@@ -808,3 +808,67 @@ func TestEndOtherReportsLoserConn(t *testing.T) {
 		t.Fatal("a failure on the pooled connection must evict it and fail the address")
 	}
 }
+
+// closeGateConn blocks Close until released, as a TLS close_notify to a peer that
+// does not read can.
+type closeGateConn struct {
+	net.Conn
+	once             sync.Once
+	closing, release chan struct{}
+}
+
+func (c *closeGateConn) Close() error {
+	c.once.Do(func() { close(c.closing) })
+	<-c.release
+	return c.Conn.Close()
+}
+
+// handleConnError closes the failed connection after releasing connMu, so a slow
+// close cannot stall every connection lookup.
+func TestHandleConnErrorClosesOutsideConnMu(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	peer := newIdentityPeer(t)
+	gate := &closeGateConn{Conn: peer.client, closing: make(chan struct{}), release: make(chan struct{})}
+	peer.client = gate
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(gate.release) }) }
+	defer release()
+	db, _ := identityDatabase(ctx, peer)
+	a, err := db.getOrDial(ctx, armAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		db.handleConnError(armAddr, a)
+	}()
+	select {
+	case <-gate.closing:
+	case <-ctx.Done():
+		t.Fatal("handleConnError did not close the failed connection")
+	}
+	locked := make(chan struct{})
+	go func() {
+		db.connMu.Lock()
+		_ = len(db.connPool)
+		db.connMu.Unlock()
+		close(locked)
+	}()
+	select {
+	case <-locked:
+	case <-time.After(3 * time.Second):
+		release()
+		t.Fatal("connMu held while the failed connection closes")
+	}
+	if pooledConn(db, armAddr) != nil || !db.failMon.isFailed(armAddr) {
+		t.Fatal("the failed connection must leave the pool and its address be marked failed before the close")
+	}
+	release()
+	<-done
+	if !a.IsClosed() {
+		t.Fatal("the failed connection was left open")
+	}
+}

@@ -45,7 +45,8 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
 	// C++ uses std::numeric_limits<int>::max() — get ALL locations at once.
 	const shardLimit = math.MaxInt32
 
-	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
+	// No attempt cap: C++ retries until the transaction times out (NativeAPI.actor.cpp:7799-7811).
+	for {
 		locations, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, shardLimit, false, tx.tenantId, tx.currentSpan())
 		if err != nil {
 			return 0, fmt.Errorf("locate range for metrics: %w", err)
@@ -93,7 +94,6 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
 			return total, nil
 		}
 	}
-	return 0, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
 // isFutureVersion returns true if the error is FDB error 1009.
@@ -122,6 +122,10 @@ func (tx *Transaction) metricsMinVersion(ctx context.Context) (int64, error) {
 // (reversed range) to get an immediate response instead of waiting for a
 // threshold change.
 func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, minVersion int64, servers []ServerInfo) (int64, error) {
+	servers, ok := tx.db.failMon.liveServers(servers, EndpointWaitMetrics)
+	if !ok {
+		return 0, tx.db.allAlternativesFailed(ctx)
+	}
 	var replyCleanup replyGuard
 	defer replyCleanup.close()
 	var sendCleanup sendGuard
@@ -167,7 +171,8 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, m
 			continue
 		}
 	}
-	return 0, &wire.FDBError{Code: ErrAllAlternativesFailed}
+	// Paced as loadBalance paces a round with no reply, since the caller retries without a cap.
+	return 0, tx.db.allAlternativesFailed(ctx)
 }
 
 // GetRangeSplitPoints returns suggested split points for the given key range.
@@ -208,7 +213,8 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 	// shard locations overlapping [begin,end) at once (NativeAPI.actor.cpp:8153-8159).
 	const shardLimit = math.MaxInt32
 
-	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
+	// No attempt cap: C++ loops until the transaction times out (NativeAPI.actor.cpp:8162, 8204-8208).
+	for {
 		locations, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, shardLimit, false, tx.tenantId, tx.currentSpan())
 		if err != nil {
 			return nil, fmt.Errorf("locate range for split points: %w", err)
@@ -272,10 +278,13 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 		}
 		return result, nil
 	}
-	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
 func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, chunkSize int64, servers []ServerInfo) ([][]byte, error) {
+	servers, ok := tx.db.failMon.liveServers(servers, EndpointGetRangeSplitPoints)
+	if !ok {
+		return nil, tx.db.allAlternativesFailed(ctx)
+	}
 	var replyCleanup replyGuard
 	defer replyCleanup.close()
 	var sendCleanup sendGuard
@@ -319,7 +328,8 @@ func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, ch
 			continue
 		}
 	}
-	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+	// Paced as loadBalance paces a round with no reply, since the caller retries without a cap.
+	return nil, tx.db.allAlternativesFailed(ctx)
 }
 
 func parseSplitRangeReply(data []byte) ([][]byte, error) {

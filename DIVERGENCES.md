@@ -3224,6 +3224,11 @@ for each invocation (`pkg/fdbgo/client/readpath.go:664-682`):
   (`readpath.go:33-40`, `:755-771`). The internal `errReplyTimeout` comes from
   the RPC reply timer, not a caller cancellation (`pkg/fdbgo/client/rpc.go:53-71`).
 
+The positive-skip mapped selector loops (`mappedrange_selectors.go`) apply the same
+reply-timeout cap (RFC-280). Storage metrics (`GetEstimatedRangeSizeBytes`,
+`GetRangeSplitPoints`) have no cap, as in C++: without a tenant they read at the latest
+version, so no aged version ends them (RFC-280).
+
 These caps apply if no caller deadline/cancellation or configured transaction
 timeout ends the read first. They do not prove the server rejected an aged read
 version: Go can synthesize 1007 solely because its retry budget ran out. A

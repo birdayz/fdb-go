@@ -238,11 +238,12 @@ func (db *database) waitProxiesChanged() <-chan struct{} {
 // replacement pooled it only counts, as C++ reports only its own connection.
 func (db *database) handleConnError(addr string, failed *transport.Conn) {
 	newlyFailed := false
+	var closing *transport.Conn
 	db.connMu.Lock()
 	c := db.connPool[addr]
 	if c == nil || c == failed || c.IsClosed() {
 		if c != nil {
-			c.Close()
+			closing = c
 			delete(db.connPool, addr)
 		}
 		if hook := db.beforeConnFailureMark.Load(); hook != nil {
@@ -252,6 +253,9 @@ func (db *database) handleConnError(addr string, failed *transport.Conn) {
 		newlyFailed = db.failMon.markFailed(addr)
 	}
 	db.connMu.Unlock()
+	if closing != nil {
+		closing.Close() // a TLS close can block for seconds; never under connMu
+	}
 	db.reportConnFailure(addr, newlyFailed)
 }
 

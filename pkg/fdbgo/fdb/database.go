@@ -408,9 +408,10 @@ func (db Database) Transact(f func(WritableTransaction) (any, error)) (any, erro
 }
 
 // TransactCtx uses ctx to bound the retry loop, backoff, and reads (RFC-090).
-// After dispatch, the commit and its uncertainty barrier outlive ctx. If the
-// commit outcome is uncertain, the caller can wait until recovery or Database.Close
-// even after its deadline. Unlike libfdb_c, cancellation does not release that wait.
+// After dispatch, the commit and its uncertainty barrier outlive ctx: if the
+// outcome is uncertain, the caller can wait until recovery or Database.Close even
+// after its deadline. As in libfdb_c, a transaction timeout or Cancel ends that wait
+// while the commit runs on (RFC-280).
 func (db Database) TransactCtx(ctx context.Context, f func(WritableTransaction) (any, error)) (any, error) {
 	var body bodyRun
 	result, err := db.d.inner.Transact(ctx, func(tx *client.Transaction) (any, error) {

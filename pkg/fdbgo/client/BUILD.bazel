@@ -564,6 +564,7 @@ go_test(
         "mappedrange_guards_test.go",
         "mappedrange_skip_lifecycle_test.go",
         "mappedrange_skip_unit_test.go",
+        "metrics_retry_fdb_test.go",
         "metrics_validation_test.go",
         "multishard_test.go",
         "native_commit_fdb_test.go",
