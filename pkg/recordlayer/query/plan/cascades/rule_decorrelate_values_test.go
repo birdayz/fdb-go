@@ -1963,3 +1963,109 @@ func TestDecorrelateValuesRule_PushIntoExpressionsWithVariations(t *testing.T) {
 		t.Error("expected uncorrelated member to be preserved unchanged")
 	}
 }
+
+// TestDecorrelateValuesRule_PushedQuantifierOrderFollowsTheSelect pins the
+// order in which pushed values boxes join a lower expression: the parent
+// select's quantifier order, as Java's insertion-ordered qunsToPushDown gives.
+// Four boxes feed one lower select (selectWithQuantifiersPushed) and one lower
+// DISTINCT (pushOnTopOfQuantifier). Each firing builds its own state, so a
+// map-ordered push shows up as a permuted quantifier list within a few firings.
+func TestDecorrelateValuesRule_PushedQuantifierOrderFollowsTheSelect(t *testing.T) {
+	t.Parallel()
+
+	columns := []string{"a", "b", "c", "d"}
+	for firing := range 32 {
+		boxes := make([]expressions.Quantifier, len(columns))
+		for i := range boxes {
+			boxes[i], _ = makeValuesBox(decorrelateLiteral(int64(i)))
+		}
+		lowerPredicates := func(base expressions.Quantifier) []predicates.QueryPredicate {
+			preds := make([]predicates.QueryPredicate, len(columns))
+			for i, column := range columns {
+				preds[i] = &predicates.ComparisonPredicate{
+					Operand: decorrelateField(decorrelateObject(base), column),
+					Comparison: predicates.Comparison{
+						Type:    predicates.ComparisonEquals,
+						Operand: decorrelateObject(boxes[i]),
+					},
+				}
+			}
+			return preds
+		}
+
+		selectBaseQ, _ := makeBaseScan()
+		lowerSelect := mustDecorrelateConstruct(expressions.NewSelectExpression(
+			decorrelateObject(selectBaseQ),
+			[]expressions.Quantifier{selectBaseQ},
+			lowerPredicates(selectBaseQ)))
+		lowerSelectQ := expressions.ForEachQuantifier(expressions.InitialOf(lowerSelect))
+
+		distinctBaseQ, _ := makeBaseScan()
+		distinctInner := mustDecorrelateConstruct(expressions.NewSelectExpression(
+			decorrelateObject(distinctBaseQ),
+			[]expressions.Quantifier{distinctBaseQ},
+			lowerPredicates(distinctBaseQ)))
+		distinctInnerQ := expressions.ForEachQuantifier(expressions.InitialOf(distinctInner))
+		lowerDistinct := mustDecorrelateConstruct(expressions.NewLogicalDistinctExpression(distinctInnerQ))
+		lowerDistinctQ := expressions.ForEachQuantifier(expressions.InitialOf(lowerDistinct))
+
+		topQuantifiers := append(append([]expressions.Quantifier{}, boxes...), lowerSelectQ, lowerDistinctQ)
+		topSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+			decorrelateObject(lowerSelectQ), topQuantifiers, nil))
+
+		yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), expressions.InitialOf(topSel))
+		if len(yielded) != 1 {
+			t.Fatalf("firing %d: expected 1 yield, got %d", firing, len(yielded))
+		}
+		decorrelated := yielded[0].(*expressions.SelectExpression)
+		if got := len(decorrelated.GetQuantifiers()); got != 2 {
+			t.Fatalf("firing %d: expected 2 quantifiers after inlining, got %d", firing, got)
+		}
+
+		// The boxes come first, in the parent's order; the last quantifier
+		// ranges over the original lower reference (pushOnTopOfQuantifier
+		// mints a fresh alias for it, as Java's Quantifier.forEach does).
+		assertOrder := func(path string, got []expressions.Quantifier, lowerRef *expressions.Reference) {
+			t.Helper()
+			gotAliases := make([]values.CorrelationIdentifier, len(got))
+			for j := range got {
+				gotAliases[j] = got[j].GetAlias()
+			}
+			if len(got) != len(boxes)+1 {
+				t.Fatalf("firing %d: %s has quantifiers %v, want %d boxes and the lower leg", firing, path, gotAliases, len(boxes))
+			}
+			for i, box := range boxes {
+				if got[i].GetAlias() != box.GetAlias() {
+					t.Fatalf("firing %d: %s quantifier order = %v, want boxes %v first", firing, path, gotAliases, boxAliases(boxes))
+				}
+			}
+			if got[len(boxes)].GetRangesOver() != lowerRef {
+				t.Fatalf("firing %d: %s last quantifier does not range over the lower leg", firing, path)
+			}
+		}
+
+		pushedSelect, ok := decorrelated.GetQuantifiers()[0].GetRangesOver().Get().(*expressions.SelectExpression)
+		if !ok {
+			t.Fatalf("firing %d: lower select rewrote to %T", firing, decorrelated.GetQuantifiers()[0].GetRangesOver().Get())
+		}
+		assertOrder("pushed select", pushedSelect.GetQuantifiers(), selectBaseQ.GetRangesOver())
+
+		pushedDistinct, ok := decorrelated.GetQuantifiers()[1].GetRangesOver().Get().(*expressions.LogicalDistinctExpression)
+		if !ok {
+			t.Fatalf("firing %d: lower distinct rewrote to %T", firing, decorrelated.GetQuantifiers()[1].GetRangesOver().Get())
+		}
+		wrapper, ok := pushedDistinct.GetQuantifiers()[0].GetRangesOver().Get().(*expressions.SelectExpression)
+		if !ok {
+			t.Fatalf("firing %d: distinct child is %T, want the select over the pushed boxes", firing, pushedDistinct.GetQuantifiers()[0].GetRangesOver().Get())
+		}
+		assertOrder("select under the distinct", wrapper.GetQuantifiers(), distinctInnerQ.GetRangesOver())
+	}
+}
+
+func boxAliases(boxes []expressions.Quantifier) []values.CorrelationIdentifier {
+	aliases := make([]values.CorrelationIdentifier, len(boxes))
+	for i, box := range boxes {
+		aliases[i] = box.GetAlias()
+	}
+	return aliases
+}

@@ -215,7 +215,7 @@ func ComputeMaxMatchMapWithEquivalence(
 
 	// Run the recursive matching algorithm.
 	matchers := make([]*incrementalValueMatcher, 0, 8)
-	memoMap := make(map[values.Value]map[values.Value]matchResult) // identity-keyed in Go via pointer
+	memoMap := make(map[values.Value]matchResults) // identity-keyed in Go via pointer
 	inProgress := make(map[values.Value]struct{})
 	var veArgs []ValueEquivalence
 	if valueEquivalence != nil {
@@ -227,15 +227,15 @@ func ComputeMaxMatchMapWithEquivalence(
 		veArgs...,
 	)
 
-	// Pick the result with the minimum maxDepth.
+	// Pick the result with the minimum maxDepth; the first one wins a tie.
 	var bestMapping map[string]maxMatchEntry
 	var bestQueryValue values.Value
 	bestMaxDepth := math.MaxInt32
-	for qv, result := range resultsMap {
-		if result.maxDepth < bestMaxDepth {
-			bestMapping = result.valueMap
-			bestQueryValue = qv
-			bestMaxDepth = result.maxDepth
+	for _, entry := range resultsMap {
+		if entry.result.maxDepth < bestMaxDepth {
+			bestMapping = entry.result.valueMap
+			bestQueryValue = entry.value
+			bestMaxDepth = entry.result.maxDepth
 		}
 	}
 
@@ -316,8 +316,8 @@ func shortCircuitMaybe(
 // ---------------------------------------------------------------------------
 
 // recurseQueryResultValue recursively finds maximal matches between a
-// query Value subtree and the candidate Value tree. Returns a map from
-// query Value variants to matchResults.
+// query Value subtree and the candidate Value tree. Returns the query
+// Value variants with their matchResults, in the order they were found.
 //
 // Ports Java's MaxMatchMap.recurseQueryResultValue (excluding the
 // Simplification variant-expansion step which is not yet ported).
@@ -328,12 +328,12 @@ func recurseQueryResultValue(
 	descendOrdinal int,
 	parentMatchers []*incrementalValueMatcher,
 	maxDepthBound int,
-	memoMap map[values.Value]map[values.Value]matchResult,
+	memoMap map[values.Value]matchResults,
 	inProgress map[values.Value]struct{},
 	valueEquivalence ...ValueEquivalence,
-) map[values.Value]matchResult {
+) matchResults {
 	if maxDepthBound == 0 {
-		return map[values.Value]matchResult{currentQueryValue: notMatched()}
+		return matchResults{{value: currentQueryValue, result: notMatched()}}
 	}
 
 	// Descend all parent matchers and track whether any parent still
@@ -368,7 +368,7 @@ func recurseQueryResultValue(
 	// separate from memoMap: a cycle is not a completed negative result, and a
 	// sibling reached under different parent matchers must still be explored.
 	if _, active := inProgress[currentQueryValue]; active {
-		return map[values.Value]matchResult{currentQueryValue: notMatched()}
+		return matchResults{{value: currentQueryValue, result: notMatched()}}
 	}
 	inProgress[currentQueryValue] = struct{}{}
 	defer delete(inProgress, currentQueryValue)
@@ -380,12 +380,15 @@ func recurseQueryResultValue(
 
 	// bestMatches tracks the best result we've found so far. When
 	// no parent is matching we can prune aggressively (local decisions
-	// only); otherwise we must keep all variants.
+	// only); otherwise we must keep all variants. Both keep Java's
+	// BestMatches order: pruning keeps the first variant of the minimum
+	// depth, and the kept variants iterate in insertion order (Java's
+	// LinkedHashMap), which the parent's cross product then follows.
 	isPruning := !anyParentsMatching
 	var bestValue values.Value
 	var bestResult matchResult
 	bestMaxDepth := -1
-	allResults := make(map[values.Value]matchResult) // used when !isPruning
+	var allResults matchResults // used when !isPruning
 
 	putResult := func(v values.Value, r matchResult) {
 		if isPruning {
@@ -398,16 +401,16 @@ func recurseQueryResultValue(
 			if bestMaxDepth == -1 || r.maxDepth < bestMaxDepth {
 				bestMaxDepth = r.maxDepth
 			}
-			allResults[v] = r
+			allResults = allResults.put(v, r)
 		}
 	}
 
-	toResultMap := func() map[values.Value]matchResult {
+	toResultMap := func() matchResults {
 		if bestMaxDepth == -1 {
-			return map[values.Value]matchResult{currentQueryValue: notMatched()}
+			return matchResults{{value: currentQueryValue, result: notMatched()}}
 		}
 		if isPruning {
-			return map[values.Value]matchResult{bestValue: bestResult}
+			return matchResults{{value: bestValue, result: bestResult}}
 		}
 		return allResults
 	}
@@ -460,19 +463,14 @@ func recurseQueryResultValue(
 				}
 			}
 
-			// Recurse into each child, collecting per-child result maps.
+			// Recurse into each child, collecting per-child results.
 			childrenResults := make([][]childResultEntry, len(children))
 			for i, child := range children {
-				childResultMap := recurseQueryResultValue(
+				childrenResults[i] = recurseQueryResultValue(
 					child, candidateValue, rangedOverAliases,
 					i, localMatchers, childrenMaxDepthBound, memoMap, inProgress,
 					valueEquivalence...,
 				)
-				entries := make([]childResultEntry, 0, len(childResultMap))
-				for v, r := range childResultMap {
-					entries = append(entries, childResultEntry{value: v, result: r})
-				}
-				childrenResults[i] = entries
 			}
 
 			// Cross-product of all children's results: for each
@@ -518,8 +516,8 @@ func recurseQueryResultValue(
 				descendOrdinal, parentMatchers, maxDepthBound, memoMap, inProgress,
 				valueEquivalence...,
 			)
-			for v, r := range expandedResults {
-				putResult(v, r)
+			for _, entry := range expandedResults {
+				putResult(entry.value, entry.result)
 			}
 		}
 	}
@@ -539,6 +537,31 @@ func recurseQueryResultValue(
 type childResultEntry struct {
 	value  values.Value
 	result matchResult
+}
+
+// matchResults maps Value variants to their matchResults in insertion
+// order, Java's LinkedHashMap<Value, MatchResult>. Java's Value.equals is
+// semanticEquals, so putting a structurally equal variant replaces the
+// stored result and keeps the first variant and its position.
+type matchResults []childResultEntry
+
+func (m matchResults) put(v values.Value, r matchResult) matchResults {
+	for i := range m {
+		if values.ValuesStructurallyEqual(m[i].value, v) {
+			m[i].result = r
+			return m
+		}
+	}
+	return append(m, childResultEntry{value: v, result: r})
+}
+
+func (m matchResults) get(v values.Value) (matchResult, bool) {
+	for _, entry := range m {
+		if values.ValuesStructurallyEqual(entry.value, v) {
+			return entry.result, true
+		}
+	}
+	return matchResult{}, false
 }
 
 // crossProductChildren iterates over the Cartesian product of the
