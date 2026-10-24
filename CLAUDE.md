@@ -24,8 +24,7 @@ Document compatibility boundaries in `docs/compatibility.md` and `DIVERGENCES.md
   check (`FDB not available (no Docker)`) is the allowed skip.
 - Finish a coherent change before moving to another. Surface genuine external
   blockers directly, with evidence and the decision or capability needed.
-- Implement before final review; do not write an RFC or design document unless
-  the owner requests one. Keep commit messages to ten lines or fewer.
+- Keep commit messages to ten lines or fewer.
 - Stage explicit paths. Do not use `--no-verify` or `git stash` (stash state is
   shared across worktrees). Preserve other agents' work.
 - Read both sides of every merge conflict. One side may correct the other;
