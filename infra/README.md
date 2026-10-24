@@ -386,7 +386,7 @@ spuriously does not fail safe here; it silently retires the sweep and the disk f
 launched directly, so `comm` is `Runner.Worker` (13 chars, under the 15-char truncation) and
 the sweep runs as root, which can see it. A framework-dependent packaging would run it as
 `dotnet Runner.Worker.dll` and `-x` would miss — `tools/bazelscaleset`'s cmdline matcher
-carries that shape as a defensive case, and an intermediate version of this guard used `-f` on
+(retired; source at 86f05ccf8) carried that shape as a defensive case, and an intermediate version of this guard used `-f` on
 the strength of it. That was reading a test table as a description of the fleet. If the runner
 packaging ever changes, this guard goes silent in the direction that returns the bug.
 

@@ -44,24 +44,6 @@ const clusterFileEnv = "FDB_STRESS_CLUSTER_FILE"
 // to a container, which cannot sustain them.
 var realClusterOnly bool
 
-// containerAllowed refuses the testcontainer fallback for the 10M binary.
-func containerAllowed(realOnly bool) error {
-	if realOnly {
-		return fmt.Errorf("the 10M scales need a real cluster: set %s (`just stress-10m <cluster file>`)", clusterFileEnv)
-	}
-	return nil
-}
-
-func TestContainerAllowed(t *testing.T) {
-	t.Parallel()
-	if err := containerAllowed(false); err != nil {
-		t.Fatalf("containerAllowed(false) = %v", err)
-	}
-	if err := containerAllowed(true); err == nil || !strings.Contains(err.Error(), clusterFileEnv) {
-		t.Fatalf("containerAllowed(true) = %v, want an error naming %s", err, clusterFileEnv)
-	}
-}
-
 func TestMain(m *testing.M) { os.Exit(runTests(m)) }
 
 func runTests(m *testing.M) (code int) {
@@ -85,8 +67,9 @@ func runTests(m *testing.M) (code int) {
 		clusterFilePath = external
 		return m.Run()
 	}
-	if err := containerAllowed(realClusterOnly); err != nil {
-		fmt.Fprintf(os.Stderr, "stress: %v\n", err)
+	if realClusterOnly {
+		// tenmguard asserts this refusal and its message.
+		fmt.Fprintf(os.Stderr, "stress: the 10M scales need a real cluster: set %s (`just stress-10m <cluster file>`)\n", clusterFileEnv)
 		return 1
 	}
 
@@ -436,8 +419,8 @@ func TestFDB_Stress_1M(t *testing.T) {
 }
 
 // The 10M scales (TestFDB_Stress_10M, TestFDB_Ingest_10M) live in
-// stress_10m_test.go behind the additional `realcluster` build tag, so this
-// package advertises exactly the scales it runs. See that file for why.
+// stress_10m_test.go, compiled only into the stress_10m_test target, so
+// stress_test advertises exactly the scales it runs. See that file for why.
 
 func TestFDB_Ingest_Parallelism(t *testing.T) {
 	type config struct {
@@ -465,7 +448,7 @@ func TestFDB_Ingest_Parallelism(t *testing.T) {
 			// transaction timeout) retried the now-unreachable cluster forever, hanging the
 			// whole suite to the 1h test deadline (nightly-stress, every night). Same
 			// single-node-Docker ceiling that keeps TestFDB_Ingest_10M / TestFDB_Stress_10M
-			// behind the `realcluster` build tag (stress_10m_test.go). 1M total keeps every
+			// on a real cluster only (stress_10m_test.go). 1M total keeps every
 			// parallelism config meaningful while staying inside what one Docker node
 			// sustains.
 			n := 200_000

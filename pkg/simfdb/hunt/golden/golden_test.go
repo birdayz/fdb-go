@@ -12,7 +12,7 @@ import (
 // corpus is the curated set of characterization scenarios. Data is literal (not random) so the
 // baseline is stable and human-reviewable. Queries span the read surface: point/range filters,
 // aggregates, GROUP BY, ORDER BY, LIMIT, IN, NULL semantics, DISTINCT, index-eligible predicates,
-// and boolean/string columns. Add scenarios/queries here, then GOLDEN_UPDATE=1 to record them.
+// and boolean/string columns. Add scenarios/queries here, then `just golden-update` to record them.
 func corpus() []Scenario {
 	orders := Scenario{
 		Name: "orders",
@@ -341,7 +341,7 @@ func corpus() []Scenario {
 }
 
 // TestGolden captures each scenario over SimFDB and diffs it against the committed baseline in
-// testdata/. A mismatch fails with a reviewable diff. GOLDEN_UPDATE=1 regenerates the baselines
+// testdata/. A mismatch fails with a reviewable diff. `just golden-update` regenerates the baselines
 // (review the diff before committing). The capture is asserted deterministic first — a golden is
 // only meaningful if the same scenario yields identical bytes every run.
 //
@@ -456,11 +456,11 @@ func TestGolden(t *testing.T) {
 			}
 			want, err := os.ReadFile(path)
 			if err != nil {
-				t.Fatalf("read golden %s (run GOLDEN_UPDATE=1 to create): %v", path, err)
+				t.Fatalf("read golden %s (run `just golden-update` to create): %v", path, err)
 			}
 			if got != string(want) {
 				t.Fatalf("GOLDEN MISMATCH for %q — behavior changed (result and/or plan). "+
-					"If intended, GOLDEN_UPDATE=1 and review the diff:\n%s", s.Name, firstDiff(string(want), got))
+					"If intended, run `just golden-update` and review the diff:\n%s", s.Name, firstDiff(string(want), got))
 			}
 		})
 	}
@@ -506,7 +506,7 @@ func TestGoldenDir(t *testing.T) {
 
 // firstDiff renders an LCS line diff (baseline "-" vs current "+"), so an inserted/removed line
 // doesn't smear every following line into a spurious mismatch (a positional diff's flaw). The
-// authoritative review artifact is still `git diff testdata/*.golden` after GOLDEN_UPDATE=1; this
+// authoritative review artifact is still `git diff testdata/*.golden` after `just golden-update`; this
 // is the in-test convenience. Golden files are small, so the O(n·m) table is fine.
 func firstDiff(want, got string) string {
 	a := strings.Split(want, "\n")

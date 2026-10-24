@@ -1971,7 +1971,12 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   job runs them with a standalone `go test -tags libfdbc` over `pkg/fdbgo/libfdbc/...`
   and `pkg/internal/fdbclient/...`; only `network_lifecycle_test` and
   `mapped_skip_regression_test` have Bazel targets, so `just test-full` skips
-  `differential_test.go` and the other cross-client differentials.
+  `differential_test.go` and the other cross-client differentials. Blocker (2026-10-24):
+  every remaining file uses `startCluster` from `differential_test.go`, which imports
+  `pkg/recordlayer`; under the `libfdbc` gotag Bazel compiles `pkg/internal/fdbclient`
+  without its only source (`open_purego.go` is `!libfdbc`), and `open_libfdbc.go` needs
+  `libfdbc_native`, which shares the stub's import path. The fix is a tag-aware select
+  across both libraries.
 - [ ] Java/Go raw key-value parity for shared TEXT indexes: plain, grouped and
   no-position variants over the Unicode-delta inputs, comparing sorted relative keys,
   values and positions; force bunch splitting with 25 common postings; cross-engine

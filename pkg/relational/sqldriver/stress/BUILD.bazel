@@ -1,4 +1,3 @@
-load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@rules_go//go:def.bzl", "go_test")
 
 # stress_10m_test.go belongs only to stress_10m_test below.
@@ -44,9 +43,9 @@ go_test(
     ],
 )
 
-# The 10M scales, against a real cluster only (`just stress-10m <cluster file>`);
-# TestMain refuses the container fallback. `just test-full` skips the realcluster
-# tag and compiles it through stress_10m_build_test instead.
+# The 10M scales, against a real cluster only (`just stress-10m <cluster file>`).
+# Gazelle does not manage it: keep srcs and deps equal to stress_test's plus
+# stress_10m_test.go. //pkg/relational/sqldriver/stress/tenmguard builds it in test-full.
 go_test(
     name = "stress_10m_test",
     timeout = "eternal",
@@ -87,13 +86,4 @@ go_test(
         "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_google_protobuf//types/dynamicpb",
     ],
-)
-
-build_test(
-    name = "stress_10m_build_test",
-    tags = [
-        "manual",
-        "stress",
-    ],
-    targets = [":stress_10m_test"],
 )
