@@ -14,10 +14,10 @@ package sqldriver_test
 //   - A result set cannot outlive its transaction — all four doors (criterion
 //     5). paginatingRows captures the *embeddedTx at Execute time; pages
 //     fetched after the transaction ended must be 25F01, never rows from a
-//     silently opened fresh transaction. The four doors are the four sites
-//     that end a transaction, two of which (Close, ResetSession) bypass
-//     Rollback entirely — a terminal flag set only in Commit/Rollback would
-//     pass the first two doors and fail those.
+//     silently opened fresh transaction. The four doors are the explicit
+//     end calls (Close and ResetSession end it through Rollback), each of
+//     which must set the terminal flag; a context abort (RFC-272) sets it
+//     too, pinned in the embedded explicit_tx tests.
 
 import (
 	"context"
@@ -269,9 +269,9 @@ func TestFDB_RFC198_ReadConflictFromSelectAlone(t *testing.T) {
 //
 // Mutation direction: restoring runInCapturedTx's silent nil-fallback for a
 // terminated captured transaction turns every subtest here into rows served
-// from a fresh auto-commit transaction — all four redden. A terminal flag set
-// only in Commit/Rollback keeps raw_commit/raw_rollback green and reddens
-// close/reset_session.
+// from a fresh auto-commit transaction — all four redden. Close or
+// ResetSession dropping the transaction without Rollback (so without the
+// terminal flag) reddens close/reset_session.
 func TestFDB_RFC198_ResultSetDiesWithItsTransaction(t *testing.T) {
 	t.Parallel()
 	if testkit.ClusterFile() == "" {

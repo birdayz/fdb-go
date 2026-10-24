@@ -70,8 +70,8 @@ Pick at least one bound for every transaction. Any of these terminates it:
 | `Transaction.SetRetryLimit` / `DatabaseOptions.SetTransactionRetryLimit` | the retry loop | The most recent error escapes once the cap is hit. |
 | `Database.TransactCtx` / `ReadTransactCtx` with a deadline `ctx` | retry loop, backoff, and reads | Go's **extra** bound (RFC-090) — not a substitute for a `libfdb_c` mechanism that does not exist. |
 
-The no-context `Database.Transact` runs on `context.Background()` to stay drop-in compatible with the Apple Go
-binding, so a `ctx` deadline is not available to it — bound it with a timeout or retry limit, or use
+The no-context `Database.Transact` runs on `context.Background()`, as the Apple Go binding has no context,
+so a `ctx` deadline is not available to it — bound it with a timeout or retry limit, or use
 `TransactCtx`.
 
 Migrating from `libfdb_c`: if you set a transaction timeout there, keep setting it here — it works the same
@@ -300,7 +300,7 @@ source/tests when evaluating behavior.
 | `tag_throttled` custom delay | Uses `cx->throttledTags` + TAG_THROTTLE_RECHECK_INTERVAL | `tagThrottles.maxDuration` with same capping | Matching C++: max(backoff, min(7s, tagDuration)) |
 | `proxy_tag_throttled` accumulated delay | Tracks `proxyTagThrottledDuration`, sends back to proxy | Tracks duration but not yet sent back to proxy in GRV request | Rate feedback incomplete (LOW); throttle still works via standard backoff |
 | QueueModel key | `endpoint.token.first()` (uint64) | Address string (host:port) | Cosmetic; same server identity in practice |
-| Load balance secondDelay | Speculative second request after delay to hedge slow servers | `sendFrameWithHedge()` — race best + second-best server with max(10ms, 2x latency) delay | Matching C++: all 3 read paths (getValue, getKey, getRange) hedge |
+| Load balance secondDelay | Speculative second request after `secondMultiplier × latency + 0.5ms`, only while `secondBudget ≥ 1` (starts at 0, +0.05 per unhedged reply) | `sendFrameWithHedge()` — race best + second-best server with max(10ms, 2x latency) delay, no budget | Partial: all 3 read paths hedge and reuse the request's tags, but Go hedges where C++'s budget would not (TODO.md) |
 
 ## Adding a new request/response type
 

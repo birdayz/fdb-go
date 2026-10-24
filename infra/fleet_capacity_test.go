@@ -83,7 +83,7 @@ type workflowFile struct {
 
 // A MATRIX JOB CONSUMES ONE SLOT PER ENTRY, NOT ONE PER JOB.
 //
-// No workflow in this repo uses `strategy.matrix` today — verified across all 14
+// No workflow in this repo uses `strategy.matrix` today — verified across all 3
 // files, where the only occurrence of the word is prose in a comment. So the
 // count this gate reports is correct as it stands, and this code changes no
 // number now.
@@ -92,7 +92,7 @@ type workflowFile struct {
 // matrix job as ONE slot UNDER-states the fan-out, so the gate would go on
 // passing while the fleet is oversubscribed — the failure mode is silent and it
 // is exactly the one the gate was written to catch. Adding a 3-entry matrix to
-// any push-triggered lane would take the real fan-out to 7 against 2 slots with
+// any push-triggered lane would take the real fan-out from 7 to 9 against 2 slots with
 // this file still green. A gate wrong in the safe direction is noise; wrong in
 // the unsafe direction it is worse than absent, because it reads as coverage.
 //
@@ -134,31 +134,11 @@ func matrixEntries(n *yaml.Node) (int, bool) {
 	return total, true
 }
 
-// hasPushTrigger reports whether the workflow runs on `push`.
-//
-// `on` is one of YAML's genuinely awkward keys — it can be a scalar ("on: push"),
-// a sequence ("on: [push, pull_request]") or a mapping ("on:\n  push:") — and it
-// is also the YAML 1.1 boolean `true`, which some parsers hand back as a bool
-// key. All three shapes are handled because a gate that silently matched none of
-// them would count zero workflows and pass while asserting nothing.
+// hasPushTrigger reports whether the workflow runs on `push`; triggerSpec
+// handles the shapes of `on:`.
 func hasPushTrigger(n *yaml.Node) bool {
-	switch n.Kind {
-	case yaml.ScalarNode:
-		return n.Value == "push"
-	case yaml.SequenceNode:
-		for _, c := range n.Content {
-			if c.Value == "push" {
-				return true
-			}
-		}
-	case yaml.MappingNode:
-		for i := 0; i+1 < len(n.Content); i += 2 {
-			if n.Content[i].Value == "push" {
-				return true
-			}
-		}
-	}
-	return false
+	_, ok := triggerSpec(n, "push")
+	return ok
 }
 
 // usesLabel reports whether a runs-on value names the pool label, in either the

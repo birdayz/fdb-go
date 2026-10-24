@@ -1293,7 +1293,7 @@ func compositeSecondaryIndexPrefixPushdownScenario() *yamsql.Scenario {
 // tests (CLAUDE.md gotcha — LIMIT not supported by fdb-relational).
 // Skip the range-over-secondary-index ORDER-BY-PK tests where the
 // planner can't reconcile index order with PK order (ORDER BY natural-
-// order continuation gotcha from earlier in this shift).
+// order continuation gotcha).
 func secondaryIndexPushdownScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "secondary_index_pushdown",
@@ -1344,7 +1344,7 @@ func secondaryIndexPushdownScenario() *yamsql.Scenario {
 // Excludes tests that require rows added via mid-stream INSERT (the
 // ESCAPE-clause subset depends on a runtime INSERT of x_ray / y%lo).
 // Excludes ORDER BY non-PK / non-index-leading column forms (planner
-// natural-order gotcha from earlier in this shift).
+// natural-order gotcha).
 func likePrefixPushdownScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "like_prefix_pushdown",
@@ -1753,8 +1753,8 @@ func betweenScenario() *yamsql.Scenario {
 // but got FieldValue". Re-enabled after threading
 // allowBareField=true through evalExprPredicateTri's value-context
 // callers (eval_predicate.go) so operands of AND/OR/NOT/XOR and
-// projection-context expressions accept bare FieldValue and convert
-// via IsTruthy. WHERE-top-level `WHERE flag` still rejects to match
+// projection-context expressions accept bare FieldValue and evaluate
+// it as a value. WHERE-top-level `WHERE flag` still rejects to match
 // Java.
 func booleanScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
@@ -3381,9 +3381,9 @@ func coalesceTypePromotionScenario() *yamsql.Scenario {
 // minMaxBigintBoundaryScenario pins MIN/MAX over int64 boundary values
 // without overflowing arithmetic. Both engines already agree on
 // arithmetic-overflow rejection (Java raises `ArithmeticException:
-// long overflow`; Go's `ApplyMathOp` raises
-// `ErrCodeNumericValueOutOfRange` via `AddInt64Checked`-family
-// helpers — only the error message text differs). MIN/MAX/COUNT
+// long overflow`; Go's `ArithmeticValue` raises
+// `ErrCodeNumericValueOutOfRange` — only the error message text
+// differs). MIN/MAX/COUNT
 // over stored boundary values doesn't trigger overflow either way.
 // Net-new.
 func minMaxBigintBoundaryScenario() *yamsql.Scenario {

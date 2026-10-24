@@ -193,7 +193,7 @@ func (tx *Transaction) legacySendGetKey(ctx context.Context, selectorKey []byte,
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
 				replyHandle.Release()
-				tx.db.handleReadConnError(server.Address, err)
+				tx.db.handleReadConnError(server.Address, conn, err)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			getKeyBufPool.Put(bufp)
@@ -201,6 +201,7 @@ func (tx *Transaction) legacySendGetKey(ctx context.Context, selectorKey []byte,
 				replyCh:     replyCh,
 				replyHandle: replyHandle,
 				addr:        server.Address,
+				conn:        conn,
 				delta:       delta,
 				start:       start,
 			}
@@ -225,7 +226,7 @@ func (tx *Transaction) legacySendGetKey(ctx context.Context, selectorKey []byte,
 
 	if result.addr != "" {
 		if result.connErr {
-			tx.db.handleReadConnError(result.addr, result.err)
+			tx.db.handleReadConnError(result.addr, result.conn, result.err)
 			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
 		} else if result.err != nil {
 			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
@@ -615,7 +616,7 @@ func legacySendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end 
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
 				replyHandle.Release()
-				tx.db.handleReadConnError(server.Address, err)
+				tx.db.handleReadConnError(server.Address, conn, err)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			ops.putBuf(poolBuf)
@@ -623,6 +624,7 @@ func legacySendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end 
 				replyCh:     replyCh,
 				replyHandle: replyHandle,
 				addr:        server.Address,
+				conn:        conn,
 				delta:       delta,
 				start:       start,
 			}
@@ -647,7 +649,7 @@ func legacySendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end 
 
 	if result.addr != "" {
 		if result.connErr {
-			tx.db.handleReadConnError(result.addr, result.err)
+			tx.db.handleReadConnError(result.addr, result.conn, result.err)
 			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
 		} else if result.err != nil {
 			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
