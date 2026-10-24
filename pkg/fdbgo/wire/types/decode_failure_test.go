@@ -438,3 +438,15 @@ func TestErrorOrErrorCodeOutsideBuffer(t *testing.T) {
 		t.Fatalf("error code past the buffer: %v; want a DecodeError", err)
 	}
 }
+
+// An Optional of a table with no Go type decodes as presence only.
+func TestOptionalTableWithoutGoType(t *testing.T) {
+	t.Parallel()
+	var m ClientDBInfo
+	if err := m.UnmarshalFDB((&ClientDBInfo{HasEncryptKeyProxy: true, EncryptKeyProxy: []byte("ekp")}).MarshalFDB()); err != nil {
+		t.Fatal(err)
+	}
+	if !m.HasEncryptKeyProxy || m.EncryptKeyProxy != nil {
+		t.Fatalf("encryptKeyProxy: present %t, %q; want present and not decoded", m.HasEncryptKeyProxy, m.EncryptKeyProxy)
+	}
+}

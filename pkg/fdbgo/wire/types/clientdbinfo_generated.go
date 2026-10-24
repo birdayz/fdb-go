@@ -53,7 +53,7 @@ type ClientDBInfo struct {
 	History       []byte   // slot 5
 	// TenantMode: unregistered nested struct at slot 6
 	HasEncryptKeyProxy bool     // slot 7, optional tag
-	EncryptKeyProxy    []byte   // slot 8, optional table, not decoded
+	EncryptKeyProxy    []byte   // slot 8, optional table: decoded as presence only, do not set
 	ClusterId          [16]byte // slot 9
 	ClusterType        int32    // slot 10
 	HasMetaclusterName bool     // slot 11, optional tag

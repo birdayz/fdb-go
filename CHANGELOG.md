@@ -346,8 +346,9 @@ Each is described in full under Compatibility or Changed below.
 - `fdb` `GetRange` sends its first batch at the call, as Apple's Go binding does: the rows reflect the transaction's writes as of that call, and commit waits for every issued range read (also one never consumed) and keeps its read conflict, as libfdb_c does. `GetSliceWithError` over more than batch 1's bytes (about 4 KB in the default mode) now takes two sequential round trips, batch 1 and then the rest, as libfdb_c does. `client.Transaction.StartGetRange` starts such a read and returns at once; `Database.Metrics()` (on `fdb.Database` too) reports `TransactionGetRangeRequests`. A watch whose read fails no longer leaves a read conflict.
 
 - `pkg/fdbgo/wire/types` decoders fail on malformed input (RFC-276):
-  - `UnmarshalFromReader` returns an error, and `Parse<T>VectorFromReader` and `ParseKeyValueRefStringVector` return `([]T, error)`.
-  - `NetworkAddressList.SecondaryAddress` decodes as the `NetworkAddress` table C++ writes; it used to read the table as a byte string.
+  - `UnmarshalFromReader` returns an error. `Parse<T>VectorFromReader` and the `Parse<T>StringVector` functions (`KeyValueRef`, `KeyRangeRef`, `GetValueReqAndResult`) return `([]T, error)`.
+  - Optional tables decode as tables. `NetworkAddressList.SecondaryAddress` is a `NetworkAddress`, and `CommitTransactionRef.Read_conflict_ranges_disabled` (C++ `spanContext`) a `SpanContext`; both used to be read as byte strings. `ClientDBInfo.EncryptKeyProxy`, `CommitTransactionRequest.CommitCostEstimation` and `TenantInfo.Token` decode as presence only.
+  - `pkg/fdbgo/wire`: `Reader.Err` reports a field read outside the buffer; `ReadVectorCount` fails on a vector field past the buffer, `ReadErrorOrInto` on an error code past it, and `ReadOptionalInt32`/`ReadOptionalString` take only tag 1. New: `DecodeBudget`, `DecodeError`, `DecodeBudgetError`, `FieldBoundsError`, `StringVectorError`.
   - The pure-Go client rejects a malformed reply instead of decoding it as a shorter valid one: a vector count, element, table or field outside the buffer, or row bytes that do not fill their blob, fails the read.
   - Vector offsets that alias one element no longer allocate without bound (a 24 KB reply allocated 292 MB): each decode is limited to `len/4` elements, which no reply an FDB server writes reaches.
 ### Fixed

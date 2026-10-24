@@ -221,7 +221,7 @@ struct GoEmitterV5 {
                     // Optional<struct>: value is a nested Go struct, not []byte.
                     fprintf(f, "\t%s    %s // slot %d, optional nested value\n", gn.c_str(), fd.nestedGoType, fd.vtableSlot + 1);
                 } else if (fd.optTable) {
-                    fprintf(f, "\t%s    []byte // slot %d, optional table, not decoded\n", gn.c_str(), fd.vtableSlot + 1);
+                    fprintf(f, "\t%s    []byte // slot %d, optional table: decoded as presence only, do not set\n", gn.c_str(), fd.vtableSlot + 1);
                 } else {
                     fprintf(f, "\t%s    []byte // slot %d, optional value\n", gn.c_str(), fd.vtableSlot + 1);
                 }
@@ -239,7 +239,7 @@ struct GoEmitterV5 {
 
         // Types with custom serialize logic (e.g. KeyRangeRef) provide
         // hand-written precomputeSize/writeToBuffer AND
-        // UnmarshalFromReader/UnmarshalFDB in *_custom.go. The custom
+        // UnmarshalFromReader/UnmarshalFDB/decode in *_custom.go. The custom
         // unmarshal must invert any optimization the custom marshal applies
         // (e.g. KeyRangeRef's single-key-range "(end, empty)" trick).
         // Caught by FuzzSplitRangeRequest_RoundTrip 2026-04-25.
@@ -1512,6 +1512,40 @@ void generateTestVectors(const char* outDir) {
         r.metadataVersion = "metadata_version_x"_sr;
         r.midShardSize = 250000;
         comma(); emitReplyVector(out, "GetReadVersionReply_locked", r);
+    }
+    {
+        GetReadVersionReply r;
+        r.version = 0x2233445566LL;
+        r.ssVersionVectorDelta.setVersion(Tag(0, 7), 0x2233445500LL);
+        comma(); emitReplyVector(out, "GetReadVersionReply_version_vector", r);
+    }
+    // A tagThrottleInfo vector is not regen-stable: ClientTagThrottleLimits writes
+    // expiration - now() (TagThrottle.actor.h:215-226).
+
+    // --- Read replies carrying the inline LoadBalancedReply.error ---
+    {
+        GetValueReply r;
+        r.penalty = 1.0;
+        r.error = wrong_shard_server();
+        comma(); emitReplyVector(out, "GetValueReply_error", r);
+    }
+    {
+        GetKeyReply r;
+        r.penalty = 1.0;
+        r.error = wrong_shard_server();
+        comma(); emitReplyVector(out, "GetKeyReply_error", r);
+    }
+    {
+        GetKeyValuesReply r;
+        r.penalty = 1.0;
+        r.error = wrong_shard_server();
+        comma(); emitReplyVector(out, "GetKeyValuesReply_error", r);
+    }
+    {
+        GetMappedKeyValuesReply r;
+        r.penalty = 1.0;
+        r.error = wrong_shard_server();
+        comma(); emitReplyVector(out, "GetMappedKeyValuesReply_error", r);
     }
 
     // --- CommitID (commit reply) ---

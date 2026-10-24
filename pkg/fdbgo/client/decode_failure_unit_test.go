@@ -282,18 +282,3 @@ func TestParseClientDBInfoForwardTag(t *testing.T) {
 		t.Fatalf("forward tag 2: %+v, %v; want no forward", info, err)
 	}
 }
-
-// Replies whose endpoints carry a secondary address decode; the address is an
-// Optional<NetworkAddress> table, not a byte string.
-func TestSecondaryAddressRepliesDecode(t *testing.T) {
-	t.Parallel()
-	entries, err := parseGetKeyServerLocationsReply(replyVector(t, "GetKeyServerLocationsReply_secondary_address"))
-	if err != nil || len(entries) != 1 || len(entries[0].servers) != 1 || entries[0].servers[0].Address != "10.1.2.3:4500" {
-		t.Fatalf("locations reply: %+v, %v", entries, err)
-	}
-	info, err := parseErrorOrClientDBInfo(replyVector(t, "ClientDBInfo_secondary_address"))
-	if err != nil || len(info.GRVProxies) != 1 || len(info.CommitProxies) != 1 ||
-		info.GRVProxies[0].Address != "10.1.2.3:4500" || info.CommitProxies[0].Address != "10.1.2.3:4500" {
-		t.Fatalf("ClientDBInfo: %+v, %v", info, err)
-	}
-}

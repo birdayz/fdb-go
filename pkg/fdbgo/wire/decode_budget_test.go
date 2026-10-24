@@ -148,9 +148,19 @@ func TestReadOptionalTagsAndBounds(t *testing.T) {
 	if _, iok, _, sok, err := read(optionalMessage(2, 12, 2, "hi")); iok || sok || err != nil {
 		t.Fatalf("tag 2: present %t/%t, %v; want absent", iok, sok, err)
 	}
-	_, iok, _, sok, err := read(optionalMessage(1, 1<<20, 2, "hi"))
-	var bounds *FieldBoundsError
-	if iok || sok || !errors.As(err, &bounds) || bounds.Slot != 1 {
-		t.Fatalf("value past the buffer: present %t/%t, %v; want a FieldBoundsError for slot 1", iok, sok, err)
+	// Each helper records the fault on a reader of its own.
+	for name, readOne := range map[string]func(r *Reader) bool{
+		"int32":  func(r *Reader) bool { _, ok := r.ReadOptionalInt32(0, 1); return ok },
+		"string": func(r *Reader) bool { _, ok := r.ReadOptionalString(0, 1); return ok },
+	} {
+		r, err := NewReader(optionalMessage(1, 1<<20, 2, "hi"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		present := readOne(r)
+		var bounds *FieldBoundsError
+		if err := r.Err(); present || !errors.As(err, &bounds) || bounds.Slot != 1 {
+			t.Fatalf("%s value past the buffer: present %t, %v; want a FieldBoundsError for slot 1", name, present, err)
+		}
 	}
 }

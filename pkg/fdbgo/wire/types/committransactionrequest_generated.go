@@ -51,7 +51,7 @@ type CommitTransactionRequest struct {
 	HasDebugID              bool                 // slot 3, optional tag
 	DebugID                 [16]byte             // slot 4, optional scalar value
 	HasCommitCostEstimation bool                 // slot 5, optional tag
-	CommitCostEstimation    []byte               // slot 6, optional table, not decoded
+	CommitCostEstimation    []byte               // slot 6, optional table: decoded as presence only, do not set
 	HasTagSet               bool                 // slot 7, optional tag
 	TagSet                  []byte               // slot 8, optional value
 	SpanContext             SpanContext          // slot 9, nested

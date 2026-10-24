@@ -336,16 +336,11 @@ FieldKind classifyField() {
     else return FieldKind::NestedStruct;
 }
 
-// Get the Go type name for the inner type of Optional<T>, if it's a serializable struct.
-// Returns "" (empty) for bytes/scalar Optionals (e.g. Optional<KeyRef>).
-// Returns the registered Go type name for struct Optionals (e.g. Optional<ReadOptions> → "ReadOptions").
-// Detect Optional<T> where T is a registered Go struct type.
-// Uses explicit specializations to avoid template metaprogramming issues.
 template <class T> struct optional_inner_t { static constexpr bool is = false; };
 template <class T> struct optional_inner_t<Optional<T>> { using type = T; static constexpr bool is = true; };
 
-// Any registered Go struct inner is a nested table (e.g. Optional<NetworkAddress>, the
-// secondary address of a NetworkAddressList); the specializations below predate this.
+// The Go type of Optional<T>'s inner when T is a registered Go struct (Optional<Error>,
+// Optional<ReadOptions>, Optional<NetworkAddress>, ...): a nested table; else "".
 template <class T> const char* optionalInnerGoType() {
     if constexpr (optional_inner_t<T>::is) {
         if constexpr (GoTypeName<typename optional_inner_t<T>::type>::registered)
@@ -353,32 +348,10 @@ template <class T> const char* optionalInnerGoType() {
     }
     return "";
 }
-template <> inline const char* optionalInnerGoType<Optional<ReadOptions>>() { return "ReadOptions"; }
-// RFC-115 §6: Optional<Error> (the inline LoadBalancedReply.error on read replies) is a
-// flatbuffers UNION — a 1-byte present tag + a RelativeOffset to a nested Error table —
-// NOT Optional<bytes>. Without this specialization the writer emitted a length-prefixed
-// byte vector (mis-marshal); registering Error as the struct inner makes the generated
-// writer emit the nested-Error-table-via-offset that the reader (wire.ReadInlineReplyError)
-// and C++ expect. Error has uint16 errorCode at slot 0 (REGISTER_FIELD_NAMES(Error,...)).
+// Error has no GoTypeName registration: Optional<Error>, the inline LoadBalancedReply.error,
+// is a nested Error table (RFC-115 §6), decoded by wire.ReadInlineReplyError as well.
 template <> inline const char* optionalInnerGoType<Optional<Error>>() { return "Error"; }
 
-// Optional<scalar-T> introspection. Optional<UID> (the debugID on requests) is a flatbuffers
-// UNION whose single alternative is the fixed-size SCALAR UID (scalar_traits<UID>,
-// flow/IRandom.h => 16 bytes; use_indirection==false), so it serializes as a bare 16-byte
-// scalar behind the union RelativeOffset (SaveAlternative, flat_buffers.h:848), NOT a
-// length-prefixed byte vector. optionalInnerGoType above only whitelists STRUCT inners; this
-// captures a SCALAR inner so the codegen emits a fixed-size scalar ([16]byte / ReadUID) rather
-// than []byte. (Optional<UID> debugID is the only Optional<scalar> in the schema; every other
-// Optional<...> is genuinely dynamic-size and stays []byte.) NOTE fb_size<Optional<UID>> is the
-// union's RelativeOffset size (4), so the inner scalar's size (16) must be queried separately.
-// An Optional<scalar-T> serializes its inner as a BARE out-of-line value behind the
-// union's RelativeOffset (C++ SaveAlternative non-indirection arm, flat_buffers.h:848),
-// NOT a length-prefixed byte vector. This covers UID (the lone 16-byte fixed-array
-// struct-scalar) AND every arithmetic/enum primitive (Optional<int64>/<Version>/<bool>/…,
-// e.g. ReadOptions.consistencyCheckStartVersion = Optional<Version>). The predicate is the
-// complement of use_indirection for the scalar case: byte-vector inners (StringRef/KeyRef/
-// Value/Standalone) are NOT arithmetic/enum/UID → they correctly stay []byte; struct inners
-// (Tag/StorageMetadataType/Error/ReadOptions) route via optionalInnerGoType, not here.
 // An Optional<T> whose inner serializes as a flatbuffers table: neither scalar, nor
 // dynamic-size bytes, nor a vector (flat_buffers.h union save, use_indirection arm).
 template <class T> bool optionalInnerIsTable() {
@@ -394,6 +367,22 @@ template <class T> bool optionalInnerIsTable() {
     return false;
 }
 
+// Optional<scalar-T> introspection. Optional<UID> (the debugID on requests) is a flatbuffers
+// UNION whose single alternative is the fixed-size SCALAR UID (scalar_traits<UID>,
+// flow/IRandom.h => 16 bytes; use_indirection==false), so it serializes as a bare 16-byte
+// scalar behind the union RelativeOffset (SaveAlternative, flat_buffers.h:848), NOT a
+// length-prefixed byte vector. This captures a SCALAR inner so the codegen emits a fixed-size
+// scalar ([16]byte / ReadUID) rather than []byte; struct inners go through optionalInnerGoType
+// or optionalInnerIsTable. NOTE fb_size<Optional<UID>> is the union's RelativeOffset size (4),
+// so the inner scalar's size (16) must be queried separately.
+// An Optional<scalar-T> serializes its inner as a BARE out-of-line value behind the
+// union's RelativeOffset (C++ SaveAlternative non-indirection arm, flat_buffers.h:848),
+// NOT a length-prefixed byte vector. This covers UID (the lone 16-byte fixed-array
+// struct-scalar) AND every arithmetic/enum primitive (Optional<int64>/<Version>/<bool>/…,
+// e.g. ReadOptions.consistencyCheckStartVersion = Optional<Version>). The predicate is the
+// complement of use_indirection for the scalar case: byte-vector inners (StringRef/KeyRef/
+// Value/Standalone) are NOT arithmetic/enum/UID → they correctly stay []byte; struct inners
+// (Tag/StorageMetadataType/Error/ReadOptions) route via optionalInnerGoType, not here.
 template <class T> bool optionalInnerIsScalar() {
     if constexpr (optional_inner_t<T>::is) {
         using Inner = typename optional_inner_t<T>::type;

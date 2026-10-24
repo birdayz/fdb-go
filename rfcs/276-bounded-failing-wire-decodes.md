@@ -236,7 +236,12 @@ revert):
 
 Non-regression guards (pass before and after):
 
-- Every ground-truth vector decodes with a nil error.
+- Every ground-truth vector decodes with a nil error, and `TestReplyGroundTruth` (now in
+  the fast lane) asserts each reply vector through its production parser. New C++
+  vectors cover the fields the stricter decoders now check: the inline error on
+  `GetValueReply`, `GetKeyReply`, `GetKeyValuesReply` and `GetMappedKeyValuesReply`, and a
+  `GetReadVersionReply` with an `ssVersionVectorDelta`. A `tagThrottleInfo` vector is not
+  regen-stable, because `ClientTagThrottleLimits` writes `expiration - now()`.
 - A dense legitimate reply decodes within the budget: a `GetMappedKeyValuesReply` of
   many range rows holding many empty `KeyValueRef`s, marshaled by the Go encoder that
   the ground-truth vectors pin to C++ layout. The test calls `decode` with its own

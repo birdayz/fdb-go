@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"os"
 	"testing"
 
@@ -31,7 +30,7 @@ type replyVectorEntry struct {
 func loadReplyVectors(t *testing.T) []replyVectorEntry {
 	t.Helper()
 	// Shared with //pkg/fdbgo/wire/types:types_test; declared as a bazel data
-	// dep of client_test. Absence is a build bug, never a skip.
+	// dep of conn_location_unit_test. Absence is a build bug, never a skip.
 	data, err := os.ReadFile("../wire/types/testdata.json")
 	if err != nil {
 		t.Fatalf("testdata.json not found (missing bazel data dep?): %v", err)
@@ -362,17 +361,74 @@ var replyAsserters = map[string]func(t *testing.T, data []byte){
 				s.Token.First, s.Token.Second, wantTok.First, wantTok.Second)
 		}
 	},
-}
-
-func assertFDBErrorCode(t *testing.T, err error, wantCode int) {
-	t.Helper()
-	var fdbErr *wire.FDBError
-	if !errors.As(err, &fdbErr) {
-		t.Fatalf("error %v is not a wire.FDBError", err)
-	}
-	if fdbErr.Code != wantCode {
-		t.Fatalf("error code = %d, want %d", fdbErr.Code, wantCode)
-	}
+	"GetKeyServerLocationsReply_secondary_address": func(t *testing.T, data []byte) {
+		entries, err := parseGetKeyServerLocationsReply(data)
+		if err != nil || len(entries) != 1 || len(entries[0].servers) != 1 {
+			t.Fatalf("parseGetKeyServerLocationsReply: %+v, %v", entries, err)
+		}
+		if s := entries[0].servers[0]; s.Address != "10.1.2.3:4500" || s.TLS {
+			t.Errorf("server = %+v, want the plaintext primary 10.1.2.3:4500", s)
+		}
+		// The secondary address decodes as the NetworkAddress table C++ writes.
+		r, err := wire.ReadErrorOr(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pair, err := r.ReadVectorElementReader(types.GetKeyServerLocationsReplySlotResults, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ss, err := pair.ReadVectorElementReader(types.LocationPairSlotServers, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ep, err := ReadEndpointFromSlot(ss, types.StorageServerInterfaceSlotField_2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a := ep.Addresses; !a.HasSecondaryAddress || a.SecondaryAddress.Port != 4501 ||
+			a.SecondaryAddress.Flags&types.FlagTLS == 0 || networkAddressString(&a.SecondaryAddress) != "10.1.2.3:4501" {
+			t.Errorf("secondary address = %+v (has %t), want 10.1.2.3:4501 with TLS", a.SecondaryAddress, a.HasSecondaryAddress)
+		}
+	},
+	"ClientDBInfo_secondary_address": func(t *testing.T, data []byte) {
+		info, err := parseErrorOrClientDBInfo(data)
+		if err != nil {
+			t.Fatalf("parseErrorOrClientDBInfo: %v", err)
+		}
+		if len(info.GRVProxies) != 1 || len(info.CommitProxies) != 1 ||
+			info.GRVProxies[0].Address != "10.1.2.3:4500" || info.CommitProxies[0].Address != "10.1.2.3:4500" {
+			t.Fatalf("proxies = %+v / %+v, want one of each at 10.1.2.3:4500", info.GRVProxies, info.CommitProxies)
+		}
+		if want := (transport.UID{First: 0xd5d5d5d5d5d5d5d5, Second: 0xe6e6e6e6e6e6e6e6}); info.ID != want {
+			t.Errorf("id = %+v, want %+v", info.ID, want)
+		}
+		if got := info.GRVProxies[0].Token.First; got != 0x9191919191919191 {
+			t.Errorf("GRV proxy token = %#x, want 0x9191919191919191", got)
+		}
+	},
+	"GetReadVersionReply_version_vector": func(t *testing.T, data []byte) {
+		version, _, _, _, _, _, err := parseGetReadVersionReply(data)
+		if err != nil || version != 0x2233445566 {
+			t.Fatalf("parseGetReadVersionReply: version %#x, %v", version, err)
+		}
+	},
+	"GetValueReply_error": func(t *testing.T, data []byte) {
+		_, _, err := parseGetValueReply(data)
+		assertFDBErrorCode(t, err, 1001)
+	},
+	"GetKeyReply_error": func(t *testing.T, data []byte) {
+		_, _, _, _, err := parseGetKeyReply(data)
+		assertFDBErrorCode(t, err, 1001)
+	},
+	"GetKeyValuesReply_error": func(t *testing.T, data []byte) {
+		_, _, _, err := parseGetKeyValuesReply(data)
+		assertFDBErrorCode(t, err, 1001)
+	},
+	"GetMappedKeyValuesReply_error": func(t *testing.T, data []byte) {
+		_, _, _, err := parseGetMappedKeyValuesReply(data)
+		assertFDBErrorCode(t, err, 1001)
+	},
 }
 
 // TestReplyGroundTruth feeds C++-ObjectWriter-serialized reply payloads to

@@ -21,7 +21,7 @@ const TenantInfoMaxAlign = 8
 type TenantInfo struct {
 	TenantId int64  // slot 0
 	HasToken bool   // slot 1, optional tag
-	Token    []byte // slot 2, optional table, not decoded
+	Token    []byte // slot 2, optional table: decoded as presence only, do not set
 	Arena    []byte // slot 3
 }
 
