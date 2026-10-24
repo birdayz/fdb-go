@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/dst"
@@ -445,5 +446,75 @@ func TestMutualTooLargeChunkRetriesAtALowerLimit(t *testing.T) {
 	n, more, err := oi.buildRangeWithRetries(context.Background(), m.buildMutual)
 	if err != nil || !more || n < 1 || n >= 10 {
 		t.Fatalf("buildRangeWithRetries = (%d, %t, %v), want a chunk below the limit of 10", n, more, err)
+	}
+}
+
+// A builder keeps a claim a peer built part of, and moves on from one a peer finished, in FULL.
+func TestMutualClaimBuiltByAPeer(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	db, _ := newShardMapDB(67)
+	ids := make([]int64, 100)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+	}
+	md := priceIndexMetaData(t, nil)
+	oi := newSimMutualIndexer(t, db, "peer", md, 10, ids)
+	oi.mutualBoundaries = [][]byte{tuple.Tuple{int64(50)}.Pack()}
+	pk := func(id int64) []byte { return tuple.Tuple{id}.Pack() }
+	rangeSet := func(rtx *FDBRecordContext) *IndexingRangeSet {
+		store, err := oi.openStore(rtx)
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		return NewIndexingRangeSet(store.subspace, md.GetIndex("Order$price"))
+	}
+	peerBuilds := func(begin, end []byte) {
+		t.Helper()
+		if _, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			return rangeSet(rtx).InsertRange(rtx.Transaction(), begin, end, true)
+		}); err != nil {
+			t.Fatalf("peer insert: %v", err)
+		}
+	}
+	m := newMutualIndexBuilder(oi)
+	m.fragmentCur, m.fragmentFirst = 0, 0
+	if more, err := m.claimNextRange(ctx); err != nil || !more {
+		t.Fatalf("claimNextRange = %t, %v", more, err)
+	}
+	// The peer finishes the claimed fragment: the builder claims the next one.
+	peerBuilds(rangeSetFirstKey, pk(50))
+	second := RangeSetRange{Begin: pk(50), End: rangeSetFinalKey}
+	n, more, err := m.buildMutual(ctx)
+	if err != nil || n != 10 || !more || m.claimed == nil || !bytes.Equal(m.claimed.Begin, second.Begin) {
+		t.Fatalf("buildMutual = (%d, %t, %v) with claim %x, want 10 records of the next fragment", n, more, err, m.claimed)
+	}
+	// The peer builds the middle of the claim: the builder keeps it and builds around it.
+	peerBuilds(pk(70), pk(80))
+	if _, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		missing, err := rangeSet(rtx).ListMissingRangesInBytes(rtx.Transaction(), second.Begin, second.End)
+		want := []RangeSetRange{{Begin: pk(60), End: pk(70)}, {Begin: pk(80), End: rangeSetFinalKey}}
+		if err == nil && !slices.EqualFunc(missing, want, func(a, b RangeSetRange) bool {
+			return bytes.Equal(a.Begin, b.Begin) && bytes.Equal(a.End, b.End)
+		}) {
+			t.Fatalf("missing in the claim = %x, want %x", missing, want)
+		}
+		return nil, err
+	}); err != nil {
+		t.Fatalf("list missing: %v", err)
+	}
+	total := n
+	for m.claimed != nil {
+		if !bytes.Equal(m.claimed.Begin, second.Begin) || !bytes.Equal(m.claimed.End, second.End) || m.iterType != fragmentFull {
+			t.Fatalf("claim %x in phase %v, want %x in FULL", m.claimed, m.iterType, second)
+		}
+		if n, _, err = m.buildMutual(ctx); err != nil {
+			t.Fatalf("buildMutual: %v", err)
+		}
+		total += n
+	}
+	if _, more, err = m.buildMutual(ctx); err != nil || more || total != 41 {
+		t.Fatalf("built %d records, then more = %t, %v; want the 41 the peer left and no more", total, more, err)
 	}
 }

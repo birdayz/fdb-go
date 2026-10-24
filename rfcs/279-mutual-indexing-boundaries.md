@@ -139,6 +139,9 @@ Each regression fails before its fix (mutations recorded on the PR).
   write limit the rest of the claim is one chunk.
 - **FULL:** one builder over two preset fragments, 100 records and limit 10 stays in FULL
   until the build is done, visits each fragment once, and takes 11 chunks of at most 10.
+- **Peers:** a peer that finishes the claimed fragment moves the builder to the next one; a
+  peer that builds the middle of a claim leaves the builder on the rest of it, in FULL, until
+  the claim has nothing missing.
 - **No anyJumper:** a claimed chunk that fails with 2101 is retried at a lower limit and
   succeeds.
 - **Claim publication:** a failed claim transaction leaves no boundaries and no claim. A

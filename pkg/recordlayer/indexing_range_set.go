@@ -62,8 +62,8 @@ func (irs *IndexingRangeSet) ListMissingRanges(tr fdb.WritableTransaction) ([]Ra
 	return irs.rangeSet.MissingRanges(tr, nil, nil, 0)
 }
 
-// ListMissingRangesInBytes returns the gaps within [begin, end), Java's
-// IndexingRangeSet.listMissingRangesAsync(begin, end).
+// ListMissingRangesInBytes returns the gaps within [begin, end), Java's public
+// IndexingRangeSet.listMissingRangesAsync(begin, end), kept for API parity.
 func (irs *IndexingRangeSet) ListMissingRangesInBytes(tr fdb.WritableTransaction, begin, end []byte) ([]RangeSetRange, error) {
 	return irs.rangeSet.MissingRanges(tr, begin, end, 0)
 }
