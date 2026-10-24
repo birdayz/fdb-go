@@ -907,10 +907,8 @@ func (rc *FDBRecordContext) GetApproximateTransactionSize() (int64, error) {
 	return rc.tx.GetApproximateSize().Get()
 }
 
-// CheckTransactionSize checks the approximate transaction size against the
-// Go-only thresholds: past the error threshold it returns
-// TransactionSizeExceededError; past the warning threshold it logs at WARN and
-// counts CountTransactionSizeWarning, once per transaction, and returns nil.
+// CheckTransactionSize returns TransactionSizeExceededError past the error threshold; past the
+// warning threshold it logs and counts CountTransactionSizeWarning once per transaction.
 func (rc *FDBRecordContext) CheckTransactionSize() error {
 	if rc.txSizeWarnBytes == 0 && rc.txSizeErrorBytes == 0 {
 		return nil

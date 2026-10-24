@@ -86,6 +86,43 @@ var _ = Describe("Rank and TEXT edges match Java", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("SCORE_FOR_RANK takes the rank as a Number, as Java does", func() {
+		rankIdx := NewRankIndex("rank_by_price", GroupBy(Field("price")))
+		md := demoMetaData(func(b *RecordMetaDataBuilder) { b.AddIndex("Order", rankIdx) })
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+			for i, p := range []int32{100, 200, 300} {
+				_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(p)})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			scoreForRank := func(rank any) (tuple.Tuple, error) {
+				return store.EvaluateAggregateFunction(ctx, []string{"Order"},
+					&IndexAggregateFunction{Name: FunctionNameScoreForRank, Operand: GroupBy(Field("price"))},
+					TupleRangeAllOf(tuple.Tuple{rank}), IsolationLevelSerializable)
+			}
+			for rank, want := range map[any]int64{int32(1): 200, float64(2.5): 300, uint64(0): 100} {
+				got, err := scoreForRank(rank)
+				Expect(err).NotTo(HaveOccurred(), "%v", rank)
+				Expect(got).To(Equal(tuple.Tuple{want}), "%v", rank)
+			}
+			_, err = scoreForRank("1")
+			var cast *ClassCastError
+			Expect(errors.As(err, &cast)).To(BeTrue(), "%v", err)
+
+			m, err := store.getIndexMaintainer(rankIdx)
+			Expect(err).NotTo(HaveOccurred())
+			score, err := m.(*rankIndexMaintainer).ScoreForRank(tuple.Tuple{int32(2)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(score).To(Equal(tuple.Tuple{int64(300)}))
+			score, err = m.(*rankIndexMaintainer).ScoreForRank(tuple.Tuple{nil})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(score).To(BeNil(), "a null rank answers null")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("a rank bound converts as Java's Number.longValue()", func() {
 		huge, ok := new(big.Int).SetString("18446744073709551621", 10) // 2^64 + 5
 		Expect(ok).To(BeTrue())

@@ -199,9 +199,8 @@ func (*KeyExpressionInvalidResultError) JavaRecordCoreException() {}
 // javaTupleValueClassName is the ACTUAL_TYPE Java logs for a value that is not a
 // Number: result.getClass().getName() of the value after
 // TupleTypeUtil.toTupleAppropriateValue (Key.java:553-561), so both fields of the
-// error carry Java class names; numbers name the class a tuple decodes them to. A
-// Go carrier with no Java counterpart keeps its Go type name, which no
-// Java-produced value can be.
+// error carry Java class names. A Go carrier with no Java counterpart keeps its Go
+// type name, which no Java-produced value can be.
 func javaTupleValueClassName(v any) string {
 	switch x := v.(type) {
 	case int64, int, int32:
@@ -266,9 +265,8 @@ func nullableLong(name string, idx int, v any) (int64, bool, error) {
 	}
 }
 
-// javaNumberLongValue is Number.longValue() of a Go carrier of a Java number:
-// integers wrap to their low 64 bits (BigInteger.longValue), floats narrow as
-// Java's (long) cast. ok is false for anything that is not a number.
+// javaNumberLongValue is Number.longValue(): integers keep their low 64 bits, floats narrow as
+// Java's (long) cast; ok is false for a value that is not a number.
 func javaNumberLongValue(v any) (int64, bool) {
 	switch x := v.(type) {
 	case int64:

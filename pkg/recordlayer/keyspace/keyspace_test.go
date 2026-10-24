@@ -605,9 +605,8 @@ func TestFindChildForValue(t *testing.T) {
 	g.Expect(tenants.FindChildForValue("acme")).To(BeNil())
 }
 
-// TestSiblingKeyTypes pins Java's KeySpaceDirectory.addSubdirectory rules: a
-// sibling of the same key type is allowed only as a distinct constant beside
-// other constants, so at most one child can hold a key element.
+// TestSiblingKeyTypes pins Java's addSubdirectory rules: a same-type sibling is allowed only
+// as a distinct constant beside other constants.
 func TestSiblingKeyTypes(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -667,9 +666,8 @@ func TestAddSubdirectories_StopsAtRefusal(t *testing.T) {
 	g.Expect(root.GetSubdirectory("c")).To(BeNil())
 }
 
-// TestPathFromTuple_NoSubdirectory pins Java's findChildForKey: an element no
-// subdirectory of a non-leaf directory holds is an error, not a remainder; a
-// remainder is left only past a leaf.
+// TestPathFromTuple_NoSubdirectory pins Java's findChildForKey: an unheld element is an
+// error, and a remainder is left only past a leaf.
 func TestPathFromTuple_NoSubdirectory(t *testing.T) {
 	t.Parallel()
 	g := NewWithT(t)

@@ -680,11 +680,8 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 	return store.saveRecordInternal(record, existenceCheck, nil, VersionstampSaveBehaviorDefault, false, nil, nil)
 }
 
-// SaveRecordWithVersion saves a record with the version that behavior chooses
-// from the supplied one, which may be nil, complete, or incomplete with a local
-// version from ClaimLocalVersion.
-//
-// Java equivalent: FDBRecordStore.saveRecordAsync(Message rec, RecordExistenceCheck existenceCheck, FDBRecordVersion version, VersionstampSaveBehavior behavior)
+// SaveRecordWithVersion saves a record with the version behavior chooses from version (nil,
+// complete, or incomplete from ClaimLocalVersion): Java's saveRecordAsync(rec, check, version, behavior).
 func (store *FDBRecordStore) SaveRecordWithVersion(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,

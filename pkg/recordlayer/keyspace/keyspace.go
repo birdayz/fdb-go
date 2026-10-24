@@ -195,11 +195,8 @@ func NewConstantDirectory(name string, keyType KeyType, value any) *Directory {
 	}
 }
 
-// AddSubdirectory adds a child directory. Like Java's
-// KeySpaceDirectory.addSubdirectory, it refuses a duplicate name and a sibling of
-// the same key type unless both are distinct constants, so that at most one
-// child can hold any key element. Go's resolver directories are always open, so
-// Java's incompatible-constant rule cannot arise.
+// AddSubdirectory adds a child directory, refusing a duplicate name or a same-type sibling
+// unless both are distinct constants, as Java's KeySpaceDirectory.addSubdirectory does.
 func (d *Directory) AddSubdirectory(child *Directory) error {
 	// A NULL directory's only value is null, which Java's isConstant counts as a constant.
 	constant := func(dir *Directory) bool { return dir.IsConstant() || dir.KeyType == KeyTypeNull }
@@ -383,12 +380,8 @@ func validateDirectory(d *Directory, path []string) error {
 	return nil
 }
 
-// PathFromTuple resolves a tuple back to a path by matching values against
-// the directory tree. Returns the leaf-most path and the tuple elements left
-// over past a leaf directory. An element that no subdirectory of a non-leaf
-// directory holds is an ArgumentError.
-//
-// Matches Java's KeySpace.resolveFromKey / KeySpaceDirectory.pathFromKey.
+// PathFromTuple resolves a tuple to its leaf-most path and the elements left past a leaf, as
+// Java's KeySpace.resolveFromKey does; an element no subdirectory holds is an ArgumentError.
 func (ks *KeySpace) PathFromTuple(t tuple.Tuple) (*Path, tuple.Tuple, error) {
 	if len(t) == 0 {
 		return nil, nil, fmt.Errorf("keyspace: empty tuple")

@@ -21,10 +21,8 @@ import (
 	"fdb.dev/pkg/recordlayer"
 )
 
-// Explicit-version saves: both engines save the same records with the same
-// complete versions and VersionstampSaveBehaviors, one transaction each, and
-// must agree on every verdict and on the record (1), index (2) and legacy
-// version (8) key-value pairs.
+// Both engines save the same records with the same versions and behaviors and must agree on
+// every verdict and on the record (1), index (2) and legacy version (8) key-value pairs.
 var _ = Describe("Explicit-version saves match Java", func() {
 	type versionedSave struct {
 		id       int64

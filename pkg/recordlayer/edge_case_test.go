@@ -43,9 +43,8 @@ var _ = Describe("Edge case hardening", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Both header readers, the open's state load and Create's existence
-			// check, keep the parse error as the cause of Java's
-			// RecordCoreStorageException("Error reading version").
+			// Both header readers (Open's state load, Create's existence check) keep the
+			// parse error as the cause of Java's RecordCoreStorageException("Error reading version").
 			for _, create := range []bool{false, true} {
 				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 					b := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks)

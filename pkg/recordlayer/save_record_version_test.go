@@ -159,6 +159,19 @@ var _ = Describe("SaveRecordWithVersion", func() {
 		})
 	})
 
+	It("refuses an unknown behavior without writing", func() {
+		md := metaData(true)
+		ks := specSubspace()
+		run(md, ks, 0, func(store *FDBRecordStore) {
+			_, err := store.SaveRecordWithVersion(order(1), RecordExistenceCheckNone, nil, VersionstampSaveBehavior(99))
+			var argErr *IllegalArgumentError
+			Expect(errors.As(err, &argErr)).To(BeTrue(), "%v", err)
+			rec, err := store.LoadRecord(tuple.Tuple{int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rec).To(BeNil())
+		})
+	})
+
 	It("clears the stored version when a re-save stores none", func() {
 		md := metaData(true)
 		ks := specSubspace()

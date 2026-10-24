@@ -297,9 +297,8 @@ func (store *FDBRecordStore) OverrideLockSaveRecord(
 	return store.saveRecordInternal(record, existenceCheck, nil, VersionstampSaveBehaviorDefault, true, nil, nil)
 }
 
-// OverrideLockSaveRecordWithVersion is OverrideLockSaveRecord with the version
-// choice of SaveRecordWithVersion: Java's overrideLockSaveRecordAsync(rec,
-// existenceCheck, version, behavior).
+// OverrideLockSaveRecordWithVersion is OverrideLockSaveRecord with SaveRecordWithVersion's
+// version choice: Java's overrideLockSaveRecordAsync(rec, existenceCheck, version, behavior).
 func (store *FDBRecordStore) OverrideLockSaveRecordWithVersion(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,

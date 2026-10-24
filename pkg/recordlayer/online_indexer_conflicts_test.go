@@ -25,9 +25,8 @@ var _ = Describe("Online build read conflicts match Java", func() {
 		return md
 	}
 
-	// A build transaction adds a record read conflict only for records its
-	// targets index (IndexingBase.handleCursorResult), so a concurrent write
-	// to another record type in the scanned range does not conflict it.
+	// A build adds read conflicts only for records its targets index (Java's
+	// IndexingBase.handleCursorResult), so another type's concurrent write does not conflict it.
 	for _, mutual := range []bool{false, true} {
 		buildRangeWithConcurrentWrite := func(concurrent proto.Message) (attempts int) {
 			GinkgoHelper()

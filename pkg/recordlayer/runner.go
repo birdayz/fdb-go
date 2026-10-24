@@ -28,9 +28,8 @@ type RecordContextConfig struct {
 	// TransactionID is an optional identifier for tracing/debugging.
 	TransactionID string
 
-	// TransactionSizeWarnBytes (Go-only) logs a warning and counts
-	// CountTransactionSizeWarning, once per transaction, when the approximate
-	// size passes it; operations still succeed. Zero disables the check.
+	// TransactionSizeWarnBytes (Go-only): past it, a save or delete logs and counts
+	// CountTransactionSizeWarning once per transaction, and still succeeds. Zero disables it.
 	TransactionSizeWarnBytes int64
 
 	// TransactionSizeErrorBytes causes operations to return
