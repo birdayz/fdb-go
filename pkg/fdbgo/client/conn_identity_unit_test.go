@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"sync"
@@ -873,22 +874,45 @@ func TestHandleConnErrorClosesOutsideConnMu(t *testing.T) {
 	}
 }
 
-// metricsArms sends each storage-metrics request through its loadBalance-shaped loop.
+// metricsArms are the connArms that send a storage-metrics request.
 func metricsArms() []connArm {
-	servers := []ServerInfo{{Address: armAddr, Token: armToken}}
-	key, end := []byte("k"), []byte("l")
-	return []connArm{
-		{"wait metrics", false, func(ctx context.Context, _ *database, tx *Transaction) {
-			_, _ = tx.sendWaitMetrics(ctx, key, end, 1, servers)
-		}},
-		{"split range", false, func(ctx context.Context, _ *database, tx *Transaction) {
-			_, _ = tx.sendSplitRange(ctx, key, end, 1000, servers)
-		}},
+	var arms []connArm
+	for _, arm := range connArms() {
+		if arm.name == "wait metrics" || arm.name == "split range" {
+			arms = append(arms, arm)
+		}
+	}
+	return arms
+}
+
+// metricsEndpoints maps each metrics arm to its interface stream.
+var metricsEndpoints = map[string]int{"wait metrics": EndpointWaitMetrics, "split range": EndpointGetRangeSplitPoints}
+
+// startArm runs arm until the test ends.
+func startArm(t *testing.T, ctx context.Context, arm connArm, db *database, tx *Transaction) {
+	t.Helper()
+	armCtx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		arm.run(armCtx, db, tx)
+	}()
+	t.Cleanup(func() { stop(); <-done })
+}
+
+// noFrame fails if peer receives a frame within d.
+func noFrame(t *testing.T, peer *identityPeer, d time.Duration, why string) {
+	t.Helper()
+	select {
+	case f := <-peer.frames:
+		t.Fatalf("%s: a request reached the peer (token %v)", why, f.token)
+	case <-time.After(d):
 	}
 }
 
-// A metrics request whose only replica is down waits for it, as loadBalance waits on
-// okFuture: the replica's recovery ends the wait, not the 30 s storm delay.
+// A metrics request whose only replica is down waits for that replica, as
+// loadBalance waits on okFuture: another address's recovery does not end the wait,
+// the replica's does, well before the 30 s storm delay.
 func TestMetricsRequestWakesOnRecovery(t *testing.T) {
 	t.Parallel()
 	for _, arm := range metricsArms() {
@@ -912,13 +936,7 @@ func TestMetricsRequestWakesOnRecovery(t *testing.T) {
 			db.failMon.mu.Lock()
 			db.failMon.oldestAltFailure, db.failMon.newestAltFailure, db.failMon.lastAltSkip = now-1000, now, now
 			db.failMon.mu.Unlock()
-			armCtx, stop := context.WithCancel(ctx)
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				arm.run(armCtx, db, tx)
-			}()
-			defer func() { stop(); <-done }()
+			startArm(t, ctx, arm, db, tx)
 			for dials.Load() == 0 || !db.failMon.isFailed(armAddr) {
 				if ctx.Err() != nil {
 					t.Fatal("the first round did not fail")
@@ -926,6 +944,9 @@ func TestMetricsRequestWakesOnRecovery(t *testing.T) {
 				time.Sleep(time.Millisecond)
 			}
 			time.Sleep(200 * time.Millisecond) // let the request park on the failed replica
+			db.failMon.markFailed("other:4500")
+			db.failMon.markAlive("other:4500")
+			noFrame(t, peer, time.Second, "another address recovered")
 			db.failMon.markAlive(armAddr)
 			waitCtx, waitStop := context.WithTimeout(ctx, 5*time.Second)
 			defer waitStop()
@@ -936,39 +957,158 @@ func TestMetricsRequestWakesOnRecovery(t *testing.T) {
 	}
 }
 
-// A replica whose metrics endpoint was reported not found is not sent to; the
-// request reports all_alternatives_failed after the delay.
+// A replica whose metrics endpoint was reported not found, before the request or
+// while it waits for the reply, gets no further request; the call reports 1006.
 func TestMetricsRequestSkipsEndpointNotFound(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct {
-		name     string
-		endpoint int
-		send     func(ctx context.Context, tx *Transaction, servers []ServerInfo) error
-	}{
-		{"wait metrics", EndpointWaitMetrics, func(ctx context.Context, tx *Transaction, servers []ServerInfo) error {
-			_, err := tx.sendWaitMetrics(ctx, []byte("k"), []byte("l"), 1, servers)
-			return err
-		}},
-		{"split range", EndpointGetRangeSplitPoints, func(ctx context.Context, tx *Transaction, servers []ServerInfo) error {
-			_, err := tx.sendSplitRange(ctx, []byte("k"), []byte("l"), 1000, servers)
-			return err
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, arm := range metricsArms() {
+		for _, during := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/during=%t", arm.name, during), func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
+				peer := newIdentityPeer(t)
+				db, tx := armDatabase(ctx, peer)
+				defer closeIdentityDatabase(db)
+				token := getAdjustedEndpoint(armToken, metricsEndpoints[arm.name])
+				if !during {
+					db.failMon.markEndpointNotFound(armAddr, token)
+				}
+				var err error
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					err = metricsArmError(ctx, arm.name, tx)
+				}()
+				if during {
+					f, ok := peer.recv(ctx)
+					if !ok || f.token != token {
+						t.Fatalf("first request: %v, %v", f.token, ok)
+					}
+					// The server no longer has the stream (FlowTransport ENDPOINT_NOT_FOUND).
+					if err := transport.WriteFrame(peer.server, transport.WellKnownToken(transport.WLTokenEndpointNotFound), endpointNotFoundBody(token), false); err != nil {
+						t.Fatal(err)
+					}
+				}
+				select {
+				case <-done:
+				case <-ctx.Done():
+					t.Fatal("the request did not end")
+				}
+				assertFDBErrorCode(t, err, ErrAllAlternativesFailed)
+				noFrame(t, peer, 0, "after not found")
+			})
+		}
+	}
+}
+
+// metricsArmError sends the named metrics request to armAddr and returns its error.
+func metricsArmError(ctx context.Context, name string, tx *Transaction) error {
+	servers := []ServerInfo{{Address: armAddr, Token: armToken}}
+	if name == "wait metrics" {
+		_, err := tx.sendWaitMetrics(ctx, []byte("k"), []byte("l"), 1, servers)
+		return err
+	}
+	_, err := tx.sendSplitRange(ctx, []byte("k"), []byte("l"), 1000, servers)
+	return err
+}
+
+// endpointNotFoundBody is FlowTransport's SerializeSource<UID> body for tok: a FakeRoot
+// table, UID inline at field 0, file identifier 15597147.
+func endpointNotFoundBody(tok transport.UID) []byte {
+	b := make([]byte, 40)
+	binary.LittleEndian.PutUint32(b[0:], 16)
+	binary.LittleEndian.PutUint32(b[4:], 15597147)
+	binary.LittleEndian.PutUint16(b[8:], 6)
+	binary.LittleEndian.PutUint16(b[10:], 24)
+	binary.LittleEndian.PutUint16(b[12:], 8)
+	binary.LittleEndian.PutUint32(b[16:], 8)
+	binary.LittleEndian.PutUint64(b[24:], tok.First)
+	binary.LittleEndian.PutUint64(b[32:], tok.Second)
+	return b
+}
+
+// metricsReplyToken decodes a metrics request's reply token.
+func metricsReplyToken(t *testing.T, name string, body []byte) transport.UID {
+	t.Helper()
+	if name == "wait metrics" {
+		var req types.WaitMetricsRequest
+		if err := req.UnmarshalFDB(body); err != nil {
+			t.Fatal(err)
+		}
+		return replyToken(req.Reply.Token)
+	}
+	var req types.SplitRangeRequest
+	if err := req.UnmarshalFDB(body); err != nil {
+		t.Fatal(err)
+	}
+	return replyToken(req.Reply.Token)
+}
+
+// A replica answering a metrics request with an in-band broken_promise has its
+// endpoint marked not found, as the reads mark theirs.
+func TestMetricsRequestNotesBrokenPromise(t *testing.T) {
+	t.Parallel()
+	for _, arm := range metricsArms() {
+		t.Run(arm.name, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 			peer := newIdentityPeer(t)
 			db, tx := armDatabase(ctx, peer)
 			defer closeIdentityDatabase(db)
-			db.failMon.markEndpointNotFound(armAddr, getAdjustedEndpoint(armToken, tc.endpoint))
-			err := tc.send(ctx, tx, []ServerInfo{{Address: armAddr, Token: armToken}})
-			assertFDBErrorCode(t, err, ErrAllAlternativesFailed)
-			select {
-			case f := <-peer.frames:
-				t.Fatalf("a request reached the not-found endpoint (token %v)", f.token)
-			default:
+			var err error
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				err = metricsArmError(ctx, arm.name, tx)
+			}()
+			f, ok := peer.recv(ctx)
+			if !ok {
+				t.Fatal("no request")
+			}
+			if err := transport.WriteFrame(peer.server, metricsReplyToken(t, arm.name, f.body), (&types.ErrorOrError{ErrorCode: 1100}).MarshalFDB(), false); err != nil {
+				t.Fatal(err)
+			}
+			<-done
+			assertFDBErrorCode(t, err, 1100)
+			if !db.failMon.endpointFailed(armAddr, getAdjustedEndpoint(armToken, metricsEndpoints[arm.name])) {
+				t.Fatal("broken_promise did not mark the endpoint not found")
 			}
 		})
+	}
+}
+
+// A metrics request waits for a slow replica's reply, as loadBalance does: no reply
+// timeout re-sends it.
+func TestMetricsRequestWaitsForSlowReply(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	peer := newIdentityPeer(t)
+	db, tx := armDatabase(ctx, peer)
+	defer closeIdentityDatabase(db)
+	reply := replyVector(t, "StorageMetrics_basic")
+	want, err := parseWaitMetricsReply(reply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got int64
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		got, err = tx.sendWaitMetrics(ctx, []byte("k"), []byte("l"), 1, []ServerInfo{{Address: armAddr, Token: armToken}})
+	}()
+	f, ok := peer.recv(ctx)
+	if !ok {
+		t.Fatal("no request")
+	}
+	noFrame(t, peer, DefaultRPCTimeout+time.Second, "while the reply is slow")
+	if err := transport.WriteFrame(peer.server, metricsReplyToken(t, "wait metrics", f.body), reply, false); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	if err != nil || got != want {
+		t.Fatalf("got %d, %v; want %d", got, err, want)
 	}
 }

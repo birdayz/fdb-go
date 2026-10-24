@@ -49,6 +49,49 @@ func (db *database) endOther(o rpcAccount) {
 	db.queueModel.endRequest(o.addr, o.delta, readFailureLatency(o.err, o.start), false)
 }
 
+// altFailureDelay is C++'s allAlternativesFailedDelay, jittered like delayJittered
+// (flow.h:1481-1484).
+func (db *database) altFailureDelay() time.Duration {
+	d := db.failMon.allAlternativesFailedDelay(nowSeconds())
+	return time.Duration(float64(d) * (0.9 + 0.2*rand.Float64()))
+}
+
+// altFailureWait returns how long to wait for one of servers to recover, zero unless
+// all are excluded, and the recovery signal taken before that check.
+func (db *database) altFailureWait(servers []ServerInfo) (<-chan struct{}, time.Duration) {
+	if db.failMon == nil {
+		return nil, 0
+	}
+	recovered := db.failMon.waitForRecovery()
+	if !db.allExcluded(servers) {
+		return nil, 0
+	}
+	return recovered, db.altFailureDelay()
+}
+
+// awaitAlternative waits until one of servers is no longer excluded, as okFuture
+// (LoadBalance.actor.cpp:47-48), or reports all_alternatives_failed after wait.
+func (db *database) awaitAlternative(ctx context.Context, closed <-chan struct{}, servers []ServerInfo, recovered <-chan struct{}, wait time.Duration) error {
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	for {
+		select {
+		case <-recovered:
+			// Any address's recovery signals; only these replicas end the wait.
+			recovered = db.failMon.waitForRecovery()
+			if !db.allExcluded(servers) {
+				return nil
+			}
+		case <-timer.C:
+			return &wire.FDBError{Code: ErrAllAlternativesFailed}
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-closed:
+			return db.ctx.Err()
+		}
+	}
+}
+
 // allExcluded reports whether the failure monitor excludes every replica's address,
 // loadBalance's "everything is down" (LoadBalance.actor.h:617-618).
 func (db *database) allExcluded(servers []ServerInfo) bool {
@@ -68,8 +111,7 @@ func (db *database) allExcluded(servers []ServerInfo) bool {
 // delayJittered (flow.h:1481-1484), before reporting all_alternatives_failed,
 // so a dead-endpoint storm cannot spin location lookups.
 func (db *database) allAlternativesFailed(ctx context.Context) error {
-	d := db.failMon.allAlternativesFailedDelay(nowSeconds())
-	if err := sleepCtx(ctx, time.Duration(float64(d)*(0.9+0.2*rand.Float64()))); err != nil {
+	if err := sleepCtx(ctx, db.altFailureDelay()); err != nil {
 		return err
 	}
 	return &wire.FDBError{Code: ErrAllAlternativesFailed}

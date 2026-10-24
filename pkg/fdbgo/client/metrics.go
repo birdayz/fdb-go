@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"math/rand/v2"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/transport"
@@ -125,7 +124,7 @@ func (tx *Transaction) metricsMinVersion(ctx context.Context) (int64, error) {
 // (reversed range) to get an immediate response instead of waiting for a
 // threshold change.
 func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, minVersion int64, servers []ServerInfo) (int64, error) {
-	body, err := tx.sendMetricsRequest(ctx, servers, EndpointWaitMetrics, func(reply transport.UID) []byte {
+	body, addr, err := tx.sendMetricsRequest(ctx, servers, EndpointWaitMetrics, func(reply transport.UID) []byte {
 		req := types.WaitMetricsRequest{
 			Keys:       types.KeyRangeRef{Begin: begin, End: end},
 			Min:        types.StorageMetrics{Bytes: 0},
@@ -139,55 +138,40 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, m
 	if err != nil {
 		return 0, err
 	}
-	return parseWaitMetricsReply(body)
+	n, err := parseWaitMetricsReply(body)
+	tx.db.noteReadBrokenPromise(err, servers, addr, EndpointWaitMetrics)
+	return n, err
 }
 
-// sendMetricsRequest sends one storage-metrics request as loadBalance does
-// (LoadBalance.actor.h): no reply timeout, a backoff after a round without a reply
-// (:682-686), and all_alternatives_failed only when every replica stays failed for
-// allAlternativesFailedDelay (:617-639). Endpoints reported not found are skipped.
-func (tx *Transaction) sendMetricsRequest(ctx context.Context, servers []ServerInfo, endpoint int, build func(reply transport.UID) []byte) ([]byte, error) {
-	servers, ok := tx.db.failMon.liveServers(servers, endpoint)
-	if !ok {
-		return nil, tx.db.allAlternativesFailed(ctx)
-	}
+// sendMetricsRequest sends a request as loadBalance does (LoadBalance.actor.h:589-686):
+// no reply timeout, and 1006 only once every replica stays failed for the delay.
+func (tx *Transaction) sendMetricsRequest(ctx context.Context, servers []ServerInfo, endpoint int, build func(reply transport.UID) []byte) ([]byte, string, error) {
 	var closed <-chan struct{} // Close ends the loop, as destroying the database cancels the actor
 	if tx.db.ctx != nil {
 		closed = tx.db.ctx.Done()
 	}
 	var backoff time.Duration
 	for {
-		if body, ok := tx.metricsRound(ctx, servers, endpoint, build); ok {
-			return body, nil
+		// Endpoints reported not found never recover, so each round drops them first.
+		live, ok := tx.db.failMon.liveServers(servers, endpoint)
+		if !ok {
+			return nil, "", tx.db.allAlternativesFailed(ctx)
+		}
+		if body, addr, ok := tx.metricsRound(ctx, live, endpoint, build); ok {
+			return body, addr, nil
 		}
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if tx.db.ctx != nil && tx.db.ctx.Err() != nil {
-			return nil, tx.db.ctx.Err()
+			return nil, "", tx.db.ctx.Err()
 		}
-		// Taken before the check, so a recovery after it wakes the wait below.
-		var recovered <-chan struct{}
-		if tx.db.failMon != nil {
-			recovered = tx.db.failMon.waitForRecovery()
-		}
-		if tx.db.allExcluded(servers) {
-			d := tx.db.failMon.allAlternativesFailedDelay(nowSeconds())
-			timer := time.NewTimer(time.Duration(float64(d) * (0.9 + 0.2*rand.Float64())))
-			select {
-			case <-recovered: // a replica is back, as okFuture (LoadBalance.actor.cpp:47-48)
-				timer.Stop()
-				backoff = 0
-				continue
-			case <-timer.C:
-				return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
-			case <-ctx.Done():
-				timer.Stop()
-				return nil, ctx.Err()
-			case <-closed:
-				timer.Stop()
-				return nil, tx.db.ctx.Err()
+		if recovered, wait := tx.db.altFailureWait(live); wait > 0 {
+			if err := tx.db.awaitAlternative(ctx, closed, live, recovered, wait); err != nil {
+				return nil, "", err
 			}
+			backoff = 0
+			continue
 		}
 		backoff = time.Duration(math.Min(math.Max(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceStartBackoff)), float64(loadBalanceMaxBackoff)))
 		timer := time.NewTimer(backoff)
@@ -195,16 +179,16 @@ func (tx *Transaction) sendMetricsRequest(ctx context.Context, servers []ServerI
 		case <-timer.C:
 		case <-ctx.Done():
 			timer.Stop()
-			return nil, ctx.Err()
+			return nil, "", ctx.Err()
 		case <-closed:
 			timer.Stop()
-			return nil, tx.db.ctx.Err()
+			return nil, "", tx.db.ctx.Err()
 		}
 	}
 }
 
 // metricsRound sends the request to each replica in turn until one replies.
-func (tx *Transaction) metricsRound(ctx context.Context, servers []ServerInfo, endpoint int, build func(reply transport.UID) []byte) ([]byte, bool) {
+func (tx *Transaction) metricsRound(ctx context.Context, servers []ServerInfo, endpoint int, build func(reply transport.UID) []byte) ([]byte, string, bool) {
 	var replyCleanup replyGuard
 	defer replyCleanup.close()
 	var sendCleanup sendGuard
@@ -232,14 +216,14 @@ func (tx *Transaction) metricsRound(ctx context.Context, servers []ServerInfo, e
 				tx.db.handleReadConnError(server.Address, conn, resp.Err)
 				continue
 			}
-			return resp.Body, true
+			return resp.Body, server.Address, true
 		case <-ctx.Done():
 			replyHandle.Cancel()
 			replyCleanup.release()
-			return nil, false
+			return nil, "", false
 		}
 	}
-	return nil, false
+	return nil, "", false
 }
 
 // GetRangeSplitPoints returns suggested split points for the given key range.
@@ -348,7 +332,7 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 }
 
 func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, chunkSize int64, servers []ServerInfo) ([][]byte, error) {
-	body, err := tx.sendMetricsRequest(ctx, servers, EndpointGetRangeSplitPoints, func(reply transport.UID) []byte {
+	body, addr, err := tx.sendMetricsRequest(ctx, servers, EndpointGetRangeSplitPoints, func(reply transport.UID) []byte {
 		req := types.SplitRangeRequest{
 			Keys:       types.KeyRangeRef{Begin: begin, End: end},
 			ChunkSize:  chunkSize,
@@ -360,7 +344,9 @@ func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, ch
 	if err != nil {
 		return nil, err
 	}
-	return parseSplitRangeReply(body)
+	points, err := parseSplitRangeReply(body)
+	tx.db.noteReadBrokenPromise(err, servers, addr, EndpointGetRangeSplitPoints)
+	return points, err
 }
 
 func parseSplitRangeReply(data []byte) ([][]byte, error) {

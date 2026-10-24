@@ -42,9 +42,13 @@ Change:
   replicas in order, with no reply timeout. A round in which no replica answered backs
   off from 10 ms, doubling to 5 s (`LOAD_BALANCE_*_BACKOFF`). When the failure monitor
   excludes every replica, the request waits `allAlternativesFailedDelay` (50 ms, growing
-  while failures continue) and reports 1006, unless a replica recovers first, which
-  ends the wait as `okFuture` does. Replicas whose endpoint was reported not found are
-  skipped, as the reads skip them (`failMon.liveServers`).
+  while failures continue) and reports 1006, unless one of its own replicas recovers
+  first, which ends the wait as `okFuture` does (another address recovering does not).
+- Replicas whose endpoint was reported not found are dropped before every round
+  (`failMon.liveServers`), as `loadBalance` checks each alternative's state per
+  attempt (`LoadBalance.actor.h:600-601`); with none left the request reports 1006
+  after the delay, so the caller re-locates. An in-band `broken_promise` reply marks
+  the replying endpoint not found, as the reads do (`noteReadBrokenPromise`).
 - The 5 s per-replica reply timeout goes: `loadBalance` has none, and with no cap it
   would keep a request that a slow replica answers in more than 5 s from ever ending.
 
@@ -103,9 +107,15 @@ in libfdb_c releases the wait.
     until released; `connMu` must be free meanwhile, the pool empty and the address
     failed.
   - `TestMetricsRequestWakesOnRecovery`: with the storm delay at 30 s, a request whose
-    only replica failed reaches it within 5 s of the replica's recovery.
+    only replica failed stays parked when another address recovers, and reaches its
+    replica within 5 s of that replica's recovery.
   - `TestMetricsRequestSkipsEndpointNotFound`: a replica whose metrics endpoint was
-    reported not found gets no request, and the call reports 1006.
+    reported not found before the request, or by an ENDPOINT_NOT_FOUND packet while it
+    waits, gets no further request, and the call reports 1006.
+  - `TestMetricsRequestNotesBrokenPromise`: an in-band `broken_promise` reply marks the
+    endpoint not found.
+  - `TestMetricsRequestWaitsForSlowReply`: a reply that comes after more than the old
+    5 s timeout is used, with one request sent.
 - `client`, test-full (`client_test`, FDB in a container, replies rewritten by the
   `simDialer`):
   - `TestMetricsRetryWrongShardWithoutCap`: 55 `WaitMetrics` replies, then 55
