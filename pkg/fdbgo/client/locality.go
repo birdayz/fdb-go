@@ -190,7 +190,7 @@ func (lc *locationCache) locateWithReplyWait(db *database, ctx context.Context, 
 // Caller must hold at least lc.mu.RLock(). O(log N).
 func (lc *locationCache) lookupLocked(tenantId int64, key []byte, isBackward bool) (LocationResult, bool) {
 	// searchIndex returns the first entry with begin >= key for this tenant.
-	// Entries are disjoint (insertRanges), so the containing entry (begin <= key)
+	// Entries are disjoint (overwrite), so the containing entry (begin <= key)
 	// is at idx-1, unless idx itself has begin == key (exact match).
 	idx := lc.searchIndex(tenantId, key)
 
@@ -437,7 +437,7 @@ func (lc *locationCache) locateRangeWith(ctx context.Context, begin, end []byte,
 		if err != nil {
 			return nil, err
 		}
-		// The reply parser drops shards without storage servers. A reply with a hole
+		// queryLocations returns no shard without storage servers. A reply with a hole
 		// would make callers skip its keys, so it is asked for again instead.
 		if results := contiguousLocations(entries, begin, end, limit, reverse); results != nil {
 			return results, nil
@@ -612,7 +612,8 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 			}
 		}
 
-		cycledAll := true
+		// Every attempt that does not return moves on to the next proxy; a full
+		// cycle without an answer backs off.
 		for _, proxy := range proxies {
 			locToken := getAdjustedEndpoint(proxy.Token, EndpointGetKeyServerLocations)
 			// basicLoadBalance skips a permanently failed alternative (LoadBalance.actor.h:790).
@@ -682,15 +683,12 @@ func (lc *locationCache) queryLocations(db *database, ctx context.Context, tenan
 				}
 				continue
 			}
-			cycledAll = false
 		}
 
-		if cycledAll {
-			if backoff == 0 {
-				backoff = loadBalanceStartBackoff
-			} else {
-				backoff = time.Duration(math.Min(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceMaxBackoff)))
-			}
+		if backoff == 0 {
+			backoff = loadBalanceStartBackoff
+		} else {
+			backoff = time.Duration(math.Min(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceMaxBackoff)))
 		}
 	}
 }

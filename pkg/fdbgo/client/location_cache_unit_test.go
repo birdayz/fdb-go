@@ -624,6 +624,59 @@ func TestQueryLocationsSkipsMalformedReply(t *testing.T) {
 	}
 }
 
+// A reply with no routable shard is a failed attempt: the proxies are asked again
+// only after the load-balance backoff, not in a busy loop.
+func TestQueryLocationsBacksOffWithoutRoutableShard(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	vector := locationsReplyVector(t)
+	layout := locateReplyFields(t, vector)
+	serverless := bytes.Clone(vector)
+	clear(serverless[layout.token : layout.token+8])
+
+	peer := newIdentityPeer(t)
+	db, _ := identityDatabase(ctx, peer)
+	defer closeIdentityDatabase(db)
+	db.locCache.maxSize = 16
+	db.dbInfo.Store(&DBInfo{CommitProxies: []ProxyInfo{{Address: "p1:4500", Token: transport.UID{First: 1}}}})
+	type result struct {
+		entries []locationEntry
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		entries, err := db.locCache.queryLocations(db, ctx, NoTenantID, func(tok transport.UID) []byte {
+			return buildGetKeyServerLocationsRequest([]byte("range_c"), false, NoTenantID, types.SpanContext{}, tok)
+		}, nil)
+		done <- result{entries, err}
+	}()
+	answer := func(reply []byte) time.Time {
+		f, ok := peer.recv(ctx)
+		if !ok {
+			t.Fatal("timed out waiting for a location request")
+		}
+		at := time.Now()
+		var req types.GetKeyServerLocationsRequest
+		if err := req.UnmarshalFDB(f.body); err != nil {
+			t.Fatal(err)
+		}
+		if err := transport.WriteFrame(peer.server, replyToken(req.Reply.Token), reply, false); err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+	first := answer(serverless)
+	second := answer(vector)
+	if gap := second.Sub(first); gap < loadBalanceStartBackoff {
+		t.Fatalf("asked again after %v, want the %v backoff", gap, loadBalanceStartBackoff)
+	}
+	got := <-done
+	if got.err != nil || len(got.entries) != 1 || len(got.entries[0].servers) != 1 {
+		t.Fatalf("queryLocations = %+v, %v; want the routable shard", got.entries, got.err)
+	}
+}
+
 // A tenant reply inverted only once the prefix is stripped from its begin is
 // neither cached nor returned; the next proxy's answer is used.
 func TestQueryLocationsSkipsReplyInvertedByTenantStrip(t *testing.T) {

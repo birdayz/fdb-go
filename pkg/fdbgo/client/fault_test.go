@@ -977,9 +977,13 @@ func TestPipelinedGet_LateFailureKeepsReplacement(t *testing.T) {
 				p.replyCh = replies
 				p.flushed = true
 			}
+			failures := db.db.metrics.Snapshot().ClientConnectionFailures
 			got, err := p.Resolve()
 			if err != nil || string(got) != string(want) {
 				t.Fatalf("Resolve = %q, %v; want %q", got, err, want)
+			}
+			if n := db.db.metrics.Snapshot().ClientConnectionFailures - failures; n != 1 {
+				t.Fatalf("ClientConnectionFailures grew by %d, want 1: the read must report A", n)
 			}
 			if b.IsClosed() {
 				t.Fatal("the late report about A closed its replacement B")

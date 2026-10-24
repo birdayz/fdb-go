@@ -53,8 +53,8 @@ of `bb` returned the stale S2; after a split learned from its upper half
 the new range overwrites what it overlaps, the rest keeps its value, an empty range
 is ignored (`:209-210`).
 
-**Change.** `insertSorted`, renamed `insertRanges`, trims an overlapping entry to
-its parts before `begin` and from `end` on (keeping its servers; a nil end stays
+**Change.** Inserting (`overwrite`, through `insertRanges` and `cacheReply`) trims
+an overlapping entry to its parts before `begin` and from `end` on (keeping its servers; a nil end stays
 unbounded) or drops it, then inserts. Touching entries keep their bounds;
 `begin >= end` inserts nothing. Caching a reply, a shard without servers only clears
 its range, where C++ caches an empty location, so no stale remainder answers for it.
@@ -87,8 +87,8 @@ while deserializing is never delivered (`FlowTransport.actor.cpp:1195-1207`).
 - Results with an absent or empty range are skipped (they cover no key), and
   servers without an endpoint are dropped. A shard left without servers clears its
   range in the cache and is not returned for routing: range lookups re-ask for the
-  hole (`locateRangeWith`); a single-key reply has one result
-  (`NativeAPI.actor.cpp:3043`), so the lookup is asked again.
+  hole (`locateRangeWith`); a reply with no routable shard counts as a failed
+  attempt, so the proxies are asked again with backoff.
 - `KeyRangeRef.UnmarshalFromReader` swaps the single-key form only when the key ends
   in `\x00`. The client decodes `KeyRangeRef` from no other reply.
 - A reply that `stripTenantPrefix` leaves with an inverted entry (a boundary without
