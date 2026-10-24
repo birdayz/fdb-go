@@ -631,20 +631,14 @@ func (m *StandardIndexMaintainer) checkUniqueness(entry EvaluatedIndexEntry) err
 		return fmt.Errorf("uniqueness scan for index %q: %w", m.index.Name, err)
 	}
 
-	indexColCount := len(entry.key)
-
 	for _, kv := range kvs {
 		existingTuple, err := tuplefast.SubspaceUnpack(kv.Key, len(m.indexSubspace.Bytes()))
 		if err != nil {
 			return fmt.Errorf("unpack existing index entry: %w", err)
 		}
 
-		if len(existingTuple) <= indexColCount {
-			continue
-		}
-
 		// Reconstruct full PK from the FDB entry key using getEntryPrimaryKey.
-		// The raw existingTuple[indexColCount:] is the TRIMMED PK (deduped
+		// The raw suffix after the value columns is the TRIMMED PK (deduped
 		// components removed). Must use getEntryPrimaryKey to get full PK
 		// for correct comparison and violation entries.
 		// Matches Java's Index.getEntryPrimaryKey(indexEntry).

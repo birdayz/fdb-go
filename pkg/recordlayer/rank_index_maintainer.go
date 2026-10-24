@@ -272,9 +272,8 @@ func (m *rankIndexMaintainer) updateRankedSet(entry EvaluatedIndexEntry, remove 
 				return fmt.Errorf("rank index %q: score not present in ranked set", m.index.Name)
 			}
 		} else {
-			// Only remove from ranked set if no other record has this score.
-			// Check the B-tree (after our clear) for remaining entries in Java's
-			// indexSubspace.range(valueKey), which excludes extending packings.
+			// Remove the score only if no other record holds it: probe (after our clear)
+			// Java's indexSubspace.range(valueKey), which excludes extending packings.
 			kvs, err := m.tx.GetRange(m.indexSubspace.Sub(entry.key...), fdb.RangeOptions{Limit: 1}).GetSliceWithError()
 			if err != nil {
 				return err
