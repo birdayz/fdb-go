@@ -242,6 +242,12 @@ type Conn struct {
 	turnDelayLimit time.Duration // the longest delay a sender waits out itself
 	turns          atomic.Int64  // turns taken, so tests can tell a sender wrote its batch
 
+	// ng is set when the experimental network goroutine owns this connection's I/O.
+	ng *ngConn
+	// firstQueued is when the oldest frame not yet in a writeLoop batch was
+	// queued (monoNow; 0 = none), for the FDBGO_COALESCE_FROM_SENDER experiment.
+	firstQueued atomic.Int64
+
 	// Debug tracing (set before first use).
 	debugFrames bool
 	debugWriter io.Writer
@@ -562,6 +568,20 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 	// (connectionMonitor + TCP keepalive handle liveness from here).
 	_ = netConn.SetDeadline(time.Time{})
 
+	if netgEnabled && tlsConfig == nil {
+		c.loopWG.Add(3) // the network goroutine's registration, connectionMonitor, readLoop
+		if netgRegister(c) {
+			if netgWriter {
+				go c.readLoop()
+			} else {
+				c.loopWG.Done()
+			}
+			go c.connectionMonitor()
+			return c, nil
+		}
+		c.loopWG.Add(-3)
+	}
+
 	if c.minCoalesce > 0 || c.maxCoalesce > 0 {
 		if t, err := hrtimer.New(); err == nil {
 			c.coalesce = t // closed by failConnection and writeLoop
@@ -680,6 +700,10 @@ func putReplyChannelImpl(ch chan Response) {
 // SendFrame writes a raw frame and flushes. Returns once the frame is written, or
 // once writeLoop holds whatever a full socket refused, ahead of every later frame.
 func (c *Conn) SendFrame(destToken UID, body []byte) error {
+	if c.ng != nil {
+		_, err := c.ngWrite(c.ctx, destToken, body, false, nil)
+		return err
+	}
 	admission, err := c.beginSend(c.ctx, nil)
 	if err != nil {
 		return err
@@ -722,6 +746,10 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
 // The write loop will flush it with the next batch. Used for pipelining:
 // send N frames, then call Flush() (or let the write loop auto-flush).
 func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
+	if c.ng != nil {
+		_, err := c.ngWrite(c.ctx, destToken, body, false, nil)
+		return err
+	}
 	admission, err := c.beginSend(c.ctx, nil)
 	if err != nil {
 		return err
@@ -738,6 +766,10 @@ func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
 // queued every earlier frame is already written; otherwise it sends a flush
 // marker through the write channel and waits for acknowledgment.
 func (c *Conn) Flush() error {
+	if c.ng != nil {
+		_, err := c.ngWrite(c.ctx, UID{}, nil, true, nil)
+		return err
+	}
 	admission, err := c.beginSend(c.ctx, nil)
 	if err != nil {
 		return err
@@ -767,10 +799,22 @@ func (c *Conn) Flush() error {
 // (FlowTransport.actor.cpp:708-710; DELAY_JITTER_OFFSET/RANGE 0.9/0.2,
 // flow/Knobs.cpp:54-55). failConnection closes the timer, which ends the wait.
 func (c *Conn) coalesceWait(sinceWrite time.Duration) {
+	c.coalesceWaitSince(sinceWrite, 0)
+}
+
+// coalesceWaitSince is coalesceWait for a batch whose first frame was queued at
+// queuedAt (monoNow, 0 = unknown): the wait is shortened by the time it spent queued.
+func (c *Conn) coalesceWaitSince(sinceWrite time.Duration, queuedAt int64) {
 	if c.coalesce == nil {
 		return
 	}
-	if c.coalesce.Reset(coalesceDelay(c.minCoalesce, c.maxCoalesce, sinceWrite, mathrand.Float64())) == nil {
+	d := coalesceDelay(c.minCoalesce, c.maxCoalesce, sinceWrite, mathrand.Float64())
+	if queuedAt != 0 {
+		if d -= time.Duration(monoNow() - queuedAt); d <= 0 {
+			return
+		}
+	}
+	if c.coalesce.Reset(d) == nil {
 		_ = c.coalesce.Wait()
 	}
 }
@@ -787,7 +831,7 @@ func (w stampedWriter) Write(p []byte) (int, error) {
 
 // CoalesceDelay reports the connection's write delay bounds and whether it waits.
 func (c *Conn) CoalesceDelay() (minDelay, maxDelay time.Duration, waits bool) {
-	return c.minCoalesce, c.maxCoalesce, c.coalesce != nil
+	return c.minCoalesce, c.maxCoalesce, c.coalesce != nil || (c.ng != nil && (c.minCoalesce > 0 || c.maxCoalesce > 0))
 }
 
 // coalesceDelay is the jittered wait for a uniform jitter in [0, 1).
@@ -843,7 +887,11 @@ func (c *Conn) writeLoop() {
 			// The rest of a partial write goes on without a new delay, as
 			// connectionWriter keeps writing until nothing is unsent
 			// (FlowTransport.actor.cpp:714-731).
-			c.coalesceWait(time.Since(c.lastWrite))
+			var queuedAt int64
+			if coalesceFromSender {
+				queuedAt = c.firstQueued.Swap(0)
+			}
+			c.coalesceWaitSince(time.Since(c.lastWrite), queuedAt)
 		}
 		if c.ctx.Err() != nil {
 			c.writeMu.Unlock()
@@ -912,6 +960,9 @@ func (c *Conn) writeLoop() {
 		}
 		c.queued.Add(-inBatch)
 		inBatch = 0
+		if coalesceFromSender {
+			c.firstQueued.Store(0) // frames queued during this batch went out with it
+		}
 		c.writeMu.Unlock()
 
 		// Notify all waiting senders. A write error means the frame may or may
@@ -999,6 +1050,9 @@ func (c *Conn) Close() error {
 func (c *Conn) failConnection(err error) {
 	c.closeOnce.Do(func() {
 		c.cancel()
+		if c.ng != nil {
+			c.ngClose()
+		}
 		if c.coalesce != nil {
 			// Wakes a writeLoop waiting to write, as cancelling connectionWriter
 			// cancels its delay (FlowTransport.actor.cpp:882-883).

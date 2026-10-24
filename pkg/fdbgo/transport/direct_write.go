@@ -2,6 +2,9 @@ package transport
 
 // tryEnqueue is enqueue for fire-and-forget frames that a full queue drops.
 func (c *Conn) tryEnqueue(req writeReq) bool {
+	if c.ng != nil {
+		return c.ngSend(req.token, req.body) == nil
+	}
 	if order := c.peerSendOrder.Load(); order != nil {
 		reserved, accepted, held := c.reserveColdControl(order, req)
 		if reserved {
@@ -20,6 +23,7 @@ func (c *Conn) tryEnqueue(req writeReq) bool {
 		return false
 	}
 	c.queued.Add(1)
+	c.stampQueued()
 	select {
 	case c.writeCh <- req:
 		return true

@@ -83,6 +83,9 @@ func (c *Conn) takeTurn(ctx context.Context, token UID, body []byte) (bool, erro
 		}
 	}
 	c.queued.Add(-int64(1 + len(batch))) // markers left with the tail stay counted
+	if coalesceFromSender {
+		c.firstQueued.Store(0)
+	}
 	c.writeMu.Unlock()
 	for _, req := range batch {
 		completeWrite(req, writeErr)

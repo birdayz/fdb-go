@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math/rand/v2"
+	"os"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/internal/sendqueue"
@@ -15,7 +16,12 @@ import (
 // A caller interrupted during the flush must still observe an already-published
 // reply (the server can reply before the socket writer acknowledges its batch).
 func sendReadFrame(ctx context.Context, conn *transport.Conn, token transport.UID, body []byte, reply *transport.ReplyHandle, permit *sendqueue.Permit, replyWait func(context.Context)) error {
-	_, err := conn.SendFrameContextOrdered(ctx, token, body, permit)
+	var err error
+	if readNoAck {
+		_, err = conn.SendFrameEagerContextOrdered(ctx, token, body, permit)
+	} else {
+		_, err = conn.SendFrameContextOrdered(ctx, token, body, permit)
+	}
 	if err != nil && ctx.Err() != nil {
 		if !reply.KeepReadyOrCancel() {
 			return ctx.Err()
@@ -31,6 +37,10 @@ func sendReadFrame(ctx context.Context, conn *transport.Conn, token transport.UI
 	}
 	return err
 }
+
+// readNoAck is a lab switch (docs/labs/single-network-goroutine): reads hand
+// their frame to the writer without waiting for its write acknowledgment.
+var readNoAck = os.Getenv("FDBGO_EXP_READ_NOACK") == "1"
 
 func (db *database) handleReadConnError(addr string, err error) {
 	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !isEndpointNotFound(err) {

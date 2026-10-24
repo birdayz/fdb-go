@@ -1,0 +1,13 @@
+{
+  "A":     {"env": []},
+  "A4":    {"env": [], "gomaxprocs": 4, "cpus": "1-4"},
+  "A16":   {"env": [], "gomaxprocs": 16, "cpus": "1-8,13-20"},
+  "B":     {"env": ["FDBGO_NETWORK_GOROUTINE=1"]},
+  "B4":    {"env": ["FDBGO_NETWORK_GOROUTINE=1"], "gomaxprocs": 4, "cpus": "1-4"},
+  "B16":   {"env": ["FDBGO_NETWORK_GOROUTINE=1"], "gomaxprocs": 16, "cpus": "1-8,13-20"},
+  "Bout":  {"env": ["FDBGO_NETWORK_GOROUTINE=1", "FDBGO_NETG_OUTFIX=1"]},
+  "Brb":   {"env": ["FDBGO_NETWORK_GOROUTINE=1", "FDBGO_NETG_RBUF=262144"]},
+  "BL2":   {"env": ["FDBGO_NETWORK_GOROUTINE=1", "FDBGO_NETG_LOOPS=2"]},
+  "Bd30":  {"env": ["FDBGO_NETWORK_GOROUTINE=1"], "args": ["-coalesce-delay=15us,30us"]},
+  "Bcap":  {"env": ["FDBGO_NETWORK_GOROUTINE=1", "FDBGO_NETG_FLUSH_FRAMES=16"], "args": ["-coalesce-delay=30us,60us"]}
+}

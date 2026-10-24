@@ -1,0 +1,90 @@
+get100/256 2500000 ops 209064 ops/s
+File: clientbench-go-ladder
+Build ID: 28c40e28ebd99e34992e0580487201abf68341d7
+Type: cpu
+Time: 2026-10-24 12:57:00 CEST
+Duration: 11.97s, Total samples = 59.52s (497.12%)
+Showing nodes accounting for 18.25s, 30.66% of 59.52s total
+Dropped 575 nodes (cum <= 0.30s)
+Showing top 80 nodes out of 256
+      flat  flat%   sum%        cum   cum%
+     0.52s  0.87%  0.87%     42.68s 71.71%  fdb.dev/tools/clientbench/internal/bench.runPhase.func2
+     0.19s  0.32%  1.19%     41.97s 70.51%  fdb.dev/tools/clientbench/internal/bench.Run.func2
+     0.20s  0.34%  1.53%     41.78s 70.19%  fdb.dev/tools/clientbench/internal/bench.Dataset.Operation
+     0.05s 0.084%  1.61%     41.21s 69.24%  main.(*backend).Transact
+         0     0%  1.61%     41.16s 69.15%  fdb.dev/pkg/fdbgo/fdb.Database.Transact (inline)
+     0.06s   0.1%  1.71%     41.16s 69.15%  fdb.dev/pkg/fdbgo/fdb.Database.TransactCtx
+     0.07s  0.12%  1.83%     41.10s 69.05%  fdb.dev/pkg/fdbgo/client.(*Database).Transact
+     0.05s 0.084%  1.92%     33.26s 55.88%  fdb.dev/pkg/fdbgo/fdb.Database.TransactCtx.func1
+     0.10s  0.17%  2.08%     33.21s 55.80%  fdb.dev/pkg/fdbgo/fdb.(*bodyRun).run
+     0.05s 0.084%  2.17%     33.03s 55.49%  fdb.dev/pkg/fdbgo/fdb.Database.TransactCtx.func1.1
+     0.04s 0.067%  2.23%     29.15s 48.98%  main.(*backend).Transact.func2
+     0.14s  0.24%  2.47%     29.03s 48.77%  fdb.dev/tools/clientbench/internal/bench.Dataset.Operation.func1
+     0.03s  0.05%  2.52%     28.83s 48.44%  main.transaction.Get
+     0.04s 0.067%  2.59%     14.89s 25.02%  fdb.dev/pkg/fdbgo/fdb.Transaction.Get
+     0.61s  1.02%  3.61%     14.64s 24.60%  fdb.dev/pkg/fdbgo/client.(*Transaction).GetPipelined
+     0.01s 0.017%  3.63%     13.81s 23.20%  fdb.dev/pkg/fdbgo/fdb.(*pendingFutureByteSlice).Get
+     0.02s 0.034%  3.66%     13.80s 23.19%  fdb.dev/pkg/fdbgo/fdb.(*pendingFutureByteSlice).resolve
+     0.11s  0.18%  3.85%     13.40s 22.51%  fdb.dev/pkg/fdbgo/client.(*PendingGet).ResolveOrAbort
+     0.51s  0.86%  4.70%     11.20s 18.82%  fdb.dev/pkg/fdbgo/client.(*PendingGet).resolve
+     1.75s  2.94%  7.64%      6.65s 11.17%  runtime.selectgo
+     0.31s  0.52%  8.17%      5.81s  9.76%  runtime.mallocgc
+     0.01s 0.017%  8.18%      5.71s  9.59%  fdb.dev/pkg/fdbgo/client.(*Transaction).Commit
+     0.11s  0.18%  8.37%      5.50s  9.24%  fdb.dev/pkg/fdbgo/transport.(*Conn).writeContext
+     0.04s 0.067%  8.43%      5.11s  8.59%  fdb.dev/pkg/fdbgo/client.(*Transaction).commitAdmitted
+     0.26s  0.44%  8.87%      4.93s  8.28%  fdb.dev/pkg/fdbgo/client.(*Transaction).armTimeoutLocked
+     0.10s  0.17%  9.04%      4.70s  7.90%  fdb.dev/pkg/fdbgo/transport.(*Conn).FlushContext
+     0.06s   0.1%  9.14%      4.68s  7.86%  runtime.systemstack
+     0.01s 0.017%  9.16%      4.65s  7.81%  runtime.lockWithRank (inline)
+     2.92s  4.91% 14.06%      4.64s  7.80%  runtime.lock2
+         0     0% 14.06%      4.45s  7.48%  runtime.lock (partial-inline)
+     0.08s  0.13% 14.20%      4.30s  7.22%  fdb.dev/pkg/fdbgo/transport.(*Conn).writeAdmittedContext
+         0     0% 14.20%      4.29s  7.21%  fdb.dev/pkg/fdbgo/client.(*Transaction).ensureReadVersion (inline)
+     0.04s 0.067% 14.26%      4.29s  7.21%  fdb.dev/pkg/fdbgo/client.(*Transaction).ensureReadVersionFlags
+     0.22s  0.37% 14.63%      4.06s  6.82%  fdb.dev/pkg/fdbgo/client.(*Transaction).readVersionForOperation
+     0.56s  0.94% 15.57%      4.06s  6.82%  runtime.chansend
+     0.18s   0.3% 15.88%      3.92s  6.59%  fdb.dev/pkg/fdbgo/client.(*Transaction).publishCommit
+     0.08s  0.13% 16.01%      3.89s  6.54%  runtime.mcall
+     0.08s  0.13% 16.15%      3.81s  6.40%  fdb.dev/pkg/fdbgo/fdb.Database.applyTxDefaults
+         0     0% 16.15%      3.77s  6.33%  fdb.dev/pkg/fdbgo/client.(*Transaction).cachedOrFetchReadVersion (inline)
+     0.13s  0.22% 16.36%      3.77s  6.33%  fdb.dev/pkg/fdbgo/client.(*readVersionState).cachedOrFetchReadVersion
+     0.11s  0.18% 16.55%      3.71s  6.23%  runtime.park_m
+     0.06s   0.1% 16.65%      3.68s  6.18%  fdb.dev/pkg/fdbgo/transport.(*Conn).writeLoop
+     0.01s 0.017% 16.67%      3.61s  6.07%  fdb.dev/pkg/fdbgo/client.(*Transaction).SetTimeout
+     0.01s 0.017% 16.68%      3.52s  5.91%  fdb.dev/pkg/fdbgo/client.(*Transaction).stateSetTimeout
+     0.02s 0.034% 16.72%      3.49s  5.86%  fdb.dev/pkg/fdbgo/client.(*Transaction).configureReadTimeout
+     3.29s  5.53% 22.24%      3.29s  5.53%  internal/runtime/syscall/linux.Syscall6
+     0.05s 0.084% 22.33%      3.03s  5.09%  fdb.dev/pkg/fdbgo/transport.(*Conn).enqueueAdmitted
+     0.12s   0.2% 22.53%         3s  5.04%  fdb.dev/pkg/fdbgo/client.readVersionRequest.fetchReadVersion
+     0.33s  0.55% 23.08%      2.98s  5.01%  fdb.dev/pkg/fdbgo/transport.(*Conn).enqueueOrdered
+         0     0% 23.08%      2.97s  4.99%  syscall.RawSyscall6
+     0.37s  0.62% 23.71%      2.96s  4.97%  runtime.schedule
+     0.06s   0.1% 23.81%      2.93s  4.92%  fdb.dev/pkg/fdbgo/client.(*PendingGet).resolveReply
+     0.16s  0.27% 24.08%      2.82s  4.74%  runtime.newobject
+     0.01s 0.017% 24.09%      2.78s  4.67%  syscall.Syscall
+     0.22s  0.37% 24.46%      2.73s  4.59%  fdb.dev/pkg/fdbgo/client.(*timeoutQueue).newNode
+     0.04s 0.067% 24.53%      2.71s  4.55%  fdb.dev/pkg/fdbgo/transport.(*Conn).readLoop
+         0     0% 24.53%      2.70s  4.54%  fdb.dev/pkg/fdbgo/transport.(*Conn).SendFrameEagerContextOrdered (inline)
+     0.32s  0.54% 25.07%      2.70s  4.54%  fdb.dev/pkg/fdbgo/transport.(*Conn).sendWithoutAck
+         0     0% 25.07%      2.62s  4.40%  runtime.chansend1
+     0.27s  0.45% 25.52%      2.52s  4.23%  fdb.dev/pkg/fdbgo/client.(*grvBatcher).getReadVersion
+         0     0% 25.52%      2.51s  4.22%  fdb.dev/pkg/fdbgo/client.(*timeoutQueue).newNodeForShard
+     0.71s  1.19% 26.71%      2.45s  4.12%  runtime.sellock
+     0.02s 0.034% 26.75%      2.43s  4.08%  runtime.unlock (partial-inline)
+     1.46s  2.45% 29.20%      2.41s  4.05%  runtime.unlock2
+         0     0% 29.20%      2.41s  4.05%  runtime.unlockWithRank (inline)
+         0     0% 29.20%      2.34s  3.93%  fdb.dev/pkg/fdbgo/client.(*grvBatcher).flush
+     0.04s 0.067% 29.27%      2.34s  3.93%  fdb.dev/pkg/fdbgo/client.(*grvBatcher).flushWithin
+         0     0% 29.27%      2.13s  3.58%  internal/poll.ignoringEINTRIO (inline)
+     0.03s  0.05% 29.32%      2.10s  3.53%  runtime.(*mcache).nextFree
+     0.15s  0.25% 29.57%      2.06s  3.46%  fdb.dev/pkg/fdbgo/client.(*Database).CreateTransaction
+     0.12s   0.2% 29.77%      2.04s  3.43%  runtime.(*mcache).refill
+         0     0% 29.77%      2.03s  3.41%  syscall.Write (inline)
+         0     0% 29.77%      2.03s  3.41%  syscall.write
+     0.16s  0.27% 30.04%      1.99s  3.34%  fdb.dev/pkg/fdbgo/transport.(*Conn).PrepareReplyTo
+     0.12s   0.2% 30.24%      1.99s  3.34%  runtime.growslice
+     0.03s  0.05% 30.29%      1.93s  3.24%  runtime.getOrAddWeakHandle
+         0     0% 30.29%      1.93s  3.24%  weak.Make[go.shape.c82802d6e04c84543c9af0707405beb03537c4e8d25e1e0fe0102a5d14cdd4c8]
+         0     0% 30.29%      1.93s  3.24%  weak.runtime_registerWeakPointer
+     0.02s 0.034% 30.33%      1.86s  3.12%  fdb.dev/pkg/fdbgo/client.turnoverToken.finish
+     0.20s  0.34% 30.66%      1.82s  3.06%  runtime.findRunnable

@@ -1,0 +1,6 @@
+{
+  "A":     {"env": []},
+  "N":     {"env": ["FDBGO_EXP_READ_NOACK=1"]},
+  "W":     {"env": ["FDBGO_NETWORK_GOROUTINE=writer"]},
+  "Wbest": {"env": ["FDBGO_NETWORK_GOROUTINE=writer", "FDBGO_NETG_LOOPS=2", "FDBGO_NETG_OUTFIX=1"]}
+}

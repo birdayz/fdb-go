@@ -11,6 +11,7 @@ import (
 // Keep hot-path defers open-coded: returns × defers must stay ≤ 15 in Go 1.26.
 func (c *Conn) enqueueOrdered(ctx context.Context, request writeReq, done <-chan struct{}) (enqueued bool, err error) {
 	c.queued.Add(1)
+	c.stampQueued()
 	reader := false
 	defer func() {
 		if reader {
