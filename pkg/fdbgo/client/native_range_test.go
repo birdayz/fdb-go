@@ -380,8 +380,8 @@ func nrRecord(rec *sendRecorder, fn func()) recording {
 }
 
 func nrProblems(rec recording) error {
-	if problems := rec.readProblems(); len(problems) > 0 {
-		return fmt.Errorf("recorder problems:\n%s", strings.Join(problems, "\n"))
+	if len(rec.problems) > 0 {
+		return fmt.Errorf("recorder problems:\n%s", strings.Join(rec.problems, "\n"))
 	}
 	return nil
 }
@@ -501,8 +501,8 @@ func (ne *nativeRangeEnv) checksTakeNoReadVersion(t *testing.T) error {
 	if len(errs) > 0 {
 		return fmt.Errorf("%s", strings.Join(errs, "\n"))
 	}
-	if problems := got.readProblems(); len(got.requests) != 0 || len(problems) != 0 {
-		return fmt.Errorf("sent %d frames, want none:\n%s", len(got.requests)+len(problems), strings.Join(append(got.requests, problems...), "\n"))
+	if len(got.requests) != 0 || len(got.problems) != 0 {
+		return fmt.Errorf("sent %d frames, want none:\n%s", len(got.requests)+len(got.problems), strings.Join(append(got.requests, got.problems...), "\n"))
 	}
 	if n := ne.db.db.metrics.getRangeRequests.Load() - before; n != 4 {
 		return fmt.Errorf("getRangeRequests counted %d, want 4 (:5808 counts before the checks)", n)
