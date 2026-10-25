@@ -46,5 +46,6 @@ their original paths with these placeholders:
 
 The 2026-10-09 campaign directory, whose name carried a time suffix also used
 for cloud resource names, is written `fdb-perf-20261009`. [IMPORT-PROVENANCE.tsv](IMPORT-PROVENANCE.tsv) lists every
-imported file with its source, source and in-tree sha256, and the substitutions
-applied; `byte-identical` marks an unchanged copy.
+imported file with its source, source and in-tree sha256 at import time, and the
+substitutions applied; `byte-identical` marks an unchanged copy. A file edited after
+its import no longer matches its in-tree sha256.

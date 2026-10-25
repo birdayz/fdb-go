@@ -2001,9 +2001,10 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 - [ ] Java proto rules: fail the build if a `java_proto_library` regenerates protobuf
   well-known types other than `any` and `descriptor`, and test that the failing fallback
   toolchain is selected on a non-Linux platform.
-- [ ] `tools/lanes/run-verified-lane.sh`: a cancelled lane leaves its Bazel server holding
+- [x] `tools/lanes/run-verified-lane.sh`: a cancelled lane leaves its Bazel server holding
   the lane lock until the server is shut down. Shut the server down on exit, or keep the
-  lock descriptor out of the server.
+  lock descriptor out of the server. Done: `flock -o` holds the lock for the
+  lane's lifetime and keeps it out of the server (`TestVerifiedLaneLock` in `//infra:infra_test`).
 - [ ] Update Buf from 1.67.0 to 1.74 (`BUF_VERSION` in `justfile`).
 - [ ] **TLS settings without a network option.** RFC-277 reads `FDB_TLS_*` only. libfdb_c
   also takes the `TLS_*` network options (`fdb.options:70-105`) and

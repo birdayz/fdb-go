@@ -25,6 +25,7 @@ go_test(
     data = [
         "README.md",
         "//:.bazelrc",
+        "//tools/lanes:run-verified-lane.sh",
         # The push fan-out gate reads the workflow definitions and main.tf
         # together: it counts self-hosted jobs one push starts and compares them
         # against var.runner_count. Without this the glob finds nothing under
