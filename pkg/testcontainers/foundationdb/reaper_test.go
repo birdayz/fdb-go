@@ -2,8 +2,9 @@ package foundationdb
 
 import (
 	"context"
+	"fmt"
 	"os"
-	"regexp"
+	"os/exec"
 	"testing"
 	"time"
 
@@ -15,13 +16,29 @@ import (
 // session; upstream's (ppid, parent create time) hash collides across
 // concurrent PID-namespaced actions.
 func TestSessionPerBazelTest(t *testing.T) {
+	if os.Getenv("FDB_REAPER_SESSION_CHILD") == "1" {
+		fmt.Print(testcontainers.SessionID())
+		os.Exit(0)
+	}
 	t.Parallel()
 	if os.Getenv("TEST_TMPDIR") == "" {
 		t.Fatal("TEST_TMPDIR unset: this target must run under bazel test")
 	}
-	uuid := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
-	if id := testcontainers.SessionID(); !uuid.MatchString(id) {
-		t.Fatalf("SessionID() = %q: the upstream parent-process hash, not a per-test session", id)
+	seen := map[string]bool{testcontainers.SessionID(): true}
+	// Siblings have the same parent PID and parent creation time, exactly the
+	// upstream collision. Distinct processes must get distinct sessions.
+	for range 4 {
+		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestSessionPerBazelTest$")
+		cmd.Env = append(os.Environ(), "FDB_REAPER_SESSION_CHILD=1")
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("session subprocess: %v", err)
+		}
+		id := string(out)
+		if seen[id] {
+			t.Fatalf("sibling processes share SessionID() %q", id)
+		}
+		seen[id] = true
 	}
 }
 

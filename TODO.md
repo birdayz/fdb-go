@@ -2318,6 +2318,10 @@ multi-page auto-commit SELECT, which stays tracked only.
 
 ### Tests and CI
 
+- [x] **High:** Bazel testcontainers sessions collide across PID namespaces, and Ryuk can
+  exit between a suite's last terminated container and later parallel tests. Fixed in #1018:
+  per-process Bazel session IDs and a process-lifetime reaper connection, pinned by
+  sibling-process isolation and real-Docker last-container lifetime regressions.
 - [x] **High ✔ SQL suites pass when the FDB container fails to start.**
   `pkg/relational/sqltest/testkit/embedded_fdb.go:47-56` treats every `Run` error other than
   `TerminationError` (timeout, pull, OOM) as "no Docker" and runs with an empty cluster file:
