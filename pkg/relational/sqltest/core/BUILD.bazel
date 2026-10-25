@@ -38,6 +38,7 @@ go_test(
         "//pkg/internal/fdbclient",
         "//pkg/recordlayer",
         "//pkg/recordlayer/query/executor",
+        "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/recordlayer/rlmetrics",
         "//pkg/recordlayer/vectorindex",
         "//pkg/relational/api",

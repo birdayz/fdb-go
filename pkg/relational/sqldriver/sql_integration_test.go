@@ -67,7 +67,7 @@ func TestSQLPingFailsWithoutFDB(t *testing.T) {
 
 func TestSQLPingReturnsUnsupportedForRemote(t *testing.T) {
 	t.Parallel()
-	// Remote mode also not implemented — must return UnsupportedOperation.
+	// Remote mode is not implemented: Ping must return UnsupportedOperation.
 	db, err := sql.Open("fdbsql", "fdbsql://localhost:50051/mydb")
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

@@ -2758,13 +2758,14 @@ func translateExecError(err error) error {
 	if errors.As(err, &slotErr) {
 		return api.NewError(api.ErrCodeUnknown, slotErr.Error())
 	}
+	// Java's SemanticException message, once; the typed error stays the cause.
 	var enumErr *values.InvalidEnumValueError
 	if errors.As(err, &enumErr) {
-		return api.WrapError(api.ErrCodeInternalError, enumErr.Error(), err)
+		return api.WrapStatedError(api.ErrCodeInternalError, enumErr.Error(), err)
 	}
 	var uuidErr *values.InvalidUUIDValueError
 	if errors.As(err, &uuidErr) {
-		return api.WrapError(api.ErrCodeInternalError, uuidErr.Error(), err)
+		return api.WrapStatedError(api.ErrCodeInternalError, uuidErr.Error(), err)
 	}
 	var invalidArg *values.InvalidArgumentError
 	if errors.As(err, &invalidArg) {
@@ -2778,11 +2779,10 @@ func translateExecError(err error) error {
 	if errors.As(err, &execErr) {
 		return api.NewError(executionErrorCode(execErr.Kind), execErr.Message)
 	}
-	// Java's RecordCoreException from checkValidRange: XXXXX with its message
-	// once (the RecordCoreException arm below would repeat it as the cause).
+	// Java's RecordCoreException from checkValidRange: XXXXX, its message once.
 	var rangeErr *values.RangeBoundsError
 	if errors.As(err, &rangeErr) {
-		return api.NewError(api.ErrCodeUnknown, rangeErr.Message)
+		return api.WrapStatedError(api.ErrCodeUnknown, rangeErr.Message, err)
 	}
 	// FDB tail: page ≥ 2 errors reach the application through THIS function,
 	// not through the QueryContext/ExecContext translateFDBError wrap (which

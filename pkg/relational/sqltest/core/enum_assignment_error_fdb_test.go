@@ -7,13 +7,14 @@ import (
 	"fmt"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
 // A string that names no member of an enum column's type, assigned by UPDATE
 // or INSERT ... SELECT, is Java's INVALID_ENUM_VALUE: XX000 with its message
-// once.
+// text, reported once, and the typed error as the cause.
 func TestFDB_EnumAssignmentErrorMessage(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -38,9 +39,10 @@ func TestFDB_EnumAssignmentErrorMessage(t *testing.T) {
 	} {
 		_, err := db.ExecContext(ctx, q)
 		var ae *api.Error
+		var invalid *values.InvalidEnumValueError
 		if !errors.As(err, &ae) || ae.Code != api.ErrCodeInternalError || ae.Message != message ||
-			err.Error() != "XX000: "+message {
-			t.Errorf("%s: err = %v, want XX000 %q", q, err, message)
+			err.Error() != "XX000: "+message || !errors.As(err, &invalid) || invalid.Value != "BOGUS" {
+			t.Errorf("%s: err = %v, want XX000 %q caused by InvalidEnumValueError", q, err, message)
 		}
 	}
 }

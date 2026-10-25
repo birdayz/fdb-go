@@ -10,6 +10,7 @@ import (
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 )
 
@@ -95,8 +96,8 @@ func TestFDB_RangeTableFunction(t *testing.T) {
 			t.Errorf("%s: err = %v, want %s", q, err, want)
 		}
 	}
-	// Java's checkValidRange is a RecordCoreException at execution
-	// (RangeValue.java:344-354), reported once.
+	// Java's checkValidRange is a RecordCoreException at execution with these
+	// messages (RangeValue.java:344-354); Go reports each once.
 	for _, c := range []struct{ sql, message string }{
 		{"SELECT * FROM range(-1)", "only non-negative exclusive end is allowed in range"},
 		{"SELECT * FROM range(-1, 4)", "only non-negative position is allowed in range"},
@@ -111,8 +112,9 @@ func TestFDB_RangeTableFunction(t *testing.T) {
 			rows.Close()
 		}
 		var ae *api.Error
+		var bounds *values.RangeBoundsError
 		if !errors.As(err, &ae) || ae.Code != api.ErrCodeUnknown || ae.Message != c.message ||
-			err.Error() != "XXXXX: "+c.message {
+			err.Error() != "XXXXX: "+c.message || !errors.As(err, &bounds) {
 			t.Errorf("%s: err = %v, want XXXXX %q", c.sql, err, c.message)
 		}
 	}

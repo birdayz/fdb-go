@@ -4485,8 +4485,7 @@ func goToProtoScalarValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.
 			// STRING_TO_ENUM does (the INSERT … VALUES converter's rule).
 			num, err := values.StringToEnumNumber(fd.Enum(), n)
 			if err != nil {
-				// Java's INVALID_ENUM_VALUE, XX000 with its message alone.
-				return protoreflect.Value{}, &ExecutionError{Kind: ExecInternalError, Message: err.Error()}
+				return protoreflect.Value{}, err
 			}
 			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(num)), nil
 		}

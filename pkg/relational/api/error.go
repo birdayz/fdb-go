@@ -34,6 +34,9 @@ type Error struct {
 	// Context carries optional structured logging fields (table name,
 	// column name, etc.). Corresponds to Java's errorContext map.
 	Context map[string]any
+
+	// causeStated marks a Message that already states Cause (WrapStatedError).
+	causeStated bool
 }
 
 // NewError returns a new Error with the given code and message.
@@ -49,6 +52,12 @@ func NewErrorf(code ErrorCode, format string, args ...any) *Error {
 // WrapError wraps cause with a relational error code and message.
 func WrapError(code ErrorCode, message string, cause error) *Error {
 	return &Error{Code: code, Message: message, Cause: cause}
+}
+
+// WrapStatedError is WrapError for a message that already states the cause:
+// Error() renders the message once, and errors.As still reaches the cause.
+func WrapStatedError(code ErrorCode, message string, cause error) *Error {
+	return &Error{Code: code, Message: message, Cause: cause, causeStated: true}
 }
 
 // WrapErrorf is WrapError with fmt.Sprintf formatting for the message.
@@ -84,7 +93,7 @@ func (e *Error) Error() string {
 		}
 		b.WriteString("]")
 	}
-	if e.Cause != nil {
+	if e.Cause != nil && !e.causeStated {
 		b.WriteString(": ")
 		b.WriteString(e.Cause.Error())
 	}

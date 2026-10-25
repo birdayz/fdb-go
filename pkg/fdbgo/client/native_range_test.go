@@ -380,8 +380,8 @@ func nrRecord(rec *sendRecorder, fn func()) recording {
 }
 
 func nrProblems(rec recording) error {
-	if len(rec.problems) > 0 {
-		return fmt.Errorf("recorder problems:\n%s", strings.Join(rec.problems, "\n"))
+	if problems := rec.readProblems(); len(problems) > 0 {
+		return fmt.Errorf("recorder problems:\n%s", strings.Join(problems, "\n"))
 	}
 	return nil
 }

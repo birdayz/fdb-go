@@ -1038,7 +1038,7 @@ Porting Java's mapping would have been wrong twice over: `ExceptionUtil.recordCo
 
 Class 54 ("program limit exceeded") is the honest class: the planner gave up because the query exceeded a configured budget, and simplifying it or raising the budget is a real remedy. `54F01` (`EXECUTION_LIMIT_REACHED`) is deliberately NOT reused — it means an *execution*-time limit and is tied to a scan/row continuation reason, so conflating plan-time with it would corrupt a meaning Java owns. `54F02` is unused in Java's enum, leaving room for Java to adopt it should it ever enable the caps.
 
-The Go error carries the same context Java's `addLogInfo` attaches (`max_task_count`/`task_count` and the queue and rule-match equivalents) via `cascades.PlannerBudgetExceededError`.
+The Go error carries the counts Java's `addLogInfo` attaches (`max_task_count`/`task_count` and the queue and rule-match equivalents) via `cascades.PlannerBudgetExceededError`. Java's rule-match trip also attaches the rule call (`rule`); Go's does not.
 
 ## Java Upstream Bugs (Go is correct, Java is wrong)
 
