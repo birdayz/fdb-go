@@ -2099,3 +2099,53 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   `api.Error` (Java 0AF00 / 42601). (3) `category || 'a'` as a key is 42804; Java is 0AF00
   "Unsupported operator ||". Parameter keys (`amount = ?, amount = ?`) are value-dependent; the
   probe runner binds no parameters, so Java's answer is unmeasured (DIVERGENCES.md).
+
+## Java-corpus plan comparison (quality review 2026-10-24, RFC-273)
+
+The javacorpus runner books every plan directive as a counted skip
+(`pkg/relational/conformance/javacorpus/testblock.go:436-437`, RFC-201 ruling 2:
+no Java-format plan renderer, so no verbatim compare). Measured on the vendored
+4.14.2.0 corpus (255 `*.yamsql`, YAML-parsed `test_block.tests` query configs;
+grep positive control agrees): 1,266 directives, 1,214 `explain` and 52
+`explainContains`, on 1,266 queries in 141 test blocks of 87 files; `planHash`
+appears in no file. 8 are runner meta-tests, 11 are UPDATE/DELETE (Go's EXPLAIN
+renders logical DML). Go's EXPLAIN is a different format (nested calls,
+predicates as `[N preds]`, no AISCAN bounds, folded MAP layers), but every Java
+operator has a Go counterpart. `wsfAccessPath`
+(`conformance/ws_f_access_path_test.go`) already reduces both formats to an
+access-path tree for 775 of the 1,211 non-meta `explain` strings; the other 436
+need AISCAN (178), AGG (161), TFILTER (39), DEFAULT (33), union/intersection
+(32), RUNION/TEMP SCAN (22), TF (14), DISTINCT BY PK (9). On 28 queries whose
+Go schema matches Java's and whose Go plan is in `plan_shape.golden`: 0 exact
+string matches, 28/28 same access leaves, 26/28 same operator skeleton (a
+biased sample: those Go scenarios were ported from Java's; WS-F already books
+12 DIFF-PATH plans).
+
+1. [ ] **Capture.** At the skip site, run `EXPLAIN` for the same query on the
+   same connection and record `{file, line, kind, java, go | go-error}`; the
+   directive stays a skip. Exit: census rows == reached directives, per-kind
+   totals pinned in `pinned_ledger_test.go`, the existing ledger line unchanged.
+2. [ ] **Shared normalizer.** Move `wsfAccessPath` into a library package
+   (e.g. `pkg/relational/conformance/accesspath`) with the WS-F probe as its
+   first consumer. Exit: WS-F verdicts byte-identical; per-operator table tests
+   for both syntaxes.
+3. [ ] **Operator coverage.** Add the operators above and vector BY_DISTANCE.
+   Compare leaf kind, index or table, comparison kinds, covering/fetch and the
+   filter/sort/agg/on-empty/join/union/IN operators; drop MAP, predicate text,
+   `@cN` literals and quantifier names. Exit: no unknown node over the 1,211
+   strings; the 47 non-meta `explainContains` reduce to leaf assertions.
+4. [ ] **Classify and pin.** One verdict per row: SAME-PATH, SAME-CLASS,
+   DIFF-PATH(reason), GO-ERROR or NOT-COMPARABLE (DML, meta-tests). Exit:
+   per-verdict counts and a per-row digest pinned, so a plan flip fails a test.
+5. [ ] **Triage DIFF-PATH.** Each distinct reason becomes a DIVERGENCES.md entry
+   with reversal criteria or a planner bug item (first suspect: an ungrouped
+   StreamingAgg without DefaultOnEmpty, `select sum(col1) from T2 where col1 =
+   0`). Exit: no undeclared DIFF-PATH row; SAME-PATH only ratchets up.
+6. [ ] **Fidelity gaps.** `AggregateIndex.Explain` omits scan bounds (93 AISCAN
+   directives carry them) and filters render as `[N preds]` (450): render the
+   comparison kinds or compare those rows at SAME-CLASS. Exit: the decision
+   recorded as an RFC-201 amendment, the explaindiff golden regenerated if any
+   `Explain()` changes.
+
+Out of scope: `planHash` (no corpus use; Go's `PlanHash` is FNV-64a, Java's an
+int, and RFC-024 makes hash compatibility a non-goal).
