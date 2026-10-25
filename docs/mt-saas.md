@@ -671,52 +671,36 @@ deployment configures TLS through exactly two surfaces:
 1. The cluster file's `:tls` coordinator suffix (`pkg/fdbgo/client/database.go:126`). It is
    all-or-nothing — a partially-`:tls` coordinator list is rejected (`database.go:160`).
 2. `FDB_TLS_CERTIFICATE_FILE` / `FDB_TLS_KEY_FILE` / `FDB_TLS_CA_FILE`, falling back to
-   `cert.pem`/`key.pem` under `/etc/foundationdb` (`pkg/fdbgo/client/tls.go:15`, `:33-35`). Setting
-   only one of cert/key is a hard error (`tls.go:40`).
+   `cert.pem`/`key.pem` under `/etc/foundationdb` (`pkg/fdbgo/client/tls.go`); a variable set
+   but empty means no file and no default, as in libfdb_c. `FDB_TLS_PASSWORD` decrypts an
+   encrypted PKCS#8 key, and `FDB_TLS_VERIFY_PEERS` sets the verify-peers policy (RFC-277).
+   Setting only one of cert/key, or an unusable setting, fails the open with `tls_error`.
 
-The precedence rule is at `pkg/fdbgo/client/tls.go:62-68`. `client.WithTLSConfig`
-(`pkg/fdbgo/client/options.go:61`) is the third surface, but it is unreachable from `database/sql` —
+The precedence rule is `openTLSConfig` in `pkg/fdbgo/client/tls.go`. `client.WithTLSConfig`
+(`pkg/fdbgo/client/options.go`) is the third surface, but it is unreachable from `database/sql` —
 another reason a service that needs fine control opens the client itself and uses
 `sqldriver.RegisterBackend`. Note the footgun: `WithTLSConfig(nil)` is a **no-op**, it does not
-force plaintext (`options.go:58`).
+force plaintext (see its doc comment).
 
-### Certificates must be hostname-verifiable — and that means IP SANs
+### Certificates are verified as libfdb_c verifies them
 
-This is the single highest-value warning on this page, because a certificate set that works on
-`libfdb_c` can hard-fail on the pure-Go client.
+On the environment path (`:tls` + `FDB_TLS_*`) the pure-Go client verifies a server as libfdb_c
+7.3.77 does (RFC-277):
 
-The pure-Go client does standard Go TLS verification. `InsecureSkipVerify` is never set anywhere in
-`pkg/fdbgo`, and the dialer fills in `ServerName` from the dialed host when the caller left it
-unset:
+- The chain must verify against the CA file alone; with no CA file nothing is trusted, and the
+  system roots never are.
+- The `FDB_TLS_VERIFY_PEERS` policy (default `Check.Valid=1`) then decides
+  (`pkg/fdbgo/transport/tls_policy.go`).
+- No host name is checked. A server certificate needs no IP SANs, though a host-name coordinator
+  in the cluster file still receives SNI.
 
-```go
-// pkg/fdbgo/transport/conn.go:1159-1166
-func upgradeTLS(conn net.Conn, addr string, cfg *tls.Config) (net.Conn, error) {
-	cfg = cfg.Clone()
-	if cfg.ServerName == "" {
-		if host, _, err := net.SplitHostPort(addr); err == nil {
-			cfg.ServerName = host
-		}
-	}
-```
+`WithTLSConfig` is different: it is a plain Go `*tls.Config`, so Go's own verification applies,
+including a host-name check against every dialed address. After coordination every connection
+is dialed at a numeric address the cluster sent (`pkg/fdbgo/client/endpoint.go`), so such a
+config needs IP SANs for every process address. For libfdb_c's check, set `InsecureSkipVerify`
+and `transport.VerifyPolicy.VerifyConnection`.
 
-**Coordinator hostnames are not enough.** After coordination, every connection to a proxy or storage
-server is dialed at an address the cluster sent over the wire, and that address is always numeric:
-`networkAddressString` builds `host:port` from the raw `types.IPAddress` bytes
-(`pkg/fdbgo/client/endpoint.go:54-58`, `:71-88`), and that string is what gets dialed with the TLS
-config (`pkg/fdbgo/client/database.go:573`). So `ServerName` becomes an IP literal for the majority
-of connections regardless of what the cluster file says.
-
-Consequence: **server certificates must carry IP SANs for every cluster process address.** Without
-them the handshake fails closed at `conn.go:1170-1173` with Go's
-`x509: cannot validate certificate for <ip> because it doesn't contain any IP SANs`.
-
-This is a deliberate divergence from `libfdb_c`, which does not do hostname verification by default
-— recorded at `rfcs/051-tls-wiring.md:140`: "`FDB_TLS_VERIFY_PEERS` rule DSL … Go uses standard CA +
-SNI verification (the C++ `Check.Valid=1` default)." There is no knob to relax it short of supplying
-your own `*tls.Config` with a `VerifyPeerCertificate`, which the SQL driver cannot do.
-
-### Tokens and `verify_peers` are `libfdb_c`-only; tenants are pure-Go-only
+### Tokens and TLS network options are `libfdb_c`-only; tenants are pure-Go-only
 
 Stated plainly, because these two facts together decide your build:
 
@@ -725,9 +709,8 @@ Stated plainly, because these two facts together decide your build:
   (FDB `invalid_option`, 2007), with the rationale at `options.go:67-76` — a silently ignored token
   means the request goes out unauthenticated. `libfdb_c` forwards it 1:1
   (`pkg/fdbgo/libfdbc/options.go:105`).
-- **`tls_verify_peers`.** No implementation in `pkg/fdbgo` at all; out of scope per
-  `rfcs/051-tls-wiring.md:140`. Under `-tags libfdbc` it is reachable through the Apple binding's own
-  network options, not through anything this repo exposes.
+- **`tls_verify_peers`.** Pure-Go reads `FDB_TLS_VERIFY_PEERS` (RFC-277) but has no network
+  option for it. Under `-tags libfdbc` both reach libfdb_c.
 - **Native tenants.** Pure-Go only. `OpenTenant`/`CreateTenant`/`DeleteTenant` each downcast to the
   concrete pure-Go transaction with the comment "tenant ops are pure-Go only (out of RFC-109
   escape-hatch scope)" (`pkg/fdbgo/fdb/database.go:450`, `:479`, `:491`); `fdb.Tenant` embeds the
@@ -736,8 +719,8 @@ Stated plainly, because these two facts together decide your build:
 
 **The mutual exclusion:** native FDB tenants and authorization tokens are the two halves of
 FoundationDB's own tenant-isolation security model, and no single build of this port has both. Build
-pure-Go and you get tenants with no token support and no `verify_peers`; build `-tags libfdbc` and
-you get tokens and `verify_peers` but no tenants. That is a second, independent reason v1 isolates
+pure-Go and you get tenants with no token support; build `-tags libfdbc` and you get tokens but no
+tenants. That is a second, independent reason v1 isolates
 tenants by subspace (§1) rather than by native tenants: subspace isolation works identically on both
 builds and leaves the choice of backend free.
 
