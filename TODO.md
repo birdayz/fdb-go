@@ -2346,8 +2346,9 @@ multi-page auto-commit SELECT, which stays tracked only.
   (`pkg/fdbgo/client/locality.go:572`; C++ waits for the reply or a proxy change) and that a
   read fails with 1007 after 10 timed-out re-sends (`readpath.go:39`). Dials are not a gap:
   C++ also times out a connect (`CONNECTION_MONITOR_TIMEOUT`). Fixed in #996.
-- [ ] **Medium:** DIVERGENCES.md:973 and SQL_CONFORMANCE.md:3 are classified against Java
-  4.12.11; SQL_CONFORMANCE's pass count omits the skipped files and plan assertions.
+- [x] **Medium:** DIVERGENCES.md:973 and SQL_CONFORMANCE.md:3 are classified against Java
+  4.12.11; SQL_CONFORMANCE's pass count omits the skipped files and plan assertions. Fixed in
+  #1007 (RFC-278).
 - [x] **Low:** stale: TODO.md:3 (PR #786 merged), `tools_cli.go:5-7` (no `cmd/frl/go.mod`),
   `pkg/fdbgo/client/CRASH_BUG.md` (resolved; title says otherwise). Fixed in #996.
 - [ ] **Low:** comments against CLAUDE.md's rules: shift tags
