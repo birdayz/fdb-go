@@ -450,6 +450,77 @@ func TestHandleConnErrorMarkCannotOvertakeRedial(t *testing.T) {
 	}
 }
 
+// Fallback accounting must cover dial/send failures as well as successful replies.
+func TestFallbackSendFailureBudget(t *testing.T) {
+	t.Parallel()
+	for _, stage := range []string{"dial", "send"} {
+		for _, cancelled := range []bool{false, true} {
+			name := stage
+			if cancelled {
+				name += "-cancelled"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
+				opCtx, stop := context.WithCancel(ctx)
+				defer stop()
+				var peers []*identityPeer
+				var writing *writeSignalConn
+				if stage == "send" {
+					peer, signal := newStallPeer(t)
+					peers, writing = []*identityPeer{peer}, signal
+				}
+				db, tx := armDatabase(ctx, peers...)
+				defer closeIdentityDatabase(db)
+				if stage == "send" {
+					if _, err := db.getOrDial(ctx, armAddr); err != nil {
+						t.Fatal(err)
+					}
+				} else if cancelled {
+					stop()
+				}
+				done := make(chan error, 1)
+				go func() {
+					_, err := tx.sendGetValueToServer(opCtx, []byte("k"), ServerInfo{Address: armAddr, Token: armToken}, 1, false, NoTenantID, readTagSample{})
+					done <- err
+				}()
+				if writing != nil {
+					select {
+					case <-writing.writing:
+					case <-ctx.Done():
+						t.Fatal("fallback did not enter the frame write")
+					}
+					if cancelled {
+						stop()
+					} else {
+						peers[0].server.Close()
+					}
+				}
+				select {
+				case err := <-done:
+					if err == nil || (cancelled && !errors.Is(err, context.Canceled)) {
+						t.Fatalf("fallback failure = %v, cancelled=%v", err, cancelled)
+					}
+				case <-ctx.Done():
+					t.Fatal("fallback did not return its failure")
+				}
+				accrued := 1
+				if cancelled {
+					accrued = 0
+				}
+				checkSecondModel(t, db.queueModel, 0, accrued, false)
+				db.queueModel.mu.Lock()
+				outstanding := db.queueModel.getOrCreate(armAddr).smoothOutstanding.total
+				db.queueModel.mu.Unlock()
+				if outstanding != 0 {
+					t.Fatalf("fallback failure leaked outstanding delta %v", outstanding)
+				}
+			})
+		}
+	}
+}
+
 // connArm runs one RPC through its production path against peer:4500. An eager
 // arm's send returns once its frame is queued, so it never fails on a blocked write.
 type connArm struct {
