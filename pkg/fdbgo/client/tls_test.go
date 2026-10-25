@@ -8,6 +8,8 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
+	"io/fs"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -66,10 +68,10 @@ func TestParseClusterString_TLS(t *testing.T) {
 	}
 }
 
-// fakeEnv returns a getenv func backed by m — lets the TLS-resolution tests run
-// in parallel without mutating process environment (t.Setenv forbids t.Parallel).
-func fakeEnv(m map[string]string) func(string) string {
-	return func(k string) string { return m[k] }
+// fakeEnv returns a lookup backed by m, so the TLS tests run in parallel without
+// mutating the process environment (t.Setenv forbids t.Parallel).
+func fakeEnv(m map[string]string) lookupEnvFunc {
+	return func(k string) (string, bool) { v, ok := m[k]; return v, ok }
 }
 
 // TestResolveTLSPath pins the C++ per-field precedence: env var wins, else
@@ -107,7 +109,7 @@ func TestResolveTLSPath(t *testing.T) {
 }
 
 // TestResolveTLSConfig loads real files into a *tls.Config and checks the error
-// paths. Uses an injected getenv (no global env mutation) so it stays parallel.
+// paths. Uses an injected environment lookup (no global env mutation) so it stays parallel.
 func TestResolveTLSConfig(t *testing.T) {
 	t.Parallel()
 	caPEM, certPEM, keyPEM := testCertPEM(t)
@@ -119,8 +121,8 @@ func TestResolveTLSConfig(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolveTLSConfig: %v", err)
 		}
-		if cfg == nil || cfg.RootCAs == nil {
-			t.Fatalf("RootCAs should be set, got %+v", cfg)
+		if cfg == nil || cfg.RootCAs == nil || cfg.RootCAs.Equal(x509.NewCertPool()) {
+			t.Fatalf("RootCAs should hold the CA, got %+v", cfg)
 		}
 		if len(cfg.Certificates) != 0 {
 			t.Errorf("no client cert expected, got %d", len(cfg.Certificates))
@@ -146,27 +148,30 @@ func TestResolveTLSConfig(t *testing.T) {
 	t.Run("cert without key → error", func(t *testing.T) {
 		t.Parallel()
 		env := fakeEnv(map[string]string{"FDB_TLS_CERTIFICATE_FILE": writeTLSTemp(t, "cert.pem", certPEM)})
-		if _, err := resolveTLSConfig(t.TempDir(), env); err == nil {
-			t.Error("cert without key must error")
-		}
+		_, err := resolveTLSConfig(t.TempDir(), env)
+		requireTLSError(t, "cert without key", err)
 	})
 
 	t.Run("unreadable CA → error", func(t *testing.T) {
 		t.Parallel()
 		env := fakeEnv(map[string]string{"FDB_TLS_CA_FILE": filepath.Join(t.TempDir(), "missing.pem")})
-		if _, err := resolveTLSConfig(t.TempDir(), env); err == nil {
-			t.Error("missing CA file must error, not silently run without it")
+		_, err := resolveTLSConfig(t.TempDir(), env)
+		requireTLSError(t, "missing CA file", err)
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("missing CA file: %v does not unwrap to fs.ErrNotExist", err)
 		}
 	})
 
-	t.Run("nothing configured → empty non-nil config", func(t *testing.T) {
+	t.Run("nothing configured → libfdb_c's default check against no roots", func(t *testing.T) {
 		t.Parallel()
 		cfg, err := resolveTLSConfig(t.TempDir(), fakeEnv(nil))
 		if err != nil || cfg == nil {
-			t.Fatalf("want empty non-nil config, got cfg=%v err=%v", cfg, err)
+			t.Fatalf("want a non-nil config, got cfg=%v err=%v", cfg, err)
 		}
-		if cfg.RootCAs != nil || len(cfg.Certificates) != 0 {
-			t.Errorf("expected empty config, got %+v", cfg)
+		// An empty pool, not nil (the system roots), and no ServerName of its own.
+		if cfg.RootCAs == nil || !cfg.RootCAs.Equal(x509.NewCertPool()) || len(cfg.Certificates) != 0 ||
+			cfg.ServerName != "" || !cfg.InsecureSkipVerify || cfg.VerifyConnection == nil {
+			t.Errorf("expected the policy config with an empty pool, got %+v", cfg)
 		}
 	})
 }

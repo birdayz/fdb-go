@@ -2001,9 +2001,10 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 - [ ] Java proto rules: fail the build if a `java_proto_library` regenerates protobuf
   well-known types other than `any` and `descriptor`, and test that the failing fallback
   toolchain is selected on a non-Linux platform.
-- [ ] `tools/lanes/run-verified-lane.sh`: a cancelled lane leaves its Bazel server holding
+- [x] `tools/lanes/run-verified-lane.sh`: a cancelled lane leaves its Bazel server holding
   the lane lock until the server is shut down. Shut the server down on exit, or keep the
-  lock descriptor out of the server.
+  lock descriptor out of the server. Done: `flock -o` holds the lock for the
+  lane's lifetime and keeps it out of the server (`TestVerifiedLaneLock` in `//infra:infra_test`).
 - [ ] Update Buf from 1.67.0 to 1.74 (`BUF_VERSION` in `justfile`).
 - [ ] SQL: the ANSI forms `POSITION(x IN s)` and `EXTRACT(<field> FROM x)` fail with 0AF00
   "projection slot 0 has no resolved Value", and `YEAR` over a BIGINT answers NULL rather than
@@ -2013,6 +2014,19 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 - [ ] `SQL_ANSI_CONFORMANCE.md`'s `Java?` column is still pinned against 4.12.11.0
   (`pkg/relational/conformance/yamsql/ansi_roster.go`, the notice in `ansiledger.go`). Re-verify
   it on 4.14.2.0, as RFC-278 did for SQL_CONFORMANCE.md.
+- [ ] **TLS settings without a network option.** RFC-277 reads `FDB_TLS_*` only. libfdb_c
+  also takes the `TLS_*` network options (`fdb.options:70-105`) and
+  `FDB_NETWORK_OPTION_TLS_*` variables (`MultiVersionTransaction.actor.cpp:3484-3536`). It
+  re-reads certificate files on change every 12 h (`Knobs.cpp:128`), and its handshake
+  timeout is 2 s (`Net2.actor.cpp:1101-1106`) where Go's is 10 s. The `fdb` facade first
+  needs network options.
+- [ ] **TLS differential.** RFC-277's verify-peers cases are pinned against the C++ source,
+  not measured: run libfdb_c and the Go client with the same `FDB_TLS_*` against one TLS
+  listener per `TestVerifyPolicyMatching` case (OpenSSL's Latin-1 widening, SAN
+  fall-throughs, `ssl_server` purpose), and open a TLS testcontainer fdbserver (test-full).
+- [ ] **One PBES2 decryptor.** `pkg/fdbgo/client/tls_key.go` (RFC-277) and
+  `pkg/recordlayer/keystore_key_manager.go` each decrypt PBES2/PBKDF2/CBC; move both onto
+  one package under `pkg/fdbgo` so a bound or a new PRF lands once.
 
 ## Test lanes and test-speed work (committed with the temporal change)
 
@@ -2227,9 +2241,10 @@ multi-page auto-commit SELECT, which stays tracked only.
 - [ ] **Medium:** decoding can allocate quadratically: vector element offsets may alias one
   inner vector (`pkg/fdbgo/wire/reader.go:415`, reachable through `GetMappedKeyValuesReply`).
   Add a per-decode element budget in the generator and a raw-bytes `UnmarshalFDB` fuzzer.
-- [ ] **Medium:** TLS sets `ServerName` to the dialed host (`pkg/fdbgo/transport/conn.go:1533-1535`),
+- [x] **Medium:** TLS sets `ServerName` to the dialed host (`pkg/fdbgo/transport/conn.go:1533-1535`),
   a hostname check libfdb_c does not make; `FDB_TLS_VERIFY_PEERS` and `FDB_TLS_PASSWORD`
-  are never read.
+  are never read. Fixed in #1006 (RFC-277): the `FDB_TLS_*` path verifies as libfdb_c does;
+  `WithTLSConfig` keeps Go's check, and SNI is still sent (DIVERGENCES.md).
 - [x] **Low:** malformed location replies are absorbed: a missing range covers the whole
   keyspace (`parseGetKeyServerLocationsReply`, `pkg/fdbgo/client/locality.go:665`);
   `ReadVectorCount` truncates an oversized count instead of failing

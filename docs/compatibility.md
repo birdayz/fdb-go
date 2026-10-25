@@ -41,6 +41,15 @@ higher-level storage layout; it does not remove the exceptions below.
 | **Store format** | An unpinned Go open can upgrade an older store to format 14 when its transaction commits. Java's default 7 is not its maximum: Java 4.14.2.0 can open 14 and 15. Older readers and downgrade paths must be checked separately. |
 | **Earlier Go SQL storage** | The v0.2.0 candidate changes the relational catalog/database/schema keyspace from v0.1.0's. There is no automatic migration from the old Go layout. A common FDB cluster does not make these layouts interchangeable. |
 
+### TLS verification
+
+The pure-Go client verifies a `:tls` cluster's servers as libfdb_c does: the CA in
+`FDB_TLS_CA_FILE` is the only trust root, `FDB_TLS_VERIFY_PEERS` decides, and no host
+name is checked. A `WithTLSConfig` config keeps Go's own verification, including a
+host-name check against each dialed address. Pure Go reads no `TLS_*` network option,
+refuses some encrypted key formats libfdb_c loads, and fails the open on a bad setting.
+DIVERGENCES.md lists each difference.
+
 ### Mapped-range backend capability
 
 The pure-Go transaction exposes the optional `fdb.MappedRangeReader` capability
