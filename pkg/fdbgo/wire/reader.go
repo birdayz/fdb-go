@@ -450,7 +450,7 @@ func (r *Reader) ReadNestedReader(vtableSlot int) (*Reader, error) {
 		return nil, fmt.Errorf("wire: nested struct field not present (slot %d)", vtableSlot)
 	}
 	if off+4 > len(r.object) {
-		return nil, fmt.Errorf("wire: nested struct field offset %d past the buffer (slot %d)", off, vtableSlot)
+		return nil, &FieldBoundsError{Slot: vtableSlot}
 	}
 	relOffset := binary.LittleEndian.Uint32(r.object[off:])
 	if relOffset == 0 {
@@ -479,7 +479,7 @@ func (r *Reader) ReadVectorCount(vtableSlot int) (int, error) {
 		return 0, nil // absent field = empty vector
 	}
 	if int(off)+4 > len(r.object) {
-		return 0, fmt.Errorf("wire: vector field offset %d past the buffer (slot %d)", off, vtableSlot)
+		return 0, &FieldBoundsError{Slot: vtableSlot}
 	}
 	relOffset := binary.LittleEndian.Uint32(r.object[off:])
 	if relOffset == 0 {

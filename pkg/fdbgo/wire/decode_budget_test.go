@@ -123,7 +123,8 @@ func TestReaderRecordsFieldOutsideBuffer(t *testing.T) {
 	}
 }
 
-// A vector field whose offset lies past the buffer is an error, not an absent vector.
+// A vector or nested-table field whose offset lies past the buffer is a
+// FieldBoundsError, not an absent field.
 func TestReadVectorCountFieldPastBuffer(t *testing.T) {
 	t.Parallel()
 	d := vectorMessage(0, 0)
@@ -132,8 +133,12 @@ func TestReadVectorCountFieldPastBuffer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n, err := r.ReadVectorCount(0); err == nil {
-		t.Fatalf("ReadVectorCount = %d, nil; want an error", n)
+	var bounds *FieldBoundsError
+	if n, err := r.ReadVectorCount(0); !errors.As(err, &bounds) || bounds.Slot != 0 {
+		t.Fatalf("ReadVectorCount = %d, %v; want a FieldBoundsError for slot 0", n, err)
+	}
+	if _, err := r.ReadNestedReader(0); !errors.As(err, &bounds) || bounds.Slot != 0 {
+		t.Fatalf("ReadNestedReader: %v; want a FieldBoundsError for slot 0", err)
 	}
 }
 

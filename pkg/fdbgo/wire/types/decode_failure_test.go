@@ -28,7 +28,7 @@ func vtablePos(d []byte, obj int) int { return obj - int(int32(le.Uint32(d[obj:]
 
 // aliasedMappedReply has n Data offsets to one row of m empty rows; the prefix goes before
 // a marshaled one-row reply because offsets point forward only.
-func aliasedMappedReply(t testing.TB, n, m int) []byte {
+func aliasedMappedReply(t testing.TB, n, m int, errorOr bool) []byte {
 	t.Helper()
 	row := MappedKeyValueRef{ReqAndResultTag: 2, ReqAndResultAlt1: GetRangeReqAndResult{
 		Result: RangeResultRef{Data: make([]KeyValueRef, m)},
@@ -46,20 +46,33 @@ func aliasedMappedReply(t testing.TB, n, m int) []byte {
 	var b []byte
 	u16 := func(v int) { b = le.AppendUint16(b, uint16(v)) }
 	u32 := func(v int) { b = le.AppendUint32(b, uint32(v)) }
-	u32(8) // 0: root → FakeRoot at 8
-	u32(int(GetMappedKeyValuesReplyFileID))
-	u32(0)  // 8: FakeRoot soffset (NewReader does not read it)
-	u32(16) // 12: FakeRoot field 0 → message at 28
+	vtable := 4 + 2*(GetMappedKeyValuesReplySlotData+1)
+	if errorOr {
+		u32(16) // 0: root → ErrorOr object at 16
+		u32(int(GetMappedKeyValuesReplyFileID))
+		u16(8) // 8: ErrorOr vtable: tag at 8, value at 4
+		u16(9)
+		u16(8)
+		u16(4)
+		u32(8)          // 16: ErrorOr object, vtable 8 bytes back
+		u32(8 + vtable) // 20: value → message after its vtable
+		b = append(b, 2, 0, 0, 0)
+	} else {
+		u32(8) // 0: root → FakeRoot at 8
+		u32(int(GetMappedKeyValuesReplyFileID))
+		u32(0)  // 8: FakeRoot soffset (NewReader does not read it)
+		u32(16) // 12: FakeRoot field 0 → message after its vtable
+	}
 
-	// 16: message vtable, Data at offset 4
-	u16(4 + 2*(GetMappedKeyValuesReplySlotData+1))
+	// Message vtable, Data at offset 4
+	u16(vtable)
 	u16(8)
 	for range GetMappedKeyValuesReplySlotData {
 		u16(0)
 	}
 	u16(4)
-	u32(12) // 28: message, vtable 12 bytes back
-	u32(4)  // 32: Data → vector at 36
+	u32(vtable) // message, its vtable just before
+	u32(4)      // Data → vector right after
 	vec := len(b)
 	u32(n)
 	b = append(b, make([]byte, 4*n)...)
@@ -83,16 +96,31 @@ func decodeMapped(data []byte) (GetMappedKeyValuesReply, error) {
 // Aliased offsets would decode n×m rows from O(n+m) bytes; the budget stops them.
 func TestDecodeAliasedVectorsExhaustBudget(t *testing.T) {
 	t.Parallel()
-	if got, err := decodeMapped(aliasedMappedReply(t, 3, 2)); err != nil || len(got.Data) != 3 ||
+	if got, err := decodeMapped(aliasedMappedReply(t, 3, 2, false)); err != nil || len(got.Data) != 3 ||
 		len(got.Data[2].ReqAndResultAlt1.Result.Data) != 2 {
 		t.Fatalf("small aliased reply: %d rows, %v; want 3 rows of 2", len(got.Data), err)
 	}
-	data := aliasedMappedReply(t, 2000, 1000)
+	data := aliasedMappedReply(t, 2000, 1000, false)
 	_, err := decodeMapped(data)
 	var budgetErr *wire.DecodeBudgetError
 	var decodeErr *wire.DecodeError
 	if !errors.As(err, &budgetErr) || !errors.As(err, &decodeErr) || decodeErr.Type != "RangeResultRef" {
 		t.Fatalf("%d-byte reply aliasing 2000×1000 rows: %v; want a budget error", len(data), err)
+	}
+	// The read parsers decode through ReadErrorOrInto and UnmarshalFromReader.
+	fromReader := func(data []byte) (GetMappedKeyValuesReply, error) {
+		var r wire.Reader
+		var m GetMappedKeyValuesReply
+		if err := wire.ReadErrorOrInto(data, &r); err != nil {
+			return m, err
+		}
+		return m, m.UnmarshalFromReader(&r)
+	}
+	if got, err := fromReader(aliasedMappedReply(t, 3, 2, true)); err != nil || len(got.Data) != 3 {
+		t.Fatalf("small ErrorOr aliased reply: %d rows, %v; want 3", len(got.Data), err)
+	}
+	if _, err := fromReader(aliasedMappedReply(t, 2000, 1000, true)); !errors.As(err, &budgetErr) {
+		t.Fatalf("ErrorOr reply aliasing 2000×1000 rows, from the reader: %v; want a budget error", err)
 	}
 }
 
@@ -285,7 +313,7 @@ func FuzzUnmarshalFDB(f *testing.F) {
 	for _, v := range loadTestVectors(f) {
 		f.Add(vectorBytes(f, v))
 	}
-	f.Add(aliasedMappedReply(f, 2000, 1000))
+	f.Add(aliasedMappedReply(f, 2000, 1000, false))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if _, err := wire.NewReader(data); err != nil {
 			return // no message to decode
