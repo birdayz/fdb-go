@@ -2250,9 +2250,11 @@ multi-page auto-commit SELECT, which stays tracked only.
   only an equal `begin` (`pkg/fdbgo/client/locality.go:64-80`) where C++
   `CoalescedKeyRangeMap::insert` overwrites the range, and `lookupLocked` (`:139`) checks
   only `idx-1`. Fixed in #997 (RFC-271).
-- [ ] **Medium:** decoding can allocate quadratically: vector element offsets may alias one
+- [x] **Medium:** decoding can allocate quadratically: vector element offsets may alias one
   inner vector (`pkg/fdbgo/wire/reader.go:415`, reachable through `GetMappedKeyValuesReply`).
   Add a per-decode element budget in the generator and a raw-bytes `UnmarshalFDB` fuzzer.
+  Fixed in #1004 (RFC-276): a `len/4` element budget per decode, `FuzzUnmarshalFDB`, and
+  decoders that fail malformed input.
 - [x] **Medium:** TLS sets `ServerName` to the dialed host (`pkg/fdbgo/transport/conn.go:1533-1535`),
   a hostname check libfdb_c does not make; `FDB_TLS_VERIFY_PEERS` and `FDB_TLS_PASSWORD`
   are never read. Fixed in #1006 (RFC-277): the `FDB_TLS_*` path verifies as libfdb_c does;
