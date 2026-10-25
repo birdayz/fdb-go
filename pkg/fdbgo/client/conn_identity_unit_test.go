@@ -1079,11 +1079,17 @@ func TestMetricsRequestBrokenPromiseTriesNextReplica(t *testing.T) {
 					_, err = tx.sendSplitRange(ctx, []byte("k"), []byte("l"), 1000, servers)
 				}
 			}()
-			endpoint := metricsEndpoints[arm.name]
+			// The first replica is chosen at random; the second request must go to the other.
+			var first transport.UID
 			for i, body := range [][]byte{(&types.ErrorOrError{ErrorCode: 1100}).MarshalFDB(), replyVector(t, replies[arm.name])} {
 				f, ok := peer.recv(ctx)
-				if want := getAdjustedEndpoint(servers[i].Token, endpoint); !ok || f.token != want {
-					t.Fatalf("request %d went to %v (%t), want %v", i, f.token, ok, want)
+				if !ok {
+					t.Fatalf("request %d missing", i)
+				}
+				if i == 0 {
+					first = f.token
+				} else if f.token == first {
+					t.Fatalf("request 1 went to the broken replica again (%v)", f.token)
 				}
 				if err := transport.WriteFrame(peer.server, metricsReplyToken(t, arm.name, f.body), body, false); err != nil {
 					t.Fatal(err)
@@ -1093,7 +1099,7 @@ func TestMetricsRequestBrokenPromiseTriesNextReplica(t *testing.T) {
 			if err != nil {
 				t.Fatalf("second replica's reply: %v", err)
 			}
-			if !db.failMon.endpointFailed(armAddr, getAdjustedEndpoint(armToken, endpoint)) {
+			if !db.failMon.endpointFailed(armAddr, first) {
 				t.Fatal("broken_promise did not mark the endpoint not found")
 			}
 		})
@@ -1177,4 +1183,94 @@ func TestMetricsRequestWaitsForSlowReply(t *testing.T) {
 	if err != nil || got != want {
 		t.Fatalf("got %d, %v; want %d", got, err, want)
 	}
+}
+
+// A request whose only replica is excluded probes it when its exclusion window
+// ends, as connectionKeeper does, so a recovered replica ends the 30 s wait
+// without other traffic.
+func TestMetricsRequestProbesExcludedReplica(t *testing.T) {
+	t.Parallel()
+	for _, arm := range metricsArms() {
+		t.Run(arm.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			peer := newIdentityPeer(t)
+			db, tx := armDatabase(ctx, peer)
+			defer closeIdentityDatabase(db)
+			var dials atomic.Int32
+			dial := db.dialFn
+			db.dialFn = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				if dials.Add(1) == 1 {
+					return nil, errors.New("test: replica down")
+				}
+				return dial(ctx, network, addr)
+			}
+			now := nowSeconds()
+			db.failMon.mu.Lock()
+			db.failMon.oldestAltFailure, db.failMon.newestAltFailure, db.failMon.lastAltSkip = now-1000, now, now
+			db.failMon.mu.Unlock()
+			var parks atomic.Int32
+			hook := func() { parks.Add(1) }
+			db.beforeAltFailureWait.Store(&hook)
+			startArm(t, ctx, arm, db, tx)
+			waitCtx, stop := context.WithTimeout(ctx, connFailureInitialWindow*time.Second+5*time.Second)
+			defer stop()
+			if _, ok := peer.recv(waitCtx); !ok {
+				t.Fatal("no request after the replica's exclusion window ended")
+			}
+			if n := parks.Load(); n != 1 {
+				t.Fatalf("%d waits, want the one the probe ended", n)
+			}
+		})
+	}
+}
+
+// Once every replica was tried, each further request waits a backoff that starts
+// at 10 ms and doubles per request (LoadBalance.actor.h:301-308, :721-725).
+func TestMetricsRequestBacksOffPerRequest(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	peer := newIdentityPeer(t)
+	db, tx := armDatabase(ctx, peer)
+	defer closeIdentityDatabase(db)
+	servers := []ServerInfo{{Address: armAddr, Token: armToken}, {Address: armAddr, Token: transport.UID{First: 0x99, Second: 0xaa}}}
+	armCtx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = tx.sendWaitMetrics(armCtx, []byte("k"), []byte("l"), 1, servers)
+	}()
+	defer func() { stop(); <-done }()
+	// Each request is answered request_maybe_delivered, so the next one follows.
+	var at []time.Time
+	for range 6 {
+		f, ok := peer.recv(ctx)
+		if !ok {
+			t.Fatal("request missing")
+		}
+		at = append(at, time.Now())
+		if err := transport.WriteFrame(peer.server, metricsReplyToken(t, "wait metrics", f.body), (&types.ErrorOrError{ErrorCode: 1030}).MarshalFDB(), false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 2; i < len(at); i++ {
+		if gap, want := at[i].Sub(at[i-1]), loadBalanceStartBackoff<<(i-2); gap < want {
+			t.Errorf("request %d followed request %d after %v, want at least %v", i, i-1, gap, want)
+		}
+	}
+}
+
+// A location with no servers reports all_alternatives_failed, so the caller re-locates.
+func TestMetricsRequestWithoutServers(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	db, tx := armDatabase(ctx, newIdentityPeer(t))
+	defer closeIdentityDatabase(db)
+	_, err := tx.sendWaitMetrics(ctx, []byte("k"), []byte("l"), 1, nil)
+	assertFDBErrorCode(t, err, ErrAllAlternativesFailed)
+	_, err = tx.sendSplitRange(ctx, []byte("k"), []byte("l"), 1000, nil)
+	assertFDBErrorCode(t, err, ErrAllAlternativesFailed)
 }

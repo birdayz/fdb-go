@@ -38,13 +38,19 @@ Change:
 
 - Both loops retry until success, a non-retryable error or the operation context ends.
   The context carries the transaction timeout (RFC-112), as C++'s `waitOrError` does.
-- Each request is sent the way `loadBalance` sends it (`sendMetricsRequest`): the
-  replicas the failure monitor does not exclude, in order, with no reply timeout
-  (`LoadBalance.actor.h:595-614`). A round in which no replica answered backs off from
-  10 ms, doubling to 5 s (`LOAD_BALANCE_*_BACKOFF`). When every replica is excluded,
-  the request sends nothing and waits `allAlternativesFailedDelay` (50 ms, growing
-  while failures continue), then reports 1006, unless one of its own replicas recovers
-  first, which ends the wait as `okFuture` does (another address recovering does not).
+- Each request is sent the way `loadBalance` sends it (`sendMetricsRequest`): one
+  replica per attempt, starting at a random one and skipping replicas the failure
+  monitor excludes, with no reply timeout (`LoadBalance.actor.h:595-614`). Once every
+  replica has been tried, each further attempt waits a backoff that starts at 10 ms and
+  doubles per attempt up to 5 s (`:301-308`, `:721-725`). When every replica is
+  excluded, the request sends nothing and waits `allAlternativesFailedDelay` (50 ms,
+  growing while failures continue), then reports 1006, unless one of its own replicas
+  recovers first, which ends the wait as `okFuture` does (another address recovering
+  does not); the attempt count restarts and the backoff is kept (`:641`). While it
+  waits, a replica whose exclusion window ends is dialed, as `connectionKeeper`
+  re-probes a failed peer (`FlowTransport.actor.cpp:784-797`); a dial that connects
+  marks it alive. A location with no servers reports 1006 at once, so the caller
+  re-locates.
 - An in-band `broken_promise` or `request_maybe_delivered` reply is not a response, as
   in `checkAndProcessResult` (`:344-377`): the request marks a `broken_promise`
   endpoint not found and goes on to the next replica in the same round.
@@ -123,6 +129,12 @@ and names the bound that matches libfdb_c, the transaction timeout or `Cancel`.
     completes the call.
   - `TestMetricsRequestSkipsExcludedReplica`: an excluded replica listed first is not
     dialed; the request reaches the available one.
+  - `TestMetricsRequestProbesExcludedReplica`: with the storm delay at 30 s and no other
+    traffic, a request whose replica failed reaches it once its exclusion window ends.
+  - `TestMetricsRequestBacksOffPerRequest`: with two replicas answering
+    `request_maybe_delivered`, the third request waits at least 10 ms, the fourth 20 ms,
+    and so on.
+  - `TestMetricsRequestWithoutServers`: an empty replica list reports 1006.
   - `TestMetricsRequestWaitsForSlowReply`: a reply that comes after more than the old
     5 s timeout is used, with one request sent.
 - `client`, test-full (`client_test`, FDB in a container, replies rewritten by the

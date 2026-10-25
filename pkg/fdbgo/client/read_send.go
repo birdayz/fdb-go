@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"math"
 	"math/rand/v2"
 	"time"
 
@@ -77,6 +78,16 @@ func (db *database) awaitAlternative(ctx context.Context, closed <-chan struct{}
 	}
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
+	// connectionKeeper re-probes a failed peer while it waits (FlowTransport.actor.cpp:784-797);
+	// a probe that connects marks the address alive, which ends the wait.
+	probe := time.NewTimer(db.untilReadmission(servers))
+	defer probe.Stop()
+	var probing chan struct{}
+	defer func() {
+		if probing != nil {
+			<-probing
+		}
+	}()
 	for {
 		select {
 		case <-recovered:
@@ -85,12 +96,47 @@ func (db *database) awaitAlternative(ctx context.Context, closed <-chan struct{}
 			if !db.allExcluded(servers) {
 				return nil
 			}
+		case <-probe.C:
+			probing = make(chan struct{})
+			go db.probeReadmitted(ctx, servers, probing)
+		case <-probing:
+			probing = nil
+			if !db.allExcluded(servers) {
+				return nil
+			}
+			probe.Reset(db.untilReadmission(servers))
 		case <-timer.C:
 			return &wire.FDBError{Code: ErrAllAlternativesFailed}
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-closed:
 			return db.ctx.Err()
+		}
+	}
+}
+
+// untilReadmission is the time until the first of servers leaves its exclusion window.
+func (db *database) untilReadmission(servers []ServerInfo) time.Duration {
+	now, soonest := nowSeconds(), math.Inf(1)
+	for _, s := range servers {
+		soonest = math.Min(soonest, db.failMon.excludedUntil(s.Address))
+	}
+	if math.IsInf(soonest, 1) {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(math.Max(soonest-now, 0) * float64(time.Second))
+}
+
+// probeReadmitted dials the replicas whose exclusion window has ended, then closes done.
+func (db *database) probeReadmitted(ctx context.Context, servers []ServerInfo, done chan struct{}) {
+	defer close(done)
+	now := nowSeconds()
+	for _, s := range servers {
+		if db.failMon.excluded(s.Address, now) {
+			continue
+		}
+		if _, err := db.getOrDial(ctx, s.Address); err != nil {
+			db.handleDialError(ctx, s.Address)
 		}
 	}
 }

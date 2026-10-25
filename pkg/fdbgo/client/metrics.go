@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/transport"
@@ -141,93 +142,97 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, m
 	return parseWaitMetricsReply(body)
 }
 
-// sendMetricsRequest sends a request as loadBalance does (LoadBalance.actor.h:589-686):
-// no reply timeout, and 1006 only once every replica stays failed for the delay.
+// sendMetricsRequest sends a request as loadBalance does (LoadBalance.actor.h:589-725):
+// one replica per attempt, no reply timeout, a backoff per attempt once every
+// replica was tried, and 1006 only once every replica stays failed for the delay.
 func (tx *Transaction) sendMetricsRequest(ctx context.Context, servers []ServerInfo, endpoint int, build func(reply transport.UID) []byte) ([]byte, error) {
 	var closed <-chan struct{} // Close ends the loop, as destroying the database cancels the actor
 	if tx.db.ctx != nil {
 		closed = tx.db.ctx.Done()
 	}
 	var backoff time.Duration
+	attempts, next := 0, rand.IntN(max(len(servers), 1))
 	for {
-		// Endpoints reported not found never recover, so each round drops them first.
+		// Endpoints reported not found never recover, so each attempt drops them first.
 		live, ok := tx.db.failMon.liveServers(servers, endpoint)
-		if !ok {
+		if !ok || len(live) == 0 {
 			return nil, tx.db.allAlternativesFailed(ctx)
 		}
-		// Excluded replicas are skipped; with none left, wait before sending (:595-639).
+		// Excluded replicas are skipped; with none left, wait before sending (:595-641).
 		if recovered, wait := tx.db.altFailureWait(live); wait > 0 {
 			if err := tx.db.awaitAlternative(ctx, closed, live, recovered, wait); err != nil {
 				return nil, err
 			}
-			backoff = 0
+			attempts = 0 // the backoff is kept (:641)
+			continue
 		}
-		if body, ok := tx.metricsRound(ctx, tx.db.notExcluded(live), endpoint, build); ok {
+		avail := tx.db.notExcluded(live)
+		if backoff > 0 {
+			timer := time.NewTimer(backoff)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-closed:
+				timer.Stop()
+				return nil, tx.db.ctx.Err()
+			}
+		}
+		if body, ok := tx.metricsSend(ctx, avail[next%len(avail)], endpoint, build); ok {
 			return body, nil
 		}
+		next++
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		if tx.db.ctx != nil && tx.db.ctx.Err() != nil {
 			return nil, tx.db.ctx.Err()
 		}
-		backoff = time.Duration(math.Min(math.Max(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceStartBackoff)), float64(loadBalanceMaxBackoff)))
-		timer := time.NewTimer(backoff)
-		select {
-		case <-timer.C:
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, ctx.Err()
-		case <-closed:
-			timer.Stop()
-			return nil, tx.db.ctx.Err()
+		if attempts++; attempts >= len(live) {
+			backoff = time.Duration(math.Min(math.Max(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceStartBackoff)), float64(loadBalanceMaxBackoff)))
 		}
 	}
 }
 
-// metricsRound sends the request to each replica in turn until one replies.
-func (tx *Transaction) metricsRound(ctx context.Context, servers []ServerInfo, endpoint int, build func(reply transport.UID) []byte) ([]byte, bool) {
-	var replyCleanup replyGuard
-	defer replyCleanup.close()
-	var sendCleanup sendGuard
+// metricsSend sends the request to server and waits for its reply.
+func (tx *Transaction) metricsSend(ctx context.Context, server ServerInfo, endpoint int, build func(reply transport.UID) []byte) ([]byte, bool) {
+	conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
+	if err != nil {
+		tx.db.handleDialError(ctx, server.Address)
+		return nil, false
+	}
+	sendCleanup := sendGuard{permit: permit}
 	defer sendCleanup.close()
-	for _, server := range servers {
-		conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
-		if err != nil {
-			tx.db.handleDialError(ctx, server.Address)
-			continue
-		}
-		sendCleanup.permit = permit
-		token := getAdjustedEndpoint(server.Token, endpoint)
-		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(token)
-		replyCleanup.handle = replyHandle
-		if err := sendReadFrame(ctx, conn, token, build(replyToken), replyHandle, permit, nil); err != nil {
-			replyHandle.Cancel()
-			replyCleanup.release()
-			tx.db.handleReadConnError(server.Address, conn, err)
-			continue
-		}
-		select {
-		case resp := <-replyCh:
-			replyCleanup.release()
-			if resp.Err != nil {
-				tx.db.handleReadConnError(server.Address, conn, resp.Err)
-				continue
-			}
-			// An in-band broken_promise or request_maybe_delivered is not a response:
-			// loadBalance moves on to the next replica (LoadBalance.actor.h:344-377).
-			if err := wire.ReadErrorOrInto(resp.Body, new(wire.Reader)); isMaybeDelivered(err) {
-				tx.db.noteBrokenPromise(err, server.Address, token)
-				continue
-			}
-			return resp.Body, true
-		case <-ctx.Done():
-			replyHandle.Cancel()
-			replyCleanup.release()
+	token := getAdjustedEndpoint(server.Token, endpoint)
+	replyToken, replyCh, replyHandle := conn.PrepareReplyTo(token)
+	replyCleanup := replyGuard{handle: replyHandle}
+	defer replyCleanup.close()
+	if err := sendReadFrame(ctx, conn, token, build(replyToken), replyHandle, permit, nil); err != nil {
+		replyHandle.Cancel()
+		replyCleanup.release()
+		tx.db.handleReadConnError(server.Address, conn, err)
+		return nil, false
+	}
+	select {
+	case resp := <-replyCh:
+		replyCleanup.release()
+		if resp.Err != nil {
+			tx.db.handleReadConnError(server.Address, conn, resp.Err)
 			return nil, false
 		}
+		// An in-band broken_promise or request_maybe_delivered is not a response:
+		// loadBalance moves on to the next replica (LoadBalance.actor.h:344-377).
+		if err := wire.ReadErrorOrInto(resp.Body, new(wire.Reader)); isMaybeDelivered(err) {
+			tx.db.noteBrokenPromise(err, server.Address, token)
+			return nil, false
+		}
+		return resp.Body, true
+	case <-ctx.Done():
+		replyHandle.Cancel()
+		replyCleanup.release()
+		return nil, false
 	}
-	return nil, false
 }
 
 // GetRangeSplitPoints returns suggested split points for the given key range.
