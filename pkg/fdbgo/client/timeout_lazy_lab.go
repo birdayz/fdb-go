@@ -88,7 +88,7 @@ func (s *lazyTimeoutShard) sweep() {
 
 // finishTimeoutLab disarms a transaction Transact has finished with.
 func (tx *Transaction) finishTimeoutLab() {
-	if !timeoutLazy {
+	if !timeoutLazy && !designTimeout {
 		return
 	}
 	tx.readErrMu.Lock()

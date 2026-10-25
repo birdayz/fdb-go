@@ -1,0 +1,33 @@
+{
+ "L": {
+  "binary": "/root/netg/bin/clientbench-cgo",
+  "env": [],
+  "args": [
+   "-rate=18000"
+  ]
+ },
+ "A": {
+  "env": [],
+  "args": [
+   "-rate=18000"
+  ]
+ },
+ "D": {
+  "env": [
+   "FDBGO_NET_DESIGN=1",
+   "FDBGO_NETG_STATS=1"
+  ],
+  "args": [
+   "-rate=18000"
+  ]
+ },
+ "DNG": {
+  "env": [
+   "FDBGO_NET_DESIGN=ng",
+   "FDBGO_NETG_STATS=1"
+  ],
+  "args": [
+   "-rate=18000"
+  ]
+ }
+}

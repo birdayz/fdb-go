@@ -245,8 +245,10 @@ type Conn struct {
 	// ng is set when the experimental network goroutine owns this connection's I/O.
 	ng *ngConn
 	// na is the lab NA/NG writer (na_writer.go); labw: a lab writer owns sends.
-	na   *naWriter
-	labw bool
+	na     *naWriter
+	m      *mWriter
+	labw   bool
+	design string // dial-option override of envDesign; see na_writer.go
 	// firstQueued is when the oldest frame not yet in a writeLoop batch was
 	// queued (monoNow; 0 = none), for the FDBGO_COALESCE_FROM_SENDER experiment.
 	firstQueued atomic.Int64
@@ -571,7 +573,7 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 	// (connectionMonitor + TCP keepalive handle liveness from here).
 	_ = netConn.SetDeadline(time.Time{})
 
-	if netgEnabled && tlsConfig == nil {
+	if netgEnabled && tlsConfig == nil && c.design != designLegacy {
 		c.loopWG.Add(3) // the network goroutine's registration, connectionMonitor, readLoop
 		if netgRegister(c) {
 			if netgWriter {
@@ -600,11 +602,20 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 		go c.coldControlLoop()
 	}
 	go c.readLoop()
-	if naOn && tlsConfig == nil {
-		c.na = &naWriter{sig: make(chan struct{}, 1)}
+	design := c.design
+	if design == "" {
+		design = envDesign
+	}
+	if design == designD || design == designNG {
+		c.na = &naWriter{sig: make(chan struct{}, 1), delay: design == designD}
 		c.labw = true
 		startLabStats()
 		go c.naLoop()
+	} else if design == designM {
+		c.m = &mWriter{}
+		c.labw = true
+		startLabStats()
+		c.loopWG.Done() // no writer goroutine
 	} else {
 		go c.writeLoop()
 	}

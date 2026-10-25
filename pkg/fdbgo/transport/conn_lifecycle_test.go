@@ -305,7 +305,7 @@ func TestConn_CtxCancelUnblocksStrandedSendFrame(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	// Long monitor cadence so the monitor never pings/interferes.
-	c, err := dialWith(ctx, "sim", s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour))
+	c, err := dialWith(ctx, "sim", s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour), WithLegacyWriter())
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -342,7 +342,7 @@ func TestConn_CtxCancelUnblocksStrandedFlush(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, err := dialWith(ctx, "sim", s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour))
+	c, err := dialWith(ctx, "sim", s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour), WithLegacyWriter())
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}

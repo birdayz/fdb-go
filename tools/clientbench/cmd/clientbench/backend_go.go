@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -25,6 +26,9 @@ type transaction struct {
 func openBackend(cfg bench.Config) (bench.LifecycleDatabase, map[string]any, error) {
 	if err := fdb.APIVersion(730); err != nil {
 		return nil, nil, err
+	}
+	if cfg.CGoClientThreads != 0 || cfg.CGoExternalClient != "" || cfg.Databases != 0 {
+		return nil, nil, errors.New("cgo-client-threads, cgo-external-client and databases apply to the libfdb_c client only")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

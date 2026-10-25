@@ -400,18 +400,18 @@ func TestReadIncarnation_EarlyReplacementTimeoutStopsHeldGRV(t *testing.T) {
 
 	tx.readErrMu.Lock()
 	inc := tx.readLife
-	node, armed := tx.timeoutNode, tx.timeoutArmed
+	pending := tx.timeoutPendingLocked()
 	tx.readErrMu.Unlock()
 	if inc != captured.inc {
 		t.Fatal("held GRV did not use the early-captured replacement")
 	}
-	if node == nil || !armed {
+	if !pending {
 		t.Fatal("replacement GRV is blocked without an armed timeout")
 	}
 	// Expire the actual registered timeout only once the real FDB reply is
 	// held. This removes the scheduling race between GRV dispatch and timeout.
 	tx.readErrMu.Lock()
-	node.queue.schedule(node, node.queue.now()-int64(timeoutSlack))
+	tx.expireTimeoutLocked()
 	tx.readErrMu.Unlock()
 	select {
 	case err := <-done:
@@ -1130,7 +1130,7 @@ func testReadCancellationObservation(t *testing.T, watch bool, cleanObservations
 				case "timeout":
 					tx.readErrMu.Lock()
 					arm := tx.timeoutArm
-					tx.timeoutNode.queue.remove(tx.timeoutNode)
+					tx.withdrawTimeoutLocked()
 					tx.readErrMu.Unlock()
 					tx.fireTimeout(arm)
 				case "reset":

@@ -43,7 +43,7 @@ func dialWriteCounted(t *testing.T, opts ...DialOption) (*Conn, *coalesceWriteCo
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	dial := func(context.Context, string, string) (net.Conn, error) { return counter, nil }
-	c, err := dialWith(ctx, "sim", dial, nil, append([]DialOption{withMonitorCadence(time.Hour, time.Hour)}, opts...)...)
+	c, err := dialWith(ctx, "sim", dial, nil, append([]DialOption{withMonitorCadence(time.Hour, time.Hour), WithLegacyWriter()}, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}

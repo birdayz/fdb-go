@@ -1,0 +1,30 @@
+{
+ "L": {
+  "binary": "/root/netg/bin/clientbench-cgo4",
+  "env": []
+ },
+ "L4": {
+  "binary": "/root/netg/bin/clientbench-cgo4",
+  "env": [],
+  "args": [
+   "-cgo-client-threads=4",
+   "-cgo-external-client=/usr/lib/libfdb_c.so",
+   "-databases=4"
+  ]
+ },
+ "A": {
+  "env": []
+ },
+ "D": {
+  "env": [
+   "FDBGO_NET_DESIGN=1",
+   "FDBGO_NETG_STATS=1"
+  ]
+ },
+ "M": {
+  "env": [
+   "FDBGO_NET_DESIGN=m",
+   "FDBGO_NETG_STATS=1"
+  ]
+ }
+}

@@ -1,0 +1,4 @@
+{
+  "L": {"binary": "/root/netg/bin/clientbench-cgo4", "env": []},
+  "A": {"binary": "/root/netg/bin/clientbench-go-m", "env": []}
+}

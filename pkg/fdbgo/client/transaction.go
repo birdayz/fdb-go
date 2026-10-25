@@ -482,8 +482,11 @@ type Transaction struct {
 	timeoutNode  *timeoutNode
 	timeoutArmed bool
 	timeoutArm   uint64
-	readLife     *readIncarnation
-	readErr      error
+	// designTimer/designArm: design D4's one timer per transaction (timeout_design.go).
+	designTimer *time.Timer
+	designArm   uint64
+	readLife    *readIncarnation
+	readErr     error
 	// readGen is the read-tracking incarnation, bumped on every reset. C++
 	// swaps the reading AndFuture on resetRyow (:2715): a read issued under an
 	// old incarnation that fails AFTER a reset must not poison the new one.

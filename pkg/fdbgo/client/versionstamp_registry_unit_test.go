@@ -208,7 +208,7 @@ func TestVersionstampRegistryRetirement(t *testing.T) {
 				requireRegistry(t, tx, inc, latest.completion, 2, older.completion)
 				tx.readErrMu.Lock()
 				arm := tx.timeoutArm
-				tx.timeoutNode.queue.remove(tx.timeoutNode)
+				tx.withdrawTimeoutLocked()
 				tx.readErrMu.Unlock()
 				want := 1025
 				if timeoutFirst {

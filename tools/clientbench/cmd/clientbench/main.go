@@ -46,6 +46,9 @@ func run() error {
 	flag.Int64Var(&cfg.RetryLimit, "retry-limit", 10, "database transaction retry limit")
 	flag.StringVar(&cfg.Profile, "profile", "none", "none|cpu|heap|mutex|block|trace; profiling runs are separate")
 	flag.StringVar(&cfg.CoalesceDelay, "coalesce-delay", "", "Go client connection write delay \"min,max\" (e.g. 0,0 or 10us,20us); empty keeps the default")
+	flag.IntVar(&cfg.CGoClientThreads, "cgo-client-threads", 0, "libfdb_c client_threads_per_version; >1 needs -cgo-external-client")
+	flag.StringVar(&cfg.CGoExternalClient, "cgo-external-client", "", "libfdb_c external_client_library path (e.g. /usr/lib/libfdb_c.so)")
+	flag.IntVar(&cfg.Databases, "databases", 0, "libfdb_c only: open N databases and start transactions on them round-robin")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		return fmt.Errorf("unexpected positional arguments: %v", flag.Args())

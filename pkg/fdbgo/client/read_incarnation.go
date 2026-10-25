@@ -212,7 +212,7 @@ func (tx *Transaction) armTimeoutLocked() {
 	}
 	tx.timeoutArm++
 	tx.timeoutArmed = true
-	if tx.lazyArmLocked(deadline, delay) {
+	if tx.lazyArmLocked(deadline, delay) || tx.designArmLocked(q, delay) {
 		return
 	}
 	n := tx.timeoutNode
@@ -234,6 +234,7 @@ func (tx *Transaction) armTimeoutLocked() {
 // by the new arm's number once something re-arms.
 func (tx *Transaction) disarmTimeoutLocked() {
 	tx.timeoutArmed = false
+	tx.stopDesignTimerLocked()
 }
 
 func (tx *Transaction) timeoutQueue() *timeoutQueue {

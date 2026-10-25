@@ -38,6 +38,13 @@ type Config struct {
 	// CoalesceDelay is the Go client's connection write delay, "min,max" as Go
 	// durations; empty keeps the client default.
 	CoalesceDelay string `json:"coalesce_delay,omitempty"`
+	// The libfdb_c client only: CGoClientThreads > 1 sets client_threads_per_version,
+	// which also needs CGoExternalClient (a libfdb_c path) and disables the local
+	// client; Databases > 1 opens that many databases, which libfdb_c assigns to its
+	// network threads round-robin, and starts each transaction on the next one.
+	CGoClientThreads  int    `json:"cgo_client_threads,omitempty"`
+	CGoExternalClient string `json:"cgo_external_client,omitempty"`
+	Databases         int    `json:"databases,omitempty"`
 	// Rate > 0 paces the run: operations start at Poisson arrival times averaging
 	// Rate per second, drawn from Seed, so every run with the same seed starts the
 	// same operations at the same offsets. Rate 0 is a closed loop.
@@ -76,6 +83,12 @@ func (c Config) Validate() error {
 	// A zero timeout (none) is allowed only as a measurement bound for the cost of arming one.
 	if c.TimeoutMS < 0 || (c.TimeoutMS == 0 && os.Getenv("CLIENTBENCH_ALLOW_NO_TIMEOUT") != "1") || c.RetryLimit < 0 {
 		return errors.New("positive transaction timeout (0 needs CLIENTBENCH_ALLOW_NO_TIMEOUT=1) and nonnegative retry limit required")
+	}
+	if c.CGoClientThreads < 0 || c.CGoClientThreads > 64 || c.Databases < 0 || c.Databases > 64 {
+		return errors.New("cgo-client-threads and databases must be 0..64")
+	}
+	if c.CGoClientThreads > 1 && c.CGoExternalClient == "" {
+		return errors.New("cgo-client-threads > 1 needs cgo-external-client")
 	}
 	switch c.Workload {
 	case "get100", "get1000", "get10000", "read1000", "grv", "set100", "range10", "range100", "ryw", "batchset50", "batchset50x1000", "getset100":

@@ -59,6 +59,12 @@ the benchmark that decides. Citations are to FoundationDB 7.3.77.
 
   A coalescing policy that differs from C2 is allowed only if it meets this bar
   and the deviation is documented.
+
+  Judge T4 at **equal throughput**, where possible, not at equal workers. In a
+  closed loop, a client that completes more operations per second puts more
+  load on the servers. Load changes batching and per-transaction server cost on
+  its own (round 2, `set100`). So compare arms rate-capped to the same ops/s
+  (clientbench `-rate`), and use equal-worker cells as the closed-loop view.
 - **T5. Wire bytes are identical.** Only packet boundaries and timing may differ.
 - **T6. The hot path is optimized for a goroutine per operation.** With an
   idiomatic API, each operation is one goroutine blocked on its reply. The cost
@@ -126,3 +132,143 @@ Tests: the full client and transport suites pass under `-race`. Tests that
 assert today's write acknowledgment are replaced with tests for T1 and T2: a
 frame is queued exactly once, cancelling never un-queues it, and a write error
 fails every pending reply.
+
+## Corrections against 7.3.77
+
+Checked against `/tmp/fdbsrc` at tag 7.3.77.
+
+- **C1, reads.** Client reads do not use `getReply`. `loadBalance` sends with
+  `tryGetReply` (`fdbrpc/include/fdbrpc/LoadBalance.actor.h:305,312,812`). That
+  is `sendUnreliable` plus `waitValueOrSignal` on the reply or the endpoint's
+  disconnect (`fdbrpc/include/fdbrpc/fdbrpc.h:797-815`). A disconnect delivers
+  `request_maybe_delivered`, and there is no resend.
+  `getReply` (`fdbrpc.h:742`) is the reliable variant: it uses `sendReliable`
+  and is resent after a reconnect. C1's conclusion stands either way: the
+  caller learns about the reply or the failure, never about the write.
+- **C2, the delay.** The delay is jittered: `delayJittered`
+  (`FlowTransport.actor.cpp:708-710`, `flow/include/flow/flow.h:1481`) waits a
+  uniform 0.9–1.1× the computed time (`flow/Knobs.cpp:54-55`). The writer is
+  triggered only by the first unsent packet
+  (`Peer::send(..., firstUnsent)`, `FlowTransport.actor.cpp:1038-1043`), which
+  is what D1 implements.
+- **C4, per-request timers.** "Reads have no per-request reply timeout" holds.
+  But `loadBalance` does arm per-request timers:
+  - a second-request (hedge) delay when a second alternative exists:
+    `secondDelay = delay(secondMultiplier × nextTime + BASE_SECOND_REQUEST_TIME)`
+    (`LoadBalance.actor.h:553-563`), otherwise `Never()`;
+  - a TSS comparison timeout (`:90`).
+
+  The timebomb is `ReadYourWrites.actor.cpp:1567-1574`, and `resetTimeout`, which
+  arms nothing for timeout 0, is `:1576-1579`.
+- **C3.** The batch-size check is `NativeAPI.actor.cpp:7351` and the latency
+  EWMA is `:7364-7365`. Both are as stated.
+
+## Timer audit: what the Go client arms today
+
+Population: every timer, `context.WithTimeout`, `hrtimer` and `AfterFunc` in
+non-test `pkg/fdbgo/client` and `pkg/fdbgo/transport` code on the request,
+transaction and connection paths. Retry backoffs (C++ `delay(backoff)`) and
+background loops (topology, coordinator polling) are left out.
+
+| Scope | Go | C++ counterpart |
+|---|---|---|
+| Per read (`GetPipelined`) | pooled `time.Timer`, `DefaultRPCTimeout` = 5 s (`transaction.go:940`) | **none**: `tryGetReply` waits for the reply or a disconnect |
+| Per read through `sendFrameWithHedge` (`readpath.go:329,577,1093`) | hedge timer `queueModel.secondDelay` (`hedge.go:84`) | `secondDelay` (`LoadBalance.actor.h:560`), only with a second alternative |
+| Same | reply timer, 5 s (`hedge.go:166,193`) | **none** |
+| Per read (`readpath.go:633` `waitReply`) | reply timer, 5 s | **none** |
+| Per location query (`locality.go:572`) | `context.WithTimeout(DefaultRPCTimeout)` | **none**: `getKeyLocation` `loadBalance` to the proxies |
+| Per GRV batch | batch window, `hrtimer` (`grv_window.go:29`) | `delay(batchTime)` (`NativeAPI.actor.cpp:7354-7355`) |
+| Per commit | none (`rpc.go` `waitReplyOrProxiesChanged`) | none (`tryCommit`) |
+| Per transaction, TIMEOUT unset | nothing armed (`armTimeoutLocked` returns at `timeoutNs <= 0`) | nothing (`resetTimeout`) |
+| Per transaction, TIMEOUT set | shared `timeoutQueue` node: `weak.Make` + `runtime.AddCleanup` + heap push per arm (`timeout_queue.go:106-140`), one or two arms per transaction (`configureReadTimeout`, `turnoverToken.finish`); plus a `readIncarnation` cancel context | one `timebomb` actor (`ReadYourWrites.actor.cpp:1567`) |
+| Per connection | coalescing `hrtimer` (`conn.go`), connection monitor | `delayJittered` in `connectionWriter`, `connectionMonitor` |
+| Per dial | `context.WithTimeout(DefaultRPCTimeout)` (`database.go:592`) | connection timeout in `connectionKeeper` |
+
+**Without a C++ counterpart:** the 5 s per-request reply timeouts on reads and
+location queries (the five "none" rows). They are documented here only; D4
+leaves them unchanged. Each GET therefore still arms one pooled 5 s timer, and
+T3's "hot path arms no timer" is met only for TIMEOUT itself.
+
+**D3, reader.** Today's `readLoop` already meets D3:
+- each request's reply handle and its size-1 channel come from pools
+  (`replyHandlePool`, `replyChanPool`);
+- `readLoop` publishes and deletes the token under `pendingMu`;
+- the only allocation per reply is the payload.
+
+D3 therefore keeps `readLoop`. The prototype changes D1 and D4 only.
+
+## Prototype of D
+
+`FDBGO_NET_DESIGN=1` selects D (C2 delay); `=ng` selects D-NG (flush when the
+queue is non-empty). Both are off by default.
+
+- **D1** (`pkg/fdbgo/transport/na_writer.go`): per-connection writer.
+  - Callers append the encoded frame to a mutex-guarded byte buffer. They signal
+    a one-slot channel only when the buffer goes from empty to non-empty
+    (`dataToSend`).
+  - The writer waits the jittered C2 delay (D only), swaps the buffer and makes
+    one `Write`.
+  - Send paths, flushes and pings never wait for a write. A write error fails
+    the connection.
+  - Cold-dial permit order is kept.
+  - TLS connections use the same writer.
+  - `transport.WithLegacyWriter()` pins today's writer for tests of its mechanics.
+- **D4** (`pkg/fdbgo/client/timeout_design.go`): with TIMEOUT set, the
+  transaction holds one `time.AfterFunc`, reset on re-arm and stopped on disarm.
+  - `Transact` and `ReadTransact` disarm on return.
+  - The timer's callback holds the transaction through one `weak.Pointer`,
+    made on the first arm. A dropped armed transaction is therefore
+    collectable, as C++'s timebomb holds only the reset promise.
+  - There is no `runtime.AddCleanup` and no shared heap per arm.
+  - A successful `Commit` leaves the timeout armed: the committed transaction
+    publishes an armed successor (`TestTimeoutSuccessor*`, the C++ timebomb
+    keeps running).
+  - An earlier variant disarmed on commit and held the transaction strongly.
+    `TestTimeoutSuccessor*` caught the semantic change, and the variant was
+    dropped.
+  - Tests that drive a manual timeout queue (custom clock, timer or hooks) keep
+    the queue path.
+
+## D-M: sender writes, no writer goroutine
+
+`FDBGO_NET_DESIGN=m` selects D-M: D3 and D4 as in D, with D1 replaced by a
+writer lock instead of a writer goroutine (`mSend`, `mDrainAndUnlock` in
+`na_writer.go`).
+
+- A sender appends its frame to the connection buffer, then `TryLock`s the
+  writer lock.
+  - If it gets the lock, it swaps the buffer out and writes it, which includes
+    its own frame and every frame appended since. It repeats until the buffer
+    is empty, unlocks, and checks the buffer once more.
+  - If it does not get the lock, it returns: the holder writes its frame.
+- There is no C2 delay. A delay would put the sender to sleep or need a timer
+  goroutine, which is D again. Batching comes only from frames appended while a
+  write is in progress, as in D-NG.
+
+Conditions D-M must meet, and whether the prototype meets them:
+
+| Condition | Met | How |
+|---|---|---|
+| No stranded frame: an appended frame is written without a further send | yes | the holder drains until empty, then rechecks after unlocking; an appender that loses `TryLock` after the holder's last check retries it |
+| Order: frames go out in append order | yes | one buffer, swapped and written under the lock |
+| Write error fails the connection and every pending reply (T1) | yes | the holder calls `failConnection`; `design_writer_test.go` covers this for `m` |
+| `ctx` ends the caller's wait (T2) | **no** | the holder is inside `write(2)`. On a full socket it blocks there, writing other callers' frames, and its `ctx` cannot interrupt the syscall |
+| No write acknowledgment (T1) | **no**, under backpressure | the sender that wins the lock returns only when the socket has taken every queued frame: that is a write acknowledgment for the whole queue |
+
+The two failures are not test artifacts. Under `-race`, every other
+transport and client target passes with `m`; these fail (`race6-m-*`):
+
+- `TestNativeCommit_ReplyBeforeWriteAcknowledgment` (4 subtests): "socket
+  write returned before the real reply completed the native actor". The commit
+  reply arrives while the committing sender is still blocked in its write.
+- `TestNativeCommit_WriteBackpressureOwnerRetirement` (4 subtests): the native
+  actor cannot exit before the gated socket writer is released.
+- `TestFallbackStartsEndAtTransportSuspension/flush` and
+  `TestFallbackReadyBeginStartsEndBeforeConsumingError`: a warm `end` request
+  is serialized behind `begin`'s blocked flush.
+
+The cure is a non-blocking write: on `EAGAIN`, hand the unwritten tail to a
+goroutine that waits for the socket to drain. That is today's A: the sender's
+direct write plus a handoff to the writer. D-M is therefore A without the
+handoff, and it is correct only while sockets never fill. It is measured to
+show what the writer goroutine costs, not as a candidate.

@@ -48,6 +48,7 @@ go_test(
         "conn_unit_test.go",
         "conn_writer_turn_linux_test.go",
         "connclosed_error_test.go",
+        "design_writer_test.go",
         "endpoint_not_found_test.go",
         "held_outbox_test.go",
         "ping_integration_test.go",

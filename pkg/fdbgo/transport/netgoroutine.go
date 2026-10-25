@@ -25,6 +25,11 @@ func (c *Conn) ngWrite(ctx context.Context, token UID, body []byte, flush bool, 
 		if order := c.peerSendOrder.Load(); order != nil {
 			select {
 			case <-order.Drained():
+			default:
+				NotifySuspend(ctx) // waits behind the cold cohort, as enqueueHeld does
+			}
+			select {
+			case <-order.Drained():
 			case <-ctx.Done():
 				return false, ctx.Err()
 			case <-c.ctx.Done():
@@ -39,7 +44,9 @@ func (c *Conn) ngWrite(ctx context.Context, token UID, body []byte, flush bool, 
 		return true, nil
 	}
 	if err := c.labSend(token, body); err != nil {
-		return false, err
+		// D-M writes on this goroutine: a failed write may have reached the peer.
+		// Not sending at all reports errConnClosed itself; anything else is a write failure.
+		return c.m != nil && err != errConnClosed, err
 	}
 	return true, nil
 }

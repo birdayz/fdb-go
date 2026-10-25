@@ -101,7 +101,7 @@ def run(args, arm, iterations, outdir, perf_target):
     env = ["PATH=/usr/bin:/bin", f"HOME={os.environ.get('HOME', '/')}",
            f"GOMAXPROCS={spec.get('gomaxprocs', args.gomaxprocs)}",
            "GOGC=100", "GOMEMLIMIT=off", *spec.get("env", [])]
-    client = ["env", "-i", *env, "taskset", "-c", spec.get("cpus", args.client_cpus), args.binary,
+    client = ["env", "-i", *env, "taskset", "-c", spec.get("cpus", args.client_cpus), spec.get("binary", args.binary),
               "-cluster-file", args.cluster_file, "-workload", args.workload, "-workers", str(args.workers),
               "-iterations", str(iterations), "-warmup", str(iterations // 20), "-allow-writes", "-output", outdir,
               *spec.get("args", [])]

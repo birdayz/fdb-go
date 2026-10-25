@@ -191,10 +191,13 @@ func TestLazySuccessorPublication(t *testing.T) {
 						t.Fatal("finish dropped a captured or timed replacement")
 					}
 					if timeout == "future" {
-						if !tx.timeoutArmed || tx.timeoutNode == nil || tx.timeoutArm != 1 {
+						// The arm is a queue node, or design D4's one timer per transaction.
+						if !tx.timeoutArmed || (tx.timeoutNode == nil && tx.designTimer == nil) || tx.timeoutArm != 1 {
 							t.Fatalf("replacement timeout: armed=%v, arm=%d", tx.timeoutArmed, tx.timeoutArm)
 						}
-						tx.timeoutNode.queue.remove(tx.timeoutNode)
+						tx.readErrMu.Lock()
+						tx.withdrawTimeoutLocked()
+						tx.readErrMu.Unlock()
 						tx.fireTimeout(tx.timeoutArm)
 					}
 					if timeout != "zero" {

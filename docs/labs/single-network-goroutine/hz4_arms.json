@@ -1,0 +1,7 @@
+{
+  "L":   {"binary": "/root/netg/bin/clientbench-cgo", "env": []},
+  "A":   {"env": []},
+  "D":   {"env": ["FDBGO_NET_DESIGN=1", "FDBGO_NETG_STATS=1"]},
+  "DNG": {"env": ["FDBGO_NET_DESIGN=ng", "FDBGO_NETG_STATS=1"]},
+  "D4P": {"env": ["FDBGO_NET_DESIGN=1", "FDBGO_NETG_STATS=1"], "gomaxprocs": 4, "cpus": "8-11"}
+}
