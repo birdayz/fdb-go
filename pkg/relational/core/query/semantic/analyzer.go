@@ -17,9 +17,8 @@ import (
 // `SemanticAnalyzer` (the static methods on that class — case
 // folding etc. — live as free functions in this package).
 //
-// Seed scope: resolve table references, resolve bare/qualified
-// column references. Star expansion, nested-field lookup,
-// correlated-identifier resolution all land in follow-up shifts.
+// It resolves table references, bare/qualified column references and
+// single-table star expansion (ExpandStar).
 //
 // Not safe for concurrent mutation of the underlying Catalog; the
 // Analyzer itself is stateless once constructed.

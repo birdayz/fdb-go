@@ -414,9 +414,8 @@ func parseGetKeyReply(data []byte) (key []byte, orEqual bool, offset int32, pena
 // Returns the value (nil if key not found), or an error.
 // wrong_shard_server is retried locally with cache invalidation.
 // A reply timeout (errReplyTimeout — a slow-but-alive storage server) is
-// re-sent without invalidating the location, matching libfdb_c's loadBalance
-// (no per-read client timeout; re-send until the server replies or the read
-// version ages to transaction_too_old). Other FDB errors (transaction_too_old,
+// re-sent without invalidating the location (libfdb_c has no per-read client
+// timeout and waits for the reply; see maxReadTimeoutRetries). Other FDB errors (transaction_too_old,
 // etc.) are returned to the caller for handling by the Transact retry loop.
 func (tx *Transaction) getValue(parentCtx context.Context, key []byte) ([]byte, error) {
 	return tx.getValueSampled(parentCtx, key, nil)

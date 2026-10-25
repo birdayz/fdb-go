@@ -15,7 +15,7 @@ import (
 
 // InMemoryStoreCatalog keeps the entire catalog (databases + schemas)
 // in a mutex-protected map. Intended for unit tests and development;
-// the FDB-backed implementation lives in a separate type (later shift).
+// the FDB-backed implementation is RecordLayerStoreCatalog.
 //
 // A single InMemoryStoreCatalog instance is safe for concurrent use
 // across transactions — the mutex serialises the full state — but

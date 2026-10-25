@@ -126,7 +126,7 @@ locals {
     just_sha256  = "9293e553ce401d1b524bf4e104918f72f268e3f9c6827e0055fe98d84a1b2522"
     # FoundationDB clients .deb — host libfdb_c for the cgo differential harness. The
     # version lives HERE (not a tofu variable) so it is LOCKED to its checksum: overriding
-    # the version without updating the SHA would make fetch-verified.sh abort (codex). MUST
+    # the version without updating the SHA would make fetch-verified.sh abort. MUST
     # match MODULE.bazel + the testcontainers default (RFC-108 §2) — a bump is one reviewed
     # edit of both fields.
     fdb_version        = "7.3.77"
