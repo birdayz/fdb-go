@@ -224,7 +224,7 @@ func (c *ImplementationRuleCall) MemoizeFinalExpression(
 
 // MemoizeUnknownExpression shares the logical/physical dispatch used by data access.
 func (c *ImplementationRuleCall) MemoizeUnknownExpression(expr expressions.RelationalExpression) *expressions.Reference {
-	return (&ExpressionRuleCall{Reference: c.Reference, memo: c.memo}).MemoizeUnknownExpression(expr)
+	return (&ExpressionRuleCall{Reference: c.Reference, RunContext: c.RunContext, memo: c.memo}).MemoizeUnknownExpression(expr)
 }
 
 // FireImplementationRule runs an ImplementationRule against a Reference,

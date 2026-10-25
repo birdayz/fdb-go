@@ -3,7 +3,7 @@ package embedded
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/executor"
+	"fdb.dev/pkg/relational/core/resultset"
 )
 
 // UPDATE/INSERT/DELETE expose only RowsAffected. Their physical rows are
@@ -14,7 +14,7 @@ import (
 func TestMaterializePageRowDMLCountsWithoutReadingThePrivateEcho(t *testing.T) {
 	t.Parallel()
 
-	row, err := materializePageRow(nil, []executor.ColumnDef{{Name: "ID"}}, true)
+	row, err := materializePageRow(nil, []resultset.ColumnDef{{Name: "ID"}}, true)
 	if err != nil {
 		t.Fatalf("materialize DML echo: %v", err)
 	}

@@ -63,7 +63,11 @@ Each is described in full under Compatibility or Changed below.
   to `fdb.dev/gen/demopb` (#842), and index-predicate normalization, the plan walkers and the
   R-tree to `pkg/recordlayer/indexpredicate`, `pkg/recordlayer/query/plan/plans` and
   `pkg/async/rtree`. The planner census left the public `values`, `cascades`, `executor` and
-  `core/query` packages (#836). `keyspace.FDBResolver` is removed.
+  `core/query` packages (#836). `keyspace.FDBResolver` is removed. The executor's
+  `api.ResultSet` adapter (`RecordLayerResultSet`, `ColumnDef`, `NewResultSetMetaData`) moved
+  to `pkg/relational/core/resultset`, and the executor returns `executor.ExecutionError` kinds
+  (or `values` errors) where it returned SQLSTATE `api.Error`s; SQL sees the same SQLSTATE and `api.Error` message,
+  without the executor's wrapping context in the error string (RFC-274).
 - **frl:** `frl` is a package of the root module; retiring the nested module requires
   the post-publication retraction procedure in `RELEASE.md`.
 
@@ -161,6 +165,10 @@ Each is described in full under Compatibility or Changed below.
 - SQL planning has no task budget by default, as in Java (was 150,000 tasks, 250,000 right-deep); the
   caller's context bounds it, and `MAX_TOTAL_TASK_COUNT`, `MAX_TASK_QUEUE_SIZE` and
   `MAX_NUM_MATCHES_PER_RULE_CALL` opt into Java's caps (54F02 when exhausted).
+- `MAX_NUM_MATCHES_PER_RULE_CALL` counts the bindings Java's matcher makes per rule call (per plan
+  partition, quantifier, combination or permutation) where it counted Go's root bindings, the
+  planner's swapped-quantifier firing included. A bound can now trip where it planned, or plan
+  where the swapped firing tripped it; a trip reports the bound+1 Java reports (RFC-274).
 - `OnlineIndexer.MergeIndexes` holds no session, as Java's `mergeIndex`: it writes no heartbeat (which blocked Java's exclusive builders), checks no index state, and proceeds under a live peer and over a DISABLED target.
 - `plandiff.SeedCorpus`, `SeedRunCorpus`, `ApplyRFC082Divergences` and `IsKnownRed` moved to the
   testonly package `plandiff/seedcorpus`; `plandiff` keeps the `Query` and `RunQuery` types.

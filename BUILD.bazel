@@ -98,6 +98,7 @@ nogo(
         "//pkg/linters/gofumpt",
         "//pkg/linters/noemptyiface",
         "//pkg/linters/norecover",
+        "//pkg/linters/recordlayerdeps",
         "//pkg/linters/typeimmutable",
         "//pkg/linters/unicodepin",
         # staticcheck SA analyzers

@@ -4329,9 +4329,9 @@ func (e *ArithmeticOverflowError) Error() string {
 	return "integer overflow"
 }
 
-// ScalarTypeMismatchError is returned by scalar functions (GREATEST,
-// LEAST) when arguments have incompatible types. The executor
-// converts this to SQLSTATE 22000 DATA_EXCEPTION.
+// ScalarTypeMismatchError is a value whose type does not fit where it is used:
+// GREATEST/LEAST arguments, or an executor assignment to a field (Java's
+// SemanticException INCOMPATIBLE_TYPE). SQL reports it as 22000.
 type ScalarTypeMismatchError struct {
 	Message string
 }
