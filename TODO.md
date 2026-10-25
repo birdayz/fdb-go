@@ -2386,10 +2386,12 @@ multi-page auto-commit SELECT, which stays tracked only.
   every "codex" tag and the listed round notes. Kept: about 30 test files and functions named
   for "RFC-141 R4 round-N" and similar review rounds (`git grep -n -E 'round-[0-9]+' --
   '*_test.go'`); renaming them is churn with no behavior change.
-- [ ] **Owner decision:** the public API surface (about 16K exported declarations outside
-  `internal/`, including test hooks such as `values.SetCensusHooks`); test and tool
-  dependencies in the library `go.mod` (docker, testcontainers, ginkgo, staticcheck,
-  cobra); nogo without `unused`; nine reused RFC numbers and no RFC index.
+- [ ] **Deferred:** the public API surface: about 16K exported declarations outside
+  `internal/`, including test hooks such as `values.SetCensusHooks`. Deferred by the owner on
+  2026-10-25: another session's client optimizations may change the surface; do not start it.
+- [ ] **Owner decision:** test and tool dependencies in the library `go.mod` (docker,
+  testcontainers, ginkgo, staticcheck, cobra); nogo without `unused`; nine reused RFC numbers
+  and no RFC index.
 
 ### Follow-ups from the fix PRs' reviews
 

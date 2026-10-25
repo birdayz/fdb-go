@@ -90,7 +90,7 @@ difference is in DIVERGENCES.md. The run of Java's own yamsql corpus against Go 
 |---|:---:|:---:|:---:|---|
 | Scalar subquery | N | Ext | Y | Java: 42601, the grammar has no `subqueryExpressionAtom` (`scalar_subquery`) |
 | EXISTS / NOT EXISTS | Y | Y | Y | `exists`, `not_exists`, and in the projection list (`exists_projection`) |
-| Correlated subquery | P | P | Y | Correlated EXISTS works in both. A correlated scalar subquery is 42601 in Java (`correlated_scalar_subquery`) and answered by Go; the shapes Go refuses are under DIVERGENCES.md "Optimization-Quality Gaps" |
+| Correlated subquery | P | P | Y | Correlated EXISTS works in both (`exists`, `not_exists`). A correlated scalar subquery is 42601 in Java (`correlated_scalar_subquery`) and answered by Go; the shapes Go refuses are under DIVERGENCES.md "Optimization-Quality Gaps" |
 | Derived table (FROM subquery) | Y | Y | Y | `derived_table` |
 | Correlated array UNNEST in FROM (+ ordinal) | Y | Y | Y | `FROM t, t.arr AS e [AT ordinal]` (`unnest`, `unnest_ordinality`); Go ports the lateral array unnest + ordinality index (RFC-142) |
 

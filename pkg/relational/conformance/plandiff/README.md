@@ -142,6 +142,5 @@ If you need a new shape that runSql/runWithSetup don't cover:
 ## See also
 
 - `rfcs/026-fdb-grpc-trajectory.md` — why we don't worry about gRPC.
-- `CLAUDE.md` "Java↔Go conformance gotchas (fdb-relational)" — fdb-
-  relational integration quirks.
+- `SQL_CONFORMANCE.md` and `DIVERGENCES.md` — measured SQL support and compatibility boundaries.
 - `TODO.md` Track A1 — context on what this harness is for.

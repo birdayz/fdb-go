@@ -434,21 +434,8 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		// cannot be made stateless. The NULL-safe DML semantics are covered
 		// Go-only via the dml_with_null_safe yamsql corpus (which runs statefully).
 		insertSelectScenario(),
-		// recursiveCteBaseScenario is NOT cross-engine: it is a showcase of
-		// Go-only recursive-CTE EXTENSIONS that fdb-relational 4.12.11.0 cannot
-		// plan, so there is no cross-engine equivalence to assert (these are
-		// welcome Go-beyond-Java read-side capabilities, not divergences):
-		//   - the `TRAVERSAL ORDER pre_order|post_order|level_order` clause —
-		//     Java's grammar has no such production at all;
-		//   - an outer `ORDER BY` over a recursive CTE (`… SELECT id FROM
-		//     ancestors ORDER BY id DESC`) — Java deterministically rejects with
-		//     "order by is not supported in subquery" (the WITH body is treated
-		//     as a subquery), the same limitation noted on
-		//     recursiveCteAdvancedScenario;
-		// The cross-engine-valid recursive-CTE basics (anchor + recursive UNION,
-		// COUNT, empty seed) are asserted by recursiveCteCountScenario. The full
-		// Go-only surface is covered by the recursive_cte yamsql corpus. (Builder
-		// kept for that Go-only coverage.)
+		// recursiveCteBaseScenario includes outer ORDER BY forms Java cannot plan;
+		// traversal order itself is shared and pinned by DocClaimsJavaProbe.
 		//
 		// dmlSubqueryScenario is NOT cross-engine: it is STATEFUL in the same way
 		// as dmlWithNullSafeScenario. Its Setup runs a full MUTATING DML chain
@@ -552,11 +539,8 @@ func unionStarScenario() *yamsql.Scenario {
 	}
 }
 
-// caseInsensitiveKeywordsScenario mirrors testdata/case_insensitive_keywords.yaml.
-// SQL standard: keywords are case-insensitive. Drops NOT NULL on PK.
-// Skips tests using LIMIT (unsupported), GROUP BY (unsupported), DESC
-// in ORDER BY (uncertain natural-order continuation), explicit INNER
-// JOIN (broken). Lifts the safe SELECT/WHERE/AND/OR/IS NOT NULL forms.
+// caseInsensitiveKeywordsScenario keeps the simple SELECT forms; omitted groupings
+// lack an ordering index. DocClaimsJavaProbe covers ordered grouping and joins.
 func caseInsensitiveKeywordsScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "case_insensitive_keywords",
@@ -895,17 +879,8 @@ func orderByEliminationScenario() *yamsql.Scenario {
 	}
 }
 
-// aggregateExpressionSelectScenario mirrors testdata/
-// aggregate_expression_select.yaml — SELECT-list expressions wrapping
-// aggregate function calls (post-aggregation evaluation). Drops NOT NULL
-// on PK. Skips GROUP BY tests (planner unsupported per CLAUDE.md
-// gotcha) and the COALESCE-wrapping-aggregate / CASE-wrapping-aggregate
-// forms — fdb-relational 4.12.11.0's planner raises
-// `IllegalStateException: unable to eval an aggregation function with
-// eval()` because the post-aggregation rewrite for scalar-function-of-
-// aggregate isn't implemented. Aggregate-of-expression
-// (`SUM(CASE WHEN ...)` covered by aggregate_expr) works; the inverse
-// direction does not. New CLAUDE.md gotcha.
+// aggregateExpressionSelectScenario omits grouping over unordered input and
+// scalar-function-of-aggregate forms; ordered grouping is shared (DocClaimsJavaProbe).
 func aggregateExpressionSelectScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "aggregate_expression_select",
@@ -952,17 +927,8 @@ func derivedTableRenamedScenario() *yamsql.Scenario {
 	}
 }
 
-// aggregateExprScenario mirrors testdata/aggregate_expr.yaml — the no-
-// GROUP-BY no-DISTINCT subset. Drops NOT NULL on PK. Drops the GROUP BY,
-// SUM(DISTINCT), error_code, and aggregate-of-aggregate-with-ORDER-BY
-// tests (planner gotchas: GROUP BY unsupported, DISTINCT unsupported,
-// ORDER BY <aggregate> requires the natural-order continuation).
-//
-// `SUM(BIGINT) / COUNT(*)` integer-division parity: Go's SUM now
-// preserves int64 when every observed
-// value is integral (see `pkg/relational/core/embedded/aggregate.go`
-// `sumIntOnly`), so `SUM(qty) / COUNT(*)` integer-divides Java-style
-// rather than float-dividing.
+// aggregateExprScenario omits unordered grouping, DISTINCT aggregates and
+// aggregate ordering without a supporting index (DocClaimsJavaProbe).
 func aggregateExprScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "aggregate_expr",

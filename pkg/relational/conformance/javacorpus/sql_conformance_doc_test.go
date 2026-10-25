@@ -1,13 +1,16 @@
 package javacorpus_test
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"fdb.dev/pkg/relational/conformance/javacorpus"
 	"fdb.dev/pkg/relational/conformance/javayamsql"
@@ -18,13 +21,12 @@ const (
 	ledgerDocEnd   = "<!-- END javacorpus ledger -->"
 )
 
-// TestSQLConformanceStatesTheLedger keeps SQL_CONFORMANCE.md's account of the
-// Java corpus run equal to pinnedLedger, the vendored VERSION and the corpus's
-// plan assertions; on drift it prints the block to paste.
+// TestSQLConformanceStatesTheLedger prevents drift between the documented ledger,
+// pinned results, vendored version and corpus plan assertions.
 func TestSQLConformanceStatesTheLedger(t *testing.T) {
 	t.Parallel()
 	version := strings.TrimSpace(readAbove(t, "third_party/apple/fdb-record-layer/VERSION"))
-	plans, err := countPlanAssertions()
+	plans, err := countPlanAssertions(javayamsql.OpenCorpus)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,8 +77,8 @@ type planAssertions struct {
 	byKind                      map[javayamsql.ConfigKind]int
 }
 
-func countPlanAssertions() (planAssertions, error) {
-	corpus, err := javayamsql.OpenCorpus()
+func countPlanAssertions(open func() (*javayamsql.Corpus, error)) (planAssertions, error) {
+	corpus, err := open()
 	if err != nil {
 		return planAssertions{}, err
 	}
@@ -106,7 +108,134 @@ func countPlanAssertions() (planAssertions, error) {
 			out.filesWithPlans++
 		}
 	}
+	if out.parsedFiles == 0 {
+		return planAssertions{}, fmt.Errorf("plan-assertion census has no parsed files")
+	}
 	return out, nil
+}
+
+type planAssertionErrorFS struct {
+	err error
+}
+
+func (f planAssertionErrorFS) Open(string) (fs.File, error) {
+	return nil, f.err
+}
+
+func TestCountPlanAssertions(t *testing.T) {
+	t.Parallel()
+	plain := &fstest.MapFile{Data: []byte("test_block:\n  tests:\n    -\n      - query: select 1\n")}
+	invalid := &fstest.MapFile{Data: []byte("test_block: [")}
+	const negative = "supported-version/illegal-version-at-file.yamsql"
+	openErr := errors.New("fixture open failure")
+	listErr := errors.New("fixture list failure")
+	for _, tc := range []struct {
+		name                   string
+		files                  fs.FS
+		openErr                error
+		wantParsed, wantPlans  int
+		wantExplain            int
+		wantContains, wantHash int
+		wantErr                string
+		wrappedErr             error
+		wantParseErr           bool
+	}{
+		{
+			name: "all directive kinds and negative filtering",
+			files: fstest.MapFS{
+				"explain.yamsql": {Data: []byte(`test_block:
+  tests:
+    -
+      - query: select 1
+      - explain: scan
+      - explainContains: scan
+    -
+      - query: select 2
+      - explain: scan again
+`)},
+				"hash.yamsql": {Data: []byte(`test_block:
+  tests:
+    -
+      - query: select 1
+      - planHash: 10
+    -
+      - query: select 2
+      - planHash: 20
+    -
+      - query: select 3
+      - planHash: 30
+`)},
+				"plain.yamsql": plain,
+				negative:       invalid,
+				"ignored.txt":  invalid,
+			},
+			wantParsed: 3, wantPlans: 2, wantExplain: 2, wantContains: 1, wantHash: 3,
+		},
+		{
+			name:       "parsed file without plan directives",
+			files:      fstest.MapFS{"plain.yamsql": plain},
+			wantParsed: 1,
+		},
+		{
+			name: "empty corpus", files: fstest.MapFS{},
+			wantErr: "no parsed files",
+		},
+		{
+			name: "all negative parse files", files: fstest.MapFS{negative: invalid},
+			wantErr: "no parsed files",
+		},
+		{
+			name: "open error", openErr: openErr,
+			wantErr: openErr.Error(), wrappedErr: openErr,
+		},
+		{
+			name: "list error", files: planAssertionErrorFS{listErr},
+			wantErr: listErr.Error(), wrappedErr: listErr,
+		},
+		{
+			name:    "parse error after a parsed file",
+			files:   fstest.MapFS{"a.yamsql": plain, "bad.yamsql": invalid},
+			wantErr: "bad.yamsql:", wantParseErr: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := countPlanAssertions(func() (*javayamsql.Corpus, error) {
+				return &javayamsql.Corpus{FS: tc.files}, tc.openErr
+			})
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("countPlanAssertions() error = %v, want %q", err, tc.wantErr)
+				}
+				if tc.wrappedErr != nil && !errors.Is(err, tc.wrappedErr) {
+					t.Errorf("countPlanAssertions() error = %v does not preserve %v", err, tc.wrappedErr)
+				}
+			}
+			if tc.wantParseErr {
+				var parseErr *javayamsql.ParseError
+				if !errors.As(err, &parseErr) || parseErr.Path != "bad.yamsql" {
+					t.Errorf("countPlanAssertions() error = %v, want wrapped ParseError for bad.yamsql", err)
+				}
+			}
+			if got.parsedFiles != tc.wantParsed || got.filesWithPlans != tc.wantPlans {
+				t.Errorf("file counts = (%d parsed, %d with plans), want (%d, %d)",
+					got.parsedFiles, got.filesWithPlans, tc.wantParsed, tc.wantPlans)
+			}
+			for kind, want := range map[javayamsql.ConfigKind]int{
+				javayamsql.ConfigExplain:         tc.wantExplain,
+				javayamsql.ConfigExplainContains: tc.wantContains,
+				javayamsql.ConfigPlanHash:        tc.wantHash,
+			} {
+				if got.byKind[kind] != want {
+					t.Errorf("%s count = %d, want %d", kind, got.byKind[kind], want)
+				}
+			}
+		})
+	}
 }
 
 // ledgerCensus is a parsed Census.Line; its class lists are largest first.

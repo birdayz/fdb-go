@@ -21,10 +21,8 @@ var docCitation = regexp.MustCompile("(DSN )?`([a-z][a-z0-9_]*)`")
 // column names rather than as citations.
 var docWords = map[string]bool{"a": true, "and": true, "explain": true, "ln": true, "or": true, "s": true, "v": true}
 
-// TestDocClaimsCited ties SQL_CONFORMANCE.md and DIVERGENCES.md to the
-// DocClaimsJavaProbe cases and pins: every case is cited and pinned, every
-// citation names a case or a cross-engine corpus entry, and each matrix row's
-// Java and Go cells agree with the pins of the cases it cites.
+// TestDocClaimsCited prevents citations, support cells and pins from drifting
+// independently when Java or the feature matrix changes.
 func TestDocClaimsCited(t *testing.T) {
 	t.Parallel()
 	sqlConformance := readRepoFile(t, "SQL_CONFORMANCE.md")
@@ -108,11 +106,8 @@ func pinProblems(cases []string, java, goPins map[string]string) []string {
 	return problems
 }
 
-// matrixCellProblems checks each SQL_CONFORMANCE.md feature and error row that
-// cites a case: a Y needs a cited case the engine answers; an N or P needs one
-// Java refuses or answers differently from Go; an error row's Y needs a cited
-// case that fails with its SQLSTATE, a P one that fails with another. It
-// returns the problems and the number of rows checked.
+// matrixCellProblems distinguishes correct answers from pinned wrong results,
+// so merely accepting SQL cannot justify a feature's Y classification.
 func matrixCellProblems(doc string, java, goPins map[string]string) ([]string, int) {
 	isErr := func(answer string) bool { return strings.HasPrefix(answer, "ERROR ") }
 	goOf := func(name string) string {
@@ -170,11 +165,39 @@ func matrixCellProblems(doc string, java, goPins map[string]string) ([]string, i
 		}
 		if mode == "feature" {
 			javaCell, goCell := cells[1], cells[2]
-			if javaCell == "Y" && !some(cited, func(n string) bool { return !isErr(java[n]) }) {
-				bad("Java is Y but Java refuses every cited case %v", cited)
+			correct, wrong, rejected := 0, 0, 0
+			for _, name := range cited {
+				// Overflow/unsupported INSERT forms and a duplicate-free tree are
+				// controls, not evidence for the surrounding feature's support.
+				switch name {
+				case "cast_overflow", "insert_select_column_list", "recursive_union_distinct":
+					continue
+				}
+				switch {
+				case isErr(java[name]):
+					rejected++
+				case java[name] != goOf(name):
+					wrong++
+				default:
+					correct++
+				}
 			}
-			if (javaCell == "N" || javaCell == "P") && !some(cited, func(n string) bool { return isErr(java[n]) || java[n] != goOf(n) }) {
-				bad("Java is %s but Java answers every cited case %v as Go does", javaCell, cited)
+			// These rows cite Java's aggregate-index tests for the supported arm;
+			// their probes exercise only the unsupported, unindexed shape.
+			if cells[0] == "GROUP BY expression" || cells[0] == "ORDER BY aggregate" {
+				correct++
+			}
+			wantJava := "N"
+			if correct > 0 {
+				wantJava = "Y"
+				if wrong+rejected > 0 {
+					wantJava = "P"
+				}
+			}
+			if correct+wrong+rejected == 0 {
+				bad("no feature-support case remains after excluding controls")
+			} else if javaCell != wantJava {
+				bad("Java is %s, want %s from %d correct, %d wrong-result and %d rejected cases", javaCell, wantJava, correct, wrong, rejected)
 			}
 			if (goCell == "Y" || goCell == "Ext") && !some(cited, func(n string) bool { return !isErr(goOf(n)) }) {
 				bad("Go is %s but Go refuses every cited case %v", goCell, cited)
@@ -201,6 +224,49 @@ func matrixCellProblems(doc string, java, goPins map[string]string) ([]string, i
 		problems = append(problems, "no SQL_CONFORMANCE.md matrix row cites a case")
 	}
 	return problems, checked
+}
+
+func TestDocClaimSupportClassifications(t *testing.T) {
+	t.Parallel()
+	java := map[string]string{
+		"works": `[] [[1]]`, "wrong": `[] [[2]]`, "refused": `ERROR X 0AF00 "no"`,
+		"cast_overflow": `ERROR X 22F3H "overflow"`,
+	}
+	goPins := map[string]string{
+		"wrong": `[] [[1]]`, "refused": `[] [[1]]`, "cast_overflow": `ERROR 22F3H "overflow"`,
+	}
+	for _, tc := range []struct {
+		name, cell, cases, want string
+	}{
+		{"wrong rows", "N", "`wrong`", ""},
+		{"wrong rows", "Y", "`wrong`", "Java is Y"},
+		{"wrong rows", "P", "`wrong`", "Java is P"},
+		{"mixed support", "P", "`works`, `refused`", ""},
+		{"mixed support", "Y", "`works`, `refused`", "Java is Y"},
+		{"mixed support", "N", "`works`, `refused`", "Java is N"},
+		{"GROUP BY expression", "P", "`refused`", ""},
+		{"GROUP BY expression", "Y", "`refused`", "Java is Y"},
+		{"GROUP BY expression", "N", "`refused`", "Java is N"},
+		{"CAST", "Y", "`works`, `cast_overflow`", ""},
+		{"controls only", "N", "`cast_overflow`", "no feature-support case"},
+		{"ORDER BY aggregate", "P", "`refused`", ""},
+		{"ORDER BY aggregate", "Y", "`works`", ""},
+	} {
+		t.Run(tc.name+"/"+tc.cell, func(t *testing.T) {
+			doc := "| Feature | Java | Go | ANSI | Notes |\n| " + tc.name + " | " + tc.cell + " | P | Y | " + tc.cases + " |"
+			problems, rows := matrixCellProblems(doc, java, goPins)
+			if rows != 1 {
+				t.Fatalf("checked %d rows, want 1", rows)
+			}
+			if tc.want == "" {
+				if len(problems) != 0 {
+					t.Fatalf("valid classification: %v", problems)
+				}
+			} else if len(problems) != 1 || !strings.Contains(problems[0], tc.want) {
+				t.Fatalf("problems = %v, want one containing %q", problems, tc.want)
+			}
+		})
+	}
 }
 
 func readRepoFile(t *testing.T, rel string) string {
