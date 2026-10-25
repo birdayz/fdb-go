@@ -1027,8 +1027,8 @@ func SeedRunCorpus() []plandiff.RunQuery {
 		// parentheses is rejected"). Go's embedded engine accepts
 		// the form. Probed against live Java — rejection confirmed.
 		// Aligning Go to also reject would invalidate Go-only tests
-		// using parenthesised boolean WHERE shapes; defer to a
-		// dedicated cleanup shift. Until then, redundant parens
+		// using parenthesised boolean WHERE shapes, so it is not
+		// aligned. Redundant parens
 		// around a boolean predicate is a Go-only feature.
 		// NOTE: `WITH RECURSIVE name AS (non-self-referencing-body)` is
 		// a known one-sided divergence: Java rejects with
@@ -1039,15 +1039,15 @@ func SeedRunCorpus() []plandiff.RunQuery {
 		// embedded engine matches SQL spec / Postgres, so it accepts.
 		// Probed against live Java — rejection confirmed. Aligning
 		// Go to also reject would invalidate yamsql `recursive_cte`
-		// scenarios that use the non-self-referencing form. Defer
-		// to a dedicated cleanup shift.
+		// scenarios that use the non-self-referencing form, so it is
+		// not aligned.
 		// NOTE: `LIMIT N` clause is a known one-sided divergence: Java
 		// rejects standalone `... LIMIT N` (pagination is JDBC-only via
 		// `Statement.setMaxRows`, per CLAUDE.md gotcha "LIMIT clause
 		// is not supported in SQL"). Go's embedded engine implements
 		// LIMIT directly. Aligning Go would invalidate dozens of
-		// LIMIT-using yamsql + sqldriver tests; defer to a dedicated
-		// cleanup shift. Probed against live Java — rejection
+		// LIMIT-using yamsql + sqldriver tests, so it is not
+		// aligned. Probed against live Java — rejection
 		// confirmed.
 		// FROM-less constant projection is shared with Java 4.14.2.0;
 		// the standalone and CTE cases above pin its singleton source.

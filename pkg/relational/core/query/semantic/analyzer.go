@@ -17,8 +17,9 @@ import (
 // `SemanticAnalyzer` (the static methods on that class — case
 // folding etc. — live as free functions in this package).
 //
-// It resolves table references, bare/qualified column references and
-// single-table star expansion (ExpandStar).
+// It resolves table and column references (bare, qualified and nested
+// paths through a Scope) and expands `*` and `t.*` (ExpandStar,
+// ExpandScopeStar, ExpandQualifiedStar).
 //
 // Not safe for concurrent mutation of the underlying Catalog; the
 // Analyzer itself is stateless once constructed.
@@ -168,8 +169,8 @@ func (a *Analyzer) ResolveTableRef(ctx antlrgen.IFullIdContext) (Table, error) {
 // builders can wrap each into a ColumnReference / ProjectionItem.
 //
 // Mirrors the single-qualifier case of Java's
-// `SemanticAnalyzer.expandStar`. The multi-table / alias-qualified
-// cases (`SELECT t.* FROM t JOIN u`) come with the FROM-scope port.
+// `SemanticAnalyzer.expandStar`; ExpandScopeStar and ExpandQualifiedStar
+// cover multi-table and alias-qualified stars.
 func (a *Analyzer) ExpandStar(table Table) []Column {
 	if table == nil {
 		return nil

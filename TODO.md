@@ -2351,7 +2351,7 @@ multi-page auto-commit SELECT, which stays tracked only.
   review rounds (`git grep -n -E 'round [0-9]+\)' -- '*.go'`: 3 of its 5 hits, e.g.
   `pkg/fdbgo/client/readpath.go:1452`, `cascades/values/values.go:2112`; also "PR #446 round 3"
   at `values.go:2051`) and "(codex)" tags in `.github/workflows/ci.yml` and `infra/main.tf:129`. Partly done in #996 and #998; left: the round-18 notes in `pkg/fdbgo/client/transaction_unit_test.go:806-817`, a shift tag at `cascades/benchmark_test.go:302`, "follow-up shift" at `query/plan/plans/insert.go:34-35` and "Codex-caught" at `pkg/relational/conformance/yamsql/testdata/uuid_column.yaml:36`.
-  Done in docs/review-leftovers: every non-test shift tag (several also stated stale facts),
+  Done in docs/review-leftovers: every shift tag in non-test Go (several also stated stale facts),
   every "codex" tag and the listed round notes. Kept: about 30 test files and functions named
   for "RFC-141 R4 round-N" and similar review rounds (`git grep -n -E 'round-[0-9]+' --
   '*_test.go'`); renaming them is churn with no behavior change.
