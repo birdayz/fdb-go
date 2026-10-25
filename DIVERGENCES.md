@@ -957,6 +957,16 @@ where Java places QUALIFY in an aggregated block (QueryVisitor.visitSimpleTable)
 QUALIFY over grouping keys, with or without HAVING, answers as Java
 (`CorrelatedHavingExistsJavaProbe`).
 
+### Raw bytes assigned to a VECTOR column (Java refuses, Go writes them)
+
+`UPDATE t SET v = ?` with a bytes parameter for a VECTOR column: Java's PromoteValue has no
+BYTES-to-VECTOR promotion, so it refuses at planning with 22000 (INCOMPATIBLE_TYPE, "A value
+cannot be assigned to a variable…"). Go's executor writes well-formed vector bytes of the
+column's precision and dimension count and refuses other bytes at execution with 22000 "Vector
+precision or dimensions do not match the target column"
+(`TestFDB_VectorAssignmentDimensionMismatchIs22000`). Reversal: refuse BYTES-to-VECTOR at
+planning, as PromoteValue does.
+
 ### An EXISTS in an aggregated block's QUALIFY (Go refuses)
 
 `SELECT b1 FROM b GROUP BY b1 QUALIFY EXISTS (SELECT a1 FROM a)`: Java conjoins QUALIFY after its
@@ -1020,7 +1030,9 @@ The first three predate this list; it was written when a claim that there was on
 
 Java's Cascades planner defines three complexity caps — `maxTotalTaskCount`, `maxTaskQueueSize`, `maxNumMatchesPerRuleCall` — and throws `RecordQueryPlanComplexityException` from `CascadesPlanner.java:456`, `:501`, and `:1081` when one trips. All three guards are gated on a positive bound (`CascadesPlanner.java:334-344`); the proto fields have no default (`record_planner_config.proto:53-55`), so each is `0`, documented as "unbound" (`RecordQueryPlannerConfiguration.java:243,251`). **Java's SQL layer never enables any of them**: `PlannerConfiguration.buildRecordQueryPlannerConfiguration` (`fdb-relational-core/.../query/PlannerConfiguration.java:158-169`) sets index scan preference, in-join union size, index fetch method, disabled rules, right-deep joins and the vector engine preference, and none of the three cap setters, and no relational `Options.Name` reaches them.
 
-Go matches those defaults: the planner is unbounded unless configured (`Planner.MaxTasks`, `MaxTaskQueueSize`, `MaxNumMatchesPerRuleCall` all default to 0), the guards trip at Java's points (a task bound N runs N+1 tasks; the queue is checked after each task), and planning is bounded in time only by the caller's context. A Go connection may opt into the caps with the Go-only options `MAX_TOTAL_TASK_COUNT`, `MAX_TASK_QUEUE_SIZE` and `MAX_NUM_MATCHES_PER_RULE_CALL`. Exhausting one is therefore a condition no Java SQL user can reach, with no shared surface to conform to.
+Go matches those defaults: the planner is unbounded unless configured (`Planner.MaxTasks`, `MaxTaskQueueSize`, `MaxNumMatchesPerRuleCall` all default to 0), the guards trip at Java's points (a task bound N runs N+1 tasks; the queue is checked after each task; rule calls count as the next paragraph describes), and planning is bounded in time only by the caller's context. A Go connection may opt into the caps with the Go-only options `MAX_TOTAL_TASK_COUNT`, `MAX_TASK_QUEUE_SIZE` and `MAX_NUM_MATCHES_PER_RULE_CALL`. Exhausting one is therefore a condition no Java SQL user can reach, with no shared surface to conform to.
+
+`MaxNumMatchesPerRuleCall` counts Java's bindings only for the rules that report them (`rule_java_bindings.go`: the plan- and stored-record-partition implementation rules, PartitionSelect, the requested-ordering pushes through a select, NestedLoopJoin and PartitionBinarySelect). The others count their Go bindings, one per call, and differ from Java where Java's matcher binds each of several members and the Go rule takes the first: the fetch push-downs, MergeFetchIntoCoveringIndex, PushDistinctBelowFilter, ImplementDistinctUnion, the explode sources of the IN rules and SplitSelectExtractIndependentQuantifiers, DecorrelateValues, ImplementIntersection and ImplementRecursiveDfsJoin. Java fires PredicateToLogicalUnion once per match partition, Go once per select; Go-only rules have no Java count. The planner's swapped-quantifier firing, which only Go has, is never counted: a set-matcher rule's count includes both orders, and Java binds every other rule once.
 
 Porting Java's mapping would have been wrong twice over: `ExceptionUtil.recordCoreToRelationalException` (`ExceptionUtil.java:59`) matches `RecordQueryPlanComplexityException` against no `instanceof` arm, so it would land on `ErrorCode.UNKNOWN` (`XXXXX`) — a code Java's own javadoc says "shouldn't be used in general" (`ErrorCode.java:173-175`) — reached only through a path Java's SQL layer never walks.
 

@@ -2,10 +2,10 @@ package executor
 
 import (
 	"context"
+	"fmt"
 
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/relational/api"
 )
 
 // EvaluateScalarSubquery executes a scalar subquery plan and returns
@@ -52,8 +52,10 @@ func EvaluateScalarSubquery(
 	}
 
 	if len(rows) > 1 {
-		return nil, api.NewErrorf(api.ErrCodeCardinalityViolation,
-			"scalar subquery returned more than one row")
+		return nil, &ExecutionError{
+			Kind:    ExecCardinalityViolation,
+			Message: "scalar subquery returned more than one row",
+		}
 	}
 	if len(rows) == 0 {
 		return nil, nil
@@ -72,8 +74,10 @@ func EvaluateScalarSubquery(
 		return nil, nil
 	}
 	if len(slots) != 1 {
-		return nil, api.NewErrorf(api.ErrCodeSyntaxError,
-			"scalar subquery must return exactly one column, got %d", len(slots))
+		return nil, &ExecutionError{
+			Kind:    ExecSubqueryColumnCount,
+			Message: fmt.Sprintf("scalar subquery must return exactly one column, got %d", len(slots)),
+		}
 	}
 	return slots[0], nil
 }

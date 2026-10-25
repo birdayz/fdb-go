@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "resultset",
+    srcs = ["resultset.go"],
+    importpath = "fdb.dev/pkg/relational/core/resultset",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//internal/unicode15",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/query/executor",
+        "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/relational/api",
+    ],
+)
+
+go_test(
+    name = "resultset_test",
+    srcs = ["resultset_test.go"],
+    embed = [":resultset"],
+    deps = [
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/query/executor",
+        "//pkg/recordlayer/query/plan/cascades/values",
+        "//pkg/relational/api",
+    ],
+)

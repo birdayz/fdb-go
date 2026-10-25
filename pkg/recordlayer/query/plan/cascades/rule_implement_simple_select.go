@@ -66,13 +66,13 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 	// on passthrough alone (the prior behaviour) would drop the widening MAP.
 	isSimpleResult := isSimplePassthroughOf(resultValue, innerQuantifier)
 
+	// Java's matcher requires anyCompensatablePredicate: index-only
+	// predicates must be consumed by an access path, never a residual.
+	if !allPredicatesCompensatable(selectExpr.GetPredicates()) {
+		return
+	}
 	var queryPredicates []predicates.QueryPredicate
 	for _, p := range selectExpr.GetPredicates() {
-		// Java's matcher requires anyCompensatablePredicate: index-only
-		// predicates must be consumed by an access path, never a residual.
-		if predicateContainsUncompensatableValues(p) {
-			return
-		}
 		if !predicates.IsTautology(p) {
 			queryPredicates = append(queryPredicates, p)
 		}

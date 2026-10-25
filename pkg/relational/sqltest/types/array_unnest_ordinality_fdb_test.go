@@ -30,6 +30,7 @@ import (
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/core/metadata"
+	"fdb.dev/pkg/relational/core/resultset"
 )
 
 // TestFDB_ArrayUnnestOrdinality is the RFC-142 (R5) end-to-end proof: correlated
@@ -4190,7 +4191,7 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 				if cErr != nil {
 					return nil, cErr
 				}
-				rs := executor.NewRecordLayerResultSet(ctx, cursor, defs)
+				rs := resultset.NewRecordLayerResultSet(ctx, cursor, defs)
 				defer rs.Close()
 				for rs.Next() {
 					parts := make([]string, len(defs))

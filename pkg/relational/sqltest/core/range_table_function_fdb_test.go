@@ -104,8 +104,9 @@ func TestFDB_RangeTableFunction(t *testing.T) {
 			err = rows.Err()
 			rows.Close()
 		}
-		if err == nil || !strings.Contains(err.Error(), "in range") {
-			t.Errorf("%s: err = %v, want a range-bounds error", q, err)
+		var ae *api.Error
+		if !errors.As(err, &ae) || ae.Code != api.ErrCodeUnknown || !strings.Contains(ae.Message, "in range") {
+			t.Errorf("%s: err = %v, want XXXXX with a range-bounds message", q, err)
 		}
 	}
 }

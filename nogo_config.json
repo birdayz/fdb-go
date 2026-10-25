@@ -28,6 +28,11 @@
       "\\.pb\\.go$": "generated protobuf code"
     }
   },
+  "recordlayerdeps": {
+    "exclude_files": {
+      "external/": "third-party dependencies"
+    }
+  },
   "typeimmutable": {
     "exclude_files": {
       "gen/": "generated protobuf code",

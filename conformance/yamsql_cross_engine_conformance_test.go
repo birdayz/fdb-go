@@ -397,13 +397,7 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		// bucket as the GROUP BY / DISTINCT / LIMIT Java limitations above.
 		unionColumnsScenario(),
 		inListNullScenario(),
-		// joinOptimizationProbesScenario is NOT cross-engine: it probes the
-		// multi-way-join cost frontier (RFC-042), where Go's join enumeration is
-		// still non-deterministic on some arithmetic-predicate shapes (a 3-way /
-		// arithmetic-join can return a different row count across runs). That is
-		// a tracked Go bug, not an RFC-082 column/conformance issue, and a
-		// non-deterministic spec must not gate. Tracked under RFC-042; the
-		// builder stays for the Go-only determinism follow-up.
+		joinOptimizationProbesScenario(),
 		// recursiveCteAdvancedScenario is NOT cross-engine: its tests order a
 		// recursive CTE's result (`... SELECT label FROM desc_tree ORDER BY
 		// id`), which fdb-relational 4.12.11.0 rejected with "order by is not
@@ -3873,11 +3867,12 @@ func expectScalarEqual(actual, expected any, msgAndArgs ...any) {
 }
 
 // joinOptimizationProbesScenario mirrors testdata/join_optimization_probes.yaml.
-// Drops NOT NULL on PK cols (fdb-relational restriction). Converts
-// explicit INNER JOIN ... ON to comma-join + WHERE (fdb-relational
-// rejects fully-qualified column names in JOIN ON clause). The GROUP BY
-// aggregate-through-join test is included as-is — it surfaces the
-// Java limitation.
+// Drops NOT NULL on PK cols (fdb-relational restriction) and writes INNER JOIN
+// ... ON as a comma join (fdb-relational rejects qualified names in JOIN ON).
+// fdb-relational 4.14.2.0 has no in-memory sort, so an ORDER BY on a column no
+// index orders fails 0AF00 (UnableToPlanException): those queries assert their
+// rows unordered here, and the aggregate groups by the indexed e.did instead of
+// d.dname. The last query keeps an ORDER BY the index provides.
 func joinOptimizationProbesScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "join_optimization_probes",
@@ -3889,20 +3884,27 @@ func joinOptimizationProbesScenario() *yamsql.Scenario {
 			"INSERT INTO emp VALUES (10, 1, 'Alice', 100), (20, 1, 'Bob', 90), (30, 2, 'Charlie', 80), (40, 2, 'Diana', 110), (50, 3, 'Eve', 95)",
 		},
 		Tests: []yamsql.Test{
-			// Single-side filter pushdown: dept filter pushed below join.
-			// Converted from INNER JOIN to comma-join.
-			{Query: "SELECT e.ename FROM emp AS e, dept AS d WHERE e.did = d.did AND d.dname = 'eng' ORDER BY e.ename", Rows: [][]any{{"Alice"}, {"Bob"}}},
-			// Cross-side predicate stays above join.
-			{Query: "SELECT e.ename FROM emp AS e, dept AS d WHERE e.did = d.did AND e.salary > d.did * 50 ORDER BY e.ename", Rows: [][]any{{"Alice"}, {"Bob"}, {"Diana"}, {"Eve"}}},
+			// Single-side filter pushdown.
+			{Query: "SELECT e.ename FROM emp AS e, dept AS d WHERE e.did = d.did AND d.dname = 'eng'", Unordered: true, Rows: [][]any{{"Alice"}, {"Bob"}}},
+			// Cross-side arithmetic predicate. Eve does not qualify: 95 > 3 * 50 is false.
+			{Query: "SELECT e.ename FROM emp AS e, dept AS d WHERE e.did = d.did AND e.salary > d.did * 50", Unordered: true, Rows: [][]any{{"Alice"}, {"Bob"}, {"Diana"}}},
 			// Both sides filtered.
-			{Query: "SELECT e.ename FROM emp AS e, dept AS d WHERE e.did = d.did AND d.dname = 'eng' AND e.salary >= 95 ORDER BY e.ename", Rows: [][]any{{"Alice"}}},
-			// ORDER BY through join — should work even with filter pushdown.
-			{Query: "SELECT e.ename, d.dname FROM emp AS e, dept AS d WHERE e.did = d.did AND d.dname != 'hr' ORDER BY e.salary DESC", Rows: [][]any{{"Diana", "sales"}, {"Alice", "eng"}, {"Bob", "eng"}, {"Charlie", "sales"}}},
+			{Query: "SELECT e.ename FROM emp AS e, dept AS d WHERE e.did = d.did AND d.dname = 'eng' AND e.salary >= 95", Unordered: true, Rows: [][]any{{"Alice"}}},
+			// Projection from both legs.
+			{Query: "SELECT e.ename, d.dname FROM emp AS e, dept AS d WHERE e.did = d.did AND d.dname != 'hr'", Unordered: true, Rows: [][]any{{"Diana", "sales"}, {"Alice", "eng"}, {"Bob", "eng"}, {"Charlie", "sales"}}},
 			// Self-join with filter.
-			{Query: "SELECT a.ename, b.ename FROM emp AS a, emp AS b WHERE a.did = b.did AND a.eid < b.eid ORDER BY a.eid, b.eid", Rows: [][]any{{"Alice", "Bob"}, {"Charlie", "Diana"}}},
-			// Aggregate through join — uses GROUP BY (unsupported in
-			// fdb-relational); included as-is to surface the divergence.
-			{Query: "SELECT d.dname, COUNT(*), MAX(e.salary) FROM emp AS e, dept AS d WHERE e.did = d.did GROUP BY d.dname ORDER BY d.dname", Rows: [][]any{{"eng", 2, 100}, {"hr", 1, 95}, {"sales", 2, 110}}},
+			{Query: "SELECT a.ename, b.ename FROM emp AS a, emp AS b WHERE a.did = b.did AND a.eid < b.eid", Unordered: true, Rows: [][]any{{"Alice", "Bob"}, {"Charlie", "Diana"}}},
+			// Aggregate through join, grouped on the indexed join column.
+			{Query: "SELECT e.did, COUNT(*), MAX(e.salary) FROM emp AS e, dept AS d WHERE e.did = d.did GROUP BY e.did", Unordered: true, Rows: [][]any{{1, 2, 100}, {2, 2, 110}, {3, 1, 95}}},
+			// Three-way joins with cross-leg arithmetic predicates.
+			{Query: "SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d WHERE a.did = d.did AND b.did = d.did AND a.salary - b.salary > d.did * 5", Unordered: true, Rows: [][]any{{"Alice", "Bob"}, {"Diana", "Charlie"}}},
+			{Query: "SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d WHERE a.did = d.did AND b.did = d.did AND a.salary > b.salary + (d.did * 5)", Unordered: true, Rows: [][]any{{"Alice", "Bob"}, {"Diana", "Charlie"}}},
+			{Query: "SELECT e.ename, d.dname, m.ename FROM emp AS e, dept AS d, emp AS m WHERE e.did = d.did AND m.did = d.did AND m.eid < e.eid AND e.salary - m.salary > d.did * 10", Unordered: true, Rows: [][]any{{"Diana", "sales", "Charlie"}}},
+			{Query: "SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d WHERE a.did = d.did AND b.did = d.did AND a.eid < b.eid AND a.salary + b.salary > d.did * 95", Unordered: true, Rows: [][]any{{"Alice", "Bob"}}},
+			// Flat left-associative arithmetic in both grammars: (b.salary + d.did) * 5.
+			{Query: "SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d WHERE a.did = d.did AND b.did = d.did AND a.salary > b.salary + d.did * 5", Unordered: true, Rows: [][]any{}},
+			// An ORDER BY the join column's index provides; rows tied on e.did are equal.
+			{Query: "SELECT e.did, d.dname FROM emp AS e, dept AS d WHERE e.did = d.did ORDER BY e.did", Rows: [][]any{{1, "eng"}, {1, "eng"}, {2, "sales"}, {2, "sales"}, {3, "hr"}}},
 		},
 	}
 }

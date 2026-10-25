@@ -17,7 +17,6 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/relational/api"
 )
 
 func TestIntegration_LimitResumeOffsetDomain(t *testing.T) {
@@ -414,8 +413,8 @@ func TestIntegration_StrictFirstOrDefaultRequest(t *testing.T) {
 					}
 					return nil, err
 				})
-				var cardinality *api.Error
-				if !errors.As(err, &cardinality) || cardinality.Code != api.ErrCodeCardinalityViolation {
+				var cardinality *ExecutionError
+				if !errors.As(err, &cardinality) || cardinality.Kind != ExecCardinalityViolation {
 					t.Fatalf("bounded request must not suppress real two-row scalar: %v, want 21000", err)
 				}
 				if outOfBand && !reachedStop {

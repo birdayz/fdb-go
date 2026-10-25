@@ -10,6 +10,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/resultset"
 )
 
 func executeInlineValuesPlan(t testing.TB, plan plans.RecordQueryPlan) []executor.QueryResult {
@@ -167,7 +168,7 @@ func TestProjectionlessExplodeColumnsUseFrozenExactRecordType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct projection-less record Explode: %v", err)
 	}
-	want := []executor.ColumnDef{
+	want := []resultset.ColumnDef{
 		{Name: "quotedCase", TypeName: "BIGINT", Nullable: api.ColumnNullable, DataType: api.NewLongType(true)},
 		{
 			Name: "ARR", TypeName: "ARRAY", Nullable: api.ColumnNoNulls,
@@ -215,7 +216,7 @@ func TestProjectionlessExplodeColumnsUseFrozenExactRecordType(t *testing.T) {
 	}
 	// WITH ORDINALITY flows the (element, ordinal) box, not the element's
 	// fields.
-	wantBox := []executor.ColumnDef{
+	wantBox := []resultset.ColumnDef{
 		{
 			Name: "_0", TypeName: "STRUCT", Nullable: api.ColumnNoNulls,
 			DataType: api.NewStructType("RECORD", []api.StructField{api.NewStructField("V", api.NewLongType(false), 0)}, false),

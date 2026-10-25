@@ -126,3 +126,39 @@ func TestNormalizeErrIsSingleLineAndBounded(t *testing.T) {
 		t.Errorf("normalizeErr did not cap a 5000-byte message: got %d chars", n)
 	}
 }
+
+// TestReplanReportsChangedRenderings drives replan's arms with a planner whose
+// output for one statement alternates: that statement is reported with its
+// renderings in first-seen order, the stable one is not, and keep's rejects
+// are neither replanned nor counted.
+func TestReplanReportsChangedRenderings(t *testing.T) {
+	t.Parallel()
+
+	jobs := []job{{base: "flips.yaml"}, {base: "stable.yaml"}, {base: "skipped.yaml"}}
+	calls := map[string]int{}
+	plan := func(js []job) []Entry {
+		out := make([]Entry, len(js))
+		for k, j := range js {
+			calls[j.base]++
+			out[k] = Entry{File: j.base, Plan: "Scan(T)"}
+			if j.base == "flips.yaml" && calls[j.base]%2 == 0 {
+				out[k].Plan = "IndexScan(I, [=])"
+			}
+		}
+		return out
+	}
+	kept, unstable := replan(jobs, 3, func(e Entry) bool { return e.File != "skipped.yaml" }, plan)
+
+	if kept != 2 {
+		t.Fatalf("kept = %d, want 2", kept)
+	}
+	if calls["skipped.yaml"] != 1 || calls["stable.yaml"] != 4 {
+		t.Fatalf("plannings = %v, want skipped.yaml once and stable.yaml 1+3 times", calls)
+	}
+	if len(unstable) != 1 || unstable[0].Key != "flips.yaml#0" {
+		t.Fatalf("unstable = %+v, want only flips.yaml#0", unstable)
+	}
+	if got := strings.Join(unstable[0].Plans, " | "); got != "Scan(T) | IndexScan(I, [=])" {
+		t.Fatalf("renderings = %q, want first-seen order", got)
+	}
+}
