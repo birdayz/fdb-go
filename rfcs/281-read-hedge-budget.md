@@ -49,13 +49,15 @@ All in `loadBalance` (`fdbrpc/include/fdbrpc/LoadBalance.actor.h`) with the
    first reply, which then accrues. The delay is reset after the first attempt
    (`:732`), so a call spends at most once. (After a paid hedge fails while the
    first request is still outstanding, C++ sends unpaid further second requests
-   to the remaining alternatives, `:648-686`; Go waits for the primary instead,
-   see Out of scope.)
+   to the remaining alternatives, `:648-686`. Go waits for the primary only when
+   the hedge fails to send; a hedge reply that is a failure Go returns, see Out of
+   scope.)
 4. **Which reads.** The model is passed only when `enableLocalityLoadBalance`,
    which `Database::createDatabase` sets (`fdbclient/NativeAPI.actor.cpp:2391,2403`):
    `getValue` (`:3673-3687`), `getKey` (`:3817-3824`), `getExactRange` (`:4328-4335`)
-   and `getRange`, whose request stream also carries `getMappedKeyValues`
-   (`:4722-4728`). `watchValue` (`:3962-3972`), `waitMetrics`, `getReadHotRanges`,
+   `getRange`, whose request stream also carries `getMappedKeyValues`
+   (`:4722-4728`), and `getOverlappingChangeFeeds` (`:11021-11027`), which the Go
+   client does not implement. `watchValue` (`:3962-3972`), `waitMetrics`, `getReadHotRanges`,
    `getRangeSplitPoints` and `splitMetrics` (`:7795-8890`) pass no model and so
    never hedge and never touch the model. Location lookups and GRVs go to proxies
    through `basicLoadBalance`, which has no second request (`LoadBalance.actor.h:746`).
@@ -139,8 +141,10 @@ changes.
 ## Test plan
 
 - Unit (synctest, the `hedge_timer` seam): accrual of 0.05 and multiplier decay
-  on a lone reply, on a transport failure and on the fail-over reply after a
-  failed primary; none on a reply timeout, on cancellation, in a race, or while
+  on the primary's reply before the delay, on its reply after a delay that found
+  budget 0.95 (which then reaches 1.0), on a read with no backup, on a transport
+  failure and on the fail-over reply after a failed primary; none on a reply
+  timeout, on cancellation, in a race, or while
   waiting for the primary after a paid hedge failed to send; the cap at 100 and the
   floor at 1.0; spend at the delay with budget 1.0 (cost 1.0, multiplier +0.01) and
   none with 0.95; with budget 2.0 and both replies slow, exactly one hedge; the
@@ -159,7 +163,7 @@ changes.
   - with hedging off and a budget of 1.0 the read sends one request and the budget
     grows; turned back on, the next read spends it.
 - `getValue` fallback: with no budget and the primary's reply lost, the fallback
-  tries the backup.
+  tries the backup, and the backup's reply accrues 0.05.
 - Watch: after a watch fires, the server's `QueueModel` entry (latency,
   outstanding) and the budget are unchanged.
 - Existing hedge tests (`TestReadTagSamplingOneDrawPerRequest`,
