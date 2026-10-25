@@ -3,9 +3,9 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "functions",
     srcs = [
-        "arith.go",
         "ast_util.go",
         "compare.go",
+        "doc.go",
         "flatten.go",
         "proto_value.go",
         "text.go",

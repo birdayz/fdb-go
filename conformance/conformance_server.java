@@ -68,6 +68,7 @@ class ConformanceServer {
         new AggregateSteps(),
         new UniqueViolationSteps(),
         new VersionSaveSteps(),
+        new TupleRangeProbeSteps(),
         new TupleOrderingSteps(),
         new MappedRangeSteps(),
         new RecordLoadChargeProbeSteps(),

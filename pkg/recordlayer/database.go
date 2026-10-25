@@ -800,8 +800,8 @@ func NewFDBRecordContext(tx fdb.WritableTransaction, env *dst.Env) *FDBRecordCon
 
 // NewRecordContext wraps an externally-created FDB transaction in a context that inherits
 // everything this database gives the contexts it opens itself: the DST environment and the
-// StoreTimer. It is the form every caller holding an *FDBDatabase should use — SQL's
-// explicit BeginTx→COMMIT path among them.
+// StoreTimer. It is the form every caller holding an *FDBDatabase should use; one with a
+// context (SQL's explicit BeginTx→COMMIT path) uses NewRecordContextIn.
 //
 // The point is that per-database state is threaded in ONE place. NewFDBRecordContext takes
 // the fields one by one, which is why env was silently dropped on the explicit-transaction
@@ -809,7 +809,14 @@ func NewFDBRecordContext(tx fdb.WritableTransaction, env *dst.Env) *FDBRecordCon
 // the identical failure for instrumentation, where the symptom is even quieter (a metric
 // that reads zero looks exactly like a workload that did nothing).
 func (d *FDBDatabase) NewRecordContext(tx fdb.WritableTransaction) *FDBRecordContext {
+	return d.NewRecordContextIn(context.Background(), tx)
+}
+
+// NewRecordContextIn is NewRecordContext with ctx as the context's Context(),
+// which bounds the reads and child transactions that take it from there.
+func (d *FDBDatabase) NewRecordContextIn(ctx context.Context, tx fdb.WritableTransaction) *FDBRecordContext {
 	rc := NewFDBRecordContext(tx, d.Env())
+	rc.ctx = ctx
 	rc.SetTimer(d.Timer())
 	rc.database = d
 	return rc

@@ -1125,14 +1125,15 @@ func encodeSortContinuation(
 		// THAT BREAK IS ACCEPTED, on three grounds, recorded here because a
 		// continuation change with no explanation is alarming on sight:
 		//
-		//  1. It fails CLOSED. positionalAligned is deliberately all-or-nothing,
+		//  1. It fails CLOSED. The result set's positionalAligned
+		//     (pkg/relational/core/resultset) is deliberately all-or-nothing,
 		//     so a stale token's row is rejected wholesale and every read returns
 		//     a loud XX000 — there is no arm that repairs slots individually and
 		//     therefore no way to serve N's value for column SK. A break that
 		//     cannot produce a wrong row is categorically different from one that
 		//     can, and the strictness is what buys that. Pinned, with the
 		//     mutation showing a TOLERANT alignment check would start serving the
-		//     wrong column silently, at resultset_test.go's
+		//     wrong column silently, at pkg/relational/core/resultset's
 		//     TestResultSet_PreRFC229SortContinuationNamesFailClosed.
 		//  2. NO JAVA-MINTED TOKEN CARRIES THESE NAMES. Stated carefully, because
 		//     the obvious phrasing — "Java never mints this token" — is FALSE and

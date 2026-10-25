@@ -521,7 +521,7 @@ race-all:
     bazelisk --output_base={{race_base}} test //pkg/fdbgo/client:client_test //pkg/recordlayer:recordlayer_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/chaos:chaos_test //conformance:conformance_test //conformance:conformance_corpora_test //pkg/recordlayer/query/plan/cascades/... --@rules_go//go/config:race --test_timeout=900
 
 # Extended verification: full suite + race detector + bounded fuzz smoke.
-# Nightly workflows retain their larger exploration budgets.
+# No CI lane runs active fuzzing; this recipe's smoke is the only routine one.
 verify:
     #!/usr/bin/env bash
     set -euo pipefail

@@ -172,8 +172,9 @@ func TestNativeReadTagSampling(t *testing.T) {
 			tx.db.hedgeEnabled.Store(hedge)
 			plan := &replyPlan{rec: rec}
 			if hedge {
+				// One planned hedge for a selector and one for the exact read.
 				duplicateServers(&Database{db: tx.db}, 2)
-				plan.entries = []plannedReply{dropReply("GetKeyRequest")}
+				plan.entries = []plannedReply{dropReply("GetKeyRequest"), dropReply("GetKeyValuesRequest")}
 				sim.setIntercept(plan.intercept)
 				sim.armEverything()
 			}
@@ -186,16 +187,26 @@ func TestNativeReadTagSampling(t *testing.T) {
 			recorded := rec.stop()
 			got := taggedRequests(t, recorded)
 			plan.check(t)
-			wantRequests := 3
+			// A hedge resends its request with its tags (LoadBalance.actor.h:660-662). Go also
+			// hedges a slow reply that C++'s second-request budget would not (TODO.md).
+			sends := map[string]int{}
+			for _, r := range got {
+				sends[r.kind]++
+			}
+			// Each request goes to at most two replicas; the planned drops force a hedge of
+			// the exact read and of one selector, and the other selector may hedge too.
+			wantExact, maxPerSelector := 1, 1
 			if hedge {
-				wantRequests++
+				wantExact, maxPerSelector = 2, 2
 			}
-			if len(got) != wantRequests || draws.count() != 3 {
-				t.Fatalf("fallback requests %v after %d draws, want %d sends after 3 draws", got, draws.count(), wantRequests)
+			if draws.count() != 3 || len(got) != sends["GetKeyRequest"]+sends["GetKeyValuesRequest"] || sends["GetKeyValuesRequest"] != wantExact {
+				t.Fatalf("fallback requests %v after %d draws; want 3 draws and %d exact sends", got, draws.count(), wantExact)
 			}
+			perSelector := map[string]int{}
 			for _, msg := range recorded.msgs {
 				switch q := msg.(type) {
 				case *types.GetKeyRequest:
+					perSelector[string(q.Sel.Key)]++
 					want := string(q.Sel.Key) == prefix+"a"
 					if string(q.Sel.Key) != prefix+"a" && string(q.Sel.Key) != prefix+"d" {
 						t.Fatalf("unexpected fallback selector %+v", q.Sel)
@@ -208,6 +219,10 @@ func TestNativeReadTagSampling(t *testing.T) {
 						t.Errorf("fallback exact request HasTags=%t Tags=%q, want new third sample", q.HasTags, q.Tags)
 					}
 				}
+			}
+			a, d := perSelector[prefix+"a"], perSelector[prefix+"d"]
+			if a < 1 || d < 1 || a > maxPerSelector || d > maxPerSelector || (hedge && a+d < 3) {
+				t.Errorf("selector sends a=%d d=%d, want 1-%d each and a planned hedge of one", a, d, maxPerSelector)
 			}
 		})
 	}

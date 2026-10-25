@@ -797,6 +797,7 @@ go_test(
         "transformed_serializer_conformance_test.go",
         "transient_fdb_error_test.go",
         "tuple_ordering_conformance_test.go",
+        "tuple_range_probe_conformance_test.go",
         "typed_record_conformance_test.go",
         "unique_violation_conformance_test.go",
         "vector_index_conformance_test.go",

@@ -204,7 +204,7 @@ it.** Update the RFC to **Status: Implemented** and flip the TODO mark.
 | `client/fault_test.go` | fault-injection dialers (`wrongShardConn`, `dropReplyConn`, …) |
 | `transport/conn.go` | connection, write/read loops, `failConnection`, `connectionMonitor`, handshake deadline |
 | `fdb/error.go` | `IsRetryable` (the high-level predicate — keep in sync with `client.isRetryable`) |
-| `fdb/database.go` + `fdb/transaction.go` | Apple-compatible facade (functional options, `Must*` boundary, `panicToError`) |
+| `fdb/database.go` + `fdb/transaction.go` | facade modeled on Apple's binding (functional options, `Must*` boundary, `panicToError`) |
 | `wire/reader.go` + `wire/types/` | `ReadErrorOr`/`ReadInlineReplyError`; generated reply structs (fix the extractor in `cmd/fdb-schema-extract`, don't hand-edit generated) |
 | `bench/` | dual-client differential harness (Go vs `libfdb_c`) |
 

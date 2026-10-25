@@ -4,7 +4,7 @@
 // Copyright 2021-2025 Apple Inc. and the FoundationDB project authors
 // Licensed under the Apache License, Version 2.0; translated to Go and modified.
 
-package executor
+package resultset
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/executor"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 )
@@ -34,7 +35,7 @@ func resultValueString(v any) string {
 	}
 }
 
-// RecordLayerResultSet wraps a RecordCursor[QueryResult] and implements
+// RecordLayerResultSet wraps a RecordCursor[executor.QueryResult] and implements
 // api.ResultSet. Mirrors Java's RecordLayerResultSet: Next() advances
 // the cursor, typed accessors read from the current row's positional slots.
 //
@@ -43,11 +44,11 @@ func resultValueString(v any) string {
 // 1-indexed per JDBC convention.
 type RecordLayerResultSet struct {
 	ctx      context.Context
-	cursor   recordlayer.RecordCursor[QueryResult]
+	cursor   recordlayer.RecordCursor[executor.QueryResult]
 	columns  []ColumnDef
 	colIndex map[string]int // upper-case name → 0-based index
 
-	current          QueryResult
+	current          executor.QueryResult
 	lastContinuation recordlayer.RecordCursorContinuation
 	lastNoNextReason recordlayer.NoNextReason
 	hasRow           bool
@@ -80,7 +81,7 @@ type ColumnDef struct {
 // and column definitions.
 func NewRecordLayerResultSet(
 	ctx context.Context,
-	cursor recordlayer.RecordCursor[QueryResult],
+	cursor recordlayer.RecordCursor[executor.QueryResult],
 	columns []ColumnDef,
 ) *RecordLayerResultSet {
 	idx := make(map[string]int, len(columns))
@@ -177,7 +178,7 @@ func (rs *RecordLayerResultSet) columnValue(columnIndex int) (any, error) {
 // so leaf-name equality is the correct structural sanity check. Duplicate leaf
 // names (`SELECT c.id, o.id` → [ID, ID]) stay safe: alignment is by ordinal, and
 // each column reads its own slot regardless of the shared name.
-func (rs *RecordLayerResultSet) positionalAligned(row *PositionalRow) bool {
+func (rs *RecordLayerResultSet) positionalAligned(row *executor.PositionalRow) bool {
 	if row.Type == nil {
 		return false
 	}

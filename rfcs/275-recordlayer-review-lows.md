@@ -1,7 +1,7 @@
 # RFC-275: Record-layer review lows and explicit-version saves
 
 **Status:** Implemented
-**Item:** TODO.md "Quality review 2026-10-24", Record layer (PR #994, unmerged). This RFC
+**Item:** TODO.md "Quality review 2026-10-24", Record layer (added by #994). This RFC
 covers the four Low items and the Medium explicit-version/`VersionstampSaveBehavior` item:
 - the transaction size warning;
 - keyspace siblings, `PathFromTuple` and the resolver context;

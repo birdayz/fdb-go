@@ -212,7 +212,7 @@ func translatePlannerError(planErr error, unableToPlanMessage string) error {
 // withBudgetContext attaches which budget was exhausted and how far the run
 // got, under the same keys Java's addLogInfo uses on
 // RecordQueryPlanComplexityException. A user should learn which limit they hit
-// and by how much, not merely that some limit existed.
+// and by how much (the rule-match budget reports bound+1, as Java's does).
 func withBudgetContext(out *api.Error, planErr error) *api.Error {
 	var budget *cascades.PlannerBudgetExceededError
 	if !errors.As(planErr, &budget) {

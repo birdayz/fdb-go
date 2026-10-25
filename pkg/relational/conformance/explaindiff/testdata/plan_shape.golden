@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=407 queries=3146 dml=183 non_query=129 plan_errors=322 unexpected_errors=4
+# files=409 queries=3168 dml=183 non_query=129 plan_errors=322 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -11157,6 +11157,204 @@ shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryIndexPlan
+=== join_optimization_probes.yaml#6
+sql:   SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d WHERE a.did = d.did AND b.did = d.did AND a.salary - b.salary > d.did * 5 ORDER BY a.ename
+plan:  InMemorySort([_current.A.ENAME#0 ASC], FlatMap(outer=IndexScan(IDX_EMP_DID, [*]), inner=FlatMap(outer=Scan(DEPT, [=]), inner=PredicatesFilter(IndexScan(IDX_EMP_DID, [*]), [2 preds]))))
+shape: RecordQueryInMemorySortPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryIndexPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryIndexPlan
+=== join_optimization_probes.yaml#7
+sql:   SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d WHERE a.did = d.did AND b.did = d.did AND a.salary > b.salary + (d.did * 5) ORDER BY a.ename
+plan:  InMemorySort([_current.A.ENAME#0 ASC], FlatMap(outer=IndexScan(IDX_EMP_DID, [*]), inner=FlatMap(outer=Scan(DEPT, [=]), inner=PredicatesFilter(IndexScan(IDX_EMP_DID, [*]), [2 preds]))))
+shape: RecordQueryInMemorySortPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryIndexPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryIndexPlan
+=== join_optimization_probes.yaml#8
+sql:   SELECT e.ename, d.dname, m.ename FROM emp AS e, dept AS d, emp AS m WHERE e.did = d.did AND m.did = d.did AND m.eid < e.eid AND e.salary - m.salary > d.did * 10 ORDER BY e.ename
+plan:  InMemorySort([_current.E.ENAME#0 ASC], FlatMap(outer=IndexScan(IDX_EMP_DID, [*]), inner=FlatMap(outer=Scan(DEPT, [=]), inner=PredicatesFilter(IndexScan(IDX_EMP_DID, [*]), [3 preds]))))
+shape: RecordQueryInMemorySortPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryIndexPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryIndexPlan
+=== join_optimization_probes.yaml#9
+sql:   SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d WHERE a.did = d.did AND b.did = d.did AND a.eid < b.eid AND a.salary + b.salary > d.did * 95 ORDER BY a.ename
+plan:  InMemorySort([_current.A.ENAME#0 ASC], FlatMap(outer=IndexScan(IDX_EMP_DID, [*]), inner=FlatMap(outer=Scan(DEPT, [=]), inner=PredicatesFilter(IndexScan(IDX_EMP_DID, [*]), [3 preds]))))
+shape: RecordQueryInMemorySortPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryIndexPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryIndexPlan
+=== join_optimization_probes.yaml#10
+sql:   SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d WHERE a.did = d.did AND b.did = d.did AND a.salary > b.salary + d.did * 5
+plan:  FlatMap(outer=IndexScan(IDX_EMP_DID, [*]), inner=FlatMap(outer=Scan(DEPT, [=]), inner=PredicatesFilter(IndexScan(IDX_EMP_DID, [*]), [2 preds])))
+shape: RecordQueryFlatMapPlan
+shape:   RecordQueryIndexPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryIndexPlan
+=== join_optimization_probes_nested_loop.yaml#0
+sql:   SELECT e.ename FROM emp AS e INNER JOIN dept AS d ON e.did = d.did WHERE d.dname = 'eng' ORDER BY e.ename
+plan:  InMemorySort([_current.ENAME#0 ASC], NestedLoopJoin(INNER, [2 preds], IndexScan(IDX_EMP_DID, [*]), Scan(DEPT)))
+shape: RecordQueryInMemorySortPlan
+shape:   RecordQueryNestedLoopJoinPlan
+shape:     RecordQueryIndexPlan
+shape:     RecordQueryScanPlan
+=== join_optimization_probes_nested_loop.yaml#1
+sql:   SELECT e.ename FROM emp AS e INNER JOIN dept AS d ON e.did = d.did WHERE e.salary > d.did * 50 ORDER BY e.ename
+plan:  InMemorySort([_current.ENAME#0 ASC], NestedLoopJoin(INNER, [2 preds], IndexScan(IDX_EMP_DID, [*]), Scan(DEPT)))
+shape: RecordQueryInMemorySortPlan
+shape:   RecordQueryNestedLoopJoinPlan
+shape:     RecordQueryIndexPlan
+shape:     RecordQueryScanPlan
+=== join_optimization_probes_nested_loop.yaml#2
+sql:   SELECT e.ename FROM emp AS e INNER JOIN dept AS d ON e.did = d.did WHERE d.dname = 'eng' AND e.salary >= 95 ORDER BY e.ename
+plan:  InMemorySort([_current.ENAME#0 ASC], NestedLoopJoin(INNER, [3 preds], IndexScan(IDX_EMP_DID, [*]), Scan(DEPT)))
+shape: RecordQueryInMemorySortPlan
+shape:   RecordQueryNestedLoopJoinPlan
+shape:     RecordQueryIndexPlan
+shape:     RecordQueryScanPlan
+=== join_optimization_probes_nested_loop.yaml#3
+sql:   SELECT e.ename, d.dname FROM emp AS e INNER JOIN dept AS d ON e.did = d.did WHERE d.dname != 'hr' ORDER BY e.salary DESC
+plan:  Map(InMemorySort([_current._2#2 DESC], NestedLoopJoin(INNER, [2 preds], IndexScan(IDX_EMP_DID, [*]), Scan(DEPT))), {ENAME: _current.ENAME#0, DNAME: _current.DNAME#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryIndexPlan
+shape:       RecordQueryScanPlan
+=== join_optimization_probes_nested_loop.yaml#4
+sql:   SELECT a.ename, b.ename FROM emp AS a INNER JOIN emp AS b ON a.did = b.did WHERE a.eid < b.eid ORDER BY a.eid, b.eid
+plan:  Map(InMemorySort([_current._2#2 ASC, _current._3#3 ASC], NestedLoopJoin(INNER, [2 preds], IndexScan(IDX_EMP_DID, [*]), IndexScan(IDX_EMP_DID, [*]))), {A.ENAME: _current.A.ENAME#0, B.ENAME: _current.B.ENAME#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryIndexPlan
+shape:       RecordQueryIndexPlan
+=== join_optimization_probes_nested_loop.yaml#5
+sql:   SELECT d.dname, COUNT(*), MAX(e.salary) FROM emp AS e INNER JOIN dept AS d ON e.did = d.did GROUP BY d.dname ORDER BY d.dname
+plan:  Map(StreamingAgg(keys=[_current.DNAME#5], InMemorySort([_current.DNAME#5 ASC], NestedLoopJoin(INNER, [1 preds], IndexScan(IDX_EMP_DID, [*]), Scan(DEPT)))), {DNAME: _current.DNAME#0, _1: _current.COUNT(*)#1, _2: _current.MAX(E.SALARY)#2})
+shape: RecordQueryMapPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryNestedLoopJoinPlan
+shape:         RecordQueryIndexPlan
+shape:         RecordQueryScanPlan
+=== join_optimization_probes_scan_only.yaml#0
+sql:   SELECT e.ename FROM emp AS e INNER JOIN dept AS d ON e.did = d.did WHERE d.dname = 'eng' ORDER BY e.ename
+plan:  InMemorySort([_current.ENAME#0 ASC], NestedLoopJoin(INNER, [2 preds], Scan(EMP), Scan(DEPT)))
+shape: RecordQueryInMemorySortPlan
+shape:   RecordQueryNestedLoopJoinPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryScanPlan
+=== join_optimization_probes_scan_only.yaml#1
+sql:   SELECT e.ename FROM emp AS e INNER JOIN dept AS d ON e.did = d.did WHERE e.salary > d.did * 50 ORDER BY e.ename
+plan:  InMemorySort([_current.ENAME#0 ASC], NestedLoopJoin(INNER, [2 preds], Scan(EMP), Scan(DEPT)))
+shape: RecordQueryInMemorySortPlan
+shape:   RecordQueryNestedLoopJoinPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryScanPlan
+=== join_optimization_probes_scan_only.yaml#2
+sql:   SELECT e.ename FROM emp AS e INNER JOIN dept AS d ON e.did = d.did WHERE d.dname = 'eng' AND e.salary >= 95 ORDER BY e.ename
+plan:  InMemorySort([_current.ENAME#0 ASC], FlatMap(outer=PredicatesFilter(Scan(DEPT), [1 preds]), inner=PredicatesFilter(Scan(EMP), [2 preds])))
+shape: RecordQueryInMemorySortPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+=== join_optimization_probes_scan_only.yaml#3
+sql:   SELECT e.ename, d.dname FROM emp AS e INNER JOIN dept AS d ON e.did = d.did WHERE d.dname != 'hr' ORDER BY e.salary DESC
+plan:  Map(InMemorySort([_current._2#2 DESC], NestedLoopJoin(INNER, [2 preds], Scan(EMP), Scan(DEPT))), {ENAME: _current.ENAME#0, DNAME: _current.DNAME#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== join_optimization_probes_scan_only.yaml#4
+sql:   SELECT a.ename, b.ename FROM emp AS a INNER JOIN emp AS b ON a.did = b.did WHERE a.eid < b.eid ORDER BY a.eid, b.eid
+plan:  Map(InMemorySort([_current._2#2 ASC, _current._3#3 ASC], NestedLoopJoin(INNER, [2 preds], Scan(EMP), Scan(EMP))), {A.ENAME: _current.A.ENAME#0, B.ENAME: _current.B.ENAME#1})
+shape: RecordQueryMapPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== join_optimization_probes_scan_only.yaml#5
+sql:   SELECT d.dname, COUNT(*), MAX(e.salary) FROM emp AS e INNER JOIN dept AS d ON e.did = d.did GROUP BY d.dname ORDER BY d.dname
+plan:  Map(StreamingAgg(keys=[_current.DNAME#5], InMemorySort([_current.DNAME#5 ASC], NestedLoopJoin(INNER, [1 preds], Scan(EMP), Scan(DEPT)))), {DNAME: _current.DNAME#0, _1: _current.COUNT(*)#1, _2: _current.MAX(E.SALARY)#2})
+shape: RecordQueryMapPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryNestedLoopJoinPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryScanPlan
+=== join_optimization_probes_scan_only.yaml#6
+sql:   SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d WHERE a.did = d.did AND b.did = d.did AND a.salary - b.salary > d.did * 5 ORDER BY a.ename
+plan:  InMemorySort([_current.A.ENAME#0 ASC], FlatMap(outer=Scan(DEPT), inner=FlatMap(outer=PredicatesFilter(Scan(EMP), [1 preds]), inner=PredicatesFilter(Scan(EMP), [2 preds]))))
+shape: RecordQueryInMemorySortPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
+=== join_optimization_probes_scan_only.yaml#7
+sql:   SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d WHERE a.did = d.did AND b.did = d.did AND a.salary > b.salary + (d.did * 5) ORDER BY a.ename
+plan:  InMemorySort([_current.A.ENAME#0 ASC], FlatMap(outer=Scan(DEPT), inner=FlatMap(outer=PredicatesFilter(Scan(EMP), [1 preds]), inner=PredicatesFilter(Scan(EMP), [2 preds]))))
+shape: RecordQueryInMemorySortPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
+=== join_optimization_probes_scan_only.yaml#8
+sql:   SELECT e.ename, d.dname, m.ename FROM emp AS e, dept AS d, emp AS m WHERE e.did = d.did AND m.did = d.did AND m.eid < e.eid AND e.salary - m.salary > d.did * 10 ORDER BY e.ename
+plan:  InMemorySort([_current.E.ENAME#0 ASC], FlatMap(outer=Scan(DEPT), inner=FlatMap(outer=PredicatesFilter(Scan(EMP), [1 preds]), inner=PredicatesFilter(Scan(EMP), [3 preds]))))
+shape: RecordQueryInMemorySortPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
+=== join_optimization_probes_scan_only.yaml#9
+sql:   SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d WHERE a.did = d.did AND b.did = d.did AND a.eid < b.eid AND a.salary + b.salary > d.did * 95 ORDER BY a.ename
+plan:  InMemorySort([_current.A.ENAME#0 ASC], FlatMap(outer=Scan(EMP), inner=FlatMap(outer=PredicatesFilter(Scan(EMP), [1 preds]), inner=Map(PredicatesFilter(Scan(DEPT), [3 preds]), {_0: 1}))))
+shape: RecordQueryInMemorySortPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryMapPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
+=== join_optimization_probes_scan_only.yaml#10
+sql:   SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d WHERE a.did = d.did AND b.did = d.did AND a.salary > b.salary + d.did * 5
+plan:  FlatMap(outer=Scan(DEPT), inner=FlatMap(outer=PredicatesFilter(Scan(EMP), [1 preds]), inner=PredicatesFilter(Scan(EMP), [2 preds])))
+shape: RecordQueryFlatMapPlan
+shape:   RecordQueryScanPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
 === join_order_expression.yaml#0
 sql:   SELECT t.name, p.name, p.score FROM teams t, players p WHERE p.team_id = t.id ORDER BY p.score
 plan:  InMemorySort([_current.SCORE#2 ASC], FlatMap(outer=Scan(PLAYERS), inner=Scan(TEAMS, [=])))

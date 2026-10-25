@@ -1171,13 +1171,10 @@ func (store *FDBRecordStore) DeleteIndexEntriesInRange(index *Index, prefix tupl
 	if index == nil {
 		return fmt.Errorf("index must not be nil")
 	}
-	indexSub := store.indexSubspace(index)
-	prefixKey := indexSub.Pack(prefix)
-	r, err := fdb.PrefixRange(prefixKey)
-	if err != nil {
-		return fmt.Errorf("DeleteIndexEntriesInRange: PrefixRange(%x): %w", prefixKey, err)
-	}
-	store.context.Transaction().ClearRange(r)
+	// [pack, pack+ff) is the prefix's tuple range plus the key at pack itself
+	// (a grouped aggregate); strinc(pack) would also clear "alice\x00…".
+	prefixKey := store.indexSubspace(index).Pack(prefix)
+	store.context.Transaction().ClearRange(fdb.KeyRange{Begin: prefixKey, End: append(prefixKey, 0xff)})
 	return nil
 }
 

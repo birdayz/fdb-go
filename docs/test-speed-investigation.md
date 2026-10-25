@@ -101,7 +101,7 @@ cause is different, measured on Bazel 9.0.1 with four 5 s go_tests tagged
 
 **Any non-zero `--local_test_jobs` makes Bazel ignore `resources:` tags on
 tests.** The tags work. Recorded in `.bazelrc`; the wrong claim in
-`nightly-coverage.yml` is corrected.
+`nightly-coverage.yml` (deleted 2026-10-09) is corrected.
 
 Tried and reverted: dropping `--local_test_jobs=4` and the `exclusive` tags of
 the four memory-motivated targets (client, million_record, factory,
@@ -128,14 +128,16 @@ not enough on this box; CPU has to be priced too (§5).
    benchmarks (§2) assert nothing that a regression would trip. Options:
    convert them to `Benchmark*` functions, or move them to a `stress_bench`
    target that runs only in `nightly-stress.yml`. Either way they leave the
-   exclusive serial tail.
+   exclusive serial tail. (Every nightly was deleted on 2026-10-09; no CI
+   workflow runs the stress target now.)
 3. **Drop `TestFDB_Stress_1M`.** `Stress_1M_LatencyAttribution` runs the same
    `runStressHarness(t, h, 1_000_000)` over an identical fixture with every
    assertion `Stress_1M` makes, plus telemetry validation. The only difference
    is a pinned `Conn` with loggers installed. The plain pooled path stays
    covered at 10K and 100K. Saves ~3 min of exclusive time.
 4. **Whether stress belongs in `test-full` at all.** CI's full lane already
-   excludes it (`--test_tag_filters=-stress`) and `nightly-stress.yml` runs it.
+   excludes it (`--test_tag_filters=-stress`) and `nightly-stress.yml` ran it
+   (deleted 2026-10-09; nothing in CI runs it now).
    AGENTS.md defines test-full as including it. Even after the changes above it
    is the longest exclusive item (~25 min).
 5. **Further safe sqldriver de-duplication, not done here** (read-only analysis,
@@ -149,8 +151,8 @@ not enough on this box; CPU has to be priced too (§5).
    - CurrentTimestamp seeding: 100-row transactions could be 1,000-row ones.
 
    Signal-reducing options, all owner calls:
-   - RowDiff_Paging: 25 serial seeds, 378 s. The nightly runs 5,000; seeds
-     could run in parallel or be fewer.
+   - RowDiff_Paging: 25 serial seeds, 378 s. The nightly ran 5,000 (deleted
+     2026-10-09); seeds could run in parallel or be fewer.
    - PlannerCapHit_SelectPathSQLSTATE and PlannerOptions_PlanRightDeep: these
      run the planner to the 150k-task cap, and embedded unit tests already pin
      the same cap.

@@ -1,0 +1,108 @@
+# Join probes with index matching disabled: every leg is a full scan.
+# join_optimization_probes.yaml's queries and rows; the joins run as
+# nested-loop joins and FlatMaps over scans, in other join orders.
+name: join_optimization_probes_scan_only
+schema_template: |
+  CREATE TABLE dept (did BIGINT, dname STRING, PRIMARY KEY (did))
+  CREATE TABLE emp (eid BIGINT, did BIGINT, ename STRING, salary BIGINT, PRIMARY KEY (eid))
+  CREATE INDEX idx_emp_did ON emp (did)
+connection_options:
+  DISABLED_PLANNER_RULES: "MatchLeafRule, MatchIntermediateRule"
+setup:
+  - INSERT INTO dept VALUES (1, 'eng'), (2, 'sales'), (3, 'hr')
+  - INSERT INTO emp VALUES (10, 1, 'Alice', 100), (20, 1, 'Bob', 90), (30, 2, 'Charlie', 80), (40, 2, 'Diana', 110), (50, 3, 'Eve', 95)
+tests:
+  - query: |-
+      SELECT e.ename FROM emp AS e
+      INNER JOIN dept AS d ON e.did = d.did
+      WHERE d.dname = 'eng'
+      ORDER BY e.ename
+    plan_not_contains: "IndexScan"
+    rows:
+      - ['Alice']
+      - ['Bob']
+  - query: |-
+      SELECT e.ename FROM emp AS e
+      INNER JOIN dept AS d ON e.did = d.did
+      WHERE e.salary > d.did * 50
+      ORDER BY e.ename
+    plan_not_contains: "IndexScan"
+    rows:
+      - ['Alice']
+      - ['Bob']
+      - ['Diana']
+  - query: |-
+      SELECT e.ename FROM emp AS e
+      INNER JOIN dept AS d ON e.did = d.did
+      WHERE d.dname = 'eng' AND e.salary >= 95
+      ORDER BY e.ename
+    plan_not_contains: "IndexScan"
+    rows:
+      - ['Alice']
+  - query: |-
+      SELECT e.ename, d.dname FROM emp AS e
+      INNER JOIN dept AS d ON e.did = d.did
+      WHERE d.dname != 'hr'
+      ORDER BY e.salary DESC
+    plan_not_contains: "IndexScan"
+    rows:
+      - ['Diana', 'sales']
+      - ['Alice', 'eng']
+      - ['Bob', 'eng']
+      - ['Charlie', 'sales']
+  - query: |-
+      SELECT a.ename, b.ename FROM emp AS a
+      INNER JOIN emp AS b ON a.did = b.did
+      WHERE a.eid < b.eid
+      ORDER BY a.eid, b.eid
+    plan_not_contains: "IndexScan"
+    rows:
+      - ['Alice', 'Bob']
+      - ['Charlie', 'Diana']
+  - query: |-
+      SELECT d.dname, COUNT(*), MAX(e.salary) FROM emp AS e
+      INNER JOIN dept AS d ON e.did = d.did
+      GROUP BY d.dname
+      ORDER BY d.dname
+    plan_not_contains: "IndexScan"
+    rows:
+      - ['eng', 2, 100]
+      - ['hr', 1, 95]
+      - ['sales', 2, 110]
+  - query: |-
+      SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d
+      WHERE a.did = d.did AND b.did = d.did AND a.salary - b.salary > d.did * 5
+      ORDER BY a.ename
+    plan_not_contains: "IndexScan"
+    rows:
+      - ['Alice', 'Bob']
+      - ['Diana', 'Charlie']
+  - query: |-
+      SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d
+      WHERE a.did = d.did AND b.did = d.did AND a.salary > b.salary + (d.did * 5)
+      ORDER BY a.ename
+    plan_not_contains: "IndexScan"
+    rows:
+      - ['Alice', 'Bob']
+      - ['Diana', 'Charlie']
+  - query: |-
+      SELECT e.ename, d.dname, m.ename FROM emp AS e, dept AS d, emp AS m
+      WHERE e.did = d.did AND m.did = d.did AND m.eid < e.eid
+        AND e.salary - m.salary > d.did * 10
+      ORDER BY e.ename
+    plan_not_contains: "IndexScan"
+    rows:
+      - ['Diana', 'sales', 'Charlie']
+  - query: |-
+      SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d
+      WHERE a.did = d.did AND b.did = d.did AND a.eid < b.eid
+        AND a.salary + b.salary > d.did * 95
+      ORDER BY a.ename
+    plan_not_contains: "IndexScan"
+    rows:
+      - ['Alice', 'Bob']
+  - query: |-
+      SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d
+      WHERE a.did = d.did AND b.did = d.did AND a.salary > b.salary + d.did * 5
+    plan_not_contains: "IndexScan"
+    rows: []
