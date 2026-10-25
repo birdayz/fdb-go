@@ -301,8 +301,15 @@ func TestVerifiedLaneLock(t *testing.T) {
 	t.Run("held_during_lane_free_after_with_daemon", func(t *testing.T) {
 		t.Parallel()
 		h := newLaneHarness(t)
-		if out, err := h.command(false).CombinedOutput(); err != nil {
+		out, err := h.command(false).CombinedOutput()
+		if err != nil {
 			t.Fatalf("lane: %v: %s", err, out)
+		}
+		if args, err := os.ReadFile(filepath.Join(h.state, "bazelisk.args")); err != nil || string(args) != "shutdown\n" {
+			t.Fatalf("shutdown args = %q (%v), want \"shutdown\"", args, err)
+		}
+		if meta := laneMetadata(t, out); !strings.Contains(meta, "shutdown: bazelisk shutdown exit=0\n") {
+			t.Fatalf("metadata lacks the fast-lane shutdown line:\n%s", meta)
 		}
 		probe, err := os.ReadFile(filepath.Join(h.state, "probe"))
 		if err != nil || strings.TrimSpace(string(probe)) != "held" {
