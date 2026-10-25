@@ -1,6 +1,7 @@
 package infra
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -199,14 +200,17 @@ func newLaneHarness(t *testing.T) *laneHarness {
 	for name, body := range map[string]string{
 		"just": `#!/bin/bash
 if [ "$1" = --dry-run ]; then echo fake; exit 0; fi
+if [ "$1" = --evaluate ]; then echo "$STATE/race_base"; exit 0; fi
 sleep 300 </dev/null >/dev/null 2>&1 &
 echo $! > "$STATE/daemon.pid"
 if flock -n "$FDB_LANE_LOCK" true; then echo free > "$STATE/probe"; else echo held > "$STATE/probe"; fi
 echo $$ > "$STATE/just.pid"
 if [ -n "$BLOCK" ]; then exec sleep 300; fi
+exit "${JUST_EXIT:-0}"
 `,
 		"bazelisk": `#!/bin/bash
 if flock -n "$FDB_LANE_LOCK" true; then echo free > "$STATE/shutdown-probe"; else echo held > "$STATE/shutdown-probe"; fi
+printf '%s\n' "$*" > "$STATE/bazelisk.args"
 `,
 	} {
 		if err := os.WriteFile(filepath.Join(h.bin, name), []byte(body), 0o700); err != nil {
@@ -230,12 +234,17 @@ if flock -n "$FDB_LANE_LOCK" true; then echo free > "$STATE/shutdown-probe"; els
 	return h
 }
 
-func (h *laneHarness) command(block bool) *exec.Cmd {
-	cmd := exec.Command("bash", h.script, h.repo, "fast")
+func (h *laneHarness) command(block bool, env ...string) *exec.Cmd {
+	return h.laneCommand("fast", block, env...)
+}
+
+func (h *laneHarness) laneCommand(lane string, block bool, env ...string) *exec.Cmd {
+	cmd := exec.Command("bash", h.script, h.repo, lane)
 	cmd.Env = append(os.Environ(), "PATH="+h.bin+":"+os.Getenv("PATH"), "FDB_LANE_LOCK="+h.lock, "STATE="+h.state, "TMPDIR="+h.t.TempDir())
 	if block {
 		cmd.Env = append(cmd.Env, "BLOCK=1")
 	}
+	cmd.Env = append(cmd.Env, env...)
 	return cmd
 }
 
@@ -306,6 +315,35 @@ func TestVerifiedLaneLock(t *testing.T) {
 			t.Fatalf("lane lock still held after the lane exited (by its daemon %d)", daemon)
 		}
 	})
+	t.Run("race_lane_shuts_down_the_race_output_base", func(t *testing.T) {
+		t.Parallel()
+		h := newLaneHarness(t)
+		out, err := h.laneCommand("race", false).CombinedOutput()
+		if err != nil {
+			t.Fatalf("lane: %v: %s", err, out)
+		}
+		args, err := os.ReadFile(filepath.Join(h.state, "bazelisk.args"))
+		want := "--output_base=" + filepath.Join(h.state, "race_base") + " shutdown"
+		if err != nil || strings.TrimSpace(string(args)) != want {
+			t.Fatalf("shutdown args = %q (%v), want %q", args, err, want)
+		}
+		meta := laneMetadata(t, out)
+		if !strings.Contains(meta, "shutdown: bazelisk "+want+" exit=0\n") {
+			t.Fatalf("metadata lacks the race shutdown line:\n%s", meta)
+		}
+	})
+	t.Run("failing_lane_exit_status_reaches_caller", func(t *testing.T) {
+		t.Parallel()
+		h := newLaneHarness(t)
+		out, err := h.command(false, "JUST_EXIT=7").CombinedOutput()
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 7 {
+			t.Fatalf("lane exit = %v, want 7: %s", err, out)
+		}
+		if meta := laneMetadata(t, out); !strings.Contains(meta, "lane_exit=7 tee_exit=0 ") {
+			t.Fatalf("metadata lacks lane_exit=7:\n%s", meta)
+		}
+	})
 	t.Run("killing_only_the_script_keeps_lock_until_lane_ends", func(t *testing.T) {
 		t.Parallel()
 		h := newLaneHarness(t)
@@ -337,4 +375,16 @@ func TestVerifiedLaneLock(t *testing.T) {
 			t.Fatalf("daemon %d is not running, so the release check was vacuous", d)
 		}
 	})
+}
+
+// laneMetadata reads the evidence metadata of a lane run; the script prints the
+// evidence directory on its first output line.
+func laneMetadata(t *testing.T, out []byte) string {
+	t.Helper()
+	dir, _, _ := strings.Cut(string(out), "\n")
+	meta, err := os.ReadFile(filepath.Join(dir, "metadata"))
+	if err != nil {
+		t.Fatalf("evidence metadata: %v (output %q)", err, out)
+	}
+	return string(meta)
 }
