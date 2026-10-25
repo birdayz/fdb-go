@@ -72,11 +72,11 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 	// validateNoIndexOnlyResidual is RETAINED as the catch-all backstop for Go-only
 	// physical-filter builders (ImplementSimpleSelectRule, NLJ, ImplementIndexScanRule)
 	// that this gate does not cover — do not remove it until every such builder is gated.
+	if !allPredicatesCompensatable(f.GetPredicates()) {
+		return
+	}
 	allTautologies := true
 	for _, pred := range f.GetPredicates() {
-		if predicateContainsUncompensatableValues(pred) {
-			return
-		}
 		allTautologies = allTautologies && predicates.IsTautology(pred)
 	}
 

@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/executor"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/javayamsql"
+	"fdb.dev/pkg/relational/core/resultset"
 )
 
 // The descending branches are exercised here directly, against the semantics
@@ -408,14 +408,14 @@ func TestExtractDescriptorsFromDriverSurface(t *testing.T) {
 		api.NewStructField("X", api.NewLongType(true), 0),
 		api.NewStructField("TAGS", api.NewArrayType(api.NewStringType(false), true), 1),
 	}, true)
-	cols := []executor.ColumnDef{
+	cols := []resultset.ColumnDef{
 		{Name: "ID", TypeName: "BIGINT", DataType: api.NewLongType(false)},
 		{Name: "PT", TypeName: "STRUCT", DataType: point},
 		{Name: "PTS", TypeName: "ARRAY", DataType: api.NewArrayType(point.WithNullable(false), true)},
 		{Name: "M", TypeName: "ARRAY", DataType: api.NewArrayType(api.NewArrayType(api.NewIntegerType(false), false), true)},
 	}
 	withMeta := rs([]string{"ID", "PT", "PTS", "M"}, []string{"BIGINT", "STRUCT", "ARRAY", "ARRAY"})
-	withMeta.Meta = executor.NewResultSetMetaData(cols)
+	withMeta.Meta = resultset.NewResultSetMetaData(cols)
 	var b strings.Builder
 	for _, d := range extractDescriptors(withMeta) {
 		appendDescriptor(&b, d, "")
