@@ -467,7 +467,8 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   (`:554-560`). Go's `sendFrameWithHedge` hedges every read with a second replica after
   max(10ms, 2 × the best server's latency) (`client/loadbalance.go` `secondDelay`), so a
   fresh database hedges where libfdb_c would not. Port the budget and multiplier, then
-  revisit the hedge tests that rely on a fresh database hedging.
+  revisit the hedge tests that rely on a fresh database hedging. In progress in #1017
+  (RFC-281).
 
 - [ ] **Connection monitor has no `resetPing` arm.** C++ `connectionMonitor` also
   ends a PING wait on `peer->resetPing.onTrigger()` (`FlowTransport.actor.cpp:696-698`),
@@ -2386,10 +2387,12 @@ multi-page auto-commit SELECT, which stays tracked only.
   every "codex" tag and the listed round notes. Kept: about 30 test files and functions named
   for "RFC-141 R4 round-N" and similar review rounds (`git grep -n -E 'round-[0-9]+' --
   '*_test.go'`); renaming them is churn with no behavior change.
-- [ ] **Owner decision:** the public API surface (about 16K exported declarations outside
-  `internal/`, including test hooks such as `values.SetCensusHooks`); test and tool
-  dependencies in the library `go.mod` (docker, testcontainers, ginkgo, staticcheck,
-  cobra); nogo without `unused`; nine reused RFC numbers and no RFC index.
+- [ ] **Deferred:** the public API surface: about 16K exported declarations outside
+  `internal/`, including test hooks such as `values.SetCensusHooks`. Deferred by the owner on
+  2026-10-25: another session's client optimizations may change the surface; do not start it.
+- [ ] **Owner decision:** test and tool dependencies in the library `go.mod` (docker,
+  testcontainers, ginkgo, staticcheck, cobra); nogo without `unused`; nine reused RFC numbers
+  and no RFC index.
 
 ### Follow-ups from the fix PRs' reviews
 
