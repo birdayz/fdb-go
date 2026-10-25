@@ -80,7 +80,7 @@ func TestAtomic_SVKSystemKeyPlaceholderStaysRawForValidation(t *testing.T) {
 	}
 	if got := tx.mutations[0].Key; got[0] != 0xff {
 		t.Fatalf("out-of-range \\xff-placeholder SVK was transformed (leading byte %#x, not 0xff) — the "+
-			"legal-range check on the raw key is bypassed (codex #17)", got[0])
+			"legal-range check on the raw key is bypassed", got[0])
 	}
 	if err := tx.validateMutation(tx.mutations[0], tx.maxWriteKey()); fdbCodeOf(err) != 2004 {
 		t.Fatalf("a \\xff-placeholder SVK on a non-system txn must be key_outside_legal_range (2004), got %v", err)

@@ -3248,9 +3248,7 @@ func buildSelectScopeChecked(
 		// (execution's translateScan contract). The prior catalog-first order
 		// analyzed the TABLE's
 		// schema for reads that execute against the CTE — 42703 on the
-		// CTE's own columns (review-caught; the plain-body variant of the
-		// shape was broken this way all along, masked only for
-		// template-qualified bodies by the pre-round-9 nil resolver).
+		// CTE's own columns.
 		if isCTE {
 			src := cte
 			// TOMBSTONE (nil Table): a DECLARED CTE whose schema is not

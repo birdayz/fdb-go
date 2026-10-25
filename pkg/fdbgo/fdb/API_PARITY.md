@@ -19,7 +19,7 @@ removes.)
 |---|---|
 | `Transaction` / `ReadTransaction` | Methods present; read/write/atomic/range/watch/versionstamp all real wire traffic |
 | `Snapshot` | Full |
-| `Database` | Superset (`+ TransactCtx`, `ReadTransactCtx`, `InvalidateGRVCache`, `OpenTenantById`) |
+| `Database` | Superset: every Apple method, plus `TransactCtx`, `ReadTransactCtx`, `CreateWritableTransaction`, `IsValid`, `HedgeEnabled`/`SetHedgeEnabled`, `InvalidateGRVCache`, `Metrics`, `OpenTenantById` |
 | `Database.Transact` / `Transactor` | The closure takes `WritableTransaction` (an interface) where Apple's takes the `Transaction` struct: change `func(tr fdb.Transaction)` to `func(tr fdb.WritableTransaction)` |
 | `Error.Error()` | `"<description> (<code>)"`, or `"FoundationDB error: <code>"` for a code without a description; Apple's is `"FoundationDB error code <code> (<description>)"`. Match on `Error.Code` |
 | `RangeResult`, `RangeIterator` | Interfaces (both backends produce them) where Apple's are structs; the method sets match |

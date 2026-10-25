@@ -31,8 +31,7 @@ import (
 // Result type matches inner — INSERT typically returns the inserted
 // rows for cursor consumption.
 //
-// Execute is NOT in the seed surface — wiring to FDBRecordStore is
-// a follow-up shift gated on the rule chain producing these plans.
+// The executor runs it (executor.go, the *plans.RecordQueryInsertPlan arm).
 type RecordQueryInsertPlan struct {
 	PlanExprBase
 	innerQ           expressions.Quantifier

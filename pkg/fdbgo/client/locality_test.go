@@ -166,7 +166,7 @@ func TestLocate_SystemKeyClampIgnoresBackward(t *testing.T) {
 		t.Fatalf("locate: %v", err)
 	}
 	if len(loc.Servers) == 0 || loc.Servers[0].Address != "SYS" {
-		t.Fatalf("backward getKey on allKeysEnd (clamped to 0xff) must route to the SYS shard, not the USER shard ending at 0xff; got %v (codex #10 P2)", loc.Servers)
+		t.Fatalf("backward getKey on allKeysEnd (clamped to 0xff) must route to the SYS shard, not the USER shard ending at 0xff; got %v", loc.Servers)
 	}
 }
 
