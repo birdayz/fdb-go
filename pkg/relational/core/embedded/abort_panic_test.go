@@ -122,6 +122,8 @@ func TestExplicitTx_AbortPanicClosesConnection(t *testing.T) {
 		if err := <-done; !errors.Is(err, context.Canceled) {
 			t.Fatalf("statement whose context ended = %v, want context.Canceled", err)
 		}
+		// The statement's own ended-context abort cancels it here; the BeginTx
+		// subtest pins retryCancel.
 		wantClosedAndCancelled(t, c, fdbTx)
 	})
 }

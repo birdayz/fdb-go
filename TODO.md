@@ -2369,8 +2369,14 @@ multi-page auto-commit SELECT, which stays tracked only.
   the `range()` test checks only "in range"; the rule-match trip's error context is unasserted
   (#1002's final review). Fixed in #1013, pinned end to end.
 - [ ] **Low:** `translateFDBError`'s deserialization, already-exists, invalid-UTF-8,
-  RecordCoreException and QueryInvalidExpression arms (`pkg/relational/core/embedded/connection.go`)
-  build the message from the typed error and pass the chain holding it as the cause, so the
-  message renders twice. `api.WrapStatedError` (#1013) renders it once, but the chains also carry
-  context (`fmt.Errorf` wrappers) that `Error()` would then stop showing; decide per arm (#1013's
-  review).
+  MetaDataException (42000), RecordCoreException and QueryInvalidExpression arms
+  (`pkg/relational/core/embedded/connection.go`) build the message from the typed error and pass
+  the chain holding it as the cause, so the message renders twice. `api.WrapStatedError` (#1013)
+  renders it once, but `Error()` then stops showing the chains' `fmt.Errorf` context; decide per
+  arm against Java's message (#1013 decided so for the schema-template build arm, whose name
+  context Java's message lacks) (#1013's review).
+- [ ] **Low:** a schema template's index refusal renders as `index "IX": XXXXX: …`: the DDL index
+  paths (`pkg/relational/core/embedded/ddl.go`, `index_onsource.go`) wrap the `api.Error` with
+  `fmt.Errorf("index %q: %w")`, a prefix Java's message lacks (`sqltest/core`
+  `TestFDB_DDLRefusalRendersMessageOnce`, index predicate case). Decide whether to drop it or record
+  it in DIVERGENCES.md (#1013's review).

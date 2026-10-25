@@ -1,7 +1,7 @@
 package sqldriver_test
 
 // database/sql smoke tests of the entry point: import sqldriver, register the
-// domain (RegisterDomainIfNotExists; testkit.Main registers FRL), sql.Open.
+// domain (RegisterDomainIfNotExists; importing testkit registers FRL), sql.Open.
 
 import (
 	"context"
