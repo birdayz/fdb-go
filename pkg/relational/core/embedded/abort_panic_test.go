@@ -68,8 +68,8 @@ func TestExplicitTx_AbortPanicClosesConnection(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		seriousLog = orig
-		if n := logged["simgate: Cancel"]; n != 2 {
-			t.Errorf("recovered Cancel panics logged %d times, want once per subtest (2)", n)
+		if n := logged["simgate: Cancel"]; n != 3 {
+			t.Errorf("recovered Cancel panics logged %d times, want once per subtest (3)", n)
 		}
 	})
 	t.Run("BeginTx context", func(t *testing.T) {
@@ -91,6 +91,21 @@ func TestExplicitTx_AbortPanicClosesConnection(t *testing.T) {
 		if n := countRows(t, g.connect(t, "S"), 800); n != 0 {
 			t.Fatalf("the aborted transaction's write was committed (count %d)", n)
 		}
+	})
+	t.Run("BeginTx context, released by Close", func(t *testing.T) {
+		t.Parallel()
+		g := newGatedSim(t, 567)
+		c := g.connect(t, "S")
+		ctx, cancel := context.WithCancel(context.Background())
+		if _, err := c.BeginTx(ctx, driver.TxOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		mustExec(t, c, "INSERT INTO t (id, v) VALUES (803, 803)")
+		fdbTx := c.activeTx.rctx.Transaction()
+		g.gate.PanicOnce(simgate.Cancel)
+		cancel()
+		waitClosed(t, c)
+		wantClosedAndCancelled(t, c, fdbTx) // Close's Rollback retries the Cancel
 	})
 	t.Run("statement context", func(t *testing.T) {
 		t.Parallel()
