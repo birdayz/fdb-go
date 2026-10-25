@@ -34,16 +34,17 @@ func pollCoordinatorInWindow(t *testing.T, ctx context.Context, db *Database, re
 		_, pollErr = db.db.pollCoordinator(pollCtx, snap, snap.Coordinators[0], db.db.dbInfo.Load().ID)
 	}()
 	t.Cleanup(func() { stop(); <-done })
-	for {
+	seen := func() bool {
 		rec.mu.Lock()
-		seen := slices.ContainsFunc(rec.rec.writes, func(w sendRecordedWrite) bool { return w.kind == "OpenDatabaseCoordRequest" })
-		rec.mu.Unlock()
-		if seen {
-			return
-		}
+		defer rec.mu.Unlock()
+		return slices.ContainsFunc(rec.rec.writes, func(w sendRecordedWrite) bool { return w.kind == "OpenDatabaseCoordRequest" })
+	}
+	for !seen() {
 		select {
 		case <-done:
-			t.Fatalf("coordinator long poll ended unrecorded: %v", pollErr)
+			if !seen() { // the poll may have been recorded just before it ended
+				t.Fatalf("coordinator long poll ended unrecorded: %v", pollErr)
+			}
 		case <-ctx.Done():
 			t.Fatal("no coordinator long poll recorded")
 		case <-time.After(time.Millisecond):
