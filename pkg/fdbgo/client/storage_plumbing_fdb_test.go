@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,33 @@ func openRecordedDB(t *testing.T, ctx context.Context) (*Database, *sendRecorder
 	}
 	t.Cleanup(func() { db.Close() })
 	return db, rec
+}
+
+// pollCoordinatorInWindow sends a coordinator long poll now, as the topology monitor
+// does on its own schedule, and returns once the recorder has seen it.
+func pollCoordinatorInWindow(t *testing.T, ctx context.Context, db *Database, rec *sendRecorder) {
+	t.Helper()
+	pollCtx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		snap := db.db.connRecord.get()
+		_, _ = db.db.pollCoordinator(pollCtx, snap, snap.Coordinators[0], db.db.dbInfo.Load().ID)
+	}()
+	t.Cleanup(func() { stop(); <-done })
+	for {
+		rec.mu.Lock()
+		seen := slices.ContainsFunc(rec.rec.writes, func(w sendRecordedWrite) bool { return w.kind == "OpenDatabaseCoordRequest" })
+		rec.mu.Unlock()
+		if seen {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("no coordinator long poll recorded")
+		case <-time.After(time.Millisecond):
+		}
+	}
 }
 
 func seedPlumbingKeys(t *testing.T, ctx context.Context, db *Database, prefix string, keys ...string) {
@@ -56,6 +84,8 @@ func TestStorageRequestsCarryOperationVersion(t *testing.T) {
 	mapper := []byte("\x01m\x00")
 
 	recorder.start()
+	// The topology monitor's long poll can land in any window; force one into this one.
+	pollCoordinatorInWindow(t, ctx, db, recorder)
 	if _, _, _, err := tx.getRangeImpl(ctx, begin, end, newRangeLimits(0, ByteLimitUnlimited), older, false); err != nil {
 		t.Fatalf("getRangeImpl: %v", err)
 	}
