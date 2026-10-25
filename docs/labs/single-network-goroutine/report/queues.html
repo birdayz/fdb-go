@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Writer Queues, Lock-Free Ring &amp; D-M — fdbgo Transport &amp; Coalescing Lab</title>
+<style>
+:root {
+  --bg: #f8fafc;
+  --panel: #ffffff;
+  --text: #0f172a;
+  --muted: #475569;
+  --border: #e2e8f0;
+  --accent: #1d4ed8;
+  --good: #047857;
+  --good-bg: #ecfdf5;
+  --warn: #b45309;
+  --warn-bg: #fffbeb;
+  --bad: #be123c;
+  --bad-bg: #fff1f2;
+  --code-bg: #f1f5f9;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--bg);
+}
+header {
+  background: #0f172a;
+  color: #f8fafc;
+  padding: 18px 28px;
+  border-bottom: 1px solid #1e293b;
+}
+header .title-row {
+  max-width: 1440px;
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+header h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+header .subtitle {
+  color: #94a3b8;
+  font-size: 13px;
+}
+nav {
+  background: #1e293b;
+  padding: 0 28px;
+  border-bottom: 1px solid #334155;
+}
+nav .nav-inner {
+  max-width: 1440px;
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+nav a {
+  color: #cbd5e1;
+  text-decoration: none;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border-bottom: 2px solid transparent;
+}
+nav a:hover {
+  color: #ffffff;
+  background: rgba(255,255,255,0.05);
+}
+nav a.active {
+  color: #ffffff;
+  border-bottom-color: #38bdf8;
+  background: rgba(56,189,248,0.1);
+}
+main {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 24px 28px 64px;
+}
+h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 28px 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  color: #0f172a;
+}
+h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 20px 0 8px;
+  color: #1e293b;
+}
+p, li {
+  color: #1e293b;
+}
+ul, ol {
+  margin: 8px 0 14px;
+  padding-left: 22px;
+}
+li {
+  margin-bottom: 4px;
+}
+code, pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12.5px;
+}
+code {
+  background: var(--code-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+pre {
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 14px 16px;
+  border-radius: 6px;
+  overflow-x: auto;
+  line-height: 1.45;
+}
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(560px, 1fr));
+  gap: 18px;
+  margin: 14px 0;
+}
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 16px;
+  margin: 14px 0;
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 18px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+.card h3 {
+  margin-top: 0;
+}
+.callout {
+  border-left: 4px solid var(--accent);
+  background: #eff6ff;
+  padding: 12px 16px;
+  border-radius: 0 6px 6px 0;
+  margin: 14px 0;
+}
+.callout.good {
+  border-left-color: var(--good);
+  background: var(--good-bg);
+}
+.callout.warn {
+  border-left-color: var(--warn);
+  background: var(--warn-bg);
+}
+.callout.bad {
+  border-left-color: var(--bad);
+  background: var(--bad-bg);
+}
+.table-wrap {
+  overflow-x: auto;
+  margin: 12px 0 20px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+th, td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+  white-space: nowrap;
+}
+th:first-child, td:first-child {
+  text-align: left;
+  font-weight: 500;
+}
+td.text-left, th.text-left {
+  text-align: left;
+  white-space: normal;
+}
+thead th {
+  background: #f1f5f9;
+  color: #334155;
+  font-weight: 600;
+  border-bottom: 2px solid #cbd5e1;
+}
+tbody tr:hover {
+  background: #f8fafc;
+}
+tbody tr.highlight {
+  background: #f0fdf4;
+}
+tbody tr.highlight-warn {
+  background: #fff1f2;
+}
+.spread {
+  color: #64748b;
+  font-size: 11px;
+  display: block;
+}
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge.pass { background: var(--good-bg); color: var(--good); }
+.badge.fail { background: var(--bad-bg); color: var(--bad); }
+.badge.warn { background: var(--warn-bg); color: var(--warn); }
+.badge.info { background: #e0f2fe; color: #0369a1; }
+.svg-wrap {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  margin: 12px 0;
+  overflow-x: auto;
+}
+footer {
+  margin-top: 48px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  display: flex;
+  justify-content: space-between;
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="title-row">
+    <h1>FoundationDB Pure-Go Transport Lab: Writer Queues, Coalescing Linger &amp; libfdb_c Parity</h1>
+    <div class="subtitle">FDB 7.3.77 &middot; PR #991 &middot; Dedicated Hetzner ccx43 (AMD EPYC-Milan, 16 vCPUs)</div>
+  </div>
+</header>
+<nav>
+  <div class="nav-inner">
+    <a href='index.html'>1. Executive Summary</a><a href='linger.html'>2. Linger Sweep &amp; Per-Role Cost</a><a href='queues.html' class='active'>3. Writer Queues, Ring &amp; D-M</a><a href='delay-vs-ack.html'>4. Coalesce Delay vs Write-Ack</a><a href='libfdbc.html'>5. libfdb_c (L vs L4) vs Go</a><a href='methodology.html'>6. Methodology &amp; Verification</a>
+  </div>
+</nav>
+<main>
+
+<h2>1. Writer Queue Designs Evaluated</h2>
+<div class="grid-2">
+  <div class="card">
+    <h3>Four Queue &amp; Handoff Architectures</h3>
+    <ol>
+      <li><strong><code>D-NG</code> (<code>FDBGO_NET_DESIGN=ng</code>) — Mutex + Byte Slice Swap:</strong>
+        Senders encode into a pooled frame buffer, lock <code>w.mu</code>, append bytes to <code>w.q</code>, and unlock. Only the sender that transitions <code>len(w.q)</code> from <code>0 &rarr; &gt;0</code> signals the 1-buffered <code>w.sig</code> channel (mirroring C++ <code>Peer::send</code>'s <code>firstUnsent</code> check). The writer swaps <code>w.q</code> with a spare buffer under <code>w.mu</code> and issues a single <code>conn.Write(buf)</code>.</li>
+      <li><strong><code>D-NG-chan</code> (<code>FDBGO_NET_DESIGN=ngc</code>) — Buffered Channel Writer:</strong>
+        Senders push <code>chanFrame{bufp, frame}</code> onto a buffered channel (<code>cap=4096</code>). <code>chanLoop</code> blocks on the first frame, drains <code>len(ch)</code> additional frames into a contiguous buffer, returns the pooled frame buffers, and calls <code>conn.Write(buf)</code>.</li>
+      <li><strong><code>D-NG-ring</code> (<code>FDBGO_NET_DESIGN=ngr</code>) — Lock-Free MPSC Byte Ring + <code>writev</code>:</strong>
+        A 1 MiB power-of-two ring with 4,096 slots. One 64-bit CAS on <code>reserve</code> claims <code>seq16&lt;&lt;48 | pos48</code> simultaneously. Senders encode directly into the ring slice in place and store <code>slot.ready = seq + 1</code>. <code>ringLoop</code> scans consecutive ready slots and writes them with a single <code>writev(2)</code> via <code>net.Buffers.WriteTo</code>.</li>
+      <li><strong><code>D-M</code> / <code>M</code> (<code>FDBGO_NET_DESIGN=m</code>) — Sender-Writes (No Writer Goroutine):</strong>
+        A sender that wins <code>wmu.TryLock()</code> writes its own frame directly on its caller goroutine, then drains any frames other senders appended to <code>pending</code> while the write was in flight.</li>
+    </ol>
+  </div>
+  <div class="card">
+    <h3>Why Lock-Free Ring v1 Collapsed at 73k ops/s — and Why v2 Still Doesn't Beat a Mutex</h3>
+    <ul>
+      <li><strong>v1 failure mode (in-order commit spin):</strong> Our first Disruptor-style MPSC ring reserved a byte span with <code>atomic.AddUint64</code> and required each sender to spin on <code>committed.Load() == start</code> before advancing <code>committed = end</code>. At 256 workers across 8 Ps (32 goroutines/P), if the OS or Go scheduler preempted a sender in the ~40 ns window between reservation and commit, <em>every subsequent sender on that connection spun in <code>runtime.procyieldAsm</code></em>. Throughput on <code>get100/256</code> collapsed from <strong>256.9k to 73.1k ops/s</strong>, client CPU tripled from <strong>27.0 to 84.8 &micro;s/op</strong>, and <code>cpu.pprof</code> showed 25.7s (12.7%) in <code>procyieldAsm</code> + 41.2s (20.3%) in <code>runtime.lock2</code>.</li>
+      <li><strong>v2 fix (per-slot ready + <code>writev</code>):</strong> Packing <code>seq16&lt;&lt;48 | pos48</code> into one CAS and publishing per-slot <code>ready</code> removed all sender-to-sender waiting. Throughput jumped from <strong>73.1k to 243.0k ops/s</strong> (29.3 &micro;s/op), and raw <code>write</code> syscalls dropped to <code>0.01/op</code> (replaced by <code>writev</code>).</li>
+      <li><strong>Why <code>D-NG</code> (257.7k ops/s, 27.0 &micro;s/op) still beats both:</strong> As the <code>pprof</code> mutex profile below proves, the send-queue mutex <code>w.mu</code> in <code>naSend</code> + <code>naLoop</code> accounts for only <strong>0.16% of CPU time</strong> and <strong>1.20% of lock contention</strong>! Removing a 40 ns uncontended lock around a slice append saves nothing, while ring slot management and <code>writev</code> iovec construction cost slightly more CPU than one contiguous <code>Write</code>.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class='svg-wrap'><svg viewBox='0 0 640 340' width='100%' height='340' xmlns='http://www.w3.org/2000/svg'>
+<text x='60' y='20' font-size='13' font-weight='600' fill='#0f172a'>Writer Queue Throughput Comparison on netg-r6 (kops/s, higher is better)</text>
+<text x='60' y='35' font-size='11' fill='#64748b'>A (today) vs D-M (sender writes) vs D-NG (mutex+slice) vs D-NG-chan (channel) vs D-NG-ring v2 (MPSC ring + writev)</text>
+<rect x='60' y='41' width='10' height='10' rx='2' fill='#d97706'/>
+<text x='74' y='50' font-size='10.5' fill='#334155'>A (today)</text>
+<rect x='136.5' y='41' width='10' height='10' rx='2' fill='#e11d48'/>
+<text x='150.5' y='50' font-size='10.5' fill='#334155'>D-M (sender)</text>
+<rect x='232.5' y='41' width='10' height='10' rx='2' fill='#059669'/>
+<text x='246.5' y='50' font-size='10.5' fill='#334155'>D-NG (0µs)</text>
+<rect x='315.5' y='41' width='10' height='10' rx='2' fill='#0d9488'/>
+<text x='329.5' y='50' font-size='10.5' fill='#334155'>D-NG-chan</text>
+<rect x='392.0' y='41' width='10' height='10' rx='2' fill='#0891b2'/>
+<text x='406.0' y='50' font-size='10.5' fill='#334155'>D-NG-ring v2</text>
+<line x1='60' y1='54.0' x2='616' y2='54.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='58.0' font-size='10.5' fill='#64748b' text-anchor='end'>296</text>
+<line x1='60' y1='112.5' x2='616' y2='112.5' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='116.5' font-size='10.5' fill='#64748b' text-anchor='end'>222</text>
+<line x1='60' y1='171.0' x2='616' y2='171.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='175.0' font-size='10.5' fill='#64748b' text-anchor='end'>148</text>
+<line x1='60' y1='229.5' x2='616' y2='229.5' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='233.5' font-size='10.5' fill='#64748b' text-anchor='end'>74</text>
+<line x1='60' y1='288.0' x2='616' y2='288.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='292.0' font-size='10.5' fill='#64748b' text-anchor='end'>0</text>
+<rect x='72.0' y='249.7' width='11.7' height='38.3' fill='#d97706' rx='2'/>
+<text x='77.9' y='245.7' font-size='9.5' fill='#334155' text-anchor='middle'>49</text>
+<rect x='85.8' y='234.1' width='11.7' height='53.9' fill='#e11d48' rx='2'/>
+<text x='91.6' y='230.1' font-size='9.5' fill='#334155' text-anchor='middle'>68</text>
+<rect x='99.5' y='247.0' width='11.7' height='41.0' fill='#059669' rx='2'/>
+<text x='105.3' y='243.0' font-size='9.5' fill='#334155' text-anchor='middle'>52</text>
+<rect x='113.2' y='231.2' width='11.7' height='56.8' fill='#0d9488' rx='2'/>
+<text x='119.0' y='227.2' font-size='9.5' fill='#334155' text-anchor='middle'>72</text>
+<rect x='126.9' y='238.2' width='11.7' height='49.8' fill='#0891b2' rx='2'/>
+<text x='132.8' y='234.2' font-size='9.5' fill='#334155' text-anchor='middle'>63</text>
+<text x='106.3' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>get100/64</text>
+<rect x='164.7' y='120.5' width='11.7' height='167.5' fill='#d97706' rx='2'/>
+<text x='170.6' y='116.5' font-size='9.5' fill='#334155' text-anchor='middle'>212</text>
+<rect x='178.4' y='94.9' width='11.7' height='193.1' fill='#e11d48' rx='2'/>
+<text x='184.3' y='90.9' font-size='9.5' fill='#334155' text-anchor='middle'>245</text>
+<rect x='192.1' y='84.5' width='11.7' height='203.5' fill='#059669' rx='2'/>
+<text x='198.0' y='80.5' font-size='9.5' fill='#334155' text-anchor='middle'>258</text>
+<rect x='205.9' y='96.0' width='11.7' height='192.0' fill='#0d9488' rx='2'/>
+<text x='211.7' y='92.0' font-size='9.5' fill='#334155' text-anchor='middle'>243</text>
+<rect x='219.6' y='96.1' width='11.7' height='191.9' fill='#0891b2' rx='2'/>
+<text x='225.4' y='92.1' font-size='9.5' fill='#334155' text-anchor='middle'>243</text>
+<text x='199.0' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>get100/256</text>
+<rect x='257.4' y='268.4' width='11.7' height='19.6' fill='#d97706' rx='2'/>
+<text x='263.2' y='264.4' font-size='9.5' fill='#334155' text-anchor='middle'>25</text>
+<rect x='271.1' y='265.7' width='11.7' height='22.3' fill='#e11d48' rx='2'/>
+<text x='277.0' y='261.7' font-size='9.5' fill='#334155' text-anchor='middle'>28</text>
+<rect x='284.8' y='265.9' width='11.7' height='22.1' fill='#059669' rx='2'/>
+<text x='290.7' y='261.9' font-size='9.5' fill='#334155' text-anchor='middle'>28</text>
+<rect x='298.5' y='265.7' width='11.7' height='22.3' fill='#0d9488' rx='2'/>
+<text x='304.4' y='261.7' font-size='9.5' fill='#334155' text-anchor='middle'>28</text>
+<rect x='312.2' y='265.9' width='11.7' height='22.1' fill='#0891b2' rx='2'/>
+<text x='318.1' y='261.9' font-size='9.5' fill='#334155' text-anchor='middle'>28</text>
+<text x='291.7' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>set100/64</text>
+<rect x='350.0' y='225.0' width='11.7' height='63.0' fill='#d97706' rx='2'/>
+<text x='355.9' y='221.0' font-size='9.5' fill='#334155' text-anchor='middle'>80</text>
+<rect x='363.8' y='223.5' width='11.7' height='64.5' fill='#e11d48' rx='2'/>
+<text x='369.6' y='219.5' font-size='9.5' fill='#334155' text-anchor='middle'>82</text>
+<rect x='377.5' y='223.4' width='11.7' height='64.6' fill='#059669' rx='2'/>
+<text x='383.3' y='219.4' font-size='9.5' fill='#334155' text-anchor='middle'>82</text>
+<rect x='391.2' y='224.1' width='11.7' height='63.9' fill='#0d9488' rx='2'/>
+<text x='397.0' y='220.1' font-size='9.5' fill='#334155' text-anchor='middle'>81</text>
+<rect x='404.9' y='224.2' width='11.7' height='63.8' fill='#0891b2' rx='2'/>
+<text x='410.8' y='220.2' font-size='9.5' fill='#334155' text-anchor='middle'>81</text>
+<text x='384.3' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>set100/256</text>
+<rect x='442.7' y='273.8' width='11.7' height='14.2' fill='#d97706' rx='2'/>
+<text x='448.6' y='269.8' font-size='9.5' fill='#334155' text-anchor='middle'>18</text>
+<rect x='456.4' y='272.7' width='11.7' height='15.3' fill='#e11d48' rx='2'/>
+<text x='462.3' y='268.7' font-size='9.5' fill='#334155' text-anchor='middle'>19</text>
+<rect x='470.1' y='273.4' width='11.7' height='14.6' fill='#059669' rx='2'/>
+<text x='476.0' y='269.4' font-size='9.5' fill='#334155' text-anchor='middle'>18</text>
+<rect x='483.9' y='273.0' width='11.7' height='15.0' fill='#0d9488' rx='2'/>
+<text x='489.7' y='269.0' font-size='9.5' fill='#334155' text-anchor='middle'>19</text>
+<rect x='497.6' y='273.3' width='11.7' height='14.7' fill='#0891b2' rx='2'/>
+<text x='503.4' y='269.3' font-size='9.5' fill='#334155' text-anchor='middle'>19</text>
+<text x='477.0' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>getset100/64</text>
+<rect x='535.4' y='239.7' width='11.7' height='48.3' fill='#d97706' rx='2'/>
+<text x='541.2' y='235.7' font-size='9.5' fill='#334155' text-anchor='middle'>61</text>
+<rect x='549.1' y='238.3' width='11.7' height='49.7' fill='#e11d48' rx='2'/>
+<text x='555.0' y='234.3' font-size='9.5' fill='#334155' text-anchor='middle'>63</text>
+<rect x='562.8' y='238.2' width='11.7' height='49.8' fill='#059669' rx='2'/>
+<text x='568.7' y='234.2' font-size='9.5' fill='#334155' text-anchor='middle'>63</text>
+<rect x='576.5' y='238.1' width='11.7' height='49.9' fill='#0d9488' rx='2'/>
+<text x='582.4' y='234.1' font-size='9.5' fill='#334155' text-anchor='middle'>63</text>
+<rect x='590.2' y='238.7' width='11.7' height='49.3' fill='#0891b2' rx='2'/>
+<text x='596.1' y='234.7' font-size='9.5' fill='#334155' text-anchor='middle'>62</text>
+<text x='569.7' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>getset100/256</text>
+<line x1='60' y1='288' x2='616' y2='288' stroke='#94a3b8' stroke-width='1'/>
+<text x='15' y='171.0' font-size='11' font-weight='500' fill='#334155' text-anchor='middle' transform='rotate(-90 15 171.0)'>Throughput (kops/s)</text>
+</svg></div>
+  <div class='svg-wrap'><svg viewBox='0 0 640 340' width='100%' height='340' xmlns='http://www.w3.org/2000/svg'>
+<text x='60' y='20' font-size='13' font-weight='600' fill='#0f172a'>Lock-Free MPSC Ring: v1 (In-Order Predecessor Spin) vs v2 (Per-Slot Ready + writev)</text>
+<text x='60' y='35' font-size='11' fill='#64748b'>In quick1 (v1), a preempted sender between CAS-reserve and commit stalls all senders behind it at 256 workers</text>
+<rect x='60' y='41' width='10' height='10' rx='2' fill='#059669'/>
+<text x='74' y='50' font-size='10.5' fill='#334155'>D-NG (mutex+slice)</text>
+<rect x='195.0' y='41' width='10' height='10' rx='2' fill='#be123c'/>
+<text x='209.0' y='50' font-size='10.5' fill='#334155'>D-NG-ring v1 (predecessor spin)</text>
+<rect x='414.5' y='41' width='10' height='10' rx='2' fill='#0891b2'/>
+<text x='428.5' y='50' font-size='10.5' fill='#334155'>D-NG-ring v2 (slot-ready + writev)</text>
+<line x1='60' y1='54.0' x2='616' y2='54.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='58.0' font-size='10.5' fill='#64748b' text-anchor='end'>3,510</text>
+<line x1='60' y1='112.5' x2='616' y2='112.5' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='116.5' font-size='10.5' fill='#64748b' text-anchor='end'>2,632</text>
+<line x1='60' y1='171.0' x2='616' y2='171.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='175.0' font-size='10.5' fill='#64748b' text-anchor='end'>1,755</text>
+<line x1='60' y1='229.5' x2='616' y2='229.5' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='233.5' font-size='10.5' fill='#64748b' text-anchor='end'>877</text>
+<line x1='60' y1='288.0' x2='616' y2='288.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='292.0' font-size='10.5' fill='#64748b' text-anchor='end'>0</text>
+<rect x='87.5' y='283.7' width='26.0' height='4.3' fill='#059669' rx='2'/>
+<rect x='115.5' y='284.4' width='26.0' height='3.6' fill='#be123c' rx='2'/>
+<rect x='143.5' y='284.2' width='26.0' height='3.8' fill='#0891b2' rx='2'/>
+<text x='129.5' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>get100/64 (kops/s)</text>
+<rect x='226.5' y='270.9' width='26.0' height='17.1' fill='#059669' rx='2'/>
+<text x='239.5' y='266.9' font-size='9.5' fill='#334155' text-anchor='middle'>257</text>
+<rect x='254.5' y='283.1' width='26.0' height='4.9' fill='#be123c' rx='2'/>
+<rect x='282.5' y='272.1' width='26.0' height='15.9' fill='#0891b2' rx='2'/>
+<text x='295.5' y='268.1' font-size='9.5' fill='#334155' text-anchor='middle'>239</text>
+<text x='268.5' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>get100/256 (kops/s)</text>
+<rect x='365.5' y='286.2' width='26.0' height='1.8' fill='#059669' rx='2'/>
+<rect x='393.5' y='282.3' width='26.0' height='5.7' fill='#be123c' rx='2'/>
+<rect x='421.5' y='286.0' width='26.0' height='2.0' fill='#0891b2' rx='2'/>
+<text x='407.5' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>get100/256 CPU (µs/op)</text>
+<rect x='504.5' y='225.8' width='26.0' height='62.2' fill='#059669' rx='2'/>
+<text x='517.5' y='221.8' font-size='9.5' fill='#334155' text-anchor='middle'>933</text>
+<rect x='532.5' y='84.5' width='26.0' height='203.5' fill='#be123c' rx='2'/>
+<text x='545.5' y='80.5' font-size='9.5' fill='#334155' text-anchor='middle'>3,052</text>
+<rect x='560.5' y='221.9' width='26.0' height='66.1' fill='#0891b2' rx='2'/>
+<text x='573.5' y='217.9' font-size='9.5' fill='#334155' text-anchor='middle'>991</text>
+<text x='546.5' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>get100/256 p50 (µs)</text>
+<line x1='60' y1='288' x2='616' y2='288' stroke='#94a3b8' stroke-width='1'/>
+<text x='15' y='171.0' font-size='11' font-weight='500' fill='#334155' text-anchor='middle' transform='rotate(-90 15 171.0)'>Value (see category label)</text>
+</svg></div>
+</div>
+
+<h2>2. Deep Dive on <code>D-M</code> (<code>M</code>): Speed vs Socket Backpressure Failure (T1/T2)</h2>
+<div class="callout warn">
+  <strong>Why <code>D-M</code> was built and tested:</strong> <code>D-M</code> removes the per-connection writer goroutine completely so we can measure the exact cost of having a dedicated writer goroutine vs writing on the caller's goroutine under a lock.
+</div>
+<div class="grid-2">
+  <div class="card">
+    <h3>Happy-Path Performance (When Sockets Never Fill)</h3>
+    <ul>
+      <li>On loopback when the kernel socket send buffer never fills, <code>write(2)</code> is a fast copy into kernel memory and never blocks.</li>
+      <li>On Box 2 (<code>rawhz5</code>), <code>D-M</code> achieved <code>260.8k ops/s</code> on <code>get100/256</code> (21.3 &micro;s/op) and <code>48.5k ops/s</code> on <code>get100/64</code> (<code>55.6k ops/s</code> at <code>GOMAXPROCS=4</code>, halving client CPU from 47.5 to 24.1 &micro;s/op).</li>
+      <li>On <code>netg-r6</code> (<code>rawhz6</code>, where <code>D-M</code> and <code>D-NG</code> ran side-by-side in the same rotated rounds), <strong><code>D-NG</code> matches or slightly leads <code>D-M</code></strong> across the board, proving that <strong>the dedicated writer goroutine in <code>D-NG</code> costs nothing in throughput or latency</strong> once the write-ack rendezvous and <code>hrtimer</code> are removed.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Why <code>D-M</code> Fails T1 and T2 Under Backpressure</h3>
+    <ul>
+      <li><strong>Violates T2 (<code>ctx</code> is local):</strong> When a TCP socket send buffer fills (slow peer, network partition, or large commit burst), the caller goroutine that won <code>wmu.TryLock()</code> blocks inside the kernel <code>write(2)</code> syscall writing both its own frame and every frame queued behind it. Its <code>ctx</code> cancellation cannot interrupt the blocking write unless the whole connection deadline is poisoned.</li>
+      <li><strong>Violates T1 (no write acknowledgment):</strong> The lock holder cannot return to its caller until the kernel accepts the entire drained queue — turning enqueue into a synchronous write barrier for the whole batch.</li>
+      <li><strong>10 deterministic <code>-race</code> failures in <code>pkg/fdbgo/client</code> (<code>race6-m-*</code>):</strong>
+        <ul>
+          <li><code>TestNativeCommit_ReplyBeforeWriteAcknowledgment</code> (4 subtests): commit reply arrives before the committing sender returns from its blocked write.</li>
+          <li><code>TestNativeCommit_WriteBackpressureOwnerRetirement</code> (4 subtests): native actor cannot exit while blocked in gated socket writer.</li>
+          <li><code>TestFallbackStartsEndAtTransportSuspension/flush</code> &amp; <code>TestFallbackReadyBeginStartsEndBeforeConsumingError</code>: warm fallback request is serialized behind a blocked flush.</li>
+        </ul>
+      </li>
+      <li><strong>Why curing <code>D-M</code> recreates <code>A</code>:</strong> Using non-blocking <code>write(2)</code> and handing unwritten <code>EAGAIN</code> tails to a background goroutine is literally today's <code>rawWriter</code> + <code>writeLoop</code> tail-handoff machinery in <code>A</code>.</li>
+    </ul>
+  </div>
+</div>
+
+<h2>3. Where Lock Contention &amp; CPU Actually Go (<code>pprof</code> CPU, Mutex &amp; Block Profiles)</h2>
+<p>Profiles captured on <code>netg-r6</code> during <code>get100/256</code> (4.8M operations) and <code>get100/64</code> (1.2M operations) across <code>D-NG</code> (<code>ng</code>), <code>D-NG-chan</code> (<code>ngc</code>), and <code>D-NG-ring</code> (<code>ngr</code> v1 and v2).</p>
+
+<div class="grid-2">
+  <div class="card">
+    <h3>Mutex Contention Breakdown (<code>get100/256</code>, <code>D-NG</code>, 17.27s total delay over 130.0s CPU)</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Call Site / Lock</th>
+            <th>Role</th>
+            <th>Mutex Delay (s)</th>
+            <th>Share of Mutex Delay</th>
+            <th>Share of Total CPU (130s)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="highlight-warn">
+            <td><code>Conn.PrepareReplyTo</code> (<code>pendingMu.Lock</code>)</td>
+            <td class="text-left">Register request token in reply map before send</td>
+            <td><strong>8.65 s</strong></td>
+            <td><strong>50.07%</strong></td>
+            <td>6.65%</td>
+          </tr>
+          <tr class="highlight-warn">
+            <td><code>Conn.readLoop</code> (<code>pendingMu.Lock</code>)</td>
+            <td class="text-left">Lookup &amp; delete request token on reply arrival</td>
+            <td><strong>4.45 s</strong></td>
+            <td><strong>25.77%</strong></td>
+            <td>3.42%</td>
+          </tr>
+          <tr>
+            <td><code>Transaction.ensureReadVersionFlags</code></td>
+            <td class="text-left">GRV batch / transaction read-version state lock</td>
+            <td>2.36 s</td>
+            <td>13.68%</td>
+            <td>1.82%</td>
+          </tr>
+          <tr>
+            <td><code>ClientMetrics.observeReadLatency</code></td>
+            <td class="text-left">Client metrics histogram lock</td>
+            <td>0.98 s</td>
+            <td>5.65%</td>
+            <td>0.75%</td>
+          </tr>
+          <tr>
+            <td><code>database.getOrDialForSend</code></td>
+            <td class="text-left">Connection pool lookup</td>
+            <td>0.20 s</td>
+            <td>1.14%</td>
+            <td>0.15%</td>
+          </tr>
+          <tr class="highlight">
+            <td><strong><code>Conn.naSend</code> + <code>Conn.naLoop</code> (<code>w.mu</code>)</strong></td>
+            <td class="text-left"><strong>D-NG send-queue mutex (append + slice swap)</strong></td>
+            <td><strong>0.207 s</strong> (0.188 + 0.019)</td>
+            <td><strong>1.20%</strong></td>
+            <td><strong>0.16%</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <h3>CPU &amp; Block Profile Comparison Across Queues (<code>get100/256</code>)</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Metric / Symbol</th>
+            <th><code>D-NG</code> (mutex+slice)</th>
+            <th><code>D-NG-chan</code> (channel)</th>
+            <th><code>D-NG-ring</code> v1 (spin)</th>
+            <th><code>D-NG-ring</code> v2 (slot-ready)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Wall Duration / Total CPU</td>
+            <td>18.38s / 129.99s</td>
+            <td>19.64s / 142.94s</td>
+            <td>28.78s / 202.78s</td>
+            <td>19.91s / 141.44s</td>
+          </tr>
+          <tr>
+            <td><code>syscall.Syscall6</code> (flat CPU)</td>
+            <td>18.05s (13.89%)</td>
+            <td>18.30s (12.80%)</td>
+            <td>23.29s (11.49%)</td>
+            <td>18.71s (13.23%)</td>
+          </tr>
+          <tr>
+            <td><code>runtime.lock2</code> (cum CPU)</td>
+            <td>4.56s (3.51%)</td>
+            <td>6.15s (4.30%)</td>
+            <td><strong>41.19s (20.31%)</strong></td>
+            <td>5.90s (4.17%)</td>
+          </tr>
+          <tr>
+            <td><code>runtime.procyieldAsm</code> (flat CPU)</td>
+            <td>&lt;1.3s (&lt;1.0%)</td>
+            <td>2.23s (1.56%)</td>
+            <td><strong>25.71s (12.68%)</strong></td>
+            <td>1.97s (1.39%)</td>
+          </tr>
+          <tr>
+            <td>Send function cum CPU (<code>naSend</code>/<code>chanSend</code>/<code>ringSend</code>)</td>
+            <td><strong>1.76s (1.35%)</strong></td>
+            <td>3.71s (2.60%)</td>
+            <td>4.06s (2.00%)</td>
+            <td>2.08s (1.47%)</td>
+          </tr>
+          <tr>
+            <td>Writer loop cum CPU (<code>naLoop</code>/<code>chanLoop</code>/<code>ringLoop</code>)</td>
+            <td>15.09s (11.61%)</td>
+            <td>16.64s (11.64%)</td>
+            <td>21.08s (10.40%)</td>
+            <td>15.92s (11.26%)</td>
+          </tr>
+          <tr>
+            <td><code>PrepareReplyTo</code> + <code>readLoop</code> share of mutex wait</td>
+            <td><strong>75.84%</strong> (50.1% + 25.8%)</td>
+            <td><strong>77.61%</strong> (49.9% + 27.7%)</td>
+            <td><strong>68.02%</strong> (44.4% + 23.6%)</td>
+            <td>~75%</td>
+          </tr>
+          <tr>
+            <td>Block profile: <code>runtime.selectgo</code> (waiting on reply)</td>
+            <td>98.55%</td>
+            <td>98.59%</td>
+            <td>98.96%</td>
+            <td>98.9%</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<h2>4. Queue &amp; Sender-Write Benchmark Tables on <code>netg-r6</code> (All 9 Closed-Loop Cells)</h2>
+<h3>get100 — 8, 64, and 256 workers</h3>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>6,446</strong><span class='spread'>[5,937, 6,932]</span></td><td><strong>143.8</strong><span class='spread'>[142.8, 153.6]</span></td><td><strong>79.7</strong><span class='spread'>[78.2, 81.9]</span></td><td><strong>1,219</strong><span class='spread'>[1,155, 1,312]</span></td><td><strong>2,908</strong><span class='spread'>[2,069, 2,936]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>1.24× / 0.80× / 1.01× / 0.81× / 1.02×</td><td>-</td></tr>
+<tr><td>A (today)</td><td><strong>5,187</strong><span class='spread'>[5,176, 5,246]</span></td><td><strong>179.0</strong><span class='spread'>[175.3, 179.3]</span></td><td><strong>78.6</strong><span class='spread'>[78.5, 79.2]</span></td><td><strong>1,502</strong><span class='spread'>[1,487, 1,504]</span></td><td><strong>2,847</strong><span class='spread'>[2,800, 2,877]</span></td><td>0.80× / 1.25× / 0.99× / 1.23× / 0.98×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td></tr>
+<tr><td>A0 (no delay)</td><td><strong>5,943</strong><span class='spread'>[5,937, 6,143]</span></td><td><strong>158.7</strong><span class='spread'>[154.4, 159.3]</span></td><td><strong>79.0</strong><span class='spread'>[78.1, 79.7]</span></td><td><strong>1,319</strong><span class='spread'>[1,308, 1,334]</span></td><td><strong>2,178</strong><span class='spread'>[2,000, 2,461]</span></td><td>0.92× / 1.10× / 0.99× / 1.08× / 0.75×</td><td>1.15× / 0.89× / 1.00× / 0.88× / 0.77×</td><td>-</td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>5,760</strong><span class='spread'>[5,700, 5,875]</span></td><td><strong>148.6</strong><span class='spread'>[145.5, 149.1]</span></td><td><strong>82.8</strong><span class='spread'>[81.5, 84.8]</span></td><td><strong>1,364</strong><span class='spread'>[1,333, 1,368]</span></td><td><strong>2,282</strong><span class='spread'>[2,176, 2,975]</span></td><td>0.89× / 1.03× / 1.04× / 1.12× / 0.78×</td><td>1.11× / 0.83× / 1.05× / 0.91× / 0.80×</td><td><strong>1.6</strong><span class='spread'>[1.6, 1.6]</span></td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>5,870</strong><span class='spread'>[5,831, 5,890]</span></td><td><strong>140.5</strong><span class='spread'>[138.6, 142.1]</span></td><td><strong>78.3</strong><span class='spread'>[77.2, 78.7]</span></td><td><strong>1,346</strong><span class='spread'>[1,336, 1,354]</span></td><td><strong>2,448</strong><span class='spread'>[2,413, 2,536]</span></td><td>0.91× / 0.98× / 0.98× / 1.10× / 0.84×</td><td>1.13× / 0.79× / 1.00× / 0.90× / 0.86×</td><td><strong>1.7</strong><span class='spread'>[1.6, 1.7]</span></td></tr>
+<tr><td>D-NG+yield</td><td><strong>5,858</strong><span class='spread'>[5,763, 5,918]</span></td><td><strong>146.8</strong><span class='spread'>[146.6, 147.6]</span></td><td><strong>78.2</strong><span class='spread'>[77.7, 80.2]</span></td><td><strong>1,343</strong><span class='spread'>[1,331, 1,364]</span></td><td><strong>2,278</strong><span class='spread'>[2,275, 2,736]</span></td><td>0.91× / 1.02× / 0.98× / 1.10× / 0.78×</td><td>1.13× / 0.82× / 0.99× / 0.89× / 0.80×</td><td><strong>2.3</strong><span class='spread'>[2.3, 2.3]</span></td></tr>
+<tr><td>D-NG-chan</td><td><strong>5,917</strong><span class='spread'>[5,806, 5,973]</span></td><td><strong>144.2</strong><span class='spread'>[142.4, 144.3]</span></td><td><strong>78.3</strong><span class='spread'>[77.7, 78.3]</span></td><td><strong>1,344</strong><span class='spread'>[1,323, 1,352]</span></td><td><strong>2,540</strong><span class='spread'>[2,076, 2,820]</span></td><td>0.92× / 1.00× / 0.98× / 1.10× / 0.87×</td><td>1.14× / 0.81× / 1.00× / 0.89× / 0.89×</td><td><strong>1.7</strong><span class='spread'>[1.7, 1.7]</span></td></tr>
+<tr><td>D-NG-ring v2</td><td><strong>5,881</strong><span class='spread'>[5,852, 5,934]</span></td><td><strong>142.7</strong><span class='spread'>[142.6, 143.0]</span></td><td><strong>77.7</strong><span class='spread'>[77.0, 78.3]</span></td><td><strong>1,340</strong><span class='spread'>[1,331, 1,348]</span></td><td><strong>2,246</strong><span class='spread'>[2,057, 2,387]</span></td><td>0.91× / 0.99× / 0.97× / 1.10× / 0.77×</td><td>1.13× / 0.80× / 0.99× / 0.89× / 0.79×</td><td><strong>1.7</strong><span class='spread'>[1.7, 1.7]</span></td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>31,589</strong><span class='spread'>[31,517, 32,474]</span></td><td><strong>71.8</strong><span class='spread'>[71.0, 72.3]</span></td><td><strong>20.4</strong><span class='spread'>[19.6, 21.4]</span></td><td><strong>1,889</strong><span class='spread'>[1,875, 1,913]</span></td><td><strong>3,564</strong><span class='spread'>[3,554, 3,624]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.65× / 1.30× / 0.98× / 1.50× / 1.42×</td><td>-</td></tr>
+<tr><td>A (today)</td><td><strong>48,535</strong><span class='spread'>[43,665, 54,095]</span></td><td><strong>55.1</strong><span class='spread'>[51.0, 59.5]</span></td><td><strong>20.8</strong><span class='spread'>[20.3, 21.5]</span></td><td><strong>1,262</strong><span class='spread'>[998, 1,451]</span></td><td><strong>2,512</strong><span class='spread'>[2,427, 2,539]</span></td><td>1.54× / 0.77× / 1.02× / 0.67× / 0.70×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td></tr>
+<tr><td>A0 (no delay)</td><td><strong>99,953</strong><span class='spread'>[99,192, 100,320]</span></td><td><strong>42.1</strong><span class='spread'>[42.0, 42.3]</span></td><td><strong>29.7</strong><span class='spread'>[29.5, 30.0]</span></td><td><strong>618</strong><span class='spread'>[616, 620]</span></td><td><strong>1,110</strong><span class='spread'>[1,099, 1,139]</span></td><td>3.16× / 0.59× / 1.45× / 0.33× / 0.31×</td><td>2.06× / 0.76× / 1.43× / 0.49× / 0.44×</td><td>-</td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>68,235</strong><span class='spread'>[53,904, 69,444]</span></td><td><strong>39.9</strong><span class='spread'>[38.3, 47.4]</span></td><td><strong>20.9</strong><span class='spread'>[19.4, 21.4]</span></td><td><strong>830</strong><span class='spread'>[794, 1,118]</span></td><td><strong>2,110</strong><span class='spread'>[1,849, 2,296]</span></td><td>2.16× / 0.56× / 1.02× / 0.44× / 0.59×</td><td>1.41× / 0.72× / 1.00× / 0.66× / 0.84×</td><td><strong>4.2</strong><span class='spread'>[4.1, 4.2]</span></td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>51,985</strong><span class='spread'>[49,267, 55,815]</span></td><td><strong>48.3</strong><span class='spread'>[46.1, 50.7]</span></td><td><strong>19.7</strong><span class='spread'>[19.3, 19.9]</span></td><td><strong>1,218</strong><span class='spread'>[1,026, 1,347]</span></td><td><strong>2,297</strong><span class='spread'>[2,167, 2,332]</span></td><td>1.65× / 0.67× / 0.96× / 0.64× / 0.64×</td><td>1.07× / 0.88× / 0.95× / 0.96× / 0.91×</td><td><strong>4.1</strong><span class='spread'>[4.1, 4.1]</span></td></tr>
+<tr><td>D-NG+yield</td><td><strong>79,995</strong><span class='spread'>[77,191, 87,728]</span></td><td><strong>39.1</strong><span class='spread'>[36.5, 39.1]</span></td><td><strong>24.7</strong><span class='spread'>[23.9, 24.8]</span></td><td><strong>710</strong><span class='spread'>[693, 735]</span></td><td><strong>1,792</strong><span class='spread'>[1,379, 1,814]</span></td><td>2.53× / 0.54× / 1.21× / 0.38× / 0.50×</td><td>1.65× / 0.71× / 1.18× / 0.56× / 0.71×</td><td><strong>5.1</strong><span class='spread'>[5.1, 5.2]</span></td></tr>
+<tr><td>D-NG-chan</td><td><strong>71,882</strong><span class='spread'>[58,767, 75,392]</span></td><td><strong>41.4</strong><span class='spread'>[38.8, 46.8]</span></td><td><strong>22.4</strong><span class='spread'>[21.1, 22.5]</span></td><td><strong>754</strong><span class='spread'>[751, 936]</span></td><td><strong>1,996</strong><span class='spread'>[1,764, 2,130]</span></td><td>2.28× / 0.58× / 1.09× / 0.40× / 0.56×</td><td>1.48× / 0.75× / 1.07× / 0.60× / 0.79×</td><td><strong>3.9</strong><span class='spread'>[3.8, 3.9]</span></td></tr>
+<tr><td>D-NG-ring v2</td><td><strong>63,102</strong><span class='spread'>[49,135, 64,156]</span></td><td><strong>42.6</strong><span class='spread'>[41.8, 51.5]</span></td><td><strong>20.0</strong><span class='spread'>[19.9, 20.4]</span></td><td><strong>851</strong><span class='spread'>[832, 1,332]</span></td><td><strong>2,066</strong><span class='spread'>[1,973, 2,584]</span></td><td>2.00× / 0.59× / 0.98× / 0.45× / 0.58×</td><td>1.30× / 0.77× / 0.96× / 0.67× / 0.82×</td><td><strong>4.0</strong><span class='spread'>[4.0, 4.1]</span></td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>50,288</strong><span class='spread'>[49,589, 50,500]</span></td><td><strong>65.8</strong><span class='spread'>[65.2, 67.2]</span></td><td><strong>13.1</strong><span class='spread'>[13.0, 13.1]</span></td><td><strong>4,601</strong><span class='spread'>[4,573, 4,680]</span></td><td><strong>8,689</strong><span class='spread'>[8,674, 9,023]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.24× / 1.99× / 0.86× / 4.13× / 2.92×</td><td>-</td></tr>
+<tr><td>A (today)</td><td><strong>212,080</strong><span class='spread'>[209,176, 213,897]</span></td><td><strong>33.0</strong><span class='spread'>[32.8, 33.5]</span></td><td><strong>15.2</strong><span class='spread'>[14.7, 15.3]</span></td><td><strong>1,114</strong><span class='spread'>[1,105, 1,127]</span></td><td><strong>2,976</strong><span class='spread'>[2,953, 3,091]</span></td><td>4.22× / 0.50× / 1.16× / 0.24× / 0.34×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td></tr>
+<tr><td>A0 (no delay)</td><td><strong>225,719</strong><span class='spread'>[225,303, 225,884]</span></td><td><strong>32.2</strong><span class='spread'>[32.2, 32.2]</span></td><td><strong>17.8</strong><span class='spread'>[17.4, 18.1]</span></td><td><strong>1,043</strong><span class='spread'>[1,039, 1,050]</span></td><td><strong>2,814</strong><span class='spread'>[2,738, 2,918]</span></td><td>4.49× / 0.49× / 1.36× / 0.23× / 0.32×</td><td>1.06× / 0.97× / 1.17× / 0.94× / 0.95×</td><td>-</td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>244,590</strong><span class='spread'>[243,539, 246,615]</span></td><td><strong>27.5</strong><span class='spread'>[27.5, 27.8]</span></td><td><strong>17.1</strong><span class='spread'>[17.0, 17.3]</span></td><td><strong>977</strong><span class='spread'>[969, 982]</span></td><td><strong>2,647</strong><span class='spread'>[2,582, 2,786]</span></td><td>4.86× / 0.42× / 1.31× / 0.21× / 0.30×</td><td>1.15× / 0.83× / 1.13× / 0.88× / 0.89×</td><td><strong>4.9</strong><span class='spread'>[4.9, 5.0]</span></td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>257,704</strong><span class='spread'>[257,108, 259,835]</span></td><td><strong>27.0</strong><span class='spread'>[27.0, 27.2]</span></td><td><strong>16.8</strong><span class='spread'>[16.6, 16.9]</span></td><td><strong>934</strong><span class='spread'>[930, 936]</span></td><td><strong>2,134</strong><span class='spread'>[2,037, 2,208]</span></td><td>5.12× / 0.41× / 1.28× / 0.20× / 0.25×</td><td>1.22× / 0.82× / 1.10× / 0.84× / 0.72×</td><td><strong>4.4</strong><span class='spread'>[4.4, 4.5]</span></td></tr>
+<tr><td>D-NG+yield</td><td><strong>246,695</strong><span class='spread'>[245,499, 246,715]</span></td><td><strong>29.2</strong><span class='spread'>[28.8, 29.3]</span></td><td><strong>16.6</strong><span class='spread'>[16.4, 16.7]</span></td><td><strong>970</strong><span class='spread'>[965, 974]</span></td><td><strong>2,306</strong><span class='spread'>[2,277, 2,384]</span></td><td>4.91× / 0.44× / 1.26× / 0.21× / 0.27×</td><td>1.16× / 0.88× / 1.09× / 0.87× / 0.78×</td><td><strong>5.9</strong><span class='spread'>[5.9, 6.1]</span></td></tr>
+<tr><td>D-NG-chan</td><td><strong>243,136</strong><span class='spread'>[242,109, 244,657]</span></td><td><strong>29.7</strong><span class='spread'>[29.7, 29.7]</span></td><td><strong>17.6</strong><span class='spread'>[17.6, 17.7]</span></td><td><strong>970</strong><span class='spread'>[966, 976]</span></td><td><strong>2,548</strong><span class='spread'>[2,506, 2,612]</span></td><td>4.83× / 0.45× / 1.34× / 0.21× / 0.29×</td><td>1.15× / 0.90× / 1.16× / 0.87× / 0.86×</td><td><strong>4.4</strong><span class='spread'>[4.3, 4.4]</span></td></tr>
+<tr><td>D-NG-ring v2</td><td><strong>243,030</strong><span class='spread'>[242,881, 243,060]</span></td><td><strong>29.3</strong><span class='spread'>[29.3, 29.4]</span></td><td><strong>17.6</strong><span class='spread'>[17.6, 17.6]</span></td><td><strong>977</strong><span class='spread'>[976, 978]</span></td><td><strong>2,431</strong><span class='spread'>[2,409, 2,494]</span></td><td>4.83× / 0.45× / 1.34× / 0.21× / 0.28×</td><td>1.15× / 0.89× / 1.16× / 0.88× / 0.82×</td><td><strong>4.1</strong><span class='spread'>[4.1, 4.2]</span></td></tr>
+</tbody></table></div>
+
+<h3>set100 — 8, 64, and 256 workers</h3>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>2,511</strong><span class='spread'>[2,444, 2,542]</span></td><td><strong>179.6</strong><span class='spread'>[179.3, 182.3]</span></td><td><strong>252.8</strong><span class='spread'>[252.4, 258.2]</span></td><td><strong>3,127</strong><span class='spread'>[3,105, 3,220]</span></td><td><strong>5,843</strong><span class='spread'>[5,741, 5,902]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.96× / 0.88× / 0.95× / 1.02× / 1.16×</td><td>-</td></tr>
+<tr><td>A (today)</td><td><strong>2,608</strong><span class='spread'>[2,577, 2,751]</span></td><td><strong>203.4</strong><span class='spread'>[202.1, 210.4]</span></td><td><strong>265.4</strong><span class='spread'>[234.8, 281.9]</span></td><td><strong>3,062</strong><span class='spread'>[2,950, 3,077]</span></td><td><strong>5,020</strong><span class='spread'>[4,991, 5,112]</span></td><td>1.04× / 1.13× / 1.05× / 0.98× / 0.86×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td></tr>
+<tr><td>A0 (no delay)</td><td><strong>2,827</strong><span class='spread'>[2,758, 2,927]</span></td><td><strong>193.0</strong><span class='spread'>[183.5, 198.0]</span></td><td><strong>278.3</strong><span class='spread'>[216.6, 287.2]</span></td><td><strong>2,806</strong><span class='spread'>[2,710, 2,855]</span></td><td><strong>4,816</strong><span class='spread'>[4,503, 4,861]</span></td><td>1.13× / 1.07× / 1.10× / 0.90× / 0.82×</td><td>1.08× / 0.95× / 1.05× / 0.92× / 0.96×</td><td>-</td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>3,037</strong><span class='spread'>[2,860, 3,260]</span></td><td><strong>213.7</strong><span class='spread'>[198.9, 216.6]</span></td><td><strong>330.7</strong><span class='spread'>[254.6, 338.8]</span></td><td><strong>2,654</strong><span class='spread'>[2,284, 2,771]</span></td><td><strong>4,141</strong><span class='spread'>[3,995, 5,081]</span></td><td>1.21× / 1.19× / 1.31× / 0.85× / 0.71×</td><td>1.16× / 1.05× / 1.25× / 0.87× / 0.83×</td><td><strong>1.5</strong><span class='spread'>[1.5, 1.6]</span></td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>2,844</strong><span class='spread'>[2,722, 2,985]</span></td><td><strong>188.6</strong><span class='spread'>[185.3, 189.6]</span></td><td><strong>260.1</strong><span class='spread'>[253.6, 288.4]</span></td><td><strong>2,801</strong><span class='spread'>[2,653, 2,926]</span></td><td><strong>4,898</strong><span class='spread'>[4,390, 4,972]</span></td><td>1.13× / 1.05× / 1.03× / 0.90× / 0.84×</td><td>1.09× / 0.93× / 0.98× / 0.91× / 0.98×</td><td><strong>1.5</strong><span class='spread'>[1.5, 1.7]</span></td></tr>
+<tr><td>D-NG+yield</td><td><strong>2,665</strong><span class='spread'>[2,624, 2,938]</span></td><td><strong>195.5</strong><span class='spread'>[188.8, 196.7]</span></td><td><strong>263.1</strong><span class='spread'>[246.0, 294.9]</span></td><td><strong>2,971</strong><span class='spread'>[2,702, 3,004]</span></td><td><strong>5,265</strong><span class='spread'>[4,975, 5,720]</span></td><td>1.06× / 1.09× / 1.04× / 0.95× / 0.90×</td><td>1.02× / 0.96× / 0.99× / 0.97× / 1.05×</td><td><strong>2.1</strong><span class='spread'>[1.9, 2.1]</span></td></tr>
+<tr><td>D-NG-chan</td><td><strong>2,866</strong><span class='spread'>[2,694, 2,887]</span></td><td><strong>184.4</strong><span class='spread'>[183.0, 198.4]</span></td><td><strong>258.7</strong><span class='spread'>[256.3, 277.4]</span></td><td><strong>2,812</strong><span class='spread'>[2,726, 2,941]</span></td><td><strong>4,752</strong><span class='spread'>[4,622, 4,781]</span></td><td>1.14× / 1.03× / 1.02× / 0.90× / 0.81×</td><td>1.10× / 0.91× / 0.97× / 0.92× / 0.95×</td><td><strong>1.5</strong><span class='spread'>[1.5, 1.6]</span></td></tr>
+<tr><td>D-NG-ring v2</td><td><strong>2,798</strong><span class='spread'>[2,696, 2,984]</span></td><td><strong>187.6</strong><span class='spread'>[185.8, 197.5]</span></td><td><strong>273.0</strong><span class='spread'>[267.9, 313.8]</span></td><td><strong>2,858</strong><span class='spread'>[2,695, 2,934]</span></td><td><strong>5,021</strong><span class='spread'>[4,310, 5,200]</span></td><td>1.11× / 1.04× / 1.08× / 0.91× / 0.86×</td><td>1.07× / 0.92× / 1.03× / 0.93× / 1.00×</td><td><strong>1.5</strong><span class='spread'>[1.5, 1.7]</span></td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>19,153</strong><span class='spread'>[18,602, 19,767]</span></td><td><strong>72.0</strong><span class='spread'>[69.6, 72.4]</span></td><td><strong>71.2</strong><span class='spread'>[71.0, 72.0]</span></td><td><strong>3,183</strong><span class='spread'>[3,132, 3,249]</span></td><td><strong>6,022</strong><span class='spread'>[5,548, 7,153]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.77× / 0.68× / 0.82× / 1.28× / 1.22×</td><td>-</td></tr>
+<tr><td>A (today)</td><td><strong>24,832</strong><span class='spread'>[24,209, 24,979]</span></td><td><strong>105.2</strong><span class='spread'>[103.0, 106.4]</span></td><td><strong>87.1</strong><span class='spread'>[85.2, 87.7]</span></td><td><strong>2,496</strong><span class='spread'>[2,463, 2,597]</span></td><td><strong>4,921</strong><span class='spread'>[4,679, 5,025]</span></td><td>1.30× / 1.46× / 1.22× / 0.78× / 0.82×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td></tr>
+<tr><td>A0 (no delay)</td><td><strong>28,330</strong><span class='spread'>[28,321, 28,738]</span></td><td><strong>91.6</strong><span class='spread'>[89.3, 91.6]</span></td><td><strong>90.6</strong><span class='spread'>[89.9, 91.4]</span></td><td><strong>2,143</strong><span class='spread'>[2,130, 2,149]</span></td><td><strong>3,982</strong><span class='spread'>[3,889, 4,208]</span></td><td>1.48× / 1.27× / 1.27× / 0.67× / 0.66×</td><td>1.14× / 0.87× / 1.04× / 0.86× / 0.81×</td><td>-</td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>28,286</strong><span class='spread'>[26,630, 28,503]</span></td><td><strong>93.6</strong><span class='spread'>[93.2, 93.9]</span></td><td><strong>93.0</strong><span class='spread'>[91.5, 94.6]</span></td><td><strong>2,153</strong><span class='spread'>[2,144, 2,194]</span></td><td><strong>3,555</strong><span class='spread'>[3,529, 5,292]</span></td><td>1.48× / 1.30× / 1.31× / 0.68× / 0.59×</td><td>1.14× / 0.89× / 1.07× / 0.86× / 0.72×</td><td><strong>2.8</strong><span class='spread'>[2.8, 2.8]</span></td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>27,927</strong><span class='spread'>[27,816, 28,237]</span></td><td><strong>93.6</strong><span class='spread'>[91.7, 94.8]</span></td><td><strong>90.8</strong><span class='spread'>[90.0, 91.7]</span></td><td><strong>2,157</strong><span class='spread'>[2,152, 2,171]</span></td><td><strong>3,852</strong><span class='spread'>[3,852, 4,376]</span></td><td>1.46× / 1.30× / 1.28× / 0.68× / 0.64×</td><td>1.12× / 0.89× / 1.04× / 0.86× / 0.78×</td><td><strong>2.8</strong><span class='spread'>[2.8, 2.9]</span></td></tr>
+<tr><td>D-NG+yield</td><td><strong>28,295</strong><span class='spread'>[28,238, 28,549]</span></td><td><strong>91.2</strong><span class='spread'>[89.5, 91.8]</span></td><td><strong>88.8</strong><span class='spread'>[88.4, 89.6]</span></td><td><strong>2,138</strong><span class='spread'>[2,136, 2,148]</span></td><td><strong>4,314</strong><span class='spread'>[3,706, 4,700]</span></td><td>1.48× / 1.27× / 1.25× / 0.67× / 0.72×</td><td>1.14× / 0.87× / 1.02× / 0.86× / 0.88×</td><td><strong>3.6</strong><span class='spread'>[3.6, 3.6]</span></td></tr>
+<tr><td>D-NG-chan</td><td><strong>28,281</strong><span class='spread'>[26,686, 28,651]</span></td><td><strong>92.2</strong><span class='spread'>[90.5, 95.4]</span></td><td><strong>89.5</strong><span class='spread'>[89.2, 94.0]</span></td><td><strong>2,149</strong><span class='spread'>[2,136, 2,166]</span></td><td><strong>4,039</strong><span class='spread'>[3,813, 5,092]</span></td><td>1.48× / 1.28× / 1.26× / 0.68× / 0.67×</td><td>1.14× / 0.88× / 1.03× / 0.86× / 0.82×</td><td><strong>2.9</strong><span class='spread'>[2.8, 2.9]</span></td></tr>
+<tr><td>D-NG-ring v2</td><td><strong>27,931</strong><span class='spread'>[27,777, 28,640]</span></td><td><strong>93.0</strong><span class='spread'>[91.3, 93.5]</span></td><td><strong>90.3</strong><span class='spread'>[89.3, 91.3]</span></td><td><strong>2,160</strong><span class='spread'>[2,134, 2,169]</span></td><td><strong>4,393</strong><span class='spread'>[3,763, 4,576]</span></td><td>1.46× / 1.29× / 1.27× / 0.68× / 0.73×</td><td>1.12× / 0.88× / 1.04× / 0.87× / 0.89×</td><td><strong>2.8</strong><span class='spread'>[2.8, 2.9]</span></td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>46,027</strong><span class='spread'>[44,111, 46,478]</span></td><td><strong>53.5</strong><span class='spread'>[53.0, 57.2]</span></td><td><strong>46.5</strong><span class='spread'>[45.3, 46.6]</span></td><td><strong>5,215</strong><span class='spread'>[5,139, 5,313]</span></td><td><strong>9,598</strong><span class='spread'>[9,316, 10,123]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.58× / 1.17× / 0.95× / 1.68× / 1.67×</td><td>-</td></tr>
+<tr><td>A (today)</td><td><strong>79,794</strong><span class='spread'>[73,465, 80,156]</span></td><td><strong>45.7</strong><span class='spread'>[45.5, 47.0]</span></td><td><strong>49.0</strong><span class='spread'>[48.6, 50.5]</span></td><td><strong>3,096</strong><span class='spread'>[3,084, 3,190]</span></td><td><strong>5,737</strong><span class='spread'>[5,699, 6,808]</span></td><td>1.73× / 0.85× / 1.05× / 0.59× / 0.60×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td></tr>
+<tr><td>A0 (no delay)</td><td><strong>80,629</strong><span class='spread'>[77,410, 81,208]</span></td><td><strong>45.7</strong><span class='spread'>[45.6, 46.9]</span></td><td><strong>50.2</strong><span class='spread'>[50.1, 50.4]</span></td><td><strong>3,062</strong><span class='spread'>[3,051, 3,079]</span></td><td><strong>6,112</strong><span class='spread'>[5,721, 6,603]</span></td><td>1.75× / 0.85× / 1.08× / 0.59× / 0.64×</td><td>1.01× / 1.00× / 1.02× / 0.99× / 1.07×</td><td>-</td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>81,728</strong><span class='spread'>[81,036, 82,405]</span></td><td><strong>43.0</strong><span class='spread'>[42.3, 43.4]</span></td><td><strong>48.1</strong><span class='spread'>[48.1, 49.6]</span></td><td><strong>3,025</strong><span class='spread'>[3,013, 3,038]</span></td><td><strong>5,286</strong><span class='spread'>[5,112, 5,508]</span></td><td>1.78× / 0.80× / 1.03× / 0.58× / 0.55×</td><td>1.02× / 0.94× / 0.98× / 0.98× / 0.92×</td><td><strong>4.4</strong><span class='spread'>[4.3, 4.4]</span></td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>81,844</strong><span class='spread'>[80,539, 82,638]</span></td><td><strong>42.3</strong><span class='spread'>[41.8, 42.6]</span></td><td><strong>49.1</strong><span class='spread'>[49.0, 49.4]</span></td><td><strong>3,025</strong><span class='spread'>[3,018, 3,035]</span></td><td><strong>5,845</strong><span class='spread'>[5,126, 5,929]</span></td><td>1.78× / 0.79× / 1.06× / 0.58× / 0.61×</td><td>1.03× / 0.92× / 1.00× / 0.98× / 1.02×</td><td><strong>4.5</strong><span class='spread'>[4.5, 4.5]</span></td></tr>
+<tr><td>D-NG+yield</td><td><strong>81,337</strong><span class='spread'>[81,147, 81,416]</span></td><td><strong>44.8</strong><span class='spread'>[44.7, 45.2]</span></td><td><strong>49.4</strong><span class='spread'>[49.3, 49.6]</span></td><td><strong>3,047</strong><span class='spread'>[3,046, 3,055]</span></td><td><strong>5,952</strong><span class='spread'>[5,905, 5,974]</span></td><td>1.77× / 0.84× / 1.06× / 0.58× / 0.62×</td><td>1.02× / 0.98× / 1.01× / 0.98× / 1.04×</td><td><strong>6.1</strong><span class='spread'>[6.1, 6.1]</span></td></tr>
+<tr><td>D-NG-chan</td><td><strong>80,952</strong><span class='spread'>[78,881, 80,971]</span></td><td><strong>46.0</strong><span class='spread'>[45.6, 46.9]</span></td><td><strong>50.2</strong><span class='spread'>[50.0, 50.4]</span></td><td><strong>3,067</strong><span class='spread'>[3,063, 3,081]</span></td><td><strong>5,699</strong><span class='spread'>[5,521, 6,566]</span></td><td>1.76× / 0.86× / 1.08× / 0.59× / 0.59×</td><td>1.01× / 1.01× / 1.02× / 0.99× / 0.99×</td><td><strong>4.4</strong><span class='spread'>[4.4, 4.6]</span></td></tr>
+<tr><td>D-NG-ring v2</td><td><strong>80,856</strong><span class='spread'>[79,266, 81,074]</span></td><td><strong>45.5</strong><span class='spread'>[45.3, 45.7]</span></td><td><strong>50.3</strong><span class='spread'>[49.7, 51.0]</span></td><td><strong>3,057</strong><span class='spread'>[3,057, 3,075]</span></td><td><strong>5,885</strong><span class='spread'>[5,496, 6,205]</span></td><td>1.76× / 0.85× / 1.08× / 0.59× / 0.61×</td><td>1.01× / 0.99× / 1.03× / 0.99× / 1.03×</td><td><strong>4.3</strong><span class='spread'>[4.2, 4.3]</span></td></tr>
+</tbody></table></div>
+
+<h3>getset100 — 8, 64, and 256 workers</h3>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>1,771</strong><span class='spread'>[1,768, 1,798]</span></td><td><strong>271.9</strong><span class='spread'>[262.1, 274.7]</span></td><td><strong>329.4</strong><span class='spread'>[326.2, 331.1]</span></td><td><strong>4,409</strong><span class='spread'>[4,380, 4,441]</span></td><td><strong>8,172</strong><span class='spread'>[8,024, 8,933]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.92× / 0.80× / 0.87× / 1.07× / 1.11×</td><td>-</td></tr>
+<tr><td>A (today)</td><td><strong>1,935</strong><span class='spread'>[1,929, 1,957]</span></td><td><strong>339.8</strong><span class='spread'>[337.8, 347.4]</span></td><td><strong>377.2</strong><span class='spread'>[367.5, 410.7]</span></td><td><strong>4,129</strong><span class='spread'>[4,081, 4,196]</span></td><td><strong>7,350</strong><span class='spread'>[7,308, 7,685]</span></td><td>1.09× / 1.25× / 1.15× / 0.94× / 0.90×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td></tr>
+<tr><td>A0 (no delay)</td><td><strong>2,184</strong><span class='spread'>[2,178, 2,304]</span></td><td><strong>309.0</strong><span class='spread'>[308.1, 325.5]</span></td><td><strong>377.6</strong><span class='spread'>[344.7, 378.7]</span></td><td><strong>3,682</strong><span class='spread'>[3,425, 3,688]</span></td><td><strong>6,461</strong><span class='spread'>[5,906, 6,543]</span></td><td>1.23× / 1.14× / 1.15× / 0.84× / 0.79×</td><td>1.13× / 0.91× / 1.00× / 0.89× / 0.88×</td><td>-</td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>2,177</strong><span class='spread'>[2,105, 2,251]</span></td><td><strong>304.0</strong><span class='spread'>[287.5, 320.8]</span></td><td><strong>393.3</strong><span class='spread'>[324.6, 426.0]</span></td><td><strong>3,655</strong><span class='spread'>[3,591, 3,834]</span></td><td><strong>5,665</strong><span class='spread'>[5,660, 6,323]</span></td><td>1.23× / 1.12× / 1.19× / 0.83× / 0.69×</td><td>1.13× / 0.89× / 1.04× / 0.89× / 0.77×</td><td><strong>1.5</strong><span class='spread'>[1.4, 1.5]</span></td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>2,190</strong><span class='spread'>[2,076, 2,246]</span></td><td><strong>291.1</strong><span class='spread'>[285.6, 307.4]</span></td><td><strong>362.5</strong><span class='spread'>[342.9, 436.4]</span></td><td><strong>3,675</strong><span class='spread'>[3,648, 3,837]</span></td><td><strong>6,318</strong><span class='spread'>[6,112, 6,829]</span></td><td>1.24× / 1.07× / 1.10× / 0.83× / 0.77×</td><td>1.13× / 0.86× / 0.96× / 0.89× / 0.86×</td><td><strong>1.6</strong><span class='spread'>[1.5, 1.6]</span></td></tr>
+<tr><td>D-NG+yield</td><td><strong>2,110</strong><span class='spread'>[2,040, 2,184]</span></td><td><strong>296.7</strong><span class='spread'>[295.7, 305.0]</span></td><td><strong>368.9</strong><span class='spread'>[359.4, 388.5]</span></td><td><strong>3,830</strong><span class='spread'>[3,672, 3,954]</span></td><td><strong>6,507</strong><span class='spread'>[6,440, 6,799]</span></td><td>1.19× / 1.09× / 1.12× / 0.87× / 0.80×</td><td>1.09× / 0.87× / 0.98× / 0.93× / 0.89×</td><td><strong>2.0</strong><span class='spread'>[1.9, 2.0]</span></td></tr>
+<tr><td>D-NG-chan</td><td><strong>2,152</strong><span class='spread'>[2,046, 2,196]</span></td><td><strong>291.7</strong><span class='spread'>[290.8, 298.5]</span></td><td><strong>333.8</strong><span class='spread'>[332.2, 388.8]</span></td><td><strong>3,735</strong><span class='spread'>[3,629, 3,898]</span></td><td><strong>6,766</strong><span class='spread'>[6,384, 7,116]</span></td><td>1.22× / 1.07× / 1.01× / 0.85× / 0.83×</td><td>1.11× / 0.86× / 0.88× / 0.90× / 0.92×</td><td><strong>1.6</strong><span class='spread'>[1.6, 1.6]</span></td></tr>
+<tr><td>D-NG-ring v2</td><td><strong>2,125</strong><span class='spread'>[2,051, 2,233]</span></td><td><strong>299.6</strong><span class='spread'>[295.1, 308.0]</span></td><td><strong>376.7</strong><span class='spread'>[363.5, 445.4]</span></td><td><strong>3,797</strong><span class='spread'>[3,606, 3,916]</span></td><td><strong>6,399</strong><span class='spread'>[6,125, 6,674]</span></td><td>1.20× / 1.10× / 1.14× / 0.86× / 0.78×</td><td>1.10× / 0.88× / 1.00× / 0.92× / 0.87×</td><td><strong>1.6</strong><span class='spread'>[1.6, 1.6]</span></td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>16,016</strong><span class='spread'>[15,867, 16,045]</span></td><td><strong>95.8</strong><span class='spread'>[95.8, 97.9]</span></td><td><strong>107.9</strong><span class='spread'>[107.3, 110.7]</span></td><td><strong>3,778</strong><span class='spread'>[3,770, 3,780]</span></td><td><strong>7,958</strong><span class='spread'>[7,934, 8,443]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.89× / 0.64× / 0.95× / 1.11× / 1.31×</td><td>-</td></tr>
+<tr><td>A (today)</td><td><strong>18,000</strong><span class='spread'>[17,828, 18,105]</span></td><td><strong>149.9</strong><span class='spread'>[149.0, 151.2]</span></td><td><strong>113.7</strong><span class='spread'>[113.2, 115.8]</span></td><td><strong>3,401</strong><span class='spread'>[3,387, 3,427]</span></td><td><strong>6,067</strong><span class='spread'>[5,953, 6,196]</span></td><td>1.12× / 1.56× / 1.05× / 0.90× / 0.76×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td></tr>
+<tr><td>A0 (no delay)</td><td><strong>20,259</strong><span class='spread'>[20,074, 20,349]</span></td><td><strong>133.1</strong><span class='spread'>[132.7, 136.1]</span></td><td><strong>128.8</strong><span class='spread'>[123.6, 129.2]</span></td><td><strong>3,057</strong><span class='spread'>[3,050, 3,077]</span></td><td><strong>5,282</strong><span class='spread'>[5,123, 5,617]</span></td><td>1.26× / 1.39× / 1.19× / 0.81× / 0.66×</td><td>1.13× / 0.89× / 1.13× / 0.90× / 0.87×</td><td>-</td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>19,325</strong><span class='spread'>[19,180, 19,554]</span></td><td><strong>134.2</strong><span class='spread'>[133.1, 134.9]</span></td><td><strong>120.4</strong><span class='spread'>[119.2, 123.7]</span></td><td><strong>3,174</strong><span class='spread'>[3,145, 3,183]</span></td><td><strong>5,323</strong><span class='spread'>[5,259, 5,970]</span></td><td>1.21× / 1.40× / 1.12× / 0.84× / 0.67×</td><td>1.07× / 0.90× / 1.06× / 0.93× / 0.88×</td><td><strong>3.0</strong><span class='spread'>[3.0, 3.1]</span></td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>18,461</strong><span class='spread'>[18,255, 18,561]</span></td><td><strong>137.3</strong><span class='spread'>[136.7, 138.9]</span></td><td><strong>116.1</strong><span class='spread'>[113.7, 116.6]</span></td><td><strong>3,339</strong><span class='spread'>[3,315, 3,356]</span></td><td><strong>5,611</strong><span class='spread'>[5,576, 6,043]</span></td><td>1.15× / 1.43× / 1.08× / 0.88× / 0.71×</td><td>1.03× / 0.92× / 1.02× / 0.98× / 0.92×</td><td><strong>3.2</strong><span class='spread'>[3.2, 3.3]</span></td></tr>
+<tr><td>D-NG+yield</td><td><strong>19,067</strong><span class='spread'>[18,978, 19,177]</span></td><td><strong>135.8</strong><span class='spread'>[135.5, 137.3]</span></td><td><strong>120.0</strong><span class='spread'>[119.1, 120.4]</span></td><td><strong>3,230</strong><span class='spread'>[3,193, 3,240]</span></td><td><strong>5,588</strong><span class='spread'>[5,551, 6,054]</span></td><td>1.19× / 1.42× / 1.11× / 0.86× / 0.70×</td><td>1.06× / 0.91× / 1.06× / 0.95× / 0.92×</td><td><strong>4.1</strong><span class='spread'>[4.1, 4.1]</span></td></tr>
+<tr><td>D-NG-chan</td><td><strong>18,953</strong><span class='spread'>[18,894, 19,154]</span></td><td><strong>136.5</strong><span class='spread'>[135.9, 139.0]</span></td><td><strong>117.5</strong><span class='spread'>[113.9, 120.3]</span></td><td><strong>3,233</strong><span class='spread'>[3,225, 3,258]</span></td><td><strong>5,797</strong><span class='spread'>[5,291, 5,855]</span></td><td>1.18× / 1.42× / 1.09× / 0.86× / 0.73×</td><td>1.05× / 0.91× / 1.03× / 0.95× / 0.96×</td><td><strong>3.3</strong><span class='spread'>[3.2, 3.3]</span></td></tr>
+<tr><td>D-NG-ring v2</td><td><strong>18,580</strong><span class='spread'>[18,425, 18,651]</span></td><td><strong>137.5</strong><span class='spread'>[137.1, 138.7]</span></td><td><strong>115.7</strong><span class='spread'>[111.1, 117.6]</span></td><td><strong>3,310</strong><span class='spread'>[3,307, 3,342]</span></td><td><strong>5,678</strong><span class='spread'>[5,602, 5,821]</span></td><td>1.16× / 1.43× / 1.07× / 0.88× / 0.71×</td><td>1.03× / 0.92× / 1.02× / 0.97× / 0.94×</td><td><strong>3.3</strong><span class='spread'>[3.2, 3.3]</span></td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>35,756</strong><span class='spread'>[35,606, 35,861]</span></td><td><strong>78.8</strong><span class='spread'>[77.8, 79.4]</span></td><td><strong>77.4</strong><span class='spread'>[77.1, 77.5]</span></td><td><strong>6,577</strong><span class='spread'>[6,544, 6,584]</span></td><td><strong>13,378</strong><span class='spread'>[13,331, 13,402]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.58× / 1.22× / 1.14× / 1.63× / 1.78×</td><td>-</td></tr>
+<tr><td>A (today)</td><td><strong>61,156</strong><span class='spread'>[60,836, 61,422]</span></td><td><strong>64.5</strong><span class='spread'>[63.3, 65.7]</span></td><td><strong>68.1</strong><span class='spread'>[66.8, 68.5]</span></td><td><strong>4,035</strong><span class='spread'>[4,019, 4,036]</span></td><td><strong>7,532</strong><span class='spread'>[7,350, 7,680]</span></td><td>1.71× / 0.82× / 0.88× / 0.61× / 0.56×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td></tr>
+<tr><td>A0 (no delay)</td><td><strong>63,498</strong><span class='spread'>[63,383, 63,529]</span></td><td><strong>65.4</strong><span class='spread'>[65.4, 66.5]</span></td><td><strong>72.4</strong><span class='spread'>[72.2, 73.6]</span></td><td><strong>3,898</strong><span class='spread'>[3,897, 3,899]</span></td><td><strong>7,049</strong><span class='spread'>[7,008, 7,540]</span></td><td>1.78× / 0.83× / 0.94× / 0.59× / 0.53×</td><td>1.04× / 1.01× / 1.06× / 0.97× / 0.94×</td><td>-</td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>62,934</strong><span class='spread'>[62,514, 62,963]</span></td><td><strong>59.7</strong><span class='spread'>[59.5, 60.1]</span></td><td><strong>69.3</strong><span class='spread'>[67.4, 69.5]</span></td><td><strong>3,921</strong><span class='spread'>[3,913, 3,926]</span></td><td><strong>6,708</strong><span class='spread'>[6,504, 7,423]</span></td><td>1.76× / 0.76× / 0.89× / 0.60× / 0.50×</td><td>1.03× / 0.93× / 1.02× / 0.97× / 0.89×</td><td><strong>3.5</strong><span class='spread'>[3.5, 3.5]</span></td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>63,030</strong><span class='spread'>[62,707, 63,447]</span></td><td><strong>58.0</strong><span class='spread'>[57.3, 58.9]</span></td><td><strong>69.0</strong><span class='spread'>[68.5, 70.0]</span></td><td><strong>3,929</strong><span class='spread'>[3,910, 3,940]</span></td><td><strong>6,855</strong><span class='spread'>[6,718, 7,052]</span></td><td>1.76× / 0.74× / 0.89× / 0.60× / 0.51×</td><td>1.03× / 0.90× / 1.01× / 0.97× / 0.91×</td><td><strong>3.7</strong><span class='spread'>[3.7, 3.8]</span></td></tr>
+<tr><td>D-NG+yield</td><td><strong>63,294</strong><span class='spread'>[62,947, 63,636]</span></td><td><strong>59.4</strong><span class='spread'>[58.6, 60.3]</span></td><td><strong>69.8</strong><span class='spread'>[69.6, 70.7]</span></td><td><strong>3,913</strong><span class='spread'>[3,891, 3,926]</span></td><td><strong>7,078</strong><span class='spread'>[6,717, 7,199]</span></td><td>1.77× / 0.75× / 0.90× / 0.60× / 0.53×</td><td>1.03× / 0.92× / 1.02× / 0.97× / 0.94×</td><td><strong>4.9</strong><span class='spread'>[4.9, 5.0]</span></td></tr>
+<tr><td>D-NG-chan</td><td><strong>63,214</strong><span class='spread'>[62,985, 63,393]</span></td><td><strong>62.7</strong><span class='spread'>[60.8, 63.5]</span></td><td><strong>71.2</strong><span class='spread'>[70.0, 72.4]</span></td><td><strong>3,898</strong><span class='spread'>[3,890, 3,923]</span></td><td><strong>7,258</strong><span class='spread'>[6,860, 7,582]</span></td><td>1.77× / 0.80× / 0.92× / 0.59× / 0.54×</td><td>1.03× / 0.97× / 1.04× / 0.97× / 0.96×</td><td><strong>3.6</strong><span class='spread'>[3.6, 3.7]</span></td></tr>
+<tr><td>D-NG-ring v2</td><td><strong>62,450</strong><span class='spread'>[62,319, 63,319]</span></td><td><strong>61.2</strong><span class='spread'>[60.8, 62.0]</span></td><td><strong>71.2</strong><span class='spread'>[70.7, 72.3]</span></td><td><strong>3,946</strong><span class='spread'>[3,915, 3,965]</span></td><td><strong>7,260</strong><span class='spread'>[7,003, 7,299]</span></td><td>1.75× / 0.78× / 0.92× / 0.60× / 0.54×</td><td>1.02× / 0.95× / 1.04× / 0.98× / 0.96×</td><td><strong>3.6</strong><span class='spread'>[3.5, 3.6]</span></td></tr>
+</tbody></table></div>
+
+<footer>
+  <div>docs/labs/single-network-goroutine/report/queues.html</div>
+  <div>All benchmark tables report 3-round medians and [min, max] ranges unless noted.</div>
+</footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,130 @@
+{
+  "client_flows": 3,
+  "kinds": {
+    "commit": {
+      "requests": 60001,
+      "replied": 60001,
+      "errors": 0,
+      "transactions": 60001,
+      "client_segments": 21138,
+      "malformed": 0,
+      "server_batches": 4781,
+      "batch_sizes": {
+        "1": 11,
+        "10": 488,
+        "11": 494,
+        "12": 446,
+        "13": 373,
+        "14": 369,
+        "15": 249,
+        "16": 194,
+        "17": 165,
+        "18": 94,
+        "19": 78,
+        "2": 19,
+        "20": 39,
+        "21": 23,
+        "22": 13,
+        "23": 10,
+        "24": 7,
+        "25": 3,
+        "26": 3,
+        "27": 4,
+        "28": 5,
+        "29": 13,
+        "3": 37,
+        "30": 6,
+        "31": 4,
+        "32": 3,
+        "33": 6,
+        "34": 5,
+        "35": 10,
+        "36": 3,
+        "37": 1,
+        "4": 65,
+        "40": 1,
+        "42": 1,
+        "43": 1,
+        "44": 1,
+        "46": 3,
+        "47": 1,
+        "49": 2,
+        "5": 111,
+        "50": 3,
+        "51": 2,
+        "52": 1,
+        "53": 2,
+        "57": 2,
+        "58": 2,
+        "59": 1,
+        "6": 185,
+        "60": 4,
+        "61": 3,
+        "62": 2,
+        "63": 1,
+        "64": 68,
+        "7": 298,
+        "8": 384,
+        "9": 462
+      },
+      "arrival_spread_ns": [
+        741650,
+        927410,
+        1100050
+      ],
+      "latency_ns": [
+        1594999,
+        2879968,
+        33658800
+      ]
+    },
+    "grv": {
+      "requests": 21409,
+      "replied": 21409,
+      "errors": 0,
+      "transactions": 60003,
+      "client_segments": 21409,
+      "malformed": 0,
+      "server_batches": 0,
+      "batch_sizes": {},
+      "arrival_spread_ns": [
+        0,
+        0,
+        0
+      ],
+      "latency_ns": [
+        141539,
+        231200,
+        904820
+      ]
+    },
+    "range": {
+      "requests": 1,
+      "replied": 1,
+      "errors": 0,
+      "transactions": 0,
+      "client_segments": 1,
+      "malformed": 0,
+      "server_batches": 0,
+      "batch_sizes": {},
+      "arrival_spread_ns": [
+        0,
+        0,
+        0
+      ],
+      "latency_ns": [
+        555579,
+        555579,
+        555579
+      ],
+      "params": {
+        "limit=101 bytes=80000 begin=false/1 end=false/1": 1
+      },
+      "reply_bytes": 4104
+    }
+  },
+  "undecodable": 0,
+  "stream_gaps": 0,
+  "partial_streams": 0,
+  "complete": true
+}

@@ -247,6 +247,8 @@ type Conn struct {
 	// na is the lab NA/NG writer (na_writer.go); labw: a lab writer owns sends.
 	na     *naWriter
 	m      *mWriter
+	cw     *chanWriter
+	rw     *ringWriter
 	labw   bool
 	design string // dial-option override of envDesign; see na_writer.go
 	// firstQueued is when the oldest frame not yet in a writeLoop batch was
@@ -606,11 +608,24 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 	if design == "" {
 		design = envDesign
 	}
-	if design == designD || design == designNG {
-		c.na = &naWriter{sig: make(chan struct{}, 1), delay: design == designD}
+	if design == designD || design == designNG || design == designNGYield || design == designNGAdaptive {
+		c.na = &naWriter{sig: make(chan struct{}, 1), delay: design == designD, yield: design == designNGYield}
+		if design == designNGAdaptive {
+			c.na.adaptive = envAdaptive
+		}
 		c.labw = true
 		startLabStats()
 		go c.naLoop()
+	} else if design == designNGChan {
+		c.cw = &chanWriter{ch: make(chan chanFrame, 256)}
+		c.labw = true
+		startLabStats()
+		go c.chanLoop()
+	} else if design == designNGRing {
+		c.rw = &ringWriter{buf: make([]byte, ringSize), sig: make(chan struct{}, 1)}
+		c.labw = true
+		startLabStats()
+		go c.ringLoop()
 	} else if design == designM {
 		c.m = &mWriter{}
 		c.labw = true

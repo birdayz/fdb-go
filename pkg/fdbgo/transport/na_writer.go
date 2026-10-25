@@ -3,6 +3,7 @@ package transport
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,6 +35,8 @@ var envDesign = func() string {
 		return designNG
 	case "m":
 		return designM
+	case designNGYield, designNGChan, designNGRing, designNGAdaptive:
+		return os.Getenv("FDBGO_NET_DESIGN")
 	}
 	switch os.Getenv("FDBGO_EXP_NA") {
 	case "1":
@@ -60,7 +63,12 @@ type naWriter struct {
 	q       []byte
 	nframes int
 	delay   bool
-	sig     chan struct{}
+	yield   bool // D-NG + yield: one runtime.Gosched after each write
+	// adaptive > 0 is D-NG with Nagle-style linger: if the last write is older
+	// than adaptive, write at once; otherwise yield (runtime.Gosched, no timer)
+	// until adaptive has passed since the last write, then write.
+	adaptive time.Duration
+	sig      chan struct{}
 }
 
 // Lab counters of socket writes and frames over all lab writers
@@ -109,6 +117,12 @@ func (c *Conn) labSend(token UID, body []byte) error {
 	if c.m != nil {
 		return c.mSend(token, body)
 	}
+	if c.rw != nil {
+		return c.ringSend(token, body)
+	}
+	if c.cw != nil {
+		return c.chanSend(token, body)
+	}
 	if c.na != nil {
 		return c.naSend(token, body)
 	}
@@ -131,6 +145,10 @@ func (c *Conn) naLoop() {
 			if c.ctx.Err() != nil {
 				return
 			}
+		} else if w.adaptive > 0 {
+			for deadline := c.lastWrite.Add(w.adaptive); time.Now().Before(deadline); {
+				runtime.Gosched()
+			}
 		}
 		w.mu.Lock()
 		buf, n := w.q, w.nframes
@@ -144,6 +162,9 @@ func (c *Conn) naLoop() {
 			}
 			labWrites.Add(1)
 			labFrames.Add(int64(n))
+			if w.yield {
+				runtime.Gosched()
+			}
 		}
 		spare = buf
 	}

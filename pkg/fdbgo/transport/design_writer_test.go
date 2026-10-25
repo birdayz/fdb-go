@@ -23,7 +23,7 @@ func dialDesign(t *testing.T, mode string, delay time.Duration) (*Conn, <-chan [
 	t.Helper()
 	c, release, frames := dialStalledPeer(t, withNetDesign(mode), WithCoalesceDelay(delay, delay))
 	close(release)
-	if c.na == nil && c.m == nil {
+	if c.na == nil && c.m == nil && c.cw == nil && c.rw == nil {
 		t.Fatalf("positive control: %s connection has no design writer", mode)
 	}
 	return c, frames
@@ -33,7 +33,7 @@ func dialDesign(t *testing.T, mode string, delay time.Duration) (*Conn, <-chan [
 // and the peer receives every frame exactly once, in send order.
 func TestDesignSendIsEnqueueOnly(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{designD, designNG, designM} {
+	for _, mode := range []string{designD, designNG, designM, designNGYield, designNGChan, designNGRing, designNGAdaptive} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			c, frames := dialDesign(t, mode, designDelay)
@@ -100,7 +100,7 @@ func (f *failingConn) Write(p []byte) (int, error) {
 // with the coded teardown; the senders themselves already returned.
 func TestDesignWriteErrorFailsAllPending(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{designD, designNG, designM} {
+	for _, mode := range []string{designD, designNG, designM, designNGYield, designNGChan, designNGRing, designNGAdaptive} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			s := newSimServer(t)
@@ -118,7 +118,7 @@ func TestDesignWriteErrorFailsAllPending(t *testing.T) {
 				t.Fatalf("dial: %v", err)
 			}
 			defer c.Close()
-			if c.na == nil && c.m == nil {
+			if c.na == nil && c.m == nil && c.cw == nil && c.rw == nil {
 				t.Fatal("positive control: no design writer")
 			}
 			var replies []<-chan Response
@@ -161,7 +161,7 @@ func TestDesignWriteErrorFailsAllPending(t *testing.T) {
 // exactly once, in each sender's order; none is stranded in a queue.
 func TestDesignConcurrentSendersFramesWholeOnce(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{designD, designNG, designM} {
+	for _, mode := range []string{designD, designNG, designM, designNGYield, designNGChan, designNGRing, designNGAdaptive} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			c, frames := dialDesign(t, mode, 20*time.Microsecond)
@@ -199,4 +199,57 @@ func TestDesignConcurrentSendersFramesWholeOnce(t *testing.T) {
 			expectNoFrame(t, frames, "after every frame arrived")
 		})
 	}
+}
+
+// D-NG-ring: frames that wrap the ring and oversize frames carried in ext
+// slots arrive whole, once, in each sender's order.
+func TestDesignRingWrapAndOversize(t *testing.T) {
+	t.Parallel()
+	c, frames := dialDesign(t, designNGRing, 0)
+	if c.rw == nil {
+		t.Fatal("positive control: no ring writer")
+	}
+	const senders, each = 6, 60
+	size := func(s, i int) int {
+		if s == 0 && i%10 == 3 {
+			return ringChunk + 4096 + i // oversize: an ext slot outside the ring
+		}
+		return 1000 + (s*7919+i*104729)%12000 // ~1.4 MiB per round: wraps
+	}
+	done := make(chan error, senders)
+	for s := 0; s < senders; s++ {
+		go func(s int) {
+			for i := 0; i < each; i++ {
+				body := append([]byte(fmt.Sprintf("s%02d-%03d-", s, i)), bytes.Repeat([]byte{byte('a' + s)}, size(s, i))...)
+				if ok, err := c.SendFrameContext(context.Background(), UID{First: uint64(s)}, body); !ok || err != nil {
+					done <- fmt.Errorf("sender %d frame %d = (%t, %v)", s, i, ok, err)
+					return
+				}
+			}
+			done <- nil
+		}(s)
+	}
+	next := make([]int, senders)
+	for range senders * each {
+		f := string(within(t, frames, "a frame"))
+		body := f[strings.Index(f, ":")+1:]
+		var s, i int
+		if _, err := fmt.Sscanf(body, "s%02d-%03d-", &s, &i); err != nil {
+			t.Fatalf("frame did not decode: %v", err)
+		}
+		if i != next[s] {
+			t.Fatalf("sender %d: frame %d arrived, want %d", s, i, next[s])
+		}
+		pad := body[len("s00-000-"):]
+		if len(pad) != size(s, i) || strings.Trim(pad, string(rune('a'+s))) != "" {
+			t.Fatalf("sender %d frame %d: torn or wrong padding (%d bytes, want %d)", s, i, len(pad), size(s, i))
+		}
+		next[s]++
+	}
+	for range senders {
+		if err := within(t, done, "a sender"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expectNoFrame(t, frames, "after every frame arrived")
 }

@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>libfdb_c (L vs L4) vs Go — fdbgo Transport &amp; Coalescing Lab</title>
+<style>
+:root {
+  --bg: #f8fafc;
+  --panel: #ffffff;
+  --text: #0f172a;
+  --muted: #475569;
+  --border: #e2e8f0;
+  --accent: #1d4ed8;
+  --good: #047857;
+  --good-bg: #ecfdf5;
+  --warn: #b45309;
+  --warn-bg: #fffbeb;
+  --bad: #be123c;
+  --bad-bg: #fff1f2;
+  --code-bg: #f1f5f9;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--bg);
+}
+header {
+  background: #0f172a;
+  color: #f8fafc;
+  padding: 18px 28px;
+  border-bottom: 1px solid #1e293b;
+}
+header .title-row {
+  max-width: 1440px;
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+header h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+header .subtitle {
+  color: #94a3b8;
+  font-size: 13px;
+}
+nav {
+  background: #1e293b;
+  padding: 0 28px;
+  border-bottom: 1px solid #334155;
+}
+nav .nav-inner {
+  max-width: 1440px;
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+nav a {
+  color: #cbd5e1;
+  text-decoration: none;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border-bottom: 2px solid transparent;
+}
+nav a:hover {
+  color: #ffffff;
+  background: rgba(255,255,255,0.05);
+}
+nav a.active {
+  color: #ffffff;
+  border-bottom-color: #38bdf8;
+  background: rgba(56,189,248,0.1);
+}
+main {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 24px 28px 64px;
+}
+h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 28px 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  color: #0f172a;
+}
+h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 20px 0 8px;
+  color: #1e293b;
+}
+p, li {
+  color: #1e293b;
+}
+ul, ol {
+  margin: 8px 0 14px;
+  padding-left: 22px;
+}
+li {
+  margin-bottom: 4px;
+}
+code, pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12.5px;
+}
+code {
+  background: var(--code-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+pre {
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 14px 16px;
+  border-radius: 6px;
+  overflow-x: auto;
+  line-height: 1.45;
+}
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(560px, 1fr));
+  gap: 18px;
+  margin: 14px 0;
+}
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 16px;
+  margin: 14px 0;
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 18px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+.card h3 {
+  margin-top: 0;
+}
+.callout {
+  border-left: 4px solid var(--accent);
+  background: #eff6ff;
+  padding: 12px 16px;
+  border-radius: 0 6px 6px 0;
+  margin: 14px 0;
+}
+.callout.good {
+  border-left-color: var(--good);
+  background: var(--good-bg);
+}
+.callout.warn {
+  border-left-color: var(--warn);
+  background: var(--warn-bg);
+}
+.callout.bad {
+  border-left-color: var(--bad);
+  background: var(--bad-bg);
+}
+.table-wrap {
+  overflow-x: auto;
+  margin: 12px 0 20px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+th, td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+  white-space: nowrap;
+}
+th:first-child, td:first-child {
+  text-align: left;
+  font-weight: 500;
+}
+td.text-left, th.text-left {
+  text-align: left;
+  white-space: normal;
+}
+thead th {
+  background: #f1f5f9;
+  color: #334155;
+  font-weight: 600;
+  border-bottom: 2px solid #cbd5e1;
+}
+tbody tr:hover {
+  background: #f8fafc;
+}
+tbody tr.highlight {
+  background: #f0fdf4;
+}
+tbody tr.highlight-warn {
+  background: #fff1f2;
+}
+.spread {
+  color: #64748b;
+  font-size: 11px;
+  display: block;
+}
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge.pass { background: var(--good-bg); color: var(--good); }
+.badge.fail { background: var(--bad-bg); color: var(--bad); }
+.badge.warn { background: var(--warn-bg); color: var(--warn); }
+.badge.info { background: #e0f2fe; color: #0369a1; }
+.svg-wrap {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  margin: 12px 0;
+  overflow-x: auto;
+}
+footer {
+  margin-top: 48px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  display: flex;
+  justify-content: space-between;
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="title-row">
+    <h1>FoundationDB Pure-Go Transport Lab: Writer Queues, Coalescing Linger &amp; libfdb_c Parity</h1>
+    <div class="subtitle">FDB 7.3.77 &middot; PR #991 &middot; Dedicated Hetzner ccx43 (AMD EPYC-Milan, 16 vCPUs)</div>
+  </div>
+</header>
+<nav>
+  <div class="nav-inner">
+    <a href='index.html'>1. Executive Summary</a><a href='linger.html'>2. Linger Sweep &amp; Per-Role Cost</a><a href='queues.html'>3. Writer Queues, Ring &amp; D-M</a><a href='delay-vs-ack.html'>4. Coalesce Delay vs Write-Ack</a><a href='libfdbc.html' class='active'>5. libfdb_c (L vs L4) vs Go</a><a href='methodology.html'>6. Methodology &amp; Verification</a>
+  </div>
+</nav>
+<main>
+
+<h2>1. Why <code>L</code> (1 Thread) and <code>L4</code> (4 Threads, 4 DBs) Behave So Differently from Go</h2>
+<div class="grid-2">
+  <div class="card">
+    <h3><code>L</code>: Single-Thread Reactor Bottleneck &amp; Implicit Coalescing</h3>
+    <ul>
+      <li><code>libfdb_c</code> runs the entire C++ client stack (<code>NativeAPI</code>, <code>ReadYourWrites</code>, <code>loadBalance</code>, <code>FlowTransport</code>) on a single OS network thread using cooperative Flow actors.</li>
+      <li>When 64 or 256 Go worker goroutines submit requests via cgo, every call crosses a cgo thread-safe promise queue onto that single network thread.</li>
+      <li>At 256 workers on <code>get100</code>, the single <code>libfdb_c</code> network thread pins at 100% CPU (~50k–57k ops/s = 5.0M–5.7M read RPCs/s). Because requests queue behind the saturated reactor loop, each <code>connectionWriter</code> drain sweeps up <strong>31.8–64.5 storage frames per TCP packet</strong>, minimizing server packet-processing overhead at the cost of a 4.5× throughput ceiling and 4.6 ms p50 latency.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3><code>L4</code>: Multi-Thread <code>libfdb_c</code> Splits Batching Across 4 Connection Pools</h3>
+    <ul>
+      <li>Setting <code>client_threads_per_version=4</code> (<code>MultiVersionTransaction.actor.cpp:3095-3097</code>) copies <code>libfdb_c.so</code> into 4 client network threads and assigns <code>FDBDatabase</code> handles round-robin (<code>:3302-3305</code>).</li>
+      <li>Because each thread owns an independent <code>FlowTransport</code> and independent <code>DatabaseContext</code>, <strong>GRV batching, commit batching, and TCP socket coalescing are split 4 ways</strong> (7–8 client TCP connections instead of 2):
+        <ul>
+          <li>Storage frames/packet on <code>get100/64</code> drop from <strong>32.1 (<code>L</code>) to 4.2 (<code>L4</code>)</strong>.</li>
+          <li><strong>Server CPU per transaction jumps to 1.14–3.58&times; <code>L</code></strong> (e.g. <code>get100/8</code>: 296.0 vs 82.4 kc/tx; <code>get100/64</code>: 62.9 vs 22.8 kc/tx; rate-capped <code>set100/64</code>: 187.8 vs 137.0 kc/tx).</li>
+          <li><strong>Client CPU per op jumps to 1.15–2.73&times; <code>L</code></strong>, and client syscalls jump <strong>3.4–4.2&times;</strong> (12.4–17.4 syscalls/op vs 2.9–5.2).</li>
+          <li>Even with 4 threads, <code>L4</code> still reaches only <strong>107k ops/s</strong> on <code>get100/256</code> — less than half of Go's <strong>229k–261k ops/s</strong>, which shares a single connection pool and a single GRV batcher across all 8 Ps!</li>
+        </ul>
+      </li>
+    </ul>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class='svg-wrap'><svg viewBox='0 0 640 340' width='100%' height='340' xmlns='http://www.w3.org/2000/svg'>
+<text x='60' y='20' font-size='13' font-weight='600' fill='#0f172a'>Closed-Loop Throughput (kops/s): L vs L4 vs Go (Box 2 / rawhz5)</text>
+<text x='60' y='35' font-size='11' fill='#64748b'>L saturates one thread at 57k ops/s; L4 saturates at 107k ops/s; Go reaches 229k–261k ops/s.</text>
+<rect x='60' y='41' width='10' height='10' rx='2' fill='#475569'/>
+<text x='74' y='50' font-size='10.5' fill='#334155'>L (libfdb_c)</text>
+<rect x='156.0' y='41' width='10' height='10' rx='2' fill='#94a3b8'/>
+<text x='170.0' y='50' font-size='10.5' fill='#334155'>L4 (4 thr)</text>
+<rect x='239.0' y='41' width='10' height='10' rx='2' fill='#d97706'/>
+<text x='253.0' y='50' font-size='10.5' fill='#334155'>A (today)</text>
+<rect x='315.5' y='41' width='10' height='10' rx='2' fill='#2563eb'/>
+<text x='329.5' y='50' font-size='10.5' fill='#334155'>D (10–20µs)</text>
+<rect x='405.0' y='41' width='10' height='10' rx='2' fill='#e11d48'/>
+<text x='419.0' y='50' font-size='10.5' fill='#334155'>D-M (sender)</text>
+<line x1='60' y1='54.0' x2='616' y2='54.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='58.0' font-size='10.5' fill='#64748b' text-anchor='end'>300</text>
+<line x1='60' y1='112.5' x2='616' y2='112.5' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='116.5' font-size='10.5' fill='#64748b' text-anchor='end'>225</text>
+<line x1='60' y1='171.0' x2='616' y2='171.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='175.0' font-size='10.5' fill='#64748b' text-anchor='end'>150</text>
+<line x1='60' y1='229.5' x2='616' y2='229.5' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='233.5' font-size='10.5' fill='#64748b' text-anchor='end'>75</text>
+<line x1='60' y1='288.0' x2='616' y2='288.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='292.0' font-size='10.5' fill='#64748b' text-anchor='end'>0</text>
+<rect x='69.0' y='283.1' width='8.3' height='4.9' fill='#475569' rx='2'/>
+<rect x='79.3' y='280.0' width='8.3' height='8.0' fill='#94a3b8' rx='2'/>
+<rect x='89.6' y='283.8' width='8.3' height='4.2' fill='#d97706' rx='2'/>
+<rect x='99.9' y='283.7' width='8.3' height='4.3' fill='#2563eb' rx='2'/>
+<rect x='110.2' y='283.0' width='8.3' height='5.0' fill='#e11d48' rx='2'/>
+<text x='94.8' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>get100/8</text>
+<rect x='138.5' y='259.4' width='8.3' height='28.6' fill='#475569' rx='2'/>
+<text x='142.7' y='255.4' font-size='9.5' fill='#334155' text-anchor='middle'>37</text>
+<rect x='148.8' y='239.1' width='8.3' height='48.9' fill='#94a3b8' rx='2'/>
+<text x='153.0' y='235.1' font-size='9.5' fill='#334155' text-anchor='middle'>63</text>
+<rect x='159.1' y='259.9' width='8.3' height='28.1' fill='#d97706' rx='2'/>
+<text x='163.2' y='255.9' font-size='9.5' fill='#334155' text-anchor='middle'>36</text>
+<rect x='169.4' y='263.2' width='8.3' height='24.8' fill='#2563eb' rx='2'/>
+<text x='173.5' y='259.2' font-size='9.5' fill='#334155' text-anchor='middle'>32</text>
+<rect x='179.7' y='250.2' width='8.3' height='37.8' fill='#e11d48' rx='2'/>
+<text x='183.8' y='246.2' font-size='9.5' fill='#334155' text-anchor='middle'>48</text>
+<text x='164.2' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>get100/64</text>
+<rect x='208.0' y='243.3' width='8.3' height='44.7' fill='#475569' rx='2'/>
+<text x='212.2' y='239.3' font-size='9.5' fill='#334155' text-anchor='middle'>57</text>
+<rect x='218.3' y='204.5' width='8.3' height='83.5' fill='#94a3b8' rx='2'/>
+<text x='222.5' y='200.5' font-size='9.5' fill='#334155' text-anchor='middle'>107</text>
+<rect x='228.6' y='109.4' width='8.3' height='178.6' fill='#d97706' rx='2'/>
+<text x='232.8' y='105.4' font-size='9.5' fill='#334155' text-anchor='middle'>229</text>
+<rect x='238.9' y='106.7' width='8.3' height='181.3' fill='#2563eb' rx='2'/>
+<text x='243.0' y='102.7' font-size='9.5' fill='#334155' text-anchor='middle'>232</text>
+<rect x='249.2' y='84.5' width='8.3' height='203.5' fill='#e11d48' rx='2'/>
+<text x='253.3' y='80.5' font-size='9.5' fill='#334155' text-anchor='middle'>261</text>
+<text x='233.8' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>get100/256</text>
+<rect x='277.5' y='286.0' width='8.3' height='2.0' fill='#475569' rx='2'/>
+<rect x='287.8' y='285.6' width='8.3' height='2.4' fill='#94a3b8' rx='2'/>
+<rect x='298.1' y='285.9' width='8.3' height='2.1' fill='#d97706' rx='2'/>
+<rect x='308.4' y='286.0' width='8.3' height='2.0' fill='#2563eb' rx='2'/>
+<rect x='318.7' y='285.8' width='8.3' height='2.2' fill='#e11d48' rx='2'/>
+<text x='303.2' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>set100/8</text>
+<rect x='347.0' y='273.0' width='8.3' height='15.0' fill='#475569' rx='2'/>
+<text x='351.2' y='269.0' font-size='9.5' fill='#334155' text-anchor='middle'>19</text>
+<rect x='357.3' y='269.1' width='8.3' height='18.9' fill='#94a3b8' rx='2'/>
+<text x='361.5' y='265.1' font-size='9.5' fill='#334155' text-anchor='middle'>24</text>
+<rect x='367.6' y='269.0' width='8.3' height='19.0' fill='#d97706' rx='2'/>
+<text x='371.8' y='265.0' font-size='9.5' fill='#334155' text-anchor='middle'>24</text>
+<rect x='377.9' y='269.0' width='8.3' height='19.0' fill='#2563eb' rx='2'/>
+<text x='382.0' y='265.0' font-size='9.5' fill='#334155' text-anchor='middle'>24</text>
+<rect x='388.2' y='266.7' width='8.3' height='21.3' fill='#e11d48' rx='2'/>
+<text x='392.3' y='262.7' font-size='9.5' fill='#334155' text-anchor='middle'>27</text>
+<text x='372.8' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>set100/64</text>
+<rect x='416.5' y='248.6' width='8.3' height='39.4' fill='#475569' rx='2'/>
+<text x='420.7' y='244.6' font-size='9.5' fill='#334155' text-anchor='middle'>51</text>
+<rect x='426.8' y='228.9' width='8.3' height='59.1' fill='#94a3b8' rx='2'/>
+<text x='431.0' y='224.9' font-size='9.5' fill='#334155' text-anchor='middle'>76</text>
+<rect x='437.1' y='225.4' width='8.3' height='62.6' fill='#d97706' rx='2'/>
+<text x='441.2' y='221.4' font-size='9.5' fill='#334155' text-anchor='middle'>80</text>
+<rect x='447.4' y='224.6' width='8.3' height='63.4' fill='#2563eb' rx='2'/>
+<text x='451.5' y='220.6' font-size='9.5' fill='#334155' text-anchor='middle'>81</text>
+<rect x='457.7' y='223.5' width='8.3' height='64.5' fill='#e11d48' rx='2'/>
+<text x='461.8' y='219.5' font-size='9.5' fill='#334155' text-anchor='middle'>83</text>
+<text x='442.2' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>set100/256</text>
+<rect x='486.0' y='275.8' width='8.3' height='12.2' fill='#475569' rx='2'/>
+<rect x='496.3' y='273.2' width='8.3' height='14.8' fill='#94a3b8' rx='2'/>
+<text x='500.5' y='269.2' font-size='9.5' fill='#334155' text-anchor='middle'>19</text>
+<rect x='506.6' y='274.9' width='8.3' height='13.1' fill='#d97706' rx='2'/>
+<rect x='516.9' y='276.4' width='8.3' height='11.6' fill='#2563eb' rx='2'/>
+<rect x='527.2' y='274.2' width='8.3' height='13.8' fill='#e11d48' rx='2'/>
+<text x='511.8' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>getset100/64</text>
+<rect x='555.5' y='258.3' width='8.3' height='29.7' fill='#475569' rx='2'/>
+<text x='559.7' y='254.3' font-size='9.5' fill='#334155' text-anchor='middle'>38</text>
+<rect x='565.8' y='244.5' width='8.3' height='43.5' fill='#94a3b8' rx='2'/>
+<text x='570.0' y='240.5' font-size='9.5' fill='#334155' text-anchor='middle'>56</text>
+<rect x='576.1' y='241.8' width='8.3' height='46.2' fill='#d97706' rx='2'/>
+<text x='580.2' y='237.8' font-size='9.5' fill='#334155' text-anchor='middle'>59</text>
+<rect x='586.4' y='241.3' width='8.3' height='46.7' fill='#2563eb' rx='2'/>
+<text x='590.5' y='237.3' font-size='9.5' fill='#334155' text-anchor='middle'>60</text>
+<rect x='596.7' y='240.1' width='8.3' height='47.9' fill='#e11d48' rx='2'/>
+<text x='600.8' y='236.1' font-size='9.5' fill='#334155' text-anchor='middle'>61</text>
+<text x='581.2' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>getset100/256</text>
+<line x1='60' y1='288' x2='616' y2='288' stroke='#94a3b8' stroke-width='1'/>
+<text x='15' y='171.0' font-size='11' font-weight='500' fill='#334155' text-anchor='middle' transform='rotate(-90 15 171.0)'>Throughput (kops/s)</text>
+</svg></div>
+  <div class='svg-wrap'><svg viewBox='0 0 640 340' width='100%' height='340' xmlns='http://www.w3.org/2000/svg'>
+<text x='60' y='20' font-size='13' font-weight='600' fill='#0f172a'>Server CPU per Transaction (kcycles/tx): L vs L4 (4 Threads / 4 DBs) vs Go (Box 2 / rawhz5)</text>
+<text x='60' y='35' font-size='11' fill='#64748b'>L4 splits batching across 4 independent connection pools, multiplying server CPU 1.14–3.58× over L.</text>
+<rect x='60' y='41' width='10' height='10' rx='2' fill='#475569'/>
+<text x='74' y='50' font-size='10.5' fill='#334155'>L (libfdb_c)</text>
+<rect x='156.0' y='41' width='10' height='10' rx='2' fill='#94a3b8'/>
+<text x='170.0' y='50' font-size='10.5' fill='#334155'>L4 (4 thr)</text>
+<rect x='239.0' y='41' width='10' height='10' rx='2' fill='#d97706'/>
+<text x='253.0' y='50' font-size='10.5' fill='#334155'>A (today)</text>
+<rect x='315.5' y='41' width='10' height='10' rx='2' fill='#2563eb'/>
+<text x='329.5' y='50' font-size='10.5' fill='#334155'>D (10–20µs)</text>
+<rect x='405.0' y='41' width='10' height='10' rx='2' fill='#e11d48'/>
+<text x='419.0' y='50' font-size='10.5' fill='#334155'>D-M (sender)</text>
+<line x1='60' y1='54.0' x2='616' y2='54.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='58.0' font-size='10.5' fill='#64748b' text-anchor='end'>545</text>
+<line x1='60' y1='112.5' x2='616' y2='112.5' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='116.5' font-size='10.5' fill='#64748b' text-anchor='end'>409</text>
+<line x1='60' y1='171.0' x2='616' y2='171.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='175.0' font-size='10.5' fill='#64748b' text-anchor='end'>273</text>
+<line x1='60' y1='229.5' x2='616' y2='229.5' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='233.5' font-size='10.5' fill='#64748b' text-anchor='end'>136</text>
+<line x1='60' y1='288.0' x2='616' y2='288.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='292.0' font-size='10.5' fill='#64748b' text-anchor='end'>0</text>
+<rect x='69.0' y='252.7' width='8.3' height='35.3' fill='#475569' rx='2'/>
+<text x='73.2' y='248.7' font-size='9.5' fill='#334155' text-anchor='middle'>82</text>
+<rect x='79.3' y='161.0' width='8.3' height='127.0' fill='#94a3b8' rx='2'/>
+<text x='83.5' y='157.0' font-size='9.5' fill='#334155' text-anchor='middle'>296</text>
+<rect x='89.6' y='252.1' width='8.3' height='35.9' fill='#d97706' rx='2'/>
+<text x='93.8' y='248.1' font-size='9.5' fill='#334155' text-anchor='middle'>84</text>
+<rect x='99.9' y='252.2' width='8.3' height='35.8' fill='#2563eb' rx='2'/>
+<text x='104.0' y='248.2' font-size='9.5' fill='#334155' text-anchor='middle'>83</text>
+<rect x='110.2' y='252.5' width='8.3' height='35.5' fill='#e11d48' rx='2'/>
+<text x='114.3' y='248.5' font-size='9.5' fill='#334155' text-anchor='middle'>83</text>
+<text x='94.8' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>get100/8</text>
+<rect x='138.5' y='278.2' width='8.3' height='9.8' fill='#475569' rx='2'/>
+<rect x='148.8' y='261.0' width='8.3' height='27.0' fill='#94a3b8' rx='2'/>
+<text x='153.0' y='257.0' font-size='9.5' fill='#334155' text-anchor='middle'>63</text>
+<rect x='159.1' y='279.7' width='8.3' height='8.3' fill='#d97706' rx='2'/>
+<rect x='169.4' y='280.4' width='8.3' height='7.6' fill='#2563eb' rx='2'/>
+<rect x='179.7' y='279.1' width='8.3' height='8.9' fill='#e11d48' rx='2'/>
+<text x='164.2' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>get100/64</text>
+<rect x='208.0' y='282.3' width='8.3' height='5.7' fill='#475569' rx='2'/>
+<rect x='218.3' y='273.8' width='8.3' height='14.2' fill='#94a3b8' rx='2'/>
+<text x='222.5' y='269.8' font-size='9.5' fill='#334155' text-anchor='middle'>33</text>
+<rect x='228.6' y='282.0' width='8.3' height='6.0' fill='#d97706' rx='2'/>
+<rect x='238.9' y='282.4' width='8.3' height='5.6' fill='#2563eb' rx='2'/>
+<rect x='249.2' y='281.7' width='8.3' height='6.3' fill='#e11d48' rx='2'/>
+<text x='233.8' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>get100/256</text>
+<rect x='277.5' y='175.7' width='8.3' height='112.3' fill='#475569' rx='2'/>
+<text x='281.7' y='171.7' font-size='9.5' fill='#334155' text-anchor='middle'>262</text>
+<rect x='287.8' y='84.5' width='8.3' height='203.5' fill='#94a3b8' rx='2'/>
+<text x='292.0' y='80.5' font-size='9.5' fill='#334155' text-anchor='middle'>474</text>
+<rect x='298.1' y='172.6' width='8.3' height='115.4' fill='#d97706' rx='2'/>
+<text x='302.2' y='168.6' font-size='9.5' fill='#334155' text-anchor='middle'>269</text>
+<rect x='308.4' y='166.6' width='8.3' height='121.4' fill='#2563eb' rx='2'/>
+<text x='312.5' y='162.6' font-size='9.5' fill='#334155' text-anchor='middle'>283</text>
+<rect x='318.7' y='178.3' width='8.3' height='109.7' fill='#e11d48' rx='2'/>
+<text x='322.8' y='174.3' font-size='9.5' fill='#334155' text-anchor='middle'>256</text>
+<text x='303.2' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>set100/8</text>
+<rect x='347.0' y='257.1' width='8.3' height='30.9' fill='#475569' rx='2'/>
+<text x='351.2' y='253.1' font-size='9.5' fill='#334155' text-anchor='middle'>72</text>
+<rect x='357.3' y='242.1' width='8.3' height='45.9' fill='#94a3b8' rx='2'/>
+<text x='361.5' y='238.1' font-size='9.5' fill='#334155' text-anchor='middle'>107</text>
+<rect x='367.6' y='251.3' width='8.3' height='36.7' fill='#d97706' rx='2'/>
+<text x='371.8' y='247.3' font-size='9.5' fill='#334155' text-anchor='middle'>86</text>
+<rect x='377.9' y='251.2' width='8.3' height='36.8' fill='#2563eb' rx='2'/>
+<text x='382.0' y='247.2' font-size='9.5' fill='#334155' text-anchor='middle'>86</text>
+<rect x='388.2' y='248.5' width='8.3' height='39.5' fill='#e11d48' rx='2'/>
+<text x='392.3' y='244.5' font-size='9.5' fill='#334155' text-anchor='middle'>92</text>
+<text x='372.8' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>set100/64</text>
+<rect x='416.5' y='267.3' width='8.3' height='20.7' fill='#475569' rx='2'/>
+<text x='420.7' y='263.3' font-size='9.5' fill='#334155' text-anchor='middle'>48</text>
+<rect x='426.8' y='263.0' width='8.3' height='25.0' fill='#94a3b8' rx='2'/>
+<text x='431.0' y='259.0' font-size='9.5' fill='#334155' text-anchor='middle'>58</text>
+<rect x='437.1' y='267.7' width='8.3' height='20.3' fill='#d97706' rx='2'/>
+<text x='441.2' y='263.7' font-size='9.5' fill='#334155' text-anchor='middle'>47</text>
+<rect x='447.4' y='268.4' width='8.3' height='19.6' fill='#2563eb' rx='2'/>
+<text x='451.5' y='264.4' font-size='9.5' fill='#334155' text-anchor='middle'>46</text>
+<rect x='457.7' y='267.6' width='8.3' height='20.4' fill='#e11d48' rx='2'/>
+<text x='461.8' y='263.6' font-size='9.5' fill='#334155' text-anchor='middle'>47</text>
+<text x='442.2' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>set100/256</text>
+<rect x='486.0' y='242.5' width='8.3' height='45.5' fill='#475569' rx='2'/>
+<text x='490.2' y='238.5' font-size='9.5' fill='#334155' text-anchor='middle'>106</text>
+<rect x='496.3' y='222.6' width='8.3' height='65.4' fill='#94a3b8' rx='2'/>
+<text x='500.5' y='218.6' font-size='9.5' fill='#334155' text-anchor='middle'>152</text>
+<rect x='506.6' y='239.9' width='8.3' height='48.1' fill='#d97706' rx='2'/>
+<text x='510.8' y='235.9' font-size='9.5' fill='#334155' text-anchor='middle'>112</text>
+<rect x='516.9' y='248.2' width='8.3' height='39.8' fill='#2563eb' rx='2'/>
+<text x='521.0' y='244.2' font-size='9.5' fill='#334155' text-anchor='middle'>93</text>
+<rect x='527.2' y='241.0' width='8.3' height='47.0' fill='#e11d48' rx='2'/>
+<text x='531.3' y='237.0' font-size='9.5' fill='#334155' text-anchor='middle'>109</text>
+<text x='511.8' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>getset100/64</text>
+<rect x='555.5' y='255.8' width='8.3' height='32.2' fill='#475569' rx='2'/>
+<text x='559.7' y='251.8' font-size='9.5' fill='#334155' text-anchor='middle'>75</text>
+<rect x='565.8' y='251.3' width='8.3' height='36.7' fill='#94a3b8' rx='2'/>
+<text x='570.0' y='247.3' font-size='9.5' fill='#334155' text-anchor='middle'>86</text>
+<rect x='576.1' y='259.7' width='8.3' height='28.3' fill='#d97706' rx='2'/>
+<text x='580.2' y='255.7' font-size='9.5' fill='#334155' text-anchor='middle'>66</text>
+<rect x='586.4' y='259.7' width='8.3' height='28.3' fill='#2563eb' rx='2'/>
+<text x='590.5' y='255.7' font-size='9.5' fill='#334155' text-anchor='middle'>66</text>
+<rect x='596.7' y='258.7' width='8.3' height='29.3' fill='#e11d48' rx='2'/>
+<text x='600.8' y='254.7' font-size='9.5' fill='#334155' text-anchor='middle'>68</text>
+<text x='581.2' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>getset100/256</text>
+<line x1='60' y1='288' x2='616' y2='288' stroke='#94a3b8' stroke-width='1'/>
+<text x='15' y='171.0' font-size='11' font-weight='500' fill='#334155' text-anchor='middle' transform='rotate(-90 15 171.0)'>Server CPU (kcycles/tx)</text>
+</svg></div>
+</div>
+
+<h2>2. Low-Concurrency (8-Worker) Latency Analysis</h2>
+<div class="card">
+  <p>On <code>set100/8</code> and <code>getset100/8</code>, Go (<code>D-NG</code> and <code>D-M</code>) already beats <code>L</code> on both throughput and latency (<code>set100/8</code> p50: <code>D-NG</code> 2,801 &micro;s vs <code>L</code> 3,127 &micro;s; <code>getset100/8</code> p50: <code>D-NG</code> 3,675 &micro;s vs <code>L</code> 4,409 &micro;s). The only cell where <code>L</code> has lower p50 than <code>D-NG</code> is <code>get100/8</code> (<code>L</code> 1,219 &micro;s vs <code>D-NG</code> 1,346 &micro;s on <code>netg-r6</code>; <code>D-M 4Ps</code> reaches 1,145 &micro;s vs <code>L</code> 1,223 &micro;s on Box 2).</p>
+  <p>Why? In <code>get100/8</code>, only 8 goroutines are active across 8 Ps (`client_cores_busy = 0.84`). Each transaction performs 1 GRV + 100 reads. With <code>D-NG</code>, the gap to <code>L</code> shrank from <code>+283 &micro;s</code> (<code>A</code>: 1,502 &micro;s) to <code>+127 &micro;s</code> (<code>D-NG</code>: 1,346 &micro;s) — i.e., <strong>1.27 &micro;s per read</strong>. That residual 1.27 &micro;s/read is the cost of waking a parked Go worker goroutine across Ps when `readLoop` delivers a reply plus arming/stopping the 5 s per-read timer in `GetPipelined` (which `D-M` at `GOMAXPROCS=4` eliminates by keeping goroutines on fewer Ps, beating `L` at 1,145 &micro;s vs 1,223 &micro;s).</p>
+</div>
+
+<h2>3. Client Syscalls per Operation: <code>L</code> vs <code>L4</code> vs Go (Box 2 / <code>rawhz5</code>)</h2>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Cell</th><th>Arm</th><th>Total syscalls/op</th><th>futex/op</th><th>epoll_pwait/op</th>
+        <th>read/op</th><th>write/op</th><th>nanosleep/op</th><th>ctx-switches/op</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>get100/64</td><td>L (libfdb_c)</td><td><strong>2.94</strong><span class='spread'>[2.94, 2.94]</span></td><td><strong>0.41</strong><span class='spread'>[0.39, 0.42]</span></td><td><strong>0.00</strong><span class='spread'>[0.00, 0.00]</span></td><td><strong>0.00</strong><span class='spread'>[0.00, 0.00]</span></td><td><strong>0.01</strong><span class='spread'>[0.01, 0.01]</span></td><td><strong>0.09</strong><span class='spread'>[0.09, 0.09]</span></td><td><strong>0.35</strong><span class='spread'>[0.35, 0.36]</span></td></tr><tr><td>get100/64</td><td>L4 (4 thr)</td><td><strong>12.38</strong><span class='spread'>[12.35, 12.42]</span></td><td><strong>1.15</strong><span class='spread'>[1.14, 1.17]</span></td><td><strong>0.00</strong><span class='spread'>[0.00, 0.00]</span></td><td><strong>0.00</strong><span class='spread'>[0.00, 0.00]</span></td><td><strong>0.01</strong><span class='spread'>[0.01, 0.01]</span></td><td><strong>0.08</strong><span class='spread'>[0.08, 0.09]</span></td><td><strong>0.76</strong><span class='spread'>[0.75, 0.78]</span></td></tr><tr><td>get100/64</td><td>A (today)</td><td><strong>2.06</strong><span class='spread'>[2.02, 2.10]</span></td><td><strong>0.71</strong><span class='spread'>[0.70, 0.72]</span></td><td><strong>0.60</strong><span class='spread'>[0.60, 0.60]</span></td><td><strong>0.34</strong><span class='spread'>[0.33, 0.35]</span></td><td><strong>0.10</strong><span class='spread'>[0.09, 0.10]</span></td><td><strong>0.15</strong><span class='spread'>[0.15, 0.16]</span></td><td><strong>0.58</strong><span class='spread'>[0.57, 0.59]</span></td></tr><tr><td>get100/64</td><td>D (10–20µs)</td><td><strong>1.89</strong><span class='spread'>[1.89, 1.89]</span></td><td><strong>0.57</strong><span class='spread'>[0.57, 0.57]</span></td><td><strong>0.53</strong><span class='spread'>[0.53, 0.53]</span></td><td><strong>0.37</strong><span class='spread'>[0.37, 0.37]</span></td><td><strong>0.11</strong><span class='spread'>[0.10, 0.11]</span></td><td><strong>0.14</strong><span class='spread'>[0.14, 0.14]</span></td><td><strong>0.51</strong><span class='spread'>[0.51, 0.52]</span></td></tr><tr><td>get100/64</td><td>D-M (sender)</td><td><strong>1.82</strong><span class='spread'>[1.81, 1.83]</span></td><td><strong>0.57</strong><span class='spread'>[0.57, 0.58]</span></td><td><strong>0.55</strong><span class='spread'>[0.54, 0.55]</span></td><td><strong>0.23</strong><span class='spread'>[0.23, 0.24]</span></td><td><strong>0.28</strong><span class='spread'>[0.28, 0.28]</span></td><td><strong>0.11</strong><span class='spread'>[0.10, 0.12]</span></td><td><strong>0.51</strong><span class='spread'>[0.50, 0.51]</span></td></tr><tr><td>getset100/64</td><td>L (libfdb_c)</td><td><strong>5.16</strong><span class='spread'>[5.13, 5.19]</span></td><td><strong>0.75</strong><span class='spread'>[0.74, 0.75]</span></td><td><strong>0.01</strong><span class='spread'>[0.01, 0.01]</span></td><td><strong>0.00</strong><span class='spread'>[0.00, 0.00]</span></td><td><strong>0.01</strong><span class='spread'>[0.01, 0.01]</span></td><td><strong>0.38</strong><span class='spread'>[0.37, 0.38]</span></td><td><strong>0.89</strong><span class='spread'>[0.89, 0.89]</span></td></tr><tr><td>getset100/64</td><td>L4 (4 thr)</td><td><strong>17.35</strong><span class='spread'>[16.83, 17.86]</span></td><td><strong>1.54</strong><span class='spread'>[1.54, 1.55]</span></td><td><strong>0.01</strong><span class='spread'>[0.01, 0.01]</span></td><td><strong>0.00</strong><span class='spread'>[0.00, 0.00]</span></td><td><strong>0.01</strong><span class='spread'>[0.01, 0.01]</span></td><td><strong>0.20</strong><span class='spread'>[0.19, 0.20]</span></td><td><strong>1.76</strong><span class='spread'>[1.70, 1.82]</span></td></tr><tr><td>getset100/64</td><td>A (today)</td><td><strong>3.98</strong><span class='spread'>[3.88, 4.07]</span></td><td><strong>1.16</strong><span class='spread'>[1.15, 1.18]</span></td><td><strong>1.11</strong><span class='spread'>[1.09, 1.14]</span></td><td><strong>0.73</strong><span class='spread'>[0.71, 0.75]</span></td><td><strong>0.26</strong><span class='spread'>[0.25, 0.26]</span></td><td><strong>0.36</strong><span class='spread'>[0.36, 0.37]</span></td><td><strong>1.12</strong><span class='spread'>[1.10, 1.13]</span></td></tr><tr><td>getset100/64</td><td>D (10–20µs)</td><td><strong>3.68</strong><span class='spread'>[3.53, 3.84]</span></td><td><strong>1.02</strong><span class='spread'>[0.98, 1.06]</span></td><td><strong>1.01</strong><span class='spread'>[0.97, 1.04]</span></td><td><strong>0.72</strong><span class='spread'>[0.68, 0.77]</span></td><td><strong>0.26</strong><span class='spread'>[0.25, 0.27]</span></td><td><strong>0.34</strong><span class='spread'>[0.33, 0.35]</span></td><td><strong>1.03</strong><span class='spread'>[0.99, 1.07]</span></td></tr><tr><td>getset100/64</td><td>D-M (sender)</td><td><strong>3.52</strong><span class='spread'>[3.50, 3.54]</span></td><td><strong>1.05</strong><span class='spread'>[1.04, 1.07]</span></td><td><strong>0.98</strong><span class='spread'>[0.98, 0.98]</span></td><td><strong>0.38</strong><span class='spread'>[0.37, 0.38]</span></td><td><strong>0.68</strong><span class='spread'>[0.68, 0.69]</span></td><td><strong>0.33</strong><span class='spread'>[0.33, 0.33]</span></td><td><strong>1.06</strong><span class='spread'>[1.06, 1.06]</span></td></tr><tr><td>set100/64</td><td>L (libfdb_c)</td><td><strong>3.41</strong><span class='spread'>[3.33, 3.50]</span></td><td><strong>0.40</strong><span class='spread'>[0.39, 0.41]</span></td><td><strong>0.01</strong><span class='spread'>[0.01, 0.01]</span></td><td><strong>-0.00</strong><span class='spread'>[-0.00, 0.00]</span></td><td><strong>0.01</strong><span class='spread'>[0.01, 0.01]</span></td><td><strong>0.17</strong><span class='spread'>[0.16, 0.17]</span></td><td><strong>0.47</strong><span class='spread'>[0.46, 0.47]</span></td></tr><tr><td>set100/64</td><td>L4 (4 thr)</td><td><strong>12.05</strong><span class='spread'>[11.56, 12.53]</span></td><td><strong>1.07</strong><span class='spread'>[1.06, 1.08]</span></td><td><strong>0.01</strong><span class='spread'>[0.01, 0.01]</span></td><td><strong>0.00</strong><span class='spread'>[0.00, 0.00]</span></td><td><strong>0.01</strong><span class='spread'>[0.01, 0.01]</span></td><td><strong>0.17</strong><span class='spread'>[0.16, 0.18]</span></td><td><strong>1.08</strong><span class='spread'>[1.04, 1.13]</span></td></tr><tr><td>set100/64</td><td>A (today)</td><td><strong>2.68</strong><span class='spread'>[2.66, 2.71]</span></td><td><strong>0.83</strong><span class='spread'>[0.81, 0.84]</span></td><td><strong>0.71</strong><span class='spread'>[0.71, 0.72]</span></td><td><strong>0.47</strong><span class='spread'>[0.46, 0.47]</span></td><td><strong>0.15</strong><span class='spread'>[0.15, 0.15]</span></td><td><strong>0.26</strong><span class='spread'>[0.26, 0.26]</span></td><td><strong>0.80</strong><span class='spread'>[0.78, 0.81]</span></td></tr><tr><td>set100/64</td><td>D (10–20µs)</td><td><strong>2.59</strong><span class='spread'>[2.56, 2.61]</span></td><td><strong>0.77</strong><span class='spread'>[0.76, 0.78]</span></td><td><strong>0.70</strong><span class='spread'>[0.69, 0.72]</span></td><td><strong>0.46</strong><span class='spread'>[0.45, 0.47]</span></td><td><strong>0.15</strong><span class='spread'>[0.15, 0.15]</span></td><td><strong>0.26</strong><span class='spread'>[0.26, 0.26]</span></td><td><strong>0.78</strong><span class='spread'>[0.78, 0.78]</span></td></tr><tr><td>set100/64</td><td>D-M (sender)</td><td><strong>2.67</strong><span class='spread'>[2.63, 2.72]</span></td><td><strong>0.91</strong><span class='spread'>[0.89, 0.92]</span></td><td><strong>0.71</strong><span class='spread'>[0.70, 0.72]</span></td><td><strong>0.30</strong><span class='spread'>[0.30, 0.30]</span></td><td><strong>0.37</strong><span class='spread'>[0.37, 0.37]</span></td><td><strong>0.26</strong><span class='spread'>[0.25, 0.26]</span></td><td><strong>0.85</strong><span class='spread'>[0.83, 0.86]</span></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2>4. Box 2 (<code>rawhz5</code>) Complete Tables: <code>L</code>, <code>L4</code>, <code>A</code>, <code>D</code>, <code>D-M</code>, <code>D-M 4Ps</code></h2>
+<h3>get100 — 8, 64, and 256 workers</h3>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+<th>Storage f/pkt</th><th>Proxy f/pkt</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>6,268</strong><span class='spread'>[6,080, 6,450]</span></td><td><strong>139.2</strong><span class='spread'>[137.9, 143.6]</span></td><td><strong>82.4</strong><span class='spread'>[82.3, 83.8]</span></td><td><strong>1,223</strong><span class='spread'>[1,204, 1,303]</span></td><td><strong>2,602</strong><span class='spread'>[2,572, 2,932]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>1.16× / 0.89× / 0.99× / 0.84× / 0.86×</td><td>-</td><td>7.4</td><td>1.0</td></tr>
+<tr><td>L4 (4 thr)</td><td><strong>10,247</strong><span class='spread'>[10,242, 10,268]</span></td><td><strong>280.6</strong><span class='spread'>[280.4, 286.2]</span></td><td><strong>296.0</strong><span class='spread'>[295.1, 296.8]</span></td><td><strong>748</strong><span class='spread'>[748, 750]</span></td><td><strong>1,458</strong><span class='spread'>[1,443, 1,518]</span></td><td>1.63× / 2.02× / 3.59× / 0.61× / 0.56×</td><td>1.89× / 1.80× / 3.54× / 0.52× / 0.48×</td><td>-</td><td>1.0</td><td>1.0</td></tr>
+<tr><td>A (today)</td><td><strong>5,425</strong><span class='spread'>[5,390, 5,466]</span></td><td><strong>156.1</strong><span class='spread'>[155.5, 157.4]</span></td><td><strong>83.6</strong><span class='spread'>[82.4, 84.1]</span></td><td><strong>1,453</strong><span class='spread'>[1,437, 1,462]</span></td><td><strong>3,037</strong><span class='spread'>[2,953, 3,192]</span></td><td>0.87× / 1.12× / 1.01× / 1.19× / 1.17×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td><td>5.1</td><td>1.0</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>5,485</strong><span class='spread'>[5,447, 5,582]</span></td><td><strong>138.0</strong><span class='spread'>[132.9, 138.6]</span></td><td><strong>83.4</strong><span class='spread'>[82.8, 84.1]</span></td><td><strong>1,441</strong><span class='spread'>[1,426, 1,451]</span></td><td><strong>2,966</strong><span class='spread'>[2,604, 3,441]</span></td><td>0.88× / 0.99× / 1.01× / 1.18× / 1.14×</td><td>1.01× / 0.88× / 1.00× / 0.99× / 0.98×</td><td><strong>3.4</strong><span class='spread'>[3.4, 3.4]</span></td><td>-</td><td>-</td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>6,456</strong><span class='spread'>[6,357, 6,641]</span></td><td><strong>123.8</strong><span class='spread'>[121.2, 124.4]</span></td><td><strong>82.8</strong><span class='spread'>[82.3, 83.3]</span></td><td><strong>1,227</strong><span class='spread'>[1,185, 1,230]</span></td><td><strong>2,242</strong><span class='spread'>[2,228, 2,880]</span></td><td>1.03× / 0.89× / 1.01× / 1.00× / 0.86×</td><td>1.19× / 0.79× / 0.99× / 0.84× / 0.74×</td><td><strong>1.7</strong><span class='spread'>[1.7, 1.7]</span></td><td>2.1</td><td>1.0</td></tr>
+<tr><td>D-M (4 Ps)</td><td><strong>6,596</strong><span class='spread'>[6,340, 6,679]</span></td><td><strong>126.9</strong><span class='spread'>[125.7, 129.1]</span></td><td><strong>83.6</strong><span class='spread'>[83.3, 85.0]</span></td><td><strong>1,145</strong><span class='spread'>[1,125, 1,247]</span></td><td><strong>2,531</strong><span class='spread'>[1,999, 2,580]</span></td><td>1.05× / 0.91× / 1.02× / 0.94× / 0.97×</td><td>1.22× / 0.81× / 1.00× / 0.79× / 0.83×</td><td><strong>1.6</strong><span class='spread'>[1.6, 1.7]</span></td><td>-</td><td>-</td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+<th>Storage f/pkt</th><th>Proxy f/pkt</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>36,625</strong><span class='spread'>[36,550, 37,018]</span></td><td><strong>62.2</strong><span class='spread'>[61.4, 62.8]</span></td><td><strong>22.8</strong><span class='spread'>[22.4, 23.4]</span></td><td><strong>1,567</strong><span class='spread'>[1,562, 1,578]</span></td><td><strong>3,659</strong><span class='spread'>[3,483, 3,680]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>1.02× / 1.01× / 1.17× / 0.89× / 0.96×</td><td>-</td><td>32.1</td><td>1.0</td></tr>
+<tr><td>L4 (4 thr)</td><td><strong>62,683</strong><span class='spread'>[62,443, 62,815]</span></td><td><strong>93.8</strong><span class='spread'>[93.4, 94.0]</span></td><td><strong>62.9</strong><span class='spread'>[62.8, 63.8]</span></td><td><strong>941</strong><span class='spread'>[936, 946]</span></td><td><strong>2,421</strong><span class='spread'>[2,417, 2,487]</span></td><td>1.71× / 1.51× / 2.76× / 0.60× / 0.66×</td><td>1.74× / 1.52× / 3.24× / 0.53× / 0.63×</td><td>-</td><td>4.2</td><td>1.0</td></tr>
+<tr><td>A (today)</td><td><strong>35,954</strong><span class='spread'>[35,392, 38,437]</span></td><td><strong>61.8</strong><span class='spread'>[59.4, 62.6]</span></td><td><strong>19.4</strong><span class='spread'>[19.4, 19.7]</span></td><td><strong>1,770</strong><span class='spread'>[1,664, 1,796]</span></td><td><strong>3,825</strong><span class='spread'>[3,281, 3,883]</span></td><td>0.98× / 0.99× / 0.85× / 1.13× / 1.05×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td><td>19.2</td><td>1.0</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>31,833</strong><span class='spread'>[31,537, 31,960]</span></td><td><strong>57.1</strong><span class='spread'>[56.8, 57.3]</span></td><td><strong>17.7</strong><span class='spread'>[17.5, 17.7]</span></td><td><strong>1,979</strong><span class='spread'>[1,961, 1,996]</span></td><td><strong>4,438</strong><span class='spread'>[4,291, 4,473]</span></td><td>0.87× / 0.92× / 0.78× / 1.26× / 1.21×</td><td>0.89× / 0.92× / 0.91× / 1.12× / 1.16×</td><td><strong>17.3</strong><span class='spread'>[17.3, 17.5]</span></td><td>-</td><td>-</td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>48,474</strong><span class='spread'>[46,754, 53,973]</span></td><td><strong>47.5</strong><span class='spread'>[42.3, 49.8]</span></td><td><strong>20.7</strong><span class='spread'>[19.9, 21.0]</span></td><td><strong>1,293</strong><span class='spread'>[1,006, 1,393]</span></td><td><strong>3,109</strong><span class='spread'>[2,881, 3,267]</span></td><td>1.32× / 0.76× / 0.91× / 0.83× / 0.85×</td><td>1.35× / 0.77× / 1.07× / 0.73× / 0.81×</td><td><strong>4.7</strong><span class='spread'>[4.7, 4.7]</span></td><td>5.0</td><td>1.0</td></tr>
+<tr><td>D-M (4 Ps)</td><td><strong>55,550</strong><span class='spread'>[54,063, 63,196]</span></td><td><strong>24.1</strong><span class='spread'>[23.1, 24.3]</span></td><td><strong>17.7</strong><span class='spread'>[17.3, 18.8]</span></td><td><strong>1,096</strong><span class='spread'>[923, 1,173]</span></td><td><strong>2,445</strong><span class='spread'>[2,115, 2,904]</span></td><td>1.52× / 0.39× / 0.78× / 0.70× / 0.67×</td><td>1.55× / 0.39× / 0.91× / 0.62× / 0.64×</td><td><strong>4.2</strong><span class='spread'>[4.1, 4.2]</span></td><td>-</td><td>-</td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+<th>Storage f/pkt</th><th>Proxy f/pkt</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>57,294</strong><span class='spread'>[56,940, 57,656]</span></td><td><strong>56.2</strong><span class='spread'>[55.5, 56.9]</span></td><td><strong>13.2</strong><span class='spread'>[13.1, 13.4]</span></td><td><strong>3,932</strong><span class='spread'>[3,888, 3,953]</span></td><td><strong>8,565</strong><span class='spread'>[8,407, 8,787]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.25× / 2.21× / 0.95× / 3.83× / 3.22×</td><td>-</td><td>61.7</td><td>1.0</td></tr>
+<tr><td>L4 (4 thr)</td><td><strong>107,019</strong><span class='spread'>[104,250, 108,504]</span></td><td><strong>65.0</strong><span class='spread'>[63.9, 66.0]</span></td><td><strong>33.0</strong><span class='spread'>[32.9, 33.5]</span></td><td><strong>2,025</strong><span class='spread'>[2,012, 2,066]</span></td><td><strong>7,689</strong><span class='spread'>[7,045, 8,828]</span></td><td>1.87× / 1.16× / 2.50× / 0.51× / 0.90×</td><td>0.47× / 2.56× / 2.38× / 1.97× / 2.89×</td><td>-</td><td>11.2</td><td>1.0</td></tr>
+<tr><td>A (today)</td><td><strong>228,876</strong><span class='spread'>[227,723, 231,460]</span></td><td><strong>25.4</strong><span class='spread'>[25.0, 25.6]</span></td><td><strong>13.9</strong><span class='spread'>[13.7, 14.2]</span></td><td><strong>1,027</strong><span class='spread'>[1,017, 1,038]</span></td><td><strong>2,662</strong><span class='spread'>[2,641, 2,755]</span></td><td>3.99× / 0.45× / 1.05× / 0.26× / 0.31×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td><td>32.4</td><td>1.0</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>232,389</strong><span class='spread'>[230,883, 233,748]</span></td><td><strong>21.0</strong><span class='spread'>[20.6, 21.1]</span></td><td><strong>13.1</strong><span class='spread'>[12.8, 13.2]</span></td><td><strong>1,057</strong><span class='spread'>[1,055, 1,066]</span></td><td><strong>2,268</strong><span class='spread'>[2,195, 2,420]</span></td><td>4.06× / 0.37× / 1.00× / 0.27× / 0.26×</td><td>1.02× / 0.83× / 0.95× / 1.03× / 0.85×</td><td><strong>22.0</strong><span class='spread'>[22.0, 22.6]</span></td><td>-</td><td>-</td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>260,778</strong><span class='spread'>[260,027, 261,111]</span></td><td><strong>21.3</strong><span class='spread'>[21.0, 21.3]</span></td><td><strong>14.7</strong><span class='spread'>[14.4, 14.8]</span></td><td><strong>920</strong><span class='spread'>[917, 924]</span></td><td><strong>2,520</strong><span class='spread'>[2,406, 2,849]</span></td><td>4.55× / 0.38× / 1.12× / 0.23× / 0.29×</td><td>1.14× / 0.84× / 1.06× / 0.90× / 0.95×</td><td><strong>5.5</strong><span class='spread'>[5.5, 5.6]</span></td><td>6.9</td><td>1.0</td></tr>
+<tr><td>D-M (4 Ps)</td><td><strong>174,522</strong><span class='spread'>[174,069, 174,643]</span></td><td><strong>20.4</strong><span class='spread'>[20.3, 20.4]</span></td><td><strong>17.5</strong><span class='spread'>[17.4, 17.6]</span></td><td><strong>1,345</strong><span class='spread'>[1,341, 1,352]</span></td><td><strong>3,593</strong><span class='spread'>[3,586, 3,702]</span></td><td>3.05× / 0.36× / 1.32× / 0.34× / 0.42×</td><td>0.76× / 0.80× / 1.26× / 1.31× / 1.35×</td><td><strong>3.1</strong><span class='spread'>[3.0, 3.1]</span></td><td>-</td><td>-</td></tr>
+</tbody></table></div>
+
+<h3>set100 — 8, 64, and 256 workers + Rate-Capped (18,000 ops/s)</h3>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+<th>Storage f/pkt</th><th>Proxy f/pkt</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>2,556</strong><span class='spread'>[2,126, 2,596]</span></td><td><strong>177.0</strong><span class='spread'>[175.0, 181.3]</span></td><td><strong>261.6</strong><span class='spread'>[248.7, 282.1]</span></td><td><strong>3,098</strong><span class='spread'>[3,009, 3,725]</span></td><td><strong>6,265</strong><span class='spread'>[6,134, 8,767]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.95× / 0.95× / 0.97× / 1.05× / 0.97×</td><td>-</td><td>1.0</td><td>4.0</td></tr>
+<tr><td>L4 (4 thr)</td><td><strong>3,086</strong><span class='spread'>[2,945, 3,144]</span></td><td><strong>464.0</strong><span class='spread'>[456.1, 470.4]</span></td><td><strong>474.1</strong><span class='spread'>[437.6, 478.0]</span></td><td><strong>2,285</strong><span class='spread'>[2,272, 2,665]</span></td><td><strong>5,967</strong><span class='spread'>[4,583, 6,411]</span></td><td>1.21× / 2.62× / 1.81× / 0.74× / 0.95×</td><td>1.15× / 2.50× / 1.76× / 0.77× / 0.93×</td><td>-</td><td>1.0</td><td>1.2</td></tr>
+<tr><td>A (today)</td><td><strong>2,686</strong><span class='spread'>[2,650, 2,746]</span></td><td><strong>185.8</strong><span class='spread'>[182.9, 193.9]</span></td><td><strong>268.9</strong><span class='spread'>[265.0, 277.1]</span></td><td><strong>2,964</strong><span class='spread'>[2,889, 2,984]</span></td><td><strong>6,443</strong><span class='spread'>[6,295, 6,528]</span></td><td>1.05× / 1.05× / 1.03× / 0.96× / 1.03×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td><td>1.0</td><td>2.7</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>2,612</strong><span class='spread'>[2,594, 2,689]</span></td><td><strong>191.4</strong><span class='spread'>[185.4, 194.7]</span></td><td><strong>282.8</strong><span class='spread'>[263.9, 291.0]</span></td><td><strong>3,044</strong><span class='spread'>[2,985, 3,086]</span></td><td><strong>5,949</strong><span class='spread'>[5,736, 6,339]</span></td><td>1.02× / 1.08× / 1.08× / 0.98× / 0.95×</td><td>0.97× / 1.03× / 1.05× / 1.03× / 0.92×</td><td><strong>2.9</strong><span class='spread'>[2.9, 2.9]</span></td><td>-</td><td>-</td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>2,844</strong><span class='spread'>[2,837, 2,884]</span></td><td><strong>167.1</strong><span class='spread'>[164.3, 168.3]</span></td><td><strong>255.6</strong><span class='spread'>[255.0, 273.8]</span></td><td><strong>2,739</strong><span class='spread'>[2,727, 2,796]</span></td><td><strong>5,713</strong><span class='spread'>[5,225, 5,905]</span></td><td>1.11× / 0.94× / 0.98× / 0.88× / 0.91×</td><td>1.06× / 0.90× / 0.95× / 0.92× / 0.89×</td><td><strong>1.6</strong><span class='spread'>[1.6, 1.7]</span></td><td>1.0</td><td>1.7</td></tr>
+<tr><td>D-M (4 Ps)</td><td><strong>2,752</strong><span class='spread'>[2,748, 2,774]</span></td><td><strong>178.5</strong><span class='spread'>[177.4, 180.5]</span></td><td><strong>272.6</strong><span class='spread'>[245.9, 293.6]</span></td><td><strong>2,860</strong><span class='spread'>[2,827, 2,877]</span></td><td><strong>6,106</strong><span class='spread'>[5,226, 6,609]</span></td><td>1.08× / 1.01× / 1.04× / 0.92× / 0.97×</td><td>1.02× / 0.96× / 1.01× / 0.96× / 0.95×</td><td><strong>1.7</strong><span class='spread'>[1.7, 1.7]</span></td><td>-</td><td>-</td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+<th>Storage f/pkt</th><th>Proxy f/pkt</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>19,229</strong><span class='spread'>[18,944, 19,977]</span></td><td><strong>66.6</strong><span class='spread'>[65.9, 67.5]</span></td><td><strong>72.0</strong><span class='spread'>[69.5, 72.4]</span></td><td><strong>3,130</strong><span class='spread'>[3,049, 3,187]</span></td><td><strong>7,267</strong><span class='spread'>[6,971, 7,802]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.79× / 0.71× / 0.84× / 1.24× / 1.36×</td><td>-</td><td>1.0</td><td>12.5</td></tr>
+<tr><td>L4 (4 thr)</td><td><strong>24,219</strong><span class='spread'>[21,755, 24,894]</span></td><td><strong>123.8</strong><span class='spread'>[120.1, 140.0]</span></td><td><strong>107.0</strong><span class='spread'>[103.6, 120.3]</span></td><td><strong>2,517</strong><span class='spread'>[2,422, 2,790]</span></td><td><strong>5,140</strong><span class='spread'>[4,882, 5,732]</span></td><td>1.26× / 1.86× / 1.49× / 0.80× / 0.71×</td><td>0.99× / 1.32× / 1.25× / 0.99× / 0.96×</td><td>-</td><td>1.0</td><td>3.0</td></tr>
+<tr><td>A (today)</td><td><strong>24,361</strong><span class='spread'>[22,913, 24,997]</span></td><td><strong>94.0</strong><span class='spread'>[90.4, 96.2]</span></td><td><strong>85.6</strong><span class='spread'>[84.3, 90.0]</span></td><td><strong>2,534</strong><span class='spread'>[2,427, 2,668]</span></td><td><strong>5,341</strong><span class='spread'>[4,871, 5,700]</span></td><td>1.27× / 1.41× / 1.19× / 0.81× / 0.74×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td><td>1.0</td><td>8.8</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>24,355</strong><span class='spread'>[23,508, 24,594]</span></td><td><strong>91.9</strong><span class='spread'>[88.5, 91.9]</span></td><td><strong>85.9</strong><span class='spread'>[84.1, 86.0]</span></td><td><strong>2,531</strong><span class='spread'>[2,516, 2,638]</span></td><td><strong>5,054</strong><span class='spread'>[5,050, 5,456]</span></td><td>1.27× / 1.38× / 1.19× / 0.81× / 0.70×</td><td>1.00× / 0.98× / 1.00× / 1.00× / 0.95×</td><td><strong>8.1</strong><span class='spread'>[8.1, 8.3]</span></td><td>-</td><td>-</td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>27,352</strong><span class='spread'>[25,542, 27,930]</span></td><td><strong>87.6</strong><span class='spread'>[87.4, 88.7]</span></td><td><strong>92.0</strong><span class='spread'>[91.4, 94.2]</span></td><td><strong>2,184</strong><span class='spread'>[2,153, 2,212]</span></td><td><strong>4,578</strong><span class='spread'>[4,116, 5,480]</span></td><td>1.42× / 1.31× / 1.28× / 0.70× / 0.63×</td><td>1.12× / 0.93× / 1.07× / 0.86× / 0.86×</td><td><strong>3.1</strong><span class='spread'>[3.0, 3.1]</span></td><td>1.0</td><td>3.6</td></tr>
+<tr><td>D-M (4 Ps)</td><td><strong>28,219</strong><span class='spread'>[27,841, 28,499]</span></td><td><strong>51.1</strong><span class='spread'>[50.6, 52.2]</span></td><td><strong>85.2</strong><span class='spread'>[84.7, 85.2]</span></td><td><strong>2,126</strong><span class='spread'>[2,117, 2,142]</span></td><td><strong>4,678</strong><span class='spread'>[4,630, 4,770]</span></td><td>1.47× / 0.77× / 1.18× / 0.68× / 0.64×</td><td>1.16× / 0.54× / 0.99× / 0.84× / 0.88×</td><td><strong>2.9</strong><span class='spread'>[2.8, 2.9]</span></td><td>-</td><td>-</td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+<th>Storage f/pkt</th><th>Proxy f/pkt</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>50,537</strong><span class='spread'>[50,135, 50,869]</span></td><td><strong>49.6</strong><span class='spread'>[48.5, 50.7]</span></td><td><strong>48.2</strong><span class='spread'>[47.7, 49.2]</span></td><td><strong>4,744</strong><span class='spread'>[4,740, 4,761]</span></td><td><strong>9,788</strong><span class='spread'>[9,025, 10,466]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.63× / 1.36× / 1.02× / 1.57× / 1.44×</td><td>-</td><td>1.0</td><td>35.9</td></tr>
+<tr><td>L4 (4 thr)</td><td><strong>75,781</strong><span class='spread'>[71,816, 76,812]</span></td><td><strong>57.5</strong><span class='spread'>[56.2, 57.9]</span></td><td><strong>58.2</strong><span class='spread'>[57.6, 60.1]</span></td><td><strong>3,196</strong><span class='spread'>[3,178, 3,263]</span></td><td><strong>5,803</strong><span class='spread'>[5,640, 6,707]</span></td><td>1.50× / 1.16× / 1.21× / 0.67× / 0.59×</td><td>0.94× / 1.57× / 1.23× / 1.06× / 0.85×</td><td>-</td><td>1.0</td><td>6.1</td></tr>
+<tr><td>A (today)</td><td><strong>80,232</strong><span class='spread'>[76,913, 80,537]</span></td><td><strong>36.6</strong><span class='spread'>[35.3, 37.9]</span></td><td><strong>47.4</strong><span class='spread'>[46.6, 47.8]</span></td><td><strong>3,017</strong><span class='spread'>[3,011, 3,062]</span></td><td><strong>6,806</strong><span class='spread'>[6,780, 6,942]</span></td><td>1.59× / 0.74× / 0.98× / 0.64× / 0.70×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td><td>1.0</td><td>21.2</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>81,271</strong><span class='spread'>[80,772, 82,319]</span></td><td><strong>34.5</strong><span class='spread'>[33.2, 34.7]</span></td><td><strong>45.8</strong><span class='spread'>[45.1, 46.3]</span></td><td><strong>3,002</strong><span class='spread'>[2,970, 3,005]</span></td><td><strong>6,082</strong><span class='spread'>[6,066, 6,415]</span></td><td>1.61× / 0.70× / 0.95× / 0.63× / 0.62×</td><td>1.01× / 0.94× / 0.97× / 0.99× / 0.89×</td><td><strong>19.2</strong><span class='spread'>[19.2, 20.0]</span></td><td>-</td><td>-</td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>82,640</strong><span class='spread'>[81,769, 85,146]</span></td><td><strong>34.6</strong><span class='spread'>[33.8, 35.4]</span></td><td><strong>47.5</strong><span class='spread'>[46.2, 47.7]</span></td><td><strong>2,944</strong><span class='spread'>[2,864, 2,953]</span></td><td><strong>6,172</strong><span class='spread'>[6,101, 6,328]</span></td><td>1.64× / 0.70× / 0.98× / 0.62× / 0.63×</td><td>1.03× / 0.95× / 1.00× / 0.98× / 0.91×</td><td><strong>5.6</strong><span class='spread'>[5.6, 5.8]</span></td><td>1.0</td><td>7.2</td></tr>
+<tr><td>D-M (4 Ps)</td><td><strong>77,981</strong><span class='spread'>[77,796, 78,673]</span></td><td><strong>28.9</strong><span class='spread'>[28.6, 29.0]</span></td><td><strong>50.4</strong><span class='spread'>[49.9, 51.4]</span></td><td><strong>3,100</strong><span class='spread'>[3,099, 3,110]</span></td><td><strong>8,101</strong><span class='spread'>[7,546, 8,215]</span></td><td>1.54× / 0.58× / 1.05× / 0.65× / 0.83×</td><td>0.97× / 0.79× / 1.07× / 1.03× / 1.19×</td><td><strong>3.8</strong><span class='spread'>[3.8, 3.8]</span></td><td>-</td><td>-</td></tr>
+</tbody></table></div>
+<h4>set100 / 64 workers — Rate-Capped at 18,000 ops/s (Box 2 / rawhz5)</h4>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>18,005</strong><span class='spread'>[18,004, 18,005]</span></td><td><strong>108.4</strong><span class='spread'>[107.1, 109.1]</span></td><td><strong>137.0</strong><span class='spread'>[133.6, 144.1]</span></td><td><strong>2,236</strong><span class='spread'>[2,200, 2,251]</span></td><td><strong>5,439</strong><span class='spread'>[5,367, 5,877]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>1.00× / 0.77× / 0.98× / 1.03× / 1.19×</td><td>-</td></tr>
+<tr><td>L4 (4 thr)</td><td><strong>18,005</strong><span class='spread'>[18,004, 18,005]</span></td><td><strong>169.4</strong><span class='spread'>[167.1, 171.6]</span></td><td><strong>187.8</strong><span class='spread'>[176.4, 188.0]</span></td><td><strong>2,115</strong><span class='spread'>[2,087, 2,175]</span></td><td><strong>4,062</strong><span class='spread'>[3,907, 4,670]</span></td><td>1.00× / 1.56× / 1.37× / 0.95× / 0.75×</td><td>1.00× / 1.21× / 1.34× / 0.98× / 0.89×</td><td>-</td></tr>
+<tr><td>A (today)</td><td><strong>18,005</strong><span class='spread'>[18,004, 18,005]</span></td><td><strong>140.0</strong><span class='spread'>[139.8, 140.0]</span></td><td><strong>139.9</strong><span class='spread'>[135.8, 141.7]</span></td><td><strong>2,165</strong><span class='spread'>[2,158, 2,200]</span></td><td><strong>4,586</strong><span class='spread'>[4,150, 5,383]</span></td><td>1.00× / 1.29× / 1.02× / 0.97× / 0.84×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>18,005</strong><span class='spread'>[17,992, 18,005]</span></td><td><strong>139.4</strong><span class='spread'>[138.4, 140.5]</span></td><td><strong>135.8</strong><span class='spread'>[134.2, 139.8]</span></td><td><strong>2,197</strong><span class='spread'>[2,156, 2,245]</span></td><td><strong>5,190</strong><span class='spread'>[4,432, 5,333]</span></td><td>1.00× / 1.29× / 0.99× / 0.98× / 0.95×</td><td>1.00× / 1.00× / 0.97× / 1.01× / 1.13×</td><td><strong>3.3</strong><span class='spread'>[3.1, 3.4]</span></td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>18,004</strong><span class='spread'>[18,000, 18,005]</span></td><td><strong>140.7</strong><span class='spread'>[140.3, 141.4]</span></td><td><strong>147.8</strong><span class='spread'>[144.2, 148.2]</span></td><td><strong>2,075</strong><span class='spread'>[2,074, 2,087]</span></td><td><strong>4,742</strong><span class='spread'>[4,402, 5,187]</span></td><td>1.00× / 1.30× / 1.08× / 0.93× / 0.87×</td><td>1.00× / 1.01× / 1.06× / 0.96× / 1.03×</td><td><strong>1.5</strong><span class='spread'>[1.5, 1.5]</span></td></tr>
+</tbody></table></div>
+
+<h3>getset100 — 8, 64, and 256 workers</h3>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+<th>Storage f/pkt</th><th>Proxy f/pkt</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>1,847</strong><span class='spread'>[1,837, 1,893]</span></td><td><strong>245.0</strong><span class='spread'>[239.6, 259.7]</span></td><td><strong>326.8</strong><span class='spread'>[325.9, 333.7]</span></td><td><strong>4,228</strong><span class='spread'>[4,085, 4,240]</span></td><td><strong>9,880</strong><span class='spread'>[8,621, 10,441]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.94× / 0.82× / 0.89× / 1.04× / 1.14×</td><td>-</td><td>7.7</td><td>4.3</td></tr>
+<tr><td>L4 (4 thr)</td><td><strong>2,097</strong><span class='spread'>[2,058, 2,126]</span></td><td><strong>670.9</strong><span class='spread'>[653.5, 674.1]</span></td><td><strong>538.3</strong><span class='spread'>[518.4, 572.1]</span></td><td><strong>3,749</strong><span class='spread'>[3,711, 3,809]</span></td><td><strong>7,308</strong><span class='spread'>[7,231, 7,640]</span></td><td>1.14× / 2.74× / 1.65× / 0.89× / 0.74×</td><td>1.07× / 2.24× / 1.47× / 0.92× / 0.84×</td><td>-</td><td>1.8</td><td>1.4</td></tr>
+<tr><td>A (today)</td><td><strong>1,962</strong><span class='spread'>[1,951, 1,975]</span></td><td><strong>300.2</strong><span class='spread'>[296.8, 300.3]</span></td><td><strong>365.7</strong><span class='spread'>[354.8, 366.7]</span></td><td><strong>4,063</strong><span class='spread'>[4,049, 4,065]</span></td><td><strong>8,661</strong><span class='spread'>[8,641, 9,553]</span></td><td>1.06× / 1.23× / 1.12× / 0.96× / 0.88×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td><td>4.5</td><td>2.7</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>1,973</strong><span class='spread'>[1,929, 2,042]</span></td><td><strong>280.2</strong><span class='spread'>[277.0, 282.9]</span></td><td><strong>353.7</strong><span class='spread'>[322.9, 375.6]</span></td><td><strong>4,008</strong><span class='spread'>[3,887, 4,130]</span></td><td><strong>8,919</strong><span class='spread'>[8,828, 9,728]</span></td><td>1.07× / 1.14× / 1.08× / 0.95× / 0.90×</td><td>1.01× / 0.93× / 0.97× / 0.99× / 1.03×</td><td><strong>3.4</strong><span class='spread'>[3.3, 3.5]</span></td><td>-</td><td>-</td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>2,151</strong><span class='spread'>[2,146, 2,178]</span></td><td><strong>260.3</strong><span class='spread'>[254.6, 260.4]</span></td><td><strong>360.3</strong><span class='spread'>[333.8, 368.0]</span></td><td><strong>3,715</strong><span class='spread'>[3,674, 3,747]</span></td><td><strong>6,981</strong><span class='spread'>[6,173, 7,732]</span></td><td>1.17× / 1.06× / 1.10× / 0.88× / 0.71×</td><td>1.10× / 0.87× / 0.99× / 0.91× / 0.81×</td><td><strong>1.6</strong><span class='spread'>[1.6, 1.6]</span></td><td>2.0</td><td>1.5</td></tr>
+<tr><td>D-M (4 Ps)</td><td><strong>2,277</strong><span class='spread'>[2,185, 2,282]</span></td><td><strong>274.1</strong><span class='spread'>[272.0, 285.5]</span></td><td><strong>406.4</strong><span class='spread'>[362.6, 408.6]</span></td><td><strong>3,450</strong><span class='spread'>[3,437, 3,692]</span></td><td><strong>7,250</strong><span class='spread'>[6,564, 7,379]</span></td><td>1.23× / 1.12× / 1.24× / 0.82× / 0.73×</td><td>1.16× / 0.91× / 1.11× / 0.85× / 0.84×</td><td><strong>1.5</strong><span class='spread'>[1.4, 1.5]</span></td><td>-</td><td>-</td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+<th>Storage f/pkt</th><th>Proxy f/pkt</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>15,692</strong><span class='spread'>[15,199, 15,788]</span></td><td><strong>90.1</strong><span class='spread'>[89.4, 90.3]</span></td><td><strong>106.1</strong><span class='spread'>[105.7, 106.5]</span></td><td><strong>3,806</strong><span class='spread'>[3,786, 3,941]</span></td><td><strong>8,879</strong><span class='spread'>[8,680, 8,997]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.93× / 0.66× / 0.95× / 1.05× / 1.21×</td><td>-</td><td>25.7</td><td>12.1</td></tr>
+<tr><td>L4 (4 thr)</td><td><strong>19,010</strong><span class='spread'>[18,809, 19,339]</span></td><td><strong>150.8</strong><span class='spread'>[146.4, 153.8]</span></td><td><strong>152.3</strong><span class='spread'>[152.2, 152.7]</span></td><td><strong>3,158</strong><span class='spread'>[3,109, 3,204]</span></td><td><strong>6,951</strong><span class='spread'>[6,582, 7,109]</span></td><td>1.21× / 1.67× / 1.44× / 0.83× / 0.78×</td><td>1.13× / 1.10× / 1.36× / 0.87× / 0.94×</td><td>-</td><td>5.5</td><td>3.3</td></tr>
+<tr><td>A (today)</td><td><strong>16,796</strong><span class='spread'>[15,950, 17,072]</span></td><td><strong>137.6</strong><span class='spread'>[130.8, 139.0]</span></td><td><strong>112.1</strong><span class='spread'>[100.9, 113.4]</span></td><td><strong>3,638</strong><span class='spread'>[3,594, 3,839]</span></td><td><strong>7,367</strong><span class='spread'>[6,798, 7,985]</span></td><td>1.07× / 1.53× / 1.06× / 0.96× / 0.83×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td><td>12.6</td><td>7.0</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>14,908</strong><span class='spread'>[14,619, 15,203]</span></td><td><strong>120.9</strong><span class='spread'>[117.9, 125.1]</span></td><td><strong>92.7</strong><span class='spread'>[91.7, 94.3]</span></td><td><strong>4,169</strong><span class='spread'>[4,082, 4,281]</span></td><td><strong>7,803</strong><span class='spread'>[7,702, 7,902]</span></td><td>0.95× / 1.34× / 0.87× / 1.10× / 0.88×</td><td>0.89× / 0.88× / 0.83× / 1.15× / 1.06×</td><td><strong>11.4</strong><span class='spread'>[11.1, 11.7]</span></td><td>-</td><td>-</td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>17,750</strong><span class='spread'>[17,747, 17,836]</span></td><td><strong>122.1</strong><span class='spread'>[117.8, 123.7]</span></td><td><strong>109.4</strong><span class='spread'>[107.8, 110.1]</span></td><td><strong>3,393</strong><span class='spread'>[3,378, 3,434]</span></td><td><strong>6,771</strong><span class='spread'>[6,593, 7,718]</span></td><td>1.13× / 1.35× / 1.03× / 0.89× / 0.76×</td><td>1.06× / 0.89× / 0.98× / 0.93× / 0.92×</td><td><strong>3.5</strong><span class='spread'>[3.4, 3.6]</span></td><td>4.1</td><td>3.3</td></tr>
+<tr><td>D-M (4 Ps)</td><td><strong>19,264</strong><span class='spread'>[18,898, 19,485]</span></td><td><strong>78.1</strong><span class='spread'>[76.5, 79.5]</span></td><td><strong>113.5</strong><span class='spread'>[108.6, 116.2]</span></td><td><strong>3,143</strong><span class='spread'>[3,098, 3,181]</span></td><td><strong>7,102</strong><span class='spread'>[6,156, 7,258]</span></td><td>1.23× / 0.87× / 1.07× / 0.83× / 0.80×</td><td>1.15× / 0.57× / 1.01× / 0.86× / 0.96×</td><td><strong>2.7</strong><span class='spread'>[2.6, 2.7]</span></td><td>-</td><td>-</td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+<th>Storage f/pkt</th><th>Proxy f/pkt</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>38,010</strong><span class='spread'>[37,835, 38,393]</span></td><td><strong>69.8</strong><span class='spread'>[68.6, 69.9]</span></td><td><strong>75.1</strong><span class='spread'>[75.0, 75.4]</span></td><td><strong>6,137</strong><span class='spread'>[6,000, 6,148]</span></td><td><strong>13,115</strong><span class='spread'>[13,096, 13,233]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.64× / 1.30× / 1.14× / 1.49× / 1.53×</td><td>-</td><td>42.9</td><td>23.8</td></tr>
+<tr><td>L4 (4 thr)</td><td><strong>55,794</strong><span class='spread'>[55,446, 56,322]</span></td><td><strong>80.4</strong><span class='spread'>[80.3, 82.3]</span></td><td><strong>85.6</strong><span class='spread'>[84.0, 86.9]</span></td><td><strong>4,240</strong><span class='spread'>[4,237, 4,264]</span></td><td><strong>9,233</strong><span class='spread'>[8,528, 9,303]</span></td><td>1.47× / 1.15× / 1.14× / 0.69× / 0.70×</td><td>0.94× / 1.50× / 1.30× / 1.03× / 1.07×</td><td>-</td><td>13.4</td><td>7.2</td></tr>
+<tr><td>A (today)</td><td><strong>59,235</strong><span class='spread'>[58,851, 59,819]</span></td><td><strong>53.5</strong><span class='spread'>[53.4, 54.2]</span></td><td><strong>65.9</strong><span class='spread'>[65.6, 67.2]</span></td><td><strong>4,118</strong><span class='spread'>[4,087, 4,129]</span></td><td><strong>8,596</strong><span class='spread'>[7,871, 8,636]</span></td><td>1.56× / 0.77× / 0.88× / 0.67× / 0.66×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td><td>27.4</td><td>15.1</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>59,804</strong><span class='spread'>[59,366, 59,826]</span></td><td><strong>51.9</strong><span class='spread'>[51.3, 52.6]</span></td><td><strong>66.0</strong><span class='spread'>[65.9, 66.2]</span></td><td><strong>4,084</strong><span class='spread'>[4,079, 4,088]</span></td><td><strong>8,210</strong><span class='spread'>[7,981, 8,606]</span></td><td>1.57× / 0.74× / 0.88× / 0.67× / 0.63×</td><td>1.01× / 0.97× / 1.00× / 0.99× / 0.96×</td><td><strong>18.2</strong><span class='spread'>[18.2, 18.4]</span></td><td>-</td><td>-</td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>61,381</strong><span class='spread'>[61,343, 61,409]</span></td><td><strong>50.5</strong><span class='spread'>[50.2, 51.4]</span></td><td><strong>68.3</strong><span class='spread'>[68.0, 69.1]</span></td><td><strong>3,990</strong><span class='spread'>[3,984, 4,006]</span></td><td><strong>7,832</strong><span class='spread'>[7,546, 8,067]</span></td><td>1.61× / 0.72× / 0.91× / 0.65× / 0.60×</td><td>1.04× / 0.94× / 1.04× / 0.97× / 0.91×</td><td><strong>4.4</strong><span class='spread'>[4.3, 4.4]</span></td><td>6.3</td><td>4.2</td></tr>
+<tr><td>D-M (4 Ps)</td><td><strong>59,215</strong><span class='spread'>[58,846, 59,576]</span></td><td><strong>44.6</strong><span class='spread'>[44.4, 45.1]</span></td><td><strong>76.9</strong><span class='spread'>[76.8, 77.9]</span></td><td><strong>4,103</strong><span class='spread'>[4,076, 4,118]</span></td><td><strong>9,877</strong><span class='spread'>[9,697, 10,155]</span></td><td>1.56× / 0.64× / 1.02× / 0.67× / 0.75×</td><td>1.00× / 0.83× / 1.17× / 1.00× / 1.15×</td><td><strong>2.3</strong><span class='spread'>[2.3, 2.3]</span></td><td>-</td><td>-</td></tr>
+</tbody></table></div>
+
+<h2>5. Box 1 (<code>rawhz4</code>) Complete Tables: <code>L</code>, <code>A</code>, <code>D</code>, <code>D-NG</code>, <code>D 4Ps</code></h2>
+<h3>get100 — 8, 64, and 256 workers</h3>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+<th>Storage f/pkt</th><th>Proxy f/pkt</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>6,254</strong><span class='spread'>[6,077, 6,314]</span></td><td><strong>147.7</strong><span class='spread'>[146.7, 149.8]</span></td><td><strong>82.7</strong><span class='spread'>[82.6, 83.7]</span></td><td><strong>1,285</strong><span class='spread'>[1,242, 1,294]</span></td><td><strong>2,421</strong><span class='spread'>[2,412, 2,948]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>1.23× / 0.81× / 1.00× / 0.84× / 0.82×</td><td>-</td><td>6.9</td><td>1.0</td></tr>
+<tr><td>A (today)</td><td><strong>5,098</strong><span class='spread'>[4,969, 5,116]</span></td><td><strong>182.3</strong><span class='spread'>[182.0, 184.9]</span></td><td><strong>82.6</strong><span class='spread'>[82.2, 83.9]</span></td><td><strong>1,533</strong><span class='spread'>[1,527, 1,566]</span></td><td><strong>2,937</strong><span class='spread'>[2,560, 3,040]</span></td><td>0.82× / 1.23× / 1.00× / 1.19× / 1.21×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td><td>5.0</td><td>1.0</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>5,067</strong><span class='spread'>[5,021, 5,084]</span></td><td><strong>160.9</strong><span class='spread'>[159.7, 161.3]</span></td><td><strong>82.6</strong><span class='spread'>[82.3, 84.3]</span></td><td><strong>1,548</strong><span class='spread'>[1,533, 1,555]</span></td><td><strong>2,787</strong><span class='spread'>[2,486, 2,818]</span></td><td>0.81× / 1.09× / 1.00× / 1.20× / 1.15×</td><td>0.99× / 0.88× / 1.00× / 1.01× / 0.95×</td><td><strong>3.4</strong><span class='spread'>[3.4, 3.4]</span></td><td>4.8</td><td>1.0</td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>5,665</strong><span class='spread'>[5,584, 5,666]</span></td><td><strong>145.2</strong><span class='spread'>[144.5, 146.2]</span></td><td><strong>82.4</strong><span class='spread'>[82.2, 82.6]</span></td><td><strong>1,393</strong><span class='spread'>[1,387, 1,406]</span></td><td><strong>2,403</strong><span class='spread'>[1,999, 2,661]</span></td><td>0.91× / 0.98× / 1.00× / 1.08× / 0.99×</td><td>1.11× / 0.80× / 1.00× / 0.91× / 0.82×</td><td><strong>1.8</strong><span class='spread'>[1.8, 1.8]</span></td><td>2.3</td><td>1.0</td></tr>
+<tr><td>D (4 Ps)</td><td><strong>4,930</strong><span class='spread'>[4,861, 5,150]</span></td><td><strong>174.9</strong><span class='spread'>[165.7, 175.4]</span></td><td><strong>83.2</strong><span class='spread'>[80.9, 84.6]</span></td><td><strong>1,595</strong><span class='spread'>[1,517, 1,617]</span></td><td><strong>2,615</strong><span class='spread'>[2,524, 2,664]</span></td><td>0.79× / 1.18× / 1.01× / 1.24× / 1.08×</td><td>0.97× / 0.96× / 1.01× / 1.04× / 0.89×</td><td><strong>3.3</strong><span class='spread'>[3.3, 3.4]</span></td><td>-</td><td>-</td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+<th>Storage f/pkt</th><th>Proxy f/pkt</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>32,633</strong><span class='spread'>[31,858, 33,084]</span></td><td><strong>70.8</strong><span class='spread'>[69.8, 71.5]</span></td><td><strong>22.4</strong><span class='spread'>[22.4, 22.5]</span></td><td><strong>1,835</strong><span class='spread'>[1,812, 1,883]</span></td><td><strong>3,721</strong><span class='spread'>[3,643, 3,836]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.70× / 1.23× / 1.06× / 1.34× / 1.47×</td><td>-</td><td>31.8</td><td>1.0</td></tr>
+<tr><td>A (today)</td><td><strong>46,695</strong><span class='spread'>[46,294, 48,082]</span></td><td><strong>57.6</strong><span class='spread'>[56.5, 57.8]</span></td><td><strong>21.2</strong><span class='spread'>[21.1, 22.2]</span></td><td><strong>1,368</strong><span class='spread'>[1,298, 1,379]</span></td><td><strong>2,538</strong><span class='spread'>[2,509, 2,574]</span></td><td>1.43× / 0.81× / 0.95× / 0.75× / 0.68×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td><td>16.5</td><td>1.0</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>31,952</strong><span class='spread'>[31,726, 32,271]</span></td><td><strong>67.2</strong><span class='spread'>[66.9, 67.2]</span></td><td><strong>18.8</strong><span class='spread'>[18.4, 19.1]</span></td><td><strong>2,000</strong><span class='spread'>[1,998, 2,012]</span></td><td><strong>3,381</strong><span class='spread'>[3,337, 3,841]</span></td><td>0.98× / 0.95× / 0.84× / 1.09× / 0.91×</td><td>0.68× / 1.17× / 0.89× / 1.46× / 1.33×</td><td><strong>15.0</strong><span class='spread'>[14.8, 15.2]</span></td><td>14.1</td><td>1.0</td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>50,615</strong><span class='spread'>[50,098, 53,935]</span></td><td><strong>49.5</strong><span class='spread'>[46.5, 50.0]</span></td><td><strong>20.5</strong><span class='spread'>[19.6, 20.7]</span></td><td><strong>1,232</strong><span class='spread'>[996, 1,308]</span></td><td><strong>2,507</strong><span class='spread'>[2,281, 2,651]</span></td><td>1.55× / 0.70× / 0.91× / 0.67× / 0.67×</td><td>1.08× / 0.86× / 0.97× / 0.90× / 0.99×</td><td><strong>4.5</strong><span class='spread'>[4.5, 4.6]</span></td><td>5.0</td><td>1.0</td></tr>
+<tr><td>D (4 Ps)</td><td><strong>41,242</strong><span class='spread'>[41,077, 41,951]</span></td><td><strong>31.5</strong><span class='spread'>[30.9, 31.8]</span></td><td><strong>16.8</strong><span class='spread'>[15.7, 16.8]</span></td><td><strong>1,520</strong><span class='spread'>[1,494, 1,533]</span></td><td><strong>2,573</strong><span class='spread'>[2,565, 2,587]</span></td><td>1.26× / 0.44× / 0.75× / 0.83× / 0.69×</td><td>0.88× / 0.55× / 0.79× / 1.11× / 1.01×</td><td><strong>16.3</strong><span class='spread'>[16.0, 16.3]</span></td><td>-</td><td>-</td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+<th>Storage f/pkt</th><th>Proxy f/pkt</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>51,098</strong><span class='spread'>[49,881, 52,207]</span></td><td><strong>64.8</strong><span class='spread'>[64.3, 65.9]</span></td><td><strong>13.5</strong><span class='spread'>[13.4, 13.7]</span></td><td><strong>4,502</strong><span class='spread'>[4,441, 4,593]</span></td><td><strong>8,583</strong><span class='spread'>[8,507, 8,853]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.24× / 1.94× / 0.87× / 3.97× / 2.85×</td><td>-</td><td>64.5</td><td>1.0</td></tr>
+<tr><td>A (today)</td><td><strong>208,829</strong><span class='spread'>[207,618, 208,840]</span></td><td><strong>33.4</strong><span class='spread'>[33.3, 33.7]</span></td><td><strong>15.6</strong><span class='spread'>[15.6, 15.8]</span></td><td><strong>1,133</strong><span class='spread'>[1,123, 1,137]</span></td><td><strong>3,010</strong><span class='spread'>[2,989, 3,175]</span></td><td>4.09× / 0.52× / 1.15× / 0.25× / 0.35×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td><td>29.1</td><td>1.0</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>242,693</strong><span class='spread'>[240,820, 244,177]</span></td><td><strong>27.5</strong><span class='spread'>[27.4, 27.8]</span></td><td><strong>15.3</strong><span class='spread'>[15.1, 15.6]</span></td><td><strong>990</strong><span class='spread'>[985, 997]</span></td><td><strong>2,245</strong><span class='spread'>[2,238, 2,263]</span></td><td>4.75× / 0.42× / 1.13× / 0.22× / 0.26×</td><td>1.16× / 0.82× / 0.98× / 0.87× / 0.75×</td><td><strong>16.3</strong><span class='spread'>[16.1, 16.5]</span></td><td>22.7</td><td>1.0</td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>250,427</strong><span class='spread'>[248,280, 252,105]</span></td><td><strong>27.5</strong><span class='spread'>[27.3, 27.6]</span></td><td><strong>17.4</strong><span class='spread'>[17.1, 17.4]</span></td><td><strong>963</strong><span class='spread'>[958, 970]</span></td><td><strong>2,277</strong><span class='spread'>[2,165, 2,283]</span></td><td>4.90× / 0.42× / 1.29× / 0.21× / 0.27×</td><td>1.20× / 0.82× / 1.12× / 0.85× / 0.76×</td><td><strong>4.9</strong><span class='spread'>[4.8, 4.9]</span></td><td>6.3</td><td>1.0</td></tr>
+<tr><td>D (4 Ps)</td><td><strong>138,930</strong><span class='spread'>[137,093, 139,386]</span></td><td><strong>25.4</strong><span class='spread'>[25.3, 25.6]</span></td><td><strong>14.0</strong><span class='spread'>[13.9, 14.0]</span></td><td><strong>1,749</strong><span class='spread'>[1,735, 1,767]</span></td><td><strong>3,718</strong><span class='spread'>[3,589, 3,840]</span></td><td>2.72× / 0.39× / 1.03× / 0.39× / 0.43×</td><td>0.67× / 0.76× / 0.89× / 1.54× / 1.24×</td><td><strong>22.5</strong><span class='spread'>[22.4, 22.5]</span></td><td>-</td><td>-</td></tr>
+</tbody></table></div>
+
+<h3>set100 — 8, 64, and 256 workers</h3>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+<th>Storage f/pkt</th><th>Proxy f/pkt</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>2,540</strong><span class='spread'>[2,485, 2,574]</span></td><td><strong>179.3</strong><span class='spread'>[179.3, 180.1]</span></td><td><strong>273.7</strong><span class='spread'>[262.4, 276.6]</span></td><td><strong>3,086</strong><span class='spread'>[3,066, 3,195]</span></td><td><strong>5,239</strong><span class='spread'>[5,148, 5,627]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.96× / 0.85× / 1.00× / 1.02× / 0.98×</td><td>-</td><td>1.0</td><td>4.0</td></tr>
+<tr><td>A (today)</td><td><strong>2,648</strong><span class='spread'>[2,614, 2,652]</span></td><td><strong>210.3</strong><span class='spread'>[208.9, 215.8]</span></td><td><strong>273.4</strong><span class='spread'>[256.1, 274.1]</span></td><td><strong>3,036</strong><span class='spread'>[3,019, 3,054]</span></td><td><strong>5,351</strong><span class='spread'>[5,300, 5,556]</span></td><td>1.04× / 1.17× / 1.00× / 0.98× / 1.02×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td><td>1.0</td><td>2.9</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>2,612</strong><span class='spread'>[2,566, 2,751]</span></td><td><strong>216.2</strong><span class='spread'>[206.5, 223.3]</span></td><td><strong>281.6</strong><span class='spread'>[262.3, 293.0]</span></td><td><strong>3,038</strong><span class='spread'>[2,974, 3,140]</span></td><td><strong>5,469</strong><span class='spread'>[4,791, 5,486]</span></td><td>1.03× / 1.21× / 1.03× / 0.98× / 1.04×</td><td>0.99× / 1.03× / 1.03× / 1.00× / 1.02×</td><td><strong>2.9</strong><span class='spread'>[2.7, 2.9]</span></td><td>1.0</td><td>2.7</td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>2,899</strong><span class='spread'>[2,873, 2,955]</span></td><td><strong>191.3</strong><span class='spread'>[187.1, 191.7]</span></td><td><strong>288.0</strong><span class='spread'>[258.3, 307.2]</span></td><td><strong>2,728</strong><span class='spread'>[2,697, 2,785]</span></td><td><strong>4,759</strong><span class='spread'>[4,456, 4,774]</span></td><td>1.14× / 1.07× / 1.05× / 0.88× / 0.91×</td><td>1.10× / 0.91× / 1.05× / 0.90× / 0.89×</td><td><strong>1.6</strong><span class='spread'>[1.6, 1.6]</span></td><td>1.0</td><td>1.8</td></tr>
+<tr><td>D (4 Ps)</td><td><strong>2,576</strong><span class='spread'>[2,479, 2,641]</span></td><td><strong>236.3</strong><span class='spread'>[229.2, 242.0]</span></td><td><strong>278.7</strong><span class='spread'>[276.3, 290.0]</span></td><td><strong>3,097</strong><span class='spread'>[3,073, 3,274]</span></td><td><strong>5,337</strong><span class='spread'>[5,137, 5,540]</span></td><td>1.01× / 1.32× / 1.02× / 1.00× / 1.02×</td><td>0.97× / 1.12× / 1.02× / 1.02× / 1.00×</td><td><strong>2.8</strong><span class='spread'>[2.6, 2.8]</span></td><td>-</td><td>-</td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+<th>Storage f/pkt</th><th>Proxy f/pkt</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>19,221</strong><span class='spread'>[19,054, 20,462]</span></td><td><strong>71.1</strong><span class='spread'>[70.7, 73.5]</span></td><td><strong>70.3</strong><span class='spread'>[68.9, 74.0]</span></td><td><strong>3,176</strong><span class='spread'>[3,015, 3,211]</span></td><td><strong>5,796</strong><span class='spread'>[5,714, 6,266]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.75× / 0.70× / 0.81× / 1.35× / 1.33×</td><td>-</td><td>1.0</td><td>13.3</td></tr>
+<tr><td>A (today)</td><td><strong>25,494</strong><span class='spread'>[25,123, 25,912]</span></td><td><strong>101.7</strong><span class='spread'>[100.7, 104.9]</span></td><td><strong>87.3</strong><span class='spread'>[87.0, 87.8]</span></td><td><strong>2,356</strong><span class='spread'>[2,315, 2,449]</span></td><td><strong>4,360</strong><span class='spread'>[4,228, 4,660]</span></td><td>1.33× / 1.43× / 1.24× / 0.74× / 0.75×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td><td>1.0</td><td>7.8</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>25,033</strong><span class='spread'>[24,785, 26,005]</span></td><td><strong>103.5</strong><span class='spread'>[99.9, 104.2]</span></td><td><strong>87.4</strong><span class='spread'>[86.8, 88.5]</span></td><td><strong>2,443</strong><span class='spread'>[2,311, 2,531]</span></td><td><strong>4,298</strong><span class='spread'>[3,836, 4,801]</span></td><td>1.30× / 1.46× / 1.24× / 0.77× / 0.74×</td><td>0.98× / 1.02× / 1.00× / 1.04× / 0.99×</td><td><strong>7.4</strong><span class='spread'>[7.4, 7.5]</span></td><td>1.0</td><td>7.7</td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>28,102</strong><span class='spread'>[27,855, 28,213]</span></td><td><strong>94.8</strong><span class='spread'>[90.4, 95.7]</span></td><td><strong>91.4</strong><span class='spread'>[90.7, 92.1]</span></td><td><strong>2,158</strong><span class='spread'>[2,150, 2,166]</span></td><td><strong>3,855</strong><span class='spread'>[3,829, 4,037]</span></td><td>1.46× / 1.33× / 1.30× / 0.68× / 0.67×</td><td>1.10× / 0.93× / 1.05× / 0.92× / 0.88×</td><td><strong>2.8</strong><span class='spread'>[2.8, 2.9]</span></td><td>1.0</td><td>3.1</td></tr>
+<tr><td>D (4 Ps)</td><td><strong>26,480</strong><span class='spread'>[26,063, 27,091]</span></td><td><strong>61.1</strong><span class='spread'>[59.5, 63.1]</span></td><td><strong>81.7</strong><span class='spread'>[78.8, 83.1]</span></td><td><strong>2,246</strong><span class='spread'>[2,202, 2,274]</span></td><td><strong>4,084</strong><span class='spread'>[3,963, 4,434]</span></td><td>1.38× / 0.86× / 1.16× / 0.71× / 0.70×</td><td>1.04× / 0.60× / 0.94× / 0.95× / 0.94×</td><td><strong>7.4</strong><span class='spread'>[7.3, 7.5]</span></td><td>-</td><td>-</td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+<th>Storage f/pkt</th><th>Proxy f/pkt</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>47,022</strong><span class='spread'>[46,551, 47,067]</span></td><td><strong>53.7</strong><span class='spread'>[53.7, 54.2]</span></td><td><strong>46.5</strong><span class='spread'>[46.2, 47.8]</span></td><td><strong>5,235</strong><span class='spread'>[5,227, 5,323]</span></td><td><strong>9,543</strong><span class='spread'>[8,989, 9,568]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.59× / 1.17× / 0.95× / 1.69× / 1.58×</td><td>-</td><td>1.0</td><td>37.9</td></tr>
+<tr><td>A (today)</td><td><strong>79,372</strong><span class='spread'>[79,332, 80,202]</span></td><td><strong>45.8</strong><span class='spread'>[45.3, 46.0]</span></td><td><strong>48.8</strong><span class='spread'>[48.7, 50.0]</span></td><td><strong>3,093</strong><span class='spread'>[3,083, 3,100]</span></td><td><strong>6,049</strong><span class='spread'>[5,897, 6,159]</span></td><td>1.69× / 0.85× / 1.05× / 0.59× / 0.63×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td><td>1.0</td><td>17.0</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>81,327</strong><span class='spread'>[80,853, 81,631]</span></td><td><strong>42.1</strong><span class='spread'>[42.1, 42.6]</span></td><td><strong>48.2</strong><span class='spread'>[48.0, 48.3]</span></td><td><strong>3,053</strong><span class='spread'>[3,036, 3,060]</span></td><td><strong>5,513</strong><span class='spread'>[5,277, 5,709]</span></td><td>1.73× / 0.78× / 1.04× / 0.58× / 0.58×</td><td>1.02× / 0.92× / 0.99× / 0.99× / 0.91×</td><td><strong>15.3</strong><span class='spread'>[15.2, 15.3]</span></td><td>1.0</td><td>16.4</td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>81,863</strong><span class='spread'>[81,433, 81,932]</span></td><td><strong>42.6</strong><span class='spread'>[42.2, 42.6]</span></td><td><strong>49.6</strong><span class='spread'>[49.1, 49.9]</span></td><td><strong>3,029</strong><span class='spread'>[3,028, 3,042]</span></td><td><strong>5,718</strong><span class='spread'>[5,304, 6,066]</span></td><td>1.74× / 0.79× / 1.07× / 0.58× / 0.60×</td><td>1.03× / 0.93× / 1.02× / 0.98× / 0.95×</td><td><strong>4.3</strong><span class='spread'>[4.2, 4.4]</span></td><td>1.0</td><td>5.1</td></tr>
+<tr><td>D (4 Ps)</td><td><strong>69,292</strong><span class='spread'>[68,896, 69,542]</span></td><td><strong>38.8</strong><span class='spread'>[38.3, 39.3]</span></td><td><strong>49.8</strong><span class='spread'>[49.8, 51.4]</span></td><td><strong>3,558</strong><span class='spread'>[3,529, 3,582]</span></td><td><strong>7,270</strong><span class='spread'>[7,169, 7,470]</span></td><td>1.47× / 0.72× / 1.07× / 0.68× / 0.76×</td><td>0.87× / 0.85× / 1.02× / 1.15× / 1.20×</td><td><strong>16.8</strong><span class='spread'>[16.7, 16.9]</span></td><td>-</td><td>-</td></tr>
+</tbody></table></div>
+
+<h3>getset100 — 8, 64, and 256 workers</h3>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+<th>Storage f/pkt</th><th>Proxy f/pkt</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>1,778</strong><span class='spread'>[1,758, 1,799]</span></td><td><strong>267.7</strong><span class='spread'>[260.6, 269.1]</span></td><td><strong>326.7</strong><span class='spread'>[324.6, 330.8]</span></td><td><strong>4,405</strong><span class='spread'>[4,342, 4,444]</span></td><td><strong>8,372</strong><span class='spread'>[8,330, 8,771]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.91× / 0.77× / 0.85× / 1.07× / 1.18×</td><td>-</td><td>7.7</td><td>4.3</td></tr>
+<tr><td>A (today)</td><td><strong>1,953</strong><span class='spread'>[1,940, 1,999]</span></td><td><strong>348.5</strong><span class='spread'>[339.3, 351.7]</span></td><td><strong>385.1</strong><span class='spread'>[346.7, 391.1]</span></td><td><strong>4,118</strong><span class='spread'>[4,039, 4,154]</span></td><td><strong>7,100</strong><span class='spread'>[6,924, 7,556]</span></td><td>1.10× / 1.30× / 1.18× / 0.93× / 0.85×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td><td>4.6</td><td>2.7</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>1,997</strong><span class='spread'>[1,934, 2,095]</span></td><td><strong>315.5</strong><span class='spread'>[311.8, 326.4]</span></td><td><strong>366.9</strong><span class='spread'>[349.5, 414.2]</span></td><td><strong>4,017</strong><span class='spread'>[3,793, 4,186]</span></td><td><strong>7,063</strong><span class='spread'>[6,965, 7,222]</span></td><td>1.12× / 1.18× / 1.12× / 0.91× / 0.84×</td><td>1.02× / 0.91× / 0.95× / 0.98× / 0.99×</td><td><strong>3.3</strong><span class='spread'>[3.1, 3.3]</span></td><td>4.4</td><td>2.7</td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>2,184</strong><span class='spread'>[2,101, 2,229]</span></td><td><strong>286.7</strong><span class='spread'>[282.0, 291.7]</span></td><td><strong>352.3</strong><span class='spread'>[347.9, 353.4]</span></td><td><strong>3,682</strong><span class='spread'>[3,668, 3,812]</span></td><td><strong>6,515</strong><span class='spread'>[5,768, 6,811]</span></td><td>1.23× / 1.07× / 1.08× / 0.84× / 0.78×</td><td>1.12× / 0.82× / 0.91× / 0.89× / 0.92×</td><td><strong>1.6</strong><span class='spread'>[1.6, 1.6]</span></td><td>2.0</td><td>1.5</td></tr>
+<tr><td>D (4 Ps)</td><td><strong>1,881</strong><span class='spread'>[1,854, 1,922]</span></td><td><strong>345.2</strong><span class='spread'>[341.7, 346.7]</span></td><td><strong>339.5</strong><span class='spread'>[330.6, 348.9]</span></td><td><strong>4,276</strong><span class='spread'>[4,186, 4,339]</span></td><td><strong>7,432</strong><span class='spread'>[7,227, 7,441]</span></td><td>1.06× / 1.29× / 1.04× / 0.97× / 0.89×</td><td>0.96× / 0.99× / 0.88× / 1.04× / 1.05×</td><td><strong>3.2</strong><span class='spread'>[3.1, 3.2]</span></td><td>-</td><td>-</td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+<th>Storage f/pkt</th><th>Proxy f/pkt</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>16,056</strong><span class='spread'>[15,707, 16,149]</span></td><td><strong>96.6</strong><span class='spread'>[96.0, 99.8]</span></td><td><strong>108.6</strong><span class='spread'>[108.6, 111.3]</span></td><td><strong>3,751</strong><span class='spread'>[3,726, 3,783]</span></td><td><strong>8,215</strong><span class='spread'>[7,825, 8,342]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.89× / 0.64× / 0.94× / 1.10× / 1.34×</td><td>-</td><td>23.6</td><td>11.2</td></tr>
+<tr><td>A (today)</td><td><strong>18,034</strong><span class='spread'>[17,705, 18,062]</span></td><td><strong>150.2</strong><span class='spread'>[147.7, 151.6]</span></td><td><strong>115.6</strong><span class='spread'>[112.1, 118.1]</span></td><td><strong>3,395</strong><span class='spread'>[3,394, 3,463]</span></td><td><strong>6,116</strong><span class='spread'>[5,894, 6,332]</span></td><td>1.12× / 1.55× / 1.06× / 0.91× / 0.74×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td><td>12.0</td><td>6.7</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>17,064</strong><span class='spread'>[16,965, 17,172]</span></td><td><strong>144.3</strong><span class='spread'>[141.3, 145.5]</span></td><td><strong>107.6</strong><span class='spread'>[107.2, 108.2]</span></td><td><strong>3,634</strong><span class='spread'>[3,567, 3,641]</span></td><td><strong>6,645</strong><span class='spread'>[6,515, 6,861]</span></td><td>1.06× / 1.49× / 0.99× / 0.97× / 0.81×</td><td>0.95× / 0.96× / 0.93× / 1.07× / 1.09×</td><td><strong>9.1</strong><span class='spread'>[9.0, 9.3]</span></td><td>10.6</td><td>6.2</td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>18,334</strong><span class='spread'>[17,950, 18,758]</span></td><td><strong>136.9</strong><span class='spread'>[136.7, 137.4]</span></td><td><strong>116.6</strong><span class='spread'>[111.2, 117.6]</span></td><td><strong>3,339</strong><span class='spread'>[3,277, 3,390]</span></td><td><strong>5,979</strong><span class='spread'>[5,810, 6,381]</span></td><td>1.14× / 1.42× / 1.07× / 0.89× / 0.73×</td><td>1.02× / 0.91× / 1.01× / 0.98× / 0.98×</td><td><strong>3.2</strong><span class='spread'>[3.2, 3.3]</span></td><td>3.9</td><td>2.9</td></tr>
+<tr><td>D (4 Ps)</td><td><strong>17,475</strong><span class='spread'>[17,416, 17,897]</span></td><td><strong>83.8</strong><span class='spread'>[82.7, 84.5]</span></td><td><strong>94.6</strong><span class='spread'>[89.3, 95.2]</span></td><td><strong>3,489</strong><span class='spread'>[3,414, 3,555]</span></td><td><strong>6,965</strong><span class='spread'>[6,233, 6,965]</span></td><td>1.09× / 0.87× / 0.87× / 0.93× / 0.85×</td><td>0.97× / 0.56× / 0.82× / 1.03× / 1.14×</td><td><strong>10.1</strong><span class='spread'>[10.0, 10.2]</span></td><td>-</td><td>-</td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+<th>Storage f/pkt</th><th>Proxy f/pkt</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>35,406</strong><span class='spread'>[33,927, 36,226]</span></td><td><strong>77.6</strong><span class='spread'>[76.5, 81.0]</span></td><td><strong>76.2</strong><span class='spread'>[75.3, 79.2]</span></td><td><strong>6,502</strong><span class='spread'>[6,442, 6,703]</span></td><td><strong>13,267</strong><span class='spread'>[12,823, 13,292]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.58× / 1.19× / 1.12× / 1.61× / 1.75×</td><td>-</td><td>42.3</td><td>22.7</td></tr>
+<tr><td>A (today)</td><td><strong>60,691</strong><span class='spread'>[60,582, 61,195]</span></td><td><strong>65.1</strong><span class='spread'>[64.4, 65.4]</span></td><td><strong>67.9</strong><span class='spread'>[67.6, 68.9]</span></td><td><strong>4,044</strong><span class='spread'>[4,028, 4,057]</span></td><td><strong>7,598</strong><span class='spread'>[7,461, 7,723]</span></td><td>1.71× / 0.84× / 0.89× / 0.62× / 0.57×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td><td>22.9</td><td>12.8</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>61,203</strong><span class='spread'>[61,008, 61,605]</span></td><td><strong>59.0</strong><span class='spread'>[58.9, 59.5]</span></td><td><strong>66.7</strong><span class='spread'>[66.7, 67.0]</span></td><td><strong>4,038</strong><span class='spread'>[4,021, 4,039]</span></td><td><strong>7,060</strong><span class='spread'>[6,909, 7,247]</span></td><td>1.73× / 0.76× / 0.88× / 0.62× / 0.53×</td><td>1.01× / 0.91× / 0.98× / 1.00× / 0.93×</td><td><strong>15.1</strong><span class='spread'>[14.9, 15.4]</span></td><td>20.2</td><td>12.0</td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>62,933</strong><span class='spread'>[62,719, 63,370]</span></td><td><strong>59.6</strong><span class='spread'>[58.0, 59.6]</span></td><td><strong>70.0</strong><span class='spread'>[69.9, 70.2]</span></td><td><strong>3,935</strong><span class='spread'>[3,918, 3,940]</span></td><td><strong>6,859</strong><span class='spread'>[6,775, 7,182]</span></td><td>1.78× / 0.77× / 0.92× / 0.61× / 0.52×</td><td>1.04× / 0.92× / 1.03× / 0.97× / 0.90×</td><td><strong>3.6</strong><span class='spread'>[3.6, 3.6]</span></td><td>5.4</td><td>3.4</td></tr>
+<tr><td>D (4 Ps)</td><td><strong>54,293</strong><span class='spread'>[54,135, 54,439]</span></td><td><strong>54.1</strong><span class='spread'>[53.8, 54.7]</span></td><td><strong>72.8</strong><span class='spread'>[72.5, 73.9]</span></td><td><strong>4,499</strong><span class='spread'>[4,493, 4,540]</span></td><td><strong>9,367</strong><span class='spread'>[9,175, 9,382]</span></td><td>1.53× / 0.70× / 0.95× / 0.69× / 0.71×</td><td>0.89× / 0.83× / 1.07× / 1.11× / 1.23×</td><td><strong>15.9</strong><span class='spread'>[15.9, 16.1]</span></td><td>-</td><td>-</td></tr>
+</tbody></table></div>
+
+<footer>
+  <div>docs/labs/single-network-goroutine/report/libfdbc.html</div>
+  <div>All benchmark tables report 3-round medians and [min, max] ranges unless noted.</div>
+</footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,99 @@
+{
+ "L": {
+  "binary": "/root/netg/bin/clientbench-cgo",
+  "env": [],
+  "args": [
+   "-rate=28000"
+  ]
+ },
+ "A": {
+  "env": [],
+  "args": [
+   "-rate=28000"
+  ]
+ },
+ "A0": {
+  "env": [],
+  "args": [
+   "-coalesce-delay=0,0",
+   "-rate=28000"
+  ]
+ },
+ "M": {
+  "env": [
+   "FDBGO_NET_DESIGN=m",
+   "FDBGO_NETG_STATS=1"
+  ],
+  "args": [
+   "-rate=28000"
+  ]
+ },
+ "DNG": {
+  "env": [
+   "FDBGO_NET_DESIGN=ng",
+   "FDBGO_NETG_STATS=1"
+  ],
+  "args": [
+   "-rate=28000"
+  ]
+ },
+ "DNGy": {
+  "env": [
+   "FDBGO_NET_DESIGN=ngy",
+   "FDBGO_NETG_STATS=1"
+  ],
+  "args": [
+   "-rate=28000"
+  ]
+ },
+ "DNGa20": {
+  "env": [
+   "FDBGO_NET_DESIGN=nga",
+   "FDBGO_NETG_ADAPTIVE_US=20",
+   "FDBGO_NETG_STATS=1"
+  ],
+  "args": [
+   "-rate=28000"
+  ]
+ },
+ "DNGa100": {
+  "env": [
+   "FDBGO_NET_DESIGN=nga",
+   "FDBGO_NETG_ADAPTIVE_US=100",
+   "FDBGO_NETG_STATS=1"
+  ],
+  "args": [
+   "-rate=28000"
+  ]
+ },
+ "D5": {
+  "env": [
+   "FDBGO_NET_DESIGN=1",
+   "FDBGO_NETG_STATS=1"
+  ],
+  "args": [
+   "-coalesce-delay=5us,5us",
+   "-rate=28000"
+  ]
+ },
+ "D": {
+  "env": [
+   "FDBGO_NET_DESIGN=1",
+   "FDBGO_NETG_STATS=1"
+  ],
+  "args": [
+   "-coalesce-delay=10us,20us",
+   "-rate=28000"
+  ]
+ },
+ "D50": {
+  "env": [
+   "FDBGO_NET_DESIGN=1",
+   "FDBGO_NETG_STATS=1"
+  ],
+  "args": [
+   "-coalesce-delay=50us,50us",
+   "-rate=28000"
+  ]
+ }
+}

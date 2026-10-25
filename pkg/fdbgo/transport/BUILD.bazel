@@ -16,6 +16,7 @@ go_library(
         "netgoroutine_linux.go",
         "netgoroutine_other.go",
         "peer_send.go",
+        "ring_writer.go",
         "send_admission.go",
         "suspend.go",
         "wellknown.go",

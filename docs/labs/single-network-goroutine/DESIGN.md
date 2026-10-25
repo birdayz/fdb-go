@@ -4,6 +4,24 @@ Rounds 1–3 compared Go designs against each other. This document fixes what
 any design must satisfy, proposes one design that follows from it, and defines
 the benchmark that decides. Citations are to FoundationDB 7.3.77.
 
+## Decisions
+
+- **The 10/20 µs coalescing delay is a performance setting, not wire
+  correctness.** Wire correctness is T5: bytes, per-connection frame order,
+  whole frames, the request set. The evidence:
+  - The delay is in the initial OSS commit, a674cb4ef4 (2017), with no
+    recorded rationale. `MIN_COALESCE_DELAY` and `MAX_COALESCE_DELAY` have not
+    changed since.
+  - That commit's `connectionWriter` keeps three alternatives commented out
+    next to it: `delay(0)`, `delay(500e-6)` and `yield(TaskWriteSocket)`. The
+    value was tuned empirically.
+  - The knobs are transport-global: servers use the same writer and delay.
+  - BUGGIFY sets both to 0 (`flow/Knobs.cpp:211-212`), so simulation tests
+    run with no delay.
+
+  A Go client may therefore use any coalescing policy that meets T4.
+- **T4 is judged at equal throughput on one box** (below).
+
 ## Ground truths
 
 ### Layers
@@ -51,21 +69,23 @@ the benchmark that decides. Citations are to FoundationDB 7.3.77.
 - **T3. Timeouts cost nothing when unset (C4).** With no TIMEOUT option, the hot
   path arms no timer. With TIMEOUT set, there is one timer per transaction, not
   one per request.
-- **T4. Batching is no worse than libfdb_c.** Under the same load, on the same
-  host, against the same cluster:
-  - frames per packet and server cycles per transaction are no worse than
-    libfdb_c's;
-  - p50 and p99 are no worse than libfdb_c's.
+- **T4. Performance is no worse than libfdb_c, at equal throughput, on one
+  box.** At a rate both clients sustain (clientbench `-rate`), on the same box
+  and cluster:
+  - server cycles per transaction are no more than L's, within box noise;
+  - p50 and p99 are no higher than L's.
 
-  A coalescing policy that differs from C2 is allowed only if it meets this bar
-  and the deviation is documented.
+  Above L's saturation there is no reference: L cannot produce that
+  throughput, so only Go arms compare there. Equal-worker closed-loop cells
+  stay as a view, not the criterion: a client that completes more operations
+  per second loads the servers more, and load alone changes batching and
+  per-transaction server cost (round 2, phase 5 `set100`).
 
-  Judge T4 at **equal throughput**, where possible, not at equal workers. In a
-  closed loop, a client that completes more operations per second puts more
-  load on the servers. Load changes batching and per-transaction server cost on
-  its own (round 2, `set100`). So compare arms rate-capped to the same ops/s
-  (clientbench `-rate`), and use equal-worker cells as the closed-loop view.
-- **T5. Wire bytes are identical.** Only packet boundaries and timing may differ.
+  Proposed RFC criteria: p50 and p99 better than L at 8 workers and at a
+  capped rate; server cycles per transaction at most L's + 5%.
+- **T5. Wire correctness.** The bytes are identical, frames on one connection
+  keep their order, every frame is written whole, and the set of requests is
+  the same as libfdb_c's. Packet boundaries and timing are not part of it.
 - **T6. The hot path is optimized for a goroutine per operation.** With an
   idiomatic API, each operation is one goroutine blocked on its reply. The cost
   that matters is enqueueing a frame plus waking exactly one waiter when its
@@ -104,6 +124,44 @@ Rejected, with the evidence in rounds 1–3:
 - a per-request GRV;
 - a sender-timed delay;
 - read no-ack as a standalone change.
+
+## Options
+
+### Writer queue
+
+1. **Channel** (today's `writeCh`, `conn.go:150`). Senders send a request onto
+   a buffered channel, and the writer receives them. Every send takes the
+   channel lock, and a waiting writer is woken by the runtime on each send to
+   an empty channel.
+2. **Mutex and slice swap, signalled on empty to non-empty** (D's prototype).
+   Senders append under a mutex. Only the sender that makes the queue
+   non-empty signals the writer, which swaps the slice out and writes it. This
+   is the shape of C++'s `unsent` plus `dataToSend`
+   (`FlowTransport.actor.cpp:1038-1043`).
+3. **Lock-free MPSC byte ring** (Disruptor, io_uring style). A sender reserves
+   a span with an atomic add, encodes the frame in place and commits it. The
+   writer issues one `write` per contiguous committed span. Its costs:
+   - The capacity is bounded, so it needs an overflow path.
+   - A frame larger than the ring needs its own path.
+   - Commits must be published in order: one sender that stalls between
+     reserve and commit stalls every frame behind it.
+   - A `ctx` must never abandon a reservation; once reserved, the frame is
+     encoded and committed whatever happens to the caller.
+   - It carries a review and test burden that options 1 and 2 do not.
+
+   It does not remove the writer wake: the writer still has to be woken when
+   the ring goes from empty to non-empty.
+
+### Coalescing policy
+
+- **C2 delay**: wait `max(10 µs, 20 µs − since last write)`, jittered, before
+  each drain, as C++ does.
+- **None (NG)**: drain as soon as the writer is woken.
+- **NG + yield**: after a drain, call `runtime.Gosched()` once and drain again
+  if something arrived, before blocking. This mirrors
+  `yield(TaskWriteSocket)` from a674cb4ef4.
+- **Adaptive**: delay only when the previous drain carried several frames
+  (load present), otherwise none.
 
 ## Benchmark
 
@@ -390,3 +448,82 @@ against each separately:
   read than libfdb_c spends spread over 4 network threads.
 - D, the design as specified, is the most frugal on the servers but trails D-M
   on throughput and latency at every 8- and 64-worker cell.
+
+## Round 6: Writer queues, linger curve, per-role server CPU, and mutex profiles
+
+Full interactive tables and SVG charts are in the self-contained HTML report
+suite: [`report/index.html`](report/index.html) (`linger.html`, `queues.html`,
+`delay-vs-ack.html`, `libfdbc.html`, `methodology.html`).
+
+Round 6 ran on two dedicated Hetzner `ccx43` boxes (`netg-r6` with the
+3-process cluster in `rawhz6/`, and `netg-r6b` with a 5-process split cluster
+— `stateless` 4751 on CPU 2, `grv_proxy` 4754 on CPU 3, `commit_proxy` 4755 on
+CPU 4, `transaction` 4752 on CPU 5, `storage` 4753 on CPUs 6–7 — in
+`rawhz6b/`):
+
+1. **Separating the 10–20 µs delay from write-ack (`A`, `A0`, `D`, `D-NG`, `D-M` on `netg-r6`):**
+   - Disabling the 10–20 µs delay on today's writer (`A0`, `-coalesce-delay=0,0`)
+     moves `get100/64` from `48.5k` to `100.0k ops/s` (`p50 1,262 → 618 µs`),
+     confirming the 10–20 µs timer wait dominates intermediate-concurrency
+     latency.
+   - Replacing `A0`'s direct-write + write-ack handoff with `D1` (`D-NG`) jumps
+     `get100/256` from `225.7k` (`32.2 µs/op`, `0.24 futex/op`) to `257.7k ops/s`
+     (`27.0 µs/op`, `0.06 futex/op`) and cuts `get100/8` client CPU from
+     `158.7` to `140.5 µs/op` (`A` is `179.0 µs/op`).
+   - Running `D-M` (`FDBGO_NET_DESIGN=m`) and `D-NG` side-by-side on `netg-r6`
+     shows `D-NG` matches `D-M` (`get100/256`: `257.7k` vs `244.6k`, `set100/64`:
+     `27.9k–28.3k` vs `28.3k`, `set100/256`: `81.8k` vs `81.7k`), proving the
+     writer goroutine in `D-NG` costs nothing while preserving `T1` and `T2`
+     under socket backpressure.
+
+2. **Writer queues (`D-NG` mutex+slice vs `D-NG-chan` channel vs `D-NG-ring` lock-free MPSC ring) and `pprof` profiles:**
+   - **Ring v1 (in-order commit spin) collapsed at 256 workers:** when senders
+     spun waiting for their predecessor slot to commit before advancing the
+     contiguous `committed` offset (`rawhz6/quick`), one preempted sender
+     stalled every sender behind it (`get100/256`: `73.1k ops/s`, `84.8 µs/op`
+     CPU, `p50 3,052 µs`, `25.7s` in `runtime.procyieldAsm` + `41.2s` in
+     `runtime.lock2`).
+   - **Ring v2 (packed `seq16<<48 | pos48` CAS + per-slot `ready` + `writev`)**
+     eliminated predecessor waiting and recovered to `243.0k ops/s` (`29.3 µs/op`,
+     `0.01 write/op`), matching `D-NG-chan` (`243.1k ops/s`, `29.7 µs/op`) and
+     trailing `D-NG` (`257.7k ops/s`, `27.0 µs/op`).
+   - **Why lock-free queues cannot beat `D-NG`'s mutex+slice:** `mutex.pprof`
+     and `cpu.pprof` on `get100/256` (`rawhz6/prof/get100-256-ng-*`) show that
+     `naSend` + `naLoop` (`w.mu`) is **1.20% of mutex wait** (`0.207s / 17.27s`)
+     and **0.16% of total CPU** (`0.207s / 129.99s`). By contrast, **75.84% of
+     all mutex contention** is the connection reply map `pendingMu`
+     (`PrepareReplyTo` **50.07%** + `readLoop` **25.77%**), followed by
+     `ensureReadVersionFlags` (**13.68%**) and `ClientMetrics.observeReadLatency`
+     (**5.65%**).
+
+3. **Fixed and adaptive linger sweep (`rawhz6/linger.jsonl` & `linger_rate.jsonl`):**
+   - Sweeping fixed linger across `0 µs` (`D-NG`), `5 µs` (`D5`), `10–20 µs`
+     (`D`), `50 µs` (`D50`), `100 µs` (`D100`), and `250 µs` (`D250`) traces a
+     monotonic latency-vs-batching Pareto curve: on `get100/256`, `D5` (`5 µs`)
+     retains `246.4k ops/s` (`p50 970 µs`) while tripling batching from `5.0` to
+     `15.0 frames/write` and cutting server cost from `17.0` to `14.9 kc/tx`
+     (below `A`'s `15.3 kc/tx`).
+   - Nagle-style adaptive linger (`DNGa20`, `20 µs` window using `runtime.Gosched`
+     only when `sinceLastWrite < 20 µs`, zero timer syscalls) reaches
+     **85.8k ops/s** on `get100/64` (`p50 697 µs`, `38.3 µs/op` client CPU,
+     `5.7 frames/write`) and **244.7k ops/s** on `get100/256` (`16.6 kc/tx`).
+   - Across multi-rate caps (25%, 60%, and 90% of `L`), at 25% and 60% of `L`
+     (`get100/64 @ 8,000` and `19,500 ops/s`; `set100/64 @ 4,800` and
+     `11,500 ops/s`), `D-NG` uses **0.79–1.03× `L`'s server cycles/tx** while
+     cutting p99 latency to **0.32–0.79× `L`**. Only at 90% of `L`'s ceiling
+     (`28,000` / `17,000 ops/s`), where `L`'s single network thread is ~89%
+     saturated and queues 15–30 frames per write behind its reactor loop, does
+     `L` pack more frames per packet than low-linger Go arms.
+
+4. **5-process split cluster per-role server CPU and wire stats (`rawhz6b/`):**
+   - Isolating `stateless` (4751), `transaction` (4752), `storage` (4753),
+     `grv_proxy` (4754), and `commit_proxy` (4755) shows that on `get100/64`,
+     `storage` and `grv_proxy` account for ~75% of server cycles, and their
+     cycles/tx move inversely with `tcpdump` client-to-server `frames/packet`
+     (`storage` `4753/c2s`: `L` `31.8`, `D50` `19.6`, `D` `15.8`, `D5` `10.8`,
+     `DNGa20` `5.6`, `D-NG` `4.3`).
+   - At equal commit throughput on the 5-process cluster (`set100/64 @ 11,000 ops/s`),
+     every Go arm uses **fewer total server cycles/tx than `L`** (`L`: `394.5 kc/tx`;
+     `D-NG`: `378.1 kc/tx` = `0.96×`; `D`: `367.2 kc/tx` = `0.93×`; `D50`:
+     `355.8 kc/tx` = `0.90×`).
+

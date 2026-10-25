@@ -1,0 +1,6 @@
+{
+  "A":       {"env": []},
+  "DNG":     {"env": ["FDBGO_NET_DESIGN=ng", "FDBGO_NETG_STATS=1"]},
+  "DNGchan": {"env": ["FDBGO_NET_DESIGN=ngc", "FDBGO_NETG_STATS=1"]},
+  "DNGring": {"env": ["FDBGO_NET_DESIGN=ngr", "FDBGO_NETG_STATS=1"]}
+}

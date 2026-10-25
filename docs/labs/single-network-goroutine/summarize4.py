@@ -11,8 +11,10 @@ import statistics
 import sys
 
 D = sys.argv[1] if len(sys.argv) > 1 else "rawhz4"
-ARMS = ["L", "L4", "A", "D", "DNG", "D4P", "M", "M4P"]
-NAMES = {"L": "L (libfdb_c)", "L4": "L4 (libfdb_c, 4 threads)", "A": "A (today)", "D": "D", "DNG": "D-NG",
+ARMS = ["L", "L4", "A", "A0", "M", "M4P", "DNG", "DNGy", "DNGchan", "DNGring", "DNGa20", "DNGa100", "D5", "D", "D4P", "D50", "D100", "D250"]
+NAMES = {"L": "L (libfdb_c)", "L4": "L4 (libfdb_c, 4 threads)", "A": "A (today)", "A0": "A0 (A, no delay)", "D": "D", "DNG": "D-NG",
+         "DNGy": "D-NG + yield", "DNGchan": "D-NG-chan", "DNGring": "D-NG-ring",
+         "DNGa20": "D-NG-adap20", "DNGa100": "D-NG-adap100", "D5": "D5 (5µs)", "D50": "D50 (50µs)", "D100": "D100 (100µs)", "D250": "D250 (250µs)",
          "D4P": "D, 4 Ps", "M": "D-M", "M4P": "D-M, 4 Ps"}
 
 
@@ -71,7 +73,7 @@ def table(path, title):
             cols = [med([r[k] for r in rs], d) for k, d in keys]
             vl = ", ".join(ratio(by, cell, a, "L", k) for k, _ in keys)
             va = ", ".join(ratio(by, cell, a, "A", k) for k, _ in keys)
-            fpw = [r["lab_frames_per_write"] for r in rs if "lab_frames_per_write" in r]
+            fpw = [r["lab_frames_per_write"] for r in rs if r.get("lab_frames_per_write")]
             ss = wv.get(a, {}).get("ss_fps")
             print(f"| {NAMES[a]} | " + " | ".join(cols) + f" | {vl} | {va} | {med(fpw, 1) if fpw else '-'} | {ss:.1f} |" if ss else
                   f"| {NAMES[a]} | " + " | ".join(cols) + f" | {vl} | {va} | {med(fpw, 1) if fpw else '-'} | - |")
@@ -107,7 +109,7 @@ def syscalls(path):
 
 
 table(f"{D}/ladder.jsonl", "Closed loop, equal workers")
-table(f"{D}/rate.jsonl", "set100, 64 workers, rate-capped to 18,000 ops/s")
+table(f"{D}/rate.jsonl", "Rate-capped" if D.endswith("hz6") else "set100, 64 workers, rate-capped to 18,000 ops/s")
 per_tx()
 syscalls(f"{D}/syscalls.jsonl")
 table(f"{D}/cross/ladder.jsonl", "Cross-box check: phase-5 binaries on this box")

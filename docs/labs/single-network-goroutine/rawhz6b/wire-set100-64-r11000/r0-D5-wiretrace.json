@@ -1,0 +1,113 @@
+{
+  "client_flows": 3,
+  "kinds": {
+    "commit": {
+      "requests": 60001,
+      "replied": 60001,
+      "errors": 0,
+      "transactions": 60001,
+      "client_segments": 23602,
+      "malformed": 0,
+      "server_batches": 5208,
+      "batch_sizes": {
+        "1": 12,
+        "10": 533,
+        "11": 567,
+        "12": 501,
+        "13": 406,
+        "14": 371,
+        "15": 305,
+        "16": 220,
+        "17": 151,
+        "18": 111,
+        "19": 82,
+        "2": 16,
+        "20": 42,
+        "21": 48,
+        "22": 19,
+        "23": 8,
+        "24": 10,
+        "25": 10,
+        "26": 3,
+        "27": 2,
+        "28": 6,
+        "29": 14,
+        "3": 28,
+        "31": 1,
+        "32": 2,
+        "34": 1,
+        "35": 13,
+        "4": 87,
+        "40": 1,
+        "42": 4,
+        "47": 1,
+        "5": 147,
+        "55": 1,
+        "6": 236,
+        "62": 2,
+        "64": 6,
+        "7": 351,
+        "8": 410,
+        "9": 480
+      },
+      "arrival_spread_ns": [
+        722009,
+        928570,
+        1351610
+      ],
+      "latency_ns": [
+        1612909,
+        2142999,
+        36379201
+      ]
+    },
+    "grv": {
+      "requests": 15222,
+      "replied": 15222,
+      "errors": 0,
+      "transactions": 60003,
+      "client_segments": 15219,
+      "malformed": 0,
+      "server_batches": 0,
+      "batch_sizes": {},
+      "arrival_spread_ns": [
+        0,
+        0,
+        0
+      ],
+      "latency_ns": [
+        211779,
+        312630,
+        3033638
+      ]
+    },
+    "range": {
+      "requests": 1,
+      "replied": 1,
+      "errors": 0,
+      "transactions": 0,
+      "client_segments": 1,
+      "malformed": 0,
+      "server_batches": 0,
+      "batch_sizes": {},
+      "arrival_spread_ns": [
+        0,
+        0,
+        0
+      ],
+      "latency_ns": [
+        128560,
+        128560,
+        128560
+      ],
+      "params": {
+        "limit=101 bytes=80000 begin=false/1 end=false/1": 1
+      },
+      "reply_bytes": 4104
+    }
+  },
+  "undecodable": 0,
+  "stream_gaps": 0,
+  "partial_streams": 0,
+  "complete": true
+}

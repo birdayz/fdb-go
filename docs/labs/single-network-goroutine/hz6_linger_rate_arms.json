@@ -1,0 +1,13 @@
+{
+  "L":       {"binary": "/root/netg/bin/clientbench-cgo", "env": []},
+  "A":       {"env": []},
+  "M":       {"env": ["FDBGO_NET_DESIGN=m", "FDBGO_NETG_STATS=1"]},
+  "DNG":     {"env": ["FDBGO_NET_DESIGN=ng", "FDBGO_NETG_STATS=1"]},
+  "DNGy":    {"env": ["FDBGO_NET_DESIGN=ngy", "FDBGO_NETG_STATS=1"]},
+  "DNGa20":  {"env": ["FDBGO_NET_DESIGN=nga", "FDBGO_NETG_ADAPTIVE_US=20", "FDBGO_NETG_STATS=1"]},
+  "DNGa100": {"env": ["FDBGO_NET_DESIGN=nga", "FDBGO_NETG_ADAPTIVE_US=100", "FDBGO_NETG_STATS=1"]},
+  "D5":      {"env": ["FDBGO_NET_DESIGN=1", "FDBGO_NETG_STATS=1"], "args": ["-coalesce-delay=5us,5us"]},
+  "D":       {"env": ["FDBGO_NET_DESIGN=1", "FDBGO_NETG_STATS=1"], "args": ["-coalesce-delay=10us,20us"]},
+  "D50":     {"env": ["FDBGO_NET_DESIGN=1", "FDBGO_NETG_STATS=1"], "args": ["-coalesce-delay=50us,50us"]},
+  "D100":    {"env": ["FDBGO_NET_DESIGN=1", "FDBGO_NETG_STATS=1"], "args": ["-coalesce-delay=100us,100us"]}
+}

@@ -1,0 +1,58 @@
+{
+ "L": {
+  "binary": "/root/netg/bin/clientbench-cgo",
+  "env": [],
+  "args": [
+   "-rate=28000"
+  ]
+ },
+ "A": {
+  "env": [],
+  "args": [
+   "-rate=28000"
+  ]
+ },
+ "A0": {
+  "env": [],
+  "args": [
+   "-coalesce-delay=0,0",
+   "-rate=28000"
+  ]
+ },
+ "DNG": {
+  "env": [
+   "FDBGO_NET_DESIGN=ng",
+   "FDBGO_NETG_STATS=1"
+  ],
+  "args": [
+   "-rate=28000"
+  ]
+ },
+ "DNGy": {
+  "env": [
+   "FDBGO_NET_DESIGN=ngy",
+   "FDBGO_NETG_STATS=1"
+  ],
+  "args": [
+   "-rate=28000"
+  ]
+ },
+ "DNGchan": {
+  "env": [
+   "FDBGO_NET_DESIGN=ngc",
+   "FDBGO_NETG_STATS=1"
+  ],
+  "args": [
+   "-rate=28000"
+  ]
+ },
+ "DNGring": {
+  "env": [
+   "FDBGO_NET_DESIGN=ngr",
+   "FDBGO_NETG_STATS=1"
+  ],
+  "args": [
+   "-rate=28000"
+  ]
+ }
+}

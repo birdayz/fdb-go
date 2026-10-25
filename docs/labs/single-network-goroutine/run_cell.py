@@ -106,7 +106,8 @@ def run(args, arm, iterations, outdir, perf_target):
               "-iterations", str(iterations), "-warmup", str(iterations // 20), "-allow-writes", "-output", outdir,
               *spec.get("args", [])]
     if perf_target == "server":
-        cmd = ["perf", "stat", "-x,", "-p", args.server_pids, "-e", "task-clock,cycles,instructions", "--", *client]
+        per_thread = ["--per-thread"] if args.per_role else []
+        cmd = ["perf", "stat", *per_thread, "-x,", "-p", args.server_pids, "-e", "task-clock,cycles,instructions", "--", *client]
         want = 3
     else:
         cmd = ["perf", "stat", "-x,", "-e", ",".join(CLIENT_EVENTS), "--", *client]
@@ -115,19 +116,44 @@ def run(args, arm, iterations, outdir, perf_target):
     la = load1()
     hz = os.sysconf("SC_CLK_TCK")
     pids = [int(x) for x in args.server_pids.split(",")]
+    tid_role, roles = {}, set()
+    if args.per_role and perf_target == "server":
+        for pid in pids:
+            cl = open(f"/proc/{pid}/cmdline").read().split("\0")
+            role = cl[cl.index("--class") + 1] if "--class" in cl else str(pid)
+            roles.add(role)
+            for tid in os.listdir(f"/proc/{pid}/task"):
+                tid_role[int(tid)] = role
     b0, s0, c0, t0 = cpu_busy(MY_CPUS), proc_cpu(pids), resource.getrusage(resource.RUSAGE_CHILDREN), time.time()
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     b1, s1, c1, t1 = cpu_busy(MY_CPUS), proc_cpu(pids), resource.getrusage(resource.RUSAGE_CHILDREN), time.time()
+    if args.per_role and perf_target == "server":
+        for pid in pids:
+            cl = open(f"/proc/{pid}/cmdline").read().split("\0")
+            role = cl[cl.index("--class") + 1] if "--class" in cl else str(pid)
+            for tid in os.listdir(f"/proc/{pid}/task"):
+                tid_role[int(tid)] = role
     mine = (c1.ru_utime + c1.ru_stime - c0.ru_utime - c0.ru_stime) + (s1 - s0) / hz
     foreign = max(0.0, ((b1 - b0) / hz - mine) / (t1 - t0))
     counters = {}
+    role_counters = {r: {"task-clock": 0.0, "cycles": 0.0, "instructions": 0.0} for r in roles}
     for line in p.stderr.splitlines():
         f = line.split(",")
-        if len(f) > 2 and f[0] and f[0][0].isdigit():
+        if args.per_role and perf_target == "server":
+            if len(f) > 3 and "-" in f[0] and f[1] and f[1][0].isdigit():
+                tid = int(f[0].rsplit("-", 1)[1])
+                ev, val = f[3], float(f[1])
+                counters[ev] = counters.get(ev, 0.0) + val
+                role = tid_role.get(tid)
+                if role in role_counters and ev in role_counters[role]:
+                    role_counters[role][ev] += val
+        elif len(f) > 2 and f[0] and f[0][0].isdigit():
             counters[f[2]] = float(f[0])
     if p.returncode != 0 or len(counters) != want:
         sys.exit(f"run failed (exit {p.returncode}):\n{p.stdout[-2000:]}\n{p.stderr[-2000:]}")
     s = json.load(open(os.path.join(outdir, "summary.json")))
+    if role_counters:
+        s["role_counters"] = role_counters
     for line in p.stderr.splitlines():  # lab writer counters (FDBGO_NETG_STATS=1)
         if line.startswith("netgstats "):
             kv = dict(f.split("=") for f in line.split()[1:])
@@ -154,6 +180,7 @@ def client_metrics(outdir, s):
         "user_cpu_us_per_op": (a["process_user_cpu_us"] - b["process_user_cpu_us"]) / n,
         "sys_cpu_us_per_op": (a["process_system_cpu_us"] - b["process_system_cpu_us"]) / n,
         "mallocs_per_op": (a["go_mallocs"] - b["go_mallocs"]) / n,
+        "alloc_bytes_per_op": (a.get("go_total_alloc_bytes", 0) - b.get("go_total_alloc_bytes", 0)) / n,
         "gc_cycles": a["go_gc_cycles"] - b["go_gc_cycles"],
     }
 
@@ -173,6 +200,7 @@ def main():
     ap.add_argument("--client-cpus", default="1-8")
     ap.add_argument("--gomaxprocs", type=int, default=8)
     ap.add_argument("--syscalls", action="store_true")
+    ap.add_argument("--per-role", action="store_true", help="record per-fdbserver-class cycles and task-clock")
     ap.add_argument("--load-max", type=float, default=16.0, help="wait for load1 <= this before each run")
     ap.add_argument("--foreign-max", type=float, default=1.0,
                     help="other tenants' busy cores on the client/server CPUs and their siblings; above this a run is redone")
@@ -210,11 +238,18 @@ def measure(args, arm, i, attempt):
                "load1_before_short": la_s[0], "load1_before_long": la_l[0],
                "waited_s": la_s[1] + la_l[1], "foreign_cores": max(la_s[2], la_l[2]),
                "foreign_cores_long": la_l[2]}
+        for a in arm_spec(arm).get("args", []):
+            if a.startswith("-rate="):
+                row["rate"] = int(a.split("=", 1)[1])
         if args.syscalls:
             row.update({k.split(":")[-1].replace("sys_enter_", "") + "_per_op": (cl[k] - cs[k]) / tx for k in cl})
         else:
             row["server_cycles_per_tx"] = (cl["cycles"] - cs["cycles"]) / tx
             row["server_task_clock_us_per_tx"] = (cl["task-clock"] - cs["task-clock"]) * 1e3 / tx
+            if "role_counters" in sl and "role_counters" in ss:
+                rc_l, rc_s = sl["role_counters"], ss["role_counters"]
+                row["role_cycles_per_tx"] = {r: (rc_l[r]["cycles"] - rc_s[r]["cycles"]) / tx for r in sorted(rc_l)}
+                row["role_task_clock_us_per_tx"] = {r: (rc_l[r]["task-clock"] - rc_s[r]["task-clock"]) * 1e3 / tx for r in sorted(rc_l)}
         row.update(client_metrics(os.path.join(tmp, "long"), sl))
         if sl.get("lab_writes"):
             row["lab_frames_per_write"] = sl["lab_frames"] / sl["lab_writes"]

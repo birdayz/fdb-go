@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coalesce Delay vs Write-Ack — fdbgo Transport &amp; Coalescing Lab</title>
+<style>
+:root {
+  --bg: #f8fafc;
+  --panel: #ffffff;
+  --text: #0f172a;
+  --muted: #475569;
+  --border: #e2e8f0;
+  --accent: #1d4ed8;
+  --good: #047857;
+  --good-bg: #ecfdf5;
+  --warn: #b45309;
+  --warn-bg: #fffbeb;
+  --bad: #be123c;
+  --bad-bg: #fff1f2;
+  --code-bg: #f1f5f9;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--bg);
+}
+header {
+  background: #0f172a;
+  color: #f8fafc;
+  padding: 18px 28px;
+  border-bottom: 1px solid #1e293b;
+}
+header .title-row {
+  max-width: 1440px;
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+header h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+header .subtitle {
+  color: #94a3b8;
+  font-size: 13px;
+}
+nav {
+  background: #1e293b;
+  padding: 0 28px;
+  border-bottom: 1px solid #334155;
+}
+nav .nav-inner {
+  max-width: 1440px;
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+nav a {
+  color: #cbd5e1;
+  text-decoration: none;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border-bottom: 2px solid transparent;
+}
+nav a:hover {
+  color: #ffffff;
+  background: rgba(255,255,255,0.05);
+}
+nav a.active {
+  color: #ffffff;
+  border-bottom-color: #38bdf8;
+  background: rgba(56,189,248,0.1);
+}
+main {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 24px 28px 64px;
+}
+h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 28px 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  color: #0f172a;
+}
+h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 20px 0 8px;
+  color: #1e293b;
+}
+p, li {
+  color: #1e293b;
+}
+ul, ol {
+  margin: 8px 0 14px;
+  padding-left: 22px;
+}
+li {
+  margin-bottom: 4px;
+}
+code, pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12.5px;
+}
+code {
+  background: var(--code-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+pre {
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 14px 16px;
+  border-radius: 6px;
+  overflow-x: auto;
+  line-height: 1.45;
+}
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(560px, 1fr));
+  gap: 18px;
+  margin: 14px 0;
+}
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 16px;
+  margin: 14px 0;
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 18px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+.card h3 {
+  margin-top: 0;
+}
+.callout {
+  border-left: 4px solid var(--accent);
+  background: #eff6ff;
+  padding: 12px 16px;
+  border-radius: 0 6px 6px 0;
+  margin: 14px 0;
+}
+.callout.good {
+  border-left-color: var(--good);
+  background: var(--good-bg);
+}
+.callout.warn {
+  border-left-color: var(--warn);
+  background: var(--warn-bg);
+}
+.callout.bad {
+  border-left-color: var(--bad);
+  background: var(--bad-bg);
+}
+.table-wrap {
+  overflow-x: auto;
+  margin: 12px 0 20px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+th, td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+  white-space: nowrap;
+}
+th:first-child, td:first-child {
+  text-align: left;
+  font-weight: 500;
+}
+td.text-left, th.text-left {
+  text-align: left;
+  white-space: normal;
+}
+thead th {
+  background: #f1f5f9;
+  color: #334155;
+  font-weight: 600;
+  border-bottom: 2px solid #cbd5e1;
+}
+tbody tr:hover {
+  background: #f8fafc;
+}
+tbody tr.highlight {
+  background: #f0fdf4;
+}
+tbody tr.highlight-warn {
+  background: #fff1f2;
+}
+.spread {
+  color: #64748b;
+  font-size: 11px;
+  display: block;
+}
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge.pass { background: var(--good-bg); color: var(--good); }
+.badge.fail { background: var(--bad-bg); color: var(--bad); }
+.badge.warn { background: var(--warn-bg); color: var(--warn); }
+.badge.info { background: #e0f2fe; color: #0369a1; }
+.svg-wrap {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  margin: 12px 0;
+  overflow-x: auto;
+}
+footer {
+  margin-top: 48px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  display: flex;
+  justify-content: space-between;
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="title-row">
+    <h1>FoundationDB Pure-Go Transport Lab: Writer Queues, Coalescing Linger &amp; libfdb_c Parity</h1>
+    <div class="subtitle">FDB 7.3.77 &middot; PR #991 &middot; Dedicated Hetzner ccx43 (AMD EPYC-Milan, 16 vCPUs)</div>
+  </div>
+</header>
+<nav>
+  <div class="nav-inner">
+    <a href='index.html'>1. Executive Summary</a><a href='linger.html'>2. Linger Sweep &amp; Per-Role Cost</a><a href='queues.html'>3. Writer Queues, Ring &amp; D-M</a><a href='delay-vs-ack.html' class='active'>4. Coalesce Delay vs Write-Ack</a><a href='libfdbc.html'>5. libfdb_c (L vs L4) vs Go</a><a href='methodology.html'>6. Methodology &amp; Verification</a>
+  </div>
+</nav>
+<main>
+
+<h2>1. Isolating the Two Orthogonal Changes Between Today (<code>A</code>) and <code>D-NG</code></h2>
+<p>Today's Go transport (<code>A</code>) differs from <code>D-NG</code> in two orthogonal ways:</p>
+<ol>
+  <li><strong>The 10–20 &micro;s coalescing delay:</strong> <code>A</code> and <code>D</code> wait <code>max(10 &micro;s, 20 &micro;s - sinceLastWrite)</code> (via Linux <code>hrtimer</code>), whereas <code>A0</code> (<code>-coalesce-delay=0,0</code>) and <code>D-NG</code> flush as soon as a frame is available.</li>
+  <li><strong>The write-acknowledgment wait &amp; writer-turn machinery:</strong> In <code>A</code> and <code>A0</code>, every caller either takes a direct-write / writer-turn lock or sends a <code>writeReq</code> with an acknowledgment channel and waits for the socket write to complete before waiting for the reply. In <code>D</code> and <code>D-NG</code> (<code>D1</code>), callers append to a byte slice under a short mutex, signal the writer only on the <code>0 &rarr; 1</code> transition, and immediately wait on the reply channel.</li>
+</ol>
+
+<div class="grid-2">
+  <div class='svg-wrap'><svg viewBox='0 0 640 340' width='100%' height='340' xmlns='http://www.w3.org/2000/svg'>
+<text x='60' y='20' font-size='13' font-weight='600' fill='#0f172a'>Separating the 10–20 µs Delay (A vs A0, D vs D-NG) from Write-Ack (A vs D, A0 vs D-NG): p50 Latency (µs)</text>
+<text x='60' y='35' font-size='11' fill='#64748b'>Lower is better. Delay dominates at 8 and 64 workers; removing write-ack wins at 256 workers and in client CPU/futexes.</text>
+<rect x='60' y='41' width='10' height='10' rx='2' fill='#d97706'/>
+<text x='74' y='50' font-size='10.5' fill='#334155'>A (today)</text>
+<rect x='136.5' y='41' width='10' height='10' rx='2' fill='#2563eb'/>
+<text x='150.5' y='50' font-size='10.5' fill='#334155'>D (10–20µs)</text>
+<rect x='226.0' y='41' width='10' height='10' rx='2' fill='#f59e0b'/>
+<text x='240.0' y='50' font-size='10.5' fill='#334155'>A0 (no delay)</text>
+<rect x='328.5' y='41' width='10' height='10' rx='2' fill='#059669'/>
+<text x='342.5' y='50' font-size='10.5' fill='#334155'>D-NG (0µs)</text>
+<rect x='411.5' y='41' width='10' height='10' rx='2' fill='#e11d48'/>
+<text x='425.5' y='50' font-size='10.5' fill='#334155'>D-M (sender)</text>
+<line x1='60' y1='54.0' x2='616' y2='54.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='58.0' font-size='10.5' fill='#64748b' text-anchor='end'>3,972</text>
+<line x1='60' y1='112.5' x2='616' y2='112.5' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='116.5' font-size='10.5' fill='#64748b' text-anchor='end'>2,979</text>
+<line x1='60' y1='171.0' x2='616' y2='171.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='175.0' font-size='10.5' fill='#64748b' text-anchor='end'>1,986</text>
+<line x1='60' y1='229.5' x2='616' y2='229.5' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='233.5' font-size='10.5' fill='#64748b' text-anchor='end'>993</text>
+<line x1='60' y1='288.0' x2='616' y2='288.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='292.0' font-size='10.5' fill='#64748b' text-anchor='end'>0</text>
+<rect x='70.3' y='199.5' width='9.8' height='88.5' fill='#d97706' rx='2'/>
+<text x='75.2' y='195.5' font-size='9.5' fill='#334155' text-anchor='middle'>1,502</text>
+<rect x='82.1' y='196.9' width='9.8' height='91.1' fill='#2563eb' rx='2'/>
+<text x='87.0' y='192.9' font-size='9.5' fill='#334155' text-anchor='middle'>1,547</text>
+<rect x='93.8' y='210.3' width='9.8' height='77.7' fill='#f59e0b' rx='2'/>
+<text x='98.7' y='206.3' font-size='9.5' fill='#334155' text-anchor='middle'>1,319</text>
+<rect x='105.6' y='208.7' width='9.8' height='79.3' fill='#059669' rx='2'/>
+<text x='110.5' y='204.7' font-size='9.5' fill='#334155' text-anchor='middle'>1,346</text>
+<rect x='117.3' y='207.6' width='9.8' height='80.4' fill='#e11d48' rx='2'/>
+<text x='122.2' y='203.6' font-size='9.5' fill='#334155' text-anchor='middle'>1,364</text>
+<text x='99.7' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>get100/8</text>
+<rect x='149.8' y='213.6' width='9.8' height='74.4' fill='#d97706' rx='2'/>
+<text x='154.6' y='209.6' font-size='9.5' fill='#334155' text-anchor='middle'>1,262</text>
+<rect x='161.5' y='168.4' width='9.8' height='119.6' fill='#2563eb' rx='2'/>
+<text x='166.4' y='164.4' font-size='9.5' fill='#334155' text-anchor='middle'>2,030</text>
+<rect x='173.3' y='251.6' width='9.8' height='36.4' fill='#f59e0b' rx='2'/>
+<text x='178.1' y='247.6' font-size='9.5' fill='#334155' text-anchor='middle'>618</text>
+<rect x='185.0' y='216.2' width='9.8' height='71.8' fill='#059669' rx='2'/>
+<text x='189.9' y='212.2' font-size='9.5' fill='#334155' text-anchor='middle'>1,218</text>
+<rect x='196.8' y='239.1' width='9.8' height='48.9' fill='#e11d48' rx='2'/>
+<text x='201.7' y='235.1' font-size='9.5' fill='#334155' text-anchor='middle'>830</text>
+<text x='179.1' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>get100/64</text>
+<rect x='229.2' y='222.4' width='9.8' height='65.6' fill='#d97706' rx='2'/>
+<text x='234.1' y='218.4' font-size='9.5' fill='#334155' text-anchor='middle'>1,114</text>
+<rect x='240.9' y='230.1' width='9.8' height='57.9' fill='#2563eb' rx='2'/>
+<text x='245.8' y='226.1' font-size='9.5' fill='#334155' text-anchor='middle'>983</text>
+<rect x='252.7' y='226.5' width='9.8' height='61.5' fill='#f59e0b' rx='2'/>
+<text x='257.6' y='222.5' font-size='9.5' fill='#334155' text-anchor='middle'>1,043</text>
+<rect x='264.4' y='233.0' width='9.8' height='55.0' fill='#059669' rx='2'/>
+<text x='269.3' y='229.0' font-size='9.5' fill='#334155' text-anchor='middle'>934</text>
+<rect x='276.2' y='230.5' width='9.8' height='57.5' fill='#e11d48' rx='2'/>
+<text x='281.1' y='226.5' font-size='9.5' fill='#334155' text-anchor='middle'>977</text>
+<text x='258.6' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>get100/256</text>
+<rect x='308.6' y='107.6' width='9.8' height='180.4' fill='#d97706' rx='2'/>
+<text x='313.5' y='103.6' font-size='9.5' fill='#334155' text-anchor='middle'>3,062</text>
+<rect x='320.4' y='158.0' width='9.8' height='130.0' fill='#2563eb' rx='2'/>
+<text x='325.2' y='154.0' font-size='9.5' fill='#334155' text-anchor='middle'>2,206</text>
+<rect x='332.1' y='122.7' width='9.8' height='165.3' fill='#f59e0b' rx='2'/>
+<text x='337.0' y='118.7' font-size='9.5' fill='#334155' text-anchor='middle'>2,806</text>
+<rect x='343.9' y='123.0' width='9.8' height='165.0' fill='#059669' rx='2'/>
+<text x='348.8' y='119.0' font-size='9.5' fill='#334155' text-anchor='middle'>2,801</text>
+<rect x='355.6' y='131.7' width='9.8' height='156.3' fill='#e11d48' rx='2'/>
+<text x='360.5' y='127.7' font-size='9.5' fill='#334155' text-anchor='middle'>2,654</text>
+<text x='338.0' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>set100/8</text>
+<rect x='388.0' y='141.0' width='9.8' height='147.0' fill='#d97706' rx='2'/>
+<text x='392.9' y='137.0' font-size='9.5' fill='#334155' text-anchor='middle'>2,496</text>
+<rect x='399.8' y='129.0' width='9.8' height='159.0' fill='#2563eb' rx='2'/>
+<text x='404.7' y='125.0' font-size='9.5' fill='#334155' text-anchor='middle'>2,698</text>
+<rect x='411.6' y='161.8' width='9.8' height='126.2' fill='#f59e0b' rx='2'/>
+<text x='416.4' y='157.8' font-size='9.5' fill='#334155' text-anchor='middle'>2,143</text>
+<rect x='423.3' y='160.9' width='9.8' height='127.1' fill='#059669' rx='2'/>
+<text x='428.2' y='156.9' font-size='9.5' fill='#334155' text-anchor='middle'>2,157</text>
+<rect x='435.1' y='161.2' width='9.8' height='126.8' fill='#e11d48' rx='2'/>
+<text x='439.9' y='157.2' font-size='9.5' fill='#334155' text-anchor='middle'>2,153</text>
+<text x='417.4' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>set100/64</text>
+<rect x='467.5' y='105.6' width='9.8' height='182.4' fill='#d97706' rx='2'/>
+<text x='472.3' y='101.6' font-size='9.5' fill='#334155' text-anchor='middle'>3,096</text>
+<rect x='479.2' y='107.5' width='9.8' height='180.5' fill='#2563eb' rx='2'/>
+<text x='484.1' y='103.5' font-size='9.5' fill='#334155' text-anchor='middle'>3,065</text>
+<rect x='491.0' y='107.7' width='9.8' height='180.3' fill='#f59e0b' rx='2'/>
+<text x='495.9' y='103.7' font-size='9.5' fill='#334155' text-anchor='middle'>3,062</text>
+<rect x='502.7' y='109.8' width='9.8' height='178.2' fill='#059669' rx='2'/>
+<text x='507.6' y='105.8' font-size='9.5' fill='#334155' text-anchor='middle'>3,025</text>
+<rect x='514.5' y='109.8' width='9.8' height='178.2' fill='#e11d48' rx='2'/>
+<text x='519.4' y='105.8' font-size='9.5' fill='#334155' text-anchor='middle'>3,025</text>
+<text x='496.9' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>set100/256</text>
+<rect x='546.9' y='87.7' width='9.8' height='200.3' fill='#d97706' rx='2'/>
+<text x='551.8' y='83.7' font-size='9.5' fill='#334155' text-anchor='middle'>3,401</text>
+<rect x='558.7' y='84.5' width='9.8' height='203.5' fill='#2563eb' rx='2'/>
+<text x='563.5' y='80.5' font-size='9.5' fill='#334155' text-anchor='middle'>3,454</text>
+<rect x='570.4' y='107.9' width='9.8' height='180.1' fill='#f59e0b' rx='2'/>
+<text x='575.3' y='103.9' font-size='9.5' fill='#334155' text-anchor='middle'>3,057</text>
+<rect x='582.2' y='91.3' width='9.8' height='196.7' fill='#059669' rx='2'/>
+<text x='587.0' y='87.3' font-size='9.5' fill='#334155' text-anchor='middle'>3,339</text>
+<rect x='593.9' y='101.0' width='9.8' height='187.0' fill='#e11d48' rx='2'/>
+<text x='598.8' y='97.0' font-size='9.5' fill='#334155' text-anchor='middle'>3,174</text>
+<text x='576.3' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>getset100/64</text>
+<line x1='60' y1='288' x2='616' y2='288' stroke='#94a3b8' stroke-width='1'/>
+<text x='15' y='171.0' font-size='11' font-weight='500' fill='#334155' text-anchor='middle' transform='rotate(-90 15 171.0)'>p50 Latency (µs)</text>
+</svg></div>
+  <div class='svg-wrap'><svg viewBox='0 0 640 340' width='100%' height='340' xmlns='http://www.w3.org/2000/svg'>
+<text x='60' y='20' font-size='13' font-weight='600' fill='#0f172a'>Client CPU per Operation (µs/op, lower is better): A vs D vs A0 vs D-NG vs D-M</text>
+<text x='60' y='35' font-size='11' fill='#64748b'>Removing the write-acknowledgment wait and writer-turn machinery (D, D-NG, D-M) cuts client CPU across every cell.</text>
+<rect x='60' y='41' width='10' height='10' rx='2' fill='#d97706'/>
+<text x='74' y='50' font-size='10.5' fill='#334155'>A (today)</text>
+<rect x='136.5' y='41' width='10' height='10' rx='2' fill='#2563eb'/>
+<text x='150.5' y='50' font-size='10.5' fill='#334155'>D (10–20µs)</text>
+<rect x='226.0' y='41' width='10' height='10' rx='2' fill='#f59e0b'/>
+<text x='240.0' y='50' font-size='10.5' fill='#334155'>A0 (no delay)</text>
+<rect x='328.5' y='41' width='10' height='10' rx='2' fill='#059669'/>
+<text x='342.5' y='50' font-size='10.5' fill='#334155'>D-NG (0µs)</text>
+<rect x='411.5' y='41' width='10' height='10' rx='2' fill='#e11d48'/>
+<text x='425.5' y='50' font-size='10.5' fill='#334155'>D-M (sender)</text>
+<line x1='60' y1='54.0' x2='616' y2='54.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='58.0' font-size='10.5' fill='#64748b' text-anchor='end'>300</text>
+<line x1='60' y1='112.5' x2='616' y2='112.5' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='116.5' font-size='10.5' fill='#64748b' text-anchor='end'>225</text>
+<line x1='60' y1='171.0' x2='616' y2='171.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='175.0' font-size='10.5' fill='#64748b' text-anchor='end'>150</text>
+<line x1='60' y1='229.5' x2='616' y2='229.5' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='233.5' font-size='10.5' fill='#64748b' text-anchor='end'>75</text>
+<line x1='60' y1='288.0' x2='616' y2='288.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='52' y='292.0' font-size='10.5' fill='#64748b' text-anchor='end'>0</text>
+<rect x='70.3' y='148.3' width='9.8' height='139.7' fill='#d97706' rx='2'/>
+<text x='75.2' y='144.3' font-size='9.5' fill='#334155' text-anchor='middle'>179</text>
+<rect x='82.1' y='157.5' width='9.8' height='130.5' fill='#2563eb' rx='2'/>
+<text x='87.0' y='153.5' font-size='9.5' fill='#334155' text-anchor='middle'>167</text>
+<rect x='93.8' y='164.1' width='9.8' height='123.9' fill='#f59e0b' rx='2'/>
+<text x='98.7' y='160.1' font-size='9.5' fill='#334155' text-anchor='middle'>159</text>
+<rect x='105.6' y='178.3' width='9.8' height='109.7' fill='#059669' rx='2'/>
+<text x='110.5' y='174.3' font-size='9.5' fill='#334155' text-anchor='middle'>141</text>
+<rect x='117.3' y='172.0' width='9.8' height='116.0' fill='#e11d48' rx='2'/>
+<text x='122.2' y='168.0' font-size='9.5' fill='#334155' text-anchor='middle'>149</text>
+<text x='99.7' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>get100/8</text>
+<rect x='149.8' y='245.0' width='9.8' height='43.0' fill='#d97706' rx='2'/>
+<text x='154.6' y='241.0' font-size='9.5' fill='#334155' text-anchor='middle'>55</text>
+<rect x='161.5' y='233.9' width='9.8' height='54.1' fill='#2563eb' rx='2'/>
+<text x='166.4' y='229.9' font-size='9.5' fill='#334155' text-anchor='middle'>69</text>
+<rect x='173.3' y='255.1' width='9.8' height='32.9' fill='#f59e0b' rx='2'/>
+<text x='178.1' y='251.1' font-size='9.5' fill='#334155' text-anchor='middle'>42</text>
+<rect x='185.0' y='250.3' width='9.8' height='37.7' fill='#059669' rx='2'/>
+<text x='189.9' y='246.3' font-size='9.5' fill='#334155' text-anchor='middle'>48</text>
+<rect x='196.8' y='256.9' width='9.8' height='31.1' fill='#e11d48' rx='2'/>
+<text x='201.7' y='252.9' font-size='9.5' fill='#334155' text-anchor='middle'>40</text>
+<text x='179.1' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>get100/64</text>
+<rect x='229.2' y='262.2' width='9.8' height='25.8' fill='#d97706' rx='2'/>
+<text x='234.1' y='258.2' font-size='9.5' fill='#334155' text-anchor='middle'>33</text>
+<rect x='240.9' y='266.5' width='9.8' height='21.5' fill='#2563eb' rx='2'/>
+<text x='245.8' y='262.5' font-size='9.5' fill='#334155' text-anchor='middle'>28</text>
+<rect x='252.7' y='262.9' width='9.8' height='25.1' fill='#f59e0b' rx='2'/>
+<text x='257.6' y='258.9' font-size='9.5' fill='#334155' text-anchor='middle'>32</text>
+<rect x='264.4' y='266.9' width='9.8' height='21.1' fill='#059669' rx='2'/>
+<text x='269.3' y='262.9' font-size='9.5' fill='#334155' text-anchor='middle'>27</text>
+<rect x='276.2' y='266.5' width='9.8' height='21.5' fill='#e11d48' rx='2'/>
+<text x='281.1' y='262.5' font-size='9.5' fill='#334155' text-anchor='middle'>28</text>
+<text x='258.6' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>get100/256</text>
+<rect x='308.6' y='129.2' width='9.8' height='158.8' fill='#d97706' rx='2'/>
+<text x='313.5' y='125.2' font-size='9.5' fill='#334155' text-anchor='middle'>203</text>
+<rect x='320.4' y='84.5' width='9.8' height='203.5' fill='#2563eb' rx='2'/>
+<text x='325.2' y='80.5' font-size='9.5' fill='#334155' text-anchor='middle'>261</text>
+<rect x='332.1' y='137.3' width='9.8' height='150.7' fill='#f59e0b' rx='2'/>
+<text x='337.0' y='133.3' font-size='9.5' fill='#334155' text-anchor='middle'>193</text>
+<rect x='343.9' y='140.8' width='9.8' height='147.2' fill='#059669' rx='2'/>
+<text x='348.8' y='136.8' font-size='9.5' fill='#334155' text-anchor='middle'>189</text>
+<rect x='355.6' y='121.2' width='9.8' height='166.8' fill='#e11d48' rx='2'/>
+<text x='360.5' y='117.2' font-size='9.5' fill='#334155' text-anchor='middle'>214</text>
+<text x='338.0' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>set100/8</text>
+<rect x='388.0' y='205.9' width='9.8' height='82.1' fill='#d97706' rx='2'/>
+<text x='392.9' y='201.9' font-size='9.5' fill='#334155' text-anchor='middle'>105</text>
+<rect x='399.8' y='203.2' width='9.8' height='84.8' fill='#2563eb' rx='2'/>
+<text x='404.7' y='199.2' font-size='9.5' fill='#334155' text-anchor='middle'>109</text>
+<rect x='411.6' y='216.5' width='9.8' height='71.5' fill='#f59e0b' rx='2'/>
+<text x='416.4' y='212.5' font-size='9.5' fill='#334155' text-anchor='middle'>92</text>
+<rect x='423.3' y='215.0' width='9.8' height='73.0' fill='#059669' rx='2'/>
+<text x='428.2' y='211.0' font-size='9.5' fill='#334155' text-anchor='middle'>94</text>
+<rect x='435.1' y='214.9' width='9.8' height='73.1' fill='#e11d48' rx='2'/>
+<text x='439.9' y='210.9' font-size='9.5' fill='#334155' text-anchor='middle'>94</text>
+<text x='417.4' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>set100/64</text>
+<rect x='467.5' y='252.3' width='9.8' height='35.7' fill='#d97706' rx='2'/>
+<text x='472.3' y='248.3' font-size='9.5' fill='#334155' text-anchor='middle'>46</text>
+<rect x='479.2' y='254.4' width='9.8' height='33.6' fill='#2563eb' rx='2'/>
+<text x='484.1' y='250.4' font-size='9.5' fill='#334155' text-anchor='middle'>43</text>
+<rect x='491.0' y='252.4' width='9.8' height='35.6' fill='#f59e0b' rx='2'/>
+<text x='495.9' y='248.4' font-size='9.5' fill='#334155' text-anchor='middle'>46</text>
+<rect x='502.7' y='255.0' width='9.8' height='33.0' fill='#059669' rx='2'/>
+<text x='507.6' y='251.0' font-size='9.5' fill='#334155' text-anchor='middle'>42</text>
+<rect x='514.5' y='254.4' width='9.8' height='33.6' fill='#e11d48' rx='2'/>
+<text x='519.4' y='250.4' font-size='9.5' fill='#334155' text-anchor='middle'>43</text>
+<text x='496.9' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>set100/256</text>
+<rect x='546.9' y='171.0' width='9.8' height='117.0' fill='#d97706' rx='2'/>
+<text x='551.8' y='167.0' font-size='9.5' fill='#334155' text-anchor='middle'>150</text>
+<rect x='558.7' y='173.2' width='9.8' height='114.8' fill='#2563eb' rx='2'/>
+<text x='563.5' y='169.2' font-size='9.5' fill='#334155' text-anchor='middle'>147</text>
+<rect x='570.4' y='184.1' width='9.8' height='103.9' fill='#f59e0b' rx='2'/>
+<text x='575.3' y='180.1' font-size='9.5' fill='#334155' text-anchor='middle'>133</text>
+<rect x='582.2' y='180.9' width='9.8' height='107.1' fill='#059669' rx='2'/>
+<text x='587.0' y='176.9' font-size='9.5' fill='#334155' text-anchor='middle'>137</text>
+<rect x='593.9' y='183.3' width='9.8' height='104.7' fill='#e11d48' rx='2'/>
+<text x='598.8' y='179.3' font-size='9.5' fill='#334155' text-anchor='middle'>134</text>
+<text x='576.3' y='306' font-size='10.5' font-weight='500' fill='#334155' text-anchor='middle'>getset100/64</text>
+<line x1='60' y1='288' x2='616' y2='288' stroke='#94a3b8' stroke-width='1'/>
+<text x='15' y='171.0' font-size='11' font-weight='500' fill='#334155' text-anchor='middle' transform='rotate(-90 15 171.0)'>Client CPU (µs/op)</text>
+</svg></div>
+</div>
+
+<div class="callout good">
+  <strong>What the 2&times;2 Factorial (<code>A</code>, <code>A0</code>, <code>D</code>, <code>D-NG</code>) Proves:</strong>
+  <ul>
+    <li><strong>Latency at 8 &amp; 64 workers is governed by the 10–20 &micro;s delay:</strong> Removing the delay from today's transport (<code>A &rarr; A0</code>) jumps <code>get100/64</code> from 48.5k to 100.0k ops/s (p50 <code>1,262 &rarr; 618 &micro;s</code>) because each <code>get100</code> transaction performs sequential hops (GRV + read waves), paying the 10–20 &micro;s timer wait on every low-queue hop.</li>
+    <li><strong>Throughput at 256 workers and client CPU/futex efficiency across all cells are governed by removing write-ack (<code>A0 &rarr; D-NG</code>):</strong>
+      <ul>
+        <li>On <code>get100/256</code>, <code>D-NG</code> reaches <strong>257.7k ops/s</strong> at <strong>27.0 &micro;s/op</strong> client CPU and <strong>0.06 futex/op</strong>, beating <code>A0</code> (225.7k ops/s, 32.2 &micro;s/op, 0.24 futex/op) and <code>A</code> (212.1k ops/s, 33.0 &micro;s/op, 0.31 futex/op).</li>
+        <li>On <code>get100/8</code>, <code>D-NG</code> uses <strong>140.5 &micro;s/op</strong> client CPU vs <code>A0</code>'s <strong>158.7 &micro;s/op</strong> and <code>A</code>'s <strong>179.0 &micro;s/op</strong> (-21.5% client CPU).</li>
+        <li>Why does <code>A0</code> beat <code>D-NG</code> specifically on closed-loop <code>get100/64</code> (100k vs 52k ops/s), while <code>D-NG+yield</code> / <code>D-NG-adap20</code> jump to 77k–80k ops/s? Because in <code>A0</code>, an idle connection writes directly on the sender's goroutine (0 goroutine hop) when no write is in flight, whereas in <code>D-NG</code> at intermediate concurrency (64 workers) the writer goroutine wakes on frame 1, writes 1–4 frames immediately, and goes back to sleep just as the next sender arrives; adding a single <code>runtime.Gosched()</code> (<code>D-NG+yield</code>) or 20 &micro;s adaptive linger (<code>DNGa20</code>) keeps the writer hot across the burst and jumps throughput to 77k–80k ops/s while cutting client CPU to 39.1 &micro;s/op (lower than <code>A0</code>'s 42.1 &micro;s/op)!</li>
+      </ul>
+    </li>
+  </ul>
+</div>
+
+<h2>2. Client Syscalls &amp; Futexes per Operation (<code>perf stat</code> on <code>netg-r6</code>)</h2>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Cell</th><th>Arm</th><th>Total syscalls/op</th><th>futex/op</th><th>epoll_pwait/op</th>
+        <th>read/op</th><th>write/op</th><th>nanosleep/op</th><th>ctx-switches/op</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>get100/64</td><td>A (today)</td><td><strong>2.53</strong><span class='spread'>[2.50, 2.57]</span></td><td><strong>0.90</strong><span class='spread'>[0.89, 0.90]</span></td><td><strong>0.76</strong><span class='spread'>[0.76, 0.76]</span></td><td><strong>0.40</strong><span class='spread'>[0.40, 0.40]</span></td><td><strong>0.11</strong><span class='spread'>[0.11, 0.11]</span></td><td><strong>0.15</strong><span class='spread'>[0.15, 0.15]</span></td><td><strong>0.67</strong><span class='spread'>[0.67, 0.68]</span></td></tr><tr><td>get100/64</td><td>A0 (no delay)</td><td><strong>2.21</strong><span class='spread'>[2.18, 2.23]</span></td><td><strong>0.56</strong><span class='spread'>[0.55, 0.58]</span></td><td><strong>0.82</strong><span class='spread'>[0.82, 0.82]</span></td><td><strong>0.36</strong><span class='spread'>[0.36, 0.36]</span></td><td><strong>0.27</strong><span class='spread'>[0.27, 0.27]</span></td><td><strong>0.06</strong><span class='spread'>[0.06, 0.07]</span></td><td><strong>0.47</strong><span class='spread'>[0.47, 0.48]</span></td></tr><tr><td>get100/64</td><td>D (10–20µs)</td><td><strong>2.00</strong><span class='spread'>[1.95, 2.05]</span></td><td><strong>0.61</strong><span class='spread'>[0.60, 0.62]</span></td><td><strong>0.61</strong><span class='spread'>[0.59, 0.63]</span></td><td><strong>0.38</strong><span class='spread'>[0.37, 0.39]</span></td><td><strong>0.11</strong><span class='spread'>[0.11, 0.11]</span></td><td><strong>0.14</strong><span class='spread'>[0.14, 0.15]</span></td><td><strong>0.54</strong><span class='spread'>[0.54, 0.54]</span></td></tr><tr><td>get100/64</td><td>D5 (5µs)</td><td><strong>2.14</strong><span class='spread'>[2.13, 2.14]</span></td><td><strong>0.63</strong><span class='spread'>[0.62, 0.63]</span></td><td><strong>0.64</strong><span class='spread'>[0.63, 0.64]</span></td><td><strong>0.42</strong><span class='spread'>[0.41, 0.43]</span></td><td><strong>0.13</strong><span class='spread'>[0.13, 0.13]</span></td><td><strong>0.13</strong><span class='spread'>[0.12, 0.13]</span></td><td><strong>0.54</strong><span class='spread'>[0.54, 0.55]</span></td></tr><tr><td>get100/64</td><td>D50 (50µs)</td><td><strong>1.88</strong><span class='spread'>[1.86, 1.91]</span></td><td><strong>0.60</strong><span class='spread'>[0.59, 0.61]</span></td><td><strong>0.56</strong><span class='spread'>[0.56, 0.57]</span></td><td><strong>0.32</strong><span class='spread'>[0.32, 0.33]</span></td><td><strong>0.09</strong><span class='spread'>[0.09, 0.09]</span></td><td><strong>0.15</strong><span class='spread'>[0.15, 0.16]</span></td><td><strong>0.54</strong><span class='spread'>[0.54, 0.54]</span></td></tr><tr><td>get100/64</td><td>D-NG (0µs)</td><td><strong>1.92</strong><span class='spread'>[1.90, 1.95]</span></td><td><strong>0.58</strong><span class='spread'>[0.56, 0.59]</span></td><td><strong>0.62</strong><span class='spread'>[0.60, 0.63]</span></td><td><strong>0.25</strong><span class='spread'>[0.23, 0.27]</span></td><td><strong>0.28</strong><span class='spread'>[0.28, 0.29]</span></td><td><strong>0.10</strong><span class='spread'>[0.09, 0.11]</span></td><td><strong>0.50</strong><span class='spread'>[0.50, 0.51]</span></td></tr><tr><td>get100/64</td><td>D-M (sender)</td><td><strong>1.89</strong><span class='spread'>[1.84, 1.94]</span></td><td><strong>0.56</strong><span class='spread'>[0.55, 0.57]</span></td><td><strong>0.60</strong><span class='spread'>[0.58, 0.62]</span></td><td><strong>0.24</strong><span class='spread'>[0.22, 0.26]</span></td><td><strong>0.31</strong><span class='spread'>[0.30, 0.31]</span></td><td><strong>0.09</strong><span class='spread'>[0.09, 0.09]</span></td><td><strong>0.49</strong><span class='spread'>[0.49, 0.50]</span></td></tr><tr><td>get100/64</td><td>D-NG+yield</td><td><strong>1.94</strong><span class='spread'>[1.93, 1.95]</span></td><td><strong>0.63</strong><span class='spread'>[0.63, 0.63]</span></td><td><strong>0.58</strong><span class='spread'>[0.58, 0.58]</span></td><td><strong>0.31</strong><span class='spread'>[0.31, 0.32]</span></td><td><strong>0.24</strong><span class='spread'>[0.24, 0.24]</span></td><td><strong>0.07</strong><span class='spread'>[0.07, 0.07]</span></td><td><strong>0.50</strong><span class='spread'>[0.50, 0.51]</span></td></tr><tr><td>get100/64</td><td>D-NG-adap20</td><td><strong>1.91</strong><span class='spread'>[1.90, 1.92]</span></td><td><strong>0.57</strong><span class='spread'>[0.55, 0.60]</span></td><td><strong>0.62</strong><span class='spread'>[0.61, 0.62]</span></td><td><strong>0.33</strong><span class='spread'>[0.33, 0.34]</span></td><td><strong>0.24</strong><span class='spread'>[0.24, 0.24]</span></td><td><strong>0.04</strong><span class='spread'>[0.03, 0.04]</span></td><td><strong>0.44</strong><span class='spread'>[0.43, 0.45]</span></td></tr><tr><td>get100/64</td><td>D-NG-adap100</td><td><strong>1.99</strong><span class='spread'>[1.98, 1.99]</span></td><td><strong>0.70</strong><span class='spread'>[0.68, 0.72]</span></td><td><strong>0.57</strong><span class='spread'>[0.56, 0.57]</span></td><td><strong>0.34</strong><span class='spread'>[0.34, 0.34]</span></td><td><strong>0.14</strong><span class='spread'>[0.14, 0.14]</span></td><td><strong>0.07</strong><span class='spread'>[0.07, 0.07]</span></td><td><strong>0.50</strong><span class='spread'>[0.48, 0.51]</span></td></tr><tr><td>get100/64</td><td>D-NG-chan</td><td><strong>2.00</strong><span class='spread'>[1.97, 2.03]</span></td><td><strong>0.57</strong><span class='spread'>[0.56, 0.59]</span></td><td><strong>0.66</strong><span class='spread'>[0.66, 0.66]</span></td><td><strong>0.29</strong><span class='spread'>[0.29, 0.29]</span></td><td><strong>0.29</strong><span class='spread'>[0.29, 0.30]</span></td><td><strong>0.08</strong><span class='spread'>[0.07, 0.09]</span></td><td><strong>0.50</strong><span class='spread'>[0.48, 0.51]</span></td></tr><tr><td>get100/64</td><td>D-NG-ring v2</td><td><strong>1.97</strong><span class='spread'>[1.96, 1.98]</span></td><td><strong>0.58</strong><span class='spread'>[0.58, 0.59]</span></td><td><strong>0.64</strong><span class='spread'>[0.64, 0.64]</span></td><td><strong>0.26</strong><span class='spread'>[0.26, 0.27]</span></td><td><strong>0.01</strong><span class='spread'>[0.01, 0.01]</span></td><td><strong>0.10</strong><span class='spread'>[0.09, 0.10]</span></td><td><strong>0.51</strong><span class='spread'>[0.50, 0.52]</span></td></tr><tr><td>get100/256</td><td>A (today)</td><td><strong>1.03</strong><span class='spread'>[1.02, 1.03]</span></td><td><strong>0.31</strong><span class='spread'>[0.30, 0.33]</span></td><td><strong>0.29</strong><span class='spread'>[0.29, 0.29]</span></td><td><strong>0.22</strong><span class='spread'>[0.21, 0.22]</span></td><td><strong>0.06</strong><span class='spread'>[0.06, 0.06]</span></td><td><strong>0.01</strong><span class='spread'>[0.01, 0.01]</span></td><td><strong>0.14</strong><span class='spread'>[0.13, 0.14]</span></td></tr><tr><td>get100/256</td><td>A0 (no delay)</td><td><strong>0.78</strong><span class='spread'>[0.77, 0.79]</span></td><td><strong>0.24</strong><span class='spread'>[0.23, 0.24]</span></td><td><strong>0.18</strong><span class='spread'>[0.18, 0.18]</span></td><td><strong>0.12</strong><span class='spread'>[0.12, 0.12]</span></td><td><strong>0.17</strong><span class='spread'>[0.17, 0.17]</span></td><td><strong>0.00</strong><span class='spread'>[0.00, 0.01]</span></td><td><strong>0.14</strong><span class='spread'>[0.13, 0.14]</span></td></tr><tr><td>get100/256</td><td>D (10–20µs)</td><td><strong>0.80</strong><span class='spread'>[0.77, 0.82]</span></td><td><strong>0.09</strong><span class='spread'>[0.08, 0.09]</span></td><td><strong>0.28</strong><span class='spread'>[0.28, 0.28]</span></td><td><strong>0.22</strong><span class='spread'>[0.22, 0.23]</span></td><td><strong>0.07</strong><span class='spread'>[0.07, 0.07]</span></td><td><strong>0.01</strong><span class='spread'>[0.01, 0.01]</span></td><td><strong>0.07</strong><span class='spread'>[0.06, 0.07]</span></td></tr><tr><td>get100/256</td><td>D5 (5µs)</td><td><strong>0.75</strong><span class='spread'>[0.75, 0.75]</span></td><td><strong>0.07</strong><span class='spread'>[0.07, 0.07]</span></td><td><strong>0.24</strong><span class='spread'>[0.24, 0.25]</span></td><td><strong>0.24</strong><span class='spread'>[0.23, 0.24]</span></td><td><strong>0.08</strong><span class='spread'>[0.08, 0.08]</span></td><td><strong>0.01</strong><span class='spread'>[0.00, 0.01]</span></td><td><strong>0.05</strong><span class='spread'>[0.05, 0.06]</span></td></tr><tr><td>get100/256</td><td>D50 (50µs)</td><td><strong>0.78</strong><span class='spread'>[0.78, 0.78]</span></td><td><strong>0.12</strong><span class='spread'>[0.11, 0.12]</span></td><td><strong>0.32</strong><span class='spread'>[0.32, 0.32]</span></td><td><strong>0.19</strong><span class='spread'>[0.19, 0.19]</span></td><td><strong>0.06</strong><span class='spread'>[0.06, 0.06]</span></td><td><strong>0.02</strong><span class='spread'>[0.01, 0.02]</span></td><td><strong>0.09</strong><span class='spread'>[0.09, 0.09]</span></td></tr><tr><td>get100/256</td><td>D-NG (0µs)</td><td><strong>0.68</strong><span class='spread'>[0.67, 0.68]</span></td><td><strong>0.06</strong><span class='spread'>[0.05, 0.06]</span></td><td><strong>0.23</strong><span class='spread'>[0.22, 0.23]</span></td><td><strong>0.10</strong><span class='spread'>[0.10, 0.10]</span></td><td><strong>0.22</strong><span class='spread'>[0.21, 0.22]</span></td><td><strong>0.01</strong><span class='spread'>[0.01, 0.02]</span></td><td><strong>0.11</strong><span class='spread'>[0.10, 0.11]</span></td></tr><tr><td>get100/256</td><td>D-M (sender)</td><td><strong>0.68</strong><span class='spread'>[0.66, 0.71]</span></td><td><strong>0.07</strong><span class='spread'>[0.06, 0.07]</span></td><td><strong>0.22</strong><span class='spread'>[0.22, 0.23]</span></td><td><strong>0.10</strong><span class='spread'>[0.10, 0.10]</span></td><td><strong>0.21</strong><span class='spread'>[0.21, 0.22]</span></td><td><strong>0.02</strong><span class='spread'>[0.01, 0.03]</span></td><td><strong>0.12</strong><span class='spread'>[0.12, 0.13]</span></td></tr><tr><td>get100/256</td><td>D-NG+yield</td><td><strong>0.64</strong><span class='spread'>[0.63, 0.64]</span></td><td><strong>0.11</strong><span class='spread'>[0.10, 0.11]</span></td><td><strong>0.17</strong><span class='spread'>[0.17, 0.18]</span></td><td><strong>0.11</strong><span class='spread'>[0.10, 0.11]</span></td><td><strong>0.17</strong><span class='spread'>[0.16, 0.17]</span></td><td><strong>0.00</strong><span class='spread'>[0.00, 0.01]</span></td><td><strong>0.09</strong><span class='spread'>[0.09, 0.10]</span></td></tr><tr><td>get100/256</td><td>D-NG-adap20</td><td><strong>0.60</strong><span class='spread'>[0.59, 0.61]</span></td><td><strong>0.11</strong><span class='spread'>[0.11, 0.12]</span></td><td><strong>0.16</strong><span class='spread'>[0.16, 0.16]</span></td><td><strong>0.11</strong><span class='spread'>[0.11, 0.11]</span></td><td><strong>0.15</strong><span class='spread'>[0.15, 0.15]</span></td><td><strong>0.00</strong><span class='spread'>[0.00, 0.00]</span></td><td><strong>0.08</strong><span class='spread'>[0.08, 0.09]</span></td></tr><tr><td>get100/256</td><td>D-NG-adap100</td><td><strong>0.52</strong><span class='spread'>[0.52, 0.53]</span></td><td><strong>0.12</strong><span class='spread'>[0.11, 0.12]</span></td><td><strong>0.17</strong><span class='spread'>[0.17, 0.17]</span></td><td><strong>0.11</strong><span class='spread'>[0.11, 0.11]</span></td><td><strong>0.06</strong><span class='spread'>[0.06, 0.06]</span></td><td><strong>0.00</strong><span class='spread'>[0.00, 0.00]</span></td><td><strong>0.05</strong><span class='spread'>[0.05, 0.06]</span></td></tr><tr><td>get100/256</td><td>D-NG-chan</td><td><strong>0.70</strong><span class='spread'>[0.69, 0.72]</span></td><td><strong>0.11</strong><span class='spread'>[0.11, 0.11]</span></td><td><strong>0.21</strong><span class='spread'>[0.20, 0.21]</span></td><td><strong>0.10</strong><span class='spread'>[0.10, 0.10]</span></td><td><strong>0.22</strong><span class='spread'>[0.22, 0.23]</span></td><td><strong>0.01</strong><span class='spread'>[0.00, 0.01]</span></td><td><strong>0.12</strong><span class='spread'>[0.11, 0.12]</span></td></tr><tr><td>get100/256</td><td>D-NG-ring v2</td><td><strong>0.72</strong><span class='spread'>[0.72, 0.72]</span></td><td><strong>0.11</strong><span class='spread'>[0.10, 0.11]</span></td><td><strong>0.21</strong><span class='spread'>[0.21, 0.21]</span></td><td><strong>0.10</strong><span class='spread'>[0.10, 0.10]</span></td><td><strong>0.01</strong><span class='spread'>[0.01, 0.01]</span></td><td><strong>0.01</strong><span class='spread'>[0.01, 0.01]</span></td><td><strong>0.12</strong><span class='spread'>[0.12, 0.13]</span></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2>3. Historical &amp; Source Evidence on C++ <code>MIN_COALESCE_DELAY</code> / <code>MAX_COALESCE_DELAY</code></h2>
+<div class="card">
+  <ul>
+    <li>In FoundationDB 7.3.77 (<code>fdbrpc/FlowTransport.actor.cpp:704-738</code>), <code>connectionWriter</code> is unchanged since the initial open-source commit <code>a674cb4ef4</code> (2017):
+<pre>// Wait a short time for more data to accumulate
+double delay = std::max(FLOW_KNOBS-&gt;MIN_COALESCE_DELAY,
+                        FLOW_KNOBS-&gt;MAX_COALESCE_DELAY - (now() - lastWriteTime));
+wait(delayJittered(delay, TaskWriteSocket));
+// wait(delay(0, TaskWriteSocket));
+// wait(delay(500e-6, TaskWriteSocket));
+// wait(yield(TaskWriteSocket));</pre>
+    </li>
+    <li>The three commented-out lines right below <code>delayJittered</code> (<code>delay(0)</code>, <code>delay(500e-6)</code>, <code>yield(TaskWriteSocket)</code>) are the exact alternatives we benchmarked in Round 6 (<code>D-NG</code> = 0, <code>D250</code> = 250 &micro;s, <code>D-NG+yield</code> = <code>runtime.Gosched()</code>).</li>
+    <li>In <code>flow/Knobs.cpp:211-212</code>, simulation runs with <code>if (randomize &amp;&amp; BUGGIFY) { MIN_COALESCE_DELAY = 0; MAX_COALESCE_DELAY = 0; }</code>, confirming that 0 coalescing delay is a valid, simulation-tested operating mode.</li>
+  </ul>
+</div>
+
+<h2>4. Full 9-Cell Comparison: <code>A</code> vs <code>A0</code> vs <code>D</code> vs <code>D-NG</code> vs <code>D-M</code> (<code>netg-r6</code>)</h2>
+<h3>get100 — 8, 64, and 256 workers</h3>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>6,446</strong><span class='spread'>[5,937, 6,932]</span></td><td><strong>143.8</strong><span class='spread'>[142.8, 153.6]</span></td><td><strong>79.7</strong><span class='spread'>[78.2, 81.9]</span></td><td><strong>1,219</strong><span class='spread'>[1,155, 1,312]</span></td><td><strong>2,908</strong><span class='spread'>[2,069, 2,936]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>1.24× / 0.80× / 1.01× / 0.81× / 1.02×</td><td>-</td></tr>
+<tr><td>A (today)</td><td><strong>5,187</strong><span class='spread'>[5,176, 5,246]</span></td><td><strong>179.0</strong><span class='spread'>[175.3, 179.3]</span></td><td><strong>78.6</strong><span class='spread'>[78.5, 79.2]</span></td><td><strong>1,502</strong><span class='spread'>[1,487, 1,504]</span></td><td><strong>2,847</strong><span class='spread'>[2,800, 2,877]</span></td><td>0.80× / 1.25× / 0.99× / 1.23× / 0.98×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td></tr>
+<tr><td>A0 (no delay)</td><td><strong>5,943</strong><span class='spread'>[5,937, 6,143]</span></td><td><strong>158.7</strong><span class='spread'>[154.4, 159.3]</span></td><td><strong>79.0</strong><span class='spread'>[78.1, 79.7]</span></td><td><strong>1,319</strong><span class='spread'>[1,308, 1,334]</span></td><td><strong>2,178</strong><span class='spread'>[2,000, 2,461]</span></td><td>0.92× / 1.10× / 0.99× / 1.08× / 0.75×</td><td>1.15× / 0.89× / 1.00× / 0.88× / 0.77×</td><td>-</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>5,046</strong><span class='spread'>[4,978, 5,090]</span></td><td><strong>167.2</strong><span class='spread'>[166.8, 167.6]</span></td><td><strong>82.0</strong><span class='spread'>[81.8, 82.4]</span></td><td><strong>1,547</strong><span class='spread'>[1,545, 1,569]</span></td><td><strong>2,536</strong><span class='spread'>[2,534, 2,824]</span></td><td>0.78× / 1.16× / 1.03× / 1.27× / 0.87×</td><td>0.97× / 0.93× / 1.04× / 1.03× / 0.89×</td><td><strong>3.4</strong><span class='spread'>[3.4, 3.4]</span></td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>5,870</strong><span class='spread'>[5,831, 5,890]</span></td><td><strong>140.5</strong><span class='spread'>[138.6, 142.1]</span></td><td><strong>78.3</strong><span class='spread'>[77.2, 78.7]</span></td><td><strong>1,346</strong><span class='spread'>[1,336, 1,354]</span></td><td><strong>2,448</strong><span class='spread'>[2,413, 2,536]</span></td><td>0.91× / 0.98× / 0.98× / 1.10× / 0.84×</td><td>1.13× / 0.79× / 1.00× / 0.90× / 0.86×</td><td><strong>1.7</strong><span class='spread'>[1.6, 1.7]</span></td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>5,760</strong><span class='spread'>[5,700, 5,875]</span></td><td><strong>148.6</strong><span class='spread'>[145.5, 149.1]</span></td><td><strong>82.8</strong><span class='spread'>[81.5, 84.8]</span></td><td><strong>1,364</strong><span class='spread'>[1,333, 1,368]</span></td><td><strong>2,282</strong><span class='spread'>[2,176, 2,975]</span></td><td>0.89× / 1.03× / 1.04× / 1.12× / 0.78×</td><td>1.11× / 0.83× / 1.05× / 0.91× / 0.80×</td><td><strong>1.6</strong><span class='spread'>[1.6, 1.6]</span></td></tr>
+<tr><td>D-NG+yield</td><td><strong>5,858</strong><span class='spread'>[5,763, 5,918]</span></td><td><strong>146.8</strong><span class='spread'>[146.6, 147.6]</span></td><td><strong>78.2</strong><span class='spread'>[77.7, 80.2]</span></td><td><strong>1,343</strong><span class='spread'>[1,331, 1,364]</span></td><td><strong>2,278</strong><span class='spread'>[2,275, 2,736]</span></td><td>0.91× / 1.02× / 0.98× / 1.10× / 0.78×</td><td>1.13× / 0.82× / 0.99× / 0.89× / 0.80×</td><td><strong>2.3</strong><span class='spread'>[2.3, 2.3]</span></td></tr>
+<tr class='highlight'><td>D-NG-adap20</td><td><strong>5,753</strong><span class='spread'>[5,521, 5,781]</span></td><td><strong>151.0</strong><span class='spread'>[147.7, 155.8]</span></td><td><strong>81.9</strong><span class='spread'>[80.4, 83.3]</span></td><td><strong>1,364</strong><span class='spread'>[1,359, 1,432]</span></td><td><strong>2,153</strong><span class='spread'>[2,144, 2,153]</span></td><td>0.89× / 1.05× / 1.03× / 1.12× / 0.74×</td><td>1.11× / 0.84× / 1.04× / 0.91× / 0.76×</td><td><strong>1.9</strong><span class='spread'>[1.9, 1.9]</span></td></tr>
+<tr class='highlight'><td>D5 (5µs)</td><td><strong>5,184</strong><span class='spread'>[4,991, 5,277]</span></td><td><strong>165.6</strong><span class='spread'>[164.2, 169.5]</span></td><td><strong>80.8</strong><span class='spread'>[80.4, 82.0]</span></td><td><strong>1,503</strong><span class='spread'>[1,498, 1,562]</span></td><td><strong>2,414</strong><span class='spread'>[2,246, 3,205]</span></td><td>0.80× / 1.15× / 1.01× / 1.23× / 0.83×</td><td>1.00× / 0.93× / 1.03× / 1.00× / 0.85×</td><td><strong>3.0</strong><span class='spread'>[3.0, 3.0]</span></td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>31,589</strong><span class='spread'>[31,517, 32,474]</span></td><td><strong>71.8</strong><span class='spread'>[71.0, 72.3]</span></td><td><strong>20.4</strong><span class='spread'>[19.6, 21.4]</span></td><td><strong>1,889</strong><span class='spread'>[1,875, 1,913]</span></td><td><strong>3,564</strong><span class='spread'>[3,554, 3,624]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.65× / 1.30× / 0.98× / 1.50× / 1.42×</td><td>-</td></tr>
+<tr><td>A (today)</td><td><strong>48,535</strong><span class='spread'>[43,665, 54,095]</span></td><td><strong>55.1</strong><span class='spread'>[51.0, 59.5]</span></td><td><strong>20.8</strong><span class='spread'>[20.3, 21.5]</span></td><td><strong>1,262</strong><span class='spread'>[998, 1,451]</span></td><td><strong>2,512</strong><span class='spread'>[2,427, 2,539]</span></td><td>1.54× / 0.77× / 1.02× / 0.67× / 0.70×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td></tr>
+<tr><td>A0 (no delay)</td><td><strong>99,953</strong><span class='spread'>[99,192, 100,320]</span></td><td><strong>42.1</strong><span class='spread'>[42.0, 42.3]</span></td><td><strong>29.7</strong><span class='spread'>[29.5, 30.0]</span></td><td><strong>618</strong><span class='spread'>[616, 620]</span></td><td><strong>1,110</strong><span class='spread'>[1,099, 1,139]</span></td><td>3.16× / 0.59× / 1.45× / 0.33× / 0.31×</td><td>2.06× / 0.76× / 1.43× / 0.49× / 0.44×</td><td>-</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>30,998</strong><span class='spread'>[30,604, 31,920]</span></td><td><strong>69.3</strong><span class='spread'>[68.5, 72.1]</span></td><td><strong>18.4</strong><span class='spread'>[17.8, 18.7]</span></td><td><strong>2,030</strong><span class='spread'>[1,991, 2,075]</span></td><td><strong>3,406</strong><span class='spread'>[3,056, 3,559]</span></td><td>0.98× / 0.96× / 0.90× / 1.07× / 0.96×</td><td>0.64× / 1.26× / 0.88× / 1.61× / 1.36×</td><td><strong>15.1</strong><span class='spread'>[14.5, 15.2]</span></td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>51,985</strong><span class='spread'>[49,267, 55,815]</span></td><td><strong>48.3</strong><span class='spread'>[46.1, 50.7]</span></td><td><strong>19.7</strong><span class='spread'>[19.3, 19.9]</span></td><td><strong>1,218</strong><span class='spread'>[1,026, 1,347]</span></td><td><strong>2,297</strong><span class='spread'>[2,167, 2,332]</span></td><td>1.65× / 0.67× / 0.96× / 0.64× / 0.64×</td><td>1.07× / 0.88× / 0.95× / 0.96× / 0.91×</td><td><strong>4.1</strong><span class='spread'>[4.1, 4.1]</span></td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>68,235</strong><span class='spread'>[53,904, 69,444]</span></td><td><strong>39.9</strong><span class='spread'>[38.3, 47.4]</span></td><td><strong>20.9</strong><span class='spread'>[19.4, 21.4]</span></td><td><strong>830</strong><span class='spread'>[794, 1,118]</span></td><td><strong>2,110</strong><span class='spread'>[1,849, 2,296]</span></td><td>2.16× / 0.56× / 1.02× / 0.44× / 0.59×</td><td>1.41× / 0.72× / 1.00× / 0.66× / 0.84×</td><td><strong>4.2</strong><span class='spread'>[4.1, 4.2]</span></td></tr>
+<tr><td>D-NG+yield</td><td><strong>79,995</strong><span class='spread'>[77,191, 87,728]</span></td><td><strong>39.1</strong><span class='spread'>[36.5, 39.1]</span></td><td><strong>24.7</strong><span class='spread'>[23.9, 24.8]</span></td><td><strong>710</strong><span class='spread'>[693, 735]</span></td><td><strong>1,792</strong><span class='spread'>[1,379, 1,814]</span></td><td>2.53× / 0.54× / 1.21× / 0.38× / 0.50×</td><td>1.65× / 0.71× / 1.18× / 0.56× / 0.71×</td><td><strong>5.1</strong><span class='spread'>[5.1, 5.2]</span></td></tr>
+<tr class='highlight'><td>D-NG-adap20</td><td><strong>85,782</strong><span class='spread'>[85,354, 88,707]</span></td><td><strong>38.3</strong><span class='spread'>[37.2, 38.3]</span></td><td><strong>26.7</strong><span class='spread'>[25.7, 27.3]</span></td><td><strong>697</strong><span class='spread'>[687, 710]</span></td><td><strong>1,454</strong><span class='spread'>[1,341, 1,570]</span></td><td>2.72× / 0.53× / 1.31× / 0.37× / 0.41×</td><td>1.77× / 0.69× / 1.28× / 0.55× / 0.58×</td><td><strong>5.7</strong><span class='spread'>[5.6, 5.8]</span></td></tr>
+<tr class='highlight'><td>D5 (5µs)</td><td><strong>48,594</strong><span class='spread'>[46,794, 53,265]</span></td><td><strong>49.8</strong><span class='spread'>[48.1, 54.0]</span></td><td><strong>20.2</strong><span class='spread'>[19.8, 20.5]</span></td><td><strong>1,244</strong><span class='spread'>[1,070, 1,369]</span></td><td><strong>2,478</strong><span class='spread'>[2,051, 2,851]</span></td><td>1.54× / 0.69× / 0.99× / 0.66× / 0.70×</td><td>1.00× / 0.90× / 0.97× / 0.99× / 0.99×</td><td><strong>11.0</strong><span class='spread'>[10.6, 11.2]</span></td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>50,288</strong><span class='spread'>[49,589, 50,500]</span></td><td><strong>65.8</strong><span class='spread'>[65.2, 67.2]</span></td><td><strong>13.1</strong><span class='spread'>[13.0, 13.1]</span></td><td><strong>4,601</strong><span class='spread'>[4,573, 4,680]</span></td><td><strong>8,689</strong><span class='spread'>[8,674, 9,023]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.24× / 1.99× / 0.86× / 4.13× / 2.92×</td><td>-</td></tr>
+<tr><td>A (today)</td><td><strong>212,080</strong><span class='spread'>[209,176, 213,897]</span></td><td><strong>33.0</strong><span class='spread'>[32.8, 33.5]</span></td><td><strong>15.2</strong><span class='spread'>[14.7, 15.3]</span></td><td><strong>1,114</strong><span class='spread'>[1,105, 1,127]</span></td><td><strong>2,976</strong><span class='spread'>[2,953, 3,091]</span></td><td>4.22× / 0.50× / 1.16× / 0.24× / 0.34×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td></tr>
+<tr><td>A0 (no delay)</td><td><strong>225,719</strong><span class='spread'>[225,303, 225,884]</span></td><td><strong>32.2</strong><span class='spread'>[32.2, 32.2]</span></td><td><strong>17.8</strong><span class='spread'>[17.4, 18.1]</span></td><td><strong>1,043</strong><span class='spread'>[1,039, 1,050]</span></td><td><strong>2,814</strong><span class='spread'>[2,738, 2,918]</span></td><td>4.49× / 0.49× / 1.36× / 0.23× / 0.32×</td><td>1.06× / 0.97× / 1.17× / 0.94× / 0.95×</td><td>-</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>242,718</strong><span class='spread'>[233,331, 243,588]</span></td><td><strong>27.6</strong><span class='spread'>[27.1, 27.6]</span></td><td><strong>15.0</strong><span class='spread'>[14.7, 15.1]</span></td><td><strong>983</strong><span class='spread'>[982, 1,008]</span></td><td><strong>2,610</strong><span class='spread'>[2,484, 2,919]</span></td><td>4.83× / 0.42× / 1.14× / 0.21× / 0.30×</td><td>1.14× / 0.83× / 0.99× / 0.88× / 0.88×</td><td><strong>16.6</strong><span class='spread'>[16.6, 16.7]</span></td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>257,704</strong><span class='spread'>[257,108, 259,835]</span></td><td><strong>27.0</strong><span class='spread'>[27.0, 27.2]</span></td><td><strong>16.8</strong><span class='spread'>[16.6, 16.9]</span></td><td><strong>934</strong><span class='spread'>[930, 936]</span></td><td><strong>2,134</strong><span class='spread'>[2,037, 2,208]</span></td><td>5.12× / 0.41× / 1.28× / 0.20× / 0.25×</td><td>1.22× / 0.82× / 1.10× / 0.84× / 0.72×</td><td><strong>4.4</strong><span class='spread'>[4.4, 4.5]</span></td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>244,590</strong><span class='spread'>[243,539, 246,615]</span></td><td><strong>27.5</strong><span class='spread'>[27.5, 27.8]</span></td><td><strong>17.1</strong><span class='spread'>[17.0, 17.3]</span></td><td><strong>977</strong><span class='spread'>[969, 982]</span></td><td><strong>2,647</strong><span class='spread'>[2,582, 2,786]</span></td><td>4.86× / 0.42× / 1.31× / 0.21× / 0.30×</td><td>1.15× / 0.83× / 1.13× / 0.88× / 0.89×</td><td><strong>4.9</strong><span class='spread'>[4.9, 5.0]</span></td></tr>
+<tr><td>D-NG+yield</td><td><strong>246,695</strong><span class='spread'>[245,499, 246,715]</span></td><td><strong>29.2</strong><span class='spread'>[28.8, 29.3]</span></td><td><strong>16.6</strong><span class='spread'>[16.4, 16.7]</span></td><td><strong>970</strong><span class='spread'>[965, 974]</span></td><td><strong>2,306</strong><span class='spread'>[2,277, 2,384]</span></td><td>4.91× / 0.44× / 1.26× / 0.21× / 0.27×</td><td>1.16× / 0.88× / 1.09× / 0.87× / 0.78×</td><td><strong>5.9</strong><span class='spread'>[5.9, 6.1]</span></td></tr>
+<tr class='highlight'><td>D-NG-adap20</td><td><strong>244,685</strong><span class='spread'>[243,263, 246,228]</span></td><td><strong>29.3</strong><span class='spread'>[28.9, 29.3]</span></td><td><strong>16.6</strong><span class='spread'>[16.4, 16.9]</span></td><td><strong>964</strong><span class='spread'>[952, 965]</span></td><td><strong>2,684</strong><span class='spread'>[2,521, 2,851]</span></td><td>4.87× / 0.45× / 1.26× / 0.21× / 0.31×</td><td>1.15× / 0.89× / 1.09× / 0.87× / 0.90×</td><td><strong>7.4</strong><span class='spread'>[7.4, 7.4]</span></td></tr>
+<tr class='highlight'><td>D5 (5µs)</td><td><strong>246,447</strong><span class='spread'>[243,024, 246,479]</span></td><td><strong>27.5</strong><span class='spread'>[27.0, 27.6]</span></td><td><strong>14.9</strong><span class='spread'>[14.8, 15.0]</span></td><td><strong>970</strong><span class='spread'>[970, 975]</span></td><td><strong>2,433</strong><span class='spread'>[2,362, 2,776]</span></td><td>4.90× / 0.42× / 1.13× / 0.21× / 0.28×</td><td>1.16× / 0.83× / 0.98× / 0.87× / 0.82×</td><td><strong>15.0</strong><span class='spread'>[15.0, 15.0]</span></td></tr>
+</tbody></table></div>
+
+<h3>set100 — 8, 64, and 256 workers</h3>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>2,511</strong><span class='spread'>[2,444, 2,542]</span></td><td><strong>179.6</strong><span class='spread'>[179.3, 182.3]</span></td><td><strong>252.8</strong><span class='spread'>[252.4, 258.2]</span></td><td><strong>3,127</strong><span class='spread'>[3,105, 3,220]</span></td><td><strong>5,843</strong><span class='spread'>[5,741, 5,902]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.96× / 0.88× / 0.95× / 1.02× / 1.16×</td><td>-</td></tr>
+<tr><td>A (today)</td><td><strong>2,608</strong><span class='spread'>[2,577, 2,751]</span></td><td><strong>203.4</strong><span class='spread'>[202.1, 210.4]</span></td><td><strong>265.4</strong><span class='spread'>[234.8, 281.9]</span></td><td><strong>3,062</strong><span class='spread'>[2,950, 3,077]</span></td><td><strong>5,020</strong><span class='spread'>[4,991, 5,112]</span></td><td>1.04× / 1.13× / 1.05× / 0.98× / 0.86×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td></tr>
+<tr><td>A0 (no delay)</td><td><strong>2,827</strong><span class='spread'>[2,758, 2,927]</span></td><td><strong>193.0</strong><span class='spread'>[183.5, 198.0]</span></td><td><strong>278.3</strong><span class='spread'>[216.6, 287.2]</span></td><td><strong>2,806</strong><span class='spread'>[2,710, 2,855]</span></td><td><strong>4,816</strong><span class='spread'>[4,503, 4,861]</span></td><td>1.13× / 1.07× / 1.10× / 0.90× / 0.82×</td><td>1.08× / 0.95× / 1.05× / 0.92× / 0.96×</td><td>-</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>3,138</strong><span class='spread'>[2,819, 3,301]</span></td><td><strong>260.7</strong><span class='spread'>[227.4, 265.0]</span></td><td><strong>374.6</strong><span class='spread'>[310.0, 375.5]</span></td><td><strong>2,206</strong><span class='spread'>[2,203, 2,914]</span></td><td><strong>4,729</strong><span class='spread'>[3,850, 5,114]</span></td><td>1.25× / 1.45× / 1.48× / 0.71× / 0.81×</td><td>1.20× / 1.28× / 1.41× / 0.72× / 0.94×</td><td><strong>2.3</strong><span class='spread'>[2.3, 2.8]</span></td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>2,844</strong><span class='spread'>[2,722, 2,985]</span></td><td><strong>188.6</strong><span class='spread'>[185.3, 189.6]</span></td><td><strong>260.1</strong><span class='spread'>[253.6, 288.4]</span></td><td><strong>2,801</strong><span class='spread'>[2,653, 2,926]</span></td><td><strong>4,898</strong><span class='spread'>[4,390, 4,972]</span></td><td>1.13× / 1.05× / 1.03× / 0.90× / 0.84×</td><td>1.09× / 0.93× / 0.98× / 0.91× / 0.98×</td><td><strong>1.5</strong><span class='spread'>[1.5, 1.7]</span></td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>3,037</strong><span class='spread'>[2,860, 3,260]</span></td><td><strong>213.7</strong><span class='spread'>[198.9, 216.6]</span></td><td><strong>330.7</strong><span class='spread'>[254.6, 338.8]</span></td><td><strong>2,654</strong><span class='spread'>[2,284, 2,771]</span></td><td><strong>4,141</strong><span class='spread'>[3,995, 5,081]</span></td><td>1.21× / 1.19× / 1.31× / 0.85× / 0.71×</td><td>1.16× / 1.05× / 1.25× / 0.87× / 0.83×</td><td><strong>1.5</strong><span class='spread'>[1.5, 1.6]</span></td></tr>
+<tr><td>D-NG+yield</td><td><strong>2,665</strong><span class='spread'>[2,624, 2,938]</span></td><td><strong>195.5</strong><span class='spread'>[188.8, 196.7]</span></td><td><strong>263.1</strong><span class='spread'>[246.0, 294.9]</span></td><td><strong>2,971</strong><span class='spread'>[2,702, 3,004]</span></td><td><strong>5,265</strong><span class='spread'>[4,975, 5,720]</span></td><td>1.06× / 1.09× / 1.04× / 0.95× / 0.90×</td><td>1.02× / 0.96× / 0.99× / 0.97× / 1.05×</td><td><strong>2.1</strong><span class='spread'>[1.9, 2.1]</span></td></tr>
+<tr class='highlight'><td>D-NG-adap20</td><td><strong>3,186</strong><span class='spread'>[3,170, 3,280]</span></td><td><strong>232.3</strong><span class='spread'>[225.3, 236.4]</span></td><td><strong>355.1</strong><span class='spread'>[351.7, 356.2]</span></td><td><strong>2,344</strong><span class='spread'>[2,259, 2,381]</span></td><td><strong>3,992</strong><span class='spread'>[3,791, 4,017]</span></td><td>1.27× / 1.29× / 1.40× / 0.75× / 0.68×</td><td>1.22× / 1.14× / 1.34× / 0.77× / 0.80×</td><td><strong>1.5</strong><span class='spread'>[1.5, 1.5]</span></td></tr>
+<tr class='highlight'><td>D5 (5µs)</td><td><strong>3,222</strong><span class='spread'>[3,110, 3,259]</span></td><td><strong>255.9</strong><span class='spread'>[246.7, 256.4]</span></td><td><strong>351.3</strong><span class='spread'>[343.8, 383.1]</span></td><td><strong>2,323</strong><span class='spread'>[2,218, 2,350]</span></td><td><strong>4,280</strong><span class='spread'>[3,847, 4,419]</span></td><td>1.28× / 1.42× / 1.39× / 0.74× / 0.73×</td><td>1.24× / 1.26× / 1.32× / 0.76× / 0.85×</td><td><strong>2.2</strong><span class='spread'>[2.1, 2.3]</span></td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>19,153</strong><span class='spread'>[18,602, 19,767]</span></td><td><strong>72.0</strong><span class='spread'>[69.6, 72.4]</span></td><td><strong>71.2</strong><span class='spread'>[71.0, 72.0]</span></td><td><strong>3,183</strong><span class='spread'>[3,132, 3,249]</span></td><td><strong>6,022</strong><span class='spread'>[5,548, 7,153]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.77× / 0.68× / 0.82× / 1.28× / 1.22×</td><td>-</td></tr>
+<tr><td>A (today)</td><td><strong>24,832</strong><span class='spread'>[24,209, 24,979]</span></td><td><strong>105.2</strong><span class='spread'>[103.0, 106.4]</span></td><td><strong>87.1</strong><span class='spread'>[85.2, 87.7]</span></td><td><strong>2,496</strong><span class='spread'>[2,463, 2,597]</span></td><td><strong>4,921</strong><span class='spread'>[4,679, 5,025]</span></td><td>1.30× / 1.46× / 1.22× / 0.78× / 0.82×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td></tr>
+<tr><td>A0 (no delay)</td><td><strong>28,330</strong><span class='spread'>[28,321, 28,738]</span></td><td><strong>91.6</strong><span class='spread'>[89.3, 91.6]</span></td><td><strong>90.6</strong><span class='spread'>[89.9, 91.4]</span></td><td><strong>2,143</strong><span class='spread'>[2,130, 2,149]</span></td><td><strong>3,982</strong><span class='spread'>[3,889, 4,208]</span></td><td>1.48× / 1.27× / 1.27× / 0.67× / 0.66×</td><td>1.14× / 0.87× / 1.04× / 0.86× / 0.81×</td><td>-</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>23,434</strong><span class='spread'>[23,266, 26,182]</span></td><td><strong>108.6</strong><span class='spread'>[101.0, 109.5]</span></td><td><strong>86.8</strong><span class='spread'>[86.0, 87.8]</span></td><td><strong>2,698</strong><span class='spread'>[2,274, 2,702]</span></td><td><strong>4,355</strong><span class='spread'>[3,838, 5,376]</span></td><td>1.22× / 1.51× / 1.22× / 0.85× / 0.72×</td><td>0.94× / 1.03× / 1.00× / 1.08× / 0.89×</td><td><strong>7.4</strong><span class='spread'>[7.3, 7.5]</span></td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>27,927</strong><span class='spread'>[27,816, 28,237]</span></td><td><strong>93.6</strong><span class='spread'>[91.7, 94.8]</span></td><td><strong>90.8</strong><span class='spread'>[90.0, 91.7]</span></td><td><strong>2,157</strong><span class='spread'>[2,152, 2,171]</span></td><td><strong>3,852</strong><span class='spread'>[3,852, 4,376]</span></td><td>1.46× / 1.30× / 1.28× / 0.68× / 0.64×</td><td>1.12× / 0.89× / 1.04× / 0.86× / 0.78×</td><td><strong>2.8</strong><span class='spread'>[2.8, 2.9]</span></td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>28,286</strong><span class='spread'>[26,630, 28,503]</span></td><td><strong>93.6</strong><span class='spread'>[93.2, 93.9]</span></td><td><strong>93.0</strong><span class='spread'>[91.5, 94.6]</span></td><td><strong>2,153</strong><span class='spread'>[2,144, 2,194]</span></td><td><strong>3,555</strong><span class='spread'>[3,529, 5,292]</span></td><td>1.48× / 1.30× / 1.31× / 0.68× / 0.59×</td><td>1.14× / 0.89× / 1.07× / 0.86× / 0.72×</td><td><strong>2.8</strong><span class='spread'>[2.8, 2.8]</span></td></tr>
+<tr><td>D-NG+yield</td><td><strong>28,295</strong><span class='spread'>[28,238, 28,549]</span></td><td><strong>91.2</strong><span class='spread'>[89.5, 91.8]</span></td><td><strong>88.8</strong><span class='spread'>[88.4, 89.6]</span></td><td><strong>2,138</strong><span class='spread'>[2,136, 2,148]</span></td><td><strong>4,314</strong><span class='spread'>[3,706, 4,700]</span></td><td>1.48× / 1.27× / 1.25× / 0.67× / 0.72×</td><td>1.14× / 0.87× / 1.02× / 0.86× / 0.88×</td><td><strong>3.6</strong><span class='spread'>[3.6, 3.6]</span></td></tr>
+<tr class='highlight'><td>D-NG-adap20</td><td><strong>27,650</strong><span class='spread'>[27,618, 28,216]</span></td><td><strong>94.1</strong><span class='spread'>[91.9, 96.9]</span></td><td><strong>93.0</strong><span class='spread'>[90.7, 94.2]</span></td><td><strong>2,171</strong><span class='spread'>[2,139, 2,191]</span></td><td><strong>3,896</strong><span class='spread'>[3,525, 4,237]</span></td><td>1.44× / 1.31× / 1.31× / 0.68× / 0.65×</td><td>1.11× / 0.89× / 1.07× / 0.87× / 0.79×</td><td><strong>3.4</strong><span class='spread'>[3.4, 3.4]</span></td></tr>
+<tr class='highlight'><td>D5 (5µs)</td><td><strong>27,016</strong><span class='spread'>[24,757, 27,170]</span></td><td><strong>99.0</strong><span class='spread'>[98.3, 104.2]</span></td><td><strong>85.9</strong><span class='spread'>[85.3, 90.2]</span></td><td><strong>2,205</strong><span class='spread'>[2,175, 2,485]</span></td><td><strong>3,994</strong><span class='spread'>[3,682, 4,495]</span></td><td>1.41× / 1.37× / 1.21× / 0.69× / 0.66×</td><td>1.09× / 0.94× / 0.99× / 0.88× / 0.81×</td><td><strong>6.3</strong><span class='spread'>[6.2, 6.3]</span></td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>46,027</strong><span class='spread'>[44,111, 46,478]</span></td><td><strong>53.5</strong><span class='spread'>[53.0, 57.2]</span></td><td><strong>46.5</strong><span class='spread'>[45.3, 46.6]</span></td><td><strong>5,215</strong><span class='spread'>[5,139, 5,313]</span></td><td><strong>9,598</strong><span class='spread'>[9,316, 10,123]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.58× / 1.17× / 0.95× / 1.68× / 1.67×</td><td>-</td></tr>
+<tr><td>A (today)</td><td><strong>79,794</strong><span class='spread'>[73,465, 80,156]</span></td><td><strong>45.7</strong><span class='spread'>[45.5, 47.0]</span></td><td><strong>49.0</strong><span class='spread'>[48.6, 50.5]</span></td><td><strong>3,096</strong><span class='spread'>[3,084, 3,190]</span></td><td><strong>5,737</strong><span class='spread'>[5,699, 6,808]</span></td><td>1.73× / 0.85× / 1.05× / 0.59× / 0.60×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td></tr>
+<tr><td>A0 (no delay)</td><td><strong>80,629</strong><span class='spread'>[77,410, 81,208]</span></td><td><strong>45.7</strong><span class='spread'>[45.6, 46.9]</span></td><td><strong>50.2</strong><span class='spread'>[50.1, 50.4]</span></td><td><strong>3,062</strong><span class='spread'>[3,051, 3,079]</span></td><td><strong>6,112</strong><span class='spread'>[5,721, 6,603]</span></td><td>1.75× / 0.85× / 1.08× / 0.59× / 0.64×</td><td>1.01× / 1.00× / 1.02× / 0.99× / 1.07×</td><td>-</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>80,692</strong><span class='spread'>[79,803, 80,856]</span></td><td><strong>43.1</strong><span class='spread'>[42.6, 43.7]</span></td><td><strong>48.1</strong><span class='spread'>[47.9, 49.1]</span></td><td><strong>3,065</strong><span class='spread'>[3,057, 3,070]</span></td><td><strong>5,240</strong><span class='spread'>[5,045, 5,334]</span></td><td>1.75× / 0.80× / 1.03× / 0.59× / 0.55×</td><td>1.01× / 0.94× / 0.98× / 0.99× / 0.91×</td><td><strong>15.2</strong><span class='spread'>[15.0, 15.3]</span></td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>81,844</strong><span class='spread'>[80,539, 82,638]</span></td><td><strong>42.3</strong><span class='spread'>[41.8, 42.6]</span></td><td><strong>49.1</strong><span class='spread'>[49.0, 49.4]</span></td><td><strong>3,025</strong><span class='spread'>[3,018, 3,035]</span></td><td><strong>5,845</strong><span class='spread'>[5,126, 5,929]</span></td><td>1.78× / 0.79× / 1.06× / 0.58× / 0.61×</td><td>1.03× / 0.92× / 1.00× / 0.98× / 1.02×</td><td><strong>4.5</strong><span class='spread'>[4.5, 4.5]</span></td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>81,728</strong><span class='spread'>[81,036, 82,405]</span></td><td><strong>43.0</strong><span class='spread'>[42.3, 43.4]</span></td><td><strong>48.1</strong><span class='spread'>[48.1, 49.6]</span></td><td><strong>3,025</strong><span class='spread'>[3,013, 3,038]</span></td><td><strong>5,286</strong><span class='spread'>[5,112, 5,508]</span></td><td>1.78× / 0.80× / 1.03× / 0.58× / 0.55×</td><td>1.02× / 0.94× / 0.98× / 0.98× / 0.92×</td><td><strong>4.4</strong><span class='spread'>[4.3, 4.4]</span></td></tr>
+<tr><td>D-NG+yield</td><td><strong>81,337</strong><span class='spread'>[81,147, 81,416]</span></td><td><strong>44.8</strong><span class='spread'>[44.7, 45.2]</span></td><td><strong>49.4</strong><span class='spread'>[49.3, 49.6]</span></td><td><strong>3,047</strong><span class='spread'>[3,046, 3,055]</span></td><td><strong>5,952</strong><span class='spread'>[5,905, 5,974]</span></td><td>1.77× / 0.84× / 1.06× / 0.58× / 0.62×</td><td>1.02× / 0.98× / 1.01× / 0.98× / 1.04×</td><td><strong>6.1</strong><span class='spread'>[6.1, 6.1]</span></td></tr>
+<tr class='highlight'><td>D-NG-adap20</td><td><strong>81,238</strong><span class='spread'>[78,440, 81,578]</span></td><td><strong>45.5</strong><span class='spread'>[45.5, 45.9]</span></td><td><strong>49.3</strong><span class='spread'>[49.1, 49.5]</span></td><td><strong>3,045</strong><span class='spread'>[3,026, 3,049]</span></td><td><strong>5,442</strong><span class='spread'>[5,192, 6,720]</span></td><td>1.77× / 0.85× / 1.06× / 0.58× / 0.57×</td><td>1.02× / 1.00× / 1.01× / 0.98× / 0.95×</td><td><strong>7.0</strong><span class='spread'>[7.0, 7.1]</span></td></tr>
+<tr class='highlight'><td>D5 (5µs)</td><td><strong>80,734</strong><span class='spread'>[79,570, 81,177]</span></td><td><strong>43.0</strong><span class='spread'>[42.8, 43.7]</span></td><td><strong>48.7</strong><span class='spread'>[48.7, 49.2]</span></td><td><strong>3,045</strong><span class='spread'>[3,042, 3,057]</span></td><td><strong>5,758</strong><span class='spread'>[5,162, 6,062]</span></td><td>1.75× / 0.80× / 1.05× / 0.58× / 0.60×</td><td>1.01× / 0.94× / 0.99× / 0.98× / 1.00×</td><td><strong>13.7</strong><span class='spread'>[13.7, 13.8]</span></td></tr>
+</tbody></table></div>
+
+<h3>getset100 — 8, 64, and 256 workers</h3>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>1,771</strong><span class='spread'>[1,768, 1,798]</span></td><td><strong>271.9</strong><span class='spread'>[262.1, 274.7]</span></td><td><strong>329.4</strong><span class='spread'>[326.2, 331.1]</span></td><td><strong>4,409</strong><span class='spread'>[4,380, 4,441]</span></td><td><strong>8,172</strong><span class='spread'>[8,024, 8,933]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.92× / 0.80× / 0.87× / 1.07× / 1.11×</td><td>-</td></tr>
+<tr><td>A (today)</td><td><strong>1,935</strong><span class='spread'>[1,929, 1,957]</span></td><td><strong>339.8</strong><span class='spread'>[337.8, 347.4]</span></td><td><strong>377.2</strong><span class='spread'>[367.5, 410.7]</span></td><td><strong>4,129</strong><span class='spread'>[4,081, 4,196]</span></td><td><strong>7,350</strong><span class='spread'>[7,308, 7,685]</span></td><td>1.09× / 1.25× / 1.15× / 0.94× / 0.90×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td></tr>
+<tr><td>A0 (no delay)</td><td><strong>2,184</strong><span class='spread'>[2,178, 2,304]</span></td><td><strong>309.0</strong><span class='spread'>[308.1, 325.5]</span></td><td><strong>377.6</strong><span class='spread'>[344.7, 378.7]</span></td><td><strong>3,682</strong><span class='spread'>[3,425, 3,688]</span></td><td><strong>6,461</strong><span class='spread'>[5,906, 6,543]</span></td><td>1.23× / 1.14× / 1.15× / 0.84× / 0.79×</td><td>1.13× / 0.91× / 1.00× / 0.89× / 0.88×</td><td>-</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>2,034</strong><span class='spread'>[2,032, 2,080]</span></td><td><strong>329.3</strong><span class='spread'>[328.6, 352.3]</span></td><td><strong>387.0</strong><span class='spread'>[316.3, 408.6]</span></td><td><strong>3,923</strong><span class='spread'>[3,882, 4,042]</span></td><td><strong>6,754</strong><span class='spread'>[6,505, 6,766]</span></td><td>1.15× / 1.21× / 1.17× / 0.89× / 0.83×</td><td>1.05× / 0.97× / 1.03× / 0.95× / 0.92×</td><td><strong>3.1</strong><span class='spread'>[3.0, 3.2]</span></td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>2,190</strong><span class='spread'>[2,076, 2,246]</span></td><td><strong>291.1</strong><span class='spread'>[285.6, 307.4]</span></td><td><strong>362.5</strong><span class='spread'>[342.9, 436.4]</span></td><td><strong>3,675</strong><span class='spread'>[3,648, 3,837]</span></td><td><strong>6,318</strong><span class='spread'>[6,112, 6,829]</span></td><td>1.24× / 1.07× / 1.10× / 0.83× / 0.77×</td><td>1.13× / 0.86× / 0.96× / 0.89× / 0.86×</td><td><strong>1.6</strong><span class='spread'>[1.5, 1.6]</span></td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>2,177</strong><span class='spread'>[2,105, 2,251]</span></td><td><strong>304.0</strong><span class='spread'>[287.5, 320.8]</span></td><td><strong>393.3</strong><span class='spread'>[324.6, 426.0]</span></td><td><strong>3,655</strong><span class='spread'>[3,591, 3,834]</span></td><td><strong>5,665</strong><span class='spread'>[5,660, 6,323]</span></td><td>1.23× / 1.12× / 1.19× / 0.83× / 0.69×</td><td>1.13× / 0.89× / 1.04× / 0.89× / 0.77×</td><td><strong>1.5</strong><span class='spread'>[1.4, 1.5]</span></td></tr>
+<tr><td>D-NG+yield</td><td><strong>2,110</strong><span class='spread'>[2,040, 2,184]</span></td><td><strong>296.7</strong><span class='spread'>[295.7, 305.0]</span></td><td><strong>368.9</strong><span class='spread'>[359.4, 388.5]</span></td><td><strong>3,830</strong><span class='spread'>[3,672, 3,954]</span></td><td><strong>6,507</strong><span class='spread'>[6,440, 6,799]</span></td><td>1.19× / 1.09× / 1.12× / 0.87× / 0.80×</td><td>1.09× / 0.87× / 0.98× / 0.93× / 0.89×</td><td><strong>2.0</strong><span class='spread'>[1.9, 2.0]</span></td></tr>
+<tr class='highlight'><td>D-NG-adap20</td><td><strong>2,235</strong><span class='spread'>[2,145, 2,264]</span></td><td><strong>316.5</strong><span class='spread'>[311.5, 320.2]</span></td><td><strong>381.9</strong><span class='spread'>[348.8, 388.5]</span></td><td><strong>3,593</strong><span class='spread'>[3,527, 3,680]</span></td><td><strong>6,303</strong><span class='spread'>[5,545, 7,201]</span></td><td>1.26× / 1.16× / 1.16× / 0.81× / 0.77×</td><td>1.16× / 0.93× / 1.01× / 0.87× / 0.86×</td><td><strong>1.6</strong><span class='spread'>[1.6, 1.6]</span></td></tr>
+<tr class='highlight'><td>D5 (5µs)</td><td><strong>2,169</strong><span class='spread'>[2,141, 2,282]</span></td><td><strong>354.3</strong><span class='spread'>[345.6, 359.1]</span></td><td><strong>407.0</strong><span class='spread'>[396.2, 427.1]</span></td><td><strong>3,597</strong><span class='spread'>[3,393, 3,734]</span></td><td><strong>6,300</strong><span class='spread'>[6,290, 6,428]</span></td><td>1.22× / 1.30× / 1.24× / 0.82× / 0.77×</td><td>1.12× / 1.04× / 1.08× / 0.87× / 0.86×</td><td><strong>2.6</strong><span class='spread'>[2.5, 2.6]</span></td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>16,016</strong><span class='spread'>[15,867, 16,045]</span></td><td><strong>95.8</strong><span class='spread'>[95.8, 97.9]</span></td><td><strong>107.9</strong><span class='spread'>[107.3, 110.7]</span></td><td><strong>3,778</strong><span class='spread'>[3,770, 3,780]</span></td><td><strong>7,958</strong><span class='spread'>[7,934, 8,443]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.89× / 0.64× / 0.95× / 1.11× / 1.31×</td><td>-</td></tr>
+<tr><td>A (today)</td><td><strong>18,000</strong><span class='spread'>[17,828, 18,105]</span></td><td><strong>149.9</strong><span class='spread'>[149.0, 151.2]</span></td><td><strong>113.7</strong><span class='spread'>[113.2, 115.8]</span></td><td><strong>3,401</strong><span class='spread'>[3,387, 3,427]</span></td><td><strong>6,067</strong><span class='spread'>[5,953, 6,196]</span></td><td>1.12× / 1.56× / 1.05× / 0.90× / 0.76×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td></tr>
+<tr><td>A0 (no delay)</td><td><strong>20,259</strong><span class='spread'>[20,074, 20,349]</span></td><td><strong>133.1</strong><span class='spread'>[132.7, 136.1]</span></td><td><strong>128.8</strong><span class='spread'>[123.6, 129.2]</span></td><td><strong>3,057</strong><span class='spread'>[3,050, 3,077]</span></td><td><strong>5,282</strong><span class='spread'>[5,123, 5,617]</span></td><td>1.26× / 1.39× / 1.19× / 0.81× / 0.66×</td><td>1.13× / 0.89× / 1.13× / 0.90× / 0.87×</td><td>-</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>17,782</strong><span class='spread'>[16,967, 17,842]</span></td><td><strong>147.1</strong><span class='spread'>[147.0, 150.2]</span></td><td><strong>114.8</strong><span class='spread'>[105.7, 114.9]</span></td><td><strong>3,454</strong><span class='spread'>[3,409, 3,647]</span></td><td><strong>5,690</strong><span class='spread'>[5,664, 6,702]</span></td><td>1.11× / 1.53× / 1.06× / 0.91× / 0.72×</td><td>0.99× / 0.98× / 1.01× / 1.02× / 0.94×</td><td><strong>8.3</strong><span class='spread'>[8.3, 8.8]</span></td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>18,461</strong><span class='spread'>[18,255, 18,561]</span></td><td><strong>137.3</strong><span class='spread'>[136.7, 138.9]</span></td><td><strong>116.1</strong><span class='spread'>[113.7, 116.6]</span></td><td><strong>3,339</strong><span class='spread'>[3,315, 3,356]</span></td><td><strong>5,611</strong><span class='spread'>[5,576, 6,043]</span></td><td>1.15× / 1.43× / 1.08× / 0.88× / 0.71×</td><td>1.03× / 0.92× / 1.02× / 0.98× / 0.92×</td><td><strong>3.2</strong><span class='spread'>[3.2, 3.3]</span></td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>19,325</strong><span class='spread'>[19,180, 19,554]</span></td><td><strong>134.2</strong><span class='spread'>[133.1, 134.9]</span></td><td><strong>120.4</strong><span class='spread'>[119.2, 123.7]</span></td><td><strong>3,174</strong><span class='spread'>[3,145, 3,183]</span></td><td><strong>5,323</strong><span class='spread'>[5,259, 5,970]</span></td><td>1.21× / 1.40× / 1.12× / 0.84× / 0.67×</td><td>1.07× / 0.90× / 1.06× / 0.93× / 0.88×</td><td><strong>3.0</strong><span class='spread'>[3.0, 3.1]</span></td></tr>
+<tr><td>D-NG+yield</td><td><strong>19,067</strong><span class='spread'>[18,978, 19,177]</span></td><td><strong>135.8</strong><span class='spread'>[135.5, 137.3]</span></td><td><strong>120.0</strong><span class='spread'>[119.1, 120.4]</span></td><td><strong>3,230</strong><span class='spread'>[3,193, 3,240]</span></td><td><strong>5,588</strong><span class='spread'>[5,551, 6,054]</span></td><td>1.19× / 1.42× / 1.11× / 0.86× / 0.70×</td><td>1.06× / 0.91× / 1.06× / 0.95× / 0.92×</td><td><strong>4.1</strong><span class='spread'>[4.1, 4.1]</span></td></tr>
+<tr class='highlight'><td>D-NG-adap20</td><td><strong>19,103</strong><span class='spread'>[19,066, 19,224]</span></td><td><strong>137.0</strong><span class='spread'>[136.8, 141.8]</span></td><td><strong>121.8</strong><span class='spread'>[120.9, 126.2]</span></td><td><strong>3,201</strong><span class='spread'>[3,195, 3,231]</span></td><td><strong>5,458</strong><span class='spread'>[5,411, 5,515]</span></td><td>1.19× / 1.43× / 1.13× / 0.85× / 0.69×</td><td>1.06× / 0.91× / 1.07× / 0.94× / 0.90×</td><td><strong>3.7</strong><span class='spread'>[3.6, 3.7]</span></td></tr>
+<tr class='highlight'><td>D5 (5µs)</td><td><strong>18,815</strong><span class='spread'>[18,343, 18,960]</span></td><td><strong>143.2</strong><span class='spread'>[141.7, 145.3]</span></td><td><strong>121.4</strong><span class='spread'>[119.5, 122.1]</span></td><td><strong>3,246</strong><span class='spread'>[3,216, 3,290]</span></td><td><strong>5,570</strong><span class='spread'>[5,411, 6,070]</span></td><td>1.17× / 1.49× / 1.12× / 0.86× / 0.70×</td><td>1.05× / 0.96× / 1.07× / 0.95× / 0.92×</td><td><strong>6.7</strong><span class='spread'>[6.6, 6.7]</span></td></tr>
+</tbody></table></div>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th> vs L (ops / CPU / srv / p50 / p99)</th>
+<th>vs A (ops / CPU / srv / p50 / p99)</th><th>Frames/write</th>
+
+</tr></thead><tbody>
+<tr><td>L (libfdb_c)</td><td><strong>35,756</strong><span class='spread'>[35,606, 35,861]</span></td><td><strong>78.8</strong><span class='spread'>[77.8, 79.4]</span></td><td><strong>77.4</strong><span class='spread'>[77.1, 77.5]</span></td><td><strong>6,577</strong><span class='spread'>[6,544, 6,584]</span></td><td><strong>13,378</strong><span class='spread'>[13,331, 13,402]</span></td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>0.58× / 1.22× / 1.14× / 1.63× / 1.78×</td><td>-</td></tr>
+<tr><td>A (today)</td><td><strong>61,156</strong><span class='spread'>[60,836, 61,422]</span></td><td><strong>64.5</strong><span class='spread'>[63.3, 65.7]</span></td><td><strong>68.1</strong><span class='spread'>[66.8, 68.5]</span></td><td><strong>4,035</strong><span class='spread'>[4,019, 4,036]</span></td><td><strong>7,532</strong><span class='spread'>[7,350, 7,680]</span></td><td>1.71× / 0.82× / 0.88× / 0.61× / 0.56×</td><td>1.00× / 1.00× / 1.00× / 1.00× / 1.00×</td><td>-</td></tr>
+<tr><td>A0 (no delay)</td><td><strong>63,498</strong><span class='spread'>[63,383, 63,529]</span></td><td><strong>65.4</strong><span class='spread'>[65.4, 66.5]</span></td><td><strong>72.4</strong><span class='spread'>[72.2, 73.6]</span></td><td><strong>3,898</strong><span class='spread'>[3,897, 3,899]</span></td><td><strong>7,049</strong><span class='spread'>[7,008, 7,540]</span></td><td>1.78× / 0.83× / 0.94× / 0.59× / 0.53×</td><td>1.04× / 1.01× / 1.06× / 0.97× / 0.94×</td><td>-</td></tr>
+<tr><td>D (10–20µs)</td><td><strong>61,638</strong><span class='spread'>[60,271, 61,904]</span></td><td><strong>58.8</strong><span class='spread'>[58.6, 59.0]</span></td><td><strong>65.0</strong><span class='spread'>[64.9, 65.3]</span></td><td><strong>3,998</strong><span class='spread'>[3,995, 4,052]</span></td><td><strong>6,637</strong><span class='spread'>[6,527, 6,928]</span></td><td>1.72× / 0.75× / 0.84× / 0.61× / 0.50×</td><td>1.01× / 0.91× / 0.95× / 0.99× / 0.88×</td><td><strong>15.3</strong><span class='spread'>[15.3, 15.4]</span></td></tr>
+<tr class='highlight'><td>D-NG (0µs)</td><td><strong>63,030</strong><span class='spread'>[62,707, 63,447]</span></td><td><strong>58.0</strong><span class='spread'>[57.3, 58.9]</span></td><td><strong>69.0</strong><span class='spread'>[68.5, 70.0]</span></td><td><strong>3,929</strong><span class='spread'>[3,910, 3,940]</span></td><td><strong>6,855</strong><span class='spread'>[6,718, 7,052]</span></td><td>1.76× / 0.74× / 0.89× / 0.60× / 0.51×</td><td>1.03× / 0.90× / 1.01× / 0.97× / 0.91×</td><td><strong>3.7</strong><span class='spread'>[3.7, 3.8]</span></td></tr>
+<tr class='highlight-warn'><td>D-M (sender)</td><td><strong>62,934</strong><span class='spread'>[62,514, 62,963]</span></td><td><strong>59.7</strong><span class='spread'>[59.5, 60.1]</span></td><td><strong>69.3</strong><span class='spread'>[67.4, 69.5]</span></td><td><strong>3,921</strong><span class='spread'>[3,913, 3,926]</span></td><td><strong>6,708</strong><span class='spread'>[6,504, 7,423]</span></td><td>1.76× / 0.76× / 0.89× / 0.60× / 0.50×</td><td>1.03× / 0.93× / 1.02× / 0.97× / 0.89×</td><td><strong>3.5</strong><span class='spread'>[3.5, 3.5]</span></td></tr>
+<tr><td>D-NG+yield</td><td><strong>63,294</strong><span class='spread'>[62,947, 63,636]</span></td><td><strong>59.4</strong><span class='spread'>[58.6, 60.3]</span></td><td><strong>69.8</strong><span class='spread'>[69.6, 70.7]</span></td><td><strong>3,913</strong><span class='spread'>[3,891, 3,926]</span></td><td><strong>7,078</strong><span class='spread'>[6,717, 7,199]</span></td><td>1.77× / 0.75× / 0.90× / 0.60× / 0.53×</td><td>1.03× / 0.92× / 1.02× / 0.97× / 0.94×</td><td><strong>4.9</strong><span class='spread'>[4.9, 5.0]</span></td></tr>
+<tr class='highlight'><td>D-NG-adap20</td><td><strong>63,686</strong><span class='spread'>[63,028, 63,775]</span></td><td><strong>61.9</strong><span class='spread'>[61.6, 62.7]</span></td><td><strong>68.2</strong><span class='spread'>[68.1, 69.1]</span></td><td><strong>3,878</strong><span class='spread'>[3,872, 3,906]</span></td><td><strong>6,608</strong><span class='spread'>[6,308, 6,686]</span></td><td>1.78× / 0.79× / 0.88× / 0.59× / 0.49×</td><td>1.04× / 0.96× / 1.00× / 0.96× / 0.88×</td><td><strong>5.9</strong><span class='spread'>[5.9, 6.1]</span></td></tr>
+<tr class='highlight'><td>D5 (5µs)</td><td><strong>61,644</strong><span class='spread'>[61,396, 62,328]</span></td><td><strong>59.1</strong><span class='spread'>[58.9, 59.3]</span></td><td><strong>65.2</strong><span class='spread'>[64.7, 66.7]</span></td><td><strong>3,993</strong><span class='spread'>[3,946, 4,012]</span></td><td><strong>6,631</strong><span class='spread'>[6,367, 6,898]</span></td><td>1.72× / 0.75× / 0.84× / 0.61× / 0.50×</td><td>1.01× / 0.92× / 0.96× / 0.99× / 0.88×</td><td><strong>13.2</strong><span class='spread'>[13.2, 13.3]</span></td></tr>
+</tbody></table></div>
+
+<footer>
+  <div>docs/labs/single-network-goroutine/report/delay-vs-ack.html</div>
+  <div>All benchmark tables report 3-round medians and [min, max] ranges unless noted.</div>
+</footer>
+</main>
+</body>
+</html>

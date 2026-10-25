@@ -1,0 +1,9 @@
+{
+  "L":       {"binary": "/root/netg/bin/clientbench-cgo", "env": []},
+  "A":       {"env": []},
+  "A0":      {"env": [], "args": ["-coalesce-delay=0,0"]},
+  "DNG":     {"env": ["FDBGO_NET_DESIGN=ng", "FDBGO_NETG_STATS=1"]},
+  "DNGy":    {"env": ["FDBGO_NET_DESIGN=ngy", "FDBGO_NETG_STATS=1"]},
+  "DNGchan": {"env": ["FDBGO_NET_DESIGN=ngc", "FDBGO_NETG_STATS=1"]},
+  "DNGring": {"env": ["FDBGO_NET_DESIGN=ngr", "FDBGO_NETG_STATS=1"]}
+}

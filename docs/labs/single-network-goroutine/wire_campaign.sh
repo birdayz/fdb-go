@@ -10,6 +10,7 @@ LOGS=${LOGS:-/var/tmp/netg-fdb}
 OUT=${OUT:-$HERE/raw2/wire}
 ops=
 ROUNDS=${ROUNDS:-2}
+PORTS=${PORTS:-4751,4752,4753}
 export WIRETRACE=${WIRETRACE:-/var/tmp/netg-bench/bin/wiretrace} WIRECAPTURE_CPUS=${WIRECAPTURE_CPUS:-20-23}
 mkdir -p "$OUT"
 declare -A ENV=([A]="" [B]="FDBGO_NETWORK_GOROUTINE=1" [W]="FDBGO_NETWORK_GOROUTINE=writer" [S]="FDBGO_COALESCE_FROM_SENDER=1")
@@ -33,7 +34,7 @@ client() { # arm iterations outdir
 quiet() { while (( $(cut -d. -f1 /proc/loadavg) > ${LOAD_MAX:-16} )); do sleep 10; done; }
 for ((r=0; r<ROUNDS; r++)); do
   order=${orders[$((r % ${#orders[@]}))]}
-  if [[ $order == *,* ]]; then IFS=, read -ra arms_in_order <<<"$order"; else mapfile -t arms_in_order < <(grep -o . <<<"$order"); fi
+  if [[ -n ${ARMS_FILE:-} || $order == *,* ]]; then IFS=, read -ra arms_in_order <<<"$order"; else mapfile -t arms_in_order < <(grep -o . <<<"$order"); fi
   for arm in "${arms_in_order[@]}"; do
     tag=r$r-$arm
     quiet; load=$(cut -d' ' -f1 /proc/loadavg)
@@ -48,12 +49,12 @@ for ((r=0; r<ROUNDS; r++)); do
     fi
     # Capture: a short run, analyzed for packets/frames per role.
     quiet
-    "$REPO/tools/clientbench/scripts/wirecapture.sh" "$OUT/$tag-cap" 4751,4752,4753 -- \
+    "$REPO/tools/clientbench/scripts/wirecapture.sh" "$OUT/$tag-cap" "$PORTS" -- \
       env -i PATH=/usr/bin:/bin HOME="$HOME" GOMAXPROCS=8 GOGC=100 GOMEMLIMIT=off ${ENV[$arm]} \
       taskset -c "${CLIENT_CPUS:-1-8}" "$(armbin "$arm")" -cluster-file "$CF" -workload "${WL:-get100}" -workers "${WORKERS:-64}" \
       -iterations "${CAP_ITERS:-200000}" -warmup "${CAP_WARMUP:-20000}" -allow-writes -output "$OUT/$tag-cap/run" ${AARGS[$arm]:-} > "$OUT/$tag-wiretrace.json"
     capops=$(python3 -c "import json;s=json.load(open('$OUT/$tag-cap/run/summary.json'));print(s['completed']+s['warmup_completed'])")
-    python3 "$HERE/wirestats.py" "$OUT/$tag-cap/capture.pcap" 4751,4752,4753 "$capops" > "$OUT/$tag-wirestats.json"
+    python3 "$HERE/wirestats.py" "$OUT/$tag-cap/capture.pcap" "$PORTS" "$capops" > "$OUT/$tag-wirestats.json"
     rm -f "$OUT/$tag-cap/capture.pcap" "$OUT/$tag-cap/events.csv" "$OUT/$tag-cap/run/samples.csv" "$OUT/$tag-cap/run/warmup.csv"
     echo "$tag load1=$load ops=${ops:-} capops=$capops $(date -Is)"
   done

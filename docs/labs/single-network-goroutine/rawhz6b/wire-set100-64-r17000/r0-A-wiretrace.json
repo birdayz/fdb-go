@@ -1,0 +1,117 @@
+{
+  "client_flows": 3,
+  "kinds": {
+    "commit": {
+      "requests": 60001,
+      "replied": 60001,
+      "errors": 0,
+      "transactions": 60001,
+      "client_segments": 17252,
+      "malformed": 0,
+      "server_batches": 3422,
+      "batch_sizes": {
+        "1": 3,
+        "10": 88,
+        "11": 116,
+        "12": 167,
+        "13": 196,
+        "14": 233,
+        "15": 260,
+        "16": 260,
+        "17": 278,
+        "18": 259,
+        "19": 271,
+        "2": 5,
+        "20": 214,
+        "21": 185,
+        "22": 156,
+        "23": 124,
+        "24": 102,
+        "25": 83,
+        "26": 65,
+        "27": 50,
+        "28": 34,
+        "29": 22,
+        "3": 5,
+        "30": 15,
+        "31": 11,
+        "32": 7,
+        "33": 3,
+        "34": 4,
+        "35": 4,
+        "36": 4,
+        "37": 8,
+        "38": 2,
+        "39": 4,
+        "4": 6,
+        "41": 4,
+        "42": 3,
+        "43": 2,
+        "44": 1,
+        "5": 16,
+        "6": 22,
+        "7": 22,
+        "8": 40,
+        "9": 68
+      },
+      "arrival_spread_ns": [
+        775989,
+        946070,
+        1098040
+      ],
+      "latency_ns": [
+        1600870,
+        2074768,
+        5504457
+      ]
+    },
+    "grv": {
+      "requests": 13579,
+      "replied": 13579,
+      "errors": 0,
+      "transactions": 60003,
+      "client_segments": 13559,
+      "malformed": 0,
+      "server_batches": 0,
+      "batch_sizes": {},
+      "arrival_spread_ns": [
+        0,
+        0,
+        0
+      ],
+      "latency_ns": [
+        139240,
+        246861,
+        868100
+      ]
+    },
+    "range": {
+      "requests": 1,
+      "replied": 1,
+      "errors": 0,
+      "transactions": 0,
+      "client_segments": 1,
+      "malformed": 0,
+      "server_batches": 0,
+      "batch_sizes": {},
+      "arrival_spread_ns": [
+        0,
+        0,
+        0
+      ],
+      "latency_ns": [
+        608909,
+        608909,
+        608909
+      ],
+      "params": {
+        "limit=101 bytes=80000 begin=false/1 end=false/1": 1
+      },
+      "reply_bytes": 4104
+    }
+  },
+  "undecodable": 0,
+  "stream_gaps": 0,
+  "partial_streams": 0,
+  "complete": true
+}

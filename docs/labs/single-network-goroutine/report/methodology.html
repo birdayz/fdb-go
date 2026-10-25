@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Methodology &amp; Verification — fdbgo Transport &amp; Coalescing Lab</title>
+<style>
+:root {
+  --bg: #f8fafc;
+  --panel: #ffffff;
+  --text: #0f172a;
+  --muted: #475569;
+  --border: #e2e8f0;
+  --accent: #1d4ed8;
+  --good: #047857;
+  --good-bg: #ecfdf5;
+  --warn: #b45309;
+  --warn-bg: #fffbeb;
+  --bad: #be123c;
+  --bad-bg: #fff1f2;
+  --code-bg: #f1f5f9;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--bg);
+}
+header {
+  background: #0f172a;
+  color: #f8fafc;
+  padding: 18px 28px;
+  border-bottom: 1px solid #1e293b;
+}
+header .title-row {
+  max-width: 1440px;
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+header h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+header .subtitle {
+  color: #94a3b8;
+  font-size: 13px;
+}
+nav {
+  background: #1e293b;
+  padding: 0 28px;
+  border-bottom: 1px solid #334155;
+}
+nav .nav-inner {
+  max-width: 1440px;
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+nav a {
+  color: #cbd5e1;
+  text-decoration: none;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border-bottom: 2px solid transparent;
+}
+nav a:hover {
+  color: #ffffff;
+  background: rgba(255,255,255,0.05);
+}
+nav a.active {
+  color: #ffffff;
+  border-bottom-color: #38bdf8;
+  background: rgba(56,189,248,0.1);
+}
+main {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 24px 28px 64px;
+}
+h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 28px 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  color: #0f172a;
+}
+h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 20px 0 8px;
+  color: #1e293b;
+}
+p, li {
+  color: #1e293b;
+}
+ul, ol {
+  margin: 8px 0 14px;
+  padding-left: 22px;
+}
+li {
+  margin-bottom: 4px;
+}
+code, pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12.5px;
+}
+code {
+  background: var(--code-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+pre {
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 14px 16px;
+  border-radius: 6px;
+  overflow-x: auto;
+  line-height: 1.45;
+}
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(560px, 1fr));
+  gap: 18px;
+  margin: 14px 0;
+}
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 16px;
+  margin: 14px 0;
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 18px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+.card h3 {
+  margin-top: 0;
+}
+.callout {
+  border-left: 4px solid var(--accent);
+  background: #eff6ff;
+  padding: 12px 16px;
+  border-radius: 0 6px 6px 0;
+  margin: 14px 0;
+}
+.callout.good {
+  border-left-color: var(--good);
+  background: var(--good-bg);
+}
+.callout.warn {
+  border-left-color: var(--warn);
+  background: var(--warn-bg);
+}
+.callout.bad {
+  border-left-color: var(--bad);
+  background: var(--bad-bg);
+}
+.table-wrap {
+  overflow-x: auto;
+  margin: 12px 0 20px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+th, td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+  white-space: nowrap;
+}
+th:first-child, td:first-child {
+  text-align: left;
+  font-weight: 500;
+}
+td.text-left, th.text-left {
+  text-align: left;
+  white-space: normal;
+}
+thead th {
+  background: #f1f5f9;
+  color: #334155;
+  font-weight: 600;
+  border-bottom: 2px solid #cbd5e1;
+}
+tbody tr:hover {
+  background: #f8fafc;
+}
+tbody tr.highlight {
+  background: #f0fdf4;
+}
+tbody tr.highlight-warn {
+  background: #fff1f2;
+}
+.spread {
+  color: #64748b;
+  font-size: 11px;
+  display: block;
+}
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge.pass { background: var(--good-bg); color: var(--good); }
+.badge.fail { background: var(--bad-bg); color: var(--bad); }
+.badge.warn { background: var(--warn-bg); color: var(--warn); }
+.badge.info { background: #e0f2fe; color: #0369a1; }
+.svg-wrap {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  margin: 12px 0;
+  overflow-x: auto;
+}
+footer {
+  margin-top: 48px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  display: flex;
+  justify-content: space-between;
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="title-row">
+    <h1>FoundationDB Pure-Go Transport Lab: Writer Queues, Coalescing Linger &amp; libfdb_c Parity</h1>
+    <div class="subtitle">FDB 7.3.77 &middot; PR #991 &middot; Dedicated Hetzner ccx43 (AMD EPYC-Milan, 16 vCPUs)</div>
+  </div>
+</header>
+<nav>
+  <div class="nav-inner">
+    <a href='index.html'>1. Executive Summary</a><a href='linger.html'>2. Linger Sweep &amp; Per-Role Cost</a><a href='queues.html'>3. Writer Queues, Ring &amp; D-M</a><a href='delay-vs-ack.html'>4. Coalesce Delay vs Write-Ack</a><a href='libfdbc.html'>5. libfdb_c (L vs L4) vs Go</a><a href='methodology.html' class='active'>6. Methodology &amp; Verification</a>
+  </div>
+</nav>
+<main>
+
+<h2>1. Hardware, Kernel &amp; CPU Core Pinning Topology</h2>
+<div class="grid-2">
+  <div class="card">
+    <h3>Hetzner Dedicated vCPU Instance Specification</h3>
+    <ul>
+      <li><strong>Instance type:</strong> Hetzner Cloud <code>ccx43</code> (Dedicated vCPU, Ashburn <code>us-east</code> / Nuremberg).</li>
+      <li><strong>Processor:</strong> AMD EPYC-Milan (8 physical cores / 16 SMT hardware threads across 1 socket, shared L3).</li>
+      <li><strong>OS &amp; Kernel:</strong> Ubuntu 24.04 LTS, Linux <code>6.8.0-138-generic</code>, performance governor.</li>
+      <li><strong>FoundationDB binary:</strong> Official <code>foundationdb-server_7.3.77-1_amd64.deb</code> and <code>foundationdb-clients_7.3.77-1_amd64.deb</code>:
+        <ul>
+          <li><code>/usr/sbin/fdbserver</code> SHA-256: <code>ebe1bfad3fd513bc81f05f0d6fb14c236e5fa586aa0de429efdb4d6c47ca1ca1</code></li>
+          <li><code>/usr/lib/libfdb_c.so</code> SHA-256: <code>2b2fd4a8db996f6b4011ee35c983952f59e0de8b3ca5dd432c8dc1fa6ab2b513</code></li>
+        </ul>
+      </li>
+      <li><strong>Client Benchmark Binaries (Round 6):</strong>
+        <ul>
+          <li><code>clientbench-go</code> (<code>CGO_ENABLED=0</code>, Go 1.24): <code>845b7ebf42f9ec90a5b92dbe7d3e0955d86346cc97c6569cbd655d9c77adb089</code></li>
+          <li><code>clientbench-cgo</code> (<code>-tags libfdbc</code>): <code>a2cb6e76fce4b7516d5b901e69f8767067122f9f2eca8803c8c7c145cf0f4914</code></li>
+        </ul>
+      </li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Strict Core Isolation Layout (<code>lscpu -e</code> Verified)</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Physical Core</th><th>Logical CPUs</th><th>3-Process Cluster (<code>netg-r6</code>)</th><th>5-Process Split Cluster (<code>netg-r6b</code>)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Core 0</td><td><code>0, 1</code></td>
+            <td class="text-left">OS housekeeping, Python driver, <code>perf</code>, <code>tcpdump</code> container</td>
+            <td class="text-left">OS housekeeping, Python driver, <code>perf</code>, <code>tcpdump</code> container</td>
+          </tr>
+          <tr>
+            <td>Core 1</td><td><code>2, 3</code></td>
+            <td class="text-left"><code>fdbserver :4751</code> (<code>--class stateless</code>) on CPUs <code>2,3</code></td>
+            <td class="text-left"><code>:4751 stateless</code> (CPU <code>2</code>) + <code>:4754 grv_proxy</code> (CPU <code>3</code>)</td>
+          </tr>
+          <tr>
+            <td>Core 2</td><td><code>4, 5</code></td>
+            <td class="text-left"><code>fdbserver :4752</code> (<code>--class transaction</code>) on CPUs <code>4,5</code></td>
+            <td class="text-left"><code>:4755 commit_proxy</code> (CPU <code>4</code>) + <code>:4752 transaction</code> (CPU <code>5</code>)</td>
+          </tr>
+          <tr>
+            <td>Core 3</td><td><code>6, 7</code></td>
+            <td class="text-left"><code>fdbserver :4753</code> (<code>--class storage</code>) on CPUs <code>6,7</code></td>
+            <td class="text-left"><code>:4753 storage</code> on CPUs <code>6,7</code></td>
+          </tr>
+          <tr>
+            <td>Cores 4–7</td><td><code>8–15</code></td>
+            <td class="text-left"><code>clientbench</code> (<code>taskset -c 8-15</code>, <code>GOMAXPROCS=8</code>)</td>
+            <td class="text-left"><code>clientbench</code> (<code>taskset -c 8-15</code>, <code>GOMAXPROCS=8</code>)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<h2>2. Differential Server-Cycle Measurement &amp; Anti-Bias Protocol</h2>
+<div class="grid-2">
+  <div class="card">
+    <h3>Short-Minus-Long Differential (<code>run_cell.py</code>)</h3>
+    <ul>
+      <li>Every arm measurement in every round executes <strong>two</strong> full <code>clientbench</code> runs under <code>perf stat -p &lt;fdbserver_pids&gt; -e task-clock,cycles,instructions</code>: a <strong>short</strong> run (<em>N<sub>short</sub></em> iterations + 5% warmup) and a <strong>long</strong> run (<em>N<sub>long</sub> = 3 &times; N<sub>short</sub></em> iterations + 5% warmup).</li>
+      <li>Server cycles per transaction is computed as <code>(cycles<sub>long</sub> - cycles<sub>short</sub>) / (tx<sub>long</sub> - tx<sub>short</sub>)</code>, canceling process startup, connection dial/handshake, initial key-location warmups, and fixed per-run background ticks.</li>
+      <li>Client metrics (<code>ops/s</code>, <code>p50</code>, <code>p99</code>, <code>getrusage</code> user+sys CPU/op, Go heap allocs/op) come from the steady-state measurement window of the long run (after warmup).</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Rotated Round Ordering &amp; Foreign-CPU Guard</h3>
+    <ul>
+      <li><strong>Order rotation (<code>ladder.sh</code>):</strong> In round <em>r</em>, the arm list is cyclically shifted by <code>r &times; (N/2 + 1) mod N</code> and reversed on odd rounds, preventing warm-cache or storage-engine compaction drift from favoring any arm.</li>
+      <li><strong>Foreign-core guard:</strong> Around every run, <code>run_cell.py</code> snapshots <code>/proc/stat</code> busy jiffies on CPUs <code>2–15</code> and subtracts the client's <code>RUSAGE_CHILDREN</code> CPU time plus the <code>fdbserver</code> PIDs' <code>/proc/&lt;pid&gt;/stat</code> jiffies. Any run where foreign processes consume above the threshold is automatically rejected and re-run.</li>
+      <li><strong>Box-to-box calibration:</strong>Running identical binaries on Box 1 (`rawhz4/cross`) and Box 2 (`rawhz5`) showed that while <code>L</code> on <code>set100/64</code> is within 3% (`18.6k` vs `19.2k` ops/s, `70.4` vs `72.0` kc/tx), latency-sensitive <code>get100/64</code> varies by up to 25% across cloud hypervisor placements (`A`: `47.4k` vs `36.0k`). Therefore, <strong>all comparisons are strictly paired within the same box and rotated round</strong>.</li>
+    </ul>
+  </div>
+</div>
+
+<h2>3. Wire Equivalence Verification (1-Worker <code>set100</code> TCP Reassembly)</h2>
+<p>To verify <strong>T5 (Wire Correctness)</strong>, <code>wirestats.py</code> reassembles every loopback TCP stream from <code>tcpdump</code> captures (checking for zero kernel packet drops and zero sequence gaps) and classifies every FDB frame by root file identifier (<code>838566 = grv</code>, <code>93948 = commit</code>, <code>8454530 = get</code>, <code>6795746 = getkeyvalues</code>). At 1 worker (no cross-goroutine batching), all single-instance arms send identical requests and bytes per transaction:</p>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Box</th><th>Arm</th><th>GRV tx / request</th><th>Proxy frames / tx</th><th>Proxy bytes / tx</th><th>Storage frames / tx</th><th>Client TCP Connections</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>Box 1 (rawhz4)</td><td>L (libfdb_c)</td><td>1.00</td><td>2.005</td><td>847.8</td><td>0.004</td><td>2</td></tr><tr><td>Box 1 (rawhz4)</td><td>A (today)</td><td>1.00</td><td>2.004</td><td>847.6</td><td>0.002</td><td>2</td></tr><tr><td>Box 1 (rawhz4)</td><td>D (10–20µs)</td><td>1.00</td><td>2.005</td><td>847.7</td><td>0.002</td><td>2</td></tr><tr><td>Box 1 (rawhz4)</td><td>D-NG (0µs)</td><td>1.00</td><td>2.004</td><td>847.6</td><td>0.002</td><td>2</td></tr><tr><td>Box 2 (rawhz5)</td><td>L (libfdb_c)</td><td>1.00</td><td>2.005</td><td>847.7</td><td>0.004</td><td>2</td></tr><tr><td>Box 2 (rawhz5)</td><td>L4 (4 thr)</td><td>1.00</td><td>2.024</td><td>851.7</td><td>0.004</td><td>7</td></tr><tr><td>Box 2 (rawhz5)</td><td>A (today)</td><td>1.00</td><td>2.004</td><td>847.6</td><td>0.002</td><td>2</td></tr><tr><td>Box 2 (rawhz5)</td><td>D-M (sender)</td><td>1.00</td><td>2.004</td><td>847.6</td><td>0.002</td><td>2</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2>4. Race Detector (<code>-race</code>) Verification Matrix</h2>
+<p>Every transport mode was run against the full <code>//pkg/fdbgo/transport:transport_test</code> and <code>//pkg/fdbgo/client/...</code> test suites under <code>bazelisk test --@io_bazel_rules_go//go/config:race</code> (logs in <code>/var/tmp/netg-bench/race*</code>):</p>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Mode / Env</th>
+        <th><code>transport_test</code> (<code>-race</code>)</th>
+        <th><code>client/...</code> (22 targets, <code>-race</code>)</th>
+        <th class="text-left">Log Artifact &amp; Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Default (<code>A</code>, legacy writer)</td>
+        <td><span class="badge pass">PASS</span></td>
+        <td><span class="badge pass">PASS (22/22)</span></td>
+        <td class="text-left"><code>race6-default.log</code></td>
+      </tr>
+      <tr>
+        <td><code>FDBGO_NET_DESIGN=1</code> (<code>D</code>, 10/20&micro;s delay)</td>
+        <td><span class="badge pass">PASS</span></td>
+        <td><span class="badge pass">PASS (22/22)</span></td>
+        <td class="text-left"><code>race6-d.log</code> — includes <code>TestDesignWriter_T1T2</code> for <code>d</code></td>
+      </tr>
+      <tr>
+        <td><code>FDBGO_NET_DESIGN=ng</code> (<code>D-NG</code>, mutex+slice)</td>
+        <td><span class="badge pass">PASS</span></td>
+        <td><span class="badge pass">PASS (22/22)</span></td>
+        <td class="text-left"><code>race6-ng.log</code> — includes <code>TestDesignWriter_T1T2</code> for <code>ng</code></td>
+      </tr>
+      <tr>
+        <td><code>FDBGO_NET_DESIGN=ngy</code> (<code>D-NG+yield</code>)</td>
+        <td><span class="badge pass">PASS</span></td>
+        <td><span class="badge pass">PASS (22/22)</span></td>
+        <td class="text-left"><code>race7-ngy.log</code></td>
+      </tr>
+      <tr>
+        <td><code>FDBGO_NET_DESIGN=ngc</code> (<code>D-NG-chan</code>)</td>
+        <td><span class="badge pass">PASS</span></td>
+        <td><span class="badge pass">PASS (22/22)</span></td>
+        <td class="text-left"><code>race7-ngc.log</code></td>
+      </tr>
+      <tr>
+        <td><code>FDBGO_NET_DESIGN=ngr</code> (<code>D-NG-ring</code> v2)</td>
+        <td><span class="badge pass">PASS</span></td>
+        <td><span class="badge pass">PASS (22/22)</span></td>
+        <td class="text-left"><code>race7-ngr2.log</code></td>
+      </tr>
+      <tr>
+        <td><code>FDBGO_NET_DESIGN=nga</code> (<code>D-NG-adap20/100</code>)</td>
+        <td><span class="badge pass">PASS</span></td>
+        <td><span class="badge pass">PASS (22/22)</span></td>
+        <td class="text-left"><code>race7-nga.log</code></td>
+      </tr>
+      <tr class="highlight-warn">
+        <td><code>FDBGO_NET_DESIGN=m</code> (<code>D-M</code>, sender writes)</td>
+        <td><span class="badge pass">PASS</span></td>
+        <td><span class="badge fail">21/22 PASS, 1 FAIL (10 subtests)</span></td>
+        <td class="text-left"><code>race6-m.log</code> — expected backpressure failures in <code>client_test</code> proving <code>D-M</code> violates T1/T2 when kernel socket buffer fills</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2>5. Raw Dataset Inventory</h2>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Directory / File</th>
+        <th>Row / File Count</th>
+        <th class="text-left">Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>rawhz6/ladder.jsonl</code></td>
+        <td>216 rows</td>
+        <td class="text-left">Round 6 on <code>netg-r6</code>: <code>L, A, A0, DNG, DNGy, DNGchan, DNGring</code> (+ <code>M</code>) &times; 9 cells &times; 3 rounds</td>
+      </tr>
+      <tr>
+        <td><code>rawhz6/linger.jsonl</code></td>
+        <td>297 rows</td>
+        <td class="text-left">Round 6 on <code>netg-r6</code>: full linger sweep (<code>L, A, M, DNG, D5, D, D50, D100, D250, DNGa20, DNGa100</code>) &times; 9 cells &times; 3 rounds</td>
+      </tr>
+      <tr>
+        <td><code>rawhz6/linger_rate.jsonl</code> + <code>rate.jsonl</code></td>
+        <td>246 rows</td>
+        <td class="text-left">Multi-rate capped (25%, 60%, 90% of <code>L</code>) on <code>get100/64</code> and <code>set100/64</code> &times; 3 rounds</td>
+      </tr>
+      <tr>
+        <td><code>rawhz6/syscalls.jsonl</code></td>
+        <td>48 rows</td>
+        <td class="text-left">Client <code>perf stat</code> syscall &amp; futex tracepoints per operation on <code>get100/64</code> and <code>get100/256</code></td>
+      </tr>
+      <tr>
+        <td><code>rawhz6/prof/</code> &amp; <code>prof2/</code></td>
+        <td>20 profiles</td>
+        <td class="text-left">CPU, mutex, and block <code>pprof</code> profiles for <code>ng</code>, <code>ngc</code>, and <code>ngr</code> (v1 &amp; v2) at 64 and 256 workers</td>
+      </tr>
+      <tr>
+        <td><code>rawhz6b/role_ladder.jsonl</code> &amp; <code>role_rate.jsonl</code></td>
+        <td>198 rows</td>
+        <td class="text-left">5-process split cluster on <code>netg-r6b</code>: per-role server CPU cycles/tx + <code>wire-*</code> per-role <code>tcpdump</code> captures</td>
+      </tr>
+      <tr>
+        <td><code>rawhz5/</code> &amp; <code>rawhz4/</code></td>
+        <td>297 ladder rows</td>
+        <td class="text-left">Phase 4 &amp; Phase 5 datasets (<code>L, L4, A, D, D-NG, D-M, D 4Ps, D-M 4Ps</code>, wire captures, 1-worker golden, cross-box check)</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<footer>
+  <div>docs/labs/single-network-goroutine/report/methodology.html</div>
+  <div>All benchmark tables report 3-round medians and [min, max] ranges unless noted.</div>
+</footer>
+</main>
+</body>
+</html>
