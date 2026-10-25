@@ -87,7 +87,7 @@ func plannerFailureFamily(planErr error) string {
 // withheldPlannerDetail carries an engine-internal planner failure without
 // rendering it.
 //
-// api.Error.Error() appends its cause unconditionally, so attaching a raw
+// api.Error.Error() appends a WrapError cause, so attaching a raw
 // invariant violation would print Go internals straight into a database/sql
 // caller's error string — the yield-invariant messages format the offending
 // expression with %T, which is how "*expressions.LogicalFilterExpression

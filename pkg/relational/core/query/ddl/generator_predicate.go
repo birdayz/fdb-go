@@ -497,7 +497,7 @@ func indexComparisonToProto(c predicates.Comparison, columnType values.Type) (*g
 		// oracle shape uuid_predicate_index, measured).
 		var unsupported *recordlayer.UnsupportedValueTypeError
 		if errors.As(err, &unsupported) {
-			return nil, api.WrapError(api.ErrCodeUnknown, unsupported.Error(), err)
+			return nil, api.WrapStatedError(api.ErrCodeUnknown, unsupported.Error(), err)
 		}
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"attempt to create PoJo index comparison from unsupported comparison: %v", err)

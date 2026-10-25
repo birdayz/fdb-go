@@ -1030,6 +1030,17 @@ The removed rows:
   plans the query and returns every row, because no SQL-layer visitor reads the keyword
   (`query/visitors/QueryVisitor.java:258-343`). See "Java Upstream Bugs".
 
+### Messages of wrapped record-layer and JDK exceptions
+
+Java wraps a record-layer or JDK exception (`RecordCoreException`, `SemanticException`, a decimal
+literal's `NumberFormatException`) in a `RelationalException(code, cause)`, whose message is the
+cause's `toString()`, so it starts with the exception class
+(`com.apple.foundationdb.record.RecordCoreException: only positive step is allowed in range`).
+Go's `api.Error.Message` is the exception's own message, without the class; the SQLSTATE is the
+same. Pinned by `sqltest/core` `TestFDB_RangeTableFunction` and
+`TestFDB_EnumAndUUIDAssignmentErrorMessage`, `core/query/expr`
+`TestWalkExpression_TypedNumericSuffixes`, and the plan-shape golden's `overflow.yaml#6`.
+
 ### Go-only SQLSTATEs
 
 `pkg/relational/api/errcode.go` tracks Java's `ErrorCode` enum: **every one of Java's 77 codes (4.14.2.0) exists in Go** — that direction has no gap. Go defines seven codes Java has no member for:
@@ -1058,7 +1069,7 @@ Porting Java's mapping would have been wrong twice over: `ExceptionUtil.recordCo
 
 Class 54 ("program limit exceeded") is the honest class: the planner gave up because the query exceeded a configured budget, and simplifying it or raising the budget is a real remedy. `54F01` (`EXECUTION_LIMIT_REACHED`) is deliberately NOT reused — it means an *execution*-time limit and is tied to a scan/row continuation reason, so conflating plan-time with it would corrupt a meaning Java owns. `54F02` is unused in Java's enum, leaving room for Java to adopt it should it ever enable the caps.
 
-The Go error carries the same context Java's `addLogInfo` attaches (`max_task_count`/`task_count` and the queue and rule-match equivalents) via `cascades.PlannerBudgetExceededError`.
+The Go error carries the counts Java's `addLogInfo` attaches (`max_task_count`/`task_count` and the queue and rule-match equivalents) via `cascades.PlannerBudgetExceededError`. Java's rule-match trip also attaches the rule call (`rule`); Go's does not.
 
 ## Java Upstream Bugs (Go is correct, Java is wrong)
 
