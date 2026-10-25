@@ -205,7 +205,9 @@ if flock -n "$FDB_LANE_LOCK" true; then echo free > "$STATE/probe"; else echo he
 echo $$ > "$STATE/just.pid"
 if [ -n "$BLOCK" ]; then exec sleep 300; fi
 `,
-		"bazelisk": "#!/bin/bash\nexit 0\n",
+		"bazelisk": `#!/bin/bash
+if flock -n "$FDB_LANE_LOCK" true; then echo free > "$STATE/shutdown-probe"; else echo held > "$STATE/shutdown-probe"; fi
+`,
 	} {
 		if err := os.WriteFile(filepath.Join(h.bin, name), []byte(body), 0o700); err != nil {
 			t.Fatal(err)
@@ -291,6 +293,10 @@ func TestVerifiedLaneLock(t *testing.T) {
 		probe, err := os.ReadFile(filepath.Join(h.state, "probe"))
 		if err != nil || strings.TrimSpace(string(probe)) != "held" {
 			t.Fatalf("lock during the lane = %q (%v), want held", probe, err)
+		}
+		probe, err = os.ReadFile(filepath.Join(h.state, "shutdown-probe"))
+		if err != nil || strings.TrimSpace(string(probe)) != "held" {
+			t.Fatalf("lock during the server shutdown = %q (%v), want held", probe, err)
 		}
 		daemon := h.pid("daemon.pid")
 		if daemon == 0 || !h.alive(daemon) {
