@@ -339,7 +339,8 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
 - [ ] **Panic-safe QueueModel accounting in read senders.** Reply registration
   cleanup does not release a delta when a recovered panic occurs after
   `startRequest`: `readpath.go:313` (getKey), `:561` (getValue), `:636` (single-server
-  getValue), `:1077` (range family), and `:1719` (watch). Add a separately owned
+  getValue), and `:1077` (range family). RFC-281 (#1017) removes watch accounting.
+  Add a separately owned
   accounting guard through sender-to-RPC ownership transfer and pin a panic after
   each increment. C++ `ModelHolder::~ModelHolder` removes the delta without a
   latency sample (`LoadBalance.actor.h:53-67`); `replyGuard` only owns the endpoint.
@@ -2064,10 +2065,9 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   - The race lane's timeout (1h0m16s, run 37669344266) is fixed by the split:
     it runs `sqldriver` (the driver's own tests) in about 11 min, green.
 - [x] Flake: `TestNativeReadTagSampling/fallback-two-nontrivial-selectors/hedge=true`.
-  RFC-281 (#1017) seeds exactly two hedge-budget units; lone replies cannot earn a
-  third hedge during the three-request fallback. Assertions retain the exact range
-  send count and per-selector tag checks. A bounded reply timeout also covers an
-  incidental selector hedge consuming the budget before the planned range drop.
+  RFC-281 (#1017) funds only the dropped selector and exact read at each request's
+  sampling boundary, keeping the intervening selector unfunded. Exact send counts
+  and per-selector tag checks no longer depend on short live-reply timeouts.
 
 ## Row-limit lookahead at an exact page boundary
 

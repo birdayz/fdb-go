@@ -8,18 +8,8 @@ import (
 	"time"
 )
 
-// QueueModel tracks estimated outstanding request depth per storage server.
-// Used by sendGetValue/sendGetKey/sendGetRange to pick the least-loaded
-// server from a shard's replica set.
-//
-// Matches C++ QueueModel in fdbclient/QueueModel.h:
-//   - Smoother-based continuous exponential decay (eFoldingTime=2s)
-//   - Server penalty from LoadBalancedReply
-//   - failedUntil with exponential backoff for future_version errors
-//   - secondMultiplier and secondBudget, which time and pay for a read's second
-//     request (LoadBalance.actor.h:554-563, :694-716)
-//
-// Selection metric: smoothOutstanding.smoothTotal() (lower = better).
+// QueueModel tracks per-server outstanding depth, latency, penalty and backoff,
+// plus C++'s database-wide second-request budget and adaptive delay (RFC-281).
 type QueueModel struct {
 	mu      sync.Mutex
 	servers map[string]*queueData
@@ -190,10 +180,8 @@ func (q *QueueModel) soonestEligible(servers []ServerInfo) int {
 	return bestIdx
 }
 
-// secondDelay is how long a read waits for the first alternative before its
-// second request: secondMultiplier × the second alternative's latency +
-// BASE_SECOND_REQUEST_TIME, or zero when the first alternative's latency exceeds
-// INSTANT_SECOND_REQUEST_MULTIPLIER times that (LoadBalance.actor.h:554-561).
+// secondDelay uses the second alternative's latency and adaptive multiplier,
+// or hedges immediately past C++'s primary-latency threshold (:554-561; RFC-281).
 func (q *QueueModel) secondDelay(bestAddr, nextAddr string) time.Duration {
 	q.mu.Lock()
 	bestTime := q.getOrCreate(bestAddr).latency
@@ -205,8 +193,7 @@ func (q *QueueModel) secondDelay(bestAddr, nextAddr string) time.Duration {
 	return time.Duration(delay * float64(time.Second))
 }
 
-// firstReplied is loadBalance's update when a request sent with no other
-// outstanding gets its reply before a second request was sent
+// firstReplied earns budget and decays the multiplier on a lone reply
 // (LoadBalance.actor.h:694-701). A nil model is loadBalance without one.
 func (q *QueueModel) firstReplied() {
 	if q == nil {
@@ -218,8 +205,8 @@ func (q *QueueModel) firstReplied() {
 	q.mu.Unlock()
 }
 
-// spendSecond pays for a second request when the delay fires, if the budget
-// allows one (LoadBalance.actor.h:710-716). A nil model never sends one (:563).
+// spendSecond pays for a second request if the budget allows one (:710-716).
+// A nil model never sends one (LoadBalance.actor.h:563).
 func (q *QueueModel) spendSecond() bool {
 	if q == nil {
 		return false

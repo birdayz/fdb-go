@@ -151,12 +151,12 @@ func TestHedgeTimerStagesAndAccounting(t *testing.T) {
 	replyFailure := &wire.FDBError{Code: 1037} // Canonical process_behind: try secondary.
 	terminalFailure := &wire.FDBError{Code: 1007}
 	sendFailure := errors.New("send failed")
-	// budget is the second-request budget before the call; accrued counts the
-	// lone replies that earn 0.05 each and spent the hedge paid for
-	// (LoadBalance.actor.h:694-716).
+	// Lone replies earn 0.05; a paid hedge earns nothing (LoadBalance.actor.h:694-716).
+	// Pin the model alongside timer stages and balanced request accounting.
 	for _, tc := range []struct {
 		name                          string
 		mode                          string
+		cancelOnSecondary             bool
 		pReady, sReady, cancel        bool
 		pSendErr, sSendErr, pReplyErr error
 		pDelay, sDelay, hedgeDelay    time.Duration
@@ -200,13 +200,18 @@ func TestHedgeTimerStagesAndAccounting(t *testing.T) {
 		{name: "hedge-secondary-send-failure-primary-reply", mode: "hedge", sSendErr: sendFailure, pReplyAfter: 5 * time.Second, hedgeDelay: 3 * time.Second, budget: 1, wantAddr: "p", wantElapsed: 5 * time.Second, wantSecondaryAt: 3 * time.Second, wantStarted: 1, spent: true},
 		// The delay fires without budget: no hedge, and the reply then accrues.
 		{name: "hedge-no-budget-primary-after-delay", mode: "hedge", pReplyAfter: 5 * time.Second, hedgeDelay: 3 * time.Second, budget: 0.95, wantAddr: "p", wantElapsed: 5 * time.Second, wantStarted: 1, accrued: 1},
-		{name: "hedge-no-budget-transport-failure", mode: "hedge", pReplyAfter: 5 * time.Second, pReplyErr: sendFailure, hedgeDelay: 3 * time.Second, budget: 0.95, wantAddr: "p", wantErr: sendFailure, wantElapsed: 5 * time.Second, wantStarted: 1, accrued: 1},
+		{name: "hedge-no-budget-transport-failure", mode: "hedge", pReplyAfter: 5 * time.Second, pReplyErr: sendFailure, sReady: true, hedgeDelay: 3 * time.Second, budget: 0.95, wantAddr: "s", wantElapsed: 5 * time.Second, wantSecondaryAt: 5 * time.Second, wantStarted: 2, accrued: 2},
+		{name: "hedge-no-budget-transport-failure-secondary-send-fails", mode: "hedge", pReplyAfter: 5 * time.Second, pReplyErr: sendFailure, sSendErr: sendFailure, hedgeDelay: 3 * time.Second, budget: 0.95, wantAddr: "p", wantErr: sendFailure, wantElapsed: 5 * time.Second, wantSecondaryAt: 5 * time.Second, wantStarted: 1, accrued: 2},
 		{name: "hedge-no-budget-timeout", mode: "hedge", hedgeDelay: 3 * time.Second, budget: 0.95, wantAddr: "p", wantErr: errReplyTimeout, wantElapsed: 10 * time.Second, wantStarted: 1},
 		{name: "hedge-no-budget-cancel", mode: "hedge", cancel: true, hedgeDelay: 0, budget: 0.95, wantAddr: "p", wantErr: context.Canceled, wantStarted: 1},
 		// The delay fires with budget: the hedge is paid for, and race replies
 		// earn nothing; a second unit of budget buys no second hedge.
 		{name: "hedge-budget-primary-wins-race", mode: "hedge", pReplyAfter: 5 * time.Second, hedgeDelay: 3 * time.Second, budget: 1, wantAddr: "p", wantElapsed: 5 * time.Second, wantSecondaryAt: 3 * time.Second, wantStarted: 2, spent: true},
 		{name: "hedge-budget-two-spends-once", mode: "hedge", hedgeDelay: 3 * time.Second, budget: 2, wantErr: errReplyTimeout, wantElapsed: 10 * time.Second, wantSecondaryAt: 3 * time.Second, wantStarted: 2, spent: true},
+		{name: "hedge-funded-cancel-before-delay", mode: "hedge", cancel: true, hedgeDelay: time.Hour, budget: 1, wantAddr: "p", wantErr: context.Canceled, wantStarted: 1},
+		{name: "hedge-funded-cancel-ready-delay", mode: "hedge", cancel: true, budget: 1, wantAddr: "p", wantErr: context.Canceled, wantStarted: 1},
+		{name: "hedge-funded-cancel-after-secondary-send", mode: "hedge", cancelOnSecondary: true, hedgeDelay: 3 * time.Second, budget: 1, wantErr: context.Canceled, wantElapsed: 3 * time.Second, wantSecondaryAt: 3 * time.Second, wantStarted: 2, spent: true},
+		{name: "hedge-funded-ready-secondary-cancel", mode: "hedge", cancelOnSecondary: true, sReady: true, hedgeDelay: 3 * time.Second, budget: 1, wantAddr: "s", wantElapsed: 3 * time.Second, wantSecondaryAt: 3 * time.Second, wantStarted: 2, spent: true},
 		{name: "hedge-instant-no-budget", mode: "hedge", pReplyAfter: 5 * time.Second, budget: 0, wantAddr: "p", wantElapsed: 5 * time.Second, wantStarted: 1, accrued: 1},
 		{name: "hedge-instant-budget", mode: "hedge", sReady: true, budget: 1, wantAddr: "s", wantStarted: 2, spent: true},
 	} {
@@ -246,6 +251,9 @@ func TestHedgeTimerStagesAndAccounting(t *testing.T) {
 							}
 							r := inFlightRPC{replyCh: ch, replyHandle: &transport.ReplyHandle{}, addr: addr, delta: qm.startRequest(addr), start: time.Now()}
 							started[addr] = accountOf(r)
+							if addr == "s" && tc.cancelOnSecondary {
+								cancel()
+							}
 							return r
 						}
 					}

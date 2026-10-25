@@ -609,9 +609,8 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 	return val, err
 }
 
-// sendGetValueToServer sends a getValue RPC to a single specific server.
-// Used as fallback after hedge fails. It is a lone request: its reply accrues
-// second-request budget.
+// sendGetValueToServer is a single-server fallback after hedge failure.
+// Its lone reply accrues second-request budget.
 func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, server ServerInfo, readVersion int64, lockAware bool, tenantId int64, tags readTagSample) ([]byte, error) {
 	conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
 	if err != nil {

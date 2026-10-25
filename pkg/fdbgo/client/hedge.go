@@ -43,15 +43,8 @@ type hedgeResult struct {
 	triedSecondary bool
 }
 
-// sendFrameWithHedge is loadBalance's first attempt (LoadBalance.actor.h:687-719).
-// It sends the request to the primary. If the primary has not replied after
-// hedgeDelay and model's second-request budget pays for it, it sends the same
-// request to the secondary and the first reply wins. A primary that fails moves
-// on to the secondary as the next lone request.
-//
-// model accrues budget on the reply of every lone request; a nil model sends no
-// second request. secondary is nil when there is no second alternative.
-// Each sendFunc dials, sends, and returns the reply channel and cleanup.
+// sendFrameWithHedge races the primary against a budget-funded secondary, or
+// advances a failed lone primary (LoadBalance.actor.h:687-719; RFC-281).
 func sendFrameWithHedge(
 	ctx context.Context,
 	model *QueueModel,
@@ -100,9 +93,13 @@ func sendFrameWithHedge(
 			return primaryReplied(ctx, model, pResult, resp, secondary, timeout)
 		default:
 		}
-		if !model.spendSecond() {
+		if ctx.Err() != nil {
 			primaryCleanup.transfer()
 			return waitLoneReply(ctx, model, pResult, timeout)
+		}
+		if !model.spendSecond() {
+			primaryCleanup.transfer()
+			return retryPrimaryReply(ctx, model, waitLoneReply(ctx, model, pResult, timeout), secondary, timeout)
 		}
 		sResult := secondary()
 		primaryCleanup.transfer()
@@ -132,13 +129,15 @@ func sendFrameWithHedge(
 	}
 }
 
-// primaryReplied handles the primary's reply before any second request: it
-// accrues budget, and a failed alternative moves on to the secondary as the next
-// lone request (LoadBalance.actor.h:694-708, nextAlt at :728).
+// primaryReplied accrues a lone reply and advances a failed alternative
+// (LoadBalance.actor.h:694-708, nextAlt at :728).
 func primaryReplied(ctx context.Context, model *QueueModel, p inFlightRPC, resp transport.Response, secondary sendFunc, timeout time.Duration) hedgeResult {
 	model.firstReplied()
-	res := processReply(p, resp)
-	if res.err == nil || !movesToNextAlternative(ctx, res.err) {
+	return retryPrimaryReply(ctx, model, processReply(p, resp), secondary, timeout)
+}
+
+func retryPrimaryReply(ctx context.Context, model *QueueModel, res hedgeResult, secondary sendFunc, timeout time.Duration) hedgeResult {
+	if res.err == nil || !res.connErr || !movesToNextAlternative(ctx, res.err) {
 		return res
 	}
 	sResult := secondary()
@@ -153,9 +152,8 @@ func primaryReplied(ctx context.Context, model *QueueModel, p inFlightRPC, resp 
 	return out
 }
 
-// waitLoneReply waits for a request sent with no other outstanding and accrues
-// budget when its reply, or its transport failure, arrives. A reply timeout or a
-// cancelled caller is no reply.
+// waitLoneReply accrues a lone reply or transport failure, but not a timeout
+// or caller cancellation.
 func waitLoneReply(ctx context.Context, model *QueueModel, inflight inFlightRPC, timeout time.Duration) hedgeResult {
 	res := waitForReply(ctx, inflight, timeout)
 	if res.err == nil || res.connErr {
@@ -164,9 +162,8 @@ func waitLoneReply(ctx context.Context, model *QueueModel, inflight inFlightRPC,
 	return res
 }
 
-// noteLoneSendFailure accrues budget for a lone request that failed to send:
-// C++ completes it with request_maybe_delivered, a reply (fdbrpc.h:775-794). A
-// send the caller cancelled is no reply.
+// A failed lone send completes as request_maybe_delivered in C++ (fdbrpc.h:775-794).
+// A caller-cancelled send is not a reply and earns nothing.
 func noteLoneSendFailure(ctx context.Context, model *QueueModel) {
 	if ctx.Err() == nil {
 		model.firstReplied()

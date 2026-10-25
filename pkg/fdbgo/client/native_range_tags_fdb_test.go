@@ -172,13 +172,21 @@ func TestNativeReadTagSampling(t *testing.T) {
 			t.Cleanup(cancel)
 			tx, rec, sim, draws, rv, _ := setup(t, ctx)
 			tx.db.hedgeEnabled.Store(hedge)
-			tx.rpcTimeoutOverride = 300 * time.Millisecond
+			tx.rpcTimeoutOverride = time.Minute
 			plan := &replyPlan{rec: rec}
 			if hedge {
-				// One planned hedge for a selector and one for the exact read, and a
-				// budget for exactly two.
+				// Fund only the dropped selector and exact read at their sampling boundary.
+				// The intervening selector has no budget, regardless of reply scheduling.
 				duplicateServers(&Database{db: tx.db}, 2)
-				setSecondBudget(tx.db.queueModel, 2)
+				tx.db.readTags.draw = func() float64 {
+					draw := draws.draw()
+					budget := 1.0
+					if draws.count() == 2 {
+						budget = 0
+					}
+					setSecondBudget(tx.db.queueModel, budget)
+					return draw
+				}
 				plan.entries = []plannedReply{dropReply("GetKeyRequest"), dropReply("GetKeyValuesRequest")}
 				sim.setIntercept(plan.intercept)
 				sim.armEverything()
@@ -197,11 +205,8 @@ func TestNativeReadTagSampling(t *testing.T) {
 			for _, r := range got {
 				sends[r.kind]++
 			}
-			// Each request goes to at most two replicas, and the budget pays for two hedges
-			// (lone replies add 0.05 each, too few for a third). The dropped selector always
-			// hedges. A slow reply to the other selector may take the second hedge; the
-			// dropped exact read is then resent after its reply timeout instead. Either way
-			// the exact read is sent twice and the selectors three or four times.
+			// Explicit per-request funding makes both planned drops hedge, without
+			// short reply timeouts or speculative sends by the other selector.
 			wantExact, maxPerSelector := 1, 1
 			if hedge {
 				wantExact, maxPerSelector = 2, 2
@@ -228,8 +233,8 @@ func TestNativeReadTagSampling(t *testing.T) {
 				}
 			}
 			a, d := perSelector[prefix+"a"], perSelector[prefix+"d"]
-			if a < 1 || d < 1 || a > maxPerSelector || d > maxPerSelector || (hedge && a+d < 3) {
-				t.Errorf("selector sends a=%d d=%d, want 1-%d each and a planned hedge of one", a, d, maxPerSelector)
+			if a != maxPerSelector || d != 1 {
+				t.Errorf("selector sends a=%d d=%d, want exactly %d and 1", a, d, maxPerSelector)
 			}
 		})
 	}

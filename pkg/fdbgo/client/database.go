@@ -821,11 +821,8 @@ func (d *Database) Metrics() ClientMetricsSnapshot {
 	return d.db.metrics.Snapshot()
 }
 
-// SetHedgeEnabled controls speculative second requests (hedge) for read RPCs.
-// When enabled (default), a read whose first reply is slow sends the same
-// request to a second replica as libfdb_c does: only while the second-request
-// budget, earned at 0.05 per unhedged reply, covers it. A new database has no
-// budget. Disabled, no read sends a second request; the budget still accrues.
+// SetHedgeEnabled enables budget-funded speculative read requests (default on).
+// Disabled, no read hedges; lone replies still accrue budget (RFC-281).
 func (d *Database) SetHedgeEnabled(enabled bool) {
 	d.db.hedgeEnabled.Store(enabled)
 }

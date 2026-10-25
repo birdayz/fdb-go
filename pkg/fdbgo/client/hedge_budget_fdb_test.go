@@ -43,10 +43,8 @@ func (h *holdFirstReply) intercept(_ int, token transport.UID, body []byte) ([]b
 	return body, false
 }
 
-// A read with two replicas whose first reply is slow sends a second request
-// only when the database's second-request budget pays for it
-// (LoadBalance.actor.h:710-716). A new database has no budget
-// (QueueModel.h:121), so it sends one request per read, as libfdb_c does.
+// Slow reads hedge only with budget; a fresh database sends one request per read
+// (LoadBalance.actor.h:710-716, QueueModel.h:121).
 func TestHedgeBudgetRequests(t *testing.T) {
 	t.Parallel()
 	seedCtx, cancelSeed := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -166,6 +164,28 @@ func TestHedgeBudgetRequests(t *testing.T) {
 				}
 				checkSecondModel(t, e.q, 0, 1, false)
 			})
+			t.Run("transport-failure", func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+				e := setup(t, ctx)
+				var failed atomic.Bool
+				e.sim.setIntercept(func(_ int, token transport.UID, body []byte) ([]byte, bool) {
+					if e.rec.replyKind(token) == rd.kind && failed.CompareAndSwap(false, true) {
+						pastDelay()
+						return severConn, true
+					}
+					return body, false
+				})
+				e.rec.start()
+				err := rd.read(ctx, e)
+				n := recordedCount(e.rec, rd.kind)
+				lookups := recordedCount(e.rec, "GetKeyServerLocationsRequest")
+				e.rec.stop()
+				if err != nil || n != 2 || lookups != 0 || !failed.Load() {
+					t.Fatalf("cached failover: err=%v requests=%d lookups=%d failed=%v; want success, 2, 0, true", err, n, lookups, failed.Load())
+				}
+				checkSecondModel(t, e.q, 0, 2, false)
+			})
 			t.Run("budget", func(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				defer cancel()
@@ -198,9 +218,8 @@ func TestHedgeBudgetRequests(t *testing.T) {
 	}
 }
 
-// With no budget the backup was never sent the read, so getValue's sequential
-// fallback tries it after the primary's reply timeout, and its reply earns
-// budget like any lone request's.
+// An unpaid delay leaves the backup untried; getValue's timeout fallback must
+// send to it and accrue its lone reply.
 func TestGetValueFallbackTriesUnhedgedBackup(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -212,6 +231,7 @@ func TestGetValueFallbackTriesUnhedgedBackup(t *testing.T) {
 
 	const lost, backup = "fallback-lost.invalid:1", "fallback-backup.invalid:1"
 	sim, aliases := newSimDialer(), &sync.Map{}
+	var tx *Transaction
 	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
 		real, ok := aliases.Load(addr)
 		if !ok {
@@ -221,12 +241,17 @@ func TestGetValueFallbackTriesUnhedgedBackup(t *testing.T) {
 		if err == nil && addr == lost {
 			c.(*simConn).armed.Store(true)
 		}
+		if addr == backup {
+			// Dial completion publishes this before the fallback reads its timeout.
+			// Only the deliberately lost primary gets the short deadline.
+			tx.rpcTimeoutOverride = time.Minute
+		}
 		return c, err
 	}
 	rec := &sendRecorder{}
 	db := newTestDatabase(t, ctx, sharedClusterFile, rec.wrap(dial))
 	defer db.Close()
-	tx := db.CreateTransaction()
+	tx = db.CreateTransaction()
 	defer tx.Cancel()
 	tx.rpcTimeoutOverride = 300 * time.Millisecond
 	if _, err := tx.GetReadVersion(ctx); err != nil {
@@ -271,9 +296,8 @@ func TestGetValueFallbackTriesUnhedgedBackup(t *testing.T) {
 	checkSecondModel(t, q, 0, 1, false)
 }
 
-// watchValue's loadBalance has no QueueModel (NativeAPI.actor.cpp:3962-3972): a
-// watch leaves the storage server's latency, its outstanding count and the
-// second-request model as they were.
+// watchValue has no QueueModel: pending and completed watches leave it unchanged
+// (NativeAPI.actor.cpp:3962-3972).
 func TestWatchLeavesQueueModel(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -293,17 +317,24 @@ func TestWatchLeavesQueueModel(t *testing.T) {
 		return snapshot{d.latency, d.smoothOutstanding.total, q.secondBudget, q.secondMultiplier}
 	}
 
+	tx := db.CreateTransaction()
+	defer tx.Cancel()
+	value, rv, span, watchCtx, watchCancel, err := tx.WatchSetup(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := snap()
+	if before.outstanding != 0 {
+		t.Fatalf("watch setup left outstanding reads: %+v", before)
+	}
 	rec.start()
 	watched := make(chan error, 1)
-	go func() {
-		tx := db.CreateTransaction()
-		defer tx.Cancel()
-		watched <- tx.Watch(ctx, key)
-	}()
+	go func() { watched <- tx.WatchPoll(watchCtx, watchCancel, key, value, rv, span) }()
 	waitForRecorded(t, ctx, rec, "WatchValueRequest")
 	rec.stop()
-	before := snap()
-	time.Sleep(50 * time.Millisecond) // a watch duration no read would take
+	if pending := snap(); pending != before {
+		t.Fatalf("a pending watch changed the QueueModel: %+v, was %+v", pending, before)
+	}
 	setKey(t, ctx, db, key, []byte("v2"))
 	if err := <-watched; err != nil {
 		t.Fatalf("watch: %v", err)

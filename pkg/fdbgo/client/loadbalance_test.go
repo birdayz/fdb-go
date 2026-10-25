@@ -349,8 +349,7 @@ func TestSmootherDecay(t *testing.T) {
 	}
 }
 
-// The delay is secondMultiplier × the second alternative's latency + 0.5 ms, or
-// zero when the first alternative's latency exceeds twice that
+// Pin the second-latency formula and instant arm against literal C++ knobs
 // (LoadBalance.actor.h:554-561).
 func TestSecondDelay(t *testing.T) {
 	t.Parallel()

@@ -91,8 +91,11 @@ does not, and which the C++ delay formula below would turn into instant hedges.
   the primary alone (the `!stream` case).
   When the delay fires it first takes a primary reply that is already queued (C++
   `choose` checks the reply first), then sends the hedge only if `spendSecond`
-  allows it. A Go reply timeout or a cancelled caller is not a reply and accrues
-  nothing.
+  allows it. An unpaid delay preserves lone-primary failure processing and
+  advances to the unattempted secondary without spending. A cancelled caller
+  with no queued primary reply sends no hedge and spends nothing; cancellation
+  after the hedge was sent does not refund it. A Go reply timeout or a cancelled
+  caller is not a reply and accrues nothing.
 - `secondDelay` is computed only when there is a backup. `hedgeResult` reports
   whether the backup was tried, so `getValue`'s sequential fallback no longer
   skips a replica that was never sent the read.
@@ -171,12 +174,15 @@ changes.
     grows; turned back on, the next read spends it.
 - `getValue` fallback: with no budget and the primary's reply lost, the fallback
   tries the backup, and the backup's reply accrues 0.05.
-- Watch: after a watch fires, the server's `QueueModel` entry (latency,
-  outstanding) and the budget are unchanged.
+- Watch: take the baseline after WatchSetup's legitimate read but before
+  WatchPoll. Both a pending and a completed watch leave latency, outstanding,
+  budget and multiplier unchanged.
 - Existing hedge tests (`TestReadTagSamplingOneDrawPerRequest`,
   `TestNativeReadTagSampling`, the hedge unit tests) set up the budget they need
-  instead of relying on a fresh database hedging. The fallback spec's budget of
-  exactly its two planned hedges bounds its sends structurally.
+  instead of relying on a fresh database hedging. The fallback spec funds its
+  dropped selector and exact read at their sampling boundaries, leaving the
+  intervening selector unfunded. Live replies have generous bounded timeouts;
+  the getValue fallback's short timeout applies only to the lost primary.
 - The libfdb_c differential and the wire goldens run against one-replica clusters,
   where neither client can hedge, and compare data or idle-cluster requests; a
   hedge count needs two replicas and a reply slower than the delay, which only the

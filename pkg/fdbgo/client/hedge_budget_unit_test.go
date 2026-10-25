@@ -111,10 +111,8 @@ func TestQueueModelSecondBudget(t *testing.T) {
 	})
 }
 
-// When the delay and the primary's reply are both ready, the reply wins and no
-// budget is spent: choose takes the first request's reply first
-// (LoadBalance.actor.h:694, :710). A zero delay is ready at once, so without
-// that order the select would pick the delay about half the time.
+// A queued primary reply wins over a ready delay without spending budget
+// (LoadBalance.actor.h:694,710). A zero delay exposes random select ordering.
 func TestHedgeReplyBeforeReadyDelay(t *testing.T) {
 	t.Parallel()
 	for i := range 200 {
