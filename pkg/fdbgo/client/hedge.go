@@ -39,7 +39,7 @@ type hedgeResult struct {
 	err     error
 	connErr bool // true if connection error (not a reply error)
 	others  []rpcAccount
-	// triedSecondary reports that the secondary was sent the request.
+	// triedSecondary reports that the secondary send was attempted.
 	triedSecondary bool
 }
 

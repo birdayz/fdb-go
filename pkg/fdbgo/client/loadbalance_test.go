@@ -364,12 +364,12 @@ func TestSecondDelay(t *testing.T) {
 		multiplier  float64
 		wantSeconds float64
 	}{
-		{"fresh", "a", "b", 1, 0.0015},                // 1 × the initial 1 ms + 0.5 ms
-		{"slow-next", "a", "slow", 1, 0.0505},         // never clamped to a floor
-		{"fast-next", "a", "fast", 1, 0.0006},         // 0.1 ms + 0.5 ms
-		{"multiplier", "a", "slow", 1.5, 0.0755},      // 1.5 × 50 ms + 0.5 ms
-		{"instant", "slow", "b", 1, 0},                // 50 ms > 2 × 1.5 ms
-		{"instant-multiplier", "slow", "fast", 2, 0},  // 50 ms > 2 × (2 × 0.1 ms + 0.5 ms)
+		{"fresh", "a", "b", 1, 0.0015},                   // 1 × the initial 1 ms + 0.5 ms
+		{"slow-next", "a", "slow", 1, 0.0505},            // never clamped to a floor
+		{"fast-next", "a", "fast", 1, 0.0006},            // 0.1 ms + 0.5 ms
+		{"multiplier", "a", "slow", 1.5, 0.0755},         // 1.5 × 50 ms + 0.5 ms
+		{"instant", "slow", "b", 1, 0},                   // 50 ms > 2 × 1.5 ms
+		{"instant-multiplier", "slow", "fast", 2, 0},     // 50 ms > 2 × (2 × 0.1 ms + 0.5 ms)
 		{"not-instant-at-bound", "edge", "b", 1, 0.0015}, // 3 ms is not > 3 ms
 	} {
 		q.mu.Lock()
