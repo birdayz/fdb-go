@@ -502,8 +502,10 @@ var _ = Describe("FDBRecordContext and FDBDatabase APIs", func() {
 				return m
 			}()
 			ks := specSubspace()
-			timer := NewStoreTimer()
+			// A timer per attempt: a retried transaction warns again.
+			var timer *StoreTimer
 			_, err := sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+				timer = NewStoreTimer()
 				rtx.SetTimer(timer)
 				rtx.txSizeWarnBytes = 1
 				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
@@ -520,8 +522,9 @@ var _ = Describe("FDBRecordContext and FDBDatabase APIs", func() {
 			Expect(timer.GetCount(CountTransactionSizeWarning)).To(Equal(int64(1)))
 
 			// The delete is the transaction's first write past the threshold.
-			deleteTimer := NewStoreTimer()
+			var deleteTimer *StoreTimer
 			_, err = sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+				deleteTimer = NewStoreTimer()
 				rtx.SetTimer(deleteTimer)
 				rtx.txSizeWarnBytes = 1
 				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()

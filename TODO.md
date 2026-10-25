@@ -1948,6 +1948,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 
 ## Follow-ups after the 4.14.2.0 migration (not blocking)
 
+- [ ] Leaderboard SCORE_FOR_TIME_WINDOW_RANK out of range. Java's `scoreForRank` answers null,
+  and COMPARISON_SKIPPED_SCORE for the ELSE_SKIP form (`TimeWindowLeaderboardIndexMaintainer.java:480-488`).
+  Go returns an error, and nil for ELSE_SKIP (`time_window_leaderboard_maintainer.go`); the RANK
+  maintainer already answers nil and `("*")`.
+
 - [ ] `keyspace`: resolved paths with logical names. A resolver directory's `Path` holds only the
   resolved `int64`, and `PathFromTuple` makes no reverse lookup. Java's `ResolvedKeySpacePath`
   carries both (`DirectoryLayerDirectory.pathFromKey`). See DIVERGENCES.md, "Key-space paths hold

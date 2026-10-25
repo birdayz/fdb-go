@@ -643,6 +643,14 @@ func TestSiblingKeyTypes(t *testing.T) {
 			g.Expect(argErr.Message).To(Equal(tc.message))
 			g.Expect(argErr.ParentDir).To(Equal("root"))
 			g.Expect(argErr.DirName).To(Equal("a"))
+			g.Expect(argErr.DirType).NotTo(BeNil())
+			g.Expect(*argErr.DirType).To(Equal(tc.added.KeyType))
+			if tc.name == "equal constants" {
+				g.Expect(argErr.DirValue).To(Equal(int64(1)))
+				g.Expect(err.Error()).To(Equal("Cannot add directory due to overlapping constant value (parent_dir=root, dir_name=a, dir_type=LONG, dir_value=1)"))
+			} else if tc.message == "Cannot add directory due to overlapping type" {
+				g.Expect(argErr.DirValue).To(BeNil())
+			}
 			g.Expect(root.GetSubdirectories()).To(HaveLen(1), "a refused directory is not added")
 		})
 	}
@@ -683,7 +691,10 @@ func TestPathFromTuple_NoSubdirectory(t *testing.T) {
 	g.Expect(errors.As(err, &argErr)).To(BeTrue(), "%v", err)
 	g.Expect(argErr.Message).To(Equal("No subdirectory available to hold provided type"))
 	g.Expect(argErr.ParentDir).To(Equal("app"))
+	g.Expect(argErr.KeyTuple).To(Equal(tuple.Tuple{int64(1), int64(5)}))
 	g.Expect(argErr.KeyPos).To(Equal(1))
+	g.Expect(err.Error()).To(HavePrefix("No subdirectory available to hold provided type (parent_dir=app, key_tuple="))
+	g.Expect(err.Error()).To(HaveSuffix(", key_tuple_pos=1)"))
 
 	_, _, err = ks.PathFromTuple(tuple.Tuple{"not a long"})
 	g.Expect(errors.As(err, &argErr)).To(BeTrue(), "%v", err)

@@ -108,14 +108,33 @@ var _ = Describe("SaveRecordWithVersion", func() {
 					case "assigned":
 						Expect(saved.Version).NotTo(BeNil())
 						Expect(saved.Version.IsComplete()).To(BeFalse())
-						if readBack != "none" {
-							Expect(loadedVersion(store, 1)).To(Equal(saved.Version), "read back in the saving transaction")
-						}
 					case "supplied":
 						Expect(saved.Version).To(Equal(supplied))
 					}
+					inTx := loadedVersion(store, 1)
+					switch readBack {
+					case "none":
+						Expect(inTx).To(BeNil(), "read back in the saving transaction")
+					case "assigned":
+						Expect(inTx).To(Equal(saved.Version), "read back in the saving transaction")
+					case "supplied":
+						Expect(inTx).To(Equal(supplied), "read back in the saving transaction")
+					}
 				})
 				run(md, ks, format, func(store *FDBRecordStore) {
+					if format != 0 && !c.storeVersions {
+						// Not read back, but written to the legacy version space.
+						raw, err := store.context.Transaction().Get(store.versionKey(tuple.Tuple{int64(1)})).Get()
+						Expect(err).NotTo(HaveOccurred())
+						switch c.want {
+						case "none":
+							Expect(raw).To(BeNil())
+						case "assigned":
+							Expect(raw).To(HaveLen(VersionBytes))
+						case "supplied":
+							Expect(raw).To(Equal(supplied.ToBytes()))
+						}
+					}
 					v := loadedVersion(store, 1)
 					switch readBack {
 					case "none":

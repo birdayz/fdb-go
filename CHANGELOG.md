@@ -131,11 +131,11 @@ Each is described in full under Compatibility or Changed below.
   - The TEXT maintainer reads its text column as Java's `Tuple.getString` does. A non-string is a
     `ClassCastError` and a position past the key an `IndexOutOfBoundsError`; null and `""` are
     still skipped.
-  - BY_RANK bounds, SCORE_FOR_RANK ranks and the arguments of the long-arithmetic key functions
-    are taken with Java's `Number.longValue()`. Every Go integer carrier is accepted, with `uint64`/`*big.Int` keeping
-    their low 64 bits, and floats are truncated with NaN as 0. A float bound used to be an
-    unbounded endpoint and now selects a rank; a bound that is not a number is a
-    `ClassCastError`.
+  - BY_RANK bounds, SCORE_FOR_RANK and SCORE_FOR_TIME_WINDOW_RANK ranks and the arguments of the
+    long-arithmetic key functions are taken with Java's `Number.longValue()`. Every Go integer
+    carrier is accepted, with `uint64`/`*big.Int` keeping their low 64 bits, and floats are
+    truncated with NaN as 0. A float bound used to be an unbounded endpoint and now selects a
+    rank; a bound that is not a number is a `ClassCastError`, and a null rank answers null.
 - `keyspace` (RFC-275), in full:
   - `AddSubdirectory`/`AddSubdirectories(...) error` refuse:
     - a duplicate name;

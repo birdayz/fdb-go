@@ -758,7 +758,8 @@ func (store *FDBRecordStore) startExistingRecordLoads(tx fdb.ReadTransaction, wi
 	return loads
 }
 
-// saveTargetFor resolves record's type, Java form and primary key.
+// saveTargetFor resolves record's type, Java form and primary key. afterType, when set, runs
+// between the type and the key, where Java chooses the save's version.
 func (store *FDBRecordStore) saveTargetFor(record proto.Message, afterType func() error) (saveTarget, error) {
 	if record == nil {
 		return saveTarget{}, fmt.Errorf("cannot save nil record")

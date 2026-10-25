@@ -121,8 +121,9 @@ covers the four Low items and the Medium explicit-version/`VersionstampSaveBehav
      `javaDoubleToLong` (NaN gives 0, saturation, truncation). A null element stays
      unbounded. Any other value is a `*ClassCastError` naming the Java class.
      `javaNumberLongValue` is shared with the key-expression functions' `nullableLong`. The
-     SCORE_FOR_RANK aggregate and `ScoreForRank` take their rank the same way (`javaRank`);
-     a null rank answers null, as Java's `scoreForRank` does.
+     SCORE_FOR_RANK aggregate, `ScoreForRank` and the leaderboard's SCORE_FOR_TIME_WINDOW_RANK
+     take their rank the same way (`javaRank`); a null rank answers null, as Java's
+     `scoreForRank` does.
    - The TEXT maintainer returns `*ClassCastError` for a non-string text column and
      `*IndexOutOfBoundsError` for a position past the key. Null and `""` are still skipped.
 6. **Explicit-version saves.**
@@ -185,16 +186,18 @@ to the old behavior.
     `*big.Int` beyond the int64 range, float32, a negative double, NaN and ±Inf. A nil bound
     stays unbounded, and a bool is a `ClassCastError`.
   - `BY_RANK` with a double bound truncates, and with a string bound fails with
-    `ClassCastError`. SCORE_FOR_RANK accepts int32, double and uint64 ranks, refuses a
-    string, and answers a null rank with null.
+    `ClassCastError`. SCORE_FOR_RANK and SCORE_FOR_TIME_WINDOW_RANK accept int32, double and
+    uint64 ranks, refuse a string, and answer a null rank with null.
   - A TEXT index over `Concat(Literal(int64(5)), Field("name"))` fails the save with a
     `ClassCastError` naming `java.lang.Long`. Null and `""` text save with no entries, and a
     position past the key is an `IndexOutOfBoundsError`.
 - **Explicit versions,** on real FDB:
   - every behavior with no version and with a complete version, on metadata that stores
     versions and metadata that does not, at the default and the legacy format, read back in
-    the saving transaction and after commit. The exception is `NO_VERSION` with a version,
-    which is refused and has its own spec;
+    the saving transaction and after commit. A legacy-format store whose metadata stores no
+    versions reads none back, as Java's does, so there the written legacy version key is
+    checked instead. The exception is `NO_VERSION` with a version, which is refused and has its
+    own spec;
   - a supplied incomplete version, completed at commit;
   - `NO_VERSION` with a version, refused before the primary key and the existence check, with
     Java's message;

@@ -126,6 +126,48 @@ var _ = Describe("Rank and TEXT edges match Java", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("SCORE_FOR_TIME_WINDOW_RANK takes the rank as a Number, as Java does", func() {
+		idx := NewTimeWindowLeaderboardIndex("lb_rank_number", Ungrouped(Concat(Field("price"), Field("quantity"))))
+		md := demoMetaData(func(b *RecordMetaDataBuilder) { b.AddIndex("Order", idx) })
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+			m, err := store.GetIndexMaintainer(idx)
+			Expect(err).NotTo(HaveOccurred())
+			return nil, m.(*timeWindowLeaderboardIndexMaintainer).PerformWindowUpdate(
+				&TimeWindowLeaderboardWindowUpdate{UpdateTimestamp: 500, AllTime: true}, store,
+			)
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			Expect(err).NotTo(HaveOccurred())
+			for i, p := range []int32{100, 200, 300} {
+				_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(p), Quantity: proto.Int32(1000)})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			scoreForRank := func(rank any) (tuple.Tuple, error) {
+				return store.EvaluateAggregateFunction(ctx, nil,
+					&IndexAggregateFunction{Name: FunctionNameScoreForTimeWindowRank, Operand: idx.RootExpression, Index: idx.Name},
+					TupleRangeAllOf(tuple.Tuple{int64(0), int64(0), rank}), IsolationLevelSerializable)
+			}
+			for rank, want := range map[any]int64{int32(1): 200, float64(2.5): 300, uint64(0): 100} {
+				got, err := scoreForRank(rank)
+				Expect(err).NotTo(HaveOccurred(), "%v", rank)
+				Expect(got[0]).To(Equal(want), "%v", rank)
+			}
+			_, err = scoreForRank("1")
+			var cast *ClassCastError
+			Expect(errors.As(err, &cast)).To(BeTrue(), "%v", err)
+			got, err := scoreForRank(nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(BeNil(), "a null rank answers null")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("a rank bound converts as Java's Number.longValue()", func() {
 		huge, ok := new(big.Int).SetString("18446744073709551621", 10) // 2^64 + 5
 		Expect(ok).To(BeTrue())

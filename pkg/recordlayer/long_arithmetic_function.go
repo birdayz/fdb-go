@@ -196,10 +196,8 @@ func (e *KeyExpressionInvalidResultError) Error() string {
 
 func (*KeyExpressionInvalidResultError) JavaRecordCoreException() {}
 
-// javaTupleValueClassName is the Java class name of a tuple value
-// (getClass().getName() after TupleTypeUtil.toTupleAppropriateValue, Key.java:553-561),
-// used in InvalidResultException and ClassCastException messages. A Go carrier with no
-// Java counterpart keeps its Go type name, which no Java-produced value can be.
+// javaTupleValueClassName is a tuple value's Java class name after toTupleAppropriateValue
+// (Key.java:553-561); a Go-only carrier keeps its Go type name.
 func javaTupleValueClassName(v any) string {
 	switch x := v.(type) {
 	case int64, int, int32:
