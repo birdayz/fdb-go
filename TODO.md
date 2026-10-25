@@ -469,6 +469,20 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   fresh database hedges where libfdb_c would not. Port the budget and multiplier, then
   revisit the hedge tests that rely on a fresh database hedging.
 
+- [ ] **Read replica selection is best-of-two random.** C++ `loadBalance` sends the
+  first request to the alternative with the lowest `smoothOutstanding` (ties to the
+  lowest index) and the second to the next-lowest (`LoadBalance.actor.h:469-552`).
+  Go's `chooseTopTwo` picks the primary by two random choices and the backup by the
+  lowest metric among the rest (`client/loadbalance.go`). Port the C++ selection,
+  including its local-DC `countBest` cut-off, with a unit test per arm.
+
+- [ ] **A hedge race ends on the first reply.** Go's `raceReplies` returns whichever
+  reply arrives first, even a failure C++ retries in `loadBalance` (`process_behind`,
+  `server_overloaded`, a transport failure). C++ discards it, keeps waiting for the
+  other request, and sends further second requests to the remaining alternatives
+  while the first is outstanding (`LoadBalance.actor.h:648-686`,
+  `checkAndProcessResultImpl` `:325-378`). Port it with a synctest per arm.
+
 - [ ] **Connection monitor has no `resetPing` arm.** C++ `connectionMonitor` also
   ends a PING wait on `peer->resetPing.onTrigger()` (`FlowTransport.actor.cpp:696-698`),
   triggered when packets arrive from an incompatible peer (`:1596`) and when the last

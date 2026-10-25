@@ -32,19 +32,25 @@ All in `loadBalance` (`fdbrpc/include/fdbrpc/LoadBalance.actor.h`) with the
    request. Otherwise the delay is `secondMultiplier × nextTime +
    BASE_SECOND_REQUEST_TIME`, or zero when `bestTime` exceeds
    `INSTANT_SECOND_REQUEST_MULTIPLIER` times that.
-2. **Accrual** (`:692-701`). Whenever a request's reply arrives while it is the
-   only one outstanding, success or error, `secondMultiplier = max(m − DECAY,
-   1.0)` and `secondBudget = min(b + GROWTH, MAX)`. A transport failure is such a
-   reply: `tryGetReply` completes with `request_maybe_delivered`
-   (`fdbrpc/include/fdbrpc/fdbrpc.h:775-794`). Every later attempt in the same
-   call is a lone request too (`firstRequestData` is reset by
-   `checkAndProcessResult`, `:384-398`), so its reply accrues as well.
+2. **Accrual** (`:687-719`). The loop's last branch sends a request when none of
+   the call's requests is outstanding and waits for it alone. When that reply
+   arrives before a second request was sent, success or error,
+   `secondMultiplier = max(m − DECAY, 1.0)` and `secondBudget = min(b + GROWTH,
+   MAX)` (`:694-701`). A transport failure is such a reply: `tryGetReply` completes
+   with `request_maybe_delivered` (`fdbrpc/include/fdbrpc/fdbrpc.h:775-794`). A
+   failed reply resets `firstRequestData` (`:384-398`), so the next alternative is
+   sent through the same branch and its reply accrues too. Nothing else accrues:
+   not the replies of a race (`:648-686`), and not the first request's reply when
+   the delay spent the budget but no other alternative was available, which the
+   `!stream` branch waits for alone (`:640-647`).
 3. **Spend** (`:710-716`). When the delay fires first, the second request is sent
    only if `secondBudget >= 1.0`; it then costs 1.0 and raises
    `secondMultiplier` by GROWTH. Without budget the call keeps waiting for the
-   first reply, which then accrues. Replies that arrive while two requests are
-   outstanding change neither field (`:663-689`). The delay is reset after the
-   first attempt (`:732`): a call hedges at most once.
+   first reply, which then accrues. The delay is reset after the first attempt
+   (`:732`), so a call spends at most once. (After a paid hedge fails while the
+   first request is still outstanding, C++ sends unpaid further second requests
+   to the remaining alternatives, `:648-686`; Go waits for the primary instead,
+   see Out of scope.)
 4. **Which reads.** The model is passed only when `enableLocalityLoadBalance`,
    which `Database::createDatabase` sets (`fdbclient/NativeAPI.actor.cpp:2391,2403`):
    `getValue` (`:3673-3687`), `getKey` (`:3817-3824`), `getExactRange` (`:4328-4335`)
@@ -71,27 +77,43 @@ does not, and which the C++ delay formula below would turn into instant hedges.
 - `QueueModel` gains `secondMultiplier` and `secondBudget` under its mutex, with
   the six knobs as constants, and three methods:
   `secondDelay(best, next)` (rule 1), `firstReplied()` (rule 2) and
-  `spendSecond() bool` (rule 3).
-- `sendFrameWithHedge` takes the model. It calls `firstReplied` for every reply,
-  or transport failure that is not the caller's cancellation, of a request that is
-  alone in flight: the primary before the delay, the primary after a delay that
-  found no budget, a single-replica read, and each fail-over request. When the
-  delay fires it first takes a primary reply that is already queued (C++ `choose`
-  checks the reply first), then sends the hedge only if `spendSecond` allows it.
-  A Go reply timeout or a cancelled caller is not a reply and accrues nothing.
+  `spendSecond() bool` (rule 3). The Go-only `backupRequestDelay` (10 ms) and
+  `secondMultiplier` (2.0) constants go.
+- `sendFrameWithHedge` takes the model. It calls `firstReplied` exactly where
+  C++'s last branch accrues: on the reply, or a transport failure that is not the
+  caller's cancellation, of the primary before the delay or after a delay that
+  found no budget, of a single-replica read, and of the fail-over request sent
+  after the primary failed. It does not accrue on race replies, nor when a paid
+  hedge fails to send and Go waits for the primary alone (the `!stream` case).
+  When the delay fires it first takes a primary reply that is already queued (C++
+  `choose` checks the reply first), then sends the hedge only if `spendSecond`
+  allows it. A Go reply timeout or a cancelled caller is not a reply and accrues
+  nothing.
 - `secondDelay` is computed only when there is a backup. `hedgeResult` reports
   whether the backup was tried, so `getValue`'s sequential fallback no longer
   skips a replica that was never sent the read.
-- The `getValue` fallback's single-server read accrues on its reply (rule 2).
+- The `getValue` fallback's single-server read is a lone request; it accrues on
+  its reply (rule 2).
 - `sendWatch` stops updating the `QueueModel` (rule 4).
 - `SetHedgeEnabled`/`HedgeEnabled` stay, default on. On, the client hedges as
   libfdb_c does. Off, no read sends a second request; the budget still accrues,
   so turning hedging back on resumes from it.
+- The legacy read-path copy in `request_transcript_legacy_test.go` takes the same
+  signatures. Its comparison runs with hedging off, so the shared budget cannot
+  make the two paths' requests differ.
+- Docs and comments that describe the unbudgeted hedge are corrected: the
+  `QueueModel`, `hedgeEnabled` and `SetHedgeEnabled` comments (client and facade),
+  the `pkg/fdbgo/README.md` parity row, the TODO.md item (checked off), and the
+  test comments and `loadbalance_test.go` expectations built on the 10 ms floor.
 
-Out of scope, recorded in TODO.md: Go picks the primary by best-of-two random
-choices, where C++ takes the lowest `smoothOutstanding` and the next-lowest as
-the second alternative (`:469-552`). The delay uses the latencies of the
-replicas Go picked.
+Out of scope, recorded in TODO.md by this change:
+- Go picks the primary by best-of-two random choices, where C++ takes the lowest
+  `smoothOutstanding` and the next-lowest as the second alternative (`:469-552`).
+  The delay uses the latencies of the replicas Go picked.
+- In a race, Go takes the first reply even when it is a failure C++ retries
+  (`process_behind`, `server_overloaded`, a transport failure); C++ keeps waiting
+  for the other request and sends unpaid second requests to the remaining
+  alternatives (`:648-686`, `checkAndProcessResultImpl` `:325-378`).
 
 ## Performance
 
@@ -117,17 +139,29 @@ changes.
 ## Test plan
 
 - Unit (synctest, the `hedge_timer` seam): accrual of 0.05 and multiplier decay
-  on a lone reply, on a transport failure and on each fail-over reply; no accrual
-  on a reply timeout, on cancellation or in a race; the cap at 100 and the floor
-  at 1.0; spend at the delay with budget 1.0 and none with 0.95; the delay and
-  instant arm values from `secondDelay`; the reply-first order when the delay and
-  the reply are both ready.
-- Request transcript (real FDB, sim dialer, two aliases of the storage server, the
-  first reply held past the delay): a fresh database sends one `GetValueRequest`,
-  `GetKeyRequest` and `GetKeyValuesRequest` per read, where the previous code sent
-  two; with a budget of 1.0 each read sends the hedge and the budget returns to 0.
+  on a lone reply, on a transport failure and on the fail-over reply after a
+  failed primary; none on a reply timeout, on cancellation, in a race, or while
+  waiting for the primary after a paid hedge failed to send; the cap at 100 and the
+  floor at 1.0; spend at the delay with budget 1.0 (cost 1.0, multiplier +0.01) and
+  none with 0.95; with budget 2.0 and both replies slow, exactly one hedge; the
+  delay and instant arm values from `secondDelay`; the reply-first order when the
+  delay and the reply are both ready.
+- Request transcript (real FDB, sim dialer, two aliases of the storage server):
+  for `GetValueRequest`, `GetKeyRequest`, `GetKeyValuesRequest` and
+  `GetMappedKeyValuesRequest`,
+  - a fresh database sends one request per read, with the first reply held
+    100 ms, far past the 1.5 ms delay, where the previous code sent two. That no
+    hedge is sent does not depend on the hold: the budget is 0. The hold makes the
+    delay fire first, the arm the unit tests pin deterministically;
+  - with a budget of 1.0 the read sends the hedge, the budget returns to 0 and the
+    multiplier to 1.01. The first reply is held until the hedge is recorded, so
+    the delay always fires first;
+  - with hedging off and a budget of 1.0 the read sends one request and the budget
+    grows; turned back on, the next read spends it.
 - `getValue` fallback: with no budget and the primary's reply lost, the fallback
   tries the backup.
+- Watch: after a watch fires, the server's `QueueModel` entry (latency,
+  outstanding) and the budget are unchanged.
 - Existing hedge tests (`TestReadTagSamplingOneDrawPerRequest`,
   `TestNativeReadTagSampling`, the hedge unit tests) set up the budget they need
   instead of relying on a fresh database hedging. The fallback spec's budget of
