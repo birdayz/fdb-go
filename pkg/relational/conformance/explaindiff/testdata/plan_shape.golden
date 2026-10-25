@@ -1164,7 +1164,7 @@ shape:       RecordQueryInMemorySortPlan
 shape:         RecordQueryScanPlan
 === aggregate_order_by_java.yaml#11 expect-error=42602
 sql:   SELECT SUM(s.score) AS total, s.player AS "SUM(S.SCORE)" FROM scores s, scores t WHERE s.id = t.id GROUP BY s.player, s.game ORDER BY SUM(s.score) DESC
-plan:  <PLAN-ERROR: 42602: SUM(S__2SCORE) it not a valid protobuf identifier: SUM(S__2SCORE) it not a valid protobuf identifier>
+plan:  <PLAN-ERROR: 42602: SUM(S__2SCORE) it not a valid protobuf identifier>
 === aggregate_order_by_java.yaml#12
 sql:   SELECT (SELECT id AS score FROM scores ORDER BY 1 DESC LIMIT 1) AS picked FROM scores LIMIT 1
 plan:  Limit(1, Map(Scan(SCORES), {PICKED: (SCALAR_SUBQUERY q$0)}))
@@ -15294,10 +15294,10 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === overflow.yaml#6 expect-error=XXXXX
 sql:   SELECT 1e400 FROM t WHERE id = 1
-plan:  <PLAN-ERROR: XXXXX: For input string: "1e400": For input string: "1e400">
+plan:  <PLAN-ERROR: XXXXX: For input string: "1e400">
 === overflow.yaml#7 expect-error=XXXXX
 sql:   SELECT -1e400 FROM t WHERE id = 1
-plan:  <PLAN-ERROR: XXXXX: For input string: "-1e400": For input string: "-1e400">
+plan:  <PLAN-ERROR: XXXXX: For input string: "-1e400">
 === overflow.yaml#8 expect-error=22003
 sql:   SELECT SUM(a) FROM t WHERE id IN (1, 3)
 plan:  Map(StreamingAgg(keys=[], InJoin(Scan(T, [=]), binding)), {_0: _current.SUM(A)#0})
@@ -16262,7 +16262,7 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === quoted_identifier_aggregate_labels.yaml#13 expect-error=42602
 sql:   SELECT "Q'"."Z'", "R'"."Z'" FROM (SELECT "Amount" AS "Z'" FROM sales WHERE id = 1) "Q'", (SELECT "Amount" AS "Z'" FROM sales WHERE id = 2) "R'"
-plan:  <PLAN-ERROR: 42602: Z' it not a valid protobuf identifier: Z' it not a valid protobuf identifier>
+plan:  <PLAN-ERROR: 42602: Z' it not a valid protobuf identifier>
 === quoted_identifier_aggregate_labels.yaml#14
 sql:   SELECT * FROM (SELECT COUNT(CASE WHEN "Region" = ')' THEN "Amount" END) FROM sales) d
 plan:  Map(StreamingAgg(keys=[], Scan(SALES)), {_0: COALESCE(_current.COUNT(CASEWHENRegion=')'THENAmountEND)#0, 0)})

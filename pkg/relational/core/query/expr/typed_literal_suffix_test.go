@@ -93,6 +93,9 @@ func TestWalkExpression_TypedNumericSuffixes(t *testing.T) {
 		if err == nil || !errors.As(err, &nfe) || nfe.Input != "99999999999" {
 			t.Fatalf("99999999999I: expected Integer.parseInt's NumberFormatException, got %v", err)
 		}
+		if err.Error() != "XXXXX: "+nfe.Error() {
+			t.Fatalf("99999999999I renders %q, want the message once", err.Error())
+		}
 	})
 
 	t.Run("exponent-only float suffix fails like Java", func(t *testing.T) {

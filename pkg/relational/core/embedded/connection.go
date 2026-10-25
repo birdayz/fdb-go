@@ -294,6 +294,9 @@ type embeddedTx struct {
 	// an abort it already started; nil when nothing is bound.
 	detachCtx func()
 
+	// uncancelled records that an abort's Cancel did not return (it panicked).
+	uncancelled atomic.Bool
+
 	// scanState is the TRANSACTION-scoped scanned-records/scanned-bytes/time
 	// counter set (RFC-198 Decision 5). Minted lazily on first use through
 	// NewScanLimiterStateIn(env) — the seamed constructor — and shared by
@@ -440,6 +443,30 @@ func (tx *embeddedTx) abort(ctx context.Context) {
 	tx.abortCause.CompareAndSwap(nil, &cause)
 	tx.terminate()
 	if tx.rctx != nil { // the warm-up's planning-only transaction has none
+		// Set until Cancel returns, so a Cancel that panicked is retried when
+		// the transaction is released (retryCancel).
+		tx.uncancelled.Store(true)
+		tx.rctx.Cancel()
+		tx.uncancelled.Store(false)
+	}
+}
+
+// abortOnContextGoroutine is abort on an AfterFunc goroutine, outside every
+// recoverInto: a panic closes the connection atomically (activeTx is not ours).
+func (tx *embeddedTx) abortOnContextGoroutine(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			logRecoveredPanic(r)
+			tx.conn.closed.Store(true)
+		}
+	}()
+	tx.abort(ctx)
+}
+
+// retryCancel cancels the FDB transaction when an abort's Cancel panicked; a
+// call in flight on it still ends only with its own FDB error.
+func (tx *embeddedTx) retryCancel() {
+	if tx.uncancelled.Swap(false) {
 		tx.rctx.Cancel()
 	}
 }
@@ -460,7 +487,7 @@ func (tx *embeddedTx) bindContext(ctx context.Context) {
 	if ctx.Done() == nil {
 		return
 	}
-	stop := afterContext(ctx, func() { tx.abort(ctx) })
+	stop := afterContext(ctx, func() { tx.abortOnContextGoroutine(ctx) })
 	tx.detachCtx = func() { stop() }
 }
 
@@ -492,7 +519,7 @@ func (tx *embeddedTx) detachContext() {
 // runBound runs fn with ctx bound to the transaction: if ctx ends first, the
 // transaction is aborted and the call returns ctx's error.
 func (tx *embeddedTx) runBound(ctx context.Context, fn func(*recordlayer.FDBRecordContext) (any, error)) (result any, err error) {
-	stop := afterContext(ctx, func() { tx.abort(ctx) })
+	stop := afterContext(ctx, func() { tx.abortOnContextGoroutine(ctx) })
 	defer func() {
 		if stop() {
 			result, err = nil, ctx.Err()
@@ -533,13 +560,14 @@ func (tx *embeddedTx) Commit() (err error) {
 	// so the BeginTx binding goes first.
 	tx.detachContext()
 	if tx.terminated.Load() {
+		tx.retryCancel()
 		return tx.endedError()
 	}
 	return translateFDBError(tx.rctx.CommitWithHooks())
 }
 
-// Rollback cancels the FDB transaction and releases it from the connection.
-// On a transaction that has already ended it only releases it.
+// Rollback cancels the FDB transaction and releases it from the connection. An
+// ended transaction is only released, or cancelled again if its abort's Cancel panicked.
 func (tx *embeddedTx) Rollback() (err error) {
 	defer tx.conn.recoverInto(&err)
 	tx.detachContext()
@@ -548,6 +576,7 @@ func (tx *embeddedTx) Rollback() (err error) {
 	if !ended && tx.rctx != nil { // the warm-up's planning-only transaction has none
 		tx.rctx.Cancel()
 	}
+	tx.retryCancel()
 	return nil
 }
 
@@ -904,9 +933,14 @@ var seriousLog = func(msg string, attrs ...any) {
 // message because the panic value may carry schema/row data. It deliberately does
 // NOT re-panic by type — see TODO-production.md P0.3.
 func recoveredPanicError(r any) error {
+	logRecoveredPanic(r)
+	return api.NewError(api.ErrCodeInternalError, "internal error")
+}
+
+// logRecoveredPanic logs a recovered panic SERIOUS, with the stack of its site.
+func logRecoveredPanic(r any) {
 	seriousLog("recovered panic in the embedded SQL connection",
 		"panic", r, "stack", string(debug.Stack()))
-	return api.NewError(api.ErrCodeInternalError, "internal error")
 }
 
 // RecoveredPanicError is recoveredPanicError for the driver's own entry
