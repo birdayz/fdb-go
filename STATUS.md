@@ -53,7 +53,7 @@ planned for v0.3.0; each has a mitigation where one exists.
 
 - `just test` is the **fast lane**: unit tests, nogo and bounded integration
   tests. It excludes `test-full`, `conformance_java`, `stress` and manual targets.
-- `just test-full` includes all Bazel test targets, including the heavyweight
+- `just test-full` includes all Bazel test targets except `realcluster` ones, including the heavyweight
   Java conformance, client differential, SQL and stress suites at their default
   budgets. It requires Docker and the declared external dependencies. It is not
   every extended seed, race or active-fuzz configuration.

@@ -1,0 +1,19 @@
+--- a/internal/core/bootstrap.go
++++ b/internal/core/bootstrap.go
+@@ -55,6 +55,16 @@
+ 		fallbackCwd = os.TempDir()
+ 	}
+ 
++	// fdb.dev: a Bazel test action (TEST_TMPDIR set) is its own session. Each runs
++	// in a PID namespace, so concurrent actions share the parent PID below and,
++	// started within one clock tick, its create time: they would share one reaper,
++	// and one action's reaper teardown would fail another's container start.
++	if os.Getenv("TEST_TMPDIR") != "" {
++		sessionID = uuid.New().String()
++		projectPath = fallbackCwd
++		return
++	}
++
+ 	processes, err := process.Processes()
+ 	if err != nil {
+ 		sessionID = uuid.New().String()

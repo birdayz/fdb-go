@@ -52,6 +52,7 @@
   "SA1019": {
     "exclude_files": {
       "metadata_proto": "uses deprecated proto fields intentionally",
+      "pkg/testcontainers/foundationdb/reaper\\.go$": "testcontainers.NewReaper is the only API that hands out a reaper connection",
       "metadata_extension_options": "reads the deprecated (field).indexed option, as Java's setRecords does",
       "key_expression_absent_child_conformance": "sets the deprecated record_count_key, which Java's loader still reads",
       "conformance/extension_options_conformance_test\\.go$": "tests Java's legacy (field).indexed option",

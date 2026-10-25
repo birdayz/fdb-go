@@ -2320,7 +2320,7 @@ multi-page auto-commit SELECT, which stays tracked only.
 - [x] **Medium:** five of the seven `.github/workflows/ci.yml` jobs have no `timeout-minutes`. Fixed in #998.
 - [x] **Medium:** the Java oracle's Maven dependencies are unpinned: `maven.install` has no
   `lock_file` (`MODULE.bazel:130,275`). Fixed in #1008 (`maven_install.json`, `just maven-repin`).
-- [ ] **Low:** tests in no lane: `pkg/relational/core/parser/yamsql_corpus_test.go` (`yamsql`
+- [x] **Low:** tests in no lane: `pkg/relational/core/parser/yamsql_corpus_test.go` (`yamsql`
   tag, run only by a `go test` recipe), `pkg/relational/sqldriver/stress/stress_10m_test.go`
   (`realcluster`) and `tools/bazelscaleset` (no BUILD file, no workflow). The libfdbc tests
   have their own item. Fixed in #1008: the corpus test joins `parser_test`, the 10M scales get a

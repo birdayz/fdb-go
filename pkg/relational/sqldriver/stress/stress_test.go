@@ -37,7 +37,8 @@ var clusterFilePath string
 // an instruction rather than an aspiration: the 10M scales in
 // stress_10m_test.go exceed what one Docker node sustains, and without this
 // there was no way to run them anywhere, because TestMain always started a
-// container. Unset (the normal case) keeps the testcontainer path unchanged.
+// container. Unset (the normal case) keeps the testcontainer path, except in the
+// 10M binary, which then refuses to run.
 const clusterFileEnv = "FDB_STRESS_CLUSTER_FILE"
 
 // realClusterOnly is set by the 10M scales: their binary must never fall back

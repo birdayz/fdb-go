@@ -95,6 +95,9 @@ func run(ctx context.Context, prober *dockerProber, img string, opts ...testcont
 	if err := prober.check(ctx); err != nil {
 		return nil, err
 	}
+	if err := holdReaper(ctx); err != nil {
+		return nil, err
+	}
 	return retryContainerStart(ctx, maxContainerStartAttempts,
 		func(attempt int) time.Duration { return time.Duration(attempt) * time.Second },
 		func() (*Container, error) { return runOnce(ctx, img, opts...) })

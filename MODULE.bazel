@@ -22,6 +22,13 @@ go_deps.module_override(
     ],
     path = "github.com/apple/foundationdb/bindings/go",
 )
+
+# One testcontainers session (and reaper) per Bazel test action; see the patch.
+go_deps.module_override(
+    patch_strip = 1,
+    patches = ["//patches:testcontainers-session-per-bazel-test.patch"],
+    path = "github.com/testcontainers/testcontainers-go",
+)
 use_repo(
     go_deps,
     "build_buf_go_protoyaml",
