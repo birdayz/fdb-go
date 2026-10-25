@@ -986,17 +986,10 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			Query:          "SELECT 1 + 1",
 		},
 		{
-			// WHERE with a single bare-paren predicate: Java's parser
-			// treats `(boolean_expr)` as a recordConstructor (single-
-			// element tuple). Expression.toUnderlyingPredicate's cast
-			// to BooleanValue then fails with the verbatim message
-			// "expected BooleanValue but got RecordConstructorValue".
-			// Go aligns at the WHERE entry sites
-			// (rejectTopLevelParenthesizedWhere) — the check fires on
-			// the WHERE expression's TOP-LEVEL only. Compound shapes
-			// like `(a) AND (b)` are accepted (the LogicalExpression
-			// surface type is BooleanValue even with RecordConstructor
-			// leaves underneath).
+			// WHERE with a single bare-paren predicate: Java reads
+			// `(boolean_expr)` as a one-field record and refuses it (42804,
+			// DocClaimsJavaProbe `where_paren`); Go answers it, a Go
+			// extension in DIVERGENCES.md. `(a) AND (b)` answers in both.
 			Name:           "where_paren_top_level_rejected",
 			SchemaTemplate: "CREATE TABLE T_WPT (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_WPT VALUES (1, 10), (2, 20)"},
@@ -1018,12 +1011,6 @@ func SeedRunCorpus() []plandiff.RunQuery {
 		// the existing yamsql ORDER BY rejection scenarios
 		// (`order_by_expression`, `order_by_dupe_col`,
 		// `order_by_limit`, etc.); not a separate corpus entry.
-		// NOTE: `WHERE (boolean_expr)` with bare parens: Java 4.12.11 rejected it
-		// ("expected BooleanValue but got RecordConstructorValue"); Go accepts it.
-		// NOTE: a `WITH RECURSIVE` body with no self-reference: Java 4.12.11
-		// rejected it ("condition is not met!"); Go accepts it, as the SQL spec
-		// does. Java 4.14.2.0's QueryVisitor plans it as a plain named query.
-		// Both await a 4.14.2.0 probe (TODO.md, "Quality review 2026-10-24").
 		// NOTE: `LIMIT N` clause is a known one-sided divergence: Java
 		// rejects standalone `... LIMIT N` (pagination is JDBC-only via
 		// `Statement.setMaxRows`; DIVERGENCES.md lists it). Go's embedded engine implements
@@ -1037,37 +1024,17 @@ func SeedRunCorpus() []plandiff.RunQuery {
 		// divergence. Java's `ExpressionVisitor.visitInPredicate`
 		// asserts `inList().queryExpressionBody() == null` with
 		// UNSUPPORTED_QUERY ("IN predicate does not support nested
-		// SELECT"), and the earlier `AstNormalizer.visitInPredicate`
-		// NPEs on the same shape (it walks `ExpressionsContext`, which
-		// is null when the IN list comes from a subquery). Go rejects
+		// SELECT"), as `AstNormalizer.visitInPredicate` already does
+		// before it. Go rejects
 		// with 0AF00 in every position (SELECT/DML WHERE, JOIN ON,
 		// projection); the yamsql corpus pins that. This run corpus has
 		// no entry because there is nothing to compare beyond "both
-		// reject" — Java's wording is an NPE stack trace and is not
-		// portable. SeedCorpus (the explain-only plan-tree half, far
+		// reject". SeedCorpus (the explain-only plan-tree half, far
 		// below) likewise has none, and the comment where the entry
 		// used to sit records why a text-echo "success" there was not
 		// evidence of support.
-		// NOTE: COUNT/SUM/AVG/MIN/MAX with DISTINCT are rejected by
-		// BOTH engines — Java NPEs (visitor unconditionally calls
-		// `AggregateWindowedFunctionContext.ALL().getText()` which is
-		// null when DISTINCT is present); Go's embedded engine rejects
-		// at execution time with `ErrCodeUnsupportedOperation`
-		// "DISTINCT aggregate %s is not supported"
-		// (`pkg/relational/core/embedded/aggregate.go` and
-		// `select_query_full.go`). Same architectural reason in both
-		// engines: visitor doesn't handle the DISTINCT case.
-		//
-		// NOT included as a cross-engine corpus entry because Java's
-		// NPE message references the parser-internal class name
-		// (`AggregateWindowedFunctionContext.ALL()`) rather than the
-		// SQL keyword `DISTINCT`, so it can't share a meaningful
-		// substring with Go's clean error message. The rejection
-		// alignment is pinned on the Go side via
-		// `count_distinct.yaml`, `count_distinct_join.yaml`,
-		// `distinct_aggregates.yaml`, `aggregate_expr.yaml`, and
-		// `group_by_validation.yaml`'s `error_code: "0A000"` tests
-		// under the yamsql harness.
+		// DISTINCT aggregates are rejected with 0AF00 by both engines;
+		// DocClaimsJavaProbe's count_distinct pins each engine's message.
 		// NOTE: an inner join with NO join condition — `a JOIN b`,
 		// `a INNER JOIN b`, `a CROSS JOIN b` — is a GO-ONLY CAPABILITY,
 		// not a shared shape. Java NPEs on all three
@@ -3395,8 +3362,8 @@ func SeedRunCorpus() []plandiff.RunQuery {
 		},
 
 		// ===== CASE expression edge cases =====
-		// The simple-CASE form is silently broken in fdb-relational
-		// (always falls through to ELSE); we use only searched-CASE here.
+		// The simple-CASE form is silently broken in fdb-relational (the ELSE,
+		// or the last THEN without one); we use only searched-CASE here.
 		{
 			// CASE WHEN ... THEN ... (no ELSE) — defaults to NULL when
 			// no WHEN matches. Pins three-valued semantics when ELSE is
@@ -5264,14 +5231,10 @@ func SeedRunCorpus() []plandiff.RunQuery {
 
 		// ===== Negative: WITH RECURSIVE non-self-referencing =====
 		{
-			// fdb-relational 4.11.1.0 rejects `WITH RECURSIVE name AS
-			// (non-self-ref-body)` with "condition is not met!" via its
-			// semantic-verifier check. SQL spec / Postgres permit the
-			// form (RECURSIVE is a scope enabler, not a requirement).
-			// Go aligns at execution time in select_dispatch.go (when
-			// `recursiveKeyword && !containsTableRef(body, cteName)`)
-			// emitting the SAME verbatim message. ExpectErrorMessage
-			// pins byte-equality. Per-entry isolation prevents Java
+			// Both engines refuse `WITH RECURSIVE name AS
+			// (non-self-ref-body)` with "condition is not met!" (Java
+			// 4.14.2.0 XX000, Go 0A000 in plan_visitor.go), though SQL
+			// permits it. ExpectErrorMessage pins byte-equality. Per-entry isolation prevents Java
 			// state-leak from stalling other negative entries.
 			Name:           "recursive_cte_non_self_ref_rejected",
 			SchemaTemplate: "CREATE TABLE T_RNS (id BIGINT, parent BIGINT, PRIMARY KEY (id))",
@@ -14356,7 +14319,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT sub.n FROM (SELECT DISTINCT n FROM T_ND_04 WHERE n >= 20) AS sub ORDER BY sub.n",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java's Cascades planner can't plan DISTINCT inside a derived table (same upstream bug as TODO #42 compound DISTINCT). Go correctly deduplicates.",
+				Reason:    "Java cannot plan this ordered derived-table shape. Plain SELECT DISTINCT instead returns duplicates (DocClaimsJavaProbe); Go correctly deduplicates.",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(20)}, {float64(30)},
@@ -14803,7 +14766,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT g, COUNT(*) FROM T_GBN_01 GROUP BY g ORDER BY g",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java rejects all GROUP BY forms with UnableToPlanException (TODO #39). Go correctly groups NULL into its own bucket per SQL spec.",
+				Reason:    "Java cannot plan a GROUP BY no index orders (UnableToPlanException, TODO #39). Go correctly groups NULL into its own bucket per SQL spec.",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{nil, float64(2)},
@@ -15191,7 +15154,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT grp, SUM(v) FROM T_GBY_01 GROUP BY grp ORDER BY grp",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java rejects GROUP BY with UnableToPlanException (TODO #39). Go correctly groups and aggregates per SQL spec.",
+				Reason:    "Java cannot plan a GROUP BY no index orders (UnableToPlanException, TODO #39). Go correctly groups and aggregates per SQL spec.",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(30)},
@@ -15208,7 +15171,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT a, b, COUNT(*) FROM T_GBY_02 GROUP BY a, b ORDER BY a, b",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java rejects GROUP BY with UnableToPlanException (TODO #39). Go correctly groups by multiple keys per SQL spec.",
+				Reason:    "Java cannot plan a GROUP BY no index orders (UnableToPlanException, TODO #39). Go correctly groups by multiple keys per SQL spec.",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(1), float64(2)},
@@ -15225,7 +15188,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT grp, SUM(v) FROM T_GBY_03 GROUP BY grp ORDER BY grp",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java rejects GROUP BY with UnableToPlanException (TODO #39). Go correctly groups NULL into its own bucket per SQL spec.",
+				Reason:    "Java cannot plan a GROUP BY no index orders (UnableToPlanException, TODO #39). Go correctly groups NULL into its own bucket per SQL spec.",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{nil, float64(50)},
@@ -15241,7 +15204,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT grp, COUNT(*), SUM(v) FROM T_GBY_04 GROUP BY grp ORDER BY grp",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java rejects GROUP BY with UnableToPlanException (TODO #39). Go correctly aggregates the single group per SQL spec.",
+				Reason:    "Java cannot plan a GROUP BY no index orders (UnableToPlanException, TODO #39). Go correctly aggregates the single group per SQL spec.",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(3), float64(60)},
@@ -15254,7 +15217,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			SetupSqls:      nil,
 			Query:          "SELECT grp, COUNT(*) FROM T_GBY_05 GROUP BY grp ORDER BY grp",
 			Divergence: &plandiff.Divergence{
-				Reason:         "Java rejects GROUP BY with UnableToPlanException (TODO #39). Go correctly returns zero groups for empty table per SQL spec.",
+				Reason:         "Java cannot plan a GROUP BY no index orders (UnableToPlanException, TODO #39). Go correctly returns zero groups for empty table per SQL spec.",
 				Direction:      plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{},
 			},
@@ -15525,7 +15488,8 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			Query: "SELECT id, CAST(v AS DOUBLE) FROM T_DBL_08 ORDER BY id",
 		},
 		// ===== DISTINCT patterns =====
-		// Java's Cascades planner can't plan DISTINCT (TODO #42).
+		// Java cannot plan these ordered shapes; plain SELECT DISTINCT instead
+		// returns duplicates (DocClaimsJavaProbe).
 		{
 			Name:           "distinct_basic",
 			SchemaTemplate: "CREATE TABLE T_DST_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
@@ -15534,7 +15498,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT DISTINCT v FROM T_DST_01 ORDER BY v",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java Cascades planner can't plan DISTINCT (TODO #42). Go correctly deduplicates.",
+				Reason:    "Java cannot plan this ordered shape; plain SELECT DISTINCT instead returns duplicates (DocClaimsJavaProbe). Go correctly deduplicates.",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(10)}, {float64(20)}, {float64(30)},
@@ -15549,7 +15513,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT DISTINCT a, b FROM T_DST_02 ORDER BY a, b",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java Cascades planner can't plan DISTINCT (TODO #42). Go correctly deduplicates multi-column.",
+				Reason:    "Java cannot plan this ordered shape; plain SELECT DISTINCT instead returns duplicates (DocClaimsJavaProbe). Go correctly deduplicates multi-column.",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(10)}, {float64(1), float64(20)}, {float64(2), float64(10)},
@@ -15564,7 +15528,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT DISTINCT v FROM T_DST_03 ORDER BY v",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java Cascades planner can't plan DISTINCT (TODO #42).",
+				Reason:    "Java cannot plan this ordered shape; plain SELECT DISTINCT instead returns duplicates (DocClaimsJavaProbe).",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(42)},
@@ -15579,7 +15543,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT DISTINCT v FROM T_DST_04 ORDER BY v",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java Cascades planner can't plan DISTINCT (TODO #42).",
+				Reason:    "Java cannot plan this ordered shape; plain SELECT DISTINCT instead returns duplicates (DocClaimsJavaProbe).",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(10)}, {float64(20)}, {float64(30)},
@@ -15594,7 +15558,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT DISTINCT v FROM T_DST_05 ORDER BY v",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java Cascades planner can't plan DISTINCT (TODO #42). Go correctly deduplicates including NULL.",
+				Reason:    "Java cannot plan this ordered shape; plain SELECT DISTINCT instead returns duplicates (DocClaimsJavaProbe). Go correctly deduplicates including NULL.",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{nil}, {float64(10)}, {float64(20)},
@@ -15609,7 +15573,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT COUNT(DISTINCT v) FROM T_DST_06",
 			Divergence: &plandiff.Divergence{
-				Reason:          "Both reject COUNT(DISTINCT) but Java throws NPE (ALL() returns null for DISTINCT token), Go gives clean rejection.",
+				Reason:          "Both reject COUNT(DISTINCT) with 0AF00; the messages differ.",
 				Direction:       plandiff.DivergenceBothErrorMessagesDrift,
 				GoErrorContains: "DISTINCT aggregate COUNT is not supported",
 			},
@@ -15620,7 +15584,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			SetupSqls:      nil,
 			Query:          "SELECT DISTINCT v FROM T_DST_07 ORDER BY v",
 			Divergence: &plandiff.Divergence{
-				Reason:         "Java Cascades planner can't plan DISTINCT (TODO #42).",
+				Reason:         "Java cannot plan this ordered shape; plain SELECT DISTINCT instead returns duplicates (DocClaimsJavaProbe).",
 				Direction:      plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{},
 			},
@@ -17017,7 +16981,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT id, CASE v WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END FROM T_CSE_01 ORDER BY id",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java's visitCaseExpressionFunctionCall is a no-op (visitChildren) that always falls through to ELSE. Go correctly evaluates simple CASE.",
+				Reason:    "Java's visitCaseExpressionFunctionCall is a no-op (visitChildren) that answers the ELSE, or the last THEN without one. Go correctly evaluates simple CASE.",
 				Direction: plandiff.DivergenceJavaWrongRowsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), "one"},

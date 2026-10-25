@@ -1,7 +1,7 @@
 // Go-internal continuation for the hash-based SELECT DISTINCT executor.
 //
-// SELECT DISTINCT is a Go-only read-side extension — Java's fdb-relational SQL
-// layer never dedups it, and Java's record-layer value-distinct
+// Java's fdb-relational SQL layer never dedups SELECT DISTINCT (DIVERGENCES.md),
+// and Java's record-layer value-distinct
 // (RecordQueryUnorderedDistinctPlan) uses a fresh-per-page HashSet that is NOT
 // carried across continuations. There is therefore NO Java wire format to
 // match here; this continuation is purely Go-internal, so it lives in the Go

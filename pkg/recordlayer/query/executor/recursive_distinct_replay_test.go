@@ -60,12 +60,11 @@ func drainOneRowPages(t *testing.T, plan plans.RecordQueryPlan, pageCap int) []i
 	}
 }
 
-// TestRecursiveDistinctReplay_ResumesMidStream pins the DISTINCT
-// recursion extension's position-replay resume on both plan shapes
-// (Java rejects recursive UNION distinct — the extension's seen-set is
-// the emission history, so resume re-executes deterministically, skips
-// the emitted prefix, and integrity-checks the boundary row). Driven
-// page-by-page with ReturnedRowLimit=1: every row crosses a resume.
+// TestRecursiveDistinctReplay_ResumesMidStream pins the DISTINCT recursion's
+// position-replay resume on both plan shapes (the seen-set is the emission
+// history, so resume re-executes deterministically, skips the emitted prefix,
+// and integrity-checks the boundary row). Driven page-by-page with
+// ReturnedRowLimit=1: every row crosses a resume.
 func TestRecursiveDistinctReplay_ResumesMidStream(t *testing.T) {
 	t.Parallel()
 	scanAlias := values.NamedCorrelationIdentifier("scan")

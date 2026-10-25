@@ -2021,6 +2021,14 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   lock descriptor out of the server. Done: `flock -o` holds the lock for the
   lane's lifetime and keeps it out of the server (`TestVerifiedLaneLock` in `//infra:infra_test`).
 - [ ] Update Buf from 1.67.0 to 1.74 (`BUF_VERSION` in `justfile`).
+- [ ] SQL: the ANSI forms `POSITION(x IN s)` and `EXTRACT(<field> FROM x)` fail with 0AF00
+  "projection slot 0 has no resolved Value", and `YEAR` over a BIGINT answers NULL rather than
+  refusing the type. `DocClaimsJavaProbe` pins them as they are (`position_in`, `extract_year`,
+  `date_part_of_integer`); Java answers the operand unchanged for both ANSI forms and refuses
+  `YEAR` (0AF00).
+- [ ] `SQL_ANSI_CONFORMANCE.md`'s `Java?` column is still pinned against 4.12.11.0
+  (`pkg/relational/conformance/yamsql/ansi_roster.go`, the notice in `ansiledger.go`). Re-verify
+  it on 4.14.2.0, as RFC-278 did for SQL_CONFORMANCE.md.
 - [ ] **TLS settings without a network option.** RFC-277 reads `FDB_TLS_*` only. libfdb_c
   also takes the `TLS_*` network options (`fdb.options:70-105`) and
   `FDB_NETWORK_OPTION_TLS_*` variables (`MultiVersionTransaction.actor.cpp:3484-3536`). It
@@ -2377,8 +2385,9 @@ multi-page auto-commit SELECT, which stays tracked only.
   (`pkg/fdbgo/client/locality.go:572`; C++ waits for the reply or a proxy change) and that a
   read fails with 1007 after 10 timed-out re-sends (`readpath.go:39`). Dials are not a gap:
   C++ also times out a connect (`CONNECTION_MONITOR_TIMEOUT`). Fixed in #996.
-- [ ] **Medium:** DIVERGENCES.md:973 and SQL_CONFORMANCE.md:3 are classified against Java
-  4.12.11; SQL_CONFORMANCE's pass count omits the skipped files and plan assertions.
+- [x] **Medium:** DIVERGENCES.md:973 and SQL_CONFORMANCE.md:3 are classified against Java
+  4.12.11; SQL_CONFORMANCE's pass count omits the skipped files and plan assertions. Fixed in
+  #1007 (RFC-278).
 - [x] **Low:** stale: TODO.md:3 (PR #786 merged), `tools_cli.go:5-7` (no `cmd/frl/go.mod`),
   `pkg/fdbgo/client/CRASH_BUG.md` (resolved; title says otherwise). Fixed in #996.
 - [x] **Low:** comments against CLAUDE.md's rules: shift tags
@@ -2390,20 +2399,23 @@ multi-page auto-commit SELECT, which stays tracked only.
   every "codex" tag and the listed round notes. Kept: about 30 test files and functions named
   for "RFC-141 R4 round-N" and similar review rounds (`git grep -n -E 'round-[0-9]+' --
   '*_test.go'`); renaming them is churn with no behavior change.
-- [ ] **Owner decision:** the public API surface (about 16K exported declarations outside
-  `internal/`, including test hooks such as `values.SetCensusHooks`); test and tool
-  dependencies in the library `go.mod` (docker, testcontainers, ginkgo, staticcheck,
-  cobra); nogo without `unused`; nine reused RFC numbers and no RFC index.
+- [ ] **Deferred:** the public API surface: about 16K exported declarations outside
+  `internal/`, including test hooks such as `values.SetCensusHooks`. Deferred by the owner on
+  2026-10-25: another session's client optimizations may change the surface; do not start it.
+- [ ] **Owner decision:** test and tool dependencies in the library `go.mod` (docker,
+  testcontainers, ginkgo, staticcheck, cobra); nogo without `unused`; nine reused RFC numbers
+  and no RFC index.
 
 ### Follow-ups from the fix PRs' reviews
 
-- [ ] **Low:** probe two seed-corpus Go extensions against live Java 4.14.2.0 and record each in
+- [x] **Low:** probe two seed-corpus Go extensions against live Java 4.14.2.0 and record each in
   DIVERGENCES.md's Go-extension table or drop the note
   (`pkg/relational/conformance/plandiff/seedcorpus/corpus.go`, the NOTE comments before the
   LIMIT note): bare-paren `WHERE (boolean_expr)` (4.12.11 rejected it) and a `WITH RECURSIVE`
   body with no self-reference (4.12.11 rejected it; 4.14.2.0's `QueryVisitor.java:212-214`
   routes it to `visitNamedQuery`, so Java may now accept). `plandiff/README.md:65` also cites
-  CLAUDE.md "gotcha" entries that do not exist.
+  CLAUDE.md "gotcha" entries that do not exist. Fixed in #1007: the parenthesized WHERE is a Go
+  extension; both engines refuse the recursive form.
 
 - [x] **Low:** when a statement's context ends inside an explicit transaction, the transaction
   is cancelled from a background goroutine with no panic recovery; `sqlpage.go` still calls

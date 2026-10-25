@@ -5,8 +5,7 @@
 # a real user might write, and exercises the whole execution pipeline
 # including the tri-state NULL handling the harness has spent the
 # shift hardening. (LIMIT was previously chained on too — Java rejects
-# LIMIT at parse time as of fdb-relational 4.11.1.0; the rejection
-# itself is pinned by offset.yaml.)
+# every LIMIT (0AF00); the rejection itself is pinned by offset.yaml.)
 name: multi_feature
 schema_template: |
   CREATE TABLE orders (id BIGINT, customer_id BIGINT, total BIGINT, PRIMARY KEY (id))
@@ -28,8 +27,8 @@ tests:
       - [200, 60]
       - [100, 125]
   # Same query, ORDER BY SUM DESC — pins that ORDER-BY-aggregate-DESC
-  # works on the CTE-wrapped aggregate. LIMIT was incidental (rejected
-  # at parse time as of fdb-relational 4.11.1.0).
+  # works on the CTE-wrapped aggregate. LIMIT was incidental (Java
+  # rejects every LIMIT, 0AF00).
   - query: |-
       WITH hv AS (SELECT customer_id, total FROM orders WHERE total >= 30)
       SELECT customer_id, SUM(total) FROM hv

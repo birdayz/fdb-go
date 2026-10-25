@@ -33,6 +33,10 @@ exports_files([
     # TestSQLCoverageUpToDate / TestAnsiLedger* drift guards in the same target.
     "SQL_COVERAGE.md",
     "SQL_ANSI_CONFORMANCE.md",
+    # Hand-written; read by TestSQLConformanceStatesTheLedger (javacorpus) and
+    # TestDocClaimsCited (//conformance:doc_claims_cited_test).
+    "DIVERGENCES.md",
+    "SQL_CONFORMANCE.md",
 ])
 
 # gazelle:prefix fdb.dev

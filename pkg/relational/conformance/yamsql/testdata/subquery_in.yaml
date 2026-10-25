@@ -1,16 +1,7 @@
 # subquery_in.yaml
 #
-# `col IN (subquery)` is rejected at predicate evaluation time. Java's
-# AstNormalizer.visitInPredicate doesn't implement the queryExpressionBody
-# alternative of the inList grammar rule (NPE in ParseHelpers.isConstant
-# whose @Nonnull parameter is dereferenced unconditionally). Per CLAUDE.md
-# principle #10 (emergent behaviour over special-case checks), Go aligns
-# with the architectural property — IN-subquery isn't supported — but
-# emits a clean ErrCodeUnsupportedQuery (0AF00) rather than reproducing
-# Java's NPE. EXISTS / NOT EXISTS / JOIN are the supported rewrites; both
-# engines accept them. Cross-engine byte-equal alignment of this error
-# message is intentionally NOT pursued (Java's wording is the NPE stack
-# trace; not portable).
+# Both engines reject IN (subquery) with 0AF00 (DocClaimsJavaProbe's in_subquery).
+# Java says "IN predicate does not support nested SELECT"; Go cannot plan it.
 name: subquery_in
 schema_template: |
   CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id))
