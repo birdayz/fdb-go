@@ -1,32 +1,14 @@
-//go:build stress && realcluster
+//go:build stress
 
-// The 10M-row scales. They carry `realcluster` ON TOP OF `stress` so they are
-// REGISTERED only in an environment that can actually run them, rather than
-// registered everywhere and skipped.
+// The 10M-row scales, in their own Bazel target (stress_10m_test) so that the
+// stress_test target advertises exactly the scales it runs: 10K / 100K / 1M.
 //
-// Why they cannot run on the default harness: a single-node FDB testcontainer
-// cannot sustain 10M rows of writes. Five parallelism configs x 1M sustained
-// writes already drove one container past its throughput ceiling until it
-// stopped responding, and the client (correctly, matching C++/Java: no default
-// transaction timeout) retried the now-unreachable cluster forever, hanging the
-// whole suite to the 1h test deadline. 10M serial inserts need ~55min at Docker
-// rates even when the node stays healthy, and degrade it along the way.
+// A single-node FDB testcontainer cannot sustain 10M rows of writes: sustained
+// load wedged the container, and the client (no default transaction timeout,
+// matching C++ and Java) retried the unreachable cluster to the 1h deadline. So
+// this binary refuses to start a container and runs only against a real cluster:
 //
-// A `t.Skip` here would be worse than the tag: it makes the package advertise
-// four scales and run three, so `-test.v` output reads as coverage that does
-// not exist. The tag makes the advertised list equal the executed list — under
-// the default `stress` tag this package is exactly 10K / 100K / 1M.
-//
-// Running them, against a REAL cluster (a testcontainer would just reproduce
-// the ceiling above):
-//
-//	FDB_STRESS_CLUSTER_FILE=/etc/foundationdb/fdb.cluster \
-//	  go test -tags 'stress realcluster' ./pkg/relational/sqldriver/stress/ \
-//	  -run 'TestFDB_(Stress|Ingest)_10M' -timeout 3h -v
-//
-// FDB_STRESS_CLUSTER_FILE is what points TestMain at the real cluster instead
-// of starting a container; see stress_test.go. Without it these tests would run
-// against a Docker node and hit the very ceiling this tag exists to avoid.
+//	just stress-10m /etc/foundationdb/fdb.cluster
 
 package stress_test
 
@@ -37,6 +19,8 @@ import (
 	"testing"
 	"time"
 )
+
+func init() { realClusterOnly = true }
 
 func TestFDB_Stress_10M(t *testing.T) {
 	runStressSuite(t, "10m", 10_000_000)

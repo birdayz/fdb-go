@@ -37,8 +37,8 @@ variable "github_runner_token" {
 # --- Runner mode ---
 #
 # The fleet runs 'classic': every box registers itself once and listens. The scale-set
-# supervisor ('scaleset') is retired but kept buildable because its variables and
-# cloud-init branch are still referenced; do not point the fleet back at it without
+# supervisor ('scaleset') is retired: its source (tools/bazelscaleset) is in git history
+# at 86f05ccf8, and its variables and cloud-init branch remain; do not point the fleet back at it without
 # fixing the two defects that retired it — JIT runners were never unregistered (1907
 # offline registrations against 5 live slots) and one supervisor process gated every
 # box in the fleet.

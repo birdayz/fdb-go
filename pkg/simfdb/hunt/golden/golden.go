@@ -3,7 +3,7 @@
 // AND result rows as a canonical text baseline committed under testdata/. The test diffs a fresh
 // capture against the baseline every run: any behavior delta — a changed result (almost always a
 // bug) or a changed plan (a cost-model / rule change) — surfaces as a reviewable golden diff at
-// merge/release. Regenerate with GOLDEN_UPDATE=1 and review the diff before committing it.
+// merge/release. Regenerate with `just golden-update` and review the diff before committing it.
 //
 // This catches CHANGED, not WRONG: a bug baked into the baseline stays green, so it is the
 // COMPLEMENT of the metamorphic oracle, never a substitute. It is only meaningful because SimFDB

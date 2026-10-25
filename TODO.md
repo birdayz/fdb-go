@@ -1987,7 +1987,12 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   job runs them with a standalone `go test -tags libfdbc` over `pkg/fdbgo/libfdbc/...`
   and `pkg/internal/fdbclient/...`; only `network_lifecycle_test` and
   `mapped_skip_regression_test` have Bazel targets, so `just test-full` skips
-  `differential_test.go` and the other cross-client differentials.
+  `differential_test.go` and the other cross-client differentials. Blocker (2026-10-24):
+  every remaining file uses `startCluster` from `differential_test.go`, which imports
+  `pkg/recordlayer`; under the `libfdbc` gotag Bazel compiles `pkg/internal/fdbclient`
+  without its only source (`open_purego.go` is `!libfdbc`), and `open_libfdbc.go` needs
+  `libfdbc_native`, which shares the stub's import path. The fix is a tag-aware select
+  across both libraries.
 - [ ] Java/Go raw key-value parity for shared TEXT indexes: plain, grouped and
   no-position variants over the Unicode-delta inputs, comparing sorted relative keys,
   values and positions; force bunch splitting with 25 common postings; cross-engine
@@ -2313,20 +2318,22 @@ multi-page auto-commit SELECT, which stays tracked only.
   Sweep `git grep -n -i nightl` for the rest. See the open nightly item in the follow-ups
   above. Fixed in #998.
 - [x] **Medium:** five of the seven `.github/workflows/ci.yml` jobs have no `timeout-minutes`. Fixed in #998.
-- [ ] **Medium:** the Java oracle's Maven dependencies are unpinned: `maven.install` has no
-  `lock_file` (`MODULE.bazel:130,275`).
+- [x] **Medium:** the Java oracle's Maven dependencies are unpinned: `maven.install` has no
+  `lock_file` (`MODULE.bazel:130,275`). Fixed in #1008 (`maven_install.json`, `just maven-repin`).
 - [ ] **Low:** tests in no lane: `pkg/relational/core/parser/yamsql_corpus_test.go` (`yamsql`
   tag, run only by a `go test` recipe), `pkg/relational/sqldriver/stress/stress_10m_test.go`
   (`realcluster`) and `tools/bazelscaleset` (no BUILD file, no workflow). The libfdbc tests
-  have their own item.
-- [ ] **Low:** `.bazelrc:40-42` sets a no-op `--test_timeout` with a wrong comment; comments
+  have their own item. Fixed in #1008: the corpus test joins `parser_test`, the 10M scales get a
+  real-cluster-only target checked by `tenmguard` in test-full, and the retired
+  `tools/bazelscaleset` is deleted (source at 86f05ccf8).
+- [x] **Low:** `.bazelrc:40-42` sets a no-op `--test_timeout` with a wrong comment; comments
   still say `.bazelrc` sets `--local_test_jobs=4` (it sets 0, `.bazelrc:63`):
   `.github/workflows/ci.yml:619`, `infra/main.tf:226`,
   `pkg/testcontainers/foundationdb/BUILD.bazel:30`,
   `pkg/relational/sqltest/agg/distinctelision/distinct_unique_elision_cost_probe_test.go:866`;
   five hard-coded `go-version`s in ci.yml; unused `pkg/linters/gofmt`; the `golden-update`
   and `smoke-yamsql` recipes call `go test`; non-standard skips in
-  `cmd/fdb-diff-oracle/fuzz_test.go` and `pkg/relational/core/ddl/fdb_ddl_test.go:100-196`. Partly done in #998 (`.bazelrc` comment, the `--local_test_jobs=4` claims, `pkg/linters/gofmt` removed; the hard-coded `go-version`s stay, since `TestWorkflowGoMatchesGoMod` blocks drift and setup-go ignores `toolchain`). The recipes and skips remain.
+  `cmd/fdb-diff-oracle/fuzz_test.go` and `pkg/relational/core/ddl/fdb_ddl_test.go:100-196`. Partly done in #998 (`.bazelrc` comment, the `--local_test_jobs=4` claims, `pkg/linters/gofmt` removed; the hard-coded `go-version`s stay, since `TestWorkflowGoMatchesGoMod` blocks drift and setup-go ignores `toolchain`). The recipes and skips are fixed in #1008 (both recipes go through Bazel; the oracle skips are failures or deleted dead branches, the DDL skips use the no-Docker form).
 ### Docs, API and hygiene
 
 - [x] **Medium:** the `pkg/fdbgo/fdb` package doc (`key.go:1-37`) names itself as the Apple
