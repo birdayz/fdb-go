@@ -43,6 +43,7 @@ difference is in DIVERGENCES.md. The run of Java's own yamsql corpus against Go 
 | Feature | Java | Go | ANSI | Notes |
 |---|:---:|:---:|:---:|---|
 | WHERE / AND / OR / NOT | Y | Y | Y | `and_or_not`. Tri-state (Kleene) |
+| Parenthesized WHERE condition (`WHERE (v = 10)`) | P | Y | Y | Java reads `( … )` as a one-field record and refuses a WHERE that is one parenthesized condition, 42804 (`where_paren`); parenthesized operands of AND/OR answer in both (`where_paren_compound`) |
 | BETWEEN | Y | Y | Y | `between` |
 | IN (literal list) | Y | Y | Y | `in_list` |
 | IN (subquery) | N | N | Y | Both reject with 0AF00: Java `IN predicate does not support nested SELECT`, Go `Cascades planner could not plan query` (`in_subquery`) |
@@ -102,6 +103,7 @@ difference is in DIVERGENCES.md. The run of Java's own yamsql corpus against Go 
 | Chained CTEs | Y | Y | Y | `with_chained` |
 | WITH RECURSIVE (level-order) | Y | Y | Y | `recursive_level_order`. RecursiveLevelUnionPlan |
 | Recursive DFS order | Y | Y | P | `TRAVERSAL ORDER PRE_ORDER` / `POST_ORDER` (`recursive_pre_order`; Java's `recursive-cte.yamsql`) |
+| WITH RECURSIVE without a self-reference | N | N | Y | Both refuse with `condition is not met!`, with or without a UNION body: Java XX000, Go 0A000 (`recursive_without_self_reference`, `recursive_union_without_self_reference`) |
 | UNION DISTINCT in recursive CTE | N | Y | Y | Java accepts it and runs UNION ALL: a node reached twice is returned twice, where Go returns it once (`recursive_union_distinct_diamond`). Over a tree, where no node repeats, both answer alike (`recursive_union_distinct`) |
 
 ## Ordering / Limiting / Distinct

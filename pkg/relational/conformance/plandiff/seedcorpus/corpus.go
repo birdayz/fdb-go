@@ -986,17 +986,10 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			Query:          "SELECT 1 + 1",
 		},
 		{
-			// WHERE with a single bare-paren predicate: Java's parser
-			// treats `(boolean_expr)` as a recordConstructor (single-
-			// element tuple). Expression.toUnderlyingPredicate's cast
-			// to BooleanValue then fails with the verbatim message
-			// "expected BooleanValue but got RecordConstructorValue".
-			// Go aligns at the WHERE entry sites
-			// (rejectTopLevelParenthesizedWhere) — the check fires on
-			// the WHERE expression's TOP-LEVEL only. Compound shapes
-			// like `(a) AND (b)` are accepted (the LogicalExpression
-			// surface type is BooleanValue even with RecordConstructor
-			// leaves underneath).
+			// WHERE with a single bare-paren predicate: Java reads
+			// `(boolean_expr)` as a one-field record and refuses it (42804,
+			// DocClaimsJavaProbe `where_paren`); Go answers it, a Go
+			// extension in DIVERGENCES.md. `(a) AND (b)` answers in both.
 			Name:           "where_paren_top_level_rejected",
 			SchemaTemplate: "CREATE TABLE T_WPT (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls:      []string{"INSERT INTO T_WPT VALUES (1, 10), (2, 20)"},
@@ -1018,12 +1011,6 @@ func SeedRunCorpus() []plandiff.RunQuery {
 		// the existing yamsql ORDER BY rejection scenarios
 		// (`order_by_expression`, `order_by_dupe_col`,
 		// `order_by_limit`, etc.); not a separate corpus entry.
-		// NOTE: `WHERE (boolean_expr)` with bare parens: Java 4.12.11 rejected it
-		// ("expected BooleanValue but got RecordConstructorValue"); Go accepts it.
-		// NOTE: a `WITH RECURSIVE` body with no self-reference: Java 4.12.11
-		// rejected it ("condition is not met!"); Go accepts it, as the SQL spec
-		// does. Java 4.14.2.0's QueryVisitor plans it as a plain named query.
-		// Both await a 4.14.2.0 probe (TODO.md, "Quality review 2026-10-24").
 		// NOTE: `LIMIT N` clause is a known one-sided divergence: Java
 		// rejects standalone `... LIMIT N` (pagination is JDBC-only via
 		// `Statement.setMaxRows`; DIVERGENCES.md lists it). Go's embedded engine implements
@@ -5262,14 +5249,10 @@ func SeedRunCorpus() []plandiff.RunQuery {
 
 		// ===== Negative: WITH RECURSIVE non-self-referencing =====
 		{
-			// fdb-relational 4.11.1.0 rejects `WITH RECURSIVE name AS
-			// (non-self-ref-body)` with "condition is not met!" via its
-			// semantic-verifier check. SQL spec / Postgres permit the
-			// form (RECURSIVE is a scope enabler, not a requirement).
-			// Go aligns at execution time in select_dispatch.go (when
-			// `recursiveKeyword && !containsTableRef(body, cteName)`)
-			// emitting the SAME verbatim message. ExpectErrorMessage
-			// pins byte-equality. Per-entry isolation prevents Java
+			// Both engines refuse `WITH RECURSIVE name AS
+			// (non-self-ref-body)` with "condition is not met!" (Java
+			// 4.14.2.0 XX000, Go 0A000 in plan_visitor.go), though SQL
+			// permits it. ExpectErrorMessage pins byte-equality. Per-entry isolation prevents Java
 			// state-leak from stalling other negative entries.
 			Name:           "recursive_cte_non_self_ref_rejected",
 			SchemaTemplate: "CREATE TABLE T_RNS (id BIGINT, parent BIGINT, PRIMARY KEY (id))",

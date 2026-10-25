@@ -2378,13 +2378,14 @@ multi-page auto-commit SELECT, which stays tracked only.
 
 ### Follow-ups from the fix PRs' reviews
 
-- [ ] **Low:** probe two seed-corpus Go extensions against live Java 4.14.2.0 and record each in
+- [x] **Low:** probe two seed-corpus Go extensions against live Java 4.14.2.0 and record each in
   DIVERGENCES.md's Go-extension table or drop the note
   (`pkg/relational/conformance/plandiff/seedcorpus/corpus.go`, the NOTE comments before the
   LIMIT note): bare-paren `WHERE (boolean_expr)` (4.12.11 rejected it) and a `WITH RECURSIVE`
   body with no self-reference (4.12.11 rejected it; 4.14.2.0's `QueryVisitor.java:212-214`
   routes it to `visitNamedQuery`, so Java may now accept). `plandiff/README.md:65` also cites
-  CLAUDE.md "gotcha" entries that do not exist.
+  CLAUDE.md "gotcha" entries that do not exist. Fixed in #1007: the parenthesized WHERE is a Go
+  extension; both engines refuse the recursive form.
 
 - [ ] **Low:** when a statement's context ends inside an explicit transaction, the transaction
   is cancelled from a background goroutine with no panic recovery; `sqlpage.go` still calls

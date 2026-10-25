@@ -998,6 +998,7 @@ case names are in backticks. Rows marked "read from source" cite the 4.14.2.0 so
 | `INFORMATION_SCHEMA` | 42703 `Unknown reference INFORMATION_SCHEMA.TABLES` (`information_schema_tables`, `information_schema_columns`); Java's system tables are `DATABASES`, `SCHEMAS` and `TEMPLATES` in `/__SYS` | Working system tables |
 | Date-part functions | 0AF00 `Unsupported operator YEAR` (`date_part_of_integer`); `EXTRACT(YEAR FROM v)` answers `v` unchanged (`extract_year`) | YEAR/MONTH/DAY/HOUR/MINUTE/SECOND/etc. `EXTRACT` is 0AF00 |
 | DATE and TIMESTAMP values | No temporal types: a `DATE`/`TIMESTAMP` column is 42F18 (`date_column`, `timestamp_column`), `CAST(… AS DATE/TIMESTAMP)` is 42601 (`cast_date`, `cast_timestamp`), `CURRENT_DATE`/`CURRENT_TIMESTAMP` are XX000 (`current_date`, `current_timestamp`) | Types of VALUES only (CAST, `CURRENT_DATE`/`CURRENT_TIMESTAMP`, a bound `time.Time`), carried as canonical UTC text in 0000-9999 whose order is the instant order. A DATE meeting a TIMESTAMP (comparison, IN, CASE, COALESCE, IFNULL, GREATEST, LEAST) is promoted to its midnight. A column spelled DATE/TIMESTAMP is STRING (the type is not persisted, so catalog bytes stay Java's), and a value against it compares text. Pinned by `temporal_promotion.yaml` and `expr/temporal_promotion_property_test.go` |
+| Parenthesized WHERE condition (`WHERE (v = 10)`) | `( … )` is a one-field record constructor: 42804 `expected boolean expression but got BOOLEAN AS _0` (`where_paren`). Parenthesized operands of AND/OR answer (`where_paren_compound`) | Evaluated as the condition |
 | Simple CASE (`CASE expr WHEN val`) | `visitChildren` no-op that compares no WHEN: the ELSE for every row (`simple_case`), the last THEN without an ELSE (`simple_case_no_else`) | Correct evaluation |
 | Symbolic logical operators (`&&`, `\|\|`) | `SqlFunctionCatalogImpl` only registers `and`/`or`; 0AF00 `Unsupported operator &&` / `\|\|` (`symbolic_and`, `symbolic_or`). `\|\|` is logical OR in Java's grammar, not concatenation | Evaluated as AND/OR |
 | `XOR` operator | Not registered in `SqlFunctionCatalogImpl`; 0AF00 `Unsupported operator XOR` (`xor`) | SQL-standard XOR with NULL propagation |
@@ -1016,7 +1017,11 @@ Go-only plan types: `RecordQueryInMemorySortPlan`, `RecordQueryLimitPlan`, `Reco
 
 Go-only logical expressions: `LogicalLimitExpression`, `LogicalValuesExpression`. Neither exists in 4.14.2.0 (read from source).
 
-The 4.14.2.0 re-verification removed two former rows:
+The 4.14.2.0 re-verification removed two former rows, and two cross-engine corpus notes that
+described Go extensions: `WITH RECURSIVE` with no self-reference is refused by both engines with
+`condition is not met!` (Java XX000, Go 0A000; `recursive_without_self_reference`,
+`recursive_union_without_self_reference`), and the parenthesized WHERE condition is the row above.
+The removed rows:
 
 - **`NOT NULL` on scalar columns — RESOLVED.** Go no longer accepts it: both engines refuse the
   CREATE with 0A000 `NOT NULL is only allowed for ARRAY column type` (`scalar_not_null`; Go's
