@@ -8,7 +8,6 @@ import (
 
 	"fdb.dev/internal/unicode15"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/recordlayer/query/executor"
 	cascades "fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -17,6 +16,7 @@ import (
 	"fdb.dev/pkg/relational/core/parser"
 	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/logical"
+	"fdb.dev/pkg/relational/core/resultset"
 	"github.com/antlr4-go/antlr/v4"
 )
 
@@ -126,14 +126,16 @@ func PlanPhysicalForTestWithReachability(
 
 // PlanPhysicalForTestWithArgs is PlanPhysicalForTestWithReachability with the
 // statement's parameters bound as the connection binds them, so a `?` plans
-// with its driver value's type, as it executes.
+// with its driver value's type, as it executes, under the connection's options
+// (nil for the defaults).
 func PlanPhysicalForTestWithArgs(
 	sql, schemaDDL string,
 	args []driver.NamedValue,
+	opts *api.Options,
 	stats properties.StatisticsProvider,
 	reach *cascades.ReachabilityCollector,
 ) (plans.RecordQueryPlan, error) {
-	popts := plannerOptionsFrom(nil)
+	popts := plannerOptionsFrom(opts)
 	popts.params = args
 	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false, reach, popts)
 	return plan, err
@@ -144,9 +146,10 @@ func PlanPhysicalForTestWithArgs(
 func PlanPhysicalForTestWithBoundLiterals(
 	sql, schemaDDL string,
 	args []driver.NamedValue,
+	opts *api.Options,
 	stats properties.StatisticsProvider,
 ) (plans.RecordQueryPlan, error) {
-	popts := plannerOptionsFrom(nil)
+	popts := plannerOptionsFrom(opts)
 	popts.params = args
 	popts.bindQueryLiterals = true
 	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false, nil, popts)
@@ -203,14 +206,16 @@ func PlanPhysicalDMLForTestWithReachability(
 }
 
 // PlanPhysicalDMLForTestWithArgs is PlanPhysicalDMLForTestWithReachability
-// with the statement's parameters bound as the connection binds them.
+// with the statement's parameters bound as the connection binds them, under
+// the connection's options (nil for the defaults).
 func PlanPhysicalDMLForTestWithArgs(
 	sql, schemaDDL string,
 	args []driver.NamedValue,
+	opts *api.Options,
 	stats properties.StatisticsProvider,
 	reach *cascades.ReachabilityCollector,
 ) (plans.RecordQueryPlan, error) {
-	return planPhysicalDMLForTest(sql, schemaDDL, args, stats, reach, plannerOptionsFrom(nil))
+	return planPhysicalDMLForTest(sql, schemaDDL, args, stats, reach, plannerOptionsFrom(opts))
 }
 
 // planPhysicalForTest is PlanPhysicalForTest plus the optional RFC-224
@@ -1001,7 +1006,7 @@ func ResultColumnNullabilityForPlan(plan plans.RecordQueryPlan) []int {
 
 // ResultColumnDefsForPlan returns the columns Execute hands to
 // NewRecordLayerResultSet before applying the query's labels.
-func ResultColumnDefsForPlan(plan plans.RecordQueryPlan) []executor.ColumnDef {
+func ResultColumnDefsForPlan(plan plans.RecordQueryPlan) []resultset.ColumnDef {
 	return resultColumns(plan)
 }
 

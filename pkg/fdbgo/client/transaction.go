@@ -931,7 +931,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 		if sendErr != nil {
 			replyHandle.Cancel()
 			replyCleanup.release()
-			tx.db.handleReadConnError(server.Address, sendErr)
+			tx.db.handleReadConnError(server.Address, conn, sendErr)
 			continue
 		}
 		// Timeout delivery ends this wait through ctx; C++ waits for the reply or

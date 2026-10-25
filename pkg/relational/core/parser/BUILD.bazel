@@ -23,6 +23,7 @@ go_test(
         "benchmark_test.go",
         "decimal_type_rejected_test.go",
         "fuzz_test.go",
+        "nesting_guard_test.go",
         "parser_test.go",
         "yamsql_corpus_test.go",
     ],

@@ -1,0 +1,72 @@
+# Join probes with predicate push-down disabled: nested-loop joins.
+# join_optimization_probes.yaml's two-way queries and rows, each evaluating its
+# predicates in a NestedLoopJoin. The three-way probes are omitted: these rules
+# do not change their plans.
+name: join_optimization_probes_nested_loop
+schema_template: |
+  CREATE TABLE dept (did BIGINT, dname STRING, PRIMARY KEY (did))
+  CREATE TABLE emp (eid BIGINT, did BIGINT, ename STRING, salary BIGINT, PRIMARY KEY (eid))
+  CREATE INDEX idx_emp_did ON emp (did)
+connection_options:
+  DISABLED_PLANNER_RULES: "PushFilterBelowJoinRule, PredicatePushDownRule, PartitionBinarySelectRule"
+setup:
+  - INSERT INTO dept VALUES (1, 'eng'), (2, 'sales'), (3, 'hr')
+  - INSERT INTO emp VALUES (10, 1, 'Alice', 100), (20, 1, 'Bob', 90), (30, 2, 'Charlie', 80), (40, 2, 'Diana', 110), (50, 3, 'Eve', 95)
+tests:
+  - query: |-
+      SELECT e.ename FROM emp AS e
+      INNER JOIN dept AS d ON e.did = d.did
+      WHERE d.dname = 'eng'
+      ORDER BY e.ename
+    plan_contains: "NestedLoopJoin(INNER"
+    rows:
+      - ['Alice']
+      - ['Bob']
+  - query: |-
+      SELECT e.ename FROM emp AS e
+      INNER JOIN dept AS d ON e.did = d.did
+      WHERE e.salary > d.did * 50
+      ORDER BY e.ename
+    plan_contains: "NestedLoopJoin(INNER"
+    rows:
+      - ['Alice']
+      - ['Bob']
+      - ['Diana']
+  - query: |-
+      SELECT e.ename FROM emp AS e
+      INNER JOIN dept AS d ON e.did = d.did
+      WHERE d.dname = 'eng' AND e.salary >= 95
+      ORDER BY e.ename
+    plan_contains: "NestedLoopJoin(INNER"
+    rows:
+      - ['Alice']
+  - query: |-
+      SELECT e.ename, d.dname FROM emp AS e
+      INNER JOIN dept AS d ON e.did = d.did
+      WHERE d.dname != 'hr'
+      ORDER BY e.salary DESC
+    plan_contains: "NestedLoopJoin(INNER"
+    rows:
+      - ['Diana', 'sales']
+      - ['Alice', 'eng']
+      - ['Bob', 'eng']
+      - ['Charlie', 'sales']
+  - query: |-
+      SELECT a.ename, b.ename FROM emp AS a
+      INNER JOIN emp AS b ON a.did = b.did
+      WHERE a.eid < b.eid
+      ORDER BY a.eid, b.eid
+    plan_contains: "NestedLoopJoin(INNER"
+    rows:
+      - ['Alice', 'Bob']
+      - ['Charlie', 'Diana']
+  - query: |-
+      SELECT d.dname, COUNT(*), MAX(e.salary) FROM emp AS e
+      INNER JOIN dept AS d ON e.did = d.did
+      GROUP BY d.dname
+      ORDER BY d.dname
+    plan_contains: "NestedLoopJoin(INNER"
+    rows:
+      - ['eng', 2, 100]
+      - ['hr', 1, 95]
+      - ['sales', 2, 110]

@@ -858,22 +858,14 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	// NO CI LANE GUARANTEES A QUIET MEASUREMENT, and that is checked rather than
 	// hoped. `.github/workflows/ci.yml` sets `concurrency: group:
 	// ci-${{ github.ref }}`, which cancels only SAME-REF runs, so two different
-	// PRs never contend for cancellation — they contend for hardware. All four
-	// of its jobs (`ci`, `race`, `wire-oracle`, `govulncheck`) pin to
-	// `hetzner-fdb-vm`, a fleet of FIVE boxes serving one job each, so a single
-	// PR can occupy four fifths of the fleet and a second PR overlaps it by
-	// construction. And even a job alone on a box is not quiet: `.bazelrc` sets
-	// `--local_test_jobs=4`, so this probe runs beside up to three other FDB
-	// testcontainer targets inside its own invocation, on a 4-vCPU box. That
-	// last one is the floor, and no workflow edit removes it.
-	//
-	// nightly-coverage.yml is NOT the quiet lane either — it is strictly
-	// noisier. It runs `bazelisk coverage //...` (the whole suite, under
-	// coverage instrumentation), then two race steps, then benchmarks, in ONE
-	// job on that same fleet, and its own comments record that GitHub dispatches
-	// it whenever a box frees up, hours off its cron hour, alongside whatever
-	// else is queued. It guarantees coverage and a heartbeat; it guarantees
-	// nothing about the clock.
+	// PRs never contend for cancellation — they contend for hardware. All of
+	// its jobs pin to `hetzner-fdb-vm`, a small pool serving one job per box, so
+	// two PRs overlap by construction. And even a job alone on a box is not
+	// quiet: `.bazelrc` schedules tests by their declared resource tags
+	// (`--local_test_jobs=0`), so this probe runs beside as many other FDB
+	// testcontainer targets as fit the box's memory, on 4 vCPUs. That last one
+	// is the floor, and no workflow edit removes it. No scheduled lane exists
+	// that could offer a quieter box.
 	//
 	// So the honest status of the timing arms is: a QUIET-MACHINE / LOCAL
 	// instrument that still reds for a genuine R3 regression when the box can

@@ -21,7 +21,6 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
-	"fdb.dev/pkg/relational/api"
 )
 
 // executeAggregateIndexScan scans an aggregate index (SUM, COUNT, etc.)
@@ -1367,8 +1366,10 @@ func executeFirstOrDefault(
 			}
 			if second.HasNext() {
 				_ = inner.Close()
-				return nil, api.NewErrorf(api.ErrCodeCardinalityViolation,
-					"scalar subquery returned more than one row")
+				return nil, &ExecutionError{
+					Kind:    ExecCardinalityViolation,
+					Message: "scalar subquery returned more than one row",
+				}
 			}
 			// An out-of-band (resource-limit) stop after the first row means the
 			// input was TRUNCATED — a second matching row may exist beyond the

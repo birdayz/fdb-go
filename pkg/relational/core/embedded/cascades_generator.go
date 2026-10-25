@@ -50,6 +50,7 @@ import (
 	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"fdb.dev/pkg/relational/core/query/semantic"
+	"fdb.dev/pkg/relational/core/resultset"
 	"fdb.dev/pkg/relational/core/rowstruct"
 	"fdb.dev/pkg/relational/core/session"
 	"google.golang.org/protobuf/proto"
@@ -1538,23 +1539,14 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	// page. The captured transaction and ownership are separate: a statement
 	// must never commit or abort an application's explicit transaction.
 	if pr.isUpdate && pr.tx == nil {
-		tx, err := c.beginTransaction()
+		tx, err := c.beginTransaction(ctx)
 		if err != nil {
 			pr.statsErr = err
 			pr.Close()
 			return query.Result{}, err
 		}
 		pr.tx, pr.ownsTx = tx, true
-		cancelDone := make(chan struct{})
-		stop := context.AfterFunc(ctx, func() {
-			tx.rctx.Cancel()
-			close(cancelDone)
-		})
-		pr.stopTxCancellation = func() {
-			if !stop() {
-				<-cancelDone
-			}
-		}
+		tx.bindContext(ctx)
 		defer pr.Close()
 		if err := c.ensureMetaData(ctx); err != nil {
 			pr.statsErr = err
@@ -1584,7 +1576,7 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 	if pr.isUpdate {
 		n, err := pr.countAll()
 		if pr.ownsTx {
-			pr.detachTxCancellation()
+			pr.tx.detachContext() // a dispatched commit's outcome must not become ctx's error
 			if err != nil && ctx.Err() != nil {
 				err = translateExecErrorCtx(ctx, ctx.Err())
 			}
@@ -1649,7 +1641,7 @@ type paginatingRows struct {
 	plan             plans.RecordQueryPlan
 	md               *recordlayer.RecordMetaData
 	scalarSubqueries []PlannedScalarSubquery
-	cols             []executor.ColumnDef
+	cols             []resultset.ColumnDef
 
 	// Carried from cascadesPlan; revalidated at the top of every page's
 	// transaction. Empty means the plan depends on no index.
@@ -1725,8 +1717,11 @@ type paginatingRows struct {
 	bufPos       int
 	continuation []byte
 	exhausted    bool
-	closed       bool
-	fetchErr     error
+	// finished records that the caller was handed io.EOF: the statement read
+	// to its end.
+	finished bool
+	closed   bool
+	fetchErr error
 
 	// tx is either the explicit transaction that was open when Execute ran, the
 	// statement-owned auto-commit DML transaction, or nil for auto-commit SELECT.
@@ -1750,9 +1745,6 @@ type paginatingRows struct {
 	// after the complete DML drain; ambiguity is reported, never replayed.
 	// Borrowed explicit transactions remain application-owned.
 	ownsTx bool
-	// stopTxCancellation detaches and drains the pre-commit cancellation hook.
-	// It is consumed exactly once before commit or during terminal cleanup.
-	stopTxCancellation func()
 
 	// isUpdate is the statement-kind fact that used to share a field with the
 	// routing decision above (`respectActiveTx`), conflating two independent
@@ -1775,22 +1767,19 @@ func (r *paginatingRows) Columns() []string {
 	return cols
 }
 
-func (r *paginatingRows) detachTxCancellation() {
-	if stop := r.stopTxCancellation; stop != nil {
-		r.stopTxCancellation = nil
-		stop()
-	}
-}
-
-func (r *paginatingRows) Close() error {
+func (r *paginatingRows) Close() (err error) {
+	defer r.conn.recoverInto(&err)
 	if r.closed {
 		return nil
 	}
 	r.closed = true
-	r.detachTxCancellation()
-	if r.ownsTx && !r.tx.terminated.Load() {
-		// Commit terminates on every outcome, including ambiguity. Reaching
-		// this arm means execution ended before commit and must be aborted.
+	if r.tx != nil && !r.ownsTx && !r.finished && r.ctx.Err() != nil {
+		// database/sql closes the rows of an ended context itself, so no later
+		// page reaches runInCapturedTx; end the transaction here instead.
+		r.tx.abort(r.ctx)
+	}
+	if r.ownsTx {
+		// Aborts it before commit; afterwards only releases it.
 		if err := r.tx.Rollback(); err != nil {
 			r.statsErr = errors.Join(r.statsErr, err)
 		}
@@ -1820,7 +1809,7 @@ func (r *paginatingRows) Close() error {
 // metaData is the result set's metadata (api.WithResultSetMetaDataObserver):
 // the labelled columns with their full types.
 func (r *paginatingRows) metaData() api.ResultSetMetaData {
-	return executor.NewResultSetMetaData(r.cols)
+	return resultset.NewResultSetMetaData(r.cols)
 }
 
 func (r *paginatingRows) ColumnTypeDatabaseTypeName(index int) string {
@@ -1881,17 +1870,14 @@ func (r *paginatingRows) Next(dest []driver.Value) (err error) {
 	// execution (an invariant trip, or any residual eval panic) must become an error
 	// here, not crash the shared multi-tenant process.
 	defer func() {
-		if rec := recover(); rec != nil {
-			err = recoveredPanicError(rec)
-		}
 		// RFC-211: stage whatever ended this statement for the record Close
-		// emits. io.EOF is exhaustion, not failure. Registered in the SAME
-		// defer as the panic recovery and AFTER it, so a recovered panic is
-		// recorded as the statement's outcome too.
+		// emits. io.EOF is exhaustion, not failure. It runs after recoverInto,
+		// so a recovered panic is recorded as the statement's outcome too.
 		if err != nil && err != io.EOF && r.statsErr == nil {
 			r.statsErr = err
 		}
 	}()
+	defer r.conn.recoverInto(&err)
 	if r.closed {
 		return io.EOF
 	}
@@ -1901,6 +1887,7 @@ func (r *paginatingRows) Next(dest []driver.Value) (err error) {
 	// setMaxRows semantics. SQL LIMIT is no longer applied here; it is the
 	// RecordQueryLimitPlan operator's job inside the plan (RFC-128).
 	if r.maxRows > 0 && r.emitted >= r.maxRows {
+		r.finished = true
 		return io.EOF
 	}
 
@@ -1968,6 +1955,7 @@ func (r *paginatingRows) nextRow() ([]driver.Value, error) {
 
 	// Buffer exhausted. If source is done, we're done.
 	if r.exhausted {
+		r.finished = true
 		return nil, io.EOF
 	}
 	if r.fetchErr != nil {
@@ -1987,6 +1975,7 @@ func (r *paginatingRows) nextRow() ([]driver.Value, error) {
 			break
 		}
 		if r.exhausted {
+			r.finished = true
 			return nil, io.EOF
 		}
 	}
@@ -2461,7 +2450,7 @@ func (r *paginatingRows) fetchPage() error {
 			return nil, translateExecErrorCtx(r.ctx, execErr)
 		}
 
-		rs := executor.NewRecordLayerResultSet(r.ctx, cursor, r.cols)
+		rs := resultset.NewRecordLayerResultSet(r.ctx, cursor, r.cols)
 		defer rs.Close()
 
 		for rs.Next() {
@@ -2541,8 +2530,8 @@ func (r *paginatingRows) fetchPage() error {
 // public columns made a successful write fail afterwards with "no positional
 // output row aligned to column ID".
 func materializePageRow(
-	rs *executor.RecordLayerResultSet,
-	cols []executor.ColumnDef,
+	rs *resultset.RecordLayerResultSet,
+	cols []resultset.ColumnDef,
 	isUpdate bool,
 ) ([]driver.Value, error) {
 	if isUpdate {
@@ -2785,6 +2774,10 @@ func translateExecError(err error) error {
 	if errors.As(err, &aggEval) {
 		return api.NewError(api.ErrCodeGroupingError, aggEval.Error())
 	}
+	var execErr *executor.ExecutionError
+	if errors.As(err, &execErr) {
+		return api.NewError(executionErrorCode(execErr.Kind), execErr.Message)
+	}
 	// FDB tail: page ≥ 2 errors reach the application through THIS function,
 	// not through the QueryContext/ExecContext translateFDBError wrap (which
 	// only sees the eagerly-fetched first page). An in-transaction page fetch
@@ -2792,6 +2785,19 @@ func translateExecError(err error) error {
 	// would otherwise escape raw (RFC-198 criterion 9). translateFDBError is
 	// idempotent on *api.Error, so double translation is harmless.
 	return translateFDBError(err)
+}
+
+// executionErrorCode is an executor failure kind's SQLSTATE.
+func executionErrorCode(kind executor.ExecutionErrorKind) api.ErrorCode {
+	switch kind {
+	case executor.ExecNotNullViolation:
+		return api.ErrCodeNotNullViolation
+	case executor.ExecCardinalityViolation:
+		return api.ErrCodeCardinalityViolation
+	case executor.ExecSubqueryColumnCount:
+		return api.ErrCodeSyntaxError
+	}
+	return api.ErrCodeInternalError
 }
 
 // likeErrorCode is ExceptionUtil's mapping of the LIKE semantic errors
@@ -4291,7 +4297,7 @@ func vectorDistanceOperator(m vectorindex.VectorMetric) values.DistanceOperator 
 // resultColumns are the columns Java reports for a plan: the fields of its
 // result row type (QueryPlan.getResultType). The SQL labels come from the
 // logical output row and are applied by Execute.
-func resultColumns(plan plans.RecordQueryPlan) []executor.ColumnDef {
+func resultColumns(plan plans.RecordQueryPlan) []resultset.ColumnDef {
 	switch t := plan.GetResultType().(type) {
 	case *values.RecordType:
 		return columnsOfRowType(t)
@@ -4302,11 +4308,11 @@ func resultColumns(plan plans.RecordQueryPlan) []executor.ColumnDef {
 	return nil
 }
 
-func columnsOfRowType(rowType *values.RecordType) []executor.ColumnDef {
+func columnsOfRowType(rowType *values.RecordType) []resultset.ColumnDef {
 	if rowType == nil {
 		return nil
 	}
-	cols := make([]executor.ColumnDef, len(rowType.Fields))
+	cols := make([]resultset.ColumnDef, len(rowType.Fields))
 	for ordinal, field := range rowType.Fields {
 		typeName := cascadesTypeName(field.FieldType)
 		if typeName == "" {
@@ -4316,7 +4322,7 @@ func columnsOfRowType(rowType *values.RecordType) []executor.ColumnDef {
 		if field.FieldType.IsNullable() {
 			nullable = api.ColumnNullable
 		}
-		cols[ordinal] = executor.ColumnDef{
+		cols[ordinal] = resultset.ColumnDef{
 			Name:     field.Name,
 			TypeName: typeName,
 			Nullable: nullable,

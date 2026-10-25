@@ -2,7 +2,6 @@ package ddl_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -30,13 +29,12 @@ func runTests(m *testing.M) (code int) {
 
 	container, err := foundationdbtc.Run(ctx, "")
 	if err != nil {
-		var terminationErr *foundationdbtc.TerminationError
-		if errors.As(err, &terminationErr) {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
-			return 1
+		if foundationdbtc.SkipWithoutDocker(err) {
+			fmt.Fprintf(os.Stderr, "FDB tests skip: %v\n", err)
+			return m.Run()
 		}
-		// No Docker available — in-memory tests still run.
-		return m.Run()
+		fmt.Fprintf(os.Stderr, "FDB container startup failed: %v\n", err)
+		return 1
 	}
 	defer func() {
 		if err := foundationdbtc.Terminate(context.Background(), container); err != nil {

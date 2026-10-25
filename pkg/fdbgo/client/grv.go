@@ -1463,7 +1463,7 @@ retry:
 				if ended := grvRPCEnded(ctx, db); ended != nil {
 					return 0, false, false, false, nil, 0, attemptEpoch, ended
 				}
-				db.handleReadConnError(proxy.Address, err)
+				db.handleReadConnError(proxy.Address, conn, err)
 				continue
 			}
 
@@ -1488,7 +1488,7 @@ retry:
 			}
 			replyCleanup.release()
 			if resp.Err != nil {
-				db.handleReadConnError(proxy.Address, resp.Err)
+				db.handleReadConnError(proxy.Address, conn, resp.Err)
 				continue
 			}
 			// A well-formed frame proves address reachability; clear failures before

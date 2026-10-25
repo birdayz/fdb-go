@@ -49,7 +49,7 @@ func TestWatchSetup_ChargesSlotAtRegistrationOrder(t *testing.T) {
 
 // TestWatchSetup_CancelledTxnDoesNotLeakSlot pins that a watch whose setup fails (here: a cancelled
 // transaction, caught by ensureReadVersion's leading checkCancelled) RELEASES the outstanding-watch
-// slot it reserved, rather than leaking it. WatchSetup acquires the slot synchronously (round 11),
+// slot it reserved, rather than leaking it. WatchSetup acquires the slot synchronously,
 // so every setup-error path must release it (the C++ catch → decreaseWatchCounter analogue).
 // Revert-proof: drop the release on the setup-error path and the cancelled watch holds the only slot,
 // so the second WatchSetup below fails 1032 instead of succeeding.

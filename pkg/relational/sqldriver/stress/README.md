@@ -57,9 +57,9 @@ the tag, so it skips this package entirely — keeping the default Go test run f
 and clean instead of spinning up million-row FDB workloads. Bazel sets the tag
 globally via `.bazelrc` (`--@rules_go//go/config:tags=...,stress`), but the
 `stress_test` target is also `manual`, so `bazel test //...` never picks it up;
-only an explicit invocation (the commands below, or the nightly stress workflow)
-runs it. Run it through Bazel: a Go-toolchain build with `-tags stress` also
-compiles `stress_10m_test.go`, whose binary refuses to run without a real cluster.
+only an explicit invocation (the commands below, or `just test-full`) runs it.
+No CI workflow runs it. Run it through Bazel: a Go-toolchain build with `-tags stress`
+also compiles `stress_10m_test.go`, whose binary refuses to run without a real cluster.
 
 `stress_10m_test.go` is compiled only into its own target, `stress_10m_test`
 (tagged `realcluster`). That keeps the **advertised scale list equal to the
@@ -76,13 +76,13 @@ run without a cluster.
 
 | Scale | Tag              | Where it runs                          |
 |-------|------------------|----------------------------------------|
-| 10K   | `stress`         | nightly-stress (whole target, no filter)|
-| 100K  | `stress`         | nightly-stress (whole target, no filter)|
-| 1M    | `stress`         | nightly-stress (whole target, no filter)|
+| 10K   | `stress`         | `just stress`, `just test-full` (whole target)|
+| 100K  | `stress`         | `just stress`, `just test-full` (whole target)|
+| 1M    | `stress`         | `just stress`, `just test-full` (whole target)|
 | 10M   | `stress`, own target | `just stress-10m <cluster file>`, real cluster only|
 
-The nightly workflow passes no `--test.run`, so it executes the entire target —
-all three container-sized scales, plus the ingest-parallelism matrix and the
+Both recipes pass no `--test.run`, so they execute the entire target — all
+three container-sized scales, plus the ingest-parallelism matrix and the
 SaveRecord comparisons.
 
 ## Running

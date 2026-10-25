@@ -77,7 +77,7 @@ SimFDB is not real wire-transport fidelity. Scope all counts.
 | `pkg/simfdb/hunt/metamorphic`, `cmd/dst-generate` | Hand-written and LLM-authored equivalence families replayed over SimFDB |
 | `pkg/relational/conformance/explaindiff`, `plandiff` | Observed plan contracts/diversity and shared-surface cross-engine evidence |
 | `pkg/relational/sqldriver`, Cascades value/rule tests | Targeted API, storage, evaluator and planner regression pins |
-| Existing Bazel targets/nightlies | Corpus replay, fuzz, race, coverage and mutation checks |
+| Existing Bazel targets and PR CI | Corpus replay, fuzz seed replay, race and mutation checks (no scheduled lane runs) |
 
 Compose [dst](../dst/SKILL.md) for reproduction/fuzz/simulation mechanics and
 [query-engine](../query-engine/SKILL.md) for design and implementation; reviews run the

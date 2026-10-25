@@ -42,10 +42,10 @@ var Allowlist = map[string]int{
 	"pkg/fdbgo/fdb/transaction.go":      1,
 	// libfdbc cgo backend — analyzed only under `cgo && libfdbc`; 1 real recover (backend.go:354).
 	"pkg/fdbgo/libfdbc/backend.go": 1,
-	// SQL engine: parse / connection / executor boundaries
-	"pkg/relational/core/parser/parser.go":               4,
-	"pkg/relational/core/embedded/connection.go":         2,
-	"pkg/relational/core/embedded/cascades_generator.go": 1,
+	// SQL engine: parse / connection / driver boundaries
+	"pkg/relational/core/parser/parser.go":       4,
+	"pkg/relational/core/embedded/connection.go": 1,
+	"pkg/relational/sqldriver/driver.go":         1,
 	// record layer: tuple.Pack on user-derived comparison keys
 	"pkg/recordlayer/merge_cursor.go": 1,
 	// RFC-232 binding admission: a hostile implementation of the open Value
@@ -62,6 +62,9 @@ var Allowlist = map[string]int{
 	// find — caught, recorded as a finding, and the sweep continues (an unattended run
 	// must survive one poisoned seed). The panic is surfaced on the finding, never swallowed.
 	"cmd/dst-hunt/main.go": 1,
+	// FDB testcontainer Docker probe: testcontainers' discovery panics without a
+	// Docker host, and the probe turns that into a DockerUnavailableError.
+	"pkg/testcontainers/foundationdb/docker.go": 1,
 	// Frozen locale parsers translate malformed tags to their existing syntax errors.
 	"internal/unicode15/text/internal/language/language.go": 5,
 	"internal/unicode15/text/internal/language/parse.go":    1,
