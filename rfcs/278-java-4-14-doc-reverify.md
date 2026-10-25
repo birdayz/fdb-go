@@ -42,7 +42,9 @@ The corpus number comes from `pinnedLedger`, which the Java corpus run already m
    the cases it cites (Y requires correct answers, N only wrong results or rejection, P mixed
    support; documented source-backed aggregate-index support supplies the unprobed arm).
    Negative-syntax and duplicate-free-tree controls do not establish feature support;
-   error rows check the SQLSTATE in each engine's pin.
+   error rows require all pins to match for Y, mixed matching/nonmatching pins for P.
+   Every matrix row needs evidence: six setup/source/external-test exemptions pin their cells
+   and evidence markers explicitly; losing a row's citations cannot silently exclude it.
 3. `TestSQLConformanceStatesTheLedger` (javacorpus) renders SQL_CONFORMANCE.md's corpus block from
    `pinnedLedger`, the vendored `VERSION` and the corpus's plan-assertion census, and fails when the
    committed block differs. The block states passing, failing and skipped files by class, and the
@@ -57,7 +59,8 @@ Test-only. The probe adds about 25 s to the Java conformance lane; the guard is 
 
 - The probe passes three consecutive runs (`--runs_per_test=3`). `TestDocClaimHelperArms` drives
   every arm of the citation, pin and matrix-cell checks with synthetic documents, including the
-  vacuity checks. Wrong-result Y/P and mixed-support Y/N relabelings are negative controls.
+  vacuity checks. Wrong-result Y/P, mixed-support Y/N, invalid cells, missing per-row citations
+  and corrupted exemptions are negative controls for both engines and SQLSTATE rows.
 - The plan-assertion census has fixture controls for all three directive kinds, file populations,
   negative-parse filtering, errors and empty/all-negative populations.
 - The guard fails on a block that differs from the rendering (checked with a placeholder) and

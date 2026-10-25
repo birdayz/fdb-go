@@ -170,7 +170,7 @@ difference is in DIVERGENCES.md. The run of Java's own yamsql corpus against Go 
 |---|---|---|
 | Core DML | Full | Full |
 | Expressions | No string, math or temporal functions; simple CASE mis-evaluates | + string, math and temporal functions, `&&`/`\|\|`/`XOR` (Go extensions) |
-| Predicates | Full except IN (subquery) | Full except IN (subquery) |
+| Predicates | No IN (subquery); a WHERE consisting only of a parenthesized condition is rejected | Full except IN (subquery) |
 | Aggregation | Grouping only over input an index or the primary key orders; no COUNT(DISTINCT) | Any grouping (hash aggregation); no COUNT(DISTINCT) |
 | Set operations | UNION ALL only | UNION ALL only |
 | Joins | INNER, comma, LEFT/RIGHT OUTER; a join without ON crashes; FULL OUTER rejected | + CROSS JOIN, FULL OUTER (Go extensions) |

@@ -106,6 +106,28 @@ func pinProblems(cases []string, java, goPins map[string]string) []string {
 	return problems
 }
 
+// Rows without standalone probes pin their setup, source or external-test evidence.
+var matrixUnprobedRows = map[string]struct{ prefix, evidence string }{
+	"INSERT VALUES": {
+		"| INSERT VALUES | Y | Y | Y |", "Every probe's setup",
+	},
+	"CREATE TABLE / INDEX": {
+		"| CREATE TABLE / INDEX | Y | Y | Y |", "Every probe's schema",
+	},
+	"Qualified table names (template.table)": {
+		"| Qualified table names (template.table) | Y | Y | P |", "ws_f_table_qualifier_conformance_test.go",
+	},
+	"FDB transaction timeout": {
+		"| FDB transaction timeout | 53F00 | Y | Y |", "ExceptionUtil.java:64-65",
+	},
+	"FDB transaction conflict": {
+		"| FDB transaction conflict | 40001 | Y | Y |", "RecordContextTransaction.java:67-68",
+	},
+	"Deserialization failure": {
+		"| Deserialization failure | XXF01 | Y | Y |", "ExceptionUtil.java:68-69",
+	},
+}
+
 // matrixCellProblems distinguishes correct answers from pinned wrong results,
 // so merely accepting SQL cannot justify a feature's Y classification.
 func matrixCellProblems(doc string, java, goPins map[string]string) ([]string, int) {
@@ -124,13 +146,14 @@ func matrixCellProblems(doc string, java, goPins map[string]string) ([]string, i
 		}
 		return ""
 	}
-	some := func(names []string, pred func(string) bool) bool {
-		for _, n := range names {
-			if pred(n) {
-				return true
-			}
+	supportCell := func(good, bad int) string {
+		if good == 0 {
+			return "N"
 		}
-		return false
+		if bad > 0 {
+			return "P"
+		}
+		return "Y"
 	}
 	var problems []string
 	checked := 0
@@ -156,22 +179,40 @@ func matrixCellProblems(doc string, java, goPins map[string]string) ([]string, i
 				cited = append(cited, m[2])
 			}
 		}
-		if len(cited) == 0 || len(cells) < 4 {
-			continue
-		}
-		checked++
 		bad := func(format string, args ...any) {
 			problems = append(problems, fmt.Sprintf("SQL_CONFORMANCE.md row %q: ", cells[0])+fmt.Sprintf(format, args...))
 		}
+		if len(cells) < 5 {
+			bad("malformed matrix row")
+			continue
+		}
+		if len(cited) == 0 {
+			if exemption, ok := matrixUnprobedRows[cells[0]]; ok {
+				if !strings.HasPrefix(line, exemption.prefix) || !strings.Contains(line, exemption.evidence) {
+					bad("source/setup/external-test exemption no longer matches its declared cells and evidence")
+				} else {
+					checked++
+				}
+			} else {
+				bad("no probe evidence or explicit source/setup/external-test exemption")
+			}
+			continue
+		}
+		checked++
 		if mode == "feature" {
 			javaCell, goCell := cells[1], cells[2]
-			correct, wrong, rejected := 0, 0, 0
+			correct, wrong, rejected, goCorrect, goRejected := 0, 0, 0, 0, 0
 			for _, name := range cited {
 				// Overflow/unsupported INSERT forms and a duplicate-free tree are
 				// controls, not evidence for the surrounding feature's support.
 				switch name {
-				case "cast_overflow", "insert_select_column_list", "recursive_union_distinct":
+				case "cast_overflow", "insert_select_column_list", "recursive_union_distinct", "position_in", "extract_year":
 					continue
+				}
+				if isErr(goOf(name)) {
+					goRejected++
+				} else {
+					goCorrect++
 				}
 				switch {
 				case isErr(java[name]):
@@ -185,39 +226,48 @@ func matrixCellProblems(doc string, java, goPins map[string]string) ([]string, i
 			// These rows cite Java's aggregate-index tests for the supported arm;
 			// their probes exercise only the unsupported, unindexed shape.
 			if cells[0] == "GROUP BY expression" || cells[0] == "ORDER BY aggregate" {
-				correct++
-			}
-			wantJava := "N"
-			if correct > 0 {
-				wantJava = "Y"
-				if wrong+rejected > 0 {
-					wantJava = "P"
+				if !strings.Contains(line, "aggregate-index-tests.yamsql") {
+					bad("source-backed supported arm has no aggregate-index citation")
 				}
+				correct++
 			}
 			if correct+wrong+rejected == 0 {
 				bad("no feature-support case remains after excluding controls")
-			} else if javaCell != wantJava {
+				continue
+			}
+			wantJava := supportCell(correct, wrong+rejected)
+			if javaCell != wantJava {
 				bad("Java is %s, want %s from %d correct, %d wrong-result and %d rejected cases", javaCell, wantJava, correct, wrong, rejected)
 			}
-			if (goCell == "Y" || goCell == "Ext") && !some(cited, func(n string) bool { return !isErr(goOf(n)) }) {
-				bad("Go is %s but Go refuses every cited case %v", goCell, cited)
+			// The correlated-subquery row documents additional refused Go shapes
+			// under DIVERGENCES.md's Optimization-Quality Gaps section.
+			if cells[0] == "Correlated subquery" {
+				if !strings.Contains(line, "Optimization-Quality Gaps") {
+					bad("source-backed Go refusal has no Optimization-Quality Gaps citation")
+				}
+				goRejected++
 			}
-			if goCell == "N" && !some(cited, func(n string) bool { return isErr(goOf(n)) }) {
-				bad("Go is N but Go answers every cited case %v", cited)
+			wantGo := supportCell(goCorrect, goRejected)
+			if goCell != wantGo && !(goCell == "Ext" && wantGo == "Y" && wantJava == "N" && rejected > 0) {
+				bad("Go is %s, want %s from %d answered and %d rejected cases", goCell, wantGo, goCorrect, goRejected)
 			}
 			continue
 		}
 		state, javaCell, goCell := cells[1], cells[2], cells[3]
-		javaHas := func(n string) bool { return stateOf(java[n], 2) == state }
-		javaOther := func(n string) bool { return isErr(java[n]) && !javaHas(n) }
-		goHas := func(n string) bool { return stateOf(goOf(n), 1) == state }
-		switch {
-		case javaCell == "Y" && !some(cited, javaHas), javaCell == "N" && some(cited, javaHas),
-			javaCell == "P" && !(some(cited, javaHas) && some(cited, javaOther)):
-			bad("Java is %s for %s, against the pins of %v", javaCell, state, cited)
+		javaMatches, goMatches := 0, 0
+		for _, name := range cited {
+			if stateOf(java[name], 2) == state {
+				javaMatches++
+			}
+			if stateOf(goOf(name), 1) == state {
+				goMatches++
+			}
 		}
-		if goCell == "Y" && !some(cited, goHas) || goCell == "N" && some(cited, goHas) {
-			bad("Go is %s for %s, against the pins of %v", goCell, state, cited)
+		if want := supportCell(javaMatches, len(cited)-javaMatches); javaCell != want {
+			bad("Java is %s for %s, want %s against the pins of %v", javaCell, state, want, cited)
+		}
+		if want := supportCell(goMatches, len(cited)-goMatches); goCell != want {
+			bad("Go is %s for %s, want %s against the pins of %v", goCell, state, want, cited)
 		}
 	}
 	if checked == 0 {
@@ -253,7 +303,11 @@ func TestDocClaimSupportClassifications(t *testing.T) {
 		{"ORDER BY aggregate", "Y", "`works`", ""},
 	} {
 		t.Run(tc.name+"/"+tc.cell, func(t *testing.T) {
-			doc := "| Feature | Java | Go | ANSI | Notes |\n| " + tc.name + " | " + tc.cell + " | P | Y | " + tc.cases + " |"
+			notes := tc.cases
+			if tc.name == "GROUP BY expression" || tc.name == "ORDER BY aggregate" {
+				notes += " (aggregate-index-tests.yamsql)"
+			}
+			doc := "| Feature | Java | Go | ANSI | Notes |\n| " + tc.name + " | " + tc.cell + " | Y | Y | " + notes + " |"
 			problems, rows := matrixCellProblems(doc, java, goPins)
 			if rows != 1 {
 				t.Fatalf("checked %d rows, want 1", rows)
@@ -266,6 +320,76 @@ func TestDocClaimSupportClassifications(t *testing.T) {
 				t.Fatalf("problems = %v, want one containing %q", problems, tc.want)
 			}
 		})
+	}
+}
+
+func TestDocClaimEngineCells(t *testing.T) {
+	t.Parallel()
+	java := map[string]string{
+		"works": `[] [[1]]`, "state": `ERROR X 23502 "no"`, "other": `ERROR X XX000 "no"`,
+	}
+	goPins := map[string]string{"state": `ERROR 23502 "no"`, "other": `ERROR XX000 "no"`}
+	for _, tc := range []struct {
+		name, header, row, want string
+	}{
+		{"Go false partial", "| Feature | Java | Go | ANSI | Notes |", "| select | Y | P | Y | `works` |", "Go is P"},
+		{"Go unknown", "| Feature | Java | Go | ANSI | Notes |", "| select | Y | banana | Y | `works` |", "Go is banana"},
+		{"Go mixed as Y", "| Feature | Java | Go | ANSI | Notes |", "| mixed | P | Y | Y | `works`, `state` |", "Go is Y"},
+		{"Java mixed state as Y", "| Error | SQLSTATE | Java | Go | Notes |", "| null | 23502 | Y | P | `state`, `other` |", "Java is Y"},
+		{"Java mixed state as P", "| Error | SQLSTATE | Java | Go | Notes |", "| null | 23502 | P | P | `state`, `other` |", ""},
+		{"Go mixed state as Y", "| Error | SQLSTATE | Java | Go | Notes |", "| null | 23502 | P | Y | `state`, `other` |", "Go is Y"},
+		{"Go false partial state", "| Error | SQLSTATE | Java | Go | Notes |", "| null | 23502 | Y | P | `state` |", "Go is P"},
+		{"Java unknown state", "| Error | SQLSTATE | Java | Go | Notes |", "| null | 23502 | banana | Y | `state` |", "Java is banana"},
+		{"missing aggregate source", "| Feature | Java | Go | ANSI | Notes |", "| GROUP BY expression | P | N | Y | `state` |", "no aggregate-index citation"},
+		{"missing Go gap source", "| Feature | Java | Go | ANSI | Notes |", "| Correlated subquery | Y | P | Y | `works` |", "no Optimization-Quality Gaps citation"},
+		{"Go gap source", "| Feature | Java | Go | ANSI | Notes |", "| Correlated subquery | Y | P | Y | `works` (Optimization-Quality Gaps) |", ""},
+		{"invalid extension", "| Feature | Java | Go | ANSI | Notes |", "| select | Y | Ext | Y | `works` |", "Go is Ext"},
+		{"malformed row", "| Feature | Java | Go | ANSI | Notes |", "| malformed | Y | Y |\n| select | Y | Y | Y | `works` |", "malformed matrix row"},
+		{"missing evidence", "| Feature | Java | Go | ANSI | Notes |", "| SELECT DISTINCT | Y | Y | Y | no citation |\n| select | Y | Y | Y | `works` |", "no probe evidence"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			problems, _ := matrixCellProblems(tc.header+"\n"+tc.row, java, goPins)
+			if tc.want == "" {
+				if len(problems) != 0 {
+					t.Fatalf("valid cells: %v", problems)
+				}
+			} else if len(problems) != 1 || !strings.Contains(problems[0], tc.want) {
+				t.Fatalf("problems = %v, want one containing %q", problems, tc.want)
+			}
+		})
+	}
+	if problems := citationProblems("`works` `state` `other`", []string{"works", "state", "other"}, nil); len(problems) != 0 {
+		t.Fatalf("other document still cites every case: %v", problems)
+	}
+}
+
+func TestDocClaimMatrixExemptions(t *testing.T) {
+	t.Parallel()
+	featureRows := []string{
+		"| INSERT VALUES | Y | Y | Y | Every probe's setup |",
+		"| CREATE TABLE / INDEX | Y | Y | Y | Every probe's schema |",
+		"| Qualified table names (template.table) | Y | Y | P | ws_f_table_qualifier_conformance_test.go |",
+	}
+	errorRows := []string{
+		"| FDB transaction timeout | 53F00 | Y | Y | ExceptionUtil.java:64-65 |",
+		"| FDB transaction conflict | 40001 | Y | Y | RecordContextTransaction.java:67-68 |",
+		"| Deserialization failure | XXF01 | Y | Y | ExceptionUtil.java:68-69 |",
+	}
+	doc := "| Feature | Java | Go | ANSI | Notes |\n" + strings.Join(featureRows, "\n") +
+		"\n\n| Error | SQLSTATE | Java | Go | Notes |\n" + strings.Join(errorRows, "\n")
+	if problems, rows := matrixCellProblems(doc, nil, nil); len(problems) != 0 || rows != 6 {
+		t.Fatalf("explicit exemptions: problems %v, rows %d; want none, 6", problems, rows)
+	}
+	for _, row := range append(featureRows, errorRows...) {
+		for _, corrupted := range []string{
+			strings.Replace(row, "| Y |", "| N |", 1),
+			row[:strings.LastIndex(row[:len(row)-1], "|")+1] + " missing evidence |",
+		} {
+			badDoc := strings.Replace(doc, row, corrupted, 1)
+			if problems, _ := matrixCellProblems(badDoc, nil, nil); len(problems) != 1 || !strings.Contains(problems[0], "exemption no longer matches") {
+				t.Errorf("corrupted exemption %q: %v", corrupted, problems)
+			}
+		}
 	}
 }
 
@@ -329,7 +453,7 @@ func TestDocClaimHelperArms(t *testing.T) {
 	if rows != 9 {
 		t.Errorf("checked %d rows, want 9", rows)
 	}
-	want(problems, `"bad java Y": Java is Y`, `"bad java N": Java is N`, `"bad go N": Go is N`,
+	want(problems, `"uncited": no probe evidence`, `"bad java Y": Java is Y`, `"bad java N": Java is N`, `"bad go N": Go is N`,
 		`"bad error": Java is Y for 42601`, `"bad error": Go is Y for 42601`, `"bad partial": Java is P`)
 
 	java["shared_refused"] = `ERROR X 0AF00 "no"`
@@ -346,7 +470,7 @@ func TestDocClaimHelperArms(t *testing.T) {
 		"| shared state | 0AF00 | Y | Y | `shared_refused` |",
 		"| bad error Go N | 0AF00 | Y | N | `shared_refused` |",
 		"| bad error Java N | 0AF00 | N | Y | `shared_refused` |",
-		"| partial state | 0AF00 | P | Y | `shared_refused`, `other_refused` |",
+		"| partial state | 0AF00 | P | P | `shared_refused`, `other_refused` |",
 	}, "\n")
 	problems, rows = matrixCellProblems(doc, java, goPins)
 	if rows != 7 {
