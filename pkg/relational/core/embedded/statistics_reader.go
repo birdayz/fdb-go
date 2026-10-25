@@ -209,7 +209,8 @@ type statisticsGateInput struct {
 // whether the planner asks, not whether the data is any good, and an operator
 // running `frl stats show` wants to know the data is fresh BEFORE turning the
 // flag on. The CLI prints the flag's role separately.
-func (c *EmbeddedConnection) StatisticsStatus(ctx context.Context) (StatisticsStatus, error) {
+func (c *EmbeddedConnection) StatisticsStatus(ctx context.Context) (_ StatisticsStatus, err error) {
+	defer c.recoverInto(&err)
 	if c.closed.Load() {
 		return StatisticsStatus{}, driver.ErrBadConn
 	}

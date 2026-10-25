@@ -53,9 +53,8 @@ func TestMain(m *testing.M) {
 		foundationdbtc.WithStorageEngine("memory"),
 	)
 	if err != nil {
-		var terminationErr *foundationdbtc.TerminationError
-		if errors.As(err, &terminationErr) {
-			fmt.Fprintf(os.Stderr, "integration startup cleanup failed: %v\n", err)
+		if !foundationdbtc.SkipWithoutDocker(err) {
+			fmt.Fprintf(os.Stderr, "integration setup: FDB container startup failed: %v\n", err)
 			os.Exit(1)
 		}
 		// No Docker — run unit tests only; integration tests skip via

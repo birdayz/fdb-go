@@ -32,7 +32,8 @@
 //
 // NO FDB REQUIRED. Planning is metadata-only: the corpus scenario's
 // `schema_template` is compiled to in-memory RecordMetaData and the query is
-// planned against it. `setup:` INSERTs are not replayed, so table statistics
+// planned against it under the scenario's `connection_options`, as the corpus
+// runner's connection is. `setup:` INSERTs are not replayed, so table statistics
 // are the planner defaults rather than the live cardinalities the driver
 // would fetch from FDB. That is a deliberate trade: the baseline is a
 // REGRESSION key (same input → same output → any delta is a real planner
@@ -48,6 +49,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -55,6 +57,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/yamsql"
 	"fdb.dev/pkg/relational/core/embedded"
 )
@@ -154,6 +157,32 @@ func CollectWithReachability(dir string, reach *cascades.ReachabilityCollector) 
 }
 
 func collect(dir string, reach *cascades.ReachabilityCollector, bound bool) ([]Entry, Stats, error) {
+	jobs, st, err := corpusJobs(dir, bound)
+	if err != nil {
+		return nil, Stats{}, err
+	}
+	entries := planJobs(jobs, reach)
+	for _, e := range entries {
+		if e.Failed() {
+			st.PlanErrors++
+		}
+		if e.UnexpectedlyFailed() {
+			st.UnexpectedErrors++
+		}
+	}
+	return entries, st, nil
+}
+
+// job is one plannable corpus statement.
+type job struct {
+	base, sql, errorPin, schemaTemplate string
+	idx                                 int
+	plan                                planFn
+}
+
+// corpusJobs gathers dir/*.yaml's plannable statements in corpus order, with
+// the Stats counts that do not depend on planning.
+func corpusJobs(dir string, bound bool) ([]job, Stats, error) {
 	matches, err := filepath.Glob(filepath.Join(dir, "*.yaml"))
 	if err != nil {
 		return nil, Stats{}, fmt.Errorf("glob %s: %w", dir, err)
@@ -163,15 +192,6 @@ func collect(dir string, reach *cascades.ReachabilityCollector, bound bool) ([]E
 		return nil, Stats{}, fmt.Errorf("no *.yaml scenarios under %s", dir)
 	}
 
-	// Statements are gathered in corpus order, planned concurrently (each plan
-	// is independent; generated aliases are renumbered per plan, and the
-	// reachability collector is mutex-guarded), and folded back in corpus
-	// order, so entries and stats are exactly the serial ones.
-	type job struct {
-		base, sql, errorPin, schemaTemplate string
-		idx                                 int
-		plan                                planFn
-	}
 	var jobs []job
 	st := Stats{Files: len(matches)}
 	for _, path := range matches {
@@ -181,6 +201,10 @@ func collect(dir string, reach *cascades.ReachabilityCollector, bound bool) ([]E
 			// A corpus file that no longer loads is a hard error: silently
 			// dropping it would shrink the baseline and read as "no change".
 			return nil, Stats{}, fmt.Errorf("load %s: %w", base, loadErr)
+		}
+		opts, optsErr := s.Options()
+		if optsErr != nil {
+			return nil, Stats{}, fmt.Errorf("%s: %w", base, optsErr)
 		}
 		for i, t := range s.Tests {
 			args, argErr := StatementArgs(&s.Tests[i])
@@ -195,12 +219,12 @@ func collect(dir string, reach *cascades.ReachabilityCollector, bound bool) ([]E
 			switch {
 			case isDML(t.Query):
 				st.DML++
-				plan = planDML(args)
+				plan = planDML(args, opts)
 			case yamsql.IsQuery(t.Query):
 				st.Queries++
-				plan = planSelect(args)
+				plan = planSelect(args, opts)
 				if bound {
-					plan = planSelectBound(args)
+					plan = planSelectBound(args, opts)
 				}
 			default:
 				st.NonQuery++
@@ -209,6 +233,13 @@ func collect(dir string, reach *cascades.ReachabilityCollector, bound bool) ([]E
 			jobs = append(jobs, job{base, t.Query, t.EffectiveErrorCode(), s.SchemaTemplate, i, plan})
 		}
 	}
+	return jobs, st, nil
+}
+
+// planJobs plans jobs concurrently (each plan is independent; generated
+// aliases are renumbered per plan, and the reachability collector is
+// mutex-guarded) and returns the entries in job order, exactly the serial ones.
+func planJobs(jobs []job, reach *cascades.ReachabilityCollector) []Entry {
 	entries := make([]Entry, len(jobs))
 	work := make(chan int)
 	var wg sync.WaitGroup
@@ -225,15 +256,55 @@ func collect(dir string, reach *cascades.ReachabilityCollector, bound bool) ([]E
 	}
 	close(work)
 	wg.Wait()
-	for _, e := range entries {
-		if e.Failed() {
-			st.PlanErrors++
-		}
-		if e.UnexpectedlyFailed() {
-			st.UnexpectedErrors++
+	return entries
+}
+
+// Instability is a corpus statement that planned to more than one rendering.
+type Instability struct {
+	Key   string
+	Plans []string // the distinct renderings, in the order first seen
+}
+
+// Replan plans the corpus once, then plans every statement whose first entry
+// keep accepts runs more times, and reports each one whose rendering changed.
+// kept is the number of statements replanned.
+func Replan(dir string, runs int, keep func(Entry) bool) (kept int, unstable []Instability, err error) {
+	jobs, _, err := corpusJobs(dir, false)
+	if err != nil {
+		return 0, nil, err
+	}
+	kept, unstable = replan(jobs, runs, keep, func(js []job) []Entry { return planJobs(js, nil) })
+	return kept, unstable, nil
+}
+
+func replan(jobs []job, runs int, keep func(Entry) bool, plan func([]job) []Entry) (int, []Instability) {
+	first := plan(jobs)
+	var keptJobs []job
+	var keptFirst []Entry
+	for k, e := range first {
+		if keep(e) {
+			keptJobs = append(keptJobs, jobs[k])
+			keptFirst = append(keptFirst, e)
 		}
 	}
-	return entries, st, nil
+	seen := make([][]string, len(keptJobs))
+	for k, e := range keptFirst {
+		seen[k] = []string{e.Plan}
+	}
+	for range runs {
+		for k, e := range plan(keptJobs) {
+			if !slices.Contains(seen[k], e.Plan) {
+				seen[k] = append(seen[k], e.Plan)
+			}
+		}
+	}
+	var unstable []Instability
+	for k, plans := range seen {
+		if len(plans) > 1 {
+			unstable = append(unstable, Instability{Key: keptFirst[k].Key(), Plans: plans})
+		}
+	}
+	return len(keptJobs), unstable
 }
 
 // Stats are the reconciliation counts for a Collect run. They are derived,
@@ -279,26 +350,26 @@ func StatementArgs(t *yamsql.Test) ([]driver.NamedValue, error) {
 }
 
 // planSelect routes a SELECT/WITH/VALUES statement through the SELECT harness.
-func planSelect(args []driver.NamedValue) planFn {
+func planSelect(args []driver.NamedValue, opts *api.Options) planFn {
 	return func(sql, schemaTemplate string, reach *cascades.ReachabilityCollector) (plans.RecordQueryPlan, error) {
 		// Statistics are nil: planner defaults (see the package doc — the
 		// baseline is a regression key, not a live-cardinality prediction).
-		return embedded.PlanPhysicalForTestWithArgs(sql, schemaTemplate, args, nil, reach)
+		return embedded.PlanPhysicalForTestWithArgs(sql, schemaTemplate, args, opts, nil, reach)
 	}
 }
 
 // planDML routes a DELETE/UPDATE statement through the DML harness — the same
 // no-FDB Cascades pipeline, entered via the DML logical builders and the DML
 // planning rule set (see embedded.PlanPhysicalDMLForTest).
-func planSelectBound(args []driver.NamedValue) planFn {
+func planSelectBound(args []driver.NamedValue, opts *api.Options) planFn {
 	return func(sql, schemaTemplate string, _ *cascades.ReachabilityCollector) (plans.RecordQueryPlan, error) {
-		return embedded.PlanPhysicalForTestWithBoundLiterals(sql, schemaTemplate, args, nil)
+		return embedded.PlanPhysicalForTestWithBoundLiterals(sql, schemaTemplate, args, opts, nil)
 	}
 }
 
-func planDML(args []driver.NamedValue) planFn {
+func planDML(args []driver.NamedValue, opts *api.Options) planFn {
 	return func(sql, schemaTemplate string, reach *cascades.ReachabilityCollector) (plans.RecordQueryPlan, error) {
-		return embedded.PlanPhysicalDMLForTestWithArgs(sql, schemaTemplate, args, nil, reach)
+		return embedded.PlanPhysicalDMLForTestWithArgs(sql, schemaTemplate, args, opts, nil, reach)
 	}
 }
 

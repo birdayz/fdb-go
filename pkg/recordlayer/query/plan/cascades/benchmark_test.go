@@ -172,7 +172,7 @@ func BenchmarkComparisonPredicate_Eval(b *testing.B) {
 }
 
 // Non-constant RHS exercises the second Operand.Evaluate(evalCtx)
-// call ComparisonPredicate.Eval grew this shift. Pin the cost
+// call in ComparisonPredicate.Eval. Pin the cost
 // against the constant-RHS baseline so a future pessimisation
 // (extra alloc, redundant nil-guard, etc.) shows up in CI bench.
 //
@@ -326,7 +326,7 @@ func BenchmarkSimplify_Absorption(b *testing.B) {
 }
 
 // BenchmarkListMatcher_BindMatches measures positional-pairing match
-// cost — the new matcher introduced this shift. Three downstreams,
+// cost. Three downstreams,
 // successful match. ReportAllocs surfaces the per-position append +
 // host-bind alloc counts.
 func BenchmarkListMatcher_BindMatches(b *testing.B) {

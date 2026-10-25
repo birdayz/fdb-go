@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/pkg/recordlayer/query/executor"
+	"fdb.dev/pkg/relational/core/resultset"
 )
 
 // The driver's scan type per SQL type: a DATE or TIMESTAMP result is its
@@ -28,7 +28,7 @@ func TestPaginatingRows_ColumnTypeScanType(t *testing.T) {
 	var r paginatingRows
 	var names []string
 	for name := range want {
-		r.cols = append(r.cols, executor.ColumnDef{TypeName: name})
+		r.cols = append(r.cols, resultset.ColumnDef{TypeName: name})
 		names = append(names, name)
 	}
 	for i, name := range names {

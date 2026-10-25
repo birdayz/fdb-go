@@ -392,8 +392,8 @@ func (db Database) CreateWritableTransaction() (WritableTransaction, error) {
 	return db.CreateTransaction()
 }
 
-// Transact runs a transactional function with automatic retry. This no-ctx form
-// is drop-in compatible with the Apple Go binding: it has no Go-context
+// Transact runs a transactional function with automatic retry. Like the Apple
+// Go binding's Transact, this no-ctx form has no Go-context
 // cancellation and, by default, retries indefinitely on retryable errors. Bound
 // it with DatabaseOptions.SetTransactionTimeout / SetTransactionRetryLimit (an
 // overall budget honored across retries), or use TransactCtx for Go-context
@@ -432,7 +432,7 @@ func (db Database) TransactCtx(ctx context.Context, f func(WritableTransaction) 
 }
 
 // ReadTransact runs a read-only transactional function with automatic retry.
-// Like Transact, this is the Apple-binding-compatible no-ctx form: no Go-context
+// Like Transact, this no-ctx form matches the Apple binding's: no Go-context
 // cancellation, retries bounded only by SetTransactionTimeout /
 // SetTransactionRetryLimit (default unbounded, matching libfdb_c). Use
 // ReadTransactCtx for Go-context cancellation/deadline (RFC-090).

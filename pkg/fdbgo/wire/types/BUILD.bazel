@@ -78,6 +78,7 @@ go_test(
         "marshal_fuzz_test.go",
         "opendatabasecoordrequest_custom_test.go",
         "readoptions_test.go",
+        "vector_count_decode_test.go",
     ],
     data = ["testdata.json"],
     embed = [":types"],

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -73,6 +74,28 @@ func TestBaselineIsDeterministic(t *testing.T) {
 	if st1.Queries == 0 {
 		t.Fatal("planned 0 queries — the corpus glob or the loader is broken")
 	}
+}
+
+// TestRepeatedPlanningIsStable plans each corpus statement with a join, union,
+// intersection, IN iteration or index read ten more times and requires one
+// EXPLAIN: the plans where an order-dependent tie would pick another winner.
+func TestRepeatedPlanningIsStable(t *testing.T) {
+	t.Parallel()
+
+	multiChoice := regexp.MustCompile(`FlatMap\(|NestedLoopJoin|InJoin|InUnion|Intersection|Union|IndexScan|AggregateIndex`)
+	kept, unstable, err := explaindiff.Replan(corpusDir, 10, func(e explaindiff.Entry) bool {
+		return !e.Failed() && multiChoice.MatchString(e.Plan)
+	})
+	if err != nil {
+		t.Fatalf("replan corpus: %v", err)
+	}
+	if kept < 1000 {
+		t.Fatalf("replanned %d statements, want at least 1000: the operator filter or the corpus is broken", kept)
+	}
+	for _, u := range unstable {
+		t.Errorf("%s planned to %d different EXPLAINs:\n  %s", u.Key, len(u.Plans), strings.Join(u.Plans, "\n  "))
+	}
+	t.Logf("replanned %d statements 10 more times each", kept)
 }
 
 // TestBaselineRoundTrips proves Render and Parse are inverses. `diff` parses

@@ -343,51 +343,6 @@ func TestConvertToProtoValue_TypeMismatch(t *testing.T) {
 	}
 }
 
-// ----- LiteralMatchesPKKind -------------------------------------------------
-
-func TestLiteralMatchesPKKind_IntegerKinds(t *testing.T) {
-	t.Parallel()
-	for _, kind := range []protoreflect.Kind{
-		protoreflect.Int32Kind, protoreflect.Int64Kind,
-		protoreflect.Sint32Kind, protoreflect.Sint64Kind,
-		protoreflect.Sfixed32Kind, protoreflect.Sfixed64Kind,
-	} {
-		if !LiteralMatchesPKKind(int64(42), kind) {
-			t.Errorf("int64 should match %v", kind)
-		}
-		if LiteralMatchesPKKind("42", kind) {
-			t.Errorf("string should not match %v", kind)
-		}
-	}
-}
-
-func TestLiteralMatchesPKKind_StringKind(t *testing.T) {
-	t.Parallel()
-	if !LiteralMatchesPKKind("hello", protoreflect.StringKind) {
-		t.Fatal("string should match StringKind")
-	}
-	if LiteralMatchesPKKind(int64(42), protoreflect.StringKind) {
-		t.Fatal("int64 should not match StringKind")
-	}
-}
-
-func TestLiteralMatchesPKKind_BytesKind(t *testing.T) {
-	t.Parallel()
-	if !LiteralMatchesPKKind([]byte{1}, protoreflect.BytesKind) {
-		t.Fatal("[]byte should match BytesKind")
-	}
-	if LiteralMatchesPKKind("hello", protoreflect.BytesKind) {
-		t.Fatal("string should not match BytesKind")
-	}
-}
-
-func TestLiteralMatchesPKKind_BoolKind(t *testing.T) {
-	t.Parallel()
-	if LiteralMatchesPKKind(true, protoreflect.BoolKind) {
-		t.Fatal("bool should not match BoolKind (not a PK type)")
-	}
-}
-
 // ----- Round-trip: ConvertToProtoValue → Set → Get → ProtoValueToDriver -----
 
 func TestRoundTrip_Int32(t *testing.T) {
@@ -864,70 +819,6 @@ func TestUUIDProtoMessageToString_MaxBits(t *testing.T) {
 }
 
 // =============================================================================
-// LiteralMatchesPKKind — extended unsigned kinds
-// =============================================================================
-
-func TestLiteralMatchesPKKind_UintKinds(t *testing.T) {
-	t.Parallel()
-	for _, kind := range []protoreflect.Kind{
-		protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
-		protoreflect.Uint64Kind, protoreflect.Fixed64Kind,
-	} {
-		t.Run(kind.String(), func(t *testing.T) {
-			t.Parallel()
-			if !LiteralMatchesPKKind(int64(42), kind) {
-				t.Error("int64 should match unsigned kind")
-			}
-			if !LiteralMatchesPKKind(uint32(42), kind) {
-				t.Error("uint32 should match unsigned kind")
-			}
-			if !LiteralMatchesPKKind(uint64(42), kind) {
-				t.Error("uint64 should match unsigned kind")
-			}
-			if LiteralMatchesPKKind("42", kind) {
-				t.Error("string should not match unsigned kind")
-			}
-			if LiteralMatchesPKKind(true, kind) {
-				t.Error("bool should not match unsigned kind")
-			}
-		})
-	}
-}
-
-func TestLiteralMatchesPKKind_AllIntTypes(t *testing.T) {
-	t.Parallel()
-	intVals := []any{
-		int(1), int8(1), int16(1), int32(1), int64(1),
-		uint(1), uint8(1), uint16(1), uint32(1), uint64(1),
-	}
-	for _, val := range intVals {
-		if !LiteralMatchesPKKind(val, protoreflect.Int64Kind) {
-			t.Errorf("%T should match Int64Kind", val)
-		}
-	}
-}
-
-func TestLiteralMatchesPKKind_FloatDoesNotMatch(t *testing.T) {
-	t.Parallel()
-	if LiteralMatchesPKKind(3.14, protoreflect.Int64Kind) {
-		t.Error("float64 should not match Int64Kind")
-	}
-	if LiteralMatchesPKKind(float32(3.14), protoreflect.Int64Kind) {
-		t.Error("float32 should not match Int64Kind")
-	}
-}
-
-func TestLiteralMatchesPKKind_UnsupportedKind(t *testing.T) {
-	t.Parallel()
-	if LiteralMatchesPKKind(true, protoreflect.BoolKind) {
-		t.Error("BoolKind should return false (not in scope)")
-	}
-	if LiteralMatchesPKKind(3.14, protoreflect.DoubleKind) {
-		t.Error("DoubleKind should return false (not in scope)")
-	}
-}
-
-// =============================================================================
 // ConvertToProtoValue + ProtoValueToDriver round-trip — all signed kinds
 // =============================================================================
 
@@ -1164,18 +1055,6 @@ func BenchmarkConvertToProtoValue_Double(b *testing.B) {
 	fd := typedFD("val_double")
 	for b.Loop() {
 		_, _ = ConvertToProtoValue(fd, float64(3.14159))
-	}
-}
-
-func BenchmarkLiteralMatchesPKKind_Int64(b *testing.B) {
-	for b.Loop() {
-		_ = LiteralMatchesPKKind(int64(42), protoreflect.Int64Kind)
-	}
-}
-
-func BenchmarkLiteralMatchesPKKind_String(b *testing.B) {
-	for b.Loop() {
-		_ = LiteralMatchesPKKind("hello", protoreflect.StringKind)
 	}
 }
 

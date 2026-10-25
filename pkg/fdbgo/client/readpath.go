@@ -30,8 +30,8 @@ const (
 	// bounded by rows alone. This is EXACT's value, per mode_bytes_array[EXACT] (fdb_c.cpp:1002).
 	ByteLimitUnlimited = -1
 	// maxReadTimeoutRetries bounds the re-send of a read whose RPC reply
-	// timed out (errReplyTimeout). libfdb_c re-sends indefinitely (bounded by
-	// the transaction's read-version validity, ~5s MVCC window); a re-send of
+	// timed out (errReplyTimeout). libfdb_c has no per-RPC reply timeout and
+	// waits (bounded by the transaction's read-version validity, ~5s MVCC window); a re-send of
 	// our read with the same read version converges to a server-side
 	// transaction_too_old once the window passes, so a small cap is a safety
 	// backstop against a wedged connection, not the primary bound. On
@@ -304,7 +304,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, select
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
 				replyCleanup.release()
-				tx.db.handleReadConnError(server.Address, err)
+				tx.db.handleReadConnError(server.Address, conn, err)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			getKeyBufPool.Put(bufp)
@@ -313,6 +313,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, select
 				replyCh:     replyCh,
 				replyHandle: replyHandle,
 				addr:        server.Address,
+				conn:        conn,
 				delta:       delta,
 				start:       start,
 			}
@@ -337,7 +338,7 @@ func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, select
 
 	if result.addr != "" {
 		if result.connErr {
-			tx.db.handleReadConnError(result.addr, result.err)
+			tx.db.handleReadConnError(result.addr, result.conn, result.err)
 			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
 		} else if result.err != nil {
 			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
@@ -552,7 +553,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
 				replyCleanup.release()
-				tx.db.handleReadConnError(server.Address, err)
+				tx.db.handleReadConnError(server.Address, conn, err)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			getValueBufPool.Put(poolBuf)
@@ -561,6 +562,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 				replyCh:     replyCh,
 				replyHandle: replyHandle,
 				addr:        server.Address,
+				conn:        conn,
 				delta:       delta,
 				start:       start,
 			}
@@ -586,7 +588,7 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 	// Process result.
 	if result.addr != "" {
 		if result.connErr {
-			tx.db.handleReadConnError(result.addr, result.err)
+			tx.db.handleReadConnError(result.addr, result.conn, result.err)
 			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
 		} else if result.err != nil {
 			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
@@ -626,7 +628,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 		getValueBufPool.Put(poolBuf) // the write queue owns its copy
 		tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 		replyHandle.Cancel()
-		tx.db.handleReadConnError(server.Address, err)
+		tx.db.handleReadConnError(server.Address, conn, err)
 		return nil, err
 	}
 	getValueBufPool.Put(poolBuf)
@@ -639,7 +641,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 	replyCleanup.release()
 	if resp.Err != nil {
 		tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(resp.Err, start), false)
-		tx.db.handleReadConnError(server.Address, resp.Err)
+		tx.db.handleReadConnError(server.Address, conn, resp.Err)
 		return nil, resp.Err
 	}
 	val, penalty, parseErr := parseGetValueReply(resp.Body)
@@ -1068,7 +1070,7 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end KeySel
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 				replyHandle.Cancel()
 				replyCleanup.release()
-				tx.db.handleReadConnError(server.Address, err)
+				tx.db.handleReadConnError(server.Address, conn, err)
 				return inFlightRPC{err: err, addr: server.Address}
 			}
 			ops.putBuf(poolBuf)
@@ -1077,6 +1079,7 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end KeySel
 				replyCh:     replyCh,
 				replyHandle: replyHandle,
 				addr:        server.Address,
+				conn:        conn,
 				delta:       delta,
 				start:       start,
 			}
@@ -1101,7 +1104,7 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end KeySel
 
 	if result.addr != "" {
 		if result.connErr {
-			tx.db.handleReadConnError(result.addr, result.err)
+			tx.db.handleReadConnError(result.addr, result.conn, result.err)
 			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
 		} else if result.err != nil {
 			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
@@ -1449,7 +1452,7 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	// async poll is observed by WatchPoll, which drains and releases. watchCancel is the SCOPED cancel
 	// (cancels+deregisters only this watch): the setup-error paths below call it, WatchPoll defers it on
 	// completion, and the fdb facade wires the Watch future's Cancel() to it — so one watch is freed
-	// without touching siblings (round 18). The async WatchPoll USES this context, never a lazy fetch
+	// without touching siblings. The async WatchPoll USES this context, never a lazy fetch
 	// (which races Cancel/reset — RFC-115 §4).
 	watchCtx, watchCancel := tx.newWatchCtx(callerCtx)
 	setupCtx, setupCancel := context.WithCancel(ctx)
@@ -1486,9 +1489,8 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 	// future (ReadYourWrites.actor.cpp:1290), but every error path sends
 	// done.send(Void()) BEFORE rethrowing (:1299-1302, :1325-1329) — done
 	// completes successfully, so a failed watch read never poisons commit;
-	// reading only barriers on watch-setup completion (RFC-098 — resolved the
-	// opposite way the original review finding suggested: the C++ source shows
-	// watch errors are deliberately excluded).
+	// reading only barriers on watch-setup completion (RFC-098): the C++ source
+	// deliberately excludes watch errors.
 	value, err := tx.ryw.get(setupCtx, key, tx.getValue)
 	if err != nil {
 		tx.db.releaseWatch() // setup failed after the slot was reserved (C++ catch → decreaseWatchCounter)
@@ -1706,7 +1708,7 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 			tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 			replyHandle.Cancel()
 			replyCleanup.release()
-			tx.db.handleReadConnError(server.Address, err)
+			tx.db.handleReadConnError(server.Address, conn, err)
 			continue
 		}
 		// Long-poll: no short timeout. Use the caller's context deadline.
@@ -1715,7 +1717,7 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 			replyCleanup.release()
 			if resp.Err != nil {
 				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(resp.Err, start), false)
-				tx.db.handleReadConnError(server.Address, resp.Err)
+				tx.db.handleReadConnError(server.Address, conn, resp.Err)
 				continue
 			}
 			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), true)

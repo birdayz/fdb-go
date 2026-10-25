@@ -32,8 +32,9 @@ fdbsql:///<database-path>?cluster_file=/etc/foundationdb/fdb.cluster&schema=<nam
 ```
 
 ```go
-import _ "fdb.dev/pkg/relational/sqldriver"
+import "fdb.dev/pkg/relational/sqldriver"
 
+sqldriver.RegisterDomainIfNotExists("FRL") // once per process
 db, err := sql.Open("fdbsql", "fdbsql:///FRL/MYAPP?cluster_file=/etc/foundationdb/fdb.cluster&schema=APP")
 ```
 
@@ -79,7 +80,8 @@ CGO_ENABLED=1 go build -tags libfdbc ./...   # libfdb_c
 The plain `fdb.OpenDatabase` form is always the pure-Go client; the backend switch lives in the
 internal seam the factory uses, not in a public package. This is a **build-time** choice (the
 libfdb_c network thread is once-per-process), not a runtime switch. Both backends are wire-compatible;
-a cross-client byte-identical differential gates every PR (`nightly-libfdbc.yml`). The SQL driver
+a cross-client byte-identical differential gates every PR (the `libfdbc-differential` job in
+`.github/workflows/ci.yml`). The SQL driver
 routes through the same seam, so `-tags libfdbc` switches it as well.
 
 ---

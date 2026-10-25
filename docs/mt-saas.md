@@ -23,9 +23,10 @@ enforced by the engine:
    (`pkg/relational/core/parser/grammar/RelationalParser.g4:57-81`).
 2. Untrusted SQL must never reach the driver. The scoping controls below are defense-in-depth on
    top of that rule, not a substitute for it.
-3. Every per-statement quota ships effectively unlimited, and none of them is settable from a DSN.
-   Arming them takes code (§3). A tenant fleet run without that code has no per-statement bound
-   other than FDB's own 5-second transaction limit.
+3. Every per-statement quota ships effectively unlimited. The DSN can set the five limits for every
+   connection; the flag that makes the scan limits fail, the statement timeout and the result-byte
+   cap take code (§3). A tenant fleet run without either has no per-statement bound other than
+   FDB's own 5-second transaction limit.
 
 ---
 
@@ -47,8 +48,8 @@ accepts any non-empty path and attaches no meaning to any segment
 guards below key on "the session has a usable database path".
 
 `schema=` has **no default**. Omit it and the session schema stays empty and metadata loading is a
-silent no-op (`pkg/relational/sqldriver/driver.go:174`,
-`pkg/relational/core/embedded/connection.go:507`). Always pass it. `MAIN` is only a convention.
+silent no-op (`Connector.Connect` in `pkg/relational/sqldriver/driver.go`,
+`EmbeddedConnection.ensureMetaData`). Always pass it. `MAIN` is only a convention.
 
 The physical layout is one subspace per (database, schema) pair, and the prefix is the *plain tuple
 encoding of the two strings*:
@@ -247,9 +248,9 @@ Two details worth knowing before you deploy it:
   the first `Connect`. To change a connection's configuration, open a new Connector.
 
 There is no options API for this: `OpenConnector` takes a DSN string
-(`pkg/relational/sqldriver/driver.go:123`) and the DSN is the only route through `database/sql`.
+(`Driver.OpenConnector`) and the DSN is the only route through `database/sql`.
 The option can also be set directly on a connection built with `embedded.New`
-(`pkg/relational/core/embedded/connection.go:525`) via `SetOptions` (`:125`,
+via `SetOptions` (`EmbeddedConnection.SetOptions`,
 `api.NoOptions().With(api.OptRestrictDDLToSessionDatabase, true)`) — exported, but it bypasses
 `database/sql` entirely, so treat the DSN as the operator surface.
 
@@ -286,8 +287,8 @@ other way: a 4-second per-page cap is armed unconditionally whether or not the o
 the option can only *narrow* it, never raise it —
 
 ```go
-// pkg/relational/core/embedded/cascades_generator.go:1775-1782
-timeLimit := txPageTimeLimit                                            // 4s, :1256
+// pkg/relational/core/embedded/cascades_generator.go, paginatingRows
+timeLimit := txPageTimeLimit                                            // 4s
 if userMillis := optInt64(opts, api.OptExecutionTimeLimit, 0); userMillis > 0 {
 	if ut := time.Duration(userMillis) * time.Millisecond; ut < timeLimit {
 		timeLimit = ut
@@ -295,33 +296,33 @@ if userMillis := optInt64(opts, api.OptExecutionTimeLimit, 0); userMillis > 0 {
 }
 ```
 
-The cap exists so FDB's 5-second hard wall is never reached (`cascades_generator.go:1252-1256`). It
+The cap exists so FDB's 5-second hard wall is never reached (`txPageTimeLimit`). It
 is not a tenancy control: a statement that pages will spend 4 seconds *per page*, unbounded in
 total, unless you also set a statement timeout.
 
 What happens on breach differs per limit, and two of them do **not** produce an error:
 
 - **`MAX_ROWS` truncates cleanly.** `io.EOF`, JDBC `setMaxRows` semantics, no error
-  (`cascades_generator.go:1594-1600`). It is an egress cap, not a quota — the work is still done.
+  (`paginatingRows.Next`). It is an egress cap, not a quota — the work is still done.
 - **The scanned-rows / scanned-bytes limits paginate by default.** They only raise
   `ScanLimitReachedError` (SQLSTATE `54F01`, `pkg/relational/api/errcode.go:137`) when
-  `SetFailOnScanLimitReached(true)` is also set (`pkg/relational/core/embedded/connection.go:88-91`).
+  `SetFailOnScanLimitReached(true)` is also set (`EmbeddedConnection.failOnScanLimitReached`).
   **Arming a scan limit without that flag is not a quota** — the statement silently pages on
   instead of failing, which is the opposite of what you wanted.
-- **The time and memory limits do error.** Time → `54F01` (`cascades_generator.go:1848`); memory →
-  `*recordlayer.MemoryLimitExceededError` (`pkg/recordlayer/execute_state.go:211`) mapped to
-  `54F01` at `cascades_generator.go:2244-2247`.
+- **The time and memory limits do error.** Time → `54F01`; memory →
+  `*recordlayer.MemoryLimitExceededError` mapped to `54F01` (both in `translateExecError`).
 
-### Setting them: not a DSN, not SQL — `conn.Raw`
+### Setting them: the DSN for every connection, `conn.Raw` per tenant
 
-**None of the five is settable from a DSN.** `ConnectionOptions()` decodes exactly one parameter,
-`restrict_ddl_to_session_database` (`pkg/relational/sqldriver/dsn.go:86-96`); every other query
-parameter is kept in the raw map and ignored (`dsn.go:84-85`). There is no `SET statement_timeout`
-either, and the reason is recorded at `pkg/relational/core/embedded/connection.go:139-141` — the
-grammar has no generic `SET <var> = <val>` rule. The SQL `OPTIONS(...)` clause carries an unrelated
-set (`cascades_generator.go:772`).
+The DSN sets the five options for every connection of a `*sql.DB` (`max_rows`,
+`execution_scanned_rows_limit`, `execution_scanned_bytes_limit`, `execution_time_limit`,
+`max_statement_memory_bytes`; `DSN.ConnectionOptions`). The flag that makes the scan limits fail,
+the statement timeout and the result-byte cap have no DSN parameter, and there is no
+`SET statement_timeout` either (the grammar has no generic `SET <var> = <val>` rule). The SQL
+`OPTIONS(...)` clause carries an unrelated set.
 
-The only route is `database/sql`'s escape hatch down to the driver connection:
+For per-tenant values, or for the three settings above, the route is `database/sql`'s escape hatch
+down to the driver connection:
 
 ```go
 import (
@@ -332,19 +333,24 @@ import (
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
-// configureTenantConn arms the per-statement governors on one pooled connection.
+// configureTenantConn arms the per-statement governors for one borrow of a
+// pooled connection.
 func configureTenantConn(driverConn any) error {
 	ec, ok := driverConn.(*embedded.EmbeddedConnection)
 	if !ok {
 		return fmt.Errorf("not an embedded connection: %T", driverConn)
 	}
-	ec.SetOptions(api.NewOptionsBuilder().
-		Set(api.OptMaxRows, int64(10_000)).                       // egress cap
-		Set(api.OptExecutionScannedRowsLimit, int64(500_000)).    // per page
-		Set(api.OptExecutionScannedBytesLimit, int64(64<<20)).    // per page
-		Set(api.OptExecutionTimeLimit, int64(2_000)).             // millis, narrows the 4s cap
-		Set(api.OptMaxStatementMemoryBytes, int64(256<<20)).      // statement-wide
-		Build())
+	for name, value := range map[api.OptionName]any{
+		api.OptMaxRows:                    int64(10_000),    // egress cap
+		api.OptExecutionScannedRowsLimit:  int64(500_000),   // per page
+		api.OptExecutionScannedBytesLimit: int64(64 << 20),  // per page
+		api.OptExecutionTimeLimit:         int64(2_000),     // millis, narrows the 4s cap
+		api.OptMaxStatementMemoryBytes:    int64(256 << 20), // statement-wide
+	} {
+		if err := ec.SetOption(name, value); err != nil {
+			return err
+		}
+	}
 	ec.SetFailOnScanLimitReached(true) // without this the scan limits only paginate
 	ec.SetStatementTimeout(30 * time.Second)
 	ec.SetMaxResultBytes(32 << 20)
@@ -362,27 +368,31 @@ if err := conn.Raw(configureTenantConn); err != nil {
 // ... use conn (NOT db) for this tenant's statements ...
 ```
 
-The setters are `SetOptions` (`connection.go:125`), `SetFailOnScanLimitReached` (`:132`),
-`SetStatementTimeout` (`:143`), `SetMaxResultBytes` (`:154`).
+The setters are `SetOption`, `SetFailOnScanLimitReached`, `SetStatementTimeout` and
+`SetMaxResultBytes` on `*embedded.EmbeddedConnection`.
 
-**The footgun to design around: this configures ONE pooled connection.** `Connector.Connect`
-installs only the DSN-decoded options (`pkg/relational/sqldriver/driver.go:173`), so a connection
-the pool hands you later has *not* been through `configureTenantConn`. Route tenant work through a
-helper that acquires a `*sql.Conn`, configures it, uses it, and closes it — do not issue queries on
-the `*sql.DB` directly and assume the governors are on. `SetOptions` is also not safe to call
-concurrently with execution on the same connection (`connection.go:121-123`).
+**The footgun to design around: this configures ONE borrow of ONE pooled connection.** Everything
+`configureTenantConn` sets lasts until the connection returns to the pool: `ResetSession` restores
+the connector's configuration (the DSN-decoded options, and the Go-local settings back at their
+defaults) before the next
+borrower gets it. Route tenant work through a helper that acquires a `*sql.Conn`, configures it,
+uses it, and closes it — do not issue queries on the `*sql.DB` directly and assume the governors are
+on. `SetOptions` is different: it replaces the connection's option set *including what
+`ResetSession` restores*, so what it installs reaches every later borrower; do not use it for
+per-tenant settings. None of the setters is safe to call concurrently with execution on the same
+connection.
 
 ### Statement timeout
 
-`SetStatementTimeout` (`pkg/relational/core/embedded/connection.go:143`) takes a `time.Duration`,
-defaults to **off** (`connection.go:96-102`), and bounds one whole `Execute` including all its
+`SetStatementTimeout` (`EmbeddedConnection.SetStatementTimeout`) takes a `time.Duration`,
+defaults to **off** and lasts one borrow, and bounds one whole `Execute` including all its
 pages. Set it on every tenant connection: it is the only bound that spans pages, and without it the
 4-second per-page cap composes into an unbounded statement. Breach surfaces as `54F01`,
 distinguished from a caller's own context deadline by a cause tag
-(`cascades_generator.go:1304`, `:2209`).
+(`errStatementTimeout`, `translateExecErrorCtx`).
 
 Note the semantics honestly: it is **per request, not per connection lifetime**. A continuation
-resumed by a new request starts a fresh deadline (`connection.go:98-100`).
+resumed by a new request starts a fresh deadline (`EmbeddedConnection.statementTimeout`).
 
 **Do not use `TRANSACTION_TIMEOUT`.** `api.OptTransactionTimeout`
 (`pkg/relational/api/options.go:56`) is dead code — that declaration is its only occurrence in the
@@ -528,10 +538,12 @@ Two caveats on reading the numbers:
 
 ### Per-tenant plan logging
 
-`PlanGenerationLogger` (`pkg/relational/core/embedded/plan_logging.go:78`) is installed **per
-connection**, via the same `conn.Raw` route as the quotas — `SetPlanLogger`
-(`pkg/relational/core/embedded/connection.go:165`). There is no DSN parameter, no context value and
-no driver-level registration. That is convenient here: the tenant ID goes in the closure.
+`PlanGenerationLogger` (`pkg/relational/core/embedded/plan_logging.go`) is installed **per
+connection borrow**, via the same `conn.Raw` route as the quotas — `SetPlanLogger` — and, like
+them, lasts until the connection returns to the pool (`ResetSession` removes it and resets the
+slow-query threshold), so install it in the same acquire/configure/use/close helper. There is no DSN
+parameter, no context value and no driver-level registration. That is convenient here: the tenant
+ID goes in the closure.
 
 `PlanGenerationLogger` is an interface with one method and the package ships no func adapter, so
 declare one and close over the tenant ID:
@@ -571,8 +583,8 @@ Sampling and log volume are the handler's problem: the engine always emits
 ### Per-tenant execution statistics
 
 `ExecutionStatsLogger` (`pkg/relational/core/embedded/execution_logging.go`) is the
-post-execution counterpart, installed the same way — per connection, via `conn.Raw` →
-`SetExecutionStatsLogger`. It is a **separate** interface from `PlanGenerationLogger`, not a second
+post-execution counterpart, installed the same way — per connection borrow, via `conn.Raw` →
+`SetExecutionStatsLogger`, removed by `ResetSession`. It is a **separate** interface from `PlanGenerationLogger`, not a second
 method on it, because a cached plan is planned once and executed many times: the two records do not
 pair up 1:1, and `PlanHash` is the join key between them.
 
@@ -945,7 +957,7 @@ These are the dangerous entries, because nothing tells the tenant.
   accepts `RETURNING` (`pkg/relational/core/parser/grammar/RelationalParser.g4:378`, `:455`) and the
   DML executes correctly with the right row count — the values simply never surface. Via `Query` you
   get `0A000 INSERT/UPDATE/DELETE return a row count, not rows — use Exec, not Query`
-  (`pkg/relational/core/embedded/connection.go:653-655`). `INSERT … RETURNING` is `42601` (not in
+  (`EmbeddedConnection.QueryContext`). `INSERT … RETURNING` is `42601` (not in
   the grammar). Pinned: `pkg/relational/sqldriver/returning_clause_probe_test.go:49`, `:61`, `:75`.
 - **`LIKE` does not treat a trailing newline as content.** `WHERE name LIKE 'abc'` matches the
   stored value `"abc\n"` — no DOTALL, and `$` matches before one final line terminator. Deliberate

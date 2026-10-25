@@ -2048,8 +2048,7 @@ func explainValueOrdinalsWithAliases(v Value, withOrdinals bool, aliases map[Cor
 		// read — the rendering is injective over (field text, ordinal).
 		//
 		// EXPLAIN-FORMAT pin, not identity (RFC-176 P3): plan identity was
-		// once keyed on these renderings (the escape's origin, PR #446 round
-		// 3) but is semantic since RFC-176 P2 — the escape stays because
+		// once keyed on these renderings but is semantic since RFC-176 P2 — the escape stays because
 		// debugging output that collapses two DIFFERENT reads is still a bug
 		// (writeSemanticHash's FieldValue arm keeps the same injective
 		// discriminator).
@@ -2108,8 +2107,8 @@ func explainValueOrdinalsWithAliases(v Value, withOrdinals bool, aliases map[Cor
 		// A baked ordinal accessor renders its ordinal (Java's FieldPath
 		// `#ordinal` syntax) alongside the name: two reads of DUPLICATE-named
 		// slots differ only by ordinal, and explain output rendering both as
-		// the bare name would make different plans read identically (PR #446
-		// round 2). FrontierPinned deliberately does NOT render: it is an
+		// the bare name would make different plans read identically.
+		// FrontierPinned deliberately does NOT render: it is an
 		// evaluation-contract marker, not part of the value's identity.
 		// ColumnNameValue drops the discriminator: a column's NAME is the
 		// same whether the reference is lazy or baked.
@@ -4140,9 +4139,6 @@ func javaFloatString(f float64, bits int) string {
 // JavaDoubleToString is Java's Double.toString(double).
 func JavaDoubleToString(f float64) string { return javaFloatString(f, 64) }
 
-// JavaFloatToString is Java's Float.toString(float).
-func JavaFloatToString(f float32) string { return javaFloatString(float64(f), 32) }
-
 // toFloat32Operand converts a FLOAT-lane operand to float32. Integer
 // operands convert DIRECTLY int64→float32 (Java's ADD_LF does `(float)l`
 // in one rounding step; routing through float64 first would double-round
@@ -4333,9 +4329,9 @@ func (e *ArithmeticOverflowError) Error() string {
 	return "integer overflow"
 }
 
-// ScalarTypeMismatchError is returned by scalar functions (GREATEST,
-// LEAST) when arguments have incompatible types. The executor
-// converts this to SQLSTATE 22000 DATA_EXCEPTION.
+// ScalarTypeMismatchError is a value whose type does not fit where it is used:
+// GREATEST/LEAST arguments, or an executor assignment to a field (Java's
+// SemanticException INCOMPATIBLE_TYPE). SQL reports it as 22000.
 type ScalarTypeMismatchError struct {
 	Message string
 }
@@ -4411,10 +4407,8 @@ func (e *AggregateEvalError) Error() string {
 	return e.Message
 }
 
-// addInt64Checked / subInt64Checked / mulInt64Checked mirror
-// embedded.functions.{Add,Sub,Mul}Int64Checked. Re-implemented in
-// cascades to keep the value-layer arithmetic free of cross-package
-// imports (the package-structure goal in RFC-025).
+// addInt64Checked / subInt64Checked / mulInt64Checked are Java's
+// Math.addExact / subtractExact / multiplyExact.
 //
 // Add/Sub overflow: signed-overflow detection via the standard
 // "different sign" check (well-defined under int64 wrap semantics).

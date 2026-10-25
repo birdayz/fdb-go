@@ -14,7 +14,7 @@ import (
 // a process crash — and the panic value (which may carry schema/row data) is logged
 // SERIOUS server-side but NOT leaked to the caller. See TODO-production.md P0.3.
 func TestRecoveredPanicError(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it swaps the seriousLog global the parallel panic tests read.
 	var logged string
 	orig := seriousLog
 	seriousLog = func(msg string, attrs ...any) { logged += fmt.Sprintf("%s %v", msg, attrs) }

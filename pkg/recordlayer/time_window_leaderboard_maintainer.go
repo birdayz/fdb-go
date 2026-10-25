@@ -222,12 +222,8 @@ func (m *timeWindowLeaderboardIndexMaintainer) updateRankedSet(
 				}
 				return nil
 			}
-			prefixBytes := m.indexSubspace.Pack(fullKey)
-			r, err := fdb.PrefixRange(prefixBytes)
-			if err != nil {
-				return err
-			}
-			kvs, err := m.tx.GetRange(r, fdb.RangeOptions{Limit: 1}).GetSliceWithError()
+			// Java's indexSubspace.range(valueKey) (RankedSetIndexHelper.updateRankedSet).
+			kvs, err := m.tx.GetRange(m.indexSubspace.Sub(fullKey...), fdb.RangeOptions{Limit: 1}).GetSliceWithError()
 			if err != nil {
 				return err
 			}
