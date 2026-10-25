@@ -143,6 +143,9 @@ maven.install(
         "bazel_worker_java",
         "protobuf",
     ],
+    # Pinned resolution of every artifact above and its transitive closure.
+    # Repin after any artifact or version change: `just maven-repin`.
+    lock_file = "//:maven_install.json",
     repositories = [
         "https://repo1.maven.org/maven2",
     ],
@@ -272,8 +275,8 @@ cc_library(
     urls = ["https://github.com/apple/foundationdb/releases/download/7.3.77/fdb-headers-7.3.77.tar.gz"],
 )
 
-# libfdb_c 7.3.77 for the Java conformance server; fdb-java 7.1.26 (unpinned, no maven lock) runs
-# on it because the C API is backward compatible. The host still provides liblzma.so.5.
+# libfdb_c 7.3.77 for the Java conformance server; fdb-java 7.1.26 (pinned in maven_install.json,
+# a transitive dependency of the Record Layer) runs on it because the C API is backward compatible. The host still provides liblzma.so.5.
 http_file(
     name = "libfdb_c_linux_x86_64",
     downloaded_file_path = "libfdb_c.so",

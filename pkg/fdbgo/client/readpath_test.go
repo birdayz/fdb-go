@@ -376,6 +376,6 @@ func TestWatch_ReadVersionSurvivesReset(t *testing.T) {
 			t.Errorf("WatchPoll after reset returned %v, want it to fire (read version must be the captured one)", err)
 		}
 	case <-time.After(15 * time.Second):
-		t.Fatal("WatchPoll did not fire after reset — read version not preserved (codex P1 regression)")
+		t.Fatal("WatchPoll did not fire after reset — read version not preserved")
 	}
 }

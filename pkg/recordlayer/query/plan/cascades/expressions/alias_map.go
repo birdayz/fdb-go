@@ -24,8 +24,8 @@ import (
 //   - emptiness check
 //   - equality
 //
-// Bigger pieces (zip-with-alias-permutations enumerator, dependency-aware
-// matching) are deferred to subsequent shifts as they're needed by rules.
+// Java's zip-with-alias-permutations enumerator and dependency-aware
+// matching are not ported here.
 type AliasMap struct {
 	// view is the validated bijection itself. Extending it by one pair adds a
 	// node rather than copying the pairs, which is what a backtracking match
