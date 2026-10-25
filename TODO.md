@@ -2368,3 +2368,9 @@ multi-page auto-commit SELECT, which stays tracked only.
 - [x] **Low:** enum-assignment and `range()` bound errors render their message twice since #1002;
   the `range()` test checks only "in range"; the rule-match trip's error context is unasserted
   (#1002's final review). Fixed in #1013, pinned end to end.
+- [ ] **Low:** `translateFDBError`'s deserialization, already-exists, invalid-UTF-8,
+  RecordCoreException and QueryInvalidExpression arms (`pkg/relational/core/embedded/connection.go`)
+  build the message from the typed error and pass the chain holding it as the cause, so the
+  message renders twice. `api.WrapStatedError` (#1013) renders it once, but the chains also carry
+  context (`fmt.Errorf` wrappers) that `Error()` would then stop showing; decide per arm (#1013's
+  review).

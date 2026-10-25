@@ -547,8 +547,8 @@ func (g *transcriptGate) run(c transcriptCase, p readPath, rv int64, extra func(
 // compareArms is the gate's verdict on one pair.
 func compareArms(c transcriptCase, legacy, current armResult) error {
 	for _, a := range []armResult{legacy, current} {
-		if len(a.rec.problems) > 0 {
-			return fmt.Errorf("%s: recorder problems (fails closed):\n%s", a.path, strings.Join(a.rec.problems, "\n"))
+		if problems := a.rec.readProblems(); len(problems) > 0 {
+			return fmt.Errorf("%s: recorder problems (fails closed):\n%s", a.path, strings.Join(problems, "\n"))
 		}
 		if a.err != nil {
 			return fmt.Errorf("%s: %v", a.path, a.err)

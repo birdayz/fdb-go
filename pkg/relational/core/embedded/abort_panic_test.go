@@ -126,9 +126,8 @@ func TestExplicitTx_AbortPanicClosesConnection(t *testing.T) {
 	})
 }
 
-// On the connection's own goroutine (a statement whose context had already
-// ended) the same panic reaches the entry point's recoverInto: the statement
-// returns the internal error and the connection is poisoned.
+// A synchronous abort's panic (an already-ended statement context) reaches
+// recoverInto: the internal error, and the connection is poisoned.
 func TestExplicitTx_SynchronousAbortPanicIsInternalError(t *testing.T) {
 	t.Parallel()
 	g := newGatedSim(t, 565)

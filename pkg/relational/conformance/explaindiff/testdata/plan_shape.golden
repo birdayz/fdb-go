@@ -15294,10 +15294,10 @@ shape: RecordQueryMapPlan
 shape:   RecordQueryScanPlan
 === overflow.yaml#6 expect-error=XXXXX
 sql:   SELECT 1e400 FROM t WHERE id = 1
-plan:  <PLAN-ERROR: XXXXX: For input string: "1e400": For input string: "1e400">
+plan:  <PLAN-ERROR: XXXXX: For input string: "1e400">
 === overflow.yaml#7 expect-error=XXXXX
 sql:   SELECT -1e400 FROM t WHERE id = 1
-plan:  <PLAN-ERROR: XXXXX: For input string: "-1e400": For input string: "-1e400">
+plan:  <PLAN-ERROR: XXXXX: For input string: "-1e400">
 === overflow.yaml#8 expect-error=22003
 sql:   SELECT SUM(a) FROM t WHERE id IN (1, 3)
 plan:  Map(StreamingAgg(keys=[], InJoin(Scan(T, [=]), binding)), {_0: _current.SUM(A)#0})

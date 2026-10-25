@@ -1,11 +1,7 @@
 package sqldriver_test
 
-// Smoke tests of the public entry point through Go's database/sql package,
-// not the raw driver.Driver interface: a program imports
-// pkg/relational/sqldriver (which registers the "fdbsql" driver), registers
-// its domain with sqldriver.RegisterDomainIfNotExists, and calls sql.Open to
-// get a *sql.DB that proxies through the driver. Here testkit.Main registers
-// the FRL domain. Only the remote (gRPC) mode is unsupported.
+// database/sql smoke tests of the entry point: import sqldriver, register the
+// domain (RegisterDomainIfNotExists; testkit.Main registers FRL), sql.Open.
 
 import (
 	"context"
