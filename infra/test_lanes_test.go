@@ -1,6 +1,7 @@
 package infra
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -176,4 +177,59 @@ func TestWorkflowsUseTheCIConfig(t *testing.T) {
 		t.Fatal("found no bazelisk commands in the workflows: the check matched nothing")
 	}
 	t.Logf("%d workflow Bazel commands pass --config=ci", checked)
+}
+
+// A lane's Bazel server outlives the lane. If it inherits the lock descriptor,
+// a killed lane leaves every later heavy lane blocked on flock.
+func TestVerifiedLaneLockOutlivesNoChild(t *testing.T) {
+	t.Parallel()
+	script, err := filepath.Abs("../tools/lanes/run-verified-lane.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin, repo := t.TempDir(), t.TempDir()
+	lock := filepath.Join(t.TempDir(), "lane.lock")
+	pidFile := filepath.Join(bin, "daemon.pid")
+	// The fake just starts a lingering daemon, as bazelisk starts a server, and
+	// records its pid; the fake bazelisk (shutdown) leaves the daemon running.
+	for name, body := range map[string]string{
+		"just":     "#!/bin/bash\nif [ \"$1\" = --dry-run ]; then echo fake; exit 0; fi\nsleep 300 </dev/null >/dev/null 2>&1 &\necho $! > \"$PID_FILE\"\nexit 0\n",
+		"bazelisk": "#!/bin/bash\nexit 0\n",
+	} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	cmd := exec.Command("bash", script, repo, "fast")
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "FDB_LANE_LOCK="+lock, "PID_FILE="+pidFile, "TMPDIR="+t.TempDir())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("lane: %v: %s", err, out)
+	}
+	raw, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("fake just did not start its daemon: %v", err)
+	}
+	var pid int
+	if _, err := fmt.Sscan(string(raw), &pid); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Fatalf("daemon %d is not running, so the check below would be vacuous: %v", pid, err)
+	}
+	f, err := os.OpenFile(lock, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("lane lock still held after the lane exited (by its daemon %d): %v", pid, err)
+	}
 }
