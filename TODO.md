@@ -2133,7 +2133,9 @@ operator has a Go counterpart. `wsfAccessPath`
 (`conformance/ws_f_access_path_test.go`) already reduces both formats to an
 access-path tree for 775 of the 1,211 non-meta `explain` strings; the other 436
 need AISCAN (178), AGG (161), TFILTER (39), DEFAULT (33), union/intersection
-(32), RUNION/TEMP SCAN (22), TF (14), DISTINCT BY PK (9). On 28 queries whose
+(32), RUNION/TEMP SCAN (22), TF (14), DISTINCT BY PK (9) — each count is the
+strings containing that operator, and a string can need several, so the counts
+sum to 488. On 28 queries whose
 Go schema matches Java's and whose Go plan is in `plan_shape.golden`: 0 exact
 string matches, 28/28 same access leaves, 26/28 same operator skeleton (a
 biased sample: those Go scenarios were ported from Java's; WS-F already books
@@ -2314,6 +2316,13 @@ multi-page auto-commit SELECT, which stays tracked only.
 - [x] **Low:** `pkg/recordlayer/query/executor` imports `pkg/relational/api` (`executor.go`,
   `executor_new_plans.go`, `resultset.go`, `scalar_subquery.go`). Fixed in #1002 (RFC-274); the
   `recordlayerdeps` nogo analyzer keeps non-test record-layer code off `pkg/relational`.
+- [ ] **Low (planner gap):** in `FROM emp a, emp b, dept d WHERE a.did = d.did AND b.did = d.did`,
+  any extra predicate tying b to a (`a.eid < b.eid`, `a.salary - b.salary > d.did * 5`) makes Go
+  read the innermost leg whole: `inner=PredicatesFilter(IndexScan(IDX_EMP_DID, [*]), [2 preds])`
+  with `b.did = d.did` as a residual. Without it, or with a b–d predicate, Go probes `[=]`. Java
+  4.14.2.0 drives from `SCAN(DEPT)` and probes both emp legs with `IDX_EMP_DID [EQUALS q0.DID]`
+  in all four shapes. Pinned by `conformance/three_way_join_sarg_java_probe_test.go` and
+  `join_optimization_probes.yaml#6-#10`; find why the b leg loses the `[=]` match.
 
 ### Tests and CI
 
@@ -2399,3 +2408,31 @@ multi-page auto-commit SELECT, which stays tracked only.
   `pkg/relational/sqldriver/sql_integration_test.go` still describes a blank import (SQL
   follow-up PR). Done in docs/review-leftovers: `readpath.go:415-418` and the two `Database`
   superset rows (#996's final review).
+- [x] **Low (#1001):** `matchResults`' structural keying was pinned only through put/get.
+  `TestRecurseQueryResultValue_FoldedVariantSharesAnEntry` drives a real frame in which q.a over
+  q's expansion folds to a distinct copy of q.a. Fixed in #PRNUM.
+- [x] **Low (#1001):** the fuzzer's plan comparison never faced a choice: no seed (nor 3,000
+  generated inputs) put two plans in one group. It now plans over an index on `T.g`, and
+  `TestPlannerDeterminismSeedsFaceAChoice` requires every seed to plan and rank alternatives.
+  Fixed in #PRNUM.
+- [x] **Low (#1001):** the three-way probe goldens read the innermost `IDX_EMP_DID` leg whole;
+  compared with Java's EXPLAIN (it probes the leg) and tracked as the Planner "planner gap"
+  entry above. Fixed in #PRNUM.
+- [x] **Nit (#1001):** TODO-production.md P2.3 no longer cites `TestRepeatedPlanningIsStable` as
+  row evidence; RFC-273 lists every field the memo rendering prints. Fixed in #PRNUM.
+- [x] **Nit (#1001):** the Java-corpus operator counts say they overlap (sum 488). Fixed in #PRNUM.
+- [x] **Nit (#1001):** the comments the review listed are two lines or fewer. Fixed in #PRNUM.
+- [x] **Nit (#1001):** `recurseQueryResultValue`'s doc no longer says the expansion is unported.
+  Fixed in #PRNUM.
+- [x] **Nit (#1001):** the `corpusOnce` comment names the tests that plan the corpus themselves.
+  Fixed in #PRNUM.
+- [x] **Low (#1002):** `physical_wrapper.go` no longer calls MaxTasks the only backstop of the
+  DML rules' fan-out. Fixed in #PRNUM.
+- [x] **Low (#1002):** the `MaxNumMatchesPerRuleCall` doc says Java's count applies only where a
+  rule reports one. Fixed in #PRNUM.
+- [x] **Low (#1002):** `TestJavaBindingsSortRollsUpStoredRecord` pins the sort roll-up with plans
+  that differ only in storedRecord. Fixed in #PRNUM.
+- [x] **Low (#1002):** `TestMaxNumMatchesPerRuleCallTripsTheCountingRule` asserts which rule trips
+  one below its Java count (partition select, binary select, NLJ, ordering push, simple select,
+  delete, update) and that the statement plans at the count. Fixed in #PRNUM.
+- [x] **Nit (#1002):** the comments the review listed are two lines or fewer. Fixed in #PRNUM.

@@ -3,6 +3,7 @@ package cascades
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -73,11 +74,9 @@ func plannerFuzzSameResultType(left, right expressions.Quantifier) bool {
 // order, deterministic result). The invariant tested here is: given
 // the same inputs and same rule order, the result is identical.
 func FuzzPlanner_Determinism(f *testing.F) {
-	f.Add([]byte{0, 1, 2, 3, 4, 5})
-	f.Add(make([]byte, 8))
-	f.Add([]byte{0xff, 5, 1, 3, 2, 7})
-	f.Add([]byte{0xff, 6, 3, 1, 4, 8, 2})
-	f.Add([]byte{35, 4, 4, 1})
+	for _, seed := range plannerDeterminismSeeds {
+		f.Add(seed)
+	}
 	f.Fuzz(func(t *testing.T, b []byte) {
 		if len(b) < 4 {
 			return
@@ -95,12 +94,7 @@ func FuzzPlanner_Determinism(f *testing.F) {
 		}
 
 		plan := func() string {
-			ref := expressions.InitialOf(buildFuzzExpression(b, 0, 0))
-			p := NewPlanner(rules, nil).
-				WithPlanningExpressionRules(BatchAExpressionRules()).
-				WithImplementationRules(DefaultImplementationRules())
-			p.MaxTasks = 100_000
-			best, _, err := p.Plan(ref)
+			best, err := planFuzzTree(b, expressions.InitialOf(buildFuzzExpression(b, 0, 0)), nil)
 			if err != nil {
 				return "<error: " + err.Error() + ">"
 			}
@@ -112,9 +106,77 @@ func FuzzPlanner_Determinism(f *testing.F) {
 	})
 }
 
-// renderMemoForDeterminism renders every Reference reachable from root, in
-// first-visit order, as its members in insertion order: each member's type,
-// record types or physical plan, result value, predicates and child References.
+var plannerDeterminismSeeds = [][]byte{
+	{0, 1, 2, 3, 4, 5},
+	make([]byte, 8),
+	{0xff, 5, 1, 3, 2, 7},
+	{0xff, 6, 3, 1, 4, 8, 2},
+	{35, 4, 4, 1},
+	{8, 1, 2, 3},
+}
+
+// plannerFuzzIndexDef is a value index over the fuzz row, so the full scan has
+// an index-scan alternative for the cost model to rank.
+type plannerFuzzIndexDef struct{ stubIndexDef }
+
+func (d *plannerFuzzIndexDef) IndexRowType() values.Type { return plannerFuzzRowType() }
+func (d *plannerFuzzIndexDef) IndexKeyComponentTypes() []values.Type {
+	return []values.Type{values.NullableLong}
+}
+
+// planFuzzTree plans root, built from b, over an index on T.g; compared, when
+// set, sees every pair of final members the cost model ranks.
+func planFuzzTree(
+	b []byte, root *expressions.Reference, compared func(x, y expressions.RelationalExpression),
+) (expressions.RelationalExpression, error) {
+	ctx := NewPlanContextFromIndexDefs([]IndexDef{&plannerFuzzIndexDef{stubIndexDef{
+		name: "planner_fuzz_idx_g", columns: []string{"g"}, recordTypes: []string{"T"},
+	}}})
+	p := NewPlanner(selectRules(b), ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
+	p.MaxTasks = 100_000
+	if compared != nil {
+		less := p.costModel
+		p.costModel = func(x, y expressions.RelationalExpression) bool {
+			compared(x, y)
+			return less(x, y)
+		}
+	}
+	best, _, err := p.Plan(root)
+	return best, err
+}
+
+// TestPlannerDeterminismSeedsFaceAChoice: the fuzzer's plan comparison is
+// vacuous unless its seeds plan and the cost model ranks alternatives.
+func TestPlannerDeterminismSeedsFaceAChoice(t *testing.T) {
+	t.Parallel()
+
+	rootChoices := 0
+	for _, seed := range plannerDeterminismSeeds {
+		root := expressions.InitialOf(buildFuzzExpression(seed, 0, 0))
+		comparisons := 0
+		best, err := planFuzzTree(seed, root, func(x, y expressions.RelationalExpression) {
+			comparisons++
+			finals := root.FinalMembers()
+			if slices.Contains(finals, x) && slices.Contains(finals, y) {
+				rootChoices++
+			}
+		})
+		if err != nil || best == nil {
+			t.Fatalf("seed %v: plan %v, err %v; want a plan", seed, best, err)
+		}
+		if comparisons == 0 {
+			t.Errorf("seed %v: the cost model ranked no alternatives for %s", seed, ExplainPhysicalPlan(best))
+		}
+	}
+	if rootChoices == 0 {
+		t.Fatal("no seed's root group held two plans to rank")
+	}
+}
+
+// renderMemoForDeterminism renders each Reference reachable from root in first-visit order,
+// as its members in insertion order (type, record types, plan, values, children).
 func renderMemoForDeterminism(root *expressions.Reference) string {
 	ids := map[*expressions.Reference]int{}
 	var refs []*expressions.Reference
@@ -422,9 +484,8 @@ func selectRules(b []byte) []ExpressionRule {
 	return out
 }
 
-// TestRenderMemoForDeterminism pins the fuzzer's oracle: two builds of one
-// tree render alike although their generated aliases differ, and the same
-// members inserted in another order render differently.
+// TestRenderMemoForDeterminism pins the fuzzer's oracle: two builds of one tree render alike
+// despite their generated aliases, and the same members in another order do not.
 func TestRenderMemoForDeterminism(t *testing.T) {
 	t.Parallel()
 

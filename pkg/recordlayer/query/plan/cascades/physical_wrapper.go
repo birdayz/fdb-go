@@ -253,19 +253,12 @@ func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 // second optimizer findPhysicalExpr's comment forbids; the point of enumerating
 // is that no choice is made at rule time at all.
 //
-// The resulting cross product is NOT capped per rule — references here hold up
-// to 52 physical finals, and a caller looping over them yields once per member
-// inside a SINGLE OnMatch. MaxNumMatchesPerRuleCall counts what Java's matcher
-// binds (ruleCallMatches): one call for streaming aggregation, whose Java rule
-// binds the rolled-up partitions once and loops in onMatch; the stored-record
-// partitions for the DML rules; one for the Go-only in-memory sort. The only
-// backstop is the opt-in, coarser
-// Planner.MaxTasks / MaxTaskQueueSize (unbounded by default, as in Java), which
-// fails the WHOLE plan with ErrPlannerCapHit rather than capping one rule's
-// fan-out. Memoization keeps the enumerated subtrees singly represented, so the
-// fan-out is in parent alternatives rather than in duplicated trees — but a
-// caller adding a second enumerated child multiplies, and nothing here will
-// stop it.
+// References here hold up to 52 physical finals, and a caller yields once per
+// member inside a SINGLE OnMatch. MaxNumMatchesPerRuleCall bounds the DML rules'
+// loop by its stored-record partitions (ruleCallMatches); streaming aggregation
+// and the Go-only in-memory sort count one match per call, so their only backstop
+// is the opt-in, coarser MaxTasks / MaxTaskQueueSize, which fails the WHOLE plan.
+// A caller adding a second enumerated child multiplies, and nothing here stops it.
 func physicalMembersForParentEnumeration(ref *expressions.Reference) []expressions.RelationalExpression {
 	if ref == nil {
 		return nil

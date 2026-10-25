@@ -10,9 +10,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 )
 
-// analyze runs the analyzer over one parsed file of package pkgPath. Imports are
-// only read from the AST, so the file is not type-checked (analysistest shells to
-// `go` and does not work in the Bazel sandbox).
+// analyze runs the analyzer over one parsed, untype-checked file of package pkgPath
+// (imports come from the AST; analysistest shells to `go`, which the sandbox lacks).
 func analyze(t *testing.T, pkgPath, filename, src string) []analysis.Diagnostic {
 	t.Helper()
 	fset := token.NewFileSet()

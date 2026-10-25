@@ -236,9 +236,8 @@ func corpusJobs(dir string, bound bool) ([]job, Stats, error) {
 	return jobs, st, nil
 }
 
-// planJobs plans jobs concurrently (each plan is independent; generated
-// aliases are renumbered per plan, and the reachability collector is
-// mutex-guarded) and returns the entries in job order, exactly the serial ones.
+// planJobs plans jobs concurrently and returns the serial entries in job order: aliases are
+// renumbered per plan and the reachability collector is mutex-guarded.
 func planJobs(jobs []job, reach *cascades.ReachabilityCollector) []Entry {
 	entries := make([]Entry, len(jobs))
 	work := make(chan int)
@@ -265,9 +264,8 @@ type Instability struct {
 	Plans []string // the distinct renderings, in the order first seen
 }
 
-// Replan plans the corpus once, then plans every statement whose first entry
-// keep accepts runs more times, and reports each one whose rendering changed.
-// kept is the number of statements replanned.
+// Replan plans the corpus, replans each statement keep accepts runs more times, and reports
+// those whose rendering changed; kept counts the replanned statements.
 func Replan(dir string, runs int, keep func(Entry) bool) (kept int, unstable []Instability, err error) {
 	jobs, _, err := corpusJobs(dir, false)
 	if err != nil {

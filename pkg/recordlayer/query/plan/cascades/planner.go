@@ -112,10 +112,8 @@ type Planner struct {
 	// RecordQueryPlanComplexityException("Maximum task queue size...").
 	MaxTaskQueueSize int
 
-	// MaxNumMatchesPerRuleCall caps the bindings one rule invocation may
-	// produce, counted as Java's matcher would bind (ruleCallMatches); 0
-	// disables (Java default). Hitting it returns ErrPlannerRuleMatchCapHit via
-	// the task-level capErr channel.
+	// MaxNumMatchesPerRuleCall caps one rule call's bindings (Java's count where the rule
+	// reports one, else Go's; see DIVERGENCES.md) with ErrPlannerRuleMatchCapHit; 0 disables.
 	MaxNumMatchesPerRuleCall int
 
 	// DisabledRules holds rule names excluded from selection — Java's
