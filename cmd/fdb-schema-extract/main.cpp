@@ -1090,7 +1090,8 @@ std::string getReplyToken(const ReplyPromise<T>& rp) {
 }
 
 template <class T>
-void emitTestVector(FILE* out, const char* name, T& msg, const std::string& replyToken) {
+void emitTestVector(FILE* out, const char* name, T& msg, const std::string& replyToken,
+                    const char* kind = "request") {
     static_assert(requires { T::file_identifier; }, "Type must have file_identifier");
     fprintf(stderr, "VEC request %s\n", name);
     ObjectWriter wr(IncludeVersion(currentProtocolVersion()));
@@ -1102,7 +1103,7 @@ void emitTestVector(FILE* out, const char* name, T& msg, const std::string& repl
 
     fprintf(out, "  {\n");
     fprintf(out, "    \"name\": \"%s\",\n", name);
-    fprintf(out, "    \"kind\": \"request\",\n");
+    fprintf(out, "    \"kind\": \"%s\",\n", kind);
     fprintf(out, "    \"file_id\": %u,\n", T::file_identifier);
     fprintf(out, "    \"reply_token\": \"%s\",\n", replyToken.c_str());
     fprintf(out, "    \"size\": %d,\n", len);
@@ -1282,6 +1283,33 @@ void generateTestVectors(const char* outDir) {
         req.tenantInfo.tenantId = -1;
         pinReply(req.reply, 0x1000000000000000ULL + 18, 0x2000000000000000ULL + 9);
         comma(); emitTestVector(out, "CommitTransactionRequest_empty", req, getReplyToken(req.reply));
+    }
+    {
+        CommitTransactionRequest req(SpanContext(
+            UID(0x0123456789abcdefULL, 0xfedcba9876543210ULL),
+            0x1020304050607080ULL, TraceFlags::sampled));
+        req.transaction.read_snapshot = 101;
+        req.transaction.spanContext = SpanContext(
+            UID(0x1122334455667788ULL, 0x99aabbccddeeff00ULL),
+            0x8877665544332211ULL, TraceFlags::sampled);
+        req.tenantInfo.tenantId = -1;
+        pinReply(req.reply, 0x1000000000000000ULL + 34, 0x2000000000000000ULL + 15);
+        comma(); emitTestVector(out, "CommitTransactionRequest_span_context", req, getReplyToken(req.reply));
+    }
+    {
+        CommitTransactionRequest req;
+        req.transaction.read_snapshot = 102;
+        ClientTrCommitCostEstimation cost;
+        cost.opsCount = 3;
+        cost.writeCosts = 12345;
+        cost.clearIdxCosts.emplace_back(7, 890);
+        cost.expensiveCostEstCount = 2;
+        req.commitCostEstimation = cost;
+        req.tenantInfo.tenantId = -1;
+        pinReply(req.reply, 0x1000000000000000ULL + 36, 0x2000000000000000ULL + 16);
+        // This unregistered table is intentionally decoded as presence only in Go.
+        comma(); emitTestVector(out, "CommitTransactionRequest_commit_cost_estimation", req,
+                                getReplyToken(req.reply), "request_decode_only");
     }
     // Commit carrying a tag set. Unlike GRV's tag map, CommitTransactionRequest::
     // tagSet is Optional<TagSet>, and TagSet has dynamic_size_traits — a flat
@@ -1623,6 +1651,13 @@ void generateTestVectors(const char* outDir) {
         NetworkAddressList addrs;
         addrs.address = NetworkAddress::parse("10.1.2.3:4500");
         addrs.secondaryAddress = NetworkAddress::parse("10.1.2.3:4501:tls");
+        Endpoint endpoint(addrs, UID(0x7373737373737373ULL, 0x8484848484848484ULL));
+        comma(); emitTestVector(out, "Endpoint_secondary_address", endpoint, "73737373737373738484848484848484");
+    }
+    {
+        NetworkAddressList addrs;
+        addrs.address = NetworkAddress::parse("10.1.2.3:4500");
+        addrs.secondaryAddress = NetworkAddress::parse("10.1.2.3:4501:tls");
 
         GetKeyServerLocationsReply r;
         StorageServerInterface ssi(UID(0x5151515151515151ULL, 0x6262626262626262ULL));
@@ -1635,9 +1670,11 @@ void generateTestVectors(const char* outDir) {
 
         ClientDBInfo info;
         GrvProxyInterface grv;
+        grv.provisional = false;
         grv.getConsistentReadVersion = PublicRequestStream<GetReadVersionRequest>(
             Endpoint(addrs, UID(0x9191919191919191ULL, 0xa2a2a2a2a2a2a2a2ULL)));
         CommitProxyInterface commit;
+        commit.provisional = false;
         commit.commit = PublicRequestStream<CommitTransactionRequest>(
             Endpoint(addrs, UID(0xb3b3b3b3b3b3b3b3ULL, 0xc4c4c4c4c4c4c4c4ULL)));
         info.grvProxies.push_back(grv);

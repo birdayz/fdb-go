@@ -53,18 +53,7 @@ func slot2Endpoint(t *testing.T, d []byte) int {
 
 func slot2EndpointReader(t *testing.T, d []byte) *wire.Reader {
 	t.Helper()
-	r, err := wire.ReadErrorOr(d)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pair, err := r.ReadVectorElementReader(types.GetKeyServerLocationsReplySlotResults, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ss, err := pair.ReadVectorElementReader(types.LocationPairSlotServers, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, ss := firstLocation(t, d)
 	wrapper, err := ss.ReadNestedReader(types.StorageServerInterfaceSlotField_2)
 	if err != nil {
 		t.Fatal(err)

@@ -21,6 +21,7 @@ go_test(
         "fdberror_test.go",
         "reader_bug_test.go",
         "reader_fuzz_test.go",
+        "reader_reuse_test.go",
         "reader_vector_count_test.go",
         "vtable_test.go",
         "writer_vtable_offset_test.go",

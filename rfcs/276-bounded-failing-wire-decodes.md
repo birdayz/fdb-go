@@ -238,6 +238,12 @@ revert):
   server whose slot-2 endpoint or its wrapper field is absent is still found by the scan.
 - `wire`: `ReadOptionalInt32`/`ReadOptionalString` treat tag 2 as absent and record a
   value past the buffer.
+- `TestReaderReuseClearsFault`: a faulted reader is reused through `InitReader`,
+  root-object initialization, nested initialization and `ReadErrorOrInto`; each clears
+  the old fault and reads the next message.
+- `TestGroundTruthOptionalTables`: C++ fixtures pin both span contexts on a commit
+  request, an endpoint's secondary address, and a presence-only commit-cost table.
+  The registered Optional tables also re-encode byte-exactly in `TestGroundTruthMarshal`.
 
 Non-regression guards (pass before and after):
 

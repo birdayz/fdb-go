@@ -371,18 +371,7 @@ var replyAsserters = map[string]func(t *testing.T, data []byte){
 			t.Errorf("server = %+v, want the plaintext primary 10.1.2.3:4500", s)
 		}
 		// The secondary address decodes as the NetworkAddress table C++ writes.
-		r, err := wire.ReadErrorOr(data)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pair, err := r.ReadVectorElementReader(types.GetKeyServerLocationsReplySlotResults, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ss, err := pair.ReadVectorElementReader(types.LocationPairSlotServers, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
+		_, ss := firstLocation(t, data)
 		ep, err := ReadEndpointFromSlot(ss, types.StorageServerInterfaceSlotField_2)
 		if err != nil {
 			t.Fatal(err)
