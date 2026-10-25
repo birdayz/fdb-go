@@ -235,7 +235,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `scalar_subquery_types` | 9 | 8 | 1 | 0 | Type-coverage probes for scalar subqueries: the cached value flows |
 | `self_not_exists` | 3 | 3 | 0 | 0 | NOT EXISTS on the same table (self-referential) |
 | `subquery_exists_complex` | 4 | 4 | 0 | 0 | Complex EXISTS subquery patterns |
-| `subquery_in` | 13 | 5 | 8 | 0 | `col IN (subquery)` is rejected at predicate evaluation time. |
+| `subquery_in` | 13 | 5 | 8 | 0 | Both engines reject IN (subquery) with 0AF00 (DocClaimsJavaProbe's in_subquery). |
 | `subquery_in_from` | 3 | 3 | 0 | 0 | Subquery in FROM clause (derived table) |
 | `subquery_scalar_in_where` | 3 | 3 | 0 | 0 | Scalar subquery used in WHERE predicate |
 | `update_correlated_exists` | 4 | 4 | 0 | 0 | UPDATE with correlated EXISTS |

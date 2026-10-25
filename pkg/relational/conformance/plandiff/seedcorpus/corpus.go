@@ -1033,26 +1033,8 @@ func SeedRunCorpus() []plandiff.RunQuery {
 		// below) likewise has none, and the comment where the entry
 		// used to sit records why a text-echo "success" there was not
 		// evidence of support.
-		// NOTE: COUNT/SUM/AVG/MIN/MAX with DISTINCT are rejected by
-		// BOTH engines — Java NPEs (visitor unconditionally calls
-		// `AggregateWindowedFunctionContext.ALL().getText()` which is
-		// null when DISTINCT is present); Go's embedded engine rejects
-		// at execution time with `ErrCodeUnsupportedOperation`
-		// "DISTINCT aggregate %s is not supported"
-		// (`pkg/relational/core/embedded/aggregate.go` and
-		// `select_query_full.go`). Same architectural reason in both
-		// engines: visitor doesn't handle the DISTINCT case.
-		//
-		// NOT included as a cross-engine corpus entry because Java's
-		// NPE message references the parser-internal class name
-		// (`AggregateWindowedFunctionContext.ALL()`) rather than the
-		// SQL keyword `DISTINCT`, so it can't share a meaningful
-		// substring with Go's clean error message. The rejection
-		// alignment is pinned on the Go side via
-		// `count_distinct.yaml`, `count_distinct_join.yaml`,
-		// `distinct_aggregates.yaml`, `aggregate_expr.yaml`, and
-		// `group_by_validation.yaml`'s `error_code: "0A000"` tests
-		// under the yamsql harness.
+		// DISTINCT aggregates are rejected with 0AF00 by both engines;
+		// DocClaimsJavaProbe's count_distinct pins each engine's message.
 		// NOTE: an inner join with NO join condition — `a JOIN b`,
 		// `a INNER JOIN b`, `a CROSS JOIN b` — is a GO-ONLY CAPABILITY,
 		// not a shared shape. Java NPEs on all three
@@ -14337,7 +14319,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT sub.n FROM (SELECT DISTINCT n FROM T_ND_04 WHERE n >= 20) AS sub ORDER BY sub.n",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java's Cascades planner can't plan DISTINCT inside a derived table (same upstream bug as TODO #42 compound DISTINCT). Go correctly deduplicates.",
+				Reason:    "Java cannot plan this ordered derived-table shape. Plain SELECT DISTINCT instead returns duplicates (DocClaimsJavaProbe); Go correctly deduplicates.",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(20)}, {float64(30)},
@@ -15506,7 +15488,8 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			Query: "SELECT id, CAST(v AS DOUBLE) FROM T_DBL_08 ORDER BY id",
 		},
 		// ===== DISTINCT patterns =====
-		// Java's Cascades planner can't plan DISTINCT (TODO #42).
+		// Java cannot plan these ordered shapes; plain SELECT DISTINCT instead
+		// returns duplicates (DocClaimsJavaProbe).
 		{
 			Name:           "distinct_basic",
 			SchemaTemplate: "CREATE TABLE T_DST_01 (id BIGINT, v BIGINT, PRIMARY KEY (id))",
@@ -15515,7 +15498,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT DISTINCT v FROM T_DST_01 ORDER BY v",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java Cascades planner can't plan DISTINCT (TODO #42). Go correctly deduplicates.",
+				Reason:    "Java cannot plan this ordered shape; plain SELECT DISTINCT instead returns duplicates (DocClaimsJavaProbe). Go correctly deduplicates.",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(10)}, {float64(20)}, {float64(30)},
@@ -15530,7 +15513,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT DISTINCT a, b FROM T_DST_02 ORDER BY a, b",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java Cascades planner can't plan DISTINCT (TODO #42). Go correctly deduplicates multi-column.",
+				Reason:    "Java cannot plan this ordered shape; plain SELECT DISTINCT instead returns duplicates (DocClaimsJavaProbe). Go correctly deduplicates multi-column.",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(1), float64(10)}, {float64(1), float64(20)}, {float64(2), float64(10)},
@@ -15545,7 +15528,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT DISTINCT v FROM T_DST_03 ORDER BY v",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java Cascades planner can't plan DISTINCT (TODO #42).",
+				Reason:    "Java cannot plan this ordered shape; plain SELECT DISTINCT instead returns duplicates (DocClaimsJavaProbe).",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(42)},
@@ -15560,7 +15543,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT DISTINCT v FROM T_DST_04 ORDER BY v",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java Cascades planner can't plan DISTINCT (TODO #42).",
+				Reason:    "Java cannot plan this ordered shape; plain SELECT DISTINCT instead returns duplicates (DocClaimsJavaProbe).",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{float64(10)}, {float64(20)}, {float64(30)},
@@ -15575,7 +15558,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT DISTINCT v FROM T_DST_05 ORDER BY v",
 			Divergence: &plandiff.Divergence{
-				Reason:    "Java Cascades planner can't plan DISTINCT (TODO #42). Go correctly deduplicates including NULL.",
+				Reason:    "Java cannot plan this ordered shape; plain SELECT DISTINCT instead returns duplicates (DocClaimsJavaProbe). Go correctly deduplicates including NULL.",
 				Direction: plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{
 					{nil}, {float64(10)}, {float64(20)},
@@ -15601,7 +15584,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			SetupSqls:      nil,
 			Query:          "SELECT DISTINCT v FROM T_DST_07 ORDER BY v",
 			Divergence: &plandiff.Divergence{
-				Reason:         "Java Cascades planner can't plan DISTINCT (TODO #42).",
+				Reason:         "Java cannot plan this ordered shape; plain SELECT DISTINCT instead returns duplicates (DocClaimsJavaProbe).",
 				Direction:      plandiff.DivergenceJavaErrorsGoCorrect,
 				GoExpectedRows: [][]any{},
 			},

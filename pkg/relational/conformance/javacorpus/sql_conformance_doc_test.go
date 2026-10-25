@@ -207,6 +207,9 @@ func TestLedgerStatementArms(t *testing.T) {
 		"pass=1 fail=0 skip=1 queries=2 file_skips{fragment} inner_skips{}",
 		"pass=1 fail=0 skip=1 queries=2 file_skips{fragment=x} inner_skips{}",
 		"pass=1 fail=0 skip=1 queries=2 file_skips{=1} inner_skips{}",
+		"pass=999999999999999999999999999999 fail=0 skip=0 queries=2 file_skips{} inner_skips{}",
+		"pass=1 fail=0 skip=0 queries=2 file_skips{} inner_skips{plan-assertion}",
+		"pass=1 fail=0 skip=0 queries=2 file_skips{} inner_skips{plan-assertion=x}",
 	} {
 		if _, err := parseLedgerLine(bad); err == nil {
 			t.Errorf("parseLedgerLine(%q) accepted a malformed line", bad)

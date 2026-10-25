@@ -51,11 +51,8 @@ func TestDocClaimsCited(t *testing.T) {
 	}
 	problems := citationProblems(cited, names, corpus)
 	problems = append(problems, pinProblems(names, docClaimWantJava, docClaimWantGo)...)
-	cells, rows := matrixCellProblems(sqlConformance, docClaimWantJava, docClaimWantGo)
+	cells, _ := matrixCellProblems(sqlConformance, docClaimWantJava, docClaimWantGo)
 	problems = append(problems, cells...)
-	if rows == 0 {
-		problems = append(problems, "no SQL_CONFORMANCE.md matrix row cites a case")
-	}
 	for _, p := range problems {
 		t.Error(p)
 	}
@@ -200,6 +197,9 @@ func matrixCellProblems(doc string, java, goPins map[string]string) ([]string, i
 			bad("Go is %s for %s, against the pins of %v", goCell, state, cited)
 		}
 	}
+	if checked == 0 {
+		problems = append(problems, "no SQL_CONFORMANCE.md matrix row cites a case")
+	}
 	return problems, checked
 }
 
@@ -265,4 +265,32 @@ func TestDocClaimHelperArms(t *testing.T) {
 	}
 	want(problems, `"bad java Y": Java is Y`, `"bad java N": Java is N`, `"bad go N": Go is N`,
 		`"bad error": Java is Y for 42601`, `"bad error": Go is Y for 42601`, `"bad partial": Java is P`)
+
+	java["shared_refused"] = `ERROR X 0AF00 "no"`
+	java["other_refused"] = `ERROR X 42601 "no"`
+	goPins["shared_refused"] = `ERROR 0AF00 "no"`
+	goPins["other_refused"] = `ERROR 42601 "no"`
+	doc = strings.Join([]string{
+		"| Feature | Java | Go | ANSI | Notes |",
+		"| bad go Y | N | Y | Y | `shared_refused` |",
+		"| bad go Ext | N | Ext | Y | `shared_refused` |",
+		"| shared refusal | N | N | Y | `shared_refused` |",
+		"",
+		"| Error | SQLSTATE | Java | Go | Notes |",
+		"| shared state | 0AF00 | Y | Y | `shared_refused` |",
+		"| bad error Go N | 0AF00 | Y | N | `shared_refused` |",
+		"| bad error Java N | 0AF00 | N | Y | `shared_refused` |",
+		"| partial state | 0AF00 | P | Y | `shared_refused`, `other_refused` |",
+	}, "\n")
+	problems, rows = matrixCellProblems(doc, java, goPins)
+	if rows != 7 {
+		t.Errorf("checked %d rows, want 7", rows)
+	}
+	want(problems, `"bad go Y": Go is Y`, `"bad go Ext": Go is Ext`,
+		`"bad error Go N": Go is N for 0AF00`, `"bad error Java N": Java is N for 0AF00`)
+	problems, rows = matrixCellProblems("no matrix rows", java, goPins)
+	if rows != 0 {
+		t.Errorf("checked %d rows in an empty matrix, want 0", rows)
+	}
+	want(problems, "no SQL_CONFORMANCE.md matrix row cites a case")
 }

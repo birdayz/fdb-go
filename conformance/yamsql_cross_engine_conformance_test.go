@@ -1976,9 +1976,8 @@ func coalesceNullifScenario() *yamsql.Scenario {
 	}
 }
 
-// bareColWithAggScenario mirrors testdata/bare_col_with_agg.yaml. Drops
-// NOT NULL on PK. Drops the DISTINCT test (CLAUDE.md gotcha — fdb-
-// relational's planner doesn't support SELECT DISTINCT).
+// bareColWithAggScenario mirrors bare_col_with_agg.yaml, without NOT NULL on PK
+// or DISTINCT: Java 4.14.2.0 returns duplicates (DocClaimsJavaProbe).
 func bareColWithAggScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "bare_col_with_agg",
