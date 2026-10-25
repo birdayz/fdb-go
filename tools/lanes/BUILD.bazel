@@ -1,0 +1,5 @@
+# Staged as data for //infra:infra_test's TestVerifiedLaneLock.
+exports_files(
+    ["run-verified-lane.sh"],
+    visibility = ["//infra:__pkg__"],
+)

@@ -222,8 +222,8 @@ func TestTimeoutSuccessorCommittedWatch(t *testing.T) {
 	}()
 	waitForRecorded(t, ctx, recorder, "WatchValueRequest")
 	recorded := recorder.stop()
-	if problems := recorded.readProblems(); len(problems) != 0 {
-		t.Fatalf("watch request recording: %v", problems)
+	if len(recorded.problems) != 0 {
+		t.Fatalf("watch request recording: %v", recorded.problems)
 	}
 	requests := 0
 	for _, message := range recorded.msgs {
