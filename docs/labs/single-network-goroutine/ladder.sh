@@ -21,6 +21,6 @@ for spec in $CELLS; do
     echo "== $wl/$w round $r [$order] $(date -Is) $(cat /proc/loadavg)"
     python3 "$HERE/run_cell.py" --binary "$BIN" --cluster-file "$CF" --server-pids "$PIDS" --arms "$ARMS_FILE" \
       --workload "$wl" --workers "$w" --short "$short" --long "$long" --order "$order" \
-      --round-len "$n" --round-base "$r" --out "$OUT" --max-wait "${MAX_WAIT:-1800}" --foreign-max "${FOREIGN_MAX:-1.5}" --retries "${RETRIES:-3}"
+      --round-len "$n" --round-base "$r" --out "$OUT" --max-wait "${MAX_WAIT:-1800}" --foreign-max "${FOREIGN_MAX:-1.5}" --retries "${RETRIES:-3}" --client-cpus "${CLIENT_CPUS:-1-8}"
   done
 done

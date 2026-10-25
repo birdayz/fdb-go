@@ -49,4 +49,6 @@ for (wl, w), cell in cells.items():
         er = f"{sum(r['errors'] for r in rs)}/{sum(r['retries'] for r in rs)}"
         fc = [r["foreign_cores"] for r in rs if "foreign_cores" in r]
         cl = f"{sum(1 for r in rs if r.get('clean', True))}/{len(rs)}, {statistics.median(fc):.1f}" if fc else "-"
+        fpw = [r["lab_frames_per_write"] for r in rs if "lab_frames_per_write" in r]
+        cl += f", {statistics.median(fpw):.1f} frames/write" if fpw else ""
         print(f"| {a} | " + " | ".join(cols) + f" | {', '.join(ratios)} | {cores} | {er} | {cl} |")

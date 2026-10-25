@@ -13,16 +13,26 @@ export WIRETRACE=${WIRETRACE:-/var/tmp/netg-bench/bin/wiretrace} WIRECAPTURE_CPU
 mkdir -p "$OUT"
 declare -A ENV=([A]="" [B]="FDBGO_NETWORK_GOROUTINE=1" [W]="FDBGO_NETWORK_GOROUTINE=writer" [S]="FDBGO_COALESCE_FROM_SENDER=1")
 orders=(ABWS BWSA WSAB SABW)
+# ARMS_FILE (run_cell.py's JSON arm specs, env only) and ARMS (comma list) replace the built-in arms.
+if [[ -n ${ARMS_FILE:-} ]]; then
+  ENV=()
+  while IFS=$'\t' read -r name envs; do ENV[$name]=$envs; done < <(python3 -c "
+import json; d=json.load(open('$ARMS_FILE'))
+for k, v in d.items(): print(k + '\t' + ' '.join(v.get('env', [])))")
+  IFS=, read -ra list <<<"$ARMS"
+  orders=("$(IFS=,; echo "${list[*]}")" "$(printf '%s\n' "${list[@]}" | tac | paste -sd,)")
+fi
 client() { # arm iterations outdir
   env -i PATH=/usr/bin:/bin HOME="$HOME" GOMAXPROCS=8 GOGC=100 GOMEMLIMIT=off ${ENV[$1]} \
-    taskset -c 1-8 "$BIN" -cluster-file "$CF" -workload get100 -workers 64 \
+    taskset -c "${CLIENT_CPUS:-1-8}" "$BIN" -cluster-file "$CF" -workload get100 -workers 64 \
     -iterations "$2" -warmup 20000 -allow-writes -output "$3"
 }
-quiet() { while (( $(cut -d. -f1 /proc/loadavg) > 16 )); do sleep 10; done; }
+quiet() { while (( $(cut -d. -f1 /proc/loadavg) > ${LOAD_MAX:-16} )); do sleep 10; done; }
 for ((r=0; r<ROUNDS; r++)); do
-  order=${orders[$((r % 4))]}
-  for ((i=0; i<${#order}; i++)); do
-    arm=${order:$i:1}; tag=r$r-$arm
+  order=${orders[$((r % ${#orders[@]}))]}
+  if [[ $order == *,* ]]; then IFS=, read -ra arms_in_order <<<"$order"; else mapfile -t arms_in_order < <(grep -o . <<<"$order"); fi
+  for arm in "${arms_in_order[@]}"; do
+    tag=r$r-$arm
     quiet; load=$(cut -d' ' -f1 /proc/loadavg)
     # Metrics window: idle margins longer than the servers' 5 s metric interval.
     sleep 7; start=$(date +%s.%N)
@@ -35,7 +45,7 @@ for ((r=0; r<ROUNDS; r++)); do
     quiet
     "$REPO/tools/clientbench/scripts/wirecapture.sh" "$OUT/$tag-cap" 4751,4752,4753 -- \
       env -i PATH=/usr/bin:/bin HOME="$HOME" GOMAXPROCS=8 GOGC=100 GOMEMLIMIT=off ${ENV[$arm]} \
-      taskset -c 1-8 "$BIN" -cluster-file "$CF" -workload get100 -workers 64 \
+      taskset -c "${CLIENT_CPUS:-1-8}" "$BIN" -cluster-file "$CF" -workload get100 -workers 64 \
       -iterations 200000 -warmup 20000 -allow-writes -output "$OUT/$tag-cap/run" > "$OUT/$tag-wiretrace.json"
     capops=$(python3 -c "import json;s=json.load(open('$OUT/$tag-cap/run/summary.json'));print(s['completed']+s['warmup_completed'])")
     python3 "$HERE/wirestats.py" "$OUT/$tag-cap/capture.pcap" 4751,4752,4753 "$capops" > "$OUT/$tag-wirestats.json"

@@ -1,0 +1,4 @@
+workers=1 grvwindow n=1 mean_latency_us=322.0 mean_window_us=16.1 grvwindow n=1602 mean_latency_us=391.4 mean_window_us=194.6 grvwindow n=1690 mean_latency_us=373.8 mean_window_us=186.8 
+workers=8 grvwindow n=1 mean_latency_us=552.7 mean_window_us=27.6 grvwindow n=939 mean_latency_us=489.3 mean_window_us=242.2 grvwindow n=941 mean_latency_us=488.9 mean_window_us=244.5 grvwindow n=846 mean_latency_us=510.5 mean_window_us=255.4 
+workers=64 grvwindow n=1 mean_latency_us=331.5 mean_window_us=16.6 grvwindow n=1846 mean_latency_us=449.2 mean_window_us=223.5 grvwindow n=1478 mean_latency_us=508.1 mean_window_us=253.4 grvwindow n=1707 mean_latency_us=472.3 mean_window_us=236.6 
+workers=256 grvwindow n=1 mean_latency_us=538.2 mean_window_us=26.9 grvwindow n=3309 mean_latency_us=366.2 mean_window_us=182.6 grvwindow n=3158 mean_latency_us=399.9 mean_window_us=199.9 grvwindow n=3584 mean_latency_us=362.5 mean_window_us=181.3 

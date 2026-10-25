@@ -651,3 +651,248 @@ acknowledgment and how much is the queue-to-writer handoff.
    for ladder 2.
 6. Tests: `bazelisk --output_base=… test //pkg/fdbgo/transport:all //pkg/fdbgo/client:all --@rules_go//go/config:race --test_env=FDBGO_NETWORK_GOROUTINE=1`
    (likewise with `=writer` and `FDBGO_COALESCE_FROM_SENDER=1`).
+
+---
+
+# Round 3
+
+## Round 3 result
+
+**Machine.** The local machine stayed contended for the whole round. Other
+tenants used 2–20 cores on the bench CPUs and load reached 30–134, so the local
+runs were discarded; they are kept in `raw3-local-contended/`. Every round-3
+number below comes from a dedicated **Hetzner ccx43**: AMD EPYC Milan, 8 cores ×
+2 SMT, KVM guest, Ubuntu 24.04, kernel 6.8, the official fdbserver 7.3.77 .deb,
+and nothing else running (load1 0.9–7.0, other tenants measured at 0.0 cores).
+
+Layout ([rawhz/host.txt](rawhz/host.txt)), one whole core per role:
+
+| CPUs | core | use |
+|---|---|---|
+| 0–1 | 0 | housekeeping, driver, tcpdump |
+| 2–3 | 1 | stateless |
+| 4–5 | 2 | transaction |
+| 6–7 | 3 | storage |
+| 8–15 | 4–7 | client, `GOMAXPROCS=8` (4/2/6-P arms use 8–11 / 8–9 / 8–13) |
+
+The client has 4 physical cores with SMT, where the local machine gave it 8.
+The round-1/2 baselines were rerun here with the same binary as the levers.
+
+**This machine is a different latency regime.**
+- An operation takes about 1.05 ms at every concurrency from 8 to 256 workers.
+  Throughput is workers ÷ 1 ms: 7.2k ops/s at 8 workers, 61k at 64, 230k at 256.
+- A GRV round trip at the wire takes 150–230 µs here, against about 86 µs locally.
+- The client's GRV batch window, half the smoothed GRV latency, is **180–255 µs**
+  ([rawhz/grvwindow.txt](rawhz/grvwindow.txt)), about 20% of an operation.
+- Client CPU per op at 8 workers is **159 µs**, against 39 µs locally. A profile
+  ([rawhz/profile-A-get100-8.pprof](rawhz/profile-A-get100-8.pprof)) spends:
+  - 26% in syscalls;
+  - 21% in `futex`, mostly `wakep`/`startm`, i.e. waking idle Ps.
+
+  On a VM, every thread wake and syscall is expensive. The leader/follower draft
+  predicted this for VMs, and it is confirmed here.
+
+Consequences on this machine:
+
+1. **The round-2 winners lose here.** B, W, Bbest and Wbest lose 19–23% of
+   throughput at `get100`/64 and 5–11% at /256. Client CPU/op improves 0–12% at
+   /256 but gets worse at /64. The wire capture shows why: their loop waits for an
+   eventfd → netpoll wake, which is slow on a VM. That lengthens the effective
+   coalescing window: 20 frames per storage packet, against 16.4 for today's
+   design. Fewer packets means more latency. It is the same mechanism as round 2
+   with the opposite sign: locally the loop was the faster waker.
+2. **The GRV batch window is the largest latency lever.** Half the window (G05)
+   gives at `get100`/64 +48–58% ops/s, −13 to −18% client CPU/op and −46 to −54%
+   p99, but +36–47% server cycles/tx: the proxy gets 2× GRV requests. At 256
+   workers it gives +4–6%, and at 8 workers +20–27%. Per-request GRV (G0) costs
+   +45–143% server cycles and loses at 256. Doubling the window (G2) loses
+   everywhere. GRV batching is worth keeping; its width is a latency/server-cost
+   dial.
+3. **A writer that skips the coalescing delay while few replies are outstanding**
+   ("WbAd": (a) with `ADAPT=16`) is the best transport lever here. At `get100`/8 it
+   gives +18–21% ops/s and −21% CPU/op; at /64 +5–14% and −10%; at /256 +3–5% and
+   −6 to −9%. Server cost is −3 to +8%.
+4. **GOMAXPROCS is the biggest client-CPU lever on this VM.**
+   - 4 Ps: at 64 workers −31 to −42% CPU/op at equal throughput; at 8 workers
+     mixed (0.88–1.08×); at 256 workers −31% ops/s.
+   - 2 Ps at `get100`/8: +52% ops/s at −64% CPU/op.
+
+   Idle Ps that spin and wake (futex, `wakep`) dominate CPU at low concurrency.
+   Syscalls per op are almost identical at 8 and 4 Ps
+   ([rawhz/tables-syscalls.md](rawhz/tables-syscalls.md)), so the saving comes
+   from less spinning and waking, not from fewer syscalls.
+5. **Timeout arming.**
+   - **NT (no timeout), the bound:** −14% CPU/op at `get100`/256.
+   - **T (lazy arming):** about two thirds of that (−8 to −9% CPU/op at /64 and
+     /256), with ±2% throughput. It fails 4 client tests plus one unit-test
+     timeout (under "Tests" below).
+6. **Read no-ack alone (N)** is nearly neutral on this machine: throughput within
+   ±4%, and −9% CPU/op only at `get100`/64. Here the writer structure matters
+   more than skipping the acknowledgment. The local split is still unmeasured.
+7. **No gain:**
+   - LockOSThread for the loop: −12 to −40% ops/s;
+   - B with a 15/30 µs delay;
+   - (b), the sender-clocked delay: +14% at `get100`/64, neutral elsewhere.
+8. **Best combination.** C1 = WbAd + G05 + T at 8 Ps, against today's design:
+
+   | | ops/s | client CPU/op | p99 | server cycles/tx |
+   |---|---:|---:|---:|---:|
+   | `get100`/8 | +35% | −25% | −31% | −4% |
+   | `get100`/64 | +50% | −29% | −49% | +33% |
+   | `get100`/256 | +14% | −15% | −26% | +9% |
+   | mixed `getset100` and writes | +2–5% | | −7 to −12% | |
+
+   C4 is C1 at 4 Ps. Up to 64 workers it brings CPU/op to 0.55–0.75× of today's
+   design, below C1 on the write and mixed cells, but it loses 22% at 256.
+
+**NA and NG** (request #169). NA is a per-connection writer shaped like libfdb_c's
+`connectionWriter`; NG is the same without the delay. Compared with A and with
+Wbest (median of 3 rounds, ratios vs A):
+
+| arm | get100/64 ops, CPU/op, server/tx, p99 | get100/256 | getset100/64 | set100/64 | frames per write (64 / 256) | storage frames per packet (wire, /64) |
+|---|---|---|---|---|---|---|
+| A, today | 66.0k ops/s, 44.3 µs, 24.2 kc, 1.54 ms | 225.6k, 25.8, 15.3, 2.38 | 20.3k, 104, 102, 4.59 | 27.1k, 77, 85, 3.53 | n/a (direct writes and turns) | 17.4 |
+| Wbest | 0.78, 1.16, 0.89, 1.30 | 0.95, 0.91, 0.93, 0.93 | 0.91, 1.00, 0.92, 1.11 | 0.91, 1.05, 0.85, 1.24 | 16.5 / 22.8 | 22.0 |
+| **NA** (C++-shaped) | 0.98, 1.01, 1.04, 0.96 | 1.01, **0.90**, 0.92, 0.91 | 0.99, 1.03, 0.98, 1.02 | 0.97, 1.11, 0.97, 1.16 | 12.6 / 21.1 | 15.7 |
+| **NG** (no delay) | **1.16, 0.84**, 1.03, **0.83** | **1.10, 0.90**, 1.06, 0.95 | 1.02, 1.02, 1.11, 1.01 | 1.08, 0.98, 1.06, 1.15 | 4.7 / 5.8 | **5.9** |
+| A, 4 Ps | 1.00, 0.60, 0.82, 1.09 | 0.69, 0.84, 0.94, 1.53 | 1.01, 0.69, 0.94, 1.15 | 1.07, 0.72, 0.97, 1.36 | | |
+| NA, 4 Ps | 0.94, 0.59, 0.81, 1.18 | 0.73, 0.77, 0.95, 1.44 | 1.01, 0.72, 0.96, 1.17 | 1.06, 0.70, 0.96, 1.27 | 17.3 / 25.8 | |
+| NG, 4 Ps | **1.17, 0.54**, 0.87, 0.90 | 0.71, 0.86, 1.25, 1.67 | 1.10, 0.69, 1.18, 1.02 | 1.10, 0.64, 1.03, 1.07 | 4.7 / 3.5 | |
+
+- **NA reproduces today's packet pattern within 10%** (15.7 vs 17.4 frames per
+  storage packet; GRV batching equal). Its throughput is within ±3% of A, and it
+  saves 10% CPU/op at 256 workers. Removing the write acknowledgment and the
+  sender's turn costs nothing and saves a little at high concurrency, while
+  staying C++-shaped. It does not lose throughput the way Wbest does on this VM.
+- **NG is the throughput arm** below saturation: +16% ops/s and −16% CPU/op at
+  `get100`/64, +10% at /256, +8% at `set100`/64. It writes 2.9× as many storage
+  packets per transaction (5.9 frames each, against 17.4) for the same bytes, and
+  server cycles/tx rise 3–11%. This is the measured deviation from C++ batching
+  parity (RFC-264/#954). With 4 Ps, NG cuts CPU/op by 46% at `get100`/64 with +17%
+  throughput, but loses 29% at 256, like every 4-P arm.
+
+**Tests**, under `-race`, transport and client packages with each switch on
+(logs in `rawhz/tests/`):
+- **GRV ×0.5 and WbAd:** client 2,583/2,583 pass.
+  - Under GRV ×0.5, `grv_batch_unit_test` fails because it asserts the window
+    equals half the latency (the positive control that the switch works).
+  - Under WbAd, the transport package has the 13 writer-mechanics failures
+    already known from (a).
+- **Read no-ack (N):** two client tests fail, and both are harness preconditions:
+  - one asserts "location send had a pending reply registration";
+  - a forced-flush-confound subtest waits 2 min for a flush gate that a no-ack
+    read never enters.
+
+  An RFC needs those harnesses redesigned.
+- **Lazy timeout (T):** fails semantics tests. `TestTimeoutSuccessor*` run on a
+  manual timeout queue, and a pending first-stage arm is not in that queue. One
+  structural test inspects `tx.timeoutNode`, and `versionstamp_registry_unit_test`
+  times out. The prototype is not correct as is: the first stage must be owned by
+  the timeout queue, not by a global sweeper.
+- **NA and NG**, after the benchmark: no race reports. Client: 2,573 pass and 9
+  fail; transport: 168 pass and 22 fail (logs `rawhz/tests/race3-na*`, `race3-ng*`).
+  Every failure asserts today's write-acknowledgment or writer-queue mechanics,
+  which NA/NG remove on purpose:
+  - "post-enqueue acknowledgment wait did not reach the held FDB reply"
+    (`TestReadWriteContext_RealFDBBackpressure`);
+  - "writeCh never reached len 1" (stranded-flush and stranded-SendFrame cancel
+    tests);
+  - registration hooks in `reply_panic_test` ("positive control: observed 0
+    registrations");
+  - the flush-gate handoff tests (`TestHandoffFlushWaitRejectsFIFO`, the forced
+    confound of `TestFallbackContinuationWaitsForEndStartup`);
+  - N's location-send positive control;
+  - the 13 writer-turn and direct-write tests.
+
+  None checks frame order or content, or returns a wrong value. An NA RFC must
+  replace those tests with ones that pin reply-only waiting.
+
+## Round 3 ranked candidate RFCs
+
+Gain × risk, using both machines:
+
+1. **NA, a C++-shaped per-connection writer with send-and-wait-for-reply only.**
+   - Gain: −10% CPU/op at 256 workers on the VM, throughput parity. Locally,
+     round-2 (a) gave −8 to −9% CPU/op and +4 to +5% throughput.
+   - Risk: low. It matches `connectionWriter` and `Peer::send`, keeps
+     `readLoop`, and keeps packets close to today's.
+   - Before an RFC, rework the read-path tests that assume a write acknowledgment
+     (N's failures).
+2. **Coalescing delay that adapts to outstanding replies**, on top of 1 (WbAd's
+   rule; NG is its extreme).
+   - Gain: +5 to +20% ops/s and −6 to −22% CPU/op on the VM below saturation;
+     locally +17% ops/s at 64 workers, but +23% server cycles there.
+   - Risk: medium. It deviates from C++ batching parity (RFC-264/#954) and moves
+     server cost. It needs a server-cost budget, a cap, and a multi-node check.
+3. **GRV batch-window width as an option or scale.**
+   - Gain: the largest latency lever on the VM, +27–58% ops/s and −33 to −54%
+     p99 at 64 workers.
+   - Risk: low in code, medium in parity (`readVersionBatcher` uses half the
+     latency). Server GRV cost doubles at ×0.5.
+   - Ship it as an explicit option with C++ parity as the default, not as a
+     default change.
+4. **Cheaper TIMEOUT arming.**
+   - Gain: up to −14% CPU/op at 256 workers (bound), −8 to −9% captured by the
+     prototype.
+   - Risk: high. Timeout delivery semantics (TODO §0 C4) failed tests here. It
+     needs a queue-owned first stage, or a node reused across a transaction's
+     arms with no weak/cleanup per arm.
+5. **GOMAXPROCS guidance:** documentation only, since it is the user's setting.
+   On small VMs, fewer Ps halve client CPU at low concurrency and cost
+   throughput at high concurrency.
+
+**Not worth an RFC:**
+- B (the single network goroutine): it has a ceiling and is VM-hostile;
+- LockOSThread;
+- per-request GRV;
+- larger read buffers;
+- (b), the sender-clocked delay;
+- read no-ack alone.
+
+## Round 3 method and data
+
+- **Arms:**
+  - [hz_arms.json](hz_arms.json): round-1/2 baselines plus the levers, alone.
+  - [hz2_arms.json](hz2_arms.json): the GOMAXPROCS sweep, GRV ×0.75 and ×0.5,
+    and the combinations C1–C4.
+  - [hz_na_arms.json](hz_na_arms.json): NA and NG.
+- **Runs:** each cell is 3 rotated rounds. Long runs are about 20 s and short
+  runs about 7 s. Server cycles/tx are long minus short. Clean-run checks were
+  kept: other tenants were measured at 0.0 cores on every run.
+- **Drivers:** [hz_phase2.sh](hz_phase2.sh) and [hz_phase_na.sh](hz_phase_na.sh).
+- **Binaries:** `go build -trimpath`, CGO off.
+  - `clientbench-go` `4cffc1f9…` for levers and combinations, from `d28a02d05`;
+  - `clientbench-go-na` `88af82f1…` for NA/NG, from `d28a02d05` plus `na_writer.go`.
+- **Tables:**
+  - full tables with spread: `rawhz/tables-*.md`;
+  - compact cross-cell ratio grids (ops / CPU / server / p99 vs A):
+    `rawhz/compact-*.md` (`summarize3_compact.py`);
+  - wire: `rawhz/tables-wire.md` (`summarize3_wire.py`);
+  - syscalls: `rawhz/tables-syscalls.md`.
+- **Absolute A values** (Hetzner, levers ladder):
+
+  | cell | ops/s | client µs/op | server kc/tx | p50 / p99 |
+  |---|---:|---:|---:|---|
+  | `get100`/8 | 7,172 | 159 | 92 | 1.06 / 1.77 ms |
+  | `get100`/64 | 60,542 | 44.5 | 24.0 | 0.96 / 2.17 ms |
+  | `get100`/256 | 229,738 | 26.1 | 15.0 | 1.05 / 2.36 ms |
+  | `getset100`/64 | 19,529 | 143 | 120 | 3.21 / 4.87 ms |
+  | `getset100`/256 | 62,554 | 56 | 67 | 3.99 / 6.98 ms |
+  | `set100`/64 | 25,548 | 92 | 83 | 2.49 / 3.71 ms |
+  | `set100`/256 | 80,464 | 41 | 50 | 3.09 / 5.62 ms |
+
+- **New lab switches**, all off by default:
+
+  | switch | lever |
+  |---|---|
+  | `FDBGO_EXP_TIMEOUT_LAZY` (`_MS`) | lazy timeout arming |
+  | `CLIENTBENCH_ALLOW_NO_TIMEOUT` | allows the timeout-off bound |
+  | `FDBGO_EXP_GRV_WINDOW_SCALE` / `_LOG` | GRV window width / sizing log |
+  | `FDBGO_EXP_READ_NOACK` | read no-ack |
+  | `FDBGO_NETG_ADAPT` | adaptive coalescing delay |
+  | `FDBGO_NETG_LOCKTHREAD` | LockOSThread for the loop |
+  | `FDBGO_EXP_NA=1\|nodelay` | NA / NG writer (`pkg/fdbgo/transport/na_writer.go`) |
+  | `FDBGO_NETG_STATS` | frames-per-write counters |
+
+  clientbench gains a mixed `getset100` workload: one 100-byte read and one
+  write per transaction.

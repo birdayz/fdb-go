@@ -55,7 +55,7 @@ func (c *Conn) SendFrameContext(ctx context.Context, token UID, body []byte) (en
 // FlushContext waits for an ordered flush marker without coupling a read's
 // cancellation to the lifetime of the shared connection.
 func (c *Conn) FlushContext(ctx context.Context) error {
-	if c.ng != nil {
+	if c.labw {
 		_, err := c.ngWrite(ctx, UID{}, nil, true, nil)
 		return err
 	}
@@ -76,7 +76,7 @@ func (c *Conn) SendFrameContextOrdered(ctx context.Context, token UID, body []by
 
 // Keep hot-path defers open-coded: returns × defers must stay ≤ 15 in Go 1.26.
 func (c *Conn) writeContext(ctx context.Context, token UID, body []byte, flush bool, permit *sendqueue.Permit) (bool, error) {
-	if c.ng != nil {
+	if c.labw {
 		return c.ngWrite(ctx, token, body, flush, permit)
 	}
 	if err := ctx.Err(); err != nil {
@@ -177,7 +177,7 @@ func (c *Conn) SendFrameEagerContextOrdered(ctx context.Context, token UID, body
 }
 
 func (c *Conn) sendWithoutAck(ctx context.Context, token UID, body []byte, eager bool, permit *sendqueue.Permit) (bool, error) {
-	if c.ng != nil {
+	if c.labw {
 		return c.ngWrite(ctx, token, body, false, permit)
 	}
 	if err := ctx.Err(); err != nil {

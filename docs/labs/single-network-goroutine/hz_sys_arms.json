@@ -1,0 +1,33 @@
+{
+ "A": {
+  "env": []
+ },
+ "W": {
+  "env": [
+   "FDBGO_NETWORK_GOROUTINE=writer"
+  ]
+ },
+ "WbAd": {
+  "env": [
+   "FDBGO_NETWORK_GOROUTINE=writer",
+   "FDBGO_NETG_LOOPS=2",
+   "FDBGO_NETG_OUTFIX=1",
+   "FDBGO_NETG_ADAPT=16"
+  ]
+ },
+ "A4": {
+  "env": [],
+  "gomaxprocs": 4,
+  "cpus": "8-11"
+ },
+ "G05": {
+  "env": [
+   "FDBGO_EXP_GRV_WINDOW_SCALE=0.5"
+  ]
+ },
+ "B": {
+  "env": [
+   "FDBGO_NETWORK_GOROUTINE=1"
+  ]
+ }
+}

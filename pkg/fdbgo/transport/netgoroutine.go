@@ -38,7 +38,7 @@ func (c *Conn) ngWrite(ctx context.Context, token UID, body []byte, flush bool, 
 	if flush {
 		return true, nil
 	}
-	if err := c.ngSend(token, body); err != nil {
+	if err := c.labSend(token, body); err != nil {
 		return false, err
 	}
 	return true, nil

@@ -1,0 +1,9 @@
+{
+  "A":     {"env": ["FDBGO_NETG_STATS=1"]},
+  "Wbest": {"env": ["FDBGO_NETWORK_GOROUTINE=writer", "FDBGO_NETG_LOOPS=2", "FDBGO_NETG_OUTFIX=1", "FDBGO_NETG_STATS=1"]},
+  "NA":    {"env": ["FDBGO_EXP_NA=1", "FDBGO_NETG_STATS=1"]},
+  "NG":    {"env": ["FDBGO_EXP_NA=nodelay", "FDBGO_NETG_STATS=1"]},
+  "A4":    {"env": ["FDBGO_NETG_STATS=1"], "gomaxprocs": 4, "cpus": "8-11"},
+  "NA4":   {"env": ["FDBGO_EXP_NA=1", "FDBGO_NETG_STATS=1"], "gomaxprocs": 4, "cpus": "8-11"},
+  "NG4":   {"env": ["FDBGO_EXP_NA=nodelay", "FDBGO_NETG_STATS=1"], "gomaxprocs": 4, "cpus": "8-11"}
+}

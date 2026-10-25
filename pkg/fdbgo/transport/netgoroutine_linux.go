@@ -211,6 +211,8 @@ func netgRegister(c *Conn) bool {
 		st.in = make([]byte, 0, netgRbuf)
 	}
 	c.ng = st
+	c.labw = true
+	startLabStats()
 	l.submit(ngSub{op: ngOpRegister, st: st})
 	return true
 }
@@ -374,6 +376,10 @@ func (l *netLoop) armTimer(d int64) {
 }
 
 func (l *netLoop) write(st *ngConn, now int64) {
+	if st.nframes > 0 {
+		labWrites.Add(1)
+		labFrames.Add(int64(st.nframes))
+	}
 	st.nframes = 0
 	for len(st.out) > st.outOff {
 		n, err := syscall.Write(st.fd, st.out[st.outOff:])

@@ -62,7 +62,16 @@ def arm_spec(arm):
     return spec if isinstance(spec, dict) else {"env": spec}
 
 
-MY_CPUS = set(range(1, 12)) | set(range(13, 24))  # client, servers and their SMT siblings
+def cpu_list(spec):
+    out = set()
+    for part in spec.split(","):
+        lo, _, hi = part.partition("-")
+        out |= set(range(int(lo), int(hi or lo) + 1))
+    return out
+
+
+# Client and server CPUs and their SMT siblings (NETG_MY_CPUS, e.g. 2-15).
+MY_CPUS = cpu_list(os.environ.get("NETG_MY_CPUS", "1-11,13-23"))
 
 
 def cpu_busy(cpus):
@@ -119,6 +128,10 @@ def run(args, arm, iterations, outdir, perf_target):
     if p.returncode != 0 or len(counters) != want:
         sys.exit(f"run failed (exit {p.returncode}):\n{p.stdout[-2000:]}\n{p.stderr[-2000:]}")
     s = json.load(open(os.path.join(outdir, "summary.json")))
+    for line in p.stderr.splitlines():  # lab writer counters (FDBGO_NETG_STATS=1)
+        if line.startswith("netgstats "):
+            kv = dict(f.split("=") for f in line.split()[1:])
+            s["lab_writes"], s["lab_frames"] = int(kv["writes"]), int(kv["frames"])
     if not s.get("success"):
         sys.exit(f"clientbench failure: {s.get('failure')}")
     return counters, s, (la, waited, foreign)
@@ -203,6 +216,8 @@ def measure(args, arm, i, attempt):
             row["server_cycles_per_tx"] = (cl["cycles"] - cs["cycles"]) / tx
             row["server_task_clock_us_per_tx"] = (cl["task-clock"] - cs["task-clock"]) * 1e3 / tx
         row.update(client_metrics(os.path.join(tmp, "long"), sl))
+        if sl.get("lab_writes"):
+            row["lab_frames_per_write"] = sl["lab_frames"] / sl["lab_writes"]
         return row
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

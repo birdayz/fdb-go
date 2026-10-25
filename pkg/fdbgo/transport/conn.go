@@ -244,6 +244,9 @@ type Conn struct {
 
 	// ng is set when the experimental network goroutine owns this connection's I/O.
 	ng *ngConn
+	// na is the lab NA/NG writer (na_writer.go); labw: a lab writer owns sends.
+	na   *naWriter
+	labw bool
 	// firstQueued is when the oldest frame not yet in a writeLoop batch was
 	// queued (monoNow; 0 = none), for the FDBGO_COALESCE_FROM_SENDER experiment.
 	firstQueued atomic.Int64
@@ -597,7 +600,14 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 		go c.coldControlLoop()
 	}
 	go c.readLoop()
-	go c.writeLoop()
+	if naOn && tlsConfig == nil {
+		c.na = &naWriter{sig: make(chan struct{}, 1)}
+		c.labw = true
+		startLabStats()
+		go c.naLoop()
+	} else {
+		go c.writeLoop()
+	}
 	go c.connectionMonitor()
 
 	return c, nil
@@ -700,7 +710,7 @@ func putReplyChannelImpl(ch chan Response) {
 // SendFrame writes a raw frame and flushes. Returns once the frame is written, or
 // once writeLoop holds whatever a full socket refused, ahead of every later frame.
 func (c *Conn) SendFrame(destToken UID, body []byte) error {
-	if c.ng != nil {
+	if c.labw {
 		_, err := c.ngWrite(c.ctx, destToken, body, false, nil)
 		return err
 	}
@@ -746,7 +756,7 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
 // The write loop will flush it with the next batch. Used for pipelining:
 // send N frames, then call Flush() (or let the write loop auto-flush).
 func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
-	if c.ng != nil {
+	if c.labw {
 		_, err := c.ngWrite(c.ctx, destToken, body, false, nil)
 		return err
 	}
@@ -766,7 +776,7 @@ func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
 // queued every earlier frame is already written; otherwise it sends a flush
 // marker through the write channel and waits for acknowledgment.
 func (c *Conn) Flush() error {
-	if c.ng != nil {
+	if c.labw {
 		_, err := c.ngWrite(c.ctx, UID{}, nil, true, nil)
 		return err
 	}

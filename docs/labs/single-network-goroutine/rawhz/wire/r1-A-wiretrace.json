@@ -1,0 +1,75 @@
+{
+  "client_flows": 2,
+  "kinds": {
+    "commit": {
+      "requests": 1,
+      "replied": 1,
+      "errors": 0,
+      "transactions": 1,
+      "client_segments": 1,
+      "malformed": 0,
+      "server_batches": 1,
+      "batch_sizes": {
+        "1": 1
+      },
+      "arrival_spread_ns": [
+        0,
+        0,
+        0
+      ],
+      "latency_ns": [
+        2661374,
+        2661374,
+        2661374
+      ]
+    },
+    "grv": {
+      "requests": 7528,
+      "replied": 7528,
+      "errors": 0,
+      "transactions": 220003,
+      "client_segments": 7516,
+      "malformed": 0,
+      "server_batches": 0,
+      "batch_sizes": {},
+      "arrival_spread_ns": [
+        0,
+        0,
+        0
+      ],
+      "latency_ns": [
+        229367,
+        306214,
+        5608321
+      ]
+    },
+    "range": {
+      "requests": 1,
+      "replied": 1,
+      "errors": 0,
+      "transactions": 0,
+      "client_segments": 1,
+      "malformed": 0,
+      "server_batches": 0,
+      "batch_sizes": {},
+      "arrival_spread_ns": [
+        0,
+        0,
+        0
+      ],
+      "latency_ns": [
+        110086,
+        110086,
+        110086
+      ],
+      "params": {
+        "limit=101 bytes=80000 begin=false/1 end=false/1": 1
+      },
+      "reply_bytes": 4104
+    }
+  },
+  "undecodable": 0,
+  "stream_gaps": 0,
+  "partial_streams": 0,
+  "complete": true
+}

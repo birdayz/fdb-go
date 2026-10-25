@@ -1,0 +1,6 @@
+smoke FDBGO_EXP_NA=1 get100 exit=0 True 0 0
+smoke FDBGO_EXP_NA=nodelay get100 exit=0 True 0 0
+smoke FDBGO_EXP_NA=1 set100 exit=0 True 0 0
+smoke FDBGO_EXP_NA=nodelay set100 exit=0 True 0 0
+smoke FDBGO_EXP_NA=1 getset100 exit=0 True 0 0
+smoke FDBGO_EXP_NA=nodelay getset100 exit=0 True 0 0

@@ -1,0 +1,23 @@
+host: Hetzner ccx43 (dedicated vCPU), netg-bench
+Model name:                              AMD EPYC-Milan Processor
+BIOS Model name:                         NotSpecified  CPU @ 2.0GHz
+Thread(s) per core:                      2
+Core(s) per socket:                      8
+Socket(s):                               1
+L3 cache:                                32 MiB (1 instance)
+6.8.0-138-generic
+PRETTY_NAME="Ubuntu 24.04.4 LTS"
+               total        used        free      shared  buff/cache   available
+Mem:              61           1          58           0           1          60
+FoundationDB 7.3 (v7.3.77)
+source version 3ea44ce1d9003ad095e408039e1f755c319c4dfb
+179df8ec7292ad060fb7bd60a771ff4a8dd3989a8115638356c73feea4fc2c5f  /usr/sbin/fdbserver
+4cffc1f9ad3ac1b48365706b6de6cff923602cc0cd9ddf55a0ab85482020000d  /root/netg/bin/clientbench-go
+88af82f1916a4f9326225f8287bfdbf521fd7fce3d22232968f0c35071f1c6b7  /root/netg/bin/clientbench-go-na
+00fc4f11c562a13806efff41d8d5be879e1a17a19b1bfc1280bec12ae34cc2d9  /root/netg/bin/wiretrace
+kvm-clock
+none
+pid 3430  6,7 --class storage
+pid 3431  2,3 --class stateless
+pid 3442  4,5 --class transaction
+layout: housekeeping/driver/tcpdump CPUs 0-1 (core 0); stateless 2-3 (core 1); transaction 4-5 (core 2); storage 6-7 (core 3); client 8-15 (cores 4-7), GOMAXPROCS=8 unless an arm says otherwise (4 Ps: CPUs 8-11; 2 Ps: 8-9; 6 Ps: 8-13)

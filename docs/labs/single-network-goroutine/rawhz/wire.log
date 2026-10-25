@@ -1,0 +1,50 @@
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+r0-A load1=5.03 ops=2420000 capops=220000 2026-10-25T03:39:13+00:00
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+r0-W load1=3.91 ops=2420000 capops=220000 2026-10-25T03:40:19+00:00
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+r0-WbAd load1=1.94 ops=2420000 capops=220000 2026-10-25T03:41:13+00:00
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+r0-G05 load1=1.94 ops=2420000 capops=220000 2026-10-25T03:41:58+00:00
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+r0-B load1=2.42 ops=2420000 capops=220000 2026-10-25T03:43:09+00:00
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+r1-B load1=2.25 ops=2420000 capops=220000 2026-10-25T03:44:20+00:00
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+r1-G05 load1=2.29 ops=2420000 capops=220000 2026-10-25T03:45:05+00:00
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+r1-WbAd load1=3.01 ops=2420000 capops=220000 2026-10-25T03:46:01+00:00
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+r1-W load1=2.33 ops=2420000 capops=220000 2026-10-25T03:47:10+00:00
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+r1-A load1=2.54 ops=2420000 capops=220000 2026-10-25T03:48:15+00:00

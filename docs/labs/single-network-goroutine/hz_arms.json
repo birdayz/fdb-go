@@ -1,0 +1,18 @@
+{
+  "A":     {"env": []},
+  "B":     {"env": ["FDBGO_NETWORK_GOROUTINE=1"]},
+  "W":     {"env": ["FDBGO_NETWORK_GOROUTINE=writer"]},
+  "S":     {"env": ["FDBGO_COALESCE_FROM_SENDER=1"]},
+  "Bbest": {"env": ["FDBGO_NETWORK_GOROUTINE=1", "FDBGO_NETG_LOOPS=2", "FDBGO_NETG_OUTFIX=1"]},
+  "Wbest": {"env": ["FDBGO_NETWORK_GOROUTINE=writer", "FDBGO_NETG_LOOPS=2", "FDBGO_NETG_OUTFIX=1"]},
+  "N":     {"env": ["FDBGO_EXP_READ_NOACK=1"]},
+  "T":     {"env": ["FDBGO_EXP_TIMEOUT_LAZY=1"]},
+  "NT":    {"env": ["CLIENTBENCH_ALLOW_NO_TIMEOUT=1"], "args": ["-transaction-timeout-ms=0"]},
+  "G05":   {"env": ["FDBGO_EXP_GRV_WINDOW_SCALE=0.5"]},
+  "G2":    {"env": ["FDBGO_EXP_GRV_WINDOW_SCALE=2"]},
+  "G0":    {"env": ["FDBGO_EXP_GRV_WINDOW_SCALE=0"]},
+  "WbAd":  {"env": ["FDBGO_NETWORK_GOROUTINE=writer", "FDBGO_NETG_LOOPS=2", "FDBGO_NETG_OUTFIX=1", "FDBGO_NETG_ADAPT=16"]},
+  "WbLT":  {"env": ["FDBGO_NETWORK_GOROUTINE=writer", "FDBGO_NETG_LOOPS=2", "FDBGO_NETG_OUTFIX=1", "FDBGO_NETG_LOCKTHREAD=1"]},
+  "Bd30":  {"env": ["FDBGO_NETWORK_GOROUTINE=1"], "args": ["-coalesce-delay=15us,30us"]},
+  "A4":    {"env": [], "gomaxprocs": 4, "cpus": "8-11"}
+}
