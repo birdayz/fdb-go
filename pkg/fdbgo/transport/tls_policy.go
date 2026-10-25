@@ -5,7 +5,9 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -289,6 +291,12 @@ func (p *VerifyPolicy) Verify(certs []*x509.Certificate, roots *x509.CertPool) e
 	if err != nil {
 		return &PeerVerifyError{Reason: "chain does not verify", Err: err}
 	}
+	chains = slices.DeleteFunc(chains, func(chain []*x509.Certificate) bool {
+		return slices.ContainsFunc(chain, anyEKUOnly)
+	})
+	if len(chains) == 0 {
+		return &PeerVerifyError{Reason: "chain does not verify", Err: errAnyEKUOnly}
+	}
 	if len(p.rules) == 0 {
 		return nil
 	}
@@ -300,6 +308,25 @@ func (p *VerifyPolicy) Verify(certs []*x509.Certificate, roots *x509.CertPool) e
 		}
 	}
 	return &PeerVerifyError{Reason: "no rule matches the peer"}
+}
+
+// errAnyEKUOnly is the cause when every chain has a certificate whose extended key
+// usage is anyExtendedKeyUsage without serverAuth.
+var errAnyEKUOnly = errors.New("certificate extended key usage is anyExtendedKeyUsage without serverAuth")
+
+// anyEKUOnly reports a certificate crypto/x509 accepts for serverAuth through
+// anyExtendedKeyUsage alone; OpenSSL's ssl_server purpose rejects it (xku_reject).
+func anyEKUOnly(c *x509.Certificate) bool {
+	if !slices.Contains(c.ExtKeyUsage, x509.ExtKeyUsageAny) {
+		return false
+	}
+	for _, u := range c.ExtKeyUsage {
+		switch u {
+		case x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageNetscapeServerGatedCrypto, x509.ExtKeyUsageMicrosoftServerGatedCrypto:
+			return false
+		}
+	}
+	return true
 }
 
 // VerifyConnection returns a tls.Config.VerifyConnection hook applying the policy

@@ -4,7 +4,7 @@
 
 **Items** (the Go FDB client entries of the 2026-10-24 quality review, open PR #994):
 
-1. `ServerName` is set to the dialed host (`transport/conn.go:1533-1535`), a hostname
+1. `ServerName` is set to the dialed host (`transport/conn.go:1533-1535` at `12e2a8fe2`), a hostname
    check libfdb_c does not make.
 2. `FDB_TLS_VERIFY_PEERS` and `FDB_TLS_PASSWORD` are never read.
 3. Match the C++ verify-peers semantics (`flow/TLSConfig.actor.cpp`) as far as Go's
@@ -207,13 +207,15 @@ Regressions (each fails when its part is reverted; rejections assert their cause
   - Latin-1: `CN=caf\E9` matches the UTF-8 CN `café`; the raw UTF-8 bytes
     `CN=caf\C3\A9`, widened, do not;
   - the empty criterion `subjectAltName>=DNS:` against a DNS SAN;
-  - issuer and root scopes, `I.subjectAltName`, and two valid chains where an `R.` rule
-    matches only one;
+  - issuer and root scopes, `I.subjectAltName`, and two valid chains through one
+    intermediate where an `R.` rule matches only one, `I.CN=intermediate` matches and
+    `I.CN=root-a` does not;
   - SAN `DNS`, `EMAIL` and `URI`, the fall-throughs, and an `IP:` criterion against an
     iPAddress SAN (no match). A URI SAN written `SPIFFE://...` matches as written,
     where Go's parsed `URL.String()` reads `spiffe://...`.
   - Accepted under `Check.Valid=0`. Rejected: an unknown CA (`x509.UnknownAuthorityError`),
-    a leaf with only ClientAuth (`x509.CertificateInvalidError`, `IncompatibleUsage`), an
+    a leaf with only ClientAuth (`x509.CertificateInvalidError`, `IncompatibleUsage`), a
+    leaf with only anyExtendedKeyUsage (OpenSSL's `xku_reject`; accepted with serverAuth), an
     expired leaf with `Check.Unexpired=0` (`Expired`). A rule mismatch is a `*PeerVerifyError` with no chain error.
 - `transport`, handshakes through `upgradeTLS` to `localhost`: a policy config accepts a
   server whose certificate names another host; a stdlib config and a config with a
@@ -231,6 +233,7 @@ Regressions (each fails when its part is reverted; rejections assert their cause
     and with SHA-384, and DES-EDE3 with OpenSSL's default PRF (SHA-256). Each decrypts
     with `FDB_TLS_PASSWORD` to the public key recorded beside it, and loads with a
     matching certificate;
+  - a PBES2 key with an HMAC-MD5 PRF or an RC2-CBC cipher is refused naming that part;
   - a wrong or missing password, a scrypt key, a PBES1 key, a PKCS#12 PBE key and a
     legacy encrypted PEM key are each a `*TLSConfigError` with code 2107, and each names
     its cause (a wrong password, or the refused scheme);

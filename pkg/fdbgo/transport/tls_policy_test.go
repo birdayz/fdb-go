@@ -172,6 +172,10 @@ func TestVerifyPolicyMatching(t *testing.T) {
 	leaf := serverLeaf(t, ca, nil)
 	cafe := serverLeaf(t, ca, func(c *x509.Certificate) { c.Subject.CommonName = "café" })
 	clientOnly := serverLeaf(t, ca, func(c *x509.Certificate) { c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth} })
+	anyOnly := serverLeaf(t, ca, func(c *x509.Certificate) { c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageAny} })
+	anyAndServer := serverLeaf(t, ca, func(c *x509.Certificate) {
+		c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageAny, x509.ExtKeyUsageServerAuth}
+	})
 	expired := serverLeaf(t, ca, func(c *x509.Certificate) {
 		c.NotBefore, c.NotAfter = time.Now().Add(-2*time.Hour), time.Now().Add(-time.Hour)
 	})
@@ -262,12 +266,17 @@ func TestVerifyPolicyMatching(t *testing.T) {
 			return errors.As(err, &invalid) && invalid.Reason == x509.IncompatibleUsage
 		}},
 		{"expired", expired, roots, func(err error) bool { return errors.As(err, &invalid) && invalid.Reason == x509.Expired }},
+		// OpenSSL's ssl_server purpose rejects anyExtendedKeyUsage without serverAuth.
+		{"anyExtendedKeyUsage only", anyOnly, roots, func(err error) bool { return errors.Is(err, errAnyEKUOnly) }},
 	} {
 		err := DefaultVerifyPolicy.Verify([]*x509.Certificate{tc.peer}, tc.roots)
 		var pe *PeerVerifyError
 		if !errors.As(err, &pe) || !tc.cause(err) {
 			t.Errorf("%s: %v; want a PeerVerifyError with its chain error", tc.name, err)
 		}
+	}
+	if err := DefaultVerifyPolicy.Verify([]*x509.Certificate{anyAndServer}, roots); err != nil {
+		t.Errorf("anyExtendedKeyUsage with serverAuth: %v", err)
 	}
 	mismatch, _ := ParseVerifyPeers("CN=server-b")
 	err := mismatch.Verify([]*x509.Certificate{leaf}, roots)
@@ -300,7 +309,11 @@ func TestVerifyPolicyAnyChain(t *testing.T) {
 	roots.AddCert(rootA.cert)
 	roots.AddCert(rootB.cert)
 	peer := []*x509.Certificate{leaf, viaA.cert, viaB.cert}
-	for policy, accept := range map[string]bool{"R.CN=root-a": true, "R.CN=root-b": true, "R.CN=root-c": false} {
+	// I. reads the leaf's issuer (the intermediate), R. the chain's last certificate.
+	for policy, accept := range map[string]bool{
+		"R.CN=root-a": true, "R.CN=root-b": true, "R.CN=root-c": false,
+		"I.CN=intermediate": true, "I.CN=root-a": false,
+	} {
 		p, err := ParseVerifyPeers(policy)
 		if err != nil {
 			t.Fatal(err)

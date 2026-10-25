@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
@@ -349,4 +350,53 @@ func TestResolveTLSConfigMutualTLS(t *testing.T) {
 	if errors.As(err, &cfgErr); cfgErr.Setting != "FDB_TLS_VERIFY_PEERS" || !errors.As(err, &parseErr) {
 		t.Fatalf("unparseable FDB_TLS_VERIFY_PEERS: %v; want the setting and a VerifyPeersError", err)
 	}
+}
+
+// rewriteScheme re-encodes the aes256-sha256 fixture with its PBKDF2 PRF or its
+// cipher replaced by oid.
+func rewriteScheme(t *testing.T, prf bool, oid asn1.ObjectIdentifier) []byte {
+	t.Helper()
+	var info encryptedPrivateKeyInfo
+	if _, err := asn1.Unmarshal(fixtureDER(t, "aes256-sha256"), &info); err != nil {
+		t.Fatal(err)
+	}
+	var params pbes2Params
+	if _, err := asn1.Unmarshal(info.Algorithm.Parameters.FullBytes, &params); err != nil {
+		t.Fatal(err)
+	}
+	if prf {
+		var kdf pbkdf2Params
+		if _, err := asn1.Unmarshal(params.KeyDerivationFunc.Parameters.FullBytes, &kdf); err != nil {
+			t.Fatal(err)
+		}
+		kdf.PRF.Algorithm = oid
+		b, err := asn1.Marshal(kdf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		params.KeyDerivationFunc.Parameters = asn1.RawValue{FullBytes: b}
+	} else {
+		params.EncryptionScheme.Algorithm = oid
+	}
+	b, err := asn1.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info.Algorithm.Parameters = asn1.RawValue{FullBytes: b}
+	der, err := asn1.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return der
+}
+
+// A PBES2 key with a PRF or cipher outside the supported set is refused by name.
+func TestDecryptPKCS8UnsupportedPRFAndCipher(t *testing.T) {
+	t.Parallel()
+	hmacMD5 := asn1.ObjectIdentifier{1, 2, 840, 113549, 2, 6}
+	rc2CBC := asn1.ObjectIdentifier{1, 2, 840, 113549, 3, 2}
+	_, err := decryptKeyPEM(encryptedPEM(rewriteScheme(t, true, hmacMD5)), fixtureKeyPassword)
+	requireKeyScheme(t, "HMAC-MD5 PRF", err, "PBKDF2 PRF")
+	_, err = decryptKeyPEM(encryptedPEM(rewriteScheme(t, false, rc2CBC)), fixtureKeyPassword)
+	requireKeyScheme(t, "RC2-CBC cipher", err, "cipher")
 }
