@@ -159,7 +159,10 @@ changes.
   floor at 1.0; spend at the delay with budget 1.0 (cost 1.0, multiplier +0.01) and
   none with 0.95; with budget 2.0 and both replies slow, exactly one hedge; the
   delay and instant arm values from `secondDelay`; the reply-first order when the
-  delay and the reply are both ready.
+  delay and the reply are both ready. Production GetValue/GetKey/shared-range
+  senders also run against protocol peers under fake time: distinct 4/8 ms
+  latencies and multiplier 3 must hedge at 24.5 ms, with the 49/50 ms primary
+  latencies pinning the strict instant threshold.
 - Request transcript (real FDB, sim dialer, two aliases of the storage server):
   for `GetValueRequest`, `GetKeyRequest`, `GetKeyValuesRequest` and
   `GetMappedKeyValuesRequest`,

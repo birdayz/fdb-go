@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
@@ -187,7 +189,21 @@ func TestNativeReadTagSampling(t *testing.T) {
 					return draw
 				}
 				plan.entries = []plannedReply{dropReply("GetKeyRequest"), dropReply("GetKeyValuesRequest")}
-				sim.setIntercept(plan.intercept)
+				sim.setIntercept(func(idx int, token transport.UID, body []byte) ([]byte, bool) {
+					if rec.replyKind(token) == "GetKeyRequest" {
+						beginReply := false
+						for _, msg := range rec.messages() {
+							if req, ok := msg.(*types.GetKeyRequest); ok && req.Reply.Token == wire.UIDFromParts(token.First, token.Second) {
+								beginReply = string(req.Sel.Key) == prefix+"a"
+								break
+							}
+						}
+						if !beginReply {
+							return body, false
+						}
+					}
+					return plan.intercept(idx, token, body)
+				})
 				sim.armEverything()
 			}
 			draws.script(drawHit, drawMiss, drawHit)
