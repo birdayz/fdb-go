@@ -841,6 +841,21 @@ func TestHandleConnErrorClosesOutsideConnMu(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Keep a completed dial's cohort undrained, as a sender paused before its flush.
+	call := &dialCall{done: make(chan struct{}), conn: a}
+	permit, _ := call.sends.Reserve()
+	defer permit.Release()
+	call.sends.Seal()
+	close(call.done)
+	db.connMu.Lock()
+	db.dialing[armAddr] = call
+	db.connMu.Unlock()
+	hook := func() {
+		if db.dialing[armAddr] == call {
+			t.Error("the failed connection's completed dial cohort was still published before Close")
+		}
+	}
+	db.beforeConnFailureMark.Store(&hook)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -910,9 +925,8 @@ func noFrame(t *testing.T, peer *identityPeer, d time.Duration, why string) {
 	}
 }
 
-// A metrics request whose only replica is down waits for that replica, as
-// loadBalance waits on okFuture: another address's recovery does not end the wait,
-// the replica's does, well before the 30 s storm delay.
+// Recovery of the request's replica, not another address, ends the wait
+// well before the 30 s storm delay, as loadBalance waits on okFuture.
 func TestMetricsRequestWakesOnRecovery(t *testing.T) {
 	t.Parallel()
 	for _, arm := range metricsArms() {
@@ -967,6 +981,77 @@ func TestMetricsRequestWakesOnRecovery(t *testing.T) {
 				t.Fatal("the request still waits after its replica recovered")
 			}
 		})
+	}
+}
+
+// A recovered replica is usable while another replica's shared probe dial is stalled;
+// ending the recovery wait must abandon only the probe's waiter, not the shared dial.
+func TestMetricsRecoveryDoesNotWaitForOtherProbe(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	peer := newIdentityPeer(t)
+	db, tx := armDatabase(ctx, peer)
+	const blocked = "blocked:4500"
+	db.failMon.markFailed(blocked)
+	db.failMon.markFailed(armAddr)
+	entered := make(chan struct{})
+	dial := db.dialFn
+	db.dialFn = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if addr == blocked {
+			close(entered)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return dial(ctx, network, addr)
+	}
+	// Both replicas are excluded when the request decides to wait. Only the blocked
+	// replica becomes probe-eligible before awaitAlternative arms its probe timer.
+	hook := func() {
+		db.failMon.mu.Lock()
+		db.failMon.failed[blocked].excludedUntil = nowSeconds() - 1
+		db.failMon.failed[armAddr].excludedUntil = nowSeconds() + 600
+		db.failMon.mu.Unlock()
+	}
+	db.beforeAltFailureWait.Store(&hook)
+	opCtx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = tx.sendWaitMetrics(opCtx, []byte("k"), []byte("l"), 1,
+			[]ServerInfo{{Address: blocked, Token: armToken}, {Address: armAddr, Token: armToken}})
+	}()
+	defer func() {
+		stop()
+		cancel()
+		<-done
+		closeIdentityDatabase(db)
+	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("the excluded-replica probe did not begin its dial")
+	}
+	db.connMu.Lock()
+	call := db.dialing[blocked]
+	db.connMu.Unlock()
+	if call == nil {
+		t.Fatal("the stalled probe has no shared dial")
+	}
+	defer func() { cancel(); <-call.done }()
+	// Keep the blocked replica excluded after recovery, so only armAddr can send.
+	db.failMon.markFailed(blocked)
+	db.failMon.markAlive(armAddr)
+	waitCtx, waitStop := context.WithTimeout(ctx, time.Second)
+	defer waitStop()
+	f, ok := peer.recv(waitCtx)
+	if !ok || f.token != getAdjustedEndpoint(armToken, EndpointWaitMetrics) {
+		t.Fatal("recovery did not send to the available replica while the other probe dial was stalled")
+	}
+	select {
+	case <-call.done:
+		t.Fatal("abandoning the probe cancelled the database-owned shared dial")
+	default:
 	}
 }
 
@@ -1199,9 +1284,8 @@ func TestMetricsRequestWaitsForSlowReply(t *testing.T) {
 	}
 }
 
-// A request whose only replica is excluded probes it when its exclusion window
-// ends, as connectionKeeper does, so a recovered replica ends the 30 s wait
-// without other traffic.
+// Probing after exclusion expires lets the replica's recovery end the 30 s wait
+// without other traffic, as connectionKeeper does.
 func TestMetricsRequestProbesExcludedReplica(t *testing.T) {
 	t.Parallel()
 	for _, arm := range metricsArms() {

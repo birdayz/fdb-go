@@ -69,8 +69,10 @@ func (db *database) awaitAlternative(ctx context.Context, closed <-chan struct{}
 	// a probe that connects marks the address alive, which ends the wait.
 	probe := time.NewTimer(db.untilReadmission(servers))
 	defer probe.Stop()
+	probeCtx, cancelProbe := context.WithCancel(ctx)
 	var probing chan struct{}
 	defer func() {
+		cancelProbe()
 		if probing != nil {
 			<-probing
 		}
@@ -85,7 +87,7 @@ func (db *database) awaitAlternative(ctx context.Context, closed <-chan struct{}
 			}
 		case <-probe.C:
 			probing = make(chan struct{})
-			go db.probeReadmitted(ctx, servers, probing)
+			go db.probeReadmitted(probeCtx, servers, probing)
 		case <-probing:
 			probing = nil
 			if !db.allExcluded(servers) {

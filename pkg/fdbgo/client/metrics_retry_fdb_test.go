@@ -145,6 +145,10 @@ func TestMappedSelectorReadsCapReplyTimeouts(t *testing.T) {
 			_, err := tx.getMappedRangeSelectorExact(ctx, begin, end, f.getValueMapper(), newMappedRangeLimits(0, ByteLimitUnlimited), rv, false)
 			return err
 		}},
+		{"public positive skip", func(tx *Transaction, _ int64) error {
+			_, _, err := tx.GetMappedRangeWithByteTargetAndSkip(ctx, begin, end, f.getValueMapper(), 0, ByteLimitUnlimited, 1, false)
+			return err
+		}},
 	} {
 		tx := db.CreateTransaction()
 		tx.rpcTimeoutOverride = 20 * time.Millisecond

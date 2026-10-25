@@ -49,7 +49,9 @@ Change:
   does not); the attempt count restarts and the backoff is kept (`:641`). While it
   waits, a replica whose exclusion window ends is dialed, as `connectionKeeper`
   re-probes a failed peer (`FlowTransport.actor.cpp:784-797`); a dial that connects
-  marks it alive. A location with no servers reports 1006 after the
+  marks it alive. The wait cancels its probe waiter on recovery or expiry, without
+  cancelling the database-owned shared dial; reconnecting never delays the selected
+  recovery or error (`LoadBalance.actor.cpp:48-54`). A location with no servers reports 1006 after the
   all-alternatives-failed delay, so the caller re-locates.
 - An in-band `broken_promise` or `request_maybe_delivered` reply is not a response, as
   in `checkAndProcessResult` (`:344-377`): the request marks a `broken_promise`
@@ -85,11 +87,10 @@ and every dial and pool lookup waits on `connMu` meanwhile.
 Change: the removal and the failure mark stay under `connMu`, so a redial cannot slip
 between them (RFC-271); the close runs after the unlock. Other closes under `connMu`
 are left: `Database.Close` and a dial that lost to `Close` happen during shutdown, and
-the dial-panic backstop only on a panic. Between the unlock and the close, a sender can
-still take the failing connection from a completed dial whose send cohort has not
-drained; its send fails as on any connection that dies after lookup, and the read
-retries. `Database.Close` can likewise return while such a connection is still closing;
-its loops end with the close.
+the dial-panic backstop only on a panic. A completed, undrained dial cohort referring
+to the removed connection is detached under the same lock, so a new sender cannot
+acquire the failed connection between the unlock and the close. `Database.Close` can
+return while such a connection is still closing; its loops end with the close.
 
 ## 4. `TransactCtx` and a dispatched commit: kept
 
@@ -97,8 +98,9 @@ In libfdb_c the transaction ends the wait for a dispatched commit: RYW `commit` 
 (`ReadYourWrites.actor.cpp:1381`, `:1405`), so a timeout or `cancel` returns
 `transaction_timed_out` or `transaction_cancelled` at once. The native commit is held by
 `Transaction::committing` (`NativeAPI.actor.cpp:6942-6945`) and runs on; only `reset`
-or destruction drops it (`:6172`, `:5486`). Go does the same: a timeout, `Cancel` or
-`Reset` ends the public wait and leaves the native commit running
+or destruction drops it (`:6172`, `:5486`). Go does the same: timeout and `Cancel`
+end the public wait but leave the native commit running; `Reset` ends the public
+wait and drops the native commit
 (`client/native_commit.go`; `TestCommitWait_TransactionInterrupts`,
 `TestCommitWait_TransactionInterruptionLeavesNativeFenceAlive`).
 
@@ -114,9 +116,11 @@ and names the bound that matches libfdb_c, the transaction timeout or `Cancel`.
 ## Tests
 
 - `client`, fast lane (`conn_location_unit_test`):
-  - `TestHandleConnErrorClosesOutsideConnMu`: the failed connection's `Close` blocks
-    until released; `connMu` must be free meanwhile, the pool empty and the address
-    failed.
+  - `TestHandleConnErrorClosesOutsideConnMu`: the failed connection's completed dial
+    cohort is detached before failure publication; `Close` blocks until released,
+    while `connMu` is free, the pool empty and the address failed.
+  - `TestMetricsRecoveryDoesNotWaitForOtherProbe`: a recovered replica gets the
+    request while a different replica's dial remains stalled and database-owned.
   - `TestMetricsRequestWakesOnRecovery`: with the storm delay at 30 s, a request whose
     only replica failed parks (a test hook reports it and keeps the replica excluded,
     so no probe dials it) and stays parked, without restarting its wait, when another
@@ -136,21 +140,21 @@ and names the bound that matches libfdb_c, the transaction timeout or `Cancel`.
     `request_maybe_delivered`, the third request waits at least 10 ms, the fourth 20 ms,
     and so on.
   - `TestMetricsRequestWithoutServers`: an empty replica list reports 1006.
-  - `TestPipelinedGetReplyTimeoutSends` (`client_test`): a read whose replies are all
-    lost fails with `transaction_too_old` after 11 sends, a pipelined Get after 12, as
-    STATUS.md's "Per-RPC 5 s read timeouts" paragraph now says.
   - `TestMetricsRequestWaitsForSlowReply`: a reply that comes after more than the old
     5 s timeout is used, with one request sent.
 - `client`, test-full (`client_test`, FDB in a container, replies rewritten by the
   `simDialer`):
+  - `TestPipelinedGetReplyTimeoutSends`: a read whose replies are all lost fails with
+    `transaction_too_old` after 11 sends, a pipelined Get after 12, as STATUS.md's
+    "Per-RPC 5 s read timeouts" paragraph now says.
   - `TestMetricsRetryWrongShardWithoutCap`: 55 `WaitMetrics` replies, then 55
     `SplitRange` replies, are `wrong_shard_server`; both calls succeed.
   - `TestMetricsRetryIsPaced`: every `WaitMetrics`, then every `SplitRange`, reply
     severs its connection; with a 2 s transaction timeout each call makes at most 30
     rounds and fails with `transaction_timed_out`.
   - `TestMappedSelectorReadsCapReplyTimeouts`: every `GetMappedKeyValues` reply is
-    dropped, with a 20 ms reply timeout; both loops send 11 requests and return
-    `transaction_too_old`.
+    dropped, with a 20 ms reply timeout; both loops and a public positive-skip read
+    send 11 mapped requests and return `transaction_too_old`.
 
 Each fails with its fix reverted.
 

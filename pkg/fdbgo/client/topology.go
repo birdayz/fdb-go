@@ -245,6 +245,9 @@ func (db *database) handleConnError(addr string, failed *transport.Conn) {
 		if c != nil {
 			closing = c
 			delete(db.connPool, addr)
+			if call := db.dialing[addr]; call != nil && call.conn == c {
+				delete(db.dialing, addr)
+			}
 		}
 		if hook := db.beforeConnFailureMark.Load(); hook != nil {
 			(*hook)()
