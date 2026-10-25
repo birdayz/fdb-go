@@ -463,7 +463,8 @@ func (tx *embeddedTx) abortOnContextGoroutine(ctx context.Context) {
 	tx.abort(ctx)
 }
 
-// retryCancel cancels the FDB transaction when an abort's Cancel panicked.
+// retryCancel cancels the FDB transaction when an abort's Cancel panicked; a
+// call in flight on it still ends only with its own FDB error.
 func (tx *embeddedTx) retryCancel() {
 	if tx.uncancelled.Swap(false) {
 		tx.rctx.Cancel()

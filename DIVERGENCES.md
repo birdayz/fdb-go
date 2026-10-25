@@ -1010,14 +1010,16 @@ Go-only plan types: `RecordQueryInMemorySortPlan`, `RecordQueryLimitPlan`, `Reco
 
 Go-only logical expressions: `LogicalLimitExpression`, `LogicalValuesExpression`.
 
-### Messages of wrapped record-layer exceptions
+### Messages of wrapped record-layer and JDK exceptions
 
-Java wraps a record-layer exception (`RecordCoreException`, `SemanticException`) in a
-`RelationalException(code, cause)`, whose message is the cause's `toString()`, so it starts with
-the exception class (`com.apple.foundationdb.record.RecordCoreException: only positive step is
-allowed in range`). Go's `api.Error.Message` is the exception's own message, without the class;
-the SQLSTATE is the same. Pinned by `sqltest/core` `TestFDB_RangeTableFunction` and
-`TestFDB_EnumAndUUIDAssignmentErrorMessage`.
+Java wraps a record-layer or JDK exception (`RecordCoreException`, `SemanticException`, a decimal
+literal's `NumberFormatException`) in a `RelationalException(code, cause)`, whose message is the
+cause's `toString()`, so it starts with the exception class
+(`com.apple.foundationdb.record.RecordCoreException: only positive step is allowed in range`).
+Go's `api.Error.Message` is the exception's own message, without the class; the SQLSTATE is the
+same. Pinned by `sqltest/core` `TestFDB_RangeTableFunction` and
+`TestFDB_EnumAndUUIDAssignmentErrorMessage`, `core/query/expr`
+`TestWalkExpression_TypedNumericSuffixes`, and the plan-shape golden's `overflow.yaml#6`.
 
 ### Go-only SQLSTATEs
 

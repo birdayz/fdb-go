@@ -67,9 +67,8 @@ func WrapErrorf(cause error, code ErrorCode, format string, args ...any) *Error 
 	return &Error{Code: code, Message: fmt.Sprintf(format, args...), Cause: cause}
 }
 
-// Error renders the error in the form "SQLSTATE: message: cause"
-// with the context fields appended; a WrapStatedError cause is not appended. The wording is informational —
-// callers must not parse it.
+// Error renders "SQLSTATE: message: cause" plus context, without a WrapStatedError
+// cause. The wording is informational; callers must not parse it.
 func (e *Error) Error() string {
 	var b strings.Builder
 	b.WriteString(string(e.Code))

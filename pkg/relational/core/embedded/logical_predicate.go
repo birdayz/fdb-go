@@ -4056,7 +4056,7 @@ func validateSelectOutputNames(sq *selectQuery) error {
 			return nil
 		}
 		if _, err := protoname.ToProtoBufCompliantName(name); err != nil {
-			return api.WrapError(api.ErrCodeInvalidName, err.Error(), err)
+			return api.WrapStatedError(api.ErrCodeInvalidName, err.Error(), err)
 		}
 		return nil
 	}
