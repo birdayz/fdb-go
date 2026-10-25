@@ -495,8 +495,9 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   `TenantInfo.Token` as presence only (`optTable` in `cmd/fdb-schema-extract`), but their
   encoders write `VisitDynamicSize` behind the union offset. Give the types Go
   equivalents, or make the encoder refuse a presence-only field, before the client sets one.
-  The table encoders of `NetworkAddressList.SecondaryAddress` and `CommitTransactionRef`
-  `spanContext` have no C++ request vector either; add one with each field set.
+  The registered table encoders for `NetworkAddressList.SecondaryAddress` and
+  `CommitTransactionRef.spanContext` are pinned byte-exactly by C++ request fixtures
+  in #1004.
 
 ## 1. WS-E — scalar/SQL semantics and statement execution — ACTIVE
 

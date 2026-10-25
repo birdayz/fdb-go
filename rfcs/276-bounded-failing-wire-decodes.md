@@ -76,8 +76,8 @@ never reject a reply C++ writes.
    - a present nested table, `Optional` table or variant-alternative table does not
      resolve;
    - the budget is exhausted;
-   - a present field's bytes lie outside the buffer, or the vtable claims more entries
-     than the buffer holds. The `wire.Reader` leaf reads (scalars, byte strings, bare
+   - a present field's bytes or an accessed vtable entry lie outside the buffer.
+     Unaccessed vtable entries are not validated. The `wire.Reader` leaf reads (scalars, byte strings, bare
      out-of-line scalars) keep returning zero or nil, and now also record the first such
      slot. `decode` returns it from `r.Err()` as a `*wire.FieldBoundsError`.
 
@@ -187,7 +187,7 @@ Regressions (each fails when its part of the change is reverted; the PR records 
 revert):
 
 - `wire`: a present scalar, byte string or bare out-of-line scalar outside the buffer,
-  and a vtable longer than the buffer, give `Err() = *FieldBoundsError`, and a later
+  or an accessed vtable entry outside it, gives `Err() = *FieldBoundsError`, and a later
   fault does not replace the first. A vector field past the buffer is a
   `ReadVectorCount` error.
 - `wire/types`:
@@ -204,7 +204,9 @@ revert):
   - Tags: a `GetValueReply` value with tag 2, or with tag 1 and no value slot, an inline
     error with tag 2, and a variant with tag 3 all read as absent.
   - An ErrorOr error whose code lies past the buffer fails with a `DecodeError`.
-  - `Parse<T>VectorFromReader` returns the element error. `ParseKeyValueRefStringVector`
+  - `Parse<T>VectorFromReader` returns the element error and a `DecodeError` wrapping
+    `FieldBoundsError` for a declared vector slot whose vtable entry is truncated.
+    A genuinely absent vector remains an empty successful decode. `ParseKeyValueRefStringVector`
     fails with a `StringVectorError` on a short blob, a count the blob cannot hold, an
     element that overruns it, and trailing bytes.
 - `client`: one table test over the reply parsers. Each moves one present field past
@@ -234,7 +236,8 @@ revert):
   and `ClientDBInfo_secondary_address` (endpoints with a TLS secondary address) parse,
   with the primary address; a selector key past the buffer fails `parseGetKeyReply`;
   a range key with a zero offset still fails the locations reply. A location pair, a
-  server or a split-point reply whose vtable runs past the buffer fails its parse, and a
+  server or a split-point reply with an accessed vtable entry outside the buffer fails
+  its parse, and a
   server whose slot-2 endpoint or its wrapper field is absent is still found by the scan.
 - `wire`: `ReadOptionalInt32`/`ReadOptionalString` treat tag 2 as absent and record a
   value past the buffer.

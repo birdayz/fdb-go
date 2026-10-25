@@ -221,6 +221,38 @@ func TestParseVectorFromReaderFailsOnElement(t *testing.T) {
 	}
 }
 
+// A missing declared vector entry is malformed, unlike a slot absent from the vtable.
+func TestParseVectorFromReaderTruncatedVTableEntry(t *testing.T) {
+	t.Parallel()
+	d := (&CoordOpenDatabaseRequest{}).MarshalFDB()
+	r, err := wire.NewReader(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj, vt := r.ObjectPos(), len(d)
+	d = append(d, 6, 0, 4, 0) // header declares slot 0, but its entry is missing
+	le.PutUint32(d[obj:], uint32(int32(obj-vt)))
+	for _, slot := range []int{0, 1} {
+		r, err := wire.NewReader(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := ParseNetworkAddressVectorFromReader(r, slot)
+		if slot == 1 {
+			if got != nil || err != nil || r.Err() != nil {
+				t.Fatalf("absent vector: %v, %v (Reader.Err %v)", got, err, r.Err())
+			}
+			continue
+		}
+		var decodeErr *wire.DecodeError
+		var bounds *wire.FieldBoundsError
+		if got != nil || !errors.As(err, &decodeErr) || decodeErr.Type != "[]NetworkAddress" ||
+			!errors.As(err, &bounds) || bounds.Slot != slot {
+			t.Fatalf("truncated vector entry: %v, %v; want DecodeError wrapping FieldBoundsError", got, err)
+		}
+	}
+}
+
 // decoderFor returns the generated decoder for the type a vector is named after.
 func decoderFor(t *testing.T, vectorName string) func([]byte) error {
 	t.Helper()

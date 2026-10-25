@@ -377,8 +377,8 @@ func firstLocation(t *testing.T, d []byte) (pair, server *wire.Reader) {
 	return pair, server
 }
 
-// A vtable that declares more entries than the buffer holds fails the hand-written
-// walks instead of reading its fields as absent.
+// A declared vtable entry outside the buffer fails the hand-written walks when
+// accessed, instead of being read as an absent field.
 func TestLocationAndSplitWalksFailOnVTablePastBuffer(t *testing.T) {
 	t.Parallel()
 	// Four entries declared, two present: slot 0's entry lies past the buffer.

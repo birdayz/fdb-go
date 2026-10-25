@@ -476,7 +476,7 @@ func (e *VectorCountError) Error() string {
 func (r *Reader) ReadVectorCount(vtableSlot int) (int, error) {
 	off := r.fieldOffset(vtableSlot)
 	if off < 4 {
-		return 0, nil // absent field = empty vector
+		return 0, r.Err() // a genuinely absent field is empty; a truncated entry is not
 	}
 	if int(off)+4 > len(r.object) {
 		return 0, &FieldBoundsError{Slot: vtableSlot}

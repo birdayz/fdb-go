@@ -142,6 +142,27 @@ func TestReadVectorCountFieldPastBuffer(t *testing.T) {
 	}
 }
 
+func TestReadVectorCountTruncatedVTableEntry(t *testing.T) {
+	t.Parallel()
+	for _, slot := range []int{0, 1} {
+		r, err := NewReader(scalarMessage(1)[:28])
+		if err != nil {
+			t.Fatal(err)
+		}
+		n, err := r.ReadVectorCount(slot)
+		if slot == 1 {
+			if n != 0 || err != nil || r.Err() != nil {
+				t.Fatalf("absent vector = %d, %v (Reader.Err %v); want 0, nil, nil", n, err, r.Err())
+			}
+			continue
+		}
+		var bounds *FieldBoundsError
+		if n != 0 || !errors.As(err, &bounds) || bounds.Slot != slot {
+			t.Fatalf("truncated vector entry = %d, %v; want FieldBoundsError for slot %d", n, err, slot)
+		}
+	}
+}
+
 // optionalMessage builds a message whose slots 0 and 1 are an Optional: a tag at
 // object offset 4 and a RelativeOffset at 8 to a value of 4 + len(tail) bytes.
 func optionalMessage(tag byte, rel uint32, value uint32, tail string) []byte {
