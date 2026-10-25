@@ -272,3 +272,121 @@ goroutine that waits for the socket to drain. That is today's A: the sender's
 direct write plus a handoff to the writer. D-M is therefore A without the
 handoff, and it is correct only while sockets never fill. It is measured to
 show what the writer goroutine costs, not as a candidate.
+
+## Results
+
+Two Hetzner ccx43 boxes (AMD EPYC-Milan, 16 vCPUs, kernel 6.8.0-138), each
+with its own single-process-per-role 7.3.77 cluster (`configure new single
+memory`), the round-3 core layout, 3 rotated rounds per cell. Medians, with
+[min, max] in the raw tables. Compare arms within a box only: the same binaries
+on both boxes give A 47.4k vs 36.0k ops/s and L 32.9k vs 36.6k on get100/64
+(`rawhz4/cross`), so the boxes differ by up to 30% on latency-bound cells.
+
+- Box 1 (`rawhz4/`, `summarize4.py rawhz4`): L, A, D, D-NG, D at 4 Ps.
+  Binaries: Go `faf81872…`, libfdb_c bench `f8731701…`.
+- Box 2 (`rawhz5/`, `summarize4.py rawhz5`): L, L4, A, D, D-M, D-M at 4 Ps,
+  plus syscalls and captures. Binaries: Go `1aaad7db…`, libfdb_c bench
+  `a2cb6e76…`, both from the transport and client source of abe373e8d.
+  L4 is libfdb_c with `client_threads_per_version=4` (which disables the local
+  client, MultiVersionTransaction.actor.cpp:3095-3097), the external client
+  `/usr/lib/libfdb_c.so` copied per thread (:2868-2890), and 4 databases,
+  which `createDatabase` assigns to threads round-robin (:3302-3305);
+  transactions start on the databases in turn.
+
+### Box 2, closed loop (ops/s; server kcycles/tx; p50 µs)
+
+| cell | L | L4 | A | D | D-M | D-M 4 Ps |
+|---|---|---|---|---|---|---|
+| get100/8 | 6.3k; 82; 1223 | 10.2k; 296; 748 | 5.4k; 84; 1453 | 5.5k; 83; 1441 | 6.5k; 83; 1227 | 6.6k; 84; 1145 |
+| get100/64 | 36.6k; 23; 1567 | 62.7k; 63; 941 | 36.0k; 19; 1770 | 31.8k; 18; 1979 | 48.5k; 21; 1293 | 55.6k; 18; 1096 |
+| get100/256 | 57.3k; 13; 3932 | 107k; 33; 2025 | 229k; 14; 1027 | 232k; 13; 1057 | 261k; 15; 920 | 175k; 18; 1345 |
+| set100/8 | 2.6k; 262; 3098 | 3.1k; 474; 2285 | 2.7k; 269; 2964 | 2.6k; 283; 3044 | 2.8k; 256; 2739 | 2.8k; 273; 2860 |
+| set100/64 | 19.2k; 72; 3130 | 24.2k; 107; 2517 | 24.4k; 86; 2534 | 24.4k; 86; 2531 | 27.4k; 92; 2184 | 28.2k; 85; 2126 |
+| set100/256 | 50.5k; 48; 4744 | 75.8k; 58; 3196 | 80.2k; 47; 3017 | 81.3k; 46; 3002 | 82.6k; 48; 2944 | 78.0k; 50; 3100 |
+| getset100/8 | 1.8k; 327; 4228 | 2.1k; 538; 3749 | 2.0k; 366; 4063 | 2.0k; 354; 4008 | 2.2k; 360; 3715 | 2.3k; 406; 3450 |
+| getset100/64 | 15.7k; 106; 3806 | 19.0k; 152; 3158 | 16.8k; 112; 3638 | 14.9k; 93; 4169 | 17.8k; 109; 3393 | 19.3k; 114; 3143 |
+| getset100/256 | 38.0k; 75; 6137 | 55.8k; 86; 4240 | 59.2k; 66; 4118 | 59.8k; 66; 4084 | 61.4k; 68; 3990 | 59.2k; 77; 4103 |
+
+Frames per write (design counter): D 3–22, D-M 1.5–5.6. Box 1 shows the
+same ordering for L, A, D and D-NG (D-NG behaves like D-M: get100/64 50.6k,
+get100/256 250k).
+
+### What the data says
+
+- **D (C2 delay) loses on latency-bound cells.** get100/64: D 31.8k vs A 36.0k
+  (box 2) and 32.0k vs 46.7k (box 1), p50 +12% and +46%. The 10–20 µs C2
+  delay is paid on every round trip when the queue is short. It packs the most
+  frames per write and has the lowest server cost on those cells (0.83–0.90×
+  A), which is what C2 is for, but it is not free for the client.
+- **No writer delay is the throughput winner.** On box 2, D-M (at 8 or 4 Ps)
+  is the fastest Go arm and has the lowest Go p50 in all 9 cells. Its server
+  cost is 0.96–1.07× A's per transaction (1.12× D's at get100/256), from fewer
+  frames per packet. On box 1, D-NG (the same flush-on-empty policy with a
+  writer goroutine) leads the same way: 1.09× A on get100/64, 1.20× on
+  get100/256.
+- **The writer goroutine itself costs little.** D-M and D-NG never ran on the
+  same box, so there is no direct pair. Against D on box 2 (get100/64), D-M
+  makes as many futex calls (0.57/op) and slightly more read+write calls
+  (0.51 vs 0.48/op): removing the writer's wakeup is offset by writing more
+  often. D-M does not meet T2 under backpressure (section above), so D-NG is
+  the shippable form of the same policy.
+- **D-M at 4 Ps** halves client CPU per op at 64 workers (24 vs 48 µs/op) and is
+  the fastest Go arm there; at 256 workers 4 Ps saturate (175k vs 261k).
+- **L4 buys latency with server and client cost.** It is 1.1–1.9× L's
+  throughput and 0.5–0.9× its p50, but each thread has its own connections, so
+  batching splits: storage frames per packet 4.2 vs 32 (get100/64), server
+  cycles per transaction 1.1–3.6× L, client CPU per op 1.2–2.7× L, 12–17
+  syscalls/op vs 3–5. At 256 workers it is still under half of every Go arm
+  on get100 (107k vs 229k+).
+
+### set100/64 server cycles: load confound, not a wire difference (#173)
+
+- Closed loop, equal workers: A is +21% (box 2: 86 vs 72 kc/tx) to +24%
+  (box 1, cross run: 87 vs 70) over L, at 1.25–1.31× L's throughput.
+- Rate-capped to 18,000 ops/s (Poisson arrivals, below L's closed-loop 19k):
+  box 2 L 137, A 140 (1.02×), D 136 (0.98×), D-M 148 (1.08×), L4 188 (1.32×);
+  box 1 L 127, A 142 (1.14×), D 143 (1.13×), D-NG 150 (1.19×). The +21% shrinks
+  to +2% and +14%. The residual is box-dependent and follows how many frames a
+  write carries (D-NG/D-M, 1.4–1.5 frames per write, cost most).
+- Per transaction the requests are identical. One worker, set100, tcpdump:
+  1.00 transactions per GRV request, 2.004 vs 2.005 proxy frames per
+  transaction, 847.6 vs 847.7–847.8 proxy bytes per transaction, for L, A, D,
+  D-NG and D-M on both boxes. The one-worker `blind_set` golden is identical
+  too (`tools/clientbench/wiregolden`).
+- Packing differs at equal workers: L sends 12.5–13.3 commit frames per proxy
+  segment, A 7.8–8.8, D 7.7, D-M 3.6, D-NG 3.2. L packs more because its single
+  network thread is the bottleneck, so more frames wait per write. That
+  packing difference, not request content, is what moves the server cost.
+
+### T4 verdict
+
+Against the better of L and L4 per metric, on box 2, at equal workers, with a
+3% tolerance (server kc/tx / p50 / p99, ratio to the better):
+
+| cell | A | D | D-M | D-M 4 Ps |
+|---|---|---|---|---|
+| get100/8 | ✗ 1.01/1.94/2.08 | ✗ 1.01/1.93/2.03 | ✗ 1.01/1.64/1.54 | ✗ 1.02/1.53/1.74 |
+| get100/64 | ✗ 0.85/1.88/1.58 | ✗ 0.78/2.10/1.83 | ✗ 0.91/1.37/1.28 | ✗ 0.78/1.16/1.01 |
+| get100/256 | ✗ 1.05/0.51/0.35 | ✓ 1.00/0.52/0.29 | ✗ 1.12/0.45/0.33 | ✗ 1.32/0.66/0.47 |
+| getset100/8 | ✗ 1.12/1.08/1.19 | ✗ 1.08/1.07/1.22 | ✗ 1.10/0.99/0.96 | ✗ 1.24/0.92/0.99 |
+| getset100/64 | ✗ 1.06/1.15/1.06 | ✗ 0.87/1.32/1.12 | ✗ 1.03/1.07/0.97 | ✗ 1.07/1.00/1.02 |
+| getset100/256 | ✓ 0.88/0.97/0.93 | ✓ 0.88/0.96/0.89 | ✓ 0.91/0.94/0.85 | ✗ 1.02/0.97/1.07 |
+| set100/8 | ✗ 1.03/1.30/1.08 | ✗ 1.08/1.33/1.00 | ✗ 0.98/1.20/0.96 | ✗ 1.04/1.25/1.02 |
+| set100/64 | ✗ 1.19/1.01/1.04 | ✗ 1.19/1.01/0.98 | ✗ 1.28/0.87/0.89 | ✗ 1.18/0.84/0.91 |
+| set100/256 | ✗ 0.98/0.94/1.17 | ✗ 0.95/0.94/1.05 | ✗ 0.98/0.94/1.06 | ✗ 1.05/0.97/1.40 |
+
+The bar is not met by any arm, and it is not one bar: L has the best server
+cost and L4 the best latency, and no libfdb_c configuration has both. Read
+against each separately:
+
+- Against L alone, D-M meets latency in every cell (p50 0.23–0.97×, p99
+  0.30–0.87×) and server cost within 3% in 6 of 9 cells; it misses server cost
+  on get100/256 (1.12×), getset100/8 (1.10×) and set100/64 (1.28× closed loop,
+  1.08× at equal ops).
+- Against L4, every Go arm has lower server cost in every cell (D-M 0.28–0.86×
+  L4's kc/tx) but higher latency at 8 and 64 workers on get100 (D-M p50 1.64×
+  and 1.37×). Per-transaction latency at low concurrency is where Go is
+  behind: 100 reads per transaction on one goroutine cost more client time per
+  read than libfdb_c spends spread over 4 network threads.
+- D, the design as specified, is the most frugal on the servers but trails D-M
+  on throughput and latency at every 8- and 64-worker cell.

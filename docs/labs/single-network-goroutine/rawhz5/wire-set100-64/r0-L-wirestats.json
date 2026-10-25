@@ -1,0 +1,71 @@
+{
+ "4751/c2s": {
+  "bytes": 52316300,
+  "bytes_per_op": 653.95375,
+  "frames": 83880,
+  "frames_per_op": 1.0485,
+  "frames_per_segment": 12.541866028708133,
+  "req_commit": 80001,
+  "req_grv": 3871,
+  "req_other": 8,
+  "segments": 6688,
+  "segments_per_op": 0.0836,
+  "segs_with_0_frames": 1,
+  "segs_with_1_frames": 3496,
+  "segs_with_2_frames": 149,
+  "segs_with_3_frames": 98,
+  "segs_with_4_frames": 89,
+  "segs_with_5_frames": 90,
+  "segs_with_6_frames": 70,
+  "segs_with_7_frames": 90,
+  "segs_with_8_frames": 99,
+  "segs_with_9_frames": 2506
+ },
+ "4751/s2c": {
+  "bytes": 10071368,
+  "bytes_per_op": 125.8921,
+  "frames": 83879,
+  "frames_per_op": 1.0484875,
+  "frames_per_segment": 15.40477502295684,
+  "segments": 5445,
+  "segments_per_op": 0.0680625,
+  "segs_with_0_frames": 1,
+  "segs_with_1_frames": 2831,
+  "segs_with_2_frames": 525,
+  "segs_with_3_frames": 36,
+  "segs_with_4_frames": 34,
+  "segs_with_5_frames": 27,
+  "segs_with_6_frames": 33,
+  "segs_with_7_frames": 29,
+  "segs_with_8_frames": 44,
+  "segs_with_9_frames": 1885
+ },
+ "4753/c2s": {
+  "bytes": 39028,
+  "bytes_per_op": 0.48785,
+  "frames": 136,
+  "frames_per_op": 0.0017,
+  "frames_per_segment": 1.0,
+  "req_get": 131,
+  "req_getkeyvalues": 1,
+  "req_other": 4,
+  "segments": 136,
+  "segments_per_op": 0.0017,
+  "segs_with_1_frames": 136
+ },
+ "4753/s2c": {
+  "bytes": 44180,
+  "bytes_per_op": 0.55225,
+  "frames": 136,
+  "frames_per_op": 0.0017,
+  "frames_per_segment": 1.0,
+  "segments": 136,
+  "segments_per_op": 0.0017,
+  "segs_with_1_frames": 136
+ },
+ "client_flows": 2,
+ "flows_by_port": {
+  "4751": 1,
+  "4753": 1
+ }
+}

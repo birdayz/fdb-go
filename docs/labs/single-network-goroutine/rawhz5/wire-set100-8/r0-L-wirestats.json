@@ -1,0 +1,66 @@
+{
+ "4751/c2s": {
+  "bytes": 21543124,
+  "bytes_per_op": 673.222625,
+  "frames": 36650,
+  "frames_per_op": 1.1453125,
+  "frames_per_segment": 4.019962707030822,
+  "req_commit": 32001,
+  "req_grv": 4635,
+  "req_other": 14,
+  "segments": 9117,
+  "segments_per_op": 0.28490625,
+  "segs_with_1_frames": 4878,
+  "segs_with_2_frames": 113,
+  "segs_with_3_frames": 85,
+  "segs_with_4_frames": 81,
+  "segs_with_5_frames": 89,
+  "segs_with_6_frames": 105,
+  "segs_with_7_frames": 236,
+  "segs_with_8_frames": 3530
+ },
+ "4751/s2c": {
+  "bytes": 4659680,
+  "bytes_per_op": 145.615,
+  "frames": 36649,
+  "frames_per_op": 1.14528125,
+  "frames_per_segment": 4.2466975666280415,
+  "segments": 8630,
+  "segments_per_op": 0.2696875,
+  "segs_with_1_frames": 4585,
+  "segs_with_2_frames": 43,
+  "segs_with_3_frames": 1,
+  "segs_with_4_frames": 2,
+  "segs_with_6_frames": 3,
+  "segs_with_7_frames": 19,
+  "segs_with_8_frames": 3977
+ },
+ "4753/c2s": {
+  "bytes": 6828,
+  "bytes_per_op": 0.213375,
+  "frames": 30,
+  "frames_per_op": 0.0009375,
+  "frames_per_segment": 1.0,
+  "req_get": 19,
+  "req_getkeyvalues": 1,
+  "req_other": 10,
+  "segments": 30,
+  "segments_per_op": 0.0009375,
+  "segs_with_1_frames": 30
+ },
+ "4753/s2c": {
+  "bytes": 19996,
+  "bytes_per_op": 0.624875,
+  "frames": 30,
+  "frames_per_op": 0.0009375,
+  "frames_per_segment": 1.0,
+  "segments": 30,
+  "segments_per_op": 0.0009375,
+  "segs_with_1_frames": 30
+ },
+ "client_flows": 2,
+ "flows_by_port": {
+  "4751": 1,
+  "4753": 1
+ }
+}

@@ -1,0 +1,67 @@
+{
+ "4751/c2s": {
+  "bytes": 22516600,
+  "bytes_per_op": 804.1642857142857,
+  "frames": 43907,
+  "frames_per_op": 1.568107142857143,
+  "frames_per_segment": 1.375877412885435,
+  "req_commit": 28001,
+  "req_grv": 15812,
+  "req_other": 94,
+  "segments": 31912,
+  "segments_per_op": 1.1397142857142857,
+  "segs_with_1_frames": 19942,
+  "segs_with_2_frames": 11957,
+  "segs_with_3_frames": 9,
+  "segs_with_4_frames": 2,
+  "segs_with_8_frames": 2
+ },
+ "4751/s2c": {
+  "bytes": 6488976,
+  "bytes_per_op": 231.74914285714286,
+  "frames": 43899,
+  "frames_per_op": 1.5678214285714285,
+  "frames_per_segment": 1.4113618827160495,
+  "segments": 31104,
+  "segments_per_op": 1.1108571428571428,
+  "segs_with_1_frames": 18334,
+  "segs_with_2_frames": 12754,
+  "segs_with_3_frames": 11,
+  "segs_with_4_frames": 4,
+  "segs_with_8_frames": 1
+ },
+ "4753/c2s": {
+  "bytes": 8188248,
+  "bytes_per_op": 292.4374285714286,
+  "frames": 28068,
+  "frames_per_op": 1.0024285714285714,
+  "frames_per_segment": 1.7717459916677187,
+  "req_get": 28019,
+  "req_getkeyvalues": 1,
+  "req_other": 48,
+  "segments": 15842,
+  "segments_per_op": 0.5657857142857143,
+  "segs_with_1_frames": 3624,
+  "segs_with_2_frames": 12212,
+  "segs_with_3_frames": 4,
+  "segs_with_4_frames": 2
+ },
+ "4753/s2c": {
+  "bytes": 6183016,
+  "bytes_per_op": 220.822,
+  "frames": 28068,
+  "frames_per_op": 1.0024285714285714,
+  "frames_per_segment": 1.7736492890995261,
+  "segments": 15825,
+  "segments_per_op": 0.5651785714285714,
+  "segs_with_1_frames": 3593,
+  "segs_with_2_frames": 12223,
+  "segs_with_3_frames": 7,
+  "segs_with_4_frames": 2
+ },
+ "client_flows": 9,
+ "flows_by_port": {
+  "4751": 5,
+  "4753": 4
+ }
+}

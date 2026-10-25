@@ -11,8 +11,9 @@ import statistics
 import sys
 
 D = sys.argv[1] if len(sys.argv) > 1 else "rawhz4"
-ARMS = ["L", "A", "D", "DNG", "D4P"]
-NAMES = {"L": "L (libfdb_c)", "A": "A (today)", "D": "D", "DNG": "D-NG", "D4P": "D, 4 Ps"}
+ARMS = ["L", "L4", "A", "D", "DNG", "D4P", "M", "M4P"]
+NAMES = {"L": "L (libfdb_c)", "L4": "L4 (libfdb_c, 4 threads)", "A": "A (today)", "D": "D", "DNG": "D-NG",
+         "D4P": "D, 4 Ps", "M": "D-M", "M4P": "D-M, 4 Ps"}
 
 
 def med(v, n=0):
@@ -89,6 +90,24 @@ def per_tx():
             print(f"| {NAMES[a]} | {v['grv_tpr']:.2f} | {v['px_frames']:.3f} | {v['px_bytes']:.1f} | {v['ss_frames'] or 0:.3f} | {v['flows']} |")
 
 
+def syscalls(path):
+    if not os.path.exists(path):
+        return
+    rows = [json.loads(l) for l in open(path)]
+    cells = sorted({(r["workload"], r["workers"]) for r in rows})
+    keys = ["sys_enter_per_op", "futex_per_op", "epoll_pwait_per_op", "read_per_op", "write_per_op", "nanosleep_per_op", "context-switches_per_op"]
+    print("\n## Client syscalls per operation (perf stat, medians)\n")
+    print("| cell | arm | " + " | ".join(k.replace("_per_op", "").replace("sys_enter", "all") for k in keys) + " |")
+    print("|---|---|" + "---:|" * len(keys))
+    for cell in cells:
+        for a in ARMS:
+            rs = [r for r in rows if (r["workload"], r["workers"]) == cell and r["arm"] == a]
+            if rs:
+                print(f"| {cell[0]}/{cell[1]} | {NAMES[a]} | " + " | ".join(f"{statistics.median([r.get(k, 0) for r in rs]):.2f}" for k in keys) + " |")
+
+
 table(f"{D}/ladder.jsonl", "Closed loop, equal workers")
 table(f"{D}/rate.jsonl", "set100, 64 workers, rate-capped to 18,000 ops/s")
 per_tx()
+syscalls(f"{D}/syscalls.jsonl")
+table(f"{D}/cross/ladder.jsonl", "Cross-box check: phase-5 binaries on this box")
