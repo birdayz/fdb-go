@@ -2065,9 +2065,9 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   - The race lane's timeout (1h0m16s, run 37669344266) is fixed by the split:
     it runs `sqldriver` (the driver's own tests) in about 11 min, green.
 - [x] Flake: `TestNativeReadTagSampling/fallback-two-nontrivial-selectors/hedge=true`.
-  RFC-281 (#1017) funds only the dropped selector and exact read at each request's
-  sampling boundary, keeping the intervening selector unfunded. Exact send counts
-  and per-selector tag checks no longer depend on short live-reply timeouts.
+  RFC-281 (#1017) funds both concurrent selectors, then seeds a separate budget
+  for the exact read after both selectors complete. An incidental selector hedge
+  cannot consume the exact read's planned hedge; live replies keep generous timeouts.
 
 ## Row-limit lookahead at an exact page boundary
 

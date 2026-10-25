@@ -179,10 +179,11 @@ changes.
   budget and multiplier unchanged.
 - Existing hedge tests (`TestReadTagSamplingOneDrawPerRequest`,
   `TestNativeReadTagSampling`, the hedge unit tests) set up the budget they need
-  instead of relying on a fresh database hedging. The fallback spec funds its
-  dropped selector and exact read at their sampling boundaries, leaving the
-  intervening selector unfunded. Live replies have generous bounded timeouts;
-  the getValue fallback's short timeout applies only to the lost primary.
+  instead of relying on a fresh database hedging. The fallback spec funds both
+  concurrent selectors and seeds a separate budget for the exact read at its
+  sampling boundary, after both selectors complete. Live replies have generous
+  bounded timeouts; the getValue fallback's short timeout applies only to the
+  lost primary.
 - The libfdb_c differential and the wire goldens run against one-replica clusters,
   where neither client can hedge, and compare data or idle-cluster requests; a
   hedge count needs two replicas and a reply slower than the delay, which only the

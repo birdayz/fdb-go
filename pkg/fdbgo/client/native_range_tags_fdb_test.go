@@ -175,16 +175,15 @@ func TestNativeReadTagSampling(t *testing.T) {
 			tx.rpcTimeoutOverride = time.Minute
 			plan := &replyPlan{rec: rec}
 			if hedge {
-				// Fund only the dropped selector and exact read at their sampling boundary.
-				// The intervening selector has no budget, regardless of reply scheduling.
+				// Both selectors overlap: fund each, then fund the exact read after
+				// they finish. An incidental selector hedge cannot steal its budget.
 				duplicateServers(&Database{db: tx.db}, 2)
+				setSecondBudget(tx.db.queueModel, 2)
 				tx.db.readTags.draw = func() float64 {
 					draw := draws.draw()
-					budget := 1.0
-					if draws.count() == 2 {
-						budget = 0
+					if draws.count() == 3 {
+						setSecondBudget(tx.db.queueModel, 1)
 					}
-					setSecondBudget(tx.db.queueModel, budget)
 					return draw
 				}
 				plan.entries = []plannedReply{dropReply("GetKeyRequest"), dropReply("GetKeyValuesRequest")}
@@ -205,8 +204,8 @@ func TestNativeReadTagSampling(t *testing.T) {
 			for _, r := range got {
 				sends[r.kind]++
 			}
-			// Explicit per-request funding makes both planned drops hedge, without
-			// short reply timeouts or speculative sends by the other selector.
+			// Separate selector/exact budgets force both planned drops to hedge,
+			// without relying on short timeouts for successful replies.
 			wantExact, maxPerSelector := 1, 1
 			if hedge {
 				wantExact, maxPerSelector = 2, 2
@@ -233,8 +232,8 @@ func TestNativeReadTagSampling(t *testing.T) {
 				}
 			}
 			a, d := perSelector[prefix+"a"], perSelector[prefix+"d"]
-			if a != maxPerSelector || d != 1 {
-				t.Errorf("selector sends a=%d d=%d, want exactly %d and 1", a, d, maxPerSelector)
+			if a != maxPerSelector || d < 1 || d > maxPerSelector {
+				t.Errorf("selector sends a=%d d=%d, want exactly %d and 1-%d", a, d, maxPerSelector, maxPerSelector)
 			}
 		})
 	}
