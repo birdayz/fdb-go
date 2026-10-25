@@ -566,8 +566,8 @@ func (tx *embeddedTx) Commit() (err error) {
 	return translateFDBError(tx.rctx.CommitWithHooks())
 }
 
-// Rollback cancels the FDB transaction and releases it from the connection.
-// On a transaction that has already ended it only releases it.
+// Rollback cancels the FDB transaction and releases it from the connection. An
+// ended transaction is only released, or cancelled again if its abort's Cancel panicked.
 func (tx *embeddedTx) Rollback() (err error) {
 	defer tx.conn.recoverInto(&err)
 	tx.detachContext()
