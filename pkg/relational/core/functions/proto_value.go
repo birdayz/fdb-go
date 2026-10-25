@@ -50,7 +50,7 @@ func uuidStringToProtoMessage(fd protoreflect.FieldDescriptor, s string) (protor
 	b, ok := values.ParseJavaUUID(s)
 	if !ok {
 		invalid := &values.InvalidUUIDValueError{Value: s}
-		return protoreflect.Value{}, api.WrapError(api.ErrCodeInternalError, invalid.Error(), invalid)
+		return protoreflect.Value{}, api.WrapStatedError(api.ErrCodeInternalError, invalid.Error(), invalid)
 	}
 	u := uuid.UUID(b)
 	msgDesc := fd.Message()

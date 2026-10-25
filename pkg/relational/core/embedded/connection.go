@@ -451,9 +451,8 @@ func (tx *embeddedTx) abort(ctx context.Context) {
 	}
 }
 
-// abortOnContextGoroutine is abort as a context's AfterFunc runs it, outside
-// every entry point's recoverInto: a panic is logged and closes the connection
-// (atomically; activeTx belongs to the connection's goroutine).
+// abortOnContextGoroutine is abort on an AfterFunc goroutine, outside every
+// recoverInto: a panic closes the connection atomically (activeTx is not ours).
 func (tx *embeddedTx) abortOnContextGoroutine(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -466,7 +465,7 @@ func (tx *embeddedTx) abortOnContextGoroutine(ctx context.Context) {
 
 // retryCancel cancels the FDB transaction when an abort's Cancel panicked.
 func (tx *embeddedTx) retryCancel() {
-	if tx.uncancelled.Swap(false) && tx.rctx != nil {
+	if tx.uncancelled.Swap(false) {
 		tx.rctx.Cancel()
 	}
 }

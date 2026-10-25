@@ -1010,6 +1010,15 @@ Go-only plan types: `RecordQueryInMemorySortPlan`, `RecordQueryLimitPlan`, `Reco
 
 Go-only logical expressions: `LogicalLimitExpression`, `LogicalValuesExpression`.
 
+### Messages of wrapped record-layer exceptions
+
+Java wraps a record-layer exception (`RecordCoreException`, `SemanticException`) in a
+`RelationalException(code, cause)`, whose message is the cause's `toString()`, so it starts with
+the exception class (`com.apple.foundationdb.record.RecordCoreException: only positive step is
+allowed in range`). Go's `api.Error.Message` is the exception's own message, without the class;
+the SQLSTATE is the same. Pinned by `sqltest/core` `TestFDB_RangeTableFunction` and
+`TestFDB_EnumAndUUIDAssignmentErrorMessage`.
+
 ### Go-only SQLSTATEs
 
 `pkg/relational/api/errcode.go` tracks Java's `ErrorCode` enum: **every one of Java's 77 codes (4.14.2.0) exists in Go** — that direction has no gap. Go defines seven codes Java has no member for:

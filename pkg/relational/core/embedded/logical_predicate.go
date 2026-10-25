@@ -1217,12 +1217,12 @@ func mapPredicateWalkError(walkErr error) *api.Error {
 	var enumErr *values.InvalidEnumValueError
 	if errors.As(walkErr, &enumErr) {
 		// Java ExceptionUtil leaves INVALID_ENUM_VALUE in INTERNAL_ERROR.
-		return api.WrapError(api.ErrCodeInternalError, enumErr.Error(), walkErr)
+		return api.WrapStatedError(api.ErrCodeInternalError, enumErr.Error(), walkErr)
 	}
 	var uuidErr *values.InvalidUUIDValueError
 	if errors.As(walkErr, &uuidErr) {
 		// And INVALID_UUID_VALUE.
-		return api.WrapError(api.ErrCodeInternalError, uuidErr.Error(), walkErr)
+		return api.WrapStatedError(api.ErrCodeInternalError, uuidErr.Error(), walkErr)
 	}
 	var binErr *expr.InvalidBinaryLiteralError
 	if errors.As(walkErr, &binErr) {

@@ -27,8 +27,7 @@ func waitClosed(t *testing.T, c *EmbeddedConnection) {
 }
 
 // wantClosedAndCancelled asserts the connection is out of service the way a
-// recovered panic leaves it, and that releasing the transaction retried the
-// FDB cancel the panic interrupted.
+// recovered panic leaves it and that the FDB transaction ended cancelled.
 func wantClosedAndCancelled(t *testing.T, c *EmbeddedConnection, fdbTx fdb.ReadTransaction) {
 	t.Helper()
 	if c.IsValid() {
@@ -50,10 +49,8 @@ func wantClosedAndCancelled(t *testing.T, c *EmbeddedConnection, fdbTx fdb.ReadT
 	}
 }
 
-// A context's abort runs on the context's own goroutine, outside every entry
-// point's recover. A panic there (here in the FDB transaction's Cancel) is
-// logged and closes the connection instead of crashing the process; releasing
-// the transaction cancels it. Not parallel: it captures the seriousLog global.
+// A panic in an AfterFunc abort (here in Cancel) is logged and closes the
+// connection. Not parallel: it captures the seriousLog global.
 func TestExplicitTx_AbortPanicClosesConnection(t *testing.T) {
 	var mu sync.Mutex
 	logged := map[string]int{}
@@ -118,6 +115,9 @@ func TestExplicitTx_AbortPanicClosesConnection(t *testing.T) {
 		g.gate.PanicOnce(simgate.Cancel)
 		cancel()
 		waitClosed(t, c)
+		if !c.activeTx.uncancelled.Load() {
+			t.Fatal("the panicking Cancel was not recorded for a retry")
+		}
 		gate.Release() // the panicking Cancel did not reach the held read
 		if err := <-done; !errors.Is(err, context.Canceled) {
 			t.Fatalf("statement whose context ended = %v, want context.Canceled", err)
