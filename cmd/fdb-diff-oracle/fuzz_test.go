@@ -38,7 +38,7 @@ func startOracle(t testing.TB) *Oracle {
 	t.Helper()
 	o, err := NewOracle(oracleBinaryPath)
 	if err != nil {
-		t.Skipf("oracle not available: %v (set DIFF_ORACLE_BIN)", err)
+		t.Fatalf("oracle not available: %v (set DIFF_ORACLE_BIN)", err)
 	}
 	t.Cleanup(func() {
 		if err := o.Close(); err != nil {
@@ -102,9 +102,6 @@ func FuzzGetReadVersionRequest(f *testing.F) {
 		if err != nil {
 			t.Fatalf("oracle error: %v", err)
 		}
-		if cppBytes == nil {
-			t.Skip("oracle returned error response")
-		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "GetReadVersionRequest",
 			unmarshalGetReadVersionRequest2, equalGetReadVersionRequest)
@@ -149,9 +146,6 @@ func FuzzGetValueRequest(f *testing.F) {
 			key, version, false, nil, tenantId, false, emptyVersionVector())
 		if err != nil {
 			t.Fatalf("oracle error: %v", err)
-		}
-		if cppBytes == nil {
-			t.Skip("oracle returned error response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "GetValueRequest",
@@ -206,9 +200,6 @@ func FuzzGetKeyRequest(f *testing.F) {
 			tenantId, false, emptyVersionVector(), nil)
 		if err != nil {
 			t.Fatalf("oracle error: %v", err)
-		}
-		if cppBytes == nil {
-			t.Skip("oracle returned error response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "GetKeyRequest",
@@ -276,9 +267,6 @@ func FuzzGetKeyValuesRequest(f *testing.F) {
 		if err != nil {
 			t.Fatalf("oracle error: %v", err)
 		}
-		if cppBytes == nil {
-			t.Skip("oracle returned error response")
-		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "GetKeyValuesRequest",
 			unmarshalGetKeyValuesRequest, equalGetKeyValuesRequest)
@@ -323,9 +311,6 @@ func FuzzGetKeyServerLocationsRequest(f *testing.F) {
 			begin, hasEnd, end, limit, reverse, tenantId, minTenantVersion)
 		if err != nil {
 			t.Fatalf("oracle error: %v", err)
-		}
-		if cppBytes == nil {
-			t.Skip("oracle returned error response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "GetKeyServerLocationsRequest",
@@ -438,11 +423,7 @@ func FuzzCommitTransactionRequest(f *testing.F) {
 			readSnapshot, mutations, readCRs, writeCRs,
 			flags, hasDebugID, debugUID[:], false, nil, false, nil, tenantId, nil)
 		if err != nil {
-			// Oracle may crash or return errors on edge cases (e.g. C++ type
-			// construction failures). Log the error so skip rate is visible in
-			// fuzz output, then skip — Go-side MarshalFDB already exercised above.
-			t.Logf("oracle error (skipping comparison): %v", err)
-			t.Skip("oracle unavailable for this input, skipping C++ comparison")
+			t.Fatalf("oracle error: %v", err)
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "CommitTransactionRequest",
@@ -507,9 +488,6 @@ func FuzzGetReadVersionReply(f *testing.F) {
 		if err != nil {
 			t.Fatalf("oracle error: %v", err)
 		}
-		if cppBytes == nil {
-			t.Skip("oracle returned error response")
-		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "GetReadVersionReply",
 			unmarshalGetReadVersionReply, equalGetReadVersionReply)
@@ -568,9 +546,6 @@ func FuzzGetValueReply(f *testing.F) {
 		if err != nil {
 			t.Fatalf("oracle error: %v", err)
 		}
-		if cppBytes == nil {
-			t.Skip("oracle returned error response")
-		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "GetValueReply",
 			unmarshalGetValueReply, equalGetValueReply)
@@ -607,9 +582,6 @@ func FuzzGetKeyReply(f *testing.F) {
 			penalty, hasError, errorData, cached)
 		if err != nil {
 			t.Fatalf("oracle error: %v", err)
-		}
-		if cppBytes == nil {
-			t.Skip("oracle returned error response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "GetKeyReply",
@@ -657,9 +629,6 @@ func FuzzGetKeyValuesReply(f *testing.F) {
 			penalty, hasError, errorData, nil, version, more, cached)
 		if err != nil {
 			t.Fatalf("oracle error: %v", err)
-		}
-		if cppBytes == nil {
-			t.Skip("oracle returned error response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "GetKeyValuesReply",
@@ -722,9 +691,6 @@ func FuzzCommitID(f *testing.F) {
 		if err != nil {
 			t.Fatalf("oracle error: %v", err)
 		}
-		if cppBytes == nil {
-			t.Skip("oracle returned error response")
-		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "CommitID",
 			unmarshalCommitID, equalCommitID)
@@ -748,9 +714,6 @@ func FuzzError(f *testing.F) {
 		cppBytes, err := o.SerializeError(errorCode)
 		if err != nil {
 			t.Fatalf("oracle error: %v", err)
-		}
-		if cppBytes == nil {
-			t.Skip("oracle returned error response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "Error",
@@ -818,9 +781,6 @@ func FuzzClientDBInfo(f *testing.F) {
 		if err != nil {
 			t.Fatalf("oracle error: %v", err)
 		}
-		if cppBytes == nil {
-			t.Skip("oracle returned error response")
-		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "ClientDBInfo",
 			unmarshalClientDBInfo, equalClientDBInfo)
@@ -864,9 +824,6 @@ func FuzzOpenDatabaseCoordRequest(f *testing.F) {
 		if err != nil {
 			t.Fatalf("oracle error: %v", err)
 		}
-		if cppBytes == nil {
-			t.Skip("oracle returned error response")
-		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "OpenDatabaseCoordRequest",
 			unmarshalOpenDatabaseCoordRequest, equalOpenDatabaseCoordRequest)
@@ -900,9 +857,6 @@ func FuzzNetworkAddress(f *testing.F) {
 		cppBytes, err := o.SerializeNetworkAddress(ipAddr, port, flags, fromHostname)
 		if err != nil {
 			t.Fatalf("oracle error: %v", err)
-		}
-		if cppBytes == nil {
-			t.Skip("oracle returned error response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "NetworkAddress",
@@ -942,9 +896,6 @@ func FuzzEndpoint(f *testing.F) {
 		if err != nil {
 			t.Fatalf("oracle error: %v", err)
 		}
-		if cppBytes == nil {
-			t.Skip("oracle returned error response")
-		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "Endpoint",
 			unmarshalEndpoint, equalEndpoint)
@@ -979,9 +930,6 @@ func FuzzNetworkAddressV6(f *testing.F) {
 		cppBytes, err := o.SerializeNetworkAddressV6(v6, port, flags, fromHostname)
 		if err != nil {
 			t.Fatalf("oracle error: %v", err)
-		}
-		if cppBytes == nil {
-			t.Skip("oracle returned error response")
 		}
 
 		compareBytesStructural(t, goBytes, cppBytes, "NetworkAddressV6",
@@ -1047,9 +995,6 @@ func testGetReadVersionRequestBasic(t testing.TB, o *Oracle, transactionCount, f
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
 	}
-	if cppBytes == nil {
-		t.Fatal("oracle returned error response")
-	}
 	compareBytesStructural(t, goBytes, cppBytes, "GetReadVersionRequest",
 		unmarshalGetReadVersionRequest2, equalGetReadVersionRequest)
 }
@@ -1074,9 +1019,6 @@ func testGetValueRequestBasic(t testing.TB, o *Oracle, key []byte, version, tena
 	cppBytes, err := o.SerializeGetValueRequest(key, version, false, nil, tenantId, false, emptyVersionVector())
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
-	}
-	if cppBytes == nil {
-		t.Fatal("oracle returned error response")
 	}
 	compareBytesStructural(t, goBytes, cppBytes, "GetValueRequest",
 		unmarshalGetValueRequest, equalGetValueRequest)
@@ -1103,9 +1045,6 @@ func testGetKeyRequestBasic(t testing.TB, o *Oracle, key []byte, orEqual bool, o
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
 	}
-	if cppBytes == nil {
-		t.Fatal("oracle returned error response")
-	}
 	compareBytesStructural(t, goBytes, cppBytes, "GetKeyRequest",
 		unmarshalGetKeyRequest, equalGetKeyRequest2)
 }
@@ -1131,9 +1070,6 @@ func TestDiffGetKeyValuesRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
 	}
-	if cppBytes == nil {
-		t.Fatal("oracle returned error response")
-	}
 	compareBytesStructural(t, goBytes, cppBytes, "GetKeyValuesRequest",
 		unmarshalGetKeyValuesRequest, equalGetKeyValuesRequest)
 }
@@ -1155,9 +1091,6 @@ func TestDiffGetKeyServerLocationsRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
 	}
-	if cppBytes == nil {
-		t.Fatal("oracle returned error response")
-	}
 	compareBytesStructural(t, goBytes, cppBytes, "GetKeyServerLocationsRequest",
 		unmarshalGetKeyServerLocationsRequest, equalGetKeyServerLocationsRequest)
 
@@ -1177,9 +1110,6 @@ func TestDiffGetKeyServerLocationsRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
 	}
-	if cppBytes2 == nil {
-		t.Fatal("oracle returned error response")
-	}
 	compareBytesStructural(t, goBytes2, cppBytes2, "GetKeyServerLocationsRequest",
 		unmarshalGetKeyServerLocationsRequest, equalGetKeyServerLocationsRequest)
 }
@@ -1198,9 +1128,6 @@ func TestDiffCommitTransactionRequest(t *testing.T) {
 	cppBytes, err := o.SerializeCommitTransactionRequest(0, nil, nil, nil, 0, false, nil, false, nil, false, nil, -1, nil)
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
-	}
-	if cppBytes == nil {
-		t.Fatal("oracle returned error response")
 	}
 	compareBytesStructural(t, goBytes, cppBytes, "CommitTransactionRequest",
 		unmarshalCommitTransactionRequest, equalCommitTransactionRequest)
@@ -1230,9 +1157,6 @@ func TestDiffCommitTransactionRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
 	}
-	if cppBytes2 == nil {
-		t.Fatal("oracle returned error response")
-	}
 	compareBytesStructural(t, goBytes2, cppBytes2, "CommitTransactionRequest",
 		unmarshalCommitTransactionRequest, equalCommitTransactionRequest)
 }
@@ -1251,9 +1175,6 @@ func TestDiffNetworkAddress(t *testing.T) {
 	cppBytes, err := o.SerializeNetworkAddress(0x0100007f, 4500, 1, false)
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
-	}
-	if cppBytes == nil {
-		t.Fatal("oracle returned error response")
 	}
 	compareBytesStructural(t, goBytes, cppBytes, "NetworkAddress",
 		unmarshalNetworkAddress, equalNetworkAddress)
@@ -1276,9 +1197,6 @@ func TestDiffNetworkAddressV6(t *testing.T) {
 	cppBytes, err := o.SerializeNetworkAddressV6(v6, 4500, 2, true)
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
-	}
-	if cppBytes == nil {
-		t.Fatal("oracle returned error response")
 	}
 	compareBytesStructural(t, goBytes, cppBytes, "NetworkAddressV6",
 		unmarshalNetworkAddress, equalNetworkAddress)
@@ -1307,9 +1225,6 @@ func TestDiffCommitID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
 	}
-	if cppBytes == nil {
-		t.Fatal("oracle returned error response")
-	}
 	compareBytesStructural(t, goBytes, cppBytes, "CommitID",
 		unmarshalCommitID, equalCommitID)
 }
@@ -1324,9 +1239,6 @@ func TestDiffError(t *testing.T) {
 		cppBytes, err := o.SerializeError(errorCode)
 		if err != nil {
 			t.Fatalf("oracle error (code=%d): %v", errorCode, err)
-		}
-		if cppBytes == nil {
-			t.Fatalf("oracle returned error response for code=%d", errorCode)
 		}
 		compareBytesStructural(t, goBytes, cppBytes, "Error",
 			unmarshalError, equalError)
@@ -1358,9 +1270,6 @@ func TestDiffGetReadVersionReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
 	}
-	if cppBytes == nil {
-		t.Fatal("oracle returned error response")
-	}
 	compareBytesStructural(t, goBytes, cppBytes, "GetReadVersionReply",
 		unmarshalGetReadVersionReply, equalGetReadVersionReply)
 }
@@ -1375,9 +1284,6 @@ func TestDiffGetValueReply(t *testing.T) {
 	cppBytes, err := o.SerializeGetValueReply(0.0, false, nil, false, nil, false)
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
-	}
-	if cppBytes == nil {
-		t.Fatal("oracle returned error response")
 	}
 	compareBytesStructural(t, goBytes, cppBytes, "GetValueReply",
 		unmarshalGetValueReply, equalGetValueReply)
@@ -1394,9 +1300,6 @@ func TestDiffGetValueReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
 	}
-	if cppBytes2 == nil {
-		t.Fatal("oracle returned error response")
-	}
 	compareBytesStructural(t, goBytes2, cppBytes2, "GetValueReply",
 		unmarshalGetValueReply, equalGetValueReply)
 }
@@ -1410,9 +1313,6 @@ func TestDiffGetKeyReply(t *testing.T) {
 	cppBytes, err := o.SerializeGetKeyReply(2.5, false, nil, true)
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
-	}
-	if cppBytes == nil {
-		t.Fatal("oracle returned error response")
 	}
 	compareBytesStructural(t, goBytes, cppBytes, "GetKeyReply",
 		unmarshalGetKeyReply, equalGetKeyReply)
@@ -1433,9 +1333,6 @@ func TestDiffGetKeyValuesReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
 	}
-	if cppBytes == nil {
-		t.Fatal("oracle returned error response")
-	}
 	compareBytesStructural(t, goBytes, cppBytes, "GetKeyValuesReply",
 		unmarshalGetKeyValuesReply, equalGetKeyValuesReply)
 }
@@ -1449,9 +1346,6 @@ func TestDiffGetKeyServerLocationsReply(t *testing.T) {
 	cppBytes, err := o.SerializeGetKeyServerLocationsReply(nil, nil, nil)
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
-	}
-	if cppBytes == nil {
-		t.Fatal("oracle returned error response")
 	}
 	// NOTE: All fields are structured vectors — no field-level comparison
 	// possible without deep type support in the oracle. Verify file ID matches.
@@ -1486,9 +1380,6 @@ func TestDiffClientDBInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
 	}
-	if cppBytes == nil {
-		t.Fatal("oracle returned error response")
-	}
 	compareBytesStructural(t, goBytes, cppBytes, "ClientDBInfo",
 		unmarshalClientDBInfo, equalClientDBInfo)
 }
@@ -1507,9 +1398,6 @@ func TestDiffOpenDatabaseCoordRequest(t *testing.T) {
 		nil, nil, nil, uid, nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
-	}
-	if cppBytes == nil {
-		t.Fatal("oracle returned error response")
 	}
 	compareBytesStructural(t, goBytes, cppBytes, "OpenDatabaseCoordRequest",
 		unmarshalOpenDatabaseCoordRequest, equalOpenDatabaseCoordRequest)
@@ -1535,9 +1423,6 @@ func TestDiffEndpoint(t *testing.T) {
 	cppBytes, err := o.SerializeEndpoint(0x0100007f, 4500, 1, false, token)
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
-	}
-	if cppBytes == nil {
-		t.Fatal("oracle returned error response")
 	}
 	compareBytesStructural(t, goBytes, cppBytes, "Endpoint",
 		unmarshalEndpoint, equalEndpoint)
@@ -1920,9 +1805,6 @@ func TestDiffCommitTransactionRequestEmptyConflictRanges(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("oracle error: %v", err)
-	}
-	if cppBytes == nil {
-		t.Fatal("oracle returned error response")
 	}
 
 	compareBytesStructural(t, goBytes, cppBytes, "CommitTransactionRequest",

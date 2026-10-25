@@ -763,7 +763,7 @@ func TestCancel_StateVisibleWhenWatchCancelled(t *testing.T) {
 	if bad != 0 {
 		t.Fatalf("%d/%d watch observers saw a non-cancelled state at cancellation — Cancel() stored the "+
 			"state AFTER cancelWatches(); it must store BEFORE so the Done()-close carries the "+
-			"happens-before edge (codex #13)", bad, n)
+			"happens-before edge", bad, n)
 	}
 }
 
@@ -803,7 +803,7 @@ func TestOnError_TerminalAbortCancelsWatches(t *testing.T) {
 	}
 }
 
-// TestNewWatchCtx_PerWatchScoped pins the RFC-168 per-watch-context restructure (round-18 fix):
+// TestNewWatchCtx_PerWatchScoped pins the RFC-168 per-watch-context restructure:
 // newWatchCtx mints a DISTINCT context per watch (not one shared per txn), each cancellable
 // independently via its scoped cancel WITHOUT touching siblings, while cancelWatches cancels ALL.
 func TestNewWatchCtx_PerWatchScoped(t *testing.T) {
@@ -814,7 +814,7 @@ func TestNewWatchCtx_PerWatchScoped(t *testing.T) {
 	if a == b {
 		t.Fatal("each watch must get its OWN context, not a shared one")
 	}
-	// Cancelling A's scoped cancel cancels A only — B stays live (the round-18 fix).
+	// Cancelling A's scoped cancel cancels A only — B stays live.
 	cancelA()
 	if a.Err() == nil {
 		t.Error("a watch future's scoped cancel must cancel its own context")

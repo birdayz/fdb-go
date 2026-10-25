@@ -1294,6 +1294,22 @@ collation engines and data, not just matching locale and strength. See
 option-by-option, with the `libfdb_c` C++ reference for each, in
 [`pkg/fdbgo/fdb/OPTIONS.md`](pkg/fdbgo/fdb/OPTIONS.md) (RFC-133).
 
+### TLS verification (RFC-277)
+
+The `:tls` + `FDB_TLS_*` path follows libfdb_c 7.3.77 (`flow/TLSConfig.actor.cpp`): the CA file is the only trust root, `FDB_TLS_VERIFY_PEERS` (default `Check.Valid=1`) decides, and no host name is checked. What remains different:
+
+| Aspect | C++ `libfdb_c` | Go | Why |
+|---|---|---|---|
+| `WithTLSConfig` | No equivalent | A Go `*tls.Config`: the stdlib check, including the host name of each dialed address | It is Go's API; `transport.VerifyPolicy.VerifyConnection` gives libfdb_c's check. |
+| SNI | Never sent | Sent for a host-name coordinator from the cluster file; IP addresses get none | `upgradeTLS` fills `ServerName`; on this path nothing verifies it. |
+| A bad setting (file, password, verify-peers string) | Logs `Net2TLSInitError` and fails every TLS connection (`Net2.actor.cpp:1405-1419`) | Fails the open with `*client.TLSConfigError` (`tls_error`) | Earlier and explicit; no connection works either way. |
+| Certificate without key, key without certificate, empty file, a key that does not match its certificate | Loads what it has (`TLSConfig.actor.cpp:124-134`); OpenSSL drops a key that does not match the certificate set after it | Fails the open | Go's key pair loads both or neither. |
+| Encrypted keys | Any scheme OpenSSL reads | PBES2 with PBKDF2 and AES-CBC or DES-EDE3-CBC; legacy PEM encryption, PBES1, PKCS#12 PBE and scrypt are `tls_error` | The stdlib has no PKCS#8 decryption; these are what `openssl pkcs8 -topk8 -v2` writes. |
+| Certificates `crypto/x509` cannot parse | Verified by the policy, or accepted under `Check.Valid=0` | Refused before any hook runs, even under `Check.Valid=0` (non-ASCII SANs, unparseable URIs, unsupported DN string types, RSA over 8192 bits) | `crypto/tls` parses every peer certificate first. |
+| Chains | One chain, built by OpenSSL | Accepted when a rule matches any chain `x509.Verify` returns; a non-self-signed pool CA is an anchor; SHA-1 is refused; only the extended key usage of the `ssl_server` purpose is checked, and a certificate whose only usage is anyExtendedKeyUsage is refused, as OpenSSL refuses it | `crypto/x509`'s chain builder. |
+| A `\|` or `\\|` in a verify-peers string | The parser loops forever (`:509-516`) | Parse error, `tls_error` | — |
+| `TLS_*` network options, `FDB_NETWORK_OPTION_TLS_*`, 12-hour certificate reload, 2 s handshake timeout | Present | Not implemented (TODO.md); Go's handshake timeout is 10 s and its minimum TLS 1.2 | The `fdb` facade has no network options. |
+
 ### Client knobs (Java 4.14 #4488)
 
 `FDBDatabaseFactory.SetKnob` / `SetKnobByName` validate and record a knob as Java's factory does, and
