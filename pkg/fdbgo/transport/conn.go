@@ -1525,7 +1525,8 @@ func newConnectionID() uint64 {
 // upgradeTLS wraps conn in TLS using the caller's *tls.Config. The config is
 // cloned so the caller's value is never mutated; we fill in two FDB-shaped
 // defaults ONLY when the caller left them unset — ServerName (from the dialed
-// host, for SNI + verification) and MinVersion (TLS 1.2). Everything else
+// host: SNI, and the stdlib's host check unless a VerifyPolicy config replaces
+// it) and MinVersion (TLS 1.2). Everything else
 // (certs, RootCAs, GetClientCertificate, VerifyPeerCertificate, cipher suites)
 // is the caller's to control — this is a plain *crypto/tls.Config.
 func upgradeTLS(conn net.Conn, addr string, cfg *tls.Config) (net.Conn, error) {

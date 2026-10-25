@@ -81,12 +81,11 @@ generate-mocks:
     # go.mod's direct/indirect tags accurate after each regen.
     go mod tidy
 
-# Smoke-test Relational SQL grammar coverage against the vendored Java
-# yamsql corpus (fdb-record-layer/yaml-tests/...). Runs directly via `go
-# test` — Bazel's test sandbox can't see the submodule tree. Only the
-# files tagged with `//go:build yamsql` are picked up.
+# Parse every statement of the vendored Java yamsql corpus
+# (third_party/apple/fdb-record-layer/yaml-tests). Part of `just test` too.
 smoke-yamsql:
-    go test -tags=yamsql -count=1 -v -run TestYamsqlCorpus ./pkg/relational/core/parser
+    bazelisk test //pkg/relational/core/parser:parser_test --test_filter=TestYamsqlCorpus \
+        --test_output=streamed --nocache_test_results
 
 # Regenerate the Relational SQL parser from grammar/*.g4 via Bazel. The
 # ANTLR4 complete jar is fetched + cached as a Bazel external repo
@@ -122,12 +121,13 @@ test-race *args:
 sqltest *args:
     bazelisk test //pkg/relational/sqldriver:all //pkg/relational/sqltest/... {{args}}
 
-# Thorough lane: all Bazel test targets, including manual stress/oracle targets.
+# Thorough lane: all Bazel test targets, including manual stress/oracle targets,
+# except those tagged realcluster (they need a real FDB cluster; see stress-10m).
 # Query explicitly: //... alone silently omits manual targets. Cache stays enabled.
 test-full *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    all=$(bazelisk query 'kind(".*_test", //...)' --output=label)
+    all=$(bazelisk query 'kind(".*_test", //...) except attr(tags, "realcluster", //...)' --output=label)
     test -n "$all" || { echo 'No test targets found' >&2; exit 1; }
     targets=$( { for t in {{test_full_first}}; do grep -Fx -- "$t" <<<"$all" || true; done; grep -Fvx -f <(tr ' ' '\n' <<<"{{test_full_first}}") <<<"$all"; } )
     test "$(wc -l <<<"$targets")" -eq "$(wc -l <<<"$all")" || { echo 'test-full reordering lost targets' >&2; exit 1; }
@@ -145,6 +145,15 @@ factory-corpus:
 # the findings dir. -date is required: generation must never read the clock.
 factory-run date seeds="1200" quota="1000":
     go run ./cmd/factory-run -seeds {{seeds}} -quota {{quota}} -date {{date}}
+
+# Run the 10M-row stress scales against a real FoundationDB cluster; a testcontainer
+# cannot sustain them, so the target refuses to start one.
+#   just stress-10m /etc/foundationdb/fdb.cluster
+stress-10m cluster_file:
+    bazelisk test //pkg/relational/sqldriver/stress:stress_10m_test \
+        --test_env=FDB_STRESS_CLUSTER_FILE="$(realpath {{cluster_file}})" \
+        --test_filter='TestFDB_(Stress|Ingest)_10M' --test_timeout=10800 \
+        --test_output=streamed --nocache_test_results
 
 # Run the full real-FDB stress family: raw/record-layer ingest and read scaling,
 # 10K/100K/1M SQL assertions, and the large vector rebalance proofs. The tests
@@ -177,8 +186,13 @@ golden:
 # architectural review gate covers it). Capture is deterministic over SimFDB, so a rerun with
 # no engine change is a no-op.
 golden-update:
-    GOLDEN_UPDATE=1 go test ./pkg/simfdb/hunt/golden/ -run TestGolden -count=1
+    GOLDEN_UPDATE=1 bazelisk run //pkg/simfdb/hunt/golden:golden_test -- -test.run '^TestGolden$'
     @echo "review the baseline diff:  git diff pkg/simfdb/hunt/golden/testdata/"
+
+# Re-resolve the Java oracle's Maven dependencies into maven_install.json after changing
+# maven.install in MODULE.bazel; commit both. A stale lock file fails the build.
+maven-repin:
+    REPIN=1 bazelisk run @maven//:pin
 
 # Regenerate the frozen compatibility data, never host/compiler Unicode tables.
 generate-unicode15:

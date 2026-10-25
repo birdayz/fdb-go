@@ -60,7 +60,7 @@ If `/tmp/fdbsrc` is unavailable, fetch raw files (the source is NOT vendored):
 | `fdbclient/NativeAPI.actor.cpp` | `commit`/`tryCommit`, GRV (`getReadVersion`), `getValue`/`getKeyValues`/`getKey` retry loops, `commitDummyTransaction`, raw_access resolution |
 | `fdbclient/ReadYourWrites.actor.cpp` | RYW read/write overlay; `resolveKeySelectorFromCache`; `addConflictRange`/`updateConflictMap`; `is_unreadable` stickiness |
 | `fdbclient/RYWIterator.cpp` + `include/fdbclient/{RYWIterator,WriteMap}.h` | the RYW write-map segment model (`is_kv`/`is_unreadable`/independent/dependent/cleared) — the basis for phantom slots & conflict filtering |
-| `fdbrpc/include/fdbrpc/LoadBalance.actor.h` | `loadBalance` — note it has **no per-read client reply timeout**; it re-sends until reply or read-version aging |
+| `fdbrpc/include/fdbrpc/LoadBalance.actor.h` | `loadBalance` — note it has **no per-read client reply timeout**; it waits for the reply or read-version aging |
 | `fdbclient/include/fdbclient/Atomic.h` | atomic-op semantics (`doMinV2`/`doAndV2` gate on `Optional.present()`) |
 | `fdbclient/ClientKnobs.cpp` | retry limits, backoff, timeouts, `USE_GRV_CACHE` — the defaults Go must match |
 | `fdbserver/storageserver.actor.cpp` | `sendErrorWithPenalty` (inline read error channel); `transaction_too_old` from version aging |

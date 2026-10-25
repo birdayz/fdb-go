@@ -14,7 +14,7 @@ automatically migrated.
 **Running this as a multi-tenant SaaS?** Read [`mt-saas.md`](mt-saas.md) alongside this page. It
 covers only what changes when one database path is one tenant — the tenancy model, the trust
 boundary and `RESTRICT_DDL_TO_SESSION_DATABASE`, per-statement quotas (none of which is on by
-default), per-tenant observability, the TLS certificate requirement, and the tenant-facing SQL
+default), per-tenant observability, TLS verification, and the tenant-facing SQL
 contract. It links back here rather than repeating the basics below.
 
 ---

@@ -194,7 +194,7 @@ var _ = Describe("SPFresh refinement (RFC-104)", func() {
 		Expect(passes[0].moved+passes[1].moved).To(Equal(1), "cycle 1 re-adds the one dropped copy")
 		Expect(passes[2].moved+passes[3].moved).To(Equal(0), "cycle 2 is quiescent")
 		Expect(passes[0].conv).To(BeFalse(), "a mid-cycle pass never reports converged")
-		Expect(passes[1].conv).To(BeFalse(), "cycle 1's tail pass moved zero but the CYCLE moved a row — NOT converged (codex fleet P2)")
+		Expect(passes[1].conv).To(BeFalse(), "cycle 1's tail pass moved zero but the CYCLE moved a row — NOT converged")
 		Expect(passes[3].conv).To(BeTrue(), "cycle 2 wraps with the whole cycle quiet ⇒ converged")
 	})
 

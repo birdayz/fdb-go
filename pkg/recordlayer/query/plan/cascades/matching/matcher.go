@@ -153,8 +153,7 @@ func Get[T any](b *PlannerBindings, matcher BindingMatcher) T {
 // downstream-bind behaviour for free.
 //
 // Return shape: []*PlannerBindings rather than iterator/stream.
-// Not yet lazy; a later shift will port to
-// iter.Seq or a callback.
+// Not lazy (Java's is a stream).
 type BindingMatcher interface {
 	// RootType identifies what concrete type this matcher can
 	// match. Used by the matcher dispatch to skip obviously-

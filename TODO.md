@@ -1997,7 +1997,12 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   job runs them with a standalone `go test -tags libfdbc` over `pkg/fdbgo/libfdbc/...`
   and `pkg/internal/fdbclient/...`; only `network_lifecycle_test` and
   `mapped_skip_regression_test` have Bazel targets, so `just test-full` skips
-  `differential_test.go` and the other cross-client differentials.
+  `differential_test.go` and the other cross-client differentials. Blocker (2026-10-24):
+  every remaining file uses `startCluster` from `differential_test.go`, which imports
+  `pkg/recordlayer`; under the `libfdbc` gotag Bazel compiles `pkg/internal/fdbclient`
+  without its only source (`open_purego.go` is `!libfdbc`), and `open_libfdbc.go` needs
+  `libfdbc_native`, which shares the stub's import path. The fix is a tag-aware select
+  across both libraries.
 - [ ] Java/Go raw key-value parity for shared TEXT indexes: plain, grouped and
   no-position variants over the Unicode-delta inputs, comparing sorted relative keys,
   values and positions; force bunch splitting with 25 common postings; cross-engine
@@ -2010,6 +2015,19 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   the lane lock until the server is shut down. Shut the server down on exit, or keep the
   lock descriptor out of the server.
 - [ ] Update Buf from 1.67.0 to 1.74 (`BUF_VERSION` in `justfile`).
+- [ ] **TLS settings without a network option.** RFC-277 reads `FDB_TLS_*` only. libfdb_c
+  also takes the `TLS_*` network options (`fdb.options:70-105`) and
+  `FDB_NETWORK_OPTION_TLS_*` variables (`MultiVersionTransaction.actor.cpp:3484-3536`). It
+  re-reads certificate files on change every 12 h (`Knobs.cpp:128`), and its handshake
+  timeout is 2 s (`Net2.actor.cpp:1101-1106`) where Go's is 10 s. The `fdb` facade first
+  needs network options.
+- [ ] **TLS differential.** RFC-277's verify-peers cases are pinned against the C++ source,
+  not measured: run libfdb_c and the Go client with the same `FDB_TLS_*` against one TLS
+  listener per `TestVerifyPolicyMatching` case (OpenSSL's Latin-1 widening, SAN
+  fall-throughs, `ssl_server` purpose), and open a TLS testcontainer fdbserver (test-full).
+- [ ] **One PBES2 decryptor.** `pkg/fdbgo/client/tls_key.go` (RFC-277) and
+  `pkg/recordlayer/keystore_key_manager.go` each decrypt PBES2/PBKDF2/CBC; move both onto
+  one package under `pkg/fdbgo` so a bound or a new PRF lands once.
 
 ## Test lanes and test-speed work (committed with the temporal change)
 
@@ -2226,9 +2244,10 @@ multi-page auto-commit SELECT, which stays tracked only.
 - [ ] **Medium:** decoding can allocate quadratically: vector element offsets may alias one
   inner vector (`pkg/fdbgo/wire/reader.go:415`, reachable through `GetMappedKeyValuesReply`).
   Add a per-decode element budget in the generator and a raw-bytes `UnmarshalFDB` fuzzer.
-- [ ] **Medium:** TLS sets `ServerName` to the dialed host (`pkg/fdbgo/transport/conn.go:1533-1535`),
+- [x] **Medium:** TLS sets `ServerName` to the dialed host (`pkg/fdbgo/transport/conn.go:1533-1535`),
   a hostname check libfdb_c does not make; `FDB_TLS_VERIFY_PEERS` and `FDB_TLS_PASSWORD`
-  are never read.
+  are never read. Fixed in #1006 (RFC-277): the `FDB_TLS_*` path verifies as libfdb_c does;
+  `WithTLSConfig` keeps Go's check, and SNI is still sent (DIVERGENCES.md).
 - [x] **Low:** malformed location replies are absorbed: a missing range covers the whole
   keyspace (`parseGetKeyServerLocationsReply`, `pkg/fdbgo/client/locality.go:665`);
   `ReadVectorCount` truncates an oversized count instead of failing
@@ -2296,13 +2315,17 @@ multi-page auto-commit SELECT, which stays tracked only.
 - [x] **Medium:** the determinism fuzzer compares only `len(refA.Members())`
   (`pkg/recordlayer/query/plan/cascades/planner_fuzz_test.go:104`); check plan, EXPLAIN and
   rows across repeated plannings. Fixed in #1001 (RFC-273).
-- [ ] **Medium:** the context is checked only between tasks, and the fan-out inside one rule
+- [x] **Medium:** the context is checked only between tasks, and the fan-out inside one rule
   is not counted against `MaxNumMatchesPerRuleCall`
   (`pkg/recordlayer/query/plan/cascades/physical_wrapper.go:250-265`, `planner.go:490-530`).
+  Fixed in #1002 (RFC-274): the context was already checked per binding; a cancelled call's
+  memoize no longer grows the memo, and 14 rules count Java's bindings (the rest are listed in
+  DIVERGENCES.md).
 - [x] **Low:** quantifier order comes from map iteration
   (`pkg/recordlayer/query/plan/cascades/rule_decorrelate_values.go:320,398`). Fixed in #1001 (RFC-273).
-- [ ] **Low:** `pkg/recordlayer/query/executor` imports `pkg/relational/api` (`executor.go`,
-  `executor_new_plans.go`, `resultset.go`, `scalar_subquery.go`).
+- [x] **Low:** `pkg/recordlayer/query/executor` imports `pkg/relational/api` (`executor.go`,
+  `executor_new_plans.go`, `resultset.go`, `scalar_subquery.go`). Fixed in #1002 (RFC-274); the
+  `recordlayerdeps` nogo analyzer keeps non-test record-layer code off `pkg/relational`.
 
 ### Tests and CI
 
@@ -2321,20 +2344,22 @@ multi-page auto-commit SELECT, which stays tracked only.
   Sweep `git grep -n -i nightl` for the rest. See the open nightly item in the follow-ups
   above. Fixed in #998.
 - [x] **Medium:** five of the seven `.github/workflows/ci.yml` jobs have no `timeout-minutes`. Fixed in #998.
-- [ ] **Medium:** the Java oracle's Maven dependencies are unpinned: `maven.install` has no
-  `lock_file` (`MODULE.bazel:130,275`).
+- [x] **Medium:** the Java oracle's Maven dependencies are unpinned: `maven.install` has no
+  `lock_file` (`MODULE.bazel:130,275`). Fixed in #1008 (`maven_install.json`, `just maven-repin`).
 - [ ] **Low:** tests in no lane: `pkg/relational/core/parser/yamsql_corpus_test.go` (`yamsql`
   tag, run only by a `go test` recipe), `pkg/relational/sqldriver/stress/stress_10m_test.go`
   (`realcluster`) and `tools/bazelscaleset` (no BUILD file, no workflow). The libfdbc tests
-  have their own item.
-- [ ] **Low:** `.bazelrc:40-42` sets a no-op `--test_timeout` with a wrong comment; comments
+  have their own item. Fixed in #1008: the corpus test joins `parser_test`, the 10M scales get a
+  real-cluster-only target checked by `tenmguard` in test-full, and the retired
+  `tools/bazelscaleset` is deleted (source at 86f05ccf8).
+- [x] **Low:** `.bazelrc:40-42` sets a no-op `--test_timeout` with a wrong comment; comments
   still say `.bazelrc` sets `--local_test_jobs=4` (it sets 0, `.bazelrc:63`):
   `.github/workflows/ci.yml:619`, `infra/main.tf:226`,
   `pkg/testcontainers/foundationdb/BUILD.bazel:30`,
   `pkg/relational/sqltest/agg/distinctelision/distinct_unique_elision_cost_probe_test.go:866`;
   five hard-coded `go-version`s in ci.yml; unused `pkg/linters/gofmt`; the `golden-update`
   and `smoke-yamsql` recipes call `go test`; non-standard skips in
-  `cmd/fdb-diff-oracle/fuzz_test.go` and `pkg/relational/core/ddl/fdb_ddl_test.go:100-196`. Partly done in #998 (`.bazelrc` comment, the `--local_test_jobs=4` claims, `pkg/linters/gofmt` removed; the hard-coded `go-version`s stay, since `TestWorkflowGoMatchesGoMod` blocks drift and setup-go ignores `toolchain`). The recipes and skips remain.
+  `cmd/fdb-diff-oracle/fuzz_test.go` and `pkg/relational/core/ddl/fdb_ddl_test.go:100-196`. Partly done in #998 (`.bazelrc` comment, the `--local_test_jobs=4` claims, `pkg/linters/gofmt` removed; the hard-coded `go-version`s stay, since `TestWorkflowGoMatchesGoMod` blocks drift and setup-go ignores `toolchain`). The recipes and skips are fixed in #1008 (both recipes go through Bazel; the oracle skips are failures or deleted dead branches, the DDL skips use the no-Docker form).
 ### Docs, API and hygiene
 
 - [x] **Medium:** the `pkg/fdbgo/fdb` package doc (`key.go:1-37`) names itself as the Apple
@@ -2354,11 +2379,15 @@ multi-page auto-commit SELECT, which stays tracked only.
   4.12.11; SQL_CONFORMANCE's pass count omits the skipped files and plan assertions.
 - [x] **Low:** stale: TODO.md:3 (PR #786 merged), `tools_cli.go:5-7` (no `cmd/frl/go.mod`),
   `pkg/fdbgo/client/CRASH_BUG.md` (resolved; title says otherwise). Fixed in #996.
-- [ ] **Low:** comments against CLAUDE.md's rules: shift tags
+- [x] **Low:** comments against CLAUDE.md's rules: shift tags
   (`git grep -n -i -E 'this (same )?shift|follow-up shift|shift investigation' -- '*.go'`),
   review rounds (`git grep -n -E 'round [0-9]+\)' -- '*.go'`: 3 of its 5 hits, e.g.
   `pkg/fdbgo/client/readpath.go:1452`, `cascades/values/values.go:2112`; also "PR #446 round 3"
   at `values.go:2051`) and "(codex)" tags in `.github/workflows/ci.yml` and `infra/main.tf:129`. Partly done in #996 and #998; left: the round-18 notes in `pkg/fdbgo/client/transaction_unit_test.go:806-817`, a shift tag at `cascades/benchmark_test.go:302`, "follow-up shift" at `query/plan/plans/insert.go:34-35` and "Codex-caught" at `pkg/relational/conformance/yamsql/testdata/uuid_column.yaml:36`.
+  Done in docs/review-leftovers: every shift tag in non-test Go (several also stated stale facts),
+  every "codex" tag and the listed round notes. Kept: about 30 test files and functions named
+  for "RFC-141 R4 round-N" and similar review rounds (`git grep -n -E 'round-[0-9]+' --
+  '*_test.go'`); renaming them is churn with no behavior change.
 - [ ] **Owner decision:** the public API surface (about 16K exported declarations outside
   `internal/`, including test hooks such as `values.SetCensusHooks`); test and tool
   dependencies in the library `go.mod` (docker, testcontainers, ginkgo, staticcheck,
@@ -2366,11 +2395,19 @@ multi-page auto-commit SELECT, which stays tracked only.
 
 ### Follow-ups from the fix PRs' reviews
 
+- [ ] **Low:** probe two seed-corpus Go extensions against live Java 4.14.2.0 and record each in
+  DIVERGENCES.md's Go-extension table or drop the note
+  (`pkg/relational/conformance/plandiff/seedcorpus/corpus.go`, the NOTE comments before the
+  LIMIT note): bare-paren `WHERE (boolean_expr)` (4.12.11 rejected it) and a `WITH RECURSIVE`
+  body with no self-reference (4.12.11 rejected it; 4.14.2.0's `QueryVisitor.java:212-214`
+  routes it to `visitNamedQuery`, so Java may now accept). `plandiff/README.md:65` also cites
+  CLAUDE.md "gotcha" entries that do not exist.
+
 - [ ] **Low:** when a statement's context ends inside an explicit transaction, the transaction
   is cancelled from a background goroutine with no panic recovery; `sqlpage.go` still calls
   `SetOptions` where the DST skill now recommends `SetOption` (#999's final review).
 - [ ] **Low:** STATUS.md's timeout paragraph: the facade's pipelined Get makes one more timed-out
-  send than the others; `pkg/fdbgo/client/readpath.go:415-418` still says libfdb_c re-sends;
-  `API_PARITY.md` and `docs/fdb-cgo-parity.md` list different `Database` supersets; the header
-  of `pkg/relational/sqldriver/sql_integration_test.go` still describes a blank import (#996's
-  final review).
+  send than the others (#1011 owns it); the header of
+  `pkg/relational/sqldriver/sql_integration_test.go` still describes a blank import (SQL
+  follow-up PR). Done in docs/review-leftovers: `readpath.go:415-418` and the two `Database`
+  superset rows (#996's final review).

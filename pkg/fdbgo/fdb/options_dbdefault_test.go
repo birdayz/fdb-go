@@ -56,7 +56,7 @@ func TestDatabaseDefault_BypassUnreadable_Propagates(t *testing.T) {
 		t.Fatalf("SetTransactionBypassUnreadable: %v", err)
 	}
 	if !idb.defaults().bypassUnreadable {
-		t.Fatal("SetTransactionBypassUnreadable must store the DB default (codex #331)")
+		t.Fatal("SetTransactionBypassUnreadable must store the DB default")
 	}
 
 	tr, inner := newBareOptionsTx()

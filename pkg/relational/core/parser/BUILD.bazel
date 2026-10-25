@@ -25,12 +25,16 @@ go_test(
         "fuzz_test.go",
         "nesting_guard_test.go",
         "parser_test.go",
+        "yamsql_corpus_test.go",
     ],
-    data = glob(["testdata/**"]),
+    data = glob(["testdata/**"]) + [
+        "//third_party/apple/fdb-record-layer:yamsql_corpus",  # keep
+    ],
     embed = [":parser"],
     deps = [
         "//pkg/relational/api",
         "//pkg/relational/core/parser/gen",
         "@com_github_antlr4_go_antlr_v4//:antlr",
+        "@in_gopkg_yaml_v3//:yaml_v3",
     ],
 )

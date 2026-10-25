@@ -388,9 +388,9 @@ func legacyRangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end
 				kvs, more, err := ops.send(ctx, shardBegin, shardEnd, remaining, bytesLeft, reverse, loc.Servers)
 				if err != nil {
 					// Reply timeout (a slow-but-alive server): the location is
-					// fine — re-send the SAME shard (no relocate), matching
-					// libfdb_c (no per-read client timeout; re-send until the
-					// server replies or the read version ages to
+					// fine — re-send the SAME shard (no relocate). libfdb_c has no
+					// per-read client timeout and waits until the server replies or
+					// the read version ages to
 					// transaction_too_old). Bounded; on exhaustion surface a
 					// RETRYABLE transaction_too_old so the Transact loop retries
 					// with a fresh read version. errReplyTimeout never escapes.

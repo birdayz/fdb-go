@@ -297,9 +297,7 @@ func BenchmarkSimplify_FullPipeline(b *testing.B) {
 }
 
 // Absorption workload: p AND (p OR q) OR r — sees the absorption
-// rule fire plus dedup + constant-fold. Baseline for the 11-rule
-// rule set vs 8-rule (absorption + NotComparisonRewrite added this
-// shift post-compaction).
+// rule fire plus dedup + constant-fold.
 func BenchmarkSimplify_Absorption(b *testing.B) {
 	b.ReportAllocs()
 	_, fields := benchExactFields(b, "a", "b")

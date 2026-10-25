@@ -98,7 +98,7 @@ func TestJustTestLanes(t *testing.T) {
 			dir := t.TempDir()
 			stub := `#!/bin/bash
 if [ "$1" = query ]; then
-    [ "$2" = 'kind(".*_test", //...)' ] || exit 91
+    [ "$2" = 'kind(".*_test", //...) except attr(tags, "realcluster", //...)' ] || exit 91
     printf '%s\n' "$LABELS"
     exit "$QUERY_EXIT"
 fi

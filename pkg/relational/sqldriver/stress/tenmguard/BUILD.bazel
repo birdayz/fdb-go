@@ -1,0 +1,11 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+# Builds the realcluster-only 10M stress binary and checks it refuses to run
+# without a cluster. test-full, so `just test-full` and CI's main job run it.
+go_test(
+    name = "tenmguard_test",
+    srcs = ["guard_test.go"],
+    data = ["//pkg/relational/sqldriver/stress:stress_10m_test"],  # keep
+    env = {"STRESS_10M_BIN": "$(rootpath //pkg/relational/sqldriver/stress:stress_10m_test)"},  # keep
+    tags = ["test-full"],
+)

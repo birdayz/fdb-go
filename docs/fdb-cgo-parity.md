@@ -25,7 +25,7 @@ The core read/write surface is at full parity or a superset of Apple's binding.
 | Surface | Status |
 |---|---|
 | Constructors (`OpenDatabase`, `OpenDefault`, `Open`, `MustOpen*`, `OpenWithConnectionString`) | Full parity (plus `OpenDatabaseFromConfig`, `WrapDatabase`) |
-| `Database` methods | Superset (every Apple method, plus `TransactCtx`/`ReadTransactCtx`, `IsValid`, hedge options, `OpenTenantById`) |
+| `Database` methods | Superset: every Apple method, plus `TransactCtx`, `ReadTransactCtx`, `CreateWritableTransaction`, `IsValid`, `HedgeEnabled`/`SetHedgeEnabled`, `InvalidateGRVCache`, `Metrics`, `OpenTenantById` |
 | `Transaction` methods | Superset (every Apple method, plus `*Bytes` key-convenience variants) |
 | `Snapshot` methods | Exact parity |
 | `KeySelector` helpers (`FirstGreaterThan`, `FirstGreaterOrEqual`, `LastLessThan`, `LastLessOrEqual`) | Full parity |
