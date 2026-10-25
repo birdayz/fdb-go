@@ -15,9 +15,9 @@ import (
 // the row at the resume boundary still encodes identically — data drift
 // under the token fails LOUDLY instead of re-emitting or skipping rows.
 //
-// This is the resume layer for the DISTINCT recursion arms — a Go
-// extension (Java rejects recursive UNION distinct outright: "only UNION
-// ALL is supported"), whose cross-level seen-set makes the recursion
+// This is the resume layer for the DISTINCT recursion arms (Java runs
+// recursive UNION DISTINCT as UNION ALL, a Java upstream bug in
+// DIVERGENCES.md), whose cross-level seen-set makes the recursion
 // inherently materialized: the seen-set cannot ride a streaming
 // continuation (it is the whole emission history), but the re-execution
 // rebuilds it deterministically. The re-execution cost per page matches

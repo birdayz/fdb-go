@@ -94,7 +94,7 @@ func TestTranslatePlannerError_SQLSTATEMap(t *testing.T) {
 				t.Fatalf("message %q reuses the unable-to-plan wording", apiErr.Message)
 			}
 
-			// api.Error.Error() appends the cause unconditionally, so a Message
+			// api.Error.Error() appends a WrapError cause, so a Message
 			// equal to the sentinel's own text renders the identical sentence
 			// twice. This is asserted for EVERY sentinel, not just the one arm
 			// that was fixed first: pinning it for a single arm is exactly what
@@ -236,8 +236,8 @@ func TestTranslatePlannerError_DefaultsToInternal(t *testing.T) {
 
 // TestTranslatePlannerError_InternalDetailNotLeaked pins the "safe user-facing
 // error classes" half of this item. Memo yield-invariant violations format the
-// offending expression with %T, and api.Error.Error() appends its cause
-// unconditionally, so a database/sql caller was one classification away from
+// offending expression with %T, and api.Error.Error() appends a WrapError
+// cause, so a database/sql caller was one classification away from
 // reading Go type names out of their terminal. The detail stays reachable
 // through the error chain for logging and errors.As; only the rendering is
 // withheld.

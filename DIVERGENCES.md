@@ -980,35 +980,66 @@ with 0AF00. An EXISTS in HAVING is 42803 in both (`CorrelatedHavingExistsJavaPro
 of an outer join. An INNER join after the unnest, and a LEFT JOIN before it, answer as Java
 (`CommaJoinJavaProbe`). TODO.md "An unnest leg before an outer join".
 
-## Go-Only Extensions (classified against Java 4.12.11; not yet re-verified on 4.14.2.0)
+## Go-Only Extensions (re-verified on Java 4.14.2.0)
 
 Go supports these SQL features that Java rejects. Removing them would be a user-visible regression; they stay as Go extensions.
 
+Each Java behavior below is measured on a live 4.14.2.0 JVM by `DocClaimsJavaProbe`
+(`conformance/doc_claims_java_probe_test.go`), which pins Java's and Go's answer per case; the
+case names are in backticks. Rows marked "read from source" cite the 4.14.2.0 source, relative to
+`fdb-relational-core/.../recordlayer/` or `fdb-record-layer-core/.../query/plan/`.
+
 | Feature | Java behavior | Go behavior |
 |---|---|---|
-| `GROUP BY` | Rejects ALL forms (`UnableToPlanException`) | Full support (streaming + hash aggregation) |
-| `LIMIT` / `OFFSET` | Rejects at parse time (uses JDBC `setMaxRows`) | `RecordQueryLimitPlan` |
-| `SELECT DISTINCT` (complex shapes) | Rejects most via Cascades | Broad support via `RecordQueryDistinctPlan` + hash distinct |
-| In-memory sort | Cascades eliminates or fails; legacy `RecordQueryPlanner` alone can construct `RecordQuerySortPlan` | `RecordQueryInMemorySortPlan` fallback |
-| Hash aggregation | Only streaming aggregation (requires ordered input) | `RecordQueryHashAggregationPlan` |
-| `INFORMATION_SCHEMA` | Rejects (`Unknown reference INFORMATION_SCHEMA.TABLES`) | Working system tables |
-| `NOT NULL` on scalar columns | Rejects (`NOT NULL is only allowed for ARRAY column type`) | SQL-standard behavior |
-| Date-part functions | No temporal types | YEAR/MONTH/DAY/HOUR/MINUTE/SECOND/etc. |
-| DATE and TIMESTAMP values | No temporal types: a `DATE`/`TIMESTAMP` column is 42F18, `CAST(… AS DATE/TIMESTAMP)` is 42601 | Types of VALUES only (CAST, `CURRENT_DATE`/`CURRENT_TIMESTAMP`, a bound `time.Time`), carried as canonical UTC text in 0000-9999 whose order is the instant order. A DATE meeting a TIMESTAMP (comparison, IN, CASE, COALESCE, IFNULL, GREATEST, LEAST) is promoted to its midnight. A column spelled DATE/TIMESTAMP is STRING (the type is not persisted, so catalog bytes stay Java's), and a value against it compares text. Pinned by `temporal_promotion.yaml` and `expr/temporal_promotion_property_test.go` |
-| Simple CASE (`CASE expr WHEN val`) | `visitChildren` no-op (always falls through to ELSE) | Correct evaluation |
-| Symbolic logical operators (`&&`, `\|\|`) | `SqlFunctionCatalogImpl` only registers `and`/`or`; symbolic forms throw UNSUPPORTED_QUERY | Evaluated as AND/OR |
-| `XOR` operator | Not registered in `SqlFunctionCatalogImpl`; throws UNSUPPORTED_QUERY | SQL-standard XOR with NULL propagation |
-| Scalar subqueries in expressions | Grammar has no `subqueryExpressionAtom` (parse error) | Translated via `ScalarSubqueryValue` (`DecorrelateValuesRule` covers the other values-box patterns) |
-| Direct-API insert of a bare `UUID ARRAY` | `RecordTypeTable.toDynamicMessage` (4.14.2.0) converts a UUID attribute (#4243) but its repeated-field path calls `addRepeatedField` with the unconverted `java.util.UUID`, which protobuf refuses for the UUID message field (read from source, not measured) | Each element is written as the two-word UUID message (`embedded/direct_access.go` `directFieldValue`); UUIDs inside structs in an array match Java |
-| `MAX_STATEMENT_MEMORY_BYTES` option (DSN `max_statement_memory_bytes`) | No such option | Statement-wide byte budget for in-memory buffering (RFC-130); a breach is 54F01 |
-| `TRANSACTION_TAGS` option (DSN `transaction_tags`) | No such option | FDB transaction tags on every connection transaction, for ratekeeper throttling |
-| `MAX_TOTAL_TASK_COUNT` option (DSN `max_total_task_count`) | No such option; Java's planner cap exists but its SQL layer never sets it | Bounds Cascades planning tasks; exhaustion is 54F02 |
-| `MAX_TASK_QUEUE_SIZE` option (DSN `max_task_queue_size`) | No such option; Java's planner cap exists but its SQL layer never sets it | Bounds the Cascades task queue; exhaustion is 54F02 |
-| `MAX_NUM_MATCHES_PER_RULE_CALL` option (DSN `max_num_matches_per_rule_call`) | No such option; Java's planner cap exists but its SQL layer never sets it | Bounds matches per rule call; exhaustion is 54F02 |
+| `GROUP BY` over unordered input | Plans a grouping only over input ordered on the grouping columns, by an index or the primary key (`cascades/rules/ImplementStreamingAggregationRule.java:120`; `group_by_ordered`, `group_by_primary_key`), or through an aggregate index. Otherwise 0AF00 `Cascades planner could not plan query` (`group_by_unordered`, `group_by_expression`) | Any grouping; unordered input is hash-aggregated |
+| `LIMIT` / `OFFSET` | Rejected for every query by `query/AstNormalizer.java:253-263`: 0AF00 `LIMIT clause is not supported.` / `OFFSET clause is not supported.` (`limit`, `limit_offset`, `limit_in_subquery`). The JDBC `MAX_ROWS` option is a page size, not a limit | `RecordQueryLimitPlan`, on the outer SELECT and in a derived table |
+| In-memory sort | Cascades implements a sort only when its input already has the order (`cascades/rules/RemoveSortRule.java:106-109`); otherwise 0AF00 (`order_by_no_index`, `order_by_aggregate`, `order_by_nulls_last`). Only the legacy `RecordQueryPlanner` builds `RecordQuerySortPlan` | `RecordQueryInMemorySortPlan` fallback |
+| Hash aggregation | Only streaming aggregation over ordered input and aggregate-index scans (`cascades/PlanningRuleSet.java:167,187`); unordered input is 0AF00 (`group_by_unordered`) | `RecordQueryHashAggregationPlan` |
+| `INFORMATION_SCHEMA` | 42703 `Unknown reference INFORMATION_SCHEMA.TABLES` (`information_schema_tables`, `information_schema_columns`); Java's system tables are `DATABASES`, `SCHEMAS` and `TEMPLATES` in `/__SYS` | Working system tables |
+| Date-part functions | 0AF00 `Unsupported operator YEAR` (`date_part_of_integer`); `EXTRACT(YEAR FROM v)` answers `v` unchanged (`extract_year`) | YEAR/MONTH/DAY/HOUR/MINUTE/SECOND/etc. `EXTRACT` is 0AF00 |
+| DATE and TIMESTAMP values | No temporal types: a `DATE`/`TIMESTAMP` column is 42F18 (`date_column`, `timestamp_column`), `CAST(… AS DATE/TIMESTAMP)` is 42601 (`cast_date`, `cast_timestamp`), `CURRENT_DATE`/`CURRENT_TIMESTAMP` are XX000 (`current_date`, `current_timestamp`) | Types of VALUES only (CAST, `CURRENT_DATE`/`CURRENT_TIMESTAMP`, a bound `time.Time`), carried as canonical UTC text in 0000-9999 whose order is the instant order. A DATE meeting a TIMESTAMP (comparison, IN, CASE, COALESCE, IFNULL, GREATEST, LEAST) is promoted to its midnight. A column spelled DATE/TIMESTAMP is STRING (the type is not persisted, so catalog bytes stay Java's), and a value against it compares text. Pinned by `temporal_promotion.yaml` and `expr/temporal_promotion_property_test.go` |
+| Parenthesized WHERE condition (`WHERE (v = 10)`) | `( … )` is a one-field record constructor: 42804 `expected boolean expression but got BOOLEAN AS _0` (`where_paren`). Parenthesized operands of AND/OR answer (`where_paren_compound`) | Evaluated as the condition |
+| Simple CASE (`CASE expr WHEN val`) | `visitChildren` no-op that compares no WHEN: the ELSE for every row (`simple_case`), the last THEN without an ELSE (`simple_case_no_else`) | Correct evaluation |
+| Symbolic logical operators (`&&`, `\|\|`) | `SqlFunctionCatalogImpl` only registers `and`/`or`; 0AF00 `Unsupported operator &&` / `\|\|` (`symbolic_and`, `symbolic_or`). `\|\|` is logical OR in Java's grammar, not concatenation | Evaluated as AND/OR |
+| `XOR` operator | Not registered in `SqlFunctionCatalogImpl`; 0AF00 `Unsupported operator XOR` (`xor`) | SQL-standard XOR with NULL propagation |
+| Scalar subqueries in expressions | Grammar has no `subqueryExpressionAtom`: 42601 (`scalar_subquery`, `correlated_scalar_subquery`) | Translated via `ScalarSubqueryValue` (`DecorrelateValuesRule` covers the other values-box patterns), correlated ones included |
+| String and math functions | 0AF00 `Unsupported operator UPPER` / `ABS` (`upper`, `abs`); `POSITION('zz' IN s)` answers `s` unchanged (`position_in`) | UPPER/LOWER/SUBSTRING/TRIM/CONCAT/REPLACE/POSITION/REVERSE/`*_LENGTH` (RFC-087) and ABS/MOD/FLOOR/CEIL(ING)/ROUND/SQRT. POSITION takes two arguments; `POSITION(x IN s)` is 0AF00 |
+| `FULL OUTER JOIN` | 42601: the grammar has only LEFT/RIGHT outer joins (`full_join`). Without OUTER, `FULL` is read as the left table's alias and the join is inner (`full_join_without_outer`) | Planned as an NLJ with `JoinFullOuter` |
+| A join without ON (`CROSS JOIN`, `JOIN` with no condition) | XXXXX: the visitor dereferences the absent ON (`cross_join`, `JoinWithoutOnJavaProbe`) | The cartesian product |
+| Direct-API insert of a bare `UUID ARRAY` | `RecordTypeTable.toDynamicMessage` (4.14.2.0) converts a UUID attribute (#4243) but its repeated-field path calls `addRepeatedField` with the unconverted `java.util.UUID`, which protobuf refuses for the UUID message field (read from source: `RecordTypeTable.java:247-270`, not measured) | Each element is written as the two-word UUID message (`embedded/direct_access.go` `directFieldValue`); UUIDs inside structs in an array match Java |
+| `MAX_STATEMENT_MEMORY_BYTES` option (DSN `max_statement_memory_bytes`) | No such option (read from source: `Options.Name`, `fdb-relational-api/.../Options.java:51-286`) | Statement-wide byte budget for in-memory buffering (RFC-130); a breach is 54F01 |
+| `TRANSACTION_TAGS` option (DSN `transaction_tags`) | No such option, and the SQL layer tags no transaction (read from source) | FDB transaction tags on every connection transaction, for ratekeeper throttling |
+| `MAX_TOTAL_TASK_COUNT` option (DSN `max_total_task_count`) | No such option; Java's planner cap exists but its SQL layer never sets it (read from source: `query/PlannerConfiguration.java:158-170`) | Bounds Cascades planning tasks; exhaustion is 54F02 |
+| `MAX_TASK_QUEUE_SIZE` option (DSN `max_task_queue_size`) | No such option; Java's planner cap exists but its SQL layer never sets it (read from source, as above) | Bounds the Cascades task queue; exhaustion is 54F02 |
+| `MAX_NUM_MATCHES_PER_RULE_CALL` option (DSN `max_num_matches_per_rule_call`) | No such option; Java's planner cap exists but its SQL layer never sets it (read from source, as above) | Bounds matches per rule call; exhaustion is 54F02 |
 
-Go-only plan types: `RecordQueryInMemorySortPlan`, `RecordQueryLimitPlan`, `RecordQueryValuesPlan`, `RecordQueryNestedLoopJoinPlan`. `RecordQueryMergeSortUnionPlan` is Go's collapsed ordered-union counterpart, not a semantic extension; its `removeDuplicates=false` mode is an extension. Go also has a keyless concat shape named `RecordQueryUnionPlan`; Java's same-named class is keyed and ordered, so the Go shape—not the class name—is the extension.
+Go-only plan types: `RecordQueryInMemorySortPlan`, `RecordQueryLimitPlan`, `RecordQueryValuesPlan`, `RecordQueryNestedLoopJoinPlan`. `RecordQueryMergeSortUnionPlan` is Go's collapsed ordered-union counterpart, not a semantic extension; its `removeDuplicates=false` mode is an extension. Go also has a keyless concat shape named `RecordQueryUnionPlan`; Java's same-named class is keyed and ordered, so the Go shape—not the class name—is the extension. None of the four listed plan classes exists in 4.14.2.0 (read from source).
 
-Go-only logical expressions: `LogicalLimitExpression`, `LogicalValuesExpression`.
+Go-only logical expressions: `LogicalLimitExpression`, `LogicalValuesExpression`. Neither exists in 4.14.2.0 (read from source).
+
+The 4.14.2.0 re-verification removed two former rows, and two cross-engine corpus notes that
+described Go extensions: `WITH RECURSIVE` with no self-reference is refused by both engines with
+`condition is not met!` (Java XX000, Go 0A000; `recursive_without_self_reference`,
+`recursive_union_without_self_reference`), and the parenthesized WHERE condition is the row above.
+The removed rows:
+
+- **`NOT NULL` on scalar columns — RESOLVED.** Go no longer accepts it: both engines refuse the
+  CREATE with 0A000 `NOT NULL is only allowed for ARRAY column type` (`scalar_not_null`; Go's
+  check is `embedded/ddl.go:1048-1051`, cross-engine entry `error_not_null_violation`).
+- **`SELECT DISTINCT` — RECLASSIFIED as a Java upstream bug.** Java does not reject DISTINCT; it
+  plans the query and returns every row, because no SQL-layer visitor reads the keyword
+  (`query/visitors/QueryVisitor.java:258-343`). See "Java Upstream Bugs".
+
+### Messages of wrapped record-layer and JDK exceptions
+
+Java wraps a record-layer or JDK exception (`RecordCoreException`, `SemanticException`, a decimal
+literal's `NumberFormatException`) in a `RelationalException(code, cause)`, whose message is the
+cause's `toString()`, so it starts with the exception class
+(`com.apple.foundationdb.record.RecordCoreException: only positive step is allowed in range`).
+Go's `api.Error.Message` is the exception's own message, without the class; the SQLSTATE is the
+same. Pinned by `sqltest/core` `TestFDB_RangeTableFunction` and
+`TestFDB_EnumAndUUIDAssignmentErrorMessage`, `core/query/expr`
+`TestWalkExpression_TypedNumericSuffixes`, and the plan-shape golden's `overflow.yaml#6`.
 
 ### Go-only SQLSTATEs
 
@@ -1038,7 +1069,7 @@ Porting Java's mapping would have been wrong twice over: `ExceptionUtil.recordCo
 
 Class 54 ("program limit exceeded") is the honest class: the planner gave up because the query exceeded a configured budget, and simplifying it or raising the budget is a real remedy. `54F01` (`EXECUTION_LIMIT_REACHED`) is deliberately NOT reused — it means an *execution*-time limit and is tied to a scan/row continuation reason, so conflating plan-time with it would corrupt a meaning Java owns. `54F02` is unused in Java's enum, leaving room for Java to adopt it should it ever enable the caps.
 
-The Go error carries the same context Java's `addLogInfo` attaches (`max_task_count`/`task_count` and the queue and rule-match equivalents) via `cascades.PlannerBudgetExceededError`.
+The Go error carries the counts Java's `addLogInfo` attaches (`max_task_count`/`task_count` and the queue and rule-match equivalents) via `cascades.PlannerBudgetExceededError`. Java's rule-match trip also attaches the rule call (`rule`); Go's does not.
 
 ## Java Upstream Bugs (Go is correct, Java is wrong)
 
@@ -1046,7 +1077,9 @@ Confirmed via cross-engine probes. Go's correct behavior is pinned in Go-only po
 
 | Bug | Go behavior | Java behavior |
 |---|---|---|
-| Compound DISTINCT (`SELECT DISTINCT a, b`) | Correctly deduplicates | Fails to dedup (returns all rows) |
+| `SELECT DISTINCT`, one column or several, indexed or not | Correctly deduplicates | Returns every row: no SQL-layer visitor reads the keyword (`distinct_ordered`, `distinct_unordered`, `distinct_order_by`; cross-engine corpus entries `compound_distinct_two_cols`, `count_over_distinct_derived`) |
+| `UNION` in a recursive CTE (`recursive_union_distinct_diamond`) | Deduplicates | Runs UNION ALL: a node reached by two paths is returned twice |
+| `FROM a FULL JOIN b ON …` without OUTER (`full_join_without_outer`) | A full outer join | Reads `FULL` as `a`'s alias and answers an inner join |
 | Signed-zero comparison (`WHERE v >= 0.0` with `-0.0`) | Keeps row (IEEE 754: `-0.0 == +0.0`) | Drops the row |
 | Signed-zero equality (`WHERE v = 0.0` with `-0.0`) | Keeps row (IEEE) | Drops the row — see below |
 | NaN self-equality (`WHERE v = v` with `NaN`) | **TRUE — Go MATCHES Java here, and both diverge from the SQL standard.** An earlier revision of this row claimed Go returned FALSE "(IEEE, SQL standard)". That was asserted, never measured, and is wrong — see the NaN section below. | **TRUE** |

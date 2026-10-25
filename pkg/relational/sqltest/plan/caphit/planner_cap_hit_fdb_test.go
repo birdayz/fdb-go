@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -158,6 +159,13 @@ func TestFDB_MaxNumMatchesPerRuleCall_CountsPlanPartitions(t *testing.T) {
 		t.Fatalf("bound 2: err = %v, want ErrPlannerRuleMatchCapHit", err)
 	}
 	testkit.RequireSQLSTATE(t, err, api.ErrCodePlanComplexityLimitReached)
+	// Java's addLogInfo keys: the bound, and bound+1, where Java stops.
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || !reflect.DeepEqual(apiErr.Context, map[string]any{
+		"max_rule_matches_count": 2, "rule_matches_count": 3,
+	}) {
+		t.Fatalf("bound 2: error context = %v, want max_rule_matches_count=2 rule_matches_count=3", apiErr)
+	}
 
 	unbounded := testkit.PinEmbeddedConn(t, capHitOpen(t, "matches"), func(*embedded.EmbeddedConnection) {})
 	generous := matchesConn(t, capHitOpen(t, "matches"), 1000)

@@ -556,14 +556,10 @@ func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCo
 // DISTINCT aggregates (`COUNT(DISTINCT col)`, `SUM(DISTINCT col)`,
 // `MIN(DISTINCT col)`, `MAX(DISTINCT col)`, `AVG(DISTINCT col)`) are
 // intentionally rejected via the parser path's distinct flag (caller
-// raises ErrCodeUnsupportedOperation before any execution). fdb-
-// relational 4.11.1.0's parser visitor NPEs on every aggregate with
-// DISTINCT (`AggregateWindowedFunctionContext.ALL().getText()` is
-// called unconditionally; ALL is null when DISTINCT is present, per
-// CLAUDE.md gotcha "COUNT(DISTINCT col) NPEs in fdb-relational"). Go
-// matches by surfacing distinct=true to callers, which then reject.
-// Same architectural reason in both engines: visitor doesn't handle
-// the DISTINCT case.
+// raises ErrCodeUnsupportedOperation before any execution). Java refuses
+// every aggregate with DISTINCT ("aggregator DISTINCT is not supported",
+// 0AF00, ExpressionVisitor); Go matches by surfacing distinct=true to
+// callers, which then reject.
 func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName, argCol string, argExpr antlrgen.IExpressionContext, outName string, distinct, argQualified bool, argBare, argQualifier string, argSegs []string, ok bool) {
 	distinct = awf.DISTINCT() != nil
 	resolveArg := func(fa antlrgen.IFunctionArgContext) {

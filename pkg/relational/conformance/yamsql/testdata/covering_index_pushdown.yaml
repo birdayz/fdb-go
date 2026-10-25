@@ -230,8 +230,8 @@ tests:
   # Covered + residual constants
   # -------------------------------------------------------------------
 
-  # Covered ORDER BY pin (LIMIT was incidental — rejected at parse
-  # time as of fdb-relational 4.11.1.0). Pre-LIMIT-rejection this case
+  # Covered ORDER BY pin (LIMIT was incidental — Java rejects
+  # every LIMIT, 0AF00). Pre-LIMIT-rejection this case
   # asserted LIMIT-early-termination compositions with covering;
   # without LIMIT the covering path still runs, just over all rows.
   - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v

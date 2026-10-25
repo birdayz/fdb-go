@@ -115,8 +115,8 @@ var rfc082Divergences = map[string]plandiff.Divergence{
 	"undefined_column":                 {Direction: plandiff.DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "Attempting to query non existing column NO_SUCH_COL"},
 	"undefined_table":                  {Direction: plandiff.DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs", GoErrorContains: "table \"NO_SUCH_TABLE\" does not exist"},
 	"update_undefined_column_rejected": {Direction: plandiff.DivergenceBothErrorMessagesDrift, Reason: "RFC-082: both engines reject; cosmetic message wording differs (Go now reports a clean 42703 at build time, matching INSERT/SELECT, instead of the old leaky executor error)", GoErrorContains: "Attempting to query non existing column NO_SUCH_COL"},
-	"where_nested_paren_and":           {Direction: plandiff.DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: expected BooleanValue but got RecordConstructorValue", GoExpectedRows: [][]any{{float64(1)}, {float64(2)}}},
-	"where_paren_top_level_rejected":   {Direction: plandiff.DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects: expected BooleanValue but got RecordConstructorValue", GoExpectedRows: [][]any{{float64(1)}}},
+	"where_nested_paren_and":           {Direction: plandiff.DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects a WHERE that is one parenthesized condition (42804)", GoExpectedRows: [][]any{{float64(1)}, {float64(2)}}},
+	"where_paren_top_level_rejected":   {Direction: plandiff.DivergenceJavaErrorsGoCorrect, Reason: "RFC-082: Go-only read-side extension; Java rejects a WHERE that is one parenthesized condition (42804)", GoExpectedRows: [][]any{{float64(1)}}},
 }
 
 // rfc082ClearStale lists corpus entries whose PRE-EXISTING inline Divergence
