@@ -5307,9 +5307,9 @@ func executeRecursiveLevelUnion(
 // and POSTORDER (emit children then parent).
 // Mirrors Java's RecordQueryRecursiveDfsJoinPlan.executePlan: the
 // UNION ALL arm STREAMS through the RecursiveCursor port (per-depth
-// continuation stack, primary-key check values); the DISTINCT arm is a
-// Go extension (Java rejects recursive UNION distinct — "only UNION
-// ALL is supported") and resumes by deterministic replay.
+// continuation stack, primary-key check values); the DISTINCT arm (Java
+// runs recursive UNION DISTINCT as UNION ALL, a Java upstream bug in
+// DIVERGENCES.md) resumes by deterministic replay.
 func executeRecursiveDfsJoin(
 	ctx context.Context,
 	p *plans.RecordQueryRecursiveDfsJoinPlan,

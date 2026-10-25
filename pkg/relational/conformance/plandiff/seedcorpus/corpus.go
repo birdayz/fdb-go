@@ -1055,14 +1055,12 @@ func SeedRunCorpus() []plandiff.RunQuery {
 		// divergence. Java's `ExpressionVisitor.visitInPredicate`
 		// asserts `inList().queryExpressionBody() == null` with
 		// UNSUPPORTED_QUERY ("IN predicate does not support nested
-		// SELECT"), and the earlier `AstNormalizer.visitInPredicate`
-		// NPEs on the same shape (it walks `ExpressionsContext`, which
-		// is null when the IN list comes from a subquery). Go rejects
+		// SELECT"), as `AstNormalizer.visitInPredicate` already does
+		// before it. Go rejects
 		// with 0AF00 in every position (SELECT/DML WHERE, JOIN ON,
 		// projection); the yamsql corpus pins that. This run corpus has
 		// no entry because there is nothing to compare beyond "both
-		// reject" — Java's wording is an NPE stack trace and is not
-		// portable. SeedCorpus (the explain-only plan-tree half, far
+		// reject". SeedCorpus (the explain-only plan-tree half, far
 		// below) likewise has none, and the comment where the entry
 		// used to sit records why a text-echo "success" there was not
 		// evidence of support.
@@ -15627,7 +15625,7 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			},
 			Query: "SELECT COUNT(DISTINCT v) FROM T_DST_06",
 			Divergence: &plandiff.Divergence{
-				Reason:          "Both reject COUNT(DISTINCT) but Java throws NPE (ALL() returns null for DISTINCT token), Go gives clean rejection.",
+				Reason:          "Both reject COUNT(DISTINCT) with 0AF00; the messages differ.",
 				Direction:       plandiff.DivergenceBothErrorMessagesDrift,
 				GoErrorContains: "DISTINCT aggregate COUNT is not supported",
 			},

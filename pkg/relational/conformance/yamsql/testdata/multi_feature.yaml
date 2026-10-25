@@ -27,8 +27,8 @@ tests:
       - [200, 60]
       - [100, 125]
   # Same query, ORDER BY SUM DESC — pins that ORDER-BY-aggregate-DESC
-  # works on the CTE-wrapped aggregate. LIMIT was incidental (rejected
-  # at parse time as of fdb-relational 4.11.1.0).
+  # works on the CTE-wrapped aggregate. LIMIT was incidental (Java
+  # rejects every LIMIT, 0AF00).
   - query: |-
       WITH hv AS (SELECT customer_id, total FROM orders WHERE total >= 30)
       SELECT customer_id, SUM(total) FROM hv

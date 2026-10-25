@@ -2050,7 +2050,7 @@ func unionColumnsRenamedScenario() *yamsql.Scenario {
 
 // countDistinctJoinPositiveScenario lifts the one COUNT(*) test from
 // testdata/count_distinct_join.yaml that doesn't use COUNT(DISTINCT)
-// (which NPEs in fdb-relational 4.12.11.0 per CLAUDE.md gotcha).
+// (which both engines refuse with 0AF00).
 // Drops NOT NULL on PK + composite PK on the join-side table.
 func countDistinctJoinPositiveScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
@@ -4807,7 +4807,7 @@ func orderByLimitScenario() *yamsql.Scenario {
 			// the sort, is what its planner rejects. Go plans both and returns the
 			// correct rows; with no Java equivalence to assert they are not
 			// cross-engine. Covered Go-only by the order_by_limit yamsql corpus.
-			// ORDER BY on aggregate with GROUP BY — rejected by Java (no GROUP BY rule).
+			// ORDER BY on aggregate with GROUP BY — Java cannot plan it (0AF00).
 			{Query: "SELECT grp, SUM(v) FROM t GROUP BY grp ORDER BY 2 DESC", ErrorCode: "0AF00"},
 			// Out-of-range positional ORDER BY (22023).
 			{Query: "SELECT id FROM t ORDER BY 99", ErrorCode: "22023"},

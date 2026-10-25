@@ -1,7 +1,7 @@
 // Go-internal continuation for the hash-based SELECT DISTINCT executor.
 //
-// SELECT DISTINCT is a Go-only read-side extension — Java's fdb-relational SQL
-// layer never dedups it, and Java's record-layer value-distinct
+// Java's fdb-relational SQL layer never dedups SELECT DISTINCT (DIVERGENCES.md),
+// and Java's record-layer value-distinct
 // (RecordQueryUnorderedDistinctPlan) uses a fresh-per-page HashSet that is NOT
 // carried across continuations. There is therefore NO Java wire format to
 // match here; this continuation is purely Go-internal, so it lives in the Go
@@ -16,11 +16,12 @@
 package gen
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -152,10 +153,13 @@ func file_distinct_continuation_proto_rawDescGZIP() []byte {
 	return file_distinct_continuation_proto_rawDescData
 }
 
-var file_distinct_continuation_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
-var file_distinct_continuation_proto_goTypes = []any{
-	(*DistinctHashContinuation)(nil), // 0: com.apple.foundationdb.relational.cursors.DistinctHashContinuation
-}
+var (
+	file_distinct_continuation_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
+	file_distinct_continuation_proto_goTypes  = []any{
+		(*DistinctHashContinuation)(nil), // 0: com.apple.foundationdb.relational.cursors.DistinctHashContinuation
+	}
+)
+
 var file_distinct_continuation_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
 	0, // [0:0] is the sub-list for method input_type

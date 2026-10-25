@@ -535,7 +535,10 @@ go_test(
         "//:DIVERGENCES.md",
         "//:SQL_CONFORMANCE.md",
     ],
-    deps = ["//pkg/relational/conformance/plandiff/seedcorpus"],
+    deps = [
+        "//pkg/relational/conformance/javacorpus",
+        "//pkg/relational/conformance/plandiff/seedcorpus",
+    ],
 )
 
 # keep
