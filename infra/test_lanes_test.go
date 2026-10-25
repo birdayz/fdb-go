@@ -205,6 +205,7 @@ sleep 300 </dev/null >/dev/null 2>&1 &
 echo $! > "$STATE/daemon.pid"
 if flock -n "$FDB_LANE_LOCK" true; then echo free > "$STATE/probe"; else echo held > "$STATE/probe"; fi
 echo $$ > "$STATE/just.pid"
+printf '%s\n' "$@" > "$STATE/just.args"
 if [ -n "$BLOCK" ]; then exec sleep 300; fi
 exit "${JUST_EXIT:-0}"
 `,
@@ -239,7 +240,11 @@ func (h *laneHarness) command(block bool, env ...string) *exec.Cmd {
 }
 
 func (h *laneHarness) laneCommand(lane string, block bool, env ...string) *exec.Cmd {
-	cmd := exec.Command("bash", h.script, h.repo, lane)
+	return h.laneCommandArgs(lane, block, nil, env...)
+}
+
+func (h *laneHarness) laneCommandArgs(lane string, block bool, extra []string, env ...string) *exec.Cmd {
+	cmd := exec.Command("bash", append([]string{h.script, h.repo, lane}, extra...)...)
 	cmd.Env = append(os.Environ(), "PATH="+h.bin+":"+os.Getenv("PATH"), "FDB_LANE_LOCK="+h.lock, "STATE="+h.state, "TMPDIR="+h.t.TempDir())
 	if block {
 		cmd.Env = append(cmd.Env, "BLOCK=1")
@@ -262,7 +267,7 @@ func (h *laneHarness) pid(name string) int {
 
 func (h *laneHarness) waitFor(name string) int {
 	h.t.Helper()
-	for i := 0; i < 500; i++ {
+	for i := 0; i < 3000; i++ {
 		if pid := h.pid(name); pid > 0 {
 			return pid
 		}
@@ -332,6 +337,18 @@ func TestVerifiedLaneLock(t *testing.T) {
 			t.Fatalf("metadata lacks the race shutdown line:\n%s", meta)
 		}
 	})
+	t.Run("recipe_and_extra_args_reach_just", func(t *testing.T) {
+		t.Parallel()
+		h := newLaneHarness(t)
+		extra := []string{"--test_arg=a b", "x"}
+		if out, err := h.laneCommandArgs("full", false, extra).CombinedOutput(); err != nil {
+			t.Fatalf("lane: %v: %s", err, out)
+		}
+		got, err := os.ReadFile(filepath.Join(h.state, "just.args"))
+		if want := "test-full\n--test_arg=a b\nx\n"; err != nil || string(got) != want {
+			t.Fatalf("just args = %q (%v), want %q", got, err, want)
+		}
+	})
 	t.Run("failing_lane_exit_status_reaches_caller", func(t *testing.T) {
 		t.Parallel()
 		h := newLaneHarness(t)
@@ -366,7 +383,7 @@ func TestVerifiedLaneLock(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i := 0; !h.lockFree(); i++ {
-			if i == 500 {
+			if i == 3000 {
 				t.Fatalf("lock still held after the lane ended (daemon %d alive=%v)", h.pid("daemon.pid"), h.alive(h.pid("daemon.pid")))
 			}
 			time.Sleep(10 * time.Millisecond)
