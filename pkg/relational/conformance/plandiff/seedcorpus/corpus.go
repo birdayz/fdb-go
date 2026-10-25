@@ -1018,33 +1018,15 @@ func SeedRunCorpus() []plandiff.RunQuery {
 		// the existing yamsql ORDER BY rejection scenarios
 		// (`order_by_expression`, `order_by_dupe_col`,
 		// `order_by_limit`, etc.); not a separate corpus entry.
-		// NOTE: `WHERE (boolean_expr)` with bare parens is a known
-		// one-sided divergence: Java rejects with "expected
-		// BooleanValue but got RecordConstructorValue" because its
-		// parser treats `(...)` as a record/tuple constructor unless
-		// it's in a context that forces predicate parsing
-		// (CLAUDE.md gotcha "WHERE (boolean_expr) with bare
-		// parentheses is rejected"). Go's embedded engine accepts
-		// the form. Probed against live Java — rejection confirmed.
-		// Aligning Go to also reject would invalidate Go-only tests
-		// using parenthesised boolean WHERE shapes, so it is not
-		// aligned. Redundant parens
-		// around a boolean predicate is a Go-only feature.
-		// NOTE: `WITH RECURSIVE name AS (non-self-referencing-body)` is
-		// a known one-sided divergence: Java rejects with
-		// "condition is not met!" because it requires an actual
-		// UNION ALL self-reference for RECURSIVE (CLAUDE.md gotcha).
-		// SQL spec + Postgres permit the non-self-referencing body
-		// (RECURSIVE is a scope enabler, not a requirement). Go's
-		// embedded engine matches SQL spec / Postgres, so it accepts.
-		// Probed against live Java — rejection confirmed. Aligning
-		// Go to also reject would invalidate yamsql `recursive_cte`
-		// scenarios that use the non-self-referencing form, so it is
-		// not aligned.
+		// NOTE: `WHERE (boolean_expr)` with bare parens: Java 4.12.11 rejected it
+		// ("expected BooleanValue but got RecordConstructorValue"); Go accepts it.
+		// NOTE: a `WITH RECURSIVE` body with no self-reference: Java 4.12.11
+		// rejected it ("condition is not met!"); Go accepts it, as the SQL spec
+		// does. Java 4.14.2.0's QueryVisitor plans it as a plain named query.
+		// Both await a 4.14.2.0 probe (TODO.md, "Quality review 2026-10-24").
 		// NOTE: `LIMIT N` clause is a known one-sided divergence: Java
 		// rejects standalone `... LIMIT N` (pagination is JDBC-only via
-		// `Statement.setMaxRows`, per CLAUDE.md gotcha "LIMIT clause
-		// is not supported in SQL"). Go's embedded engine implements
+		// `Statement.setMaxRows`; DIVERGENCES.md lists it). Go's embedded engine implements
 		// LIMIT directly. Aligning Go would invalidate dozens of
 		// LIMIT-using yamsql + sqldriver tests, so it is not
 		// aligned. Probed against live Java — rejection
