@@ -457,17 +457,22 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   checked against workers ÷ mean latency and, for writes, the servers' commit counts.
   Needs those checks in `tools/clientbench` and owner approval of the cloud budget.
 
-- [ ] **Read hedging has no second-request budget.** C++ `loadBalance` sends the second
-  request only while `model->secondBudget >= 1.0`, spending 1.0 per hedge; a
-  `QueueModel` starts at 0 and gains `SECOND_REQUEST_BUDGET_GROWTH` (0.05) per first
-  reply that completes unhedged, capped at 100 (`LoadBalance.actor.h:695-716`,
-  `QueueModel.h:121`, `flow/Knobs.cpp:278-283`). Its delay is the adaptive
-  `secondMultiplier` (from 1.0) times the second-best alternative's latency plus
-  `BASE_SECOND_REQUEST_TIME`, sent at once past `INSTANT_SECOND_REQUEST_MULTIPLIER`
-  (`:554-560`). Go's `sendFrameWithHedge` hedges every read with a second replica after
-  max(10ms, 2 × the best server's latency) (`client/loadbalance.go` `secondDelay`), so a
-  fresh database hedges where libfdb_c would not. Port the budget and multiplier, then
-  revisit the hedge tests that rely on a fresh database hedging.
+- [x] **Read hedging second-request budget.** RFC-281 (#1017) ports C++ 7.3.77's
+  database-wide budget (initial 0, +0.05 per lone reply, cap 100, cost 1 per hedge),
+  adaptive multiplier (initial/floor 1, +0.01 per spend, −0.00025 per lone reply)
+  and second-alternative delay/instant arm (`LoadBalance.actor.h:554-563,694-716`,
+  `QueueModel.h:121`, `flow/Knobs.cpp:278-283`). Deterministic timer tests pin each
+  accrual/spend arm; real-FDB transcripts cover value, selector, range and mapped
+  requests, disabled/re-enabled hedging, the unhedged backup fallback and watches.
+  Existing hedge tests seed the budget they need.
+
+- [ ] **Connection monitor has no `resetPing` arm.** C++ `connectionMonitor` also
+  ends a PING wait on `peer->resetPing.onTrigger()` (`FlowTransport.actor.cpp:696-698`),
+  triggered when packets arrive from an incompatible peer (`:1596`) and when the last
+  peer reference drops with nothing outstanding (`:1892-1896`). Go's `monitorPing`
+  waits only on the reply, the timeout and cancellation. The second trigger depends on
+  the peer-reference count Go does not track (see the idle-connection divergence in
+  `connectionMonitor`); port both with the unreferenced-close knobs, pinned by tests.
 
 - [ ] **Read replica selection is best-of-two random.** C++ `loadBalance` sends the
   first request to the alternative with the lowest `smoothOutstanding` (ties to the
@@ -481,15 +486,10 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   `server_overloaded`, a transport failure). C++ discards it, keeps waiting for the
   other request, and sends further second requests to the remaining alternatives
   while the first is outstanding (`LoadBalance.actor.h:648-686`,
-  `checkAndProcessResultImpl` `:325-378`). Port it with a synctest per arm.
-
-- [ ] **Connection monitor has no `resetPing` arm.** C++ `connectionMonitor` also
-  ends a PING wait on `peer->resetPing.onTrigger()` (`FlowTransport.actor.cpp:696-698`),
-  triggered when packets arrive from an incompatible peer (`:1596`) and when the last
-  peer reference drops with nothing outstanding (`:1892-1896`). Go's `monitorPing`
-  waits only on the reply, the timeout and cancellation. The second trigger depends on
-  the peer-reference count Go does not track (see the idle-connection divergence in
-  `connectionMonitor`); port both with the unreferenced-close knobs, pinned by tests.
+  `checkAndProcessResultImpl` `:325-378`). Lone inline retryable errors also bypass
+  `primaryReplied` because decoding happens after the hedge helper returns; the
+  transport-error unit cases do not cover server error bodies. Port both reply
+  paths with encoded-response integration regressions and a synctest per arm.
 
 ## 1. WS-E — scalar/SQL semantics and statement execution — ACTIVE
 
@@ -2062,12 +2062,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   the fast lane. The test-suite speed investigation owns this now.
   - The race lane's timeout (1h0m16s, run 37669344266) is fixed by the split:
     it runs `sqldriver` (the driver's own tests) in about 11 min, green.
-- [ ] Flake: `TestNativeReadTagSampling/fallback-two-nontrivial-selectors/hedge=true`
-  (`pkg/fdbgo/client/native_range_tags_fdb_test.go:194`) failed once in a full lane at
-  `87938be26` (2026-10-24, 221 targets): 5 tagged sends, want 4, with an extra tagged
-  `GetKeyValuesRequest` (suspected: a hedge of the range read whose reply outlasted the
-  hedge delay under load). 20/20 isolated runs pass. Reproduce under load and make the
-  spec count only the planned hedge.
+- [x] Flake: `TestNativeReadTagSampling/fallback-two-nontrivial-selectors/hedge=true`.
+  RFC-281 (#1017) seeds exactly two hedge-budget units; lone replies cannot earn a
+  third hedge during the three-request fallback. Assertions retain the exact range
+  send count and per-selector tag checks. A bounded reply timeout also covers an
+  incidental selector hedge consuming the budget before the planned range drop.
 
 ## Row-limit lookahead at an exact page boundary
 

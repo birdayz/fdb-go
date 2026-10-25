@@ -69,6 +69,7 @@ func TestNativeReadTagSampling(t *testing.T) {
 				switch fault {
 				case "hedge":
 					duplicateServers(&Database{db: tx.db}, 2)
+					setSecondBudget(tx.db.queueModel, 1)
 				case "alternative":
 					loc, err := tx.db.locCache.locate(tx.db, ctx, []byte(prefix+"a"), NoTenantID, types.SpanContext{}, false)
 					if err != nil || len(loc.Servers) == 0 {
@@ -85,8 +86,9 @@ func TestNativeReadTagSampling(t *testing.T) {
 					defer q.endRequest(real.Address, delta, 0, false)
 					q.mu.Lock()
 					q.getOrCreate(real.Address).smoothOutstanding.estimate = 1
-					q.getOrCreate(alias).latency = time.Hour.Seconds() // no timer hedge within the test's lifetime
 					q.mu.Unlock()
+					// A new database has no second-request budget, so the dead primary is
+					// never hedged: its failure moves on to the real server.
 					if best, next := q.chooseTopTwo(servers); best != 0 || next != 1 {
 						t.Fatalf("alternative selection = %d,%d; want dead primary then real", best, next)
 					}
@@ -170,10 +172,13 @@ func TestNativeReadTagSampling(t *testing.T) {
 			t.Cleanup(cancel)
 			tx, rec, sim, draws, rv, _ := setup(t, ctx)
 			tx.db.hedgeEnabled.Store(hedge)
+			tx.rpcTimeoutOverride = 300 * time.Millisecond
 			plan := &replyPlan{rec: rec}
 			if hedge {
-				// One planned hedge for a selector and one for the exact read.
+				// One planned hedge for a selector and one for the exact read, and a
+				// budget for exactly two.
 				duplicateServers(&Database{db: tx.db}, 2)
+				setSecondBudget(tx.db.queueModel, 2)
 				plan.entries = []plannedReply{dropReply("GetKeyRequest"), dropReply("GetKeyValuesRequest")}
 				sim.setIntercept(plan.intercept)
 				sim.armEverything()
@@ -187,14 +192,16 @@ func TestNativeReadTagSampling(t *testing.T) {
 			recorded := rec.stop()
 			got := taggedRequests(t, recorded)
 			plan.check(t)
-			// A hedge resends its request with its tags (LoadBalance.actor.h:660-662). Go also
-			// hedges a slow reply that C++'s second-request budget would not (TODO.md).
+			// A hedge resends its request with its tags (LoadBalance.actor.h:660-662).
 			sends := map[string]int{}
 			for _, r := range got {
 				sends[r.kind]++
 			}
-			// Each request goes to at most two replicas; the planned drops force a hedge of
-			// the exact read and of one selector, and the other selector may hedge too.
+			// Each request goes to at most two replicas, and the budget pays for two hedges
+			// (lone replies add 0.05 each, too few for a third). The dropped selector always
+			// hedges. A slow reply to the other selector may take the second hedge; the
+			// dropped exact read is then resent after its reply timeout instead. Either way
+			// the exact read is sent twice and the selectors three or four times.
 			wantExact, maxPerSelector := 1, 1
 			if hedge {
 				wantExact, maxPerSelector = 2, 2

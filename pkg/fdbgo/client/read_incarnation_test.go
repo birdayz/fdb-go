@@ -199,7 +199,7 @@ func TestReadReplyReadyOutranksCancellation(t *testing.T) {
 						result := waitForReply(ctx, rpc, time.Hour)
 						body, err = result.body, result.err
 					case "hedge":
-						result := sendFrameWithHedge(ctx, time.Hour, func() inFlightRPC { return rpc }, func() inFlightRPC {
+						result := sendFrameWithHedge(ctx, nil, time.Hour, func() inFlightRPC { return rpc }, func() inFlightRPC {
 							t.Error("sent secondary despite queued primary reply")
 							return other
 						}, time.Hour)

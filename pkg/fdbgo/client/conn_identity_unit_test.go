@@ -687,23 +687,23 @@ func TestHedgeResultCarriesConn(t *testing.T) {
 		}
 	}
 
-	res := sendFrameWithHedge(ctx, time.Hour, failed("a", connA), nil, time.Minute)
+	res := sendFrameWithHedge(ctx, nil, time.Hour, failed("a", connA), nil, time.Minute)
 	if !res.connErr || res.addr != "a" || res.conn != connA {
 		t.Fatalf("single request: addr %q conn %p connErr %v, want a/%p/true", res.addr, res.conn, res.connErr, connA)
 	}
 
 	// The primary fails before the hedge delay; its failure is ended as a loser.
-	res = sendFrameWithHedge(ctx, time.Hour, failed("a", connA), failed("b", connB), time.Minute)
+	res = sendFrameWithHedge(ctx, nil, time.Hour, failed("a", connA), failed("b", connB), time.Minute)
 	if res.addr != "b" || res.conn != connB || len(res.others) != 1 || res.others[0].addr != "a" || res.others[0].conn != connA {
 		t.Fatalf("failed primary: winner %q/%p others %+v", res.addr, res.conn, res.others)
 	}
 
 	// Both requests outstanding when the reply timeout fires.
-	res = sendFrameWithHedge(ctx, 0, silent("a", connA), silent("b", connB), time.Millisecond)
+	res = sendFrameWithHedge(ctx, budgetModel(1), 0, silent("a", connA), silent("b", connB), time.Millisecond)
 	if len(res.others) != 2 || res.others[0].conn != connA || res.others[1].conn != connB {
 		t.Fatalf("timeout: others %+v, want a/%p and b/%p", res.others, connA, connB)
 	}
-	res = sendFrameWithHedge(ctx, time.Hour, silent("a", connA), nil, time.Millisecond)
+	res = sendFrameWithHedge(ctx, nil, time.Hour, silent("a", connA), nil, time.Millisecond)
 	if res.conn != connA {
 		t.Fatalf("timeout of a single request: conn %p, want %p", res.conn, connA)
 	}

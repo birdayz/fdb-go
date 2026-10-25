@@ -1,6 +1,6 @@
 # RFC-281: Read hedging second-request budget
 
-**Status:** Draft
+**Status:** Implemented
 **Item:** TODO.md, "Read hedging has no second-request budget" (from #1000).
 
 ## Problem
@@ -85,8 +85,10 @@ does not, and which the C++ delay formula below would turn into instant hedges.
   C++'s last branch accrues: on the reply, or a transport failure that is not the
   caller's cancellation, of the primary before the delay or after a delay that
   found no budget, of a single-replica read, and of the fail-over request sent
-  after the primary failed. It does not accrue on race replies, nor when a paid
-  hedge fails to send and Go waits for the primary alone (the `!stream` case).
+  after the primary failed. A lone synchronous send failure also accrues, with
+  or without a secondary; a send cancelled by the caller does not. It does not
+  accrue on race replies, nor when a paid hedge fails to send and Go waits for
+  the primary alone (the `!stream` case).
   When the delay fires it first takes a primary reply that is already queued (C++
   `choose` checks the reply first), then sends the hedge only if `spendSecond`
   allows it. A Go reply timeout or a cancelled caller is not a reply and accrues
@@ -104,9 +106,10 @@ does not, and which the C++ delay formula below would turn into instant hedges.
   signatures. Its comparison runs with hedging off, so the shared budget cannot
   make the two paths' requests differ.
 - Docs and comments that describe the unbudgeted hedge are corrected: the
-  `QueueModel`, `hedgeEnabled` and `SetHedgeEnabled` comments (client and facade),
-  the `pkg/fdbgo/README.md` parity row, the TODO.md item (checked off), and the
-  test comments and `loadbalance_test.go` expectations built on the 10 ms floor.
+  `QueueModel`, `sendFrameWithHedge`, `hedgeEnabled` and `SetHedgeEnabled` comments
+  (client and facade), the `pkg/fdbgo/README.md` parity row, the TODO.md budget and
+  native-tag fallback flake items (checked off), and the test comments and
+  `loadbalance_test.go` expectations built on the 10 ms floor.
 
 Out of scope, recorded in TODO.md by this change:
 - Go picks the primary by best-of-two random choices, where C++ takes the lowest
@@ -115,7 +118,10 @@ Out of scope, recorded in TODO.md by this change:
 - In a race, Go takes the first reply even when it is a failure C++ retries
   (`process_behind`, `server_overloaded`, a transport failure); C++ keeps waiting
   for the other request and sends unpaid second requests to the remaining
-  alternatives (`:648-686`, `checkAndProcessResultImpl` `:325-378`).
+  alternatives (`:648-686`, `checkAndProcessResultImpl` `:325-378`). Lone inline
+  retryable errors likewise decode after the hedge helper returns, so they do not
+  enter its transport-error fail-over branch. This pre-existing retry gap remains
+  tracked separately from second-request budgeting.
 
 ## Performance
 
@@ -143,8 +149,9 @@ changes.
 - Unit (synctest, the `hedge_timer` seam): accrual of 0.05 and multiplier decay
   on the primary's reply before the delay, on its reply after a delay that found
   budget 0.95 (which then reaches 1.0), on a read with no backup, on a transport
-  failure and on the fail-over reply after a failed primary; none on a reply
-  timeout, on cancellation, in a race, or while
+  failure and on the fail-over reply after a failed primary, and on synchronous
+  primary/secondary send failures; none on a reply timeout, on cancellation
+  (including a cancelled send), in a race, or while
   waiting for the primary after a paid hedge failed to send; the cap at 100 and the
   floor at 1.0; spend at the delay with budget 1.0 (cost 1.0, multiplier +0.01) and
   none with 0.95; with budget 2.0 and both replies slow, exactly one hedge; the

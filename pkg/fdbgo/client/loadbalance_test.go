@@ -349,28 +349,37 @@ func TestSmootherDecay(t *testing.T) {
 	}
 }
 
+// The delay is secondMultiplier × the second alternative's latency + 0.5 ms, or
+// zero when the first alternative's latency exceeds twice that
+// (LoadBalance.actor.h:554-561).
 func TestSecondDelay(t *testing.T) {
 	t.Parallel()
 	q := newQueueModel()
-
-	// Default latency is 1ms. secondDelay = max(10ms, 2.0 × 1ms) = 10ms.
-	delay := q.secondDelay("server-a")
-	if delay < 10*time.Millisecond || delay > 11*time.Millisecond {
-		t.Fatalf("default secondDelay: got %v, want ~10ms", delay)
-	}
-
-	// Simulate a slow server (50ms latency). secondDelay = max(10ms, 2.0 × 50ms) = 100ms.
-	q.endRequestFull("server-b", 1.0, 50*time.Millisecond, true, false, -1.0)
-	delay = q.secondDelay("server-b")
-	if delay < 90*time.Millisecond || delay > 110*time.Millisecond {
-		t.Fatalf("slow server secondDelay: got %v, want ~100ms", delay)
-	}
-
-	// Very fast server (0.1ms latency). secondDelay = max(10ms, 2.0 × 0.1ms) = 10ms (clamped).
-	q.endRequestFull("server-c", 1.0, 100*time.Microsecond, true, false, -1.0)
-	delay = q.secondDelay("server-c")
-	if delay < 9*time.Millisecond || delay > 11*time.Millisecond {
-		t.Fatalf("fast server secondDelay: got %v, want ~10ms (clamped)", delay)
+	q.endRequestFull("slow", 1.0, 50*time.Millisecond, true, false, -1.0)
+	q.endRequestFull("fast", 1.0, 100*time.Microsecond, true, false, -1.0)
+	q.endRequestFull("edge", 1.0, 3*time.Millisecond, true, false, -1.0) // exactly 2 × (1 × 1 ms + 0.5 ms)
+	for _, tc := range []struct {
+		name        string
+		best, next  string
+		multiplier  float64
+		wantSeconds float64
+	}{
+		{"fresh", "a", "b", 1, 0.0015},                // 1 × the initial 1 ms + 0.5 ms
+		{"slow-next", "a", "slow", 1, 0.0505},         // never clamped to a floor
+		{"fast-next", "a", "fast", 1, 0.0006},         // 0.1 ms + 0.5 ms
+		{"multiplier", "a", "slow", 1.5, 0.0755},      // 1.5 × 50 ms + 0.5 ms
+		{"instant", "slow", "b", 1, 0},                // 50 ms > 2 × 1.5 ms
+		{"instant-multiplier", "slow", "fast", 2, 0},  // 50 ms > 2 × (2 × 0.1 ms + 0.5 ms)
+		{"not-instant-at-bound", "edge", "b", 1, 0.0015}, // 3 ms is not > 3 ms
+	} {
+		q.mu.Lock()
+		q.secondMultiplier = tc.multiplier
+		q.mu.Unlock()
+		got := q.secondDelay(tc.best, tc.next)
+		want := time.Duration(tc.wantSeconds * float64(time.Second))
+		if diff := got - want; diff < -time.Nanosecond || diff > time.Nanosecond {
+			t.Errorf("%s: secondDelay(%s, %s) = %v, want %v", tc.name, tc.best, tc.next, got, want)
+		}
 	}
 }
 

@@ -4536,3 +4536,22 @@ conflicts. Snapshot and CGo facade transactions do not expose this capability.
 It is distinct from ordinary index cursor Skip; Record Layer remote-fetch scans
 continue routing positive Skip to SCAN_AND_FETCH, and index plans keep it above
 their remote-fetch leaves.
+
+## Native FDB client read hedging
+
+RFC-281 (#1017) aligns the second-request budget and adaptive delay with
+libfdb_c 7.3.77 (`QueueModel.h:121`, `LoadBalance.actor.h:554-563,694-716`):
+new databases start at zero budget; lone replies earn 0.05 up to 100; a hedge
+costs 1 and raises the delay multiplier by 0.01; lone replies decay it by
+0.00025 toward 1. Watches neither accrue budget nor record read latency.
+`SetHedgeEnabled(false)` remains a Go control that suppresses hedges while
+allowing lone replies to accrue budget.
+
+Remaining differences are tracked in TODO.md: Go chooses the primary by
+best-of-two random rather than C++'s minimum outstanding depth, and retryable
+reply handling does not implement C++'s full alternative loop (including
+continuing after a failed hedge, and decoding lone inline errors before
+choosing another alternative). The budget tests do not claim to close these
+selection/retry gaps. Single-replica wire goldens and data-plane differentials
+remain useful but cannot measure speculative duplicate requests; the budget
+regressions use two storage-server aliases and held replies against real FDB.

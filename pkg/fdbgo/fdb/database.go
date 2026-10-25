@@ -506,8 +506,10 @@ func (db Database) Options() DatabaseOptions {
 }
 
 // SetHedgeEnabled controls speculative second requests (hedge) for read RPCs.
-// When enabled (default), slow reads are rescued by sending a backup request
-// to a second server after max(10ms, 2×latency).
+// When enabled (default), a read whose first reply is slow sends the same
+// request to a second replica as libfdb_c does: only while the second-request
+// budget, earned at 0.05 per unhedged reply, covers it. A new database has no
+// budget. Disabled, no read sends a second request; the budget still accrues.
 func (db Database) SetHedgeEnabled(enabled bool) {
 	db.d.inner.SetHedgeEnabled(enabled)
 }

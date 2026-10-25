@@ -13,15 +13,20 @@ import (
 // server from a shard's replica set.
 //
 // Matches C++ QueueModel in fdbclient/QueueModel.h:
-// - Smoother-based continuous exponential decay (eFoldingTime=2s)
-// - Server penalty from LoadBalancedReply
-// - failedUntil with exponential backoff for future_version errors
+//   - Smoother-based continuous exponential decay (eFoldingTime=2s)
+//   - Server penalty from LoadBalancedReply
+//   - failedUntil with exponential backoff for future_version errors
+//   - secondMultiplier and secondBudget, which time and pay for a read's second
+//     request (LoadBalance.actor.h:554-563, :694-716)
 //
-// Selection metric: smoothOutstanding.smoothTotal() (lower = better). secondDelay
-// has no secondBudget or adaptive secondMultiplier (TODO.md).
+// Selection metric: smoothOutstanding.smoothTotal() (lower = better).
 type QueueModel struct {
 	mu      sync.Mutex
 	servers map[string]*queueData
+
+	// C++ QueueModel::secondMultiplier and secondBudget (QueueModel.h:103-104,121).
+	secondMultiplier float64
+	secondBudget     float64
 
 	// failMon, when set, is the connection failure monitor consulted BEFORE the
 	// per-server QueueModel backoff in chooseServer/chooseTopTwo, matching C++
@@ -65,15 +70,19 @@ const (
 	futureVersionMaxBackoff     = 8.0 // FUTURE_VERSION_MAX_BACKOFF (growth capped here)
 	futureVersionBackoffGrowth  = 2.0 // BACKOFF_GROWTH_RATE
 
-	// Speculative second request: Go-only fixed values; C++ adapts secondMultiplier
-	// and gates on secondBudget (TODO.md, "Read hedging has no second-request budget").
-	backupRequestDelay = 0.01 // 10ms minimum hedge delay
-	secondMultiplier   = 2.0  // latency × this = hedge delay
+	// Second request FLOW_KNOBS (flow/Knobs.cpp:278-283).
+	instantSecondRequestMultiplier = 2.0     // INSTANT_SECOND_REQUEST_MULTIPLIER
+	baseSecondRequestTime          = 0.0005  // BASE_SECOND_REQUEST_TIME, seconds
+	secondRequestMultiplierGrowth  = 0.01    // SECOND_REQUEST_MULTIPLIER_GROWTH
+	secondRequestMultiplierDecay   = 0.00025 // SECOND_REQUEST_MULTIPLIER_DECAY
+	secondRequestBudgetGrowth      = 0.05    // SECOND_REQUEST_BUDGET_GROWTH
+	secondRequestMaxBudget         = 100.0   // SECOND_REQUEST_MAX_BUDGET
 )
 
 func newQueueModel() *QueueModel {
 	return &QueueModel{
-		servers: make(map[string]*queueData),
+		servers:          make(map[string]*queueData),
+		secondMultiplier: 1.0,
 	}
 }
 
@@ -181,20 +190,48 @@ func (q *QueueModel) soonestEligible(servers []ServerInfo) int {
 	return bestIdx
 }
 
-// secondDelay returns the hedge delay, max(backupRequestDelay, secondMultiplier ×
-// the best server's latency). C++ uses an adaptive multiplier times the second-best
-// alternative's latency plus BASE_SECOND_REQUEST_TIME (LoadBalance.actor.h:554-560).
-func (q *QueueModel) secondDelay(addr string) time.Duration {
+// secondDelay is how long a read waits for the first alternative before its
+// second request: secondMultiplier × the second alternative's latency +
+// BASE_SECOND_REQUEST_TIME, or zero when the first alternative's latency exceeds
+// INSTANT_SECOND_REQUEST_MULTIPLIER times that (LoadBalance.actor.h:554-561).
+func (q *QueueModel) secondDelay(bestAddr, nextAddr string) time.Duration {
 	q.mu.Lock()
-	d := q.getOrCreate(addr)
-	lat := d.latency
+	bestTime := q.getOrCreate(bestAddr).latency
+	delay := q.secondMultiplier*q.getOrCreate(nextAddr).latency + baseSecondRequestTime
 	q.mu.Unlock()
-
-	delay := secondMultiplier * lat
-	if delay < backupRequestDelay {
-		delay = backupRequestDelay
+	if bestTime > instantSecondRequestMultiplier*delay {
+		return 0
 	}
 	return time.Duration(delay * float64(time.Second))
+}
+
+// firstReplied is loadBalance's update when a request sent with no other
+// outstanding gets its reply before a second request was sent
+// (LoadBalance.actor.h:694-701). A nil model is loadBalance without one.
+func (q *QueueModel) firstReplied() {
+	if q == nil {
+		return
+	}
+	q.mu.Lock()
+	q.secondMultiplier = math.Max(q.secondMultiplier-secondRequestMultiplierDecay, 1.0)
+	q.secondBudget = math.Min(q.secondBudget+secondRequestBudgetGrowth, secondRequestMaxBudget)
+	q.mu.Unlock()
+}
+
+// spendSecond pays for a second request when the delay fires, if the budget
+// allows one (LoadBalance.actor.h:710-716). A nil model never sends one (:563).
+func (q *QueueModel) spendSecond() bool {
+	if q == nil {
+		return false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.secondBudget < 1.0 {
+		return false
+	}
+	q.secondMultiplier += secondRequestMultiplierGrowth
+	q.secondBudget -= 1.0
+	return true
 }
 
 // chooseTopTwo picks a primary and backup server for hedged reads.
