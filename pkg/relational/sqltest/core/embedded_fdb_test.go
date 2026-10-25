@@ -2731,7 +2731,7 @@ func TestFDB_AggregateWithoutGroupBy(t *testing.T) {
 // SUM(qty)=10 / COUNT(*)=3 emerged as 3.333... while Java returned 3.
 // The dual-accumulator path (sumsI int64 + sumNonInt bool flag) emits
 // int64 when every observed value is integral; subsequent int64 / int64
-// arithmetic in `ApplyMathOp` yields the integer-divided result.
+// arithmetic yields the integer-divided result.
 func TestFDB_SumIntegerDivision(t *testing.T) {
 	t.Parallel()
 
@@ -2783,7 +2783,7 @@ func TestFDB_SumIntegerDivision(t *testing.T) {
 // TestFDB_BareBoolProjection pins Java-aligned bare-boolean operand
 // behaviour in SELECT projection. `SELECT b AND TRUE`, `SELECT NOT b`,
 // `SELECT b OR FALSE` over a BOOLEAN column evaluate the column as a
-// value (via IsTruthy) rather than rejecting with "expected
+// value rather than rejecting with "expected
 // BooleanValue but got FieldValue". Top-level `WHERE b` now plans too
 // (RFC-146): it lifts to `b = TRUE`, matching Java 4.12.
 func TestFDB_BareBoolProjection(t *testing.T) {

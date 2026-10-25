@@ -129,10 +129,10 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	// Build TranslationMap and qunsToPushDown map.
+	// Quantifiers to push down, in quantifier order as Java's ImmutableMap keeps them.
 	tmBuilder := NewTranslationMapBuilder()
 	valuesBoxIdxSet := map[int]bool{}
-	qunsToPushDown := make(map[values.CorrelationIdentifier]expressions.Quantifier, len(valuesBoxes))
+	qunsToPushDown := make([]expressions.Quantifier, 0, len(valuesBoxes))
 
 	for _, vb := range valuesBoxes {
 		valuesBoxIdxSet[vb.idx] = true
@@ -140,7 +140,7 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 		tmBuilder.When(vb.alias).Then(func(_ values.CorrelationIdentifier, _ values.LeafValue) values.Value {
 			return capturedResult
 		})
-		qunsToPushDown[vb.alias] = vb.quantifierToPush
+		qunsToPushDown = append(qunsToPushDown, vb.quantifierToPush)
 	}
 	tm := tmBuilder.Build()
 
@@ -166,10 +166,7 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 
 	// Push values boxes into child quantifiers and build the new
 	// quantifier list.
-	pushDownAliasSet := make(map[values.CorrelationIdentifier]struct{}, len(qunsToPushDown))
-	for alias := range qunsToPushDown {
-		pushDownAliasSet[alias] = struct{}{}
-	}
+	pushDownAliasSet := pushedAliasSet(qunsToPushDown)
 
 	newQuantifiers := make([]expressions.Quantifier, 0, max(1, len(quantifiers)-len(valuesBoxes)))
 	if len(quantifiers) == len(valuesBoxes) {
@@ -249,6 +246,14 @@ func (r *DecorrelateValuesRule) OnMatch(call *ExpressionRuleCall) {
 	call.Yield(merged)
 }
 
+func pushedAliasSet(qs []expressions.Quantifier) map[values.CorrelationIdentifier]struct{} {
+	aliases := make(map[values.CorrelationIdentifier]struct{}, len(qs))
+	for _, q := range qs {
+		aliases[q.GetAlias()] = struct{}{}
+	}
+	return aliases
+}
+
 // expressionCorrelatedToAliases returns the subset of aliases that the
 // given expression (including its transitive children) is correlated to.
 func expressionCorrelatedToAliases(
@@ -270,7 +275,7 @@ func expressionCorrelatedToAliases(
 // values box quantifiers into it. Mirrors Java's PushValuesIntoVisitor.
 func pushValuesIntoExpression(
 	expr expressions.RelationalExpression,
-	qunsToPushDown map[values.CorrelationIdentifier]expressions.Quantifier,
+	qunsToPushDown []expressions.Quantifier,
 	tm TranslationMap,
 	call *ExpressionRuleCall,
 ) (expressions.RelationalExpression, error) {
@@ -306,7 +311,7 @@ func pushValuesIntoExpression(
 // the expression is actually correlated to.
 func selectWithQuantifiersPushed(
 	expr expressions.RelationalExpression,
-	qunsToPushDown map[values.CorrelationIdentifier]expressions.Quantifier,
+	qunsToPushDown []expressions.Quantifier,
 	resultValue values.Value,
 	quantifierBase []expressions.Quantifier,
 	preds []predicates.QueryPredicate,
@@ -333,14 +338,11 @@ func selectWithQuantifiersPushed(
 // correlations.
 func pushValuesDefault(
 	expr expressions.RelationalExpression,
-	qunsToPushDown map[values.CorrelationIdentifier]expressions.Quantifier,
+	qunsToPushDown []expressions.Quantifier,
 	tm TranslationMap,
 	call *ExpressionRuleCall,
 ) (expressions.RelationalExpression, error) {
-	pushDownAliasSet := make(map[values.CorrelationIdentifier]struct{}, len(qunsToPushDown))
-	for alias := range qunsToPushDown {
-		pushDownAliasSet[alias] = struct{}{}
-	}
+	pushDownAliasSet := pushedAliasSet(qunsToPushDown)
 
 	origQs := expr.GetQuantifiers()
 	newQs := make([]expressions.Quantifier, 0, len(origQs))
@@ -368,7 +370,7 @@ func pushValuesDefault(
 // values box. Returns the original quantifier if uncorrelated.
 func pushOnTopOfQuantifier(
 	childQ expressions.Quantifier,
-	qunsToPushDown map[values.CorrelationIdentifier]expressions.Quantifier,
+	qunsToPushDown []expressions.Quantifier,
 	pushDownAliasSet map[values.CorrelationIdentifier]struct{},
 	call *ExpressionRuleCall,
 ) (expressions.Quantifier, error) {

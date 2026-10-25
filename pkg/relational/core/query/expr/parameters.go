@@ -61,6 +61,15 @@ func specialize(v values.Value) (values.Value, bool) {
 	return c.literal, true
 }
 
+// PinConstants pins every statement-pool literal under v: a decision made from
+// their values must not reach a cached plan's other bindings.
+func PinConstants(v values.Value) {
+	values.WalkValue(v, func(n values.Value) bool {
+		specialize(n)
+		return true
+	})
+}
+
 // specializeCrossTypeComparands pins numeric cross-type comparands, which the
 // SARG coercions rewrite from their value; STRING-to-ENUM/UUID promotes at run time.
 func specializeCrossTypeComparands(left, right values.Value) (values.Value, values.Value) {

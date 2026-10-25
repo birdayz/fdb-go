@@ -6,9 +6,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
-	"math"
 	"reflect"
-	"strconv"
 	"testing"
 
 	fdb "fdb.dev/pkg/fdbgo/fdb"
@@ -253,93 +251,6 @@ func TestEmbeddedConnection_IsValid(t *testing.T) {
 	}
 }
 
-// FuzzApplyMathOp pins the arithmetic evaluator. The function must never
-// panic, must reject non-numeric operands cleanly, must propagate NULL, and
-// must error on div/0 for both `/` and `%` (one unified code path).
-func FuzzApplyMathOp(f *testing.F) {
-	f.Add(int64(7), int64(3), "+")
-	f.Add(int64(7), int64(3), "-")
-	f.Add(int64(7), int64(3), "*")
-	f.Add(int64(7), int64(3), "/")
-	f.Add(int64(7), int64(3), "%")
-	// Division by zero.
-	f.Add(int64(1), int64(0), "/")
-	f.Add(int64(1), int64(0), "%")
-	// Unknown op.
-	f.Add(int64(1), int64(2), "@")
-	// Mixed int/float shouldn't panic — we pass only int64 to the int64 fuzz,
-	// but the NULL-on-either-side path is critical.
-	f.Fuzz(func(t *testing.T, a, b int64, op string) {
-		_, err := functions.ApplyMathOp(a, b, op)
-		_ = err
-		// NULL propagation on left, right, and both.
-		for _, pair := range []struct{ l, r any }{{nil, b}, {a, nil}, {nil, nil}} {
-			v, err := functions.ApplyMathOp(pair.l, pair.r, op)
-			if err != nil || v != nil {
-				t.Fatalf("functions.ApplyMathOp(%v, %v, %q) = (%v, %v), want (nil, nil)",
-					pair.l, pair.r, op, v, err)
-			}
-		}
-		// A string operand: `+` CONCATENATES per Java's ADD string family
-		// (ArithmeticValue.java ADD_SI..ADD_SS — "bad" + 3 is "bad3");
-		// every other operator must error cleanly.
-		v, err := functions.ApplyMathOp("bad", b, op)
-		if op == "+" {
-			want := "bad" + strconv.FormatInt(b, 10)
-			if err != nil || v != want {
-				t.Fatalf("functions.ApplyMathOp(string, %d, +) = (%v, %v), want (%q, nil)", b, v, err, want)
-			}
-		} else if err == nil {
-			t.Fatalf("functions.ApplyMathOp(string, _, %q) must error", op)
-		}
-	})
-}
-
-// FuzzApplyBitOp pins the bitwise-operator implementation. The function
-// must never panic, must reject non-integer operands cleanly, must
-// propagate NULL, and must consistently reject the shift operators
-// `<<` / `>>` per Java alignment (Java tokenizes
-// the shift operators but its function registry has no evaluator).
-func FuzzApplyBitOp(f *testing.F) {
-	f.Add(int64(7), int64(3), "&")
-	f.Add(int64(7), int64(3), "|")
-	f.Add(int64(7), int64(3), "^")
-	// Shift seeds — these used to evaluate; now always reject (Java parity).
-	f.Add(int64(7), int64(2), "<<")
-	f.Add(int64(7), int64(1), ">>")
-	f.Add(int64(1), int64(64), "<<")
-	f.Add(int64(1), int64(-1), "<<")
-	f.Add(int64(-1), int64(63), ">>")
-	// Unknown op.
-	f.Add(int64(1), int64(2), "@")
-	f.Fuzz(func(t *testing.T, a, b int64, op string) {
-		// Must not panic. Either returns a value+nil, NULL+nil, or value+error.
-		_, err := functions.ApplyBitOp(a, b, op)
-		_ = err // accept any error
-		// Also try with NULL operands; those must always return nil, nil
-		// regardless of the op (NULL propagates first).
-		v, err := functions.ApplyBitOp(nil, b, op)
-		if err != nil || v != nil {
-			t.Fatalf("functions.ApplyBitOp(nil, _) = (%v, %v), want (nil, nil)", v, err)
-		}
-		v, err = functions.ApplyBitOp(a, nil, op)
-		if err != nil || v != nil {
-			t.Fatalf("functions.ApplyBitOp(_, nil) = (%v, %v), want (nil, nil)", v, err)
-		}
-		// Non-integer operand must error cleanly, not panic.
-		if _, err := functions.ApplyBitOp("string", b, op); err == nil {
-			t.Fatalf("functions.ApplyBitOp(string, _) must error")
-		}
-		// Shift operators are always rejected (Java parity).
-		if op == "<<" || op == ">>" {
-			_, shErr := functions.ApplyBitOp(a, b, op)
-			if shErr == nil {
-				t.Fatalf("functions.ApplyBitOp(%d, %d, %q) must error (shift operators are always rejected, Java parity)", a, b, op)
-			}
-		}
-	})
-}
-
 // FuzzCompareValues pins core algebraic invariants of the SQL
 // three-valued compare function — antisymmetry, reflexivity,
 // no-panic — across every value-type combination that flows through
@@ -442,69 +353,4 @@ func FuzzCompareValues(f *testing.F) {
 			t.Fatalf("CompareValues(false, true) = %d, want -1", r)
 		}
 	})
-}
-
-// TestInt64CheckedArithmetic pins the overflow semantics of the
-// helpers behind applyMathOp's int64 fast-path. They mirror Java's
-// Math.addExact / subtractExact / multiplyExact — the moment the true
-// mathematical result doesn't fit in a signed 64-bit integer, the
-// operation reports overflow rather than silently wrapping.
-func TestInt64CheckedArithmetic(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name   string
-		op     func(a, b int64) (int64, bool)
-		a, b   int64
-		want   int64
-		wantOK bool
-	}{
-		// Add
-		{"add/ok", functions.AddInt64Checked, 1, 2, 3, true},
-		{"add/zero", functions.AddInt64Checked, 0, 0, 0, true},
-		{"add/negatives", functions.AddInt64Checked, -3, -4, -7, true},
-		{"add/max+0", functions.AddInt64Checked, math.MaxInt64, 0, math.MaxInt64, true},
-		{"add/max+1", functions.AddInt64Checked, math.MaxInt64, 1, 0, false},
-		{"add/max+max", functions.AddInt64Checked, math.MaxInt64, math.MaxInt64, 0, false},
-		{"add/min-1", functions.AddInt64Checked, math.MinInt64, -1, 0, false},
-		{"add/min+min", functions.AddInt64Checked, math.MinInt64, math.MinInt64, 0, false},
-		// Cross-sign cannot overflow.
-		{"add/max-1", functions.AddInt64Checked, math.MaxInt64, -1, math.MaxInt64 - 1, true},
-		{"add/min+1", functions.AddInt64Checked, math.MinInt64, 1, math.MinInt64 + 1, true},
-		// Sub
-		{"sub/ok", functions.SubInt64Checked, 5, 3, 2, true},
-		{"sub/zero", functions.SubInt64Checked, 0, 0, 0, true},
-		{"sub/max-max", functions.SubInt64Checked, math.MaxInt64, math.MaxInt64, 0, true},
-		{"sub/min-min", functions.SubInt64Checked, math.MinInt64, math.MinInt64, 0, true},
-		{"sub/min-1", functions.SubInt64Checked, math.MinInt64, 1, 0, false},
-		{"sub/min-max", functions.SubInt64Checked, math.MinInt64, math.MaxInt64, 0, false},
-		{"sub/max-(-1)", functions.SubInt64Checked, math.MaxInt64, -1, 0, false},
-		// Same-sign subtraction cannot overflow.
-		{"sub/max-1", functions.SubInt64Checked, math.MaxInt64, 1, math.MaxInt64 - 1, true},
-		{"sub/min-(-1)", functions.SubInt64Checked, math.MinInt64, -1, math.MinInt64 + 1, true},
-		// Mul
-		{"mul/zero.l", functions.MulInt64Checked, 0, math.MaxInt64, 0, true},
-		{"mul/zero.r", functions.MulInt64Checked, math.MinInt64, 0, 0, true},
-		{"mul/small", functions.MulInt64Checked, 7, 8, 56, true},
-		{"mul/neg", functions.MulInt64Checked, -7, 8, -56, true},
-		{"mul/min*-1", functions.MulInt64Checked, math.MinInt64, -1, 0, false},
-		{"mul/-1*min", functions.MulInt64Checked, -1, math.MinInt64, 0, false},
-		{"mul/min*1", functions.MulInt64Checked, math.MinInt64, 1, math.MinInt64, true},
-		{"mul/max*2", functions.MulInt64Checked, math.MaxInt64, 2, 0, false},
-		{"mul/half*3", functions.MulInt64Checked, math.MaxInt64 / 2, 3, 0, false},
-		{"mul/half*2", functions.MulInt64Checked, math.MaxInt64 / 2, 2, (math.MaxInt64 / 2) * 2, true},
-	}
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got, ok := tc.op(tc.a, tc.b)
-			if ok != tc.wantOK {
-				t.Fatalf("ok = %v, want %v (a=%d b=%d got=%d)", ok, tc.wantOK, tc.a, tc.b, got)
-			}
-			if tc.wantOK && got != tc.want {
-				t.Fatalf("result = %d, want %d", got, tc.want)
-			}
-		})
-	}
 }

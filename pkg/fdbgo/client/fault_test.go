@@ -923,6 +923,78 @@ func TestPipelinedGet_Resolve_FlushErrorRetries(t *testing.T) {
 	}
 }
 
+// A pipelined read resolved after its connection A died and the pool redialed B
+// reports A from its flush and reply arms; B must stay open and its address alive.
+func TestPipelinedGet_LateFailureKeepsReplacement(t *testing.T) {
+	t.Parallel()
+	for _, arm := range []string{"flush", "reply"} {
+		t.Run(arm, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			db := openTestDB(t, ctx)
+			defer db.Close()
+
+			key := []byte(t.Name() + "_key")
+			want := []byte("value")
+			if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+				tx.Set(key, want)
+				return nil, nil
+			}); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			tx := db.CreateTransaction()
+			if err := tx.ensureReadVersion(ctx); err != nil {
+				t.Fatalf("read version: %v", err)
+			}
+
+			addr := storageAddrFor(t, db, ctx, key)
+			a, err := db.db.getOrDial(ctx, addr)
+			if err != nil {
+				t.Fatalf("dial %s: %v", addr, err)
+			}
+			a.Close()
+			b, err := db.db.getOrDial(ctx, addr) // the pool replaces the dead connection
+			if err != nil || b == a {
+				t.Fatalf("redial %s: %v (same connection: %v)", addr, err, b == a)
+			}
+
+			p := &PendingGet{
+				key:         key,
+				tx:          tx,
+				addr:        addr,
+				conn:        a,
+				replyHandle: &transport.ReplyHandle{},
+				ctx:         ctx,
+				timer:       getTimer(10 * time.Minute),
+			}
+			if arm == "flush" {
+				_ = a.SendFrameDeferred(transport.UID{First: 1}, []byte{0}) // the flush finds A dead
+				p.replyCh = make(chan transport.Response)
+			} else {
+				replies := make(chan transport.Response, 1)
+				replies <- transport.Response{Err: transport.ErrConnClosed}
+				p.replyCh = replies
+				p.flushed = true
+			}
+			failures := db.db.metrics.Snapshot().ClientConnectionFailures
+			got, err := p.Resolve()
+			if err != nil || string(got) != string(want) {
+				t.Fatalf("Resolve = %q, %v; want %q", got, err, want)
+			}
+			if n := db.db.metrics.Snapshot().ClientConnectionFailures - failures; n != 1 {
+				t.Fatalf("ClientConnectionFailures grew by %d, want 1: the read must report A", n)
+			}
+			if b.IsClosed() {
+				t.Fatal("the late report about A closed its replacement B")
+			}
+			if db.db.failMon.isFailed(addr) {
+				t.Fatal("the late report about A marked the reachable address failed")
+			}
+		})
+	}
+}
+
 // TestRead_BoundedByTimeout_NoHang pins that a read whose proxies / storage servers
 // never reply (a wedged or dead cluster) is bounded by the transaction timeout: it
 // returns transaction_timed_out (1031) within the deadline instead of retrying the

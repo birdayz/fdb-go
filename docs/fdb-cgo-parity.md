@@ -62,9 +62,13 @@ Four trivial package functions Apple had and we lacked:
 - **Absent by design:** `NetworkOptions` (no global network thread to configure),
   `Cluster` (legacy, gone from modern Apple too), `ErrorPredicate` (we expose
   `IsRetryable` / `IsOnErrorRetryable` functions instead of the predicate type).
+- **`Error.Error()` text differs:** `"<description> (<code>)"` (or
+  `"FoundationDB error: <code>"` without a description) where Apple's is
+  `"FoundationDB error code <code> (<description>)"`. Match on `Error.Code`, not the text.
 
 ## Verdict
 
 Apple-binding code ports with minimal changes: select the API version, open a
-database, and use the same transaction methods. The only routine edit is the
-`Transact` callback parameter type. No missing core capability was found.
+database, and use the same transaction methods. The routine edit is the
+`Transact` callback parameter type; code that matches error text must match `Error.Code`
+instead. No missing core capability was found.

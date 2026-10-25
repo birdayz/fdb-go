@@ -18,7 +18,7 @@ an error instead: a planner bug must fail the QUERY, never the process. This is 
 (`RecordCoreException` propagates through the cursor future chain as a recoverable error) and
 it matters because exported executor entry points (`ExecutePlan`) deliberately have **no**
 recover boundary — direct Record Layer API clients would crash on what SQL clients survive
-only via the `cascades_generator.go` boundary recover.
+only via the SQL connection's boundary recover (`recoverInto`, which `Rows.Next` defers).
 
 ## The gate (RFC-134) — this is what keeps the discipline honest
 
@@ -81,13 +81,14 @@ allowlist (file → permitted AST count). Keep the two in sync.
 | `pkg/fdbgo/fdb/transaction.go` | 1 | `Transact` closure boundary |
 | `pkg/fdbgo/libfdbc/backend.go` | 1 | cgo libfdb_c backend: translate cgo/callback panics to Go errors (`cgo && libfdbc` only) |
 | `pkg/relational/core/parser/parser.go` | 4 | ANTLR bailout panic → syntax error |
-| `pkg/relational/core/embedded/connection.go` | 2 | public SQL connection API: panic → SQL error |
-| `pkg/relational/core/embedded/cascades_generator.go` | 1 | executor eval bridge: panic → SQL error |
+| `pkg/relational/core/embedded/connection.go` | 1 | public SQL connection API: panic → SQL error (`recoverInto`, deferred by every exported connection, transaction, result-set and DirectAccess entry; it closes the connection) |
+| `pkg/relational/sqldriver/driver.go` | 1 | `Connector.Connect`: a panic initializing the connector → SQL internal error; the next `Connect` initializes again |
 | `pkg/recordlayer/merge_cursor.go` | 1 | `tuple.Pack()` on user-derived comparison keys → cursor error |
 | `pkg/recordlayer/query/plan/cascades/values/required_bindings.go` | 1 | RFC-232 binding admission: a hostile implementation of the open `Value` interface → typed `LayoutForeignValue` error |
 | `cmd/fdb-stacktester/directory_ops.go` | 1 | binding-tester harness binary (cgo-dependent build) |
 | `pkg/relational/conformance/explaindiff/explaindiff.go` | 1 | RFC-183 EXPLAIN-differ: a planner panic on one corpus query → `<PLAN-PANIC: …>` marker, so the corpus-wide dump completes instead of aborting. Surfaced, not swallowed: `TestNoPlanPanics` fails on any marker. |
 | `cmd/dst-hunt/main.go` | 1 | RFC-199 DST overnight hunter: a panicking seed → recorded finding, sweep continues (never aborts an unattended run). Surfaced on the finding, never swallowed. |
+| `pkg/testcontainers/foundationdb/docker.go` | 1 | FDB testcontainer Docker probe: testcontainers' Docker-host discovery panics on a machine without Docker → `*DockerUnavailableError`, so a suite skips only when the daemon is absent. A non-error panic, or one naming any other failure, stays an ordinary error. |
 | `internal/unicode15/text/internal/language/language.go` | 5 | Frozen x/text locale component parsers: malformed input → existing syntax error, preserving RFC-265 key behavior. |
 | `internal/unicode15/text/internal/language/parse.go` | 1 | Frozen locale parser: malformed input → `ErrSyntax`. |
 | `internal/unicode15/text/language/parse.go` | 3 | Frozen public tag/base/region parsers: malformed input → existing typed syntax errors. |

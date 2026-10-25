@@ -399,7 +399,7 @@ func TestClientMetrics_ConnectionFailureVisible(t *testing.T) {
 	db := &database{logger: slog.New(h), failMon: newFailureMonitor()}
 
 	const addr = "10.0.0.7:4500"
-	db.handleConnError(addr)
+	db.handleConnError(addr, nil)
 
 	if c := db.metrics.Snapshot().ClientConnectionFailures; c != 1 {
 		t.Errorf("ClientConnectionFailures = %d, want 1", c)
@@ -429,7 +429,7 @@ func TestClientMetrics_ConnectionFailureVisible(t *testing.T) {
 
 	// Storm hygiene: a repeat failure on the same (still-failed) endpoint ticks the
 	// COUNTER (rate signal) but does NOT re-Warn (edge-triggered, no log melt).
-	db.handleConnError(addr)
+	db.handleConnError(addr, nil)
 	if c := db.metrics.Snapshot().ClientConnectionFailures; c != 2 {
 		t.Errorf("ClientConnectionFailures = %d after a repeat, want 2 (counter ticks every event)", c)
 	}
@@ -438,7 +438,7 @@ func TestClientMetrics_ConnectionFailureVisible(t *testing.T) {
 	}
 	// Recovery re-arms the edge: a failure after markAlive Warns again.
 	db.failMon.markAlive(addr)
-	db.handleConnError(addr)
+	db.handleConnError(addr, nil)
 	if got := h.count(); got != 2 {
 		t.Errorf("Warn count = %d after recover→fail, want 2 (re-armed)", got)
 	}

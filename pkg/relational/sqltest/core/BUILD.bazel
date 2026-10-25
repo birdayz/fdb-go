@@ -10,6 +10,7 @@ go_test(
         "current_timestamp_join_shapes_test.go",
         "current_timestamp_stability_test.go",
         "direct_access_fdb_test.go",
+        "driver_robustness_fdb_test.go",
         "embedded_fdb_test.go",
         "fleet_fanout_fdb_test.go",
         "main_test.go",

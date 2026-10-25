@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "cleanup.go",
         "cluster.go",
+        "docker.go",
         "foundationdb.go",
         "options.go",
         "startup_diagnostics.go",
@@ -26,9 +27,9 @@ go_library(
 # cluster, and it was the ONE container-spinning target in the repo still on
 # Bazel's default (medium, 300s) — every sibling that spins containers declares
 # a longer one (//pkg/recordlayer is "long"). Measured 2026-08-20 on this tree:
-# 18s alone (3/3 runs), and killed at 300s under `bazelisk test //...` with
-# .bazelrc's --local_test_jobs=4, hung inside a Docker exec stream read while
-# the machine ran four other container-heavy targets.
+# 18s alone (3/3 runs), and killed at 300s under `bazelisk test //...` at four
+# concurrent tests, hung inside a Docker exec stream read while the machine ran
+# four other container-heavy targets.
 #
 # Under-declaring is a defect in the safety net, not a tuning detail: a target
 # killed by its own budget under legitimate load reads as a flake, and "unrelated
@@ -43,6 +44,7 @@ go_test(
         "cleanup_test.go",
         "cluster_test.go",
         "database_test.go",
+        "docker_test.go",
         "examples_test.go",
         "exec_deadline_test.go",
         "file_allocation_test.go",
@@ -53,6 +55,8 @@ go_test(
         "retry_test.go",
         "startup_diagnostics_test.go",
     ],
+    # docker_test.go pins the testcontainers release its error matching was read from.
+    data = ["//:go.mod"],
     embed = [":foundationdb"],
     tags = ["resources:memory:1100"],
     deps = [
@@ -63,6 +67,7 @@ go_test(
         "//pkg/recordlayer",
         "@com_github_containerd_errdefs//:errdefs",
         "@com_github_docker_docker//api/types/container",
+        "@com_github_docker_docker//client",
         "@com_github_onsi_gomega//:gomega",
         "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@com_github_testcontainers_testcontainers_go//exec",
