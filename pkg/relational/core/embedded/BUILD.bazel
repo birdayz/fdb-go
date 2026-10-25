@@ -119,6 +119,7 @@ go_test(
     # number to re-measure if this starts warning is the star, not the box.
     timeout = "long",
     srcs = [
+        "abort_panic_test.go",
         "agg_output_cols_nullability_test.go",
         "aggregate_call_provenance_test.go",
         "aggregate_distinct_latent_bind_test.go",
@@ -577,6 +578,7 @@ go_test(
         "reset_session_settings_test.go",
         "groupby_duplicate_gate_typed_test.go",
         "explicit_tx_sql_test.go",
+        "abort_panic_test.go",
     ],
     tags = ["resources:cpu:4"],
     deps = [

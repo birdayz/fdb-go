@@ -67,8 +67,9 @@ func TestStorageRequestsCarryOperationVersion(t *testing.T) {
 	_, _, _ = tx.getMappedRangeImpl(ctx, begin, end, mapper, 0, ByteLimitUnlimited, older, false)
 	_, _ = tx.getMappedRangeSelectors(ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), mapper, newMappedRangeLimits(0, ByteLimitUnlimited), older, false)
 	rec := recorder.stop()
-	if len(rec.problems) > 0 {
-		t.Fatalf("recorder problems:\n%s", strings.Join(rec.problems, "\n"))
+	// readProblems drops the coordinator long poll, which may re-send at any time.
+	if problems := rec.readProblems(); len(problems) > 0 {
+		t.Fatalf("recorder problems:\n%s", strings.Join(problems, "\n"))
 	}
 
 	// The recorder numbers versions in order of appearance; every storage
@@ -125,8 +126,8 @@ func TestExactRangeMinRowsOnStorage(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(recorded.problems) > 0 {
-				t.Fatalf("recorder problems:\n%s", strings.Join(recorded.problems, "\n"))
+			if problems := recorded.readProblems(); len(problems) > 0 {
+				t.Fatalf("recorder problems:\n%s", strings.Join(problems, "\n"))
 			}
 			reqs := recorded.requests
 			first, second := prefix+"a", prefix+"a\x00"

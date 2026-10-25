@@ -2354,11 +2354,17 @@ multi-page auto-commit SELECT, which stays tracked only.
 
 ### Follow-ups from the fix PRs' reviews
 
-- [ ] **Low:** when a statement's context ends inside an explicit transaction, the transaction
+- [x] **Low:** when a statement's context ends inside an explicit transaction, the transaction
   is cancelled from a background goroutine with no panic recovery; `sqlpage.go` still calls
-  `SetOptions` where the DST skill now recommends `SetOption` (#999's final review).
+  `SetOptions` where the DST skill now recommends `SetOption` (#999's final review). Fixed in
+  fix/sql-review-followups: the abort recovers and closes the connection; sqlpage and rowdiff
+  use `SetOption`.
 - [ ] **Low:** STATUS.md's timeout paragraph: the facade's pipelined Get makes one more timed-out
   send than the others; `pkg/fdbgo/client/readpath.go:415-418` still says libfdb_c re-sends;
-  `API_PARITY.md` and `docs/fdb-cgo-parity.md` list different `Database` supersets; the header
-  of `pkg/relational/sqldriver/sql_integration_test.go` still describes a blank import (#996's
-  final review).
+  `API_PARITY.md` and `docs/fdb-cgo-parity.md` list different `Database` supersets (#996's final
+  review).
+- [x] **Low:** the header of `pkg/relational/sqldriver/sql_integration_test.go` still describes a
+  blank import (#996's final review). Fixed in fix/sql-review-followups.
+- [x] **Low:** enum-assignment and `range()` bound errors render their message twice since #1002;
+  the `range()` test checks only "in range"; the rule-match trip's error context is unasserted
+  (#1002's final review). Fixed in fix/sql-review-followups, pinned end to end.

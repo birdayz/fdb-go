@@ -2778,6 +2778,12 @@ func translateExecError(err error) error {
 	if errors.As(err, &execErr) {
 		return api.NewError(executionErrorCode(execErr.Kind), execErr.Message)
 	}
+	// Java's RecordCoreException from checkValidRange: XXXXX with its message
+	// once (the RecordCoreException arm below would repeat it as the cause).
+	var rangeErr *values.RangeBoundsError
+	if errors.As(err, &rangeErr) {
+		return api.NewError(api.ErrCodeUnknown, rangeErr.Message)
+	}
 	// FDB tail: page ≥ 2 errors reach the application through THIS function,
 	// not through the QueryContext/ExecContext translateFDBError wrap (which
 	// only sees the eagerly-fetched first page). An in-transaction page fetch

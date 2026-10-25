@@ -12,6 +12,7 @@ go_test(
         "direct_access_fdb_test.go",
         "driver_robustness_fdb_test.go",
         "embedded_fdb_test.go",
+        "enum_assignment_error_fdb_test.go",
         "fleet_fanout_fdb_test.go",
         "main_test.go",
         "named_call_fdb_test.go",

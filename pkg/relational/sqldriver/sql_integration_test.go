@@ -1,13 +1,11 @@
 package sqldriver_test
 
-// End-to-end smoke tests that use Go's database/sql package, not the
-// raw driver.Driver interface. These prove the *public* entry point
-// shape works: users blank-import pkg/relational/sqldriver, call
-// sql.Open, and get back a *sql.DB that proxies through the driver.
-//
-// Execution returns ErrCodeUnsupportedOperation until Phase 5 is in
-// place. The tests assert on the shape of those errors so later
-// phases can replace them one-by-one without breaking the public API.
+// Smoke tests of the public entry point through Go's database/sql package,
+// not the raw driver.Driver interface: a program imports
+// pkg/relational/sqldriver (which registers the "fdbsql" driver), registers
+// its domain with sqldriver.RegisterDomainIfNotExists, and calls sql.Open to
+// get a *sql.DB that proxies through the driver. Here testkit.Main registers
+// the FRL domain. Only the remote (gRPC) mode is unsupported.
 
 import (
 	"context"

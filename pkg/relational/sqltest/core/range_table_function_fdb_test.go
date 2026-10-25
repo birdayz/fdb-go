@@ -95,9 +95,15 @@ func TestFDB_RangeTableFunction(t *testing.T) {
 			t.Errorf("%s: err = %v, want %s", q, err, want)
 		}
 	}
-	// Java's checkValidRange is a RecordCoreException at execution.
-	for _, q := range []string{"SELECT * FROM range(-1)", "SELECT * FROM range(-1, 4)", "SELECT * FROM range(1, 4, -1)", "SELECT * FROM range(1, 4, 0)"} {
-		rows, err := db.QueryContext(ctx, q)
+	// Java's checkValidRange is a RecordCoreException at execution
+	// (RangeValue.java:344-354), reported once.
+	for _, c := range []struct{ sql, message string }{
+		{"SELECT * FROM range(-1)", "only non-negative exclusive end is allowed in range"},
+		{"SELECT * FROM range(-1, 4)", "only non-negative position is allowed in range"},
+		{"SELECT * FROM range(1, 4, -1)", "only positive step is allowed in range"},
+		{"SELECT * FROM range(1, 4, 0)", "only positive step is allowed in range"},
+	} {
+		rows, err := db.QueryContext(ctx, c.sql)
 		if err == nil {
 			for rows.Next() {
 			}
@@ -105,8 +111,9 @@ func TestFDB_RangeTableFunction(t *testing.T) {
 			rows.Close()
 		}
 		var ae *api.Error
-		if !errors.As(err, &ae) || ae.Code != api.ErrCodeUnknown || !strings.Contains(ae.Message, "in range") {
-			t.Errorf("%s: err = %v, want XXXXX with a range-bounds message", q, err)
+		if !errors.As(err, &ae) || ae.Code != api.ErrCodeUnknown || ae.Message != c.message ||
+			err.Error() != "XXXXX: "+c.message {
+			t.Errorf("%s: err = %v, want XXXXX %q", c.sql, err, c.message)
 		}
 	}
 }

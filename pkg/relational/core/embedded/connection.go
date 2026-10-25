@@ -436,6 +436,14 @@ func (tx *embeddedTx) terminate() { tx.terminated.Store(true) }
 // to fail an FDB call in flight (DIVERGENCES.md, RFC-272). Goroutine-safe; the
 // Rollback that follows releases it from the connection.
 func (tx *embeddedTx) abort(ctx context.Context) {
+	// abort runs on the context's goroutine, outside the entry points'
+	// recoverInto: a panic closes the connection, whose Close releases it.
+	defer func() {
+		if r := recover(); r != nil {
+			_ = recoveredPanicError(r)
+			tx.conn.closed.Store(true)
+		}
+	}()
 	cause := contextCancellationError(ctx)
 	tx.abortCause.CompareAndSwap(nil, &cause)
 	tx.terminate()
