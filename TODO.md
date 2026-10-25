@@ -2284,13 +2284,17 @@ multi-page auto-commit SELECT, which stays tracked only.
 - [x] **Medium:** the determinism fuzzer compares only `len(refA.Members())`
   (`pkg/recordlayer/query/plan/cascades/planner_fuzz_test.go:104`); check plan, EXPLAIN and
   rows across repeated plannings. Fixed in #1001 (RFC-273).
-- [ ] **Medium:** the context is checked only between tasks, and the fan-out inside one rule
+- [x] **Medium:** the context is checked only between tasks, and the fan-out inside one rule
   is not counted against `MaxNumMatchesPerRuleCall`
   (`pkg/recordlayer/query/plan/cascades/physical_wrapper.go:250-265`, `planner.go:490-530`).
+  Fixed in #1002 (RFC-274): the context was already checked per binding; a cancelled call's
+  memoize no longer grows the memo, and 14 rules count Java's bindings (the rest are listed in
+  DIVERGENCES.md).
 - [x] **Low:** quantifier order comes from map iteration
   (`pkg/recordlayer/query/plan/cascades/rule_decorrelate_values.go:320,398`). Fixed in #1001 (RFC-273).
-- [ ] **Low:** `pkg/recordlayer/query/executor` imports `pkg/relational/api` (`executor.go`,
-  `executor_new_plans.go`, `resultset.go`, `scalar_subquery.go`).
+- [x] **Low:** `pkg/recordlayer/query/executor` imports `pkg/relational/api` (`executor.go`,
+  `executor_new_plans.go`, `resultset.go`, `scalar_subquery.go`). Fixed in #1002 (RFC-274); the
+  `recordlayerdeps` nogo analyzer keeps non-test record-layer code off `pkg/relational`.
 
 ### Tests and CI
 
@@ -2342,11 +2346,15 @@ multi-page auto-commit SELECT, which stays tracked only.
   4.12.11; SQL_CONFORMANCE's pass count omits the skipped files and plan assertions.
 - [x] **Low:** stale: TODO.md:3 (PR #786 merged), `tools_cli.go:5-7` (no `cmd/frl/go.mod`),
   `pkg/fdbgo/client/CRASH_BUG.md` (resolved; title says otherwise). Fixed in #996.
-- [ ] **Low:** comments against CLAUDE.md's rules: shift tags
+- [x] **Low:** comments against CLAUDE.md's rules: shift tags
   (`git grep -n -i -E 'this (same )?shift|follow-up shift|shift investigation' -- '*.go'`),
   review rounds (`git grep -n -E 'round [0-9]+\)' -- '*.go'`: 3 of its 5 hits, e.g.
   `pkg/fdbgo/client/readpath.go:1452`, `cascades/values/values.go:2112`; also "PR #446 round 3"
   at `values.go:2051`) and "(codex)" tags in `.github/workflows/ci.yml` and `infra/main.tf:129`. Partly done in #996 and #998; left: the round-18 notes in `pkg/fdbgo/client/transaction_unit_test.go:806-817`, a shift tag at `cascades/benchmark_test.go:302`, "follow-up shift" at `query/plan/plans/insert.go:34-35` and "Codex-caught" at `pkg/relational/conformance/yamsql/testdata/uuid_column.yaml:36`.
+  Done in docs/review-leftovers: every non-test shift tag (several also stated stale facts),
+  every "codex" tag and the listed round notes. Kept: about 30 test files and functions named
+  for "RFC-141 R4 round-N" and similar review rounds (`git grep -n -E 'round-[0-9]+' --
+  '*_test.go'`); renaming them is churn with no behavior change.
 - [ ] **Owner decision:** the public API surface (about 16K exported declarations outside
   `internal/`, including test hooks such as `values.SetCensusHooks`); test and tool
   dependencies in the library `go.mod` (docker, testcontainers, ginkgo, staticcheck,
@@ -2358,7 +2366,7 @@ multi-page auto-commit SELECT, which stays tracked only.
   is cancelled from a background goroutine with no panic recovery; `sqlpage.go` still calls
   `SetOptions` where the DST skill now recommends `SetOption` (#999's final review).
 - [ ] **Low:** STATUS.md's timeout paragraph: the facade's pipelined Get makes one more timed-out
-  send than the others; `pkg/fdbgo/client/readpath.go:415-418` still says libfdb_c re-sends;
-  `API_PARITY.md` and `docs/fdb-cgo-parity.md` list different `Database` supersets; the header
-  of `pkg/relational/sqldriver/sql_integration_test.go` still describes a blank import (#996's
-  final review).
+  send than the others (#1011 owns it); the header of
+  `pkg/relational/sqldriver/sql_integration_test.go` still describes a blank import (SQL
+  follow-up PR). Done in docs/review-leftovers: `readpath.go:415-418` and the two `Database`
+  superset rows (#996's final review).
