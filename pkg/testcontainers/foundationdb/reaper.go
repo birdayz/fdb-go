@@ -8,12 +8,8 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 )
 
-// heldReaper is a connection to the session's reaper (Ryuk) kept for the life
-// of the process. Ryuk removes the session 10 s after its last connection
-// closes, and each container's connection closes when it terminates, so a suite
-// that terminates its last container and starts another later (a Ginkgo
-// AfterSuite before parallel tests resume) races that teardown: a reaper caught
-// mid-removal fails the start. The held connection ends only with the process.
+// heldReaper keeps Ryuk alive between a suite's last container and later parallel
+// tests. The connection closes with the process, not with an individual container.
 var heldReaper struct {
 	mu   sync.Mutex
 	conn chan bool

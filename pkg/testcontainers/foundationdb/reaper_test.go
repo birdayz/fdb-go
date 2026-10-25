@@ -5,16 +5,17 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
+	"github.com/docker/docker/api/types/container"
 	"github.com/testcontainers/testcontainers-go"
 )
 
-// The patched testcontainers bootstrap gives a Bazel test action a random
-// session; upstream's (ppid, parent create time) hash collides across
-// concurrent PID-namespaced actions.
+// Upstream's parent PID/create-time hash collides across PID-namespaced actions.
+// Each process must get its own session, including siblings with the same parent.
 func TestSessionPerBazelTest(t *testing.T) {
 	if os.Getenv("FDB_REAPER_SESSION_CHILD") == "1" {
 		fmt.Print(testcontainers.SessionID())
@@ -42,10 +43,8 @@ func TestSessionPerBazelTest(t *testing.T) {
 	}
 }
 
-// With RYUK_RECONNECTION_TIMEOUT=1s (set by the BUILD target), a reaper whose
-// last connection closed is gone a second later. The held connection must keep
-// it running after the process's last container terminates, and a later Run
-// must start.
+// The isolated binary sets RYUK_RECONNECTION_TIMEOUT=1s. Ryuk must survive an
+// idle gap after the last container terminates so a later Run can still start.
 func TestReaperOutlivesTheLastContainer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -80,4 +79,118 @@ func TestReaperOutlivesTheLastContainer(t *testing.T) {
 		t.Fatalf("Run after the last container terminated: %v", err)
 	}
 	TerminateT(t, ctx, second)
+}
+
+func runReaperTestChild(t *testing.T, env ...string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+t.Name()+"$", "-test.v")
+	cmd.Env = append(os.Environ(), append(env, "FDB_REAPER_TEST_CHILD=1")...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("reaper subprocess: %v\n%s", err, out)
+	}
+	t.Logf("%s", out)
+}
+
+// Configuration and heldReaper are process-global, so disabled mode needs a
+// fresh process that has not already acquired the normal lifetime connection.
+func TestReaperDisabled(t *testing.T) {
+	if os.Getenv("FDB_REAPER_TEST_CHILD") != "1" {
+		runReaperTestChild(t, "TESTCONTAINERS_RYUK_DISABLED=true")
+		return
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	first, err := Run(ctx, "")
+	if err != nil {
+		if SkipWithoutDocker(err) {
+			t.Skipf("FDB not available (no Docker): %v", err)
+		}
+		t.Fatalf("Run with Ryuk disabled: %v", err)
+	}
+	TerminateT(t, ctx, first)
+	cluster, err := RunCluster(ctx, 1)
+	if err != nil {
+		t.Fatalf("RunCluster with Ryuk disabled: %v", err)
+	}
+	TerminateT(t, ctx, cluster)
+	if heldReaper.conn != nil {
+		t.Fatal("Ryuk disabled but a lifetime connection was acquired")
+	}
+	cli, err := tcDockerClient(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cli.Close()
+	if _, err := cli.ContainerInspect(ctx, "reaper_"+testcontainers.SessionID()); !cerrdefs.IsNotFound(err) {
+		t.Fatalf("Ryuk disabled: reaper inspect returned %v; want not found", err)
+	}
+}
+
+// Reserve Ryuk's name without its labels to force a real reaper-creation error.
+// Removing that obstruction must let the same process initialize and retain Ryuk.
+func TestReaperInitializationRetry(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+	if os.Getenv("FDB_REAPER_TEST_CHILD") != "1" {
+		// Ensure the FDB image exists before the child reserves an unstarted container.
+		warm, err := Run(ctx, "")
+		if err != nil {
+			if SkipWithoutDocker(err) {
+				t.Skipf("FDB not available (no Docker): %v", err)
+			}
+			t.Fatal(err)
+		}
+		TerminateT(t, ctx, warm)
+		runReaperTestChild(t)
+		return
+	}
+	cli, err := tcDockerClient(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cli.Close()
+	name := "reaper_" + testcontainers.SessionID()
+	blocker, err := cli.ContainerCreate(ctx, &container.Config{Image: defaultImage + ":" + fdbVersion()}, nil, nil, nil, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := cli.ContainerRemove(cleanupCtx, blocker.ID, container.RemoveOptions{Force: true}); err != nil && !cerrdefs.IsNotFound(err) {
+			t.Errorf("remove reaper-name blocker: %v", err)
+		}
+	}()
+	failed, err := Run(ctx, "")
+	if failed != nil {
+		TerminateT(t, ctx, failed)
+	}
+	if failed != nil || err == nil || !strings.HasPrefix(err.Error(), "hold reaper:") || !cerrdefs.IsConflict(err) {
+		t.Fatalf("Run with occupied reaper name: container=%v, err=%v; want held-reaper name conflict", failed, err)
+	}
+	if heldReaper.conn != nil {
+		t.Fatal("failed reaper initialization retained a connection")
+	}
+	if err := cli.ContainerRemove(ctx, blocker.ID, container.RemoveOptions{Force: true}); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := Run(ctx, "")
+	if err != nil {
+		t.Fatalf("Run after removing reaper-name conflict: %v", err)
+	}
+	TerminateT(t, ctx, recovered)
+	if heldReaper.conn == nil {
+		t.Fatal("successful retry did not acquire a lifetime connection")
+	}
+	time.Sleep(4 * time.Second)
+	info, err := cli.ContainerInspect(ctx, name)
+	if err != nil {
+		t.Fatalf("inspect retained reaper after recovery: %v", err)
+	}
+	if !info.State.Running {
+		t.Fatalf("reaper after recovery is %s", info.State.Status)
+	}
 }
