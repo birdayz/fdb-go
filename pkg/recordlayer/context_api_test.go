@@ -1,8 +1,12 @@
 package recordlayer
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -472,7 +476,13 @@ var _ = Describe("FDBRecordContext and FDBDatabase APIs", func() {
 			Expect(rctx.CheckTransactionSize()).NotTo(HaveOccurred())
 		})
 
-		It("counts the warning once per transaction and returns no error", func() {
+		It("logs and counts the warning once per transaction and returns no error", Serial, func() {
+			// The default logger is process-global, so isolate its replacement.
+			previousLogger := slog.Default()
+			DeferCleanup(slog.SetDefault, previousLogger)
+			var logs bytes.Buffer
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
 			tx, err := sharedDB.CreateTransaction()
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
@@ -484,11 +494,27 @@ var _ = Describe("FDBRecordContext and FDBDatabase APIs", func() {
 
 			ks := specSubspace()
 			tx.Set(fdb.Key(ks.Bytes()), make([]byte, 100))
+			size, err := rctx.GetApproximateTransactionSize()
+			Expect(err).NotTo(HaveOccurred())
 
 			Expect(rctx.CheckTransactionSize()).To(Succeed())
 			Expect(timer.GetCount(CountTransactionSizeWarning)).To(Equal(int64(1)))
 			Expect(rctx.CheckTransactionSize()).To(Succeed())
 			Expect(timer.GetCount(CountTransactionSizeWarning)).To(Equal(int64(1)), "once per transaction")
+
+			var warning struct {
+				Level        string `json:"level"`
+				Message      string `json:"msg"`
+				CurrentBytes int64  `json:"current_bytes"`
+				LimitBytes   int64  `json:"limit_bytes"`
+			}
+			decoder := json.NewDecoder(&logs)
+			Expect(decoder.Decode(&warning)).To(Succeed())
+			Expect(warning.Level).To(Equal("WARN"))
+			Expect(warning.Message).To(Equal("transaction size exceeds warning threshold"))
+			Expect(warning.CurrentBytes).To(Equal(size))
+			Expect(warning.LimitBytes).To(Equal(int64(1)))
+			Expect(decoder.Decode(&warning)).To(Equal(io.EOF), "once per transaction")
 		})
 
 		It("lets a save and a delete past the warning threshold succeed", func() {

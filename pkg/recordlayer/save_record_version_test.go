@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"fdb.dev/gen"
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -243,6 +244,47 @@ var _ = Describe("SaveRecordWithVersion", func() {
 			stamp, err := v.ToVersionstamp()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(entries[0].Key).To(Equal(tuple.Tuple{stamp, int64(1)}))
+		})
+	})
+
+	It("saves the supplied version on a locked store only with the override-lock API", func() {
+		md := metaData(true)
+		ks := specSubspace()
+		v := complete(5)
+		run(md, ks, 0, func(store *FDBRecordStore) {
+			Expect(store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")).To(Succeed())
+		})
+		run(md, ks, 0, func(store *FDBRecordStore) {
+			_, err := store.SaveRecordWithVersion(order(1), RecordExistenceCheckNone, v, VersionstampSaveBehaviorIfPresent)
+			var lockErr *StoreIsLockedForRecordUpdatesError
+			Expect(errors.As(err, &lockErr)).To(BeTrue(), "%v", err)
+			saved, err := store.OverrideLockSaveRecordWithVersion(order(1), RecordExistenceCheckNone, v, VersionstampSaveBehaviorIfPresent)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(saved.Version).To(Equal(v))
+		})
+		run(md, ks, 0, func(store *FDBRecordStore) {
+			Expect(loadedVersion(store, 1)).To(Equal(v))
+		})
+	})
+
+	It("preserves a supplied complete version through the typed save and reopened typed read", func() {
+		md := metaData(true)
+		ks := specSubspace()
+		v := complete(6)
+		run(md, ks, 0, func(store *FDBRecordStore) {
+			typed, err := NewTypedRecordStore[*demopb.Order](store, md.GetRecordType("Order"))
+			Expect(err).NotTo(HaveOccurred())
+			saved, err := typed.SaveRecordWithVersion(order(1), RecordExistenceCheckNone, v, VersionstampSaveBehaviorIfPresent)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(saved.Version).To(Equal(v))
+		})
+		run(md, ks, 0, func(store *FDBRecordStore) {
+			typed, err := NewTypedRecordStore[*demopb.Order](store, md.GetRecordType("Order"))
+			Expect(err).NotTo(HaveOccurred())
+			loaded, err := typed.LoadRecord(tuple.Tuple{int64(1)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded).NotTo(BeNil())
+			Expect(loaded.Version).To(Equal(v))
 		})
 	})
 

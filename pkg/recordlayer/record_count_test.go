@@ -17,6 +17,60 @@ import (
 var _ = Describe("RecordCounting", func() {
 	ctx := context.Background()
 
+	It("groups maintained counts by the complete version on insert and delete", func() {
+		for _, format := range []int32{0, 5} {
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			builder.SetStoreRecordVersions(true).SetRecordCountKey(VersionKey())
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			version, err := CompleteVersionFromBytes([]byte{0, 0, 0, 0, 0, 0, 0, 2, 0, 9, 0, 7})
+			Expect(err).NotTo(HaveOccurred())
+			stamp, err := version.ToVersionstamp()
+			Expect(err).NotTo(HaveOccurred())
+			ks := specSubspace()
+			run := func(fn func(*FDBRecordStore)) {
+				GinkgoHelper()
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					b := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks)
+					if format != 0 {
+						b.SetFormatVersion(format)
+					}
+					store, err := b.CreateOrOpen()
+					Expect(err).NotTo(HaveOccurred())
+					fn(store)
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			assertCount := func(store *FDBRecordStore, want int64) {
+				GinkgoHelper()
+				count, err := store.GetSnapshotRecordCount(tuple.Tuple{stamp})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(count).To(Equal(want))
+				count, err = store.GetSnapshotRecordCount(tuple.Tuple{nil})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(count).To(BeZero(), "a complete version must not use the null group")
+			}
+			run(func(store *FDBRecordStore) {
+				_, err := store.SaveRecordWithVersion(&demopb.Order{OrderId: proto.Int64(1)},
+					RecordExistenceCheckNone, version, VersionstampSaveBehaviorIfPresent)
+				Expect(err).NotTo(HaveOccurred())
+				assertCount(store, 1)
+			})
+			run(func(store *FDBRecordStore) {
+				assertCount(store, 1)
+				deleted, err := store.DeleteRecord(tuple.Tuple{int64(1)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(deleted).To(BeTrue())
+				assertCount(store, 0)
+			})
+			run(func(store *FDBRecordStore) { assertCount(store, 0) })
+		}
+	})
+
 	It("BasicCounting", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))

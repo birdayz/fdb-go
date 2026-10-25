@@ -614,23 +614,23 @@ func (store *FDBRecordStore) deleteRecord(primaryKey tuple.Tuple, typed *typedRe
 		}
 	}
 
+	oldStoredRecord := &FDBStoredRecord[proto.Message]{
+		PrimaryKey: primaryKey,
+		RecordType: oldRecordType,
+		Record:     oldMsg,
+		wire:       oldWire,
+		Version:    oldRecordVersion,
+		Store:      store,
+	}
 	// Decrement record count
 	if store.metaData.GetRecordCountKey() != nil && oldMsg != nil {
-		if err := store.addRecordCount(oldRecordType, oldMsg, littleEndianInt64MinusOne); err != nil {
+		if err := store.addRecordCount(oldStoredRecord, littleEndianInt64MinusOne); err != nil {
 			return false, fmt.Errorf("failed to decrement record count: %w", err)
 		}
 	}
 
 	// Update secondary indexes
 	if store.metaData.HasIndexes() && oldMsg != nil {
-		oldStoredRecord := &FDBStoredRecord[proto.Message]{
-			PrimaryKey: primaryKey,
-			RecordType: oldRecordType,
-			Record:     oldMsg,
-			wire:       oldWire,
-			Version:    oldRecordVersion,
-			Store:      store,
-		}
 		if err := store.updateSecondaryIndexes(oldStoredRecord, nil); err != nil {
 			return false, err
 		}
@@ -999,13 +999,6 @@ func (store *FDBRecordStore) saveRecordInternal(
 		}
 	}
 
-	// Only increment record count for new inserts (not updates).
-	if !oldRecordExists {
-		if err := store.addRecordCount(recordType, record, littleEndianInt64One); err != nil {
-			return nil, fmt.Errorf("failed to increment record count: %w", err)
-		}
-	}
-
 	newStoredRecord := &FDBStoredRecord[proto.Message]{
 		PrimaryKey: primaryKey,
 		RecordType: recordType,
@@ -1019,6 +1012,13 @@ func (store *FDBRecordStore) saveRecordInternal(
 		KeySize:         newsizeInfo.KeySize,
 		Split:           newsizeInfo.IsSplit,
 		VersionedInline: newsizeInfo.VersionedInline,
+	}
+
+	// Only increment record count for new inserts (not updates).
+	if !oldRecordExists {
+		if err := store.addRecordCount(newStoredRecord, littleEndianInt64One); err != nil {
+			return nil, fmt.Errorf("failed to increment record count: %w", err)
+		}
 	}
 
 	// Update secondary indexes

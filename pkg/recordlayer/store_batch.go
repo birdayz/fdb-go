@@ -318,7 +318,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 				insertCount++
 			} else if countKey != nil {
 				// Grouped count or non-empty key: per-record ADD
-				if err := store.addRecordCount(p.recordType, p.record, littleEndianInt64One); err != nil {
+				if err := store.addRecordCount(stored, littleEndianInt64One); err != nil {
 					return nil, fmt.Errorf("record %d: record count: %w", i, err)
 				}
 			}

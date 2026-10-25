@@ -28,7 +28,7 @@ class VersionSaveSteps extends ConformanceBase {
         RecordMetaDataOptionsProto.registerAllExtensions(EXTENSION_REGISTRY);
     }
 
-    /** Saves each record, one transaction each, with its version (empty: none) and behavior; dumps spaces 1, 2 and 8. */
+    /** Saves each record, one transaction each, with its version (empty: none) and behavior; dumps spaces 1, 2, 4 and 8. */
     @ConformanceStep("saveWithVersionsJava")
     public Map<String, Object> saveWithVersionsJava(String clusterFile, byte[] subspace, byte[] metaData, String recordTypeName,
                                                     byte[][] records, byte[][] versions, String[] behaviors, int formatVersion)
@@ -65,7 +65,7 @@ class VersionSaveSteps extends ConformanceBase {
         result.put("kvs", runInContext(clusterFile, null, context -> {
             final byte[] prefix = ss.getKey();
             final List<List<String>> out = new ArrayList<>();
-            for (long space : new long[] {1L, 2L, 8L}) {
+            for (long space : new long[] {1L, 2L, 4L, 8L}) {
                 for (KeyValue kv : context.ensureActive().getRange(ss.range(Tuple.from(space))).asList().join()) {
                     out.add(List.of(HexFormat.of().formatHex(Arrays.copyOfRange(kv.getKey(), prefix.length, kv.getKey().length)),
                             HexFormat.of().formatHex(kv.getValue())));

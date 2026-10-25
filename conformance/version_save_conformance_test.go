@@ -22,7 +22,7 @@ import (
 )
 
 // Both engines save the same records with the same versions and behaviors and must agree on
-// every verdict and on the record (1), index (2) and legacy version (8) key-value pairs.
+// every verdict and on the record (1), index (2), count (4) and legacy version (8) key-value pairs.
 var _ = Describe("Explicit-version saves match Java", func() {
 	type versionedSave struct {
 		id       int64
@@ -53,7 +53,7 @@ var _ = Describe("Explicit-version saves match Java", func() {
 				builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 				builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 				builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
-				builder.SetStoreRecordVersions(storeVersions)
+				builder.SetStoreRecordVersions(storeVersions).SetRecordCountKey(recordlayer.VersionKey())
 				if storeVersions {
 					builder.AddIndex("Order", recordlayer.NewVersionIndex("order$version", recordlayer.VersionKey()))
 				}
@@ -124,7 +124,7 @@ var _ = Describe("Explicit-version saves match Java", func() {
 				var goKVs [][]string
 				_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 					goKVs = [][]string{}
-					for _, space := range []int64{1, 2, 8} {
+					for _, space := range []int64{1, 2, 4, 8} {
 						kvs, err := rtx.Transaction().GetRange(goSS.Sub(space), fdb.RangeOptions{}).GetSliceWithError()
 						if err != nil {
 							return nil, err
