@@ -178,3 +178,52 @@ func TestMappedSelectorReadsCapReplyTimeouts(t *testing.T) {
 		}
 	}
 }
+
+// A pipelined Get (the fdb facade's Get) makes one more timed-out send than the
+// other reads: its own first send, then getValue's 11 (STATUS.md).
+func TestPipelinedGetReplyTimeoutSends(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	prefix := t.Name() + "/"
+	db, sim, rec := metricsRetryDB(t, ctx, prefix)
+	key := []byte(prefix + "0000")
+	for _, pipelined := range []bool{false, true} {
+		tx := db.CreateTransaction()
+		tx.rpcTimeoutOverride = 20 * time.Millisecond
+		if _, err := tx.GetReadVersion(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.db.locCache.locate(db.db, ctx, key, NoTenantID, types.SpanContext{}, false); err != nil {
+			t.Fatal(err)
+		}
+		sim.setIntercept(func(_ int, token transport.UID, body []byte) ([]byte, bool) {
+			return body, rec.replyKind(token) == "GetValueRequest"
+		})
+		sim.armEverything()
+		rec.start()
+		var err error
+		if pipelined {
+			var p *PendingGet
+			if _, p, err = tx.GetPipelined(ctx, key); err == nil && p != nil {
+				_, err = p.Resolve()
+			}
+		} else {
+			_, err = tx.Get(ctx, key)
+		}
+		sent := 0
+		for _, r := range rec.stop().requests {
+			if strings.HasPrefix(r, "GetValueRequest ") {
+				sent++
+			}
+		}
+		want := maxReadTimeoutRetries + 1
+		if pipelined {
+			want++
+		}
+		var fdbErr *wire.FDBError
+		if !errors.As(err, &fdbErr) || fdbErr.Code != ErrTransactionTooOld || sent != want {
+			t.Fatalf("pipelined=%t: %v after %d requests; want transaction_too_old after %d", pipelined, err, sent, want)
+		}
+	}
+}
