@@ -1,7 +1,7 @@
 # RFC-279: Mutual indexing fragments, limits and the FULL phase; lessen-work backoff
 
 **Status:** Implemented
-**Item:** TODO.md "Quality review 2026-10-24", Record layer (PR #994, unmerged). This RFC
+**Item:** TODO.md "Quality review 2026-10-24", Record layer (added by #994). This RFC
 covers four Medium items:
 - mutual-indexing fragment edges are raw shard keys;
 - the mutual build loop never checks the transaction limits;
