@@ -2410,29 +2410,29 @@ multi-page auto-commit SELECT, which stays tracked only.
   superset rows (#996's final review).
 - [x] **Low (#1001):** `matchResults`' structural keying was pinned only through put/get.
   `TestRecurseQueryResultValue_FoldedVariantSharesAnEntry` drives a real frame in which q.a over
-  q's expansion folds to a distinct copy of q.a. Fixed in #PRNUM.
+  q's expansion folds to a distinct copy of q.a. Fixed in #1016.
 - [x] **Low (#1001):** the fuzzer's plan comparison never faced a choice: no seed (nor 3,000
   generated inputs) put two plans in one group. It now plans over an index on `T.g`, and
   `TestPlannerDeterminismSeedsFaceAChoice` requires every seed to plan and rank alternatives.
-  Fixed in #PRNUM.
+  Fixed in #1016.
 - [x] **Low (#1001):** the three-way probe goldens read the innermost `IDX_EMP_DID` leg whole;
   compared with Java's EXPLAIN (it probes the leg) and tracked as the Planner "planner gap"
-  entry above. Fixed in #PRNUM.
+  entry above. Fixed in #1016.
 - [x] **Nit (#1001):** TODO-production.md P2.3 no longer cites `TestRepeatedPlanningIsStable` as
-  row evidence; RFC-273 lists every field the memo rendering prints. Fixed in #PRNUM.
-- [x] **Nit (#1001):** the Java-corpus operator counts say they overlap (sum 488). Fixed in #PRNUM.
-- [x] **Nit (#1001):** the comments the review listed are two lines or fewer. Fixed in #PRNUM.
+  row evidence; RFC-273 lists every field the memo rendering prints. Fixed in #1016.
+- [x] **Nit (#1001):** the Java-corpus operator counts say they overlap (sum 488). Fixed in #1016.
+- [x] **Nit (#1001):** the comments the review listed are two lines or fewer. Fixed in #1016.
 - [x] **Nit (#1001):** `recurseQueryResultValue`'s doc no longer says the expansion is unported.
-  Fixed in #PRNUM.
+  Fixed in #1016.
 - [x] **Nit (#1001):** the `corpusOnce` comment names the tests that plan the corpus themselves.
-  Fixed in #PRNUM.
+  Fixed in #1016.
 - [x] **Low (#1002):** `physical_wrapper.go` no longer calls MaxTasks the only backstop of the
-  DML rules' fan-out. Fixed in #PRNUM.
+  DML rules' fan-out. Fixed in #1016.
 - [x] **Low (#1002):** the `MaxNumMatchesPerRuleCall` doc says Java's count applies only where a
-  rule reports one. Fixed in #PRNUM.
+  rule reports one. Fixed in #1016.
 - [x] **Low (#1002):** `TestJavaBindingsSortRollsUpStoredRecord` pins the sort roll-up with plans
-  that differ only in storedRecord. Fixed in #PRNUM.
+  that differ only in storedRecord. Fixed in #1016.
 - [x] **Low (#1002):** `TestMaxNumMatchesPerRuleCallTripsTheCountingRule` asserts which rule trips
   one below its Java count (partition select, binary select, NLJ, ordering push, simple select,
-  delete, update) and that the statement plans at the count. Fixed in #PRNUM.
-- [x] **Nit (#1002):** the comments the review listed are two lines or fewer. Fixed in #PRNUM.
+  delete, update) and that the statement plans at the count. Fixed in #1016.
+- [x] **Nit (#1002):** the comments the review listed are two lines or fewer. Fixed in #1016.
