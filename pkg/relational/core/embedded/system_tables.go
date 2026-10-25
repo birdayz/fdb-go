@@ -284,7 +284,7 @@ func (c *EmbeddedConnection) execSysTables(ctx context.Context, alias string, wh
 		}
 
 		for _, ref := range refs {
-			schema, loadErr := c.cachedLoadSchema(txn, ref.db, ref.schema)
+			schema, loadErr := c.cachedLoadSchema(ctx, txn, ref.db, ref.schema)
 			if loadErr != nil {
 				return nil, loadErr
 			}
@@ -351,7 +351,7 @@ func (c *EmbeddedConnection) execSysColumns(ctx context.Context, alias string, w
 		}
 
 		for _, ref := range refs {
-			schema, loadErr := c.cachedLoadSchema(txn, ref.db, ref.schema)
+			schema, loadErr := c.cachedLoadSchema(ctx, txn, ref.db, ref.schema)
 			if loadErr != nil {
 				return nil, loadErr
 			}
@@ -439,7 +439,7 @@ func (c *EmbeddedConnection) execSysIndexes(ctx context.Context, alias string, w
 		}
 
 		for _, ref := range refs {
-			schema, loadErr := c.cachedLoadSchema(txn, ref.db, ref.schema)
+			schema, loadErr := c.cachedLoadSchema(ctx, txn, ref.db, ref.schema)
 			if loadErr != nil {
 				return nil, loadErr
 			}

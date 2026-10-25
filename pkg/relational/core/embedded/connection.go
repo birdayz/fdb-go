@@ -175,7 +175,8 @@ func (c *EmbeddedConnection) ActiveTransactionTags() []string {
 // ResetSession restores when a pooled connection is returned (the driver's
 // connector installs the DSN's options this way). Passing nil resets to
 // defaults. To change one option, use SetOption, which keeps the rest (the
-// DSN's restrict_ddl_to_session_database among them). Not safe to call
+// DSN's restrict_ddl_to_session_database among them) and lasts one borrow;
+// what SetOptions installs reaches every later borrower. Not safe to call
 // concurrently with query execution on the same connection (matches
 // database/sql's per-Conn threading contract).
 func (c *EmbeddedConnection) SetOptions(o *api.Options) {
@@ -202,7 +203,8 @@ func (c *EmbeddedConnection) SetOption(name api.OptionName, value any) error {
 
 // SetFailOnScanLimitReached toggles the Java setFailOnScanLimitReached(true)
 // behavior (RFC-106a): when true a leaf cursor hitting a scan/byte limit
-// errors (54F01) instead of paginating. Default false.
+// errors (54F01) instead of paginating. Default false. Like the other
+// Go-local settings below, it lasts until ResetSession: one pool borrow.
 func (c *EmbeddedConnection) SetFailOnScanLimitReached(v bool) {
 	c.failOnScanLimitReached = v
 }
@@ -213,7 +215,8 @@ func (c *EmbeddedConnection) SetFailOnScanLimitReached(v bool) {
 // starts a fresh deadline. There is intentionally no `SET statement_timeout
 // = …` SQL path — the parser grammar has no generic SET <var> = <val> rule
 // (only SET TRANSACTION), so a grammar change would be required; this
-// connection-field setter is the Go-local config instead (RFC-106a §3).
+// connection-field setter is the Go-local config instead (RFC-106a §3). It
+// lasts until ResetSession.
 func (c *EmbeddedConnection) SetStatementTimeout(d time.Duration) {
 	if d < 0 {
 		d = 0
@@ -224,7 +227,7 @@ func (c *EmbeddedConnection) SetStatementTimeout(d time.Duration) {
 // SetMaxResultBytes sets the statement-wide returned-row byte cap
 // (RFC-106a §5). A non-positive value disables it. The accounted size is
 // the cheap tuple-encoded length of each returned row, not exact heap — a
-// non-exact egress ceiling.
+// non-exact egress ceiling. It lasts until ResetSession.
 func (c *EmbeddedConnection) SetMaxResultBytes(n int64) {
 	if n < 0 {
 		n = 0
@@ -233,17 +236,18 @@ func (c *EmbeddedConnection) SetMaxResultBytes(n int64) {
 }
 
 // SetPlanLogger installs a planning-metrics logger (RFC-034). Passing nil
-// disables planning logging. Not safe to call concurrently with query
-// planning on the same connection (matches database/sql's per-Conn threading
-// contract).
+// disables planning logging. It lasts until ResetSession. Not safe to call
+// concurrently with query planning on the same connection (matches
+// database/sql's per-Conn threading contract).
 func (c *EmbeddedConnection) SetPlanLogger(l PlanGenerationLogger) {
 	c.planLogger = l
 }
 
 // SetExecutionStatsLogger installs a post-execution statistics logger
-// (RFC-211). Passing nil disables execution logging. Not safe to call
-// concurrently with statement execution on the same connection (matches
-// database/sql's per-Conn threading contract, same as SetPlanLogger).
+// (RFC-211). Passing nil disables execution logging. It lasts until
+// ResetSession. Not safe to call concurrently with statement execution on the
+// same connection (matches database/sql's per-Conn threading contract, same
+// as SetPlanLogger).
 func (c *EmbeddedConnection) SetExecutionStatsLogger(l ExecutionStatsLogger) {
 	c.execStatsLogger = l
 }
@@ -251,7 +255,8 @@ func (c *EmbeddedConnection) SetExecutionStatsLogger(l ExecutionStatsLogger) {
 // SetSlowQueryThresholdMicros sets the slow-query threshold in microseconds.
 // A non-positive value disables the slow-query flag. The threshold governs
 // both dimensions independently: PlanGenerationInfo.SlowQuery reports that
-// PLANNING exceeded it, ExecutionStats.SlowQuery that EXECUTION did.
+// PLANNING exceeded it, ExecutionStats.SlowQuery that EXECUTION did. It lasts
+// until ResetSession.
 func (c *EmbeddedConnection) SetSlowQueryThresholdMicros(micros int64) {
 	c.slowQueryThresholdMicros = micros
 }
@@ -262,10 +267,9 @@ type embeddedTx struct {
 	conn *EmbeddedConnection
 	rctx *recordlayer.FDBRecordContext
 
-	// terminated records that this transaction has ENDED — through any of the
-	// four doors: Commit, Rollback, EmbeddedConnection.Close, ResetSession
-	// (the last two cancel the context without going through Rollback, which
-	// is why the flag cannot live inside Rollback alone). It exists because a
+	// terminated records that this transaction has ENDED: by Commit, by
+	// Rollback (which Close, ResetSession and a poisoned connection go
+	// through), or by abort when a context ended it. It exists because a
 	// result set (paginatingRows) outlives the Execute that made it: pages are
 	// fetched from Next after QueryContext returned, so a SELECT whose
 	// transaction ended mid-iteration would otherwise resume reading in a
@@ -281,6 +285,14 @@ type embeddedTx struct {
 	// transaction-scoped object dies on (result sets here; the schema-cache
 	// binding and the per-transaction store follow the same flag).
 	terminated atomic.Bool
+
+	// abortCause is why a context ended the transaction (abort); nil when it
+	// ended through a door.
+	abortCause atomic.Pointer[error]
+
+	// detachCtx stops the BeginTx context binding (bindContext) and waits for
+	// an abort it already started; nil when nothing is bound.
+	detachCtx func()
 
 	// scanState is the TRANSACTION-scoped scanned-records/scanned-bytes/time
 	// counter set (RFC-198 Decision 5). Minted lazily on first use through
@@ -417,27 +429,125 @@ func (tx *embeddedTx) scanStateIn(env *dst.Env) *recordlayer.ScanLimiterState {
 	return tx.scanState
 }
 
-// terminate marks the transaction ended. Idempotent; called at all four doors.
+// terminate marks the transaction ended. Idempotent.
 func (tx *embeddedTx) terminate() { tx.terminated.Store(true) }
 
+// abort ends the transaction because ctx ended: cancelling it is the only way
+// to fail an FDB call in flight (DIVERGENCES.md, RFC-272). Goroutine-safe; the
+// Rollback that follows releases it from the connection.
+func (tx *embeddedTx) abort(ctx context.Context) {
+	cause := contextCancellationError(ctx)
+	tx.abortCause.CompareAndSwap(nil, &cause)
+	tx.terminate()
+	if tx.rctx != nil { // the warm-up's planning-only transaction has none
+		tx.rctx.Cancel()
+	}
+}
+
+// endedError is the 25F01 a statement or Commit on an ended transaction gets.
+func (tx *embeddedTx) endedError() error {
+	if cause := tx.abortCause.Load(); cause != nil {
+		return api.WrapError(api.ErrCodeTransactionInactive,
+			"transaction has ended: a context ended while the transaction was open", *cause)
+	}
+	return api.NewError(api.ErrCodeTransactionInactive,
+		"transaction has ended: it was committed, rolled back or closed")
+}
+
+// bindContext ends the transaction when ctx ends (database/sql's BeginTx
+// contract), so a statement blocked in FDB cannot hold up its rollback.
+func (tx *embeddedTx) bindContext(ctx context.Context) {
+	if ctx.Done() == nil {
+		return
+	}
+	stop := afterContext(ctx, func() { tx.abort(ctx) })
+	tx.detachCtx = func() { stop() }
+}
+
+// afterContext runs f when ctx ends. Call stop once: it detaches f, waits
+// for an f already running, and reports whether f ran.
+func afterContext(ctx context.Context, f func()) (stop func() bool) {
+	done := make(chan struct{})
+	stopAfter := context.AfterFunc(ctx, func() {
+		defer close(done)
+		f()
+	})
+	return func() bool {
+		if stopAfter() {
+			return false
+		}
+		<-done
+		return true
+	}
+}
+
+// detachContext undoes bindContext, waiting for an abort already running.
+func (tx *embeddedTx) detachContext() {
+	if detach := tx.detachCtx; detach != nil {
+		tx.detachCtx = nil
+		detach()
+	}
+}
+
+// runBound runs fn with ctx bound to the transaction: if ctx ends first, the
+// transaction is aborted and the call returns ctx's error.
+func (tx *embeddedTx) runBound(ctx context.Context, fn func(*recordlayer.FDBRecordContext) (any, error)) (result any, err error) {
+	stop := afterContext(ctx, func() { tx.abort(ctx) })
+	defer func() {
+		if stop() {
+			result, err = nil, ctx.Err()
+		}
+	}()
+	result, err = fn(tx.rctx)
+	if err != nil && tx.terminated.Load() {
+		// The BeginTx context or a door ended the transaction while fn ran.
+		return nil, tx.endedError()
+	}
+	return result, err
+}
+
+// release detaches the transaction from its connection, unless a newer
+// transaction has replaced it there: a stale handle must not end that one.
+func (tx *embeddedTx) release() {
+	if tx.conn.activeTx == tx {
+		tx.conn.activeTx = nil
+	}
+}
+
 // Commit runs pre-commit hooks, flushes version mutations, commits the FDB
-// transaction, runs post-commit hooks, and clears the connection's activeTx.
+// transaction, runs post-commit hooks, and releases it from the connection.
 // The transaction is terminal whether or not the commit succeeded: an
 // explicit transaction never retries (there is no OnError loop on this path —
 // the driver does not hold the statements it would have to replay), so a
-// failed commit leaves a dead handle, not a resumable one.
-func (tx *embeddedTx) Commit() error {
-	err := tx.rctx.CommitWithHooks()
-	tx.terminate()
-	tx.conn.activeTx = nil
-	return translateFDBError(err)
+// failed commit leaves a dead handle, not a resumable one. A transaction that
+// has already ended is not committed again (25F01).
+func (tx *embeddedTx) Commit() (err error) {
+	defer func() {
+		tx.terminate()
+		tx.release()
+	}()
+	// Before the release above, so a panic's poison still finds and cancels
+	// this transaction.
+	defer tx.conn.recoverInto(&err)
+	// A dispatched commit's outcome must not be replaced by a context error,
+	// so the BeginTx binding goes first.
+	tx.detachContext()
+	if tx.terminated.Load() {
+		return tx.endedError()
+	}
+	return translateFDBError(tx.rctx.CommitWithHooks())
 }
 
-// Rollback cancels the FDB transaction and clears the connection's activeTx.
-func (tx *embeddedTx) Rollback() error {
-	tx.terminate()
-	tx.conn.activeTx = nil
-	tx.rctx.Cancel()
+// Rollback cancels the FDB transaction and releases it from the connection.
+// On a transaction that has already ended it only releases it.
+func (tx *embeddedTx) Rollback() (err error) {
+	defer tx.conn.recoverInto(&err)
+	tx.detachContext()
+	ended := tx.terminated.Swap(true)
+	tx.release()
+	if !ended && tx.rctx != nil { // the warm-up's planning-only transaction has none
+		tx.rctx.Cancel()
+	}
 	return nil
 }
 
@@ -460,17 +570,21 @@ func (c *EmbeddedConnection) runInTx(ctx context.Context, fn func(*recordlayer.F
 //
 // In explicit-transaction mode fn errors propagate WITHOUT retry: a retry
 // would have to re-run the whole transaction, and the driver does not hold the
-// statements the application has not issued yet.
+// statements the application has not issued yet. A statement whose context
+// has ended or ends while fn runs ends the transaction (runBound).
 //
 // opts are the options of the statement the work belongs to; an auto-commit
 // transaction is configured from them (transactionConfigurer) on every attempt.
 func (c *EmbeddedConnection) runInCapturedTx(ctx context.Context, tx *embeddedTx, opts *api.Options, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
 	if tx != nil {
 		if tx.terminated.Load() {
-			return nil, api.NewError(api.ErrCodeTransactionInactive,
-				"transaction has ended: the result set was created inside an explicit transaction that has since committed, rolled back, or been closed")
+			return nil, tx.endedError()
 		}
-		return fn(tx.rctx)
+		if err := ctx.Err(); err != nil {
+			tx.abort(ctx)
+			return nil, err
+		}
+		return tx.runBound(ctx, fn)
 	}
 	return configuredRunner{c.sess.DB, opts}.Run(ctx, fn)
 }
@@ -549,14 +663,14 @@ func configured(opts *api.Options, fn func(*recordlayer.FDBRecordContext) (any, 
 // conn.getTransaction(); RecordLayerSchema caches per transaction). The
 // in-transaction read result is deliberately NOT copied into the session
 // cache: it describes one transaction's snapshot, not the session's present.
-func (c *EmbeddedConnection) cachedLoadSchema(txn api.Transaction, dbPath, schemaName string) (api.Schema, error) {
+func (c *EmbeddedConnection) cachedLoadSchema(ctx context.Context, txn api.Transaction, dbPath, schemaName string) (api.Schema, error) {
 	key := session.SchemaCacheKey(dbPath, schemaName)
 	if tx := c.activeTx; tx != nil {
 		if s, ok := tx.schemaCache[key]; ok {
 			return s, nil
 		}
 		var s api.Schema
-		_, err := c.runInTx(context.Background(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
+		_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 			readTxn := catalog.NewFDBTransaction(rctx)
 			var loadErr error
 			s, loadErr = c.loadSchemaOfDatabase(readTxn, dbPath, schemaName)
@@ -735,7 +849,7 @@ func (c *EmbeddedConnection) ensureMetaData(ctx context.Context) error {
 	// auto-commit it is the same fresh transaction as before.
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		txn := catalog.NewFDBTransaction(rctx)
-		_, loadErr := c.cachedLoadSchema(txn, c.sess.DBPath, c.sess.Schema)
+		_, loadErr := c.cachedLoadSchema(ctx, txn, c.sess.DBPath, c.sess.Schema)
 		return nil, loadErr
 	})
 	return err
@@ -780,19 +894,49 @@ var seriousLog = func(msg string, attrs ...any) {
 	slog.Default().Error(msg, attrs...)
 }
 
-// recoveredPanicError converts a panic that escaped statement planning/execution
-// into a returned error. This is the Go "don't leak panics" API boundary (the
-// encoding/json model): genuine internal-invariant asserts may panic freely below
-// here, but at this boundary they become a generic internal error so a single
-// statement cannot crash a shared, multi-tenant process. The panic value and the
+// recoveredPanicError converts a panic that escaped an exported connection or
+// driver entry point into a returned error. This is the Go "don't leak panics" API
+// boundary (the encoding/json model): genuine internal-invariant asserts may panic
+// freely below here, but at this boundary they become a generic internal error so
+// one call cannot crash a shared, multi-tenant process. The panic value and the
 // stack are logged SERIOUS (debug.Stack here still shows the original panic site —
 // the stack is live until recover completes the unwind); the caller gets a generic
 // message because the panic value may carry schema/row data. It deliberately does
 // NOT re-panic by type — see TODO-production.md P0.3.
 func recoveredPanicError(r any) error {
-	seriousLog("recovered panic in statement execution",
+	seriousLog("recovered panic in the embedded SQL connection",
 		"panic", r, "stack", string(debug.Stack()))
 	return api.NewError(api.ErrCodeInternalError, "internal error")
+}
+
+// RecoveredPanicError is recoveredPanicError for the driver's own entry
+// points (Connector.Connect).
+func RecoveredPanicError(r any) error { return recoveredPanicError(r) }
+
+// recoverInto, deferred by every exported entry point, turns a panic into
+// recoveredPanicError and closes the connection, whose state is now unknown.
+func (c *EmbeddedConnection) recoverInto(err *error) {
+	if r := recover(); r != nil {
+		*err = recoveredPanicError(r)
+		c.poison()
+	}
+}
+
+// poison closes the connection (IsValid false, so database/sql discards it)
+// and rolls back its transaction.
+func (c *EmbeddedConnection) poison() {
+	c.closed.Store(true)
+	if tx := c.activeTx; tx != nil {
+		_ = tx.Rollback()
+	}
+}
+
+// endTxOnEndedContext ends the explicit transaction when a statement failed
+// with its context ended, also before any FDB call (planning checks ctx).
+func (c *EmbeddedConnection) endTxOnEndedContext(ctx context.Context, err error) {
+	if tx := c.activeTx; err != nil && tx != nil && ctx.Err() != nil {
+		tx.abort(ctx)
+	}
 }
 
 // ExecContext executes SQL (DDL/DML/transaction) and returns the row-
@@ -800,12 +944,9 @@ func recoveredPanicError(r any) error {
 // dispatches DML/DDL/transaction through execStatement and returns a
 // Plan whose Execute aggregates RowsAffected across a multi-statement
 // batch.
-func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args []driver.NamedValue) (res driver.Result, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			res, err = nil, recoveredPanicError(r)
-		}
-	}()
+func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args []driver.NamedValue) (_ driver.Result, err error) {
+	defer c.recoverInto(&err)
+	defer func() { c.endTxOnEndedContext(ctx, err) }()
 	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
@@ -838,10 +979,15 @@ func (c *EmbeddedConnection) ExecContext(ctx context.Context, sql string, args [
 // QueryContext.
 func (c *EmbeddedConnection) QueryContext(ctx context.Context, sql string, args []driver.NamedValue) (rows driver.Rows, err error) {
 	defer func() {
-		if r := recover(); r != nil {
-			rows, err = nil, recoveredPanicError(r)
+		// A panic after the rows were made (the metadata observer) returns
+		// no rows: database/sql would never close them.
+		if err != nil && rows != nil {
+			_ = rows.Close()
+			rows = nil
 		}
 	}()
+	defer c.recoverInto(&err)
+	defer func() { c.endTxOnEndedContext(ctx, err) }()
 	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
@@ -907,18 +1053,14 @@ func (c *EmbeddedConnection) newStoreBuilder() (*recordlayer.StoreBuilder, error
 	return recordlayer.NewStoreBuilder().SetDatabase(c.sess.DB).SetSerializer(serializer), nil
 }
 
-// Close marks the connection as closed and cancels any open FDB transaction.
-func (c *EmbeddedConnection) Close() error {
+// Close marks the connection as closed and rolls back any open transaction,
+// which sets its terminal flag: a result set from it must not resume in a
+// fresh auto-commit transaction (RFC-198 Decision 3).
+func (c *EmbeddedConnection) Close() (err error) {
+	defer c.recoverInto(&err)
 	c.closed.Store(true)
-	if c.activeTx != nil {
-		tx := c.activeTx
-		c.activeTx = nil
-		// This door bypasses Rollback, so it must set the terminal flag
-		// itself — a flag set only in Commit/Rollback would leave a result
-		// set from this transaction free to resume in a fresh auto-commit
-		// transaction (RFC-198 Decision 3).
-		tx.terminate()
-		tx.rctx.Cancel()
+	if tx := c.activeTx; tx != nil {
+		return tx.Rollback()
 	}
 	return nil
 }
@@ -929,25 +1071,12 @@ func (c *EmbeddedConnection) Begin() (driver.Tx, error) {
 }
 
 // BeginTx implements driver.ConnBeginTx. Opens an FDB transaction that spans
-// all subsequent statements until Commit or Rollback is called.
-// The accepted levels are LevelDefault and LevelSerializable; every other level
-// returns an error. ReadCommitted is NOT among them — naming it here was a stale
-// comment that advertised a weaker level this driver has never accepted, which is
-// the opposite of the direction a reader needs to be wrong in.
-// Read-only transactions are not separately enforced at the FDB level.
-//
-// KNOWN GAP (database/sql ctx not honored): the caller's ctx is dropped here, and
-// beginTransaction → NewFDBRecordContext pins context.Background() (recordlayer/
-// database.go), so a bounded ExecContext(ctx)/QueryContext(ctx) deadline never
-// reaches the FDB read path. Against a wedged/unreachable cluster a read therefore
-// retries forever (correct C++/Java behaviour — neither sets a default transaction
-// timeout — but it means a caller deadline cannot interrupt it). Honoring ctx here
-// needs care: database/sql ctx is per-statement, an FDB transaction timeout is
-// whole-tx (anchored at creation, bounded by the 5s MVCC window), and txns are pooled
-// — so it is a deliberate follow-up, not a drive-by. The client CAN be bounded today
-// via tx.SetTimeout (see TestRead_BoundedByTimeout_NoHang); what's missing is the
-// SQL layer wiring a caller deadline through to it.
-func (c *EmbeddedConnection) BeginTx(_ context.Context, opts driver.TxOptions) (driver.Tx, error) {
+// all subsequent statements until Commit or Rollback is called. Only
+// LevelDefault and LevelSerializable are accepted. ReadOnly is refused
+// (0A000): database/sql forbids ignoring it and nothing enforces it.
+// ctx bounds the transaction until it ends (bindContext).
+func (c *EmbeddedConnection) BeginTx(ctx context.Context, opts driver.TxOptions) (_ driver.Tx, err error) {
+	defer c.recoverInto(&err)
 	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
@@ -963,10 +1092,23 @@ func (c *EmbeddedConnection) BeginTx(_ context.Context, opts driver.TxOptions) (
 			"isolation level %v is not supported; use LevelDefault or LevelSerializable",
 			sql.IsolationLevel(opts.Isolation))
 	}
-	return c.beginTransaction()
+	if opts.ReadOnly {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation, "read-only transactions are not supported")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	tx, err := c.beginTransaction(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tx.bindContext(ctx)
+	return tx, nil
 }
 
-func (c *EmbeddedConnection) beginTransaction() (*embeddedTx, error) {
+// beginTransaction opens a transaction and makes it the connection's active
+// one; its record context carries ctx.
+func (c *EmbeddedConnection) beginTransaction(ctx context.Context) (*embeddedTx, error) {
 	// CreateWritableTransaction (not CreateTransaction) so explicit SQL transactions
 	// (database/sql BeginTx → COMMIT) work on ANY backend, including the libfdb_c
 	// escape hatch. BeginTx spans multiple driver calls, so it needs a long-lived
@@ -983,7 +1125,7 @@ func (c *EmbeddedConnection) beginTransaction() (*embeddedTx, error) {
 	// on exactly the same terms as an autocommit statement (which goes through
 	// FDBDatabase.Run and inherits the timer there). Naming the fields one by one
 	// here is what previously left this path running with env==nil.
-	rctx := c.sess.DB.NewRecordContext(fdbTx)
+	rctx := c.sess.DB.NewRecordContextIn(ctx, fdbTx)
 	if err := rctx.Configure(transactionConfigurer(c.Options())); err != nil {
 		fdbTx.Cancel()
 		return nil, err
@@ -1010,8 +1152,8 @@ func (c *EmbeddedConnection) SetDefaultSchema(s string) {
 	c.sess.Schema = s
 }
 
-// ResetSession implements driver.SessionResetter. Resets per-request
-// state so pooled connections start clean:
+// ResetSession implements driver.SessionResetter. Resets per-borrow state so
+// pooled connections start clean:
 //   - schema → defaultSchema (original CONNECT value)
 //   - activeTx → rolled back (prevents a leaked transaction bleeding into
 //     the next checkout)
@@ -1019,20 +1161,28 @@ func (c *EmbeddedConnection) SetDefaultSchema(s string) {
 //     otherwise serve a stale descriptor)
 //   - options → the set the connection was opened with (SetOptions); a
 //     SetOption through Conn.Raw must not reach the next borrower
-func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
+//   - statement timeout, result-byte cap, fail-on-scan-limit, plan and
+//     execution-stats loggers and slow-query threshold → New's values, which
+//     the connector never changes
+//
+// A connection left in an unknown state by a recovered panic reports
+// driver.ErrBadConn, the one error database/sql discards a connection for.
+func (c *EmbeddedConnection) ResetSession(_ context.Context) (err error) {
+	defer func() {
+		if c.closed.Load() {
+			err = driver.ErrBadConn
+		}
+	}()
+	defer c.recoverInto(&err)
 	if c.closed.Load() {
 		return driver.ErrBadConn
 	}
 	c.sess.Schema = c.sess.DefaultSchema
-	if c.activeTx != nil {
-		// Best-effort rollback; we're about to release the connection
-		// back to the pool and must not leak the open FDB tx. Like Close,
-		// this door bypasses Rollback and must set the terminal flag itself
+	if tx := c.activeTx; tx != nil {
+		// We're about to release the connection back to the pool and must
+		// not leak the open FDB tx; Rollback sets its terminal flag
 		// (RFC-198 Decision 3).
-		tx := c.activeTx
-		c.activeTx = nil
-		tx.terminate()
-		tx.rctx.Cancel()
+		_ = tx.Rollback()
 	}
 	c.sess.ResetSchemaCache()
 	// A connection's own cache is dropped with its borrow. The engine-wide
@@ -1043,8 +1193,15 @@ func (c *EmbeddedConnection) ResetSession(_ context.Context) error {
 	if c.SharedPlanCache() == nil {
 		c.invalidatePlanCache()
 	}
-	// A SetOption made through Conn.Raw lasts for that borrow only.
+	// A SetOption made through Conn.Raw lasts for that borrow only, and so do
+	// the Go-local settings below, which no DSN sets.
 	c.options = c.baseOptions
+	c.failOnScanLimitReached = false
+	c.statementTimeout = 0
+	c.maxResultBytes = 0
+	c.planLogger = nil
+	c.execStatsLogger = nil
+	c.slowQueryThresholdMicros = defaultSlowQueryThresholdMicros()
 	return nil
 }
 
@@ -1069,7 +1226,8 @@ func (c *EmbeddedConnection) PrepareContext(_ context.Context, query string) (dr
 // (Java's null) clears the schema without a check. The check reads the catalog
 // in the open transaction when there is one (Java's
 // runIsolatedInTransactionIfPossible), in its own otherwise.
-func (c *EmbeddedConnection) SetSchema(s string) error {
+func (c *EmbeddedConnection) SetSchema(s string) (err error) {
+	defer c.recoverInto(&err)
 	if c.closed.Load() {
 		// Java's checkOpen: "Connection is closed!", INTERNAL_ERROR.
 		return api.NewError(api.ErrCodeInternalError, "Connection is closed!")
@@ -1106,7 +1264,8 @@ func (c *EmbeddedConnection) GetDBPath() string { return c.sess.DBPath }
 // PlanExplain runs the SQL through the Cascades planner and returns
 // the physical plan's Explain string without executing the query.
 // Useful for testing plan structure (e.g. verifying sort elimination).
-func (c *EmbeddedConnection) PlanExplain(ctx context.Context, sql string) (string, error) {
+func (c *EmbeddedConnection) PlanExplain(ctx context.Context, sql string) (_ string, err error) {
+	defer c.recoverInto(&err)
 	if err := c.ensureCatalogInit(ctx); err != nil {
 		return "", err
 	}
@@ -1177,7 +1336,8 @@ func (c *EmbeddedConnection) execTransactionStatement(txn antlrgen.ITransactionS
 		if c.activeTx != nil {
 			return 0, api.NewError(api.ErrCodeUnsupportedOperation, "nested transactions are not supported")
 		}
-		if _, err := c.beginTransaction(); err != nil {
+		// The transaction outlives this statement, so it takes no statement context.
+		if _, err := c.beginTransaction(context.Background()); err != nil {
 			return 0, err
 		}
 		return 0, nil
@@ -1327,7 +1487,8 @@ var (
 func (c *EmbeddedConnection) CollectStatistics(
 	ctx context.Context,
 	opts recordlayer.CollectOptions,
-) (*recordlayer.CollectionReport, error) {
+) (_ *recordlayer.CollectionReport, err error) {
+	defer c.recoverInto(&err)
 	// The connection owns the tags; a caller passing CollectOptions should not
 	// have to know they exist.
 	opts.Tags = c.statisticsTags()
@@ -1427,7 +1588,8 @@ func (c *EmbeddedConnection) CollectStatistics(
 }
 
 // ClearStatistics removes this schema's collected statistics.
-func (c *EmbeddedConnection) ClearStatistics(ctx context.Context) error {
+func (c *EmbeddedConnection) ClearStatistics(ctx context.Context) (err error) {
+	defer c.recoverInto(&err)
 	if c.closed.Load() {
 		return driver.ErrBadConn
 	}

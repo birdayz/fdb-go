@@ -784,11 +784,9 @@ func SeedRunCorpus() []plandiff.RunQuery {
 			// operator but has no entry in the function registry, so
 			// its planner returns the verbatim string
 			// "Unsupported operator <<" (CLAUDE.md gotcha). Go's
-			// embedded engine matches by NOT having `<<` / `>>` cases
-			// in `ApplyBitOp`, AND by emitting the SAME exact message
-			// "Unsupported operator <<" from the default arm. Same
-			// architectural reason in both engines: function
-			// registry has no evaluator for shift operators.
+			// expression resolver refuses the shift operators with the
+			// SAME exact message. Same architectural reason in both
+			// engines: no evaluator for shift operators.
 			//
 			// `ExpectErrorMessage` requires the core error string to
 			// match VERBATIM on both sides — Java's
@@ -2177,8 +2175,8 @@ func SeedRunCorpus() []plandiff.RunQuery {
 		{
 			// SUM(BIGINT) overflow — Java throws ArithmeticException
 			// 'long overflow' (Math.addExact). Pre- Go's
-			// int64 accumulator silently wrapped; aligned via
-			// AddInt64Checked at every SUM accumulation site.
+			// int64 accumulator silently wrapped; aligned with a
+			// checked addition at every SUM accumulation site.
 			Name:           "sum_bigint_overflow",
 			SchemaTemplate: "CREATE TABLE T_SOV (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 			SetupSqls: []string{

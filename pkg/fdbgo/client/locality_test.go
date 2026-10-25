@@ -238,14 +238,14 @@ func TestLocateTenantIsolation(t *testing.T) {
 	}
 }
 
-// TestInsertSortedDedup verifies that inserting an entry with the same
+// TestInsertRangesDedup verifies that inserting an entry with the same
 // (tenantId, begin) replaces the existing one.
-func TestInsertSortedDedup(t *testing.T) {
+func TestInsertRangesDedup(t *testing.T) {
 	t.Parallel()
 
 	lc := &locationCache{maxSize: 1000}
 
-	lc.insertSorted([]locationEntry{
+	lc.insertRanges([]locationEntry{
 		{tenantId: NoTenantID, begin: []byte("a"), end: []byte("d"), servers: []ServerInfo{{Address: "s1"}}},
 		{tenantId: NoTenantID, begin: []byte("d"), end: []byte("g"), servers: []ServerInfo{{Address: "s2"}}},
 	})
@@ -254,7 +254,7 @@ func TestInsertSortedDedup(t *testing.T) {
 	}
 
 	// Insert duplicate begin="a" with different server — should replace.
-	lc.insertSorted([]locationEntry{
+	lc.insertRanges([]locationEntry{
 		{tenantId: NoTenantID, begin: []byte("a"), end: []byte("d"), servers: []ServerInfo{{Address: "s1-replaced"}}},
 	})
 	if len(lc.entries) != 2 {
@@ -265,15 +265,15 @@ func TestInsertSortedDedup(t *testing.T) {
 	}
 }
 
-// TestInsertSortedOrder verifies that entries are inserted in sorted order
+// TestInsertRangesOrder verifies that entries are inserted in sorted order
 // even when provided out of order.
-func TestInsertSortedOrder(t *testing.T) {
+func TestInsertRangesOrder(t *testing.T) {
 	t.Parallel()
 
 	lc := &locationCache{maxSize: 1000}
 
 	// Insert out of order.
-	lc.insertSorted([]locationEntry{
+	lc.insertRanges([]locationEntry{
 		{tenantId: NoTenantID, begin: []byte("g"), end: []byte("k"), servers: []ServerInfo{{Address: "s3"}}},
 		{tenantId: NoTenantID, begin: []byte("a"), end: []byte("d"), servers: []ServerInfo{{Address: "s1"}}},
 		{tenantId: NoTenantID, begin: []byte("d"), end: []byte("g"), servers: []ServerInfo{{Address: "s2"}}},
@@ -292,13 +292,13 @@ func TestInsertSortedOrder(t *testing.T) {
 	}
 }
 
-// TestInsertSortedMultiTenant verifies insertion ordering across tenants.
-func TestInsertSortedMultiTenant(t *testing.T) {
+// TestInsertRangesMultiTenant verifies insertion ordering across tenants.
+func TestInsertRangesMultiTenant(t *testing.T) {
 	t.Parallel()
 
 	lc := &locationCache{maxSize: 1000}
 
-	lc.insertSorted([]locationEntry{
+	lc.insertRanges([]locationEntry{
 		{tenantId: 42, begin: []byte("a"), end: []byte("z"), servers: []ServerInfo{{Address: "t42"}}},
 		{tenantId: NoTenantID, begin: []byte("a"), end: []byte("z"), servers: []ServerInfo{{Address: "default"}}},
 		{tenantId: 10, begin: []byte("a"), end: []byte("z"), servers: []ServerInfo{{Address: "t10"}}},

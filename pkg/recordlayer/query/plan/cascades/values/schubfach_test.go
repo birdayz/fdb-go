@@ -68,7 +68,7 @@ func TestSchubfach_GoldenCorpus(t *testing.T) {
 				t.Fatal(err)
 			}
 			v := math.Float32frombits(uint32(bits))
-			if got := JavaFloatToString(v); got != parts[2] {
+			if got := javaFloatString(float64(v), 32); got != parts[2] {
 				t.Errorf("float bits %s: got %q, want %q", parts[1], got, parts[2])
 			}
 		default:

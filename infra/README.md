@@ -60,8 +60,8 @@ Two causes produce that signature, and they are distinguishable:
   was *idle and listening* while the job went unacquired, the placement failure was
   GitHub's — nothing here can prevent it. This is what happened on 2026-08-06.
 - **Oversubscription.** If every runner was busy, the job queued out. That one *is* ours,
-  and it is now the **expected** state: one push starts **5** self-hosted jobs (`ci.yml` 4 +
-  `nightly-libfdbc.yml` 1) against **2** slots, so three of them queue and a slow one can
+  and it is now the **expected** state: one push starts **7** self-hosted jobs (all in
+  `ci.yml`) against **2** slots, so five of them queue and a slow one can
   age out of the ~10-minute window. This is the accepted cost of the one-box pool.
   `//infra:infra_test`'s `TestPushFanOutVersusTheRunnerPool` no longer fails on it — it
   computes the ratio from source (workflows + `var.runner_count`) and logs it, so
@@ -71,9 +71,9 @@ Two causes produce that signature, and they are distinguishable:
   hard there is an untrustworthy count: a parse that finds no jobs, or a `strategy.matrix`
   it cannot size statically.
 
-Scheduled lanes are deliberately outside that budget (`nightly-fuzz.yml` alone is 5 jobs):
-they are not racing a merge, and a nightly overlapping a push is a queueing cost rather
-than a gate. If nightlies start being cancelled unacquired, revisit that.
+No scheduled workflow runs today: every nightly was deleted on 2026-10-09, and which of
+them return is an open item in `TODO.md`. A scheduled lane that returns sits outside this
+budget: it is not racing a merge, so overlapping a push costs queueing rather than a gate.
 
 ## Prerequisites
 
@@ -225,7 +225,7 @@ restarts runners **mid-job** — which has already taken live CI down twice:
   listener writes nothing between credential refreshes (~30 min observed, an undocumented
   implementation detail, so a safe threshold has to be far above it), while a job in
   progress writes to `Worker_*.log` and leaves `Runner_*.log` untouched for its whole
-  duration — the nightly batch lane runs 2h+. Any threshold high enough to avoid false
+  duration — a cold `Build, Lint & Test` job runs over an hour. Any threshold high enough to avoid false
   positives on an idle box is also inside the silent window of a long job.
 - A queue-aware check (queued runs fleet-wide + this listener idle for N minutes) *would*
   separate them, but it needs a GitHub token with repo scope sitting on every box. Not

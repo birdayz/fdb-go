@@ -2,7 +2,6 @@ package simfdb_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	mrand "math/rand/v2"
 	"os"
@@ -23,6 +22,7 @@ var (
 	realDBOnce sync.Once
 	realDB     fdb.BackendDatabase
 	realDBErr  error
+	realDBSkip bool // decided where Run fails, so the dockerskip analyzer sees it
 )
 
 func getRealDB(t *testing.T) fdb.BackendDatabase {
@@ -33,6 +33,7 @@ func getRealDB(t *testing.T) fdb.BackendDatabase {
 		container, err := foundationdbtc.Run(ctx, "", foundationdbtc.WithAPIVersion(730))
 		if err != nil {
 			realDBErr = err
+			realDBSkip = foundationdbtc.SkipWithoutDocker(err)
 			return
 		}
 		cf, err := container.ClusterFile(ctx)
@@ -59,9 +60,8 @@ func getRealDB(t *testing.T) fdb.BackendDatabase {
 		realDB = d
 	})
 	if realDBErr != nil || realDB == nil {
-		var terminationErr *foundationdbtc.TerminationError
-		if errors.As(realDBErr, &terminationErr) {
-			t.Fatalf("FDB startup cleanup failed: %v", realDBErr)
+		if !realDBSkip {
+			t.Fatalf("FDB setup failed: %v", realDBErr)
 		}
 		if simfdb.DockerRequired {
 			t.Fatalf("FDB container unavailable under the fdbdocker build tag: %v.\n"+

@@ -32,9 +32,9 @@ func sendReadFrame(ctx context.Context, conn *transport.Conn, token transport.UI
 	return err
 }
 
-func (db *database) handleReadConnError(addr string, err error) {
+func (db *database) handleReadConnError(addr string, conn *transport.Conn, err error) {
 	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) && !isEndpointNotFound(err) {
-		db.handleConnError(addr)
+		db.handleConnError(addr, conn)
 	}
 }
 
@@ -45,7 +45,7 @@ func (db *database) endOther(o rpcAccount) {
 		db.queueModel.endRequest(o.addr, o.delta, 0, false)
 		return
 	}
-	db.handleReadConnError(o.addr, o.err)
+	db.handleReadConnError(o.addr, o.conn, o.err)
 	db.queueModel.endRequest(o.addr, o.delta, readFailureLatency(o.err, o.start), false)
 }
 

@@ -239,7 +239,7 @@ func (p *PendingGet) resolve(ctx context.Context, abort <-chan struct{}) ([]byte
 				return p.resolveReply(ctx, response, abort)
 			}
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				p.tx.db.handleConnError(p.addr)
+				p.tx.db.handleConnError(p.addr, p.conn)
 			}
 			p.releaseWireLocked()
 			return p.full(ctx, abort, true)
@@ -287,7 +287,7 @@ func (p *PendingGet) resolveReply(ctx context.Context, response transport.Respon
 	}
 	if response.Err != nil {
 		if !isEndpointNotFound(response.Err) {
-			p.tx.db.handleConnError(p.addr)
+			p.tx.db.handleConnError(p.addr, p.conn)
 		}
 	} else {
 		p.tx.db.locCache.invalidate(p.key, p.tenantID, false)

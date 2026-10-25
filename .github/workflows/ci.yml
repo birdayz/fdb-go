@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [ master, main ]
+  # Any base: a stacked PR (gh stack) targets the branch below it. Fork PRs are
+  # refused on the runners by infra/runner-job-guard.sh, whatever the base.
   pull_request:
-    branches: [ master, main ]
   workflow_dispatch:
 
 permissions:
@@ -25,6 +26,7 @@ jobs:
   ci:
     name: Build, Lint & Test
     runs-on: hetzner-fdb-vm
+    timeout-minutes: 120
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -87,22 +89,20 @@ jobs:
             exit 1
           fi
 
-      - name: Check Docker (else the PRIMARY merge gate silently no-ops)
-        # The whole test suite drives real FDB testcontainers; without Docker every
-        # FDB test hits the allowed `FDB not available (no Docker)` skip and this job
-        # — the gate that BLOCKS MERGES — reports SUCCESS with no coverage (codex,
-        # RFC-107). This matters more than the race job: fail loudly.
+      - name: Check Docker
+        # One clear failure up front instead of every FDB suite failing on its own
+        # (CI never skips them: SkipWithoutDocker reads the forwarded CI variable).
         run: |
-          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — the test suite would skip (exit 0) and the merge gate would silently pass with no coverage"; exit 1; }
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable: every FDB test suite would fail"; exit 1; }
 
       # `--define gotags=fdbdocker` turns the SimFDB differential's missing-container
       # skip into a FAILURE (pkg/simfdb/differential_docker_required.go). The Docker
-      # preflight above proves the daemon answers; the tag proves the differential
-      # actually RAN. They are not the same check — a container can fail to start on a
-      # runner whose daemon is perfectly healthy, and that lands on the sanctioned
-      # `FDB not available (no Docker)` skip. The differential is the ONLY test that
-      # checks SimFDB against real FDB rather than against itself, so skipping it
-      # yields a green suite that has verified nothing about fidelity.
+      # preflight above proves the daemon answers when the job starts; the tag makes
+      # the differential's build itself demand a container, independent of the CI
+      # variable foundationdb.SkipWithoutDocker reads (.bazelrc forwards it under
+      # --config=ci). The differential is the ONLY test that checks SimFDB against
+      # real FDB rather than against itself, so skipping it yields a green suite
+      # that has verified nothing about fidelity.
       #
       # The flag is ADDITIVE to `.bazelrc`'s `--@rules_go//go/config:tags=` list
       # (rules_go go/private/context.bzl:998-1000 appends `--define gotags` to it), so
@@ -140,7 +140,7 @@ jobs:
       # Report/upload run on test success OR failure (always() lost the report on a
       # red suite) — but NOT when the test step was SKIPPED (e.g. the Docker preflight
       # aborted first): there's no BEP then, and `> test-report.html` would otherwise
-      # truncate an EMPTY report and publish it, masking the real failure (codex).
+      # truncate an EMPTY report and publish it, masking the real failure.
       - name: Generate test report
         id: report
         if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
@@ -183,6 +183,7 @@ jobs:
     # them here, on the second runner, takes their quarter off the critical path.
     # Same bazel flags as the main lane, so the build reuses this runner's disk cache.
     runs-on: hetzner-fdb-vm
+    timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -204,9 +205,9 @@ jobs:
           go-version: '1.27.3'
           cache: false
 
-      - name: Check Docker (else the conformance gate silently no-ops)
+      - name: Check Docker
         run: |
-          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — the conformance suite would skip (exit 0) and the gate would silently pass with no coverage"; exit 1; }
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable: every conformance suite would fail"; exit 1; }
 
       - name: Java conformance tests
         id: test
@@ -298,6 +299,7 @@ jobs:
   frl-go-install:
     name: go install lane (cmd/frl)
     runs-on: hetzner-fdb-vm
+    timeout-minutes: 30
     steps:
       # Full history, blobless: the secret scan reads every commit a change adds.
       - name: Checkout code
@@ -377,6 +379,7 @@ jobs:
   govulncheck:
     name: Vulnerability scan
     runs-on: hetzner-fdb-vm
+    timeout-minutes: 20
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -482,6 +485,7 @@ jobs:
   race:
     name: Race detector (SQL layer + client + cascades)
     runs-on: hetzner-fdb-vm
+    timeout-minutes: 100
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -497,12 +501,10 @@ jobs:
           PR_BASE_REF: ${{ github.base_ref }}
         run: infra/merge-current-master.sh
 
-      - name: Check Docker (else the race gates silently no-op)
-        # Both race steps below drive real FDB testcontainers; without Docker the
-        # tests skip (exit 0) and the gate passes with no race coverage (codex,
-        # RFC-107). Fail loudly so a green race job always means -race actually ran.
+      - name: Check Docker
+        # One clear failure up front instead of every FDB race suite failing on its own.
         run: |
-          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable — race tests would skip (exit 0) and the gate would silently pass"; exit 1; }
+          docker info >/dev/null 2>&1 || { echo "::error::Docker unavailable: every FDB race suite would fail"; exit 1; }
 
       - name: Set up Go
         # For `go run ./cmd/test-budget` in the budget step. It is deliberately not
@@ -588,7 +590,7 @@ jobs:
           REL_SCOPE="//pkg/relational/... -//pkg/relational/conformance/... -//pkg/relational/sqltest/..."
           CLIENT_SCOPE="//pkg/fdbgo/client/... //pkg/fdbgo/transport/... //pkg/fdbgo/fdb/..."
           CASCADES_SCOPE="//pkg/recordlayer/query/plan/cascades/..."
-          # No-op guard PER SCOPE (codex): count each gate independently. Counting the
+          # No-op guard PER SCOPE: count each gate independently. Counting the
           # UNION would let one side silently drop to zero (e.g. the client packages stop
           # exposing test targets) while the other keeps the union > 0 — `bazel test`
           # would still exit 0 and quietly lose that race coverage. All must be non-empty.
@@ -614,9 +616,9 @@ jobs:
           if [ "$NC" -eq 0 ]; then echo "::error::client race scope resolved 0 test targets — gate would be a no-op"; exit 1; fi
           if [ "$NX" -eq 0 ]; then echo "::error::cascades race scope resolved 0 test targets — gate would be a no-op"; exit 1; fi
           echo "race scope: relational=$NR client=$NC cascades=$NX test targets"
-          # Run the heavy suites as SEPARATE, serial invocations (codex) — NOT one
-          # combined `bazel test`. A combined invocation lets Bazel interleave relational
-          # and client targets under --local_test_jobs=4, so the heavy client_test could
+          # Run the heavy suites as SEPARATE, serial invocations — NOT one combined
+          # `bazel test`. A combined invocation lets Bazel interleave relational and
+          # client targets several at a time, so the heavy client_test could
           # overlap the heavy relational FDB-testcontainer tests and reintroduce Docker/
           # container contention on the single runner. Serial keeps the heavy suites from
           # overlapping; the SHARED RACE_BASE keeps both warm + isolated from the normal

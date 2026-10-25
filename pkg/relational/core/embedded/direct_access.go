@@ -55,14 +55,14 @@ type directTable struct {
 
 // run resolves tableName and runs fn over its store, in the open explicit
 // transaction or in one of its own.
-func (s *directAccessStatement) run(ctx context.Context, tableName string, opts *api.Options, fn func(directTable, *api.Options) (any, error)) (any, error) {
+func (s *directAccessStatement) run(ctx context.Context, tableName string, opts *api.Options, fn func(directTable, *api.Options) (any, error)) (_ any, err error) {
 	c := s.c
+	defer func() { c.endTxOnEndedContext(ctx, err) }()
 	if c.closed.Load() {
 		return nil, api.NewError(api.ErrCodeStatementClosed, "statement is closed")
 	}
 	merged := c.Options()
 	if opts != nil {
-		var err error
 		if merged, err = merged.WithChild(opts); err != nil {
 			return nil, err
 		}
@@ -91,7 +91,7 @@ func (s *directAccessStatement) run(ctx context.Context, tableName string, opts 
 
 	tx, own := c.activeTx, false
 	if tx == nil {
-		if tx, err = c.beginTransaction(); err != nil {
+		if tx, err = c.beginTransaction(ctx); err != nil {
 			return nil, translateFDBError(err)
 		}
 		own = true
@@ -143,7 +143,8 @@ func (s *directAccessStatement) schemaAndTable(tableName string) (string, string
 // many it wrote (executeInsert, :160-187). A struct whose primary key exists
 // is refused unless REPLACE_ON_DUPLICATE_PK is set, in which case it replaces
 // the record (BackingRecordStore.insert, :170-189).
-func (s *directAccessStatement) ExecuteInsert(ctx context.Context, tableName string, data []api.Struct, opts *api.Options) (int64, error) {
+func (s *directAccessStatement) ExecuteInsert(ctx context.Context, tableName string, data []api.Struct, opts *api.Options) (_ int64, err error) {
+	defer s.c.recoverInto(&err)
 	if len(data) == 0 {
 		return 0, nil
 	}
@@ -182,7 +183,8 @@ func (s *directAccessStatement) ExecuteInsert(ctx context.Context, tableName str
 // (executeGet, :135-157). With INDEX_HINT, key is the named index's complete
 // key and the row is the record of its first entry
 // (BackingRecordStore.getFromIndex, :107-131).
-func (s *directAccessStatement) ExecuteGet(ctx context.Context, tableName string, key *api.KeySet, opts *api.Options) (api.ResultSet, error) {
+func (s *directAccessStatement) ExecuteGet(ctx context.Context, tableName string, key *api.KeySet, opts *api.Options) (_ api.ResultSet, err error) {
+	defer s.c.recoverInto(&err)
 	rows, err := s.run(ctx, tableName, opts, func(t directTable, o *api.Options) (any, error) {
 		index, err := directSourceIndex(t, o)
 		if err != nil {
@@ -226,7 +228,8 @@ type directRows struct {
 // the rows are consumed, resumes the scan where the page stopped, or is the
 // end when the scan is exhausted. Java streams the page out of an open
 // transaction instead; the rows and continuations are the same.
-func (s *directAccessStatement) ExecuteScan(ctx context.Context, tableName string, keyPrefix *api.KeySet, opts *api.Options) (api.ResultSet, error) {
+func (s *directAccessStatement) ExecuteScan(ctx context.Context, tableName string, keyPrefix *api.KeySet, opts *api.Options) (_ api.ResultSet, err error) {
+	defer s.c.recoverInto(&err)
 	rows, err := s.run(ctx, tableName, opts, func(t directTable, o *api.Options) (any, error) {
 		index, err := directSourceIndex(t, o)
 		if err != nil {
@@ -265,7 +268,8 @@ func directRowLimit(o *api.Options) int {
 
 // ExecuteDelete deletes the record whose complete primary key is key and
 // returns how many it deleted (executeDelete, :189-217).
-func (s *directAccessStatement) ExecuteDelete(ctx context.Context, tableName string, key *api.KeySet, opts *api.Options) (int64, error) {
+func (s *directAccessStatement) ExecuteDelete(ctx context.Context, tableName string, key *api.KeySet, opts *api.Options) (_ int64, err error) {
+	defer s.c.recoverInto(&err)
 	n, err := s.run(ctx, tableName, opts, func(t directTable, _ *api.Options) (any, error) {
 		pk, err := buildDirectKey(t.rt, t.rt.PrimaryKey, "primary key of <"+t.name+">", keySetMap(key), true)
 		if err != nil {
@@ -288,7 +292,8 @@ func (s *directAccessStatement) ExecuteDelete(ctx context.Context, tableName str
 // the one record; a prefix is a delete-where over it, and where an index
 // cannot be cleared by that prefix the records are scanned and deleted one by
 // one, as the target falls back.
-func (s *directAccessStatement) ExecuteDeleteRange(ctx context.Context, tableName string, keyPrefix *api.KeySet, opts *api.Options) (int64, error) {
+func (s *directAccessStatement) ExecuteDeleteRange(ctx context.Context, tableName string, keyPrefix *api.KeySet, opts *api.Options) (_ int64, err error) {
+	defer s.c.recoverInto(&err)
 	n, err := s.run(ctx, tableName, opts, func(t directTable, _ *api.Options) (any, error) {
 		columns := keySetMap(keyPrefix)
 		prefix, err := buildDirectKey(t.rt, t.rt.PrimaryKey, "primary key of <"+t.name+">", columns, false)
