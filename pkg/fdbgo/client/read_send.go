@@ -57,19 +57,6 @@ func (db *database) altFailureDelay() time.Duration {
 	return time.Duration(float64(d) * (0.9 + 0.2*rand.Float64()))
 }
 
-// altFailureWait returns how long to wait for one of servers to recover, zero unless
-// all are excluded, and the recovery signal taken before that check.
-func (db *database) altFailureWait(servers []ServerInfo) (<-chan struct{}, time.Duration) {
-	if db.failMon == nil {
-		return nil, 0
-	}
-	recovered := db.failMon.waitForRecovery()
-	if !db.allExcluded(servers) {
-		return nil, 0
-	}
-	return recovered, db.altFailureDelay()
-}
-
 // awaitAlternative waits until one of servers is no longer excluded, as okFuture
 // (LoadBalance.actor.cpp:47-48), or reports all_alternatives_failed after wait.
 func (db *database) awaitAlternative(ctx context.Context, closed <-chan struct{}, servers []ServerInfo, recovered <-chan struct{}, wait time.Duration) error {

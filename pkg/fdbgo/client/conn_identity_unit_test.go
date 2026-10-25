@@ -940,6 +940,10 @@ func TestMetricsRequestWakesOnRecovery(t *testing.T) {
 			var parks atomic.Int32
 			hook := func() {
 				if parks.Add(1) == 1 {
+					// Keep the replica excluded past the test, so no probe dials it.
+					db.failMon.mu.Lock()
+					db.failMon.failed[armAddr].excludedUntil = nowSeconds() + 600
+					db.failMon.mu.Unlock()
 					close(parked)
 				}
 			}
@@ -1141,8 +1145,18 @@ func TestMetricsRequestSkipsExcludedReplica(t *testing.T) {
 				}
 			}()
 			defer func() { stop(); <-done }()
-			if _, ok := peer.recv(ctx); !ok {
-				t.Fatal("no request reached the available replica")
+			// Two attempts, whatever the random start: the first is answered
+			// request_maybe_delivered, so the next attempt moves on in the list.
+			for i := range 2 {
+				f, ok := peer.recv(ctx)
+				if !ok {
+					t.Fatalf("request %d did not reach the available replica", i)
+				}
+				if i == 0 {
+					if err := transport.WriteFrame(peer.server, metricsReplyToken(t, arm.name, f.body), (&types.ErrorOrError{ErrorCode: 1030}).MarshalFDB(), false); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			if n := deadDials.Load(); n != 0 {
 				t.Fatalf("the excluded replica was dialed %d times", n)

@@ -143,8 +143,7 @@ func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, m
 }
 
 // sendMetricsRequest sends a request as loadBalance does (LoadBalance.actor.h:589-725):
-// one replica per attempt, no reply timeout, a backoff per attempt once every
-// replica was tried, and 1006 only once every replica stays failed for the delay.
+// one replica per attempt, no reply timeout, and a backoff once all were tried.
 func (tx *Transaction) sendMetricsRequest(ctx context.Context, servers []ServerInfo, endpoint int, build func(reply transport.UID) []byte) ([]byte, error) {
 	var closed <-chan struct{} // Close ends the loop, as destroying the database cancels the actor
 	if tx.db.ctx != nil {
@@ -159,14 +158,18 @@ func (tx *Transaction) sendMetricsRequest(ctx context.Context, servers []ServerI
 			return nil, tx.db.allAlternativesFailed(ctx)
 		}
 		// Excluded replicas are skipped; with none left, wait before sending (:595-641).
-		if recovered, wait := tx.db.altFailureWait(live); wait > 0 {
-			if err := tx.db.awaitAlternative(ctx, closed, live, recovered, wait); err != nil {
+		var recovered <-chan struct{}
+		if tx.db.failMon != nil {
+			recovered = tx.db.failMon.waitForRecovery() // before the check, so no recovery is missed
+		}
+		avail := tx.db.notExcluded(live)
+		if len(avail) == 0 {
+			if err := tx.db.awaitAlternative(ctx, closed, live, recovered, tx.db.altFailureDelay()); err != nil {
 				return nil, err
 			}
 			attempts = 0 // the backoff is kept (:641)
 			continue
 		}
-		avail := tx.db.notExcluded(live)
 		if backoff > 0 {
 			timer := time.NewTimer(backoff)
 			select {
