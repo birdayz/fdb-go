@@ -126,14 +126,16 @@ func PlanPhysicalForTestWithReachability(
 
 // PlanPhysicalForTestWithArgs is PlanPhysicalForTestWithReachability with the
 // statement's parameters bound as the connection binds them, so a `?` plans
-// with its driver value's type, as it executes.
+// with its driver value's type, as it executes, under the connection's options
+// (nil for the defaults).
 func PlanPhysicalForTestWithArgs(
 	sql, schemaDDL string,
 	args []driver.NamedValue,
+	opts *api.Options,
 	stats properties.StatisticsProvider,
 	reach *cascades.ReachabilityCollector,
 ) (plans.RecordQueryPlan, error) {
-	popts := plannerOptionsFrom(nil)
+	popts := plannerOptionsFrom(opts)
 	popts.params = args
 	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false, reach, popts)
 	return plan, err
@@ -144,9 +146,10 @@ func PlanPhysicalForTestWithArgs(
 func PlanPhysicalForTestWithBoundLiterals(
 	sql, schemaDDL string,
 	args []driver.NamedValue,
+	opts *api.Options,
 	stats properties.StatisticsProvider,
 ) (plans.RecordQueryPlan, error) {
-	popts := plannerOptionsFrom(nil)
+	popts := plannerOptionsFrom(opts)
 	popts.params = args
 	popts.bindQueryLiterals = true
 	plan, _, err := planPhysicalForTest(sql, schemaDDL, stats, false, nil, popts)
@@ -203,14 +206,16 @@ func PlanPhysicalDMLForTestWithReachability(
 }
 
 // PlanPhysicalDMLForTestWithArgs is PlanPhysicalDMLForTestWithReachability
-// with the statement's parameters bound as the connection binds them.
+// with the statement's parameters bound as the connection binds them, under
+// the connection's options (nil for the defaults).
 func PlanPhysicalDMLForTestWithArgs(
 	sql, schemaDDL string,
 	args []driver.NamedValue,
+	opts *api.Options,
 	stats properties.StatisticsProvider,
 	reach *cascades.ReachabilityCollector,
 ) (plans.RecordQueryPlan, error) {
-	return planPhysicalDMLForTest(sql, schemaDDL, args, stats, reach, plannerOptionsFrom(nil))
+	return planPhysicalDMLForTest(sql, schemaDDL, args, stats, reach, plannerOptionsFrom(opts))
 }
 
 // planPhysicalForTest is PlanPhysicalForTest plus the optional RFC-224
