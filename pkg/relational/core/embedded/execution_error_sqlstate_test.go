@@ -34,6 +34,9 @@ func TestTranslateExecErrorMapsExecutorFailures(t *testing.T) {
 			if !errors.As(got, &apiErr) || apiErr.Code != c.wantCode || apiErr.Message != c.wantMessage {
 				t.Fatalf("translateExecError = %v, want %s %q", got, c.wantCode, c.wantMessage)
 			}
+			if got.Error() != string(c.wantCode)+": "+c.wantMessage {
+				t.Fatalf("translateExecError renders %q, want the message once", got.Error())
+			}
 		})
 	}
 }

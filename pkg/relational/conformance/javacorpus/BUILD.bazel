@@ -67,6 +67,7 @@ go_test(
         "pinned_ledger_test.go",
         "prepared_fdb_test.go",
         "resultmetadata_internal_test.go",
+        "sql_conformance_doc_test.go",
         "typenames_internal_test.go",
     ],
     # keep: the run walks the vendored .yamsql tree, so it must be in runfiles.
@@ -74,7 +75,12 @@ go_test(
     # find the corpus at all, which is a far worse outcome than a drifted count.
     # keep: so are the yaml-tests descriptor sets and metadata JSON that
     # `load schema template` reads.
+    # keep: TestSQLConformanceStatesTheLedger reads SQL_CONFORMANCE.md,
+    # DIVERGENCES.md and the vendored VERSION.
     data = [
+        "//:DIVERGENCES.md",
+        "//:SQL_CONFORMANCE.md",
+        "//third_party/apple/fdb-record-layer:version",
         "//third_party/apple/fdb-record-layer:yamltests_main_proto",
         "//third_party/apple/fdb-record-layer:yamltests_metadata_json",
         "//third_party/apple/fdb-record-layer:yamltests_test_proto",

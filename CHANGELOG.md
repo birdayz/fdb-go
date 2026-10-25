@@ -369,6 +369,13 @@ Each is described in full under Compatibility or Changed below.
   options belong in `SetOption`: `SetOptions` sets what `ResetSession` restores, so code that
   copied the earlier `docs/mt-saas.md` recipe (`SetOptions` per tenant borrow) hands one
   borrow's options to the next borrower; the recipe now uses `SetOption`.
+- SQL driver (#1013): a panic while an ended context aborts a transaction (on the context's own
+  goroutine, outside every entry point) is logged and closes the connection instead of crashing
+  the process. Enum, UUID, `range()` bound, 42602 invalid-name, UUID index-predicate and
+  decimal-literal errors render their message once (`XX000: Invalid enum value for the enum type
+  BOGUS`, not three times); a schema template's invalid-name error no longer carries its
+  `build file descriptor: table …` context, as in Java. New `api.WrapStatedError` builds such an
+  error: its message states the cause, which still unwraps.
 - GROUP BY duplicate-key detection (42702) compares expression keys by their resolved value in
   value context, as Java does: keys differing only in literal case are two keys
   (`GROUP BY c = 'a', c = 'A'` was refused; Java declines it in its planner), `<>`/`!=` and other

@@ -128,7 +128,12 @@ func pinWith(ctx context.Context, db *sql.DB, p perturbation) (*sql.Conn, error)
 		if !ok {
 			return fmt.Errorf("driver conn is %T, want *embedded.EmbeddedConnection", dc)
 		}
-		ec.SetOptions(p.opts(api.NewOptionsBuilder().Set(api.OptMaxTotalTaskCount, 150_000)).Build())
+		// Per borrow, over the DSN's options (max_total_task_count among them).
+		for name, value := range p.opts(api.NewOptionsBuilder()).Build().AllEntries() {
+			if err := ec.SetOption(name, value); err != nil {
+				return err
+			}
+		}
 		return nil
 	}); err != nil {
 		conn.Close() //nolint:errcheck

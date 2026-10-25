@@ -1085,7 +1085,7 @@ func parseTableDefinition(td antlrgen.ITableDefinitionContext, b *metadata.Build
 		if _, err := recordlayer.ToProtoBufCompliantName(c.Name()); err != nil {
 			var invalid *recordlayer.InvalidNameError
 			if errors.As(err, &invalid) {
-				return nil, nil, api.WrapError(api.ErrCodeInvalidName, invalid.Message, err)
+				return nil, nil, api.WrapStatedError(api.ErrCodeInvalidName, invalid.Message, err)
 			}
 			return nil, nil, err
 		}

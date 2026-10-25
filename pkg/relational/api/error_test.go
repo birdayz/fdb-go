@@ -209,3 +209,23 @@ func TestEveryCodeRoundTrips(t *testing.T) {
 		}
 	}
 }
+
+// A stated cause is rendered by the message alone and still unwraps.
+func TestWrapStatedErrorRendersOnce(t *testing.T) {
+	t.Parallel()
+	cause := errors.New("only positive step is allowed in range")
+	err := WrapStatedError(ErrCodeUnknown, cause.Error(), fmt.Errorf("page: %w", cause))
+	if got := err.Error(); got != "XXXXX: only positive step is allowed in range" {
+		t.Fatalf("Error() = %q, want the message once", got)
+	}
+	if !errors.Is(err, cause) {
+		t.Fatal("the stated cause is not reachable through Unwrap")
+	}
+	if got := err.WithContext("k", 1).Error(); got != "XXXXX: only positive step is allowed in range [k=1]" {
+		t.Fatalf("WithContext lost the stated cause: %q", got)
+	}
+	plain := WrapError(ErrCodeUnknown, "outer", cause)
+	if got := plain.Error(); got != "XXXXX: outer: only positive step is allowed in range" {
+		t.Fatalf("WrapError Error() = %q, want message and cause", got)
+	}
+}

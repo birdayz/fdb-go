@@ -28,8 +28,8 @@ import (
 // follow-up). Over UNORDERED input this would silently drop non-adjacent
 // duplicates and keep adjacent ones — a wrong-rows hazard — hence the flag gate.
 //
-// SELECT DISTINCT is a Go-only read-side extension (Java's fdb-relational does
-// not dedup it — see executeDistinct), so this continuation is GO-INTERNAL:
+// Java's fdb-relational does not dedup SELECT DISTINCT (DIVERGENCES.md; see
+// executeDistinct), so this continuation is GO-INTERNAL:
 // there is no Java wire format to match. Shares the DedupContinuation proto and
 // the adjacent-dedup shape with recordlayer.DedupCursor; specialised here to
 // carry the packed dedup KEY (not a whole reconstructed row) as lastValue.

@@ -434,21 +434,8 @@ func crossEngineScenarios() []*yamsql.Scenario {
 		// cannot be made stateless. The NULL-safe DML semantics are covered
 		// Go-only via the dml_with_null_safe yamsql corpus (which runs statefully).
 		insertSelectScenario(),
-		// recursiveCteBaseScenario is NOT cross-engine: it is a showcase of
-		// Go-only recursive-CTE EXTENSIONS that fdb-relational 4.12.11.0 cannot
-		// plan, so there is no cross-engine equivalence to assert (these are
-		// welcome Go-beyond-Java read-side capabilities, not divergences):
-		//   - the `TRAVERSAL ORDER pre_order|post_order|level_order` clause —
-		//     Java's grammar has no such production at all;
-		//   - an outer `ORDER BY` over a recursive CTE (`… SELECT id FROM
-		//     ancestors ORDER BY id DESC`) — Java deterministically rejects with
-		//     "order by is not supported in subquery" (the WITH body is treated
-		//     as a subquery), the same limitation noted on
-		//     recursiveCteAdvancedScenario;
-		// The cross-engine-valid recursive-CTE basics (anchor + recursive UNION,
-		// COUNT, empty seed) are asserted by recursiveCteCountScenario. The full
-		// Go-only surface is covered by the recursive_cte yamsql corpus. (Builder
-		// kept for that Go-only coverage.)
+		// recursiveCteBaseScenario includes outer ORDER BY forms Java cannot plan;
+		// traversal order itself is shared and pinned by DocClaimsJavaProbe.
 		//
 		// dmlSubqueryScenario is NOT cross-engine: it is STATEFUL in the same way
 		// as dmlWithNullSafeScenario. Its Setup runs a full MUTATING DML chain
@@ -552,11 +539,8 @@ func unionStarScenario() *yamsql.Scenario {
 	}
 }
 
-// caseInsensitiveKeywordsScenario mirrors testdata/case_insensitive_keywords.yaml.
-// SQL standard: keywords are case-insensitive. Drops NOT NULL on PK.
-// Skips tests using LIMIT (unsupported), GROUP BY (unsupported), DESC
-// in ORDER BY (uncertain natural-order continuation), explicit INNER
-// JOIN (broken). Lifts the safe SELECT/WHERE/AND/OR/IS NOT NULL forms.
+// caseInsensitiveKeywordsScenario keeps the simple SELECT forms; omitted groupings
+// lack an ordering index. DocClaimsJavaProbe covers ordered grouping and joins.
 func caseInsensitiveKeywordsScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "case_insensitive_keywords",
@@ -895,17 +879,8 @@ func orderByEliminationScenario() *yamsql.Scenario {
 	}
 }
 
-// aggregateExpressionSelectScenario mirrors testdata/
-// aggregate_expression_select.yaml — SELECT-list expressions wrapping
-// aggregate function calls (post-aggregation evaluation). Drops NOT NULL
-// on PK. Skips GROUP BY tests (planner unsupported per CLAUDE.md
-// gotcha) and the COALESCE-wrapping-aggregate / CASE-wrapping-aggregate
-// forms — fdb-relational 4.12.11.0's planner raises
-// `IllegalStateException: unable to eval an aggregation function with
-// eval()` because the post-aggregation rewrite for scalar-function-of-
-// aggregate isn't implemented. Aggregate-of-expression
-// (`SUM(CASE WHEN ...)` covered by aggregate_expr) works; the inverse
-// direction does not. New CLAUDE.md gotcha.
+// aggregateExpressionSelectScenario omits grouping over unordered input and
+// scalar-function-of-aggregate forms; ordered grouping is shared (DocClaimsJavaProbe).
 func aggregateExpressionSelectScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "aggregate_expression_select",
@@ -952,17 +927,8 @@ func derivedTableRenamedScenario() *yamsql.Scenario {
 	}
 }
 
-// aggregateExprScenario mirrors testdata/aggregate_expr.yaml — the no-
-// GROUP-BY no-DISTINCT subset. Drops NOT NULL on PK. Drops the GROUP BY,
-// SUM(DISTINCT), error_code, and aggregate-of-aggregate-with-ORDER-BY
-// tests (planner gotchas: GROUP BY unsupported, DISTINCT unsupported,
-// ORDER BY <aggregate> requires the natural-order continuation).
-//
-// `SUM(BIGINT) / COUNT(*)` integer-division parity: Go's SUM now
-// preserves int64 when every observed
-// value is integral (see `pkg/relational/core/embedded/aggregate.go`
-// `sumIntOnly`), so `SUM(qty) / COUNT(*)` integer-divides Java-style
-// rather than float-dividing.
+// aggregateExprScenario omits unordered grouping, DISTINCT aggregates and
+// aggregate ordering without a supporting index (DocClaimsJavaProbe).
 func aggregateExprScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "aggregate_expr",
@@ -1976,9 +1942,8 @@ func coalesceNullifScenario() *yamsql.Scenario {
 	}
 }
 
-// bareColWithAggScenario mirrors testdata/bare_col_with_agg.yaml. Drops
-// NOT NULL on PK. Drops the DISTINCT test (CLAUDE.md gotcha — fdb-
-// relational's planner doesn't support SELECT DISTINCT).
+// bareColWithAggScenario mirrors bare_col_with_agg.yaml, without NOT NULL on PK
+// or DISTINCT: Java 4.14.2.0 returns duplicates (DocClaimsJavaProbe).
 func bareColWithAggScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name:           "bare_col_with_agg",
@@ -2050,7 +2015,7 @@ func unionColumnsRenamedScenario() *yamsql.Scenario {
 
 // countDistinctJoinPositiveScenario lifts the one COUNT(*) test from
 // testdata/count_distinct_join.yaml that doesn't use COUNT(DISTINCT)
-// (which NPEs in fdb-relational 4.12.11.0 per CLAUDE.md gotcha).
+// (which both engines refuse with 0AF00).
 // Drops NOT NULL on PK + composite PK on the join-side table.
 func countDistinctJoinPositiveScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
@@ -3962,7 +3927,7 @@ func unionColumnsScenario() *yamsql.Scenario {
 			// branch) and is likewise not cross-engine.
 			// ORDER BY on right-side column name fails — result schema is left's names only.
 			{Query: "SELECT id, v FROM a UNION ALL SELECT id, w FROM b ORDER BY w", ErrorCode: "42703"},
-			// LIMIT/OFFSET on UNION rejected at parse time.
+			// LIMIT/OFFSET on UNION rejected (0AF00).
 			{Query: "SELECT v FROM a UNION ALL SELECT w FROM b ORDER BY v LIMIT 2 OFFSET 1", ErrorCode: "0AF00"},
 			// Plain UNION (without ALL) rejected.
 			{Query: "SELECT v FROM a UNION SELECT v FROM a ORDER BY v", ErrorCode: "0AF00"},
@@ -4110,12 +4075,8 @@ func compositePKCrossScenario() *yamsql.Scenario {
 func uniqueViolationScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "unique_violation",
-		// NOT NULL dropped from `name`: fdb-relational 4.12.11.0 allows NOT NULL
-		// only on ARRAY columns ("NOT NULL is only allowed for ARRAY column
-		// type") — scalar NOT NULL is a Go-only extension Java cannot CREATE, so
-		// keeping it makes the schema un-creatable in Java (fails deterministically
-		// on a fresh per-scenario server). The unique-constraint behaviour under
-		// test (PK + UNIQUE INDEX on email) is unaffected; the data is non-null.
+		// No NOT NULL on `name`: neither engine accepts it on a scalar column
+		// (0A000). The unique-constraint behaviour under test is unaffected.
 		SchemaTemplate: "CREATE TABLE t (id BIGINT, name STRING, email STRING, PRIMARY KEY (id))" +
 			" CREATE UNIQUE INDEX t_email ON t (email)",
 		Setup: []string{
@@ -4150,11 +4111,8 @@ func uniqueViolationScenario() *yamsql.Scenario {
 func notNullViolationScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "not_null_violation",
-		// NOT NULL dropped: fdb-relational 4.12.11.0 allows NOT NULL only on ARRAY
-		// columns, so scalar NOT NULL is a Go-only extension Java cannot CREATE.
-		// The 23502 NOT-NULL-violation tests are error_code (skipped cross-engine,
-		// covered Go-only via the yamsql twin); the cross-engine SELECT below is
-		// unaffected by the dropped constraint (its row is non-null).
+		// No scalar NOT NULL: neither engine accepts it (0A000). The 23502 tests are
+		// error_code (skipped cross-engine, covered Go-only via the yamsql twin).
 		SchemaTemplate: "CREATE TABLE t (id BIGINT, name STRING, PRIMARY KEY (id))",
 		Setup: []string{
 			"INSERT INTO t VALUES (1, 'alice')",
@@ -4215,7 +4173,7 @@ func inSubqueryDecompositionScenario() *yamsql.Scenario {
 
 // subqueryInScenario mirrors testdata/subquery_in.yaml.
 // `col IN (subquery)` and `col NOT IN (subquery)` are rejected
-// (Java NPEs in AstNormalizer; Go emits 0AF00). EXISTS / NOT EXISTS
+// (0AF00 in both: Java "IN predicate does not support nested SELECT"). EXISTS / NOT EXISTS
 // and comma-join are the supported rewrites. Drops NOT NULL on PK.
 func subqueryInScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
@@ -4523,10 +4481,7 @@ func dmlWithNullSafeScenario() *yamsql.Scenario {
 func insertSelectScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "insert_select",
-		// NOT NULL dropped from dst.v: fdb-relational 4.12.11.0 allows NOT NULL
-		// only on ARRAY columns (scalar NOT NULL is a Go-only extension Java
-		// cannot CREATE). The INSERT…SELECT under test copies non-null values, so
-		// the constraint is immaterial to the cross-engine result.
+		// No NOT NULL on dst.v: neither engine accepts it on a scalar column (0A000).
 		SchemaTemplate: "CREATE TABLE src (id BIGINT, v BIGINT, PRIMARY KEY (id))" +
 			"\nCREATE TABLE dst (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 		Setup: []string{
@@ -4806,7 +4761,7 @@ func orderByLimitScenario() *yamsql.Scenario {
 		Tests: []yamsql.Test{
 			// Multi-column ORDER BY: rejected by Java's Cascades (no multi-key sort rule).
 			{Query: "SELECT id, grp, v FROM t ORDER BY grp, v DESC", ErrorCode: "0AF00"},
-			// LIMIT clause rejected at parse time (0AF00).
+			// LIMIT clause rejected (0AF00).
 			{Query: "SELECT id FROM t ORDER BY id LIMIT 3", ErrorCode: "0AF00"},
 			{Query: "SELECT id FROM t ORDER BY id LIMIT 100", ErrorCode: "0AF00"},
 			{Query: "SELECT id FROM t ORDER BY id LIMIT 0", ErrorCode: "0AF00"},
@@ -4817,7 +4772,7 @@ func orderByLimitScenario() *yamsql.Scenario {
 			// the sort, is what its planner rejects. Go plans both and returns the
 			// correct rows; with no Java equivalence to assert they are not
 			// cross-engine. Covered Go-only by the order_by_limit yamsql corpus.
-			// ORDER BY on aggregate with GROUP BY — rejected by Java (no GROUP BY rule).
+			// ORDER BY on aggregate with GROUP BY — Java cannot plan it (0AF00).
 			{Query: "SELECT grp, SUM(v) FROM t GROUP BY grp ORDER BY 2 DESC", ErrorCode: "0AF00"},
 			// Out-of-range positional ORDER BY (22023).
 			{Query: "SELECT id FROM t ORDER BY 99", ErrorCode: "22023"},
