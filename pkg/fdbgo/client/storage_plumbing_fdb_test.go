@@ -27,10 +27,11 @@ func pollCoordinatorInWindow(t *testing.T, ctx context.Context, db *Database, re
 	t.Helper()
 	pollCtx, stop := context.WithCancel(ctx)
 	done := make(chan struct{})
+	var pollErr error
 	go func() {
 		defer close(done)
 		snap := db.db.connRecord.get()
-		_, _ = db.db.pollCoordinator(pollCtx, snap, snap.Coordinators[0], db.db.dbInfo.Load().ID)
+		_, pollErr = db.db.pollCoordinator(pollCtx, snap, snap.Coordinators[0], db.db.dbInfo.Load().ID)
 	}()
 	t.Cleanup(func() { stop(); <-done })
 	for {
@@ -41,6 +42,8 @@ func pollCoordinatorInWindow(t *testing.T, ctx context.Context, db *Database, re
 			return
 		}
 		select {
+		case <-done:
+			t.Fatalf("coordinator long poll ended unrecorded: %v", pollErr)
 		case <-ctx.Done():
 			t.Fatal("no coordinator long poll recorded")
 		case <-time.After(time.Millisecond):

@@ -78,6 +78,7 @@ type sendRecordedWrite struct {
 
 var (
 	pingToken      = transport.WellKnownToken(transport.WLTokenPingPacket)
+	coordToken     = transport.WellKnownToken(transport.WLTokenClientLeaderRegOpenDatabase)
 	pingReplyBody  = (&types.VoidReply{}).MarshalFDB()
 	droppedFields  = map[string]bool{"Reply": true, "SpanContext": true, "DebugID": true, "HasDebugID": true, "Arena": true}
 	versionFields  = map[string]bool{"Version": true, "ReadSnapshot": true, "MinKnownCommittedVersion": true}
@@ -377,9 +378,12 @@ func (r *sendRecorder) frame(conn *recordingConn, token transport.UID, body []by
 		write.problem = fmt.Sprintf("%v (token %x, %d bytes)", err, token, len(body))
 		if coordReply, recognized, coordErr := decodeRecordedCoordWrite(write.body); recognized {
 			write.kind, write.reply, write.problem = "OpenDatabaseCoordRequest", coordReply, ""
-			if coordErr != nil {
+			switch {
+			case coordErr != nil:
 				write.problem = fmt.Sprintf("invalid OpenDatabaseCoordRequest: %v (token %x, %d bytes)", coordErr, token, len(body))
-			} else {
+			case token != coordToken:
+				write.problem = fmt.Sprintf("OpenDatabaseCoordRequest sent to token %x, not the coordinator's openDatabase endpoint", token)
+			default:
 				r.rec.excluded++ // background, like PING: its timing is not the test's
 			}
 		}
@@ -602,13 +606,15 @@ func TestSendRecorderPriorNonStorageWrites(t *testing.T) {
 	void := write{token: transport.UID{First: 9}, body: voidBody}
 	grv := write{token: transport.UID{First: 10}, body: (&types.GetReadVersionRequest{Reply: promise(60)}).MarshalFDB()}
 	location := write{token: transport.UID{First: 11}, body: (&types.GetKeyServerLocationsRequest{Reply: promise(61)}).MarshalFDB()}
-	coord := write{token: transport.UID{First: 20}, body: (&types.CoordOpenDatabaseRequest{
+	coord := write{token: coordToken, body: (&types.CoordOpenDatabaseRequest{
 		Issues:            [][]byte{[]byte("issue")},
 		SupportedVersions: []types.ClientVersionRef{{ClientVersion: []byte("7.3.77"), SourceVersion: []byte("source"), ProtocolVersion: []byte("protocol")}},
 		TraceLogGroup:     []byte("test"), ClusterKey: []byte("desc:abcdef"), KnownClientInfoID: [16]byte{3},
 		Coordinators: []types.NetworkAddress{{Ip: types.IPAddress{AddrTag: 1, AddrAlt0: 0x7f000001}, Port: 4500, Flags: types.FlagTLS}},
 		Reply:        promise(66), Hostnames: []types.Hostname{{Host: []byte("coord.invalid"), Service: []byte("4500"), IsTLS: true}}, Internal: true,
 	}).MarshalFDB()}
+	coordElsewhere := coord
+	coordElsewhere.token = transport.UID{First: 20}
 	prefixedCoord := coord
 	prefixedCoord.body = append(binary.LittleEndian.AppendUint64(nil, transport.ProtocolVersion73), coord.body...)
 	otherPrefixedCoord := prefixedCoord
@@ -671,6 +677,7 @@ func TestSendRecorderPriorNonStorageWrites(t *testing.T) {
 		{name: "void-literal-payload", writes: []write{void, targetWrite}, target: target, want: []string{"VoidReply"}, requests: 1, excluded: 1},
 		{name: "known-nonstorage", writes: []write{grv, location, targetWrite}, target: target, want: []string{"GetReadVersionRequest", "GetKeyServerLocationsRequest"}, requests: 3},
 		{name: "known-coordinator-typed-vectors", writes: []write{coord, targetWrite}, target: target, want: []string{"OpenDatabaseCoordRequest"}, requests: 1, excluded: 1},
+		{name: "coordinator-wrong-token", writes: []write{coordElsewhere, targetWrite}, target: target, wantErr: "not the coordinator's openDatabase endpoint", requests: 1, problems: 1},
 		{name: "coordinator-protocol-prefix-blocks-retry", writes: []write{prefixedCoord, targetWrite}, target: target, wantErr: "protocol prefix", requests: 1, problems: 1},
 		{name: "coordinator-prefix-other-connection-blocks-retry", writes: []write{ping, otherPrefixedCoord, targetWrite}, target: target, want: []string{"PING"}, requests: 1, excluded: 1, problems: 1},
 		{name: "coordinator-prefix-post-target-blocks-retry", writes: []write{ping, targetWrite, prefixedCoord}, target: target, want: []string{"PING"}, requests: 1, excluded: 1, problems: 1},
