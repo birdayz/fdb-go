@@ -19,10 +19,7 @@ shutdown=(bazelisk shutdown)
 if [[ $lane = race ]]; then
   shutdown=(bazelisk "--output_base=$(just --evaluate race_base)" shutdown)
 fi
-exec 9>"${FDB_LANE_LOCK:-${TMPDIR:-/tmp}/fdb-heavy-lane.lock}"
-flock 9
-# Only this script holds the lock: children run with fd 9 closed, so a Bazel
-# server they start cannot keep the lock after the lane is killed.
+lock=${FDB_LANE_LOCK:-${TMPDIR:-/tmp}/fdb-heavy-lane.lock}
 out=$(mktemp -d "${TMPDIR:-/tmp}/fdb-${lane}-evidence.XXXXXX")
 printf '%s\n' "$out"
 git rev-parse HEAD > "$out/head.before"
@@ -42,9 +39,12 @@ printf 'HEAD=%s lane=%s start=%s\n' "$(cat "$out/head.before")" "$lane" "$start"
 printf 'command: just %s' "$recipe" | tee -a "$out/metadata"
 printf ' %q' "$@" | tee -a "$out/metadata"
 printf '\n' | tee -a "$out/metadata"
-printf 'expands to: %s\n' "$(just --dry-run "$recipe" "$@" 9>&- 2>&1 | tail -n 1)" | tee -a "$out/metadata"
+printf 'expands to: %s\n' "$(just --dry-run "$recipe" "$@" 2>&1 | tail -n 1)" | tee -a "$out/metadata"
 set +e
-just "$recipe" "$@" 9>&- 2>&1 | tee "$out/lane.log" 9>&-
+# flock holds the lock exactly as long as the lane runs, even if this script is
+# killed, and -o keeps the descriptor out of just and the Bazel server it starts.
+printf 'waiting for %s\n' "$lock"
+flock -o "$lock" just "$recipe" "$@" 2>&1 | tee "$out/lane.log"
 statuses=("${PIPESTATUS[@]}")
 set -e
 rc=${statuses[0]}
@@ -58,7 +58,7 @@ cmp -s "$out/head.before" "$out/head.after" || changed=1
 cmp -s "$out/status.before" "$out/status.after" || changed=1
 printf 'lane_exit=%s tee_exit=%s inputs_changed=%s elapsed_seconds=%s\n' "$rc" "$tee_rc" "$changed" "$(( $(date +%s) - start ))" | tee -a "$out/metadata"
 shutdown_rc=0
-"${shutdown[@]}" 9>&- > "$out/shutdown.log" 2>&1 || shutdown_rc=$?
+"${shutdown[@]}" > "$out/shutdown.log" 2>&1 || shutdown_rc=$?
 printf 'shutdown: %s exit=%s\n' "${shutdown[*]}" "$shutdown_rc" | tee -a "$out/metadata"
 if (( changed )); then
   diff -u "$out/inputs.before" "$out/inputs.after" > "$out/input.diff" || true

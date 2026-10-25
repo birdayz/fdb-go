@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestPrecommitFastLane(t *testing.T) {
@@ -179,57 +180,155 @@ func TestWorkflowsUseTheCIConfig(t *testing.T) {
 	t.Logf("%d workflow Bazel commands pass --config=ci", checked)
 }
 
-// A lane's Bazel server outlives the lane. If it inherits the lock descriptor,
-// a killed lane leaves every later heavy lane blocked on flock.
-func TestVerifiedLaneLockOutlivesNoChild(t *testing.T) {
-	t.Parallel()
+// laneHarness runs run-verified-lane.sh against a fake just in a throwaway repo.
+// The fake starts a lingering daemon, as bazelisk starts a server, and probes the
+// lock from inside the lane.
+type laneHarness struct {
+	t                              *testing.T
+	script, bin, repo, lock, state string
+}
+
+func newLaneHarness(t *testing.T) *laneHarness {
+	t.Helper()
 	script, err := filepath.Abs("../tools/lanes/run-verified-lane.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	bin, repo := t.TempDir(), t.TempDir()
-	lock := filepath.Join(t.TempDir(), "lane.lock")
-	pidFile := filepath.Join(bin, "daemon.pid")
-	// The fake just starts a lingering daemon, as bazelisk starts a server, and
-	// records its pid; the fake bazelisk (shutdown) leaves the daemon running.
+	h := &laneHarness{t: t, script: script, bin: t.TempDir(), repo: t.TempDir(), state: t.TempDir()}
+	h.lock = filepath.Join(h.state, "lane.lock")
 	for name, body := range map[string]string{
-		"just":     "#!/bin/bash\nif [ \"$1\" = --dry-run ]; then echo fake; exit 0; fi\nsleep 300 </dev/null >/dev/null 2>&1 &\necho $! > \"$PID_FILE\"\nexit 0\n",
+		"just": `#!/bin/bash
+if [ "$1" = --dry-run ]; then echo fake; exit 0; fi
+sleep 300 </dev/null >/dev/null 2>&1 &
+echo $! > "$STATE/daemon.pid"
+if flock -n "$FDB_LANE_LOCK" true; then echo free > "$STATE/probe"; else echo held > "$STATE/probe"; fi
+echo $$ > "$STATE/just.pid"
+if [ -n "$BLOCK" ]; then exec sleep 300; fi
+`,
 		"bazelisk": "#!/bin/bash\nexit 0\n",
 	} {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o700); err != nil {
+		if err := os.WriteFile(filepath.Join(h.bin, name), []byte(body), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, args := range [][]string{{"init", "-q"}, {"-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "x"}} {
 		cmd := exec.Command("git", args...)
-		cmd.Dir = repo
+		cmd.Dir = h.repo
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
-	cmd := exec.Command("bash", script, repo, "fast")
-	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "FDB_LANE_LOCK="+lock, "PID_FILE="+pidFile, "TMPDIR="+t.TempDir())
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("lane: %v: %s", err, out)
+	t.Cleanup(func() {
+		for _, f := range []string{"daemon.pid", "just.pid"} {
+			if pid := h.pid(f); pid > 0 {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	return h
+}
+
+func (h *laneHarness) command(block bool) *exec.Cmd {
+	cmd := exec.Command("bash", h.script, h.repo, "fast")
+	cmd.Env = append(os.Environ(), "PATH="+h.bin+":"+os.Getenv("PATH"), "FDB_LANE_LOCK="+h.lock, "STATE="+h.state, "TMPDIR="+h.t.TempDir())
+	if block {
+		cmd.Env = append(cmd.Env, "BLOCK=1")
 	}
-	raw, err := os.ReadFile(pidFile)
+	return cmd
+}
+
+func (h *laneHarness) pid(name string) int {
+	raw, err := os.ReadFile(filepath.Join(h.state, name))
 	if err != nil {
-		t.Fatalf("fake just did not start its daemon: %v", err)
+		return 0
 	}
 	var pid int
 	if _, err := fmt.Sscan(string(raw), &pid); err != nil {
-		t.Fatal(err)
+		return 0
 	}
-	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
-	if err := syscall.Kill(pid, 0); err != nil {
-		t.Fatalf("daemon %d is not running, so the check below would be vacuous: %v", pid, err)
+	return pid
+}
+
+func (h *laneHarness) waitFor(name string) int {
+	h.t.Helper()
+	for i := 0; i < 500; i++ {
+		if pid := h.pid(name); pid > 0 {
+			return pid
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	f, err := os.OpenFile(lock, os.O_RDWR, 0)
+	h.t.Fatalf("fake just never wrote %s", name)
+	return 0
+}
+
+// lockFree reports whether the lane lock can be taken now.
+func (h *laneHarness) lockFree() bool {
+	h.t.Helper()
+	f, err := os.OpenFile(h.lock, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
-		t.Fatal(err)
+		h.t.Fatal(err)
 	}
 	defer f.Close()
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		t.Fatalf("lane lock still held after the lane exited (by its daemon %d): %v", pid, err)
+		return false
 	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return true
+}
+
+func (h *laneHarness) alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
+
+// The lane's Bazel server outlives the lane. If it inherits the lock descriptor,
+// a killed lane leaves every later heavy lane blocked on flock.
+func TestVerifiedLaneLock(t *testing.T) {
+	t.Parallel()
+	t.Run("held_during_lane_free_after_with_daemon", func(t *testing.T) {
+		t.Parallel()
+		h := newLaneHarness(t)
+		if out, err := h.command(false).CombinedOutput(); err != nil {
+			t.Fatalf("lane: %v: %s", err, out)
+		}
+		probe, err := os.ReadFile(filepath.Join(h.state, "probe"))
+		if err != nil || strings.TrimSpace(string(probe)) != "held" {
+			t.Fatalf("lock during the lane = %q (%v), want held", probe, err)
+		}
+		daemon := h.pid("daemon.pid")
+		if daemon == 0 || !h.alive(daemon) {
+			t.Fatalf("daemon %d is not running, so the check below would be vacuous", daemon)
+		}
+		if !h.lockFree() {
+			t.Fatalf("lane lock still held after the lane exited (by its daemon %d)", daemon)
+		}
+	})
+	t.Run("killing_only_the_script_keeps_lock_until_lane_ends", func(t *testing.T) {
+		t.Parallel()
+		h := newLaneHarness(t)
+		cmd := h.command(true)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		just := h.waitFor("just.pid")
+		if err := cmd.Process.Kill(); err != nil {
+			t.Fatal(err)
+		}
+		_ = cmd.Wait()
+		if !h.alive(just) {
+			t.Fatalf("lane %d died with the script, so the check below would be vacuous", just)
+		}
+		if h.lockFree() {
+			t.Fatal("lock released while the killed script's lane is still running")
+		}
+		if err := syscall.Kill(just, syscall.SIGKILL); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; !h.lockFree(); i++ {
+			if i == 500 {
+				t.Fatalf("lock still held after the lane ended (daemon %d alive=%v)", h.pid("daemon.pid"), h.alive(h.pid("daemon.pid")))
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if d := h.pid("daemon.pid"); d == 0 || !h.alive(d) {
+			t.Fatalf("daemon %d is not running, so the release check was vacuous", d)
+		}
+	})
 }

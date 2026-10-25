@@ -2003,8 +2003,8 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   toolchain is selected on a non-Linux platform.
 - [x] `tools/lanes/run-verified-lane.sh`: a cancelled lane leaves its Bazel server holding
   the lane lock until the server is shut down. Shut the server down on exit, or keep the
-  lock descriptor out of the server. Done: children run with fd 9 closed
-  (`TestVerifiedLaneLockOutlivesNoChild` in `//infra:infra_test`).
+  lock descriptor out of the server. Done: `flock -o` holds the lock for the
+  lane's lifetime and keeps it out of the server (`TestVerifiedLaneLock` in `//infra:infra_test`).
 - [ ] Update Buf from 1.67.0 to 1.74 (`BUF_VERSION` in `justfile`).
 - [ ] **TLS settings without a network option.** RFC-277 reads `FDB_TLS_*` only. libfdb_c
   also takes the `TLS_*` network options (`fdb.options:70-105`) and
