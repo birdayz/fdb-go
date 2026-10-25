@@ -15,12 +15,11 @@ case "$lane" in
   *) printf 'Unknown lane: %s\n' "$lane" >&2; exit 2 ;;
 esac
 cd "$worktree"
-shutdown=(bazelisk shutdown)
+shutdown_base=
 if [[ $lane = race ]]; then
-  shutdown=(bazelisk "--output_base=$(just --evaluate race_base)" shutdown)
+  shutdown_base=$(just --evaluate race_base)
 fi
-exec 9>"${FDB_LANE_LOCK:-${TMPDIR:-/tmp}/fdb-heavy-lane.lock}"
-flock 9
+lock=${FDB_LANE_LOCK:-${TMPDIR:-/tmp}/fdb-heavy-lane.lock}
 out=$(mktemp -d "${TMPDIR:-/tmp}/fdb-${lane}-evidence.XXXXXX")
 printf '%s\n' "$out"
 git rev-parse HEAD > "$out/head.before"
@@ -41,12 +40,22 @@ printf 'command: just %s' "$recipe" | tee -a "$out/metadata"
 printf ' %q' "$@" | tee -a "$out/metadata"
 printf '\n' | tee -a "$out/metadata"
 printf 'expands to: %s\n' "$(just --dry-run "$recipe" "$@" 2>&1 | tail -n 1)" | tee -a "$out/metadata"
+# flock holds the lock while the lane and its server shutdown run, even if this
+# script is killed; -o keeps the descriptor out of just and the Bazel server
+# (which outlives the lane). The shutdown stays locked: race lanes share one
+# output base, so an unlocked shutdown could reach the next lane's server.
+locked='out=$1; shift
+just "$@" 2>&1 | tee "$out/lane.log"
+printf "%s %s\n" "${PIPESTATUS[@]}" > "$out/lane.rc"
+if [[ -n $SHUTDOWN_BASE ]]; then set -- bazelisk "--output_base=$SHUTDOWN_BASE" shutdown; else set -- bazelisk shutdown; fi
+"$@" > "$out/shutdown.log" 2>&1
+printf "%s\n%s\n" "$?" "$*" > "$out/shutdown.rc"'
+printf 'waiting for %s\n' "$lock"
 set +e
-just "$recipe" "$@" 2>&1 | tee "$out/lane.log"
-statuses=("${PIPESTATUS[@]}")
+SHUTDOWN_BASE=$shutdown_base flock -o "$lock" bash -c "$locked" lane "$out" "$recipe" "$@"
 set -e
-rc=${statuses[0]}
-tee_rc=${statuses[1]}
+rc=1 tee_rc=1
+if [[ -s $out/lane.rc ]]; then read -r rc tee_rc < "$out/lane.rc"; fi
 manifest > "$out/inputs.after"
 git rev-parse HEAD > "$out/head.after"
 git status --porcelain=v1 > "$out/status.after"
@@ -55,9 +64,9 @@ cmp -s "$out/inputs.before" "$out/inputs.after" || changed=1
 cmp -s "$out/head.before" "$out/head.after" || changed=1
 cmp -s "$out/status.before" "$out/status.after" || changed=1
 printf 'lane_exit=%s tee_exit=%s inputs_changed=%s elapsed_seconds=%s\n' "$rc" "$tee_rc" "$changed" "$(( $(date +%s) - start ))" | tee -a "$out/metadata"
-shutdown_rc=0
-"${shutdown[@]}" > "$out/shutdown.log" 2>&1 || shutdown_rc=$?
-printf 'shutdown: %s exit=%s\n' "${shutdown[*]}" "$shutdown_rc" | tee -a "$out/metadata"
+shutdown_rc=missing shutdown_cmd='not run'
+if [[ -s $out/shutdown.rc ]]; then { read -r shutdown_rc; read -r shutdown_cmd; } < "$out/shutdown.rc"; fi
+printf 'shutdown: %s exit=%s\n' "$shutdown_cmd" "$shutdown_rc" | tee -a "$out/metadata"
 if (( changed )); then
   diff -u "$out/inputs.before" "$out/inputs.after" > "$out/input.diff" || true
   printf 'INVALID: inputs/HEAD/status changed while lane ran\n' >&2
