@@ -352,45 +352,12 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,
 ) (*FDBStoredRecord[proto.Message], error) {
-	if record == nil {
-		return nil, fmt.Errorf("cannot save nil record")
-	}
-	descriptor := record.ProtoReflect().Descriptor()
-	recordTypeName := string(descriptor.Name())
-	recordType, err := store.metaData.GetRecordTypeForDescriptor(descriptor)
+	target, err := store.saveTargetFor(record, nil, VersionstampSaveBehaviorDefault)
 	if err != nil {
 		return nil, err
 	}
-
-	if recordType.PrimaryKey == nil {
-		return nil, &MetaDataError{Message: fmt.Sprintf("no primary key defined for record type: %s", recordTypeName)}
-	}
-	if err := store.checkPrimaryKeyCollation(recordType); err != nil {
-		return nil, err
-	}
-	// As saveRecordInternal: the record as every later load reads it, and
-	// the message the save serializes.
-	var writeRecord proto.Message
-	record, writeRecord = recordType.asJavaForSave(record)
-
-	// Record type supplied so a record-type-prefixed primary key resolves its
-	// leading component, matching the real save path (and Java's dry run,
-	// which shares saveTypedRecord's record builder).
-	pkTuples, err := recordType.PrimaryKey.Evaluate(&FDBStoredRecord[proto.Message]{
-		RecordType: recordType,
-		Record:     record,
-	}, record)
-	if err != nil {
-		return nil, fmt.Errorf("evaluate primary key: %w", err)
-	}
-	if len(pkTuples) != 1 {
-		return nil, &MetaDataError{Message: fmt.Sprintf("primary key must evaluate to exactly one tuple, got %d", len(pkTuples))}
-	}
-	keyValues := pkTuples[0]
-	primaryKey := make(tuple.Tuple, len(keyValues))
-	for i, v := range keyValues {
-		primaryKey[i] = v
-	}
+	recordTypeName, recordType := target.recordTypeName, target.recordType
+	record, writeRecord, primaryKey := target.record, target.write, target.primaryKey
 
 	defer store.context.Timer().RecordSince(EventSaveRecord, time.Now())
 
@@ -494,6 +461,7 @@ func (store *FDBRecordStore) DryRunSaveRecord(
 		PrimaryKey:      primaryKey,
 		Record:          record,
 		RecordType:      recordType,
+		Version:         target.version,
 		KeyCount:        sizes.KeyCount,
 		KeySize:         sizes.KeySize,
 		ValueSize:       sizes.ValueSize,

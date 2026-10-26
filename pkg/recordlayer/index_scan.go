@@ -24,9 +24,8 @@ type IndexScanType string
 const (
 	// IndexScanByValue scans a VALUE index by its indexed values.
 	IndexScanByValue IndexScanType = "BY_VALUE"
-	// IndexScanByRank scans a RANK index by rank position.
-	// The range bounds contain [group..., rank] where rank is an int64.
-	// Matches Java's IndexScanType.BY_RANK.
+	// IndexScanByRank scans [group..., numeric rank], using Java's Number.longValue().
+	// A null rank bound is unbounded.
 	IndexScanByRank IndexScanType = "BY_RANK"
 
 	// IndexScanByTextToken scans a TEXT index by text token.

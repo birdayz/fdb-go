@@ -129,10 +129,10 @@ covers the four Low items and the Medium explicit-version/`VersionstampSaveBehav
 6. **Explicit-version saves.**
    - Add `VersionstampSaveBehavior` (`Default`, `NoVersion`, `WithVersion`, `IfPresent`), whose
      `String` gives Java's constant names, and `recordVersionForSave`.
-   - `saveRecordInternal` takes the version and the behavior, and chooses the version right
-     after resolving the record type, before the primary key is evaluated and the existing
-     record is loaded. A pipelined save resolved its target earlier, so it chooses at its
-     save; it always uses the default behavior, which cannot fail. Its callers:
+   - `saveTargetFor` chooses the version once after resolving the record type, before
+     evaluating the primary key and starting the existing-record read. Pipelined saves carry
+     this chosen version in their precomputed target and reuse it in `saveRecordInternal`.
+     Its callers:
      - `SaveRecordWithVersion` (new, the four-argument Java mapping);
      - `OverrideLockSaveRecordWithVersion` (new);
      - the typed store's `SaveRecordWithVersion` (new; its `SaveRecordWithOptions` delegates
@@ -142,9 +142,10 @@ covers the four Low items and the Medium explicit-version/`VersionstampSaveBehav
 
      `SaveRecordWithOptions`'s doc now names the two-argument Java overload, and the
      "Phase 2" note is gone.
-   - `SaveRecordBatch` chooses its version through `recordVersionForSave(nil, Default)`, so
-     its behavior is unchanged. `DryRunSaveRecord` is unchanged; Java's dry run ignores the
-     version too.
+   - `SaveRecordBatch` chooses its default version before primary-key evaluation and keeps
+     it for the save. `DryRunSaveRecord` uses the same default version-aware target as a real
+     save, but stages no record, count, index or version mutation. Java's dry run keeps the
+     chosen version on the preview record and omits version storage in the legacy format.
    - The version is written by the existing `saveRecordVersion`, which already handles
      complete versions, incomplete ones and the legacy format. VERSION index maintenance
      reads the stored record's version, and a complete version gives a plain index key.
@@ -207,7 +208,8 @@ to the old behavior.
   - maintained count keys grouped by a complete version on insert and delete, and incomplete
     count keys refused with `IncompleteVersionstampError` rather than a tuple-encoder panic;
   - primary keys containing the supplied complete version, including distinct versions for
-    the same record id; incomplete primary-key versions are refused before encoding;
+    the same record id; incomplete primary-key versions are refused before encoding, by both
+    real and dry-run saves; a field-only dry run returns its chosen version without writing;
   - the override-lock save on a locked store, a supplied complete version through the typed
     save, and the default behavior of pipelined and batch saves.
 - **Explicit versions, cross-engine** (`conformance/version_save_conformance_test.go`): a new

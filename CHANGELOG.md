@@ -54,6 +54,11 @@ Each is described in full under Compatibility or Changed below.
   - A TEXT index whose text column is not a string fails the save with `ClassCastError`, as Java
     does.
   - A BY_RANK bound that is not a number also fails with `ClassCastError`.
+  - Primary and maintained-count keys evaluate the chosen record version, not a null
+    placeholder. An incomplete version in either key returns `IncompleteVersionstampError`;
+    this includes automatic versions in ordinary, batch and pipelined saves. Dry runs share
+    primary-key validation but do not maintain counts. Count-key checks run only when a count
+    is maintained.
 - **`keyspace` (RFC-275):**
   - `AddSubdirectory` and `AddSubdirectories` return an `*ArgumentError` under Java's sibling
     rules, instead of panicking on a duplicate name.
@@ -91,6 +96,12 @@ Each is described in full under Compatibility or Changed below.
   the post-publication retraction procedure in `RELEASE.md`.
 
 ### Compatibility
+- **Version-dependent record keys (RFC-275):** complete supplied versions participate in
+  primary and maintained-count keys as in Java. Automatic or supplied incomplete versions
+  cannot be packed into these ordinary keys and are refused with `IncompleteVersionstampError`.
+  Existing records or counters written under null-version components are not relocated or
+  corrected automatically; migrate or recreate affected pre-release stores before mixed-engine
+  use. Tuple encodings and stores without version-dependent keys are unchanged.
 - **Collation:** collated index access and writes that evaluate collated primary/count keys now fail with `GoOnlyCollationError` unless the store explicitly opts into Go-only bytes with `StoreBuilder.SetGoOnlyCollation(true)`; existing keys are not migrated.
 - **Collation metadata:** fan-out follows the function arguments as in Java, permitting scalar collations in primary keys.
 - **Wire format:** the Java target is upgraded to `fdb-record-layer-core` 4.14.2.0 (RFC-257). Records Java writes through `TransformedRecordSerializer` (compressed, encrypted) are
@@ -140,6 +151,10 @@ Each is described in full under Compatibility or Changed below.
 
 ### Changed
 - Record layer (RFC-275), in full:
+  - The chosen record version is visible to primary/count-key evaluation. Saves with complete
+    supplied versions now produce Java's version-prefixed keys and counters. Incomplete
+    primary/count keys return `IncompleteVersionstampError` instead of using null components
+    or panicking; dry runs use the same primary-key preparation and return the chosen version.
   - `CheckTransactionSize` returns only `TransactionSizeExceededError`. The Go-only warning
     threshold logs at WARN and counts `CountTransactionSizeWarning` once per transaction.
   - Header parse failures are `RecordCoreStorageError{Message: "Error reading version", Cause}`.
@@ -405,6 +420,13 @@ Each is described in full under Compatibility or Changed below.
   options belong in `SetOption`: `SetOptions` sets what `ResetSession` restores, so code that
   copied the earlier `docs/mt-saas.md` recipe (`SetOptions` per tenant borrow) hands one
   borrow's options to the next borrower; the recipe now uses `SetOption`.
+- SQL driver (#1013): a panic while an ended context aborts a transaction (on the context's own
+  goroutine, outside every entry point) is logged and closes the connection instead of crashing
+  the process. Enum, UUID, `range()` bound, 42602 invalid-name, UUID index-predicate and
+  decimal-literal errors render their message once (`XX000: Invalid enum value for the enum type
+  BOGUS`, not three times); a schema template's invalid-name error no longer carries its
+  `build file descriptor: table …` context, as in Java. New `api.WrapStatedError` builds such an
+  error: its message states the cause, which still unwraps.
 - GROUP BY duplicate-key detection (42702) compares expression keys by their resolved value in
   value context, as Java does: keys differing only in literal case are two keys
   (`GROUP BY c = 'a', c = 'A'` was refused; Java declines it in its planner), `<>`/`!=` and other

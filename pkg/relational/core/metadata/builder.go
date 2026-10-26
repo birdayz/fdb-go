@@ -606,7 +606,7 @@ func (b *Builder) Build() (*RecordLayerSchemaTemplate, error) {
 	tmpl, err := b.build()
 	var invalidName *recordlayer.InvalidNameError
 	if err != nil && errors.As(err, &invalidName) {
-		return nil, api.WrapError(api.ErrCodeInvalidName, invalidName.Message, err)
+		return nil, api.WrapStatedError(api.ErrCodeInvalidName, invalidName.Message, err)
 	}
 	return tmpl, err
 }

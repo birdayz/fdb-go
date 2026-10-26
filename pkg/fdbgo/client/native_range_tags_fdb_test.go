@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
@@ -69,6 +71,7 @@ func TestNativeReadTagSampling(t *testing.T) {
 				switch fault {
 				case "hedge":
 					duplicateServers(&Database{db: tx.db}, 2)
+					setSecondBudget(tx.db.queueModel, 1)
 				case "alternative":
 					loc, err := tx.db.locCache.locate(tx.db, ctx, []byte(prefix+"a"), NoTenantID, types.SpanContext{}, false)
 					if err != nil || len(loc.Servers) == 0 {
@@ -85,8 +88,9 @@ func TestNativeReadTagSampling(t *testing.T) {
 					defer q.endRequest(real.Address, delta, 0, false)
 					q.mu.Lock()
 					q.getOrCreate(real.Address).smoothOutstanding.estimate = 1
-					q.getOrCreate(alias).latency = time.Hour.Seconds() // no timer hedge within the test's lifetime
 					q.mu.Unlock()
+					// A new database has no second-request budget, so the dead primary is
+					// never hedged: its failure moves on to the real server.
 					if best, next := q.chooseTopTwo(servers); best != 0 || next != 1 {
 						t.Fatalf("alternative selection = %d,%d; want dead primary then real", best, next)
 					}
@@ -170,12 +174,36 @@ func TestNativeReadTagSampling(t *testing.T) {
 			t.Cleanup(cancel)
 			tx, rec, sim, draws, rv, _ := setup(t, ctx)
 			tx.db.hedgeEnabled.Store(hedge)
+			tx.rpcTimeoutOverride = time.Minute
 			plan := &replyPlan{rec: rec}
 			if hedge {
-				// One planned hedge for a selector and one for the exact read.
+				// Both selectors overlap: fund each, then fund the exact read after
+				// they finish. An incidental selector hedge cannot steal its budget.
 				duplicateServers(&Database{db: tx.db}, 2)
+				setSecondBudget(tx.db.queueModel, 2)
+				tx.db.readTags.draw = func() float64 {
+					draw := draws.draw()
+					if draws.count() == 3 {
+						setSecondBudget(tx.db.queueModel, 1)
+					}
+					return draw
+				}
 				plan.entries = []plannedReply{dropReply("GetKeyRequest"), dropReply("GetKeyValuesRequest")}
-				sim.setIntercept(plan.intercept)
+				sim.setIntercept(func(idx int, token transport.UID, body []byte) ([]byte, bool) {
+					if rec.replyKind(token) == "GetKeyRequest" {
+						beginReply := false
+						for _, msg := range rec.messages() {
+							if req, ok := msg.(*types.GetKeyRequest); ok && req.Reply.Token == wire.UIDFromParts(token.First, token.Second) {
+								beginReply = string(req.Sel.Key) == prefix+"a"
+								break
+							}
+						}
+						if !beginReply {
+							return body, false
+						}
+					}
+					return plan.intercept(idx, token, body)
+				})
 				sim.armEverything()
 			}
 			draws.script(drawHit, drawMiss, drawHit)
@@ -187,14 +215,13 @@ func TestNativeReadTagSampling(t *testing.T) {
 			recorded := rec.stop()
 			got := taggedRequests(t, recorded)
 			plan.check(t)
-			// A hedge resends its request with its tags (LoadBalance.actor.h:660-662). Go also
-			// hedges a slow reply that C++'s second-request budget would not (TODO.md).
+			// A hedge resends its request with its tags (LoadBalance.actor.h:660-662).
 			sends := map[string]int{}
 			for _, r := range got {
 				sends[r.kind]++
 			}
-			// Each request goes to at most two replicas; the planned drops force a hedge of
-			// the exact read and of one selector, and the other selector may hedge too.
+			// Separate selector/exact budgets force both planned drops to hedge,
+			// without relying on short timeouts for successful replies.
 			wantExact, maxPerSelector := 1, 1
 			if hedge {
 				wantExact, maxPerSelector = 2, 2
@@ -221,8 +248,8 @@ func TestNativeReadTagSampling(t *testing.T) {
 				}
 			}
 			a, d := perSelector[prefix+"a"], perSelector[prefix+"d"]
-			if a < 1 || d < 1 || a > maxPerSelector || d > maxPerSelector || (hedge && a+d < 3) {
-				t.Errorf("selector sends a=%d d=%d, want 1-%d each and a planned hedge of one", a, d, maxPerSelector)
+			if a != maxPerSelector || d < 1 || d > maxPerSelector {
+				t.Errorf("selector sends a=%d d=%d, want exactly %d and 1-%d", a, d, maxPerSelector, maxPerSelector)
 			}
 		})
 	}

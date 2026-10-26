@@ -450,6 +450,77 @@ func TestHandleConnErrorMarkCannotOvertakeRedial(t *testing.T) {
 	}
 }
 
+// Fallback accounting must cover dial/send failures as well as successful replies.
+func TestFallbackSendFailureBudget(t *testing.T) {
+	t.Parallel()
+	for _, stage := range []string{"dial", "send"} {
+		for _, cancelled := range []bool{false, true} {
+			name := stage
+			if cancelled {
+				name += "-cancelled"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
+				opCtx, stop := context.WithCancel(ctx)
+				defer stop()
+				var peers []*identityPeer
+				var writing *writeSignalConn
+				if stage == "send" {
+					peer, signal := newStallPeer(t)
+					peers, writing = []*identityPeer{peer}, signal
+				}
+				db, tx := armDatabase(ctx, peers...)
+				defer closeIdentityDatabase(db)
+				if stage == "send" {
+					if _, err := db.getOrDial(ctx, armAddr); err != nil {
+						t.Fatal(err)
+					}
+				} else if cancelled {
+					stop()
+				}
+				done := make(chan error, 1)
+				go func() {
+					_, err := tx.sendGetValueToServer(opCtx, []byte("k"), ServerInfo{Address: armAddr, Token: armToken}, 1, false, NoTenantID, readTagSample{})
+					done <- err
+				}()
+				if writing != nil {
+					select {
+					case <-writing.writing:
+					case <-ctx.Done():
+						t.Fatal("fallback did not enter the frame write")
+					}
+					if cancelled {
+						stop()
+					} else {
+						peers[0].server.Close()
+					}
+				}
+				select {
+				case err := <-done:
+					if err == nil || (cancelled && !errors.Is(err, context.Canceled)) {
+						t.Fatalf("fallback failure = %v, cancelled=%v", err, cancelled)
+					}
+				case <-ctx.Done():
+					t.Fatal("fallback did not return its failure")
+				}
+				accrued := 1
+				if cancelled {
+					accrued = 0
+				}
+				checkSecondModel(t, db.queueModel, 0, accrued, false)
+				db.queueModel.mu.Lock()
+				outstanding := db.queueModel.getOrCreate(armAddr).smoothOutstanding.total
+				db.queueModel.mu.Unlock()
+				if outstanding != 0 {
+					t.Fatalf("fallback failure leaked outstanding delta %v", outstanding)
+				}
+			})
+		}
+	}
+}
+
 // connArm runs one RPC through its production path against peer:4500. An eager
 // arm's send returns once its frame is queued, so it never fails on a blocked write.
 type connArm struct {
@@ -687,23 +758,23 @@ func TestHedgeResultCarriesConn(t *testing.T) {
 		}
 	}
 
-	res := sendFrameWithHedge(ctx, time.Hour, failed("a", connA), nil, time.Minute)
+	res := sendFrameWithHedge(ctx, nil, time.Hour, failed("a", connA), nil, time.Minute)
 	if !res.connErr || res.addr != "a" || res.conn != connA {
 		t.Fatalf("single request: addr %q conn %p connErr %v, want a/%p/true", res.addr, res.conn, res.connErr, connA)
 	}
 
 	// The primary fails before the hedge delay; its failure is ended as a loser.
-	res = sendFrameWithHedge(ctx, time.Hour, failed("a", connA), failed("b", connB), time.Minute)
+	res = sendFrameWithHedge(ctx, nil, time.Hour, failed("a", connA), failed("b", connB), time.Minute)
 	if res.addr != "b" || res.conn != connB || len(res.others) != 1 || res.others[0].addr != "a" || res.others[0].conn != connA {
 		t.Fatalf("failed primary: winner %q/%p others %+v", res.addr, res.conn, res.others)
 	}
 
 	// Both requests outstanding when the reply timeout fires.
-	res = sendFrameWithHedge(ctx, 0, silent("a", connA), silent("b", connB), time.Millisecond)
+	res = sendFrameWithHedge(ctx, budgetModel(1), 0, silent("a", connA), silent("b", connB), time.Millisecond)
 	if len(res.others) != 2 || res.others[0].conn != connA || res.others[1].conn != connB {
 		t.Fatalf("timeout: others %+v, want a/%p and b/%p", res.others, connA, connB)
 	}
-	res = sendFrameWithHedge(ctx, time.Hour, silent("a", connA), nil, time.Millisecond)
+	res = sendFrameWithHedge(ctx, nil, time.Hour, silent("a", connA), nil, time.Millisecond)
 	if res.conn != connA {
 		t.Fatalf("timeout of a single request: conn %p, want %p", res.conn, connA)
 	}

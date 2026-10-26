@@ -208,9 +208,8 @@ func (m *rankIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStor
 // Scan scans the primary B-tree (BY_VALUE).
 // Inherited from standardIndexMaintainer — no override needed.
 
-// ScanByRank converts a rank range to a score range, then scans BY_VALUE.
-// The rank range tuples have format [group..., rank] where rank is an int64.
-// Matches Java's rankIndexMaintainer.scan(BY_RANK, ...).
+// ScanByRank converts [group..., numeric rank] with Java's Number.longValue(), then scans BY_VALUE.
+// A null rank bound is unbounded, as in Java's scan(BY_RANK, ...).
 func (m *rankIndexMaintainer) ScanByRank(
 	rankRange TupleRange,
 	continuation []byte,

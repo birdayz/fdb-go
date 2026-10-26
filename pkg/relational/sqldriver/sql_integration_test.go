@@ -1,13 +1,7 @@
 package sqldriver_test
 
-// End-to-end smoke tests that use Go's database/sql package, not the
-// raw driver.Driver interface. These prove the *public* entry point
-// shape works: users blank-import pkg/relational/sqldriver, call
-// sql.Open, and get back a *sql.DB that proxies through the driver.
-//
-// Execution returns ErrCodeUnsupportedOperation until Phase 5 is in
-// place. The tests assert on the shape of those errors so later
-// phases can replace them one-by-one without breaking the public API.
+// database/sql smoke tests of the entry point: import sqldriver, register the
+// domain (RegisterDomainIfNotExists; importing testkit registers FRL), sql.Open.
 
 import (
 	"context"
@@ -69,7 +63,7 @@ func TestSQLPingFailsWithoutFDB(t *testing.T) {
 
 func TestSQLPingReturnsUnsupportedForRemote(t *testing.T) {
 	t.Parallel()
-	// Remote mode also not implemented — must return UnsupportedOperation.
+	// Remote mode is not implemented: Ping must return UnsupportedOperation.
 	db, err := sql.Open("fdbsql", "fdbsql://localhost:50051/mydb")
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)

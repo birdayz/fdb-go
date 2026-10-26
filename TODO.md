@@ -339,7 +339,8 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
 - [ ] **Panic-safe QueueModel accounting in read senders.** Reply registration
   cleanup does not release a delta when a recovered panic occurs after
   `startRequest`: `readpath.go:313` (getKey), `:561` (getValue), `:636` (single-server
-  getValue), `:1077` (range family), and `:1719` (watch). Add a separately owned
+  getValue), and `:1077` (range family). RFC-281 (#1017) removes watch accounting.
+  Add a separately owned
   accounting guard through sender-to-RPC ownership transfer and pin a panic after
   each increment. C++ `ModelHolder::~ModelHolder` removes the delta without a
   latency sample (`LoadBalance.actor.h:53-67`); `replyGuard` only owns the endpoint.
@@ -457,17 +458,14 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   checked against workers ÷ mean latency and, for writes, the servers' commit counts.
   Needs those checks in `tools/clientbench` and owner approval of the cloud budget.
 
-- [ ] **Read hedging has no second-request budget.** C++ `loadBalance` sends the second
-  request only while `model->secondBudget >= 1.0`, spending 1.0 per hedge; a
-  `QueueModel` starts at 0 and gains `SECOND_REQUEST_BUDGET_GROWTH` (0.05) per first
-  reply that completes unhedged, capped at 100 (`LoadBalance.actor.h:695-716`,
-  `QueueModel.h:121`, `flow/Knobs.cpp:278-283`). Its delay is the adaptive
-  `secondMultiplier` (from 1.0) times the second-best alternative's latency plus
-  `BASE_SECOND_REQUEST_TIME`, sent at once past `INSTANT_SECOND_REQUEST_MULTIPLIER`
-  (`:554-560`). Go's `sendFrameWithHedge` hedges every read with a second replica after
-  max(10ms, 2 × the best server's latency) (`client/loadbalance.go` `secondDelay`), so a
-  fresh database hedges where libfdb_c would not. Port the budget and multiplier, then
-  revisit the hedge tests that rely on a fresh database hedging.
+- [x] **Read hedging second-request budget.** RFC-281 (#1017) ports C++ 7.3.77's
+  database-wide budget (initial 0, +0.05 per lone reply, cap 100, cost 1 per hedge),
+  adaptive multiplier (initial/floor 1, +0.01 per spend, −0.00025 per lone reply)
+  and second-alternative delay/instant arm (`LoadBalance.actor.h:554-563,694-716`,
+  `QueueModel.h:121`, `flow/Knobs.cpp:278-283`). Deterministic timer tests pin each
+  accrual/spend arm; real-FDB transcripts cover value, selector, range and mapped
+  requests, disabled/re-enabled hedging, the unhedged backup fallback and watches.
+  Existing hedge tests seed the budget they need.
 
 - [ ] **Connection monitor has no `resetPing` arm.** C++ `connectionMonitor` also
   ends a PING wait on `peer->resetPing.onTrigger()` (`FlowTransport.actor.cpp:696-698`),
@@ -476,6 +474,23 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   waits only on the reply, the timeout and cancellation. The second trigger depends on
   the peer-reference count Go does not track (see the idle-connection divergence in
   `connectionMonitor`); port both with the unreferenced-close knobs, pinned by tests.
+
+- [ ] **Read replica selection is best-of-two random.** C++ `loadBalance` sends the
+  first request to the alternative with the lowest `smoothOutstanding` (ties to the
+  lowest index) and the second to the next-lowest (`LoadBalance.actor.h:469-552`).
+  Go's `chooseTopTwo` picks the primary by two random choices and the backup by the
+  lowest metric among the rest (`client/loadbalance.go`). Port the C++ selection,
+  including its local-DC `countBest` cut-off, with a unit test per arm.
+
+- [ ] **A hedge race ends on the first reply.** Go's `raceReplies` returns whichever
+  reply arrives first, even a failure C++ retries in `loadBalance` (`process_behind`,
+  `server_overloaded`, a transport failure). C++ discards it, keeps waiting for the
+  other request, and sends further second requests to the remaining alternatives
+  while the first is outstanding (`LoadBalance.actor.h:648-686`,
+  `checkAndProcessResultImpl` `:325-378`). Lone inline retryable errors also bypass
+  `primaryReplied` because decoding happens after the hedge helper returns; the
+  transport-error unit cases do not cover server error bodies. Port both reply
+  paths with encoded-response integration regressions and a synctest per arm.
 
 ## 1. WS-E — scalar/SQL semantics and statement execution — ACTIVE
 
@@ -2016,6 +2031,14 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   lock descriptor out of the server. Done: `flock -o` holds the lock for the
   lane's lifetime and keeps it out of the server (`TestVerifiedLaneLock` in `//infra:infra_test`).
 - [ ] Update Buf from 1.67.0 to 1.74 (`BUF_VERSION` in `justfile`).
+- [ ] SQL: the ANSI forms `POSITION(x IN s)` and `EXTRACT(<field> FROM x)` fail with 0AF00
+  "projection slot 0 has no resolved Value", and `YEAR` over a BIGINT answers NULL rather than
+  refusing the type. `DocClaimsJavaProbe` pins them as they are (`position_in`, `extract_year`,
+  `date_part_of_integer`); Java answers the operand unchanged for both ANSI forms and refuses
+  `YEAR` (0AF00).
+- [ ] `SQL_ANSI_CONFORMANCE.md`'s `Java?` column is still pinned against 4.12.11.0
+  (`pkg/relational/conformance/yamsql/ansi_roster.go`, the notice in `ansiledger.go`). Re-verify
+  it on 4.14.2.0, as RFC-278 did for SQL_CONFORMANCE.md.
 - [ ] **TLS settings without a network option.** RFC-277 reads `FDB_TLS_*` only. libfdb_c
   also takes the `TLS_*` network options (`fdb.options:70-105`) and
   `FDB_NETWORK_OPTION_TLS_*` variables (`MultiVersionTransaction.actor.cpp:3484-3536`). It
@@ -2059,12 +2082,10 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   the fast lane. The test-suite speed investigation owns this now.
   - The race lane's timeout (1h0m16s, run 37669344266) is fixed by the split:
     it runs `sqldriver` (the driver's own tests) in about 11 min, green.
-- [ ] Flake: `TestNativeReadTagSampling/fallback-two-nontrivial-selectors/hedge=true`
-  (`pkg/fdbgo/client/native_range_tags_fdb_test.go:194`) failed once in a full lane at
-  `87938be26` (2026-10-24, 221 targets): 5 tagged sends, want 4, with an extra tagged
-  `GetKeyValuesRequest` (suspected: a hedge of the range read whose reply outlasted the
-  hedge delay under load). 20/20 isolated runs pass. Reproduce under load and make the
-  spec count only the planned hedge.
+- [x] Flake: `TestNativeReadTagSampling/fallback-two-nontrivial-selectors/hedge=true`.
+  RFC-281 (#1017) funds both concurrent selectors, then seeds a separate budget
+  for the exact read after both selectors complete. An incidental selector hedge
+  cannot consume the exact read's planned hedge; live replies keep generous timeouts.
 
 ## Row-limit lookahead at an exact page boundary
 
@@ -2376,8 +2397,9 @@ multi-page auto-commit SELECT, which stays tracked only.
   (`pkg/fdbgo/client/locality.go:572`; C++ waits for the reply or a proxy change) and that a
   read fails with 1007 after 10 timed-out re-sends (`readpath.go:39`). Dials are not a gap:
   C++ also times out a connect (`CONNECTION_MONITOR_TIMEOUT`). Fixed in #996.
-- [ ] **Medium:** DIVERGENCES.md:973 and SQL_CONFORMANCE.md:3 are classified against Java
-  4.12.11; SQL_CONFORMANCE's pass count omits the skipped files and plan assertions.
+- [x] **Medium:** DIVERGENCES.md:973 and SQL_CONFORMANCE.md:3 are classified against Java
+  4.12.11; SQL_CONFORMANCE's pass count omits the skipped files and plan assertions. Fixed in
+  #1007 (RFC-278).
 - [x] **Low:** stale: TODO.md:3 (PR #786 merged), `tools_cli.go:5-7` (no `cmd/frl/go.mod`),
   `pkg/fdbgo/client/CRASH_BUG.md` (resolved; title says otherwise). Fixed in #996.
 - [x] **Low:** comments against CLAUDE.md's rules: shift tags
@@ -2389,26 +2411,46 @@ multi-page auto-commit SELECT, which stays tracked only.
   every "codex" tag and the listed round notes. Kept: about 30 test files and functions named
   for "RFC-141 R4 round-N" and similar review rounds (`git grep -n -E 'round-[0-9]+' --
   '*_test.go'`); renaming them is churn with no behavior change.
-- [ ] **Owner decision:** the public API surface (about 16K exported declarations outside
-  `internal/`, including test hooks such as `values.SetCensusHooks`); test and tool
-  dependencies in the library `go.mod` (docker, testcontainers, ginkgo, staticcheck,
-  cobra); nogo without `unused`; nine reused RFC numbers and no RFC index.
+- [ ] **Deferred:** the public API surface: about 16K exported declarations outside
+  `internal/`, including test hooks such as `values.SetCensusHooks`. Deferred by the owner on
+  2026-10-25: another session's client optimizations may change the surface; do not start it.
+- [ ] **Owner decision:** test and tool dependencies in the library `go.mod` (docker,
+  testcontainers, ginkgo, staticcheck, cobra); nogo without `unused`; nine reused RFC numbers
+  and no RFC index.
 
 ### Follow-ups from the fix PRs' reviews
 
-- [ ] **Low:** probe two seed-corpus Go extensions against live Java 4.14.2.0 and record each in
+- [x] **Low:** probe two seed-corpus Go extensions against live Java 4.14.2.0 and record each in
   DIVERGENCES.md's Go-extension table or drop the note
   (`pkg/relational/conformance/plandiff/seedcorpus/corpus.go`, the NOTE comments before the
   LIMIT note): bare-paren `WHERE (boolean_expr)` (4.12.11 rejected it) and a `WITH RECURSIVE`
   body with no self-reference (4.12.11 rejected it; 4.14.2.0's `QueryVisitor.java:212-214`
   routes it to `visitNamedQuery`, so Java may now accept). `plandiff/README.md:65` also cites
-  CLAUDE.md "gotcha" entries that do not exist.
+  CLAUDE.md "gotcha" entries that do not exist. Fixed in #1007: the parenthesized WHERE is a Go
+  extension; both engines refuse the recursive form.
 
-- [ ] **Low:** when a statement's context ends inside an explicit transaction, the transaction
+- [x] **Low:** when a statement's context ends inside an explicit transaction, the transaction
   is cancelled from a background goroutine with no panic recovery; `sqlpage.go` still calls
-  `SetOptions` where the DST skill now recommends `SetOption` (#999's final review).
+  `SetOptions` where the DST skill now recommends `SetOption` (#999's final review). Fixed in
+  #1013: the abort recovers and closes the connection; sqlpage and rowdiff
+  use `SetOption`.
 - [ ] **Low:** STATUS.md's timeout paragraph: the facade's pipelined Get makes one more timed-out
-  send than the others (#1011 owns it); the header of
-  `pkg/relational/sqldriver/sql_integration_test.go` still describes a blank import (SQL
-  follow-up PR). Done in docs/review-leftovers: `readpath.go:415-418` and the two `Database`
-  superset rows (#996's final review).
+  send than the others (#1011 owns it). Done in docs/review-leftovers: `readpath.go:415-418` and
+  the two `Database` superset rows (#996's final review).
+- [x] **Low:** the header of `pkg/relational/sqldriver/sql_integration_test.go` still describes a
+  blank import (#996's final review). Fixed in #1013.
+- [x] **Low:** enum-assignment and `range()` bound errors render their message twice since #1002;
+  the `range()` test checks only "in range"; the rule-match trip's error context is unasserted
+  (#1002's final review). Fixed in #1013, pinned end to end.
+- [ ] **Low:** `translateFDBError`'s deserialization, already-exists, invalid-UTF-8,
+  MetaDataException (42000), RecordCoreException and QueryInvalidExpression arms
+  (`pkg/relational/core/embedded/connection.go`) build the message from the typed error and pass
+  the chain holding it as the cause, so the message renders twice. `api.WrapStatedError` (#1013)
+  renders it once, but `Error()` then stops showing the chains' `fmt.Errorf` context; decide per
+  arm against Java's message (#1013 decided so for the schema-template build arm, whose name
+  context Java's message lacks) (#1013's review).
+- [ ] **Low:** a schema template's index refusal renders as `index "IX": XXXXX: …`: the DDL index
+  paths (`pkg/relational/core/embedded/ddl.go`, `index_onsource.go`) wrap the `api.Error` with
+  `fmt.Errorf("index %q: %w")`, a prefix Java's message lacks (`sqltest/core`
+  `TestFDB_DDLRefusalRendersMessageOnce`, index predicate case). Decide whether to drop it or record
+  it in DIVERGENCES.md (#1013's review).

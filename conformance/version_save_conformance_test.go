@@ -130,7 +130,11 @@ var _ = Describe("Explicit-version saves match Java", func() {
 					_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 						goKVs = [][]string{}
 						if versionPrimaryKey {
-							store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(goSS).Open()
+							builder := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(goSS)
+							if format != 0 {
+								builder.SetFormatVersion(format)
+							}
+							store, err := builder.Open()
 							if err != nil {
 								return nil, err
 							}

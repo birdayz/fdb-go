@@ -204,8 +204,8 @@ func executePlanUnwrapped(
 		return executeValues(p, evalCtx, continuation, props)
 	case *plans.RecordQueryRecursiveLevelUnionPlan:
 		if p.IsDistinct() {
-			// UNION DISTINCT recursion (a Go extension — Java rejects it:
-			// "only UNION ALL is supported") carries a cross-level
+			// UNION DISTINCT recursion (Java runs it as UNION ALL, a Java
+			// upstream bug in DIVERGENCES.md) carries a cross-level
 			// seen-set that IS the emission history, so it cannot ride a
 			// streaming continuation; it resumes by deterministic replay
 			// (position + boundary-row integrity, loud on drift).
@@ -2173,7 +2173,7 @@ func executeDistinct(
 	// adjacent and only the last emitted key need ride the continuation
 	// (gen.DedupContinuation). This is the fix for the fresh-per-page hash-set's
 	// cross-page re-admission (TODO.md C5) — a Go-internal continuation, since
-	// SELECT DISTINCT is a Go-only extension.
+	// Java's SELECT DISTINCT does not deduplicate (DIVERGENCES.md).
 	if p.IsStreaming() {
 		var innerCont []byte
 		var lastKey string
@@ -2220,7 +2220,7 @@ func executeDistinct(
 	// O(pages^2) bytes written and re-parsed across a drain; that encoding
 	// survives only for a scratch-less execution.
 	//
-	// SELECT DISTINCT is a Go-only extension — Java's SQL layer never dedups it,
+	// Java's SQL layer never dedups SELECT DISTINCT (DIVERGENCES.md),
 	// and Java's value-distinct HashSet is likewise un-carried across
 	// continuations — so this continuation is Go-internal
 	// (gen.DistinctHashContinuation) with no Java wire format to match. The set
@@ -5307,9 +5307,9 @@ func executeRecursiveLevelUnion(
 // and POSTORDER (emit children then parent).
 // Mirrors Java's RecordQueryRecursiveDfsJoinPlan.executePlan: the
 // UNION ALL arm STREAMS through the RecursiveCursor port (per-depth
-// continuation stack, primary-key check values); the DISTINCT arm is a
-// Go extension (Java rejects recursive UNION distinct — "only UNION
-// ALL is supported") and resumes by deterministic replay.
+// continuation stack, primary-key check values); the DISTINCT arm (Java
+// runs recursive UNION DISTINCT as UNION ALL, a Java upstream bug in
+// DIVERGENCES.md) resumes by deterministic replay.
 func executeRecursiveDfsJoin(
 	ctx context.Context,
 	p *plans.RecordQueryRecursiveDfsJoinPlan,

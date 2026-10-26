@@ -127,7 +127,7 @@ var _ = Describe("SaveRecordWithVersion", func() {
 			})
 		}
 	}
-	for _, api := range []string{"ordinary", "batch", "pipelined", "supplied incomplete", "typed supplied incomplete", "override supplied incomplete"} {
+	for _, api := range []string{"ordinary", "batch", "pipelined", "dry-run", "supplied incomplete", "typed supplied incomplete", "override supplied incomplete"} {
 		It("returns an incomplete-version error and aborts the "+api+" save with a version primary key", func() {
 			md := versionPrimaryKeyMetaData()
 			ks := specSubspace()
@@ -144,6 +144,8 @@ var _ = Describe("SaveRecordWithVersion", func() {
 					return store.SaveRecordBatch([]proto.Message{order(1)})
 				case "pipelined":
 					return store.SaveRecordsPipelined([]proto.Message{order(1)}, RecordExistenceCheckNone)
+				case "dry-run":
+					return store.DryRunSaveRecord(order(1), RecordExistenceCheckNone)
 				default:
 					version, err := IncompleteVersion(rtx.ClaimLocalVersion())
 					if err != nil {
@@ -177,6 +179,24 @@ var _ = Describe("SaveRecordWithVersion", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	}
+
+	It("chooses the dry-run record version without staging a version mutation", func() {
+		for _, format := range []int32{0, 5} {
+			md := metaData(true)
+			ks := specSubspace()
+			run(md, ks, format, func(store *FDBRecordStore) {
+				dry, err := store.DryRunSaveRecord(order(1), RecordExistenceCheckNone)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(dry.Version).NotTo(BeNil())
+				Expect(dry.Version.IsComplete()).To(BeFalse())
+				Expect(dry.Version.GetLocalVersion()).To(Equal(0))
+				Expect(store.context.HasVersionMutations()).To(BeFalse())
+				loaded, err := store.LoadRecord(tuple.Tuple{int64(1)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(loaded).To(BeNil())
+			})
+		}
+	})
 
 	// want: "none", "assigned" (an incomplete version, complete after commit),
 	// or "supplied" (exactly the supplied version).

@@ -34,6 +34,9 @@ type Error struct {
 	// Context carries optional structured logging fields (table name,
 	// column name, etc.). Corresponds to Java's errorContext map.
 	Context map[string]any
+
+	// causeStated marks a Message that already states Cause (WrapStatedError).
+	causeStated bool
 }
 
 // NewError returns a new Error with the given code and message.
@@ -51,6 +54,12 @@ func WrapError(code ErrorCode, message string, cause error) *Error {
 	return &Error{Code: code, Message: message, Cause: cause}
 }
 
+// WrapStatedError is WrapError for a message that already states the cause:
+// Error() renders the message once, and errors.As still reaches the cause.
+func WrapStatedError(code ErrorCode, message string, cause error) *Error {
+	return &Error{Code: code, Message: message, Cause: cause, causeStated: true}
+}
+
 // WrapErrorf is WrapError with fmt.Sprintf formatting for the message.
 // Use instead of fmt.Errorf("context: %w", err) at API boundaries so the
 // error carries a SQLSTATE that errors.As can match.
@@ -58,9 +67,8 @@ func WrapErrorf(cause error, code ErrorCode, format string, args ...any) *Error 
 	return &Error{Code: code, Message: fmt.Sprintf(format, args...), Cause: cause}
 }
 
-// Error renders the error in the form "SQLSTATE: message: cause"
-// with the context fields appended. The wording is informational —
-// callers must not parse it.
+// Error renders "SQLSTATE: message: cause" plus context, without a WrapStatedError
+// cause. The wording is informational; callers must not parse it.
 func (e *Error) Error() string {
 	var b strings.Builder
 	b.WriteString(string(e.Code))
@@ -84,7 +92,7 @@ func (e *Error) Error() string {
 		}
 		b.WriteString("]")
 	}
-	if e.Cause != nil {
+	if e.Cause != nil && !e.causeStated {
 		b.WriteString(": ")
 		b.WriteString(e.Cause.Error())
 	}
