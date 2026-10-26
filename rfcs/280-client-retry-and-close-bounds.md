@@ -103,8 +103,11 @@ Reporting failure does not wait for socket teardown, so joining cancelled shard
 workers cannot withhold an error or timeout behind TLS `close_notify`. Shutdown
 also detaches the pool before closing sockets; a discarded dial publishes its result
 before closing outside `connMu`, and the dial-panic backstop schedules teardown.
-Thus a cancelled worker acquiring the pool lock cannot wait behind another close. A completed, undrained dial cohort referring
-to the removed connection is detached under the same lock, so a new sender cannot
+Thus a cancelled worker acquiring the pool lock cannot wait behind another close.
+Acquisition checks the database lifetime under that lock before inspecting cohorts,
+so an unclosed connection cannot escape a completed cohort during shutdown's drain.
+A completed, undrained dial cohort referring to the removed connection is detached
+under the same lock, so a new sender cannot
 acquire the failed connection between the unlock and the close. `Database.Close` can
 return while such a connection is still closing; its loops end with the close.
 
@@ -137,6 +140,9 @@ and names the bound that matches libfdb_c, the transaction timeout or `Cancel`.
     close remains gated, with `connMu` free, the pool empty and the address failed.
   - `TestDatabaseCloseClosesOutsideConnMu`: shutdown detaches the pool before closing
     sockets and leaves `connMu` available while socket teardown remains gated.
+  - `TestDatabaseCloseRejectsCompletedDialCohort`: while one detached connection's
+    close is gated and another remains live in a completed undrained cohort, both
+    ordinary and sending acquisitions reject the cancelled database lifetime.
   - `TestMetricsRecoveryDoesNotWaitForOtherProbe`: a recovered replica gets the
     request while a different replica's dial remains stalled and database-owned.
   - `TestMetricsRequestWakesOnRecovery`: with the storm delay at 30 s, a request whose

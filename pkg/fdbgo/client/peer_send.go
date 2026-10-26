@@ -19,6 +19,11 @@ func (db *database) getOrDialConnFor(ctx context.Context, addr string, sending b
 		return nil, false, nil, err
 	}
 	db.connMu.Lock()
+	if db.ctx != nil && db.ctx.Err() != nil {
+		err := db.ctx.Err()
+		db.connMu.Unlock()
+		return nil, false, nil, err
+	}
 	call := db.dialing[addr]
 	if call != nil {
 		select {

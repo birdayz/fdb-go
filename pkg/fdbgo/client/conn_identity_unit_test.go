@@ -1031,6 +1031,115 @@ func TestDatabaseCloseClosesOutsideConnMu(t *testing.T) {
 	requireIdentityConnClosed(t, ctx, second)
 }
 
+// Draining the pool does not consume a completed dial cohort. A database-close
+// check must reject that still-open connection even while another close stalls.
+func TestDatabaseCloseRejectsCompletedDialCohort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	dbCtx, cancelDB := context.WithCancel(ctx)
+	defer cancelDB()
+	peers := [2]*identityPeer{newIdentityPeer(t), newIdentityPeer(t)}
+	var gates [2]*closeGateConn
+	for i, peer := range peers {
+		gates[i] = &closeGateConn{Conn: peer.client, closing: make(chan struct{}), release: make(chan struct{}), done: make(chan struct{})}
+		peer.client = gates[i]
+	}
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			for _, gate := range gates {
+				close(gate.release)
+			}
+		})
+	}
+	db, _ := identityDatabase(dbCtx, peers[0], peers[1])
+	db.cancel = cancelDB
+	publicDB := &Database{db: db}
+	defer func() {
+		release()
+		publicDB.Close()
+	}()
+	addresses := [2]string{"close-a:4500", "close-b:4500"}
+	var conns [2]*transport.Conn
+	var calls [2]*dialCall
+	for i, addr := range addresses {
+		conn, err := db.getOrDial(ctx, addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conns[i] = conn
+		call := &dialCall{done: make(chan struct{}), conn: conn}
+		permit, _ := call.sends.Reserve()
+		defer permit.Release()
+		call.sends.Seal()
+		close(call.done)
+		calls[i] = call
+		db.connMu.Lock()
+		db.dialing[addr] = call
+		db.connMu.Unlock()
+	}
+	done := make(chan error, 1)
+	go func() { done <- publicDB.Close() }()
+	var live int
+	select {
+	case <-gates[0].closing:
+		live = 1
+	case <-gates[1].closing:
+		live = 0
+	case <-ctx.Done():
+		t.Fatal("Database.Close did not enter either blocked socket close")
+	}
+	if !errors.Is(dbCtx.Err(), context.Canceled) || conns[live].IsClosed() {
+		t.Fatal("the database must be cancelled while the other connection remains open")
+	}
+	select {
+	case <-gates[live].closing:
+		t.Fatal("the second connection started closing before the first close gate was released")
+	default:
+	}
+	db.connMu.Lock()
+	cohortPending := db.dialing[addresses[live]] == calls[live] && calls[live].sends.Pending()
+	poolEmpty := len(db.connPool) == 0
+	db.connMu.Unlock()
+	if !cohortPending || !poolEmpty {
+		t.Fatal("the regression requires an undrained completed cohort outside the drained pool")
+	}
+	callerCtx, stopCaller := context.WithCancel(ctx)
+	defer stopCaller()
+	conn, err := db.getOrDial(callerCtx, addresses[live])
+	if conn != nil || !errors.Is(err, context.Canceled) {
+		t.Errorf("ordinary lookup after database close = (%p, %v), want (nil, context.Canceled)", conn, err)
+	}
+	conn, permit, err := db.getOrDialForSend(callerCtx, addresses[live])
+	if permit != nil {
+		permit.Release()
+	}
+	if conn != nil || !errors.Is(err, context.Canceled) {
+		t.Errorf("send lookup after database close = (%p, %v), want (nil, context.Canceled)", conn, err)
+	}
+	if err := callerCtx.Err(); err != nil {
+		t.Fatalf("database close also cancelled the independent caller: %v", err)
+	}
+	release()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Database.Close: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("Database.Close did not finish after both close gates were released")
+	}
+	for i, conn := range conns {
+		select {
+		case <-gates[i].done:
+		default:
+			t.Fatalf("connection %d's socket close did not complete", i)
+		}
+		requireIdentityConnClosed(t, ctx, conn)
+	}
+}
+
 type metricsArm struct {
 	name       string
 	endpoint   int
