@@ -2617,3 +2617,25 @@ one item; superseded findings and already-tracked compatibility boundaries are n
   finding. [Final review](https://github.com/birdayz/fdb-go/pull/1015#issuecomment-6398608811).
 - [ ] **Nit, unverified (#1015 F6–F8):** shorten the specified lane comments and simplify
   the chained command-building wrappers (same final review).
+
+### Dependency alerts observed at closeout
+
+GitHub Dependabot snapshot on 2026-10-26: 8 open alerts (5 high, 3 moderate).
+These dependency-graph alerts are separate from the review suggestions above; they do not
+establish vulnerable-code reachability in the published Go library.
+
+- [ ] Triage/update `website/themes/hextra/package-lock.json` development dependencies:
+  [source-map-js #16](https://github.com/birdayz/fdb-go/security/dependabot/16),
+  [nanoid #14](https://github.com/birdayz/fdb-go/security/dependabot/14), and postcss
+  [#10](https://github.com/birdayz/fdb-go/security/dependabot/10) /
+  [#11](https://github.com/birdayz/fdb-go/security/dependabot/11). The snapshot lists fixes
+  in source-map-js 1.2.2, nanoid 3.3.12, and postcss 8.5.18 / 8.5.23 respectively.
+  Update the vendored theme/lockfile and run its documented build/tests; Go vulnerability
+  checks alone do not validate these website dependencies.
+- [ ] Triage `github.com/docker/docker` alerts in `go.mod`:
+  [#4](https://github.com/birdayz/fdb-go/security/dependabot/4),
+  [#3](https://github.com/birdayz/fdb-go/security/dependabot/3),
+  [#2](https://github.com/birdayz/fdb-go/security/dependabot/2), and
+  [#1](https://github.com/birdayz/fdb-go/security/dependabot/1). GitHub labels them runtime
+  dependencies and listed no patched module version. Determine affected library/test/tool
+  paths and remediation, rather than assuming either production exposure or a false positive.
