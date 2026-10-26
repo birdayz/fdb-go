@@ -253,12 +253,8 @@ func findPhysicalPlan(ref *expressions.Reference) plans.RecordQueryPlan {
 // second optimizer findPhysicalExpr's comment forbids; the point of enumerating
 // is that no choice is made at rule time at all.
 //
-// References here hold up to 52 physical finals, and a caller yields once per
-// member inside a SINGLE OnMatch. MaxNumMatchesPerRuleCall bounds the DML rules'
-// loop by its stored-record partitions (ruleCallMatches); streaming aggregation
-// and the Go-only in-memory sort count one match per call, so their only backstop
-// is the opt-in, coarser MaxTasks / MaxTaskQueueSize, which fails the WHOLE plan.
-// A caller adding a second enumerated child multiplies, and nothing here stops it.
+// DML's match cap counts stored-record partitions, not members within them.
+// Member fan-out (also aggregation/sort) has only the opt-in MaxTasks/MaxTaskQueueSize backstop.
 func physicalMembersForParentEnumeration(ref *expressions.Reference) []expressions.RelationalExpression {
 	if ref == nil {
 		return nil

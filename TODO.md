@@ -2447,8 +2447,8 @@ multi-page auto-commit SELECT, which stays tracked only.
   Fixed in #1016.
 - [x] **Nit (#1001):** the `corpusOnce` comment names the tests that plan the corpus themselves.
   Fixed in #1016.
-- [x] **Low (#1002):** `physical_wrapper.go` no longer calls MaxTasks the only backstop of the
-  DML rules' fan-out. Fixed in #1016.
+- [x] **Low (#1002):** `physical_wrapper.go` distinguishes DML's partition match cap from
+  per-member fan-out, which still needs the coarse task backstop. Fixed in #1016.
 - [x] **Low (#1002):** the `MaxNumMatchesPerRuleCall` doc says Java's count applies only where a
   rule reports one. Fixed in #1016.
 - [x] **Low (#1002):** `TestJavaBindingsSortRollsUpStoredRecord` pins the sort roll-up with plans
