@@ -222,6 +222,59 @@ var _ = Describe("OnlineIndexer batch session fencing", func() {
 		oi.cleanupPendingQueueHeartbeat(m.heartbeat)
 	})
 
+	It("rejects a block committed after the final mutual chunk before completion", func() {
+		root := specSubspace()
+		builder := baseBuilder()
+		index := NewIndex("target", Field("price"))
+		builder.AddIndex("Order", index)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).Create()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)}); err != nil {
+				return nil, err
+			}
+			return nil, disableIndexes(store, index)
+		})
+		Expect(err).NotTo(HaveOccurred())
+		oi, err := NewOnlineIndexerBuilder().SetDatabase(sharedDB).SetMetaData(md).SetIndex(index).
+			SetSubspace(root).SetMutualIndexing().SetLimit(100).Build()
+		Expect(err).NotTo(HaveOccurred())
+		oi.sessionHeartbeat = NewIndexingHeartbeat("mutual worker", 30_000, true, nil)
+		Expect(oi.markWriteOnly(ctx)).Error().To(Succeed())
+		defer oi.cleanupPendingQueueHeartbeat(oi.sessionHeartbeat)
+
+		m := newMutualIndexBuilder(oi)
+		n, more, err := m.buildMutual(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(int64(1)))
+		Expect(more).To(BeTrue())
+		Expect(m.claimed).To(BeNil(), "the final chunk exhausted its claim")
+		Expect(oi.BlockIndex(ctx, "after-final-chunk", 0)).To(Succeed())
+
+		_, _, err = m.buildMutual(ctx)
+		var blocked *PartlyBuiltError
+		Expect(errors.As(err, &blocked)).To(BeTrue(), "%v", err)
+		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			store, err := oi.openStore(rc)
+			if err != nil {
+				return nil, err
+			}
+			state, err := store.readIndexState(index.Name)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(state.IsWriteOnly()).To(BeTrue())
+			stamp, err := store.LoadIndexingTypeStamp(index)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(stamp.GetBlock()).To(BeTrue())
+			Expect(stamp.GetBlockID()).To(Equal("after-final-chunk"))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	for _, change := range []string{"disabled", "blocked", "method", "other-session"} {
 		It("rejects an empty batch after "+change, func() {
 			root := specSubspace()

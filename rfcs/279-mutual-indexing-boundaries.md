@@ -82,7 +82,8 @@ Go line numbers are at the base commit, `da73f1db1`.
      builder drops it and claims again. A chunk that reaches the claim's end drops it at once.
 
    The claim and the walk are kept only when the claim transaction commits. A failed chunk
-   keeps the claim for the retry.
+   keeps the claim for the retry. An empty range set still runs the session/stamp/heartbeat
+   fence before reporting completion, so a block committed after the last chunk is respected.
 4. **Backoff.** `buildRangeWithRetries` makes an `exponentialDelay` from the database's
    initial and maximum delays at its first retry. Before each retry it waits through
    `waitRetryDelay`, which is the wait taken out of `attemptLoop`. Under a simulated
@@ -146,7 +147,10 @@ Each regression fails before its fix (mutations recorded on the PR).
   - A `BackendCapabilityError` gives one fragment and a complete build; any other shard-map
     error fails the claim and sets no fragments.
 - **Limits:** a mutual chunk with a 1-byte write limit indexes one record; with the default
-  write limit the rest of the claim is one chunk.
+  write limit the rest of the claim is one chunk. A separate real-FDB spec advances a local
+  clock by 11 ms during maintenance with a 10 ms transaction budget and generous write/count
+  limits. It verifies the committed early boundary, raises only the time budget, and finishes
+  with all five index entries. Resetting the start time per record fails this regression.
 - **FULL:** one builder over two preset fragments, 100 records and limit 10 stays in FULL
   until the build is done, visits each fragment once, and takes 11 chunks of at most 10.
 - **Peers:** a peer that finishes the claimed fragment moves the builder to the next one; a
@@ -160,7 +164,9 @@ Each regression fails before its fix (mutations recorded on the PR).
   two chunk transactions and no re-claim.
 - **Claim publication:** a failed claim transaction leaves no boundaries and no claim. A
   failed chunk keeps the claim. A successful last chunk drops it, and the next call reports
-  done.
+  done only after session validation. A real-FDB regression commits `BlockIndex` between the
+  last chunk and that completion check: it must return `PartlyBuiltError`, preserve WRITE_ONLY
+  and leave the blocking stamp intact.
 - **Walk:** Java's `testFullyUnBuiltRange` and `testPartlyUnBuiltRange` vectors. A walk with
   a missing range outside every fragment fails with the third-iteration error.
 - **Backoff:** two 2101 lessen-work retries record two `EventRetryDelay`s under a simulated

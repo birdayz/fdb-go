@@ -252,8 +252,11 @@ func (m *mutualIndexBuilder) claimNextRange(ctx context.Context) (bool, error) {
 			}
 		}
 		missing, err := NewIndexingRangeSet(store.subspace, m.indexer.primaryIndex()).ListMissingRanges(rtx.Transaction())
-		if err != nil || len(missing) == 0 {
+		if err != nil {
 			return nil, err
+		}
+		if len(missing) == 0 {
+			return nil, m.validateBuildSession(store)
 		}
 		more = true
 		m.claimed, err = m.nextClaim(missing)
@@ -336,17 +339,8 @@ func (m *mutualIndexBuilder) buildClaimedRange(ctx context.Context) (n int64, bu
 		if err != nil {
 			return nil, err
 		}
-		if err := m.indexer.validateBuildSession(store); err != nil {
+		if err := m.validateBuildSession(store); err != nil {
 			return nil, err
-		}
-		// validateBuildSession already renewed the shared admitted session. The
-		// standalone internal builder still needs its own compatibility check.
-		if m.heartbeat != m.indexer.sessionHeartbeat {
-			for _, index := range m.indexer.targetIndexes {
-				if err := m.indexer.renewSessionHeartbeat(store, index, m.heartbeat); err != nil {
-					return nil, err
-				}
-			}
 		}
 
 		primaryRangeSet := NewIndexingRangeSet(store.subspace, m.indexer.primaryIndex())
@@ -376,6 +370,22 @@ func (m *mutualIndexBuilder) buildClaimedRange(ctx context.Context) (n int64, bu
 	}
 	m.indexer.mergeRequiredIndexes = mergeRequests
 	return n, built, nil
+}
+
+// Completion must fence session changes just as a chunk does, even with no records left.
+func (m *mutualIndexBuilder) validateBuildSession(store *FDBRecordStore) error {
+	if err := m.indexer.validateBuildSession(store); err != nil {
+		return err
+	}
+	// Admitted sessions were renewed above; standalone builders need their own check.
+	if m.heartbeat != m.indexer.sessionHeartbeat {
+		for _, index := range m.indexer.targetIndexes {
+			if err := m.indexer.renewSessionHeartbeat(store, index, m.heartbeat); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // buildFragmentRange indexes r from its start until the record limit or the transaction's time
