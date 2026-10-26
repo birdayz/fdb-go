@@ -1,12 +1,19 @@
 package recordlayer
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
 )
 
 var _ = Describe("FDBRecordContext and FDBDatabase APIs", func() {
@@ -469,26 +476,93 @@ var _ = Describe("FDBRecordContext and FDBDatabase APIs", func() {
 			Expect(rctx.CheckTransactionSize()).NotTo(HaveOccurred())
 		})
 
-		It("returns TransactionSizeWarningError once when warn threshold exceeded", func() {
+		It("logs and counts the warning once per transaction and returns no error", Serial, func() {
+			// The default logger is process-global, so isolate its replacement.
+			previousLogger := slog.Default()
+			DeferCleanup(slog.SetDefault, previousLogger)
+			var logs bytes.Buffer
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
 			tx, err := sharedDB.CreateTransaction()
 			Expect(err).NotTo(HaveOccurred())
 			defer tx.Cancel()
 
 			rctx := NewFDBRecordContext(tx, nil)
+			timer := NewStoreTimer()
+			rctx.SetTimer(timer)
 			rctx.txSizeWarnBytes = 1 // 1 byte = always warn after any write
 
 			ks := specSubspace()
 			tx.Set(fdb.Key(ks.Bytes()), make([]byte, 100))
-
-			err = rctx.CheckTransactionSize()
-			Expect(err).To(HaveOccurred())
-			var warnErr *TransactionSizeWarningError
-			Expect(errors.As(err, &warnErr)).To(BeTrue())
-			Expect(warnErr.CurrentBytes).To(BeNumerically(">", 0))
-
-			// Second call should NOT warn again (once per tx)
-			err = rctx.CheckTransactionSize()
+			size, err := rctx.GetApproximateTransactionSize()
 			Expect(err).NotTo(HaveOccurred())
+
+			Expect(rctx.CheckTransactionSize()).To(Succeed())
+			Expect(timer.GetCount(CountTransactionSizeWarning)).To(Equal(int64(1)))
+			Expect(rctx.CheckTransactionSize()).To(Succeed())
+			Expect(timer.GetCount(CountTransactionSizeWarning)).To(Equal(int64(1)), "once per transaction")
+
+			var warning struct {
+				Level        string `json:"level"`
+				Message      string `json:"msg"`
+				CurrentBytes int64  `json:"current_bytes"`
+				LimitBytes   int64  `json:"limit_bytes"`
+			}
+			decoder := json.NewDecoder(&logs)
+			Expect(decoder.Decode(&warning)).To(Succeed())
+			Expect(warning.Level).To(Equal("WARN"))
+			Expect(warning.Message).To(Equal("transaction size exceeds warning threshold"))
+			Expect(warning.CurrentBytes).To(Equal(size))
+			Expect(warning.LimitBytes).To(Equal(int64(1)))
+			Expect(decoder.Decode(&warning)).To(Equal(io.EOF), "once per transaction")
+		})
+
+		It("lets a save and a delete past the warning threshold succeed", func() {
+			md := func() *RecordMetaData {
+				b := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
+				b.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+				b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+				b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+				m, err := b.Build()
+				Expect(err).NotTo(HaveOccurred())
+				return m
+			}()
+			ks := specSubspace()
+			// A timer per attempt: a retried transaction warns again.
+			var timer *StoreTimer
+			_, err := sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+				timer = NewStoreTimer()
+				rtx.SetTimer(timer)
+				rtx.txSizeWarnBytes = 1
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)}); err != nil {
+					return nil, err
+				}
+				_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(2), Price: proto.Int32(20)})
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(timer.GetCount(CountTransactionSizeWarning)).To(Equal(int64(1)))
+
+			// The delete is the transaction's first write past the threshold.
+			var deleteTimer *StoreTimer
+			_, err = sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+				deleteTimer = NewStoreTimer()
+				rtx.SetTimer(deleteTimer)
+				rtx.txSizeWarnBytes = 1
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				if err != nil {
+					return nil, err
+				}
+				existed, err := store.DeleteRecord(tuple.Tuple{int64(1)})
+				Expect(existed).To(BeTrue())
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deleteTimer.GetCount(CountTransactionSizeWarning)).To(Equal(int64(1)))
 		})
 
 		It("returns TransactionSizeExceededError when error threshold exceeded", func() {

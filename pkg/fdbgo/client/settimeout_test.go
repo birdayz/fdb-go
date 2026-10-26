@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/fdbgo/wire/types"
 )
@@ -192,18 +193,28 @@ func TestSetTimeout_UndeliveredKeepsPipelinedReplyWait(t *testing.T) {
 	tx.creationTime = time.Now().Add(-2 * time.Minute)
 	tx.deadlineNs.Store(tx.creationTime.Add(tx.timeoutDur()).UnixNano())
 	var sent *PendingGet
-	tx.afterPendingSend = func(p *PendingGet) { sent = p }
+	var origReplyCh <-chan transport.Response
+	delayedCh := make(chan transport.Response, 1)
+	tx.afterPendingSend = func(p *PendingGet) {
+		sent = p
+		origReplyCh = p.replyCh
+		p.replyCh = delayedCh
+	}
 	_, pending, err := tx.GetPipelined(ctx, []byte(t.Name()))
 	if err != nil || pending == nil || sent != pending {
 		t.Fatalf("GetPipelined = pending %v, sent %v, err %v; want one sent pending read", pending != nil, sent != nil, err)
 	}
-	select {
-	case <-sent.timer.C:
-		t.Fatal("the reply wait ended at the elapsed deadline before the timeout was delivered")
-	case <-time.After(50 * time.Millisecond):
-	}
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		if r, ok := <-origReplyCh; ok {
+			delayedCh <- r
+		}
+	}()
 	if _, err := pending.Resolve(); err != nil {
 		t.Fatalf("Resolve with an undelivered timeout = %v, want the reply", err)
+	}
+	if !sent.replyConsumed {
+		t.Fatal("the reply wait ended at the elapsed deadline before the timeout was delivered")
 	}
 }
 

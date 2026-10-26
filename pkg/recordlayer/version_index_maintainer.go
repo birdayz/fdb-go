@@ -71,10 +71,8 @@ func (m *versionIndexMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pr
 		newEntries = entries
 	}
 
-	// Skip the removeCommonEntries optimization for VERSION indexes.
-	// The version always changes on update (new record gets a new versionstamp),
-	// so there are never common entries. Additionally, removeCommonEntries calls
-	// tuple.Pack() which panics on incomplete versionstamps.
+	// Skip removeCommonEntries because tuple.Pack panics on incomplete versionstamps.
+	// Reusing a supplied complete version can still produce common entries.
 
 	// Remove old entries
 	for i := range oldEntries {

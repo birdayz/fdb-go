@@ -10,6 +10,7 @@ package recordlayer
 import (
 	"fmt"
 	"math"
+	"math/big"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -195,13 +196,18 @@ func (e *KeyExpressionInvalidResultError) Error() string {
 
 func (*KeyExpressionInvalidResultError) JavaRecordCoreException() {}
 
-// javaTupleValueClassName is the ACTUAL_TYPE Java logs for a value that is not a
-// Number: result.getClass().getName() of the value after
-// TupleTypeUtil.toTupleAppropriateValue (Key.java:553-561), so both fields of the
-// error carry Java class names. A Go carrier with no Java counterpart keeps its Go
-// type name, which no Java-produced value can be.
+// javaTupleValueClassName is a tuple value's Java class name after toTupleAppropriateValue
+// (Key.java:553-561); a Go-only carrier keeps its Go type name.
 func javaTupleValueClassName(v any) string {
 	switch x := v.(type) {
+	case int64, int, int32:
+		return "java.lang.Long"
+	case uint64, *big.Int:
+		return "java.math.BigInteger"
+	case float32:
+		return "java.lang.Float"
+	case float64:
+		return "java.lang.Double"
 	case string:
 		return "java.lang.String"
 	case []byte:
@@ -245,29 +251,54 @@ func javaMessageClassName(m proto.Message) string {
 // carriers come from literal arguments (an INT literal is int32, as Java's
 // Integer is) and from float and double fields.
 func nullableLong(name string, idx int, v any) (int64, bool, error) {
-	switch x := v.(type) {
-	case nil:
+	if v == nil {
 		return 0, false, nil
-	case int64:
-		return x, true, nil
-	case int32:
-		return int64(x), true, nil
-	case int:
-		return int64(x), true, nil
-	case int16:
-		return int64(x), true, nil
-	case int8:
-		return int64(x), true, nil
-	case float64:
-		return javaDoubleToLong(x), true, nil
-	case float32:
-		return javaDoubleToLong(float64(x)), true, nil
-	default:
-		return 0, false, &KeyExpressionInvalidResultError{
-			Function: name, Index: idx, ExpectedType: "java.lang.Number", ActualType: javaTupleValueClassName(v),
-		}
+	}
+	if n, ok := javaNumberLongValue(v); ok {
+		return n, true, nil
+	}
+	return 0, false, &KeyExpressionInvalidResultError{
+		Function: name, Index: idx, ExpectedType: "java.lang.Number", ActualType: javaTupleValueClassName(v),
 	}
 }
+
+// javaNumberLongValue is Number.longValue(): integers keep their low 64 bits, floats narrow as
+// Java's (long) cast; ok is false for a value that is not a number.
+func javaNumberLongValue(v any) (int64, bool) {
+	switch x := v.(type) {
+	case int64:
+		return x, true
+	case int:
+		return int64(x), true
+	case int32:
+		return int64(x), true
+	case int16:
+		return int64(x), true
+	case int8:
+		return int64(x), true
+	case uint64:
+		return int64(x), true
+	case uint:
+		return int64(x), true
+	case uint32:
+		return int64(x), true
+	case uint16:
+		return int64(x), true
+	case uint8:
+		return int64(x), true
+	case *big.Int:
+		return int64(new(big.Int).And(x, maxUint64Big).Uint64()), true
+	case big.Int:
+		return int64(new(big.Int).And(&x, maxUint64Big).Uint64()), true
+	case float64:
+		return javaDoubleToLong(x), true
+	case float32:
+		return javaDoubleToLong(float64(x)), true
+	}
+	return 0, false
+}
+
+var maxUint64Big = new(big.Int).SetUint64(math.MaxUint64)
 
 // javaDoubleToLong is Java's narrowing primitive conversion from double (and,
 // through the exact float-to-double widening, from float) to long (JLS 5.1.3):

@@ -825,7 +825,13 @@ func (b *Builder) build() (*RecordLayerSchemaTemplate, error) {
 
 	md, err := mdBuilder.Build()
 	if err != nil {
-		return nil, api.WrapErrorf(err, api.ErrCodeInternalError, "build RecordMetaData")
+		code := api.ErrCodeInternalError
+		// Java's ExceptionUtil maps InvalidExpressionException itself to UNKNOWN.
+		// Do not inspect causes: a containing MetaDataException is a different class.
+		if _, ok := err.(*recordlayer.KeyExpressionError); ok {
+			code = api.ErrCodeUnknown
+		}
+		return nil, api.WrapErrorf(err, code, "build RecordMetaData")
 	}
 
 	return NewRecordLayerSchemaTemplateWithVersion(b.name, md, b.version)

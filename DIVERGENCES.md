@@ -4596,6 +4596,56 @@ or into Nagle-style adaptive linger via `WithAdaptiveLinger(window)`.
 `Transact`/`ReadTransact` pool per-transaction timeout timers when no custom
 test clock/hooks are installed on the database's `timeoutQueue`.
 
+## Version-dependent record keys before RFC-275
+
+Earlier Go metadata accepted native `VersionKey()` primary-key columns that Java refuses.
+RFC-275 rejects those declarations with `MetaDataError` ("Version in primary key not supported")
+at construction and load. Existing unsupported metadata is not migrated automatically.
+Functions declare zero version columns even when their arguments contain a version.
+Consequently VERSION indexes rooted at such functions are refused during metadata and SQL
+DDL validation, as in Java; the SQL error is UNKNOWN (`XXXXX`). VALUE indexes with the
+same roots remain legal metadata. A version in a KeyWithValue VALUE portion also remains
+legal metadata; an incomplete version fails recoverably at write time, not at DDL.
+
+Maintained-count expressions and function-wrapped primary keys now see the chosen
+record version, as Java's save record builder does. Incomplete values reaching ordinary key
+encoders return `IncompleteVersionstampError` rather than a panic. Earlier null-version
+counters are not corrected automatically; migrate or recreate affected pre-release stores
+before mixed-engine use. Unaffected stores and tuple encodings are unchanged.
+
+## Transaction size thresholds (Go-only extension, RFC-275)
+
+Java has no user-set transaction size threshold. Its only size check is the
+online indexer's write limit (`IndexingBase.hadTransactionReachedLimits`), and
+FDB's own 2101 is counted and wrapped. Go adds two opt-in `ContextConfig` fields,
+which `SaveRecord` and `DeleteRecord` check after their write:
+- `TransactionSizeWarnBytes` logs at WARN and counts `CountTransactionSizeWarning`,
+  once per transaction. The operation still succeeds.
+- `TransactionSizeErrorBytes` returns `TransactionSizeExceededError`, a signal to
+  commit and start a new transaction.
+
+Neither changes any stored byte.
+
+## Key-space paths hold the stored value (RFC-275)
+
+Go's `keyspace` follows Java's `KeySpaceDirectory` in these respects:
+- sibling rules (`addSubdirectory`);
+- declaration-order key matching;
+- the "No subdirectory available to hold provided type" error.
+
+It differs in three places:
+- **Stored value only.** A path stores only the value that goes into the tuple. A
+  resolver directory's path carries the resolved `int64`, and `PathFromTuple`
+  makes no reverse lookup. Java's `ResolvedKeySpacePath` also carries the logical
+  name.
+- **Byte constants.** Two constant `BYTES` siblings with equal content are refused.
+  Java compares constants with `Objects.equals`, which for arrays is identity, so
+  it accepts them and then matches the first.
+  Integer constants compare by value too. Java's `Objects.equals` tells an `Integer` 1
+  from a `Long` 1 and accepts both. Floats compare as Java's `Double.equals` does.
+- **No constant resolver directories.** A resolver directory is always open, so
+  Java's `isCompatible` check, which applies only between constants, never applies.
+
 ## Native FDB client read hedging
 
 
@@ -4615,3 +4665,28 @@ choosing another alternative). The budget tests do not claim to close these
 selection/retry gaps. Single-replica wire goldens and data-plane differentials
 remain useful but cannot measure speculative duplicate requests; the budget
 regressions use two storage-server aliases and held replies against real FDB.
+
+## Mutual indexing has no anyJumper (RFC-279)
+
+Java's mutual builder records an FDB error that ends a claimed range, after the
+runner's retries, and returns quietly without lessening the limit
+(`IndexingMutuallyByRecords.java:495-544`). On the next walk:
+- in another fragment, or with nothing left to build, it forgets the error;
+- in the same fragment on a different range, it jumps to the next fragment, as a
+  peer is building there;
+- in the same fragment on the same range, it throws the error again and keeps it.
+
+Because the error is kept, every lessen-work retry throws it again, and the build
+fails. A claimed range too large for one transaction (2101) therefore fails a Java
+mutual build without a retry at a smaller limit.
+
+Go does not port it. A failed chunk of a claimed range goes through the runner's
+retries and then lessen-work, as every other build does. Peers inside one fragment
+progress by the runner's retries in both engines. Java jumps only after a range
+fails every runner attempt. No stored byte differs; the built ranges are the same
+kind of primary-key ranges.
+
+Java's `infiniteLoopProtection`, which fails a build after the same range is picked
+1000 times in a row, is not ported either. A Go claim is built until nothing in it
+is missing, and a chunk that keeps failing ends the build after the lessen-work
+retries, so no build picks one range forever.

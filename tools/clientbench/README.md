@@ -269,6 +269,7 @@ unique prefix, one benchmark process at a time. There are no database-wide clear
 | `read1000` | Fresh `ReadTransact`, exact Get, no commit |
 | `grv` | Fresh `ReadTransact`, positive read version, no data read |
 | `set100` | Changing 100-byte overwrite and commit |
+| `getset100` | Fresh `Transact`, exact 100-byte point Get and verified check, then changing 100-byte worker-key Set and commit |
 | `batchset50` | 50 distinct changing 100-byte Sets and commit |
 | `batchset50x1000` | Same 50 keys/transaction, 1,000-byte values |
 | `range10`, `range100` | Fresh `Transact`, WantAll, exact ordered keys and 8-byte little-endian row-index values |

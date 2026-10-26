@@ -164,7 +164,7 @@ func benchmarkWarmPeerReadSendPath(b *testing.B, queued bool) {
 		dialing:    make(map[string]*dialCall),
 		failMon:    newFailureMonitor(),
 		queueModel: newQueueModel(),
-		dialOpts:   []transport.DialOption{transport.WithCoalesceDelay(0, 0)},
+		dialOpts:   []transport.DialOption{transport.WithCoalesceDelay(0, 0), transport.WithLegacyWriter()},
 		dialFn: func(context.Context, string, string) (net.Conn, error) {
 			if n := dials.Add(1); n != 1 {
 				return nil, fmt.Errorf("warm benchmark unexpectedly dialed %d times", n)

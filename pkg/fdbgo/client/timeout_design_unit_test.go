@@ -191,6 +191,7 @@ func TestDesignTimeoutTransactScopedPoolAndExpiry(t *testing.T) {
 	// Returning from ReadTransact while an operation is still in flight (users > 0
 	// or issuedReads > 0) detaches the pooled entry and hands the remaining
 	// deadline off to a per-transaction weak timer that delivers 1031 on expiry.
+	// 1. Escaped active operation (users > 0, issuedReads == 0) hands off to weak timer.
 	var inFlightTx *Transaction
 	var inFlightCtx context.Context
 	var inFlightRelease context.CancelFunc
@@ -223,6 +224,71 @@ func TestDesignTimeoutTransactScopedPoolAndExpiry(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 
+	// 2. Escaped issued read (issuedReads > 0, users == 0 after lease release) hands off to weak timer.
+	var issuedTx *Transaction
+	var issuedCtx context.Context
+	var issuedCleanup opRelease
+	_, err = db.ReadTransact(context.Background(), func(tx *Transaction) (any, error) {
+		issuedTx = tx
+		tx.SetTimeout(30000)
+		var lease *executionLease
+		issuedCtx, issuedCleanup, lease = tx.opContextWithLease(context.Background(), true)
+		// Drop users while keeping issuedReads == 1 (as an in-flight range/read continuation holds).
+		tx.readErrMu.Lock()
+		tx.readLife.users--
+		lease.active.Store(false)
+		tx.readErrMu.Unlock()
+		return "ok", nil
+	})
+	if err != nil {
+		t.Fatalf("Database.ReadTransact with issuedRead = %v", err)
+	}
+	defer issuedCleanup.release()
+	issuedTx.readErrMu.Lock()
+	issuedHandedOff := !issuedTx.transactScoped && issuedTx.designEntry == nil && issuedTx.designTimer != nil && issuedTx.timeoutArmed && issuedTx.readLife.users == 0 && issuedTx.readLife.issuedReads == 1
+	issuedTx.expireTimeoutLocked()
+	issuedTx.readErrMu.Unlock()
+	if !issuedHandedOff {
+		t.Fatal("ReadTransact exit with issuedReads > 0 (users == 0) did not hand timeout off to weak timer")
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		var fdbErr *wire.FDBError
+		if errors.As(issuedTx.readEntryError(issuedCtx), &fdbErr) && fdbErr.Code == 1031 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("handed-off weak timer never delivered 1031 to escaped issuedRead")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// 3. Escaped pending versionstamp (users == 0, issuedReads == 0) hands off to weak timer.
+	var vsTx *Transaction
+	var pendingVs *PendingVersionstamp
+	_, err = db.ReadTransact(context.Background(), func(tx *Transaction) (any, error) {
+		vsTx = tx
+		tx.SetTimeout(30000)
+		var vsErr error
+		_, pendingVs, vsErr = tx.GetVersionstampPending(context.Background())
+		return nil, vsErr
+	})
+	if err != nil || pendingVs == nil {
+		t.Fatalf("Database.ReadTransact with GetVersionstampPending = (%v, %v)", pendingVs, err)
+	}
+	vsTx.readErrMu.Lock()
+	vsHandedOff := !vsTx.transactScoped && vsTx.designEntry == nil && vsTx.designTimer != nil && vsTx.timeoutArmed && vsTx.readLife.users == 0 && vsTx.readLife.issuedReads == 0
+	vsTx.expireTimeoutLocked()
+	vsTx.readErrMu.Unlock()
+	if !vsHandedOff {
+		t.Fatal("ReadTransact exit with pending versionstamp (users == 0, issuedReads == 0) did not hand timeout off to weak timer")
+	}
+	_, vsResolveErr := pendingVs.Resolve()
+	var vsFDBErr *wire.FDBError
+	if !errors.As(vsResolveErr, &vsFDBErr) || vsFDBErr.Code != 1031 {
+		t.Fatalf("escaped pending versionstamp Resolve = %v, want 1031", vsResolveErr)
+	}
+
 	tx := db.createTransaction(true)
 	defer tx.releaseTransactTimeout()
 	ctx, release := tx.opContext(context.Background())
@@ -242,11 +308,8 @@ func TestDesignTimeoutTransactScopedPoolAndExpiry(t *testing.T) {
 	}
 }
 
-// Deterministic test for pooled designTimerEntry reuse: when an entry armed
-// for transaction A is reused by transaction B with a later deadline (skipping
-// Timer.Reset because nextFire is in the future and <= B's deadline), an early
-// fire from A's schedule re-arms for B's remaining budget without delivering a
-// false 1031; firing once B's deadline has elapsed delivers 1031.
+// Pooled designTimerEntry reuse: an early fire from a prior owner re-arms for
+// the new owner's remaining budget without delivering a false 1031.
 func TestDesignTimeoutPooledReuseEarlyFireReArmsWithoutFalseTimeout(t *testing.T) {
 	t.Parallel()
 	// Use a dedicated entry owned by this test so parallel tests pulling from

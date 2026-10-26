@@ -164,7 +164,18 @@ func (ts *TypedFDBRecordStore[T]) SaveRecordWithOptions(
 	record T,
 	existenceCheck RecordExistenceCheck,
 ) (*FDBStoredRecord[T], error) {
-	storedRecord, err := ts.baseStore.saveRecordInternal(record, existenceCheck, false, nil, &ts.typedRecordSerializer)
+	return ts.SaveRecordWithVersion(record, existenceCheck, nil, VersionstampSaveBehaviorDefault)
+}
+
+// SaveRecordWithVersion saves a typed record with the version that behavior
+// chooses, as FDBRecordStore.SaveRecordWithVersion does.
+func (ts *TypedFDBRecordStore[T]) SaveRecordWithVersion(
+	record T,
+	existenceCheck RecordExistenceCheck,
+	version *FDBRecordVersion,
+	behavior VersionstampSaveBehavior,
+) (*FDBStoredRecord[T], error) {
+	storedRecord, err := ts.baseStore.saveRecordInternal(record, existenceCheck, version, behavior, false, nil, &ts.typedRecordSerializer)
 	if err != nil {
 		return nil, err
 	}

@@ -110,8 +110,8 @@ var (
 	EventScanIndex      = Event{"scan_index", "Scan Index", KindTimed}
 	EventOpenStore      = Event{"open_store", "Open Store", KindTimed}
 	EventRebuildIndex   = Event{"rebuild_index", "Rebuild Index", KindTimed}
-	// EventRetryDelay is Java's Events.RETRY_DELAY: the backoff between a
-	// transaction runner's attempts (FDBDatabaseRunnerImpl.RunRetriable.handle).
+	// EventRetryDelay is Java's Events.RETRY_DELAY: the backoff between a runner's attempts and
+	// before an online indexer's lessen-work retry (IndexingThrottle.buildCommitRetryAsync).
 	EventRetryDelay = Event{"retry_delay", "Retry Delay", KindTimed}
 	// EventScanRemoteFetchEntry is Java's Events.SCAN_REMOTE_FETCH_ENTRY, timing
 	// each result of a remote-fetch index scan.
@@ -144,6 +144,10 @@ var (
 	CountDeleteIndexKey        = Event{"delete_index_key", "Delete Index Key", KindCount}
 	CountDeleteIndexKeyBytes   = Event{"delete_index_key_bytes", "Delete Index Key Bytes", KindSize}
 	CountDeleteIndexValueBytes = Event{"delete_index_value_bytes", "Delete Index Value Bytes", KindSize}
+
+	// CountTransactionSizeWarning is Go-only: a transaction crossed
+	// ContextConfig.TransactionSizeWarnBytes (Java has no such threshold).
+	CountTransactionSizeWarning = Event{"transaction_size_warning", "Transaction Size Warning", KindCount}
 )
 
 // Counter tracks an occurrence count plus a cumulative value.

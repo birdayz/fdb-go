@@ -201,10 +201,8 @@ func WithCoalesceDelay(minDelay, maxDelay time.Duration) Option {
 	return client.WithCoalesceDelay(minDelay, maxDelay)
 }
 
-// WithAdaptiveLinger configures Nagle-style adaptive linger on each connection's
-// D-NG writer: if the last socket write was at least d ago, the writer flushes
-// immediately; otherwise it yields (runtime.Gosched, no timer) until d has elapsed
-// since the last write. Passing 0 disables linger; the last linger/coalesce setting wins.
+// WithAdaptiveLinger configures Nagle-style adaptive linger on the D-NG writer
+// (0 disables; the last linger/coalesce option wins; RFC-282).
 func WithAdaptiveLinger(d time.Duration) Option {
 	return client.WithAdaptiveLinger(d)
 }

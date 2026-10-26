@@ -89,6 +89,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		oldRecord  proto.Message
 		oldWire    *recordWire
 		oldVersion *FDBRecordVersion
+		version    *FDBRecordVersion
 		previous   int // previous occurrence of this primary key, or -1
 	}
 
@@ -106,6 +107,10 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		if err != nil {
 			return nil, err
 		}
+		savedVersion, err := store.recordVersionForSave(nil, VersionstampSaveBehaviorDefault)
+		if err != nil {
+			return nil, fmt.Errorf("record %d: choose version: %w", i, err)
+		}
 		if recordType.PrimaryKey == nil {
 			return nil, &MetaDataError{Message: fmt.Sprintf("no primary key for: %s", recordTypeName)}
 		}
@@ -122,6 +127,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		keyValues, err := evaluateKeyFlat(recordType.PrimaryKey, &FDBStoredRecord[proto.Message]{
 			RecordType: recordType,
 			Record:     record,
+			Version:    savedVersion,
 		}, record)
 		if err != nil {
 			return nil, fmt.Errorf("record %d: extract primary key: %w", i, err)
@@ -130,6 +136,9 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		primaryKey := make(tuple.Tuple, len(keyValues))
 		for j, v := range keyValues {
 			primaryKey[j] = v
+		}
+		if incomplete, _ := primaryKey.HasIncompleteVersionstamp(); incomplete {
+			return nil, &IncompleteVersionstampError{Context: fmt.Sprintf("record %d primary key", i)}
 		}
 
 		// Issue the whole record range before waiting on any batch member.
@@ -151,6 +160,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			write:      write,
 			recordType: recordType,
 			primaryKey: primaryKey,
+			version:    savedVersion,
 			unsplitKey: unsplitKey,
 			load:       load,
 			previous:   previous,
@@ -287,17 +297,11 @@ func (store *FDBRecordStore) SaveRecordBatch(
 
 		// Save version if versioning is enabled. One SET_VERSIONSTAMPED_VALUE
 		// mutation per record — no round trip, just added to the write set.
-		var savedVersion *FDBRecordVersion
-		if store.metaData.IsStoreRecordVersions() {
-			localVer := store.context.ClaimLocalVersion()
-			version, verErr := IncompleteVersion(localVer)
-			if verErr != nil {
-				return nil, fmt.Errorf("record %d: create incomplete version: %w", i, verErr)
-			}
-			if err := store.saveRecordVersion(p.primaryKey, version, &newsizeInfo); err != nil {
+		savedVersion := p.version
+		if savedVersion != nil {
+			if err := store.saveRecordVersion(p.primaryKey, savedVersion, &newsizeInfo); err != nil {
 				return nil, fmt.Errorf("record %d: save version: %w", i, err)
 			}
-			savedVersion = version
 		}
 
 		// Record count
@@ -321,7 +325,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 				insertCount++
 			} else if countKey != nil {
 				// Grouped count or non-empty key: per-record ADD
-				if err := store.addRecordCount(p.recordType, p.record, littleEndianInt64One); err != nil {
+				if err := store.addRecordCount(stored, littleEndianInt64One); err != nil {
 					return nil, fmt.Errorf("record %d: record count: %w", i, err)
 				}
 			}

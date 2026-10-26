@@ -1953,10 +1953,10 @@ func (tx *Transaction) Reset() {
 // trace); otherwise a brand-new random span, sampled per the DB's sample rate
 // (default unsampled). RFC-115 §4.
 func (tx *Transaction) regenerateSpan() {
-	tx.spanNeedsRegen.Store(false)
 	if parent := tx.spanParent.Load(); parent != nil {
 		sc := childSpanContext(*parent)
 		tx.spanContext.Store(&sc)
+		tx.spanNeedsRegen.Store(false)
 		return
 	}
 	// tx.db is nil for directly-constructed Transactions in some unit tests (which call
@@ -1967,6 +1967,7 @@ func (tx *Transaction) regenerateSpan() {
 	}
 	sc := newSpanContext(rate)
 	tx.spanContext.Store(&sc)
+	tx.spanNeedsRegen.Store(false)
 }
 
 // currentSpan returns the transaction's wire span context by value. Lock-free
@@ -1983,9 +1984,9 @@ func (tx *Transaction) currentSpan() types.SpanContext {
 			tx.regenerateSpan()
 		}
 		tx.traceMu.Unlock()
-		if p := tx.spanContext.Load(); p != nil {
-			return *p
-		}
+	}
+	if p := tx.spanContext.Load(); p != nil {
+		return *p
 	}
 	return types.SpanContext{}
 }

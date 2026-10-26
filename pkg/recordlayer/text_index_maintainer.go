@@ -326,13 +326,20 @@ func (m *textIndexMaintainer) updateOneKey(record *FDBStoredRecord[proto.Message
 		return err
 	}
 
-	// Extract text field value.
+	// Java's indexEntryKey.getString(textPosition): out of range and non-string
+	// throw; null and "" mean there is nothing to tokenize.
 	if textPosition >= len(indexEntryKey) {
-		return nil
+		return &IndexOutOfBoundsError{Message: fmt.Sprintf("text index %q: text position %d is past the key's %d columns", m.index.Name, textPosition, len(indexEntryKey))}
 	}
 	textVal := indexEntryKey[textPosition]
+	if textVal == nil {
+		return nil
+	}
 	text, ok := textVal.(string)
-	if !ok || text == "" {
+	if !ok {
+		return &ClassCastError{Message: fmt.Sprintf("class %s cannot be cast to class java.lang.String", javaTupleValueClassName(textVal))}
+	}
+	if text == "" {
 		return nil
 	}
 

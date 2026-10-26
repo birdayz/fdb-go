@@ -964,6 +964,18 @@ func (d *Database) SetDialFunc(fn transport.DialFunc) {
 	d.db.dialFn = fn
 }
 
+// ConnectionLinger reports the active write-delay and adaptive-linger settings
+// of a pooled connection.
+func (d *Database) ConnectionLinger() (minDelay, maxDelay, adaptive time.Duration, waits bool) {
+	d.db.connMu.Lock()
+	defer d.db.connMu.Unlock()
+	for _, c := range d.db.connPool {
+		minDelay, maxDelay, waits = c.CoalesceDelay()
+		return minDelay, maxDelay, c.AdaptiveLinger(), waits
+	}
+	return 0, 0, 0, false
+}
+
 // Transact runs a function in a transaction with automatic retry.
 // This is the primary API for interacting with FDB.
 // The transaction is reused across retries — retryCount and backoff escalate.

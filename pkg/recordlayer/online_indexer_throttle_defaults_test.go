@@ -6,8 +6,10 @@ import (
 	"time"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/simfdb"
 )
 
 // TestOnlineIndexerBuilderRetryDefaults pins the two halves of the throttling
@@ -83,7 +85,8 @@ func TestOnlineIndexerBuilderRetryDefaults(t *testing.T) {
 		th := newIndexingThrottle(100, 5, 10, 0) // 10 records/sec, retries ON
 		th.recordsScannedSinceForcedDelay = 10   // credit owed by the previous range
 		th.forcedDelayTimestamp = time.Now()
-		oi := &OnlineIndexer{maxRetries: 5, recordsPerSecond: 10, throttle: th}
+		env := dst.NewSim(5)
+		oi := &OnlineIndexer{db: NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env), maxRetries: 5, recordsPerSecond: 10, throttle: th}
 
 		attempts := 0
 		n, hasMore, err := oi.buildRangeWithRetries(context.Background(),

@@ -114,7 +114,7 @@ boundaries:
 3. **Boundaries are record-aligned and roughly count-balanced.** Source — the
    implementation uses **one universal path: count-quantile PKs captured on the
    serial sample scan**, on every cluster. (FDB shard splits via
-   `LocalityGetBoundaryKeys` — the `indexing_mutual.go:99` pattern — are *not*
+   `LocalityGetBoundaryKeys` — the pattern the mutual indexer used before RFC-279 — are *not*
    used: they return raw keys needing per-(1) normalization, and the synchronous
    pure-Go client is latency-bound, not locality-bound, so aligning shards to
    data placement buys nothing over count-balanced quantiles. Locality alignment

@@ -58,7 +58,7 @@ func (b *backend) Barrier() error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.GetCommittedVersion()
+	_, err = tx.GetApproximateSize().Get()
 	tx.Cancel()
 	return err
 }

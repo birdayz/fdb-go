@@ -8,6 +8,7 @@ import (
 	"fdb.dev/gen"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -16,6 +17,112 @@ import (
 
 var _ = Describe("RecordCounting", func() {
 	ctx := context.Background()
+
+	It("groups maintained counts by the complete version on insert and delete", func() {
+		for _, format := range []int32{0, 5} {
+			builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			builder.SetStoreRecordVersions(true).SetRecordCountKey(VersionKey())
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			version, err := CompleteVersionFromBytes([]byte{0, 0, 0, 0, 0, 0, 0, 2, 0, 9, 0, 7})
+			Expect(err).NotTo(HaveOccurred())
+			stamp, err := version.ToVersionstamp()
+			Expect(err).NotTo(HaveOccurred())
+			ks := specSubspace().Sub(int64(format))
+			expectedFormat := format
+			if expectedFormat == 0 {
+				expectedFormat = formatVersionDefault
+			}
+			run := func(fn func(*FDBRecordStore)) {
+				GinkgoHelper()
+				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+					b := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks)
+					if format != 0 {
+						b.SetFormatVersion(format)
+					}
+					store, err := b.CreateOrOpen()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(store.GetFormatVersion()).To(Equal(expectedFormat), "requested format %d", format)
+					fn(store)
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			assertCount := func(store *FDBRecordStore, want int64) {
+				GinkgoHelper()
+				count, err := store.GetSnapshotRecordCount(tuple.Tuple{stamp})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(count).To(Equal(want))
+				count, err = store.GetSnapshotRecordCount(tuple.Tuple{nil})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(count).To(BeZero(), "a complete version must not use the null group")
+			}
+			run(func(store *FDBRecordStore) {
+				_, err := store.SaveRecordWithVersion(&demopb.Order{OrderId: proto.Int64(1)},
+					RecordExistenceCheckNone, version, VersionstampSaveBehaviorIfPresent)
+				Expect(err).NotTo(HaveOccurred())
+				assertCount(store, 1)
+			})
+			run(func(store *FDBRecordStore) {
+				assertCount(store, 1)
+				deleted, err := store.DeleteRecord(tuple.Tuple{int64(1)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(deleted).To(BeTrue())
+				assertCount(store, 0)
+			})
+			run(func(store *FDBRecordStore) { assertCount(store, 0) })
+		}
+	})
+
+	for _, api := range []string{"ordinary", "batch", "pipelined", "supplied incomplete"} {
+		It("returns an incomplete-version error and aborts the "+api+" save with a version count key", func() {
+			builder := baseBuilder().SetStoreRecordVersions(true).SetRecordCountKey(VersionKey())
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			ks := specSubspace()
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Create()
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				if err != nil {
+					return nil, err
+				}
+				record := &demopb.Order{OrderId: proto.Int64(1)}
+				switch api {
+				case "batch":
+					return store.SaveRecordBatch([]proto.Message{record})
+				case "pipelined":
+					return store.SaveRecordsPipelined([]proto.Message{record}, RecordExistenceCheckNone)
+				case "supplied incomplete":
+					version, err := IncompleteVersion(rtx.ClaimLocalVersion())
+					if err != nil {
+						return nil, err
+					}
+					return store.SaveRecordWithVersion(record, RecordExistenceCheckNone, version, VersionstampSaveBehaviorIfPresent)
+				default:
+					return store.SaveRecord(record)
+				}
+			})
+			var incomplete *IncompleteVersionstampError
+			Expect(errors.As(err, &incomplete)).To(BeTrue(), "%v", err)
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				for _, space := range []int64{RecordKey, RecordCountKey, RecordVersionKey} {
+					rows, err := rtx.Transaction().GetRange(ks.Sub(space), fdb.RangeOptions{}).GetSliceWithError()
+					if err != nil {
+						return nil, err
+					}
+					Expect(rows).To(BeEmpty(), "the failed transaction must not persist subspace %d", space)
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	}
 
 	It("BasicCounting", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)

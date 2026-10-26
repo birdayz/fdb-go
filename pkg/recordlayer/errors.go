@@ -664,11 +664,15 @@ type RecordCoreStorageError struct {
 	StoredVersion *int32      // LogMessageKeys.STORED_VERSION
 	ExpectedType  string      // Bound protobuf full name, the language-independent message identity
 	ActualType    string      // LogMessageKeys.ACTUAL_TYPE (stored Any type URL)
+	Cause         error       // the exception's cause, e.g. the store header's parse error
 }
 
 func (*RecordCoreInternalError) JavaRecordCoreException() {}
 
 func (e *RecordCoreStorageError) Error() string {
+	if e.Cause != nil && e.KeyTuple == nil && e.IndexName == "" {
+		return fmt.Sprintf("%s: %v", e.Message, e.Cause)
+	}
 	if e.KeyTuple != nil {
 		message := fmt.Sprintf("%s (key_tuple=%v", e.Message, e.KeyTuple)
 		if e.Version != nil && e.StoredVersion != nil {
@@ -684,6 +688,9 @@ func (e *RecordCoreStorageError) Error() string {
 }
 
 func (*RecordCoreStorageError) JavaRecordCoreException() {}
+
+// Unwrap returns the cause.
+func (e *RecordCoreStorageError) Unwrap() error { return e.Cause }
 
 // RecordContextNotActiveError is Java's RecordContextNotActiveException, a
 // RecordCoreStorageException: the context's transaction is no longer active.
@@ -824,12 +831,11 @@ func (e *DuplicateIndexOptionError) Error() string {
 // where Java hands the caller a recoverable failure. Every site that can put a
 // versionstamp in front of a vanilla pack returns this instead.
 //
-// Reachable from ordinary DDL: an index whose version column lands in the VALUE
-// portion of a KeyWithValue split, or one that wraps the version in an ordering
-// function. Both metadata shapes are what Java's own index generator emits (see
-// IndexTest.java createVersionIndexWithVersionInValue), so the shapes cannot be
-// rejected at DDL without diverging on index metadata — the failure belongs at
-// the write, exactly where Java puts it.
+// Reachable from a VERSION index whose version lands in the VALUE portion of a
+// KeyWithValue split (IndexTest.createVersionIndexWithVersionInValue), or from
+// ordering functions over versions in legal VALUE indexes and primary keys.
+// A VERSION index rooted at an ordering function is instead refused at metadata
+// validation because functions declare zero version columns.
 type IncompleteVersionstampError struct {
 	// Context names the encoder that refused, e.g. the index whose entry was
 	// being written.

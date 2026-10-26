@@ -208,9 +208,8 @@ func (m *rankIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStor
 // Scan scans the primary B-tree (BY_VALUE).
 // Inherited from standardIndexMaintainer — no override needed.
 
-// ScanByRank converts a rank range to a score range, then scans BY_VALUE.
-// The rank range tuples have format [group..., rank] where rank is an int64.
-// Matches Java's rankIndexMaintainer.scan(BY_RANK, ...).
+// ScanByRank converts [group..., numeric rank] with Java's Number.longValue(), then scans BY_VALUE.
+// A null rank bound is unbounded, as in Java's scan(BY_RANK, ...).
 func (m *rankIndexMaintainer) ScanByRank(
 	rankRange TupleRange,
 	continuation []byte,
@@ -463,30 +462,27 @@ func (m *rankIndexMaintainer) ScoreForRank(groupAndRank tuple.Tuple) (tuple.Tupl
 	groupPrefixSize := m.getGroupingCount()
 
 	var rankSubspace subspace.Subspace
-	var rank int64
+	var rankValue any
 
 	if groupPrefixSize > 0 && groupPrefixSize < len(groupAndRank) {
 		prefix := tuple.Tuple(groupAndRank[:groupPrefixSize])
 		rankSubspace = m.secondarySubspace.Sub(prefix...)
-		rankVal, ok := groupAndRank[groupPrefixSize].(int64)
-		if !ok {
-			return nil, fmt.Errorf("rank index: expected int64 rank, got %T", groupAndRank[groupPrefixSize])
-		}
-		rank = rankVal
+		rankValue = groupAndRank[groupPrefixSize]
 	} else if len(groupAndRank) > 0 {
 		rankSubspace = m.secondarySubspace
-		rankVal, ok := groupAndRank[0].(int64)
-		if !ok {
-			return nil, fmt.Errorf("rank index: expected int64 rank, got %T", groupAndRank[0])
-		}
-		rank = rankVal
+		rankValue = groupAndRank[0]
 	} else {
 		return nil, fmt.Errorf("rank index: empty group and rank tuple")
+	}
+	// Java's scoreForRank answers a null rank with null.
+	rank, err := javaRank(rankValue)
+	if err != nil || rank == nil {
+		return nil, err
 	}
 
 	rankedSet := newRankedSet(rankSubspace, m.rankedSetConfig)
 	rankedSet.PreloadForLookup(m.tx.Snapshot())
-	scoreBytes, err := rankedSet.GetNth(m.tx, rank)
+	scoreBytes, err := rankedSet.GetNth(m.tx, *rank)
 	if err != nil {
 		return nil, err
 	}
@@ -505,17 +501,23 @@ func extractRankValue(groupPrefixSize int, maybeTuple tuple.Tuple) (*int64, erro
 		return nil, nil
 	}
 	if len(maybeTuple) == groupPrefixSize+1 {
-		switch v := maybeTuple[groupPrefixSize].(type) {
-		case int64:
-			return &v, nil
-		case int:
-			r := int64(v)
-			return &r, nil
-		}
-		return nil, nil
+		return javaRank(maybeTuple[groupPrefixSize])
 	}
 	if len(maybeTuple) <= groupPrefixSize {
 		return nil, nil
 	}
 	return nil, fmt.Errorf("ranked set range bound is not correct size: groupPrefixSize=%d, tuple=%v", groupPrefixSize, maybeTuple)
+}
+
+// javaRank is Java's (Number) cast of a rank and its longValue(): nil stays
+// nil, and a value that is not a number is a ClassCastError.
+func javaRank(v any) (*int64, error) {
+	if v == nil {
+		return nil, nil
+	}
+	r, ok := javaNumberLongValue(v)
+	if !ok {
+		return nil, &ClassCastError{Message: fmt.Sprintf("class %s cannot be cast to class java.lang.Number", javaTupleValueClassName(v))}
+	}
+	return &r, nil
 }

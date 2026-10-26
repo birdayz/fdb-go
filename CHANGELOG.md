@@ -46,6 +46,27 @@ Each is described in full under Compatibility or Changed below.
   with 2023 unless the transaction is also lock-aware, and `SetSizeLimit` outside
   [32, 10,000,000] is a deferred error (#820). `SetTimeout` outside [0, INT_MAX] is a deferred
   2006 (#799).
+- **Record layer (RFC-275):**
+  - `TransactionSizeWarningError` is removed. Past `TransactionSizeWarnBytes`, saves and deletes
+    succeed, and the warning is logged and counted as `CountTransactionSizeWarning`.
+  - A corrupt store header is a `RecordCoreStorageError` ("Error reading version") that unwraps to
+    the parse error.
+  - A TEXT index whose text column is not a string fails the save with `ClassCastError`, as Java
+    does.
+  - A BY_RANK bound that is not a number also fails with `ClassCastError`.
+  - Primary-key expressions declaring version columns are refused with `MetaDataError`
+    ("Version in primary key not supported"), as Java does. The chosen record version is
+    visible to function-wrapped primary keys and maintained-count keys; an
+    incomplete value in their ordinary tuple encoders returns `IncompleteVersionstampError`.
+    Dry runs share primary-key preparation but do not maintain counts. Count-key checks run
+    only when a count is maintained.
+- **`keyspace` (RFC-275):**
+  - `AddSubdirectory` and `AddSubdirectories` return an `*ArgumentError` under Java's sibling
+    rules, instead of panicking on a duplicate name.
+  - `ResolverFunc`, `KeySpace.Path` and `Path.Add` take a `context.Context`.
+  - `PathFromTuple` fails on an element that no subdirectory of a non-leaf directory holds.
+  - `FindChildForValue` matches a stored value: a resolver directory is found by its `int64`,
+    not by its string name.
 - **Continuations:** restart paged queries across this release; plan changes and cursor
   encoding corrections do not preserve old tokens. See `docs/upgrade.md`.
 - **Record layer:** `FDBDatabase.Run` and its variants make at most 10 attempts by default, and a
@@ -79,6 +100,17 @@ Each is described in full under Compatibility or Changed below.
   `CommitTransactionRef.Read_conflict_ranges_disabled` a `SpanContext` (RFC-276).
 
 ### Compatibility
+- **Version-dependent record keys (RFC-275):** native `VersionKey()` primary-key columns are
+  unsupported, as in Java; formerly accepted Go-only metadata is now refused. Complete supplied
+  versions participate in maintained-count keys and reach primary-key functions such as
+  ordering wrappers. Incomplete values reaching ordinary key encoders are refused with
+  `IncompleteVersionstampError`. Existing null-version counters and unsupported primary-key
+  metadata are not migrated automatically; migrate or recreate affected pre-release stores
+  before mixed-engine use. VERSION indexes rooted at a function over a version are also
+  refused at metadata/DDL validation: functions declare zero version columns, but VERSION
+  requires exactly one. A version in a KeyWithValue VALUE portion remains valid metadata
+  and fails recoverably at write time if incomplete. Tuple encodings and unaffected stores
+  are unchanged.
 - **Collation:** collated index access and writes that evaluate collated primary/count keys now fail with `GoOnlyCollationError` unless the store explicitly opts into Go-only bytes with `StoreBuilder.SetGoOnlyCollation(true)`; existing keys are not migrated.
 - **Collation metadata:** fan-out follows the function arguments as in Java, permitting scalar collations in primary keys.
 - **Wire format:** the Java target is upgraded to `fdb-record-layer-core` 4.14.2.0 (RFC-257). Records Java writes through `TransformedRecordSerializer` (compressed, encrypted) are
@@ -116,6 +148,11 @@ Each is described in full under Compatibility or Changed below.
 
 ### Added
 - `transport.WithAdaptiveLinger`, `client.WithAdaptiveLinger`, `fdb.WithAdaptiveLinger`, and `transport.Conn.AdaptiveLinger` configure and report Nagle-style adaptive writer linger on the pure-Go client's enqueue-only connection writer (RFC-282).
+- `FDBRecordStore.GetPrimaryKeyBoundaries`, Java's `getPrimaryKeyBoundaries`: the primary keys at
+  the records' shard boundaries. `IndexingRangeSet.FirstMissingRangeInBytes`, Java's
+  `firstMissingRangeAsync(begin, end)` (RFC-279).
+- Record Layer explicit-version saves: `SaveRecordWithVersion`, `OverrideLockSaveRecordWithVersion`
+  and the typed store's `SaveRecordWithVersion`, with Java's `VersionstampSaveBehavior` (RFC-275).
 - The pure-Go client reads `FDB_TLS_VERIFY_PEERS` (libfdb_c's verify-peers grammar,
   `transport.ParseVerifyPeers`) and `FDB_TLS_PASSWORD` (encrypted PBES2 PKCS#8 keys) (RFC-277).
 - Pure-Go `fdb.MappedRangeReader` capability with byte-driven batch iteration for exact primary ranges; the libfdb_c backend does not expose it.
@@ -127,6 +164,33 @@ Each is described in full under Compatibility or Changed below.
 
 ### Changed
 - Pure-Go client transport writer and hot path (RFC-282): connections use an enqueue-only writer (`D-NG`) with a 16 MiB high-water backpressure bound and default to immediate flush on wakeup (`0, 0` coalesce delay; pass `WithCoalesceDelay(transport.DefaultMinCoalesceDelay, transport.DefaultMaxCoalesceDelay)` for `libfdb_c`'s 10/20 µs timer coalescing or `WithAdaptiveLinger` for Nagle-style adaptive linger). Reply registration uses a 32-shard connection table, `Transact`/`ReadTransact` pool per-transaction timeout timers, `latencySketch` is 16-way striped, and single-read/single-waiter transaction paths inline their state.
+- Record layer (RFC-275), in full:
+  - Native version columns in primary keys are refused at metadata construction and load,
+    as in Java. The chosen version is visible to function-wrapped primary keys and
+    maintained-count expressions. Incomplete values in ordinary key encoders return
+    `IncompleteVersionstampError`; dry runs share primary-key preparation and return the
+    chosen version without count maintenance.
+  - `CheckTransactionSize` returns only `TransactionSizeExceededError`. The Go-only warning
+    threshold logs at WARN and counts `CountTransactionSizeWarning` once per transaction.
+  - Header parse failures are `RecordCoreStorageError{Message: "Error reading version", Cause}`.
+  - The TEXT maintainer reads its text column as Java's `Tuple.getString` does. A non-string is a
+    `ClassCastError` and a position past the key an `IndexOutOfBoundsError`; null and `""` are
+    still skipped.
+  - BY_RANK bounds, SCORE_FOR_RANK and SCORE_FOR_TIME_WINDOW_RANK ranks and the arguments of the
+    long-arithmetic key functions are taken with Java's `Number.longValue()`. Every Go integer
+    carrier is accepted, with `uint64`/`*big.Int` keeping their low 64 bits, and floats are
+    truncated with NaN as 0. A float bound used to be an unbounded endpoint and now selects a
+    rank; a bound that is not a number is a `ClassCastError`, and a null rank answers null.
+- `keyspace` (RFC-275), in full:
+  - `AddSubdirectory`/`AddSubdirectories(...) error` refuse:
+    - a duplicate name;
+    - a same-type sibling unless both are distinct constants (a NULL directory counts as a
+      constant);
+    - an equal constant (bytes by content, floats as `Double.equals`).
+  - `PathFromTuple` and `FindChildForValue` match a stored value in declaration order. An element
+    no subdirectory of a non-leaf directory holds, or any element under a root without
+    subdirectories, is an `*ArgumentError`.
+  - `ResolverFunc`, `KeySpace.Path` and `Path.Add` take the caller's context.
 - SQL driver transactions (RFC-272): `BeginTx` with `TxOptions{ReadOnly: true}` fails with 0A000
   (Java accepts `setReadOnly` and ignores it; database/sql requires a driver that does not enforce
   it to refuse it). The `BeginTx` context bounds the transaction: when it ends, the FDB transaction
@@ -137,6 +201,13 @@ Each is described in full under Compatibility or Changed below.
   `DIVERGENCES.md` "Driver transactions" has the comparison with Java. `functions.ApplyMathOp`,
   `ApplyBitOp`, `IsTruthy`, `LiteralMatchesPKKind`, `ToIntegerArg`, `ToFloat64` and
   `Add/Sub/MulInt64Checked` and `values.JavaFloatToString` are removed.
+- Online indexer (RFC-279):
+  - A mutual build whose fragment walk finds nothing to build in FULL and then in ANY fails
+    with Java's `IndexingValidationError` "Mutual indexing failure - third iteration". A walk
+    finds work whenever a range is missing.
+  - A mutual build reads the shard map in a transaction, and an error reading it fails that
+    transaction, and the build when it is not retried. It used to fall back to one fragment.
+    A database without a shard map (`BackendCapabilityError`) still builds one fragment.
 - Development builds use Bazel 9.3.1, Bazelisk 1.30.0, and updated stable BCR build rules.
 - Require Go 1.27 (minimum toolchain Go 1.27.3).
 - Go 1.27.3 includes the GO-2026-6809 `crypto/x509` fix used by pure-Go client TLS.
@@ -356,6 +427,13 @@ Each is described in full under Compatibility or Changed below.
   - The pure-Go client rejects a malformed reply instead of decoding it as a shorter valid one: a vector count, element, table or field outside the buffer, or row bytes that do not fill their blob, fails the read.
   - Vector offsets that alias one element no longer allocate without bound (a 24 KB reply allocated 292 MB): each decode is limited to `len/4` elements, which no reply an FDB server writes reaches.
 ### Fixed
+- Record layer (RFC-275):
+  - An online build no longer conflicts on writes to records of a type its target indexes do not
+    cover. Java filters by record type before it adds the read conflict.
+  - `GetNth` returns nil past level 0 of a ranked set without duplicate counting.
+  - Key-space matching follows Java's declaration order.
+  - The behavior changes listed under Breaking changes are Java's (`RecordCoreStorageException`,
+    `ClassCastException`, `RecordCoreArgumentException`).
 - SQL driver (RFC-272): a failed connector initialization (an FDB open failure) is retried by the
   next `Connect` instead of failing the `*sql.DB` for good, and the initialization runs detached
   from the `Connect` that starts it: a `Connect` whose deadline ends first returns its context
@@ -385,6 +463,16 @@ Each is described in full under Compatibility or Changed below.
   error (42703 for an undefined column) instead of 42702. With parameters the bound values decide
   (`amount = ?, amount = ?`: 42702 for equal values, two keys otherwise; a cached plan serves only
   the values it was planned with); Java's answer there is unmeasured (RFC-272).
+- Online indexer (RFC-279):
+  - A retry with a lessened limit waits the runner's exponential delay first, timed as
+    `EventRetryDelay`, as Java's `buildCommitRetryAsync` does.
+  - Mutual build fragments end at primary keys, as Java's do. The builder reads the shard map
+    over the indexed record types' records in its first transaction, and maps each boundary to
+    the first record at or after it. A shard boundary inside a split record no longer fails the
+    build.
+  - A mutual chunk commits once its transaction passes the time or write limit.
+  - The mutual FULL phase builds a claimed fragment to its end before it moves on, so
+    concurrent builders keep to their own fragments.
 - Built-in TEXT tokenization, casing/name lookup and Go-only collated keys use frozen Unicode-15 data, so compiler upgrades preserve existing terms, positions and keys; pre-existing Java differences remain explicit in `docs/compatibility.md` (RFC-265).
 - Ordinary, covering and fetch query index scans over one physical range pass Skip to the index cursor, as Java's plans do: skipped entries no longer count against scan-record or byte limits, and their records are not loaded. Multi-range and residual key-filter scans, and the mapped reads of remote-fetch plans, still skip once above the combined cursor.
 - Range-read shard lookups ask a commit proxy once for the shards a read needs, as libfdb_c does, instead of filling the cache for the whole range first; a reverse read over more uncached shards than one lookup returns no longer repeats the same location request until its deadline, and `GetLocations` with a limit of 0 returns every shard.

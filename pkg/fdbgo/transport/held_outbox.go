@@ -319,6 +319,27 @@ func (c *Conn) reserveColdControl(order *sendqueue.Queue, request writeReq) (res
 	return false, false, order.Pending()
 }
 
+// tryEnqueueNAControl serializes both prefix and held control permit reservation
+// with coldControls publication under controlMu so a second producer cannot
+// publish a later heldWaiters permit ahead of an earlier one.
+func (c *Conn) tryEnqueueNAControl(request writeReq) (handled, accepted bool) {
+	c.controlMu.Lock()
+	defer c.controlMu.Unlock()
+	if order := c.peerSendOrder.Load(); order != nil {
+		if permit, _, reserved := order.TryReserve(); reserved {
+			return true, c.tryEnqueueColdControl(request, permit, false)
+		}
+		if order.Pending() || c.heldWaiters.Pending() {
+			hPermit, _ := c.heldWaiters.Reserve()
+			return true, c.tryEnqueueColdControl(request, hPermit, true)
+		}
+	} else if c.heldWaiters.Pending() && c.coldControls != nil {
+		hPermit, _ := c.heldWaiters.Reserve()
+		return true, c.tryEnqueueColdControl(request, hPermit, true)
+	}
+	return false, false
+}
+
 // readLoop cannot wait for a cold predecessor. One connection-owned worker
 // drains this bounded queue; post-seal controls append directly to heldCh (or
 // for D-NG wait in coldControls behind the prefix and heldWaiters).

@@ -42,10 +42,8 @@ func WithLegacyWriter() DialOption { return func(c *Conn) { c.design = designLeg
 // withNetDesign selects design D (designD or designNG) for one connection.
 func withNetDesign(mode string) DialOption { return func(c *Conn) { c.design = mode } }
 
-// WithAdaptiveLinger configures Nagle-style adaptive linger on the D-NG writer:
-// if the last socket write was at least d ago, the writer flushes immediately;
-// otherwise it yields (runtime.Gosched, no timer) until d has elapsed since the
-// last write. Passing 0 disables linger; the last linger/coalesce option wins.
+// WithAdaptiveLinger configures Nagle-style adaptive linger on the D-NG writer
+// (0 disables; the last linger/coalesce option wins; RFC-282).
 func WithAdaptiveLinger(d time.Duration) DialOption {
 	return func(c *Conn) {
 		c.adaptiveLinger = max(d, 0)
@@ -70,16 +68,21 @@ type naWriter struct {
 	q       []byte
 	drained chan struct{} // lazily allocated only when len(q) >= naHighWater
 	delay   bool
-	// adaptive > 0 is D-NG with Nagle-style linger: if the last write is older
-	// than adaptive, write at once; otherwise yield (runtime.Gosched, no timer)
-	// until adaptive has passed since the last write, then write.
+	// adaptive > 0 enables Nagle-style linger on D-NG (RFC-282).
 	adaptive        time.Duration
-	onAdaptiveYield func() bool // optional test hook; returning false ends the linger loop
+	now             func() time.Time // optional clock for tests; nil uses time.Now
+	onAdaptiveYield func()           // optional observer for tests
 	sig             chan struct{}
 }
 
-// naWrite is the D-NG writer's send entry: it preserves cold-dial permit and
-// held-cohort FIFO order, then appends the frame to the connection's queue
+func (w *naWriter) nowTime() time.Time {
+	if w.now != nil {
+		return w.now()
+	}
+	return time.Now()
+}
+
+// naWrite preserves cold-dial and held-cohort FIFO order, then queues the frame
 // without waiting for the socket write (FlowTransport.actor.cpp:1038-1043).
 func (c *Conn) naWrite(ctx context.Context, token UID, body []byte, flush bool, permit *sendqueue.Permit) (bool, error) {
 	if err := ctx.Err(); err != nil {
@@ -133,7 +136,36 @@ func (c *Conn) naWrite(ctx context.Context, token UID, body []byte, flush bool, 
 	return true, nil
 }
 
-func (c *Conn) naWaitHighWater(ctx context.Context, w *naWriter) error {
+// naWaitHighWater reserves a FIFO place on c.sendWaiters before unlocking w.mu
+// or firing NotifySuspend, so high-water suspension preserves sender wire order.
+func (c *Conn) naWaitHighWater(ctx context.Context, w *naWriter) (*sendqueue.Permit, error) {
+	permit, _ := c.sendWaiters.Reserve()
+	w.mu.Unlock()
+	select {
+	case <-permit.Ready():
+	default:
+		NotifySuspend(ctx)
+	}
+	select {
+	case <-permit.Ready():
+	case <-ctx.Done():
+		permit.Release()
+		return nil, ctx.Err()
+	case <-c.ctx.Done():
+		permit.Release()
+		return nil, errConnClosed
+	}
+	w.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		permit.Release()
+		w.mu.Unlock()
+		return nil, err
+	}
+	if c.ctx.Err() != nil {
+		permit.Release()
+		w.mu.Unlock()
+		return nil, errConnClosed
+	}
 	for len(w.q) >= naHighWater {
 		ch := w.drained
 		if ch == nil {
@@ -145,21 +177,25 @@ func (c *Conn) naWaitHighWater(ctx context.Context, w *naWriter) error {
 		select {
 		case <-ch:
 		case <-ctx.Done():
-			return ctx.Err()
+			permit.Release()
+			return nil, ctx.Err()
 		case <-c.ctx.Done():
-			return errConnClosed
+			permit.Release()
+			return nil, errConnClosed
 		}
 		w.mu.Lock()
 		if err := ctx.Err(); err != nil {
+			permit.Release()
 			w.mu.Unlock()
-			return err
+			return nil, err
 		}
 		if c.ctx.Err() != nil {
+			permit.Release()
 			w.mu.Unlock()
-			return errConnClosed
+			return nil, errConnClosed
 		}
 	}
-	return nil
+	return permit, nil
 }
 
 func (c *Conn) naSend(ctx context.Context, token UID, body []byte) error {
@@ -177,14 +213,18 @@ func (c *Conn) naSend(ctx context.Context, token UID, body []byte) error {
 			w.mu.Unlock()
 			return errConnClosed
 		}
-		if len(w.q) >= naHighWater {
-			if err := c.naWaitHighWater(ctx, w); err != nil {
+		var permit *sendqueue.Permit
+		if len(w.q) >= naHighWater || c.sendWaiters.Pending() {
+			var err error
+			permit, err = c.naWaitHighWater(ctx, w)
+			if err != nil {
 				return err
 			}
 		}
 		LogSend(token, body)
 		wake := len(w.q) == 0 // dataToSend fires only on the first unsent frame (Peer::send)
 		w.q = append(w.q, frame...)
+		permit.Release()
 		w.mu.Unlock()
 		if wake {
 			select {
@@ -201,8 +241,11 @@ func (c *Conn) naSend(ctx context.Context, token UID, body []byte) error {
 		putFrame(bufp, frame)
 		return errConnClosed
 	}
-	if len(w.q) >= naHighWater {
-		if err := c.naWaitHighWater(ctx, w); err != nil {
+	var permit *sendqueue.Permit
+	if len(w.q) >= naHighWater || c.sendWaiters.Pending() {
+		var err error
+		permit, err = c.naWaitHighWater(ctx, w)
+		if err != nil {
 			putFrame(bufp, frame)
 			return err
 		}
@@ -210,6 +253,7 @@ func (c *Conn) naSend(ctx context.Context, token UID, body []byte) error {
 	LogSend(token, body)
 	wake := len(w.q) == 0 // dataToSend fires only on the first unsent frame (Peer::send)
 	w.q = append(w.q, frame...)
+	permit.Release()
 	w.mu.Unlock()
 	putFrame(bufp, frame)
 	if wake {
@@ -223,12 +267,12 @@ func (c *Conn) naSend(ctx context.Context, token UID, body []byte) error {
 
 // naTrySend appends a fire-and-forget frame without blocking; drops if closed or at high-water.
 func (c *Conn) naTrySend(token UID, body []byte) bool {
-	if c.ctx.Err() != nil {
+	if c.ctx.Err() != nil || c.sendWaiters.Pending() {
 		return false
 	}
 	w := c.na
 	w.mu.Lock()
-	if len(w.q) >= naHighWater || c.ctx.Err() != nil {
+	if len(w.q) >= naHighWater || c.sendWaiters.Pending() || c.ctx.Err() != nil {
 		w.mu.Unlock()
 		return false
 	}
@@ -273,12 +317,12 @@ func (c *Conn) naLoop() {
 				return
 			}
 		} else if w.adaptive > 0 {
-			for deadline := c.lastWrite.Add(w.adaptive); time.Now().Before(deadline); {
+			for deadline := c.lastWrite.Add(w.adaptive); w.nowTime().Before(deadline); {
 				if c.ctx.Err() != nil {
 					return
 				}
-				if w.onAdaptiveYield != nil && !w.onAdaptiveYield() {
-					break
+				if w.onAdaptiveYield != nil {
+					w.onAdaptiveYield()
 				}
 				runtime.Gosched()
 			}
@@ -291,7 +335,7 @@ func (c *Conn) naLoop() {
 			close(drained)
 		}
 		if len(buf) > 0 {
-			c.lastWrite = time.Now()
+			c.lastWrite = w.nowTime()
 			if _, err := c.conn.Write(buf); err != nil {
 				c.failConnection(codedConnClosed(err))
 				return

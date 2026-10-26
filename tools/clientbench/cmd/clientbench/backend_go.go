@@ -62,9 +62,16 @@ func openBackend(cfg bench.Config) (bench.LifecycleDatabase, map[string]any, err
 		db.Close()
 		return nil, nil, err
 	}
-	meta := map[string]any{"backend": "go", "api_version": 730, "native_library": false, "coalesce_delay": cfg.CoalesceDelay}
-	if cfg.AdaptiveLinger > 0 {
-		meta["adaptive_linger_ns"] = int64(cfg.AdaptiveLinger)
+	minDelay, maxDelay, adaptive, waits := raw.ConnectionLinger()
+	meta := map[string]any{
+		"backend":            "go",
+		"api_version":        730,
+		"native_library":     false,
+		"coalesce_delay":     cfg.CoalesceDelay,
+		"effective_min_ns":   int64(minDelay),
+		"effective_max_ns":   int64(maxDelay),
+		"effective_waits":    waits,
+		"adaptive_linger_ns": int64(adaptive),
 	}
 	return &backend{db: db, raw: raw}, meta, nil
 }

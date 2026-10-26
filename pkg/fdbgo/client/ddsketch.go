@@ -130,6 +130,8 @@ func (s *latencySketch) addSample(v float64) {
 // and answers all requested percentiles from that single sorted slice (vs the
 // C++ per-call vector walk) — snapshot is not the hot path.
 func (s *latencySketch) stats() LatencyStats {
+	s.lockAll()
+	defer s.unlockAll()
 	var (
 		populationSize uint64
 		zeroPopulation uint64
@@ -140,7 +142,6 @@ func (s *latencySketch) stats() LatencyStats {
 	)
 	for i := range s.stripes {
 		st := &s.stripes[i]
-		st.mu.Lock()
 		if st.populationSize > 0 {
 			if populationSize == 0 {
 				minValue, maxValue = st.minValue, st.maxValue
@@ -164,7 +165,6 @@ func (s *latencySketch) stats() LatencyStats {
 				}
 			}
 		}
-		st.mu.Unlock()
 	}
 	st := LatencyStats{Count: int64(populationSize)}
 	if populationSize == 0 {

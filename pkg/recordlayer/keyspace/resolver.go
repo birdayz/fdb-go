@@ -103,12 +103,12 @@ func ResolverDirectory(name string, resolver LocatableResolver) *Directory {
 		}
 		return nil
 	}
-	d.Resolver = func(value any) (any, error) {
+	d.Resolver = func(ctx context.Context, value any) (any, error) {
 		s, ok := value.(string)
 		if !ok {
 			return nil, fmt.Errorf("resolver directory %q: expected string, got %T", name, value)
 		}
-		return resolver.Resolve(context.Background(), s)
+		return resolver.Resolve(ctx, s)
 	}
 	return d
 }

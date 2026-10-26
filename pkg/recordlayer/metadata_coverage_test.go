@@ -351,11 +351,10 @@ var _ = Describe("RecordMetaData coverage", func() {
 	})
 
 	Describe("countVersionColumns deep branches", func() {
-		It("counts through FunctionKeyExpression", func() {
-			// Wrap a VersionKeyExpression inside a FunctionKeyExpression's arguments.
+		It("does not count a FunctionKeyExpression's arguments as result version columns", func() {
 			inner := VersionKey()
 			fn := FunctionExpr("test_func", inner)
-			Expect(countVersionColumns(fn)).To(Equal(1))
+			Expect(countVersionColumns(fn)).To(Equal(0))
 		})
 
 		It("counts through a record type key nested with a version", func() {

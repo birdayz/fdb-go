@@ -216,11 +216,11 @@ type Conn struct {
 	// regression test, so the rate is asserted directly.
 	monitorCycles atomic.Int64
 
-	// writeMu orders socket writes between writeLoop and direct writers; queued
-	// counts frames handed to writeLoop and not yet flushed.
+	// Legacy writer state (WithLegacyWriter): writeMu orders socket writes between
+	// writeLoop and direct writers; queued counts frames in writeLoop.
 	writeMu sync.Mutex
 	queued  atomic.Int64
-	// raw is set for plaintext TCP only: a direct write needs a non-blocking
+	// raw is set for plaintext TCP only: a legacy direct write needs a non-blocking
 	// socket write, so a full socket never holds its caller past its ctx.
 	raw       *rawWriter
 	tail      []byte        // unwritten end of a direct write, under writeMu
@@ -229,15 +229,15 @@ type Conn struct {
 	tailKick  chan struct{} // wakes writeLoop for a tail or held-outbox change
 
 	// minCoalesce/maxCoalesce are connectionWriter's write delay bounds; coalesce
-	// is its timer, nil when the delay is disabled or unsupported, in which case
-	// an idle connection writes a frame on its sender's goroutine.
+	// is its timer (nil when disabled or unsupported). lastWrite is owned by
+	// naLoop on D-NG connections, or guarded by writeMu on WithLegacyWriter().
 	minCoalesce, maxCoalesce time.Duration
 	coalesce                 *hrtimer.Timer
-	lastWrite                time.Time    // when wbuf last wrote to the socket; under writeMu
+	lastWrite                time.Time
 	tails                    atomic.Int64 // partial direct writes, so tests can tell a tail occurred
 
-	// A sender may take the writer's turn (writer_turn.go). turnMu orders it
-	// taking writeMu and starting to collect against writeLoop handing it frames.
+	// Legacy writer-turn state (writer_turn.go, WithLegacyWriter): turnMu orders a
+	// sender taking writeMu and collecting frames from writeLoop.
 	turnMu         sync.Mutex
 	turnCollecting bool          // a turn is waiting out the delay; under turnMu
 	turnFrames     []writeReq    // frames writeLoop handed to that turn; under turnMu
@@ -251,6 +251,7 @@ type Conn struct {
 	design         string // dial-option override of envDesign; see na_writer.go
 	adaptiveLinger time.Duration
 	coalesceSet    bool
+	beforeReadLoop func() // optional test hook run in dialWith just before readLoop starts
 
 	// Debug tracing (set before first use).
 	debugFrames bool
@@ -608,6 +609,9 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 	if c.coldControls != nil {
 		c.loopWG.Add(1)
 		go c.coldControlLoop()
+	}
+	if c.beforeReadLoop != nil {
+		c.beforeReadLoop()
 	}
 	go c.readLoop()
 	if c.na != nil {
@@ -1025,7 +1029,7 @@ func (c *Conn) SendAndWait(ctx context.Context, destToken UID, body []byte) ([]b
 //  1. Cancel context — signals all waiters that conn is dead
 //  2. Close TCP socket — unblocks readLoop's ReadFrame
 //  3. failConnection delivers errors to all pending requests
-//  4. readLoop, writeLoop, connectionMonitor and coldControlLoop exit and
+//  4. readLoop, naLoop/writeLoop, connectionMonitor and coldControlLoop exit and
 //     signal loopWG; the monitor first releases its PING reply (RFC-269)
 //  5. Close returns
 func (c *Conn) Close() error {
