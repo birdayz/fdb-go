@@ -28,6 +28,7 @@ func TestHedgeTimerAllocations(t *testing.T) {
 		}
 		return inFlightRPC{replyCh: reply, replyHandle: &transport.ReplyHandle{}, addr: addr, delta: 1}
 	}
+	qm := newQueueModel() // accrual on every lone reply must not allocate
 	for _, shape := range []string{"single", "hedge", "race"} {
 		t.Run(shape, func(t *testing.T) {
 			measure := func(control bool) (float64, int) {
@@ -54,7 +55,7 @@ func TestHedgeTimerAllocations(t *testing.T) {
 						if shape == "hedge" {
 							secondary = func() inFlightRPC { panic("ready primary must win before an hour") }
 						}
-						result = sendFrameWithHedge(context.Background(), time.Hour, func() inFlightRPC { return p }, secondary, time.Hour)
+						result = sendFrameWithHedge(context.Background(), qm, time.Hour, func() inFlightRPC { return p }, secondary, time.Hour)
 					}
 					if result.err != nil || result.addr != "primary" || string(result.body) != string(body) || len(ch) != 0 {
 						t.Fatalf("nonempty reply lost: %+v", result)
@@ -150,41 +151,69 @@ func TestHedgeTimerStagesAndAccounting(t *testing.T) {
 	replyFailure := &wire.FDBError{Code: 1037} // Canonical process_behind: try secondary.
 	terminalFailure := &wire.FDBError{Code: 1007}
 	sendFailure := errors.New("send failed")
+	// Lone replies earn 0.05; a paid hedge earns nothing (LoadBalance.actor.h:694-716).
+	// Pin the model alongside timer stages and balanced request accounting.
 	for _, tc := range []struct {
 		name                          string
 		mode                          string
+		cancelOnSecondary             bool
 		pReady, sReady, cancel        bool
 		pSendErr, sSendErr, pReplyErr error
 		pDelay, sDelay, hedgeDelay    time.Duration
+		pReplyAfter                   time.Duration // a primary reply this long after its send
+		budget                        float64
 		wantAddr                      string
 		wantErr                       error
 		wantElapsed, wantSecondaryAt  time.Duration
-		wantStarted                   int
+		wantStarted, accrued          int
+		spent                         bool
 	}{
-		{name: "single-ready", mode: "single", pReady: true, wantAddr: "p", wantStarted: 1},
+		{name: "single-ready", mode: "single", pReady: true, wantAddr: "p", wantStarted: 1, accrued: 1},
+		{name: "single-transport-failure", mode: "single", pReady: true, pReplyErr: sendFailure, wantAddr: "p", wantErr: sendFailure, wantStarted: 1, accrued: 1},
+		{name: "cancelled-single-send-failure", mode: "single", cancel: true, pSendErr: context.Canceled, wantErr: context.Canceled},
 		{name: "single-timeout-after-send", mode: "single", pDelay: 5 * time.Second, wantAddr: "p", wantErr: errReplyTimeout, wantElapsed: 12 * time.Second, wantStarted: 1},
 		{name: "single-cancel", mode: "single", cancel: true, wantAddr: "p", wantErr: context.Canceled, wantStarted: 1},
-		{name: "single-ready-cancel", mode: "single", cancel: true, pReady: true, wantAddr: "p", wantStarted: 1},
+		{name: "single-ready-cancel", mode: "single", cancel: true, pReady: true, wantAddr: "p", wantStarted: 1, accrued: 1},
+		{name: "single-ready-with-budget", mode: "single", pReady: true, budget: 99.98, wantAddr: "p", wantStarted: 1, accrued: 1},
 		{name: "race-primary", mode: "race", pReady: true, wantAddr: "p", wantStarted: 2},
 		{name: "race-secondary", mode: "race", sReady: true, wantAddr: "s", wantStarted: 2},
 		{name: "race-timeout", mode: "race", wantErr: errReplyTimeout, wantElapsed: 7 * time.Second, wantStarted: 2},
 		{name: "race-cancel", mode: "race", cancel: true, wantErr: context.Canceled, wantStarted: 2},
 		{name: "race-ready-primary-cancel", mode: "race", cancel: true, pReady: true, wantAddr: "p", wantStarted: 2},
 		{name: "race-ready-secondary-cancel", mode: "race", cancel: true, sReady: true, wantAddr: "s", wantStarted: 2},
-		{name: "hedge-primary", mode: "hedge", pReady: true, hedgeDelay: time.Hour, wantAddr: "p", wantStarted: 1},
+		{name: "hedge-primary", mode: "hedge", pReady: true, hedgeDelay: time.Hour, wantAddr: "p", wantStarted: 1, accrued: 1},
 		{name: "hedge-cancel", mode: "hedge", cancel: true, hedgeDelay: time.Hour, wantAddr: "p", wantErr: context.Canceled, wantStarted: 1},
-		{name: "hedge-ready-cancel", mode: "hedge", cancel: true, pReady: true, hedgeDelay: time.Hour, wantAddr: "p", wantStarted: 1},
-		{name: "hedge-terminal-reply", mode: "hedge", pReady: true, pReplyErr: terminalFailure, hedgeDelay: time.Hour, wantAddr: "p", wantErr: terminalFailure, wantStarted: 1},
-		{name: "hedge-retryable-reply-fallback", mode: "hedge", pReady: true, pReplyErr: replyFailure, sReady: true, hedgeDelay: time.Hour, wantAddr: "s", wantStarted: 2},
-		{name: "hedge-retryable-reply-send-failure", mode: "hedge", pReady: true, pReplyErr: replyFailure, sSendErr: sendFailure, hedgeDelay: time.Hour, wantAddr: "p", wantErr: replyFailure, wantStarted: 1},
-		{name: "hedge-retryable-reply-wait-timeout", mode: "hedge", pReady: true, pReplyErr: replyFailure, pDelay: 5 * time.Second, sDelay: 4 * time.Second, hedgeDelay: time.Hour, wantAddr: "s", wantErr: errReplyTimeout, wantElapsed: 16 * time.Second, wantSecondaryAt: 5 * time.Second, wantStarted: 2},
-		{name: "primary-send-failure-fallback", mode: "hedge", pSendErr: sendFailure, sReady: true, wantAddr: "s", wantStarted: 1},
-		{name: "primary-send-failure-wait-timeout", mode: "hedge", pSendErr: sendFailure, pDelay: 5 * time.Second, sDelay: 4 * time.Second, wantAddr: "s", wantErr: errReplyTimeout, wantElapsed: 16 * time.Second, wantSecondaryAt: 5 * time.Second, wantStarted: 1},
-		{name: "both-send-fail", mode: "hedge", pSendErr: sendFailure, sSendErr: sendFailure, wantErr: sendFailure},
-		{name: "single-send-fail", mode: "single", pSendErr: sendFailure, wantErr: sendFailure},
-		{name: "hedge-secondary-after-both-sends", mode: "hedge", sReady: true, pDelay: 5 * time.Second, sDelay: 4 * time.Second, hedgeDelay: 3 * time.Second, wantAddr: "s", wantElapsed: 12 * time.Second, wantSecondaryAt: 8 * time.Second, wantStarted: 2},
-		{name: "hedge-race-timeout-after-both-sends", mode: "hedge", pDelay: 5 * time.Second, sDelay: 4 * time.Second, hedgeDelay: 3 * time.Second, wantErr: errReplyTimeout, wantElapsed: 19 * time.Second, wantSecondaryAt: 8 * time.Second, wantStarted: 2},
-		{name: "hedge-secondary-send-failure-wait-timeout", mode: "hedge", sSendErr: sendFailure, pDelay: 5 * time.Second, sDelay: 4 * time.Second, hedgeDelay: 3 * time.Second, wantAddr: "p", wantErr: errReplyTimeout, wantElapsed: 19 * time.Second, wantSecondaryAt: 8 * time.Second, wantStarted: 1},
+		{name: "hedge-ready-cancel", mode: "hedge", cancel: true, pReady: true, hedgeDelay: time.Hour, wantAddr: "p", wantStarted: 1, accrued: 1},
+		{name: "hedge-terminal-reply", mode: "hedge", pReady: true, pReplyErr: terminalFailure, hedgeDelay: time.Hour, wantAddr: "p", wantErr: terminalFailure, wantStarted: 1, accrued: 1},
+		{name: "hedge-retryable-reply-fallback", mode: "hedge", pReady: true, pReplyErr: replyFailure, sReady: true, hedgeDelay: time.Hour, wantAddr: "s", wantStarted: 2, accrued: 2},
+		{name: "hedge-retryable-reply-send-failure", mode: "hedge", pReady: true, pReplyErr: replyFailure, sSendErr: sendFailure, hedgeDelay: time.Hour, wantAddr: "p", wantErr: replyFailure, wantStarted: 1, accrued: 2},
+		{name: "hedge-retryable-reply-wait-timeout", mode: "hedge", pReady: true, pReplyErr: replyFailure, pDelay: 5 * time.Second, sDelay: 4 * time.Second, hedgeDelay: time.Hour, wantAddr: "s", wantErr: errReplyTimeout, wantElapsed: 16 * time.Second, wantSecondaryAt: 5 * time.Second, wantStarted: 2, accrued: 1},
+		{name: "primary-send-failure-fallback", mode: "hedge", pSendErr: sendFailure, sReady: true, wantAddr: "s", wantStarted: 1, accrued: 2},
+		{name: "primary-send-failure-wait-timeout", mode: "hedge", pSendErr: sendFailure, pDelay: 5 * time.Second, sDelay: 4 * time.Second, wantAddr: "s", wantErr: errReplyTimeout, wantElapsed: 16 * time.Second, wantSecondaryAt: 5 * time.Second, wantStarted: 1, accrued: 1},
+		{name: "both-send-fail", mode: "hedge", pSendErr: sendFailure, sSendErr: sendFailure, wantErr: sendFailure, accrued: 2},
+		{name: "single-send-fail", mode: "single", pSendErr: sendFailure, wantErr: sendFailure, accrued: 1},
+		{name: "hedge-secondary-after-both-sends", mode: "hedge", sReady: true, pDelay: 5 * time.Second, sDelay: 4 * time.Second, hedgeDelay: 3 * time.Second, budget: 1, wantAddr: "s", wantElapsed: 12 * time.Second, wantSecondaryAt: 8 * time.Second, wantStarted: 2, spent: true},
+		{name: "hedge-race-timeout-after-both-sends", mode: "hedge", pDelay: 5 * time.Second, sDelay: 4 * time.Second, hedgeDelay: 3 * time.Second, budget: 1, wantErr: errReplyTimeout, wantElapsed: 19 * time.Second, wantSecondaryAt: 8 * time.Second, wantStarted: 2, spent: true},
+		{name: "hedge-secondary-send-failure-wait-timeout", mode: "hedge", sSendErr: sendFailure, pDelay: 5 * time.Second, sDelay: 4 * time.Second, hedgeDelay: 3 * time.Second, budget: 1, wantAddr: "p", wantErr: errReplyTimeout, wantElapsed: 19 * time.Second, wantSecondaryAt: 8 * time.Second, wantStarted: 1, spent: true},
+		// A paid hedge that cannot be sent leaves the primary waited for alone,
+		// without accruing (the !stream branch, LoadBalance.actor.h:640-647).
+		{name: "hedge-secondary-send-failure-primary-reply", mode: "hedge", sSendErr: sendFailure, pReplyAfter: 5 * time.Second, hedgeDelay: 3 * time.Second, budget: 1, wantAddr: "p", wantElapsed: 5 * time.Second, wantSecondaryAt: 3 * time.Second, wantStarted: 1, spent: true},
+		// The delay fires without budget: no hedge, and the reply then accrues.
+		{name: "hedge-no-budget-primary-after-delay", mode: "hedge", pReplyAfter: 5 * time.Second, hedgeDelay: 3 * time.Second, budget: 0.95, wantAddr: "p", wantElapsed: 5 * time.Second, wantStarted: 1, accrued: 1},
+		{name: "hedge-no-budget-transport-failure", mode: "hedge", pReplyAfter: 5 * time.Second, pReplyErr: sendFailure, sReady: true, hedgeDelay: 3 * time.Second, budget: 0.95, wantAddr: "s", wantElapsed: 5 * time.Second, wantSecondaryAt: 5 * time.Second, wantStarted: 2, accrued: 2},
+		{name: "hedge-no-budget-transport-failure-secondary-send-fails", mode: "hedge", pReplyAfter: 5 * time.Second, pReplyErr: sendFailure, sSendErr: sendFailure, hedgeDelay: 3 * time.Second, budget: 0.95, wantAddr: "p", wantErr: sendFailure, wantElapsed: 5 * time.Second, wantSecondaryAt: 5 * time.Second, wantStarted: 1, accrued: 2},
+		{name: "hedge-no-budget-timeout", mode: "hedge", hedgeDelay: 3 * time.Second, budget: 0.95, wantAddr: "p", wantErr: errReplyTimeout, wantElapsed: 10 * time.Second, wantStarted: 1},
+		{name: "hedge-no-budget-cancel", mode: "hedge", cancel: true, hedgeDelay: 0, budget: 0.95, wantAddr: "p", wantErr: context.Canceled, wantStarted: 1},
+		// The delay fires with budget: the hedge is paid for, and race replies
+		// earn nothing; a second unit of budget buys no second hedge.
+		{name: "hedge-budget-primary-wins-race", mode: "hedge", pReplyAfter: 5 * time.Second, hedgeDelay: 3 * time.Second, budget: 1, wantAddr: "p", wantElapsed: 5 * time.Second, wantSecondaryAt: 3 * time.Second, wantStarted: 2, spent: true},
+		{name: "hedge-budget-two-spends-once", mode: "hedge", hedgeDelay: 3 * time.Second, budget: 2, wantErr: errReplyTimeout, wantElapsed: 10 * time.Second, wantSecondaryAt: 3 * time.Second, wantStarted: 2, spent: true},
+		{name: "hedge-funded-cancel-before-delay", mode: "hedge", cancel: true, hedgeDelay: time.Hour, budget: 1, wantAddr: "p", wantErr: context.Canceled, wantStarted: 1},
+		{name: "hedge-funded-cancel-ready-delay", mode: "hedge", cancel: true, budget: 1, wantAddr: "p", wantErr: context.Canceled, wantStarted: 1},
+		{name: "hedge-funded-cancel-after-secondary-send", mode: "hedge", cancelOnSecondary: true, hedgeDelay: 3 * time.Second, budget: 1, wantErr: context.Canceled, wantElapsed: 3 * time.Second, wantSecondaryAt: 3 * time.Second, wantStarted: 2, spent: true},
+		{name: "hedge-funded-ready-secondary-cancel", mode: "hedge", cancelOnSecondary: true, sReady: true, hedgeDelay: 3 * time.Second, budget: 1, wantAddr: "s", wantElapsed: 3 * time.Second, wantSecondaryAt: 3 * time.Second, wantStarted: 2, spent: true},
+		{name: "hedge-instant-no-budget", mode: "hedge", pReplyAfter: 5 * time.Second, budget: 0, wantAddr: "p", wantElapsed: 5 * time.Second, wantStarted: 1, accrued: 1},
+		{name: "hedge-instant-budget", mode: "hedge", sReady: true, budget: 1, wantAddr: "s", wantStarted: 2, spent: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hedgeTimerBubble(t, func(t *testing.T, created *[]*time.Timer) {
@@ -196,12 +225,12 @@ func TestHedgeTimerStagesAndAccounting(t *testing.T) {
 					if tc.cancel {
 						cancel()
 					}
-					qm := newQueueModel()
+					qm := budgetModel(tc.budget)
 					started := make(map[string]rpcAccount)
 					begin := time.Now()
 					var secondaryAt time.Duration
 					secondaryCalls := 0
-					prepare := func(addr string, ready bool, sendErr, replyErr error, delay time.Duration) sendFunc {
+					prepare := func(addr string, ready bool, sendErr, replyErr error, delay, replyAfter time.Duration) sendFunc {
 						return func() inFlightRPC {
 							if addr == "s" {
 								secondaryAt = time.Since(begin)
@@ -214,25 +243,37 @@ func TestHedgeTimerStagesAndAccounting(t *testing.T) {
 							ch := make(chan transport.Response, 1)
 							if ready {
 								ch <- transport.Response{Body: []byte(addr), Err: replyErr}
+							} else if replyAfter > 0 {
+								go func() {
+									time.Sleep(replyAfter)
+									ch <- transport.Response{Body: []byte(addr), Err: replyErr}
+								}()
 							}
 							r := inFlightRPC{replyCh: ch, replyHandle: &transport.ReplyHandle{}, addr: addr, delta: qm.startRequest(addr), start: time.Now()}
 							started[addr] = accountOf(r)
+							if addr == "s" && tc.cancelOnSecondary {
+								cancel()
+							}
 							return r
 						}
 					}
-					primary := prepare("p", tc.pReady, tc.pSendErr, tc.pReplyErr, tc.pDelay)
-					secondary := prepare("s", tc.sReady, tc.sSendErr, nil, tc.sDelay)
+					primary := prepare("p", tc.pReady, tc.pSendErr, tc.pReplyErr, tc.pDelay, tc.pReplyAfter)
+					secondary := prepare("s", tc.sReady, tc.sSendErr, nil, tc.sDelay, 0)
 					var got hedgeResult
 					switch tc.mode {
 					case "single":
-						got = sendFrameWithHedge(ctx, tc.hedgeDelay, primary, nil, 7*time.Second)
+						got = sendFrameWithHedge(ctx, qm, tc.hedgeDelay, primary, nil, 7*time.Second)
 					case "race":
 						got = raceReplies(ctx, primary(), secondary(), 7*time.Second)
 					case "hedge":
-						got = sendFrameWithHedge(ctx, tc.hedgeDelay, primary, secondary, 7*time.Second)
+						got = sendFrameWithHedge(ctx, qm, tc.hedgeDelay, primary, secondary, 7*time.Second)
 					}
 					if got.err != tc.wantErr || got.addr != tc.wantAddr || time.Since(begin) != tc.wantElapsed {
 						t.Fatalf("round %d: result=%+v elapsed=%v; want addr=%q err=%v elapsed=%v", round, got, time.Since(begin), tc.wantAddr, tc.wantErr, tc.wantElapsed)
+					}
+					checkSecondModel(t, qm, tc.budget, tc.accrued, tc.spent)
+					if tc.mode == "hedge" && got.triedSecondary != (secondaryCalls > 0) {
+						t.Fatalf("triedSecondary=%v after %d secondary calls", got.triedSecondary, secondaryCalls)
 					}
 					if got.err == nil && string(got.body) != tc.wantAddr {
 						t.Fatalf("reply body lost: %+v", got)
@@ -309,7 +350,7 @@ func TestHedgeTimerNestedLease(t *testing.T) {
 			return inFlightRPC{replyCh: make(chan transport.Response), replyHandle: &transport.ReplyHandle{}, addr: "s"}
 		}
 		begin := time.Now()
-		got := sendFrameWithHedge(context.Background(), 3*time.Second, primary, secondary, 7*time.Second)
+		got := sendFrameWithHedge(context.Background(), budgetModel(1), 3*time.Second, primary, secondary, 7*time.Second)
 		if got.err != nil || got.addr != "p" || string(got.body) != "primary after hedge" || len(got.others) != 1 || got.others[0].addr != "s" || time.Since(begin) != 5*time.Second {
 			t.Fatalf("nested race result=%+v elapsed=%v", got, time.Since(begin))
 		}

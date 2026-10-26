@@ -32,7 +32,7 @@ func TestHedge_PrimaryRepliesBeforeTimer(t *testing.T) {
 		return inFlightRPC{err: nil, addr: "secondary"}
 	}
 
-	result := sendFrameWithHedge(context.Background(), 1*time.Second, primary, secondary, 5*time.Second)
+	result := sendFrameWithHedge(context.Background(), nil, 1*time.Second, primary, secondary, 5*time.Second)
 	g.Expect(result.err).NotTo(gomega.HaveOccurred())
 	g.Expect(string(result.body)).To(gomega.Equal("primary-wins"))
 	g.Expect(result.addr).To(gomega.Equal("primary"))
@@ -69,7 +69,7 @@ func TestHedge_SecondaryWinsRace(t *testing.T) {
 	}
 
 	// Hedge delay very short so secondary fires quickly
-	result := sendFrameWithHedge(context.Background(), 1*time.Millisecond, primary, secondary, 5*time.Second)
+	result := sendFrameWithHedge(context.Background(), budgetModel(1), 1*time.Millisecond, primary, secondary, 5*time.Second)
 	g.Expect(result.err).NotTo(gomega.HaveOccurred())
 	g.Expect(string(result.body)).To(gomega.Equal("secondary-wins"))
 	g.Expect(result.addr).To(gomega.Equal("secondary"))
@@ -95,7 +95,7 @@ func TestHedge_PrimarySendFails_FallsBackToSecondary(t *testing.T) {
 		}
 	}
 
-	result := sendFrameWithHedge(context.Background(), 10*time.Millisecond, primary, secondary, 5*time.Second)
+	result := sendFrameWithHedge(context.Background(), nil, 10*time.Millisecond, primary, secondary, 5*time.Second)
 	g.Expect(result.err).NotTo(gomega.HaveOccurred())
 	g.Expect(string(result.body)).To(gomega.Equal("secondary-fallback"))
 }
@@ -117,7 +117,7 @@ func TestHedge_NoSecondary_WaitsForPrimary(t *testing.T) {
 		}
 	}
 
-	result := sendFrameWithHedge(context.Background(), 10*time.Millisecond, primary, nil, 5*time.Second)
+	result := sendFrameWithHedge(context.Background(), nil, 10*time.Millisecond, primary, nil, 5*time.Second)
 	g.Expect(result.err).NotTo(gomega.HaveOccurred())
 	g.Expect(string(result.body)).To(gomega.Equal("only-server"))
 }
@@ -140,7 +140,7 @@ func TestHedge_ContextCancellation(t *testing.T) {
 		}
 	}
 
-	result := sendFrameWithHedge(ctx, 1*time.Second, primary, nil, 5*time.Second)
+	result := sendFrameWithHedge(ctx, nil, 1*time.Second, primary, nil, 5*time.Second)
 	g.Expect(result.err).To(gomega.MatchError(context.Canceled))
 }
 
@@ -176,7 +176,7 @@ func TestHedge_ContextCancellation_AccountsPrimary(t *testing.T) {
 		t.Error("secondary must not be sent: ctx is cancelled before the hedge timer")
 		return inFlightRPC{replyHandle: &transport.ReplyHandle{}, addr: "secondary"}
 	}
-	result := sendFrameWithHedge(ctx, 1*time.Second, primary, secondary, 5*time.Second)
+	result := sendFrameWithHedge(ctx, nil, 1*time.Second, primary, secondary, 5*time.Second)
 	g.Expect(result.err).To(gomega.MatchError(context.Canceled))
 	// The result MUST carry the primary's accounting so the readpath caller endRequests its
 	// startRequest delta (RFC-010 #5) — exactly as waitForReply's ctx.Done branch does. Pre-fix the
@@ -343,7 +343,7 @@ func TestHedge_ConnErrorOnReply(t *testing.T) {
 		}
 	}
 
-	result := sendFrameWithHedge(context.Background(), 10*time.Millisecond, primary, nil, 5*time.Second)
+	result := sendFrameWithHedge(context.Background(), nil, 10*time.Millisecond, primary, nil, 5*time.Second)
 	g.Expect(result.connErr).To(gomega.BeTrue())
 	g.Expect(result.err).To(gomega.HaveOccurred())
 }

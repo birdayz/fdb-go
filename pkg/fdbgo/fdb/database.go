@@ -505,9 +505,8 @@ func (db Database) Options() DatabaseOptions {
 	return DatabaseOptions{db: db.d}
 }
 
-// SetHedgeEnabled controls speculative second requests (hedge) for read RPCs.
-// When enabled (default), slow reads are rescued by sending a backup request
-// to a second server after max(10ms, 2×latency).
+// SetHedgeEnabled enables budget-funded speculative read requests (default on).
+// Disabled, no read hedges; lone replies still accrue budget (RFC-281).
 func (db Database) SetHedgeEnabled(enabled bool) {
 	db.d.inner.SetHedgeEnabled(enabled)
 }
