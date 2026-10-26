@@ -45,6 +45,7 @@ func (m *TenantInfo) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 		m.TenantId = r.ReadInt64(TenantInfoSlotTenantId)
 	}
 	if r.FieldPresent(TenantInfoSlotToken) && r.ReadUint8(TenantInfoSlotToken) == 1 && r.FieldPresent(TenantInfoSlotToken+1) {
+		_ = r.ReadUint32(TenantInfoSlotToken + 1)
 		m.HasToken = true
 	}
 	if r.FieldPresent(TenantInfoSlotArena) {

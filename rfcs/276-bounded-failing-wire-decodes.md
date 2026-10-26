@@ -91,7 +91,9 @@ never reject a reply C++ writes.
    `FieldPresent` first, so a reply from a schema with fewer fields still decodes. An
    `Optional` is present only with tag 1 and its value slot present. A variant decodes
    only a known tag with its value slot present (`LoadAlternative`,
-   `flat_buffers.h:863-886`). Anything else leaves the zero value, as C++ leaves the
+   `flat_buffers.h:863-886`). A present variant tag is read even when its value slot is
+   absent (`flat_buffers.h:1031-1035`), so its bounds fault cannot be skipped. Anything
+   else leaves the zero value, as C++ leaves the
    member empty. `wire.ReadInlineReplyError`, `ReadOptionalInt32` and
    `ReadOptionalString` use the same tag rule.
 
@@ -99,8 +101,9 @@ never reject a reply C++ writes.
    `Optional<T>` whose `T` has a Go type a nested decode, which turns
    `NetworkAddressList.SecondaryAddress` from a byte string into the `NetworkAddress` C++
    writes. An `Optional` of a table with no Go type (`EncryptKeyProxyInterface`,
-   `ClientTrCommitCostEstimation`, `WipedString`) records only its presence. These
-   fields used to be read as byte strings, which the stricter reads would refuse.
+   `ClientTrCommitCostEstimation`, `WipedString`) validates the pointer word and records
+   only its presence; the unregistered body is not traversed or validated. These fields
+   used to be read as byte strings, which the stricter reads would refuse.
 
    A present field whose RelativeOffset is 0 keeps reading as empty: C++ then reads the
    offset word itself, a zero length or count, so the value is the same. A nested table
@@ -244,6 +247,12 @@ revert):
 - `TestReaderReuseClearsFault`: a faulted reader is reused through `InitReader`,
   root-object initialization, nested initialization and `ReadErrorOrInto`; each clears
   the old fault and reads the next message.
+- Standalone vector parser tests pin one shared nested budget and propagation of
+  malformed element contents through `ParseMappedKeyValueRefVectorFromReader`.
+  All three string-vector APIs have literal-value and malformed-blob controls,
+  including `KeyRangeRef`'s single-key inversion.
+- Presence-only Optional pointer words outside the buffer fail for all three opaque
+  tables; both variants fail on a tag outside the buffer even when the value is absent.
 - `TestGroundTruthOptionalTables`: C++ fixtures pin both span contexts on a commit
   request, an endpoint's secondary address, and a presence-only commit-cost table.
   The registered Optional tables also re-encode byte-exactly in `TestGroundTruthMarshal`.

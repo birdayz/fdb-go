@@ -38,14 +38,17 @@ func (m *IPAddress) UnmarshalFDB(data []byte) error {
 }
 
 func (m *IPAddress) decode(r *wire.Reader, b *wire.DecodeBudget) error {
-	if r.FieldPresent(IPAddressSlotAddr) && r.FieldPresent(IPAddressSlotAddr+1) {
-		switch r.ReadUint8(IPAddressSlotAddr) {
-		case 1:
-			m.AddrTag = 1
-			m.AddrAlt0 = r.ReadRelOffUint32(IPAddressSlotAddr + 1)
-		case 2:
-			m.AddrTag = 2
-			m.AddrAlt1 = r.ReadBytes(IPAddressSlotAddr + 1)
+	if r.FieldPresent(IPAddressSlotAddr) {
+		tag := r.ReadUint8(IPAddressSlotAddr)
+		if r.FieldPresent(IPAddressSlotAddr + 1) {
+			switch tag {
+			case 1:
+				m.AddrTag = 1
+				m.AddrAlt0 = r.ReadRelOffUint32(IPAddressSlotAddr + 1)
+			case 2:
+				m.AddrTag = 2
+				m.AddrAlt1 = r.ReadBytes(IPAddressSlotAddr + 1)
+			}
 		}
 	}
 	if err := r.Err(); err != nil {

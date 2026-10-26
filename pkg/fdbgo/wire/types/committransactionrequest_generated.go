@@ -102,6 +102,7 @@ func (m *CommitTransactionRequest) decode(r *wire.Reader, b *wire.DecodeBudget) 
 		m.HasDebugID = true
 	}
 	if r.FieldPresent(CommitTransactionRequestSlotCommitCostEstimation) && r.ReadUint8(CommitTransactionRequestSlotCommitCostEstimation) == 1 && r.FieldPresent(CommitTransactionRequestSlotCommitCostEstimation+1) {
+		_ = r.ReadUint32(CommitTransactionRequestSlotCommitCostEstimation + 1)
 		m.HasCommitCostEstimation = true
 	}
 	if r.FieldPresent(CommitTransactionRequestSlotTagSet) && r.ReadUint8(CommitTransactionRequestSlotTagSet) == 1 && r.FieldPresent(CommitTransactionRequestSlotTagSet+1) {

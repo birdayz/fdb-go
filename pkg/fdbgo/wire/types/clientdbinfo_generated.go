@@ -93,6 +93,7 @@ func (m *ClientDBInfo) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 		m.History = r.ReadBytes(ClientDBInfoSlotHistory)
 	}
 	if r.FieldPresent(ClientDBInfoSlotEncryptKeyProxy) && r.ReadUint8(ClientDBInfoSlotEncryptKeyProxy) == 1 && r.FieldPresent(ClientDBInfoSlotEncryptKeyProxy+1) {
+		_ = r.ReadUint32(ClientDBInfoSlotEncryptKeyProxy + 1)
 		m.HasEncryptKeyProxy = true
 	}
 	if r.FieldPresent(ClientDBInfoSlotClusterId) {

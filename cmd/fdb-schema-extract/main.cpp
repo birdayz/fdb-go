@@ -384,7 +384,8 @@ private:
                     // Optional<struct>: the value is a nested table behind the union reloff.
                     decodeNested("\t\t", slot + " + 1", "m." + gn, derr);
                 } else if (fd.optTable) {
-                    // A table with no Go type: only its presence is decoded.
+                    // The body is opaque, but the Optional's pointer word must exist.
+                    fprintf(f, "\t\t_ = %s.ReadUint32(%s + 1)\n", rv, slot.c_str());
                 } else {
                     fprintf(f, "\t\tm.%s = %s.ReadBytes(%s + 1)\n", gn.c_str(), rv, slot.c_str());
                 }
@@ -393,9 +394,10 @@ private:
                 break;
             case FieldKind::Variant:
                 // As for Optional: an unknown tag or an absent value slot leaves the zero value.
-                fprintf(f, "\tif %s.FieldPresent(%s) && %s.FieldPresent(%s + 1) {\n",
-                        rv, slot.c_str(), rv, slot.c_str());
-                fprintf(f, "\t\tswitch %s.ReadUint8(%s) {\n", rv, slot.c_str());
+                fprintf(f, "\tif %s.FieldPresent(%s) {\n", rv, slot.c_str());
+                fprintf(f, "\t\ttag := %s.ReadUint8(%s)\n", rv, slot.c_str());
+                fprintf(f, "\t\tif %s.FieldPresent(%s + 1) {\n", rv, slot.c_str());
+                fprintf(f, "\t\tswitch tag {\n");
                 for (size_t a = 0; a < fd.variantAlts.size(); a++) {
                     auto& alt = fd.variantAlts[a];
                     fprintf(f, "\t\tcase %zu:\n", a + 1);
@@ -423,6 +425,7 @@ private:
                                 gn.c_str(), a, rv, slot.c_str(), alt.size);
                     }
                 }
+                fprintf(f, "\t\t}\n");
                 fprintf(f, "\t\t}\n");
                 fprintf(f, "\t}\n");
                 break;

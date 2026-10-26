@@ -49,25 +49,28 @@ func (m *MappedKeyValueRef) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 			return err
 		}
 	}
-	if r.FieldPresent(MappedKeyValueRefSlotReqAndResult) && r.FieldPresent(MappedKeyValueRefSlotReqAndResult+1) {
-		switch r.ReadUint8(MappedKeyValueRefSlotReqAndResult) {
-		case 1:
-			m.ReqAndResultTag = 1
-			nr, err := r.ReadNestedReader(MappedKeyValueRefSlotReqAndResult + 1)
-			if err != nil {
-				return &wire.DecodeError{Type: "MappedKeyValueRef", Field: "ReqAndResult", Err: err}
-			}
-			if err := m.ReqAndResultAlt0.decode(nr, b); err != nil {
-				return err
-			}
-		case 2:
-			m.ReqAndResultTag = 2
-			nr, err := r.ReadNestedReader(MappedKeyValueRefSlotReqAndResult + 1)
-			if err != nil {
-				return &wire.DecodeError{Type: "MappedKeyValueRef", Field: "ReqAndResult", Err: err}
-			}
-			if err := m.ReqAndResultAlt1.decode(nr, b); err != nil {
-				return err
+	if r.FieldPresent(MappedKeyValueRefSlotReqAndResult) {
+		tag := r.ReadUint8(MappedKeyValueRefSlotReqAndResult)
+		if r.FieldPresent(MappedKeyValueRefSlotReqAndResult + 1) {
+			switch tag {
+			case 1:
+				m.ReqAndResultTag = 1
+				nr, err := r.ReadNestedReader(MappedKeyValueRefSlotReqAndResult + 1)
+				if err != nil {
+					return &wire.DecodeError{Type: "MappedKeyValueRef", Field: "ReqAndResult", Err: err}
+				}
+				if err := m.ReqAndResultAlt0.decode(nr, b); err != nil {
+					return err
+				}
+			case 2:
+				m.ReqAndResultTag = 2
+				nr, err := r.ReadNestedReader(MappedKeyValueRefSlotReqAndResult + 1)
+				if err != nil {
+					return &wire.DecodeError{Type: "MappedKeyValueRef", Field: "ReqAndResult", Err: err}
+				}
+				if err := m.ReqAndResultAlt1.decode(nr, b); err != nil {
+					return err
+				}
 			}
 		}
 	}
