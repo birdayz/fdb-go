@@ -4575,6 +4575,11 @@ their remote-fetch leaves.
 Earlier Go metadata accepted native `VersionKey()` primary-key columns that Java refuses.
 RFC-275 rejects those declarations with `MetaDataError` ("Version in primary key not supported")
 at construction and load. Existing unsupported metadata is not migrated automatically.
+Functions declare zero version columns even when their arguments contain a version.
+Consequently VERSION indexes rooted at such functions are refused during metadata and SQL
+DDL validation, as in Java; the SQL error is UNKNOWN (`XXXXX`). VALUE indexes with the
+same roots remain legal metadata. A version in a KeyWithValue VALUE portion also remains
+legal metadata; an incomplete version fails recoverably at write time, not at DDL.
 
 Maintained-count expressions and function-wrapped primary keys now see the chosen
 record version, as Java's save record builder does. Incomplete values reaching ordinary key

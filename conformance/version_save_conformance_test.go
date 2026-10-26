@@ -21,6 +21,143 @@ import (
 	"fdb.dev/pkg/recordlayer"
 )
 
+var _ = Describe("Ordered version index validation matches Java", func() {
+	metadataBuilder := func(index *recordlayer.Index) *recordlayer.RecordMetaDataBuilder {
+		builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+		builder.SetStoreRecordVersions(true).AddIndex("Order", index)
+		return builder
+	}
+	orderedVersion := func() recordlayer.KeyExpression {
+		return recordlayer.FunctionExpr(recordlayer.OrderFuncDescNullsLast, recordlayer.VersionKey())
+	}
+
+	It("refuses a VERSION index whose ordering function declares no version columns", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		md, err := metadataBuilder(recordlayer.NewVersionIndex("order$version", recordlayer.VersionKey())).Build()
+		Expect(err).NotTo(HaveOccurred())
+		mdProto, err := md.ToProto()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(mdProto.GetIndexes()).To(HaveLen(1))
+		mdProto.Indexes[0].RootExpression = orderedVersion().ToKeyExpression()
+		mdBytes, err := proto.Marshal(mdProto)
+		Expect(err).NotTo(HaveOccurred())
+		clusterFile, err := sharedContainer.ClusterFile(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		javaSS := subspace.Sub(tuple.Tuple{"ordered_version_index_refusal_java", uuid.NewString()}...)
+		_, err = NewJavaInvoker().Invoke(ctx, "saveWithVersionsJava", map[string]any{
+			"clusterFile": clusterFile, "subspace": BytesToIntArray(javaSS.Bytes()), "metaData": BytesToIntArray(mdBytes),
+			"recordTypeName": "Order", "records": [][]int{}, "versions": [][]int{}, "behaviors": []string{}, "formatVersion": 0,
+		})
+		var javaErr *JavaError
+		Expect(errors.As(err, &javaErr)).To(BeTrue(), "%v", err)
+		Expect(javaErr.ExceptionClass).To(Equal("InvalidExpressionException"))
+		Expect(javaErr.ExceptionFullClass).To(Equal("com.apple.foundationdb.record.metadata.expressions.KeyExpression$InvalidExpressionException"))
+		Expect(javaErr.Message).To(Equal("there must be exactly 1 version entry in index"))
+		Expect(javaErr.SQLState).To(BeEmpty())
+
+		_, err = recordlayer.RecordMetaDataFromProto(mdProto)
+		var keyErr *recordlayer.KeyExpressionError
+		Expect(errors.As(err, &keyErr)).To(BeTrue(), "%v", err)
+		Expect(keyErr.Message).To(Equal("there must be exactly 1 version entry in index"))
+		_, err = metadataBuilder(recordlayer.NewVersionIndex("order$version", orderedVersion())).Build()
+		keyErr = nil
+		Expect(errors.As(err, &keyErr)).To(BeTrue(), "%v", err)
+		Expect(keyErr.Message).To(Equal("there must be exactly 1 version entry in index"))
+	})
+
+	It("accepts the VALUE index metadata but aborts an automatic incomplete-version save", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		md, err := metadataBuilder(recordlayer.NewIndex("order$ordered_version", orderedVersion())).Build()
+		Expect(err).NotTo(HaveOccurred())
+		mdProto, err := md.ToProto()
+		Expect(err).NotTo(HaveOccurred())
+		decoded, err := recordlayer.RecordMetaDataFromProto(mdProto)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(decoded).NotTo(BeNil())
+		mdBytes, err := proto.Marshal(mdProto)
+		Expect(err).NotTo(HaveOccurred())
+		record := &demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10)}
+		recordBytes, err := proto.MarshalOptions{Deterministic: true}.Marshal(record)
+		Expect(err).NotTo(HaveOccurred())
+		clusterFile, err := sharedContainer.ClusterFile(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		javaSS := subspace.Sub(tuple.Tuple{"ordered_version_value_java", uuid.NewString()}...)
+		var java struct {
+			Verdicts []string   `json:"verdicts"`
+			KVs      [][]string `json:"kvs"`
+		}
+		Expect(NewJavaInvoker().InvokeAs(ctx, "saveWithVersionsJava", map[string]any{
+			"clusterFile": clusterFile, "subspace": BytesToIntArray(javaSS.Bytes()), "metaData": BytesToIntArray(mdBytes),
+			"recordTypeName": "Order", "records": [][]int{BytesToIntArray(recordBytes)}, "versions": [][]int{{}},
+			"behaviors": []string{recordlayer.VersionstampSaveBehaviorDefault.String()}, "formatVersion": 0,
+		}, &java)).To(Succeed())
+		Expect(java.Verdicts).To(Equal([]string{"java.lang.IllegalArgumentException"}))
+		Expect(java.KVs).To(BeEmpty(), "the failed Java save must not persist record, index, count or version entries")
+
+		goSS := subspace.Sub(tuple.Tuple{"ordered_version_value_go", uuid.NewString()}...)
+		db := recordlayer.NewFDBDatabase(sharedDB)
+		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(goSS).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			return store.SaveRecord(record)
+		})
+		var incomplete *recordlayer.IncompleteVersionstampError
+		Expect(errors.As(err, &incomplete)).To(BeTrue(), "%v", err)
+		_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			for _, space := range []int64{1, 2, 4, 8} {
+				rows, err := rtx.Transaction().GetRange(goSS.Sub(space), fdb.RangeOptions{}).GetSliceWithError()
+				if err != nil {
+					return nil, err
+				}
+				Expect(rows).To(BeEmpty(), "the failed Go save must not persist subspace %d", space)
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("refuses persisted SQL DDL for a descending ROW_VERSION index with Java's SQLState", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		clusterFile, err := sharedContainer.ClusterFile(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		java := NewJavaInvoker()
+		templateName := "RFC275_ORDERED_VERSION_" + uuid.NewString()
+		body := `CREATE TABLE T (id BIGINT, col2 STRING, col3 BIGINT, col4 BIGINT, PRIMARY KEY(id))
+			CREATE INDEX desc_v AS SELECT "__ROW_VERSION" FROM T ORDER BY "__ROW_VERSION" DESC
+			WITH OPTIONS(store_row_versions=true)`
+		var created struct {
+			Created bool `json:"created"`
+		}
+		err = java.InvokeAs(ctx, "createSchemaTemplatePersistentJava", map[string]any{
+			"clusterFile": clusterFile, "templateName": templateName, "schemaTemplateBody": body,
+		}, &created)
+		if created.Created {
+			DeferCleanup(func() {
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+				_, err := java.Invoke(cleanupCtx, "dropSchemaTemplatePersistentJava", map[string]any{
+					"clusterFile": clusterFile, "templateName": templateName,
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+		}
+		var javaErr *JavaError
+		Expect(errors.As(err, &javaErr)).To(BeTrue(), "%v", err)
+		Expect(javaErr.ExceptionClass).To(Equal("InvalidExpressionException"))
+		Expect(javaErr.ExceptionFullClass).To(Equal("com.apple.foundationdb.record.metadata.expressions.KeyExpression$InvalidExpressionException"))
+		Expect(javaErr.Message).To(Equal("there must be exactly 1 version entry in index"))
+		Expect(javaErr.SQLState).To(Equal("XXXXX"))
+	})
+})
+
 // Both engines save the same records with the same versions and behaviors and must agree on
 // every verdict and on the record (1), index (2), count (4) and legacy version (8) key-value pairs.
 var _ = Describe("Explicit-version saves match Java", func() {

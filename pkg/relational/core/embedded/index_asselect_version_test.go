@@ -203,6 +203,18 @@ func TestAsSelectVersionIndex_Rejections(t *testing.T) {
 			WITH OPTIONS(store_row_versions=true)`,
 			api.ErrCodeAmbiguousColumn, "Ambiguous reference __ROW_VERSION",
 		},
+		// Java FunctionKeyExpression inherits versionColumns() == 0. The
+		// generator emits VERSION(order_desc_nulls_last(version())), which
+		// IndexValidator.validateVersionKey rejects during catalog validation.
+		// ExceptionUtil maps InvalidExpressionException to UNKNOWN, not INTERNAL.
+		{
+			"ordering_wrapper_over_version",
+			`CREATE SCHEMA TEMPLATE vg
+			CREATE TABLE t1(col1 bigint, primary key(col1))
+			CREATE INDEX mv1 AS SELECT "__ROW_VERSION" FROM t1 ORDER BY "__ROW_VERSION" DESC
+			WITH OPTIONS(store_row_versions=true)`,
+			api.ErrCodeUnknown, "there must be exactly 1 version entry in index",
+		},
 		// IndexTest.java:907-918 createVersionIndexWithNestingFields → the
 		// disconnected-references 0A000 is pinned by the struct-DDL arm once
 		// CREATE TYPE AS STRUCT lands; the double-version rule is pinned

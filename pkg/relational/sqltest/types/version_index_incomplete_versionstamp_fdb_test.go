@@ -4,34 +4,12 @@
 
 package sqltest
 
-// Two index shapes that ordinary DDL accepts put an INCOMPLETE versionstamp in
-// front of a vanilla tuple pack:
-//
-//   - the version column landing in the VALUE portion of a KeyWithValue split
-//     (`... ORDER BY col2` with the version later in the projection), and
-//   - an ordering wrapper over the version (`ORDER BY "__ROW_VERSION" DESC`).
-//
-// Neither can ever be written: the versionstamp mutation substitutes into the
-// KEY only, so a versionstamp anywhere else has nothing that could complete it.
-// Java reaches the identical dead end — VersionIndexMaintainer.java:107 packs
-// the value after testing only the entry KEY for incompleteness (:90), and
-// TupleOrdering.packNullsLast raises IllegalArgumentException("Incomplete
-// Versionstamp included in vanilla tuple pack") (TupleOrdering.java:174-180).
-//
-// Java THROWS. Go used to PANIC, because tuple.Pack panics where Java's throws,
-// so the failure crossed the library boundary as a crash instead of an error —
-// a direct violation of the no-panic invariant. Measured before the fix:
-//
-//	p13_version_in_value: PANIC on insert: Incomplete Versionstamp included in vanilla tuple pack
-//	p14_version_desc:     PANIC on insert: Incomplete Versionstamp included in vanilla tuple pack
-//
-// The METADATA is deliberately unchanged. Both shapes are what Java's own index
-// generator emits and its DDL tests pin (IndexTest.java:897-905
-// createVersionIndexWithVersionInValue), and index metadata is wire, so
-// rejecting them at DDL would diverge. The failure belongs at the write, which
-// is exactly where Java puts it. This test therefore asserts BOTH halves: the
-// DDL still builds the Java key expression, AND the insert fails with an error
-// rather than a panic.
+// Java accepts a VERSION index with the version in its KeyWithValue VALUE
+// portion (IndexTest.createVersionIndexWithVersionInValue), but an automatic
+// incomplete version then fails during the value's ordinary tuple pack. Go must
+// return an error, not panic. In contrast, VERSION(order_desc(version())) is
+// rejected during metadata validation: functions declare zero version columns,
+// and IndexValidator.validateVersionKey requires exactly one. Pin both stages.
 
 import (
 	"context"
@@ -48,6 +26,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 )
 
@@ -63,7 +42,8 @@ func TestFDB_VersionIndex_IncompleteVersionstampIsAnErrorNotAPanic(t *testing.T)
 		// wantRoot is the key expression Java's generator emits for this
 		// declaration. Asserting it here is what stops a future "fix" from
 		// quietly rejecting the shape at DDL and diverging on index metadata.
-		wantRoot recordlayer.KeyExpression
+		wantRoot     recordlayer.KeyExpression
+		wantDDLError bool
 	}{
 		{
 			name: "version_in_value_portion",
@@ -81,7 +61,7 @@ func TestFDB_VersionIndex_IncompleteVersionstampIsAnErrorNotAPanic(t *testing.T)
 				CREATE TABLE T (id bigint, col2 string, col3 bigint, col4 bigint, PRIMARY KEY(id))
 				CREATE INDEX desc_v AS SELECT "__ROW_VERSION" FROM t ORDER BY "__ROW_VERSION" DESC
 				WITH OPTIONS(store_row_versions=true)`,
-			wantRoot: recordlayer.FunctionExpr("order_desc_nulls_last", recordlayer.VersionKey()),
+			wantDDLError: true,
 		},
 	}
 
@@ -99,10 +79,17 @@ func TestFDB_VersionIndex_IncompleteVersionstampIsAnErrorNotAPanic(t *testing.T)
 			ks := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 
 			tmpl, err := embedded.BuildSchemaTemplateFromDDL(tc.ddl)
+			if tc.wantDDLError {
+				var apiErr *api.Error
+				var keyErr *recordlayer.KeyExpressionError
+				if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnknown ||
+					!errors.As(err, &keyErr) || keyErr.Error() != "there must be exactly 1 version entry in index" {
+					t.Fatalf("want Java's UNKNOWN metadata-validation error, got %T: %v", err, err)
+				}
+				return
+			}
 			if err != nil {
-				t.Fatalf("the DDL must still be ACCEPTED — Java's index generator emits "+
-					"this shape and its own DDL tests pin it, so rejecting it here would "+
-					"diverge on index metadata: %v", err)
+				t.Fatalf("Java accepts a version in the VALUE portion; DDL failed: %v", err)
 			}
 			md := tmpl.Underlying()
 			var found *recordlayer.Index

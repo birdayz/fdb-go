@@ -133,6 +133,10 @@ covers the four Low items and the Medium explicit-version/`VersionstampSaveBehav
      (`setPrimaryKey`, lines 86-90), and now by Go's metadata setter, validation and proto
      loader. A function expression declares no version columns by default, even if its
      arguments include one; lists sum and split/dimensions delegate as Java does.
+     Therefore VERSION indexes rooted at an ordering function over a version are refused
+     during metadata/DDL validation (SQLSTATE `XXXXX`), not deferred to a write. A version
+     in a KeyWithValue VALUE portion and ordering wrappers in VALUE indexes remain legal
+     metadata; automatic incomplete versions fail recoverably when ordinarily packed.
    - `saveTargetFor` chooses the version once after resolving the record type, before
      evaluating the primary key and starting the existing-record read. Pipelined saves carry
      this chosen version in their precomputed target and reuse it in `saveRecordInternal`.

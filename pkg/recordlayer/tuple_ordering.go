@@ -33,9 +33,9 @@ var (
 // IllegalArgumentException("Incomplete Versionstamp included in vanilla tuple
 // pack") when one reaches it (TupleOrdering.java:174-180) and Tuple.pack does
 // the same. Go's tuple.Pack PANICS in that situation, so the check happens here
-// and the caller gets Java's exception as a Go error. An ordering wrapper over
-// the __ROW_VERSION pseudo-field (`ORDER BY "__ROW_VERSION" DESC`) is the shape
-// that reaches this from ordinary DDL.
+// and the caller gets Java's exception as a Go error. Legal VALUE indexes and
+// primary keys can wrap a version in an ordering function; VERSION indexes with
+// that root are refused earlier because functions declare zero version columns.
 func tupleOrderingPack(t tuple.Tuple, dir OrderDirection) ([]byte, error) {
 	if tupleHasIncompleteVersionstamp(t) {
 		return nil, &IncompleteVersionstampError{Context: "tuple ordering"}

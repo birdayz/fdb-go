@@ -831,12 +831,11 @@ func (e *DuplicateIndexOptionError) Error() string {
 // where Java hands the caller a recoverable failure. Every site that can put a
 // versionstamp in front of a vanilla pack returns this instead.
 //
-// Reachable from ordinary DDL: an index whose version column lands in the VALUE
-// portion of a KeyWithValue split, or one that wraps the version in an ordering
-// function. Both metadata shapes are what Java's own index generator emits (see
-// IndexTest.java createVersionIndexWithVersionInValue), so the shapes cannot be
-// rejected at DDL without diverging on index metadata — the failure belongs at
-// the write, exactly where Java puts it.
+// Reachable from a VERSION index whose version lands in the VALUE portion of a
+// KeyWithValue split (IndexTest.createVersionIndexWithVersionInValue), or from
+// ordering functions over versions in legal VALUE indexes and primary keys.
+// A VERSION index rooted at an ordering function is instead refused at metadata
+// validation because functions declare zero version columns.
 type IncompleteVersionstampError struct {
 	// Context names the encoder that refused, e.g. the index whose entry was
 	// being written.

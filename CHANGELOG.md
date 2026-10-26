@@ -103,7 +103,11 @@ Each is described in full under Compatibility or Changed below.
   ordering wrappers. Incomplete values reaching ordinary key encoders are refused with
   `IncompleteVersionstampError`. Existing null-version counters and unsupported primary-key
   metadata are not migrated automatically; migrate or recreate affected pre-release stores
-  before mixed-engine use. Tuple encodings and unaffected stores are unchanged.
+  before mixed-engine use. VERSION indexes rooted at a function over a version are also
+  refused at metadata/DDL validation: functions declare zero version columns, but VERSION
+  requires exactly one. A version in a KeyWithValue VALUE portion remains valid metadata
+  and fails recoverably at write time if incomplete. Tuple encodings and unaffected stores
+  are unchanged.
 - **Collation:** collated index access and writes that evaluate collated primary/count keys now fail with `GoOnlyCollationError` unless the store explicitly opts into Go-only bytes with `StoreBuilder.SetGoOnlyCollation(true)`; existing keys are not migrated.
 - **Collation metadata:** fan-out follows the function arguments as in Java, permitting scalar collations in primary keys.
 - **Wire format:** the Java target is upgraded to `fdb-record-layer-core` 4.14.2.0 (RFC-257). Records Java writes through `TransformedRecordSerializer` (compressed, encrypted) are
