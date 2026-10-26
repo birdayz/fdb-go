@@ -11,6 +11,7 @@ import (
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/network"
 	"github.com/testcontainers/testcontainers-go"
 )
 
@@ -135,15 +136,20 @@ func TestReaperInitializationRetry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
 	if os.Getenv("FDB_REAPER_TEST_CHILD") != "1" {
-		// Ensure the FDB image exists before the child reserves an unstarted container.
-		warm, err := Run(ctx, "")
-		if err != nil {
+		// Warm the image through the upstream provider, not the initializer under test.
+		if err := tcProber.check(ctx); err != nil {
 			if SkipWithoutDocker(err) {
 				t.Skipf("FDB not available (no Docker): %v", err)
 			}
 			t.Fatal(err)
 		}
-		TerminateT(t, ctx, warm)
+		warm, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+			ContainerRequest: testcontainers.ContainerRequest{Image: defaultImage + ":" + fdbVersion()},
+		})
+		testcontainers.CleanupContainer(t, warm)
+		if err != nil {
+			t.Fatal(err)
+		}
 		runReaperTestChild(t)
 		return
 	}
@@ -152,6 +158,14 @@ func TestReaperInitializationRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cli.Close()
+	networksBefore, err := cli.NetworkList(ctx, network.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	existingNetworks := make(map[string]bool, len(networksBefore))
+	for _, nw := range networksBefore {
+		existingNetworks[nw.ID] = true
+	}
 	name := "reaper_" + testcontainers.SessionID()
 	blocker, err := cli.ContainerCreate(ctx, &container.Config{Image: defaultImage + ":" + fdbVersion()}, nil, nil, nil, name)
 	if err != nil {
@@ -174,6 +188,18 @@ func TestReaperInitializationRetry(t *testing.T) {
 	if heldReaper.conn != nil {
 		t.Fatal("failed reaper initialization retained a connection")
 	}
+	networksAfter, err := cli.NetworkList(ctx, network.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, nw := range networksAfter {
+		if !existingNetworks[nw.ID] && nw.Labels["org.testcontainers.sessionId"] == testcontainers.SessionID() {
+			if err := cli.NetworkRemove(ctx, nw.ID); err != nil {
+				t.Errorf("remove leaked network %q: %v", nw.Name, err)
+			}
+			t.Fatalf("failed reaper initialization leaked network %q", nw.Name)
+		}
+	}
 	if err := cli.ContainerRemove(ctx, blocker.ID, container.RemoveOptions{Force: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -192,5 +218,9 @@ func TestReaperInitializationRetry(t *testing.T) {
 	}
 	if !info.State.Running {
 		t.Fatalf("reaper after recovery is %s", info.State.Status)
+	}
+	// Check the selected bridge even when another session already created reaper_default.
+	if _, ok := info.NetworkSettings.Networks[testcontainers.Bridge]; !ok {
+		t.Fatalf("reaper after recovery uses networks %v; want %s", info.NetworkSettings.Networks, testcontainers.Bridge)
 	}
 }

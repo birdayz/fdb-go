@@ -89,6 +89,7 @@ go_test(
     deps = [
         "@com_github_containerd_errdefs//:errdefs",
         "@com_github_docker_docker//api/types/container",
+        "@com_github_docker_docker//api/types/network",
         "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
     ],
 )

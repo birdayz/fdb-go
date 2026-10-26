@@ -23,9 +23,9 @@ func holdReaper(ctx context.Context) error {
 	if heldReaper.conn != nil || testcontainers.ReadConfig().RyukDisabled {
 		return nil
 	}
-	provider, err := testcontainers.NewDockerProvider()
+	provider, err := testcontainers.ProviderDefault.GetProvider()
 	if err != nil {
-		return fmt.Errorf("hold reaper: docker provider: %w", err)
+		return fmt.Errorf("hold reaper: provider: %w", err)
 	}
 	// NewReaper is deprecated but the only API that hands out a reaper connection;
 	// the release is pinned by TestTestcontainersVersionPinned.
