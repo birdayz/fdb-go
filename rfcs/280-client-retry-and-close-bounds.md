@@ -2,9 +2,10 @@
 
 **Status:** Implemented
 
-**Base:** stacked on PR #1004 (RFC-276), which builds on RFC-271 (PR #997, merged).
-RFC-271 rewrote `handleConnError` to name the failed connection; item 3 changes that
-code, and items 1 and 2 touch files RFC-276 also edits.
+**Base:** parent PR #1004 (RFC-276) merged as `e14dd5bea`; the child was restacked
+onto master, retaining RFC-281's hedge budget (#1017). RFC-271 (PR #997) made
+`handleConnError` name the failed connection; item 3 changes that code, and
+items 1 and 2 touch files RFC-276 also edits.
 
 **Items** (the Go FDB client entries of the 2026-10-24 quality review, open PR #994):
 
