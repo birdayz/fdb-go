@@ -134,6 +134,23 @@ skipped entries are neither scan-limit charges nor record loads. Multi-range
 of remote-fetch plans keep one outer Skip, plus the outer returned-row limit.
 See DIVERGENCES.md.
 
+### Mutual indexing retries
+
+Mutual indexing fragments end at primary keys, with split suffixes removed from
+shard-map boundaries read at the transaction's read version. Boundary lookups are
+snapshot reads. Claimed ranges and built-range entries retain Java's encoding.
+
+Go does not implement Java 4.14.2.0's `anyJumper`: after a claimed chunk exhausts
+runner retries, Go retains that exact claim and applies lessen-work backoff and
+a smaller limit. Java instead records the error and revisits the fragment; an
+unchanged range rethrows it, so a transaction-too-large (2101) can end Java's
+mutual build without a smaller retry. Go also omits Java's repeated-range guard
+that fails after more than 1000 repeats; it finishes each claim chunk by chunk or
+returns the error when lessen-work retries are exhausted. These are build-control
+differences, not changes to stored records or index/range-set bytes. See
+[RFC-279](../rfcs/279-mutual-indexing-boundaries.md) and
+[DIVERGENCES.md](../DIVERGENCES.md#mutual-indexing-has-no-anyjumper-rfc-279).
+
 ### Vector defaults are layer-specific
 
 `DefaultHNSWConfig` is a low-level HNSW configuration, not a general promise about

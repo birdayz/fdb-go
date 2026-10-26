@@ -126,7 +126,7 @@ range, pipelined, once per build.
 
 Each regression fails before its fix (mutations recorded on the PR).
 
-- **Boundaries** (simulated database with an injected shard map):
+- **Boundaries** (injected shard map over simulated and real FoundationDB):
   - `GetPrimaryKeyBoundaries` on a store with a split record maps a boundary before the
     first record, a non-tuple boundary, two boundaries inside the split record and one past
     the last record to `[(10), (50)]`, reading the shard map at the transaction's version. A
@@ -134,6 +134,11 @@ Each regression fails before its fix (mutations recorded on the PR).
     the lookups in flight, with a repeat across the window's edge, give 14 sorted keys. A
     concurrent save inside a looked-up range does not conflict the caller (snapshot reads),
     and a context without a database gets a `BackendCapabilityError`.
+  - Real-FDB specs in `online_indexer_conflicts_test.go` inject boundaries inside a real
+    250 KB split record at key 50 and prove suffix removal and deduplication. The caller pins
+    its read version before a concurrent insert of key 7; lookups still return key 10 and
+    send that same version to the shard map. A marker write commits with snapshot lookups;
+    adding a serializable read over the same gap instead makes commit fail with 1020.
   - A mutual build with a shard boundary at `(50, 2)` inside a split record gets the edges
     `[\x00, (50), \xff]` and indexes every record.
   - With a record-type key prefix, the shard map is read over the indexed type's records
@@ -149,8 +154,10 @@ Each regression fails before its fix (mutations recorded on the PR).
   the claim has nothing missing.
 - **ANY:** a resumed build whose two fragments each hold one built chunk moves to ANY and
   builds the 80 records left; the index then has all 100.
-- **No anyJumper:** a claimed chunk that fails with 2101 is retried at a lower limit and
-  succeeds.
+- **No anyJumper:** `TestMutualTooLargeChunkRetriesAtALowerLimit` commits its claim first,
+  fails the first chunk with 2101 after its body, and succeeds at a smaller limit. The test
+  requires the exact claim pointer and byte range to survive both attempts, with exactly
+  two chunk transactions and no re-claim.
 - **Claim publication:** a failed claim transaction leaves no boundaries and no claim. A
   failed chunk keeps the claim. A successful last chunk drops it, and the next call reports
   done.
