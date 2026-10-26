@@ -33,6 +33,11 @@ func (w *coalesceWriteCounter) snapshot() [][]byte {
 
 func dialWriteCounted(t *testing.T, opts ...DialOption) (*Conn, *coalesceWriteCounter) {
 	t.Helper()
+	return dialWriteCountedRaw(t, append([]DialOption{WithLegacyWriter()}, opts...)...)
+}
+
+func dialWriteCountedRaw(t *testing.T, opts ...DialOption) (*Conn, *coalesceWriteCounter) {
+	t.Helper()
 	s := newSimServer(t)
 	counter := &coalesceWriteCounter{Conn: s.cli}
 	go func() {
@@ -51,8 +56,8 @@ func dialWriteCounted(t *testing.T, opts ...DialOption) (*Conn, *coalesceWriteCo
 	return c, counter
 }
 
-// Zero for both delays restores immediate writes; the default is libfdb_c's;
-// the last option wins.
+// Zero for both delays restores immediate writes; D-NG defaults to 0/0 while
+// WithLegacyWriter defaults to libfdb_c's 10/20 µs; the last option wins.
 func TestCoalesceDelayOption(t *testing.T) {
 	t.Parallel()
 	linux := runtime.GOOS == "linux"
@@ -61,19 +66,35 @@ func TestCoalesceDelayOption(t *testing.T) {
 		opts     []DialOption
 		min, max time.Duration
 		waits    bool
+		adaptive time.Duration
 	}{
-		{"default", nil, 10 * time.Microsecond, 20 * time.Microsecond, linux},
-		{"off", []DialOption{WithCoalesceDelay(0, 0)}, 0, 0, false},
-		{"negative", []DialOption{WithCoalesceDelay(-time.Second, -time.Second)}, 0, 0, false},
-		{"last-wins-off", []DialOption{WithCoalesceDelay(time.Millisecond, time.Millisecond), WithCoalesceDelay(0, 0)}, 0, 0, false},
-		{"last-wins-on", []DialOption{WithCoalesceDelay(0, 0), WithCoalesceDelay(3*time.Microsecond, 7*time.Microsecond)}, 3 * time.Microsecond, 7 * time.Microsecond, linux},
+		{"default", nil, 0, 0, false, 0},
+		{"legacy-default", []DialOption{WithLegacyWriter()}, 10 * time.Microsecond, 20 * time.Microsecond, linux, 0},
+		{"design-d-default", []DialOption{withNetDesign(designD)}, 10 * time.Microsecond, 20 * time.Microsecond, linux, 0},
+		{"off", []DialOption{WithCoalesceDelay(0, 0)}, 0, 0, false, 0},
+		{"negative", []DialOption{WithCoalesceDelay(-time.Second, -time.Second)}, 0, 0, false, 0},
+		{"last-wins-off", []DialOption{WithCoalesceDelay(time.Millisecond, time.Millisecond), WithCoalesceDelay(0, 0)}, 0, 0, false, 0},
+		{"last-wins-on", []DialOption{WithCoalesceDelay(0, 0), WithCoalesceDelay(3*time.Microsecond, 7*time.Microsecond)}, 3 * time.Microsecond, 7 * time.Microsecond, linux, 0},
+		{"adaptive", []DialOption{WithAdaptiveLinger(20 * time.Microsecond)}, 0, 0, false, 20 * time.Microsecond},
+		{"adaptive-negative", []DialOption{WithAdaptiveLinger(-time.Second)}, 0, 0, false, 0},
+		{"adaptive-overrides-coalesce", []DialOption{WithCoalesceDelay(10*time.Microsecond, 20*time.Microsecond), WithAdaptiveLinger(25 * time.Microsecond)}, 0, 0, false, 25 * time.Microsecond},
+		{"coalesce-overrides-adaptive", []DialOption{WithAdaptiveLinger(25 * time.Microsecond), WithCoalesceDelay(3*time.Microsecond, 7*time.Microsecond)}, 3 * time.Microsecond, 7 * time.Microsecond, linux, 0},
+		{"coalesce-zero-overrides-adaptive", []DialOption{WithAdaptiveLinger(25 * time.Microsecond), WithCoalesceDelay(0, 0)}, 0, 0, false, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			c, _ := dialWriteCounted(t, tc.opts...)
+			c, _ := dialWriteCountedRaw(t, tc.opts...)
 			lo, hi, waits := c.CoalesceDelay()
 			if lo != tc.min || hi != tc.max || waits != tc.waits {
 				t.Fatalf("delay %v/%v waits=%t, want %v/%v waits=%t", lo, hi, waits, tc.min, tc.max, tc.waits)
+			}
+			if got := c.AdaptiveLinger(); got != tc.adaptive {
+				t.Fatalf("AdaptiveLinger() = %v, want %v", got, tc.adaptive)
+			}
+			if c.na != nil {
+				if c.na.delay != tc.waits || c.na.adaptive != tc.adaptive {
+					t.Fatalf("naWriter delay=%t adaptive=%v, want delay=%t adaptive=%v", c.na.delay, c.na.adaptive, tc.waits, tc.adaptive)
+				}
 			}
 		})
 	}

@@ -55,6 +55,10 @@ func (c *Conn) SendFrameContext(ctx context.Context, token UID, body []byte) (en
 // FlushContext waits for an ordered flush marker without coupling a read's
 // cancellation to the lifetime of the shared connection.
 func (c *Conn) FlushContext(ctx context.Context) error {
+	if c.na != nil {
+		_, err := c.naWrite(ctx, UID{}, nil, true, nil)
+		return err
+	}
 	if c.queued.Load() == 0 && !c.peerSendPending() && c.ctx.Err() == nil {
 		return ctx.Err()
 	}
@@ -72,6 +76,9 @@ func (c *Conn) SendFrameContextOrdered(ctx context.Context, token UID, body []by
 
 // Keep hot-path defers open-coded: returns × defers must stay ≤ 15 in Go 1.26.
 func (c *Conn) writeContext(ctx context.Context, token UID, body []byte, flush bool, permit *sendqueue.Permit) (bool, error) {
+	if c.na != nil {
+		return c.naWrite(ctx, token, body, flush, permit)
+	}
 	if err := ctx.Err(); err != nil {
 		permit.Release()
 		return false, err
@@ -170,6 +177,9 @@ func (c *Conn) SendFrameEagerContextOrdered(ctx context.Context, token UID, body
 }
 
 func (c *Conn) sendWithoutAck(ctx context.Context, token UID, body []byte, eager bool, permit *sendqueue.Permit) (bool, error) {
+	if c.na != nil {
+		return c.naWrite(ctx, token, body, false, permit)
+	}
 	if err := ctx.Err(); err != nil {
 		permit.Release()
 		return false, err

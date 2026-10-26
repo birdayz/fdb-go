@@ -140,16 +140,26 @@ func WithAPIVersion(v int) Option {
 
 // WithCoalesceDelay sets how long each connection waits before writing a batch, so
 // requests sent meanwhile share it: max(minDelay, maxDelay - time since the last
-// write), jittered by 0.9-1.1. The default is libfdb_c's MIN_COALESCE_DELAY and
-// MAX_COALESCE_DELAY, 10 and 20 µs (transport.DefaultMinCoalesceDelay and
-// DefaultMaxCoalesceDelay). The last setting wins. Fewer, larger writes cost the
-// servers less per request;
-// the wait adds to each request's latency. Zero for both writes a request at
-// once when its connection has nothing queued. The wait needs a sub-millisecond
+// write), jittered by 0.9-1.1. On the default D-NG writer the default is 0, 0
+// (immediate flush on writer wakeup); pass transport.DefaultMinCoalesceDelay and
+// DefaultMaxCoalesceDelay for libfdb_c's 10 and 20 µs timer coalescing. The last
+// linger/coalesce setting wins. Fewer, larger writes cost the servers less per
+// request; the wait adds to each request's latency. Zero for both writes a request
+// at once when its connection has nothing queued. The wait needs a sub-millisecond
 // timer: off Linux, or if the timer cannot be created, requests are written at once.
 func WithCoalesceDelay(minDelay, maxDelay time.Duration) Option {
 	return func(o *openOptions) {
 		o.dialOpts = append(o.dialOpts, transport.WithCoalesceDelay(minDelay, maxDelay))
+	}
+}
+
+// WithAdaptiveLinger configures Nagle-style adaptive linger on each connection's
+// D-NG writer: if the last socket write was at least d ago, the writer flushes
+// immediately; otherwise it yields (runtime.Gosched, no timer) until d has elapsed
+// since the last write. Passing 0 disables linger; the last linger/coalesce setting wins.
+func WithAdaptiveLinger(d time.Duration) Option {
+	return func(o *openOptions) {
+		o.dialOpts = append(o.dialOpts, transport.WithAdaptiveLinger(d))
 	}
 }
 

@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -26,17 +27,31 @@ func openBackend(cfg bench.Config) (bench.LifecycleDatabase, map[string]any, err
 	if err := fdb.APIVersion(730); err != nil {
 		return nil, nil, err
 	}
+	if cfg.CGoClientThreads != 0 || cfg.CGoExternalClient != "" || cfg.Databases != 0 {
+		return nil, nil, errors.New("cgo-client-threads, cgo-external-client and databases apply to the libfdb_c client only")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	opts := []client.Option{client.WithAPIVersion(730)}
+	if cfg.AdaptiveLinger > 0 {
+		opts = append(opts, client.WithAdaptiveLinger(cfg.AdaptiveLinger))
+	}
 	if cfg.CoalesceDelay != "" {
-		lo, hi, ok := strings.Cut(cfg.CoalesceDelay, ",")
-		minDelay, err1 := time.ParseDuration(lo)
-		maxDelay, err2 := time.ParseDuration(hi)
-		if !ok || err1 != nil || err2 != nil {
-			return nil, nil, fmt.Errorf("coalesce-delay %q: want min,max durations", cfg.CoalesceDelay)
+		if after, ok := strings.CutPrefix(cfg.CoalesceDelay, "adaptive:"); ok {
+			d, err := time.ParseDuration(after)
+			if err != nil || d < 0 {
+				return nil, nil, fmt.Errorf("coalesce-delay %q: want adaptive:<duration> or min,max durations", cfg.CoalesceDelay)
+			}
+			opts = append(opts, client.WithAdaptiveLinger(d))
+		} else {
+			lo, hi, ok := strings.Cut(cfg.CoalesceDelay, ",")
+			minDelay, err1 := time.ParseDuration(lo)
+			maxDelay, err2 := time.ParseDuration(hi)
+			if !ok || err1 != nil || err2 != nil {
+				return nil, nil, fmt.Errorf("coalesce-delay %q: want min,max durations", cfg.CoalesceDelay)
+			}
+			opts = append(opts, client.WithCoalesceDelay(minDelay, maxDelay))
 		}
-		opts = append(opts, client.WithCoalesceDelay(minDelay, maxDelay))
 	}
 	raw, err := client.OpenDatabase(ctx, cfg.ClusterFile, opts...)
 	if err != nil {
@@ -51,7 +66,11 @@ func openBackend(cfg bench.Config) (bench.LifecycleDatabase, map[string]any, err
 		db.Close()
 		return nil, nil, err
 	}
-	return &backend{db: db, raw: raw}, map[string]any{"backend": "go", "api_version": 730, "native_library": false, "coalesce_delay": cfg.CoalesceDelay}, nil
+	meta := map[string]any{"backend": "go", "api_version": 730, "native_library": false, "coalesce_delay": cfg.CoalesceDelay}
+	if cfg.AdaptiveLinger > 0 {
+		meta["adaptive_linger_ns"] = int64(cfg.AdaptiveLinger)
+	}
+	return &backend{db: db, raw: raw}, meta, nil
 }
 
 func (b *backend) Close()         { b.db.Close() }

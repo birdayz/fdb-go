@@ -47,7 +47,7 @@ func directConn(t *testing.T, nc *net.TCPConn) *Conn {
 	t.Cleanup(cancel)
 	return &Conn{
 		conn: nc, ctx: ctx, cancel: cancel, writeCh: make(chan writeReq, 8),
-		pending: make(map[UID]pendingEntry), raw: newRawWriter(nc), tailKick: make(chan struct{}, 1),
+		raw: newRawWriter(nc), tailKick: make(chan struct{}, 1),
 	}
 }
 
@@ -232,7 +232,8 @@ func dialStalledPeer(t *testing.T, opts ...DialOption) (c *Conn, release chan st
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	base := []DialOption{withMonitorCadence(time.Hour, time.Hour), WithCoalesceDelay(0, 0)}
+	// Today's writer unless an option selects design D: these tests pin its mechanics.
+	base := []DialOption{withMonitorCadence(time.Hour, time.Hour), WithCoalesceDelay(0, 0), WithLegacyWriter()}
 	c, err = dialWith(ctx, ln.Addr().String(), nil, nil, append(base, opts...)...)
 	if err != nil {
 		t.Fatal(err)

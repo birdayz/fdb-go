@@ -115,6 +115,7 @@ Each is described in full under Compatibility or Changed below.
   - Legacy GODEBUG values removed in Go 1.27 abort program startup if set.
 
 ### Added
+- `transport.WithAdaptiveLinger`, `client.WithAdaptiveLinger`, `fdb.WithAdaptiveLinger`, and `transport.Conn.AdaptiveLinger` configure and report Nagle-style adaptive writer linger on the pure-Go client's enqueue-only connection writer (RFC-282).
 - The pure-Go client reads `FDB_TLS_VERIFY_PEERS` (libfdb_c's verify-peers grammar,
   `transport.ParseVerifyPeers`) and `FDB_TLS_PASSWORD` (encrypted PBES2 PKCS#8 keys) (RFC-277).
 - Pure-Go `fdb.MappedRangeReader` capability with byte-driven batch iteration for exact primary ranges; the libfdb_c backend does not expose it.
@@ -125,6 +126,7 @@ Each is described in full under Compatibility or Changed below.
   and tags now apply to every statement transaction, autocommit and read-only ones included.
 
 ### Changed
+- Pure-Go client transport writer and hot path (RFC-282): connections use an enqueue-only writer (`D-NG`) with a 16 MiB high-water backpressure bound and default to immediate flush on wakeup (`0, 0` coalesce delay; pass `WithCoalesceDelay(transport.DefaultMinCoalesceDelay, transport.DefaultMaxCoalesceDelay)` for `libfdb_c`'s 10/20 µs timer coalescing or `WithAdaptiveLinger` for Nagle-style adaptive linger). Reply registration uses a 32-shard connection table, `Transact`/`ReadTransact` pool per-transaction timeout timers, `latencySketch` is 16-way striped, and single-read/single-waiter transaction paths inline their state.
 - SQL driver transactions (RFC-272): `BeginTx` with `TxOptions{ReadOnly: true}` fails with 0A000
   (Java accepts `setReadOnly` and ignores it; database/sql requires a driver that does not enforce
   it to refuse it). The `BeginTx` context bounds the transaction: when it ends, the FDB transaction

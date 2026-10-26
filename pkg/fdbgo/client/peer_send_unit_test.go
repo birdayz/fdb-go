@@ -180,9 +180,10 @@ func TestColdPeerSendOrderThroughEnqueue(t *testing.T) {
 		t.Fatalf("other peer frame = %q", got)
 	}
 	resumeOnce.Do(func() { close(resumeBegin) })
-	if registered {
+	if registered && transport.NetDesign() == "" {
 		// The peer still cannot read: end reaches its flush wait only if begin
-		// releases the cold turn on enqueue, not after the blocked flush.
+		// releases the cold turn on enqueue, not after the blocked flush. Design D
+		// has no flush wait (DESIGN.md T1); its order and results are checked below.
 		sendAwait(t, ctx, endQueued, "end enqueue before begin's flush completes")
 	}
 	readsOnce.Do(func() { close(reads) })

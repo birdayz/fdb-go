@@ -481,24 +481,34 @@ type Transaction struct {
 	// TIMEOUT is armed for the current read generation, whether or not its
 	// incarnation exists (all under readErrMu). timeoutNode is this object's
 	// queue entry; timeoutArm numbers arms so a stale delivery is rejected.
-	timeoutNode  *timeoutNode
-	timeoutArmed bool
-	timeoutArm   uint64
-	readLife     *readIncarnation
-	readErr      error
+	timeoutNode         *timeoutNode
+	timeoutArmed        bool
+	timeoutNeedsArm     bool
+	timeoutArm          uint64
+	transactScoped      bool
+	transactFinalCommit bool
+	turnoverErr         wire.FDBError
+	turnoverErrUsed     bool
+	inlineVs            versionstampCompletion
+	inlineVsUsed        bool
+	spanNeedsRegen      atomic.Bool
+	// designTimer/designEntry/designArm: design D4's timer per transaction (timeout_design.go).
+	designTimer *time.Timer
+	designEntry *designTimerEntry
+	designArm   uint64
+	readLife    *readIncarnation
+	readErr     error
 	// readGen is the read-tracking incarnation, bumped on every reset. C++
 	// swaps the reading AndFuture on resetRyow (:2715): a read issued under an
 	// old incarnation that fails AFTER a reset must not poison the new one.
 	// PendingGet captures the gen at issue; trackReadErrorGen drops stale
 	// recordings.
 	readGen uint64
-	// pendingReads is the set of issued-but-unresolved pipelined reads of the
-	// CURRENT incarnation. C++ commit() waits on ryw->reading (:1358) — a
-	// completion barrier for in-flight reads, not just a sample of past
-	// failures — so Commit drains these (Resolve is idempotent/memoized)
-	// before checking readErr. Cleared on reset: C++ detaches old reads with
-	// the AndFuture swap.
-	pendingReads map[*PendingGet]struct{}
+	// pendingReadFirst + pendingReads hold issued-but-unresolved pipelined reads
+	// of the CURRENT incarnation. Single-read transactions use pendingReadFirst
+	// without allocating a map.
+	pendingReadFirst *PendingGet
+	pendingReads     map[*PendingGet]struct{}
 
 	// hadRead: set when any read is ISSUED (getValue / getRange / GetPipelined — the chokes
 	// every read funnels through, which GetReadVersion and Commit do NOT). Together with a
@@ -919,7 +929,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 		// The first read of a burst goes out at once; later ones queue while it is
 		// outstanding, so writeLoop can coalesce them into one write.
 		tx.readErrMu.Lock()
-		first := len(tx.pendingReads) == 0
+		first := !tx.hasPendingReadsLocked()
 		tx.readErrMu.Unlock()
 		var sendErr error
 		if first {
@@ -935,9 +945,15 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			continue
 		}
 		// Timeout delivery ends this wait through ctx; C++ waits for the reply or
-		// resetPromise, never the deadline itself (RYW:361-391).
-		timer := getTimer(tx.readRPCTimeout())
-		p := &PendingGet{key: bytes.Clone(key), tx: tx, addr: server.Address, tenantID: tx.tenantId, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, cancel: opCancel.afterLease(), timer: timer, sentAt: sentAt, gen: op.inc.gen, tags: tags}
+		// resetPromise, never the deadline itself (RYW:361-391). The per-RPC reply
+		// timer is acquired lazily in PendingGet.resolve only if replyCh is not ready.
+		p := &PendingGet{tx: tx, addr: server.Address, tenantID: tx.tenantId, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, cancel: opCancel.afterLease(), sentAt: sentAt, gen: op.inc.gen, tags: tags}
+		if len(key) <= len(p.keyBuf) {
+			p.key = p.keyBuf[:len(key):len(key)]
+			copy(p.key, key)
+		} else {
+			p.key = bytes.Clone(key)
+		}
 		if tx.afterPendingSend != nil {
 			tx.afterPendingSend(p)
 		}
@@ -955,10 +971,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			p.retireLocked()
 			return p.memoVal, nil, p.memoErr
 		}
-		if tx.pendingReads == nil {
-			tx.pendingReads = make(map[*PendingGet]struct{})
-		}
-		tx.pendingReads[p] = struct{}{}
+		tx.addPendingReadLocked(p)
 		tx.readErrMu.Unlock()
 		replyCleanup.transfer()
 		return nil, p, nil
@@ -976,6 +989,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 // PendingGet represents a GetValue request that has been sent but not yet resolved.
 type PendingGet struct {
 	key           []byte
+	keyBuf        [64]byte
 	tx            *Transaction
 	tenantID      int64
 	replyConsumed bool
@@ -1686,11 +1700,23 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 	// wait(reading). Returns without resetting — the caller drives
 	// OnError/Reset, which clears it (resetRyow :2715).
 	tx.readErrMu.Lock()
-	drain := make([]*PendingGet, 0, len(tx.pendingReads))
-	for p := range tx.pendingReads {
-		drain = append(drain, p)
+	var drainFirst *PendingGet
+	var drain []*PendingGet
+	if tx.pendingReadFirst != nil && len(tx.pendingReads) == 0 {
+		drainFirst = tx.pendingReadFirst
+	} else if n := tx.pendingReadsCountLocked(); n > 0 {
+		drain = make([]*PendingGet, 0, n)
+		if tx.pendingReadFirst != nil {
+			drain = append(drain, tx.pendingReadFirst)
+		}
+		for p := range tx.pendingReads {
+			drain = append(drain, p)
+		}
 	}
 	tx.readErrMu.Unlock()
+	if drainFirst != nil {
+		drainFirst.Resolve() //nolint:errcheck // outcome lands in readErr via its tracked tail
+	}
 	for _, p := range drain {
 		p.Resolve() //nolint:errcheck // outcome lands in readErr via its tracked tail
 	}
@@ -1755,6 +1781,20 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 	// ship or be sized unvalidated. The ship-decision (coalesce vs raw; the versionstamp/rywDisabled
 	// carve-outs) lives in coalesceCommitVectors so it is unit-testable outside this inline flow.
 	shipMuts, sizeConflicts, coalesced := coalesceCommitVectors(muts, writeConflictsSnap[:nWriteConflicts], tx.rywDisabled)
+	nativeStarted = true
+	if len(shipMuts) == 0 && len(sizeConflicts) == 0 {
+		// Read-only transaction — no commit needed.
+		// NativeAPI commitMutations resets the committed version to invalidVersion.
+		// Preserve Go's auto-reuse behavior; C++ API >=410 does not reset here.
+		// RFC-170 (#8): activate pending watches at the READ version (committedVersion is -1 for a
+		// no-commit txn — C++ setupWatches' ternary falls back to getReadVersion). Fire BEFORE
+		// postCommitReset clears the read version.
+		completion.finishNoWrite()
+		owned.release()
+		tx.publishCommit(op.inc, owned, commitOutcome{version: -1})
+		return nil
+	}
+
 	// The read conflicts are sized, checked for self-conflict and shipped as one
 	// vector, frozen with the mutations above: C++ materializes its read-conflict
 	// map into the native transaction before sizing it (ReadYourWrites.actor.cpp:
@@ -1777,33 +1817,19 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 	// that fast path's condition) but BEFORE the size check (~:6835), so a
 	// persistently oversized commit shows up as Started-without-Completed.
 	// Started-Completed = failed/in-flight (intentional asymmetry). RFC-097.
-	nativeStarted = true
-	if tx.db != nil && (len(shipMuts) > 0 || len(sizeConflicts) > 0) {
+	if tx.db != nil {
 		tx.db.metrics.transactionsCommitStarted.Add(1)
 	}
 
 	// C++ checks readOnly after the empty fast path and before the size check (:6810-6811).
-	if (len(shipMuts) > 0 || len(sizeConflicts) > 0) && tx.readOnly {
+	if tx.readOnly {
 		tx.state.Store(int32(txStateErrored))
 		return &wire.FDBError{Code: ErrTransactionReadOnly}
 	}
 
-	if (len(shipMuts) > 0 || len(sizeConflicts) > 0) && tx.sizeLimit > 0 && tx.approximateCommitSize(shipMuts, shipReads, sizeConflicts) > tx.sizeLimit {
+	if tx.sizeLimit > 0 && tx.approximateCommitSize(shipMuts, shipReads, sizeConflicts) > tx.sizeLimit {
 		tx.state.Store(int32(txStateErrored))
 		return &wire.FDBError{Code: 2101} // transaction_too_large
-	}
-
-	if len(shipMuts) == 0 && len(sizeConflicts) == 0 {
-		// Read-only transaction — no commit needed.
-		// NativeAPI commitMutations resets the committed version to invalidVersion.
-		// Preserve Go's auto-reuse behavior; C++ API >=410 does not reset here.
-		// RFC-170 (#8): activate pending watches at the READ version (committedVersion is -1 for a
-		// no-commit txn — C++ setupWatches' ternary falls back to getReadVersion). Fire BEFORE
-		// postCommitReset clears the read version.
-		completion.finishNoWrite()
-		owned.release()
-		tx.publishCommit(op.inc, owned, commitOutcome{version: -1})
-		return nil
 	}
 
 	// makeSelfConflicting: C++ commitMutations (NativeAPI.actor.cpp:6858-6860), placed here — AFTER the
@@ -1926,6 +1952,7 @@ func (tx *Transaction) Reset() {
 // trace); otherwise a brand-new random span, sampled per the DB's sample rate
 // (default unsampled). RFC-115 §4.
 func (tx *Transaction) regenerateSpan() {
+	tx.spanNeedsRegen.Store(false)
 	if parent := tx.spanParent.Load(); parent != nil {
 		sc := childSpanContext(*parent)
 		tx.spanContext.Store(&sc)
@@ -1948,6 +1975,16 @@ func (tx *Transaction) regenerateSpan() {
 func (tx *Transaction) currentSpan() types.SpanContext {
 	if p := tx.spanContext.Load(); p != nil {
 		return *p
+	}
+	if tx.spanNeedsRegen.Load() {
+		tx.traceMu.Lock()
+		if tx.spanNeedsRegen.Load() {
+			tx.regenerateSpan()
+		}
+		tx.traceMu.Unlock()
+		if p := tx.spanContext.Load(); p != nil {
+			return *p
+		}
 	}
 	return types.SpanContext{}
 }
@@ -3349,7 +3386,12 @@ func (tx *Transaction) postCommitResetFields() {
 	// it must NOT carry the just-committed transaction's traceID. The next op's first GRV
 	// starts a fresh Transaction span via ensureTxSpan.
 	tx.endTxSpan()
-	tx.regenerateSpan()
+	if tx.transactFinalCommit {
+		tx.spanNeedsRegen.Store(true)
+		tx.spanContext.Store(nil)
+	} else {
+		tx.regenerateSpan()
+	}
 	// committedVersion and txnBatchId preserved intentionally.
 }
 

@@ -83,7 +83,6 @@ func TestSendPingWithReply_DropsToNilOnFullWriteCh(t *testing.T) {
 		ctx:     ctx,
 		cancel:  cancel,
 		writeCh: make(chan writeReq, 1),
-		pending: make(map[UID]pendingEntry),
 	}
 	c.writeCh <- writeReq{} // saturate the 1-slot writeCh (no writeLoop draining it)
 
@@ -92,10 +91,7 @@ func TestSendPingWithReply_DropsToNilOnFullWriteCh(t *testing.T) {
 		t.Fatalf("on a saturated writeCh the dropped ping must return a nil channel and no handle "+
 			"(a closed one is read as 'PING reply arrived → alive', defeating the liveness check); got %v, %v", got, handle)
 	}
-	c.pendingMu.Lock()
-	n := len(c.pending)
-	c.pendingMu.Unlock()
-	if n != 0 {
+	if n := c.pendingCount(); n != 0 {
 		t.Errorf("dropped ping left a pending reply registered (leak): %d", n)
 	}
 }
@@ -120,12 +116,11 @@ func TestMonitor_DroppedPingRePingsInsteadOfStalling(t *testing.T) {
 		ctx:                 ctx,
 		cancel:              cancel,
 		writeCh:             make(chan writeReq, 1),
-		pending:             make(map[UID]pendingEntry),
 		monitorLoopInterval: 5 * time.Millisecond,
 		monitorTimeout:      60 * time.Millisecond,
 	}
 	// Pending work and a full inbox force the first real ping send to drop.
-	c.pending[UID{First: 99}] = pendingEntry{ch: make(chan Response, 1)}
+	c.putPending(UID{First: 99}, pendingEntry{ch: make(chan Response, 1)})
 	c.writeCh <- writeReq{}
 	traffic := &monitorTrafficContext{Context: ctx, conn: c, firstWait: make(chan struct{})}
 	c.ctx = traffic
@@ -182,10 +177,8 @@ func (c *monitorTrafficContext) Done() <-chan struct{} {
 	c.conn.bytesReceived.Add(1)
 	if c.conn.monitorCycles.Load() > 0 {
 		c.once.Do(func() {
-			c.conn.pendingMu.RLock()
-			_, work := c.conn.pending[UID{First: 99}]
-			c.dropped = work && len(c.conn.pending) == 1 && len(c.conn.writeCh) == 1
-			c.conn.pendingMu.RUnlock()
+			work := c.conn.HasPendingReply(UID{First: 99})
+			c.dropped = work && c.conn.pendingCount() == 1 && len(c.conn.writeCh) == 1
 			close(c.firstWait)
 		})
 	}
@@ -207,12 +200,12 @@ func TestMonitorTrafficContextObservation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			conn := &Conn{pending: make(map[UID]pendingEntry), writeCh: make(chan writeReq, 1)}
+			conn := &Conn{writeCh: make(chan writeReq, 1)}
 			if tc.work {
-				conn.pending[UID{First: 99}] = pendingEntry{}
+				conn.putPending(UID{First: 99}, pendingEntry{})
 			}
 			if tc.extra {
-				conn.pending[UID{First: 100}] = pendingEntry{}
+				conn.putPending(UID{First: 100}, pendingEntry{})
 			}
 			if tc.full {
 				conn.writeCh <- writeReq{}
@@ -236,7 +229,7 @@ func TestMonitorTrafficContextObservation(t *testing.T) {
 			default:
 				t.Fatal("inner wait did not publish its observation")
 			}
-			conn.pending = nil
+			conn.clearAllPending()
 			traffic.Done()
 			if conn.bytesReceived.Load() != 3 || traffic.dropped != tc.want {
 				t.Fatal("later wait changed the first observation or stopped advancing traffic")
@@ -305,7 +298,7 @@ func TestConn_CtxCancelUnblocksStrandedSendFrame(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	// Long monitor cadence so the monitor never pings/interferes.
-	c, err := dialWith(ctx, "sim", s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour))
+	c, err := dialWith(ctx, "sim", s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour), WithLegacyWriter())
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -342,7 +335,7 @@ func TestConn_CtxCancelUnblocksStrandedFlush(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, err := dialWith(ctx, "sim", s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour))
+	c, err := dialWith(ctx, "sim", s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour), WithLegacyWriter())
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}

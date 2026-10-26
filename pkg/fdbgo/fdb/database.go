@@ -192,11 +192,21 @@ func WithTLSConfig(cfg *tls.Config) Option { return client.WithTLSConfig(cfg) }
 func WithDialFunc(fn client.DialFunc) Option { return client.WithDialFunc(fn) }
 
 // WithCoalesceDelay sets how long each connection waits before writing a batch, so
-// requests sent meanwhile share it. The default is libfdb_c's 10/20 µs; zero for
-// both writes a request at once when its connection has nothing queued. Off Linux
-// the delay does not apply.
+// requests sent meanwhile share it. On the default D-NG writer the default is 0, 0
+// (immediate flush on wakeup); pass transport.DefaultMinCoalesceDelay and
+// DefaultMaxCoalesceDelay for libfdb_c's 10/20 µs timer coalescing. Zero for both
+// writes a request at once when its connection has nothing queued. Off Linux the
+// delay does not apply.
 func WithCoalesceDelay(minDelay, maxDelay time.Duration) Option {
 	return client.WithCoalesceDelay(minDelay, maxDelay)
+}
+
+// WithAdaptiveLinger configures Nagle-style adaptive linger on each connection's
+// D-NG writer: if the last socket write was at least d ago, the writer flushes
+// immediately; otherwise it yields (runtime.Gosched, no timer) until d has elapsed
+// since the last write. Passing 0 disables linger; the last linger/coalesce setting wins.
+func WithAdaptiveLinger(d time.Duration) Option {
+	return client.WithAdaptiveLinger(d)
 }
 
 // WithRangeByteCeiling bounds how many bytes a single GetRange may materialize

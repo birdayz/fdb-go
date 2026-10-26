@@ -10,8 +10,8 @@ import (
 	"fdb.dev/pkg/fdbgo/transport"
 )
 
-// Every connection of a database, coordinators and roles alike, uses its write
-// delay; the default is libfdb_c's MIN/MAX_COALESCE_DELAY.
+// Every connection of a database, coordinators and roles alike, uses its configured
+// write delay or adaptive linger; the D-NG default is 0/0 (immediate flush on wakeup).
 func TestWithCoalesceDelayReachesEveryConnection(t *testing.T) {
 	t.Parallel()
 	if sharedClusterFile == nil {
@@ -21,10 +21,15 @@ func TestWithCoalesceDelayReachesEveryConnection(t *testing.T) {
 		name     string
 		opts     []Option
 		min, max time.Duration
+		adaptive time.Duration
 	}{
-		{"default", nil, transport.DefaultMinCoalesceDelay, transport.DefaultMaxCoalesceDelay},
-		{"disabled", []Option{WithCoalesceDelay(0, 0)}, 0, 0},
-		{"custom", []Option{WithCoalesceDelay(30*time.Microsecond, 50*time.Microsecond)}, 30 * time.Microsecond, 50 * time.Microsecond},
+		{"default", nil, 0, 0, 0},
+		{"disabled", []Option{WithCoalesceDelay(0, 0)}, 0, 0, 0},
+		{"libfdbc-default", []Option{WithCoalesceDelay(transport.DefaultMinCoalesceDelay, transport.DefaultMaxCoalesceDelay)}, transport.DefaultMinCoalesceDelay, transport.DefaultMaxCoalesceDelay, 0},
+		{"custom", []Option{WithCoalesceDelay(30*time.Microsecond, 50*time.Microsecond)}, 30 * time.Microsecond, 50 * time.Microsecond, 0},
+		{"adaptive", []Option{WithAdaptiveLinger(20 * time.Microsecond)}, 0, 0, 20 * time.Microsecond},
+		{"last-wins-adaptive", []Option{WithCoalesceDelay(30*time.Microsecond, 50*time.Microsecond), WithAdaptiveLinger(15 * time.Microsecond)}, 0, 0, 15 * time.Microsecond},
+		{"last-wins-coalesce", []Option{WithAdaptiveLinger(15 * time.Microsecond), WithCoalesceDelay(30*time.Microsecond, 50*time.Microsecond)}, 30 * time.Microsecond, 50 * time.Microsecond, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -60,6 +65,9 @@ func TestWithCoalesceDelayReachesEveryConnection(t *testing.T) {
 				wantWait := runtime.GOOS == "linux" && tc.max > 0
 				if lo != tc.min || hi != tc.max || waits != wantWait {
 					t.Fatalf("connection delay %v/%v waits=%t, want %v/%v waits=%t", lo, hi, waits, tc.min, tc.max, wantWait)
+				}
+				if got := c.AdaptiveLinger(); got != tc.adaptive {
+					t.Fatalf("connection AdaptiveLinger() = %v, want %v", got, tc.adaptive)
 				}
 			}
 		})

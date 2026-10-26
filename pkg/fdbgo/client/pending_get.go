@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire"
@@ -199,7 +200,7 @@ func (p *PendingGet) completeLocked(value []byte, err error) {
 	}
 	p.tx.readErrMu.Lock()
 	if p.gen == p.tx.readGen {
-		delete(p.tx.pendingReads, p)
+		p.tx.removePendingReadLocked(p)
 	}
 	p.tx.readErrMu.Unlock()
 }
@@ -244,6 +245,15 @@ func (p *PendingGet) resolve(ctx context.Context, abort <-chan struct{}) ([]byte
 			p.releaseWireLocked()
 			return p.full(ctx, abort, true)
 		}
+	}
+	select {
+	case response := <-p.replyCh:
+		p.replyConsumed = true
+		return p.resolveReply(ctx, response, abort)
+	default:
+	}
+	if p.timer == nil {
+		p.timer = getTimer(max(p.tx.readRPCTimeout()-time.Since(p.sentAt), 0))
 	}
 	select {
 	case response := <-p.replyCh:

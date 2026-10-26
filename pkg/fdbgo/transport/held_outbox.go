@@ -361,6 +361,10 @@ func (c *Conn) coldControlLoop() {
 				case <-c.ctx.Done():
 					return
 				}
+				if c.na != nil {
+					_ = c.naSend(c.ctx, control.request.token, control.request.body)
+					return
+				}
 				ownsCredit = false // enqueuePrefix owns the existing queued credit
 				_, _ = c.enqueuePrefix(c.ctx, control.request, nil, control.permit, true)
 			}()

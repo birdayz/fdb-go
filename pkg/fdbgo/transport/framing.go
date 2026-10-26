@@ -44,15 +44,33 @@ func WriteFrame(w io.Writer, token UID, body []byte, tls bool) error {
 	return err
 }
 
+func frameSize(body []byte, tls bool) int {
+	n := packetLenWidth + 16 + len(body)
+	if !tls {
+		n += checksumWidth
+	}
+	return n
+}
+
+// encodeFrameInto writes the framed message into dst (len(dst) == frameSize(body, tls)).
+func encodeFrameInto(dst []byte, token UID, body []byte, tls bool) {
+	payloadLen := 16 + len(body)
+	binary.LittleEndian.PutUint32(dst, uint32(payloadLen))
+	p := packetLenWidth
+	if !tls {
+		p += checksumWidth
+	}
+	binary.LittleEndian.PutUint64(dst[p:], token.First)
+	binary.LittleEndian.PutUint64(dst[p+8:], token.Second)
+	copy(dst[p+16:], body)
+	if !tls {
+		binary.LittleEndian.PutUint64(dst[packetLenWidth:], xxh3.Hash(dst[p:p+payloadLen]))
+	}
+}
+
 // encodeFrame builds the frame in a pooled buffer; putFrame returns it.
 func encodeFrame(token UID, body []byte, tls bool) (*[]byte, []byte) {
-	payloadLen := 16 + len(body) // token + body
-	headerSize := packetLenWidth
-	if !tls {
-		headerSize += checksumWidth
-	}
-
-	totalSize := headerSize + payloadLen
+	totalSize := frameSize(body, tls)
 
 	// Get buffer from pool, grow if needed.
 	bufp := writeFramePool.Get().(*[]byte)
@@ -63,27 +81,7 @@ func encodeFrame(token UID, body []byte, tls bool) (*[]byte, []byte) {
 		buf = buf[:totalSize]
 	}
 
-	off := 0
-
-	// Packet length (does not include itself or checksum).
-	binary.LittleEndian.PutUint32(buf[off:], uint32(payloadLen))
-	off += packetLenWidth
-
-	// Payload: token + body.
-	payloadStart := off
-	if !tls {
-		payloadStart += checksumWidth
-	}
-	binary.LittleEndian.PutUint64(buf[payloadStart:], token.First)
-	binary.LittleEndian.PutUint64(buf[payloadStart+8:], token.Second)
-	copy(buf[payloadStart+16:], body)
-
-	// Checksum (non-TLS only): XXH3-64 over payload.
-	if !tls {
-		checksum := xxh3.Hash(buf[payloadStart : payloadStart+payloadLen])
-		binary.LittleEndian.PutUint64(buf[off:], checksum)
-	}
-
+	encodeFrameInto(buf, token, body, tls)
 	return bufp, buf
 }
 

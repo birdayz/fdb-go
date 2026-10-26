@@ -28,18 +28,24 @@ type pingOwnerContext struct {
 }
 
 func (p *pingOwnerContext) Done() <-chan struct{} {
-	// TryRLock: a release blocked in the seam may hold pendingMu.
-	if p.ping.Load() == nil && p.conn.pendingMu.TryRLock() {
+	// TryLock per shard: a release blocked in the seam may hold its shard lock.
+	if p.ping.Load() == nil {
 		recordedNow := false
-		for token, entry := range p.conn.pending {
-			if token != pingOwnerDummy {
-				ch := entry.ch
-				p.ping.Store(&ch)
-				close(p.recorded)
-				recordedNow = true
+		for i := range p.conn.pendingShards {
+			s := &p.conn.pendingShards[i]
+			if !s.mu.TryLock() {
+				continue
 			}
+			for token, entry := range s.m {
+				if token != pingOwnerDummy {
+					ch := entry.ch
+					p.ping.Store(&ch)
+					close(p.recorded)
+					recordedNow = true
+				}
+			}
+			s.mu.Unlock()
 		}
-		p.conn.pendingMu.RUnlock()
 		if recordedNow && p.hold != nil {
 			<-p.hold
 		}
@@ -90,10 +96,10 @@ func newPingOwnerFixture(t *testing.T, opts pingOwnerOptions) *pingOwnerFixture 
 		conn:                client,
 		cancel:              cancel,
 		writeCh:             make(chan writeReq, 1),
-		pending:             map[UID]pendingEntry{pingOwnerDummy: {ch: make(chan Response, 1)}},
 		monitorLoopInterval: time.Millisecond,
 		monitorTimeout:      opts.timeout,
 	}
+	c.putPending(pingOwnerDummy, pendingEntry{ch: make(chan Response, 1)})
 	f := &pingOwnerFixture{c: c, cancel: cancel, monitorDone: make(chan struct{}), released: make(chan bool, 1)}
 	if opts.gated {
 		f.gate = make(chan struct{})
@@ -194,11 +200,8 @@ func TestMonitorPingOwner_CloseWaitsForReplyRelease(t *testing.T) {
 	}
 	// A write lock taken before recording would fail the recording TryRLock.
 	admissionAwait(t, f.ctx.recorded, "the monitor's PING wait")
-	// Publish the reply as readLoop does: send, then delete, under pendingMu.
-	f.c.pendingMu.Lock()
-	f.c.pending[token].ch <- Response{}
-	delete(f.c.pending, token)
-	f.c.pendingMu.Unlock()
+	// Publish the reply as readLoop does: send, then delete, under the shard lock.
+	f.c.deliverPending(token, Response{})
 	requireCloseWaitsForGate(t, f, token)
 }
 
@@ -277,19 +280,16 @@ func TestReleasePingPoolsPublishedReply(t *testing.T) {
 			c := newTestConn()
 			token, _, h := c.PrepareReply()
 			ch := h.ch
-			if published { // failAllPending: send, then delete, under pendingMu
-				c.pendingMu.Lock()
-				ch <- Response{Err: errConnClosed}
-				delete(c.pending, token)
-				c.pendingMu.Unlock()
+			if published { // failAllPending: send, then delete, under the shard lock
+				c.deliverPending(token, Response{Err: errConnClosed})
 			}
 			pooled := observePool(t)
 			releasePing(h, false)
 			if len(*pooled) != 1 || (*pooled)[0] != ch {
 				t.Fatalf("releasePing pooled %d channels, want the PING's once", len(*pooled))
 			}
-			if len(c.pending) != 0 {
-				t.Fatalf("releasePing left %d registrations", len(c.pending))
+			if n := c.pendingCount(); n != 0 {
+				t.Fatalf("releasePing left %d registrations", n)
 			}
 		})
 	}

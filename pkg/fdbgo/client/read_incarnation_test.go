@@ -125,9 +125,8 @@ func TestReadIncarnationTimerRetirement(t *testing.T) {
 	}
 	tx.readErrMu.Lock()
 	arm = tx.timeoutArm
-	node := tx.timeoutNode
+	tx.withdrawTimeoutLocked() // Deliver this callback explicitly, without leaving a queued timeout.
 	tx.readErrMu.Unlock()
-	node.queue.remove(node) // Deliver this callback explicitly, without leaving a queued timeout.
 	tx.fireTimeout(arm)
 	tx.SetTimeout(0)
 	if got := fdbCodeOf(tx.readEntryError(ctx)); got != 1031 {

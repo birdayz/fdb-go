@@ -61,7 +61,7 @@ func TestBothBackendsAgainstFDB(t *testing.T) {
 			t.Fatal(err)
 		}
 		digest := sha256.Sum256(binaryBytes)
-		for _, name := range []string{"get100", "get1000", "get10000", "read1000", "grv", "set100", "range10", "range100", "ryw", "batchset50", "batchset50x1000", "set100-paced"} {
+		for _, name := range []string{"get100", "get1000", "get10000", "read1000", "grv", "set100", "range10", "range100", "ryw", "batchset50", "batchset50x1000", "getset100", "set100-paced"} {
 			workload, paced := strings.CutSuffix(name, "-paced")
 			t.Run(arm.name+"/"+name, func(t *testing.T) {
 				output := filepath.Join(t.TempDir(), "result")

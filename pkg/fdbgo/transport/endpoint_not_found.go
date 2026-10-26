@@ -79,17 +79,20 @@ func (c *Conn) handleEndpointNotFound(body []byte) {
 		(*fn)(token)
 	}
 	var err error
-	c.pendingMu.Lock()
-	for reply, entry := range c.pending {
-		if entry.dest != token {
-			continue
+	for i := range c.pendingShards {
+		s := &c.pendingShards[i]
+		s.mu.Lock()
+		for reply, entry := range s.m {
+			if entry.dest != token {
+				continue
+			}
+			if err == nil {
+				err = &EndpointNotFoundError{Token: token}
+			}
+			// Same single-producer discipline as readLoop's delivery.
+			entry.ch <- Response{Err: err}
+			delete(s.m, reply)
 		}
-		if err == nil {
-			err = &EndpointNotFoundError{Token: token}
-		}
-		// Same single-producer discipline as readLoop's delivery.
-		entry.ch <- Response{Err: err}
-		delete(c.pending, reply)
+		s.mu.Unlock()
 	}
-	c.pendingMu.Unlock()
 }

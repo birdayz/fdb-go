@@ -2,6 +2,18 @@ package transport
 
 // tryEnqueue is enqueue for fire-and-forget frames that a full queue drops.
 func (c *Conn) tryEnqueue(req writeReq) bool {
+	if c.na != nil {
+		if order := c.peerSendOrder.Load(); order != nil {
+			reserved, accepted, held := c.reserveColdControl(order, req)
+			if reserved {
+				return accepted
+			}
+			if held {
+				return false
+			}
+		}
+		return c.naTrySend(req.token, req.body)
+	}
 	if order := c.peerSendOrder.Load(); order != nil {
 		reserved, accepted, held := c.reserveColdControl(order, req)
 		if reserved {

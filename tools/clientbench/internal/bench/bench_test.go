@@ -251,6 +251,20 @@ func TestPacedRateValidation(t *testing.T) {
 			t.Errorf("schedule rate %v accepted", rate)
 		}
 	}
+	cfg := base
+	cfg.AdaptiveLinger = 20 * time.Microsecond
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid adaptive-linger rejected: %v", err)
+	}
+	cfg.CoalesceDelay = "10us,20us"
+	if cfg.Validate() == nil {
+		t.Error("mutually exclusive coalesce-delay and adaptive-linger accepted")
+	}
+	cfg.CoalesceDelay = ""
+	cfg.AdaptiveLinger = -time.Microsecond
+	if cfg.Validate() == nil {
+		t.Error("negative adaptive-linger accepted")
+	}
 }
 
 // A failure ends a paced phase at once: workers already waiting for later

@@ -77,9 +77,9 @@ func (d *faultDialer) disarm() {
 
 // newTestDatabase creates a Database from a ClusterFile with custom dialer,
 // bootstrapping the connection against the provided context.
-func newTestDatabase(t *testing.T, ctx context.Context, cf *ClusterFile, dialFn transport.DialFunc) *Database {
+func newTestDatabase(t *testing.T, ctx context.Context, cf *ClusterFile, dialFn transport.DialFunc, opts ...Option) *Database {
 	t.Helper()
-	db, err := OpenDatabaseFromConfig(ctx, cf, WithDialFunc(dialFn), WithAPIVersion(730))
+	db, err := OpenDatabaseFromConfig(ctx, cf, append([]Option{WithDialFunc(dialFn), WithAPIVersion(730)}, opts...)...)
 	if err != nil {
 		t.Fatalf("newTestDatabase: %v", err)
 	}
@@ -1117,4 +1117,10 @@ func TestRead_BoundedByTimeout_NoHang(t *testing.T) {
 		t.Fatalf("want transaction_timed_out (%d), got %v (%T)", ErrTransactionTimedOut, err, err)
 	}
 	t.Logf("read against wedged cluster bounded in %v: %v (no hang)", elapsed, err)
+}
+
+// withLegacyWriter pins today's transport writer (write acknowledgments, writer
+// turns) for tests of those mechanics, whatever FDBGO_NET_DESIGN selects.
+func withLegacyWriter() Option {
+	return func(o *openOptions) { o.dialOpts = append(o.dialOpts, transport.WithLegacyWriter()) }
 }

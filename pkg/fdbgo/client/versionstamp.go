@@ -20,12 +20,20 @@ type versionstampCompletion struct {
 	claimed bool
 	ready   bool
 	retired bool
+	noWrite bool
 	result  commitOutcome
 	err     error
 }
 
 func (tx *Transaction) newVersionstampLocked(inc *readIncarnation) *versionstampCompletion {
-	c := &versionstampCompletion{tx: tx, inc: inc}
+	var c *versionstampCompletion
+	if !tx.inlineVsUsed {
+		tx.inlineVsUsed = true
+		tx.inlineVs = versionstampCompletion{tx: tx, inc: inc}
+		c = &tx.inlineVs
+	} else {
+		c = &versionstampCompletion{tx: tx, inc: inc}
+	}
 	if previous := inc.versionstamp; previous != nil && !previous.ready {
 		if inc.versionstamps == nil {
 			inc.versionstamps = make(map[*versionstampCompletion]struct{})
@@ -76,7 +84,10 @@ func (c *versionstampCompletion) finishNativeLocked(result commitOutcome, err er
 
 func (c *versionstampCompletion) finishNoWrite() {
 	c.tx.readErrMu.Lock()
-	c.selectLocked(commitOutcome{}, &wire.FDBError{Code: 2021}, false)
+	if !c.ready {
+		c.noWrite = true
+		c.selectLocked(commitOutcome{}, nil, false)
+	}
 	c.tx.readErrMu.Unlock()
 }
 
@@ -85,6 +96,9 @@ func (c *versionstampCompletion) finishNoWrite() {
 func (c *versionstampCompletion) value() ([]byte, error) {
 	if c.err != nil {
 		return nil, c.err
+	}
+	if c.noWrite {
+		return nil, &wire.FDBError{Code: 2021}
 	}
 	value := make([]byte, 10)
 	binary.BigEndian.PutUint64(value[:8], uint64(c.result.version))

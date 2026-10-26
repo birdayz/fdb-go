@@ -968,7 +968,8 @@ func (d *Database) SetDialFunc(fn transport.DialFunc) {
 // This is the primary API for interacting with FDB.
 // The transaction is reused across retries — retryCount and backoff escalate.
 func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, error)) (any, error) {
-	tx := d.CreateTransaction()
+	tx := d.createTransaction(true)
+	defer tx.releaseTransactTimeout()
 	for {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -989,7 +990,10 @@ func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, 
 
 		// Commit owns the cancellable GRV / detached-native split; prefetching here
 		// would force a GRV on the no-write fast path.
-		if err := tx.Commit(ctx); err != nil {
+		tx.transactFinalCommit = true
+		err = tx.Commit(ctx)
+		tx.transactFinalCommit = false
+		if err != nil {
 			if retryErr := tx.OnError(ctx, err); retryErr != nil {
 				return nil, retryErr
 			}
@@ -1003,7 +1007,8 @@ func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, 
 // ReadTransact runs a read-only function in a transaction with automatic retry.
 // The transaction is never committed — only reads are performed.
 func (d *Database) ReadTransact(ctx context.Context, fn func(tx *Transaction) (any, error)) (any, error) {
-	tx := d.CreateTransaction()
+	tx := d.createTransaction(true)
+	defer tx.releaseTransactTimeout()
 	for {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -1023,12 +1028,17 @@ func (d *Database) ReadTransact(ctx context.Context, fn func(tx *Transaction) (a
 // CreateTransaction creates a new transaction.
 // Database-level defaults (timeout, retry limit, system key access) are applied.
 func (d *Database) CreateTransaction() *Transaction {
+	return d.createTransaction(false)
+}
+
+func (d *Database) createTransaction(transactScoped bool) *Transaction {
 	tx := &Transaction{
 		committedVersion: -1, // C++ TransactionState::committedVersion starts at invalidVersion.
 		readVersionState: &readVersionState{},
 		db:               d.db,
 		txOptions:        txOptions{tenantId: NoTenantID},
 		creationTime:     time.Now(),
+		transactScoped:   transactScoped,
 	}
 	// Apply database-level defaults (matches C++ applyTxDefaults). One Load, so every
 	// option below comes from the SAME snapshot.

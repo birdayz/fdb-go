@@ -655,12 +655,8 @@ func (c *rywCache) getSnapshot(ctx context.Context, key []byte, serverGet func(c
 
 func (c *rywCache) cachePointResult(key, value []byte) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	var rows []KeyValue
-	if value != nil {
-		rows = []KeyValue{{Key: bytes.Clone(key), Value: value}}
-	}
-	c.serverCache.insert(key, append(bytes.Clone(key), 0), rows)
+	c.serverCache.insertPoint(key, value)
+	c.mu.Unlock()
 }
 
 // rywRangeRead is a range read past its RYW issue; its merge and conflict filter use the

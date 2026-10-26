@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // Hand an admitted token to the private Commit continuation so asynchronous
@@ -29,10 +30,61 @@ func TestReadOnlyCommitFinishAllocations(t *testing.T) {
 			t.Fatal("Commit did not publish its lazy replacement")
 		}
 	})
-	if allocs != 10 {
-		t.Fatalf("TURNOVER_FINISH_ALLOC: %v allocations, want 10", allocs)
+	if allocs != 8 {
+		t.Fatalf("TURNOVER_FINISH_ALLOC: %v allocations, want 8", allocs)
 	}
 	t.Logf("TURNOVER_FINISH_ALLOC: %v", allocs)
+}
+
+func TestTransactFinalCommitTurnoverAndEscapedHandleSafety(t *testing.T) {
+	t.Parallel()
+	tx := &Transaction{creationTime: time.Now()}
+	tx.SetTimeout(60000)
+	tx.SetReadVersion(123)
+	initialSpan := tx.initialSpan
+	if initialSpan.TraceID == [16]byte{} {
+		tx.regenerateSpan()
+		initialSpan = tx.currentSpan()
+	}
+	old := tx.readLife
+	op := &readOperation{Context: old.ctx, readAdmission: readAdmission{tx: tx, inc: old, parent: context.Background()}}
+	op.lease = tx.enterReadStateInto(op, old, false, false, &op.leaseStorage)
+	if op.lease == nil {
+		t.Fatal("failed to admit Commit")
+	}
+	tx.transactFinalCommit = true
+	completion, err := tx.admitCommit(op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.commitAdmitted(op, completion, op.lease); err != nil {
+		t.Fatal(err)
+	}
+	tx.transactFinalCommit = false
+	if !tx.hasCommitted || tx.committedVersion != -1 || tx.readLife != nil || tx.readReady != nil || tx.readGen != old.gen+1 {
+		t.Fatal("Transact final Commit did not complete turnover")
+	}
+	// If the caller retains tx after Transact:
+	// 1. currentSpan lazily regenerates a fresh trace span (never reuses the committed traceID).
+	if got := tx.currentSpan(); got.TraceID == initialSpan.TraceID || got.SpanID == 0 {
+		t.Fatalf("currentSpan after Transact final commit = %+v, want fresh TraceID != %x", got, initialSpan.TraceID)
+	}
+	// 2. GetVersionstamp still reports 2021 (read_only_transaction) and lazily arms the
+	// remaining timeout on the escaped handle.
+	_, err = tx.GetVersionstamp()
+	requireLazySuccessorCode(t, err, 2021)
+	tx.readErrMu.Lock()
+	arm, pending := tx.timeoutArm, tx.timeoutPendingLocked()
+	tx.withdrawTimeoutLocked()
+	tx.readErrMu.Unlock()
+	if !pending {
+		t.Fatal("escaped handle did not lazily arm its timeout on post-Transact entry")
+	}
+	// 3. Delivering the armed timeout on the escaped handle records 1031.
+	tx.fireTimeout(arm)
+	ctx, release := tx.opContext(context.Background())
+	defer release()
+	requireLazySuccessorCode(t, tx.readEntryError(ctx), 1031)
 }
 
 func TestTurnoverFinishPublishesOnUnwind(t *testing.T) {

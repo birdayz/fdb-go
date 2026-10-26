@@ -16,7 +16,12 @@ import (
 //
 // Thread safety: callers must hold rywCache.mu when accessing this struct.
 type snapshotCache struct {
-	entries []cacheEntry
+	entries    []cacheEntry
+	entry0     [2]cacheEntry
+	kv0        [2]KeyValue
+	keyBuf     [64]byte
+	kvUsed     int
+	keyBufUsed int
 
 	// kvsTouched counts cached KeyValues examined by the range walk since the last
 	// reset. It exists to make the walk's cost observable: the walk is supposed to do
@@ -51,7 +56,48 @@ type cacheEntry struct {
 
 // reset clears all cached state.
 func (sc *snapshotCache) reset() {
+	clear(sc.entries)
 	sc.entries = nil
+	sc.kv0 = [2]KeyValue{}
+	sc.kvUsed = 0
+	sc.keyBufUsed = 0
+}
+
+// insertPoint caches a single point read [key, key+\x00) using inline storage
+// when capacity allows, avoiding 7 per-Get slice/row allocations on the common
+// 1-2 point read transaction path.
+func (sc *snapshotCache) insertPoint(key, value []byte) {
+	need := len(key) + 1
+	var buf []byte
+	if sc.keyBufUsed+need <= len(sc.keyBuf) {
+		buf = sc.keyBuf[sc.keyBufUsed : sc.keyBufUsed+need : sc.keyBufUsed+need]
+		sc.keyBufUsed += need
+	} else {
+		buf = make([]byte, need)
+	}
+	copy(buf, key)
+	buf[len(key)] = 0
+	k := buf[:len(key):len(key)]
+	end := buf
+
+	var rows []KeyValue
+	if value != nil {
+		if sc.kvUsed < len(sc.kv0) {
+			rows = sc.kv0[sc.kvUsed : sc.kvUsed+1 : sc.kvUsed+1]
+			sc.kvUsed++
+			rows[0] = KeyValue{Key: k, Value: value}
+		} else {
+			rows = []KeyValue{{Key: k, Value: value}}
+		}
+	}
+	if len(sc.entries) == 0 {
+		if sc.entries == nil {
+			sc.entries = sc.entry0[:0]
+		}
+		sc.entries = append(sc.entries, cacheEntry{begin: k, end: end, kvs: rows})
+		return
+	}
+	sc.insert(k, end, rows)
 }
 
 // insert marks [begin, end) as known with the given KVs (must be sorted
