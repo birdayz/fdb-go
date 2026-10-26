@@ -1,0 +1,17 @@
+--- a/internal/core/bootstrap.go
++++ b/internal/core/bootstrap.go
+@@ -55,6 +55,14 @@
+ 		fallbackCwd = os.TempDir()
+ 	}
+ 
++	// fdb.dev: PID-namespaced Bazel tests can share the parent PID/create time.
++	// Give each test process its own session so their reapers cannot collide.
++	if os.Getenv("TEST_TMPDIR") != "" {
++		sessionID = uuid.New().String()
++		projectPath = fallbackCwd
++		return
++	}
++
+ 	processes, err := process.Processes()
+ 	if err != nil {
+ 		sessionID = uuid.New().String()

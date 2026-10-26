@@ -55,6 +55,9 @@ func RunCluster(ctx context.Context, size int, opts ...testcontainers.ContainerC
 	if err := tcProber.check(ctx); err != nil {
 		return nil, err
 	}
+	if err := holdReaper(ctx); err != nil {
+		return nil, err
+	}
 
 	// Create shared network.
 	nw, err := CreateNetwork(ctx)

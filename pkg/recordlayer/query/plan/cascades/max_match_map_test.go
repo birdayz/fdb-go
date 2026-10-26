@@ -945,9 +945,8 @@ func TestComputeMaxMatchMap_NewMaxMatchMap_NilInputs(t *testing.T) {
 	}
 }
 
-// TestComputeMaxMatchMap_TiedVariantsKeepTheFirstFound: q and its expansion
-// both match at depth 0, so the parent's combinations tie at depth 1 and Java
-// keeps the first found, the unexpanded query with q -> q.
+// TestComputeMaxMatchMap_TiedVariantsKeepTheFirstFound: q and its expansion tie, so the
+// parent keeps the first found, as Java does: the unexpanded query with q -> q.
 func TestComputeMaxMatchMap_TiedVariantsKeepTheFirstFound(t *testing.T) {
 	t.Parallel()
 
@@ -1015,6 +1014,55 @@ func TestMatchResults_PutKeysByStructuralEquality(t *testing.T) {
 	got, ok := results.get(aAgain)
 	if !ok || got.maxDepth != 0 {
 		t.Fatalf("get(aAgain) = %+v, %v; want depth 0", got, ok)
+	}
+}
+
+// TestRecurseQueryResultValue_FoldedVariantSharesAnEntry: under an open parent
+// matcher, q.a over q's expansion folds to a distinct copy of q.a; the frame keeps one entry.
+func TestRecurseQueryResultValue_FoldedVariantSharesAnEntry(t *testing.T) {
+	t.Parallel()
+
+	rowType := values.NewRecordType("MaxMatchFold", false, []values.Field{
+		{Name: "a", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "b", FieldType: values.NullableLong, Ordinal: 1},
+	})
+	qAlias := values.NamedCorrelationIdentifier("max_match_fold_q")
+	q := maxMatchTestQOV(t, qAlias, rowType)
+	w := maxMatchTestQOV(t, values.NamedCorrelationIdentifier("max_match_fold_w"), rowType)
+	fieldA := func(root values.Value) values.Value {
+		v, err := values.ResolveFieldOrdinals(root, []int{0})
+		return mustConstruct(t, v, err)
+	}
+	qa := fieldA(q)
+	query := values.NewRecordConstructorValue(values.RecordConstructorField{Name: "f", Value: qa})
+	candidate := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "x", Value: qa},
+		values.RecordConstructorField{Name: "z", Value: values.NewRecordConstructorValue(
+			values.RecordConstructorField{Name: "f", Value: fieldA(w)})},
+	)
+	rangedOver := map[values.CorrelationIdentifier]struct{}{qAlias: {}}
+
+	expansions := expandValueForMatching(q)
+	if len(expansions) != 1 {
+		t.Fatalf("fixture: q expands to %d values, want 1", len(expansions))
+	}
+	folded := values.WithChildren(qa, []values.Value{expansions[0]})
+	if folded == qa || !values.ValuesStructurallyEqual(folded, qa) {
+		t.Fatalf("fixture: q.a over q's expansion is %s, want a distinct copy of q.a", values.ExplainValue(folded))
+	}
+	parent := initialMatcher(query, candidate)
+	if !parent.anyMatches() {
+		t.Fatal("fixture: the parent matcher must stay open on z")
+	}
+
+	results := recurseQueryResultValue(qa, candidate, rangedOver, 0,
+		[]*incrementalValueMatcher{parent}, math.MaxInt32,
+		map[values.Value]matchResults{}, map[values.Value]struct{}{})
+	if len(results) != 1 || results[0].value != qa {
+		t.Fatalf("frame returned %d entries, want q.a once, as first found", len(results))
+	}
+	if results[0].result.maxDepth != 0 {
+		t.Fatalf("q.a's result has depth %d, want 0", results[0].result.maxDepth)
 	}
 }
 

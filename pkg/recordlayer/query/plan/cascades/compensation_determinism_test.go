@@ -496,9 +496,8 @@ func TestPlannerCapTrips(t *testing.T) {
 		}
 	})
 
-	// Java counts the bindings of one rule call: per permutation only for a set
-	// matcher, which reports both orders itself. The swapped firing of any other
-	// rule adds nothing: 2 primary bindings plan under a bound of 2.
+	// Only a set matcher counts both orders, itself; any other rule's swapped
+	// firing adds nothing, so 2 primary bindings plan under a bound of 2.
 	t.Run("swapped_firing_is_not_counted", func(t *testing.T) {
 		t.Parallel()
 		sel := twoQuantifierCapSelect(t)

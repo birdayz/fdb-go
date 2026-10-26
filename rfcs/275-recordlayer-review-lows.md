@@ -180,7 +180,8 @@ to the old behavior.
   commit, while a write to an indexed record still does. The scanned count includes the
   skipped record.
 - **Long-arithmetic key functions:** `uint64`, `uint` and a `*big.Int` past 2^64 are taken
-  with `longValue()`.
+  with `longValue()`, both at the evaluator and through a registered application function
+  nested under `add` in a real-FDB VALUE index. Reopened index keys pin the numeric results.
 - **Rank and TEXT:**
   - A ranked set written with duplicate counting and read without returns nil past level 0.
   - `extractRankValue` gives `longValue()` for `int64`, `uint64` above `MaxInt64`,

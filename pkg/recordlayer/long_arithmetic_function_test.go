@@ -1,14 +1,19 @@
 package recordlayer
 
 import (
+	"context"
 	"errors"
 	"math"
 	"math/big"
 	"testing"
 
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/gen"
+	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
@@ -88,6 +93,74 @@ func TestArithmeticWideIntegerOperands(t *testing.T) {
 		})
 	}
 }
+
+var _ = Describe("Wide arithmetic operands in stored index keys", func() {
+	It("wraps application-function operands through nested arithmetic expressions", Serial, func() {
+		const name = "recordlayer_wide_arithmetic_index_test_carrier"
+		_, registered := LookupFunction(name)
+		Expect(registered).To(BeFalse())
+		DeferCleanup(func() {
+			globalFunctionRegistryMu.Lock()
+			defer globalFunctionRegistryMu.Unlock()
+			delete(globalFunctionRegistry, name)
+		})
+		huge := new(big.Int).Add(new(big.Int).Lsh(big.NewInt(1), 64), big.NewInt(5))
+		carriers := []any{uint64(math.MaxUint64), huge, uint(4)}
+		RegisterFunctionSpec(name, FunctionSpec{
+			MinArguments: 1, MaxArguments: 1, ColumnSize: 1,
+			Evaluator: func(record *FDBStoredRecord[proto.Message], msg proto.Message, args [][]any) ([][]any, error) {
+				if record == nil || record.Record == nil || msg == nil || len(args) != 1 || len(args[0]) != 1 {
+					return nil, &KeyExpressionError{Message: "wide carrier requires a record and one evaluated field"}
+				}
+				selector, ok := args[0][0].(int64)
+				field := msg.ProtoReflect().Descriptor().Fields().ByName("price")
+				if !ok || selector < 1 || selector > int64(len(carriers)) || field == nil || msg.ProtoReflect().Get(field).Int() != selector {
+					return nil, &KeyExpressionError{Message: "wide carrier argument must be the record's signed price field"}
+				}
+				return [][]any{{carriers[selector-1]}}, nil
+			},
+		})
+		idx := NewIndex("wide_price_plus_one", FunctionExpr("add", Concat(
+			FunctionExpr(name, Field("price")), Literal(int64(1)),
+		)))
+		builder := baseBuilder()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		ks := specSubspace()
+		ctx := context.Background()
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Create()
+			if err != nil {
+				return nil, err
+			}
+			for id := int64(1); id <= 3; id++ {
+				if _, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id))}); err != nil {
+					return nil, err
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			if err != nil {
+				return nil, err
+			}
+			entries, err := AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
+			if err != nil {
+				return nil, err
+			}
+			keys := make([]tuple.Tuple, len(entries))
+			for i, entry := range entries {
+				keys[i] = entry.Key
+			}
+			Expect(keys).To(Equal([]tuple.Tuple{{int64(0), int64(1)}, {int64(5), int64(3)}, {int64(6), int64(2)}}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+})
 
 func TestArithmeticAddOverflow(t *testing.T) {
 	t.Parallel()
@@ -763,14 +836,10 @@ func TestArithmeticRegistered(t *testing.T) {
 	}
 }
 
-// TestArithmeticFunctionExprEvaluate tests the full FunctionExpr → Evaluate path
-// using a real proto message with the arithmetic functions.
+// TestArithmeticFunctionExprEvaluate checks unknown-function errors through the expression path.
 func TestArithmeticFunctionExprEvaluate(t *testing.T) {
 	t.Parallel()
 
-	// We can't easily test with a real proto message here (would need a test proto
-	// with int64 fields), but we CAN test that FunctionExpr("add", ...) correctly
-	// resolves to the registered evaluator.
 	t.Run("unknown_function_errors", func(t *testing.T) {
 		t.Parallel()
 		expr := FunctionExpr("nonexistent_arithmetic_fn", EmptyKey())

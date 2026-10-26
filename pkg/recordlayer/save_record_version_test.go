@@ -180,10 +180,20 @@ var _ = Describe("SaveRecordWithVersion", func() {
 		})
 	}
 
-	It("chooses the dry-run record version without staging a version mutation", func() {
+	It("previews an incomplete version without maintaining the count key that refuses a real save", func() {
 		for _, format := range []int32{0, 5} {
-			md := metaData(true)
-			ks := specSubspace()
+			builder := baseBuilder().SetStoreRecordVersions(true).SetRecordCountKey(VersionKey())
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			ks := specSubspace().Sub(int64(format))
+			assertEmpty := func(store *FDBRecordStore) {
+				GinkgoHelper()
+				for _, space := range []int64{RecordKey, RecordCountKey, RecordVersionKey} {
+					rows, err := store.context.Transaction().GetRange(ks.Sub(space), fdb.RangeOptions{}).GetSliceWithError()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(rows).To(BeEmpty(), "the preview and aborted save must not persist subspace %d", space)
+				}
+			}
 			run(md, ks, format, func(store *FDBRecordStore) {
 				dry, err := store.DryRunSaveRecord(order(1), RecordExistenceCheckNone)
 				Expect(err).NotTo(HaveOccurred())
@@ -195,6 +205,21 @@ var _ = Describe("SaveRecordWithVersion", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(loaded).To(BeNil())
 			})
+			run(md, ks, format, assertEmpty)
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				builder := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks)
+				if format != 0 {
+					builder.SetFormatVersion(format)
+				}
+				store, err := builder.Open()
+				if err != nil {
+					return nil, err
+				}
+				return store.SaveRecord(order(1))
+			})
+			var incomplete *IncompleteVersionstampError
+			Expect(errors.As(err, &incomplete)).To(BeTrue(), "%v", err)
+			run(md, ks, format, assertEmpty)
 		}
 	})
 

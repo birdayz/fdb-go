@@ -190,9 +190,8 @@ func unpackVersion(value []byte) (*FDBRecordVersion, error) {
 	return NewCompleteVersion(vs.TransactionVersion[:], int(vs.UserVersion))
 }
 
-// LoadRecordVersion loads the version associated with a record.
-// Returns nil if no version is stored or versioning is not enabled.
-// Matches Java's FDBRecordStore.loadRecordVersionAsync().
+// LoadRecordVersion returns the stored version, or nil when absent. Modern formats read explicit
+// versions even without automatic versioning; legacy formats return nil when metadata disables it.
 func (store *FDBRecordStore) LoadRecordVersion(primaryKey tuple.Tuple, snapshot bool) (*FDBRecordVersion, error) {
 	return store.loadRecordVersionAsync(primaryKey, snapshot).Get()
 }
@@ -201,9 +200,8 @@ func (store *FDBRecordStore) LoadRecordVersion(primaryKey tuple.Tuple, snapshot 
 func (store *FDBRecordStore) loadRecordVersionAsync(primaryKey tuple.Tuple, snapshot bool) PendingRead[*FDBRecordVersion] {
 	oldFormat := store.useOldVersionFormat()
 
-	// In the legacy layout the version subspace is cleared whenever the store is not
-	// configured to keep versions, so we can answer without any I/O. Matches Java's
-	// loadRecordVersionAsync: `useOldVersionFormat() && !metaData.isStoreRecordVersions()`.
+	// Java ignores legacy version bytes when metadata disables versions, even if an
+	// explicit-version save wrote them (loadRecordVersionAsync).
 	if oldFormat && !store.metaData.IsStoreRecordVersions() {
 		return NewPendingRead(func() (*FDBRecordVersion, error) { return nil, nil }, nil)
 	}
