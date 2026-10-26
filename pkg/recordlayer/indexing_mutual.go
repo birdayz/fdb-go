@@ -228,8 +228,8 @@ func (m *mutualIndexBuilder) buildMutual(ctx context.Context) (int64, bool, erro
 	}
 }
 
-// claimNextRange claims the next range to build in a read-only transaction, Java's buildRangeOnly.
-// It reports false when nothing is missing, and keeps the claim only if the transaction commits.
+// claimNextRange selects work without writes; completion validates and renews the heartbeat.
+// It keeps the claim and walk only after the transaction commits.
 func (m *mutualIndexBuilder) claimNextRange(ctx context.Context) (bool, error) {
 	next := *m
 	var more bool

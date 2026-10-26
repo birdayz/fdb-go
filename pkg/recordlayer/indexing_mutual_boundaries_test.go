@@ -193,6 +193,140 @@ func TestGetPrimaryKeyBoundaries(t *testing.T) {
 	}
 }
 
+// boundaryPipelineProbe counts issued range results until their slices are consumed.
+// Positive events issue a numbered lookup; negative events collect that lookup.
+type boundaryPipelineProbe struct {
+	t           *testing.T
+	lookups     map[string]int
+	end         []byte
+	outstanding int
+	maximum     int
+	events      []int
+}
+
+type boundaryPipelineTransaction struct {
+	fdb.WritableTransaction
+	probe *boundaryPipelineProbe
+}
+
+func (tx *boundaryPipelineTransaction) Snapshot() fdb.ReadTransaction {
+	return &boundaryPipelineSnapshot{ReadTransaction: tx.WritableTransaction.Snapshot(), probe: tx.probe}
+}
+
+type boundaryPipelineSnapshot struct {
+	fdb.ReadTransaction
+	probe *boundaryPipelineProbe
+}
+
+func (tx *boundaryPipelineSnapshot) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResult {
+	exact, ok := r.(fdb.ExactRange)
+	if !ok {
+		return tx.ReadTransaction.GetRange(r, options)
+	}
+	begin, end := exact.FDBRangeKeys()
+	number, configured := tx.probe.lookups[string(begin.FDBKey())]
+	if !configured || !bytes.Equal(end.FDBKey(), tx.probe.end) {
+		return tx.ReadTransaction.GetRange(r, options)
+	}
+	if options.Limit != 1 {
+		tx.probe.t.Fatalf("boundary lookup %d has limit %d, want 1", number, options.Limit)
+	}
+	result := tx.ReadTransaction.GetRange(r, options)
+	tx.probe.outstanding++
+	tx.probe.maximum = max(tx.probe.maximum, tx.probe.outstanding)
+	tx.probe.events = append(tx.probe.events, number)
+	return &boundaryPipelineResult{RangeResult: result, probe: tx.probe, number: number}
+}
+
+type boundaryPipelineResult struct {
+	fdb.RangeResult
+	probe     *boundaryPipelineProbe
+	number    int
+	collected bool
+}
+
+func (r *boundaryPipelineResult) GetSliceWithError() ([]fdb.KeyValue, error) {
+	if r.collected {
+		r.probe.t.Fatalf("boundary lookup %d collected twice", r.number)
+	}
+	rows, err := r.RangeResult.GetSliceWithError()
+	r.collected = true
+	r.probe.outstanding--
+	r.probe.events = append(r.probe.events, -r.number)
+	return rows, err
+}
+
+func TestGetPrimaryKeyBoundariesPipelineWindow(t *testing.T) {
+	t.Parallel()
+	if DefaultPipelineSize < 2 {
+		t.Fatal("pipeline overlap requires a window of at least two lookups")
+	}
+	db, backend := newShardMapDB(79)
+	md, err := baseBuilder().Build()
+	if err != nil {
+		t.Fatalf("metadata: %v", err)
+	}
+	sb := NewStoreBuilder().SetMetaDataProvider(md).
+		SetSubspace(subspace.FromBytes(tuple.Tuple{"pkbounds", "pipeline-window"}.Pack()))
+	const extraLookups = 3
+	lookupCount := 2*DefaultPipelineSize + extraLookups
+	ids := make([]int64, lookupCount)
+	want := make([]tuple.Tuple, lookupCount)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+		want[i] = tuple.Tuple{ids[i]}
+	}
+	seedOrders(t, db, sb, ids)
+
+	if _, err := db.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+		store, err := sb.copyBuilder().SetContext(rtx).Open()
+		if err != nil {
+			return nil, err
+		}
+		kr := TupleRangeAll.ToFDBRange(store.recordsSubspace)
+		probe := &boundaryPipelineProbe{t: t, lookups: make(map[string]int), end: kr.End.FDBKey()}
+		backend.shards = nil
+		for i, pk := range want {
+			key := store.recordsSubspace.Pack(pk)
+			backend.shards = append(backend.shards, key)
+			probe.lookups[string(key)] = i + 1
+		}
+		// Install after Open, and match only the configured shard-to-record lookups.
+		original := rtx.tx
+		rtx.tx = &boundaryPipelineTransaction{WritableTransaction: original, probe: probe}
+		defer func() { rtx.tx = original }()
+		got, err := store.GetPrimaryKeyBoundaries(TupleRangeAll)
+		if err != nil {
+			return nil, err
+		}
+		if !slices.EqualFunc(got, want, func(a, b tuple.Tuple) bool { return bytes.Equal(a.Pack(), b.Pack()) }) {
+			t.Fatalf("boundaries = %v, want %v", got, want)
+		}
+		if probe.maximum != DefaultPipelineSize || probe.outstanding != 0 {
+			t.Fatalf("outstanding lookups: maximum %d, remaining %d; want maximum %d, remaining 0; events %v",
+				probe.maximum, probe.outstanding, DefaultPipelineSize, probe.events)
+		}
+		// Fill the first window before collecting, then collect the oldest before
+		// issuing each replacement, and finally drain the remaining window in order.
+		var wantEvents []int
+		for number := 1; number <= lookupCount; number++ {
+			if number > DefaultPipelineSize {
+				wantEvents = append(wantEvents, -(number - DefaultPipelineSize))
+			}
+			wantEvents = append(wantEvents, number)
+		}
+		for number := lookupCount - DefaultPipelineSize + 1; number <= lookupCount; number++ {
+			wantEvents = append(wantEvents, -number)
+		}
+		if !slices.Equal(probe.events, wantEvents) {
+			t.Fatalf("lookup issue/collect events = %v, want %v", probe.events, wantEvents)
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("GetPrimaryKeyBoundaries: %v", err)
+	}
+}
+
 // newSimMutualIndexer seeds orders over a simulated store and returns a mutual indexer
 // for a new price index, marked write-only.
 func newSimMutualIndexer(t *testing.T, db *FDBDatabase, name string, md *RecordMetaData, limit int, ids []int64, large ...int64) *OnlineIndexer {

@@ -67,9 +67,9 @@ Go line numbers are at the base commit, `da73f1db1`.
    `transactionReachedLimits` after each indexed record, as `buildRangeInTransaction` does.
    The record after the limit ends the range. The function returns whether it stopped early.
 3. **FULL phase.** The builder keeps a claimed range across calls. `buildMutual`:
-   - with no claim, runs `claimNextRange`, a read-only transaction like Java's
-     `buildRangeOnly`. It checks the index states, reads the boundaries if needed and lists
-     the missing ranges. It reports done when nothing is missing. Otherwise `nextClaim` walks
+   - with no claim, runs `claimNextRange`, which checks index states, reads the boundaries
+     if needed and lists missing ranges. Selecting nonempty work is read-only; reporting
+     completion validates and renews the heartbeat in a committing transaction. `nextClaim` walks
      the fragments from the current one with ports of `fullyUnBuiltRange` and
      `partlyUnBuiltRange`.
      - A walk back to the first fragment moves FULL to ANY.
@@ -117,11 +117,11 @@ returns an error; it is unexported.
 
 ## Performance
 
-A claim costs one read-only transaction per fragment, where Go used to list the missing
-ranges of every fragment it walked inside each chunk's transaction. The chunk transaction
-now reads only the claimed range of the range set, so a peer's progress elsewhere does not
-conflict it. Boundary detection adds one snapshot read per shard boundary in the records
-range, pipelined, once per build.
+Selecting nonempty work costs one read-only transaction per fragment, where Go used to list
+missing ranges inside each chunk's transaction. The final completion check instead writes the
+heartbeat to fence the session. Chunk transactions read only the claimed range of the range
+set, so a peer's progress elsewhere does not conflict them. Boundary detection adds one
+snapshot read per shard boundary in the records range, pipelined, once per build.
 
 ## Test plan
 
@@ -135,6 +135,10 @@ Each regression fails before its fix (mutations recorded on the PR).
     the lookups in flight, with a repeat across the window's edge, give 14 sorted keys. A
     concurrent save inside a looked-up range does not conflict the caller (snapshot reads),
     and a context without a database gets a `BackendCapabilityError`.
+  - `TestGetPrimaryKeyBoundariesPipelineWindow` records issue/collect events for 23 lookups:
+    the initial window overlaps, at most `DefaultPipelineSize` results are outstanding,
+    collection/refill is FIFO, and no result remains uncollected. Serial and unbounded-window
+    mutations must fail its outstanding-read assertions.
   - Real-FDB specs in `online_indexer_conflicts_test.go` inject boundaries inside a real
     250 KB split record at key 50 and prove suffix removal and deduplication. The caller pins
     its read version before a concurrent insert of key 7; lookups still return key 10 and
