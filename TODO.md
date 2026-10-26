@@ -2348,6 +2348,10 @@ multi-page auto-commit SELECT, which stays tracked only.
 
 ### Tests and CI
 
+- [x] **High:** Bazel testcontainers sessions collide across PID namespaces, and Ryuk can
+  exit between a suite's last terminated container and later parallel tests. Fixed in #1018:
+  per-process Bazel session IDs and a process-lifetime reaper connection, pinned by
+  sibling-process isolation and real-Docker last-container lifetime regressions.
 - [x] **High ✔ SQL suites pass when the FDB container fails to start.**
   `pkg/relational/sqltest/testkit/embedded_fdb.go:47-56` treats every `Run` error other than
   `TerminationError` (timeout, pull, OOM) as "no Docker" and runs with an empty cluster file:
@@ -2365,7 +2369,7 @@ multi-page auto-commit SELECT, which stays tracked only.
 - [x] **Medium:** five of the seven `.github/workflows/ci.yml` jobs have no `timeout-minutes`. Fixed in #998.
 - [x] **Medium:** the Java oracle's Maven dependencies are unpinned: `maven.install` has no
   `lock_file` (`MODULE.bazel:130,275`). Fixed in #1008 (`maven_install.json`, `just maven-repin`).
-- [ ] **Low:** tests in no lane: `pkg/relational/core/parser/yamsql_corpus_test.go` (`yamsql`
+- [x] **Low:** tests in no lane: `pkg/relational/core/parser/yamsql_corpus_test.go` (`yamsql`
   tag, run only by a `go test` recipe), `pkg/relational/sqldriver/stress/stress_10m_test.go`
   (`realcluster`) and `tools/bazelscaleset` (no BUILD file, no workflow). The libfdbc tests
   have their own item. Fixed in #1008: the corpus test joins `parser_test`, the 10M scales get a
