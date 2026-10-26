@@ -54,11 +54,12 @@ Each is described in full under Compatibility or Changed below.
   - A TEXT index whose text column is not a string fails the save with `ClassCastError`, as Java
     does.
   - A BY_RANK bound that is not a number also fails with `ClassCastError`.
-  - Primary and maintained-count keys evaluate the chosen record version, not a null
-    placeholder. An incomplete version in either key returns `IncompleteVersionstampError`;
-    this includes automatic versions in ordinary, batch and pipelined saves. Dry runs share
-    primary-key validation but do not maintain counts. Count-key checks run only when a count
-    is maintained.
+  - Primary-key expressions declaring version columns are refused with `MetaDataError`
+    ("Version in primary key not supported"), as Java does. The chosen record version is
+    visible to function-wrapped primary keys and maintained-count keys; an
+    incomplete value in their ordinary tuple encoders returns `IncompleteVersionstampError`.
+    Dry runs share primary-key preparation but do not maintain counts. Count-key checks run
+    only when a count is maintained.
 - **`keyspace` (RFC-275):**
   - `AddSubdirectory` and `AddSubdirectories` return an `*ArgumentError` under Java's sibling
     rules, instead of panicking on a duplicate name.
@@ -96,12 +97,13 @@ Each is described in full under Compatibility or Changed below.
   the post-publication retraction procedure in `RELEASE.md`.
 
 ### Compatibility
-- **Version-dependent record keys (RFC-275):** complete supplied versions participate in
-  primary and maintained-count keys as in Java. Automatic or supplied incomplete versions
-  cannot be packed into these ordinary keys and are refused with `IncompleteVersionstampError`.
-  Existing records or counters written under null-version components are not relocated or
-  corrected automatically; migrate or recreate affected pre-release stores before mixed-engine
-  use. Tuple encodings and stores without version-dependent keys are unchanged.
+- **Version-dependent record keys (RFC-275):** native `VersionKey()` primary-key columns are
+  unsupported, as in Java; formerly accepted Go-only metadata is now refused. Complete supplied
+  versions participate in maintained-count keys and reach primary-key functions such as
+  ordering wrappers. Incomplete values reaching ordinary key encoders are refused with
+  `IncompleteVersionstampError`. Existing null-version counters and unsupported primary-key
+  metadata are not migrated automatically; migrate or recreate affected pre-release stores
+  before mixed-engine use. Tuple encodings and unaffected stores are unchanged.
 - **Collation:** collated index access and writes that evaluate collated primary/count keys now fail with `GoOnlyCollationError` unless the store explicitly opts into Go-only bytes with `StoreBuilder.SetGoOnlyCollation(true)`; existing keys are not migrated.
 - **Collation metadata:** fan-out follows the function arguments as in Java, permitting scalar collations in primary keys.
 - **Wire format:** the Java target is upgraded to `fdb-record-layer-core` 4.14.2.0 (RFC-257). Records Java writes through `TransformedRecordSerializer` (compressed, encrypted) are
@@ -151,10 +153,11 @@ Each is described in full under Compatibility or Changed below.
 
 ### Changed
 - Record layer (RFC-275), in full:
-  - The chosen record version is visible to primary/count-key evaluation. Saves with complete
-    supplied versions now produce Java's version-prefixed keys and counters. Incomplete
-    primary/count keys return `IncompleteVersionstampError` instead of using null components
-    or panicking; dry runs use the same primary-key preparation and return the chosen version.
+  - Native version columns in primary keys are refused at metadata construction and load,
+    as in Java. The chosen version is visible to function-wrapped primary keys and
+    maintained-count expressions. Incomplete values in ordinary key encoders return
+    `IncompleteVersionstampError`; dry runs share primary-key preparation and return the
+    chosen version without count maintenance.
   - `CheckTransactionSize` returns only `TransactionSizeExceededError`. The Go-only warning
     threshold logs at WARN and counts `CountTransactionSizeWarning` once per transaction.
   - Header parse failures are `RecordCoreStorageError{Message: "Error reading version", Cause}`.

@@ -343,6 +343,9 @@ func RecordMetaDataFromProto(md *gen.MetaData, opts ...MetaDataProtoOption) (*Re
 			if err != nil {
 				return nil, protoDeserializationError(fmt.Errorf("record type %s primary key: %w", rtProto.GetName(), err))
 			}
+			if countVersionColumns(pk) != 0 {
+				return nil, &MetaDataError{Message: "Version in primary key not supported"}
+			}
 			rt.PrimaryKey = pk
 		}
 		if rtProto.SinceVersion != nil {

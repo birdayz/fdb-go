@@ -129,6 +129,10 @@ covers the four Low items and the Medium explicit-version/`VersionstampSaveBehav
 6. **Explicit-version saves.**
    - Add `VersionstampSaveBehavior` (`Default`, `NoVersion`, `WithVersion`, `IfPresent`), whose
      `String` gives Java's constant names, and `recordVersionForSave`.
+   - Native version columns in a primary key are refused by Java's `RecordTypeBuilder`
+     (`setPrimaryKey`, lines 86-90), and now by Go's metadata setter, validation and proto
+     loader. A function expression declares no version columns by default, even if its
+     arguments include one; lists sum and split/dimensions delegate as Java does.
    - `saveTargetFor` chooses the version once after resolving the record type, before
      evaluating the primary key and starting the existing-record read. Pipelined saves carry
      this chosen version in their precomputed target and reuse it in `saveRecordInternal`.
@@ -208,14 +212,17 @@ to the old behavior.
   - a VERSION index key with a complete version;
   - maintained count keys grouped by a complete version on insert and delete, and incomplete
     count keys refused with `IncompleteVersionstampError` rather than a tuple-encoder panic;
-  - primary keys containing the supplied complete version, including distinct versions for
-    the same record id; incomplete primary-key versions are refused before encoding, by both
-    real and dry-run saves; a field-only dry run returns its chosen version without writing;
+  - an ordering-function primary key observes the supplied complete version, including
+    distinct versions for the same record id; incomplete values are refused before
+    encoding by real and dry-run saves. Native `VersionKey()` primary keys are not supported;
+    their metadata is refused instead. A field-only dry run returns its version without writing;
   - the override-lock save on a locked store, a supplied complete version through the typed
     save, and the default behavior of pipelined and batch saves.
 - **Explicit versions, cross-engine** (`conformance/version_save_conformance_test.go`): a new
   Java step saves the same records with the same complete versions and behaviors, including
   a `NO_VERSION` refusal and a clearing re-save. It runs on metadata with and without
   versions and a VERSION index, at the default and the legacy format. The verdicts and the
-  record, index, maintained-count and legacy-version key-value pairs must be equal. This runs
-  with both field-only and version-prefixed primary keys.
+  record, index, maintained-count and legacy-version key-value pairs must be equal, with
+  field-only and ordering-wrapped-version primary keys. Separate
+  metadata cases pin native-version primary-key refusals for direct, composite, list, split
+  and dimensions expressions, and Java's acceptance of a function-wrapped version expression.

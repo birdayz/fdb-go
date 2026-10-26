@@ -4572,13 +4572,15 @@ their remote-fetch leaves.
 
 ## Version-dependent record keys before RFC-275
 
-Earlier Go saves evaluated primary and maintained-count keys without the record version,
-so a `VersionKey()` component became null even when a complete version was supplied.
-RFC-275 evaluates the chosen version, as Java does, and refuses incomplete versions in
-ordinary primary/count-key encoders with `IncompleteVersionstampError` rather than a panic.
-Existing null-version keys and counters are not migrated automatically; migrate or recreate
-affected pre-release stores before mixed-engine use. Stores without version-dependent keys
-and the tuple encodings are unchanged.
+Earlier Go metadata accepted native `VersionKey()` primary-key columns that Java refuses.
+RFC-275 rejects those declarations with `MetaDataError` ("Version in primary key not supported")
+at construction and load. Existing unsupported metadata is not migrated automatically.
+
+Maintained-count expressions and function-wrapped primary keys now see the chosen
+record version, as Java's save record builder does. Incomplete values reaching ordinary key
+encoders return `IncompleteVersionstampError` rather than a panic. Earlier null-version
+counters are not corrected automatically; migrate or recreate affected pre-release stores
+before mixed-engine use. Unaffected stores and tuple encodings are unchanged.
 
 ## Transaction size thresholds (Go-only extension, RFC-275)
 

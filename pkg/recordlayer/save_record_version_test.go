@@ -62,9 +62,9 @@ var _ = Describe("SaveRecordWithVersion", func() {
 		return rec.Version
 	}
 
-	versionPrimaryKeyMetaData := func() *RecordMetaData {
+	orderedVersionPrimaryKeyMetaData := func() *RecordMetaData {
 		builder := baseBuilder().SetStoreRecordVersions(true)
-		builder.GetRecordType("Order").SetPrimaryKey(Concat(VersionKey(), Field("order_id")))
+		builder.GetRecordType("Order").SetPrimaryKey(Concat(FunctionExpr(OrderFuncAscNullsFirst, VersionKey()), Field("order_id")))
 		md, err := builder.Build()
 		Expect(err).NotTo(HaveOccurred())
 		return md
@@ -75,15 +75,17 @@ var _ = Describe("SaveRecordWithVersion", func() {
 			if format != 0 {
 				formatName = "legacy format"
 			}
-			It("keeps distinct version-prefixed primary keys through "+api+" saves in "+formatName, func() {
-				md := versionPrimaryKeyMetaData()
+			It("keeps distinct ordered-version primary keys through "+api+" saves in "+formatName, func() {
+				md := orderedVersionPrimaryKeyMetaData()
 				ks := specSubspace()
 				versions := []*FDBRecordVersion{complete(21), complete(22)}
 				keys := make([]tuple.Tuple, len(versions))
 				for i, version := range versions {
 					stamp, err := version.ToVersionstamp()
 					Expect(err).NotTo(HaveOccurred())
-					keys[i] = tuple.Tuple{stamp, int64(1)}
+					packed, err := tupleOrderingPack(tuple.Tuple{stamp}, OrderAscNullsFirst)
+					Expect(err).NotTo(HaveOccurred())
+					keys[i] = tuple.Tuple{packed, int64(1)}
 				}
 				run(md, ks, format, func(store *FDBRecordStore) {
 					if api == "override-lock" && format == 0 {
@@ -117,7 +119,9 @@ var _ = Describe("SaveRecordWithVersion", func() {
 						Expect(loaded.PrimaryKey).To(Equal(key))
 						Expect(loaded.Version).To(Equal(versions[i]))
 					}
-					missing, err := store.LoadRecord(tuple.Tuple{nil, int64(1)})
+					nullVersion, err := tupleOrderingPack(tuple.Tuple{nil}, OrderAscNullsFirst)
+					Expect(err).NotTo(HaveOccurred())
+					missing, err := store.LoadRecord(tuple.Tuple{nullVersion, int64(1)})
 					Expect(err).NotTo(HaveOccurred())
 					Expect(missing).To(BeNil())
 					rows, err := AsList(ctx, store.ScanRecords(nil, ForwardScan()))
@@ -128,8 +132,8 @@ var _ = Describe("SaveRecordWithVersion", func() {
 		}
 	}
 	for _, api := range []string{"ordinary", "batch", "pipelined", "dry-run", "supplied incomplete", "typed supplied incomplete", "override supplied incomplete"} {
-		It("returns an incomplete-version error and aborts the "+api+" save with a version primary key", func() {
-			md := versionPrimaryKeyMetaData()
+		It("returns an incomplete-version error and aborts the "+api+" save with an ordered-version primary key", func() {
+			md := orderedVersionPrimaryKeyMetaData()
 			ks := specSubspace()
 			run(md, ks, 0, func(*FDBRecordStore) {})
 			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {

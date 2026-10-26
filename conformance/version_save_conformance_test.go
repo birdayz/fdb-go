@@ -38,14 +38,87 @@ var _ = Describe("Explicit-version saves match Java", func() {
 		{4, nil, recordlayer.VersionstampSaveBehaviorNoVersion, "ok"},
 		{5, complete(5), recordlayer.VersionstampSaveBehaviorWithVersion, "ok"},
 		{6, complete(6), recordlayer.VersionstampSaveBehaviorNoVersion, "com.apple.foundationdb.record.RecordCoreException"},
-		{1, complete(9), recordlayer.VersionstampSaveBehaviorIfPresent, "ok"}, // distinct from version 1 when the version is in the primary key
-		{1, nil, recordlayer.VersionstampSaveBehaviorNoVersion, "ok"},         // clears the field-only key's version, or creates a null-version primary key
+		{1, complete(9), recordlayer.VersionstampSaveBehaviorIfPresent, "ok"}, // replaces the field-only key's version, or creates a distinct ordered-version key
+		{1, nil, recordlayer.VersionstampSaveBehaviorNoVersion, "ok"},         // clears the field-only key's version, or creates the ordered-null version key
 	}
 
-	for _, versionPrimaryKey := range []bool{false, true} {
+	for _, tc := range []struct {
+		name       string
+		primaryKey recordlayer.KeyExpression
+		refused    bool
+	}{
+		{"direct version", recordlayer.VersionKey(), true},
+		{"concatenated version", recordlayer.Concat(recordlayer.VersionKey(), recordlayer.Field("order_id")), true},
+		{"listed version", recordlayer.ListExpr(recordlayer.VersionKey(), recordlayer.Field("order_id")), true},
+		{"split version", recordlayer.Split(recordlayer.VersionKey(), 1), true},
+		{"dimension version", recordlayer.Dimensions(recordlayer.VersionKey(), 0, 1), true},
+		{"function-wrapped version", recordlayer.FunctionExpr(recordlayer.OrderFuncAscNullsFirst, recordlayer.VersionKey()), false},
+	} {
+		It("matches primary-key metadata validation for "+tc.name, func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
+			builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+			builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			mdProto, err := md.ToProto()
+			Expect(err).NotTo(HaveOccurred())
+			injected := false
+			for _, recordType := range mdProto.GetRecordTypes() {
+				if recordType.GetName() == "Order" {
+					recordType.PrimaryKey = tc.primaryKey.ToKeyExpression()
+					injected = true
+				}
+			}
+			Expect(injected).To(BeTrue())
+			mdBytes, err := proto.Marshal(mdProto)
+			Expect(err).NotTo(HaveOccurred())
+			clusterFile, err := sharedContainer.ClusterFile(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			javaSS := subspace.Sub(tuple.Tuple{"version_primary_key_metadata_java", uuid.NewString()}...)
+			_, err = NewJavaInvoker().Invoke(ctx, "saveWithVersionsJava", map[string]any{
+				"clusterFile": clusterFile, "subspace": BytesToIntArray(javaSS.Bytes()), "metaData": BytesToIntArray(mdBytes),
+				"recordTypeName": "Order", "records": [][]int{}, "versions": [][]int{}, "behaviors": []string{}, "formatVersion": 0,
+			})
+			if tc.refused {
+				var javaErr *JavaError
+				Expect(errors.As(err, &javaErr)).To(BeTrue(), "%v", err)
+				Expect(javaErr.ExceptionClass).To(Equal("MetaDataException"))
+				Expect(javaErr.ExceptionFullClass).To(Equal("com.apple.foundationdb.record.metadata.MetaDataException"))
+				Expect(javaErr.Message).To(Equal("Version in primary key not supported"))
+				Expect(javaErr.SQLState).To(BeEmpty())
+			} else {
+				Expect(err).NotTo(HaveOccurred(), "functions declare zero version columns in Java")
+			}
+
+			decoded, err := recordlayer.RecordMetaDataFromProto(mdProto)
+			if tc.refused {
+				var metaErr *recordlayer.MetaDataError
+				Expect(errors.As(err, &metaErr)).To(BeTrue(), "%v", err)
+				Expect(metaErr.Message).To(Equal("Version in primary key not supported"))
+			} else {
+				Expect(err).NotTo(HaveOccurred())
+				Expect(decoded).NotTo(BeNil())
+			}
+			builder.GetRecordType("Order").SetPrimaryKey(tc.primaryKey)
+			built, err := builder.Build()
+			if tc.refused {
+				var metaErr *recordlayer.MetaDataError
+				Expect(errors.As(err, &metaErr)).To(BeTrue(), "%v", err)
+				Expect(metaErr.Message).To(Equal("Version in primary key not supported"))
+			} else {
+				Expect(err).NotTo(HaveOccurred())
+				Expect(built).NotTo(BeNil())
+			}
+		})
+	}
+
+	for _, orderedVersionPrimaryKey := range []bool{false, true} {
 		for _, storeVersions := range []bool{false, true} {
 			for _, format := range []int32{0, 5} {
-				It(fmt.Sprintf("versionPrimaryKey=%v, storeRecordVersions=%v, format %d", versionPrimaryKey, storeVersions, format), func() {
+				It(fmt.Sprintf("orderedVersionPrimaryKey=%v, storeRecordVersions=%v, format %d", orderedVersionPrimaryKey, storeVersions, format), func() {
 					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 					defer cancel()
 					clusterFile, err := sharedContainer.ClusterFile(ctx)
@@ -53,8 +126,9 @@ var _ = Describe("Explicit-version saves match Java", func() {
 
 					builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 					builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
-					if versionPrimaryKey {
-						builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Concat(recordlayer.VersionKey(), recordlayer.Field("order_id")))
+					orderedVersion := recordlayer.FunctionExpr(recordlayer.OrderFuncAscNullsFirst, recordlayer.VersionKey())
+					if orderedVersionPrimaryKey {
+						builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Concat(orderedVersion, recordlayer.Field("order_id")))
 					}
 					builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 					builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
@@ -129,7 +203,7 @@ var _ = Describe("Explicit-version saves match Java", func() {
 					var goKVs [][]string
 					_, err = db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 						goKVs = [][]string{}
-						if versionPrimaryKey {
+						if orderedVersionPrimaryKey {
 							builder := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(goSS)
 							if format != 0 {
 								builder.SetFormatVersion(format)
@@ -141,12 +215,14 @@ var _ = Describe("Explicit-version saves match Java", func() {
 							for _, b := range []byte{1, 9} {
 								version, err := recordlayer.CompleteVersionFromBytes(complete(b))
 								Expect(err).NotTo(HaveOccurred())
-								stamp, err := version.ToVersionstamp()
+								evaluated, err := orderedVersion.Evaluate(&recordlayer.FDBStoredRecord[proto.Message]{Version: version}, nil)
 								Expect(err).NotTo(HaveOccurred())
-								key := tuple.Tuple{stamp, int64(1)}
+								Expect(evaluated).To(HaveLen(1))
+								Expect(evaluated[0]).To(HaveLen(1))
+								key := tuple.Tuple{evaluated[0][0], int64(1)}
 								loaded, err := store.LoadRecord(key)
 								Expect(err).NotTo(HaveOccurred())
-								Expect(loaded).NotTo(BeNil(), "both versions of id 1 must survive")
+								Expect(loaded).NotTo(BeNil(), "both ordered versions of id 1 must survive")
 								Expect(loaded.PrimaryKey).To(Equal(key))
 							}
 						}
