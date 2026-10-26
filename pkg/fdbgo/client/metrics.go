@@ -346,9 +346,6 @@ func parseSplitRangeReply(data []byte) ([][]byte, error) {
 		}
 		points = append(points, p)
 	}
-	if err := r.Err(); err != nil {
-		return nil, fmt.Errorf("SplitRange: %w", err)
-	}
 	return points, nil
 }
 

@@ -497,6 +497,7 @@ go_test(
         "clusterfile_lookup_test.go",
         "clusterfile_test.go",
         "coalesce_option_test.go",
+        "commit_decode_fdb_test.go",
         "commit_dummy_regression_test.go",
         "commit_grv_lifetime_test.go",
         "commit_lifetime_fdb_test.go",

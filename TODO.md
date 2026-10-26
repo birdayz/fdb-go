@@ -475,11 +475,10 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   the peer-reference count Go does not track (see the idle-connection divergence in
   `connectionMonitor`); port both with the unreferenced-close knobs, pinned by tests.
 
-- [ ] **A commit reply that does not decode is not `commit_unknown_result`.** RFC-276 makes a
-  `CommitID` with a field past the buffer a `wire.DecodeError`; `commitNative` surfaces it
-  like an ErrorOr-level parse failure (`dispositionForReplyError`), so an application cannot
-  tell the commit may have applied. Route reply parse failures through `unknownResult`
-  (1021 and the dummy-transaction fence), pinned by a corrupted `CommitID_committed`.
+- [x] **A commit reply that does not decode is not `commit_unknown_result`.** Fixed in #1004
+  (RFC-276): malformed post-send replies route through `unknownResult`, returning 1021
+  only after the dummy-transaction fence succeeds. A corrupted real-FDB commit reply
+  pins the applied mutation, the synchronization fence and the unknown-result error.
 
 - [ ] **Endpoints ignore their secondary address.** C++ `Endpoint::serialize` calls
   `choosePrimaryAddress` on deserialization (`FlowTransport.h:62-68,97-103`): a client,

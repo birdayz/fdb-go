@@ -116,6 +116,11 @@ never reject a reply C++ writes.
    `KeyRangeRef`'s hand-written decoder gets the same shape. On error the target holds a
    partial decode, which callers discard.
 3. **Hand-written parsers.**
+   - A malformed post-send commit reply (including its ErrorOr envelope) is an
+     uncertain commit, not a terminal decode error. `commitNative` routes it through
+     `unknownResult`: a successful dummy fence precedes 1021, and a failed fence's
+     error propagates (`NativeAPI.actor.cpp:6730-6750`). Valid FDB reply errors retain
+     their existing classifications.
    - `parseGetKeyServerLocationsReply` charges one budget for the results vector and
      for every pair's server vector. A server whose slot-2 endpoint is present but does
      not decode fails the reply with its `locationsReplyError`. Only a slot-2 endpoint
@@ -247,6 +252,9 @@ revert):
 - `TestReaderReuseClearsFault`: a faulted reader is reused through `InitReader`,
   root-object initialization, nested initialization and `ReadErrorOrInto`; each clears
   the old fault and reads the next message.
+- A real-FDB commit reply is corrupted after the proxy applied its mutation. The
+  commit reports 1021 only after a self-conflicting dummy request fences it, without
+  resending the original mutation; malformed envelopes get the same treatment.
 - Standalone vector parser tests pin one shared nested budget and propagation of
   malformed element contents through `ParseMappedKeyValueRefVectorFromReader`.
   All three string-vector APIs have literal-value and malformed-blob controls,

@@ -839,9 +839,6 @@ func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 		// Pair slot 1: vector<StorageServerInterface>.
 		ssCount, err := pairR.ReadVectorCount(types.LocationPairSlotServers)
 		if err == nil {
-			err = pairR.Err()
-		}
-		if err == nil {
 			err = budget.Take(ssCount)
 		}
 		if err != nil {
