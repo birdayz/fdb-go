@@ -78,7 +78,7 @@ func TestSecondaryPanicCleansPrimaryReply(t *testing.T) {
 				t.Error("secondary did not panic")
 			}
 		}()
-		sendFrameWithHedge(context.Background(), 0,
+		sendFrameWithHedge(context.Background(), budgetModel(1), 0,
 			func() inFlightRPC { return inFlightRPC{replyCh: replies, replyHandle: handle} },
 			func() inFlightRPC { panic("secondary builder") }, time.Second)
 	}()

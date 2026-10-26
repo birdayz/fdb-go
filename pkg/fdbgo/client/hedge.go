@@ -39,22 +39,15 @@ type hedgeResult struct {
 	err     error
 	connErr bool // true if connection error (not a reply error)
 	others  []rpcAccount
+	// triedSecondary reports that the secondary send was attempted.
+	triedSecondary bool
 }
 
-// sendFrameWithHedge sends an RPC to the primary server and, after hedgeDelay,
-// sends the same RPC to a secondary server. Whichever replies first wins;
-// the other's reply is discarded.
-//
-// This is the core of the speculative second request (secondDelay) optimization
-// from C++ LoadBalance.actor.h. It improves p99 latency by racing two servers
-// when the primary is slow.
-//
-// The caller provides two pre-built request functions (one per server).
-// Each function dials, sends, and returns the reply channel + cleanup.
-//
-// Returns the winning result. The losing server's reply is cancelled.
+// sendFrameWithHedge races the primary against a budget-funded secondary, or
+// advances a failed lone primary (LoadBalance.actor.h:687-719; RFC-281).
 func sendFrameWithHedge(
 	ctx context.Context,
+	model *QueueModel,
 	hedgeDelay time.Duration,
 	primary sendFunc,
 	secondary sendFunc, // may be nil if only 1 server
@@ -65,61 +58,65 @@ func sendFrameWithHedge(
 	primaryCleanup := replyGuard{handle: pResult.replyHandle}
 	defer primaryCleanup.close()
 	if pResult.err != nil {
-		// Primary failed to send — try secondary immediately (no hedge delay).
+		noteLoneSendFailure(ctx, model)
 		if secondary != nil {
 			sResult := secondary()
 			if sResult.err != nil {
-				return hedgeResult{err: sResult.err, connErr: true}
+				noteLoneSendFailure(ctx, model)
+				return hedgeResult{err: sResult.err, connErr: true, triedSecondary: true}
 			}
-			return waitForReply(ctx, sResult, timeout)
+			out := waitLoneReply(ctx, model, sResult, timeout)
+			out.triedSecondary = true
+			return out
 		}
 		return hedgeResult{err: pResult.err, connErr: true}
 	}
 
 	if secondary == nil {
-		// No secondary — just wait for primary.
 		primaryCleanup.transfer()
-		return waitForReply(ctx, pResult, timeout)
+		return waitLoneReply(ctx, model, pResult, timeout)
 	}
 
-	// Start hedge timer.
 	timer := getTimer(hedgeDelay)
 	defer putTimer(timer)
 
-	// Wait for primary reply or hedge timer.
 	select {
 	case resp := <-pResult.replyCh:
-		// Primary replied before hedge timer. Use it.
 		primaryCleanup.release()
-		res := processReply(pResult, resp)
-		if res.err == nil || !movesToNextAlternative(ctx, res.err) {
-			return res
-		}
-		// A failed alternative is not a tried secondary: C++ loadBalance moves on
-		// to the next one (LoadBalance.actor.h:703-708, nextAlt at :728).
-		sResult := secondary()
-		if sResult.err != nil {
-			return res
-		}
-		out := waitForReply(ctx, sResult, timeout)
-		out.others = append(out.others, rpcAccount{addr: res.addr, conn: res.conn, delta: res.delta, start: res.start, err: res.err})
-		return out
+		return primaryReplied(ctx, model, pResult, resp, secondary, timeout)
 
 	case <-timer.C:
-		// Hedge timer fired — send to secondary.
-		sResult := secondary()
-		if sResult.err != nil {
-			// Secondary failed to send — wait for primary only.
-			primaryCleanup.transfer()
-			return waitForReply(ctx, pResult, timeout)
+		// choose takes the first request's reply before the delay (:694, :710).
+		select {
+		case resp := <-pResult.replyCh:
+			primaryCleanup.release()
+			return primaryReplied(ctx, model, pResult, resp, secondary, timeout)
+		default:
 		}
-
-		// Race both replies.
+		if ctx.Err() != nil {
+			primaryCleanup.transfer()
+			return waitLoneReply(ctx, model, pResult, timeout)
+		}
+		if !model.spendSecond() {
+			primaryCleanup.transfer()
+			return retryPrimaryReply(ctx, model, waitLoneReply(ctx, model, pResult, timeout), secondary, timeout)
+		}
+		sResult := secondary()
 		primaryCleanup.transfer()
-		return raceReplies(ctx, pResult, sResult, timeout)
+		if sResult.err != nil {
+			// Paid for but unsent: the primary is waited for alone without
+			// accruing, as loadBalance's !stream branch (:640-647).
+			out := waitForReply(ctx, pResult, timeout)
+			out.triedSecondary = true
+			return out
+		}
+		out := raceReplies(ctx, pResult, sResult, timeout)
+		out.triedSecondary = true
+		return out
 
 	case <-ctx.Done():
 		if result, ready := readyReplyOwned(pResult, &primaryCleanup); ready {
+			model.firstReplied()
 			return result
 		}
 		pResult.replyHandle.Cancel()
@@ -129,6 +126,47 @@ func sendFrameWithHedge(
 		// request's QueueModel delta permanently, biasing server selection (RFC-010 #5; C++
 		// LoadBalance's ModelHolder RAII releases on cancel too).
 		return hedgeResult{addr: pResult.addr, conn: pResult.conn, delta: pResult.delta, start: pResult.start, err: ctx.Err()}
+	}
+}
+
+// primaryReplied accrues a lone reply and advances a failed alternative
+// (LoadBalance.actor.h:694-708, nextAlt at :728).
+func primaryReplied(ctx context.Context, model *QueueModel, p inFlightRPC, resp transport.Response, secondary sendFunc, timeout time.Duration) hedgeResult {
+	model.firstReplied()
+	return retryPrimaryReply(ctx, model, processReply(p, resp), secondary, timeout)
+}
+
+func retryPrimaryReply(ctx context.Context, model *QueueModel, res hedgeResult, secondary sendFunc, timeout time.Duration) hedgeResult {
+	if res.err == nil || !res.connErr || !movesToNextAlternative(ctx, res.err) {
+		return res
+	}
+	sResult := secondary()
+	if sResult.err != nil {
+		noteLoneSendFailure(ctx, model)
+		res.triedSecondary = true
+		return res
+	}
+	out := waitLoneReply(ctx, model, sResult, timeout)
+	out.triedSecondary = true
+	out.others = append(out.others, rpcAccount{addr: res.addr, conn: res.conn, delta: res.delta, start: res.start, err: res.err})
+	return out
+}
+
+// waitLoneReply accrues a lone reply or transport failure, but not a timeout
+// or caller cancellation.
+func waitLoneReply(ctx context.Context, model *QueueModel, inflight inFlightRPC, timeout time.Duration) hedgeResult {
+	res := waitForReply(ctx, inflight, timeout)
+	if res.err == nil || res.connErr {
+		model.firstReplied()
+	}
+	return res
+}
+
+// A failed lone send completes as request_maybe_delivered in C++ (fdbrpc.h:775-794).
+// A caller-cancelled send is not a reply and earns nothing.
+func noteLoneSendFailure(ctx context.Context, model *QueueModel) {
+	if ctx.Err() == nil {
+		model.firstReplied()
 	}
 }
 

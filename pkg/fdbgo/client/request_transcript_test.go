@@ -399,11 +399,11 @@ func (g *transcriptGate) seed(fn func(tx *Transaction)) {
 
 // layout is the cluster's shard map, read with a cold location cache. It also
 // pins each shard's replica: load balancing picks a replica at random
-// (loadbalance.go:242-250), and which replica answers decides how far a getKey
+// (QueueModel.chooseTopTwo), and which replica answers decides how far a getKey
 // resolves before it must cross a shard, so the two runs would otherwise send
 // different requests for a reason neither path controls. With every storage
 // address marked failed until a distinct time, each request goes to the
-// replica that is eligible soonest (soonestEligible, loadbalance.go:166-182).
+// replica that is eligible soonest (QueueModel.soonestEligible).
 func (g *transcriptGate) layout(t *testing.T) string {
 	t.Helper()
 	all := []byte{0xff, 0xff}

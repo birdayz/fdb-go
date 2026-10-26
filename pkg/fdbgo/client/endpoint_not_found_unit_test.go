@@ -151,7 +151,7 @@ func TestHedge_FailedPrimaryTriesSecondary(t *testing.T) {
 	secondary := func() inFlightRPC {
 		return inFlightRPC{replyCh: sCh, replyHandle: &transport.ReplyHandle{}, addr: "s", delta: 2, start: time.Now()}
 	}
-	res := sendFrameWithHedge(context.Background(), time.Hour, primary, secondary, 5*time.Second)
+	res := sendFrameWithHedge(context.Background(), nil, time.Hour, primary, secondary, 5*time.Second)
 	if res.err != nil || string(res.body) != "secondary" || res.addr != "s" {
 		t.Fatalf("want the secondary's reply, got %+v", res)
 	}
