@@ -1,0 +1,176 @@
+{
+  "backend": {
+    "api_version": 730,
+    "backend": "go",
+    "coalesce_delay": "",
+    "executable": "/root/netg/bin/clientbench-Step0",
+    "executable_sha256": "49372cee6a98ea02880161e318d0f5d393361a81b53a5abcd5e54a18c44021fa",
+    "go_build_info": "go\tgo1.27.3\npath\tfdb.dev/tools/clientbench/cmd/clientbench\nmod\tfdb.dev\t(devel)\t\ndep\tgithub.com/cespare/xxhash/v2\tv2.3.0\th1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=\ndep\tgithub.com/klauspost/cpuid/v2\tv2.2.10\th1:tBs3QSyvjDyFTq3uoc/9xFpCuOsJQFNPiAhYdw2skhE=\ndep\tgithub.com/zeebo/xxh3\tv1.1.0\th1:s7DLGDK45Dyfg7++yxI0khrfwq9661w9EN78eP/UZVs=\ndep\tgo.opentelemetry.io/otel\tv1.45.0\th1:pdrWmLHofpubmArBv1LgFSv1Z0Ie/ppdZzu+kUN5EeU=\ndep\tgo.opentelemetry.io/otel/trace\tv1.45.0\th1:l/mP6Uv7oNO7/TblbhpbgMidxhq1uO/rPsikOyVhxag=\ndep\tgolang.org/x/sys\tv0.49.0\th1:XbzkgYJHdqh/8m2Uu0W/dQv8nktxx4BFHp1M0gROTXA=\nbuild\t-buildmode=exe\nbuild\t-compiler=gc\nbuild\tCGO_ENABLED=0\nbuild\tGOARCH=amd64\nbuild\tGOOS=linux\nbuild\tGOAMD64=v1\n",
+    "loaded_fdb_libraries_sha256": {},
+    "native_library": false
+  },
+  "client_counters_after": {
+    "observation": "observed",
+    "values": {
+      "commit_completed": 1,
+      "commit_started": 1,
+      "connection_failures": 0,
+      "grv_cache_hits": 0,
+      "grv_in_band_maybe_delivered": 0,
+      "grv_successful_batch_replies": 41774,
+      "read_versions_completed": 1300002,
+      "transaction_retries": 0
+    }
+  },
+  "client_counters_before": {
+    "observation": "observed",
+    "values": {
+      "commit_completed": 1,
+      "commit_started": 1,
+      "connection_failures": 0,
+      "grv_cache_hits": 0,
+      "grv_in_band_maybe_delivered": 0,
+      "grv_successful_batch_replies": 3249,
+      "read_versions_completed": 100002,
+      "transaction_retries": 0
+    }
+  },
+  "client_counters_delta": {
+    "observation": "observed",
+    "values": {
+      "commit_completed": 0,
+      "commit_started": 0,
+      "connection_failures": 0,
+      "grv_cache_hits": 0,
+      "grv_in_band_maybe_delivered": 0,
+      "grv_successful_batch_replies": 38525,
+      "read_versions_completed": 1200000,
+      "transaction_retries": 0
+    }
+  },
+  "completed": 1200000,
+  "config": {
+    "cluster_file": "/root/netg/fdb/fdb.cluster",
+    "workload": "get100",
+    "iterations": 1200000,
+    "warmup": 100000,
+    "workers": 64,
+    "output": "/root/netg/prof/Step0-get100-64-cpu",
+    "run_id": "prof",
+    "block": -1,
+    "source_revision": "0000000000000000000000000000000000000000",
+    "harness_id": "0000000000000000000000000000000000000000000000000000000000000000",
+    "allow_writes": true,
+    "prefix": "clientbench/v1/",
+    "transaction_timeout_ms": 30000,
+    "retry_limit": 10,
+    "profile": "cpu",
+    "seed": 1,
+    "warmup_duration_ns": 10000000000
+  },
+  "errors": 0,
+  "failure": "",
+  "failure_stage": "shutdown",
+  "lifecycle": {
+    "measurement_drain": {
+      "before": {
+        "finalizers_queued": 0,
+        "finalizers_executed": 0,
+        "cleanups_queued_estimate": 0,
+        "cleanups_executed_estimate": 0,
+        "gc_cycles": 34
+      },
+      "after": {
+        "finalizers_queued": 0,
+        "finalizers_executed": 0,
+        "cleanups_queued_estimate": 0,
+        "cleanups_executed_estimate": 0,
+        "gc_cycles": 36
+      },
+      "rounds": 2,
+      "wall_ns": 27314512,
+      "complete": true
+    },
+    "measurement_barrier_complete": true,
+    "stats_after_measurement_drain": {
+      "go_total_alloc_bytes": 6459556560,
+      "go_mallocs": 62705465,
+      "go_gc_cycles": 36,
+      "go_gc_pause_ns": 8248154,
+      "process_user_cpu_us": 50003659,
+      "process_system_cpu_us": 16998657,
+      "process_high_water_rss_kb": 575516
+    },
+    "shutdown_drain": {
+      "before": {
+        "finalizers_queued": 0,
+        "finalizers_executed": 0,
+        "cleanups_queued_estimate": 0,
+        "cleanups_executed_estimate": 0,
+        "gc_cycles": 36
+      },
+      "after": {
+        "finalizers_queued": 0,
+        "finalizers_executed": 0,
+        "cleanups_queued_estimate": 0,
+        "cleanups_executed_estimate": 0,
+        "gc_cycles": 38
+      },
+      "rounds": 2,
+      "wall_ns": 25925076,
+      "complete": true
+    },
+    "database_closed": true,
+    "network_stopped": false,
+    "stats_after_shutdown": {
+      "go_total_alloc_bytes": 6499454008,
+      "go_mallocs": 67906377,
+      "go_gc_cycles": 38,
+      "go_gc_pause_ns": 8374935,
+      "process_user_cpu_us": 50355697,
+      "process_system_cpu_us": 17057907,
+      "process_high_water_rss_kb": 575516
+    },
+    "complete": true
+  },
+  "measured_wall_ns": 19708718262,
+  "pacing": null,
+  "persisted_validation": "ok",
+  "profile": "cpu",
+  "requested": 1200000,
+  "retries": 0,
+  "stats_after": {
+    "go_total_alloc_bytes": 6455404312,
+    "go_mallocs": 62683659,
+    "go_gc_cycles": 34,
+    "go_gc_pause_ns": 8099660,
+    "process_user_cpu_us": 49878736,
+    "process_system_cpu_us": 16990403,
+    "process_high_water_rss_kb": 575388
+  },
+  "stats_after_identity": {
+    "go_total_alloc_bytes": 359592,
+    "go_mallocs": 1468,
+    "go_gc_cycles": 0,
+    "go_gc_pause_ns": 0,
+    "process_user_cpu_us": 22745,
+    "process_system_cpu_us": 8271,
+    "process_high_water_rss_kb": 7168
+  },
+  "stats_before": {
+    "go_total_alloc_bytes": 880838952,
+    "go_mallocs": 6029020,
+    "go_gc_cycles": 12,
+    "go_gc_pause_ns": 1568912,
+    "process_user_cpu_us": 4871295,
+    "process_system_cpu_us": 1914058,
+    "process_high_water_rss_kb": 389068
+  },
+  "success": true,
+  "totalcompleted": 1200000,
+  "warmup_completed": 100000,
+  "warmup_errors": 0,
+  "warmup_requested": 100000,
+  "warmup_retries": 0,
+  "warmup_wall_ns": 1866298780
+}

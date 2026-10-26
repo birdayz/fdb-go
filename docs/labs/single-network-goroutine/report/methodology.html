@@ -256,7 +256,7 @@ footer {
 </header>
 <nav>
   <div class="nav-inner">
-    <a href='index.html'>1. Executive Summary</a><a href='linger.html'>2. Linger Sweep &amp; Per-Role Cost</a><a href='queues.html'>3. Writer Queues, Ring &amp; D-M</a><a href='delay-vs-ack.html'>4. Coalesce Delay vs Write-Ack</a><a href='libfdbc.html'>5. libfdb_c (L vs L4) vs Go</a><a href='methodology.html' class='active'>6. Methodology &amp; Verification</a>
+    <a href='index.html'>1. Executive Summary</a><a href='hillclimb.html'>2. D-NG Hill-Climb (Round 7)</a><a href='linger.html'>3. Linger Sweep &amp; Per-Role Cost</a><a href='queues.html'>4. Writer Queues, Ring &amp; D-M</a><a href='delay-vs-ack.html'>5. Coalesce Delay vs Write-Ack</a><a href='libfdbc.html'>6. libfdb_c (L vs L4) vs Go</a><a href='methodology.html' class='active'>7. Methodology &amp; Verification</a>
   </div>
 </nav>
 <main>
@@ -469,6 +469,11 @@ footer {
         <td><code>rawhz5/</code> &amp; <code>rawhz4/</code></td>
         <td>297 ladder rows</td>
         <td class="text-left">Phase 4 &amp; Phase 5 datasets (<code>L, L4, A, D, D-NG, D-M, D 4Ps, D-M 4Ps</code>, wire captures, 1-worker golden, cross-box check)</td>
+      </tr>
+      <tr>
+        <td><code>rawhz7/</code></td>
+        <td>299 rows + 18 profiles</td>
+        <td class="text-left">Round 7 on <code>dng-climb</code>: Step 0 &rarr; Step 7 hill-climbing progression, 7-cell final scoreboard, rate-capped T4, syscalls/futex, and before/after CPU/mutex/heap <code>pprof</code></td>
       </tr>
     </tbody>
   </table>

@@ -1,0 +1,12 @@
+{
+  "L":     {"binary": "/root/netg/bin/clientbench-cgo", "env": []},
+  "A":     {"binary": "/root/netg/bin/clientbench-A", "env": []},
+  "Step0": {"binary": "/root/netg/bin/clientbench-Step0", "env": ["FDBGO_NETG_STATS=1"]},
+  "Step1": {"binary": "/root/netg/bin/clientbench-Step1", "env": ["FDBGO_NETG_STATS=1"]},
+  "Step2": {"binary": "/root/netg/bin/clientbench-Step2", "env": ["FDBGO_NETG_STATS=1"]},
+  "Step3": {"binary": "/root/netg/bin/clientbench-Step3", "env": ["FDBGO_NETG_STATS=1"]},
+  "Step4": {"binary": "/root/netg/bin/clientbench-Step4", "env": ["FDBGO_NETG_STATS=1"]},
+  "Step5": {"binary": "/root/netg/bin/clientbench-Step5", "env": ["FDBGO_NETG_STATS=1"]},
+  "Step6": {"binary": "/root/netg/bin/clientbench-Step6", "env": ["FDBGO_NETG_STATS=1"]},
+  "Step7": {"binary": "/root/netg/bin/clientbench-Step7", "env": ["FDBGO_NETG_STATS=1"]}
+}

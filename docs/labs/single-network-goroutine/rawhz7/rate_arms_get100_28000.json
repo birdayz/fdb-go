@@ -1,0 +1,66 @@
+{
+ "L": {
+  "binary": "/root/netg/bin/clientbench-cgo",
+  "env": [],
+  "args": [
+   "-rate=28000"
+  ]
+ },
+ "L4": {
+  "binary": "/root/netg/bin/clientbench-cgo",
+  "env": [],
+  "args": [
+   "-cgo-client-threads=4",
+   "-cgo-external-client=/usr/lib/libfdb_c.so",
+   "-databases=4",
+   "-rate=28000"
+  ]
+ },
+ "A": {
+  "binary": "/root/netg/bin/clientbench-A",
+  "env": [],
+  "args": [
+   "-rate=28000"
+  ]
+ },
+ "Step0": {
+  "binary": "/root/netg/bin/clientbench-Step0",
+  "env": [
+   "FDBGO_NETG_STATS=1"
+  ],
+  "args": [
+   "-rate=28000"
+  ]
+ },
+ "Step7": {
+  "binary": "/root/netg/bin/clientbench-Step7",
+  "env": [
+   "FDBGO_NETG_STATS=1"
+  ],
+  "args": [
+   "-rate=28000"
+  ]
+ },
+ "Step7a20": {
+  "binary": "/root/netg/bin/clientbench-Step7",
+  "env": [
+   "FDBGO_NET_DESIGN=nga",
+   "FDBGO_NETG_ADAPTIVE_US=20",
+   "FDBGO_NETG_STATS=1"
+  ],
+  "args": [
+   "-rate=28000"
+  ]
+ },
+ "Step7d5": {
+  "binary": "/root/netg/bin/clientbench-Step7",
+  "env": [
+   "FDBGO_NET_DESIGN=1",
+   "FDBGO_NETG_STATS=1"
+  ],
+  "args": [
+   "-coalesce-delay=5us,5us",
+   "-rate=28000"
+  ]
+ }
+}

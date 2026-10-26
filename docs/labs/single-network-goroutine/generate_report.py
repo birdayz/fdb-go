@@ -41,6 +41,16 @@ ARM_LABELS = {
     "D50": "D50 (fixed 50µs linger)",
     "D100": "D100 (fixed 100µs linger)",
     "D250": "D250 (fixed 250µs linger)",
+    "Step0": "Step 0: D-NG Baseline (D1 + D4)",
+    "Step1": "Step 1: 32-Shard pendingMu + Out-of-Lock RecvAt + Fast UID",
+    "Step2": "Step 2: In-Place encodeFrameInto Queue",
+    "Step3": "Step 3: Pooled Transact Timeout Timer (No weak.Make/AfterFunc)",
+    "Step4": "Step 4: Scalar pendingReadFirst + Lazy Timer + Zero-Alloc Point Cache",
+    "Step5": "Step 5: 16-Stripe latencySketch + Out-of-Lock bucketIndex",
+    "Step6": "Step 6: Inline pendingReadVersion + Pooled GRV Reply Chan",
+    "Step7": "Step 7 (Final): No Final-Commit Turnover Allocs + Fast Read-Only",
+    "Step7a20": "Step 7 + adap20 (20µs Adaptive Linger)",
+    "Step7d5": "Step 7 + D5 (5µs Fixed Linger)",
 }
 
 ARM_SHORT = {
@@ -62,6 +72,16 @@ ARM_SHORT = {
     "D50": "D50 (50µs)",
     "D100": "D100 (100µs)",
     "D250": "D250 (250µs)",
+    "Step0": "Step 0 (D-NG)",
+    "Step1": "Step 1 (32-shard)",
+    "Step2": "Step 2 (in-place)",
+    "Step3": "Step 3 (tx timer)",
+    "Step4": "Step 4 (fast Get)",
+    "Step5": "Step 5 (16-sketch)",
+    "Step6": "Step 6 (GRV pool)",
+    "Step7": "Step 7 (Final)",
+    "Step7a20": "Step 7 + adap20",
+    "Step7d5": "Step 7 + D5",
 }
 
 ARM_COLORS = {
@@ -83,6 +103,16 @@ ARM_COLORS = {
     "D50": "#1d4ed8",
     "D100": "#1e40af",
     "D250": "#1e3a8a",
+    "Step0": "#059669",
+    "Step1": "#0d9488",
+    "Step2": "#0891b2",
+    "Step3": "#0284c7",
+    "Step4": "#2563eb",
+    "Step5": "#4f46e5",
+    "Step6": "#7c3aed",
+    "Step7": "#15803d",
+    "Step7a20": "#9333ea",
+    "Step7d5": "#3b82f6",
 }
 
 CSS = """
@@ -330,11 +360,12 @@ footer {
 
 NAV_PAGES = [
     ("index.html", "1. Executive Summary"),
-    ("linger.html", "2. Linger Sweep & Per-Role Cost"),
-    ("queues.html", "3. Writer Queues, Ring & D-M"),
-    ("delay-vs-ack.html", "4. Coalesce Delay vs Write-Ack"),
-    ("libfdbc.html", "5. libfdb_c (L vs L4) vs Go"),
-    ("methodology.html", "6. Methodology & Verification"),
+    ("hillclimb.html", "2. D-NG Hill-Climb (Round 7)"),
+    ("linger.html", "3. Linger Sweep & Per-Role Cost"),
+    ("queues.html", "4. Writer Queues, Ring & D-M"),
+    ("delay-vs-ack.html", "5. Coalesce Delay vs Write-Ack"),
+    ("libfdbc.html", "6. libfdb_c (L vs L4) vs Go"),
+    ("methodology.html", "7. Methodology & Verification"),
 ]
 
 
@@ -722,6 +753,10 @@ def generate_all():
     hz6_quick2 = load_jsonl("rawhz6/quick2/ladder.jsonl")
     hz6b_ladder = load_jsonl("rawhz6b/role_ladder.jsonl")
     hz6b_rate = load_jsonl("rawhz6b/role_rate.jsonl")
+    hz7_steps = load_jsonl("rawhz7/steps_ladder.jsonl")
+    hz7_final = load_jsonl("rawhz7/final_ladder.jsonl")
+    hz7_rate = load_jsonl("rawhz7/rate.jsonl")
+    hz7_sys = load_jsonl("rawhz7/syscalls.jsonl")
 
     # Merge hz6_ladder + new arms from hz6_linger so combined tables on netg-r6 have all arms
     existing_hz6_arms = {r["arm"] for r in hz6_ladder}
@@ -729,21 +764,23 @@ def generate_all():
 
     # 1. index.html
     write_index(hz6_combined, hz6_linger, hz6_linger_rate, hz6_rate, hz5_ladder, hz6b_ladder, hz6b_rate)
-    # 2. linger.html
+    # 2. hillclimb.html
+    write_hillclimb(hz7_steps, hz7_final, hz7_rate, hz7_sys)
+    # 3. linger.html
     write_linger(hz6_linger, hz6_linger_rate, hz6b_ladder, hz6b_rate)
-    # 3. queues.html
+    # 4. queues.html
     write_queues(hz6_combined, hz6_rate, hz6_sys, hz6_quick1, hz6_quick2, hz5_ladder, hz6b_ladder)
-    # 4. delay-vs-ack.html
+    # 5. delay-vs-ack.html
     write_delay_vs_ack(hz6_combined, hz6_rate, hz6_sys, hz6_linger)
-    # 5. libfdbc.html
+    # 6. libfdbc.html
     write_libfdbc(hz5_ladder, hz5_rate, hz5_sys, hz4_ladder, hz6_combined)
-    # 6. methodology.html
+    # 7. methodology.html
     write_methodology(hz4_ladder, hz4_cross, hz5_ladder, hz6_ladder, hz6_linger, hz6b_ladder)
 
     if os.path.exists(TMP_REPORT_DIR):
         shutil.rmtree(TMP_REPORT_DIR)
     shutil.copytree(REPORT_DIR, TMP_REPORT_DIR)
-    print(f"Generated 6 HTML pages in {REPORT_DIR} and copied to {TMP_REPORT_DIR}")
+    print(f"Generated 7 HTML pages in {REPORT_DIR} and copied to {TMP_REPORT_DIR}")
 
 
 def make_linger_points(rows, workload, workers, x_key, y_key, arms, rate=None):
@@ -796,8 +833,9 @@ def write_index(hz6_combined, hz6_linger, hz6_linger_rate, hz6_rate, hz5_ladder,
 
     body = f"""
 <div class="callout good">
-  <strong>Headline Findings (Rounds 1–6):</strong>
+  <strong>Headline Findings (Rounds 1–7, including <a href="hillclimb.html">Page 2: Round-7 D-NG Hill-Climb</a>):</strong>
   <ul>
+    <li><strong>Round-7 Hill-Climbing Campaign (<a href="hillclimb.html">see Page 2: D-NG Hill-Climb</a>):</strong> Starting from the Round-6 <code>D-NG</code> baseline (<code>Step 0</code>), 7 profile-guided steps on <code>feat/dng-transport</code> eliminated <strong>80.9% of all client mutex contention</strong> (<code>13.90s &rarr; 2.66s</code>), reduced heap allocations by <strong>55.8% vs master <code>A</code></strong> (<code>50.1 &rarr; 47.1 &rarr; 22.1 allocs/op</code>, <code>4,980 &rarr; 3,729 B/op</code>), cut client CPU to <strong>25.0–25.4 &micro;s/op</strong> (<strong>-37% vs <code>A</code></strong>, <strong>-63% vs <code>L</code></strong>), pushed <code>get100/256</code> to <strong>262.0k ops/s (<code>Step 7</code>) and 273.4k ops/s (<code>Step 7 + adap20</code>, 5.41&times; <code>libfdb_c</code>)</strong>, and <strong>closed the <code>get100/8</code> serial read gap to beat <code>libfdb_c</code> (<code>7,222 vs 6,915 ops/s</code> = <code>1.04&times; L</code>, <code>0.82&times; L</code> client CPU, <code>0.96&times; L</code> server CPU)</strong>!</li>
     <li><strong>Enqueuing without write acknowledgment (<code>D1</code>: per-connection mutex+slice writer signalled on empty&rarr;non-empty) and per-transaction weak-pointer <code>time.AfterFunc</code> (<code>D4</code>) strictly dominate today's transport (<code>A</code>)</strong> across every concurrency level, reducing client CPU by 12–22%, futex calls by up to 81% at 256 workers, and latency across all workloads.</li>
     <li><strong>The 10–20 &micro;s C++ coalesce delay (<code>D</code>) is a pure latency-vs-server-CPU knob, not wire correctness:</strong> at 0 &micro;s linger (<code>D-NG</code>), Go achieves <strong>257.7k ops/s</strong> on <code>get100/256</code> (<strong>5.1&times;</strong> <code>libfdb_c</code>'s 50.3k ops/s) and 52k–80k ops/s on <code>get100/64</code>. Adding fixed linger (5&ndash;250 &micro;s) traces a smooth Pareto curve trading +10&ndash;700 &micro;s of client p50 for 10&ndash;25% lower server CPU/tx.</li>
     <li><strong>Sender-writes without a writer goroutine (<code>D-M</code> / <code>M</code>) is fastest on the happy path when sockets never fill, and matches <code>D-NG</code> on <code>netg-r6</code>, but fails <code>T1</code> and <code>T2</code> under socket backpressure:</strong> a sender that wins <code>TryLock</code> blocks inside <code>write(2)</code> when the kernel send buffer fills, ignoring <code>ctx</code> cancellation and acting as a queue-wide write acknowledgment (10 deterministic <code>-race</code> failures).</li>
@@ -1929,6 +1967,11 @@ def write_methodology(hz4_ladder, hz4_cross, hz5_ladder, hz6_ladder, hz6_linger,
         <td>{len(hz5_ladder) + len(hz4_ladder)} ladder rows</td>
         <td class="text-left">Phase 4 &amp; Phase 5 datasets (<code>L, L4, A, D, D-NG, D-M, D 4Ps, D-M 4Ps</code>, wire captures, 1-worker golden, cross-box check)</td>
       </tr>
+      <tr>
+        <td><code>rawhz7/</code></td>
+        <td>{len(load_jsonl('rawhz7/steps_ladder.jsonl')) + len(load_jsonl('rawhz7/final_ladder.jsonl')) + len(load_jsonl('rawhz7/rate.jsonl')) + len(load_jsonl('rawhz7/syscalls.jsonl'))} rows + 18 profiles</td>
+        <td class="text-left">Round 7 on <code>dng-climb</code>: Step 0 &rarr; Step 7 hill-climbing progression, 7-cell final scoreboard, rate-capped T4, syscalls/futex, and before/after CPU/mutex/heap <code>pprof</code></td>
+      </tr>
     </tbody>
   </table>
 </div>
@@ -1937,5 +1980,481 @@ def write_methodology(hz4_ladder, hz4_cross, hz5_ladder, hz6_ladder, hz6_linger,
         f.write(page_shell("methodology.html", "Methodology & Verification", body))
 
 
+def build_hillclimb_table(rows, workload, workers, arms_order, rate=None):
+    cell_rows = [
+        r for r in rows
+        if r["workload"] == workload and r["workers"] == workers
+        and (rate is None or r.get("rate") == rate)
+    ]
+    if not cell_rows:
+        return "<p><em>No rows for this cell.</em></p>"
+
+    l_rows = [r for r in cell_rows if r["arm"] == "L"]
+    a_rows = [r for r in cell_rows if r["arm"] == "A"]
+    s0_rows = [r for r in cell_rows if r["arm"] == "Step0"]
+    l_med = {k: med_val([r[k] for r in l_rows if k in r]) for k in ("ops_per_s", "client_cpu_us_per_op", "server_kcycles", "p50_us", "p99_us")}
+    a_med = {k: med_val([r[k] for r in a_rows if k in r]) for k in ("ops_per_s", "client_cpu_us_per_op", "server_kcycles", "p50_us", "p99_us")}
+    s0_med = {k: med_val([r[k] for r in s0_rows if k in r]) for k in ("ops_per_s", "client_cpu_us_per_op", "server_kcycles", "p50_us", "p99_us", "mallocs_per_op")}
+
+    out = [
+        "<div class='table-wrap'><table><thead><tr>",
+        "<th>Arm / Step</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>",
+        "<th>p50 (µs)</th><th>p99 (µs)</th><th>Allocs/op</th><th>Bytes/op</th><th>GC cycles</th>",
+        "<th>Frames/write</th><th>vs L (ops / CPU / p50)</th><th>vs A (ops / CPU / allocs)</th><th>vs Step 0 (ops / CPU / allocs)</th>",
+        "</tr></thead><tbody>",
+    ]
+    for arm in arms_order:
+        rs = [r for r in cell_rows if r["arm"] == arm]
+        if not rs:
+            continue
+        ops = fmt_med_spread([r["ops_per_s"] for r in rs], 0)
+        cpu = fmt_med_spread([r["client_cpu_us_per_op"] for r in rs], 1)
+        srv = fmt_med_spread([r["server_kcycles"] for r in rs], 1)
+        p50 = fmt_med_spread([r["p50_us"] for r in rs], 0)
+        p99 = fmt_med_spread([r["p99_us"] for r in rs], 0)
+        allocs = fmt_med_spread([r["mallocs_per_op"] for r in rs if "mallocs_per_op" in r], 1)
+        b_op = fmt_med_spread([r["alloc_bytes_per_op"] for r in rs if "alloc_bytes_per_op" in r], 0)
+        gc_c = fmt_med_spread([r["gc_cycles"] for r in rs if "gc_cycles" in r], 0)
+        fpw_vals = [r["lab_frames_per_write"] for r in rs if r.get("lab_frames_per_write")]
+        fpw = fmt_med_spread(fpw_vals, 2) if fpw_vals else "-"
+
+        def ratio_str(base, keys):
+            parts = []
+            for k in keys:
+                mv = med_val([r[k] for r in rs if k in r])
+                bm = base.get(k)
+                parts.append(f"{mv / bm:.2f}×" if mv and bm else "-")
+            return " / ".join(parts)
+
+        a_med_ext = dict(a_med)
+        a_med_ext["mallocs_per_op"] = med_val([r["mallocs_per_op"] for r in a_rows if "mallocs_per_op" in r])
+
+        tr_cls = ""
+        if arm in ("Step7", "Step7a20", "Step7d5"):
+            tr_cls = " class='highlight'"
+        elif arm == "Step0":
+            tr_cls = " style='background:#f8fafc;'"
+
+        out.append(
+            f"<tr{tr_cls}><td>{html.escape(ARM_LABELS.get(arm, arm))}</td>"
+            f"<td>{ops}</td><td>{cpu}</td><td>{srv}</td><td>{p50}</td><td>{p99}</td>"
+            f"<td>{allocs}</td><td>{b_op}</td><td>{gc_c}</td><td>{fpw}</td>"
+            f"<td>{ratio_str(l_med, ('ops_per_s', 'client_cpu_us_per_op', 'p50_us'))}</td>"
+            f"<td>{ratio_str(a_med_ext, ('ops_per_s', 'client_cpu_us_per_op', 'mallocs_per_op'))}</td>"
+            f"<td>{ratio_str(s0_med, ('ops_per_s', 'client_cpu_us_per_op', 'mallocs_per_op'))}</td></tr>"
+        )
+    out.append("</tbody></table></div>")
+    return "\n".join(out)
+
+
+def svg_waterfall_bars(title, subtitle, items, y_label, decimals=1, suffix="", width=660, height=340):
+    """items: list of (label, val, color)."""
+    pts = [(lbl, v, c) for (lbl, v, c) in items if v is not None]
+    if not pts:
+        return ""
+    pad_l, pad_r, pad_t, pad_b = 62, 24, 52, 68
+    pw, ph = width - pad_l - pad_r, height - pad_t - pad_b
+    ymax = max(v for _, v, _ in pts) * 1.18
+    if ymax <= 0:
+        ymax = 1.0
+
+    elems = [
+        f"<div class='svg-wrap'><svg viewBox='0 0 {width} {height}' width='100%' height='{height}' xmlns='http://www.w3.org/2000/svg'>",
+        f"<text x='{pad_l}' y='20' font-size='13' font-weight='600' fill='#0f172a'>{html.escape(title)}</text>",
+        f"<text x='{pad_l}' y='36' font-size='11' fill='#64748b'>{html.escape(subtitle)}</text>",
+    ]
+    for i in range(5):
+        gy = pad_t + ph * i / 4
+        vy = ymax * (1 - i / 4)
+        elems.append(f"<line x1='{pad_l}' y1='{gy:.1f}' x2='{width - pad_r}' y2='{gy:.1f}' stroke='#e2e8f0' stroke-width='1'/>")
+        elems.append(f"<text x='{pad_l - 8}' y='{gy + 4:.1f}' font-size='10.5' fill='#64748b' text-anchor='end'>{vy:,.{decimals}f}</text>")
+
+    gw = pw / len(pts)
+    bw = min(38.0, gw * 0.65)
+    for idx, (lbl, v, color) in enumerate(pts):
+        bx = pad_l + idx * gw + (gw - bw) / 2
+        bh = (v / ymax) * ph
+        by = pad_t + ph - bh
+        elems.append(f"<rect x='{bx:.1f}' y='{by:.1f}' width='{bw:.1f}' height='{max(bh, 1):.1f}' fill='{color}' rx='3'/>")
+        elems.append(f"<text x='{bx + bw / 2:.1f}' y='{by - 5:.1f}' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>{v:,.{decimals}f}{suffix}</text>")
+        elems.append(f"<text x='{bx + bw / 2:.1f}' y='{pad_t + ph + 16}' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 {bx + bw / 2:.1f} {pad_t + ph + 16})'>{html.escape(lbl)}</text>")
+
+    elems.append(f"<line x1='{pad_l}' y1='{pad_t + ph}' x2='{width - pad_r}' y2='{pad_t + ph}' stroke='#94a3b8' stroke-width='1'/>")
+    elems.append(f"<text x='15' y='{pad_t + ph / 2}' font-size='11' font-weight='500' fill='#334155' text-anchor='middle' transform='rotate(-90 15 {pad_t + ph / 2})'>{html.escape(y_label)}</text>")
+    elems.append("</svg></div>")
+    return "\n".join(elems)
+
+
+def write_hillclimb(hz7_steps, hz7_final, hz7_rate, hz7_sys):
+    step_arms = ["L", "A", "Step0", "Step1", "Step2", "Step3", "Step4", "Step5", "Step6", "Step7"]
+    final_arms = ["L", "L4", "A", "Step0", "Step7", "Step7a20", "Step7d5"]
+    combined_256 = hz7_steps if hz7_steps else hz7_final
+
+    def step_series(wl, w, key, scale=1.0, arms=step_arms):
+        items = []
+        for a in arms:
+            rs = [r[key] * scale for r in combined_256 if r["workload"] == wl and r["workers"] == w and r["arm"] == a and key in r]
+            if not rs and hz7_final:
+                rs = [r[key] * scale for r in hz7_final if r["workload"] == wl and r["workers"] == w and r["arm"] == a and key in r]
+            if rs:
+                items.append((ARM_SHORT.get(a, a), statistics.median(rs), ARM_COLORS.get(a, "#334155")))
+        return items
+
+    c_ops = svg_waterfall_bars(
+        "Hill-Climb Progression on get100 / 256 workers: Throughput (kops/s)",
+        "Higher is better: L (48.6k) -> A (173.6k) -> Step 0 (240.0k) -> ... -> Step 7 (263.5k+ ops/s)",
+        step_series("get100", 256, "ops_per_s", scale=1e-3),
+        "Throughput (kops/s)", decimals=1, suffix="k",
+    )
+    c_cpu = svg_waterfall_bars(
+        "Hill-Climb Progression on get100 / 256 workers: Client CPU (µs/op)",
+        "Lower is better: L (68.3 µs) -> A (39.4 µs) -> Step 0 (30.4 µs) -> ... -> Step 7 (25.4 µs/op)",
+        step_series("get100", 256, "client_cpu_us_per_op"),
+        "Client CPU (µs/op)", decimals=1, suffix="µs",
+    )
+    c_allocs = svg_waterfall_bars(
+        "Hill-Climb Progression on get100 / 256 workers: Heap Allocations per Tx (allocs/op)",
+        "Lower is better: A (50.1) -> Step 0 (47.1) -> Step 3 (44.1) -> Step 4 (35.1) -> Step 6 (31.1) -> Step 7 (22.1)",
+        step_series("get100", 256, "mallocs_per_op", arms=["A", "Step0", "Step1", "Step2", "Step3", "Step4", "Step5", "Step6", "Step7"]),
+        "Allocations / op", decimals=1,
+    )
+    c_mutex = svg_waterfall_bars(
+        "pprof Total Mutex Contention Delay on get100 / 256 (3.6M ops, seconds)",
+        "Lower is better: Round-6 / Step 0 (13.90s) -> Step 6 (4.52s) -> Step 7 (2.66s) (-80.9% mutex wait)",
+        [
+            ("Round 6 (4.8M)", 17.27, "#be123c"),
+            ("Step 0 (3.6M)", 13.90, "#e11d48"),
+            ("Step 6 (3.6M)", 4.52, "#7c3aed"),
+            ("Step 7 (3.6M)", 2.66, "#15803d"),
+        ],
+        "Total Mutex Delay (s)", decimals=2, suffix="s",
+    )
+
+    # Syscalls table from rawhz7/syscalls.jsonl
+    sys_keys = [
+        ("sys_enter_per_op", "Total syscalls/op"),
+        ("futex_per_op", "futex/op"),
+        ("epoll_pwait_per_op", "epoll_pwait/op"),
+        ("read_per_op", "read/op"),
+        ("write_per_op", "write/op"),
+        ("nanosleep_per_op", "nanosleep/op"),
+        ("context-switches_per_op", "ctx-switches/op"),
+    ]
+    sys7_html = []
+    for (wl, w) in sorted({(r["workload"], r["workers"]) for r in hz7_sys}):
+        for a in ["A", "Step0", "Step1", "Step2", "Step3", "Step4", "Step5", "Step6", "Step7", "Step7a20", "Step7d5"]:
+            rs = [r for r in hz7_sys if r["workload"] == wl and r["workers"] == w and r["arm"] == a]
+            if not rs:
+                continue
+            cols = "".join(f"<td>{fmt_med_spread([r.get(k, 0.0) for r in rs], 2)}</td>" for k, _ in sys_keys)
+            sys7_html.append(f"<tr><td>{wl}/{w}</td><td>{html.escape(ARM_SHORT.get(a, a))}</td>{cols}</tr>")
+
+    body = f"""
+<div class="callout good">
+  <strong>Round-7 Hill-Climbing Campaign Summary (Branch <code>feat/dng-transport</code> on <code>dng-climb</code>):</strong>
+  <ul>
+    <li><strong>80.9% reduction in total mutex contention:</strong> Sharding <code>Conn.pending</code> into 32 cache-line-padded shards with per-connection atomic reply tokens (<code>Step 1</code>) and 16-striping <code>latencySketch</code> with out-of-lock <code>bucketIndex</code> (<code>Step 5</code>) eliminated <strong>100% of <code>pendingMu</code> contention</strong> (<code>10.65s &rarr; 0.00s</code>) and <strong>99% of <code>observeReadLatency</code> contention</strong> (<code>1.59s &rarr; 0.02s</code>), cutting total mutex delay over 3.6M <code>get100/256</code> operations from <strong>13.90s to 2.66s</strong>.</li>
+    <li><strong>55.8% reduction in heap allocations per transaction:</strong> Pooling <code>Transact</code>-scoped timeout timers (<code>Step 3</code>, <code>-3 allocs/op</code>), adding a scalar <code>pendingReadFirst</code> slot + lazy <code>PendingGet</code> timer + inline point-read cache (<code>Step 4</code>, <code>-9 allocs/op</code>), embedding <code>pendingReadVersion</code> with lazy <code>done</code> chan + pooled <code>chan grvResult</code> (<code>Step 6</code>, <code>-4 allocs/op</code>), and skipping final-commit turnover allocations + read-only conflict clones (<code>Step 7</code>, <code>-9 allocs/op</code>) cut allocations from <strong>50.20 allocs/op (<code>A</code>) and 47.11 allocs/op (<code>Step 0</code>) down to 22.11 allocs/op (<code>Step 7</code>)</strong> (<code>4,980 &rarr; 3,729 B/op</code>).</li>
+    <li><strong>Throughput, CPU, and Server Coalescing Gains:</strong>
+      <ul>
+        <li><strong><code>get100/256</code>:</strong> Throughput climbs monotonically from <strong>49.5k (<code>L</code>) &rarr; 171.1k (<code>A</code>) &rarr; 240.6k (<code>Step 0</code>) &rarr; 262.0k (<code>Step 7</code>) &rarr; 273.4k ops/s (<code>Step 7 + adap20</code>, 5.41&times; <code>L</code>)</strong>, while client CPU drops from <strong>68.0 &rarr; 39.6 &rarr; 30.3 &rarr; 25.0 &micro;s/op</strong>, server CPU drops from <strong>19.1 to 14.9–15.6 kcycles/tx</strong> (<code>14.1 kc/tx</code> with <code>Step 7 + D5</code>, matching <code>L</code>'s <code>13.8 kc/tx</code>), and futex calls drop <strong>88%</strong> (<code>0.311 &rarr; 0.036 futex/op</code>).</li>
+        <li><strong><code>get100/8</code> (Serial Read Latency):</strong> Eliminating eager per-read timer resets and post-commit turnover allocations closed the last remaining low-concurrency gap against <code>libfdb_c</code>: <code>Step 7</code> reaches <strong>7,222 ops/s vs <code>L</code>'s 6,915 ops/s (<code>1.04&times; L</code>)</strong> at <strong>119.6 vs 146.3 &micro;s/op client CPU (<code>0.82&times; L</code>)</strong>, <strong>89.6 vs 93.2 kc/tx server CPU (<code>0.96&times; L</code>)</strong>, and <strong>1,710 vs 2,002 &micro;s p99 (<code>0.85&times; L</code>)</strong>.</li>
+        <li><strong>Rate-Capped Equal Throughput (T4):</strong> At <code>get100/64 @ 28,000 ops/s</code>, <code>Step 7</code> achieves <strong>p50 = 590 &micro;s (<code>0.49&times; L</code>)</strong>, <strong>p99 = 878 &micro;s (<code>0.22&times; L</code>)</strong>, and <strong>client CPU = 94.1 &micro;s/op (<code>0.96&times; L</code>)</strong>. At <code>set100/64 @ 17,000 ops/s</code>, <code>Step 7</code> achieves <strong>p50 = 2,145 &micro;s (<code>0.98&times; L</code>)</strong>, <strong>p99 = 3,410 &micro;s (<code>0.83&times; L</code>)</strong>, and <strong>server CPU = 160.2 kc/tx (<code>0.89&times; L</code>; <code>152.8 kc/tx = 0.85&times; L</code> with <code>Step 7 + D5</code>)</strong>.</li>
+      </ul>
+    </li>
+  </ul>
+</div>
+
+<h2>1. The 8-Step Hill-Climbing Ladder (Commits on <code>feat/dng-transport</code>)</h2>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Step</th>
+        <th>Commit</th>
+        <th class="text-left">Bottleneck Targeted (from Round-6 / Step-6 <code>pprof</code>)</th>
+        <th class="text-left">Engineering Change (<code>pkg/fdbgo/transport</code> &amp; <code>pkg/fdbgo/client</code>)</th>
+        <th>Allocs/op (<code>get100</code>)</th>
+        <th>Primary Win</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>A</code> (Master)</td>
+        <td><code>e14dd5bea</code></td>
+        <td class="text-left">Baseline: direct write + writer turn + write-ack wait + 10/20&micro;s <code>hrtimer</code> + global <code>timeoutQueue</code></td>
+        <td class="text-left">Unmodified <code>origin/master</code></td>
+        <td>50.1</td>
+        <td class="text-left">Baseline (173.6k ops/s, 39.4 &micro;s/op)</td>
+      </tr>
+      <tr>
+        <td><code>Step 0</code></td>
+        <td><code>8582f72c4</code></td>
+        <td class="text-left">Write-ack handoff &amp; <code>hrtimer</code> wait in <code>writeLoop</code></td>
+        <td class="text-left">Per-connection <code>D-NG</code> writer (<code>naSend</code> + <code>naLoop</code>, double-buffered <code>w.q</code> &harr; <code>spare</code>, 0&rarr;1 wakeup, 16 MiB high-water backpressure) + <code>D4</code> per-tx timer</td>
+        <td>47.1</td>
+        <td class="text-left">+38% ops/s (240.0k), -23% CPU/op (30.4 &micro;s)</td>
+      </tr>
+      <tr>
+        <td><code>Step 1</code></td>
+        <td><code>09b62e730</code></td>
+        <td class="text-left"><code>Conn.pendingMu</code> = <strong>76.65% of all mutex delay</strong> (<code>PrepareReplyTo</code> + <code>readLoop</code>) + global <code>NewUID</code> atomic contention</td>
+        <td class="text-left">32 cache-line-padded <code>pendingShard</code>s (<code>[48]byte</code> pad, <code>sync.Mutex</code>), out-of-lock <code>recvAt := time.Now()</code> in <code>readLoop</code>, per-conn atomic <code>nextReplyToken()</code></td>
+        <td>47.1</td>
+        <td class="text-left"><code>pendingMu</code> wait: <strong>10.65s &rarr; 0.00s</strong> (-0.9 &micro;s CPU/op)</td>
+      </tr>
+      <tr>
+        <td><code>Step 2</code></td>
+        <td><code>d57915963</code></td>
+        <td class="text-left"><code>encodeFrame</code> + <code>putFrame</code> <code>sync.Pool</code> round-trip &amp; double copy in <code>naSend</code></td>
+        <td class="text-left">Pre-allocated 64 KiB <code>w.q</code>/<code>spare</code> buffers + direct in-place <code>encodeFrameInto(w.q[off:off+n])</code> for frames &le; 4 KiB</td>
+        <td>47.1</td>
+        <td class="text-left">Eliminates <code>writeFramePool</code> get/put &amp; extra copy</td>
+      </tr>
+      <tr>
+        <td><code>Step 3</code></td>
+        <td><code>9ef277a47</code></td>
+        <td class="text-left"><code>armDesignTimerLocked</code> = <strong>5.71s CPU</strong> (<code>3.01s weak.Make</code> + <code>1.99s time.AfterFunc</code> + <code>0.57s Timer.Reset</code>)</td>
+        <td class="text-left">Pool <code>designTimerEntry</code> across <code>Transact</code>/<code>ReadTransact</code> calls; skip <code>weak.Make</code>, <code>time.AfterFunc</code>, and redundant <code>Timer.Reset</code> when existing wake &le; new deadline</td>
+        <td><strong>44.1</strong> (-3.0)</td>
+        <td class="text-left"><strong>-3.0 allocs/op</strong>, -1.5 &micro;s CPU/op, +6k ops/s</td>
+      </tr>
+      <tr>
+        <td><code>Step 4</code></td>
+        <td><code>664b143f3</code></td>
+        <td class="text-left"><code>GetPipelined</code> <code>make(map[*PendingGet]struct{{}})</code> + eager <code>getTimer</code> + 7 allocs in <code>cachePointResult</code></td>
+        <td class="text-left">Scalar <code>pendingReadFirst</code> slot, inline <code>PendingGet.keyBuf[64]</code>, lazy timer in <code>PendingGet.resolve</code>, Go 1.23+ direct <code>Timer.Reset</code>, inline <code>snapshotCache.insertPoint</code></td>
+        <td><strong>35.1</strong> (-9.0)</td>
+        <td class="text-left"><strong>-9.0 allocs/op</strong>, -1.2 &micro;s CPU/op, +6.3k ops/s</td>
+      </tr>
+      <tr>
+        <td><code>Step 5</code></td>
+        <td><code>d267fecd7</code></td>
+        <td class="text-left"><code>ClientMetrics.observeReadLatency</code> = <strong>11.44% of mutex delay</strong> (<code>1.59s</code>)</td>
+        <td class="text-left">Compute <code>bucketIndex(v)</code> (<code>math.Log</code>) before lock; shard <code>latencySketch</code> into 16 cache-line-padded stripes merged in <code>stats()</code></td>
+        <td>35.1</td>
+        <td class="text-left"><code>observeReadLatency</code> wait: <strong>1.59s &rarr; 0.02s</strong></td>
+      </tr>
+      <tr>
+        <td><code>Step 6</code></td>
+        <td><code>359793824</code></td>
+        <td class="text-left"><code>cachedOrFetchReadVersion</code> allocating <code>&amp;pendingReadVersion</code> + <code>make(chan struct{{}})</code> + <code>make(chan grvResult, 1)</code></td>
+        <td class="text-left">Inline <code>inlinePending</code> on <code>readVersionState</code>, lazy <code>pending.done</code> chan allocated only on 2nd waiter, and pooled <code>grvReplyPool</code></td>
+        <td><strong>31.1</strong> (-4.0)</td>
+        <td class="text-left"><strong>-4.0 allocs/op</strong>, -225 B/op, +4.6k ops/s</td>
+      </tr>
+      <tr class="highlight">
+        <td><code>Step 7</code> (Final)</td>
+        <td><code>c645f6b47</code></td>
+        <td class="text-left">Step-6 <code>heap.pprof</code> exposed 9 post-commit turnover allocs on <code>Transact</code>'s final commit (2nd <code>readIncarnation</code>, <code>regenerateSpan</code>, <code>shipReadConflicts</code> clone, <code>versionstampCompletion</code>)</td>
+        <td class="text-left">Mark <code>tx.transactFinalCommit</code> in <code>Database.Transact</code>: skip unused post-commit successor incarnation/span/versionstamp allocs and move <code>shipReadConflicts</code> past read-only fast path</td>
+        <td><strong>22.1</strong> (-9.0)</td>
+        <td class="text-left"><strong>-9.0 allocs/op</strong> (-510 B/op), <strong>263.5k+ ops/s, 25.4 &micro;s/op</strong></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2>2. Progression Waterfall Charts (<code>L</code> &rarr; <code>A</code> &rarr; <code>Step 0</code> &rarr; &hellip; &rarr; <code>Step 7</code>)</h2>
+<div class="grid-2">
+  {c_ops}
+  {c_cpu}
+</div>
+<div class="grid-2">
+  {c_allocs}
+  {c_mutex}
+</div>
+
+<h2>3. Before vs After <code>pprof</code> Profiles on <code>dng-climb</code> (<code>get100/256</code>, 3.6M Measured Ops)</h2>
+<div class="grid-2">
+  <div class="card">
+    <h3>Mutex Contention Profile (<code>mutex.pprof</code>): Step 0 vs Step 6 vs Step 7</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Contended Lock / Call Site</th>
+            <th>Step 0 (D-NG Base)</th>
+            <th>Step 6</th>
+            <th>Step 7 (Final)</th>
+            <th>Change</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="highlight">
+            <td><strong>Total Mutex Wait (3.6M ops)</strong></td>
+            <td><strong>13.90 s</strong> (100%)</td>
+            <td><strong>4.52 s</strong></td>
+            <td><strong>2.66 s</strong></td>
+            <td><strong>-80.9%</strong></td>
+          </tr>
+          <tr class="highlight">
+            <td><code>Conn.pendingMu</code> (<code>PrepareReplyTo</code> + <code>readLoop</code>)</td>
+            <td><strong>10.65 s</strong> (76.65%)</td>
+            <td><strong>0.00 s</strong> (&lt;0.01s)</td>
+            <td><strong>0.00 s</strong> (&lt;0.01s)</td>
+            <td><strong>-100% (Eliminated in Step 1)</strong></td>
+          </tr>
+          <tr class="highlight">
+            <td><code>ClientMetrics.observeReadLatency</code> (<code>latencySketch</code>)</td>
+            <td><strong>1.59 s</strong> (11.44%)</td>
+            <td><strong>0.00 s</strong> (&lt;0.02s)</td>
+            <td><strong>0.02 s</strong> (0.82%)</td>
+            <td><strong>-98.7% (Eliminated in Step 5)</strong></td>
+          </tr>
+          <tr class="highlight">
+            <td><code>Transaction.armDesignTimerLocked</code> (runtime timer lock)</td>
+            <td><strong>0.09 s</strong> (0.64%)</td>
+            <td><strong>0.00 s</strong></td>
+            <td><strong>0.00 s</strong></td>
+            <td><strong>-100% (Eliminated in Step 3)</strong></td>
+          </tr>
+          <tr>
+            <td><code>grvBatcher.admit</code> (<code>b.mu</code> GRV batcher lock)</td>
+            <td>1.15 s (8.25%)</td>
+            <td>2.03 s (45.0%)</td>
+            <td>1.40 s (52.7%)</td>
+            <td>Shared GRV batcher (60 ints/batch)</td>
+          </tr>
+          <tr>
+            <td><code>database.getOrDialForSend</code> (<code>connMu.RLock</code>)</td>
+            <td>0.18 s (1.3%)</td>
+            <td>0.19 s (4.2%)</td>
+            <td>0.14 s (5.3%)</td>
+            <td>Connection pool lookup</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <h3>CPU &amp; Heap Profile (<code>cpu.pprof</code> &amp; <code>heap.pprof</code>): Step 0 vs Step 6 vs Step 7</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Metric / Hotspot (3.6M ops on <code>get100/256</code>)</th>
+            <th>Step 0 (D-NG Base)</th>
+            <th>Step 6</th>
+            <th>Step 7 (Final)</th>
+            <th>Change</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="highlight">
+            <td><strong>Measured Wall Time (3.6M ops)</strong></td>
+            <td><strong>14.87 s</strong> (242.2k/s)</td>
+            <td><strong>13.62 s</strong> (264.2k/s)</td>
+            <td><strong>13.44 s</strong> (267.8k/s)</td>
+            <td><strong>-9.6% wall / +10.6% ops/s</strong></td>
+          </tr>
+          <tr class="highlight">
+            <td><strong>Total Client CPU Time (User + Sys)</strong></td>
+            <td><strong>110.28 s</strong> (30.63 &micro;s/op)</td>
+            <td><strong>95.57 s</strong> (26.55 &micro;s/op)</td>
+            <td><strong>92.20 s</strong> (25.61 &micro;s/op)</td>
+            <td><strong>-16.4% CPU/op (-18.1 CPU-s)</strong></td>
+          </tr>
+          <tr class="highlight">
+            <td><strong>Total Heap Mallocs (3.6M ops)</strong></td>
+            <td><strong>169.61 M</strong> (47.11/op)</td>
+            <td><strong>111.98 M</strong> (31.11/op)</td>
+            <td><strong>75.99 M</strong> (21.11–22.11/op)</td>
+            <td><strong>-55.2% mallocs (-93.6M allocs)</strong></td>
+          </tr>
+          <tr>
+            <td><strong>Total Allocated Heap Bytes</strong></td>
+            <td>16.65 GB (4,624 B/op)</td>
+            <td>15.26 GB (4,239 B/op)</td>
+            <td><strong>13.43 GB (3,729 B/op)</strong></td>
+            <td><strong>-19.4% bytes (-3.22 GB)</strong></td>
+          </tr>
+          <tr>
+            <td><code>Transaction.GetPipelined</code> (cum CPU)</td>
+            <td>28.89 s</td>
+            <td>23.23 s</td>
+            <td><strong>21.40 s</strong></td>
+            <td><strong>-25.9% (-7.49 CPU-s)</strong></td>
+          </tr>
+          <tr>
+            <td><code>PendingGet.ResolveOrAbort</code> (cum CPU)</td>
+            <td>18.10 s</td>
+            <td>16.55 s</td>
+            <td><strong>15.80 s</strong></td>
+            <td><strong>-12.7% (-2.30 CPU-s)</strong></td>
+          </tr>
+          <tr>
+            <td><code>Transaction.Commit</code> (read-only cum CPU)</td>
+            <td>12.39 s</td>
+            <td>11.28 s</td>
+            <td><strong>6.12 s</strong></td>
+            <td><strong>-50.6% (-6.27 CPU-s in Step 7)</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<h2>4. Step-by-Step Progression Tables on <code>dng-climb</code> (<code>L</code>, <code>A</code>, <code>Step 0</code> &rarr; <code>Step 7</code>)</h2>
+<h3>get100 / 256 workers — Step-by-Step Progression</h3>
+{build_hillclimb_table(hz7_steps, "get100", 256, step_arms)}
+
+<h3>get100 / 64 workers — Step-by-Step Progression</h3>
+{build_hillclimb_table(hz7_steps, "get100", 64, step_arms)}
+
+<h3>set100 / 64 workers — Step-by-Step Progression</h3>
+{build_hillclimb_table(hz7_steps, "set100", 64, step_arms)}
+
+<h3>getset100 / 64 workers — Step-by-Step Progression</h3>
+{build_hillclimb_table(hz7_steps, "getset100", 64, step_arms)}
+
+<h2>5. Final 7-Cell Scoreboard on <code>dng-climb</code> (<code>L</code>, <code>L4</code>, <code>A</code>, <code>Step 0</code>, <code>Step 7</code>, <code>Step 7 + adap20</code>, <code>Step 7 + D5</code>)</h2>
+<h3>get100 — 8, 64, and 256 workers</h3>
+<h4>get100 / 8 workers</h4>
+{build_hillclimb_table(hz7_final, "get100", 8, final_arms)}
+<h4>get100 / 64 workers</h4>
+{build_hillclimb_table(hz7_final, "get100", 64, final_arms)}
+<h4>get100 / 256 workers</h4>
+{build_hillclimb_table(hz7_final, "get100", 256, final_arms)}
+
+<h3>set100 — 8, 64, and 256 workers</h3>
+<h4>set100 / 8 workers</h4>
+{build_hillclimb_table(hz7_final, "set100", 8, final_arms)}
+<h4>set100 / 64 workers</h4>
+{build_hillclimb_table(hz7_final, "set100", 64, final_arms)}
+<h4>set100 / 256 workers</h4>
+{build_hillclimb_table(hz7_final, "set100", 256, final_arms)}
+
+<h3>getset100 — 64 workers</h3>
+{build_hillclimb_table(hz7_final, "getset100", 64, final_arms)}
+
+<h2>6. Rate-Capped Equal-Throughput (T4) Comparison (~90% of <code>L</code>)</h2>
+<h3>get100 / 64 workers — Rate-Capped at 28,000 ops/s</h3>
+{build_hillclimb_table(hz7_rate, "get100", 64, final_arms, rate=28000)}
+
+<h3>set100 / 64 workers — Rate-Capped at 17,000 ops/s</h3>
+{build_hillclimb_table(hz7_rate, "set100", 64, final_arms, rate=17000)}
+
+<h2>7. Client Syscalls &amp; Futexes per Operation Across Hill-Climb Steps (<code>perf stat</code>)</h2>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Cell</th><th>Arm / Step</th><th>Total syscalls/op</th><th>futex/op</th><th>epoll_pwait/op</th>
+        <th>read/op</th><th>write/op</th><th>nanosleep/op</th><th>ctx-switches/op</th>
+      </tr>
+    </thead>
+    <tbody>
+      {"".join(sys7_html)}
+    </tbody>
+  </table>
+</div>
+"""
+    with open(os.path.join(REPORT_DIR, "hillclimb.html"), "w") as f:
+        f.write(page_shell("hillclimb.html", "Round-7 D-NG Hill-Climbing Campaign", body))
+
+
 if __name__ == "__main__":
     generate_all()
+

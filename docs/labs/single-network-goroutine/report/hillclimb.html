@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Round-7 D-NG Hill-Climbing Campaign — fdbgo Transport &amp; Coalescing Lab</title>
+<style>
+:root {
+  --bg: #f8fafc;
+  --panel: #ffffff;
+  --text: #0f172a;
+  --muted: #475569;
+  --border: #e2e8f0;
+  --accent: #1d4ed8;
+  --good: #047857;
+  --good-bg: #ecfdf5;
+  --warn: #b45309;
+  --warn-bg: #fffbeb;
+  --bad: #be123c;
+  --bad-bg: #fff1f2;
+  --code-bg: #f1f5f9;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--bg);
+}
+header {
+  background: #0f172a;
+  color: #f8fafc;
+  padding: 18px 28px;
+  border-bottom: 1px solid #1e293b;
+}
+header .title-row {
+  max-width: 1440px;
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+header h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+header .subtitle {
+  color: #94a3b8;
+  font-size: 13px;
+}
+nav {
+  background: #1e293b;
+  padding: 0 28px;
+  border-bottom: 1px solid #334155;
+}
+nav .nav-inner {
+  max-width: 1440px;
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+nav a {
+  color: #cbd5e1;
+  text-decoration: none;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border-bottom: 2px solid transparent;
+}
+nav a:hover {
+  color: #ffffff;
+  background: rgba(255,255,255,0.05);
+}
+nav a.active {
+  color: #ffffff;
+  border-bottom-color: #38bdf8;
+  background: rgba(56,189,248,0.1);
+}
+main {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 24px 28px 64px;
+}
+h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 28px 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  color: #0f172a;
+}
+h3 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 20px 0 8px;
+  color: #1e293b;
+}
+p, li {
+  color: #1e293b;
+}
+ul, ol {
+  margin: 8px 0 14px;
+  padding-left: 22px;
+}
+li {
+  margin-bottom: 4px;
+}
+code, pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12.5px;
+}
+code {
+  background: var(--code-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+pre {
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 14px 16px;
+  border-radius: 6px;
+  overflow-x: auto;
+  line-height: 1.45;
+}
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(560px, 1fr));
+  gap: 18px;
+  margin: 14px 0;
+}
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 16px;
+  margin: 14px 0;
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 18px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+.card h3 {
+  margin-top: 0;
+}
+.callout {
+  border-left: 4px solid var(--accent);
+  background: #eff6ff;
+  padding: 12px 16px;
+  border-radius: 0 6px 6px 0;
+  margin: 14px 0;
+}
+.callout.good {
+  border-left-color: var(--good);
+  background: var(--good-bg);
+}
+.callout.warn {
+  border-left-color: var(--warn);
+  background: var(--warn-bg);
+}
+.callout.bad {
+  border-left-color: var(--bad);
+  background: var(--bad-bg);
+}
+.table-wrap {
+  overflow-x: auto;
+  margin: 12px 0 20px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+th, td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+  white-space: nowrap;
+}
+th:first-child, td:first-child {
+  text-align: left;
+  font-weight: 500;
+}
+td.text-left, th.text-left {
+  text-align: left;
+  white-space: normal;
+}
+thead th {
+  background: #f1f5f9;
+  color: #334155;
+  font-weight: 600;
+  border-bottom: 2px solid #cbd5e1;
+}
+tbody tr:hover {
+  background: #f8fafc;
+}
+tbody tr.highlight {
+  background: #f0fdf4;
+}
+tbody tr.highlight-warn {
+  background: #fff1f2;
+}
+.spread {
+  color: #64748b;
+  font-size: 11px;
+  display: block;
+}
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge.pass { background: var(--good-bg); color: var(--good); }
+.badge.fail { background: var(--bad-bg); color: var(--bad); }
+.badge.warn { background: var(--warn-bg); color: var(--warn); }
+.badge.info { background: #e0f2fe; color: #0369a1; }
+.svg-wrap {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  margin: 12px 0;
+  overflow-x: auto;
+}
+footer {
+  margin-top: 48px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  display: flex;
+  justify-content: space-between;
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="title-row">
+    <h1>FoundationDB Pure-Go Transport Lab: Writer Queues, Coalescing Linger &amp; libfdb_c Parity</h1>
+    <div class="subtitle">FDB 7.3.77 &middot; PR #991 &middot; Dedicated Hetzner ccx43 (AMD EPYC-Milan, 16 vCPUs)</div>
+  </div>
+</header>
+<nav>
+  <div class="nav-inner">
+    <a href='index.html'>1. Executive Summary</a><a href='hillclimb.html' class='active'>2. D-NG Hill-Climb (Round 7)</a><a href='linger.html'>3. Linger Sweep &amp; Per-Role Cost</a><a href='queues.html'>4. Writer Queues, Ring &amp; D-M</a><a href='delay-vs-ack.html'>5. Coalesce Delay vs Write-Ack</a><a href='libfdbc.html'>6. libfdb_c (L vs L4) vs Go</a><a href='methodology.html'>7. Methodology &amp; Verification</a>
+  </div>
+</nav>
+<main>
+
+<div class="callout good">
+  <strong>Round-7 Hill-Climbing Campaign Summary (Branch <code>feat/dng-transport</code> on <code>dng-climb</code>):</strong>
+  <ul>
+    <li><strong>80.9% reduction in total mutex contention:</strong> Sharding <code>Conn.pending</code> into 32 cache-line-padded shards with per-connection atomic reply tokens (<code>Step 1</code>) and 16-striping <code>latencySketch</code> with out-of-lock <code>bucketIndex</code> (<code>Step 5</code>) eliminated <strong>100% of <code>pendingMu</code> contention</strong> (<code>10.65s &rarr; 0.00s</code>) and <strong>99% of <code>observeReadLatency</code> contention</strong> (<code>1.59s &rarr; 0.02s</code>), cutting total mutex delay over 3.6M <code>get100/256</code> operations from <strong>13.90s to 2.66s</strong>.</li>
+    <li><strong>55.8% reduction in heap allocations per transaction:</strong> Pooling <code>Transact</code>-scoped timeout timers (<code>Step 3</code>, <code>-3 allocs/op</code>), adding a scalar <code>pendingReadFirst</code> slot + lazy <code>PendingGet</code> timer + inline point-read cache (<code>Step 4</code>, <code>-9 allocs/op</code>), embedding <code>pendingReadVersion</code> with lazy <code>done</code> chan + pooled <code>chan grvResult</code> (<code>Step 6</code>, <code>-4 allocs/op</code>), and skipping final-commit turnover allocations + read-only conflict clones (<code>Step 7</code>, <code>-9 allocs/op</code>) cut allocations from <strong>50.20 allocs/op (<code>A</code>) and 47.11 allocs/op (<code>Step 0</code>) down to 22.11 allocs/op (<code>Step 7</code>)</strong> (<code>4,980 &rarr; 3,729 B/op</code>).</li>
+    <li><strong>Throughput, CPU, and Server Coalescing Gains:</strong>
+      <ul>
+        <li><strong><code>get100/256</code>:</strong> Throughput climbs monotonically from <strong>49.5k (<code>L</code>) &rarr; 171.1k (<code>A</code>) &rarr; 240.6k (<code>Step 0</code>) &rarr; 262.0k (<code>Step 7</code>) &rarr; 273.4k ops/s (<code>Step 7 + adap20</code>, 5.41&times; <code>L</code>)</strong>, while client CPU drops from <strong>68.0 &rarr; 39.6 &rarr; 30.3 &rarr; 25.0 &micro;s/op</strong>, server CPU drops from <strong>19.1 to 14.9–15.6 kcycles/tx</strong> (<code>14.1 kc/tx</code> with <code>Step 7 + D5</code>, matching <code>L</code>'s <code>13.8 kc/tx</code>), and futex calls drop <strong>88%</strong> (<code>0.311 &rarr; 0.036 futex/op</code>).</li>
+        <li><strong><code>get100/8</code> (Serial Read Latency):</strong> Eliminating eager per-read timer resets and post-commit turnover allocations closed the last remaining low-concurrency gap against <code>libfdb_c</code>: <code>Step 7</code> reaches <strong>7,222 ops/s vs <code>L</code>'s 6,915 ops/s (<code>1.04&times; L</code>)</strong> at <strong>119.6 vs 146.3 &micro;s/op client CPU (<code>0.82&times; L</code>)</strong>, <strong>89.6 vs 93.2 kc/tx server CPU (<code>0.96&times; L</code>)</strong>, and <strong>1,710 vs 2,002 &micro;s p99 (<code>0.85&times; L</code>)</strong>.</li>
+        <li><strong>Rate-Capped Equal Throughput (T4):</strong> At <code>get100/64 @ 28,000 ops/s</code>, <code>Step 7</code> achieves <strong>p50 = 590 &micro;s (<code>0.49&times; L</code>)</strong>, <strong>p99 = 878 &micro;s (<code>0.22&times; L</code>)</strong>, and <strong>client CPU = 94.1 &micro;s/op (<code>0.96&times; L</code>)</strong>. At <code>set100/64 @ 17,000 ops/s</code>, <code>Step 7</code> achieves <strong>p50 = 2,145 &micro;s (<code>0.98&times; L</code>)</strong>, <strong>p99 = 3,410 &micro;s (<code>0.83&times; L</code>)</strong>, and <strong>server CPU = 160.2 kc/tx (<code>0.89&times; L</code>; <code>152.8 kc/tx = 0.85&times; L</code> with <code>Step 7 + D5</code>)</strong>.</li>
+      </ul>
+    </li>
+  </ul>
+</div>
+
+<h2>1. The 8-Step Hill-Climbing Ladder (Commits on <code>feat/dng-transport</code>)</h2>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Step</th>
+        <th>Commit</th>
+        <th class="text-left">Bottleneck Targeted (from Round-6 / Step-6 <code>pprof</code>)</th>
+        <th class="text-left">Engineering Change (<code>pkg/fdbgo/transport</code> &amp; <code>pkg/fdbgo/client</code>)</th>
+        <th>Allocs/op (<code>get100</code>)</th>
+        <th>Primary Win</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>A</code> (Master)</td>
+        <td><code>e14dd5bea</code></td>
+        <td class="text-left">Baseline: direct write + writer turn + write-ack wait + 10/20&micro;s <code>hrtimer</code> + global <code>timeoutQueue</code></td>
+        <td class="text-left">Unmodified <code>origin/master</code></td>
+        <td>50.1</td>
+        <td class="text-left">Baseline (173.6k ops/s, 39.4 &micro;s/op)</td>
+      </tr>
+      <tr>
+        <td><code>Step 0</code></td>
+        <td><code>8582f72c4</code></td>
+        <td class="text-left">Write-ack handoff &amp; <code>hrtimer</code> wait in <code>writeLoop</code></td>
+        <td class="text-left">Per-connection <code>D-NG</code> writer (<code>naSend</code> + <code>naLoop</code>, double-buffered <code>w.q</code> &harr; <code>spare</code>, 0&rarr;1 wakeup, 16 MiB high-water backpressure) + <code>D4</code> per-tx timer</td>
+        <td>47.1</td>
+        <td class="text-left">+38% ops/s (240.0k), -23% CPU/op (30.4 &micro;s)</td>
+      </tr>
+      <tr>
+        <td><code>Step 1</code></td>
+        <td><code>09b62e730</code></td>
+        <td class="text-left"><code>Conn.pendingMu</code> = <strong>76.65% of all mutex delay</strong> (<code>PrepareReplyTo</code> + <code>readLoop</code>) + global <code>NewUID</code> atomic contention</td>
+        <td class="text-left">32 cache-line-padded <code>pendingShard</code>s (<code>[48]byte</code> pad, <code>sync.Mutex</code>), out-of-lock <code>recvAt := time.Now()</code> in <code>readLoop</code>, per-conn atomic <code>nextReplyToken()</code></td>
+        <td>47.1</td>
+        <td class="text-left"><code>pendingMu</code> wait: <strong>10.65s &rarr; 0.00s</strong> (-0.9 &micro;s CPU/op)</td>
+      </tr>
+      <tr>
+        <td><code>Step 2</code></td>
+        <td><code>d57915963</code></td>
+        <td class="text-left"><code>encodeFrame</code> + <code>putFrame</code> <code>sync.Pool</code> round-trip &amp; double copy in <code>naSend</code></td>
+        <td class="text-left">Pre-allocated 64 KiB <code>w.q</code>/<code>spare</code> buffers + direct in-place <code>encodeFrameInto(w.q[off:off+n])</code> for frames &le; 4 KiB</td>
+        <td>47.1</td>
+        <td class="text-left">Eliminates <code>writeFramePool</code> get/put &amp; extra copy</td>
+      </tr>
+      <tr>
+        <td><code>Step 3</code></td>
+        <td><code>9ef277a47</code></td>
+        <td class="text-left"><code>armDesignTimerLocked</code> = <strong>5.71s CPU</strong> (<code>3.01s weak.Make</code> + <code>1.99s time.AfterFunc</code> + <code>0.57s Timer.Reset</code>)</td>
+        <td class="text-left">Pool <code>designTimerEntry</code> across <code>Transact</code>/<code>ReadTransact</code> calls; skip <code>weak.Make</code>, <code>time.AfterFunc</code>, and redundant <code>Timer.Reset</code> when existing wake &le; new deadline</td>
+        <td><strong>44.1</strong> (-3.0)</td>
+        <td class="text-left"><strong>-3.0 allocs/op</strong>, -1.5 &micro;s CPU/op, +6k ops/s</td>
+      </tr>
+      <tr>
+        <td><code>Step 4</code></td>
+        <td><code>664b143f3</code></td>
+        <td class="text-left"><code>GetPipelined</code> <code>make(map[*PendingGet]struct{})</code> + eager <code>getTimer</code> + 7 allocs in <code>cachePointResult</code></td>
+        <td class="text-left">Scalar <code>pendingReadFirst</code> slot, inline <code>PendingGet.keyBuf[64]</code>, lazy timer in <code>PendingGet.resolve</code>, Go 1.23+ direct <code>Timer.Reset</code>, inline <code>snapshotCache.insertPoint</code></td>
+        <td><strong>35.1</strong> (-9.0)</td>
+        <td class="text-left"><strong>-9.0 allocs/op</strong>, -1.2 &micro;s CPU/op, +6.3k ops/s</td>
+      </tr>
+      <tr>
+        <td><code>Step 5</code></td>
+        <td><code>d267fecd7</code></td>
+        <td class="text-left"><code>ClientMetrics.observeReadLatency</code> = <strong>11.44% of mutex delay</strong> (<code>1.59s</code>)</td>
+        <td class="text-left">Compute <code>bucketIndex(v)</code> (<code>math.Log</code>) before lock; shard <code>latencySketch</code> into 16 cache-line-padded stripes merged in <code>stats()</code></td>
+        <td>35.1</td>
+        <td class="text-left"><code>observeReadLatency</code> wait: <strong>1.59s &rarr; 0.02s</strong></td>
+      </tr>
+      <tr>
+        <td><code>Step 6</code></td>
+        <td><code>359793824</code></td>
+        <td class="text-left"><code>cachedOrFetchReadVersion</code> allocating <code>&amp;pendingReadVersion</code> + <code>make(chan struct{})</code> + <code>make(chan grvResult, 1)</code></td>
+        <td class="text-left">Inline <code>inlinePending</code> on <code>readVersionState</code>, lazy <code>pending.done</code> chan allocated only on 2nd waiter, and pooled <code>grvReplyPool</code></td>
+        <td><strong>31.1</strong> (-4.0)</td>
+        <td class="text-left"><strong>-4.0 allocs/op</strong>, -225 B/op, +4.6k ops/s</td>
+      </tr>
+      <tr class="highlight">
+        <td><code>Step 7</code> (Final)</td>
+        <td><code>c645f6b47</code></td>
+        <td class="text-left">Step-6 <code>heap.pprof</code> exposed 9 post-commit turnover allocs on <code>Transact</code>'s final commit (2nd <code>readIncarnation</code>, <code>regenerateSpan</code>, <code>shipReadConflicts</code> clone, <code>versionstampCompletion</code>)</td>
+        <td class="text-left">Mark <code>tx.transactFinalCommit</code> in <code>Database.Transact</code>: skip unused post-commit successor incarnation/span/versionstamp allocs and move <code>shipReadConflicts</code> past read-only fast path</td>
+        <td><strong>22.1</strong> (-9.0)</td>
+        <td class="text-left"><strong>-9.0 allocs/op</strong> (-510 B/op), <strong>263.5k+ ops/s, 25.4 &micro;s/op</strong></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<h2>2. Progression Waterfall Charts (<code>L</code> &rarr; <code>A</code> &rarr; <code>Step 0</code> &rarr; &hellip; &rarr; <code>Step 7</code>)</h2>
+<div class="grid-2">
+  <div class='svg-wrap'><svg viewBox='0 0 660 340' width='100%' height='340' xmlns='http://www.w3.org/2000/svg'>
+<text x='62' y='20' font-size='13' font-weight='600' fill='#0f172a'>Hill-Climb Progression on get100 / 256 workers: Throughput (kops/s)</text>
+<text x='62' y='36' font-size='11' fill='#64748b'>Higher is better: L (48.6k) -&gt; A (173.6k) -&gt; Step 0 (240.0k) -&gt; ... -&gt; Step 7 (263.5k+ ops/s)</text>
+<line x1='62' y1='52.0' x2='636' y2='52.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='54' y='56.0' font-size='10.5' fill='#64748b' text-anchor='end'>309.2</text>
+<line x1='62' y1='107.0' x2='636' y2='107.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='54' y='111.0' font-size='10.5' fill='#64748b' text-anchor='end'>231.9</text>
+<line x1='62' y1='162.0' x2='636' y2='162.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='54' y='166.0' font-size='10.5' fill='#64748b' text-anchor='end'>154.6</text>
+<line x1='62' y1='217.0' x2='636' y2='217.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='54' y='221.0' font-size='10.5' fill='#64748b' text-anchor='end'>77.3</text>
+<line x1='62' y1='272.0' x2='636' y2='272.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='54' y='276.0' font-size='10.5' fill='#64748b' text-anchor='end'>0.0</text>
+<rect x='72.0' y='236.7' width='37.3' height='35.3' fill='#475569' rx='3'/>
+<text x='90.7' y='231.7' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>49.5k</text>
+<text x='90.7' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 90.7 288)'>L (libfdb_c)</text>
+<rect x='129.4' y='150.3' width='37.3' height='121.7' fill='#d97706' rx='3'/>
+<text x='148.1' y='145.3' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>171.1k</text>
+<text x='148.1' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 148.1 288)'>A (today)</text>
+<rect x='186.8' y='100.8' width='37.3' height='171.2' fill='#059669' rx='3'/>
+<text x='205.5' y='95.8' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>240.6k</text>
+<text x='205.5' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 205.5 288)'>Step 0 (D-NG)</text>
+<rect x='244.2' y='102.7' width='37.3' height='169.3' fill='#0d9488' rx='3'/>
+<text x='262.9' y='97.7' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>238.0k</text>
+<text x='262.9' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 262.9 288)'>Step 1 (32-shard)</text>
+<rect x='301.6' y='99.8' width='37.3' height='172.2' fill='#0891b2' rx='3'/>
+<text x='320.3' y='94.8' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>242.0k</text>
+<text x='320.3' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 320.3 288)'>Step 2 (in-place)</text>
+<rect x='359.0' y='94.0' width='37.3' height='178.0' fill='#0284c7' rx='3'/>
+<text x='377.7' y='89.0' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>250.2k</text>
+<text x='377.7' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 377.7 288)'>Step 3 (tx timer)</text>
+<rect x='416.4' y='91.5' width='37.3' height='180.5' fill='#2563eb' rx='3'/>
+<text x='435.1' y='86.5' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>253.7k</text>
+<text x='435.1' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 435.1 288)'>Step 4 (fast Get)</text>
+<rect x='473.8' y='91.2' width='37.3' height='180.8' fill='#4f46e5' rx='3'/>
+<text x='492.5' y='86.2' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>254.1k</text>
+<text x='492.5' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 492.5 288)'>Step 5 (16-sketch)</text>
+<rect x='531.2' y='89.1' width='37.3' height='182.9' fill='#7c3aed' rx='3'/>
+<text x='549.9' y='84.1' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>257.1k</text>
+<text x='549.9' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 549.9 288)'>Step 6 (GRV pool)</text>
+<rect x='588.6' y='85.6' width='37.3' height='186.4' fill='#15803d' rx='3'/>
+<text x='607.3' y='80.6' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>262.0k</text>
+<text x='607.3' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 607.3 288)'>Step 7 (Final)</text>
+<line x1='62' y1='272' x2='636' y2='272' stroke='#94a3b8' stroke-width='1'/>
+<text x='15' y='162.0' font-size='11' font-weight='500' fill='#334155' text-anchor='middle' transform='rotate(-90 15 162.0)'>Throughput (kops/s)</text>
+</svg></div>
+  <div class='svg-wrap'><svg viewBox='0 0 660 340' width='100%' height='340' xmlns='http://www.w3.org/2000/svg'>
+<text x='62' y='20' font-size='13' font-weight='600' fill='#0f172a'>Hill-Climb Progression on get100 / 256 workers: Client CPU (µs/op)</text>
+<text x='62' y='36' font-size='11' fill='#64748b'>Lower is better: L (68.3 µs) -&gt; A (39.4 µs) -&gt; Step 0 (30.4 µs) -&gt; ... -&gt; Step 7 (25.4 µs/op)</text>
+<line x1='62' y1='52.0' x2='636' y2='52.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='54' y='56.0' font-size='10.5' fill='#64748b' text-anchor='end'>80.2</text>
+<line x1='62' y1='107.0' x2='636' y2='107.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='54' y='111.0' font-size='10.5' fill='#64748b' text-anchor='end'>60.2</text>
+<line x1='62' y1='162.0' x2='636' y2='162.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='54' y='166.0' font-size='10.5' fill='#64748b' text-anchor='end'>40.1</text>
+<line x1='62' y1='217.0' x2='636' y2='217.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='54' y='221.0' font-size='10.5' fill='#64748b' text-anchor='end'>20.1</text>
+<line x1='62' y1='272.0' x2='636' y2='272.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='54' y='276.0' font-size='10.5' fill='#64748b' text-anchor='end'>0.0</text>
+<rect x='72.0' y='85.6' width='37.3' height='186.4' fill='#475569' rx='3'/>
+<text x='90.7' y='80.6' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>68.0µs</text>
+<text x='90.7' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 90.7 288)'>L (libfdb_c)</text>
+<rect x='129.4' y='163.4' width='37.3' height='108.6' fill='#d97706' rx='3'/>
+<text x='148.1' y='158.4' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>39.6µs</text>
+<text x='148.1' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 148.1 288)'>A (today)</text>
+<rect x='186.8' y='188.9' width='37.3' height='83.1' fill='#059669' rx='3'/>
+<text x='205.5' y='183.9' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>30.3µs</text>
+<text x='205.5' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 205.5 288)'>Step 0 (D-NG)</text>
+<rect x='244.2' y='191.3' width='37.3' height='80.7' fill='#0d9488' rx='3'/>
+<text x='262.9' y='186.3' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>29.4µs</text>
+<text x='262.9' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 262.9 288)'>Step 1 (32-shard)</text>
+<rect x='301.6' y='190.9' width='37.3' height='81.1' fill='#0891b2' rx='3'/>
+<text x='320.3' y='185.9' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>29.6µs</text>
+<text x='320.3' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 320.3 288)'>Step 2 (in-place)</text>
+<rect x='359.0' y='195.4' width='37.3' height='76.6' fill='#0284c7' rx='3'/>
+<text x='377.7' y='190.4' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>28.0µs</text>
+<text x='377.7' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 377.7 288)'>Step 3 (tx timer)</text>
+<rect x='416.4' y='198.2' width='37.3' height='73.8' fill='#2563eb' rx='3'/>
+<text x='435.1' y='193.2' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>26.9µs</text>
+<text x='435.1' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 435.1 288)'>Step 4 (fast Get)</text>
+<rect x='473.8' y='198.9' width='37.3' height='73.1' fill='#4f46e5' rx='3'/>
+<text x='492.5' y='193.9' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>26.7µs</text>
+<text x='492.5' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 492.5 288)'>Step 5 (16-sketch)</text>
+<rect x='531.2' y='198.5' width='37.3' height='73.5' fill='#7c3aed' rx='3'/>
+<text x='549.9' y='193.5' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>26.8µs</text>
+<text x='549.9' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 549.9 288)'>Step 6 (GRV pool)</text>
+<rect x='588.6' y='202.3' width='37.3' height='69.7' fill='#15803d' rx='3'/>
+<text x='607.3' y='197.3' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>25.4µs</text>
+<text x='607.3' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 607.3 288)'>Step 7 (Final)</text>
+<line x1='62' y1='272' x2='636' y2='272' stroke='#94a3b8' stroke-width='1'/>
+<text x='15' y='162.0' font-size='11' font-weight='500' fill='#334155' text-anchor='middle' transform='rotate(-90 15 162.0)'>Client CPU (µs/op)</text>
+</svg></div>
+</div>
+<div class="grid-2">
+  <div class='svg-wrap'><svg viewBox='0 0 660 340' width='100%' height='340' xmlns='http://www.w3.org/2000/svg'>
+<text x='62' y='20' font-size='13' font-weight='600' fill='#0f172a'>Hill-Climb Progression on get100 / 256 workers: Heap Allocations per Tx (allocs/op)</text>
+<text x='62' y='36' font-size='11' fill='#64748b'>Lower is better: A (50.1) -&gt; Step 0 (47.1) -&gt; Step 3 (44.1) -&gt; Step 4 (35.1) -&gt; Step 6 (31.1) -&gt; Step 7 (22.1)</text>
+<line x1='62' y1='52.0' x2='636' y2='52.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='54' y='56.0' font-size='10.5' fill='#64748b' text-anchor='end'>59.2</text>
+<line x1='62' y1='107.0' x2='636' y2='107.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='54' y='111.0' font-size='10.5' fill='#64748b' text-anchor='end'>44.4</text>
+<line x1='62' y1='162.0' x2='636' y2='162.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='54' y='166.0' font-size='10.5' fill='#64748b' text-anchor='end'>29.6</text>
+<line x1='62' y1='217.0' x2='636' y2='217.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='54' y='221.0' font-size='10.5' fill='#64748b' text-anchor='end'>14.8</text>
+<line x1='62' y1='272.0' x2='636' y2='272.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='54' y='276.0' font-size='10.5' fill='#64748b' text-anchor='end'>0.0</text>
+<rect x='74.9' y='85.6' width='38.0' height='186.4' fill='#d97706' rx='3'/>
+<text x='93.9' y='80.6' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>50.2</text>
+<text x='93.9' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 93.9 288)'>A (today)</text>
+<rect x='138.7' y='97.0' width='38.0' height='175.0' fill='#059669' rx='3'/>
+<text x='157.7' y='92.0' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>47.1</text>
+<text x='157.7' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 157.7 288)'>Step 0 (D-NG)</text>
+<rect x='202.4' y='97.0' width='38.0' height='175.0' fill='#0d9488' rx='3'/>
+<text x='221.4' y='92.0' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>47.1</text>
+<text x='221.4' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 221.4 288)'>Step 1 (32-shard)</text>
+<rect x='266.2' y='97.0' width='38.0' height='175.0' fill='#0891b2' rx='3'/>
+<text x='285.2' y='92.0' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>47.1</text>
+<text x='285.2' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 285.2 288)'>Step 2 (in-place)</text>
+<rect x='330.0' y='108.2' width='38.0' height='163.8' fill='#0284c7' rx='3'/>
+<text x='349.0' y='103.2' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>44.1</text>
+<text x='349.0' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 349.0 288)'>Step 3 (tx timer)</text>
+<rect x='393.8' y='141.6' width='38.0' height='130.4' fill='#2563eb' rx='3'/>
+<text x='412.8' y='136.6' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>35.1</text>
+<text x='412.8' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 412.8 288)'>Step 4 (fast Get)</text>
+<rect x='457.6' y='141.6' width='38.0' height='130.4' fill='#4f46e5' rx='3'/>
+<text x='476.6' y='136.6' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>35.1</text>
+<text x='476.6' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 476.6 288)'>Step 5 (16-sketch)</text>
+<rect x='521.3' y='156.5' width='38.0' height='115.5' fill='#7c3aed' rx='3'/>
+<text x='540.3' y='151.5' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>31.1</text>
+<text x='540.3' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 540.3 288)'>Step 6 (GRV pool)</text>
+<rect x='585.1' y='189.9' width='38.0' height='82.1' fill='#15803d' rx='3'/>
+<text x='604.1' y='184.9' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>22.1</text>
+<text x='604.1' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 604.1 288)'>Step 7 (Final)</text>
+<line x1='62' y1='272' x2='636' y2='272' stroke='#94a3b8' stroke-width='1'/>
+<text x='15' y='162.0' font-size='11' font-weight='500' fill='#334155' text-anchor='middle' transform='rotate(-90 15 162.0)'>Allocations / op</text>
+</svg></div>
+  <div class='svg-wrap'><svg viewBox='0 0 660 340' width='100%' height='340' xmlns='http://www.w3.org/2000/svg'>
+<text x='62' y='20' font-size='13' font-weight='600' fill='#0f172a'>pprof Total Mutex Contention Delay on get100 / 256 (3.6M ops, seconds)</text>
+<text x='62' y='36' font-size='11' fill='#64748b'>Lower is better: Round-6 / Step 0 (13.90s) -&gt; Step 6 (4.52s) -&gt; Step 7 (2.66s) (-80.9% mutex wait)</text>
+<line x1='62' y1='52.0' x2='636' y2='52.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='54' y='56.0' font-size='10.5' fill='#64748b' text-anchor='end'>20.38</text>
+<line x1='62' y1='107.0' x2='636' y2='107.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='54' y='111.0' font-size='10.5' fill='#64748b' text-anchor='end'>15.28</text>
+<line x1='62' y1='162.0' x2='636' y2='162.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='54' y='166.0' font-size='10.5' fill='#64748b' text-anchor='end'>10.19</text>
+<line x1='62' y1='217.0' x2='636' y2='217.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='54' y='221.0' font-size='10.5' fill='#64748b' text-anchor='end'>5.09</text>
+<line x1='62' y1='272.0' x2='636' y2='272.0' stroke='#e2e8f0' stroke-width='1'/>
+<text x='54' y='276.0' font-size='10.5' fill='#64748b' text-anchor='end'>0.00</text>
+<rect x='114.8' y='85.6' width='38.0' height='186.4' fill='#be123c' rx='3'/>
+<text x='133.8' y='80.6' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>17.27s</text>
+<text x='133.8' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 133.8 288)'>Round 6 (4.8M)</text>
+<rect x='258.2' y='121.9' width='38.0' height='150.1' fill='#e11d48' rx='3'/>
+<text x='277.2' y='116.9' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>13.90s</text>
+<text x='277.2' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 277.2 288)'>Step 0 (3.6M)</text>
+<rect x='401.8' y='223.2' width='38.0' height='48.8' fill='#7c3aed' rx='3'/>
+<text x='420.8' y='218.2' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>4.52s</text>
+<text x='420.8' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 420.8 288)'>Step 6 (3.6M)</text>
+<rect x='545.2' y='243.3' width='38.0' height='28.7' fill='#15803d' rx='3'/>
+<text x='564.2' y='238.3' font-size='9.5' font-weight='600' fill='#0f172a' text-anchor='middle'>2.66s</text>
+<text x='564.2' y='288' font-size='10' font-weight='500' fill='#334155' text-anchor='end' transform='rotate(-25 564.2 288)'>Step 7 (3.6M)</text>
+<line x1='62' y1='272' x2='636' y2='272' stroke='#94a3b8' stroke-width='1'/>
+<text x='15' y='162.0' font-size='11' font-weight='500' fill='#334155' text-anchor='middle' transform='rotate(-90 15 162.0)'>Total Mutex Delay (s)</text>
+</svg></div>
+</div>
+
+<h2>3. Before vs After <code>pprof</code> Profiles on <code>dng-climb</code> (<code>get100/256</code>, 3.6M Measured Ops)</h2>
+<div class="grid-2">
+  <div class="card">
+    <h3>Mutex Contention Profile (<code>mutex.pprof</code>): Step 0 vs Step 6 vs Step 7</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Contended Lock / Call Site</th>
+            <th>Step 0 (D-NG Base)</th>
+            <th>Step 6</th>
+            <th>Step 7 (Final)</th>
+            <th>Change</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="highlight">
+            <td><strong>Total Mutex Wait (3.6M ops)</strong></td>
+            <td><strong>13.90 s</strong> (100%)</td>
+            <td><strong>4.52 s</strong></td>
+            <td><strong>2.66 s</strong></td>
+            <td><strong>-80.9%</strong></td>
+          </tr>
+          <tr class="highlight">
+            <td><code>Conn.pendingMu</code> (<code>PrepareReplyTo</code> + <code>readLoop</code>)</td>
+            <td><strong>10.65 s</strong> (76.65%)</td>
+            <td><strong>0.00 s</strong> (&lt;0.01s)</td>
+            <td><strong>0.00 s</strong> (&lt;0.01s)</td>
+            <td><strong>-100% (Eliminated in Step 1)</strong></td>
+          </tr>
+          <tr class="highlight">
+            <td><code>ClientMetrics.observeReadLatency</code> (<code>latencySketch</code>)</td>
+            <td><strong>1.59 s</strong> (11.44%)</td>
+            <td><strong>0.00 s</strong> (&lt;0.02s)</td>
+            <td><strong>0.02 s</strong> (0.82%)</td>
+            <td><strong>-98.7% (Eliminated in Step 5)</strong></td>
+          </tr>
+          <tr class="highlight">
+            <td><code>Transaction.armDesignTimerLocked</code> (runtime timer lock)</td>
+            <td><strong>0.09 s</strong> (0.64%)</td>
+            <td><strong>0.00 s</strong></td>
+            <td><strong>0.00 s</strong></td>
+            <td><strong>-100% (Eliminated in Step 3)</strong></td>
+          </tr>
+          <tr>
+            <td><code>grvBatcher.admit</code> (<code>b.mu</code> GRV batcher lock)</td>
+            <td>1.15 s (8.25%)</td>
+            <td>2.03 s (45.0%)</td>
+            <td>1.40 s (52.7%)</td>
+            <td>Shared GRV batcher (60 ints/batch)</td>
+          </tr>
+          <tr>
+            <td><code>database.getOrDialForSend</code> (<code>connMu.RLock</code>)</td>
+            <td>0.18 s (1.3%)</td>
+            <td>0.19 s (4.2%)</td>
+            <td>0.14 s (5.3%)</td>
+            <td>Connection pool lookup</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <h3>CPU &amp; Heap Profile (<code>cpu.pprof</code> &amp; <code>heap.pprof</code>): Step 0 vs Step 6 vs Step 7</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Metric / Hotspot (3.6M ops on <code>get100/256</code>)</th>
+            <th>Step 0 (D-NG Base)</th>
+            <th>Step 6</th>
+            <th>Step 7 (Final)</th>
+            <th>Change</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="highlight">
+            <td><strong>Measured Wall Time (3.6M ops)</strong></td>
+            <td><strong>14.87 s</strong> (242.2k/s)</td>
+            <td><strong>13.62 s</strong> (264.2k/s)</td>
+            <td><strong>13.44 s</strong> (267.8k/s)</td>
+            <td><strong>-9.6% wall / +10.6% ops/s</strong></td>
+          </tr>
+          <tr class="highlight">
+            <td><strong>Total Client CPU Time (User + Sys)</strong></td>
+            <td><strong>110.28 s</strong> (30.63 &micro;s/op)</td>
+            <td><strong>95.57 s</strong> (26.55 &micro;s/op)</td>
+            <td><strong>92.20 s</strong> (25.61 &micro;s/op)</td>
+            <td><strong>-16.4% CPU/op (-18.1 CPU-s)</strong></td>
+          </tr>
+          <tr class="highlight">
+            <td><strong>Total Heap Mallocs (3.6M ops)</strong></td>
+            <td><strong>169.61 M</strong> (47.11/op)</td>
+            <td><strong>111.98 M</strong> (31.11/op)</td>
+            <td><strong>75.99 M</strong> (21.11–22.11/op)</td>
+            <td><strong>-55.2% mallocs (-93.6M allocs)</strong></td>
+          </tr>
+          <tr>
+            <td><strong>Total Allocated Heap Bytes</strong></td>
+            <td>16.65 GB (4,624 B/op)</td>
+            <td>15.26 GB (4,239 B/op)</td>
+            <td><strong>13.43 GB (3,729 B/op)</strong></td>
+            <td><strong>-19.4% bytes (-3.22 GB)</strong></td>
+          </tr>
+          <tr>
+            <td><code>Transaction.GetPipelined</code> (cum CPU)</td>
+            <td>28.89 s</td>
+            <td>23.23 s</td>
+            <td><strong>21.40 s</strong></td>
+            <td><strong>-25.9% (-7.49 CPU-s)</strong></td>
+          </tr>
+          <tr>
+            <td><code>PendingGet.ResolveOrAbort</code> (cum CPU)</td>
+            <td>18.10 s</td>
+            <td>16.55 s</td>
+            <td><strong>15.80 s</strong></td>
+            <td><strong>-12.7% (-2.30 CPU-s)</strong></td>
+          </tr>
+          <tr>
+            <td><code>Transaction.Commit</code> (read-only cum CPU)</td>
+            <td>12.39 s</td>
+            <td>11.28 s</td>
+            <td><strong>6.12 s</strong></td>
+            <td><strong>-50.6% (-6.27 CPU-s in Step 7)</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<h2>4. Step-by-Step Progression Tables on <code>dng-climb</code> (<code>L</code>, <code>A</code>, <code>Step 0</code> &rarr; <code>Step 7</code>)</h2>
+<h3>get100 / 256 workers — Step-by-Step Progression</h3>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm / Step</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th>Allocs/op</th><th>Bytes/op</th><th>GC cycles</th>
+<th>Frames/write</th><th>vs L (ops / CPU / p50)</th><th>vs A (ops / CPU / allocs)</th><th>vs Step 0 (ops / CPU / allocs)</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c, 1 net thread)</td><td><strong>49,548</strong><span class='spread'>[48,645, 50,452]</span></td><td><strong>68.0</strong><span class='spread'>[67.7, 68.3]</span></td><td><strong>14.3</strong><span class='spread'>[14.1, 14.5]</span></td><td><strong>4,492</strong><span class='spread'>[4,462, 4,522]</span></td><td><strong>8,769</strong><span class='spread'>[8,703, 8,836]</span></td><td><strong>16.0</strong><span class='spread'>[16.0, 16.0]</span></td><td><strong>664</strong><span class='spread'>[664, 664]</span></td><td><strong>4</strong><span class='spread'>[3, 4]</span></td><td>-</td><td>1.00× / 1.00× / 1.00×</td><td>0.29× / 1.72× / 0.32×</td><td>0.21× / 2.24× / 0.34×</td></tr>
+<tr><td>A (today: direct write + ack + 10/20µs)</td><td><strong>171,063</strong><span class='spread'>[168,547, 173,580]</span></td><td><strong>39.6</strong><span class='spread'>[39.4, 39.8]</span></td><td><strong>19.1</strong><span class='spread'>[18.2, 19.9]</span></td><td><strong>1,348</strong><span class='spread'>[1,326, 1,370]</span></td><td><strong>3,543</strong><span class='spread'>[3,478, 3,608]</span></td><td><strong>50.2</strong><span class='spread'>[50.0, 50.4]</span></td><td><strong>4,980</strong><span class='spread'>[4,969, 4,992]</span></td><td><strong>24</strong><span class='spread'>[24, 24]</span></td><td>-</td><td>3.45× / 0.58× / 0.30×</td><td>1.00× / 1.00× / 1.00×</td><td>0.71× / 1.31× / 1.07×</td></tr>
+<tr style='background:#f8fafc;'><td>Step 0: D-NG Baseline (D1 + D4)</td><td><strong>240,568</strong><span class='spread'>[240,039, 241,096]</span></td><td><strong>30.3</strong><span class='spread'>[30.2, 30.4]</span></td><td><strong>18.1</strong><span class='spread'>[18.0, 18.2]</span></td><td><strong>997</strong><span class='spread'>[994, 999]</span></td><td><strong>2,496</strong><span class='spread'>[2,494, 2,498]</span></td><td><strong>47.1</strong><span class='spread'>[47.1, 47.1]</span></td><td><strong>4,624</strong><span class='spread'>[4,624, 4,625]</span></td><td><strong>22</strong><span class='spread'>[22, 22]</span></td><td><strong>3.96</strong><span class='spread'>[3.94, 3.98]</span></td><td>4.86× / 0.45× / 0.22×</td><td>1.41× / 0.77× / 0.94×</td><td>1.00× / 1.00× / 1.00×</td></tr>
+<tr><td>Step 1: 32-Shard pendingMu + Out-of-Lock RecvAt + Fast UID</td><td><strong>237,958</strong><span class='spread'>[235,080, 240,835]</span></td><td><strong>29.4</strong><span class='spread'>[29.3, 29.6]</span></td><td><strong>17.0</strong><span class='spread'>[16.9, 17.1]</span></td><td><strong>1,007</strong><span class='spread'>[997, 1,017]</span></td><td><strong>2,568</strong><span class='spread'>[2,509, 2,628]</span></td><td><strong>47.1</strong><span class='spread'>[47.1, 47.1]</span></td><td><strong>4,641</strong><span class='spread'>[4,640, 4,642]</span></td><td><strong>22</strong><span class='spread'>[22, 22]</span></td><td><strong>4.77</strong><span class='spread'>[4.75, 4.78]</span></td><td>4.80× / 0.43× / 0.22×</td><td>1.39× / 0.74× / 0.94×</td><td>0.99× / 0.97× / 1.00×</td></tr>
+<tr><td>Step 2: In-Place encodeFrameInto Queue</td><td><strong>242,044</strong><span class='spread'>[241,705, 242,382]</span></td><td><strong>29.6</strong><span class='spread'>[29.5, 29.6]</span></td><td><strong>17.0</strong><span class='spread'>[16.9, 17.1]</span></td><td><strong>991</strong><span class='spread'>[989, 994]</span></td><td><strong>2,537</strong><span class='spread'>[2,526, 2,548]</span></td><td><strong>47.1</strong><span class='spread'>[47.1, 47.1]</span></td><td><strong>4,636</strong><span class='spread'>[4,635, 4,636]</span></td><td><strong>22</strong><span class='spread'>[21, 22]</span></td><td><strong>4.92</strong><span class='spread'>[4.88, 4.97]</span></td><td>4.89× / 0.43× / 0.22×</td><td>1.41× / 0.75× / 0.94×</td><td>1.01× / 0.98× / 1.00×</td></tr>
+<tr><td>Step 3: Pooled Transact Timeout Timer (No weak.Make/AfterFunc)</td><td><strong>250,198</strong><span class='spread'>[246,769, 253,627]</span></td><td><strong>28.0</strong><span class='spread'>[27.8, 28.1]</span></td><td><strong>16.2</strong><span class='spread'>[15.9, 16.5]</span></td><td><strong>965</strong><span class='spread'>[953, 977]</span></td><td><strong>2,336</strong><span class='spread'>[2,321, 2,351]</span></td><td><strong>44.1</strong><span class='spread'>[44.1, 44.1]</span></td><td><strong>4,494</strong><span class='spread'>[4,492, 4,497]</span></td><td><strong>22</strong><span class='spread'>[22, 22]</span></td><td><strong>5.18</strong><span class='spread'>[5.15, 5.21]</span></td><td>5.05× / 0.41× / 0.21×</td><td>1.46× / 0.71× / 0.88×</td><td>1.04× / 0.92× / 0.94×</td></tr>
+<tr><td>Step 4: Scalar pendingReadFirst + Lazy Timer + Zero-Alloc Point Cache</td><td><strong>253,727</strong><span class='spread'>[253,071, 254,384]</span></td><td><strong>26.9</strong><span class='spread'>[26.9, 26.9]</span></td><td><strong>16.2</strong><span class='spread'>[16.1, 16.3]</span></td><td><strong>949</strong><span class='spread'>[947, 951]</span></td><td><strong>2,372</strong><span class='spread'>[2,356, 2,388]</span></td><td><strong>35.1</strong><span class='spread'>[35.1, 35.1]</span></td><td><strong>4,464</strong><span class='spread'>[4,462, 4,465]</span></td><td><strong>21</strong><span class='spread'>[21, 21]</span></td><td><strong>5.45</strong><span class='spread'>[5.35, 5.54]</span></td><td>5.12× / 0.40× / 0.21×</td><td>1.48× / 0.68× / 0.70×</td><td>1.05× / 0.89× / 0.75×</td></tr>
+<tr><td>Step 5: 16-Stripe latencySketch + Out-of-Lock bucketIndex</td><td><strong>254,115</strong><span class='spread'>[253,922, 254,307]</span></td><td><strong>26.7</strong><span class='spread'>[26.3, 27.0]</span></td><td><strong>15.9</strong><span class='spread'>[15.9, 15.9]</span></td><td><strong>944</strong><span class='spread'>[941, 948]</span></td><td><strong>2,500</strong><span class='spread'>[2,470, 2,530]</span></td><td><strong>35.1</strong><span class='spread'>[35.1, 35.1]</span></td><td><strong>4,464</strong><span class='spread'>[4,464, 4,464]</span></td><td><strong>22</strong><span class='spread'>[22, 22]</span></td><td><strong>5.51</strong><span class='spread'>[5.48, 5.54]</span></td><td>5.13× / 0.39× / 0.21×</td><td>1.49× / 0.67× / 0.70×</td><td>1.06× / 0.88× / 0.75×</td></tr>
+<tr><td>Step 6: Inline pendingReadVersion + Pooled GRV Reply Chan</td><td><strong>257,101</strong><span class='spread'>[255,694, 258,509]</span></td><td><strong>26.8</strong><span class='spread'>[26.8, 26.8]</span></td><td><strong>16.1</strong><span class='spread'>[16.1, 16.1]</span></td><td><strong>938</strong><span class='spread'>[932, 944]</span></td><td><strong>2,324</strong><span class='spread'>[2,302, 2,346]</span></td><td><strong>31.1</strong><span class='spread'>[31.1, 31.1]</span></td><td><strong>4,239</strong><span class='spread'>[4,239, 4,239]</span></td><td><strong>20</strong><span class='spread'>[20, 21]</span></td><td><strong>5.51</strong><span class='spread'>[5.44, 5.57]</span></td><td>5.19× / 0.39× / 0.21×</td><td>1.50× / 0.68× / 0.62×</td><td>1.07× / 0.88× / 0.66×</td></tr>
+<tr class='highlight'><td>Step 7 (Final): No Final-Commit Turnover Allocs + Fast Read-Only</td><td><strong>262,020</strong><span class='spread'>[260,562, 263,477]</span></td><td><strong>25.4</strong><span class='spread'>[25.4, 25.5]</span></td><td><strong>15.6</strong><span class='spread'>[15.6, 15.7]</span></td><td><strong>924</strong><span class='spread'>[918, 929]</span></td><td><strong>2,268</strong><span class='spread'>[2,225, 2,312]</span></td><td><strong>22.1</strong><span class='spread'>[22.1, 22.1]</span></td><td><strong>3,729</strong><span class='spread'>[3,729, 3,730]</span></td><td><strong>18</strong><span class='spread'>[18, 18]</span></td><td><strong>5.70</strong><span class='spread'>[5.66, 5.75]</span></td><td>5.29× / 0.37× / 0.21×</td><td>1.53× / 0.64× / 0.44×</td><td>1.09× / 0.84× / 0.47×</td></tr>
+</tbody></table></div>
+
+<h3>get100 / 64 workers — Step-by-Step Progression</h3>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm / Step</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th>Allocs/op</th><th>Bytes/op</th><th>GC cycles</th>
+<th>Frames/write</th><th>vs L (ops / CPU / p50)</th><th>vs A (ops / CPU / allocs)</th><th>vs Step 0 (ops / CPU / allocs)</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c, 1 net thread)</td><td><strong>35,057</strong><span class='spread'>[34,663, 35,452]</span></td><td><strong>72.7</strong><span class='spread'>[71.9, 73.5]</span></td><td><strong>25.6</strong><span class='spread'>[24.9, 26.3]</span></td><td><strong>1,662</strong><span class='spread'>[1,660, 1,663]</span></td><td><strong>3,724</strong><span class='spread'>[3,559, 3,889]</span></td><td><strong>16.0</strong><span class='spread'>[16.0, 16.0]</span></td><td><strong>664</strong><span class='spread'>[664, 664]</span></td><td><strong>3</strong><span class='spread'>[3, 3]</span></td><td>-</td><td>1.00× / 1.00× / 1.00×</td><td>0.82× / 0.90× / 0.32×</td><td>0.95× / 1.01× / 0.34×</td></tr>
+<tr><td>A (today: direct write + ack + 10/20µs)</td><td><strong>42,704</strong><span class='spread'>[35,319, 50,090]</span></td><td><strong>80.4</strong><span class='spread'>[69.3, 91.5]</span></td><td><strong>24.2</strong><span class='spread'>[23.0, 25.4]</span></td><td><strong>1,446</strong><span class='spread'>[1,108, 1,783]</span></td><td><strong>2,679</strong><span class='spread'>[2,435, 2,922]</span></td><td><strong>49.2</strong><span class='spread'>[49.2, 49.2]</span></td><td><strong>4,888</strong><span class='spread'>[4,887, 4,888]</span></td><td><strong>23</strong><span class='spread'>[23, 23]</span></td><td>-</td><td>1.22× / 1.11× / 0.87×</td><td>1.00× / 1.00× / 1.00×</td><td>1.15× / 1.11× / 1.04×</td></tr>
+<tr style='background:#f8fafc;'><td>Step 0: D-NG Baseline (D1 + D4)</td><td><strong>37,045</strong><span class='spread'>[33,703, 40,388]</span></td><td><strong>72.2</strong><span class='spread'>[70.7, 73.7]</span></td><td><strong>23.0</strong><span class='spread'>[19.4, 26.6]</span></td><td><strong>1,754</strong><span class='spread'>[1,612, 1,896]</span></td><td><strong>2,708</strong><span class='spread'>[2,701, 2,714]</span></td><td><strong>47.2</strong><span class='spread'>[47.1, 47.2]</span></td><td><strong>4,612</strong><span class='spread'>[4,607, 4,616]</span></td><td><strong>22</strong><span class='spread'>[22, 22]</span></td><td><strong>4.35</strong><span class='spread'>[4.29, 4.41]</span></td><td>1.06× / 0.99× / 1.06×</td><td>0.87× / 0.90× / 0.96×</td><td>1.00× / 1.00× / 1.00×</td></tr>
+<tr><td>Step 1: 32-Shard pendingMu + Out-of-Lock RecvAt + Fast UID</td><td><strong>33,996</strong><span class='spread'>[33,913, 34,079]</span></td><td><strong>71.8</strong><span class='spread'>[69.9, 73.7]</span></td><td><strong>18.5</strong><span class='spread'>[18.1, 18.9]</span></td><td><strong>1,872</strong><span class='spread'>[1,867, 1,877]</span></td><td><strong>2,718</strong><span class='spread'>[2,591, 2,845]</span></td><td><strong>47.1</strong><span class='spread'>[47.1, 47.1]</span></td><td><strong>4,606</strong><span class='spread'>[4,605, 4,606]</span></td><td><strong>22</strong><span class='spread'>[21, 22]</span></td><td><strong>4.60</strong><span class='spread'>[4.58, 4.61]</span></td><td>0.97× / 0.99× / 1.13×</td><td>0.80× / 0.89× / 0.96×</td><td>0.92× / 0.99× / 1.00×</td></tr>
+<tr><td>Step 2: In-Place encodeFrameInto Queue</td><td><strong>36,634</strong><span class='spread'>[35,473, 37,795]</span></td><td><strong>70.7</strong><span class='spread'>[69.6, 71.7]</span></td><td><strong>19.4</strong><span class='spread'>[19.4, 19.4]</span></td><td><strong>1,731</strong><span class='spread'>[1,677, 1,785]</span></td><td><strong>2,621</strong><span class='spread'>[2,490, 2,753]</span></td><td><strong>47.1</strong><span class='spread'>[47.1, 47.1]</span></td><td><strong>4,607</strong><span class='spread'>[4,606, 4,607]</span></td><td><strong>22</strong><span class='spread'>[21, 22]</span></td><td><strong>4.73</strong><span class='spread'>[4.66, 4.80]</span></td><td>1.04× / 0.97× / 1.04×</td><td>0.86× / 0.88× / 0.96×</td><td>0.99× / 0.98× / 1.00×</td></tr>
+<tr><td>Step 3: Pooled Transact Timeout Timer (No weak.Make/AfterFunc)</td><td><strong>36,520</strong><span class='spread'>[35,010, 38,030]</span></td><td><strong>72.1</strong><span class='spread'>[71.8, 72.3]</span></td><td><strong>20.8</strong><span class='spread'>[19.4, 22.1]</span></td><td><strong>1,729</strong><span class='spread'>[1,661, 1,798]</span></td><td><strong>2,731</strong><span class='spread'>[2,632, 2,830]</span></td><td><strong>44.1</strong><span class='spread'>[44.1, 44.2]</span></td><td><strong>4,465</strong><span class='spread'>[4,460, 4,470]</span></td><td><strong>21</strong><span class='spread'>[21, 21]</span></td><td><strong>4.64</strong><span class='spread'>[4.55, 4.73]</span></td><td>1.04× / 0.99× / 1.04×</td><td>0.86× / 0.90× / 0.90×</td><td>0.99× / 1.00× / 0.94×</td></tr>
+<tr><td>Step 4: Scalar pendingReadFirst + Lazy Timer + Zero-Alloc Point Cache</td><td><strong>35,757</strong><span class='spread'>[33,527, 37,986]</span></td><td><strong>65.4</strong><span class='spread'>[64.9, 65.9]</span></td><td><strong>19.6</strong><span class='spread'>[18.2, 21.1]</span></td><td><strong>1,794</strong><span class='spread'>[1,683, 1,904]</span></td><td><strong>2,602</strong><span class='spread'>[2,519, 2,686]</span></td><td><strong>35.1</strong><span class='spread'>[35.1, 35.1]</span></td><td><strong>4,430</strong><span class='spread'>[4,427, 4,432]</span></td><td><strong>21</strong><span class='spread'>[21, 21]</span></td><td><strong>4.84</strong><span class='spread'>[4.82, 4.87]</span></td><td>1.02× / 0.90× / 1.08×</td><td>0.84× / 0.81× / 0.71×</td><td>0.97× / 0.91× / 0.75×</td></tr>
+<tr><td>Step 5: 16-Stripe latencySketch + Out-of-Lock bucketIndex</td><td><strong>40,590</strong><span class='spread'>[34,136, 47,043]</span></td><td><strong>65.7</strong><span class='spread'>[65.5, 65.8]</span></td><td><strong>23.6</strong><span class='spread'>[18.5, 28.7]</span></td><td><strong>1,577</strong><span class='spread'>[1,288, 1,865]</span></td><td><strong>2,549</strong><span class='spread'>[2,293, 2,805]</span></td><td><strong>35.2</strong><span class='spread'>[35.1, 35.2]</span></td><td><strong>4,438</strong><span class='spread'>[4,428, 4,449]</span></td><td><strong>21</strong><span class='spread'>[21, 21]</span></td><td><strong>4.82</strong><span class='spread'>[4.81, 4.82]</span></td><td>1.16× / 0.90× / 0.95×</td><td>0.95× / 0.82× / 0.71×</td><td>1.10× / 0.91× / 0.75×</td></tr>
+<tr><td>Step 6: Inline pendingReadVersion + Pooled GRV Reply Chan</td><td><strong>38,532</strong><span class='spread'>[36,521, 40,542]</span></td><td><strong>67.9</strong><span class='spread'>[65.0, 70.9]</span></td><td><strong>22.8</strong><span class='spread'>[21.0, 24.6]</span></td><td><strong>1,659</strong><span class='spread'>[1,548, 1,770]</span></td><td><strong>2,486</strong><span class='spread'>[2,389, 2,584]</span></td><td><strong>31.2</strong><span class='spread'>[31.1, 31.2]</span></td><td><strong>4,221</strong><span class='spread'>[4,209, 4,233]</span></td><td><strong>20</strong><span class='spread'>[20, 20]</span></td><td><strong>4.75</strong><span class='spread'>[4.67, 4.83]</span></td><td>1.10× / 0.93× / 1.00×</td><td>0.90× / 0.84× / 0.63×</td><td>1.04× / 0.94× / 0.66×</td></tr>
+<tr class='highlight'><td>Step 7 (Final): No Final-Commit Turnover Allocs + Fast Read-Only</td><td><strong>39,268</strong><span class='spread'>[35,415, 43,121]</span></td><td><strong>62.4</strong><span class='spread'>[61.5, 63.3]</span></td><td><strong>24.2</strong><span class='spread'>[21.5, 26.8]</span></td><td><strong>1,662</strong><span class='spread'>[1,509, 1,814]</span></td><td><strong>2,683</strong><span class='spread'>[2,682, 2,685]</span></td><td><strong>22.2</strong><span class='spread'>[22.1, 22.2]</span></td><td><strong>3,700</strong><span class='spread'>[3,695, 3,706]</span></td><td><strong>18</strong><span class='spread'>[18, 18]</span></td><td><strong>4.93</strong><span class='spread'>[4.90, 4.95]</span></td><td>1.12× / 0.86× / 1.00×</td><td>0.92× / 0.78× / 0.45×</td><td>1.06× / 0.86× / 0.47×</td></tr>
+</tbody></table></div>
+
+<h3>set100 / 64 workers — Step-by-Step Progression</h3>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm / Step</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th>Allocs/op</th><th>Bytes/op</th><th>GC cycles</th>
+<th>Frames/write</th><th>vs L (ops / CPU / p50)</th><th>vs A (ops / CPU / allocs)</th><th>vs Step 0 (ops / CPU / allocs)</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c, 1 net thread)</td><td><strong>17,528</strong><span class='spread'>[16,142, 18,913]</span></td><td><strong>82.3</strong><span class='spread'>[78.9, 85.7]</span></td><td><strong>83.9</strong><span class='spread'>[75.8, 92.1]</span></td><td><strong>3,513</strong><span class='spread'>[3,233, 3,792]</span></td><td><strong>6,122</strong><span class='spread'>[5,704, 6,541]</span></td><td><strong>10.0</strong><span class='spread'>[10.0, 10.0]</span></td><td><strong>440</strong><span class='spread'>[440, 440]</span></td><td><strong>2</strong><span class='spread'>[2, 2]</span></td><td>-</td><td>1.00× / 1.00× / 1.00×</td><td>0.84× / 0.67× / 0.19×</td><td>0.74× / 0.71× / 0.19×</td></tr>
+<tr><td>A (today: direct write + ack + 10/20µs)</td><td><strong>20,935</strong><span class='spread'>[18,378, 23,493]</span></td><td><strong>123.3</strong><span class='spread'>[115.7, 130.8]</span></td><td><strong>97.7</strong><span class='spread'>[87.8, 107.6]</span></td><td><strong>3,023</strong><span class='spread'>[2,675, 3,370]</span></td><td><strong>4,844</strong><span class='spread'>[4,517, 5,171]</span></td><td><strong>53.5</strong><span class='spread'>[53.5, 53.6]</span></td><td><strong>6,138</strong><span class='spread'>[6,128, 6,149]</span></td><td><strong>29</strong><span class='spread'>[29, 29]</span></td><td>-</td><td>1.19× / 1.50× / 0.86×</td><td>1.00× / 1.00× / 1.00×</td><td>0.89× / 1.07× / 1.04×</td></tr>
+<tr style='background:#f8fafc;'><td>Step 0: D-NG Baseline (D1 + D4)</td><td><strong>23,576</strong><span class='spread'>[21,752, 25,400]</span></td><td><strong>115.5</strong><span class='spread'>[112.6, 118.3]</span></td><td><strong>98.5</strong><span class='spread'>[96.6, 100.5]</span></td><td><strong>2,614</strong><span class='spread'>[2,382, 2,845]</span></td><td><strong>4,629</strong><span class='spread'>[4,347, 4,912]</span></td><td><strong>51.5</strong><span class='spread'>[51.5, 51.5]</span></td><td><strong>5,501</strong><span class='spread'>[5,501, 5,502]</span></td><td><strong>25</strong><span class='spread'>[25, 25]</span></td><td><strong>2.85</strong><span class='spread'>[2.80, 2.90]</span></td><td>1.35× / 1.40× / 0.74×</td><td>1.13× / 0.94× / 0.96×</td><td>1.00× / 1.00× / 1.00×</td></tr>
+<tr><td>Step 1: 32-Shard pendingMu + Out-of-Lock RecvAt + Fast UID</td><td><strong>24,349</strong><span class='spread'>[24,252, 24,447]</span></td><td><strong>117.3</strong><span class='spread'>[116.5, 118.1]</span></td><td><strong>98.5</strong><span class='spread'>[94.0, 103.1]</span></td><td><strong>2,467</strong><span class='spread'>[2,463, 2,470]</span></td><td><strong>5,390</strong><span class='spread'>[4,674, 6,106]</span></td><td><strong>51.5</strong><span class='spread'>[51.5, 51.5]</span></td><td><strong>5,505</strong><span class='spread'>[5,503, 5,508]</span></td><td><strong>26</strong><span class='spread'>[25, 26]</span></td><td><strong>2.90</strong><span class='spread'>[2.89, 2.91]</span></td><td>1.39× / 1.43× / 0.70×</td><td>1.16× / 0.95× / 0.96×</td><td>1.03× / 1.02× / 1.00×</td></tr>
+<tr><td>Step 2: In-Place encodeFrameInto Queue</td><td><strong>24,329</strong><span class='spread'>[24,030, 24,629]</span></td><td><strong>117.2</strong><span class='spread'>[117.1, 117.3]</span></td><td><strong>100.5</strong><span class='spread'>[98.3, 102.6]</span></td><td><strong>2,431</strong><span class='spread'>[2,377, 2,484]</span></td><td><strong>4,601</strong><span class='spread'>[4,583, 4,619]</span></td><td><strong>51.5</strong><span class='spread'>[51.5, 51.5]</span></td><td><strong>5,501</strong><span class='spread'>[5,501, 5,501]</span></td><td><strong>25</strong><span class='spread'>[25, 25]</span></td><td><strong>2.95</strong><span class='spread'>[2.88, 3.01]</span></td><td>1.39× / 1.42× / 0.69×</td><td>1.16× / 0.95× / 0.96×</td><td>1.03× / 1.01× / 1.00×</td></tr>
+<tr><td>Step 3: Pooled Transact Timeout Timer (No weak.Make/AfterFunc)</td><td><strong>25,128</strong><span class='spread'>[24,392, 25,865]</span></td><td><strong>110.7</strong><span class='spread'>[109.6, 111.8]</span></td><td><strong>98.5</strong><span class='spread'>[95.6, 101.4]</span></td><td><strong>2,391</strong><span class='spread'>[2,355, 2,428]</span></td><td><strong>4,225</strong><span class='spread'>[3,853, 4,598]</span></td><td><strong>48.5</strong><span class='spread'>[48.5, 48.5]</span></td><td><strong>5,351</strong><span class='spread'>[5,351, 5,351]</span></td><td><strong>25</strong><span class='spread'>[25, 25]</span></td><td><strong>3.05</strong><span class='spread'>[3.02, 3.08]</span></td><td>1.43× / 1.35× / 0.68×</td><td>1.20× / 0.90× / 0.91×</td><td>1.07× / 0.96× / 0.94×</td></tr>
+<tr><td>Step 4: Scalar pendingReadFirst + Lazy Timer + Zero-Alloc Point Cache</td><td><strong>25,682</strong><span class='spread'>[24,633, 26,730]</span></td><td><strong>109.5</strong><span class='spread'>[106.2, 112.7]</span></td><td><strong>90.6</strong><span class='spread'>[89.7, 91.4]</span></td><td><strong>2,304</strong><span class='spread'>[2,202, 2,406]</span></td><td><strong>4,742</strong><span class='spread'>[4,644, 4,841]</span></td><td><strong>48.5</strong><span class='spread'>[48.5, 48.5]</span></td><td><strong>5,736</strong><span class='spread'>[5,735, 5,737]</span></td><td><strong>27</strong><span class='spread'>[27, 27]</span></td><td><strong>2.94</strong><span class='spread'>[2.91, 2.98]</span></td><td>1.47× / 1.33× / 0.66×</td><td>1.23× / 0.89× / 0.91×</td><td>1.09× / 0.95× / 0.94×</td></tr>
+<tr><td>Step 5: 16-Stripe latencySketch + Out-of-Lock bucketIndex</td><td><strong>25,945</strong><span class='spread'>[25,851, 26,038]</span></td><td><strong>113.1</strong><span class='spread'>[111.3, 115.0]</span></td><td><strong>96.3</strong><span class='spread'>[95.2, 97.3]</span></td><td><strong>2,329</strong><span class='spread'>[2,321, 2,337]</span></td><td><strong>4,043</strong><span class='spread'>[3,864, 4,222]</span></td><td><strong>48.5</strong><span class='spread'>[48.5, 48.5]</span></td><td><strong>5,741</strong><span class='spread'>[5,741, 5,741]</span></td><td><strong>26</strong><span class='spread'>[26, 26]</span></td><td><strong>2.98</strong><span class='spread'>[2.95, 3.01]</span></td><td>1.48× / 1.37× / 0.66×</td><td>1.24× / 0.92× / 0.91×</td><td>1.10× / 0.98× / 0.94×</td></tr>
+<tr><td>Step 6: Inline pendingReadVersion + Pooled GRV Reply Chan</td><td><strong>25,473</strong><span class='spread'>[25,205, 25,740]</span></td><td><strong>112.5</strong><span class='spread'>[110.7, 114.3]</span></td><td><strong>96.1</strong><span class='spread'>[95.2, 97.1]</span></td><td><strong>2,398</strong><span class='spread'>[2,370, 2,426]</span></td><td><strong>4,070</strong><span class='spread'>[3,999, 4,140]</span></td><td><strong>44.5</strong><span class='spread'>[44.5, 44.5]</span></td><td><strong>5,521</strong><span class='spread'>[5,520, 5,521]</span></td><td><strong>25</strong><span class='spread'>[25, 25]</span></td><td><strong>3.03</strong><span class='spread'>[3.03, 3.03]</span></td><td>1.45× / 1.37× / 0.68×</td><td>1.22× / 0.91× / 0.83×</td><td>1.08× / 0.97× / 0.86×</td></tr>
+<tr class='highlight'><td>Step 7 (Final): No Final-Commit Turnover Allocs + Fast Read-Only</td><td><strong>25,990</strong><span class='spread'>[25,806, 26,174]</span></td><td><strong>107.7</strong><span class='spread'>[106.9, 108.4]</span></td><td><strong>96.1</strong><span class='spread'>[94.7, 97.5]</span></td><td><strong>2,346</strong><span class='spread'>[2,327, 2,366]</span></td><td><strong>4,021</strong><span class='spread'>[3,952, 4,089]</span></td><td><strong>38.5</strong><span class='spread'>[38.5, 38.5]</span></td><td><strong>5,140</strong><span class='spread'>[5,138, 5,142]</span></td><td><strong>24</strong><span class='spread'>[24, 24]</span></td><td><strong>3.03</strong><span class='spread'>[3.01, 3.05]</span></td><td>1.48× / 1.31× / 0.67×</td><td>1.24× / 0.87× / 0.72×</td><td>1.10× / 0.93× / 0.75×</td></tr>
+</tbody></table></div>
+
+<h3>getset100 / 64 workers — Step-by-Step Progression</h3>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm / Step</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th>Allocs/op</th><th>Bytes/op</th><th>GC cycles</th>
+<th>Frames/write</th><th>vs L (ops / CPU / p50)</th><th>vs A (ops / CPU / allocs)</th><th>vs Step 0 (ops / CPU / allocs)</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c, 1 net thread)</td><td><strong>16,016</strong><span class='spread'>[15,856, 16,177]</span></td><td><strong>97.7</strong><span class='spread'>[92.9, 102.6]</span></td><td><strong>115.3</strong><span class='spread'>[111.5, 119.1]</span></td><td><strong>3,757</strong><span class='spread'>[3,749, 3,765]</span></td><td><strong>7,519</strong><span class='spread'>[6,867, 8,172]</span></td><td><strong>17.0</strong><span class='spread'>[17.0, 17.0]</span></td><td><strong>688</strong><span class='spread'>[688, 688]</span></td><td><strong>2</strong><span class='spread'>[2, 3]</span></td><td>-</td><td>1.00× / 1.00× / 1.00×</td><td>0.86× / 0.55× / 0.21×</td><td>0.82× / 0.61× / 0.22×</td></tr>
+<tr><td>A (today: direct write + ack + 10/20µs)</td><td><strong>18,640</strong><span class='spread'>[18,294, 18,987]</span></td><td><strong>176.2</strong><span class='spread'>[170.0, 182.3]</span></td><td><strong>130.0</strong><span class='spread'>[121.7, 138.3]</span></td><td><strong>3,314</strong><span class='spread'>[3,247, 3,380]</span></td><td><strong>5,271</strong><span class='spread'>[5,104, 5,438]</span></td><td><strong>79.6</strong><span class='spread'>[79.6, 79.6]</span></td><td><strong>8,484</strong><span class='spread'>[8,482, 8,487]</span></td><td><strong>38</strong><span class='spread'>[38, 39]</span></td><td>-</td><td>1.16× / 1.80× / 0.88×</td><td>1.00× / 1.00× / 1.00×</td><td>0.95× / 1.09× / 1.04×</td></tr>
+<tr style='background:#f8fafc;'><td>Step 0: D-NG Baseline (D1 + D4)</td><td><strong>19,580</strong><span class='spread'>[19,141, 20,019]</span></td><td><strong>161.5</strong><span class='spread'>[159.8, 163.3]</span></td><td><strong>146.8</strong><span class='spread'>[144.5, 149.2]</span></td><td><strong>3,174</strong><span class='spread'>[3,111, 3,237]</span></td><td><strong>5,106</strong><span class='spread'>[4,951, 5,260]</span></td><td><strong>76.5</strong><span class='spread'>[76.5, 76.5]</span></td><td><strong>7,508</strong><span class='spread'>[7,502, 7,514]</span></td><td><strong>34</strong><span class='spread'>[34, 34]</span></td><td><strong>3.00</strong><span class='spread'>[2.99, 3.01]</span></td><td>1.22× / 1.65× / 0.84×</td><td>1.05× / 0.92× / 0.96×</td><td>1.00× / 1.00× / 1.00×</td></tr>
+<tr><td>Step 1: 32-Shard pendingMu + Out-of-Lock RecvAt + Fast UID</td><td><strong>19,434</strong><span class='spread'>[19,196, 19,672]</span></td><td><strong>149.0</strong><span class='spread'>[145.9, 152.1]</span></td><td><strong>128.0</strong><span class='spread'>[127.4, 128.7]</span></td><td><strong>3,209</strong><span class='spread'>[3,173, 3,244]</span></td><td><strong>5,190</strong><span class='spread'>[5,036, 5,344]</span></td><td><strong>76.5</strong><span class='spread'>[76.5, 76.5]</span></td><td><strong>7,510</strong><span class='spread'>[7,509, 7,511]</span></td><td><strong>34</strong><span class='spread'>[34, 35]</span></td><td><strong>3.08</strong><span class='spread'>[3.00, 3.15]</span></td><td>1.21× / 1.52× / 0.85×</td><td>1.04× / 0.85× / 0.96×</td><td>0.99× / 0.92× / 1.00×</td></tr>
+<tr><td>Step 2: In-Place encodeFrameInto Queue</td><td><strong>19,211</strong><span class='spread'>[18,928, 19,493]</span></td><td><strong>159.5</strong><span class='spread'>[155.2, 163.7]</span></td><td><strong>139.0</strong><span class='spread'>[129.7, 148.4]</span></td><td><strong>3,223</strong><span class='spread'>[3,167, 3,279]</span></td><td><strong>5,247</strong><span class='spread'>[5,214, 5,280]</span></td><td><strong>76.5</strong><span class='spread'>[76.5, 76.5]</span></td><td><strong>7,509</strong><span class='spread'>[7,504, 7,513]</span></td><td><strong>34</strong><span class='spread'>[34, 35]</span></td><td><strong>3.10</strong><span class='spread'>[3.04, 3.15]</span></td><td>1.20× / 1.63× / 0.86×</td><td>1.03× / 0.91× / 0.96×</td><td>0.98× / 0.99× / 1.00×</td></tr>
+<tr><td>Step 3: Pooled Transact Timeout Timer (No weak.Make/AfterFunc)</td><td><strong>20,028</strong><span class='spread'>[19,384, 20,673]</span></td><td><strong>141.5</strong><span class='spread'>[125.3, 157.7]</span></td><td><strong>134.4</strong><span class='spread'>[125.0, 143.9]</span></td><td><strong>3,110</strong><span class='spread'>[3,039, 3,181]</span></td><td><strong>4,890</strong><span class='spread'>[4,469, 5,311]</span></td><td><strong>73.5</strong><span class='spread'>[73.5, 73.5]</span></td><td><strong>7,352</strong><span class='spread'>[7,349, 7,356]</span></td><td><strong>33</strong><span class='spread'>[33, 33]</span></td><td><strong>3.19</strong><span class='spread'>[3.17, 3.22]</span></td><td>1.25× / 1.45× / 0.83×</td><td>1.07× / 0.80× / 0.92×</td><td>1.02× / 0.88× / 0.96×</td></tr>
+<tr><td>Step 4: Scalar pendingReadFirst + Lazy Timer + Zero-Alloc Point Cache</td><td><strong>19,401</strong><span class='spread'>[18,943, 19,859]</span></td><td><strong>152.1</strong><span class='spread'>[150.2, 153.9]</span></td><td><strong>132.3</strong><span class='spread'>[129.6, 135.0]</span></td><td><strong>3,239</strong><span class='spread'>[3,160, 3,318]</span></td><td><strong>4,897</strong><span class='spread'>[4,759, 5,035]</span></td><td><strong>64.5</strong><span class='spread'>[64.5, 64.5]</span></td><td><strong>7,332</strong><span class='spread'>[7,328, 7,336]</span></td><td><strong>34</strong><span class='spread'>[33, 34]</span></td><td><strong>3.20</strong><span class='spread'>[3.13, 3.26]</span></td><td>1.21× / 1.56× / 0.86×</td><td>1.04× / 0.86× / 0.81×</td><td>0.99× / 0.94× / 0.84×</td></tr>
+<tr><td>Step 5: 16-Stripe latencySketch + Out-of-Lock bucketIndex</td><td><strong>19,279</strong><span class='spread'>[18,886, 19,672]</span></td><td><strong>151.3</strong><span class='spread'>[151.0, 151.6]</span></td><td><strong>128.2</strong><span class='spread'>[121.3, 135.0]</span></td><td><strong>3,245</strong><span class='spread'>[3,173, 3,316]</span></td><td><strong>4,917</strong><span class='spread'>[4,861, 4,973]</span></td><td><strong>64.5</strong><span class='spread'>[64.5, 64.5]</span></td><td><strong>7,328</strong><span class='spread'>[7,327, 7,330]</span></td><td><strong>32</strong><span class='spread'>[32, 33]</span></td><td><strong>3.22</strong><span class='spread'>[3.21, 3.22]</span></td><td>1.20× / 1.55× / 0.86×</td><td>1.03× / 0.86× / 0.81×</td><td>0.98× / 0.94× / 0.84×</td></tr>
+<tr><td>Step 6: Inline pendingReadVersion + Pooled GRV Reply Chan</td><td><strong>19,546</strong><span class='spread'>[19,476, 19,616]</span></td><td><strong>153.1</strong><span class='spread'>[150.2, 156.0]</span></td><td><strong>134.2</strong><span class='spread'>[131.7, 136.7]</span></td><td><strong>3,196</strong><span class='spread'>[3,184, 3,207]</span></td><td><strong>4,781</strong><span class='spread'>[4,739, 4,823]</span></td><td><strong>60.5</strong><span class='spread'>[60.5, 60.5]</span></td><td><strong>7,114</strong><span class='spread'>[7,110, 7,118]</span></td><td><strong>32</strong><span class='spread'>[32, 33]</span></td><td><strong>3.19</strong><span class='spread'>[3.18, 3.20]</span></td><td>1.22× / 1.57× / 0.85×</td><td>1.05× / 0.87× / 0.76×</td><td>1.00× / 0.95× / 0.79×</td></tr>
+<tr class='highlight'><td>Step 7 (Final): No Final-Commit Turnover Allocs + Fast Read-Only</td><td><strong>19,929</strong><span class='spread'>[19,785, 20,073]</span></td><td><strong>147.3</strong><span class='spread'>[143.9, 150.8]</span></td><td><strong>136.0</strong><span class='spread'>[135.2, 136.9]</span></td><td><strong>3,149</strong><span class='spread'>[3,131, 3,167]</span></td><td><strong>4,797</strong><span class='spread'>[4,734, 4,861]</span></td><td><strong>54.5</strong><span class='spread'>[54.5, 54.5]</span></td><td><strong>6,735</strong><span class='spread'>[6,733, 6,737]</span></td><td><strong>30</strong><span class='spread'>[30, 31]</span></td><td><strong>3.19</strong><span class='spread'>[3.06, 3.32]</span></td><td>1.24× / 1.51× / 0.84×</td><td>1.07× / 0.84× / 0.68×</td><td>1.02× / 0.91× / 0.71×</td></tr>
+</tbody></table></div>
+
+<h2>5. Final 7-Cell Scoreboard on <code>dng-climb</code> (<code>L</code>, <code>L4</code>, <code>A</code>, <code>Step 0</code>, <code>Step 7</code>, <code>Step 7 + adap20</code>, <code>Step 7 + D5</code>)</h2>
+<h3>get100 — 8, 64, and 256 workers</h3>
+<h4>get100 / 8 workers</h4>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm / Step</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th>Allocs/op</th><th>Bytes/op</th><th>GC cycles</th>
+<th>Frames/write</th><th>vs L (ops / CPU / p50)</th><th>vs A (ops / CPU / allocs)</th><th>vs Step 0 (ops / CPU / allocs)</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c, 1 net thread)</td><td><strong>6,915</strong><span class='spread'>[6,436, 7,428]</span></td><td><strong>146.3</strong><span class='spread'>[141.6, 149.6]</span></td><td><strong>93.2</strong><span class='spread'>[91.9, 95.3]</span></td><td><strong>1,038</strong><span class='spread'>[960, 1,307]</span></td><td><strong>2,002</strong><span class='spread'>[1,847, 2,237]</span></td><td><strong>16.0</strong><span class='spread'>[16.0, 16.0]</span></td><td><strong>664</strong><span class='spread'>[664, 664]</span></td><td><strong>3</strong><span class='spread'>[3, 4]</span></td><td>-</td><td>1.00× / 1.00× / 1.00×</td><td>1.25× / 0.88× / 0.32×</td><td>1.10× / 1.05× / 0.34×</td></tr>
+<tr><td>L4 (libfdb_c, 4 threads / 4 DBs)</td><td><strong>10,088</strong><span class='spread'>[10,070, 10,109]</span></td><td><strong>303.5</strong><span class='spread'>[301.0, 303.5]</span></td><td><strong>311.4</strong><span class='spread'>[309.2, 316.1]</span></td><td><strong>781</strong><span class='spread'>[781, 782]</span></td><td><strong>1,055</strong><span class='spread'>[1,020, 1,056]</span></td><td><strong>16.0</strong><span class='spread'>[16.0, 16.0]</span></td><td><strong>664</strong><span class='spread'>[664, 664]</span></td><td><strong>3</strong><span class='spread'>[3, 3]</span></td><td>-</td><td>1.46× / 2.07× / 0.75×</td><td>1.83× / 1.83× / 0.32×</td><td>1.60× / 2.17× / 0.34×</td></tr>
+<tr><td>A (today: direct write + ack + 10/20µs)</td><td><strong>5,519</strong><span class='spread'>[5,237, 5,984]</span></td><td><strong>165.4</strong><span class='spread'>[165.0, 187.3]</span></td><td><strong>86.9</strong><span class='spread'>[86.7, 90.8]</span></td><td><strong>1,465</strong><span class='spread'>[1,332, 1,526]</span></td><td><strong>1,968</strong><span class='spread'>[1,845, 1,990]</span></td><td><strong>49.7</strong><span class='spread'>[49.7, 49.7]</span></td><td><strong>4,913</strong><span class='spread'>[4,912, 4,914]</span></td><td><strong>23</strong><span class='spread'>[23, 23]</span></td><td>-</td><td>0.80× / 1.13× / 1.41×</td><td>1.00× / 1.00× / 1.00×</td><td>0.88× / 1.18× / 1.04×</td></tr>
+<tr style='background:#f8fafc;'><td>Step 0: D-NG Baseline (D1 + D4)</td><td><strong>6,300</strong><span class='spread'>[6,049, 6,473]</span></td><td><strong>139.7</strong><span class='spread'>[133.1, 147.2]</span></td><td><strong>85.8</strong><span class='spread'>[79.4, 91.2]</span></td><td><strong>1,247</strong><span class='spread'>[1,234, 1,297]</span></td><td><strong>1,683</strong><span class='spread'>[1,671, 1,706]</span></td><td><strong>47.7</strong><span class='spread'>[47.7, 47.7]</span></td><td><strong>4,664</strong><span class='spread'>[4,663, 4,664]</span></td><td><strong>22</strong><span class='spread'>[22, 22]</span></td><td><strong>1.77</strong><span class='spread'>[1.76, 1.81]</span></td><td>0.91× / 0.95× / 1.20×</td><td>1.14× / 0.84× / 0.96×</td><td>1.00× / 1.00× / 1.00×</td></tr>
+<tr class='highlight'><td>Step 7 (Final): No Final-Commit Turnover Allocs + Fast Read-Only</td><td><strong>7,222</strong><span class='spread'>[6,063, 7,320]</span></td><td><strong>119.6</strong><span class='spread'>[114.9, 130.5]</span></td><td><strong>89.6</strong><span class='spread'>[87.1, 90.7]</span></td><td><strong>1,057</strong><span class='spread'>[979, 1,311]</span></td><td><strong>1,710</strong><span class='spread'>[1,611, 1,768]</span></td><td><strong>22.7</strong><span class='spread'>[22.7, 22.7]</span></td><td><strong>3,750</strong><span class='spread'>[3,750, 3,751]</span></td><td><strong>18</strong><span class='spread'>[18, 18]</span></td><td><strong>1.80</strong><span class='spread'>[1.79, 1.80]</span></td><td>1.04× / 0.82× / 1.02×</td><td>1.31× / 0.72× / 0.46×</td><td>1.15× / 0.86× / 0.48×</td></tr>
+<tr class='highlight'><td>Step 7 + adap20 (20µs Adaptive Linger)</td><td><strong>6,265</strong><span class='spread'>[6,185, 6,447]</span></td><td><strong>124.0</strong><span class='spread'>[122.6, 136.3]</span></td><td><strong>89.4</strong><span class='spread'>[87.3, 93.3]</span></td><td><strong>1,277</strong><span class='spread'>[1,235, 1,300]</span></td><td><strong>1,733</strong><span class='spread'>[1,697, 1,744]</span></td><td><strong>22.7</strong><span class='spread'>[22.7, 22.7]</span></td><td><strong>3,750</strong><span class='spread'>[3,750, 3,750]</span></td><td><strong>18</strong><span class='spread'>[18, 18]</span></td><td><strong>2.03</strong><span class='spread'>[1.96, 2.03]</span></td><td>0.91× / 0.85× / 1.23×</td><td>1.14× / 0.75× / 0.46×</td><td>0.99× / 0.89× / 0.48×</td></tr>
+<tr class='highlight'><td>Step 7 + D5 (5µs Fixed Linger)</td><td><strong>6,261</strong><span class='spread'>[5,912, 7,150]</span></td><td><strong>146.8</strong><span class='spread'>[142.6, 149.9]</span></td><td><strong>96.2</strong><span class='spread'>[88.8, 97.2]</span></td><td><strong>1,300</strong><span class='spread'>[1,073, 1,306]</span></td><td><strong>1,802</strong><span class='spread'>[1,651, 1,826]</span></td><td><strong>22.7</strong><span class='spread'>[22.7, 22.7]</span></td><td><strong>3,750</strong><span class='spread'>[3,749, 3,751]</span></td><td><strong>18</strong><span class='spread'>[18, 18]</span></td><td><strong>3.03</strong><span class='spread'>[3.00, 3.05]</span></td><td>0.91× / 1.00× / 1.25×</td><td>1.13× / 0.89× / 0.46×</td><td>0.99× / 1.05× / 0.48×</td></tr>
+</tbody></table></div>
+<h4>get100 / 64 workers</h4>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm / Step</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th>Allocs/op</th><th>Bytes/op</th><th>GC cycles</th>
+<th>Frames/write</th><th>vs L (ops / CPU / p50)</th><th>vs A (ops / CPU / allocs)</th><th>vs Step 0 (ops / CPU / allocs)</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c, 1 net thread)</td><td><strong>31,608</strong><span class='spread'>[31,186, 38,352]</span></td><td><strong>71.7</strong><span class='spread'>[65.4, 72.0]</span></td><td><strong>23.2</strong><span class='spread'>[20.6, 25.3]</span></td><td><strong>1,836</strong><span class='spread'>[1,475, 1,876]</span></td><td><strong>3,835</strong><span class='spread'>[3,451, 3,872]</span></td><td><strong>16.0</strong><span class='spread'>[16.0, 16.0]</span></td><td><strong>664</strong><span class='spread'>[664, 664]</span></td><td><strong>3</strong><span class='spread'>[3, 3]</span></td><td>-</td><td>1.00× / 1.00× / 1.00×</td><td>0.63× / 1.10× / 0.32×</td><td>0.85× / 0.97× / 0.34×</td></tr>
+<tr><td>L4 (libfdb_c, 4 threads / 4 DBs)</td><td><strong>55,841</strong><span class='spread'>[55,670, 56,287]</span></td><td><strong>111.2</strong><span class='spread'>[108.8, 111.7]</span></td><td><strong>71.6</strong><span class='spread'>[70.9, 72.1]</span></td><td><strong>1,056</strong><span class='spread'>[1,041, 1,059]</span></td><td><strong>2,686</strong><span class='spread'>[2,586, 2,701]</span></td><td><strong>16.0</strong><span class='spread'>[16.0, 16.0]</span></td><td><strong>664</strong><span class='spread'>[664, 664]</span></td><td><strong>3</strong><span class='spread'>[3, 3]</span></td><td>-</td><td>1.77× / 1.55× / 0.58×</td><td>1.12× / 1.71× / 0.32×</td><td>1.50× / 1.51× / 0.34×</td></tr>
+<tr><td>A (today: direct write + ack + 10/20µs)</td><td><strong>49,955</strong><span class='spread'>[39,556, 70,019]</span></td><td><strong>65.0</strong><span class='spread'>[52.9, 80.0]</span></td><td><strong>24.5</strong><span class='spread'>[21.4, 27.7]</span></td><td><strong>1,206</strong><span class='spread'>[830, 1,593]</span></td><td><strong>2,338</strong><span class='spread'>[2,031, 2,614]</span></td><td><strong>49.2</strong><span class='spread'>[49.2, 49.2]</span></td><td><strong>4,891</strong><span class='spread'>[4,887, 4,892]</span></td><td><strong>23</strong><span class='spread'>[22, 23]</span></td><td>-</td><td>1.58× / 0.91× / 0.66×</td><td>1.00× / 1.00× / 1.00×</td><td>1.34× / 0.88× / 1.04×</td></tr>
+<tr style='background:#f8fafc;'><td>Step 0: D-NG Baseline (D1 + D4)</td><td><strong>37,341</strong><span class='spread'>[37,217, 74,628]</span></td><td><strong>73.9</strong><span class='spread'>[39.2, 76.4]</span></td><td><strong>21.7</strong><span class='spread'>[21.4, 22.3]</span></td><td><strong>1,681</strong><span class='spread'>[745, 1,699]</span></td><td><strong>2,558</strong><span class='spread'>[1,991, 2,687]</span></td><td><strong>47.2</strong><span class='spread'>[47.1, 47.2]</span></td><td><strong>4,615</strong><span class='spread'>[4,611, 4,619]</span></td><td><strong>22</strong><span class='spread'>[22, 22]</span></td><td><strong>4.25</strong><span class='spread'>[3.98, 4.34]</span></td><td>1.18× / 1.03× / 0.92×</td><td>0.75× / 1.14× / 0.96×</td><td>1.00× / 1.00× / 1.00×</td></tr>
+<tr class='highlight'><td>Step 7 (Final): No Final-Commit Turnover Allocs + Fast Read-Only</td><td><strong>37,142</strong><span class='spread'>[34,047, 41,866]</span></td><td><strong>61.7</strong><span class='spread'>[61.7, 62.7]</span></td><td><strong>22.2</strong><span class='spread'>[18.3, 27.5]</span></td><td><strong>1,695</strong><span class='spread'>[1,501, 1,883]</span></td><td><strong>2,598</strong><span class='spread'>[2,472, 2,622]</span></td><td><strong>22.1</strong><span class='spread'>[22.1, 22.1]</span></td><td><strong>3,696</strong><span class='spread'>[3,692, 3,700]</span></td><td><strong>18</strong><span class='spread'>[18, 18]</span></td><td><strong>5.11</strong><span class='spread'>[4.85, 5.29]</span></td><td>1.18× / 0.86× / 0.92×</td><td>0.74× / 0.95× / 0.45×</td><td>0.99× / 0.83× / 0.47×</td></tr>
+<tr class='highlight'><td>Step 7 + adap20 (20µs Adaptive Linger)</td><td><strong>39,976</strong><span class='spread'>[37,661, 60,549]</span></td><td><strong>62.0</strong><span class='spread'>[51.4, 63.2]</span></td><td><strong>22.1</strong><span class='spread'>[20.3, 31.8]</span></td><td><strong>1,573</strong><span class='spread'>[896, 1,697]</span></td><td><strong>2,275</strong><span class='spread'>[2,195, 2,363]</span></td><td><strong>22.2</strong><span class='spread'>[22.2, 22.2]</span></td><td><strong>3,716</strong><span class='spread'>[3,710, 3,726]</span></td><td><strong>18</strong><span class='spread'>[18, 18]</span></td><td><strong>5.77</strong><span class='spread'>[5.75, 6.16]</span></td><td>1.26× / 0.87× / 0.86×</td><td>0.80× / 0.96× / 0.45×</td><td>1.07× / 0.84× / 0.47×</td></tr>
+<tr class='highlight'><td>Step 7 + D5 (5µs Fixed Linger)</td><td><strong>38,016</strong><span class='spread'>[33,811, 52,614]</span></td><td><strong>57.3</strong><span class='spread'>[55.3, 64.1]</span></td><td><strong>23.5</strong><span class='spread'>[17.9, 26.6]</span></td><td><strong>1,839</strong><span class='spread'>[1,018, 1,879]</span></td><td><strong>2,556</strong><span class='spread'>[2,243, 2,602]</span></td><td><strong>22.2</strong><span class='spread'>[22.1, 22.2]</span></td><td><strong>3,707</strong><span class='spread'>[3,695, 3,715]</span></td><td><strong>18</strong><span class='spread'>[18, 18]</span></td><td><strong>10.24</strong><span class='spread'>[9.32, 12.29]</span></td><td>1.20× / 0.80× / 1.00×</td><td>0.76× / 0.88× / 0.45×</td><td>1.02× / 0.78× / 0.47×</td></tr>
+</tbody></table></div>
+<h4>get100 / 256 workers</h4>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm / Step</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th>Allocs/op</th><th>Bytes/op</th><th>GC cycles</th>
+<th>Frames/write</th><th>vs L (ops / CPU / p50)</th><th>vs A (ops / CPU / allocs)</th><th>vs Step 0 (ops / CPU / allocs)</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c, 1 net thread)</td><td><strong>50,548</strong><span class='spread'>[49,619, 50,935]</span></td><td><strong>67.2</strong><span class='spread'>[67.2, 68.6]</span></td><td><strong>13.8</strong><span class='spread'>[13.5, 14.0]</span></td><td><strong>4,502</strong><span class='spread'>[4,497, 4,571]</span></td><td><strong>8,582</strong><span class='spread'>[8,196, 9,230]</span></td><td><strong>16.0</strong><span class='spread'>[16.0, 16.0]</span></td><td><strong>664</strong><span class='spread'>[664, 664]</span></td><td><strong>3</strong><span class='spread'>[3, 3]</span></td><td>-</td><td>1.00× / 1.00× / 1.00×</td><td>0.31× / 1.66× / 0.32×</td><td>0.21× / 2.24× / 0.34×</td></tr>
+<tr><td>L4 (libfdb_c, 4 threads / 4 DBs)</td><td><strong>89,911</strong><span class='spread'>[88,778, 91,249]</span></td><td><strong>78.4</strong><span class='spread'>[77.6, 79.3]</span></td><td><strong>35.8</strong><span class='spread'>[35.8, 36.6]</span></td><td><strong>2,466</strong><span class='spread'>[2,451, 2,509]</span></td><td><strong>8,288</strong><span class='spread'>[8,268, 8,473]</span></td><td><strong>16.0</strong><span class='spread'>[16.0, 16.0]</span></td><td><strong>664</strong><span class='spread'>[664, 664]</span></td><td><strong>3</strong><span class='spread'>[3, 3]</span></td><td>-</td><td>1.78× / 1.17× / 0.55×</td><td>0.55× / 1.93× / 0.32×</td><td>0.37× / 2.61× / 0.34×</td></tr>
+<tr><td>A (today: direct write + ack + 10/20µs)</td><td><strong>164,892</strong><span class='spread'>[162,957, 168,675]</span></td><td><strong>40.5</strong><span class='spread'>[39.9, 40.8]</span></td><td><strong>19.8</strong><span class='spread'>[19.2, 20.2]</span></td><td><strong>1,401</strong><span class='spread'>[1,363, 1,421]</span></td><td><strong>3,852</strong><span class='spread'>[3,642, 3,934]</span></td><td><strong>50.4</strong><span class='spread'>[50.2, 50.4]</span></td><td><strong>4,996</strong><span class='spread'>[4,984, 4,998]</span></td><td><strong>24</strong><span class='spread'>[24, 24]</span></td><td>-</td><td>3.26× / 0.60× / 0.31×</td><td>1.00× / 1.00× / 1.00×</td><td>0.68× / 1.35× / 1.07×</td></tr>
+<tr style='background:#f8fafc;'><td>Step 0: D-NG Baseline (D1 + D4)</td><td><strong>242,343</strong><span class='spread'>[232,923, 245,467]</span></td><td><strong>30.0</strong><span class='spread'>[28.9, 30.8]</span></td><td><strong>18.1</strong><span class='spread'>[17.6, 18.9]</span></td><td><strong>989</strong><span class='spread'>[981, 1,030]</span></td><td><strong>2,551</strong><span class='spread'>[2,302, 2,577]</span></td><td><strong>47.1</strong><span class='spread'>[47.1, 47.1]</span></td><td><strong>4,630</strong><span class='spread'>[4,623, 4,631]</span></td><td><strong>21</strong><span class='spread'>[21, 22]</span></td><td><strong>4.07</strong><span class='spread'>[3.99, 4.20]</span></td><td>4.79× / 0.45× / 0.22×</td><td>1.47× / 0.74× / 0.93×</td><td>1.00× / 1.00× / 1.00×</td></tr>
+<tr class='highlight'><td>Step 7 (Final): No Final-Commit Turnover Allocs + Fast Read-Only</td><td><strong>259,747</strong><span class='spread'>[258,638, 263,172]</span></td><td><strong>25.6</strong><span class='spread'>[25.4, 25.8]</span></td><td><strong>15.9</strong><span class='spread'>[15.9, 16.0]</span></td><td><strong>928</strong><span class='spread'>[920, 932]</span></td><td><strong>2,262</strong><span class='spread'>[2,246, 2,378]</span></td><td><strong>22.1</strong><span class='spread'>[22.1, 22.1]</span></td><td><strong>3,729</strong><span class='spread'>[3,728, 3,730]</span></td><td><strong>18</strong><span class='spread'>[18, 18]</span></td><td><strong>5.66</strong><span class='spread'>[5.64, 5.68]</span></td><td>5.14× / 0.38× / 0.21×</td><td>1.58× / 0.63× / 0.44×</td><td>1.07× / 0.85× / 0.47×</td></tr>
+<tr class='highlight'><td>Step 7 + adap20 (20µs Adaptive Linger)</td><td><strong>273,388</strong><span class='spread'>[271,963, 273,948]</span></td><td><strong>25.0</strong><span class='spread'>[24.7, 25.0]</span></td><td><strong>14.9</strong><span class='spread'>[14.7, 15.0]</span></td><td><strong>888</strong><span class='spread'>[886, 890]</span></td><td><strong>1,883</strong><span class='spread'>[1,830, 2,016]</span></td><td><strong>22.1</strong><span class='spread'>[22.1, 22.1]</span></td><td><strong>3,722</strong><span class='spread'>[3,722, 3,723]</span></td><td><strong>18</strong><span class='spread'>[18, 18]</span></td><td><strong>9.12</strong><span class='spread'>[9.10, 9.31]</span></td><td>5.41× / 0.37× / 0.20×</td><td>1.66× / 0.62× / 0.44×</td><td>1.13× / 0.83× / 0.47×</td></tr>
+<tr class='highlight'><td>Step 7 + D5 (5µs Fixed Linger)</td><td><strong>248,654</strong><span class='spread'>[248,040, 249,884]</span></td><td><strong>25.6</strong><span class='spread'>[25.6, 25.7]</span></td><td><strong>14.1</strong><span class='spread'>[14.0, 14.3]</span></td><td><strong>975</strong><span class='spread'>[965, 977]</span></td><td><strong>2,008</strong><span class='spread'>[1,892, 2,086]</span></td><td><strong>22.1</strong><span class='spread'>[22.1, 22.1]</span></td><td><strong>3,731</strong><span class='spread'>[3,729, 3,732]</span></td><td><strong>18</strong><span class='spread'>[18, 18]</span></td><td><strong>17.39</strong><span class='spread'>[17.29, 17.44]</span></td><td>4.92× / 0.38× / 0.22×</td><td>1.51× / 0.63× / 0.44×</td><td>1.03× / 0.85× / 0.47×</td></tr>
+</tbody></table></div>
+
+<h3>set100 — 8, 64, and 256 workers</h3>
+<h4>set100 / 8 workers</h4>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm / Step</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th>Allocs/op</th><th>Bytes/op</th><th>GC cycles</th>
+<th>Frames/write</th><th>vs L (ops / CPU / p50)</th><th>vs A (ops / CPU / allocs)</th><th>vs Step 0 (ops / CPU / allocs)</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c, 1 net thread)</td><td><strong>3,512</strong><span class='spread'>[3,449, 3,554]</span></td><td><strong>161.2</strong><span class='spread'>[154.5, 166.5]</span></td><td><strong>300.7</strong><span class='spread'>[285.7, 306.7]</span></td><td><strong>2,194</strong><span class='spread'>[2,188, 2,214]</span></td><td><strong>3,704</strong><span class='spread'>[3,351, 3,802]</span></td><td><strong>10.0</strong><span class='spread'>[10.0, 10.0]</span></td><td><strong>440</strong><span class='spread'>[440, 440]</span></td><td><strong>3</strong><span class='spread'>[3, 3]</span></td><td>-</td><td>1.00× / 1.00× / 1.00×</td><td>1.01× / 0.87× / 0.19×</td><td>0.95× / 0.96× / 0.19×</td></tr>
+<tr><td>L4 (libfdb_c, 4 threads / 4 DBs)</td><td><strong>3,609</strong><span class='spread'>[3,519, 3,677]</span></td><td><strong>446.0</strong><span class='spread'>[393.1, 465.5]</span></td><td><strong>460.5</strong><span class='spread'>[460.0, 477.9]</span></td><td><strong>2,164</strong><span class='spread'>[2,137, 2,219]</span></td><td><strong>3,133</strong><span class='spread'>[2,983, 3,452]</span></td><td><strong>10.0</strong><span class='spread'>[10.0, 10.0]</span></td><td><strong>440</strong><span class='spread'>[440, 440]</span></td><td><strong>3</strong><span class='spread'>[3, 3]</span></td><td>-</td><td>1.03× / 2.77× / 0.99×</td><td>1.04× / 2.42× / 0.19×</td><td>0.98× / 2.66× / 0.19×</td></tr>
+<tr><td>A (today: direct write + ack + 10/20µs)</td><td><strong>3,484</strong><span class='spread'>[3,439, 3,671]</span></td><td><strong>184.3</strong><span class='spread'>[179.4, 220.8]</span></td><td><strong>306.0</strong><span class='spread'>[292.1, 318.6]</span></td><td><strong>2,247</strong><span class='spread'>[2,149, 2,288]</span></td><td><strong>3,140</strong><span class='spread'>[2,943, 3,465]</span></td><td><strong>54.0</strong><span class='spread'>[54.0, 54.0]</span></td><td><strong>6,133</strong><span class='spread'>[6,132, 6,137]</span></td><td><strong>28</strong><span class='spread'>[27, 28]</span></td><td>-</td><td>0.99× / 1.14× / 1.02×</td><td>1.00× / 1.00× / 1.00×</td><td>0.94× / 1.10× / 1.04×</td></tr>
+<tr style='background:#f8fafc;'><td>Step 0: D-NG Baseline (D1 + D4)</td><td><strong>3,698</strong><span class='spread'>[3,688, 3,709]</span></td><td><strong>167.9</strong><span class='spread'>[166.9, 205.9]</span></td><td><strong>286.5</strong><span class='spread'>[218.4, 328.1]</span></td><td><strong>2,107</strong><span class='spread'>[2,075, 2,140]</span></td><td><strong>3,044</strong><span class='spread'>[2,996, 3,349]</span></td><td><strong>51.8</strong><span class='spread'>[51.8, 52.1]</span></td><td><strong>5,509</strong><span class='spread'>[5,508, 5,555]</span></td><td><strong>25</strong><span class='spread'>[25, 25]</span></td><td><strong>1.63</strong><span class='spread'>[1.50, 1.65]</span></td><td>1.05× / 1.04× / 0.96×</td><td>1.06× / 0.91× / 0.96×</td><td>1.00× / 1.00× / 1.00×</td></tr>
+<tr class='highlight'><td>Step 7 (Final): No Final-Commit Turnover Allocs + Fast Read-Only</td><td><strong>3,693</strong><span class='spread'>[3,658, 3,767]</span></td><td><strong>183.1</strong><span class='spread'>[173.3, 185.5]</span></td><td><strong>282.5</strong><span class='spread'>[222.0, 332.5]</span></td><td><strong>2,112</strong><span class='spread'>[2,105, 2,136]</span></td><td><strong>3,035</strong><span class='spread'>[2,765, 3,090]</span></td><td><strong>38.9</strong><span class='spread'>[38.8, 39.0]</span></td><td><strong>5,151</strong><span class='spread'>[5,135, 5,169]</span></td><td><strong>23</strong><span class='spread'>[23, 23]</span></td><td><strong>1.65</strong><span class='spread'>[1.52, 1.75]</span></td><td>1.05× / 1.14× / 0.96×</td><td>1.06× / 0.99× / 0.72×</td><td>1.00× / 1.09× / 0.75×</td></tr>
+<tr class='highlight'><td>Step 7 + adap20 (20µs Adaptive Linger)</td><td><strong>3,661</strong><span class='spread'>[3,644, 3,771]</span></td><td><strong>178.9</strong><span class='spread'>[153.5, 182.2]</span></td><td><strong>290.1</strong><span class='spread'>[268.4, 293.9]</span></td><td><strong>2,122</strong><span class='spread'>[2,078, 2,149]</span></td><td><strong>3,033</strong><span class='spread'>[2,982, 3,170]</span></td><td><strong>38.9</strong><span class='spread'>[38.9, 38.9]</span></td><td><strong>5,151</strong><span class='spread'>[5,144, 5,157]</span></td><td><strong>22</strong><span class='spread'>[22, 23]</span></td><td><strong>1.78</strong><span class='spread'>[1.76, 1.79]</span></td><td>1.04× / 1.11× / 0.97×</td><td>1.05× / 0.97× / 0.72×</td><td>0.99× / 1.07× / 0.75×</td></tr>
+<tr class='highlight'><td>Step 7 + D5 (5µs Fixed Linger)</td><td><strong>3,625</strong><span class='spread'>[3,342, 3,694]</span></td><td><strong>198.6</strong><span class='spread'>[188.5, 213.7]</span></td><td><strong>343.4</strong><span class='spread'>[296.2, 347.8]</span></td><td><strong>2,171</strong><span class='spread'>[2,130, 2,319]</span></td><td><strong>3,152</strong><span class='spread'>[2,991, 3,318]</span></td><td><strong>39.0</strong><span class='spread'>[38.9, 39.1]</span></td><td><strong>5,170</strong><span class='spread'>[5,149, 5,192]</span></td><td><strong>23</strong><span class='spread'>[23, 23]</span></td><td><strong>2.48</strong><span class='spread'>[2.45, 2.68]</span></td><td>1.03× / 1.23× / 0.99×</td><td>1.04× / 1.08× / 0.72×</td><td>0.98× / 1.18× / 0.75×</td></tr>
+</tbody></table></div>
+<h4>set100 / 64 workers</h4>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm / Step</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th>Allocs/op</th><th>Bytes/op</th><th>GC cycles</th>
+<th>Frames/write</th><th>vs L (ops / CPU / p50)</th><th>vs A (ops / CPU / allocs)</th><th>vs Step 0 (ops / CPU / allocs)</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c, 1 net thread)</td><td><strong>19,844</strong><span class='spread'>[19,118, 19,844]</span></td><td><strong>75.3</strong><span class='spread'>[74.8, 76.2]</span></td><td><strong>70.8</strong><span class='spread'>[66.0, 75.4]</span></td><td><strong>3,150</strong><span class='spread'>[3,130, 3,222]</span></td><td><strong>5,462</strong><span class='spread'>[4,951, 5,478]</span></td><td><strong>10.0</strong><span class='spread'>[10.0, 10.0]</span></td><td><strong>440</strong><span class='spread'>[440, 440]</span></td><td><strong>2</strong><span class='spread'>[2, 2]</span></td><td>-</td><td>1.00× / 1.00× / 1.00×</td><td>0.86× / 0.61× / 0.19×</td><td>0.77× / 0.63× / 0.19×</td></tr>
+<tr><td>L4 (libfdb_c, 4 threads / 4 DBs)</td><td><strong>21,984</strong><span class='spread'>[21,684, 22,033]</span></td><td><strong>170.1</strong><span class='spread'>[165.0, 170.1]</span></td><td><strong>116.9</strong><span class='spread'>[109.5, 119.4]</span></td><td><strong>2,863</strong><span class='spread'>[2,858, 2,904]</span></td><td><strong>4,409</strong><span class='spread'>[4,337, 4,581]</span></td><td><strong>10.0</strong><span class='spread'>[10.0, 10.0]</span></td><td><strong>440</strong><span class='spread'>[440, 440]</span></td><td><strong>2</strong><span class='spread'>[2, 2]</span></td><td>-</td><td>1.11× / 2.26× / 0.91×</td><td>0.95× / 1.38× / 0.19×</td><td>0.85× / 1.42× / 0.19×</td></tr>
+<tr><td>A (today: direct write + ack + 10/20µs)</td><td><strong>23,132</strong><span class='spread'>[23,131, 23,493]</span></td><td><strong>123.3</strong><span class='spread'>[120.8, 124.3]</span></td><td><strong>87.3</strong><span class='spread'>[86.6, 89.9]</span></td><td><strong>2,721</strong><span class='spread'>[2,693, 2,726]</span></td><td><strong>4,448</strong><span class='spread'>[4,380, 4,604]</span></td><td><strong>53.6</strong><span class='spread'>[53.5, 53.6]</span></td><td><strong>6,159</strong><span class='spread'>[6,153, 6,161]</span></td><td><strong>29</strong><span class='spread'>[29, 29]</span></td><td>-</td><td>1.17× / 1.64× / 0.86×</td><td>1.00× / 1.00× / 1.00×</td><td>0.90× / 1.03× / 1.04×</td></tr>
+<tr style='background:#f8fafc;'><td>Step 0: D-NG Baseline (D1 + D4)</td><td><strong>25,810</strong><span class='spread'>[24,724, 25,811]</span></td><td><strong>119.6</strong><span class='spread'>[118.3, 122.0]</span></td><td><strong>98.4</strong><span class='spread'>[97.3, 101.0]</span></td><td><strong>2,329</strong><span class='spread'>[2,318, 2,518]</span></td><td><strong>4,096</strong><span class='spread'>[4,082, 4,130]</span></td><td><strong>51.5</strong><span class='spread'>[51.5, 51.5]</span></td><td><strong>5,501</strong><span class='spread'>[5,501, 5,509]</span></td><td><strong>26</strong><span class='spread'>[25, 26]</span></td><td><strong>2.89</strong><span class='spread'>[2.86, 2.91]</span></td><td>1.30× / 1.59× / 0.74×</td><td>1.12× / 0.97× / 0.96×</td><td>1.00× / 1.00× / 1.00×</td></tr>
+<tr class='highlight'><td>Step 7 (Final): No Final-Commit Turnover Allocs + Fast Read-Only</td><td><strong>26,799</strong><span class='spread'>[26,562, 26,835]</span></td><td><strong>109.5</strong><span class='spread'>[108.8, 110.9]</span></td><td><strong>95.6</strong><span class='spread'>[94.5, 95.8]</span></td><td><strong>2,231</strong><span class='spread'>[2,213, 2,270]</span></td><td><strong>3,825</strong><span class='spread'>[3,737, 4,176]</span></td><td><strong>38.5</strong><span class='spread'>[38.5, 38.5]</span></td><td><strong>5,137</strong><span class='spread'>[5,135, 5,139]</span></td><td><strong>24</strong><span class='spread'>[23, 24]</span></td><td><strong>3.02</strong><span class='spread'>[3.00, 3.11]</span></td><td>1.35× / 1.45× / 0.71×</td><td>1.16× / 0.89× / 0.72×</td><td>1.04× / 0.92× / 0.75×</td></tr>
+<tr class='highlight'><td>Step 7 + adap20 (20µs Adaptive Linger)</td><td><strong>25,730</strong><span class='spread'>[25,630, 25,966]</span></td><td><strong>110.1</strong><span class='spread'>[109.4, 111.1]</span></td><td><strong>96.1</strong><span class='spread'>[94.4, 96.1]</span></td><td><strong>2,323</strong><span class='spread'>[2,306, 2,376]</span></td><td><strong>4,035</strong><span class='spread'>[4,001, 4,450]</span></td><td><strong>38.5</strong><span class='spread'>[38.5, 38.5]</span></td><td><strong>5,143</strong><span class='spread'>[5,140, 5,144]</span></td><td><strong>24</strong><span class='spread'>[24, 24]</span></td><td><strong>3.42</strong><span class='spread'>[3.38, 3.42]</span></td><td>1.30× / 1.46× / 0.74×</td><td>1.11× / 0.89× / 0.72×</td><td>1.00× / 0.92× / 0.75×</td></tr>
+<tr class='highlight'><td>Step 7 + D5 (5µs Fixed Linger)</td><td><strong>23,490</strong><span class='spread'>[23,396, 23,997]</span></td><td><strong>108.3</strong><span class='spread'>[102.9, 109.0]</span></td><td><strong>80.6</strong><span class='spread'>[79.7, 81.8]</span></td><td><strong>2,688</strong><span class='spread'>[2,647, 2,689]</span></td><td><strong>4,348</strong><span class='spread'>[4,005, 4,388]</span></td><td><strong>38.5</strong><span class='spread'>[38.4, 38.5]</span></td><td><strong>5,162</strong><span class='spread'>[5,159, 5,164]</span></td><td><strong>24</strong><span class='spread'>[24, 24]</span></td><td><strong>6.97</strong><span class='spread'>[6.95, 7.57]</span></td><td>1.18× / 1.44× / 0.85×</td><td>1.02× / 0.88× / 0.72×</td><td>0.91× / 0.91× / 0.75×</td></tr>
+</tbody></table></div>
+<h4>set100 / 256 workers</h4>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm / Step</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th>Allocs/op</th><th>Bytes/op</th><th>GC cycles</th>
+<th>Frames/write</th><th>vs L (ops / CPU / p50)</th><th>vs A (ops / CPU / allocs)</th><th>vs Step 0 (ops / CPU / allocs)</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c, 1 net thread)</td><td><strong>44,020</strong><span class='spread'>[43,329, 47,297]</span></td><td><strong>54.6</strong><span class='spread'>[52.9, 55.0]</span></td><td><strong>48.9</strong><span class='spread'>[47.3, 50.1]</span></td><td><strong>5,221</strong><span class='spread'>[5,220, 5,679]</span></td><td><strong>9,121</strong><span class='spread'>[9,078, 9,395]</span></td><td><strong>10.0</strong><span class='spread'>[10.0, 10.0]</span></td><td><strong>440</strong><span class='spread'>[440, 440]</span></td><td><strong>2</strong><span class='spread'>[1, 2]</span></td><td>-</td><td>1.00× / 1.00× / 1.00×</td><td>0.58× / 1.05× / 0.19×</td><td>0.56× / 1.12× / 0.20×</td></tr>
+<tr><td>L4 (libfdb_c, 4 threads / 4 DBs)</td><td><strong>70,742</strong><span class='spread'>[69,945, 71,295]</span></td><td><strong>65.5</strong><span class='spread'>[65.1, 65.8]</span></td><td><strong>60.6</strong><span class='spread'>[59.5, 61.1]</span></td><td><strong>3,411</strong><span class='spread'>[3,392, 3,438]</span></td><td><strong>6,570</strong><span class='spread'>[5,563, 6,788]</span></td><td><strong>10.0</strong><span class='spread'>[10.0, 10.0]</span></td><td><strong>440</strong><span class='spread'>[440, 440]</span></td><td><strong>2</strong><span class='spread'>[1, 2]</span></td><td>-</td><td>1.61× / 1.20× / 0.65×</td><td>0.93× / 1.26× / 0.19×</td><td>0.90× / 1.34× / 0.20×</td></tr>
+<tr><td>A (today: direct write + ack + 10/20µs)</td><td><strong>75,664</strong><span class='spread'>[60,827, 76,088]</span></td><td><strong>51.9</strong><span class='spread'>[51.8, 56.7]</span></td><td><strong>49.9</strong><span class='spread'>[49.7, 56.8]</span></td><td><strong>3,194</strong><span class='spread'>[3,192, 4,062]</span></td><td><strong>5,808</strong><span class='spread'>[5,772, 6,909]</span></td><td><strong>53.3</strong><span class='spread'>[53.2, 53.3]</span></td><td><strong>6,115</strong><span class='spread'>[6,110, 6,138]</span></td><td><strong>28</strong><span class='spread'>[28, 28]</span></td><td>-</td><td>1.72× / 0.95× / 0.61×</td><td>1.00× / 1.00× / 1.00×</td><td>0.96× / 1.06× / 1.04×</td></tr>
+<tr style='background:#f8fafc;'><td>Step 0: D-NG Baseline (D1 + D4)</td><td><strong>78,952</strong><span class='spread'>[77,594, 79,230]</span></td><td><strong>48.9</strong><span class='spread'>[48.5, 49.1]</span></td><td><strong>51.9</strong><span class='spread'>[50.2, 52.4]</span></td><td><strong>3,131</strong><span class='spread'>[3,117, 3,148]</span></td><td><strong>5,255</strong><span class='spread'>[5,247, 5,290]</span></td><td><strong>51.2</strong><span class='spread'>[51.2, 51.2]</span></td><td><strong>5,500</strong><span class='spread'>[5,500, 5,503]</span></td><td><strong>25</strong><span class='spread'>[25, 25]</span></td><td><strong>3.97</strong><span class='spread'>[3.96, 4.08]</span></td><td>1.79× / 0.90× / 0.60×</td><td>1.04× / 0.94× / 0.96×</td><td>1.00× / 1.00× / 1.00×</td></tr>
+<tr class='highlight'><td>Step 7 (Final): No Final-Commit Turnover Allocs + Fast Read-Only</td><td><strong>71,744</strong><span class='spread'>[67,021, 78,482]</span></td><td><strong>54.2</strong><span class='spread'>[48.7, 54.8]</span></td><td><strong>52.0</strong><span class='spread'>[48.8, 55.6]</span></td><td><strong>3,307</strong><span class='spread'>[3,131, 3,634]</span></td><td><strong>6,318</strong><span class='spread'>[5,382, 6,732]</span></td><td><strong>38.2</strong><span class='spread'>[38.2, 38.2]</span></td><td><strong>5,143</strong><span class='spread'>[5,142, 5,146]</span></td><td><strong>24</strong><span class='spread'>[23, 24]</span></td><td><strong>4.49</strong><span class='spread'>[4.22, 4.51]</span></td><td>1.63× / 0.99× / 0.63×</td><td>0.95× / 1.04× / 0.72×</td><td>0.91× / 1.11× / 0.75×</td></tr>
+<tr class='highlight'><td>Step 7 + adap20 (20µs Adaptive Linger)</td><td><strong>75,214</strong><span class='spread'>[73,742, 79,484]</span></td><td><strong>53.8</strong><span class='spread'>[45.6, 54.0]</span></td><td><strong>51.1</strong><span class='spread'>[48.2, 53.6]</span></td><td><strong>3,219</strong><span class='spread'>[3,088, 3,250]</span></td><td><strong>5,920</strong><span class='spread'>[5,133, 5,962]</span></td><td><strong>38.2</strong><span class='spread'>[38.2, 38.2]</span></td><td><strong>5,142</strong><span class='spread'>[5,138, 5,142]</span></td><td><strong>24</strong><span class='spread'>[24, 24]</span></td><td><strong>6.36</strong><span class='spread'>[6.28, 6.99]</span></td><td>1.71× / 0.99× / 0.62×</td><td>0.99× / 1.04× / 0.72×</td><td>0.95× / 1.10× / 0.75×</td></tr>
+<tr class='highlight'><td>Step 7 + D5 (5µs Fixed Linger)</td><td><strong>77,047</strong><span class='spread'>[76,961, 77,188]</span></td><td><strong>46.4</strong><span class='spread'>[44.4, 48.2]</span></td><td><strong>48.1</strong><span class='spread'>[47.3, 48.3]</span></td><td><strong>3,151</strong><span class='spread'>[3,141, 3,170]</span></td><td><strong>5,476</strong><span class='spread'>[5,460, 5,610]</span></td><td><strong>38.2</strong><span class='spread'>[38.2, 38.2]</span></td><td><strong>5,144</strong><span class='spread'>[5,140, 5,144]</span></td><td><strong>24</strong><span class='spread'>[23, 24]</span></td><td><strong>13.09</strong><span class='spread'>[12.84, 13.15]</span></td><td>1.75× / 0.85× / 0.60×</td><td>1.02× / 0.89× / 0.72×</td><td>0.98× / 0.95× / 0.75×</td></tr>
+</tbody></table></div>
+
+<h3>getset100 — 64 workers</h3>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm / Step</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th>Allocs/op</th><th>Bytes/op</th><th>GC cycles</th>
+<th>Frames/write</th><th>vs L (ops / CPU / p50)</th><th>vs A (ops / CPU / allocs)</th><th>vs Step 0 (ops / CPU / allocs)</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c, 1 net thread)</td><td><strong>16,001</strong><span class='spread'>[15,888, 16,124]</span></td><td><strong>98.5</strong><span class='spread'>[96.2, 102.6]</span></td><td><strong>116.2</strong><span class='spread'>[114.3, 117.9]</span></td><td><strong>3,669</strong><span class='spread'>[3,630, 3,827]</span></td><td><strong>7,495</strong><span class='spread'>[7,169, 7,833]</span></td><td><strong>17.0</strong><span class='spread'>[17.0, 17.0]</span></td><td><strong>688</strong><span class='spread'>[688, 688]</span></td><td><strong>4</strong><span class='spread'>[3, 4]</span></td><td>-</td><td>1.00× / 1.00× / 1.00×</td><td>0.89× / 0.53× / 0.21×</td><td>0.84× / 0.60× / 0.22×</td></tr>
+<tr><td>L4 (libfdb_c, 4 threads / 4 DBs)</td><td><strong>19,339</strong><span class='spread'>[19,196, 19,386]</span></td><td><strong>171.9</strong><span class='spread'>[169.6, 172.1]</span></td><td><strong>162.8</strong><span class='spread'>[156.4, 164.0]</span></td><td><strong>3,163</strong><span class='spread'>[3,157, 3,165]</span></td><td><strong>5,299</strong><span class='spread'>[5,124, 5,977]</span></td><td><strong>17.0</strong><span class='spread'>[17.0, 17.0]</span></td><td><strong>688</strong><span class='spread'>[688, 688]</span></td><td><strong>3</strong><span class='spread'>[3, 4]</span></td><td>-</td><td>1.21× / 1.75× / 0.86×</td><td>1.07× / 0.93× / 0.21×</td><td>1.01× / 1.04× / 0.22×</td></tr>
+<tr><td>A (today: direct write + ack + 10/20µs)</td><td><strong>18,029</strong><span class='spread'>[18,010, 18,725]</span></td><td><strong>185.4</strong><span class='spread'>[185.0, 185.7]</span></td><td><strong>130.5</strong><span class='spread'>[129.8, 138.0]</span></td><td><strong>3,383</strong><span class='spread'>[3,273, 3,407]</span></td><td><strong>5,630</strong><span class='spread'>[5,391, 5,808]</span></td><td><strong>79.6</strong><span class='spread'>[79.6, 79.6]</span></td><td><strong>8,487</strong><span class='spread'>[8,487, 8,489]</span></td><td><strong>39</strong><span class='spread'>[39, 39]</span></td><td>-</td><td>1.13× / 1.88× / 0.92×</td><td>1.00× / 1.00× / 1.00×</td><td>0.95× / 1.12× / 1.04×</td></tr>
+<tr style='background:#f8fafc;'><td>Step 0: D-NG Baseline (D1 + D4)</td><td><strong>19,066</strong><span class='spread'>[18,914, 19,304]</span></td><td><strong>165.3</strong><span class='spread'>[163.7, 166.2]</span></td><td><strong>138.0</strong><span class='spread'>[127.4, 141.5]</span></td><td><strong>3,258</strong><span class='spread'>[3,214, 3,282]</span></td><td><strong>5,125</strong><span class='spread'>[5,028, 5,310]</span></td><td><strong>76.5</strong><span class='spread'>[76.5, 76.5]</span></td><td><strong>7,518</strong><span class='spread'>[7,518, 7,526]</span></td><td><strong>35</strong><span class='spread'>[34, 35]</span></td><td><strong>2.96</strong><span class='spread'>[2.91, 3.01]</span></td><td>1.19× / 1.68× / 0.89×</td><td>1.06× / 0.89× / 0.96×</td><td>1.00× / 1.00× / 1.00×</td></tr>
+<tr class='highlight'><td>Step 7 (Final): No Final-Commit Turnover Allocs + Fast Read-Only</td><td><strong>19,329</strong><span class='spread'>[19,037, 19,434]</span></td><td><strong>144.8</strong><span class='spread'>[136.0, 156.5]</span></td><td><strong>123.0</strong><span class='spread'>[112.3, 137.8]</span></td><td><strong>3,224</strong><span class='spread'>[3,208, 3,256]</span></td><td><strong>5,040</strong><span class='spread'>[5,001, 5,111]</span></td><td><strong>54.5</strong><span class='spread'>[54.5, 54.5]</span></td><td><strong>6,730</strong><span class='spread'>[6,726, 6,742]</span></td><td><strong>31</strong><span class='spread'>[30, 31]</span></td><td><strong>3.29</strong><span class='spread'>[3.07, 3.42]</span></td><td>1.21× / 1.47× / 0.88×</td><td>1.07× / 0.78× / 0.68×</td><td>1.01× / 0.88× / 0.71×</td></tr>
+<tr class='highlight'><td>Step 7 + adap20 (20µs Adaptive Linger)</td><td><strong>19,528</strong><span class='spread'>[19,128, 19,877]</span></td><td><strong>143.9</strong><span class='spread'>[127.8, 148.3]</span></td><td><strong>125.3</strong><span class='spread'>[122.7, 127.6]</span></td><td><strong>3,200</strong><span class='spread'>[3,142, 3,254]</span></td><td><strong>4,816</strong><span class='spread'>[4,716, 4,872]</span></td><td><strong>54.5</strong><span class='spread'>[54.5, 54.5]</span></td><td><strong>6,726</strong><span class='spread'>[6,724, 6,729]</span></td><td><strong>30</strong><span class='spread'>[30, 30]</span></td><td><strong>3.66</strong><span class='spread'>[3.57, 3.73]</span></td><td>1.22× / 1.46× / 0.87×</td><td>1.08× / 0.78× / 0.68×</td><td>1.02× / 0.87× / 0.71×</td></tr>
+<tr class='highlight'><td>Step 7 + D5 (5µs Fixed Linger)</td><td><strong>18,644</strong><span class='spread'>[18,538, 18,891]</span></td><td><strong>157.0</strong><span class='spread'>[146.3, 165.7]</span></td><td><strong>119.0</strong><span class='spread'>[114.3, 137.2]</span></td><td><strong>3,318</strong><span class='spread'>[3,285, 3,380]</span></td><td><strong>4,926</strong><span class='spread'>[4,878, 5,134]</span></td><td><strong>54.5</strong><span class='spread'>[54.5, 54.5]</span></td><td><strong>6,721</strong><span class='spread'>[6,716, 6,735]</span></td><td><strong>30</strong><span class='spread'>[30, 31]</span></td><td><strong>6.77</strong><span class='spread'>[6.46, 7.31]</span></td><td>1.17× / 1.59× / 0.90×</td><td>1.03× / 0.85× / 0.68×</td><td>0.98× / 0.95× / 0.71×</td></tr>
+</tbody></table></div>
+
+<h2>6. Rate-Capped Equal-Throughput (T4) Comparison (~90% of <code>L</code>)</h2>
+<h3>get100 / 64 workers — Rate-Capped at 28,000 ops/s</h3>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm / Step</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th>Allocs/op</th><th>Bytes/op</th><th>GC cycles</th>
+<th>Frames/write</th><th>vs L (ops / CPU / p50)</th><th>vs A (ops / CPU / allocs)</th><th>vs Step 0 (ops / CPU / allocs)</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c, 1 net thread)</td><td><strong>27,838</strong><span class='spread'>[27,764, 27,912]</span></td><td><strong>97.9</strong><span class='spread'>[93.8, 102.1]</span></td><td><strong>55.5</strong><span class='spread'>[55.3, 55.7]</span></td><td><strong>1,214</strong><span class='spread'>[1,208, 1,220]</span></td><td><strong>3,952</strong><span class='spread'>[3,882, 4,022]</span></td><td><strong>16.0</strong><span class='spread'>[16.0, 16.0]</span></td><td><strong>664</strong><span class='spread'>[664, 664]</span></td><td><strong>3</strong><span class='spread'>[3, 3]</span></td><td>-</td><td>1.00× / 1.00× / 1.00×</td><td>1.00× / 0.94× / 0.32×</td><td>1.00× / 1.07× / 0.33×</td></tr>
+<tr><td>L4 (libfdb_c, 4 threads / 4 DBs)</td><td><strong>27,891</strong><span class='spread'>[27,872, 27,911]</span></td><td><strong>201.6</strong><span class='spread'>[201.3, 201.9]</span></td><td><strong>142.4</strong><span class='spread'>[141.4, 143.4]</span></td><td><strong>939</strong><span class='spread'>[936, 942]</span></td><td><strong>2,402</strong><span class='spread'>[2,171, 2,633]</span></td><td><strong>16.0</strong><span class='spread'>[16.0, 16.0]</span></td><td><strong>664</strong><span class='spread'>[664, 664]</span></td><td><strong>4</strong><span class='spread'>[3, 4]</span></td><td>-</td><td>1.00× / 2.06× / 0.77×</td><td>1.00× / 1.93× / 0.32×</td><td>1.00× / 2.20× / 0.33×</td></tr>
+<tr><td>A (today: direct write + ack + 10/20µs)</td><td><strong>27,912</strong><span class='spread'>[27,912, 27,912]</span></td><td><strong>104.6</strong><span class='spread'>[103.8, 105.4]</span></td><td><strong>85.0</strong><span class='spread'>[84.9, 85.2]</span></td><td><strong>670</strong><span class='spread'>[669, 671]</span></td><td><strong>1,202</strong><span class='spread'>[1,050, 1,354]</span></td><td><strong>49.9</strong><span class='spread'>[49.9, 49.9]</span></td><td><strong>4,953</strong><span class='spread'>[4,952, 4,953]</span></td><td><strong>23</strong><span class='spread'>[23, 23]</span></td><td>-</td><td>1.00× / 1.07× / 0.55×</td><td>1.00× / 1.00× / 1.00×</td><td>1.00× / 1.14× / 1.04×</td></tr>
+<tr style='background:#f8fafc;'><td>Step 0: D-NG Baseline (D1 + D4)</td><td><strong>27,913</strong><span class='spread'>[27,912, 27,913]</span></td><td><strong>91.6</strong><span class='spread'>[91.1, 92.1]</span></td><td><strong>93.9</strong><span class='spread'>[92.9, 94.9]</span></td><td><strong>567</strong><span class='spread'>[566, 568]</span></td><td><strong>899</strong><span class='spread'>[835, 963]</span></td><td><strong>48.0</strong><span class='spread'>[48.0, 48.0]</span></td><td><strong>4,714</strong><span class='spread'>[4,714, 4,714]</span></td><td><strong>22</strong><span class='spread'>[22, 22]</span></td><td><strong>1.73</strong><span class='spread'>[1.73, 1.74]</span></td><td>1.00× / 0.94× / 0.47×</td><td>1.00× / 0.88× / 0.96×</td><td>1.00× / 1.00× / 1.00×</td></tr>
+<tr class='highlight'><td>Step 7 (Final): No Final-Commit Turnover Allocs + Fast Read-Only</td><td><strong>27,913</strong><span class='spread'>[27,912, 27,913]</span></td><td><strong>94.1</strong><span class='spread'>[93.7, 94.4]</span></td><td><strong>93.0</strong><span class='spread'>[91.1, 94.8]</span></td><td><strong>590</strong><span class='spread'>[589, 592]</span></td><td><strong>878</strong><span class='spread'>[873, 882]</span></td><td><strong>22.9</strong><span class='spread'>[22.9, 22.9]</span></td><td><strong>3,803</strong><span class='spread'>[3,803, 3,803]</span></td><td><strong>18</strong><span class='spread'>[18, 18]</span></td><td><strong>1.78</strong><span class='spread'>[1.78, 1.78]</span></td><td>1.00× / 0.96× / 0.49×</td><td>1.00× / 0.90× / 0.46×</td><td>1.00× / 1.03× / 0.48×</td></tr>
+<tr class='highlight'><td>Step 7 + adap20 (20µs Adaptive Linger)</td><td><strong>27,912</strong><span class='spread'>[27,911, 27,913]</span></td><td><strong>99.3</strong><span class='spread'>[90.3, 108.4]</span></td><td><strong>93.5</strong><span class='spread'>[89.4, 97.7]</span></td><td><strong>609</strong><span class='spread'>[567, 651]</span></td><td><strong>951</strong><span class='spread'>[911, 992]</span></td><td><strong>22.9</strong><span class='spread'>[22.9, 23.0]</span></td><td><strong>3,801</strong><span class='spread'>[3,798, 3,805]</span></td><td><strong>18</strong><span class='spread'>[18, 18]</span></td><td><strong>2.11</strong><span class='spread'>[2.04, 2.18]</span></td><td>1.00× / 1.01× / 0.50×</td><td>1.00× / 0.95× / 0.46×</td><td>1.00× / 1.08× / 0.48×</td></tr>
+<tr class='highlight'><td>Step 7 + D5 (5µs Fixed Linger)</td><td><strong>27,912</strong><span class='spread'>[27,912, 27,913]</span></td><td><strong>93.5</strong><span class='spread'>[93.4, 93.5]</span></td><td><strong>89.6</strong><span class='spread'>[89.6, 89.7]</span></td><td><strong>641</strong><span class='spread'>[640, 641]</span></td><td><strong>911</strong><span class='spread'>[891, 930]</span></td><td><strong>22.9</strong><span class='spread'>[22.9, 22.9]</span></td><td><strong>3,791</strong><span class='spread'>[3,791, 3,792]</span></td><td><strong>18</strong><span class='spread'>[18, 18]</span></td><td><strong>3.16</strong><span class='spread'>[3.15, 3.17]</span></td><td>1.00× / 0.95× / 0.53×</td><td>1.00× / 0.89× / 0.46×</td><td>1.00× / 1.02× / 0.48×</td></tr>
+</tbody></table></div>
+
+<h3>set100 / 64 workers — Rate-Capped at 17,000 ops/s</h3>
+<div class='table-wrap'><table><thead><tr>
+<th>Arm / Step</th><th>ops/s</th><th>Client CPU (µs/op)</th><th>Server (kcycles/tx)</th>
+<th>p50 (µs)</th><th>p99 (µs)</th><th>Allocs/op</th><th>Bytes/op</th><th>GC cycles</th>
+<th>Frames/write</th><th>vs L (ops / CPU / p50)</th><th>vs A (ops / CPU / allocs)</th><th>vs Step 0 (ops / CPU / allocs)</th>
+</tr></thead><tbody>
+<tr><td>L (libfdb_c, 1 net thread)</td><td><strong>16,938</strong><span class='spread'>[16,938, 16,939]</span></td><td><strong>120.1</strong><span class='spread'>[115.0, 125.3]</span></td><td><strong>180.8</strong><span class='spread'>[157.3, 204.3]</span></td><td><strong>2,180</strong><span class='spread'>[2,111, 2,249]</span></td><td><strong>4,126</strong><span class='spread'>[3,915, 4,337]</span></td><td><strong>10.0</strong><span class='spread'>[10.0, 10.0]</span></td><td><strong>441</strong><span class='spread'>[441, 441]</span></td><td><strong>2</strong><span class='spread'>[2, 2]</span></td><td>-</td><td>1.00× / 1.00× / 1.00×</td><td>1.00× / 0.70× / 0.18×</td><td>1.00× / 0.69× / 0.19×</td></tr>
+<tr><td>L4 (libfdb_c, 4 threads / 4 DBs)</td><td><strong>16,939</strong><span class='spread'>[16,938, 16,939]</span></td><td><strong>186.4</strong><span class='spread'>[185.3, 187.4]</span></td><td><strong>202.0</strong><span class='spread'>[201.6, 202.3]</span></td><td><strong>2,102</strong><span class='spread'>[2,099, 2,104]</span></td><td><strong>2,976</strong><span class='spread'>[2,965, 2,986]</span></td><td><strong>10.0</strong><span class='spread'>[10.0, 10.0]</span></td><td><strong>440</strong><span class='spread'>[440, 440]</span></td><td><strong>2</strong><span class='spread'>[2, 2]</span></td><td>-</td><td>1.00× / 1.55× / 0.96×</td><td>1.00× / 1.08× / 0.18×</td><td>1.00× / 1.06× / 0.19×</td></tr>
+<tr><td>A (today: direct write + ack + 10/20µs)</td><td><strong>16,938</strong><span class='spread'>[16,938, 16,939]</span></td><td><strong>172.3</strong><span class='spread'>[159.3, 185.2]</span></td><td><strong>155.7</strong><span class='spread'>[151.6, 159.7]</span></td><td><strong>2,211</strong><span class='spread'>[2,152, 2,269]</span></td><td><strong>3,467</strong><span class='spread'>[3,415, 3,519]</span></td><td><strong>54.7</strong><span class='spread'>[54.6, 54.8]</span></td><td><strong>6,233</strong><span class='spread'>[6,223, 6,242]</span></td><td><strong>28</strong><span class='spread'>[28, 29]</span></td><td>-</td><td>1.00× / 1.43× / 1.01×</td><td>1.00× / 1.00× / 1.00×</td><td>1.00× / 0.98× / 1.04×</td></tr>
+<tr style='background:#f8fafc;'><td>Step 0: D-NG Baseline (D1 + D4)</td><td><strong>16,938</strong><span class='spread'>[16,937, 16,938]</span></td><td><strong>175.0</strong><span class='spread'>[165.9, 184.1]</span></td><td><strong>158.1</strong><span class='spread'>[157.6, 158.6]</span></td><td><strong>2,107</strong><span class='spread'>[2,080, 2,134]</span></td><td><strong>3,191</strong><span class='spread'>[3,137, 3,246]</span></td><td><strong>52.5</strong><span class='spread'>[52.5, 52.6]</span></td><td><strong>5,595</strong><span class='spread'>[5,590, 5,599]</span></td><td><strong>26</strong><span class='spread'>[26, 26]</span></td><td><strong>1.51</strong><span class='spread'>[1.46, 1.57]</span></td><td>1.00× / 1.46× / 0.97×</td><td>1.00× / 1.02× / 0.96×</td><td>1.00× / 1.00× / 1.00×</td></tr>
+<tr class='highlight'><td>Step 7 (Final): No Final-Commit Turnover Allocs + Fast Read-Only</td><td><strong>16,939</strong><span class='spread'>[16,939, 16,939]</span></td><td><strong>168.1</strong><span class='spread'>[158.4, 177.9]</span></td><td><strong>160.2</strong><span class='spread'>[159.5, 160.9]</span></td><td><strong>2,145</strong><span class='spread'>[2,126, 2,165]</span></td><td><strong>3,410</strong><span class='spread'>[3,392, 3,429]</span></td><td><strong>39.6</strong><span class='spread'>[39.5, 39.6]</span></td><td><strong>5,241</strong><span class='spread'>[5,234, 5,249]</span></td><td><strong>24</strong><span class='spread'>[23, 24]</span></td><td><strong>1.50</strong><span class='spread'>[1.43, 1.57]</span></td><td>1.00× / 1.40× / 0.98×</td><td>1.00× / 0.98× / 0.72×</td><td>1.00× / 0.96× / 0.75×</td></tr>
+<tr class='highlight'><td>Step 7 + adap20 (20µs Adaptive Linger)</td><td><strong>16,938</strong><span class='spread'>[16,938, 16,939]</span></td><td><strong>172.9</strong><span class='spread'>[170.0, 175.7]</span></td><td><strong>162.0</strong><span class='spread'>[159.5, 164.6]</span></td><td><strong>2,130</strong><span class='spread'>[2,103, 2,157]</span></td><td><strong>3,572</strong><span class='spread'>[3,540, 3,604]</span></td><td><strong>39.5</strong><span class='spread'>[39.5, 39.6]</span></td><td><strong>5,239</strong><span class='spread'>[5,236, 5,241]</span></td><td><strong>24</strong><span class='spread'>[24, 24]</span></td><td><strong>1.65</strong><span class='spread'>[1.64, 1.65]</span></td><td>1.00× / 1.44× / 0.98×</td><td>1.00× / 1.00× / 0.72×</td><td>1.00× / 0.99× / 0.75×</td></tr>
+<tr class='highlight'><td>Step 7 + D5 (5µs Fixed Linger)</td><td><strong>16,937</strong><span class='spread'>[16,935, 16,939]</span></td><td><strong>182.1</strong><span class='spread'>[176.0, 188.2]</span></td><td><strong>152.8</strong><span class='spread'>[150.9, 154.7]</span></td><td><strong>2,275</strong><span class='spread'>[2,219, 2,330]</span></td><td><strong>3,677</strong><span class='spread'>[3,347, 4,007]</span></td><td><strong>39.4</strong><span class='spread'>[39.4, 39.4]</span></td><td><strong>5,225</strong><span class='spread'>[5,221, 5,229]</span></td><td><strong>24</strong><span class='spread'>[24, 24]</span></td><td><strong>2.97</strong><span class='spread'>[2.97, 2.98]</span></td><td>1.00× / 1.52× / 1.04×</td><td>1.00× / 1.06× / 0.72×</td><td>1.00× / 1.04× / 0.75×</td></tr>
+</tbody></table></div>
+
+<h2>7. Client Syscalls &amp; Futexes per Operation Across Hill-Climb Steps (<code>perf stat</code>)</h2>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Cell</th><th>Arm / Step</th><th>Total syscalls/op</th><th>futex/op</th><th>epoll_pwait/op</th>
+        <th>read/op</th><th>write/op</th><th>nanosleep/op</th><th>ctx-switches/op</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>get100/64</td><td>A (today)</td><td><strong>2.68</strong><span class='spread'>[2.64, 2.71]</span></td><td><strong>0.93</strong><span class='spread'>[0.88, 0.98]</span></td><td><strong>0.84</strong><span class='spread'>[0.83, 0.84]</span></td><td><strong>0.44</strong><span class='spread'>[0.42, 0.45]</span></td><td><strong>0.12</strong><span class='spread'>[0.12, 0.12]</span></td><td><strong>0.14</strong><span class='spread'>[0.13, 0.15]</span></td><td><strong>0.68</strong><span class='spread'>[0.64, 0.72]</span></td></tr><tr><td>get100/64</td><td>Step 0 (D-NG)</td><td><strong>2.02</strong><span class='spread'>[1.99, 2.04]</span></td><td><strong>0.61</strong><span class='spread'>[0.61, 0.61]</span></td><td><strong>0.60</strong><span class='spread'>[0.59, 0.60]</span></td><td><strong>0.24</strong><span class='spread'>[0.24, 0.25]</span></td><td><strong>0.31</strong><span class='spread'>[0.31, 0.31]</span></td><td><strong>0.15</strong><span class='spread'>[0.15, 0.15]</span></td><td><strong>0.56</strong><span class='spread'>[0.55, 0.56]</span></td></tr><tr><td>get100/64</td><td>Step 1 (32-shard)</td><td><strong>1.91</strong><span class='spread'>[1.88, 1.94]</span></td><td><strong>0.59</strong><span class='spread'>[0.56, 0.61]</span></td><td><strong>0.57</strong><span class='spread'>[0.56, 0.57]</span></td><td><strong>0.24</strong><span class='spread'>[0.23, 0.24]</span></td><td><strong>0.29</strong><span class='spread'>[0.28, 0.30]</span></td><td><strong>0.15</strong><span class='spread'>[0.14, 0.16]</span></td><td><strong>0.55</strong><span class='spread'>[0.53, 0.57]</span></td></tr><tr><td>get100/64</td><td>Step 2 (in-place)</td><td><strong>1.98</strong><span class='spread'>[1.95, 2.01]</span></td><td><strong>0.60</strong><span class='spread'>[0.59, 0.61]</span></td><td><strong>0.58</strong><span class='spread'>[0.58, 0.58]</span></td><td><strong>0.24</strong><span class='spread'>[0.24, 0.24]</span></td><td><strong>0.30</strong><span class='spread'>[0.30, 0.30]</span></td><td><strong>0.15</strong><span class='spread'>[0.13, 0.17]</span></td><td><strong>0.55</strong><span class='spread'>[0.52, 0.57]</span></td></tr><tr><td>get100/64</td><td>Step 3 (tx timer)</td><td><strong>1.91</strong><span class='spread'>[1.88, 1.94]</span></td><td><strong>0.57</strong><span class='spread'>[0.57, 0.58]</span></td><td><strong>0.58</strong><span class='spread'>[0.57, 0.59]</span></td><td><strong>0.24</strong><span class='spread'>[0.24, 0.24]</span></td><td><strong>0.29</strong><span class='spread'>[0.28, 0.30]</span></td><td><strong>0.14</strong><span class='spread'>[0.13, 0.14]</span></td><td><strong>0.54</strong><span class='spread'>[0.52, 0.56]</span></td></tr><tr><td>get100/64</td><td>Step 4 (fast Get)</td><td><strong>1.82</strong><span class='spread'>[1.80, 1.84]</span></td><td><strong>0.55</strong><span class='spread'>[0.55, 0.55]</span></td><td><strong>0.54</strong><span class='spread'>[0.53, 0.54]</span></td><td><strong>0.24</strong><span class='spread'>[0.24, 0.24]</span></td><td><strong>0.27</strong><span class='spread'>[0.27, 0.27]</span></td><td><strong>0.14</strong><span class='spread'>[0.13, 0.15]</span></td><td><strong>0.52</strong><span class='spread'>[0.52, 0.53]</span></td></tr><tr><td>get100/64</td><td>Step 5 (16-sketch)</td><td><strong>1.87</strong><span class='spread'>[1.86, 1.87]</span></td><td><strong>0.57</strong><span class='spread'>[0.57, 0.57]</span></td><td><strong>0.54</strong><span class='spread'>[0.53, 0.55]</span></td><td><strong>0.23</strong><span class='spread'>[0.23, 0.24]</span></td><td><strong>0.27</strong><span class='spread'>[0.27, 0.28]</span></td><td><strong>0.15</strong><span class='spread'>[0.15, 0.15]</span></td><td><strong>0.55</strong><span class='spread'>[0.54, 0.55]</span></td></tr><tr><td>get100/64</td><td>Step 6 (GRV pool)</td><td><strong>1.87</strong><span class='spread'>[1.86, 1.88]</span></td><td><strong>0.56</strong><span class='spread'>[0.55, 0.57]</span></td><td><strong>0.55</strong><span class='spread'>[0.55, 0.56]</span></td><td><strong>0.24</strong><span class='spread'>[0.24, 0.25]</span></td><td><strong>0.28</strong><span class='spread'>[0.27, 0.28]</span></td><td><strong>0.14</strong><span class='spread'>[0.13, 0.15]</span></td><td><strong>0.53</strong><span class='spread'>[0.52, 0.54]</span></td></tr><tr><td>get100/64</td><td>Step 7 (Final)</td><td><strong>1.83</strong><span class='spread'>[1.83, 1.84]</span></td><td><strong>0.56</strong><span class='spread'>[0.56, 0.56]</span></td><td><strong>0.54</strong><span class='spread'>[0.53, 0.54]</span></td><td><strong>0.24</strong><span class='spread'>[0.24, 0.24]</span></td><td><strong>0.27</strong><span class='spread'>[0.27, 0.28]</span></td><td><strong>0.14</strong><span class='spread'>[0.13, 0.14]</span></td><td><strong>0.53</strong><span class='spread'>[0.53, 0.54]</span></td></tr><tr><td>get100/64</td><td>Step 7 + adap20</td><td><strong>1.90</strong><span class='spread'>[1.87, 1.93]</span></td><td><strong>0.60</strong><span class='spread'>[0.59, 0.62]</span></td><td><strong>0.53</strong><span class='spread'>[0.53, 0.53]</span></td><td><strong>0.27</strong><span class='spread'>[0.26, 0.27]</span></td><td><strong>0.23</strong><span class='spread'>[0.23, 0.23]</span></td><td><strong>0.15</strong><span class='spread'>[0.15, 0.15]</span></td><td><strong>0.56</strong><span class='spread'>[0.56, 0.57]</span></td></tr><tr><td>get100/64</td><td>Step 7 + D5</td><td><strong>2.21</strong><span class='spread'>[2.21, 2.22]</span></td><td><strong>0.59</strong><span class='spread'>[0.57, 0.62]</span></td><td><strong>0.61</strong><span class='spread'>[0.61, 0.61]</span></td><td><strong>0.45</strong><span class='spread'>[0.45, 0.45]</span></td><td><strong>0.15</strong><span class='spread'>[0.15, 0.15]</span></td><td><strong>0.15</strong><span class='spread'>[0.13, 0.16]</span></td><td><strong>0.56</strong><span class='spread'>[0.53, 0.59]</span></td></tr><tr><td>get100/256</td><td>A (today)</td><td><strong>1.24</strong><span class='spread'>[1.17, 1.30]</span></td><td><strong>0.31</strong><span class='spread'>[0.29, 0.34]</span></td><td><strong>0.34</strong><span class='spread'>[0.31, 0.36]</span></td><td><strong>0.29</strong><span class='spread'>[0.25, 0.33]</span></td><td><strong>0.08</strong><span class='spread'>[0.07, 0.09]</span></td><td><strong>0.04</strong><span class='spread'>[0.03, 0.06]</span></td><td><strong>0.19</strong><span class='spread'>[0.17, 0.20]</span></td></tr><tr><td>get100/256</td><td>Step 0 (D-NG)</td><td><strong>0.70</strong><span class='spread'>[0.70, 0.70]</span></td><td><strong>0.05</strong><span class='spread'>[0.04, 0.05]</span></td><td><strong>0.20</strong><span class='spread'>[0.19, 0.21]</span></td><td><strong>0.10</strong><span class='spread'>[0.10, 0.10]</span></td><td><strong>0.26</strong><span class='spread'>[0.26, 0.26]</span></td><td><strong>0.01</strong><span class='spread'>[0.00, 0.02]</span></td><td><strong>0.10</strong><span class='spread'>[0.09, 0.11]</span></td></tr><tr><td>get100/256</td><td>Step 1 (32-shard)</td><td><strong>0.62</strong><span class='spread'>[0.58, 0.65]</span></td><td><strong>0.04</strong><span class='spread'>[0.02, 0.05]</span></td><td><strong>0.20</strong><span class='spread'>[0.18, 0.21]</span></td><td><strong>0.11</strong><span class='spread'>[0.11, 0.11]</span></td><td><strong>0.22</strong><span class='spread'>[0.22, 0.22]</span></td><td><strong>0.00</strong><span class='spread'>[-0.01, 0.01]</span></td><td><strong>0.11</strong><span class='spread'>[0.10, 0.12]</span></td></tr><tr><td>get100/256</td><td>Step 2 (in-place)</td><td><strong>0.63</strong><span class='spread'>[0.61, 0.65]</span></td><td><strong>0.05</strong><span class='spread'>[0.04, 0.05]</span></td><td><strong>0.20</strong><span class='spread'>[0.19, 0.21]</span></td><td><strong>0.11</strong><span class='spread'>[0.11, 0.11]</span></td><td><strong>0.21</strong><span class='spread'>[0.20, 0.21]</span></td><td><strong>0.01</strong><span class='spread'>[0.01, 0.02]</span></td><td><strong>0.12</strong><span class='spread'>[0.11, 0.12]</span></td></tr><tr><td>get100/256</td><td>Step 3 (tx timer)</td><td><strong>0.66</strong><span class='spread'>[0.63, 0.68]</span></td><td><strong>0.04</strong><span class='spread'>[0.04, 0.05]</span></td><td><strong>0.22</strong><span class='spread'>[0.21, 0.23]</span></td><td><strong>0.10</strong><span class='spread'>[0.10, 0.10]</span></td><td><strong>0.20</strong><span class='spread'>[0.20, 0.20]</span></td><td><strong>0.02</strong><span class='spread'>[0.01, 0.02]</span></td><td><strong>0.11</strong><span class='spread'>[0.11, 0.11]</span></td></tr><tr><td>get100/256</td><td>Step 4 (fast Get)</td><td><strong>0.66</strong><span class='spread'>[0.64, 0.68]</span></td><td><strong>0.04</strong><span class='spread'>[0.03, 0.05]</span></td><td><strong>0.22</strong><span class='spread'>[0.21, 0.23]</span></td><td><strong>0.10</strong><span class='spread'>[0.10, 0.10]</span></td><td><strong>0.19</strong><span class='spread'>[0.19, 0.20]</span></td><td><strong>0.01</strong><span class='spread'>[0.01, 0.02]</span></td><td><strong>0.11</strong><span class='spread'>[0.10, 0.11]</span></td></tr><tr><td>get100/256</td><td>Step 5 (16-sketch)</td><td><strong>0.64</strong><span class='spread'>[0.61, 0.68]</span></td><td><strong>0.05</strong><span class='spread'>[0.04, 0.05]</span></td><td><strong>0.23</strong><span class='spread'>[0.23, 0.23]</span></td><td><strong>0.10</strong><span class='spread'>[0.10, 0.10]</span></td><td><strong>0.19</strong><span class='spread'>[0.19, 0.19]</span></td><td><strong>0.02</strong><span class='spread'>[0.01, 0.02]</span></td><td><strong>0.11</strong><span class='spread'>[0.11, 0.11]</span></td></tr><tr><td>get100/256</td><td>Step 6 (GRV pool)</td><td><strong>0.65</strong><span class='spread'>[0.64, 0.66]</span></td><td><strong>0.04</strong><span class='spread'>[0.02, 0.06]</span></td><td><strong>0.22</strong><span class='spread'>[0.20, 0.24]</span></td><td><strong>0.10</strong><span class='spread'>[0.10, 0.11]</span></td><td><strong>0.19</strong><span class='spread'>[0.19, 0.20]</span></td><td><strong>0.01</strong><span class='spread'>[-0.01, 0.03]</span></td><td><strong>0.11</strong><span class='spread'>[0.09, 0.13]</span></td></tr><tr><td>get100/256</td><td>Step 7 (Final)</td><td><strong>0.62</strong><span class='spread'>[0.62, 0.62]</span></td><td><strong>0.04</strong><span class='spread'>[0.04, 0.05]</span></td><td><strong>0.24</strong><span class='spread'>[0.23, 0.24]</span></td><td><strong>0.10</strong><span class='spread'>[0.10, 0.10]</span></td><td><strong>0.19</strong><span class='spread'>[0.18, 0.19]</span></td><td><strong>0.01</strong><span class='spread'>[0.01, 0.01]</span></td><td><strong>0.11</strong><span class='spread'>[0.10, 0.11]</span></td></tr><tr><td>get100/256</td><td>Step 7 + adap20</td><td><strong>0.54</strong><span class='spread'>[0.53, 0.55]</span></td><td><strong>0.04</strong><span class='spread'>[0.03, 0.04]</span></td><td><strong>0.21</strong><span class='spread'>[0.21, 0.21]</span></td><td><strong>0.10</strong><span class='spread'>[0.10, 0.10]</span></td><td><strong>0.13</strong><span class='spread'>[0.13, 0.13]</span></td><td><strong>-0.00</strong><span class='spread'>[-0.01, 0.00]</span></td><td><strong>0.06</strong><span class='spread'>[0.05, 0.06]</span></td></tr><tr><td>get100/256</td><td>Step 7 + D5</td><td><strong>0.80</strong><span class='spread'>[0.79, 0.81]</span></td><td><strong>0.08</strong><span class='spread'>[0.07, 0.09]</span></td><td><strong>0.29</strong><span class='spread'>[0.27, 0.30]</span></td><td><strong>0.22</strong><span class='spread'>[0.21, 0.22]</span></td><td><strong>0.07</strong><span class='spread'>[0.07, 0.07]</span></td><td><strong>0.01</strong><span class='spread'>[0.01, 0.01]</span></td><td><strong>0.07</strong><span class='spread'>[0.06, 0.08]</span></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<footer>
+  <div>docs/labs/single-network-goroutine/report/hillclimb.html</div>
+  <div>All benchmark tables report 3-round medians and [min, max] ranges unless noted.</div>
+</footer>
+</main>
+</body>
+</html>
