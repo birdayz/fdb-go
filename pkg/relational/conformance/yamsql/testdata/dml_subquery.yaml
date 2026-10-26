@@ -1,8 +1,8 @@
 # dml_subquery.yaml
 #
 # UPDATE and DELETE with subqueries in WHERE. `col IN (subquery)` is
-# rejected (Java NPEs in AstNormalizer.visitInPredicate; Go aligns
-# architecturally per CLAUDE.md principle #10). EXISTS / NOT EXISTS
+# rejected, as by Java (0AF00 "IN predicate does not support nested SELECT";
+# CLAUDE.md principle #10). EXISTS / NOT EXISTS
 # correlated subqueries are the supported rewrites and exercise the
 # same DML scan-loop integration path the IN form previously did.
 name: dml_subquery

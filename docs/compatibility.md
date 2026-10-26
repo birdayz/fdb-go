@@ -189,6 +189,6 @@ The concrete boundaries above can be checked in:
 - [CHANGELOG.md](../CHANGELOG.md), especially the unreleased storage changes.
 
 For SQL, [FEATURE_MATRIX.md](../FEATURE_MATRIX.md) inventories scenarios, not a
-standards certification or proof for every combination of features. The historical
-[SQL_CONFORMANCE.md](../SQL_CONFORMANCE.md) matrix records an earlier reference;
-use the pinned Java version and current cross-engine tests when evaluating a query.
+standards certification or proof for every combination of features.
+[SQL_CONFORMANCE.md](../SQL_CONFORMANCE.md) is a feature matrix against the pinned Java version,
+measured by `DocClaimsJavaProbe`; the cross-engine tests cover combinations it does not.

@@ -523,6 +523,24 @@ go_test(
 # gazelle:exclude *_java_probe_test.go
 # gazelle:exclude libfdbc_pin_test.go
 
+# The documents' citations of DocClaimsJavaProbe cases, checked in the fast lane.
+# keep
+go_test(
+    name = "doc_claims_cited_test",
+    srcs = [
+        "doc_claims_cases_java_probe_test.go",
+        "doc_claims_cited_java_probe_test.go",
+    ],
+    data = [
+        "//:DIVERGENCES.md",
+        "//:SQL_CONFORMANCE.md",
+    ],
+    deps = [
+        "//pkg/relational/conformance/javacorpus",
+        "//pkg/relational/conformance/plandiff/seedcorpus",
+    ],
+)
+
 # keep
 go_test(
     name = "conformance_probes_test",
@@ -537,6 +555,8 @@ go_test(
         "conformance_suite_test.go",
         "container_test.go",
         "correlated_having_exists_java_probe_test.go",
+        "doc_claims_cases_java_probe_test.go",
+        "doc_claims_java_probe_test.go",
         "dotted_and_recursive_seed_java_probe_test.go",
         "duplicate_alias_java_probe_test.go",
         "duplicate_groupby_java_probe_test.go",

@@ -4149,9 +4149,8 @@ func TestFDB_CountDistinct(t *testing.T) {
 	_, err = db.ExecContext(ctx, `INSERT INTO Sale (id, customer_id, region) VALUES (4, 3, 'US')`)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
-	// COUNT(DISTINCT) is rejected by both engines (Java NPE on
-	// AggregateWindowedFunctionContext.ALL().getText() with DISTINCT;
-	// Go ErrCodeUnsupportedOperation). Per project conformance
+	// COUNT(DISTINCT) is rejected by both engines (Java 0AF00 "aggregator
+	// DISTINCT is not supported"; Go ErrCodeUnsupportedOperation). Per project conformance
 	// principle: doesn't work in Java → doesn't work in Go.
 	var n int64
 	err = db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT customer_id) FROM Sale`).Scan(&n)
@@ -4221,14 +4220,12 @@ func TestFDB_GreatestLeast(t *testing.T) {
 }
 
 // TestFDB_SubqueryINRejected pins that `col IN (subquery)` and `col NOT
-// IN (subquery)` are rejected at predicate evaluation time. Java's
-// AstNormalizer.visitInPredicate doesn't implement the queryExpressionBody
-// alternative of the inList grammar rule (NPE in ParseHelpers.isConstant
-// whose @Nonnull parameter is dereferenced unconditionally). Per CLAUDE.md
-// principle #10 (emergent behaviour over special-case checks), Go aligns
-// with the architectural property — IN-subquery isn't supported — but
-// emits a clean ErrCodeUnsupportedQuery rather than reproducing Java's
-// NPE. EXISTS / NOT EXISTS / JOIN are the supported rewrites and exercised
+// IN (subquery)` are rejected at predicate evaluation time. Java refuses
+// the queryExpressionBody alternative of the inList grammar rule (0AF00
+// "IN predicate does not support nested SELECT"). Per CLAUDE.md principle
+// #10 (emergent behaviour over special-case checks), Go aligns with the
+// architectural property — IN-subquery isn't supported — and emits
+// ErrCodeUnsupportedQuery. EXISTS / NOT EXISTS / JOIN are the supported rewrites and exercised
 // elsewhere (TestFDB_ExistsSubquery, etc).
 func TestFDB_SubqueryINRejected(t *testing.T) {
 	t.Parallel()
@@ -6903,8 +6900,8 @@ func TestFDB_DistinctAggregates(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 
 	// All DISTINCT-aggregate forms (SUM/AVG/MIN/MAX/COUNT) are
-	// rejected by both engines (Java NPEs on every aggregate with
-	// DISTINCT; Go ErrCodeUnsupportedOperation). Per project
+	// rejected by both engines (Java 0AF00 "aggregator DISTINCT is not
+	// supported"; Go ErrCodeUnsupportedOperation). Per project
 	// conformance principle: doesn't work in Java → doesn't work in Go.
 	for _, q := range []string{
 		`SELECT SUM(DISTINCT n) FROM T`,
@@ -6923,8 +6920,8 @@ func TestFDB_DistinctAggregates(t *testing.T) {
 // TestFDB_SubqueryInNullRowRejected pins that `x [NOT] IN (subquery)` is
 // rejected at predicate evaluation time, including the NULL-row shapes
 // that previously exercised SQL §8.4 UNKNOWN-on-NULL semantics. Java's
-// AstNormalizer.visitInPredicate doesn't implement the queryExpressionBody
-// alternative of the inList grammar rule (NPE); per CLAUDE.md principle
+// AstNormalizer.visitInPredicate refuses the queryExpressionBody
+// alternative of the inList grammar rule (0AF00); per CLAUDE.md principle
 // #10 Go aligns architecturally and emits a clean error. The §8.4
 // semantics this test originally exercised are moot — the feature is
 // gone. NOT EXISTS is the supported rewrite for "outer rows whose value
@@ -6999,7 +6996,7 @@ func TestFDB_CountDistinctTypeTaggedKey(t *testing.T) {
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	defer db.Close()
 
-	// COUNT(DISTINCT) is rejected by both engines (Java NPE; Go
+	// COUNT(DISTINCT) is rejected by both engines (Java 0AF00; Go
 	// ErrCodeUnsupportedOperation). The type-tagged-key invariant
 	// this test originally exercised is still pinned indirectly via
 	// the GROUP BY paths' rowKey encoding (TestFDB_GroupByNullVsNilString

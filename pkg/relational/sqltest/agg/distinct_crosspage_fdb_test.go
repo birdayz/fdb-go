@@ -4,8 +4,7 @@ package sqltest
 // ordered by the dedup key, a duplicate run that STRADDLES a scanned-rows
 // continuation boundary must NOT be re-admitted on resume.
 //
-// SELECT DISTINCT is a Go-only extension (Java's fdb-relational does not dedup
-// it). The pre-fix executeDistinct rebuilt its seen-set FRESH per page, so with
+// Java's fdb-relational does not dedup SELECT DISTINCT (DIVERGENCES.md). The pre-fix executeDistinct rebuilt its seen-set FRESH per page, so with
 // EXECUTION_SCANNED_ROWS_LIMIT forcing many mid-run breaks every straddling
 // duplicate leaked. The streaming distinct (RecordQueryDistinctPlan.streaming,
 // set by ImplementDistinctFinalRule when the inner ordering makes equal rows

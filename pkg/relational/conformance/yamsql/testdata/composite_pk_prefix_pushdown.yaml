@@ -149,8 +149,8 @@ tests:
       - [2, 20, 'd']
 
   # Pure-prefix on 2-col PK with ORDER BY: naturalOrder = pkCols, so
-  # the sort is eliminated. (LIMIT was incidental; rejected at parse
-  # time as of fdb-relational 4.11.1.0.)
+  # the sort is eliminated. (LIMIT was incidental; Java rejects
+  # every LIMIT, 0AF00.)
   - query: SELECT a, b, label FROM kv2 WHERE a = 1 ORDER BY a, b
     plan_contains: "Scan(KV2, [=])"
     plan_not_contains: InMemorySort

@@ -60,19 +60,19 @@ for JSON numbers — `int` literals would fail equality), `null` → `nil`,
 
 ### When fdb-relational rejects your SQL
 
-Real failures fall into categories — see `CLAUDE.md` "Java↔Go conformance
-gotchas (fdb-relational)" first. Common ones surfaced by this harness:
+Real failures fall into categories; `SQL_CONFORMANCE.md` and the "Go-Only
+Extensions" section of `DIVERGENCES.md` list what Java 4.14.2.0 refuses. Common
+ones surfaced by this harness:
 
 - `RelationalException: NOT NULL is only allowed for ARRAY column type` — drop
   `NOT NULL` from BIGINT/STRING/etc. PK columns are implicitly NOT NULL.
 - `RelationalException: No Schema specified` — the runWithEphemeralSchema
   helper handles this internally; if you see it, the bug is in your test
   shape, not the harness.
-- `UnableToPlanException` — Cascades planner can't plan that shape yet.
-  Examples: `GROUP BY <col>`, `SELECT DISTINCT`. Don't add such corpus
-  entries until the planner ports the rule.
-- `LIMIT clause is not supported` — `LIMIT N` is JDBC-only
-  (`Statement.setMaxRows`), not SQL syntax in fdb-relational.
+- `UnableToPlanException` — Cascades planner can't plan that shape.
+  Examples: `GROUP BY` or `ORDER BY` on a column no index orders.
+- `LIMIT clause is not supported` — Java rejects every LIMIT and OFFSET
+  (0AF00); its `MAX_ROWS` option is a page size, not a limit.
 
 If your shape DOES work but ordering is non-deterministic, add `ORDER BY
 <pk>` so the Expected rows compare deterministically across runs.
@@ -142,6 +142,5 @@ If you need a new shape that runSql/runWithSetup don't cover:
 ## See also
 
 - `rfcs/026-fdb-grpc-trajectory.md` — why we don't worry about gRPC.
-- `CLAUDE.md` "Java↔Go conformance gotchas (fdb-relational)" — fdb-
-  relational integration quirks.
+- `SQL_CONFORMANCE.md` and `DIVERGENCES.md` — measured SQL support and compatibility boundaries.
 - `TODO.md` Track A1 — context on what this harness is for.
