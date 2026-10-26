@@ -91,7 +91,7 @@ func TestNativeResolveKeyLocationPanic(t *testing.T) {
 	var pendingConn *transport.Conn
 	var pendingAddr string
 	hook := func() {
-		// A send returns once its frame is queued (DESIGN.md T1), so the request
+		// A send returns once its frame is queued (RFC-282 T1), so the request
 		// may reach the wire after the hook runs: wait for the writer to write it.
 		for deadline := time.Now().Add(5 * time.Second); pendingToken == (transport.UID{}) && time.Now().Before(deadline); {
 			for _, msg := range rec.messages() {

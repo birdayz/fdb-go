@@ -80,6 +80,7 @@ func TestCoalesceDelayOption(t *testing.T) {
 		{"adaptive-overrides-coalesce", []DialOption{WithCoalesceDelay(10*time.Microsecond, 20*time.Microsecond), WithAdaptiveLinger(25 * time.Microsecond)}, 0, 0, false, 25 * time.Microsecond},
 		{"coalesce-overrides-adaptive", []DialOption{WithAdaptiveLinger(25 * time.Microsecond), WithCoalesceDelay(3*time.Microsecond, 7*time.Microsecond)}, 3 * time.Microsecond, 7 * time.Microsecond, linux, 0},
 		{"coalesce-zero-overrides-adaptive", []DialOption{WithAdaptiveLinger(25 * time.Microsecond), WithCoalesceDelay(0, 0)}, 0, 0, false, 0},
+		{"legacy-ignores-adaptive", []DialOption{WithLegacyWriter(), WithAdaptiveLinger(20 * time.Microsecond)}, 0, 0, false, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

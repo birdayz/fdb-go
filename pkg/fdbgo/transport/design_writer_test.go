@@ -42,25 +42,86 @@ func dialDesignArm(t *testing.T, opts ...DialOption) (*Conn, <-chan []byte) {
 	return c, frames
 }
 
-// T1: a send returns once its frame is queued, before the writer's delay ends,
-// and the peer receives every frame exactly once, in send order.
+// gatedWriteConn blocks post-handshake Write calls until gate is closed,
+// deterministically proving callers of SendFrameContext return before the
+// writer's socket write completes (without wall-clock timing thresholds).
+type gatedWriteConn struct {
+	net.Conn
+	armed  atomic.Bool
+	gate   chan struct{}
+	writes atomic.Int64
+}
+
+func (g *gatedWriteConn) Write(p []byte) (int, error) {
+	if g.armed.Load() {
+		<-g.gate
+	}
+	n, err := g.Conn.Write(p)
+	if g.armed.Load() && err == nil {
+		g.writes.Add(1)
+	}
+	return n, err
+}
+
+// T1: a send returns once its frame is queued, while the socket writer is gated
+// (zero socket writes completed), and once the gate opens the peer receives
+// every frame whole and in send order.
 func TestDesignSendIsEnqueueOnly(t *testing.T) {
 	t.Parallel()
 	for _, arm := range writerArms() {
 		t.Run(arm.name, func(t *testing.T) {
 			t.Parallel()
-			c, frames := dialDesignArm(t, arm.opts...)
+			s := newSimServer(t)
+			frames := make(chan []byte, 64)
+			go func() {
+				if s.handshake() != nil {
+					return
+				}
+				var fr FrameReader
+				for {
+					tok, body, err := fr.Read(s.srv, false)
+					if err != nil {
+						return
+					}
+					frames <- []byte(fmt.Sprintf("%d:%s", tok.First, body))
+				}
+			}()
+			gw := &gatedWriteConn{Conn: s.cli, gate: make(chan struct{})}
+			dial := func(context.Context, string, string) (net.Conn, error) { return gw, nil }
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			opts := append([]DialOption{withMonitorCadence(time.Hour, time.Hour)}, arm.opts...)
+			if arm.name == "d-coalesce" {
+				opts = append(opts, WithCoalesceDelay(10*time.Microsecond, 20*time.Microsecond))
+			}
+			c, err := dialWith(ctx, "sim", dial, nil, opts...)
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			defer func() {
+				select {
+				case <-gw.gate:
+				default:
+					close(gw.gate)
+				}
+				_ = c.Close()
+			}()
+			if c.na == nil {
+				t.Fatal("positive control: connection has no D-NG writer")
+			}
+			gw.armed.Store(true)
+
 			const n = 20
 			for i := uint64(1); i <= n; i++ {
-				start := time.Now()
 				if ok, err := c.SendFrameContext(context.Background(), UID{First: i}, frameBody(i)); !ok || err != nil {
 					t.Fatalf("send %d = (%t, %v), want queued", i, ok, err)
 				}
-				// The D delay is at least 0.9 × 40 ms; a send that waited for its write would exceed it.
-				if arm.name == "d-coalesce" && time.Since(start) >= designDelay*9/10 {
-					t.Fatalf("send %d took %v: it waited for the write", i, time.Since(start))
-				}
 			}
+			// Every SendFrameContext returned while the socket write gate is closed.
+			if got := gw.writes.Load(); got != 0 {
+				t.Fatalf("writes before gate opened = %d, want 0 (send waited on socket write)", got)
+			}
+			close(gw.gate)
 			for i := uint64(1); i <= n; i++ {
 				if got, want := string(within(t, frames, "a frame")), fmt.Sprint(i, ":f", i); got != want {
 					t.Fatalf("peer read %q, want %q", got, want)
@@ -68,6 +129,90 @@ func TestDesignSendIsEnqueueOnly(t *testing.T) {
 			}
 			expectNoFrame(t, frames, "after the last send")
 		})
+	}
+}
+
+// Adaptive linger (WithAdaptiveLinger):
+//  1. When idle (time.Since(lastWrite) >= window), naLoop flushes immediately
+//     without waiting out the window.
+//  2. Immediately after that write (time.Since(lastWrite) < window, active burst),
+//     frames queued while the window is open are held until the window expires and
+//     coalesced into one socket write.
+//  3. Closing the connection while naLoop is yielding in an active window exits
+//     promptly without waiting out the window or writing after close.
+func TestDesignAdaptiveLingerBurstAndIdle(t *testing.T) {
+	t.Parallel()
+	const window = 80 * time.Millisecond
+	c, counter := dialWriteCountedRaw(t, WithAdaptiveLinger(window))
+	if c.na == nil || c.AdaptiveLinger() != window {
+		t.Fatalf("precondition: expected D-NG adaptive=%v, got na=%v adaptive=%v", window, c.na, c.AdaptiveLinger())
+	}
+	handshake := len(counter.snapshot())
+
+	// 1. Idle connection: wait past the 80ms window so time.Since(lastWrite) >= window.
+	// Sending frame 1 must flush immediately (well before another 80ms window).
+	time.Sleep(window + 15*time.Millisecond)
+	idleStart := time.Now()
+	if err := c.SendFrameDeferred(UID{First: 1}, []byte{0}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		return len(counter.snapshot()) == handshake+1
+	}, "immediate flush on idle connection")
+	if elapsed := time.Since(idleStart); elapsed >= window*3/4 {
+		t.Fatalf("ADAPTIVE_IDLE_WAITED: idle flush took %v, want immediate (< %v)", elapsed, window*3/4)
+	}
+
+	// 2. Active burst: the idle flush just stamped c.lastWrite = time.Now(), so
+	// the connection is now inside the 80ms active burst window. Send 4 frames
+	// spaced by 3ms; naLoop must linger and coalesce them into one socket write.
+	const burstFrames = 4
+	for i := range burstFrames {
+		if err := c.SendFrameDeferred(UID{First: uint64(i + 2)}, []byte{byte(i + 1)}); err != nil {
+			t.Fatal(err)
+		}
+		if i < burstFrames-1 {
+			time.Sleep(3 * time.Millisecond)
+		}
+	}
+	if got := len(counter.snapshot()) - (handshake + 1); got != 0 {
+		t.Fatalf("ADAPTIVE_EARLY: %d socket writes while inside active burst window, want 0", got)
+	}
+	waitFor(t, func() bool {
+		return len(counter.snapshot()) == handshake+2
+	}, "coalesced burst write after adaptive window")
+	writes := counter.snapshot()[handshake+1:]
+	if len(writes) != 1 {
+		t.Fatalf("ADAPTIVE_SPLIT: %d socket writes for %d burst frames, want 1", len(writes), burstFrames)
+	}
+	var fr FrameReader
+	r := bytes.NewReader(writes[0])
+	for i := range burstFrames {
+		token, body, err := fr.Read(r, false)
+		if err != nil || token.First != uint64(i+2) || !bytes.Equal(body, []byte{byte(i + 1)}) {
+			t.Fatalf("burst frame %d = %v %x %v", i, token, body, err)
+		}
+	}
+	if r.Len() != 0 {
+		t.Fatalf("%d trailing bytes after %d burst frames", r.Len(), burstFrames)
+	}
+
+	// 3. Close during a 1-hour active adaptive linger must return promptly without writing.
+	c2, counter2 := dialWriteCountedRaw(t, WithAdaptiveLinger(time.Hour))
+	beforeCloseWrites := len(counter2.snapshot())
+	if err := c2.SendFrameDeferred(UID{First: 99}, []byte("never")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	closed := make(chan error, 1)
+	go func() { closed <- c2.Close() }()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ADAPTIVE_CLOSE_BLOCKED: Close waited for the 1h adaptive linger")
+	}
+	if n := len(counter2.snapshot()) - beforeCloseWrites; n != 0 {
+		t.Fatalf("ADAPTIVE_WROTE_AFTER_CLOSE: %d writes after teardown", n)
 	}
 }
 

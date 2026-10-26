@@ -234,6 +234,10 @@ func (p *PendingGet) full(ctx context.Context, abort <-chan struct{}, keepTags b
 func (p *PendingGet) resolve(ctx context.Context, abort <-chan struct{}) ([]byte, error) {
 	if !p.flushed {
 		p.flushed = true
+		// On the default D-NG writer, FlushContext validates ctx, cold-dial order,
+		// and connection liveness without waiting for a socket write (write errors
+		// fail the connection and deliver 1030 on p.replyCh); on WithLegacyWriter()
+		// it waits for the deferred batch's flush acknowledgment.
 		if err := p.conn.FlushContext(ctx); err != nil {
 			if response, ready := p.replyHandle.TakeReadyOrCancel(); ready {
 				p.replyConsumed = true

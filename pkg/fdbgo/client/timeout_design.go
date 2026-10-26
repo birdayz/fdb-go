@@ -116,6 +116,7 @@ func (tx *Transaction) armDesignTimerLocked(delay time.Duration) {
 }
 
 func (tx *Transaction) armDesignWeakTimerLocked(delay time.Duration) {
+	tx.designDeadline = monoNow() + int64(delay)
 	if tx.designTimer == nil {
 		w := weak.Make(tx)
 		tx.designTimer = time.AfterFunc(delay, func() {
@@ -130,6 +131,17 @@ func (tx *Transaction) armDesignWeakTimerLocked(delay time.Duration) {
 
 func (tx *Transaction) fireDesignTimeout() {
 	tx.readErrMu.Lock()
+	if !tx.timeoutArmed || tx.timeoutArm != tx.designArm {
+		tx.readErrMu.Unlock()
+		return
+	}
+	if rem := tx.designDeadline - monoNow(); rem > 0 {
+		if tx.designTimer != nil {
+			tx.designTimer.Reset(time.Duration(rem))
+		}
+		tx.readErrMu.Unlock()
+		return
+	}
 	arm := tx.designArm
 	tx.readErrMu.Unlock()
 	tx.fireTimeout(arm) // rejects a stale or disarmed arm under the same lock
@@ -217,6 +229,7 @@ func (tx *Transaction) expireTimeoutLocked() {
 		return
 	}
 	if tx.designTimer != nil {
+		tx.designDeadline = monoNow()
 		tx.designTimer.Reset(0)
 	}
 }

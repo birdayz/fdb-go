@@ -718,8 +718,10 @@ func putReplyChannelImpl(ch chan Response) {
 	replyChanPool.Put(ch)
 }
 
-// SendFrame writes a raw frame and flushes. Returns once the frame is written, or
-// once writeLoop holds whatever a full socket refused, ahead of every later frame.
+// SendFrame queues a raw frame for the connection's writer. On the default D-NG
+// writer it returns once the frame is appended to the connection's unsent buffer
+// (FlowTransport.actor.cpp:1038-1043); with WithLegacyWriter() it waits until the
+// frame is written or writeLoop holds a partial tail.
 func (c *Conn) SendFrame(destToken UID, body []byte) error {
 	if c.na != nil {
 		_, err := c.naWrite(c.ctx, destToken, body, false, nil)
@@ -763,9 +765,7 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
 	}
 }
 
-// SendFrameDeferred writes a raw frame WITHOUT waiting for flush.
-// The write loop will flush it with the next batch. Used for pipelining:
-// send N frames, then call Flush() (or let the write loop auto-flush).
+// SendFrameDeferred queues a raw frame without waiting for a socket write.
 func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
 	if c.na != nil {
 		_, err := c.naWrite(c.ctx, destToken, body, false, nil)
@@ -783,9 +783,10 @@ func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
 	return nil
 }
 
-// Flush ensures all pending frames are flushed to the TCP socket. With nothing
-// queued every earlier frame is already written; otherwise it sends a flush
-// marker through the write channel and waits for acknowledgment.
+// Flush validates cold-dial admission and connection liveness on the default D-NG
+// writer without waiting for naLoop's asynchronous socket write (socket write
+// errors fail the connection and all pending replies). With WithLegacyWriter(),
+// it sends a flush marker through the write channel and waits for acknowledgment.
 func (c *Conn) Flush() error {
 	if c.na != nil {
 		_, err := c.naWrite(c.ctx, UID{}, nil, true, nil)

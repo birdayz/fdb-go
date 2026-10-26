@@ -46,19 +46,45 @@ func TestDesignTimeoutOneTimerPerTransaction(t *testing.T) {
 
 func TestDesignTimeoutStaleArmIsRejected(t *testing.T) {
 	t.Parallel()
-	tx := &Transaction{}
+	tx := &Transaction{creationTime: time.Now()}
 	defer tx.Cancel()
 	ctx, release := tx.opContext(context.Background())
 	defer release()
-	tx.readErrMu.Lock()
-	tx.timeoutArm++
-	tx.timeoutArmed = true
-	tx.armDesignTimerLocked(time.Hour)
-	tx.disarmTimeoutLocked() // e.g. SetTimeout(0) after the arm
-	tx.readErrMu.Unlock()
-	tx.fireDesignTimeout() // a callback that raced the disarm
+	tx.SetTimeout(60000)
+	tx.SetTimeout(0) // disarm via SetTimeout(0)
+	tx.fireDesignTimeout()
 	if err := tx.readEntryError(ctx); err != nil {
 		t.Fatalf("a disarmed timer poisoned the transaction: %v", err)
+	}
+
+	// Re-arm with a future deadline (e.g. SetTimeout or Reset while an earlier
+	// AfterFunc callback was already runnable before acquiring readErrMu):
+	// fireDesignTimeout must re-arm for the remaining budget and NOT deliver 1031.
+	tx.SetTimeout(60000)
+	tx.fireDesignTimeout()
+	if err := tx.readEntryError(ctx); err != nil {
+		t.Fatalf("an in-flight callback from an earlier arm poisoned a re-armed transaction: %v", err)
+	}
+
+	// Reset also disarms the old generation and re-arms the new one with a future deadline.
+	release()
+	tx.Reset()
+	ctx2, release2 := tx.opContext(context.Background())
+	defer release2()
+	tx.SetTimeout(60000)
+	tx.fireDesignTimeout()
+	if err := tx.readEntryError(ctx2); err != nil {
+		t.Fatalf("an in-flight callback after Reset poisoned the new generation: %v", err)
+	}
+
+	// Once designDeadline has elapsed, fireDesignTimeout delivers 1031.
+	tx.readErrMu.Lock()
+	tx.designDeadline = monoNow()
+	tx.readErrMu.Unlock()
+	tx.fireDesignTimeout()
+	var fdbErr *wire.FDBError
+	if err := tx.readEntryError(ctx2); !errors.As(err, &fdbErr) || fdbErr.Code != 1031 {
+		t.Fatalf("expired weak timer fire = %v, want FDBError 1031", err)
 	}
 }
 
@@ -112,12 +138,57 @@ func TestDesignTimeoutProductionQueue(t *testing.T) {
 
 func TestDesignTimeoutTransactScopedPoolAndExpiry(t *testing.T) {
 	t.Parallel()
-	for range 10 {
-		tx := &Transaction{transactScoped: true}
+	db := &Database{db: &database{timeouts: newTimeoutQueue()}}
+	var observedTx *Transaction
+	var attempts int
+	_, err := db.Transact(context.Background(), func(tx *Transaction) (any, error) {
+		observedTx = tx
+		attempts++
 		tx.SetTimeout(30000)
-		tx.releaseTransactTimeout()
+		tx.readErrMu.Lock()
+		hasPooled := tx.transactScoped && tx.designEntry != nil && tx.timeoutNode == nil && tx.designTimer == nil
+		tx.readErrMu.Unlock()
+		if !hasPooled {
+			t.Fatal("Database.Transact with TIMEOUT did not select a pooled designTimerEntry")
+		}
+		if attempts == 1 {
+			return nil, &wire.FDBError{Code: ErrNotCommitted}
+		}
+		return "ok", nil
+	})
+	if err != nil || attempts != 2 {
+		t.Fatalf("Database.Transact = %v after %d attempts, want nil after 2", err, attempts)
 	}
-	tx := &Transaction{transactScoped: true}
+	observedTx.readErrMu.Lock()
+	releasedAfterTransact := !observedTx.transactScoped && observedTx.designEntry == nil && !observedTx.timeoutArmed
+	observedTx.readErrMu.Unlock()
+	if !releasedAfterTransact {
+		t.Fatal("Database.Transact did not release its pooled designTimerEntry on exit")
+	}
+
+	var observedReadTx *Transaction
+	_, err = db.ReadTransact(context.Background(), func(tx *Transaction) (any, error) {
+		observedReadTx = tx
+		tx.SetTimeout(30000)
+		tx.readErrMu.Lock()
+		hasPooled := tx.transactScoped && tx.designEntry != nil && tx.timeoutNode == nil && tx.designTimer == nil
+		tx.readErrMu.Unlock()
+		if !hasPooled {
+			t.Fatal("Database.ReadTransact with TIMEOUT did not select a pooled designTimerEntry")
+		}
+		return "ok", nil
+	})
+	if err != nil {
+		t.Fatalf("Database.ReadTransact = %v", err)
+	}
+	observedReadTx.readErrMu.Lock()
+	releasedAfterReadTransact := !observedReadTx.transactScoped && observedReadTx.designEntry == nil && !observedReadTx.timeoutArmed
+	observedReadTx.readErrMu.Unlock()
+	if !releasedAfterReadTransact {
+		t.Fatal("Database.ReadTransact did not release its pooled designTimerEntry on exit")
+	}
+
+	tx := db.createTransaction(true)
 	defer tx.releaseTransactTimeout()
 	ctx, release := tx.opContext(context.Background())
 	defer release()
@@ -137,40 +208,47 @@ func TestDesignTimeoutTransactScopedPoolAndExpiry(t *testing.T) {
 }
 
 // Deterministic test for pooled designTimerEntry reuse: when an entry armed
-// for transaction A is released and reused by transaction B with a later
-// deadline (skipping Timer.Reset because nextFire is in the future and <= B's
-// deadline), an early fire from A's schedule re-arms for B's remaining budget
-// without delivering a false 1031; firing once B's deadline has elapsed
-// delivers 1031.
+// for transaction A is reused by transaction B with a later deadline (skipping
+// Timer.Reset because nextFire is in the future and <= B's deadline), an early
+// fire from A's schedule re-arms for B's remaining budget without delivering a
+// false 1031; firing once B's deadline has elapsed delivers 1031.
 func TestDesignTimeoutPooledReuseEarlyFireReArmsWithoutFalseTimeout(t *testing.T) {
 	t.Parallel()
-	txA := &Transaction{transactScoped: true}
+	// Use a dedicated entry owned by this test so parallel tests pulling from
+	// designTimerPool cannot race with our deterministic fire() calls.
+	entry := &designTimerEntry{}
+	txA := &Transaction{transactScoped: true, designEntry: entry}
 	txA.readErrMu.Lock()
 	txA.timeoutArm = 1
 	txA.timeoutArmed = true
 	txA.armDesignTimerLocked(10 * time.Minute)
-	entry := txA.designEntry
+	txA.stopDesignTimerLocked()
+	txA.designEntry = nil
 	txA.readErrMu.Unlock()
-	if entry == nil {
-		t.Fatal("expected pooled designTimerEntry on txA")
+	if entry.t != nil {
+		defer entry.t.Stop()
 	}
-	txA.releaseTransactTimeout()
 
-	// Firing while the entry is in the pool (tx == nil) is a no-op and clears nextFire.
+	// Firing while disarmed (tx == nil) is a no-op and clears nextFire.
 	entry.fire()
 	entry.mu.Lock()
 	if entry.tx != nil || entry.nextFire != 0 {
 		entry.mu.Unlock()
-		t.Fatalf("pooled fire left tx=%v nextFire=%d, want nil/0", entry.tx, entry.nextFire)
+		t.Fatalf("disarmed fire left tx=%v nextFire=%d, want nil/0", entry.tx, entry.nextFire)
 	}
-	// Simulate an entry in the pool whose underlying timer is still scheduled
-	// for an earlier deadline (10 minutes from now).
+	// Simulate an entry whose underlying timer is still scheduled for an earlier
+	// deadline (10 minutes from now).
 	earlyFire := monoNow() + int64(10*time.Minute)
 	entry.nextFire = earlyFire
 	entry.mu.Unlock()
 
 	txB := &Transaction{transactScoped: true, designEntry: entry}
-	defer txB.releaseTransactTimeout()
+	defer func() {
+		txB.readErrMu.Lock()
+		txB.stopDesignTimerLocked()
+		txB.designEntry = nil
+		txB.readErrMu.Unlock()
+	}()
 	ctx, release := txB.opContext(context.Background())
 	defer release()
 	txB.readErrMu.Lock()

@@ -492,12 +492,13 @@ type Transaction struct {
 	inlineVs            versionstampCompletion
 	inlineVsUsed        bool
 	spanNeedsRegen      atomic.Bool
-	// designTimer/designEntry/designArm: design D4's timer per transaction (timeout_design.go).
-	designTimer *time.Timer
-	designEntry *designTimerEntry
-	designArm   uint64
-	readLife    *readIncarnation
-	readErr     error
+	// designTimer/designEntry/designArm/designDeadline: design D4's timer per transaction (timeout_design.go).
+	designTimer    *time.Timer
+	designEntry    *designTimerEntry
+	designArm      uint64
+	designDeadline int64
+	readLife       *readIncarnation
+	readErr        error
 	// readGen is the read-tracking incarnation, bumped on every reset. C++
 	// swaps the reading AndFuture on resetRyow (:2715): a read issued under an
 	// old incarnation that fails AFTER a reset must not poison the new one.

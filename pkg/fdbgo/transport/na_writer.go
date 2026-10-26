@@ -57,9 +57,13 @@ func WithAdaptiveLinger(d time.Duration) DialOption {
 	}
 }
 
-// AdaptiveLinger reports the connection's adaptive linger window (0 when disabled).
+// AdaptiveLinger reports the connection's active adaptive linger window (0 when
+// disabled or when using the legacy writer).
 func (c *Conn) AdaptiveLinger() time.Duration {
-	return c.adaptiveLinger
+	if c.na == nil {
+		return 0
+	}
+	return c.na.adaptive
 }
 
 const naHighWater = 16 << 20 // 16 MiB high-water backpressure bound when a peer socket stalls
