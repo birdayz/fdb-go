@@ -13,6 +13,7 @@ package transport
 // never be silently downgraded.
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -21,6 +22,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -105,8 +107,8 @@ func clientTLSConfig(t *testing.T, caPEM, cliCertPEM, cliKeyPEM []byte) *tls.Con
 
 // startFDBTLSServer starts a TLS listener that requires+verifies a client cert
 // (mutual auth), then speaks the server side of the FDB ConnectPacket handshake
-// inside the tunnel. Returns its address.
-func startFDBTLSServer(t *testing.T, serverCertPEM, serverKeyPEM, caPEM []byte) string {
+// inside the tunnel and decodes post-handshake TLS frames.
+func startFDBTLSServer(t *testing.T, serverCertPEM, serverKeyPEM, caPEM []byte) (string, <-chan string) {
 	t.Helper()
 	cert, err := tls.X509KeyPair(serverCertPEM, serverKeyPEM)
 	if err != nil {
@@ -124,6 +126,7 @@ func startFDBTLSServer(t *testing.T, serverCertPEM, serverKeyPEM, caPEM []byte) 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ln.Close() })
+	frames := make(chan string, 16)
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -140,11 +143,20 @@ func startFDBTLSServer(t *testing.T, serverCertPEM, serverKeyPEM, caPEM []byte) 
 				if _, err := c.Write(sp.Marshal()); err != nil {
 					return
 				}
-				io.Copy(io.Discard, c) // drain until the client closes
+				var fr FrameReader
+				for {
+					tok, body, err := fr.Read(c, true)
+					if err != nil {
+						return
+					}
+					if tok != WellKnownToken(WLTokenPingPacket) {
+						frames <- fmt.Sprintf("%d:%d", tok.First, len(body))
+					}
+				}
 			}(conn)
 		}
 	}()
-	return ln.Addr().String()
+	return ln.Addr().String(), frames
 }
 
 // TestDial_RealMutualTLS: Dial negotiates real mutual TLS with a standard
@@ -155,7 +167,7 @@ func TestDial_RealMutualTLS(t *testing.T) {
 	ca, caKey, caPEM := genCA(t)
 	srvCert, srvKey := genLeaf(t, ca, caKey, true)
 	cliCert, cliKey := genLeaf(t, ca, caKey, false)
-	addr := startFDBTLSServer(t, srvCert, srvKey, caPEM)
+	addr, frames := startFDBTLSServer(t, srvCert, srvKey, caPEM)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -167,6 +179,25 @@ func TestDial_RealMutualTLS(t *testing.T) {
 	if c.PeerProtocolVersion() != ProtocolVersion73 {
 		t.Errorf("peer protocol: got %#x, want %#x", c.PeerProtocolVersion(), ProtocolVersion73)
 	}
+	if ok, err := c.SendFrameContext(ctx, UID{First: 1}, []byte("tls-small")); !ok || err != nil {
+		t.Fatalf("small TLS SendFrameContext = (%t, %v)", ok, err)
+	}
+	if ok, err := c.SendFrameContext(ctx, UID{First: 2}, bytes.Repeat([]byte{'T'}, 5000)); !ok || err != nil {
+		t.Fatalf("large TLS SendFrameContext = (%t, %v)", ok, err)
+	}
+	if !c.tryEnqueue(writeReq{token: UID{First: 3}, body: []byte("tls-try")}) {
+		t.Fatal("TLS tryEnqueue returned false")
+	}
+	for _, want := range []string{"1:9", "2:5000", "3:7"} {
+		select {
+		case got := <-frames:
+			if got != want {
+				t.Fatalf("TLS frame = %q, want %q", got, want)
+			}
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for TLS frame %q", want)
+		}
+	}
 }
 
 // TestDial_WrongCARejected: a client trusting the wrong CA must fail to verify
@@ -176,7 +207,7 @@ func TestDial_WrongCARejected(t *testing.T) {
 	ca, caKey, caPEM := genCA(t)
 	srvCert, srvKey := genLeaf(t, ca, caKey, true)
 	cliCert, cliKey := genLeaf(t, ca, caKey, false)
-	addr := startFDBTLSServer(t, srvCert, srvKey, caPEM)
+	addr, _ := startFDBTLSServer(t, srvCert, srvKey, caPEM)
 
 	_, _, otherCAPEM := genCA(t) // a DIFFERENT CA
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -195,7 +226,7 @@ func TestDial_MissingClientCertRejected(t *testing.T) {
 	t.Parallel()
 	ca, caKey, caPEM := genCA(t)
 	srvCert, srvKey := genLeaf(t, ca, caKey, true)
-	addr := startFDBTLSServer(t, srvCert, srvKey, caPEM)
+	addr, _ := startFDBTLSServer(t, srvCert, srvKey, caPEM)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -1000,7 +1000,8 @@ type PendingGet struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
 	timer         *time.Timer
-	sentAt        time.Time // RFC-114: send time, for the pipelined read-latency sample
+	onReplyTimer  func(*time.Timer) // optional test hook run when timer is lazily acquired
+	sentAt        time.Time         // RFC-114: send time, for the pipelined read-latency sample
 	flushed       bool
 	gen           uint64        // read incarnation at issue (see Transaction.readGen)
 	tags          readTagSample // the request's draw, kept by a fallback loadBalance would retry itself

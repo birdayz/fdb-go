@@ -12,7 +12,8 @@ import (
 // readIncarnation is the lifetime of one C++ resetPromise. Its mutable fields
 // are protected by Transaction.readErrMu: cancellation delivery and all other
 // transaction locks stay outside it (RFC-256); only the leaf locks
-// nativeCommit.mu and timeoutQueue.mu nest inside.
+// nativeCommit.mu, timeoutQueue.mu, and designTimerEntry.mu (released before
+// callbacks take readErrMu) nest inside.
 type readIncarnation struct {
 	ctx     context.Context
 	cancel  context.CancelCauseFunc

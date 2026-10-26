@@ -124,6 +124,9 @@ func (c *Conn) naWrite(ctx context.Context, token UID, body []byte, flush bool, 
 			}
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if c.ctx.Err() != nil {
 		return false, errConnClosed
 	}
@@ -208,6 +211,10 @@ func (c *Conn) naSend(ctx context.Context, token UID, body []byte) error {
 		frame := stackBuf[:n]
 		encodeFrameInto(frame, token, body, c.useTLS)
 		w.mu.Lock()
+		if err := ctx.Err(); err != nil {
+			w.mu.Unlock()
+			return err
+		}
 		if c.ctx.Err() != nil {
 			w.mu.Unlock()
 			return errConnClosed
@@ -228,6 +235,10 @@ func (c *Conn) naSend(ctx context.Context, token UID, body []byte) error {
 			w.mu.Unlock()
 			LogSend(token, body)
 			w.mu.Lock()
+			if err := ctx.Err(); err != nil {
+				w.mu.Unlock()
+				return err
+			}
 			if c.ctx.Err() != nil {
 				w.mu.Unlock()
 				return errConnClosed
@@ -247,6 +258,11 @@ func (c *Conn) naSend(ctx context.Context, token UID, body []byte) error {
 	}
 	bufp, frame := encodeFrame(token, body, c.useTLS)
 	w.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		w.mu.Unlock()
+		putFrame(bufp, frame)
+		return err
+	}
 	if c.ctx.Err() != nil {
 		w.mu.Unlock()
 		putFrame(bufp, frame)
@@ -275,6 +291,10 @@ func (c *Conn) naSend(ctx context.Context, token UID, body []byte) error {
 		w.mu.Unlock()
 		LogSend(token, body)
 		w.mu.Lock()
+		if err := ctx.Err(); err != nil {
+			w.mu.Unlock()
+			return err
+		}
 		if c.ctx.Err() != nil {
 			w.mu.Unlock()
 			return errConnClosed

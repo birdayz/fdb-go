@@ -27,6 +27,7 @@ typedef struct {
 	atomic_int pre_seq;
 	atomic_int bar_seq;
 	atomic_int bar_saw_pre;
+	atomic_int pre_err;
 	atomic_int gate_cb_done;
 	atomic_int pre_cb_done;
 	atomic_int bar_cb_done;
@@ -55,7 +56,11 @@ static void on_gate_ready(FDBFuture* f, void* param) {
 		return;
 	}
 	p->pre_f = fdb_transaction_get_approximate_size(p->pre_tr);
-	fdb_future_set_callback(p->pre_f, on_pre_ready, p);
+	fdb_error_t err = fdb_future_set_callback(p->pre_f, on_pre_ready, p);
+	if (err != 0) {
+		atomic_store(&p->pre_err, (int)err);
+		atomic_store(&p->pre_cb_done, 1);
+	}
 	atomic_store(&p->parked, 1);
 	while (atomic_load(&p->release) == 0) {
 		usleep(100);
@@ -115,6 +120,7 @@ static fdb_error_t start_barrier_probe(FDBDatabase* db, int64_t initial_delay_ms
 		atomic_init(&p->pre_seq, 0);
 		atomic_init(&p->bar_seq, 0);
 		atomic_init(&p->bar_saw_pre, 0);
+		atomic_init(&p->pre_err, 0);
 		atomic_init(&p->gate_cb_done, 0);
 		atomic_init(&p->pre_cb_done, 0);
 		atomic_init(&p->bar_cb_done, 0);
@@ -184,7 +190,8 @@ static void release_barrier_probe(barrier_probe_t* p) {
 
 static int finish_barrier_probe(barrier_probe_t* p) {
 	cleanup_probe_attempt(p);
-	int ordered = (atomic_load(&p->pre_seq) == 1 &&
+	int ordered = (atomic_load(&p->pre_err) == 0 &&
+		atomic_load(&p->pre_seq) == 1 &&
 		atomic_load(&p->bar_seq) == 2 &&
 		atomic_load(&p->bar_saw_pre) == 1);
 	free(p);
@@ -197,6 +204,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 	"unsafe"
 
 	"fdb.dev/tools/clientbench/internal/bench"
@@ -257,42 +265,41 @@ func (b *backend) Close() {
 	})
 }
 
-func (b *backend) Barrier() error {
-	// Start at initial_delay_ms=0 to exercise already-ready inline callback recovery,
-	// then record predecessor vs barrier completion sequence on the network thread.
+func runWithBarrierProbe(cDB *C.FDBDatabase, fn func() error) error {
 	var probe *C.barrier_probe_t
-	if cerr := C.start_barrier_probe(b.cDB, 0, &probe); cerr != 0 {
+	if cerr := C.start_barrier_probe(cDB, 0, &probe); cerr != 0 {
 		return fmt.Errorf("start_barrier_probe: %d", int(cerr))
-	}
-	tx, err := b.db.CreateTransaction()
-	if err != nil {
-		C.finish_barrier_probe(probe)
-		return err
-	}
-	defer tx.Cancel()
-	if _, err = tx.GetCommittedVersion(); err != nil {
-		C.finish_barrier_probe(probe)
-		return err
 	}
 	if cerr := C.queue_barrier_future(probe); cerr != 0 {
 		C.finish_barrier_probe(probe)
 		return fmt.Errorf("queue_barrier_future: %d", int(cerr))
 	}
-	fut := tx.GetApproximateSize()
-	if C.probe_pre_done(probe) != 0 || fut.IsReady() {
-		C.finish_barrier_probe(probe)
-		return errors.New("native FIFO predecessor completed before barrier future was queued")
-	}
-	C.release_barrier_probe(probe)
-	_, err = fut.Get()
+	go func(p *C.barrier_probe_t) {
+		time.Sleep(5 * time.Millisecond)
+		C.release_barrier_probe(p)
+	}(probe)
+	err := fn()
+	// Sample predecessor completion immediately when fn returns, before cleanup waits.
+	preDone := C.probe_pre_done(probe)
 	ordered := C.finish_barrier_probe(probe)
 	if err != nil {
 		return err
 	}
-	if ordered == 0 {
-		return errors.New("native barrier did not complete strictly after queued onMainThread predecessor")
+	if preDone == 0 || ordered == 0 {
+		return errors.New("native barrier returned before queued onMainThread predecessor completed")
 	}
 	return nil
+}
+
+func (b *backend) Barrier() error {
+	// This non-I/O future follows finalizer-posted destructors on the native FIFO.
+	tx, err := b.db.CreateTransaction()
+	if err != nil {
+		return err
+	}
+	_, err = tx.GetApproximateSize().Get()
+	tx.Cancel()
+	return err
 }
 
 func (b *backend) Shutdown() (bool, error) {

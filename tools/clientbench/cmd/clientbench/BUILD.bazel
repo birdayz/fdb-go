@@ -12,6 +12,22 @@ go_test(
     deps = ["@rules_go//go/runfiles"],
 )
 
+go_test(
+    name = "backend_cgo_test",
+    srcs = [
+        "backend_cgo.go",
+        "backend_cgo_test.go",
+    ],
+    cgo = True,
+    clinkopts = ["-lfdb_c"],
+    gotags = ["libfdbc"],
+    pure = "off",
+    deps = [
+        "//tools/clientbench/internal/bench",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb",
+    ],
+)
+
 # Each executable contains exactly one backend, including its dependency graph.
 go_binary(
     name = "clientbench_go",

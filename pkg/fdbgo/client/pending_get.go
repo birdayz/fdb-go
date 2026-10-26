@@ -256,6 +256,9 @@ func (p *PendingGet) resolve(ctx context.Context, abort <-chan struct{}) ([]byte
 	}
 	if p.timer == nil {
 		p.timer = getTimer(max(p.tx.readRPCTimeout()-time.Since(p.sentAt), 0))
+		if p.onReplyTimer != nil {
+			p.onReplyTimer(p.timer)
+		}
 	}
 	select {
 	case response := <-p.replyCh:

@@ -261,6 +261,27 @@ func TestDesignCancelNeverUnqueues(t *testing.T) {
 	if ok, err := c.SendFrameContext(ctx, UID{First: 3}, frameBody(3)); ok || !errors.Is(err, context.Canceled) {
 		t.Fatalf("send on a cancelled ctx = (%t, %v), want not queued", ok, err)
 	}
+
+	// Cancelling a sender while it is blocked waiting to acquire w.mu must reject
+	// admission when w.mu is granted, without appending the frame.
+	c.na.mu.Lock()
+	ctxContended, cancelContended := context.WithCancel(context.Background())
+	contendedDone := make(chan error, 1)
+	go func() {
+		ok, err := c.SendFrameContext(ctxContended, UID{First: 4}, frameBody(4))
+		if ok || !errors.Is(err, context.Canceled) {
+			contendedDone <- fmt.Errorf("contended cancelled send = (%t, %v), want (false, context.Canceled)", ok, err)
+			return
+		}
+		contendedDone <- nil
+	}()
+	time.Sleep(2 * time.Millisecond)
+	cancelContended()
+	c.na.mu.Unlock()
+	if err := within(t, contendedDone, "contended cancelled sender"); err != nil {
+		t.Fatal(err)
+	}
+
 	expectFrames(t, frames, 1, 2)
 	expectNoFrame(t, frames, "the cancelled-before-send frame")
 }
@@ -768,6 +789,7 @@ func TestDesignWireLogPanicDoesNotPoisonWriter(t *testing.T) {
 		entered, release := make(chan struct{}), make(chan struct{})
 		var releaseOnce sync.Once
 		openGate := func() { releaseOnce.Do(func() { close(release) }) }
+		defer openGate()
 		pw.mu.Lock()
 		pw.enteredGate, pw.releaseGate = entered, release
 		pw.mu.Unlock()

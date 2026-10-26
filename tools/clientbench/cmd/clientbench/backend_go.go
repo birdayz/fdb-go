@@ -33,21 +33,13 @@ func openBackend(cfg bench.Config) (bench.LifecycleDatabase, map[string]any, err
 		opts = append(opts, client.WithAdaptiveLinger(cfg.AdaptiveLinger))
 	}
 	if cfg.CoalesceDelay != "" {
-		if after, ok := strings.CutPrefix(cfg.CoalesceDelay, "adaptive:"); ok {
-			d, err := time.ParseDuration(after)
-			if err != nil || d < 0 {
-				return nil, nil, fmt.Errorf("coalesce-delay %q: want adaptive:<duration> or min,max durations", cfg.CoalesceDelay)
-			}
-			opts = append(opts, client.WithAdaptiveLinger(d))
-		} else {
-			lo, hi, ok := strings.Cut(cfg.CoalesceDelay, ",")
-			minDelay, err1 := time.ParseDuration(lo)
-			maxDelay, err2 := time.ParseDuration(hi)
-			if !ok || err1 != nil || err2 != nil {
-				return nil, nil, fmt.Errorf("coalesce-delay %q: want min,max durations", cfg.CoalesceDelay)
-			}
-			opts = append(opts, client.WithCoalesceDelay(minDelay, maxDelay))
+		lo, hi, ok := strings.Cut(cfg.CoalesceDelay, ",")
+		minDelay, err1 := time.ParseDuration(lo)
+		maxDelay, err2 := time.ParseDuration(hi)
+		if !ok || err1 != nil || err2 != nil {
+			return nil, nil, fmt.Errorf("coalesce-delay %q: want min,max durations", cfg.CoalesceDelay)
 		}
+		opts = append(opts, client.WithCoalesceDelay(minDelay, maxDelay))
 	}
 	raw, err := client.OpenDatabase(ctx, cfg.ClusterFile, opts...)
 	if err != nil {

@@ -36,7 +36,7 @@ type Config struct {
 	RetryLimit     int64  `json:"retry_limit"`
 	Profile        string `json:"profile"`
 	// CoalesceDelay is the Go client's connection write delay, "min,max" as Go
-	// durations (or "adaptive:<duration>"); empty keeps the client default.
+	// durations; empty keeps the client default.
 	CoalesceDelay string `json:"coalesce_delay,omitempty"`
 	// AdaptiveLinger is the Go client's Nagle-style adaptive linger window; 0 keeps the default.
 	AdaptiveLinger time.Duration `json:"adaptive_linger_ns,omitempty"`

@@ -195,26 +195,32 @@ func TestSetTimeout_UndeliveredKeepsPipelinedReplyWait(t *testing.T) {
 	var sent *PendingGet
 	var origReplyCh <-chan transport.Response
 	delayedCh := make(chan transport.Response, 1)
+	timerChecked := false
 	tx.afterPendingSend = func(p *PendingGet) {
 		sent = p
 		origReplyCh = p.replyCh
 		p.replyCh = delayedCh
+		p.onReplyTimer = func(tm *time.Timer) {
+			timerChecked = true
+			select {
+			case <-tm.C:
+				t.Fatal("the reply wait ended at the elapsed deadline before the timeout was delivered")
+			case <-time.After(50 * time.Millisecond):
+			}
+			if r, ok := <-origReplyCh; ok {
+				delayedCh <- r
+			}
+		}
 	}
 	_, pending, err := tx.GetPipelined(ctx, []byte(t.Name()))
 	if err != nil || pending == nil || sent != pending {
 		t.Fatalf("GetPipelined = pending %v, sent %v, err %v; want one sent pending read", pending != nil, sent != nil, err)
 	}
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		if r, ok := <-origReplyCh; ok {
-			delayedCh <- r
-		}
-	}()
 	if _, err := pending.Resolve(); err != nil {
 		t.Fatalf("Resolve with an undelivered timeout = %v, want the reply", err)
 	}
-	if !sent.replyConsumed {
-		t.Fatal("the reply wait ended at the elapsed deadline before the timeout was delivered")
+	if !timerChecked || !sent.replyConsumed {
+		t.Fatalf("timerChecked=%t replyConsumed=%t, want (true, true)", timerChecked, sent.replyConsumed)
 	}
 }
 

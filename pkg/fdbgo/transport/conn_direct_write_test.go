@@ -232,7 +232,7 @@ func dialStalledPeer(t *testing.T, opts ...DialOption) (c *Conn, release chan st
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	// Today's writer unless an option selects design D: these tests pin its mechanics.
+	// Pin the legacy writer unless a later option selects an enqueue-only design.
 	base := []DialOption{withMonitorCadence(time.Hour, time.Hour), WithCoalesceDelay(0, 0), WithLegacyWriter()}
 	c, err = dialWith(ctx, ln.Addr().String(), nil, nil, append(base, opts...)...)
 	if err != nil {

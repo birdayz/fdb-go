@@ -174,18 +174,8 @@ func TestBothBackendsAgainstFDB(t *testing.T) {
 							t.Fatalf("go adaptive-linger failed: %v\n%s", err, text)
 						}
 						readJSON(t, filepath.Join(lingerArgs[slices.Index(lingerArgs, "--output")+1], "manifest.json"), &manifest)
-						if manifest.Config.AdaptiveLinger != 20*time.Microsecond || manifest.Backend.AdaptiveLinger != int64(20*time.Microsecond) {
+						if manifest.Config.AdaptiveLinger != 20*time.Microsecond || manifest.Backend.AdaptiveLinger != int64(20*time.Microsecond) || manifest.Backend.EffectiveMinNS != 0 || manifest.Backend.EffectiveMaxNS != 0 {
 							t.Fatalf("adaptive-linger manifest = %+v", manifest)
-						}
-						cdArgs := append(slices.Clone(args), "--coalesce-delay=adaptive:15us")
-						cdOut := filepath.Join(t.TempDir(), "cd-adaptive")
-						cdArgs[slices.Index(cdArgs, "--output")+1] = cdOut
-						if text, err := execute(cdArgs); err != nil {
-							t.Fatalf("go coalesce-delay=adaptive:15us failed: %v\n%s", err, text)
-						}
-						readJSON(t, filepath.Join(cdOut, "manifest.json"), &manifest)
-						if manifest.Backend.AdaptiveLinger != int64(15*time.Microsecond) || manifest.Backend.EffectiveMinNS != 0 || manifest.Backend.EffectiveMaxNS != 0 {
-							t.Fatalf("coalesce-delay=adaptive:15us effective connection linger = %+v", manifest.Backend)
 						}
 						fixedArgs := append(slices.Clone(args), "--coalesce-delay=10us,20us")
 						fixedOut := filepath.Join(t.TempDir(), "cd-fixed")

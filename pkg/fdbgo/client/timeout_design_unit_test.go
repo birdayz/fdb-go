@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 	"weak"
@@ -269,9 +270,11 @@ func TestDesignTimeoutTransactScopedPoolAndExpiry(t *testing.T) {
 	var issuedTx *Transaction
 	var escapedRange *PendingRange
 	rangeEntered, releaseRange := make(chan struct{}), make(chan struct{})
+	openRange := sync.OnceFunc(func() { close(releaseRange) })
+	defer openRange()
 	_, err = pipeDB.ReadTransact(context.Background(), func(tx *Transaction) (any, error) {
 		issuedTx = tx
-		tx.SetTimeout(30000)
+		tx.SetTimeout(3600000)
 		tx.readVersion = 1
 		tx.hasReadVersion = true
 		tx.beforeRangeGoroutine = func() {
@@ -284,15 +287,21 @@ func TestDesignTimeoutTransactScopedPoolAndExpiry(t *testing.T) {
 		return "ok", nil
 	})
 	if err != nil || escapedRange == nil {
-		close(releaseRange)
 		t.Fatalf("Database.ReadTransact with StartGetRange = (%v, %v)", escapedRange, err)
 	}
-	<-rangeEntered
+	select {
+	case <-rangeEntered:
+	case <-escapedRange.done:
+		_, _, earlyErr := escapedRange.Get()
+		t.Fatalf("StartGetRange completed before entering background goroutine: %v", earlyErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("StartGetRange did not enter background goroutine within 5s")
+	}
 	issuedTx.readErrMu.Lock()
 	issuedHandedOff := !issuedTx.transactScoped && issuedTx.designEntry == nil && issuedTx.designTimer != nil && issuedTx.timeoutArmed && issuedTx.readLife.users == 0 && issuedTx.readLife.issuedReads == 1
 	issuedTx.expireTimeoutLocked()
 	issuedTx.readErrMu.Unlock()
-	close(releaseRange)
+	openRange()
 	if !issuedHandedOff {
 		t.Fatal("ReadTransact exit with issuedReads > 0 (users == 0) did not hand timeout off to weak timer")
 	}
