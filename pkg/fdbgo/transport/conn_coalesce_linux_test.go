@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -154,13 +155,18 @@ func TestDNGCoalesceDelaySharesOneWriteAndEndsOnClose(t *testing.T) {
 		t.Fatalf("%d trailing bytes after %d frames", r.Len(), frames)
 	}
 
-	// Queue one more frame under the 1-hour delay, then Close: Close must return
-	// promptly without waiting out the delay or writing the frame.
+	// Queue one more frame under the 1-hour delay, wait until naLoop enters
+	// coalesceWait, then Close: Close must return promptly without writing.
+	enteredCoalesceWait := make(chan struct{})
+	var coalesceWaitOnce sync.Once
+	c.na.onCoalesceWait = func() {
+		coalesceWaitOnce.Do(func() { close(enteredCoalesceWait) })
+	}
 	beforeCloseWrites := len(counter.snapshot())
 	if err := c.SendFrameDeferred(UID{First: 99}, []byte("never")); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(5 * time.Millisecond)
+	within(t, enteredCoalesceWait, "naLoop entering coalesceWait before Close")
 	closed := make(chan error, 1)
 	go func() { closed <- c.Close() }()
 	select {

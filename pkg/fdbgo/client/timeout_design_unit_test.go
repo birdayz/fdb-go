@@ -461,4 +461,43 @@ func TestDesignTimeoutPooledReuseEarlyFireReArmsWithoutFalseTimeout(t *testing.T
 	if err := txB.readEntryError(ctx); !errors.As(err, &fdbErr) || fdbErr.Code != 1031 {
 		t.Fatalf("expired pooled timer fire = %v, want FDBError 1031", err)
 	}
+
+	// A standalone transaction resurrected by a finalizer renews its weak timer
+	// identity on Reset/SetTimeout so the re-armed timeout still delivers 1031.
+	resurrectedCh := make(chan *Transaction, 1)
+	func() {
+		txR := &Transaction{creationTime: time.Now()}
+		txR.SetTimeout(60000)
+		runtime.SetFinalizer(txR, func(tx *Transaction) {
+			resurrectedCh <- tx
+		})
+	}()
+	var resurrected *Transaction
+	deadline := time.Now().Add(5 * time.Second)
+	for resurrected == nil {
+		runtime.GC()
+		select {
+		case resurrected = <-resurrectedCh:
+		case <-time.After(time.Millisecond):
+			if time.Now().After(deadline) {
+				t.Fatal("finalizer never ran to resurrect standalone transaction")
+			}
+		}
+	}
+	defer resurrected.Cancel()
+	resurrected.Reset()
+	ctxR, releaseR := resurrected.opContext(context.Background())
+	defer releaseR()
+	resurrected.SetTimeout(1)
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		var rErr *wire.FDBError
+		if errors.As(resurrected.readEntryError(ctxR), &rErr) && rErr.Code == 1031 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("resurrected standalone transaction never received 1031 after Reset/SetTimeout")
+		}
+		time.Sleep(time.Millisecond)
+	}
 }

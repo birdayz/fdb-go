@@ -262,25 +262,33 @@ func TestDesignCancelNeverUnqueues(t *testing.T) {
 		t.Fatalf("send on a cancelled ctx = (%t, %v), want not queued", ok, err)
 	}
 
-	// Cancelling a sender while it is blocked waiting to acquire w.mu must reject
-	// admission when w.mu is granted, without appending the frame.
-	c.na.mu.Lock()
-	ctxContended, cancelContended := context.WithCancel(context.Background())
-	contendedDone := make(chan error, 1)
-	go func() {
-		ok, err := c.SendFrameContext(ctxContended, UID{First: 4}, frameBody(4))
-		if ok || !errors.Is(err, context.Canceled) {
-			contendedDone <- fmt.Errorf("contended cancelled send = (%t, %v), want (false, context.Canceled)", ok, err)
-			return
+	// Cancelling a sender after it reaches beforeLock (while w.mu is held) must
+	// reject admission on both stack (<=4KiB) and pooled (>4KiB) encoding paths.
+	for _, body := range [][]byte{frameBody(4), bytes.Repeat([]byte{'P'}, 5000)} {
+		reachedLock := make(chan struct{})
+		var reachedOnce sync.Once
+		c.na.beforeLock = func() {
+			reachedOnce.Do(func() { close(reachedLock) })
 		}
-		contendedDone <- nil
-	}()
-	time.Sleep(2 * time.Millisecond)
-	cancelContended()
-	c.na.mu.Unlock()
-	if err := within(t, contendedDone, "contended cancelled sender"); err != nil {
-		t.Fatal(err)
+		c.na.mu.Lock()
+		ctxContended, cancelContended := context.WithCancel(context.Background())
+		contendedDone := make(chan error, 1)
+		go func(b []byte) {
+			ok, err := c.SendFrameContext(ctxContended, UID{First: 4}, b)
+			if ok || !errors.Is(err, context.Canceled) {
+				contendedDone <- fmt.Errorf("contended cancelled send = (%t, %v), want (false, context.Canceled)", ok, err)
+				return
+			}
+			contendedDone <- nil
+		}(body)
+		within(t, reachedLock, "sender reached beforeLock")
+		cancelContended()
+		c.na.mu.Unlock()
+		if err := within(t, contendedDone, "contended cancelled sender"); err != nil {
+			t.Fatal(err)
+		}
 	}
+	c.na.beforeLock = nil
 
 	expectFrames(t, frames, 1, 2)
 	expectNoFrame(t, frames, "the cancelled-before-send frame")
@@ -289,7 +297,9 @@ func TestDesignCancelNeverUnqueues(t *testing.T) {
 // failingConn fails every write once armed; reads block until Close.
 type failingConn struct {
 	net.Conn
-	armed atomic.Bool
+	counting atomic.Bool
+	armed    atomic.Bool
+	writes   chan struct{}
 }
 
 var errInjectedWrite = errors.New("injected write failure")
@@ -298,7 +308,14 @@ func (f *failingConn) Write(p []byte) (int, error) {
 	if f.armed.Load() {
 		return 0, errInjectedWrite
 	}
-	return f.Conn.Write(p)
+	n, err := f.Conn.Write(p)
+	if f.counting.Load() && err == nil {
+		select {
+		case f.writes <- struct{}{}:
+		default:
+		}
+	}
+	return n, err
 }
 
 // T1: a write error fails the connection, and every pending reply on it fails
@@ -314,7 +331,7 @@ func TestDesignWriteErrorFailsAllPending(t *testing.T) {
 					s.drainUntilClosed()
 				}
 			}()
-			fc := &failingConn{Conn: s.cli}
+			fc := &failingConn{Conn: s.cli, writes: make(chan struct{}, 16)}
 			dial := func(context.Context, string, string) (net.Conn, error) { return fc, nil }
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -330,6 +347,7 @@ func TestDesignWriteErrorFailsAllPending(t *testing.T) {
 			if c.na == nil {
 				t.Fatal("positive control: no D-NG writer")
 			}
+			fc.counting.Store(true)
 			var replies []<-chan Response
 			for i := 0; i < 3; i++ {
 				token, ch, h := c.PrepareReply()
@@ -341,7 +359,7 @@ func TestDesignWriteErrorFailsAllPending(t *testing.T) {
 					t.Fatalf("send %d = (%t, %v), want queued", i, ok, err)
 				}
 				if i < 2 {
-					time.Sleep(5 * time.Millisecond) // let the healthy sends go out first
+					within(t, fc.writes, "healthy socket write")
 				}
 			}
 			for i, ch := range replies {
@@ -821,16 +839,57 @@ func TestDesignWireLogPanicDoesNotPoisonWriter(t *testing.T) {
 		}
 	}
 
-	wantOrder := []uint64{10, 11, 12, 20, 21, 30, 31}
-	for _, want := range wantOrder {
+	// Cancelling a sender while it is blocked in the unlocked LogSend callback must
+	// reject admission on re-lock without appending the frame, for both sizes.
+	for _, tc := range []struct {
+		tok  uint64
+		body []byte
+	}{
+		{40, []byte("cancel-small")},
+		{41, bytes.Repeat([]byte{'C'}, 5000)},
+	} {
+		entered, release := make(chan struct{}), make(chan struct{})
+		var releaseOnce sync.Once
+		openGate := func() { releaseOnce.Do(func() { close(release) }) }
+		defer openGate()
+		pw.mu.Lock()
+		pw.enteredGate, pw.releaseGate = entered, release
+		pw.mu.Unlock()
+		pw.gateNext.Store(true)
+
+		ctxCancel, cancelSend := context.WithCancel(ctx)
+		doneCancel := make(chan error, 1)
+		go func() {
+			ok, err := c.SendFrameContext(ctxCancel, UID{First: tc.tok}, tc.body)
+			if ok || !errors.Is(err, context.Canceled) {
+				doneCancel <- fmt.Errorf("cancelled-in-LogSend (%d) = (%t, %v), want (false, context.Canceled)", tc.tok, ok, err)
+				return
+			}
+			doneCancel <- nil
+		}()
+		within(t, entered, "sender entered LogSend before cancellation")
+		cancelSend()
+		openGate()
+		if err := within(t, doneCancel, "cancelled-in-LogSend sender"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if ok, err := c.SendFrameContext(ctx, UID{First: 50}, []byte("after-cancel")); !ok || err != nil {
+		t.Fatalf("post-cancel SendFrameContext = (%t, %v)", ok, err)
+	}
+
+	wantSocketOrder := []uint64{10, 11, 12, 20, 21, 30, 31, 50}
+	for _, want := range wantSocketOrder {
 		if got := within(t, frames, "ordered frame"); got != want {
 			t.Fatalf("peer socket frame token = %d, want %d", got, want)
 		}
 	}
+	wantLoggedOrder := []uint64{10, 11, 12, 20, 21, 30, 31, 40, 41, 50}
 	pw.mu.Lock()
 	gotLogged := append([]uint64(nil), pw.logged...)
 	pw.mu.Unlock()
-	if fmt.Sprint(gotLogged) != fmt.Sprint(wantOrder) {
-		t.Fatalf("wire-log token order = %v, want %v", gotLogged, wantOrder)
+	if fmt.Sprint(gotLogged) != fmt.Sprint(wantLoggedOrder) {
+		t.Fatalf("wire-log token order = %v, want %v", gotLogged, wantLoggedOrder)
 	}
 }

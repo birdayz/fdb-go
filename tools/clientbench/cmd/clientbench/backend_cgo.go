@@ -3,209 +3,15 @@
 package main
 
 /*
-#cgo LDFLAGS: -lfdb_c -lpthread
+#cgo LDFLAGS: -lfdb_c
 #define FDB_API_VERSION 730
 #include <foundationdb/fdb_c.h>
-#include <pthread.h>
-#include <stdatomic.h>
-#include <stdint.h>
-#include <stdlib.h>
-#include <unistd.h>
-
-typedef struct {
-	FDBTransaction* gate_tr;
-	FDBTransaction* pre_tr;
-	FDBTransaction* bar_tr;
-	FDBFuture* gate_f;
-	FDBFuture* pre_f;
-	FDBFuture* bar_f;
-	pthread_t caller_tid;
-	atomic_int ran_inline;
-	atomic_int parked;
-	atomic_int release;
-	atomic_int seq;
-	atomic_int pre_seq;
-	atomic_int bar_seq;
-	atomic_int bar_saw_pre;
-	atomic_int pre_err;
-	atomic_int gate_cb_done;
-	atomic_int pre_cb_done;
-	atomic_int bar_cb_done;
-} barrier_probe_t;
-
-static void on_pre_ready(FDBFuture* f, void* param) {
-	barrier_probe_t* p = (barrier_probe_t*)param;
-	int s = atomic_fetch_add(&p->seq, 1) + 1;
-	atomic_store(&p->pre_seq, s);
-	atomic_store(&p->pre_cb_done, 1);
-}
-
-static void on_bar_ready(FDBFuture* f, void* param) {
-	barrier_probe_t* p = (barrier_probe_t*)param;
-	int s = atomic_fetch_add(&p->seq, 1) + 1;
-	atomic_store(&p->bar_seq, s);
-	atomic_store(&p->bar_saw_pre, atomic_load(&p->pre_seq));
-	atomic_store(&p->bar_cb_done, 1);
-}
-
-static void on_gate_ready(FDBFuture* f, void* param) {
-	barrier_probe_t* p = (barrier_probe_t*)param;
-	if (pthread_equal(pthread_self(), p->caller_tid)) {
-		atomic_store(&p->ran_inline, 1);
-		atomic_store(&p->gate_cb_done, 1);
-		return;
-	}
-	p->pre_f = fdb_transaction_get_approximate_size(p->pre_tr);
-	fdb_error_t err = fdb_future_set_callback(p->pre_f, on_pre_ready, p);
-	if (err != 0) {
-		atomic_store(&p->pre_err, (int)err);
-		atomic_store(&p->pre_cb_done, 1);
-	}
-	atomic_store(&p->parked, 1);
-	while (atomic_load(&p->release) == 0) {
-		usleep(100);
-	}
-	atomic_store(&p->gate_cb_done, 1);
-}
-
-static void cleanup_probe_attempt(barrier_probe_t* p) {
-	atomic_store(&p->release, 1);
-	if (p->gate_f != NULL) {
-		while (atomic_load(&p->gate_cb_done) == 0) {
-			usleep(100);
-		}
-		fdb_future_block_until_ready(p->gate_f);
-		fdb_future_destroy(p->gate_f);
-		p->gate_f = NULL;
-	}
-	if (p->pre_f != NULL) {
-		while (atomic_load(&p->pre_cb_done) == 0) {
-			usleep(100);
-		}
-		fdb_future_block_until_ready(p->pre_f);
-		fdb_future_destroy(p->pre_f);
-		p->pre_f = NULL;
-	}
-	if (p->bar_f != NULL) {
-		while (atomic_load(&p->bar_cb_done) == 0) {
-			usleep(100);
-		}
-		fdb_future_block_until_ready(p->bar_f);
-		fdb_future_destroy(p->bar_f);
-		p->bar_f = NULL;
-	}
-	if (p->bar_tr != NULL) {
-		fdb_transaction_destroy(p->bar_tr);
-		p->bar_tr = NULL;
-	}
-	if (p->pre_tr != NULL) {
-		fdb_transaction_destroy(p->pre_tr);
-		p->pre_tr = NULL;
-	}
-	if (p->gate_tr != NULL) {
-		fdb_transaction_destroy(p->gate_tr);
-		p->gate_tr = NULL;
-	}
-}
-
-static fdb_error_t start_barrier_probe(FDBDatabase* db, int64_t initial_delay_ms, barrier_probe_t** out_p) {
-	barrier_probe_t* p = (barrier_probe_t*)calloc(1, sizeof(barrier_probe_t));
-	if (p == NULL) return 4100;
-	int64_t delay_ms = initial_delay_ms;
-	for (int attempt = 0; attempt < 8; attempt++) {
-		atomic_init(&p->ran_inline, 0);
-		atomic_init(&p->parked, 0);
-		atomic_init(&p->release, 0);
-		atomic_init(&p->seq, 0);
-		atomic_init(&p->pre_seq, 0);
-		atomic_init(&p->bar_seq, 0);
-		atomic_init(&p->bar_saw_pre, 0);
-		atomic_init(&p->pre_err, 0);
-		atomic_init(&p->gate_cb_done, 0);
-		atomic_init(&p->pre_cb_done, 0);
-		atomic_init(&p->bar_cb_done, 0);
-		p->caller_tid = pthread_self();
-
-		fdb_error_t err = fdb_database_create_transaction(db, &p->gate_tr);
-		if (err != 0) {
-			free(p);
-			return err;
-		}
-		err = fdb_database_create_transaction(db, &p->pre_tr);
-		if (err != 0) {
-			cleanup_probe_attempt(p);
-			free(p);
-			return err;
-		}
-		err = fdb_database_create_transaction(db, &p->bar_tr);
-		if (err != 0) {
-			cleanup_probe_attempt(p);
-			free(p);
-			return err;
-		}
-		if (delay_ms > 0) {
-			fdb_transaction_set_option(p->gate_tr, FDB_TR_OPTION_MAX_RETRY_DELAY, (const uint8_t*)&delay_ms, sizeof(delay_ms));
-			p->gate_f = fdb_transaction_on_error(p->gate_tr, 1020);
-		} else {
-			p->gate_f = fdb_transaction_get_approximate_size(p->gate_tr);
-			fdb_future_block_until_ready(p->gate_f);
-		}
-		err = fdb_future_set_callback(p->gate_f, on_gate_ready, p);
-		if (err != 0) {
-			atomic_store(&p->gate_cb_done, 1);
-			cleanup_probe_attempt(p);
-			free(p);
-			return err;
-		}
-		while (atomic_load(&p->parked) == 0 && atomic_load(&p->ran_inline) == 0) {
-			usleep(100);
-		}
-		if (atomic_load(&p->parked) != 0) {
-			*out_p = p;
-			return 0;
-		}
-		cleanup_probe_attempt(p);
-		delay_ms = (delay_ms <= 0) ? 5 : delay_ms * 2;
-	}
-	free(p);
-	return 4100;
-}
-
-static fdb_error_t queue_barrier_future(barrier_probe_t* p) {
-	p->bar_f = fdb_transaction_get_approximate_size(p->bar_tr);
-	fdb_error_t err = fdb_future_set_callback(p->bar_f, on_bar_ready, p);
-	if (err != 0) {
-		atomic_store(&p->bar_cb_done, 1);
-	}
-	return err;
-}
-
-static int probe_pre_done(barrier_probe_t* p) {
-	return atomic_load(&p->pre_seq) != 0;
-}
-
-static void release_barrier_probe(barrier_probe_t* p) {
-	atomic_store(&p->release, 1);
-}
-
-static int finish_barrier_probe(barrier_probe_t* p) {
-	cleanup_probe_attempt(p);
-	int ordered = (atomic_load(&p->pre_err) == 0 &&
-		atomic_load(&p->pre_seq) == 1 &&
-		atomic_load(&p->bar_seq) == 2 &&
-		atomic_load(&p->bar_saw_pre) == 1);
-	free(p);
-	return ordered;
-}
 */
 import "C"
 
 import (
 	"errors"
-	"fmt"
 	"sync"
-	"time"
-	"unsafe"
 
 	"fdb.dev/tools/clientbench/internal/bench"
 	"github.com/apple/foundationdb/bindings/go/src/fdb"
@@ -214,7 +20,6 @@ import (
 type (
 	backend struct {
 		db        fdb.Database
-		cDB       *C.FDBDatabase
 		closeOnce sync.Once
 	}
 	transaction struct {
@@ -242,54 +47,10 @@ func openBackend(cfg bench.Config) (bench.LifecycleDatabase, map[string]any, err
 		db.Close()
 		return nil, nil, err
 	}
-	var cCluster *C.char
-	if cfg.ClusterFile != "" {
-		cCluster = C.CString(cfg.ClusterFile)
-		defer C.free(unsafe.Pointer(cCluster))
-	}
-	var cDB *C.FDBDatabase
-	if cerr := C.fdb_create_database(cCluster, &cDB); cerr != 0 {
-		db.Close()
-		return nil, nil, fmt.Errorf("fdb_create_database: %d", int(cerr))
-	}
-	return &backend{db: db, cDB: cDB}, map[string]any{"backend": "cgo", "api_version": 730, "native_library": true, "native_client_version": C.GoString(C.fdb_get_client_version())}, nil
+	return &backend{db: db}, map[string]any{"backend": "cgo", "api_version": 730, "native_library": true, "native_client_version": C.GoString(C.fdb_get_client_version())}, nil
 }
 
-func (b *backend) Close() {
-	b.closeOnce.Do(func() {
-		if b.cDB != nil {
-			C.fdb_database_destroy(b.cDB)
-			b.cDB = nil
-		}
-		b.db.Close()
-	})
-}
-
-func runWithBarrierProbe(cDB *C.FDBDatabase, fn func() error) error {
-	var probe *C.barrier_probe_t
-	if cerr := C.start_barrier_probe(cDB, 0, &probe); cerr != 0 {
-		return fmt.Errorf("start_barrier_probe: %d", int(cerr))
-	}
-	if cerr := C.queue_barrier_future(probe); cerr != 0 {
-		C.finish_barrier_probe(probe)
-		return fmt.Errorf("queue_barrier_future: %d", int(cerr))
-	}
-	go func(p *C.barrier_probe_t) {
-		time.Sleep(5 * time.Millisecond)
-		C.release_barrier_probe(p)
-	}(probe)
-	err := fn()
-	// Sample predecessor completion immediately when fn returns, before cleanup waits.
-	preDone := C.probe_pre_done(probe)
-	ordered := C.finish_barrier_probe(probe)
-	if err != nil {
-		return err
-	}
-	if preDone == 0 || ordered == 0 {
-		return errors.New("native barrier returned before queued onMainThread predecessor completed")
-	}
-	return nil
-}
+func (b *backend) Close() { b.closeOnce.Do(b.db.Close) }
 
 func (b *backend) Barrier() error {
 	// This non-I/O future follows finalizer-posted destructors on the native FIFO.

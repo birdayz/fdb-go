@@ -17,6 +17,7 @@ go_test(
     srcs = [
         "backend_cgo.go",
         "backend_cgo_test.go",
+        "barrier_probe_cgo.go",
     ],
     cgo = True,
     clinkopts = ["-lfdb_c"],

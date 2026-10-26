@@ -204,11 +204,18 @@ func TestSetTimeout_UndeliveredKeepsPipelinedReplyWait(t *testing.T) {
 			timerChecked = true
 			select {
 			case <-tm.C:
-				t.Fatal("the reply wait ended at the elapsed deadline before the timeout was delivered")
+				t.Error("the reply wait ended at the elapsed deadline before the timeout was delivered")
 			case <-time.After(50 * time.Millisecond):
 			}
-			if r, ok := <-origReplyCh; ok {
-				delayedCh <- r
+			select {
+			case r, ok := <-origReplyCh:
+				if ok {
+					delayedCh <- r
+				}
+			case <-ctx.Done():
+				t.Errorf("timed out waiting for server reply: %v", ctx.Err())
+			case <-time.After(10 * time.Second):
+				t.Error("server reply did not arrive within 10s")
 			}
 		}
 	}

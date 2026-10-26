@@ -72,6 +72,8 @@ type naWriter struct {
 	adaptive        time.Duration
 	now             func() time.Time // optional clock for tests; nil uses time.Now
 	onAdaptiveYield func()           // optional observer for tests
+	onCoalesceWait  func()           // optional observer for tests
+	beforeLock      func()           // optional test seam before acquiring w.mu in naSend
 	sig             chan struct{}
 }
 
@@ -210,6 +212,9 @@ func (c *Conn) naSend(ctx context.Context, token UID, body []byte) error {
 		n := frameSize(body, c.useTLS)
 		frame := stackBuf[:n]
 		encodeFrameInto(frame, token, body, c.useTLS)
+		if w.beforeLock != nil {
+			w.beforeLock()
+		}
 		w.mu.Lock()
 		if err := ctx.Err(); err != nil {
 			w.mu.Unlock()
@@ -257,6 +262,9 @@ func (c *Conn) naSend(ctx context.Context, token UID, body []byte) error {
 		return nil
 	}
 	bufp, frame := encodeFrame(token, body, c.useTLS)
+	if w.beforeLock != nil {
+		w.beforeLock()
+	}
 	w.mu.Lock()
 	if err := ctx.Err(); err != nil {
 		w.mu.Unlock()
@@ -372,6 +380,9 @@ func (c *Conn) naLoop() {
 			return
 		}
 		if w.delay {
+			if w.onCoalesceWait != nil {
+				w.onCoalesceWait()
+			}
 			c.coalesceWait(time.Since(c.lastWrite))
 			if c.ctx.Err() != nil {
 				return

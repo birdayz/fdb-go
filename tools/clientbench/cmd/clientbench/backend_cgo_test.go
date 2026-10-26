@@ -10,9 +10,8 @@ import (
 	"fdb.dev/tools/clientbench/internal/bench"
 )
 
-// TestNativeBarrierFIFOOrdering verifies that backend.Barrier() waits for a
-// predecessor queued on the native onMainThread FIFO before returning, whereas a
-// synchronous GetCommittedVersion barrier returns before the predecessor completes.
+// TestNativeBarrierFIFOOrdering proves backend.Barrier() blocks behind a parked
+// native FIFO predecessor, whereas synchronous GetCommittedVersion is rejected.
 func TestNativeBarrierFIFOOrdering(t *testing.T) {
 	clusterFile := filepath.Join(t.TempDir(), "fdb.cluster")
 	if err := os.WriteFile(clusterFile, []byte("test:test@127.0.0.1:4500\n"), 0o600); err != nil {
@@ -29,9 +28,15 @@ func TestNativeBarrierFIFOOrdering(t *testing.T) {
 	defer db.Close()
 	b := db.(*backend)
 
-	// Negative control: synchronous GetCommittedVersion returns before the parked
-	// onMainThread predecessor runs, so runWithBarrierProbe must reject it.
-	err = runWithBarrierProbe(b.cDB, func() error {
+	probeDB, err := openNativeProbeDB(clusterFile)
+	if err != nil {
+		t.Fatalf("openNativeProbeDB: %v", err)
+	}
+	defer probeDB.Close()
+
+	// Negative control: synchronous GetCommittedVersion returns while the native
+	// network thread is still parked before the predecessor, so the probe rejects it.
+	err = probeDB.verifyBarrierWaitsForPredecessor(func() error {
 		tx, err := b.db.CreateTransaction()
 		if err != nil {
 			return err
@@ -41,12 +46,12 @@ func TestNativeBarrierFIFOOrdering(t *testing.T) {
 		return err
 	})
 	if err == nil {
-		t.Fatal("runWithBarrierProbe accepted synchronous GetCommittedVersion that bypassed the native FIFO")
+		t.Fatal("verifyBarrierWaitsForPredecessor accepted synchronous GetCommittedVersion that bypassed the native FIFO")
 	}
 
-	// Positive control: the production b.Barrier() must wait until the queued
-	// onMainThread predecessor has completed before returning.
-	if err := runWithBarrierProbe(b.cDB, b.Barrier); err != nil {
-		t.Fatalf("runWithBarrierProbe(b.Barrier) = %v, want nil", err)
+	// Positive control: production b.Barrier() remains blocked while the native
+	// network thread is parked and returns only after the predecessor completes.
+	if err := probeDB.verifyBarrierWaitsForPredecessor(b.Barrier); err != nil {
+		t.Fatalf("verifyBarrierWaitsForPredecessor(b.Barrier) = %v, want nil", err)
 	}
 }

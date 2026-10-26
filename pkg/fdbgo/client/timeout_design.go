@@ -113,8 +113,12 @@ func (tx *Transaction) armDesignTimerLocked(delay time.Duration) {
 
 func (tx *Transaction) armDesignWeakTimerLocked(delay time.Duration) {
 	tx.designDeadline = monoNow() + int64(delay)
-	if tx.designTimer == nil {
+	if tx.designTimer == nil || tx.designWeak.Value() == nil {
+		if tx.designTimer != nil {
+			tx.designTimer.Stop()
+		}
 		w := weak.Make(tx)
+		tx.designWeak = w
 		tx.designTimer = time.AfterFunc(delay, func() {
 			if t := w.Value(); t != nil {
 				t.fireDesignTimeout()

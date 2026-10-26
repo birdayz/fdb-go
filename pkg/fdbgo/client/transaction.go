@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"weak"
 
 	oteltrace "go.opentelemetry.io/otel/trace"
 
@@ -475,8 +476,8 @@ type Transaction struct {
 	// together (a mutex, not the atomic deferred-error contract above).
 	resetMu   sync.Mutex
 	readReady chan struct{}
-	// Lock order: conflictMu -> readErrMu -> timeoutQueue.mu, never the reverse.
-	// timeoutQueue.mu is a leaf; delivery runs without it.
+	// Lock order: conflictMu -> readErrMu -> {timeoutQueue.mu, designTimerEntry.mu},
+	// never the reverse. Both timer locks are leaves; delivery runs without them.
 	readErrMu sync.Mutex
 	// TIMEOUT is armed for the current read generation, whether or not its
 	// incarnation exists (all under readErrMu). timeoutNode is this object's
@@ -492,9 +493,10 @@ type Transaction struct {
 	inlineVs            versionstampCompletion
 	inlineVsUsed        bool
 	spanNeedsRegen      atomic.Bool
-	// designTimer/designEntry/designArm/designDeadline: design D4's timer per transaction (timeout_design.go).
+	// designTimer/designEntry/designWeak/designArm/designDeadline: design D4's timer per transaction (timeout_design.go).
 	designTimer    *time.Timer
 	designEntry    *designTimerEntry
+	designWeak     weak.Pointer[Transaction]
 	designArm      uint64
 	designDeadline int64
 	readLife       *readIncarnation
