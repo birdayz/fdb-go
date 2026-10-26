@@ -31,7 +31,11 @@ var _ = Describe("RecordCounting", func() {
 			Expect(err).NotTo(HaveOccurred())
 			stamp, err := version.ToVersionstamp()
 			Expect(err).NotTo(HaveOccurred())
-			ks := specSubspace()
+			ks := specSubspace().Sub(int64(format))
+			expectedFormat := format
+			if expectedFormat == 0 {
+				expectedFormat = formatVersionDefault
+			}
 			run := func(fn func(*FDBRecordStore)) {
 				GinkgoHelper()
 				_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -41,6 +45,7 @@ var _ = Describe("RecordCounting", func() {
 					}
 					store, err := b.CreateOrOpen()
 					Expect(err).NotTo(HaveOccurred())
+					Expect(store.GetFormatVersion()).To(Equal(expectedFormat), "requested format %d", format)
 					fn(store)
 					return nil, nil
 				})
