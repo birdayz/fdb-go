@@ -147,6 +147,9 @@ Each is described in full under Compatibility or Changed below.
   - Legacy GODEBUG values removed in Go 1.27 abort program startup if set.
 
 ### Added
+- `FDBRecordStore.GetPrimaryKeyBoundaries`, Java's `getPrimaryKeyBoundaries`: the primary keys at
+  the records' shard boundaries. `IndexingRangeSet.FirstMissingRangeInBytes`, Java's
+  `firstMissingRangeAsync(begin, end)` (RFC-279).
 - Record Layer explicit-version saves: `SaveRecordWithVersion`, `OverrideLockSaveRecordWithVersion`
   and the typed store's `SaveRecordWithVersion`, with Java's `VersionstampSaveBehavior` (RFC-275).
 - The pure-Go client reads `FDB_TLS_VERIFY_PEERS` (libfdb_c's verify-peers grammar,
@@ -196,6 +199,13 @@ Each is described in full under Compatibility or Changed below.
   `DIVERGENCES.md` "Driver transactions" has the comparison with Java. `functions.ApplyMathOp`,
   `ApplyBitOp`, `IsTruthy`, `LiteralMatchesPKKind`, `ToIntegerArg`, `ToFloat64` and
   `Add/Sub/MulInt64Checked` and `values.JavaFloatToString` are removed.
+- Online indexer (RFC-279):
+  - A mutual build whose fragment walk finds nothing to build in FULL and then in ANY fails
+    with Java's `IndexingValidationError` "Mutual indexing failure - third iteration". A walk
+    finds work whenever a range is missing.
+  - A mutual build reads the shard map in a transaction, and an error reading it fails that
+    transaction, and the build when it is not retried. It used to fall back to one fragment.
+    A database without a shard map (`BackendCapabilityError`) still builds one fragment.
 - Development builds use Bazel 9.3.1, Bazelisk 1.30.0, and updated stable BCR build rules.
 - Require Go 1.27 (minimum toolchain Go 1.27.3).
 - Go 1.27.3 includes the GO-2026-6809 `crypto/x509` fix used by pure-Go client TLS.
@@ -451,6 +461,16 @@ Each is described in full under Compatibility or Changed below.
   error (42703 for an undefined column) instead of 42702. With parameters the bound values decide
   (`amount = ?, amount = ?`: 42702 for equal values, two keys otherwise; a cached plan serves only
   the values it was planned with); Java's answer there is unmeasured (RFC-272).
+- Online indexer (RFC-279):
+  - A retry with a lessened limit waits the runner's exponential delay first, timed as
+    `EventRetryDelay`, as Java's `buildCommitRetryAsync` does.
+  - Mutual build fragments end at primary keys, as Java's do. The builder reads the shard map
+    over the indexed record types' records in its first transaction, and maps each boundary to
+    the first record at or after it. A shard boundary inside a split record no longer fails the
+    build.
+  - A mutual chunk commits once its transaction passes the time or write limit.
+  - The mutual FULL phase builds a claimed fragment to its end before it moves on, so
+    concurrent builders keep to their own fragments.
 - Built-in TEXT tokenization, casing/name lookup and Go-only collated keys use frozen Unicode-15 data, so compiler upgrades preserve existing terms, positions and keys; pre-existing Java differences remain explicit in `docs/compatibility.md` (RFC-265).
 - Ordinary, covering and fetch query index scans over one physical range pass Skip to the index cursor, as Java's plans do: skipped entries no longer count against scan-record or byte limits, and their records are not loaded. Multi-range and residual key-filter scans, and the mapped reads of remote-fetch plans, still skip once above the combined cursor.
 - Range-read shard lookups ask a commit proxy once for the shards a read needs, as libfdb_c does, instead of filling the cache for the whole range first; a reverse read over more uncached shards than one lookup returns no longer repeats the same location request until its deadline, and `GetLocations` with a limit of 0 returns every shard.

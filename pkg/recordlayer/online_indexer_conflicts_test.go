@@ -1,15 +1,104 @@
 package recordlayer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )
+
+var _ = Describe("Primary-key boundary snapshot reads", func() {
+	for _, serializableControl := range []bool{false, true} {
+		name := "maps split-record boundaries at the pinned read version without a read conflict"
+		if serializableControl {
+			name = "conflicts on the concurrent insert when a serializable lookup is added"
+		}
+		It(name, func() {
+			ctx := context.Background()
+			root := specSubspace()
+			md, err := baseBuilder().SetSplitLongRecords(true).Build()
+			Expect(err).NotTo(HaveOccurred())
+			sb := NewStoreBuilder().SetMetaDataProvider(md).SetSubspace(root)
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := sb.copyBuilder().SetContext(rtx).Create()
+				if err != nil {
+					return nil, err
+				}
+				for _, id := range []int64{10, 50, 90} {
+					order := &demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(int32(id))}
+					if id == 50 {
+						order.VectorData = make([]byte, 250_000)
+					}
+					if _, err := store.SaveRecord(order); err != nil {
+						return nil, err
+					}
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			backend := &shardMapBackend{BackendDatabase: sharedDB.db}
+			db := NewFDBDatabaseWithBackend(backend)
+			Expect(db.SetMaxAttempts(1)).To(Succeed())
+			var readVersion int64
+			_, err = db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := sb.copyBuilder().SetContext(rtx).Open()
+				if err != nil {
+					return nil, err
+				}
+				records := store.recordsSubspace
+				boundary := records.Pack(tuple.Tuple{int64(5)})
+				backend.shards = []fdb.Key{
+					boundary,
+					records.Pack(tuple.Tuple{int64(50), int64(2)}),
+					records.Pack(tuple.Tuple{int64(50), int64(3)}),
+				}
+				readVersion, err = rtx.GetReadVersion()
+				Expect(err).NotTo(HaveOccurred())
+				splitChunk, err := rtx.Transaction().Snapshot().Get(backend.shards[1]).Get()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(splitChunk).NotTo(BeEmpty(), "the injected boundary must fall inside a real split record")
+				if serializableControl {
+					rows, err := rtx.Transaction().GetRange(fdb.KeyRange{
+						Begin: boundary, End: records.Pack(tuple.Tuple{int64(50)}),
+					}, fdb.RangeOptions{Limit: 1}).GetSliceWithError()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(rows).To(HaveLen(1))
+					Expect(bytes.Equal(rows[0].Key, records.Pack(tuple.Tuple{int64(10), int64(0)}))).To(BeTrue())
+				}
+				// A later commit lies inside the lookup's gap, but must not change its pinned view.
+				_, err = sharedDB.Run(ctx, func(other *FDBRecordContext) (any, error) {
+					store, err := sb.copyBuilder().SetContext(other).Open()
+					if err != nil {
+						return nil, err
+					}
+					return store.SaveRecord(&demopb.Order{OrderId: proto.Int64(7), Price: proto.Int32(7)})
+				})
+				Expect(err).NotTo(HaveOccurred())
+				got, err := store.GetPrimaryKeyBoundaries(TupleRangeAll)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(got).To(Equal([]tuple.Tuple{{int64(10)}, {int64(50)}}))
+				Expect(backend.readVersions).To(Equal([]int64{readVersion}))
+				// A write makes read conflicts observable at commit, unlike a read-only caller.
+				rtx.Transaction().Set(root.Pack(tuple.Tuple{"boundary-marker"}), []byte{1})
+				return nil, nil
+			})
+			if serializableControl {
+				var conflict fdb.Error
+				Expect(errors.As(err, &conflict)).To(BeTrue(), "%v", err)
+				Expect(conflict.Code).To(Equal(1020))
+			} else {
+				Expect(err).NotTo(HaveOccurred())
+			}
+		})
+	}
+})
 
 var _ = Describe("Online build read conflicts match Java", func() {
 	ctx := context.Background()
@@ -69,15 +158,14 @@ var _ = Describe("Online build read conflicts match Java", func() {
 				return r.recordsProcessed, err
 			}
 			if mutual {
-				m, err := newMutualIndexBuilder(oi)
-				Expect(err).NotTo(HaveOccurred())
+				m := newMutualIndexBuilder(oi)
 				build = func(rtx *FDBRecordContext) (int64, error) {
 					store, err := oi.openStore(rtx)
 					if err != nil {
 						return 0, err
 					}
-					rs := NewIndexingRangeSet(store.subspace, oi.primaryIndex())
-					return m.buildFragmentRange(ctx, store, rs, &RangeSetRange{Begin: rangeSetFirstKey, End: rangeSetFinalKey})
+					n, _, err := m.buildFragmentRange(ctx, store, rtx.Env().Now(), &RangeSetRange{Begin: rangeSetFirstKey, End: rangeSetFinalKey})
+					return n, err
 				}
 			}
 

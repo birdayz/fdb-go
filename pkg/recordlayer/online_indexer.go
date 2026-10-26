@@ -412,7 +412,7 @@ type OnlineIndexer struct {
 	indexerID uuid.UUID
 	// lastOutcome is what the last completed BuildIndex did; see LastBuildOutcome.
 	lastOutcome      IndexBuildOutcome
-	mutualBoundaries [][]byte // pre-set fragment boundaries (nil = single fragment)
+	mutualBoundaries [][]byte // pre-set fragment boundaries (nil: read from the shard map)
 	leaseLengthMs    int64    // heartbeat lease duration in ms (default defaultLeaseLengthMs)
 	// markReadableEnabled controls whether BuildIndex marks the index readable (and
 	// thus erases the per-build bookkeeping) at the end. Defaults to true. Matches
@@ -880,7 +880,8 @@ func (b *OnlineIndexerBuilder) SetMutualIndexing() *OnlineIndexerBuilder {
 
 // SetMutualIndexingBoundaries enables mutual mode with pre-set fragment boundaries.
 // Each boundary is a packed tuple representing a primary key at which to split
-// the key space. If nil/empty, the entire key space is treated as a single fragment.
+// the key space. If nil/empty, the boundaries are the primary keys at the shard
+// boundaries of the indexed records (GetPrimaryKeyBoundaries).
 // Matches Java's OnlineIndexer.Builder.setMutualIndexingBoundaries().
 func (b *OnlineIndexerBuilder) SetMutualIndexingBoundaries(boundaries [][]byte) *OnlineIndexerBuilder {
 	b.indexer.mutual = true
@@ -1519,10 +1520,7 @@ func (oi *OnlineIndexer) buildIndexAttempt(ctx context.Context) (int64, IndexBui
 
 // buildIndexMutual runs the mutual (concurrent) build path.
 func (oi *OnlineIndexer) buildIndexMutual(ctx context.Context, startTime time.Time) (int64, error) {
-	mutual, err := newMutualIndexBuilder(oi)
-	if err != nil {
-		return 0, fmt.Errorf("init mutual builder: %w", err)
-	}
+	mutual := newMutualIndexBuilder(oi)
 
 	// Mutual builds preset the out-of-range gaps as already-built (Java
 	// IndexingMutuallyByRecords), before the fragmented build loop.
@@ -1607,6 +1605,7 @@ func (oi *OnlineIndexer) buildRangeWithRetries(ctx context.Context, buildFn func
 		return buildFn(ctx)
 	}
 
+	var delay *exponentialDelay // made at the first retry: it draws from the env
 	for attempt := 0; ; attempt++ {
 		// Apply adaptive limit from throttle
 		oi.limit = oi.throttle.getLimit()
@@ -1628,7 +1627,13 @@ func (oi *OnlineIndexer) buildRangeWithRetries(ctx context.Context, buildFn func
 		if oi.maxRetries <= 0 || !oi.throttle.mayRetryAfterHandlingException(err, attempt, int(n)) {
 			return n, hasMore, err
 		}
-		// Throttle has decreased the limit — retry
+		// The limit is decreased; Java's buildCommitRetryAsync also waits before the retry.
+		if delay == nil {
+			delay = newExponentialDelay(oi.db.InitialDelay(), oi.db.MaxDelay(), oi.db.Env())
+		}
+		if werr := waitRetryDelay(ctx, oi.db.Env(), oi.db.Timer(), delay.delay(), err); werr != nil {
+			return n, hasMore, werr
+		}
 	}
 }
 

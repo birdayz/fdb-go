@@ -361,10 +361,7 @@ func TestMutualFragmentOrderIsReproducible(t *testing.T) {
 			mutualBoundaries: boundaries,
 			subspace:         subspace.FromBytes(tuple.Tuple{"fragseam"}.Pack()),
 		}
-		m, err := newMutualIndexBuilder(oi)
-		if err != nil {
-			t.Fatalf("newMutualIndexBuilder: %v", err)
-		}
+		m := newMutualIndexBuilder(oi)
 		return m.fragmentFirst, m.fragmentStep, m.fragmentCount
 	}
 

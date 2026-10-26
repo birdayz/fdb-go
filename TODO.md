@@ -1989,6 +1989,10 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   Go returns an error, and nil for ELSE_SKIP (`time_window_leaderboard_maintainer.go`); the RANK
   maintainer already answers nil and `("*")`.
 
+- [ ] Online indexer: one scan-and-mark loop. `buildRangeInTransaction`, the mutual
+  `buildFragmentRange` and `buildRangeByIndex` each scan with the limits and mark the built
+  range; a fix to one has to be copied to the others (RFC-279 copied the transaction-limit check).
+
 - [ ] `keyspace`: resolved paths with logical names. A resolver directory's `Path` holds only the
   resolved `int64`, and `PathFromTuple` makes no reverse lookup. Java's `ResolvedKeySpacePath`
   carries both (`DirectoryLayerDirectory.pathFromKey`). See DIVERGENCES.md, "Key-space paths hold
@@ -2245,17 +2249,20 @@ multi-page auto-commit SELECT, which stays tracked only.
 - [x] **Medium ✔ SUM index cannot remove `math.MinInt64`.** `pkg/recordlayer/atomic_mutation.go:285`
   returns an error; Java adds `-lval`, which wraps to MinInt64 and is correct mod 2^64. The
   test that introduced the guard (`byte_limit_bug_test.go:89-111`) only asserts Go arithmetic. Fixed in #995 (RFC-270).
-- [ ] **Medium:** mutual-indexing fragment edges are raw shard keys
+- [x] **Medium:** mutual-indexing fragment edges are raw shard keys
   (`pkg/recordlayer/indexing_mutual.go:105-118`), not Java's `getPrimaryKeyBoundaries` (first
   record key at or after the boundary, split suffix dropped); a non-tuple boundary fails the
-  `Unpack` at `:368` or `:377`.
-- [ ] **Medium:** the mutual build loop (`buildFragmentRange`, `pkg/recordlayer/indexing_mutual.go:359-425`)
-  never calls `transactionReachedLimits`; `buildRange` does (`online_indexer.go:2106`).
-- [ ] **Medium:** the mutual FULL phase builds one chunk and stays on the fragment
+  `Unpack` at `:368` or `:377`. Fixed in #1009 (RFC-279).
+- [x] **Medium:** the mutual build loop (`buildFragmentRange`, `pkg/recordlayer/indexing_mutual.go:359-425`)
+  never calls `transactionReachedLimits`; `buildRange` does (`online_indexer.go:2106`). Fixed in
+  #1009 (RFC-279).
+- [x] **Medium:** the mutual FULL phase builds one chunk and stays on the fragment
   (`pkg/recordlayer/indexing_mutual.go:283-294`), then skips any partly built fragment
-  (`:344-350`), so every peer falls into ANY: partitioning is lost and 1020s follow.
-- [ ] **Medium:** no backoff between lessen-work retries (`buildRangeWithRetries`,
+  (`:344-350`), so every peer falls into ANY: partitioning is lost and 1020s follow. Fixed in
+  #1009 (RFC-279).
+- [x] **Medium:** no backoff between lessen-work retries (`buildRangeWithRetries`,
   `pkg/recordlayer/online_indexer.go:1605-1631`; Java waits in `IndexingThrottle.java:394`).
+  Fixed in #1009 (RFC-279).
 - [x] **Medium:** no explicit-version save or `VersionstampSaveBehavior`
   (`pkg/recordlayer/store.go:682`, "Phase 2"); not listed in DIVERGENCES.md or
   docs/compatibility.md. Fixed in #1003 (RFC-275).

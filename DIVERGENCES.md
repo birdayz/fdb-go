@@ -4649,3 +4649,28 @@ choosing another alternative). The budget tests do not claim to close these
 selection/retry gaps. Single-replica wire goldens and data-plane differentials
 remain useful but cannot measure speculative duplicate requests; the budget
 regressions use two storage-server aliases and held replies against real FDB.
+
+## Mutual indexing has no anyJumper (RFC-279)
+
+Java's mutual builder records an FDB error that ends a claimed range, after the
+runner's retries, and returns quietly without lessening the limit
+(`IndexingMutuallyByRecords.java:495-544`). On the next walk:
+- in another fragment, or with nothing left to build, it forgets the error;
+- in the same fragment on a different range, it jumps to the next fragment, as a
+  peer is building there;
+- in the same fragment on the same range, it throws the error again and keeps it.
+
+Because the error is kept, every lessen-work retry throws it again, and the build
+fails. A claimed range too large for one transaction (2101) therefore fails a Java
+mutual build without a retry at a smaller limit.
+
+Go does not port it. A failed chunk of a claimed range goes through the runner's
+retries and then lessen-work, as every other build does. Peers inside one fragment
+progress by the runner's retries in both engines. Java jumps only after a range
+fails every runner attempt. No stored byte differs; the built ranges are the same
+kind of primary-key ranges.
+
+Java's `infiniteLoopProtection`, which fails a build after the same range is picked
+1000 times in a row, is not ported either. A Go claim is built until nothing in it
+is missing, and a chunk that keeps failing ends the build after the lessen-work
+retries, so no build picks one range forever.
