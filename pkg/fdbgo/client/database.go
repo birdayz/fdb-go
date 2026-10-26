@@ -348,8 +348,8 @@ type database struct {
 	// slog.Default() at open). RFC-097 / P1.2.
 	logger *slog.Logger
 
-	// Speculative second request (hedge) control: when true, a read sends a hedge to
-	// a second server after secondDelay. C++ also requires secondBudget (TODO.md).
+	// Speculative second request (hedge) control: when true, a read may send a hedge
+	// to a second server, timed and paid for by queueModel as libfdb_c does.
 	hedgeEnabled atomic.Bool
 
 	// Opt-in GetRange materialization ceiling in bytes (WithRangeByteCeiling,
@@ -821,10 +821,8 @@ func (d *Database) Metrics() ClientMetricsSnapshot {
 	return d.db.metrics.Snapshot()
 }
 
-// SetHedgeEnabled controls speculative second requests (hedge) for read RPCs.
-// When enabled (default), slow reads are rescued by sending a backup request
-// to a second server after max(10ms, 2×latency). Disable for debugging or
-// benchmarking the non-hedged path.
+// SetHedgeEnabled enables budget-funded speculative read requests (default on).
+// Disabled, no read hedges; lone replies still accrue budget (RFC-281).
 func (d *Database) SetHedgeEnabled(enabled bool) {
 	d.db.hedgeEnabled.Store(enabled)
 }

@@ -114,10 +114,18 @@ go_test(
     deps = ["//pkg/fdbgo/wire"],
 )
 
+# gazelle:exclude hedge_budget_unit_test.go
+# gazelle:exclude hedge_budget_helpers_test.go
 # gazelle:exclude hedge_timer_unit_test.go
+# gazelle:exclude hedge_sender_delay_unit_test.go
 go_test(
     name = "hedge_timer_unit_test",
-    srcs = ["hedge_timer_unit_test.go"],
+    srcs = [
+        "hedge_budget_helpers_test.go",
+        "hedge_budget_unit_test.go",
+        "hedge_sender_delay_unit_test.go",
+        "hedge_timer_unit_test.go",
+    ],
     embed = [":client"],
     deps = [
         "//pkg/fdbgo/transport",
@@ -364,6 +372,7 @@ go_test(
 go_test(
     name = "native_range_unit_test",
     srcs = [
+        "hedge_budget_helpers_test.go",
         "native_range_suspend_test.go",
         "native_range_unit_test.go",
         "peer_send_load_unit_test.go",
@@ -413,6 +422,7 @@ go_test(
         "conn_identity_unit_test.go",
         "decode_failure_unit_test.go",
         "fdberror_assert_test.go",
+        "hedge_budget_helpers_test.go",
         "location_cache_unit_test.go",
         "reply_ground_truth_test.go",
     ],
@@ -536,6 +546,8 @@ go_test(
         "grv_test.go",
         "grv_throttle_ordering_test.go",
         "grv_unit_test.go",
+        "hedge_budget_fdb_test.go",
+        "hedge_budget_helpers_test.go",  # keep
         "hedge_test.go",
         "inband_maybedelivered_grv_test.go",
         "inband_reply_error_test.go",

@@ -322,12 +322,12 @@ func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, select
 
 	primary := makeSender(servers[bestIdx])
 	var secondary sendFunc
+	var hedgeDelay time.Duration
 	if secondIdx >= 0 {
 		secondary = makeSender(servers[secondIdx])
+		hedgeDelay = tx.db.queueModel.secondDelay(servers[bestIdx].Address, servers[secondIdx].Address)
 	}
-
-	hedgeDelay := tx.db.queueModel.secondDelay(servers[bestIdx].Address)
-	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, tx.readRPCTimeout())
+	result := sendFrameWithHedge(ctx, tx.db.queueModel, hedgeDelay, primary, secondary, tx.readRPCTimeout())
 
 	// End every started request that did not become the winner (hedge losers;
 	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
@@ -572,12 +572,12 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 
 	primary := makeSender(servers[bestIdx])
 	var secondary sendFunc
+	var hedgeDelay time.Duration
 	if secondIdx >= 0 {
 		secondary = makeSender(servers[secondIdx])
+		hedgeDelay = tx.db.queueModel.secondDelay(servers[bestIdx].Address, servers[secondIdx].Address)
 	}
-
-	hedgeDelay := tx.db.queueModel.secondDelay(servers[bestIdx].Address)
-	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, tx.readRPCTimeout())
+	result := sendFrameWithHedge(ctx, tx.db.queueModel, hedgeDelay, primary, secondary, tx.readRPCTimeout())
 
 	// End every started request that did not become the winner (hedge losers;
 	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
@@ -597,6 +597,9 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 	}
 	if result.err != nil {
 		// Hedge failed — fall back to remaining servers sequentially (see resolveFallback).
+		if !result.triedSecondary {
+			secondIdx = -1
+		}
 		return resolveFallback(ctx, result.err, servers, bestIdx, secondIdx, func(server ServerInfo) ([]byte, error) {
 			return tx.sendGetValueToServer(ctx, key, server, readVersion, lockAware, tenantId, tags)
 		})
@@ -608,12 +611,13 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 	return val, err
 }
 
-// sendGetValueToServer sends a getValue RPC to a single specific server.
-// Used as fallback after hedge fails.
+// sendGetValueToServer is a single-server fallback after hedge failure.
+// Its lone reply accrues second-request budget.
 func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, server ServerInfo, readVersion int64, lockAware bool, tenantId int64, tags readTagSample) ([]byte, error) {
 	conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
 	if err != nil {
 		tx.db.handleDialError(ctx, server.Address)
+		noteLoneSendFailure(ctx, tx.db.queueModel)
 		return nil, err
 	}
 	defer permit.Release()
@@ -630,6 +634,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 		tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 		replyHandle.Cancel()
 		tx.db.handleReadConnError(server.Address, conn, err)
+		noteLoneSendFailure(ctx, tx.db.queueModel)
 		return nil, err
 	}
 	getValueBufPool.Put(poolBuf)
@@ -640,6 +645,7 @@ func (tx *Transaction) sendGetValueToServer(ctx context.Context, key []byte, ser
 		return nil, err
 	}
 	replyCleanup.release()
+	tx.db.queueModel.firstReplied()
 	if resp.Err != nil {
 		tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(resp.Err, start), false)
 		tx.db.handleReadConnError(server.Address, conn, resp.Err)
@@ -1089,12 +1095,12 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end KeySel
 
 	primary := makeSender(servers[bestIdx])
 	var secondary sendFunc
+	var hedgeDelay time.Duration
 	if secondIdx >= 0 {
 		secondary = makeSender(servers[secondIdx])
+		hedgeDelay = tx.db.queueModel.secondDelay(servers[bestIdx].Address, servers[secondIdx].Address)
 	}
-
-	hedgeDelay := tx.db.queueModel.secondDelay(servers[bestIdx].Address)
-	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, tx.readRPCTimeout())
+	result := sendFrameWithHedge(ctx, tx.db.queueModel, hedgeDelay, primary, secondary, tx.readRPCTimeout())
 
 	// End every started request that did not become the winner (hedge losers;
 	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
@@ -1708,11 +1714,9 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 		replyCleanup.handle = replyHandle
 		reqData := buildWatchValueRequest(key, value, readVersion, tenantId, span, tags, replyToken)
 
-		delta := tx.db.queueModel.startRequest(server.Address)
-		start := time.Now()
-
+		// watchValue's loadBalance has no QueueModel (NativeAPI.actor.cpp:3962-3972):
+		// a watch's duration must not become the server's read latency.
 		if err := sendReadFrame(ctx, conn, watchToken, reqData, replyHandle, permit, nil); err != nil {
-			tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(err, start), false)
 			replyHandle.Cancel()
 			replyCleanup.release()
 			tx.db.handleReadConnError(server.Address, conn, err)
@@ -1723,14 +1727,11 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 		case resp := <-replyCh:
 			replyCleanup.release()
 			if resp.Err != nil {
-				tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(resp.Err, start), false)
 				tx.db.handleReadConnError(server.Address, conn, resp.Err)
 				continue
 			}
-			tx.db.queueModel.endRequest(server.Address, delta, time.Since(start), true)
 			return parseWatchValueReply(resp.Body)
 		case <-ctx.Done():
-			tx.db.queueModel.endRequest(server.Address, delta, readFailureLatency(ctx.Err(), start), false)
 			replyHandle.Cancel()
 			replyCleanup.release()
 			return ctx.Err()
