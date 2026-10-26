@@ -21,7 +21,7 @@ func allRange() fdb.KeyRange { return fdb.KeyRange{Begin: fdb.Key(""), End: fdb.
 //
 // In the client every one of these funnels through ensureReadVersion, whose first act is
 // checkCancelled (client/transaction.go:662-665); the two metrics entry points bypass the read
-// version and so gate explicitly (client/metrics.go:36-38, :186-188). A gap here is not
+// version and so gate explicitly (client/metrics.go getEstimatedRangeSizeBytesImpl, getRangeSplitPointsImpl). A gap here is not
 // cosmetic: a cancelled transaction that can still scan a range hands the caller data it must
 // never have seen, and the sim would certify a driver that reads after cancellation as correct.
 func TestCancelledTransactionReadEntryPoints(t *testing.T) {
@@ -134,7 +134,7 @@ func TestCancelledTransactionApproximateSizeStillAnswers(t *testing.T) {
 // TestGetEstimatedRangeSizeBytesInvertedRangeOutranksCancel pins the PRECEDENCE, not just the
 // presence, of the cancellation gate on the two metrics entry points. libfdb_c constructs a
 // KeyRangeRef from the C arguments before entering the op, and that constructor throws
-// inverted_range(2005) ahead of everything else (client/metrics.go:29-33, :177-184) — so a
+// inverted_range(2005) ahead of everything else (client/metrics.go getEstimatedRangeSizeBytesImpl, getRangeSplitPointsImpl) — so a
 // cancelled transaction asked about an inverted range reports 2005, not 1025. A cancel gate
 // bolted on at the top would invert that and is exactly the mistake this pins.
 func TestGetEstimatedRangeSizeBytesInvertedRangeOutranksCancel(t *testing.T) {

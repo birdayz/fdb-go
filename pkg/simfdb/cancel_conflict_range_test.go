@@ -25,7 +25,7 @@ func codeOf(err error) int {
 //
 // The client reaches 1025 on the range and version paths through ensureReadVersion, whose first
 // act is checkCancelled (client/transaction.go:662-665); the two metrics paths never fetch a read
-// version, so libfdb_c gates them explicitly at op entry (client/metrics.go:29-38, :177-187). A
+// version, so libfdb_c gates them explicitly at op entry (client/metrics.go getEstimatedRangeSizeBytesImpl, getRangeSplitPointsImpl). A
 // sim that keeps answering reads on a cancelled handle lets a test "verify" post-cancel behaviour
 // that no real client exhibits — and SimFDB exists to stand in for a real client.
 func TestCancelledTransactionReadEntryPoints(t *testing.T) {
@@ -107,7 +107,7 @@ func TestCancelledTransactionReadEntryPoints(t *testing.T) {
 // TestCancelledTransactionMetricsReportInvertedRangeFirst pins the ORDER the two metrics entry
 // points report their two errors in. libfdb_c constructs a KeyRangeRef from the C arguments
 // before the op runs and that constructor throws inverted_range(2005), so an inverted range on a
-// CANCELLED transaction is 2005 — not 1025 (client/metrics.go:29-38, :177-187). Gating on cancel
+// CANCELLED transaction is 2005 — not 1025 (client/metrics.go getEstimatedRangeSizeBytesImpl, getRangeSplitPointsImpl). Gating on cancel
 // first would invert the order the client reports, which is exactly the kind of divergence that
 // makes a sim-certified error-handling path wrong against the real thing.
 func TestCancelledTransactionMetricsReportInvertedRangeFirst(t *testing.T) {

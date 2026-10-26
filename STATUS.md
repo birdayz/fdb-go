@@ -26,12 +26,14 @@ planned for v0.3.0; each has a mitigation where one exists.
 
 - **Per-RPC 5 s read timeouts, which libfdb_c does not have.** A read reply
   slower than 5 s is abandoned and re-sent, to another replica first; libfdb_c
-  keeps waiting. After 10 timed-out re-sends, get, getKey, getRange and
-  getMappedRange fail with a retryable `transaction_too_old` (1007); a
-  mapped-range read with a positive skip re-sends without a cap. Range-size and split-point estimates fail with a non-retryable
-  `all_alternatives_failed` (1006) where libfdb_c keeps retrying. Location
-  lookups have the same 5 s cap per attempt, where libfdb_c waits for the reply
-  or a proxy change. Commits have no such timeout (#882).
+  keeps waiting. get, getKey, getRange and getMappedRange (a positive skip
+  included) fail with a retryable `transaction_too_old` (1007) at the eleventh
+  timed-out send, after 10 re-sends; the `fdb` facade's Get sends a pipelined
+  request first, so it fails at the twelfth. Range-size and split-point estimates
+  have no reply timeout and retry until the transaction times out, as libfdb_c
+  does (RFC-280). Location lookups have the same 5 s cap per attempt, where
+  libfdb_c waits for the reply or a proxy change. Commits have no such timeout
+  (#882).
 - **Read-only transaction allocation remains a launch concern.** The historical
   observation was about 38 KB per transaction before allocation cuts; there is
   no current-cut allocation measurement here. Go heap counters exclude the

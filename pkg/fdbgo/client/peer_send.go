@@ -19,6 +19,11 @@ func (db *database) getOrDialConnFor(ctx context.Context, addr string, sending b
 		return nil, false, nil, err
 	}
 	db.connMu.Lock()
+	if db.ctx != nil && db.ctx.Err() != nil {
+		err := db.ctx.Err()
+		db.connMu.Unlock()
+		return nil, false, nil, err
+	}
 	call := db.dialing[addr]
 	if call != nil {
 		select {
@@ -55,6 +60,9 @@ func (db *database) getOrDialConnFor(ctx context.Context, addr string, sending b
 	if call == nil {
 		call = &dialCall{done: make(chan struct{})}
 		db.dialing[addr] = call
+		// Close cancels the database before draining under connMu, so no new
+		// owner can register after its shutdown barrier reaches wg.Wait.
+		db.wg.Add(1)
 		owner = true
 	}
 	if sending {
@@ -69,7 +77,10 @@ func (db *database) getOrDialConnFor(ctx context.Context, addr string, sending b
 		}
 	}()
 	if owner {
-		go db.dialAndPool(addr, call)
+		go func() {
+			defer db.wg.Done()
+			db.dialAndPool(addr, call)
+		}()
 	}
 	select {
 	case <-call.done:

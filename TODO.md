@@ -298,7 +298,7 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   - [x] `clear_key`: libfdb_c serializes a single-key clear `[k, k\x00)` as `(k\x00, '')`
     (`MutationRef::serialize`, `CommitTransaction.h:318-334`); Go sends `(k, k\x00)`.
   - [ ] Mapped range continuation selector: inside one native call a forward mapped read
-    continues at `FGE(keyAfter(last))` (`pkg/fdbgo/client/mappedrange_selectors.go:179`);
+    continues at `FGE(keyAfter(last))` (`getMappedRangeSelectors`, `pkg/fdbgo/client/mappedrange_selectors.go`);
     NativeAPI `getRange` sends `firstGreaterThan(last)` (`NativeAPI.actor.cpp:4850`). Same
     rows, different `Begin` bytes. RFC-262 D4 leaves mapped reads on their sender; port the
     selector-capable sender for them and add a mapped multi-request golden scenario.
@@ -2306,18 +2306,23 @@ multi-page auto-commit SELECT, which stays tracked only.
   keyspace (`parseGetKeyServerLocationsReply`, `pkg/fdbgo/client/locality.go:665`);
   `ReadVectorCount` truncates an oversized count instead of failing
   (`pkg/fdbgo/wire/reader.go:435-437`). Fixed in #997 (RFC-271); generated decoders that read a vector-count error as an absent vector are #1004's.
-- [ ] **Low:** `handleConnError` closes the connection under `connMu`
+- [x] **Low:** `handleConnError` closes the connection under `connMu`
   (`pkg/fdbgo/client/topology.go:242`), and a TLS socket close in `failConnection`
-  (`pkg/fdbgo/transport/conn.go:1007`) can block for up to 5 s.
-- [ ] **Medium:** `GetEstimatedRangeSizeBytes` and `GetRangeSplitPoints` time out each
+  (`pkg/fdbgo/transport/conn.go:1007`) can block for up to 5 s. Fixed in #1011 (RFC-280):
+  the close runs after the unlock.
+- [x] **Medium:** `GetEstimatedRangeSizeBytes` and `GetRangeSplitPoints` time out each
   replica after 5 s and end with a non-retryable `all_alternatives_failed` (1006)
   (`pkg/fdbgo/client/metrics.go:96,170,275,322`); C++ retries 1006 and wrong-shard without a
-  cap (`NativeAPI.actor.cpp:8079,8205`).
-- [ ] **Low:** a mapped-range read with a positive skip re-sends on reply timeout without the
+  cap (`NativeAPI.actor.cpp:8079,8205`). Fixed in #1011 (RFC-280): no cap and no reply
+  timeout; requests are sent as `loadBalance` sends them.
+- [x] **Low:** a mapped-range read with a positive skip re-sends on reply timeout without the
   10-re-send cap the other reads have (`pkg/fdbgo/client/mappedrange_selectors.go:154,265`).
-- [ ] **Low:** a `TransactCtx` deadline does not bound a dispatched commit
+  Fixed in #1011 (RFC-280).
+- [x] **Low:** a `TransactCtx` deadline does not bound a dispatched commit
   (`pkg/fdbgo/client/transaction.go:1882`); documented at `pkg/fdbgo/fdb/database.go:409`.
-  Decide whether to keep it.
+  Decide whether to keep it. Kept in #1011 (RFC-280): libfdb_c's transaction timeout and
+  `Cancel` end the wait as Go's do; the `TransactCtx` doc names the `fdb_future_cancel`
+  difference.
 
 ### SQL
 
@@ -2477,9 +2482,10 @@ multi-page auto-commit SELECT, which stays tracked only.
   `SetOptions` where the DST skill now recommends `SetOption` (#999's final review). Fixed in
   #1013: the abort recovers and closes the connection; sqlpage and rowdiff
   use `SetOption`.
-- [ ] **Low:** STATUS.md's timeout paragraph: the facade's pipelined Get makes one more timed-out
-  send than the others (#1011 owns it). Done in docs/review-leftovers: `readpath.go:415-418` and
-  the two `Database` superset rows (#996's final review).
+- [x] **Low:** STATUS.md's timeout paragraph: the facade's pipelined Get makes one more timed-out
+  send than the others. Fixed in #1011 (RFC-280), pinned by
+  `TestPipelinedGetReplyTimeoutSends`; the `readpath.go` timeout comment and both `Database`
+  superset rows were fixed in #1012 (#996's final review).
 - [x] **Low:** the header of `pkg/relational/sqldriver/sql_integration_test.go` still describes a
   blank import (#996's final review). Fixed in #1013.
 - [x] **Low:** enum-assignment and `range()` bound errors render their message twice since #1002;
