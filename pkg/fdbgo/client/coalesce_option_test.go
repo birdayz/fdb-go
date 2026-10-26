@@ -60,6 +60,12 @@ func TestWithCoalesceDelayReachesEveryConnection(t *testing.T) {
 			if len(conns) == 0 {
 				t.Fatal("no pooled connections after a write and a read")
 			}
+			dbMin, dbMax, dbAdaptive, dbWaits := db.ConnectionLinger()
+			wantWait := runtime.GOOS == "linux" && tc.max > 0
+			if dbMin != tc.min || dbMax != tc.max || dbWaits != wantWait || dbAdaptive != tc.adaptive {
+				t.Fatalf("db.ConnectionLinger() = (%v, %v, %v, %t), want (%v, %v, %v, %t)",
+					dbMin, dbMax, dbAdaptive, dbWaits, tc.min, tc.max, tc.adaptive, wantWait)
+			}
 			for _, c := range conns {
 				lo, hi, waits := c.CoalesceDelay()
 				wantWait := runtime.GOOS == "linux" && tc.max > 0

@@ -140,6 +140,12 @@ func (c *Conn) naWrite(ctx context.Context, token UID, body []byte, flush bool, 
 // or firing NotifySuspend, so high-water suspension preserves sender wire order.
 func (c *Conn) naWaitHighWater(ctx context.Context, w *naWriter) (*sendqueue.Permit, error) {
 	permit, _ := c.sendWaiters.Reserve()
+	ok := false
+	defer func() {
+		if !ok {
+			permit.Release()
+		}
+	}()
 	w.mu.Unlock()
 	select {
 	case <-permit.Ready():
@@ -149,20 +155,16 @@ func (c *Conn) naWaitHighWater(ctx context.Context, w *naWriter) (*sendqueue.Per
 	select {
 	case <-permit.Ready():
 	case <-ctx.Done():
-		permit.Release()
 		return nil, ctx.Err()
 	case <-c.ctx.Done():
-		permit.Release()
 		return nil, errConnClosed
 	}
 	w.mu.Lock()
 	if err := ctx.Err(); err != nil {
-		permit.Release()
 		w.mu.Unlock()
 		return nil, err
 	}
 	if c.ctx.Err() != nil {
-		permit.Release()
 		w.mu.Unlock()
 		return nil, errConnClosed
 	}
@@ -177,24 +179,21 @@ func (c *Conn) naWaitHighWater(ctx context.Context, w *naWriter) (*sendqueue.Per
 		select {
 		case <-ch:
 		case <-ctx.Done():
-			permit.Release()
 			return nil, ctx.Err()
 		case <-c.ctx.Done():
-			permit.Release()
 			return nil, errConnClosed
 		}
 		w.mu.Lock()
 		if err := ctx.Err(); err != nil {
-			permit.Release()
 			w.mu.Unlock()
 			return nil, err
 		}
 		if c.ctx.Err() != nil {
-			permit.Release()
 			w.mu.Unlock()
 			return nil, errConnClosed
 		}
 	}
+	ok = true
 	return permit, nil
 }
 
@@ -221,7 +220,19 @@ func (c *Conn) naSend(ctx context.Context, token UID, body []byte) error {
 				return err
 			}
 		}
-		LogSend(token, body)
+		if globalWireLog.Load() != nil {
+			if permit == nil {
+				permit, _ = c.sendWaiters.Reserve()
+			}
+			defer permit.Release()
+			w.mu.Unlock()
+			LogSend(token, body)
+			w.mu.Lock()
+			if c.ctx.Err() != nil {
+				w.mu.Unlock()
+				return errConnClosed
+			}
+		}
 		wake := len(w.q) == 0 // dataToSend fires only on the first unsent frame (Peer::send)
 		w.q = append(w.q, frame...)
 		permit.Release()
@@ -250,7 +261,26 @@ func (c *Conn) naSend(ctx context.Context, token UID, body []byte) error {
 			return err
 		}
 	}
-	LogSend(token, body)
+	if globalWireLog.Load() != nil {
+		if permit == nil {
+			permit, _ = c.sendWaiters.Reserve()
+		}
+		returned := false
+		defer func() {
+			permit.Release()
+			if !returned {
+				putFrame(bufp, frame)
+			}
+		}()
+		w.mu.Unlock()
+		LogSend(token, body)
+		w.mu.Lock()
+		if c.ctx.Err() != nil {
+			w.mu.Unlock()
+			return errConnClosed
+		}
+		returned = true
+	}
 	wake := len(w.q) == 0 // dataToSend fires only on the first unsent frame (Peer::send)
 	w.q = append(w.q, frame...)
 	permit.Release()
@@ -276,7 +306,17 @@ func (c *Conn) naTrySend(token UID, body []byte) bool {
 		w.mu.Unlock()
 		return false
 	}
-	LogSend(token, body)
+	if globalWireLog.Load() != nil {
+		permit, _ := c.sendWaiters.Reserve()
+		defer permit.Release()
+		w.mu.Unlock()
+		LogSend(token, body)
+		w.mu.Lock()
+		if len(w.q) >= naHighWater || c.ctx.Err() != nil {
+			w.mu.Unlock()
+			return false
+		}
+	}
 	n := frameSize(body, c.useTLS)
 	off := len(w.q)
 	wake := off == 0

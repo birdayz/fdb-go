@@ -927,8 +927,8 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 		// delivered (stamping resp.RecvAt), before the send returns — RecvAt−sentAt
 		// would go negative and be silently dropped by the sketch.
 		sentAt := time.Now()
-		// The first read of a burst goes out at once; later ones queue while it is
-		// outstanding, so writeLoop can coalesce them into one write.
+		// First read of a burst uses eager send; subsequent reads use deferred send
+		// (coalesced by writeLoop on WithLegacyWriter; both enqueue on default D-NG).
 		tx.readErrMu.Lock()
 		first := !tx.hasPendingReadsLocked()
 		tx.readErrMu.Unlock()
@@ -1970,10 +1970,8 @@ func (tx *Transaction) regenerateSpan() {
 	tx.spanNeedsRegen.Store(false)
 }
 
-// currentSpan returns the transaction's wire span context by value. Lock-free
-// atomic load (RFC-175 E1): the commit auto-reset regenerates the span
-// concurrently with in-flight sends. A directly-constructed Transaction (unit
-// tests) has no span yet — the zero SpanContext (unsampled) is returned.
+// currentSpan loads the transaction's span context atomically, acquiring traceMu
+// only when post-commit reset deferred regeneration (callers must not hold traceMu).
 func (tx *Transaction) currentSpan() types.SpanContext {
 	if p := tx.spanContext.Load(); p != nil {
 		return *p

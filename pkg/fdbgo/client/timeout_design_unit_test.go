@@ -3,11 +3,13 @@ package client
 import (
 	"context"
 	"errors"
+	"net"
 	"runtime"
 	"testing"
 	"time"
 	"weak"
 
+	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire"
 )
 
@@ -57,9 +59,8 @@ func TestDesignTimeoutStaleArmIsRejected(t *testing.T) {
 		t.Fatalf("a disarmed timer poisoned the transaction: %v", err)
 	}
 
-	// Re-arm with a future deadline (e.g. SetTimeout or Reset while an earlier
-	// AfterFunc callback was already runnable before acquiring readErrMu):
-	// fireDesignTimeout must re-arm for the remaining budget and NOT deliver 1031.
+	// Re-arm with a future deadline: fireDesignTimeout re-arms for the remaining
+	// budget without delivering 1031.
 	tx.SetTimeout(60000)
 	tx.fireDesignTimeout()
 	if err := tx.readEntryError(ctx); err != nil {
@@ -188,9 +189,6 @@ func TestDesignTimeoutTransactScopedPoolAndExpiry(t *testing.T) {
 		t.Fatal("Database.ReadTransact did not release its pooled designTimerEntry and preserve timeoutNeedsArm on exit")
 	}
 
-	// Returning from ReadTransact while an operation is still in flight (users > 0
-	// or issuedReads > 0) detaches the pooled entry and hands the remaining
-	// deadline off to a per-transaction weak timer that delivers 1031 on expiry.
 	// 1. Escaped active operation (users > 0, issuedReads == 0) hands off to weak timer.
 	var inFlightTx *Transaction
 	var inFlightCtx context.Context
@@ -224,46 +222,118 @@ func TestDesignTimeoutTransactScopedPoolAndExpiry(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 
-	// 2. Escaped issued read (issuedReads > 0, users == 0 after lease release) hands off to weak timer.
-	var issuedTx *Transaction
-	var issuedCtx context.Context
-	var issuedCleanup opRelease
-	_, err = db.ReadTransact(context.Background(), func(tx *Transaction) (any, error) {
-		issuedTx = tx
-		tx.SetTimeout(30000)
-		var lease *executionLease
-		issuedCtx, issuedCleanup, lease = tx.opContextWithLease(context.Background(), true)
-		// Drop users while keeping issuedReads == 1 (as an in-flight range/read continuation holds).
-		tx.readErrMu.Lock()
-		tx.readLife.users--
-		lease.active.Store(false)
-		tx.readErrMu.Unlock()
-		return "ok", nil
+	// Set up a pipe-backed database whose server accepts frames and withholds replies,
+	// so real StartGetRange and GetPipelined calls remain in flight across ReadTransact exit.
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	go func() {
+		if _, err := transport.ReadConnectPacket(serverConn); err != nil {
+			return
+		}
+		pkt := transport.ConnectPacket{ProtocolVersion: transport.ProtocolVersion73, ConnectionID: 262}
+		if _, err := serverConn.Write(pkt.Marshal()); err != nil {
+			return
+		}
+		for {
+			if _, _, err := transport.ReadFrame(serverConn, false); err != nil {
+				return
+			}
+		}
+	}()
+	const pipeAddr = "127.0.0.1:4599"
+	pipeToken := transport.UID{First: 0x4599, Second: 1}
+	pipeTransportConn, err := transport.Dial(context.Background(), pipeAddr, nil, func(context.Context, string, string) (net.Conn, error) {
+		return clientConn, nil
 	})
 	if err != nil {
-		t.Fatalf("Database.ReadTransact with issuedRead = %v", err)
+		t.Fatalf("transport.Dial pipe: %v", err)
 	}
-	defer issuedCleanup.release()
+	defer pipeTransportConn.Close()
+	pipeDB := &Database{db: &database{
+		ctx:        context.Background(),
+		connPool:   map[string]*transport.Conn{pipeAddr: pipeTransportConn},
+		dialing:    make(map[string]*dialCall),
+		failMon:    newFailureMonitor(),
+		queueModel: newQueueModel(),
+	}}
+	pipeDB.db.locCache.maxSize = 16
+	pipeDB.db.locCache.insertRanges([]locationEntry{{
+		tenantId: NoTenantID,
+		begin:    []byte{},
+		end:      []byte{0xff},
+		servers:  []ServerInfo{{Address: pipeAddr, Token: pipeToken}},
+	}})
+
+	// 2. Escaped StartGetRange under borrowed opContext (issuedReads == 1, users == 0).
+	var issuedTx *Transaction
+	var escapedRange *PendingRange
+	rangeEntered, releaseRange := make(chan struct{}), make(chan struct{})
+	_, err = pipeDB.ReadTransact(context.Background(), func(tx *Transaction) (any, error) {
+		issuedTx = tx
+		tx.SetTimeout(30000)
+		tx.readVersion = 1
+		tx.hasReadVersion = true
+		tx.beforeRangeGoroutine = func() {
+			close(rangeEntered)
+			<-releaseRange
+		}
+		opCtx, opRelease := tx.opContext(context.Background())
+		escapedRange = tx.StartGetRange(opCtx, []byte("a"), []byte("z"), 0, 0, false)
+		opRelease()
+		return "ok", nil
+	})
+	if err != nil || escapedRange == nil {
+		close(releaseRange)
+		t.Fatalf("Database.ReadTransact with StartGetRange = (%v, %v)", escapedRange, err)
+	}
+	<-rangeEntered
 	issuedTx.readErrMu.Lock()
 	issuedHandedOff := !issuedTx.transactScoped && issuedTx.designEntry == nil && issuedTx.designTimer != nil && issuedTx.timeoutArmed && issuedTx.readLife.users == 0 && issuedTx.readLife.issuedReads == 1
 	issuedTx.expireTimeoutLocked()
 	issuedTx.readErrMu.Unlock()
+	close(releaseRange)
 	if !issuedHandedOff {
 		t.Fatal("ReadTransact exit with issuedReads > 0 (users == 0) did not hand timeout off to weak timer")
 	}
-	deadline = time.Now().Add(5 * time.Second)
-	for {
-		var fdbErr *wire.FDBError
-		if errors.As(issuedTx.readEntryError(issuedCtx), &fdbErr) && fdbErr.Code == 1031 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("handed-off weak timer never delivered 1031 to escaped issuedRead")
-		}
-		time.Sleep(time.Millisecond)
+	_, _, rangeErr := escapedRange.Get()
+	var rangeFDBErr *wire.FDBError
+	if !errors.As(rangeErr, &rangeFDBErr) || rangeFDBErr.Code != 1031 {
+		t.Fatalf("escaped StartGetRange.Get() = %v, want 1031", rangeErr)
 	}
 
-	// 3. Escaped pending versionstamp (users == 0, issuedReads == 0) hands off to weak timer.
+	// 3. Escaped GetPipelined (hasPendingReadsLocked() == true, users == 0, issuedReads == 0).
+	var pipeTx *Transaction
+	var escapedGet *PendingGet
+	_, err = pipeDB.ReadTransact(context.Background(), func(tx *Transaction) (any, error) {
+		pipeTx = tx
+		tx.SetTimeout(30000)
+		tx.readVersion = 1
+		tx.hasReadVersion = true
+		var getErr error
+		_, escapedGet, getErr = tx.GetPipelined(context.Background(), []byte("k"))
+		return nil, getErr
+	})
+	if err != nil || escapedGet == nil {
+		t.Fatalf("ReadTransact with GetPipelined = (%v, %v)", escapedGet, err)
+	}
+	pipeTx.readErrMu.Lock()
+	pipeHandedOff := !pipeTx.transactScoped && pipeTx.designEntry == nil && pipeTx.designTimer != nil && pipeTx.timeoutArmed && pipeTx.readLife.users == 0 && pipeTx.readLife.issuedReads == 0 && pipeTx.hasPendingReadsLocked()
+	pipeTx.expireTimeoutLocked()
+	pipeTx.readErrMu.Unlock()
+	if !pipeHandedOff {
+		t.Fatal("ReadTransact exit with PendingGet did not hand timeout off to weak timer")
+	}
+	_, getResolveErr := escapedGet.Resolve()
+	var getFDBErr *wire.FDBError
+	if !errors.As(getResolveErr, &getFDBErr) || getFDBErr.Code != 1031 {
+		t.Fatalf("escaped PendingGet.Resolve() = %v, want 1031", getResolveErr)
+	}
+	if escapedGet.replyHandle != nil {
+		t.Fatal("escaped PendingGet did not retire its replyHandle on timeout")
+	}
+
+	// 4. Escaped pending versionstamp (users == 0, issuedReads == 0) hands off to weak timer.
 	var vsTx *Transaction
 	var pendingVs *PendingVersionstamp
 	_, err = db.ReadTransact(context.Background(), func(tx *Transaction) (any, error) {

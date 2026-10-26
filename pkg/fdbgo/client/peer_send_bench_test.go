@@ -20,18 +20,11 @@ import (
 )
 
 // BenchmarkWarmPeerReadSendPath measures one production GetValue RPC over a
-// prewarmed loopback connection: lookup, encoding, send, reply wait and parsing.
-// Its source also compiles against ff4b78d1b, whose unchanged sender API reaches
-// getOrDial/SendFrameContext instead of getOrDialForSend/SendFrameContextOrdered.
-// Allocations include both ends of the loopback RPC, not just send admission.
+// prewarmed loopback connection across the default D-NG writer and legacy arms.
 func BenchmarkWarmPeerReadSendPath(b *testing.B) {
-	for _, queued := range []bool{false, true} {
-		name := "tcp-direct-eligible"
-		if queued {
-			name = "tcp-queued"
-		}
-		b.Run(name, func(b *testing.B) { benchmarkWarmPeerReadSendPath(b, queued) })
-	}
+	b.Run("dng-default", func(b *testing.B) { benchmarkWarmPeerReadSendPath(b, false, false) })
+	b.Run("legacy-tcp-direct-eligible", func(b *testing.B) { benchmarkWarmPeerReadSendPath(b, true, false) })
+	b.Run("legacy-tcp-queued", func(b *testing.B) { benchmarkWarmPeerReadSendPath(b, true, true) })
 }
 
 // This wrapper deliberately hides *net.TCPConn from transport.newRawWriter.
@@ -81,7 +74,7 @@ func (c *warmPeerProbeContext) Value(key any) any {
 	return value
 }
 
-func benchmarkWarmPeerReadSendPath(b *testing.B, queued bool) {
+func benchmarkWarmPeerReadSendPath(b *testing.B, legacy, queued bool) {
 	b.Helper()
 	b.StopTimer()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -157,6 +150,10 @@ func benchmarkWarmPeerReadSendPath(b *testing.B, queued bool) {
 	} else if _, err := client.SyscallConn(); err != nil {
 		b.Fatalf("direct-eligible TCP socket has no raw capability: %v", err)
 	}
+	dialOpts := []transport.DialOption{transport.WithCoalesceDelay(0, 0)}
+	if legacy {
+		dialOpts = append(dialOpts, transport.WithLegacyWriter())
+	}
 	var dials atomic.Int64
 	db := &database{
 		ctx:        ctx,
@@ -164,7 +161,7 @@ func benchmarkWarmPeerReadSendPath(b *testing.B, queued bool) {
 		dialing:    make(map[string]*dialCall),
 		failMon:    newFailureMonitor(),
 		queueModel: newQueueModel(),
-		dialOpts:   []transport.DialOption{transport.WithCoalesceDelay(0, 0), transport.WithLegacyWriter()},
+		dialOpts:   dialOpts,
 		dialFn: func(context.Context, string, string) (net.Conn, error) {
 			if n := dials.Add(1); n != 1 {
 				return nil, fmt.Errorf("warm benchmark unexpectedly dialed %d times", n)

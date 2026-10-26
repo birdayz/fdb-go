@@ -251,9 +251,11 @@ in `transport/conn.go` (`writeMu`, queued counts, tails, cancellation of a queue
 `hrtimer` before each batch and stamps the last write before every socket write. A
 waiting connection never writes on the sender's goroutine, so queue ownership is
 unchanged. There is no idle fast path: every batch waits, including after an idle
-period, as in libfdb_c. `WithCoalesceDelay(min, max)` sets the bounds (default 10/20 µs);
-`0, 0` restores immediate direct writes. Off Linux, without a precise timer, frames are
-written at once.
+period, as in libfdb_c. `WithCoalesceDelay(min, max)` sets the bounds (default 10/20 µs
+at the time of RFC-259; later superseded by [RFC-282](282-dng-transport-and-hotpath.md)'s
+0/0 D-NG default, while 10/20 µs remains the `WithLegacyWriter()` default and an
+explicit option); `0, 0` restores immediate writes. Off Linux, without a precise timer,
+frames are written at once.
 
 ## Not in scope
 

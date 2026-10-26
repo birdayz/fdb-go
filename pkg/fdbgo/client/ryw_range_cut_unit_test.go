@@ -336,3 +336,27 @@ func TestRYWCacheHitsDoNotScaleStorageRequestBytes(t *testing.T) {
 		}
 	}
 }
+
+// Completed PendingRange futures answered from inline point-cache entries retain
+// immutable key bytes across Transaction.Reset and subsequent point-cache writes.
+func TestPendingRangeRetainsPointCachedKeyAcrossReset(t *testing.T) {
+	t.Parallel()
+	for _, reverse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reverse=%v", reverse), func(t *testing.T) {
+			t.Parallel()
+			tx := &Transaction{}
+			tx.ryw.serverCache.insertPoint([]byte("a"), []byte("v1"))
+			pr := tx.StartGetRange(context.Background(), []byte("a"), []byte("a\x00"), 0, 0, reverse)
+			kvs1, more1, err1 := pr.Get()
+			if err1 != nil || more1 || len(kvs1) != 1 || string(kvs1[0].Key) != "a" || string(kvs1[0].Value) != "v1" {
+				t.Fatalf("initial PendingRange.Get = (%v, %t, %v), want [a=v1]", kvs1, more1, err1)
+			}
+			tx.Reset()
+			tx.ryw.serverCache.insertPoint([]byte("b"), []byte("v2"))
+			kvs2, more2, err2 := pr.Get()
+			if err2 != nil || more2 || len(kvs2) != 1 || string(kvs2[0].Key) != "a" || string(kvs2[0].Value) != "v1" {
+				t.Fatalf("post-Reset PendingRange.Get = (%v, %t, %v), want [a=v1]", kvs2, more2, err2)
+			}
+		})
+	}
+}

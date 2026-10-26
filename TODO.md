@@ -48,11 +48,10 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   noninferiority bounds but failed their intended p50 improvement conditions; neither
   is promoted. The [Rejected RFC](rfcs/264-send-wait-cost-and-ordering.md) retains the
   historical bisect results, common harness and reproduction inputs, not production
-  prototype changes. Keep #954's C++-parity 10/20 µs default; the owner accepts its
-  latency-versus-CPU/allocation trade-off (superseded by RFC-282, #1019: the D-NG
-  writer defaults to 0/0 immediate flush, with 10/20 µs and adaptive linger as
-  explicit options). Remaining unbuilt ideas are not pursued under this RFC; no
-  further prototype or measurement is authorized.
+  prototype changes. At the time, RFC-264 retained #954's 10/20 µs legacy-writer
+  default; RFC-282 (#1019) supersedes that default with D-NG's 0/0 immediate flush
+  (10/20 µs and adaptive linger remain explicit options). Remaining unbuilt ideas are
+  not pursued under this RFC; no further prototype or measurement is authorized.
 - [ ] **Deferred — zero-delay option comparison; owner rescheduling required.** The
   previously assigned `WithCoalesceDelay(0, 0)` versus 10/20 µs comparison for
   get100/get1000 at 8/64 workers remains deferred, not an active RFC-264 workstream.

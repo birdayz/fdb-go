@@ -50,7 +50,8 @@ type latencySketchStripe struct {
 }
 
 type latencySketch struct {
-	stripes [numSketchStripes]latencySketchStripe
+	stripes      [numSketchStripes]latencySketchStripe
+	onStripeRead func(int) // optional test hook run during stats() aggregation
 }
 
 func (s *latencySketch) lockAll() {
@@ -94,6 +95,10 @@ func bucketValue(index int) float64 {
 // (a clock-skew artifact; latencies are non-negative) are dropped rather than
 // bucketed into a bogus index.
 func (s *latencySketch) addSample(v float64) {
+	s.addSampleAt(int(rand.Uint64()&(numSketchStripes-1)), v)
+}
+
+func (s *latencySketch) addSampleAt(stripe int, v float64) {
 	if v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
 		return
 	}
@@ -102,7 +107,7 @@ func (s *latencySketch) addSample(v float64) {
 	if !isZero {
 		idx = bucketIndex(v)
 	}
-	st := &s.stripes[rand.Uint64()&(numSketchStripes-1)]
+	st := &s.stripes[stripe]
 	st.mu.Lock()
 	if st.populationSize == 0 {
 		st.minValue, st.maxValue = v, v
@@ -164,6 +169,9 @@ func (s *latencySketch) stats() LatencyStats {
 					buckets[k] += c
 				}
 			}
+		}
+		if s.onStripeRead != nil {
+			s.onStripeRead(i)
 		}
 	}
 	st := LatencyStats{Count: int64(populationSize)}

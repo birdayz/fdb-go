@@ -102,9 +102,8 @@ func drainFinalizers(ctx context.Context, maxRounds int) (report FinalizerDrain,
 				break
 			}
 			if report.After.FinalizersExecuted == report.After.FinalizersQueued && report.After.CleanupsExecuted == report.After.CleanupsQueued {
-				// Finalizers and cleanups can release objects for the NEXT GC
-				// cycle (the Go client stops an unreachable transaction's
-				// timeout timer from a cleanup), so both must be stable.
+				// Finalizers and cleanups can release objects for the NEXT GC cycle
+				// (e.g. native C bindings or legacy timeout-queue cleanups).
 				if stable && report.After.FinalizersQueued == previous && report.After.CleanupsQueued == previousCleanups {
 					report.Complete = true
 					return report, nil

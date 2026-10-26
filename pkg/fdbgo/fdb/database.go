@@ -191,12 +191,8 @@ func WithTLSConfig(cfg *tls.Config) Option { return client.WithTLSConfig(cfg) }
 // WithDialFunc overrides the dialer used for every connection (advanced / tests).
 func WithDialFunc(fn client.DialFunc) Option { return client.WithDialFunc(fn) }
 
-// WithCoalesceDelay sets how long each connection waits before writing a batch, so
-// requests sent meanwhile share it. On the default D-NG writer the default is 0, 0
-// (immediate flush on wakeup); pass transport.DefaultMinCoalesceDelay and
-// DefaultMaxCoalesceDelay for libfdb_c's 10/20 µs timer coalescing. Zero for both
-// writes a request at once when its connection has nothing queued. Off Linux the
-// delay does not apply.
+// WithCoalesceDelay sets each connection's timer-based batch delay bounds (default
+// 0, 0 on D-NG; 10/20 µs on WithLegacyWriter(); the last linger/coalesce option wins).
 func WithCoalesceDelay(minDelay, maxDelay time.Duration) Option {
 	return client.WithCoalesceDelay(minDelay, maxDelay)
 }

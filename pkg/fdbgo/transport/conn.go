@@ -247,11 +247,12 @@ type Conn struct {
 	turns          atomic.Int64  // turns taken, so tests can tell a sender wrote its batch
 
 	// na is the enqueue-only D-NG writer (na_writer.go).
-	na             *naWriter
-	design         string // dial-option override of envDesign; see na_writer.go
-	adaptiveLinger time.Duration
-	coalesceSet    bool
-	beforeReadLoop func() // optional test hook run in dialWith just before readLoop starts
+	na                *naWriter
+	design            string // dial-option override of envDesign; see na_writer.go
+	adaptiveLinger    time.Duration
+	coalesceSet       bool
+	beforeReadLoop    func() // optional test hook run in dialWith just before readLoop starts
+	beforeControlLock func() // optional test hook run in tryEnqueueNAControl before controlMu.Lock
 
 	// Debug tracing (set before first use).
 	debugFrames bool
@@ -376,15 +377,8 @@ const (
 	DefaultMaxCoalesceDelay = 20 * time.Microsecond
 )
 
-// WithCoalesceDelay sets how long the connection waits before writing a batch,
-// so frames sent meanwhile share it: max(min, max - time since the last write),
-// jittered by 0.9-1.1, as libfdb_c's connectionWriter does
-// (FlowTransport.actor.cpp:704-710). On the default D-NG writer the default is
-// 0, 0 (immediate flush on writer wakeup); pass DefaultMinCoalesceDelay and
-// DefaultMaxCoalesceDelay for libfdb_c's 10/20 µs timer coalescing. Zero for
-// both writes a frame at once when nothing is queued ahead of it. The last
-// linger/coalesce option wins. The wait needs a sub-millisecond timer: off
-// Linux, or if the timer cannot be created, frames are written at once.
+// WithCoalesceDelay sets the connection's timer-based batch delay bounds (default
+// 0, 0 on D-NG; 10/20 µs on WithLegacyWriter(); the last linger/coalesce option wins).
 func WithCoalesceDelay(minDelay, maxDelay time.Duration) DialOption {
 	return func(c *Conn) {
 		c.minCoalesce, c.maxCoalesce = max(minDelay, 0), max(maxDelay, 0)
@@ -724,10 +718,8 @@ func putReplyChannelImpl(ch chan Response) {
 	replyChanPool.Put(ch)
 }
 
-// SendFrame queues a raw frame for the connection's writer. On the default D-NG
-// writer it returns once the frame is appended to the connection's unsent buffer
-// (FlowTransport.actor.cpp:1038-1043); with WithLegacyWriter() it waits until the
-// frame is written or writeLoop holds a partial tail.
+// SendFrame queues a raw frame on the connection's writer (returning once appended
+// on D-NG, or after write/tail handoff on WithLegacyWriter()).
 func (c *Conn) SendFrame(destToken UID, body []byte) error {
 	if c.na != nil {
 		_, err := c.naWrite(c.ctx, destToken, body, false, nil)
@@ -789,10 +781,8 @@ func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
 	return nil
 }
 
-// Flush validates cold-dial admission and connection liveness on the default D-NG
-// writer without waiting for naLoop's asynchronous socket write (socket write
-// errors fail the connection and all pending replies). With WithLegacyWriter(),
-// it sends a flush marker through the write channel and waits for acknowledgment.
+// Flush checks cold-dial admission and liveness on D-NG, or waits for a flush
+// marker acknowledgment when WithLegacyWriter() is active.
 func (c *Conn) Flush() error {
 	if c.na != nil {
 		_, err := c.naWrite(c.ctx, UID{}, nil, true, nil)
@@ -1256,8 +1246,8 @@ func (c *Conn) handlePing(body []byte) {
 
 	replyBody := buildVoidReply()
 
-	// Send ping reply through the write loop. Fire-and-forget (no errCh).
-	// A full write channel drops the ping reply; the server will retry.
+	// Enqueue ping reply fire-and-forget; dropped if the writer outbox is at
+	// high-water (or legacy writeCh is full), in which case the server retries.
 	c.tryEnqueue(writeReq{token: replyToken, body: replyBody})
 }
 
@@ -1486,15 +1476,8 @@ func (c *Conn) sendPingWithReply() (<-chan Response, *ReplyHandle) {
 	pingEP := WellKnownToken(WLTokenPingPacket)
 	body := BuildPingRequest(replyToken)
 	if !c.tryEnqueue(writeReq{token: pingEP, body: body}) {
-		// writeCh is saturated — we could not send the PING. Return a nil
-		// channel, NOT a closed one. A closed channel makes the monitor's
-		// reply arm fire immediately and falsely conclude "connection
-		// alive", skipping the bytesReceived liveness check exactly when a
-		// saturated buffer signals a stuck connection (writeLoop blocked on an
-		// undrained socket). A nil channel is never selected, so the monitor
-		// falls through to the timer → bytesReceived check and kills a genuinely
-		// stuck conn. The pending reply is cancelled and released here (no leak),
-		// so there is no handle to return.
+		// Outbox saturated: return nil (not a closed channel) so the monitor falls
+		// through to bytesReceived liveness rather than treating the drop as a reply.
 		return nil, nil
 	}
 	transferred = true
@@ -1631,8 +1614,7 @@ func (c *Conn) pendingCount() int {
 }
 
 // nextReplyToken generates a connection-unique 128-bit reply token using one
-// per-connection atomic increment and one SplitMix64 finalizer (so token.First
-// spreads uniformly across pendingShards and never collides with wellKnownFirst).
+// atomic increment and SplitMix64 finalizer (spreading uniformly across shards).
 func (c *Conn) nextReplyToken() UID {
 	if c.nextToken.Load() == 0 {
 		c.nextToken.CompareAndSwap(0, splitmix64()|1)

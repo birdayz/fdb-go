@@ -64,9 +64,8 @@ func (g *gatedWriteConn) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// T1: a send returns once its frame is queued, while the socket writer is gated
-// (zero socket writes completed), and once the gate opens the peer receives
-// every frame whole and in send order.
+// T1: a send returns once queued while the socket writer is gated (0 writes),
+// and once the gate opens the peer receives every frame whole and in order.
 func TestDesignSendIsEnqueueOnly(t *testing.T) {
 	t.Parallel()
 	for _, arm := range writerArms() {
@@ -136,9 +135,8 @@ func TestDesignSendIsEnqueueOnly(t *testing.T) {
 	}
 }
 
-// Deterministic test for WithAdaptiveLinger using a controllable clock: idle
-// flush skips yielding; active burst yields repeatedly until the clock reaches
-// lastWrite+window; Close exits promptly while yielding.
+// Controllable-clock test for WithAdaptiveLinger: idle flushes immediately,
+// active bursts yield until lastWrite+window, and Close exits while yielding.
 func TestDesignAdaptiveLingerBurstAndIdle(t *testing.T) {
 	t.Parallel()
 	const window = time.Hour
@@ -166,8 +164,7 @@ func TestDesignAdaptiveLingerBurstAndIdle(t *testing.T) {
 	}
 	handshake := len(counter.snapshot())
 
-	// 1. Idle connection (now = baseTime+2h >= baseTime+1h): frame 1 flushes
-	// immediately with zero yields and stamps c.lastWrite = baseTime+2h.
+	// 1. Idle connection (now = baseTime+2h >= baseTime+1h): flushes with 0 yields.
 	if err := c.SendFrameDeferred(UID{First: 1}, []byte{0}); err != nil {
 		t.Fatal(err)
 	}
@@ -178,11 +175,8 @@ func TestDesignAdaptiveLingerBurstAndIdle(t *testing.T) {
 		t.Fatalf("ADAPTIVE_IDLE_YIELDED: idle connection yielded %d times, want 0", got)
 	}
 
-	// 2. Active burst: c.lastWrite is now baseTime+2h, so deadline is baseTime+3h.
-	// Advance clock by only 10ms (< 1h window), send frame 2, and require naLoop
-	// to yield >= 3 times while withholding the write. Queue frames 3..5, verify
-	// still 0 writes while before deadline, then advance clock to baseTime+3h
-	// so the production Before(deadline) condition terminates the loop and writes.
+	// 2. Active burst before deadline (baseTime+3h) yields without writing until
+	// the fake clock reaches baseTime+3h.
 	nowOffsetNs.Store(int64(2*window + 10*time.Millisecond))
 	const burstFrames = 4
 	if err := c.SendFrameDeferred(UID{First: 2}, []byte{1}); err != nil {
@@ -403,9 +397,8 @@ func TestDesignConcurrentSendersFramesWholeOnce(t *testing.T) {
 	}
 }
 
-// High-water backpressure: verifies ctx cancellation at high-water, naLoop-driven
-// wakeup, and FIFO wire order when a sender suspended in WithSuspendHandoff is
-// raced by a second sender as naLoop drains w.q.
+// High-water backpressure: ctx cancellation, naLoop wakeup, and FIFO wire order
+// when a sender suspended in WithSuspendHandoff races a second sender on drain.
 func TestDesignHighWaterBackpressure(t *testing.T) {
 	t.Parallel()
 	c, release, frames := dialStalledPeer(t, withNetDesign(designNG))
@@ -416,9 +409,7 @@ func TestDesignHighWaterBackpressure(t *testing.T) {
 			close(release)
 		}
 	}()
-	// Pre-fill w.q with a valid >= naHighWater frame under w.mu while keeping w.sig
-	// empty so naLoop stays parked until we signal w.sig to let naLoop drain and
-	// close w.drained itself.
+	// Pre-fill w.q with >= naHighWater while w.sig is empty so naLoop stays parked.
 	_, bigFrame := encodeFrame(UID{First: 100}, bytes.Repeat([]byte{'x'}, naHighWater), false)
 	c.na.mu.Lock()
 	c.na.q = append(c.na.q[:0], bigFrame...)
@@ -446,11 +437,8 @@ func TestDesignHighWaterBackpressure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Start sender 2 ("begin") with WithSuspendHandoff: when it suspends at
-	// high-water, start sender 3 ("end") and wake naLoop while sender 2 is STILL
-	// held in NotifySuspend. Because naWaitHighWater reserved sender 2's FIFO
-	// position on c.sendWaiters before NotifySuspend, sender 2's frame (2:f2)
-	// must precede sender 3's frame (3:f3) even after naLoop drains w.q!
+	// Sender 2 ("begin") reserves its c.sendWaiters FIFO slot before NotifySuspend,
+	// so its frame (2:f2) precedes sender 3's (3:f3) when naLoop drains w.q.
 	resumeBeginHandoff := make(chan struct{})
 	defer func() {
 		select {
@@ -510,14 +498,52 @@ func TestDesignHighWaterBackpressure(t *testing.T) {
 	}
 }
 
-// Verifies c.na is initialized before readLoop starts (forcing handlePing at
-// the beforeReadLoop seam) and that concurrent held controls serialize permit
-// reservation with coldControls publication under controlMu without deadlocking.
+// Cold/held outbox ordering and un-ordered startup PING on the default D-NG writer.
 func TestDesignColdHeldOrderAndStartupPing(t *testing.T) {
 	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// 1. Un-ordered connection (no WithSendOrder): forcing handlePing at beforeReadLoop
+	// must enqueue on c.na and deliver the PING reply to the peer, not c.writeCh.
+	pingSrv := newSimServer(t)
+	pingFrames := make(chan UID, 4)
+	pingTok := UID{First: 555, Second: 777}
+	go func() {
+		if pingSrv.handshake() != nil {
+			return
+		}
+		var fr FrameReader
+		for {
+			tok, _, err := fr.Read(pingSrv.srv, false)
+			if err != nil {
+				return
+			}
+			pingFrames <- tok
+		}
+	}()
+	var pingConn *Conn
+	pc, err := dialWith(ctx, "sim", pingSrv.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour), func(c *Conn) {
+		pingConn = c
+		c.beforeReadLoop = func() {
+			c.handlePing(BuildPingRequest(pingTok))
+		}
+	})
+	if err != nil {
+		t.Fatalf("dial pingConn: %v", err)
+	}
+	defer pc.Close()
+	if len(pingConn.writeCh) != 0 {
+		t.Fatalf("startup PING landed in legacy writeCh (len=%d)", len(pingConn.writeCh))
+	}
+	if got := within(t, pingFrames, "un-ordered startup PING reply"); got != pingTok {
+		t.Fatalf("startup PING token = %v, want %v", got, pingTok)
+	}
+
+	// 2. Cold-ordered connection: serialize held-control reservation and publication
+	// under controlMu across two concurrent producers gated at beforeControlLock.
 	s := newSimServer(t)
 	frames := make(chan string, 32)
-	pingTok := UID{First: 555, Second: 777}
 	go func() {
 		if s.handshake() != nil {
 			return
@@ -534,24 +560,22 @@ func TestDesignColdHeldOrderAndStartupPing(t *testing.T) {
 
 	var order sendqueue.Queue
 	prefixPermit, _ := order.Reserve()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	enteredCtrl1, releaseCtrl1 := make(chan struct{}), make(chan struct{})
-	var armCtrl1, gateCtrl1 atomic.Bool
-	var startupConn *Conn
+	reachedCtrl2 := make(chan struct{})
+	var armCtrl, gateCtrl1 atomic.Bool
+	var ctrlCalls atomic.Int32
 	c, err := dialWith(ctx, "sim", s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour), WithSendOrder(&order), func(c *Conn) {
-		startupConn = c
 		origCtx := c.ctx
 		c.ctx = &outboxProbeContext{Context: origCtx, onErr: func() {
-			if armCtrl1.Load() && gateCtrl1.CompareAndSwap(false, true) {
+			if armCtrl.Load() && gateCtrl1.CompareAndSwap(false, true) {
 				close(enteredCtrl1)
 				<-releaseCtrl1
 			}
 		}}
-		c.beforeReadLoop = func() {
-			// Force handlePing right before readLoop starts: c.na must already be
-			// initialized so the PING reply never lands in the unused legacy writeCh.
-			c.handlePing(BuildPingRequest(pingTok))
+		c.beforeControlLock = func() {
+			if armCtrl.Load() && ctrlCalls.Add(1) == 2 {
+				close(reachedCtrl2)
+			}
 		}
 	})
 	if err != nil {
@@ -559,25 +583,17 @@ func TestDesignColdHeldOrderAndStartupPing(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 	defer c.Close()
-	if len(startupConn.writeCh) != 0 {
-		prefixPermit.Release()
-		t.Fatalf("startup PING landed in legacy writeCh (len=%d); c.na was not initialized before readLoop", len(startupConn.writeCh))
-	}
 
-	// Seal the cold cohort while prefixPermit is still held. Now test two
-	// concurrent held controls where the first producer is paused inside
-	// tryEnqueueColdControl (via outboxProbeContext.Err) while a second producer
-	// races tryEnqueue: controlMu must serialize them so H2 cannot be published
-	// to coldControls ahead of H1.
+	// Seal the cold cohort while prefixPermit is held, then gate ctrl1 inside
+	// tryEnqueueColdControl until ctrl2 reaches beforeControlLock.
 	order.Seal()
-	armCtrl1.Store(true)
+	armCtrl.Store(true)
 
 	ctrl1Done, ctrl2Done := make(chan bool, 1), make(chan bool, 1)
 	go func() { ctrl1Done <- c.tryEnqueue(writeReq{token: UID{First: 2}, body: []byte("held-ctrl-1")}) }()
 	within(t, enteredCtrl1, "ctrl1 holding controlMu after reserving H1")
 	go func() { ctrl2Done <- c.tryEnqueue(writeReq{token: UID{First: 3}, body: []byte("held-ctrl-2")}) }()
-	// Give ctrl2 a moment to block on controlMu before releasing ctrl1.
-	time.Sleep(5 * time.Millisecond)
+	within(t, reachedCtrl2, "ctrl2 reached tryEnqueueNAControl before controlMu")
 	close(releaseCtrl1)
 	if !within(t, ctrl1Done, "ctrl1 enqueue") || !within(t, ctrl2Done, "ctrl2 enqueue") {
 		prefixPermit.Release()
@@ -613,19 +629,97 @@ func TestDesignColdHeldOrderAndStartupPing(t *testing.T) {
 	}
 
 	var nonPing []string
-	sawPing := false
-	for len(nonPing) < 5 || !sawPing {
-		f := within(t, frames, "ordered frame")
-		if strings.HasPrefix(f, "555:") {
-			sawPing = true
-		} else {
-			nonPing = append(nonPing, f)
-		}
+	for len(nonPing) < 5 {
+		nonPing = append(nonPing, within(t, frames, "ordered frame"))
 	}
 	want := []string{"1:prefix", "2:held-ctrl-1", "3:held-ctrl-2", "4:held1", "5:held2"}
 	for i := range want {
 		if nonPing[i] != want[i] {
 			t.Fatalf("wire order = %v, want %v", nonPing, want)
+		}
+	}
+}
+
+type panicOnceWriter struct {
+	shouldPanic atomic.Bool
+}
+
+func (w *panicOnceWriter) Write(p []byte) (int, error) {
+	if w.shouldPanic.CompareAndSwap(true, false) {
+		panic("injected wirelog panic")
+	}
+	return len(p), nil
+}
+
+// A panicking CaptureWireLog writer must not leave w.mu locked or c.sendWaiters
+// permits leaked on any D-NG enqueue path (small frame, >4KiB frame, tryEnqueue).
+func TestDesignWireLogPanicDoesNotPoisonWriter(t *testing.T) {
+	s := newSimServer(t)
+	frames := make(chan uint64, 16)
+	go func() {
+		if s.handshake() != nil {
+			return
+		}
+		var fr FrameReader
+		for {
+			tok, _, err := fr.Read(s.srv, false)
+			if err != nil {
+				return
+			}
+			frames <- tok.First
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := dialWith(ctx, "sim", s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+
+	pw := &panicOnceWriter{}
+	stop := CaptureWireLog(pw)
+	defer stop()
+
+	expectPanic := func(name string, fn func()) {
+		t.Helper()
+		pw.shouldPanic.Store(true)
+		panicked := false
+		func() {
+			defer func() {
+				if recover() != nil {
+					panicked = true
+				}
+			}()
+			fn()
+		}()
+		if !panicked {
+			t.Fatalf("%s did not panic as expected", name)
+		}
+	}
+
+	expectPanic("small SendFrameContext", func() {
+		_, _ = c.SendFrameContext(ctx, UID{First: 1}, []byte("small"))
+	})
+	expectPanic("large SendFrameContext", func() {
+		_, _ = c.SendFrameContext(ctx, UID{First: 2}, bytes.Repeat([]byte{'L'}, 5000))
+	})
+	expectPanic("tryEnqueue", func() {
+		_ = c.tryEnqueue(writeReq{token: UID{First: 3}, body: []byte("try")})
+	})
+
+	if ok, err := c.SendFrameContext(ctx, UID{First: 10}, []byte("after-panic-small")); !ok || err != nil {
+		t.Fatalf("post-panic small SendFrameContext = (%t, %v)", ok, err)
+	}
+	if ok, err := c.SendFrameContext(ctx, UID{First: 11}, bytes.Repeat([]byte{'M'}, 5000)); !ok || err != nil {
+		t.Fatalf("post-panic large SendFrameContext = (%t, %v)", ok, err)
+	}
+	if !c.tryEnqueue(writeReq{token: UID{First: 12}, body: []byte("after-panic-try")}) {
+		t.Fatal("post-panic tryEnqueue returned false")
+	}
+	for _, want := range []uint64{10, 11, 12} {
+		if got := within(t, frames, "post-panic frame"); got != want {
+			t.Fatalf("frame token = %d, want %d", got, want)
 		}
 	}
 }

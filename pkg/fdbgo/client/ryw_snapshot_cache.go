@@ -63,9 +63,8 @@ func (sc *snapshotCache) reset() {
 	sc.keyBufUsed = 0
 }
 
-// insertPoint caches a single point read [key, key+\x00) using inline storage
-// when capacity allows, avoiding 7 per-Get slice/row allocations on the common
-// 1-2 point read transaction path.
+// insertPoint caches [key, key+\x00) in inline storage when capacity allows,
+// avoiding per-Get slice/row allocations on the common 1-2 point read path.
 func (sc *snapshotCache) insertPoint(key, value []byte) {
 	need := len(key) + 1
 	var buf []byte
@@ -288,6 +287,9 @@ func (sc *snapshotCache) getRangeKVsLimited(begin, end []byte, budget int, rever
 			if bytes.Compare(kv.Key, end) >= 0 {
 				break
 			}
+			if sc.keyBufUsed > 0 && len(e.kvs) == 1 {
+				kv.Key = bytes.Clone(kv.Key)
+			}
 			sc.kvsTouched++
 			result = append(result, kv)
 			if budget > 0 && len(result) >= budget {
@@ -333,6 +335,9 @@ func (sc *snapshotCache) getRangeKVsBack(begin, end []byte, budget int) ([]KeyVa
 			kv := e.kvs[k]
 			if bytes.Compare(kv.Key, begin) < 0 {
 				break
+			}
+			if sc.keyBufUsed > 0 && len(e.kvs) == 1 {
+				kv.Key = bytes.Clone(kv.Key)
 			}
 			sc.kvsTouched++
 			desc = append(desc, kv)
@@ -391,6 +396,7 @@ func (sc *snapshotCache) getKey(key []byte) ([]byte, bool) {
 // skipKnownEmpty narrows [begin, end) past the known ranges holding no key at its scan
 // origin: begin moves up forward, end moves down in reverse.
 func (sc *snapshotCache) skipKnownEmpty(begin, end []byte, reverse bool) ([]byte, []byte) {
+	origBegin, origEnd := begin, end
 	es := sc.entries
 	for bytes.Compare(begin, end) < 0 {
 		if reverse {
@@ -417,6 +423,14 @@ func (sc *snapshotCache) skipKnownEmpty(begin, end []byte, reverse bool) ([]byte
 			break
 		}
 		begin = e.end
+	}
+	if sc.keyBufUsed > 0 {
+		if len(begin) != len(origBegin) || (len(begin) > 0 && &begin[0] != &origBegin[0]) {
+			begin = bytes.Clone(begin)
+		}
+		if len(end) != len(origEnd) || (len(end) > 0 && &end[0] != &origEnd[0]) {
+			end = bytes.Clone(end)
+		}
 	}
 	return begin, end
 }

@@ -13,8 +13,9 @@ improvement in ordinary SCAN_AND_FETCH, not a new absolute remote slowdown.
 This is source-interval localization, **not a causal decomposition** of timer,
 dispatch, scheduling or coalescing costs, and not a recoverable optimization
 budget. [RFC-264 is Rejected](../../../rfcs/264-send-wait-cost-and-ordering.md);
-the owner retains #954's 10/20 µs default and accepts its latency-versus-CPU/
-allocation trade-off. No further prototype or measurement follows from this
+for that workstream the owner retained #954's 10/20 µs legacy-writer default
+(later superseded by [RFC-282](../../../rfcs/282-dng-transport-and-hotpath.md)'s
+0/0 D-NG default). No further prototype or measurement follows from this
 report.
 
 The workload was `BenchmarkPlanSkip/cell=rows10`, plan-level Skip 3, small

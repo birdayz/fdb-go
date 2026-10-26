@@ -320,9 +320,11 @@ func (c *Conn) reserveColdControl(order *sendqueue.Queue, request writeReq) (res
 }
 
 // tryEnqueueNAControl serializes both prefix and held control permit reservation
-// with coldControls publication under controlMu so a second producer cannot
-// publish a later heldWaiters permit ahead of an earlier one.
+// with coldControls publication under controlMu.
 func (c *Conn) tryEnqueueNAControl(request writeReq) (handled, accepted bool) {
+	if c.beforeControlLock != nil {
+		c.beforeControlLock()
+	}
 	c.controlMu.Lock()
 	defer c.controlMu.Unlock()
 	if order := c.peerSendOrder.Load(); order != nil {
