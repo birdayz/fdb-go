@@ -23,14 +23,10 @@ type GetValueReqAndResult struct {
 	Result    []byte // slot 2, optional value
 }
 
-func (m *GetValueReqAndResult) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(GetValueReqAndResultSlotKey) {
-		m.Key = r.ReadBytes(GetValueReqAndResultSlotKey)
-	}
-	if r.FieldPresent(GetValueReqAndResultSlotResult) && r.ReadUint8(GetValueReqAndResultSlotResult) > 0 {
-		m.Result = r.ReadBytes(GetValueReqAndResultSlotResult + 1)
-		m.HasResult = true
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *GetValueReqAndResult) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *GetValueReqAndResult) UnmarshalFDB(data []byte) error {
@@ -38,12 +34,20 @@ func (m *GetValueReqAndResult) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *GetValueReqAndResult) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(GetValueReqAndResultSlotKey) {
 		m.Key = r.ReadBytes(GetValueReqAndResultSlotKey)
 	}
-	if r.FieldPresent(GetValueReqAndResultSlotResult) && r.ReadUint8(GetValueReqAndResultSlotResult) > 0 {
+	if r.FieldPresent(GetValueReqAndResultSlotResult) && r.ReadUint8(GetValueReqAndResultSlotResult) == 1 && r.FieldPresent(GetValueReqAndResultSlotResult+1) {
 		m.Result = r.ReadBytes(GetValueReqAndResultSlotResult + 1)
 		m.HasResult = true
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "GetValueReqAndResult", Err: err}
 	}
 	return nil
 }
@@ -91,62 +95,69 @@ func (m *GetValueReqAndResult) writeToBuffer(wb *wire.WriteToBuffer, vtableStart
 	return selfStart
 }
 
-// ParseGetValueReqAndResultVectorFromReader reads a FlatBuffers vector of GetValueReqAndResult.
-func ParseGetValueReqAndResultVectorFromReader(r *wire.Reader, slot int) []GetValueReqAndResult {
+// ParseGetValueReqAndResultVectorFromReader reads a FlatBuffers vector of GetValueReqAndResult under one decode budget.
+func ParseGetValueReqAndResultVectorFromReader(r *wire.Reader, slot int) ([]GetValueReqAndResult, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]GetValueReqAndResult, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]GetValueReqAndResult", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]GetValueReqAndResult, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]GetValueReqAndResult", Err: err}
 		}
-		var elem GetValueReqAndResult
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }
 
 // ParseGetValueReqAndResultStringVector decodes a VectorRef<GetValueReqAndResult, VecSerStrategy::String>.
-// Each element's DynamicSize fields are inline: [len(4)][data] per field.
-func ParseGetValueReqAndResultStringVector(data []byte) []GetValueReqAndResult {
-	if len(data) < 4 {
-		return nil
+// Each element's DynamicSize fields are inline: [len(4)][data] per field, and the
+// elements must fill the blob exactly. An empty blob is an empty vector.
+func ParseGetValueReqAndResultStringVector(data []byte) ([]GetValueReqAndResult, error) {
+	if len(data) == 0 {
+		return nil, nil
 	}
-	count := binary.LittleEndian.Uint32(data[0:4])
-	if count == 0 {
-		return nil
+	var count uint32
+	if len(data) >= 4 {
+		count = binary.LittleEndian.Uint32(data[0:4])
 	}
-	// Cap allocation to prevent OOM from crafted count values.
-	// Minimum 4 bytes per element (4-byte length prefix per field).
-	maxCount := uint32((len(data) - 4) / 4)
-	if maxCount == 0 {
-		maxCount = 1
+	// Each element holds at least one 4-byte length per field.
+	if len(data) < 4 || uint64(count) > uint64((len(data)-4)/4) {
+		return nil, &wire.DecodeError{Type: "[]GetValueReqAndResult", Err: &wire.StringVectorError{Count: count, Len: len(data)}}
 	}
-	allocCount := count
-	if allocCount > maxCount {
-		allocCount = maxCount
+	var result []GetValueReqAndResult
+	if count > 0 {
+		result = make([]GetValueReqAndResult, count)
 	}
 	pos := 4
-	result := make([]GetValueReqAndResult, 0, allocCount)
-	for i := uint32(0); i < count; i++ {
-		var elem GetValueReqAndResult
+	for i := range result {
+		elem := &result[i]
 		if pos+4 > len(data) {
-			break
+			return nil, &wire.DecodeError{Type: "[]GetValueReqAndResult", Err: &wire.StringVectorError{Count: count, Len: len(data)}}
 		}
 		{
 			n := int(binary.LittleEndian.Uint32(data[pos:]))
 			pos += 4
-			if n < 0 || pos+n > len(data) {
-				break
+			if n < 0 || n > len(data)-pos {
+				return nil, &wire.DecodeError{Type: "[]GetValueReqAndResult", Err: &wire.StringVectorError{Count: count, Len: len(data)}}
 			}
 			elem.Key = data[pos : pos+n : pos+n]
 			pos += n
 		}
-		result = append(result, elem)
 	}
-	return result
+	if pos != len(data) {
+		return nil, &wire.DecodeError{Type: "[]GetValueReqAndResult", Err: &wire.StringVectorError{Count: count, Len: len(data)}}
+	}
+	return result, nil
 }

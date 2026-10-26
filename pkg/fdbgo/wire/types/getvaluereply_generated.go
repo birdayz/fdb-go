@@ -41,23 +41,10 @@ type GetValueReply struct {
 	Cached   bool    // slot 5
 }
 
-func (m *GetValueReply) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(GetValueReplySlotPenalty) {
-		m.Penalty = r.ReadFloat64(GetValueReplySlotPenalty)
-	}
-	if r.FieldPresent(GetValueReplySlotError) && r.ReadUint8(GetValueReplySlotError) > 0 {
-		if nr, err := r.ReadNestedReader(GetValueReplySlotError + 1); err == nil {
-			m.Error.UnmarshalFromReader(nr)
-		}
-		m.HasError = true
-	}
-	if r.FieldPresent(GetValueReplySlotValue) && r.ReadUint8(GetValueReplySlotValue) > 0 {
-		m.Value = r.ReadBytes(GetValueReplySlotValue + 1)
-		m.HasValue = true
-	}
-	if r.FieldPresent(GetValueReplySlotCached) {
-		m.Cached = r.ReadBool(GetValueReplySlotCached)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *GetValueReply) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *GetValueReply) UnmarshalFDB(data []byte) error {
@@ -65,21 +52,33 @@ func (m *GetValueReply) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *GetValueReply) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(GetValueReplySlotPenalty) {
 		m.Penalty = r.ReadFloat64(GetValueReplySlotPenalty)
 	}
-	if r.FieldPresent(GetValueReplySlotError) && r.ReadUint8(GetValueReplySlotError) > 0 {
-		if nr, err := r.ReadNestedReader(GetValueReplySlotError + 1); err == nil {
-			m.Error.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetValueReplySlotError) && r.ReadUint8(GetValueReplySlotError) == 1 && r.FieldPresent(GetValueReplySlotError+1) {
+		nr, err := r.ReadNestedReader(GetValueReplySlotError + 1)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetValueReply", Field: "Error", Err: err}
+		}
+		if err := m.Error.decode(nr, b); err != nil {
+			return err
 		}
 		m.HasError = true
 	}
-	if r.FieldPresent(GetValueReplySlotValue) && r.ReadUint8(GetValueReplySlotValue) > 0 {
+	if r.FieldPresent(GetValueReplySlotValue) && r.ReadUint8(GetValueReplySlotValue) == 1 && r.FieldPresent(GetValueReplySlotValue+1) {
 		m.Value = r.ReadBytes(GetValueReplySlotValue + 1)
 		m.HasValue = true
 	}
 	if r.FieldPresent(GetValueReplySlotCached) {
 		m.Cached = r.ReadBool(GetValueReplySlotCached)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "GetValueReply", Err: err}
 	}
 	return nil
 }
@@ -255,21 +254,28 @@ func (m *GetValueReply) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseGetValueReplyVectorFromReader reads a FlatBuffers vector of GetValueReply.
-func ParseGetValueReplyVectorFromReader(r *wire.Reader, slot int) []GetValueReply {
+// ParseGetValueReplyVectorFromReader reads a FlatBuffers vector of GetValueReply under one decode budget.
+func ParseGetValueReplyVectorFromReader(r *wire.Reader, slot int) ([]GetValueReply, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]GetValueReply, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]GetValueReply", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]GetValueReply, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]GetValueReply", Err: err}
 		}
-		var elem GetValueReply
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

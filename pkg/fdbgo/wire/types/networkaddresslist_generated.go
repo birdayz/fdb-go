@@ -20,17 +20,13 @@ const NetworkAddressListMaxAlign = 4
 type NetworkAddressList struct {
 	Address             NetworkAddress // slot 0, nested
 	HasSecondaryAddress bool           // slot 1, optional tag
-	SecondaryAddress    []byte         // slot 2, optional value
+	SecondaryAddress    NetworkAddress // slot 2, optional nested value
 }
 
-func (m *NetworkAddressList) UnmarshalFromReader(r *wire.Reader) {
-	if nr, err := r.ReadNestedReader(NetworkAddressListSlotAddress); err == nil {
-		m.Address.UnmarshalFromReader(nr)
-	}
-	if r.FieldPresent(NetworkAddressListSlotSecondaryAddress) && r.ReadUint8(NetworkAddressListSlotSecondaryAddress) > 0 {
-		m.SecondaryAddress = r.ReadBytes(NetworkAddressListSlotSecondaryAddress + 1)
-		m.HasSecondaryAddress = true
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *NetworkAddressList) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *NetworkAddressList) UnmarshalFDB(data []byte) error {
@@ -38,12 +34,32 @@ func (m *NetworkAddressList) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if nr, err := r.ReadNestedReader(NetworkAddressListSlotAddress); err == nil {
-		m.Address.UnmarshalFromReader(nr)
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *NetworkAddressList) decode(r *wire.Reader, b *wire.DecodeBudget) error {
+	if r.FieldPresent(NetworkAddressListSlotAddress) {
+		nr, err := r.ReadNestedReader(NetworkAddressListSlotAddress)
+		if err != nil {
+			return &wire.DecodeError{Type: "NetworkAddressList", Field: "Address", Err: err}
+		}
+		if err := m.Address.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if r.FieldPresent(NetworkAddressListSlotSecondaryAddress) && r.ReadUint8(NetworkAddressListSlotSecondaryAddress) > 0 {
-		m.SecondaryAddress = r.ReadBytes(NetworkAddressListSlotSecondaryAddress + 1)
+	if r.FieldPresent(NetworkAddressListSlotSecondaryAddress) && r.ReadUint8(NetworkAddressListSlotSecondaryAddress) == 1 && r.FieldPresent(NetworkAddressListSlotSecondaryAddress+1) {
+		nr, err := r.ReadNestedReader(NetworkAddressListSlotSecondaryAddress + 1)
+		if err != nil {
+			return &wire.DecodeError{Type: "NetworkAddressList", Field: "SecondaryAddress", Err: err}
+		}
+		if err := m.SecondaryAddress.decode(nr, b); err != nil {
+			return err
+		}
 		m.HasSecondaryAddress = true
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "NetworkAddressList", Err: err}
 	}
 	return nil
 }
@@ -54,7 +70,7 @@ func (m *NetworkAddressList) UnmarshalFDB(data []byte) error {
 func (m *NetworkAddressList) precomputeSize(ps *wire.PrecomputeSize) int {
 	m.Address.precomputeSize(ps)
 	if m.HasSecondaryAddress {
-		ps.VisitDynamicSize(len(m.SecondaryAddress))
+		m.SecondaryAddress.precomputeSize(ps)
 	}
 	{
 		n := ps.GetMessageWriter(int(NetworkAddressListVTable[1]))
@@ -71,7 +87,7 @@ func (m *NetworkAddressList) writeToBuffer(wb *wire.WriteToBuffer, vtableStart i
 	var secondaryAddressOff int
 	addressStart = m.Address.writeToBuffer(wb, vtableStart, tmpl)
 	if m.HasSecondaryAddress {
-		secondaryAddressOff, _ = wb.VisitDynamicSize(m.SecondaryAddress)
+		secondaryAddressOff = m.SecondaryAddress.writeToBuffer(wb, vtableStart, tmpl)
 	}
 	selfW := wb.GetMessageWriter(int(NetworkAddressListVTable[1]), true)
 	selfStart := selfW.FinalLocation
@@ -91,21 +107,28 @@ func (m *NetworkAddressList) writeToBuffer(wb *wire.WriteToBuffer, vtableStart i
 	return selfStart
 }
 
-// ParseNetworkAddressListVectorFromReader reads a FlatBuffers vector of NetworkAddressList.
-func ParseNetworkAddressListVectorFromReader(r *wire.Reader, slot int) []NetworkAddressList {
+// ParseNetworkAddressListVectorFromReader reads a FlatBuffers vector of NetworkAddressList under one decode budget.
+func ParseNetworkAddressListVectorFromReader(r *wire.Reader, slot int) ([]NetworkAddressList, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]NetworkAddressList, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]NetworkAddressList", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]NetworkAddressList, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]NetworkAddressList", Err: err}
 		}
-		var elem NetworkAddressList
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

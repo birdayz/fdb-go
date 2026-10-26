@@ -30,7 +30,7 @@ import (
 // MarkerPrefix is the key a scenario's marker read gets, followed by its name.
 const MarkerPrefix = "\x02wg/marker/"
 
-type message interface{ UnmarshalFromReader(*wire.Reader) }
+type message interface{ UnmarshalFromReader(*wire.Reader) error }
 
 // requests are the client request types the transcript decodes.
 var requests = map[uint32]func() message{
@@ -201,7 +201,10 @@ func (c *Capture) addBody(timeNS int64, body []byte) {
 		return
 	}
 	m := mk()
-	m.UnmarshalFromReader(r)
+	if err := m.UnmarshalFromReader(r); err != nil {
+		c.Undecodable++
+		return
+	}
 	c.Requests = append(c.Requests, Request{TimeNS: timeNS, Seq: len(c.Requests), Kind: reflect.TypeOf(m).Elem().Name(), Msg: m})
 }
 

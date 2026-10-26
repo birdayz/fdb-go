@@ -42,7 +42,9 @@ func TestGRVLockAwarenessReadAtReply(t *testing.T) {
 					t.Fatal(err)
 				}
 				var reply types.GetReadVersionReply
-				reply.UnmarshalFromReader(&rd)
+				if err := reply.UnmarshalFromReader(&rd); err != nil {
+					t.Fatal(err)
+				}
 				reply.Locked = true
 				if err := r.conn.forward(r.token, types.MarshalErrorOrValueGetReadVersionReply(&reply)); err != nil {
 					t.Fatal(err)

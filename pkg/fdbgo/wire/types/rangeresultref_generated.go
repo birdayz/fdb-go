@@ -41,30 +41,10 @@ type RangeResultRef struct {
 	ReadThroughEnd bool          // slot 5
 }
 
-func (m *RangeResultRef) UnmarshalFromReader(r *wire.Reader) {
-	if count, err := r.ReadVectorCount(RangeResultRefSlotData); err == nil && count > 0 {
-		m.Data = make([]KeyValueRef, 0, count)
-		for i := 0; i < count; i++ {
-			if elemR, err := r.ReadVectorElementReader(RangeResultRefSlotData, i); err == nil {
-				var elem KeyValueRef
-				elem.UnmarshalFromReader(elemR)
-				m.Data = append(m.Data, elem)
-			}
-		}
-	}
-	if r.FieldPresent(RangeResultRefSlotMore) {
-		m.More = r.ReadBool(RangeResultRefSlotMore)
-	}
-	if r.FieldPresent(RangeResultRefSlotReadThrough) && r.ReadUint8(RangeResultRefSlotReadThrough) > 0 {
-		m.ReadThrough = r.ReadBytes(RangeResultRefSlotReadThrough + 1)
-		m.HasReadThrough = true
-	}
-	if r.FieldPresent(RangeResultRefSlotReadToBegin) {
-		m.ReadToBegin = r.ReadBool(RangeResultRefSlotReadToBegin)
-	}
-	if r.FieldPresent(RangeResultRefSlotReadThroughEnd) {
-		m.ReadThroughEnd = r.ReadBool(RangeResultRefSlotReadThroughEnd)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *RangeResultRef) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *RangeResultRef) UnmarshalFDB(data []byte) error {
@@ -72,20 +52,36 @@ func (m *RangeResultRef) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if count, err := r.ReadVectorCount(RangeResultRefSlotData); err == nil && count > 0 {
-		m.Data = make([]KeyValueRef, 0, count)
-		for i := 0; i < count; i++ {
-			if elemR, err := r.ReadVectorElementReader(RangeResultRefSlotData, i); err == nil {
-				var elem KeyValueRef
-				elem.UnmarshalFromReader(elemR)
-				m.Data = append(m.Data, elem)
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *RangeResultRef) decode(r *wire.Reader, b *wire.DecodeBudget) error {
+	if r.FieldPresent(RangeResultRefSlotData) {
+		count, err := r.ReadVectorCount(RangeResultRefSlotData)
+		if err == nil {
+			err = b.Take(count)
+		}
+		if err != nil {
+			return &wire.DecodeError{Type: "RangeResultRef", Field: "Data", Err: err}
+		}
+		if count > 0 {
+			m.Data = make([]KeyValueRef, count)
+			for i := range m.Data {
+				elemR, err := r.ReadVectorElementReader(RangeResultRefSlotData, i)
+				if err != nil {
+					return &wire.DecodeError{Type: "RangeResultRef", Field: "Data", Err: err}
+				}
+				if err := m.Data[i].decode(elemR, b); err != nil {
+					return err
+				}
 			}
 		}
 	}
 	if r.FieldPresent(RangeResultRefSlotMore) {
 		m.More = r.ReadBool(RangeResultRefSlotMore)
 	}
-	if r.FieldPresent(RangeResultRefSlotReadThrough) && r.ReadUint8(RangeResultRefSlotReadThrough) > 0 {
+	if r.FieldPresent(RangeResultRefSlotReadThrough) && r.ReadUint8(RangeResultRefSlotReadThrough) == 1 && r.FieldPresent(RangeResultRefSlotReadThrough+1) {
 		m.ReadThrough = r.ReadBytes(RangeResultRefSlotReadThrough + 1)
 		m.HasReadThrough = true
 	}
@@ -94,6 +90,9 @@ func (m *RangeResultRef) UnmarshalFDB(data []byte) error {
 	}
 	if r.FieldPresent(RangeResultRefSlotReadThroughEnd) {
 		m.ReadThroughEnd = r.ReadBool(RangeResultRefSlotReadThroughEnd)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "RangeResultRef", Err: err}
 	}
 	return nil
 }
@@ -290,21 +289,28 @@ func (m *RangeResultRef) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseRangeResultRefVectorFromReader reads a FlatBuffers vector of RangeResultRef.
-func ParseRangeResultRefVectorFromReader(r *wire.Reader, slot int) []RangeResultRef {
+// ParseRangeResultRefVectorFromReader reads a FlatBuffers vector of RangeResultRef under one decode budget.
+func ParseRangeResultRefVectorFromReader(r *wire.Reader, slot int) ([]RangeResultRef, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]RangeResultRef, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]RangeResultRef", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]RangeResultRef, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]RangeResultRef", Err: err}
 		}
-		var elem RangeResultRef
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

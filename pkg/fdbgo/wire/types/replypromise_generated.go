@@ -31,10 +31,10 @@ type ReplyPromise struct {
 	Token [16]byte // slot 0
 }
 
-func (m *ReplyPromise) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(ReplyPromiseSlotToken) {
-		m.Token = r.ReadUID(ReplyPromiseSlotToken)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *ReplyPromise) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *ReplyPromise) UnmarshalFDB(data []byte) error {
@@ -42,8 +42,16 @@ func (m *ReplyPromise) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *ReplyPromise) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(ReplyPromiseSlotToken) {
 		m.Token = r.ReadUID(ReplyPromiseSlotToken)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "ReplyPromise", Err: err}
 	}
 	return nil
 }
@@ -190,21 +198,28 @@ func (m *ReplyPromise) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseReplyPromiseVectorFromReader reads a FlatBuffers vector of ReplyPromise.
-func ParseReplyPromiseVectorFromReader(r *wire.Reader, slot int) []ReplyPromise {
+// ParseReplyPromiseVectorFromReader reads a FlatBuffers vector of ReplyPromise under one decode budget.
+func ParseReplyPromiseVectorFromReader(r *wire.Reader, slot int) ([]ReplyPromise, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]ReplyPromise, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]ReplyPromise", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]ReplyPromise, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]ReplyPromise", Err: err}
 		}
-		var elem ReplyPromise
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

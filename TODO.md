@@ -475,6 +475,27 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   the peer-reference count Go does not track (see the idle-connection divergence in
   `connectionMonitor`); port both with the unreferenced-close knobs, pinned by tests.
 
+- [x] **A commit reply that does not decode is not `commit_unknown_result`.** Fixed in #1004
+  (RFC-276): malformed post-send replies route through `unknownResult`, returning 1021
+  only after the dummy-transaction fence succeeds. A corrupted real-FDB commit reply
+  pins the applied mutation, the synchronization fence and the unknown-result error.
+
+- [ ] **Endpoints ignore their secondary address.** C++ `Endpoint::serialize` calls
+  `choosePrimaryAddress` on deserialization (`FlowTransport.h:62-68,97-103`): a client,
+  whose local address list is plaintext with no secondary, swaps to the secondary when
+  the primary's TLS flag differs. Go dials `NetworkAddressList.Address` as written
+  (`client/endpoint.go`); RFC-276 decodes `SecondaryAddress` as a `NetworkAddress`
+  (vector `GetKeyServerLocationsReply_secondary_address`), so the choice can be
+  ported and pinned against that vector.
+- [ ] **Presence-only Optional tables still encode as byte strings.** RFC-276 decodes
+  `ClientDBInfo.EncryptKeyProxy`, `CommitTransactionRequest.CommitCostEstimation` and
+  `TenantInfo.Token` as presence only (`optTable` in `cmd/fdb-schema-extract`), but their
+  encoders write `VisitDynamicSize` behind the union offset. Give the types Go
+  equivalents, or make the encoder refuse a presence-only field, before the client sets one.
+  The registered table encoders for `NetworkAddressList.SecondaryAddress` and
+  `CommitTransactionRef.spanContext` are pinned byte-exactly by C++ request fixtures
+  in #1004.
+
 - [ ] **Read replica selection is best-of-two random.** C++ `loadBalance` sends the
   first request to the alternative with the lowest `smoothOutstanding` (ties to the
   lowest index) and the second to the next-lowest (`LoadBalance.actor.h:469-552`).
@@ -2253,9 +2274,11 @@ multi-page auto-commit SELECT, which stays tracked only.
   only an equal `begin` (`pkg/fdbgo/client/locality.go:64-80`) where C++
   `CoalescedKeyRangeMap::insert` overwrites the range, and `lookupLocked` (`:139`) checks
   only `idx-1`. Fixed in #997 (RFC-271).
-- [ ] **Medium:** decoding can allocate quadratically: vector element offsets may alias one
+- [x] **Medium:** decoding can allocate quadratically: vector element offsets may alias one
   inner vector (`pkg/fdbgo/wire/reader.go:415`, reachable through `GetMappedKeyValuesReply`).
   Add a per-decode element budget in the generator and a raw-bytes `UnmarshalFDB` fuzzer.
+  Fixed in #1004 (RFC-276): a `len/4` element budget per decode, `FuzzUnmarshalFDB`, and
+  decoders that fail malformed input.
 - [x] **Medium:** TLS sets `ServerName` to the dialed host (`pkg/fdbgo/transport/conn.go:1533-1535`),
   a hostname check libfdb_c does not make; `FDB_TLS_VERIFY_PEERS` and `FDB_TLS_PASSWORD`
   are never read. Fixed in #1006 (RFC-277): the `FDB_TLS_*` path verifies as libfdb_c does;

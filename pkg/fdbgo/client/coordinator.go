@@ -213,10 +213,13 @@ func parseClientDBInfoFromReader(r *wire.Reader) (*DBInfo, error) {
 	// connection string instead of proxies (a `coordinators auto`/`change`
 	// rotation). Read exactly as types.ClientDBInfo.UnmarshalFromReader does —
 	// slot-3 presence tag + slot-4 value (RFC-111 §3).
-	if r.FieldPresent(types.ClientDBInfoSlotForward) && r.ReadUint8(types.ClientDBInfoSlotForward) > 0 {
+	if r.FieldPresent(types.ClientDBInfoSlotForward) && r.ReadUint8(types.ClientDBInfoSlotForward) == 1 &&
+		r.FieldPresent(types.ClientDBInfoSlotForward+1) {
 		info.Forward = string(r.ReadBytes(types.ClientDBInfoSlotForward + 1))
 	}
-
+	if err := r.Err(); err != nil {
+		return nil, &wire.DecodeError{Type: "ClientDBInfo", Err: err}
+	}
 	return info, nil
 }
 

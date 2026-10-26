@@ -414,12 +414,17 @@ go_test(
 
 # gazelle:exclude conn_identity_unit_test.go
 # gazelle:exclude location_cache_unit_test.go
+# gazelle:exclude decode_failure_unit_test.go
+# gazelle:exclude reply_ground_truth_test.go
 go_test(
     name = "conn_location_unit_test",
     srcs = [
         "conn_identity_unit_test.go",
+        "decode_failure_unit_test.go",
+        "fdberror_assert_test.go",
         "hedge_budget_helpers_test.go",
         "location_cache_unit_test.go",
+        "reply_ground_truth_test.go",
     ],
     data = ["//pkg/fdbgo/wire/types:testdata.json"],
     embed = [":client"],
@@ -492,6 +497,7 @@ go_test(
         "clusterfile_lookup_test.go",
         "clusterfile_test.go",
         "coalesce_option_test.go",
+        "commit_decode_fdb_test.go",
         "commit_dummy_regression_test.go",
         "commit_grv_lifetime_test.go",
         "commit_lifetime_fdb_test.go",
@@ -519,6 +525,7 @@ go_test(
         "endpoint_test.go",
         "failure_monitor_test.go",
         "fault_test.go",
+        "fdberror_assert_test.go",
         "getkey_conflict_unit_test.go",
         "getrange_conflict_unit_test.go",
         "getrange_more_limit_test.go",
@@ -583,7 +590,6 @@ go_test(
         "readversion_instant_anchor_test.go",
         "readversion_instant_test.go",
         "readversion_race_test.go",
-        "reply_ground_truth_test.go",
         "request_transcript_legacy_test.go",
         "request_transcript_test.go",
         "reset_option_lifecycle_test.go",

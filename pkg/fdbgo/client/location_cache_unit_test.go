@@ -383,10 +383,11 @@ func TestParseLocationsReplyMalformed(t *testing.T) {
 	}
 	put := func(d []byte, p int, v uint32) { binary.LittleEndian.PutUint32(d[p:], v) }
 	cases := []struct {
-		name      string
-		mutate    func(d []byte)
-		defect    locationsDefect
-		wantCount bool // the cause is a *wire.VectorCountError
+		name       string
+		mutate     func(d []byte)
+		defect     locationsDefect
+		wantCount  bool // the cause is a *wire.VectorCountError
+		wantDecode bool // the cause is a *wire.DecodeError
 	}{
 		{name: "absent key range", mutate: func(d []byte) { binary.LittleEndian.PutUint16(d[layout.keyRangeSlot:], 0) }, defect: locationsNoShards},
 		{name: "empty key range", mutate: func(d []byte) { put(d, layout.beginString, 0); put(d, layout.endString, 0) }, defect: locationsNoShards},
@@ -395,7 +396,8 @@ func TestParseLocationsReplyMalformed(t *testing.T) {
 		{name: "server past the buffer", mutate: func(d []byte) { put(d, layout.server, 1<<20) }, defect: locationsUnreadable},
 		{name: "results count past the buffer", mutate: func(d []byte) { put(d, layout.resultsCount, 1000) }, defect: locationsUnreadable, wantCount: true},
 		{name: "server count past the buffer", mutate: func(d []byte) { put(d, layout.serversCount, 1000) }, defect: locationsUnreadable, wantCount: true},
-		{name: "range key past the buffer", mutate: func(d []byte) { put(d, layout.beginField, 1<<20) }, defect: locationsUnreadable},
+		{name: "range key past the buffer", mutate: func(d []byte) { put(d, layout.beginField, 1<<20) }, defect: locationsUnreadable, wantDecode: true},
+		{name: "range key offset zero", mutate: func(d []byte) { put(d, layout.beginField, 0) }, defect: locationsUnreadable},
 		{name: "inverted range", mutate: func(d []byte) { d[layout.beginString+4] = 'z' }, defect: locationsInvertedRange},
 		// The result and its KeyRangeRef share one vtable here, so the result's
 		// servers vanish too; the range is checked first.
@@ -415,6 +417,10 @@ func TestParseLocationsReplyMalformed(t *testing.T) {
 			var countErr *wire.VectorCountError
 			if got := errors.As(err, &countErr); got != tc.wantCount {
 				t.Fatalf("VectorCountError in %v: %v, want %v", err, got, tc.wantCount)
+			}
+			var decodeErr *wire.DecodeError
+			if tc.wantDecode && !errors.As(err, &decodeErr) {
+				t.Fatalf("%v: want a DecodeError", err)
 			}
 		})
 	}

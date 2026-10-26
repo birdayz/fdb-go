@@ -369,6 +369,8 @@ func parseWaitMetricsReply(data []byte) (int64, error) {
 	// uses the one canonical ReadErrorOrInto walk instead of leaning on that
 	// coincidence. Covered by the StorageMetrics_basic vector.
 	var metrics types.StorageMetrics
-	metrics.UnmarshalFromReader(&r)
+	if err := metrics.UnmarshalFromReader(&r); err != nil {
+		return 0, fmt.Errorf("WaitMetrics: %w", err)
+	}
 	return metrics.Bytes, nil
 }

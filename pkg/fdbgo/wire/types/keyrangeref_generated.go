@@ -22,73 +22,78 @@ type KeyRangeRef struct {
 	End   []byte // slot 1
 }
 
-// UnmarshalFromReader / UnmarshalFDB are defined in keyrangeref_custom.go to
+// UnmarshalFromReader / UnmarshalFDB / decode are defined in keyrangeref_custom.go to
 // invert the C++ single-key-range serialize optimization. The generator
 // (cmd/fdb-schema-extract/main.cpp) skips them when hasCustomSerialize is true.
 
-// ParseKeyRangeRefVectorFromReader reads a FlatBuffers vector of KeyRangeRef.
-func ParseKeyRangeRefVectorFromReader(r *wire.Reader, slot int) []KeyRangeRef {
+// ParseKeyRangeRefVectorFromReader reads a FlatBuffers vector of KeyRangeRef under one decode budget.
+func ParseKeyRangeRefVectorFromReader(r *wire.Reader, slot int) ([]KeyRangeRef, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]KeyRangeRef, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]KeyRangeRef", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]KeyRangeRef, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]KeyRangeRef", Err: err}
 		}
-		var elem KeyRangeRef
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }
 
 // ParseKeyRangeRefStringVector decodes a VectorRef<KeyRangeRef, VecSerStrategy::String>.
-// Each element's DynamicSize fields are inline: [len(4)][data] per field.
-func ParseKeyRangeRefStringVector(data []byte) []KeyRangeRef {
-	if len(data) < 4 {
-		return nil
+// Each element's DynamicSize fields are inline: [len(4)][data] per field, and the
+// elements must fill the blob exactly. An empty blob is an empty vector.
+func ParseKeyRangeRefStringVector(data []byte) ([]KeyRangeRef, error) {
+	if len(data) == 0 {
+		return nil, nil
 	}
-	count := binary.LittleEndian.Uint32(data[0:4])
-	if count == 0 {
-		return nil
+	var count uint32
+	if len(data) >= 4 {
+		count = binary.LittleEndian.Uint32(data[0:4])
 	}
-	// Cap allocation to prevent OOM from crafted count values.
-	// Minimum 8 bytes per element (4-byte length prefix per field).
-	maxCount := uint32((len(data) - 4) / 8)
-	if maxCount == 0 {
-		maxCount = 1
+	// Each element holds at least one 4-byte length per field.
+	if len(data) < 4 || uint64(count) > uint64((len(data)-4)/8) {
+		return nil, &wire.DecodeError{Type: "[]KeyRangeRef", Err: &wire.StringVectorError{Count: count, Len: len(data)}}
 	}
-	allocCount := count
-	if allocCount > maxCount {
-		allocCount = maxCount
+	var result []KeyRangeRef
+	if count > 0 {
+		result = make([]KeyRangeRef, count)
 	}
 	pos := 4
-	result := make([]KeyRangeRef, 0, allocCount)
-	for i := uint32(0); i < count; i++ {
-		var elem KeyRangeRef
+	for i := range result {
+		elem := &result[i]
 		if pos+4 > len(data) {
-			break
+			return nil, &wire.DecodeError{Type: "[]KeyRangeRef", Err: &wire.StringVectorError{Count: count, Len: len(data)}}
 		}
 		{
 			n := int(binary.LittleEndian.Uint32(data[pos:]))
 			pos += 4
-			if n < 0 || pos+n > len(data) {
-				break
+			if n < 0 || n > len(data)-pos {
+				return nil, &wire.DecodeError{Type: "[]KeyRangeRef", Err: &wire.StringVectorError{Count: count, Len: len(data)}}
 			}
 			elem.Begin = data[pos : pos+n : pos+n]
 			pos += n
 		}
 		if pos+4 > len(data) {
-			break
+			return nil, &wire.DecodeError{Type: "[]KeyRangeRef", Err: &wire.StringVectorError{Count: count, Len: len(data)}}
 		}
 		{
 			n := int(binary.LittleEndian.Uint32(data[pos:]))
 			pos += 4
-			if n < 0 || pos+n > len(data) {
-				break
+			if n < 0 || n > len(data)-pos {
+				return nil, &wire.DecodeError{Type: "[]KeyRangeRef", Err: &wire.StringVectorError{Count: count, Len: len(data)}}
 			}
 			elem.End = data[pos : pos+n : pos+n]
 			pos += n
@@ -105,7 +110,9 @@ func ParseKeyRangeRefStringVector(data []byte) []KeyRangeRef {
 			elem.Begin = first[:len(first)-1]
 			elem.End = first
 		}
-		result = append(result, elem)
 	}
-	return result
+	if pos != len(data) {
+		return nil, &wire.DecodeError{Type: "[]KeyRangeRef", Err: &wire.StringVectorError{Count: count, Len: len(data)}}
+	}
+	return result, nil
 }

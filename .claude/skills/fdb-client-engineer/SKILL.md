@@ -80,9 +80,9 @@ Read the *actual* function before porting/verifying. Never guess wire layout or 
   (1=Error, 2=value, 0=NONE), **never by field count** (a 1-field success is indistinguishable
   from a 1-field Error by count). `wire.ReadErrorOr` parses the tag.
 - **`Optional<Error>` is a nested Error TABLE** (uint16 code at the table's slot 0) via a
-  RelativeOffset — NOT a length-prefixed string. Use `wire.ReadInlineReplyError`; the generated
-  `.Error` field mis-decodes it (schema-extractor bug — fix the extractor, don't hand-edit
-  generated code).
+  RelativeOffset — NOT a length-prefixed string. `wire.ReadInlineReplyError` and the generated
+  `.Error` field both decode it that way; any `Optional<T>` of a table follows the same rule
+  (fix the extractor, don't hand-edit generated code).
 - **Error codes are `uint16`.** Read with `ReadUint16`.
 - Codes that matter: **1001** wrong_shard_server, **1006** all_alternatives_failed (read-path
   *absorbed* — must NEVER surface to the app), **1007** transaction_too_old (retryable),
@@ -205,7 +205,7 @@ it.** Update the RFC to **Status: Implemented** and flip the TODO mark.
 | `transport/conn.go` | connection, write/read loops, `failConnection`, `connectionMonitor`, handshake deadline |
 | `fdb/error.go` | `IsRetryable` (the high-level predicate — keep in sync with `client.isRetryable`) |
 | `fdb/database.go` + `fdb/transaction.go` | facade modeled on Apple's binding (functional options, `Must*` boundary, `panicToError`) |
-| `wire/reader.go` + `wire/types/` | `ReadErrorOr`/`ReadInlineReplyError`; generated reply structs (fix the extractor in `cmd/fdb-schema-extract`, don't hand-edit generated) |
+| `wire/reader.go` + `wire/types/` | `ReadErrorOr`; generated reply structs, whose `HasError`/`Error` carry the inline read error (fix the extractor in `cmd/fdb-schema-extract`, don't hand-edit generated) |
 | `bench/` | dual-client differential harness (Go vs `libfdb_c`) |
 
 ---

@@ -17,7 +17,9 @@ func decodeCommit(t *testing.T, body []byte) types.CommitTransactionRequest {
 		t.Fatal(err)
 	}
 	var req types.CommitTransactionRequest
-	req.UnmarshalFromReader(r)
+	if err := req.UnmarshalFromReader(r); err != nil {
+		t.Fatal(err)
+	}
 	return req
 }
 

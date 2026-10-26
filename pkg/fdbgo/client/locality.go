@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
@@ -788,7 +789,12 @@ func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 
 	// Parse vector of pair<KeyRangeRef, vector<StorageServerInterface>> using
 	// generated slot constants and types.
+	// One budget covers both vector levels, so aliased offsets cannot multiply the walk.
+	budget := wire.NewDecodeBudget(data)
 	pairCount, err := r.ReadVectorCount(types.GetKeyServerLocationsReplySlotResults)
+	if err == nil {
+		err = budget.Take(pairCount)
+	}
 	if err != nil {
 		return nil, &locationsReplyError{defect: locationsUnreadable, detail: "results", err: err}
 	}
@@ -802,21 +808,26 @@ func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 
 		// Pair slot 0: KeyRangeRef (nested struct).
 		if !pairR.FieldPresent(types.LocationPairSlotKeyRange) {
+			if err := pairR.Err(); err != nil {
+				return nil, &locationsReplyError{defect: locationsUnreadable, detail: fmt.Sprintf("result %d", i), err: err}
+			}
 			continue
 		}
 		krR, err := pairR.ReadNestedReader(types.LocationPairSlotKeyRange)
 		if err != nil {
 			return nil, &locationsReplyError{defect: locationsUnreadable, detail: fmt.Sprintf("result %d range", i), err: err}
 		}
-		// ReadBytes returns nil for a present key only when its bytes lie outside the
-		// reply; decoding that as the empty key would widen the range.
+		var kr types.KeyRangeRef
+		if err := kr.UnmarshalFromReader(krR); err != nil {
+			return nil, &locationsReplyError{defect: locationsUnreadable, detail: fmt.Sprintf("result %d range", i), err: err}
+		}
+		// A present key with a zero RelativeOffset reads as empty, as in C++, and would
+		// widen the range.
 		for _, slot := range [...]int{types.KeyRangeRefSlotBegin, types.KeyRangeRefSlotEnd} {
 			if krR.FieldPresent(slot) && krR.ReadBytes(slot) == nil {
 				return nil, &locationsReplyError{defect: locationsUnreadable, detail: fmt.Sprintf("result %d range key", i)}
 			}
 		}
-		var kr types.KeyRangeRef
-		kr.UnmarshalFromReader(krR)
 		// An absent end is the empty key, as C++ decodes it: ["a", absent) is inverted.
 		switch c := bytes.Compare(kr.Begin, kr.End); {
 		case c > 0:
@@ -827,6 +838,9 @@ func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 
 		// Pair slot 1: vector<StorageServerInterface>.
 		ssCount, err := pairR.ReadVectorCount(types.LocationPairSlotServers)
+		if err == nil {
+			err = budget.Take(ssCount)
+		}
 		if err != nil {
 			return nil, &locationsReplyError{defect: locationsUnreadable, detail: fmt.Sprintf("result %d servers", i), err: err}
 		}
@@ -840,14 +854,24 @@ func parseGetKeyServerLocationsReply(data []byte) ([]locationEntry, error) {
 			// We read any endpoint to get the base token; slot 2 is the most
 			// reliably present in all FDB versions.
 			ep, err := ReadEndpointFromSlot(ssR, types.StorageServerInterfaceSlotField_2)
+			// A present but malformed endpoint fails the reply; the scan below probes
+			// slots that may hold no endpoint at all, so it skips their errors.
+			var absent *endpointAbsentError
+			if err != nil && !errors.As(err, &absent) {
+				return nil, &locationsReplyError{defect: locationsUnreadable, detail: fmt.Sprintf("result %d server %d", i, j), err: err}
+			}
 			if err != nil || !endpointValid(&ep) {
-				nf := ssR.VTableLength() - 2
+				// Scan only the slots this schema knows; the peer chooses the vtable length.
+				nf := min(ssR.VTableLength(), len(types.StorageServerInterfaceVTable)) - 2
 				for s := 0; s < nf; s++ {
 					ep, err = ReadEndpointFromSlot(ssR, s)
 					if err == nil && endpointValid(&ep) {
 						break
 					}
 				}
+			}
+			if err := ssR.Err(); err != nil {
+				return nil, &locationsReplyError{defect: locationsUnreadable, detail: fmt.Sprintf("result %d server %d", i, j), err: err}
 			}
 			if endpointValid(&ep) {
 				servers = append(servers, ServerInfo{

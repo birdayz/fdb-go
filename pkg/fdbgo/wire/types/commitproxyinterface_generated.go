@@ -28,14 +28,10 @@ type CommitProxyInterface struct {
 	// Commit: unregistered nested struct at slot 3
 }
 
-func (m *CommitProxyInterface) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(CommitProxyInterfaceSlotProcessId) && r.ReadUint8(CommitProxyInterfaceSlotProcessId) > 0 {
-		m.ProcessId = r.ReadBytes(CommitProxyInterfaceSlotProcessId + 1)
-		m.HasProcessId = true
-	}
-	if r.FieldPresent(CommitProxyInterfaceSlotProvisional) {
-		m.Provisional = r.ReadBool(CommitProxyInterfaceSlotProvisional)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *CommitProxyInterface) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *CommitProxyInterface) UnmarshalFDB(data []byte) error {
@@ -43,12 +39,20 @@ func (m *CommitProxyInterface) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if r.FieldPresent(CommitProxyInterfaceSlotProcessId) && r.ReadUint8(CommitProxyInterfaceSlotProcessId) > 0 {
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *CommitProxyInterface) decode(r *wire.Reader, b *wire.DecodeBudget) error {
+	if r.FieldPresent(CommitProxyInterfaceSlotProcessId) && r.ReadUint8(CommitProxyInterfaceSlotProcessId) == 1 && r.FieldPresent(CommitProxyInterfaceSlotProcessId+1) {
 		m.ProcessId = r.ReadBytes(CommitProxyInterfaceSlotProcessId + 1)
 		m.HasProcessId = true
 	}
 	if r.FieldPresent(CommitProxyInterfaceSlotProvisional) {
 		m.Provisional = r.ReadBool(CommitProxyInterfaceSlotProvisional)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "CommitProxyInterface", Err: err}
 	}
 	return nil
 }
@@ -95,21 +99,28 @@ func (m *CommitProxyInterface) writeToBuffer(wb *wire.WriteToBuffer, vtableStart
 	return selfStart
 }
 
-// ParseCommitProxyInterfaceVectorFromReader reads a FlatBuffers vector of CommitProxyInterface.
-func ParseCommitProxyInterfaceVectorFromReader(r *wire.Reader, slot int) []CommitProxyInterface {
+// ParseCommitProxyInterfaceVectorFromReader reads a FlatBuffers vector of CommitProxyInterface under one decode budget.
+func ParseCommitProxyInterfaceVectorFromReader(r *wire.Reader, slot int) ([]CommitProxyInterface, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]CommitProxyInterface, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]CommitProxyInterface", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]CommitProxyInterface, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]CommitProxyInterface", Err: err}
 		}
-		var elem CommitProxyInterface
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

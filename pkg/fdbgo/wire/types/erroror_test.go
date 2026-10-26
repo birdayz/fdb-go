@@ -93,8 +93,8 @@ func TestReadErrorOr_ZeroFieldSuccess(t *testing.T) {
 // (Optional<Error>) that storage read replies carry (RFC-010 #1). An ErrorOrError
 // buffer's root object is byte-identical to that inline field: a uint8 present-tag
 // at slot 0 and a RelativeOffset to a nested Error table at slot 1. The real
-// replies put the same structure at slot 1/2 (the generated SlotError constant);
-// this exercises the nested-Error-table decode the generated reply.Error mis-handles.
+// replies put the same structure at slot 1/2 (the generated SlotError constant),
+// which the generated reply decoders read as the same nested Error table.
 func TestReadInlineReplyError(t *testing.T) {
 	t.Parallel()
 	for _, code := range []uint16{1001, 1009, 1037, 0xFFFF} {
@@ -113,12 +113,8 @@ func TestReadInlineReplyError(t *testing.T) {
 	}
 }
 
-// TestMarshalErrorOrInlineError_RoundTrip validates the fault-injection envelope
-// (RFC-118): MarshalErrorOrInlineError must produce a frame that the production
-// read-reply decode path (ReadErrorOrInto → UnmarshalFromReader →
-// ReadInlineReplyError) reads as a SUCCESS ErrorOr whose nested reply carries the
-// inline error. It must decode identically through all three read reply types'
-// SlotError (the single frame serves all three parsers). Penalty must survive too.
+// The retained inline-error helper reads the fault-injection envelope as ErrorOr success.
+// Production parsers use generated HasError/Error, covered by reply ground-truth tests.
 func TestMarshalErrorOrInlineError_RoundTrip(t *testing.T) {
 	t.Parallel()
 	for _, code := range []uint16{1001, 1009, 1037} {
@@ -132,7 +128,9 @@ func TestMarshalErrorOrInlineError_RoundTrip(t *testing.T) {
 		}
 		// Penalty (slot 0) round-trips.
 		var reply GetValueReply
-		reply.UnmarshalFromReader(r)
+		if err := reply.UnmarshalFromReader(r); err != nil {
+			t.Fatalf("code %d: UnmarshalFromReader: %v", code, err)
+		}
 		if reply.Penalty != 1.5 {
 			t.Errorf("code %d: Penalty = %v, want 1.5", code, reply.Penalty)
 		}

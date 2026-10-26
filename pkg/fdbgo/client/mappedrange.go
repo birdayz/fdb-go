@@ -134,9 +134,11 @@ func parseGetMappedKeyValuesReply(data []byte) ([]MappedKeyValue, bool, float64,
 		return nil, false, -1.0, fmt.Errorf("GetMappedKeyValues: %w", err)
 	}
 	var reply types.GetMappedKeyValuesReply
-	reply.UnmarshalFromReader(&r)
-	if ferr := wire.ReadInlineReplyError(&r, types.GetMappedKeyValuesReplySlotError); ferr != nil {
-		return nil, false, reply.Penalty, ferr
+	if err := reply.UnmarshalFromReader(&r); err != nil {
+		return nil, false, -1.0, fmt.Errorf("GetMappedKeyValues: %w", err)
+	}
+	if reply.HasError {
+		return nil, false, reply.Penalty, &wire.FDBError{Code: int(reply.Error.ErrorCode)}
 	}
 
 	rows := make([]MappedKeyValue, 0, len(reply.Data))

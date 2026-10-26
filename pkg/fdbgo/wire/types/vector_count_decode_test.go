@@ -2,14 +2,15 @@ package types
 
 import (
 	"encoding/binary"
+	"errors"
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/wire"
 )
 
-// A generated decoder treats a vector whose count cannot fit in the reply as
-// absent: it decodes as empty, never as elements read from the bytes after it.
-func TestGeneratedDecoderDropsOversizedVector(t *testing.T) {
+// A generated decoder fails on a vector whose count cannot fit in the reply,
+// instead of decoding it as absent.
+func TestGeneratedDecoderRejectsOversizedVector(t *testing.T) {
 	t.Parallel()
 	reply := GetReadVersionReply{
 		Version: 42,
@@ -19,18 +20,18 @@ func TestGeneratedDecoderDropsOversizedVector(t *testing.T) {
 		},
 	}
 	data := MarshalErrorOrValueGetReadVersionReply(&reply)
-	decode := func(d []byte) GetReadVersionReply {
+	decode := func(d []byte) (GetReadVersionReply, error) {
 		t.Helper()
 		var r wire.Reader
 		if err := wire.ReadErrorOrInto(d, &r); err != nil {
 			t.Fatal(err)
 		}
 		var got GetReadVersionReply
-		got.UnmarshalFromReader(&r)
-		return got
+		err := got.UnmarshalFromReader(&r)
+		return got, err
 	}
-	if got := decode(data); got.Version != 42 || len(got.TagThrottleInfo) != 2 {
-		t.Fatalf("well-formed reply: version %d, %d throttles", got.Version, len(got.TagThrottleInfo))
+	if got, err := decode(data); err != nil || got.Version != 42 || len(got.TagThrottleInfo) != 2 {
+		t.Fatalf("well-formed reply: version %d, %d throttles, %v", got.Version, len(got.TagThrottleInfo), err)
 	}
 
 	var r wire.Reader
@@ -43,7 +44,11 @@ func TestGeneratedDecoderDropsOversizedVector(t *testing.T) {
 		t.Fatal("did not locate the throttle vector's count")
 	}
 	binary.LittleEndian.PutUint32(data[count:], 1000)
-	if got := decode(data); got.Version != 42 || len(got.TagThrottleInfo) != 0 {
-		t.Fatalf("oversized vector: version %d, %d throttles; want 42 and none", got.Version, len(got.TagThrottleInfo))
+	_, err := decode(data)
+	var decodeErr *wire.DecodeError
+	var countErr *wire.VectorCountError
+	if !errors.As(err, &decodeErr) || decodeErr.Type != "GetReadVersionReply" || decodeErr.Field != "TagThrottleInfo" ||
+		!errors.As(err, &countErr) || countErr.Count != 1000 {
+		t.Fatalf("oversized vector: %v; want a DecodeError for TagThrottleInfo wrapping a VectorCountError", err)
 	}
 }

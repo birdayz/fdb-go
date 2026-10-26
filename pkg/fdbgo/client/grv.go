@@ -1585,7 +1585,9 @@ func parseGetReadVersionReply(data []byte) (int64, bool, bool, bool, []types.Tra
 		return 0, false, false, false, nil, 0, fmt.Errorf("GRV: %w", err)
 	}
 	var reply types.GetReadVersionReply
-	reply.UnmarshalFromReader(&r)
+	if err := reply.UnmarshalFromReader(&r); err != nil {
+		return 0, false, false, false, nil, 0, fmt.Errorf("GRV: %w", err)
+	}
 	return reply.Version, reply.Locked, reply.RkDefaultThrottled, reply.RkBatchThrottled, reply.TagThrottleInfo, reply.ProxyTagThrottledDuration, nil
 }
 

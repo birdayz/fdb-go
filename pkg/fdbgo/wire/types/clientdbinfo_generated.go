@@ -53,44 +53,17 @@ type ClientDBInfo struct {
 	History       []byte   // slot 5
 	// TenantMode: unregistered nested struct at slot 6
 	HasEncryptKeyProxy bool     // slot 7, optional tag
-	EncryptKeyProxy    []byte   // slot 8, optional value
+	EncryptKeyProxy    []byte   // slot 8, optional table: decoded as presence only, do not set
 	ClusterId          [16]byte // slot 9
 	ClusterType        int32    // slot 10
 	HasMetaclusterName bool     // slot 11, optional tag
 	MetaclusterName    []byte   // slot 12, optional value
 }
 
-func (m *ClientDBInfo) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(ClientDBInfoSlotGrvProxies) {
-		m.GrvProxies = r.ReadBytes(ClientDBInfoSlotGrvProxies)
-	}
-	if r.FieldPresent(ClientDBInfoSlotCommitProxies) {
-		m.CommitProxies = r.ReadBytes(ClientDBInfoSlotCommitProxies)
-	}
-	if r.FieldPresent(ClientDBInfoSlotId) {
-		m.Id = r.ReadUID(ClientDBInfoSlotId)
-	}
-	if r.FieldPresent(ClientDBInfoSlotForward) && r.ReadUint8(ClientDBInfoSlotForward) > 0 {
-		m.Forward = r.ReadBytes(ClientDBInfoSlotForward + 1)
-		m.HasForward = true
-	}
-	if r.FieldPresent(ClientDBInfoSlotHistory) {
-		m.History = r.ReadBytes(ClientDBInfoSlotHistory)
-	}
-	if r.FieldPresent(ClientDBInfoSlotEncryptKeyProxy) && r.ReadUint8(ClientDBInfoSlotEncryptKeyProxy) > 0 {
-		m.EncryptKeyProxy = r.ReadBytes(ClientDBInfoSlotEncryptKeyProxy + 1)
-		m.HasEncryptKeyProxy = true
-	}
-	if r.FieldPresent(ClientDBInfoSlotClusterId) {
-		m.ClusterId = r.ReadUID(ClientDBInfoSlotClusterId)
-	}
-	if r.FieldPresent(ClientDBInfoSlotClusterType) {
-		m.ClusterType = r.ReadInt32(ClientDBInfoSlotClusterType)
-	}
-	if r.FieldPresent(ClientDBInfoSlotMetaclusterName) && r.ReadUint8(ClientDBInfoSlotMetaclusterName) > 0 {
-		m.MetaclusterName = r.ReadBytes(ClientDBInfoSlotMetaclusterName + 1)
-		m.HasMetaclusterName = true
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *ClientDBInfo) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *ClientDBInfo) UnmarshalFDB(data []byte) error {
@@ -98,6 +71,11 @@ func (m *ClientDBInfo) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *ClientDBInfo) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(ClientDBInfoSlotGrvProxies) {
 		m.GrvProxies = r.ReadBytes(ClientDBInfoSlotGrvProxies)
 	}
@@ -107,15 +85,15 @@ func (m *ClientDBInfo) UnmarshalFDB(data []byte) error {
 	if r.FieldPresent(ClientDBInfoSlotId) {
 		m.Id = r.ReadUID(ClientDBInfoSlotId)
 	}
-	if r.FieldPresent(ClientDBInfoSlotForward) && r.ReadUint8(ClientDBInfoSlotForward) > 0 {
+	if r.FieldPresent(ClientDBInfoSlotForward) && r.ReadUint8(ClientDBInfoSlotForward) == 1 && r.FieldPresent(ClientDBInfoSlotForward+1) {
 		m.Forward = r.ReadBytes(ClientDBInfoSlotForward + 1)
 		m.HasForward = true
 	}
 	if r.FieldPresent(ClientDBInfoSlotHistory) {
 		m.History = r.ReadBytes(ClientDBInfoSlotHistory)
 	}
-	if r.FieldPresent(ClientDBInfoSlotEncryptKeyProxy) && r.ReadUint8(ClientDBInfoSlotEncryptKeyProxy) > 0 {
-		m.EncryptKeyProxy = r.ReadBytes(ClientDBInfoSlotEncryptKeyProxy + 1)
+	if r.FieldPresent(ClientDBInfoSlotEncryptKeyProxy) && r.ReadUint8(ClientDBInfoSlotEncryptKeyProxy) == 1 && r.FieldPresent(ClientDBInfoSlotEncryptKeyProxy+1) {
+		_ = r.ReadUint32(ClientDBInfoSlotEncryptKeyProxy + 1)
 		m.HasEncryptKeyProxy = true
 	}
 	if r.FieldPresent(ClientDBInfoSlotClusterId) {
@@ -124,9 +102,12 @@ func (m *ClientDBInfo) UnmarshalFDB(data []byte) error {
 	if r.FieldPresent(ClientDBInfoSlotClusterType) {
 		m.ClusterType = r.ReadInt32(ClientDBInfoSlotClusterType)
 	}
-	if r.FieldPresent(ClientDBInfoSlotMetaclusterName) && r.ReadUint8(ClientDBInfoSlotMetaclusterName) > 0 {
+	if r.FieldPresent(ClientDBInfoSlotMetaclusterName) && r.ReadUint8(ClientDBInfoSlotMetaclusterName) == 1 && r.FieldPresent(ClientDBInfoSlotMetaclusterName+1) {
 		m.MetaclusterName = r.ReadBytes(ClientDBInfoSlotMetaclusterName + 1)
 		m.HasMetaclusterName = true
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "ClientDBInfo", Err: err}
 	}
 	return nil
 }
@@ -324,21 +305,28 @@ func (m *ClientDBInfo) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseClientDBInfoVectorFromReader reads a FlatBuffers vector of ClientDBInfo.
-func ParseClientDBInfoVectorFromReader(r *wire.Reader, slot int) []ClientDBInfo {
+// ParseClientDBInfoVectorFromReader reads a FlatBuffers vector of ClientDBInfo under one decode budget.
+func ParseClientDBInfoVectorFromReader(r *wire.Reader, slot int) ([]ClientDBInfo, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]ClientDBInfo, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]ClientDBInfo", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]ClientDBInfo, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]ClientDBInfo", Err: err}
 		}
-		var elem ClientDBInfo
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

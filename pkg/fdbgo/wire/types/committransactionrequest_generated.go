@@ -51,7 +51,7 @@ type CommitTransactionRequest struct {
 	HasDebugID              bool                 // slot 3, optional tag
 	DebugID                 [16]byte             // slot 4, optional scalar value
 	HasCommitCostEstimation bool                 // slot 5, optional tag
-	CommitCostEstimation    []byte               // slot 6, optional value
+	CommitCostEstimation    []byte               // slot 6, optional table: decoded as presence only, do not set
 	HasTagSet               bool                 // slot 7, optional tag
 	TagSet                  []byte               // slot 8, optional value
 	SpanContext             SpanContext          // slot 9, nested
@@ -60,40 +60,10 @@ type CommitTransactionRequest struct {
 	Arena                   []byte               // slot 12
 }
 
-func (m *CommitTransactionRequest) UnmarshalFromReader(r *wire.Reader) {
-	if nr, err := r.ReadNestedReader(CommitTransactionRequestSlotTransaction); err == nil {
-		m.Transaction.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(CommitTransactionRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nr)
-	}
-	if r.FieldPresent(CommitTransactionRequestSlotFlags) {
-		m.Flags = r.ReadUint32(CommitTransactionRequestSlotFlags)
-	}
-	if r.FieldPresent(CommitTransactionRequestSlotDebugID) && r.ReadUint8(CommitTransactionRequestSlotDebugID) > 0 {
-		copy(m.DebugID[:], r.ReadRelOffRaw(CommitTransactionRequestSlotDebugID+1, 16))
-		m.HasDebugID = true
-	}
-	if r.FieldPresent(CommitTransactionRequestSlotCommitCostEstimation) && r.ReadUint8(CommitTransactionRequestSlotCommitCostEstimation) > 0 {
-		m.CommitCostEstimation = r.ReadBytes(CommitTransactionRequestSlotCommitCostEstimation + 1)
-		m.HasCommitCostEstimation = true
-	}
-	if r.FieldPresent(CommitTransactionRequestSlotTagSet) && r.ReadUint8(CommitTransactionRequestSlotTagSet) > 0 {
-		m.TagSet = r.ReadBytes(CommitTransactionRequestSlotTagSet + 1)
-		m.HasTagSet = true
-	}
-	if nr, err := r.ReadNestedReader(CommitTransactionRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(CommitTransactionRequestSlotTenantInfo); err == nil {
-		m.TenantInfo.UnmarshalFromReader(nr)
-	}
-	if r.FieldPresent(CommitTransactionRequestSlotIdempotencyId) {
-		m.IdempotencyId = r.ReadBytes(CommitTransactionRequestSlotIdempotencyId)
-	}
-	if r.FieldPresent(CommitTransactionRequestSlotArena) {
-		m.Arena = r.ReadBytes(CommitTransactionRequestSlotArena)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *CommitTransactionRequest) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *CommitTransactionRequest) UnmarshalFDB(data []byte) error {
@@ -101,38 +71,70 @@ func (m *CommitTransactionRequest) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if nr, err := r.ReadNestedReader(CommitTransactionRequestSlotTransaction); err == nil {
-		m.Transaction.UnmarshalFromReader(nr)
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *CommitTransactionRequest) decode(r *wire.Reader, b *wire.DecodeBudget) error {
+	if r.FieldPresent(CommitTransactionRequestSlotTransaction) {
+		nr, err := r.ReadNestedReader(CommitTransactionRequestSlotTransaction)
+		if err != nil {
+			return &wire.DecodeError{Type: "CommitTransactionRequest", Field: "Transaction", Err: err}
+		}
+		if err := m.Transaction.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(CommitTransactionRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nr)
+	if r.FieldPresent(CommitTransactionRequestSlotReply) {
+		nr, err := r.ReadNestedReader(CommitTransactionRequestSlotReply)
+		if err != nil {
+			return &wire.DecodeError{Type: "CommitTransactionRequest", Field: "Reply", Err: err}
+		}
+		if err := m.Reply.decode(nr, b); err != nil {
+			return err
+		}
 	}
 	if r.FieldPresent(CommitTransactionRequestSlotFlags) {
 		m.Flags = r.ReadUint32(CommitTransactionRequestSlotFlags)
 	}
-	if r.FieldPresent(CommitTransactionRequestSlotDebugID) && r.ReadUint8(CommitTransactionRequestSlotDebugID) > 0 {
+	if r.FieldPresent(CommitTransactionRequestSlotDebugID) && r.ReadUint8(CommitTransactionRequestSlotDebugID) == 1 && r.FieldPresent(CommitTransactionRequestSlotDebugID+1) {
 		copy(m.DebugID[:], r.ReadRelOffRaw(CommitTransactionRequestSlotDebugID+1, 16))
 		m.HasDebugID = true
 	}
-	if r.FieldPresent(CommitTransactionRequestSlotCommitCostEstimation) && r.ReadUint8(CommitTransactionRequestSlotCommitCostEstimation) > 0 {
-		m.CommitCostEstimation = r.ReadBytes(CommitTransactionRequestSlotCommitCostEstimation + 1)
+	if r.FieldPresent(CommitTransactionRequestSlotCommitCostEstimation) && r.ReadUint8(CommitTransactionRequestSlotCommitCostEstimation) == 1 && r.FieldPresent(CommitTransactionRequestSlotCommitCostEstimation+1) {
+		_ = r.ReadUint32(CommitTransactionRequestSlotCommitCostEstimation + 1)
 		m.HasCommitCostEstimation = true
 	}
-	if r.FieldPresent(CommitTransactionRequestSlotTagSet) && r.ReadUint8(CommitTransactionRequestSlotTagSet) > 0 {
+	if r.FieldPresent(CommitTransactionRequestSlotTagSet) && r.ReadUint8(CommitTransactionRequestSlotTagSet) == 1 && r.FieldPresent(CommitTransactionRequestSlotTagSet+1) {
 		m.TagSet = r.ReadBytes(CommitTransactionRequestSlotTagSet + 1)
 		m.HasTagSet = true
 	}
-	if nr, err := r.ReadNestedReader(CommitTransactionRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nr)
+	if r.FieldPresent(CommitTransactionRequestSlotSpanContext) {
+		nr, err := r.ReadNestedReader(CommitTransactionRequestSlotSpanContext)
+		if err != nil {
+			return &wire.DecodeError{Type: "CommitTransactionRequest", Field: "SpanContext", Err: err}
+		}
+		if err := m.SpanContext.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(CommitTransactionRequestSlotTenantInfo); err == nil {
-		m.TenantInfo.UnmarshalFromReader(nr)
+	if r.FieldPresent(CommitTransactionRequestSlotTenantInfo) {
+		nr, err := r.ReadNestedReader(CommitTransactionRequestSlotTenantInfo)
+		if err != nil {
+			return &wire.DecodeError{Type: "CommitTransactionRequest", Field: "TenantInfo", Err: err}
+		}
+		if err := m.TenantInfo.decode(nr, b); err != nil {
+			return err
+		}
 	}
 	if r.FieldPresent(CommitTransactionRequestSlotIdempotencyId) {
 		m.IdempotencyId = r.ReadBytes(CommitTransactionRequestSlotIdempotencyId)
 	}
 	if r.FieldPresent(CommitTransactionRequestSlotArena) {
 		m.Arena = r.ReadBytes(CommitTransactionRequestSlotArena)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "CommitTransactionRequest", Err: err}
 	}
 	return nil
 }
@@ -337,21 +339,28 @@ func (m *CommitTransactionRequest) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseCommitTransactionRequestVectorFromReader reads a FlatBuffers vector of CommitTransactionRequest.
-func ParseCommitTransactionRequestVectorFromReader(r *wire.Reader, slot int) []CommitTransactionRequest {
+// ParseCommitTransactionRequestVectorFromReader reads a FlatBuffers vector of CommitTransactionRequest under one decode budget.
+func ParseCommitTransactionRequestVectorFromReader(r *wire.Reader, slot int) ([]CommitTransactionRequest, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]CommitTransactionRequest, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]CommitTransactionRequest", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]CommitTransactionRequest, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]CommitTransactionRequest", Err: err}
 		}
-		var elem CommitTransactionRequest
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

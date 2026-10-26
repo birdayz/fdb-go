@@ -31,59 +31,15 @@ type CommitTransactionRef struct {
 	Report_conflicting_keys           bool          // slot 4
 	Lock_aware                        bool          // slot 5
 	HasRead_conflict_ranges_disabled  bool          // slot 6, optional tag
-	Read_conflict_ranges_disabled     []byte        // slot 7, optional value
+	Read_conflict_ranges_disabled     SpanContext   // slot 7, optional nested value
 	HasWrite_conflict_ranges_disabled bool          // slot 8, optional tag
 	Write_conflict_ranges_disabled    []byte        // slot 9, optional value
 }
 
-func (m *CommitTransactionRef) UnmarshalFromReader(r *wire.Reader) {
-	if count, err := r.ReadVectorCount(CommitTransactionRefSlotReadConflictRanges); err == nil && count > 0 {
-		m.ReadConflictRanges = make([]KeyRangeRef, 0, count)
-		for i := 0; i < count; i++ {
-			if elemR, err := r.ReadVectorElementReader(CommitTransactionRefSlotReadConflictRanges, i); err == nil {
-				var elem KeyRangeRef
-				elem.UnmarshalFromReader(elemR)
-				m.ReadConflictRanges = append(m.ReadConflictRanges, elem)
-			}
-		}
-	}
-	if count, err := r.ReadVectorCount(CommitTransactionRefSlotWriteConflictRanges); err == nil && count > 0 {
-		m.WriteConflictRanges = make([]KeyRangeRef, 0, count)
-		for i := 0; i < count; i++ {
-			if elemR, err := r.ReadVectorElementReader(CommitTransactionRefSlotWriteConflictRanges, i); err == nil {
-				var elem KeyRangeRef
-				elem.UnmarshalFromReader(elemR)
-				m.WriteConflictRanges = append(m.WriteConflictRanges, elem)
-			}
-		}
-	}
-	if count, err := r.ReadVectorCount(CommitTransactionRefSlotMutations); err == nil && count > 0 {
-		m.Mutations = make([]MutationRef, 0, count)
-		for i := 0; i < count; i++ {
-			if elemR, err := r.ReadVectorElementReader(CommitTransactionRefSlotMutations, i); err == nil {
-				var elem MutationRef
-				elem.UnmarshalFromReader(elemR)
-				m.Mutations = append(m.Mutations, elem)
-			}
-		}
-	}
-	if r.FieldPresent(CommitTransactionRefSlotReadSnapshot) {
-		m.ReadSnapshot = r.ReadInt64(CommitTransactionRefSlotReadSnapshot)
-	}
-	if r.FieldPresent(CommitTransactionRefSlotReport_conflicting_keys) {
-		m.Report_conflicting_keys = r.ReadBool(CommitTransactionRefSlotReport_conflicting_keys)
-	}
-	if r.FieldPresent(CommitTransactionRefSlotLock_aware) {
-		m.Lock_aware = r.ReadBool(CommitTransactionRefSlotLock_aware)
-	}
-	if r.FieldPresent(CommitTransactionRefSlotRead_conflict_ranges_disabled) && r.ReadUint8(CommitTransactionRefSlotRead_conflict_ranges_disabled) > 0 {
-		m.Read_conflict_ranges_disabled = r.ReadBytes(CommitTransactionRefSlotRead_conflict_ranges_disabled + 1)
-		m.HasRead_conflict_ranges_disabled = true
-	}
-	if r.FieldPresent(CommitTransactionRefSlotWrite_conflict_ranges_disabled) && r.ReadUint8(CommitTransactionRefSlotWrite_conflict_ranges_disabled) > 0 {
-		m.Write_conflict_ranges_disabled = r.ReadBytes(CommitTransactionRefSlotWrite_conflict_ranges_disabled + 1)
-		m.HasWrite_conflict_ranges_disabled = true
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *CommitTransactionRef) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *CommitTransactionRef) UnmarshalFDB(data []byte) error {
@@ -91,33 +47,71 @@ func (m *CommitTransactionRef) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if count, err := r.ReadVectorCount(CommitTransactionRefSlotReadConflictRanges); err == nil && count > 0 {
-		m.ReadConflictRanges = make([]KeyRangeRef, 0, count)
-		for i := 0; i < count; i++ {
-			if elemR, err := r.ReadVectorElementReader(CommitTransactionRefSlotReadConflictRanges, i); err == nil {
-				var elem KeyRangeRef
-				elem.UnmarshalFromReader(elemR)
-				m.ReadConflictRanges = append(m.ReadConflictRanges, elem)
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *CommitTransactionRef) decode(r *wire.Reader, b *wire.DecodeBudget) error {
+	if r.FieldPresent(CommitTransactionRefSlotReadConflictRanges) {
+		count, err := r.ReadVectorCount(CommitTransactionRefSlotReadConflictRanges)
+		if err == nil {
+			err = b.Take(count)
+		}
+		if err != nil {
+			return &wire.DecodeError{Type: "CommitTransactionRef", Field: "ReadConflictRanges", Err: err}
+		}
+		if count > 0 {
+			m.ReadConflictRanges = make([]KeyRangeRef, count)
+			for i := range m.ReadConflictRanges {
+				elemR, err := r.ReadVectorElementReader(CommitTransactionRefSlotReadConflictRanges, i)
+				if err != nil {
+					return &wire.DecodeError{Type: "CommitTransactionRef", Field: "ReadConflictRanges", Err: err}
+				}
+				if err := m.ReadConflictRanges[i].decode(elemR, b); err != nil {
+					return err
+				}
 			}
 		}
 	}
-	if count, err := r.ReadVectorCount(CommitTransactionRefSlotWriteConflictRanges); err == nil && count > 0 {
-		m.WriteConflictRanges = make([]KeyRangeRef, 0, count)
-		for i := 0; i < count; i++ {
-			if elemR, err := r.ReadVectorElementReader(CommitTransactionRefSlotWriteConflictRanges, i); err == nil {
-				var elem KeyRangeRef
-				elem.UnmarshalFromReader(elemR)
-				m.WriteConflictRanges = append(m.WriteConflictRanges, elem)
+	if r.FieldPresent(CommitTransactionRefSlotWriteConflictRanges) {
+		count, err := r.ReadVectorCount(CommitTransactionRefSlotWriteConflictRanges)
+		if err == nil {
+			err = b.Take(count)
+		}
+		if err != nil {
+			return &wire.DecodeError{Type: "CommitTransactionRef", Field: "WriteConflictRanges", Err: err}
+		}
+		if count > 0 {
+			m.WriteConflictRanges = make([]KeyRangeRef, count)
+			for i := range m.WriteConflictRanges {
+				elemR, err := r.ReadVectorElementReader(CommitTransactionRefSlotWriteConflictRanges, i)
+				if err != nil {
+					return &wire.DecodeError{Type: "CommitTransactionRef", Field: "WriteConflictRanges", Err: err}
+				}
+				if err := m.WriteConflictRanges[i].decode(elemR, b); err != nil {
+					return err
+				}
 			}
 		}
 	}
-	if count, err := r.ReadVectorCount(CommitTransactionRefSlotMutations); err == nil && count > 0 {
-		m.Mutations = make([]MutationRef, 0, count)
-		for i := 0; i < count; i++ {
-			if elemR, err := r.ReadVectorElementReader(CommitTransactionRefSlotMutations, i); err == nil {
-				var elem MutationRef
-				elem.UnmarshalFromReader(elemR)
-				m.Mutations = append(m.Mutations, elem)
+	if r.FieldPresent(CommitTransactionRefSlotMutations) {
+		count, err := r.ReadVectorCount(CommitTransactionRefSlotMutations)
+		if err == nil {
+			err = b.Take(count)
+		}
+		if err != nil {
+			return &wire.DecodeError{Type: "CommitTransactionRef", Field: "Mutations", Err: err}
+		}
+		if count > 0 {
+			m.Mutations = make([]MutationRef, count)
+			for i := range m.Mutations {
+				elemR, err := r.ReadVectorElementReader(CommitTransactionRefSlotMutations, i)
+				if err != nil {
+					return &wire.DecodeError{Type: "CommitTransactionRef", Field: "Mutations", Err: err}
+				}
+				if err := m.Mutations[i].decode(elemR, b); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -130,13 +124,22 @@ func (m *CommitTransactionRef) UnmarshalFDB(data []byte) error {
 	if r.FieldPresent(CommitTransactionRefSlotLock_aware) {
 		m.Lock_aware = r.ReadBool(CommitTransactionRefSlotLock_aware)
 	}
-	if r.FieldPresent(CommitTransactionRefSlotRead_conflict_ranges_disabled) && r.ReadUint8(CommitTransactionRefSlotRead_conflict_ranges_disabled) > 0 {
-		m.Read_conflict_ranges_disabled = r.ReadBytes(CommitTransactionRefSlotRead_conflict_ranges_disabled + 1)
+	if r.FieldPresent(CommitTransactionRefSlotRead_conflict_ranges_disabled) && r.ReadUint8(CommitTransactionRefSlotRead_conflict_ranges_disabled) == 1 && r.FieldPresent(CommitTransactionRefSlotRead_conflict_ranges_disabled+1) {
+		nr, err := r.ReadNestedReader(CommitTransactionRefSlotRead_conflict_ranges_disabled + 1)
+		if err != nil {
+			return &wire.DecodeError{Type: "CommitTransactionRef", Field: "Read_conflict_ranges_disabled", Err: err}
+		}
+		if err := m.Read_conflict_ranges_disabled.decode(nr, b); err != nil {
+			return err
+		}
 		m.HasRead_conflict_ranges_disabled = true
 	}
-	if r.FieldPresent(CommitTransactionRefSlotWrite_conflict_ranges_disabled) && r.ReadUint8(CommitTransactionRefSlotWrite_conflict_ranges_disabled) > 0 {
+	if r.FieldPresent(CommitTransactionRefSlotWrite_conflict_ranges_disabled) && r.ReadUint8(CommitTransactionRefSlotWrite_conflict_ranges_disabled) == 1 && r.FieldPresent(CommitTransactionRefSlotWrite_conflict_ranges_disabled+1) {
 		m.Write_conflict_ranges_disabled = r.ReadBytes(CommitTransactionRefSlotWrite_conflict_ranges_disabled + 1)
 		m.HasWrite_conflict_ranges_disabled = true
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "CommitTransactionRef", Err: err}
 	}
 	return nil
 }
@@ -188,7 +191,7 @@ func (m *CommitTransactionRef) precomputeSize(ps *wire.PrecomputeSize) int {
 		}
 	}
 	if m.HasRead_conflict_ranges_disabled {
-		ps.VisitDynamicSize(len(m.Read_conflict_ranges_disabled))
+		m.Read_conflict_ranges_disabled.precomputeSize(ps)
 	}
 	if m.HasWrite_conflict_ranges_disabled {
 		ps.VisitDynamicSize(len(m.Write_conflict_ranges_disabled))
@@ -255,7 +258,7 @@ func (m *CommitTransactionRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart
 		}
 	}
 	if m.HasRead_conflict_ranges_disabled {
-		read_conflict_ranges_disabledOff, _ = wb.VisitDynamicSize(m.Read_conflict_ranges_disabled)
+		read_conflict_ranges_disabledOff = m.Read_conflict_ranges_disabled.writeToBuffer(wb, vtableStart, tmpl)
 	}
 	if m.HasWrite_conflict_ranges_disabled {
 		write_conflict_ranges_disabledOff, _ = wb.VisitDynamicSize(m.Write_conflict_ranges_disabled)
@@ -295,21 +298,28 @@ func (m *CommitTransactionRef) writeToBuffer(wb *wire.WriteToBuffer, vtableStart
 	return selfStart
 }
 
-// ParseCommitTransactionRefVectorFromReader reads a FlatBuffers vector of CommitTransactionRef.
-func ParseCommitTransactionRefVectorFromReader(r *wire.Reader, slot int) []CommitTransactionRef {
+// ParseCommitTransactionRefVectorFromReader reads a FlatBuffers vector of CommitTransactionRef under one decode budget.
+func ParseCommitTransactionRefVectorFromReader(r *wire.Reader, slot int) ([]CommitTransactionRef, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]CommitTransactionRef, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]CommitTransactionRef", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]CommitTransactionRef, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]CommitTransactionRef", Err: err}
 		}
-		var elem CommitTransactionRef
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

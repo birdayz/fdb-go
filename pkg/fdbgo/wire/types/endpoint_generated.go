@@ -36,13 +36,10 @@ type Endpoint struct {
 	Token     [16]byte           // slot 1
 }
 
-func (m *Endpoint) UnmarshalFromReader(r *wire.Reader) {
-	if nr, err := r.ReadNestedReader(EndpointSlotAddresses); err == nil {
-		m.Addresses.UnmarshalFromReader(nr)
-	}
-	if r.FieldPresent(EndpointSlotToken) {
-		m.Token = r.ReadUID(EndpointSlotToken)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *Endpoint) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *Endpoint) UnmarshalFDB(data []byte) error {
@@ -50,11 +47,25 @@ func (m *Endpoint) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if nr, err := r.ReadNestedReader(EndpointSlotAddresses); err == nil {
-		m.Addresses.UnmarshalFromReader(nr)
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *Endpoint) decode(r *wire.Reader, b *wire.DecodeBudget) error {
+	if r.FieldPresent(EndpointSlotAddresses) {
+		nr, err := r.ReadNestedReader(EndpointSlotAddresses)
+		if err != nil {
+			return &wire.DecodeError{Type: "Endpoint", Field: "Addresses", Err: err}
+		}
+		if err := m.Addresses.decode(nr, b); err != nil {
+			return err
+		}
 	}
 	if r.FieldPresent(EndpointSlotToken) {
 		m.Token = r.ReadUID(EndpointSlotToken)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "Endpoint", Err: err}
 	}
 	return nil
 }
@@ -205,21 +216,28 @@ func (m *Endpoint) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseEndpointVectorFromReader reads a FlatBuffers vector of Endpoint.
-func ParseEndpointVectorFromReader(r *wire.Reader, slot int) []Endpoint {
+// ParseEndpointVectorFromReader reads a FlatBuffers vector of Endpoint under one decode budget.
+func ParseEndpointVectorFromReader(r *wire.Reader, slot int) ([]Endpoint, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]Endpoint, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]Endpoint", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]Endpoint, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]Endpoint", Err: err}
 		}
-		var elem Endpoint
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

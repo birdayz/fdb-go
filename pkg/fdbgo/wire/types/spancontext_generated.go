@@ -24,16 +24,10 @@ type SpanContext struct {
 	Flags   uint8    // slot 2
 }
 
-func (m *SpanContext) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(SpanContextSlotTraceID) {
-		m.TraceID = r.ReadUID(SpanContextSlotTraceID)
-	}
-	if r.FieldPresent(SpanContextSlotSpanID) {
-		m.SpanID = r.ReadUint64(SpanContextSlotSpanID)
-	}
-	if r.FieldPresent(SpanContextSlotFlags) {
-		m.Flags = r.ReadUint8(SpanContextSlotFlags)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *SpanContext) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *SpanContext) UnmarshalFDB(data []byte) error {
@@ -41,6 +35,11 @@ func (m *SpanContext) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *SpanContext) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 	if r.FieldPresent(SpanContextSlotTraceID) {
 		m.TraceID = r.ReadUID(SpanContextSlotTraceID)
 	}
@@ -49,6 +48,9 @@ func (m *SpanContext) UnmarshalFDB(data []byte) error {
 	}
 	if r.FieldPresent(SpanContextSlotFlags) {
 		m.Flags = r.ReadUint8(SpanContextSlotFlags)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "SpanContext", Err: err}
 	}
 	return nil
 }
@@ -88,21 +90,28 @@ func (m *SpanContext) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmp
 	return selfStart
 }
 
-// ParseSpanContextVectorFromReader reads a FlatBuffers vector of SpanContext.
-func ParseSpanContextVectorFromReader(r *wire.Reader, slot int) []SpanContext {
+// ParseSpanContextVectorFromReader reads a FlatBuffers vector of SpanContext under one decode budget.
+func ParseSpanContextVectorFromReader(r *wire.Reader, slot int) ([]SpanContext, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]SpanContext, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]SpanContext", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]SpanContext, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]SpanContext", Err: err}
 		}
-		var elem SpanContext
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

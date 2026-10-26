@@ -62,50 +62,10 @@ type GetMappedKeyValuesRequest struct {
 	Arena                  []byte         // slot 14
 }
 
-func (m *GetMappedKeyValuesRequest) UnmarshalFromReader(r *wire.Reader) {
-	if nr, err := r.ReadNestedReader(GetMappedKeyValuesRequestSlotBegin); err == nil {
-		m.Begin.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(GetMappedKeyValuesRequestSlotEnd); err == nil {
-		m.End.UnmarshalFromReader(nr)
-	}
-	if r.FieldPresent(GetMappedKeyValuesRequestSlotMapper) {
-		m.Mapper = r.ReadBytes(GetMappedKeyValuesRequestSlotMapper)
-	}
-	if r.FieldPresent(GetMappedKeyValuesRequestSlotVersion) {
-		m.Version = r.ReadInt64(GetMappedKeyValuesRequestSlotVersion)
-	}
-	if r.FieldPresent(GetMappedKeyValuesRequestSlotLimit) {
-		m.Limit = r.ReadInt32(GetMappedKeyValuesRequestSlotLimit)
-	}
-	if r.FieldPresent(GetMappedKeyValuesRequestSlotLimitBytes) {
-		m.LimitBytes = r.ReadInt32(GetMappedKeyValuesRequestSlotLimitBytes)
-	}
-	if r.FieldPresent(GetMappedKeyValuesRequestSlotTags) && r.ReadUint8(GetMappedKeyValuesRequestSlotTags) > 0 {
-		m.Tags = r.ReadBytes(GetMappedKeyValuesRequestSlotTags + 1)
-		m.HasTags = true
-	}
-	if nr, err := r.ReadNestedReader(GetMappedKeyValuesRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(GetMappedKeyValuesRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nr)
-	}
-	if nr, err := r.ReadNestedReader(GetMappedKeyValuesRequestSlotTenantInfo); err == nil {
-		m.TenantInfo.UnmarshalFromReader(nr)
-	}
-	if r.FieldPresent(GetMappedKeyValuesRequestSlotOptions) && r.ReadUint8(GetMappedKeyValuesRequestSlotOptions) > 0 {
-		if nr, err := r.ReadNestedReader(GetMappedKeyValuesRequestSlotOptions + 1); err == nil {
-			m.Options.UnmarshalFromReader(nr)
-		}
-		m.HasOptions = true
-	}
-	if r.FieldPresent(GetMappedKeyValuesRequestSlotSsLatestCommitVersions) {
-		m.SsLatestCommitVersions = r.ReadBytes(GetMappedKeyValuesRequestSlotSsLatestCommitVersions)
-	}
-	if r.FieldPresent(GetMappedKeyValuesRequestSlotArena) {
-		m.Arena = r.ReadBytes(GetMappedKeyValuesRequestSlotArena)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *GetMappedKeyValuesRequest) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *GetMappedKeyValuesRequest) UnmarshalFDB(data []byte) error {
@@ -113,11 +73,28 @@ func (m *GetMappedKeyValuesRequest) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if nr, err := r.ReadNestedReader(GetMappedKeyValuesRequestSlotBegin); err == nil {
-		m.Begin.UnmarshalFromReader(nr)
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *GetMappedKeyValuesRequest) decode(r *wire.Reader, b *wire.DecodeBudget) error {
+	if r.FieldPresent(GetMappedKeyValuesRequestSlotBegin) {
+		nr, err := r.ReadNestedReader(GetMappedKeyValuesRequestSlotBegin)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetMappedKeyValuesRequest", Field: "Begin", Err: err}
+		}
+		if err := m.Begin.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(GetMappedKeyValuesRequestSlotEnd); err == nil {
-		m.End.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetMappedKeyValuesRequestSlotEnd) {
+		nr, err := r.ReadNestedReader(GetMappedKeyValuesRequestSlotEnd)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetMappedKeyValuesRequest", Field: "End", Err: err}
+		}
+		if err := m.End.decode(nr, b); err != nil {
+			return err
+		}
 	}
 	if r.FieldPresent(GetMappedKeyValuesRequestSlotMapper) {
 		m.Mapper = r.ReadBytes(GetMappedKeyValuesRequestSlotMapper)
@@ -131,22 +108,44 @@ func (m *GetMappedKeyValuesRequest) UnmarshalFDB(data []byte) error {
 	if r.FieldPresent(GetMappedKeyValuesRequestSlotLimitBytes) {
 		m.LimitBytes = r.ReadInt32(GetMappedKeyValuesRequestSlotLimitBytes)
 	}
-	if r.FieldPresent(GetMappedKeyValuesRequestSlotTags) && r.ReadUint8(GetMappedKeyValuesRequestSlotTags) > 0 {
+	if r.FieldPresent(GetMappedKeyValuesRequestSlotTags) && r.ReadUint8(GetMappedKeyValuesRequestSlotTags) == 1 && r.FieldPresent(GetMappedKeyValuesRequestSlotTags+1) {
 		m.Tags = r.ReadBytes(GetMappedKeyValuesRequestSlotTags + 1)
 		m.HasTags = true
 	}
-	if nr, err := r.ReadNestedReader(GetMappedKeyValuesRequestSlotReply); err == nil {
-		m.Reply.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetMappedKeyValuesRequestSlotReply) {
+		nr, err := r.ReadNestedReader(GetMappedKeyValuesRequestSlotReply)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetMappedKeyValuesRequest", Field: "Reply", Err: err}
+		}
+		if err := m.Reply.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(GetMappedKeyValuesRequestSlotSpanContext); err == nil {
-		m.SpanContext.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetMappedKeyValuesRequestSlotSpanContext) {
+		nr, err := r.ReadNestedReader(GetMappedKeyValuesRequestSlotSpanContext)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetMappedKeyValuesRequest", Field: "SpanContext", Err: err}
+		}
+		if err := m.SpanContext.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if nr, err := r.ReadNestedReader(GetMappedKeyValuesRequestSlotTenantInfo); err == nil {
-		m.TenantInfo.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetMappedKeyValuesRequestSlotTenantInfo) {
+		nr, err := r.ReadNestedReader(GetMappedKeyValuesRequestSlotTenantInfo)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetMappedKeyValuesRequest", Field: "TenantInfo", Err: err}
+		}
+		if err := m.TenantInfo.decode(nr, b); err != nil {
+			return err
+		}
 	}
-	if r.FieldPresent(GetMappedKeyValuesRequestSlotOptions) && r.ReadUint8(GetMappedKeyValuesRequestSlotOptions) > 0 {
-		if nr, err := r.ReadNestedReader(GetMappedKeyValuesRequestSlotOptions + 1); err == nil {
-			m.Options.UnmarshalFromReader(nr)
+	if r.FieldPresent(GetMappedKeyValuesRequestSlotOptions) && r.ReadUint8(GetMappedKeyValuesRequestSlotOptions) == 1 && r.FieldPresent(GetMappedKeyValuesRequestSlotOptions+1) {
+		nr, err := r.ReadNestedReader(GetMappedKeyValuesRequestSlotOptions + 1)
+		if err != nil {
+			return &wire.DecodeError{Type: "GetMappedKeyValuesRequest", Field: "Options", Err: err}
+		}
+		if err := m.Options.decode(nr, b); err != nil {
+			return err
 		}
 		m.HasOptions = true
 	}
@@ -155,6 +154,9 @@ func (m *GetMappedKeyValuesRequest) UnmarshalFDB(data []byte) error {
 	}
 	if r.FieldPresent(GetMappedKeyValuesRequestSlotArena) {
 		m.Arena = r.ReadBytes(GetMappedKeyValuesRequestSlotArena)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "GetMappedKeyValuesRequest", Err: err}
 	}
 	return nil
 }
@@ -365,21 +367,28 @@ func (m *GetMappedKeyValuesRequest) MarshalFDBPooled(dst []byte) []byte {
 	return buf
 }
 
-// ParseGetMappedKeyValuesRequestVectorFromReader reads a FlatBuffers vector of GetMappedKeyValuesRequest.
-func ParseGetMappedKeyValuesRequestVectorFromReader(r *wire.Reader, slot int) []GetMappedKeyValuesRequest {
+// ParseGetMappedKeyValuesRequestVectorFromReader reads a FlatBuffers vector of GetMappedKeyValuesRequest under one decode budget.
+func ParseGetMappedKeyValuesRequestVectorFromReader(r *wire.Reader, slot int) ([]GetMappedKeyValuesRequest, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]GetMappedKeyValuesRequest, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]GetMappedKeyValuesRequest", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]GetMappedKeyValuesRequest, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]GetMappedKeyValuesRequest", Err: err}
 		}
-		var elem GetMappedKeyValuesRequest
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

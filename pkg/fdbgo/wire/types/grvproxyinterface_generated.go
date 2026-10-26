@@ -28,14 +28,10 @@ type GrvProxyInterface struct {
 	// GetConsistentReadVersion: unregistered nested struct at slot 3
 }
 
-func (m *GrvProxyInterface) UnmarshalFromReader(r *wire.Reader) {
-	if r.FieldPresent(GrvProxyInterfaceSlotProcessId) && r.ReadUint8(GrvProxyInterfaceSlotProcessId) > 0 {
-		m.ProcessId = r.ReadBytes(GrvProxyInterfaceSlotProcessId + 1)
-		m.HasProcessId = true
-	}
-	if r.FieldPresent(GrvProxyInterfaceSlotProvisional) {
-		m.Provisional = r.ReadBool(GrvProxyInterfaceSlotProvisional)
-	}
+// UnmarshalFromReader decodes m from r; on error m holds a partial decode.
+func (m *GrvProxyInterface) UnmarshalFromReader(r *wire.Reader) error {
+	b := wire.NewDecodeBudget(r.RawData())
+	return m.decode(r, &b)
 }
 
 func (m *GrvProxyInterface) UnmarshalFDB(data []byte) error {
@@ -43,12 +39,20 @@ func (m *GrvProxyInterface) UnmarshalFDB(data []byte) error {
 	if err != nil {
 		return err
 	}
-	if r.FieldPresent(GrvProxyInterfaceSlotProcessId) && r.ReadUint8(GrvProxyInterfaceSlotProcessId) > 0 {
+	b := wire.NewDecodeBudget(data)
+	return m.decode(r, &b)
+}
+
+func (m *GrvProxyInterface) decode(r *wire.Reader, b *wire.DecodeBudget) error {
+	if r.FieldPresent(GrvProxyInterfaceSlotProcessId) && r.ReadUint8(GrvProxyInterfaceSlotProcessId) == 1 && r.FieldPresent(GrvProxyInterfaceSlotProcessId+1) {
 		m.ProcessId = r.ReadBytes(GrvProxyInterfaceSlotProcessId + 1)
 		m.HasProcessId = true
 	}
 	if r.FieldPresent(GrvProxyInterfaceSlotProvisional) {
 		m.Provisional = r.ReadBool(GrvProxyInterfaceSlotProvisional)
+	}
+	if err := r.Err(); err != nil {
+		return &wire.DecodeError{Type: "GrvProxyInterface", Err: err}
 	}
 	return nil
 }
@@ -95,21 +99,28 @@ func (m *GrvProxyInterface) writeToBuffer(wb *wire.WriteToBuffer, vtableStart in
 	return selfStart
 }
 
-// ParseGrvProxyInterfaceVectorFromReader reads a FlatBuffers vector of GrvProxyInterface.
-func ParseGrvProxyInterfaceVectorFromReader(r *wire.Reader, slot int) []GrvProxyInterface {
+// ParseGrvProxyInterfaceVectorFromReader reads a FlatBuffers vector of GrvProxyInterface under one decode budget.
+func ParseGrvProxyInterfaceVectorFromReader(r *wire.Reader, slot int) ([]GrvProxyInterface, error) {
+	b := wire.NewDecodeBudget(r.RawData())
 	count, err := r.ReadVectorCount(slot)
-	if err != nil || count == 0 {
-		return nil
+	if err == nil {
+		err = b.Take(count)
 	}
-	result := make([]GrvProxyInterface, 0, count)
-	for i := 0; i < count; i++ {
+	if err != nil {
+		return nil, &wire.DecodeError{Type: "[]GrvProxyInterface", Err: err}
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	result := make([]GrvProxyInterface, count)
+	for i := range result {
 		elemR, err := r.ReadVectorElementReader(slot, i)
 		if err != nil {
-			continue
+			return nil, &wire.DecodeError{Type: "[]GrvProxyInterface", Err: err}
 		}
-		var elem GrvProxyInterface
-		elem.UnmarshalFromReader(elemR)
-		result = append(result, elem)
+		if err := result[i].decode(elemR, &b); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

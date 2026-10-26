@@ -215,7 +215,7 @@ func BenchmarkParseKeyValueRefStringVector_10(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = ParseKeyValueRefStringVector(data)
+		_, _ = ParseKeyValueRefStringVector(data)
 	}
 }
 
@@ -228,6 +228,6 @@ func BenchmarkParseKeyValueRefStringVector_100(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = ParseKeyValueRefStringVector(data)
+		_, _ = ParseKeyValueRefStringVector(data)
 	}
 }

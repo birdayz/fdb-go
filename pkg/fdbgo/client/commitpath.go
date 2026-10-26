@@ -137,6 +137,14 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 	outcome, commitErr := parseCommitOutcome(resp.Body)
 	outcome.epoch = result.epoch
 	result = outcome
+	if commitErr != nil {
+		var fdbErr *wire.FDBError
+		if !errors.As(commitErr, &fdbErr) {
+			// An undecodable post-send reply cannot establish whether the commit applied.
+			// Fence it like a lost reply before reporting commit_unknown_result.
+			return result, input.unknownResult(ctx)
+		}
+	}
 	// An IN-BAND maybeDelivered error means the commit proxy died while
 	// answering, so whether the mutation landed is UNKNOWN. It arrives here and
 	// not in the four transport arms above, which already map their failures to
@@ -555,7 +563,9 @@ func parseCommitOutcome(data []byte) (commitOutcome, error) {
 		return commitOutcome{}, fmt.Errorf("commit: %w", err)
 	}
 	var reply types.CommitID
-	reply.UnmarshalFromReader(&r)
+	if err := reply.UnmarshalFromReader(&r); err != nil {
+		return commitOutcome{}, fmt.Errorf("commit: %w", err)
+	}
 	// A conflict can arrive IN-BAND: with report_conflicting_keys set, the
 	// proxy replies CommitID{version: invalidVersion, conflictingKRIndices}
 	// instead of an ErrorOr not_committed (CommitProxyServer.actor.cpp:
