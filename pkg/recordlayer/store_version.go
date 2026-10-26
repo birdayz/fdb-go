@@ -14,6 +14,60 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
+// VersionstampSaveBehavior is Java's FDBRecordStoreBase.VersionstampSaveBehavior:
+// how a save chooses the version stored with the record.
+type VersionstampSaveBehavior int
+
+const (
+	// VersionstampSaveBehaviorDefault stores the supplied version; without one it
+	// assigns an incomplete version when the metadata stores record versions.
+	VersionstampSaveBehaviorDefault VersionstampSaveBehavior = iota
+	// VersionstampSaveBehaviorNoVersion stores no version; supplying one is an error.
+	VersionstampSaveBehaviorNoVersion
+	// VersionstampSaveBehaviorWithVersion always stores a version, assigning an
+	// incomplete one when none is supplied, even if the metadata stores none.
+	VersionstampSaveBehaviorWithVersion
+	// VersionstampSaveBehaviorIfPresent stores exactly the supplied version, if any.
+	VersionstampSaveBehaviorIfPresent
+)
+
+// String returns the Java enum constant's name.
+func (b VersionstampSaveBehavior) String() string {
+	switch b {
+	case VersionstampSaveBehaviorDefault:
+		return "DEFAULT"
+	case VersionstampSaveBehaviorNoVersion:
+		return "NO_VERSION"
+	case VersionstampSaveBehaviorWithVersion:
+		return "WITH_VERSION"
+	case VersionstampSaveBehaviorIfPresent:
+		return "IF_PRESENT"
+	}
+	return fmt.Sprintf("VersionstampSaveBehavior(%d)", int(b))
+}
+
+// recordVersionForSave is Java's FDBRecordStore.recordVersionForSave
+// (FDBRecordStore.java:621-633).
+func (store *FDBRecordStore) recordVersionForSave(version *FDBRecordVersion, behavior VersionstampSaveBehavior) (*FDBRecordVersion, error) {
+	switch behavior {
+	case VersionstampSaveBehaviorNoVersion:
+		if version != nil {
+			// Java appends FDBRecordVersion.toString(): "FDBRecordVersion(" + printable bytes + ")".
+			return nil, &RecordCoreError{Message: "Nonnull version supplied with a NO_VERSION behavior: FDBRecordVersion(" + fdb.Printable(version.ToBytes()) + ")"}
+		}
+		return nil, nil
+	case VersionstampSaveBehaviorIfPresent:
+		return version, nil
+	case VersionstampSaveBehaviorDefault, VersionstampSaveBehaviorWithVersion:
+	default:
+		return nil, &IllegalArgumentError{Message: "unknown " + behavior.String()}
+	}
+	if version == nil && (behavior == VersionstampSaveBehaviorWithVersion || store.metaData.IsStoreRecordVersions()) {
+		return IncompleteVersion(store.context.ClaimLocalVersion())
+	}
+	return version, nil
+}
+
 // saveRecordVersion stores the version for a record.
 //
 // In the modern layout (format version >= SAVE_VERSION_WITH_RECORD and the unsplit
@@ -136,9 +190,8 @@ func unpackVersion(value []byte) (*FDBRecordVersion, error) {
 	return NewCompleteVersion(vs.TransactionVersion[:], int(vs.UserVersion))
 }
 
-// LoadRecordVersion loads the version associated with a record.
-// Returns nil if no version is stored or versioning is not enabled.
-// Matches Java's FDBRecordStore.loadRecordVersionAsync().
+// LoadRecordVersion returns the stored version, or nil when absent. Modern formats read explicit
+// versions even without automatic versioning; legacy formats return nil when metadata disables it.
 func (store *FDBRecordStore) LoadRecordVersion(primaryKey tuple.Tuple, snapshot bool) (*FDBRecordVersion, error) {
 	return store.loadRecordVersionAsync(primaryKey, snapshot).Get()
 }
@@ -147,9 +200,8 @@ func (store *FDBRecordStore) LoadRecordVersion(primaryKey tuple.Tuple, snapshot 
 func (store *FDBRecordStore) loadRecordVersionAsync(primaryKey tuple.Tuple, snapshot bool) PendingRead[*FDBRecordVersion] {
 	oldFormat := store.useOldVersionFormat()
 
-	// In the legacy layout the version subspace is cleared whenever the store is not
-	// configured to keep versions, so we can answer without any I/O. Matches Java's
-	// loadRecordVersionAsync: `useOldVersionFormat() && !metaData.isStoreRecordVersions()`.
+	// Java ignores legacy version bytes when metadata disables versions, even if an
+	// explicit-version save wrote them (loadRecordVersionAsync).
 	if oldFormat && !store.metaData.IsStoreRecordVersions() {
 		return NewPendingRead(func() (*FDBRecordVersion, error) { return nil, nil }, nil)
 	}

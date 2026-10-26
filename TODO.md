@@ -1984,6 +1984,16 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 
 ## Follow-ups after the 4.14.2.0 migration (not blocking)
 
+- [ ] Leaderboard SCORE_FOR_TIME_WINDOW_RANK out of range. Java's `scoreForRank` answers null,
+  and COMPARISON_SKIPPED_SCORE for the ELSE_SKIP form (`TimeWindowLeaderboardIndexMaintainer.java:480-488`).
+  Go returns an error, and nil for ELSE_SKIP (`time_window_leaderboard_maintainer.go`); the RANK
+  maintainer already answers nil and `("*")`.
+
+- [ ] `keyspace`: resolved paths with logical names. A resolver directory's `Path` holds only the
+  resolved `int64`, and `PathFromTuple` makes no reverse lookup. Java's `ResolvedKeySpacePath`
+  carries both (`DirectoryLayerDirectory.pathFromKey`). See DIVERGENCES.md, "Key-space paths hold
+  the stored value" (RFC-275).
+
 - [ ] **Decide which nightly nets to bring back (all deleted 2026-10-09).** The seven nightly
   workflows (coverage, factory, fuzz, oracles, reconcile, rowdiff, stress), `cmd/verify-pr-checks`
   (used only by reconcile) and the `census_test` target were removed: a late nightly could hold
@@ -2246,21 +2256,23 @@ multi-page auto-commit SELECT, which stays tracked only.
   (`:344-350`), so every peer falls into ANY: partitioning is lost and 1020s follow.
 - [ ] **Medium:** no backoff between lessen-work retries (`buildRangeWithRetries`,
   `pkg/recordlayer/online_indexer.go:1605-1631`; Java waits in `IndexingThrottle.java:394`).
-- [ ] **Medium:** no explicit-version save or `VersionstampSaveBehavior`
+- [x] **Medium:** no explicit-version save or `VersionstampSaveBehavior`
   (`pkg/recordlayer/store.go:682`, "Phase 2"); not listed in DIVERGENCES.md or
-  docs/compatibility.md.
-- [ ] **Low:** `TransactionSizeWarningError` comes back through the error result after the
+  docs/compatibility.md. Fixed in #1003 (RFC-275).
+- [x] **Low:** `TransactionSizeWarningError` comes back through the error result after the
   write (`pkg/recordlayer/database.go:925`, via `CheckTransactionSize` at `store.go:644,1032`).
-- [ ] **Low:** keyspace accepts sibling directories with the same key type
+  Fixed in #1003 (RFC-275).
+- [x] **Low:** keyspace accepts sibling directories with the same key type
   (`pkg/recordlayer/keyspace/keyspace.go:166`; Java `KeySpaceDirectory.java:356-368`) and
   `PathFromTuple` (`:338`) picks the first match; the resolver uses `context.Background()`
-  (`keyspace/resolver.go:111`).
-- [ ] **Low:** `%v` drops error chains (`pkg/recordlayer/store_builder.go:1037`,
+  (`keyspace/resolver.go:111`). Fixed in #1003 (RFC-275).
+- [x] **Low:** `%v` drops error chains (`pkg/recordlayer/store_builder.go:1037`,
   `store_state_cache.go:305`); `buildRange` adds a record read conflict
-  (`online_indexer.go:2085`) before the per-index record-type filter (`:2093`).
-- [ ] **Low:** rank and text edges: `GetNth` returns a key where Java returns null; a
+  (`online_indexer.go:2085`) before the per-index record-type filter (`:2093`). Fixed in #1003
+  (RFC-275).
+- [x] **Low:** rank and text edges: `GetNth` returns a key where Java returns null; a
   non-int64 rank bound becomes an unbounded scan (`extractRankValue`); TEXT silently skips
-  non-string columns.
+  non-string columns. Fixed in #1003 (RFC-275).
 
 ### Go FDB client
 

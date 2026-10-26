@@ -1094,10 +1094,12 @@ func (m *timeWindowLeaderboardIndexMaintainer) EvaluateTimeWindowAggregate(
 		if len(values) == 0 {
 			return nil, fmt.Errorf("score_for_time_window_rank requires rank value")
 		}
-		rankVal, ok := asInt64(values[0])
-		if !ok {
-			return nil, fmt.Errorf("score_for_time_window_rank: rank must be int64")
+		// Java's (Number) cast and scoreForRank, as for SCORE_FOR_RANK: a null rank answers null.
+		rank, err := javaRank(values[0])
+		if err != nil || rank == nil {
+			return nil, err
 		}
+		rankVal := *rank
 		scoreBytes, err := rankedSet.GetNth(m.tx, rankVal)
 		if err != nil {
 			return nil, err

@@ -614,23 +614,23 @@ func (store *FDBRecordStore) deleteRecord(primaryKey tuple.Tuple, typed *typedRe
 		}
 	}
 
+	oldStoredRecord := &FDBStoredRecord[proto.Message]{
+		PrimaryKey: primaryKey,
+		RecordType: oldRecordType,
+		Record:     oldMsg,
+		wire:       oldWire,
+		Version:    oldRecordVersion,
+		Store:      store,
+	}
 	// Decrement record count
 	if store.metaData.GetRecordCountKey() != nil && oldMsg != nil {
-		if err := store.addRecordCount(oldRecordType, oldMsg, littleEndianInt64MinusOne); err != nil {
+		if err := store.addRecordCount(oldStoredRecord, littleEndianInt64MinusOne); err != nil {
 			return false, fmt.Errorf("failed to decrement record count: %w", err)
 		}
 	}
 
 	// Update secondary indexes
 	if store.metaData.HasIndexes() && oldMsg != nil {
-		oldStoredRecord := &FDBStoredRecord[proto.Message]{
-			PrimaryKey: primaryKey,
-			RecordType: oldRecordType,
-			Record:     oldMsg,
-			wire:       oldWire,
-			Version:    oldRecordVersion,
-			Store:      store,
-		}
 		if err := store.updateSecondaryIndexes(oldStoredRecord, nil); err != nil {
 			return false, err
 		}
@@ -665,26 +665,30 @@ func (store *FDBRecordStore) RecordExists(primaryKey tuple.Tuple, isolationLevel
 	return recordExistsWithSplit(tx, recordsSubspace, primaryKey, store.metaData.IsSplitLongRecords(), store.omitUnsplitRecordSuffix())
 }
 
-// SaveRecordWithOptions saves a protobuf record with existence checking.
-// This is the full-featured save method that supports all RecordExistenceCheck modes.
+// SaveRecordWithOptions saves a protobuf record with existence checking and the
+// default version behavior.
 //
-// Java equivalent: FDBRecordStore.saveRecordAsync(Message rec, RecordExistenceCheck existenceCheck, FDBRecordVersion version, VersionstampSaveBehavior behavior)
-// Java location: fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/FDBRecordStore.java:496
-//
-// Parameters:
-//   - record: The protobuf message to save
-//   - existenceCheck: Validation to perform (NONE, ERROR_IF_EXISTS, etc.)
+// Java equivalent: FDBRecordStoreBase.saveRecord(Message rec, RecordExistenceCheck existenceCheck)
 //
 // Returns:
 //   - *FDBStoredRecord: The saved record with metadata
 //   - error: RecordAlreadyExistsError, RecordDoesNotExistError, or RecordTypeChangedError based on existenceCheck
-//
-// Note: Version and versionstamp support will be added in Phase 2
 func (store *FDBRecordStore) SaveRecordWithOptions(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,
 ) (*FDBStoredRecord[proto.Message], error) {
-	return store.saveRecordInternal(record, existenceCheck, false, nil, nil)
+	return store.saveRecordInternal(record, existenceCheck, nil, VersionstampSaveBehaviorDefault, false, nil, nil)
+}
+
+// SaveRecordWithVersion saves a record with the version behavior chooses from version (nil,
+// complete, or incomplete from ClaimLocalVersion): Java's saveRecordAsync(rec, check, version, behavior).
+func (store *FDBRecordStore) SaveRecordWithVersion(
+	record proto.Message,
+	existenceCheck RecordExistenceCheck,
+	version *FDBRecordVersion,
+	behavior VersionstampSaveBehavior,
+) (*FDBStoredRecord[proto.Message], error) {
+	return store.saveRecordInternal(record, existenceCheck, version, behavior, false, nil, nil)
 }
 
 // SaveRecordsPipelined saves records in order as SaveRecordWithOptions would
@@ -704,7 +708,7 @@ func (store *FDBRecordStore) SaveRecordsPipelined(
 		window := records[start:min(start+DefaultPipelineSize, len(records))]
 		loads := store.startExistingRecordLoads(tx, window)
 		for i, record := range window {
-			stored, err := store.saveRecordInternal(record, existenceCheck, false, &loads[i], nil)
+			stored, err := store.saveRecordInternal(record, existenceCheck, nil, VersionstampSaveBehaviorDefault, false, &loads[i], nil)
 			if err != nil {
 				return nil, err
 			}
@@ -721,6 +725,7 @@ type saveTarget struct {
 	record         proto.Message // as every later load reads it
 	write          proto.Message // what the save serializes
 	primaryKey     tuple.Tuple
+	version        *FDBRecordVersion
 }
 
 // existingRecordLoad is a save's read of the record already stored under its
@@ -740,7 +745,7 @@ func (store *FDBRecordStore) startExistingRecordLoads(tx fdb.ReadTransaction, wi
 	keys := make([][]byte, 0, len(window))
 	for i, record := range window {
 		load := &loads[i]
-		if load.target, load.err = store.saveTargetFor(record); load.err != nil {
+		if load.target, load.err = store.saveTargetFor(record, nil, VersionstampSaveBehaviorDefault); load.err != nil {
 			continue
 		}
 		key := load.target.primaryKey.Pack()
@@ -754,8 +759,9 @@ func (store *FDBRecordStore) startExistingRecordLoads(tx fdb.ReadTransaction, wi
 	return loads
 }
 
-// saveTargetFor resolves record's type, Java form and primary key.
-func (store *FDBRecordStore) saveTargetFor(record proto.Message) (saveTarget, error) {
+// saveTargetFor resolves the record's type, chosen version, Java form and primary key.
+// Java chooses the version before evaluating the primary key against the versioned record.
+func (store *FDBRecordStore) saveTargetFor(record proto.Message, version *FDBRecordVersion, behavior VersionstampSaveBehavior) (saveTarget, error) {
 	if record == nil {
 		return saveTarget{}, fmt.Errorf("cannot save nil record")
 	}
@@ -764,6 +770,11 @@ func (store *FDBRecordStore) saveTargetFor(record proto.Message) (saveTarget, er
 	// descriptor is refused, untyped saves included.
 	descriptor := record.ProtoReflect().Descriptor()
 	recordType, err := store.metaData.GetRecordTypeForDescriptor(descriptor)
+	if err != nil {
+		return saveTarget{}, err
+	}
+	// Java chooses the save's version here, before the primary key (FDBRecordStore.java:555).
+	savedVersion, err := store.recordVersionForSave(version, behavior)
 	if err != nil {
 		return saveTarget{}, err
 	}
@@ -794,29 +805,33 @@ func (store *FDBRecordStore) saveTargetFor(record proto.Message) (saveTarget, er
 	keyValues, err := evaluateKeyFlat(recordType.PrimaryKey, &FDBStoredRecord[proto.Message]{
 		RecordType: recordType,
 		Record:     record,
+		Version:    savedVersion,
 	}, record)
 	if err != nil {
 		return saveTarget{}, fmt.Errorf("failed to extract primary key: %w", err)
+	}
+	// Reinterpret []any as tuple.Tuple without a copy; both element types are any.
+	primaryKey := *(*tuple.Tuple)(unsafe.Pointer(&keyValues))
+	if incomplete, _ := primaryKey.HasIncompleteVersionstamp(); incomplete {
+		return saveTarget{}, &IncompleteVersionstampError{Context: "record primary key"}
 	}
 	return saveTarget{
 		recordTypeName: recordTypeName,
 		recordType:     recordType,
 		record:         record,
 		write:          writeRecord,
-		// Reinterpret []any as tuple.Tuple ([]TupleElement where TupleElement=any).
-		// Identical memory layout — no copy needed.
-		primaryKey: *(*tuple.Tuple)(unsafe.Pointer(&keyValues)),
+		primaryKey:     primaryKey,
+		version:        savedVersion,
 	}, nil
 }
 
-// saveRecordInternal implements the save logic with an explicit overrideLock parameter.
-// When overrideLock is true, the FORBID_RECORD_UPDATE lock check is skipped.
-// This eliminates the goroutine-unsafe overrideLock field pattern. A non-nil
-// load is record's, from startExistingRecordLoads. A non-nil typed is a typed
-// store's serializer, which reads the existing record and writes record.
+// saveRecordInternal reuses a preloaded target or prepares one with the requested version behavior.
+// overrideLock bypasses the update lock; typed supplies a typed store's serializer.
 func (store *FDBRecordStore) saveRecordInternal(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,
+	version *FDBRecordVersion,
+	behavior VersionstampSaveBehavior,
 	overrideLock bool,
 	load *existingRecordLoad,
 	typed *typedRecordSerializer,
@@ -827,13 +842,14 @@ func (store *FDBRecordStore) saveRecordInternal(
 	if load != nil {
 		target, err = load.target, load.err
 	} else {
-		target, err = store.saveTargetFor(record)
+		target, err = store.saveTargetFor(record, version, behavior)
 	}
 	if err != nil {
 		return nil, err
 	}
 	recordTypeName, recordType := target.recordTypeName, target.recordType
 	record, writeRecord, primaryKey := target.record, target.write, target.primaryKey
+	savedVersion := target.version
 	defer store.context.Timer().RecordSince(EventSaveRecord, startTime)
 
 	recordsSubspace := store.recordsSubspace
@@ -968,25 +984,11 @@ func (store *FDBRecordStore) saveRecordInternal(
 		return nil, fmt.Errorf("failed to save record: %w", err)
 	}
 
-	// Save version if versioning is enabled (handled separately from split helper
-	// because Go FDB bindings need context-level AddVersionMutation for versionstamps)
-	var savedVersion *FDBRecordVersion
-	if store.metaData.IsStoreRecordVersions() {
-		localVer := store.context.ClaimLocalVersion()
-		version, verErr := IncompleteVersion(localVer)
-		if verErr != nil {
-			return nil, fmt.Errorf("failed to create incomplete version: %w", verErr)
-		}
-		if err := store.saveRecordVersion(primaryKey, version, &newsizeInfo); err != nil {
+	// Save the version, if any (handled separately from split helper because Go
+	// FDB bindings need context-level AddVersionMutation for versionstamps).
+	if savedVersion != nil {
+		if err := store.saveRecordVersion(primaryKey, savedVersion, &newsizeInfo); err != nil {
 			return nil, err
-		}
-		savedVersion = version
-	}
-
-	// Only increment record count for new inserts (not updates).
-	if !oldRecordExists {
-		if err := store.addRecordCount(recordType, record, littleEndianInt64One); err != nil {
-			return nil, fmt.Errorf("failed to increment record count: %w", err)
 		}
 	}
 
@@ -1003,6 +1005,13 @@ func (store *FDBRecordStore) saveRecordInternal(
 		KeySize:         newsizeInfo.KeySize,
 		Split:           newsizeInfo.IsSplit,
 		VersionedInline: newsizeInfo.VersionedInline,
+	}
+
+	// Only increment record count for new inserts (not updates).
+	if !oldRecordExists {
+		if err := store.addRecordCount(newStoredRecord, littleEndianInt64One); err != nil {
+			return nil, fmt.Errorf("failed to increment record count: %w", err)
+		}
 	}
 
 	// Update secondary indexes

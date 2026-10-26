@@ -67,9 +67,8 @@ type RecordMetaData struct {
 	// Java equivalent: RecordMetaData.getRecordCountKey()
 	recordCountKey KeyExpression
 
-	// storeRecordVersions controls whether record versions are stored.
-	// When true, each save assigns an FDBRecordVersion using SET_VERSIONSTAMPED_VALUE.
-	// Java equivalent: RecordMetaData.isStoreRecordVersions()
+	// storeRecordVersions enables automatic version assignment under DEFAULT.
+	// Per-save behaviors and supplied versions override it.
 	storeRecordVersions bool
 
 	// splitLongRecords controls whether records >100KB are split across
@@ -525,9 +524,8 @@ func (b *RecordMetaDataBuilder) AddView(name, definition string) *RecordMetaData
 	return b
 }
 
-// SetStoreRecordVersions enables or disables automatic record versioning.
-// When enabled, each save assigns an FDBRecordVersion to the record.
-// Java equivalent: RecordMetaDataBuilder.setStoreRecordVersions(boolean)
+// SetStoreRecordVersions controls automatic version assignment under DEFAULT.
+// Per-save behaviors and supplied versions override this metadata setting.
 func (b *RecordMetaDataBuilder) SetStoreRecordVersions(store bool) *RecordMetaDataBuilder {
 	if b.storeRecordVersions != store {
 		b.version++ // Matches Java: bumps version when value changes
@@ -936,6 +934,9 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	typeKeySeen := make(map[string]string)
 	for _, name := range recordTypeNames {
 		rt := b.recordTypes[name]
+		if countVersionColumns(rt.PrimaryKey) != 0 {
+			return nil, &MetaDataError{Message: "Version in primary key not supported"}
+		}
 		// Go-only: an empty primary key. Java's validator has no such check;
 		// Go refuses it because such a record's split clear range is the whole
 		// records subspace, every other record type's records included
@@ -1350,10 +1351,14 @@ type RecordTypeBuilder struct {
 	builder    *RecordMetaDataBuilder
 }
 
-// SetPrimaryKey sets the primary key expression for this record type
+// SetPrimaryKey sets the primary key expression, refusing declared version columns as Java does.
 func (rtb *RecordTypeBuilder) SetPrimaryKey(keyExpr KeyExpression) *RecordTypeBuilder {
-	rtb.recordType.PrimaryKey = keyExpr
 	rtb.builder.handedKeys = append(rtb.builder.handedKeys, keyExpr)
+	if countVersionColumns(keyExpr) != 0 {
+		rtb.builder.recordBuildError(&MetaDataError{Message: "Version in primary key not supported"})
+		return rtb
+	}
+	rtb.recordType.PrimaryKey = keyExpr
 	return rtb
 }
 
@@ -2124,9 +2129,8 @@ func countVersionColumnsInGroupParts(expr KeyExpression, groupingCount int) (gro
 	return 0, totalVersions
 }
 
-// countVersionColumns returns the number of VersionKeyExpression columns in a
-// key expression tree. Matches Java's KeyExpression.versionColumns() which
-// defaults to 0 and sums through composite/grouping/nesting/keyWithValue.
+// countVersionColumns is Java's declared versionColumns, not a search for VersionKey leaves.
+// FunctionKeyExpression inherits the default 0 even when its arguments contain a version.
 func countVersionColumns(expr KeyExpression) int {
 	if expr == nil {
 		return 0
@@ -2140,14 +2144,22 @@ func countVersionColumns(expr KeyExpression) int {
 			total += countVersionColumns(child)
 		}
 		return total
+	case *ListKeyExpression:
+		total := 0
+		for _, child := range e.children {
+			total += countVersionColumns(child)
+		}
+		return total
 	case *GroupingKeyExpression:
 		return countVersionColumns(e.wholeKey)
 	case *KeyWithValueExpression:
 		return countVersionColumns(e.innerKey)
 	case *NestingKeyExpression:
 		return countVersionColumns(e.child)
-	case *FunctionKeyExpression:
-		return countVersionColumns(e.arguments)
+	case *SplitKeyExpression:
+		return countVersionColumns(e.joined)
+	case *DimensionsKeyExpression:
+		return countVersionColumns(e.WholeKey)
 	default:
 		return 0
 	}

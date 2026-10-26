@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -913,10 +914,8 @@ func (rc *FDBRecordContext) GetApproximateTransactionSize() (int64, error) {
 	return rc.tx.GetApproximateSize().Get()
 }
 
-// CheckTransactionSize checks the approximate transaction size against the
-// configured warning and error thresholds. Returns TransactionSizeExceededError
-// if the error threshold is exceeded, TransactionSizeWarningError if the warning
-// threshold is exceeded (once per transaction), or nil.
+// CheckTransactionSize returns TransactionSizeExceededError past the error threshold; past the
+// warning threshold it logs and counts CountTransactionSizeWarning once per transaction.
 func (rc *FDBRecordContext) CheckTransactionSize() error {
 	if rc.txSizeWarnBytes == 0 && rc.txSizeErrorBytes == 0 {
 		return nil
@@ -929,7 +928,14 @@ func (rc *FDBRecordContext) CheckTransactionSize() error {
 		return &TransactionSizeExceededError{CurrentBytes: size, LimitBytes: rc.txSizeErrorBytes}
 	}
 	if rc.txSizeWarnBytes > 0 && size >= rc.txSizeWarnBytes && rc.txSizeWarned.CompareAndSwap(false, true) {
-		return &TransactionSizeWarningError{CurrentBytes: size, LimitBytes: rc.txSizeWarnBytes}
+		// A warning, not an error: the write that crossed the threshold succeeded.
+		rc.Timer().Increment(CountTransactionSizeWarning)
+		ctx := rc.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		slog.Default().LogAttrs(ctx, slog.LevelWarn, "transaction size exceeds warning threshold",
+			slog.Int64("current_bytes", size), slog.Int64("limit_bytes", rc.txSizeWarnBytes))
 	}
 	return nil
 }
@@ -944,17 +950,6 @@ type TransactionSizeExceededError struct {
 
 func (e *TransactionSizeExceededError) Error() string {
 	return fmt.Sprintf("transaction size %d bytes exceeds limit %d bytes", e.CurrentBytes, e.LimitBytes)
-}
-
-// TransactionSizeWarningError is returned once per transaction when the
-// approximate size exceeds the configured warning threshold.
-type TransactionSizeWarningError struct {
-	CurrentBytes int64
-	LimitBytes   int64
-}
-
-func (e *TransactionSizeWarningError) Error() string {
-	return fmt.Sprintf("transaction size %d bytes exceeds warning threshold %d bytes", e.CurrentBytes, e.LimitBytes)
 }
 
 // Commit runs pre-commit checks, flushes pending version mutations, commits the

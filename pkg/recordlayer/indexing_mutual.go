@@ -401,23 +401,8 @@ func (m *mutualIndexBuilder) buildFragmentRange(ctx context.Context, store *FDBR
 			break
 		}
 
-		if m.indexer.allTargetIndexesIdempotent() {
-			if err := store.AddRecordReadConflict(rec.PrimaryKey); err != nil {
-				return 0, err
-			}
-		}
-
-		for _, idx := range m.indexer.targetIndexes {
-			if !m.indexer.shouldIndexRecordForIndex(rec, idx) {
-				continue
-			}
-			maintainer, mErr := store.GetIndexMaintainer(idx)
-			if mErr != nil {
-				return 0, fmt.Errorf("index %q get maintainer: %w", idx.Name, mErr)
-			}
-			if err := maintainer.Update(nil, rec); err != nil {
-				return 0, fmt.Errorf("index %q update: %w", idx.Name, err)
-			}
+		if _, err := m.indexer.indexScannedRecord(store, rec); err != nil {
+			return 0, err
 		}
 		recordsProcessed++
 	}

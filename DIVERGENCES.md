@@ -4581,6 +4581,56 @@ It is distinct from ordinary index cursor Skip; Record Layer remote-fetch scans
 continue routing positive Skip to SCAN_AND_FETCH, and index plans keep it above
 their remote-fetch leaves.
 
+## Version-dependent record keys before RFC-275
+
+Earlier Go metadata accepted native `VersionKey()` primary-key columns that Java refuses.
+RFC-275 rejects those declarations with `MetaDataError` ("Version in primary key not supported")
+at construction and load. Existing unsupported metadata is not migrated automatically.
+Functions declare zero version columns even when their arguments contain a version.
+Consequently VERSION indexes rooted at such functions are refused during metadata and SQL
+DDL validation, as in Java; the SQL error is UNKNOWN (`XXXXX`). VALUE indexes with the
+same roots remain legal metadata. A version in a KeyWithValue VALUE portion also remains
+legal metadata; an incomplete version fails recoverably at write time, not at DDL.
+
+Maintained-count expressions and function-wrapped primary keys now see the chosen
+record version, as Java's save record builder does. Incomplete values reaching ordinary key
+encoders return `IncompleteVersionstampError` rather than a panic. Earlier null-version
+counters are not corrected automatically; migrate or recreate affected pre-release stores
+before mixed-engine use. Unaffected stores and tuple encodings are unchanged.
+
+## Transaction size thresholds (Go-only extension, RFC-275)
+
+Java has no user-set transaction size threshold. Its only size check is the
+online indexer's write limit (`IndexingBase.hadTransactionReachedLimits`), and
+FDB's own 2101 is counted and wrapped. Go adds two opt-in `ContextConfig` fields,
+which `SaveRecord` and `DeleteRecord` check after their write:
+- `TransactionSizeWarnBytes` logs at WARN and counts `CountTransactionSizeWarning`,
+  once per transaction. The operation still succeeds.
+- `TransactionSizeErrorBytes` returns `TransactionSizeExceededError`, a signal to
+  commit and start a new transaction.
+
+Neither changes any stored byte.
+
+## Key-space paths hold the stored value (RFC-275)
+
+Go's `keyspace` follows Java's `KeySpaceDirectory` in these respects:
+- sibling rules (`addSubdirectory`);
+- declaration-order key matching;
+- the "No subdirectory available to hold provided type" error.
+
+It differs in three places:
+- **Stored value only.** A path stores only the value that goes into the tuple. A
+  resolver directory's path carries the resolved `int64`, and `PathFromTuple`
+  makes no reverse lookup. Java's `ResolvedKeySpacePath` also carries the logical
+  name.
+- **Byte constants.** Two constant `BYTES` siblings with equal content are refused.
+  Java compares constants with `Objects.equals`, which for arrays is identity, so
+  it accepts them and then matches the first.
+  Integer constants compare by value too. Java's `Objects.equals` tells an `Integer` 1
+  from a `Long` 1 and accepts both. Floats compare as Java's `Double.equals` does.
+- **No constant resolver directories.** A resolver directory is always open, so
+  Java's `isCompatible` check, which applies only between constants, never applies.
+
 ## Native FDB client read hedging
 
 RFC-281 (#1017) aligns the second-request budget and adaptive delay with

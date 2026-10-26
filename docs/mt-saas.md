@@ -753,9 +753,10 @@ Three things make the naive version wrong, and they are the actual content of th
   limits, so a store larger than one transaction is copied at drifting read versions. The only
   freeze available is `frl store lock forbid-record-update`
   (`cmd/frl/internal/cmd/store_write.go:52`).
-- **Record versions cannot be restored.** `SaveRecordWithOptions` takes `(record, existenceCheck)`
-  (`pkg/recordlayer/store.go:503`); there is no API to write a record's stored version. A
-  reload mints new versions, which breaks VERSION-keyed indexes and version continuations.
+- **Record versions need explicit capture and replay.** A copier can preserve each complete
+  stored version with `SaveRecordWithVersion` and `VersionstampSaveBehaviorIfPresent`
+  (RFC-275). Ordinary `SaveRecordWithOptions` can mint new versions instead; the CLI output
+  below does not capture versions, so a CLI scan/put round trip still loses them.
 - **The CLI is not a capture format.** `frl store dump` prints value *lengths*, not bytes
   (`cmd/frl/internal/cmd/store_dump.go:188`), and `frl record scan` emits three fields —
   `primary_key`, `record_type`, `record` (`cmd/frl/internal/cmd/record.go:186`) — with no record

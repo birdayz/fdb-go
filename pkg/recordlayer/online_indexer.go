@@ -2001,160 +2001,182 @@ func (oi *OnlineIndexer) markReadable(ctx context.Context) error {
 // record. Range tracking uses the primary index's RangeSet for reading, but inserts
 // into all target indexes' RangeSets. Matches Java's IndexingMultiTargetByRecords.
 func (oi *OnlineIndexer) buildRange(ctx context.Context) (int64, bool, error) {
-	var recordsProcessed int64
-	var hasMore bool
-	var mergeRequests []*Index
-
+	var r buildRangeResult
 	_, err := oi.run(ctx, func(rtx *FDBRecordContext) (any, error) {
-		// Reset on retry — previous attempt's values are stale.
-		recordsProcessed = 0
-		mergeRequests = nil
-		hasMore = false
-		started := rtx.Env().Now()
-
-		store, err := oi.openStore(rtx)
-		if err != nil {
-			return nil, err
-		}
-
-		if err := oi.validateBuildSession(store); err != nil {
-			return nil, err
-		}
-
-		// Primary index's RangeSet determines the build boundaries.
-		primaryRangeSet := NewIndexingRangeSet(store.subspace, oi.primaryIndex())
-
-		// Find first missing range.
-		missing, err := primaryRangeSet.FirstMissingRange(rtx.Transaction())
-		if err != nil {
-			return nil, err
-		}
-		if missing == nil {
-			hasMore = false
-			return nil, nil
-		}
-
-		// Convert byte boundaries to a TupleRange for record scanning. The end boundary may
-		// be a tuple+0xff (RANGE_INCLUSIVE high) written by the typed-records preset, which
-		// unpackRangeEndBoundary maps to an INCLUSIVE high endpoint.
-		var rangeStart, rangeEnd tuple.Tuple
-		lowEp := EndpointTypeRangeInclusive
-		highEp := EndpointTypeRangeExclusive
-		if bytes.Equal(missing.Begin, rangeSetFirstKey) {
-			lowEp = EndpointTypeTreeStart
-		} else if rangeStart, err = tuplefast.Unpack(missing.Begin); err != nil {
-			return nil, fmt.Errorf("unpack range start: %w", err)
-		}
-		if bytes.Equal(missing.End, rangeSetFinalKey) {
-			highEp = EndpointTypeTreeEnd
-		} else if rangeEnd, highEp, err = unpackRangeEndBoundary(missing.End); err != nil {
-			return nil, fmt.Errorf("unpack range end: %w", err)
-		}
-
-		// Scan limit+1 records: process up to limit, use the extra as continuation.
-		// Idempotent indexes use SNAPSHOT reads (no conflict tracking) for better
-		// throughput. Non-idempotent indexes use SERIALIZABLE to prevent double-counting.
-		// Matches Java's IndexingBase.scanPropertiesWithLimits().
-		scanProps := ForwardScan()
-		scanProps.ExecuteProperties.ReturnedRowLimit = saturatingAdd(oi.limit, 1)
-		if oi.allTargetIndexesIdempotent() {
-			scanProps.ExecuteProperties.IsolationLevel = IsolationLevelSnapshot
-		}
-
-		cursor := store.ScanRecordsInRange(rangeStart, rangeEnd, lowEp, highEp, nil, scanProps)
-
-		var scannedCount int
-		var extraPK tuple.Tuple
-		// reachedLimits: the last record indexed took the transaction past its
-		// time or write limit, so the next record ends the range.
-		var reachedLimits bool
-
-		for rec, iterErr := range Seq2(cursor, ctx) {
-			if iterErr != nil {
-				return nil, iterErr
-			}
-
-			scannedCount++
-
-			if scannedCount > oi.limit || reachedLimits {
-				extraPK = rec.PrimaryKey
-				break
-			}
-
-			if oi.allTargetIndexesIdempotent() {
-				if err := store.AddRecordReadConflict(rec.PrimaryKey); err != nil {
-					return nil, err
-				}
-			}
-
-			// Update each target index that applies to this record.
-			indexed := false
-			for _, idx := range oi.targetIndexes {
-				if !oi.shouldIndexRecordForIndex(rec, idx) {
-					continue
-				}
-				maintainer, mErr := store.getIndexMaintainer(idx)
-				if mErr != nil {
-					return nil, fmt.Errorf("index %q get maintainer: %w", idx.Name, mErr)
-				}
-				if err := maintainer.Update(nil, rec); err != nil {
-					return nil, fmt.Errorf("index %q record pk=%v: %w", idx.Name, rec.PrimaryKey, err)
-				}
-				indexed = true
-			}
-			if indexed {
-				if reachedLimits, err = oi.transactionReachedLimits(rtx, started); err != nil {
-					return nil, err
-				}
-			}
-			// Count ALL scanned records, not just indexed ones.
-			// Matches Java's IndexingBase.handleCursorResult() which increments
-			// recordsScannedCounter for every record regardless of type filtering.
-			recordsProcessed++
-		}
-
-		// Mark progress in ALL target indexes' RangeSets.
-		var rangeBeginBytes, rangeEndBytes []byte
-		if rangeStart != nil {
-			rangeBeginBytes = rangeStart.Pack()
-		}
-
-		if extraPK != nil {
-			rangeEndBytes = extraPK.Pack()
-			hasMore = true
-		} else {
-			// Mark up to the ORIGINAL byte boundary, not rangeEnd.Pack(): the boundary may
-			// be a tuple+0xff (RANGE_INCLUSIVE high) written by the typed-records preset, and
-			// the stripped rangeEnd.Pack() would drop the 0xff and invert the range.
-			if !bytes.Equal(missing.End, rangeSetFinalKey) {
-				rangeEndBytes = missing.End
-			}
-			hasMore = !bytes.Equal(missing.End, rangeSetFinalKey)
-		}
-
-		for _, idx := range oi.targetIndexes {
-			rangeSet := NewIndexingRangeSet(store.subspace, idx)
-			if err := insertIndexBuildRange(rangeSet, rtx.Transaction(), idx, rangeBeginBytes, rangeEndBytes); err != nil {
-				return nil, fmt.Errorf("mark range built for %q: %w", idx.Name, err)
-			}
-		}
-
-		// Track progress: atomic ADD of records scanned per target index.
-		// Matches Java's IndexingBase.tieredMergeAndCommit() progress tracking.
-		if recordsProcessed > 0 {
-			for _, idx := range oi.targetIndexes {
-				store.AddBuildProgress(idx, recordsProcessed)
-			}
-		}
-
-		mergeRequests = store.GetIndexDeferredMaintenanceControl().GetMergeRequiredIndexes()
-		return nil, nil
+		var err error
+		// Each attempt starts from a fresh result; a retry's values are stale.
+		r, err = oi.buildRangeInTransaction(ctx, rtx)
+		return nil, err
 	})
-
 	if err == nil {
-		oi.mergeRequiredIndexes = mergeRequests
+		oi.mergeRequiredIndexes = r.mergeRequests
 	}
-	return recordsProcessed, hasMore, err
+	return r.recordsProcessed, r.hasMore, err
+}
+
+// buildRangeResult is one buildRange transaction's outcome.
+type buildRangeResult struct {
+	recordsProcessed int64
+	hasMore          bool
+	mergeRequests    []*Index
+}
+
+// buildRangeInTransaction is buildRange's body: it indexes one chunk in rtx,
+// which the caller commits.
+func (oi *OnlineIndexer) buildRangeInTransaction(ctx context.Context, rtx *FDBRecordContext) (buildRangeResult, error) {
+	var r buildRangeResult
+	started := rtx.Env().Now()
+
+	store, err := oi.openStore(rtx)
+	if err != nil {
+		return r, err
+	}
+
+	if err := oi.validateBuildSession(store); err != nil {
+		return r, err
+	}
+
+	// Primary index's RangeSet determines the build boundaries.
+	primaryRangeSet := NewIndexingRangeSet(store.subspace, oi.primaryIndex())
+
+	// Find first missing range.
+	missing, err := primaryRangeSet.FirstMissingRange(rtx.Transaction())
+	if err != nil {
+		return r, err
+	}
+	if missing == nil {
+		r.hasMore = false
+		return r, nil
+	}
+
+	// Convert byte boundaries to a TupleRange for record scanning. The end boundary may
+	// be a tuple+0xff (RANGE_INCLUSIVE high) written by the typed-records preset, which
+	// unpackRangeEndBoundary maps to an INCLUSIVE high endpoint.
+	var rangeStart, rangeEnd tuple.Tuple
+	lowEp := EndpointTypeRangeInclusive
+	highEp := EndpointTypeRangeExclusive
+	if bytes.Equal(missing.Begin, rangeSetFirstKey) {
+		lowEp = EndpointTypeTreeStart
+	} else if rangeStart, err = tuplefast.Unpack(missing.Begin); err != nil {
+		return r, fmt.Errorf("unpack range start: %w", err)
+	}
+	if bytes.Equal(missing.End, rangeSetFinalKey) {
+		highEp = EndpointTypeTreeEnd
+	} else if rangeEnd, highEp, err = unpackRangeEndBoundary(missing.End); err != nil {
+		return r, fmt.Errorf("unpack range end: %w", err)
+	}
+
+	// Scan limit+1 records: process up to limit, use the extra as continuation.
+	// Idempotent indexes use SNAPSHOT reads (no conflict tracking) for better
+	// throughput. Non-idempotent indexes use SERIALIZABLE to prevent double-counting.
+	// Matches Java's IndexingBase.scanPropertiesWithLimits().
+	scanProps := ForwardScan()
+	scanProps.ExecuteProperties.ReturnedRowLimit = saturatingAdd(oi.limit, 1)
+	if oi.allTargetIndexesIdempotent() {
+		scanProps.ExecuteProperties.IsolationLevel = IsolationLevelSnapshot
+	}
+
+	cursor := store.ScanRecordsInRange(rangeStart, rangeEnd, lowEp, highEp, nil, scanProps)
+
+	var scannedCount int
+	var extraPK tuple.Tuple
+	// reachedLimits: the last record indexed took the transaction past its
+	// time or write limit, so the next record ends the range.
+	var reachedLimits bool
+
+	for rec, iterErr := range Seq2(cursor, ctx) {
+		if iterErr != nil {
+			return r, iterErr
+		}
+
+		scannedCount++
+
+		if scannedCount > oi.limit || reachedLimits {
+			extraPK = rec.PrimaryKey
+			break
+		}
+
+		// Count ALL scanned records, not just indexed ones.
+		// Matches Java's IndexingBase.handleCursorResult() which increments
+		// recordsScannedCounter for every record regardless of type filtering.
+		r.recordsProcessed++
+
+		indexed, err := oi.indexScannedRecord(store, rec)
+		if err != nil {
+			return r, err
+		}
+		if indexed {
+			if reachedLimits, err = oi.transactionReachedLimits(rtx, started); err != nil {
+				return r, err
+			}
+		}
+	}
+
+	// Mark progress in ALL target indexes' RangeSets.
+	var rangeBeginBytes, rangeEndBytes []byte
+	if rangeStart != nil {
+		rangeBeginBytes = rangeStart.Pack()
+	}
+
+	if extraPK != nil {
+		rangeEndBytes = extraPK.Pack()
+		r.hasMore = true
+	} else {
+		// Mark up to the ORIGINAL byte boundary, not rangeEnd.Pack(): the boundary may
+		// be a tuple+0xff (RANGE_INCLUSIVE high) written by the typed-records preset, and
+		// the stripped rangeEnd.Pack() would drop the 0xff and invert the range.
+		if !bytes.Equal(missing.End, rangeSetFinalKey) {
+			rangeEndBytes = missing.End
+		}
+		r.hasMore = !bytes.Equal(missing.End, rangeSetFinalKey)
+	}
+
+	for _, idx := range oi.targetIndexes {
+		rangeSet := NewIndexingRangeSet(store.subspace, idx)
+		if err := insertIndexBuildRange(rangeSet, rtx.Transaction(), idx, rangeBeginBytes, rangeEndBytes); err != nil {
+			return r, fmt.Errorf("mark range built for %q: %w", idx.Name, err)
+		}
+	}
+
+	// Track progress: atomic ADD of records scanned per target index.
+	// Matches Java's IndexingBase.tieredMergeAndCommit() progress tracking.
+	if r.recordsProcessed > 0 {
+		for _, idx := range oi.targetIndexes {
+			store.AddBuildProgress(idx, r.recordsProcessed)
+		}
+	}
+
+	r.mergeRequests = store.GetIndexDeferredMaintenanceControl().GetMergeRequiredIndexes()
+	return r, nil
+}
+
+// indexScannedRecord maintains the targets covering rec, reporting whether any did. As in Java's
+// handleCursorResult, the record-type filter precedes the read conflict.
+func (oi *OnlineIndexer) indexScannedRecord(store *FDBRecordStore, rec *FDBStoredRecord[proto.Message]) (bool, error) {
+	var applicable []*Index
+	for _, idx := range oi.targetIndexes {
+		if oi.shouldIndexRecordForIndex(rec, idx) {
+			applicable = append(applicable, idx)
+		}
+	}
+	if len(applicable) == 0 {
+		return false, nil
+	}
+	if oi.allTargetIndexesIdempotent() {
+		if err := store.AddRecordReadConflict(rec.PrimaryKey); err != nil {
+			return false, err
+		}
+	}
+	for _, idx := range applicable {
+		maintainer, err := store.getIndexMaintainer(idx)
+		if err != nil {
+			return false, fmt.Errorf("index %q get maintainer: %w", idx.Name, err)
+		}
+		if err := maintainer.Update(nil, rec); err != nil {
+			return false, fmt.Errorf("index %q record pk=%v: %w", idx.Name, rec.PrimaryKey, err)
+		}
+	}
+	return true, nil
 }
 
 // buildIndexingStamp creates the IndexBuildIndexingStamp proto for this build.
