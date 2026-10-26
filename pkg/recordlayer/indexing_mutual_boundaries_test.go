@@ -17,7 +17,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// shardMapBackend is simfdb with an injected shard map: LocalityGetBoundaryKeys returns
+// shardMapBackend wraps a backend with an injected shard map: LocalityGetBoundaryKeys returns
 // the injected keys inside the requested range, or shardErr, and records each request.
 type shardMapBackend struct {
 	fdb.BackendDatabase
@@ -441,12 +441,45 @@ func TestMutualTooLargeChunkRetriesAtALowerLimit(t *testing.T) {
 	}
 	oi := newSimMutualIndexer(t, db, "toolarge", priceIndexMetaData(t, nil), 10, ids)
 	m := newMutualIndexBuilder(oi)
-	// The claim commits; its first chunk fails.
-	backend.failAt, backend.failErr = backend.transactions+2, fdb.Error{Code: 2101}
-	n, more, err := oi.buildRangeWithRetries(context.Background(), m.buildMutual)
-	if err != nil || !more || n < 1 || n >= 10 {
-		t.Fatalf("buildRangeWithRetries = (%d, %t, %v), want a chunk below the limit of 10", n, more, err)
+	ctx := context.Background()
+	if more, err := m.claimNextRange(ctx); err != nil || !more || m.claimed == nil {
+		t.Fatalf("claimNextRange = (%t, %v) with claim %x, want a committed claim", more, err, m.claimed)
 	}
+	claim := m.claimed
+	begin, end := bytes.Clone(claim.Begin), bytes.Clone(claim.End)
+	assertClaim := func() {
+		t.Helper()
+		if m.claimed != claim || !bytes.Equal(m.claimed.Begin, begin) || !bytes.Equal(m.claimed.End, end) {
+			t.Fatalf("claim = %p %x, want the committed claim %p [%x, %x)", m.claimed, m.claimed, claim, begin, end)
+		}
+	}
+	// Fail the first chunk after its body, not the already-committed claim.
+	committedTransactions := backend.transactions
+	backend.failAt, backend.failErr = committedTransactions+1, fdb.Error{Code: 2101}
+	attempts := 0
+	n, more, err := oi.buildRangeWithRetries(ctx, func(ctx context.Context) (int64, bool, error) {
+		attempts++
+		assertClaim()
+		before := backend.transactions
+		n, more, err := m.buildMutual(ctx)
+		assertClaim()
+		if backend.transactions != before+1 {
+			t.Fatalf("attempt %d used %d transactions, want only the claimed chunk without re-claiming", attempts, backend.transactions-before)
+		}
+		if attempts == 1 {
+			var tooLarge fdb.Error
+			if !errors.As(err, &tooLarge) || tooLarge.Code != 2101 || n != 10 || more {
+				t.Fatalf("first chunk = (%d, %t, %v), want 10 scanned records and transaction_too_large", n, more, err)
+			}
+		} else if oi.limit >= 10 || n != int64(oi.limit) {
+			t.Fatalf("retry scanned %d records at limit %d, want a full chunk at a reduced limit", n, oi.limit)
+		}
+		return n, more, err
+	})
+	if err != nil || !more || n < 1 || n >= 10 || attempts != 2 || backend.transactions != committedTransactions+2 {
+		t.Fatalf("buildRangeWithRetries = (%d, %t, %v) after %d attempts and %d chunk transactions, want one failed chunk and one smaller retry", n, more, err, attempts, backend.transactions-committedTransactions)
+	}
+	assertClaim()
 }
 
 // A builder keeps a claim a peer built part of, and moves on from one a peer finished, in FULL.
