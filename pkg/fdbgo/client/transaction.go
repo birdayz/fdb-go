@@ -486,7 +486,7 @@ type Transaction struct {
 	timeoutNeedsArm     bool
 	timeoutArm          uint64
 	transactScoped      bool
-	transactFinalCommit bool
+	transactFinalCommit atomic.Bool
 	turnoverErr         wire.FDBError
 	turnoverErrUsed     bool
 	inlineVs            versionstampCompletion
@@ -3387,7 +3387,7 @@ func (tx *Transaction) postCommitResetFields() {
 	// it must NOT carry the just-committed transaction's traceID. The next op's first GRV
 	// starts a fresh Transaction span via ensureTxSpan.
 	tx.endTxSpan()
-	if tx.transactFinalCommit {
+	if tx.transactFinalCommit.Load() {
 		tx.spanNeedsRegen.Store(true)
 		tx.spanContext.Store(nil)
 	} else {

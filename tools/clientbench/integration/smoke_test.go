@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -140,10 +141,11 @@ func TestBothBackendsAgainstFDB(t *testing.T) {
 				var manifest struct {
 					Config  bench.Config `json:"config"`
 					Backend struct {
-						Name          string            `json:"backend"`
-						Native        bool              `json:"native_library"`
-						ExecutableSHA string            `json:"executable_sha256"`
-						Libraries     map[string]string `json:"loaded_fdb_libraries_sha256"`
+						Name           string            `json:"backend"`
+						Native         bool              `json:"native_library"`
+						ExecutableSHA  string            `json:"executable_sha256"`
+						Libraries      map[string]string `json:"loaded_fdb_libraries_sha256"`
+						AdaptiveLinger int64             `json:"adaptive_linger_ns"`
 					} `json:"backend"`
 				}
 				readJSON(t, filepath.Join(output, "manifest.json"), &manifest)
@@ -157,6 +159,28 @@ func TestBothBackendsAgainstFDB(t *testing.T) {
 				checkSamples(t, filepath.Join(output, "warmup.csv"), "warmup", 3, paced)
 				if text, err := execute(args); err == nil || !strings.Contains(string(text), "file exists") {
 					t.Fatalf("existing output not rejected: err=%v output=%s", err, text)
+				}
+				if name == "getset100" {
+					lingerArgs := append(slices.Clone(args), "--adaptive-linger=20us")
+					lingerArgs[slices.Index(lingerArgs, "--output")+1] = filepath.Join(t.TempDir(), "linger")
+					if arm.native {
+						if text, err := execute(lingerArgs); err == nil || !strings.Contains(string(text), "Go client only") {
+							t.Fatalf("cgo accepted adaptive-linger: err=%v output=%s", err, text)
+						}
+					} else {
+						if text, err := execute(lingerArgs); err != nil {
+							t.Fatalf("go adaptive-linger failed: %v\n%s", err, text)
+						}
+						readJSON(t, filepath.Join(lingerArgs[slices.Index(lingerArgs, "--output")+1], "manifest.json"), &manifest)
+						if manifest.Config.AdaptiveLinger != 20*time.Microsecond || manifest.Backend.AdaptiveLinger != int64(20*time.Microsecond) {
+							t.Fatalf("adaptive-linger manifest = %+v", manifest)
+						}
+						cdArgs := append(slices.Clone(args), "--coalesce-delay=adaptive:15us")
+						cdArgs[slices.Index(cdArgs, "--output")+1] = filepath.Join(t.TempDir(), "cd-adaptive")
+						if text, err := execute(cdArgs); err != nil {
+							t.Fatalf("go coalesce-delay=adaptive:15us failed: %v\n%s", err, text)
+						}
+					}
 				}
 				t.Logf("CLIENTBENCH_SMOKE %s/%s: measured=5 warmup=3 persisted=ok backend=%s", arm.name, name, manifest.Backend.Name)
 			})

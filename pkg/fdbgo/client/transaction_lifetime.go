@@ -72,6 +72,9 @@ func (tx *Transaction) admitState(lease *executionLease) {
 			inc := tx.readIncarnationLocked()
 			if tx.timeoutNeedsArm {
 				tx.armTimeoutLocked()
+				if inc.cause != nil {
+					inc.cancel(inc.cause)
+				}
 			}
 			inc.users++
 			lease.inc = inc
@@ -261,7 +264,7 @@ func (tx *Transaction) turnoverLocked(old *readIncarnation) turnoverToken {
 	tx.readGen++
 	tx.readErr = nil
 	var cancelErr error
-	if tx.transactFinalCommit && !tx.turnoverErrUsed {
+	if tx.transactFinalCommit.Load() && !tx.turnoverErrUsed {
 		tx.turnoverErrUsed = true
 		tx.turnoverErr = wire.FDBError{Code: ErrTransactionCancelled}
 		cancelErr = &tx.turnoverErr
@@ -303,12 +306,13 @@ func (token turnoverToken) finish() {
 	// captured during turnover, skip eagerly allocating a new incarnation and
 	// re-arming the timeout for a handle that returns on the next line (if a
 	// caller retains tx past Transact, readIncarnationLocked arms it lazily).
-	if tx.readLife != nil || (tx.timeoutNs.Load() > 0 && !tx.transactFinalCommit) {
+	finalCommit := tx.transactFinalCommit.Load()
+	if tx.readLife != nil || (tx.timeoutNs.Load() > 0 && !finalCommit) {
 		tx.readIncarnationLocked()
 	}
 	ready := tx.readReady
 	tx.readReady = nil
-	if !tx.transactFinalCommit || tx.readLife != nil {
+	if !finalCommit || tx.readLife != nil {
 		tx.armTimeoutLocked()
 	} else if tx.timeoutNs.Load() > 0 {
 		tx.timeoutNeedsArm = true

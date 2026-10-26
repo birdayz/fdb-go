@@ -990,9 +990,9 @@ func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, 
 
 		// Commit owns the cancellable GRV / detached-native split; prefetching here
 		// would force a GRV on the no-write fast path.
-		tx.transactFinalCommit = true
+		tx.transactFinalCommit.Store(true)
 		err = tx.Commit(ctx)
-		tx.transactFinalCommit = false
+		tx.transactFinalCommit.Store(false)
 		if err != nil {
 			if retryErr := tx.OnError(ctx, err); retryErr != nil {
 				return nil, retryErr

@@ -9,9 +9,12 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/fdbgo/internal/sendqueue"
 )
 
 // Enqueue-only writer (RFC-282) tests against T1 and T2: a send is
@@ -87,6 +90,9 @@ func TestDesignSendIsEnqueueOnly(t *testing.T) {
 				}
 			}()
 			gw := &gatedWriteConn{Conn: s.cli, gate: make(chan struct{})}
+			var gateOnce sync.Once
+			openGate := func() { gateOnce.Do(func() { close(gw.gate) }) }
+			defer openGate()
 			dial := func(context.Context, string, string) (net.Conn, error) { return gw, nil }
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -99,11 +105,7 @@ func TestDesignSendIsEnqueueOnly(t *testing.T) {
 				t.Fatalf("dial: %v", err)
 			}
 			defer func() {
-				select {
-				case <-gw.gate:
-				default:
-					close(gw.gate)
-				}
+				openGate()
 				_ = c.Close()
 			}()
 			if c.na == nil {
@@ -113,15 +115,19 @@ func TestDesignSendIsEnqueueOnly(t *testing.T) {
 
 			const n = 20
 			for i := uint64(1); i <= n; i++ {
-				if ok, err := c.SendFrameContext(context.Background(), UID{First: i}, frameBody(i)); !ok || err != nil {
-					t.Fatalf("send %d = (%t, %v), want queued", i, ok, err)
+				sendCtx, sendCancel := context.WithTimeout(ctx, 2*time.Second)
+				ok, err := c.SendFrameContext(sendCtx, UID{First: i}, frameBody(i))
+				sendCancel()
+				if !ok || err != nil {
+					openGate()
+					t.Fatalf("send %d = (%t, %v), want queued without waiting for gated socket write", i, ok, err)
 				}
 			}
 			// Every SendFrameContext returned while the socket write gate is closed.
 			if got := gw.writes.Load(); got != 0 {
 				t.Fatalf("writes before gate opened = %d, want 0 (send waited on socket write)", got)
 			}
-			close(gw.gate)
+			openGate()
 			for i := uint64(1); i <= n; i++ {
 				if got, want := string(within(t, frames, "a frame")), fmt.Sprint(i, ":f", i); got != want {
 					t.Fatalf("peer read %q, want %q", got, want)
@@ -132,52 +138,67 @@ func TestDesignSendIsEnqueueOnly(t *testing.T) {
 	}
 }
 
-// Adaptive linger (WithAdaptiveLinger):
-//  1. When idle (time.Since(lastWrite) >= window), naLoop flushes immediately
-//     without waiting out the window.
-//  2. Immediately after that write (time.Since(lastWrite) < window, active burst),
-//     frames queued while the window is open are held until the window expires and
-//     coalesced into one socket write.
-//  3. Closing the connection while naLoop is yielding in an active window exits
-//     promptly without waiting out the window or writing after close.
+// Deterministic test for WithAdaptiveLinger (idle immediate flush, active burst
+// coalescing, and Close teardown during an active linger window).
 func TestDesignAdaptiveLingerBurstAndIdle(t *testing.T) {
 	t.Parallel()
-	const window = 80 * time.Millisecond
-	c, counter := dialWriteCountedRaw(t, WithAdaptiveLinger(window))
-	if c.na == nil || c.AdaptiveLinger() != window {
-		t.Fatalf("precondition: expected D-NG adaptive=%v, got na=%v adaptive=%v", window, c.na, c.AdaptiveLinger())
+	var idleYielded atomic.Bool
+	enteredBurstLinger := make(chan struct{})
+	releaseBurstLinger := make(chan struct{})
+	var burstOnce sync.Once
+	inBurstPhase := false
+
+	c, counter := dialWriteCountedRaw(t, WithAdaptiveLinger(time.Hour), func(c *Conn) {
+		c.lastWrite = time.Now().Add(-24 * time.Hour)
+	})
+	if c.na == nil || c.AdaptiveLinger() != time.Hour {
+		t.Fatalf("precondition: expected D-NG adaptive=1h, got na=%v adaptive=%v", c.na, c.AdaptiveLinger())
+	}
+	// Backdate lastWrite before any frame is sent so the first send sees an idle
+	// connection (time.Since(lastWrite) >= 1h) and skips the yield loop entirely.
+	c.lastWrite = time.Now().Add(-24 * time.Hour)
+	c.na.onAdaptiveYield = func() bool {
+		if !inBurstPhase {
+			idleYielded.Store(true)
+			return false
+		}
+		burstOnce.Do(func() { close(enteredBurstLinger) })
+		<-releaseBurstLinger
+		return false
 	}
 	handshake := len(counter.snapshot())
 
-	// 1. Idle connection: wait past the 80ms window so time.Since(lastWrite) >= window.
-	// Sending frame 1 must flush immediately (well before another 80ms window).
-	time.Sleep(window + 15*time.Millisecond)
-	idleStart := time.Now()
+	// 1. Idle connection: frame 1 flushes without entering the adaptive yield loop.
 	if err := c.SendFrameDeferred(UID{First: 1}, []byte{0}); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
 		return len(counter.snapshot()) == handshake+1
 	}, "immediate flush on idle connection")
-	if elapsed := time.Since(idleStart); elapsed >= window*3/4 {
-		t.Fatalf("ADAPTIVE_IDLE_WAITED: idle flush took %v, want immediate (< %v)", elapsed, window*3/4)
+	if idleYielded.Load() {
+		t.Fatal("ADAPTIVE_IDLE_YIELDED: idle connection entered adaptive yield loop")
 	}
 
-	// 2. Active burst: the idle flush just stamped c.lastWrite = time.Now(), so
-	// the connection is now inside the 80ms active burst window. Send 4 frames
-	// spaced by 3ms; naLoop must linger and coalesce them into one socket write.
+	// 2. Active burst: the idle flush stamped c.lastWrite = time.Now(), so the
+	// 1-hour window is active. Send frame 2, wait for naLoop to enter the adaptive
+	// yield hook, then queue frames 3..5 while naLoop is lingering, and release.
+	inBurstPhase = true
 	const burstFrames = 4
-	for i := range burstFrames {
-		if err := c.SendFrameDeferred(UID{First: uint64(i + 2)}, []byte{byte(i + 1)}); err != nil {
-			t.Fatal(err)
-		}
-		if i < burstFrames-1 {
-			time.Sleep(3 * time.Millisecond)
-		}
+	if err := c.SendFrameDeferred(UID{First: 2}, []byte{1}); err != nil {
+		t.Fatal(err)
 	}
+	within(t, enteredBurstLinger, "naLoop entering active adaptive linger")
 	if got := len(counter.snapshot()) - (handshake + 1); got != 0 {
+		close(releaseBurstLinger)
 		t.Fatalf("ADAPTIVE_EARLY: %d socket writes while inside active burst window, want 0", got)
 	}
+	for i := 1; i < burstFrames; i++ {
+		if err := c.SendFrameDeferred(UID{First: uint64(i + 2)}, []byte{byte(i + 1)}); err != nil {
+			close(releaseBurstLinger)
+			t.Fatal(err)
+		}
+	}
+	close(releaseBurstLinger)
 	waitFor(t, func() bool {
 		return len(counter.snapshot()) == handshake+2
 	}, "coalesced burst write after adaptive window")
@@ -199,11 +220,17 @@ func TestDesignAdaptiveLingerBurstAndIdle(t *testing.T) {
 
 	// 3. Close during a 1-hour active adaptive linger must return promptly without writing.
 	c2, counter2 := dialWriteCountedRaw(t, WithAdaptiveLinger(time.Hour))
+	enteredCloseLinger := make(chan struct{})
+	var closeOnce sync.Once
+	c2.na.onAdaptiveYield = func() bool {
+		closeOnce.Do(func() { close(enteredCloseLinger) })
+		return true
+	}
 	beforeCloseWrites := len(counter2.snapshot())
 	if err := c2.SendFrameDeferred(UID{First: 99}, []byte("never")); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(5 * time.Millisecond)
+	within(t, enteredCloseLinger, "naLoop entering adaptive linger before Close")
 	closed := make(chan error, 1)
 	go func() { closed <- c2.Close() }()
 	select {
@@ -374,8 +401,7 @@ func TestDesignConcurrentSendersFramesWholeOnce(t *testing.T) {
 
 // High-water backpressure: when the queue reaches naHighWater while the peer
 // is stalled, a sender suspends and respects ctx cancellation; once the writer
-// drains the queue, waiting senders resume in order. Also verifies tryEnqueue
-// drops without blocking when at naHighWater.
+// drains the queue itself, waiting senders are woken by naLoop's close(drained).
 func TestDesignHighWaterBackpressure(t *testing.T) {
 	t.Parallel()
 	c, release, frames := dialStalledPeer(t, withNetDesign(designNG))
@@ -386,10 +412,12 @@ func TestDesignHighWaterBackpressure(t *testing.T) {
 			close(release)
 		}
 	}()
-	// Pre-fill w.q to naHighWater under w.mu while keeping w.sig empty so naLoop
-	// stays parked until we release it.
+	// Pre-fill w.q with a valid >= naHighWater frame under w.mu while keeping w.sig
+	// empty so naLoop stays parked until we signal w.sig to let naLoop drain and
+	// close w.drained itself.
+	_, bigFrame := encodeFrame(UID{First: 100}, bytes.Repeat([]byte{'x'}, naHighWater), false)
 	c.na.mu.Lock()
-	c.na.q = make([]byte, naHighWater)
+	c.na.q = append(c.na.q[:0], bigFrame...)
 	c.na.mu.Unlock()
 
 	if c.tryEnqueue(writeReq{token: UID{First: 99}, body: []byte("drop")}) {
@@ -414,7 +442,9 @@ func TestDesignHighWaterBackpressure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Clear the synthetic high-water fill and wake naLoop; a waiting sender resumes.
+	// Start a second sender that suspends on c.na.drained, then wake naLoop via
+	// w.sig and release the peer reader so naLoop itself drains w.q and closes
+	// w.drained.
 	ctx2, signal2 := WithSuspendSignal(context.Background())
 	t.Cleanup(signal2.Fire)
 	done2 := make(chan error, 1)
@@ -427,18 +457,105 @@ func TestDesignHighWaterBackpressure(t *testing.T) {
 		done2 <- nil
 	}()
 	within(t, signal2.Done(), "second high-water suspend")
-	c.na.mu.Lock()
-	c.na.q = c.na.q[:0]
-	if c.na.drained != nil {
-		close(c.na.drained)
-		c.na.drained = nil
-	}
-	c.na.mu.Unlock()
 	close(release)
-	if err := within(t, done2, "resumed high-water sender"); err != nil {
+	c.na.sig <- struct{}{}
+	if err := within(t, done2, "resumed high-water sender woken by naLoop"); err != nil {
 		t.Fatal(err)
+	}
+	if first := string(within(t, frames, "drained high-water frame")); !strings.HasPrefix(first, "100:") {
+		t.Fatalf("first frame prefix = %q, want 100:...", first[:min(len(first), 16)])
 	}
 	if got, want := string(within(t, frames, "resumed frame")), "2:f2"; got != want {
 		t.Fatalf("peer read %q, want %q", got, want)
+	}
+}
+
+// Verifies on D-NG:
+//  1. A server PING sent immediately after the handshake is answered without racing c.na initialization.
+//  2. During a sealed cold send cohort, a held control (tryEnqueue) and multiple held senders
+//     preserve strict FIFO wire order behind the cold prefix.
+func TestDesignColdHeldOrderAndStartupPing(t *testing.T) {
+	t.Parallel()
+	s := newSimServer(t)
+	frames := make(chan string, 32)
+	pingTok := UID{First: 555, Second: 777}
+	go func() {
+		if s.handshake() != nil {
+			return
+		}
+		// Immediately send a server PING right after the handshake to exercise readLoop -> handlePing -> tryEnqueue.
+		_ = WriteFrame(s.srv, WellKnownToken(WLTokenPingPacket), BuildPingRequest(pingTok), false)
+		var fr FrameReader
+		for {
+			tok, body, err := fr.Read(s.srv, false)
+			if err != nil {
+				return
+			}
+			frames <- fmt.Sprintf("%d:%s", tok.First, body)
+		}
+	}()
+
+	var order sendqueue.Queue
+	prefixPermit, _ := order.Reserve()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := dialWith(ctx, "sim", s.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour), WithSendOrder(&order))
+	if err != nil {
+		prefixPermit.Release()
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+
+	// Seal the cold cohort while prefixPermit is still held, then enqueue a held
+	// control frame and two held SendFrameContextOrdered calls.
+	order.Seal()
+	if !c.tryEnqueue(writeReq{token: UID{First: 2}, body: []byte("held-ctrl")}) {
+		prefixPermit.Release()
+		t.Fatal("tryEnqueue dropped a held control during a sealed cold cohort")
+	}
+
+	held1Ctx, held1Sig := WithSuspendSignal(ctx)
+	defer held1Sig.Fire()
+	held1Done := make(chan error, 1)
+	go func() {
+		_, err := c.SendFrameContextOrdered(held1Ctx, UID{First: 3}, []byte("held1"), nil)
+		held1Done <- err
+	}()
+	within(t, held1Sig.Done(), "held1 suspend")
+
+	held2Ctx, held2Sig := WithSuspendSignal(ctx)
+	defer held2Sig.Fire()
+	held2Done := make(chan error, 1)
+	go func() {
+		_, err := c.SendFrameContextOrdered(held2Ctx, UID{First: 4}, []byte("held2"), nil)
+		held2Done <- err
+	}()
+	within(t, held2Sig.Done(), "held2 suspend")
+
+	if ok, err := c.SendFrameContextOrdered(ctx, UID{First: 1}, []byte("prefix"), prefixPermit); !ok || err != nil {
+		t.Fatalf("prefix send = (%t, %v)", ok, err)
+	}
+	if err := within(t, held1Done, "held1 completion"); err != nil {
+		t.Fatal(err)
+	}
+	if err := within(t, held2Done, "held2 completion"); err != nil {
+		t.Fatal(err)
+	}
+
+	var nonPing []string
+	sawPing := false
+	for len(nonPing) < 4 || !sawPing {
+		f := within(t, frames, "ordered frame")
+		if strings.HasPrefix(f, "555:") {
+			sawPing = true
+		} else {
+			nonPing = append(nonPing, f)
+		}
+	}
+	want := []string{"1:prefix", "2:held-ctrl", "3:held1", "4:held2"}
+	for i := range want {
+		if nonPing[i] != want[i] {
+			t.Fatalf("wire order = %v, want %v", nonPing, want)
+		}
 	}
 }

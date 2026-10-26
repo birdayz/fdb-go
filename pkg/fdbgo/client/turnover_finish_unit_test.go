@@ -38,53 +38,60 @@ func TestReadOnlyCommitFinishAllocations(t *testing.T) {
 
 func TestTransactFinalCommitTurnoverAndEscapedHandleSafety(t *testing.T) {
 	t.Parallel()
-	tx := &Transaction{creationTime: time.Now()}
-	tx.SetTimeout(60000)
-	tx.SetReadVersion(123)
-	initialSpan := tx.initialSpan
-	if initialSpan.TraceID == [16]byte{} {
-		tx.regenerateSpan()
-		initialSpan = tx.currentSpan()
-	}
-	old := tx.readLife
-	op := &readOperation{Context: old.ctx, readAdmission: readAdmission{tx: tx, inc: old, parent: context.Background()}}
-	op.lease = tx.enterReadStateInto(op, old, false, false, &op.leaseStorage)
-	if op.lease == nil {
-		t.Fatal("failed to admit Commit")
-	}
-	tx.transactFinalCommit = true
-	completion, err := tx.admitCommit(op)
+	db := &Database{db: &database{timeouts: newTimeoutQueue()}}
+	var escapedTx *Transaction
+	var initialSpanTrace [16]byte
+	_, err := db.Transact(context.Background(), func(tx *Transaction) (any, error) {
+		escapedTx = tx
+		tx.SetTimeout(60000)
+		tx.SetReadVersion(123)
+		initialSpanTrace = tx.currentSpan().TraceID
+		return nil, nil
+	})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Database.Transact = %v", err)
 	}
-	if err := tx.commitAdmitted(op, completion, op.lease); err != nil {
-		t.Fatal(err)
+	if !escapedTx.hasCommitted || escapedTx.committedVersion != -1 || escapedTx.readLife != nil || escapedTx.readReady != nil || escapedTx.transactFinalCommit.Load() {
+		t.Fatal("Database.Transact final Commit did not complete lazy turnover")
 	}
-	tx.transactFinalCommit = false
-	if !tx.hasCommitted || tx.committedVersion != -1 || tx.readLife != nil || tx.readReady != nil || tx.readGen != old.gen+1 {
-		t.Fatal("Transact final Commit did not complete turnover")
-	}
-	// If the caller retains tx after Transact:
+	// If the caller retains tx after Database.Transact returns:
 	// 1. currentSpan lazily regenerates a fresh trace span (never reuses the committed traceID).
-	if got := tx.currentSpan(); got.TraceID == initialSpan.TraceID || got.SpanID == 0 {
-		t.Fatalf("currentSpan after Transact final commit = %+v, want fresh TraceID != %x", got, initialSpan.TraceID)
+	if got := escapedTx.currentSpan(); got.TraceID == initialSpanTrace || got.SpanID == 0 {
+		t.Fatalf("currentSpan after Transact final commit = %+v, want fresh TraceID != %x", got, initialSpanTrace)
 	}
 	// 2. GetVersionstamp still reports 2021 (read_only_transaction) and lazily arms the
 	// remaining timeout on the escaped handle.
-	_, err = tx.GetVersionstamp()
+	_, err = escapedTx.GetVersionstamp()
 	requireLazySuccessorCode(t, err, 2021)
-	tx.readErrMu.Lock()
-	arm, pending := tx.timeoutArm, tx.timeoutPendingLocked()
-	tx.withdrawTimeoutLocked()
-	tx.readErrMu.Unlock()
+	escapedTx.readErrMu.Lock()
+	arm, pending := escapedTx.timeoutArm, escapedTx.timeoutPendingLocked()
+	escapedTx.withdrawTimeoutLocked()
+	escapedTx.readErrMu.Unlock()
 	if !pending {
-		t.Fatal("escaped handle did not lazily arm its timeout on post-Transact entry")
+		t.Fatal("escaped Transact handle did not lazily arm its timeout on post-Transact entry")
 	}
 	// 3. Delivering the armed timeout on the escaped handle records 1031.
-	tx.fireTimeout(arm)
-	ctx, release := tx.opContext(context.Background())
+	escapedTx.fireTimeout(arm)
+	ctx, release := escapedTx.opContext(context.Background())
 	defer release()
-	requireLazySuccessorCode(t, tx.readEntryError(ctx), 1031)
+	requireLazySuccessorCode(t, escapedTx.readEntryError(ctx), 1031)
+
+	// Also verify a handle retained from Database.ReadTransact preserves its TIMEOUT
+	// when reused after ReadTransact returns (both before and after deadline expiry).
+	var escapedReadTx *Transaction
+	_, err = db.ReadTransact(context.Background(), func(tx *Transaction) (any, error) {
+		escapedReadTx = tx
+		tx.SetTimeout(60000)
+		tx.SetReadVersion(456)
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("Database.ReadTransact = %v", err)
+	}
+	escapedReadTx.deadlineNs.Store(time.Now().Add(-2 * time.Minute).UnixNano())
+	rCtx, rRelease := escapedReadTx.opContext(context.Background())
+	defer rRelease()
+	requireLazySuccessorCode(t, escapedReadTx.readEntryError(rCtx), 1031)
 }
 
 func TestTurnoverFinishPublishesOnUnwind(t *testing.T) {

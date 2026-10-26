@@ -8,12 +8,8 @@ import (
 	"weak"
 )
 
-// Design D4 (RFC-282), on by default (disabled with FDBGO_NET_DESIGN=0|legacy):
-// a transaction with TIMEOUT set holds one runtime timer for its deadline, as
-// C++ holds one timebomb actor (ReadYourWrites.actor.cpp:1567-1578). For
-// Transact/ReadTransact-scoped transactions, a pooled designTimerEntry is
-// reused across transactions without weak.Make, time.AfterFunc, or Timer.Reset
-// when the existing timer wake already precedes or equals the new deadline.
+// Per-transaction timeout timer and Transact-scoped timer pool (RFC-282,
+// ReadYourWrites.actor.cpp:1567-1578).
 var designTimeout = func() bool {
 	switch os.Getenv("FDBGO_NET_DESIGN") {
 	case "0", "legacy":
@@ -169,7 +165,11 @@ func (tx *Transaction) releaseTransactTimeout() {
 	tx.transactScoped = false
 	e := tx.designEntry
 	tx.designEntry = nil
-	if tx.hasPendingReadsLocked() || (tx.readLife != nil && tx.readLife.issuedReads > 0) {
+	inFlight := tx.hasPendingReadsLocked() ||
+		(tx.readLife != nil && (tx.readLife.users > 0 || tx.readLife.issuedReads > 0 ||
+			(tx.readLife.versionstamp != nil && !tx.readLife.versionstamp.ready) ||
+			len(tx.readLife.versionstamps) > 0))
+	if inFlight {
 		if e != nil {
 			e.mu.Lock()
 			deadline := e.deadline
@@ -182,6 +182,9 @@ func (tx *Transaction) releaseTransactTimeout() {
 		}
 		tx.readErrMu.Unlock()
 		return
+	}
+	if tx.timeoutArmed && tx.timeoutNs.Load() > 0 {
+		tx.timeoutNeedsArm = true
 	}
 	tx.timeoutArmed = false
 	if tx.designTimer != nil {

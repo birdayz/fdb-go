@@ -182,10 +182,45 @@ func TestDesignTimeoutTransactScopedPoolAndExpiry(t *testing.T) {
 		t.Fatalf("Database.ReadTransact = %v", err)
 	}
 	observedReadTx.readErrMu.Lock()
-	releasedAfterReadTransact := !observedReadTx.transactScoped && observedReadTx.designEntry == nil && !observedReadTx.timeoutArmed
+	releasedAfterReadTransact := !observedReadTx.transactScoped && observedReadTx.designEntry == nil && !observedReadTx.timeoutArmed && observedReadTx.timeoutNeedsArm
 	observedReadTx.readErrMu.Unlock()
 	if !releasedAfterReadTransact {
-		t.Fatal("Database.ReadTransact did not release its pooled designTimerEntry on exit")
+		t.Fatal("Database.ReadTransact did not release its pooled designTimerEntry and preserve timeoutNeedsArm on exit")
+	}
+
+	// Returning from ReadTransact while an operation is still in flight (users > 0
+	// or issuedReads > 0) detaches the pooled entry and hands the remaining
+	// deadline off to a per-transaction weak timer that delivers 1031 on expiry.
+	var inFlightTx *Transaction
+	var inFlightCtx context.Context
+	var inFlightRelease context.CancelFunc
+	_, err = db.ReadTransact(context.Background(), func(tx *Transaction) (any, error) {
+		inFlightTx = tx
+		tx.SetTimeout(30000)
+		inFlightCtx, inFlightRelease = tx.opContext(context.Background())
+		return "ok", nil
+	})
+	if err != nil {
+		t.Fatalf("Database.ReadTransact with in-flight op = %v", err)
+	}
+	defer inFlightRelease()
+	inFlightTx.readErrMu.Lock()
+	handedOffToWeak := !inFlightTx.transactScoped && inFlightTx.designEntry == nil && inFlightTx.designTimer != nil && inFlightTx.timeoutArmed
+	inFlightTx.expireTimeoutLocked()
+	inFlightTx.readErrMu.Unlock()
+	if !handedOffToWeak {
+		t.Fatal("ReadTransact exit with in-flight operation did not hand timeout off to weak timer")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var fdbErr *wire.FDBError
+		if errors.As(inFlightTx.readEntryError(inFlightCtx), &fdbErr) && fdbErr.Code == 1031 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("handed-off weak timer never delivered transaction_timed_out to escaped in-flight operation")
+		}
+		time.Sleep(time.Millisecond)
 	}
 
 	tx := db.createTransaction(true)
@@ -194,7 +229,7 @@ func TestDesignTimeoutTransactScopedPoolAndExpiry(t *testing.T) {
 	defer release()
 	tx.SetTimeout(30000)
 	tx.SetTimeout(1) // tighten to 1 ms -> resets pooled timer
-	deadline := time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(5 * time.Second)
 	for {
 		var fdbErr *wire.FDBError
 		if errors.As(tx.readEntryError(ctx), &fdbErr) && fdbErr.Code == 1031 {

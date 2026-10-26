@@ -198,7 +198,7 @@ func TestMonitorPingOwner_CloseWaitsForReplyRelease(t *testing.T) {
 	if !f.c.HasPendingReply(token) {
 		t.Fatal("positive control: the PING's reply token is not registered")
 	}
-	// A write lock taken before recording would fail the recording TryRLock.
+	// A shard lock held before recording would skip that shard's TryLock.
 	admissionAwait(t, f.ctx.recorded, "the monitor's PING wait")
 	// Publish the reply as readLoop does: send, then delete, under the shard lock.
 	f.c.deliverPending(token, Response{})
@@ -206,7 +206,7 @@ func TestMonitorPingOwner_CloseWaitsForReplyRelease(t *testing.T) {
 }
 
 // The wait resumes only after Close's teardown published, so either arm releases
-// via Release without pendingMu, and Close can only be waiting on the join.
+// via Release without taking the shard lock, and Close can only be waiting on the join.
 func TestMonitorPingOwner_CloseWaitsForOutstandingPing(t *testing.T) {
 	f := newPingOwnerFixture(t, pingOwnerOptions{timeout: time.Minute, gated: true, holdWait: true})
 	token := f.takePing(t)
@@ -223,7 +223,7 @@ func TestMonitorPingOwner_CancellationReleasesOnMonitor(t *testing.T) {
 	// No failConnection: the token stays registered, so the owner's cancel pools it.
 	f.cancel()
 	admissionAwait(t, f.released, "release of the cancelled PING reply")
-	// The blocked cancel holds pendingMu: touch nothing that takes it until open.
+	// The blocked cancel holds its shard lock: touch nothing that takes it until open.
 	select {
 	case <-f.monitorDone:
 		t.Fatal("connectionMonitor returned while its PING reply was still being released")

@@ -239,7 +239,7 @@ func TestPeerDisconnect_FailsInFlightReplyImmediately(t *testing.T) {
 	_, replyCh, replyHandle := conn.PrepareReply()
 	// Cleanup discipline (conn.go ReplyHandle): a SUCCESSFUL receive leaves Release
 	// to pool the (drained) channel — failAllPending does its non-blocking send and
-	// the token delete in one pendingMu-held iteration and visits each token exactly
+	// the token delete in one shard-lock-held iteration and visits each token exactly
 	// once, so once we have received the value no further send can race the pool Put.
 	// A NOT-received outcome (the 2s arm) MUST Cancel() first: Cancel removes the
 	// still-pending token and nils h.ch so the deferred Release does not pool a channel

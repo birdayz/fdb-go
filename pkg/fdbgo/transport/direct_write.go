@@ -8,9 +8,13 @@ func (c *Conn) tryEnqueue(req writeReq) bool {
 			if reserved {
 				return accepted
 			}
-			if held {
-				return false
+			if held || c.heldWaiters.Pending() {
+				hPermit, _ := c.heldWaiters.Reserve()
+				return c.tryEnqueueColdControl(req, hPermit, true)
 			}
+		} else if c.heldWaiters.Pending() && c.coldControls != nil {
+			hPermit, _ := c.heldWaiters.Reserve()
+			return c.tryEnqueueColdControl(req, hPermit, true)
 		}
 		return c.naTrySend(req.token, req.body)
 	}

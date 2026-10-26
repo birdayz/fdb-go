@@ -304,6 +304,7 @@ func (c *Conn) nextWrite(block bool) (request writeReq, frame, ready bool) {
 type coldControl struct {
 	request writeReq
 	permit  *sendqueue.Permit
+	held    bool
 }
 
 // The single worker must see controls in reservation order: consuming a later
@@ -313,14 +314,15 @@ func (c *Conn) reserveColdControl(order *sendqueue.Queue, request writeReq) (res
 	defer c.controlMu.Unlock()
 	permit, _, reserved := order.TryReserve()
 	if reserved {
-		return true, c.tryEnqueueColdControl(request, permit), false
+		return true, c.tryEnqueueColdControl(request, permit, false), false
 	}
 	return false, false, order.Pending()
 }
 
 // readLoop cannot wait for a cold predecessor. One connection-owned worker
-// drains this bounded queue; post-seal controls append directly to heldCh.
-func (c *Conn) tryEnqueueColdControl(request writeReq, permit *sendqueue.Permit) (enqueued bool) {
+// drains this bounded queue; post-seal controls append directly to heldCh (or
+// for D-NG wait in coldControls behind the prefix and heldWaiters).
+func (c *Conn) tryEnqueueColdControl(request writeReq, permit *sendqueue.Permit, held bool) (enqueued bool) {
 	defer func() {
 		if !enqueued {
 			permit.Release()
@@ -333,7 +335,7 @@ func (c *Conn) tryEnqueueColdControl(request writeReq, permit *sendqueue.Permit)
 	}
 	c.queued.Add(1)
 	select {
-	case c.coldControls <- coldControl{request: request, permit: permit}:
+	case c.coldControls <- coldControl{request: request, permit: permit, held: held}:
 		return true
 	default:
 		c.queued.Add(-1)
@@ -341,33 +343,52 @@ func (c *Conn) tryEnqueueColdControl(request writeReq, permit *sendqueue.Permit)
 	}
 }
 
+func (c *Conn) runColdControl(control coldControl) {
+	defer control.permit.Release()
+	ownsCredit := true
+	defer func() {
+		if ownsCredit {
+			c.queued.Add(-1)
+		}
+	}()
+	select {
+	case <-control.permit.Ready():
+	case <-c.ctx.Done():
+		return
+	}
+	if control.held {
+		select {
+		case <-c.prefixDone:
+		case <-c.ctx.Done():
+			return
+		}
+	}
+	if c.na != nil {
+		_ = c.naSend(c.ctx, control.request.token, control.request.body)
+		return
+	}
+	ownsCredit = false // enqueuePrefix owns the existing queued credit
+	_, _ = c.enqueuePrefix(c.ctx, control.request, nil, control.permit, true)
+}
+
 func (c *Conn) coldControlLoop() {
 	defer c.loopWG.Done()
 	defer c.finishColdControls()
 	defer c.recoverLoop("coldControlLoop")
+	if c.na != nil {
+		for {
+			select {
+			case control := <-c.coldControls:
+				c.runColdControl(control)
+			case <-c.ctx.Done():
+				return
+			}
+		}
+	}
 	for {
 		select {
 		case control := <-c.coldControls:
-			func() {
-				defer control.permit.Release()
-				ownsCredit := true
-				defer func() {
-					if ownsCredit {
-						c.queued.Add(-1)
-					}
-				}()
-				select {
-				case <-control.permit.Ready():
-				case <-c.ctx.Done():
-					return
-				}
-				if c.na != nil {
-					_ = c.naSend(c.ctx, control.request.token, control.request.body)
-					return
-				}
-				ownsCredit = false // enqueuePrefix owns the existing queued credit
-				_, _ = c.enqueuePrefix(c.ctx, control.request, nil, control.permit, true)
-			}()
+			c.runColdControl(control)
 		case <-c.prefixDone:
 			return
 		case <-c.ctx.Done():

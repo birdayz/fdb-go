@@ -11,10 +11,7 @@ import (
 	"fdb.dev/pkg/fdbgo/internal/sendqueue"
 )
 
-// Enqueue-only per-connection writer (RFC-282), shaped like libfdb_c's
-// connectionWriter (FlowTransport.actor.cpp:704-738). Senders append the frame
-// to the connection's unsent buffer and signal the writer on an empty->non-empty
-// transition, then wait only for the reply, as Peer::send does (:1038-1043).
+// Enqueue-only per-connection writer (RFC-282, FlowTransport.actor.cpp:704-738, 1038-1043).
 const (
 	designLegacy = "legacy" // legacy writeLoop, direct writes and writer turns
 	designD      = "d"
@@ -71,19 +68,19 @@ const naHighWater = 16 << 20 // 16 MiB high-water backpressure bound when a peer
 type naWriter struct {
 	mu      sync.Mutex
 	q       []byte
-	nframes int
 	drained chan struct{} // lazily allocated only when len(q) >= naHighWater
 	delay   bool
 	// adaptive > 0 is D-NG with Nagle-style linger: if the last write is older
 	// than adaptive, write at once; otherwise yield (runtime.Gosched, no timer)
 	// until adaptive has passed since the last write, then write.
-	adaptive time.Duration
-	sig      chan struct{}
+	adaptive        time.Duration
+	onAdaptiveYield func() bool // optional test hook; returning false ends the linger loop
+	sig             chan struct{}
 }
 
-// naWrite is the D-NG writer's send entry: it preserves cold-dial permit order,
-// then appends the frame to the connection's queue without waiting for the
-// socket write (FlowTransport.actor.cpp:1038-1043).
+// naWrite is the D-NG writer's send entry: it preserves cold-dial permit and
+// held-cohort FIFO order, then appends the frame to the connection's queue
+// without waiting for the socket write (FlowTransport.actor.cpp:1038-1043).
 func (c *Conn) naWrite(ctx context.Context, token UID, body []byte, flush bool, permit *sendqueue.Permit) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		permit.Release()
@@ -94,7 +91,21 @@ func (c *Conn) naWrite(ctx context.Context, token UID, body []byte, flush bool, 
 		return false, err
 	}
 	defer admission.permit.Release()
-	if admission.held {
+	if admission.permit == nil && (admission.held || c.heldWaiters.Pending()) {
+		hPermit, _ := c.heldWaiters.Reserve()
+		defer hPermit.Release()
+		select {
+		case <-hPermit.Ready():
+		default:
+			NotifySuspend(ctx)
+		}
+		select {
+		case <-hPermit.Ready():
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-c.ctx.Done():
+			return false, errConnClosed
+		}
 		if order := c.peerSendOrder.Load(); order != nil {
 			select {
 			case <-order.Drained():
@@ -174,7 +185,6 @@ func (c *Conn) naSend(ctx context.Context, token UID, body []byte) error {
 		LogSend(token, body)
 		wake := len(w.q) == 0 // dataToSend fires only on the first unsent frame (Peer::send)
 		w.q = append(w.q, frame...)
-		w.nframes++
 		w.mu.Unlock()
 		if wake {
 			select {
@@ -200,7 +210,6 @@ func (c *Conn) naSend(ctx context.Context, token UID, body []byte) error {
 	LogSend(token, body)
 	wake := len(w.q) == 0 // dataToSend fires only on the first unsent frame (Peer::send)
 	w.q = append(w.q, frame...)
-	w.nframes++
 	w.mu.Unlock()
 	putFrame(bufp, frame)
 	if wake {
@@ -232,7 +241,6 @@ func (c *Conn) naTrySend(token UID, body []byte) bool {
 	}
 	w.q = w.q[:off+n]
 	encodeFrameInto(w.q[off:off+n], token, body, c.useTLS)
-	w.nframes++
 	w.mu.Unlock()
 	if wake {
 		select {
@@ -269,12 +277,15 @@ func (c *Conn) naLoop() {
 				if c.ctx.Err() != nil {
 					return
 				}
+				if w.onAdaptiveYield != nil && !w.onAdaptiveYield() {
+					break
+				}
 				runtime.Gosched()
 			}
 		}
 		w.mu.Lock()
 		buf, drained := w.q, w.drained
-		w.q, w.nframes, w.drained = spare[:0], 0, nil
+		w.q, w.drained = spare[:0], nil
 		w.mu.Unlock()
 		if drained != nil {
 			close(drained)

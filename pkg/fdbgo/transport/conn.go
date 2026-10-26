@@ -124,10 +124,10 @@ func (h *ReplyHandle) NotifyWait(ctx context.Context) {
 
 // Release returns the handle to the pool. Call EITHER after a successful receive
 // (no Cancel) OR after Cancel. On the success path h.ch is still set and is
-// pooled here: response publication and token deletion share pendingMu, in that
-// order. Once the caller receives the response, that publisher has no further
-// channel send, and the lock excludes another publisher until deletion. Cancel
-// nils h.ch, so the cancel path never double-pools.
+// pooled here: response publication and token deletion share the token's
+// pendingShard.mu lock, in that order. Once the caller receives the response,
+// that publisher has no further channel send, and the lock excludes another
+// publisher until deletion. Cancel nils h.ch, so the cancel path never double-pools.
 func (h *ReplyHandle) Release() {
 	if h.ch != nil {
 		putReplyChannel(h.ch)
@@ -594,6 +594,14 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 	}
 
 	c.lastWrite = time.Now() // connectionWriter's initial lastWriteTime
+	if design == designD || design == designNG {
+		c.na = &naWriter{
+			q:        make([]byte, 0, 64*1024),
+			sig:      make(chan struct{}, 1),
+			delay:    c.coalesce != nil,
+			adaptive: c.adaptiveLinger,
+		}
+	}
 
 	// Start read, write, and connection monitor loops.
 	c.loopWG.Add(3)
@@ -602,13 +610,7 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 		go c.coldControlLoop()
 	}
 	go c.readLoop()
-	if design == designD || design == designNG {
-		c.na = &naWriter{
-			q:        make([]byte, 0, 64*1024),
-			sig:      make(chan struct{}, 1),
-			delay:    c.coalesce != nil,
-			adaptive: c.adaptiveLinger,
-		}
+	if c.na != nil {
 		go c.naLoop()
 	} else {
 		go c.writeLoop()
@@ -1043,7 +1045,7 @@ func (c *Conn) Close() error {
 // and deliver err to every in-flight reply. sync.Once makes the trio run exactly
 // once with the FIRST caller's error, no matter how many of {Close, monitor
 // death, readLoop error} fire. Single-delivery to a given pending reply is
-// guaranteed by failAllPending's own pendingMu + delete-as-you-go, not by the
+// guaranteed by failAllPending's per-shard lock + delete-as-you-go, not by the
 // Once; the Once only ensures the meaningful error wins over a later
 // "use of closed connection" read error.
 //
