@@ -1119,7 +1119,7 @@ func TestRead_BoundedByTimeout_NoHang(t *testing.T) {
 	t.Logf("read against wedged cluster bounded in %v: %v (no hang)", elapsed, err)
 }
 
-// withLegacyWriter pins today's transport writer (write acknowledgments, writer
+// withLegacyWriter pins the legacy transport writer (write acknowledgments, writer
 // turns) for tests of those mechanics, whatever FDBGO_NET_DESIGN selects.
 func withLegacyWriter() Option {
 	return func(o *openOptions) { o.dialOpts = append(o.dialOpts, transport.WithLegacyWriter()) }

@@ -189,9 +189,8 @@ native cleanup completed. Do not present window CPU as native full-cost evidence
 Three additional CPU scopes are reported per measured transaction:
 
 - **Drained CPU** subtracts the pre-window snapshot from a snapshot after a Go
-  finalizer and cleanup fixpoint (scoped `Transact` timers are released on
-  return under D4, while legacy queue nodes or standalone cleanups run in the
-  fixpoint) and a native non-I/O FIFO barrier (`GetApproximateSize`).
+  finalizer and cleanup fixpoint (waiting for any outstanding Go finalizers and
+  runtime cleanups) and a native non-I/O FIFO barrier (`GetApproximateSize`).
   It includes forced GC and any pending setup/warmup cleanup, not just measured
   transaction work. It excludes persisted validation and terminal shutdown.
 - **Shutdown process CPU** is `(E-A)/N`: `RUSAGE_SELF` user + system after another

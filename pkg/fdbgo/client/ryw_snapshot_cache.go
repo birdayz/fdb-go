@@ -58,6 +58,7 @@ type cacheEntry struct {
 func (sc *snapshotCache) reset() {
 	clear(sc.entries)
 	sc.entries = nil
+	sc.entry0 = [2]cacheEntry{}
 	sc.kv0 = [2]KeyValue{}
 	sc.kvUsed = 0
 	sc.keyBufUsed = 0

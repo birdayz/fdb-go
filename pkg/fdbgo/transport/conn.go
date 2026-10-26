@@ -679,13 +679,7 @@ func (c *Conn) PrepareReplyTo(dest UID) (UID, <-chan Response, *ReplyHandle) {
 	h.conn = c
 	h.token = token
 	h.ch = ch
-	s := c.pendingShard(token)
-	s.mu.Lock()
-	if s.m == nil {
-		s.m = make(map[UID]pendingEntry, 4)
-	}
-	s.m[token] = pendingEntry{ch: ch, dest: dest}
-	s.mu.Unlock()
+	c.putPending(token, pendingEntry{ch: ch, dest: dest})
 	return token, ch, h
 }
 
@@ -1246,8 +1240,8 @@ func (c *Conn) handlePing(body []byte) {
 
 	replyBody := buildVoidReply()
 
-	// Enqueue ping reply fire-and-forget; dropped if the writer outbox is at
-	// high-water (or legacy writeCh is full), in which case the server retries.
+	// Enqueue ping reply fire-and-forget; dropped if tryEnqueue rejects admission
+	// (high-water, pending FIFO waiters, close, or full legacy writeCh).
 	c.tryEnqueue(writeReq{token: replyToken, body: replyBody})
 }
 
@@ -1476,8 +1470,8 @@ func (c *Conn) sendPingWithReply() (<-chan Response, *ReplyHandle) {
 	pingEP := WellKnownToken(WLTokenPingPacket)
 	body := BuildPingRequest(replyToken)
 	if !c.tryEnqueue(writeReq{token: pingEP, body: body}) {
-		// Outbox saturated: return nil (not a closed channel) so the monitor falls
-		// through to bytesReceived liveness rather than treating the drop as a reply.
+		// Admission rejected (high-water, pending FIFO waiters, close, or full legacy
+		// writeCh): return nil so the monitor falls through to bytesReceived liveness.
 		return nil, nil
 	}
 	transferred = true

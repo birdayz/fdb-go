@@ -437,6 +437,24 @@ func TestDesignHighWaterBackpressure(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// A panicking NotifySuspend hook at high-water must release its sendWaiters permit.
+	panicCtx, panicSig := WithSuspendHandoff(context.Background(), make(chan struct{}), func() {
+		panic("injected high-water suspend panic")
+	})
+	t.Cleanup(panicSig.Fire)
+	panickedAtHighWater := false
+	func() {
+		defer func() {
+			if recover() != nil {
+				panickedAtHighWater = true
+			}
+		}()
+		_, _ = c.SendFrameContext(panicCtx, UID{First: 98}, []byte("panic-hw"))
+	}()
+	if !panickedAtHighWater || c.sendWaiters.Pending() {
+		t.Fatalf("high-water NotifySuspend panic: panicked=%t sendWaiters.Pending=%t, want (true, false)", panickedAtHighWater, c.sendWaiters.Pending())
+	}
+
 	// Sender 2 ("begin") reserves its c.sendWaiters FIFO slot before NotifySuspend,
 	// so its frame (2:f2) precedes sender 3's (3:f3) when naLoop drains w.q.
 	resumeBeginHandoff := make(chan struct{})
@@ -561,6 +579,8 @@ func TestDesignColdHeldOrderAndStartupPing(t *testing.T) {
 	var order sendqueue.Queue
 	prefixPermit, _ := order.Reserve()
 	enteredCtrl1, releaseCtrl1 := make(chan struct{}), make(chan struct{})
+	var releaseCtrl1Once sync.Once
+	openCtrl1 := func() { releaseCtrl1Once.Do(func() { close(releaseCtrl1) }) }
 	reachedCtrl2 := make(chan struct{})
 	var armCtrl, gateCtrl1 atomic.Bool
 	var ctrlCalls atomic.Int32
@@ -583,6 +603,7 @@ func TestDesignColdHeldOrderAndStartupPing(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 	defer c.Close()
+	defer openCtrl1()
 
 	// Seal the cold cohort while prefixPermit is held, then gate ctrl1 inside
 	// tryEnqueueColdControl until ctrl2 reaches beforeControlLock.
@@ -594,7 +615,7 @@ func TestDesignColdHeldOrderAndStartupPing(t *testing.T) {
 	within(t, enteredCtrl1, "ctrl1 holding controlMu after reserving H1")
 	go func() { ctrl2Done <- c.tryEnqueue(writeReq{token: UID{First: 3}, body: []byte("held-ctrl-2")}) }()
 	within(t, reachedCtrl2, "ctrl2 reached tryEnqueueNAControl before controlMu")
-	close(releaseCtrl1)
+	openCtrl1()
 	if !within(t, ctrl1Done, "ctrl1 enqueue") || !within(t, ctrl2Done, "ctrl2 enqueue") {
 		prefixPermit.Release()
 		t.Fatal("tryEnqueue dropped a held control during a sealed cold cohort")
@@ -642,11 +663,28 @@ func TestDesignColdHeldOrderAndStartupPing(t *testing.T) {
 
 type panicOnceWriter struct {
 	shouldPanic atomic.Bool
+	gateNext    atomic.Bool
+	enteredGate chan struct{}
+	releaseGate chan struct{}
+	mu          sync.Mutex
+	logged      []uint64
 }
 
 func (w *panicOnceWriter) Write(p []byte) (int, error) {
 	if w.shouldPanic.CompareAndSwap(true, false) {
 		panic("injected wirelog panic")
+	}
+	if len(p) == 29 && p[0] == 'S' {
+		tok := uint64(p[9]) | uint64(p[10])<<8 | uint64(p[11])<<16 | uint64(p[12])<<24 |
+			uint64(p[13])<<32 | uint64(p[14])<<40 | uint64(p[15])<<48 | uint64(p[16])<<56
+		w.mu.Lock()
+		w.logged = append(w.logged, tok)
+		entered, release := w.enteredGate, w.releaseGate
+		w.mu.Unlock()
+		if w.gateNext.CompareAndSwap(true, false) {
+			close(entered)
+			<-release
+		}
 	}
 	return len(p), nil
 }
@@ -717,9 +755,60 @@ func TestDesignWireLogPanicDoesNotPoisonWriter(t *testing.T) {
 	if !c.tryEnqueue(writeReq{token: UID{First: 12}, body: []byte("after-panic-try")}) {
 		t.Fatal("post-panic tryEnqueue returned false")
 	}
-	for _, want := range []uint64{10, 11, 12} {
-		if got := within(t, frames, "post-panic frame"); got != want {
-			t.Fatalf("frame token = %d, want %d", got, want)
+
+	// Verify concurrent FIFO preservation across the unlocked LogSend callback for
+	// both small (<=4KiB) and large (>4KiB) frames, and tryEnqueue rejection while pending.
+	for _, tc := range []struct {
+		tok1, tok2 uint64
+		body       []byte
+	}{
+		{20, 21, []byte("small-ordered")},
+		{30, 31, bytes.Repeat([]byte{'B'}, 5000)},
+	} {
+		entered, release := make(chan struct{}), make(chan struct{})
+		var releaseOnce sync.Once
+		openGate := func() { releaseOnce.Do(func() { close(release) }) }
+		pw.mu.Lock()
+		pw.enteredGate, pw.releaseGate = entered, release
+		pw.mu.Unlock()
+		pw.gateNext.Store(true)
+
+		done1, done2 := make(chan error, 1), make(chan error, 1)
+		go func() {
+			_, err := c.SendFrameContext(ctx, UID{First: tc.tok1}, tc.body)
+			done1 <- err
+		}()
+		within(t, entered, "first sender entered unlocked LogSend callback")
+		if c.tryEnqueue(writeReq{token: UID{First: 99}, body: []byte("drop-behind-wirelog")}) {
+			openGate()
+			t.Fatal("tryEnqueue overtook a sender blocked in LogSend")
 		}
+		ctx2, sig2 := WithSuspendSignal(ctx)
+		go func() {
+			_, err := c.SendFrameContext(ctx2, UID{First: tc.tok2}, tc.body)
+			done2 <- err
+		}()
+		within(t, sig2.Done(), "second sender suspended on sendWaiters behind first sender's LogSend")
+		openGate()
+		sig2.Fire()
+		if err := within(t, done1, "first gated sender"); err != nil {
+			t.Fatal(err)
+		}
+		if err := within(t, done2, "second gated sender"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	wantOrder := []uint64{10, 11, 12, 20, 21, 30, 31}
+	for _, want := range wantOrder {
+		if got := within(t, frames, "ordered frame"); got != want {
+			t.Fatalf("peer socket frame token = %d, want %d", got, want)
+		}
+	}
+	pw.mu.Lock()
+	gotLogged := append([]uint64(nil), pw.logged...)
+	pw.mu.Unlock()
+	if fmt.Sprint(gotLogged) != fmt.Sprint(wantOrder) {
+		t.Fatalf("wire-log token order = %v, want %v", gotLogged, wantOrder)
 	}
 }

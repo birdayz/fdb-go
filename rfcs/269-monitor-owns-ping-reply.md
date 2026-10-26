@@ -120,9 +120,9 @@ fail on the reverted code; test 6 fails when `releasePing` uses a plain `Cancel`
    (after recording, before the select picks an arm) until `Close`'s `failAllPending`
    has published the teardown response and removed the token. The select then takes
    either arm: the reply arm, or the ctx arm followed by `TakeReadyOrCancel` taking the
-   response. Both release through `Release` without `pendingMu`, so a `Close` still
-   running can only be waiting on the monitor's join. The release is gated as in test
-   1; the test asserts that `Close` has not returned when the gate opens, returns
+   response. Both release through `Release` without holding `pendingShard(token).mu`, so a
+   `Close` still running can only be waiting on the monitor's join. The release is gated as
+   in test 1; the test asserts that `Close` has not returned when the gate opens, returns
    afterwards, and leaves no registration. Reverted, the waiter releases after `Close`
    returns, or its `Cancel` finds the token already removed and never reaches the seam.
 3. **Cancellation releases on the monitor.** With the PING outstanding and no reply, the
@@ -130,10 +130,10 @@ fail on the reverted code; test 6 fails when `releasePing` uses a plain `Cancel`
    the token registered and the cancel must pool the channel). The seam blocks that
    release behind a gate. As in test 1, the gate stays closed for a bounded wait for the
    monitor-exit signal; the test asserts that `connectionMonitor` has not returned when
-   the gate opens. The cancel holds `pendingMu` inside the seam, so nothing in the test
-   takes `pendingMu` until the gate is open. Afterwards it asserts that the ping token
-   is no longer registered. Reverted, the waiter's `Cancel` blocks and the monitor
-   returns within the wait anyway.
+   the gate opens. The cancel holds `pendingShard(token).mu` inside the seam, so nothing in
+   the test takes that shard lock until the gate is open. Afterwards it asserts that the
+   ping token is no longer registered. Reverted, the waiter's `Cancel` blocks and the
+   monitor returns within the wait anyway.
 4. **A frozen ping releases before teardown.** No reply and no traffic, so the timeout
    fires. When the seam sees the ping channel's release, it records `IsClosed()`. The
    test asserts that the release happened and that the connection was still open at

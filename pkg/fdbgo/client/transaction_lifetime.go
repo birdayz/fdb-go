@@ -300,12 +300,8 @@ func (tx *Transaction) turnoverLocked(old *readIncarnation) turnoverToken {
 func (token turnoverToken) finish() {
 	tx := token.tx
 	tx.readErrMu.Lock()
-	// Captured successors and positive final timeouts must exist at publication.
-	// The timeout is armed for the published generation once readReady is clear.
-	// When Database.Transact's final Commit has finished and no successor was
-	// captured during turnover, skip eagerly allocating a new incarnation and
-	// re-arming the timeout for a handle that returns on the next line (if a
-	// caller retains tx past Transact, readIncarnationLocked arms it lazily).
+	// Captured successors and non-final positive timeouts are created/armed here;
+	// final Transact commits defer uncaptured successor creation to readIncarnationLocked.
 	finalCommit := tx.transactFinalCommit.Load()
 	if tx.readLife != nil || (tx.timeoutNs.Load() > 0 && !finalCommit) {
 		tx.readIncarnationLocked()

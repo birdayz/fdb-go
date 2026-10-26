@@ -945,9 +945,8 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 			tx.db.handleReadConnError(server.Address, conn, sendErr)
 			continue
 		}
-		// Timeout delivery ends this wait through ctx; C++ waits for the reply or
-		// resetPromise, never the deadline itself (RYW:361-391). The per-RPC reply
-		// timer is acquired lazily in PendingGet.resolve only if replyCh is not ready.
+		// Timeout delivery ends this wait through ctx (RYW:361-391); the per-RPC
+		// reply timer is acquired lazily in PendingGet.resolve if replyCh is not ready.
 		p := &PendingGet{tx: tx, addr: server.Address, tenantID: tx.tenantId, replyCh: replyCh, replyHandle: replyHandle, conn: conn, ctx: ctx, cancel: opCancel.afterLease(), sentAt: sentAt, gen: op.inc.gen, tags: tags}
 		if len(key) <= len(p.keyBuf) {
 			p.key = p.keyBuf[:len(key):len(key)]
