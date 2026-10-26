@@ -319,8 +319,8 @@ func shortCircuitMaybe(
 // query Value subtree and the candidate Value tree. Returns the query
 // Value variants with their matchResults, in the order they were found.
 //
-// Ports Java's MaxMatchMap.recurseQueryResultValue (excluding the
-// Simplification variant-expansion step which is not yet ported).
+// Ports Java's MaxMatchMap.recurseQueryResultValue; expandValueForMatching
+// ports its Simplification step's record expansion (fused paths are canonical).
 func recurseQueryResultValue(
 	currentQueryValue values.Value,
 	candidateValue values.Value,
@@ -536,8 +536,7 @@ type matchResultEntry struct {
 }
 
 // matchResults is Java's LinkedHashMap<Value, MatchResult>, keyed by
-// semanticEquals: a structurally equal put replaces the result in place. No
-// current value shape puts two such variants in one frame; this is parity.
+// semanticEquals: a structurally equal put replaces the result in place.
 type matchResults []matchResultEntry
 
 func (m matchResults) put(v values.Value, r matchResult) matchResults {

@@ -1388,9 +1388,8 @@ func collectSlots(t *testing.T, ctx context.Context, cursor recordlayer.RecordCu
 	return rows
 }
 
-// TestIntegration_ProjectionRowsAreOrdinal executes a projection over a scan
-// against real FDB and checks the output rows carry the projected columns, in
-// projection order.
+// TestIntegration_ProjectionRowsAreOrdinal: a projection over a scan on real FDB
+// returns rows carrying the projected columns in projection order.
 func TestIntegration_ProjectionRowsAreOrdinal(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

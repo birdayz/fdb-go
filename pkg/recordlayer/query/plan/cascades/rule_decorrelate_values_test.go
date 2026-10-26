@@ -2018,9 +2018,8 @@ func TestDecorrelateValuesRule_PushedQuantifierOrderFollowsTheSelect(t *testing.
 			t.Fatalf("firing %d: expected 2 quantifiers after inlining, got %d", firing, got)
 		}
 
-		// The boxes come first, in the parent's order; the last quantifier
-		// ranges over the original lower reference (pushOnTopOfQuantifier
-		// mints a fresh alias for it, as Java's Quantifier.forEach does).
+		// The boxes come first, in the parent's order; the last quantifier ranges over the
+		// lower reference under a fresh alias (Java's Quantifier.forEach).
 		assertOrder := func(path string, got []expressions.Quantifier, lowerRef *expressions.Reference) {
 			t.Helper()
 			gotAliases := make([]values.CorrelationIdentifier, len(got))

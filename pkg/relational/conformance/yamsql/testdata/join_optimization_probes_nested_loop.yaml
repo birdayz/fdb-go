@@ -1,7 +1,5 @@
 # Join probes with predicate push-down disabled: nested-loop joins.
-# join_optimization_probes.yaml's two-way queries and rows, each evaluating its
-# predicates in a NestedLoopJoin. The three-way probes are omitted: these rules
-# do not change their plans.
+# join_optimization_probes.yaml's two-way queries and rows (the rules do not change the three-way plans).
 name: join_optimization_probes_nested_loop
 schema_template: |
   CREATE TABLE dept (did BIGINT, dname STRING, PRIMARY KEY (did))

@@ -79,7 +79,8 @@ PR.
    variant and its position. The memo holds the same slices. The cross product,
    the expansion merge and the top-level minimum read them in order.
 3. The fuzzer compares a rendering of every reachable Reference's members (type,
-   result value, predicates, child references; generated aliases renumbered) and
+   result value, predicates, record types, physical plan, child references;
+   generated aliases renumbered) and
    the chosen physical plan's EXPLAIN across two fresh plannings.
    `TestRepeatedPlanningIsStable` (explaindiff) plans each corpus statement whose
    plan joins, unions, intersects, iterates an IN list or reads an index ten more
@@ -108,6 +109,11 @@ slice is smaller than the map it replaces. Acceptance: no existing entry of
   `TestRenderMemoForDeterminism` pins its oracle (alias-insensitive,
   member-order-sensitive) and `TestReplanReportsChangedRenderings` drives the
   replanning guard's arms with a planner whose output alternates.
+  Its plan half plans over an index on `T.g`: without one, neither a seed nor
+  any of 3,000 generated inputs put two plans in one group, so a coin-flip
+  OPTIMIZE winner passed it.
+  `TestPlannerDeterminismSeedsFaceAChoice` requires every seed to plan and rank
+  alternatives.
 - `TestRepeatedPlanningIsStable`: with the cost model's final hash tie-break
   made a coin flip, it fails (`cross_join.yaml#0` and others plan to two
   EXPLAINs). Member order alone does not move any corpus plan. Both tests are

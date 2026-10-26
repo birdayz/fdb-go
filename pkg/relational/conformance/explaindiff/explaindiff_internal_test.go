@@ -127,10 +127,8 @@ func TestNormalizeErrIsSingleLineAndBounded(t *testing.T) {
 	}
 }
 
-// TestReplanReportsChangedRenderings drives replan's arms with a planner whose
-// output for one statement alternates: that statement is reported with its
-// renderings in first-seen order, the stable one is not, and keep's rejects
-// are neither replanned nor counted.
+// TestReplanReportsChangedRenderings: with one statement's plan alternating, only it is
+// reported (renderings in first-seen order); keep's rejects are not replanned or counted.
 func TestReplanReportsChangedRenderings(t *testing.T) {
 	t.Parallel()
 

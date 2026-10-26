@@ -17,9 +17,8 @@ func javaBindingsRowType() *values.RecordType {
 	})
 }
 
-// javaBindingsPartitionedRef holds three plans of one row type: an unbound PK
-// scan, a PK scan with an equality-bound key (another ordering) and a
-// default-on-empty over the first (not a stored record).
+// javaBindingsPartitionedRef holds three plans in three partitions: a PK scan, an
+// equality-bound PK scan (another ordering) and a default-on-empty over the first.
 func javaBindingsPartitionedRef(t *testing.T) *expressions.Reference {
 	t.Helper()
 	rowType := javaBindingsRowType()
@@ -55,9 +54,8 @@ func TestJavaBindingsPartitionedRefFixture(t *testing.T) {
 	}
 }
 
-// TestJavaBindingsCountJavasMatcherBindings pins each rule's count against its
-// Java matcher, one case per fan-out kind and per shape the matcher rejects.
-// The partitioned reference has three plan partitions, two of them stored-record.
+// TestJavaBindingsCountJavasMatcherBindings pins each rule's count against its Java
+// matcher, one case per fan-out kind and per shape the matcher rejects.
 func TestJavaBindingsCountJavasMatcherBindings(t *testing.T) {
 	t.Parallel()
 
@@ -166,6 +164,31 @@ func TestJavaBindingsCountJavasMatcherBindings(t *testing.T) {
 				t.Fatalf("javaBindings = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestJavaBindingsSortRollsUpStoredRecord: an unordered scan and a first-or-default over
+// it differ only in storedRecord: two plan partitions, one sort partition.
+func TestJavaBindingsSortRollsUpStoredRecord(t *testing.T) {
+	t.Parallel()
+
+	rowType := javaBindingsRowType()
+	scan := mustJavaBindingsConstruct(plans.NewRecordQueryScanPlan([]string{"TBL"}, rowType, false))
+	firstOrDefault := mustJavaBindingsConstruct(plans.NewRecordQueryFirstOrDefaultPlan(scan,
+		mustJavaBindingsConstruct(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("java_bindings_first"), rowType))))
+	ref := expressions.FinalOfAtStage(scan, expressions.StagePlanned)
+	ref.InsertFinal(firstOrDefault)
+	computeRefPlanProperties(ref)
+
+	if got := len(javaPlanPartitions(ref)); got != 2 {
+		t.Fatalf("fixture: plan partitions = %d, want 2", got)
+	}
+	if got := len(javaStoredRecordPartitions(ref)); got != 1 {
+		t.Fatalf("fixture: stored-record partitions = %d, want 1", got)
+	}
+	sort := mustJavaBindingsConstruct(expressions.UnsortedLogicalSortExpression(expressions.ForEachQuantifier(ref)))
+	if got := (&ImplementSortRule{}).javaBindings(sort); got != 1 {
+		t.Fatalf("sort javaBindings = %d, want 1: storedRecord is not one of its roll-up properties", got)
 	}
 }
 
