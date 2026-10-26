@@ -219,9 +219,21 @@ var _ = Describe("Rank and TEXT edges match Java", func() {
 			m, err := store.getIndexMaintainer(textIdx)
 			Expect(err).NotTo(HaveOccurred())
 			rec := &FDBStoredRecord[proto.Message]{PrimaryKey: tuple.Tuple{int64(3)}, Record: &demopb.Customer{CustomerId: proto.Int64(3)}}
-			err = m.(*textIndexMaintainer).updateOneKey(rec, false, []any{"word"}, 5, 0)
-			var oob *IndexOutOfBoundsError
-			Expect(errors.As(err, &oob)).To(BeTrue(), "%v", err)
+			fullKey, err := indexEntryKey(textIdx, tuple.Tuple{"word"}, rec.PrimaryKey)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fullKey).To(Equal(tuple.Tuple{"word", int64(3)}))
+			for _, tc := range []struct {
+				position int
+				message  string
+			}{
+				{2, `text index "customer$name_text": text position 2 is past the key's 2 columns`},
+				{5, `text index "customer$name_text": text position 5 is past the key's 2 columns`},
+			} {
+				err = m.(*textIndexMaintainer).updateOneKey(rec, false, []any{"word"}, tc.position, 0)
+				var oob *IndexOutOfBoundsError
+				Expect(errors.As(err, &oob)).To(BeTrue(), "%v", err)
+				Expect(oob.Message).To(Equal(tc.message))
+			}
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
