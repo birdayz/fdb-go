@@ -174,8 +174,9 @@ always, a broken one fails nearly always.
   the single key does), end-to-end cases in `sqltest/agg`, and four
   rows in the live-JVM `DuplicateGroupByJavaProbe` (`<>`/`!=` and `1`/`01` both 42702,
   literal-case keys planned by Go and declined by Java's planner, an undefined key twice both
-  42703). The probe runner binds no parameters, so the parameter-value shape is unmeasured
-  (DIVERGENCES.md).
+  42703). The parameter-value shape remains unmeasured; the existing `runPreparedExtended`
+  and `runPreparedSequence` steps can bind the values needed for that open differential
+  (DIVERGENCES.md and TODO.md).
 - Item 7: a stale handle's Commit (25F01) and Rollback leave the newer transaction, through
   BeginTx and through SQL COMMIT/START TRANSACTION.
 - Item 8: self-return, a two-Valuer cycle, a Valuer returning its own array, a self pointer, and a

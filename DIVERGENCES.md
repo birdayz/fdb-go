@@ -1283,8 +1283,9 @@ whose statement was cancelled for the second reason.
 
 Go compares `GROUP BY amount = ?, amount = ?` by the bound values: equal values
 are one key twice (42702), distinct values two keys, grouped by Go's streaming
-aggregation. Java's answer is not measured: the JVM probe runner binds no
-parameters. Reading Java, its `MutablePlanGenerationContext` folds equal
+aggregation. Java's answer is not measured yet; the existing `runPreparedExtended`
+and `runPreparedSequence` JVM probe steps can bind the values needed for that
+comparison (tracked in TODO.md). Reading Java, its `MutablePlanGenerationContext` folds equal
 parameter values into one constant (42702) and its planner declines a GROUP BY
 without an aggregate index for distinct ones. Both plan caches hold such a plan
 only for the values it was planned with (Go pins them).
