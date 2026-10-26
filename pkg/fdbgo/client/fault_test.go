@@ -637,7 +637,7 @@ func TestPipelinedGet_IllegalKeyRejectedAtEnqueue(t *testing.T) {
 // TestPipelinedGet_BatchResolvesCorrectly verifies pipelining still works after
 // the #3 retry change: N deferred sends followed by N Resolves return the right
 // values. The retry logic only activates on error, so the happy-path batched
-// send/flush is structurally unchanged — this pins that end to end.
+// send/resolve path is structurally unchanged — this pins that end to end.
 func TestPipelinedGet_BatchResolvesCorrectly(t *testing.T) {
 	t.Parallel()
 
@@ -661,7 +661,7 @@ func TestPipelinedGet_BatchResolvesCorrectly(t *testing.T) {
 	}
 
 	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		// Enqueue all N pipelined gets (deferred sends, no flush yet)...
+		// Enqueue all N pipelined gets...
 		pendings := make([]*PendingGet, n)
 		for i := 0; i < n; i++ {
 			_, p, err := tx.GetPipelined(ctx, keys[i])
@@ -673,7 +673,7 @@ func TestPipelinedGet_BatchResolvesCorrectly(t *testing.T) {
 			}
 			pendings[i] = p
 		}
-		// ...then resolve them; the first Resolve flushes the batch.
+		// ...then resolve them (first Resolve checks liveness on D-NG or flushes on legacy).
 		for i := 0; i < n; i++ {
 			got, err := pendings[i].Resolve()
 			if err != nil {
@@ -860,9 +860,9 @@ func TestPipelinedGet_Resolve_TimeoutRetries(t *testing.T) {
 }
 
 // TestPipelinedGet_Resolve_FlushErrorRetries covers PendingGet.resolve's
-// flush-error arm (RFC-118 Gap 2, transaction.go:858-869): when conn.Flush()
-// fails, the request never reached the server, so the arm marks the connection
-// bad (handleConnError) and re-drives through the full getValue path.
+// flush-error arm (RFC-118 Gap 2): when conn.FlushContext() fails (connection
+// liveness failure on D-NG or flush failure on legacy), the arm marks the
+// connection bad (handleConnError) and re-drives through the full getValue path.
 //
 // The flush error is driven through a REAL conn deterministically: a conn dialed
 // to the storage server, then Close()d (joins the loops), so Resolve()'s flush

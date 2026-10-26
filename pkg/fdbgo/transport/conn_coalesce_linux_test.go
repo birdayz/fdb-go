@@ -132,12 +132,15 @@ func TestDNGCoalesceDelaySharesOneWriteAndEndsOnClose(t *testing.T) {
 	}
 	handshake := len(counter.snapshot())
 	const frames = 4
-	for i := range frames {
+	if err := c.SendFrameDeferred(UID{First: 1}, []byte{0}); err != nil {
+		t.Fatal(err)
+	}
+	within(t, enteredBatchWait, "naLoop entering coalesceWait for the batch")
+	for i := 1; i < frames; i++ {
 		if err := c.SendFrameDeferred(UID{First: uint64(i + 1)}, []byte{byte(i)}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	within(t, enteredBatchWait, "naLoop entering coalesceWait for the batch")
 	if n := len(counter.snapshot()) - handshake; n != 0 {
 		t.Fatalf("DNG_COALESCE_EARLY: %d socket writes before the wait ended", n)
 	}

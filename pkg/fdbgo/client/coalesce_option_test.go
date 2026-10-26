@@ -41,8 +41,13 @@ func TestWithCoalesceDelayReachesEveryConnection(t *testing.T) {
 			}
 			defer db.Close()
 			key, value := []byte(t.Name()), []byte("coalesced")
+			var escapedWriteTx *Transaction
+			var initialSpan [16]byte
 			if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
+				escapedWriteTx = tx
+				tx.SetTimeout(60000)
 				tx.Set(key, value)
+				initialSpan = tx.currentSpan().TraceID
 				return nil, nil
 			}); err != nil {
 				t.Fatal(err)
@@ -50,6 +55,28 @@ func TestWithCoalesceDelayReachesEveryConnection(t *testing.T) {
 			got, err := db.Transact(ctx, func(tx *Transaction) (any, error) { return tx.Get(ctx, key) })
 			if err != nil || !bytes.Equal(got.([]byte), value) {
 				t.Fatalf("read back %q, %v", got, err)
+			}
+			if !escapedWriteTx.hasCommitted || escapedWriteTx.committedVersion <= 0 || escapedWriteTx.readLife != nil || escapedWriteTx.readReady != nil || escapedWriteTx.transactFinalCommit.Load() {
+				t.Fatalf("escaped write Transact final Commit state: hasCommitted=%t ver=%d readLife=%v", escapedWriteTx.hasCommitted, escapedWriteTx.committedVersion, escapedWriteTx.readLife)
+			}
+			if span := escapedWriteTx.currentSpan(); span.TraceID == initialSpan || span.SpanID == 0 {
+				t.Fatalf("escaped write Transact currentSpan = %+v, want fresh TraceID != %x", span, initialSpan)
+			}
+			if vs, vsErr := escapedWriteTx.GetVersionstamp(); vsErr != nil || len(vs) != 10 {
+				t.Fatalf("escaped write Transact GetVersionstamp = (%x, %v), want 10-byte stamp", vs, vsErr)
+			}
+			escapedWriteTx.readErrMu.Lock()
+			wArm, wPending := escapedWriteTx.timeoutArm, escapedWriteTx.timeoutPendingLocked()
+			escapedWriteTx.withdrawTimeoutLocked()
+			escapedWriteTx.readErrMu.Unlock()
+			if !wPending {
+				t.Fatal("escaped write Transact handle did not lazily arm its timeout")
+			}
+			escapedWriteTx.fireTimeout(wArm)
+			wCtx, wRelease := escapedWriteTx.opContext(ctx)
+			defer wRelease()
+			if code, ok := fdbErrorCode(escapedWriteTx.readEntryError(wCtx)); !ok || code != 1031 {
+				t.Fatalf("escaped write Transact timeout delivery = %v, want 1031", escapedWriteTx.readEntryError(wCtx))
 			}
 			db.db.connMu.Lock()
 			conns := make([]*transport.Conn, 0, len(db.db.connPool))

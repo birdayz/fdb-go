@@ -40,7 +40,7 @@ That is the 6.6 futex/tx above. It is also why libfdb_c needs epoll_wait 14×/tx
 ## Proposal: the waiter reads its own reply (leader/follower)
 
 Make "the reader" a role, not a goroutine:
-- The role is a mutex-protected reader state: the bufio reader, the FrameReader's partial-frame state, and the pending map.
+- The role is a mutex-protected reader state: the bufio reader and the FrameReader's partial-frame state (while pending replies live in separately locked per-token shards, `pendingShard(token).mu`).
 - A goroutine that is about to wait for a reply tries to take the role (`TryLock`).
 - While it holds the role, it reads and dispatches frames itself, exactly as readLoop does today:
   - pings are answered;

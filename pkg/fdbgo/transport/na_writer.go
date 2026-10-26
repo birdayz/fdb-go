@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"runtime"
 	"slices"
@@ -84,21 +85,62 @@ func (w *naWriter) nowTime() time.Time {
 	return time.Now()
 }
 
+func (c *Conn) naReserveOrder(permit *sendqueue.Permit) (p *sendqueue.Permit, hPermit *sendqueue.Permit) {
+	if permit != nil {
+		return permit, nil
+	}
+	if !c.coldOrderActive.Load() {
+		return nil, nil
+	}
+	if c.beforeControlLock != nil {
+		c.beforeControlLock()
+	}
+	c.controlMu.Lock()
+	defer c.controlMu.Unlock()
+	if order := c.peerSendOrder.Load(); order != nil {
+		if p, _, reserved := order.TryReserve(); reserved {
+			return p, nil
+		}
+		if order.Pending() || c.heldWaiters.Pending() {
+			hp, _ := c.heldWaiters.Reserve()
+			return nil, hp
+		}
+	} else if c.heldWaiters.Pending() {
+		hp, _ := c.heldWaiters.Reserve()
+		return nil, hp
+	}
+	c.coldOrderActive.Store(false)
+	return nil, nil
+}
+
 // naWrite preserves cold-dial and held-cohort FIFO order, then queues the frame
 // without waiting for the socket write (FlowTransport.actor.cpp:1038-1043).
 func (c *Conn) naWrite(ctx context.Context, token UID, body []byte, flush bool, permit *sendqueue.Permit) (bool, error) {
+	return c.naWriteFull(ctx, token, body, flush, false, permit)
+}
+
+func (c *Conn) naWriteFull(ctx context.Context, token UID, body []byte, flush, debug bool, permit *sendqueue.Permit) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		permit.Release()
-		return false, err
+		return false, c.enqueueError(ctx)
 	}
-	admission, err := c.beginSend(ctx, permit)
-	if err != nil {
-		return false, err
-	}
-	defer admission.permit.Release()
-	if admission.permit == nil && (admission.held || c.heldWaiters.Pending()) {
-		hPermit, _ := c.heldWaiters.Reserve()
-		defer hPermit.Release()
+	p, hPermit := c.naReserveOrder(permit)
+	defer p.Release()
+	defer hPermit.Release()
+	if p != nil {
+		select {
+		case <-p.Ready():
+		default:
+			NotifySuspend(ctx)
+		}
+		select {
+		case <-p.Ready():
+		case <-ctx.Done():
+			return false, c.enqueueError(ctx)
+		case <-c.ctx.Done():
+			return false, errConnClosed
+		}
+	} else if hPermit != nil {
 		select {
 		case <-hPermit.Ready():
 		default:
@@ -107,33 +149,37 @@ func (c *Conn) naWrite(ctx context.Context, token UID, body []byte, flush bool, 
 		select {
 		case <-hPermit.Ready():
 		case <-ctx.Done():
-			return false, ctx.Err()
+			return false, c.enqueueError(ctx)
 		case <-c.ctx.Done():
 			return false, errConnClosed
 		}
-		if order := c.peerSendOrder.Load(); order != nil {
+		if c.prefixDone != nil {
 			select {
-			case <-order.Drained():
+			case <-c.prefixDone:
 			default:
 				NotifySuspend(ctx) // waits behind the cold cohort, as enqueueHeld does
 			}
 			select {
-			case <-order.Drained():
+			case <-c.prefixDone:
 			case <-ctx.Done():
-				return false, ctx.Err()
+				return false, c.enqueueError(ctx)
 			case <-c.ctx.Done():
 				return false, errConnClosed
 			}
 		}
 	}
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
 	if c.ctx.Err() != nil {
 		return false, errConnClosed
 	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if flush {
 		return true, nil
+	}
+	if debug && c.debugFrames {
+		fmt.Fprintf(c.debugWriter, "[send %s] token=%016x:%016x bodyLen=%d\n", c.conn.RemoteAddr(),
+			token.First, token.Second, len(body))
 	}
 	if err := c.naSend(ctx, token, body); err != nil {
 		return false, err
@@ -160,18 +206,18 @@ func (c *Conn) naWaitHighWater(ctx context.Context, w *naWriter) (*sendqueue.Per
 	select {
 	case <-permit.Ready():
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, c.enqueueError(ctx)
 	case <-c.ctx.Done():
 		return nil, errConnClosed
 	}
 	w.mu.Lock()
-	if err := ctx.Err(); err != nil {
-		w.mu.Unlock()
-		return nil, err
-	}
 	if c.ctx.Err() != nil {
 		w.mu.Unlock()
 		return nil, errConnClosed
+	}
+	if err := ctx.Err(); err != nil {
+		w.mu.Unlock()
+		return nil, err
 	}
 	for len(w.q) >= naHighWater {
 		ch := w.drained
@@ -184,18 +230,18 @@ func (c *Conn) naWaitHighWater(ctx context.Context, w *naWriter) (*sendqueue.Per
 		select {
 		case <-ch:
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, c.enqueueError(ctx)
 		case <-c.ctx.Done():
 			return nil, errConnClosed
 		}
 		w.mu.Lock()
-		if err := ctx.Err(); err != nil {
-			w.mu.Unlock()
-			return nil, err
-		}
 		if c.ctx.Err() != nil {
 			w.mu.Unlock()
 			return nil, errConnClosed
+		}
+		if err := ctx.Err(); err != nil {
+			w.mu.Unlock()
+			return nil, err
 		}
 	}
 	ok = true
@@ -216,13 +262,13 @@ func (c *Conn) naSend(ctx context.Context, token UID, body []byte) error {
 			w.beforeLock()
 		}
 		w.mu.Lock()
-		if err := ctx.Err(); err != nil {
-			w.mu.Unlock()
-			return err
-		}
 		if c.ctx.Err() != nil {
 			w.mu.Unlock()
 			return errConnClosed
+		}
+		if err := ctx.Err(); err != nil {
+			w.mu.Unlock()
+			return err
 		}
 		var permit *sendqueue.Permit
 		if len(w.q) >= naHighWater || c.sendWaiters.Pending() {
@@ -240,13 +286,13 @@ func (c *Conn) naSend(ctx context.Context, token UID, body []byte) error {
 			w.mu.Unlock()
 			LogSend(token, body)
 			w.mu.Lock()
-			if err := ctx.Err(); err != nil {
-				w.mu.Unlock()
-				return err
-			}
 			if c.ctx.Err() != nil {
 				w.mu.Unlock()
 				return errConnClosed
+			}
+			if err := ctx.Err(); err != nil {
+				w.mu.Unlock()
+				return err
 			}
 		}
 		wake := len(w.q) == 0 // dataToSend fires only on the first unsent frame (Peer::send)
@@ -266,15 +312,15 @@ func (c *Conn) naSend(ctx context.Context, token UID, body []byte) error {
 		w.beforeLock()
 	}
 	w.mu.Lock()
-	if err := ctx.Err(); err != nil {
-		w.mu.Unlock()
-		putFrame(bufp, frame)
-		return err
-	}
 	if c.ctx.Err() != nil {
 		w.mu.Unlock()
 		putFrame(bufp, frame)
 		return errConnClosed
+	}
+	if err := ctx.Err(); err != nil {
+		w.mu.Unlock()
+		putFrame(bufp, frame)
+		return err
 	}
 	var permit *sendqueue.Permit
 	if len(w.q) >= naHighWater || c.sendWaiters.Pending() {
@@ -299,13 +345,13 @@ func (c *Conn) naSend(ctx context.Context, token UID, body []byte) error {
 		w.mu.Unlock()
 		LogSend(token, body)
 		w.mu.Lock()
-		if err := ctx.Err(); err != nil {
-			w.mu.Unlock()
-			return err
-		}
 		if c.ctx.Err() != nil {
 			w.mu.Unlock()
 			return errConnClosed
+		}
+		if err := ctx.Err(); err != nil {
+			w.mu.Unlock()
+			return err
 		}
 		returned = true
 	}
@@ -380,9 +426,6 @@ func (c *Conn) naLoop() {
 			return
 		}
 		if w.delay {
-			if w.onCoalesceWait != nil {
-				w.onCoalesceWait()
-			}
 			c.coalesceWait(time.Since(c.lastWrite))
 			if c.ctx.Err() != nil {
 				return

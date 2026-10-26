@@ -70,16 +70,18 @@ func (tx *Transaction) admitState(lease *executionLease) {
 		ready := tx.readReady
 		if ready == nil {
 			inc := tx.readIncarnationLocked()
+			var cause error
 			if tx.timeoutNeedsArm {
 				tx.armTimeoutLocked()
-				if inc.cause != nil {
-					inc.cancel(inc.cause)
-				}
+				cause = inc.cause
 			}
 			inc.users++
 			lease.inc = inc
 			lease.active.Store(true)
 			tx.readErrMu.Unlock()
+			if cause != nil {
+				inc.cancel(cause)
+			}
 			return
 		}
 		ready = tx.observeReadReadyLocked()

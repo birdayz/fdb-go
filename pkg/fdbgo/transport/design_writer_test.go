@@ -384,9 +384,15 @@ func TestDesignWriteErrorFailsAllPending(t *testing.T) {
 			if !c.IsClosed() {
 				t.Fatal("a failed write left the connection open")
 			}
-			var fe *wire.FDBError
-			if ok, err := c.SendFrameContext(context.Background(), UID{First: 9}, nil); ok || !errors.Is(err, ErrConnClosed) || !errors.As(err, &fe) || fe.Code != codeRequestMaybeDelivered {
-				t.Fatalf("send after teardown = (%t, %v), want ErrConnClosed with FDB code %d", ok, err, codeRequestMaybeDelivered)
+			for name, err := range map[string]error{
+				"SendFrame":         c.SendFrame(UID{First: 9}, nil),
+				"SendFrameDeferred": c.SendFrameDeferred(UID{First: 9}, nil),
+				"Flush":             c.Flush(),
+			} {
+				var cfe *wire.FDBError
+				if !errors.Is(err, ErrConnClosed) || !errors.As(err, &cfe) || cfe.Code != codeRequestMaybeDelivered {
+					t.Fatalf("%s after teardown = %v, want ErrConnClosed with FDB code %d", name, err, codeRequestMaybeDelivered)
+				}
 			}
 		})
 	}
@@ -683,7 +689,11 @@ func TestDesignColdHeldOrderAndStartupPing(t *testing.T) {
 	}()
 	within(t, held1Sig.Done(), "held1 suspend")
 
-	held2Ctx, held2Sig := WithSuspendSignal(ctx)
+	resumeHeld2 := make(chan struct{})
+	var resumeHeld2Once sync.Once
+	openHeld2 := func() { resumeHeld2Once.Do(func() { close(resumeHeld2) }) }
+	defer openHeld2()
+	held2Ctx, held2Sig := WithSuspendHandoff(ctx, resumeHeld2, nil)
 	defer held2Sig.Fire()
 	held2Done := make(chan error, 1)
 	go func() {
@@ -698,15 +708,36 @@ func TestDesignColdHeldOrderAndStartupPing(t *testing.T) {
 	if err := within(t, held1Done, "held1 completion"); err != nil {
 		t.Fatal(err)
 	}
+
+	// While held2 is still parked on resumeHeld2 after the prefix has drained
+	// (and ClearSendOrder has detached order), a warm sender and a warm control
+	// frame must still queue behind held2 on c.heldWaiters rather than overtaking it.
+	c.ClearSendOrder(&order)
+	warm1Ctx, warm1Sig := WithSuspendSignal(ctx)
+	defer warm1Sig.Fire()
+	warm1Done := make(chan error, 1)
+	go func() {
+		_, err := c.SendFrameContext(warm1Ctx, UID{First: 6}, []byte("warm1"))
+		warm1Done <- err
+	}()
+	within(t, warm1Sig.Done(), "warm1 waiting behind held2")
+	if !c.tryEnqueue(writeReq{token: UID{First: 7}, body: []byte("warm-ctrl")}) {
+		t.Fatal("tryEnqueue dropped a warm control behind held2")
+	}
+
+	openHeld2()
 	if err := within(t, held2Done, "held2 completion"); err != nil {
+		t.Fatal(err)
+	}
+	if err := within(t, warm1Done, "warm1 completion"); err != nil {
 		t.Fatal(err)
 	}
 
 	var nonPing []string
-	for len(nonPing) < 5 {
+	for len(nonPing) < 7 {
 		nonPing = append(nonPing, within(t, frames, "ordered frame"))
 	}
-	want := []string{"1:prefix", "2:held-ctrl-1", "3:held-ctrl-2", "4:held1", "5:held2"}
+	want := []string{"1:prefix", "2:held-ctrl-1", "3:held-ctrl-2", "4:held1", "5:held2", "6:warm1", "7:warm-ctrl"}
 	for i := range want {
 		if nonPing[i] != want[i] {
 			t.Fatalf("wire order = %v, want %v", nonPing, want)

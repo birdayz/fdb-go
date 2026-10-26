@@ -251,6 +251,7 @@ type Conn struct {
 	design            string // dial-option override of envDesign; see na_writer.go
 	adaptiveLinger    time.Duration
 	coalesceSet       bool
+	coldOrderActive   atomic.Bool
 	beforeReadLoop    func() // optional test hook run in dialWith just before readLoop starts
 	beforeControlLock func() // optional test hook run in tryEnqueueNAControl before controlMu.Lock
 
@@ -716,7 +717,7 @@ func putReplyChannelImpl(ch chan Response) {
 // on D-NG, or after write/tail handoff on WithLegacyWriter()).
 func (c *Conn) SendFrame(destToken UID, body []byte) error {
 	if c.na != nil {
-		_, err := c.naWrite(c.ctx, destToken, body, false, nil)
+		_, err := c.naWriteFull(c.ctx, destToken, body, false, true, nil)
 		return err
 	}
 	admission, err := c.beginSend(c.ctx, nil)
@@ -815,6 +816,9 @@ func (c *Conn) coalesceWait(sinceWrite time.Duration) {
 		return
 	}
 	if c.coalesce.Reset(coalesceDelay(c.minCoalesce, c.maxCoalesce, sinceWrite, mathrand.Float64())) == nil {
+		if c.na != nil && c.na.onCoalesceWait != nil {
+			c.na.onCoalesceWait()
+		}
 		_ = c.coalesce.Wait()
 	}
 }

@@ -196,7 +196,7 @@ func TestMonitorPingOwner_CloseWaitsForReplyRelease(t *testing.T) {
 	if !f.c.HasPendingReply(token) {
 		t.Fatal("positive control: the PING's reply token is not registered")
 	}
-	// A shard lock held before recording would skip that shard's TryLock.
+	// Wait for recording before deliverPending takes the shard lock.
 	admissionAwait(t, f.ctx.recorded, "the monitor's PING wait")
 	// Publish the reply as readLoop does: send, then delete, under the shard lock.
 	f.c.deliverPending(token, Response{})

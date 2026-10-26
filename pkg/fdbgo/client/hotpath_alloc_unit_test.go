@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/wire"
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
 // Not parallel: AllocsPerRun counts process-wide allocations.
@@ -141,6 +142,17 @@ func TestGRVBatchStorageReuse(t *testing.T) {
 	}
 	if b.inFlight != 0 || cap(b.spare) == 0 || b.spare[:1][0].reply != nil {
 		t.Fatal("flush did not recycle the cleared batch")
+	}
+
+	// Production getReadVersion slow path acquires and returns grvReplyPool channels
+	// with zero allocations per serial fetch once warmed.
+	db := &database{ctx: context.Background()}
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if allocs := testing.AllocsPerRun(100, func() {
+		_, _, _, _ = b.getReadVersion(db, cancelledCtx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
+	}); allocs != 0 {
+		t.Fatalf("ALLOC_GRV_SLOW_PATH: %v allocations per serial getReadVersion, want 0", allocs)
 	}
 }
 

@@ -322,6 +322,9 @@ func (c *Conn) reserveColdControl(order *sendqueue.Queue, request writeReq) (res
 // tryEnqueueNAControl serializes both prefix and held control permit reservation
 // with coldControls publication under controlMu.
 func (c *Conn) tryEnqueueNAControl(request writeReq) (handled, accepted bool) {
+	if !c.coldOrderActive.Load() && !c.heldWaiters.Pending() {
+		return false, false
+	}
 	if c.beforeControlLock != nil {
 		c.beforeControlLock()
 	}
@@ -339,12 +342,12 @@ func (c *Conn) tryEnqueueNAControl(request writeReq) (handled, accepted bool) {
 		hPermit, _ := c.heldWaiters.Reserve()
 		return true, c.tryEnqueueColdControl(request, hPermit, true)
 	}
+	c.coldOrderActive.Store(false)
 	return false, false
 }
 
-// readLoop cannot wait for a cold predecessor. One connection-owned worker
-// drains this bounded queue; post-seal controls append directly to heldCh (or
-// for D-NG wait in coldControls behind the prefix and heldWaiters).
+// readLoop cannot wait for a cold predecessor; coldControlLoop drains this
+// bounded queue behind the cold prefix and heldWaiters.
 func (c *Conn) tryEnqueueColdControl(request writeReq, permit *sendqueue.Permit, held bool) (enqueued bool) {
 	defer func() {
 		if !enqueued {

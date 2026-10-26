@@ -90,7 +90,7 @@ func TestSendRegistrationPanicReleasesReply(t *testing.T) {
 				}()
 				probe := &replyPanicProbe{publish: published}
 				writer := &replyPanicWriter{probe: probe}
-				conn, err := dialWith(ctx, "reply-panic", peer.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour), WithLegacyWriter(), func(c *Conn) {
+				conn, err := dialWith(ctx, "reply-panic", peer.dialFunc(), nil, withMonitorCadence(time.Hour, time.Hour), func(c *Conn) {
 					probe.conn = c
 					c.debugFrames, c.debugWriter = true, writer
 				})

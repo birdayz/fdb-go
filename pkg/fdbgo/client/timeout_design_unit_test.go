@@ -462,37 +462,33 @@ func TestDesignTimeoutPooledReuseEarlyFireReArmsWithoutFalseTimeout(t *testing.T
 		t.Fatalf("expired pooled timer fire = %v, want FDBError 1031", err)
 	}
 
-	// A standalone transaction resurrected by a finalizer renews its weak timer
-	// identity on Reset/SetTimeout so the re-armed timeout still delivers 1031.
-	resurrectedCh := make(chan *Transaction, 1)
-	func() {
-		txR := &Transaction{creationTime: time.Now()}
-		txR.SetTimeout(60000)
-		runtime.SetFinalizer(txR, func(tx *Transaction) {
-			resurrectedCh <- tx
-		})
-	}()
-	var resurrected *Transaction
-	deadline := time.Now().Add(5 * time.Second)
-	for resurrected == nil {
-		runtime.GC()
-		select {
-		case resurrected = <-resurrectedCh:
-		case <-time.After(time.Millisecond):
-			if time.Now().After(deadline) {
-				t.Fatal("finalizer never ran to resurrect standalone transaction")
-			}
-		}
+	// A standalone transaction whose weak identity was cleared (as after finalizer
+	// resurrection) renews its weak timer callback on Reset/SetTimeout and delivers 1031.
+	txR := &Transaction{creationTime: time.Now()}
+	defer txR.Cancel()
+	txR.SetTimeout(60000)
+	txR.readErrMu.Lock()
+	oldTimer := txR.designTimer
+	txR.designWeak = weak.Pointer[Transaction]{} // cleared weak identity after resurrection
+	txR.readErrMu.Unlock()
+	if oldTimer == nil {
+		t.Fatal("initial SetTimeout did not arm designTimer")
 	}
-	defer resurrected.Cancel()
-	resurrected.Reset()
-	ctxR, releaseR := resurrected.opContext(context.Background())
+	defer oldTimer.Stop()
+	txR.Reset()
+	ctxR, releaseR := txR.opContext(context.Background())
 	defer releaseR()
-	resurrected.SetTimeout(1)
-	deadline = time.Now().Add(5 * time.Second)
+	txR.SetTimeout(1)
+	txR.readErrMu.Lock()
+	renewed := txR.designTimer != nil && txR.designTimer != oldTimer && txR.designWeak.Value() == txR
+	txR.readErrMu.Unlock()
+	if !renewed {
+		t.Fatal("Reset/SetTimeout did not renew cleared designWeak and replace designTimer")
+	}
+	deadline := time.Now().Add(5 * time.Second)
 	for {
 		var rErr *wire.FDBError
-		if errors.As(resurrected.readEntryError(ctxR), &rErr) && rErr.Code == 1031 {
+		if errors.As(txR.readEntryError(ctxR), &rErr) && rErr.Code == 1031 {
 			break
 		}
 		if time.Now().After(deadline) {
