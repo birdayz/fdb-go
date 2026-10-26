@@ -3831,13 +3831,8 @@ func expectScalarEqual(actual, expected any, msgAndArgs ...any) {
 	}
 }
 
-// joinOptimizationProbesScenario mirrors testdata/join_optimization_probes.yaml.
-// Drops NOT NULL on PK cols (fdb-relational restriction) and writes INNER JOIN
-// ... ON as a comma join (fdb-relational rejects qualified names in JOIN ON).
-// fdb-relational 4.14.2.0 has no in-memory sort, so an ORDER BY on a column no
-// index orders fails 0AF00 (UnableToPlanException): those queries assert their
-// rows unordered here, and the aggregate groups by the indexed e.did instead of
-// d.dname. The last query keeps an ORDER BY the index provides.
+// joinOptimizationProbesScenario mirrors testdata/join_optimization_probes.yaml as comma
+// joins, unordered and grouped by e.did: Java has no in-memory sort (0AF00).
 func joinOptimizationProbesScenario() *yamsql.Scenario {
 	return &yamsql.Scenario{
 		Name: "join_optimization_probes",

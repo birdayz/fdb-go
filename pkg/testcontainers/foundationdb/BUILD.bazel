@@ -8,6 +8,7 @@ go_library(
         "docker.go",
         "foundationdb.go",
         "options.go",
+        "reaper.go",
         "startup_diagnostics.go",
     ],
     importpath = "fdb.dev/pkg/testcontainers/foundationdb",
@@ -73,5 +74,22 @@ go_test(
         "@com_github_testcontainers_testcontainers_go//exec",
         "@com_github_testcontainers_testcontainers_go//wait",
         "@org_golang_google_protobuf//proto",
+    ],
+)
+
+# reaper_test.go needs RYUK_RECONNECTION_TIMEOUT for the whole process, so it is its own binary.
+# gazelle:exclude reaper_test.go
+go_test(
+    name = "reaper_test",
+    timeout = "long",
+    srcs = ["reaper_test.go"],
+    embed = [":foundationdb"],
+    env = {"RYUK_RECONNECTION_TIMEOUT": "1s"},
+    tags = ["resources:memory:1100"],
+    deps = [
+        "@com_github_containerd_errdefs//:errdefs",
+        "@com_github_docker_docker//api/types/container",
+        "@com_github_docker_docker//api/types/network",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
     ],
 )

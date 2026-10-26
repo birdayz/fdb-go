@@ -103,9 +103,8 @@ tests:
       - ['hr', 1, 95]
       - ['sales', 2, 110]
 
-  # Three-way joins with a cross-leg arithmetic predicate (RFC-273). `+ - * /`
-  # fold flat and left-associative in both grammars, so `b.salary + d.did * 5`
-  # is `(b.salary + d.did) * 5`: these predicates do not depend on it.
+  # Three-way joins with a cross-leg predicate. Go reads b's index leg whole
+  # here; Java probes it (TODO.md "planner gap", three_way_join_sarg probe).
   - query: |-
       SELECT a.ename, b.ename FROM emp AS a, emp AS b, dept AS d
       WHERE a.did = d.did AND b.did = d.did AND a.salary - b.salary > d.did * 5

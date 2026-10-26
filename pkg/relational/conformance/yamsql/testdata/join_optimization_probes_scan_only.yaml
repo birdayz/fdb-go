@@ -1,6 +1,5 @@
 # Join probes with index matching disabled: every leg is a full scan.
-# join_optimization_probes.yaml's queries and rows; the joins run as
-# nested-loop joins and FlatMaps over scans, in other join orders.
+# join_optimization_probes.yaml's queries and rows, as joins over scans in other join orders.
 name: join_optimization_probes_scan_only
 schema_template: |
   CREATE TABLE dept (did BIGINT, dname STRING, PRIMARY KEY (did))

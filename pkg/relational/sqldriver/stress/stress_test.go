@@ -32,12 +32,8 @@ import (
 
 var clusterFilePath string
 
-// clusterFileEnv points the suite at an EXISTING FoundationDB cluster instead
-// of a single-node testcontainer. It is what makes "run against a real cluster"
-// an instruction rather than an aspiration: the 10M scales in
-// stress_10m_test.go exceed what one Docker node sustains, and without this
-// there was no way to run them anywhere, because TestMain always started a
-// container. Unset (the normal case) keeps the testcontainer path unchanged.
+// clusterFileEnv selects a provisioned FDB cluster. Without it, ordinary tests
+// use a container; the 10M binary refuses to run because it requires a real cluster.
 const clusterFileEnv = "FDB_STRESS_CLUSTER_FILE"
 
 // realClusterOnly is set by the 10M scales: their binary must never fall back
