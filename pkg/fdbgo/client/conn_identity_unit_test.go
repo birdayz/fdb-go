@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -355,9 +356,7 @@ func TestHandleConnErrorIdentity(t *testing.T) {
 		db, w := setup(t, 1)
 		a := dial(t, db)
 		db.handleConnError(addr, a)
-		if !a.IsClosed() {
-			t.Fatal("the failed connection was left open")
-		}
+		requireIdentityConnClosed(t, ctx, a)
 		check(t, db, w, nil, true, 1, 1)
 	})
 	t.Run("pool replaced it with an open connection", func(t *testing.T) {
@@ -803,7 +802,8 @@ func TestEndOtherReportsLoserConn(t *testing.T) {
 		t.Fatal("a hedge loser's failure on A closed or failed its replacement B")
 	}
 	db.endOther(rpcAccount{addr: addr, conn: b, err: transport.ErrConnClosed, start: time.Now()})
-	if !b.IsClosed() || !db.failMon.isFailed(addr) {
+	requireIdentityConnClosed(t, ctx, b)
+	if !db.failMon.isFailed(addr) {
 		t.Fatal("a failure on the pooled connection must evict it and fail the address")
 	}
 }
@@ -812,24 +812,72 @@ func TestEndOtherReportsLoserConn(t *testing.T) {
 // does not read can.
 type closeGateConn struct {
 	net.Conn
-	once             sync.Once
-	closing, release chan struct{}
+	once                   sync.Once
+	closing, release, done chan struct{}
+	err                    error
 }
 
 func (c *closeGateConn) Close() error {
-	c.once.Do(func() { close(c.closing) })
-	<-c.release
-	return c.Conn.Close()
+	c.once.Do(func() {
+		close(c.closing)
+		<-c.release
+		c.err = c.Conn.Close()
+		close(c.done)
+	})
+	return c.err
 }
 
-// handleConnError closes the failed connection after releasing connMu, so a slow
-// close cannot stall every connection lookup.
+// failMetricsWriteConn holds only the chosen metrics frame, leaving monitor
+// PINGs usable until the test releases a deterministic transport failure.
+type failMetricsWriteConn struct {
+	net.Conn
+	token         transport.UID
+	writing, fail chan struct{}
+}
+
+func (c *failMetricsWriteConn) Write(p []byte) (int, error) {
+	r := bytes.NewReader(p)
+	for r.Len() > 0 {
+		token, _, err := transport.ReadFrame(r, false)
+		if err != nil {
+			break // the connect packet is not a frame
+		}
+		if token == c.token {
+			close(c.writing)
+			<-c.fail
+			return 0, errors.New("test: metrics frame write failed")
+		}
+	}
+	return c.Conn.Write(p)
+}
+
+func requireIdentityConnClosed(t *testing.T, ctx context.Context, conn *transport.Conn) {
+	t.Helper()
+	select {
+	case <-conn.Done():
+	case <-ctx.Done():
+		t.Fatal("the failed connection was left open")
+	}
+	done := make(chan struct{})
+	go func() {
+		conn.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("the failed connection's transport loops did not stop")
+	}
+}
+
+// Failure reporting publishes eviction before database-owned teardown, so a
+// slow close cannot stall the reporter or another connection lookup.
 func TestHandleConnErrorClosesOutsideConnMu(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	peer := newIdentityPeer(t)
-	gate := &closeGateConn{Conn: peer.client, closing: make(chan struct{}), release: make(chan struct{})}
+	gate := &closeGateConn{Conn: peer.client, closing: make(chan struct{}), release: make(chan struct{}), done: make(chan struct{})}
 	peer.client = gate
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(gate.release) }) }
@@ -880,11 +928,107 @@ func TestHandleConnErrorClosesOutsideConnMu(t *testing.T) {
 	if pooledConn(db, armAddr) != nil || !db.failMon.isFailed(armAddr) {
 		t.Fatal("the failed connection must leave the pool and its address be marked failed before the close")
 	}
-	release()
-	<-done
-	if !a.IsClosed() {
-		t.Fatal("the failed connection was left open")
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("failure reporting waited for the blocked connection close")
 	}
+	select {
+	case <-gate.done:
+		t.Fatal("the socket closed before its close gate was released")
+	default:
+	}
+	release()
+	select {
+	case <-gate.done:
+	case <-ctx.Done():
+		t.Fatal("the socket did not close after its close gate was released")
+	}
+	requireIdentityConnClosed(t, ctx, a)
+}
+
+// Database shutdown detaches the entire pool before a socket close can block,
+// so cancelled workers can still acquire connMu while Close joins teardown.
+func TestDatabaseCloseClosesOutsideConnMu(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	dbCtx, cancelDB := context.WithCancel(ctx)
+	defer cancelDB()
+	peer, other := newIdentityPeer(t), newIdentityPeer(t)
+	gate := &closeGateConn{Conn: peer.client, closing: make(chan struct{}), release: make(chan struct{}), done: make(chan struct{})}
+	peer.client = gate
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(gate.release) }) }
+	db, _ := identityDatabase(dbCtx, peer, other)
+	db.cancel = cancelDB
+	publicDB := &Database{db: db}
+	defer func() {
+		release()
+		publicDB.Close()
+	}()
+	first, err := db.getOrDial(ctx, armAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := db.getOrDial(ctx, "other:4500")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || pooledConn(db, armAddr) != first || pooledConn(db, "other:4500") != second {
+		t.Fatal("the shutdown regression requires two distinct pooled connections")
+	}
+	done := make(chan error, 1)
+	go func() { done <- publicDB.Close() }()
+	select {
+	case <-gate.closing:
+	case <-ctx.Done():
+		t.Fatal("Database.Close did not enter the blocked socket close")
+	}
+	if !errors.Is(dbCtx.Err(), context.Canceled) {
+		t.Fatal("Database.Close did not cancel the database lifetime before closing sockets")
+	}
+	pooled := make(chan int, 1)
+	go func() {
+		db.connMu.Lock()
+		n := len(db.connPool)
+		db.connMu.Unlock()
+		pooled <- n
+	}()
+	select {
+	case n := <-pooled:
+		if n != 0 {
+			t.Fatalf("Database.Close left %d connections pooled while socket teardown was blocked", n)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Database.Close held connMu while socket teardown was blocked")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Database.Close returned before its blocked socket closed: %v", err)
+	default:
+	}
+	select {
+	case <-gate.done:
+		t.Fatal("the socket closed before its close gate was released")
+	default:
+	}
+	release()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Database.Close: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("Database.Close did not finish after its close gate was released")
+	}
+	select {
+	case <-gate.done:
+	default:
+		t.Fatal("Database.Close returned before the actual socket close completed")
+	}
+	requireIdentityConnClosed(t, ctx, first)
+	requireIdentityConnClosed(t, ctx, second)
 }
 
 type metricsArm struct {
@@ -892,6 +1036,7 @@ type metricsArm struct {
 	endpoint   int
 	reply      string
 	send       func(context.Context, *Transaction, []ServerInfo) error
+	operation  func(context.Context, *Transaction, []byte, []byte) error
 	replyToken func(*testing.T, []byte) transport.UID
 }
 
@@ -905,6 +1050,10 @@ func metricsArms() []metricsArm {
 	return []metricsArm{
 		{
 			name: "wait metrics", endpoint: EndpointWaitMetrics, reply: "StorageMetrics_basic",
+			operation: func(ctx context.Context, tx *Transaction, begin, end []byte) error {
+				_, err := tx.GetEstimatedRangeSizeBytes(ctx, begin, end)
+				return err
+			},
 			send: func(ctx context.Context, tx *Transaction, servers []ServerInfo) error {
 				_, err := tx.sendWaitMetrics(ctx, []byte("k"), []byte("l"), 1, servers)
 				return err
@@ -920,6 +1069,10 @@ func metricsArms() []metricsArm {
 		},
 		{
 			name: "split range", endpoint: EndpointGetRangeSplitPoints, reply: "SplitRangeReply_two_points",
+			operation: func(ctx context.Context, tx *Transaction, begin, end []byte) error {
+				_, err := tx.GetRangeSplitPoints(ctx, begin, end, 1000)
+				return err
+			},
 			send: func(ctx context.Context, tx *Transaction, servers []ServerInfo) error {
 				_, err := tx.sendSplitRange(ctx, []byte("k"), []byte("l"), 1000, servers)
 				return err
@@ -955,6 +1108,139 @@ func noFrame(t *testing.T, peer *identityPeer, d time.Duration, why string) {
 	case f := <-peer.frames:
 		t.Fatalf("%s: a request reached the peer (token %v)", why, f.token)
 	case <-time.After(d):
+	}
+}
+
+// A losing shard's transport teardown belongs to the database, not the public
+// metrics operation: a blocked close cannot hide a sibling error or cancellation.
+func TestMetricsFanoutDoesNotWaitForConnectionClose(t *testing.T) {
+	t.Parallel()
+	for _, arm := range metricsArms() {
+		for _, cancelled := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/cancelled=%t", arm.name, cancelled), func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
+				healthy, losing := newIdentityPeer(t), newIdentityPeer(t)
+				write := &failMetricsWriteConn{
+					Conn: losing.client, token: getAdjustedEndpoint(armToken, arm.endpoint),
+					writing: make(chan struct{}), fail: make(chan struct{}),
+				}
+				gate := &closeGateConn{Conn: write, closing: make(chan struct{}), release: make(chan struct{}), done: make(chan struct{})}
+				losing.client = gate
+				var failOnce, releaseOnce sync.Once
+				failWrite := func() { failOnce.Do(func() { close(write.fail) }) }
+				release := func() { releaseOnce.Do(func() { close(gate.release) }) }
+				db, tx := armDatabase(ctx, healthy, losing)
+				tx.tenantId = 42
+				db.altFailureDelayOverride = 30 * time.Second
+				const losingAddr = "losing:4500"
+				var losingConn *transport.Conn
+				opCtx, stop := context.WithCancel(ctx)
+				var done chan struct{}
+				defer func() {
+					failWrite()
+					release()
+					stop()
+					if done != nil {
+						<-done
+					}
+					if losingConn != nil {
+						losingConn.Close()
+					}
+					closeIdentityDatabase(db)
+				}()
+				healthyConn, err := db.getOrDial(ctx, armAddr)
+				if err != nil {
+					t.Fatal(err)
+				}
+				losingConn, err = db.getOrDial(ctx, losingAddr)
+				if err != nil {
+					t.Fatal(err)
+				}
+				db.locCache.entries = []locationEntry{
+					{tenantId: 42, begin: []byte("a"), end: []byte("m"), servers: []ServerInfo{{Address: armAddr, Token: armToken}}},
+					{tenantId: 42, begin: []byte("m"), end: []byte("z"), servers: []ServerInfo{{Address: losingAddr, Token: armToken}}},
+				}
+				reporting := make(chan struct{})
+				var reportOnce sync.Once
+				hook := func() {
+					if db.connPool[losingAddr] == nil {
+						reportOnce.Do(func() { close(reporting) })
+					}
+				}
+				db.beforeConnFailureMark.Store(&hook)
+				done = make(chan struct{})
+				go func() {
+					defer close(done)
+					err = arm.operation(opCtx, tx, []byte("a"), []byte("z"))
+				}()
+				frame, ok := healthy.recv(ctx)
+				if !ok || frame.token != getAdjustedEndpoint(armToken, arm.endpoint) {
+					t.Fatal("the healthy shard did not receive its metrics request")
+				}
+				reply := arm.replyToken(t, frame.body)
+				select {
+				case <-write.writing:
+				case <-ctx.Done():
+					t.Fatal("the losing shard did not enter its frame write")
+				}
+				failWrite()
+				select {
+				case <-gate.closing:
+				case <-ctx.Done():
+					t.Fatal("the failed connection did not enter its blocked close")
+				}
+				select {
+				case <-reporting:
+				case <-ctx.Done():
+					t.Fatal("the losing shard did not report its connection failure")
+				}
+				if pooledConn(db, losingAddr) != nil || !db.failMon.isFailed(losingAddr) {
+					t.Fatal("failure reporting did not publish eviction and failed state")
+				}
+				if !healthyConn.HasPendingReply(reply) {
+					t.Fatal("the healthy shard was not still waiting at the close gate")
+				}
+				select {
+				case <-gate.done:
+					t.Fatal("the failed socket closed before the terminal/cancellation gate")
+				default:
+				}
+				if cancelled {
+					stop()
+				} else if err := transport.WriteFrame(healthy.server, reply, (&types.ErrorOrError{ErrorCode: uint16(ErrTenantNotFound)}).MarshalFDB(), false); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+					t.Fatal("public metrics operation waited for its losing shard's blocked close")
+				}
+				if cancelled {
+					if !errors.Is(err, context.Canceled) {
+						t.Fatalf("operation cancellation = %v, want context.Canceled", err)
+					}
+				} else {
+					assertFDBErrorCode(t, err, ErrTenantNotFound)
+				}
+				select {
+				case <-gate.done:
+					t.Fatal("the operation completed only after its failed socket closed")
+				default:
+				}
+				if healthyConn.IsClosed() || healthyConn.HasPendingReply(reply) {
+					t.Fatal("completion must release the healthy reply waiter, not its connection")
+				}
+				release()
+				select {
+				case <-gate.done:
+				case <-ctx.Done():
+					t.Fatal("the failed socket did not close after its gate was released")
+				}
+				requireIdentityConnClosed(t, ctx, losingConn)
+			})
+		}
 	}
 }
 

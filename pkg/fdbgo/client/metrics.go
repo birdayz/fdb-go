@@ -111,8 +111,8 @@ func metricsShardBounds(begin, end []byte, loc LocationResult) ([]byte, []byte) 
 	return shardBegin, shardEnd
 }
 
-// Match waitForAll: start all shard workers, fail on any error, and retain shard
-// order on success. Cancel and join waiters, never their database-owned dials.
+// Run each shard through its first enqueue or suspension before starting the next,
+// as Flow does. Match waitForAll's error propagation and ordered results.
 func collectMetricsShards[T any](parent context.Context, locations []LocationResult, send func(context.Context, int, LocationResult) (T, error)) ([]T, error) {
 	ctx, cancel := context.WithCancel(parent)
 	type result struct {
@@ -124,12 +124,22 @@ func collectMetricsShards[T any](parent context.Context, locations []LocationRes
 	var wg sync.WaitGroup
 	defer func() { cancel(); wg.Wait() }()
 	for i, loc := range locations {
+		workerCtx, started := withParkSignal(ctx)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			value, err := send(ctx, i, loc)
+			defer started.Fire()
+			value, err := send(workerCtx, i, loc)
 			completed <- result{index: i, value: value, err: err}
 		}()
+		select {
+		case <-started.Done():
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if len(completed) < len(locations) {
+		notifyParked(ctx)
 	}
 	values := make([]T, len(locations))
 	for range locations {
@@ -219,6 +229,7 @@ func (tx *Transaction) sendMetricsRequest(ctx context.Context, servers []ServerI
 		}
 		if backoff > 0 {
 			timer := time.NewTimer(backoff)
+			notifyParked(ctx)
 			select {
 			case <-timer.C:
 			case <-ctx.Done():

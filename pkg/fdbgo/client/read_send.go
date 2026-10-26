@@ -60,8 +60,8 @@ func (db *database) altFailureDelay() time.Duration {
 	return time.Duration(float64(d) * (0.9 + 0.2*rand.Float64()))
 }
 
-// awaitAlternative waits until one of servers is no longer excluded, as okFuture
-// (LoadBalance.actor.cpp:47-48), or reports all_alternatives_failed after wait.
+// awaitAlternative waits for one of its own replicas to become actually live,
+// as okFuture does; exclusion expiry only permits a probe, not a successful return.
 func (db *database) awaitAlternative(ctx context.Context, closed <-chan struct{}, servers []ServerInfo, recovered <-chan struct{}, wait time.Duration) error {
 	if hook := db.beforeAltFailureWait.Load(); hook != nil {
 		(*hook)()
@@ -81,6 +81,7 @@ func (db *database) awaitAlternative(ctx context.Context, closed <-chan struct{}
 		}
 	}()
 	for {
+		notifyParked(ctx)
 		select {
 		case <-recovered:
 			// Any address's recovery signals; only these replicas end the wait.

@@ -585,7 +585,7 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 			if db.connPool[addr] == c {
 				delete(db.connPool, addr)
 			}
-			_ = c.Close()
+			go c.Close()
 		}
 		call.err = fmt.Errorf("fdbgo: panic dialing %s: %v", addr, r)
 		call.sends.Seal()
@@ -599,6 +599,7 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 	var dialErr error
 	c, dialErr = transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn, dialOpts...)
 
+	discard := false
 	func() {
 		db.connMu.Lock()
 		defer db.connMu.Unlock()
@@ -610,7 +611,7 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 			// so a conn pooled now would never be reaped (leaking its read/write/monitor
 			// goroutines). Discard it and fail the call.
 			call.err = db.ctx.Err()
-			_ = c.Close()
+			discard = true
 		default:
 			c.SetEndpointNotFoundHandler(func(token transport.UID) { db.failMon.markEndpointNotFound(addr, token) })
 			db.connPool[addr] = c
@@ -636,6 +637,9 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 		}
 		close(call.done) // membership and result become visible atomically under connMu
 	}()
+	if discard {
+		_ = c.Close()
+	}
 }
 
 // warmConnections pre-establishes TCP connections to all known proxies.
@@ -1188,11 +1192,15 @@ func (d *Database) Close() error {
 		d.db.cancel()
 		// Native commits may be blocked in SendFrame: close their sockets before joining.
 		d.db.connMu.Lock()
+		connections := make([]*transport.Conn, 0, len(d.db.connPool))
 		for addr, conn := range d.db.connPool {
-			conn.Close()
+			connections = append(connections, conn)
 			delete(d.db.connPool, addr)
 		}
 		d.db.connMu.Unlock()
+		for _, conn := range connections {
+			conn.Close()
+		}
 		d.db.wg.Wait()
 	})
 	return nil

@@ -40,8 +40,10 @@ Change:
 - Both loops retry until success, a non-retryable error or the operation context ends.
   The context carries the transaction timeout (RFC-112), as C++'s `waitOrError` does.
 - All located shards start before waiting, as `waitForAll` does (`NativeAPI.actor.cpp:7835-7845,
-  8171-8184`); a terminal error cancels and joins the other waiters, not their shared
-  connections or database-owned dials. Successful results retain shard order. Size
+  8171-8184`). Each worker runs through its initial enqueue or first suspension
+  before the next starts, preserving C++'s fixed order on a connected shared peer.
+  A terminal error cancels and joins other waiters, not shared connections or
+  database-owned dials. Successful results retain shard order. Size
   workers retry and re-locate only their own subrange (`doGetStorageMetrics`, :7785-7811),
   so a retryable error cannot cancel and hide a sibling's terminal error. Repeated
   singleton retries stay iterative; a location that splits starts child workers for
@@ -96,9 +98,12 @@ socket first sends close_notify under a 5 s write deadline (`crypto/tls` `Conn.C
 and every dial and pool lookup waits on `connMu` meanwhile.
 
 Change: the removal and the failure mark stay under `connMu`, so a redial cannot slip
-between them (RFC-271); the close runs after the unlock. Other closes under `connMu`
-are left: `Database.Close` and a dial that lost to `Close` happen during shutdown, and
-the dial-panic backstop only on a panic. A completed, undrained dial cohort referring
+between them (RFC-271); the close runs after the unlock in a database-owned goroutine.
+Reporting failure does not wait for socket teardown, so joining cancelled shard
+workers cannot withhold an error or timeout behind TLS `close_notify`. Shutdown
+also detaches the pool before closing sockets; a discarded dial publishes its result
+before closing outside `connMu`, and the dial-panic backstop schedules teardown.
+Thus a cancelled worker acquiring the pool lock cannot wait behind another close. A completed, undrained dial cohort referring
 to the removed connection is detached under the same lock, so a new sender cannot
 acquire the failed connection between the unlock and the close. `Database.Close` can
 return while such a connection is still closing; its loops end with the close.
@@ -128,8 +133,10 @@ and names the bound that matches libfdb_c, the transaction timeout or `Cancel`.
 
 - `client`, fast lane (`conn_location_unit_test`):
   - `TestHandleConnErrorClosesOutsideConnMu`: the failed connection's completed dial
-    cohort is detached before failure publication; `Close` blocks until released,
-    while `connMu` is free, the pool empty and the address failed.
+    cohort is detached before failure publication; reporting returns while socket
+    close remains gated, with `connMu` free, the pool empty and the address failed.
+  - `TestDatabaseCloseClosesOutsideConnMu`: shutdown detaches the pool before closing
+    sockets and leaves `connMu` available while socket teardown remains gated.
   - `TestMetricsRecoveryDoesNotWaitForOtherProbe`: a recovered replica gets the
     request while a different replica's dial remains stalled and database-owned.
   - `TestMetricsRequestWakesOnRecovery`: with the storm delay at 30 s, a request whose
@@ -157,11 +164,17 @@ and names the bound that matches libfdb_c, the transaction timeout or `Cancel`.
     `TestMetricsRequestDatabaseCloseInterruptsAllFailedDelay`: closing only the database
     lifetime interrupts backoff, all-excluded, empty-list and exhausted-endpoint waits
     while the request context stays live.
+  - `TestMetricsFanoutDoesNotWaitForConnectionClose`: both public metrics operations
+    return a sibling's terminal error or caller cancellation while a failed shard's
+    socket close remains gated, then prove teardown completes after gate release.
   - `TestMetricsShardsFailFast`: both public metrics operations dispatch two shards
     before either replies; a terminal error on the second ends the call with the first
     reply withheld, cancels its registration and leaves the connection open.
   - `TestMetricsShardsPreserveOrder`: reversed shard replies sum the size and assemble
     split points in shard order, including the internal boundary.
+  - `TestMetricsShardsPreserveInitialWireOrder`: on a hot shared peer, both public
+    operations send three shard ranges in location order with every reply withheld;
+    all three are concurrently pending before a terminal error ends the call.
   - `TestMetricsShardRetryKeepsSibling`: wrong-shard, all-alternatives-failed and
     future-version retries retain the sibling's original waiter and cached location;
     its terminal error cancels the first shard's withheld relocation or retry reply.

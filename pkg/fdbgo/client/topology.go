@@ -257,7 +257,8 @@ func (db *database) handleConnError(addr string, failed *transport.Conn) {
 	}
 	db.connMu.Unlock()
 	if closing != nil {
-		closing.Close() // a TLS close can block for seconds; never under connMu
+		// Teardown belongs to the database, not a cancelled RPC worker's join.
+		go closing.Close() // TLS close_notify can block for seconds
 	}
 	db.reportConnFailure(addr, newlyFailed)
 }

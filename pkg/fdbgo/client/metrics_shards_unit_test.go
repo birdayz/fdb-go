@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 
@@ -31,6 +32,109 @@ func TestMetricsShardsFailFast(t *testing.T) {
 func TestMetricsShardsPreserveOrder(t *testing.T) {
 	t.Parallel()
 	testMetricsShards(t, false)
+}
+
+// Initial requests sharing one hot peer retain location order while every reply
+// is outstanding. One P exposes an uncoordinated spawn loop's runnext ordering.
+func TestMetricsShardsPreserveInitialWireOrder(t *testing.T) {
+	// Keep this test exclusive: the scheduler setting controls the interleaving,
+	// and parallel tests must not observe it.
+	previous := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(previous)
+	for _, split := range []bool{false, true} {
+		t.Run(fmt.Sprintf("split=%t", split), func(t *testing.T) {
+			ctx, stop := context.WithTimeout(context.Background(), 20*time.Second)
+			defer stop()
+			peer := newIdentityPeer(t)
+			db, tx := armDatabase(ctx, peer)
+			defer closeIdentityDatabase(db)
+			servers := []ServerInfo{{Address: armAddr, Token: armToken}}
+			bounds := []string{"a", "m", "t", "z"}
+			db.locCache.entries = nil
+			for i := range 3 {
+				db.locCache.entries = append(db.locCache.entries, locationEntry{
+					tenantId: NoTenantID, begin: []byte(bounds[i]), end: []byte(bounds[i+1]), servers: servers,
+				})
+			}
+			if _, err := db.getOrDial(ctx, armAddr); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				if split {
+					_, err = tx.GetRangeSplitPoints(ctx, []byte("a"), []byte("z"), 1000)
+				} else {
+					_, err = tx.GetEstimatedRangeSizeBytes(ctx, []byte("a"), []byte("z"))
+				}
+			}()
+			defer func() { stop(); <-done }()
+			requests := make([]transport.UID, 0, 3)
+			dispatchCtx, cancelDispatch := context.WithTimeout(ctx, 5*time.Second)
+			defer cancelDispatch()
+			for i := range 3 {
+				frame, ok := peer.recv(dispatchCtx)
+				if !ok {
+					t.Fatal("not all ordered shards were dispatched with their replies withheld")
+				}
+				var begin, end []byte
+				var token transport.UID
+				endpoint := EndpointWaitMetrics
+				if split {
+					endpoint = EndpointGetRangeSplitPoints
+					var req types.SplitRangeRequest
+					if err := req.UnmarshalFDB(frame.body); err != nil {
+						t.Fatal(err)
+					}
+					if req.TenantInfo.TenantId != NoTenantID || req.ChunkSize != 1000 {
+						t.Fatalf("unexpected split request: %+v", req)
+					}
+					begin, end, token = req.Keys.Begin, req.Keys.End, replyToken(req.Reply.Token)
+				} else {
+					var req types.WaitMetricsRequest
+					if err := req.UnmarshalFDB(frame.body); err != nil {
+						t.Fatal(err)
+					}
+					if req.TenantInfo.TenantId != NoTenantID || req.MinVersion != LatestVersion {
+						t.Fatalf("unexpected size request: %+v", req)
+					}
+					begin, end, token = req.Keys.Begin, req.Keys.End, replyToken(req.Reply.Token)
+				}
+				if frame.token != getAdjustedEndpoint(armToken, endpoint) || string(begin) != bounds[i] || string(end) != bounds[i+1] {
+					t.Fatalf("initial request %d = [%q,%q), want [%q,%q) in location order", i, begin, end, bounds[i], bounds[i+1])
+				}
+				requests = append(requests, token)
+			}
+			conn := pooledConn(db, armAddr)
+			for i, token := range requests {
+				if conn == nil || !conn.HasPendingReply(token) {
+					t.Fatalf("ordered shard %d was not concurrently waiting for its withheld reply", i)
+				}
+			}
+			if err := transport.WriteFrame(peer.server, requests[2], (&types.ErrorOrError{ErrorCode: uint16(ErrTenantNotFound)}).MarshalFDB(), false); err != nil {
+				t.Fatal(err)
+			}
+			completionCtx, cancelCompletion := context.WithTimeout(ctx, 5*time.Second)
+			defer cancelCompletion()
+			select {
+			case <-done:
+			case <-completionCtx.Done():
+				t.Fatal("ordered fanout hid the later shard's terminal error")
+			}
+			if code, ok := fdbErrorCode(err); !ok || code != ErrTenantNotFound {
+				t.Fatalf("ordered fanout returned %v, want tenant_not_found", err)
+			}
+			for i, token := range requests {
+				if conn.HasPendingReply(token) {
+					t.Fatalf("completed fanout retained shard %d's waiter", i)
+				}
+			}
+			if ctx.Err() != nil || conn.IsClosed() {
+				t.Fatal("ordered fanout cancelled its caller or closed its peer")
+			}
+		})
+	}
 }
 
 // A retryable size error belongs to that shard's worker, not the parent fanout:
