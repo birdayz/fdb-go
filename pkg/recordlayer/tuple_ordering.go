@@ -25,17 +25,8 @@ var (
 	OrderDescNullsLast = tupleordering.DescNullsLast
 )
 
-// tupleOrderingPack encodes a tuple according to the given direction.
-// Matches Java's TupleOrdering.pack(Tuple, Direction).
-//
-// Both packing branches are VANILLA packs and therefore cannot represent an
-// incomplete versionstamp: Java's packNullsLast raises
-// IllegalArgumentException("Incomplete Versionstamp included in vanilla tuple
-// pack") when one reaches it (TupleOrdering.java:174-180) and Tuple.pack does
-// the same. Go's tuple.Pack PANICS in that situation, so the check happens here
-// and the caller gets Java's exception as a Go error. Legal VALUE indexes and
-// primary keys can wrap a version in an ordering function; VERSION indexes with
-// that root are refused earlier because functions declare zero version columns.
+// tupleOrderingPack matches Java's TupleOrdering.pack(Tuple, Direction).
+// An incomplete versionstamp is a recoverable error, not a vanilla tuple-pack panic.
 func tupleOrderingPack(t tuple.Tuple, dir OrderDirection) ([]byte, error) {
 	if tupleHasIncompleteVersionstamp(t) {
 		return nil, &IncompleteVersionstampError{Context: "tuple ordering"}

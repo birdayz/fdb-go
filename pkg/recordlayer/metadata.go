@@ -67,9 +67,8 @@ type RecordMetaData struct {
 	// Java equivalent: RecordMetaData.getRecordCountKey()
 	recordCountKey KeyExpression
 
-	// storeRecordVersions controls whether record versions are stored.
-	// When true, each save assigns an FDBRecordVersion using SET_VERSIONSTAMPED_VALUE.
-	// Java equivalent: RecordMetaData.isStoreRecordVersions()
+	// storeRecordVersions enables automatic version assignment under DEFAULT.
+	// Per-save behaviors and supplied versions override it.
 	storeRecordVersions bool
 
 	// splitLongRecords controls whether records >100KB are split across
@@ -525,9 +524,8 @@ func (b *RecordMetaDataBuilder) AddView(name, definition string) *RecordMetaData
 	return b
 }
 
-// SetStoreRecordVersions enables or disables automatic record versioning.
-// When enabled, each save assigns an FDBRecordVersion to the record.
-// Java equivalent: RecordMetaDataBuilder.setStoreRecordVersions(boolean)
+// SetStoreRecordVersions controls automatic version assignment under DEFAULT.
+// Per-save behaviors and supplied versions override this metadata setting.
 func (b *RecordMetaDataBuilder) SetStoreRecordVersions(store bool) *RecordMetaDataBuilder {
 	if b.storeRecordVersions != store {
 		b.version++ // Matches Java: bumps version when value changes

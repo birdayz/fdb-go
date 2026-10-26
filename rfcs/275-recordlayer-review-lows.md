@@ -220,8 +220,17 @@ to the old behavior.
     distinct versions for the same record id; incomplete values are refused before
     encoding by real and dry-run saves. Native `VersionKey()` primary keys are not supported;
     their metadata is refused instead. A field-only dry run returns its version without writing;
+  - raw incomplete versions reaching the ordinary primary-key encoder, independently of
+    ordering-function packing, with exact error context and no persisted writes;
+  - batch and pipelined saves across a pipeline-window boundary, where an encodable
+    primary-key observer sees exactly the returned and reopened local version and each
+    record claims only one version, at current and legacy formats;
   - the override-lock save on a locked store, a supplied complete version through the typed
     save, and the default behavior of pipelined and batch saves.
+  The raw-stamp and local-version observers are white-box, single-row function fixtures using
+  the existing internal arithmetic duplicate policy. They do not override core functions or
+  add a public duplicate-policy registration option; ordinary application registration still
+  uses Java's duplicate-producing default.
 - **Explicit versions, cross-engine** (`conformance/version_save_conformance_test.go`): a new
   Java step saves the same records with the same complete versions and behaviors, including
   a `NO_VERSION` refusal and a clearing re-save. It runs on metadata with and without

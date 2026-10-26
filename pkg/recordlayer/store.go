@@ -825,12 +825,8 @@ func (store *FDBRecordStore) saveTargetFor(record proto.Message, version *FDBRec
 	}, nil
 }
 
-// saveRecordInternal implements the save logic with an explicit overrideLock parameter.
-// When overrideLock is true, the FORBID_RECORD_UPDATE lock check is skipped.
-// This eliminates the goroutine-unsafe overrideLock field pattern. A non-nil
-// load is record's, from startExistingRecordLoads. A non-nil typed is a typed
-// store's serializer, which reads the existing record and writes record.
-// behavior chooses the stored version from version (recordVersionForSave).
+// saveRecordInternal reuses a preloaded target or prepares one with the requested version behavior.
+// overrideLock bypasses the update lock; typed supplies a typed store's serializer.
 func (store *FDBRecordStore) saveRecordInternal(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,

@@ -203,10 +203,8 @@ func TestAsSelectVersionIndex_Rejections(t *testing.T) {
 			WITH OPTIONS(store_row_versions=true)`,
 			api.ErrCodeAmbiguousColumn, "Ambiguous reference __ROW_VERSION",
 		},
-		// Java FunctionKeyExpression inherits versionColumns() == 0. The
-		// generator emits VERSION(order_desc_nulls_last(version())), which
-		// IndexValidator.validateVersionKey rejects during catalog validation.
-		// ExceptionUtil maps InvalidExpressionException to UNKNOWN, not INTERNAL.
+		// Functions declare zero version columns, so VERSION(order(version())) is invalid.
+		// Java's ExceptionUtil maps this metadata-validation failure to UNKNOWN.
 		{
 			"ordering_wrapper_over_version",
 			`CREATE SCHEMA TEMPLATE vg

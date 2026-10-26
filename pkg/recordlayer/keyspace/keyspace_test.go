@@ -624,6 +624,8 @@ func TestSiblingKeyTypes(t *testing.T) {
 		{"two NULL directories", NewDirectory("a", KeyTypeNull), NewDirectory("b", KeyTypeNull), "Cannot add directory due to overlapping constant value"},
 		{"equal NaN constants", NewConstantDirectory("a", KeyTypeDouble, math.NaN()), NewConstantDirectory("b", KeyTypeDouble, math.NaN()), "Cannot add directory due to overlapping constant value"},
 		{"0.0 and -0.0 constants", NewConstantDirectory("a", KeyTypeDouble, 0.0), NewConstantDirectory("b", KeyTypeDouble, math.Copysign(0, -1)), ""},
+		{"equal Float NaN constants", NewConstantDirectory("a", KeyTypeFloat, float32(math.NaN())), NewConstantDirectory("b", KeyTypeFloat, float32(math.NaN())), "Cannot add directory due to overlapping constant value"},
+		{"Float 0.0 and -0.0 constants", NewConstantDirectory("a", KeyTypeFloat, float32(0)), NewConstantDirectory("b", KeyTypeFloat, float32(math.Copysign(0, -1))), ""},
 		{"distinct constants", NewConstantDirectory("a", KeyTypeLong, int64(1)), NewConstantDirectory("b", KeyTypeLong, int64(2)), ""},
 		{"different types", NewDirectory("a", KeyTypeString), NewDirectory("b", KeyTypeLong), ""},
 	} {

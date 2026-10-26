@@ -4,12 +4,8 @@
 
 package sqltest
 
-// Java accepts a VERSION index with the version in its KeyWithValue VALUE
-// portion (IndexTest.createVersionIndexWithVersionInValue), but an automatic
-// incomplete version then fails during the value's ordinary tuple pack. Go must
-// return an error, not panic. In contrast, VERSION(order_desc(version())) is
-// rejected during metadata validation: functions declare zero version columns,
-// and IndexValidator.validateVersionKey requires exactly one. Pin both stages.
+// A version in a KeyWithValue VALUE is valid metadata but fails incomplete saves.
+// An ordered VERSION index is refused earlier; see RFC-275 for the Java boundary.
 
 import (
 	"context"

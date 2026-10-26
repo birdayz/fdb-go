@@ -62,6 +62,133 @@ var _ = Describe("SaveRecordWithVersion", func() {
 		return rec.Version
 	}
 
+	singleRowVersionPrimaryKeyMetaData := func(name string, rawVersion bool) *RecordMetaData {
+		_, registered := LookupFunction(name)
+		Expect(registered).To(BeFalse())
+		DeferCleanup(func() {
+			globalFunctionRegistryMu.Lock()
+			defer globalFunctionRegistryMu.Unlock()
+			delete(globalFunctionRegistry, name)
+		})
+		// This white-box fixture installs the known single-row arithmetic duplicate rule.
+		// It does not expose a public registration option for primary-key functions.
+		RegisterFunctionSpec(name, FunctionSpec{
+			MinArguments: 1, MaxArguments: 1, ColumnSize: 1, longArithmetic: true,
+			Evaluator: func(record *FDBStoredRecord[proto.Message], msg proto.Message, args [][]any) ([][]any, error) {
+				if record == nil || record.Version == nil || msg == nil || len(args) != 1 || len(args[0]) != 1 {
+					return nil, &KeyExpressionError{Message: "version fixture requires a versioned record and one evaluated argument"}
+				}
+				stamp, err := record.Version.ToVersionstamp()
+				if err != nil {
+					return nil, err
+				}
+				argument, ok := args[0][0].(tuple.Versionstamp)
+				if !ok || argument != stamp {
+					return nil, &KeyExpressionError{Message: "version fixture argument must match the record's chosen version"}
+				}
+				if rawVersion {
+					return args, nil
+				}
+				return [][]any{{int64(record.Version.GetLocalVersion())}}, nil
+			},
+		})
+		builder := baseBuilder().SetStoreRecordVersions(true)
+		builder.GetRecordType("Order").SetPrimaryKey(Concat(FunctionExpr(name, VersionKey()), Field("order_id")))
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(md).NotTo(BeNil())
+		return md
+	}
+	for _, api := range []string{"ordinary", "batch", "pipelined", "dry-run"} {
+		It("guards the ordinary primary-key encoder against a raw incomplete version on "+api+" saves", Serial, func() {
+			md := singleRowVersionPrimaryKeyMetaData("record_pk_raw_version_guard_fixture_"+api, true)
+			ks := specSubspace()
+			run(md, ks, 0, func(*FDBRecordStore) {})
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				if err != nil {
+					return nil, err
+				}
+				switch api {
+				case "batch":
+					return store.SaveRecordBatch([]proto.Message{order(1)})
+				case "pipelined":
+					return store.SaveRecordsPipelined([]proto.Message{order(1)}, RecordExistenceCheckNone)
+				case "dry-run":
+					return store.DryRunSaveRecord(order(1), RecordExistenceCheckNone)
+				default:
+					return store.SaveRecord(order(1))
+				}
+			})
+			var incomplete *IncompleteVersionstampError
+			Expect(errors.As(err, &incomplete)).To(BeTrue(), "%v", err)
+			wantContext := "record primary key"
+			if api == "batch" {
+				wantContext = "record 0 primary key"
+			}
+			Expect(incomplete.Context).To(Equal(wantContext))
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				for _, space := range []int64{RecordKey, IndexKey, RecordCountKey, RecordVersionKey} {
+					rows, err := rtx.Transaction().GetRange(ks.Sub(space), fdb.RangeOptions{}).GetSliceWithError()
+					if err != nil {
+						return nil, err
+					}
+					Expect(rows).To(BeEmpty(), "the failed transaction must not persist subspace %d", space)
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	}
+	for _, api := range []string{"batch", "pipelined"} {
+		for _, format := range []int32{0, 5} {
+			formatName := "current format"
+			if format != 0 {
+				formatName = "legacy format"
+			}
+			It("reuses each version observed by the primary key on "+api+" saves in "+formatName, Serial, func() {
+				md := singleRowVersionPrimaryKeyMetaData("record_pk_local_version_observer_fixture_"+api, false)
+				ks := specSubspace()
+				n := DefaultPipelineSize + 2
+				records := make([]proto.Message, n)
+				keys := make([]tuple.Tuple, n)
+				for i := range records {
+					records[i] = order(int64(i + 1))
+					keys[i] = tuple.Tuple{int64(i), int64(i + 1)}
+				}
+				run(md, ks, format, func(store *FDBRecordStore) {
+					var saved []*FDBStoredRecord[proto.Message]
+					var err error
+					if api == "batch" {
+						saved, err = store.SaveRecordBatch(records)
+					} else {
+						saved, err = store.SaveRecordsPipelined(records, RecordExistenceCheckNone)
+					}
+					Expect(err).NotTo(HaveOccurred())
+					Expect(saved).To(HaveLen(n))
+					for i, record := range saved {
+						Expect(record.PrimaryKey).To(Equal(keys[i]))
+						Expect(record.Version).NotTo(BeNil())
+						Expect(record.Version.IsComplete()).To(BeFalse())
+						Expect(record.Version.GetLocalVersion()).To(Equal(i))
+					}
+					Expect(store.context.ClaimLocalVersion()).To(Equal(n), "exactly one version must be claimed per record")
+				})
+				run(md, ks, format, func(store *FDBRecordStore) {
+					for i, key := range keys {
+						loaded, err := store.LoadRecord(key)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(loaded).NotTo(BeNil())
+						Expect(loaded.PrimaryKey).To(Equal(key))
+						Expect(loaded.Version).NotTo(BeNil())
+						Expect(loaded.Version.IsComplete()).To(BeTrue())
+						Expect(loaded.Version.GetLocalVersion()).To(Equal(i))
+					}
+				})
+			})
+		}
+	}
+
 	orderedVersionPrimaryKeyMetaData := func() *RecordMetaData {
 		builder := baseBuilder().SetStoreRecordVersions(true)
 		builder.GetRecordType("Order").SetPrimaryKey(Concat(FunctionExpr(OrderFuncAscNullsFirst, VersionKey()), Field("order_id")))
