@@ -1992,6 +1992,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
 - [ ] Online indexer: one scan-and-mark loop. `buildRangeInTransaction`, the mutual
   `buildFragmentRange` and `buildRangeByIndex` each scan with the limits and mark the built
   range; a fix to one has to be copied to the others (RFC-279 copied the transaction-limit check).
+  Retained from #1009's final ACK review F1 (Low/unverified), not resolved by that PR.
 
 - [ ] `keyspace`: resolved paths with logical names. A resolver directory's `Path` holds only the
   resolved `int64`, and `PathFromTuple` makes no reverse lookup. Java's `ResolvedKeySpacePath`
@@ -2172,8 +2173,10 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   (`QueryVisitor.java:274-305`, `LogicalOperator.java:436-455`). (2) An unknown function or a
   scalar subquery as a GROUP BY key returns a raw `*expr.UnsupportedExpressionShapeError`, not an
   `api.Error` (Java 0AF00 / 42601). (3) `category || 'a'` as a key is 42804; Java is 0AF00
-  "Unsupported operator ||". Parameter keys (`amount = ?, amount = ?`) are value-dependent; the
-  probe runner binds no parameters, so Java's answer is unmeasured (DIVERGENCES.md).
+  "Unsupported operator ||". Parameter keys (`amount = ?, amount = ?`) are value-dependent:
+  probe equal and different values against live Java using the existing prepared-statement
+  steps (`runPreparedExtended` / `runPreparedSequence`), then pin the result (DIVERGENCES.md;
+  #999 final review F6, Low/unverified).
 
 ## Java-corpus plan comparison (quality review 2026-10-24, RFC-273)
 
@@ -2232,7 +2235,8 @@ int, and RFC-024 makes hash compatibility a non-goal).
 A six-area read-only review; line numbers are from master `12e2a8fe2`. ✔ marks a finding
 re-verified by reading the code; the rest are reviewer reports to verify against current Go
 and Java (or C++ 7.3.77) before changing anything. Owner scope: work every item except the
-multi-page auto-commit SELECT, which stays tracked only.
+owner-deferred public API restructuring and multi-page auto-commit SELECT, which stays
+tracked only.
 
 ### Record layer
 
@@ -2298,7 +2302,7 @@ multi-page auto-commit SELECT, which stays tracked only.
   Add a per-decode element budget in the generator and a raw-bytes `UnmarshalFDB` fuzzer.
   Fixed in #1004 (RFC-276): a `len/4` element budget per decode, `FuzzUnmarshalFDB`, and
   decoders that fail malformed input.
-- [x] **Medium:** TLS sets `ServerName` to the dialed host (`pkg/fdbgo/transport/conn.go:1533-1535`),
+- [x] **Medium:** TLS sets `ServerName` to the dialed host (`upgradeTLS`, `pkg/fdbgo/transport/conn.go`),
   a hostname check libfdb_c does not make; `FDB_TLS_VERIFY_PEERS` and `FDB_TLS_PASSWORD`
   are never read. Fixed in #1006 (RFC-277): the `FDB_TLS_*` path verifies as libfdb_c does;
   `WithTLSConfig` keeps Go's check, and SNI is still sent (DIVERGENCES.md).
@@ -2455,8 +2459,9 @@ multi-page auto-commit SELECT, which stays tracked only.
   review rounds (`git grep -n -E 'round [0-9]+\)' -- '*.go'`: 3 of its 5 hits, e.g.
   `pkg/fdbgo/client/readpath.go:1452`, `cascades/values/values.go:2112`; also "PR #446 round 3"
   at `values.go:2051`) and "(codex)" tags in `.github/workflows/ci.yml` and `infra/main.tf:129`. Partly done in #996 and #998; left: the round-18 notes in `pkg/fdbgo/client/transaction_unit_test.go:806-817`, a shift tag at `cascades/benchmark_test.go:302`, "follow-up shift" at `query/plan/plans/insert.go:34-35` and "Codex-caught" at `pkg/relational/conformance/yamsql/testdata/uuid_column.yaml:36`.
-  Done in docs/review-leftovers: every shift tag in non-test Go (several also stated stale facts),
-  every "codex" tag and the listed round notes. Kept: about 30 test files and functions named
+  The listed shift/round tags and scoped "codex" annotations were removed in #1012. Residual
+  documentation tags and `review-caught`/historical comments remain tracked below; this was not
+  a repository-wide cleanup. Kept: about 30 test files and functions named
   for "RFC-141 R4 round-N" and similar review rounds (`git grep -n -E 'round-[0-9]+' --
   '*_test.go'`); renaming them is churn with no behavior change.
 - [ ] **Deferred:** the public API surface: about 16K exported declarations outside
@@ -2485,7 +2490,9 @@ multi-page auto-commit SELECT, which stays tracked only.
 - [x] **Low:** STATUS.md's timeout paragraph: the facade's pipelined Get makes one more timed-out
   send than the others. Fixed in #1011 (RFC-280), pinned by
   `TestPipelinedGetReplyTimeoutSends`; the `readpath.go` timeout comment and both `Database`
-  superset rows were fixed in #1012 (#996's final review).
+  superset rows were fixed in #1012 (#996's final review). #1011 also corrected the separate
+  estimate-path comparison: no reply timeout and retries until transaction timeout
+  (#996 F6, Nit/unverified).
 - [x] **Low:** the header of `pkg/relational/sqldriver/sql_integration_test.go` still describes a
   blank import (#996's final review). Fixed in #1013.
 - [x] **Low:** enum-assignment and `range()` bound errors render their message twice since #1002;
@@ -2531,3 +2538,82 @@ multi-page auto-commit SELECT, which stays tracked only.
   one below its Java count (partition select, binary select, NLJ, ordering push, simple select,
   delete, update) and that the statement plans at the count. Fixed in #1016.
 - [x] **Nit (#1002):** the comments the review listed are two lines or fewer. Fixed in #1016.
+
+### Unverified residuals from final ACK reviews
+
+These are follow-up suggestions, not confirmed bugs. Each retained finding was individually
+`unverified` in its final report; the Low/Nit ratings below are those reports' ratings. Check
+current code and the Java/C++ reference before changing behavior. Duplicate findings share
+one item; superseded findings and already-tracked compatibility boundaries are not reopened.
+
+- [ ] **Low, unverified (#996 F2/F5):** reconcile `rpc.go`'s account of libfdb_c slow-read
+  retries with the C++ hedging behavior; correct the incomplete catalog `Scope:` list in
+  `core/catalog/fdb_store_catalog.go` and the "Exercises every seam" claim in
+  `core/query/expr/fullstack_test.go` (both under `pkg/relational`).
+  [Final review](https://github.com/birdayz/fdb-go/pull/996#issuecomment-6384004563).
+- [ ] **Low, unverified (#997 F1/F3/F4):** pin connection identity at the eager-commit and
+  pipelined-Get send-failure report sites (`TestLateSendFailureEveryArm` skips eager arms).
+  Resolve test-only `locationCache.insertRanges` and its production-path attribution:
+  production uses `cacheReply`. Exercise a mixed locations reply with a server-less shard
+  through `queryLocations → cacheReply`, asserting its stale range is cleared and a later
+  lookup re-asks. [Final review](https://github.com/birdayz/fdb-go/pull/997#issuecomment-6384066384).
+- [ ] **Low, unverified (#998 F1–F5):** make dockerskip's "a different error checked" fixture
+  reach the error-identity check rather than fail adjacency first at `_ = err`. Investigate
+  successful Docker discovery followed by Info failure/default-host substitution being
+  classified as DockerUnavailable; avoid dialing `onlyNoDaemon` twice in
+  `classifyDockerProbe`. Remove the ordinary-run child-dispatch skip in
+  `TestRunWithoutDockerChild`; shorten the remaining `SkipWithoutDocker` and `triggerSpec`
+  comments. This is not the historical discovery-panic finding, which was fixed.
+  [Final review](https://github.com/birdayz/fdb-go/pull/998#issuecomment-6384101421).
+- [ ] **Nit, unverified (#998 F6):** qualify javacorpus's "container failure must be fatal"
+  comment with the permitted local no-Docker exception (same final review).
+- [ ] **Low, unverified (#999 F2/F3/F5/F7):** consolidate duplicated RFC-272 release notes;
+  include auto-commit DML in `detachCtx`/`bindContext` comments. Strengthen or qualify
+  `TestExplicitTx_StatementContextInterruptsCatalogRead`: the outer binding can abort it
+  even if `cachedLoadSchema` uses Background. Correct RFC-272's Connector.Connect recovery
+  claim: initialization recovers, not the remaining New/setter path.
+  [Final review thread](https://github.com/birdayz/fdb-go/pull/999#discussion_r4367458130).
+- [ ] **Nit, unverified (#999 F8/F9):** shorten the listed driver/parser/simgate comments
+  and replace local `apiCode`/row-count helpers with testkit helpers (same final review).
+- [ ] **Low, unverified (#1004 F1):** shorten the newly added explanatory decode-failure
+  comments. [Final review](https://github.com/birdayz/fdb-go/pull/1004#issuecomment-6388313035).
+- [ ] **Nit, unverified (#1004 F2/F3):** consolidate the four vtable-slot corruption helpers;
+  separate unrelated decode-error declarations and Reader fault tests from decode-budget
+  files (same final review).
+- [ ] **Low, unverified (#1006 F2/F3/F6):** assert invalid `FDB_TLS_*` configuration preserves
+  `TLSConfigError` and FDB code 2107 through open; assess typed nested wrong-password and
+  malformed-key causes without starting owner-deferred API restructuring. Consolidate the
+  duplicated CA/leaf and TLS-server test builders. The TLS differential and shared-PBES2
+  work already have open entries.
+  [Final review](https://github.com/birdayz/fdb-go/pull/1006#issuecomment-6389082902).
+- [ ] **Nit, unverified (#1006 F8):** shorten the specified TLS comments. F7's shifted
+  `conn.go` citation now uses `upgradeTLS` rather than a line number (same final review).
+- [ ] **Low, unverified (#1008 F6/F7, duplicate):** eliminate or guard hand-maintained
+  duplication of `stress_test` and `stress_10m_test` sources/dependencies in
+  `pkg/relational/sqldriver/stress/BUILD.bazel`; Gazelle manages only one.
+  [Final review](https://github.com/birdayz/fdb-go/pull/1008#issuecomment-6389999018).
+- [ ] **Low, unverified (#1012 F1/F3–F6):** finish residual `review-caught`/historical comment
+  cleanup and documentation `codex` tags (`OPTIONS.md` and the vector-benchmark docs).
+  Give the duplicated Database-superset list one authoritative location; check AliasMap's
+  "dependency-aware matching not ported" description against `quantifier_match.go`.
+  F12 duplicates the AliasMap finding; the scoped completion text above no longer claims
+  every documentation tag was removed.
+  [Final review](https://github.com/birdayz/fdb-go/pull/1012#issuecomment-6394433956).
+- [ ] **Nit, unverified (#1012 F9–F11, overlapping):** remove stray closing parentheses
+  from the range-timeout comments and their legacy transcript copy (same final review).
+- [ ] **Low, unverified (#1013 F1–F3):** investigate Cancel-panic recovery whose cancellation
+  retry waits behind the held in-flight read. Assert DDL render-once behavior on the error
+  the caller sees, not only the inner `api.Error`. Pin inherited option preservation for
+  all four borrow paths: sqlpage, rowdiff, pinWith and testkit.
+  [Final review](https://github.com/birdayz/fdb-go/pull/1013#issuecomment-6394564263).
+- [ ] **Low, unverified (#1014 F1/F2):** consolidate `pollCoordinatorInWindow`'s duplicate
+  recorder-polling loop; assess excluding every valid `OpenDatabaseCoordRequest` from the
+  recorder rather than only non-zero-known-ID long polls.
+  [Final review](https://github.com/birdayz/fdb-go/pull/1014#issuecomment-6394626965).
+- [ ] **Low, unverified (#1015 F1–F5):** isolate fixture Git commands from global config;
+  assert shutdown still executes under the lock after script death; correct README
+  shutdown/elapsed ordering; preserve/report flock failure distinctly; test missing
+  `lane.rc`/`shutdown.rc` fallbacks. This is not the superseded missing-failing-lane-test
+  finding. [Final review](https://github.com/birdayz/fdb-go/pull/1015#issuecomment-6398608811).
+- [ ] **Nit, unverified (#1015 F6–F8):** shorten the specified lane comments and simplify
+  the chained command-building wrappers (same final review).
