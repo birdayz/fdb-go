@@ -53,6 +53,9 @@ func (db *database) endOther(o rpcAccount) {
 // altFailureDelay is C++'s allAlternativesFailedDelay, jittered like delayJittered
 // (flow.h:1481-1484).
 func (db *database) altFailureDelay() time.Duration {
+	if db.altFailureDelayOverride > 0 {
+		return db.altFailureDelayOverride
+	}
 	d := db.failMon.allAlternativesFailedDelay(nowSeconds())
 	return time.Duration(float64(d) * (0.9 + 0.2*rand.Float64()))
 }
@@ -82,7 +85,7 @@ func (db *database) awaitAlternative(ctx context.Context, closed <-chan struct{}
 		case <-recovered:
 			// Any address's recovery signals; only these replicas end the wait.
 			recovered = db.failMon.waitForRecovery()
-			if !db.allExcluded(servers) {
+			if db.hasLiveAlternative(servers) {
 				return nil
 			}
 		case <-probe.C:
@@ -90,7 +93,7 @@ func (db *database) awaitAlternative(ctx context.Context, closed <-chan struct{}
 			go db.probeReadmitted(probeCtx, servers, probing)
 		case <-probing:
 			probing = nil
-			if !db.allExcluded(servers) {
+			if db.hasLiveAlternative(servers) {
 				return nil
 			}
 			probe.Reset(db.untilReadmission(servers))
@@ -145,29 +148,41 @@ func (db *database) notExcluded(servers []ServerInfo) []ServerInfo {
 	return live
 }
 
-// allExcluded reports whether the failure monitor excludes every replica's address,
-// loadBalance's "everything is down" (LoadBalance.actor.h:617-618).
-func (db *database) allExcluded(servers []ServerInfo) bool {
-	if db.failMon == nil || len(servers) == 0 {
-		return false
-	}
-	now := nowSeconds()
+// Exclusion expiry only permits a probe; recovery requires an actual live state,
+// as onStateEqual(FailureStatus(false)) does (LoadBalance.actor.h:620-626).
+func (db *database) hasLiveAlternative(servers []ServerInfo) bool {
+	live := false
 	for _, s := range servers {
-		if !db.failMon.excluded(s.Address, now) {
-			return false
+		if db.failMon == nil || !db.failMon.isFailed(s.Address) {
+			live = true
+			break
 		}
 	}
-	return true
+	if hook := db.afterAltRecoveryCheck.Load(); hook != nil {
+		(*hook)(live)
+	}
+	return live
 }
 
 // allAlternativesFailed waits C++'s allAlternativesFailedDelay, jittered like
 // delayJittered (flow.h:1481-1484), before reporting all_alternatives_failed,
 // so a dead-endpoint storm cannot spin location lookups.
 func (db *database) allAlternativesFailed(ctx context.Context) error {
-	if err := sleepCtx(ctx, db.altFailureDelay()); err != nil {
-		return err
+	var closed <-chan struct{}
+	if db.ctx != nil {
+		closed = db.ctx.Done()
 	}
-	return &wire.FDBError{Code: ErrAllAlternativesFailed}
+	timer := time.NewTimer(db.altFailureDelay())
+	defer timer.Stop()
+	notifyParked(ctx)
+	select {
+	case <-timer.C:
+		return &wire.FDBError{Code: ErrAllAlternativesFailed}
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-closed:
+		return db.ctx.Err()
+	}
 }
 
 // isEndpointNotFound reports a reply failed by ENDPOINT_NOT_FOUND. The connection

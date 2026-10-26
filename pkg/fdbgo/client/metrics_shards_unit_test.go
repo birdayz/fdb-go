@@ -3,12 +3,14 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"reflect"
 	"testing"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
@@ -131,6 +133,185 @@ func TestMetricsShardRetryKeepsSibling(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Relocation can split one worker while an original sibling remains in flight.
+// Replacement locations may extend beyond the worker, but its requests must not.
+func TestMetricsShardRelocationSplitsWorker(t *testing.T) {
+	t.Parallel()
+	ctx, stop := context.WithTimeout(context.Background(), 20*time.Second)
+	defer stop()
+	peer, replacementPeer := newIdentityPeer(t), newIdentityPeer(t)
+	db, tx := armDatabase(ctx, peer, replacementPeer)
+	defer closeIdentityDatabase(db)
+	servers := []ServerInfo{{Address: armAddr, Token: armToken}}
+	db.locCache.entries = []locationEntry{
+		{tenantId: NoTenantID, begin: []byte("a"), end: []byte("m"), servers: servers},
+		{tenantId: NoTenantID, begin: []byte("m"), end: []byte("z"), servers: servers},
+	}
+	var total int64
+	var err error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		total, err = tx.GetEstimatedRangeSizeBytes(ctx, []byte("d"), []byte("z"))
+	}()
+	defer func() { stop(); <-done }()
+
+	initial := make(map[string]transport.UID)
+	dispatchCtx, cancelDispatch := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelDispatch()
+	for range 2 {
+		frame, ok := peer.recv(dispatchCtx)
+		if !ok {
+			t.Fatal("not all original shards were dispatched")
+		}
+		var req types.WaitMetricsRequest
+		if err := req.UnmarshalFDB(frame.body); err != nil {
+			t.Fatal(err)
+		}
+		wantEnd := map[string]string{"d": "m", "m": "z"}[string(req.Keys.Begin)]
+		if frame.token != getAdjustedEndpoint(armToken, EndpointWaitMetrics) || wantEnd == "" || string(req.Keys.End) != wantEnd || req.TenantInfo.TenantId != NoTenantID || req.MinVersion != LatestVersion {
+			t.Fatalf("unexpected original metrics request: %+v", req)
+		}
+		if _, duplicate := initial[string(req.Keys.Begin)]; duplicate {
+			t.Fatalf("duplicate original shard %q", req.Keys.Begin)
+		}
+		initial[string(req.Keys.Begin)] = replyToken(req.Reply.Token)
+	}
+	if err := transport.WriteFrame(peer.server, initial["d"], (&types.ErrorOrError{ErrorCode: uint16(ErrWrongShardServer)}).MarshalFDB(), false); err != nil {
+		t.Fatal(err)
+	}
+	frame, ok := peer.recv(dispatchCtx)
+	if !ok {
+		t.Fatal("failed worker did not request relocation")
+	}
+	var relocation types.GetKeyServerLocationsRequest
+	if err := relocation.UnmarshalFDB(frame.body); err != nil {
+		t.Fatal(err)
+	}
+	if frame.token != getAdjustedEndpoint(armToken, EndpointGetKeyServerLocations) || string(relocation.Begin) != "d" || !relocation.HasEnd || string(relocation.End) != "m" || relocation.Tenant.TenantId != NoTenantID {
+		t.Fatalf("relocation widened the failed worker: %+v", relocation)
+	}
+	conn := pooledConn(db, armAddr)
+	if conn == nil || !conn.HasPendingReply(initial["m"]) {
+		t.Fatal("relocation cancelled the original sibling")
+	}
+	db.locCache.mu.RLock()
+	sibling, cached := db.locCache.lookupLocked(NoTenantID, []byte("y"), false)
+	db.locCache.mu.RUnlock()
+	if !cached || !reflect.DeepEqual(sibling.Servers, servers) {
+		t.Fatal("relocation invalidated the original sibling's location")
+	}
+
+	// Both replacement outer bounds exceed [d,m); only [d,h) and [h,m)
+	// belong to this worker. The original sibling still owns its [m,z) reply.
+	replacement := metricsReplacementLocationsReply(t, [2]string{"a", "h"}, [2]string{"h", "n"})
+	entries, parseErr := parseGetKeyServerLocationsReply(replacement)
+	if parseErr != nil || len(entries) != 2 || len(entries[0].servers) != 1 || len(entries[1].servers) != 1 {
+		t.Fatalf("replacement fixture = %+v, %v", entries, parseErr)
+	}
+	if err := transport.WriteFrame(peer.server, replyToken(relocation.Reply.Token), replacement, false); err != nil {
+		t.Fatal(err)
+	}
+	children := make(map[string]transport.UID)
+	childCtx, cancelChildren := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelChildren()
+	for range 2 {
+		frame, ok := replacementPeer.recv(childCtx)
+		if !ok {
+			t.Fatal("relocation did not dispatch both replacement children")
+		}
+		var req types.WaitMetricsRequest
+		if err := req.UnmarshalFDB(frame.body); err != nil {
+			t.Fatal(err)
+		}
+		wantEnd := map[string]string{"d": "h", "h": "m"}[string(req.Keys.Begin)]
+		if frame.token != getAdjustedEndpoint(entries[0].servers[0].Token, EndpointWaitMetrics) || wantEnd == "" || string(req.Keys.End) != wantEnd || req.TenantInfo.TenantId != NoTenantID || req.MinVersion != LatestVersion {
+			t.Fatalf("replacement child escaped the failed worker: %+v", req)
+		}
+		if _, duplicate := children[string(req.Keys.Begin)]; duplicate {
+			t.Fatalf("duplicate replacement child %q", req.Keys.Begin)
+		}
+		children[string(req.Keys.Begin)] = replyToken(req.Reply.Token)
+	}
+	if !conn.HasPendingReply(initial["m"]) {
+		t.Fatal("replacement fanout cancelled the original sibling")
+	}
+	db.locCache.mu.RLock()
+	sibling, cached = db.locCache.lookupLocked(NoTenantID, []byte("y"), false)
+	db.locCache.mu.RUnlock()
+	if !cached || !reflect.DeepEqual(sibling.Servers, servers) {
+		t.Fatal("replacement locations discarded the original sibling's unaffected cache")
+	}
+	metricsReply := func(n uint64) []byte {
+		body := replyVector(t, "StorageMetrics_basic")
+		var r wire.Reader
+		if err := wire.ReadErrorOrInto(body, &r); err != nil {
+			t.Fatal(err)
+		}
+		if !r.FieldPresent(types.StorageMetricsSlotBytes) {
+			t.Fatal("metrics fixture has no bytes field")
+		}
+		binary.LittleEndian.PutUint64(body[r.ObjectPos()+r.FieldOffset(types.StorageMetricsSlotBytes):], n)
+		return body
+	}
+	// Complete the children out of order, then release the original sibling.
+	if err := transport.WriteFrame(replacementPeer.server, children["h"], metricsReply(17), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := transport.WriteFrame(replacementPeer.server, children["d"], metricsReply(11), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := transport.WriteFrame(peer.server, initial["m"], metricsReply(29), false); err != nil {
+		t.Fatal(err)
+	}
+	completionCtx, cancelCompletion := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelCompletion()
+	select {
+	case <-done:
+	case <-completionCtx.Done():
+		t.Fatal("split worker did not aggregate its children and original sibling")
+	}
+	if err != nil || total != 57 {
+		t.Fatalf("size = %d, %v; want 57 (11 + 17 + 29)", total, err)
+	}
+	if ctx.Err() != nil || conn.IsClosed() {
+		t.Fatal("successful replacement fanout ended its caller or original connection")
+	}
+}
+
+// Reuse the ground-truth server object while supplying replacement range pairs.
+func metricsReplacementLocationsReply(t *testing.T, ranges ...[2]string) []byte {
+	t.Helper()
+	vector := locationsReplyVector(t)
+	_, server := firstLocation(t, vector)
+	b := make([]byte, 8)
+	binary.LittleEndian.PutUint32(b[4:], types.GetKeyServerLocationsReplyFileID)
+	b, root := appendObject(b, 0, 9, 8, 4)
+	b[root+8] = 2 // ErrorOr value arm
+	b, reply := appendObject(b, root+4, int(types.GetKeyServerLocationsReplyVTable[1]), types.GetKeyServerLocationsReplyVTable[2:]...)
+	results := len(b)
+	binary.LittleEndian.PutUint32(b[reply+int(types.GetKeyServerLocationsReplyVTable[2]):], uint32(results-reply-int(types.GetKeyServerLocationsReplyVTable[2])))
+	b = binary.LittleEndian.AppendUint32(b, uint32(len(ranges)))
+	slots := len(b)
+	b = append(b, make([]byte, 4*len(ranges))...)
+	for i, bounds := range ranges {
+		var pair, keyRange int
+		b, pair = appendObject(b, slots+4*i, int(types.LocationPairVTable[1]), types.LocationPairVTable[2:]...)
+		b, keyRange = appendObject(b, pair+int(types.LocationPairVTable[2]), int(types.KeyRangeRefVTable[1]), types.KeyRangeRefVTable[2:]...)
+		b = appendString(b, keyRange+int(types.KeyRangeRefVTable[2]), bounds[0])
+		b = appendString(b, keyRange+int(types.KeyRangeRefVTable[3]), bounds[1])
+		servers := len(b)
+		binary.LittleEndian.PutUint32(b[pair+int(types.LocationPairVTable[3]):], uint32(servers-pair-int(types.LocationPairVTable[3])))
+		b = binary.LittleEndian.AppendUint32(b, 1)
+		b = binary.LittleEndian.AppendUint32(b, uint32(4+server.ObjectPos()))
+		b = append(b, vector...)
+		for len(b)%4 != 0 {
+			b = append(b, 0)
+		}
+	}
+	return b
 }
 
 func testMetricsShards(t *testing.T, terminalError bool) {

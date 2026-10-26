@@ -55,13 +55,15 @@ Change:
   excluded, the request sends nothing and waits `allAlternativesFailedDelay` (50 ms,
   growing while failures continue), then reports 1006, unless one of its own replicas
   recovers first, which ends the wait as `okFuture` does (another address recovering
-  does not); the attempt count restarts and the backoff is kept (`:641`). While it
+  does not); expiry only permits a probe, while recovery requires the address to
+  leave the failed set. The attempt count restarts and the backoff is kept (`:641`). While it
   waits, a replica whose exclusion window ends is dialed, as `connectionKeeper`
   re-probes a failed peer (`FlowTransport.actor.cpp:784-797`); a dial that connects
   marks it alive. The wait cancels its probe waiter on recovery or expiry, without
   cancelling the database-owned shared dial; reconnecting never delays the selected
   recovery or error (`LoadBalance.actor.cpp:48-54`). A location with no servers reports 1006 after the
-  all-alternatives-failed delay, so the caller re-locates.
+  all-alternatives-failed delay, so the caller re-locates. This delay also ends when
+  the database closes, independently of the request context.
 - An in-band `broken_promise` or `request_maybe_delivered` reply is not a response, as
   in `checkAndProcessResult` (`:344-377`): the request marks a `broken_promise`
   endpoint not found and goes on to the next replica in the same round.
@@ -151,8 +153,10 @@ and names the bound that matches libfdb_c, the transaction timeout or `Cancel`.
   - `TestMetricsRequestWithoutServers`: an empty replica list reports 1006.
   - `TestMetricsRequestAllFailedDelay`: empty and endpoint-exhausted lists enter the
     all-failed delay on both senders, remain waiting, and honor request cancellation.
-  - `TestMetricsRequestDatabaseCloseInterruptsWait`: closing only the database lifetime
-    interrupts an armed backoff or all-excluded wait while the request context stays live.
+  - `TestMetricsRequestDatabaseCloseInterruptsWait` and
+    `TestMetricsRequestDatabaseCloseInterruptsAllFailedDelay`: closing only the database
+    lifetime interrupts backoff, all-excluded, empty-list and exhausted-endpoint waits
+    while the request context stays live.
   - `TestMetricsShardsFailFast`: both public metrics operations dispatch two shards
     before either replies; a terminal error on the second ends the call with the first
     reply withheld, cancels its registration and leaves the connection open.
@@ -161,6 +165,13 @@ and names the bound that matches libfdb_c, the transaction timeout or `Cancel`.
   - `TestMetricsShardRetryKeepsSibling`: wrong-shard, all-alternatives-failed and
     future-version retries retain the sibling's original waiter and cached location;
     its terminal error cancels the first shard's withheld relocation or retry reply.
+  - `TestMetricsShardRelocationSplitsWorker`: relocation splits a failed worker into
+    two child shards, clamps replacement outer bounds to the worker's range, retains
+    the original sibling, and sums literal child/sibling replies to 57 bytes.
+  - `TestMetricsRecoveryIgnoresUnrelatedAfterExclusionExpires`: an expired exclusion
+    and stalled probe do not make an unrelated recovery count as the request's own;
+    an observed actual-live transition ends the wait without cancelling the shared dial.
+    Recovery tests use a controlled 30 s delay, not production timers or storm-clock seeds.
   - `TestMetricsRequestWaitsForSlowReply`: a reply that comes after more than the old
     5 s timeout is used, with one request sent.
 - `client`, test-full (`client_test`, FDB in a container, replies rewritten by the

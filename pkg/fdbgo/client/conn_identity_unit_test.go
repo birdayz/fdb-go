@@ -978,11 +978,7 @@ func TestMetricsRequestWakesOnRecovery(t *testing.T) {
 				}
 				return dial(ctx, network, addr)
 			}
-			// A long storm: allAlternativesFailedDelay is its 30 s slow maximum.
-			now := nowSeconds()
-			db.failMon.mu.Lock()
-			db.failMon.oldestAltFailure, db.failMon.newestAltFailure, db.failMon.lastAltSkip = now-1000, now, now
-			db.failMon.mu.Unlock()
+			db.altFailureDelayOverride = 30 * time.Second
 			parked := make(chan struct{})
 			var parks atomic.Int32
 			hook := func() {
@@ -1017,6 +1013,126 @@ func TestMetricsRequestWakesOnRecovery(t *testing.T) {
 	}
 }
 
+// Expiry permits a probe, not recovery: another address becoming live cannot
+// end the original failure-delay wait while this replica's probe is still stuck.
+func TestMetricsRecoveryIgnoresUnrelatedAfterExclusionExpires(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	dbCtx, closeDB := context.WithCancel(ctx)
+	defer closeDB()
+	db, _ := identityDatabase(dbCtx)
+	db.altFailureDelayOverride = 30 * time.Second
+	db.failMon.markFailed(armAddr)
+	entered := make(chan struct{})
+	db.dialFn = func(ctx context.Context, _, addr string) (net.Conn, error) {
+		if addr != armAddr {
+			return nil, fmt.Errorf("unexpected probe address %q", addr)
+		}
+		close(entered)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	beforeWait := func() {
+		db.failMon.mu.Lock()
+		db.failMon.failed[armAddr].excludedUntil = nowSeconds() - 1
+		db.failMon.mu.Unlock()
+	}
+	db.beforeAltFailureWait.Store(&beforeWait)
+	opCtx, stop := context.WithCancel(ctx)
+	checks := make(chan bool, 2)
+	release := make(chan struct{})
+	afterCheck := func(live bool) {
+		select {
+		case checks <- live:
+		case <-opCtx.Done():
+			return
+		}
+		if !live {
+			select {
+			case <-release:
+			case <-opCtx.Done():
+			}
+		}
+	}
+	db.afterAltRecoveryCheck.Store(&afterCheck)
+	servers := []ServerInfo{{Address: armAddr, Token: armToken}}
+	recovered := db.failMon.waitForRecovery()
+	var err error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		err = db.awaitAlternative(opCtx, dbCtx.Done(), servers, recovered, db.altFailureDelay())
+	}()
+	var call *dialCall
+	defer func() {
+		stop()
+		closeDB()
+		<-done
+		if call != nil {
+			<-call.done
+		}
+		closeIdentityDatabase(db)
+	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("the expired replica's probe did not start")
+	}
+	if !db.failMon.isFailed(armAddr) || db.failMon.excluded(armAddr, nowSeconds()) {
+		t.Fatal("the replica must remain failed after its exclusion deadline expires")
+	}
+	db.connMu.Lock()
+	call = db.dialing[armAddr]
+	db.connMu.Unlock()
+	if call == nil {
+		t.Fatal("the stalled probe has no shared dial")
+	}
+	db.failMon.markFailed("other:4500")
+	db.failMon.markAlive("other:4500")
+	select {
+	case live := <-checks:
+		if live {
+			t.Fatal("unrelated recovery treated the expired replica as live")
+		}
+	case <-done:
+		t.Fatalf("unrelated recovery ended the failure-delay wait: %v", err)
+	case <-ctx.Done():
+		t.Fatal("the failure-delay wait did not consume unrelated recovery")
+	}
+	select {
+	case <-done:
+		t.Fatalf("the original failure-delay wait ended before its replica recovered: %v", err)
+	default:
+	}
+	if !db.failMon.isFailed(armAddr) {
+		t.Fatal("unrelated recovery cleared this replica's failed state")
+	}
+	db.failMon.markAlive(armAddr)
+	close(release)
+	select {
+	case live := <-checks:
+		if !live {
+			t.Fatal("the wait did not recognize its own replica's recovery")
+		}
+	case <-ctx.Done():
+		t.Fatal("the wait did not consume its own replica's recovery")
+	}
+	select {
+	case <-done:
+		if err != nil {
+			t.Fatalf("own-replica recovery = %v, want nil", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("own-replica recovery did not end the wait with a stalled probe")
+	}
+	select {
+	case <-call.done:
+		t.Fatal("ending the wait cancelled the database-owned shared dial")
+	default:
+	}
+}
+
 // A recovered replica is usable while another replica's shared probe dial is stalled;
 // ending the recovery wait must abandon only the probe's waiter, not the shared dial.
 func TestMetricsRecoveryDoesNotWaitForOtherProbe(t *testing.T) {
@@ -1025,6 +1141,7 @@ func TestMetricsRecoveryDoesNotWaitForOtherProbe(t *testing.T) {
 	defer cancel()
 	peer := newIdentityPeer(t)
 	db, tx := armDatabase(ctx, peer)
+	db.altFailureDelayOverride = 30 * time.Second
 	const blocked = "blocked:4500"
 	db.failMon.markFailed(blocked)
 	db.failMon.markFailed(armAddr)
@@ -1300,10 +1417,7 @@ func TestMetricsRequestProbesExcludedReplica(t *testing.T) {
 				}
 				return dial(ctx, network, addr)
 			}
-			now := nowSeconds()
-			db.failMon.mu.Lock()
-			db.failMon.oldestAltFailure, db.failMon.newestAltFailure, db.failMon.lastAltSkip = now-1000, now, now
-			db.failMon.mu.Unlock()
+			db.altFailureDelayOverride = 30 * time.Second
 			var parks atomic.Int32
 			hook := func() { parks.Add(1) }
 			db.beforeAltFailureWait.Store(&hook)
@@ -1395,13 +1509,6 @@ func (ctx *metricsWaitContext) Err() error {
 	return ctx.Context.Err()
 }
 
-func metricsFailureStorm(db *database) {
-	now := nowSeconds()
-	db.failMon.mu.Lock()
-	db.failMon.oldestAltFailure, db.failMon.newestAltFailure, db.failMon.lastAltSkip = now-1000, now, now
-	db.failMon.mu.Unlock()
-}
-
 // Both dead-end location shapes wait before callers can re-locate; bypassing the
 // delay must fail even if the sender still returns all_alternatives_failed.
 func TestMetricsRequestAllFailedDelay(t *testing.T) {
@@ -1415,7 +1522,7 @@ func TestMetricsRequestAllFailedDelay(t *testing.T) {
 				peer := newIdentityPeer(t)
 				db, tx := armDatabase(ctx, peer)
 				defer closeIdentityDatabase(db)
-				metricsFailureStorm(db) // the jittered delay is at least 27 s
+				db.altFailureDelayOverride = 30 * time.Second
 				var servers []ServerInfo
 				if !empty {
 					servers = []ServerInfo{{Address: armAddr, Token: armToken}, {Address: armAddr, Token: transport.UID{First: 0x99, Second: 0xaa}}}
@@ -1460,6 +1567,64 @@ func TestMetricsRequestAllFailedDelay(t *testing.T) {
 	}
 }
 
+// Database close also interrupts the dead-end delay for empty locations and
+// exhausted endpoint lists, without relying on request cancellation or sockets.
+func TestMetricsRequestDatabaseCloseInterruptsAllFailedDelay(t *testing.T) {
+	t.Parallel()
+	for _, arm := range metricsArms() {
+		for _, empty := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/empty=%t", arm.name, empty), func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
+				dbCtx, closeDB := context.WithCancel(ctx)
+				defer closeDB()
+				peer := newIdentityPeer(t)
+				db, tx := armDatabase(dbCtx, peer)
+				defer closeIdentityDatabase(db)
+				db.altFailureDelayOverride = 30 * time.Second
+				var servers []ServerInfo
+				if !empty {
+					servers = []ServerInfo{{Address: armAddr, Token: armToken}, {Address: armAddr, Token: transport.UID{First: 0x99, Second: 0xaa}}}
+					for _, server := range servers {
+						db.failMon.markEndpointNotFound(server.Address, getAdjustedEndpoint(server.Token, arm.endpoint))
+					}
+				}
+				opCtx, stop := context.WithCancel(ctx)
+				waitCtx := &metricsWaitContext{Context: opCtx, waiting: make(chan struct{})}
+				waitCtx.observe.Store(true)
+				var err error
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					err = arm.send(waitCtx, tx, servers)
+				}()
+				defer func() { stop(); <-done }()
+				select {
+				case <-waitCtx.waiting:
+				case <-done:
+					t.Fatalf("request returned before entering the all-failed delay: %v", err)
+				case <-ctx.Done():
+					t.Fatal("request did not enter the all-failed delay")
+				}
+				closeDB()
+				select {
+				case <-done:
+					if !errors.Is(err, context.Canceled) {
+						t.Fatalf("database-close result = %v, want context.Canceled", err)
+					}
+				case <-time.After(500 * time.Millisecond):
+					t.Fatal("all-failed delay did not return promptly after database close")
+				}
+				if err := opCtx.Err(); err != nil {
+					t.Fatalf("database close also cancelled the independent request: %v", err)
+				}
+				noFrame(t, peer, 0, "with no usable endpoint")
+			})
+		}
+	}
+}
+
 // Closing the database interrupts both loadBalance waits independently of the
 // request's lifetime, including an already-armed backoff timer.
 func TestMetricsRequestDatabaseCloseInterruptsWait(t *testing.T) {
@@ -1479,7 +1644,7 @@ func TestMetricsRequestDatabaseCloseInterruptsWait(t *testing.T) {
 				opCtx, stop := context.WithCancel(ctx)
 				waitCtx := &metricsWaitContext{Context: opCtx, waiting: make(chan struct{})}
 				if !backoff {
-					metricsFailureStorm(db)
+					db.altFailureDelayOverride = 30 * time.Second
 					db.failMon.markFailed(armAddr)
 					db.failMon.mu.Lock()
 					db.failMon.failed[armAddr].excludedUntil = nowSeconds() + 600
