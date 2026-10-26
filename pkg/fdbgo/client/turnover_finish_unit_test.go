@@ -1,10 +1,34 @@
 package client
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
+	"net"
 	"testing"
 	"time"
+
+	"fdb.dev/pkg/fdbgo/transport"
+	"fdb.dev/pkg/fdbgo/wire/types"
 )
+
+func testCommitSuccessReply(version int64, batchID uint16) []byte {
+	payload := (&types.CommitID{Version: version, TxnBatchId: batchID}).MarshalFDB()
+	fakeRoot := int(binary.LittleEndian.Uint32(payload[:4]))
+	replyObject := fakeRoot + 4 + int(binary.LittleEndian.Uint32(payload[fakeRoot+4:]))
+	const prefix = 32
+	body := make([]byte, prefix+len(payload))
+	copy(body[prefix:], payload)
+	binary.LittleEndian.PutUint32(body[:4], 16)
+	copy(body[4:8], payload[4:8])
+	for i, field := range [...]uint16{8, 9, 8, 4} {
+		binary.LittleEndian.PutUint16(body[8+2*i:], field)
+	}
+	binary.LittleEndian.PutUint32(body[16:], 8)
+	binary.LittleEndian.PutUint32(body[20:], uint32(prefix+replyObject-20))
+	body[24] = 2 // ErrorOr success tag
+	return body
+}
 
 // Hand an admitted token to the private Commit continuation so asynchronous
 // AfterFunc goroutine-cache growth cannot enter the count. Include producer
@@ -92,6 +116,94 @@ func TestTransactFinalCommitTurnoverAndEscapedHandleSafety(t *testing.T) {
 	rCtx, rRelease := escapedReadTx.opContext(context.Background())
 	defer rRelease()
 	requireLazySuccessorCode(t, escapedReadTx.readEntryError(rCtx), 1031)
+
+	// 4. Write-commit Database.Transact also completes lazy turnover, regenerates
+	// a fresh span, returns the committed versionstamp, and lazily arms the timeout.
+	cliConn, srvConn := net.Pipe()
+	defer cliConn.Close()
+	defer srvConn.Close()
+	const proxyAddr = "127.0.0.1:4588"
+	proxyTok := transport.UID{First: 0x4588, Second: 2}
+	go func() {
+		if _, err := transport.ReadConnectPacket(srvConn); err != nil {
+			return
+		}
+		pkt := transport.ConnectPacket{ProtocolVersion: transport.ProtocolVersion73, ConnectionID: 262}
+		if _, err := srvConn.Write(pkt.Marshal()); err != nil {
+			return
+		}
+		for {
+			tok, body, err := transport.ReadFrame(srvConn, false)
+			if err != nil {
+				return
+			}
+			if tok != proxyTok {
+				continue
+			}
+			var req types.CommitTransactionRequest
+			if err := req.UnmarshalFDB(body); err != nil {
+				return
+			}
+			replyTok := transport.UID{
+				First:  binary.LittleEndian.Uint64(req.Reply.Token[:8]),
+				Second: binary.LittleEndian.Uint64(req.Reply.Token[8:]),
+			}
+			_ = transport.WriteFrame(srvConn, replyTok, testCommitSuccessReply(0x0102030405060708, 0x090a), false)
+		}
+	}()
+	proxyConn, err := transport.Dial(context.Background(), proxyAddr, nil, func(context.Context, string, string) (net.Conn, error) {
+		return cliConn, nil
+	})
+	if err != nil {
+		t.Fatalf("transport.Dial commit proxy: %v", err)
+	}
+	defer proxyConn.Close()
+	writeDB := &Database{db: &database{
+		ctx:        context.Background(),
+		timeouts:   newTimeoutQueue(),
+		connPool:   map[string]*transport.Conn{proxyAddr: proxyConn},
+		dialing:    make(map[string]*dialCall),
+		failMon:    newFailureMonitor(),
+		queueModel: newQueueModel(),
+	}}
+	writeDB.db.dbInfo.Store(&DBInfo{CommitProxies: []ProxyInfo{{Address: proxyAddr, Token: proxyTok}}})
+
+	var escapedWriteTx *Transaction
+	var initialWriteSpan [16]byte
+	_, err = writeDB.Transact(context.Background(), func(tx *Transaction) (any, error) {
+		escapedWriteTx = tx
+		tx.SetTimeout(60000)
+		tx.readVersion = 123
+		tx.hasReadVersion = true
+		tx.Set([]byte("write-key"), []byte("write-val"))
+		initialWriteSpan = tx.currentSpan().TraceID
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("write Database.Transact = %v", err)
+	}
+	if !escapedWriteTx.hasCommitted || escapedWriteTx.committedVersion != 0x0102030405060708 || escapedWriteTx.readLife != nil || escapedWriteTx.readReady != nil || escapedWriteTx.transactFinalCommit.Load() {
+		t.Fatalf("write Database.Transact final Commit state: hasCommitted=%t ver=%#x readLife=%v", escapedWriteTx.hasCommitted, escapedWriteTx.committedVersion, escapedWriteTx.readLife)
+	}
+	if got := escapedWriteTx.currentSpan(); got.TraceID == initialWriteSpan || got.SpanID == 0 {
+		t.Fatalf("currentSpan after write Transact final commit = %+v, want fresh TraceID != %x", got, initialWriteSpan)
+	}
+	vs, err := escapedWriteTx.GetVersionstamp()
+	wantVS := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a}
+	if err != nil || !bytes.Equal(vs, wantVS) {
+		t.Fatalf("write escaped GetVersionstamp = (%x, %v), want (%x, nil)", vs, err, wantVS)
+	}
+	escapedWriteTx.readErrMu.Lock()
+	wArm, wPending := escapedWriteTx.timeoutArm, escapedWriteTx.timeoutPendingLocked()
+	escapedWriteTx.withdrawTimeoutLocked()
+	escapedWriteTx.readErrMu.Unlock()
+	if !wPending {
+		t.Fatal("escaped write Transact handle did not lazily arm its timeout")
+	}
+	escapedWriteTx.fireTimeout(wArm)
+	wCtx, wRelease := escapedWriteTx.opContext(context.Background())
+	defer wRelease()
+	requireLazySuccessorCode(t, escapedWriteTx.readEntryError(wCtx), 1031)
 }
 
 func TestTurnoverFinishPublishesOnUnwind(t *testing.T) {

@@ -28,14 +28,12 @@ type pingOwnerContext struct {
 }
 
 func (p *pingOwnerContext) Done() <-chan struct{} {
-	// TryLock per shard: a release blocked in the seam may hold its shard lock.
+	// Lock per shard while ping is unrecorded (the seam only blocks once ping != nil).
 	if p.ping.Load() == nil {
 		recordedNow := false
 		for i := range p.conn.pendingShards {
 			s := &p.conn.pendingShards[i]
-			if !s.mu.TryLock() {
-				continue
-			}
+			s.mu.Lock()
 			for token, entry := range s.m {
 				if token != pingOwnerDummy {
 					ch := entry.ch

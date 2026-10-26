@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// expireCoalesceWait ends writeLoop's current wait. writeLoop may arm its timer
-// after a single Reset, so keep expiring it until done reports true.
+// expireCoalesceWait ends the connection writer's current coalescing wait (naLoop or
+// writeLoop), keeping Reset active until done reports true.
 func expireCoalesceWait(t *testing.T, c *Conn, done func() bool, what string) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
@@ -125,6 +125,11 @@ func TestDNGCoalesceDelaySharesOneWriteAndEndsOnClose(t *testing.T) {
 	if c.na == nil || !c.na.delay {
 		t.Fatalf("precondition: expected D-NG writer with delay=true, got na=%v", c.na)
 	}
+	enteredBatchWait := make(chan struct{})
+	var batchWaitOnce sync.Once
+	c.na.onCoalesceWait = func() {
+		batchWaitOnce.Do(func() { close(enteredBatchWait) })
+	}
 	handshake := len(counter.snapshot())
 	const frames = 4
 	for i := range frames {
@@ -132,7 +137,7 @@ func TestDNGCoalesceDelaySharesOneWriteAndEndsOnClose(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	time.Sleep(10 * time.Millisecond)
+	within(t, enteredBatchWait, "naLoop entering coalesceWait for the batch")
 	if n := len(counter.snapshot()) - handshake; n != 0 {
 		t.Fatalf("DNG_COALESCE_EARLY: %d socket writes before the wait ended", n)
 	}

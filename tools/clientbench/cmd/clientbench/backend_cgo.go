@@ -19,8 +19,9 @@ import (
 
 type (
 	backend struct {
-		db        fdb.Database
-		closeOnce sync.Once
+		db            fdb.Database
+		closeOnce     sync.Once
+		onBarrierWait func(fdb.FutureInt64)
 	}
 	transaction struct {
 		read  fdb.ReadTransaction
@@ -58,7 +59,11 @@ func (b *backend) Barrier() error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.GetApproximateSize().Get()
+	fut := tx.GetApproximateSize()
+	if b.onBarrierWait != nil {
+		b.onBarrierWait(fut)
+	}
+	_, err = fut.Get()
 	tx.Cancel()
 	return err
 }

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"fdb.dev/pkg/fdbgo/internal/sendqueue"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // Enqueue-only writer (RFC-282) tests against T1 and T2: a send is
@@ -120,9 +121,20 @@ func TestDesignSendIsEnqueueOnly(t *testing.T) {
 					t.Fatalf("send %d = (%t, %v), want queued without waiting for gated socket write", i, ok, err)
 				}
 			}
-			// Every SendFrameContext returned while the socket write gate is closed.
+			// Every SendFrameContext, Flush, and FlushContext returned while gated.
+			if err := c.Flush(); err != nil {
+				openGate()
+				t.Fatalf("Flush while socket gated = %v, want nil", err)
+			}
+			flushCtx, flushCancel := context.WithTimeout(ctx, 2*time.Second)
+			err = c.FlushContext(flushCtx)
+			flushCancel()
+			if err != nil {
+				openGate()
+				t.Fatalf("FlushContext while socket gated = %v, want nil", err)
+			}
 			if got := gw.writes.Load(); got != 0 {
-				t.Fatalf("writes before gate opened = %d, want 0 (send waited on socket write)", got)
+				t.Fatalf("writes before gate opened = %d, want 0 (send/flush waited on socket write)", got)
 			}
 			openGate()
 			for i := uint64(1); i <= n; i++ {
@@ -364,15 +376,17 @@ func TestDesignWriteErrorFailsAllPending(t *testing.T) {
 			}
 			for i, ch := range replies {
 				r := within(t, ch, fmt.Sprint("pending reply ", i))
-				if !errors.Is(r.Err, ErrConnClosed) {
-					t.Fatalf("reply %d = %v, want the coded teardown", i, r.Err)
+				var fe *wire.FDBError
+				if !errors.Is(r.Err, ErrConnClosed) || !errors.As(r.Err, &fe) || fe.Code != codeRequestMaybeDelivered {
+					t.Fatalf("reply %d = %v, want ErrConnClosed with FDB code %d", i, r.Err, codeRequestMaybeDelivered)
 				}
 			}
 			if !c.IsClosed() {
 				t.Fatal("a failed write left the connection open")
 			}
-			if ok, err := c.SendFrameContext(context.Background(), UID{First: 9}, nil); ok || !errors.Is(err, ErrConnClosed) {
-				t.Fatalf("send after teardown = (%t, %v), want the teardown", ok, err)
+			var fe *wire.FDBError
+			if ok, err := c.SendFrameContext(context.Background(), UID{First: 9}, nil); ok || !errors.Is(err, ErrConnClosed) || !errors.As(err, &fe) || fe.Code != codeRequestMaybeDelivered {
+				t.Fatalf("send after teardown = (%t, %v), want ErrConnClosed with FDB code %d", ok, err, codeRequestMaybeDelivered)
 			}
 		})
 	}

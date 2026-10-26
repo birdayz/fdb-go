@@ -150,7 +150,7 @@ func startFDBTLSServer(t *testing.T, serverCertPEM, serverKeyPEM, caPEM []byte) 
 						return
 					}
 					if tok != WellKnownToken(WLTokenPingPacket) {
-						frames <- fmt.Sprintf("%d:%d", tok.First, len(body))
+						frames <- fmt.Sprintf("%d:%s", tok.First, body)
 					}
 				}
 			}(conn)
@@ -188,7 +188,7 @@ func TestDial_RealMutualTLS(t *testing.T) {
 	if !c.tryEnqueue(writeReq{token: UID{First: 3}, body: []byte("tls-try")}) {
 		t.Fatal("TLS tryEnqueue returned false")
 	}
-	for _, want := range []string{"1:9", "2:5000", "3:7"} {
+	for _, want := range []string{"1:tls-small", "2:" + string(bytes.Repeat([]byte{'T'}, 5000)), "3:tls-try"} {
 		select {
 		case got := <-frames:
 			if got != want {

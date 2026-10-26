@@ -154,8 +154,9 @@ import "C"
 import (
 	"errors"
 	"fmt"
-	"time"
 	"unsafe"
+
+	"github.com/apple/foundationdb/bindings/go/src/fdb"
 )
 
 type nativeProbeDB struct {
@@ -182,27 +183,51 @@ func (p *nativeProbeDB) Close() {
 	}
 }
 
-// verifyBarrierWaitsForPredecessor parks the native network thread after queuing a
-// predecessor onMainThread task, requires fn to remain blocked while parked, then
-// releases the gate and requires the predecessor to be complete when fn returns.
-func (p *nativeProbeDB) verifyBarrierWaitsForPredecessor(fn func() error) error {
+// verifySynchronousBypassRejected proves a synchronous non-FIFO call returns
+// while the native network thread is still parked before the predecessor.
+func (p *nativeProbeDB) verifySynchronousBypassRejected(fn func() error) error {
 	var probe *C.barrier_probe_t
 	if cerr := C.start_barrier_probe(p.cDB, 0, &probe); cerr != 0 {
 		return fmt.Errorf("start_barrier_probe: %d", int(cerr))
 	}
+	err := fn()
+	preDone := C.probe_pre_done(probe)
+	C.finish_barrier_probe(probe)
+	if err != nil {
+		return err
+	}
+	if preDone == 0 {
+		return errors.New("synchronous call returned before queued onMainThread predecessor completed")
+	}
+	return nil
+}
+
+// verifyBarrierWaitsForPredecessor proves b.Barrier() queues an unready future
+// while the network thread is parked and completes only after the predecessor.
+func (p *nativeProbeDB) verifyBarrierWaitsForPredecessor(b *backend) error {
+	var probe *C.barrier_probe_t
+	if cerr := C.start_barrier_probe(p.cDB, 0, &probe); cerr != 0 {
+		return fmt.Errorf("start_barrier_probe: %d", int(cerr))
+	}
+	queued := make(chan bool, 1)
+	b.onBarrierWait = func(fut fdb.FutureInt64) {
+		queued <- (!fut.IsReady() && C.probe_pre_done(probe) == 0)
+	}
+	defer func() { b.onBarrierWait = nil }()
 	done := make(chan error, 1)
 	go func() {
-		done <- fn()
+		done <- b.Barrier()
 	}()
+	pendingWhileParked := <-queued
 	select {
 	case err := <-done:
 		C.finish_barrier_probe(probe)
-		return fmt.Errorf("barrier returned (%v) while native network thread was still parked before predecessor", err)
-	case <-time.After(15 * time.Millisecond):
+		return fmt.Errorf("barrier returned (%v) while native network thread was still parked", err)
+	default:
 	}
-	if C.probe_pre_done(probe) != 0 {
+	if !pendingWhileParked {
 		C.finish_barrier_probe(probe)
-		return errors.New("predecessor completed while native network thread was still parked")
+		return errors.New("barrier future was ready or predecessor completed before gate release")
 	}
 	C.release_barrier_probe(probe)
 	err := <-done

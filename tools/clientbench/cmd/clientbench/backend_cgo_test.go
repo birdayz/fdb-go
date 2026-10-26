@@ -36,7 +36,7 @@ func TestNativeBarrierFIFOOrdering(t *testing.T) {
 
 	// Negative control: synchronous GetCommittedVersion returns while the native
 	// network thread is still parked before the predecessor, so the probe rejects it.
-	err = probeDB.verifyBarrierWaitsForPredecessor(func() error {
+	err = probeDB.verifySynchronousBypassRejected(func() error {
 		tx, err := b.db.CreateTransaction()
 		if err != nil {
 			return err
@@ -46,12 +46,12 @@ func TestNativeBarrierFIFOOrdering(t *testing.T) {
 		return err
 	})
 	if err == nil {
-		t.Fatal("verifyBarrierWaitsForPredecessor accepted synchronous GetCommittedVersion that bypassed the native FIFO")
+		t.Fatal("verifySynchronousBypassRejected accepted synchronous GetCommittedVersion that bypassed the native FIFO")
 	}
 
-	// Positive control: production b.Barrier() remains blocked while the native
+	// Positive control: production b.Barrier() queues an unready future while the
 	// network thread is parked and returns only after the predecessor completes.
-	if err := probeDB.verifyBarrierWaitsForPredecessor(b.Barrier); err != nil {
-		t.Fatalf("verifyBarrierWaitsForPredecessor(b.Barrier) = %v, want nil", err)
+	if err := probeDB.verifyBarrierWaitsForPredecessor(b); err != nil {
+		t.Fatalf("verifyBarrierWaitsForPredecessor(b) = %v, want nil", err)
 	}
 }
