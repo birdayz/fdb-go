@@ -725,6 +725,7 @@ type saveTarget struct {
 	record         proto.Message // as every later load reads it
 	write          proto.Message // what the save serializes
 	primaryKey     tuple.Tuple
+	version        *FDBRecordVersion
 }
 
 // existingRecordLoad is a save's read of the record already stored under its
@@ -744,7 +745,7 @@ func (store *FDBRecordStore) startExistingRecordLoads(tx fdb.ReadTransaction, wi
 	keys := make([][]byte, 0, len(window))
 	for i, record := range window {
 		load := &loads[i]
-		if load.target, load.err = store.saveTargetFor(record, nil); load.err != nil {
+		if load.target, load.err = store.saveTargetFor(record, nil, VersionstampSaveBehaviorDefault); load.err != nil {
 			continue
 		}
 		key := load.target.primaryKey.Pack()
@@ -758,9 +759,9 @@ func (store *FDBRecordStore) startExistingRecordLoads(tx fdb.ReadTransaction, wi
 	return loads
 }
 
-// saveTargetFor resolves record's type, Java form and primary key. afterType, when set, runs
-// between the type and the key, where Java chooses the save's version.
-func (store *FDBRecordStore) saveTargetFor(record proto.Message, afterType func() error) (saveTarget, error) {
+// saveTargetFor resolves the record's type, chosen version, Java form and primary key.
+// Java chooses the version before evaluating the primary key against the versioned record.
+func (store *FDBRecordStore) saveTargetFor(record proto.Message, version *FDBRecordVersion, behavior VersionstampSaveBehavior) (saveTarget, error) {
 	if record == nil {
 		return saveTarget{}, fmt.Errorf("cannot save nil record")
 	}
@@ -773,10 +774,9 @@ func (store *FDBRecordStore) saveTargetFor(record proto.Message, afterType func(
 		return saveTarget{}, err
 	}
 	// Java chooses the save's version here, before the primary key (FDBRecordStore.java:555).
-	if afterType != nil {
-		if err := afterType(); err != nil {
-			return saveTarget{}, err
-		}
+	savedVersion, err := store.recordVersionForSave(version, behavior)
+	if err != nil {
+		return saveTarget{}, err
 	}
 	recordTypeName := string(descriptor.Name())
 
@@ -805,18 +805,23 @@ func (store *FDBRecordStore) saveTargetFor(record proto.Message, afterType func(
 	keyValues, err := evaluateKeyFlat(recordType.PrimaryKey, &FDBStoredRecord[proto.Message]{
 		RecordType: recordType,
 		Record:     record,
+		Version:    savedVersion,
 	}, record)
 	if err != nil {
 		return saveTarget{}, fmt.Errorf("failed to extract primary key: %w", err)
+	}
+	// Reinterpret []any as tuple.Tuple without a copy; both element types are any.
+	primaryKey := *(*tuple.Tuple)(unsafe.Pointer(&keyValues))
+	if incomplete, _ := primaryKey.HasIncompleteVersionstamp(); incomplete {
+		return saveTarget{}, &IncompleteVersionstampError{Context: "record primary key"}
 	}
 	return saveTarget{
 		recordTypeName: recordTypeName,
 		recordType:     recordType,
 		record:         record,
 		write:          writeRecord,
-		// Reinterpret []any as tuple.Tuple ([]TupleElement where TupleElement=any).
-		// Identical memory layout — no copy needed.
-		primaryKey: *(*tuple.Tuple)(unsafe.Pointer(&keyValues)),
+		primaryKey:     primaryKey,
+		version:        savedVersion,
 	}, nil
 }
 
@@ -840,23 +845,15 @@ func (store *FDBRecordStore) saveRecordInternal(
 	var err error
 	if load != nil {
 		target, err = load.target, load.err
-	}
-	var savedVersion *FDBRecordVersion
-	chooseVersion := func() (err error) {
-		savedVersion, err = store.recordVersionForSave(version, behavior)
-		return err
-	}
-	if load == nil {
-		target, err = store.saveTargetFor(record, chooseVersion)
-	} else if err == nil {
-		// A pipelined save resolved its target before its load; it chooses now.
-		err = chooseVersion()
+	} else {
+		target, err = store.saveTargetFor(record, version, behavior)
 	}
 	if err != nil {
 		return nil, err
 	}
 	recordTypeName, recordType := target.recordTypeName, target.recordType
 	record, writeRecord, primaryKey := target.record, target.write, target.primaryKey
+	savedVersion := target.version
 	defer store.context.Timer().RecordSince(EventSaveRecord, startTime)
 
 	recordsSubspace := store.recordsSubspace

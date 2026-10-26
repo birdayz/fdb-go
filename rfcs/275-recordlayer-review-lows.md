@@ -204,11 +204,15 @@ to the old behavior.
   - an unknown `VersionstampSaveBehavior`, an `IllegalArgumentError` that writes nothing;
   - a re-save with no version clears the stored one;
   - a VERSION index key with a complete version;
-  - maintained count keys grouped by a complete version on insert and delete;
+  - maintained count keys grouped by a complete version on insert and delete, and incomplete
+    count keys refused with `IncompleteVersionstampError` rather than a tuple-encoder panic;
+  - primary keys containing the supplied complete version, including distinct versions for
+    the same record id; incomplete primary-key versions are refused before encoding;
   - the override-lock save on a locked store, a supplied complete version through the typed
     save, and the default behavior of pipelined and batch saves.
 - **Explicit versions, cross-engine** (`conformance/version_save_conformance_test.go`): a new
   Java step saves the same records with the same complete versions and behaviors, including
   a `NO_VERSION` refusal and a clearing re-save. It runs on metadata with and without
   versions and a VERSION index, at the default and the legacy format. The verdicts and the
-  record, index, maintained-count and legacy-version key-value pairs must be equal.
+  record, index, maintained-count and legacy-version key-value pairs must be equal. This runs
+  with both field-only and version-prefixed primary keys.

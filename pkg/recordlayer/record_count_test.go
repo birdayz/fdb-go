@@ -8,6 +8,7 @@ import (
 	"fdb.dev/gen"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -70,6 +71,53 @@ var _ = Describe("RecordCounting", func() {
 			run(func(store *FDBRecordStore) { assertCount(store, 0) })
 		}
 	})
+
+	for _, api := range []string{"ordinary", "batch", "pipelined", "supplied incomplete"} {
+		It("returns an incomplete-version error and aborts the "+api+" save with a version count key", func() {
+			builder := baseBuilder().SetStoreRecordVersions(true).SetRecordCountKey(VersionKey())
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			ks := specSubspace()
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				return NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Create()
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				if err != nil {
+					return nil, err
+				}
+				record := &demopb.Order{OrderId: proto.Int64(1)}
+				switch api {
+				case "batch":
+					return store.SaveRecordBatch([]proto.Message{record})
+				case "pipelined":
+					return store.SaveRecordsPipelined([]proto.Message{record}, RecordExistenceCheckNone)
+				case "supplied incomplete":
+					version, err := IncompleteVersion(rtx.ClaimLocalVersion())
+					if err != nil {
+						return nil, err
+					}
+					return store.SaveRecordWithVersion(record, RecordExistenceCheckNone, version, VersionstampSaveBehaviorIfPresent)
+				default:
+					return store.SaveRecord(record)
+				}
+			})
+			var incomplete *IncompleteVersionstampError
+			Expect(errors.As(err, &incomplete)).To(BeTrue(), "%v", err)
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				for _, space := range []int64{RecordKey, RecordCountKey, RecordVersionKey} {
+					rows, err := rtx.Transaction().GetRange(ks.Sub(space), fdb.RangeOptions{}).GetSliceWithError()
+					if err != nil {
+						return nil, err
+					}
+					Expect(rows).To(BeEmpty(), "the failed transaction must not persist subspace %d", space)
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	}
 
 	It("BasicCounting", func() {
 		builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)

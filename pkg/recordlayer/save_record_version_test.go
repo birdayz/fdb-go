@@ -6,6 +6,7 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/gen/demopb"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -59,6 +60,122 @@ var _ = Describe("SaveRecordWithVersion", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(rec).NotTo(BeNil())
 		return rec.Version
+	}
+
+	versionPrimaryKeyMetaData := func() *RecordMetaData {
+		builder := baseBuilder().SetStoreRecordVersions(true)
+		builder.GetRecordType("Order").SetPrimaryKey(Concat(VersionKey(), Field("order_id")))
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		return md
+	}
+	for _, api := range []string{"untyped", "typed", "override-lock"} {
+		for _, format := range []int32{0, 5} {
+			formatName := "current format"
+			if format != 0 {
+				formatName = "legacy format"
+			}
+			It("keeps distinct version-prefixed primary keys through "+api+" saves in "+formatName, func() {
+				md := versionPrimaryKeyMetaData()
+				ks := specSubspace()
+				versions := []*FDBRecordVersion{complete(21), complete(22)}
+				keys := make([]tuple.Tuple, len(versions))
+				for i, version := range versions {
+					stamp, err := version.ToVersionstamp()
+					Expect(err).NotTo(HaveOccurred())
+					keys[i] = tuple.Tuple{stamp, int64(1)}
+				}
+				run(md, ks, format, func(store *FDBRecordStore) {
+					if api == "override-lock" && format == 0 {
+						Expect(store.SetStoreLockState(gen.DataStoreInfo_StoreLockState_FORBID_RECORD_UPDATE, "test lock")).To(Succeed())
+					}
+					for i, version := range versions {
+						if api == "typed" {
+							typed, err := NewTypedRecordStore[*demopb.Order](store, md.GetRecordType("Order"))
+							Expect(err).NotTo(HaveOccurred())
+							saved, err := typed.SaveRecordWithVersion(order(1), RecordExistenceCheckNone, version, VersionstampSaveBehaviorIfPresent)
+							Expect(err).NotTo(HaveOccurred())
+							Expect(saved.PrimaryKey).To(Equal(keys[i]))
+							Expect(saved.Version).To(Equal(version))
+						} else {
+							save := store.SaveRecordWithVersion
+							if api == "override-lock" {
+								save = store.OverrideLockSaveRecordWithVersion
+							}
+							saved, err := save(order(1), RecordExistenceCheckNone, version, VersionstampSaveBehaviorIfPresent)
+							Expect(err).NotTo(HaveOccurred())
+							Expect(saved.PrimaryKey).To(Equal(keys[i]))
+							Expect(saved.Version).To(Equal(version))
+						}
+					}
+				})
+				run(md, ks, format, func(store *FDBRecordStore) {
+					for i, key := range keys {
+						loaded, err := store.LoadRecord(key)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(loaded).NotTo(BeNil())
+						Expect(loaded.PrimaryKey).To(Equal(key))
+						Expect(loaded.Version).To(Equal(versions[i]))
+					}
+					missing, err := store.LoadRecord(tuple.Tuple{nil, int64(1)})
+					Expect(err).NotTo(HaveOccurred())
+					Expect(missing).To(BeNil())
+					rows, err := AsList(ctx, store.ScanRecords(nil, ForwardScan()))
+					Expect(err).NotTo(HaveOccurred())
+					Expect(rows).To(HaveLen(2))
+				})
+			})
+		}
+	}
+	for _, api := range []string{"ordinary", "batch", "pipelined", "supplied incomplete", "typed supplied incomplete", "override supplied incomplete"} {
+		It("returns an incomplete-version error and aborts the "+api+" save with a version primary key", func() {
+			md := versionPrimaryKeyMetaData()
+			ks := specSubspace()
+			run(md, ks, 0, func(*FDBRecordStore) {})
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+				if err != nil {
+					return nil, err
+				}
+				switch api {
+				case "ordinary":
+					return store.SaveRecord(order(1))
+				case "batch":
+					return store.SaveRecordBatch([]proto.Message{order(1)})
+				case "pipelined":
+					return store.SaveRecordsPipelined([]proto.Message{order(1)}, RecordExistenceCheckNone)
+				default:
+					version, err := IncompleteVersion(rtx.ClaimLocalVersion())
+					if err != nil {
+						return nil, err
+					}
+					if api == "typed supplied incomplete" {
+						typed, err := NewTypedRecordStore[*demopb.Order](store, md.GetRecordType("Order"))
+						if err != nil {
+							return nil, err
+						}
+						return typed.SaveRecordWithVersion(order(1), RecordExistenceCheckNone, version, VersionstampSaveBehaviorIfPresent)
+					}
+					if api == "override supplied incomplete" {
+						return store.OverrideLockSaveRecordWithVersion(order(1), RecordExistenceCheckNone, version, VersionstampSaveBehaviorIfPresent)
+					}
+					return store.SaveRecordWithVersion(order(1), RecordExistenceCheckNone, version, VersionstampSaveBehaviorIfPresent)
+				}
+			})
+			var incomplete *IncompleteVersionstampError
+			Expect(errors.As(err, &incomplete)).To(BeTrue(), "%v", err)
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				for _, space := range []int64{RecordKey, RecordCountKey, RecordVersionKey} {
+					rows, err := rtx.Transaction().GetRange(ks.Sub(space), fdb.RangeOptions{}).GetSliceWithError()
+					if err != nil {
+						return nil, err
+					}
+					Expect(rows).To(BeEmpty(), "the failed transaction must not persist subspace %d", space)
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
 	}
 
 	// want: "none", "assigned" (an incomplete version, complete after commit),

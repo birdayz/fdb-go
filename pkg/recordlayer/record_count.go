@@ -116,6 +116,10 @@ func (store *FDBRecordStore) addRecordCount(record *FDBStoredRecord[proto.Messag
 	for i, v := range subkey {
 		keyTuple[i] = v
 	}
+	// Counts use an ordinary atomic ADD, not a versionstamped-key mutation.
+	if incomplete, _ := keyTuple.HasIncompleteVersionstamp(); incomplete {
+		return &IncompleteVersionstampError{Context: "record count key"}
+	}
 	fdbKey := countSubspace.Pack(keyTuple)
 
 	// Atomic ADD — no read needed, no conflicts generated
