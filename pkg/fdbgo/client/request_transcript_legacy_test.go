@@ -210,12 +210,12 @@ func (tx *Transaction) legacySendGetKey(ctx context.Context, selectorKey []byte,
 
 	primary := makeSender(servers[bestIdx])
 	var secondary sendFunc
+	var hedgeDelay time.Duration
 	if secondIdx >= 0 {
 		secondary = makeSender(servers[secondIdx])
+		hedgeDelay = tx.db.queueModel.secondDelay(servers[bestIdx].Address, servers[secondIdx].Address)
 	}
-
-	hedgeDelay := tx.db.queueModel.secondDelay(servers[bestIdx].Address)
-	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, tx.readRPCTimeout())
+	result := sendFrameWithHedge(ctx, tx.db.queueModel, hedgeDelay, primary, secondary, tx.readRPCTimeout())
 
 	// End every started request that did not become the winner (hedge losers;
 	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
@@ -633,12 +633,12 @@ func legacySendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end 
 
 	primary := makeSender(servers[bestIdx])
 	var secondary sendFunc
+	var hedgeDelay time.Duration
 	if secondIdx >= 0 {
 		secondary = makeSender(servers[secondIdx])
+		hedgeDelay = tx.db.queueModel.secondDelay(servers[bestIdx].Address, servers[secondIdx].Address)
 	}
-
-	hedgeDelay := tx.db.queueModel.secondDelay(servers[bestIdx].Address)
-	result := sendFrameWithHedge(ctx, hedgeDelay, primary, secondary, tx.readRPCTimeout())
+	result := sendFrameWithHedge(ctx, tx.db.queueModel, hedgeDelay, primary, secondary, tx.readRPCTimeout())
 
 	// End every started request that did not become the winner (hedge losers;
 	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
