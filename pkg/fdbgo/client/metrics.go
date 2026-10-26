@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"sync"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/transport"
@@ -45,58 +46,104 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
 	if err != nil {
 		return 0, err
 	}
-	// C++ uses std::numeric_limits<int>::max() — get ALL locations at once.
-	const shardLimit = math.MaxInt32
+	return tx.getStorageMetricsRange(ctx, begin, end, minVersion, nil)
+}
 
-	// No attempt cap: C++ retries until the transaction times out (NativeAPI.actor.cpp:7799-7811).
+// Each size worker retries only its own range, as doGetStorageMetrics does.
+// Singleton retries stay iterative; recursion is needed only when a shard splits.
+func (tx *Transaction) getStorageMetricsRange(ctx context.Context, begin, end []byte, minVersion int64, locations []LocationResult) (int64, error) {
 	for {
-		locations, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, shardLimit, false, tx.tenantId, tx.currentSpan())
-		if err != nil {
-			return 0, fmt.Errorf("locate range for metrics: %w", err)
-		}
-
-		var total int64
-		retry := false
-		for _, loc := range locations {
-			// Clamp shard boundaries to requested range (same pattern as readpath.go).
-			shardBegin := loc.ShardBegin
-			shardEnd := loc.ShardEnd
-			if bytes.Compare(shardBegin, begin) < 0 {
-				shardBegin = begin
-			}
-			if shardEnd == nil || bytes.Compare(shardEnd, end) > 0 {
-				shardEnd = end
-			}
-			if bytes.Compare(shardBegin, shardEnd) >= 0 {
-				continue // empty range for this shard
-			}
-
-			b, err := tx.sendWaitMetrics(ctx, shardBegin, shardEnd, minVersion, loc.Servers)
+		if locations == nil {
+			var err error
+			// C++ uses std::numeric_limits<int>::max() to get all locations.
+			locations, err = tx.db.locCache.locateRange(tx.db, ctx, begin, end, math.MaxInt32, false, tx.tenantId, tx.currentSpan())
 			if err != nil {
-				if isWrongShardServer(err) || isAllAlternativesFailed(err) {
-					tx.db.locCache.invalidateRange(begin, end, tx.tenantId)
-					if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
-						return 0, err
-					}
-					retry = true
-					break
-				}
-				// C++ catches future_version (1009), delays, and retries.
-				if isFutureVersion(err) {
-					if err := sleepCtx(ctx, futureVersionDelay); err != nil {
-						return 0, err
-					}
-					retry = true
-					break
-				}
-				return 0, err
+				return 0, fmt.Errorf("locate range for metrics: %w", err)
 			}
-			total += b
 		}
-		if !retry {
+		var total int64
+		var err error
+		if len(locations) == 1 {
+			loc := locations[0]
+			shardBegin, shardEnd := metricsShardBounds(begin, end, loc)
+			if bytes.Compare(shardBegin, shardEnd) >= 0 {
+				return 0, nil
+			}
+			total, err = tx.sendWaitMetrics(ctx, shardBegin, shardEnd, minVersion, loc.Servers)
+		} else {
+			var sizes []int64
+			sizes, err = collectMetricsShards(ctx, locations, func(ctx context.Context, _ int, loc LocationResult) (int64, error) {
+				shardBegin, shardEnd := metricsShardBounds(begin, end, loc)
+				return tx.getStorageMetricsRange(ctx, shardBegin, shardEnd, minVersion, []LocationResult{loc})
+			})
+			for _, size := range sizes {
+				total += size
+			}
+		}
+		if err == nil {
 			return total, nil
 		}
+		var delay time.Duration
+		switch {
+		case isWrongShardServer(err), isAllAlternativesFailed(err):
+			tx.db.locCache.invalidateRange(begin, end, tx.tenantId)
+			delay = wrongShardRetryDelay
+		case isFutureVersion(err):
+			delay = futureVersionDelay
+		default:
+			return 0, err
+		}
+		if err := sleepCtx(ctx, delay); err != nil {
+			return 0, err
+		}
+		locations = nil
 	}
+}
+
+func metricsShardBounds(begin, end []byte, loc LocationResult) ([]byte, []byte) {
+	shardBegin, shardEnd := loc.ShardBegin, loc.ShardEnd
+	if bytes.Compare(shardBegin, begin) < 0 {
+		shardBegin = begin
+	}
+	if shardEnd == nil || bytes.Compare(shardEnd, end) > 0 {
+		shardEnd = end
+	}
+	return shardBegin, shardEnd
+}
+
+// Match waitForAll: start all shard workers, fail on any error, and retain shard
+// order on success. Cancel and join waiters, never their database-owned dials.
+func collectMetricsShards[T any](parent context.Context, locations []LocationResult, send func(context.Context, int, LocationResult) (T, error)) ([]T, error) {
+	ctx, cancel := context.WithCancel(parent)
+	type result struct {
+		index int
+		value T
+		err   error
+	}
+	completed := make(chan result, len(locations))
+	var wg sync.WaitGroup
+	defer func() { cancel(); wg.Wait() }()
+	for i, loc := range locations {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			value, err := send(ctx, i, loc)
+			completed <- result{index: i, value: value, err: err}
+		}()
+	}
+	values := make([]T, len(locations))
+	for range locations {
+		select {
+		case res := <-completed:
+			if res.err != nil {
+				return nil, res.err
+			}
+			values[res.index] = res.value
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return values, nil
 }
 
 // isFutureVersion returns true if the error is FDB error 1009.
@@ -291,10 +338,7 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 		// The result is ALWAYS framed by the range bounds, and each internal shard
 		// boundary is itself a split point — so a range spanning N shards yields the
 		// N-1 internal boundaries even when no shard has an internal chunk split.
-		result := make([][]byte, 0, len(locations)+2)
-		result = append(result, append([]byte(nil), begin...)) // push_back(keys.begin)
-		retry, opFailed := false, false
-		for i, loc := range locations {
+		shardPoints, err := collectMetricsShards(ctx, locations, func(ctx context.Context, i int, loc LocationResult) ([][]byte, error) {
 			// partBegin/partEnd per C++ :8165-8166: first shard starts at keys.begin,
 			// last ends at keys.end, interior shards use their own bounds.
 			partBegin := loc.ShardBegin
@@ -305,35 +349,30 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 			if i == len(locations)-1 || partEnd == nil || bytes.Compare(partEnd, end) > 0 {
 				partEnd = end
 			}
-			// Insert the internal shard boundary BEFORE this shard's points (C++ :8179-8182).
-			if i > 0 {
-				result = append(result, append([]byte(nil), loc.ShardBegin...))
+			return tx.sendSplitRange(ctx, partBegin, partEnd, chunkSize, loc.Servers)
+		})
+		if err != nil {
+			if isWrongShardServer(err) || isAllAlternativesFailed(err) {
+				tx.db.locCache.invalidateRange(begin, end, tx.tenantId)
+				if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
+					return nil, err
+				}
+				continue
 			}
-			points, perr := tx.sendSplitRange(ctx, partBegin, partEnd, chunkSize, loc.Servers)
-			if perr != nil {
-				if isWrongShardServer(perr) || isAllAlternativesFailed(perr) {
-					tx.db.locCache.invalidateRange(begin, end, tx.tenantId)
-					if serr := sleepCtx(ctx, wrongShardRetryDelay); serr != nil {
-						return nil, serr
-					}
-					retry = true
-					break
-				}
-				// operation_failed (4) = endpoint unsupported (old FDB): degrade to no
-				// split points, matching the prior graceful fallback.
-				if isOperationFailed(perr) {
-					opFailed = true
-					break
-				}
-				return nil, perr
+			// operation_failed (4) = endpoint unsupported (old FDB): keep the
+			// existing graceful fallback to no split points.
+			if isOperationFailed(err) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		result := make([][]byte, 0, len(locations)+2)
+		result = append(result, append([]byte(nil), begin...))
+		for i, points := range shardPoints {
+			if i > 0 {
+				result = append(result, append([]byte(nil), locations[i].ShardBegin...))
 			}
 			result = append(result, points...)
-		}
-		if retry {
-			continue
-		}
-		if opFailed {
-			return nil, nil
 		}
 		// C++ :8189-8191: append keys.end unless the last point already is it.
 		if !bytes.Equal(result[len(result)-1], end) {

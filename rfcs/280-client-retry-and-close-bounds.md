@@ -39,6 +39,14 @@ Change:
 
 - Both loops retry until success, a non-retryable error or the operation context ends.
   The context carries the transaction timeout (RFC-112), as C++'s `waitOrError` does.
+- All located shards start before waiting, as `waitForAll` does (`NativeAPI.actor.cpp:7835-7845,
+  8171-8184`); a terminal error cancels and joins the other waiters, not their shared
+  connections or database-owned dials. Successful results retain shard order. Size
+  workers retry and re-locate only their own subrange (`doGetStorageMetrics`, :7785-7811),
+  so a retryable error cannot cancel and hide a sibling's terminal error. Repeated
+  singleton retries stay iterative; a location that splits starts child workers for
+  its clamped subranges. Split-point retries restart the whole fanout, as C++ does
+  (`:8204-8210`).
 - Each request is sent the way `loadBalance` sends it (`sendMetricsRequest`): one
   replica per attempt, starting at a random one and skipping replicas the failure
   monitor excludes, with no reply timeout (`LoadBalance.actor.h:595-614`). Once every
@@ -141,6 +149,18 @@ and names the bound that matches libfdb_c, the transaction timeout or `Cancel`.
     `request_maybe_delivered`, the third request waits at least 10 ms, the fourth 20 ms,
     and so on.
   - `TestMetricsRequestWithoutServers`: an empty replica list reports 1006.
+  - `TestMetricsRequestAllFailedDelay`: empty and endpoint-exhausted lists enter the
+    all-failed delay on both senders, remain waiting, and honor request cancellation.
+  - `TestMetricsRequestDatabaseCloseInterruptsWait`: closing only the database lifetime
+    interrupts an armed backoff or all-excluded wait while the request context stays live.
+  - `TestMetricsShardsFailFast`: both public metrics operations dispatch two shards
+    before either replies; a terminal error on the second ends the call with the first
+    reply withheld, cancels its registration and leaves the connection open.
+  - `TestMetricsShardsPreserveOrder`: reversed shard replies sum the size and assemble
+    split points in shard order, including the internal boundary.
+  - `TestMetricsShardRetryKeepsSibling`: wrong-shard, all-alternatives-failed and
+    future-version retries retain the sibling's original waiter and cached location;
+    its terminal error cancels the first shard's withheld relocation or retry reply.
   - `TestMetricsRequestWaitsForSlowReply`: a reply that comes after more than the old
     5 s timeout is used, with one request sent.
 - `client`, test-full (`client_test`, FDB in a container, replies rewritten by the
@@ -157,7 +177,8 @@ and names the bound that matches libfdb_c, the transaction timeout or `Cancel`.
     dropped, with a 20 ms reply timeout; both loops and a public positive-skip read
     send 11 mapped requests and return `transaction_too_old`.
 
-Each fails with its fix reverted.
+Compiled mutation results for the behavior-changing guards are recorded in the PR,
+alongside the preserved earlier red-to-green and repeated-race evidence.
 
 ## Compatibility
 

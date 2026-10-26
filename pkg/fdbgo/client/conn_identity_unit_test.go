@@ -538,7 +538,7 @@ var armToken = transport.UID{First: 0x77, Second: 0x88}
 func connArms() []connArm {
 	servers := []ServerInfo{{Address: armAddr, Token: armToken}}
 	key, end := []byte("k"), []byte("l")
-	return []connArm{
+	arms := []connArm{
 		{"commit", true, func(ctx context.Context, db *database, _ *Transaction) {
 			input := &commitInput{db: db, readVersion: 1, tenantID: NoTenantID}
 			_, _ = input.commitNative(ctx)
@@ -550,12 +550,6 @@ func connArms() []connArm {
 			_, _ = db.locCache.queryLocations(db, ctx, NoTenantID, func(tok transport.UID) []byte {
 				return buildGetKeyServerLocationsRequest(key, false, NoTenantID, types.SpanContext{}, tok)
 			}, nil)
-		}},
-		{"wait metrics", false, func(ctx context.Context, _ *database, tx *Transaction) {
-			_, _ = tx.sendWaitMetrics(ctx, key, end, 1, servers)
-		}},
-		{"split range", false, func(ctx context.Context, _ *database, tx *Transaction) {
-			_, _ = tx.sendSplitRange(ctx, key, end, 1000, servers)
 		}},
 		{"get value from one server", false, func(ctx context.Context, _ *database, tx *Transaction) {
 			_, _ = tx.sendGetValueToServer(ctx, key, servers[0], 1, false, NoTenantID, readTagSample{})
@@ -578,6 +572,10 @@ func connArms() []connArm {
 			}
 		}},
 	}
+	for _, arm := range metricsArms() {
+		arms = append(arms, arm.connArm())
+	}
+	return arms
 }
 
 // armDatabase is a database whose proxies and storage server are armAddr, with
@@ -889,19 +887,54 @@ func TestHandleConnErrorClosesOutsideConnMu(t *testing.T) {
 	}
 }
 
-// metricsArms are the connArms that send a storage-metrics request.
-func metricsArms() []connArm {
-	var arms []connArm
-	for _, arm := range connArms() {
-		if arm.name == "wait metrics" || arm.name == "split range" {
-			arms = append(arms, arm)
-		}
-	}
-	return arms
+type metricsArm struct {
+	name       string
+	endpoint   int
+	reply      string
+	send       func(context.Context, *Transaction, []ServerInfo) error
+	replyToken func(*testing.T, []byte) transport.UID
 }
 
-// metricsEndpoints maps each metrics arm to its interface stream.
-var metricsEndpoints = map[string]int{"wait metrics": EndpointWaitMetrics, "split range": EndpointGetRangeSplitPoints}
+func (arm metricsArm) connArm() connArm {
+	return connArm{arm.name, false, func(ctx context.Context, _ *database, tx *Transaction) {
+		_ = arm.send(ctx, tx, []ServerInfo{{Address: armAddr, Token: armToken}})
+	}}
+}
+
+func metricsArms() []metricsArm {
+	return []metricsArm{
+		{
+			name: "wait metrics", endpoint: EndpointWaitMetrics, reply: "StorageMetrics_basic",
+			send: func(ctx context.Context, tx *Transaction, servers []ServerInfo) error {
+				_, err := tx.sendWaitMetrics(ctx, []byte("k"), []byte("l"), 1, servers)
+				return err
+			},
+			replyToken: func(t *testing.T, body []byte) transport.UID {
+				t.Helper()
+				var req types.WaitMetricsRequest
+				if err := req.UnmarshalFDB(body); err != nil {
+					t.Fatal(err)
+				}
+				return replyToken(req.Reply.Token)
+			},
+		},
+		{
+			name: "split range", endpoint: EndpointGetRangeSplitPoints, reply: "SplitRangeReply_two_points",
+			send: func(ctx context.Context, tx *Transaction, servers []ServerInfo) error {
+				_, err := tx.sendSplitRange(ctx, []byte("k"), []byte("l"), 1000, servers)
+				return err
+			},
+			replyToken: func(t *testing.T, body []byte) transport.UID {
+				t.Helper()
+				var req types.SplitRangeRequest
+				if err := req.UnmarshalFDB(body); err != nil {
+					t.Fatal(err)
+				}
+				return replyToken(req.Reply.Token)
+			},
+		},
+	}
+}
 
 // startArm runs arm until the test ends.
 func startArm(t *testing.T, ctx context.Context, arm connArm, db *database, tx *Transaction) {
@@ -962,7 +995,7 @@ func TestMetricsRequestWakesOnRecovery(t *testing.T) {
 				}
 			}
 			db.beforeAltFailureWait.Store(&hook)
-			startArm(t, ctx, arm, db, tx)
+			startArm(t, ctx, arm.connArm(), db, tx)
 			select {
 			case <-parked:
 			case <-ctx.Done():
@@ -1068,7 +1101,7 @@ func TestMetricsRequestSkipsEndpointNotFound(t *testing.T) {
 				peer := newIdentityPeer(t)
 				db, tx := armDatabase(ctx, peer)
 				defer closeIdentityDatabase(db)
-				token := getAdjustedEndpoint(armToken, metricsEndpoints[arm.name])
+				token := getAdjustedEndpoint(armToken, arm.endpoint)
 				if !during {
 					db.failMon.markEndpointNotFound(armAddr, token)
 				}
@@ -1076,7 +1109,7 @@ func TestMetricsRequestSkipsEndpointNotFound(t *testing.T) {
 				done := make(chan struct{})
 				go func() {
 					defer close(done)
-					err = metricsArmError(ctx, arm.name, tx)
+					err = arm.send(ctx, tx, []ServerInfo{{Address: armAddr, Token: armToken}})
 				}()
 				if during {
 					f, ok := peer.recv(ctx)
@@ -1100,17 +1133,6 @@ func TestMetricsRequestSkipsEndpointNotFound(t *testing.T) {
 	}
 }
 
-// metricsArmError sends the named metrics request to armAddr and returns its error.
-func metricsArmError(ctx context.Context, name string, tx *Transaction) error {
-	servers := []ServerInfo{{Address: armAddr, Token: armToken}}
-	if name == "wait metrics" {
-		_, err := tx.sendWaitMetrics(ctx, []byte("k"), []byte("l"), 1, servers)
-		return err
-	}
-	_, err := tx.sendSplitRange(ctx, []byte("k"), []byte("l"), 1000, servers)
-	return err
-}
-
 // endpointNotFoundBody is FlowTransport's SerializeSource<UID> body for tok: a FakeRoot
 // table, UID inline at field 0, file identifier 15597147.
 func endpointNotFoundBody(tok transport.UID) []byte {
@@ -1126,28 +1148,10 @@ func endpointNotFoundBody(tok transport.UID) []byte {
 	return b
 }
 
-// metricsReplyToken decodes a metrics request's reply token.
-func metricsReplyToken(t *testing.T, name string, body []byte) transport.UID {
-	t.Helper()
-	if name == "wait metrics" {
-		var req types.WaitMetricsRequest
-		if err := req.UnmarshalFDB(body); err != nil {
-			t.Fatal(err)
-		}
-		return replyToken(req.Reply.Token)
-	}
-	var req types.SplitRangeRequest
-	if err := req.UnmarshalFDB(body); err != nil {
-		t.Fatal(err)
-	}
-	return replyToken(req.Reply.Token)
-}
-
 // An in-band broken_promise is not a response: the request marks that endpoint not
 // found and goes on to the next replica in the same call, as loadBalance does.
 func TestMetricsRequestBrokenPromiseTriesNextReplica(t *testing.T) {
 	t.Parallel()
-	replies := map[string]string{"wait metrics": "StorageMetrics_basic", "split range": "SplitRangeReply_two_points"}
 	for _, arm := range metricsArms() {
 		t.Run(arm.name, func(t *testing.T) {
 			t.Parallel()
@@ -1162,15 +1166,11 @@ func TestMetricsRequestBrokenPromiseTriesNextReplica(t *testing.T) {
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				if arm.name == "wait metrics" {
-					_, err = tx.sendWaitMetrics(ctx, []byte("k"), []byte("l"), 1, servers)
-				} else {
-					_, err = tx.sendSplitRange(ctx, []byte("k"), []byte("l"), 1000, servers)
-				}
+				err = arm.send(ctx, tx, servers)
 			}()
 			// The first replica is chosen at random; the second request must go to the other.
 			var first transport.UID
-			for i, body := range [][]byte{(&types.ErrorOrError{ErrorCode: 1100}).MarshalFDB(), replyVector(t, replies[arm.name])} {
+			for i, body := range [][]byte{(&types.ErrorOrError{ErrorCode: 1100}).MarshalFDB(), replyVector(t, arm.reply)} {
 				f, ok := peer.recv(ctx)
 				if !ok {
 					t.Fatalf("request %d missing", i)
@@ -1180,7 +1180,7 @@ func TestMetricsRequestBrokenPromiseTriesNextReplica(t *testing.T) {
 				} else if f.token == first {
 					t.Fatalf("request 1 went to the broken replica again (%v)", f.token)
 				}
-				if err := transport.WriteFrame(peer.server, metricsReplyToken(t, arm.name, f.body), body, false); err != nil {
+				if err := transport.WriteFrame(peer.server, arm.replyToken(t, f.body), body, false); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1223,11 +1223,7 @@ func TestMetricsRequestSkipsExcludedReplica(t *testing.T) {
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
-				if arm.name == "wait metrics" {
-					_, _ = tx.sendWaitMetrics(armCtx, []byte("k"), []byte("l"), 1, servers)
-				} else {
-					_, _ = tx.sendSplitRange(armCtx, []byte("k"), []byte("l"), 1000, servers)
-				}
+				_ = arm.send(armCtx, tx, servers)
 			}()
 			defer func() { stop(); <-done }()
 			// Two attempts, whatever the random start: the first is answered
@@ -1238,7 +1234,7 @@ func TestMetricsRequestSkipsExcludedReplica(t *testing.T) {
 					t.Fatalf("request %d did not reach the available replica", i)
 				}
 				if i == 0 {
-					if err := transport.WriteFrame(peer.server, metricsReplyToken(t, arm.name, f.body), (&types.ErrorOrError{ErrorCode: 1030}).MarshalFDB(), false); err != nil {
+					if err := transport.WriteFrame(peer.server, arm.replyToken(t, f.body), (&types.ErrorOrError{ErrorCode: 1030}).MarshalFDB(), false); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -1275,7 +1271,7 @@ func TestMetricsRequestWaitsForSlowReply(t *testing.T) {
 		t.Fatal("no request")
 	}
 	noFrame(t, peer, DefaultRPCTimeout+time.Second, "while the reply is slow")
-	if err := transport.WriteFrame(peer.server, metricsReplyToken(t, "wait metrics", f.body), reply, false); err != nil {
+	if err := transport.WriteFrame(peer.server, metricsArms()[0].replyToken(t, f.body), reply, false); err != nil {
 		t.Fatal(err)
 	}
 	<-done
@@ -1311,7 +1307,7 @@ func TestMetricsRequestProbesExcludedReplica(t *testing.T) {
 			var parks atomic.Int32
 			hook := func() { parks.Add(1) }
 			db.beforeAltFailureWait.Store(&hook)
-			startArm(t, ctx, arm, db, tx)
+			startArm(t, ctx, arm.connArm(), db, tx)
 			waitCtx, stop := context.WithTimeout(ctx, connFailureInitialWindow*time.Second+5*time.Second)
 			defer stop()
 			if _, ok := peer.recv(waitCtx); !ok {
@@ -1349,7 +1345,7 @@ func TestMetricsRequestBacksOffPerRequest(t *testing.T) {
 			t.Fatal("request missing")
 		}
 		at = append(at, time.Now())
-		if err := transport.WriteFrame(peer.server, metricsReplyToken(t, "wait metrics", f.body), (&types.ErrorOrError{ErrorCode: 1030}).MarshalFDB(), false); err != nil {
+		if err := transport.WriteFrame(peer.server, metricsArms()[0].replyToken(t, f.body), (&types.ErrorOrError{ErrorCode: 1030}).MarshalFDB(), false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1363,12 +1359,178 @@ func TestMetricsRequestBacksOffPerRequest(t *testing.T) {
 // A location with no servers reports all_alternatives_failed, so the caller re-locates.
 func TestMetricsRequestWithoutServers(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	db, tx := armDatabase(ctx, newIdentityPeer(t))
-	defer closeIdentityDatabase(db)
-	_, err := tx.sendWaitMetrics(ctx, []byte("k"), []byte("l"), 1, nil)
-	assertFDBErrorCode(t, err, ErrAllAlternativesFailed)
-	_, err = tx.sendSplitRange(ctx, []byte("k"), []byte("l"), 1000, nil)
-	assertFDBErrorCode(t, err, ErrAllAlternativesFailed)
+	for _, arm := range metricsArms() {
+		t.Run(arm.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			db, tx := armDatabase(ctx, newIdentityPeer(t))
+			defer closeIdentityDatabase(db)
+			assertFDBErrorCode(t, arm.send(ctx, tx, nil), ErrAllAlternativesFailed)
+		})
+	}
+}
+
+// metricsWaitContext observes a wait without cancelling the request. For backoff,
+// the post-reply Err check arms the observation of the following timer select.
+type metricsWaitContext struct {
+	context.Context
+	waiting  chan struct{}
+	once     sync.Once
+	observe  atomic.Bool
+	armOnErr atomic.Bool
+}
+
+func (ctx *metricsWaitContext) Done() <-chan struct{} {
+	if ctx.observe.Load() {
+		ctx.once.Do(func() { close(ctx.waiting) })
+	}
+	return ctx.Context.Done()
+}
+
+func (ctx *metricsWaitContext) Err() error {
+	if ctx.armOnErr.Swap(false) {
+		ctx.observe.Store(true)
+	}
+	return ctx.Context.Err()
+}
+
+func metricsFailureStorm(db *database) {
+	now := nowSeconds()
+	db.failMon.mu.Lock()
+	db.failMon.oldestAltFailure, db.failMon.newestAltFailure, db.failMon.lastAltSkip = now-1000, now, now
+	db.failMon.mu.Unlock()
+}
+
+// Both dead-end location shapes wait before callers can re-locate; bypassing the
+// delay must fail even if the sender still returns all_alternatives_failed.
+func TestMetricsRequestAllFailedDelay(t *testing.T) {
+	t.Parallel()
+	for _, arm := range metricsArms() {
+		for _, empty := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/empty=%t", arm.name, empty), func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
+				peer := newIdentityPeer(t)
+				db, tx := armDatabase(ctx, peer)
+				defer closeIdentityDatabase(db)
+				metricsFailureStorm(db) // the jittered delay is at least 27 s
+				var servers []ServerInfo
+				if !empty {
+					servers = []ServerInfo{{Address: armAddr, Token: armToken}, {Address: armAddr, Token: transport.UID{First: 0x99, Second: 0xaa}}}
+					for _, server := range servers {
+						db.failMon.markEndpointNotFound(server.Address, getAdjustedEndpoint(server.Token, arm.endpoint))
+					}
+				}
+				opCtx, stop := context.WithCancel(ctx)
+				waitCtx := &metricsWaitContext{Context: opCtx, waiting: make(chan struct{})}
+				waitCtx.observe.Store(true)
+				var err error
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					err = arm.send(waitCtx, tx, servers)
+				}()
+				defer func() { stop(); <-done }()
+				select {
+				case <-waitCtx.waiting:
+				case <-done:
+					t.Fatalf("sender bypassed the all-failed delay: %v", err)
+				case <-ctx.Done():
+					t.Fatal("sender did not enter the all-failed delay")
+				}
+				select {
+				case <-done:
+					t.Fatalf("sender ended during the long all-failed delay: %v", err)
+				case <-time.After(100 * time.Millisecond):
+				}
+				stop()
+				select {
+				case <-done:
+					if !errors.Is(err, context.Canceled) {
+						t.Fatalf("all-failed delay cancellation = %v, want context.Canceled", err)
+					}
+				case <-ctx.Done():
+					t.Fatal("all-failed delay ignored request cancellation")
+				}
+				noFrame(t, peer, 0, "with no usable endpoint")
+			})
+		}
+	}
+}
+
+// Closing the database interrupts both loadBalance waits independently of the
+// request's lifetime, including an already-armed backoff timer.
+func TestMetricsRequestDatabaseCloseInterruptsWait(t *testing.T) {
+	t.Parallel()
+	for _, arm := range metricsArms() {
+		for _, backoff := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/backoff=%t", arm.name, backoff), func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
+				dbCtx, closeDB := context.WithCancel(ctx)
+				defer closeDB()
+				peer := newIdentityPeer(t)
+				db, tx := armDatabase(dbCtx, peer)
+				defer closeIdentityDatabase(db)
+				servers := []ServerInfo{{Address: armAddr, Token: armToken}}
+				opCtx, stop := context.WithCancel(ctx)
+				waitCtx := &metricsWaitContext{Context: opCtx, waiting: make(chan struct{})}
+				if !backoff {
+					metricsFailureStorm(db)
+					db.failMon.markFailed(armAddr)
+					db.failMon.mu.Lock()
+					db.failMon.failed[armAddr].excludedUntil = nowSeconds() + 600
+					db.failMon.mu.Unlock()
+					hook := func() { waitCtx.observe.Store(true) }
+					db.beforeAltFailureWait.Store(&hook)
+				}
+				var err error
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					err = arm.send(waitCtx, tx, servers)
+				}()
+				defer func() { stop(); <-done }()
+				if backoff {
+					for i := range 8 {
+						f, ok := peer.recv(ctx)
+						if !ok {
+							t.Fatalf("request %d missing", i)
+						}
+						if i == 7 {
+							// The successful frame write has already checked Err; the
+							// next check follows this retryable reply, before backoff.
+							waitCtx.armOnErr.Store(true)
+						}
+						if err := transport.WriteFrame(peer.server, arm.replyToken(t, f.body), (&types.ErrorOrError{ErrorCode: 1030}).MarshalFDB(), false); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				select {
+				case <-waitCtx.waiting:
+				case <-done:
+					t.Fatalf("request returned before entering its wait: %v", err)
+				case <-ctx.Done():
+					t.Fatal("request did not enter its wait")
+				}
+				closeDB()
+				select {
+				case <-done:
+					if !errors.Is(err, context.Canceled) {
+						t.Fatalf("database-close result = %v, want context.Canceled", err)
+					}
+				case <-time.After(500 * time.Millisecond):
+					t.Fatal("request did not return promptly after database close")
+				}
+				if err := opCtx.Err(); err != nil {
+					t.Fatalf("database close also cancelled the independent request: %v", err)
+				}
+				noFrame(t, peer, 0, "after database close")
+			})
+		}
+	}
 }
