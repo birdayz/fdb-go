@@ -75,7 +75,7 @@ func (tx *Transaction) getStorageMetricsRange(ctx context.Context, begin, end []
 			sizes, err = collectMetricsShards(ctx, locations, func(ctx context.Context, _ int, loc LocationResult) (int64, error) {
 				shardBegin, shardEnd := metricsShardBounds(begin, end, loc)
 				return tx.getStorageMetricsRange(ctx, shardBegin, shardEnd, minVersion, []LocationResult{loc})
-			})
+			}, tx.db.afterMetricsShardResult.Load())
 			for _, size := range sizes {
 				total += size
 			}
@@ -113,7 +113,7 @@ func metricsShardBounds(begin, end []byte, loc LocationResult) ([]byte, []byte) 
 
 // Run each shard through its first enqueue or suspension before starting the next,
 // as Flow does. Match waitForAll's error propagation and ordered results.
-func collectMetricsShards[T any](parent context.Context, locations []LocationResult, send func(context.Context, int, LocationResult) (T, error)) ([]T, error) {
+func collectMetricsShards[T any](parent context.Context, locations []LocationResult, send func(context.Context, int, LocationResult) (T, error), afterResult *func(int)) ([]T, error) {
 	ctx, cancel := context.WithCancel(parent)
 	type result struct {
 		index int
@@ -149,6 +149,9 @@ func collectMetricsShards[T any](parent context.Context, locations []LocationRes
 				return nil, res.err
 			}
 			values[res.index] = res.value
+			if afterResult != nil {
+				(*afterResult)(res.index)
+			}
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -275,25 +278,51 @@ func (tx *Transaction) metricsSend(ctx context.Context, server ServerInfo, endpo
 		tx.db.handleReadConnError(server.Address, conn, err)
 		return nil, false
 	}
+	var closed <-chan struct{}
+	if tx.db.ctx != nil {
+		closed = tx.db.ctx.Done()
+	}
+	if hook := tx.db.beforeMetricsReplyWait.Load(); hook != nil {
+		(*hook)()
+	}
+	var resp transport.Response
 	select {
-	case resp := <-replyCh:
+	case resp = <-replyCh:
+	case <-conn.Done():
+		if hook := tx.db.beforeMetricsDisconnectReply.Load(); hook != nil {
+			(*hook)()
+		}
+		// A published reply wins over disconnect; otherwise do not wait for
+		// pending-reply failure delivery behind a blocked socket Close.
+		select {
+		case resp = <-replyCh:
+		default:
+			replyHandle.Cancel()
+			replyCleanup.release()
+			tx.db.handleReadConnError(server.Address, conn, &transport.ConnClosedError{})
+			return nil, false
+		}
+	case <-closed:
+		replyHandle.Cancel()
 		replyCleanup.release()
-		if resp.Err != nil {
-			tx.db.handleReadConnError(server.Address, conn, resp.Err)
-			return nil, false
-		}
-		// An in-band broken_promise or request_maybe_delivered is not a response:
-		// loadBalance moves on to the next replica (LoadBalance.actor.h:344-377).
-		if err := wire.ReadErrorOrInto(resp.Body, new(wire.Reader)); isMaybeDelivered(err) {
-			tx.db.noteBrokenPromise(err, server.Address, token)
-			return nil, false
-		}
-		return resp.Body, true
+		return nil, false
 	case <-ctx.Done():
 		replyHandle.Cancel()
 		replyCleanup.release()
 		return nil, false
 	}
+	replyCleanup.release()
+	if resp.Err != nil {
+		tx.db.handleReadConnError(server.Address, conn, resp.Err)
+		return nil, false
+	}
+	// An in-band broken_promise or request_maybe_delivered is not a response:
+	// loadBalance moves on to the next replica (LoadBalance.actor.h:344-377).
+	if err := wire.ReadErrorOrInto(resp.Body, new(wire.Reader)); isMaybeDelivered(err) {
+		tx.db.noteBrokenPromise(err, server.Address, token)
+		return nil, false
+	}
+	return resp.Body, true
 }
 
 // GetRangeSplitPoints returns suggested split points for the given key range.
@@ -361,7 +390,7 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 				partEnd = end
 			}
 			return tx.sendSplitRange(ctx, partBegin, partEnd, chunkSize, loc.Servers)
-		})
+		}, tx.db.afterMetricsShardResult.Load())
 		if err != nil {
 			if isWrongShardServer(err) || isAllAlternativesFailed(err) {
 				tx.db.locCache.invalidateRange(begin, end, tx.tenantId)

@@ -102,14 +102,26 @@ between them (RFC-271); the close runs after the unlock in a database-owned goro
 Reporting failure does not wait for socket teardown, so joining cancelled shard
 workers cannot withhold an error or timeout behind TLS `close_notify`. Shutdown
 also detaches the pool before closing sockets; a discarded dial publishes its result
-before closing outside `connMu`, and the dial-panic backstop schedules teardown.
+before closing outside `connMu`, and the dial-panic backstop publishes failure
+before joining its unpublished connection outside the lock.
 Thus a cancelled worker acquiring the pool lock cannot wait behind another close.
 Acquisition checks the database lifetime under that lock before inspecting cohorts,
 so an unclosed connection cannot escape a completed cohort during shutdown's drain.
 A completed, undrained dial cohort referring to the removed connection is detached
-under the same lock, so a new sender cannot
-acquire the failed connection between the unlock and the close. `Database.Close` can
-return while such a connection is still closing; its loops end with the close.
+under the same lock, so a new sender cannot acquire the failed connection between
+unlock and close. `Database.Close` remains a complete transport-shutdown barrier:
+
+- A shared dial enrolls under `connMu` before its owner starts, covering pending
+  cohorts and successful-but-unpublished discard/panic teardown.
+- Every successfully pooled connection enrolls before publication. Its lifetime
+  owner waits for connection death and joins `Conn.Close`, retaining ownership
+  across leases, completed/undrained cohorts, eviction and transport self-failure.
+- Shutdown cancels the database before acquiring `connMu` to detach the pool, so
+  neither new dials nor connection publication can enroll after the drain barrier.
+  Dial-to-connection ownership overlaps; no Add can race a zero-count Wait.
+- Late failure reporters do not enroll new owners. Pool eviction merely initiates
+  asynchronous teardown of an already-owned connection; shutdown joins it outside
+  `connMu` together with pending dials and background workers.
 
 ## 4. `TransactCtx` and a dispatched commit: kept
 
@@ -170,6 +182,24 @@ and names the bound that matches libfdb_c, the transaction timeout or `Cancel`.
     `TestMetricsRequestDatabaseCloseInterruptsAllFailedDelay`: closing only the database
     lifetime interrupts backoff, all-excluded, empty-list and exhausted-endpoint waits
     while the request context stays live.
+  - `TestMetricsPublishedReplyWinsDisconnect`: after an observed completed flush,
+    gate the disconnect-selected branch, publish the primary reply, and require its
+    literal value without backup traffic while socket close stays held.
+  - `TestMetricsReplyWaitObservesDatabaseOnlyCancellation`: both operations cancel
+    an outstanding reply while its socket and caller remain live.
+  - `TestDatabaseCloseJoinsPendingSharedDial`: from an otherwise empty database,
+    shutdown reaches its join while a shared dial is held, rejects late enrollment,
+    and waits for that dial's failure publication and owner completion.
+  - `TestMetricsReplyWaitEndsBeforeSocketClose`: both public operations wake an
+    already-outstanding reply on disconnect (failover) or database shutdown while
+    socket teardown remains gated.
+  - `TestDatabaseCloseJoinsDetachedConnection`: shutdown joins a previously evicted
+    gated connection after an observed drained-pool join boundary; late failure
+    reports cannot create a new ownership slot.
+  - `TestDialTeardownPublishesBeforeClose`: discarded and pooling-panic dials publish
+    failure and release `connMu` while close is gated, and remain shutdown-owned.
+  - `TestSplitPointsRetryRestartsAllShards`: literal wire errors 1001/1006 cancel an unanswered
+    old sibling, reissues every shard, and excludes old points from the fresh result.
   - `TestMetricsFanoutDoesNotWaitForConnectionClose`: both public metrics operations
     return a sibling's terminal error or caller cancellation while a failed shard's
     socket close remains gated, then prove teardown completes after gate release.

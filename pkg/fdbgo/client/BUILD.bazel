@@ -415,6 +415,7 @@ go_test(
 # gazelle:exclude conn_identity_unit_test.go
 # gazelle:exclude location_cache_unit_test.go
 # gazelle:exclude metrics_shards_unit_test.go
+# gazelle:exclude metrics_lifetime_unit_test.go
 # gazelle:exclude decode_failure_unit_test.go
 # gazelle:exclude reply_ground_truth_test.go
 go_test(
@@ -425,6 +426,7 @@ go_test(
         "fdberror_assert_test.go",
         "hedge_budget_helpers_test.go",
         "location_cache_unit_test.go",
+        "metrics_lifetime_unit_test.go",
         "metrics_shards_unit_test.go",
         "reply_ground_truth_test.go",
     ],
