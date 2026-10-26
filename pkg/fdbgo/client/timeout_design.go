@@ -3,7 +3,9 @@ package client
 import (
 	"os"
 	"reflect"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 	"weak"
 )
@@ -111,20 +113,47 @@ func (tx *Transaction) armDesignTimerLocked(delay time.Duration) {
 	tx.armDesignWeakTimerLocked(delay)
 }
 
+var onDesignWeakTimerStop atomic.Pointer[func(*time.Timer)]
+
+type designWeakCleanup struct {
+	t atomic.Pointer[time.Timer]
+}
+
+func stopDesignWeakTimer(c *designWeakCleanup) {
+	if tm := c.t.Swap(nil); tm != nil {
+		tm.Stop()
+		if fn := onDesignWeakTimerStop.Load(); fn != nil {
+			(*fn)(tm)
+		}
+	}
+}
+
 func (tx *Transaction) armDesignWeakTimerLocked(delay time.Duration) {
 	tx.designDeadline = monoNow() + int64(delay)
 	if tx.designTimer == nil || tx.designWeak.Value() == nil {
 		if tx.designTimer != nil {
+			if tx.designCleanup != nil {
+				tx.designCleanup.t.Store(nil)
+			}
+			tx.designCleanupHandle.Stop()
 			tx.designTimer.Stop()
 		}
 		w := weak.Make(tx)
 		tx.designWeak = w
-		tx.designTimer = time.AfterFunc(delay, func() {
+		tm := time.AfterFunc(delay, func() {
 			if t := w.Value(); t != nil {
 				t.fireDesignTimeout()
 			}
 		})
+		tx.designTimer = tm
+		c := &designWeakCleanup{}
+		c.t.Store(tm)
+		tx.designCleanup = c
+		tx.designCleanupHandle = runtime.AddCleanup(tx, stopDesignWeakTimer, c)
 	} else {
+		if tx.designCleanup != nil {
+			tx.designCleanup.t.Store(tx.designTimer)
+		}
 		tx.designTimer.Reset(delay)
 	}
 }
@@ -153,6 +182,9 @@ func (tx *Transaction) stopDesignTimerLocked() {
 		e.mu.Lock()
 		e.tx = nil
 		e.mu.Unlock()
+	}
+	if tx.designCleanup != nil {
+		tx.designCleanup.t.Store(nil)
 	}
 	if tx.designTimer != nil {
 		tx.designTimer.Stop()
@@ -191,6 +223,9 @@ func (tx *Transaction) releaseTransactTimeout() {
 		tx.timeoutNeedsArm = true
 	}
 	tx.timeoutArmed = false
+	if tx.designCleanup != nil {
+		tx.designCleanup.t.Store(nil)
+	}
 	if tx.designTimer != nil {
 		tx.designTimer.Stop()
 	}
@@ -237,6 +272,9 @@ func (tx *Transaction) expireTimeoutLocked() {
 	}
 	if tx.designTimer != nil {
 		tx.designDeadline = monoNow()
+		if tx.designCleanup != nil {
+			tx.designCleanup.t.Store(tx.designTimer)
+		}
 		tx.designTimer.Reset(0)
 	}
 }

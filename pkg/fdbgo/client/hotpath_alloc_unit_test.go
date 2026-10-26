@@ -144,15 +144,24 @@ func TestGRVBatchStorageReuse(t *testing.T) {
 		t.Fatal("flush did not recycle the cleared batch")
 	}
 
-	// Production getReadVersion slow path acquires and returns grvReplyPool channels
-	// with zero allocations per serial fetch once warmed.
+	// Production getReadVersion and readVersionState.cachedOrFetchReadVersion
+	// reuse grvReplyPool and inlinePending with zero allocations once warmed.
 	db := &database{ctx: context.Background()}
+	db.grvBatchers[grvBatcherDefault] = b
 	cancelledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if allocs := testing.AllocsPerRun(100, func() {
 		_, _, _, _ = b.getReadVersion(db, cancelledCtx, grvPriorityDefault, types.SpanContext{}, nil, false, false)
 	}); allocs != 0 {
 		t.Fatalf("ALLOC_GRV_SLOW_PATH: %v allocations per serial getReadVersion, want 0", allocs)
+	}
+	var state readVersionState
+	fetchReq := readVersionRequest{db: db, flags: grvPriorityDefault}
+	if allocs := testing.AllocsPerRun(100, func() {
+		state = readVersionState{}
+		_, _, _ = state.cachedOrFetchReadVersion(cancelledCtx, &fetchReq, 0, nil)
+	}); allocs != 0 {
+		t.Fatalf("ALLOC_GRV_INLINE_STATE: %v allocations per cachedOrFetchReadVersion, want 0", allocs)
 	}
 }
 

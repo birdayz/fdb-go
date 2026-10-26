@@ -6,6 +6,7 @@ import (
 	"net"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"weak"
@@ -90,25 +91,50 @@ func TestDesignTimeoutStaleArmIsRejected(t *testing.T) {
 	}
 }
 
-// The timer holds the transaction weakly: an armed transaction that is
-// dropped is collectable before its deadline.
+// The timer holds the transaction weakly and registers an AddCleanup to stop
+// the runtime timer when an armed transaction is dropped before its deadline.
 func TestDesignTimeoutDoesNotRetainTransaction(t *testing.T) {
 	t.Parallel()
-	arm := func() weak.Pointer[Transaction] {
+	stoppedCh := make(chan struct{})
+	var stopOnce sync.Once
+	var targetTimer atomic.Pointer[time.Timer]
+	hook := func(tm *time.Timer) {
+		if tm == targetTimer.Load() {
+			stopOnce.Do(func() { close(stoppedCh) })
+		}
+	}
+	onDesignWeakTimerStop.Store(&hook)
+	defer onDesignWeakTimerStop.CompareAndSwap(&hook, nil)
+
+	arm := func() (weak.Pointer[Transaction], *time.Timer) {
 		tx := &Transaction{}
 		tx.readErrMu.Lock()
 		tx.timeoutArm++
 		tx.timeoutArmed = true
 		tx.armDesignTimerLocked(time.Hour) // still armed when dropped
+		tm := tx.designTimer
+		targetTimer.Store(tm)
 		tx.readErrMu.Unlock()
-		return weak.Make(tx)
+		return weak.Make(tx), tm
 	}
-	w := arm()
-	for i := 0; i < 20 && w.Value() != nil; i++ {
+	w, tm := arm()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
 		runtime.GC()
-	}
-	if w.Value() != nil {
-		t.Fatal("an armed timer kept a dropped transaction alive")
+		select {
+		case <-stoppedCh:
+			if w.Value() != nil {
+				t.Fatal("cleanup ran while weak pointer was still non-nil")
+			}
+			if tm.Stop() {
+				t.Fatal("collected transaction's weak timer was still active in the runtime timer heap")
+			}
+			return
+		case <-time.After(time.Millisecond):
+			if time.Now().After(deadline) {
+				t.Fatalf("dropped transaction timer was not stopped by cleanup (weak=%v)", w.Value())
+			}
+		}
 	}
 }
 

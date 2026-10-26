@@ -865,15 +865,12 @@ func TestPipelinedGet_Resolve_TimeoutRetries(t *testing.T) {
 // connection bad (handleConnError) and re-drives through the full getValue path.
 //
 // The flush error is driven through a REAL conn deterministically: a conn dialed
-// to the storage server, then Close()d (joins the loops), so Resolve()'s flush
-// finds a dead connection and returns errConnClosed — a faithful flush error (a
-// conn torn down between the deferred send and the flush). resolveFull then
-// re-dials a clean conn (the pool self-heals on a closed entry) and returns the value.
-//
-// Revert-proof: with the flush-error arm removed, the ignored flush error falls
-// through to the select, whose replyCh never fires and whose timer is set far
-// beyond ctx, so the ctx.Done arm (transaction.go:904) returns ctx.Err() — the
-// test reddens (Resolve surfaces an error instead of the value).
+// to the storage server, then Close()d (joins the loops), so Resolve()'s
+// FlushContext finds a closed connection and returns errConnClosed; resolveFull
+// then re-dials a clean conn (the pool self-heals on a closed entry) and returns
+// the value. Revert-proof: with the flush-error arm in pending_get.go removed,
+// the ignored flush error falls through to the select, whose replyCh never fires
+// and whose timer is set far beyond ctx, so the ctx.Done arm returns ctx.Err().
 func TestPipelinedGet_Resolve_FlushErrorRetries(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

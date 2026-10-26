@@ -229,6 +229,38 @@ func TestSetTimeout_UndeliveredKeepsPipelinedReplyWait(t *testing.T) {
 	if !timerChecked || !sent.replyConsumed {
 		t.Fatalf("timerChecked=%t replyConsumed=%t, want (true, true)", timerChecked, sent.replyConsumed)
 	}
+
+	// When the reply is already ready in replyCh on Resolve entry, the nonblocking
+	// fast probe consumes it without acquiring a pooled reply timer.
+	var sentReady *PendingGet
+	readyTimerAcquired := false
+	tx.afterPendingSend = func(p *PendingGet) {
+		sentReady = p
+		orig := p.replyCh
+		readyCh := make(chan transport.Response, 1)
+		select {
+		case r := <-orig:
+			readyCh <- r
+		case <-ctx.Done():
+			t.Errorf("timed out waiting for ready reply: %v", ctx.Err())
+		case <-time.After(10 * time.Second):
+			t.Error("ready reply did not arrive within 10s")
+		}
+		p.replyCh = readyCh
+		p.onReplyTimer = func(*time.Timer) {
+			readyTimerAcquired = true
+		}
+	}
+	_, pendingReady, err := tx.GetPipelined(ctx, []byte(t.Name()+"_ready"))
+	if err != nil || pendingReady == nil || sentReady != pendingReady {
+		t.Fatalf("GetPipelined(ready) = pending %v, sent %v, err %v", pendingReady != nil, sentReady != nil, err)
+	}
+	if _, err := pendingReady.Resolve(); err != nil {
+		t.Fatalf("Resolve(ready) = %v, want nil", err)
+	}
+	if readyTimerAcquired || !sentReady.replyConsumed {
+		t.Fatalf("readyTimerAcquired=%t replyConsumed=%t, want (false, true)", readyTimerAcquired, sentReady.replyConsumed)
+	}
 }
 
 // TestSetTimeout_BoundsHungLocate covers the cache-MISS locate (GetKeyServerLocations)

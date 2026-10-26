@@ -8,8 +8,9 @@ the public `pkg/fdbgo/fdb` facade; CGo uses Apple's Go binding to `libfdb_c`.
 The workload/measurement implementation was imported from the frozen V6 VM
 harness (source archive SHA256
 `3d2504ae0db14fad14f0384287377998231cf049310c8289d6e7245d3428e0d0`).
-This lifecycle-accounting revision (V7) preserves the V6 workload and measured
-window, but adds post-window draining and terminal shutdown snapshots. It uses
+This lifecycle-accounting revision (V7) preserves the original V6 workloads and
+measured window (and adds the mixed `getset100` workload), plus post-window
+draining and terminal shutdown snapshots. It uses
 the main module and Bazel dependency graph, including its native-binding patch,
 instead of the historical standalone module. Historical frozen V6 archives are unchanged.
 It is **not a claim that newly built binaries reproduce historical results**.

@@ -709,9 +709,8 @@ func TestDesignColdHeldOrderAndStartupPing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// While held2 is still parked on resumeHeld2 after the prefix has drained
-	// (and ClearSendOrder has detached order), a warm sender and a warm control
-	// frame must still queue behind held2 on c.heldWaiters rather than overtaking it.
+	// While held2 is parked on resumeHeld2 after the prefix drains and order is
+	// cleared, warm traffic must still queue behind held2 on c.heldWaiters.
 	c.ClearSendOrder(&order)
 	warm1Ctx, warm1Sig := WithSuspendSignal(ctx)
 	defer warm1Sig.Fire()

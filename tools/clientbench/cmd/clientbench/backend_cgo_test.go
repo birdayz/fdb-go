@@ -35,9 +35,8 @@ func TestNativeBarrierFIFOOrdering(t *testing.T) {
 	}
 	defer probeDB.Close()
 
-	// Negative control 1: defined synchronous transaction option returns while the
-	// native network thread is still parked, so verifySynchronousBypassRejected
-	// specifically reports errSynchronousBypass.
+	// Negative control 1: synchronous option returns while the native network
+	// thread is still parked, so verifySynchronousBypassRejected rejects it.
 	err = probeDB.verifySynchronousBypassRejected(func() error {
 		tx, err := b.db.CreateTransaction()
 		if err != nil {
@@ -48,11 +47,11 @@ func TestNativeBarrierFIFOOrdering(t *testing.T) {
 		return err
 	})
 	if !errors.Is(err, errSynchronousBypass) {
-		t.Fatalf("verifySynchronousBypassRejected = %v, want %v", err, errSynchronousBypass)
+		t.Fatalf("verifySynchronousBypassRejected (option) = %v, want %v", err, errSynchronousBypass)
 	}
 
-	// Negative control 2: queuing GetApproximateSize and firing onBarrierWait
-	// without awaiting fut.Get() returns while preDone == 0 and is rejected.
+	// Negative control 2: queuing GetApproximateSize and invoking onBarrierWait
+	// without awaiting fut.Get() returns while the gate is parked and is rejected.
 	err = probeDB.verifyBarrierWaitsForPredecessor(b, func() error {
 		tx, err := b.db.CreateTransaction()
 		if err != nil {
@@ -60,14 +59,14 @@ func TestNativeBarrierFIFOOrdering(t *testing.T) {
 		}
 		fut := tx.GetApproximateSize()
 		if b.onBarrierWait != nil {
-			b.onBarrierWait(fut)
+			fut = b.onBarrierWait(fut)
 		}
 		fut.Cancel()
 		tx.Cancel()
 		return nil
 	})
-	if err == nil {
-		t.Fatal("verifyBarrierWaitsForPredecessor accepted a barrier that omitted fut.Get()")
+	if !errors.Is(err, errSynchronousBypass) {
+		t.Fatalf("verifyBarrierWaitsForPredecessor (no-wait future) = %v, want %v", err, errSynchronousBypass)
 	}
 
 	// Positive control: production b.Barrier() queues an unready future while the

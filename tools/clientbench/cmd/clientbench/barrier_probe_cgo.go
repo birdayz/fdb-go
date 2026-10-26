@@ -21,6 +21,9 @@ typedef struct {
 	atomic_int ran_inline;
 	atomic_int parked;
 	atomic_int release;
+	atomic_int seq;
+	atomic_int pre_seq;
+	atomic_int return_seq;
 	atomic_int pre_done;
 	atomic_int pre_err;
 	atomic_int gate_cb_done;
@@ -29,6 +32,8 @@ typedef struct {
 
 static void on_pre_ready(FDBFuture* f, void* param) {
 	barrier_probe_t* p = (barrier_probe_t*)param;
+	int s = atomic_fetch_add(&p->seq, 1) + 1;
+	atomic_store(&p->pre_seq, s);
 	atomic_store(&p->pre_done, 1);
 	atomic_store(&p->pre_cb_done, 1);
 }
@@ -89,6 +94,9 @@ static fdb_error_t start_barrier_probe(FDBDatabase* db, int64_t initial_delay_ms
 		atomic_init(&p->ran_inline, 0);
 		atomic_init(&p->parked, 0);
 		atomic_init(&p->release, 0);
+		atomic_init(&p->seq, 0);
+		atomic_init(&p->pre_seq, 0);
+		atomic_init(&p->return_seq, 0);
 		atomic_init(&p->pre_done, 0);
 		atomic_init(&p->pre_err, 0);
 		atomic_init(&p->gate_cb_done, 0);
@@ -138,13 +146,22 @@ static int probe_pre_done(barrier_probe_t* p) {
 	return atomic_load(&p->pre_done) != 0 && atomic_load(&p->pre_err) == 0;
 }
 
+static int record_barrier_return(barrier_probe_t* p) {
+	int s = atomic_fetch_add(&p->seq, 1) + 1;
+	atomic_store(&p->return_seq, s);
+	return atomic_load(&p->pre_seq) == 1 && s == 2 && atomic_load(&p->pre_err) == 0;
+}
+
 static void release_barrier_probe(barrier_probe_t* p) {
 	atomic_store(&p->release, 1);
 }
 
 static int finish_barrier_probe(barrier_probe_t* p) {
 	cleanup_probe_attempt(p);
-	int ok = (atomic_load(&p->pre_err) == 0 && atomic_load(&p->pre_done) == 1);
+	int ok = (atomic_load(&p->pre_err) == 0 &&
+		atomic_load(&p->pre_done) == 1 &&
+		atomic_load(&p->pre_seq) == 1 &&
+		atomic_load(&p->return_seq) == 2);
 	free(p);
 	return ok;
 }
@@ -185,23 +202,42 @@ func (p *nativeProbeDB) Close() {
 
 var errSynchronousBypass = errors.New("synchronous call returned before queued onMainThread predecessor completed")
 
-// verifySynchronousBypassRejected proves a synchronous non-FIFO call returns
-// while the native network thread is still parked before the predecessor.
+// verifySynchronousBypassRejected proves a non-waiting call returns while the
+// native network thread is still parked before the predecessor.
 func (p *nativeProbeDB) verifySynchronousBypassRejected(fn func() error) error {
 	var probe *C.barrier_probe_t
 	if cerr := C.start_barrier_probe(p.cDB, 0, &probe); cerr != 0 {
 		return fmt.Errorf("start_barrier_probe: %d", int(cerr))
 	}
 	err := fn()
-	preDone := C.probe_pre_done(probe)
+	ordered := C.record_barrier_return(probe)
 	C.finish_barrier_probe(probe)
 	if err != nil {
 		return err
 	}
-	if preDone == 0 {
+	if ordered == 0 {
 		return errSynchronousBypass
 	}
 	return nil
+}
+
+type barrierProbeFuture struct {
+	fdb.FutureInt64
+	probe             *C.barrier_probe_t
+	queuedWhileParked bool
+	waited            bool
+	ordered           bool
+}
+
+func (f *barrierProbeFuture) Get() (int64, error) {
+	if !f.queuedWhileParked || f.FutureInt64.IsReady() || C.probe_pre_done(f.probe) != 0 {
+		return f.FutureInt64.Get()
+	}
+	f.waited = true
+	C.release_barrier_probe(f.probe)
+	v, err := f.FutureInt64.Get()
+	f.ordered = C.record_barrier_return(f.probe) != 0
+	return v, err
 }
 
 // verifyBarrierWaitsForPredecessor proves fn queues an unready future while the
@@ -211,38 +247,25 @@ func (p *nativeProbeDB) verifyBarrierWaitsForPredecessor(b *backend, fn func() e
 	if cerr := C.start_barrier_probe(p.cDB, 0, &probe); cerr != 0 {
 		return fmt.Errorf("start_barrier_probe: %d", int(cerr))
 	}
-	queued := make(chan bool, 1)
-	b.onBarrierWait = func(fut fdb.FutureInt64) {
-		queued <- (!fut.IsReady() && C.probe_pre_done(probe) == 0)
+	var wrapped *barrierProbeFuture
+	b.onBarrierWait = func(fut fdb.FutureInt64) fdb.FutureInt64 {
+		wrapped = &barrierProbeFuture{
+			FutureInt64:       fut,
+			probe:             probe,
+			queuedWhileParked: !fut.IsReady() && C.probe_pre_done(probe) == 0,
+		}
+		return wrapped
 	}
 	defer func() { b.onBarrierWait = nil }()
-	type barrierOutcome struct {
-		err     error
-		preDone int
+	err := fn()
+	if wrapped == nil || !wrapped.waited {
+		_ = C.record_barrier_return(probe)
 	}
-	done := make(chan barrierOutcome, 1)
-	go func() {
-		err := fn()
-		done <- barrierOutcome{err: err, preDone: int(C.probe_pre_done(probe))}
-	}()
-	pendingWhileParked := <-queued
-	select {
-	case out := <-done:
-		C.finish_barrier_probe(probe)
-		return fmt.Errorf("barrier returned (%v) while native network thread was still parked", out.err)
-	default:
-	}
-	if !pendingWhileParked {
-		C.finish_barrier_probe(probe)
-		return errors.New("barrier future was ready or predecessor completed before gate release")
-	}
-	C.release_barrier_probe(probe)
-	out := <-done
 	ok := C.finish_barrier_probe(probe)
-	if out.err != nil {
-		return out.err
+	if err != nil {
+		return err
 	}
-	if out.preDone == 0 || ok == 0 {
+	if wrapped == nil || !wrapped.queuedWhileParked || !wrapped.waited || !wrapped.ordered || ok == 0 {
 		return errSynchronousBypass
 	}
 	return nil
