@@ -197,6 +197,18 @@ func TestRealRecordLayerCoveringIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, order := range []string{"trace", "time"} {
+		t.Run(order+"_intrinsic_v2", func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+			defer cancel()
+			testOtelIntrinsicV2(t, ctx, cluster, order)
+		})
+		t.Run(order+"_approximate_size_error", func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+			defer cancel()
+			testOtelApproximateSizeError(t, ctx, cluster, order)
+		})
 		t.Run(order, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)

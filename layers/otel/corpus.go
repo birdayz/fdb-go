@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	ToolVersion = "otelbench-v1"
+	ToolVersion = "otelbench-v2"
 	QueryKey    = "customer.incident_key_283"
 	QueryValue  = "283"
 )
@@ -96,14 +96,37 @@ func randomWord(seed uint64, domain string, i int) [32]byte {
 	return sha256.Sum256(append([]byte(domain), b[:]...))
 }
 
-// Generate uses counter-based hashes and makes two spans per trace, including
-// ties, scope/type lookalikes and a guaranteed absent query value.
+// fixtureWord is a keyed bijection over nonzero uint64s (cycle-walking zero).
+// It gives synthetic randomized-looking IDs, not cryptographic/security IDs.
+// Unlike truncated hashes, uniqueness is guaranteed for distinct ordinals.
+func fixtureWord(seed uint64, domain string, ordinal int) uint64 {
+	key := randomWord(seed, domain, 0)
+	mix := func(x uint64) uint64 {
+		x ^= binary.BigEndian.Uint64(key[:8])
+		x ^= x >> 30
+		x *= 0xbf58476d1ce4e5b9
+		x ^= x >> 27
+		x *= 0x94d049bb133111eb
+		return x ^ (x >> 31)
+	}
+	v := mix(uint64(ordinal) + 1)
+	if v == 0 {
+		v = mix(0)
+	}
+	return v
+}
+
+// Generate makes exactly two adjacent spans per trace (except an odd final
+// singleton), with injective trace/span identities and scope/type controls.
 func Generate(c Config, i int) Span {
 	traceOrdinal := i / 2
-	tr := randomWord(c.Seed, "trace", traceOrdinal)
-	id := randomWord(c.Seed, "span", i)
+	var tr [16]byte
+	var id [8]byte
+	binary.BigEndian.PutUint64(tr[:8], fixtureWord(c.Seed, "trace-a-v2", traceOrdinal))
+	binary.BigEndian.PutUint64(tr[8:], fixtureWord(c.Seed, "trace-b-v2", traceOrdinal))
+	binary.BigEndian.PutUint64(id[:], fixtureWord(c.Seed, "span-v2", i))
 	ts := randomWord(c.Seed, "time", i)
-	s := Span{Ordinal: i, Tenant: traceOrdinal % c.Tenants, Trace: hex.EncodeToString(tr[:16]), ID: hex.EncodeToString(id[:8]), Start: 1700000000000000000 + int64(binary.BigEndian.Uint64(ts[:8])%86400)*1000000000}
+	s := Span{Ordinal: i, Tenant: traceOrdinal % c.Tenants, Trace: hex.EncodeToString(tr[:]), ID: hex.EncodeToString(id[:]), Start: 1700000000000000000 + int64(binary.BigEndian.Uint64(ts[:8])%86400)*1000000000}
 	value := "other_" + fmt.Sprint(traceOrdinal)
 	if (traceOrdinal/c.Tenants)%c.MatchEvery == 0 {
 		value = QueryValue
@@ -117,6 +140,13 @@ func Generate(c Config, i int) Span {
 	for j := 4; j < c.Attributes; j++ {
 		s.Attributes = append(s.Attributes, Attribute{"span", fmt.Sprintf("custom.literal.%d", j), "string", fmt.Sprintf("v_%d_%d", j, i%97)})
 	}
+	if c.Attributes >= 8 {
+		s.Attributes[4] = Attribute{"span", "gen_ai.operation.name", "string", "chat"}
+		s.Attributes[5] = Attribute{"span", "gen_ai.provider.name", "string", "openai"}
+		s.Attributes[6] = Attribute{"span", "gen_ai.request.model", "string", "gpt-4"}
+		// Uniqueness is a synthetic fixture contract, not an OTel/provider promise.
+		s.Attributes[7] = Attribute{"span", "gen_ai.response.id", "string", "chatcmpl-fixture-v2-" + s.ID}
+	}
 	return s
 }
 
@@ -128,25 +158,9 @@ func Expected(c Config, scope, key, typ, value string) []Hit {
 }
 
 func ExpectedContext(ctx context.Context, c Config, scope, key, typ, value string) ([]Hit, error) {
-	latest := map[string]int64{}
-	for i := 0; i < c.Count; i++ {
-		if err := ctx.Err(); err != nil {
-			return nil, wrap("canceled", "oracle scan", err)
-		}
-		s := Generate(c, i)
-		if s.Tenant != c.Tenant {
-			continue
-		}
-		for _, a := range s.Attributes {
-			if a.Scope == scope && a.Key == key && a.Type == typ && a.Value == value {
-				if prev, ok := latest[s.Trace]; !ok || s.Start > prev {
-					latest[s.Trace] = s.Start
-				}
-				break
-			}
-		}
-	}
-	return oracleTopKContext(ctx, latest, c.K)
+	a := Attribute{Scope: scope, Key: key, Type: typ, Value: value}
+	results, _, _, err := scanOraclePredicates(ctx, c, []Attribute{a}, nil)
+	return results[a], err
 }
 
 // oracleTopK independently implements the declared result order; backend sort

@@ -54,7 +54,7 @@ type Evidence struct {
 }
 
 func NewEvidence(c Config, backend, mode, suite, revision string) Evidence {
-	return Evidence{Tool: ToolVersion, Backend: backend, Mode: mode, Suite: suite, Revision: revision, Go: runtime.Version(), Config: c, Corpus: corpusIdentity(c), Start: time.Now().UTC().Format(time.RFC3339Nano), Boundary: "immutable unique synthetic spans; local closed-loop diagnostic, not SLO/HA/production evidence; covering string/int equality and full trace lookup only"}
+	return Evidence{Tool: ToolVersion, Backend: backend, Mode: mode, Suite: suite, Revision: revision, Go: runtime.Version(), Config: c, Corpus: corpusIdentity(c), Start: time.Now().UTC().Format(time.RFC3339Nano), Boundary: "fixture V2 immutable synthetic spans; local closed-loop diagnostic, not SLO/HA/production evidence; typed scoped equality, complete trace, standalone span ID, intrinsic half-open time; synthetic ID/response uniqueness is not a provider or semconv guarantee"}
 }
 
 func resultDigest(v any) string {
@@ -79,19 +79,84 @@ func histogram(samples []int64) Histogram {
 }
 
 type queryCase struct {
+	kind          string
 	class         string
 	attribute     Attribute
 	trace         string
+	span          string
+	interval      TimeRange
+	sourceOrdinal int
 	expected      []Hit
 	expectedTrace []SpanHit
+	expectedSpans []SpanMatch
+}
+
+func ValidateQuerySuite(c Config, suite string) error {
+	switch suite {
+	case "selective", "mixed", "rare", "trace", "span", "time":
+		return nil
+	case "genai", "all":
+		if c.Attributes < 8 {
+			return fail("config", "prepare queries", "genai and all suites require at least 8 attributes")
+		}
+		return nil
+	default:
+		return fail("config", "prepare queries", "suite must be selective, mixed, rare, trace, span, genai, time or all")
+	}
+}
+
+func intrinsicQueryCase(c Config, source Span, kind string, i int) queryCase {
+	q := queryCase{kind: kind, sourceOrdinal: source.Ordinal}
+	switch kind {
+	case "trace":
+		q.class, q.trace = "trace", source.Trace
+		if i%2 != 0 {
+			q.class, q.trace = "trace_absent", "00000000000000000000000000000000"
+		}
+	case "span":
+		q.class, q.span = "span", source.ID
+		if i%2 != 0 {
+			q.class, q.span = "span_absent", "0000000000000000"
+		}
+	case "time":
+		q.class, q.interval = "time_narrow", TimeRange{Start: source.Start, End: source.Start + 1}
+		switch i % 4 {
+		case 1:
+			q.class, q.interval = "time_empty", TimeRange{Start: source.Start, End: source.Start}
+		case 2:
+			q.class, q.interval = "time_absent", TimeRange{Start: 1699999999999999999, End: 1700000000000000000}
+		case 3:
+			q.class, q.interval = "time_broad", TimeRange{Start: 1700000000000000000, End: 1700086400000000000}
+		}
+	case "genai":
+		q.kind, q.class = "attribute", "genai_response"
+		q.attribute = Attribute{"span", "gen_ai.response.id", "string", "chatcmpl-fixture-v2-" + source.ID}
+		switch i % 8 {
+		case 1:
+			q.class, q.attribute.Scope = "genai_scope_resource", "resource"
+		case 2:
+			q.class, q.attribute.Scope = "genai_scope_scope", "scope"
+		case 3:
+			q.class, q.attribute.Type, q.attribute.Value = "genai_type", "int", "42"
+		case 4:
+			q.class, q.attribute.Value = "genai_absent", "chatcmpl-fixture-v2-0000000000000000"
+		case 5:
+			q.class, q.attribute = "genai_operation", source.Attributes[4]
+		case 6:
+			q.class, q.attribute = "genai_provider", source.Attributes[5]
+		case 7:
+			q.class, q.attribute = "genai_model", source.Attributes[6]
+		}
+	}
+	return q
 }
 
 func queryCases(ctx context.Context, c Config, suite string) ([]queryCase, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, wrap("canceled", "prepare queries", err)
 	}
-	if suite != "selective" && suite != "mixed" && suite != "rare" && suite != "trace" {
-		return nil, fail("config", "prepare queries", "suite must be selective, mixed, rare or trace")
+	if err := ValidateQuerySuite(c, suite); err != nil {
+		return nil, err
 	}
 	cases := make([]queryCase, c.Iterations)
 	for i := range cases {
@@ -106,10 +171,22 @@ func queryCases(ctx context.Context, c Config, suite string) ([]queryCase, error
 			ordinal = c.Tenant
 		}
 		source := Generate(c, ordinal)
-		q := queryCase{class: "rare", attribute: Attribute{"span", QueryKey, "string", QueryValue}}
+		q := queryCase{kind: "attribute", sourceOrdinal: ordinal, class: "rare", attribute: Attribute{"span", QueryKey, "string", QueryValue}}
 		if suite == "trace" {
-			q.class = "trace"
-			q.trace = source.Trace
+			q.kind, q.class, q.trace = "trace", "trace", source.Trace
+		} else if suite == "span" || suite == "genai" || suite == "time" {
+			q = intrinsicQueryCase(c, source, suite, i)
+		} else if suite == "all" {
+			switch j := i % 16; {
+			case j < 2:
+				q = intrinsicQueryCase(c, source, "trace", j)
+			case j < 4:
+				q = intrinsicQueryCase(c, source, "span", j-2)
+			case j < 12:
+				q = intrinsicQueryCase(c, source, "genai", j-4)
+			default:
+				q = intrinsicQueryCase(c, source, "time", j-12)
+			}
 		} else if suite != "rare" {
 			switch i % 5 {
 			case 1:
@@ -136,69 +213,8 @@ func queryCases(ctx context.Context, c Config, suite string) ([]queryCase, error
 		}
 		cases[i] = q
 	}
-	// Compute expected answers for all unique predicates in one source traversal.
-	// These maps are oracle state only; backend query results are never cached.
-	lookup := map[Attribute]map[string]int64{}
-	traces := map[string][]SpanHit{}
-	for _, q := range cases {
-		if err := ctx.Err(); err != nil {
-			return nil, wrap("canceled", "prepare queries", err)
-		}
-		if q.class != "trace" {
-			if _, ok := lookup[q.attribute]; !ok {
-				lookup[q.attribute] = map[string]int64{}
-			}
-		} else if _, ok := traces[q.trace]; !ok {
-			traces[q.trace] = []SpanHit{}
-		}
-	}
-	for i := 0; i < c.Count; i++ {
-		if err := ctx.Err(); err != nil {
-			return nil, wrap("canceled", "prepare queries", err)
-		}
-		s := Generate(c, i)
-		if s.Tenant != c.Tenant {
-			continue
-		}
-		if _, ok := traces[s.Trace]; ok {
-			traces[s.Trace] = append(traces[s.Trace], SpanHit{s.ID, s.Start})
-		}
-		for _, a := range s.Attributes {
-			m, ok := lookup[a]
-			if !ok {
-				continue
-			}
-			if t, ok := m[s.Trace]; !ok || s.Start > t {
-				m[s.Trace] = s.Start
-			}
-		}
-	}
-	expected := make(map[Attribute][]Hit, len(lookup))
-	for attribute, latest := range lookup {
-		out, err := oracleTopKContext(ctx, latest, c.K)
-		if err != nil {
-			return nil, err
-		}
-		// Retain only K hits, once per predicate; cases share immutable answers.
-		compact := make([]Hit, len(out))
-		copy(compact, out)
-		expected[attribute] = compact
-	}
-	for trace := range traces {
-		if err := ctx.Err(); err != nil {
-			return nil, wrap("canceled", "prepare queries", err)
-		}
-		oracleTraceSort(traces[trace])
-	}
-	for i := range cases {
-		if err := ctx.Err(); err != nil {
-			return nil, wrap("canceled", "prepare queries", err)
-		}
-		if cases[i].class != "trace" {
-			cases[i].expected = expected[cases[i].attribute]
-		} else {
-			cases[i].expectedTrace = traces[cases[i].trace]
-		}
+	if _, err := prepareQueryOracles(ctx, c, cases); err != nil {
+		return nil, err
 	}
 	return cases, nil
 }
@@ -206,6 +222,13 @@ func queryCases(ctx context.Context, c Config, suite string) ([]queryCase, error
 // MeasureQueries excludes corpus/oracle preparation; includes manifest guards,
 // backend RPCs, decoding and exact covering verification. No warmup is hidden.
 func MeasureQueries(ctx context.Context, b Backend, c Config, suite string, e *Evidence) error {
+	if err := ctx.Err(); err != nil {
+		return wrap("canceled", "measure queries", err)
+	}
+	intrinsic, capable := b.(IntrinsicBackend)
+	if (suite == "span" || suite == "time" || suite == "all") && !capable {
+		return fail("config", "measure queries", "backend does not support intrinsic span/time queries")
+	}
 	cases, err := queryCases(ctx, c, suite)
 	if err != nil {
 		return err
@@ -225,7 +248,7 @@ func MeasureQueries(ctx context.Context, b Backend, c Config, suite string, e *E
 		}
 		sample := Sample{Iteration: i, Class: q.class}
 		before := time.Now()
-		if q.class == "trace" {
+		if q.kind == "trace" {
 			got, err := b.Trace(ctx, q.trace)
 			sample.Nanoseconds = time.Since(before).Nanoseconds()
 			if err == nil && !sameJSON(got, q.expectedTrace) {
@@ -246,11 +269,37 @@ func MeasureQueries(ctx context.Context, b Backend, c Config, suite string, e *E
 			if err != nil {
 				sample.Error = err.Error()
 			}
+		} else if q.kind == "span" {
+			got, err := intrinsic.Span(ctx, q.span)
+			sample.Nanoseconds = time.Since(before).Nanoseconds()
+			if err == nil && !sameJSON(got, q.expectedSpans) {
+				err = fail("oracle", "measure span", "standalone span result differs from independent oracle")
+			}
+			sample.Results, sample.Digest = len(got), resultDigest(got)
+			if w, ok := b.(interface{ LastQueryWork() QueryResult }); ok {
+				work := w.LastQueryWork()
+				sample.Candidates, sample.LogicalBytes = work.Candidates, work.Bytes
+				sample.ServerReadRows, sample.ServerReadBytes = work.ServerReadRows, work.ServerReadBytes
+				sample.ServerElapsed, sample.ResponseBytes, sample.ServerSummary = work.ServerElapsed, work.ResponseBytes, work.ServerSummary
+			}
+			if err != nil {
+				sample.Error = err.Error()
+			}
 		} else {
-			got, err := b.Query(ctx, q.attribute)
+			var got QueryResult
+			var err error
+			if q.kind == "time" {
+				got, err = intrinsic.Time(ctx, q.interval)
+			} else {
+				got, err = b.Query(ctx, q.attribute)
+			}
 			sample.Nanoseconds = time.Since(before).Nanoseconds()
 			if err == nil && !sameJSON(got.Hits, q.expected) {
-				err = fail("oracle", "measure equality", "equality identities/order differ from independent oracle")
+				if q.kind == "time" {
+					err = fail("oracle", "measure time", "time identities/order differ from independent oracle")
+				} else {
+					err = fail("oracle", "measure equality", "equality identities/order differ from independent oracle")
+				}
 			}
 			sample.Results = len(got.Hits)
 			sample.Candidates = got.Candidates
@@ -287,11 +336,13 @@ func MeasureQueries(ctx context.Context, b Backend, c Config, suite string, e *E
 // AuditQueries checks positive, scoped/type-lookalike and negative predicates
 // plus trace lookup against source truth; it does not substitute for source audit.
 func AuditQueries(ctx context.Context, b Backend, c Config) error {
-	for _, a := range []Attribute{{"span", QueryKey, "string", QueryValue}, {"resource", QueryKey + ".int", "string", QueryValue}, {"scope", QueryKey + ".int", "string", QueryValue}, {"span", QueryKey + ".int", "string", QueryValue}, {"span", QueryKey, "string", "absent_query_v1"}} {
-		expected, err := ExpectedContext(ctx, c, a.Scope, a.Key, a.Type, a.Value)
-		if err != nil {
-			return err
-		}
+	attributes := []Attribute{{"span", QueryKey, "string", QueryValue}, {"resource", QueryKey + ".int", "string", QueryValue}, {"scope", QueryKey + ".int", "string", QueryValue}, {"span", QueryKey + ".int", "string", QueryValue}, {"span", QueryKey, "string", "absent_query_v1"}}
+	expectedAttributes, _, _, err := scanOraclePredicates(ctx, c, attributes, nil)
+	if err != nil {
+		return err
+	}
+	for _, a := range attributes {
+		expected := expectedAttributes[a]
 		if err := ctx.Err(); err != nil {
 			return wrap("canceled", "audit queries", err)
 		}
@@ -307,10 +358,11 @@ func AuditQueries(ctx context.Context, b Backend, c Config) error {
 		}
 	}
 	s := Generate(c, min(2*c.Tenant, c.Count-1))
-	expected, err := ExpectedTraceContext(ctx, c, s.Trace)
-	if err != nil {
+	traceCases := []queryCase{{kind: "trace", trace: s.Trace, sourceOrdinal: s.Ordinal}}
+	if _, err := prepareQueryOracles(ctx, c, traceCases); err != nil {
 		return err
 	}
+	expected := traceCases[0].expectedTrace
 	if err := ctx.Err(); err != nil {
 		return wrap("canceled", "audit queries", err)
 	}

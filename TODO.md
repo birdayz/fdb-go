@@ -2684,6 +2684,19 @@ the trace experiment.
   then define a maintainer-owned complete-clear hook and safe prefix-delete preflight.
   Cover rebuild, drop and interrupted cleanup; do not assume the primary-only helper
   clears every structure or change Java-shared formats without checking the reference.
+- [ ] **Record Layer index-state accessor — dropped state/conflict errors.**
+  `index_state.go:GetIndexState` calls `ensureStoreStateLoaded` without an error
+  result, and `getIndexStateLocked` discards the error from `indexStateView.read`.
+  The latter can return READABLE together with a failed state-key conflict read.
+  The V2 real-FDB transactor regression reproduces the adapter returning attribute
+  query data with nil error when using this getter; full `just test` RED compiled
+  and failed both layouts. The adapter now uses supported `ReadIndexState`; full
+  `just test` GREEN passed 179 targets (2 executed / 177 cached). Regression receipt:
+  `layers/otel/bench/evidence/2026-10-27/state-error-regression.txt`.
+  `ReadIndexState` propagates initialization/liveness/conflict errors. Audit remaining transactional
+  callers and define a safe migration/deprecation contract for the non-error getter,
+  with cancellation, state-load and conflict-registration regressions. Do not infer
+  every core scan is affected: public scan paths already use error-aware checks.
 - [ ] **Record Layer typed custom scans — reusable guarded dispatch.**
   `ScanIndex` enforces readability/instrumentation, while direct `GetIndexMaintainer`
   capability calls leave those checks to callers. Provide a central typed scan path
@@ -2724,6 +2737,31 @@ the trace experiment.
   checks to manufacture throughput. Record any independently reproduced client
   defect separately with a regression; do not label serial-loader overhead, an
   application deadline, or an unmeasured pipeline hypothesis a client bug.
+  Follow-up at `290d0d7b7`: a single ordered 50k sweep completed and audited
+  serial/one-worker at 444 spans/s, pipelined/one-worker at 595, and batch mode
+  at 538 / 1,122 / 1,854 spans/s with one / two / four workers. All five completed
+  arms passed 1,000 timed oracle checks in total. Eight workers failed with
+  `transaction_timed_out (1031)` during store opening after 10,624 acknowledged
+  rows; its loading run correctly rejected audit. Do not report that partial
+  load as throughput or treat increasing workers as a proven capacity fix.
+  Retain the full failed arm and order/growing-database caveats in
+  `layers/otel/bench/evidence/2026-10-27/ingest-ab-50k/README.md`.
+  A separate frozen 100k baseline used 30.319 client CPU-seconds over 199.863 s
+  wall time, while storage queues grew; client CPU saturation is not established.
+  Profiling receipts: `layers/otel/bench/evidence/2026-10-27/profile-100k/`.
+  Profile commit/manifest/store reads and storage persistence/backpressure before
+  attributing delay to client correctness. Validate steady-state behavior at 1M
+  and above rather than extrapolating the short four-worker burst to 100M.
+  The subsequent requested 1M load failed after 412.312 s with 222,400 acknowledged
+  spans and error 1031 during an existing-record read. No ready publication or
+  complete source census was achieved. Post-failure FDB RSS was 4,249,853,952 bytes
+  near its 4-GiB container cap (server ceiling 8 GiB), with a 995,906,485-byte storage
+  persistence queue and 216.787 s worst storage durability lag. The manifest phase
+  includes implicit GRV/start waiting and dominates the overlapping worker totals;
+  do not conclude that the manifest KV, Go client, or Record Layer is defective.
+  Full failure receipts: `layers/otel/bench/evidence/2026-10-27/pilot-1m-failed/`.
+  Validate a properly budgeted role-separated server profile and persistence behavior
+  before retrying a larger population; do not hide this failure or count it as 1M.
 - [ ] **Go client / Record Layer query tails — unlocalized performance finding.**
   In the same immutable 100,000-span campaign at `12c293130`, three rotated rounds
   each measured 1,000 selective queries (200 per class) and 1,000 trace lookups per
@@ -2778,14 +2816,27 @@ regressions so they can be proposed upstream after the PoC.
   then bounded independent transaction workers. Retain old/new index maintenance,
   ownership checks, byte/time guards and complete-ready publication. Use measured
   profiles to justify core changes rather than assuming the adapter is the cause.
-- [ ] Add equivalent needle-query access paths on FDB and tuned ClickHouse for
+- [x] Add equivalent needle-query access paths on FDB and tuned ClickHouse for
   tenant-scoped trace ID, standalone span ID, indexed GenAI/custom attributes and
   half-open time ranges. Pin returned fields, duplicate handling, ordering, limits,
   scoped/type lookalikes and misses; trace-plus-span primary-key lookup is not a
   substitute for standalone span-ID search. Account for every maintained index.
-- [ ] Make the independent query oracle bounded-memory at 100M, with small-corpus
+  Implemented fixture/tool V2 with intrinsic Record Layer VALUE indexes, CH span/time
+  projections, exact GenAI response-ID predicates, and state/budget/boundary regressions.
+  Fast lane passed 179 targets (3 executed / 176 cached); real FDB and CH tests had
+  no skips. This implements access paths, not a 100M stored-population measurement.
+- [x] Make the independent query oracle bounded-memory at 100M, with small-corpus
   equivalence tests. Keep preparation outside timed queries and retain every timed
   answer check; do not replace source truth with a backend-derived expected result.
+  V2 pairs the guaranteed adjacent source spans per trace, retains K-heap state per
+  unique predicate, and prepares known trace/span needles without a source scan.
+  Brute-force equivalence, odd/tied populations, cancellation and bounded-retention
+  tests pass; a 100M configuration test is not evidence of 100M records stored.
+- [ ] Add a native-TCP ClickHouse query arm with the official pinned Go driver,
+  matched SQL/settings/result shapes/ownership checks and persistent connections.
+  Keep the HTTP arm and disclose transport differences. Pin Go/Bazel dependencies,
+  validate against server 26.10.2.103, and correlate native query IDs with actual
+  server work; progress callbacks alone need not report complete small-query totals.
 - [ ] Gate capacity using measured physical volume/filesystem growth at 1M and 10M,
   peak maintenance/log space, and a fixed free-space stop reserve. The 100k census
   scales arithmetically to about 330 GB of FDB logical owned KV at 100M, not physical

@@ -9,8 +9,11 @@ The design/research lives alongside the code under `rfcs/`, `reports/`, and
 
 ## Implemented semantic class
 
-* Counter-based SHA-256 corpus, configurable seed/population/tenants/attribute
-  count/selectivity. Two spans per trace; timestamps have intentional ties.
+* Fixture **V2**, configurable seed/population/tenants/attribute count/selectivity.
+  Exactly two adjacent source spans per trace (an odd final span is a singleton).
+  Keyed bijective counter mixing guarantees unique nonzero span IDs and trace
+  group IDs; these synthetic randomized-looking IDs are not cryptographic IDs.
+  Counter-based SHA-256 timestamps have second resolution and permit ties.
   Scoped string/int attributes include literal dotted keys, same-name other
   scopes, integer/string lookalikes, repeated matching spans, and absent values.
 * Real `FDBRecordStore.SaveRecord(proto.Message)` through a dynamic envelope
@@ -24,7 +27,13 @@ The design/research lives alongside the code under `rfcs/`, `reports/`, and
   tenant-qualified trace lookup returns span identities/timestamps in ascending
   timestamp/span order. Both systems return the same narrow metadata result shape,
   not full span/content output. FDB trace lookup still fetches primary records and
-  decodes their OTLP payloads; only attribute-posting queries are index-only.
+  decodes their OTLP payloads. Standalone tenant-qualified span-ID lookup returns
+  every matching `{trace_id,span_id,start_ns}` ordered by time/trace/span ascending,
+  without a trace hint and without K truncation. Intrinsic span-time lookup uses
+  `[start_ns,end_ns)` and returns newest K distinct traces by maximum timestamp
+  of a matching witness, not the trace's latest nonmatching span. Both intrinsic
+  queries use covering built-in Record Layer VALUE indexes; attribute postings
+  remain a real synchronous custom maintainer.
 * Covering postings retain the original scope/key/type/value and timestamp;
   shortened SHA-256 digests are candidates only. Verification never needs a
   primary fetch for supported values. An occurrence suffix prevents two colliding
@@ -35,7 +44,10 @@ The design/research lives alongside the code under `rfcs/`, `reports/`, and
   OTLP extractor, hashes, physical keys or encoded CH Map keys; expected ordering
   has a separate implementation. Each timed query checks identities and order.
   Source audits check every record, ordinal uniqueness/completeness, and source
-  fields against the fixture. FDB also counts posting keys/logical bytes.
+  fields against the fixture. FDB counts attribute and both intrinsic index
+  keys/logical bytes. Expected answers combine the two source witnesses before
+  maintaining a bounded K-hit heap per unique predicate: no map of all matching
+  traces is retained. Known trace/span needles use constant-size source witnesses.
 
 Excluded: production OTLP admission/partial success, logs, content and privacy
 services, retention/receipts/revision lifecycle, replay protocols, concurrent
@@ -45,6 +57,21 @@ HMAC epochs, normalized resources, compressed blocks, and service SLOs. The
 maintainer's update/delete behavior is tested, but CH incremental MVs are
 **append-only unique-corpus comparisons**, not a correction/delete equivalent.
 There is no claim that the prototype implements all RFC-283 requirements.
+
+At eight or more attributes, fixture slots 4..7 are span string attributes
+`gen_ai.operation.name=chat`, `gen_ai.provider.name=openai`,
+`gen_ai.request.model=gpt-4`, and `gen_ai.response.id=chatcmpl-fixture-v2-<spanID>`.
+The pseudorandom unique response value avoids an ascending counter-string
+compression advantage. Its uniqueness is only a fixture promise, not a provider
+or semantic-convention guarantee. These OTel-authored **Development** names are
+pinned to [GenAI conventions e19717d](https://github.com/open-telemetry/semantic-conventions-genai/blob/e19717d65f890955777b044bca2a3cd71ae8b498/docs/registry/attributes/gen-ai.md);
+there is no invented standardized `gen_ai.request.id`. Smaller 4..7-attribute
+fixtures retain their original controls/fillers and cannot run `genai`/`all`.
+
+V2 changes source identities, payloads and maintained structures. Use fresh runs;
+V1 receipts/binaries (including the initial ingest-profile commits) remain
+historical evidence, not compatible V2 measurements. No storage compatibility
+or direct before/after performance claim is made across this fixture change.
 
 ## Physical arms
 
@@ -62,9 +89,12 @@ Every arm uses a fresh run namespace and maintains only its selected layout.
 CH stores Map, aligned typed terms, and source JSON so every copy is included in
 storage/ingest cost. FDB stores OTLP protobuf plus its custom index, not that JSON
 schema. Report those representation differences, not an unexplained byte ratio.
-Every CH source table also gets a covering `by_trace` projection before load,
-ordered by tenant/trace/span and containing timestamps. Trace queries enable
-projection optimization; audit captures their EXPLAIN and projection-part bytes.
+Every FDB arm also maintains built-in `span_id_v2` (tenant/span/time) and
+`span_time_v2` (tenant/time/trace) VALUE indexes on every Record Layer save.
+Every CH source table gets covering `by_trace`, `by_span`, and `by_time`
+projections before load. All their synchronous write work is included in ingest;
+there is no uncosted lookup accelerator. Queries enable projection optimization;
+audit captures actual EXPLAIN choices, named projection row counts and bytes.
 Verify selection and parent/projection byte inclusion before making a trace
 comparison or summing storage. All source data is retained; there is no hidden
 term-time accelerator in the trace-ordered FDB arm.
@@ -116,7 +146,7 @@ For CH, use `--backend ch-map` or `--backend ch-attrs --ch-url http://127.0.0.1:
 instead of `FDB`. Create a new `RUN`; compare both attribute-table orders in fresh
 databases. Select `--order time` for the corresponding FDB experiment too.
 CH database names are `otel_<run>`; FDB roots are tuples
-`("otel_otelbench_v1",run)`. Drop requires `--confirm-drop` **and** matching owner
+`("otel_otelbench_v2",run)`. Drop requires `--confirm-drop` **and** matching owner
 metadata, and removes only that owned database/root. A failed partial load stays
 `loading`; choose a fresh run or explicitly drop it, never resume/replay blindly.
 
@@ -196,6 +226,14 @@ results under this layer after source-integrity checks pass.
   varying identifier predicates. `mixed` additionally includes a common resource
   term. `trace` rotates trace identities. `rare` intentionally repeats one term
   and must be labeled as a hot-query diagnostic, not the mixed-workload verdict.
+* `span` alternates standalone span-ID hits/misses. `genai` cycles high-cardinality
+  response-ID equality, resource/scope/type/missing controls and common
+  operation/provider/model terms. `time` cycles intrinsic one-nanosecond windows,
+  empty intervals, absent intervals and a broad time window. `all` cycles trace
+  hits/misses, both span cases, eight GenAI cases and four time cases (16 samples
+  cover the cycle). `genai`/`all` require at least eight attributes. Complete
+  trace and standalone span queries do not silently truncate to K; equality and
+  time queries return K distinct traces. All obey candidate/byte budgets.
 * No application result cache. CH explicitly disables `use_query_cache`; stdlib
   HTTP connections persist. FDB uses its native Go client with one open database.
   Client protocols, per-query ownership checks and decoding are included in wall
@@ -212,8 +250,10 @@ results under this layer after source-integrity checks pass.
   failure, never partial exact top-K. CH has a 2 s query deadline; FDB per-attempt
   timeout is 1.5 s. Configurations that fail are not performance wins. There is no
   durable snapshot across separate queries or audit pages.
-* Oracle preparation is outside query timing and scans the source corpus once
-  for all selected predicates/traces. Audits are outside timing and warm caches.
+* Oracle preparation is outside query timing: at most one streaming source pass
+  for all unique equality/time predicates, with at most K retained hits per
+  predicate and one two-span trace pair of scratch witnesses. Known trace/span
+  needles need no corpus pass. Audits are outside timing and warm caches.
   CH source audit streams once with a 180 s timeout and ordinal bitset; FDB audits
   bounded pages and commits bitset bookkeeping only after a successful page.
   Mandatory live audits avoid common-term scans; explicit `mixed` workloads and
@@ -222,7 +262,9 @@ results under this layer after source-integrity checks pass.
   deliberately raise audit budgets and label that receipt.
 * Audit receipts include per-index FDB logical keys/key/value bytes (not physical
   compressed size), CH active-part compressed/uncompressed bytes for source and
-  MV destination, CH version and rare-query EXPLAIN. Merge/part state is observed,
+  MV destination, CH version and equality/trace/span/time EXPLAIN. Named
+  projection components are reported separately; verify their inclusion in
+  parent-part totals before adding or comparing totals. Merge/part state is observed,
   not forcibly optimized. External engine/log/backup/replica bytes remain outside
   these measurements. A source fingerprint excludes physical order/hash/backend;
   ownership separately checks these, preventing a wrong-layout reopen.
