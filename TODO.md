@@ -2644,3 +2644,19 @@ establish vulnerable-code reachability in the published Go library.
   [#1](https://github.com/birdayz/fdb-go/security/dependabot/1). GitHub labels them runtime
   dependencies and listed no patched module version. Determine affected library/test/tool
   paths and remediation, rather than assuming either production exposure or a false positive.
+
+### RFC-282 four-machine campaign execution gates
+
+- [ ] Qualify and execute the complete 44-case repeat (M1 workers 1/8/32/64,
+  M2rl/M2skip), using the reviewed `tools/benchcampaign/campaigns/fdbmn-rfc282/`
+  exporter, byte-identical measured-fence overlay and exclusive cgroup-v2 CPU
+  source. Before timing: run the overlay's actual frozen-export Go controls,
+  qualify controller start/stop/collection for the separate 100Hz accounting
+  sidecar, prove all 17 private FDB cgroups and perform sampler-off/on
+  overhead/accounting controls during F0/P0. No cloud mutation before the owner's
+  merged SHA plus launch confirmation; four ccx43 hosts, fixed 16h hard lifetime,
+  guard armed first, unchanged protected inventory and original workload gates.
+  Publish full coverage, direct latency/throughput, client CPU/allocations and
+  measured M1 versus lifecycle M2 server CPU with explicit bounds; show every
+  CPU-unqualified/omitted case. Optional linger is separately preregistered and
+  cannot reduce the primary matrix. This entry is not an execution receipt.

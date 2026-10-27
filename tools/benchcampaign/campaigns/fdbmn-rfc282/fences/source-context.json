@@ -1,0 +1,199 @@
+{
+  "base_revision": "d94b4c61377d173b7c6884fde426a227dab0f0bb",
+  "go_controls_sha256": "7111754dc198414fd64bfecfdc355fe898c9cbe28ab09a5ac89c2433566641dd",
+  "original_context": {
+    "tools/clientbench/integration/smoke_test.go": {
+      "hunks": [
+        {
+          "lines": [
+            "\t\t\t\tfor _, drain := range []bench.FinalizerDrain{life.MeasurementDrain, life.ShutdownDrain} {\n",
+            "\t\t\t\t\tif !drain.Complete || drain.Rounds < 2 || drain.WallNS <= 0 ||\n",
+            "\t\t\t\t\t\tdrain.After.FinalizersExecuted != drain.After.FinalizersQueued ||\n",
+            "\t\t\t\t\t\tdrain.After.CleanupsQueued != drain.Before.CleanupsQueued ||\n",
+            "\t\t\t\t\t\tdrain.After.CleanupsExecuted != drain.After.CleanupsQueued {\n",
+            "\t\t\t\t\t\tt.Fatalf(\"incomplete finalizer fixpoint: %+v\", drain)\n",
+            "\t\t\t\t\t}\n"
+          ],
+          "start": 121
+        }
+      ],
+      "line_count": 192
+    },
+    "tools/clientbench/internal/bench/bench_test.go": {
+      "hunks": [
+        {
+          "lines": [
+            "import (\n",
+            "\t\"bytes\"\n",
+            "\t\"encoding/csv\"\n",
+            "\t\"errors\"\n",
+            "\t\"os\"\n",
+            "\t\"path/filepath\"\n",
+            "\t\"testing\"\n",
+            ")\n",
+            "\n",
+            "func TestPreparedDataset(t *testing.T) {\n"
+          ],
+          "start": 2
+        },
+        {
+          "lines": [
+            "\t\t}\n",
+            "\t}\n",
+            "}\n"
+          ],
+          "start": 155
+        }
+      ],
+      "line_count": 158
+    },
+    "tools/clientbench/internal/bench/run.go": {
+      "hunks": [
+        {
+          "lines": [
+            "type Phase struct {\n",
+            "\tSamples                    []Sample\n",
+            "\tWallNS                     int64\n",
+            "\tCompleted, Errors, Retries int\n",
+            "\tBefore, After              Stats\n",
+            "\tStatsError                 error\n"
+          ],
+          "start": 73
+        },
+        {
+          "lines": [
+            "\tepoch = time.Now()\n",
+            "\tclose(start)\n",
+            "\tdone.Wait()\n",
+            "\tp.WallNS = time.Since(epoch).Nanoseconds()\n",
+            "\tif collectStats {\n",
+            "\t\tvar err error\n",
+            "\t\tp.After, err = ReadStats(true)\n"
+          ],
+          "start": 122
+        },
+        {
+          "lines": [
+            "\t\tp.Retries += max(0, sample.Attempts-1)\n",
+            "\t}\n",
+            "\treturn p\n",
+            "}\n",
+            "\n",
+            "func WriteSamples(path, phase string, samples []Sample) error {\n"
+          ],
+          "start": 139
+        },
+        {
+          "lines": [
+            "\t\t\tlifecycle.Complete = runErr == nil\n",
+            "\t\t}\n",
+            "\t}\n",
+            "\tfailure := \"\"\n",
+            "\tif runErr != nil {\n",
+            "\t\tfailure = runErr.Error()\n",
+            "\t}\n",
+            "\tsummary := map[string]any{\"config\": cfg, \"backend\": metadata, \"requested\": cfg.Iterations, \"completed\": measured.Completed, \"totalcompleted\": measured.Completed, \"errors\": measured.Errors, \"retries\": measured.Retries, \"warmup_requested\": cfg.Warmup, \"warmup_completed\": warm.Completed, \"warmup_errors\": warm.Errors, \"warmup_retries\": warm.Retries, \"measured_wall_ns\": measured.WallNS, \"warmup_wall_ns\": warm.WallNS, \"stats_after_identity\": afterIdentity, \"stats_before\": measured.Before, \"stats_after\": measured.After, \"lifecycle\": lifecycle, \"client_counters_before\": countersBefore, \"client_counters_after\": countersAfter, \"client_counters_delta\": countersDelta, \"persisted_validation\": postValidation, \"failure_stage\": stage, \"failure\": failure, \"success\": runErr == nil && writeErr == nil, \"profile\": cfg.Profile}\n",
+            "\treturn errors.Join(runErr, writeErr, WriteJSON(filepath.Join(cfg.Output, \"summary.json\"), summary))\n",
+            "}\n"
+          ],
+          "start": 291
+        }
+      ],
+      "line_count": 301
+    },
+    "tools/clientbench/scripts/BUILD.bazel": {
+      "hunks": [
+        {
+          "lines": [
+            "load(\"@rules_shell//shell:sh_test.bzl\", \"sh_test\")\n",
+            "\n",
+            "sh_test(\n",
+            "    name = \"campaign_test\",\n",
+            "    srcs = [\"test.sh\"],\n",
+            "    data = [\n",
+            "        \"analyze.py\",\n",
+            "        \"matrix_plan.py\",\n",
+            "        \"r3_plan.py\",\n",
+            "        \"run.py\",\n",
+            "        \"test_campaign.py\",\n",
+            "        \"test_matrix_plan.py\",\n",
+            "    ],\n",
+            ")\n"
+          ],
+          "start": 0
+        }
+      ],
+      "line_count": 14
+    },
+    "tools/clientbench/scripts/matrix_plan.py": {
+      "hunks": [
+        {
+          "lines": [
+            "                                 LC_ALL='C', TZ='UTC'),\n",
+            "                workloads=[dict(name=w, iterations=args.iterations, warmup=args.warmup, workers=1)\n",
+            "                           for w in args.workload],\n",
+            "                go_version='go1.26.9', fdb_version='7.3.77', fdb_api_version=730,\n",
+            "                native_library_sha256=digest(args.native_library), pinned_files=sorted(pinned), arms=[])\n",
+            "    for name, binary, revision in arms:\n",
+            "        binary = str(Path(binary).resolve())\n"
+          ],
+          "start": 96
+        }
+      ],
+      "line_count": 145
+    },
+    "tools/clientbench/scripts/r3_plan.py": {
+      "hunks": [
+        {
+          "lines": [
+            "                timeout_seconds=180, campaign_wall_cap_seconds=180,\n",
+            "                environment=dict(GOMAXPROCS='8', GOGC='100', GOMEMLIMIT='off', GODEBUG='', LC_ALL='C', TZ='UTC'),\n",
+            "                workloads=[dict(name='batchset50', iterations=3000, warmup=200, workers=1)],\n",
+            "                go_version='go1.26.9', fdb_version='7.3.77', fdb_api_version=730,\n",
+            "                native_library_sha256=digest(args.native_library), pinned_files=sorted(pinned), arms=[])\n",
+            "    for arm, binary in [('go', args.go_binary), ('cgo', args.cgo_binary)]:\n",
+            "        binary = str(Path(binary).resolve())\n"
+          ],
+          "start": 55
+        }
+      ],
+      "line_count": 94
+    },
+    "tools/clientbench/scripts/test_campaign.py": {
+      "hunks": [
+        {
+          "lines": [
+            "            backend = dict(backend=entry['arm'], native_library=native, executable=binary,\n",
+            "                           executable_sha256=pins[binary], api_version=730,\n",
+            "                           loaded_fdb_libraries_sha256={str(self.root / 'native'): plan['native_library_sha256']} if native else {})\n",
+            "            manifest = dict(config=cfg, backend=backend, go_version='go1.26.9', gomaxprocs=8)\n",
+            "            before = dict(process_user_cpu_us=100, process_system_cpu_us=50, go_total_alloc_bytes=0,\n",
+            "                          go_mallocs=0, go_gc_cycles=0, go_gc_pause_ns=0, process_high_water_rss_kb=1)\n",
+            "            identity = dict(before, process_user_cpu_us=25, process_system_cpu_us=10)\n"
+          ],
+          "start": 190
+        }
+      ],
+      "line_count": 415
+    }
+  },
+  "original_sha256": {
+    "tools/clientbench/integration/smoke_test.go": "91f30632cc7d60f7950337175ef16d249ab63c899cceb0df0dc8271e9d3fd561",
+    "tools/clientbench/internal/bench/bench_test.go": "97e1a0dc3ba0174f4b8035d3b36e9e191f2eabc6d473086f6896e7e4834d9f7c",
+    "tools/clientbench/internal/bench/run.go": "b82341a5652afa1a94931ff687519c262065f592b85b16e5b832182efea00214",
+    "tools/clientbench/scripts/BUILD.bazel": "8b56aadaced964d10d425acfb42b6bb509aa850351fe1421b1c989d8e7e778c1",
+    "tools/clientbench/scripts/matrix_plan.py": "84c270500d522317495cc23b0e5051a8c5fd238a119d08acba0a13bec860b933",
+    "tools/clientbench/scripts/r3_plan.py": "effa82052b4327d0998b4c914250f4bd1e66e22397003b818d55f4892904f9d3",
+    "tools/clientbench/scripts/test_campaign.py": "228664e32b4e8aca5f22ab557df50456b455768d0e96a03687931fcbb8e6ccbd"
+  },
+  "patch_sha256": "466d02c13d1b80493dedc31c88057e0640ba0321ca18ab90f25c1a41bde67cab",
+  "patched_sha256": {
+    "tools/clientbench/integration/smoke_test.go": "e1c608c4b9f439063e4c84af54ecbdc191dae46c6970f248d09ebfc882f8ca01",
+    "tools/clientbench/internal/bench/bench_test.go": "1ac0484a8c1846a15efcf2a8c71c6c516d624a8a8ef568caffe9fdb32be0967a",
+    "tools/clientbench/internal/bench/run.go": "c1baf2bc6631db1cbc02bcd4ea0bd1ee161657146f58e8ee1801807374162f76",
+    "tools/clientbench/scripts/BUILD.bazel": "b795f7634215896deb22585621e5fabee18e5ddb3059a09781808b7ef2b92cb4",
+    "tools/clientbench/scripts/matrix_plan.py": "a4cc76e6c206279ba1a8a1d8dae8b70f7c195527c8c3aa4ae48e2a1f16ad3a67",
+    "tools/clientbench/scripts/r3_plan.py": "2907907476310e9d0f4556d9700911db174b89047ca8715719a9b7a8c45d4729",
+    "tools/clientbench/scripts/test_campaign.py": "c6582200abd057a162d542d40f433d3883d5c658afe75e7608aef8bc10ca9808"
+  }
+}

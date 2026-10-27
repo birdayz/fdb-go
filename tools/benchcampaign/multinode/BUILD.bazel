@@ -1,5 +1,11 @@
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
+filegroup(
+    name = "cpu_controller_support",
+    srcs = ["mn_common.py"],
+    visibility = ["//tools/benchcampaign/campaigns/fdbmn-rfc282:__pkg__"],
+)
+
 # Standard-library unit tests for the multi-node campaign tooling. They use
 # temporary fixtures and fake command runners only: no hcloud, ssh or FDB.
 sh_test(

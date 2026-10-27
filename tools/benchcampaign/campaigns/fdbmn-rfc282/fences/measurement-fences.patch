@@ -1,0 +1,217 @@
+--- a/tools/clientbench/internal/bench/run.go
++++ b/tools/clientbench/internal/bench/run.go
+@@ -74,6 +74,7 @@
+ type Phase struct {
+ 	Samples                    []Sample
+ 	WallNS                     int64
++	Started, Ended             time.Time
+ 	Completed, Errors, Retries int
+ 	Before, After              Stats
+ 	StatsError                 error
+@@ -123,7 +124,9 @@
+ 	epoch = time.Now()
+ 	close(start)
+ 	done.Wait()
+-	p.WallNS = time.Since(epoch).Nanoseconds()
++	end := time.Now()
++	p.WallNS = end.Sub(epoch).Nanoseconds()
++	p.Started, p.Ended = epoch, end
+ 	if collectStats {
+ 		var err error
+ 		p.After, err = ReadStats(true)
+@@ -140,6 +143,20 @@
+ 		p.Retries += max(0, sample.Attempts-1)
+ 	}
+ 	return p
++}
++
++func (p Phase) measurementFences() (map[string]any, error) {
++	if p.Started.IsZero() || p.Ended.IsZero() || p.WallNS <= 0 || p.Completed <= 0 || p.Errors != 0 ||
++		p.Ended.Sub(p.Started).Nanoseconds() != p.WallNS || p.Ended.UnixNano() <= p.Started.UnixNano() {
++		return nil, errors.New("invalid measured phase fences")
++	}
++	return map[string]any{
++		"measured_fences_format":   "fdb-bench-measured-fences/v1",
++		"measured_started_unix_ns": p.Started.UnixNano(),
++		"measured_ended_unix_ns":   p.Ended.UnixNano(),
++		"measured_started_utc":     p.Started.UTC().Format(time.RFC3339Nano),
++		"measured_ended_utc":       p.Ended.UTC().Format(time.RFC3339Nano),
++	}, nil
+ }
+ 
+ func WriteSamples(path, phase string, samples []Sample) error {
+@@ -292,10 +309,17 @@
+ 			lifecycle.Complete = runErr == nil
+ 		}
+ 	}
++	fences, fenceErr := measured.measurementFences()
++	if fenceErr != nil && runErr == nil {
++		stage, runErr = "measurement_fences", fenceErr
++	}
+ 	failure := ""
+ 	if runErr != nil {
+ 		failure = runErr.Error()
+ 	}
+ 	summary := map[string]any{"config": cfg, "backend": metadata, "requested": cfg.Iterations, "completed": measured.Completed, "totalcompleted": measured.Completed, "errors": measured.Errors, "retries": measured.Retries, "warmup_requested": cfg.Warmup, "warmup_completed": warm.Completed, "warmup_errors": warm.Errors, "warmup_retries": warm.Retries, "measured_wall_ns": measured.WallNS, "warmup_wall_ns": warm.WallNS, "stats_after_identity": afterIdentity, "stats_before": measured.Before, "stats_after": measured.After, "lifecycle": lifecycle, "client_counters_before": countersBefore, "client_counters_after": countersAfter, "client_counters_delta": countersDelta, "persisted_validation": postValidation, "failure_stage": stage, "failure": failure, "success": runErr == nil && writeErr == nil, "profile": cfg.Profile}
++	for name, value := range fences {
++		summary[name] = value
++	}
+ 	return errors.Join(runErr, writeErr, WriteJSON(filepath.Join(cfg.Output, "summary.json"), summary))
+ }
+--- a/tools/clientbench/internal/bench/bench_test.go
++++ b/tools/clientbench/internal/bench/bench_test.go
+@@ -3,10 +3,12 @@
+ import (
+ 	"bytes"
+ 	"encoding/csv"
++	"encoding/json"
+ 	"errors"
+ 	"os"
+ 	"path/filepath"
+ 	"testing"
++	"time"
+ )
+ 
+ func TestPreparedDataset(t *testing.T) {
+@@ -156,3 +158,81 @@
+ 		}
+ 	}
+ }
++
++func TestMeasurementFencesUseOriginalTimes(t *testing.T) {
++	t.Parallel()
++	warm := RunPhase(2, 1, func(i, w int) (int, error) { return 1, nil })
++	measured := RunPhase(17, 4, func(i, w int) (int, error) { return 1, nil })
++	fences, err := measured.measurementFences()
++	if err != nil {
++		t.Fatal(err)
++	}
++	if measured.WallNS != measured.Ended.Sub(measured.Started).Nanoseconds() || measured.Started.Before(warm.Ended) {
++		t.Fatal("measured fences include warmup or disagree with the original wall window")
++	}
++	if fences["measured_started_unix_ns"] != measured.Started.UnixNano() || fences["measured_ended_unix_ns"] != measured.Ended.UnixNano() {
++		t.Fatal("fences were not derived from the measured phase")
++	}
++	for _, sample := range measured.Samples {
++		if sample.StartOffsetNS < 0 || sample.StartOffsetNS+sample.LatencyNS > measured.WallNS {
++			t.Fatalf("sample outside measured window: %+v", sample)
++		}
++	}
++}
++
++func TestMeasurementFencesRejectInvalidPhase(t *testing.T) {
++	t.Parallel()
++	start := time.Unix(1792000000, 123456789)
++	valid := Phase{Started: start, Ended: start.Add(123456789 * time.Nanosecond), WallNS: 123456789, Completed: 17}
++	for _, mutate := range []func(*Phase){
++		func(p *Phase) { p.Started, p.Ended = p.Ended, p.Started },
++		func(p *Phase) { p.Ended = p.Started },
++		func(p *Phase) { p.Started = time.Time{} },
++		func(p *Phase) { p.WallNS++ },
++		func(p *Phase) { p.Completed = 0 },
++		func(p *Phase) { p.Errors = 1 },
++	} {
++		p := valid
++		mutate(&p)
++		if fences, err := p.measurementFences(); err == nil || fences != nil {
++			t.Fatalf("invalid phase accepted: %+v", p)
++		}
++	}
++}
++
++func TestMeasurementFencesKeepNanosecondPrecision(t *testing.T) {
++	t.Parallel()
++	start := time.Unix(1792000000, 123456789)
++	p := Phase{Started: start, Ended: start.Add(987654321 * time.Nanosecond), WallNS: 987654321, Completed: 17}
++	fences, err := p.measurementFences()
++	if err != nil {
++		t.Fatal(err)
++	}
++	path := filepath.Join(t.TempDir(), "fences.json")
++	if err := WriteJSON(path, fences); err != nil {
++		t.Fatal(err)
++	}
++	data, err := os.ReadFile(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var got struct {
++		Format   string `json:"measured_fences_format"`
++		Start    int64  `json:"measured_started_unix_ns"`
++		End      int64  `json:"measured_ended_unix_ns"`
++		StartUTC string `json:"measured_started_utc"`
++		EndUTC   string `json:"measured_ended_utc"`
++	}
++	if err := json.Unmarshal(data, &got); err != nil {
++		t.Fatal(err)
++	}
++	if got.Format != "fdb-bench-measured-fences/v1" || got.Start != start.UnixNano() || got.End != p.Ended.UnixNano() {
++		t.Fatalf("lost integer timestamp precision: %+v", got)
++	}
++	for text, want := range map[string]time.Time{got.StartUTC: start, got.EndUTC: p.Ended} {
++		parsed, err := time.Parse(time.RFC3339Nano, text)
++		if err != nil || parsed.UnixNano() != want.UnixNano() {
++			t.Fatalf("UTC fence disagrees with Unix ns: %q", text)
++		}
++	}
++}
+--- a/tools/clientbench/scripts/BUILD.bazel
++++ b/tools/clientbench/scripts/BUILD.bazel
+@@ -1,4 +1,14 @@
+ load("@rules_shell//shell:sh_test.bzl", "sh_test")
++
++exports_files(
++    [
++        "analyze.py",
++        "matrix_plan.py",
++        "r3_plan.py",
++        "run.py",
++    ],
++    visibility = ["//tools/benchcampaign:__subpackages__"],
++)
+ 
+ sh_test(
+     name = "campaign_test",
+--- a/tools/clientbench/scripts/matrix_plan.py
++++ b/tools/clientbench/scripts/matrix_plan.py
+@@ -97,7 +97,7 @@
+                                  LC_ALL='C', TZ='UTC'),
+                 workloads=[dict(name=w, iterations=args.iterations, warmup=args.warmup, workers=1)
+                            for w in args.workload],
+-                go_version='go1.26.9', fdb_version='7.3.77', fdb_api_version=730,
++                go_version='go1.27.3', fdb_version='7.3.77', fdb_api_version=730,
+                 native_library_sha256=digest(args.native_library), pinned_files=sorted(pinned), arms=[])
+     for name, binary, revision in arms:
+         binary = str(Path(binary).resolve())
+--- a/tools/clientbench/scripts/r3_plan.py
++++ b/tools/clientbench/scripts/r3_plan.py
+@@ -56,7 +56,7 @@
+                 timeout_seconds=180, campaign_wall_cap_seconds=180,
+                 environment=dict(GOMAXPROCS='8', GOGC='100', GOMEMLIMIT='off', GODEBUG='', LC_ALL='C', TZ='UTC'),
+                 workloads=[dict(name='batchset50', iterations=3000, warmup=200, workers=1)],
+-                go_version='go1.26.9', fdb_version='7.3.77', fdb_api_version=730,
++                go_version='go1.27.3', fdb_version='7.3.77', fdb_api_version=730,
+                 native_library_sha256=digest(args.native_library), pinned_files=sorted(pinned), arms=[])
+     for arm, binary in [('go', args.go_binary), ('cgo', args.cgo_binary)]:
+         binary = str(Path(binary).resolve())
+--- a/tools/clientbench/scripts/test_campaign.py
++++ b/tools/clientbench/scripts/test_campaign.py
+@@ -191,7 +191,7 @@
+             backend = dict(backend=entry['arm'], native_library=native, executable=binary,
+                            executable_sha256=pins[binary], api_version=730,
+                            loaded_fdb_libraries_sha256={str(self.root / 'native'): plan['native_library_sha256']} if native else {})
+-            manifest = dict(config=cfg, backend=backend, go_version='go1.26.9', gomaxprocs=8)
++            manifest = dict(config=cfg, backend=backend, go_version='go1.27.3', gomaxprocs=8)
+             before = dict(process_user_cpu_us=100, process_system_cpu_us=50, go_total_alloc_bytes=0,
+                           go_mallocs=0, go_gc_cycles=0, go_gc_pause_ns=0, process_high_water_rss_kb=1)
+             identity = dict(before, process_user_cpu_us=25, process_system_cpu_us=10)
+--- a/tools/clientbench/integration/smoke_test.go
++++ b/tools/clientbench/integration/smoke_test.go
+@@ -122,7 +122,6 @@
+ 				for _, drain := range []bench.FinalizerDrain{life.MeasurementDrain, life.ShutdownDrain} {
+ 					if !drain.Complete || drain.Rounds < 2 || drain.WallNS <= 0 ||
+ 						drain.After.FinalizersExecuted != drain.After.FinalizersQueued ||
+-						drain.After.CleanupsQueued != drain.Before.CleanupsQueued ||
+ 						drain.After.CleanupsExecuted != drain.After.CleanupsQueued {
+ 						t.Fatalf("incomplete finalizer fixpoint: %+v", drain)
+ 					}

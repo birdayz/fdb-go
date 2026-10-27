@@ -1,0 +1,17 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+# Synthetic archive/patch controls only; Go behavioral tests travel in the
+# separately qualified frozen harness's existing bench_test target.
+sh_test(
+    name = "measurement_fences_test",
+    srcs = ["test.sh"],
+    data = [
+        "apply_patch.py",
+        "fence-tests.go.txt",
+        "measurement-fences.patch",
+        "prepare_harness.py",
+        "source-context.json",
+        "test_fences.py",
+        "test_prepare_harness.py",
+    ],
+)

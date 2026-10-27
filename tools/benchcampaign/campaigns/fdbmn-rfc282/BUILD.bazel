@@ -1,0 +1,21 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+# Offline, synthetic fixtures only: no cloud, SSH, FDB or retained raw inputs.
+sh_test(
+    name = "campaign_export_test",
+    srcs = ["test.sh"],
+    data = [
+        "controller.py",
+        "export_results.py",
+        "helpers.py",
+        "m2_export.py",
+        "server_cpu.py",
+        "test_controller.py",
+        "test_export_results.py",
+        "test_m2_export.py",
+        "test_server_cpu.py",
+        "//tools/benchcampaign/campaigns/fdbmn-20261020:ops60_controller",
+        "//tools/benchcampaign/campaigns/fdbmn-20261020/public-export:analysis_helpers",
+        "//tools/benchcampaign/multinode:cpu_controller_support",
+    ],
+)
