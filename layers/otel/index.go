@@ -122,7 +122,45 @@ func postings(ss subspace.Subspace, width int, order string, record *recordlayer
 	return out, nil
 }
 
+// diffPostings retains only changed key/value pairs, including multiplicity.
+// Matching keys alone would lose covering-value changes and digest collisions.
+func diffPostings(before, after []posting) (removed, added []posting) {
+	if len(before) == 0 {
+		return nil, after
+	}
+	if len(after) == 0 {
+		return before, nil
+	}
+	type identity struct{ key, value string }
+	available := make(map[identity]int, len(before))
+	matched := make(map[identity]int, len(before))
+	for _, p := range before {
+		available[identity{string(p.Key), string(p.Value)}]++
+	}
+	for _, p := range after {
+		id := identity{string(p.Key), string(p.Value)}
+		if matched[id] < available[id] {
+			matched[id]++
+		} else {
+			added = append(added, p)
+		}
+	}
+	for _, p := range before {
+		id := identity{string(p.Key), string(p.Value)}
+		if matched[id] > 0 {
+			matched[id]--
+		} else {
+			removed = append(removed, p)
+		}
+	}
+	return removed, added
+}
+
 func (m *postingMaintainer) Update(old, new *recordlayer.FDBStoredRecord[proto.Message]) error {
+	return m.update(old, new, true)
+}
+
+func (m *postingMaintainer) update(old, new *recordlayer.FDBStoredRecord[proto.Message], skipUnchanged bool) error {
 	before, err := postings(m.secondary, m.width, m.order, old)
 	if err != nil {
 		return err
@@ -131,17 +169,23 @@ func (m *postingMaintainer) Update(old, new *recordlayer.FDBStoredRecord[proto.M
 	if err != nil {
 		return err
 	}
-	for _, p := range before {
+	removed, added := before, after
+	if skipUnchanged {
+		removed, added = diffPostings(before, after)
+	}
+	for _, p := range removed {
 		m.Transaction().Clear(p.Key)
 	}
-	for _, p := range after {
+	for _, p := range added {
 		m.Transaction().Set(p.Key, p.Value)
 	}
 	return nil
 }
 
 func (m *postingMaintainer) UpdateWhileWriteOnly(old, new *recordlayer.FDBStoredRecord[proto.Message]) error {
-	return m.Update(old, new)
+	// The build may not have materialized the old record's entries yet.
+	// Preserve full maintenance rather than assuming unchanged entries exist.
+	return m.update(old, new, false)
 }
 
 func (m *postingMaintainer) Scan(recordlayer.TupleRange, []byte, recordlayer.ScanProperties) recordlayer.RecordCursor[*recordlayer.IndexEntry] {
