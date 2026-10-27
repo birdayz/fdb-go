@@ -108,10 +108,25 @@ func (b *evidenceBackend) response(ctx context.Context) (evidenceCall, string) {
 		Candidates: 31 + n, Bytes: int64(101 + n),
 		ServerReadRows: int64(201 + n), ServerReadBytes: int64(301 + n),
 		ServerElapsed: int64(401 + n), ResponseBytes: int64(501 + n),
-		ServerSummary: n%2 == 0,
+		ServerSummary: true,
+		QueryID:       fmt.Sprintf("fake-query-%03d", n), QueryTransport: "http", ServerMetricsSource: "http_summary",
 	}}
+	switch n % 3 {
+	case 1:
+		call.work.QueryTransport = "native"
+		call.work.ResponseBytes = 0
+		fallthrough
+	case 2:
+		call.work.ServerReadRows, call.work.ServerReadBytes, call.work.ServerElapsed = 0, 0, 0
+		call.work.ServerSummary, call.work.ServerMetricsSource = false, "unavailable"
+	}
 	if mode == "transport" {
 		call.err = errors.New("injected transport failure")
+	}
+	if mode == "ownership_after_success" && n > 0 {
+		mode = "ownership"
+		call.work = QueryResult{}
+		call.err = fail("ownership", "fake query", "run has no ownership manifest")
 	}
 	if mode == "cancel" || mode == "cancel_ignores_context" || (mode == "cancel_after_success" && n > 0) {
 		b.cancel()
@@ -127,6 +142,8 @@ func (b *evidenceBackend) Query(ctx context.Context, a Attribute) (QueryResult, 
 	call.kind, call.attribute = "attribute", a
 	call.hits = evidenceHits(b.cfg, a)
 	switch mode {
+	case "ownership":
+		call.hits = []Hit{}
 	case "identity":
 		if len(call.hits) > 0 {
 			call.hits[0].Trace = "wrong-trace"
@@ -156,6 +173,8 @@ func (b *evidenceBackend) Trace(ctx context.Context, trace string) ([]SpanHit, e
 	call.kind, call.trace = "trace", trace
 	call.spans = evidenceSpans(b.cfg, trace)
 	switch mode {
+	case "ownership":
+		call.spans = []SpanHit{}
 	case "identity":
 		if len(call.spans) > 0 {
 			call.spans[0].ID = "wrong-span"
@@ -180,7 +199,9 @@ func (b *evidenceBackend) Span(ctx context.Context, id string) ([]SpanMatch, err
 	call, mode := b.response(ctx)
 	call.kind, call.span = "span", id
 	call.matches = bruteSpanOracle(b.cfg, id)
-	if mode == "identity" {
+	if mode == "ownership" {
+		call.matches = []SpanMatch{}
+	} else if mode == "identity" {
 		if len(call.matches) > 0 {
 			call.matches[0].ID = "wrong-span"
 		} else {
@@ -199,6 +220,8 @@ func (b *evidenceBackend) Time(ctx context.Context, interval TimeRange) (QueryRe
 	call.kind, call.interval = "time", interval
 	call.hits = bruteTimeOracle(b.cfg, interval)
 	switch mode {
+	case "ownership":
+		call.hits = []Hit{}
 	case "identity":
 		if len(call.hits) > 0 {
 			call.hits[0].Trace = "wrong-trace"
@@ -273,9 +296,14 @@ func TestMeasureQueriesReceipts(t *testing.T) {
 					t.Fatalf("calls=%d samples=%d want %d", len(b.calls), len(e.Samples), c.Iterations)
 				}
 				failures := 0
+				queryIDs := map[string]bool{}
 				populations := map[string][]int64{}
 				for i, call := range b.calls {
 					actual := e.Samples[i]
+					if actual.QueryID == "" || queryIDs[actual.QueryID] {
+						t.Fatalf("sample %d missing or reused data-query identity: %+v", i, actual)
+					}
+					queryIDs[actual.QueryID] = true
 					class := evidenceClass(suite, i)
 					kind := "attribute"
 					for _, candidate := range []string{"trace", "span", "time"} {
@@ -292,6 +320,7 @@ func TestMeasureQueriesReceipts(t *testing.T) {
 						ServerReadRows: call.work.ServerReadRows, ServerReadBytes: call.work.ServerReadBytes,
 						ServerElapsed: call.work.ServerElapsed, ResponseBytes: call.work.ResponseBytes,
 						ServerSummary: call.work.ServerSummary,
+						QueryID:       call.work.QueryID, QueryTransport: call.work.QueryTransport, ServerMetricsSource: call.work.ServerMetricsSource,
 					}
 					mismatch := false
 					switch call.kind {
@@ -361,6 +390,72 @@ func TestMeasureQueriesReceipts(t *testing.T) {
 					t.Fatalf("invalid evidence metadata: %+v", e)
 				}
 			})
+		}
+	}
+}
+
+func TestOwnershipFailureDoesNotRetainQueryProvenance(t *testing.T) {
+	t.Parallel()
+	for _, suite := range []string{"rare", "trace", "span", "time"} {
+		t.Run(suite, func(t *testing.T) {
+			t.Parallel()
+			c := evidenceConfig()
+			c.Iterations = 3
+			ctx := t.Context()
+			b := &evidenceBackend{cfg: c, mode: "ownership_after_success", ctx: ctx}
+			var e Evidence
+			err := MeasureQueries(ctx, b, c, suite, &e)
+			if err == nil || e.Failures != 2 || len(e.Samples) != 3 || len(b.calls) != 3 {
+				t.Fatalf("ownership-failure population: error=%v evidence=%+v calls=%d", err, e, len(b.calls))
+			}
+			first := e.Samples[0]
+			if first.Error != "" || first.QueryID == "" || first.QueryTransport != "http" || first.ServerMetricsSource != "http_summary" || !first.ServerSummary || first.ServerReadRows == 0 || first.ServerReadBytes == 0 || first.ServerElapsed == 0 {
+				t.Fatalf("missing successful provenance/metric control: %+v", first)
+			}
+			for i, sample := range e.Samples[1:] {
+				if sample.QueryID != "" || sample.QueryTransport != "" || sample.ServerMetricsSource != "" || sample.ServerSummary || sample.Candidates != 0 || sample.LogicalBytes != 0 || sample.ServerReadRows != 0 || sample.ServerReadBytes != 0 || sample.ServerElapsed != 0 || sample.ResponseBytes != 0 || sample.Results != 0 || sample.Error == "" || sample.Digest != evidenceDigest([]Hit{}) {
+					t.Fatalf("ownership failure sample %d retained prior data-query provenance/metrics: %+v", i+1, sample)
+				}
+			}
+		})
+	}
+}
+
+func TestEvidenceQueryProvenanceJSONAndBoundary(t *testing.T) {
+	t.Parallel()
+	for _, sample := range []Sample{
+		{QueryID: "http-data-id", QueryTransport: "http", ServerMetricsSource: "http_summary", ServerSummary: true},
+		{QueryID: "native-data-id", QueryTransport: "native", ServerMetricsSource: "unavailable"},
+	} {
+		wire, err := json.Marshal(sample)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]any
+		if err := json.Unmarshal(wire, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if fields["query_id"] != sample.QueryID || fields["query_transport"] != sample.QueryTransport || fields["server_metrics_source"] != sample.ServerMetricsSource || fields["server_summary_available"] != sample.ServerSummary {
+			t.Fatalf("provenance receipt JSON: %s", wire)
+		}
+	}
+	wire, err := json.Marshal(Sample{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var empty map[string]any
+	if err := json.Unmarshal(wire, &empty); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"query_id", "query_transport", "server_metrics_source"} {
+		if _, present := empty[name]; present {
+			t.Fatalf("absent work side channel fabricated %s: %s", name, wire)
+		}
+	}
+	e := NewEvidence(evidenceConfig(), "ch-map", "query", "all", "revision")
+	for _, disclosure := range []string{"ownership checks and data queries use the selected transport", "HTTP JSON", "native typed transport", "DDL, ingest, storage audit and EXPLAIN remain HTTP", "not protocol-cost-equivalent"} {
+		if !strings.Contains(e.Boundary, disclosure) {
+			t.Fatalf("missing protocol measurement boundary %q: %s", disclosure, e.Boundary)
 		}
 	}
 }
@@ -455,6 +550,10 @@ func TestMeasurementCancellationStopsCalls(t *testing.T) {
 			if e.Samples[0].Error != context.Canceled.Error() || e.Samples[0].Digest == "" || len(e.Histograms) != 0 {
 				t.Fatalf("canceled receipt: %+v", e)
 			}
+			work := b.calls[0].work
+			if e.Samples[0].QueryID != work.QueryID || e.Samples[0].QueryTransport != work.QueryTransport || e.Samples[0].ServerMetricsSource != work.ServerMetricsSource {
+				t.Fatalf("canceled receipt lost current query provenance: sample=%+v work=%+v", e.Samples[0], work)
+			}
 		})
 	}
 }
@@ -518,7 +617,7 @@ func TestQueryCasesSuites(t *testing.T) {
 			if suite != "rare" {
 				switch i {
 				case 1:
-					want = Attribute{"span", "gen_ai.provider.name", "string", "openai"}
+					want = Attribute{"span", "gen_ai.response.id", "string", "chatcmpl-fixture-v2-" + Generate(c, 44).ID}
 					if suite == "mixed" {
 						want = Attribute{"resource", QueryKey, "string", QueryValue}
 					}
@@ -655,8 +754,32 @@ func TestTraceReceiptWithoutWorkSideChannel(t *testing.T) {
 		t.Fatalf("samples=%d", len(e.Samples))
 	}
 	for i, s := range e.Samples {
-		if s.Candidates != 0 || s.LogicalBytes != 0 || s.ServerReadRows != 0 || s.ServerReadBytes != 0 || s.ServerElapsed != 0 || s.ResponseBytes != 0 || s.ServerSummary || s.Digest != evidenceDigest(b.calls[i].spans) {
+		if s.Candidates != 0 || s.LogicalBytes != 0 || s.ServerReadRows != 0 || s.ServerReadBytes != 0 || s.ServerElapsed != 0 || s.ResponseBytes != 0 || s.ServerSummary || s.QueryID != "" || s.QueryTransport != "" || s.ServerMetricsSource != "" || s.Digest != evidenceDigest(b.calls[i].spans) {
 			t.Fatalf("sample %d fabricated work or lost results: %+v", i, s)
+		}
+	}
+}
+
+type evidenceIntrinsicWithoutWork struct {
+	Backend
+	IntrinsicBackend
+}
+
+func TestSpanReceiptWithoutWorkSideChannel(t *testing.T) {
+	t.Parallel()
+	c := evidenceConfig()
+	ctx := t.Context()
+	b := &evidenceBackend{cfg: c, mode: "success", ctx: ctx}
+	var e Evidence
+	if err := MeasureQueries(ctx, &evidenceIntrinsicWithoutWork{Backend: b, IntrinsicBackend: b}, c, "span", &e); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.Samples) != c.Iterations {
+		t.Fatalf("samples=%d", len(e.Samples))
+	}
+	for i, sample := range e.Samples {
+		if sample.Candidates != 0 || sample.LogicalBytes != 0 || sample.ServerReadRows != 0 || sample.ServerReadBytes != 0 || sample.ServerElapsed != 0 || sample.ResponseBytes != 0 || sample.ServerSummary || sample.QueryID != "" || sample.QueryTransport != "" || sample.ServerMetricsSource != "" || sample.Digest != evidenceDigest(b.calls[i].matches) {
+			t.Fatalf("sample %d fabricated absent side-channel provenance or lost span results: %+v", i, sample)
 		}
 	}
 }
@@ -694,7 +817,7 @@ func TestAuditTraceFailures(t *testing.T) {
 
 func TestCancellationRetainsSuccessfulHistogram(t *testing.T) {
 	t.Parallel()
-	for _, suite := range []string{"rare", "trace"} {
+	for _, suite := range []string{"rare", "trace", "span", "time"} {
 		c := evidenceConfig()
 		ctx, cancel := context.WithCancel(context.Background())
 		b := &evidenceBackend{cfg: c, mode: "cancel_after_success", ctx: ctx, cancel: cancel}
@@ -705,8 +828,14 @@ func TestCancellationRetainsSuccessfulHistogram(t *testing.T) {
 			t.Fatalf("%s error=%v calls=%d samples=%+v failures=%d", suite, err, len(b.calls), e.Samples, e.Failures)
 		}
 		ns := e.Samples[0].Nanoseconds
-		if e.Samples[0].Error != "" || e.Samples[1].Error != context.Canceled.Error() || len(e.Histograms) != 1 || e.Histograms[suite] != (Histogram{1, ns, ns, ns, ns, ns}) {
+		if e.Samples[0].Error != "" || e.Samples[1].Error != context.Canceled.Error() || len(e.Histograms) != 1 || e.Histograms[evidenceClass(suite, 0)] != (Histogram{1, ns, ns, ns, ns, ns}) {
 			t.Fatalf("%s: canceled receipt lost successful population: %+v", suite, e)
+		}
+		for i, sample := range e.Samples {
+			work := b.calls[i].work
+			if sample.QueryID != work.QueryID || sample.QueryTransport != work.QueryTransport || sample.ServerMetricsSource != work.ServerMetricsSource || sample.ServerSummary != work.ServerSummary || sample.ServerReadRows != work.ServerReadRows || sample.ServerReadBytes != work.ServerReadBytes || sample.ServerElapsed != work.ServerElapsed || sample.ResponseBytes != work.ResponseBytes {
+				t.Fatalf("%s sample %d retained stale provenance/metrics on cancellation: sample=%+v work=%+v", suite, i, sample, work)
+			}
 		}
 	}
 }

@@ -1,0 +1,150 @@
+{
+  "schema": "otel283_failed_pilot_archive_v1",
+  "created_utc": "2026-10-27T16:41:24.101Z",
+  "outcome": "FAILED: non-monitor transaction_timed_out (1031)",
+  "measured_revision": "692a42505133f7f42030bc9ba91c65f8d7828d14",
+  "active_tree_head_at_archive": "1c027d05f4dcf98d7440d79d64355f8b7cb9a639",
+  "active_tree_is_not_measured_source": true,
+  "measured_source_clean_at_archive": true,
+  "binary_sha256": "686448b8dcde2ccabb86ab512d6feac4de9eff0187ec13f32e13e41f32ad02df",
+  "source_before_after_identical": true,
+  "binary_before_after_identical": true,
+  "config_before_after_identical": true,
+  "frozen_policy_checks": [
+    {
+      "name": "foundationdb.conf",
+      "expected": "6b2b4e0e85fba430d99ea8710778c6776a95326246ae6e45109192327e242b1f",
+      "archived": "6b2b4e0e85fba430d99ea8710778c6776a95326246ae6e45109192327e242b1f"
+    },
+    {
+      "name": "fdb.cluster.seed",
+      "expected": "88eea690f206eac6e9d532cadc882fe4945da0c4aa0f6d6eb55e5ee1615eed3e",
+      "archived": "88eea690f206eac6e9d532cadc882fe4945da0c4aa0f6d6eb55e5ee1615eed3e"
+    },
+    {
+      "name": "resume.sh",
+      "expected": "d8512a8b209f9c134543ab64e2546f4c95b5293f19e77377c0065a5c637cd882",
+      "archived": "d8512a8b209f9c134543ab64e2546f4c95b5293f19e77377c0065a5c637cd882"
+    },
+    {
+      "name": "resume-entrypoint.sh",
+      "expected": "ba92031f087e97a8932b8fc11adfbb5cff343f1333fc660dbf291fa8810cc52b",
+      "archived": "ba92031f087e97a8932b8fc11adfbb5cff343f1333fc660dbf291fa8810cc52b"
+    },
+    {
+      "name": "monitor.sh",
+      "expected": "8db0e24a1b007c89f7846b28ce1839afc8085f435587a3140c926eec3e78109d",
+      "archived": "8db0e24a1b007c89f7846b28ce1839afc8085f435587a3140c926eec3e78109d"
+    },
+    {
+      "name": "status-check.jq",
+      "expected": "35de9a2f1c08ecde7a964a52d38dbd878571c78f6f3a8046dc9ecb4158e74df3",
+      "archived": "35de9a2f1c08ecde7a964a52d38dbd878571c78f6f3a8046dc9ecb4158e74df3"
+    },
+    {
+      "name": "readiness.sh",
+      "expected": "36b1b022378809beda723ff6ea16c236aa5391c0537bcfb19e2ff8639d006d97",
+      "archived": "36b1b022378809beda723ff6ea16c236aa5391c0537bcfb19e2ff8639d006d97"
+    },
+    {
+      "name": "bulk-phase.jq",
+      "expected": "a329c2340240291a0cd9f88237e971bdb79dd76a570b950c5d1d2507668842c3",
+      "archived": "a329c2340240291a0cd9f88237e971bdb79dd76a570b950c5d1d2507668842c3"
+    },
+    {
+      "name": "declare-bulk.sh",
+      "expected": "9f4f4966e950e96cdb067fe30217520cc6d203f3ab168520ecc0a8bef9e4a444",
+      "archived": "9f4f4966e950e96cdb067fe30217520cc6d203f3ab168520ecc0a8bef9e4a444"
+    },
+    {
+      "name": "drain.sh",
+      "expected": "e961332d5f5b11d9f1d600df55e38129a70496be3adf7297d4a7acb26d4327da",
+      "archived": "e961332d5f5b11d9f1d600df55e38129a70496be3adf7297d4a7acb26d4327da"
+    },
+    {
+      "name": "verify-drain.sh",
+      "expected": "02a86cbf54ed657a2b00005dee19677e85f0b6c67111fe87a5edabae6ef6ba95",
+      "archived": "02a86cbf54ed657a2b00005dee19677e85f0b6c67111fe87a5edabae6ef6ba95"
+    }
+  ],
+  "run": "rw1m0284",
+  "requested_rows": 1000000,
+  "acknowledged_rows": 114720,
+  "ingest_wall_ns": 47583190245,
+  "successful_source_census": false,
+  "audit_attempt": "post-failure audit rejected loading before row scan",
+  "queries_run": 0,
+  "monitor_selection": {
+    "method": "Unmodified complete-line prefix with timestamp <= final drain certificate completed_epoch; raw status references copied; no ongoing tail copied",
+    "cutoff_epoch": 1793118647,
+    "records": 23,
+    "status_samples": 14,
+    "bulk_status_samples": 14,
+    "warning_exception_samples": 1,
+    "last_selected_timestamp": "2026-10-27T16:30:44Z"
+  },
+  "drain": {
+    "raw_samples": 17,
+    "certificate_sample_hash_checks": [
+      {
+        "archive_path": "session/drain-raw.GAZ4Ot/status-000015.json",
+        "expected_sha256": "9c1cece9e26ee0e005bf1548dfa7c7720a2bdf25c673d14bf118a0c6ba14d900",
+        "observed_sha256": "9c1cece9e26ee0e005bf1548dfa7c7720a2bdf25c673d14bf118a0c6ba14d900",
+        "matches": true,
+        "epoch": 1793118637
+      },
+      {
+        "archive_path": "session/drain-raw.GAZ4Ot/status-000016.json",
+        "expected_sha256": "88108304b133ac555209a3bacfa4a40bde2da14f4a8ab693c2159954409f3169",
+        "observed_sha256": "88108304b133ac555209a3bacfa4a40bde2da14f4a8ab693c2159954409f3169",
+        "matches": true,
+        "epoch": 1793118642
+      },
+      {
+        "archive_path": "session/drain-raw.GAZ4Ot/status-000017.json",
+        "expected_sha256": "c1b95093c583297de1abedbbfcaabade81269b3d5e3ed2361bb06cdf24f237a9",
+        "observed_sha256": "c1b95093c583297de1abedbbfcaabade81269b3d5e3ed2361bb06cdf24f237a9",
+        "matches": true,
+        "epoch": 1793118647
+      }
+    ],
+    "load_receipt_hash_matches": true,
+    "certifies_load": false
+  },
+  "validation": [
+    {
+      "archive_path": "validation/initial-red-217",
+      "tests": 217,
+      "passed": 213,
+      "failed": 4,
+      "commands": 395,
+      "pure_file_only": true
+    },
+    {
+      "archive_path": "validation/intermediate-red-238",
+      "tests": 238,
+      "passed": 235,
+      "failed": 3,
+      "commands": 472,
+      "pure_file_only": true
+    },
+    {
+      "archive_path": "validation/final-file-validation-241",
+      "tests": 241,
+      "passed": 241,
+      "failed": 0,
+      "commands": 475,
+      "pure_file_only": true
+    }
+  ],
+  "raw_files": 4141,
+  "raw_symlinks": 4,
+  "portability": "All original /tmp paths are local provenance. Four adversarial fixture symlinks retain absolute original targets and must not be followed blindly. Commands/harness require explicit fresh paths and original ownership/approval guards.",
+  "exclusions": [
+    "Docker inspect/environment logs; no nonloopback-address or credential-bearing inspect dump included",
+    "Monitor records after final drain cutoff",
+    "No runtime process files or ongoing runtime directory copied wholesale"
+  ],
+  "supplemental_analysis_note": "Any no-audit wording means no completed population census; root separately attempted audit and retained the explicit loading rejection. Sampled Ratekeeper backpressure is not a precise failed-transaction bottleneck trace.",
+  "archive_operations_only": true
+}

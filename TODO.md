@@ -2762,6 +2762,25 @@ the trace experiment.
   Full failure receipts: `layers/otel/bench/evidence/2026-10-27/pilot-1m-failed/`.
   Validate a properly budgeted role-separated server profile and persistence behavior
   before retrying a larger population; do not hide this failure or count it as 1M.
+  A separately labeled V2/four-process/16-GiB/Redwood pilot was externally stopped
+  after 143,264 acknowledged spans because the monitor treated a sole batch-priority
+  probe timeout as fatal aggregate unhealthiness. Data remained healthy/available,
+  roles/recovery intact; storage queue was about 1.026 GB and durability lag 23.9 s.
+  This is real backpressure and a monitor-terminated incomplete gate, not a proven
+  DB crash or successful capacity result. Preserve the stop and use any narrowly
+  source-backed bulk-warning policy only as a new arm; readiness/final drain and
+  all structural/resource/backlog gates remain strict. Receipts:
+  `layers/otel/bench/evidence/2026-10-27/pilot-1m-v2-monitor-aborted/`.
+  A new, separately declared bounded-bulk policy arm then failed with transaction
+  timeout 1031 after 114,720 acknowledged spans in 47.583 s; the monitor did not
+  terminate this load. Three subsequent strict drained samples passed, but the
+  ready/source-audit guard correctly rejected the still-loading namespace. This
+  is neither a completed 1M gate nor proof of a client defect. Investigate bounded,
+  cancellation-safe recovery using fresh transactions and immutable batch replay;
+  configure transaction bounds before the manifest read and retain every existing
+  admission/save/mutation/resource guard. Do not retry terminal application errors
+  or claim throughput from the partial load. Receipts:
+  `layers/otel/bench/evidence/2026-10-27/pilot-1m-v2-bulk-timeout/`.
 - [ ] **Go client / Record Layer query tails — unlocalized performance finding.**
   In the same immutable 100,000-span campaign at `12c293130`, three rotated rounds
   each measured 1,000 selective queries (200 per class) and 1,000 trace lookups per
@@ -2842,6 +2861,11 @@ regressions so they can be proposed upstream after the PoC.
   scales arithmetically to about 330 GB of FDB logical owned KV at 100M, not physical
   usage; 423 GiB free on the host does not establish that FDB plus ClickHouse fits.
   Run variants sequentially with owned cleanup when coexistence would be unsafe.
+  Respect FDB's own operating-space reserve too: exact 7.3 source defaults
+  `MIN_AVAILABLE_SPACE=100 MB`, `MIN_AVAILABLE_SPACE_RATIO=0.05`; Ratekeeper uses
+  the greater value and reports free-minus-reserve as `least_operating_space`.
+  A host-only 64-GiB floor would not suffice on this roughly 1.9-TB filesystem;
+  preserve the database's reserve rather than lowering it to make 100M fit.
 - [ ] Load and verify the full 100M population, then retain repeated needle-query
   latency/work receipts and sustained ingest-plus-concurrent-query measurements.
   Report achieved throughput, p50/p95/p99/p99.9 populations, failures, CPU/RAM,

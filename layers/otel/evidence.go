@@ -12,19 +12,22 @@ import (
 )
 
 type Sample struct {
-	Iteration       int    `json:"iteration"`
-	Class           string `json:"class"`
-	Nanoseconds     int64  `json:"ns"`
-	Results         int    `json:"results"`
-	Candidates      int    `json:"consumed_candidates,omitempty"`
-	LogicalBytes    int64  `json:"consumed_logical_bytes,omitempty"`
-	ServerReadRows  int64  `json:"server_read_rows,omitempty"`
-	ServerReadBytes int64  `json:"server_read_bytes,omitempty"`
-	ServerElapsed   int64  `json:"server_elapsed_ns,omitempty"`
-	ResponseBytes   int64  `json:"http_response_bytes,omitempty"`
-	ServerSummary   bool   `json:"server_summary_available"`
-	Digest          string `json:"result_digest,omitempty"`
-	Error           string `json:"error,omitempty"`
+	Iteration           int    `json:"iteration"`
+	Class               string `json:"class"`
+	Nanoseconds         int64  `json:"ns"`
+	Results             int    `json:"results"`
+	Candidates          int    `json:"consumed_candidates,omitempty"`
+	LogicalBytes        int64  `json:"consumed_logical_bytes,omitempty"`
+	ServerReadRows      int64  `json:"server_read_rows,omitempty"`
+	ServerReadBytes     int64  `json:"server_read_bytes,omitempty"`
+	ServerElapsed       int64  `json:"server_elapsed_ns,omitempty"`
+	ResponseBytes       int64  `json:"http_response_bytes,omitempty"`
+	ServerSummary       bool   `json:"server_summary_available"`
+	QueryID             string `json:"query_id,omitempty"`
+	QueryTransport      string `json:"query_transport,omitempty"`
+	ServerMetricsSource string `json:"server_metrics_source,omitempty"`
+	Digest              string `json:"result_digest,omitempty"`
+	Error               string `json:"error,omitempty"`
 }
 type Histogram struct {
 	Population int   `json:"population"`
@@ -54,7 +57,7 @@ type Evidence struct {
 }
 
 func NewEvidence(c Config, backend, mode, suite, revision string) Evidence {
-	return Evidence{Tool: ToolVersion, Backend: backend, Mode: mode, Suite: suite, Revision: revision, Go: runtime.Version(), Config: c, Corpus: corpusIdentity(c), Start: time.Now().UTC().Format(time.RFC3339Nano), Boundary: "fixture V2 immutable synthetic spans; local closed-loop diagnostic, not SLO/HA/production evidence; typed scoped equality, complete trace, standalone span ID, intrinsic half-open time; synthetic ID/response uniqueness is not a provider or semconv guarantee"}
+	return Evidence{Tool: ToolVersion, Backend: backend, Mode: mode, Suite: suite, Revision: revision, Go: runtime.Version(), Config: c, Corpus: corpusIdentity(c), Start: time.Now().UTC().Format(time.RFC3339Nano), Boundary: "fixture V2 immutable synthetic spans; local closed-loop diagnostic, not SLO/HA/production evidence; typed scoped equality, complete trace, standalone span ID, intrinsic half-open time; synthetic ID/response uniqueness is not a provider or semconv guarantee; ClickHouse ownership checks and data queries use the selected transport, HTTP JSON or native typed transport; DDL, ingest, storage audit and EXPLAIN remain HTTP; transport arms are not protocol-cost-equivalent"}
 }
 
 func resultDigest(v any) string {
@@ -191,11 +194,17 @@ func queryCases(ctx context.Context, c Config, suite string) ([]queryCase, error
 			switch i % 5 {
 			case 1:
 				q.class = "custom_varying"
-				j := 4 + i%max(1, c.Attributes-4)
-				if j >= len(source.Attributes) {
-					j = 3
+				if suite == "mixed" {
+					q.class = "resource_common"
+					q.attribute = Attribute{"resource", QueryKey, "string", QueryValue}
+				} else if c.Attributes >= 8 {
+					q.attribute = source.Attributes[7]
+				} else if c.Attributes > 4 {
+					q.attribute = source.Attributes[4+i%(c.Attributes-4)]
+				} else {
+					q.kind, q.class, q.trace = "trace", "trace_varying", source.Trace
+					q.attribute = Attribute{}
 				}
-				q.attribute = source.Attributes[j]
 			case 2:
 				q.class = "lookalike_type"
 				q.attribute = Attribute{"span", QueryKey + ".int", "string", QueryValue}
@@ -205,10 +214,6 @@ func queryCases(ctx context.Context, c Config, suite string) ([]queryCase, error
 			case 4:
 				q.class = "id_varying"
 				q.attribute = source.Attributes[0]
-			}
-			if suite == "mixed" && i%5 == 1 {
-				q.class = "resource_common"
-				q.attribute = Attribute{"resource", QueryKey, "string", QueryValue}
 			}
 		}
 		cases[i] = q
@@ -264,6 +269,7 @@ func MeasureQueries(ctx context.Context, b Backend, c Config, suite string, e *E
 				sample.ServerElapsed = work.ServerElapsed
 				sample.ResponseBytes = work.ResponseBytes
 				sample.ServerSummary = work.ServerSummary
+				sample.QueryID, sample.QueryTransport, sample.ServerMetricsSource = work.QueryID, work.QueryTransport, work.ServerMetricsSource
 			}
 			sample.Digest = resultDigest(got)
 			if err != nil {
@@ -281,6 +287,7 @@ func MeasureQueries(ctx context.Context, b Backend, c Config, suite string, e *E
 				sample.Candidates, sample.LogicalBytes = work.Candidates, work.Bytes
 				sample.ServerReadRows, sample.ServerReadBytes = work.ServerReadRows, work.ServerReadBytes
 				sample.ServerElapsed, sample.ResponseBytes, sample.ServerSummary = work.ServerElapsed, work.ResponseBytes, work.ServerSummary
+				sample.QueryID, sample.QueryTransport, sample.ServerMetricsSource = work.QueryID, work.QueryTransport, work.ServerMetricsSource
 			}
 			if err != nil {
 				sample.Error = err.Error()
@@ -309,6 +316,7 @@ func MeasureQueries(ctx context.Context, b Backend, c Config, suite string, e *E
 			sample.ServerElapsed = got.ServerElapsed
 			sample.ResponseBytes = got.ResponseBytes
 			sample.ServerSummary = got.ServerSummary
+			sample.QueryID, sample.QueryTransport, sample.ServerMetricsSource = got.QueryID, got.QueryTransport, got.ServerMetricsSource
 			sample.Digest = resultDigest(got.Hits)
 			if err != nil {
 				sample.Error = err.Error()

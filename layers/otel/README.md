@@ -75,8 +75,10 @@ or direct before/after performance claim is made across this fixture change.
 
 ## Physical arms
 
-Every arm uses a fresh run namespace and maintains only its selected layout.
-`--order` changes ownership metadata, not source corpus bytes.
+Every physical arm uses a fresh run namespace and maintains only its selected
+layout. HTTP/native query transports intentionally reuse that same loaded arm;
+transport does not change ownership or corpus identity. `--order` changes
+ownership metadata, not source corpus bytes.
 
 | Backend | Order | Physical/query strategy |
 |---|---|---|
@@ -98,6 +100,44 @@ audit captures actual EXPLAIN choices, named projection row counts and bytes.
 Verify selection and parent/projection byte inclusion before making a trace
 comparison or summing storage. All source data is retained; there is no hidden
 term-time accelerator in the trace-ordered FDB arm.
+
+## ClickHouse query transports
+
+`--ch-query-transport=http` is the default. `native` uses the pinned official
+`clickhouse-go/v2 v2.43.0` client (`ch-go v0.71.0`) and requires
+`--ch-native-addr=127.0.0.1:PORT` (or explicit IPv6 loopback/localhost). Native
+mode also requires a loopback HTTP administration endpoint. It reuses HTTP-loaded
+tables: do not load a second copy for the transport comparison.
+
+Each timed operation performs ownership **and** data queries over the selected
+transport. DDL, ingest, storage audits and EXPLAIN remain HTTP. SQL predicates,
+parameters, ordering, limits, projection settings and server read budgets are
+shared; only HTTP's `FORMAT JSONEachRow` suffix is removed for native blocks.
+Native results scan directly into typed fields and drain through terminal error
+and close checks, without a JSON round trip. Both protocols are uncompressed in
+this first comparison; native encoding versus JSON/HTTP overhead is deliberately
+part of the measured transport difference, not a storage-engine claim.
+
+The native pool persists (four open/idle connections), with a five-second dial
+bound and 30-second read/query-context bounds; data SQL retains its two-second
+server deadline. Pool creation performs no Ping or hidden warmup. Native client
+compatibility and real access paths require the real-CH validation lane; this
+source description is not evidence that those tests or a benchmark passed.
+
+Credentials may be inherited internally from the existing HTTP URL, never from
+the native address or new password flags. They are absent from Config/receipts
+and query IDs; diagnostic errors redact raw/escaped userinfo and nested native
+exception details while preserving safe error categories/causes.
+
+Data queries on both transports retain fresh query IDs, including failures after
+execution starts. Ownership failures have no data-query ID and clear prior work.
+Native server metrics are explicitly `unavailable`: fast queries need not emit
+progress, and no callback is assumed to be a complete read-work summary. Native
+zero metric fields mean unavailable, not zero engine work. Query-log reconciliation
+is a separate future operation outside measurement timing; millisecond duration
+quantization must be disclosed if used. HTTP summaries remain labeled
+`http_summary` when available. Native decoded-result and HTTP response caps are
+both 32 MiB, but decoded bytes and JSON wire bytes are different quantities.
 
 ## Build and validation
 
@@ -224,8 +264,11 @@ results under this layer after source-integrity checks pass.
 
 ## Query/audit evidence
 
-* `selective` rotates rare, varying custom key/value, absent, type-negative and
-  varying identifier predicates. `mixed` additionally includes a common resource
+* `selective` rotates rare, varying, absent, type-negative and identifier
+  predicates. Its legacy `custom_varying` class uses a unique response-ID at
+  eight or more attributes, retained filler values at five through seven, and
+  an honestly labeled `trace_varying` lookup at four (where no varying attribute
+  is guaranteed). `mixed` additionally includes a common resource
   term. `trace` rotates trace identities. `rare` intentionally repeats one term
   and must be labeled as a hot-query diagnostic, not the mixed-workload verdict.
 * `span` alternates standalone span-ID hits/misses. `genai` cycles high-cardinality
@@ -236,13 +279,15 @@ results under this layer after source-integrity checks pass.
   cover the cycle). `genai`/`all` require at least eight attributes. Complete
   trace and standalone span queries do not silently truncate to K; equality and
   time queries return K distinct traces. All obey candidate/byte budgets.
-* No application result cache. CH explicitly disables `use_query_cache`; stdlib
-  HTTP connections persist. FDB uses its native Go client with one open database.
+* No application result cache. CH explicitly disables `use_query_cache`; HTTP
+  connections and the optional native pool persist. FDB uses its native Go client with one open database.
   Client protocols, per-query ownership checks and decoding are included in wall
   latency; they are not identical protocols. FDB covering verification is included.
 * Every query keeps a raw nanosecond sample, result count/digest, failure, FDB
   consumed candidate/logical-byte count, and CH server `X-ClickHouse-Summary`
   read_rows/read_bytes/elapsed_ns plus HTTP response bytes where available.
+  CH data-query IDs, selected transport and server-metrics source accompany each
+  sample; native read-work metrics remain honestly unavailable until reconciliation.
   `server_summary_available=false` means unavailable, **not zero engine work**.
   FDB logical consumed bytes exclude protocol bytes and iterator prefetch; they
   must not be equated to physical server I/O. CH physical read budgets and FDB

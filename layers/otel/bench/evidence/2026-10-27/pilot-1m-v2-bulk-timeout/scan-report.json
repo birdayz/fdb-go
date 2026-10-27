@@ -1,0 +1,133 @@
+{
+  "schema": "otel283_lossless_archive_scan_v1",
+  "scope": "Entire decompressed evidence.tar.gz, including every regular member and all original JSON/JSONL, scripts, manifests, static failed-arm fixtures/results and supplemental analysis. No drivers/harnesses executed.",
+  "gzip_crc_and_decompression": "passed",
+  "tar_regular_files": 4143,
+  "tar_symlinks": 4,
+  "tar_members": 4408,
+  "json_members": 1323,
+  "jsonl_members": 10,
+  "ipv4_literals": [
+    {
+      "literal": "127.0.0.1",
+      "classification": "loopback",
+      "occurrences": 33790,
+      "example_members": [
+        "./policy/frozen/README.md",
+        "./policy/frozen/fdb.cluster.seed",
+        "./policy/frozen/foundationdb.conf",
+        "./policy/frozen/launch.sh",
+        "./policy/frozen/resume.sh"
+      ]
+    },
+    {
+      "literal": "0.0.0.0",
+      "classification": "wildcard listen/bind address, not destination",
+      "occurrences": 3476,
+      "example_members": [
+        "./policy/frozen/foundationdb.conf",
+        "./run/fdb.acknowledged.json",
+        "./run/fdb.before.json",
+        "./run/fdb.settled.json",
+        "./session/drain-raw.GAZ4Ot/status-000001.json"
+      ]
+    },
+    {
+      "literal": "4.14.2.0",
+      "classification": "Java Record Layer version in source-manifest filenames, not an address",
+      "occurrences": 2,
+      "example_members": [
+        "./run/source.after",
+        "./run/source.before"
+      ]
+    }
+  ],
+  "ipv6_candidate_literals": [],
+  "nonloopback_destination_findings": [],
+  "secret_candidate_members": [],
+  "secret_pattern_scope": "Private key headers, AWS access-key formats, GitHub token formats, OpenAI-style key formats, long credential assignments, URL userinfo. Pattern scan is not proof of absence of every possible secret.",
+  "trailing_whitespace": {
+    "members": 14,
+    "lines": 60,
+    "handling": "Preserved byte-for-byte inside gzip: performance output, source excerpts, command receipt and deliberate tampered negative fixtures. No raw fields or whitespace rewritten.",
+    "details": [
+      {
+        "member": "./rootcause-analysis/NativeAPI.actor.cpp.excerpts.txt",
+        "lines": 3
+      },
+      {
+        "member": "./rootcause-analysis/Ratekeeper.actor.cpp.excerpts.txt",
+        "lines": 4
+      },
+      {
+        "member": "./rootcause-analysis/ReadYourWrites.actor.cpp.excerpts.txt",
+        "lines": 22
+      },
+      {
+        "member": "./rootcause-analysis/Status.actor.cpp.excerpts.txt",
+        "lines": 11
+      },
+      {
+        "member": "./rootcause-analysis/fdb.options.excerpts.txt",
+        "lines": 1
+      },
+      {
+        "member": "./rootcause-analysis/perf-stat.txt",
+        "lines": 6
+      },
+      {
+        "member": "./run/ingest-command.txt",
+        "lines": 1
+      },
+      {
+        "member": "./run/perf-stat.txt",
+        "lines": 6
+      },
+      {
+        "member": "./validation/final-file-validation-241/cert-fixtures/tampered-raw/drain-raw.fixture/status-000001.json",
+        "lines": 1
+      },
+      {
+        "member": "./validation/final-file-validation-241/cert-fixtures/tampered-receipt/load-receipt.json",
+        "lines": 1
+      },
+      {
+        "member": "./validation/initial-red-217/cert-fixtures/tampered-raw/drain-raw.fixture/status-000001.json",
+        "lines": 1
+      },
+      {
+        "member": "./validation/initial-red-217/cert-fixtures/tampered-receipt/load-receipt.json",
+        "lines": 1
+      },
+      {
+        "member": "./validation/intermediate-red-238/cert-fixtures/tampered-raw/drain-raw.fixture/status-000001.json",
+        "lines": 1
+      },
+      {
+        "member": "./validation/intermediate-red-238/cert-fixtures/tampered-receipt/load-receipt.json",
+        "lines": 1
+      }
+    ]
+  },
+  "certificate_raws_rehashed_from_archive": [
+    {
+      "member": "./session/drain-raw.GAZ4Ot/status-000015.json",
+      "sha256": "9c1cece9e26ee0e005bf1548dfa7c7720a2bdf25c673d14bf118a0c6ba14d900"
+    },
+    {
+      "member": "./session/drain-raw.GAZ4Ot/status-000016.json",
+      "sha256": "88108304b133ac555209a3bacfa4a40bde2da14f4a8ab693c2159954409f3169"
+    },
+    {
+      "member": "./session/drain-raw.GAZ4Ot/status-000017.json",
+      "sha256": "c1b95093c583297de1abedbbfcaabade81269b3d5e3ed2361bb06cdf24f237a9"
+    }
+  ],
+  "egress_finding": false,
+  "services_or_tests_executed": false,
+  "raw_manifest_verification": {
+    "verified_raw_files": 4141,
+    "method": "Safely materialized only regular gzip/tar members under a fresh /tmp root, skipped all symlinks, sha256sum --check RAW-SHA256SUMS",
+    "all_match": true
+  }
+}

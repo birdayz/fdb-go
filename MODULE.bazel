@@ -39,6 +39,7 @@ use_repo(
     "com_github_birdayz_protobuf_ecosystem",
     "com_github_charmbracelet_x_term",
     "com_github_chzyer_readline",
+    "com_github_clickhouse_clickhouse_go_v2",
     "com_github_containerd_errdefs",
     "com_github_docker_docker",
     "com_github_docker_go_connections",

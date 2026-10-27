@@ -54,6 +54,9 @@ func assertCHRequest(t *testing.T, r *http.Request, params map[string]string) st
 		t.Errorf("query body = %q, error %v", body, err)
 	}
 	q := r.URL.Query()
+	if ids := q["query_id"]; len(ids) != 1 || ids[0] == "" {
+		t.Errorf("public data request missing singleton query_id: %q", ids)
+	}
 	for k, want := range map[string]string{"use_query_cache": "0", "enable_http_compression": "0", "send_progress_in_http_headers": "0"} {
 		if got := q[k]; !reflect.DeepEqual(got, []string{want}) {
 			t.Errorf("%s = %q, want singleton %q", k, got, want)
@@ -212,8 +215,10 @@ func TestCHPublicSummaryAvailability(t *testing.T) {
 				if op == "query" {
 					var result QueryResult
 					result, err = b.Query(t.Context(), Attribute{"span", QueryKey, "string", QueryValue})
-					if !reflect.DeepEqual(result, b.LastQueryWork()) {
-						t.Fatalf("returned and side-channel query work differ: result=%+v work=%+v", result, b.LastQueryWork())
+					work := b.LastQueryWork()
+					result.Hits, work.Hits = nil, nil
+					if !reflect.DeepEqual(result, work) {
+						t.Fatalf("returned and side-channel query work differ: result=%+v work=%+v", result, work)
 					}
 				} else {
 					err = chPublicOperation(t.Context(), b, op)
@@ -224,6 +229,13 @@ func TestCHPublicSummaryAvailability(t *testing.T) {
 				work := b.LastQueryWork()
 				if work.ServerSummary != tc.available {
 					t.Fatalf("%s summary availability = %t, want %t", op, work.ServerSummary, tc.available)
+				}
+				wantSource := "unavailable"
+				if tc.available {
+					wantSource = "http_summary"
+				}
+				if work.QueryID == "" || work.QueryTransport != "http" || work.ServerMetricsSource != wantSource {
+					t.Fatalf("%s dishonest/missing HTTP provenance: %+v", op, work)
 				}
 				if tc.available && tc.name != "zero" && (work.ServerReadRows != 7 || work.ServerReadBytes != 9 || work.ServerElapsed != 11) {
 					t.Fatalf("%s summary values corrupted: %+v", op, work)
@@ -342,15 +354,23 @@ func TestCHLastWorkResetOnFailure(t *testing.T) {
 				if err := chPublicOperation(t.Context(), b, op); err != nil {
 					t.Fatal(err)
 				}
-				if work := b.LastQueryWork(); !work.ServerSummary || work.ServerReadRows != 13 || work.ResponseBytes == 0 {
-					t.Fatalf("positive work control: %+v", work)
+				prior := b.LastQueryWork()
+				if !prior.ServerSummary || prior.ServerReadRows != 13 || prior.ResponseBytes == 0 || prior.QueryID == "" {
+					t.Fatalf("positive work control: %+v", prior)
 				}
 				fail.Store(true)
 				if err := chPublicOperation(t.Context(), b, op); err == nil {
 					t.Fatal("failed request succeeded")
 				}
-				if work := b.LastQueryWork(); !reflect.DeepEqual(work, QueryResult{}) {
-					t.Fatalf("failed request retained previous work: %+v", work)
+				if failure == "ownership" {
+					if work := b.LastQueryWork(); !reflect.DeepEqual(work, QueryResult{}) {
+						t.Fatalf("ownership failure retained previous data work: %+v", work)
+					}
+				} else {
+					assertCHUnavailableDataWork(t, b.LastQueryWork(), "http")
+					if b.LastQueryWork().QueryID == prior.QueryID {
+						t.Fatal("failed data request reused previous successful query ID")
+					}
 				}
 			})
 		}
@@ -459,9 +479,7 @@ func TestCHPublicCancellation(t *testing.T) {
 			if requests.Load() != 2 {
 				t.Fatalf("cancellation did not reach actual query request: %d", requests.Load())
 			}
-			if work := b.LastQueryWork(); !reflect.DeepEqual(work, QueryResult{}) {
-				t.Fatalf("canceled request retained work: %+v", work)
-			}
+			assertCHUnavailableDataWork(t, b.LastQueryWork(), "http")
 		})
 	}
 }
@@ -867,7 +885,60 @@ func TestCHIntrinsicResponseCap(t *testing.T) {
 	})
 	matches, err := b.Span(t.Context(), "shared")
 	var budget *QueryBudgetError
-	if !errors.As(err, &budget) || matches != nil || !reflect.DeepEqual(b.LastQueryWork(), QueryResult{}) {
+	if !errors.As(err, &budget) || matches != nil {
 		t.Fatalf("response cap returned partial exact matches/work: matches=%+v error=%v work=%+v", matches, err, b.LastQueryWork())
+	}
+	assertCHUnavailableDataWork(t, b.LastQueryWork(), "http")
+}
+
+func assertCHUnavailableDataWork(t *testing.T, work QueryResult, transport string) {
+	t.Helper()
+	if work.QueryID == "" || work.QueryTransport != transport || work.ServerMetricsSource != "unavailable" || work.ServerSummary || work.ServerReadRows != 0 || work.ServerReadBytes != 0 || work.ServerElapsed != 0 || work.ResponseBytes != 0 || work.Candidates != 0 || work.Bytes != 0 {
+		t.Fatalf("failed data query lost current ID/transport or retained stale metrics: %+v", work)
+	}
+}
+
+func TestCHHTTPPublicQueryIDs(t *testing.T) {
+	t.Parallel()
+	for _, op := range []string{"query", "trace", "span", "time"} {
+		t.Run(op, func(t *testing.T) {
+			t.Parallel()
+			var mu sync.Mutex
+			var ownerIDs, dataIDs []string
+			seen := map[string]bool{}
+			var b *CHBackend
+			b = chHTTPBackend(t, false, func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				defer mu.Unlock()
+				ids := r.URL.Query()["query_id"]
+				if len(ids) != 1 || ids[0] == "" {
+					t.Errorf("public HTTP query lacks singleton ID: %q", ids)
+					http.Error(w, "missing ID", http.StatusBadRequest)
+					return
+				}
+				id := ids[0]
+				if seen[id] {
+					t.Errorf("owner/data HTTP query ID reused: %s", id)
+				}
+				seen[id] = true
+				if chIsManifest(r.URL.Query().Get("query")) {
+					ownerIDs = append(ownerIDs, id)
+					fmt.Fprint(w, chManifestWire(t, manifest(b.cfg, "ready")))
+					return
+				}
+				dataIDs = append(dataIDs, id)
+			})
+			for i := 0; i < 2; i++ {
+				if err := chPublicOperation(t.Context(), b, op); err != nil {
+					t.Fatal(err)
+				}
+				mu.Lock()
+				if len(ownerIDs) != i+1 || len(dataIDs) != i+1 || b.LastQueryWork().QueryID != dataIDs[i] {
+					t.Errorf("HTTP data receipt ID does not identify actual data request: owner=%v data=%v work=%+v", ownerIDs, dataIDs, b.LastQueryWork())
+				}
+				mu.Unlock()
+				assertCHUnavailableDataWork(t, b.LastQueryWork(), "http")
+			}
+		})
 	}
 }

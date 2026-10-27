@@ -5,8 +5,8 @@ import (
 	"context"
 )
 
-// oracleStats bounds retained answers by unique predicates * K, never by the
-// number of matching traces. Only two adjacent source spans are live at once.
+// oracleStats bounds retained answers by unique predicates * K; scratch
+// witnesses contain only the current adjacent source pair.
 type oracleStats struct {
 	Predicates       int
 	ScannedSpans     int
@@ -37,10 +37,8 @@ func finishOracleHeap(ctx context.Context, h *oracleHeap) ([]Hit, error) {
 	return out, nil
 }
 
-// scanOraclePredicates relies only on the explicit V2 source contract: adjacent
-// ordinals 2n and 2n+1 are the only witnesses for one unique trace. It combines
-// their matching timestamps BEFORE retaining that trace. No backend encoding,
-// backend sorting helper, or whole-matching-corpus trace map is used.
+// scanOraclePredicates combines the only two source witnesses before top-K
+// retention, without backend encodings or a whole-matching-trace population map.
 func scanOraclePredicates(ctx context.Context, c Config, attributes []Attribute, intervals []TimeRange) (map[Attribute][]Hit, map[TimeRange][]Hit, oracleStats, error) {
 	stats := oracleStats{}
 	attrs := map[Attribute]*oracleHeap{}
@@ -154,10 +152,8 @@ func ExpectedSpanContext(ctx context.Context, c Config, id string) ([]SpanMatch,
 	return out, nil
 }
 
-// prepareQueryOracles makes one bounded source pass for all unique equality
-// and time predicates. Trace/span needles selected from known fixture ordinals
-// use constant-size source witness preparation; missing IDs are explicitly
-// compared to those witnesses. All preparation is outside timed backend calls.
+// prepareQueryOracles bounds equality/time answers and uses known source
+// witnesses for point needles, entirely outside timed backend calls.
 func prepareQueryOracles(ctx context.Context, c Config, cases []queryCase) (oracleStats, error) {
 	var attrs []Attribute
 	var intervals []TimeRange

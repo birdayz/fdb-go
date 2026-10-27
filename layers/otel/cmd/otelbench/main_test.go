@@ -175,7 +175,7 @@ func TestExecuteModes(t *testing.T) {
 					t.Fatalf("unexpected stderr: %s", &stderr)
 				}
 				e := decodeEvidence(t, stdout.Bytes())
-				if e.Tool != otel.ToolVersion || e.Backend != backend || e.Mode != mode || e.Revision != "test-revision" || e.Config != b.cfg || e.Config.Run != "cli_test_run" || e.Config.SaveMode != "pipelined" || e.Config.Workers != 1 || e.Config.Diagnostics || e.Corpus == "" || e.Boundary == "" || e.Start == "" || e.Go == "" || e.Error != "" || e.Failures != 0 {
+				if e.Tool != otel.ToolVersion || e.Backend != backend || e.Mode != mode || e.Revision != "test-revision" || e.Config != b.cfg || e.Config.Run != "cli_test_run" || e.Config.SaveMode != "pipelined" || e.Config.Workers != 1 || e.Config.Diagnostics || e.Config.CHQueryTransport != "http" || e.Config.CHNativeAddr != "" || e.Corpus == "" || e.Boundary == "" || e.Start == "" || e.Go == "" || e.Error != "" || e.Failures != 0 {
 					t.Fatalf("wrong receipt: %+v", e)
 				}
 				var want []string
@@ -289,6 +289,52 @@ func TestExecuteIntrinsicAndGenAISuites(t *testing.T) {
 	}
 }
 
+func TestExecuteClickHouseQueryTransportSuites(t *testing.T) {
+	t.Parallel()
+	const endpoint = "http://synthetic_user:synthetic_password@127.0.0.1:8123"
+	for _, backend := range []string{"ch-map", "ch-attrs"} {
+		for _, transport := range []string{"http", "native"} {
+			for _, suite := range []string{"selective", "mixed", "rare", "trace", "span", "time", "genai", "all"} {
+				t.Run(backend+"/"+transport+"/"+suite, func(t *testing.T) {
+					t.Parallel()
+					b := &fakeBackend{t: t}
+					addr := ""
+					args := append(cliArgs("query"), "-backend="+backend, "-suite="+suite, "-count=48", "-attrs=8", "-iterations=16", "-ch-query-transport="+transport, "-ch-url="+endpoint)
+					if transport == "native" {
+						addr = "127.0.0.1:9000"
+						args = append(args, "-ch-native-addr="+addr)
+					}
+					var stdout, stderr bytes.Buffer
+					code := execute(args, &stdout, &stderr, func(ctx context.Context, c otel.Config, cluster, chURL string) (otel.Backend, error) {
+						if c.Backend != backend || c.CHQueryTransport != transport || c.CHNativeAddr != addr || cluster != "" || chURL != endpoint {
+							t.Fatalf("opener received incorrect transport configuration: %+v", c)
+						}
+						return b.open(ctx, c, cluster, chURL)
+					})
+					if code != 0 || stderr.Len() != 0 {
+						t.Fatalf("exit=%d stderr=%s stdout=%s", code, &stderr, &stdout)
+					}
+					e := decodeEvidence(t, stdout.Bytes())
+					if e.Backend != backend || e.Suite != suite || e.Config != b.cfg || e.Config.CHQueryTransport != transport || e.Config.CHNativeAddr != addr || e.Failures != 0 || e.Error != "" || len(e.Samples) != 16 || len(b.calls) != 17 || b.calls[16] != "close" {
+						t.Fatalf("receipt=%+v calls=%v", e, b.calls)
+					}
+					for _, sample := range e.Samples {
+						if sample.Error != "" || sample.Digest == "" {
+							t.Fatalf("sample=%+v", sample)
+						}
+					}
+					if strings.Contains(stdout.String(), "synthetic_user") || strings.Contains(stdout.String(), "synthetic_password") || strings.Contains(stdout.String(), endpoint) {
+						t.Fatal("evidence exposed HTTP endpoint credentials")
+					}
+					if transport == "http" && strings.Contains(stdout.String(), "\"ch_native_addr\"") {
+						t.Fatal("default HTTP receipt retained an empty native address")
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestExecuteQuerySuiteAttributeBounds(t *testing.T) {
 	t.Parallel()
 	for _, suite := range []string{"selective", "mixed", "rare", "trace", "span", "time", "genai", "all"} {
@@ -357,6 +403,19 @@ func TestExecuteRejectsArgumentsBeforeOpeningOrCreatingOutput(t *testing.T) {
 		{"-workers=-1"},
 		{"-workers=bad"},
 		{"-diagnostics=bad"},
+		{"-backend=ch-map", "-ch-query-transport="},
+		{"-backend=ch-map", "-ch-query-transport=other"},
+		{"-backend=ch-map", "-ch-query-transport=native"},
+		{"-backend=ch-map", "-ch-query-transport=native", "-ch-native-addr=bad"},
+		{"-backend=ch-map", "-ch-query-transport=native", "-ch-native-addr=127.0.0.1"},
+		{"-backend=ch-map", "-ch-query-transport=native", "-ch-native-addr=127.0.0.1:0"},
+		{"-backend=ch-map", "-ch-query-transport=native", "-ch-native-addr=127.0.0.1:65536"},
+		{"-backend=ch-map", "-ch-query-transport=native", "-ch-native-addr=0.0.0.0:9000"},
+		{"-backend=ch-map", "-ch-query-transport=native", "-ch-native-addr=192.0.2.1:9000"},
+		{"-backend=ch-map", "-ch-query-transport=native", "-ch-native-addr=tcp://127.0.0.1:9000"},
+		{"-backend=ch-map", "-ch-query-transport=native", "-ch-native-addr=127.0.0.1:9000/path"},
+		{"-backend=ch-map", "-ch-query-transport=native", "-ch-native-addr=user:password@127.0.0.1:9000"},
+		{"-ch-native-password=not-supported"},
 		{"-unknown"},
 		{"-confirm-drop=bad"},
 		{"positional"},
@@ -390,7 +449,7 @@ func TestExecuteHelp(t *testing.T) {
 	if code := execute([]string{"-help"}, &stdout, &stderr, nil); code != 0 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "confirm-drop") {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, &stdout, &stderr)
 	}
-	for _, description := range []string{"standalone span ID", "intrinsic half-open range", "typed/scoped attributes", "all (trace, span, genai, time)"} {
+	for _, description := range []string{"standalone span ID", "intrinsic half-open range", "typed/scoped attributes", "all (trace, span, genai, time)", "ch-query-transport", "http or native", "ch-native-addr", "loopback host:port"} {
 		if !strings.Contains(stderr.String(), description) {
 			t.Fatalf("help missing %q: %s", description, &stderr)
 		}
@@ -402,8 +461,8 @@ func TestExecuteFlagForwarding(t *testing.T) {
 	for _, saveMode := range []string{"serial", "pipelined", "batch"} {
 		t.Run(saveMode, func(t *testing.T) {
 			t.Parallel()
-			args := []string{"-backend=ch-attrs", "-mode=drop", "-confirm-drop", "-run=flag_test_run", "-seed=42", "-count=24", "-tenants=3", "-attrs=12", "-match-every=2", "-batch=4", "-ch-batch=5", "-ch-batch-bytes=4096", "-tenant=1", "-k=2", "-iterations=3", "-max-candidates=99", "-max-bytes=12345", "-hash-bytes=1", "-order=time", "-cluster-file=owned.cluster", "-ch-url=http://owned.invalid:8123", "-timeout=37s", "-revision=flag-revision", "-suite=mixed", "-save-mode=" + saveMode, "-workers=2", "-diagnostics"}
-			want := otel.Config{Run: "flag_test_run", Backend: "ch-attrs", Seed: 42, Count: 24, Tenants: 3, Attributes: 12, MatchEvery: 2, Batch: 4, CHBatch: 5, CHBatchBytes: 4096, Tenant: 1, K: 2, Iterations: 3, MaxCandidates: 99, MaxBytes: 12345, HashBytes: 1, Order: "time", SaveMode: saveMode, Workers: 2, Diagnostics: true}
+			args := []string{"-backend=ch-attrs", "-mode=drop", "-confirm-drop", "-run=flag_test_run", "-seed=42", "-count=24", "-tenants=3", "-attrs=12", "-match-every=2", "-batch=4", "-ch-batch=5", "-ch-batch-bytes=4096", "-tenant=1", "-k=2", "-iterations=3", "-max-candidates=99", "-max-bytes=12345", "-hash-bytes=1", "-order=time", "-cluster-file=owned.cluster", "-ch-url=http://owned.invalid:8123", "-timeout=37s", "-revision=flag-revision", "-suite=mixed", "-save-mode=" + saveMode, "-workers=2", "-diagnostics", "-ch-query-transport=native", "-ch-native-addr=127.0.0.1:9000"}
+			want := otel.Config{Run: "flag_test_run", Backend: "ch-attrs", Seed: 42, Count: 24, Tenants: 3, Attributes: 12, MatchEvery: 2, Batch: 4, CHBatch: 5, CHBatchBytes: 4096, Tenant: 1, K: 2, Iterations: 3, MaxCandidates: 99, MaxBytes: 12345, HashBytes: 1, Order: "time", SaveMode: saveMode, Workers: 2, Diagnostics: true, CHQueryTransport: "native", CHNativeAddr: "127.0.0.1:9000"}
 			b := &fakeBackend{t: t}
 			var stdout, stderr bytes.Buffer
 			code := execute(args, &stdout, &stderr, func(ctx context.Context, c otel.Config, cluster, chURL string) (otel.Backend, error) {

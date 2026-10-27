@@ -57,6 +57,8 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 	flags.StringVar(&suite, "suite", "selective", "selective (varying predicates), mixed (also common resource term), rare (one hot predicate), trace, span (standalone span ID), time (intrinsic half-open range), genai (typed/scoped attributes), all (trace, span, genai, time)")
 	flags.StringVar(&cluster, "cluster-file", "", "explicit owned FDB cluster file; CLI never launches containers")
 	flags.StringVar(&chURL, "ch-url", "", "explicit owned ClickHouse HTTP endpoint")
+	flags.StringVar(&c.CHQueryTransport, "ch-query-transport", c.CHQueryTransport, "ClickHouse query transport: http or native")
+	flags.StringVar(&c.CHNativeAddr, "ch-native-addr", c.CHNativeAddr, "explicit loopback host:port required for native ClickHouse queries; no DSN or credentials")
 	flags.StringVar(&output, "output", "-", "JSON evidence path, created exclusively; - writes stdout")
 	flags.StringVar(&revision, "revision", "unrecorded", "actual source revision for evidence receipt")
 	flags.DurationVar(&timeout, "timeout", 10*time.Minute, "whole-command context deadline")
