@@ -147,7 +147,7 @@ Each is described in full under Compatibility or Changed below.
   - Legacy GODEBUG values removed in Go 1.27 abort program startup if set.
 
 ### Added
-- `transport.WithAdaptiveLinger`, `client.WithAdaptiveLinger`, `fdb.WithAdaptiveLinger`, and `transport.Conn.AdaptiveLinger` configure and report Nagle-style adaptive writer linger on the pure-Go client's enqueue-only connection writer (RFC-282).
+- `transport.WithAdaptiveLinger`, `client.WithAdaptiveLinger`, `fdb.WithAdaptiveLinger`, and `transport.Conn.AdaptiveLinger` configure and report Nagle-style adaptive writer linger on the pure-Go client's enqueue-only connection writer (RFC-282). `client.Database.ConnectionLinger` reports the effective linger settings. `transport.NetDesign` reports the default writer design; `FDBGO_NET_DESIGN=legacy` (or `0`) selects the legacy writer and timeout path process-wide, while `transport.WithLegacyWriter` selects that writer for one connection.
 - `FDBRecordStore.GetPrimaryKeyBoundaries`, Java's `getPrimaryKeyBoundaries`: the primary keys at
   the records' shard boundaries. `IndexingRangeSet.FirstMissingRangeInBytes`, Java's
   `firstMissingRangeAsync(begin, end)` (RFC-279).

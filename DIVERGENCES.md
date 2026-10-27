@@ -4654,7 +4654,6 @@ It differs in three places:
 
 ## Native FDB client read hedging
 
-
 RFC-281 (#1017) aligns the second-request budget and adaptive delay with
 libfdb_c 7.3.77 (`QueueModel.h:121`, `LoadBalance.actor.h:554-563,694-716`):
 new databases start at zero budget; lone replies earn 0.05 up to 100; a hedge

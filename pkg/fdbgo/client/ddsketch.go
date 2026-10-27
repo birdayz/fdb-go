@@ -7,6 +7,19 @@ import (
 	"sync"
 )
 
+const numSketchStripes = 16
+
+type latencySketchStripe struct {
+	mu             sync.Mutex
+	buckets        map[int]uint64 // signed bucket index -> count; lazily created
+	populationSize uint64
+	zeroPopulation uint64 // samples <= ddSketchEPS (count as 0, per C++)
+	sum            float64
+	minValue       float64
+	maxValue       float64
+	_              [8]byte // pad to 64B cache line
+}
+
 // latencySketch is a faithful port of C++ DDSketch<double> (fdbrpc/include/
 // fdbrpc/DDSketch.h), the type behind DatabaseContext's read/commit/GRV latency
 // distributions (DatabaseContext.h:657). It answers mean / median / arbitrary
@@ -33,22 +46,8 @@ import (
 //     natural map keys — no offset bookkeeping. percentile() sorts the occupied
 //     indices, but only at snapshot time, never on the sampling hot path.
 //
-// The zero value is ready to use (the bucket map is created lazily under the
-// lock), so a latencySketch can be embedded directly in ClientMetrics with no
-// constructor.
-const numSketchStripes = 16
-
-type latencySketchStripe struct {
-	mu             sync.Mutex
-	buckets        map[int]uint64 // signed bucket index -> count; lazily created
-	populationSize uint64
-	zeroPopulation uint64 // samples <= ddSketchEPS (count as 0, per C++)
-	sum            float64
-	minValue       float64
-	maxValue       float64
-	_              [8]byte // pad to 64B cache line
-}
-
+// The zero value is ready to use: each stripe creates its bucket map lazily
+// under its own lock. No constructor is needed for ClientMetrics.
 type latencySketch struct {
 	stripes      [numSketchStripes]latencySketchStripe
 	onStripeRead func(int) // optional test hook run during stats() aggregation

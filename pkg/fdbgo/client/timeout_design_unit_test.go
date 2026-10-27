@@ -198,6 +198,53 @@ func TestDesignTimeoutProductionQueue(t *testing.T) {
 	}
 }
 
+func TestDesignTimeoutLateReadAdmissionAfterDeadline(t *testing.T) {
+	t.Parallel()
+	db := &Database{db: &database{timeouts: newTimeoutQueue()}}
+	var tx *Transaction
+	var inc *readIncarnation
+	_, err := db.ReadTransact(context.Background(), func(readTx *Transaction) (any, error) {
+		tx = readTx
+		tx.SetTimeout(30000)
+		tx.readErrMu.Lock()
+		inc = tx.readIncarnationLocked()
+		tx.readErrMu.Unlock()
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Cancel()
+	tx.readErrMu.Lock()
+	needsArm := tx.timeoutNeedsArm && !tx.timeoutArmed && tx.designEntry == nil && tx.designTimer == nil
+	// The pooled timer has been retired; move the logical deadline into the
+	// past without racing a timer or sleeping for the original deadline.
+	tx.deadlineNs.Store(0)
+	tx.readErrMu.Unlock()
+	if !needsArm {
+		t.Fatal("ReadTransact exit did not leave a lazy timeout to re-arm")
+	}
+	select {
+	case <-inc.ctx.Done():
+		t.Fatal("captured incarnation was cancelled before late admission")
+	default:
+	}
+	lease := tx.enterReadStateInto(context.Background(), inc, true, true, nil)
+	if lease == nil {
+		t.Fatal("late admission did not take a lease on the captured incarnation")
+	}
+	defer lease.release()
+	select {
+	case <-inc.ctx.Done():
+	default:
+		t.Fatal("late admission recorded an expired timeout without cancelling its context")
+	}
+	var fdbErr *wire.FDBError
+	if cause := context.Cause(inc.ctx); !errors.As(cause, &fdbErr) || fdbErr.Code != 1031 {
+		t.Fatalf("late admission cause = %v, want transaction_timed_out (1031)", cause)
+	}
+}
+
 func TestDesignTimeoutTransactScopedPoolAndExpiry(t *testing.T) {
 	t.Parallel()
 	db := &Database{db: &database{timeouts: newTimeoutQueue()}}

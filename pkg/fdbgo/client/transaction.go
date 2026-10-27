@@ -1818,8 +1818,8 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 	// a Set racing this Commit on another goroutine appends beyond `muts` and is not in this
 	// commit, so GetApproximateSize() could fail a small commit for an unshipped mutation.
 	// C++ ++transactionsCommitStarted in commitMutations (:6808): AFTER the
-	// empty fast path (:6800-6806, not counted — the non-empty guard here is
-	// that fast path's condition) but BEFORE the size check (~:6835), so a
+	// empty fast path (:6800-6806, excluded by the early return above) but
+	// BEFORE the size check (~:6835), so a
 	// persistently oversized commit shows up as Started-without-Completed.
 	// Started-Completed = failed/in-flight (intentional asymmetry). RFC-097.
 	if tx.db != nil {
