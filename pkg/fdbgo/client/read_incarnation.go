@@ -12,7 +12,8 @@ import (
 // readIncarnation is the lifetime of one C++ resetPromise. Its mutable fields
 // are protected by Transaction.readErrMu: cancellation delivery and all other
 // transaction locks stay outside it (RFC-256); only the leaf locks
-// nativeCommit.mu and timeoutQueue.mu nest inside.
+// nativeCommit.mu, timeoutQueue.mu, and designTimerEntry.mu (released before
+// callbacks take readErrMu) nest inside.
 type readIncarnation struct {
 	ctx     context.Context
 	cancel  context.CancelCauseFunc
@@ -188,6 +189,7 @@ func (tx *Transaction) configureReadTimeout() {
 // expired deadline records 1031 synchronously, as the timebomb actor does
 // before its first wait (RYW:1567-1573). The caller delivers a recorded cause.
 func (tx *Transaction) armTimeoutLocked() {
+	tx.timeoutNeedsArm = false
 	if tx.readReady != nil {
 		return
 	}
@@ -212,6 +214,9 @@ func (tx *Transaction) armTimeoutLocked() {
 	}
 	tx.timeoutArm++
 	tx.timeoutArmed = true
+	if tx.designArmLocked(q, delay) {
+		return
+	}
 	n := tx.timeoutNode
 	if n == nil {
 		n = q.newNode(tx)
@@ -231,6 +236,8 @@ func (tx *Transaction) armTimeoutLocked() {
 // by the new arm's number once something re-arms.
 func (tx *Transaction) disarmTimeoutLocked() {
 	tx.timeoutArmed = false
+	tx.timeoutNeedsArm = false
+	tx.stopDesignTimerLocked()
 }
 
 func (tx *Transaction) timeoutQueue() *timeoutQueue {
@@ -332,6 +339,9 @@ func (tx *Transaction) opContextWithLease(parent context.Context, issued bool) (
 	}
 	tx.readErrMu.Lock()
 	inc := tx.readIncarnationLocked()
+	if tx.timeoutNeedsArm && tx.readReady == nil {
+		tx.armTimeoutLocked()
+	}
 	cause := inc.cause
 	tx.readErrMu.Unlock()
 	if parent.Done() == nil {

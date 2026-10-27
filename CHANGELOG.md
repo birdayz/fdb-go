@@ -147,6 +147,7 @@ Each is described in full under Compatibility or Changed below.
   - Legacy GODEBUG values removed in Go 1.27 abort program startup if set.
 
 ### Added
+- `transport.WithAdaptiveLinger`, `client.WithAdaptiveLinger`, `fdb.WithAdaptiveLinger`, and `transport.Conn.AdaptiveLinger` configure and report Nagle-style adaptive writer linger on the pure-Go client's enqueue-only connection writer (RFC-282). `client.Database.ConnectionLinger` reports the effective linger settings. `transport.NetDesign` reports the default writer design; `FDBGO_NET_DESIGN=legacy` (or `0`) selects the legacy writer and timeout path process-wide, while `transport.WithLegacyWriter` selects that writer for one connection.
 - `FDBRecordStore.GetPrimaryKeyBoundaries`, Java's `getPrimaryKeyBoundaries`: the primary keys at
   the records' shard boundaries. `IndexingRangeSet.FirstMissingRangeInBytes`, Java's
   `firstMissingRangeAsync(begin, end)` (RFC-279).
@@ -162,6 +163,7 @@ Each is described in full under Compatibility or Changed below.
   and tags now apply to every statement transaction, autocommit and read-only ones included.
 
 ### Changed
+- Pure-Go client transport writer and hot path (RFC-282): connections use an enqueue-only writer (`D-NG`) with a 16 MiB high-water backpressure bound and default to immediate flush on wakeup (`0, 0` coalesce delay; pass `WithCoalesceDelay(transport.DefaultMinCoalesceDelay, transport.DefaultMaxCoalesceDelay)` for `libfdb_c`'s 10/20 µs timer coalescing or `WithAdaptiveLinger` for Nagle-style adaptive linger). Reply registration uses a 32-shard connection table, `Transact`/`ReadTransact` pool per-transaction timeout timers, `latencySketch` is 16-way striped, and single-read/single-waiter transaction paths inline their state.
 - Record layer (RFC-275), in full:
   - Native version columns in primary keys are refused at metadata construction and load,
     as in Java. The chosen version is visible to function-wrapped primary keys and

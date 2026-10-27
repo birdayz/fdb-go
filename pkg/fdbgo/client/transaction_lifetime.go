@@ -70,10 +70,18 @@ func (tx *Transaction) admitState(lease *executionLease) {
 		ready := tx.readReady
 		if ready == nil {
 			inc := tx.readIncarnationLocked()
+			var cause error
+			if tx.timeoutNeedsArm {
+				tx.armTimeoutLocked()
+				cause = inc.cause
+			}
 			inc.users++
 			lease.inc = inc
 			lease.active.Store(true)
 			tx.readErrMu.Unlock()
+			if cause != nil {
+				inc.cancel(cause)
+			}
 			return
 		}
 		ready = tx.observeReadReadyLocked()
@@ -110,6 +118,11 @@ func (tx *Transaction) enterReadStateInto(ctx context.Context, inc *readIncarnat
 		}
 		ready := tx.readReady
 		if ready == nil {
+			var cause error
+			if tx.timeoutNeedsArm {
+				tx.armTimeoutLocked()
+				cause = inc.cause
+			}
 			inc.users++
 			if issued {
 				inc.issuedReads++
@@ -120,6 +133,9 @@ func (tx *Transaction) enterReadStateInto(ctx context.Context, inc *readIncarnat
 			lease.tx, lease.inc, lease.issued = tx, inc, issued
 			lease.active.Store(true)
 			tx.readErrMu.Unlock()
+			if cause != nil {
+				inc.cancel(cause)
+			}
 			return lease
 		}
 		if wait {
@@ -137,11 +153,54 @@ func (tx *Transaction) enterReadStateInto(ctx context.Context, inc *readIncarnat
 	}
 }
 
+func (tx *Transaction) hasPendingReadsLocked() bool {
+	return tx.pendingReadFirst != nil || len(tx.pendingReads) > 0
+}
+
+func (tx *Transaction) pendingReadsCountLocked() int {
+	n := len(tx.pendingReads)
+	if tx.pendingReadFirst != nil {
+		n++
+	}
+	return n
+}
+
+func (tx *Transaction) addPendingReadLocked(p *PendingGet) {
+	if tx.pendingReadFirst == nil && len(tx.pendingReads) == 0 {
+		tx.pendingReadFirst = p
+		return
+	}
+	if tx.pendingReads == nil {
+		tx.pendingReads = make(map[*PendingGet]struct{}, 4)
+	}
+	if tx.pendingReadFirst != nil {
+		tx.pendingReads[tx.pendingReadFirst] = struct{}{}
+		tx.pendingReadFirst = nil
+	}
+	tx.pendingReads[p] = struct{}{}
+}
+
+func (tx *Transaction) removePendingReadLocked(p *PendingGet) {
+	if tx.pendingReadFirst == p {
+		tx.pendingReadFirst = nil
+		return
+	}
+	delete(tx.pendingReads, p)
+}
+
 func (tx *Transaction) detachPendingLocked(inc *readIncarnation) []*PendingGet {
 	if tx.readLife != inc {
 		return nil
 	}
-	pending := make([]*PendingGet, 0, len(tx.pendingReads))
+	n := tx.pendingReadsCountLocked()
+	if n == 0 {
+		return nil
+	}
+	pending := make([]*PendingGet, 0, n)
+	if tx.pendingReadFirst != nil {
+		pending = append(pending, tx.pendingReadFirst)
+		tx.pendingReadFirst = nil
+	}
 	for p := range tx.pendingReads {
 		pending = append(pending, p)
 	}
@@ -214,7 +273,15 @@ func (tx *Transaction) turnoverLocked(old *readIncarnation) turnoverToken {
 	tx.readLife = nil
 	tx.readGen++
 	tx.readErr = nil
-	tx.recordCauseLocked(old, &wire.FDBError{Code: ErrTransactionCancelled})
+	var cancelErr error
+	if tx.transactFinalCommit.Load() && !tx.turnoverErrUsed {
+		tx.turnoverErrUsed = true
+		tx.turnoverErr = wire.FDBError{Code: ErrTransactionCancelled}
+		cancelErr = &tx.turnoverErr
+	} else {
+		cancelErr = &wire.FDBError{Code: ErrTransactionCancelled}
+	}
+	tx.recordCauseLocked(old, cancelErr)
 	cause := old.cause
 	tx.disarmTimeoutLocked()
 	first, native := old.nativeCommit, old.nativeCommits
@@ -243,14 +310,19 @@ func (tx *Transaction) turnoverLocked(old *readIncarnation) turnoverToken {
 func (token turnoverToken) finish() {
 	tx := token.tx
 	tx.readErrMu.Lock()
-	// Captured successors and positive final timeouts must exist at publication.
-	// The timeout is armed for the published generation once readReady is clear.
-	if tx.readLife != nil || tx.timeoutNs.Load() > 0 {
+	// Captured successors and non-final positive timeouts are created/armed here;
+	// final Transact commits defer uncaptured successor creation to readIncarnationLocked.
+	finalCommit := tx.transactFinalCommit.Load()
+	if tx.readLife != nil || (tx.timeoutNs.Load() > 0 && !finalCommit) {
 		tx.readIncarnationLocked()
 	}
 	ready := tx.readReady
 	tx.readReady = nil
-	tx.armTimeoutLocked()
+	if !finalCommit || tx.readLife != nil {
+		tx.armTimeoutLocked()
+	} else if tx.timeoutNs.Load() > 0 {
+		tx.timeoutNeedsArm = true
+	}
 	inc := tx.readLife
 	var cause error
 	if inc != nil {

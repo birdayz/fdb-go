@@ -48,16 +48,17 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   noninferiority bounds but failed their intended p50 improvement conditions; neither
   is promoted. The [Rejected RFC](rfcs/264-send-wait-cost-and-ordering.md) retains the
   historical bisect results, common harness and reproduction inputs, not production
-  prototype changes. Keep #954's C++-parity 10/20 µs default; the owner accepts its
-  latency-versus-CPU/allocation trade-off. Remaining unbuilt ideas are not pursued
-  under this RFC; no further prototype or measurement is authorized.
+  prototype changes. At the time, RFC-264 retained #954's 10/20 µs legacy-writer
+  default; RFC-282 (#1019) supersedes that default with D-NG's 0/0 immediate flush
+  (10/20 µs and adaptive linger remain explicit options). Remaining unbuilt ideas are
+  not pursued under this RFC; no further prototype or measurement is authorized.
 - [ ] **Deferred — zero-delay option comparison; owner rescheduling required.** The
   previously assigned `WithCoalesceDelay(0, 0)` versus 10/20 µs comparison for
   get100/get1000 at 8/64 workers remains deferred, not an active RFC-264 workstream.
   If separately authorized, report latency p50/p99, successful ops/s, errors/retries
   per 1k completed operations with raw counts, and cores busy plus CPU/op. Add other
   metrics only to explain an outlier. The [option godoc](pkg/fdbgo/client/options.go) documents the
-  explicit option and unchanged default; update the measured trade-off only if
+  explicit options and RFC-282's 0/0 D-NG default; update the measured trade-off only if
   warranted by those separately authorized results. No run is currently authorized.
 
 - [x] **Timeout delivery parity (C++ C4).** Done: the eager `checkTimeout` is gone; read,
@@ -175,7 +176,11 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     workers, 0.88 at 32 (1.34 without); `grv` 0.76 at 8; 1-worker 0.93–0.99. The wait
     raises 1-worker `get100` latency 26% (221 → 279 µs; libfdb_c 404 µs). OWNER
     DECISION (2026-10-17): the wait is on by default, as in libfdb_c;
-    `WithCoalesceDelay(0, 0)` restores immediate writes.
+    `WithCoalesceDelay(0, 0)` restores immediate writes. SUPERSEDED by RFC-282
+    (#1019): under the enqueue-only `D-NG` writer (`naWriter`), connections default
+    to immediate flush on wakeup (`0, 0`); `WithCoalesceDelay(transport.DefaultMinCoalesceDelay, transport.DefaultMaxCoalesceDelay)`
+    opts into libfdb_c's 10/20 µs timer wait and `WithAdaptiveLinger(window)` opts
+    into Nagle-style adaptive linger.
     A [closed-loop sweep](docs/benchmarks/rfc-259/wire-capture-20261018.md) of all four
     workloads at 1/8/32/64 workers on `e5209b8c6`: server cycles ≤ 1.03× libfdb_c
     everywhere except `range100` at 32–64 (1.12–1.15×, outside the criterion) and

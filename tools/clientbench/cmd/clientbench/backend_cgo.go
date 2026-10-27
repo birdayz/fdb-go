@@ -19,8 +19,9 @@ import (
 
 type (
 	backend struct {
-		db        fdb.Database
-		closeOnce sync.Once
+		db            fdb.Database
+		closeOnce     sync.Once
+		onBarrierWait func(fdb.FutureInt64) fdb.FutureInt64
 	}
 	transaction struct {
 		read  fdb.ReadTransaction
@@ -32,8 +33,8 @@ func openBackend(cfg bench.Config) (bench.LifecycleDatabase, map[string]any, err
 	if err := fdb.APIVersion(730); err != nil {
 		return nil, nil, err
 	}
-	if cfg.CoalesceDelay != "" {
-		return nil, nil, errors.New("coalesce-delay applies to the Go client only")
+	if cfg.CoalesceDelay != "" || cfg.AdaptiveLinger != 0 {
+		return nil, nil, errors.New("coalesce-delay and adaptive-linger apply to the Go client only")
 	}
 	db, err := fdb.OpenDatabase(cfg.ClusterFile)
 	if err != nil {
@@ -58,7 +59,12 @@ func (b *backend) Barrier() error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.GetApproximateSize().Get()
+	fut := tx.GetApproximateSize()
+	if b.onBarrierWait != nil {
+		fut = b.onBarrierWait(fut)
+	}
+	_, err = fut.Get()
+	tx.Cancel()
 	return err
 }
 
@@ -89,9 +95,11 @@ func (b *backend) Local(fn func(bench.Transaction) error) error {
 	defer tx.Cancel()
 	return fn(transaction{tx, tx})
 }
+
 func (t transaction) Get(key []byte) ([]byte, error) { return t.read.Get(fdb.Key(key)).Get() }
 func (t transaction) Set(key, value []byte)          { t.write.Set(fdb.Key(key), value) }
 func (t transaction) ReadVersion() (int64, error)    { return t.read.GetReadVersion().Get() }
+
 func (t transaction) Range(begin, end []byte, limit int) ([]bench.KV, error) {
 	rows, err := t.read.GetRange(fdb.KeyRange{Begin: fdb.Key(begin), End: fdb.Key(end)}, fdb.RangeOptions{Limit: limit, Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
 	if err != nil {

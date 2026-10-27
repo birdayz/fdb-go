@@ -77,9 +77,9 @@ func (d *faultDialer) disarm() {
 
 // newTestDatabase creates a Database from a ClusterFile with custom dialer,
 // bootstrapping the connection against the provided context.
-func newTestDatabase(t *testing.T, ctx context.Context, cf *ClusterFile, dialFn transport.DialFunc) *Database {
+func newTestDatabase(t *testing.T, ctx context.Context, cf *ClusterFile, dialFn transport.DialFunc, opts ...Option) *Database {
 	t.Helper()
-	db, err := OpenDatabaseFromConfig(ctx, cf, WithDialFunc(dialFn), WithAPIVersion(730))
+	db, err := OpenDatabaseFromConfig(ctx, cf, append([]Option{WithDialFunc(dialFn), WithAPIVersion(730)}, opts...)...)
 	if err != nil {
 		t.Fatalf("newTestDatabase: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestPeerDisconnect_FailsInFlightReplyImmediately(t *testing.T) {
 	_, replyCh, replyHandle := conn.PrepareReply()
 	// Cleanup discipline (conn.go ReplyHandle): a SUCCESSFUL receive leaves Release
 	// to pool the (drained) channel — failAllPending does its non-blocking send and
-	// the token delete in one pendingMu-held iteration and visits each token exactly
+	// the token delete in one shard-lock-held iteration and visits each token exactly
 	// once, so once we have received the value no further send can race the pool Put.
 	// A NOT-received outcome (the 2s arm) MUST Cancel() first: Cancel removes the
 	// still-pending token and nils h.ch so the deferred Release does not pool a channel
@@ -637,7 +637,7 @@ func TestPipelinedGet_IllegalKeyRejectedAtEnqueue(t *testing.T) {
 // TestPipelinedGet_BatchResolvesCorrectly verifies pipelining still works after
 // the #3 retry change: N deferred sends followed by N Resolves return the right
 // values. The retry logic only activates on error, so the happy-path batched
-// send/flush is structurally unchanged — this pins that end to end.
+// send/resolve path is structurally unchanged — this pins that end to end.
 func TestPipelinedGet_BatchResolvesCorrectly(t *testing.T) {
 	t.Parallel()
 
@@ -661,7 +661,7 @@ func TestPipelinedGet_BatchResolvesCorrectly(t *testing.T) {
 	}
 
 	if _, err := db.Transact(ctx, func(tx *Transaction) (any, error) {
-		// Enqueue all N pipelined gets (deferred sends, no flush yet)...
+		// Enqueue all N pipelined gets...
 		pendings := make([]*PendingGet, n)
 		for i := 0; i < n; i++ {
 			_, p, err := tx.GetPipelined(ctx, keys[i])
@@ -673,7 +673,7 @@ func TestPipelinedGet_BatchResolvesCorrectly(t *testing.T) {
 			}
 			pendings[i] = p
 		}
-		// ...then resolve them; the first Resolve flushes the batch.
+		// ...then resolve them (first Resolve checks liveness on D-NG or flushes on legacy).
 		for i := 0; i < n; i++ {
 			got, err := pendings[i].Resolve()
 			if err != nil {
@@ -860,20 +860,17 @@ func TestPipelinedGet_Resolve_TimeoutRetries(t *testing.T) {
 }
 
 // TestPipelinedGet_Resolve_FlushErrorRetries covers PendingGet.resolve's
-// flush-error arm (RFC-118 Gap 2, transaction.go:858-869): when conn.Flush()
-// fails, the request never reached the server, so the arm marks the connection
-// bad (handleConnError) and re-drives through the full getValue path.
+// flush-error arm (RFC-118 Gap 2): when conn.FlushContext() fails (connection
+// liveness failure on D-NG or flush failure on legacy), the arm marks the
+// connection bad (handleConnError) and re-drives through the full getValue path.
 //
 // The flush error is driven through a REAL conn deterministically: a conn dialed
-// to the storage server, then Close()d (joins the loops), so Resolve()'s flush
-// finds a dead connection and returns errConnClosed — a faithful flush error (a
-// conn torn down between the deferred send and the flush). resolveFull then
-// re-dials a clean conn (the pool self-heals on a closed entry) and returns the value.
-//
-// Revert-proof: with the flush-error arm removed, the ignored flush error falls
-// through to the select, whose replyCh never fires and whose timer is set far
-// beyond ctx, so the ctx.Done arm (transaction.go:904) returns ctx.Err() — the
-// test reddens (Resolve surfaces an error instead of the value).
+// to the storage server, then Close()d (joins the loops), so Resolve()'s
+// FlushContext finds a closed connection and returns errConnClosed; resolveFull
+// then re-dials a clean conn (the pool self-heals on a closed entry) and returns
+// the value. Revert-proof: with the flush-error arm in pending_get.go removed,
+// the ignored flush error falls through to the select, whose replyCh never fires
+// and whose timer is set far beyond ctx, so the ctx.Done arm returns ctx.Err().
 func TestPipelinedGet_Resolve_FlushErrorRetries(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1117,4 +1114,10 @@ func TestRead_BoundedByTimeout_NoHang(t *testing.T) {
 		t.Fatalf("want transaction_timed_out (%d), got %v (%T)", ErrTransactionTimedOut, err, err)
 	}
 	t.Logf("read against wedged cluster bounded in %v: %v (no hang)", elapsed, err)
+}
+
+// withLegacyWriter pins the legacy transport writer (write acknowledgments, writer
+// turns) for tests of those mechanics, whatever FDBGO_NET_DESIGN selects.
+func withLegacyWriter() Option {
+	return func(o *openOptions) { o.dialOpts = append(o.dialOpts, transport.WithLegacyWriter()) }
 }

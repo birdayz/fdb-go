@@ -208,7 +208,7 @@ func TestVersionstampRegistryRetirement(t *testing.T) {
 				requireRegistry(t, tx, inc, latest.completion, 2, older.completion)
 				tx.readErrMu.Lock()
 				arm := tx.timeoutArm
-				tx.timeoutNode.queue.remove(tx.timeoutNode)
+				tx.withdrawTimeoutLocked()
 				tx.readErrMu.Unlock()
 				want := 1025
 				if timeoutFirst {
@@ -253,6 +253,14 @@ func TestVersionstampRegistrySingleProducerAllocations(t *testing.T) {
 	tx.readErrMu.Lock()
 	defer tx.readErrMu.Unlock()
 	inc := tx.readIncarnationLocked()
+	firstAllocs := testing.AllocsPerRun(100, func() {
+		tx.inlineVsUsed = false
+		inc.versionstamp, inc.versionstamps = nil, nil
+		tx.newVersionstampLocked(inc)
+	})
+	if firstAllocs != 0 {
+		t.Fatalf("VERSIONSTAMP_INLINE_ALLOC: got %v, want 0 for first completion", firstAllocs)
+	}
 	allocs := testing.AllocsPerRun(100, func() {
 		inc.versionstamp, inc.versionstamps = nil, nil
 		tx.newVersionstampLocked(inc)
@@ -263,5 +271,5 @@ func TestVersionstampRegistrySingleProducerAllocations(t *testing.T) {
 	if inc.versionstamp == nil || inc.versionstamps != nil {
 		t.Fatal("first completion did not remain inline")
 	}
-	t.Logf("VERSIONSTAMP_REGISTRY_ALLOC: %v", allocs)
+	t.Logf("VERSIONSTAMP_REGISTRY_ALLOC: first=%v subsequent=%v", firstAllocs, allocs)
 }

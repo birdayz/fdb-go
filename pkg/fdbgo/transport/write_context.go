@@ -44,17 +44,19 @@ func (c *writeCompletion) complete(err error) {
 	c.release()
 }
 
-// SendFrameContext cancels the wait, not already-enqueued bytes. A direct write
-// never blocks; queued bytes own a copy, so the caller may recycle body on return.
-// enqueued reports ownership transfer, NOT delivery to the peer. An at-most-once
-// commit must use its native-owner context, never public/caller cancellation.
+// SendFrameContext enqueues a frame (or waits for its flush on WithLegacyWriter);
+// cancelling ctx ends admission/high-water/flush wait without retracting queued bytes.
 func (c *Conn) SendFrameContext(ctx context.Context, token UID, body []byte) (enqueued bool, err error) {
 	return c.writeContext(ctx, token, body, false, nil)
 }
 
-// FlushContext waits for an ordered flush marker without coupling a read's
-// cancellation to the lifetime of the shared connection.
+// FlushContext checks ctx, cold-dial order, and connection liveness on D-NG (or
+// waits for an ordered flush marker when WithLegacyWriter() is active).
 func (c *Conn) FlushContext(ctx context.Context) error {
+	if c.na != nil {
+		_, err := c.naWrite(ctx, UID{}, nil, true, nil)
+		return err
+	}
 	if c.queued.Load() == 0 && !c.peerSendPending() && c.ctx.Err() == nil {
 		return ctx.Err()
 	}
@@ -72,6 +74,9 @@ func (c *Conn) SendFrameContextOrdered(ctx context.Context, token UID, body []by
 
 // Keep hot-path defers open-coded: returns × defers must stay ≤ 15 in Go 1.26.
 func (c *Conn) writeContext(ctx context.Context, token UID, body []byte, flush bool, permit *sendqueue.Permit) (bool, error) {
+	if c.na != nil {
+		return c.naWrite(ctx, token, body, flush, permit)
+	}
 	if err := ctx.Err(); err != nil {
 		permit.Release()
 		return false, err
@@ -145,16 +150,14 @@ func (c *Conn) writeAdmittedContext(ctx context.Context, token UID, body []byte,
 	}
 }
 
-// SendFrameDeferredContext transfers an immutable copy to the write queue, but
-// does not wait for its acknowledgment. The boolean reports enqueue, not wire
-// delivery. FlushContext may subsequently wait for the batch.
+// SendFrameDeferredContext transfers an immutable copy to the write queue without
+// waiting for a socket write acknowledgment (the bool reports enqueue, not wire delivery).
 func (c *Conn) SendFrameDeferredContext(ctx context.Context, token UID, body []byte) (bool, error) {
 	return c.sendWithoutAck(ctx, token, body, false, nil)
 }
 
-// SendFrameEagerContext is SendFrameDeferredContext for a frame nothing is about
-// to join: an idle writer lets the caller write it at once. (true, err) means the
-// direct write failed: maybe delivered, and the connection is failed.
+// SendFrameEagerContext is SendFrameDeferredContext for a frame nothing is about to
+// join (enqueues on D-NG; writes directly when idle on WithLegacyWriter()).
 func (c *Conn) SendFrameEagerContext(ctx context.Context, token UID, body []byte) (bool, error) {
 	return c.sendWithoutAck(ctx, token, body, true, nil)
 }
@@ -170,6 +173,9 @@ func (c *Conn) SendFrameEagerContextOrdered(ctx context.Context, token UID, body
 }
 
 func (c *Conn) sendWithoutAck(ctx context.Context, token UID, body []byte, eager bool, permit *sendqueue.Permit) (bool, error) {
+	if c.na != nil {
+		return c.naWrite(ctx, token, body, false, permit)
+	}
 	if err := ctx.Err(); err != nil {
 		permit.Release()
 		return false, err

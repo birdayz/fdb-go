@@ -62,6 +62,10 @@ func TestFallbackStartsEndAtTransportSuspension(t *testing.T) {
 			}
 			beginPeer, endPeer := pipePeer(t, handshake, reads), pipePeer(t, nil, nil)
 			db := &database{ctx: ctx, connPool: map[string]*transport.Conn{}, dialing: map[string]*dialCall{}, failMon: newFailureMonitor()}
+			if mode == "flush" {
+				// The flush variant tests suspension on a blocked socket write acknowledgment.
+				db.dialOpts = []transport.DialOption{transport.WithLegacyWriter()}
+			}
 			db.dialFn = func(ctx context.Context, _, addr string) (net.Conn, error) {
 				if addr == "end" {
 					return endPeer, nil

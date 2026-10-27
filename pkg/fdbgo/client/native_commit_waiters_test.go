@@ -211,6 +211,10 @@ func TestNativeCommit_SetReadVersionSupersedesRetainedGRV(t *testing.T) {
 	native := currentNativeCommit(t, tx)
 	state.readVersionMu.Lock()
 	pending := state.pendingReadVersion
+	var pendingDone <-chan struct{}
+	if pending != nil {
+		pendingDone = state.pendingDoneLocked(pending)
+	}
 	state.readVersionMu.Unlock()
 	if pending == nil {
 		t.Fatal("native GRV has no captured pending completion")
@@ -258,7 +262,7 @@ func TestNativeCommit_SetReadVersionSupersedesRetainedGRV(t *testing.T) {
 	awaitCommitLifetimeCode(t, waitCtx, done, ErrTransactionCancelled, "public commit before old GRV publication")
 	gate.release()
 	waitCommitLifetimeGate(t, ctx, native.finished, "native commit uses its captured GRV")
-	waitCommitLifetimeGate(t, ctx, pending.done, "original GRV completion")
+	waitCommitLifetimeGate(t, ctx, pendingDone, "original GRV completion")
 	if pending.err != nil || pending.version != heldVersion {
 		t.Fatalf("original captured GRV = %d/%v, want %d/nil", pending.version, pending.err, heldVersion)
 	}

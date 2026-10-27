@@ -25,15 +25,19 @@ type replyPanicProbe struct {
 }
 
 func (p *replyPanicProbe) observe() {
-	p.conn.pendingMu.Lock()
-	defer p.conn.pendingMu.Unlock()
-	p.registrations = len(p.conn.pending)
-	for token, entry := range p.conn.pending {
-		p.token, p.channel = token, entry.ch
-		if p.publish {
-			entry.ch <- Response{Body: []byte("published")}
-			delete(p.conn.pending, token)
+	p.registrations = 0
+	for i := range p.conn.pendingShards {
+		s := &p.conn.pendingShards[i]
+		s.mu.Lock()
+		p.registrations += len(s.m)
+		for token, entry := range s.m {
+			p.token, p.channel = token, entry.ch
+			if p.publish {
+				entry.ch <- Response{Body: []byte("published")}
+				delete(s.m, token)
+			}
 		}
+		s.mu.Unlock()
 	}
 }
 
@@ -158,7 +162,7 @@ func TestPingRegistrationPanicReleasesReply(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	probe := &replyPanicProbe{}
-	conn := &Conn{ctx: &replyPanicContext{Context: ctx, probe: probe}, cancel: cancel, pending: make(map[UID]pendingEntry), writeCh: make(chan writeReq, 1)}
+	conn := &Conn{ctx: &replyPanicContext{Context: ctx, probe: probe}, cancel: cancel, writeCh: make(chan writeReq, 1)}
 	probe.conn = conn
 	requireReplyPanic(t, func() { conn.sendPingWithReply() })
 	if probe.registrations != 1 || probe.channel == nil {
@@ -177,11 +181,7 @@ func TestPingRegistrationPanicReleasesReply(t *testing.T) {
 	if !ok || !conn.HasPendingReply(token) {
 		t.Fatal("reused ping did not register its encoded reply token")
 	}
-	conn.pendingMu.Lock()
-	entry := conn.pending[token]
-	entry.ch <- Response{}
-	delete(conn.pending, token)
-	conn.pendingMu.Unlock()
+	conn.deliverPending(token, Response{})
 	select {
 	case <-reply:
 	case <-ctx.Done():

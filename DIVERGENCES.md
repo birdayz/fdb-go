@@ -4587,6 +4587,21 @@ It is distinct from ordinary index cursor Skip; Record Layer remote-fetch scans
 continue routing positive Skip to SCAN_AND_FETCH, and index plans keep it above
 their remote-fetch leaves.
 
+## Native FDB client connection writer and linger
+
+RFC-282 (#1019) replaces the synchronous write-acknowledgment handoff with an
+enqueue-only per-connection writer (`naWriter`, `D-NG`) matching `Peer::send`
+(`FlowTransport.actor.cpp:1038-1043`), bounded by a 16 MiB per-connection
+high-water mark. Because Go callers run across `P`s rather than on a single
+network thread, the `D-NG` writer defaults to immediate flush on wakeup
+(`minCoalesce = 0, maxCoalesce = 0`), coalescing frames that arrive while the
+writer goroutine is scheduled or inside `conn.Write`. Callers can opt into
+`libfdb_c`'s 10/20 µs timer wait via
+`WithCoalesceDelay(transport.DefaultMinCoalesceDelay, transport.DefaultMaxCoalesceDelay)`
+or into Nagle-style adaptive linger via `WithAdaptiveLinger(window)`.
+`Transact`/`ReadTransact` pool per-transaction timeout timers when no custom
+test clock/hooks are installed on the database's `timeoutQueue`.
+
 ## Version-dependent record keys before RFC-275
 
 Earlier Go metadata accepted native `VersionKey()` primary-key columns that Java refuses.

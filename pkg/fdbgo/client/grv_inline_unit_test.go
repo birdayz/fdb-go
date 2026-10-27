@@ -62,6 +62,35 @@ func TestGRVSoleRequestEndsOnClose(t *testing.T) {
 	if n := batcherInFlight(b); n != 0 {
 		t.Fatalf("%d batch still in flight after Close", n)
 	}
+
+	// A serial first fetch on readVersionState uses &state.inlinePending with a
+	// nil done channel while in flight.
+	db2, closeDB2 := noProxyDB(t)
+	db2.grvBatchers[grvBatcherDefault] = &grvBatcher{priority: grvPriorityDefault}
+	var state readVersionState
+	fetchReq := readVersionRequest{db: db2, flags: grvPriorityDefault}
+	fetchDone := make(chan error, 1)
+	go func() {
+		_, _, err := state.cachedOrFetchReadVersion(context.Background(), &fetchReq, 0, nil)
+		fetchDone <- err
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		state.readVersionMu.Lock()
+		p := state.pendingReadVersion
+		inline := p == &state.inlinePending && p.done == nil
+		state.readVersionMu.Unlock()
+		if inline {
+			break
+		}
+		if time.Now().After(deadline) {
+			closeDB2()
+			t.Fatal("cachedOrFetchReadVersion did not install &state.inlinePending with nil done")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	closeDB2()
+	<-fetchDone
 }
 
 // A batch with other members keeps running under db.ctx: one caller's deadline

@@ -52,19 +52,20 @@ func (h *ReplyHandle) Cancel() {
 	if h.conn == nil {
 		return
 	}
-	h.conn.pendingMu.Lock()
-	if _, ok := h.conn.pending[h.token]; ok {
+	s := h.conn.pendingShard(h.token)
+	s.mu.Lock()
+	if _, ok := s.m[h.token]; ok {
 		// Won the race: the token is still pending, so readLoop has not
 		// delivered and never will (we delete it here under the same lock).
 		// The channel is clean — pool it.
-		delete(h.conn.pending, h.token)
+		delete(s.m, h.token)
 		putReplyChannel(h.ch)
 	}
 	// Else readLoop already delivered (or is mid-delivery): h.ch may hold a
 	// buffered value, so we must NOT pool it — leave it to GC. This rare
 	// race-loser leak is the price of never handing a stale reply to a future
 	// request.
-	h.conn.pendingMu.Unlock()
+	s.mu.Unlock()
 	h.ch = nil // mark the channel handled so Release does not re-pool it
 }
 
@@ -75,15 +76,16 @@ func (h *ReplyHandle) TakeReadyOrCancel() (Response, bool) {
 	if h.conn == nil {
 		return Response{}, false
 	}
-	h.conn.pendingMu.Lock()
-	defer h.conn.pendingMu.Unlock()
+	s := h.conn.pendingShard(h.token)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	select {
 	case response := <-h.ch:
-		delete(h.conn.pending, h.token)
+		delete(s.m, h.token)
 		return response, true
 	default:
-		if _, pending := h.conn.pending[h.token]; pending {
-			delete(h.conn.pending, h.token)
+		if _, pending := s.m[h.token]; pending {
+			delete(s.m, h.token)
 			putReplyChannel(h.ch)
 		}
 		h.ch = nil
@@ -98,13 +100,14 @@ func (h *ReplyHandle) KeepReadyOrCancel() bool {
 	if h.conn == nil {
 		return false
 	}
-	h.conn.pendingMu.Lock()
-	defer h.conn.pendingMu.Unlock()
+	s := h.conn.pendingShard(h.token)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if len(h.ch) != 0 {
 		return true
 	}
-	if _, pending := h.conn.pending[h.token]; pending {
-		delete(h.conn.pending, h.token)
+	if _, pending := s.m[h.token]; pending {
+		delete(s.m, h.token)
 		putReplyChannel(h.ch)
 	}
 	h.ch = nil
@@ -121,10 +124,10 @@ func (h *ReplyHandle) NotifyWait(ctx context.Context) {
 
 // Release returns the handle to the pool. Call EITHER after a successful receive
 // (no Cancel) OR after Cancel. On the success path h.ch is still set and is
-// pooled here: response publication and token deletion share pendingMu, in that
-// order. Once the caller receives the response, that publisher has no further
-// channel send, and the lock excludes another publisher until deletion. Cancel
-// nils h.ch, so the cancel path never double-pools.
+// pooled here: response publication and token deletion share the token's
+// pendingShard.mu lock, in that order. Once the caller receives the response,
+// that publisher has no further channel send, and the lock excludes another
+// publisher until deletion. Cancel nils h.ch, so the cancel path never double-pools.
 func (h *ReplyHandle) Release() {
 	if h.ch != nil {
 		putReplyChannel(h.ch)
@@ -190,10 +193,11 @@ type Conn struct {
 	monitorLoopInterval time.Duration
 	monitorTimeout      time.Duration
 
-	// Typed pending map avoids sync.Map's interface boxing (saves 3 allocs/RPC).
-	pendingMu sync.RWMutex
-	pending   map[UID]pendingEntry
-	peerPkt   *ConnectPacket // peer's connect packet
+	// Sharded typed pending maps avoid both sync.Map's interface boxing and
+	// single-lock contention across concurrent senders and readLoop.
+	pendingShards [numPendingShards]pendingShard
+	nextToken     atomic.Uint64
+	peerPkt       *ConnectPacket // peer's connect packet
 
 	// onEndpointNotFound observes every ENDPOINT_NOT_FOUND, waiter or not, as
 	// C++ marks the endpoint failed regardless (FlowTransport.actor.cpp:227-233).
@@ -212,11 +216,11 @@ type Conn struct {
 	// regression test, so the rate is asserted directly.
 	monitorCycles atomic.Int64
 
-	// writeMu orders socket writes between writeLoop and direct writers; queued
-	// counts frames handed to writeLoop and not yet flushed.
+	// Legacy writer state (WithLegacyWriter): writeMu orders socket writes between
+	// writeLoop and direct writers; queued counts frames in writeLoop.
 	writeMu sync.Mutex
 	queued  atomic.Int64
-	// raw is set for plaintext TCP only: a direct write needs a non-blocking
+	// raw is set for plaintext TCP only: a legacy direct write needs a non-blocking
 	// socket write, so a full socket never holds its caller past its ctx.
 	raw       *rawWriter
 	tail      []byte        // unwritten end of a direct write, under writeMu
@@ -225,15 +229,15 @@ type Conn struct {
 	tailKick  chan struct{} // wakes writeLoop for a tail or held-outbox change
 
 	// minCoalesce/maxCoalesce are connectionWriter's write delay bounds; coalesce
-	// is its timer, nil when the delay is disabled or unsupported, in which case
-	// an idle connection writes a frame on its sender's goroutine.
+	// is its timer (nil when disabled or unsupported). lastWrite is owned by
+	// naLoop on D-NG connections, or guarded by writeMu on WithLegacyWriter().
 	minCoalesce, maxCoalesce time.Duration
 	coalesce                 *hrtimer.Timer
-	lastWrite                time.Time    // when wbuf last wrote to the socket; under writeMu
+	lastWrite                time.Time
 	tails                    atomic.Int64 // partial direct writes, so tests can tell a tail occurred
 
-	// A sender may take the writer's turn (writer_turn.go). turnMu orders it
-	// taking writeMu and starting to collect against writeLoop handing it frames.
+	// Legacy writer-turn state (writer_turn.go, WithLegacyWriter): turnMu orders a
+	// sender taking writeMu and collecting frames from writeLoop.
 	turnMu         sync.Mutex
 	turnCollecting bool          // a turn is waiting out the delay; under turnMu
 	turnFrames     []writeReq    // frames writeLoop handed to that turn; under turnMu
@@ -241,6 +245,15 @@ type Conn struct {
 	writerExited   bool          // writeLoop has failed tailMarkers and exited; under turnMu
 	turnDelayLimit time.Duration // the longest delay a sender waits out itself
 	turns          atomic.Int64  // turns taken, so tests can tell a sender wrote its batch
+
+	// na is the enqueue-only D-NG writer (na_writer.go).
+	na                *naWriter
+	design            string // dial-option override of envDesign; see na_writer.go
+	adaptiveLinger    time.Duration
+	coalesceSet       bool
+	coldOrderActive   atomic.Bool
+	beforeReadLoop    func() // optional test hook run in dialWith just before readLoop starts
+	beforeControlLock func() // optional test hook run in tryEnqueueNAControl before controlMu.Lock
 
 	// Debug tracing (set before first use).
 	debugFrames bool
@@ -365,16 +378,13 @@ const (
 	DefaultMaxCoalesceDelay = 20 * time.Microsecond
 )
 
-// WithCoalesceDelay sets how long the connection waits before writing a batch,
-// so frames sent meanwhile share it: max(min, max - time since the last write),
-// jittered by 0.9-1.1, as libfdb_c's connectionWriter does
-// (FlowTransport.actor.cpp:704-710). The defaults are libfdb_c's knobs. Zero for
-// both writes a frame at once when nothing is queued ahead of it. The wait needs
-// a sub-millisecond timer: off Linux, or if the timer cannot be created, frames
-// are written at once.
+// WithCoalesceDelay sets the connection's timer-based batch delay bounds (default
+// 0, 0 on D-NG; 10/20 µs on WithLegacyWriter(); the last linger/coalesce option wins).
 func WithCoalesceDelay(minDelay, maxDelay time.Duration) DialOption {
 	return func(c *Conn) {
 		c.minCoalesce, c.maxCoalesce = max(minDelay, 0), max(maxDelay, 0)
+		c.adaptiveLinger = 0
+		c.coalesceSet = true
 	}
 }
 
@@ -498,7 +508,6 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 		conn:    netConn,
 		useTLS:  tlsConfig != nil,         // drives frame-checksum omission; not a TLS switch
 		writeCh: make(chan writeReq, 256), // buffered for concurrent senders
-		pending: make(map[UID]pendingEntry, 16),
 		ctx:     connCtx,
 		cancel:  cancel,
 		// C++ CONNECTION_MONITOR_LOOP_TIME / CONNECTION_MONITOR_TIMEOUT, both
@@ -509,9 +518,11 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 		monitorLoopInterval: 1 * time.Second,
 		monitorTimeout:      2 * time.Second,
 		tailKick:            make(chan struct{}, 1),
-		minCoalesce:         DefaultMinCoalesceDelay,
-		maxCoalesce:         DefaultMaxCoalesceDelay,
 		turnDelayLimit:      maxTurnDelay,
+	}
+	c.nextToken.Store(splitmix64())
+	for i := range c.pendingShards {
+		c.pendingShards[i].m = make(map[UID]pendingEntry, 4)
 	}
 	c.wbuf = bufio.NewWriterSize(stampedWriter{c}, 64*1024)
 	if tlsConfig == nil {
@@ -520,6 +531,16 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 	// Apply test-only knobs BEFORE any loop goroutine starts (no data race).
 	for _, o := range opts {
 		o(c)
+	}
+	design := c.design
+	if design == "" {
+		design = envDesign
+	}
+	if !c.coalesceSet {
+		if design == "" || design == designLegacy || design == designD {
+			c.minCoalesce = DefaultMinCoalesceDelay
+			c.maxCoalesce = DefaultMaxCoalesceDelay
+		}
 	}
 
 	// Exchange ConnectPackets.
@@ -569,6 +590,14 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 	}
 
 	c.lastWrite = time.Now() // connectionWriter's initial lastWriteTime
+	if design == designD || design == designNG {
+		c.na = &naWriter{
+			q:        make([]byte, 0, 64*1024),
+			sig:      make(chan struct{}, 1),
+			delay:    c.coalesce != nil,
+			adaptive: c.adaptiveLinger,
+		}
+	}
 
 	// Start read, write, and connection monitor loops.
 	c.loopWG.Add(3)
@@ -576,8 +605,15 @@ func dialWith(ctx context.Context, addr string, dialFn DialFunc, tlsConfig *tls.
 		c.loopWG.Add(1)
 		go c.coldControlLoop()
 	}
+	if c.beforeReadLoop != nil {
+		c.beforeReadLoop()
+	}
 	go c.readLoop()
-	go c.writeLoop()
+	if c.na != nil {
+		go c.naLoop()
+	} else {
+		go c.writeLoop()
+	}
 	go c.connectionMonitor()
 
 	return c, nil
@@ -594,11 +630,9 @@ func (c *Conn) Send(destToken UID, body []byte) (replyToken UID, replyCh <-chan 
 // callers (SendAndWait) can return it to the pool. Send exposes only the
 // receive-only view.
 func (c *Conn) sendInternal(destToken UID, body []byte) (replyToken UID, replyCh chan Response, err error) {
-	token := NewUID()
+	token := c.nextReplyToken()
 	ch := getReplyChannel()
-	c.pendingMu.Lock()
-	c.pending[token] = pendingEntry{ch: ch, dest: destToken}
-	c.pendingMu.Unlock()
+	c.putPending(token, pendingEntry{ch: ch, dest: destToken})
 	transferred := false
 	defer func() {
 		if !transferred {
@@ -618,12 +652,13 @@ func (c *Conn) sendInternal(destToken UID, body []byte) (replyToken UID, replyCh
 // the pool iff it won the race against readLoop's delivery — the same discipline
 // as ReplyHandle.Cancel, for the raw token+channel SendAndWait holds.
 func (c *Conn) cancelPending(token UID, ch chan Response) {
-	c.pendingMu.Lock()
-	if _, ok := c.pending[token]; ok {
-		delete(c.pending, token)
+	s := c.pendingShard(token)
+	s.mu.Lock()
+	if _, ok := s.m[token]; ok {
+		delete(s.m, token)
 		putReplyChannel(ch)
 	}
-	c.pendingMu.Unlock()
+	s.mu.Unlock()
 }
 
 // PrepareReply allocates a reply token and registers it for response routing.
@@ -640,20 +675,21 @@ func (c *Conn) PrepareReply() (UID, <-chan Response, *ReplyHandle) {
 // ENDPOINT_NOT_FOUND for dest fails this reply instead of leaving it to time out.
 func (c *Conn) PrepareReplyTo(dest UID) (UID, <-chan Response, *ReplyHandle) {
 	h := replyHandlePool.Get().(*ReplyHandle)
+	token := c.nextReplyToken()
+	ch := getReplyChannel()
 	h.conn = c
-	h.token = NewUID()
-	h.ch = getReplyChannel()
-	c.pendingMu.Lock()
-	c.pending[h.token] = pendingEntry{ch: h.ch, dest: dest}
-	c.pendingMu.Unlock()
-	return h.token, h.ch, h
+	h.token = token
+	h.ch = ch
+	c.putPending(token, pendingEntry{ch: ch, dest: dest})
+	return token, ch, h
 }
 
 // HasPendingReply reports whether token still owns a reply registration.
 func (c *Conn) HasPendingReply(token UID) bool {
-	c.pendingMu.RLock()
-	_, pending := c.pending[token]
-	c.pendingMu.RUnlock()
+	s := c.pendingShard(token)
+	s.mu.Lock()
+	_, pending := s.m[token]
+	s.mu.Unlock()
 	return pending
 }
 
@@ -677,9 +713,13 @@ func putReplyChannelImpl(ch chan Response) {
 	replyChanPool.Put(ch)
 }
 
-// SendFrame writes a raw frame and flushes. Returns once the frame is written, or
-// once writeLoop holds whatever a full socket refused, ahead of every later frame.
+// SendFrame queues a raw frame on the connection's writer (returning once appended
+// on D-NG, or after write/tail handoff on WithLegacyWriter()).
 func (c *Conn) SendFrame(destToken UID, body []byte) error {
+	if c.na != nil {
+		_, err := c.naWriteFull(c.ctx, destToken, body, false, true, nil)
+		return err
+	}
 	admission, err := c.beginSend(c.ctx, nil)
 	if err != nil {
 		return err
@@ -718,10 +758,12 @@ func (c *Conn) SendFrame(destToken UID, body []byte) error {
 	}
 }
 
-// SendFrameDeferred writes a raw frame WITHOUT waiting for flush.
-// The write loop will flush it with the next batch. Used for pipelining:
-// send N frames, then call Flush() (or let the write loop auto-flush).
+// SendFrameDeferred queues a raw frame without waiting for a socket write.
 func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
+	if c.na != nil {
+		_, err := c.naWrite(c.ctx, destToken, body, false, nil)
+		return err
+	}
 	admission, err := c.beginSend(c.ctx, nil)
 	if err != nil {
 		return err
@@ -734,10 +776,13 @@ func (c *Conn) SendFrameDeferred(destToken UID, body []byte) error {
 	return nil
 }
 
-// Flush ensures all pending frames are flushed to the TCP socket. With nothing
-// queued every earlier frame is already written; otherwise it sends a flush
-// marker through the write channel and waits for acknowledgment.
+// Flush checks cold-dial admission and liveness on D-NG, or waits for a flush
+// marker acknowledgment when WithLegacyWriter() is active.
 func (c *Conn) Flush() error {
+	if c.na != nil {
+		_, err := c.naWrite(c.ctx, UID{}, nil, true, nil)
+		return err
+	}
 	admission, err := c.beginSend(c.ctx, nil)
 	if err != nil {
 		return err
@@ -771,6 +816,9 @@ func (c *Conn) coalesceWait(sinceWrite time.Duration) {
 		return
 	}
 	if c.coalesce.Reset(coalesceDelay(c.minCoalesce, c.maxCoalesce, sinceWrite, mathrand.Float64())) == nil {
+		if c.na != nil && c.na.onCoalesceWait != nil {
+			c.na.onCoalesceWait()
+		}
 		_ = c.coalesce.Wait()
 	}
 }
@@ -969,7 +1017,7 @@ func (c *Conn) SendAndWait(ctx context.Context, destToken UID, body []byte) ([]b
 //  1. Cancel context — signals all waiters that conn is dead
 //  2. Close TCP socket — unblocks readLoop's ReadFrame
 //  3. failConnection delivers errors to all pending requests
-//  4. readLoop, writeLoop, connectionMonitor and coldControlLoop exit and
+//  4. readLoop, naLoop/writeLoop, connectionMonitor and coldControlLoop exit and
 //     signal loopWG; the monitor first releases its PING reply (RFC-269)
 //  5. Close returns
 func (c *Conn) Close() error {
@@ -989,7 +1037,7 @@ func (c *Conn) Close() error {
 // and deliver err to every in-flight reply. sync.Once makes the trio run exactly
 // once with the FIRST caller's error, no matter how many of {Close, monitor
 // death, readLoop error} fire. Single-delivery to a given pending reply is
-// guaranteed by failAllPending's own pendingMu + delete-as-you-go, not by the
+// guaranteed by failAllPending's per-shard lock + delete-as-you-go, not by the
 // Once; the Once only ensures the meaningful error wins over a later
 // "use of closed connection" read error.
 //
@@ -1115,9 +1163,7 @@ func (c *Conn) readLoop() {
 		LogRecv(token, body)
 
 		if c.debugFrames {
-			c.pendingMu.RLock()
-			_, isPending := c.pending[token]
-			c.pendingMu.RUnlock()
+			isPending := c.HasPendingReply(token)
 			fmt.Fprintf(c.debugWriter, "[recv %s] token=%016x:%016x bodyLen=%d ping=%v pending=%v\n", c.conn.RemoteAddr(),
 				token.First, token.Second, len(body), token == pingToken, isPending)
 		}
@@ -1132,16 +1178,18 @@ func (c *Conn) readLoop() {
 			continue
 		}
 
-		// Look up the pending request by reply token.
-		c.pendingMu.Lock()
-		entry, ok := c.pending[token]
+		// Stamp arrival time before acquiring the shard lock to minimize lock hold time.
+		recvAt := time.Now()
+		s := c.pendingShard(token)
+		s.mu.Lock()
+		entry, ok := s.m[token]
 		if ok {
 			// The fresh size-one channel has one producer. Publish together
 			// with deletion so cancellation cannot fall into a delivery gap.
-			entry.ch <- Response{Body: body, RecvAt: time.Now()}
-			delete(c.pending, token)
+			entry.ch <- Response{Body: body, RecvAt: recvAt}
+			delete(s.m, token)
 		}
-		c.pendingMu.Unlock()
+		s.mu.Unlock()
 		// Unknown tokens are silently dropped (e.g., late responses after timeout).
 	}
 }
@@ -1167,15 +1215,18 @@ const readBufferSize = 16 << 10
 // Matches C++ connectionKeeper's disconnect promise that wakes all
 // in-flight deliver() actors.
 func (c *Conn) failAllPending(err error) {
-	c.pendingMu.Lock()
-	for token, entry := range c.pending {
-		select {
-		case entry.ch <- Response{Err: err}:
-		default:
+	for i := range c.pendingShards {
+		s := &c.pendingShards[i]
+		s.mu.Lock()
+		for token, entry := range s.m {
+			select {
+			case entry.ch <- Response{Err: err}:
+			default:
+			}
+			delete(s.m, token)
 		}
-		delete(c.pending, token)
+		s.mu.Unlock()
 	}
-	c.pendingMu.Unlock()
 }
 
 // WLTokenPingPacket is the well-known token for PING keepalive.
@@ -1193,8 +1244,8 @@ func (c *Conn) handlePing(body []byte) {
 
 	replyBody := buildVoidReply()
 
-	// Send ping reply through the write loop. Fire-and-forget (no errCh).
-	// A full write channel drops the ping reply; the server will retry.
+	// Enqueue ping reply fire-and-forget; dropped if tryEnqueue rejects admission
+	// (high-water, pending FIFO waiters, close, or full legacy writeCh).
 	c.tryEnqueue(writeReq{token: replyToken, body: replyBody})
 }
 
@@ -1323,10 +1374,7 @@ func (c *Conn) connectionMonitor() {
 		// track, so it is a separate change with its own client-review lap.
 		c.monitorCycles.Add(1)
 
-		c.pendingMu.RLock()
-		hasPending := len(c.pending) > 0
-		c.pendingMu.RUnlock()
-		if !hasPending {
+		if !c.hasAnyPending() {
 			continue
 		}
 
@@ -1426,15 +1474,8 @@ func (c *Conn) sendPingWithReply() (<-chan Response, *ReplyHandle) {
 	pingEP := WellKnownToken(WLTokenPingPacket)
 	body := BuildPingRequest(replyToken)
 	if !c.tryEnqueue(writeReq{token: pingEP, body: body}) {
-		// writeCh is saturated — we could not send the PING. Return a nil
-		// channel, NOT a closed one. A closed channel makes the monitor's
-		// reply arm fire immediately and falsely conclude "connection
-		// alive", skipping the bytesReceived liveness check exactly when a
-		// saturated buffer signals a stuck connection (writeLoop blocked on an
-		// undrained socket). A nil channel is never selected, so the monitor
-		// falls through to the timer → bytesReceived check and kills a genuinely
-		// stuck conn. The pending reply is cancelled and released here (no leak),
-		// so there is no handle to return.
+		// Admission rejected (high-water, pending FIFO waiters, close, or full legacy
+		// writeCh): return nil so the monitor falls through to bytesReceived liveness.
 		return nil, nil
 	}
 	transferred = true
@@ -1497,21 +1538,113 @@ func init() {
 	fastRNGState.Store(binary.LittleEndian.Uint64(buf[:]))
 }
 
+// numPendingShards is the number of reply-map shards per connection (power of two).
+const numPendingShards = 32
+
+type pendingShard struct {
+	mu sync.Mutex
+	m  map[UID]pendingEntry
+	_  [48]byte // cache-line padding (64B total on 64-bit architectures)
+}
+
+func (c *Conn) pendingShard(token UID) *pendingShard {
+	return &c.pendingShards[(token.First^(token.First>>17))&(numPendingShards-1)]
+}
+
+func (c *Conn) putPending(token UID, entry pendingEntry) {
+	s := c.pendingShard(token)
+	s.mu.Lock()
+	if s.m == nil {
+		s.m = make(map[UID]pendingEntry, 4)
+	}
+	s.m[token] = entry
+	s.mu.Unlock()
+}
+
+func (c *Conn) deliverPending(token UID, resp Response) {
+	s := c.pendingShard(token)
+	s.mu.Lock()
+	if entry, ok := s.m[token]; ok {
+		entry.ch <- resp
+		delete(s.m, token)
+	}
+	s.mu.Unlock()
+}
+
+func (c *Conn) removePending(token UID) {
+	s := c.pendingShard(token)
+	s.mu.Lock()
+	delete(s.m, token)
+	s.mu.Unlock()
+}
+
+func (c *Conn) clearAllPending() {
+	for i := range c.pendingShards {
+		s := &c.pendingShards[i]
+		s.mu.Lock()
+		s.m = nil
+		s.mu.Unlock()
+	}
+}
+
+func (c *Conn) hasAnyPending() bool {
+	for i := range c.pendingShards {
+		s := &c.pendingShards[i]
+		s.mu.Lock()
+		n := len(s.m)
+		s.mu.Unlock()
+		if n > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Conn) pendingCount() int {
+	n := 0
+	for i := range c.pendingShards {
+		s := &c.pendingShards[i]
+		s.mu.Lock()
+		n += len(s.m)
+		s.mu.Unlock()
+	}
+	return n
+}
+
+// nextReplyToken generates a connection-unique 128-bit reply token using one
+// atomic increment and SplitMix64 finalizer (spreading uniformly across shards).
+func (c *Conn) nextReplyToken() UID {
+	if c.nextToken.Load() == 0 {
+		c.nextToken.CompareAndSwap(0, splitmix64()|1)
+	}
+	s := c.nextToken.Add(0x9e3779b97f4a7c15)
+	a := mix64(s)
+	if a == wellKnownFirst {
+		a ^= 1
+	}
+	return UID{First: a, Second: s}
+}
+
 // splitmix64 is a fast 64-bit PRNG. Period: 2^64.
 func splitmix64() uint64 {
 	// Atomic add gives each caller a unique state progression.
 	s := fastRNGState.Add(0x9e3779b97f4a7c15)
+	return mix64(s)
+}
+
+func mix64(s uint64) uint64 {
 	s = (s ^ (s >> 30)) * 0xbf58476d1ce4e5b9
 	s = (s ^ (s >> 27)) * 0x94d049bb133111eb
 	return s ^ (s >> 31)
 }
 
 // NewUID generates a random 128-bit UID for endpoint tokens.
-// Uses a fast non-crypto PRNG — UIDs are for reply routing, not security.
+// Uses a single atomic progression on fastRNGState per 128-bit UID.
 func NewUID() UID {
+	s := fastRNGState.Add(0x9e3779b97f4a7c15)
 	return UID{
-		First:  splitmix64(),
-		Second: splitmix64(),
+		First:  mix64(s),
+		Second: mix64(s ^ 0x6a09e667f3bcc909),
 	}
 }
 

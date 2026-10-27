@@ -405,10 +405,7 @@ func TestAdmissionPingDropsBehindPendingHead(t *testing.T) {
 				if reply, handle := c.sendPingWithReply(); reply != nil || handle != nil {
 					t.Error("monitor ping bypassed the pending FIFO")
 				}
-				c.pendingMu.RLock()
-				pending := len(c.pending)
-				c.pendingMu.RUnlock()
-				if pending != 0 {
+				if pending := c.pendingCount(); pending != 0 {
 					t.Errorf("dropped ping retained %d reply registrations", pending)
 				}
 			} else {

@@ -91,9 +91,16 @@ func TestNativeResolveKeyLocationPanic(t *testing.T) {
 	var pendingConn *transport.Conn
 	var pendingAddr string
 	hook := func() {
-		for _, msg := range rec.messages() {
-			if q, ok := msg.(*types.GetKeyServerLocationsRequest); ok {
-				pendingToken = transport.UID{First: binary.LittleEndian.Uint64(q.Reply.Token[:8]), Second: binary.LittleEndian.Uint64(q.Reply.Token[8:])}
+		// A send returns once its frame is queued (RFC-282 T1), so the request
+		// may reach the wire after the hook runs: wait for the writer to write it.
+		for deadline := time.Now().Add(5 * time.Second); pendingToken == (transport.UID{}) && time.Now().Before(deadline); {
+			for _, msg := range rec.messages() {
+				if q, ok := msg.(*types.GetKeyServerLocationsRequest); ok {
+					pendingToken = transport.UID{First: binary.LittleEndian.Uint64(q.Reply.Token[:8]), Second: binary.LittleEndian.Uint64(q.Reply.Token[8:])}
+				}
+			}
+			if pendingToken == (transport.UID{}) {
+				time.Sleep(time.Millisecond)
 			}
 		}
 		db.db.connMu.Lock()

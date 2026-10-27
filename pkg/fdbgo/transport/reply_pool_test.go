@@ -22,7 +22,7 @@ func observePool(t *testing.T) *[]chan Response {
 }
 
 func newTestConn() *Conn {
-	return &Conn{pending: make(map[UID]pendingEntry)}
+	return &Conn{}
 }
 
 // TestReplyHandle_Cancel_WonRace_PoolsChannel: when Cancel runs before readLoop
@@ -38,8 +38,8 @@ func TestReplyHandle_Cancel_WonRace_PoolsChannel(t *testing.T) {
 	if len(*pooled) != 1 || (*pooled)[0] != bidi {
 		t.Fatalf("Cancel (won race) must pool the channel exactly once; pooled=%d", len(*pooled))
 	}
-	if len(c.pending) != 0 {
-		t.Errorf("Cancel must remove the pending token; pending=%d", len(c.pending))
+	if n := c.pendingCount(); n != 0 {
+		t.Errorf("Cancel must remove the pending token; pending=%d", n)
 	}
 	if h.ch != nil {
 		t.Errorf("Cancel must nil h.ch to mark it handled")
@@ -60,9 +60,7 @@ func TestReplyHandle_Cancel_LostRace_LeaksChannel(t *testing.T) {
 	token, _, h := c.PrepareReply()
 	bidi := h.ch
 	// Simulate readLoop winning: delete the token and deliver a (stale) reply.
-	c.pendingMu.Lock()
-	delete(c.pending, token)
-	c.pendingMu.Unlock()
+	c.removePending(token)
 	bidi <- Response{Body: []byte("stale")}
 
 	h.Cancel()
@@ -88,9 +86,7 @@ func TestReplyHandle_Release_Success_PoolsChannel(t *testing.T) {
 	token, ch, h := c.PrepareReply()
 	bidi := h.ch
 	// Simulate readLoop delivering, then the caller receiving its reply.
-	c.pendingMu.Lock()
-	delete(c.pending, token)
-	c.pendingMu.Unlock()
+	c.removePending(token)
 	bidi <- Response{Body: []byte("ok")}
 	<-ch // caller receives via the returned receive-only view
 
@@ -118,9 +114,7 @@ func TestConn_cancelPending_Discipline(t *testing.T) {
 
 	// Lost race: token already gone (readLoop delivered) → do NOT pool.
 	token2, _, h2 := c.PrepareReply()
-	c.pendingMu.Lock()
-	delete(c.pending, token2)
-	c.pendingMu.Unlock()
+	c.removePending(token2)
 	h2.ch <- Response{Body: []byte("stale")}
 	c.cancelPending(token2, h2.ch)
 	if len(*pooled) != 1 {

@@ -275,8 +275,13 @@ type database struct {
 	proxiesChanged   chan struct{}
 
 	// Connection pool. C++ uses FlowTransport; we need explicit pool.
-	connMu   sync.RWMutex
-	connPool map[string]*transport.Conn
+	connMu        sync.RWMutex
+	connPool      map[string]*transport.Conn
+	hasConnLinger bool
+	lastMinDelay  time.Duration
+	lastMaxDelay  time.Duration
+	lastAdaptive  time.Duration
+	lastWaits     bool
 	// dialing coalesces concurrent dials to the same address (singleflight): the
 	// first miss dials, later misses to the same address wait on its result rather
 	// than each running a redundant TCP/TLS/ConnectPacket handshake. Guarded by
@@ -627,6 +632,9 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 		default:
 			c.SetEndpointNotFoundHandler(func(token transport.UID) { db.failMon.markEndpointNotFound(addr, token) })
 			db.connPool[addr] = c
+			db.lastMinDelay, db.lastMaxDelay, db.lastWaits = c.CoalesceDelay()
+			db.lastAdaptive = c.AdaptiveLinger()
+			db.hasConnLinger = true
 			// Enroll before publication, while Close's pool-drain barrier is
 			// excluded. Ownership survives eviction, leases and stale cohorts.
 			db.wg.Add(1)
@@ -993,11 +1001,27 @@ func (d *Database) SetDialFunc(fn transport.DialFunc) {
 	d.db.dialFn = fn
 }
 
+// ConnectionLinger reports the active write-delay and adaptive-linger settings
+// of a pooled or most recently dialed connection.
+func (d *Database) ConnectionLinger() (minDelay, maxDelay, adaptive time.Duration, waits bool) {
+	d.db.connMu.Lock()
+	defer d.db.connMu.Unlock()
+	for _, c := range d.db.connPool {
+		minDelay, maxDelay, waits = c.CoalesceDelay()
+		return minDelay, maxDelay, c.AdaptiveLinger(), waits
+	}
+	if d.db.hasConnLinger {
+		return d.db.lastMinDelay, d.db.lastMaxDelay, d.db.lastAdaptive, d.db.lastWaits
+	}
+	return 0, 0, 0, false
+}
+
 // Transact runs a function in a transaction with automatic retry.
 // This is the primary API for interacting with FDB.
 // The transaction is reused across retries — retryCount and backoff escalate.
 func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, error)) (any, error) {
-	tx := d.CreateTransaction()
+	tx := d.createTransaction(true)
+	defer tx.releaseTransactTimeout()
 	for {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -1018,7 +1042,10 @@ func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, 
 
 		// Commit owns the cancellable GRV / detached-native split; prefetching here
 		// would force a GRV on the no-write fast path.
-		if err := tx.Commit(ctx); err != nil {
+		tx.transactFinalCommit.Store(true)
+		err = tx.Commit(ctx)
+		tx.transactFinalCommit.Store(false)
+		if err != nil {
 			if retryErr := tx.OnError(ctx, err); retryErr != nil {
 				return nil, retryErr
 			}
@@ -1032,7 +1059,8 @@ func (d *Database) Transact(ctx context.Context, fn func(tx *Transaction) (any, 
 // ReadTransact runs a read-only function in a transaction with automatic retry.
 // The transaction is never committed — only reads are performed.
 func (d *Database) ReadTransact(ctx context.Context, fn func(tx *Transaction) (any, error)) (any, error) {
-	tx := d.CreateTransaction()
+	tx := d.createTransaction(true)
+	defer tx.releaseTransactTimeout()
 	for {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -1052,12 +1080,17 @@ func (d *Database) ReadTransact(ctx context.Context, fn func(tx *Transaction) (a
 // CreateTransaction creates a new transaction.
 // Database-level defaults (timeout, retry limit, system key access) are applied.
 func (d *Database) CreateTransaction() *Transaction {
+	return d.createTransaction(false)
+}
+
+func (d *Database) createTransaction(transactScoped bool) *Transaction {
 	tx := &Transaction{
 		committedVersion: -1, // C++ TransactionState::committedVersion starts at invalidVersion.
 		readVersionState: &readVersionState{},
 		db:               d.db,
 		txOptions:        txOptions{tenantId: NoTenantID},
 		creationTime:     time.Now(),
+		transactScoped:   transactScoped,
 	}
 	// Apply database-level defaults (matches C++ applyTxDefaults). One Load, so every
 	// option below comes from the SAME snapshot.

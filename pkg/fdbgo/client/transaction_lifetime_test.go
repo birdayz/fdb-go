@@ -320,17 +320,19 @@ func TestExecutionLeaseEarlyReplacementCaptureArmsTimeout(t *testing.T) {
 			defer release()
 			op := tx.readOperation(ctx)
 			tx.readErrMu.Lock()
-			node, arm, armed := tx.timeoutNode, tx.timeoutArm, tx.timeoutArmed
+			arm, pending := tx.timeoutArm, tx.timeoutPendingLocked()
 			tx.readErrMu.Unlock()
 			if op.inc != captured.inc || op.lease == nil {
 				t.Fatal("read did not enter the early-captured replacement")
 			}
-			if node == nil || !armed {
+			if !pending {
 				t.Fatal("published early-captured replacement has no armed timeout")
 			}
 			// Deliver the armed callback deterministically, without racing an
 			// operating-system timer against test scheduling.
-			node.queue.remove(node)
+			tx.readErrMu.Lock()
+			tx.withdrawTimeoutLocked()
+			tx.readErrMu.Unlock()
 			tx.fireTimeout(arm)
 			receiveLifetimeTest(t, ctx.Done(), "replacement timeout delivery")
 			if code := fdbCodeOf(context.Cause(ctx)); code != 1031 {

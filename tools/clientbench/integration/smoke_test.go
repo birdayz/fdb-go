@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -61,7 +62,7 @@ func TestBothBackendsAgainstFDB(t *testing.T) {
 			t.Fatal(err)
 		}
 		digest := sha256.Sum256(binaryBytes)
-		for _, name := range []string{"get100", "get1000", "get10000", "read1000", "grv", "set100", "range10", "range100", "ryw", "batchset50", "batchset50x1000", "set100-paced"} {
+		for _, name := range []string{"get100", "get1000", "get10000", "read1000", "grv", "set100", "range10", "range100", "ryw", "batchset50", "batchset50x1000", "getset100", "set100-paced"} {
 			workload, paced := strings.CutSuffix(name, "-paced")
 			t.Run(arm.name+"/"+name, func(t *testing.T) {
 				output := filepath.Join(t.TempDir(), "result")
@@ -140,10 +141,13 @@ func TestBothBackendsAgainstFDB(t *testing.T) {
 				var manifest struct {
 					Config  bench.Config `json:"config"`
 					Backend struct {
-						Name          string            `json:"backend"`
-						Native        bool              `json:"native_library"`
-						ExecutableSHA string            `json:"executable_sha256"`
-						Libraries     map[string]string `json:"loaded_fdb_libraries_sha256"`
+						Name           string            `json:"backend"`
+						Native         bool              `json:"native_library"`
+						ExecutableSHA  string            `json:"executable_sha256"`
+						Libraries      map[string]string `json:"loaded_fdb_libraries_sha256"`
+						EffectiveMinNS int64             `json:"effective_min_ns"`
+						EffectiveMaxNS int64             `json:"effective_max_ns"`
+						AdaptiveLinger int64             `json:"adaptive_linger_ns"`
 					} `json:"backend"`
 				}
 				readJSON(t, filepath.Join(output, "manifest.json"), &manifest)
@@ -157,6 +161,33 @@ func TestBothBackendsAgainstFDB(t *testing.T) {
 				checkSamples(t, filepath.Join(output, "warmup.csv"), "warmup", 3, paced)
 				if text, err := execute(args); err == nil || !strings.Contains(string(text), "file exists") {
 					t.Fatalf("existing output not rejected: err=%v output=%s", err, text)
+				}
+				if name == "getset100" {
+					lingerArgs := append(slices.Clone(args), "--adaptive-linger=20us")
+					lingerArgs[slices.Index(lingerArgs, "--output")+1] = filepath.Join(t.TempDir(), "linger")
+					if arm.native {
+						if text, err := execute(lingerArgs); err == nil || !strings.Contains(string(text), "Go client only") {
+							t.Fatalf("cgo accepted adaptive-linger: err=%v output=%s", err, text)
+						}
+					} else {
+						if text, err := execute(lingerArgs); err != nil {
+							t.Fatalf("go adaptive-linger failed: %v\n%s", err, text)
+						}
+						readJSON(t, filepath.Join(lingerArgs[slices.Index(lingerArgs, "--output")+1], "manifest.json"), &manifest)
+						if manifest.Config.AdaptiveLinger != 20*time.Microsecond || manifest.Backend.AdaptiveLinger != int64(20*time.Microsecond) || manifest.Backend.EffectiveMinNS != 0 || manifest.Backend.EffectiveMaxNS != 0 {
+							t.Fatalf("adaptive-linger manifest = %+v", manifest)
+						}
+						fixedArgs := append(slices.Clone(args), "--coalesce-delay=10us,20us")
+						fixedOut := filepath.Join(t.TempDir(), "cd-fixed")
+						fixedArgs[slices.Index(fixedArgs, "--output")+1] = fixedOut
+						if text, err := execute(fixedArgs); err != nil {
+							t.Fatalf("go coalesce-delay=10us,20us failed: %v\n%s", err, text)
+						}
+						readJSON(t, filepath.Join(fixedOut, "manifest.json"), &manifest)
+						if manifest.Backend.EffectiveMinNS != int64(10*time.Microsecond) || manifest.Backend.EffectiveMaxNS != int64(20*time.Microsecond) || manifest.Backend.AdaptiveLinger != 0 {
+							t.Fatalf("coalesce-delay=10us,20us effective connection delay = %+v", manifest.Backend)
+						}
+					}
 				}
 				t.Logf("CLIENTBENCH_SMOKE %s/%s: measured=5 warmup=3 persisted=ok backend=%s", arm.name, name, manifest.Backend.Name)
 			})

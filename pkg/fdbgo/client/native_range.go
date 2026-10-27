@@ -464,9 +464,10 @@ func getRangeFinishedConflict(begin, end KeySelector, r *nativeRangeResult, reve
 // ready before it creates resolveKey(end) (:4465-4466); a goroutine has no such
 // point, so the goroutine resolving begin carries a transport.SuspendSignal and
 // every wait on its path fires it before blocking (transport/suspend.go): the
-// dial wait (getOrDialConn), a full write queue, the flush acknowledgment, the
-// writer turn, the reply wait (sendReadFrame), location backoff and delays
-// (sleepCtx). On a ready path the frame is queued, in order, before the signal.
+// dial wait (getOrDialConn), high-water backpressure (or legacy full write queue,
+// flush acknowledgment, and writer turn), the reply wait (sendReadFrame),
+// location backoff and delays (sleepCtx). On a ready path the frame is queued,
+// in order, before the signal.
 func withParkSignal(ctx context.Context) (context.Context, *transport.SuspendSignal) {
 	return transport.WithSuspendSignal(ctx)
 }

@@ -18,6 +18,8 @@ type readVersionState struct {
 	hasReadVersion     bool
 	userSetReadVersion bool
 	pendingReadVersion *pendingReadVersion
+	inlinePending      pendingReadVersion
+	inlinePendingUsed  bool
 	// Total latency spans OnError retries; the MVCC instant belongs to one GRV.
 	metricStart        time.Time
 	readVersionInstant time.Time
@@ -27,6 +29,15 @@ type pendingReadVersion struct {
 	done    chan struct{}
 	version int64
 	err     error
+}
+
+// pendingDoneLocked returns pending's completion channel, allocating it lazily
+// under state.readVersionMu when a waiter first observes the in-flight fetch.
+func (state *readVersionState) pendingDoneLocked(pending *pendingReadVersion) chan struct{} {
+	if pending.done == nil {
+		pending.done = make(chan struct{})
+	}
+	return pending.done
 }
 
 // readVersionRequest contains no public transaction or incarnation references.
@@ -91,11 +102,12 @@ func (state *readVersionState) cachedOrFetchReadVersion(ctx context.Context, req
 			return rv, userSet, nil
 		}
 		if pending := state.pendingReadVersion; pending != nil {
+			done := state.pendingDoneLocked(pending)
 			state.readVersionMu.Unlock()
 			select {
 			case <-ctx.Done():
 				return 0, false, mapReadVersionError(ctx, owner, ctx.Err())
-			case <-pending.done:
+			case <-done:
 				if err := readVersionEntryError(ctx, owner); err != nil {
 					return 0, false, err
 				}
@@ -106,7 +118,14 @@ func (state *readVersionState) cachedOrFetchReadVersion(ctx context.Context, req
 				continue
 			}
 		}
-		pending := &pendingReadVersion{done: make(chan struct{})}
+		var pending *pendingReadVersion
+		if !state.inlinePendingUsed {
+			state.inlinePendingUsed = true
+			state.inlinePending = pendingReadVersion{}
+			pending = &state.inlinePending
+		} else {
+			pending = &pendingReadVersion{}
+		}
 		state.pendingReadVersion = pending
 		state.readVersionMu.Unlock()
 		var fetch readVersionRequest
@@ -154,7 +173,9 @@ func (request readVersionRequest) fetchReadVersion(ctx context.Context, extraFla
 				state.readVersionInstant = rvAt
 			}
 		}
-		close(pending.done)
+		if pending.done != nil {
+			close(pending.done)
+		}
 		state.readVersionMu.Unlock()
 	}()
 	flags := request.flags | extraFlags

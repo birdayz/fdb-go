@@ -53,6 +53,7 @@ go_library(
         "sizelimits.go",
         "span.go",
         "tag_throttle.go",
+        "timeout_design.go",
         "timeout_queue.go",
         "tls.go",
         "tls_key.go",
@@ -172,6 +173,7 @@ go_test(
 # gazelle:exclude turnover_finish_unit_test.go
 # gazelle:exclude turnover_ready_unit_test.go
 # gazelle:exclude timeout_alloc_unit_test.go
+# gazelle:exclude timeout_design_unit_test.go
 # gazelle:exclude timeout_generation_unit_test.go
 # gazelle:exclude timeout_init_alloc_unit_test.go
 # gazelle:exclude timeout_queue_regression_unit_test.go
@@ -182,6 +184,7 @@ go_test(
         "lazy_successor_unit_test.go",
         "lease_alloc_unit_test.go",
         "timeout_alloc_unit_test.go",
+        "timeout_design_unit_test.go",
         "timeout_generation_unit_test.go",
         "timeout_init_alloc_unit_test.go",
         "timeout_queue_regression_unit_test.go",

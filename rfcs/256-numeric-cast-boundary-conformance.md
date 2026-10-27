@@ -1777,11 +1777,11 @@ removal. Timer failure / Cancel use the same detached-set TryLock cleanup even
 when no replacement is created.
 
 **Reply linearization:** add a single-owner ReplyHandle take-ready-or-cancel
-operation, used only under pending ownership. Under connection pendingMu it
-consumes an already-published response, or deletes the still-pending token and
-claims cancellation. Move readLoop's buffered response publication into that
-same pendingMu critical section with deletion; failAllPending already publishes
-there. The buffer is size one with one producer. No delete-before-delivery gap
+operation, used only under pending ownership. Under the connection's `pendingShards[i].mu`
+(formerly `pendingMu`) it consumes an already-published response, or deletes the
+still-pending token and claims cancellation. Move readLoop's buffered response
+publication into that same `pendingShards[i].mu` critical section with deletion;
+failAllPending already publishes there. The buffer is size one with one producer. No delete-before-delivery gap
 remains, no waiting for wire I/O occurs under that lock, and the winner is copied
 to PendingGet-owned memo before ready publication. A successful or terminal-error
 reply remains immutable; a retriable intermediate response from a retired

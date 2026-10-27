@@ -204,7 +204,7 @@ func TestDurationCPUReadFailureStartsNoOperations(t *testing.T) {
 
 func TestDurationOperandsAndPersistedValidationIncludeFinalDrainWrite(t *testing.T) {
 	t.Parallel()
-	for _, workload := range []string{"set100", "batchset50", "batchset50x1000"} {
+	for _, workload := range []string{"set100", "getset100", "batchset50", "batchset50x1000"} {
 		t.Run(workload, func(t *testing.T) {
 			t.Parallel()
 			const prefix = "clientbench/timed-persisted/"
@@ -342,7 +342,7 @@ func (tx *durationErrorTransaction) ReadVersion() (int64, error) {
 // Not parallel: Run performs the same process-wide finalizer drains as the
 // executable. Other finalizer tests must not mutate their metrics concurrently.
 func TestDurationRunReportsTerminalErrorsWithoutFailingPopulation(t *testing.T) {
-	for _, workload := range []string{"get100", "set100", "grv"} {
+	for _, workload := range []string{"get100", "set100", "getset100", "grv"} {
 		t.Run(workload, func(t *testing.T) {
 			prefix := "clientbench/timed-errors/" + workload + "/"
 			db := &durationErrorDatabase{prefix: prefix, values: make(map[string][]byte)}
@@ -420,7 +420,7 @@ func TestDurationCorrectnessErrorsAreNotTerminalErrors(t *testing.T) {
 
 // Not parallel: Run drains process-wide finalizers.
 func TestDurationRunRejectsMeasuredCorrectnessFailures(t *testing.T) {
-	for _, workload := range []string{"get100", "range10", "range100", "grv"} {
+	for _, workload := range []string{"get100", "getset100", "range10", "range100", "grv"} {
 		t.Run(workload, func(t *testing.T) {
 			prefix := "clientbench/timed-corruption/" + workload + "/"
 			db := &durationErrorDatabase{prefix: prefix, values: make(map[string][]byte), corruptMeasured: true}
