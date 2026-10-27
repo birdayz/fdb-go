@@ -1,0 +1,29 @@
+OTel V2 adapter index-state error propagation regression
+
+RED command: just test (the complete fast lane, no target/filter selection)
+Result: 178 targets passed, 1 failed; 2 executed / 177 cached.
+The test compiled and injected exactly one state-conflict-registration error.
+Both real-FDB layouts returned an attribute hit with nil error through the old
+GetIndexState guard, despite the injected error:
+
+trace layout: failures=1 Candidates=1 Bytes=359 err=<nil>
+time layout: failures=1 Candidates=1 Bytes=368 err=<nil>
+
+Both failures contained:
+attribute Query swallowed state read failure or consumed postings
+
+Fix: use ReadIndexState and propagate its error before checking readability;
+reset result/work state inside every retry attempt. No core API was changed.
+
+GREEN command: just test (complete fast lane)
+Result: 179 targets passed; 2 executed / 177 cached.
+Both XML cases completed without failure or skip:
+TestRealRecordLayerCoveringIndexes/time_intrinsic_v2/attribute_state_read_error
+TestRealRecordLayerCoveringIndexes/trace_intrinsic_v2/attribute_state_read_error
+
+Each case checks positive prior work, errors.Is identity, exactly one injected
+failure, no returned/consumed/stale work, and restored successful results.
+Tracked and untracked source manifests matched before/after each lane.
+Full local logs: /tmp/fdb-hotelbench.VxNArC/state-{red,green}.log and
+/tmp/fdb-hotelbench.VxNArC/state-red-otel-test.log.
+This is fast-lane correctness evidence, not full-suite or stored-100M evidence.

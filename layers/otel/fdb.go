@@ -79,7 +79,7 @@ func OpenFDBContext(ctx context.Context, c Config, cluster string) (*FDBBackend,
 		raw.Close()
 		return nil, err
 	}
-	root := subspace.Sub("otel_otelbench_v1", c.Run)
+	root := subspace.Sub("otel_otelbench_v2", c.Run)
 	return &FDBBackend{cfg: c, raw: raw, db: recordlayer.NewFDBDatabase(raw), root: root, store: root.Sub("store"), md: md, idx: idx}, nil
 }
 func (b *FDBBackend) Close()                     { b.raw.Close() }
@@ -111,8 +111,10 @@ func (b *FDBBackend) readManifest(rc *recordlayer.FDBRecordContext, ready bool) 
 
 func (b *FDBBackend) Query(ctx context.Context, a Attribute) (QueryResult, error) {
 	b.lastWork = QueryResult{}
-	var out QueryResult
+	out := QueryResult{Hits: []Hit{}}
 	_, err := b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+		out = QueryResult{Hits: []Hit{}}
+		b.lastWork = QueryResult{}
 		if err := b.readManifest(rc, true); err != nil {
 			return nil, err
 		}
@@ -120,7 +122,11 @@ func (b *FDBBackend) Query(ctx context.Context, a Attribute) (QueryResult, error
 		if err != nil {
 			return nil, err
 		}
-		if !store.GetIndexState(b.idx.Name).IsScannable() {
+		indexState, err := store.ReadIndexState(b.idx.Name)
+		if err != nil {
+			return nil, err
+		}
+		if !indexState.IsScannable() {
 			return nil, fail("ownership", "query", "index is not readable")
 		}
 		m, err := store.GetIndexMaintainer(b.idx)
@@ -313,12 +319,25 @@ func (b *FDBBackend) Audit(ctx context.Context) (Statistics, error) {
 		return stats, failf("audit", "source census", "source rows %d want %d", stats.Rows, b.cfg.Count)
 	}
 	stats.Attributes = stats.Rows * int64(b.cfg.Attributes)
-	for name, ss := range map[string]subspace.Subspace{"owned_total": b.root, "records": b.store.Sub(recordlayer.RecordKey), "eq_primary": b.store.Sub(recordlayer.IndexKey, b.idx.SubspaceTupleKey()), "eq_secondary": b.store.Sub(recordlayer.IndexSecondarySpaceKey, b.idx.SubspaceTupleKey())} {
+	structures := map[string]subspace.Subspace{"owned_total": b.root, "records": b.store.Sub(recordlayer.RecordKey), "eq_primary": b.store.Sub(recordlayer.IndexKey, b.idx.SubspaceTupleKey()), "eq_secondary": b.store.Sub(recordlayer.IndexSecondarySpaceKey, b.idx.SubspaceTupleKey())}
+	for _, name := range []string{spanIndexName, timeIndexName} {
+		idx := b.md.GetIndex(name)
+		if idx == nil {
+			return stats, fail("config", "intrinsic index census", "missing intrinsic index metadata")
+		}
+		structures[name] = b.store.Sub(recordlayer.IndexKey, idx.SubspaceTupleKey())
+	}
+	for name, ss := range structures {
 		sz, err := b.size(ctx, ss)
 		if err != nil {
 			return stats, err
 		}
 		stats.Structures[name] = sz
+	}
+	for _, name := range []string{spanIndexName, timeIndexName} {
+		if stats.Structures[name].Keys != stats.Rows {
+			return stats, failf("audit", "intrinsic index census", "%s keys %d want %d", name, stats.Structures[name].Keys, stats.Rows)
+		}
 	}
 	if stats.Structures["eq_secondary"].Keys != stats.Attributes {
 		return stats, failf("audit", "posting census", "posting key census %d want %d", stats.Structures["eq_secondary"].Keys, stats.Attributes)

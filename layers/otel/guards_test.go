@@ -2,7 +2,10 @@ package otel
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -167,8 +170,13 @@ func TestGenerationKnobsAndLiteralIdentity(t *testing.T) {
 	t.Parallel()
 	c := testConfig()
 	s := Generate(c, 0)
-	if s.Trace != "1ab2e4b106961151a6fa2668c89fc243" || s.ID != "98be9352aa1d392d" {
-		t.Fatalf("seeded fixture identity changed: %s %s", s.Trace, s.ID)
+	if ToolVersion != "otelbench-v2" {
+		t.Fatalf("unexpected fixture version: %s", ToolVersion)
+	}
+	wantTrace := fmt.Sprintf("%016x%016x", referenceFixtureWord(283, "trace-a-v2", 0), referenceFixtureWord(283, "trace-b-v2", 0))
+	wantID := fmt.Sprintf("%016x", referenceFixtureWord(283, "span-v2", 0))
+	if s.Trace != wantTrace || s.ID != wantID {
+		t.Fatalf("seeded V2 fixture identity: got %s %s want %s %s", s.Trace, s.ID, wantTrace, wantID)
 	}
 	if s.Ordinal != 0 || s.Tenant != 0 || len(s.Attributes) != 8 {
 		t.Fatal("fixture knobs ignored")
@@ -186,6 +194,83 @@ func TestGenerationKnobsAndLiteralIdentity(t *testing.T) {
 	}
 	if Generate(testConfig(), 0).Attributes[0].Value != QueryValue || Generate(testConfig(), 4).Attributes[0].Value == QueryValue {
 		t.Fatal("selectivity schedule changed")
+	}
+}
+
+// The identity specification uses a SHA-256 keyed permutation, not truncated
+// randomWord hashes. Keep this calculation independent of both ID helpers.
+func referenceFixtureWord(seed uint64, domain string, ordinal int) uint64 {
+	material := binary.BigEndian.AppendUint64([]byte(domain), seed)
+	material = binary.BigEndian.AppendUint64(material, 0)
+	key := sha256.Sum256(material)
+	permutation := func(value uint64) uint64 {
+		value ^= binary.BigEndian.Uint64(key[:8])
+		value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9
+		value = (value ^ (value >> 27)) * 0x94d049bb133111eb
+		return value ^ (value >> 31)
+	}
+	value := permutation(uint64(ordinal) + 1)
+	if value == 0 {
+		value = permutation(0)
+	}
+	return value
+}
+
+func TestV2IdentityAndAdjacentTraceContract(t *testing.T) {
+	t.Parallel()
+	for _, seed := range []uint64{0, 283, math.MaxUint64} {
+		c := testConfig()
+		c.Seed = seed
+		ids := map[string]bool{}
+		traces := map[string]int{}
+		for _, ordinal := range []int{0, 1, 2, 3, 96, 97, 98, 99, 99999998, 99999999} {
+			s := Generate(c, ordinal)
+			wantTrace := fmt.Sprintf("%016x%016x", referenceFixtureWord(seed, "trace-a-v2", ordinal/2), referenceFixtureWord(seed, "trace-b-v2", ordinal/2))
+			wantID := fmt.Sprintf("%016x", referenceFixtureWord(seed, "span-v2", ordinal))
+			if s.Trace != wantTrace || s.ID != wantID || s.ID == strings.Repeat("0", 16) || s.Trace == strings.Repeat("0", 32) || ids[s.ID] {
+				t.Fatalf("seed=%d ordinal=%d: invalid or repeated identity: %+v", seed, ordinal, s)
+			}
+			if prev, ok := traces[s.Trace]; ok && prev/2 != ordinal/2 {
+				t.Fatalf("seed=%d: distinct trace ordinals %d and %d collided", seed, prev/2, ordinal/2)
+			}
+			if paired := Generate(c, ordinal^1); paired.Trace != s.Trace || paired.ID == s.ID || paired.Tenant != s.Tenant || s.Tenant != (ordinal/2)%c.Tenants {
+				t.Fatalf("seed=%d ordinal=%d: adjacent trace contract failed", seed, ordinal)
+			}
+			ids[s.ID], traces[s.Trace] = true, ordinal
+		}
+	}
+}
+
+func TestV2GenAIAttributeSlots(t *testing.T) {
+	t.Parallel()
+	c := testConfig()
+	for _, n := range []int{4, 5, 7, 8, 9, 128} {
+		c.Attributes = n
+		s := Generate(c, 17)
+		if len(s.Attributes) != n {
+			t.Fatalf("attributes=%d got %d", n, len(s.Attributes))
+		}
+		if n >= 8 {
+			want := []Attribute{
+				{"span", "gen_ai.operation.name", "string", "chat"},
+				{"span", "gen_ai.provider.name", "string", "openai"},
+				{"span", "gen_ai.request.model", "string", "gpt-4"},
+				{"span", "gen_ai.response.id", "string", "chatcmpl-fixture-v2-" + s.ID},
+			}
+			if !sameJSON(s.Attributes[4:8], want) {
+				t.Fatalf("attributes=%d: GenAI slots=%+v want %+v", n, s.Attributes[4:8], want)
+			}
+		} else {
+			for j := 4; j < n; j++ {
+				want := Attribute{"span", fmt.Sprintf("custom.literal.%d", j), "string", fmt.Sprintf("v_%d_17", j)}
+				if s.Attributes[j] != want {
+					t.Fatalf("attributes=%d slot=%d: partial GenAI replacement: %+v", n, j, s.Attributes[j])
+				}
+			}
+		}
+		if n > 8 && s.Attributes[8] != (Attribute{"span", "custom.literal.8", "string", "v_8_17"}) {
+			t.Fatal("GenAI replacement changed later filler slots")
+		}
 	}
 }
 

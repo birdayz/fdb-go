@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -47,12 +48,89 @@ func (b *fakeBackend) Audit(ctx context.Context) (otel.Statistics, error) {
 
 func (b *fakeBackend) Query(ctx context.Context, a otel.Attribute) (otel.QueryResult, error) {
 	err := b.call(ctx, "query")
-	return otel.QueryResult{Hits: otel.Expected(b.cfg, a.Scope, a.Key, a.Type, a.Value)}, err
+	return otel.QueryResult{Hits: b.sourceHits(func(s otel.Span) bool {
+		for _, attr := range s.Attributes {
+			if attr == a {
+				return true
+			}
+		}
+		return false
+	})}, err
+}
+
+func (b *fakeBackend) sourceHits(matches func(otel.Span) bool) []otel.Hit {
+	latest := map[string]int64{}
+	for i := 0; i < b.cfg.Count; i++ {
+		s := otel.Generate(b.cfg, i)
+		if s.Tenant != b.cfg.Tenant || !matches(s) {
+			continue
+		}
+		if previous, ok := latest[s.Trace]; !ok || s.Start > previous {
+			latest[s.Trace] = s.Start
+		}
+	}
+	hits := []otel.Hit{}
+	for trace, start := range latest {
+		hits = append(hits, otel.Hit{Trace: trace, Latest: start})
+	}
+	sort.Slice(hits, func(i, j int) bool {
+		if hits[i].Latest != hits[j].Latest {
+			return hits[i].Latest > hits[j].Latest
+		}
+		return hits[i].Trace > hits[j].Trace
+	})
+	if len(hits) > b.cfg.K {
+		hits = hits[:b.cfg.K]
+	}
+	return hits
 }
 
 func (b *fakeBackend) Trace(ctx context.Context, trace string) ([]otel.SpanHit, error) {
-	return otel.ExpectedTrace(b.cfg, trace), b.call(ctx, "trace")
+	err := b.call(ctx, "trace")
+	hits := []otel.SpanHit{}
+	for i := 0; i < b.cfg.Count; i++ {
+		s := otel.Generate(b.cfg, i)
+		if s.Tenant == b.cfg.Tenant && s.Trace == trace {
+			hits = append(hits, otel.SpanHit{ID: s.ID, Start: s.Start})
+		}
+	}
+	sort.Slice(hits, func(i, j int) bool {
+		if hits[i].Start != hits[j].Start {
+			return hits[i].Start < hits[j].Start
+		}
+		return hits[i].ID < hits[j].ID
+	})
+	return hits, err
 }
+
+func (b *fakeBackend) Span(ctx context.Context, id string) ([]otel.SpanMatch, error) {
+	err := b.call(ctx, "span")
+	hits := []otel.SpanMatch{}
+	for i := 0; i < b.cfg.Count; i++ {
+		s := otel.Generate(b.cfg, i)
+		if s.Tenant == b.cfg.Tenant && s.ID == id {
+			hits = append(hits, otel.SpanMatch{Trace: s.Trace, ID: s.ID, Start: s.Start})
+		}
+	}
+	sort.Slice(hits, func(i, j int) bool {
+		if hits[i].Start != hits[j].Start {
+			return hits[i].Start < hits[j].Start
+		}
+		if hits[i].Trace != hits[j].Trace {
+			return hits[i].Trace < hits[j].Trace
+		}
+		return hits[i].ID < hits[j].ID
+	})
+	return hits, err
+}
+
+func (b *fakeBackend) Time(ctx context.Context, interval otel.TimeRange) (otel.QueryResult, error) {
+	err := b.call(ctx, "time")
+	return otel.QueryResult{Hits: b.sourceHits(func(s otel.Span) bool {
+		return s.Start >= interval.Start && s.Start < interval.End
+	})}, err
+}
+
 func (b *fakeBackend) Drop(ctx context.Context) error { return b.call(ctx, "drop") }
 func (b *fakeBackend) Close()                         { b.calls = append(b.calls, "close") }
 func (b *fakeBackend) open(ctx context.Context, c otel.Config, _, _ string) (otel.Backend, error) {
@@ -157,6 +235,99 @@ func TestExecuteQuerySuites(t *testing.T) {
 	}
 }
 
+func TestExecuteIntrinsicAndGenAISuites(t *testing.T) {
+	t.Parallel()
+	genai := []string{"genai_response", "genai_scope_resource", "genai_scope_scope", "genai_type", "genai_absent", "genai_operation", "genai_provider", "genai_model"}
+	times := []string{"time_narrow", "time_empty", "time_absent", "time_broad"}
+	all := append([]string{"trace", "trace_absent", "span", "span_absent"}, genai...)
+	all = append(all, times...)
+	for _, tc := range []struct {
+		suite   string
+		classes []string
+		methods []string
+	}{
+		{"span", []string{"span", "span_absent"}, []string{"span", "span"}},
+		{"genai", genai, []string{"query", "query", "query", "query", "query", "query", "query", "query"}},
+		{"time", times, []string{"time", "time", "time", "time"}},
+		{"all", all, []string{"trace", "trace", "span", "span", "query", "query", "query", "query", "query", "query", "query", "query", "time", "time", "time", "time"}},
+	} {
+		t.Run(tc.suite, func(t *testing.T) {
+			t.Parallel()
+			b := &fakeBackend{t: t}
+			args := append(cliArgs("query"), "-suite="+tc.suite, "-count=48", "-attrs=8", "-iterations=16")
+			var stdout, stderr bytes.Buffer
+			if code := execute(args, &stdout, &stderr, b.open); code != 0 || stderr.Len() != 0 {
+				t.Fatalf("exit=%d stderr=%s stdout=%s", code, &stderr, &stdout)
+			}
+			e := decodeEvidence(t, stdout.Bytes())
+			if e.Suite != tc.suite || len(e.Samples) != 16 || e.Failures != 0 || e.Error != "" || len(b.calls) != 17 || b.calls[16] != "close" {
+				t.Fatalf("receipt=%+v calls=%v", e, b.calls)
+			}
+			for i, sample := range e.Samples {
+				if b.calls[i] != tc.methods[i%len(tc.methods)] || sample.Class != tc.classes[i%len(tc.classes)] || sample.Iteration != i || sample.Error != "" || sample.Digest == "" {
+					t.Fatalf("sample=%+v calls=%v", sample, b.calls)
+				}
+				switch sample.Class {
+				case "trace_absent", "span_absent", "genai_absent", "time_empty", "time_absent":
+					if sample.Results != 0 {
+						t.Fatalf("negative query returned results: %+v", sample)
+					}
+				case "span":
+					if sample.Results != 1 {
+						t.Fatalf("standalone span lookup results: %+v", sample)
+					}
+				}
+			}
+			population := 0
+			for _, histogram := range e.Histograms {
+				population += histogram.Population
+			}
+			if population != 16 {
+				t.Fatalf("histograms=%+v", e.Histograms)
+			}
+		})
+	}
+}
+
+func TestExecuteQuerySuiteAttributeBounds(t *testing.T) {
+	t.Parallel()
+	for _, suite := range []string{"selective", "mixed", "rare", "trace", "span", "time", "genai", "all"} {
+		for _, attrs := range []string{"4", "7", "8"} {
+			t.Run(suite+"/attrs="+attrs, func(t *testing.T) {
+				t.Parallel()
+				b := &fakeBackend{t: t}
+				path := filepath.Join(t.TempDir(), "receipt.json")
+				args := append(cliArgs("ingest"), "-suite="+suite, "-attrs="+attrs, "-output="+path)
+				var stdout, stderr bytes.Buffer
+				opened := false
+				code := execute(args, &stdout, &stderr, func(ctx context.Context, c otel.Config, cluster, chURL string) (otel.Backend, error) {
+					opened = true
+					return b.open(ctx, c, cluster, chURL)
+				})
+				if (suite == "genai" || suite == "all") && attrs != "8" {
+					if code != 2 || opened || stdout.Len() != 0 || stderr.Len() == 0 {
+						t.Fatalf("exit=%d opened=%v stdout=%q stderr=%q", code, opened, &stdout, &stderr)
+					}
+					if _, err := os.Stat(path); !os.IsNotExist(err) {
+						t.Fatalf("rejected suite created output: %v", err)
+					}
+					return
+				}
+				if code != 0 || !opened || stdout.Len() != 0 || stderr.Len() != 0 {
+					t.Fatalf("exit=%d opened=%v stdout=%q stderr=%q", code, opened, &stdout, &stderr)
+				}
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if e := decodeEvidence(t, data); e.Suite != suite {
+					t.Fatalf("receipt suite=%q, want %q", e.Suite, suite)
+				}
+			})
+		}
+	}
+}
+
 func TestExecuteRejectsArgumentsBeforeOpeningOrCreatingOutput(t *testing.T) {
 	t.Parallel()
 	for _, args := range [][]string{
@@ -172,6 +343,11 @@ func TestExecuteRejectsArgumentsBeforeOpeningOrCreatingOutput(t *testing.T) {
 		{"-timeout=-1s"},
 		{"-timeout=bad"},
 		{"-suite=other"},
+		{"-suite="},
+		{"-suite=genai", "-attrs=4"},
+		{"-suite=genai", "-attrs=7"},
+		{"-suite=all", "-attrs=4"},
+		{"-suite=all", "-attrs=7"},
 		{"-count=0"},
 		{"-count=bad"},
 		{"-save-mode=other"},
@@ -213,6 +389,11 @@ func TestExecuteHelp(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := execute([]string{"-help"}, &stdout, &stderr, nil); code != 0 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "confirm-drop") {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, &stdout, &stderr)
+	}
+	for _, description := range []string{"standalone span ID", "intrinsic half-open range", "typed/scoped attributes", "all (trace, span, genai, time)"} {
+		if !strings.Contains(stderr.String(), description) {
+			t.Fatalf("help missing %q: %s", description, &stderr)
+		}
 	}
 }
 
@@ -258,6 +439,8 @@ func TestExecuteFailureReceipts(t *testing.T) {
 		{"ingest", "selective", "ingest"},
 		{"query", "selective", "query"},
 		{"query", "trace", "trace"},
+		{"query", "span", "span"},
+		{"query", "time", "time"},
 		{"audit", "selective", "audit"},
 		{"audit", "selective", "query"},
 		{"audit", "selective", "trace"},

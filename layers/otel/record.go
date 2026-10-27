@@ -43,13 +43,15 @@ func metadata(c Config) (*recordlayer.RecordMetaData, *recordlayer.Index, error)
 	if err != nil {
 		return nil, nil, err
 	}
-	idx := recordlayer.NewIndex("typed_scoped_eq_v1", recordlayer.Field("start_ns"))
+	idx := recordlayer.NewIndex("typed_scoped_eq_v2", recordlayer.Field("start_ns"))
 	idx.Type = indexType
 	idx.SetOption("hash_bytes", strconv.Itoa(c.HashBytes))
 	idx.SetOption("order", c.Order)
 	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(d.ParentFile()).SetSplitLongRecords(true)
 	b.GetRecordType("Envelope").SetPrimaryKey(recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.Field("trace_id"), recordlayer.Field("span_id")))
 	b.AddIndex("Envelope", idx)
+	b.AddIndex("Envelope", recordlayer.NewIndex(spanIndexName, recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.Field("span_id"), recordlayer.Field("start_ns"))))
+	b.AddIndex("Envelope", recordlayer.NewIndex(timeIndexName, recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.Field("start_ns"), recordlayer.Field("trace_id"))))
 	md, err := b.Build()
 	return md, idx, err
 }
@@ -70,7 +72,7 @@ func toRecord(s Span) (proto.Message, error) {
 	if len(tr) != 16 || len(id) != 8 {
 		return nil, fail("admission", "identity", "expected 16-byte trace and 8-byte span identifiers")
 	}
-	otlp := &tracepb.ResourceSpans{Resource: &resourcepb.Resource{}, SchemaUrl: "otelbench-resource-v1", ScopeSpans: []*tracepb.ScopeSpans{{Scope: &commonpb.InstrumentationScope{Name: "otelbench", Version: "1"}, SchemaUrl: "otelbench-scope-v1", Spans: []*tracepb.Span{{TraceId: tr, SpanId: id, Name: "immutable-fixture", StartTimeUnixNano: uint64(s.Start), EndTimeUnixNano: uint64(s.Start + 1000)}}}}}
+	otlp := &tracepb.ResourceSpans{Resource: &resourcepb.Resource{}, SchemaUrl: "otelbench-resource-v2", ScopeSpans: []*tracepb.ScopeSpans{{Scope: &commonpb.InstrumentationScope{Name: "otelbench", Version: "2"}, SchemaUrl: "otelbench-scope-v2", Spans: []*tracepb.Span{{TraceId: tr, SpanId: id, Name: "immutable-fixture", StartTimeUnixNano: uint64(s.Start), EndTimeUnixNano: uint64(s.Start + 1000)}}}}}
 	for _, a := range s.Attributes {
 		v := &commonpb.AnyValue{}
 		switch a.Type {

@@ -54,7 +54,7 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 	flags.Int64Var(&c.MaxBytes, "max-bytes", c.MaxBytes, "FDB consumed KV logical-byte / CH max_bytes_to_read budget")
 	flags.IntVar(&c.HashBytes, "hash-bytes", c.HashBytes, "FDB digest bytes (1 for collision testing, 32 normally)")
 	flags.StringVar(&c.Order, "order", c.Order, "trace (complete candidate topK) or time (ordered distinct frontier); one layout per run")
-	flags.StringVar(&suite, "suite", "selective", "selective (varying predicates), mixed (also common resource term), rare (one hot predicate), trace")
+	flags.StringVar(&suite, "suite", "selective", "selective (varying predicates), mixed (also common resource term), rare (one hot predicate), trace, span (standalone span ID), time (intrinsic half-open range), genai (typed/scoped attributes), all (trace, span, genai, time)")
 	flags.StringVar(&cluster, "cluster-file", "", "explicit owned FDB cluster file; CLI never launches containers")
 	flags.StringVar(&chURL, "ch-url", "", "explicit owned ClickHouse HTTP endpoint")
 	flags.StringVar(&output, "output", "-", "JSON evidence path, created exclusively; - writes stdout")
@@ -76,8 +76,8 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, "explicit valid backend/mode required; see -help")
 		return 2
 	}
-	if suite != "selective" && suite != "mixed" && suite != "rare" && suite != "trace" {
-		fmt.Fprintln(stderr, "suite must be selective, mixed, rare or trace")
+	if err := otel.ValidateQuerySuite(c, suite); err != nil {
+		fmt.Fprintln(stderr, err)
 		return 2
 	}
 	if mode == "drop" && !confirm {

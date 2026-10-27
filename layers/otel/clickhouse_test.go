@@ -207,7 +207,7 @@ func TestCHPublicSummaryAvailability(t *testing.T) {
 					w.Header().Set("X-ClickHouse-Summary", tc.header)
 				}
 			})
-			for _, op := range []string{"query", "trace"} {
+			for _, op := range []string{"query", "trace", "span", "time"} {
 				var err error
 				if op == "query" {
 					var result QueryResult
@@ -216,7 +216,7 @@ func TestCHPublicSummaryAvailability(t *testing.T) {
 						t.Fatalf("returned and side-channel query work differ: result=%+v work=%+v", result, b.LastQueryWork())
 					}
 				} else {
-					_, err = b.Trace(t.Context(), "trace")
+					err = chPublicOperation(t.Context(), b, op)
 				}
 				if err != nil {
 					t.Fatalf("%s: %v", op, err)
@@ -244,6 +244,15 @@ func chPublicOperation(ctx context.Context, b *CHBackend, op string) error {
 	case "trace":
 		_, err := b.Trace(ctx, "trace")
 		return err
+	case "span":
+		_, err := b.Span(ctx, "span")
+		return err
+	case "time":
+		_, err := b.Time(ctx, TimeRange{Start: 0, End: 1})
+		return err
+	case "empty_time":
+		_, err := b.Time(ctx, TimeRange{Start: 0, End: 0})
+		return err
 	case "audit":
 		_, err := b.Audit(ctx)
 		return err
@@ -264,7 +273,7 @@ func TestCHPublicOwnershipGuards(t *testing.T) {
 		"missing": nil, "malformed": nil,
 	}
 	for name, mutate := range mutations {
-		for _, op := range []string{"query", "trace", "audit", "drop"} {
+		for _, op := range []string{"query", "trace", "span", "time", "empty_time", "audit", "drop"} {
 			if name == "loading" && op == "drop" {
 				continue // Loading is owned and explicitly droppable.
 			}
@@ -308,7 +317,7 @@ func TestCHPublicOwnershipGuards(t *testing.T) {
 
 func TestCHLastWorkResetOnFailure(t *testing.T) {
 	t.Parallel()
-	for _, op := range []string{"query", "trace"} {
+	for _, op := range []string{"query", "trace", "span", "time"} {
 		for _, failure := range []string{"ownership", "http"} {
 			t.Run(op+"/"+failure, func(t *testing.T) {
 				t.Parallel()
@@ -350,7 +359,7 @@ func TestCHLastWorkResetOnFailure(t *testing.T) {
 
 func TestCHPublicDecodeFailures(t *testing.T) {
 	t.Parallel()
-	for _, op := range []string{"query", "trace"} {
+	for _, op := range []string{"query", "trace", "span", "time"} {
 		for name, body := range map[string]string{"json": `{`, "timestamp": `{"trace_id":"x","span_id":"y","latest":"oops","ts_ns":"oops"}`, "missing_timestamp": `{"trace_id":"x","span_id":"y"}`, "overflow": `{"trace_id":"x","span_id":"y","latest":"9223372036854775808","ts_ns":"9223372036854775808"}`} {
 			t.Run(op+"/"+name, func(t *testing.T) {
 				t.Parallel()
@@ -426,7 +435,7 @@ func TestCHInitialOwnershipRollback(t *testing.T) {
 
 func TestCHPublicCancellation(t *testing.T) {
 	t.Parallel()
-	for _, op := range []string{"query", "trace"} {
+	for _, op := range []string{"query", "trace", "span", "time"} {
 		t.Run(op, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := context.WithCancel(t.Context())
@@ -476,7 +485,7 @@ func chSourceRows(t *testing.T, c Config) []string {
 
 func TestCHSourceAuditRejectsCorruption(t *testing.T) {
 	t.Parallel()
-	for _, problem := range []string{"intact", "missing", "duplicate", "out_of_range", "changed_source", "malformed_source", "malformed_row", "http", "attribute_census"} {
+	for _, problem := range []string{"intact", "missing", "duplicate", "out_of_range", "changed_source", "malformed_source", "malformed_row", "http", "attribute_census", "missing_projection", "projection_census"} {
 		t.Run(problem, func(t *testing.T) {
 			t.Parallel()
 			var b *CHBackend
@@ -519,12 +528,19 @@ func TestCHSourceAuditRejectsCorruption(t *testing.T) {
 					fmt.Fprintf(w, "{\"table\":\"spans\",\"rows\":\"%d\",\"disk\":\"10\",\"logical\":\"20\"}\n{\"table\":\"attr_lookup\",\"rows\":\"%d\",\"disk\":\"30\",\"logical\":\"40\"}\n", b.cfg.Count, n)
 				case strings.HasPrefix(sql, "EXPLAIN indexes=1 "):
 					explainCalls.Add(1)
-					if strings.Contains(sql, "SELECT span_id,ts_ns") {
-						assertCHBudgets(t, sql, b.cfg)
-					}
+					assertCHBudgets(t, sql, b.cfg)
 					fmt.Fprint(w, "ReadFromMergeTree")
 				case strings.Contains(sql, "FROM system.projection_parts "):
-					fmt.Fprint(w, `{"disk":"1","logical":"2"}`)
+					for _, name := range []string{"by_trace", "by_span", "by_time"} {
+						if problem == "missing_projection" && name == "by_span" {
+							continue
+						}
+						rows := b.cfg.Count
+						if problem == "projection_census" && name == "by_time" {
+							rows--
+						}
+						fmt.Fprintf(w, "{\"name\":%q,\"rows\":\"%d\",\"disk\":\"1\",\"logical\":\"2\"}\n", name, rows)
+					}
 				default:
 					t.Errorf("unexpected audit SQL: %s", sql)
 					http.Error(w, "unexpected SQL", http.StatusBadRequest)
@@ -535,7 +551,7 @@ func TestCHSourceAuditRejectsCorruption(t *testing.T) {
 				t.Fatalf("source audit requests = %d", sourceCalls.Load())
 			}
 			if problem == "intact" {
-				if err != nil || explainCalls.Load() != 2 || stats.Rows != int64(b.cfg.Count) || stats.Structures["attr_lookup"].Keys != int64(b.cfg.Count*b.cfg.Attributes) {
+				if err != nil || explainCalls.Load() != 4 || stats.Rows != int64(b.cfg.Count) || stats.Structures["attr_lookup"].Keys != int64(b.cfg.Count*b.cfg.Attributes) {
 					t.Fatalf("positive audit control stats=%+v explain=%d error=%v", stats, explainCalls.Load(), err)
 				}
 			} else if err == nil {
@@ -605,6 +621,11 @@ func TestCHPublicIngestBatchLimits(t *testing.T) {
 					databaseCreated = true
 				case strings.HasPrefix(sql, "CREATE TABLE otel_"+c.Run+".owner "):
 				case strings.HasPrefix(sql, "CREATE TABLE otel_"+c.Run+".spans "):
+					for _, projection := range []string{"PROJECTION by_trace (SELECT tenant,trace_id,span_id,ts_ns ORDER BY (tenant,trace_id,span_id))", "PROJECTION by_span (SELECT tenant,span_id,ts_ns,trace_id ORDER BY (tenant,span_id,ts_ns,trace_id))", "PROJECTION by_time (SELECT tenant,ts_ns,trace_id,span_id ORDER BY (tenant,ts_ns,trace_id,span_id))"} {
+						if !strings.Contains(sql, projection) {
+							t.Errorf("missing covering projection: %s", projection)
+						}
+					}
 					schemaCreated = true
 				case sql == "INSERT INTO otel_"+c.Run+".owner FORMAT JSONEachRow":
 					var row struct {
@@ -703,5 +724,150 @@ func TestCHPublicIngestBatchLimits(t *testing.T) {
 				t.Fatalf("owner lifecycle = %+v sequences=%v", owners, sequences)
 			}
 		})
+	}
+}
+
+func TestCHIntrinsicHTTPBindingsAndDecoding(t *testing.T) {
+	t.Parallel()
+	id := "span' OR 1=1 --&=+%\n雪"
+	window := TimeRange{Start: -12345, End: 9223372036854775807}
+	var spanCalls, timeCalls atomic.Int64
+	var b *CHBackend
+	b = chHTTPBackend(t, false, func(w http.ResponseWriter, r *http.Request) {
+		sql := r.URL.Query().Get("query")
+		if chIsManifest(sql) {
+			fmt.Fprint(w, chManifestWire(t, manifest(b.cfg, "ready")))
+			return
+		}
+		w.Header().Set("X-ClickHouse-Summary", `{"read_rows":"29","read_bytes":"137","elapsed_ns":"41"}`)
+		assertCHBudgets(t, sql, b.cfg)
+		for _, forbidden := range []string{"attrs", "terms", "source", "trace_id={trace:String}"} {
+			if strings.Contains(sql, forbidden) {
+				t.Errorf("intrinsic SQL contains nonintrinsic filter/column %q: %s", forbidden, sql)
+			}
+		}
+		if strings.HasPrefix(sql, "SELECT trace_id,span_id,ts_ns") {
+			spanCalls.Add(1)
+			assertCHRequest(t, r, map[string]string{"tenant": strconv.Itoa(b.cfg.Tenant), "span": id})
+			for _, fragment := range []string{"tenant={tenant:UInt32} AND span_id={span:String}", "ORDER BY ts_ns,trace_id,span_id LIMIT " + strconv.Itoa(b.cfg.MaxCandidates+1), "optimize_use_projections=1"} {
+				if !strings.Contains(sql, fragment) {
+					t.Errorf("span SQL missing %q: %s", fragment, sql)
+				}
+			}
+			if strings.Contains(sql, id) || strings.Contains(sql, "LIMIT 1 BY") {
+				t.Errorf("span lookup interpolates ID or truncates matches: %s", sql)
+			}
+			fmt.Fprint(w, "{\"trace_id\":\"z\",\"span_id\":\"shared\",\"ts_ns\":\"4\"}\n{\"trace_id\":\"a\",\"span_id\":\"shared\",\"ts_ns\":5}\n{\"trace_id\":\"z\",\"span_id\":\"shared\",\"ts_ns\":\"5\"}\n")
+			return
+		}
+		timeCalls.Add(1)
+		assertCHRequest(t, r, map[string]string{"tenant": strconv.Itoa(b.cfg.Tenant), "start": "-12345", "end": "9223372036854775807"})
+		for _, fragment := range []string{"ts_ns>={start:Int64} AND ts_ns<{end:Int64}", "ORDER BY ts_ns DESC,trace_id DESC,span_id DESC LIMIT 1 BY trace_id LIMIT 3", "optimize_use_projections=1", "optimize_read_in_order=1"} {
+			if !strings.Contains(sql, fragment) {
+				t.Errorf("time SQL missing %q: %s", fragment, sql)
+			}
+		}
+		fmt.Fprint(w, "{\"trace_id\":\"z\",\"latest\":\"5\"}\n{\"trace_id\":\"a\",\"latest\":5}\n{\"trace_id\":\"b\",\"latest\":\"4\"}\n")
+	})
+	b.cfg.K = 1
+	spans, err := b.Span(t.Context(), id)
+	if err != nil || !reflect.DeepEqual(spans, []SpanMatch{{Trace: "z", ID: "shared", Start: 4}, {Trace: "a", ID: "shared", Start: 5}, {Trace: "z", ID: "shared", Start: 5}}) {
+		t.Fatalf("standalone span lookup lost matches/order (K=1): %+v, error %v", spans, err)
+	}
+	work := b.LastQueryWork()
+	if !work.ServerSummary || work.ServerReadRows != 29 || work.ServerReadBytes != 137 || work.ServerElapsed != 41 || work.ResponseBytes <= 0 {
+		t.Fatalf("span work: %+v", work)
+	}
+	b.cfg.K = 3
+	got, err := b.Time(t.Context(), window)
+	if err != nil || !reflect.DeepEqual(got.Hits, []Hit{{Trace: "z", Latest: 5}, {Trace: "a", Latest: 5}, {Trace: "b", Latest: 4}}) {
+		t.Fatalf("intrinsic time decoding/order: %+v, error %v", got, err)
+	}
+	if !got.ServerSummary || got.ServerReadRows != 29 || got.ServerReadBytes != 137 || got.ServerElapsed != 41 || got.ResponseBytes <= 0 {
+		t.Fatalf("time work: %+v", got)
+	}
+	if spanCalls.Load() != 1 || timeCalls.Load() != 1 {
+		t.Fatalf("intrinsic request populations span=%d time=%d", spanCalls.Load(), timeCalls.Load())
+	}
+}
+
+func TestCHIntrinsicEmptyAndInvalidRange(t *testing.T) {
+	t.Parallel()
+	var dataCalls atomic.Int64
+	var b *CHBackend
+	b = chHTTPBackend(t, false, func(w http.ResponseWriter, r *http.Request) {
+		if chIsManifest(r.URL.Query().Get("query")) {
+			fmt.Fprint(w, chManifestWire(t, manifest(b.cfg, "ready")))
+			return
+		}
+		dataCalls.Add(1)
+		w.Header().Set("X-ClickHouse-Summary", `{"read_rows":"0","read_bytes":"0","elapsed_ns":"1"}`)
+	})
+	spans, err := b.Span(t.Context(), "missing")
+	if err != nil || spans == nil || len(spans) != 0 {
+		t.Fatalf("span miss=%+v error=%v", spans, err)
+	}
+	for _, window := range []TimeRange{{Start: 3, End: 3}, {Start: 4, End: 5}} {
+		got, err := b.Time(t.Context(), window)
+		if err != nil || got.Hits == nil || len(got.Hits) != 0 || !got.ServerSummary {
+			t.Fatalf("empty/missing time result=%+v error=%v", got, err)
+		}
+	}
+	if dataCalls.Load() != 3 {
+		t.Fatalf("empty/miss request population=%d", dataCalls.Load())
+	}
+	_, err = b.Time(t.Context(), TimeRange{Start: 2, End: 1})
+	var invalid *ConfigError
+	if !errors.As(err, &invalid) || dataCalls.Load() != 3 || !reflect.DeepEqual(b.LastQueryWork(), QueryResult{}) {
+		t.Fatalf("invalid time range admitted or retained work: error=%v calls=%d work=%+v", err, dataCalls.Load(), b.LastQueryWork())
+	}
+}
+
+func TestCHStandaloneSpanCandidateBudget(t *testing.T) {
+	t.Parallel()
+	var b *CHBackend
+	b = chHTTPBackend(t, false, func(w http.ResponseWriter, r *http.Request) {
+		if chIsManifest(r.URL.Query().Get("query")) {
+			fmt.Fprint(w, chManifestWire(t, manifest(b.cfg, "ready")))
+			return
+		}
+		assertCHBudgets(t, r.URL.Query().Get("query"), b.cfg)
+		fmt.Fprint(w, "{\"trace_id\":\"a\",\"span_id\":\"shared\",\"ts_ns\":1}\n{\"trace_id\":\"b\",\"span_id\":\"shared\",\"ts_ns\":2}\n")
+	})
+	b.cfg.K, b.cfg.MaxCandidates = 1, 1
+	matches, err := b.Span(t.Context(), "shared")
+	var budget *QueryBudgetError
+	if !errors.As(err, &budget) || matches != nil {
+		t.Fatalf("candidate stop returned partial exact span answer: matches=%+v error=%v", matches, err)
+	}
+}
+
+func TestCHIntrinsicResponseCap(t *testing.T) {
+	var b *CHBackend
+	b = chHTTPBackend(t, false, func(w http.ResponseWriter, r *http.Request) {
+		if chIsManifest(r.URL.Query().Get("query")) {
+			fmt.Fprint(w, chManifestWire(t, manifest(b.cfg, "ready")))
+			return
+		}
+		first := "{\"trace_id\":\"a\",\"span_id\":\"shared\",\"ts_ns\":1}\n"
+		if _, err := io.WriteString(w, first); err != nil {
+			return
+		}
+		chunk := strings.Repeat(" ", 16<<10)
+		for remaining := (32 << 20) - len(first); remaining > 0; {
+			n := min(remaining, len(chunk))
+			if _, err := io.WriteString(w, chunk[:n]); err != nil {
+				return
+			}
+			remaining -= n
+		}
+		// At the old truncation boundary the response ends in whitespace,
+		// making one decoded match look complete despite this second row.
+		fmt.Fprint(w, "{\"trace_id\":\"b\",\"span_id\":\"shared\",\"ts_ns\":2}\n")
+	})
+	matches, err := b.Span(t.Context(), "shared")
+	var budget *QueryBudgetError
+	if !errors.As(err, &budget) || matches != nil || !reflect.DeepEqual(b.LastQueryWork(), QueryResult{}) {
+		t.Fatalf("response cap returned partial exact matches/work: matches=%+v error=%v work=%+v", matches, err, b.LastQueryWork())
 	}
 }

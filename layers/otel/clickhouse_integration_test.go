@@ -2,12 +2,14 @@ package otel
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -145,10 +147,16 @@ func TestRealClickHouseLayouts(t *testing.T) {
 			if layout.attrs && stats.Structures["attr_lookup"].Keys != int64(c.Count*c.Attributes) {
 				t.Fatalf("MV destination census = %+v", stats.Structures)
 			}
-			if !strings.HasPrefix(stats.Details["server_version"], "26.10.") || stats.Details["rare_query_explain"] == "" || stats.Details["trace_query_explain"] == "" {
+			if !strings.HasPrefix(stats.Details["server_version"], "26.10.") || stats.Details["rare_query_explain"] == "" || stats.Details["trace_query_explain"] == "" || stats.Details["span_query_explain"] == "" || stats.Details["time_query_explain"] == "" {
 				t.Fatalf("version/plan evidence missing: %+v", stats.Details)
 			}
+			assertCHProjectionEvidence(t, stats, c.Count)
+			responseID := Attribute{"span", "gen_ai.response.id", "string", "chatcmpl-fixture-v2-" + Generate(c, 0).ID}
+			if want := Expected(c, responseID.Scope, responseID.Key, responseID.Type, responseID.Value); len(want) != 1 {
+				t.Fatalf("GenAI response ID positive population=%v", want)
+			}
 			for _, a := range []Attribute{
+				responseID,
 				{"span", QueryKey, "string", QueryValue},
 				{"resource", QueryKey, "string", QueryValue},
 				{"scope", QueryKey, "string", QueryValue},
@@ -203,7 +211,7 @@ func TestRealClickHouseLayouts(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(unowned.Close)
-			for _, op := range []string{"query", "trace", "audit", "drop"} {
+			for _, op := range []string{"query", "trace", "span", "time", "empty_time", "audit", "drop"} {
 				if err := chPublicOperation(ctx, unowned, op); err == nil {
 					t.Fatalf("wrong-corpus %s authorized", op)
 				}
@@ -212,10 +220,11 @@ func TestRealClickHouseLayouts(t *testing.T) {
 				t.Fatalf("rejected wrong-owner operations damaged source: stats=%+v error=%v", stats, err)
 			}
 			assertCHUnownedSentinel(t, ctx, c, endpoint, layout.attrs)
+			assertCHIntrinsicQueries(t, ctx, b)
 			if err := b.putManifest(ctx, "loading", 3); err != nil {
 				t.Fatal(err)
 			}
-			for _, op := range []string{"query", "trace", "audit"} {
+			for _, op := range []string{"query", "trace", "span", "time", "empty_time", "audit"} {
 				if err := chPublicOperation(ctx, b, op); err == nil {
 					t.Fatalf("loading %s authorized", op)
 				}
@@ -255,7 +264,7 @@ func assertCHUnownedSentinel(t *testing.T, ctx context.Context, c Config, endpoi
 	if err := b.exec(ctx, "INSERT INTO "+b.database+".sentinel VALUES ('do_not_drop')"); err != nil {
 		t.Fatal(err)
 	}
-	for _, op := range []string{"query", "trace", "audit", "drop"} {
+	for _, op := range []string{"query", "trace", "span", "time", "empty_time", "audit", "drop"} {
 		if err := chPublicOperation(ctx, b, op); err == nil {
 			t.Fatalf("manifest-free %s authorized", op)
 		}
@@ -271,5 +280,121 @@ func assertCHUnownedSentinel(t *testing.T, ctx context.Context, c Config, endpoi
 	wire, err = b.request(ctx, fmt.Sprintf("SELECT v FROM %s.sentinel FORMAT TabSeparated", b.database), nil, nil)
 	if err != nil || string(wire) != "do_not_drop\n" {
 		t.Fatalf("failed ingest removed pre-existing sentinel: %q, error %v", wire, err)
+	}
+}
+
+func assertCHProjectionEvidence(t *testing.T, stats Statistics, count int) {
+	t.Helper()
+	decoder := json.NewDecoder(strings.NewReader(stats.Details["projection_parts_bytes"]))
+	seen := map[string]bool{}
+	for decoder.More() {
+		var row struct{ Name, Rows, Disk, Logical string }
+		if err := decoder.Decode(&row); err != nil {
+			t.Fatal(err)
+		}
+		if seen[row.Name] {
+			t.Fatalf("duplicate projection evidence: %s", row.Name)
+		}
+		seen[row.Name] = true
+		if row.Rows != strconv.Itoa(count) {
+			t.Fatalf("projection rows=%s, want %d: %+v", row.Rows, count, row)
+		}
+		for _, value := range []string{row.Disk, row.Logical} {
+			n, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || n <= 0 {
+				t.Fatalf("projection byte evidence missing: %+v error=%v", row, err)
+			}
+		}
+	}
+	for _, name := range []string{"by_trace", "by_span", "by_time"} {
+		if !seen[name] {
+			t.Fatalf("projection not materialized/accounted: %s in %+v", name, stats.Details)
+		}
+	}
+}
+
+func assertCHIntrinsicQueries(t *testing.T, ctx context.Context, b *CHBackend) {
+	t.Helper()
+	const base int64 = 1700000000000000000
+	const shared = "ffffffffffffffff"
+	trace := func(n int) string { return fmt.Sprintf("%032x", n) }
+	id := func(n int) string { return fmt.Sprintf("%016x", n) }
+	if got, err := b.Span(ctx, shared); err != nil || len(got) != 0 {
+		t.Fatalf("standalone span miss control=%+v error=%v", got, err)
+	}
+	// These timestamps are between generated whole-second timestamps. A shared
+	// span ID across traces proves the intrinsic lookup needs no trace hint.
+	spans := []Span{
+		{Tenant: b.cfg.Tenant, Trace: trace(1), ID: shared, Start: base + 10},
+		{Tenant: b.cfg.Tenant, Trace: trace(2), ID: shared, Start: base + 10},
+		{Tenant: b.cfg.Tenant, Trace: trace(3), ID: shared, Start: base + 9},
+		{Tenant: b.cfg.Tenant, Trace: trace(1), ID: id(2), Start: base + 20},
+		{Tenant: b.cfg.Tenant, Trace: trace(4), ID: id(3), Start: base + 19},
+		{Tenant: b.cfg.Tenant, Trace: trace(4), ID: id(4), Start: base + 18},
+		{Tenant: b.cfg.Tenant, Trace: trace(5), ID: id(5), Start: base + 10},
+		{Tenant: (b.cfg.Tenant + 1) % b.cfg.Tenants, Trace: trace(99), ID: shared, Start: base + 11},
+	}
+	var payload strings.Builder
+	for _, span := range spans {
+		span.Attributes = []Attribute{{Scope: "span", Key: "intrinsic.fixture", Type: "string", Value: "v2"}}
+		wire, err := json.Marshal(chRow(span))
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload.Write(wire)
+		payload.WriteByte('\n')
+	}
+	if _, err := b.request(ctx, "INSERT INTO "+b.database+".spans SETTINGS async_insert=0 FORMAT JSONEachRow", []byte(payload.String()), nil); err != nil {
+		t.Fatal(err)
+	}
+	k := b.cfg.K
+	b.cfg.K = 1
+	got, err := b.Span(ctx, shared)
+	b.cfg.K = k
+	want := []SpanMatch{{Trace: trace(3), ID: shared, Start: base + 9}, {Trace: trace(1), ID: shared, Start: base + 10}, {Trace: trace(2), ID: shared, Start: base + 10}}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("standalone span matches/order with K=1: got=%+v want=%+v error=%v", got, want, err)
+	}
+	work := b.LastQueryWork()
+	if !work.ServerSummary || work.ServerReadRows < 3 || work.ServerReadBytes <= 0 {
+		t.Fatalf("span server read-work evidence unavailable: %+v", work)
+	}
+	for _, tc := range []struct {
+		window TimeRange
+		want   []Hit
+	}{
+		{TimeRange{Start: base + 10, End: base + 20}, []Hit{{Trace: trace(4), Latest: base + 19}, {Trace: trace(5), Latest: base + 10}, {Trace: trace(2), Latest: base + 10}}},
+		{TimeRange{Start: base + 10, End: base + 11}, []Hit{{Trace: trace(5), Latest: base + 10}, {Trace: trace(2), Latest: base + 10}, {Trace: trace(1), Latest: base + 10}}},
+		{TimeRange{Start: base + 9, End: base + 10}, []Hit{{Trace: trace(3), Latest: base + 9}}},
+		{TimeRange{Start: base + 20, End: base + 21}, []Hit{{Trace: trace(1), Latest: base + 20}}},
+		{TimeRange{Start: base + 20, End: base + 20}, []Hit{}},
+		{TimeRange{Start: base + 21, End: base + 22}, []Hit{}},
+	} {
+		result, err := b.Time(ctx, tc.window)
+		if err != nil || !reflect.DeepEqual(result.Hits, tc.want) {
+			t.Fatalf("intrinsic time %+v: got=%+v want=%+v error=%v", tc.window, result.Hits, tc.want, err)
+		}
+		if len(tc.want) > 0 && (!result.ServerSummary || result.ServerReadRows <= 0 || result.ServerReadBytes <= 0) {
+			t.Fatalf("time server read-work evidence unavailable: %+v", result)
+		}
+	}
+	for _, budget := range []string{"bytes", "rows"} {
+		limitedConfig := b.cfg
+		if budget == "bytes" {
+			limitedConfig.MaxBytes = 1
+		} else {
+			limitedConfig.MaxCandidates = 1
+		}
+		limited, err := OpenCH(limitedConfig, b.endpoint.String(), b.attrs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(limited.Close)
+		if _, err := limited.Span(ctx, shared); err == nil {
+			t.Fatalf("span accepted insufficient %s budget", budget)
+		}
+		if _, err := limited.Time(ctx, TimeRange{Start: base + 10, End: base + 20}); err == nil {
+			t.Fatalf("time accepted insufficient %s budget", budget)
+		}
 	}
 }

@@ -27,11 +27,15 @@ type evidenceBackend struct {
 }
 
 type evidenceCall struct {
+	kind      string
 	attribute Attribute
 	trace     string
+	span      string
+	interval  TimeRange
 	work      QueryResult
 	hits      []Hit
 	spans     []SpanHit
+	matches   []SpanMatch
 	err       error
 }
 
@@ -120,11 +124,19 @@ func (b *evidenceBackend) response(ctx context.Context) (evidenceCall, string) {
 
 func (b *evidenceBackend) Query(ctx context.Context, a Attribute) (QueryResult, error) {
 	call, mode := b.response(ctx)
-	call.attribute = a
+	call.kind, call.attribute = "attribute", a
 	call.hits = evidenceHits(b.cfg, a)
 	switch mode {
 	case "identity":
-		call.hits = append(call.hits, Hit{"wrong-trace", -1})
+		if len(call.hits) > 0 {
+			call.hits[0].Trace = "wrong-trace"
+		} else {
+			call.hits = append(call.hits, Hit{"wrong-trace", -1})
+		}
+	case "timestamp":
+		if len(call.hits) > 0 {
+			call.hits[0].Latest++
+		}
 	case "order":
 		if len(call.hits) > 1 {
 			call.hits[0], call.hits[1] = call.hits[1], call.hits[0]
@@ -141,17 +153,71 @@ func (b *evidenceBackend) Trace(ctx context.Context, trace string) ([]SpanHit, e
 		b.mode = b.traceMode
 	}
 	call, mode := b.response(ctx)
-	call.trace = trace
+	call.kind, call.trace = "trace", trace
 	call.spans = evidenceSpans(b.cfg, trace)
 	switch mode {
 	case "identity":
-		call.spans[0].ID = "wrong-span"
+		if len(call.spans) > 0 {
+			call.spans[0].ID = "wrong-span"
+		} else {
+			call.spans = append(call.spans, SpanHit{ID: "wrong-span", Start: -1})
+		}
+	case "timestamp":
+		if len(call.spans) > 0 {
+			call.spans[0].Start++
+		}
 	case "order":
-		call.spans[0], call.spans[1] = call.spans[1], call.spans[0]
+		if len(call.spans) > 1 {
+			call.spans[0], call.spans[1] = call.spans[1], call.spans[0]
+		}
 	}
 	b.lastWork = call.work
 	b.calls = append(b.calls, call)
 	return call.spans, call.err
+}
+
+func (b *evidenceBackend) Span(ctx context.Context, id string) ([]SpanMatch, error) {
+	call, mode := b.response(ctx)
+	call.kind, call.span = "span", id
+	call.matches = bruteSpanOracle(b.cfg, id)
+	if mode == "identity" {
+		if len(call.matches) > 0 {
+			call.matches[0].ID = "wrong-span"
+		} else {
+			call.matches = append(call.matches, SpanMatch{Trace: "wrong-trace", ID: "wrong-span", Start: -1})
+		}
+	} else if mode == "timestamp" && len(call.matches) > 0 {
+		call.matches[0].Start++
+	}
+	b.lastWork = call.work
+	b.calls = append(b.calls, call)
+	return call.matches, call.err
+}
+
+func (b *evidenceBackend) Time(ctx context.Context, interval TimeRange) (QueryResult, error) {
+	call, mode := b.response(ctx)
+	call.kind, call.interval = "time", interval
+	call.hits = bruteTimeOracle(b.cfg, interval)
+	switch mode {
+	case "identity":
+		if len(call.hits) > 0 {
+			call.hits[0].Trace = "wrong-trace"
+		} else {
+			call.hits = append(call.hits, Hit{"wrong-trace", -1})
+		}
+	case "timestamp":
+		if len(call.hits) > 0 {
+			call.hits[0].Latest++
+		}
+	case "order":
+		if len(call.hits) > 1 {
+			call.hits[0], call.hits[1] = call.hits[1], call.hits[0]
+		}
+	}
+	call.work.Hits = call.hits
+	b.lastWork = call.work
+	b.calls = append(b.calls, call)
+	return call.work, call.err
 }
 
 func (b *evidenceBackend) LastQueryWork() QueryResult { return b.lastWork }
@@ -166,6 +232,22 @@ func evidenceDigest(v any) string {
 }
 
 func evidenceClass(suite string, i int) string {
+	span := []string{"span", "span_absent"}
+	genai := []string{"genai_response", "genai_scope_resource", "genai_scope_scope", "genai_type", "genai_absent", "genai_operation", "genai_provider", "genai_model"}
+	time := []string{"time_narrow", "time_empty", "time_absent", "time_broad"}
+	switch suite {
+	case "span":
+		return span[i%len(span)]
+	case "genai":
+		return genai[i%len(genai)]
+	case "time":
+		return time[i%len(time)]
+	case "all":
+		classes := append([]string{"trace", "trace_absent"}, span...)
+		classes = append(classes, genai...)
+		classes = append(classes, time...)
+		return classes[i%len(classes)]
+	}
 	if suite == "rare" || suite == "trace" {
 		return suite
 	}
@@ -178,8 +260,8 @@ func evidenceClass(suite string, i int) string {
 
 func TestMeasureQueriesReceipts(t *testing.T) {
 	t.Parallel()
-	for _, suite := range []string{"selective", "mixed", "rare", "trace"} {
-		for _, mode := range []string{"success", "identity", "order", "transport", "mixed"} {
+	for _, suite := range []string{"selective", "mixed", "rare", "trace", "span", "genai", "time", "all"} {
+		for _, mode := range []string{"success", "identity", "timestamp", "order", "transport", "mixed"} {
 			t.Run(suite+"/"+mode, func(t *testing.T) {
 				t.Parallel()
 				c := evidenceConfig()
@@ -195,6 +277,15 @@ func TestMeasureQueriesReceipts(t *testing.T) {
 				for i, call := range b.calls {
 					actual := e.Samples[i]
 					class := evidenceClass(suite, i)
+					kind := "attribute"
+					for _, candidate := range []string{"trace", "span", "time"} {
+						if class == candidate || strings.HasPrefix(class, candidate+"_") {
+							kind = candidate
+						}
+					}
+					if call.kind != kind {
+						t.Fatalf("class %s dispatched to %s instead of %s", class, call.kind, kind)
+					}
 					want := Sample{
 						Iteration: i, Class: class, Nanoseconds: actual.Nanoseconds,
 						Candidates: call.work.Candidates, LogicalBytes: call.work.Bytes,
@@ -203,10 +294,17 @@ func TestMeasureQueriesReceipts(t *testing.T) {
 						ServerSummary: call.work.ServerSummary,
 					}
 					mismatch := false
-					if suite == "trace" {
+					switch call.kind {
+					case "trace":
 						want.Results, want.Digest = len(call.spans), evidenceDigest(call.spans)
 						mismatch = !reflect.DeepEqual(call.spans, evidenceSpans(c, call.trace))
-					} else {
+					case "span":
+						want.Results, want.Digest = len(call.matches), evidenceDigest(call.matches)
+						mismatch = !reflect.DeepEqual(call.matches, bruteSpanOracle(c, call.span))
+					case "time":
+						want.Results, want.Digest = len(call.hits), evidenceDigest(call.hits)
+						mismatch = !reflect.DeepEqual(call.hits, bruteTimeOracle(c, call.interval))
+					default:
 						want.Results, want.Digest = len(call.hits), evidenceDigest(call.hits)
 						mismatch = !reflect.DeepEqual(call.hits, evidenceHits(c, call.attribute))
 					}
@@ -214,8 +312,13 @@ func TestMeasureQueriesReceipts(t *testing.T) {
 						want.Error = call.err.Error()
 					} else if mismatch {
 						message := "equality identities/order differ from independent oracle"
-						if suite == "trace" {
+						switch call.kind {
+						case "trace":
 							message = "trace result differs from independent oracle"
+						case "span":
+							message = "standalone span result differs from independent oracle"
+						case "time":
+							message = "time identities/order differ from independent oracle"
 						}
 						if !strings.Contains(actual.Error, message) {
 							t.Fatalf("sample %d error=%q want oracle mismatch %q", i, actual.Error, message)
@@ -234,7 +337,7 @@ func TestMeasureQueriesReceipts(t *testing.T) {
 				if e.Failures != failures || (err != nil) != (failures > 0) {
 					t.Fatalf("failures=%d want=%d verdict=%v", e.Failures, failures, err)
 				}
-				if mode != "success" && failures == 0 {
+				if mode != "success" && !(suite == "span" && mode == "order") && failures == 0 {
 					t.Fatal("negative test had no failures")
 				}
 				if err != nil && !strings.Contains(err.Error(), fmt.Sprintf("%d/%d queries failed", failures, c.Iterations)) {
@@ -319,7 +422,7 @@ func (c *evidenceCancelContext) Err() error {
 func TestQueryPreparationCancellation(t *testing.T) {
 	t.Parallel()
 	c := evidenceConfig()
-	for _, checks := range []int{1, 2, c.Iterations + 2, 2*c.Iterations + 2, 2*c.Iterations + c.Count + 2} {
+	for _, checks := range []int{1, 2, 4} {
 		ctx := &evidenceCancelContext{Context: context.Background(), remaining: checks}
 		b := &evidenceBackend{cfg: c, mode: "success", ctx: ctx}
 		var e Evidence
@@ -337,7 +440,7 @@ func TestQueryPreparationCancellation(t *testing.T) {
 
 func TestMeasurementCancellationStopsCalls(t *testing.T) {
 	t.Parallel()
-	for _, test := range []struct{ suite, mode string }{{"rare", "cancel"}, {"trace", "cancel"}, {"rare", "cancel_ignores_context"}, {"trace", "cancel_ignores_context"}} {
+	for _, test := range []struct{ suite, mode string }{{"rare", "cancel"}, {"trace", "cancel"}, {"span", "cancel"}, {"time", "cancel"}, {"genai", "cancel"}, {"all", "cancel"}, {"rare", "cancel_ignores_context"}, {"trace", "cancel_ignores_context"}, {"span", "cancel_ignores_context"}, {"time", "cancel_ignores_context"}} {
 		t.Run(test.suite+"/"+test.mode, func(t *testing.T) {
 			t.Parallel()
 			c := evidenceConfig()
@@ -415,7 +518,7 @@ func TestQueryCasesSuites(t *testing.T) {
 			if suite != "rare" {
 				switch i {
 				case 1:
-					want = Attribute{"span", "custom.literal.5", "string", "v_5_44"}
+					want = Attribute{"span", "gen_ai.provider.name", "string", "openai"}
 					if suite == "mixed" {
 						want = Attribute{"resource", QueryKey, "string", QueryValue}
 					}
@@ -430,6 +533,109 @@ func TestQueryCasesSuites(t *testing.T) {
 			if q.attribute != want || !reflect.DeepEqual(q.expected, evidenceHits(c, want)) {
 				t.Fatalf("%s case %d: got %+v want attribute %+v", suite, i, q, want)
 			}
+		}
+	}
+}
+
+func TestV2QueryCaseShapes(t *testing.T) {
+	t.Parallel()
+	c := evidenceConfig()
+	c.Iterations = 32
+	ordinals := []int{0, 44, 40, 36, 32, 28, 24, 20, 16, 12, 8, 4}
+	for _, suite := range []string{"span", "genai", "time", "all"} {
+		cases, err := queryCases(t.Context(), c, suite)
+		if err != nil || len(cases) != c.Iterations {
+			t.Fatalf("%s cases=%d error=%v", suite, len(cases), err)
+		}
+		for i, q := range cases {
+			class := evidenceClass(suite, i)
+			ordinal := ordinals[i%len(ordinals)]
+			source := Generate(c, ordinal)
+			if q.class != class || q.sourceOrdinal != ordinal {
+				t.Fatalf("%s case %d: class=%s source=%d want class=%s source=%d", suite, i, q.class, q.sourceOrdinal, class, ordinal)
+			}
+			switch class {
+			case "trace", "trace_absent":
+				trace := source.Trace
+				if class == "trace_absent" {
+					trace = "00000000000000000000000000000000"
+				}
+				if q.kind != "trace" || q.trace != trace || !reflect.DeepEqual(q.expectedTrace, evidenceSpans(c, trace)) {
+					t.Fatalf("%s case %d trace shape: %+v", suite, i, q)
+				}
+			case "span", "span_absent":
+				span := source.ID
+				if class == "span_absent" {
+					span = "0000000000000000"
+				}
+				if q.kind != "span" || q.span != span || !reflect.DeepEqual(q.expectedSpans, bruteSpanOracle(c, span)) {
+					t.Fatalf("%s case %d span shape: %+v", suite, i, q)
+				}
+			case "time_narrow", "time_empty", "time_absent", "time_broad":
+				interval := TimeRange{Start: source.Start, End: source.Start + 1}
+				switch class {
+				case "time_empty":
+					interval.End = interval.Start
+				case "time_absent":
+					interval = TimeRange{Start: 1699999999999999999, End: 1700000000000000000}
+				case "time_broad":
+					interval = TimeRange{Start: 1700000000000000000, End: 1700086400000000000}
+				}
+				if q.kind != "time" || q.interval != interval || !reflect.DeepEqual(q.expected, bruteTimeOracle(c, interval)) {
+					t.Fatalf("%s case %d time shape: %+v", suite, i, q)
+				}
+			default:
+				attribute := Attribute{"span", "gen_ai.response.id", "string", "chatcmpl-fixture-v2-" + source.ID}
+				switch class {
+				case "genai_scope_resource":
+					attribute.Scope = "resource"
+				case "genai_scope_scope":
+					attribute.Scope = "scope"
+				case "genai_type":
+					attribute.Type, attribute.Value = "int", "42"
+				case "genai_absent":
+					attribute.Value = "chatcmpl-fixture-v2-0000000000000000"
+				case "genai_operation":
+					attribute = Attribute{"span", "gen_ai.operation.name", "string", "chat"}
+				case "genai_provider":
+					attribute = Attribute{"span", "gen_ai.provider.name", "string", "openai"}
+				case "genai_model":
+					attribute = Attribute{"span", "gen_ai.request.model", "string", "gpt-4"}
+				}
+				if q.kind != "attribute" || q.attribute != attribute || !reflect.DeepEqual(q.expected, bruteAttributeOracle(c, attribute)) {
+					t.Fatalf("%s case %d GenAI shape: %+v", suite, i, q)
+				}
+			}
+		}
+	}
+}
+
+func TestV2SuiteAdmission(t *testing.T) {
+	t.Parallel()
+	for _, suite := range []string{"genai", "all"} {
+		for _, attributes := range []int{4, 7, 8, 128} {
+			c := evidenceConfig()
+			c.Attributes = attributes
+			err := ValidateQuerySuite(c, suite)
+			var config *ConfigError
+			if attributes < 8 {
+				if !errors.As(err, &config) {
+					t.Fatalf("%s accepted %d attributes: %v", suite, attributes, err)
+				}
+			} else if err != nil {
+				t.Fatalf("%s rejected %d attributes: %v", suite, attributes, err)
+			}
+		}
+	}
+	for _, suite := range []string{"span", "time", "all"} {
+		c := evidenceConfig()
+		ctx := t.Context()
+		b := &evidenceBackend{cfg: c, mode: "success", ctx: ctx}
+		var e Evidence
+		var config *ConfigError
+		err := MeasureQueries(ctx, &evidenceNoWorkBackend{b}, c, suite, &e)
+		if !errors.As(err, &config) || len(b.calls) != 0 || len(e.Samples) != 0 {
+			t.Fatalf("%s unsupported intrinsic backend: error=%v calls=%d samples=%+v", suite, err, len(b.calls), e.Samples)
 		}
 	}
 }

@@ -121,12 +121,15 @@ func (b *CHBackend) requestWithSummary(ctx context.Context, sql string, payload 
 		return nil, chSummary{}, wrap("http", "request", err)
 	}
 	defer resp.Body.Close()
-	wire, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	wire, err := io.ReadAll(io.LimitReader(resp.Body, (32<<20)+1))
 	if err != nil {
 		return nil, chSummary{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, chSummary{}, failf("http", "request", "ClickHouse HTTP status %d: %.4096s", resp.StatusCode, wire)
+	}
+	if len(wire) > 32<<20 {
+		return nil, chSummary{}, fail("budget", "CH response", "HTTP response exceeds 32MiB cap")
 	}
 	summary, summaryErr := parseSummary(resp.Header.Get("X-ClickHouse-Summary"))
 	if summaryErr != nil {
@@ -212,7 +215,7 @@ func (b *CHBackend) Ingest(ctx context.Context) (stats Statistics, retErr error)
 		return Statistics{}, err
 	}
 	initialized = true
-	schema := "CREATE TABLE " + b.database + `.spans (ordinal UInt64,tenant UInt32,service LowCardinality(String),day Date,ts_ns Int64,trace_id String,span_id String,attrs Map(String,String) CODEC(ZSTD(1)),terms Array(Tuple(String,String,String,String)) CODEC(ZSTD(1)),source String CODEC(ZSTD(1)), INDEX trace_bf trace_id TYPE bloom_filter(0.01) GRANULARITY 1, INDEX attrs_k mapKeys(attrs) TYPE bloom_filter(0.01) GRANULARITY 1, INDEX attrs_v mapValues(attrs) TYPE bloom_filter(0.01) GRANULARITY 1, PROJECTION by_trace (SELECT tenant,trace_id,span_id,ts_ns ORDER BY (tenant,trace_id,span_id))) ENGINE=MergeTree PARTITION BY day ORDER BY (tenant,service,ts_ns,trace_id,span_id)`
+	schema := "CREATE TABLE " + b.database + `.spans (ordinal UInt64,tenant UInt32,service LowCardinality(String),day Date,ts_ns Int64,trace_id String,span_id String,attrs Map(String,String) CODEC(ZSTD(1)),terms Array(Tuple(String,String,String,String)) CODEC(ZSTD(1)),source String CODEC(ZSTD(1)), INDEX trace_bf trace_id TYPE bloom_filter(0.01) GRANULARITY 1, INDEX attrs_k mapKeys(attrs) TYPE bloom_filter(0.01) GRANULARITY 1, INDEX attrs_v mapValues(attrs) TYPE bloom_filter(0.01) GRANULARITY 1, PROJECTION by_trace (SELECT tenant,trace_id,span_id,ts_ns ORDER BY (tenant,trace_id,span_id)), PROJECTION by_span (SELECT tenant,span_id,ts_ns,trace_id ORDER BY (tenant,span_id,ts_ns,trace_id)), PROJECTION by_time (SELECT tenant,ts_ns,trace_id,span_id ORDER BY (tenant,ts_ns,trace_id,span_id))) ENGINE=MergeTree PARTITION BY day ORDER BY (tenant,service,ts_ns,trace_id,span_id)`
 	if err := b.exec(ctx, schema); err != nil {
 		return Statistics{}, err
 	}
@@ -268,6 +271,14 @@ func (b *CHBackend) readWorkSettings() string {
 
 func (b *CHBackend) traceSQL(trace string) (string, map[string]string) {
 	return "SELECT span_id,ts_ns FROM " + b.database + ".spans WHERE tenant={tenant:UInt32} AND trace_id={trace:String} ORDER BY ts_ns,span_id LIMIT " + strconv.Itoa(b.cfg.MaxCandidates+1) + " SETTINGS optimize_use_projections=1," + b.readWorkSettings() + " FORMAT JSONEachRow", map[string]string{"tenant": strconv.Itoa(b.cfg.Tenant), "trace": trace}
+}
+
+func (b *CHBackend) spanSQL(id string) (string, map[string]string) {
+	return "SELECT trace_id,span_id,ts_ns FROM " + b.database + ".spans WHERE tenant={tenant:UInt32} AND span_id={span:String} ORDER BY ts_ns,trace_id,span_id LIMIT " + strconv.Itoa(b.cfg.MaxCandidates+1) + " SETTINGS optimize_use_projections=1,optimize_read_in_order=1," + b.readWorkSettings() + " FORMAT JSONEachRow", map[string]string{"tenant": strconv.Itoa(b.cfg.Tenant), "span": id}
+}
+
+func (b *CHBackend) timeSQL(window TimeRange) (string, map[string]string) {
+	return "SELECT trace_id,ts_ns AS latest FROM " + b.database + ".spans WHERE tenant={tenant:UInt32} AND ts_ns>={start:Int64} AND ts_ns<{end:Int64} ORDER BY ts_ns DESC,trace_id DESC,span_id DESC LIMIT 1 BY trace_id LIMIT " + strconv.Itoa(b.cfg.K) + " SETTINGS optimize_use_projections=1,optimize_read_in_order=1," + b.readWorkSettings() + " FORMAT JSONEachRow", map[string]string{"tenant": strconv.Itoa(b.cfg.Tenant), "start": strconv.FormatInt(window.Start, 10), "end": strconv.FormatInt(window.End, 10)}
 }
 
 func (b *CHBackend) querySQL(a Attribute) (string, map[string]string) {
@@ -351,6 +362,87 @@ func (b *CHBackend) Trace(ctx context.Context, trace string) ([]SpanHit, error) 
 	}
 	if len(out) > b.cfg.MaxCandidates {
 		return nil, fail("budget", "CH trace", "trace row limit exceeded")
+	}
+	return out, nil
+}
+
+// Span looks up a span ID without a trace hint. IDs are not assumed globally
+// unique: all tenant-local matches are returned or the work budget fails.
+func (b *CHBackend) Span(ctx context.Context, id string) ([]SpanMatch, error) {
+	b.lastWork = QueryResult{}
+	if err := b.readManifest(ctx, true); err != nil {
+		return nil, err
+	}
+	sql, params := b.spanSQL(id)
+	wire, summary, err := b.requestWithSummary(ctx, sql, nil, params)
+	if err != nil {
+		return nil, err
+	}
+	b.lastWork = QueryResult{ServerReadRows: summary.ReadRows, ServerReadBytes: summary.ReadBytes, ServerElapsed: summary.Elapsed, ResponseBytes: int64(len(wire)), ServerSummary: summary.Present}
+	out := []SpanMatch{}
+	for _, line := range bytes.Split(bytes.TrimSpace(wire), []byte{'\n'}) {
+		if err := ctx.Err(); err != nil {
+			return nil, wrap("canceled", "span result", err)
+		}
+		if len(line) == 0 {
+			continue
+		}
+		var row struct {
+			Trace string      `json:"trace_id"`
+			ID    string      `json:"span_id"`
+			Start json.Number `json:"ts_ns"`
+		}
+		if err := json.Unmarshal(line, &row); err != nil {
+			return nil, wrap("corruption", "span result", err)
+		}
+		start, err := strconv.ParseInt(string(row.Start), 10, 64)
+		if err != nil {
+			return nil, wrap("corruption", "span timestamp", err)
+		}
+		out = append(out, SpanMatch{Trace: row.Trace, ID: row.ID, Start: start})
+		if len(out) > b.cfg.MaxCandidates {
+			return nil, fail("budget", "CH span", "span row limit exceeded")
+		}
+	}
+	return out, nil
+}
+
+// Time returns newest distinct traces using timestamps within the half-open
+// interval only; a newer span outside the interval cannot affect the answer.
+func (b *CHBackend) Time(ctx context.Context, window TimeRange) (QueryResult, error) {
+	b.lastWork = QueryResult{}
+	if err := window.Validate(); err != nil {
+		return QueryResult{}, err
+	}
+	if err := b.readManifest(ctx, true); err != nil {
+		return QueryResult{}, err
+	}
+	sql, params := b.timeSQL(window)
+	wire, summary, err := b.requestWithSummary(ctx, sql, nil, params)
+	if err != nil {
+		return QueryResult{}, err
+	}
+	out := QueryResult{Hits: []Hit{}, ServerReadRows: summary.ReadRows, ServerReadBytes: summary.ReadBytes, ServerElapsed: summary.Elapsed, ResponseBytes: int64(len(wire)), ServerSummary: summary.Present}
+	b.lastWork = out
+	for _, line := range bytes.Split(bytes.TrimSpace(wire), []byte{'\n'}) {
+		if err := ctx.Err(); err != nil {
+			return out, wrap("canceled", "time result", err)
+		}
+		if len(line) == 0 {
+			continue
+		}
+		var row struct {
+			Trace  string      `json:"trace_id"`
+			Latest json.Number `json:"latest"`
+		}
+		if err := json.Unmarshal(line, &row); err != nil {
+			return out, wrap("corruption", "time result", err)
+		}
+		latest, err := strconv.ParseInt(string(row.Latest), 10, 64)
+		if err != nil {
+			return out, wrap("corruption", "time timestamp", err)
+		}
+		out.Hits = append(out.Hits, Hit{Trace: row.Trace, Latest: latest})
 	}
 	return out, nil
 }
@@ -492,12 +584,56 @@ func (b *CHBackend) Audit(ctx context.Context) (Statistics, error) {
 		return stats, err
 	}
 	stats.Details["trace_query_explain"] = string(tracePlan)
-	projectionBytes, err := b.request(ctx, "SELECT toString(sum(bytes_on_disk)) AS disk,toString(sum(data_uncompressed_bytes)) AS logical FROM system.projection_parts WHERE database={db:String} AND active FORMAT JSONEachRow", nil, map[string]string{"db": b.database})
+	sample := Generate(b.cfg, 2*b.cfg.Tenant)
+	spanSQL, spanParams := b.spanSQL(sample.ID)
+	spanPlan, err := b.request(ctx, "EXPLAIN indexes=1 "+strings.TrimSuffix(spanSQL, " FORMAT JSONEachRow"), nil, spanParams)
 	if err != nil {
 		return stats, err
 	}
+	stats.Details["span_query_explain"] = string(spanPlan)
+	timeSQL, timeParams := b.timeSQL(TimeRange{Start: sample.Start, End: sample.Start + 1})
+	timePlan, err := b.request(ctx, "EXPLAIN indexes=1 "+strings.TrimSuffix(timeSQL, " FORMAT JSONEachRow"), nil, timeParams)
+	if err != nil {
+		return stats, err
+	}
+	stats.Details["time_query_explain"] = string(timePlan)
+	projectionBytes, err := b.request(ctx, "SELECT name,toString(sum(rows)) AS rows,toString(sum(bytes_on_disk)) AS disk,toString(sum(data_uncompressed_bytes)) AS logical FROM system.projection_parts WHERE database={db:String} AND table='spans' AND active GROUP BY name FORMAT JSONEachRow", nil, map[string]string{"db": b.database})
+	if err != nil {
+		return stats, err
+	}
+	projections := map[string]bool{}
+	for _, line := range bytes.Split(bytes.TrimSpace(projectionBytes), []byte{'\n'}) {
+		if len(line) == 0 {
+			continue
+		}
+		var row struct{ Name, Rows, Disk, Logical string }
+		if err := json.Unmarshal(line, &row); err != nil {
+			return stats, wrap("audit", "projection parts", err)
+		}
+		rows, err := strconv.ParseInt(row.Rows, 10, 64)
+		if err != nil {
+			return stats, wrap("audit", "projection rows", err)
+		}
+		disk, err := strconv.ParseInt(row.Disk, 10, 64)
+		if err != nil {
+			return stats, wrap("audit", "projection bytes", err)
+		}
+		logical, err := strconv.ParseInt(row.Logical, 10, 64)
+		if err != nil {
+			return stats, wrap("audit", "projection logical bytes", err)
+		}
+		if projections[row.Name] || rows != stats.Rows || disk <= 0 || logical <= 0 {
+			return stats, failf("audit", "projection census", "invalid projection %q: rows=%d disk=%d logical=%d", row.Name, rows, disk, logical)
+		}
+		projections[row.Name] = true
+	}
+	for _, name := range []string{"by_trace", "by_span", "by_time"} {
+		if !projections[name] {
+			return stats, failf("audit", "projection census", "missing %s", name)
+		}
+	}
 	stats.Details["projection_parts_bytes"] = strings.TrimSpace(string(projectionBytes))
-	stats.Details["projection_accounting"] = "by_trace created before loading; report projection_parts separately and verify whether parent system.parts already includes these bytes before summing"
+	stats.Details["projection_accounting"] = "by_trace, by_span and by_time are built synchronously during every source INSERT; report observed system.parts totals and all three named projection_parts components separately; verify whether parent totals include projection files before adding or comparing totals"
 	if b.attrs && stats.Structures["attr_lookup"].Keys != stats.Attributes {
 		return stats, fail("audit", "posting census", "CH attribute destination row census mismatch")
 	}
