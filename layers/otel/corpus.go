@@ -1,0 +1,352 @@
+// Package otel implements an immutable-span storage experiment, not an OTLP service.
+package otel
+
+import (
+	"container/heap"
+	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"sort"
+)
+
+const (
+	ToolVersion = "otelbench-v1"
+	QueryKey    = "customer.incident_key_283"
+	QueryValue  = "283"
+)
+
+type Config struct {
+	Run           string `json:"run"`
+	Backend       string `json:"backend"`
+	Seed          uint64 `json:"seed"`
+	Count         int    `json:"count"`
+	Tenants       int    `json:"tenants"`
+	Attributes    int    `json:"attributes"`
+	MatchEvery    int    `json:"match_every"`
+	Batch         int    `json:"batch"`
+	SaveMode      string `json:"save_mode"`
+	CHBatch       int    `json:"ch_batch"`
+	CHBatchBytes  int    `json:"ch_batch_bytes"`
+	Tenant        int    `json:"tenant"`
+	K             int    `json:"k"`
+	Iterations    int    `json:"iterations"`
+	MaxCandidates int    `json:"max_candidates"`
+	MaxBytes      int64  `json:"max_bytes"`
+	HashBytes     int    `json:"hash_bytes"`
+	Order         string `json:"order"`
+}
+
+func DefaultConfig() Config {
+	return Config{Seed: 283, Count: 10000, Tenants: 10, Attributes: 8, MatchEvery: 100, Batch: 32, SaveMode: "pipelined", CHBatch: 8192, CHBatchBytes: 8 << 20, K: 100, Iterations: 20, MaxCandidates: 20000, MaxBytes: 4 << 20, HashBytes: 32, Order: "trace"}
+}
+
+func (c Config) Validate() error {
+	if !regexp.MustCompile(`^[a-z0-9_]{8,48}$`).MatchString(c.Run) {
+		return fail("config", "namespace", "run must be an explicit fresh 8..48 character lowercase alphanumeric/underscore namespace")
+	}
+	if c.Count < 1 || c.Count > 100000000 || c.Tenants < 1 || c.Tenants > (c.Count+1)/2 || c.Attributes < 4 || c.Attributes > 128 || c.MatchEvery < 1 || c.Batch < 1 || c.Batch > 64 || (c.SaveMode != "serial" && c.SaveMode != "pipelined") || c.CHBatch < 1 || c.CHBatch > 65536 || c.CHBatchBytes < 1 || c.CHBatchBytes > 64<<20 || c.Tenant < 0 || c.Tenant >= c.Tenants || c.K < 1 || c.K > 10000 || c.Iterations < 1 || c.Iterations > 100000 || c.MaxCandidates < 1 || c.MaxCandidates > 100000000 || c.MaxBytes < 1 || c.HashBytes < 1 || c.HashBytes > 32 || (c.Order != "trace" && c.Order != "time") {
+		return fail("config", "bounds", "invalid corpus/query bounds")
+	}
+	return nil
+}
+
+type Attribute struct {
+	Scope string `json:"scope"`
+	Key   string `json:"key"`
+	Type  string `json:"type"`
+	Value string `json:"value"`
+}
+type Span struct {
+	Ordinal    int         `json:"ordinal"`
+	Tenant     int         `json:"tenant"`
+	Trace      string      `json:"trace_id"`
+	ID         string      `json:"span_id"`
+	Start      int64       `json:"start_ns"`
+	Attributes []Attribute `json:"attributes"`
+}
+type Hit struct {
+	Trace  string `json:"trace_id"`
+	Latest int64  `json:"latest"`
+}
+type SpanHit struct {
+	ID    string `json:"span_id"`
+	Start int64  `json:"start_ns"`
+}
+type QueryResult struct {
+	Hits            []Hit `json:"hits"`
+	Candidates      int   `json:"candidates"`
+	Bytes           int64 `json:"logical_read_bytes"`
+	ServerReadRows  int64 `json:"server_read_rows,omitempty"`
+	ServerReadBytes int64 `json:"server_read_bytes,omitempty"`
+	ServerElapsed   int64 `json:"server_elapsed_ns,omitempty"`
+	ResponseBytes   int64 `json:"http_response_bytes,omitempty"`
+	ServerSummary   bool  `json:"server_summary_available"`
+}
+
+func randomWord(seed uint64, domain string, i int) [32]byte {
+	var b [16]byte
+	binary.BigEndian.PutUint64(b[:8], seed)
+	binary.BigEndian.PutUint64(b[8:], uint64(i))
+	return sha256.Sum256(append([]byte(domain), b[:]...))
+}
+
+// Generate uses counter-based hashes and makes two spans per trace, including
+// ties, scope/type lookalikes and a guaranteed absent query value.
+func Generate(c Config, i int) Span {
+	traceOrdinal := i / 2
+	tr := randomWord(c.Seed, "trace", traceOrdinal)
+	id := randomWord(c.Seed, "span", i)
+	ts := randomWord(c.Seed, "time", i)
+	s := Span{Ordinal: i, Tenant: traceOrdinal % c.Tenants, Trace: hex.EncodeToString(tr[:16]), ID: hex.EncodeToString(id[:8]), Start: 1700000000000000000 + int64(binary.BigEndian.Uint64(ts[:8])%86400)*1000000000}
+	value := "other_" + fmt.Sprint(traceOrdinal)
+	if (traceOrdinal/c.Tenants)%c.MatchEvery == 0 {
+		value = QueryValue
+	}
+	s.Attributes = []Attribute{{"span", QueryKey, "string", value}, {"resource", QueryKey, "string", QueryValue}, {"scope", QueryKey, "string", QueryValue}, {"span", QueryKey + ".int", "int", QueryValue}}
+	// Some spans carry the identical literal key with an integer instead: they
+	// must never satisfy a string query, even if a digest is deliberately short.
+	if (traceOrdinal/c.Tenants)%c.MatchEvery != 0 && i%3 == 0 {
+		s.Attributes[0] = Attribute{"span", QueryKey, "int", QueryValue}
+	}
+	for j := 4; j < c.Attributes; j++ {
+		s.Attributes = append(s.Attributes, Attribute{"span", fmt.Sprintf("custom.literal.%d", j), "string", fmt.Sprintf("v_%d_%d", j, i%97)})
+	}
+	return s
+}
+
+// Expected deliberately inspects source fixture fields directly: no OTLP
+// extractor, digest, FDB key, or ClickHouse encoded-map key is shared with it.
+func Expected(c Config, scope, key, typ, value string) []Hit {
+	out, _ := ExpectedContext(context.Background(), c, scope, key, typ, value)
+	return out
+}
+
+func ExpectedContext(ctx context.Context, c Config, scope, key, typ, value string) ([]Hit, error) {
+	latest := map[string]int64{}
+	for i := 0; i < c.Count; i++ {
+		if err := ctx.Err(); err != nil {
+			return nil, wrap("canceled", "oracle scan", err)
+		}
+		s := Generate(c, i)
+		if s.Tenant != c.Tenant {
+			continue
+		}
+		for _, a := range s.Attributes {
+			if a.Scope == scope && a.Key == key && a.Type == typ && a.Value == value {
+				if prev, ok := latest[s.Trace]; !ok || s.Start > prev {
+					latest[s.Trace] = s.Start
+				}
+				break
+			}
+		}
+	}
+	return oracleTopKContext(ctx, latest, c.K)
+}
+
+// oracleTopK independently implements the declared result order; backend sort
+// bugs must not become their own expected answer.
+type oracleHeap []Hit
+
+func (h oracleHeap) Len() int { return len(h) }
+func (h oracleHeap) Less(i, j int) bool {
+	a, b := h[i], h[j]
+	return a.Latest < b.Latest || (a.Latest == b.Latest && a.Trace < b.Trace)
+}
+func (h oracleHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h *oracleHeap) Push(v any)   { *h = append(*h, v.(Hit)) }
+func (h *oracleHeap) Pop() any {
+	old := *h
+	v := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return v
+}
+
+func oracleTopK(m map[string]int64, k int) []Hit {
+	out, _ := oracleTopKContext(context.Background(), m, k)
+	return out
+}
+
+func oracleTopKContext(ctx context.Context, m map[string]int64, k int) ([]Hit, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, wrap("canceled", "oracle topK", err)
+	}
+	if k < 1 {
+		return nil, fail("config", "oracle topK", "positive K required")
+	}
+	h := oracleHeap{}
+	for id, ns := range m {
+		if err := ctx.Err(); err != nil {
+			return nil, wrap("canceled", "oracle topK", err)
+		}
+		candidate := Hit{Trace: id, Latest: ns}
+		if h.Len() < k {
+			heap.Push(&h, candidate)
+		} else {
+			worst := h[0]
+			if ns > worst.Latest || (ns == worst.Latest && id > worst.Trace) {
+				heap.Pop(&h)
+				heap.Push(&h, candidate)
+			}
+		}
+	}
+	out := make([]Hit, h.Len())
+	for i := len(out) - 1; i >= 0; i-- {
+		if err := ctx.Err(); err != nil {
+			return nil, wrap("canceled", "oracle topK", err)
+		}
+		out[i] = heap.Pop(&h).(Hit)
+	}
+	return out, nil
+}
+
+func oracleTraceSort(out []SpanHit) {
+	for i := 1; i < len(out); i++ {
+		v := out[i]
+		j := i
+		for j > 0 {
+			p := out[j-1]
+			if p.Start < v.Start || (p.Start == v.Start && p.ID <= v.ID) {
+				break
+			}
+			out[j] = p
+			j--
+		}
+		out[j] = v
+	}
+}
+
+func sortedHits(m map[string]int64, k int) []Hit {
+	out := make([]Hit, 0, len(m))
+	for tr, t := range m {
+		out = append(out, Hit{tr, t})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Latest != out[j].Latest {
+			return out[i].Latest > out[j].Latest
+		}
+		return out[i].Trace > out[j].Trace
+	})
+	if len(out) > k {
+		out = out[:k]
+	}
+	return out
+}
+
+func ExpectedTrace(c Config, trace string) []SpanHit {
+	out, _ := ExpectedTraceContext(context.Background(), c, trace)
+	return out
+}
+
+func ExpectedTraceContext(ctx context.Context, c Config, trace string) ([]SpanHit, error) {
+	out := []SpanHit{}
+	for i := 0; i < c.Count; i++ {
+		if err := ctx.Err(); err != nil {
+			return nil, wrap("canceled", "oracle scan", err)
+		}
+		s := Generate(c, i)
+		if s.Tenant == c.Tenant && s.Trace == trace {
+			out = append(out, SpanHit{s.ID, s.Start})
+		}
+	}
+	oracleTraceSort(out)
+	return out, ctx.Err()
+}
+
+func sortSpanHits(s []SpanHit) {
+	sort.Slice(s, func(i, j int) bool {
+		if s[i].Start != s[j].Start {
+			return s[i].Start < s[j].Start
+		}
+		return s[i].ID < s[j].ID
+	})
+}
+
+func sameJSON(a, b any) bool {
+	x, _ := json.Marshal(a)
+	y, _ := json.Marshal(b)
+	return string(x) == string(y)
+}
+
+func mapKey(a Attribute) string {
+	b, _ := json.Marshal([]string{a.Scope, a.Key, a.Type})
+	return string(b)
+}
+
+func equalSpan(a, b Span) bool {
+	sortAttrs := func(s *Span) {
+		sort.Slice(s.Attributes, func(i, j int) bool {
+			x, y := s.Attributes[i], s.Attributes[j]
+			if x.Scope != y.Scope {
+				return x.Scope < y.Scope
+			}
+			if x.Key != y.Key {
+				return x.Key < y.Key
+			}
+			return x.Type < y.Type
+		})
+	}
+	sortAttrs(&a)
+	sortAttrs(&b)
+	return sameJSON(a, b)
+}
+
+type ordinalSet struct {
+	bits  []uint64
+	count int
+}
+
+func newOrdinalSet(n int) *ordinalSet { return &ordinalSet{bits: make([]uint64, (n+63)/64)} }
+func (s *ordinalSet) add(i, n int) error {
+	if i < 0 || i >= n {
+		return fail("audit", "ordinal", "source ordinal out of range")
+	}
+	mask := uint64(1) << uint(i%64)
+	if s.bits[i/64]&mask != 0 {
+		return failf("audit", "ordinal", "duplicate source ordinal %d", i)
+	}
+	s.bits[i/64] |= mask
+	s.count++
+	return nil
+}
+
+func fixtureOrdinal(c Config, s Span) (int, bool) {
+	return s.Ordinal, s.Ordinal >= 0 && s.Ordinal < c.Count
+}
+
+func corpusIdentity(c Config) string {
+	b, _ := json.Marshal(struct {
+		Version                                string
+		Seed                                   uint64
+		Count, Tenants, Attributes, MatchEvery int
+	}{ToolVersion, c.Seed, c.Count, c.Tenants, c.Attributes, c.MatchEvery})
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
+}
+
+type Manifest struct {
+	Tool      string `json:"tool"`
+	Run       string `json:"run"`
+	Corpus    string `json:"corpus"`
+	State     string `json:"state"`
+	Order     string `json:"order"`
+	HashBytes int    `json:"hash_bytes"`
+	Backend   string `json:"backend"`
+}
+
+func manifest(c Config, state string) Manifest {
+	return Manifest{ToolVersion, c.Run, corpusIdentity(c), state, c.Order, c.HashBytes, c.Backend}
+}
+
+func checkManifest(c Config, m Manifest, ready bool) error {
+	if m.Tool != ToolVersion || m.Run != c.Run || m.Corpus != corpusIdentity(c) || m.Order != c.Order || m.HashBytes != c.HashBytes || m.Backend != c.Backend {
+		return fail("ownership", "manifest", "ownership/corpus manifest mismatch; refusing access")
+	}
+	if ready && m.State != "ready" {
+		return failf("ownership", "manifest", "run is not ready (state %q); explicit owned drop only", m.State)
+	}
+	return nil
+}

@@ -1,0 +1,60 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "otel",
+    srcs = [
+        "clickhouse.go",
+        "corpus.go",
+        "errors.go",
+        "evidence.go",
+        "fdb.go",
+        "index.go",
+        "record.go",
+    ],
+    importpath = "fdb.dev/layers/otel",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/fdbgo/client",
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "@io_opentelemetry_go_proto_otlp//common/v1:common",
+        "@io_opentelemetry_go_proto_otlp//resource/v1:resource",
+        "@io_opentelemetry_go_proto_otlp//trace/v1:trace",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/descriptorpb",
+        "@org_golang_google_protobuf//types/dynamicpb",
+    ],
+)
+
+go_test(
+    name = "otel_test",
+    timeout = "long",
+    srcs = [
+        "bootstrap_test.go",
+        "clickhouse_integration_test.go",
+        "clickhouse_test.go",
+        "evidence_test.go",
+        "guards_test.go",
+        "integration_test.go",
+        "otel_test.go",
+    ],
+    embed = [":otel"],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/recordlayer",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_docker_docker//client",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
+        "@com_github_testcontainers_testcontainers_go//wait",
+        "@io_opentelemetry_go_proto_otlp//common/v1:common",
+        "@io_opentelemetry_go_proto_otlp//trace/v1:trace",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+    ],
+)
