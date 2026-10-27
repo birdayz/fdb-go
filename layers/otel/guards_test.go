@@ -34,6 +34,8 @@ func TestEveryConfigBound(t *testing.T) {
 		{"batch high", func(c *Config) { c.Batch = 65 }},
 		{"save mode", func(c *Config) { c.SaveMode = "unknown" }},
 		{"empty save mode", func(c *Config) { c.SaveMode = "" }},
+		{"workers low", func(c *Config) { c.Workers = 0 }},
+		{"workers high", func(c *Config) { c.Workers = 9 }},
 		{"CH batch low", func(c *Config) { c.CHBatch = 0 }},
 		{"CH batch high", func(c *Config) { c.CHBatch = 65537 }},
 		{"CH bytes low", func(c *Config) { c.CHBatchBytes = 0 }},
@@ -81,6 +83,7 @@ func TestEveryConfigBound(t *testing.T) {
 	low.Attributes = 4
 	low.MatchEvery = 1
 	low.Batch = 1
+	low.Workers = 1
 	low.CHBatch = 1
 	low.CHBatchBytes = 1
 	low.Tenant = 0
@@ -97,6 +100,7 @@ func TestEveryConfigBound(t *testing.T) {
 	high.Tenants = 50000000
 	high.Attributes = 128
 	high.Batch = 64
+	high.Workers = 8
 	high.CHBatch = 65536
 	high.CHBatchBytes = 64 << 20
 	high.K = 10000
@@ -112,21 +116,28 @@ func TestSaveModeIsExecutionOnly(t *testing.T) {
 	t.Parallel()
 	c := testConfig()
 	baseline := manifest(c, "ready")
-	for _, mode := range []string{"serial", "pipelined"} {
-		changed := c
-		changed.SaveMode = mode
-		if err := changed.Validate(); err != nil {
-			t.Fatal(err)
-		}
-		if corpusIdentity(changed) != corpusIdentity(c) {
-			t.Fatal("save strategy changed source corpus")
-		}
-		if err := checkManifest(changed, baseline, true); err != nil {
-			t.Fatal("save strategy changed stored layout ownership", err)
+	for _, mode := range []string{"serial", "pipelined", "batch"} {
+		for _, workers := range []int{1, 8} {
+			for _, diagnostics := range []bool{false, true} {
+				changed := c
+				changed.SaveMode = mode
+				changed.Workers = workers
+				changed.Diagnostics = diagnostics
+				if err := changed.Validate(); err != nil {
+					t.Fatalf("mode=%s workers=%d diagnostics=%t: %v", mode, workers, diagnostics, err)
+				}
+				if corpusIdentity(changed) != corpusIdentity(c) {
+					t.Fatalf("execution settings changed source corpus: mode=%s workers=%d diagnostics=%t", mode, workers, diagnostics)
+				}
+				if err := checkManifest(changed, baseline, true); err != nil {
+					t.Fatalf("execution settings changed stored ownership: mode=%s workers=%d diagnostics=%t: %v", mode, workers, diagnostics, err)
+				}
+			}
 		}
 	}
-	if DefaultConfig().SaveMode != "pipelined" {
-		t.Fatal("default ingestion strategy is not pipelined")
+	defaults := DefaultConfig()
+	if defaults.SaveMode != "pipelined" || defaults.Workers != 1 || defaults.Diagnostics {
+		t.Fatalf("unexpected ingestion defaults: mode=%s workers=%d diagnostics=%t", defaults.SaveMode, defaults.Workers, defaults.Diagnostics)
 	}
 }
 

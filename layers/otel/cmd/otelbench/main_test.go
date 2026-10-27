@@ -97,7 +97,7 @@ func TestExecuteModes(t *testing.T) {
 					t.Fatalf("unexpected stderr: %s", &stderr)
 				}
 				e := decodeEvidence(t, stdout.Bytes())
-				if e.Tool != otel.ToolVersion || e.Backend != backend || e.Mode != mode || e.Revision != "test-revision" || e.Config != b.cfg || e.Config.Run != "cli_test_run" || e.Config.SaveMode != "pipelined" || e.Corpus == "" || e.Boundary == "" || e.Start == "" || e.Go == "" || e.Error != "" || e.Failures != 0 {
+				if e.Tool != otel.ToolVersion || e.Backend != backend || e.Mode != mode || e.Revision != "test-revision" || e.Config != b.cfg || e.Config.Run != "cli_test_run" || e.Config.SaveMode != "pipelined" || e.Config.Workers != 1 || e.Config.Diagnostics || e.Corpus == "" || e.Boundary == "" || e.Start == "" || e.Go == "" || e.Error != "" || e.Failures != 0 {
 					t.Fatalf("wrong receipt: %+v", e)
 				}
 				var want []string
@@ -176,6 +176,11 @@ func TestExecuteRejectsArgumentsBeforeOpeningOrCreatingOutput(t *testing.T) {
 		{"-count=bad"},
 		{"-save-mode=other"},
 		{"-save-mode="},
+		{"-workers=0"},
+		{"-workers=9"},
+		{"-workers=-1"},
+		{"-workers=bad"},
+		{"-diagnostics=bad"},
 		{"-unknown"},
 		{"-confirm-drop=bad"},
 		{"positional"},
@@ -213,11 +218,11 @@ func TestExecuteHelp(t *testing.T) {
 
 func TestExecuteFlagForwarding(t *testing.T) {
 	t.Parallel()
-	for _, saveMode := range []string{"serial", "pipelined"} {
+	for _, saveMode := range []string{"serial", "pipelined", "batch"} {
 		t.Run(saveMode, func(t *testing.T) {
 			t.Parallel()
-			args := []string{"-backend=ch-attrs", "-mode=drop", "-confirm-drop", "-run=flag_test_run", "-seed=42", "-count=24", "-tenants=3", "-attrs=12", "-match-every=2", "-batch=4", "-ch-batch=5", "-ch-batch-bytes=4096", "-tenant=1", "-k=2", "-iterations=3", "-max-candidates=99", "-max-bytes=12345", "-hash-bytes=1", "-order=time", "-cluster-file=owned.cluster", "-ch-url=http://owned.invalid:8123", "-timeout=37s", "-revision=flag-revision", "-suite=mixed", "-save-mode=" + saveMode}
-			want := otel.Config{Run: "flag_test_run", Backend: "ch-attrs", Seed: 42, Count: 24, Tenants: 3, Attributes: 12, MatchEvery: 2, Batch: 4, CHBatch: 5, CHBatchBytes: 4096, Tenant: 1, K: 2, Iterations: 3, MaxCandidates: 99, MaxBytes: 12345, HashBytes: 1, Order: "time", SaveMode: saveMode}
+			args := []string{"-backend=ch-attrs", "-mode=drop", "-confirm-drop", "-run=flag_test_run", "-seed=42", "-count=24", "-tenants=3", "-attrs=12", "-match-every=2", "-batch=4", "-ch-batch=5", "-ch-batch-bytes=4096", "-tenant=1", "-k=2", "-iterations=3", "-max-candidates=99", "-max-bytes=12345", "-hash-bytes=1", "-order=time", "-cluster-file=owned.cluster", "-ch-url=http://owned.invalid:8123", "-timeout=37s", "-revision=flag-revision", "-suite=mixed", "-save-mode=" + saveMode, "-workers=2", "-diagnostics"}
+			want := otel.Config{Run: "flag_test_run", Backend: "ch-attrs", Seed: 42, Count: 24, Tenants: 3, Attributes: 12, MatchEvery: 2, Batch: 4, CHBatch: 5, CHBatchBytes: 4096, Tenant: 1, K: 2, Iterations: 3, MaxCandidates: 99, MaxBytes: 12345, HashBytes: 1, Order: "time", SaveMode: saveMode, Workers: 2, Diagnostics: true}
 			b := &fakeBackend{t: t}
 			var stdout, stderr bytes.Buffer
 			code := execute(args, &stdout, &stderr, func(ctx context.Context, c otel.Config, cluster, chURL string) (otel.Backend, error) {

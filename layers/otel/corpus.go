@@ -29,6 +29,8 @@ type Config struct {
 	MatchEvery    int    `json:"match_every"`
 	Batch         int    `json:"batch"`
 	SaveMode      string `json:"save_mode"`
+	Workers       int    `json:"workers"`
+	Diagnostics   bool   `json:"diagnostics"`
 	CHBatch       int    `json:"ch_batch"`
 	CHBatchBytes  int    `json:"ch_batch_bytes"`
 	Tenant        int    `json:"tenant"`
@@ -41,14 +43,14 @@ type Config struct {
 }
 
 func DefaultConfig() Config {
-	return Config{Seed: 283, Count: 10000, Tenants: 10, Attributes: 8, MatchEvery: 100, Batch: 32, SaveMode: "pipelined", CHBatch: 8192, CHBatchBytes: 8 << 20, K: 100, Iterations: 20, MaxCandidates: 20000, MaxBytes: 4 << 20, HashBytes: 32, Order: "trace"}
+	return Config{Seed: 283, Count: 10000, Tenants: 10, Attributes: 8, MatchEvery: 100, Batch: 32, SaveMode: "pipelined", Workers: 1, CHBatch: 8192, CHBatchBytes: 8 << 20, K: 100, Iterations: 20, MaxCandidates: 20000, MaxBytes: 4 << 20, HashBytes: 32, Order: "trace"}
 }
 
 func (c Config) Validate() error {
 	if !regexp.MustCompile(`^[a-z0-9_]{8,48}$`).MatchString(c.Run) {
 		return fail("config", "namespace", "run must be an explicit fresh 8..48 character lowercase alphanumeric/underscore namespace")
 	}
-	if c.Count < 1 || c.Count > 100000000 || c.Tenants < 1 || c.Tenants > (c.Count+1)/2 || c.Attributes < 4 || c.Attributes > 128 || c.MatchEvery < 1 || c.Batch < 1 || c.Batch > 64 || (c.SaveMode != "serial" && c.SaveMode != "pipelined") || c.CHBatch < 1 || c.CHBatch > 65536 || c.CHBatchBytes < 1 || c.CHBatchBytes > 64<<20 || c.Tenant < 0 || c.Tenant >= c.Tenants || c.K < 1 || c.K > 10000 || c.Iterations < 1 || c.Iterations > 100000 || c.MaxCandidates < 1 || c.MaxCandidates > 100000000 || c.MaxBytes < 1 || c.HashBytes < 1 || c.HashBytes > 32 || (c.Order != "trace" && c.Order != "time") {
+	if c.Count < 1 || c.Count > 100000000 || c.Tenants < 1 || c.Tenants > (c.Count+1)/2 || c.Attributes < 4 || c.Attributes > 128 || c.MatchEvery < 1 || c.Batch < 1 || c.Batch > 64 || (c.SaveMode != "serial" && c.SaveMode != "pipelined" && c.SaveMode != "batch") || c.Workers < 1 || c.Workers > 8 || c.CHBatch < 1 || c.CHBatch > 65536 || c.CHBatchBytes < 1 || c.CHBatchBytes > 64<<20 || c.Tenant < 0 || c.Tenant >= c.Tenants || c.K < 1 || c.K > 10000 || c.Iterations < 1 || c.Iterations > 100000 || c.MaxCandidates < 1 || c.MaxCandidates > 100000000 || c.MaxBytes < 1 || c.HashBytes < 1 || c.HashBytes > 32 || (c.Order != "trace" && c.Order != "time") {
 		return fail("config", "bounds", "invalid corpus/query bounds")
 	}
 	return nil

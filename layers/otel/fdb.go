@@ -3,15 +3,12 @@ package otel
 import (
 	"context"
 	"encoding/json"
-	"strconv"
-	"time"
 
 	"fdb.dev/pkg/fdbgo/client"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-	"google.golang.org/protobuf/proto"
 )
 
 type Size struct {
@@ -21,11 +18,12 @@ type Size struct {
 	PhysicalBytes int64 `json:"physical_bytes,omitempty"`
 }
 type Statistics struct {
-	Rows                int64             `json:"rows"`
-	Attributes          int64             `json:"attributes"`
-	LogicalPayloadBytes int64             `json:"logical_payload_bytes"`
-	Structures          map[string]Size   `json:"structures"`
-	Details             map[string]string `json:"details,omitempty"`
+	Rows                int64              `json:"rows"`
+	Attributes          int64              `json:"attributes"`
+	LogicalPayloadBytes int64              `json:"logical_payload_bytes"`
+	Structures          map[string]Size    `json:"structures"`
+	Details             map[string]string  `json:"details,omitempty"`
+	Diagnostics         *IngestDiagnostics `json:"diagnostics,omitempty"`
 }
 type Backend interface {
 	Ingest(context.Context) (Statistics, error)
@@ -109,108 +107,6 @@ func (b *FDBBackend) readManifest(rc *recordlayer.FDBRecordContext, ready bool) 
 		return err
 	}
 	return checkManifest(b.cfg, m, ready)
-}
-
-func (b *FDBBackend) Ingest(ctx context.Context) (Statistics, error) {
-	_, err := b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
-		key := b.root.Sub("owner").FDBKey()
-		v, err := rc.Transaction().Get(key).Get()
-		if err != nil {
-			return nil, err
-		}
-		if len(v) != 0 {
-			return nil, fail("ownership", "ingest", "run already exists; choose a fresh namespace or explicitly drop owned run")
-		}
-		wire, _ := json.Marshal(manifest(b.cfg, "loading"))
-		rc.Transaction().Set(key, wire)
-		_, err = b.open(rc)
-		return nil, err
-	})
-	if err != nil {
-		return Statistics{}, err
-	}
-	var logical int64
-	batches := 0
-	for lo := 0; lo < b.cfg.Count; {
-		hi := lo
-		estimate := 0
-		records := []Span{}
-		for hi < b.cfg.Count && hi-lo < b.cfg.Batch {
-			s := Generate(b.cfg, hi)
-			cost := 2048
-			for _, a := range s.Attributes {
-				cost += 2 * (len(a.Key) + len(a.Value) + 256)
-			}
-			if cost > 300000 {
-				return Statistics{}, fail("admission", "ingest batch", "single span exceeds conservative 300KB transaction estimate")
-			}
-			if len(records) > 0 && estimate+cost > 300000 {
-				break
-			}
-			estimate += cost
-			records = append(records, s)
-			hi++
-		}
-		messages := make([]proto.Message, len(records))
-		for i, s := range records {
-			m, err := toRecord(s)
-			if err != nil {
-				return Statistics{}, err
-			}
-			messages[i] = m
-		}
-		_, err = b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
-			if err := b.readManifest(rc, false); err != nil {
-				return nil, err
-			}
-			store, err := b.open(rc)
-			if err != nil {
-				return nil, err
-			}
-			started := time.Now()
-			if b.cfg.SaveMode == "pipelined" {
-				if _, err := store.SaveRecordsPipelined(messages, recordlayer.RecordExistenceCheckNone); err != nil {
-					return nil, err
-				}
-			} else {
-				for _, m := range messages {
-					if _, err := store.SaveRecord(m); err != nil {
-						return nil, err
-					}
-				}
-			}
-			n, err := rc.Transaction().GetApproximateSize().Get()
-			if err != nil {
-				return nil, err
-			}
-			elapsed := time.Since(started)
-			if n > 500000 || elapsed > time.Second {
-				return nil, failf("budget", "ingest transaction", "transaction guard exceeded: bytes=%d elapsed=%s", n, elapsed)
-			}
-			return nil, nil
-		})
-		if err != nil {
-			return Statistics{}, wrap("operation", "ingest batch starting "+strconv.Itoa(lo), err)
-		}
-		batches++
-		for _, s := range records {
-			wire, e := json.Marshal(s)
-			if e != nil {
-				return Statistics{}, e
-			}
-			logical += int64(len(wire))
-		}
-		lo = hi
-	}
-	_, err = b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
-		if err := b.readManifest(rc, false); err != nil {
-			return nil, err
-		}
-		wire, _ := json.Marshal(manifest(b.cfg, "ready"))
-		rc.Transaction().Set(b.root.Sub("owner").FDBKey(), wire)
-		return nil, nil
-	})
-	return Statistics{Rows: int64(b.cfg.Count), Attributes: int64(b.cfg.Count * b.cfg.Attributes), LogicalPayloadBytes: logical, Details: map[string]string{"ingest": "real Record Layer SaveRecord + synchronous custom covering secondary index", "payload_bytes": "fixture JSON logical bytes, not FDB serialized/storage bytes", "committed_batches": strconv.Itoa(batches), "save_mode": b.cfg.SaveMode}}, err
 }
 
 func (b *FDBBackend) Query(ctx context.Context, a Attribute) (QueryResult, error) {
