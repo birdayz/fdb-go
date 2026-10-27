@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -242,6 +243,9 @@ func TestRealRecordLayerCoveringIndexes(t *testing.T) {
 			if stats.Rows != 9 || stats.Attributes != 1152 {
 				t.Fatalf("ingestion population: %+v", stats)
 			}
+			if stats.Diagnostics != nil {
+				t.Fatalf("default diagnostics should be absent: %+v", stats.Diagnostics)
+			}
 			audited, err := b.Audit(ctx)
 			if err != nil || audited.Rows != 9 || audited.Structures["eq_secondary"].Keys != 1152 {
 				t.Fatalf("high-attribute ingestion census: %+v %v", audited, err)
@@ -256,7 +260,7 @@ func TestRealRecordLayerCoveringIndexes(t *testing.T) {
 			c.Order = order
 			testOtelIngestPublicationAndDrop(t, ctx, cluster, c, false)
 		})
-		for _, saveMode := range []string{"serial", "pipelined"} {
+		for _, saveMode := range []string{"serial", "pipelined", "batch"} {
 			t.Run(order+"_"+saveMode+"_interrupted_ingest_and_drop", func(t *testing.T) {
 				t.Parallel()
 				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
@@ -265,36 +269,73 @@ func TestRealRecordLayerCoveringIndexes(t *testing.T) {
 				c.Order, c.SaveMode = order, saveMode
 				testOtelIngestPublicationAndDrop(t, ctx, cluster, c, true)
 			})
-			t.Run(order+"_"+saveMode+"_ingest", func(t *testing.T) {
+			for _, workers := range []int{1, 2} {
+				t.Run(order+"_"+saveMode+"_ingest_workers"+strconv.Itoa(workers), func(t *testing.T) {
+					t.Parallel()
+					ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+					defer cancel()
+					c := testConfig()
+					c.Count, c.Batch, c.Order, c.SaveMode = 7, 2, order, saveMode
+					c.Workers, c.Diagnostics = workers, workers == 2
+					b := openOtelFixture(t, ctx, cluster, c, false)
+					var observerMu sync.Mutex
+					observed := map[uint64]bool{}
+					b.db.SetAttemptObserver(func(call recordlayer.AttemptCall, _ error) {
+						observerMu.Lock()
+						observed[call.CallID] = true
+						observerMu.Unlock()
+					})
+					ingested, err := b.Ingest(ctx)
+					b.db.SetAttemptObserver(nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					observerMu.Lock()
+					observedRuns := len(observed)
+					observerMu.Unlock()
+					if observedRuns != 6 {
+						t.Fatalf("preserved observer saw %d runs, want initialization + four source batches + ready", observedRuns)
+					}
+					if workers == 2 {
+						assertOtelIngestDiagnostics(t, ingested, 4, 7)
+						if d := ingested.Diagnostics; d.SourceRuns != 4 || d.SourceAttempts < d.SourceRuns || d.SourceReplays != d.SourceAttempts-d.SourceRuns {
+							t.Fatalf("source run diagnostics included initialization/ready or miscounted retries: %+v", d)
+						}
+					} else if ingested.Diagnostics != nil {
+						t.Fatalf("worker1 diagnostics should be disabled: %+v", ingested.Diagnostics)
+					}
+					if _, err := b.Ingest(ctx); err == nil {
+						t.Fatal("duplicate ingest accepted")
+					} else {
+						var ownership *OwnershipError
+						if !errors.As(err, &ownership) {
+							t.Fatalf("duplicate ingest: %T %v", err, err)
+						}
+					}
+					stats, err := b.Audit(ctx)
+					if err != nil || stats.Rows != 7 || stats.Structures["eq_secondary"].Keys != 56 {
+						t.Fatalf("%s ingest census: %+v %v", saveMode, stats, err)
+					}
+					a := Attribute{"span", QueryKey, "string", QueryValue}
+					got, err := b.Query(ctx, a)
+					want := Expected(b.cfg, a.Scope, a.Key, a.Type, a.Value)
+					if err != nil || len(want) == 0 || !sameJSON(got.Hits, want) {
+						t.Fatalf("%s ingest query: %+v want %+v: %v", saveMode, got, want, err)
+					}
+					first := Generate(b.cfg, 0)
+					traced, err := b.Trace(ctx, first.Trace)
+					if err != nil || !sameJSON(traced, ExpectedTrace(b.cfg, first.Trace)) {
+						t.Fatalf("%s ingest trace: %+v %v", saveMode, traced, err)
+					}
+				})
+			}
+			t.Run(order+"_"+saveMode+"_worker_failure", func(t *testing.T) {
 				t.Parallel()
 				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 				defer cancel()
 				c := testConfig()
-				c.Count, c.Order, c.SaveMode = 7, order, saveMode
-				b := openOtelFixture(t, ctx, cluster, c, true)
-				if _, err := b.Ingest(ctx); err == nil {
-					t.Fatal("duplicate ingest accepted")
-				} else {
-					var ownership *OwnershipError
-					if !errors.As(err, &ownership) {
-						t.Fatalf("duplicate ingest: %T %v", err, err)
-					}
-				}
-				stats, err := b.Audit(ctx)
-				if err != nil || stats.Rows != 7 || stats.Structures["eq_secondary"].Keys != 56 {
-					t.Fatalf("%s ingest census: %+v %v", saveMode, stats, err)
-				}
-				a := Attribute{"span", QueryKey, "string", QueryValue}
-				got, err := b.Query(ctx, a)
-				want := Expected(b.cfg, a.Scope, a.Key, a.Type, a.Value)
-				if err != nil || len(want) == 0 || !sameJSON(got.Hits, want) {
-					t.Fatalf("%s ingest query: %+v want %+v: %v", saveMode, got, want, err)
-				}
-				first := Generate(b.cfg, 0)
-				traced, err := b.Trace(ctx, first.Trace)
-				if err != nil || !sameJSON(traced, ExpectedTrace(b.cfg, first.Trace)) {
-					t.Fatalf("%s ingest trace: %+v %v", saveMode, traced, err)
-				}
+				c.Order, c.SaveMode = order, saveMode
+				testOtelConcurrentIngestFailure(t, ctx, cluster, c)
 			})
 		}
 		t.Run(order+"_single_source_trace_budget", func(t *testing.T) {
@@ -326,6 +367,266 @@ func TestRealRecordLayerCoveringIndexes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func assertOtelIngestDiagnostics(t *testing.T, stats Statistics, batches, rows int64) {
+	t.Helper()
+	d := stats.Diagnostics
+	if d == nil {
+		t.Fatal("requested ingestion diagnostics are missing")
+	}
+	if d.CommittedBatches != batches || d.CommittedRows != rows || d.SourceRuns < batches || d.SourceAttempts < batches || d.SourceReplays < 0 || d.SourceReplays > d.SourceAttempts || d.SourceReplays < d.SourceAttempts-d.SourceRuns {
+		t.Fatalf("source-only diagnostics population: %+v want committed batches=%d rows=%d", d, batches, rows)
+	}
+	if d.ApproximateMutationBytes <= 0 || len(d.PhaseNanos) == 0 || len(d.Timer) == 0 {
+		t.Fatalf("vacuous ingestion work diagnostics: %+v", d)
+	}
+	var elapsed, events int64
+	for phase, nanos := range d.PhaseNanos {
+		if nanos < 0 {
+			t.Fatalf("negative phase %s=%d", phase, nanos)
+		}
+		elapsed += nanos
+	}
+	for name, counter := range d.Timer {
+		if counter == nil || counter.Count < 0 || counter.CumulativeValue < 0 {
+			t.Fatalf("invalid timer counter %s: %+v", name, counter)
+		}
+		events += counter.Count
+	}
+	if elapsed <= 0 || events <= 0 {
+		t.Fatalf("empty measured diagnostic work: %+v", d)
+	}
+}
+
+func testOtelConcurrentIngestFailure(t *testing.T, ctx context.Context, cluster string, c Config) {
+	c.Count, c.Tenants, c.Attributes, c.Batch, c.Workers, c.Diagnostics = 64, 1, 4, 2, 2, true
+	b := openOtelFixture(t, ctx, cluster, c, false)
+	c = b.cfg
+	ingestCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var mu sync.Mutex
+	var inspectionErr error
+	var canceledAfterSource, returned, lateObserver bool
+	var successfulCalls, sourceSuccesses int
+	sourceGate := make(chan struct{})
+	b.db.SetAttemptObserver(func(call recordlayer.AttemptCall, attemptErr error) {
+		mu.Lock()
+		if returned {
+			lateObserver = true
+		}
+		if attemptErr != nil {
+			cancel()
+			mu.Unlock()
+			return
+		}
+		successfulCalls++
+		commit, err := readOtelIngestCommit(ctx, b, call)
+		if err != nil {
+			inspectionErr = err
+			cancel()
+			mu.Unlock()
+			return
+		}
+		if commit.owner != manifest(c, "loading") {
+			inspectionErr = fmt.Errorf("premature publication during interrupted load: %+v", commit.owner)
+			cancel()
+			mu.Unlock()
+			return
+		}
+		if commit.recordKeys == 0 {
+			mu.Unlock()
+			return
+		}
+		if commit.recordKeys%c.Batch != 0 || commit.postingKeys != commit.recordKeys*c.Attributes {
+			inspectionErr = fmt.Errorf("partial source transaction committed: %+v", commit)
+			cancel()
+			mu.Unlock()
+			return
+		}
+		sourceSuccesses++
+		if sourceSuccesses == c.Workers {
+			canceledAfterSource = true
+			cancel()
+			close(sourceGate)
+		}
+		mu.Unlock()
+		// Both workers must have successful commit responses before canceling;
+		// neither can dequeue another batch while its observer is gated.
+		select {
+		case <-sourceGate:
+		case <-ingestCtx.Done():
+		}
+	})
+	defer b.db.SetAttemptObserver(nil)
+	stats, err := b.Ingest(ingestCtx)
+	mu.Lock()
+	returned = true
+	callsAtReturn := successfulCalls
+	observedErr, canceled := inspectionErr, canceledAfterSource
+	mu.Unlock()
+	if observedErr != nil || !canceled || !errors.Is(err, context.Canceled) {
+		t.Fatalf("worker ingestion did not fail after actual source commit: canceled=%t err=%v inspection=%v", canceled, err, observedErr)
+	}
+	// Raw snapshots do not themselves enter the Record Layer observer.
+	snapshot := func() map[string]string {
+		var rows []fdb.KeyValue
+		_, readErr := b.raw.ReadTransactCtx(ctx, func(tx fdb.ReadTransaction) (any, error) {
+			var err error
+			rows, err = tx.GetRange(b.root, fdb.RangeOptions{Limit: 20001}).GetSliceWithError()
+			return nil, err
+		})
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if len(rows) > 20000 {
+			t.Fatal("interrupted fixture snapshot exceeded bound")
+		}
+		out := make(map[string]string, len(rows))
+		for _, row := range rows {
+			out[string(row.Key)] = string(row.Value)
+		}
+		return out
+	}
+	before := snapshot()
+	time.Sleep(50 * time.Millisecond)
+	after := snapshot()
+	mu.Lock()
+	late, finalCalls, finalErr := lateObserver, successfulCalls, inspectionErr
+	mu.Unlock()
+	if late || finalCalls != callsAtReturn || finalErr != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("Ingest returned before workers joined: late=%t calls=%d/%d inspection=%v", late, callsAtReturn, finalCalls, finalErr)
+	}
+	b.db.SetAttemptObserver(nil)
+	var sources map[int]Span
+	otelTransaction(t, ctx, b, func(store *recordlayer.FDBRecordStore, rc *recordlayer.FDBRecordContext) error {
+		wire, err := rc.Transaction().Get(b.root.Sub("owner").FDBKey()).Get()
+		if err != nil {
+			return err
+		}
+		var owner Manifest
+		if err := json.Unmarshal(wire, &owner); err != nil {
+			return err
+		}
+		if owner != manifest(c, "loading") {
+			return fmt.Errorf("interrupted worker run published %+v", owner)
+		}
+		records, err := recordlayer.AsList(ctx, store.ScanRecords(nil, recordlayer.ForwardScan()))
+		if err != nil {
+			return err
+		}
+		sources = map[int]Span{}
+		for _, record := range records {
+			source, err := decodeRecord(record.Record)
+			if err != nil {
+				return err
+			}
+			if source.Ordinal < 0 || source.Ordinal >= c.Count {
+				return fmt.Errorf("source ordinal outside workload: %d", source.Ordinal)
+			}
+			if _, duplicate := sources[source.Ordinal]; duplicate {
+				return fmt.Errorf("duplicate source ordinal %d", source.Ordinal)
+			}
+			if !equalSpan(source, Generate(c, source.Ordinal)) {
+				return fmt.Errorf("changed committed source %d", source.Ordinal)
+			}
+			sources[source.Ordinal] = source
+		}
+		return nil
+	})
+	if len(sources) == 0 || len(sources) >= c.Count {
+		t.Fatalf("interrupted source population=%d want nonempty incomplete corpus of %d", len(sources), c.Count)
+	}
+	committedBatches := int64(0)
+	for lo := 0; lo < c.Count; lo += c.Batch {
+		present := 0
+		for ordinal := lo; ordinal < lo+c.Batch && ordinal < c.Count; ordinal++ {
+			if _, ok := sources[ordinal]; ok {
+				present++
+			}
+		}
+		if present != 0 && present != c.Batch {
+			t.Fatalf("partially committed logical batch at ordinal %d: %d/%d", lo, present, c.Batch)
+		}
+		if present != 0 {
+			committedBatches++
+		}
+	}
+	acknowledgedBatches, err := strconv.ParseInt(stats.Details["committed_batches"], 10, 64)
+	if err != nil || acknowledgedBatches < 1 || acknowledgedBatches > committedBatches || stats.Rows != acknowledgedBatches*int64(c.Batch) || stats.Rows > int64(len(sources)) || stats.Attributes != stats.Rows*int64(c.Attributes) {
+		t.Fatalf("acknowledged progress %+v cannot exceed persisted complete batches=%d rows=%d: %v", stats, committedBatches, len(sources), err)
+	}
+	// Cancellation can leave another in-flight commit durable without an
+	// acknowledged Run; receipts describe acknowledged progress, not recovery.
+	assertOtelIngestDiagnostics(t, stats, acknowledgedBatches, stats.Rows)
+	postings := otelSnapshot(t, ctx, b, otelSecondary(b))
+	if len(postings) != len(sources)*c.Attributes {
+		t.Fatalf("interrupted posting census=%d want %d", len(postings), len(sources)*c.Attributes)
+	}
+	identity := func(trace, span string, a Attribute) string {
+		wire, _ := json.Marshal([]any{trace, span, a})
+		return string(wire)
+	}
+	want := map[string]int64{}
+	for _, source := range sources {
+		for _, a := range source.Attributes {
+			want[identity(source.Trace, source.ID, a)] = source.Start
+		}
+	}
+	for key, value := range postings {
+		var covered coveringValue
+		if err := json.Unmarshal([]byte(value), &covered); err != nil {
+			t.Fatal(err)
+		}
+		term := termPrefix(otelSecondary(b), c.Tenant, covered.Attribute, c.HashBytes)
+		suffix, err := term.Unpack(fdb.Key(key))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var trace, span string
+		if c.Order == "trace" {
+			if len(suffix) != 3 {
+				t.Fatalf("trace suffix arity: %+v", suffix)
+			}
+			var traceOK, spanOK bool
+			trace, traceOK = suffix[0].(string)
+			span, spanOK = suffix[1].(string)
+			if !traceOK || !spanOK {
+				t.Fatalf("trace suffix identity: %+v", suffix)
+			}
+		} else {
+			if len(suffix) != 4 {
+				t.Fatalf("time suffix arity: %+v", suffix)
+			}
+			timestamp, timeOK := suffix[0].(int64)
+			encoded, traceOK := suffix[1].([]byte)
+			var spanOK bool
+			span, spanOK = suffix[2].(string)
+			if !timeOK || timestamp != -covered.Start || !traceOK || !spanOK {
+				t.Fatalf("time suffix identity: %+v", suffix)
+			}
+			decoded := make([]byte, len(encoded))
+			for i, octet := range encoded {
+				decoded[i] = ^octet
+			}
+			trace = string(decoded)
+		}
+		id := identity(trace, span, covered.Attribute)
+		if timestamp, exists := want[id]; !exists || timestamp != covered.Start {
+			t.Fatalf("unexpected/duplicate posting %s: %+v", id, covered)
+		}
+		delete(want, id)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing %d memberships for committed sources", len(want))
+	}
+	first := Generate(c, 0)
+	_, err = b.Query(ctx, first.Attributes[0])
+	requireOtelKind(t, err, "ownership")
+	_, err = b.Trace(ctx, first.Trace)
+	requireOtelKind(t, err, "ownership")
+	_, err = b.Audit(ctx)
+	requireOtelKind(t, err, "ownership")
 }
 
 type otelIngestCommit struct {

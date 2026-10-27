@@ -124,12 +124,41 @@ FDB ingestion uses `--save-mode pipelined` by default: immutable protobuf messag
 are prepared outside the retry closure, then `SaveRecordsPipelined(..., None)`
 pipelines existing-record reads while retaining ordered saves and old/new index
 maintenance. `--save-mode serial` preserves the one-save-at-a-time baseline with
-the same prepared messages. Receipts record the strategy in Config and ingest
-details; it does not change source fingerprints or stored layout ownership.
-Neither mode assumes that an identity is absent or skips old-record correctness.
+the same prepared messages; `--save-mode batch` uses `SaveRecordBatch` to issue
+all existing-record reads before collecting them, retaining old/new index
+maintenance. No mode assumes that an identity is absent or skips old-record
+correctness. `--workers` (default 1, range 1..8) bounds concurrent source-batch
+transactions. Each Run has an independent record context and store; batches are
+disjoint and prepared once outside retries. The queue holds at most `workers`
+batches, with at most `workers` running and one being prepared. On failure,
+admission stops, the worker context is canceled, and every worker is joined
+before return; `ready` is published only after every source batch succeeds.
+Receipts record strategy and worker count; these and diagnostics do not change
+source fingerprints or stored layout ownership.
+
+`--diagnostics` adds bounded source-batch-only instrumentation to ingest receipts
+(default off, scope `source_batches_only`). Initialization and ready publication
+are excluded; preparation includes batches discarded on cancellation. `source_runs`
+counts Run calls, `source_attempts` counts closure entries, and `source_replays`
+counts entries beyond the first per Run, not transport retries or RPCs. The
+`phase_nanos` preparation/manifest/open/save/guard/run totals overlap across
+workers and parent/child phases: do not add them or label them critical-path,
+GRV, or server latency. Run time includes retry backoff and observer callbacks;
+the context-scoped timer does not capture database-policy retry-delay events.
+`approximate_mutation_bytes` sums successful size samples,
+including attempts that later fail a guard or commit, not persisted storage.
+`timer` is a native StoreTimer snapshot taken after workers join; event kind
+identifies units (timed `CumulativeValue` is nanoseconds; size `Count` is bytes).
+Commit timing covers successful commits and precommit work only, not failed
+commits. Batch mode does not emit scalar save/load timers or scalar save
+counters; missing counters are not evidence that this work was free. Failure
+receipts retain acknowledged batch/row counts, not an authoritative persisted
+census when a canceled commit has an unknown outcome. Existing attempt observers
+are preserved.
+
 FDB batches use `--batch` (default 32, max 64), conservative 300 KB estimates,
-500 KB approximate-write guards, 1 s application elapsed guard and 1.5 s
-transaction timeout. CH offline loading instead defaults to `--ch-batch 8192`
+500 KB approximate-write guards, 1 s save-plus-guard elapsed bound and 1.5 s
+transaction timeout with finite retries in every mode. CH offline loading instead defaults to `--ch-batch 8192`
 and `--ch-batch-bytes 8388608`: it is optimized bulk loading, not an artificial
 FDB-sized synchronous tiny-part workload. **Load wall times are bulk preparation
 comparisons, not equal real-time acknowledgment semantics.** No nonidempotent
