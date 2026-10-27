@@ -2644,3 +2644,76 @@ establish vulnerable-code reachability in the published Go library.
   [#1](https://github.com/birdayz/fdb-go/security/dependabot/1). GitHub labels them runtime
   dependencies and listed no patched module version. Determine affected library/test/tool
   paths and remediation, rather than assuming either production exposure or a false positive.
+
+## OTel storage findings (RFC-283, 2026-10-27)
+
+These findings come from `layers/otel/` and the repository investigation in
+`layers/otel/research_notes/Transactional OTel trace storage/repository.md`, inspected
+against `a7349ff657e1448a4f6937535129cfdb5afafcda`. Source-confirmed gaps below still
+need their own minimal regression before a core behavior change; extension requests
+are not Java parity defects. No Go client correctness bug has been established by
+the trace experiment.
+
+- [ ] **Record Layer metadata validation — dispatch gap.**
+  `IndexMaintainerFactory.ValidateIndexOptions` promises metadata-build validation,
+  but `index_validator.go:477–505` dispatches the factory hook only for VECTOR paths;
+  `validateIndexType` accepts other custom types without it. Evolution validation
+  already dispatches factories. Add an external factory whose option validator
+  rejects, prove ordinary metadata construction invokes it, and fix general dispatch
+  without breaking intentionally loadable metadata for unlinked plugins. Constructors
+  must remain defensive. Inspect Java 4.14.2.0 before changing shared behavior.
+- [ ] **Planner safety — fail closed for opaque custom index formats.**
+  `pkg/relational/core/embedded/cascades_generator.go`'s `buildMatchCandidates` excludes
+  selected built-ins but puts remaining types into VALUE-style candidates. A custom
+  maintainer can own a non-VALUE physical layout. Add explicit capability/candidacy
+  classification, an opaque-plugin negative plan/execution regression, and a positive
+  opted-in VALUE-compatible plugin control. Keep the OTel typed API outside SQL until
+  that contract exists; do not parse arbitrary custom bytes as ordinary index entries.
+- [ ] **Record Layer external WRITE_ONLY dispatch — embedding hazard.**
+  `StandardIndexMaintainer.UpdateWhileWriteOnly` calls its own `Update`; Go embedding
+  does not dynamically dispatch to an external maintainer's override. An external
+  plugin must currently override both. Add a callback/capability-based safe default
+  or explicit refusal and an external-package regression proving the intended update
+  executes during WRITE_ONLY builds. Preserve idempotent/by-records/by-index behavior;
+  the OTel experiment's explicit override is a workaround, not a core fix.
+- [ ] **Record Layer index clearing — secondary ownership contract.**
+  `FDBRecordStore.DeleteIndexEntries` in `store.go:1153` clears only the primary index
+  subspace, despite its all-entries description; custom maintainers can store their
+  actual entries in `IndexSecondarySubspace`. `DeleteAllRecords` does clear both.
+  Reproduce public index clearing/rebuild with an external secondary-backed maintainer,
+  then define a maintainer-owned complete-clear hook and safe prefix-delete preflight.
+  Cover rebuild, drop and interrupted cleanup; do not assume the primary-only helper
+  clears every structure or change Java-shared formats without checking the reference.
+- [ ] **Record Layer typed custom scans — reusable guarded dispatch.**
+  `ScanIndex` enforces readability/instrumentation, while direct `GetIndexMaintainer`
+  capability calls leave those checks to callers. Provide a central typed scan path
+  carrying state, isolation, common budgets, continuations, metrics and decorator-safe
+  capability lookup. Exercise READABLE/WRITE_ONLY/DISABLED and unsupported scan kinds;
+  do not require every new index package to duplicate these guarantees.
+- [ ] **Record Layer external online-build helpers — extension request.**
+  `atomic_index_helpers.go:updateWhileWriteOnlyNonIdempotent` and its range/source-index
+  coordination are private. Expose a supported callback/helper contract for external
+  nonidempotent maintainers, including by-records/by-index builds and online
+  insert/update/delete races. This is an API limitation, not evidence the existing
+  built-in nonidempotent indexes are incorrect.
+- [ ] **Record Layer scan-budget semantics — document soft limits and support strict callers.**
+  `index_cursor_limits.go:tryScanLimits` checks previously consumed bytes and allows an
+  initial record; source exhaustion can therefore follow a final record exceeding
+  `ScannedBytesLimit`. The OTel adapter needed an explicit accumulated-byte check.
+  Document this continuation/soft-limit contract and consider a reusable strict-budget
+  helper with sole-record, final-record-crossing and exact-budget controls. Preserve
+  the Java-compatible cursor behavior unless reference-backed evidence warrants a
+  change; soft limits themselves are not a newly proved Record Layer correctness bug.
+- [ ] **Go client / Record Layer performance investigation — not a client bug report.**
+  The first unpipelined synthetic load failed the one-second application transaction
+  guard at batch offset 36,160 after 79.358 s, reporting 253,402 affected bytes (below
+  its byte cap). No complete source audit or sustainable-throughput measurement exists
+  for that failed load. Receipt:
+  `layers/otel/bench/evidence/2026-10-27/serial-100k-ingest-failed.json.gz`.
+  Compare the preserved serial path with existing `SaveRecordsPipelined` and
+  `SaveRecordBatch` on identical source data, then profile client/RL request waves,
+  GRV/commit latency, retries, decoding and affected bytes if the bottleneck remains.
+  Both batch APIs preserve old-record/index maintenance; do not assume keys absent or
+  weaken transaction checks to manufacture throughput. Record any independently
+  reproduced client defect separately with a regression; do not label serial-loader
+  overhead, an application deadline, or an unmeasured pipeline hypothesis a client bug.

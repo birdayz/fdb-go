@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_binary(
+    name = "otelbench",
+    embed = [":otelbench_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "otelbench_lib",
+    srcs = ["main.go"],
+    importpath = "fdb.dev/layers/otel/cmd/otelbench",
+    visibility = ["//visibility:private"],
+    deps = ["//layers/otel"],
+)
+
+go_test(
+    name = "otelbench_test",
+    srcs = ["main_test.go"],
+    embed = [":otelbench_lib"],
+    deps = ["//layers/otel"],
+)

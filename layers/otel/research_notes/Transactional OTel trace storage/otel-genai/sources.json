@@ -1,0 +1,187 @@
+[
+  {
+    "name": "genai-overview.md",
+    "url": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions-genai/main/docs/gen-ai/README.md",
+    "bytes": 1839
+  },
+  {
+    "name": "genai-spans.md",
+    "url": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions-genai/main/docs/gen-ai/gen-ai-spans.md",
+    "bytes": 74175
+  },
+  {
+    "name": "genai-agent-spans.md",
+    "url": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions-genai/main/docs/gen-ai/gen-ai-agent-spans.md",
+    "bytes": 162468
+  },
+  {
+    "name": "genai-metrics.md",
+    "url": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions-genai/main/docs/gen-ai/gen-ai-metrics.md",
+    "bytes": 65149
+  },
+  {
+    "name": "genai-events.md",
+    "url": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions-genai/main/docs/gen-ai/gen-ai-events.md",
+    "bytes": 5427
+  },
+  {
+    "name": "genai-attributes.yaml",
+    "url": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions-genai/main/model/registry/gen-ai.yaml",
+    "error": "Error: Command failed: curl -fLsS https://raw.githubusercontent.com/open-telemetry/semantic-conventions-genai/main/model/registry/gen-ai.yaml\ncurl: (22) The requested URL returned error: 404\n"
+  },
+  {
+    "name": "otlp-trace.proto",
+    "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-proto/main/opentelemetry/proto/trace/v1/trace.proto",
+    "bytes": 15928
+  },
+  {
+    "name": "otlp-common.proto",
+    "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-proto/main/opentelemetry/proto/common/v1/common.proto",
+    "bytes": 6624
+  },
+  {
+    "name": "trace-api.md",
+    "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-specification/main/specification/trace/api.md",
+    "bytes": 39607
+  },
+  {
+    "name": "common-attributes.md",
+    "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-specification/main/specification/common/README.md",
+    "bytes": 17523
+  },
+  {
+    "name": "client-inference.md",
+    "url": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions-genai/main/docs/gen-ai/client-inference.md",
+    "bytes": 117703
+  },
+  {
+    "name": "token-metrics.md",
+    "url": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions-genai/main/docs/gen-ai/gen-ai-token-metrics.md",
+    "bytes": 88420
+  },
+  {
+    "name": "registry-gen-ai.md",
+    "url": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions-genai/main/docs/registry/attributes/gen-ai.md",
+    "bytes": 58412
+  },
+  {
+    "name": "genai-commit.json",
+    "url": "https://api.github.com/repos/open-telemetry/semantic-conventions-genai/commits/main",
+    "bytes": 178565
+  },
+  {
+    "name": "old-genai.md",
+    "url": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions/main/docs/gen-ai/README.md",
+    "bytes": 404
+  },
+  {
+    "name": "langfuse-sessions.html",
+    "url": "https://langfuse.com/docs/observability/features/sessions",
+    "bytes": 503737
+  },
+  {
+    "name": "langfuse-cost.html",
+    "url": "https://langfuse.com/docs/observability/features/token-and-cost-tracking",
+    "bytes": 698176
+  },
+  {
+    "name": "langfuse-data-model.html",
+    "url": "https://langfuse.com/docs/observability/data-model",
+    "bytes": 421749
+  },
+  {
+    "name": "langfuse-cursor.html",
+    "url": "https://langfuse.com/integrations/developer-tools/cursor",
+    "bytes": 464207
+  },
+  {
+    "name": "langfuse-masking.html",
+    "url": "https://langfuse.com/docs/observability/features/masking",
+    "bytes": 553992
+  },
+  {
+    "name": "langfuse-corrections.html",
+    "url": "https://langfuse.com/docs/observability/features/corrections",
+    "bytes": 454244
+  },
+  {
+    "name": "genai-releases.json",
+    "url": "https://api.github.com/repos/open-telemetry/semantic-conventions-genai/releases",
+    "bytes": 5
+  },
+  {
+    "name": "genai-repo-readme.md",
+    "url": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions-genai/main/README.md",
+    "bytes": 1232
+  },
+  {
+    "name": "genai-changelog.md",
+    "url": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions-genai/main/CHANGELOG.md",
+    "bytes": 203
+  },
+  {
+    "name": "otlp-spec.md",
+    "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-proto/main/docs/specification.md",
+    "bytes": 43963
+  },
+  {
+    "name": "resource.md",
+    "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-specification/main/specification/resource/sdk.md",
+    "bytes": 17363
+  },
+  {
+    "name": "logs-data-model.md",
+    "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-specification/main/specification/logs/data-model.md",
+    "bytes": 20151
+  },
+  {
+    "name": "semconv-user.md",
+    "url": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions/main/docs/registry/attributes/user.md",
+    "bytes": 1648
+  },
+  {
+    "name": "openinference.md",
+    "url": "https://raw.githubusercontent.com/Arize-ai/openinference/main/spec/semantic_conventions.md",
+    "bytes": 80601
+  },
+  {
+    "name": "otel-sensitive-data.html",
+    "url": "https://opentelemetry.io/docs/security/handling-sensitive-data/",
+    "bytes": 414550
+  },
+  {
+    "name": "historical-genai-v1.37.0.md",
+    "url": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions/v1.37.0/docs/gen-ai/README.md",
+    "bytes": 2123
+  },
+  {
+    "name": "historical-spans-v1.37.0.md",
+    "url": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions/v1.37.0/docs/gen-ai/gen-ai-spans.md",
+    "bytes": 40287
+  },
+  {
+    "name": "historical-metrics-v1.37.0.md",
+    "url": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions/v1.37.0/docs/gen-ai/gen-ai-metrics.md",
+    "bytes": 47771
+  },
+  {
+    "name": "tempo-queries.html",
+    "url": "https://grafana.com/docs/tempo/latest/traceql/construct-traceql-queries/",
+    "bytes": 241526
+  },
+  {
+    "name": "tempo-structure.html",
+    "url": "https://grafana.com/docs/tempo/latest/traceql/trace-structure/",
+    "bytes": 172229
+  },
+  {
+    "name": "langfuse-attribute-mapping.html",
+    "url": "https://langfuse.com/docs/opentelemetry/get-started#property-mapping",
+    "bytes": 614176
+  },
+  {
+    "name": "genai-a2a.md",
+    "url": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions-genai/main/docs/gen-ai/a2a.md",
+    "bytes": 80971
+  }
+]
