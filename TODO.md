@@ -2710,10 +2710,89 @@ the trace experiment.
   its byte cap). No complete source audit or sustainable-throughput measurement exists
   for that failed load. Receipt:
   `layers/otel/bench/evidence/2026-10-27/serial-100k-ingest-failed.json.gz`.
-  Compare the preserved serial path with existing `SaveRecordsPipelined` and
-  `SaveRecordBatch` on identical source data, then profile client/RL request waves,
-  GRV/commit latency, retries, decoding and affected bytes if the bottleneck remains.
-  Both batch APIs preserve old-record/index maintenance; do not assume keys absent or
-  weaken transaction checks to manufacture throughput. Record any independently
-  reproduced client defect separately with a regression; do not label serial-loader
-  overhead, an application deadline, or an unmeasured pipeline hypothesis a client bug.
+  A subsequent completed 100,000-span load at `12c293130` using
+  `SaveRecordsPipelined`, batch 32 and eight indexed attributes took 194.455 s
+  (approximately 514 spans/s); the ClickHouse dedicated-attribute arm took 4.442 s.
+  Both source audits passed. Raw ingest/audit receipts are archived under
+  `layers/otel/bench/evidence/2026-10-27/pipeline-100k/`. This is a local end-to-end
+  observation, not isolated client cost or sustainable ingest capacity; the earlier
+  failed serial load used a different batch size and is not a controlled baseline.
+  Compare serial, `SaveRecordsPipelined` and `SaveRecordBatch` on identical source
+  data and batch/transaction budgets, then profile client/RL request waves,
+  GRV/commit latency, retries, decoding and affected bytes. Both batch APIs preserve
+  old-record/index maintenance; do not assume keys absent or weaken transaction
+  checks to manufacture throughput. Record any independently reproduced client
+  defect separately with a regression; do not label serial-loader overhead, an
+  application deadline, or an unmeasured pipeline hypothesis a client bug.
+- [ ] **Go client / Record Layer query tails — unlocalized performance finding.**
+  In the same immutable 100,000-span campaign at `12c293130`, three rotated rounds
+  each measured 1,000 selective queries (200 per class) and 1,000 trace lookups per
+  backend. FDB rare-query p99 was 42.448 / 1.800 / 1.774 ms; the ClickHouse
+  dedicated-attribute arm was 9.233 / 9.787 / 7.847 ms. FDB trace-lookup p99 was
+  29.136 ms in the first round, then 0.745 / 0.875 ms. All 12,000 timed queries
+  passed the independent oracle, but median wins do not establish a clean p99 win.
+  Preserve the first-round spike, not just the later fast samples; all rounds are
+  archived under `layers/otel/bench/evidence/2026-10-27/pipeline-100k/`.
+  Reproduce with explicit warmup/cache policy and synchronized client/RL timers,
+  FDB background-work metrics, host load and cgroup CPU/I/O/throttling counters.
+  Localize the delay before claiming a Go client defect or production tail SLO.
+
+### OTel prototype regression gaps from final review
+
+The pinned review of `12c293130597477035e32b372b3c4101dbd9c2fb` returned NAK
+for these three confirmed test-coverage gaps, not runtime correctness defects.
+They concern the experimental adapter/campaign, not established Go client bugs.
+The regressions below now pass: `just test` passed 179 targets (3 executed,
+176 cached), including all six new real-FDB ready/interrupted-ingest Drop cases
+with no skips and the 13-case campaign suite. Source inputs were frozen around
+the run. This is fast-lane validation, not full-suite or 100M-scale evidence.
+
+- [x] **Campaign shared-lock exclusion — contention regression (review F1).**
+  `layers/otel/bench/local_campaign_test.sh` uses an uncontested private lock, so
+  removing the runner's `flock` would not fail the tests. Add a bounded independent
+  holder/contender handshake proving the real campaign cannot reach its fake
+  executable while the configured lane lock is held, proceeds after release,
+  completes normally, and releases the lock itself.
+- [x] **Record Layer adapter partial-ingest publication — failure regression (review F2).**
+  `layers/otel/integration_test.go` does not fail public `FDBBackend.Ingest` after
+  a committed batch. Deterministically interrupt a real-FDB load after at least one
+  committed source batch; assert the persisted partial population, a `loading`
+  manifest, rejection from Query/Trace/Audit and a second Ingest, and successful
+  explicit owned cleanup. Manually installing a loading manifest is not a substitute
+  for exercising the public ingest failure boundary in `layers/otel/fdb.go`.
+- [x] **Record Layer adapter owned Drop — deletion/isolation regression (review F3).**
+  Successful `FDBBackend.Drop` is currently checked only for a nil cleanup error.
+  Add ready- and loading-run tests that inspect the raw owned root and prove it is
+  empty after Drop, while an independently populated sibling root remains unchanged.
+  A no-op successful Drop must fail these assertions; `DeleteAllRecords` coverage
+  does not establish the backend Drop contract.
+
+### 100M stored-record proof requested by owner
+
+The target is 100,000,000 stored spans, not an extrapolated QPS claim. Core Record
+Layer fixes are allowed for this proof; keep them in separable commits with
+regressions so they can be proposed upstream after the PoC.
+
+- [ ] Profile and accelerate real Record Layer ingestion before the 100M load.
+  Compare serial/pipelined/batch APIs on matched data and transaction budgets,
+  then bounded independent transaction workers. Retain old/new index maintenance,
+  ownership checks, byte/time guards and complete-ready publication. Use measured
+  profiles to justify core changes rather than assuming the adapter is the cause.
+- [ ] Add equivalent needle-query access paths on FDB and tuned ClickHouse for
+  tenant-scoped trace ID, standalone span ID, indexed GenAI/custom attributes and
+  half-open time ranges. Pin returned fields, duplicate handling, ordering, limits,
+  scoped/type lookalikes and misses; trace-plus-span primary-key lookup is not a
+  substitute for standalone span-ID search. Account for every maintained index.
+- [ ] Make the independent query oracle bounded-memory at 100M, with small-corpus
+  equivalence tests. Keep preparation outside timed queries and retain every timed
+  answer check; do not replace source truth with a backend-derived expected result.
+- [ ] Gate capacity using measured physical volume/filesystem growth at 1M and 10M,
+  peak maintenance/log space, and a fixed free-space stop reserve. The 100k census
+  scales arithmetically to about 330 GB of FDB logical owned KV at 100M, not physical
+  usage; 423 GiB free on the host does not establish that FDB plus ClickHouse fits.
+  Run variants sequentially with owned cleanup when coexistence would be unsafe.
+- [ ] Load and verify the full 100M population, then retain repeated needle-query
+  latency/work receipts and sustained ingest-plus-concurrent-query measurements.
+  Report achieved throughput, p50/p95/p99/p99.9 populations, failures, CPU/RAM,
+  physical storage and write amplification. Keep cold/warm policy and durability
+  boundaries explicit; the current local single-node runs are not HA/SLO proof.

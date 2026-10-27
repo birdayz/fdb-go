@@ -1,6 +1,6 @@
 # RFC-283: Serve transactional OTel traces with exact custom-attribute indexes
 
-**Status:** Proposed; research-backed design, not implemented or benchmarked.
+**Status:** Proposed production design; a bounded immutable kernel and diagnostic measurements exist, not a full implementation or production validation.
 
 **Reference:** FoundationDB 7.3.77; Java Record Layer 4.14.2.0; repository base `a7349ff657e1448a4f6937535129cfdb5afafcda`.
 
@@ -16,7 +16,7 @@ Build a **Record Layer–owned transactional serving tier**, initially using sta
 
 The competitive hypothesis is narrow: fresh, selective tenant-scoped retrieval, arbitrary identifiers, bounded trace/session navigation and predictable correction/deletion visibility could beat a well-tuned ClickHouse deployment at a useful latency/cost frontier. **There is no measurement establishing that hypothesis.** Broad scans, group-bys, quantiles and inexpensive long retention are credible ClickHouse/object-storage strengths. Keep compressed immutable history and an analytical replica as measured alternatives, not promises of future compression that justify an expensive hot design today.
 
-The repository is explicitly **pre-1.0 and not declared production-ready**. The sources establish transaction/lifecycle primitives, not an OTel backend, production capacity or best-in-class latency. This RFC makes no implementation, throughput or cost claim. No prototype is run now: ownership of the observed local FDB container was not established, and no usable ClickHouse comparator was established. The appropriate next artifact is a small real-Record-Layer correctness proof, after contract approval. ([Repository status](../../../STATUS.md), [repository investigation](../research_notes/Transactional%20OTel%20trace%20storage/repository.md))
+The repository is explicitly **pre-1.0 and not declared production-ready**. The research sources establish transaction/lifecycle primitives, not production capacity or best-in-class latency. At the original research stage, no prototype or benchmark had been run: ownership of the observed local FDB container and a usable ClickHouse comparator had not been established. A bounded immutable [executable kernel](../cmd/otelbench) has since been exercised; its [scope and exclusions](../README.md#implemented-semantic-class), retained [10k diagnostic receipts](../bench/evidence/2026-10-27/diagnostic-10k/) and [pipelined 100k receipts](../bench/evidence/2026-10-27/pipeline-100k/README.md) describe that narrower evidence. These single-node, closed-loop diagnostics do not implement the full proposal or establish sustainable ingest capacity, query tails under concurrent load or comparative production cost. ([Repository status](../../../STATUS.md), [repository investigation](../research_notes/Transactional%20OTel%20trace%20storage/repository.md))
 
 ### Proposed envelope, not supplied requirements
 
