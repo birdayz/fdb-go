@@ -184,17 +184,34 @@ func TestDesignTimeoutUnsetArmsNothing(t *testing.T) {
 	}
 }
 
-// The production check recognizes an unmodified database queue and rejects
-// a queue that a test drives by hand.
+// Each case changes only one guard so another rejection cannot mask it.
 func TestDesignTimeoutProductionQueue(t *testing.T) {
 	t.Parallel()
-	if !newTimeoutQueue().production() {
-		t.Fatal("an unmodified queue is not recognized")
-	}
-	q := newTimeoutQueue()
-	q.now = func() int64 { return 0 } // a hand-driven clock
-	if q.production() {
-		t.Fatal("a manual queue was taken for the production one")
+	for _, tc := range []struct {
+		name   string
+		modify func(*timeoutQueue)
+	}{
+		{"timer", func(q *timeoutQueue) { q.timer = &manualTimeoutTimer{} }},
+		{"beforeDeliver", func(q *timeoutQueue) { q.beforeDeliver = func(*timeoutNode) {} }},
+		{"beforeEagerSchedule", func(q *timeoutQueue) { q.beforeEagerSchedule = func(*timeoutNode) {} }},
+		{"compare", func(q *timeoutQueue) { q.compare = func() {} }},
+		{"afterFrontier", func(q *timeoutQueue) { q.root.afterFrontier = func(int64, uint64) {} }},
+		{"beforeScan", func(q *timeoutQueue) { q.root.beforeScan = func(*timeoutQueue) {} }},
+		{"afterScan", func(q *timeoutQueue) { q.root.afterScan = func(*timeoutQueue) {} }},
+		{"afterPop", func(q *timeoutQueue) { q.root.afterPop = func(*timeoutNode) {} }},
+		{"now", func(q *timeoutQueue) { q.now = func() int64 { return 0 } }},
+		{"deliver", func(q *timeoutQueue) { q.deliver = func(*Transaction, uint64) {} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := newTimeoutQueue()
+			if !q.production() {
+				t.Fatal("an unmodified queue is not recognized")
+			}
+			tc.modify(q)
+			if q.production() {
+				t.Fatal("a modified queue was taken for the production one")
+			}
+		})
 	}
 }
 
