@@ -208,6 +208,10 @@ func TestRealRecordLayerCoveringIndexes(t *testing.T) {
 			{"selective_v2", testOtelSelectiveV2},
 			{"public_query_replay", testOtelPublicQueryReplay},
 			{"persisted_intrinsic_corruption", testOtelPersistedIntrinsicCorruption},
+			{"source_timeout_commit_recovery", testOtelTimeoutCommitRecovery},
+			{"source_timeout_policy", testOtelTimeoutPolicy},
+			{"source_timeout_ordering", testOtelIngestTimeoutOrdering},
+			{"source_timeout_drop_safety", testOtelTimeoutDropSafety},
 		} {
 			t.Run(order+"_"+check.name, func(t *testing.T) {
 				t.Parallel()

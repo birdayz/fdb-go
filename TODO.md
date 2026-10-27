@@ -2775,11 +2775,15 @@ the trace experiment.
   timeout 1031 after 114,720 acknowledged spans in 47.583 s; the monitor did not
   terminate this load. Three subsequent strict drained samples passed, but the
   ready/source-audit guard correctly rejected the still-loading namespace. This
-  is neither a completed 1M gate nor proof of a client defect. Investigate bounded,
-  cancellation-safe recovery using fresh transactions and immutable batch replay;
-  configure transaction bounds before the manifest read and retain every existing
-  admission/save/mutation/resource guard. Do not retry terminal application errors
-  or claim throughput from the partial load. Receipts:
+  is neither a completed 1M gate nor proof of a client defect. Bounded application
+  recovery now permits at most eight fresh source Runs on 1031 with cancellable
+  backoff and immutable payloads; all old/new maintenance and guards remain intact.
+  Initialization/source/ready reads now arm the 1500-ms timeout first; neither
+  initialization nor publication adopts or retries an ambiguous ownership state.
+  Real-FDB tests cover both ambiguous commit orders, already-committed replay,
+  Drop conflicts, cancellation, exhaustion, accounting and earliest timeout setup.
+  Fast lane: 179 targets pass (3 executed / 176 cached), not full-suite or completed
+  large-load proof. Terminal application errors are not retried. Failed receipts:
   `layers/otel/bench/evidence/2026-10-27/pilot-1m-v2-bulk-timeout/`.
 - [ ] **Go client / Record Layer query tails — unlocalized performance finding.**
   In the same immutable 100,000-span campaign at `12c293130`, three rotated rounds
@@ -2835,7 +2839,7 @@ regressions so they can be proposed upstream after the PoC.
   then bounded independent transaction workers. Retain old/new index maintenance,
   ownership checks, byte/time guards and complete-ready publication. Use measured
   profiles to justify core changes rather than assuming the adapter is the cause.
-- [x] Add equivalent needle-query access paths on FDB and tuned ClickHouse for
+- [x] Add equivalent needle-query access paths on FDB and ClickHouse for
   tenant-scoped trace ID, standalone span ID, indexed GenAI/custom attributes and
   half-open time ranges. Pin returned fields, duplicate handling, ordering, limits,
   scoped/type lookalikes and misses; trace-plus-span primary-key lookup is not a
@@ -2851,11 +2855,32 @@ regressions so they can be proposed upstream after the PoC.
   unique predicate, and prepares known trace/span needles without a source scan.
   Brute-force equivalence, odd/tied populations, cancellation and bounded-retention
   tests pass; a 100M configuration test is not evidence of 100M records stored.
-- [ ] Add a native-TCP ClickHouse query arm with the official pinned Go driver,
+- [x] Add a native-TCP ClickHouse query arm with the official pinned Go driver,
   matched SQL/settings/result shapes/ownership checks and persistent connections.
-  Keep the HTTP arm and disclose transport differences. Pin Go/Bazel dependencies,
-  validate against server 26.10.2.103, and correlate native query IDs with actual
-  server work; progress callbacks alone need not report complete small-query totals.
+  Keep the HTTP arm and disclose transport differences. Implemented in `edfd8dbe8`
+  with driver v2.43.0 and real 26.10.2.103 parity across all four layouts, including
+  server-budget rejection and typed-nil error rows. Fast lane: 179 passing targets,
+  2 executed / 177 cached; commit hook: 1 executed / 178 cached. Not full-suite proof.
+- [x] **Native decoded-byte cap regression (formal review F1).** Re-review of
+  `290d0d7b..edfd8dbe` confirmed the four prior V2 blockers fixed, but the native
+  32-MiB owner/result caps lack public boundary regressions. Exercise Query, Trace,
+  Span and Time at and just above the decoded-byte limit, including a valid padded
+  manifest and cumulative multirow results. Require typed budget errors, row closure,
+  no data operation after owner rejection, and correct current-query provenance;
+  row-count failures and server `max_bytes_to_read` failures are not substitutes.
+  Public exact-32-MiB and +1-byte regressions now pass across all four operations,
+  including valid padded owners, cumulative results, closure and query provenance.
+- [ ] Reconcile native/HTTP sample query IDs with actual ClickHouse query-log work
+  outside the timed path. Native read-work metrics remain explicitly unavailable;
+  progress callbacks alone need not report complete small-query totals. A zero
+  integer-millisecond server duration is resolution-limited, not zero elapsed time.
+- [ ] Tune ClickHouse for the actual needle workload before a competitive claim.
+  Current benchmark tables use the default 8192-row MergeTree granularity. The
+  selected-projection regression uses a separate 64-row-granularity fixture; it is
+  not benchmark tuning. Add an explicit fresh-table granularity option and compare
+  8192/512/64 (and finer if justified), retaining ingest/storage/maintenance costs.
+  The earlier ALTER attempt was rejected as READONLY_SETTING; do not claim it took
+  effect or call the current profile an optimal tuned baseline.
 - [ ] Gate capacity using measured physical volume/filesystem growth at 1M and 10M,
   peak maintenance/log space, and a fixed free-space stop reserve. The 100k census
   scales arithmetically to about 330 GB of FDB logical owned KV at 100M, not physical

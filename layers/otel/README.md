@@ -203,6 +203,25 @@ disjoint and prepared once outside retries. The queue holds at most `workers`
 batches, with at most `workers` running and one being prepared. On failure,
 admission stops, the worker context is canceled, and every worker is joined
 before return; `ready` is published only after every source batch succeeds.
+
+A source Run reporting FDB `transaction_timed_out` (1031) gets at most eight
+fresh Run calls for that same prepared batch, with cancelable waits of
+25/50/100/200/250/250/250 ms between calls. This fixed application policy does
+not change FDB OnError classification or any transaction/save/size guard. The
+1.5-second transaction timeout is armed before initial ownership and all manifest
+reads; setting it again while opening a store does not reset its creation-relative
+budget. Existing finite internal retries remain separate.
+
+A timed-out commit may already have succeeded or may complete later. Each fresh
+Run re-reads ownership and old records and uses normal Record Layer old/new
+maintenance, not captured mutations or an absence assumption. A batch contributes
+acknowledged rows/bytes only once, after a successful Run. Exhaustion, cancellation
+and other errors stop the worker pool; budget/ownership/admission errors are not
+recovered by this policy. Initialization and ready publication are neither retried
+nor ambiguously adopted: a reported error can still have committed its manifest,
+so a command error is not an authoritative persisted-population census. A second
+public Ingest still rejects an existing namespace.
+
 Receipts record strategy and worker count; these and diagnostics do not change
 source fingerprints or stored layout ownership.
 
@@ -210,8 +229,12 @@ source fingerprints or stored layout ownership.
 (default off, scope `source_batches_only`). Initialization and ready publication
 are excluded; preparation includes batches discarded on cancellation. `source_runs`
 counts Run calls, `source_attempts` counts closure entries, and `source_replays`
-counts entries beyond the first per Run, not transport retries or RPCs. The
-`phase_nanos` preparation/manifest/open/save/guard/run totals overlap across
+counts internal closure entries beyond the first per Run, not transport retries
+or RPCs. `source_timeouts` counts source Runs reporting 1031, including exhaustion;
+`source_fresh_retries` counts additional source Run calls actually started because
+of 1031. Fresh retries are not internal `source_replays`. The optional
+`timeout_backoff` phase measures application waits separately from Run time.
+The `phase_nanos` preparation/manifest/open/save/guard/run totals overlap across
 workers and parent/child phases: do not add them or label them critical-path,
 GRV, or server latency. Run time includes retry backoff and observer callbacks;
 the context-scoped timer does not capture database-policy retry-delay events.
@@ -221,7 +244,9 @@ including attempts that later fail a guard or commit, not persisted storage.
 identifies units (timed `CumulativeValue` is nanoseconds; size `Count` is bytes).
 Native commit timing includes successful precommit/commit work **and the
 successful AttemptObserver callback**, including any observer blocking or reads;
-it excludes failed commits and is not pure server commit latency. Batch mode
+it is emitted only for successful Run returns, not a complete physical commit
+census: a commit reported as 1031 can be durable yet absent from this timer.
+It is not pure server commit latency. Batch mode
 does not emit scalar save/load timers or scalar save
 counters; missing counters are not evidence that this work was free. Failure
 receipts retain acknowledged batch/row counts, not an authoritative persisted

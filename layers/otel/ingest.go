@@ -18,6 +18,8 @@ type IngestDiagnostics struct {
 	SourceRuns               int64                                   `json:"source_runs"`
 	SourceAttempts           int64                                   `json:"source_attempts"`
 	SourceReplays            int64                                   `json:"source_replays"`
+	SourceTimeouts           int64                                   `json:"source_timeouts"`
+	SourceFreshRetries       int64                                   `json:"source_fresh_retries"`
 	CommittedBatches         int64                                   `json:"committed_batches"`
 	CommittedRows            int64                                   `json:"committed_rows"`
 	ApproximateMutationBytes int64                                   `json:"approximate_mutation_bytes"`
@@ -148,7 +150,7 @@ func (b *FDBBackend) prepareBatch(ctx context.Context, lo int) (preparedBatch, e
 	return batch, err
 }
 
-func (b *FDBBackend) saveIngestBatch(ctx context.Context, batch preparedBatch, d *ingestRecorder) error {
+func (b *FDBBackend) saveIngestBatchRun(ctx context.Context, batch preparedBatch, d *ingestRecorder) error {
 	started := time.Now()
 	var attempts int64
 	_, err := b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
@@ -202,14 +204,14 @@ func (b *FDBBackend) saveIngestBatch(ctx context.Context, batch preparedBatch, d
 		return nil, nil
 	})
 	d.run(attempts, started)
-	if err != nil {
-		return wrap("operation", "ingest batch starting "+strconv.Itoa(batch.first), err)
-	}
-	return nil
+	return err
 }
 
 func (b *FDBBackend) Ingest(ctx context.Context) (Statistics, error) {
 	_, err := b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+		if err := configureRecordTimeout(rc); err != nil {
+			return nil, err
+		}
 		key := b.root.Sub("owner").FDBKey()
 		v, err := rc.Transaction().Get(key).Get()
 		if err != nil {
@@ -302,11 +304,13 @@ produce:
 	b.observeIngest("before_join", preparedBatch{}, jobs)
 	workers.Wait()
 	stats := Statistics{Rows: rows, Attributes: rows * int64(b.cfg.Attributes), LogicalPayloadBytes: logical, Diagnostics: d.snapshot(rows, batches), Details: map[string]string{
-		"ingest":            "real Record Layer saves + synchronous custom covering secondary index",
-		"payload_bytes":     "fixture JSON logical bytes, not FDB serialized/storage bytes",
-		"committed_batches": strconv.FormatInt(batches, 10),
-		"save_mode":         b.cfg.SaveMode,
-		"workers":           strconv.Itoa(b.cfg.Workers),
+		"ingest":                 "real Record Layer saves + synchronous custom covering secondary index",
+		"payload_bytes":          "fixture JSON logical bytes, not FDB serialized/storage bytes",
+		"committed_batches":      strconv.FormatInt(batches, 10),
+		"save_mode":              b.cfg.SaveMode,
+		"workers":                strconv.Itoa(b.cfg.Workers),
+		"source_run_limit":       strconv.Itoa(maxSourceRuns),
+		"source_timeout_backoff": "25ms exponential, capped at 250ms; only fresh source Runs on 1031",
 	}}
 	if firstErr != nil {
 		return stats, firstErr
