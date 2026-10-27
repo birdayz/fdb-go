@@ -11,8 +11,10 @@ The old campaign exporters contain historical population assertions and skip
 w32. `export_results.py` instead validates the exact44-case protocol and joins
 **every** case to full-phase R4 and the canonical frozen adapter's analysis.
 It emits only clean whole-case estimates; contaminated/unverifiable cases stay
-visible with reasons. Missing phases fail rather than inherit October's budget
-omission. Zero clean cases are coverage, not performance success. All six phases
+visible with public-safe reason categories and SHA256 identities. Exact diagnostics
+stay in the hash-pinned private R4 report; addresses, paths and resource names are
+never copied into public coverage. Missing phases fail rather than inherit October's
+budget omission. Zero clean cases are coverage, not performance success. All six phases
 must be passed to the existing analysis adapter; no omitted-phase override hides
 real data. Existing numerical helpers and strict raw-count/CPU/CSV validators are
 reused, not forked. `m2_export.py` is the old M2 accounting/clustered-bootstrap

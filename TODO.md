@@ -2647,6 +2647,15 @@ establish vulnerable-code reachability in the published Go library.
 
 ### RFC-282 four-machine campaign execution gates
 
+- [ ] Resolve the verified PR #1021 CPU-accounting blocker before qualification:
+  `cpu.stat` flushes scheduler-accounted counters, not pending runtime of running
+  threads, so microsecond formatting does not justify actual-window CPU bounds.
+  Select and review a defensible source/metric or fail CPU qualification closed;
+  do not silently substitute task-clock, clock resolution, or a tick allowance.
+  Preserve raw diagnostics, exact source policy, actual overhead controls and
+  accounting-boundary regressions. Paid provisioning remains paused until the
+  owner's offline-readiness barrier is explicitly released.
+
 - [ ] Qualify and execute the complete 44-case repeat (M1 workers 1/8/32/64,
   M2rl/M2skip), using the reviewed `tools/benchcampaign/campaigns/fdbmn-rfc282/`
   exporter, byte-identical measured-fence overlay and exclusive cgroup-v2 CPU

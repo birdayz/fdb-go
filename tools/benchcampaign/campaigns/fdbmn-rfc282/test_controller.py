@@ -128,6 +128,44 @@ class Tests(unittest.TestCase):
                 c.finish_runner.assert_called_once_with()
                 c.collect.assert_called_once_with()
 
+    def test_partial_start_failures_stop_all_intended_units_and_collect_real_adverse_raw(self):
+        for failure in ('lost_ack', 'readiness_timeout', 'lifetime_after_ready'):
+            with self.subTest(failure=failure):
+                c, _, _ = self.make()
+                transport = c.call.side_effect
+                def call(role, command, **kwargs):
+                    reply = transport(role, command, **kwargs)
+                    words = shlex.split(command)
+                    if failure == 'lost_ack' and role == 'node2' and words[0] == 'systemd-run':
+                        raise OSError('lost launch acknowledgement after remote dispatch')
+                    if failure == 'readiness_timeout' and words[0] == 'test':
+                        return subprocess.CompletedProcess(words, 1, stdout='', stderr='not ready')
+                    return reply
+                c.call.side_effect = call
+                if failure == 'lifetime_after_ready':
+                    c.require_phase_budget.side_effect = controller.legacy.Refused('insufficient phase lifetime')
+                c.preflight, c.client_receipt, c.execute_runner = Mock(), Mock(), Mock()
+                c.finish_runner, c.reconcile = Mock(return_value=True), Mock()
+                c.runner_rc, c.reconcile_rc = None, None
+                c.complete = Mock(side_effect=lambda code, outcome: code)
+                with patch.object(controller.legacy.Controller, 'start_samplers'), \
+                     patch.object(controller.legacy.Controller, 'collect') as original_collect:
+                    self.assertEqual(c.execute(), 2)
+                original_collect.assert_called_once_with()
+                c.execute_runner.assert_not_called()
+                c.client_receipt.assert_not_called()
+                self.assertEqual(c.cpu_intended, [(node, c.cpu_unit) for node in ('node1', 'node2', 'node3')])
+                self.assertEqual(c.stop_and_prove.call_args_list,
+                                 [unittest.mock.call(node, c.cpu_unit, 180) for node in ('node1', 'node2', 'node3')])
+                self.assertEqual([call.args[0] for call in c.pull.call_args_list], ['node1', 'node2', 'node3'])
+                self.assertEqual(set(c.cpu_starts), set(controller.legacy.NODES) if failure == 'lifetime_after_ready' else set())
+                self.assertTrue(any('orchestration:' in error for error in c.errors))
+                receipt = json.loads((c.folder / 'cpu-extension-collection.json').read_text())
+                self.assertEqual(receipt['intents'], [[node, c.cpu_unit] for node in ('node1', 'node2', 'node3')])
+                if failure == 'readiness_timeout':
+                    self.assertGreaterEqual(c.time, 90)
+                    self.assertTrue(any('never ready' in error for error in c.errors))
+
     def test_bad_cpu_stop_receipt_still_collects_adverse_raw_artifacts(self):
         c, _, receipts = self.make()
         self.start(c)
@@ -173,17 +211,32 @@ class Tests(unittest.TestCase):
         c.require_phase_budget.assert_called_once_with('after CPU-sidecar preflight')
 
     def test_preflight_refuses_source_swap_or_unsealed_controller_before_dispatch(self):
-        for mutation in ('source', 'pin'):
+        mutations = {'server_cpu_source': 'host-proc-stat', 'process_cpu_interval_ns': 20_000_000,
+                     'process_cpu_min_inner_intervals': 1, 'process_cpu_max_time_envelope_ratio': 2,
+                     'process_cpu_clock_reserve_ns': 0, 'process_cpu_phase_correlation_range_ns': 2_000_000,
+                     'pin': None}
+        for mutation, replacement in mutations.items():
             c, layout, _ = self.make()
             protocol = dict(measurement_extensions=dict(server_cpu_source='exclusive-cgroup-v2-usage-usec',
                 process_cpu_interval_ns=10_000_000, process_cpu_min_inner_intervals=10, process_cpu_max_time_envelope_ratio=1.2,
                 process_cpu_clock_reserve_ns=2_000_000, process_cpu_phase_correlation_range_ns=1_000_000))
             c.read_json.side_effect = lambda role, path: protocol if path == c.a.protocol else layout
-            c.pins = {}
-            if mutation == 'source': protocol['measurement_extensions']['server_cpu_source'] = 'host-proc-stat'
+            sources = {
+                'tools/benchcampaign/campaigns/fdbmn-rfc282/controller.py': Path(controller.__file__),
+                'tools/benchcampaign/campaigns/fdbmn-rfc282/server_cpu.py': Path(controller.server_cpu.__file__),
+                'tools/benchcampaign/campaigns/fdbmn-20261020/execution/run_phase_ops60.py': Path(controller.legacy.__file__),
+                'tools/benchcampaign/campaigns/fdbmn-20261020/execution/remote_ops60.py': Path(controller.remote_ops60.__file__),
+            }
+            c.pins = {controller.legacy.R + '/tooling/' + p: controller.legacy.sha(f.read_bytes()) for p, f in sources.items()}
+            if mutation == 'pin':
+                c.pins[controller.legacy.R + '/tooling/tools/benchcampaign/campaigns/fdbmn-rfc282/controller.py'] = '0' * 64
+            else:
+                protocol['measurement_extensions'][mutation] = replacement
             c.require_fresh_unit = Mock()
             with patch.object(controller.legacy.Controller, 'preflight'):
-                with self.assertRaises(controller.legacy.Refused): c.preflight()
+                with self.assertRaisesRegex(controller.legacy.Refused,
+                                            'unsealed controller/helper' if mutation == 'pin' else 'unsealed CPU source/policy'):
+                    c.preflight()
             c.call.assert_not_called()
             c.require_fresh_unit.assert_not_called()
 
@@ -203,12 +256,23 @@ class Tests(unittest.TestCase):
                 self.assertIn('StrictHostKeyChecking=yes', words)
                 self.assertIn('HostKeyAlias=campaign-node1', words)
                 self.assertEqual(words[-1], 'safe-fixture-command')
-            state['hosts']['node1']['id'] = 99
-            state['campaign_server_ids'].append(99)
-            (base / 'state.json').write_text(json.dumps(state))
-            with patch.object(controller.subprocess, 'run') as run:
-                with self.assertRaises(controller.legacy.Refused): transport('node1', 'never-dispatch')
-                run.assert_not_called()
+            owned = copy.deepcopy(state)
+            for mutation in ('unowned', 'protected', 'name', 'role'):
+                with self.subTest(mutation=mutation):
+                    state = copy.deepcopy(owned)
+                    role = 'node1'
+                    if mutation == 'unowned': state['hosts']['node1']['id'] = 13
+                    if mutation == 'protected':
+                        state['hosts']['node1']['id'] = 99
+                        state['campaign_server_ids'].append(99)
+                    if mutation == 'name': state['hosts']['node1']['name'] = 'another-campaign-node1'
+                    if mutation == 'role': role = 'unexpected-role'
+                    (base / 'state.json').write_text(json.dumps(state))
+                    with patch.object(controller.subprocess, 'run') as run:
+                        with self.assertRaisesRegex(controller.legacy.Refused,
+                                                    'unknown campaign role' if mutation == 'role' else 'unowned/protected SSH target'):
+                            transport(role, 'never-dispatch')
+                        run.assert_not_called()
 
 
 if __name__ == '__main__':

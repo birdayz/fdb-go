@@ -9,6 +9,7 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 import prepare_harness as prepare
 
@@ -103,9 +104,21 @@ class PrepareTest(unittest.TestCase):
         self.assertEqual(receipt['status'], 'prepared-not-runtime-qualified')
 
     def test_two_preparations_are_byte_identical_verification_is_idempotent(self):
-        first, second = self.prepare('one'), self.prepare('two')
+        with mock.patch('time.time', return_value=2000000000):
+            first = self.prepare('one')
+        with mock.patch('time.time', return_value=2000000100):
+            second = self.prepare('two')
         self.assertEqual(first, second)
         self.assertEqual(self.snapshot(self.root / 'one'), self.snapshot(self.root / 'two'))
+        for name in ('one', 'two'):
+            archive = self.root / name / 'client-harness.tar.gz'
+            header = archive.read_bytes()[:10]
+            self.assertEqual(header[:3], b'\x1f\x8b\x08')
+            self.assertEqual(int.from_bytes(header[4:8], 'little'), 0, 'gzip timestamp must be zero')
+            with tarfile.open(archive) as source:
+                members = source.getmembers()
+            self.assertTrue(members)
+            self.assertTrue(all(member.mtime == 0 for member in members))
         before = self.snapshot(self.root / 'one')
         self.assertEqual(self.verify('one'), self.verify('one'))
         self.assertEqual(self.snapshot(self.root / 'one'), before)

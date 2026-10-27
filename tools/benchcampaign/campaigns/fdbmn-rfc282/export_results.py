@@ -53,6 +53,24 @@ def protocol_cases(protocol):
     return specs, expected
 
 
+def public_r4_reasons(reasons):
+    """Keep diagnostic categories public; exact diagnostics stay in pinned R4."""
+    need(isinstance(reasons, list) and all(isinstance(reason, str) for reason in reasons),
+         'invalid R4 exclusion reasons')
+    categories = (('role or process-class change', 'FDB role or process-class changed'),
+                  ('placement', 'fixture placement qualification failed'),
+                  ('steal', 'CPU steal contamination'),
+                  ('clock', 'clock qualification failed'),
+                  ('MainPID', 'FDB process identity changed'),
+                  ('missing', 'required evidence missing'),
+                  ('no case receipts', 'case receipts missing'),
+                  ('samples', 'telemetry sample qualification failed'))
+    return [next((label for marker, label in categories if marker in reason),
+                 'R4 exclusion; diagnostic retained in pinned private report')
+            + ' [sha256:' + hashlib.sha256(reason.encode()).hexdigest() + ']'
+            for reason in reasons]
+
+
 def population(inputs, analysis, expected):
     coverage, reports, analyses = {}, {}, {}
     for phase, cases in expected.items():
@@ -74,7 +92,7 @@ def population(inputs, analysis, expected):
             need(not clean or not (r4[case]['contaminated_reasons'] + r4[case]['unverifiable_reasons']),
                  'clean case has adverse reasons')
             coverage[phase][case] = dict(verdict=verdict,
-                reasons=r4[case]['contaminated_reasons'] + r4[case]['unverifiable_reasons'])
+                reasons=public_r4_reasons(r4[case]['contaminated_reasons'] + r4[case]['unverifiable_reasons']))
         reports[phase], analyses[phase] = report, current
     counts = {v: sum(c['verdict'] == v for p in coverage.values() for c in p.values())
               for v in ('clean', 'contaminated', 'unverifiable')}
@@ -159,10 +177,13 @@ def cpu_rows(inputs, phase, report, layout, processes, parser):
     try:
         for node in server_cpu.NODES:
             root = f'telemetry-cpu/{phase}/{node}'
-            start, stop = (inputs.load(f'{root}/receipt-{k}.json') for k in ('start', 'stop'))
+            start, stop = (server_cpu.mapping(inputs.load(f'{root}/receipt-{k}.json'), 'sidecar receipt')
+                           for k in ('start', 'stop'))
             for kind, sidecar in (('start', start), ('stop', stop)):
                 relative = f'telemetry/{phase}/{node}/receipt-{kind}.json'
-                base = inputs.load(relative)
+                base = server_cpu.mapping(inputs.load(relative), 'R4 sampler receipt')
+                server_cpu.mapping(base.get('units'), 'R4 sampler units')
+                server_cpu.mapping(sidecar.get('units'), 'sidecar units')
                 need(report['inputs_sha256']['/srv/fdb-bench/' + relative] == inputs.digest(relative),
                      'R4/base receipt hash differs')
                 need(base['units']['starttimes'] == sidecar['units']['starttimes']
@@ -173,6 +194,7 @@ def cpu_rows(inputs, phase, report, layout, processes, parser):
             data = server_cpu.validate_node(start, stop, samples, node, phase, units[node], max_gap_ns=20_000_000)
             bounds = []
             for receipt in (start, stop):
+                server_cpu.mapping(receipt.get('chrony'), 'sidecar chrony receipt')
                 need(receipt['chrony']['rc'] == 0, 'sidecar chrony failed')
                 fields, errors = parser.parse_chrony_tracking(receipt['chrony']['raw'])
                 need(not errors, 'sidecar chrony invalid')
@@ -182,7 +204,7 @@ def cpu_rows(inputs, phase, report, layout, processes, parser):
             data['clock_bound_s'] = client_bound + max(bounds)
             need(set(report['nodes'][node]['units']) == units[node], 'R4/sidecar unit population differs')
             nodes[node] = data
-    except (KeyError, ValueError, OSError, InvalidOperation) as error:
+    except (KeyError, ValueError, TypeError, AttributeError, OSError, InvalidOperation) as error:
         return [dict(phase=phase, case=c['case'], status='CPU-unqualified', reason=cpu_failure(error))
                 for c in report['cases'] if c['verdict'] == 'clean']
     output = []
@@ -195,11 +217,11 @@ def cpu_rows(inputs, phase, report, layout, processes, parser):
             for run in case['runs']:
                 row = by_run[run['run_id']]
                 folder = f'results-raw/{phase}/' + (case['case'] + '/' if phase.startswith('M1') else '') + run['run_id']
-                process_receipt = inputs.load(folder + '/result.json')
+                process_receipt = server_cpu.mapping(inputs.load(folder + '/result.json'), 'raw process receipt')
                 need((process_receipt['run_id'], process_receipt['started_utc'], process_receipt['ended_utc']) ==
                      (run['run_id'], run['start_utc'], run['end_utc']), 'R4/raw lifecycle window differs')
                 if phase.startswith('M1'):
-                    raw = inputs.load(folder + '/summary.json')
+                    raw = server_cpu.mapping(inputs.load(folder + '/summary.json'), 'raw measured summary')
                     window = measured_window(raw)
                 else:
                     window = None
@@ -209,7 +231,7 @@ def cpu_rows(inputs, phase, report, layout, processes, parser):
                     cpu.update(lower_cpu_ns_per_op=cpu['lower_cpu_seconds'] * 1e9 / ops,
                                upper_cpu_ns_per_op=cpu['upper_cpu_seconds'] * 1e9 / ops)
                 case_rows.append(dict(phase=phase, case=case['case'], arm=row['arm'], block=row['block'], status='qualified', **cpu))
-        except (KeyError, ValueError, OSError, InvalidOperation) as error:
+        except (KeyError, ValueError, TypeError, AttributeError, OSError, InvalidOperation) as error:
             output.append(dict(phase=phase, case=case['case'], status='CPU-unqualified', reason=cpu_failure(error)))
             continue  # whole case: never publish just the surviving arms
         output.extend(case_rows)

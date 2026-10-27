@@ -25,9 +25,10 @@ changes `internal/bench/run.go`, appends real Go controls to the already-declare
 `internal/bench/bench_test.go`, adds four existing-script exports in
 `scripts/BUILD.bazel`, and updates only the expected compiler literal in
 `matrix_plan.py`, `r3_plan.py` and their `test_campaign.py` fixture. Its seventh
-file, `integration/smoke_test.go`, drops only the obsolete rejection of completed
-cleanup-count growth, matching the already-declared #948 drain contract. No
-current production checkout is patched.
+file, `integration/smoke_test.go`, drops the obsolete rejection of completed
+cleanup-count growth, matching the already-declared #948 drain contract, and adds
+measured-fence publication assertions to every existing Go/CGo workload cell.
+No current production checkout is patched.
 
 The BUILD-only compatibility amendment exposes exactly `analyze.py`,
 `matrix_plan.py`, `r3_plan.py` and `run.py` to
@@ -48,8 +49,8 @@ compiler statement describes the original harness and is superseded for this
 new campaign by these explicit source/compiler receipts. Nothing asserts that
 the October campaign used Go 1.27.3. Both external SDK receipts identify compiler
 SHA256 `5f5eb6d0b2fb6aa0bb5d5f8c5f1c944e0de955c925f0111af92a9d8f79680b5b`.
-The appended Go test's four field-alignment lines were formatted with gofumpt;
-its statements, strings and existing test-file prefix are unchanged.
+The appended Go controls are formatted with gofumpt; pre-existing test bodies
+are unchanged.
 
 The smoke-test-only cleanup correction removes exactly
 `drain.After.CleanupsQueued != drain.Before.CleanupsQueued`. It preserves
@@ -149,7 +150,10 @@ declared files changed, and every other file's bytes stayed unchanged. Existing 
 directories refuse without overwriting; repeated verification is read-only.
 Prepare **once**, preserve this archive and receipt, and reuse the exact same
 archive bytes for every A/B/C external export. Re-preparing the same inputs at
-different locations produces identical archive and receipt bytes.
+different locations produces identical archive and receipt bytes. The synthetic
+control uses two wall clocks 100 seconds apart, checks the gzip header's mtime is
+zero independently, and checks every tar member's mtime is zero; it does not rely
+on two preparations happening within the same clock second.
 
 Each production export must replace its entire `tools/clientbench` directory
 with this archive, rather than layering onto a moving harness containing extra
@@ -195,9 +199,35 @@ source-file identity or qualify benchmark output.
 existing `bench_test.go`. Its real Go tests exercise `RunPhase`, sample/window
 bounds, separate warmup and measured phases, fence inversion/missing/zero cases,
 wall-duration mismatch, failed/empty populations, exact int64 JSON round-trip
-above 2^53 and UTC/Unix nanosecond agreement. These behavioral tests require an
-explicitly authorized later frozen-export Bazel validation; their presence in
-this patch is **not** an execution receipt.
+above 2^53 and UTC/Unix nanosecond agreement. Both UTC endpoints are checked in an
+ordered slice, not a map keyed by timestamp text: equal or missing strings cannot
+collapse the two checks.
+
+The existing integration smoke executes the actual `Run` path in each of its 22
+Go/CGo workload cells, reads the published `summary.json` into int64/string
+fields, and requires the format, increasing nanosecond timestamps above 2^53,
+positive measured wall time, canonical UTC agreement for each endpoint, and
+containment in the child's external invocation bracket. It does not equate
+realtime endpoint subtraction with the monotonic wall duration. Removing fence
+publication from `Run` therefore fails the real smoke rather than merely leaving
+helper tests green.
+
+The direct invalid-`Phase` controls prove `measurementFences` rejects malformed
+phases; they do **not** execute `Run`'s fenceErr-only propagation branch. Valid
+public configuration produces a positive measured population, and operation,
+stats or counter failures already set `runErr` before that branch. An
+otherwise-successful invalid clock window cannot be induced through the current
+public inputs without clock mutation, a timing hook or a production refactor.
+None is introduced here; the fenceErr-only branch remains an explicit behavioral
+coverage limit. Runtime `run.go` bytes, including boundary clocks and error
+propagation, are unchanged by these control corrections.
+
+These behavioral tests require an explicitly authorized later frozen-export
+Bazel validation; their presence in this patch is **not** an execution receipt.
+The revised patch/context and Go-test/smoke hashes require a fresh external
+preparation and source receipt, plus renewed qualification. Earlier archives and
+qualification receipts remain historical evidence for their own pinned bytes,
+not verification of these revised controls.
 
 Repository validation remains `just test` (and the authorized full lane at the
 workstream boundary), not direct Python tests or `go test`. On the shared

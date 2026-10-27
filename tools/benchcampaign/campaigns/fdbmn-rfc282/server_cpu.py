@@ -25,12 +25,23 @@ def need(ok, message):
         raise CPUUnqualified(message)
 
 
+def mapping(value, label):
+    need(isinstance(value, dict), 'invalid ' + label + ' object')
+    return value
+
+
+def sequence(value, label):
+    need(isinstance(value, list), 'invalid ' + label + ' list')
+    return value
+
+
 def integer(value, label, minimum=0):
     need(type(value) is int and value >= minimum, 'invalid ' + label)
     return value
 
 
 def utc_ns(text):
+    need(isinstance(text, str), 'window timestamp is not explicit UTC')
     match = re.fullmatch(r'(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(?:Z|\+00:00)', text)
     need(match is not None, 'window timestamp is not explicit UTC')
     stamp = dt.datetime.fromisoformat(match[1]).replace(tzinfo=dt.timezone.utc)
@@ -52,6 +63,12 @@ def unit_population(layout):
 def validate_node(start, stop, samples, node, phase, units, max_gap_ns=2 * 10**9):
     """Validate the entire phase population before estimating any clean run."""
     for receipt, kind in ((start, 'start'), (stop, 'stop')):
+        mapping(receipt, 'sampler receipt')
+        mapping(receipt.get('cgroup_units'), 'cgroup units')
+        units_receipt = mapping(receipt.get('units'), 'sampler units')
+        sequence(units_receipt.get('names'), 'sampler unit names')
+        mapping(units_receipt.get('starttimes'), 'sampler starttimes')
+        mapping(receipt.get('cgroup_v2'), 'cgroup mount')
         need(receipt.get('host') == node and receipt.get('phase') == phase and receipt.get('kind') == kind,
              'foreign sampler receipt')
         need(receipt.get('process_cpu_format') == FORMAT, 'missing process CPU instrumentation')
@@ -73,6 +90,10 @@ def validate_node(start, stop, samples, node, phase, units, max_gap_ns=2 * 10**9
     integer(mount.get('inode'), 'cgroup mount inode', 1)
     need(groups == stop['cgroup_units'], 'cgroup identity/membership changed across phase')
     for unit, group in groups.items():
+        mapping(group, 'cgroup identity')
+        mapping(identities[unit], 'process identity')
+        sequence(group.get('threads'), 'cgroup threads')
+        sequence(group.get('procs'), 'cgroup processes')
         need(group['path'] == '/sys/fs/cgroup/system.slice/' + unit
              and group['pid'] == identities[unit]['pid'] and group['starttime'] == identities[unit]['starttime']
              and group['procs'] == [group['pid']], 'foreign cgroup/process membership')
@@ -86,8 +107,13 @@ def validate_node(start, stop, samples, node, phase, units, max_gap_ns=2 * 10**9
         integer(identity['pid'], 'PID', 1)
         need(isinstance(identity['starttime'], str) and identity['starttime'].isdigit(), 'bad process starttime')
     need(len({p['pid'] for p in identities.values()}) == len(units), 'shared PID double count')
+    sequence(samples, 'CPU samples')
     need(len(samples) >= 2 and stop.get('samples') == len(samples), 'empty/incomplete CPU samples')
     for seq, sample in enumerate(samples):
+        mapping(sample, 'CPU sample')
+        mapping(sample.get('cgroup_cpu'), 'sampled cgroup CPU')
+        mapping(sample.get('process_cpu'), 'sampled process CPU')
+        mapping(sample.get('procs'), 'sampled process identities')
         need(sample.get('seq') == seq and sample.get('process_cpu_format') == FORMAT,
              'bad CPU sequence/format')
         need(not sample.get('error') and not sample.get('process_cpu_errors'), 'unreadable process CPU sample')
@@ -159,9 +185,8 @@ def estimate_run(run, nodes, measured_window=None):
         r4_u = int((bound * 10**9).to_integral_value(rounding=ROUND_CEILING))
         need((evidence['widened_start_ns'], evidence['widened_end_ns']) ==
              (lifecycle_start - r4_u, lifecycle_end + r4_u), 'R4 widened window differs')
-        # R4's one-second granularity reserve is for its 1Hz safety audit.
-        # CPU accounting bounds actual read intervals explicitly instead.
-        # A measured sidecar's bound also includes its own chrony receipts.
+        # R4's 1Hz reserve is separate from CPU read intervals and chrony
+        # bounds; the sidecar contributes its own chrony receipts.
         cpu_bound = max(bound - Decimal('1.001'), nodes[node].get('clock_bound_s', Decimal('0')))
         quantum_ns = 1 if measured_window is not None else 1_000_000
         u = int((cpu_bound * 10**9).to_integral_value(rounding=ROUND_CEILING)) + CLOCK_RESERVE_NS + quantum_ns

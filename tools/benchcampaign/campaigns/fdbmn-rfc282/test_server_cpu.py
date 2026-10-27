@@ -54,6 +54,31 @@ class Tests(unittest.TestCase):
         self.assertIn('measured quota', result['scope'])
         self.assertEqual(result['nodes']['node1']['clock_bound_ns'], 2_000_001)
 
+    def test_raw_cgroup_deltas_differ_from_proc_and_component_diagnostics(self):
+        _, units, telemetry, _, run = fixture()
+        nodes = {}
+        for node, (start, stop, samples) in telemetry.items():
+            for sample in samples:
+                seq = sample['seq']
+                for process in sample['process_cpu'].values():
+                    process.update(user_ticks=seq * 3, system_ticks=seq * 2)
+                for group in sample['cgroup_cpu'].values():
+                    group.update(usage_usec=seq * 7000, user_usec=seq * 1000, system_usec=seq * 2000)
+            nodes[node] = cpu.validate_node(start, stop, samples, node, 'M1w1', units[node])
+        result = cpu.estimate_run(run, nodes, (1_200_000_000, 1_400_000_000))
+        self.assertAlmostEqual(result['bracket_cores'], 11.9)
+        self.assertAlmostEqual(result['bracket_cpu_seconds'], 2.618)
+        self.assertAlmostEqual(sum(value['bracket_user_cpu_seconds'] for value in result['nodes'].values()), .374)
+        self.assertAlmostEqual(sum(value['bracket_system_cpu_seconds'] for value in result['nodes'].values()), .748)
+        for node, (start, stop, samples) in telemetry.items():
+            for sample in samples:
+                for group in sample['cgroup_cpu'].values():
+                    group.update(usage_usec=0, user_usec=0, system_usec=0)
+            nodes[node] = cpu.validate_node(start, stop, samples, node, 'M1w1', units[node])
+        zero = cpu.estimate_run(run, nodes, (1_200_000_000, 1_400_000_000))
+        self.assertEqual(zero['bracket_cpu_seconds'], 0)
+        self.assertEqual(zero['bracket_cores'], 0)
+
     def test_user_and_system_are_added_once_no_child_or_host_cpu(self):
         _, units, telemetry, _, run = fixture()
         nodes = {}
@@ -88,7 +113,7 @@ class Tests(unittest.TestCase):
         self.assertGreater(result['upper_cpu_seconds'], 0)  # quantization is not precision
 
     def test_pid_restart_reuse_foreign_missing_and_bad_ticks_refuse(self):
-        for mutation in ('restart', 'reuse', 'missing', 'foreign', 'negative', 'decrease', 'float', 'error', 'duplicate_pid'):
+        for mutation in ('restart', 'reuse', 'missing', 'foreign', 'negative', 'decrease', 'float', 'error'):
             with self.subTest(mutation=mutation):
                 _, units, telemetry, _, _ = fixture()
                 start, stop, samples = telemetry['node1']
@@ -102,17 +127,14 @@ class Tests(unittest.TestCase):
                 if mutation == 'decrease': process['user_ticks'] = 0
                 if mutation == 'float': process['user_ticks'] = 20.0
                 if mutation == 'error': samples[20]['process_cpu_errors'] = {unit: 'read failed'}
-                if mutation == 'duplicate_pid':
-                    start['units']['starttimes'][sorted(units['node1'])[1]]['pid'] = start['units']['starttimes'][unit]['pid']
                 with self.assertRaises(ValueError): cpu.validate_node(start, stop, samples, 'node1', 'M1w1', units['node1'])
 
     def test_phase_wide_malformed_clock_gap_counter_receipt_and_population_controls(self):
-        for mutation in ('sequence', 'gap', 'clock_step', 'read_overlap', 'hz', 'changed_hz', 'boot', 'old_sample', 'empty'):
+        for mutation in ('sequence', 'clock_step', 'read_overlap', 'hz', 'changed_hz', 'boot', 'old_sample', 'empty'):
             with self.subTest(mutation=mutation):
                 _, units, telemetry, _, _ = fixture()
                 start, stop, samples = telemetry['node1']
                 if mutation == 'sequence': samples[20]['seq'] = 19
-                if mutation == 'gap': samples[20]['monotonic_ns'] += 3_000_000_000
                 if mutation == 'clock_step': samples[20]['realtime_ns'] += 2_000_000
                 if mutation == 'read_overlap': samples[20]['realtime_after_ns'] += 20_000_000
                 if mutation == 'hz': start['clock_ticks_per_second'] = 0
@@ -121,6 +143,40 @@ class Tests(unittest.TestCase):
                 if mutation == 'old_sample': samples[20].pop('process_cpu_format')
                 if mutation == 'empty': samples.clear()
                 with self.assertRaises(ValueError): cpu.validate_node(start, stop, samples, 'node1', 'M1w1', units['node1'])
+
+    def test_gap_limit_is_independent_of_clock_correlation_and_inclusive(self):
+        for shift, accepted in ((10_000_000, True), (10_000_001, False)):
+            _, units, telemetry, _, _ = fixture()
+            start, stop, samples = telemetry['node1']
+            for sample in samples[20:]:
+                for field in ('realtime_ns', 'realtime_after_ns', 'monotonic_ns'):
+                    sample[field] += shift
+            if accepted:
+                data = cpu.validate_node(start, stop, samples, 'node1', 'M1w1', units['node1'], max_gap_ns=20_000_000)
+                self.assertEqual(data['correlation_range_ns'], 0)
+            else:
+                with self.assertRaisesRegex(cpu.CPUUnqualified, 'CPU gap or overlapping sample reads'):
+                    cpu.validate_node(start, stop, samples, 'node1', 'M1w1', units['node1'], max_gap_ns=20_000_000)
+
+    def test_exclusivity_guards_have_consistent_receipt_and_sample_identities(self):
+        for mutation, reason in (('pid', 'shared PID double count'), ('group', 'shared cgroup double count'),
+                                 ('controller', 'missing/changed cgroup v2 CPU mount')):
+            _, units, telemetry, _, _ = fixture()
+            start, stop, samples = telemetry['node1']
+            first, second = sorted(units['node1'])[:2]
+            for receipt in (start, stop):
+                if mutation == 'pid':
+                    pid = receipt['units']['starttimes'][first]['pid']
+                    receipt['units']['starttimes'][second]['pid'] = pid
+                    receipt['cgroup_units'][second].update(pid=pid, procs=[pid], threads=[pid, pid + 1000])
+                if mutation == 'group':
+                    receipt['cgroup_units'][second]['inode'] = receipt['cgroup_units'][first]['inode']
+                if mutation == 'controller': receipt['cgroup_v2']['controllers'] = ['memory']
+            for sample in samples:
+                if mutation == 'pid': sample['process_cpu'][second]['pid'] = start['units']['starttimes'][first]['pid']
+                sample['cgroup_cpu'][second].update(start['cgroup_units'][second])
+            with self.assertRaisesRegex(cpu.CPUUnqualified, reason):
+                cpu.validate_node(start, stop, samples, 'node1', 'M1w1', units['node1'])
 
     def test_m2_lifecycle_retains_timestamp_precision_reserve(self):
         _, _, _, nodes, run = fixture()
@@ -131,8 +187,11 @@ class Tests(unittest.TestCase):
 
     def test_short_windows_and_clock_uncertainty_are_visible_unqualified_not_interpolated(self):
         _, _, _, nodes, run = fixture()
+        # 130ms outer / 110ms measured passes20%; exactly nine inner intervals fails ten.
         with self.assertRaisesRegex(ValueError, 'resolution unqualified'):
-            cpu.estimate_run(run, nodes, (1_200_000_000, 1_250_000_000))
+            cpu.estimate_run(run, nodes, (1_200_000_000, 1_310_000_000))
+        accepted = cpu.estimate_run(run, nodes, (1_200_000_000, 1_320_000_000))
+        self.assertEqual(accepted['nodes']['node1']['inner_intervals'], 10)
         for data in nodes.values(): data['clock_bound_s'] = Decimal('0.2')
         with self.assertRaisesRegex(ValueError, 'resolution unqualified'):
             cpu.estimate_run(run, nodes, (1_300_000_000, 1_500_000_000))
@@ -178,16 +237,32 @@ class Tests(unittest.TestCase):
             cpu.validate_node(start, stop, accumulated, 'node1', 'M1w1', units['node1'])
 
     def test_edge_counter_read_brackets_not_just_sample_start_end_must_cover(self):
-        for field, value in [('coverage_start_ns', 1_200_000_000), ('coverage_end_ns', 1_400_000_000)]:
-            _, _, _, nodes, run = fixture()
-            cpu.estimate_run(run, nodes, (1_200_000_000, 1_400_000_000))  # positive control
-            nodes['node1'][field] = value
-            with self.assertRaisesRegex(ValueError, 'certainly bracket'):
-                cpu.estimate_run(run, nodes, (1_200_000_000, 1_400_000_000))
+        for edge in ('start', 'end'):
+            for qualified in (True, False):
+                with self.subTest(edge=edge, qualified=qualified):
+                    _, units, telemetry, nodes, run = fixture()
+                    start, stop, samples = telemetry['node1']
+                    samples = samples[19:42]
+                    if edge == 'start':
+                        samples[0]['realtime_after_ns'] = 1_197_000_000 if qualified else 1_198_000_000
+                    else:
+                        stamp = 1_402_000_001 if qualified else 1_401_000_000
+                        samples[-1].update(realtime_ns=stamp, monotonic_ns=stamp, realtime_after_ns=1_403_000_000)
+                    for seq, sample in enumerate(samples): sample['seq'] = seq
+                    stop['samples'] = len(samples)
+                    data = cpu.validate_node(start, stop, samples, 'node1', 'M1w1', units['node1'], max_gap_ns=20_000_000)
+                    self.assertEqual(data['coverage_start_ns'], samples[0]['realtime_after_ns'])
+                    self.assertEqual(data['coverage_end_ns'], samples[-1]['realtime_ns'])
+                    nodes['node1'] = data
+                    if qualified:
+                        cpu.estimate_run(run, nodes, (1_200_000_000, 1_400_000_000))
+                    else:
+                        with self.assertRaisesRegex(cpu.CPUUnqualified, 'certainly bracket'):
+                            cpu.estimate_run(run, nodes, (1_200_000_000, 1_400_000_000))
 
     def test_cgroup_missing_foreign_membership_reset_and_recreation_refuse(self):
         for mutation in ('missing', 'foreign_path', 'foreign_process', 'foreign_thread', 'reset', 'negative',
-                         'units', 'recreate', 'components', 'component_reset', 'shared_group', 'mount'):
+                         'units', 'recreate', 'components', 'component_reset'):
             with self.subTest(mutation=mutation):
                 _, units, telemetry, _, _ = fixture()
                 start, stop, samples = telemetry['node1']
@@ -205,10 +280,6 @@ class Tests(unittest.TestCase):
                 if mutation == 'components': group.pop('system_usec')
                 if mutation == 'component_reset':
                     group.update(user_usec=0, system_usec=group['usage_usec'])
-                if mutation == 'mount': start['cgroup_v2']['controllers'] = ['memory']
-                if mutation == 'shared_group':
-                    second = sorted(units['node1'])[1]
-                    start['cgroup_units'][second]['inode'] = start['cgroup_units'][unit]['inode']
                 with self.assertRaises(ValueError):
                     cpu.validate_node(start, stop, samples, 'node1', 'M1w1', units['node1'])
 

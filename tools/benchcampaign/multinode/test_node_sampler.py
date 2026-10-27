@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import signal
 import sys
 import tempfile
 import unittest
@@ -416,6 +417,53 @@ class CgroupTest(Temp):
         self.assertNotIn('cgroup_cpu_errors', sample)
         self.assertEqual(sample['procs'], {self.unit: '500'})
         self.assertEqual(sample['process_cpu'][self.unit]['pid'], 1000)
+
+    def test_positive_receipt_cli_forwards_explicit_cgroup_source(self):
+        host, expected = self.host_and_receipt()
+        output = self.tmp / 'cgroup-before.json'
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc = ns.main(['receipt', '--host', 'node1', '--phase', 'M1w1', '--kind', 'before',
+                          '--unit', self.unit, '--cgroup-cpu', '--output', str(output)], host=host)
+        self.assertEqual(rc, 0)
+        receipt = json.loads(output.read_text())
+        self.assertEqual(receipt['kind'], 'before')
+        self.assertEqual(receipt['cgroup_cpu_format'], 'fdb-bench-cgroup-cpu/v1')
+        self.assertEqual(receipt['cgroup_v2'], expected['cgroup_v2'])
+        self.assertEqual(receipt['cgroup_units'], expected['cgroup_units'])
+        self.assertEqual(receipt['units']['names'], [self.unit])
+
+    def test_positive_run_cli_forwards_explicit_cgroup_source_and_collects_nonempty_stream(self):
+        host, expected = self.host_and_receipt()
+        output = self.tmp / 'cgroup-cli-run'
+        handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                rc = ns.main(['run', '--host', 'node1', '--phase', 'M1w1', '--unit', self.unit,
+                              '--cgroup-cpu', '--interval', '0.01', '--max-seconds', '1',
+                              '--output-dir', str(output)], host=host)
+        finally:
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
+        self.assertEqual(rc, 0)
+        start, stop = (json.loads((output / ('receipt-' + kind + '.json')).read_text()) for kind in ('start', 'stop'))
+        samples = [json.loads(line) for line in (output / 'samples.jsonl').read_text().splitlines()]
+        self.assertGreater(len(samples), 10)
+        self.assertEqual(stop['samples'], len(samples))
+        self.assertEqual(stop['stop_reason'], 'max-seconds')
+        self.assertEqual(stop['samples_sha256'], ns.sha256_file(output / 'samples.jsonl'))
+        for receipt in (start, stop):
+            self.assertEqual(receipt['cgroup_cpu_format'], 'fdb-bench-cgroup-cpu/v1')
+            self.assertEqual(receipt['cgroup_v2'], expected['cgroup_v2'])
+            self.assertEqual(receipt['cgroup_units'], expected['cgroup_units'])
+        for seq, sample in enumerate(samples):
+            self.assertEqual(sample['seq'], seq)
+            self.assertEqual(sample['cgroup_cpu_format'], 'fdb-bench-cgroup-cpu/v1')
+            self.assertNotIn('cgroup_cpu_errors', sample)
+            counter = sample['cgroup_cpu'][self.unit]
+            self.assertEqual({key: counter[key] for key in expected['cgroup_units'][self.unit]},
+                             expected['cgroup_units'][self.unit])
+            self.assertGreaterEqual(counter['usage_usec'], 100000)
+            self.assertEqual(set(sample['cgroup_cpu']), {self.unit})
 
     def test_source_proof_refuses_unsupported_foreign_empty_duplicate_and_nested_groups(self):
         for mutation in ('v1', 'controller', 'foreign_group', 'path_escape', 'nested', 'foreign_pid', 'empty_pid',

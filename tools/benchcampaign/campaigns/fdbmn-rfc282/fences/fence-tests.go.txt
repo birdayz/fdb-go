@@ -68,10 +68,13 @@ func TestMeasurementFencesKeepNanosecondPrecision(t *testing.T) {
 	if got.Format != "fdb-bench-measured-fences/v1" || got.Start != start.UnixNano() || got.End != p.Ended.UnixNano() {
 		t.Fatalf("lost integer timestamp precision: %+v", got)
 	}
-	for text, want := range map[string]time.Time{got.StartUTC: start, got.EndUTC: p.Ended} {
-		parsed, err := time.Parse(time.RFC3339Nano, text)
-		if err != nil || parsed.UnixNano() != want.UnixNano() {
-			t.Fatalf("UTC fence disagrees with Unix ns: %q", text)
+	for _, endpoint := range []struct {
+		text string
+		want time.Time
+	}{{got.StartUTC, start}, {got.EndUTC, p.Ended}} {
+		parsed, err := time.Parse(time.RFC3339Nano, endpoint.text)
+		if err != nil || parsed.UnixNano() != endpoint.want.UnixNano() {
+			t.Fatalf("UTC fence disagrees with Unix ns: %q", endpoint.text)
 		}
 	}
 }

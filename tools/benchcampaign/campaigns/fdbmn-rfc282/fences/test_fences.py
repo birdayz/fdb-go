@@ -67,6 +67,8 @@ class FenceOverlayTest(unittest.TestCase):
     def test_build_compatibility_only_exports_four_existing_scripts(self):
         self.assertEqual(self.manifest['original_sha256'][BUILD],
                          '8b56aadaced964d10d425acfb42b6bb509aa850351fe1421b1c989d8e7e778c1')
+        self.assertEqual(hashlib.sha256(self.sources[BUILD].encode()).hexdigest(),
+                         self.manifest['original_sha256'][BUILD])
         patched = apply_patch(self.sources, self.patch)[BUILD]
         block = ('exports_files(\n    [\n        "analyze.py",\n        "matrix_plan.py",\n'
                  '        "r3_plan.py",\n        "run.py",\n    ],\n'
@@ -86,11 +88,26 @@ class FenceOverlayTest(unittest.TestCase):
         self.assertNotIn('tools/clientbench/scripts/run.py', patched)
         self.assertNotIn('tools/clientbench/README.md', patched)
 
-    def test_smoke_contract_only_drops_obsolete_completed_cleanup_growth_rejection(self):
+    def test_smoke_preserves_cleanup_contract_and_checks_run_summary_publication(self):
         patched = apply_patch(self.sources, self.patch)[SMOKE]
         obsolete = '\t\t\t\t\t\tdrain.After.CleanupsQueued != drain.Before.CleanupsQueued ||\n'
         self.assertEqual(self.sources[SMOKE].count(obsolete), 1)
-        self.assertEqual(patched, self.sources[SMOKE].replace(obsolete, ''))
+        smoke_patch = self.patch.split('--- a/' + SMOKE + '\n', 1)[1]
+        removed = [line[1:] + '\n' for line in smoke_patch.splitlines()
+                   if line.startswith('-') and not line.startswith('---')]
+        self.assertEqual(removed, [obsolete])
+        self.assertNotIn(obsolete, patched)
+        for field in ('measured_fences_format', 'measured_started_unix_ns', 'measured_ended_unix_ns',
+                      'measured_started_utc', 'measured_ended_utc', 'measured_wall_ns'):
+            self.assertIn('`json:"' + field + '"`', patched)
+        for check in ('summary.FencesFormat != "fdb-bench-measured-fences/v1"',
+                      'summary.StartedNS <= 1<<53', 'summary.EndedNS <= summary.StartedNS',
+                      'summary.WallNS <= 0', 'summary.StartedNS < invocationStarted.UnixNano()',
+                      'summary.EndedNS > invocationEnded.UnixNano()',
+                      '{summary.StartedUTC, summary.StartedNS}, {summary.EndedUTC, summary.EndedNS}',
+                      'parsed.UnixNano() != endpoint.ns',
+                      'endpoint.text != time.Unix(0, endpoint.ns).UTC().Format(time.RFC3339Nano)'):
+            self.assertIn(check, patched)
         for check in ('!drain.Complete', 'drain.Rounds < 2', 'drain.WallNS <= 0',
                       'drain.After.FinalizersExecuted != drain.After.FinalizersQueued',
                       'drain.After.CleanupsExecuted != drain.After.CleanupsQueued'):
@@ -108,6 +125,9 @@ class FenceOverlayTest(unittest.TestCase):
                      'TestMeasurementFencesKeepNanosecondPrecision'):
             self.assertIn('func ' + name + '(t *testing.T)', patched)
         self.assertIn('json.Unmarshal(data, &got)', controls)
+        self.assertIn('{got.StartUTC, start}, {got.EndUTC, p.Ended}', controls)
+        self.assertNotIn('range map[string]time.Time', controls)
+        self.assertIn('parsed.UnixNano() != endpoint.want.UnixNano()', controls)
         self.assertIn('p.WallNS++', controls)
         self.assertIn('p.Started, p.Ended = p.Ended, p.Started', controls)
         self.assertIn('measured.Started.Before(warm.Ended)', controls)

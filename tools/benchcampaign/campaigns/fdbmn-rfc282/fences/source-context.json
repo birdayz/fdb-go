@@ -1,9 +1,35 @@
 {
   "base_revision": "d94b4c61377d173b7c6884fde426a227dab0f0bb",
-  "go_controls_sha256": "7111754dc198414fd64bfecfdc355fe898c9cbe28ab09a5ac89c2433566641dd",
+  "go_controls_sha256": "753ed12f333fed8e2d28a4aadd65614d67d6056fd32ead5803e3207f4cfb668f",
   "original_context": {
     "tools/clientbench/integration/smoke_test.go": {
       "hunks": [
+        {
+          "lines": [
+            "\t\t\t\t\t\tt.Fatalf(\"unsafe lifecycle environment %q accepted: err=%v output=%s\", env, err, text)\n",
+            "\t\t\t\t\t}\n",
+            "\t\t\t\t}\n",
+            "\t\t\t\tif text, err := execute(args); err != nil {\n",
+            "\t\t\t\t\tt.Fatalf(\"benchmark failed: %v\\n%s\", err, text)\n",
+            "\t\t\t\t}\n",
+            "\t\t\t\tvar summary struct {\n",
+            "\t\t\t\t\tSuccess             bool                 `json:\"success\"`\n",
+            "\t\t\t\t\tCompleted           int                  `json:\"completed\"`\n",
+            "\t\t\t\t\tErrors              int                  `json:\"errors\"`\n"
+          ],
+          "start": 83
+        },
+        {
+          "lines": [
+            "\t\t\t\tif !summary.Success || summary.Completed != 5 || summary.WarmupCompleted != 3 || summary.Errors != 0 || summary.WarmupErrors != 0 || summary.PersistedValidation != \"ok\" {\n",
+            "\t\t\t\t\tt.Fatalf(\"invalid completed run: %+v\", summary)\n",
+            "\t\t\t\t}\n",
+            "\t\t\t\tif summary.After.UserUS+summary.After.SystemUS <= summary.Before.UserUS+summary.Before.SystemUS {\n",
+            "\t\t\t\t\tt.Fatal(\"missing measured-phase getrusage CPU\")\n",
+            "\t\t\t\t}\n"
+          ],
+          "start": 103
+        },
         {
           "lines": [
             "\t\t\t\tfor _, drain := range []bench.FinalizerDrain{life.MeasurementDrain, life.ShutdownDrain} {\n",
@@ -186,10 +212,10 @@
     "tools/clientbench/scripts/r3_plan.py": "effa82052b4327d0998b4c914250f4bd1e66e22397003b818d55f4892904f9d3",
     "tools/clientbench/scripts/test_campaign.py": "228664e32b4e8aca5f22ab557df50456b455768d0e96a03687931fcbb8e6ccbd"
   },
-  "patch_sha256": "466d02c13d1b80493dedc31c88057e0640ba0321ca18ab90f25c1a41bde67cab",
+  "patch_sha256": "887b0f2be1b425a357127c0cf6f4fc3488d51a67fb344aa283c5cce2a9cc0fcf",
   "patched_sha256": {
-    "tools/clientbench/integration/smoke_test.go": "e1c608c4b9f439063e4c84af54ecbdc191dae46c6970f248d09ebfc882f8ca01",
-    "tools/clientbench/internal/bench/bench_test.go": "1ac0484a8c1846a15efcf2a8c71c6c516d624a8a8ef568caffe9fdb32be0967a",
+    "tools/clientbench/integration/smoke_test.go": "c5cd32915486929a1d1d5b1dc9c13f36bc6be0c1fc8b1978853c3b97bae79945",
+    "tools/clientbench/internal/bench/bench_test.go": "e264c5ee57fc2491ff28d7cfef6c6fa30a3ed774b4d9d0cce5f5d58a9e934413",
     "tools/clientbench/internal/bench/run.go": "c1baf2bc6631db1cbc02bcd4ea0bd1ee161657146f58e8ee1801807374162f76",
     "tools/clientbench/scripts/BUILD.bazel": "b795f7634215896deb22585621e5fabee18e5ddb3059a09781808b7ef2b92cb4",
     "tools/clientbench/scripts/matrix_plan.py": "a4cc76e6c206279ba1a8a1d8dae8b70f7c195527c8c3aa4ae48e2a1f16ad3a67",
