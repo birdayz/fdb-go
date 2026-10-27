@@ -11,8 +11,9 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// IngestDiagnostics measures source batches only; overlapping phases are not
-// critical-path time. See README.md for attempt, timer and sampling boundaries.
+// IngestDiagnostics measures source batches; overlapping phases are not
+// critical-path time. ClientMetrics has its own whole-handle scope, including
+// initialization and ready publication; its snapshots are not per-batch deltas.
 type IngestDiagnostics struct {
 	Scope                    string                                  `json:"scope"`
 	SourceRuns               int64                                   `json:"source_runs"`
@@ -24,6 +25,8 @@ type IngestDiagnostics struct {
 	CommittedRows            int64                                   `json:"committed_rows"`
 	ApproximateMutationBytes int64                                   `json:"approximate_mutation_bytes"`
 	PhaseNanos               map[string]int64                        `json:"phase_nanos"`
+	PhaseLatencies           map[string]IngestPhaseLatency           `json:"phase_latencies"`
+	ClientMetrics            *IngestClientMetrics                    `json:"client_metrics,omitempty"`
 	Timer                    map[string]*recordlayer.CounterSnapshot `json:"timer"`
 }
 
@@ -44,9 +47,7 @@ func (d *ingestRecorder) phase(name string, started time.Time) {
 	if d == nil {
 		return
 	}
-	d.mu.Lock()
-	d.out.PhaseNanos[name] += time.Since(started).Nanoseconds()
-	d.mu.Unlock()
+	d.observePhase(name, time.Since(started))
 }
 
 func (d *ingestRecorder) run(attempts int64, started time.Time) {
@@ -59,7 +60,9 @@ func (d *ingestRecorder) run(attempts int64, started time.Time) {
 	if attempts > 1 {
 		d.out.SourceReplays += attempts - 1
 	}
-	d.out.PhaseNanos["run"] += time.Since(started).Nanoseconds()
+	elapsed := time.Since(started)
+	d.out.PhaseNanos["run"] += elapsed.Nanoseconds()
+	d.latencyLocked("run", elapsed)
 	d.mu.Unlock()
 }
 
@@ -152,12 +155,13 @@ func (b *FDBBackend) prepareBatch(ctx context.Context, lo int) (preparedBatch, e
 
 func (b *FDBBackend) saveIngestBatchRun(ctx context.Context, batch preparedBatch, d *ingestRecorder) error {
 	started := time.Now()
+	runTimer := d.newRunTimer()
 	var attempts int64
 	_, err := b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
 		attempts++
 		b.observeIngest("attempt", batch, nil)
 		if d != nil {
-			rc.SetTimer(d.timer)
+			rc.SetTimer(runTimer)
 		}
 		phase := time.Now()
 		err := b.readManifest(rc, false)
@@ -204,10 +208,19 @@ func (b *FDBBackend) saveIngestBatchRun(ctx context.Context, batch preparedBatch
 		return nil, nil
 	})
 	d.run(attempts, started)
+	d.mergeTimer(runTimer)
 	return err
 }
 
-func (b *FDBBackend) Ingest(ctx context.Context) (Statistics, error) {
+func (b *FDBBackend) Ingest(ctx context.Context) (stats Statistics, retErr error) {
+	if b.cfg.Diagnostics {
+		before := b.raw.Metrics()
+		defer func() {
+			if stats.Diagnostics != nil {
+				stats.Diagnostics.ClientMetrics = &IngestClientMetrics{Scope: ingestClientMetricsScope, Before: before, After: b.raw.Metrics()}
+			}
+		}()
+	}
 	_, err := b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
 		if err := configureRecordTimeout(rc); err != nil {
 			return nil, err
@@ -303,7 +316,7 @@ produce:
 	b.observeIngest("producer_done", preparedBatch{}, jobs)
 	b.observeIngest("before_join", preparedBatch{}, jobs)
 	workers.Wait()
-	stats := Statistics{Rows: rows, Attributes: rows * int64(b.cfg.Attributes), LogicalPayloadBytes: logical, Diagnostics: d.snapshot(rows, batches), Details: map[string]string{
+	stats = Statistics{Rows: rows, Attributes: rows * int64(b.cfg.Attributes), LogicalPayloadBytes: logical, Diagnostics: d.snapshot(rows, batches), Details: map[string]string{
 		"ingest":                 "real Record Layer saves + synchronous custom covering secondary index",
 		"payload_bytes":          "fixture JSON logical bytes, not FDB serialized/storage bytes",
 		"committed_batches":      strconv.FormatInt(batches, 10),

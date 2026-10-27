@@ -7,6 +7,11 @@ open-loop SLO, compression, or production win merely by running successfully.
 The design/research lives alongside the code under `rfcs/`, `reports/`, and
 `research_notes/`.
 
+**Final PoC target: 10,000,000 stored spans.** The owner reduced the original
+100M target to 10M. Complete the 10M validation/comparison and stop; no 100M load
+or further scale-up is in scope. Historical measurements and failed arms remain
+unchanged.
+
 ## Implemented semantic class
 
 * Fixture **V2**, configurable seed/population/tenants/attribute count/selectivity.
@@ -97,8 +102,8 @@ production SLOs. All tails remain in the receipts, including a 6.737-ms span
 lookup and 6.846-ms common-provider query. The owned census is 3.435 GB of logical
 KV; the 2.810-GB whole-volume growth is not isolated per-run physical storage or
 a safe 100M multiplier. Earlier failed and monitor-aborted arms remain separate.
-**The 100M capacity/concurrency gates and broader production competitiveness
-remain open.**
+**The final 10M capacity/validation gate remains open.** A 100M load is out of
+scope; broader production competitiveness is not established.
 
 Receipts: [completed 1M load/audit](bench/evidence/2026-10-27/pilot-1m-v2-workers2-complete/)
 and [three warm query rounds](bench/evidence/2026-10-27/query-1m-fdb-warm/).
@@ -335,9 +340,11 @@ public Ingest still rejects an existing namespace.
 Receipts record strategy and worker count; these and diagnostics do not change
 source fingerprints or stored layout ownership.
 
-`--diagnostics` adds bounded source-batch-only instrumentation to ingest receipts
-(default off, scope `source_batches_only`). Initialization and ready publication
-are excluded; preparation includes batches discarded on cancellation. `source_runs`
+`--diagnostics` adds bounded instrumentation to ingest receipts (default off).
+Source counters, phases and timers have scope `source_batches_only` and exclude
+initialization and ready publication; preparation includes batches discarded on
+cancellation. The separately scoped `client_metrics` snapshots are an explicit
+exception described below. `source_runs`
 counts Run calls, `source_attempts` counts closure entries, and `source_replays`
 counts internal closure entries beyond the first per Run, not transport retries
 or RPCs. `source_timeouts` counts source Runs reporting 1031, including exhaustion;
@@ -362,6 +369,32 @@ counters; missing counters are not evidence that this work was free. Failure
 receipts retain acknowledged batch/row counts, not an authoritative persisted
 census when a canceled commit has an unknown outcome. Existing attempt observers
 are preserved.
+
+`phase_latencies` adds exact count/total/min/max nanoseconds for each observed
+phase, including failed attempt phases and discarded preparation. These are not
+quantiles. Commit observations use isolated per-Run timers merged after each Run
+returns, so concurrent workers cannot contaminate each other's samples; the same
+successful-Run/observer boundaries apply as for `timer`.
+
+`client_metrics.before` and `.after` retain the existing client's cumulative
+snapshots without extra RPCs. Their explicit scope is the **whole database
+handle**, including initialization, ready publication and any concurrent users,
+not just source batches. Latency statistics retain client API units of seconds
+and lifetime populations; never subtract their means, extrema or quantiles to
+claim interval distributions. Read latency covers GetValue, not all range reads.
+Monotonic counters can be differenced, but snapshot fields are not an atomic
+cross-counter transaction. These snapshots accompany receipts with source-batch
+diagnostics; an initialization failure before source processing has no such
+receipt. Neither diagnostics nor the unchanged-posting optimization establishes
+a throughput improvement or a 20k-spans/s result.
+
+For readable custom indexes, updates compare complete encoded posting keys and
+covering values and leave identical pairs untouched. Changed values at the same
+key still replace the old value. WRITE_ONLY maintenance retains full clear/set
+behavior because unchanged entries might not have been built yet. This reduces
+replay/update mutations, not the mandatory postings for fresh inserts. Batch and
+worker defaults remain unchanged; any larger batch still needs fresh and
+already-committed replay checks under the same actual-size guard.
 
 FDB batches use `--batch` (default 32, max 64), conservative 300 KB estimates,
 500 KB approximate-write guards, 1 s save-plus-guard elapsed bound and 1.5 s

@@ -2835,13 +2835,27 @@ the run. This is fast-lane validation, not full-suite or 100M-scale evidence.
   A no-op successful Drop must fail these assertions; `DeleteAllRecords` coverage
   does not establish the backend Drop contract.
 
-### 100M stored-record proof requested by owner
+### Final 10M stored-record proof requested by owner
 
-The target is 100,000,000 stored spans, not an extrapolated QPS claim. Core Record
+The owner reduced the target to **10,000,000 stored spans**. Complete the 10M
+comparison and stop; no 100M load or further scale-up is in scope. Core Record
 Layer fixes are allowed for this proof; keep them in separable commits with
 regressions so they can be proposed upstream after the PoC.
 
-- [ ] Profile and accelerate real Record Layer ingestion before the 100M load.
+- [ ] Reach a measured 20,000 durably acknowledged spans/s with all eight custom
+  postings and both native indexes maintained synchronously. The completed 1M
+  arm achieved about 1,101/s at batch 32 / two workers. Its cumulative worker
+  timing averages about 58 ms per source batch, including about 32.6 ms in
+  successful commit; this is not a pure disk-latency measurement. Add explicit
+  client GRV/read/commit distributions without extra RPCs, profile before making
+  core changes, and check fresh plus already-committed replay transaction sizes
+  before increasing batches. Retain the 300KB estimate, 500KB actual-size,
+  save/time/retry guards and warning/backlog stops. More workers alone already
+  failed the earlier backlog gate. No 20k/s measurement or runtime change yet.
+  Fresh-volume profiling is blocked by the pinned image lacking `lsattr` for
+  the inode-flags safety gate. A replacement read-only probe requires explicit
+  approval and review; no helper installation or filesystem change is approved.
+- [ ] Profile and accelerate real Record Layer ingestion before the final 10M load.
   Compare serial/pipelined/batch APIs on matched data and transaction budgets,
   then bounded independent transaction workers. Retain old/new index maintenance,
   ownership checks, byte/time guards and complete-ready publication. Use measured
@@ -2902,7 +2916,7 @@ regressions so they can be proposed upstream after the PoC.
   median ratios about 9–14x above FDB's guarded path. All sixteen classes and
   tails remain intact; source/oracle populations are matched, not deadlines,
   engine-only costs, durability or acknowledgment batching. Broader SQL/layout/
-  projection tuning and the 100M/concurrent-load gates remain open. An explicit fresh-table granularity option (1..8192,
+  projection tuning and the final 10M/concurrent-load gates remain open. An explicit fresh-table granularity option (1..8192,
   default 8192) now pins CH manifests and records actual DDL/settings/marks; FDB
   manifest bytes and source identity are unchanged. Real 512/64 Map/attribute
   profiles pass both transports and the source oracle. Their implementation fast
@@ -2926,19 +2940,19 @@ regressions so they can be proposed upstream after the PoC.
   1M spans / 908.535 s, strict final drain, full 1M-record/8M-posting/native-index
   census and 1,600 oracle-checked answers passed. Three additional warm rounds
   verified all 48,000 answers (1,000/class/round); tail samples remain intact.
-  This is not 100M, a tuned-CH comparison, HA or a production SLO. Receipts:
+  This FDB-only gate is not the final 10M comparison, HA or a production SLO. Receipts:
   `layers/otel/bench/evidence/2026-10-27/pilot-1m-v2-workers2-complete/` and
   `layers/otel/bench/evidence/2026-10-27/query-1m-fdb-warm/`.
 - [ ] Gate capacity using measured physical volume/filesystem growth at 1M and 10M,
-  peak maintenance/log space, and a fixed free-space stop reserve. The 100k census
-  scales arithmetically to about 330 GB of FDB logical owned KV at 100M, not physical
-  usage; 423 GiB free on the host does not establish that FDB plus ClickHouse fits.
-  Run variants sequentially with owned cleanup when coexistence would be unsafe.
+  peak maintenance/log space, and a fixed free-space stop reserve. Logical KV
+  extrapolations and retained-volume deltas do not establish physical 10M fit or
+  safe coexistence with ClickHouse. Run variants sequentially; owned cleanup
+  requires approval, and protected data must not be deleted to force a pass.
   Respect FDB's own operating-space reserve too: exact 7.3 source defaults
   `MIN_AVAILABLE_SPACE=100 MB`, `MIN_AVAILABLE_SPACE_RATIO=0.05`; Ratekeeper uses
   the greater value and reports free-minus-reserve as `least_operating_space`.
   A host-only 64-GiB floor would not suffice on this roughly 1.9-TB filesystem;
-  preserve the database's reserve rather than lowering it to make 100M fit.
+  preserve the database's reserve rather than lowering it to force a fit.
   The completed 1M arm added 2.810 GB to the whole retained volume and owns
   3.435 GB logical KV, but old failed roots, fetch/merge history, logs and
   preallocation prevent treating that delta as isolated per-run physical bytes.
@@ -2950,8 +2964,9 @@ regressions so they can be proposed upstream after the PoC.
   real empty-Btrfs/minimum-capability validation, bootstrap and actual storage/
   log inode gates remain open. No existing-volume flag change is authorized;
   filesystem checksum/compression changes are not durability-equivalent evidence.
-- [ ] Load and verify the full 100M population, then retain repeated needle-query
-  latency/work receipts and sustained ingest-plus-concurrent-query measurements.
-  Report achieved throughput, p50/p95/p99/p99.9 populations, failures, CPU/RAM,
-  physical storage and write amplification. Keep cold/warm policy and durability
-  boundaries explicit; the current local single-node runs are not HA/SLO proof.
+- [ ] Load and verify the final 10M population and ClickHouse comparison, then
+  retain repeated needle-query latency/work receipts and bounded ingest-plus-
+  concurrent-query measurements. Report achieved throughput, p50/p95/p99/p99.9
+  populations, failures, CPU/RAM, physical storage and write amplification. Keep
+  cold/warm policy and durability boundaries explicit; the current local single-
+  node runs are not HA/SLO proof. Stop at 10M; the former 100M load is out of scope.

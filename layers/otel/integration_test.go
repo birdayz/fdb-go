@@ -212,6 +212,8 @@ func TestRealRecordLayerCoveringIndexes(t *testing.T) {
 			{"source_timeout_policy", testOtelTimeoutPolicy},
 			{"source_timeout_ordering", testOtelIngestTimeoutOrdering},
 			{"source_timeout_drop_safety", testOtelTimeoutDropSafety},
+			{"ingest_profiling", testOtelIngestProfiling},
+			{"posting_diff", testOtelPostingDiff},
 		} {
 			t.Run(order+"_"+check.name, func(t *testing.T) {
 				t.Parallel()
