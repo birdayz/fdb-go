@@ -197,6 +197,30 @@ func TestRealRecordLayerCoveringIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, order := range []string{"trace", "time"} {
+		for _, check := range []struct {
+			name string
+			run  func(*testing.T, context.Context, string, string)
+		}{
+			{"ingest_pool_bounds", testOtelIngestPoolBounds},
+			{"batch_replacement", testOtelBatchReplacement},
+			{"save_api_dispatch", testOtelSaveAPIDispatch},
+			{"ingest_replay", testOtelIngestReplay},
+		} {
+			t.Run(order+"_"+check.name, func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+				defer cancel()
+				check.run(t, ctx, cluster, order)
+			})
+		}
+		for _, mode := range []string{"serial", "pipelined", "batch"} {
+			t.Run(order+"_"+mode+"_internal_error_join", func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+				defer cancel()
+				testOtelWorkerErrorAndJoin(t, ctx, cluster, order, mode)
+			})
+		}
 		t.Run(order+"_intrinsic_v2", func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
@@ -419,20 +443,16 @@ func testOtelConcurrentIngestFailure(t *testing.T, ctx context.Context, cluster 
 	defer cancel()
 	var mu sync.Mutex
 	var inspectionErr error
-	var canceledAfterSource, returned, lateObserver bool
-	var successfulCalls, sourceSuccesses int
+	var canceledAfterSource bool
+	var sourceSuccesses int
 	sourceGate := make(chan struct{})
 	b.db.SetAttemptObserver(func(call recordlayer.AttemptCall, attemptErr error) {
 		mu.Lock()
-		if returned {
-			lateObserver = true
-		}
 		if attemptErr != nil {
 			cancel()
 			mu.Unlock()
 			return
 		}
-		successfulCalls++
 		commit, err := readOtelIngestCommit(ctx, b, call)
 		if err != nil {
 			inspectionErr = err
@@ -473,41 +493,10 @@ func testOtelConcurrentIngestFailure(t *testing.T, ctx context.Context, cluster 
 	defer b.db.SetAttemptObserver(nil)
 	stats, err := b.Ingest(ingestCtx)
 	mu.Lock()
-	returned = true
-	callsAtReturn := successfulCalls
 	observedErr, canceled := inspectionErr, canceledAfterSource
 	mu.Unlock()
 	if observedErr != nil || !canceled || !errors.Is(err, context.Canceled) {
 		t.Fatalf("worker ingestion did not fail after actual source commit: canceled=%t err=%v inspection=%v", canceled, err, observedErr)
-	}
-	// Raw snapshots do not themselves enter the Record Layer observer.
-	snapshot := func() map[string]string {
-		var rows []fdb.KeyValue
-		_, readErr := b.raw.ReadTransactCtx(ctx, func(tx fdb.ReadTransaction) (any, error) {
-			var err error
-			rows, err = tx.GetRange(b.root, fdb.RangeOptions{Limit: 20001}).GetSliceWithError()
-			return nil, err
-		})
-		if readErr != nil {
-			t.Fatal(readErr)
-		}
-		if len(rows) > 20000 {
-			t.Fatal("interrupted fixture snapshot exceeded bound")
-		}
-		out := make(map[string]string, len(rows))
-		for _, row := range rows {
-			out[string(row.Key)] = string(row.Value)
-		}
-		return out
-	}
-	before := snapshot()
-	time.Sleep(50 * time.Millisecond)
-	after := snapshot()
-	mu.Lock()
-	late, finalCalls, finalErr := lateObserver, successfulCalls, inspectionErr
-	mu.Unlock()
-	if late || finalCalls != callsAtReturn || finalErr != nil || !reflect.DeepEqual(before, after) {
-		t.Fatalf("Ingest returned before workers joined: late=%t calls=%d/%d inspection=%v", late, callsAtReturn, finalCalls, finalErr)
 	}
 	b.db.SetAttemptObserver(nil)
 	var sources map[int]Span
@@ -571,67 +560,11 @@ func testOtelConcurrentIngestFailure(t *testing.T, ctx context.Context, cluster 
 	// Cancellation can leave another in-flight commit durable without an
 	// acknowledged Run; receipts describe acknowledged progress, not recovery.
 	assertOtelIngestDiagnostics(t, stats, acknowledgedBatches, stats.Rows)
-	postings := otelSnapshot(t, ctx, b, otelSecondary(b))
-	if len(postings) != len(sources)*c.Attributes {
-		t.Fatalf("interrupted posting census=%d want %d", len(postings), len(sources)*c.Attributes)
-	}
-	identity := func(trace, span string, a Attribute) string {
-		wire, _ := json.Marshal([]any{trace, span, a})
-		return string(wire)
-	}
-	want := map[string]int64{}
+	committed := make([]Span, 0, len(sources))
 	for _, source := range sources {
-		for _, a := range source.Attributes {
-			want[identity(source.Trace, source.ID, a)] = source.Start
-		}
+		committed = append(committed, source)
 	}
-	for key, value := range postings {
-		var covered coveringValue
-		if err := json.Unmarshal([]byte(value), &covered); err != nil {
-			t.Fatal(err)
-		}
-		term := termPrefix(otelSecondary(b), c.Tenant, covered.Attribute, c.HashBytes)
-		suffix, err := term.Unpack(fdb.Key(key))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var trace, span string
-		if c.Order == "trace" {
-			if len(suffix) != 3 {
-				t.Fatalf("trace suffix arity: %+v", suffix)
-			}
-			var traceOK, spanOK bool
-			trace, traceOK = suffix[0].(string)
-			span, spanOK = suffix[1].(string)
-			if !traceOK || !spanOK {
-				t.Fatalf("trace suffix identity: %+v", suffix)
-			}
-		} else {
-			if len(suffix) != 4 {
-				t.Fatalf("time suffix arity: %+v", suffix)
-			}
-			timestamp, timeOK := suffix[0].(int64)
-			encoded, traceOK := suffix[1].([]byte)
-			var spanOK bool
-			span, spanOK = suffix[2].(string)
-			if !timeOK || timestamp != -covered.Start || !traceOK || !spanOK {
-				t.Fatalf("time suffix identity: %+v", suffix)
-			}
-			decoded := make([]byte, len(encoded))
-			for i, octet := range encoded {
-				decoded[i] = ^octet
-			}
-			trace = string(decoded)
-		}
-		id := identity(trace, span, covered.Attribute)
-		if timestamp, exists := want[id]; !exists || timestamp != covered.Start {
-			t.Fatalf("unexpected/duplicate posting %s: %+v", id, covered)
-		}
-		delete(want, id)
-	}
-	if len(want) != 0 {
-		t.Fatalf("missing %d memberships for committed sources", len(want))
-	}
+	assertOtelCommittedPostings(t, ctx, b, committed)
 	first := Generate(c, 0)
 	_, err = b.Query(ctx, first.Attributes[0])
 	requireOtelKind(t, err, "ownership")
@@ -805,71 +738,11 @@ func testOtelIngestPublicationAndDrop(t *testing.T, ctx context.Context, cluster
 		rc.Transaction().Set(b.root.FDBKey(), []byte("owned-root-boundary"))
 		return nil
 	})
-	postings := otelSnapshot(t, ctx, b, otelSecondary(b))
-	if len(postings) != wantRows*c.Attributes {
-		t.Fatalf("persisted posting population %d want %d", len(postings), wantRows*c.Attributes)
+	committed := make([]Span, wantRows)
+	for i := range committed {
+		committed[i] = Generate(c, i)
 	}
-	expectedPostings := make(map[string]int64, wantRows*c.Attributes)
-	postingIdentity := func(trace, span string, attribute Attribute) string {
-		identity, err := json.Marshal([]any{trace, span, attribute})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return string(identity)
-	}
-	for i := 0; i < wantRows; i++ {
-		source := Generate(c, i)
-		for _, attribute := range source.Attributes {
-			expectedPostings[postingIdentity(source.Trace, source.ID, attribute)] = source.Start
-		}
-	}
-	for key, value := range postings {
-		var covered coveringValue
-		if err := json.Unmarshal([]byte(value), &covered); err != nil {
-			t.Fatal(err)
-		}
-		term := termPrefix(otelSecondary(b), c.Tenant, covered.Attribute, c.HashBytes)
-		suffix, err := term.Unpack(fdb.Key(key))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var trace, span string
-		if c.Order == "trace" {
-			if len(suffix) != 3 {
-				t.Fatalf("trace posting suffix %+v", suffix)
-			}
-			var traceOK, spanOK bool
-			trace, traceOK = suffix[0].(string)
-			span, spanOK = suffix[1].(string)
-			if !traceOK || !spanOK {
-				t.Fatalf("trace posting identity %+v", suffix)
-			}
-		} else {
-			if len(suffix) != 4 {
-				t.Fatalf("time posting suffix %+v", suffix)
-			}
-			timestamp, timeOK := suffix[0].(int64)
-			encodedTrace, traceOK := suffix[1].([]byte)
-			var spanOK bool
-			span, spanOK = suffix[2].(string)
-			if !timeOK || timestamp != -covered.Start || !traceOK || !spanOK {
-				t.Fatalf("time posting identity %+v", suffix)
-			}
-			decoded := make([]byte, len(encodedTrace))
-			for i, octet := range encodedTrace {
-				decoded[i] = ^octet
-			}
-			trace = string(decoded)
-		}
-		identity := postingIdentity(trace, span, covered.Attribute)
-		if expectedTime, exists := expectedPostings[identity]; !exists || expectedTime != covered.Start {
-			t.Fatalf("unexpected or duplicate committed posting %s: %+v", identity, covered)
-		}
-		delete(expectedPostings, identity)
-	}
-	if len(expectedPostings) != 0 {
-		t.Fatalf("missing %d committed source-attribute memberships", len(expectedPostings))
-	}
+	assertOtelCommittedPostings(t, ctx, b, committed)
 	before := otelRawRootSnapshot(t, ctx, b)
 	if len(before) == 0 || before[string(b.root.FDBKey())] != "owned-root-boundary" {
 		t.Fatal("drop target has no committed raw root boundary/data")

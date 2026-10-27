@@ -11,15 +11,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// IngestDiagnostics is opt-in, bounded instrumentation of source batches.
-// Initialization and ready publication are excluded. Preparation includes
-// batches discarded on cancellation; other phases measure Runs. Totals overlap both
-// across workers and with parent/child phases; they are not critical-path time.
-// SourceReplays counts repeated closure entries, not transport/RPC retries.
-// ApproximateMutationBytes sums successful size samples, including attempts that
-// later fail a guard or commit. Timer preserves native event kinds and units:
-// timed CumulativeValue is nanoseconds; size Count is bytes. Batch saves do not
-// emit the scalar save/load timers or scalar save counters.
+// IngestDiagnostics measures source batches only; overlapping phases are not
+// critical-path time. See README.md for attempt, timer and sampling boundaries.
 type IngestDiagnostics struct {
 	Scope                    string                                  `json:"scope"`
 	SourceRuns               int64                                   `json:"source_runs"`
@@ -133,11 +126,34 @@ func prepareIngestBatch(ctx context.Context, c Config, lo int) (preparedBatch, e
 	return batch, nil
 }
 
+// ingestEvent exposes lifecycle barriers to package-local regression probes.
+type ingestEvent struct {
+	kind     string
+	batch    preparedBatch
+	queued   int
+	capacity int
+}
+
+func (b *FDBBackend) observeIngest(kind string, batch preparedBatch, queue chan preparedBatch) {
+	if b.ingestProbe != nil {
+		b.ingestProbe(ingestEvent{kind: kind, batch: batch, queued: len(queue), capacity: cap(queue)})
+	}
+}
+
+func (b *FDBBackend) prepareBatch(ctx context.Context, lo int) (preparedBatch, error) {
+	batch, err := prepareIngestBatch(ctx, b.cfg, lo)
+	if err == nil {
+		b.observeIngest("prepared", batch, nil)
+	}
+	return batch, err
+}
+
 func (b *FDBBackend) saveIngestBatch(ctx context.Context, batch preparedBatch, d *ingestRecorder) error {
 	started := time.Now()
 	var attempts int64
 	_, err := b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
 		attempts++
+		b.observeIngest("attempt", batch, nil)
 		if d != nil {
 			rc.SetTimer(d.timer)
 		}
@@ -258,7 +274,7 @@ produce:
 			break
 		}
 		started := time.Now()
-		batch, err := prepareIngestBatch(workCtx, b.cfg, lo)
+		batch, err := b.prepareBatch(workCtx, lo)
 		d.phase("preparation", started)
 		if err != nil {
 			failWork(err)
@@ -269,10 +285,21 @@ produce:
 			failWork(workCtx.Err())
 			break produce
 		case jobs <- batch:
-			lo = batch.next
+		default:
+			b.observeIngest("backpressure", batch, jobs)
+			select {
+			case <-workCtx.Done():
+				failWork(workCtx.Err())
+				break produce
+			case jobs <- batch:
+			}
 		}
+		b.observeIngest("admitted", batch, jobs)
+		lo = batch.next
 	}
 	close(jobs)
+	b.observeIngest("producer_done", preparedBatch{}, jobs)
+	b.observeIngest("before_join", preparedBatch{}, jobs)
 	workers.Wait()
 	stats := Statistics{Rows: rows, Attributes: rows * int64(b.cfg.Attributes), LogicalPayloadBytes: logical, Diagnostics: d.snapshot(rows, batches), Details: map[string]string{
 		"ingest":            "real Record Layer saves + synchronous custom covering secondary index",

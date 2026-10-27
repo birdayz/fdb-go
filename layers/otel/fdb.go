@@ -43,6 +43,7 @@ type FDBBackend struct {
 	idx           *recordlayer.Index
 	lastWork      QueryResult
 	auditPageHook func(context.Context, *recordlayer.FDBRecordContext, int) error
+	ingestProbe   func(ingestEvent)
 }
 
 func OpenFDB(c Config, cluster string) (*FDBBackend, error) {
