@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/fdbgo/wire/types"
@@ -155,11 +156,17 @@ func TestGRVBatchStorageReuse(t *testing.T) {
 	}); allocs != 0 {
 		t.Fatalf("ALLOC_GRV_SLOW_PATH: %v allocations per serial getReadVersion, want 0", allocs)
 	}
+	immBatcher := &grvBatcher{priority: grvPrioritySystemImmediate}
+	db.grvBatchers[grvBatcherSystemImmediate] = immBatcher
+	db.grvCache.updateFromGRV(db.grvCache.token(), time.Now(), 42)
 	var state readVersionState
-	fetchReq := readVersionRequest{db: db, flags: grvPriorityDefault}
+	fetchReq := readVersionRequest{db: db, flags: grvPrioritySystemImmediate, useGrvCache: true}
 	if allocs := testing.AllocsPerRun(100, func() {
 		state = readVersionState{}
-		_, _, _ = state.cachedOrFetchReadVersion(cancelledCtx, &fetchReq, 0, nil)
+		rv, _, err := state.cachedOrFetchReadVersion(context.Background(), &fetchReq, 0, nil)
+		if err != nil || rv != 42 || !state.inlinePendingUsed || state.inlinePending.version != 42 || state.inlinePending.done != nil {
+			t.Fatalf("cachedOrFetchReadVersion = (%d, %v), inlineUsed=%t, version=%d, done=%v", rv, err, state.inlinePendingUsed, state.inlinePending.version, state.inlinePending.done)
+		}
 	}); allocs != 0 {
 		t.Fatalf("ALLOC_GRV_INLINE_STATE: %v allocations per cachedOrFetchReadVersion, want 0", allocs)
 	}

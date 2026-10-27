@@ -129,12 +129,44 @@ func TestDesignTimeoutDoesNotRetainTransaction(t *testing.T) {
 			if tm.Stop() {
 				t.Fatal("collected transaction's weak timer was still active in the runtime timer heap")
 			}
-			return
+			goto verifyPooledRetirement
 		case <-time.After(time.Millisecond):
 			if time.Now().After(deadline) {
 				t.Fatalf("dropped transaction timer was not stopped by cleanup (weak=%v)", w.Value())
 			}
 		}
+	}
+
+verifyPooledRetirement:
+	// A ReadTransact that sets a long timeout and exits stops e.t and clears
+	// e.nextFire before returning e to designTimerPool, so GC eviction collects e.
+	armAndRetirePooled := func() (weak.Pointer[designTimerEntry], *time.Timer) {
+		e := &designTimerEntry{}
+		tx := &Transaction{transactScoped: true, designEntry: e}
+		tx.SetTimeout(3600000)
+		tx.readErrMu.Lock()
+		tx.timeoutArm++
+		tx.timeoutArmed = true
+		tx.armDesignTimerLocked(time.Hour)
+		pt := e.t
+		tx.readErrMu.Unlock()
+		tx.releaseTransactTimeout()
+		e.mu.Lock()
+		nextFire := e.nextFire
+		owner := e.tx
+		e.mu.Unlock()
+		if owner != nil || nextFire != 0 || pt == nil || pt.Stop() {
+			t.Fatalf("retired pooled entry left owner=%v nextFire=%d or active timer", owner, nextFire)
+		}
+		return weak.Make(e), pt
+	}
+	we, _ := armAndRetirePooled()
+	for we.Value() != nil && time.Now().Before(deadline) {
+		runtime.GC()
+		time.Sleep(time.Millisecond)
+	}
+	if we.Value() != nil {
+		t.Fatal("evicted pooled designTimerEntry remained rooted by its runtime timer")
 	}
 }
 

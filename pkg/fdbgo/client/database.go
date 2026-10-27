@@ -275,8 +275,13 @@ type database struct {
 	proxiesChanged   chan struct{}
 
 	// Connection pool. C++ uses FlowTransport; we need explicit pool.
-	connMu   sync.RWMutex
-	connPool map[string]*transport.Conn
+	connMu        sync.RWMutex
+	connPool      map[string]*transport.Conn
+	hasConnLinger bool
+	lastMinDelay  time.Duration
+	lastMaxDelay  time.Duration
+	lastAdaptive  time.Duration
+	lastWaits     bool
 	// dialing coalesces concurrent dials to the same address (singleflight): the
 	// first miss dials, later misses to the same address wait on its result rather
 	// than each running a redundant TCP/TLS/ConnectPacket handshake. Guarded by
@@ -609,6 +614,9 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 		default:
 			c.SetEndpointNotFoundHandler(func(token transport.UID) { db.failMon.markEndpointNotFound(addr, token) })
 			db.connPool[addr] = c
+			db.lastMinDelay, db.lastMaxDelay, db.lastWaits = c.CoalesceDelay()
+			db.lastAdaptive = c.AdaptiveLinger()
+			db.hasConnLinger = true
 			call.conn = c
 			// Clear the failed state on a successful dial HERE — not in a caller (so a
 			// reconnect wakes failure-monitor recovery even if every caller abandoned
@@ -965,13 +973,16 @@ func (d *Database) SetDialFunc(fn transport.DialFunc) {
 }
 
 // ConnectionLinger reports the active write-delay and adaptive-linger settings
-// of a pooled connection.
+// of a pooled or most recently dialed connection.
 func (d *Database) ConnectionLinger() (minDelay, maxDelay, adaptive time.Duration, waits bool) {
 	d.db.connMu.Lock()
 	defer d.db.connMu.Unlock()
 	for _, c := range d.db.connPool {
 		minDelay, maxDelay, waits = c.CoalesceDelay()
 		return minDelay, maxDelay, c.AdaptiveLinger(), waits
+	}
+	if d.db.hasConnLinger {
+		return d.db.lastMinDelay, d.db.lastMaxDelay, d.db.lastAdaptive, d.db.lastWaits
 	}
 	return 0, 0, 0, false
 }

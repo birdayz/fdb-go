@@ -134,7 +134,7 @@ func TestDesignSendIsEnqueueOnly(t *testing.T) {
 				t.Fatalf("FlushContext while socket gated = %v, want nil", err)
 			}
 			if got := gw.writes.Load(); got != 0 {
-				t.Fatalf("writes before gate opened = %d, want 0 (send/flush waited on socket write)", got)
+				t.Fatalf("writes before gate opened = %d, want 0 while socket is gated", got)
 			}
 			openGate()
 			for i := uint64(1); i <= n; i++ {
@@ -258,15 +258,32 @@ func TestDesignAdaptiveLingerBurstAndIdle(t *testing.T) {
 // frame; a ctx already done before the send queues nothing.
 func TestDesignCancelNeverUnqueues(t *testing.T) {
 	t.Parallel()
-	c, frames := dialDesignArm(t, withNetDesign(designD), WithCoalesceDelay(designDelay, designDelay))
+	enteredCoalesce := make(chan struct{})
+	releaseCoalesce := make(chan struct{})
+	var coalesceOnce sync.Once
+	var releaseOnce sync.Once
+	releaseWait := func() { releaseOnce.Do(func() { close(releaseCoalesce) }) }
+	c, frames := dialDesignArm(t, withNetDesign(designD), WithCoalesceDelay(time.Hour, time.Hour))
+	defer releaseWait()
+	c.na.onCoalesceWait = func() {
+		coalesceOnce.Do(func() { close(enteredCoalesce) })
+		<-releaseCoalesce
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	if ok, err := c.SendFrameContext(ctx, UID{First: 1}, frameBody(1)); !ok || err != nil {
 		t.Fatalf("send = (%t, %v), want queued", ok, err)
 	}
+	within(t, enteredCoalesce, "naLoop entered coalesceWait before draining queue")
 	if ok, err := c.SendFrameDeferredContext(ctx, UID{First: 2}, frameBody(2)); !ok || err != nil {
 		t.Fatalf("deferred send = (%t, %v), want queued", ok, err)
 	}
-	cancel() // the writer is still waiting out its delay: both frames are only queued
+	c.na.mu.Lock()
+	queuedBeforeCancel := len(c.na.q)
+	c.na.mu.Unlock()
+	if queuedBeforeCancel == 0 {
+		t.Fatal("expected frames 1 and 2 to remain in c.na.q while naLoop is held in coalesceWait")
+	}
+	cancel() // both frames are proven still queued in c.na.q when cancel runs
 	if err := c.FlushContext(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("flush on a cancelled ctx = %v, want context.Canceled", err)
 	}
@@ -301,6 +318,14 @@ func TestDesignCancelNeverUnqueues(t *testing.T) {
 		}
 	}
 	c.na.beforeLock = nil
+	c.na.mu.Lock()
+	queuedAfterCancel := len(c.na.q)
+	c.na.mu.Unlock()
+	if queuedAfterCancel != queuedBeforeCancel {
+		t.Fatalf("c.na.q length changed across caller cancellation: got %d, want %d", queuedAfterCancel, queuedBeforeCancel)
+	}
+	_ = c.coalesce.Reset(time.Nanosecond)
+	releaseWait()
 
 	expectFrames(t, frames, 1, 2)
 	expectNoFrame(t, frames, "the cancelled-before-send frame")

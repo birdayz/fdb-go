@@ -103,6 +103,20 @@ func TestWithCoalesceDelayReachesEveryConnection(t *testing.T) {
 					t.Fatalf("connection AdaptiveLinger() = %v, want %v", got, tc.adaptive)
 				}
 			}
+			// Even if connPool is temporarily empty (e.g. after transient proxy eviction),
+			// ConnectionLinger preserves the effective settings of the dialed connection.
+			db.db.connMu.Lock()
+			savedPool := db.db.connPool
+			db.db.connPool = make(map[string]*transport.Conn)
+			db.db.connMu.Unlock()
+			emptyMin, emptyMax, emptyAdaptive, emptyWaits := db.ConnectionLinger()
+			db.db.connMu.Lock()
+			db.db.connPool = savedPool
+			db.db.connMu.Unlock()
+			if emptyMin != tc.min || emptyMax != tc.max || emptyWaits != wantWait || emptyAdaptive != tc.adaptive {
+				t.Fatalf("db.ConnectionLinger() with empty pool = (%v, %v, %v, %t), want (%v, %v, %v, %t)",
+					emptyMin, emptyMax, emptyAdaptive, emptyWaits, tc.min, tc.max, tc.adaptive, wantWait)
+			}
 		})
 	}
 }

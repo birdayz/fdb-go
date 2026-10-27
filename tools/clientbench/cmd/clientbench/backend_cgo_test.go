@@ -69,6 +69,25 @@ func TestNativeBarrierFIFOOrdering(t *testing.T) {
 		t.Fatalf("verifyBarrierWaitsForPredecessor (no-wait future) = %v, want %v", err, errSynchronousBypass)
 	}
 
+	// Negative control 3: ignoring the wrapper returned by onBarrierWait and
+	// blocking on raw fut.Get() times out the parked gate and is rejected.
+	err = probeDB.verifyBarrierWaitsForPredecessorBounded(b, 100, func() error {
+		tx, err := b.db.CreateTransaction()
+		if err != nil {
+			return err
+		}
+		fut := tx.GetApproximateSize()
+		if b.onBarrierWait != nil {
+			_ = b.onBarrierWait(fut)
+		}
+		_, err = fut.Get()
+		tx.Cancel()
+		return err
+	})
+	if !errors.Is(err, errSynchronousBypass) {
+		t.Fatalf("verifyBarrierWaitsForPredecessorBounded (unwrapped Get) = %v, want %v", err, errSynchronousBypass)
+	}
+
 	// Positive control: production b.Barrier() queues an unready future while the
 	// network thread is parked and returns only after the predecessor completes.
 	if err := probeDB.verifyBarrierWaitsForPredecessor(b, b.Barrier); err != nil {

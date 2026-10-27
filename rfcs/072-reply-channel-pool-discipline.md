@@ -24,16 +24,21 @@ can still race it.**
 
 ## Investigation
 
-`readLoop` (conn.go) takes `pendingMu`, deletes the token from `pending`, releases
-the lock, then sends to the channel. Key invariants this gives:
-- **Success**: once a caller has received its reply, `readLoop` already deleted
-  the token *before* sending, and only `readLoop` ever sends per token
+At the time of RFC-072, `readLoop` (`conn.go`) took `pendingMu`, deleted the token from
+`pending`, released the lock, and then sent to the channel (subsequently updated by
+RFC-256 and RFC-282 so `readLoop` and `failAllPending` both publish the buffered
+`Response` and delete the token inside the same `pendingShards[i].mu` critical section,
+while `ReplyHandle.TakeReadyOrCancel` consumes or cancels under that same shard lock).
+Key invariants this gives:
+- **Success**: once a caller has received its reply, `readLoop` already published and
+  deleted the token under `pendingShards[i].mu`, and only one producer ever sends per token
   (`failAllPending` skips deleted tokens). So no further send can race → safe to pool.
-- **Cancel/timeout that wins the delete race** (token still in `pending`): the
-  delete (under `pendingMu`) prevents `readLoop` from ever finding/sending to it →
+- **Cancel/timeout that wins the delete race** (token still in `pendingShards[i].m`): the
+  delete (under `pendingShards[i].mu`) prevents `readLoop` from ever finding/sending to it →
   channel is clean → safe to pool.
 - **Cancel/timeout that loses the race** (token already gone): `readLoop` delivered
-  (or is mid-deliver); the channel may hold a buffered value → must NOT pool (leak it).
+  under `pendingShards[i].mu` (or `TakeReadyOrCancel` drains the published response); a bare
+  `Cancel` that lost the delete race must NOT pool an undrained channel (leak it).
 
 Caller convention (hedge.go, `sendPingWithReply`): **success → `Release()` only;
 cancel/loser → `Cancel()` then `Release()`.** `SendAndWait` has no production

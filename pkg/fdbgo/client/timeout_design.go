@@ -176,11 +176,19 @@ func (tx *Transaction) fireDesignTimeout() {
 	tx.fireTimeout(arm) // rejects a stale or disarmed arm under the same lock
 }
 
+func (e *designTimerEntry) stopLocked() {
+	e.tx = nil
+	e.nextFire = 0
+	if e.t != nil {
+		e.t.Stop()
+	}
+}
+
 // stopDesignTimerLocked releases the timer's reference to tx. Caller holds readErrMu.
 func (tx *Transaction) stopDesignTimerLocked() {
 	if e := tx.designEntry; e != nil {
 		e.mu.Lock()
-		e.tx = nil
+		e.stopLocked()
 		e.mu.Unlock()
 	}
 	if tx.designCleanup != nil {
@@ -209,7 +217,7 @@ func (tx *Transaction) releaseTransactTimeout() {
 		if e != nil {
 			e.mu.Lock()
 			deadline := e.deadline
-			e.tx = nil
+			e.stopLocked()
 			e.mu.Unlock()
 			designTimerPool.Put(e)
 			if tx.timeoutArmed {
@@ -231,7 +239,7 @@ func (tx *Transaction) releaseTransactTimeout() {
 	}
 	if e != nil {
 		e.mu.Lock()
-		e.tx = nil
+		e.stopLocked()
 		e.mu.Unlock()
 	}
 	tx.readErrMu.Unlock()
