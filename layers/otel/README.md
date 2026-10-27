@@ -73,6 +73,80 @@ V1 receipts/binaries (including the initial ingest-profile commits) remain
 historical evidence, not compatible V2 measurements. No storage compatibility
 or direct before/after performance claim is made across this fixture change.
 
+## Stored-population evidence
+
+The first completed V2 scale gate stored **1,000,000 spans** on 2026-10-27,
+using source `c7d00bf`, two batch workers, one tenant and eight indexed attributes.
+Ingestion took 908.535 s (about 1,101 acknowledged spans/s), including 32 bounded
+fresh-Run timeout recoveries. A strict drain preceded the complete source audit:
+1M records, 8M attribute postings and 1M entries in each intrinsic index. All
+1,600 initial timed answers and 48,000 answers in three further warm/local rounds
+matched the independent source oracle.
+
+Each additional round has 1,000 samples per class. Across those three rounds:
+
+| Query class | Median range (ms) | p99 range (ms) |
+|---|---:|---:|
+| Trace ID | 0.595–0.603 | 0.996–1.012 |
+| Standalone span ID | 0.554–0.561 | 0.769–0.788 |
+| Unique GenAI response ID | 0.566–0.571 | 0.747–0.798 |
+| Narrow time range | 0.602–0.610 | 0.938–1.052 |
+
+These are sequential native-FDB timings including ownership/store guards, not
+production SLOs. All tails remain in the receipts, including a 6.737-ms span
+lookup and 6.846-ms common-provider query. The owned census is 3.435 GB of logical
+KV; the 2.810-GB whole-volume growth is not isolated per-run physical storage or
+a safe 100M multiplier. Earlier failed and monitor-aborted arms remain separate.
+**The 100M capacity/concurrency gates and broader production competitiveness
+remain open.**
+
+Receipts: [completed 1M load/audit](bench/evidence/2026-10-27/pilot-1m-v2-workers2-complete/)
+and [three warm query rounds](bench/evidence/2026-10-27/query-1m-fdb-warm/).
+
+## One-million-span guarded query comparison
+
+The separate CH campaign tested fresh, source-audited 8192/512/64-granularity
+layouts under the same four-CPU/16-GiB resource caps. Three rotated rounds per
+layout and transport retained **28,800 oracle-checked answers**, with no failures.
+One configuration was selected by the geometric mean of twelve native medians:
+trace, span, unique GenAI response and narrow time, across three rounds. **8192
+won** (6.297 ms versus 7.343 ms for 512 and 11.486 ms for 64); there is no
+per-query layout selection. Granularity 1 was excluded after full-audit EXPLAIN
+requests exceeded the unchanged two-second budget, including after three strict
+zero-merge observations. Its failed load/audit/drain windows remain separate;
+its native-query population is zero, not a fabricated slow result.
+
+The selected native CH arm then completed **three 16,000-answer rounds**, 1,000
+per class per round, matching the FDB sample population. Both engines' 48,000
+answers matched their source oracles. These are observed ranges across rounds:
+
+| Query class | FDB median (ms) | Native CH median (ms) | CH/FDB median ratio bounds |
+|---|---:|---:|---:|
+| Trace ID | 0.595–0.603 | 5.420–5.852 | 8.99–9.84× |
+| Standalone span ID | 0.554–0.561 | 5.421–5.790 | 9.66–10.45× |
+| Unique GenAI response ID | 0.566–0.571 | 6.537–8.131 | 11.45–14.36× |
+| Narrow time range | 0.602–0.610 | 6.445–6.596 | 10.56–10.95× |
+
+Ratios are descriptive bounds across the measured round medians, not independent
+trial estimates. All sixteen classes, first post-restart CH samples and tails
+are retained; no warmup samples were hidden. Timings include ownership checks,
+backend requests and decoding: CH performs a separate ownership SQL request,
+whereas FDB checks ownership inside its transaction. This is a **guarded query
+path result against the best-tested passing CH profile**, not an isolated-index
+or globally optimal ClickHouse comparison. FDB used `c7d00bf`, CH `9244882`, both
+Go 1.27.3. FDB's command timeout was 20 minutes with diagnostics on; CH's was ten
+minutes with diagnostics off and a two-second server-query limit. Deadlines,
+durability, acknowledgment batching and record representations are not equated.
+This does not establish an ingest win, 100M performance, HA or a production SLO.
+
+After all timing, **76,800 unique data-query IDs** across 21 receipts reconciled
+with CH query logs, with no missing, duplicate or error terminals. Those metrics
+exclude the separate ownership requests and are not FDB-equivalent total work;
+integer-millisecond zero means below one millisecond. Original native metric
+fields remain explicitly unavailable, not rewritten as measured zeros.
+
+Receipts: [CH tuning, confirmation and query-log reconciliation](bench/evidence/2026-10-27/ch-1m-eligible3-native-confirmed/).
+
 ## Physical arms
 
 Every physical arm uses a fresh run namespace and maintains only its selected
@@ -91,6 +165,16 @@ ownership metadata, not source corpus bytes.
 CH stores Map, aligned typed terms, and source JSON so every copy is included in
 storage/ingest cost. FDB stores OTLP protobuf plus its custom index, not that JSON
 schema. Report those representation differences, not an unexplained byte ratio.
+CH ingest statistics retain acknowledged source progress on success **and error**:
+rows, source attributes and JSON transport bytes (including each newline) count
+only complete source INSERT batches whose HTTP responses succeeded. A failed or
+canceled batch is excluded even if some or all of it physically applied, so a
+partial physical census can exceed these acknowledged counts. A later ready-
+manifest error retains all earlier source acknowledgments without inferring
+publication success, retrying or adopting the run. Progress is not a substitute
+for a successful ready-state source audit; earlier zero-stat error receipts do
+not prove an empty database.
+
 Every FDB arm also maintains built-in `span_id_v2` (tenant/span/time) and
 `span_time_v2` (tenant/time/trace) VALUE indexes on every Record Layer save.
 Every CH source table gets covering `by_trace`, `by_span`, and `by_time`

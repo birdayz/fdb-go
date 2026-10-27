@@ -1,0 +1,542 @@
+{
+  "schema": "otel283_lossless_archive_scan_v1",
+  "scope": "Every regular member of decompressed evidence.tar.gz, including allJSON/JSONL,16queryclasses,frozen249validation,monitor120statuses,selected105readonlyIOsamples and source. No driver/harness execution.",
+  "gzip_crc_and_decompression": "passed",
+  "tar_members": 2635,
+  "tar_regular_files": 2529,
+  "tar_symlinks": 2,
+  "json_members": 622,
+  "jsonl_members": 8,
+  "ipv4_literals": [
+    {
+      "literal": "127.0.0.1",
+      "classification": "loopback",
+      "occurrences": 19082,
+      "example_members": [
+        "./policy/frozen/README.md",
+        "./policy/frozen/fdb.cluster.seed",
+        "./policy/frozen/foundationdb.conf",
+        "./policy/frozen/launch.sh",
+        "./policy/frozen/resume.sh"
+      ]
+    },
+    {
+      "literal": "0.0.0.0",
+      "classification": "wildcard listen/bind, not destination",
+      "occurrences": 1794,
+      "example_members": [
+        "./policy/frozen/foundationdb.conf",
+        "./run/fdb.acknowledged.json",
+        "./run/fdb.after.json",
+        "./run/fdb.before.json",
+        "./run/fdb.settled.json"
+      ]
+    },
+    {
+      "literal": "4.14.2.0",
+      "classification": "Java Record Layer version in source-manifest filenames, not destination",
+      "occurrences": 2,
+      "example_members": [
+        "./run/source.after",
+        "./run/source.before"
+      ]
+    }
+  ],
+  "ipv6_candidate_literals": [
+    {
+      "literal": "0::",
+      "occurrences": 105,
+      "classification": "cgroup-v2 membership record 0::/, not an IPv6 address; verified only in selectedIOsample stdout"
+    }
+  ],
+  "nonloopback_destination_findings": [],
+  "secret_candidate_members": [],
+  "secret_pattern_scope": "Private-key headers,AWS/GitHub/OpenAI token formats,long credential assignments,URLuserinfo; not proof of absence of every possible secret.",
+  "trailing_whitespace": {
+    "members": 109,
+    "lines": 1269,
+    "handling": "Preserved byte-for-byte inside gzip: proc/cgroup/perf/command outputs and intentional malformed fixtures are never rewritten.",
+    "details": [
+      {
+        "member": "./io/observations/sample-000001.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000002.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000003.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000004.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000005.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000006.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000007.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000008.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000009.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000010.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000011.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000012.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000013.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000014.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000015.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000016.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000017.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000018.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000019.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000020.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000021.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000022.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000023.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000024.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000025.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000026.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000027.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000028.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000029.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000030.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000031.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000032.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000033.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000034.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000035.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000036.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000037.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000038.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000039.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000040.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000041.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000042.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000043.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000044.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000045.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000046.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000047.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000048.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000049.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000050.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000051.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000052.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000053.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000054.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000055.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000056.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000057.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000058.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000059.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000060.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000061.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000062.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000063.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000064.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000065.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000066.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000067.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000068.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000069.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000070.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000071.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000072.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000073.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000074.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000075.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000076.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000077.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000078.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000079.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000080.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000081.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000082.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000083.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000084.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000085.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000086.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000087.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000088.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000089.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000090.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000091.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000092.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000093.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000094.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000095.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000096.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000097.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000098.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000099.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000100.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000101.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000102.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000103.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000104.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./io/observations/sample-000105.stdout",
+        "lines": 12
+      },
+      {
+        "member": "./run/ingest-command.txt",
+        "lines": 1
+      },
+      {
+        "member": "./run/perf-stat.txt",
+        "lines": 6
+      },
+      {
+        "member": "./validation/policy286-final-249/cert-fixtures/tampered-raw/drain-raw.fixture/status-000001.json",
+        "lines": 1
+      },
+      {
+        "member": "./validation/policy286-final-249/cert-fixtures/tampered-receipt/load-receipt.json",
+        "lines": 1
+      }
+    ]
+  },
+  "raw_manifest_verification": {
+    "verified_raw_files": 2527,
+    "method": "Safe extraction of regular members only under fresh/tmp root;symlinks skipped;sha256sum --check RAW-SHA256SUMS",
+    "all_match": true
+  },
+  "certificate_raw_checks": [
+    {
+      "member": "session/drain-raw.WRO5uG/status-000003.json",
+      "expected": "652c143b7977c9f5ccbf9b2cf40185ccb7cd9be687f3dc56e3822c52a5bed6a0",
+      "actual": "652c143b7977c9f5ccbf9b2cf40185ccb7cd9be687f3dc56e3822c52a5bed6a0",
+      "matches": true
+    },
+    {
+      "member": "session/drain-raw.WRO5uG/status-000004.json",
+      "expected": "33936d73ab1f229443b26d335313aff6bb6d9aaa33af6bdc474c65b071899464",
+      "actual": "33936d73ab1f229443b26d335313aff6bb6d9aaa33af6bdc474c65b071899464",
+      "matches": true
+    },
+    {
+      "member": "session/drain-raw.WRO5uG/status-000005.json",
+      "expected": "9d8bb8054621fa84e9b9ae9542b042cb0982679cf42796c02ab6db6450b490df",
+      "actual": "9d8bb8054621fa84e9b9ae9542b042cb0982679cf42796c02ab6db6450b490df",
+      "matches": true
+    }
+  ],
+  "retained_full_inspect_negative_fixture_review": {
+    "member": "validation/policy286-final-249/stopped-container.input.inspect.json",
+    "bytes": 10505,
+    "sha256": "d9eb4e40a8d56b8d5218b97b181d3191956301fcc50d994a4d00ab1ecfc37866",
+    "complete_member_streamed_and_parsed": true,
+    "inspected_strings": 133,
+    "config_env_entries": 10,
+    "config_env_names": ["FDB4_OWNER", "FDB4_MODE", "FDB_CLUSTER_FILE", "PATH", "FDB_PORT", "FDB_NETWORKING_MODE", "FDB_COORDINATOR", "FDB_COORDINATOR_PORT", "FDB_CLUSTER_FILE_CONTENTS", "FDB_PROCESS_CLASS"],
+    "environment_review": "Ordinary FDB configuration/PATH, no observed credentials; full inspect still retains local host paths/state/configuration/mount metadata",
+    "ipv4_literals": ["127.0.0.1"],
+    "ipv6_candidate_literals": [],
+    "credential_candidate_paths": [],
+    "nonloopback_destination_findings": [],
+    "raw_manifest_matches": true,
+    "raw_payload_unchanged": true,
+    "publication_contract": "Explicit retained negative-fixture exception to the inspect/environment exclusion; not a redacted or omitted inspect response"
+  },
+  "egress_finding": false,
+  "services_or_tests_executed": false
+}

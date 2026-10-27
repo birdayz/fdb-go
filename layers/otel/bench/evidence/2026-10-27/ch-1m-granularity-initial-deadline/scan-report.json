@@ -1,0 +1,80 @@
+{
+  "schema": "otel283_lossless_archive_scan_v1",
+  "scope": "Every decompressed evidence.tar.gz regular member including allJSON/JSONL,initialCH1Mcampaign failed/successful arms,initialreadinessfailure+posthocguardcontrols,10Kpreflight160queries and160untimedquerylog reconciliations,source/config/manifests and monitor prefix only. No code or DB action executed.",
+  "gzip_crc_and_decompression": "passed",
+  "tar_members": 92,
+  "tar_regular_files": 83,
+  "tar_symlinks": 0,
+  "json_members": 15,
+  "jsonl_members": 12,
+  "all_json_jsonl_parse": true,
+  "ipv4_literals": [
+    {
+      "literal": "26.10.2.103",
+      "classification": "ClickHouse server version, not network destination",
+      "occurrences": 13,
+      "example_members": [
+        "./preflight-10k/audit.json",
+        "./preflight-10k/profile-ready.txt",
+        "./profile/frozen/README.md",
+        "./profile/frozen/readiness.sh",
+        "./profile/readiness/initial-readiness-failure/readiness.sh"
+      ]
+    },
+    {
+      "literal": "127.0.0.1",
+      "classification": "loopback",
+      "occurrences": 24,
+      "example_members": [
+        "./preflight-10k/native-all.json",
+        "./preflight-10k/query-log-reconciliation/provenance.json",
+        "./profile/frozen/README.md",
+        "./profile/frozen/readiness.sh",
+        "./profile/frozen/server.xml"
+      ]
+    },
+    {
+      "literal": "4.14.2.0",
+      "classification": "Java Record Layer version in source-manifest filenames, not destination",
+      "occurrences": 2,
+      "example_members": [
+        "./run/source.after",
+        "./run/source.before"
+      ]
+    }
+  ],
+  "ipv6_candidate_literals": [],
+  "nonloopback_destination_findings": [],
+  "secret_candidate_members": [],
+  "secret_pattern_scope": "Private-key headers,AWS/GitHub/OpenAI token formats,long credential assignments,URLuserinfo; not proof of absence of every possible secret.",
+  "trailing_whitespace": {
+    "members": 4,
+    "lines": 4,
+    "handling": "All original whitespace preserved byte-for-byte inside gzip; no rawfields rewritten.",
+    "details": [
+      {
+        "member": "./run/ingest-g1.command",
+        "lines": 1
+      },
+      {
+        "member": "./run/ingest-g512.command",
+        "lines": 1
+      },
+      {
+        "member": "./run/ingest-g64.command",
+        "lines": 1
+      },
+      {
+        "member": "./run/ingest-g8192.command",
+        "lines": 1
+      }
+    ]
+  },
+  "raw_manifest_verification": {
+    "verified_raw_files": 81,
+    "method": "Safe regular-member extraction under fresh/tmp root;sha256sum --check RAW-SHA256SUMS",
+    "all_match": true
+  },
+  "egress_finding": false,
+  "services_or_tests_executed": false
+}

@@ -1,0 +1,69 @@
+{
+  "schema": "otel283_lossless_archive_scan_v1",
+  "scope": "Every decompressed evidence.tar.gz regularmember, including allJSON/JSONL,0288ACKsuccess+auditfailure,distinctfailedpostdrainwindow,finite monitorthroughoperatorstop,filteredstate/mountmetadata and7pinnedprofilesources. No code/DB action executed.",
+  "gzip_crc_and_decompression": "passed",
+  "tar_members": 50,
+  "tar_regular_files": 44,
+  "tar_symlinks": 0,
+  "json_members": 4,
+  "jsonl_members": 2,
+  "all_json_jsonl_parse": true,
+  "ipv4_literals": [
+    {
+      "literal": "26.10.2.103",
+      "classification": "ClickHouse server version, not destination",
+      "occurrences": 5,
+      "example_members": [
+        "./campaign-0288/audit.json",
+        "./postdrain-window/profile-before.txt",
+        "./profile/frozen/readiness.sh"
+      ]
+    },
+    {
+      "literal": "127.0.0.1",
+      "classification": "loopback",
+      "occurrences": 11,
+      "example_members": [
+        "./campaign-0288/driver.sh",
+        "./campaign-0288/ingest.command",
+        "./postdrain-window/driver.sh",
+        "./profile/frozen/readiness.sh",
+        "./profile/frozen/server.xml"
+      ]
+    },
+    {
+      "literal": "4.14.2.0",
+      "classification": "Java Record Layer version in source-manifest filenames, not destination",
+      "occurrences": 4,
+      "example_members": [
+        "./campaign-0288/source.after",
+        "./campaign-0288/source.before",
+        "./postdrain-window/source.after",
+        "./postdrain-window/source.before"
+      ]
+    }
+  ],
+  "ipv6_candidate_literals": [],
+  "nonloopback_destination_findings": [],
+  "secret_candidate_members": [],
+  "secret_pattern_scope": "Private-key headers,AWS/GitHub/OpenAI token formats,long credential assignments,URLuserinfo; not proof of absence of every possible secret.",
+  "trailing_whitespace": {
+    "members": 1,
+    "lines": 1,
+    "handling": "Original whitespace retained byte-for-byte insidegzip; no rawfields rewritten.",
+    "details": [
+      {
+        "member": "./campaign-0288/ingest.command",
+        "lines": 1
+      }
+    ]
+  },
+  "raw_manifest_verification": {
+    "verified_raw_files": 42,
+    "method": "Safe regular-member extraction under fresh/tmp root;sha256sum --check RAW-SHA256SUMS",
+    "all_match": true
+  },
+  "egress_finding": false,
+  "services_or_tests_executed": false,
+  "active_worktree_edits": false
+}

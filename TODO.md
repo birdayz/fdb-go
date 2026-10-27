@@ -2877,21 +2877,58 @@ regressions so they can be proposed upstream after the PoC.
   row-count failures and server `max_bytes_to_read` failures are not substitutes.
   Public exact-32-MiB and +1-byte regressions now pass across all four operations,
   including valid padded owners, cumulative results, closure and query provenance.
-- [ ] Reconcile native/HTTP sample query IDs with actual ClickHouse query-log work
-  outside the timed path. Native read-work metrics remain explicitly unavailable;
-  progress callbacks alone need not report complete small-query totals. A zero
-  integer-millisecond server duration is resolution-limited, not zero elapsed time.
-- [ ] Tune ClickHouse for the actual needle workload before a competitive claim.
-  Current benchmark tables use the default 8192-row MergeTree granularity. The
-  selected-projection regression uses a separate 64-row-granularity fixture; it is
-  not benchmark tuning. An explicit fresh-table granularity option (1..8192,
+- [x] Reconcile native/HTTP sample query IDs with actual ClickHouse query-log work
+  outside the timed path. All 76,800 data-query IDs across 18 tuning and three
+  confirmation receipts reconcile, with no missing/duplicate/error terminals;
+  observed settings are four threads, 8-GiB query cap and cache disabled. Native
+  read-work fields remain explicitly unavailable and unmodified. Separate owner
+  requests are not covered by these data-request-only metrics; a zero integer-
+  millisecond server duration is resolution-limited, not zero elapsed time.
+- [ ] Harden generic CH HTTP exception classification or explicitly reject
+  unsupported response framing. HTTP 200 plus EOF is not universally a server
+  operation ACK: a profile enabling `framing_output_format` can frame a late
+  INSERT exception in a successful HTTP stream. The measured pinned profile uses
+  `None` and forces progress headers off; its completed source audits provide
+  independent data evidence. Keep the diagnostic definition at HTTP-response ACK
+  scope, not an unsupported general server-operation guarantee.
+- [ ] Extend CH tuning before claiming a broad production advantage. The first
+  1M guarded-query comparison is complete against the best-tested passing
+  8192/512/64 profiles, not a globally optimal CH configuration.
+  Earlier benchmark tables used default 8192-row MergeTree granularity. The
+  selected-projection regression's separate 64-row fixture was not benchmark
+  tuning. Fresh 1M 8192/512/64 layouts pass source audits. All 28,800 tuning
+  answers pass; a fixed geometric mean of twelve native medians selects 8192.
+  Its 48,000-answer native confirmation also passes, with four selected-class
+  median ratios about 9–14x above FDB's guarded path. All sixteen classes and
+  tails remain intact; source/oracle populations are matched, not deadlines,
+  engine-only costs, durability or acknowledgment batching. Broader SQL/layout/
+  projection tuning and the 100M/concurrent-load gates remain open. An explicit fresh-table granularity option (1..8192,
   default 8192) now pins CH manifests and records actual DDL/settings/marks; FDB
   manifest bytes and source identity are unchanged. Real 512/64 Map/attribute
-  profiles pass both transports and the source oracle. Fast lane: 179 targets,
-  3 executed / 176 cached, not full-suite proof. Still compare measured 8192/512/64
-  (and finer if justified), retaining ingest/storage/maintenance costs.
+  profiles pass both transports and the source oracle. Their implementation fast
+  lane passed 179 targets, 3 executed / 176 cached, not full-suite proof. Retain
+  ingest/storage/maintenance costs alongside the completed three-profile query
+  measurements, and preserve any further tuning as separately named campaigns.
   The earlier ALTER attempt was rejected as READONLY_SETTING; do not claim it took
-  effect or call the current profile an optimal tuned baseline.
+  effect or call the current profile an optimal tuned baseline. The extreme
+  granularity-1 arm hit its initial 10-minute load deadline. A distinct 30-minute
+  load acknowledged 1M, but both its first and later quiescent full audits hit
+  the unchanged 2-second EXPLAIN deadline; separate five- and ten-minute drain
+  windows also failed their three-zero-sample gates. Retain all failures, shared
+  background-maintenance confounds and any explicit eligible-profile exclusions.
+- [x] Preserve CH source-INSERT HTTP-response progress on every error return,
+  without guessing an ambiguous physical tail or inferring ready publication.
+  Public regressions cover 48 source/ready/admission cases plus 26 initialization
+  cases, including rollback, retained loading ownership and non-adoption.
+  Fast lane passes 179 targets (2 executed / 177 cached), 1,279 OTel XML cases,
+  zero failures/errors/skips; CLI build passes. Not full-suite verification.
+- [x] Complete the first stored 1M V2 gate. Frozen `c7d00bf`, two batch workers,
+  1M spans / 908.535 s, strict final drain, full 1M-record/8M-posting/native-index
+  census and 1,600 oracle-checked answers passed. Three additional warm rounds
+  verified all 48,000 answers (1,000/class/round); tail samples remain intact.
+  This is not 100M, a tuned-CH comparison, HA or a production SLO. Receipts:
+  `layers/otel/bench/evidence/2026-10-27/pilot-1m-v2-workers2-complete/` and
+  `layers/otel/bench/evidence/2026-10-27/query-1m-fdb-warm/`.
 - [ ] Gate capacity using measured physical volume/filesystem growth at 1M and 10M,
   peak maintenance/log space, and a fixed free-space stop reserve. The 100k census
   scales arithmetically to about 330 GB of FDB logical owned KV at 100M, not physical
@@ -2902,6 +2939,17 @@ regressions so they can be proposed upstream after the PoC.
   the greater value and reports free-minus-reserve as `least_operating_space`.
   A host-only 64-GiB floor would not suffice on this roughly 1.9-TB filesystem;
   preserve the database's reserve rather than lowering it to make 100M fit.
+  The completed 1M arm added 2.810 GB to the whole retained volume and owns
+  3.435 GB logical KV, but old failed roots, fetch/merge history, logs and
+  preallocation prevent treating that delta as isolated per-run physical bytes.
+  No 10M physical/maintenance gate has run. Diagnose the observed sync stalls
+  and conditional Btrfs direct-I/O fallback before a larger/faster profile;
+  do not infer a client bug or change filesystem flags on existing data.
+  A fresh-empty-volume NOCOW prototype is prepared but unapproved. Its 297 pure
+  policy cases and 27 C predicates pass; distinct listen ports, formal review,
+  real empty-Btrfs/minimum-capability validation, bootstrap and actual storage/
+  log inode gates remain open. No existing-volume flag change is authorized;
+  filesystem checksum/compression changes are not durability-equivalent evidence.
 - [ ] Load and verify the full 100M population, then retain repeated needle-query
   latency/work receipts and sustained ingest-plus-concurrent-query measurements.
   Report achieved throughput, p50/p95/p99/p99.9 populations, failures, CPU/RAM,

@@ -1,0 +1,63 @@
+{
+  "schema": "otel283_lossless_archive_scan_v1",
+  "scope": "All decompressed evidence.tar.gz regular members, including all48000raw timed samples across3rounds/16classes,selected-summary,6rawhealthstatuses+6summaries,source/binarymanifests and driver. No driver/policy executed.",
+  "gzip_crc_and_decompression": "passed",
+  "tar_members": 30,
+  "tar_regular_files": 27,
+  "tar_symlinks": 0,
+  "json_members": 16,
+  "jsonl_members": 1,
+  "all_json_jsonl_parse": true,
+  "ipv4_literals": [
+    {
+      "literal": "127.0.0.1",
+      "classification": "loopback",
+      "occurrences": 344,
+      "example_members": [
+        "./policy/status-check.jq",
+        "./run/fdb-after-1.json",
+        "./run/fdb-after-2.json",
+        "./run/fdb-after-3.json",
+        "./run/fdb-before-1.json"
+      ]
+    },
+    {
+      "literal": "0.0.0.0",
+      "classification": "wildcard listen/bind, not destination",
+      "occurrences": 24,
+      "example_members": [
+        "./run/fdb-after-1.json",
+        "./run/fdb-after-2.json",
+        "./run/fdb-after-3.json",
+        "./run/fdb-before-1.json",
+        "./run/fdb-before-2.json"
+      ]
+    },
+    {
+      "literal": "4.14.2.0",
+      "classification": "Java Record Layer version in source-manifest filenames, not destination",
+      "occurrences": 2,
+      "example_members": [
+        "./run/source.after",
+        "./run/source.before"
+      ]
+    }
+  ],
+  "ipv6_candidate_literals": [],
+  "nonloopback_destination_findings": [],
+  "secret_candidate_members": [],
+  "secret_pattern_scope": "Private-key headers,AWS/GitHub/OpenAI token formats,long credential assignments,URLuserinfo; not proof of absence of every possible secret.",
+  "trailing_whitespace": {
+    "members": 0,
+    "lines": 0,
+    "handling": "Any original whitespace remains byte-for-byte inside gzip; no raw field rewritten.",
+    "details": []
+  },
+  "raw_manifest_verification": {
+    "verified_raw_files": 25,
+    "method": "Safe regular-member extraction under fresh/tmp root;sha256sum --check RAW-SHA256SUMS",
+    "all_match": true
+  },
+  "egress_finding": false,
+  "services_or_tests_executed": false
+}

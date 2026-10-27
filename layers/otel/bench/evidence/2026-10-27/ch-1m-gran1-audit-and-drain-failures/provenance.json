@@ -1,0 +1,179 @@
+{
+  "schema": "otel283_ch_g1_audit_drain_failures_archive_v1",
+  "created_utc": "2026-10-27T19:09:51.049Z",
+  "intended_repo_path": "layers/otel/bench/evidence/2026-10-27/ch-1m-gran1-audit-and-drain-failures",
+  "publication": "Prepared/tmp only; explicitrootunfreeze required",
+  "outcome": "IngestACKsuccess;firstfullauditFAILED408/159;separatepostdrainwindowFAILEDexit6;no secondaudit or timed1Mquerymatrix",
+  "measured_revision": "9244882a5914e0f897b0216866ca77d2bd4b6910",
+  "measured_source_clean": true,
+  "measured_binary_sha256": "ffdb0e4ff43e12fa2605b7c61bf3a2695ab464c8c518cd21c5ff136a46f1a515",
+  "source_binary_config_before_after_identical_both_windows": true,
+  "frozen_config_checks": [
+    {
+      "file": "server.xml",
+      "expected": "f47a7ea2bd2e0aa60967b69ae789dd4c29a266f5d6927f25764e44dda8cf4d68",
+      "archived": "f47a7ea2bd2e0aa60967b69ae789dd4c29a266f5d6927f25764e44dda8cf4d68"
+    },
+    {
+      "file": "profile.xml",
+      "expected": "11108499e6913769ccb59186d455ccb32e3017adfb501f49b4326fc3a942c6ae",
+      "archived": "11108499e6913769ccb59186d455ccb32e3017adfb501f49b4326fc3a942c6ae"
+    },
+    {
+      "file": "launch.sh",
+      "expected": "0e0e598987f76d25a2e5071bfce6744048315f5d7f347da839e8b88ae3075c04",
+      "archived": "0e0e598987f76d25a2e5071bfce6744048315f5d7f347da839e8b88ae3075c04"
+    },
+    {
+      "file": "monitor.sh",
+      "expected": "5bafcd0d3c49f0a9b227d9a24244ab4f4167c25529a8f6550498224f49010f3a",
+      "archived": "5bafcd0d3c49f0a9b227d9a24244ab4f4167c25529a8f6550498224f49010f3a"
+    },
+    {
+      "file": "resources.sh",
+      "expected": "e8f607885824e81cd98361c911303174318a33e8fedf838b7349f6645b6cbcc4",
+      "archived": "e8f607885824e81cd98361c911303174318a33e8fedf838b7349f6645b6cbcc4"
+    },
+    {
+      "file": "resources-policy.sh",
+      "expected": "544ec37c94d9473b1a0be000043e17cda60c044b52eec7e492289c5bde6916fd",
+      "archived": "544ec37c94d9473b1a0be000043e17cda60c044b52eec7e492289c5bde6916fd"
+    },
+    {
+      "file": "readiness.sh",
+      "expected": "54fd9edded68193df8b42c616a1493c4bdb1c64ee43bb2317993520758e01e83",
+      "archived": "54fd9edded68193df8b42c616a1493c4bdb1c64ee43bb2317993520758e01e83"
+    }
+  ],
+  "predecessor_unchanged_checks": [
+    {
+      "file": "status",
+      "expected": "60b041b1e9052ac817f786cea35a452d3eca5f762a80fa5b485a067b1d60c5f7",
+      "archived": "60b041b1e9052ac817f786cea35a452d3eca5f762a80fa5b485a067b1d60c5f7"
+    },
+    {
+      "file": "ingest.json",
+      "expected": "86bd389b7236abea5524a5b6d27fec97b83df4ec9059846886cc821a41f5e6a3",
+      "archived": "86bd389b7236abea5524a5b6d27fec97b83df4ec9059846886cc821a41f5e6a3"
+    },
+    {
+      "file": "audit.json",
+      "expected": "74b6277f150a479dbd286c0c68189cc846a4526b014dc7b06cf295cfe214dc89",
+      "archived": "74b6277f150a479dbd286c0c68189cc846a4526b014dc7b06cf295cfe214dc89"
+    }
+  ],
+  "ingest": {
+    "run": "ch1m_g1_30m_0288",
+    "ack_rows": 1000000,
+    "ack_attributes": 8000000,
+    "start_utc": "2026-10-27T18:44:52.728819238Z",
+    "wall_ns": 767957222264,
+    "error": null,
+    "budget": "30minutewholecommand"
+  },
+  "first_audit": {
+    "start_utc": "2026-10-27T18:57:40.697562326Z",
+    "wall_ns": 31168207820,
+    "reported_rows": 1000000,
+    "reported_attributes": 8000000,
+    "reported_failure_counter": 0,
+    "error": "otel http request: ClickHouse HTTP status 408: Code: 159. DB::Exception: Timeout exceeded: elapsed 2003.823 ms, maximum: 2000.000 ms. (TIMEOUT_EXCEEDED) (version 26.10.2.103 (official build))\n",
+    "error_identity": {
+      "http_status": 408,
+      "clickhouse_code": 159,
+      "symbol": "TIMEOUT_EXCEEDED",
+      "server_maximum_ms": 2000
+    },
+    "full_audit_pass": false,
+    "partial_counts_and_details_are_not_pass": true,
+    "campaign_status": "exit=1 end=2026-10-27T18:58:12Z"
+  },
+  "postdrain": {
+    "status": "exit=6 end=2026-10-27T19:04:27Z",
+    "scope": "Distinct post-merge validation window on existing ready ch1m_g1_30m_0288. Original 30m load campaign failed its first audit and remains failed. No new ingest, altered budget, ownership adoption, hidden retry or source/config change.",
+    "samples": 60,
+    "min_active_merges": 1,
+    "max_active_merges": 7,
+    "zero_samples": 0,
+    "second_audit_started": false,
+    "gate_database_population": [
+      "otel_ch1m_g8192_0287",
+      "otel_ch1m_g512_0287",
+      "otel_ch1m_g64_0287",
+      "otel_ch1m_g1_0287",
+      "otel_ch1m_g1_30m_0288"
+    ],
+    "gate_count_not_solely0288": true
+  },
+  "operator_stop": {
+    "owner_reason": "Explicit session boundary: original granularity-1 first audit timed out; distinct five-minute merge-drain window failed. No tuning matrix started. Stop exact owned CH instance cleanly before source validation; protected existing volume is retained. No existing failed receipt is changed and no monitor deadline is extended.",
+    "state_after": {
+      "Status": "exited",
+      "Running": false,
+      "Paused": false,
+      "Restarting": false,
+      "OOMKilled": false,
+      "Dead": false,
+      "Pid": 0,
+      "ExitCode": 0,
+      "StartedAt": "2026-10-27T18:18:56.872908745Z",
+      "FinishedAt": "2026-10-27T19:05:32.333863904Z"
+    },
+    "mount_metadata": [
+      {
+        "Type": "volume",
+        "Name": "otel283-vxnar-ch16-v1",
+        "Destination": "/var/lib/clickhouse",
+        "RW": true
+      }
+    ],
+    "retained_volume_owner_reported": true,
+    "no_new_poststop_data_audit": true
+  },
+  "selection": {
+    "monitor": {
+      "source": "/tmp/fdb-hotelbench.VxNArC/ch16-config/monitor.log",
+      "source_sha_scope": "Finite session01 log; unmodified suffix from last baseline observation at/before0288ingest through operator stop; initialfailedcampaign prefixexcluded",
+      "source_mtime_utc": "2026-10-27T19:05:32.643Z",
+      "source_bytes": 38218,
+      "selected_offset_bytes": 21181,
+      "selected_bytes": 17037,
+      "lines": 244,
+      "baseline": "2026-10-27T18:44:52Z memory_current=7254102016 memory_max=17179869184",
+      "last_timestamped": "2026-10-27T19:05:27Z memory_current=9636290560 memory_max=17179869184",
+      "terminal_message": "Container is not running"
+    },
+    "windows": {
+      "campaign_ingest_start_utc": "2026-10-27T18:44:52.728819238Z",
+      "campaign_end_utc": "2026-10-27T18:58:12Z",
+      "postdrain_start_utc": "2026-10-27T18:59:25Z",
+      "postdrain_last_sample_utc": "2026-10-27T19:04:21Z",
+      "postdrain_status_end_utc": "2026-10-27T19:04:27Z",
+      "operator_stop_start": "2026-10-27T19:05:29Z",
+      "operator_stop_end": "2026-10-27T19:05:32Z"
+    },
+    "drain": {
+      "samples": 60,
+      "min_active_merges": 1,
+      "max_active_merges": 7,
+      "zero_samples": 0,
+      "last_sample": {
+        "timestamp": "2026-10-27T19:04:21Z",
+        "active_merges": 1
+      }
+    }
+  },
+  "timed1m_query_samples": 0,
+  "tuning_matrix_started": false,
+  "winner_or_competitive_claim": false,
+  "raw_regular_files": 42,
+  "raw_symlinks": 0,
+  "portability": "All/tmp paths are localprovenance,notportabledependencies. No blinddriverexecution;freshownedpaths and allapproval/source/binary/config/instance/profile/monitor/readinessguards required.",
+  "exclusions": [
+    "Initialdeadlinearchive/preflight notduplicated",
+    "FullDockerinspectenvironment/privateaddressdumps",
+    "Subsequentresumedsessions and futurequerymatrix"
+  ],
+  "archive_operations_only": true,
+  "active_worktree_edits": false
+}

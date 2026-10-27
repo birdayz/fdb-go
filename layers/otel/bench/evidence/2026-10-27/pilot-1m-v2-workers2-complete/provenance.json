@@ -1,0 +1,1161 @@
+{
+  "schema": "otel283_completed_1m_archive_v1",
+  "created_utc": "2026-10-27T18:11:08.010Z",
+  "run": "rw1m0286",
+  "outcome": "Completed exactly1M immutable pilot/load+strictdrain+sourcecensus+single1600querycampaign; not100M/production/HA/competitiveproof",
+  "measured_revision": "c7d00bf938edc6cb9a84df4c63b3bbd3ac22dc94",
+  "measured_source_clean": true,
+  "measured_binary_sha256": "e3d5f167aba6c671d31cd278dc16414dcdb784bb36a5f3a516d893f0668f762c",
+  "before_after": {
+    "source_identical": true,
+    "binary_identical": true,
+    "config_identical": true
+  },
+  "prepared_policy_files": [
+    {
+      "file": "README.md",
+      "expected": "3bef35fa05c58734954b3210c5a0d3ec4d5fdd1df03ac07d6fff924fa5fd350e",
+      "archived": "3bef35fa05c58734954b3210c5a0d3ec4d5fdd1df03ac07d6fff924fa5fd350e"
+    },
+    {
+      "file": "bulk-phase.jq",
+      "expected": "4d2978b8615898624c58f806cb8add1239971e0baec48418af4bf94f7dc02bc1",
+      "archived": "4d2978b8615898624c58f806cb8add1239971e0baec48418af4bf94f7dc02bc1"
+    },
+    {
+      "file": "container-entrypoint.sh",
+      "expected": "d9258a8850b2cc67075616374ceae4c083eed8eb269aff2a131132c689221ca2",
+      "archived": "d9258a8850b2cc67075616374ceae4c083eed8eb269aff2a131132c689221ca2"
+    },
+    {
+      "file": "declare-bulk.sh",
+      "expected": "65923b6679fcfa0a8d28c09ec834453773a9c3185446d373669bba88ce7ccaa7",
+      "archived": "65923b6679fcfa0a8d28c09ec834453773a9c3185446d373669bba88ce7ccaa7"
+    },
+    {
+      "file": "drain.sh",
+      "expected": "bb7010eb0fbc56c939430e1881d5ad510db9fb9899c429f4b004aff1a712ac43",
+      "archived": "bb7010eb0fbc56c939430e1881d5ad510db9fb9899c429f4b004aff1a712ac43"
+    },
+    {
+      "file": "fdb.cluster.seed",
+      "expected": "88eea690f206eac6e9d532cadc882fe4945da0c4aa0f6d6eb55e5ee1615eed3e",
+      "archived": "88eea690f206eac6e9d532cadc882fe4945da0c4aa0f6d6eb55e5ee1615eed3e"
+    },
+    {
+      "file": "foundationdb.conf",
+      "expected": "6b2b4e0e85fba430d99ea8710778c6776a95326246ae6e45109192327e242b1f",
+      "archived": "6b2b4e0e85fba430d99ea8710778c6776a95326246ae6e45109192327e242b1f"
+    },
+    {
+      "file": "launch.sh",
+      "expected": "06895aa03d761048add866a5e907ff5d54db4faa8e944fab31fdf3e344bbc363",
+      "archived": "06895aa03d761048add866a5e907ff5d54db4faa8e944fab31fdf3e344bbc363"
+    },
+    {
+      "file": "monitor.sh",
+      "expected": "f7ac720045bc0f1ed63d96605feb17b5deac75e93b3a5c1cbd08dee83a67d147",
+      "archived": "f7ac720045bc0f1ed63d96605feb17b5deac75e93b3a5c1cbd08dee83a67d147"
+    },
+    {
+      "file": "readiness.sh",
+      "expected": "724d26ed605beea4e77a6b211df4e61457f323c5c40816e9b02fa4536524ede0",
+      "archived": "724d26ed605beea4e77a6b211df4e61457f323c5c40816e9b02fa4536524ede0"
+    },
+    {
+      "file": "resume-entrypoint.sh",
+      "expected": "ba92031f087e97a8932b8fc11adfbb5cff343f1333fc660dbf291fa8810cc52b",
+      "archived": "ba92031f087e97a8932b8fc11adfbb5cff343f1333fc660dbf291fa8810cc52b"
+    },
+    {
+      "file": "resume.sh",
+      "expected": "ab32a06e00b9dcd28633cafe99217ab0fece03cd54b7f9e4a2caed54fc0dc4fe",
+      "archived": "ab32a06e00b9dcd28633cafe99217ab0fece03cd54b7f9e4a2caed54fc0dc4fe"
+    },
+    {
+      "file": "status-check.jq",
+      "expected": "35de9a2f1c08ecde7a964a52d38dbd878571c78f6f3a8046dc9ecb4158e74df3",
+      "archived": "35de9a2f1c08ecde7a964a52d38dbd878571c78f6f3a8046dc9ecb4158e74df3"
+    },
+    {
+      "file": "verify-drain.sh",
+      "expected": "193ee0cb966f8872bcabd81e8e8c72d8f33b6fb99301a5b4f1e1a39bb9034366",
+      "archived": "193ee0cb966f8872bcabd81e8e8c72d8f33b6fb99301a5b4f1e1a39bb9034366"
+    }
+  ],
+  "requested_and_acknowledged_rows": 1000000,
+  "ingest_wall_ns": 908534626470,
+  "acknowledged_spans_per_second": 1100.6735141019087,
+  "diagnostics": {
+    "scope": "source_batches_only",
+    "source_runs": 31282,
+    "source_attempts": 31300,
+    "source_replays": 18,
+    "source_timeouts": 32,
+    "source_fresh_retries": 32,
+    "committed_batches": 31250,
+    "committed_rows": 1000000,
+    "approximate_mutation_bytes": 8453442862,
+    "phase_nanos": {
+      "guard": 64683521,
+      "manifest": 265165883572,
+      "open": 164285334714,
+      "preparation": 15644808059,
+      "run": 1815877367975,
+      "save": 309246316788,
+      "timeout_backoff": 1064565069
+    },
+    "timer": {
+      "commit": {
+        "Event": {
+          "Name": "commit",
+          "Title": "Commit",
+          "Kind": 1
+        },
+        "Count": 31250,
+        "CumulativeValue": 1017669367286
+      },
+      "open_store": {
+        "Event": {
+          "Name": "open_store",
+          "Title": "Open Store",
+          "Kind": 1
+        },
+        "Count": 31300,
+        "CumulativeValue": 164163754981
+      }
+    }
+  },
+  "source_audit": {
+    "rows": 1000000,
+    "attributes": 8000000,
+    "structures": {
+      "eq_primary": {
+        "keys": 0,
+        "key_bytes": 0,
+        "value_bytes": 0
+      },
+      "eq_secondary": {
+        "keys": 8000000,
+        "key_bytes": 1689217626,
+        "value_bytes": 908803336
+      },
+      "owned_total": {
+        "keys": 11000002,
+        "key_bytes": 2007217699,
+        "value_bytes": 1427920352
+      },
+      "records": {
+        "keys": 1000000,
+        "key_bytes": 92000000,
+        "value_bytes": 519116824
+      },
+      "span_id_v2": {
+        "keys": 1000000,
+        "key_bytes": 112000000,
+        "value_bytes": 0
+      },
+      "span_time_v2": {
+        "keys": 1000000,
+        "key_bytes": 114000000,
+        "value_bytes": 0
+      }
+    },
+    "failures": 0,
+    "consistency": "Immutable corpus only; not concurrent mutation audit"
+  },
+  "drain": {
+    "raw_samples": 5,
+    "certified_samples": [
+      {
+        "path": "session/drain-raw.WRO5uG/status-000003.json",
+        "expected": "652c143b7977c9f5ccbf9b2cf40185ccb7cd9be687f3dc56e3822c52a5bed6a0",
+        "archived": "652c143b7977c9f5ccbf9b2cf40185ccb7cd9be687f3dc56e3822c52a5bed6a0",
+        "matches": true,
+        "epoch": 1793124129
+      },
+      {
+        "path": "session/drain-raw.WRO5uG/status-000004.json",
+        "expected": "33936d73ab1f229443b26d335313aff6bb6d9aaa33af6bdc474c65b071899464",
+        "archived": "33936d73ab1f229443b26d335313aff6bb6d9aaa33af6bdc474c65b071899464",
+        "matches": true,
+        "epoch": 1793124134
+      },
+      {
+        "path": "session/drain-raw.WRO5uG/status-000005.json",
+        "expected": "9d8bb8054621fa84e9b9ae9542b042cb0982679cf42796c02ab6db6450b490df",
+        "archived": "9d8bb8054621fa84e9b9ae9542b042cb0982679cf42796c02ab6db6450b490df",
+        "matches": true,
+        "epoch": 1793124139
+      }
+    ],
+    "completed_epoch": 1793124139,
+    "load_receipt_hash_matches": true,
+    "phase_pin_hash_matches": true
+  },
+  "queries": {
+    "campaigns": 1,
+    "timed_samples": 1600,
+    "class_populations": {
+      "trace": 100,
+      "trace_absent": 100,
+      "span": 100,
+      "span_absent": 100,
+      "genai_response": 100,
+      "genai_scope_resource": 100,
+      "genai_scope_scope": 100,
+      "genai_type": 100,
+      "genai_absent": 100,
+      "genai_operation": 100,
+      "genai_provider": 100,
+      "genai_model": 100,
+      "time_narrow": 100,
+      "time_empty": 100,
+      "time_absent": 100,
+      "time_broad": 100
+    },
+    "histograms": {
+      "genai_absent": {
+        "population": 100,
+        "min_ns": 510778,
+        "p50_ns": 572144,
+        "p95_ns": 648579,
+        "p99_ns": 715024,
+        "max_ns": 760501
+      },
+      "genai_model": {
+        "population": 100,
+        "min_ns": 1267341,
+        "p50_ns": 1409250,
+        "p95_ns": 1744114,
+        "p99_ns": 1769452,
+        "max_ns": 1836750
+      },
+      "genai_operation": {
+        "population": 100,
+        "min_ns": 1211124,
+        "p50_ns": 1368072,
+        "p95_ns": 1666427,
+        "p99_ns": 1758762,
+        "max_ns": 7923200
+      },
+      "genai_provider": {
+        "population": 100,
+        "min_ns": 1266098,
+        "p50_ns": 1421133,
+        "p95_ns": 1767228,
+        "p99_ns": 1996502,
+        "max_ns": 2296571
+      },
+      "genai_response": {
+        "population": 100,
+        "min_ns": 530796,
+        "p50_ns": 578426,
+        "p95_ns": 688004,
+        "p99_ns": 703062,
+        "max_ns": 711247
+      },
+      "genai_scope_resource": {
+        "population": 100,
+        "min_ns": 500007,
+        "p50_ns": 560752,
+        "p95_ns": 637929,
+        "p99_ns": 772483,
+        "max_ns": 825544
+      },
+      "genai_scope_scope": {
+        "population": 100,
+        "min_ns": 509485,
+        "p50_ns": 578276,
+        "p95_ns": 678365,
+        "p99_ns": 961872,
+        "max_ns": 1546630
+      },
+      "genai_type": {
+        "population": 100,
+        "min_ns": 521618,
+        "p50_ns": 579167,
+        "p95_ns": 647747,
+        "p99_ns": 905155,
+        "max_ns": 934701
+      },
+      "span": {
+        "population": 100,
+        "min_ns": 505518,
+        "p50_ns": 569329,
+        "p95_ns": 664359,
+        "p99_ns": 744751,
+        "max_ns": 764839
+      },
+      "span_absent": {
+        "population": 100,
+        "min_ns": 492403,
+        "p50_ns": 561795,
+        "p95_ns": 629752,
+        "p99_ns": 820655,
+        "max_ns": 873916
+      },
+      "time_absent": {
+        "population": 100,
+        "min_ns": 465813,
+        "p50_ns": 556925,
+        "p95_ns": 622740,
+        "p99_ns": 713892,
+        "max_ns": 842005
+      },
+      "time_broad": {
+        "population": 100,
+        "min_ns": 862835,
+        "p50_ns": 939580,
+        "p95_ns": 1104854,
+        "p99_ns": 1268684,
+        "max_ns": 1348534
+      },
+      "time_empty": {
+        "population": 100,
+        "min_ns": 391001,
+        "p50_ns": 452617,
+        "p95_ns": 496090,
+        "p99_ns": 693614,
+        "max_ns": 711588
+      },
+      "time_narrow": {
+        "population": 100,
+        "min_ns": 552126,
+        "p50_ns": 623982,
+        "p95_ns": 790478,
+        "p99_ns": 946673,
+        "max_ns": 1004222
+      },
+      "trace": {
+        "population": 100,
+        "min_ns": 558007,
+        "p50_ns": 636415,
+        "p95_ns": 835292,
+        "p99_ns": 903011,
+        "max_ns": 1603978
+      },
+      "trace_absent": {
+        "population": 100,
+        "min_ns": 480210,
+        "p50_ns": 550793,
+        "p95_ns": 696099,
+        "p99_ns": 863977,
+        "max_ns": 939971
+      }
+    },
+    "reported_oracle_failures": 0,
+    "subsequent_warm_rounds_excluded": true
+  },
+  "pilot_end_utc": "2026-10-27T18:03:54Z",
+  "observer_selection": {
+    "cutoff_epoch": 1793124234,
+    "cutoff_utc": "2026-10-27T18:03:54Z",
+    "monitor": {
+      "records": 128,
+      "status_samples": 120,
+      "prefix_bytes": 335468,
+      "last": "2026-10-27T18:03:48Z"
+    },
+    "io": {
+      "selected_samples": 105,
+      "first": {
+        "sample": "sample-000001",
+        "host_utc": "2026-10-27T17:46:34Z",
+        "container_utc": "2026-10-27T17:46:34Z",
+        "exit": "0",
+        "files": 8
+      },
+      "last": {
+        "sample": "sample-000105",
+        "host_utc": "2026-10-27T18:03:54Z",
+        "container_utc": "2026-10-27T18:03:54Z",
+        "exit": "0",
+        "files": 8
+      },
+      "samples": [
+        {
+          "sample": "sample-000001",
+          "host_utc": "2026-10-27T17:46:34Z",
+          "container_utc": "2026-10-27T17:46:34Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000002",
+          "host_utc": "2026-10-27T17:46:44Z",
+          "container_utc": "2026-10-27T17:46:44Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000003",
+          "host_utc": "2026-10-27T17:46:54Z",
+          "container_utc": "2026-10-27T17:46:54Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000004",
+          "host_utc": "2026-10-27T17:47:04Z",
+          "container_utc": "2026-10-27T17:47:04Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000005",
+          "host_utc": "2026-10-27T17:47:14Z",
+          "container_utc": "2026-10-27T17:47:14Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000006",
+          "host_utc": "2026-10-27T17:47:24Z",
+          "container_utc": "2026-10-27T17:47:24Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000007",
+          "host_utc": "2026-10-27T17:47:34Z",
+          "container_utc": "2026-10-27T17:47:34Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000008",
+          "host_utc": "2026-10-27T17:47:44Z",
+          "container_utc": "2026-10-27T17:47:44Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000009",
+          "host_utc": "2026-10-27T17:47:54Z",
+          "container_utc": "2026-10-27T17:47:54Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000010",
+          "host_utc": "2026-10-27T17:48:04Z",
+          "container_utc": "2026-10-27T17:48:04Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000011",
+          "host_utc": "2026-10-27T17:48:14Z",
+          "container_utc": "2026-10-27T17:48:14Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000012",
+          "host_utc": "2026-10-27T17:48:25Z",
+          "container_utc": "2026-10-27T17:48:25Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000013",
+          "host_utc": "2026-10-27T17:48:34Z",
+          "container_utc": "2026-10-27T17:48:34Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000014",
+          "host_utc": "2026-10-27T17:48:44Z",
+          "container_utc": "2026-10-27T17:48:44Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000015",
+          "host_utc": "2026-10-27T17:48:54Z",
+          "container_utc": "2026-10-27T17:48:54Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000016",
+          "host_utc": "2026-10-27T17:49:04Z",
+          "container_utc": "2026-10-27T17:49:04Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000017",
+          "host_utc": "2026-10-27T17:49:14Z",
+          "container_utc": "2026-10-27T17:49:14Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000018",
+          "host_utc": "2026-10-27T17:49:24Z",
+          "container_utc": "2026-10-27T17:49:24Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000019",
+          "host_utc": "2026-10-27T17:49:34Z",
+          "container_utc": "2026-10-27T17:49:34Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000020",
+          "host_utc": "2026-10-27T17:49:44Z",
+          "container_utc": "2026-10-27T17:49:45Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000021",
+          "host_utc": "2026-10-27T17:49:54Z",
+          "container_utc": "2026-10-27T17:49:54Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000022",
+          "host_utc": "2026-10-27T17:50:04Z",
+          "container_utc": "2026-10-27T17:50:04Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000023",
+          "host_utc": "2026-10-27T17:50:14Z",
+          "container_utc": "2026-10-27T17:50:14Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000024",
+          "host_utc": "2026-10-27T17:50:24Z",
+          "container_utc": "2026-10-27T17:50:24Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000025",
+          "host_utc": "2026-10-27T17:50:34Z",
+          "container_utc": "2026-10-27T17:50:34Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000026",
+          "host_utc": "2026-10-27T17:50:44Z",
+          "container_utc": "2026-10-27T17:50:44Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000027",
+          "host_utc": "2026-10-27T17:50:54Z",
+          "container_utc": "2026-10-27T17:50:54Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000028",
+          "host_utc": "2026-10-27T17:51:04Z",
+          "container_utc": "2026-10-27T17:51:04Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000029",
+          "host_utc": "2026-10-27T17:51:14Z",
+          "container_utc": "2026-10-27T17:51:14Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000030",
+          "host_utc": "2026-10-27T17:51:24Z",
+          "container_utc": "2026-10-27T17:51:24Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000031",
+          "host_utc": "2026-10-27T17:51:34Z",
+          "container_utc": "2026-10-27T17:51:34Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000032",
+          "host_utc": "2026-10-27T17:51:44Z",
+          "container_utc": "2026-10-27T17:51:44Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000033",
+          "host_utc": "2026-10-27T17:51:54Z",
+          "container_utc": "2026-10-27T17:51:54Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000034",
+          "host_utc": "2026-10-27T17:52:04Z",
+          "container_utc": "2026-10-27T17:52:04Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000035",
+          "host_utc": "2026-10-27T17:52:14Z",
+          "container_utc": "2026-10-27T17:52:14Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000036",
+          "host_utc": "2026-10-27T17:52:24Z",
+          "container_utc": "2026-10-27T17:52:24Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000037",
+          "host_utc": "2026-10-27T17:52:34Z",
+          "container_utc": "2026-10-27T17:52:34Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000038",
+          "host_utc": "2026-10-27T17:52:44Z",
+          "container_utc": "2026-10-27T17:52:44Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000039",
+          "host_utc": "2026-10-27T17:52:54Z",
+          "container_utc": "2026-10-27T17:52:54Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000040",
+          "host_utc": "2026-10-27T17:53:04Z",
+          "container_utc": "2026-10-27T17:53:04Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000041",
+          "host_utc": "2026-10-27T17:53:14Z",
+          "container_utc": "2026-10-27T17:53:14Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000042",
+          "host_utc": "2026-10-27T17:53:24Z",
+          "container_utc": "2026-10-27T17:53:24Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000043",
+          "host_utc": "2026-10-27T17:53:34Z",
+          "container_utc": "2026-10-27T17:53:34Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000044",
+          "host_utc": "2026-10-27T17:53:44Z",
+          "container_utc": "2026-10-27T17:53:44Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000045",
+          "host_utc": "2026-10-27T17:53:54Z",
+          "container_utc": "2026-10-27T17:53:54Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000046",
+          "host_utc": "2026-10-27T17:54:04Z",
+          "container_utc": "2026-10-27T17:54:04Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000047",
+          "host_utc": "2026-10-27T17:54:14Z",
+          "container_utc": "2026-10-27T17:54:14Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000048",
+          "host_utc": "2026-10-27T17:54:24Z",
+          "container_utc": "2026-10-27T17:54:24Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000049",
+          "host_utc": "2026-10-27T17:54:34Z",
+          "container_utc": "2026-10-27T17:54:34Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000050",
+          "host_utc": "2026-10-27T17:54:44Z",
+          "container_utc": "2026-10-27T17:54:44Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000051",
+          "host_utc": "2026-10-27T17:54:54Z",
+          "container_utc": "2026-10-27T17:54:54Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000052",
+          "host_utc": "2026-10-27T17:55:04Z",
+          "container_utc": "2026-10-27T17:55:05Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000053",
+          "host_utc": "2026-10-27T17:55:14Z",
+          "container_utc": "2026-10-27T17:55:14Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000054",
+          "host_utc": "2026-10-27T17:55:24Z",
+          "container_utc": "2026-10-27T17:55:24Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000055",
+          "host_utc": "2026-10-27T17:55:34Z",
+          "container_utc": "2026-10-27T17:55:34Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000056",
+          "host_utc": "2026-10-27T17:55:44Z",
+          "container_utc": "2026-10-27T17:55:44Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000057",
+          "host_utc": "2026-10-27T17:55:54Z",
+          "container_utc": "2026-10-27T17:55:54Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000058",
+          "host_utc": "2026-10-27T17:56:04Z",
+          "container_utc": "2026-10-27T17:56:04Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000059",
+          "host_utc": "2026-10-27T17:56:14Z",
+          "container_utc": "2026-10-27T17:56:14Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000060",
+          "host_utc": "2026-10-27T17:56:24Z",
+          "container_utc": "2026-10-27T17:56:25Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000061",
+          "host_utc": "2026-10-27T17:56:34Z",
+          "container_utc": "2026-10-27T17:56:34Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000062",
+          "host_utc": "2026-10-27T17:56:44Z",
+          "container_utc": "2026-10-27T17:56:44Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000063",
+          "host_utc": "2026-10-27T17:56:54Z",
+          "container_utc": "2026-10-27T17:56:54Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000064",
+          "host_utc": "2026-10-27T17:57:04Z",
+          "container_utc": "2026-10-27T17:57:04Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000065",
+          "host_utc": "2026-10-27T17:57:14Z",
+          "container_utc": "2026-10-27T17:57:14Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000066",
+          "host_utc": "2026-10-27T17:57:24Z",
+          "container_utc": "2026-10-27T17:57:24Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000067",
+          "host_utc": "2026-10-27T17:57:34Z",
+          "container_utc": "2026-10-27T17:57:34Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000068",
+          "host_utc": "2026-10-27T17:57:44Z",
+          "container_utc": "2026-10-27T17:57:45Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000069",
+          "host_utc": "2026-10-27T17:57:54Z",
+          "container_utc": "2026-10-27T17:57:54Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000070",
+          "host_utc": "2026-10-27T17:58:04Z",
+          "container_utc": "2026-10-27T17:58:04Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000071",
+          "host_utc": "2026-10-27T17:58:14Z",
+          "container_utc": "2026-10-27T17:58:14Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000072",
+          "host_utc": "2026-10-27T17:58:24Z",
+          "container_utc": "2026-10-27T17:58:24Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000073",
+          "host_utc": "2026-10-27T17:58:34Z",
+          "container_utc": "2026-10-27T17:58:34Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000074",
+          "host_utc": "2026-10-27T17:58:44Z",
+          "container_utc": "2026-10-27T17:58:44Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000075",
+          "host_utc": "2026-10-27T17:58:54Z",
+          "container_utc": "2026-10-27T17:58:54Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000076",
+          "host_utc": "2026-10-27T17:59:04Z",
+          "container_utc": "2026-10-27T17:59:05Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000077",
+          "host_utc": "2026-10-27T17:59:14Z",
+          "container_utc": "2026-10-27T17:59:14Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000078",
+          "host_utc": "2026-10-27T17:59:24Z",
+          "container_utc": "2026-10-27T17:59:24Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000079",
+          "host_utc": "2026-10-27T17:59:34Z",
+          "container_utc": "2026-10-27T17:59:34Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000080",
+          "host_utc": "2026-10-27T17:59:44Z",
+          "container_utc": "2026-10-27T17:59:44Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000081",
+          "host_utc": "2026-10-27T17:59:54Z",
+          "container_utc": "2026-10-27T17:59:54Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000082",
+          "host_utc": "2026-10-27T18:00:04Z",
+          "container_utc": "2026-10-27T18:00:04Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000083",
+          "host_utc": "2026-10-27T18:00:14Z",
+          "container_utc": "2026-10-27T18:00:14Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000084",
+          "host_utc": "2026-10-27T18:00:24Z",
+          "container_utc": "2026-10-27T18:00:25Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000085",
+          "host_utc": "2026-10-27T18:00:34Z",
+          "container_utc": "2026-10-27T18:00:34Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000086",
+          "host_utc": "2026-10-27T18:00:44Z",
+          "container_utc": "2026-10-27T18:00:44Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000087",
+          "host_utc": "2026-10-27T18:00:54Z",
+          "container_utc": "2026-10-27T18:00:54Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000088",
+          "host_utc": "2026-10-27T18:01:04Z",
+          "container_utc": "2026-10-27T18:01:04Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000089",
+          "host_utc": "2026-10-27T18:01:14Z",
+          "container_utc": "2026-10-27T18:01:14Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000090",
+          "host_utc": "2026-10-27T18:01:24Z",
+          "container_utc": "2026-10-27T18:01:24Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000091",
+          "host_utc": "2026-10-27T18:01:34Z",
+          "container_utc": "2026-10-27T18:01:34Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000092",
+          "host_utc": "2026-10-27T18:01:44Z",
+          "container_utc": "2026-10-27T18:01:45Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000093",
+          "host_utc": "2026-10-27T18:01:54Z",
+          "container_utc": "2026-10-27T18:01:54Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000094",
+          "host_utc": "2026-10-27T18:02:04Z",
+          "container_utc": "2026-10-27T18:02:04Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000095",
+          "host_utc": "2026-10-27T18:02:14Z",
+          "container_utc": "2026-10-27T18:02:14Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000096",
+          "host_utc": "2026-10-27T18:02:24Z",
+          "container_utc": "2026-10-27T18:02:24Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000097",
+          "host_utc": "2026-10-27T18:02:34Z",
+          "container_utc": "2026-10-27T18:02:34Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000098",
+          "host_utc": "2026-10-27T18:02:44Z",
+          "container_utc": "2026-10-27T18:02:44Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000099",
+          "host_utc": "2026-10-27T18:02:54Z",
+          "container_utc": "2026-10-27T18:02:54Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000100",
+          "host_utc": "2026-10-27T18:03:04Z",
+          "container_utc": "2026-10-27T18:03:04Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000101",
+          "host_utc": "2026-10-27T18:03:14Z",
+          "container_utc": "2026-10-27T18:03:14Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000102",
+          "host_utc": "2026-10-27T18:03:24Z",
+          "container_utc": "2026-10-27T18:03:24Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000103",
+          "host_utc": "2026-10-27T18:03:34Z",
+          "container_utc": "2026-10-27T18:03:34Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000104",
+          "host_utc": "2026-10-27T18:03:44Z",
+          "container_utc": "2026-10-27T18:03:44Z",
+          "exit": "0",
+          "files": 8
+        },
+        {
+          "sample": "sample-000105",
+          "host_utc": "2026-10-27T18:03:54Z",
+          "container_utc": "2026-10-27T18:03:54Z",
+          "exit": "0",
+          "files": 8
+        }
+      ],
+      "collector_ended_receipt_present": false,
+      "cancellation": "Root-reported intentional cancellation after pilot success; no service/DB action. No natural-completion receipt inferred.",
+      "overhead": "Read-only proc/cgroup sampling every10seconds, docker identity/exec plus file reads; overhead is part of this arm, not measured or subtracted.",
+      "excluded": "All samples after pilot cutoff; no future warm query rounds bundled."
+    }
+  },
+  "physical": {
+    "before_bytes": 7557361664,
+    "settled_bytes": 10367668224,
+    "delta_bytes": 2810306560,
+    "not_isolated_per_run_or_capacity_multiplier": true,
+    "confounds": [
+      "Retained earlier failed roots",
+      "data distribution movement",
+      "transaction log preallocation",
+      "trace growth"
+    ]
+  },
+  "static_validation": {
+    "tests": 249,
+    "passed": 249,
+    "failed": 0,
+    "commands": 483,
+    "expected_success": 48,
+    "expected_rejection": 201,
+    "pure_file_only": true
+  },
+  "raw_regular_files": 2527,
+  "raw_symlinks": 2,
+  "portability": "Original /tmp paths and2 adversarial absolute fixture links are local provenance, not portable dependencies. Never blindly execute extracted command receipts/drivers or follow symlinks; fresh owned paths and all approval/identity/config/source/binary guards are required.",
+  "exclusions": [
+    "All monitor andIOsamples after pilot-end cutoff",
+    "Future warmqueryrounds",
+    "Priorfailedarchives except15originalpolicyinputs required by249validator",
+    "Other runtime Docker inspect/environment dumps and process-state files; EXCEPTION: validation/policy286-final-249/stopped-container.input.inspect.json is retained as a full stopped-container negative fixture, including Config.Env/state/host paths/HostConfig/mounts",
+    "Broader kernel/IOanalysis not yet independently frozen/approved for inclusion"
+  ],
+  "retained_negative_fixture_exception": {
+    "member": "validation/policy286-final-249/stopped-container.input.inspect.json",
+    "content": "Full Docker inspect response: Config.Env, state, host paths, HostConfig and mounts; local operational metadata is retained, not redacted",
+    "bytes": 10505,
+    "sha256": "d9eb4e40a8d56b8d5218b97b181d3191956301fcc50d994a4d00ab1ecfc37866",
+    "review": "Entire member streamed and inspected; ten ordinary FDB configuration/PATH environment entries; only loopback IPv4, no IPv6 or observed credentials/nonloopback destinations",
+    "raw_fixture_validation_checksums_and_tar_unchanged": true,
+    "correction": "Qualifies the earlier false unqualified inspect/environment exclusion; no finding is dropped or rerated"
+  },
+  "safeguarded_data": "Volume retained; archiving touched noDB/service/volume",
+  "archive_operations_only": true
+}
