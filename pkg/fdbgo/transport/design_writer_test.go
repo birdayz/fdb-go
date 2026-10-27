@@ -21,8 +21,6 @@ import (
 // Enqueue-only writer (RFC-282) tests against T1 and T2: a send is
 // enqueue-plus-wait-for-reply, never a write acknowledgment.
 
-const designDelay = 40 * time.Millisecond // coalescing delay long enough to observe
-
 type writerArm struct {
 	name string
 	opts []DialOption
@@ -31,7 +29,7 @@ type writerArm struct {
 func writerArms() []writerArm {
 	return []writerArm{
 		{name: "d-ng", opts: []DialOption{withNetDesign(designNG), WithCoalesceDelay(0, 0)}},
-		{name: "d-coalesce", opts: []DialOption{withNetDesign(designD), WithCoalesceDelay(designDelay, designDelay)}},
+		{name: "d-coalesce", opts: []DialOption{withNetDesign(designD), WithCoalesceDelay(10*time.Microsecond, 20*time.Microsecond)}},
 		{name: "d-adaptive", opts: []DialOption{withNetDesign(designNG), WithAdaptiveLinger(20 * time.Microsecond)}},
 	}
 }
@@ -95,9 +93,6 @@ func TestDesignSendIsEnqueueOnly(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			opts := append([]DialOption{withMonitorCadence(time.Hour, time.Hour)}, arm.opts...)
-			if arm.name == "d-coalesce" {
-				opts = append(opts, WithCoalesceDelay(10*time.Microsecond, 20*time.Microsecond))
-			}
 			c, err := dialWith(ctx, "sim", dial, nil, opts...)
 			if err != nil {
 				t.Fatalf("dial: %v", err)
@@ -329,6 +324,41 @@ func TestDesignCancelNeverUnqueues(t *testing.T) {
 
 	expectFrames(t, frames, 1, 2)
 	expectNoFrame(t, frames, "the cancelled-before-send frame")
+
+	// Teardown while a sender waits at beforeLock (w.mu held) must reject admission
+	// with ErrConnClosed (1030) and leave w.q unchanged across both frame size paths.
+	for _, body := range [][]byte{frameBody(5), bytes.Repeat([]byte{'T'}, 5000)} {
+		cLock, _ := dialDesignArm(t, withNetDesign(designNG), WithCoalesceDelay(0, 0))
+		reachedLock := make(chan struct{})
+		var reachedOnce sync.Once
+		cLock.na.beforeLock = func() {
+			reachedOnce.Do(func() { close(reachedLock) })
+		}
+		cLock.na.mu.Lock()
+		qBefore := len(cLock.na.q)
+		teardownDone := make(chan error, 1)
+		go func(b []byte) {
+			ok, err := cLock.SendFrameContext(context.Background(), UID{First: 5}, b)
+			var fdbErr *wire.FDBError
+			if ok || !errors.Is(err, ErrConnClosed) || !errors.As(err, &fdbErr) || fdbErr.Code != 1030 {
+				teardownDone <- fmt.Errorf("teardown at beforeLock = (%t, %v), want (false, ErrConnClosed 1030)", ok, err)
+				return
+			}
+			teardownDone <- nil
+		}(body)
+		within(t, reachedLock, "sender reached beforeLock before teardown")
+		cLock.failConnection(codedConnClosed(errInjectedWrite))
+		cLock.na.mu.Unlock()
+		if err := within(t, teardownDone, "teardown-at-beforeLock sender"); err != nil {
+			t.Fatal(err)
+		}
+		cLock.na.mu.Lock()
+		qAfter := len(cLock.na.q)
+		cLock.na.mu.Unlock()
+		if qAfter != qBefore || cLock.sendWaiters.Pending() {
+			t.Fatalf("teardown at beforeLock left q=%d (want %d) or pending sendWaiters", qAfter, qBefore)
+		}
+	}
 }
 
 // failingConn fails every write once armed; reads block until Close.
@@ -373,9 +403,6 @@ func TestDesignWriteErrorFailsAllPending(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			opts := append([]DialOption{withMonitorCadence(time.Hour, time.Hour)}, arm.opts...)
-			if arm.name == "d-coalesce" {
-				opts = append(opts, WithCoalesceDelay(10*time.Microsecond, 20*time.Microsecond))
-			}
 			c, err := dialWith(ctx, "sim", dial, nil, opts...)
 			if err != nil {
 				t.Fatalf("dial: %v", err)
@@ -597,6 +624,40 @@ func TestDesignHighWaterBackpressure(t *testing.T) {
 	}
 	if got, want := string(within(t, frames, "end frame")), "3:f3"; got != want {
 		t.Fatalf("peer read %q, want %q", got, want)
+	}
+
+	// Closing the connection while a sender with a live caller context is parked
+	// in naWaitHighWater must unblock with ErrConnClosed (1030) and release its permit.
+	cHW, releaseHW, _ := dialStalledPeer(t, withNetDesign(designNG), WithCoalesceDelay(0, 0))
+	defer func() {
+		select {
+		case <-releaseHW:
+		default:
+			close(releaseHW)
+		}
+	}()
+	cHW.na.mu.Lock()
+	cHW.na.q = append(cHW.na.q[:0], bigFrame...)
+	cHW.na.mu.Unlock()
+	hwCtx, hwSig := WithSuspendSignal(context.Background())
+	t.Cleanup(hwSig.Fire)
+	hwDone := make(chan error, 1)
+	go func() {
+		ok, err := cHW.SendFrameContext(hwCtx, UID{First: 77}, []byte("hw-close"))
+		var fdbErr *wire.FDBError
+		if ok || !errors.Is(err, ErrConnClosed) || !errors.As(err, &fdbErr) || fdbErr.Code != 1030 {
+			hwDone <- fmt.Errorf("closed high-water send = (%t, %v), want (false, ErrConnClosed 1030)", ok, err)
+			return
+		}
+		hwDone <- nil
+	}()
+	within(t, hwSig.Done(), "high-water sender parked before connection close")
+	cHW.failConnection(codedConnClosed(errInjectedWrite))
+	if err := within(t, hwDone, "closed high-water sender"); err != nil {
+		t.Fatal(err)
+	}
+	if cHW.sendWaiters.Pending() {
+		t.Fatal("closed high-water sender leaked its sendWaiters permit")
 	}
 }
 
@@ -960,5 +1021,51 @@ func TestDesignWireLogPanicDoesNotPoisonWriter(t *testing.T) {
 	pw.mu.Unlock()
 	if fmt.Sprint(gotLogged) != fmt.Sprint(wantLoggedOrder) {
 		t.Fatalf("wire-log token order = %v, want %v", gotLogged, wantLoggedOrder)
+	}
+
+	// Failing the connection while a sender is inside the unlocked LogSend callback
+	// must reject admission with ErrConnClosed (1030), leave w.q unchanged, and release its permit.
+	for _, tc := range []struct {
+		tok  uint64
+		body []byte
+	}{
+		{60, []byte("close-log-small")},
+		{61, bytes.Repeat([]byte{'L'}, 5000)},
+	} {
+		cLog, _ := dialDesignArm(t, withNetDesign(designNG), WithCoalesceDelay(0, 0))
+		entered, release := make(chan struct{}), make(chan struct{})
+		var releaseOnce sync.Once
+		openGate := func() { releaseOnce.Do(func() { close(release) }) }
+		defer openGate()
+		pw.mu.Lock()
+		pw.enteredGate, pw.releaseGate = entered, release
+		pw.mu.Unlock()
+		pw.gateNext.Store(true)
+
+		cLog.na.mu.Lock()
+		qBefore := len(cLog.na.q)
+		cLog.na.mu.Unlock()
+		doneClose := make(chan error, 1)
+		go func() {
+			ok, err := cLog.SendFrameContext(context.Background(), UID{First: tc.tok}, tc.body)
+			var fdbErr *wire.FDBError
+			if ok || !errors.Is(err, ErrConnClosed) || !errors.As(err, &fdbErr) || fdbErr.Code != 1030 {
+				doneClose <- fmt.Errorf("teardown-in-LogSend (%d) = (%t, %v), want (false, ErrConnClosed 1030)", tc.tok, ok, err)
+				return
+			}
+			doneClose <- nil
+		}()
+		within(t, entered, "sender entered LogSend before connection teardown")
+		cLog.failConnection(codedConnClosed(errInjectedWrite))
+		openGate()
+		if err := within(t, doneClose, "teardown-in-LogSend sender"); err != nil {
+			t.Fatal(err)
+		}
+		cLog.na.mu.Lock()
+		qAfter := len(cLog.na.q)
+		cLog.na.mu.Unlock()
+		if qAfter != qBefore || cLog.sendWaiters.Pending() {
+			t.Fatalf("teardown-in-LogSend (%d) left q=%d (want %d) or pending sendWaiters", tc.tok, qAfter, qBefore)
+		}
 	}
 }

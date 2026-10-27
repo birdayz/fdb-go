@@ -118,6 +118,11 @@ func (tx *Transaction) enterReadStateInto(ctx context.Context, inc *readIncarnat
 		}
 		ready := tx.readReady
 		if ready == nil {
+			var cause error
+			if tx.timeoutNeedsArm {
+				tx.armTimeoutLocked()
+				cause = inc.cause
+			}
 			inc.users++
 			if issued {
 				inc.issuedReads++
@@ -128,6 +133,9 @@ func (tx *Transaction) enterReadStateInto(ctx context.Context, inc *readIncarnat
 			lease.tx, lease.inc, lease.issued = tx, inc, issued
 			lease.active.Store(true)
 			tx.readErrMu.Unlock()
+			if cause != nil {
+				inc.cancel(cause)
+			}
 			return lease
 		}
 		if wait {

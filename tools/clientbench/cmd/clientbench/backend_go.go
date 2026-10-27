@@ -14,9 +14,8 @@ import (
 )
 
 type backend struct {
-	db   fdb.Database
-	raw  *client.Database
-	meta map[string]any
+	db  fdb.Database
+	raw *client.Database
 }
 type transaction struct {
 	read  fdb.ReadTransaction
@@ -55,33 +54,22 @@ func openBackend(cfg bench.Config) (bench.LifecycleDatabase, map[string]any, err
 		db.Close()
 		return nil, nil, err
 	}
-	b := &backend{
-		db:  db,
-		raw: raw,
-		meta: map[string]any{
-			"backend":        "go",
-			"api_version":    730,
-			"native_library": false,
-			"coalesce_delay": cfg.CoalesceDelay,
-		},
+	minDelay, maxDelay, adaptive, waits := raw.ConnectionLinger()
+	meta := map[string]any{
+		"backend":            "go",
+		"api_version":        730,
+		"native_library":     false,
+		"coalesce_delay":     cfg.CoalesceDelay,
+		"effective_min_ns":   int64(minDelay),
+		"effective_max_ns":   int64(maxDelay),
+		"effective_waits":    waits,
+		"adaptive_linger_ns": int64(adaptive),
 	}
-	b.recordLinger()
-	return b, b.meta, nil
+	return &backend{db: db, raw: raw}, meta, nil
 }
 
-func (b *backend) recordLinger() {
-	minDelay, maxDelay, adaptive, waits := b.raw.ConnectionLinger()
-	b.meta["effective_min_ns"] = int64(minDelay)
-	b.meta["effective_max_ns"] = int64(maxDelay)
-	b.meta["effective_waits"] = waits
-	b.meta["adaptive_linger_ns"] = int64(adaptive)
-}
-
-func (b *backend) Close() { b.db.Close() }
-func (b *backend) Barrier() error {
-	b.recordLinger()
-	return nil
-}
+func (b *backend) Close()         { b.db.Close() }
+func (b *backend) Barrier() error { return nil }
 
 func (b *backend) Shutdown() (bool, error) {
 	// Database.Close waits for background workers and all transport loops.

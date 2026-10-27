@@ -158,7 +158,9 @@ func TestGRVBatchStorageReuse(t *testing.T) {
 	}
 	immBatcher := &grvBatcher{priority: grvPrioritySystemImmediate}
 	db.grvBatchers[grvBatcherSystemImmediate] = immBatcher
-	db.grvCache.updateFromGRV(db.grvCache.token(), time.Now(), 42)
+	fixedNow := time.Now()
+	db.grvCache.now = func() time.Time { return fixedNow }
+	db.grvCache.updateFromGRV(db.grvCache.token(), fixedNow, 42)
 	var state readVersionState
 	fetchReq := readVersionRequest{db: db, flags: grvPrioritySystemImmediate, useGrvCache: true}
 	if allocs := testing.AllocsPerRun(100, func() {

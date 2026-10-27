@@ -129,17 +129,18 @@ func TestDesignTimeoutDoesNotRetainTransaction(t *testing.T) {
 			if tm.Stop() {
 				t.Fatal("collected transaction's weak timer was still active in the runtime timer heap")
 			}
-			goto verifyPooledRetirement
+			return
 		case <-time.After(time.Millisecond):
 			if time.Now().After(deadline) {
 				t.Fatalf("dropped transaction timer was not stopped by cleanup (weak=%v)", w.Value())
 			}
 		}
 	}
+}
 
-verifyPooledRetirement:
-	// A ReadTransact that sets a long timeout and exits stops e.t and clears
-	// e.nextFire before returning e to designTimerPool, so GC eviction collects e.
+// Not parallel: inspects and GCs a pooled entry returned to the package-wide
+// designTimerPool, so it must not run concurrently with pool consumers.
+func TestDesignTimeoutPooledRetirementStopsTimerAndCollects(t *testing.T) {
 	armAndRetirePooled := func() (weak.Pointer[designTimerEntry], *time.Timer) {
 		e := &designTimerEntry{}
 		tx := &Transaction{transactScoped: true, designEntry: e}
@@ -160,6 +161,7 @@ verifyPooledRetirement:
 		}
 		return weak.Make(e), pt
 	}
+	deadline := time.Now().Add(5 * time.Second)
 	we, _ := armAndRetirePooled()
 	for we.Value() != nil && time.Now().Before(deadline) {
 		runtime.GC()
@@ -243,9 +245,35 @@ func TestDesignTimeoutTransactScopedPoolAndExpiry(t *testing.T) {
 	}
 	observedReadTx.readErrMu.Lock()
 	releasedAfterReadTransact := !observedReadTx.transactScoped && observedReadTx.designEntry == nil && !observedReadTx.timeoutArmed && observedReadTx.timeoutNeedsArm
+	capturedInc := observedReadTx.readIncarnationLocked()
 	observedReadTx.readErrMu.Unlock()
 	if !releasedAfterReadTransact {
 		t.Fatal("Database.ReadTransact did not release its pooled designTimerEntry and preserve timeoutNeedsArm on exit")
+	}
+	// An operation that captured inc before ReadTransact exited and enters
+	// enterReadStateInto afterward must atomically re-arm timeoutNeedsArm.
+	lateLease := observedReadTx.enterReadStateInto(context.Background(), capturedInc, true, true, nil)
+	if lateLease == nil {
+		t.Fatal("enterReadStateInto after ReadTransact exit returned nil lease")
+	}
+	defer lateLease.release()
+	observedReadTx.readErrMu.Lock()
+	rearmedInEnter := observedReadTx.timeoutArmed && !observedReadTx.timeoutNeedsArm && observedReadTx.designTimer != nil
+	observedReadTx.expireTimeoutLocked()
+	observedReadTx.readErrMu.Unlock()
+	if !rearmedInEnter {
+		t.Fatal("enterReadStateInto did not re-arm timeoutNeedsArm after ReadTransact exit")
+	}
+	lateDeadline := time.Now().Add(5 * time.Second)
+	for {
+		var fdbErr *wire.FDBError
+		if errors.As(context.Cause(capturedInc.ctx), &fdbErr) && fdbErr.Code == 1031 {
+			break
+		}
+		if time.Now().After(lateDeadline) {
+			t.Fatalf("late enterReadStateInto did not expire with 1031: %v", context.Cause(capturedInc.ctx))
+		}
+		time.Sleep(time.Millisecond)
 	}
 
 	// 1. Escaped active operation (users > 0, issuedReads == 0) hands off to weak timer.

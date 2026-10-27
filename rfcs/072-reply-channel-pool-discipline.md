@@ -30,9 +30,10 @@ RFC-256 and RFC-282 so `readLoop` and `failAllPending` both publish the buffered
 `Response` and delete the token inside the same `pendingShards[i].mu` critical section,
 while `ReplyHandle.TakeReadyOrCancel` consumes or cancels under that same shard lock).
 Key invariants this gives:
-- **Success**: once a caller has received its reply, `readLoop` already published and
-  deleted the token under `pendingShards[i].mu`, and only one producer ever sends per token
-  (`failAllPending` skips deleted tokens). So no further send can race → safe to pool.
+- **Success**: once a caller has received its reply, the sole producer (`readLoop`) has
+  already completed its send and will delete the token before releasing `pendingShards[i].mu`,
+  and every competing producer (`failAllPending`) acquires that same shard lock and skips
+  deleted tokens. So no further send can race → safe to pool.
 - **Cancel/timeout that wins the delete race** (token still in `pendingShards[i].m`): the
   delete (under `pendingShards[i].mu`) prevents `readLoop` from ever finding/sending to it →
   channel is clean → safe to pool.
