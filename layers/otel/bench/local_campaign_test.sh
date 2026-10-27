@@ -2,7 +2,15 @@
 set -euo pipefail
 source_script=${TEST_SRCDIR:?}/${TEST_WORKSPACE:?}/layers/otel/bench/local_campaign.sh
 scratch=$(mktemp -d "${TEST_TMPDIR:?}/otel-campaign.XXXXXX")
-trap 'rm -rf "$scratch"' EXIT
+campaign_pid=
+cleanup() {
+  if [[ -n $campaign_pid ]]; then
+    kill "$campaign_pid" 2>/dev/null || true
+    wait "$campaign_pid" 2>/dev/null || true
+  fi
+  rm -rf "$scratch"
+}
+trap cleanup EXIT
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 fixture=$scratch/repo
 mkdir -p "$fixture/layers/otel/bench" "$scratch/bin" "$scratch/argv"
@@ -11,6 +19,7 @@ script=$fixture/layers/otel/bench/local_campaign.sh
 cat > "$fixture/fake-otelbench" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ -n ${LOCK_EVENT_PIPE:-} ]]; then printf 'executable\n' > "$LOCK_EVENT_PIPE"; fi
 mode= output= backend= order= run=
 invocation=$(wc -l < "${CALL_LOG:?}")
 argv=("$@")
@@ -147,6 +156,54 @@ for target in ch_map.spans ch_attrs_trace.spans ch_attrs_trace.attr_lookup ch_at
   printf '\n' >> "$scratch/expected-curl"
 done
 diff -u "$scratch/expected-curl" "$CURL_LOG"
+# An independent holder excludes a live contender until release, not just on paper.
+case_number=$((case_number + 1))
+export REAL_FLOCK
+REAL_FLOCK=$(command -v flock)
+cat > "$scratch/bin/flock" <<'FAKE'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ -n ${LOCK_EVENT_PIPE:-} ]]; then printf 'lock-attempt\n' > "$LOCK_EVENT_PIPE"; fi
+exec "${REAL_FLOCK:?}" "$@"
+FAKE
+chmod +x "$scratch/bin/flock"
+mkfifo "$scratch/lock-events"
+exec 7<>"$scratch/lock-events"
+exec 8>"$FDB_LANE_LOCK"
+"$REAL_FLOCK" 8
+mkdir "$scratch/lock-argv"
+: > "$scratch/lock-calls"
+: > "$scratch/lock-curl-calls"
+timeout --kill-after=2s 20s env OUT="$scratch/contended" LOCK_EVENT_PIPE="$scratch/lock-events" \
+  CALL_LOG="$scratch/lock-calls" CURL_LOG="$scratch/lock-curl-calls" ARG_DIR="$scratch/lock-argv" \
+  bash "$script" 7>&- 8>&- > "$scratch/case-${case_number}.log" 2>&1 &
+campaign_pid=$!
+# The real flock is about to run; missing the lock call cannot pass by doing no work.
+read -r -t 5 event <&7
+[[ $event == lock-attempt ]]
+kill -0 "$campaign_pid"
+if read -r -t 0.5 event <&7; then
+  printf 'campaign reached %s while the independent holder owned the lock\n' "$event" >&2
+  exit 1
+fi
+[[ ! -s $scratch/lock-calls && ! -s $scratch/lock-curl-calls ]]
+"$REAL_FLOCK" -u 8
+exec 8>&-
+read -r -t 5 event <&7
+[[ $event == executable ]]
+rc=0
+wait "$campaign_pid" || rc=$?
+campaign_pid=
+if [[ $rc != 0 ]]; then
+  cat "$scratch/case-${case_number}.log" >&2
+  printf 'contending campaign failed after lock release: %s\n' "$rc" >&2
+  exit 1
+fi
+exec 7>&-
+[[ $(wc -l < "$scratch/lock-calls") == 30 ]]
+[[ $(wc -l < "$scratch/lock-curl-calls") == 5 ]]
+grep -q '^exit=0 query_command_failures=0 ' "$scratch/contended/status"
+"$REAL_FLOCK" -n "$FDB_LANE_LOCK" true
 # Failures remain raw and do not abort later arms.
 expect_exit 1 env FAIL_QUERY=1 OUT="$scratch/query-failures" bash "$script"
 grep -q '^exit=1 query_command_failures=20 ' "$scratch/query-failures/status"

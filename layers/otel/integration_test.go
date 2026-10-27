@@ -248,7 +248,23 @@ func TestRealRecordLayerCoveringIndexes(t *testing.T) {
 			}
 			testOtelAdmission(t, ctx, b)
 		})
+		t.Run(order+"_ready_drop", func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+			defer cancel()
+			c := testConfig()
+			c.Order = order
+			testOtelIngestPublicationAndDrop(t, ctx, cluster, c, false)
+		})
 		for _, saveMode := range []string{"serial", "pipelined"} {
+			t.Run(order+"_"+saveMode+"_interrupted_ingest_and_drop", func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+				defer cancel()
+				c := testConfig()
+				c.Order, c.SaveMode = order, saveMode
+				testOtelIngestPublicationAndDrop(t, ctx, cluster, c, true)
+			})
 			t.Run(order+"_"+saveMode+"_ingest", func(t *testing.T) {
 				t.Parallel()
 				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
@@ -309,6 +325,270 @@ func TestRealRecordLayerCoveringIndexes(t *testing.T) {
 				t.Fatalf("exact sole-source byte budget: %+v %+v %v", got, b.LastQueryWork(), err)
 			}
 		})
+	}
+}
+
+type otelIngestCommit struct {
+	call        recordlayer.AttemptCall
+	owner       Manifest
+	recordKeys  int
+	postingKeys int
+}
+
+// Raw reads observe committed initialization and source batches without running
+// another Record Layer attempt through the observer being tested.
+func readOtelIngestCommit(ctx context.Context, b *FDBBackend, call recordlayer.AttemptCall) (otelIngestCommit, error) {
+	commit := otelIngestCommit{call: call}
+	_, err := b.raw.ReadTransactCtx(ctx, func(tx fdb.ReadTransaction) (any, error) {
+		owner, err := tx.Get(b.root.Sub("owner").FDBKey()).Get()
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(owner, &commit.owner); err != nil {
+			return nil, err
+		}
+		records, err := tx.GetRange(b.store.Sub(recordlayer.RecordKey), fdb.RangeOptions{Limit: b.cfg.Count + 1}).GetSliceWithError()
+		if err != nil {
+			return nil, err
+		}
+		postings, err := tx.GetRange(otelSecondary(b), fdb.RangeOptions{Limit: b.cfg.Count*b.cfg.Attributes + 1}).GetSliceWithError()
+		if err != nil {
+			return nil, err
+		}
+		commit.recordKeys, commit.postingKeys = len(records), len(postings)
+		return nil, nil
+	})
+	return commit, err
+}
+
+// PrefixRange includes a bare root boundary key as well as every child key.
+func otelRawRootSnapshot(t *testing.T, ctx context.Context, b *FDBBackend) map[string]string {
+	t.Helper()
+	var rows []fdb.KeyValue
+	_, err := b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+		root, err := fdb.PrefixRange(b.root.Bytes())
+		if err != nil {
+			return nil, err
+		}
+		rows, err = rc.Transaction().GetRange(root, fdb.RangeOptions{Limit: 257}).GetSliceWithError()
+		return nil, err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) > 256 {
+		t.Fatal("small owned-drop fixture exceeded raw snapshot bound")
+	}
+	out := make(map[string]string, len(rows))
+	for _, row := range rows {
+		out[string(row.Key)] = string(row.Value)
+	}
+	return out
+}
+
+func testOtelIngestPublicationAndDrop(t *testing.T, ctx context.Context, cluster string, c Config, interrupt bool) {
+	c.Count, c.Tenants, c.Attributes, c.Batch = 7, 1, 4, 2
+	b := openOtelFixture(t, ctx, cluster, c, false)
+	c = b.cfg
+	siblingConfig := c
+	siblingConfig.Count = 3
+	sibling := openOtelFixture(t, ctx, cluster, siblingConfig, true)
+	otelTransaction(t, ctx, sibling, func(_ *recordlayer.FDBRecordStore, rc *recordlayer.FDBRecordContext) error {
+		rc.Transaction().Set(sibling.root.FDBKey(), []byte("independent-sibling-boundary"))
+		return nil
+	})
+	siblingBefore := otelRawRootSnapshot(t, ctx, sibling)
+	if len(siblingBefore) == 0 || siblingBefore[string(sibling.root.FDBKey())] != "independent-sibling-boundary" {
+		t.Fatal("independently ingested sibling has no committed raw population")
+	}
+
+	wantState, wantRows := "ready", c.Count
+	if interrupt {
+		wantState, wantRows = "loading", c.Batch
+		ingestCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		var commits []otelIngestCommit
+		var inspectionErr error
+		canceledAfterBatch := false
+		b.db.SetAttemptObserver(func(call recordlayer.AttemptCall, err error) {
+			if err != nil {
+				return
+			}
+			commit, err := readOtelIngestCommit(ctx, b, call)
+			if err != nil {
+				inspectionErr = err
+				cancel()
+				return
+			}
+			commits = append(commits, commit)
+			if len(commits) == 2 && commit.recordKeys == c.Batch && commit.postingKeys == c.Batch*c.Attributes {
+				canceledAfterBatch = true
+				cancel()
+			}
+		})
+		defer b.db.SetAttemptObserver(nil)
+		_, err := b.Ingest(ingestCtx)
+		b.db.SetAttemptObserver(nil)
+		if inspectionErr != nil || !canceledAfterBatch || !errors.Is(ingestCtx.Err(), context.Canceled) || !errors.Is(err, context.Canceled) {
+			t.Fatalf("public ingest did not cancel after committed source batch: fired=%t context=%v error=%v inspection=%v commits=%+v", canceledAfterBatch, ingestCtx.Err(), err, inspectionErr, commits)
+		}
+		if len(commits) != 2 {
+			t.Fatalf("want initialization and first source-batch commits, got %+v", commits)
+		}
+		for _, commit := range commits {
+			if commit.call.Owner != "run" || commit.call.Route != recordlayer.RouteAttempt || commit.call.CallID == 0 || commit.owner != manifest(c, "loading") {
+				t.Fatalf("unexpected successful transaction fields: %+v", commit)
+			}
+		}
+		if commits[0].call.CallID == commits[1].call.CallID || commits[0].recordKeys != 0 || commits[0].postingKeys != 0 || commits[1].recordKeys != c.Batch || commits[1].postingKeys != c.Batch*c.Attributes {
+			t.Fatalf("commits do not identify empty initialization followed by one complete source batch: %+v", commits)
+		}
+	} else {
+		stats, err := b.Ingest(ctx)
+		if err != nil || stats.Rows != int64(c.Count) || stats.Attributes != int64(c.Count*c.Attributes) {
+			t.Fatalf("ready-drop fixture failed to ingest completely: %+v %v", stats, err)
+		}
+	}
+
+	otelTransaction(t, ctx, b, func(store *recordlayer.FDBRecordStore, rc *recordlayer.FDBRecordContext) error {
+		wire, err := rc.Transaction().Get(b.root.Sub("owner").FDBKey()).Get()
+		if err != nil {
+			return err
+		}
+		var owner Manifest
+		if err := json.Unmarshal(wire, &owner); err != nil {
+			return err
+		}
+		if owner != manifest(c, wantState) {
+			return fmt.Errorf("persisted owner %+v want %+v", owner, manifest(c, wantState))
+		}
+		records, err := recordlayer.AsList(ctx, store.ScanRecords(nil, recordlayer.ForwardScan()))
+		if err != nil {
+			return err
+		}
+		if len(records) != wantRows {
+			return fmt.Errorf("persisted source population %d want %d", len(records), wantRows)
+		}
+		seen := make(map[int]bool, wantRows)
+		for _, record := range records {
+			source, err := decodeRecord(record.Record)
+			if err != nil {
+				return err
+			}
+			if source.Ordinal < 0 || source.Ordinal >= wantRows || seen[source.Ordinal] || !equalSpan(source, Generate(c, source.Ordinal)) {
+				return fmt.Errorf("unexpected persisted source %+v", source)
+			}
+			seen[source.Ordinal] = true
+		}
+		for i := wantRows; i < c.Count; i++ {
+			record, err := store.LoadRecord(otelPK(Generate(c, i)))
+			if err != nil {
+				return err
+			}
+			if record != nil {
+				return fmt.Errorf("uncommitted source %d became visible", i)
+			}
+		}
+		rc.Transaction().Set(b.root.FDBKey(), []byte("owned-root-boundary"))
+		return nil
+	})
+	postings := otelSnapshot(t, ctx, b, otelSecondary(b))
+	if len(postings) != wantRows*c.Attributes {
+		t.Fatalf("persisted posting population %d want %d", len(postings), wantRows*c.Attributes)
+	}
+	expectedPostings := make(map[string]int64, wantRows*c.Attributes)
+	postingIdentity := func(trace, span string, attribute Attribute) string {
+		identity, err := json.Marshal([]any{trace, span, attribute})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(identity)
+	}
+	for i := 0; i < wantRows; i++ {
+		source := Generate(c, i)
+		for _, attribute := range source.Attributes {
+			expectedPostings[postingIdentity(source.Trace, source.ID, attribute)] = source.Start
+		}
+	}
+	for key, value := range postings {
+		var covered coveringValue
+		if err := json.Unmarshal([]byte(value), &covered); err != nil {
+			t.Fatal(err)
+		}
+		term := termPrefix(otelSecondary(b), c.Tenant, covered.Attribute, c.HashBytes)
+		suffix, err := term.Unpack(fdb.Key(key))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var trace, span string
+		if c.Order == "trace" {
+			if len(suffix) != 3 {
+				t.Fatalf("trace posting suffix %+v", suffix)
+			}
+			var traceOK, spanOK bool
+			trace, traceOK = suffix[0].(string)
+			span, spanOK = suffix[1].(string)
+			if !traceOK || !spanOK {
+				t.Fatalf("trace posting identity %+v", suffix)
+			}
+		} else {
+			if len(suffix) != 4 {
+				t.Fatalf("time posting suffix %+v", suffix)
+			}
+			timestamp, timeOK := suffix[0].(int64)
+			encodedTrace, traceOK := suffix[1].([]byte)
+			var spanOK bool
+			span, spanOK = suffix[2].(string)
+			if !timeOK || timestamp != -covered.Start || !traceOK || !spanOK {
+				t.Fatalf("time posting identity %+v", suffix)
+			}
+			decoded := make([]byte, len(encodedTrace))
+			for i, octet := range encodedTrace {
+				decoded[i] = ^octet
+			}
+			trace = string(decoded)
+		}
+		identity := postingIdentity(trace, span, covered.Attribute)
+		if expectedTime, exists := expectedPostings[identity]; !exists || expectedTime != covered.Start {
+			t.Fatalf("unexpected or duplicate committed posting %s: %+v", identity, covered)
+		}
+		delete(expectedPostings, identity)
+	}
+	if len(expectedPostings) != 0 {
+		t.Fatalf("missing %d committed source-attribute memberships", len(expectedPostings))
+	}
+	before := otelRawRootSnapshot(t, ctx, b)
+	if len(before) == 0 || before[string(b.root.FDBKey())] != "owned-root-boundary" {
+		t.Fatal("drop target has no committed raw root boundary/data")
+	}
+	if interrupt {
+		first := Generate(c, 0)
+		operations := []struct {
+			name string
+			run  func() error
+		}{
+			{"Query", func() error { _, err := b.Query(ctx, first.Attributes[0]); return err }},
+			{"Trace", func() error { _, err := b.Trace(ctx, first.Trace); return err }},
+			{"Audit", func() error { _, err := b.Audit(ctx); return err }},
+			{"Ingest", func() error { _, err := b.Ingest(ctx); return err }},
+		}
+		for _, operation := range operations {
+			t.Run("loading_rejects_"+operation.name, func(t *testing.T) {
+				requireOtelKind(t, operation.run(), "ownership")
+			})
+		}
+		if !reflect.DeepEqual(before, otelRawRootSnapshot(t, ctx, b)) {
+			t.Fatal("rejected incomplete-load operations changed committed data")
+		}
+	}
+	if err := b.Drop(ctx); err != nil {
+		t.Fatalf("public owned %s Drop failed: %v", wantState, err)
+	}
+	if after := otelRawRootSnapshot(t, ctx, b); len(after) != 0 {
+		t.Fatalf("public %s Drop left %d raw root keys", wantState, len(after))
+	}
+	if !reflect.DeepEqual(siblingBefore, otelRawRootSnapshot(t, ctx, sibling)) {
+		t.Fatal("public Drop changed independently populated sibling root")
 	}
 }
 
