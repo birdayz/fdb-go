@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/client"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -44,6 +45,7 @@ type FDBBackend struct {
 	lastWork      QueryResult
 	auditPageHook func(context.Context, *recordlayer.FDBRecordContext, int) error
 	ingestProbe   func(ingestEvent)
+	ingestWait    func(context.Context, time.Duration) error
 }
 
 func OpenFDB(c Config, cluster string) (*FDBBackend, error) {
@@ -85,8 +87,12 @@ func OpenFDBContext(ctx context.Context, c Config, cluster string) (*FDBBackend,
 }
 func (b *FDBBackend) Close()                     { b.raw.Close() }
 func (b *FDBBackend) LastQueryWork() QueryResult { return b.lastWork }
+func configureRecordTimeout(rc *recordlayer.FDBRecordContext) error {
+	return rc.Transaction().Options().SetTimeout(1500)
+}
+
 func (b *FDBBackend) open(rc *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
-	if err := rc.Transaction().Options().SetTimeout(1500); err != nil {
+	if err := configureRecordTimeout(rc); err != nil {
 		return nil, err
 	}
 	if err := rc.Transaction().Options().SetRetryLimit(10); err != nil {
@@ -96,6 +102,9 @@ func (b *FDBBackend) open(rc *recordlayer.FDBRecordContext) (*recordlayer.FDBRec
 }
 
 func (b *FDBBackend) readManifest(rc *recordlayer.FDBRecordContext, ready bool) error {
+	if err := configureRecordTimeout(rc); err != nil {
+		return err
+	}
 	wire, err := rc.Transaction().Get(b.root.Sub("owner").FDBKey()).Get()
 	if err != nil {
 		return err
