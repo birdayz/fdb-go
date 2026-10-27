@@ -22,32 +22,33 @@ const (
 )
 
 type Config struct {
-	Run              string `json:"run"`
-	Backend          string `json:"backend"`
-	Seed             uint64 `json:"seed"`
-	Count            int    `json:"count"`
-	Tenants          int    `json:"tenants"`
-	Attributes       int    `json:"attributes"`
-	MatchEvery       int    `json:"match_every"`
-	Batch            int    `json:"batch"`
-	SaveMode         string `json:"save_mode"`
-	Workers          int    `json:"workers"`
-	Diagnostics      bool   `json:"diagnostics"`
-	CHBatch          int    `json:"ch_batch"`
-	CHBatchBytes     int    `json:"ch_batch_bytes"`
-	CHQueryTransport string `json:"ch_query_transport"`
-	CHNativeAddr     string `json:"ch_native_addr,omitempty"`
-	Tenant           int    `json:"tenant"`
-	K                int    `json:"k"`
-	Iterations       int    `json:"iterations"`
-	MaxCandidates    int    `json:"max_candidates"`
-	MaxBytes         int64  `json:"max_bytes"`
-	HashBytes        int    `json:"hash_bytes"`
-	Order            string `json:"order"`
+	Run                string `json:"run"`
+	Backend            string `json:"backend"`
+	Seed               uint64 `json:"seed"`
+	Count              int    `json:"count"`
+	Tenants            int    `json:"tenants"`
+	Attributes         int    `json:"attributes"`
+	MatchEvery         int    `json:"match_every"`
+	Batch              int    `json:"batch"`
+	SaveMode           string `json:"save_mode"`
+	Workers            int    `json:"workers"`
+	Diagnostics        bool   `json:"diagnostics"`
+	CHBatch            int    `json:"ch_batch"`
+	CHBatchBytes       int    `json:"ch_batch_bytes"`
+	CHIndexGranularity int    `json:"ch_index_granularity"`
+	CHQueryTransport   string `json:"ch_query_transport"`
+	CHNativeAddr       string `json:"ch_native_addr,omitempty"`
+	Tenant             int    `json:"tenant"`
+	K                  int    `json:"k"`
+	Iterations         int    `json:"iterations"`
+	MaxCandidates      int    `json:"max_candidates"`
+	MaxBytes           int64  `json:"max_bytes"`
+	HashBytes          int    `json:"hash_bytes"`
+	Order              string `json:"order"`
 }
 
 func DefaultConfig() Config {
-	return Config{Seed: 283, Count: 10000, Tenants: 10, Attributes: 8, MatchEvery: 100, Batch: 32, SaveMode: "pipelined", Workers: 1, CHBatch: 8192, CHBatchBytes: 8 << 20, CHQueryTransport: "http", K: 100, Iterations: 20, MaxCandidates: 20000, MaxBytes: 4 << 20, HashBytes: 32, Order: "trace"}
+	return Config{Seed: 283, Count: 10000, Tenants: 10, Attributes: 8, MatchEvery: 100, Batch: 32, SaveMode: "pipelined", Workers: 1, CHBatch: 8192, CHBatchBytes: 8 << 20, CHIndexGranularity: 8192, CHQueryTransport: "http", K: 100, Iterations: 20, MaxCandidates: 20000, MaxBytes: 4 << 20, HashBytes: 32, Order: "trace"}
 }
 
 func (c Config) Validate() error {
@@ -56,6 +57,9 @@ func (c Config) Validate() error {
 	}
 	if c.Count < 1 || c.Count > 100000000 || c.Tenants < 1 || c.Tenants > (c.Count+1)/2 || c.Attributes < 4 || c.Attributes > 128 || c.MatchEvery < 1 || c.Batch < 1 || c.Batch > 64 || (c.SaveMode != "serial" && c.SaveMode != "pipelined" && c.SaveMode != "batch") || c.Workers < 1 || c.Workers > 8 || c.CHBatch < 1 || c.CHBatch > 65536 || c.CHBatchBytes < 1 || c.CHBatchBytes > 64<<20 || c.Tenant < 0 || c.Tenant >= c.Tenants || c.K < 1 || c.K > 10000 || c.Iterations < 1 || c.Iterations > 100000 || c.MaxCandidates < 1 || c.MaxCandidates > 100000000 || c.MaxBytes < 1 || c.HashBytes < 1 || c.HashBytes > 32 || (c.Order != "trace" && c.Order != "time") {
 		return fail("config", "bounds", "invalid corpus/query bounds")
+	}
+	if c.CHIndexGranularity < 1 || c.CHIndexGranularity > 8192 {
+		return fail("config", "CH index granularity", "index granularity must be 1..8192 for fresh tables")
 	}
 	if c.CHQueryTransport != "http" && c.CHQueryTransport != "native" {
 		return fail("config", "CH query transport", "query transport must be http or native")
@@ -361,22 +365,32 @@ func corpusIdentity(c Config) string {
 }
 
 type Manifest struct {
-	Tool      string `json:"tool"`
-	Run       string `json:"run"`
-	Corpus    string `json:"corpus"`
-	State     string `json:"state"`
-	Order     string `json:"order"`
-	HashBytes int    `json:"hash_bytes"`
-	Backend   string `json:"backend"`
+	Tool               string `json:"tool"`
+	Run                string `json:"run"`
+	Corpus             string `json:"corpus"`
+	State              string `json:"state"`
+	Order              string `json:"order"`
+	HashBytes          int    `json:"hash_bytes"`
+	Backend            string `json:"backend"`
+	CHIndexGranularity int    `json:"ch_index_granularity,omitempty"`
 }
 
 func manifest(c Config, state string) Manifest {
-	return Manifest{ToolVersion, c.Run, corpusIdentity(c), state, c.Order, c.HashBytes, c.Backend}
+	m := Manifest{Tool: ToolVersion, Run: c.Run, Corpus: corpusIdentity(c), State: state, Order: c.Order, HashBytes: c.HashBytes, Backend: c.Backend}
+	// CH table settings are layout identity, not source identity. Omit this
+	// field for FDB so existing V2 manifests retain their exact wire format.
+	if c.Backend == "ch-map" || c.Backend == "ch-attrs" {
+		m.CHIndexGranularity = c.CHIndexGranularity
+	}
+	return m
 }
 
 func checkManifest(c Config, m Manifest, ready bool) error {
 	if m.Tool != ToolVersion || m.Run != c.Run || m.Corpus != corpusIdentity(c) || m.Order != c.Order || m.HashBytes != c.HashBytes || m.Backend != c.Backend {
 		return fail("ownership", "manifest", "ownership/corpus manifest mismatch; refusing access")
+	}
+	if (c.Backend == "ch-map" || c.Backend == "ch-attrs") && (m.CHIndexGranularity < 1 || m.CHIndexGranularity != c.CHIndexGranularity) {
+		return fail("ownership", "manifest", "CH index granularity missing or mismatched; refusing access")
 	}
 	if ready && m.State != "ready" {
 		return failf("ownership", "manifest", "run is not ready (state %q); explicit owned drop only", m.State)

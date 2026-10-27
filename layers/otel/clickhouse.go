@@ -242,6 +242,7 @@ func (b *CHBackend) Ingest(ctx context.Context) (stats Statistics, retErr error)
 	}
 	initialized = true
 	schema := "CREATE TABLE " + b.database + `.spans (ordinal UInt64,tenant UInt32,service LowCardinality(String),day Date,ts_ns Int64,trace_id String,span_id String,attrs Map(String,String) CODEC(ZSTD(1)),terms Array(Tuple(String,String,String,String)) CODEC(ZSTD(1)),source String CODEC(ZSTD(1)), INDEX trace_bf trace_id TYPE bloom_filter(0.01) GRANULARITY 1, INDEX attrs_k mapKeys(attrs) TYPE bloom_filter(0.01) GRANULARITY 1, INDEX attrs_v mapValues(attrs) TYPE bloom_filter(0.01) GRANULARITY 1, PROJECTION by_trace (SELECT tenant,trace_id,span_id,ts_ns ORDER BY (tenant,trace_id,span_id)), PROJECTION by_span (SELECT tenant,span_id,ts_ns,trace_id ORDER BY (tenant,span_id,ts_ns,trace_id)), PROJECTION by_time (SELECT tenant,ts_ns,trace_id,span_id ORDER BY (tenant,ts_ns,trace_id,span_id))) ENGINE=MergeTree PARTITION BY day ORDER BY (tenant,service,ts_ns,trace_id,span_id)`
+	schema += " SETTINGS index_granularity=" + strconv.Itoa(b.cfg.CHIndexGranularity)
 	if err := b.exec(ctx, schema); err != nil {
 		return Statistics{}, err
 	}
@@ -250,7 +251,7 @@ func (b *CHBackend) Ingest(ctx context.Context) (stats Statistics, retErr error)
 		if b.cfg.Order == "time" {
 			order = "tenant,scope,k,typ,v,neg_time,rev_trace,span_id"
 		}
-		ddl := "CREATE TABLE " + b.database + ".attr_lookup (tenant UInt32,day Date,scope LowCardinality(String),k String,typ LowCardinality(String),v String,ts_ns Int64,neg_time Int64,trace_id String,rev_trace String,span_id String) ENGINE=MergeTree PARTITION BY day ORDER BY (" + order + ")"
+		ddl := "CREATE TABLE " + b.database + ".attr_lookup (tenant UInt32,day Date,scope LowCardinality(String),k String,typ LowCardinality(String),v String,ts_ns Int64,neg_time Int64,trace_id String,rev_trace String,span_id String) ENGINE=MergeTree PARTITION BY day ORDER BY (" + order + ") SETTINGS index_granularity=" + strconv.Itoa(b.cfg.CHIndexGranularity)
 		if err := b.exec(ctx, ddl); err != nil {
 			return Statistics{}, err
 		}
@@ -288,7 +289,7 @@ func (b *CHBackend) Ingest(ctx context.Context) (stats Statistics, retErr error)
 	if err := b.putManifest(ctx, "ready", 2); err != nil {
 		return Statistics{}, err
 	}
-	return Statistics{Rows: int64(b.cfg.Count), Attributes: int64(b.cfg.Count * b.cfg.Attributes), LogicalPayloadBytes: logical, Details: map[string]string{"ingest": "bulk synchronous HTTP JSONEachRow, independent CH batch/byte caps; NOT matched real-time acknowledgment batching", "payload_bytes": "JSON transport bytes including duplicate terms/map/source; not comparable serialized-record bytes"}}, nil
+	return Statistics{Rows: int64(b.cfg.Count), Attributes: int64(b.cfg.Count * b.cfg.Attributes), LogicalPayloadBytes: logical, Details: map[string]string{"ingest": "bulk synchronous HTTP JSONEachRow, independent CH batch/byte caps; NOT matched real-time acknowledgment batching", "payload_bytes": "JSON transport bytes including duplicate terms/map/source; not comparable serialized-record bytes", "ch_index_granularity": strconv.Itoa(b.cfg.CHIndexGranularity)}}, nil
 }
 
 func (b *CHBackend) readWorkSettings() string {
@@ -575,6 +576,9 @@ func (b *CHBackend) Audit(ctx context.Context) (stats Statistics, err error) {
 	stats.Details["projection_accounting"] = "by_trace, by_span and by_time are built synchronously during every source INSERT; report observed system.parts totals and all three named projection_parts components separately; verify whether parent totals include projection files before adding or comparing totals"
 	if b.attrs && stats.Structures["attr_lookup"].Keys != stats.Attributes {
 		return stats, fail("audit", "posting census", "CH attribute destination row census mismatch")
+	}
+	if err := b.auditMergeTreeLayout(ctx, stats.Details); err != nil {
+		return stats, err
 	}
 	return stats, nil
 }

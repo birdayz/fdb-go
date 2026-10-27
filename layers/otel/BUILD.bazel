@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "clickhouse.go",
         "clickhouse_errors.go",
+        "clickhouse_layout.go",
         "clickhouse_native.go",
         "clickhouse_query.go",
         "corpus.go",
@@ -44,7 +45,9 @@ go_test(
     timeout = "long",
     srcs = [
         "bootstrap_test.go",
+        "clickhouse_granularity_test.go",
         "clickhouse_integration_test.go",
+        "clickhouse_layout_test.go",
         "clickhouse_native_budget_test.go",
         "clickhouse_native_test.go",
         "clickhouse_test.go",

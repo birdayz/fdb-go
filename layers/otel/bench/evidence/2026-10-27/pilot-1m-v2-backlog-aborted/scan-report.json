@@ -1,0 +1,79 @@
+{
+  "schema": "otel283_lossless_archive_scan_v1",
+  "scope": "Entire gzip/tar payload: every regular member, all JSON/JSONL, scripts, source manifests, frozen249validation harness/fixtures/results. Read-only inspection; no driver/harness execution.",
+  "gzip_crc_and_decompression": "passed",
+  "tar_members": 1655,
+  "tar_regular_files": 1553,
+  "tar_symlinks": 2,
+  "json_members": 501,
+  "jsonl_members": 6,
+  "ipv4_literals": [
+    {
+      "literal": "127.0.0.1",
+      "classification": "loopback",
+      "occurrences": 12648,
+      "example_members": [
+        "./policy/frozen/README.md",
+        "./policy/frozen/fdb.cluster.seed",
+        "./policy/frozen/foundationdb.conf",
+        "./policy/frozen/launch.sh",
+        "./policy/frozen/resume.sh"
+      ]
+    },
+    {
+      "literal": "0.0.0.0",
+      "classification": "wildcard listen/bind, not destination",
+      "occurrences": 1334,
+      "example_members": [
+        "./policy/frozen/foundationdb.conf",
+        "./run/fdb.before.json",
+        "./session/monitor-raw/status-000001.json",
+        "./session/monitor-raw/status-000002.json",
+        "./session/monitor-raw/status-000003.json"
+      ]
+    },
+    {
+      "literal": "4.14.2.0",
+      "classification": "Java Record Layer version in source-manifest filenames, not destination",
+      "occurrences": 2,
+      "example_members": [
+        "./run/source.after",
+        "./run/source.before"
+      ]
+    }
+  ],
+  "ipv6_candidate_literals": [],
+  "nonloopback_destination_findings": [],
+  "secret_candidate_members": [],
+  "secret_pattern_scope": "Private-key headers, AWS/GitHub/OpenAI token formats, long credential assignments, URL userinfo; not proof of absence of every possible secret.",
+  "trailing_whitespace": {
+    "members": 4,
+    "lines": 9,
+    "handling": "Retained byte-for-byte inside gzip; performance output, command receipts and deliberately tampered negative fixtures are not rewritten.",
+    "details": [
+      {
+        "member": "./run/ingest-command.txt",
+        "lines": 1
+      },
+      {
+        "member": "./run/perf-stat.txt",
+        "lines": 6
+      },
+      {
+        "member": "./validation/policy285-249/cert-fixtures/tampered-raw/drain-raw.fixture/status-000001.json",
+        "lines": 1
+      },
+      {
+        "member": "./validation/policy285-249/cert-fixtures/tampered-receipt/load-receipt.json",
+        "lines": 1
+      }
+    ]
+  },
+  "raw_manifest_verification": {
+    "verified_raw_files": 1551,
+    "method": "Safely materialized only regular members under fresh /tmp directory, skipped symlinks, sha256sum --check RAW-SHA256SUMS",
+    "all_match": true
+  },
+  "egress_finding": false,
+  "services_or_tests_executed": false
+}

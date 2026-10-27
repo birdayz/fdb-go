@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -112,15 +114,30 @@ func TestRealClickHouseLayouts(t *testing.T) {
 	}
 	nativeAddr := net.JoinHostPort(host, nativePort.Port())
 	for _, layout := range []struct {
-		name  string
-		attrs bool
-		order string
-	}{{"map", false, "trace"}, {"map_time", false, "time"}, {"attrs_trace", true, "trace"}, {"attrs_time", true, "time"}} {
+		name        string
+		attrs       bool
+		order       string
+		granularity int
+	}{
+		{"map", false, "trace", 8192},
+		{"map_time", false, "time", 8192},
+		{"attrs_trace", true, "trace", 8192},
+		{"attrs_time", true, "time", 8192},
+		{"map_512", false, "trace", 512},
+		{"map_64", false, "time", 64},
+		{"attrs_512", true, "trace", 512},
+		{"attrs_64", true, "time", 64},
+	} {
 		t.Run(layout.name, func(t *testing.T) {
 			t.Parallel()
 			c := testConfig()
 			c.Run, c.Order, c.K = freshRun(t), layout.order, 3
 			c.CHBatch = 7 // Several synchronous batches must feed both Map and MV destinations.
+			c.CHIndexGranularity = layout.granularity
+			if layout.granularity < 8192 {
+				c.Count, c.CHBatch, c.CHBatchBytes = 2048, 2048, 8<<20
+				c.MaxCandidates, c.MaxBytes = c.Count*c.Attributes, 64<<20
+			}
 			b, err := OpenCH(c, endpoint, layout.attrs)
 			if err != nil {
 				t.Fatal(err)
@@ -156,6 +173,9 @@ func TestRealClickHouseLayouts(t *testing.T) {
 				t.Fatalf("version/plan evidence missing: %+v", stats.Details)
 			}
 			assertCHProjectionEvidence(t, stats, c.Count)
+			if err := checkCHGranularityEvidence(stats, c, layout.attrs, layout.granularity < 8192); err != nil {
+				t.Fatalf("observed table/projection granularity: %v", err)
+			}
 			if layout.name == "map" {
 				t.Run("selected_covering_projections", func(t *testing.T) { assertCHSelectedProjectionPaths(t, ctx, b) })
 			}
@@ -428,6 +448,230 @@ func assertCHUnownedSentinel(t *testing.T, ctx context.Context, c Config, endpoi
 	}
 }
 
+func chDDLGranularity(ddl string) (int, error) {
+	at := strings.LastIndex(strings.ToUpper(ddl), "SETTINGS ")
+	if at < 0 {
+		return 0, errors.New("SHOW CREATE has no SETTINGS clause")
+	}
+	setting := regexp.MustCompile(`^index_granularity\s*=\s*([0-9]+)$`)
+	var matches []string
+	for _, field := range strings.Split(ddl[at+len("SETTINGS "):], ",") {
+		if match := setting.FindStringSubmatch(strings.TrimSpace(field)); len(match) == 2 {
+			matches = append(matches, match[1])
+		}
+	}
+	if len(matches) != 1 {
+		return 0, errors.New("SHOW CREATE lacks one unambiguous index_granularity setting")
+	}
+	n, err := strconv.Atoi(matches[0])
+	if err != nil || n < 1 || n > 8192 {
+		return 0, errors.New("SHOW CREATE index_granularity outside supported bounds")
+	}
+	return n, nil
+}
+
+func checkCHGranularityEvidence(stats Statistics, c Config, attrs, singleSourceBatch bool) error {
+	tables := map[string]int64{"spans": int64(c.Count)}
+	if attrs {
+		tables["attr_lookup"] = int64(c.Count * c.Attributes)
+	}
+	for table := range tables {
+		n, err := chDDLGranularity(stats.Details[table+"_show_create"])
+		if err != nil || n != c.CHIndexGranularity {
+			return fmt.Errorf("%s SHOW CREATE granularity=%d want %d: %v", table, n, c.CHIndexGranularity, err)
+		}
+	}
+	seen := map[string]bool{}
+	metadata := json.NewDecoder(strings.NewReader(stats.Details["merge_tree_settings"]))
+	for {
+		var row struct {
+			Table   string `json:"table"`
+			Engine  string `json:"engine"`
+			Sorting string `json:"sorting_key"`
+			Create  string `json:"create_table_query"`
+		}
+		err := metadata.Decode(&row)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if _, ok := tables[row.Table]; !ok || seen[row.Table] || row.Engine != "MergeTree" || row.Sorting == "" {
+			return fmt.Errorf("invalid/duplicate MergeTree metadata: %+v", row)
+		}
+		seen[row.Table] = true
+		n, err := chDDLGranularity(row.Create)
+		if err != nil || n != c.CHIndexGranularity {
+			return fmt.Errorf("%s system.tables granularity=%d want %d: %v", row.Table, n, c.CHIndexGranularity, err)
+		}
+	}
+	if len(seen) != len(tables) {
+		return fmt.Errorf("MergeTree metadata population=%d want %d", len(seen), len(tables))
+	}
+	days := map[string]bool{}
+	if singleSourceBatch {
+		for i := 0; i < c.Count; i++ {
+			days[time.Unix(0, Generate(c, i).Start).UTC().Format("2006-01-02")] = true
+		}
+	}
+	for _, evidence := range []struct {
+		key, identity string
+		rows          map[string]int64
+	}{
+		{"part_marks", "table", tables},
+		{"projection_marks", "name", map[string]int64{"by_trace": int64(c.Count), "by_span": int64(c.Count), "by_time": int64(c.Count)}},
+	} {
+		decoder := json.NewDecoder(strings.NewReader(stats.Details[evidence.key]))
+		seen := map[string]bool{}
+		for {
+			var row map[string]string
+			err := decoder.Decode(&row)
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				return err
+			}
+			name := row[evidence.identity]
+			want, ok := evidence.rows[name]
+			if !ok || seen[name] {
+				return fmt.Errorf("unexpected/duplicate %s identity %q", evidence.key, name)
+			}
+			seen[name] = true
+			rows, rowErr := strconv.ParseInt(row["rows"], 10, 64)
+			marks, markErr := strconv.ParseInt(row["marks"], 10, 64)
+			parts, partErr := strconv.ParseInt(row["parts"], 10, 64)
+			minimum := (want + int64(c.CHIndexGranularity) - 1) / int64(c.CHIndexGranularity)
+			if rowErr != nil || markErr != nil || partErr != nil || rows != want || rows <= 0 || marks < minimum || parts <= 0 || parts > rows || marks < parts || marks > rows+parts {
+				return fmt.Errorf("invalid %s census %q: %+v want rows=%d minimum marks=%d", evidence.key, name, row, want, minimum)
+			}
+			if singleSourceBatch && (parts > int64(len(days)) || marks <= 2*parts) {
+				return fmt.Errorf("fine-grain %s %q masked by tiny parts: marks=%d parts=%d source days=%d", evidence.key, name, marks, parts, len(days))
+			}
+		}
+		if len(seen) != len(evidence.rows) {
+			return fmt.Errorf("%s population=%d want %d", evidence.key, len(seen), len(evidence.rows))
+		}
+	}
+	return nil
+}
+
+func TestCHObservedGranularityDDL(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		ddl  string
+		want int
+	}{
+		{"CREATE TABLE t SETTINGS index_granularity = 8192", 8192},
+		{"CREATE TABLE t SETTINGS index_granularity = 512, index_granularity_bytes = 10485760", 512},
+		{"CREATE TABLE t SETTINGS other = 1, index_granularity = 64", 64},
+		{"CREATE TABLE t", 0},
+		{"CREATE TABLE t SETTINGS index_granularity_bytes = 64", 0},
+		{"CREATE TABLE t SETTINGS index_granularity = 0", 0},
+		{"CREATE TABLE t SETTINGS index_granularity = 8193", 0},
+		{"CREATE TABLE t SETTINGS index_granularity = -1", 0},
+		{"CREATE TABLE t SETTINGS index_granularity = '64'", 0},
+		{"CREATE TABLE t SETTINGS index_granularity = 64, other = 1, index_granularity = 512", 0},
+		{"CREATE TABLE t SETTINGS index_granularity = 64, index_granularity = 512", 0},
+	} {
+		n, err := chDDLGranularity(test.ddl)
+		if test.want == 0 {
+			if err == nil {
+				t.Fatalf("invalid observed DDL accepted: %s", test.ddl)
+			}
+			continue
+		}
+		if err != nil || n != test.want {
+			t.Fatalf("observed granularity=%d want %d: %v (%s)", n, test.want, err, test.ddl)
+		}
+	}
+}
+
+func TestCHGranularityEvidenceCensus(t *testing.T) {
+	t.Parallel()
+	c := testConfig()
+	c.Count, c.CHIndexGranularity = 2048, 512
+	ddl := "CREATE TABLE t ENGINE=MergeTree ORDER BY tenant SETTINGS index_granularity = 512"
+	metadataRow := func(table, engine, sorting, create string) string {
+		wire, _ := json.Marshal(map[string]string{"table": table, "engine": engine, "sorting_key": sorting, "create_table_query": create})
+		return string(wire) + "\n"
+	}
+	spans := metadataRow("spans", "MergeTree", "tenant", ddl)
+	attrs := metadataRow("attr_lookup", "MergeTree", "tenant", ddl)
+	parent := `{"table":"spans","rows":"2048","marks":"8","parts":"2"}` + "\n"
+	lookup := `{"table":"attr_lookup","rows":"16384","marks":"40","parts":"2"}` + "\n"
+	projections := ""
+	for _, name := range []string{"by_trace", "by_span", "by_time"} {
+		projections += fmt.Sprintf("{\"name\":%q,\"rows\":\"2048\",\"marks\":\"8\",\"parts\":\"2\"}\n", name)
+	}
+	base := map[string]string{"spans_show_create": ddl, "attr_lookup_show_create": ddl, "merge_tree_settings": spans + attrs, "part_marks": parent + lookup, "projection_marks": projections}
+	for _, test := range []struct {
+		name, key, value string
+		valid            bool
+	}{
+		{"complete", "", "", true},
+		{"wrong_show_setting", "spans_show_create", strings.ReplaceAll(ddl, "512", "64"), false},
+		{"missing_show_setting", "attr_lookup_show_create", "", false},
+		{"malformed_metadata", "merge_tree_settings", "[", false},
+		{"metadata_trailing_junk", "merge_tree_settings", spans + attrs + "]", false},
+		{"missing_metadata", "merge_tree_settings", spans, false},
+		{"duplicate_metadata", "merge_tree_settings", spans + spans, false},
+		{"unknown_metadata", "merge_tree_settings", metadataRow("other", "MergeTree", "tenant", ddl) + attrs, false},
+		{"wrong_engine", "merge_tree_settings", metadataRow("spans", "TinyLog", "tenant", ddl) + attrs, false},
+		{"missing_sorting", "merge_tree_settings", metadataRow("spans", "MergeTree", "", ddl) + attrs, false},
+		{"wrong_metadata_setting", "merge_tree_settings", metadataRow("spans", "MergeTree", "tenant", strings.ReplaceAll(ddl, "512", "64")) + attrs, false},
+		{"malformed_marks", "part_marks", "[", false},
+		{"missing_parent", "part_marks", lookup, false},
+		{"unknown_parent", "part_marks", strings.ReplaceAll(parent, "spans", "other") + lookup, false},
+		{"marks_trailing_junk", "part_marks", parent + lookup + "]", false},
+		{"duplicate_parent", "part_marks", parent + parent, false},
+		{"missing_projection", "projection_marks", "", false},
+		{"duplicate_projection", "projection_marks", projections + projections, false},
+		{"unknown_projection", "projection_marks", strings.ReplaceAll(projections, "by_time", "other"), false},
+		{"wrong_rows", "part_marks", strings.ReplaceAll(parent, "2048", "2047") + lookup, false},
+		{"invalid_rows", "part_marks", strings.ReplaceAll(parent, "2048", "invalid") + lookup, false},
+		{"invalid_marks", "part_marks", strings.ReplaceAll(parent, `"marks":"8"`, `"marks":"invalid"`) + lookup, false},
+		{"invalid_parts", "part_marks", strings.ReplaceAll(parent, `"parts":"2"`, `"parts":"invalid"`) + lookup, false},
+		{"wrong_projection_rows", "projection_marks", strings.ReplaceAll(projections, "2048", "2047"), false},
+		{"invalid_projection_rows", "projection_marks", strings.ReplaceAll(projections, "2048", "invalid"), false},
+		{"invalid_projection_marks", "projection_marks", strings.ReplaceAll(projections, `"marks":"8"`, `"marks":"invalid"`), false},
+		{"invalid_projection_parts", "projection_marks", strings.ReplaceAll(projections, `"parts":"2"`, `"parts":"invalid"`), false},
+		{"projection_zero_parts", "projection_marks", strings.ReplaceAll(projections, `"parts":"2"`, `"parts":"0"`), false},
+		{"projection_impossible_parts", "projection_marks", strings.ReplaceAll(projections, `"parts":"2"`, `"parts":"3000"`), false},
+		{"projection_impossible_marks", "projection_marks", strings.ReplaceAll(projections, `"marks":"8"`, `"marks":"3000"`), false},
+		{"projection_below_minimum", "projection_marks", strings.ReplaceAll(projections, `"marks":"8"`, `"marks":"1"`), false},
+		{"projection_marks_below_parts", "projection_marks", strings.ReplaceAll(projections, `"parts":"2"`, `"parts":"9"`), false},
+		{"projection_tiny_part_mask", "projection_marks", strings.ReplaceAll(projections, `"parts":"2"`, `"parts":"8"`), false},
+		{"projection_fine_marks", "projection_marks", strings.ReplaceAll(projections, `"marks":"8"`, `"marks":"4"`), false},
+		{"zero_marks", "projection_marks", strings.ReplaceAll(projections, `"marks":"8"`, `"marks":"0"`), false},
+		{"zero_parts", "part_marks", strings.ReplaceAll(parent, `"parts":"2"`, `"parts":"0"`) + lookup, false},
+		{"below_minimum_marks", "part_marks", strings.ReplaceAll(parent, `"marks":"8"`, `"marks":"1"`) + lookup, false},
+		{"marks_below_parts", "part_marks", strings.ReplaceAll(parent, `"parts":"2"`, `"parts":"9"`) + lookup, false},
+		{"impossible_parts", "part_marks", strings.ReplaceAll(parent, `"parts":"2"`, `"parts":"3000"`) + lookup, false},
+		{"impossible_marks", "part_marks", strings.ReplaceAll(parent, `"marks":"8"`, `"marks":"3000"`) + lookup, false},
+		{"tiny_part_mask", "part_marks", strings.ReplaceAll(parent, `"parts":"2"`, `"parts":"8"`) + lookup, false},
+		{"insufficient_fine_marks", "part_marks", strings.ReplaceAll(parent, `"marks":"8"`, `"marks":"4"`) + lookup, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			details := map[string]string{}
+			for key, value := range base {
+				details[key] = value
+			}
+			if test.key != "" {
+				details[test.key] = test.value
+			}
+			err := checkCHGranularityEvidence(Statistics{Details: details}, c, true, true)
+			if (err == nil) != test.valid {
+				t.Fatalf("granularity census valid=%t: %v", test.valid, err)
+			}
+		})
+	}
+	if err := checkCHGranularityEvidence(Statistics{Details: map[string]string{"spans_show_create": ddl, "merge_tree_settings": spans, "part_marks": parent, "projection_marks": projections}}, c, false, false); err != nil {
+		t.Fatalf("map-only observation positive: %v", err)
+	}
+}
+
 type chExplainPlanNode struct {
 	Type        string               `json:"Node Type"`
 	Description string               `json:"Description"`
@@ -504,16 +748,14 @@ func assertCHSelectedProjectionPaths(t *testing.T, ctx context.Context, schema *
 	t.Helper()
 	c := schema.cfg
 	c.Run, c.Count, c.Tenants, c.Attributes = freshRun(t), 8192, 1, 4
-	c.MaxCandidates, c.MaxBytes = 2*c.Count, 64<<20
+	c.MaxCandidates, c.MaxBytes = c.Count*c.Attributes, 64<<20
+	c.CHIndexGranularity, c.CHBatch, c.CHBatchBytes = 64, 1024, 8<<20
 	c.CHQueryTransport, c.CHNativeAddr = "http", ""
 	profile, err := OpenCHContext(ctx, c, schema.endpoint.String(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(profile.Close)
-	if err := profile.exec(ctx, "CREATE DATABASE "+profile.database); err != nil {
-		t.Fatal(err)
-	}
 	t.Cleanup(func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -521,34 +763,18 @@ func assertCHSelectedProjectionPaths(t *testing.T, ctx context.Context, schema *
 			t.Error(err)
 		}
 	})
-	// Clone the production columns/indexes/projections; 128 granules make the
-	// alternate keys observable without forcing a projection or changing SQL.
-	ddl := "CREATE TABLE " + profile.database + ".spans AS " + schema.database + ".spans ENGINE=MergeTree PARTITION BY day ORDER BY (tenant,service,ts_ns,trace_id,span_id) SETTINGS index_granularity=64"
-	if err := profile.exec(ctx, ddl); err != nil {
+	// Use production ingestion and ownership for the selected-path profile;
+	// 128 granules expose the alternate keys without forcing a projection.
+	loaded, err := profile.Ingest(ctx)
+	if err != nil || loaded.Rows != int64(c.Count) {
+		t.Fatalf("production projection profile ingest: %+v %v", loaded, err)
+	}
+	audited, err := profile.Audit(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := profile.exec(ctx, "CREATE TABLE "+profile.database+".owner (sequence UInt32,payload String) ENGINE=TinyLog"); err != nil {
-		t.Fatal(err)
-	}
-	if err := profile.putManifest(ctx, "loading", 1); err != nil {
-		t.Fatal(err)
-	}
-	for lo := 0; lo < c.Count; lo += 1024 {
-		var payload strings.Builder
-		for ordinal := lo; ordinal < lo+1024 && ordinal < c.Count; ordinal++ {
-			wire, err := json.Marshal(chRow(Generate(c, ordinal)))
-			if err != nil {
-				t.Fatal(err)
-			}
-			payload.Write(wire)
-			payload.WriteByte('\n')
-		}
-		if _, err := profile.request(ctx, "INSERT INTO "+profile.database+".spans SETTINGS async_insert=0 FORMAT JSONEachRow", []byte(payload.String()), nil); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := profile.putManifest(ctx, "ready", 2); err != nil {
-		t.Fatal(err)
+	if err := checkCHGranularityEvidence(audited, c, false, false); err != nil {
+		t.Fatalf("production projection profile layout: %v", err)
 	}
 	population, err := profile.request(ctx, "SELECT count() FROM "+profile.database+".spans FORMAT TabSeparated", nil, nil)
 	if err != nil || strings.TrimSpace(string(population)) != strconv.Itoa(c.Count) {
