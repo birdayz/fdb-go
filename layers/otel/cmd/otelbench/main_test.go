@@ -175,7 +175,7 @@ func TestExecuteModes(t *testing.T) {
 					t.Fatalf("unexpected stderr: %s", &stderr)
 				}
 				e := decodeEvidence(t, stdout.Bytes())
-				if e.Tool != otel.ToolVersion || e.Backend != backend || e.Mode != mode || e.Revision != "test-revision" || e.Config != b.cfg || e.Config.Run != "cli_test_run" || e.Config.SaveMode != "pipelined" || e.Config.Workers != 1 || e.Config.Diagnostics || e.Config.CHQueryTransport != "http" || e.Config.CHNativeAddr != "" || e.Corpus == "" || e.Boundary == "" || e.Start == "" || e.Go == "" || e.Error != "" || e.Failures != 0 {
+				if e.Tool != otel.ToolVersion || e.Backend != backend || e.Mode != mode || e.Revision != "test-revision" || e.Config != b.cfg || e.Config.Run != "cli_test_run" || e.Config.SaveMode != "pipelined" || e.Config.Workers != 1 || e.Config.Diagnostics || e.Config.CHQueryTransport != "http" || e.Config.CHNativeAddr != "" || e.Config.CHIndexGranularity != 8192 || e.Corpus == "" || e.Boundary == "" || e.Start == "" || e.Go == "" || e.Error != "" || e.Failures != 0 {
 					t.Fatalf("wrong receipt: %+v", e)
 				}
 				var want []string
@@ -416,6 +416,9 @@ func TestExecuteRejectsArgumentsBeforeOpeningOrCreatingOutput(t *testing.T) {
 		{"-backend=ch-map", "-ch-query-transport=native", "-ch-native-addr=127.0.0.1:9000/path"},
 		{"-backend=ch-map", "-ch-query-transport=native", "-ch-native-addr=user:password@127.0.0.1:9000"},
 		{"-ch-native-password=not-supported"},
+		{"-backend=ch-map", "-ch-index-granularity=0"},
+		{"-backend=ch-map", "-ch-index-granularity=8193"},
+		{"-backend=ch-map", "-ch-index-granularity=bad"},
 		{"-unknown"},
 		{"-confirm-drop=bad"},
 		{"positional"},
@@ -449,7 +452,7 @@ func TestExecuteHelp(t *testing.T) {
 	if code := execute([]string{"-help"}, &stdout, &stderr, nil); code != 0 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "confirm-drop") {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, &stdout, &stderr)
 	}
-	for _, description := range []string{"standalone span ID", "intrinsic half-open range", "typed/scoped attributes", "all (trace, span, genai, time)", "ch-query-transport", "http or native", "ch-native-addr", "loopback host:port"} {
+	for _, description := range []string{"standalone span ID", "intrinsic half-open range", "typed/scoped attributes", "all (trace, span, genai, time)", "ch-query-transport", "http or native", "ch-native-addr", "loopback host:port", "ch-index-granularity", "fresh-table MergeTree index granularity"} {
 		if !strings.Contains(stderr.String(), description) {
 			t.Fatalf("help missing %q: %s", description, &stderr)
 		}
@@ -461,8 +464,8 @@ func TestExecuteFlagForwarding(t *testing.T) {
 	for _, saveMode := range []string{"serial", "pipelined", "batch"} {
 		t.Run(saveMode, func(t *testing.T) {
 			t.Parallel()
-			args := []string{"-backend=ch-attrs", "-mode=drop", "-confirm-drop", "-run=flag_test_run", "-seed=42", "-count=24", "-tenants=3", "-attrs=12", "-match-every=2", "-batch=4", "-ch-batch=5", "-ch-batch-bytes=4096", "-tenant=1", "-k=2", "-iterations=3", "-max-candidates=99", "-max-bytes=12345", "-hash-bytes=1", "-order=time", "-cluster-file=owned.cluster", "-ch-url=http://owned.invalid:8123", "-timeout=37s", "-revision=flag-revision", "-suite=mixed", "-save-mode=" + saveMode, "-workers=2", "-diagnostics", "-ch-query-transport=native", "-ch-native-addr=127.0.0.1:9000"}
-			want := otel.Config{Run: "flag_test_run", Backend: "ch-attrs", Seed: 42, Count: 24, Tenants: 3, Attributes: 12, MatchEvery: 2, Batch: 4, CHBatch: 5, CHBatchBytes: 4096, Tenant: 1, K: 2, Iterations: 3, MaxCandidates: 99, MaxBytes: 12345, HashBytes: 1, Order: "time", SaveMode: saveMode, Workers: 2, Diagnostics: true, CHQueryTransport: "native", CHNativeAddr: "127.0.0.1:9000"}
+			args := []string{"-backend=ch-attrs", "-mode=drop", "-confirm-drop", "-run=flag_test_run", "-seed=42", "-count=24", "-tenants=3", "-attrs=12", "-match-every=2", "-batch=4", "-ch-batch=5", "-ch-batch-bytes=4096", "-tenant=1", "-k=2", "-iterations=3", "-max-candidates=99", "-max-bytes=12345", "-hash-bytes=1", "-order=time", "-cluster-file=owned.cluster", "-ch-url=http://owned.invalid:8123", "-timeout=37s", "-revision=flag-revision", "-suite=mixed", "-save-mode=" + saveMode, "-workers=2", "-diagnostics", "-ch-query-transport=native", "-ch-native-addr=127.0.0.1:9000", "-ch-index-granularity=512"}
+			want := otel.Config{Run: "flag_test_run", Backend: "ch-attrs", Seed: 42, Count: 24, Tenants: 3, Attributes: 12, MatchEvery: 2, Batch: 4, CHBatch: 5, CHBatchBytes: 4096, Tenant: 1, K: 2, Iterations: 3, MaxCandidates: 99, MaxBytes: 12345, HashBytes: 1, Order: "time", SaveMode: saveMode, Workers: 2, Diagnostics: true, CHQueryTransport: "native", CHNativeAddr: "127.0.0.1:9000", CHIndexGranularity: 512}
 			b := &fakeBackend{t: t}
 			var stdout, stderr bytes.Buffer
 			code := execute(args, &stdout, &stderr, func(ctx context.Context, c otel.Config, cluster, chURL string) (otel.Backend, error) {
@@ -483,6 +486,46 @@ func TestExecuteFlagForwarding(t *testing.T) {
 				t.Fatalf("receipt=%+v", e)
 			}
 		})
+	}
+}
+
+func TestExecuteCHIndexGranularity(t *testing.T) {
+	t.Parallel()
+	for _, backend := range []string{"ch-map", "ch-attrs"} {
+		for _, mode := range []string{"ingest", "query"} {
+			for _, tc := range []struct {
+				name string
+				flag string
+				want int
+			}{
+				{"default", "", 8192},
+				{"512", "-ch-index-granularity=512", 512},
+				{"64", "-ch-index-granularity=64", 64},
+			} {
+				t.Run(backend+"/"+mode+"/"+tc.name, func(t *testing.T) {
+					t.Parallel()
+					b := &fakeBackend{t: t}
+					args := append(cliArgs(mode), "-backend="+backend)
+					if tc.flag != "" {
+						args = append(args, tc.flag)
+					}
+					var stdout, stderr bytes.Buffer
+					code := execute(args, &stdout, &stderr, func(ctx context.Context, c otel.Config, cluster, chURL string) (otel.Backend, error) {
+						if c.CHIndexGranularity != tc.want {
+							t.Fatalf("opener index granularity=%d, want %d", c.CHIndexGranularity, tc.want)
+						}
+						return b.open(ctx, c, cluster, chURL)
+					})
+					if code != 0 || stderr.Len() != 0 {
+						t.Fatalf("exit=%d stderr=%s stdout=%s", code, &stderr, &stdout)
+					}
+					e := decodeEvidence(t, stdout.Bytes())
+					if e.Backend != backend || e.Mode != mode || e.Config != b.cfg || e.Config.CHIndexGranularity != tc.want || e.Error != "" || e.Failures != 0 {
+						t.Fatalf("receipt=%+v", e)
+					}
+				})
+			}
+		}
 	}
 }
 

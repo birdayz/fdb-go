@@ -101,6 +101,32 @@ Verify selection and parent/projection byte inclusion before making a trace
 comparison or summing storage. All source data is retained; there is no hidden
 term-time accelerator in the trace-ordered FDB arm.
 
+### ClickHouse index granularity
+
+`--ch-index-granularity` sets the fresh MergeTree tables' sparse-index row
+interval, from 1 to 8192 (default 8192). It is applied at initial creation to
+`spans` and, for `ch-attrs`, `attr_lookup`; the three covering projections inherit
+the source table setting. Values such as 512 and 64 are tuning candidates, not
+claims of better performance; 1 is an exploratory extreme, not the default.
+Smaller granules can improve pruning while increasing marks, index bytes and
+write work. Adaptive byte granularity and part boundaries also affect actual
+rows per granule. Existing tables are never altered: use a fresh run to change
+this setting.
+
+CH ownership manifests pin the value. A mismatch, including an older CH manifest
+without this field, refuses queries, audits and Drop; there is no implicit
+adoption. Every later command must supply the same value as ingest. This setting
+does not change the source corpus, FDB manifest encoding, ToolVersion or FDB run
+namespace, so existing V2 FDB runs remain compatible. HTTP and native use the same
+tables and query semantics.
+
+Receipts retain the requested value in Config. CH audits additionally retain
+actual `SHOW CREATE TABLE` output for each MergeTree table, server
+`system.tables` engine/settings metadata, active parent-part rows/marks/parts and
+all three covering projections' rows/marks/parts. Inspect these observed settings,
+marks, storage bytes and plans before describing an arm as tuned; small
+correctness profiles are not full-scale performance evidence.
+
 ## ClickHouse query transports
 
 `--ch-query-transport=http` is the default. `native` uses the pinned official

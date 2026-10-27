@@ -2785,6 +2785,13 @@ the trace experiment.
   Fast lane: 179 targets pass (3 executed / 176 cached), not full-suite or completed
   large-load proof. Terminal application errors are not retried. Failed receipts:
   `layers/otel/bench/evidence/2026-10-27/pilot-1m-v2-bulk-timeout/`.
+  The subsequent frozen `c7d00bf` four-worker arm recovered transient timeouts but
+  was monitor-stopped after 284,544 acknowledged spans / 167.996 s: queue exceeded
+  512 MiB and durability lag exceeded 60 s for six samples (final 1.005 GB / 91.25 s).
+  The final loader 1031 followed that shutdown. No strict drain, source audit or
+  ready/query gate completed. Preserve this failed arm and diagnose durable-write
+  stalls / fetch amplification rather than weakening the backlog gates. Receipts:
+  `layers/otel/bench/evidence/2026-10-27/pilot-1m-v2-backlog-aborted/`.
 - [ ] **Go client / Record Layer query tails — unlocalized performance finding.**
   In the same immutable 100,000-span campaign at `12c293130`, three rotated rounds
   each measured 1,000 selective queries (200 per class) and 1,000 trace lookups per
@@ -2877,8 +2884,12 @@ regressions so they can be proposed upstream after the PoC.
 - [ ] Tune ClickHouse for the actual needle workload before a competitive claim.
   Current benchmark tables use the default 8192-row MergeTree granularity. The
   selected-projection regression uses a separate 64-row-granularity fixture; it is
-  not benchmark tuning. Add an explicit fresh-table granularity option and compare
-  8192/512/64 (and finer if justified), retaining ingest/storage/maintenance costs.
+  not benchmark tuning. An explicit fresh-table granularity option (1..8192,
+  default 8192) now pins CH manifests and records actual DDL/settings/marks; FDB
+  manifest bytes and source identity are unchanged. Real 512/64 Map/attribute
+  profiles pass both transports and the source oracle. Fast lane: 179 targets,
+  3 executed / 176 cached, not full-suite proof. Still compare measured 8192/512/64
+  (and finer if justified), retaining ingest/storage/maintenance costs.
   The earlier ALTER attempt was rejected as READONLY_SETTING; do not claim it took
   effect or call the current profile an optimal tuned baseline.
 - [ ] Gate capacity using measured physical volume/filesystem growth at 1M and 10M,

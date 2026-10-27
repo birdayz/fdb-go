@@ -507,7 +507,7 @@ func TestCHSourceAuditRejectsCorruption(t *testing.T) {
 		t.Run(problem, func(t *testing.T) {
 			t.Parallel()
 			var b *CHBackend
-			var sourceCalls, explainCalls atomic.Int64
+			var sourceCalls, explainCalls, layoutCalls atomic.Int64
 			b = chHTTPBackend(t, true, func(w http.ResponseWriter, r *http.Request) {
 				sql := r.URL.Query().Get("query")
 				switch {
@@ -538,6 +538,19 @@ func TestCHSourceAuditRejectsCorruption(t *testing.T) {
 						return
 					}
 					fmt.Fprintln(w, strings.Join(rows, "\n"))
+				case strings.HasPrefix(sql, "SHOW CREATE TABLE "):
+					layoutCalls.Add(1)
+					fmt.Fprint(w, "CREATE TABLE observed ENGINE = MergeTree ORDER BY tuple() SETTINGS index_granularity = 16384\n")
+				case strings.Contains(sql, "FROM system.tables "):
+					layoutCalls.Add(1)
+					fmt.Fprintln(w, `{"table":"spans","engine":"MergeTree","engine_full":"MergeTree ORDER BY tuple() SETTINGS index_granularity = 16384","sorting_key":"tuple()","create_table_query":"CREATE TABLE observed"}`)
+				case strings.Contains(sql, "sum(marks)"):
+					layoutCalls.Add(1)
+					if strings.Contains(sql, "FROM system.projection_parts ") {
+						fmt.Fprintln(w, `{"name":"by_trace","rows":"48","marks":"7","parts":"2"}`)
+					} else {
+						fmt.Fprintln(w, `{"table":"spans","rows":"48","marks":"11","parts":"3"}`)
+					}
 				case strings.Contains(sql, "FROM system.parts "):
 					n := b.cfg.Count * b.cfg.Attributes
 					if problem == "attribute_census" {
@@ -569,11 +582,21 @@ func TestCHSourceAuditRejectsCorruption(t *testing.T) {
 				t.Fatalf("source audit requests = %d", sourceCalls.Load())
 			}
 			if problem == "intact" {
-				if err != nil || explainCalls.Load() != 4 || stats.Rows != int64(b.cfg.Count) || stats.Structures["attr_lookup"].Keys != int64(b.cfg.Count*b.cfg.Attributes) {
-					t.Fatalf("positive audit control stats=%+v explain=%d error=%v", stats, explainCalls.Load(), err)
+				if err != nil || explainCalls.Load() != 4 || layoutCalls.Load() != 5 || stats.Rows != int64(b.cfg.Count) || stats.Structures["attr_lookup"].Keys != int64(b.cfg.Count*b.cfg.Attributes) {
+					t.Fatalf("positive audit control stats=%+v explain=%d layout=%d error=%v", stats, explainCalls.Load(), layoutCalls.Load(), err)
+				}
+				for _, key := range []string{"spans_show_create", "attr_lookup_show_create", "merge_tree_settings", "part_marks", "projection_marks", "granularity_evidence"} {
+					if stats.Details[key] == "" {
+						t.Errorf("positive audit omitted observed layout receipt %q", key)
+					}
+				}
+				if stats.Details["ch_index_granularity_requested"] != strconv.Itoa(b.cfg.CHIndexGranularity) {
+					t.Error("positive audit lost the separately labeled requested granularity")
 				}
 			} else if err == nil {
 				t.Fatalf("%s corruption accepted: %+v", problem, stats)
+			} else if layoutCalls.Load() != 0 {
+				t.Fatalf("%s corruption reached final layout audit: calls=%d", problem, layoutCalls.Load())
 			}
 		})
 	}

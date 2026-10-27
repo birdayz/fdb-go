@@ -91,7 +91,7 @@ type preparedBatch struct {
 }
 
 // prepareIngestBatch runs outside retry closures. Each bounded, disjoint batch
-// owns immutable messages reused by all attempts of exactly one Run.
+// owns immutable messages across internal attempts and every fresh source Run.
 func prepareIngestBatch(ctx context.Context, c Config, lo int) (preparedBatch, error) {
 	batch := preparedBatch{first: lo, next: lo}
 	if lo < 0 || lo >= c.Count {

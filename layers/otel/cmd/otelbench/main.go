@@ -47,6 +47,7 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 	flags.BoolVar(&c.Diagnostics, "diagnostics", c.Diagnostics, "include ingest diagnostics in evidence")
 	flags.IntVar(&c.CHBatch, "ch-batch", c.CHBatch, "CH offline bulk insert row cap; separately reported, not matched live ack batching")
 	flags.IntVar(&c.CHBatchBytes, "ch-batch-bytes", c.CHBatchBytes, "CH offline bulk insert byte cap, at most 64MiB")
+	flags.IntVar(&c.CHIndexGranularity, "ch-index-granularity", c.CHIndexGranularity, "fresh-table MergeTree index granularity, 1..8192")
 	flags.IntVar(&c.Tenant, "tenant", c.Tenant, "query tenant ordinal")
 	flags.IntVar(&c.K, "k", c.K, "newest K DISTINCT traces, time DESC then trace ID DESC")
 	flags.IntVar(&c.Iterations, "iterations", c.Iterations, "query sample count; raw samples retained")
