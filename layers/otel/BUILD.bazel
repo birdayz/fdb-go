@@ -46,6 +46,7 @@ go_test(
     srcs = [
         "bootstrap_test.go",
         "clickhouse_granularity_test.go",
+        "clickhouse_ingest_progress_test.go",
         "clickhouse_integration_test.go",
         "clickhouse_layout_test.go",
         "clickhouse_native_budget_test.go",

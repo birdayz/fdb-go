@@ -1,0 +1,86 @@
+{
+  "schema": "otel283_lossless_archive_scan_v1",
+  "scope": "Every decompressed regular member of the completed eligible3 archive, including frozen analysis helpers, controls, finite runtime/profile/stop receipts and generated source/reference manifests. Mechanical file inspection only; no archived helper, DB action, build or test executed.",
+  "gzip_crc_and_decompression": "passed",
+  "decompressed_tar_bytes": 80404480,
+  "tar_headers": 454,
+  "tar_regular_files": 402,
+  "tar_symlinks": 0,
+  "unsafe_or_duplicate_paths": 0,
+  "json_members_parsed": 109,
+  "jsonl_members_parsed": 45,
+  "jsonl_records_parsed": 77231,
+  "json_parse_failures": [],
+  "intentional_non_json_controls": [
+    {
+      "member": "./analysis-controls/owned-fixture-results/already-exists.json",
+      "reason": "Intentional existing-output refusal marker, literal untouched (9 bytes), not JSON."
+    }
+  ],
+  "all_other_json_jsonl_parse": true,
+  "full_docker_inspect_responses": [],
+  "ipv4_literals": [
+    {
+      "literal": "127.0.0.1",
+      "occurrences": 62,
+      "example_members": [
+        "./failed-windows/ch1m-gran1-after-maintenance-audit/audit.command",
+        "./failed-windows/ch1m-gran1-after-maintenance-audit/driver.sh",
+        "./failed-windows/ch1m-gran1-postdrain-resume02-audit/driver.sh",
+        "./helpers/ch-querylog-reconcile-resume03/README.md",
+        "./helpers/ch-querylog-reconcile-resume03/reconcile.js",
+        "./helpers/ch1m-select-confirm-eligible3/confirm.sh"
+      ],
+      "classification": "loopback"
+    },
+    {
+      "literal": "26.10.2.103",
+      "occurrences": 24,
+      "example_members": [
+        "./failed-windows/ch1m-gran1-after-maintenance-audit/audit.json",
+        "./failed-windows/ch1m-gran1-after-maintenance-audit/profile-before.txt",
+        "./failed-windows/ch1m-gran1-postdrain-resume02-audit/profile-before.txt",
+        "./helpers/ch-querylog-reconcile-resume03/reconcile.js",
+        "./helpers/ch1m-select-confirm-eligible3/analyze.js",
+        "./helpers/ch1m-select-confirm-eligible3-resume03/analyze.js"
+      ],
+      "classification": "ClickHouse version, not destination"
+    },
+    {
+      "literal": "4.14.2.0",
+      "occurrences": 8,
+      "example_members": [
+        "./failed-windows/ch1m-gran1-after-maintenance-audit/source.after",
+        "./failed-windows/ch1m-gran1-after-maintenance-audit/source.before",
+        "./failed-windows/ch1m-gran1-postdrain-resume02-audit/source.after",
+        "./failed-windows/ch1m-gran1-postdrain-resume02-audit/source.before",
+        "./runtime/ch1m-eligible3-confirmation/source.after",
+        "./runtime/ch1m-eligible3-confirmation/source.before"
+      ],
+      "classification": "Java Record Layer version, not destination"
+    }
+  ],
+  "ipv6_candidate_literals": [],
+  "nonloopback_destination_findings": [],
+  "secret_candidate_members": [],
+  "secret_pattern_scope": "Private-key headers, AWS/GitHub/OpenAI token formats, long credential assignments, URL userinfo; not proof of absence of every possible secret.",
+  "trailing_whitespace": {
+    "members": 1,
+    "lines": 1,
+    "handling": "Original whitespace retained byte-for-byte under gzip; raw fields not rewritten.",
+    "details": [
+      {
+        "member": "./failed-windows/ch1m-gran1-after-maintenance-audit/audit.command",
+        "lines": 1
+      }
+    ]
+  },
+  "raw_manifest_verification": {
+    "verified_raw_files": 399,
+    "generated_files": 3,
+    "method": "Entire gzip decompression and safe regular-member extraction to fresh /tmp; sha256sum --check RAW-SHA256SUMS; original-source SHA manifest byte comparison.",
+    "all_match": true
+  },
+  "services_or_tests_executed": false,
+  "archived_helpers_executed": false
+}

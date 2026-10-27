@@ -218,10 +218,16 @@ func chRow(s Span) chSpan {
 }
 
 func (b *CHBackend) Ingest(ctx context.Context) (stats Statistics, retErr error) {
+	stats.Details = map[string]string{
+		"ingest":               "bulk synchronous HTTP JSONEachRow, independent CH batch/byte caps; NOT matched real-time acknowledgment batching",
+		"payload_bytes":        "JSON transport bytes including duplicate terms/map/source; not comparable serialized-record bytes",
+		"ch_index_granularity": strconv.Itoa(b.cfg.CHIndexGranularity),
+		"progress":             "rows, attributes and logical_payload_bytes count only source INSERT batches with successful HTTP responses; a failed or canceled batch may have applied additional physical rows; ready publication is not inferred",
+	}
 	defer func() { retErr = redactCHError(retErr, b.endpoint) }()
 	// No IF NOT EXISTS: never append into a previous run or assume ownership.
 	if err := b.exec(ctx, "CREATE DATABASE "+b.database); err != nil {
-		return Statistics{}, err
+		return stats, err
 	}
 	initialized := false
 	defer func() {
@@ -235,16 +241,16 @@ func (b *CHBackend) Ingest(ctx context.Context) (stats Statistics, retErr error)
 		}
 	}()
 	if err := b.exec(ctx, "CREATE TABLE "+b.database+".owner (sequence UInt32,payload String) ENGINE=TinyLog"); err != nil {
-		return Statistics{}, err
+		return stats, err
 	}
 	if err := b.putManifest(ctx, "loading", 1); err != nil {
-		return Statistics{}, err
+		return stats, err
 	}
 	initialized = true
 	schema := "CREATE TABLE " + b.database + `.spans (ordinal UInt64,tenant UInt32,service LowCardinality(String),day Date,ts_ns Int64,trace_id String,span_id String,attrs Map(String,String) CODEC(ZSTD(1)),terms Array(Tuple(String,String,String,String)) CODEC(ZSTD(1)),source String CODEC(ZSTD(1)), INDEX trace_bf trace_id TYPE bloom_filter(0.01) GRANULARITY 1, INDEX attrs_k mapKeys(attrs) TYPE bloom_filter(0.01) GRANULARITY 1, INDEX attrs_v mapValues(attrs) TYPE bloom_filter(0.01) GRANULARITY 1, PROJECTION by_trace (SELECT tenant,trace_id,span_id,ts_ns ORDER BY (tenant,trace_id,span_id)), PROJECTION by_span (SELECT tenant,span_id,ts_ns,trace_id ORDER BY (tenant,span_id,ts_ns,trace_id)), PROJECTION by_time (SELECT tenant,ts_ns,trace_id,span_id ORDER BY (tenant,ts_ns,trace_id,span_id))) ENGINE=MergeTree PARTITION BY day ORDER BY (tenant,service,ts_ns,trace_id,span_id)`
 	schema += " SETTINGS index_granularity=" + strconv.Itoa(b.cfg.CHIndexGranularity)
 	if err := b.exec(ctx, schema); err != nil {
-		return Statistics{}, err
+		return stats, err
 	}
 	if b.attrs {
 		order := "tenant,scope,k,typ,v,trace_id,span_id"
@@ -253,14 +259,13 @@ func (b *CHBackend) Ingest(ctx context.Context) (stats Statistics, retErr error)
 		}
 		ddl := "CREATE TABLE " + b.database + ".attr_lookup (tenant UInt32,day Date,scope LowCardinality(String),k String,typ LowCardinality(String),v String,ts_ns Int64,neg_time Int64,trace_id String,rev_trace String,span_id String) ENGINE=MergeTree PARTITION BY day ORDER BY (" + order + ") SETTINGS index_granularity=" + strconv.Itoa(b.cfg.CHIndexGranularity)
 		if err := b.exec(ctx, ddl); err != nil {
-			return Statistics{}, err
+			return stats, err
 		}
 		mv := "CREATE MATERIALIZED VIEW " + b.database + ".attr_mv TO " + b.database + ".attr_lookup AS SELECT tenant,day,a.1 AS scope,a.2 AS k,a.3 AS typ,a.4 AS v,ts_ns,-ts_ns AS neg_time,trace_id,translate(trace_id,'0123456789abcdef','fedcba9876543210') AS rev_trace,span_id FROM " + b.database + ".spans ARRAY JOIN terms AS a"
 		if err := b.exec(ctx, mv); err != nil {
-			return Statistics{}, err
+			return stats, err
 		}
 	}
-	var logical int64
 	for lo := 0; lo < b.cfg.Count; {
 		var buf bytes.Buffer
 		hi := lo
@@ -268,28 +273,32 @@ func (b *CHBackend) Ingest(ctx context.Context) (stats Statistics, retErr error)
 			row := chRow(Generate(b.cfg, hi))
 			wire, err := json.Marshal(row)
 			if err != nil {
-				return Statistics{}, err
+				return stats, err
 			}
 			if buf.Len() > 0 && buf.Len()+len(wire)+1 > b.cfg.CHBatchBytes {
 				break
 			}
 			if len(wire)+1 > b.cfg.CHBatchBytes {
-				return Statistics{}, fail("admission", "CH ingest", "source row exceeds batch cap")
+				return stats, fail("admission", "CH ingest", "source row exceeds batch cap")
 			}
 			buf.Write(wire)
 			buf.WriteByte('\n')
 			hi++
 		}
 		if _, err := b.request(ctx, "INSERT INTO "+b.database+".spans SETTINGS async_insert=0 FORMAT JSONEachRow", buf.Bytes(), nil); err != nil {
-			return Statistics{}, wrap("http", "ingest batch "+strconv.Itoa(lo), err)
+			return stats, wrap("http", "ingest batch "+strconv.Itoa(lo), err)
 		}
-		logical += int64(buf.Len())
+		// Only a completed successful response acknowledges the whole batch.
+		// A failed response can hide partial application; never count that tail.
+		stats.Rows += int64(hi - lo)
+		stats.Attributes += int64((hi - lo) * b.cfg.Attributes)
+		stats.LogicalPayloadBytes += int64(buf.Len())
 		lo = hi
 	}
 	if err := b.putManifest(ctx, "ready", 2); err != nil {
-		return Statistics{}, err
+		return stats, err
 	}
-	return Statistics{Rows: int64(b.cfg.Count), Attributes: int64(b.cfg.Count * b.cfg.Attributes), LogicalPayloadBytes: logical, Details: map[string]string{"ingest": "bulk synchronous HTTP JSONEachRow, independent CH batch/byte caps; NOT matched real-time acknowledgment batching", "payload_bytes": "JSON transport bytes including duplicate terms/map/source; not comparable serialized-record bytes", "ch_index_granularity": strconv.Itoa(b.cfg.CHIndexGranularity)}}, nil
+	return stats, nil
 }
 
 func (b *CHBackend) readWorkSettings() string {

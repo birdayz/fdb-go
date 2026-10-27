@@ -742,8 +742,8 @@ func TestCHPublicIngestBatchLimits(t *testing.T) {
 				if !errors.As(err, &admission) || len(ordinals) != 0 || payloadBytes != 0 || !reflect.DeepEqual(owners, []Manifest{manifest(c, "loading")}) || !reflect.DeepEqual(sequences, []int{1}) {
 					t.Fatalf("oversized row must fail before source INSERT and remain loading: error=%v ordinals=%v payload=%d owners=%+v sequences=%v", err, ordinals, payloadBytes, owners, sequences)
 				}
-				if !reflect.DeepEqual(stats, Statistics{}) {
-					t.Fatalf("oversized row reported successful ingest statistics: %+v", stats)
+				if stats.Rows != 0 || stats.Attributes != 0 || stats.LogicalPayloadBytes != 0 || stats.Details["progress"] == "" {
+					t.Fatalf("oversized row reported acknowledged source progress or omitted its accounting scope: %+v", stats)
 				}
 				return
 			}
