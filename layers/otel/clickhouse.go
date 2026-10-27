@@ -24,6 +24,7 @@ type CHBackend struct {
 	database  string
 	attrs     bool
 	lastWork  QueryResult
+	queries   chQueryExecutor
 }
 
 func OpenCH(c Config, endpoint string, attrs bool) (*CHBackend, error) {
@@ -43,18 +44,34 @@ func OpenCHContext(ctx context.Context, c Config, endpoint string, attrs bool) (
 	}
 	u, err := url.Parse(endpoint)
 	if err != nil {
-		return nil, wrap("config", "open CH", err)
+		return nil, fail("config", "open CH", "invalid CH URL")
 	}
 	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
 		return nil, fail("config", "open CH", "CH URL must be explicit http(s) endpoint without query/fragment")
 	}
 	tr := &http.Transport{MaxIdleConns: 8, MaxIdleConnsPerHost: 4, IdleConnTimeout: 90 * time.Second}
-	return &CHBackend{cfg: c, endpoint: u, client: &http.Client{Transport: tr, Timeout: 30 * time.Second}, transport: tr, database: "otel_" + c.Run, attrs: attrs}, nil
+	b := &CHBackend{cfg: c, endpoint: u, client: &http.Client{Transport: tr, Timeout: 30 * time.Second}, transport: tr, database: "otel_" + c.Run, attrs: attrs}
+	b.queries = &chHTTPQueries{backend: b}
+	if c.CHQueryTransport == "native" {
+		native, err := openCHNativeQueries(c, u)
+		if err != nil {
+			tr.CloseIdleConnections()
+			return nil, redactCHError(err, u)
+		}
+		b.queries = native
+	}
+	return b, nil
 }
 
 // LastQueryWork is metrics only; results are never cached. CLI calls are sequential.
 func (b *CHBackend) LastQueryWork() QueryResult { return b.lastWork }
-func (b *CHBackend) Close()                     { b.transport.CloseIdleConnections() }
+
+func (b *CHBackend) Close() {
+	if b.queries != nil {
+		_ = b.queries.close()
+	}
+	b.transport.CloseIdleConnections()
+}
 
 type chSummary struct {
 	ReadRows, ReadBytes, Elapsed int64
@@ -101,9 +118,17 @@ func (b *CHBackend) request(ctx context.Context, sql string, payload []byte, par
 }
 
 func (b *CHBackend) requestWithSummary(ctx context.Context, sql string, payload []byte, params map[string]string) ([]byte, chSummary, error) {
+	return b.requestWithSummaryID(ctx, sql, payload, params, "")
+}
+
+func (b *CHBackend) requestWithSummaryID(ctx context.Context, sql string, payload []byte, params map[string]string, queryID string) (wire []byte, summary chSummary, err error) {
+	defer func() { err = redactCHError(err, b.endpoint) }()
 	u := *b.endpoint
 	q := u.Query()
 	q.Set("query", sql)
+	if queryID != "" {
+		q.Set("query_id", queryID)
+	}
 	q.Set("use_query_cache", "0")
 	q.Set("enable_http_compression", "0")
 	q.Set("send_progress_in_http_headers", "0")
@@ -121,7 +146,7 @@ func (b *CHBackend) requestWithSummary(ctx context.Context, sql string, payload 
 		return nil, chSummary{}, wrap("http", "request", err)
 	}
 	defer resp.Body.Close()
-	wire, err := io.ReadAll(io.LimitReader(resp.Body, (32<<20)+1))
+	wire, err = io.ReadAll(io.LimitReader(resp.Body, (32<<20)+1))
 	if err != nil {
 		return nil, chSummary{}, err
 	}
@@ -193,6 +218,7 @@ func chRow(s Span) chSpan {
 }
 
 func (b *CHBackend) Ingest(ctx context.Context) (stats Statistics, retErr error) {
+	defer func() { retErr = redactCHError(retErr, b.endpoint) }()
 	// No IF NOT EXISTS: never append into a previous run or assume ownership.
 	if err := b.exec(ctx, "CREATE DATABASE "+b.database); err != nil {
 		return Statistics{}, err
@@ -299,155 +325,67 @@ func (b *CHBackend) querySQL(a Attribute) (string, map[string]string) {
 	return sql, params
 }
 
-func (b *CHBackend) Query(ctx context.Context, a Attribute) (QueryResult, error) {
+func (b *CHBackend) Query(ctx context.Context, a Attribute) (out QueryResult, err error) {
+	defer func() { err = redactCHError(err, b.endpoint) }()
 	b.lastWork = QueryResult{}
-	if err := b.readManifest(ctx, true); err != nil {
+	if err := b.readQueryManifest(ctx); err != nil {
 		return QueryResult{}, err
 	}
 	sql, params := b.querySQL(a)
-	wire, summary, err := b.requestWithSummary(ctx, sql, nil, params)
-	if err != nil {
-		return QueryResult{}, err
-	}
-	out := QueryResult{Hits: []Hit{}, ServerReadRows: summary.ReadRows, ServerReadBytes: summary.ReadBytes, ServerElapsed: summary.Elapsed, ResponseBytes: int64(len(wire)), ServerSummary: summary.Present}
-	b.lastWork = out
-	for _, line := range bytes.Split(bytes.TrimSpace(wire), []byte{'\n'}) {
-		if len(line) == 0 {
-			continue
-		}
-		var r struct {
-			Trace  string      `json:"trace_id"`
-			Latest json.Number `json:"latest"`
-		}
-		if err := json.Unmarshal(line, &r); err != nil {
-			return out, wrap("corruption", "query result", err)
-		}
-		n, err := strconv.ParseInt(string(r.Latest), 10, 64)
-		if err != nil {
-			return out, err
-		}
-		out.Hits = append(out.Hits, Hit{r.Trace, n})
-	}
-	return out, nil
+	hits, meta, err := b.queries.hits(ctx, sql, params)
+	b.lastWork = meta.work()
+	out = b.lastWork
+	out.Hits = hits
+	return out, err
 }
 
-func (b *CHBackend) Trace(ctx context.Context, trace string) ([]SpanHit, error) {
+func (b *CHBackend) Trace(ctx context.Context, trace string) (out []SpanHit, err error) {
+	defer func() { err = redactCHError(err, b.endpoint) }()
 	b.lastWork = QueryResult{}
-	if err := b.readManifest(ctx, true); err != nil {
+	if err := b.readQueryManifest(ctx); err != nil {
 		return nil, err
 	}
 	sql, params := b.traceSQL(trace)
-	wire, summary, err := b.requestWithSummary(ctx, sql, nil, params)
-	if err != nil {
-		return nil, err
-	}
-	b.lastWork = QueryResult{ServerReadRows: summary.ReadRows, ServerReadBytes: summary.ReadBytes, ServerElapsed: summary.Elapsed, ResponseBytes: int64(len(wire)), ServerSummary: summary.Present}
-	out := []SpanHit{}
-	for _, line := range bytes.Split(bytes.TrimSpace(wire), []byte{'\n'}) {
-		if len(line) == 0 {
-			continue
-		}
-		var r struct {
-			ID    string      `json:"span_id"`
-			Start json.Number `json:"ts_ns"`
-		}
-		if err := json.Unmarshal(line, &r); err != nil {
-			return nil, wrap("corruption", "trace result", err)
-		}
-		n, err := strconv.ParseInt(string(r.Start), 10, 64)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, SpanHit{r.ID, n})
-	}
-	if len(out) > b.cfg.MaxCandidates {
-		return nil, fail("budget", "CH trace", "trace row limit exceeded")
-	}
-	return out, nil
+	spans, meta, err := b.queries.trace(ctx, sql, params)
+	b.lastWork = meta.work()
+	return spans, err
 }
 
 // Span looks up a span ID without a trace hint. IDs are not assumed globally
 // unique: all tenant-local matches are returned or the work budget fails.
-func (b *CHBackend) Span(ctx context.Context, id string) ([]SpanMatch, error) {
+func (b *CHBackend) Span(ctx context.Context, id string) (out []SpanMatch, err error) {
+	defer func() { err = redactCHError(err, b.endpoint) }()
 	b.lastWork = QueryResult{}
-	if err := b.readManifest(ctx, true); err != nil {
+	if err := b.readQueryManifest(ctx); err != nil {
 		return nil, err
 	}
 	sql, params := b.spanSQL(id)
-	wire, summary, err := b.requestWithSummary(ctx, sql, nil, params)
-	if err != nil {
-		return nil, err
-	}
-	b.lastWork = QueryResult{ServerReadRows: summary.ReadRows, ServerReadBytes: summary.ReadBytes, ServerElapsed: summary.Elapsed, ResponseBytes: int64(len(wire)), ServerSummary: summary.Present}
-	out := []SpanMatch{}
-	for _, line := range bytes.Split(bytes.TrimSpace(wire), []byte{'\n'}) {
-		if err := ctx.Err(); err != nil {
-			return nil, wrap("canceled", "span result", err)
-		}
-		if len(line) == 0 {
-			continue
-		}
-		var row struct {
-			Trace string      `json:"trace_id"`
-			ID    string      `json:"span_id"`
-			Start json.Number `json:"ts_ns"`
-		}
-		if err := json.Unmarshal(line, &row); err != nil {
-			return nil, wrap("corruption", "span result", err)
-		}
-		start, err := strconv.ParseInt(string(row.Start), 10, 64)
-		if err != nil {
-			return nil, wrap("corruption", "span timestamp", err)
-		}
-		out = append(out, SpanMatch{Trace: row.Trace, ID: row.ID, Start: start})
-		if len(out) > b.cfg.MaxCandidates {
-			return nil, fail("budget", "CH span", "span row limit exceeded")
-		}
-	}
-	return out, nil
+	spans, meta, err := b.queries.spans(ctx, sql, params)
+	b.lastWork = meta.work()
+	return spans, err
 }
 
 // Time returns newest distinct traces using timestamps within the half-open
 // interval only; a newer span outside the interval cannot affect the answer.
-func (b *CHBackend) Time(ctx context.Context, window TimeRange) (QueryResult, error) {
+func (b *CHBackend) Time(ctx context.Context, window TimeRange) (out QueryResult, err error) {
+	defer func() { err = redactCHError(err, b.endpoint) }()
 	b.lastWork = QueryResult{}
 	if err := window.Validate(); err != nil {
 		return QueryResult{}, err
 	}
-	if err := b.readManifest(ctx, true); err != nil {
+	if err := b.readQueryManifest(ctx); err != nil {
 		return QueryResult{}, err
 	}
 	sql, params := b.timeSQL(window)
-	wire, summary, err := b.requestWithSummary(ctx, sql, nil, params)
-	if err != nil {
-		return QueryResult{}, err
-	}
-	out := QueryResult{Hits: []Hit{}, ServerReadRows: summary.ReadRows, ServerReadBytes: summary.ReadBytes, ServerElapsed: summary.Elapsed, ResponseBytes: int64(len(wire)), ServerSummary: summary.Present}
-	b.lastWork = out
-	for _, line := range bytes.Split(bytes.TrimSpace(wire), []byte{'\n'}) {
-		if err := ctx.Err(); err != nil {
-			return out, wrap("canceled", "time result", err)
-		}
-		if len(line) == 0 {
-			continue
-		}
-		var row struct {
-			Trace  string      `json:"trace_id"`
-			Latest json.Number `json:"latest"`
-		}
-		if err := json.Unmarshal(line, &row); err != nil {
-			return out, wrap("corruption", "time result", err)
-		}
-		latest, err := strconv.ParseInt(string(row.Latest), 10, 64)
-		if err != nil {
-			return out, wrap("corruption", "time timestamp", err)
-		}
-		out.Hits = append(out.Hits, Hit{Trace: row.Trace, Latest: latest})
-	}
-	return out, nil
+	hits, meta, err := b.queries.hits(ctx, sql, params)
+	b.lastWork = meta.work()
+	out = b.lastWork
+	out.Hits = hits
+	return out, err
 }
 
-func (b *CHBackend) Drop(ctx context.Context) error {
+func (b *CHBackend) Drop(ctx context.Context) (err error) {
+	defer func() { err = redactCHError(err, b.endpoint) }()
 	if err := b.readManifest(ctx, false); err != nil {
 		return err
 	}
@@ -508,11 +446,12 @@ func (b *CHBackend) auditSources(ctx context.Context) error {
 	return nil
 }
 
-func (b *CHBackend) Audit(ctx context.Context) (Statistics, error) {
+func (b *CHBackend) Audit(ctx context.Context) (stats Statistics, err error) {
+	defer func() { err = redactCHError(err, b.endpoint) }()
 	if err := b.readManifest(ctx, true); err != nil {
 		return Statistics{}, err
 	}
-	stats := Statistics{Structures: map[string]Size{}, Details: map[string]string{"storage": "system.parts active bytes; source + every MV destination included", "semantic_class": "immutable unique span corpus; no replication/durability equivalence claimed"}}
+	stats = Statistics{Structures: map[string]Size{}, Details: map[string]string{"storage": "system.parts active bytes; source + every MV destination included", "semantic_class": "immutable unique span corpus; no replication/durability equivalence claimed"}}
 	wire, err := b.request(ctx, "SELECT version() FORMAT TabSeparated", nil, nil)
 	if err != nil {
 		return stats, err

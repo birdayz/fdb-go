@@ -2,15 +2,17 @@
 package otel
 
 import (
-	"container/heap"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/netip"
 	"regexp"
 	"sort"
+	"strconv"
 )
 
 const (
@@ -20,30 +22,32 @@ const (
 )
 
 type Config struct {
-	Run           string `json:"run"`
-	Backend       string `json:"backend"`
-	Seed          uint64 `json:"seed"`
-	Count         int    `json:"count"`
-	Tenants       int    `json:"tenants"`
-	Attributes    int    `json:"attributes"`
-	MatchEvery    int    `json:"match_every"`
-	Batch         int    `json:"batch"`
-	SaveMode      string `json:"save_mode"`
-	Workers       int    `json:"workers"`
-	Diagnostics   bool   `json:"diagnostics"`
-	CHBatch       int    `json:"ch_batch"`
-	CHBatchBytes  int    `json:"ch_batch_bytes"`
-	Tenant        int    `json:"tenant"`
-	K             int    `json:"k"`
-	Iterations    int    `json:"iterations"`
-	MaxCandidates int    `json:"max_candidates"`
-	MaxBytes      int64  `json:"max_bytes"`
-	HashBytes     int    `json:"hash_bytes"`
-	Order         string `json:"order"`
+	Run              string `json:"run"`
+	Backend          string `json:"backend"`
+	Seed             uint64 `json:"seed"`
+	Count            int    `json:"count"`
+	Tenants          int    `json:"tenants"`
+	Attributes       int    `json:"attributes"`
+	MatchEvery       int    `json:"match_every"`
+	Batch            int    `json:"batch"`
+	SaveMode         string `json:"save_mode"`
+	Workers          int    `json:"workers"`
+	Diagnostics      bool   `json:"diagnostics"`
+	CHBatch          int    `json:"ch_batch"`
+	CHBatchBytes     int    `json:"ch_batch_bytes"`
+	CHQueryTransport string `json:"ch_query_transport"`
+	CHNativeAddr     string `json:"ch_native_addr,omitempty"`
+	Tenant           int    `json:"tenant"`
+	K                int    `json:"k"`
+	Iterations       int    `json:"iterations"`
+	MaxCandidates    int    `json:"max_candidates"`
+	MaxBytes         int64  `json:"max_bytes"`
+	HashBytes        int    `json:"hash_bytes"`
+	Order            string `json:"order"`
 }
 
 func DefaultConfig() Config {
-	return Config{Seed: 283, Count: 10000, Tenants: 10, Attributes: 8, MatchEvery: 100, Batch: 32, SaveMode: "pipelined", Workers: 1, CHBatch: 8192, CHBatchBytes: 8 << 20, K: 100, Iterations: 20, MaxCandidates: 20000, MaxBytes: 4 << 20, HashBytes: 32, Order: "trace"}
+	return Config{Seed: 283, Count: 10000, Tenants: 10, Attributes: 8, MatchEvery: 100, Batch: 32, SaveMode: "pipelined", Workers: 1, CHBatch: 8192, CHBatchBytes: 8 << 20, CHQueryTransport: "http", K: 100, Iterations: 20, MaxCandidates: 20000, MaxBytes: 4 << 20, HashBytes: 32, Order: "trace"}
 }
 
 func (c Config) Validate() error {
@@ -53,7 +57,34 @@ func (c Config) Validate() error {
 	if c.Count < 1 || c.Count > 100000000 || c.Tenants < 1 || c.Tenants > (c.Count+1)/2 || c.Attributes < 4 || c.Attributes > 128 || c.MatchEvery < 1 || c.Batch < 1 || c.Batch > 64 || (c.SaveMode != "serial" && c.SaveMode != "pipelined" && c.SaveMode != "batch") || c.Workers < 1 || c.Workers > 8 || c.CHBatch < 1 || c.CHBatch > 65536 || c.CHBatchBytes < 1 || c.CHBatchBytes > 64<<20 || c.Tenant < 0 || c.Tenant >= c.Tenants || c.K < 1 || c.K > 10000 || c.Iterations < 1 || c.Iterations > 100000 || c.MaxCandidates < 1 || c.MaxCandidates > 100000000 || c.MaxBytes < 1 || c.HashBytes < 1 || c.HashBytes > 32 || (c.Order != "trace" && c.Order != "time") {
 		return fail("config", "bounds", "invalid corpus/query bounds")
 	}
+	if c.CHQueryTransport != "http" && c.CHQueryTransport != "native" {
+		return fail("config", "CH query transport", "query transport must be http or native")
+	}
+	if c.CHNativeAddr != "" || c.CHQueryTransport == "native" {
+		if _, err := nativeAddress(c.CHNativeAddr); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func nativeAddress(address string) (string, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return "", fail("config", "CH native address", "explicit loopback host:port required; no DSN or credentials")
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return "", fail("config", "CH native address", "port must be 1..65535")
+	}
+	if host == "localhost" {
+		host = "127.0.0.1"
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil || ip.Zone() != "" || !ip.Unmap().IsLoopback() {
+		return "", fail("config", "CH native address", "only literal loopback addresses or localhost are supported")
+	}
+	return net.JoinHostPort(ip.Unmap().String(), strconv.Itoa(n)), nil
 }
 
 type Attribute struct {
@@ -79,14 +110,17 @@ type SpanHit struct {
 	Start int64  `json:"start_ns"`
 }
 type QueryResult struct {
-	Hits            []Hit `json:"hits"`
-	Candidates      int   `json:"candidates"`
-	Bytes           int64 `json:"logical_read_bytes"`
-	ServerReadRows  int64 `json:"server_read_rows,omitempty"`
-	ServerReadBytes int64 `json:"server_read_bytes,omitempty"`
-	ServerElapsed   int64 `json:"server_elapsed_ns,omitempty"`
-	ResponseBytes   int64 `json:"http_response_bytes,omitempty"`
-	ServerSummary   bool  `json:"server_summary_available"`
+	Hits                []Hit  `json:"hits"`
+	Candidates          int    `json:"candidates"`
+	Bytes               int64  `json:"logical_read_bytes"`
+	ServerReadRows      int64  `json:"server_read_rows,omitempty"`
+	ServerReadBytes     int64  `json:"server_read_bytes,omitempty"`
+	ServerElapsed       int64  `json:"server_elapsed_ns,omitempty"`
+	ResponseBytes       int64  `json:"http_response_bytes,omitempty"`
+	ServerSummary       bool   `json:"server_summary_available"`
+	QueryID             string `json:"query_id,omitempty"`
+	QueryTransport      string `json:"query_transport,omitempty"`
+	ServerMetricsSource string `json:"server_metrics_source,omitempty"`
 }
 
 func randomWord(seed uint64, domain string, i int) [32]byte {
@@ -96,9 +130,8 @@ func randomWord(seed uint64, domain string, i int) [32]byte {
 	return sha256.Sum256(append([]byte(domain), b[:]...))
 }
 
-// fixtureWord is a keyed bijection over nonzero uint64s (cycle-walking zero).
-// It gives synthetic randomized-looking IDs, not cryptographic/security IDs.
-// Unlike truncated hashes, uniqueness is guaranteed for distinct ordinals.
+// fixtureWord cycle-walks a keyed bijection to guarantee nonzero unique IDs.
+// These randomized-looking fixture identities are not cryptographic IDs.
 func fixtureWord(seed uint64, domain string, ordinal int) uint64 {
 	key := randomWord(seed, domain, 0)
 	mix := func(x uint64) uint64 {
@@ -198,25 +231,9 @@ func oracleTopKContext(ctx context.Context, m map[string]int64, k int) ([]Hit, e
 		if err := ctx.Err(); err != nil {
 			return nil, wrap("canceled", "oracle topK", err)
 		}
-		candidate := Hit{Trace: id, Latest: ns}
-		if h.Len() < k {
-			heap.Push(&h, candidate)
-		} else {
-			worst := h[0]
-			if ns > worst.Latest || (ns == worst.Latest && id > worst.Trace) {
-				heap.Pop(&h)
-				heap.Push(&h, candidate)
-			}
-		}
+		retainOracleHit(&h, Hit{Trace: id, Latest: ns}, k)
 	}
-	out := make([]Hit, h.Len())
-	for i := len(out) - 1; i >= 0; i-- {
-		if err := ctx.Err(); err != nil {
-			return nil, wrap("canceled", "oracle topK", err)
-		}
-		out[i] = heap.Pop(&h).(Hit)
-	}
-	return out, nil
+	return finishOracleHeap(ctx, &h)
 }
 
 func oracleTraceSort(out []SpanHit) {

@@ -205,6 +205,9 @@ func TestRealRecordLayerCoveringIndexes(t *testing.T) {
 			{"batch_replacement", testOtelBatchReplacement},
 			{"save_api_dispatch", testOtelSaveAPIDispatch},
 			{"ingest_replay", testOtelIngestReplay},
+			{"selective_v2", testOtelSelectiveV2},
+			{"public_query_replay", testOtelPublicQueryReplay},
+			{"persisted_intrinsic_corruption", testOtelPersistedIntrinsicCorruption},
 		} {
 			t.Run(order+"_"+check.name, func(t *testing.T) {
 				t.Parallel()

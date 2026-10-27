@@ -34,11 +34,8 @@ func (r TimeRange) Validate() error {
 	return nil
 }
 
-// IntrinsicBackend is optional, preserving the original Backend contract.
-// Span returns all tenant-local matches ordered start ASC, trace ASC, span ASC;
-// K does not truncate this identity lookup. Time returns newest K distinct
-// traces by maximum qualifying start DESC, then trace ID DESC. Both obey the
-// same explicit candidate/byte budgets as other queries, never partial answers.
+// IntrinsicBackend preserves Backend while adding complete span and top-K time
+// lookup; README.md specifies ordering, matching witnesses and work budgets.
 type IntrinsicBackend interface {
 	Span(context.Context, string) ([]SpanMatch, error)
 	Time(context.Context, TimeRange) (QueryResult, error)
@@ -56,9 +53,8 @@ func validIdentity(s string, size int) bool {
 	return nonzero != 0
 }
 
-// intrinsicMatch uses metadata-aware PrimaryKey extraction. Only the declared
-// indexed fields are read by index-expression position; appended PK positions
-// are never guessed. A VALUE index must have exactly one span entry, no value.
+// intrinsicMatch uses metadata to reconstruct deduplicated primary keys;
+// validate covering shape rather than guessing appended PK positions.
 func intrinsicMatch(entry *recordlayer.IndexEntry, name string, tenant int) (SpanMatch, error) {
 	bad := func() (SpanMatch, error) {
 		return SpanMatch{}, fail("corruption", "intrinsic index", "malformed covering index entry")
@@ -101,11 +97,8 @@ func intrinsicMatch(entry *recordlayer.IndexEntry, name string, tenant int) (Spa
 	return SpanMatch{Trace: trace, ID: span, Start: start}, nil
 }
 
-// scanIntrinsic runs a covering built-in VALUE index through the public Record
-// Layer API. Each retry gets fresh output and scan state. The cursor byte limit
-// is deliberately disabled: its soft pre-read check cannot enforce the final
-// consumed entry or distinguish exact-byte exhaustion. We charge and check the
-// actual full raw index KV bytes immediately after every successful read.
+// scanIntrinsic checks actual post-read bytes: a soft cursor limit misses the
+// final oversized entry. Every retry gets fresh output and scan state.
 func (b *FDBBackend) scanIntrinsic(ctx context.Context, name string, rng recordlayer.TupleRange, reverse bool, empty bool, visit func(SpanMatch) (bool, error), reset func()) error {
 	_, err := b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
 		reset()
