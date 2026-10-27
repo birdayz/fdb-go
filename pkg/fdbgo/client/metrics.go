@@ -5,7 +5,11 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"math/rand/v2"
+	"sync"
+	"time"
 
+	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire"
 	"fdb.dev/pkg/fdbgo/wire/types"
 )
@@ -42,58 +46,117 @@ func (tx *Transaction) getEstimatedRangeSizeBytesImpl(ctx context.Context, begin
 	if err != nil {
 		return 0, err
 	}
-	// C++ uses std::numeric_limits<int>::max() — get ALL locations at once.
-	const shardLimit = math.MaxInt32
+	return tx.getStorageMetricsRange(ctx, begin, end, minVersion, nil)
+}
 
-	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
-		locations, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, shardLimit, false, tx.tenantId, tx.currentSpan())
-		if err != nil {
-			return 0, fmt.Errorf("locate range for metrics: %w", err)
-		}
-
-		var total int64
-		retry := false
-		for _, loc := range locations {
-			// Clamp shard boundaries to requested range (same pattern as readpath.go).
-			shardBegin := loc.ShardBegin
-			shardEnd := loc.ShardEnd
-			if bytes.Compare(shardBegin, begin) < 0 {
-				shardBegin = begin
-			}
-			if shardEnd == nil || bytes.Compare(shardEnd, end) > 0 {
-				shardEnd = end
-			}
-			if bytes.Compare(shardBegin, shardEnd) >= 0 {
-				continue // empty range for this shard
-			}
-
-			b, err := tx.sendWaitMetrics(ctx, shardBegin, shardEnd, minVersion, loc.Servers)
+// Each size worker retries only its own range, as doGetStorageMetrics does.
+// Singleton retries stay iterative; recursion is needed only when a shard splits.
+func (tx *Transaction) getStorageMetricsRange(ctx context.Context, begin, end []byte, minVersion int64, locations []LocationResult) (int64, error) {
+	for {
+		if locations == nil {
+			var err error
+			// C++ uses std::numeric_limits<int>::max() to get all locations.
+			locations, err = tx.db.locCache.locateRange(tx.db, ctx, begin, end, math.MaxInt32, false, tx.tenantId, tx.currentSpan())
 			if err != nil {
-				if isWrongShardServer(err) || isAllAlternativesFailed(err) || isMaybeDelivered(err) {
-					tx.db.locCache.invalidateRange(begin, end, tx.tenantId)
-					if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
-						return 0, err
-					}
-					retry = true
-					break
-				}
-				// C++ catches future_version (1009), delays, and retries.
-				if isFutureVersion(err) {
-					if err := sleepCtx(ctx, futureVersionDelay); err != nil {
-						return 0, err
-					}
-					retry = true
-					break
-				}
-				return 0, err
+				return 0, fmt.Errorf("locate range for metrics: %w", err)
 			}
-			total += b
 		}
-		if !retry {
+		var total int64
+		var err error
+		if len(locations) == 1 {
+			loc := locations[0]
+			shardBegin, shardEnd := metricsShardBounds(begin, end, loc)
+			if bytes.Compare(shardBegin, shardEnd) >= 0 {
+				return 0, nil
+			}
+			total, err = tx.sendWaitMetrics(ctx, shardBegin, shardEnd, minVersion, loc.Servers)
+		} else {
+			var sizes []int64
+			sizes, err = collectMetricsShards(ctx, locations, func(ctx context.Context, _ int, loc LocationResult) (int64, error) {
+				shardBegin, shardEnd := metricsShardBounds(begin, end, loc)
+				return tx.getStorageMetricsRange(ctx, shardBegin, shardEnd, minVersion, []LocationResult{loc})
+			}, tx.db.afterMetricsShardResult.Load())
+			for _, size := range sizes {
+				total += size
+			}
+		}
+		if err == nil {
 			return total, nil
 		}
+		var delay time.Duration
+		switch {
+		case isWrongShardServer(err), isAllAlternativesFailed(err):
+			tx.db.locCache.invalidateRange(begin, end, tx.tenantId)
+			delay = wrongShardRetryDelay
+		case isFutureVersion(err):
+			delay = futureVersionDelay
+		default:
+			return 0, err
+		}
+		if err := sleepCtx(ctx, delay); err != nil {
+			return 0, err
+		}
+		locations = nil
 	}
-	return 0, &wire.FDBError{Code: ErrAllAlternativesFailed}
+}
+
+func metricsShardBounds(begin, end []byte, loc LocationResult) ([]byte, []byte) {
+	shardBegin, shardEnd := loc.ShardBegin, loc.ShardEnd
+	if bytes.Compare(shardBegin, begin) < 0 {
+		shardBegin = begin
+	}
+	if shardEnd == nil || bytes.Compare(shardEnd, end) > 0 {
+		shardEnd = end
+	}
+	return shardBegin, shardEnd
+}
+
+// Run each shard through its first enqueue or suspension before starting the next,
+// as Flow does. Match waitForAll's error propagation and ordered results.
+func collectMetricsShards[T any](parent context.Context, locations []LocationResult, send func(context.Context, int, LocationResult) (T, error), afterResult *func(int)) ([]T, error) {
+	ctx, cancel := context.WithCancel(parent)
+	type result struct {
+		index int
+		value T
+		err   error
+	}
+	completed := make(chan result, len(locations))
+	var wg sync.WaitGroup
+	defer func() { cancel(); wg.Wait() }()
+	for i, loc := range locations {
+		workerCtx, started := withParkSignal(ctx)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer started.Fire()
+			value, err := send(workerCtx, i, loc)
+			completed <- result{index: i, value: value, err: err}
+		}()
+		select {
+		case <-started.Done():
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if len(completed) < len(locations) {
+		notifyParked(ctx)
+	}
+	values := make([]T, len(locations))
+	for range locations {
+		select {
+		case res := <-completed:
+			if res.err != nil {
+				return nil, res.err
+			}
+			values[res.index] = res.value
+			if afterResult != nil {
+				(*afterResult)(res.index)
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return values, nil
 }
 
 // isFutureVersion returns true if the error is FDB error 1009.
@@ -122,52 +185,144 @@ func (tx *Transaction) metricsMinVersion(ctx context.Context) (int64, error) {
 // (reversed range) to get an immediate response instead of waiting for a
 // threshold change.
 func (tx *Transaction) sendWaitMetrics(ctx context.Context, begin, end []byte, minVersion int64, servers []ServerInfo) (int64, error) {
-	var replyCleanup replyGuard
-	defer replyCleanup.close()
-	var sendCleanup sendGuard
-	defer sendCleanup.close()
-	for _, server := range servers {
-		conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
-		if err != nil {
-			tx.db.handleDialError(ctx, server.Address)
-			continue
-		}
-		sendCleanup.permit = permit
-		wmToken := getAdjustedEndpoint(server.Token, EndpointWaitMetrics)
-		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(wmToken)
-		replyCleanup.handle = replyHandle
+	body, err := tx.sendMetricsRequest(ctx, servers, EndpointWaitMetrics, func(reply transport.UID) []byte {
 		req := types.WaitMetricsRequest{
 			Keys:       types.KeyRangeRef{Begin: begin, End: end},
 			Min:        types.StorageMetrics{Bytes: 0},
 			Max:        types.StorageMetrics{Bytes: -1},
-			Reply:      types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
+			Reply:      types.ReplyPromise{Token: wire.UIDFromParts(reply.First, reply.Second)},
 			TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
 			MinVersion: minVersion,
 		}
-		if err := sendReadFrame(ctx, conn, wmToken, req.MarshalFDB(), replyHandle, permit, nil); err != nil {
-			replyHandle.Cancel()
-			replyCleanup.release()
-			tx.db.handleReadConnError(server.Address, conn, err)
+		return req.MarshalFDB()
+	})
+	if err != nil {
+		return 0, err
+	}
+	return parseWaitMetricsReply(body)
+}
+
+// sendMetricsRequest sends a request as loadBalance does (LoadBalance.actor.h:589-725):
+// one replica per attempt, no reply timeout, and a backoff once all were tried.
+func (tx *Transaction) sendMetricsRequest(ctx context.Context, servers []ServerInfo, endpoint int, build func(reply transport.UID) []byte) ([]byte, error) {
+	var closed <-chan struct{} // Close ends the loop, as destroying the database cancels the actor
+	if tx.db.ctx != nil {
+		closed = tx.db.ctx.Done()
+	}
+	var backoff time.Duration
+	attempts, next := 0, rand.IntN(max(len(servers), 1))
+	for {
+		// Endpoints reported not found never recover, so each attempt drops them first.
+		live, ok := tx.db.failMon.liveServers(servers, endpoint)
+		if !ok || len(live) == 0 {
+			return nil, tx.db.allAlternativesFailed(ctx)
+		}
+		// Excluded replicas are skipped; with none left, wait before sending (:595-641).
+		var recovered <-chan struct{}
+		if tx.db.failMon != nil {
+			recovered = tx.db.failMon.waitForRecovery() // before the check, so no recovery is missed
+		}
+		avail := tx.db.notExcluded(live)
+		if len(avail) == 0 {
+			if err := tx.db.awaitAlternative(ctx, closed, live, recovered, tx.db.altFailureDelay()); err != nil {
+				return nil, err
+			}
+			attempts = 0 // the backoff is kept (:641)
 			continue
 		}
-		rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
-		select {
-		case resp := <-replyCh:
-			cancel()
-			replyCleanup.release()
-			if resp.Err != nil {
-				tx.db.handleReadConnError(server.Address, conn, resp.Err)
-				continue
+		if backoff > 0 {
+			timer := time.NewTimer(backoff)
+			notifyParked(ctx)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-closed:
+				timer.Stop()
+				return nil, tx.db.ctx.Err()
 			}
-			return parseWaitMetricsReply(resp.Body)
-		case <-rctx.Done():
-			cancel()
-			replyHandle.Cancel()
-			replyCleanup.release()
-			continue
+		}
+		if body, ok := tx.metricsSend(ctx, avail[next%len(avail)], endpoint, build); ok {
+			return body, nil
+		}
+		next++
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if tx.db.ctx != nil && tx.db.ctx.Err() != nil {
+			return nil, tx.db.ctx.Err()
+		}
+		if attempts++; attempts >= len(live) {
+			backoff = time.Duration(math.Min(math.Max(float64(backoff)*loadBalanceBackoffRate, float64(loadBalanceStartBackoff)), float64(loadBalanceMaxBackoff)))
 		}
 	}
-	return 0, &wire.FDBError{Code: ErrAllAlternativesFailed}
+}
+
+// metricsSend sends the request to server and waits for its reply.
+func (tx *Transaction) metricsSend(ctx context.Context, server ServerInfo, endpoint int, build func(reply transport.UID) []byte) ([]byte, bool) {
+	conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
+	if err != nil {
+		tx.db.handleDialError(ctx, server.Address)
+		return nil, false
+	}
+	sendCleanup := sendGuard{permit: permit}
+	defer sendCleanup.close()
+	token := getAdjustedEndpoint(server.Token, endpoint)
+	replyToken, replyCh, replyHandle := conn.PrepareReplyTo(token)
+	replyCleanup := replyGuard{handle: replyHandle}
+	defer replyCleanup.close()
+	if err := sendReadFrame(ctx, conn, token, build(replyToken), replyHandle, permit, nil); err != nil {
+		replyHandle.Cancel()
+		replyCleanup.release()
+		tx.db.handleReadConnError(server.Address, conn, err)
+		return nil, false
+	}
+	var closed <-chan struct{}
+	if tx.db.ctx != nil {
+		closed = tx.db.ctx.Done()
+	}
+	if hook := tx.db.beforeMetricsReplyWait.Load(); hook != nil {
+		(*hook)()
+	}
+	var resp transport.Response
+	select {
+	case resp = <-replyCh:
+	case <-conn.Done():
+		if hook := tx.db.beforeMetricsDisconnectReply.Load(); hook != nil {
+			(*hook)()
+		}
+		// A published reply wins over disconnect; otherwise do not wait for
+		// pending-reply failure delivery behind a blocked socket Close.
+		select {
+		case resp = <-replyCh:
+		default:
+			replyHandle.Cancel()
+			replyCleanup.release()
+			tx.db.handleReadConnError(server.Address, conn, &transport.ConnClosedError{})
+			return nil, false
+		}
+	case <-closed:
+		replyHandle.Cancel()
+		replyCleanup.release()
+		return nil, false
+	case <-ctx.Done():
+		replyHandle.Cancel()
+		replyCleanup.release()
+		return nil, false
+	}
+	replyCleanup.release()
+	if resp.Err != nil {
+		tx.db.handleReadConnError(server.Address, conn, resp.Err)
+		return nil, false
+	}
+	// An in-band broken_promise or request_maybe_delivered is not a response:
+	// loadBalance moves on to the next replica (LoadBalance.actor.h:344-377).
+	if err := wire.ReadErrorOrInto(resp.Body, new(wire.Reader)); isMaybeDelivered(err) {
+		tx.db.noteBrokenPromise(err, server.Address, token)
+		return nil, false
+	}
+	return resp.Body, true
 }
 
 // GetRangeSplitPoints returns suggested split points for the given key range.
@@ -208,7 +363,8 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 	// shard locations overlapping [begin,end) at once (NativeAPI.actor.cpp:8153-8159).
 	const shardLimit = math.MaxInt32
 
-	for attempts := 0; attempts < MaxWrongShardRetries; attempts++ {
+	// No attempt cap: C++ loops until the transaction times out (NativeAPI.actor.cpp:8162, 8204-8208).
+	for {
 		locations, err := tx.db.locCache.locateRange(tx.db, ctx, begin, end, shardLimit, false, tx.tenantId, tx.currentSpan())
 		if err != nil {
 			return nil, fmt.Errorf("locate range for split points: %w", err)
@@ -222,10 +378,7 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 		// The result is ALWAYS framed by the range bounds, and each internal shard
 		// boundary is itself a split point — so a range spanning N shards yields the
 		// N-1 internal boundaries even when no shard has an internal chunk split.
-		result := make([][]byte, 0, len(locations)+2)
-		result = append(result, append([]byte(nil), begin...)) // push_back(keys.begin)
-		retry, opFailed := false, false
-		for i, loc := range locations {
+		shardPoints, err := collectMetricsShards(ctx, locations, func(ctx context.Context, i int, loc LocationResult) ([][]byte, error) {
 			// partBegin/partEnd per C++ :8165-8166: first shard starts at keys.begin,
 			// last ends at keys.end, interior shards use their own bounds.
 			partBegin := loc.ShardBegin
@@ -236,35 +389,30 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 			if i == len(locations)-1 || partEnd == nil || bytes.Compare(partEnd, end) > 0 {
 				partEnd = end
 			}
-			// Insert the internal shard boundary BEFORE this shard's points (C++ :8179-8182).
-			if i > 0 {
-				result = append(result, append([]byte(nil), loc.ShardBegin...))
+			return tx.sendSplitRange(ctx, partBegin, partEnd, chunkSize, loc.Servers)
+		}, tx.db.afterMetricsShardResult.Load())
+		if err != nil {
+			if isWrongShardServer(err) || isAllAlternativesFailed(err) {
+				tx.db.locCache.invalidateRange(begin, end, tx.tenantId)
+				if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
+					return nil, err
+				}
+				continue
 			}
-			points, perr := tx.sendSplitRange(ctx, partBegin, partEnd, chunkSize, loc.Servers)
-			if perr != nil {
-				if isWrongShardServer(perr) || isAllAlternativesFailed(perr) || isMaybeDelivered(perr) {
-					tx.db.locCache.invalidateRange(begin, end, tx.tenantId)
-					if serr := sleepCtx(ctx, wrongShardRetryDelay); serr != nil {
-						return nil, serr
-					}
-					retry = true
-					break
-				}
-				// operation_failed (4) = endpoint unsupported (old FDB): degrade to no
-				// split points, matching the prior graceful fallback.
-				if isOperationFailed(perr) {
-					opFailed = true
-					break
-				}
-				return nil, perr
+			// operation_failed (4) = endpoint unsupported (old FDB): keep the
+			// existing graceful fallback to no split points.
+			if isOperationFailed(err) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		result := make([][]byte, 0, len(locations)+2)
+		result = append(result, append([]byte(nil), begin...))
+		for i, points := range shardPoints {
+			if i > 0 {
+				result = append(result, append([]byte(nil), locations[i].ShardBegin...))
 			}
 			result = append(result, points...)
-		}
-		if retry {
-			continue
-		}
-		if opFailed {
-			return nil, nil
 		}
 		// C++ :8189-8191: append keys.end unless the last point already is it.
 		if !bytes.Equal(result[len(result)-1], end) {
@@ -272,54 +420,22 @@ func (tx *Transaction) getRangeSplitPointsImpl(ctx context.Context, begin, end [
 		}
 		return result, nil
 	}
-	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 }
 
 func (tx *Transaction) sendSplitRange(ctx context.Context, begin, end []byte, chunkSize int64, servers []ServerInfo) ([][]byte, error) {
-	var replyCleanup replyGuard
-	defer replyCleanup.close()
-	var sendCleanup sendGuard
-	defer sendCleanup.close()
-	for _, server := range servers {
-		conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
-		if err != nil {
-			tx.db.handleDialError(ctx, server.Address)
-			continue
-		}
-		sendCleanup.permit = permit
-		srToken := getAdjustedEndpoint(server.Token, EndpointGetRangeSplitPoints)
-		replyToken, replyCh, replyHandle := conn.PrepareReplyTo(srToken)
-		replyCleanup.handle = replyHandle
+	body, err := tx.sendMetricsRequest(ctx, servers, EndpointGetRangeSplitPoints, func(reply transport.UID) []byte {
 		req := types.SplitRangeRequest{
 			Keys:       types.KeyRangeRef{Begin: begin, End: end},
 			ChunkSize:  chunkSize,
-			Reply:      types.ReplyPromise{Token: wire.UIDFromParts(replyToken.First, replyToken.Second)},
+			Reply:      types.ReplyPromise{Token: wire.UIDFromParts(reply.First, reply.Second)},
 			TenantInfo: types.TenantInfo{TenantId: tx.tenantId},
 		}
-		if err := sendReadFrame(ctx, conn, srToken, req.MarshalFDB(), replyHandle, permit, nil); err != nil {
-			replyHandle.Cancel()
-			replyCleanup.release()
-			tx.db.handleReadConnError(server.Address, conn, err)
-			continue
-		}
-		rctx, cancel := context.WithTimeout(ctx, DefaultRPCTimeout)
-		select {
-		case resp := <-replyCh:
-			cancel()
-			replyCleanup.release()
-			if resp.Err != nil {
-				tx.db.handleReadConnError(server.Address, conn, resp.Err)
-				continue
-			}
-			return parseSplitRangeReply(resp.Body)
-		case <-rctx.Done():
-			cancel()
-			replyHandle.Cancel()
-			replyCleanup.release()
-			continue
-		}
+		return req.MarshalFDB()
+	})
+	if err != nil {
+		return nil, err
 	}
-	return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
+	return parseSplitRangeReply(body)
 }
 
 func parseSplitRangeReply(data []byte) ([][]byte, error) {

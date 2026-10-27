@@ -393,6 +393,17 @@ type database struct {
 	// beforeConnFailureMark runs in handleConnError just before it marks the address
 	// failed (test seam). Nil in production.
 	beforeConnFailureMark atomic.Pointer[func()]
+	// Test seams observe dial publication, shutdown joining and disconnect/reply races.
+	afterDialBeforePool          atomic.Pointer[func()]
+	beforeCloseJoin              atomic.Pointer[func()]
+	beforeMetricsDisconnectReply atomic.Pointer[func()]
+	beforeMetricsReplyWait       atomic.Pointer[func()]
+	afterMetricsShardResult      atomic.Pointer[func(int)]
+	// beforeAltFailureWait runs when a request starts waiting for an excluded replica (tests).
+	beforeAltFailureWait atomic.Pointer[func()]
+	// Test seams: set the delay before dispatch; observe actual-live recovery checks.
+	altFailureDelayOverride time.Duration
+	afterAltRecoveryCheck   atomic.Pointer[func(bool)]
 	// rangeReadPanics is the RFC-110 backstop shared by this database's range reads.
 	rangeReadPanics panicBackstop
 	// resolveKeyPanics is the getRange fallback resolveKey goroutines' backstop.
@@ -407,11 +418,8 @@ type database struct {
 	// timeouts delivers its transactions' TIMEOUT expiries; Close leaves it running.
 	timeouts *timeoutQueue
 	wg       sync.WaitGroup
-	// closeMu guards `closed`, the barrier that stops the lazy GRV-cache background refresher from
-	// registering a wg slot once Close() has begun. Without it, the refresher's one-shot db.wg.Add(1)
-	// (grv.go) can race Close's db.wg.Wait() at a zero counter → "sync: WaitGroup misuse: Add called
-	// concurrently with Wait" panic. Close sets closed under this lock BEFORE cancel()/Wait(); the
-	// refresher launch checks it under the same lock, so the check-and-Add is atomic w.r.t. the store.
+	// GRV refreshers enroll under closeMu; dials and connections enroll under connMu.
+	// Close seals both paths before wg.Wait, including zero-count shutdown.
 	closeMu sync.Mutex
 	closed  bool
 }
@@ -571,25 +579,31 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 		if !pb.recovered(r) {
 			return
 		}
-		db.connMu.Lock()
-		defer db.connMu.Unlock()
-		select {
-		case <-call.done:
-			return
-		default:
-		}
-		if db.dialing[addr] == call {
-			delete(db.dialing, addr)
-		}
-		if c != nil {
-			if db.connPool[addr] == c {
-				delete(db.connPool, addr)
+		closeConn := false
+		func() {
+			db.connMu.Lock()
+			defer db.connMu.Unlock()
+			select {
+			case <-call.done:
+				return
+			default:
 			}
+			if db.dialing[addr] == call {
+				delete(db.dialing, addr)
+			}
+			if c != nil {
+				if db.connPool[addr] == c {
+					delete(db.connPool, addr)
+				}
+				closeConn = true
+			}
+			call.err = fmt.Errorf("fdbgo: panic dialing %s: %v", addr, r)
+			call.sends.Seal()
+			close(call.done)
+		}()
+		if closeConn {
 			_ = c.Close()
 		}
-		call.err = fmt.Errorf("fdbgo: panic dialing %s: %v", addr, r)
-		call.sends.Seal()
-		close(call.done)
 	}()
 
 	dialCtx, cancel := context.WithTimeout(db.ctx, DefaultRPCTimeout)
@@ -598,7 +612,11 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 	dialOpts = append(dialOpts, transport.WithSendOrder(&call.sends))
 	var dialErr error
 	c, dialErr = transport.Dial(dialCtx, addr, db.tlsConfig, db.dialFn, dialOpts...)
+	if hook := db.afterDialBeforePool.Load(); hook != nil {
+		(*hook)()
+	}
 
+	discard := false
 	func() {
 		db.connMu.Lock()
 		defer db.connMu.Unlock()
@@ -610,13 +628,21 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 			// so a conn pooled now would never be reaped (leaking its read/write/monitor
 			// goroutines). Discard it and fail the call.
 			call.err = db.ctx.Err()
-			_ = c.Close()
+			discard = true
 		default:
 			c.SetEndpointNotFoundHandler(func(token transport.UID) { db.failMon.markEndpointNotFound(addr, token) })
 			db.connPool[addr] = c
 			db.lastMinDelay, db.lastMaxDelay, db.lastWaits = c.CoalesceDelay()
 			db.lastAdaptive = c.AdaptiveLinger()
 			db.hasConnLinger = true
+			// Enroll before publication, while Close's pool-drain barrier is
+			// excluded. Ownership survives eviction, leases and stale cohorts.
+			db.wg.Add(1)
+			go func(conn *transport.Conn) {
+				defer db.wg.Done()
+				<-conn.Done()
+				_ = conn.Close()
+			}(c)
 			call.conn = c
 			// Clear the failed state on a successful dial HERE — not in a caller (so a
 			// reconnect wakes failure-monitor recovery even if every caller abandoned
@@ -639,6 +665,9 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 		}
 		close(call.done) // membership and result become visible atomically under connMu
 	}()
+	if discard {
+		_ = c.Close()
+	}
 }
 
 // warmConnections pre-establishes TCP connections to all known proxies.
@@ -1202,8 +1231,8 @@ func (db *database) registerBackgroundGoroutine() bool {
 	return true
 }
 
-// Close shuts down the database connection. Idempotent.
-// Cancels background goroutines, waits for them to exit, closes all connections.
+// Close is idempotent. It joins database workers, shared dials and all connection
+// teardown, including transports already evicted from the pool.
 func (d *Database) Close() error {
 	d.db.closeOnce.Do(func() {
 		// Set closed BEFORE cancel()/Wait() so a concurrent GRV-cache opt-in can't start the background
@@ -1216,11 +1245,18 @@ func (d *Database) Close() error {
 		d.db.cancel()
 		// Native commits may be blocked in SendFrame: close their sockets before joining.
 		d.db.connMu.Lock()
+		connections := make([]*transport.Conn, 0, len(d.db.connPool))
 		for addr, conn := range d.db.connPool {
-			conn.Close()
+			connections = append(connections, conn)
 			delete(d.db.connPool, addr)
 		}
 		d.db.connMu.Unlock()
+		for _, conn := range connections {
+			conn.Close()
+		}
+		if hook := d.db.beforeCloseJoin.Load(); hook != nil {
+			(*hook)()
+		}
 		d.db.wg.Wait()
 	})
 	return nil

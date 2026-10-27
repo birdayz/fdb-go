@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"math"
 	"math/rand/v2"
 	"time"
 
@@ -49,15 +50,140 @@ func (db *database) endOther(o rpcAccount) {
 	db.queueModel.endRequest(o.addr, o.delta, readFailureLatency(o.err, o.start), false)
 }
 
+// altFailureDelay is C++'s allAlternativesFailedDelay, jittered like delayJittered
+// (flow.h:1481-1484).
+func (db *database) altFailureDelay() time.Duration {
+	if db.altFailureDelayOverride > 0 {
+		return db.altFailureDelayOverride
+	}
+	d := db.failMon.allAlternativesFailedDelay(nowSeconds())
+	return time.Duration(float64(d) * (0.9 + 0.2*rand.Float64()))
+}
+
+// awaitAlternative waits for one of its own replicas to become actually live,
+// as okFuture does; exclusion expiry only permits a probe, not a successful return.
+func (db *database) awaitAlternative(ctx context.Context, closed <-chan struct{}, servers []ServerInfo, recovered <-chan struct{}, wait time.Duration) error {
+	if hook := db.beforeAltFailureWait.Load(); hook != nil {
+		(*hook)()
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	// connectionKeeper re-probes a failed peer while it waits (FlowTransport.actor.cpp:784-797);
+	// a probe that connects marks the address alive, which ends the wait.
+	probe := time.NewTimer(db.untilReadmission(servers))
+	defer probe.Stop()
+	probeCtx, cancelProbe := context.WithCancel(ctx)
+	var probing chan struct{}
+	defer func() {
+		cancelProbe()
+		if probing != nil {
+			<-probing
+		}
+	}()
+	for {
+		notifyParked(ctx)
+		select {
+		case <-recovered:
+			// Any address's recovery signals; only these replicas end the wait.
+			recovered = db.failMon.waitForRecovery()
+			if db.hasLiveAlternative(servers) {
+				return nil
+			}
+		case <-probe.C:
+			probing = make(chan struct{})
+			go db.probeReadmitted(probeCtx, servers, probing)
+		case <-probing:
+			probing = nil
+			if db.hasLiveAlternative(servers) {
+				return nil
+			}
+			probe.Reset(db.untilReadmission(servers))
+		case <-timer.C:
+			return &wire.FDBError{Code: ErrAllAlternativesFailed}
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-closed:
+			return db.ctx.Err()
+		}
+	}
+}
+
+// untilReadmission is the time until the first of servers leaves its exclusion window.
+func (db *database) untilReadmission(servers []ServerInfo) time.Duration {
+	now, soonest := nowSeconds(), math.Inf(1)
+	for _, s := range servers {
+		soonest = math.Min(soonest, db.failMon.excludedUntil(s.Address))
+	}
+	if math.IsInf(soonest, 1) {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(math.Max(soonest-now, 0) * float64(time.Second))
+}
+
+// probeReadmitted dials the replicas whose exclusion window has ended, then closes done.
+func (db *database) probeReadmitted(ctx context.Context, servers []ServerInfo, done chan struct{}) {
+	defer close(done)
+	now := nowSeconds()
+	for _, s := range servers {
+		if db.failMon.excluded(s.Address, now) {
+			continue
+		}
+		if _, err := db.getOrDial(ctx, s.Address); err != nil {
+			db.handleDialError(ctx, s.Address)
+		}
+	}
+}
+
+// notExcluded returns the replicas the failure monitor does not exclude.
+func (db *database) notExcluded(servers []ServerInfo) []ServerInfo {
+	if db.failMon == nil {
+		return servers
+	}
+	now := nowSeconds()
+	live := make([]ServerInfo, 0, len(servers))
+	for _, s := range servers {
+		if !db.failMon.excluded(s.Address, now) {
+			live = append(live, s)
+		}
+	}
+	return live
+}
+
+// Exclusion expiry only permits a probe; recovery requires an actual live state,
+// as onStateEqual(FailureStatus(false)) does (LoadBalance.actor.h:620-626).
+func (db *database) hasLiveAlternative(servers []ServerInfo) bool {
+	live := false
+	for _, s := range servers {
+		if db.failMon == nil || !db.failMon.isFailed(s.Address) {
+			live = true
+			break
+		}
+	}
+	if hook := db.afterAltRecoveryCheck.Load(); hook != nil {
+		(*hook)(live)
+	}
+	return live
+}
+
 // allAlternativesFailed waits C++'s allAlternativesFailedDelay, jittered like
 // delayJittered (flow.h:1481-1484), before reporting all_alternatives_failed,
 // so a dead-endpoint storm cannot spin location lookups.
 func (db *database) allAlternativesFailed(ctx context.Context) error {
-	d := db.failMon.allAlternativesFailedDelay(nowSeconds())
-	if err := sleepCtx(ctx, time.Duration(float64(d)*(0.9+0.2*rand.Float64()))); err != nil {
-		return err
+	var closed <-chan struct{}
+	if db.ctx != nil {
+		closed = db.ctx.Done()
 	}
-	return &wire.FDBError{Code: ErrAllAlternativesFailed}
+	timer := time.NewTimer(db.altFailureDelay())
+	defer timer.Stop()
+	notifyParked(ctx)
+	select {
+	case <-timer.C:
+		return &wire.FDBError{Code: ErrAllAlternativesFailed}
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-closed:
+		return db.ctx.Err()
+	}
 }
 
 // isEndpointNotFound reports a reply failed by ENDPOINT_NOT_FOUND. The connection

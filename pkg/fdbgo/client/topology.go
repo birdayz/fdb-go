@@ -238,12 +238,16 @@ func (db *database) waitProxiesChanged() <-chan struct{} {
 // replacement pooled it only counts, as C++ reports only its own connection.
 func (db *database) handleConnError(addr string, failed *transport.Conn) {
 	newlyFailed := false
+	var closing *transport.Conn
 	db.connMu.Lock()
 	c := db.connPool[addr]
 	if c == nil || c == failed || c.IsClosed() {
 		if c != nil {
-			c.Close()
+			closing = c
 			delete(db.connPool, addr)
+			if call := db.dialing[addr]; call != nil && call.conn == c {
+				delete(db.dialing, addr)
+			}
 		}
 		if hook := db.beforeConnFailureMark.Load(); hook != nil {
 			(*hook)()
@@ -252,6 +256,10 @@ func (db *database) handleConnError(addr string, failed *transport.Conn) {
 		newlyFailed = db.failMon.markFailed(addr)
 	}
 	db.connMu.Unlock()
+	if closing != nil {
+		// Teardown belongs to the database, not a cancelled RPC worker's join.
+		go closing.Close() // TLS close_notify can block for seconds
+	}
 	db.reportConnFailure(addr, newlyFailed)
 }
 

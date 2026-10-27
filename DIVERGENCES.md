@@ -1283,8 +1283,9 @@ whose statement was cancelled for the second reason.
 
 Go compares `GROUP BY amount = ?, amount = ?` by the bound values: equal values
 are one key twice (42702), distinct values two keys, grouped by Go's streaming
-aggregation. Java's answer is not measured: the JVM probe runner binds no
-parameters. Reading Java, its `MutablePlanGenerationContext` folds equal
+aggregation. Java's answer is not measured yet; the existing `runPreparedExtended`
+and `runPreparedSequence` JVM probe steps can bind the values needed for that
+comparison (tracked in TODO.md). Reading Java, its `MutablePlanGenerationContext` folds equal
 parameter values into one constant (42702) and its planner declines a GROUP BY
 without an aggregate index for distinct ones. Both plan caches hold such a plan
 only for the values it was planned with (Go pins them).
@@ -3223,6 +3224,11 @@ for each invocation (`pkg/fdbgo/client/readpath.go:664-682`):
   **the eleventh reply timeout** returns synthesized **1007**, not the tenth
   (`readpath.go:33-40`, `:755-771`). The internal `errReplyTimeout` comes from
   the RPC reply timer, not a caller cancellation (`pkg/fdbgo/client/rpc.go:53-71`).
+
+The positive-skip mapped selector loops (`mappedrange_selectors.go`) apply the same
+reply-timeout cap (RFC-280). Storage metrics (`GetEstimatedRangeSizeBytes`,
+`GetRangeSplitPoints`) have neither cap nor reply timeout, as in C++: without a tenant
+they read at the latest version, so no aged version ends them (RFC-280).
 
 These caps apply if no caller deadline/cancellation or configured transaction
 timeout ends the read first. They do not prove the server rejected an aged read

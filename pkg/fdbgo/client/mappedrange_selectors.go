@@ -118,6 +118,7 @@ func (tx *Transaction) getMappedRangeSelectors(ctx context.Context, begin, end K
 	tx.hadRead.Store(true)
 	var tags readTagSample
 	redraw := true
+	timeoutRetries := 0
 	for {
 		if bytes.Compare(begin.Key, end.Key) >= 0 {
 			return output, nil
@@ -152,6 +153,10 @@ func (tx *Transaction) getMappedRangeSelectors(ctx context.Context, begin, end K
 				continue
 			}
 			if isReplyTimeout(err) {
+				// Bounded as the other reads' re-sends are.
+				if timeoutRetries++; timeoutRetries > maxReadTimeoutRetries {
+					return mappedRangeResult{}, &wire.FDBError{Code: ErrTransactionTooOld}
+				}
 				if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
 					return mappedRangeResult{}, err
 				}
@@ -234,6 +239,7 @@ func (tx *Transaction) getMappedRangeSelectorExact(ctx context.Context, begin, e
 	var materializedBytes int64
 	var tags readTagSample
 	redraw := true
+	timeoutRetries := 0
 	for {
 		locations, err := tx.mappedExactLocations(ctx, begin, end, reverse)
 		if err != nil {
@@ -263,6 +269,10 @@ func (tx *Transaction) getMappedRangeSelectorExact(ctx context.Context, begin, e
 					break
 				}
 				if isReplyTimeout(err) {
+					// Bounded as the other reads' re-sends are.
+					if timeoutRetries++; timeoutRetries > maxReadTimeoutRetries {
+						return mappedRangeResult{}, &wire.FDBError{Code: ErrTransactionTooOld}
+					}
 					if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
 						return mappedRangeResult{}, err
 					}
