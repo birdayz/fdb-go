@@ -1,9 +1,8 @@
-"""Exclusive FDB cgroup CPU envelopes, never host CPU plus process CPU.
+"""Observed exclusive FDB cgroup accounting deltas, not execution-window CPU.
 
-M1 uses the reviewed fence overlay's exact measured quota window. M2 has only
-lifecycle windows including startup, warmup, audits and shutdown. Both include
-clock uncertainty, sample-read brackets and microsecond counter quantization;
-no uniform-within-sample interpolation or proc-tick fallback is assumed.
+M1 client fences and M2 lifecycle timestamps select actual sample-read brackets.
+Kernel scheduler publication debt is unquantified: accounted runtime can originate
+outside those brackets. No execution bounds, CPU/op, rates or proc fallback.
 """
 from decimal import Decimal, ROUND_CEILING
 import datetime as dt
@@ -172,7 +171,7 @@ def validate_node(start, stop, samples, node, phase, units, max_gap_ns=2 * 10**9
                 coverage_start_ns=samples[0]['realtime_after_ns'], coverage_end_ns=samples[-1]['realtime_ns'])
 
 
-def estimate_run(run, nodes, measured_window=None):
+def observe_run(run, nodes, measured_window=None):
     lifecycle_start, lifecycle_end = utc_ns(run['start_utc']), utc_ns(run['end_utc'])
     start, end = measured_window if measured_window is not None else (lifecycle_start, lifecycle_end)
     need(lifecycle_start <= start < end <= lifecycle_end and set(run['nodes']) == set(NODES),
@@ -200,29 +199,26 @@ def estimate_run(run, nodes, measured_window=None):
         need(outer, 'empty CPU interval population')
         if measured_window is not None:
             need(len(inner) >= 10 and 5 * (outer[-1]['end_ns'] - outer[0]['start_ns']) <= 6 * (end - start),
-                 'measured CPU resolution unqualified: need ten inner intervals and <=20% time-envelope excess')
+                 'accounting temporal resolution unqualified: need ten inner intervals and <=20% sample-bracket excess')
         usage = sum(iv['usage_usec'] for iv in outer)
-        # usage_usec is one floored cumulative counter per exclusive group.
-        # Its telescoping endpoint difference has <1us quantization/group.
-        quantum = data['units']
-        lower = max(0, sum(iv['usage_usec'] for iv in inner) - quantum) / 1e6 if inner else 0.0
-        upper = (usage + quantum) / 1e6
-        wall = (outer[-1]['end_ns'] - outer[0]['start_ns']) / 10**9
-        result[node] = dict(lower_cpu_seconds=lower, upper_cpu_seconds=upper,
-                            bracket_cpu_seconds=usage / 1e6, bracket_wall_seconds=wall,
-                            bracket_user_cpu_seconds=(sum(iv['user_usec'] for iv in outer) / 1e6
-                                                      if all(iv['user_usec'] is not None for iv in outer) else None),
-                            bracket_system_cpu_seconds=(sum(iv['system_usec'] for iv in outer) / 1e6
-                                                        if all(iv['system_usec'] is not None for iv in outer) else None),
-                            bracket_cores=(usage / 1e6) / wall,
+        # These are observed published-counter differences, not runtime assigned
+        # to this bracket: scheduler publication debt has no qualified bound.
+        result[node] = dict(observed_accounted_cpu_usec=usage, observed_accounted_cpu_seconds=usage / 1e6,
+                            sample_bracket_started_unix_ns=outer[0]['start_ns'],
+                            sample_bracket_ended_unix_ns=outer[-1]['end_ns'],
+                            sample_bracket_wall_ns=outer[-1]['end_ns'] - outer[0]['start_ns'],
+                            observed_accounted_user_cpu_seconds=(sum(iv['user_usec'] for iv in outer) / 1e6
+                                                                if all(iv['user_usec'] is not None for iv in outer) else None),
+                            observed_accounted_system_cpu_seconds=(sum(iv['system_usec'] for iv in outer) / 1e6
+                                                                  if all(iv['system_usec'] is not None for iv in outer) else None),
                             sample_sequence=[outer[0]['seq'][0], outer[-1]['seq'][1]],
-                            inner_intervals=len(inner), outer_intervals=len(outer),
-                            clock_bound_ns=u, phase_correlation_range_ns=data['correlation_range_ns'],
+                            inner_intervals=len(inner), observed_intervals=len(outer),
+                            temporal_selection_allowance_ns=u, phase_correlation_range_ns=data['correlation_range_ns'],
                             processes=data['units'])
-    return dict(nodes=result, lower_cpu_seconds=sum(v['lower_cpu_seconds'] for v in result.values()),
-                upper_cpu_seconds=sum(v['upper_cpu_seconds'] for v in result.values()),
-                bracket_cpu_seconds=sum(v['bracket_cpu_seconds'] for v in result.values()),
-                bracket_cores=sum(v['bracket_cores'] for v in result.values()),
-                scope=('17 exclusive FDB unit cgroups usage_usec only; measured quota UTC fences with clock/sample CPU bounds'
-                       if measured_window is not None else
-                       '17 exclusive FDB unit cgroups usage_usec only; lifecycle UTC window with clock/sample envelopes; not measured-window CPU/op'))
+    total = sum(value['observed_accounted_cpu_usec'] for value in result.values())
+    return dict(nodes=result, observed_accounted_cpu_usec=total, observed_accounted_cpu_seconds=total / 1e6,
+                actual_window_cpu_available=False,
+                requested_window_started_unix_ns=start, requested_window_ended_unix_ns=end,
+                window_kind='measured-client-UTC-fences' if measured_window is not None else 'process-lifecycle-UTC',
+                scope='17 exclusive FDB unit cgroup published usage_usec deltas over three node-specific sample-read brackets; '
+                      'scheduler accounting debt is unquantified and runtime may originate outside the brackets')

@@ -1,16 +1,18 @@
 # RFC-282 four-machine repeat: measurement extensions
 
 Preparation/tooling only. These files do not authorize provisioning or launch a
-campaign. No historical publication, frozen workload, quota, arm order, CPU gate,
-placement control or R4 omission rule is changed. The main campaign is the full
-prior matrix: seven M1 workloads at workers1/8/32/64 (28cases,504processes), plus
+campaign. No historical publication, frozen workload, quota, arm order, original
+R3/R4 safety gate, placement control or R4 omission rule is changed. The main
+campaign is the full prior matrix: seven M1 workloads at workers1/8/32/64 (28cases,504processes), plus
 M2rl12cases and M2skip4cases (192processes/576testing.B repeats). Optional linger
 is a separate preregistered phase, never a substitute for primary cases.
 
 The old campaign exporters contain historical population assertions and skip
 w32. `export_results.py` instead validates the exact44-case protocol and joins
 **every** case to full-phase R4 and the canonical frozen adapter's analysis.
-It emits only clean whole-case estimates; contaminated/unverifiable cases stay
+It emits clean whole-case latency/throughput/client estimates and separate
+observed cgroup-accounting deltas under `fdbmn-rfc282-public-results/v2`, not
+actual-window server CPU estimates. Contaminated/unverifiable cases stay
 visible with public-safe reason categories and SHA256 identities. Exact diagnostics
 stay in the hash-pinned private R4 report; addresses, paths and resource names are
 never copied into public coverage. Missing phases fail rather than inherit October's
@@ -36,6 +38,8 @@ The new protocol must preregister `measurement_extensions` with:
 
 - `throughput_preregistered: true`;
 - `server_cpu_source: exclusive-cgroup-v2-usage-usec`;
+- `server_cpu_metric: observed-cgroup-accounting-delta`;
+- `server_cpu_actual_window_available: false`;
 - `process_cpu_interval_ns: 10000000` (100Hz);
 - `process_cpu_min_inner_intervals: 10`;
 - `process_cpu_max_time_envelope_ratio: 1.2`;
@@ -47,7 +51,7 @@ new protocol or launch configuration is supplied here. Source receipts retain
 both amendment hashes and the resulting complete harness archive hash. New
 results must not claim the prior archive hash names the fence-amended bytes.
 
-## Process CPU: separate original R4 safety and fine-grained accounting
+## Observed cgroup accounting: separate from original R4 safety
 
 Keep original R3 **1Hz** sampling and unchanged R4 safety windows/gates. A second
 instance of the reviewed `node_sampler.py`, pinned to housekeeping CPUs0–1,
@@ -57,73 +61,99 @@ with repeated `--unit` (seven units on node1, five each on node2/3); cgroup mode
 refuses implicit/discovered or duplicate units. It adds observation only, no status
 polling in per-operation paths. All17 campaign `fdbserver` MainPIDs, their starttimes and
 `/proc/PID/stat` user/system ticks are retained. The base1Hz sampler also retains
-these fields additively using the reads it already made. Only utime+stime count;
-child CPU, other host processes, host `/proc/stat` busy time, guest duplication
-and the sampler's own process are **not** added to server-process CPU.
+these fields additively using the reads it already made. Proc diagnostics retain
+utime+stime, not child CPU. Neither proc ticks, other host processes, host
+`/proc/stat` busy time, guest duplication nor the sampler's own process is added
+to the observed server cgroup-accounting deltas.
 
 Both start/stop receipts include real positive `SC_CLK_TCK` for diagnostics,
-bootID, exact unit population/PIDs and chrony tracking. The preferred measurement
+bootID, exact unit population/PIDs and chrony tracking. The authorized accounting
 source is cgroup-v2 `cpu.stat usage_usec` for exactly17 private systemd FDB unit
 cgroups. Require canonical `/sys/fs/cgroup/system.slice/fdb-bench-PORT.service`
 ControlGroup paths, cgroup-v2 evidence, unique device/inode identity, no subgroups,
 `cgroup.procs` exactly MainPID and `cgroup.threads` exactly its FDB thread IDs from
 `/proc/MainPID/task`. Membership and directory identity must remain identical in
 every sample and start/stop receipt. A helper/foreign task, group recreation,
-restart, unsupported cgroups or missing/reset usage counter **blocks this CPU
-claim**, not permission to substitute coarse proc ticks. User/system microsecond
-components are retained if both available, never fabricated as zero.
+restart, unsupported cgroups or missing/reset usage counter **blocks this
+accounting observation**, not permission to substitute coarse proc ticks.
+User/system microsecond components are retained if both available, never
+fabricated as zero.
 
 The sidecar's stop receipt hashes all sample bytes. Every source/receipt/sample/
 parser must be pinned in the campaign input manifest. Main PID/starttime/boot/HZ
-change, missing process/counter, malformed sample, negative execution delta,
+change, missing process/counter, malformed sample, negative accounted-counter delta,
 gap>20ms, adjacent clock step>1ms, phase-wide range of
-`realtime_ns-monotonic_ns`>1ms or overlapping sample read brackets disqualifies CPU
-for the phase. This phase-wide check also rejects accumulated sub-millisecond
-steps; individually small adjacent changes are not proof of clock stability. No missing counter becomes zero.
+`realtime_ns-monotonic_ns`>1ms or overlapping sample read brackets disqualifies
+accounting observations for the phase. This phase-wide check also rejects
+accumulated sub-millisecond steps; individually small adjacent changes are not
+proof of clock stability. No missing counter becomes zero.
 Original R4 failures continue to exclude the whole case from all comparisons.
-A CPU-specific failure is visible as `CPU-unqualified`; it does not rewrite R4.
+A CPU-specific failure is visible as `CPU-unavailable`; it does not rewrite R4.
 
 M1's fence overlay serializes **the exact original start/end time.Time values**
 that define monotonic `measured_wall_ns`. UTC/UnixNS and monotonic differences
-must agree within1us (a clock-step/correlation qualification check, not a new
-throughput denominator); measured UTC fences must lie inside R4's lifecycle run.
-All quotas, fixture/warmup exclusions and worker finishing tails stay unchanged.
-M2 testing.B has no such fences: report its server and GNU-time client CPU over
-explicitly **lifecycle** windows including fixtures/calibration/audits/shutdown.
-Never label M2 CPU steady-state CPU/op or its ns/op mean as p50/p99.
+must agree within1us (a temporal clock-step/correlation check, not a CPU-accuracy
+bound or a new throughput denominator); measured UTC fences must lie inside R4's
+lifecycle run. All quotas, fixture/warmup exclusions and worker finishing tails
+stay unchanged. These fences select accounting observations; they do not turn
+accounted counters into actual-window execution measurements.
+M2 testing.B has no such fences: select server accounting samples around explicitly
+**lifecycle** windows including fixtures/calibration/audits/shutdown. GNU-time
+client CPU retains its existing lifecycle scope. Never label M2 CPU steady-state
+CPU/op or its ns/op mean as p50/p99.
 
-The accounting clock bound is the sum of client/server chrony root distances
-`abs(offset)+dispersion+delay/2`, taking the maximum over the phase receipts and
-sidecar receipts, plus an explicit2ms correlation reserve (1ms per clock), then
+The temporal sample-selection tolerance is the sum of client/server chrony root
+distances `abs(offset)+dispersion+delay/2`, taking the maximum over the phase and
+sidecar receipts, plus the existing2ms correlation reserve (1ms per clock), then
 1ns timestamp quantum for exact M1 fences or1ms lifecycle timestamp allowance
 for M2. The server phase-wide correlation guard and client's measured UTC versus
-monotonic wall check remain required. The envelope assumes at most the reserved
-1ms additional error per clock beyond phase chrony bounds; it is not a claim to
-observe arbitrary unsampled client clock changes or repair clock steps. Original R4 still uses its larger
-`+1.001s` safety reserve. Do **not** shrink R4. CPU accounting does not add that
-one-second sampler-granularity reserve again: it explicitly bounds each actual
-read interval `[realtime_before_i,realtime_after_(i+1)]`.
+monotonic wall check remain required. These checks do not observe arbitrary
+unsampled client clock changes or repair clock steps. Original R4 still uses its
+larger `+1.001s` safety reserve. Do **not** shrink R4. The separate accounting
+selection retains each node's actual counter-read brackets; its inner/outer
+windows describe temporal eligibility only, not physical CPU bounds.
 
-For each exclusive unit/node, CPU seconds are cumulative `usage_usec` differences
-/1e6. Proc user/system ticks are diagnostics only and NEVER added to these totals
-or used as fallback. Report actual sampled-bracket CPU seconds, bracket wall
-seconds and cores, plus lower/upper measured-window CPU bounds. Lower includes only
-intervals wholly inside the clock-uncertainty inner window; upper includes every
-interval touching the outer window. Both account for endpoint quantization
-(one microsecond per exclusive cgroup endpoint difference). No uniform within-interval interpolation,
-background subtraction or guessed server completion fence is used. Sum disjoint
-process populations across nodes once; preserve per-node values. The upper/lower
-numbers are accounting envelopes, not confidence intervals or proofs all
-asynchronous server work for an operation falls inside its client window.
+`cpu.stat usage_usec` exposes scheduler-accounted cumulative runtime. Reading or
+flushing it does not force pending runtime of running threads to be accounted.
+The accounting debt at each endpoint is unquantified: a delta observed between
+two reads can include runtime originating before the bracket and can omit runtime
+executed inside it. Microsecond formatting is not a freshness or execution-error
+bound. **Actual-window server CPU is unavailable.** No kernel/perf source,
+`/proc/stat` forcing or process-clock substitution is introduced.
 
-For M1, require at least10 complete inner sample intervals and sampled outer
-bracket wall<=1.2×measured wall. A subsecond window with inadequate resolution
-is **CPU-unqualified**, never interpolated or made longer after results. Whole
-case CPU output is withheld when any compared arm/block fails. Latency and
-throughput remain visible if original R4 permits; CPU coverage explicitly marks
-the missing measurement. Do not compute a six-block CPU ratio from only surviving
-processes. A longer-quota CPU-specific ancillary phase needs a separate protocol;
-it must not change this repeat's quotas or consume primary completion reserves.
+For each exclusive unit, retain the difference between the selected cumulative
+`usage_usec` observations. Sum disjoint unit populations within each node and
+across the fleet exactly once. Report `observed_accounted_cpu_usec` and
+`observed_accounted_cpu_seconds` (microseconds /1e6), retaining per-node values
+and each node's actual selected sample brackets. Fleet totals sum those observed
+node deltas; differing node brackets are not one common execution window. Proc
+user/system ticks remain raw diagnostics only, NEVER additions or fallback.
+Do not attribute these deltas to execution inside a client or sampled window,
+publish actual-CPU lower/upper bounds, CPU/op, cores or server-CPU ratio confidence
+intervals, interpolate, subtract an idle/baseline delta, or invent a server
+completion fence. Client latency/throughput and existing client CPU accounting
+remain separate metrics with their existing scopes.
+
+For M1, still require at least10 complete inner sample intervals and sampled outer
+bracket wall<=1.2×measured wall. These are **temporal-selection guards only**, not
+physical CPU bounds or proof of counter freshness. An inadequately covered window
+is **CPU-unavailable**, never interpolated or made longer after results. Missing,
+malformed or unverifiable accounting evidence in any compared arm/block makes the
+**whole case** CPU-unavailable; do not publish partial-arm or surviving-block CPU
+comparisons. Latency/throughput remain visible if original R4 permits. Any separate
+ancillary phase needs its own protocol and cannot consume primary reserves.
+
+Public output uses `server_cgroup_accounting`. Available observation rows have
+`status: observed`, per-node and fleet `observed_accounted_cpu_usec` /
+`observed_accounted_cpu_seconds`, and `actual_window_cpu_available: false`.
+Unavailable cases retain explicit coverage/reasons rather than zero deltas or
+partial arms. The protocol must seal both
+`server_cpu_metric: observed-cgroup-accounting-delta` and
+`server_cpu_actual_window_available: false`
+alongside every existing source/policy field; missing or conflicting semantics
+must refuse rather than inherit the superseded bounds policy. Exact field names,
+units, closed accounting schemas and a synthetic section fixture are pinned in
+[the v2 JSON contract](JSON-CONTRACT.md).
 
 ## Controller lifecycle
 
@@ -135,9 +165,9 @@ server CPU module and both imported ops60 modules in the acknowledged manifest.
 The original controller hash and the extension's separate pin receipt together
 name the executed source; neither is a substitute for the other.
 
-Preflight rejects an unsealed cgroup source/policy, missing helper pins, reused
-CPU unit/cgroup or existing CPU output directory. All three bounded sidecar
-intents are persisted before first dispatch. Each sidecar has its own exact
+Preflight rejects an unsealed cgroup source/observed-metric policy, missing
+helper pins, reused CPU unit/cgroup or existing CPU output directory. All three
+bounded sidecar intents are persisted before first dispatch. Each sidecar has its own exact
 systemd unit, CPUAffinity0–1, control-group kill mode and RuntimeMaxSec equal to
 phase cap+900s; all three start receipts must match the original R3 MainPIDs and
 be active before any measured runner starts. Recheck lifetime after readiness.
@@ -161,9 +191,11 @@ Before arm timing on dedicated hosts, capture idle sampler-off/on controls with
 identical layout, CPUs and clocks. Verify100Hz gap/read latency, housekeeping CPU,
 all17 exclusive cgroup/PID/thread populations, no FDB-core interference/recovery/
 role change and all original quiescence/steal/health gates. Run a controlled FDB
-unit CPU-accounting positive/idle control and verify `usage_usec` units/monotonic
-accounting against independently observed user+system activity; retain off/on
-sampler overhead and membership proofs before arm timing. Retain control commands/pins/raw counters
+unit accounting positive/idle control to check `usage_usec` units, monotonic
+counter behavior and qualitative response to independently observed user+system
+activity. This is not a freshness, actual-window attribution or execution-bound
+proof; idle observations are not subtracted. Retain off/on sampler overhead and
+membership proofs before arm timing. Retain control commands/pins/raw counters
 and sampler overhead. Failure is a qualification blocker: stop/report/teardown,
 not permission to relax gates, lengthen primary quotas or tune a favourable rate.
 Parser/unit controls run locally first; actual hardware overhead qualification

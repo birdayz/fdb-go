@@ -204,8 +204,8 @@ def cpu_rows(inputs, phase, report, layout, processes, parser):
             data['clock_bound_s'] = client_bound + max(bounds)
             need(set(report['nodes'][node]['units']) == units[node], 'R4/sidecar unit population differs')
             nodes[node] = data
-    except (KeyError, ValueError, TypeError, AttributeError, OSError, InvalidOperation) as error:
-        return [dict(phase=phase, case=c['case'], status='CPU-unqualified', reason=cpu_failure(error))
+    except (KeyError, ValueError, TypeError, AttributeError, OverflowError, OSError, InvalidOperation) as error:
+        return [dict(phase=phase, case=c['case'], status='CPU-unavailable', actual_window_cpu_available=False, reason=cpu_failure(error))
                 for c in report['cases'] if c['verdict'] == 'clean']
     output = []
     by_run = {r.get('run_id', r.get('source_run_id')): r for r in processes if r['phase'] == phase}
@@ -225,14 +225,11 @@ def cpu_rows(inputs, phase, report, layout, processes, parser):
                     window = measured_window(raw)
                 else:
                     window = None
-                cpu = server_cpu.estimate_run(run, nodes, window)
-                if window is not None:
-                    ops = server_cpu.integer(row['measured_ops'], 'completed measured operations', 1)
-                    cpu.update(lower_cpu_ns_per_op=cpu['lower_cpu_seconds'] * 1e9 / ops,
-                               upper_cpu_ns_per_op=cpu['upper_cpu_seconds'] * 1e9 / ops)
-                case_rows.append(dict(phase=phase, case=case['case'], arm=row['arm'], block=row['block'], status='qualified', **cpu))
-        except (KeyError, ValueError, TypeError, AttributeError, OSError, InvalidOperation) as error:
-            output.append(dict(phase=phase, case=case['case'], status='CPU-unqualified', reason=cpu_failure(error)))
+                observation = server_cpu.observe_run(run, nodes, window)
+                case_rows.append(dict(phase=phase, case=case['case'], arm=row['arm'], block=row['block'],
+                                      status='observed', **observation))
+        except (KeyError, ValueError, TypeError, AttributeError, OverflowError, OSError, InvalidOperation) as error:
+            output.append(dict(phase=phase, case=case['case'], status='CPU-unavailable', actual_window_cpu_available=False, reason=cpu_failure(error)))
             continue  # whole case: never publish just the surviving arms
         output.extend(case_rows)
     return output
@@ -259,6 +256,8 @@ def export(inputs, analysis, bootstrap, paired_gm, parser):
     need(set(runtime_hashes) == {'client', *server_cpu.NODES}, 'missing canonical runtime population')
     extension = protocol['measurement_extensions']
     need(extension['throughput_preregistered'] is True and extension['server_cpu_source'] == 'exclusive-cgroup-v2-usage-usec'
+         and extension.get('server_cpu_metric') == 'observed-cgroup-accounting-delta'
+         and extension.get('server_cpu_actual_window_available') is False
          and extension['process_cpu_interval_ns'] == 10_000_000
          and extension['process_cpu_min_inner_intervals'] == 10 and extension['process_cpu_max_time_envelope_ratio'] == 1.2
          and extension['process_cpu_clock_reserve_ns'] == server_cpu.CLOCK_RESERVE_NS
@@ -293,9 +292,9 @@ def export(inputs, analysis, bootstrap, paired_gm, parser):
                 m2_metrics.append(dict(phase=phase, **{k: r[k] for k in
                     ('case', 'metric', 'numerator', 'denominator', 'gm', 'nominal_95_interval', 'blocks', 'status') if k in r}))
     inputs.verify_all()
-    return dict(format='fdbmn-rfc282-public-results/v1', performance_results_available=coverage['clean'] > 0,
+    return dict(format='fdbmn-rfc282-public-results/v2', performance_results_available=coverage['clean'] > 0,
                 coverage=coverage, M1=m1, M1_comparisons=comparisons,
-                M2=m2, M2_absolutes=m2_absolutes, M2_comparisons=m2_metrics, server_process_cpu=cpu,
+                M2=m2, M2_absolutes=m2_absolutes, M2_comparisons=m2_metrics, server_cgroup_accounting=cpu,
                 method=dict(production_revisions=source['production_revisions'], harness_commit=source['harness_commit'],
                     compiler_sha256=source['compiler_sha256'], runtime_binary_sha256=runtime_hashes,
                     runtime={k: protocol['runtime'][k] for k in ('go', 'bazel', 'bazelisk', 'foundationdb', 'api',
@@ -303,7 +302,11 @@ def export(inputs, analysis, bootstrap, paired_gm, parser):
                     harness_amendment={k: source['harness_compatibility'][k] for k in ('upstream_commit', 'archive_sha256', 'patch_sha256')},
                     absolute_estimand='median of run-level statistics; M2 median of process repeat means; never pooled percentiles',
                     preregistered=True, bootstrap_seed=SEED, resamples=RESAMPLES, paired_blocks=6,
-                    M2=m2_method, server_cpu='exclusive cgroup-v2 usage_usec bounds only; never add host/proc diagnostics; measured M1 and lifecycle M2',
+                    M2=m2_method, server_cpu=dict(metric='observed-cgroup-accounting-delta',
+                        source='exclusive-cgroup-v2-usage-usec', actual_window_cpu_available=False,
+                        scheduler_accounting_debt='unquantified; runtime may originate outside sample-read brackets',
+                        fleet_aggregation='sum of observed deltas over three node-specific brackets',
+                        execution_attribution='unavailable; no actual-window CPU, bounds, CPU/op, rates or server ratio confidence intervals'),
                     native_heap='not measured by Go allocation counters', inference='nominal exploratory intervals; no equivalence/capacity claim'))
 
 

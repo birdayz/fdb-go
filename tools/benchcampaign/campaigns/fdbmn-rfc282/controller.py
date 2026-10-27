@@ -57,6 +57,8 @@ class Controller(legacy.Controller):
         protocol = self.read_json('client', self.a.protocol)
         policy = protocol['measurement_extensions']
         legacy.need(policy['server_cpu_source'] == 'exclusive-cgroup-v2-usage-usec'
+                    and policy.get('server_cpu_metric') == 'observed-cgroup-accounting-delta'
+                    and policy.get('server_cpu_actual_window_available') is False
                     and policy['process_cpu_interval_ns'] == 10_000_000
                     and policy['process_cpu_min_inner_intervals'] == 10
                     and policy['process_cpu_max_time_envelope_ratio'] == 1.2

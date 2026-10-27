@@ -1,5 +1,7 @@
 import copy
 from decimal import Decimal
+import json
+from pathlib import Path
 import unittest
 
 import server_cpu as cpu
@@ -41,18 +43,90 @@ def fixture():
 
 
 class Tests(unittest.TestCase):
-    def test_known_seventeen_process_seconds_and_quantized_bounds_not_host_cpu(self):
+    def test_known_seventeen_group_accounting_deltas_not_execution_bounds(self):
         _, _, _, nodes, run = fixture()
-        result = cpu.estimate_run(run, nodes, (1_200_000_000, 1_400_000_000))
-        # Seventeen processes each accrue 1 tick every10ms at HZ100:17cores.
-        self.assertAlmostEqual(result['bracket_cores'], 17)
-        self.assertAlmostEqual(result['bracket_cpu_seconds'], 3.74)
-        self.assertAlmostEqual(result['lower_cpu_seconds'], 3.059983)
-        self.assertAlmostEqual(result['upper_cpu_seconds'], 3.740017)
+        result = cpu.observe_run(run, nodes, (1_200_000_000, 1_400_000_000))
+        self.assertEqual(result['observed_accounted_cpu_usec'], 3_740_000)
+        self.assertAlmostEqual(result['observed_accounted_cpu_seconds'], 3.74)
         self.assertEqual([result['nodes'][n]['processes'] for n in cpu.NODES], [7, 5, 5])
-        self.assertTrue(result['lower_cpu_seconds'] <= 3.4 <= result['upper_cpu_seconds'])
-        self.assertIn('measured quota', result['scope'])
-        self.assertEqual(result['nodes']['node1']['clock_bound_ns'], 2_000_001)
+        self.assertFalse(result['actual_window_cpu_available'])
+        self.assertEqual(result['window_kind'], 'measured-client-UTC-fences')
+        self.assertEqual((result['requested_window_started_unix_ns'], result['requested_window_ended_unix_ns']),
+                         (1_200_000_000, 1_400_000_000))
+        self.assertIn('scheduler accounting debt is unquantified', result['scope'])
+        self.assertEqual(result['nodes']['node1']['temporal_selection_allowance_ns'], 2_000_001)
+        for value in result['nodes'].values():
+            self.assertEqual((value['sample_bracket_started_unix_ns'], value['sample_bracket_ended_unix_ns'],
+                              value['sample_bracket_wall_ns']), (1_190_000_000, 1_410_000_000, 220_000_000))
+            self.assertEqual(value['observed_accounted_cpu_usec'] / 1e6, value['observed_accounted_cpu_seconds'])
+        for value in [result, *result['nodes'].values()]:
+            self.assertTrue(set(value).isdisjoint({'lower_cpu_seconds', 'upper_cpu_seconds', 'bracket_cores',
+                                                   'lower_cpu_ns_per_op', 'upper_cpu_ns_per_op', 'ratio',
+                                                   'ci95_low', 'ci95_high', 'cpu_util_cores'}))
+
+    def test_frozen_section_example_matches_emitted_observation_and_closed_schema_fields(self):
+        folder = Path(__file__).resolve().parent
+        example = json.loads((folder / 'accounting-example.json').read_text())
+        schema = json.loads((folder / 'accounting-contract.schema.json').read_text())
+        _, _, _, nodes, run = fixture()
+        observed = dict(phase='M1w1', case='grv', arm='before', block=0, status='observed',
+                        **cpu.observe_run(run, nodes, (1_200_000_000, 1_400_000_000)))
+        self.assertEqual(example['format'], 'fdbmn-rfc282-public-results/v2')
+        self.assertEqual(schema['properties']['format']['const'], example['format'])
+        self.assertEqual(example['server_cgroup_accounting'][0], observed)
+        for name, value in [('observed', observed), ('unavailable', example['server_cgroup_accounting'][1]),
+                            ('method', example['method']['server_cpu']),
+                            *[('node', node) for node in observed['nodes'].values()]]:
+            definition = schema['$defs'][name]
+            self.assertFalse(definition['additionalProperties'])
+            self.assertEqual(set(definition['required']), set(value))
+            self.assertEqual(set(definition['properties']), set(value))
+
+    def test_delayed_scheduler_publication_is_observation_not_execution_attribution(self):
+        _, units, telemetry, _, run = fixture()
+        nodes = {}
+        for node, (start, stop, samples) in telemetry.items():
+            charged_unit = sorted(units[node])[0]
+            for sample in samples:
+                for unit, group in sample['cgroup_cpu'].items():
+                    charge = 9000 if node == 'node1' and unit == charged_unit and sample['seq'] >= 41 else 0
+                    group.update(usage_usec=charge, user_usec=charge, system_usec=0)
+            nodes[node] = cpu.validate_node(start, stop, samples, node, 'M1w1', units[node])
+        # F6's schedule runs1.3966..1.4056 but publishes9ms at1.41. The
+        # earlier window sees0; a later window sees9ms of delayed accounting.
+        earlier = cpu.observe_run(run, nodes, (1_200_000_000, 1_397_999_000))
+        later = cpu.observe_run(run, nodes, (1_407_000_000, 1_607_000_000))
+        self.assertEqual(earlier['observed_accounted_cpu_usec'], 0)
+        self.assertEqual(later['observed_accounted_cpu_usec'], 9000)
+        self.assertEqual(earlier['nodes']['node1']['sample_sequence'], [19, 40])
+        for result in (earlier, later):
+            self.assertFalse(result['actual_window_cpu_available'])
+            for value in [result, *result['nodes'].values()]:
+                self.assertNotIn('lower_cpu_seconds', value)
+                self.assertNotIn('upper_cpu_seconds', value)
+                self.assertNotIn('bracket_cores', value)
+                self.assertNotIn('lower_cpu_ns_per_op', value)
+
+    def test_fleet_sums_deltas_over_distinct_node_sample_brackets_without_common_wall(self):
+        _, units, telemetry, _, run = fixture()
+        nodes = {}
+        for (node, (start, stop, samples)), shift in zip(telemetry.items(), (0, 3_000_000, 7_000_000)):
+            for sample in samples:
+                for field in ('realtime_ns', 'realtime_after_ns', 'monotonic_ns'): sample[field] += shift
+            nodes[node] = cpu.validate_node(start, stop, samples, node, 'M1w1', units[node])
+        result = cpu.observe_run(run, nodes, (1_200_000_000, 1_400_000_000))
+        self.assertEqual(result['observed_accounted_cpu_usec'], 3_640_000)
+        expected = {'node1': (1_540_000, 1_190_000_000, 1_410_000_000),
+                    'node2': (1_050_000, 1_193_000_000, 1_403_000_000),
+                    'node3': (1_050_000, 1_197_000_000, 1_407_000_000)}
+        for node, (usage, start, end) in expected.items():
+            value = result['nodes'][node]
+            self.assertEqual((value['observed_accounted_cpu_usec'], value['sample_bracket_started_unix_ns'],
+                              value['sample_bracket_ended_unix_ns'], value['sample_bracket_wall_ns']),
+                             (usage, start, end, end - start))
+        for field in ('sample_bracket_wall_ns', 'sample_bracket_started_unix_ns',
+                      'sample_bracket_ended_unix_ns', 'bracket_cores', 'rate'):
+            self.assertNotIn(field, result)
 
     def test_raw_cgroup_deltas_differ_from_proc_and_component_diagnostics(self):
         _, units, telemetry, _, run = fixture()
@@ -65,19 +139,19 @@ class Tests(unittest.TestCase):
                 for group in sample['cgroup_cpu'].values():
                     group.update(usage_usec=seq * 7000, user_usec=seq * 1000, system_usec=seq * 2000)
             nodes[node] = cpu.validate_node(start, stop, samples, node, 'M1w1', units[node])
-        result = cpu.estimate_run(run, nodes, (1_200_000_000, 1_400_000_000))
-        self.assertAlmostEqual(result['bracket_cores'], 11.9)
-        self.assertAlmostEqual(result['bracket_cpu_seconds'], 2.618)
-        self.assertAlmostEqual(sum(value['bracket_user_cpu_seconds'] for value in result['nodes'].values()), .374)
-        self.assertAlmostEqual(sum(value['bracket_system_cpu_seconds'] for value in result['nodes'].values()), .748)
+        result = cpu.observe_run(run, nodes, (1_200_000_000, 1_400_000_000))
+        self.assertEqual(result['observed_accounted_cpu_usec'], 2_618_000)
+        self.assertAlmostEqual(result['observed_accounted_cpu_seconds'], 2.618)
+        self.assertAlmostEqual(sum(value['observed_accounted_user_cpu_seconds'] for value in result['nodes'].values()), .374)
+        self.assertAlmostEqual(sum(value['observed_accounted_system_cpu_seconds'] for value in result['nodes'].values()), .748)
         for node, (start, stop, samples) in telemetry.items():
             for sample in samples:
                 for group in sample['cgroup_cpu'].values():
                     group.update(usage_usec=0, user_usec=0, system_usec=0)
             nodes[node] = cpu.validate_node(start, stop, samples, node, 'M1w1', units[node])
-        zero = cpu.estimate_run(run, nodes, (1_200_000_000, 1_400_000_000))
-        self.assertEqual(zero['bracket_cpu_seconds'], 0)
-        self.assertEqual(zero['bracket_cores'], 0)
+        zero = cpu.observe_run(run, nodes, (1_200_000_000, 1_400_000_000))
+        self.assertEqual(zero['observed_accounted_cpu_seconds'], 0)
+        self.assertEqual(zero['observed_accounted_cpu_usec'], 0)
 
     def test_user_and_system_are_added_once_no_child_or_host_cpu(self):
         _, units, telemetry, _, run = fixture()
@@ -92,7 +166,7 @@ class Tests(unittest.TestCase):
                         group[field] *= 2
                 sample['stat'] = 'irrelevant host workload/guest/IRQ counters'
             nodes[node] = cpu.validate_node(start, stop, samples, node, 'M1w1', units[node])
-        self.assertAlmostEqual(cpu.estimate_run(run, nodes, (1_200_000_000, 1_400_000_000))['bracket_cores'], 34)
+        self.assertAlmostEqual(cpu.observe_run(run, nodes, (1_200_000_000, 1_400_000_000))['observed_accounted_cpu_seconds'], 7.48)
 
     def test_different_hz_and_zero_cpu_have_defined_values_not_missing_zeros(self):
         _, units, telemetry, _, run = fixture()
@@ -103,14 +177,13 @@ class Tests(unittest.TestCase):
                 for process in sample['process_cpu'].values():
                     process['user_ticks'] *= i + 1
             nodes[node] = cpu.validate_node(start, stop, samples, node, 'M1w1', units[node])
-        self.assertAlmostEqual(cpu.estimate_run(run, nodes, (1_200_000_000, 1_400_000_000))['bracket_cores'], 17)
+        self.assertAlmostEqual(cpu.observe_run(run, nodes, (1_200_000_000, 1_400_000_000))['observed_accounted_cpu_seconds'], 3.74)
         for data in nodes.values():
             for interval in data['intervals']:
                 interval.update(usage_usec=0, user_usec=0, system_usec=0)
-        result = cpu.estimate_run(run, nodes, (1_200_000_000, 1_400_000_000))
-        self.assertEqual(result['bracket_cores'], 0)
-        self.assertEqual(result['lower_cpu_seconds'], 0)
-        self.assertGreater(result['upper_cpu_seconds'], 0)  # quantization is not precision
+        result = cpu.observe_run(run, nodes, (1_200_000_000, 1_400_000_000))
+        self.assertEqual(result['observed_accounted_cpu_usec'], 0)
+        self.assertFalse(result['actual_window_cpu_available'])
 
     def test_pid_restart_reuse_foreign_missing_and_bad_ticks_refuse(self):
         for mutation in ('restart', 'reuse', 'missing', 'foreign', 'negative', 'decrease', 'float', 'error'):
@@ -180,21 +253,21 @@ class Tests(unittest.TestCase):
 
     def test_m2_lifecycle_retains_timestamp_precision_reserve(self):
         _, _, _, nodes, run = fixture()
-        result = cpu.estimate_run(run, nodes)
-        self.assertEqual(result['nodes']['node1']['clock_bound_ns'], 3_000_000)
-        self.assertIn('lifecycle', result['scope'])
+        result = cpu.observe_run(run, nodes)
+        self.assertEqual(result['nodes']['node1']['temporal_selection_allowance_ns'], 3_000_000)
+        self.assertEqual(result['window_kind'], 'process-lifecycle-UTC')
         self.assertNotIn('lower_cpu_ns_per_op', result)
 
     def test_short_windows_and_clock_uncertainty_are_visible_unqualified_not_interpolated(self):
         _, _, _, nodes, run = fixture()
         # 130ms outer / 110ms measured passes20%; exactly nine inner intervals fails ten.
         with self.assertRaisesRegex(ValueError, 'resolution unqualified'):
-            cpu.estimate_run(run, nodes, (1_200_000_000, 1_310_000_000))
-        accepted = cpu.estimate_run(run, nodes, (1_200_000_000, 1_320_000_000))
+            cpu.observe_run(run, nodes, (1_200_000_000, 1_310_000_000))
+        accepted = cpu.observe_run(run, nodes, (1_200_000_000, 1_320_000_000))
         self.assertEqual(accepted['nodes']['node1']['inner_intervals'], 10)
         for data in nodes.values(): data['clock_bound_s'] = Decimal('0.2')
         with self.assertRaisesRegex(ValueError, 'resolution unqualified'):
-            cpu.estimate_run(run, nodes, (1_300_000_000, 1_500_000_000))
+            cpu.observe_run(run, nodes, (1_300_000_000, 1_500_000_000))
 
     def test_windows_outside_lifecycle_bad_r4_bounds_missing_nodes_and_coverage_refuse(self):
         for mutation in ('lifecycle', 'r4', 'node', 'coverage'):
@@ -204,16 +277,16 @@ class Tests(unittest.TestCase):
             if mutation == 'r4': run['nodes']['node1']['widened_start_ns'] += 1
             if mutation == 'node': run['nodes'].pop('node3')
             if mutation == 'coverage': nodes['node1']['intervals'] = nodes['node1']['intervals'][40:]
-            with self.assertRaises(ValueError): cpu.estimate_run(run, nodes, window)
+            with self.assertRaises(ValueError): cpu.observe_run(run, nodes, window)
 
     def test_exact_twenty_percent_outer_time_envelope_is_inclusive(self):
         _, _, _, nodes, run = fixture()
         for data in nodes.values(): data['clock_bound_s'] = Decimal('0.01')
-        result = cpu.estimate_run(run, nodes, (1_200_000_000, 1_400_000_000))
-        self.assertAlmostEqual(result['nodes']['node1']['bracket_wall_seconds'], 0.24)
+        result = cpu.observe_run(run, nodes, (1_200_000_000, 1_400_000_000))
+        self.assertEqual(result['nodes']['node1']['sample_bracket_wall_ns'], 240_000_000)
         for data in nodes.values(): data['clock_bound_s'] = Decimal('0.02')
         with self.assertRaisesRegex(ValueError, 'resolution unqualified'):
-            cpu.estimate_run(run, nodes, (1_200_000_000, 1_400_000_000))
+            cpu.observe_run(run, nodes, (1_200_000_000, 1_400_000_000))
 
     def test_accumulated_sub_millisecond_clock_steps_fail_phase_range(self):
         _, units, telemetry, _, _ = fixture()
@@ -255,10 +328,10 @@ class Tests(unittest.TestCase):
                     self.assertEqual(data['coverage_end_ns'], samples[-1]['realtime_ns'])
                     nodes['node1'] = data
                     if qualified:
-                        cpu.estimate_run(run, nodes, (1_200_000_000, 1_400_000_000))
+                        cpu.observe_run(run, nodes, (1_200_000_000, 1_400_000_000))
                     else:
                         with self.assertRaisesRegex(cpu.CPUUnqualified, 'certainly bracket'):
-                            cpu.estimate_run(run, nodes, (1_200_000_000, 1_400_000_000))
+                            cpu.observe_run(run, nodes, (1_200_000_000, 1_400_000_000))
 
     def test_cgroup_missing_foreign_membership_reset_and_recreation_refuse(self):
         for mutation in ('missing', 'foreign_path', 'foreign_process', 'foreign_thread', 'reset', 'negative',
@@ -292,9 +365,9 @@ class Tests(unittest.TestCase):
                     group.pop('user_usec')
                     group.pop('system_usec')
             nodes[node] = cpu.validate_node(start, stop, samples, node, 'M1w1', units[node])
-        result = cpu.estimate_run(run, nodes, (1_200_000_000, 1_400_000_000))
-        self.assertEqual(result['nodes']['node1']['bracket_user_cpu_seconds'], None)
-        self.assertAlmostEqual(result['bracket_cores'], 17)
+        result = cpu.observe_run(run, nodes, (1_200_000_000, 1_400_000_000))
+        self.assertEqual(result['nodes']['node1']['observed_accounted_user_cpu_seconds'], None)
+        self.assertAlmostEqual(result['observed_accounted_cpu_seconds'], 3.74)
 
     def test_nanosecond_utc_is_exact_above_float_mantissa(self):
         self.assertEqual(cpu.utc_ns('2026-10-20T13:13:35.425685123Z'), 1792502015425685123)

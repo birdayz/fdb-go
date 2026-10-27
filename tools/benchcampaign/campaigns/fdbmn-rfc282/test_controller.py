@@ -192,6 +192,7 @@ class Tests(unittest.TestCase):
     def test_positive_preflight_checks_every_new_unit_and_pins(self):
         c, layout, _ = self.make()
         protocol = dict(measurement_extensions=dict(server_cpu_source='exclusive-cgroup-v2-usage-usec',
+            server_cpu_metric='observed-cgroup-accounting-delta', server_cpu_actual_window_available=False,
             process_cpu_interval_ns=10_000_000, process_cpu_min_inner_intervals=10, process_cpu_max_time_envelope_ratio=1.2,
                 process_cpu_clock_reserve_ns=2_000_000, process_cpu_phase_correlation_range_ns=1_000_000))
         c.read_json.side_effect = lambda role, path: protocol if path == c.a.protocol else layout
@@ -211,13 +212,15 @@ class Tests(unittest.TestCase):
         c.require_phase_budget.assert_called_once_with('after CPU-sidecar preflight')
 
     def test_preflight_refuses_source_swap_or_unsealed_controller_before_dispatch(self):
-        mutations = {'server_cpu_source': 'host-proc-stat', 'process_cpu_interval_ns': 20_000_000,
+        mutations = {'server_cpu_source': 'host-proc-stat', 'server_cpu_metric': 'actual-execution-window-cpu',
+                     'server_cpu_actual_window_available': True, 'process_cpu_interval_ns': 20_000_000,
                      'process_cpu_min_inner_intervals': 1, 'process_cpu_max_time_envelope_ratio': 2,
                      'process_cpu_clock_reserve_ns': 0, 'process_cpu_phase_correlation_range_ns': 2_000_000,
                      'pin': None}
         for mutation, replacement in mutations.items():
             c, layout, _ = self.make()
             protocol = dict(measurement_extensions=dict(server_cpu_source='exclusive-cgroup-v2-usage-usec',
+                server_cpu_metric='observed-cgroup-accounting-delta', server_cpu_actual_window_available=False,
                 process_cpu_interval_ns=10_000_000, process_cpu_min_inner_intervals=10, process_cpu_max_time_envelope_ratio=1.2,
                 process_cpu_clock_reserve_ns=2_000_000, process_cpu_phase_correlation_range_ns=1_000_000))
             c.read_json.side_effect = lambda role, path: protocol if path == c.a.protocol else layout

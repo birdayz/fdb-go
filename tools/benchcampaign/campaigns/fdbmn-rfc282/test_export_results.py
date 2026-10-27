@@ -5,6 +5,7 @@ import io
 import itertools
 import hashlib
 import json
+from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 from decimal import Decimal
@@ -88,6 +89,7 @@ def seal_export_fixture(inputs, expected, clean=44):
     p = protocol()
     p.update(production_revisions=dict(before_allocation_work_after_read_parity='1' * 40, final='2' * 40),
              measurement_extensions=dict(throughput_preregistered=True, server_cpu_source='exclusive-cgroup-v2-usage-usec',
+                 server_cpu_metric='observed-cgroup-accounting-delta', server_cpu_actual_window_available=False,
                  process_cpu_interval_ns=10_000_000, process_cpu_min_inner_intervals=10, process_cpu_max_time_envelope_ratio=1.2,
                  process_cpu_clock_reserve_ns=2_000_000, process_cpu_phase_correlation_range_ns=1_000_000),
              runtime={k: 'synthetic' for k in ('go', 'bazel', 'bazelisk', 'foundationdb', 'api', 'GOMAXPROCS',
@@ -113,6 +115,17 @@ def seal_export_fixture(inputs, expected, clean=44):
             runtime_receipts={role: dict(identities={path: '8' * 64 for path in
                 ('/usr/sbin/fdbserver', '/usr/bin/fdbcli', '/usr/lib/libfdb_c.so')}) for role in ('client', 'node1', 'node2', 'node3')}))
     inputs.verify_all = Mock()
+
+
+def assert_accounting_only(test, row):
+    test.assertIs(row['actual_window_cpu_available'], False)
+    for record in [row, *row.get('nodes', {}).values()]:
+        unsupported = {key for key in record if any(token in key for token in
+            ('lower', 'upper', 'bound', 'per_op', 'cores', 'rate', 'ratio', 'ci95', 'interval_95'))}
+        unsupported.update(set(record) & {'cpu_util_cores', 'throughput_ops_per_second', 'gm',
+                                         'nominal_95_interval', 'bracket_cpu_seconds', 'bracket_wall_seconds',
+                                         'bracket_user_cpu_seconds', 'bracket_system_cpu_seconds', 'outer_intervals'})
+        test.assertEqual(unsupported, set(), 'unsupported server CPU estimates')
 
 
 class PopulationTests(unittest.TestCase):
@@ -234,6 +247,8 @@ class PopulationTests(unittest.TestCase):
         result = export.export(inputs, 'analysis/current', estimator, estimator, None)
         estimator.assert_not_called()
         self.assertFalse(result['performance_results_available'])
+        self.assertEqual(result['format'], 'fdbmn-rfc282-public-results/v2')
+        self.assertNotIn('server_process_cpu', result)
         self.assertEqual((result['coverage']['planned'], result['coverage']['clean'], result['coverage']['unverifiable']),
                          (44, 0, 44))
         excluded = [(phase, case, detail) for phase, cases in result['coverage']['phases'].items()
@@ -245,7 +260,7 @@ class PopulationTests(unittest.TestCase):
                          {(phase, case) for phase, cases in expected.items() for case in cases})
         self.assertEqual(len(result['M2']), 16)
         self.assertEqual({row['record_type'] for row in result['M2']}, {'omitted'})
-        for key in ('M1', 'M1_comparisons', 'M2_absolutes', 'M2_comparisons', 'server_process_cpu'):
+        for key in ('M1', 'M1_comparisons', 'M2_absolutes', 'M2_comparisons', 'server_cgroup_accounting'):
             self.assertEqual(result[key], [], key)
         self.assertEqual(inputs.verify_all.call_count, 2)
 
@@ -335,44 +350,66 @@ class PopulationTests(unittest.TestCase):
         parser = SimpleNamespace(parse_chrony_tracking=lambda text: ({}, []), chrony_error_bound=lambda fields: Decimal('0'))
         return inputs, report, layout, rows, parser
 
-    def test_m1_cpu_rows_joins_measured_fences_and_normalizes_measured_operations(self):
+    def test_m1_accounting_rows_join_measured_fences_without_operation_normalization(self):
         inputs, report, layout, processes, parser = self.m1_cpu_fixture()
         rows = export.cpu_rows(inputs, 'M1w1', report, layout, processes, parser)
         self.assertEqual(len(rows), 18)
         self.assertEqual({(r['block'], r['arm']) for r in rows},
                          {(block, arm) for block in range(6) for arm in ('before', 'final', 'cgo')})
         for row in rows:
-            self.assertEqual(row['status'], 'qualified')
-            self.assertAlmostEqual(row['bracket_cpu_seconds'], 3.74)
-            self.assertAlmostEqual(row['lower_cpu_seconds'], 3.059983)
-            self.assertAlmostEqual(row['upper_cpu_seconds'], 3.740017)
-            self.assertIn('measured quota', row['scope'])
-            lower, upper = {'before': (30_599_830, 37_400_170), 'final': (15_299_915, 18_700_085),
-                            'cgo': (7_649_957.5, 9_350_042.5)}[row['arm']]
-            self.assertAlmostEqual(row['lower_cpu_ns_per_op'], lower)
-            self.assertAlmostEqual(row['upper_cpu_ns_per_op'], upper)
-            self.assertEqual(row['nodes']['node1']['clock_bound_ns'], 2_000_001)
+            self.assertEqual(row['status'], 'observed')
+            self.assertIs(type(row['observed_accounted_cpu_usec']), int)
+            self.assertEqual(row['observed_accounted_cpu_usec'], 3_740_000)
+            self.assertAlmostEqual(row['observed_accounted_cpu_seconds'], 3.74)
+            self.assertEqual(row['window_kind'], 'measured-client-UTC-fences')
+            self.assertEqual((row['requested_window_started_unix_ns'], row['requested_window_ended_unix_ns']),
+                             (1_200_000_000, 1_400_000_000))
+            assert_accounting_only(self, row)
+            for node, count, usage in [('node1', 7, 1_540_000), ('node2', 5, 1_100_000), ('node3', 5, 1_100_000)]:
+                data = row['nodes'][node]
+                self.assertIs(type(data['observed_accounted_cpu_usec']), int)
+                self.assertEqual(data['observed_accounted_cpu_usec'], usage)
+                self.assertAlmostEqual(data['observed_accounted_cpu_seconds'], usage / 1e6)
+                self.assertEqual((data['sample_bracket_started_unix_ns'], data['sample_bracket_ended_unix_ns'],
+                                  data['sample_bracket_wall_ns']), (1_190_000_000, 1_410_000_000, 220_000_000))
+                self.assertEqual(data['sample_sequence'], [19, 41])
+                self.assertEqual((data['inner_intervals'], data['observed_intervals']), (18, 22))
+                self.assertEqual(data['temporal_selection_allowance_ns'], 2_000_001)
+                self.assertEqual(data['phase_correlation_range_ns'], 0)
+                self.assertEqual(data['processes'], count)
+                self.assertAlmostEqual(data['observed_accounted_user_cpu_seconds'], usage * .8 / 1e6)
+                self.assertAlmostEqual(data['observed_accounted_system_cpu_seconds'], usage * .2 / 1e6)
+        for index, process in enumerate(processes):
+            if index % 3 == 0:
+                process.pop('measured_ops')
+            else:
+                process['measured_ops'] = 0 if index % 3 == 1 else None
+        self.assertEqual(export.cpu_rows(inputs, 'M1w1', report, layout, processes, parser), rows)
 
-    def test_m1_bad_last_arm_fence_or_resolution_omits_entire_case(self):
+    def test_m1_bad_last_arm_fence_or_temporal_resolution_omits_entire_case(self):
         for mutation, reason in [('missing', 'missing reviewed measured fences'),
-                                 ('short', 'resolution unqualified')]:
+                                 ('mismatch', 'UTC/Unix measured fences differ'),
+                                 ('short', 'accounting temporal resolution unqualified')]:
             with self.subTest(mutation=mutation):
                 inputs, report, layout, processes, parser = self.m1_cpu_fixture()
                 positive = export.cpu_rows(inputs, 'M1w1', report, layout, processes, parser)
                 self.assertEqual(len(positive), 18)
-                self.assertTrue(all(r['status'] == 'qualified' for r in positive))
+                self.assertTrue(all(r['status'] == 'observed' for r in positive))
                 raw = inputs.values['results-raw/M1w1/grv/b5-cgo/summary.json']
                 if mutation == 'missing':
                     raw.pop('measured_fences_format')
+                elif mutation == 'mismatch':
+                    raw['measured_ended_utc'] = '1970-01-01T00:00:01.400000001Z'
                 else:
                     raw.update(measured_ended_unix_ns=1_250_000_000,
                                measured_ended_utc='1970-01-01T00:00:01.25Z', measured_wall_ns=50_000_000)
                 result = export.cpu_rows(inputs, 'M1w1', report, layout, processes, parser)
                 self.assertEqual(len(result), 1)
                 self.assertEqual((result[0]['phase'], result[0]['case'], result[0]['status']),
-                                 ('M1w1', 'grv', 'CPU-unqualified'))
+                                 ('M1w1', 'grv', 'CPU-unavailable'))
                 self.assertIn(reason, result[0]['reason'])
-                for field in ('arm', 'bracket_cpu_seconds', 'lower_cpu_ns_per_op', 'upper_cpu_ns_per_op'):
+                assert_accounting_only(self, result[0])
+                for field in ('arm', 'observed_accounted_cpu_usec', 'observed_accounted_cpu_seconds', 'nodes'):
                     self.assertNotIn(field, result[0])
 
     def test_m2_foreign_raw_windows_omit_whole_case_cpu_not_one_good_arm(self):
@@ -403,14 +440,25 @@ class PopulationTests(unittest.TestCase):
             values[f'results-raw/M2rl/{run_id}/result.json'] = dict(run_id=run_id,
                 started_utc=run['start_utc'], ended_utc=run['end_utc'])
         parser = SimpleNamespace(parse_chrony_tracking=lambda text: ({}, []), chrony_error_bound=lambda fields: Decimal('0'))
-        # Positive control: both rows were estimable before the exact raw mutation.
-        self.assertEqual(len(export.cpu_rows(inputs, 'M2rl', report, layout, rows, parser)), 2)
+        # Positive control: both rows had observed accounting before the raw mutation.
+        positive = export.cpu_rows(inputs, 'M2rl', report, layout, rows, parser)
+        self.assertEqual(len(positive), 2)
+        for row in positive:
+            self.assertEqual(row['status'], 'observed')
+            self.assertEqual(row['window_kind'], 'process-lifecycle-UTC')
+            self.assertEqual((row['requested_window_started_unix_ns'], row['requested_window_ended_unix_ns']),
+                             (1_100_000_000, 1_900_000_000))
+            self.assertEqual(row['observed_accounted_cpu_usec'], 13_940_000)
+            self.assertAlmostEqual(row['observed_accounted_cpu_seconds'], 13.94)
+            self.assertEqual(row['nodes']['node1']['temporal_selection_allowance_ns'], 3_000_000)
+            assert_accounting_only(self, row)
         values['results-raw/M2rl/final-remote/result.json']['ended_utc'] = '1970-01-01T00:00:01.8Z'
         result = export.cpu_rows(inputs, 'M2rl', report, layout, rows, parser)
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]['status'], 'CPU-unqualified')
+        self.assertEqual(result[0]['status'], 'CPU-unavailable')
         self.assertIn('R4/raw lifecycle window differs', result[0]['reason'])
-        self.assertNotIn('bracket_cpu_seconds', result[0])
+        self.assertNotIn('observed_accounted_cpu_seconds', result[0])
+        assert_accounting_only(self, result[0])
 
     def test_export_wiring_retains_full_population_absolutes_and_source_identities(self):
         inputs, _, expected = population_fixture()
@@ -421,6 +469,13 @@ class PopulationTests(unittest.TestCase):
             result = export.export(inputs, 'analysis/current', None, None, None)
         self.assertEqual(result['coverage']['clean'], 44)
         self.assertTrue(result['performance_results_available'])
+        self.assertEqual(result['format'], 'fdbmn-rfc282-public-results/v2')
+        self.assertEqual(result['server_cgroup_accounting'], [])
+        self.assertNotIn('server_process_cpu', result)
+        self.assertEqual(result['method']['server_cpu']['metric'], 'observed-cgroup-accounting-delta')
+        self.assertIs(result['method']['server_cpu']['actual_window_cpu_available'], False)
+        example = json.loads((Path(__file__).resolve().parent / 'accounting-example.json').read_text())
+        self.assertEqual(result['method']['server_cpu'], example['method']['server_cpu'])
         self.assertEqual(len(result['M2_absolutes']), 32)
         self.assertEqual(result['M2_absolutes'][0]['metrics']['ns/op'], 10)
         self.assertEqual(result['method']['compiler_sha256'], '4' * 64)
@@ -431,12 +486,34 @@ class PopulationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'provenance differs'):
             export.export(inputs, 'analysis/current', None, None, None)
 
-    def test_cpu_unqualification_does_not_publish_private_exception_paths(self):
+    def test_export_refuses_legacy_or_conflicting_accounting_policy_before_collectors(self):
+        for field, value in [('server_cpu_metric', None), ('server_cpu_metric', 'actual-execution-window-cpu'),
+                             ('server_cpu_actual_window_available', None), ('server_cpu_actual_window_available', True),
+                             ('server_cpu_actual_window_available', 'false'), ('server_cpu_actual_window_available', 0),
+                             ('server_cpu_source', 'host-proc-stat'), ('process_cpu_interval_ns', 20_000_000),
+                             ('process_cpu_min_inner_intervals', 1), ('process_cpu_max_time_envelope_ratio', 2),
+                             ('process_cpu_clock_reserve_ns', 0), ('process_cpu_phase_correlation_range_ns', 2_000_000),
+                             ('throughput_preregistered', False)]:
+            with self.subTest(field=field, value=value):
+                inputs, _, expected = population_fixture()
+                seal_export_fixture(inputs, expected)
+                policy = inputs.values['deploy/protocol.json']['measurement_extensions']
+                if value is None:
+                    policy.pop(field)
+                else:
+                    policy[field] = value
+                inputs.values['analysis/current/summary.json']['provenance']['protocol_sha256'] = inputs.digest('deploy/protocol.json')
+                with patch.object(export, 'collect_m1') as collector:
+                    with self.assertRaisesRegex(ValueError, 'unsealed measurement extension policy'):
+                        export.export(inputs, 'analysis/current', None, None, None)
+                collector.assert_not_called()
+
+    def test_cpu_unavailability_does_not_publish_private_exception_paths(self):
         reason = export.cpu_failure(FileNotFoundError('/home/private/campaign/secret-resource-id'))
         self.assertNotIn('/home', reason)
         self.assertNotIn('secret-resource-id', reason)
-        self.assertEqual(export.cpu_failure(export.server_cpu.CPUUnqualified('CPU resolution unqualified')),
-                         'CPU resolution unqualified')
+        self.assertEqual(export.cpu_failure(export.server_cpu.CPUUnqualified('accounting temporal resolution unqualified')),
+                         'accounting temporal resolution unqualified')
 
     def test_fence_inversion_mismatch_rounding_and_warmup_refused(self):
         raw = dict(measured_fences_format='fdb-bench-measured-fences/v1', measured_started_unix_ns=1_000_000_000,

@@ -1,0 +1,56 @@
+{
+  "format": "fdbmn-rfc282-public-results/v2",
+  "server_cgroup_accounting": [
+    {
+      "phase": "M1w1", "case": "grv", "arm": "before", "block": 0, "status": "observed",
+      "actual_window_cpu_available": false,
+      "requested_window_started_unix_ns": 1200000000,
+      "requested_window_ended_unix_ns": 1400000000,
+      "window_kind": "measured-client-UTC-fences",
+      "observed_accounted_cpu_usec": 3740000,
+      "observed_accounted_cpu_seconds": 3.74,
+      "scope": "17 exclusive FDB unit cgroup published usage_usec deltas over three node-specific sample-read brackets; scheduler accounting debt is unquantified and runtime may originate outside the brackets",
+      "nodes": {
+        "node1": {
+          "observed_accounted_cpu_usec": 1540000, "observed_accounted_cpu_seconds": 1.54,
+          "sample_bracket_started_unix_ns": 1190000000, "sample_bracket_ended_unix_ns": 1410000000,
+          "sample_bracket_wall_ns": 220000000, "sample_sequence": [19, 41],
+          "inner_intervals": 18, "observed_intervals": 22,
+          "temporal_selection_allowance_ns": 2000001, "phase_correlation_range_ns": 0, "processes": 7,
+          "observed_accounted_user_cpu_seconds": 1.232, "observed_accounted_system_cpu_seconds": 0.308
+        },
+        "node2": {
+          "observed_accounted_cpu_usec": 1100000, "observed_accounted_cpu_seconds": 1.1,
+          "sample_bracket_started_unix_ns": 1190000000, "sample_bracket_ended_unix_ns": 1410000000,
+          "sample_bracket_wall_ns": 220000000, "sample_sequence": [19, 41],
+          "inner_intervals": 18, "observed_intervals": 22,
+          "temporal_selection_allowance_ns": 2000001, "phase_correlation_range_ns": 0, "processes": 5,
+          "observed_accounted_user_cpu_seconds": 0.88, "observed_accounted_system_cpu_seconds": 0.22
+        },
+        "node3": {
+          "observed_accounted_cpu_usec": 1100000, "observed_accounted_cpu_seconds": 1.1,
+          "sample_bracket_started_unix_ns": 1190000000, "sample_bracket_ended_unix_ns": 1410000000,
+          "sample_bracket_wall_ns": 220000000, "sample_sequence": [19, 41],
+          "inner_intervals": 18, "observed_intervals": 22,
+          "temporal_selection_allowance_ns": 2000001, "phase_correlation_range_ns": 0, "processes": 5,
+          "observed_accounted_user_cpu_seconds": 0.88, "observed_accounted_system_cpu_seconds": 0.22
+        }
+      }
+    },
+    {
+      "phase": "M2skip", "case": "skip3-rows10-forward", "status": "CPU-unavailable",
+      "actual_window_cpu_available": false,
+      "reason": "unavailable or invalid pinned CPU evidence (FileNotFoundError)"
+    }
+  ],
+  "method": {
+    "server_cpu": {
+      "metric": "observed-cgroup-accounting-delta",
+      "source": "exclusive-cgroup-v2-usage-usec",
+      "actual_window_cpu_available": false,
+      "scheduler_accounting_debt": "unquantified; runtime may originate outside sample-read brackets",
+      "fleet_aggregation": "sum of observed deltas over three node-specific brackets",
+      "execution_attribution": "unavailable; no actual-window CPU, bounds, CPU/op, rates or server ratio confidence intervals"
+    }
+  }
+}

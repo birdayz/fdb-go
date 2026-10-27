@@ -2647,25 +2647,41 @@ establish vulnerable-code reachability in the published Go library.
 
 ### RFC-282 four-machine campaign execution gates
 
-- [ ] Resolve the verified PR #1021 CPU-accounting blocker before qualification:
-  `cpu.stat` flushes scheduler-accounted counters, not pending runtime of running
-  threads, so microsecond formatting does not justify actual-window CPU bounds.
-  Select and review a defensible source/metric or fail CPU qualification closed;
-  do not silently substitute task-clock, clock resolution, or a tick allowance.
-  Preserve raw diagnostics, exact source policy, actual overhead controls and
-  accounting-boundary regressions. Paid provisioning remains paused until the
-  owner's offline-readiness barrier is explicitly released.
+- [ ] Complete and review the verified PR #1021 F6 CPU-accounting correction
+  before qualification. Preserve the failed bounds claim and endpoint-proof
+  history: `cpu.stat` flushes scheduler-accounted counters, not pending runtime
+  of running threads; microsecond formatting does not justify actual-window CPU
+  bounds. Endpoint accounting debt is unquantified and can originate outside the
+  selected sample bracket. The owner approved **observed accounted-counter deltas
+  only**, not actual-window execution attribution. Seal
+  `server_cpu_metric: observed-cgroup-accounting-delta` and
+  `server_cpu_actual_window_available: false` alongside all existing source and
+  temporal-policy fields. Do not substitute task-clock, clock resolution, guessed
+  tick allowances, kernel/perf changes or `/proc/stat` forcing. Retain raw proc
+  diagnostics, source policy, regressions and real sampler overhead controls.
+  Code/contract validation, review and the execution gate remain open; paid
+  provisioning is paused until the owner's offline-readiness barrier is released.
 
 - [ ] Qualify and execute the complete 44-case repeat (M1 workers 1/8/32/64,
   M2rl/M2skip), using the reviewed `tools/benchcampaign/campaigns/fdbmn-rfc282/`
-  exporter, byte-identical measured-fence overlay and exclusive cgroup-v2 CPU
-  source. Before timing: run the overlay's actual frozen-export Go controls,
-  qualify controller start/stop/collection for the separate 100Hz accounting
-  sidecar, prove all 17 private FDB cgroups and perform sampler-off/on
-  overhead/accounting controls during F0/P0. No cloud mutation before the owner's
-  merged SHA plus launch confirmation; four ccx43 hosts, fixed 16h hard lifetime,
-  guard armed first, unchanged protected inventory and original workload gates.
-  Publish full coverage, direct latency/throughput, client CPU/allocations and
-  measured M1 versus lifecycle M2 server CPU with explicit bounds; show every
-  CPU-unqualified/omitted case. Optional linger is separately preregistered and
-  cannot reduce the primary matrix. This entry is not an execution receipt.
+  exporter, byte-identical measured-fence overlay and exclusive cgroup-v2 observed
+  accounting source. Before timing: retain the overlay's actual frozen-export Go
+  controls, qualify controller start/stop/collection for the separate 100Hz
+  sidecar, prove all 17 private FDB cgroups and perform sampler-off/on overhead
+  and accounted-counter positive/idle controls during F0/P0. Keep original R3/R4,
+  placement controls and full geometry; the 10-inner-interval and 1.2-span guards
+  qualify temporal selection only, not physical CPU bounds or counter freshness.
+  No cloud mutation before the owner's merged SHA plus launch confirmation; four
+  ccx43 hosts, fixed 16h hard lifetime, guard armed first, unchanged protected
+  inventory and original workload gates. Publish full coverage, direct
+  latency/throughput, existing client CPU/allocations and
+  `fdbmn-rfc282-public-results/v2` `server_cgroup_accounting` observations: per-node
+  and fleet `observed_accounted_cpu_usec` / `observed_accounted_cpu_seconds`, rows
+  with `status: observed`, actual per-node read brackets, and
+  `actual_window_cpu_available: false`. Actual-window server runtime remains
+  unavailable: no execution attribution, actual-CPU bounds, CPU/op, cores,
+  server-CPU ratio confidence intervals, interpolation or baseline subtraction.
+  Missing/malformed evidence in any arm/block makes the whole case CPU-unavailable;
+  never publish partial-arm CPU comparisons. Show every CPU-unavailable/omitted
+  case. Optional linger is separately preregistered and cannot reduce the primary
+  matrix. This open entry is not an execution receipt.

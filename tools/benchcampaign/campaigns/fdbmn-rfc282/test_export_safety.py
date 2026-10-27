@@ -63,6 +63,9 @@ class SafetyTests(unittest.TestCase):
              patch.object(export, 'cpu_rows', return_value=[]):
             result = export.export(inputs, 'analysis/current', None, None, None)
         self.assertTrue(result['performance_results_available'])
+        self.assertEqual(result['format'], 'fdbmn-rfc282-public-results/v2')
+        self.assertEqual(result['server_cgroup_accounting'], [])
+        self.assertNotIn('server_process_cpu', result)
         self.assertEqual((result['coverage']['clean'], result['coverage']['contaminated']), (43, 1))
         public = result['coverage']['phases']['M1w32']['grv']['reasons']
         self.assertEqual(len(public), 3)
@@ -81,7 +84,9 @@ class SafetyTests(unittest.TestCase):
             with self.subTest(mutation=mutation):
                 inputs, report, layout, rows, parser = cpu_fixture()
                 good = export.cpu_rows(inputs, 'M2rl', report, layout, rows, parser)
-                self.assertEqual([row['status'] for row in good], ['qualified', 'qualified'])
+                self.assertEqual([row['status'] for row in good], ['observed', 'observed'])
+                for row in good:
+                    fixtures.assert_accounting_only(self, row)
                 root = 'telemetry-cpu/M2rl/node1'
                 samples = [json.loads(line) for line in inputs.values[root + '/samples.jsonl'].splitlines()]
                 if mutation == 'null_record': samples[20] = None
@@ -98,8 +103,11 @@ class SafetyTests(unittest.TestCase):
                 before = copy.deepcopy(report)
                 output = export.cpu_rows(inputs, 'M2rl', report, layout, rows, parser)
                 self.assertEqual(len(output), 1)
-                self.assertEqual((output[0]['case'], output[0]['status']), ('small-limit1-forward', 'CPU-unqualified'))
-                self.assertNotIn('bracket_cpu_seconds', output[0])
+                self.assertEqual((output[0]['case'], output[0]['status']), ('small-limit1-forward', 'CPU-unavailable'))
+                fixtures.assert_accounting_only(self, output[0])
+                self.assertNotIn('observed_accounted_cpu_usec', output[0])
+                self.assertNotIn('observed_accounted_cpu_seconds', output[0])
+                self.assertNotIn('nodes', output[0])
                 self.assertEqual(report, before)
                 export.legacy_io.validate_public({'results.json': json.dumps(output) + '\n'},
                                                 {'identifiers': ['synthetic-private'], 'names': []})
@@ -108,14 +116,20 @@ class SafetyTests(unittest.TestCase):
         for value in (None, [], {}, 1):
             with self.subTest(value=value):
                 inputs, report, layout, rows, parser = cpu_fixture('M1w1')
-                self.assertEqual(len(export.cpu_rows(inputs, 'M1w1', report, layout, rows, parser)), 3)
+                positive = export.cpu_rows(inputs, 'M1w1', report, layout, rows, parser)
+                self.assertEqual(len(positive), 3)
+                self.assertEqual([row['status'] for row in positive], ['observed'] * 3)
+                for row in positive:
+                    fixtures.assert_accounting_only(self, row)
                 inputs.values['results-raw/M1w1/grv/cgo/summary.json']['measured_started_utc'] = value
                 output = export.cpu_rows(inputs, 'M1w1', report, layout, rows, parser)
                 self.assertEqual(len(output), 1)
-                self.assertEqual((output[0]['case'], output[0]['status']), ('grv', 'CPU-unqualified'))
+                self.assertEqual((output[0]['case'], output[0]['status']), ('grv', 'CPU-unavailable'))
                 self.assertIn('window timestamp is not explicit UTC', output[0]['reason'])
-                self.assertNotIn('lower_cpu_ns_per_op', output[0])
-                self.assertNotIn('upper_cpu_seconds', output[0])
+                fixtures.assert_accounting_only(self, output[0])
+                self.assertNotIn('observed_accounted_cpu_usec', output[0])
+                self.assertNotIn('observed_accounted_cpu_seconds', output[0])
+                self.assertNotIn('nodes', output[0])
 
 
 if __name__ == '__main__':

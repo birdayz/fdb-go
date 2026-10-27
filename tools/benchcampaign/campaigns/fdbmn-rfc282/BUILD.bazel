@@ -5,6 +5,8 @@ sh_test(
     name = "campaign_export_test",
     srcs = ["test.sh"],
     data = [
+        "accounting-contract.schema.json",
+        "accounting-example.json",
         "controller.py",
         "export_results.py",
         "helpers.py",
