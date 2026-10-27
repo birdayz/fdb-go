@@ -2,7 +2,10 @@ load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 filegroup(
     name = "cpu_controller_support",
-    srcs = ["mn_common.py"],
+    srcs = [
+        "mn_common.py",
+        "node_sampler.py",
+    ],
     visibility = ["//tools/benchcampaign/campaigns/fdbmn-rfc282:__pkg__"],
 )
 

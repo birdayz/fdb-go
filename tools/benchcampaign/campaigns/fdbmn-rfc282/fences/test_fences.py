@@ -12,6 +12,8 @@ RUN = 'tools/clientbench/internal/bench/run.go'
 TEST = 'tools/clientbench/internal/bench/bench_test.go'
 BUILD = 'tools/clientbench/scripts/BUILD.bazel'
 SMOKE = 'tools/clientbench/integration/smoke_test.go'
+BACKEND_BUILD = 'tools/clientbench/cmd/clientbench/BUILD.bazel'
+BACKEND_TEST = 'tools/clientbench/cmd/clientbench/backend_selection_test.go'
 VERSION_FILES = {'tools/clientbench/scripts/' + name for name in ('matrix_plan.py', 'r3_plan.py', 'test_campaign.py')}
 
 
@@ -37,7 +39,7 @@ class FenceOverlayTest(unittest.TestCase):
         self.assertEqual(self.manifest['original_sha256'][RUN],
                          'b82341a5652afa1a94931ff687519c262065f592b85b16e5b832182efea00214')
         self.assertEqual(hashlib.sha256(self.patch.encode()).hexdigest(), self.manifest['patch_sha256'])
-        self.assertEqual(set(apply_patch(self.sources, self.patch)), {RUN, TEST, BUILD, SMOKE} | VERSION_FILES)
+        self.assertEqual(set(apply_patch(self.sources, self.patch)), {RUN, TEST, BUILD, SMOKE, BACKEND_BUILD, BACKEND_TEST} | VERSION_FILES)
 
     def test_patch_refuses_changed_context_and_incomplete_population(self):
         changed = dict(self.sources)
@@ -92,7 +94,7 @@ class FenceOverlayTest(unittest.TestCase):
         patched = apply_patch(self.sources, self.patch)[SMOKE]
         obsolete = '\t\t\t\t\t\tdrain.After.CleanupsQueued != drain.Before.CleanupsQueued ||\n'
         self.assertEqual(self.sources[SMOKE].count(obsolete), 1)
-        smoke_patch = self.patch.split('--- a/' + SMOKE + '\n', 1)[1]
+        smoke_patch = self.patch.split('--- a/' + SMOKE + '\n', 1)[1].split('\n--- a/', 1)[0]
         removed = [line[1:] + '\n' for line in smoke_patch.splitlines()
                    if line.startswith('-') and not line.startswith('---')]
         self.assertEqual(removed, [obsolete])
@@ -115,6 +117,48 @@ class FenceOverlayTest(unittest.TestCase):
         self.assertNotIn('tools/clientbench/internal/bench/lifecycle.go', self.sources)
         self.assertNotIn('tools/clientbench/internal/bench/lifecycle_test.go', self.sources)
         self.assertNotIn('tools/clientbench/scripts/run.py', self.sources)
+
+    def test_real_cgo_run_controls_reuse_actual_backend_and_keep_old_selection_controls(self):
+        patched = apply_patch(self.sources, self.patch)
+        control = patched[BACKEND_TEST]
+        self.assertEqual(hashlib.sha256(control.encode()).hexdigest(), self.manifest['patched_sha256'][BACKEND_TEST])
+        original_tests = self.sources[BACKEND_TEST].split('func TestBackendBuildTags', 1)[1]
+        self.assertTrue(control.endswith('func TestBackendBuildTags' + original_tests))
+        for name in ('default_without_cgo', 'default_with_cgo', 'libfdbc_without_cgo', 'libfdbc_with_cgo'):
+            self.assertIn('name: "' + name + '"', control)
+        for check in ('foundationdb.Run(ctx, "", foundationdb.WithDirectIP())',
+                      'context.WithTimeout(context.Background(), 2*time.Minute)',
+                      'exec.CommandContext(ctx, os.Args[0]',
+                      '[]string{"positive", "zero"}',
+                      'db, metadata, err := openBackend(cfg)',
+                      'synctest.Test(t, func(t *testing.T)',
+                      'runErr = bench.Run(cfg, database, metadata, afterIdentity)',
+                      'err := d.LifecycleDatabase.Transact(readOnly, fn)',
+                      'if err == nil && readOnly', 'time.Sleep(time.Nanosecond)',
+                      'Workload: "read1000"', 'Iterations: 1, Warmup: 0, Workers: 1',
+                      'summary.Completed != 1 || summary.Errors != 0',
+                      'summary.PersistedValidation != "ok"',
+                      '!life.Complete || !life.DatabaseClosed || !life.NetworkStopped',
+                      'runErr.Error() != "invalid measured phase fences"',
+                      'summary.FailureStage != "measurement_fences"',
+                      'summary.WallNS != 0', 'summary.WallNS != 1',
+                      'present != (mode == "positive")'):
+            self.assertIn(check, control)
+        self.assertLess(control.index('db, metadata, err := openBackend(cfg)'), control.index('synctest.Test(t,'))
+        for key in ('measured_fences_format', 'measured_started_unix_ns', 'measured_ended_unix_ns',
+                    'measured_started_utc', 'measured_ended_utc'):
+            self.assertIn('"' + key + '"', control)
+        self.assertNotIn('type transaction struct', control)
+        self.assertNotIn('func (d delayedRealDatabase) Get', control)
+        build = patched[BACKEND_BUILD]
+        self.assertEqual(build.split('# Each executable', 1)[1], self.sources[BACKEND_BUILD].split('# Each executable', 1)[1])
+        for declaration in ('"backend_cgo.go",', 'cgo = True', 'clinkopts = ["-lfdb_c"]',
+                            'gotags = ["libfdbc"]', 'pure = "off"',
+                            '"//pkg/testcontainers/foundationdb"', '"//tools/clientbench/internal/bench"',
+                            '"@com_github_apple_foundationdb_bindings_go//src/fdb"'):
+            self.assertIn(declaration, build.split('# Each executable', 1)[0])
+        for source in ('backend_cgo.go', 'backend_go.go', 'main.go'):
+            self.assertNotIn('tools/clientbench/cmd/clientbench/' + source, patched)
 
     def test_real_go_controls_are_in_existing_declared_test_file(self):
         controls = (HERE / 'fence-tests.go.txt').read_text()

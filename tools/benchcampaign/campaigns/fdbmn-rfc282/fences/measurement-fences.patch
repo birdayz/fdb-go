@@ -258,3 +258,215 @@
  						drain.After.CleanupsExecuted != drain.After.CleanupsQueued {
  						t.Fatalf("incomplete finalizer fixpoint: %+v", drain)
  					}
+--- a/tools/clientbench/cmd/clientbench/BUILD.bazel
++++ b/tools/clientbench/cmd/clientbench/BUILD.bazel
+@@ -3,13 +3,26 @@
+ # gazelle:ignore
+ go_test(
+     name = "backend_selection_test",
+-    srcs = ["backend_selection_test.go"],
++    srcs = [
++        "backend_cgo.go",
++        "backend_selection_test.go",
++    ],
+     args = ["-backend-source=$(rlocationpath backend_go.go)"],
++    cgo = True,
++    clinkopts = ["-lfdb_c"],
+     data = [
+         "backend_cgo.go",
+         "backend_go.go",
+     ],
+-    deps = ["@rules_go//go/runfiles"],
++    gotags = ["libfdbc"],
++    pure = "off",
++    tags = ["resources:memory:750"],
++    deps = [
++        "//pkg/testcontainers/foundationdb",
++        "//tools/clientbench/internal/bench",
++        "@com_github_apple_foundationdb_bindings_go//src/fdb",
++        "@rules_go//go/runfiles",
++    ],
+ )
+ 
+ # Each executable contains exactly one backend, including its dependency graph.
+--- a/tools/clientbench/cmd/clientbench/backend_selection_test.go
++++ b/tools/clientbench/cmd/clientbench/backend_selection_test.go
+@@ -1,15 +1,177 @@
+ package main
+ 
+ import (
++	"context"
++	"encoding/json"
+ 	"flag"
+ 	"go/build"
++	"os"
++	"os/exec"
+ 	"path/filepath"
++	"strings"
+ 	"testing"
+-
++	"testing/synctest"
++	"time"
++
++	foundationdb "fdb.dev/pkg/testcontainers/foundationdb"
++	"fdb.dev/tools/clientbench/internal/bench"
+ 	"github.com/bazelbuild/rules_go/go/runfiles"
+ )
+ 
+ var backendSource = flag.String("backend-source", "", "runfile path to backend_go.go")
++
++// The wrapper preserves real transactions and changes only bubble-clock progress.
++type delayedRealDatabase struct {
++	bench.LifecycleDatabase
++}
++
++func (d delayedRealDatabase) Transact(readOnly bool, fn func(bench.Transaction) error) error {
++	err := d.LifecycleDatabase.Transact(readOnly, fn)
++	if err == nil && readOnly {
++		time.Sleep(time.Nanosecond)
++	}
++	return err
++}
++
++func TestRunMeasurementFencesAgainstRealFDB(t *testing.T) {
++	if mode := os.Getenv("CLIENTBENCH_FENCE_CHILD"); mode != "" {
++		runMeasurementFenceChild(t, mode)
++		return
++	}
++	// Each child owns a native network; StopNetwork is terminal for that process.
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
++	defer cancel()
++	container, err := foundationdb.Run(ctx, "", foundationdb.WithDirectIP())
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() {
++		stop, cancelStop := context.WithTimeout(context.Background(), 30*time.Second)
++		defer cancelStop()
++		if err := foundationdb.Terminate(stop, container); err != nil {
++			t.Error(err)
++		}
++	})
++	cluster, err := container.ClusterFilePath(ctx)
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, mode := range []string{"positive", "zero"} {
++		if !t.Run(mode, func(t *testing.T) {
++			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRunMeasurementFencesAgainstRealFDB$", "-test.v")
++			cmd.Env = append(os.Environ(), "CLIENTBENCH_FENCE_CHILD="+mode,
++				"CLIENTBENCH_FENCE_CLUSTER="+cluster, "GOMAXPROCS=2")
++			text, err := cmd.CombinedOutput()
++			if err != nil {
++				t.Fatalf("real CGo fence child %s failed: %v\n%s", mode, err, text)
++			}
++			if !strings.Contains(string(text), "CLIENTBENCH_REAL_FENCE "+mode+" completed=1 errors=0 persisted=ok lifecycle=complete") {
++				t.Fatalf("missing real CGo fence child population %s:\n%s", mode, text)
++			}
++			t.Logf("%s", text)
++		}) {
++			return
++		}
++	}
++}
++
++func runMeasurementFenceChild(t *testing.T, mode string) {
++	t.Helper()
++	if mode != "positive" && mode != "zero" {
++		t.Fatalf("unknown fence child mode %q", mode)
++	}
++	cfg := bench.Config{
++		ClusterFile: os.Getenv("CLIENTBENCH_FENCE_CLUSTER"), Workload: "read1000",
++		Iterations: 1, Warmup: 0, Workers: 1, Output: filepath.Join(t.TempDir(), "result"),
++		RunID: "real-fence-" + mode, Block: 0, SourceRevision: "fence-control", HarnessID: "fence-control",
++		AllowWrites: true, Prefix: "clientbench/fence/" + mode + "/", TimeoutMS: 30000, RetryLimit: 10, Profile: "none",
++	}
++	afterIdentity, err := bench.ReadStats(true)
++	if err != nil {
++		t.Fatal(err)
++	}
++	// Native callbacks and the network WaitGroup must originate outside the bubble.
++	db, metadata, err := openBackend(cfg)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer db.Close()
++	if metadata["backend"] != "cgo" || metadata["native_library"] != true {
++		t.Fatalf("not the real CGo backend: %+v", metadata)
++	}
++	var database bench.LifecycleDatabase = db
++	if mode == "positive" {
++		database = delayedRealDatabase{LifecycleDatabase: db}
++	}
++	var runErr error
++	synctest.Test(t, func(t *testing.T) {
++		runErr = bench.Run(cfg, database, metadata, afterIdentity)
++	})
++	data, err := os.ReadFile(filepath.Join(cfg.Output, "summary.json"))
++	if err != nil {
++		t.Fatalf("summary missing: %v; Run error: %v", err, runErr)
++	}
++	var summary struct {
++		Success             bool            `json:"success"`
++		Completed           int             `json:"completed"`
++		Errors              int             `json:"errors"`
++		PersistedValidation string          `json:"persisted_validation"`
++		FailureStage        string          `json:"failure_stage"`
++		Failure             string          `json:"failure"`
++		WallNS              int64           `json:"measured_wall_ns"`
++		Format              string          `json:"measured_fences_format"`
++		StartedNS           int64           `json:"measured_started_unix_ns"`
++		EndedNS             int64           `json:"measured_ended_unix_ns"`
++		StartedUTC          string          `json:"measured_started_utc"`
++		EndedUTC            string          `json:"measured_ended_utc"`
++		Lifecycle           bench.Lifecycle `json:"lifecycle"`
++	}
++	if err := json.Unmarshal(data, &summary); err != nil {
++		t.Fatal(err)
++	}
++	var fields map[string]json.RawMessage
++	if err := json.Unmarshal(data, &fields); err != nil {
++		t.Fatal(err)
++	}
++	life := summary.Lifecycle
++	if summary.Completed != 1 || summary.Errors != 0 || summary.PersistedValidation != "ok" ||
++		!life.Complete || !life.DatabaseClosed || !life.NetworkStopped || !life.MeasurementBarrier ||
++		!life.MeasurementDrain.Complete || !life.ShutdownDrain.Complete {
++		t.Fatalf("Run did not otherwise succeed: %+v; error=%v", summary, runErr)
++	}
++	fenceKeys := []string{
++		"measured_fences_format", "measured_started_unix_ns", "measured_ended_unix_ns",
++		"measured_started_utc", "measured_ended_utc",
++	}
++	for _, key := range fenceKeys {
++		_, present := fields[key]
++		if present != (mode == "positive") {
++			t.Fatalf("fence %s presence=%t in %s Run: %s", key, present, mode, data)
++		}
++	}
++	if mode == "zero" {
++		if runErr == nil || runErr.Error() != "invalid measured phase fences" || summary.Success ||
++			summary.WallNS != 0 || summary.FailureStage != "measurement_fences" || summary.Failure != "invalid measured phase fences" {
++			t.Fatalf("invalid fences did not fail Run publication: %+v; error=%v", summary, runErr)
++		}
++	} else {
++		if runErr != nil || !summary.Success || summary.Failure != "" || summary.WallNS != 1 ||
++			summary.Format != "fdb-bench-measured-fences/v1" || summary.StartedNS <= 1<<53 ||
++			summary.EndedNS-summary.StartedNS != summary.WallNS {
++			t.Fatalf("valid real CGo Run fences rejected: %+v; error=%v", summary, runErr)
++		}
++		for _, endpoint := range []struct {
++			text string
++			ns   int64
++		}{{summary.StartedUTC, summary.StartedNS}, {summary.EndedUTC, summary.EndedNS}} {
++			parsed, err := time.Parse(time.RFC3339Nano, endpoint.text)
++			if err != nil || parsed.UnixNano() != endpoint.ns || endpoint.text != time.Unix(0, endpoint.ns).UTC().Format(time.RFC3339Nano) {
++				t.Fatalf("invalid canonical fence UTC: %+v", endpoint)
++			}
++		}
++	}
++	t.Logf("CLIENTBENCH_REAL_FENCE %s completed=1 errors=0 persisted=ok lifecycle=complete", mode)
++}
+ 
+ func TestBackendBuildTags(t *testing.T) {
+ 	t.Parallel()

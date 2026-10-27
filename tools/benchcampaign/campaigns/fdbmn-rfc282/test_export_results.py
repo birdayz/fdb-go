@@ -2,6 +2,7 @@
 import copy
 import csv
 import io
+import importlib.util
 import itertools
 import hashlib
 import json
@@ -349,6 +350,114 @@ class PopulationTests(unittest.TestCase):
                     measured_wall_ns=200_000_000, warmup_wall_ns=100_000_000)
         parser = SimpleNamespace(parse_chrony_tracking=lambda text: ({}, []), chrony_error_bound=lambda fields: Decimal('0'))
         return inputs, report, layout, rows, parser
+
+    def m1_clock_fixture(self, start_dispersion, stop_dispersion, r4_bound, widened_start_ns, widened_end_ns,
+                         client_bound='0.004', client_dispersion='0.002'):
+        inputs, report, layout, processes, _ = self.m1_cpu_fixture()
+        def chrony(offset, delay, dispersion):
+            return dict(rc=0, raw=(f'System time: {offset} seconds slow of NTP time\n'
+                f'Root delay: {delay} seconds\nRoot dispersion: {dispersion} seconds\nLeap status: Normal\n'))
+        report['clock']['client'] = dict(bound_s=client_bound, receipts={}, reasons=[])
+        for kind, stamp in [('before', 1_000_000_000), ('after', 2_000_000_000)]:
+            path = f'telemetry/M1w1/client/receipt-{kind}.json'
+            inputs.values[path] = dict(format='fdb-bench-node-receipt/v1', host='client', phase='M1w1', kind=kind,
+                realtime_ns=stamp, chrony=chrony('0.001', '0.002', client_dispersion))
+            report['clock']['client']['receipts'][path] = client_bound
+            report['inputs_sha256']['/srv/fdb-bench/' + path] = inputs.digest(path)
+        # R4's base audit receipts are distinct from the CPU sidecar receipts.
+        base_bound, base_clock = (('0.020', chrony('0.001', '0.002', '0.018')) if r4_bound == '1.025' else
+                                 ('0.001', chrony('0.0002', '0.0004', '0.0006')))
+        report['clock']['nodes'] = {node: dict(bound_s=base_bound, u_s=r4_bound, reasons=[])
+                                    for node in ('node1', 'node2', 'node3')}
+        for run in report['cases'][0]['runs']:
+            for evidence in run['nodes'].values():
+                evidence.update(u_s=r4_bound, widened_start_ns=widened_start_ns, widened_end_ns=widened_end_ns)
+            inputs.values[f'results-raw/M1w1/grv/{run["run_id"]}/summary.json'].update(
+                measured_ended_unix_ns=1_600_000_000, measured_ended_utc='1970-01-01T00:00:01.6Z',
+                measured_wall_ns=400_000_000)
+        for node in ('node1', 'node2', 'node3'):
+            for kind, dispersion in [('start', start_dispersion), ('stop', stop_dispersion)]:
+                inputs.values[f'telemetry-cpu/M1w1/{node}/receipt-{kind}.json']['chrony'] = chrony('0.001', '0.002', dispersion)
+                base = f'telemetry/M1w1/{node}/receipt-{kind}.json'
+                inputs.values[base].update(format='fdb-bench-node-receipt/v1', chrony=copy.deepcopy(base_clock))
+                report['inputs_sha256']['/srv/fdb-bench/' + base] = inputs.digest(base)
+        multinode = Path(export.__file__).resolve().parents[2] / 'multinode'
+        common_spec = importlib.util.spec_from_file_location('rfc282_clock_common', multinode / 'mn_common.py')
+        common = importlib.util.module_from_spec(common_spec)
+        common_spec.loader.exec_module(common)
+        sampler_spec = importlib.util.spec_from_file_location('rfc282_clock_sampler', multinode / 'node_sampler.py')
+        parser = importlib.util.module_from_spec(sampler_spec)
+        # Use the production parser without changing other tests' import bindings.
+        with patch.dict('sys.modules', {'mn_common': common}):
+            sampler_spec.loader.exec_module(parser)
+        for path, receipt in inputs.values.items():
+            if path.startswith('telemetry/'):
+                fields, errors = parser.parse_chrony_tracking(receipt['chrony']['raw'])
+                self.assertEqual(errors, [])
+                self.assertEqual(parser.chrony_error_bound(fields), Decimal(client_bound if '/client/' in path else base_bound))
+                self.assertEqual(report['inputs_sha256']['/srv/fdb-bench/' + path], inputs.digest(path))
+        self.assertEqual(Decimal(r4_bound), Decimal('1.001') + Decimal(client_bound) + Decimal(base_bound))
+        return inputs, report, layout, processes, parser
+
+    def test_cpu_rows_composes_receipt_and_r4_clocks_before_selecting_brackets(self):
+        cases = [
+            ('start-dominates', '0.006', '0.001', '1.006', 94_000_000, 2_906_000_000,
+             Decimal('0.008'), Decimal('0.003'), 14_000_001, [18, 62], 1_180_000_000, 1_620_000_000, 36, 7_480_000),
+            ('stop-dominates', '0.001', '0.006', '1.006', 94_000_000, 2_906_000_000,
+             Decimal('0.003'), Decimal('0.008'), 14_000_001, [18, 62], 1_180_000_000, 1_620_000_000, 36, 7_480_000),
+            ('r4-dominates', '0.006', '0.001', '1.025', 75_000_000, 2_925_000_000,
+             Decimal('0.008'), Decimal('0.003'), 26_000_001, [17, 63], 1_170_000_000, 1_630_000_000, 34, 7_820_000),
+        ]
+        for label, start_disp, stop_disp, r4, widened_start, widened_end, start_bound, stop_bound, allowance, sequence, start, end, inner, usage in cases:
+            with self.subTest(clock=label):
+                inputs, report, layout, processes, parser = self.m1_clock_fixture(
+                    start_disp, stop_disp, r4, widened_start, widened_end)
+                for kind, expected in [('start', start_bound), ('stop', stop_bound)]:
+                    fields, errors = parser.parse_chrony_tracking(
+                        inputs.values[f'telemetry-cpu/M1w1/node1/receipt-{kind}.json']['chrony']['raw'])
+                    self.assertEqual(errors, [])
+                    self.assertEqual(parser.chrony_error_bound(fields), expected)
+                rows = export.cpu_rows(inputs, 'M1w1', report, layout, processes, parser)
+                self.assertEqual(len(rows), 18)
+                for row in rows:
+                    self.assertEqual(row['status'], 'observed')
+                    self.assertEqual(row['observed_accounted_cpu_usec'], usage)
+                    self.assertEqual((row['requested_window_started_unix_ns'], row['requested_window_ended_unix_ns']),
+                                     (1_200_000_000, 1_600_000_000))
+                    assert_accounting_only(self, row)
+                    for data in row['nodes'].values():
+                        self.assertEqual(data['temporal_selection_allowance_ns'], allowance)
+                        self.assertEqual(data['sample_sequence'], sequence)
+                        self.assertEqual((data['sample_bracket_started_unix_ns'], data['sample_bracket_ended_unix_ns']),
+                                         (start, end))
+                        self.assertEqual(data['sample_bracket_wall_ns'], end - start)
+                        self.assertEqual(data['inner_intervals'], inner)
+
+    def test_composed_clock_allowance_can_make_whole_case_accounting_unavailable(self):
+        for start_disp, stop_disp in [('0.023', '0.001'), ('0.001', '0.023')]:
+            with self.subTest(start_dispersion=start_disp, stop_dispersion=stop_disp):
+                inputs, report, layout, processes, parser = self.m1_clock_fixture(
+                    start_disp, stop_disp, '1.006', 94_000_000, 2_906_000_000)
+                positive = export.cpu_rows(inputs, 'M1w1', report, layout, processes, parser)
+                self.assertEqual(len(positive), 18)
+                for row in positive:
+                    self.assertEqual(row['status'], 'observed')
+                    for data in row['nodes'].values():
+                        self.assertEqual(data['temporal_selection_allowance_ns'], 31_000_001)
+                        self.assertEqual(data['sample_sequence'], [16, 64])
+                        self.assertEqual((data['sample_bracket_started_unix_ns'], data['sample_bracket_ended_unix_ns'],
+                                          data['sample_bracket_wall_ns']), (1_160_000_000, 1_640_000_000, 480_000_000))
+                inputs, report, layout, processes, parser = self.m1_clock_fixture(
+                    start_disp, stop_disp, '1.016', 84_000_000, 2_916_000_000,
+                    client_bound='0.014', client_dispersion='0.012')
+                result = export.cpu_rows(inputs, 'M1w1', report, layout, processes, parser)
+                self.assertEqual(len(result), 1)
+                self.assertEqual((result[0]['phase'], result[0]['case'], result[0]['status']),
+                                 ('M1w1', 'grv', 'CPU-unavailable'))
+                self.assertIn('accounting temporal resolution unqualified', result[0]['reason'])
+                assert_accounting_only(self, result[0])
+                for field in ('arm', 'nodes', 'observed_accounted_cpu_usec', 'observed_accounted_cpu_seconds'):
+                    self.assertNotIn(field, result[0])
 
     def test_m1_accounting_rows_join_measured_fences_without_operation_normalization(self):
         inputs, report, layout, processes, parser = self.m1_cpu_fixture()

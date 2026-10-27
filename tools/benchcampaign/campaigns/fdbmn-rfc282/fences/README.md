@@ -18,7 +18,7 @@ archive sha256: 76990b867f337bdad0132cc69aa3f6f9a9bcf0cb0859cc8c7f8514def684f508
 run.go sha256: b82341a5652afa1a94931ff687519c262065f592b85b16e5b832182efea00214
 ```
 
-`source-context.json` pins all seven complete original and patched file hashes,
+`source-context.json` pins all nine complete original and patched file hashes,
 patch hash and Go-control hash. It retains original patch-context snippets (the
 small BUILD file is complete), not the whole harness. `measurement-fences.patch`
 changes `internal/bench/run.go`, appends real Go controls to the already-declared
@@ -28,9 +28,13 @@ changes `internal/bench/run.go`, appends real Go controls to the already-declare
 file, `integration/smoke_test.go`, drops the obsolete rejection of completed
 cleanup-count growth, matching the already-declared #948 drain contract, and adds
 measured-fence publication assertions to every existing Go/CGo workload cell.
-No current production checkout is patched.
+The eighth and ninth files, `cmd/clientbench/backend_selection_test.go` and its
+`BUILD.bazel`, add a test-only real-CGo `Run` fence control using the existing
+production opener and backend. The four original backend-selection controls and
+both executable BUILD declarations remain unchanged. No current production
+checkout is patched.
 
-The BUILD-only compatibility amendment exposes exactly `analyze.py`,
+The scripts BUILD-only compatibility amendment exposes exactly `analyze.py`,
 `matrix_plan.py`, `r3_plan.py` and `run.py` to
 `//tools/benchcampaign:__subpackages__`. The current campaign tests legitimately
 consume those frozen scripts; without the declaration, whole `just test` stops
@@ -49,8 +53,11 @@ compiler statement describes the original harness and is superseded for this
 new campaign by these explicit source/compiler receipts. Nothing asserts that
 the October campaign used Go 1.27.3. Both external SDK receipts identify compiler
 SHA256 `5f5eb6d0b2fb6aa0bb5d5f8c5f1c944e0de955c925f0111af92a9d8f79680b5b`.
-The appended Go controls are formatted with gofumpt; pre-existing test bodies
-are unchanged.
+The appended bench and real-CGo command controls are formatted with the
+repository-pinned gofumpt v0.12.0. The command test uses the Bazel-built formatter
+SHA256 `52700e112445146466f3c40b1b5f3770866b5fab30d36d36c27af1b491285ec6`,
+whose build info identifies go1.27.3 and mvdan.cc/gofumpt v0.12.0. Pre-existing
+test bodies are unchanged.
 
 The smoke-test-only cleanup correction removes exactly
 `drain.After.CleanupsQueued != drain.Before.CleanupsQueued`. It preserves
@@ -117,9 +124,9 @@ is contained in it.
 
 `prepare_harness.py` is an offline source preparer, not a build/test runner. Its
 CLI fixes the original cleanup-compatible archive SHA above and requires exactly
-28 regular files. It verifies the patch SHA and all seven complete original
+28 regular files. It verifies the patch SHA and all nine complete original
 source hashes before applying any hunk; it applies with exact old/new line
-positions, no offsets/fuzz, then verifies all seven complete patched hashes. Tar members must
+positions, no offsets/fuzz, then verifies all nine complete patched hashes. Tar members must
 be canonical regular files/directories under `tools/clientbench`; traversal,
 links, special files, duplicate members and file/directory collisions refuse.
 No tar extraction API or archive-supplied owner metadata is used.
@@ -145,7 +152,7 @@ The fresh directory receives:
 
 The receipt explicitly says `prepared-not-runtime-qualified`. It is supplemental
 and does not replace the campaign protocol/source/build/compiler receipts. The
-preparer verifies no regular members were added/removed, exactly the seven
+preparer verifies no regular members were added/removed, exactly the nine
 declared files changed, and every other file's bytes stayed unchanged. Existing output
 directories refuse without overwriting; repeated verification is read-only.
 Prepare **once**, preserve this archive and receipt, and reuse the exact same
@@ -177,7 +184,8 @@ the checker again; it requires explicit `FROZEN_EXPORT`, `HARNESS_RECEIPT` and
 `FENCES_PREPARER` paths. No source export, extraction, compilation, tests or
 qualification run is performed merely by creating the recipe. Successful real
 Go controls on both production exports, pinned binary builds and untimed
-three-arm qualification still need their own nonempty execution receipts.
+three-arm qualification need their own nonempty execution receipts; the renewed
+F1 control/build receipts are summarized below.
 
 ## Controls and validation boundary
 
@@ -212,22 +220,94 @@ realtime endpoint subtraction with the monotonic wall duration. Removing fence
 publication from `Run` therefore fails the real smoke rather than merely leaving
 helper tests green.
 
-The direct invalid-`Phase` controls prove `measurementFences` rejects malformed
-phases; they do **not** execute `Run`'s fenceErr-only propagation branch. Valid
-public configuration produces a positive measured population, and operation,
-stats or counter failures already set `runErr` before that branch. An
-otherwise-successful invalid clock window cannot be induced through the current
-public inputs without clock mutation, a timing hook or a production refactor.
-None is introduced here; the fenceErr-only branch remains an explicit behavioral
-coverage limit. Runtime `run.go` bytes, including boundary clocks and error
-propagation, are unchanged by these control corrections.
+The direct invalid-`Phase` controls alone do **not** execute `Run`'s fenceErr-only
+propagation branch. The new command test covers that branch with
+real FoundationDB, not an in-memory database or injected transaction result. Its
+parent owns one real testcontainer under a two-minute context. Each positive/zero
+case runs in a fresh bounded child because native network shutdown is terminal.
+The child calls the existing production CGo `openBackend` outside a supported
+`testing/synctest` bubble, then calls actual `bench.Run` inside it, using one real
+`read1000` operation, no warmup and one worker. Native futures wait through
+callback-unlocked mutexes, which do not advance the bubble clock. The zero case
+therefore expects a zero measured wall; the positive wrapper only sleeps 1ns
+after a successful delegated read-only transaction and expects a 1ns wall.
+Neither case substitutes data, errors, transactions, lifecycle methods or fences.
 
-These behavioral tests require an explicitly authorized later frozen-export
-Bazel validation; their presence in this patch is **not** an execution receipt.
-The revised patch/context and Go-test/smoke hashes require a fresh external
-preparation and source receipt, plus renewed qualification. Earlier archives and
-qualification receipts remain historical evidence for their own pinned bytes,
-not verification of these revised controls.
+Both cases require completed=1, errors=0, successful persisted validation and
+complete drains/barrier/database-close/native-network-stop. The zero case must
+return exactly `invalid measured phase fences`, publish success=false and
+failure_stage=`measurement_fences`, and omit all five fence keys. The positive
+case must return nil, publish success=true and all five valid integer/UTC fence
+fields. The existing four backend-selection controls remain intact. The command
+test target gains only the sources, native linking and dependencies required to
+reuse the actual CGo backend; neither executable target changes.
+
+## Renewed F1 execution evidence
+
+The revised nine-file overlay was prepared into fresh frozen A/B exports using
+the pinned Go 1.27.3 compiler. Each whole fast lane passed **172/172 targets,
+172 actual executions and zero cached results**. On each export, actual execution
+passed both real-CGo positive/zero controls, all four original backend-selection
+controls, all three bench fence controls and all 22 integration smoke cells.
+Both real-CGo controls reached complete native lifecycle shutdown; the zero case
+exercised the fenceErr-only failure-publication branch.
+
+The three authorized frozen B benchmark/probe builds passed. All **seven**
+deployed ELF files were compared byte-for-byte with the previous qualification
+and were identical. Runtime `run.go`, `backend_cgo.go`, `backend_go.go`, `main.go`
+and lifecycle implementation bytes remain unchanged by these test-only controls.
+The renewed archive SHA256 is
+`5ced06a69c21d1e24c4e5627b2656176a74427e6963b36f50128b88430e0f656`;
+its source-receipt SHA256 is
+`ad21d5056093a0cc90ed04d445e851b82429765b38d3f75d5e7b0d6ae9e512ed`.
+
+A separate fresh export removed only the assignment of `fenceErr` to `runErr`.
+Its whole fast lane executed all 172 targets: 171 passed and only the command
+test target failed. The positive control passed; the zero control failed the
+specific publication assertion with completed=1, errors=0, persisted validation
+ok, complete database/network shutdown, wall=0, success=true and a nil returned
+error. This is a **compiled, applied, branch-only RED**, not a drain, setup or
+earlier-guard failure. Exact source restoration then passed the whole fast lane:
+**172/172 targets, 3 actual executions and 169 cached results**. The real-CGo
+command, integration and constfoldcensus targets actually reran; bench fence
+controls reused their passing cache. Every phase retained unchanged
+source/helper/archive/runtime seals and Bazel shutdown exit 0.
+
+The final F1 qualification packet SHA256 is
+`47b3737b7b734d3a017a87b567414a9f2100ead2ef2338214c1fc5419ce5577a`.
+It binds these receipts:
+
+| Receipt | SHA256 |
+|---|---|
+| A corrected offline artifact discovery | `1a3e9b453fad7f8b0cb91d4586c4ef2d658286b1ae08336d56e594c04910c47c` |
+| B whole fast lane and seven ELF comparisons | `19ccd02a4fcf275f626f4e75c1571ffe0e2ab308f9b7daebf0e41414553ee4f0` |
+| Compiled propagation-removal RED | `3a75494b33f698dbc93cb854bbc258a60d25ea97ffa7fdea93f1537f3ed7e691` |
+| Exact restored GREEN | `a535cb6eb98845789132cd672294fa2aa5c8dedaf7ee0a934ad923a014b59af2` |
+
+Failure history is preserved, not overwritten. The first A attempt failed nogo's
+gofumpt check: 12 actual passing targets, one build failure and 159 skipped
+targets, with **zero** positive/zero child executions and no runtime/drain
+outcome. The pinned formatter corrected only the new multiline fence-key literal.
+The next A whole lane passed all 172 actual targets, but its supervisor then
+failed artifact collection by assuming a default testlogs configuration instead
+of the CGo transition. That original FAIL script/log/receipt/BEP remains intact.
+The supplemental A receipt discovers and checks the existing passing log/XML
+through their pinned BEP URIs; **A was not rerun** to repair postprocessing.
+
+Measured endpoints are saved before drains, while fence validation runs after
+shutdown. `DrainFinalizers` uses bubble timers and runtime finalizers execute
+outside the bubble. The recorded executions completed both drains; this does
+not authorize hiding any future timeout with a rerun or weaker assertion.
+Earlier qualification receipts still describe only their own pinned bytes.
+The qualified overlay input copy is preserved separately; this results update
+is a bounded README-only change, not a new harness or source receipt.
+
+These results close the tested F1 error-publication gap. They do **not** establish
+VPC placement, four-node F0/P0, performance, server CPU accuracy, campaign launch
+readiness or authorization to create paid resources. Whole fast lanes are not
+full-suite verification. The new repository integrity/preparer controls still
+require whole-repository `just test` after integration; frozen A/B validation
+does not run the current campaign fences package.
 
 Repository validation remains `just test` (and the authorized full lane at the
 workstream boundary), not direct Python tests or `go test`. On the shared

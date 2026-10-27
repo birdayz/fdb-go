@@ -21,7 +21,8 @@ SOURCE_ROOT = 'tools/clientbench'
 PATCHED_FILES = {SOURCE_ROOT + '/internal/bench/run.go', SOURCE_ROOT + '/internal/bench/bench_test.go',
                  SOURCE_ROOT + '/scripts/BUILD.bazel', SOURCE_ROOT + '/scripts/matrix_plan.py',
                  SOURCE_ROOT + '/scripts/r3_plan.py', SOURCE_ROOT + '/scripts/test_campaign.py',
-                 SOURCE_ROOT + '/integration/smoke_test.go'}
+                 SOURCE_ROOT + '/integration/smoke_test.go', SOURCE_ROOT + '/cmd/clientbench/BUILD.bazel',
+                 SOURCE_ROOT + '/cmd/clientbench/backend_selection_test.go'}
 FORMAT = 'fdbmn-measured-fence-harness/v1'
 
 QUALIFICATION_RECIPE = '''#!/usr/bin/env bash

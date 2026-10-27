@@ -17,10 +17,12 @@ RUN = prepare.SOURCE_ROOT + '/internal/bench/run.go'
 TEST = prepare.SOURCE_ROOT + '/internal/bench/bench_test.go'
 BUILD = prepare.SOURCE_ROOT + '/scripts/BUILD.bazel'
 SMOKE = prepare.SOURCE_ROOT + '/integration/smoke_test.go'
+BACKEND_BUILD = prepare.SOURCE_ROOT + '/cmd/clientbench/BUILD.bazel'
+BACKEND_TEST = prepare.SOURCE_ROOT + '/cmd/clientbench/backend_selection_test.go'
 OTHER = prepare.SOURCE_ROOT + '/scripts/run.py'
 VERSION_FILES = tuple(prepare.SOURCE_ROOT + '/scripts/' + name for name in
                       ('matrix_plan.py', 'r3_plan.py', 'test_campaign.py'))
-CHANGED_FILES = (RUN, TEST, BUILD, SMOKE, *VERSION_FILES)
+CHANGED_FILES = (RUN, TEST, BUILD, SMOKE, BACKEND_BUILD, BACKEND_TEST, *VERSION_FILES)
 
 
 class PrepareTest(unittest.TestCase):
@@ -29,11 +31,14 @@ class PrepareTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.old = {RUN: b'package bench\nvar fence = 0\n', TEST: b'package bench\nvar checked = false\n',
-                    BUILD: b'# fixture build before\n', SMOKE: b'# fixture smoke before\n', OTHER: b'# unchanged\n\xff\n'}
+                    BUILD: b'# fixture build before\n', SMOKE: b'# fixture smoke before\n',
+                    BACKEND_BUILD: b'# fixture backend build before\n', BACKEND_TEST: b'# fixture backend test before\n',
+                    OTHER: b'# unchanged\n\xff\n'}
         self.old.update({name: b"go_version='go1.26.9'\n" for name in VERSION_FILES})
         self.new = dict(self.old, **{RUN: b'package bench\nvar fence = 1\n',
                                     TEST: b'package bench\nvar checked = true\n', BUILD: b'# fixture build after\n',
-                                    SMOKE: b'# fixture smoke after\n'})
+                                    SMOKE: b'# fixture smoke after\n', BACKEND_BUILD: b'# fixture backend build after\n',
+                                    BACKEND_TEST: b'# fixture backend test after\n'})
         self.new.update({name: b"go_version='go1.27.3'\n" for name in VERSION_FILES})
         self.patch = self.root / 'overlay.patch'
         self.patch.write_text(''.join(''.join(difflib.unified_diff(
@@ -68,7 +73,7 @@ class PrepareTest(unittest.TestCase):
                 member, body = extra
                 archive.addfile(member, io.BytesIO(body) if member.isfile() else None)
 
-    def prepare(self, name='prepared', expected_count=8):
+    def prepare(self, name='prepared', expected_count=10):
         return prepare.prepare(self.archive, self.root / name, self.context, self.patch,
                                prepare.digest(self.archive.read_bytes()), expected_count)
 
@@ -99,7 +104,7 @@ class PrepareTest(unittest.TestCase):
         with tarfile.open(archive) as source:
             regular = {member.name: source.extractfile(member).read() for member in source if member.isfile()}
         self.assertEqual(regular, self.new)
-        self.assertEqual(self.verify()['regular_files'], 8)
+        self.assertEqual(self.verify()['regular_files'], 10)
         self.assertIn('just test', (self.root / 'prepared/qualify-harness.sh').read_text())
         self.assertEqual(receipt['status'], 'prepared-not-runtime-qualified')
 
@@ -189,7 +194,7 @@ class PrepareTest(unittest.TestCase):
         tree = self.root / 'prepared/tree'
         (tree / 'unrelated-production.go').write_text('outside harness scope\n')
         (tree / '.bazel-bep.jsonl').write_text('build output outside harness scope\n')
-        self.assertEqual(self.verify()['regular_files'], 8)
+        self.assertEqual(self.verify()['regular_files'], 10)
         (tree / OTHER).write_bytes(b'drift')
         with self.assertRaisesRegex(ValueError, 'bytes or modes changed'):
             self.verify()
@@ -273,7 +278,7 @@ class PrepareTest(unittest.TestCase):
         (repo / '.git').write_text('gitdir: /not-a-real-git-directory\n')
         with self.assertRaisesRegex(ValueError, 'inside a Git worktree'):
             prepare.prepare(self.archive, repo / 'output', self.context, self.patch,
-                            prepare.digest(self.archive.read_bytes()), 8)
+                            prepare.digest(self.archive.read_bytes()), 10)
         self.assertFalse((repo / 'output').exists())
 
 
