@@ -179,8 +179,10 @@ the context-scoped timer does not capture database-policy retry-delay events.
 including attempts that later fail a guard or commit, not persisted storage.
 `timer` is a native StoreTimer snapshot taken after workers join; event kind
 identifies units (timed `CumulativeValue` is nanoseconds; size `Count` is bytes).
-Commit timing covers successful commits and precommit work only, not failed
-commits. Batch mode does not emit scalar save/load timers or scalar save
+Native commit timing includes successful precommit/commit work **and the
+successful AttemptObserver callback**, including any observer blocking or reads;
+it excludes failed commits and is not pure server commit latency. Batch mode
+does not emit scalar save/load timers or scalar save
 counters; missing counters are not evidence that this work was free. Failure
 receipts retain acknowledged batch/row counts, not an authoritative persisted
 census when a canceled commit has an unknown outcome. Existing attempt observers
