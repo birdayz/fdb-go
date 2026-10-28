@@ -69,7 +69,7 @@ The sealed approval is one strict JSON object containing **every literal** from
 `policy.arm(run)`, plus:
 
 - `schema: "ingest20k_fresh100k_v1"`, `approved: true`;
-- `source_revision` and identical `source_formal_ack_revision`;
+- `source_revision` and identical `source_approved_revision` (explicit operator approval);
 - absolute `binary`, `source_root`, `source_manifest`, `probe_binary`, `out`;
 - `binary_sha256`, `input_manifest_sha256`, `probe_sha256`, `probe_source_sha256`;
 - reviewed `policy_sha256` and identical `policy_formal_ack_sha256`;
@@ -83,7 +83,12 @@ and clean source HEAD are checked at admission, before/after workload stages and
 after output writers join, not on every monitor tick. App/probe bytes, manifest
 bytes, approval/request/configuration and critical operations hashes are checked
 periodically by the monitor as well. Both executables must be non-writable and
-executable. An ACK for one application's source is not an ACK for these ops.
+executable. Application source/binary hashes and explicit operator approval bind
+each experimental candidate; that approval does not claim formal application
+review. Isolated candidates may be measured before that review; formal application
+review remains separate before merge. The baseline revision above retains its
+genuine prior formal ACK. Host operations/probe safety still require the unchanged
+`policy_formal_ack_sha256` binding; application approval is not an ACK for these ops.
 
 The operator-only foreground form is:
 
@@ -237,8 +242,11 @@ initial Docker admission, raw commands/status, attached streams and ingest ACK.
 after these checks, successful monitor exit and confirmed **exit0/noOOM/noRestart**
 stop. Any nonzero stop command or lost stop receipt is a sticky failure even if a
 later independent check confirms containment. Emergency stop still confirms an exited137
-or OOM instance and releases the lease, but records `FAILED_STOP.json` rather than
-looping forever waiting for an exit code to change. GNU timeout/Tini's actual normal
+or OOM instance and releases the lease rather than waiting for an exit code to
+change. `FAILED_STOP.json` is written only when cleanup reaches the final nonclean
+stop gate without a pending error. Earlier guard/monitor failures instead retain
+`FAILED.json`, command/monitor exits and stop events when receipt writes succeed;
+absence of `FAILED_STOP.json` is not proof of a clean stop. GNU timeout/Tini's actual normal
 shutdown behavior must pass this gate; it is not assumed. Server attachment exit is
 recorded separately, not invented.
 Neither file establishes20k/s, a production limit, HA or an SLO.
