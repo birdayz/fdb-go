@@ -2857,6 +2857,14 @@ regressions so they can be proposed upstream after the PoC.
   check. Implementation, test, formal-review and actual-inode gates remain;
   no filesystem flag changes, retained-data changes or guard relaxation are
   authorized. Keep the 4-CPU/16-GiB resource envelope and 10M final ceiling.
+  The first operations commit `428478f2` passed 182 fast targets (2 executed,
+  180 cached), 29 Python methods, 121 C predicate checks and 9,532 injected C
+  checks, but formal review returned NAK with 13 blockers. Close sticky shutdown
+  failure accounting, continuous lease identity/default-path compatibility,
+  preconfigure warning rejection, complete evidence inventory and the shell,
+  deadline, observation-adapter, monitor and foreground-lifecycle regression
+  gaps; correct scope documentation and remove dead warning-waiver plumbing.
+  No runtime is admitted until fixes pass validation and formal re-review.
   Initial formal review of `e4107200` returned NAK for missing overlapping-worker
   profiling assertions (F1) and retry/failure receipt assertions (F3, duplicate
   F2). Both were fixed with deterministic regressions in `12b1c7da`; formal

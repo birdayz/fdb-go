@@ -1,4 +1,4 @@
-# Strict only. No warning arm, even if a caller supplies allow_batch_warning.
+# Strict only: every status warning is rejected.
 def nonnegative: type == "number" and . >= 0 and . < 1e300;
 def bytes: nonnegative and floor == .;
 def hasrole($name): any(.roles[]; .role == $name);
@@ -66,7 +66,6 @@ if (.client.database_status.available == true
       and role_placement)
     and strict_aggregate)
 then {aggregate_healthy_original:.client.database_status.healthy,
-      health_exception_used:false,
       warning_names:[.cluster.messages[].name],
       queue_bytes:.cluster.qos.worst_queue_bytes_storage_server,
       durability_lag_seconds:.cluster.qos.worst_durability_lag_storage_server.seconds,

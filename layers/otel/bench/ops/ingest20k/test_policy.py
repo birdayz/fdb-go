@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Offline fresh-100k admission/receipt fixtures; never start a database."""
-import ast
 import contextlib
 import copy
 import hashlib
@@ -65,7 +64,7 @@ def quiet():
 
 def readiness():
     return {"samples": [{"epoch": i * 5, "aggregate_healthy_original": True,
-                         "health_exception_used": False, "queue_bytes": 16777215,
+                         "queue_bytes": 16777215,
                          "durability_lag_seconds": 9.999} for i in range(3)]}
 
 
@@ -102,9 +101,11 @@ def evidence(mode, run="prof20k0290", revision="1" * 40, batch=32, workers=2):
 
 def unconfigured():
     return {"cluster": {"connection_string": "otel20k:otel20k@127.0.0.1:14883",
-                        "recovery_state": {"name": "configuration_never_created"}, "configuration": None},
-            "client": {"coordinators": {"quorum_reachable": True},
-                       "cluster_file": {"up_to_date": True}, "database_status": {"available": False}}}
+                        "recovery_state": {"name": "configuration_never_created"}, "configuration": None,
+                        "messages": []},
+            "client": {"coordinators": {"quorum_reachable": True}, "messages": [],
+                       "cluster_file": {"up_to_date": True},
+                       "database_status": {"available": False, "healthy": False}}}
 
 
 def inode_proof():
@@ -279,6 +280,17 @@ class PolicyTests(unittest.TestCase):
             for field in ("binary", "source_root", "source_manifest", "probe_binary", "out"):
                 self.reject("approval", base, field, ["relative/path"])
 
+    def test_formal_acknowledgements_reject_other_well_formed_reviewed_identities(self):
+        base = approval()
+        for field, replacement in (("source_revision", "2" * 40),
+                                   ("source_formal_ack_revision", "2" * 40),
+                                   ("policy_sha256", "e" * 64),
+                                   ("policy_formal_ack_sha256", "e" * 64)):
+            self.reject("approval", base, field, [replacement])
+        matching = approval(revision="2" * 40)
+        matching.update(policy_sha256="e" * 64, policy_formal_ack_sha256="e" * 64)
+        self.assertEqual(self.cli("approval", matching), {"approved": True})
+
     def test_strict_json_vacuity_and_missing_fields(self):
         for raw in ("", "{} {}", '{"samples":[],"samples":[]}', '{"x":NaN}',
                     '{"x":Infinity}', '{"x":-Infinity}', '{"x":1e999}', "null", "[]", "true", "17"):
@@ -345,7 +357,7 @@ class PolicyTests(unittest.TestCase):
         for run in RUNS:
             for stage in ("load", "drain", "census", "oracle"):
                 base = phase(run, stage)
-                self.assertEqual(self.cli("phase", base), {"allow_batch_warning": False})
+                self.assertEqual(self.cli("phase", base), {"phase_valid": True})
                 self.reject("phase", base, "stage_deadline_epoch", [base["stage_deadline_epoch"] + 1, 1000, 2201])
                 self.reject("phase", base, "now", [999, base["stage_deadline_epoch"], 2201])
                 base["now"] = base["stage_deadline_epoch"] - 1
@@ -370,7 +382,7 @@ class PolicyTests(unittest.TestCase):
             self.cli("readiness", base, valid=False)
         for field, values in {
             "epoch": [0, 4, -1, True, "5"], "aggregate_healthy_original": [False, 1, "true"],
-            "health_exception_used": [True, 0, "false"], "queue_bytes": [16777216, -1, True, "0"],
+            "queue_bytes": [16777216, -1, True, "0"],
             "durability_lag_seconds": [10, -1, True, "0"],
         }.items():
             self.reject("readiness", readiness(), "samples.1." + field, values + [None])
@@ -434,7 +446,7 @@ class PolicyTests(unittest.TestCase):
         for configuration in (None, {}):
             base = unconfigured()
             base["cluster"]["configuration"] = configuration
-            self.assertEqual(self.cli("unconfigured", base), {"unconfigured": True})
+            self.assertEqual(self.cli("unconfigured", base), {"unconfigured": True, "canonical_messages": []})
         for path, values in {
             "cluster.connection_string": [None, "", "otel10c:otel10c@127.0.0.1:14783"],
             "cluster.recovery_state.name": [None, "fully_recovered", "configuration_missing"],
@@ -451,11 +463,65 @@ class PolicyTests(unittest.TestCase):
                 parent = parent[part]
             del parent[parts[-1]]
             if path == "cluster.configuration":
-                self.assertEqual(self.cli("unconfigured", base), {"unconfigured": True})
+                self.assertEqual(self.cli("unconfigured", base), {"unconfigured": True, "canonical_messages": []})
             else:
                 self.cli("unconfigured", base, valid=False)
         for section in ("client", "cluster"):
             self.reject("unconfigured", unconfigured(), section, [None, {}, [], "wrong"])
+
+    def test_preconfigure_native_absence_messages_are_exact_unique_and_role_consistent(self):
+        allowed = {"unreachable_master_worker": "master", "unreachable_dataDistributor_worker": "data_distributor",
+                   "unreachable_ratekeeper_worker": "ratekeeper", "unreachable_consistencyScan_worker": "consistency_scan",
+                   "unreadable_configuration": None}
+        for name, role in allowed.items():
+            value = unconfigured()
+            value["cluster"]["messages"] = [{"name": name}]
+            self.assertEqual(self.cli("unconfigured", value), {"unconfigured": True, "canonical_messages": [name]})
+            value["cluster"]["messages"].append({"name": name})
+            self.cli("unconfigured", value, valid=False)
+            if role:
+                value["cluster"]["messages"] = [{"name": name}]
+                value["cluster"]["processes"] = {"worker": {"roles": [{"role": role}]}}
+                self.cli("unconfigured", value, valid=False)
+        value = unconfigured()
+        value["cluster"]["messages"] = [{"name": name} for name in allowed]
+        self.assertEqual(self.cli("unconfigured", value),
+                         {"unconfigured": True, "canonical_messages": list(allowed)})
+        value["cluster"]["messages"].append({"name": "status_incomplete"})
+        self.cli("unconfigured", value, valid=False)
+        paths = {
+            "client.messages": [None, {}, "", [{"name": "status_incomplete"}], [{"name": "unreadable_configuration"}]],
+            "cluster.messages": [None, {}, "", [None], [{"name": 1}], [{"name": "status_incomplete"}],
+                                 [{"name": "batch_priority_transaction_start_probe_timeout"}]],
+            "client.database_status.healthy": [True, 0, None],
+            "cluster.database_available": [True, 0, None],
+            "client.configuration": [None, [], "configuration"],
+            "cluster.processes": [None, [], "processes"],
+        }
+        for path, values in paths.items():
+            self.reject("unconfigured", unconfigured(), path, values)
+        for section in ("client", "cluster"):
+            value = unconfigured()
+            del value[section]["messages"]
+            self.cli("unconfigured", value, valid=False)
+        for configuration in ({}, {"messages": []}):
+            value = unconfigured()
+            value["client"]["configuration"] = configuration
+            self.cli("unconfigured", value)
+        for messages in (None, {}, [{"name": "configuration_error"}]):
+            value = unconfigured()
+            value["client"]["configuration"] = {"messages": messages}
+            self.cli("unconfigured", value, valid=False)
+        for process in ({}, {"address": "127.0.0.1:14883", "class_type": "storage", "roles": [], "messages": []}):
+            value = unconfigured()
+            value["cluster"]["processes"] = {"partial": process}
+            self.cli("unconfigured", value)
+        for process in (None, {"messages": None}, {"messages": [{"name": "process_error"}]},
+                        {"address": "127.0.0.1:14683"}, {"address": "127.0.0.1:14883", "class_type": "stateless"},
+                        {"roles": None}, {"roles": [None]}, {"roles": [{"role": ""}]}):
+            value = unconfigured()
+            value["cluster"]["processes"] = {"worker": process}
+            self.cli("unconfigured", value, valid=False)
 
     def test_native_startup_progress_population_and_optional_sections(self):
         names = ("reading_coordinated_state", "locking_coordinated_state", "locking_old_transaction_servers",
@@ -540,13 +606,15 @@ class PolicyTests(unittest.TestCase):
         self.cli("startup_pending", value, valid=False)
 
     def test_clean_stop_is_separate_from_confirmed_emergency_exit(self):
-        clean = {"running": False, "status": "exited", "exit_code": 0, "oom": False, "restarts": 0}
+        clean = {"running": False, "status": "exited", "exit_code": 0, "oom": False,
+                 "restarts": 0, "shutdown_ok": True}
         self.assertEqual(self.cli("clean_stop", clean), {"clean_stop": True})
         self.assertEqual(self.cli("clean_stop", {}), {"clean_stop": False})
         for field, values in {
             "running": [True, None, 0, "false"], "status": ["dead", "running", None],
             "exit_code": [137, 1, -1, True, False, 0.0, "0", None],
             "oom": [True, None, 0, "false"], "restarts": [1, -1, True, False, 0.0, "0", None],
+            "shutdown_ok": [False, None, 1, "true"],
         }.items():
             for value in values:
                 candidate = dict(clean)
@@ -620,11 +688,10 @@ class PolicyTests(unittest.TestCase):
 class StrictStatusTests(unittest.TestCase):
     setUp = PolicyTests.setUp
 
-    def jq(self, value, *, valid=True, allow=False, raw=None):
+    def jq(self, value, *, valid=True, raw=None):
         executable = shutil.which("jq")
         self.assertIsNotNone(executable, "jq must be available; never skip")
-        result = subprocess.run([executable, "-e", "--argjson", "allow_batch_warning", json.dumps(allow),
-                                 "-f", str(HERE / "status-check.jq")],
+        result = subprocess.run([executable, "-e", "-f", str(HERE / "status-check.jq")],
                                 input=json.dumps(value) if raw is None else raw, cwd=self.work,
                                 env=self.env, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode == 0, valid, result.stdout + result.stderr)
@@ -632,16 +699,15 @@ class StrictStatusTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in self.work.iterdir()), ["bin"])
         return json.loads(result.stdout) if valid else None
 
-    def test_strict_positive_and_no_batch_exception_even_explicit_true(self):
-        for allow in (False, True):
-            result = self.jq(status(), allow=allow)
-            self.assertIs(result["aggregate_healthy_original"], True)
-            self.assertIs(result["health_exception_used"], False)
-            self.assertEqual(len(result["processes"]), 4)
-            value = status()
-            value["client"]["database_status"]["healthy"] = False
-            value["cluster"]["messages"] = [{"name": "batch_priority_transaction_start_probe_timeout"}]
-            self.jq(value, allow=allow, valid=False)
+    def test_strict_positive_and_batch_warning_is_always_rejected(self):
+        result = self.jq(status())
+        self.assertIs(result["aggregate_healthy_original"], True)
+        self.assertNotIn("health_exception_used", result)
+        self.assertEqual(len(result["processes"]), 4)
+        value = status()
+        value["client"]["database_status"]["healthy"] = False
+        value["cluster"]["messages"] = [{"name": "batch_priority_transaction_start_probe_timeout"}]
+        self.jq(value, valid=False)
 
     def test_malformed_structural_status_population_roles_and_probes(self):
         for value in (None, {}, [], True):
@@ -682,7 +748,7 @@ class StrictStatusTests(unittest.TestCase):
             for replacement in values:
                 value = status()
                 set_path(value, path, replacement)
-                self.jq(value, valid=False, allow=True)
+                self.jq(value, valid=False)
         for name in status()["cluster"]["latency_probe"]:
             for replacement in (None, -1, True, 5):
                 value = status()
@@ -785,7 +851,7 @@ class DriverSafetyTests(unittest.TestCase):
                 subprocess.CompletedProcess([], 0, json.dumps(self.inspected("prof20k0290")), ""),
                 subprocess.CompletedProcess([], 0, "stopped", ""),
                 subprocess.CompletedProcess([], 0, json.dumps(after), "")]) as command:
-            self.assertEqual(runtime.stop(), after)
+            self.assertEqual(runtime.stop(), dict(after, shutdown_ok=True, shutdown_failures=[]))
         self.assertEqual(command.call_count, 3)
         runtime.stop = mock.Mock(return_value=after)
         with mock.patch.object(self.driver.time, "sleep") as sleep:
@@ -834,9 +900,9 @@ class DriverSafetyTests(unittest.TestCase):
         runtime.out = self.work / dirname
         runtime.out.mkdir()
         runtime.frozen = "d" * 64
-        runtime.phase = mock.Mock(return_value=False)
+        runtime.phase = mock.Mock(return_value=None)
         clock = {"seconds": 1000, "index": 0}
-        summary = {"aggregate_healthy_original": True, "health_exception_used": False,
+        summary = {"aggregate_healthy_original": True,
                    "queue_bytes": 0, "durability_lag_seconds": 0}
 
         def raw_status(*_args, **_kwargs):
@@ -860,7 +926,7 @@ class DriverSafetyTests(unittest.TestCase):
             clock["seconds"] += seconds
 
         runtime.bounded_exec = mock.Mock(side_effect=raw_status)
-        runtime.status = lambda allow=False, bootstrap=False: self.driver.Runtime.status(runtime, allow, bootstrap)
+        runtime.status = lambda *, bootstrap=False: self.driver.Runtime.status(runtime, bootstrap=bootstrap)
         guard = mock.Mock()
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(self.driver.subprocess, "run", side_effect=jq_result))
@@ -886,7 +952,7 @@ class DriverSafetyTests(unittest.TestCase):
                 raw_sha = hashlib.sha256(runtime.last_stdout.read_bytes()).hexdigest()
                 for sample in samples:
                     self.assertIs(sample["aggregate_healthy_original"], True)
-                    self.assertIs(sample["health_exception_used"], False)
+                    self.assertNotIn("health_exception_used", sample)
                     self.assertNotIn("startup_pending", sample)
                     self.assertEqual(sample["raw_path"], "status.raw.json")
                     self.assertEqual(sample["raw_sha256"], raw_sha)
@@ -930,52 +996,6 @@ class DriverSafetyTests(unittest.TestCase):
                     self.driver.strict_ready(runtime, guard, "bootstrap.ready", 60, bootstrap=True)
                 pending.assert_not_called()
             self.assertFalse((runtime.out / "bootstrap.ready.json").exists())
-
-    def test_monitor_guard_failure_always_stops_with_inherited_lease(self):
-        lock = self.work / "lease.lock"
-        lock.write_text("")
-        (self.work / "lease.json").write_text(json.dumps(
-            {"path": str(lock), "pid": 123, "start_ticks": "fixture-start"}))
-        for guard in ("check_frozen", "identity", "sequential", "volume", "resources", "missing-heartbeat"):
-            runtime = mock.Mock(started=2000, started_mono=1000, instance="a" * 64)
-            if guard != "missing-heartbeat":
-                getattr(runtime, guard).side_effect = ValueError("guard failed")
-            with contextlib.ExitStack() as stack:
-                stack.enter_context(mock.patch.object(self.driver, "Runtime", return_value=runtime))
-                stack.enter_context(mock.patch.object(self.driver.os, "getppid", return_value=123))
-                stack.enter_context(mock.patch.object(self.driver, "parent_start", return_value="fixture-start"))
-                stack.enter_context(mock.patch.object(self.driver.time, "time", return_value=2001))
-                stack.enter_context(mock.patch.object(self.driver.time, "monotonic", return_value=1001))
-                stack.enter_context(mock.patch.object(self.driver.time, "sleep", side_effect=AssertionError("unexpected loop")))
-                flock = stack.enter_context(mock.patch.object(self.driver.fcntl, "flock"))
-                with lock.open() as lease:
-                    with self.assertRaises((ValueError, FileNotFoundError)):
-                        self.driver.monitor(self.work, lease.fileno())
-            runtime.stop_until_confirmed.assert_called_once_with()
-            flock.assert_not_called()
-            self.assertFalse((self.work / "heartbeat.json").exists())
-
-    def test_sealed_1200s_container_deadline_and_lease_cleanup_structure(self):
-        source = (HERE / "driver.py").read_text()
-        tree = ast.parse(source)
-        run = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run")
-        argv = [n for n in ast.walk(run) if isinstance(n, ast.List) and any(
-            isinstance(v, ast.Constant) and v.value == "/etc/fdb4/container-entrypoint.sh" for v in n.elts)]
-        self.assertEqual(len(argv), 1)
-        self.assertEqual(ast.unparse(argv[0].elts[-1]), "str(request['started_epoch'] + 1200)")
-        cleanup = [n.finalbody for n in ast.walk(run) if isinstance(n, ast.Try) and any(
-            "os.close(lock_fd)" in ast.unparse(v) for v in n.finalbody)]
-        self.assertEqual(len(cleanup), 1)
-        text = "\n".join(ast.unparse(n) for n in cleanup[0])
-        self.assertLess(text.index("runtime.stop_until_confirmed()"), text.index("os.close(lock_fd)"))
-        commands = [line.strip() for line in (HERE / "container-entrypoint.sh").read_text().splitlines()
-                    if line.strip() and not line.lstrip().startswith("#")]
-        self.assertIn("(( remaining > 5 && remaining <= 1200 )) || exit 1", commands)
-        timeout = [line for line in commands if line.startswith("exec /usr/bin/timeout ")]
-        self.assertEqual(len(timeout), 1)
-        self.assertNotIn("--foreground", timeout[0])
-        self.assertIn('--kill-after=5s "$((remaining - 5))s" /bin/bash "$0" --inside "$1"', timeout[0])
-
 
 if __name__ == "__main__":
     unittest.main()

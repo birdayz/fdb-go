@@ -12,7 +12,7 @@ PROFILE = {"owner":"otel283-vxnar", "profile":"fdb4-4cpu-16g-ingest20k-v1",
            "count":100000, "batch":32, "workers":2, "ports":[14883,14884,14885,14886],
            "image":"foundationdb/foundationdb@sha256:559b178a137bbe09272ad6e3752531aa04e2ddacab8ccfa4ffa86467db033bea",
            "total_seconds":1200, "load_seconds":300, "drain_seconds":300, "census_seconds":120, "oracle_seconds":120}
-RUNTIME_FILES = ("policy.py", "driver.py", "status-check.jq", "foundationdb.conf", "fdb.cluster.seed", "container-entrypoint.sh", "inode-readonly.sh", "inode_flags.c", "build-probe.sh")
+RUNTIME_FILES = ("policy.py", "driver.py", "status-check.jq", "foundationdb.conf", "fdb.cluster.seed", "container-entrypoint.sh", "deadline.sh", "inode-readonly.sh", "inode_flags.c", "build-probe.sh")
 
 
 def arm(run, batch=32, workers=2):
@@ -135,7 +135,7 @@ def readiness(d):
     require(isinstance(samples, list) and len(samples) == 3, "exact three strict samples required")
     for s in samples:
         require(isinstance(s, dict) and uint(s.get("epoch")), "invalid strict sample")
-        require(s.get("aggregate_healthy_original") is True and s.get("health_exception_used") is False, "strict original health required")
+        require(s.get("aggregate_healthy_original") is True, "strict original health required")
         require(uint(s.get("queue_bytes")) and s["queue_bytes"] < 16777216, "strict queue")
         require(number(s.get("durability_lag_seconds")) and s["durability_lag_seconds"] < 10, "strict lag")
     require(all(b["epoch"] - a["epoch"] >= 5 for a, b in zip(samples, samples[1:])), "strict samples need five real seconds")
@@ -148,8 +148,46 @@ def unconfigured(d):
     require(cluster.get("recovery_state", {}).get("name") == "configuration_never_created", "never-created recovery required")
     require("configuration" not in cluster or cluster["configuration"] in (None, {}), "existing configuration rejected")
     require(client.get("coordinators", {}).get("quorum_reachable") is True and client.get("cluster_file", {}).get("up_to_date") is True, "new quorum/cluster file proof missing")
-    require(client.get("database_status", {}).get("available") is False, "new database must be unavailable")
-    return {"unconfigured": True}
+    require(client.get("database_status", {}).get("available") is False and client["database_status"].get("healthy") is False, "new database must be unavailable/unhealthy")
+    require(type(client.get("messages")) is list and client["messages"] == [], "unexpected preconfigure client messages")
+    if "configuration" in client:
+        require(isinstance(client["configuration"], dict), "preconfigure client configuration shape")
+        require("messages" not in client["configuration"] or type(client["configuration"]["messages"]) is list and client["configuration"]["messages"] == [], "preconfigure configuration messages")
+    if "database_available" in cluster:
+        require(cluster["database_available"] is False, "preconfigure availability contradiction")
+    messages = cluster.get("messages")
+    require(isinstance(messages, list), "preconfigure cluster messages shape")
+    allowed = {"unreachable_master_worker":"master", "unreachable_dataDistributor_worker":"data_distributor",
+               "unreachable_ratekeeper_worker":"ratekeeper", "unreachable_consistencyScan_worker":"consistency_scan",
+               "unreadable_configuration":None}
+    names = []
+    for message in messages:
+        require(isinstance(message, dict) and isinstance(message.get("name"), str) and message["name"] in allowed, "unexpected preconfigure cluster message")
+        require(message["name"] not in names, "duplicate preconfigure message")
+        names.append(message["name"])
+    processes = cluster.get("processes", {})
+    require(isinstance(processes, dict), "preconfigure processes shape")
+    observed_roles = set()
+    addresses = set()
+    classes = {"127.0.0.1:14883":"storage", "127.0.0.1:14884":"transaction", "127.0.0.1:14885":"stateless", "127.0.0.1:14886":"storage"}
+    for process in processes.values():
+        require(isinstance(process, dict), "preconfigure process shape")
+        # Status.actor.cpp can leave partial worker objects after a metric fetch
+        # error; missing optional messages is not a fabricated empty error list.
+        if "messages" in process:
+            require(type(process["messages"]) is list and process["messages"] == [], "unexpected preconfigure process messages")
+        if "address" in process:
+            address = process["address"]
+            require(address in classes and address not in addresses, "preconfigure process address")
+            addresses.add(address)
+            require("class_type" not in process or process["class_type"] == classes[address], "preconfigure class mismatch")
+        if "roles" in process:
+            require(isinstance(process["roles"], list), "preconfigure role shape")
+            for role in process["roles"]:
+                require(isinstance(role, dict) and isinstance(role.get("role"), str) and role["role"], "preconfigure role entry")
+                observed_roles.add(role["role"])
+    require(all(allowed[name] is None or allowed[name] not in observed_roles for name in names), "preconfigure absence warning contradicts observed role")
+    return {"unconfigured": True, "canonical_messages": names}
 
 
 def inode_proof(d):
@@ -208,7 +246,7 @@ def phase(d):
     require(d["deadline_epoch"]-d["started_epoch"] == 1200, "absolute 1200-second deadline")
     require(d["started_epoch"] <= d["stage_started_epoch"] <= d["now"] < d["stage_deadline_epoch"] <= d["deadline_epoch"], "expired/outside phase")
     require(0 < d["stage_deadline_epoch"]-d["stage_started_epoch"] <= limits[d["stage"]], "stage cap")
-    return {"allow_batch_warning":False}
+    return {"phase_valid":True}
 
 
 def evidence(d, approved=None):
@@ -307,7 +345,8 @@ def startup_pending(d):
 def clean_stop(d):
     clean = (d.get("running") is False and d.get("status") == "exited"
              and type(d.get("exit_code")) is int and d["exit_code"] == 0
-             and d.get("oom") is False and type(d.get("restarts")) is int and d["restarts"] == 0)
+             and d.get("oom") is False and type(d.get("restarts")) is int and d["restarts"] == 0
+             and d.get("shutdown_ok") is True)
     return {"clean_stop": clean}
 
 

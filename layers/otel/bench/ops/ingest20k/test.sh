@@ -11,15 +11,18 @@ import importlib
 import sys
 import unittest
 
-module = importlib.import_module("test_policy")
-suite = unittest.defaultTestLoader.loadTestsFromModule(module)
-count = suite.countTestCases()
-print(f"test_policy: discovered {count} tests", flush=True)
-if count <= 0:
-    print("test_policy: rejected empty test population", file=sys.stderr)
-    sys.exit(1)
-result = unittest.TextTestRunner(stream=sys.stdout, verbosity=2).run(suite)
-print(f"test_policy: ran {result.testsRun}/{count}; failures={len(result.failures)}; "
-      f"errors={len(result.errors)}; skipped={len(result.skipped)}", flush=True)
-sys.exit(0 if result.wasSuccessful() and result.testsRun == count and not result.skipped else 1)
+success = True
+for name in ("test_policy", "test_runtime", "test_lifecycle", "test_shell"):
+    module = importlib.import_module(name)
+    suite = unittest.defaultTestLoader.loadTestsFromModule(module)
+    count = suite.countTestCases()
+    print(f"{name}: discovered {count} tests", flush=True)
+    if count <= 0:
+        print(f"{name}: rejected empty test population", file=sys.stderr)
+        sys.exit(1)
+    result = unittest.TextTestRunner(stream=sys.stdout, verbosity=2).run(suite)
+    print(f"{name}: ran {result.testsRun}/{count}; failures={len(result.failures)}; "
+          f"errors={len(result.errors)}; skipped={len(result.skipped)}", flush=True)
+    success = success and result.wasSuccessful() and result.testsRun == count and not result.skipped
+sys.exit(0 if success else 1)
 PY

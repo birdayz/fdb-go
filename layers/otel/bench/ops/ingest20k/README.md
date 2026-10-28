@@ -35,6 +35,11 @@ volume-inspection utility is not misclassified as a database.
 The resource/workload envelope is fixed: 4 CPU, 16 GiB memory and memory+swap,
 bridge networking, four server processes with 4 GiB limits, two storage caches of
 2 GiB and other caches 64 MiB. Single redundancy/same host+zone is **not HA**.
+The two-active-storage-role/two-Redwood-primary gate is this profile's admission
+requirement, not a FoundationDB single-redundancy guarantee. Native 7.3.77 can seed
+one storage process and recruit another asynchronously. If the desired layout is
+not proven within startup admission, refuse before load and retain actual status;
+do not force internal recruitment/replica knobs or weaken inode proofs.
 Redwood, FDB checksums/fsync and default queues remain unchanged. Workload is
 seed283, one tenant, eight attributes, match-every100, batch save mode, time order,
 K100, hash-bytes32, two-million candidates and 256 MiB query byte budget. The first
@@ -73,10 +78,12 @@ The sealed approval is one strict JSON object containing **every literal** from
 No approval file is generated automatically. `policy.runtime_sha()` hashes ordered
 `SHA256  basename\n` records for `RUNTIME_FILES`, including C getter source and its
 build script. Tests/README are reviewed separately. The app source manifest resolves
-relative names against the explicit detached source root. Source files/clean HEAD,
-app/probe bytes, approval/request/configuration and critical operations hashes are
-checked before stages and during monitoring. Both executables must be non-writable
-and executable. An ACK for one application's source is not an ACK for these ops.
+relative names against the explicit detached source root. Source manifest entries
+and clean source HEAD are checked at admission, before/after workload stages and
+after output writers join, not on every monitor tick. App/probe bytes, manifest
+bytes, approval/request/configuration and critical operations hashes are checked
+periodically by the monitor as well. Both executables must be non-writable and
+executable. An ACK for one application's source is not an ACK for these ops.
 
 The operator-only foreground form is:
 
@@ -137,9 +144,12 @@ not a live bootstrap/GET success. jq and Python are **host** tools, not image de
 
 ## Time, ownership and safety
 
-The original global heavy-lane descriptor is acquired nonblocking **before quiet
-admission** and retained through confirmed stop. PID/start-time/device/inode lease
-proof is recorded. The monitor and attached Docker client inherit that descriptor;
+The global heavy-lane path is `${FDB_LANE_LOCK:-${TMPDIR:-/tmp}/fdb-heavy-lane.lock}`,
+matching the existing lane wrapper, including empty-variable fallbacks. Its
+descriptor is acquired nonblocking **before quiet admission** and retained through
+confirmed stop. PID/start-time/device/inode lease proof is recorded and the sealed
+FD/current pathname identity is revalidated throughout quiet/supervision, immediately
+before create/start and each monitor iteration. The monitor and attached Docker client inherit that descriptor;
 the monitor never reacquires flock. Do not wrap this driver in a nested flock.
 
 The absolute session deadline is **1200 seconds including setup**. It is passed
@@ -157,8 +167,15 @@ no load begins, and pending resets the three-sample streak. Unknown/malformed
 states, degraded processes, wrong identity/configuration, every warning including
 batch probe timeout, failed command and resource failure still abort. The exact
 never-created preconfigure proof also accepts an absent `configuration` key,
-which native status omits when its configuration object is empty. Drain/load never
-use startup classification.
+which native status omits when its configuration object is empty. Under the fresh
+owned empty-layout/seed/nonce/exact-ID/image/quorum proofs only, it accepts the
+native absence messages `unreachable_master_worker`,
+`unreachable_dataDistributor_worker`, `unreachable_ratekeeper_worker`,
+`unreachable_consistencyScan_worker` and `unreadable_configuration`. Duplicates,
+unknown/error/probe messages, client/process messages and observable-role
+contradictions reject. `bootstrap.unconfigured.json` binds the phase-specific
+reason and original raw status SHA before the sole configure attempt. Drain/load
+never use startup classification.
 
 Caps: initial readiness180s, CLI load300s, strict drain300s, source census120s,
 independent oracle120s. Each stage needs its complete budget plus120s shutdown
@@ -173,10 +190,9 @@ or swap/kernel change. No post-failure threshold relaxation.
 
 Continuous guards: host>=8GiB, cgroup<90% of16GiB, no OOM/restart/PID replacement,
 exact new instance/owner/profile/session/nonce/image/mount/ports/resources and
-immutable source inputs. Queue>512MiB **AND** lag>60s for six consecutive nominal
+the periodic immutable-input seals described above. Queue>512MiB **AND** lag>60s for six consecutive nominal
 10s samples aborts. Readiness/drain need three original strictly healthy samples,
->=5s apart, queue<16MiB and lag<10s. **No batch-warning exception exists**, even
-when a caller supplies an allow argument. Status health is never rewritten;
+>=5s apart, queue<16MiB and lag<10s. **No batch-warning exception or warning-permission argument exists**. Status health is never rewritten;
 admin probes are not workload latency/SLO evidence.
 
 Conservative space guards are inherited: free floor
@@ -212,9 +228,15 @@ prove100k records,800k equality postings,100k each native span/time index, zero
 primary equality keys and1,100,002 owned keys for the pinned layout. The independent
 `all` suite retains1600 samples:16 exact classes ×100, ordered iteration IDs,
 digests and zero failures. These checks retain the application query guards.
-`verification.complete.json` binds source/census/oracle/drain/GET commitments;
-`complete.json` appears only after verified stages, successful monitor exit and
-confirmed **exit0/noOOM/noRestart** stop. Emergency stop still confirms an exited137
+`verification.complete.json` binds source/census/oracle/drain/GET commitments.
+After workload, monitor and attachment writers join, source/evidence/certificates
+and validation-time receipt hashes are revalidated. `final-inventory.json` is a
+nonempty path/size/SHA256 inventory of every prior retained output, including
+initial Docker admission, raw commands/status, attached streams and ingest ACK.
+`complete.json` binds both verification and inventory hashes and appears only
+after these checks, successful monitor exit and confirmed **exit0/noOOM/noRestart**
+stop. Any nonzero stop command or lost stop receipt is a sticky failure even if a
+later independent check confirms containment. Emergency stop still confirms an exited137
 or OOM instance and releases the lease, but records `FAILED_STOP.json` rather than
 looping forever waiting for an exit code to change. GNU timeout/Tini's actual normal
 shutdown behavior must pass this gate; it is not assumed. Server attachment exit is
