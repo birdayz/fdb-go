@@ -77,6 +77,20 @@ The sealed approval is one strict JSON object containing **every literal** from
 - `policy_sha256` and identical `policy_approved_sha256` (explicit operator approval);
 - `quiet_thresholds_approved: true`, `growth_overshoot_accepted: true`.
 
+Only for an explicitly approved new isolated Docker host, approval may also include:
+
+```json
+{"new_host_inventory":{"approved":true,"docker_daemon_id":"RECORDED_NEW_DAEMON_ID","retained":{}}}
+```
+
+Replace the placeholder with that new host's recorded daemon ID (1–256 ASCII
+letters, digits, `:`, `.`, `_` or `-`). The object requires exactly those three
+keys, `approved` must be true, and `retained` must be an empty object. Both
+supervisor and monitor compare the actual `docker info --format '{{.ID}}'` result
+on every sequential check. Mismatch fails closed. Without this explicit inventory,
+the original protected-name/full-ID map and missing-instance failures remain.
+Dynamic discovered-name and owner exclusion checks apply in both modes.
+
 No approval file is generated automatically. `policy.runtime_sha()` hashes ordered
 `SHA256  basename\n` records for `RUNTIME_FILES`, including C getter source and its
 build script. Tests/README are reviewed separately. The app source manifest resolves

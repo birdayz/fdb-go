@@ -289,6 +289,27 @@ class PolicyTests(unittest.TestCase):
         matching.update(policy_sha256="e" * 64, policy_approved_sha256="e" * 64)
         self.assertEqual(self.cli("approval", matching), {"approved": True})
 
+    def test_optional_new_host_inventory_has_exact_empty_schema_and_safe_daemon_id(self):
+        base = approval()
+        self.assertNotIn("new_host_inventory", base)
+        self.assertEqual(self.cli("approval", base), {"approved": True})
+        inventory = {"approved": True, "docker_daemon_id": "fixture-daemon", "retained": {}}
+        for daemon_id in ("a", "A" * 256, "00000000-0000-4000-8000-000000000001", "AAAA:BBBB:CCCC", "AZaz09:._-"):
+            candidate = dict(base, new_host_inventory=dict(inventory, docker_daemon_id=daemon_id))
+            self.assertEqual(self.cli("approval", candidate), {"approved": True})
+        explicit = dict(base, new_host_inventory=inventory)
+        self.reject("approval", explicit, "new_host_inventory", [None, {}, [], "inventory", True, 0])
+        for field in inventory:
+            candidate = copy.deepcopy(explicit)
+            del candidate["new_host_inventory"][field]
+            self.cli("approval", candidate, valid=False)
+        self.reject("approval", explicit, "new_host_inventory", [dict(inventory, unexpected=True)])
+        self.reject("approval", explicit, "new_host_inventory.approved", [False, 1, "true", None, []])
+        self.reject("approval", explicit, "new_host_inventory.retained", [None, [], "", False, 0, {"old": "instance"}])
+        self.reject("approval", explicit, "new_host_inventory.docker_daemon_id",
+                    [None, True, 1, 1.0, [], {}, "", "A" * 257, "id with spaces", "id/host", "id\\host",
+                     "id@host", "id+suffix", "id=bad", "id\n", "id\x00bad", "caf\u00e9"])
+
     def test_strict_json_vacuity_and_missing_fields(self):
         for raw in ("", "{} {}", '{"samples":[],"samples":[]}', '{"x":NaN}',
                     '{"x":Infinity}', '{"x":-Infinity}', '{"x":1e999}', "null", "[]", "true", "17"):
@@ -873,6 +894,7 @@ class DriverSafetyTests(unittest.TestCase):
         self.driver.select_arm(approval(run))
         runtime = self.driver.Runtime.__new__(self.driver.Runtime)
         runtime.out, runtime.nonce, runtime.instance = self.work, "fixture-nonce", "a" * 64
+        runtime.approval = approval(run)
         runtime.event = mock.Mock()
         for name in ("command", "identity", "volume", "resources"):
             setattr(runtime, name, mock.Mock(side_effect=AssertionError("stop must bypass " + name)))

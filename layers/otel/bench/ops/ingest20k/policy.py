@@ -94,6 +94,14 @@ def approval(d):
     for key in ("binary", "source_root", "source_manifest", "probe_binary", "out"):
         require(isinstance(d.get(key),str) and Path(d[key]).is_absolute(), "explicit absolute path: " + key)
     require(Path(d["out"]).name == "ingest20k-"+d["run"], "fresh exact output identity")
+    if "new_host_inventory" in d:
+        inventory = d["new_host_inventory"]
+        require(type(inventory) is dict and set(inventory) == {"approved", "docker_daemon_id", "retained"}, "exact new-host inventory schema required")
+        require(inventory["approved"] is True, "explicit new-host inventory approval required")
+        require(type(inventory["retained"]) is dict and not inventory["retained"], "new-host retained inventory must be an empty object")
+        require(type(inventory["docker_daemon_id"]) is str
+                and re.fullmatch(r"[A-Za-z0-9:._-]{1,256}", inventory["docker_daemon_id"]) is not None,
+                "invalid approved Docker daemon identity")
     return {"approved":True}
 
 
