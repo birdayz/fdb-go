@@ -232,10 +232,14 @@ func testOtelIngestReplay(t *testing.T, ctx context.Context, cluster, order stri
 		}
 		state.commits = append(state.commits, commit)
 	})
+	seedOtelProfileClientMetrics(t, ctx, b)
+	metricsBefore := b.raw.Metrics()
 	stats, err := b.Ingest(ctx)
+	metricsAfter := b.raw.Metrics()
 	b.ingestProbe = nil
 	b.db.SetAttemptObserver(nil)
 	b.db = original
+	assertOtelProfileClientMetrics(t, stats, metricsBefore, metricsAfter)
 	if err != nil {
 		t.Fatalf("public ingestion replay failed: %v", err)
 	}
@@ -270,6 +274,11 @@ func testOtelIngestReplay(t *testing.T, ctx context.Context, cluster, order stri
 	if d == nil || d.Scope != "source_batches_only" || d.SourceRuns != 1 || d.SourceAttempts != 2 || d.SourceReplays != 1 || d.CommittedBatches != 1 || d.CommittedRows != 2 || d.ApproximateMutationBytes != sampledBytes {
 		t.Fatalf("diagnostics lost replay/source-only/sample accounting: %+v want mutation bytes=%d", d, sampledBytes)
 	}
+	assertOtelProfileMoments(t, stats, map[string]int64{
+		"preparation": int64(len(state.prepared)),
+		"manifest":    2, "open": 2, "save": 2, "guard": 2,
+		"run": 1, "timeout_backoff": 0, "commit": 1,
+	})
 	phases := []string{"preparation", "manifest", "open", "save", "guard", "run"}
 	if len(d.PhaseNanos) != len(phases) {
 		t.Fatalf("unexpected measured phases: %v", d.PhaseNanos)

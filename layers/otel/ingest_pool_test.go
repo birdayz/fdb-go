@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/fdbgo/client"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
@@ -66,6 +67,7 @@ func (p *otelPoolProbe) observe(event ingestEvent) {
 			bad("attempt replaced prepared message storage: first=%d", event.batch.first)
 		}
 		p.attempts[event.batch.first]++
+	case "preparation_started", "run_returned":
 	case "admitted":
 		p.admitted = append(p.admitted, event.batch.first)
 	case "backpressure":
@@ -89,9 +91,10 @@ func (p *otelPoolProbe) observe(event ingestEvent) {
 }
 
 type otelPoolResult struct {
-	stats     Statistics
-	err       error
-	premature bool
+	stats                       Statistics
+	err                         error
+	premature                   bool
+	metricsBefore, metricsAfter client.ClientMetricsSnapshot
 }
 
 type otelPoolGateTransactor struct {
@@ -217,6 +220,9 @@ func testOtelIngestPoolBounds(t *testing.T, ctx context.Context, cluster, order 
 			out := <-result
 			if out.err != nil || out.stats.Rows != int64(c.Count) || out.stats.Attributes != int64(c.Count*c.Attributes) {
 				t.Fatalf("released pool: stats=%+v error=%v", out.stats, out.err)
+			}
+			if out.stats.Diagnostics != nil {
+				t.Fatalf("disabled pool diagnostics fabricated profile fields: %+v", out.stats.Diagnostics)
 			}
 			gate.mu.Lock()
 			actualActive, maximum = gate.active, gate.maximum
@@ -380,6 +386,7 @@ func testOtelWorkerErrorAndJoin(t *testing.T, ctx context.Context, cluster, orde
 	c.Count, c.Tenants, c.Attributes, c.Batch, c.Workers, c.Diagnostics = 16, 1, 4, 1, 2, true
 	c.Order, c.SaveMode = order, mode
 	b := openOtelFixture(t, ctx, cluster, c, false)
+	seedOtelProfileClientMetrics(t, ctx, b)
 	runCtx, cancel := context.WithCancel(ctx)
 	failRelease, heldRelease := make(chan struct{}), make(chan struct{})
 	releaseFailure := sync.OnceFunc(func() { close(failRelease) })
@@ -405,14 +412,16 @@ func testOtelWorkerErrorAndJoin(t *testing.T, ctx context.Context, cluster, orde
 	})
 	go func() {
 		defer close(done)
+		before := b.raw.Metrics()
 		stats, err := b.Ingest(runCtx)
+		after := b.raw.Metrics()
 		premature := false
 		select {
 		case <-gate.exited:
 		default:
 			premature = true
 		}
-		result <- otelPoolResult{stats: stats, err: err, premature: premature}
+		result <- otelPoolResult{stats: stats, err: err, premature: premature, metricsBefore: before, metricsAfter: after}
 	}()
 	awaitOtelPoolSignal(t, ctx, gate.failEntered, "failing source guard entered")
 	awaitOtelPoolSignal(t, ctx, gate.heldEntered, "sibling source guard entered")
@@ -451,6 +460,7 @@ func testOtelWorkerErrorAndJoin(t *testing.T, ctx context.Context, cluster, orde
 	awaitOtelPoolSignal(t, ctx, gate.exited, "held sibling source transactor exited")
 	awaitOtelPoolSignal(t, ctx, done, "Ingest returned after worker exit")
 	out := <-result
+	assertOtelProfileClientMetrics(t, out.stats, out.metricsBefore, out.metricsAfter)
 	if out.premature || !errors.Is(out.err, cause) || errors.Is(out.err, context.Canceled) || ctx.Err() != nil || runCtx.Err() != nil {
 		t.Fatalf("worker join/cause preservation: premature=%t error=%v parent=%v ingest=%v", out.premature, out.err, ctx.Err(), runCtx.Err())
 	}
@@ -462,10 +472,19 @@ func testOtelWorkerErrorAndJoin(t *testing.T, ctx context.Context, cluster, orde
 	}
 	p.mu.Lock()
 	finalPrepared, finalAdmitted, finalProbeErr := len(p.prepared), len(p.admitted), p.err
+	var actualAttempts int64
+	for _, count := range p.attempts {
+		actualAttempts += int64(count)
+	}
 	p.mu.Unlock()
 	if finalPrepared != prepared || finalAdmitted != admitted || finalProbeErr != nil || gate.active.Load() != 0 || gate.calls.Load() != 2 {
 		t.Fatalf("post-error producer/worker activity: prepared=%d/%d admitted=%d/%d active=%d calls=%d probe=%v", finalPrepared, prepared, finalAdmitted, admitted, gate.active.Load(), gate.calls.Load(), finalProbeErr)
 	}
+	assertOtelProfileMoments(t, out.stats, map[string]int64{
+		"preparation": int64(finalPrepared), "manifest": actualAttempts,
+		"open": actualAttempts, "save": actualAttempts, "guard": actualAttempts,
+		"run": gate.calls.Load(), "timeout_backoff": 0, "commit": 0,
+	})
 	b.db, b.ingestProbe = original, nil
 	assertOtelPoolRollback(t, ctx, b)
 }

@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -242,6 +243,7 @@ func (d *ingestProfileTransactor) TransactCtx(ctx context.Context, fn func(fdb.W
 
 func testOtelIngestProfiling(t *testing.T, ctx context.Context, cluster, order string) {
 	t.Helper()
+	t.Run("overlapping_workers", func(t *testing.T) { testOtelIngestProfilingOverlap(t, ctx, cluster, order) })
 	for _, enabled := range []bool{false, true} {
 		name := "disabled"
 		if enabled {
@@ -338,5 +340,240 @@ func testOtelIngestProfiling(t *testing.T, ctx context.Context, cluster, order s
 				t.Fatalf("profiled source audit: %+v %v", audited, err)
 			}
 		})
+	}
+}
+
+func testOtelIngestProfilingOverlap(t *testing.T, ctx context.Context, cluster, order string) {
+	t.Helper()
+	c := testConfig()
+	c.Count, c.Tenants, c.Attributes, c.Batch, c.Workers, c.Diagnostics, c.Order = 2, 1, 4, 1, 2, true, order
+	c.SaveMode = "pipelined"
+	b := openOtelFixture(t, ctx, cluster, c, false)
+	runCtx, cancel := context.WithCancel(ctx)
+	attemptRelease, returnRelease := make(chan struct{}), make(chan struct{})
+	releaseAttempts := sync.OnceFunc(func() { close(attemptRelease) })
+	releaseReturns := sync.OnceFunc(func() { close(returnRelease) })
+	bothEntered, bothReturned, probeFailed := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var enteredOnce, returnedOnce sync.Once
+	var mu sync.Mutex
+	var probeError error
+	firstTimers := map[int]*recordlayer.StoreTimer{}
+	timerOwners := map[*recordlayer.StoreTimer]int{}
+	returned := map[*recordlayer.StoreTimer]bool{}
+	successfulBatches := map[int]bool{}
+	type runSample struct {
+		batch        int
+		timer        *recordlayer.StoreTimer
+		count, nanos int64
+	}
+	var samples []runSample
+	var attempted int64
+	var heldAttempts, heldReturns atomic.Int64
+	failLocked := func(format string, args ...any) {
+		if probeError == nil {
+			probeError = fmt.Errorf(format, args...)
+			close(probeFailed)
+		}
+	}
+	originalProbe := b.ingestProbe
+	b.ingestProbe = func(event ingestEvent) {
+		if event.kind != "attempt" && event.kind != "run_returned" {
+			return
+		}
+		mu.Lock()
+		if event.batch.first < 0 || event.batch.first > 1 || event.batch.next != event.batch.first+1 || len(event.batch.messages) != 1 {
+			failLocked("invalid overlap fixture batch: first=%d next=%d messages=%d", event.batch.first, event.batch.next, len(event.batch.messages))
+		}
+		if event.timer == nil {
+			failLocked("%s did not expose an actual private Run timer", event.kind)
+		}
+		waitAttempt, waitReturn := false, false
+		if event.kind == "attempt" {
+			attempted++
+			if returned[event.timer] {
+				failLocked("new source Run reused returned timer %p", event.timer)
+			}
+			if owner, exists := timerOwners[event.timer]; exists && owner != event.batch.first {
+				failLocked("two overlapping batches shared timer %p: owners=%d/%d", event.timer, owner, event.batch.first)
+			} else {
+				timerOwners[event.timer] = event.batch.first
+			}
+			if _, exists := firstTimers[event.batch.first]; !exists {
+				firstTimers[event.batch.first] = event.timer
+				heldAttempts.Add(1)
+				waitAttempt = true
+				if len(firstTimers) == 2 {
+					enteredOnce.Do(func() { close(bothEntered) })
+				}
+			}
+		} else {
+			if owner, exists := timerOwners[event.timer]; !exists || owner != event.batch.first {
+				failLocked("returned Run changed its actual timer identity: batch=%d timer=%p owner=%d present=%t", event.batch.first, event.timer, owner, exists)
+			}
+			if returned[event.timer] {
+				failLocked("timer %p returned from more than one source Run", event.timer)
+			}
+			returned[event.timer] = true
+			if event.timer != nil {
+				count, nanos := event.timer.GetCount(recordlayer.EventCommit), event.timer.GetTimeNanos(recordlayer.EventCommit)
+				if count < 0 || count > 1 || nanos < 0 || count == 0 && nanos != 0 {
+					failLocked("non-private commit sample before merge: batch=%d timer=%p count=%d nanos=%d", event.batch.first, event.timer, count, nanos)
+				}
+				samples = append(samples, runSample{batch: event.batch.first, timer: event.timer, count: count, nanos: nanos})
+				if count == 1 {
+					if successfulBatches[event.batch.first] {
+						failLocked("batch %d produced more than one successful Run", event.batch.first)
+					}
+					successfulBatches[event.batch.first] = true
+					heldReturns.Add(1)
+					waitReturn = true
+					if len(successfulBatches) == 2 {
+						returnedOnce.Do(func() { close(bothReturned) })
+					}
+				}
+			}
+		}
+		mu.Unlock()
+		if waitAttempt {
+			defer heldAttempts.Add(-1)
+			select {
+			case <-attemptRelease:
+			case <-runCtx.Done():
+			}
+		}
+		if waitReturn {
+			defer heldReturns.Add(-1)
+			select {
+			case <-returnRelease:
+			case <-runCtx.Done():
+			}
+		}
+	}
+	externalTimer := recordlayer.NewStoreTimer()
+	originalTimer := b.db.Timer()
+	b.db.SetTimer(externalTimer)
+	var observerMu sync.Mutex
+	var calls []recordlayer.AttemptCall
+	b.db.SetAttemptObserver(func(call recordlayer.AttemptCall, _ error) {
+		observerMu.Lock()
+		calls = append(calls, call)
+		observerMu.Unlock()
+	})
+	type outcome struct {
+		stats Statistics
+		err   error
+	}
+	result, done := make(chan outcome, 1), make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		releaseAttempts()
+		releaseReturns()
+		cleanup, stop := context.WithTimeout(context.Background(), 10*time.Second)
+		defer stop()
+		select {
+		case <-done:
+			b.ingestProbe = originalProbe
+			b.db.SetAttemptObserver(nil)
+			b.db.SetTimer(originalTimer)
+		case <-cleanup.Done():
+			t.Error("overlap Ingest failed to join after releasing all profiling barriers")
+		}
+	})
+	go func() { defer close(done); stats, err := b.Ingest(runCtx); result <- outcome{stats: stats, err: err} }()
+	await := func(signal <-chan struct{}, name string) {
+		t.Helper()
+		select {
+		case <-signal:
+		case <-probeFailed:
+			mu.Lock()
+			err := probeError
+			mu.Unlock()
+			t.Fatalf("overlap probe before %s: %v", name, err)
+		case <-done:
+			out := <-result
+			t.Fatalf("Ingest returned before positive %s handshake: stats=%+v error=%v", name, out.stats, out.err)
+		case <-runCtx.Done():
+			t.Fatalf("waiting for overlap %s: %v", name, runCtx.Err())
+		}
+	}
+	await(bothEntered, "two simultaneous source attempts")
+	mu.Lock()
+	first, second, earlyReturns, earlyError := firstTimers[0], firstTimers[1], len(samples), probeError
+	mu.Unlock()
+	if first == nil || second == nil || first == second || heldAttempts.Load() != 2 || earlyReturns != 0 || earlyError != nil {
+		t.Fatalf("source Runs did not overlap with separate actual timers: timers=%p/%p held=%d earlyReturns=%d error=%v", first, second, heldAttempts.Load(), earlyReturns, earlyError)
+	}
+	releaseAttempts()
+	await(bothReturned, "two completed source Runs paused before merge")
+	if heldReturns.Load() != 2 {
+		t.Fatalf("source return barrier did not hold both merges: %d", heldReturns.Load())
+	}
+	select {
+	case <-done:
+		t.Fatal("Ingest returned while both source Run merges were held")
+	default:
+	}
+	releaseReturns()
+	select {
+	case <-done:
+	case <-runCtx.Done():
+		t.Fatalf("overlap Ingest failed after releasing merges: %v", runCtx.Err())
+	}
+	out := <-result
+	if out.err != nil || out.stats.Rows != 2 || out.stats.Attributes != 8 {
+		t.Fatalf("overlapping profiled ingestion failed: stats=%+v error=%v", out.stats, out.err)
+	}
+	mu.Lock()
+	observedSamples, actualTimers, actualReturns, actualAttempts, finalError := append([]runSample(nil), samples...), len(timerOwners), len(returned), attempted, probeError
+	mu.Unlock()
+	if finalError != nil || heldAttempts.Load() != 0 || heldReturns.Load() != 0 {
+		t.Fatalf("overlap timers/barriers inconsistent after join: error=%v attemptHeld=%d returnHeld=%d", finalError, heldAttempts.Load(), heldReturns.Load())
+	}
+	d := out.stats.Diagnostics
+	if d == nil || d.CommittedRows != 2 || d.CommittedBatches != 2 || int64(actualTimers) != d.SourceRuns || int64(actualReturns) != d.SourceRuns || int64(len(observedSamples)) != d.SourceRuns || actualAttempts != d.SourceAttempts {
+		t.Fatalf("actual private Run identities/populations differ from one joined recorder: timers=%d returns=%d samples=%d attempts=%d diagnostics=%+v", actualTimers, actualReturns, len(observedSamples), actualAttempts, d)
+	}
+	var expected IngestPhaseLatency
+	for _, sample := range observedSamples {
+		if sample.count == 0 {
+			continue
+		}
+		if sample.nanos <= 0 {
+			t.Fatalf("real successful Run commit sample is not positive: %+v", sample)
+		}
+		if expected.Count == 0 || sample.nanos < expected.MinNanos {
+			expected.MinNanos = sample.nanos
+		}
+		if expected.Count == 0 || sample.nanos > expected.MaxNanos {
+			expected.MaxNanos = sample.nanos
+		}
+		expected.Count++
+		expected.TotalNanos += sample.nanos
+	}
+	if expected.Count != 2 || d.PhaseLatencies["commit"] != expected {
+		t.Fatalf("overlapping merge lost/cross-assigned commit moments: got=%+v exact premerge samples=%+v want=%+v", d.PhaseLatencies["commit"], observedSamples, expected)
+	}
+	commit := d.Timer[recordlayer.EventCommit.Name]
+	if commit == nil || commit.Event != recordlayer.EventCommit || commit.Count != expected.Count || commit.CumulativeValue != expected.TotalNanos {
+		t.Fatalf("joined native aggregate disagrees with actual private Run samples: native=%+v samples=%+v", commit, expected)
+	}
+	if _, exists := d.PhaseNanos["commit"]; exists {
+		t.Fatalf("overlap commit samples changed legacy phase totals: %v", d.PhaseNanos)
+	}
+	observerMu.Lock()
+	observedCalls := append([]recordlayer.AttemptCall(nil), calls...)
+	observerMu.Unlock()
+	ids := map[uint64]bool{}
+	for _, call := range observedCalls {
+		if call.CallID == 0 || call.Owner != "run" || call.Route != recordlayer.RouteAttempt {
+			t.Fatalf("overlap replaced external observer identity: %+v", observedCalls)
+		}
+		ids[call.CallID] = true
+	}
+	if int64(len(ids)) != d.SourceRuns+2 || b.db.Timer() != externalTimer || externalTimer.GetCount(recordlayer.EventCommit) != 2 {
+		t.Fatalf("overlap profiling stole caller observer/timer population: RunIDs=%d sourceRuns=%d external commits=%d timerSame=%t", len(ids), d.SourceRuns, externalTimer.GetCount(recordlayer.EventCommit), b.db.Timer() == externalTimer)
+	}
+	if audited, err := b.Audit(ctx); err != nil || audited.Rows != 2 {
+		t.Fatalf("overlapping profiled sources failed final audit: %+v %v", audited, err)
 	}
 }

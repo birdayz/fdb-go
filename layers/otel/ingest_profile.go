@@ -7,9 +7,8 @@ import (
 	"fdb.dev/pkg/recordlayer"
 )
 
-// IngestPhaseLatency is a bounded set of exact observations, not a quantile
-// estimate. Attempt phases include failed attempts; commit includes successful
-// source Runs only, following StoreTimer's existing EventCommit contract.
+// IngestPhaseLatency holds exact duration moments, not quantiles.
+// Attempt phases include failures; commit follows successful-Run EventCommit.
 type IngestPhaseLatency struct {
 	Count      int64 `json:"count"`
 	TotalNanos int64 `json:"total_nanos"`
@@ -19,11 +18,8 @@ type IngestPhaseLatency struct {
 
 const ingestClientMetricsScope = "whole_database_handle_including_initialization_and_ready"
 
-// IngestClientMetrics retains cumulative, undifferenced client snapshots.
-// Their scope is the whole database handle, not individual source batches:
-// retries, initialization, ready publication and concurrent users can contribute.
-// Client latency statistics retain their API units (seconds). Quantiles must
-// never be subtracted to describe the interval between snapshots.
+// IngestClientMetrics holds undifferenced cumulative whole-handle snapshots.
+// See README.md for scope, seconds, concurrent-user and quantile qualifications.
 type IngestClientMetrics struct {
 	Scope  string                       `json:"scope"`
 	Before client.ClientMetricsSnapshot `json:"before"`

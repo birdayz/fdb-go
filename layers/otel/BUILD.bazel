@@ -58,6 +58,7 @@ go_test(
         "guards_test.go",
         "ingest_assert_test.go",
         "ingest_pool_test.go",
+        "ingest_profile_assert_test.go",
         "ingest_profile_test.go",
         "ingest_replay_test.go",
         "ingest_semantics_test.go",

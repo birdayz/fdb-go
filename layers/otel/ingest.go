@@ -11,9 +11,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// IngestDiagnostics measures source batches; overlapping phases are not
-// critical-path time. ClientMetrics has its own whole-handle scope, including
-// initialization and ready publication; its snapshots are not per-batch deltas.
+// IngestDiagnostics times source work; client snapshots have a separate whole-handle scope.
+// See README.md for overlapping phases, attempt populations and snapshot boundaries.
 type IngestDiagnostics struct {
 	Scope                    string                                  `json:"scope"`
 	SourceRuns               int64                                   `json:"source_runs"`
@@ -137,6 +136,7 @@ type ingestEvent struct {
 	batch    preparedBatch
 	queued   int
 	capacity int
+	timer    *recordlayer.StoreTimer
 }
 
 func (b *FDBBackend) observeIngest(kind string, batch preparedBatch, queue chan preparedBatch) {
@@ -145,7 +145,14 @@ func (b *FDBBackend) observeIngest(kind string, batch preparedBatch, queue chan 
 	}
 }
 
+func (b *FDBBackend) observeIngestRun(kind string, batch preparedBatch, timer *recordlayer.StoreTimer) {
+	if b.ingestProbe != nil {
+		b.ingestProbe(ingestEvent{kind: kind, batch: batch, timer: timer})
+	}
+}
+
 func (b *FDBBackend) prepareBatch(ctx context.Context, lo int) (preparedBatch, error) {
+	b.observeIngest("preparation_started", preparedBatch{first: lo}, nil)
 	batch, err := prepareIngestBatch(ctx, b.cfg, lo)
 	if err == nil {
 		b.observeIngest("prepared", batch, nil)
@@ -159,7 +166,7 @@ func (b *FDBBackend) saveIngestBatchRun(ctx context.Context, batch preparedBatch
 	var attempts int64
 	_, err := b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
 		attempts++
-		b.observeIngest("attempt", batch, nil)
+		b.observeIngestRun("attempt", batch, runTimer)
 		if d != nil {
 			rc.SetTimer(runTimer)
 		}
@@ -207,6 +214,7 @@ func (b *FDBBackend) saveIngestBatchRun(ctx context.Context, batch preparedBatch
 		}
 		return nil, nil
 	})
+	b.observeIngestRun("run_returned", batch, runTimer)
 	d.run(attempts, started)
 	d.mergeTimer(runTimer)
 	return err

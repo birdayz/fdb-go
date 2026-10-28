@@ -280,6 +280,7 @@ func newSourceTimeoutPolicyFixture(t *testing.T, ctx context.Context, cluster, o
 	c := testConfig()
 	c.Count, c.Tenants, c.Batch, c.Workers, c.SaveMode, c.Diagnostics, c.Order = 2, 1, 2, 1, "batch", true, order
 	b := openOtelFixture(t, ctx, cluster, c, false)
+	seedOtelProfileClientMetrics(t, ctx, b)
 	state := &sourceTimeoutPolicyState{events: map[string]int{}}
 	original := b.db
 	state.original = original
@@ -436,6 +437,12 @@ func assertSourceTimeoutDiagnostics(t *testing.T, stats Statistics, state *sourc
 			t.Fatalf("batch invented scalar save work %s: %+v", event.Name, counter)
 		}
 	}
+	attempts := int64(len(state.attempts))
+	assertOtelProfileMoments(t, stats, map[string]int64{
+		"preparation": int64(len(state.prepared)), "manifest": attempts,
+		"open": attempts, "save": attempts, "guard": attempts,
+		"run": int64(len(state.calls)), "timeout_backoff": int64(len(state.waits)), "commit": committed,
+	})
 }
 
 func testOtelTimeoutPolicy(t *testing.T, ctx context.Context, cluster, order string) {
@@ -443,7 +450,10 @@ func testOtelTimeoutPolicy(t *testing.T, ctx context.Context, cluster, order str
 	t.Run("exhausts_eight_fresh_runs", func(t *testing.T) {
 		timeout := fdb.Error{Code: 1031}
 		b, state := newSourceTimeoutPolicyFixture(t, ctx, cluster, order, timeout, nil, nil, 0)
+		before := b.raw.Metrics()
 		stats, err := b.Ingest(ctx)
+		after := b.raw.Metrics()
+		assertOtelProfileClientMetrics(t, stats, before, after)
 		if !errors.Is(err, timeout) {
 			t.Fatalf("timeout exhaustion lost exact cause: %v", err)
 		}
@@ -500,7 +510,10 @@ func testOtelTimeoutPolicy(t *testing.T, ctx context.Context, cluster, order str
 				<-canceled
 				return err
 			}
+			before := b.raw.Metrics()
 			stats, err := b.Ingest(ingestCtx)
+			after := b.raw.Metrics()
+			assertOtelProfileClientMetrics(t, stats, before, after)
 			if !errors.Is(err, context.Canceled) || (cancelParent && !errors.Is(ingestCtx.Err(), context.Canceled)) || (!cancelParent && ingestCtx.Err() != nil) {
 				t.Fatalf("wait cancellation: parent=%t context=%v error=%v", cancelParent, ingestCtx.Err(), err)
 			}
@@ -529,7 +542,10 @@ func testOtelTimeoutPolicy(t *testing.T, ctx context.Context, cluster, order str
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b, state := newSourceTimeoutPolicyFixture(t, ctx, cluster, order, tc.cause, nil, nil, tc.size)
+			before := b.raw.Metrics()
 			stats, err := b.Ingest(ctx)
+			after := b.raw.Metrics()
+			assertOtelProfileClientMetrics(t, stats, before, after)
 			if tc.budget {
 				var budget *QueryBudgetError
 				if !errors.As(err, &budget) || !strings.Contains(err.Error(), "bytes=500001") {
@@ -556,7 +572,12 @@ func testOtelTimeoutPolicy(t *testing.T, ctx context.Context, cluster, order str
 				readyError = timeout
 			}
 			b, state := newSourceTimeoutPolicyFixture(t, ctx, cluster, order, nil, initError, readyError, 0)
+			before := b.raw.Metrics()
 			stats, err := b.Ingest(ctx)
+			after := b.raw.Metrics()
+			if stage != "init" {
+				assertOtelProfileClientMetrics(t, stats, before, after)
+			}
 			if !errors.Is(err, timeout) || len(state.waits) != 0 {
 				t.Fatalf("%s timeout was retried/adopted: waits=%v error=%v", stage, state.waits, err)
 			}
