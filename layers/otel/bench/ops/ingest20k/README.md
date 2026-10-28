@@ -189,8 +189,10 @@ The single external configure attempt keeps its20s cap, including ambiguous or
 timeout failure: never retry, adopt, FORCE or fall back to reconfiguration. Only
 sole `Database created` stdout with empty stderr succeeds; already-created,
 configuration-changed, malformed/error or extra warning output refuses the trial.
-After creation, bootstrap may wait only for typed clean native7.3.77 recovery
-progress or documented DD `initializing` (whose healthy field is omitted).
+After creation, bootstrap waits one5s sampling interval before its first status,
+with lease/supervision/deadline guards active and the wait inside the unchanged180s
+readiness/1200s session budgets. It may then wait only for typed clean native7.3.77
+recovery progress or documented DD `initializing` (whose healthy field is omitted).
 Original strict health and the two-active-storage/two-primary GET admission gate
 remain mandatory before load. Unknown/malformed states, degraded processes, wrong
 identity/configuration, every warning including batch probe timeout, command and

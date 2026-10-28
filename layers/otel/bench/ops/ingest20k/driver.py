@@ -699,7 +699,13 @@ def run(args):
         configured = runtime.bounded_exec(["/usr/bin/fdbcli", "-C", "/var/fdb/data/cluster/fdb.cluster", "--exec", "configure new single ssd-redwood-1 logs:=1 commit_proxies:=1 grv_proxies:=1 resolvers:=1"], 20)
         p.require(configured == "Database created\n" and not runtime.last_stdout.with_suffix(".stderr").read_bytes(),
                   "configure did not return sole canonical Database created outcome; never retry")
-        strict_ready(runtime, supervised_wait, "bootstrap.ready", 180, bootstrap=True)
+        bootstrap_deadline = time.monotonic() + 180
+        first_observation = time.monotonic() + 5
+        while time.monotonic() < first_observation:
+            supervised_wait(deadline=bootstrap_deadline)
+            time.sleep(max(0, min(1, first_observation - time.monotonic())))
+        supervised_wait(deadline=bootstrap_deadline)
+        strict_ready(runtime, supervised_wait, "bootstrap.ready", 180, deadline=bootstrap_deadline, bootstrap=True)
         proof = runtime.bounded_exec(["/bin/bash", "/etc/fdb4/inode-readonly.sh"], 20, user="fdb")
         p.inode_proof({"rows": [p.loads(line) for line in proof.splitlines()]})
         write(out / "cow.ready.json", {"instance": instance, "volume": P["volume"], "run": P["run"], "count": 100000,
