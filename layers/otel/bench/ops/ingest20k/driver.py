@@ -2,6 +2,7 @@
 """Explicitly approved, foreground, fresh-only COW trial. Import is inert."""
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -273,7 +274,9 @@ class Runtime:
         p.require(p.sha(HERE / "inode_flags.c") == self.approval["probe_source_sha256"], "probe source hash changed")
         if full:
             revision = self.command(["git", "-C", self.request["source_root"], "rev-parse", "HEAD"]).strip()
+            source_head = self.last_stdout
             clean = self.command(["git", "-C", self.request["source_root"], "status", "--porcelain=v1"])
+            source_clean = self.last_stdout
             p.require(revision == self.approval["source_revision"] and not clean, "chosen application source tree changed")
             seen = set()
             lines = Path(self.request["source_manifest"]).read_text().splitlines()
@@ -288,6 +291,7 @@ class Runtime:
                 p.require(str(path) not in seen and path.is_file(), "duplicate/non-file source input")
                 seen.add(str(path))
                 p.require(p.sha(path) == match[1], "actual source input changed")
+            return {"source_head": source_head, "source_clean": source_clean}
 
     def bounded_exec(self, args, seconds=10, user=None):
         argv = ["docker", "exec"]
@@ -661,20 +665,40 @@ def run(args):
         while not (out / "heartbeat.json").exists():
             supervised_wait()
             time.sleep(1)
-        # Configure exactly once only after explicit owner/layout/unconfigured proofs.
+        # Native configure NEW exclusively initializes; full status can block before configuration.
         runtime.bounded_exec(["/bin/bash", "-c", LAYOUT_SCRIPT, "ingest20k-layout", "/var/fdb/data", p.sha(HERE / "fdb.cluster.seed"), P["owner"] + " " + P["session"] + " " + P["run"]], 5)
-        raw = runtime.bounded_exec(["/usr/bin/fdbcli", "-C", "/var/fdb/data/cluster/fdb.cluster", "--exec", "status json"])
-        status = p.loads(raw)
-        unconfigured = p.unconfigured(status)
-        unconfigured_raw = runtime.last_stdout
-        runtime.check_frozen(full=True)
-        write(out / "bootstrap.unconfigured.json", {"instance": instance, "epoch": int(time.time()),
-              "reason": "fresh-owned-empty-layout-native-never-created-status",
-              "raw_path": unconfigured_raw.name, "raw_sha256": p.sha(unconfigured_raw), **unconfigured})
-        write(out / "bootstrap.attempted.json", {"instance": instance, "epoch": int(time.time())})
-        remember("bootstrap.unconfigured.json", "bootstrap.attempted.json", unconfigured_raw.name)
+        proofs = {"layout": runtime.last_stdout}
+        runtime.identity()
+        proofs["identity"] = runtime.last_stdout
+        runtime.volume()
+        proofs["volume"] = runtime.last_stdout
+        proofs.update(runtime.check_frozen(full=True))
+        with open(out / "server.stdout", "rb") as stream:
+            bootstrap_get_raw = stream.readline(16385)
+        p.require(bootstrap_get_raw.endswith(b"\n") and len(bootstrap_get_raw) <= 16384, "missing/incomplete bootstrap root GET receipt")
+        bootstrap_get = p.loads(bootstrap_get_raw.decode())
+        p.bootstrap_get(bootstrap_get)
+        supervised_wait()
+        proof_receipts = {}
+        for name, raw in proofs.items():
+            proof_receipts[name] = {"raw_path": raw.name, "raw_sha256": p.sha(raw),
+                                   "command_sha256": p.sha(raw.with_suffix(".command.json")),
+                                   "exit_sha256": p.sha(raw.with_suffix(".exit.json"))}
+            remember(raw.name, raw.with_suffix(".command.json").name, raw.with_suffix(".exit.json").name)
+        write(out / "bootstrap.authorized.json", {"instance": instance, **LABELS, "nonce": runtime.nonce,
+              "image": P["image"], "volume": P["volume"], "seed_sha256": p.sha(HERE / "fdb.cluster.seed"),
+              "source_revision": approval["source_revision"], "binary_sha256": approval["binary_sha256"],
+              "input_manifest_sha256": approval["input_manifest_sha256"], "policy_sha256": runtime.frozen,
+              "probe_binary_sha256": approval["probe_sha256"], "probe_source_sha256": approval["probe_source_sha256"],
+              "proofs": proof_receipts, "root_get": {"attached_path": "server.stdout", "raw": bootstrap_get_raw.decode(),
+              "raw_sha256": hashlib.sha256(bootstrap_get_raw).hexdigest(), "facts": bootstrap_get},
+              "authority": "native-configure-new-exclusive-initialization", "epoch": int(time.time())})
+        write(out / "bootstrap.attempted.json", {"instance": instance, "epoch": int(time.time()),
+              "authorization_sha256": p.sha(out / "bootstrap.authorized.json")})
+        remember("bootstrap.authorized.json", "bootstrap.attempted.json")
         configured = runtime.bounded_exec(["/usr/bin/fdbcli", "-C", "/var/fdb/data/cluster/fdb.cluster", "--exec", "configure new single ssd-redwood-1 logs:=1 commit_proxies:=1 grv_proxies:=1 resolvers:=1"], 20)
-        p.require("Database created" in configured.splitlines(), "configure did not return exact success; never retry")
+        p.require(configured == "Database created\n" and not runtime.last_stdout.with_suffix(".stderr").read_bytes(),
+                  "configure did not return sole canonical Database created outcome; never retry")
         strict_ready(runtime, supervised_wait, "bootstrap.ready", 180, bootstrap=True)
         proof = runtime.bounded_exec(["/bin/bash", "/etc/fdb4/inode-readonly.sh"], 20, user="fdb")
         p.inode_proof({"rows": [p.loads(line) for line in proof.splitlines()]})
@@ -782,6 +806,8 @@ def run(args):
         for sample in certificate["samples"]:
             p.require(Path(sample["raw_path"]).name == sample["raw_path"]
                       and p.sha(out / sample["raw_path"]) == sample["raw_sha256"], "readiness raw receipt changed")
+    with open(out / "server.stdout", "rb") as stream:
+        p.require(stream.readline(16385) == bootstrap_get_raw, "bootstrap root GET receipt changed")
     inventory = final_inventory(out, commitments)
     write(out / "final-inventory.json", inventory)
     write(out / "complete.json", {"verification_sha256": p.sha(out / "verification.complete.json"),

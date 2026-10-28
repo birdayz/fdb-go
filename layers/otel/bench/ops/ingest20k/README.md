@@ -133,7 +133,10 @@ built artifact is
 `/tmp/fdb-hotelbench.VxNArC/ingest20k-probe-build-v2/inode-flags`, SHA256
 `55daed4087c104c4a22cdb4bc287947b4b6fd1dc15f5bf6591ba8b901ddc11eb`, source SHA256
 `35d06ffd3f61753ff864fc925be6f44e8691f31e1f3bc220c17ba2d3f81bc543`.
-Root built this 0555 static artifact without executing it; the old asset is retained.
+This 0555 artifact executed the initial root GET in0296: flags0, NOCOW=false,
+UID0, Btrfs; original proof is private
+`/var/tmp/fdb-hotelbench.VxNArC-ingest20k/ingest20k-prof20k0296/server.stdout`.
+The populated-file GET census was not reached. The old asset is retained.
 A production-source change invalidates that build and requires rebuilding.
 
 Only that sealed executable is mounted **read-only** at
@@ -171,21 +174,27 @@ nonempty data. Host supervisor/monitor also enforce the same deadline and watch
 one another's heartbeat. Arbitrary host/kernel/daemon failure is not a promise of
 hard-real-time shutdown; unconfirmed stop is FAILED/UNKNOWN, never clean success.
 
-After `Database created`, bootstrap may wait only for typed clean native7.3.77
-recovery-progress states, or the documented DD `initializing` state (whose healthy
-field is omitted). This is separate from strict health: originals remain unchanged,
-no load begins, and pending resets the three-sample streak. Unknown/malformed
-states, degraded processes, wrong identity/configuration, every warning including
-batch probe timeout, failed command and resource failure still abort. The exact
-never-created preconfigure proof also accepts an absent `configuration` key,
-which native status omits when its configuration object is empty. Under the fresh
-owned empty-layout/seed/nonce/exact-ID/image/quorum proofs only, it accepts the
-native absence messages `unreachable_master_worker`,
-`unreachable_dataDistributor_worker`, `unreachable_ratekeeper_worker`,
-`unreachable_consistencyScan_worker` and `unreadable_configuration`. Duplicates,
-unknown/error/probe messages, client/process messages and observable-role
-contradictions reject. `bootstrap.unconfigured.json` binds the phase-specific
-reason and original raw status SHA before the sole configure attempt. Drain/load
+Bootstrap authorizes one canonical `configure new` only after fresh exact-ID,
+nonce/image/volume, initial empty-root GET, owner/seed/processId/no-engine-file
+layout and source proofs. `bootstrap.authorized.json` binds those raw receipts,
+source/seed/probe hashes and exact identity; it claims no preconfigure status or
+quorum measurement. Native7.3.77 `configure NEW` uses exclusive initialization
+(`GenericManagementAPI.actor.h`: init_id and INITIALIZE_NEW_DATABASE), rejecting
+an already-created database. This native operation, not full preconfigure status,
+is the authoritative creation guard: the latter can block on transactional status
+futures in a never-created database. Prior finding/failed-run history is retained;
+this phase-authority change is not a warning waiver or lost-history claim.
+
+The single external configure attempt keeps its20s cap, including ambiguous or
+timeout failure: never retry, adopt, FORCE or fall back to reconfiguration. Only
+sole `Database created` stdout with empty stderr succeeds; already-created,
+configuration-changed, malformed/error or extra warning output refuses the trial.
+After creation, bootstrap may wait only for typed clean native7.3.77 recovery
+progress or documented DD `initializing` (whose healthy field is omitted).
+Original strict health and the two-active-storage/two-primary GET admission gate
+remain mandatory before load. Unknown/malformed states, degraded processes, wrong
+identity/configuration, every warning including batch probe timeout, command and
+resource failures still abort. Pending resets the three-sample streak; drain/load
 never use startup classification.
 
 Caps: initial readiness180s, CLI load300s, strict drain300s, source census120s,
