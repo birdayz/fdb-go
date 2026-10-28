@@ -30,6 +30,7 @@ class FakeCloud:
         self.bad_auto_delete = False
         self.auto_delete_update_effect = True
         self.primary_ip_updates = []
+        self.ipv6_descriptor = dict(id=0, ip='', blocked=False, dns_ptr=[])
         self.low_disk = False
         self.create_counts = {}
         self.guard_ready = True
@@ -41,6 +42,7 @@ class FakeCloud:
 
     def popen(self, argv, **kwargs):
         self.guard_kwargs = kwargs
+        self.guard_argv = list(argv)
         self.events.append('guard-start')
         plan_path = Path(argv[argv.index('--guard-plan')+1])
         plan = json.loads(plan_path.read_text())
@@ -103,7 +105,8 @@ class FakeCloud:
                 item['datacenter'] = dict(location=dict(name='hel1'))
                 ipid = self.ident()
                 ip = '192.0.2.'+str(item['id']-90)
-                item.update(public_net=dict(ipv4=dict(id=ipid, ip=ip), ipv6=None), private_net=[],
+                item.update(public_net=dict(ipv4=dict(id=ipid, ip=ip),
+                                            ipv6=copy.deepcopy(self.ipv6_descriptor)), private_net=[],
                             placement_group=dict(id=int(argv[argv.index('--placement-group')+1])))
                 self.items['primary-ip'].append(dict(id=ipid, name='', type='ipv4', ip=ip,
                     auto_delete=not self.bad_auto_delete, assignee_id=item['id'], assignee_type='server'))
@@ -184,6 +187,7 @@ class ProvisionTest(unittest.TestCase):
         self.assertEqual(len(resources['primary_ip_proof']), 5)
         self.assertEqual(len(resources['ids']['placement-group']), 1)
         self.assertNotIn('start_new_session', self.cloud.guard_kwargs)
+        self.assertEqual(self.cloud.guard_argv[:2], [p.sys.executable, '-B'])
         self.assertEqual(resources['price_hourly_net'], '0.3000')
         self.assertEqual(resources['price_hourly_gross'], '0.3570')
         self.assertEqual(p._sha(resources['pricing_receipt']), resources['pricing_receipt_sha256'])
@@ -258,6 +262,93 @@ class ProvisionTest(unittest.TestCase):
         self.assertTrue(any(kind == 'placement-group' for kind, _ in self.cloud.deleted))
         self.assertEqual(sum(kind == 'server' for kind, _ in self.cloud.deleted), 3)
         self.assertFalse(any(kind == 'primary-ip' for kind, _ in self.cloud.deleted))
+
+    def test_exact_disabled_ipv6_shape_and_missing_null_are_absent(self):
+        resources = self.prepare()
+        servers = copy.deepcopy(self.cloud.items['server'])
+        ips = copy.deepcopy(self.cloud.items['primary-ip'])
+        server = next(s for s in servers if s['id'] == resources['nodes']['node1']['id'])
+        self.assertEqual(server['public_net']['ipv6'], dict(id=0, ip='', blocked=False, dns_ptr=[]))
+        for value in (None, dict(id=0, ip='', blocked=False, dns_ptr=[])):
+            with self.subTest(value=value):
+                server['public_net']['ipv6'] = value
+                self.assertTrue(p._ipv6_absent(value))
+                self.assertEqual(p._verified_ipv4(self.plan, resources, servers, ips, server)['type'], 'ipv4')
+        del server['public_net']['ipv6']
+        self.assertEqual(p._verified_ipv4(self.plan, resources, servers, ips, server)['type'], 'ipv4')
+
+    def test_populated_or_malformed_ipv6_descriptor_fails_closed(self):
+        resources = self.prepare()
+        servers = copy.deepcopy(self.cloud.items['server'])
+        ips = copy.deepcopy(self.cloud.items['primary-ip'])
+        server = next(s for s in servers if s['id'] == resources['nodes']['node1']['id'])
+        bad = [dict(id=123, ip='2001:db8::/64', blocked=False, dns_ptr=[]),
+               dict(id=0, ip='2001:db8::/64', blocked=False, dns_ptr=[]),
+               dict(id=True, ip='', blocked=False, dns_ptr=[]),
+               dict(id=0, ip='', blocked=0, dns_ptr=[]),
+               dict(id=0, ip='', blocked=True, dns_ptr=[]),
+               dict(id=0, ip='', blocked=False, dns_ptr=['unexpected']),
+               dict(id=0, ip='', blocked=False, dns_ptr=[], unknown=False),
+               dict(id=0, ip='', blocked=False), {}, [], False, 0, '']
+        for value in bad:
+            with self.subTest(value=value):
+                server['public_net']['ipv6'] = value
+                self.assertFalse(p._ipv6_absent(value))
+                with self.assertRaisesRegex(p.ProvisionError, 'exact new IPv4-only'):
+                    p._verified_ipv4(self.plan, resources, servers, ips, server)
+        self.assertFalse(self.cloud.primary_ip_updates)
+
+    def test_raw_ip_snapshots_survive_ipv6_validation_failure(self):
+        self.cloud.ipv6_descriptor = dict(id=0, ip='', blocked=False, dns_ptr=[], unknown=False)
+        with self.assertRaisesRegex(p.ProvisionError, 'exact new IPv4-only'):
+            self.prepare()
+        state = p._state(self.out)
+        snapshots = sorted(state.glob('ip-snapshot-*.json'))
+        self.assertEqual(len(snapshots), 1)
+        receipt = p._load(snapshots[0])
+        self.assertTrue(receipt['read_only'])
+        self.assertTrue(receipt['before_validation'])
+        self.assertEqual(set(receipt['raw']), {'server', 'primary-ip'})
+        raw_servers = json.loads(receipt['raw']['server']['stdout'])
+        created = [s for s in raw_servers if s['id'] > 10]
+        self.assertEqual(len(created), 1)
+        self.assertEqual(created[0]['public_net']['ipv6'], self.cloud.ipv6_descriptor)
+        self.assertTrue(json.loads(receipt['raw']['primary-ip']['stdout']))
+        self.assertEqual(os.stat(snapshots[0]).st_mode & 0o777, 0o600)
+        self.assertEqual(self.cloud.items, self.cloud.baseline)
+        self.assertFalse(self.cloud.primary_ip_updates)
+
+    def test_auxiliary_guard_disables_bytecode_and_fake_fixture_has_no_cache_writes(self):
+        # Only inspect this test's temporary fixture, never mutable source trees.
+        fixture = self.root / 'input-fixture'
+        fixture.mkdir()
+        source = fixture / 'module.py'
+        source.write_text('VALUE = 1' + chr(10))
+        before = source.read_bytes()
+        self.prepare()
+        self.assertEqual(self.cloud.guard_argv[0], p.sys.executable)
+        self.assertEqual(self.cloud.guard_argv[1], '-B')
+        self.assertEqual(source.read_bytes(), before)
+        self.assertFalse(list(fixture.rglob('__pycache__')))
+        self.assertFalse(list(fixture.rglob('*.pyc')))
+
+    def test_raw_ip_capture_uses_active_budget_but_cleanup_inventory_does_not(self):
+        state = self.root / 'capture-state'
+        state.mkdir()
+        resources = {}
+        clock = lambda: self.plan['first_epoch'] + 5999.75
+        p._capture_ip_snapshots(self.plan, state, resources, self.cloud, clock)
+        self.assertEqual([timeout for _, timeout in self.cloud.calls], [.25, .25])
+        argv = [self.plan['hcloud'], 'server', 'list', '-o', 'json']
+        before = len(self.cloud.calls)
+        refused = p._inventory_run(self.plan, self.cloud, argv,
+                                   lambda: self.plan['first_epoch']+6000, active=True)
+        self.assertNotEqual(refused[0], 0)
+        self.assertEqual(len(self.cloud.calls), before)
+        cleanup = p._inventory_run(self.plan, self.cloud, argv,
+                                   lambda: self.plan['first_epoch']+6600)
+        self.assertEqual(cleanup[0], 0)
+        self.assertEqual(self.cloud.calls[-1][1], 10)
 
     def test_auto_delete_false_is_repaired_and_read_back_before_proceeding(self):
         self.cloud.bad_auto_delete = True
