@@ -2852,9 +2852,11 @@ regressions so they can be proposed upstream after the PoC.
   before increasing batches. Retain the 300KB estimate, 500KB actual-size,
   save/time/retry guards and warning/backlog stops. More workers alone already
   failed the earlier backlog gate. No 20k/s measurement or runtime change yet.
-  Fresh-volume profiling is blocked by the pinned image lacking `lsattr` for
-  the inode-flags safety gate. A replacement read-only probe requires explicit
-  approval and review; no helper installation or filesystem change is approved.
+  The owner authorized a reviewed read-only inode-flags probe and a guarded
+  fresh-volume 100k profiling run to replace the pinned image's missing `lsattr`
+  check. Implementation, test, formal-review and actual-inode gates remain;
+  no filesystem flag changes, retained-data changes or guard relaxation are
+  authorized. Keep the 4-CPU/16-GiB resource envelope and 10M final ceiling.
   Initial formal review of `e4107200` returned NAK for missing overlapping-worker
   profiling assertions (F1) and retry/failure receipt assertions (F3, duplicate
   F2). Both were fixed with deterministic regressions in `12b1c7da`; formal

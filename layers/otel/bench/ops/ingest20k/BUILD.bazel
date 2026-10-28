@@ -1,0 +1,40 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+# Compile with the same static host-toolchain flags as build-probe.sh.
+sh_test(
+    name = "inode_flags_test",
+    srcs = ["probe-test.sh"],
+    args = ["inode_flags_test"],
+    data = [
+        "inode_flags.c",
+        "inode_flags_test.c",
+    ],
+)
+
+sh_test(
+    name = "inode_flags_syscall_test",
+    srcs = ["probe-test.sh"],
+    args = ["inode_flags_syscall_test"],
+    data = [
+        "inode_flags.c",
+        "inode_flags_syscall_test.c",
+    ],
+)
+
+# Pure predicates, temporary receipt fixtures and mocked shutdown only.
+sh_test(
+    name = "ingest20k_test",
+    srcs = ["test.sh"],
+    data = [
+        "build-probe.sh",
+        "container-entrypoint.sh",
+        "driver.py",
+        "fdb.cluster.seed",
+        "foundationdb.conf",
+        "inode-readonly.sh",
+        "inode_flags.c",
+        "policy.py",
+        "status-check.jq",
+        "test_policy.py",
+    ],
+)
