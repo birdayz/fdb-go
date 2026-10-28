@@ -558,16 +558,46 @@ def run(args):
         p.require(P["image"] in digests, "pinned image not locally verified; no pull")
         for port in P["ports"]:
             p.require(not runtime.command(["ss", "-H", "-ltn", "sport = :" + str(port)]).strip(), "candidate port already listening")
-        samples = []
-        for i in range(7):
+        samples, busy = [], []
+        quiet_started = time.monotonic()
+
+        def quiet_guard():
             check_lease(lock_fd, lease)
+            now = time.monotonic()
+            p.require(now - request["started_monotonic"] < 1200, "total deadline during quiet admission")
+            p.require(now - quiet_started <= 180, "quiet admission 180-second budget exhausted")
+
+        for i in range(19):
+            quiet_guard()
             if i:
+                p.require(time.monotonic() + 10 <= quiet_started + 180, "quiet admission 180-second budget exhausted")
                 time.sleep(10)
-            check_lease(lock_fd, lease)
+                quiet_guard()
             sample = host_sample()
             samples.append(sample)
-            write(out / (f"quiet-{i}.json"), sample)
-        p.quiet({"samples": samples})
+            raw = out / (f"quiet-{i}.json")
+            write(raw, sample)
+            remember(raw.name)
+            quiet_guard()
+            window = samples[-7:]
+            try:
+                p.quiet_observations(window)
+            except p.QuietBusy as error:
+                busy.append({"index": i, "raw_path": raw.name, "raw_sha256": p.sha(raw), "reason": str(error)})
+                continue
+            if len(window) == 7:
+                accepted = p.quiet({"samples": window})
+                indices = list(range(i - 6, i + 1))
+                write(out / "quiet.accepted.json", {**accepted, "window_indices": indices,
+                      "samples": [{"index": index, "raw_path": f"quiet-{index}.json",
+                                   "raw_sha256": p.sha(out / f"quiet-{index}.json")} for index in indices],
+                      "prior_busy": busy, "budget_seconds": 180, "started_monotonic": quiet_started,
+                      "accepted_monotonic": time.monotonic()})
+                remember("quiet.accepted.json")
+                quiet_guard()
+                break
+        else:
+            raise p.QuietBusy("quiet admission remained busy through 19 samples/180 seconds")
         current = os.statvfs(docker_root)
         p.require(current.f_frsize * current.f_blocks == request["total_bytes"], "filesystem total changed during admission")
         # Reserve 64 GiB plus the conservative global floor before creation.

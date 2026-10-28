@@ -170,6 +170,9 @@ class Lifecycle:
         lock.write_text("replaced lock inode\n")
 
     def statvfs(self, path):
+        if self.fault == "lease_before_volume" and (self.out / "quiet.accepted.json").exists() and not self.injected:
+            self.lose_lease()
+            self.injected = True
         available = 100 if self.fault == "reservation" else 900 * p.GiB
         return types.SimpleNamespace(f_frsize=1, f_blocks=1000 * p.GiB, f_bavail=available)
 
@@ -200,6 +203,35 @@ class Lifecycle:
         value["epoch"] = int(self.now)
         if self.fault == "quiet":
             value["mem_available_bytes"] = 0
+        elif self.fault == "quiet_cpu":
+            value["cpu_psi_some_avg10"] = 5.001
+        elif self.fault == "quiet_memory_psi":
+            value["memory_psi_some_avg10"] = 0.1001
+        elif self.fault == "quiet_full_psi":
+            value["memory_psi_full_avg10"] = 0.0101
+        elif self.fault == "quiet_io":
+            value["io_psi_full_avg10"] = 1.001
+        elif self.fault == "quiet_variation":
+            value["mem_available_bytes"] += (self.quiet_count % 2) * (p.GiB + 1)
+        elif self.fault == "quiet_swap":
+            value["pswpin"] += self.quiet_count
+        elif self.fault in ("quiet_then_clean", "quiet_wait_lease", "quiet_wait_deadline"):
+            if self.quiet_count <= 7:
+                value["cpu_psi_some_avg10"] = 5.001
+            elif self.fault == "quiet_wait_lease":
+                self.lose_lease()
+            elif self.fault == "quiet_wait_deadline":
+                self.now += 1200
+        elif self.fault == "quiet_slow_first":
+            self.now += 181
+        elif self.fault == "quiet_missing":
+            del value["cpu_psi_some_avg10"]
+        elif self.fault == "quiet_nonfinite":
+            value["cpu_psi_some_avg10"] = float("inf")
+        elif self.fault == "quiet_decreasing_swap":
+            value["pswpin"] = 2 - self.quiet_count
+        elif self.fault == "quiet_bad_interval" and self.quiet_count == 2:
+            value["epoch"] += 9
         return value
 
     def write(self, path, value, exclusive=True):
@@ -211,8 +243,6 @@ class Lifecycle:
             self.injected = True
             raise OSError("offline receipt failure: " + path.name)
         result = self.original_write(path, value, exclusive)
-        if path.name == "quiet-6.json" and self.fault == "lease_before_volume":
-            self.lose_lease()
         if path.name == "cow.ready.json" and self.fault == "budget":
             # Not expired yet: the complete 300s stage plus 120s stop margin cannot fit.
             self.now = 1781
@@ -318,12 +348,20 @@ class Lifecycle:
         raise AssertionError("unexpected external command: " + repr(argv))
 
     def assert_admitted(self):
-        assert self.quiet_count == 7, "create before all quiet samples"
+        assert 7 <= self.quiet_count <= 19, "create outside bounded quiet admission"
+        accepted = driver.read(self.out / "quiet.accepted.json")
+        assert accepted["window_indices"] == list(range(self.quiet_count - 7, self.quiet_count))
+        window = []
+        for receipt in accepted["samples"]:
+            raw = self.out / receipt["raw_path"]
+            assert p.sha(raw) == receipt["raw_sha256"]
+            window.append(driver.read(raw))
+        p.quiet({"samples": window})
         lease = json.loads((self.out / "lease.json").read_text())
         info = os.fstat(lease["descriptor"])
         assert (info.st_dev, info.st_ino) == (lease["device"], lease["inode"])
         assert (self.out / "request.json").exists()
-        assert len(list(self.out.glob("quiet-*.json"))) == 7
+        assert len(list(self.out.glob("quiet-*.json"))) == self.quiet_count
         assert sum(x[0] == "ss" for x in self.calls) == 4
         assert sum(x[0] == "git" and "rev-parse" in x for x in self.calls) >= 1
         assert any(x[:3] == ["docker", "volume", "ls"] for x in self.calls)
@@ -580,6 +618,69 @@ class LifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "Application launch argv"):
             h.application_result(changed)
 
+    def test_quiet_wait_accepts_only_seven_clean_consecutive_samples_and_retains_busy_raw(self):
+        h = self.harness("quiet_then_clean")
+        h.invoke()
+        self.assertEqual(h.quiet_count, 14)
+        certificate = driver.read(h.out / "quiet.accepted.json")
+        self.assertEqual(certificate["window_indices"], list(range(7, 14)))
+        self.assertEqual(certificate["budget_seconds"], 180)
+        self.assertEqual(certificate["accepted_monotonic"] - certificate["started_monotonic"], 130)
+        self.assertEqual([row["index"] for row in certificate["prior_busy"]], list(range(13)))
+        for row in certificate["prior_busy"] + certificate["samples"]:
+            self.assertEqual(row["raw_sha256"], p.sha(h.out / row["raw_path"]))
+        raw = [driver.read(h.out / f"quiet-{index}.json") for index in range(14)]
+        self.assertEqual([row["epoch"] for row in raw], list(range(1000, 1140, 10)))
+        with self.assertRaises(p.QuietBusy):
+            p.quiet({"samples": raw[:7]})
+        p.quiet({"samples": raw[-7:]})
+        retained = {row["path"] for row in driver.read(h.out / "final-inventory.json")["files"]}
+        self.assertTrue({f"quiet-{index}.json" for index in range(14)} <= retained)
+        self.assertIn("quiet.accepted.json", retained)
+        self.assertTrue((h.out / "complete.json").exists())
+        for stage, cap in (("load", 300), ("drain", 300), ("census", 120), ("oracle", 120)):
+            record = driver.read(h.out / ("phase-" + stage + ".json"))
+            self.assertEqual(record["stage_deadline_epoch"] - record["stage_started_epoch"], cap)
+            self.assertEqual(record["deadline_epoch"] - record["started_epoch"], 1200)
+
+    def test_quiet_wait_persistent_busy_thresholds_stop_after_nineteen_samples(self):
+        for fault in ("quiet", "quiet_cpu", "quiet_memory_psi", "quiet_full_psi", "quiet_io", "quiet_variation", "quiet_swap"):
+            with self.subTest(fault=fault):
+                h = self.harness(fault)
+                with self.assertRaisesRegex(p.QuietBusy, "19 samples/180 seconds"):
+                    h.invoke()
+                self.assertEqual(h.quiet_count, 19)
+                raw = list(h.out.glob("quiet-*.json"))
+                self.assertEqual(len(raw), 19)
+                self.assertEqual(driver.read(h.out / "quiet-18.json")["epoch"] - driver.read(h.out / "quiet-0.json")["epoch"], 180)
+                self.assertFalse((h.out / "quiet.accepted.json").exists())
+                self.assertFalse(any(call[:3] == ["docker", "volume", "create"] or call[:2] in (["docker", "create"], ["docker", "start"]) for call in h.calls))
+
+    def test_quiet_wait_invalid_accounting_is_fatal_without_retry(self):
+        for fault, samples in (("quiet_missing", 1), ("quiet_nonfinite", 1),
+                               ("quiet_decreasing_swap", 2), ("quiet_bad_interval", 2)):
+            with self.subTest(fault=fault):
+                h = self.harness(fault)
+                with self.assertRaises(ValueError) as error:
+                    h.invoke()
+                self.assertNotIsInstance(error.exception, p.QuietBusy)
+                self.assertEqual(h.quiet_count, samples)
+                self.assertEqual(len(list(h.out.glob("quiet-*.json"))), samples)
+                self.assertFalse((h.out / "quiet.accepted.json").exists())
+                self.assertFalse(any(call[:3] == ["docker", "volume", "create"] or call[:2] in (["docker", "create"], ["docker", "start"]) for call in h.calls))
+
+    def test_quiet_wait_lease_total_deadline_and_first_sample_budget_fail_before_create(self):
+        for fault, expected, samples in (("quiet_wait_lease", "global lease descriptor/path identity lost", 8),
+                                        ("quiet_wait_deadline", "total deadline during quiet admission", 8),
+                                        ("quiet_slow_first", "quiet admission 180-second budget exhausted", 1)):
+            with self.subTest(fault=fault):
+                h = self.harness(fault)
+                with self.assertRaisesRegex(ValueError, "^" + expected + "$"):
+                    h.invoke()
+                self.assertEqual(h.quiet_count, samples)
+                self.assertFalse((h.out / "quiet.accepted.json").exists())
+                self.assertFalse(any(call[:3] == ["docker", "volume", "create"] or call[:2] in (["docker", "create"], ["docker", "start"]) for call in h.calls))
+
     def test_main_dispatch_executes_real_positive_lifecycle(self):
         h = self.harness()
         h.invoke(main=True)
@@ -653,7 +754,7 @@ class LifecycleTests(unittest.TestCase):
                     self.assertTrue(work.terminated)
 
     def test_receipt_write_failures_never_complete(self):
-        for name in ("request.json", "bootstrap.unconfigured.json", "bootstrap.attempted.json", "bootstrap.ready.json", "cow.ready.json",
+        for name in ("request.json", "quiet.accepted.json", "bootstrap.unconfigured.json", "bootstrap.attempted.json", "bootstrap.ready.json", "cow.ready.json",
                      "phase-load.json", "active-phase.json", "load.command.json", "load.exit.json",
                      "load.exited.json", "drain.certificate.json", "census.command.json", "census.exit.json",
                      "oracle.command.json", "oracle.exit.json", "verification.complete.json", "stop.request.json",
