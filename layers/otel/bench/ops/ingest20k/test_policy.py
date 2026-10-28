@@ -41,7 +41,7 @@ def approval(run="prof20k0290", revision="1" * 40, batch=32, workers=2):
                 schema="ingest20k_fresh100k_v1", approved=True,
                 source_revision=revision, source_approved_revision=revision,
                 binary_sha256="b" * 64, input_manifest_sha256="c" * 64,
-                policy_sha256="d" * 64, policy_formal_ack_sha256="d" * 64,
+                policy_sha256="d" * 64, policy_approved_sha256="d" * 64,
                 probe_sha256="e" * 64, probe_source_sha256="f" * 64,
                 quiet_thresholds_approved=True, growth_overshoot_accepted=True,
                 binary="/fixture/application", source_root="/fixture/source",
@@ -118,6 +118,7 @@ def inode_proof():
     paths += ["/var/fdb/data/processes/14884/" + name for name in (
         "log2-V_6-" + "c" * 32 + ".sqlite", "log2-V_6-" + "c" * 32 + ".sqlite-wal",
         "logqueue-V_6-" + "c" * 32 + "-0.fdq", "logqueue-V_6-" + "c" * 32 + "-1.fdq")]
+    paths.append("/var/fdb/data/cluster")
     rows = [{"path": path, "flags": 0, "nocow": False, "compression_flag": False,
              "uid": 4059, "dev": 17, "ino": i + 1, "nlink": 1, "size": 0,
              "allocated_bytes": 0, "mount_id": 23, "filesystem": "btrfs", "nodatasum": "NOT_EXPOSED"}
@@ -280,15 +281,15 @@ class PolicyTests(unittest.TestCase):
             for field in ("binary", "source_root", "source_manifest", "probe_binary", "out"):
                 self.reject("approval", base, field, ["relative/path"])
 
-    def test_approvals_and_policy_ack_reject_other_well_formed_identities(self):
+    def test_approvals_reject_other_well_formed_source_and_policy_identities(self):
         base = approval()
         for field, replacement in (("source_revision", "2" * 40),
                                    ("source_approved_revision", "2" * 40),
                                    ("policy_sha256", "e" * 64),
-                                   ("policy_formal_ack_sha256", "e" * 64)):
+                                   ("policy_approved_sha256", "e" * 64)):
             self.reject("approval", base, field, [replacement])
         matching = approval(revision="2" * 40)
-        matching.update(policy_sha256="e" * 64, policy_formal_ack_sha256="e" * 64)
+        matching.update(policy_sha256="e" * 64, policy_approved_sha256="e" * 64)
         self.assertEqual(self.cli("approval", matching), {"approved": True})
 
     def test_strict_json_vacuity_and_missing_fields(self):
@@ -626,23 +627,50 @@ class PolicyTests(unittest.TestCase):
 
     def test_get_inode_proof_positive_population_flags_and_summary(self):
         base = inode_proof()
-        self.assertEqual(len(base["rows"]), 20)
-        self.assertEqual(self.cli("inode_proof", base), {"inodes_verified": 19})
+        self.assertEqual(len(base["rows"]), 21)
+        self.assertEqual(self.cli("inode_proof", base), {"inodes_verified": 20})
         base["rows"][0].update(flags=4, compression_flag=True)
-        self.assertEqual(self.cli("inode_proof", base), {"inodes_verified": 19})
+        self.assertEqual(self.cli("inode_proof", base), {"inodes_verified": 20})
         extra = dict(base["rows"][0], path="/var/fdb/data/traces/14885/trace.1.json", ino=99)
         base["rows"].insert(-1, extra)
         base["rows"][-1]["regular_files_verified"] = 9
-        self.assertEqual(self.cli("inode_proof", base), {"inodes_verified": 20})
+        self.assertEqual(self.cli("inode_proof", base), {"inodes_verified": 21})
         for field, values in {"schema": [None, "wrong"], "regular_files_verified": [0, 7, 9, True, 8.0, None],
                               "primary_sets_verified": [0, 2, 4, True, 3.0, None]}.items():
-            self.reject("inode_proof", inode_proof(), "rows.19." + field, values)
+            self.reject("inode_proof", inode_proof(), "rows.20." + field, values)
         for value in (None, [], {}, True):
             self.reject("inode_proof", inode_proof(), "rows", [value])
         for count in (0, 1, 17, 19):
             candidate = inode_proof()
             candidate["rows"] = candidate["rows"][:count]
             self.cli("inode_proof", candidate, valid=False)
+
+    def test_cluster_directory_get_fact_is_required_owned_and_cow(self):
+        base = inode_proof()
+        matches = [i for i, row in enumerate(base["rows"][:-1])
+                   if row["path"] == "/var/fdb/data/cluster"]
+        self.assertEqual(len(matches), 1)
+        index = matches[0]
+        self.assertEqual(base["rows"][index],
+                         {"path": "/var/fdb/data/cluster", "flags": 0, "nocow": False,
+                          "compression_flag": False, "uid": 4059, "dev": 17, "ino": index + 1,
+                          "nlink": 1, "size": 0, "allocated_bytes": 0, "mount_id": 23,
+                          "filesystem": "btrfs", "nodatasum": "NOT_EXPOSED"})
+        self.assertEqual(self.cli("inode_proof", base), {"inodes_verified": 20})
+        for field, values in {
+            "uid": [0, 4058, 4060, True, 4059.0, None],
+            "flags": [0x00800000, 0x00800004, -1, True, None],
+            "nocow": [True, None, 0], "filesystem": ["ext4", None],
+            "ino": [0, None], "mount_id": [0, 24, None],
+        }.items():
+            self.reject("inode_proof", base, f"rows.{index}." + field, values)
+        for field in base["rows"][index]:
+            candidate = inode_proof()
+            del candidate["rows"][index][field]
+            self.cli("inode_proof", candidate, valid=False)
+        candidate = inode_proof()
+        del candidate["rows"][index]
+        self.cli("inode_proof", candidate, valid=False)
 
     def test_get_inode_proof_paths_mount_uid_uuid_and_missing_facts(self):
         base = inode_proof()
@@ -659,7 +687,7 @@ class PolicyTests(unittest.TestCase):
             candidate = inode_proof()
             del candidate["rows"][1][field]
             self.cli("inode_proof", candidate, valid=False)
-        for i in range(19):
+        for i in range(len(base["rows"]) - 1):
             candidate = inode_proof()
             del candidate["rows"][i]
             self.cli("inode_proof", candidate, valid=False)

@@ -327,7 +327,7 @@ static void test_success(void)
     const char *paths[] = { "/var/fdb/data", "/var/fdb/data/.otel283-owner",
         "/var/fdb/data/cluster/fdb.cluster", "/var/fdb/data/traces",
         "/var/fdb/data/traces/14883", "/var/fdb/data/traces/14883/x",
-        "/var/fdb/data/processes/14886/x" };
+        "/var/fdb/data/processes/14886/x", "/var/fdb/data/cluster" };
     const uint32_t flags[] = { 0, FS_COMPR_FL, FS_NOCOW_FL, FS_NOCOW_FL | FS_COMPR_FL };
     for (size_t p = 0; p < sizeof(paths) / sizeof(paths[0]); ++p) {
         for (size_t f = 0; f < sizeof(flags) / sizeof(flags[0]); ++f) {
@@ -356,6 +356,13 @@ static void test_failed_reads(void)
     const enum fault inspect_faults[] = { STAT_ERROR, WRONG_TYPE, STATFS_ERROR,
         NOT_BTRFS, STATX_ERROR, MISSING_MOUNT_MASK, ZERO_MOUNT_ID };
     const char *path = "/var/fdb/data/traces/14883/x";
+    reset(IOCTL_ERROR, 0, 0);
+    CHECK(run("/var/fdb/data/cluster") != 0 && state.ioctls == 1);
+    CHECK(state.errors == 1 && state.output_length == 0);
+    reset(NONE, 0, FS_NOCOW_FL);
+    CHECK(run("/var/fdb/data/cluster") == 1 && state.ioctls == 1);
+    CHECK(state.errors == 0 && strstr(state.output, "\"nocow\":true") != NULL);
+    CHECK(strstr(state.output, "\"path\":\"/var/fdb/data/cluster\"") != NULL);
     for (size_t i = 0; i < sizeof(inspect_faults) / sizeof(inspect_faults[0]); ++i) {
         for (unsigned at = 1; at <= 4; ++at) {
             reset(inspect_faults[i], at, 0);

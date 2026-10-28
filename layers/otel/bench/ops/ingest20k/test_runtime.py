@@ -78,7 +78,7 @@ class RuntimeFixture(unittest.TestCase):
                              binary_sha256=digest(self.binary), input_manifest_sha256=digest(self.manifest),
                              probe_sha256=digest(self.probe), probe_source_sha256=digest(driver.HERE / "inode_flags.c"),
                              policy_sha256=driver.p.runtime_sha(driver.HERE))
-        self.approved["policy_formal_ack_sha256"] = self.approved["policy_sha256"]
+        self.approved["policy_approved_sha256"] = self.approved["policy_sha256"]
         self.approval_path = self.root / "approval.json"
         store(self.approval_path, self.approved)
         self.docker_root = self.root / "docker-root"

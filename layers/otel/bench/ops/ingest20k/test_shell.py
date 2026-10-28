@@ -36,12 +36,20 @@ with open(os.environ['FIXTURE_LOG'], 'a') as f:
                         'children':sorted(x.name for x in p.iterdir()) if p.is_dir() else None})+'\\n')
 if os.environ.get('FAIL_PROBE') in ('all', p.name):
     sys.exit(19)
-print(json.dumps({'path':str(p), 'flags':0, 'nocow':False}))
+nocow = os.environ.get('NOCOW_PROBE') == p.name
+print(json.dumps({'path':str(p), 'flags':8388608 if nocow else 0, 'nocow':nocow}))
+if nocow: sys.exit(1)
 """)
         self.tool("chown", """
 import json, os, sys
 with open(os.environ['FIXTURE_LOG'], 'a') as f:
     f.write(json.dumps({'op':'chown', 'argv':sys.argv[1:]})+'\\n')
+""")
+
+        self.monitor = self.tool("fixture-monitor", """
+import json, os
+with open(os.environ['FIXTURE_LOG'], 'a') as f:
+    f.write(json.dumps({'op':'monitor'})+'\\n')
 """)
 
     def tool(self, name, body):
@@ -56,8 +64,20 @@ with open(os.environ['FIXTURE_LOG'], 'a') as f:
                               env=env or self.env, capture_output=True, text=True, timeout=10)
 
     def prepare(self, root=None, env=None, owner="otel283-vxnar", session="prof20k1234", run="prof20k1234"):
-        return self.invoke("container-entrypoint.sh", "ingest20k_prepare", root or self.root,
-                           self.probe, self.seed, owner, session, run, env=env)
+        # Match production's conditional function call: errexit cannot mask a
+        # missing explicit return inside prepare before the monitor would start.
+        return subprocess.run(["/bin/bash", "-c", '''
+source "$1"
+monitor=$2
+shift 2
+bootstrap() {
+    ingest20k_prepare "$@" || return
+    "$monitor"
+}
+bootstrap "$@"
+''', "fixture", str(HERE / "container-entrypoint.sh"), str(self.monitor),
+                               str(root or self.root), str(self.probe), str(self.seed), owner, session, run],
+                              env=env or self.env, capture_output=True, text=True, timeout=10)
 
     def inventory(self, uid=None, env=None):
         return self.invoke("inode-readonly.sh", "ingest20k_inventory", self.root,
@@ -89,7 +109,7 @@ with open(os.environ['FIXTURE_LOG'], 'a') as f:
         self.assertEqual(result.returncode, 0, result.stderr)
         events = self.events()
         self.assertEqual(events[0], {"op": "GET", "path": str(self.root), "children": []})
-        self.assertEqual([e["op"] for e in events], ["GET", "chown"])
+        self.assertEqual([e["op"] for e in events], ["GET", "chown", "monitor"])
         self.assertEqual((self.root / "cluster/fdb.cluster").read_bytes(), self.seed.read_bytes())
         self.assertEqual((self.root / ".otel283-owner").read_text(),
                          "otel283-vxnar prof20k1234 prof20k1234\n")
@@ -97,7 +117,7 @@ with open(os.environ['FIXTURE_LOG'], 'a') as f:
         self.assertEqual(len(list((self.root / "traces").iterdir())), 4)
 
     def test_bootstrap_refusals_never_write_layout(self):
-        for case in ("populated", "symlink", "missing", "probe", "find", "mkdir", "cp", "chown", "owner", "session", "run"):
+        for case in ("populated", "symlink", "missing", "probe", "find", "mkdir", "mkdir-port", "cp", "chown", "owner", "session", "run"):
             with self.subTest(case=case):
                 candidate = self.base / ("candidate-" + case)
                 candidate.mkdir()
@@ -114,8 +134,18 @@ with open(os.environ['FIXTURE_LOG'], 'a') as f:
                     env["FAIL_PROBE"] = "all"
                 elif case == "find":
                     self.tool("find", "import sys\nsys.exit(23)\n")
-                elif case in ("mkdir", "cp", "chown"):
-                    self.tool(case, "import sys\nsys.exit(24)\n")
+                elif case in ("mkdir", "mkdir-port", "cp", "chown"):
+                    command = "mkdir" if case == "mkdir-port" else case
+                    real_command = shutil.which(command, path=os.defpath)
+                    self.assertIsNotNone(real_command)
+                    self.tool(command, f"""
+import json, os, sys
+if {case!r} == 'mkdir-port' and not any(arg.endswith('/14883') for arg in sys.argv[1:]):
+    os.execv({real_command!r}, [{real_command!r}] + sys.argv[1:])
+with open(os.environ['FIXTURE_LOG'], 'a') as f:
+    f.write(json.dumps({{'op':{case!r}}})+'\\n')
+sys.exit(24)
+""")
                 elif case == "owner":
                     kwargs["owner"] = "wrong"
                 elif case == "session":
@@ -123,17 +153,21 @@ with open(os.environ['FIXTURE_LOG'], 'a') as f:
                 elif case == "run":
                     kwargs["run"] = kwargs["session"] = "not-a-run"
                 result = self.prepare(candidate, env=env, **kwargs)
-                self.assertNotEqual(result.returncode, 0)
-                if case not in ("cp", "chown"):
+                expected_exit = {"probe": 19, "find": 23, "mkdir": 24, "mkdir-port": 24, "cp": 24, "chown": 24}.get(case, 1)
+                self.assertEqual(result.returncode, expected_exit)
+                self.assertNotIn("monitor", [e["op"] for e in self.events()])
+                if case == "probe":
+                    self.assertEqual(list(candidate.iterdir()), [])
+                if case not in ("mkdir-port", "cp", "chown"):
                     self.assertFalse((candidate / "cluster").exists())
                 if case != "chown":
                     self.assertFalse((candidate / ".otel283-owner").exists())
-                if case in ("find", "mkdir", "cp"):
-                    (self.tools / case).unlink()
+                if case in ("find", "mkdir", "mkdir-port", "cp"):
+                    (self.tools / ("mkdir" if case == "mkdir-port" else case)).unlink()
                 if self.log.exists():
                     events = self.events()
-                    self.assertIn(case, ("probe", "mkdir", "cp", "chown"))
-                    self.assertEqual([e["op"] for e in events], ["GET"])
+                    self.assertIn(case, ("probe", "mkdir", "mkdir-port", "cp", "chown"))
+                    self.assertEqual([e["op"] for e in events], ["GET"] if case == "probe" else ["GET", case])
                     self.log.unlink()
 
     def test_inventory_reads_the_complete_population(self):
@@ -145,7 +179,7 @@ with open(os.environ['FIXTURE_LOG'], 'a') as f:
         rows = [json.loads(line) for line in result.stdout.splitlines()]
         summary = rows.pop()
         expected_files = {str(p) for p in self.root.rglob("*") if p.is_file()}
-        expected_dirs = {str(self.root), str(self.root / "processes"), str(self.root / "traces")}
+        expected_dirs = {str(self.root), str(self.root / "cluster"), str(self.root / "processes"), str(self.root / "traces")}
         expected_dirs |= {str(self.root / d / str(p)) for d in ("processes", "traces") for p in range(14883, 14887)}
         self.assertEqual({r["path"] for r in rows}, expected_files | expected_dirs)
         self.assertEqual(len(rows), len(expected_files | expected_dirs))
@@ -160,7 +194,8 @@ with open(os.environ['FIXTURE_LOG'], 'a') as f:
         cases = ("empty", "symlink", "symlink-dir", "fifo", "missing-dir", "missing-seed", "missing-owner",
                  "missing-storage", "duplicate-storage", "bad-storage-uuid", "missing-log",
                  "duplicate-log", "bad-log-uuid", "missing-wal", "wrong-wal-uuid", "missing-queue",
-                 "wrong-queue-uuid", "unknown-file", "unknown-dir", "uid", "dev", "stat", "find", "probe")
+                 "wrong-queue-uuid", "unknown-file", "unknown-dir", "uid", "dev", "stat", "find", "probe",
+                 "cluster-uid", "cluster-get", "cluster-nocow")
         for case in cases:
             with self.subTest(case=case), tempfile.TemporaryDirectory(dir=self.base) as temp:
                 original = self.root
@@ -209,13 +244,15 @@ with open(os.environ['FIXTURE_LOG'], 'a') as f:
                         (self.root / "traces/14883/nested").mkdir()
                     elif case == "uid":
                         uid = os.getuid() + 1
-                    elif case in ("dev", "stat"):
+                    elif case in ("dev", "stat", "cluster-uid"):
                         real_stat = shutil.which("stat", path=os.defpath)
                         self.assertIsNotNone(real_stat)
                         self.tool("stat", f"""
 import os, sys
 if {case!r} == 'stat': sys.exit(22)
-if sys.argv[-1].endswith('/traces') and sys.argv[2] == '%d':
+if {case!r} == 'cluster-uid' and sys.argv[-1].endswith('/cluster') and sys.argv[2] == '%u':
+    print(os.getuid() + 1); sys.exit(0)
+if {case!r} == 'dev' and sys.argv[-1].endswith('/traces') and sys.argv[2] == '%d':
     print('99999999'); sys.exit(0)
 os.execv({real_stat!r}, [{real_stat!r}] + sys.argv[1:])
 """)
@@ -223,9 +260,19 @@ os.execv({real_stat!r}, [{real_stat!r}] + sys.argv[1:])
                         self.tool("find", "import sys\nsys.exit(23)\n")
                     elif case == "probe":
                         env["FAIL_PROBE"] = "trace.xml"
+                    elif case == "cluster-get":
+                        env["FAIL_PROBE"] = "cluster"
+                    elif case == "cluster-nocow":
+                        env["NOCOW_PROBE"] = "cluster"
                     result = self.inventory(uid=uid, env=env)
                     self.assertNotEqual(result.returncode, 0, case)
                     self.assertNotIn('"schema":"ingest20k_inode_proof_v1"', result.stdout)
+                    if case == "cluster-uid":
+                        self.assertNotIn(str(self.root / "cluster"), [e["path"] for e in self.events()])
+                    elif case in ("cluster-get", "cluster-nocow"):
+                        self.assertEqual([e["path"] for e in self.events()], [str(self.root), str(self.root / "cluster")])
+                        if case == "cluster-nocow":
+                            self.assertTrue(json.loads(result.stdout.splitlines()[-1])["nocow"])
                 finally:
                     self.root = original
                     for tool in ("stat", "find"):

@@ -83,7 +83,7 @@ class Lifecycle:
     """Respond at the OS/process boundary, retaining Runtime and policy guards."""
     instance = "a" * 64
 
-    def __init__(self, root, fault=None):
+    def __init__(self, root, fault=None, batch=32, workers=2, revision="1" * 40):
         self.root, self.fault = Path(root), fault
         self.now = 1000.0
         self.processes, self.calls, self.events = [], [], []
@@ -106,13 +106,13 @@ class Lifecycle:
             binary.write_text("offline bytes; never executable by this fixture\n")
             binary.chmod(0o555)
         self.out = self.root / "ingest20k-prof20k0290"
-        self.approved = fixtures.approval()
+        self.approved = fixtures.approval(batch=batch, workers=workers, revision=revision)
         self.approved.update(binary=str(self.binary), probe_binary=str(self.probe),
                              source_root=str(self.source), source_manifest=str(self.manifest),
                              out=str(self.out), binary_sha256=p.sha(self.binary),
                              probe_sha256=p.sha(self.probe), input_manifest_sha256=p.sha(self.manifest),
                              policy_sha256=p.runtime_sha(driver.HERE),
-                             policy_formal_ack_sha256=p.runtime_sha(driver.HERE),
+                             policy_approved_sha256=p.runtime_sha(driver.HERE),
                              probe_source_sha256=p.sha(driver.HERE / "inode_flags.c"))
         self.approval = self.root / "approval.json"
         self.approval.write_text(json.dumps(self.approved))
@@ -264,6 +264,12 @@ class Lifecycle:
             return 0, json.dumps([] if self.fault == "image" else [a["image"]])
         if argv[:3] == ["docker", "volume", "create"]:
             self.assert_admitted()
+            request = driver.read(self.out / "request.json")
+            labels = {"otel283.owner": a["owner"], "otel283.profile": a["profile"],
+                      "otel283.session": a["session"], "otel283.run": a["run"], "otel283.nonce": request["nonce"]}
+            expected = ["docker", "volume", "create"] + [item for key, value in labels.items()
+                        for item in ("--label", key + "=" + value)] + [a["volume"]]
+            assert argv == expected, "Volume launch argv differs from sealed profile"
             return 0, a["volume"] + "\n"
         if argv[:3] == ["docker", "volume", "inspect"]:
             request = json.loads((self.out / "request.json").read_text())
@@ -274,6 +280,7 @@ class Lifecycle:
             return 0, result
         if argv[:2] == ["docker", "create"]:
             self.assert_admitted()
+            self.assert_docker_create(argv)
             return 0, self.instance + "\n"
         if argv[:2] == ["docker", "inspect"]:
             result = json.dumps(self.inspect())
@@ -322,6 +329,61 @@ class Lifecycle:
         assert any(x[:3] == ["docker", "volume", "ls"] for x in self.calls)
         assert any(x[:2] == ["docker", "ps"] for x in self.calls)
 
+    def assert_docker_create(self, argv):
+        a = self.approved
+        request = driver.read(self.out / "request.json")
+        labels = {"otel283.owner": a["owner"], "otel283.profile": a["profile"],
+                  "otel283.session": a["session"], "otel283.run": a["run"],
+                  "otel283.nonce": request["nonce"]}
+        expected = ["docker", "create", "--name", a["container"], "--pull", "never", "--restart", "no",
+                    "--network", "bridge", "--cpus", "4", "--memory", "16g", "--memory-swap", "16g", "--log-driver", "none"]
+        expected += [item for key, value in labels.items() for item in ("--label", key + "=" + value)]
+        expected += ["--mount", "type=volume,source=" + a["volume"] + ",target=/var/fdb/data,volume-nocopy",
+                     "--mount", "type=bind,source=" + str(driver.HERE) + ",target=/etc/fdb4,readonly",
+                     "--mount", "type=bind,source=" + str(self.probe) + ",target=/etc/ingest20k/inode-flags,readonly"]
+        for port in (14883, 14884, 14885, 14886):
+            expected += ["--publish", f"127.0.0.1:{port}:{port}"]
+        expected += ["--env", "FDB4_OWNER=" + a["owner"], "--env", "FDB4_SESSION=" + a["session"],
+                     "--env", "FDB4_RUN=" + a["run"], "--env", "FDB_CLUSTER_FILE=/var/fdb/data/cluster/fdb.cluster",
+                     "--entrypoint", "/usr/bin/tini", a["image"], "-g", "--", "/bin/bash",
+                     "/etc/fdb4/container-entrypoint.sh", str(request["started_epoch"] + 1200)]
+        assert list(argv) == expected, "Docker launch argv differs from sealed profile"
+
+    def application_result(self, argv):
+        a = self.approved
+        mode = argv[argv.index("--mode") + 1]
+        assert mode in ("ingest", "audit", "query"), "unknown workload mode"
+        cap = 300 if mode == "ingest" else 120
+        expected = [str(self.binary), "--backend", "fdb", "--order", "time", "--cluster-file",
+                    str(driver.HERE / "fdb.cluster.seed"), "--run", a["run"], "--seed", "283", "--count", "100000",
+                    "--tenants", "1", "--attrs", "8", "--match-every", "100", "--batch", str(a["batch"]),
+                    "--save-mode", "batch", "--workers", str(a["workers"]), "--diagnostics", "--k", "100",
+                    "--max-candidates", "2000000", "--max-bytes", "268435456", "--revision", a["source_revision"],
+                    "--mode", mode, "--timeout", str(cap) + "s", "--output", str(self.out / (mode + ".json"))]
+        if mode == "query":
+            expected += ["--suite", "all", "--iterations", "1600"]
+        assert list(argv) == expected, "Application launch argv differs from sealed profile"
+        options = {}
+        arguments = iter(argv[1:])
+        for key in arguments:
+            options[key] = True if key == "--diagnostics" else next(arguments)
+        result = fixtures.evidence(mode, run=options["--run"], revision=options["--revision"],
+                                   batch=int(options["--batch"]), workers=int(options["--workers"]))["evidence"]
+        result["backend"], result["mode"] = options["--backend"], options["--mode"]
+        for flag, key in (("--backend", "backend"), ("--order", "order"), ("--save-mode", "save_mode")):
+            result["config"][key] = options[flag]
+        for flag, key in (("--seed", "seed"), ("--count", "count"), ("--tenants", "tenants"), ("--attrs", "attributes"),
+                          ("--match-every", "match_every"), ("--k", "k"), ("--max-candidates", "max_candidates"), ("--max-bytes", "max_bytes")):
+            result["config"][key] = int(options[flag])
+        result["config"]["diagnostics"] = options["--diagnostics"]
+        if mode == "query":
+            result["suite"] = options["--suite"]
+            result["config"]["iterations"] = int(options["--iterations"])
+        else:
+            result["stats"]["rows"] = int(options["--count"])
+            result["stats"]["attributes"] = int(options["--count"]) * int(options["--attrs"])
+        return result
+
     def external_run(self, argv, **kwargs):
         if argv[0] == "jq":
             summary = {"aggregate_healthy_original": True,
@@ -356,6 +418,7 @@ class Lifecycle:
             return process
         if list(argv[:2]) == ["docker", "start"]:
             self.assert_admitted()
+            assert list(argv) == ["docker", "start", "--attach", self.instance], "Unexpected attached start argv"
             self.running = True
             self.had_started = True
             self.calls.append(list(argv))
@@ -364,7 +427,7 @@ class Lifecycle:
             self.calls.append(list(argv))
             mode = argv[argv.index("--mode") + 1]
             self.events.append(("workload", mode))
-            result = fixtures.evidence(mode)["evidence"]
+            result = self.application_result(argv)
             if self.fault == "evidence:" + mode:
                 result["stats" if mode != "query" else "config"]["rows" if mode != "query" else "iterations"] = 1
             if self.fault == "mode:" + mode:
@@ -410,13 +473,13 @@ class Lifecycle:
 
 
 class LifecycleTests(unittest.TestCase):
-    def harness(self, fault=None):
+    def harness(self, fault=None, batch=32, workers=2, revision="1" * 40):
         previous = getattr(self, "active_harness", None)
         if previous is not None:
             previous.close()
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        harness = Lifecycle(temp.name, fault)
+        harness = Lifecycle(temp.name, fault, batch=batch, workers=workers, revision=revision)
         self.addCleanup(harness.close)
         self.active_harness = harness
         return harness.enter()
@@ -472,6 +535,50 @@ class LifecycleTests(unittest.TestCase):
         self.assertTrue({"ingest.json", "audit.json", "query.json", "load.exited.json",
                          "server.stdout", "server.stderr", "monitor.exit.json", "server.exit.json",
                          "lease.json", "request.json", "admission-docker-info.stdout"} <= expected)
+
+    def test_real_lifecycle_nondefault_approved_pairs_bind_launched_evidence(self):
+        for batch, workers in ((32, 4), (32, 8), (64, 2), (64, 4), (64, 8)):
+            with self.subTest(batch=batch, workers=workers):
+                revision = "2" * 40 if (batch, workers) == (64, 8) else "1" * 40
+                h = self.harness(batch=batch, workers=workers, revision=revision)
+                h.invoke()
+                self.assertTrue((h.out / "complete.json").exists())
+                launched = [argv for argv in h.calls if argv[0] == str(h.binary)]
+                self.assertEqual(len(launched), 3)
+                for argv in launched:
+                    self.assertEqual(argv[argv.index("--batch") + 1], str(batch))
+                    self.assertEqual(argv[argv.index("--workers") + 1], str(workers))
+                    result = driver.read(Path(argv[argv.index("--output") + 1]))
+                    self.assertEqual((result["config"]["batch"], result["config"]["workers"]), (batch, workers))
+                    self.assertEqual(result["revision"], revision)
+                    p.evidence(result, h.approved)
+
+    def test_launch_boundary_rejects_changed_or_missing_sealed_arguments(self):
+        h = self.harness(batch=64, workers=8)
+        h.invoke()
+        docker = next(argv for argv in h.calls if argv[:2] == ["docker", "create"])
+        application = next(argv for argv in h.calls if argv[0] == str(h.binary))
+        for original, validate, flags in (
+                (docker, h.assert_docker_create, ("--memory", "--memory-swap", "--cpus", "--entrypoint", "--mount", "--label")),
+                (application, h.application_result, ("--count", "--batch", "--workers", "--revision", "--timeout", "--max-bytes", "--cluster-file"))):
+            for flag in flags:
+                with self.subTest(flag=flag):
+                    index = original.index(flag)
+                    changed = list(original)
+                    changed[index + 1] = "wrong"
+                    with self.assertRaisesRegex(AssertionError, "argv differs from sealed profile"):
+                        validate(changed)
+                    missing = list(original)
+                    del missing[index:index + 2]
+                    with self.assertRaisesRegex(AssertionError, "argv differs from sealed profile"):
+                        validate(missing)
+        changed = list(docker)
+        changed[-1] = str(int(changed[-1]) + 1)
+        with self.assertRaisesRegex(AssertionError, "Docker launch argv"):
+            h.assert_docker_create(changed)
+        changed = [value for value in application if value != "--diagnostics"]
+        with self.assertRaisesRegex(AssertionError, "Application launch argv"):
+            h.application_result(changed)
 
     def test_main_dispatch_executes_real_positive_lifecycle(self):
         h = self.harness()

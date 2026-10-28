@@ -2,8 +2,10 @@
 
 This is preparation for **one** guarded 100,000-span diagnostic invocation, not a
 20k inserts/s result or authorization to start a server. Root must run the full
-fast lane, obtain the formal ACK for final bytes, seal an explicit configuration,
-and issue the run instruction. There is no sweep, escalation, adoption, cleanup,
+fast lane, explicitly approve the tested diagnostic bytes, seal a configuration,
+and issue the run instruction. Formal policy/application review is deferred to
+the coherent winning candidate before merge; operator approval is not a formal ACK.
+Prior NAK reports and findings remain part of the experiment's provenance. There is no sweep, escalation, adoption, cleanup,
 Drop, native-filesystem change, installer, SETFLAGS, or durability-knob change.
 The old 13-file 10M profile, ready `rw1m0286` and every retained volume stay
 untouched. The final PoC ceiling remains 10 million spans; this profile admits
@@ -72,7 +74,7 @@ The sealed approval is one strict JSON object containing **every literal** from
 - `source_revision` and identical `source_approved_revision` (explicit operator approval);
 - absolute `binary`, `source_root`, `source_manifest`, `probe_binary`, `out`;
 - `binary_sha256`, `input_manifest_sha256`, `probe_sha256`, `probe_source_sha256`;
-- reviewed `policy_sha256` and identical `policy_formal_ack_sha256`;
+- `policy_sha256` and identical `policy_approved_sha256` (explicit operator approval);
 - `quiet_thresholds_approved: true`, `growth_overshoot_accepted: true`.
 
 No approval file is generated automatically. `policy.runtime_sha()` hashes ordered
@@ -87,8 +89,11 @@ executable. Application source/binary hashes and explicit operator approval bind
 each experimental candidate; that approval does not claim formal application
 review. Isolated candidates may be measured before that review; formal application
 review remains separate before merge. The baseline revision above retains its
-genuine prior formal ACK. Host operations/probe safety still require the unchanged
-`policy_formal_ack_sha256` binding; application approval is not an ACK for these ops.
+genuine prior formal ACK. The tested operator-approved diagnostic binds operations
+bytes with `policy_approved_sha256` exactly equal to `policy_sha256`. Formal policy
+and application review remain separate before merge, with actual prior NAK
+provenance retained rather than relabelled as an ACK. All runtime guards remain
+mandatory; approval does not waive GET, ownership, durability or resource limits.
 
 The operator-only foreground form is:
 
@@ -125,9 +130,10 @@ compiler (`CC`, otherwise `cc`), readlink, sha256sum, readelf, grep and mkdir.
 Build records source/compiler/command/exit/binary/static-ELF receipts and **never
 runs** the result. Root seals the built executable 0555. The current separately
 built artifact is
-`/tmp/fdb-hotelbench.VxNArC/ingest20k-probe-build-v1/inode-flags`, SHA256
-`86e87ee0a47327ad1631a94bf6343a6b2d73a6b92e12c1f6726cbc2be4603d24`, source SHA256
-`4a42f9d20b514a0d4101c4e10bf912e65479cbde8033320adf53c11f37b1aad9`.
+`/tmp/fdb-hotelbench.VxNArC/ingest20k-probe-build-v2/inode-flags`, SHA256
+`55daed4087c104c4a22cdb4bc287947b4b6fd1dc15f5bf6591ba8b901ddc11eb`, source SHA256
+`35d06ffd3f61753ff864fc925be6f44e8691f31e1f3bc220c17ba2d3f81bc543`.
+Root built this 0555 static artifact without executing it; the old asset is retained.
 A production-source change invalidates that build and requires rebuilding.
 
 Only that sealed executable is mounted **read-only** at
