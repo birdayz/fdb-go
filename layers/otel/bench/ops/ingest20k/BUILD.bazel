@@ -21,13 +21,14 @@ sh_test(
     ],
 )
 
-# Pure predicates, temporary receipt fixtures and mocked shutdown only.
+# Offline real adapters/lifecycle, shell fixtures and harmless deadline children.
 sh_test(
     name = "ingest20k_test",
     srcs = ["test.sh"],
     data = [
         "build-probe.sh",
         "container-entrypoint.sh",
+        "deadline.sh",
         "driver.py",
         "fdb.cluster.seed",
         "foundationdb.conf",
@@ -36,5 +37,8 @@ sh_test(
         "policy.py",
         "status-check.jq",
         "test_policy.py",
+        "test_runtime.py",
+        "test_lifecycle.py",
+        "test_shell.py",
     ],
 )

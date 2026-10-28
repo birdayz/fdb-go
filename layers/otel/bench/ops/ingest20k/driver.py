@@ -70,6 +70,46 @@ def allocated_tree(root):
     return total
 
 
+def final_inventory(root, commitments):
+    """Seal every retained output only after all output writers have joined."""
+    root = Path(root)
+    for name, expected in commitments.items():
+        path = root / name
+        p.require(path.is_file() and not path.is_symlink() and p.sha(path) == expected,
+                  "validated receipt changed/missing: " + name)
+    rows = []
+    def failed(error):
+        raise error
+    for directory, dirs, files in os.walk(root, followlinks=False, onerror=failed):
+        for name in dirs:
+            p.require(not (Path(directory) / name).is_symlink(), "symlink in final inventory")
+        for name in files:
+            path = Path(directory) / name
+            relative = str(path.relative_to(root))
+            p.require(relative not in ("final-inventory.json", "complete.json"), "completion output already exists")
+            info = path.lstat()
+            p.require(stat.S_ISREG(info.st_mode), "nonregular final receipt")
+            rows.append({"path": relative, "size": info.st_size, "sha256": p.sha(path)})
+            if name.endswith(".exit.json"):
+                receipt = read(path)
+                for field, suffix in (("stdout_sha256", ".stdout"), ("stderr_sha256", ".stderr")):
+                    if field in receipt:
+                        raw = path.with_name(name[:-len(".exit.json")] + suffix)
+                        p.require(raw.is_file() and not raw.is_symlink() and p.sha(raw) == receipt[field],
+                                  "raw command receipt changed/missing")
+    p.require(rows and set(commitments) <= {row["path"] for row in rows}, "empty/incomplete final inventory")
+    rows.sort(key=lambda row: row["path"])
+    # Re-read the population and bytes before publishing the commitment.
+    current = sorted(str(path.relative_to(root)) for path in root.rglob("*") if not path.is_dir())
+    p.require(current == [row["path"] for row in rows], "final inventory population changed")
+    for row in rows:
+        path = root / row["path"]
+        info = path.lstat()
+        p.require(stat.S_ISREG(info.st_mode) and info.st_size == row["size"] and p.sha(path) == row["sha256"],
+                  "final inventory bytes changed")
+    return {"files": rows, "count": len(rows)}
+
+
 def host_sample():
     fields = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
     vm = dict(line.split() for line in Path("/proc/vmstat").read_text().splitlines())
@@ -82,6 +122,24 @@ def host_sample():
         p.require(len(values) == 1, "missing PSI accounting")
         result[key] = float(values[0]["avg10"])
     return result
+
+
+def lease_path(environment=None):
+    environment = os.environ if environment is None else environment
+    value = environment.get("FDB_LANE_LOCK") or str(Path(environment.get("TMPDIR") or "/tmp") / "fdb-heavy-lane.lock")
+    return Path(value).absolute()
+
+
+def check_lease(fd, lease):
+    info = os.fstat(fd)
+    path = Path(lease["path"])
+    p.require(path.is_absolute(), "global lease path must be absolute")
+    current = path.lstat()
+    expected = (lease["device"], lease["inode"])
+    p.require(stat.S_ISREG(info.st_mode) and stat.S_ISREG(current.st_mode)
+              and info.st_nlink > 0 and current.st_nlink > 0
+              and (info.st_dev, info.st_ino) == expected == (current.st_dev, current.st_ino),
+              "global lease descriptor/path identity lost")
 
 
 def parent_start(pid):
@@ -107,6 +165,8 @@ class Runtime:
         self.initial_pids = None
         self.backlog = 0
         self.phase_seen = False
+        self.shutdown_ok = not any(self.out.glob("shutdown.failed-*.json"))
+        self.shutdown_failures = [] if self.shutdown_ok else ["persisted shutdown failure"]
         self.frozen = self.approval["policy_sha256"]
         self.root = Path(self.request["docker_root"])
         self.total = self.request["total_bytes"]
@@ -216,7 +276,7 @@ class Runtime:
         current = self.out / "active-phase.json"
         if not current.exists():
             p.require(not self.phase_seen, "active phase removed after declaration")
-            return False
+            return
         self.phase_seen = True
         pointer = read(current)
         p.require(pointer["stage"] in ("load", "drain", "census", "oracle"), "unknown active stage")
@@ -225,14 +285,13 @@ class Runtime:
         phase = read(path)
         p.require(phase["instance"] == self.instance and all(phase[k] == self.approval[k] for k in ("source_revision", "binary_sha256", "input_manifest_sha256", "policy_sha256")), "phase binding changed")
         phase["now"] = int(time.time())
-        allowed = p.phase(phase)["allow_batch_warning"]
-        return allowed and not (self.out / "load.exited.json").exists()
+        p.phase(phase)
 
-    def status(self, allow=False, bootstrap=False):
+    def status(self, *, bootstrap=False):
         raw = self.bounded_exec(["/usr/bin/fdbcli", "-C", "/var/fdb/data/cluster/fdb.cluster", "--exec", "status json"])
         # Parsing rejects a stream even if jq could return a successful first item.
         document = p.loads(raw)
-        result = subprocess.run(["jq", "-ce", "--argjson", "allow_batch_warning", str(allow).lower(), "-f", str(HERE / "status-check.jq")], input=raw, text=True, capture_output=True, timeout=3)
+        result = subprocess.run(["jq", "-ce", "-f", str(HERE / "status-check.jq")], input=raw, text=True, capture_output=True, timeout=3)
         self.event({"type": "status-validator", "exit": result.returncode, "stderr": result.stderr})
         if result.returncode != 0 and bootstrap:
             return p.startup_pending(document)
@@ -289,10 +348,21 @@ class Runtime:
                     "raw_path": self.last_stdout.name, "raw_sha256": p.sha(self.last_stdout)})
         return data
 
+    def shutdown_failure(self, reason):
+        self.shutdown_ok = False
+        self.shutdown_failures = [*getattr(self, "shutdown_failures", []), reason]
+        try:
+            write(self.out / (f"shutdown.failed-{os.getpid()}.json"), {"failures": self.shutdown_failures}, exclusive=False)
+        except OSError:
+            pass
+
     def stop(self):
         # Emergency stop must work even when the receipt filesystem is full or
         # a resource/health guard failed. Only immutable ID + ownership authorize
         # stopping; OOM/resource failures must not veto our own shutdown.
+        if any(self.out.glob("shutdown.failed-*.json")) and getattr(self, "shutdown_ok", True):
+            self.shutdown_ok = False
+            self.shutdown_failures = [*getattr(self, "shutdown_failures", []), "persisted shutdown failure"]
         if not self.instance and not (self.out / "instance.json").exists():
             return
         expected = self.instance or read(self.out / "instance.json")["instance"]
@@ -307,24 +377,27 @@ class Runtime:
         result = None
         if before["running"]:
             result = subprocess.run(["docker", "stop", "--time", "60", expected], capture_output=True, text=True, timeout=75)
+        if result is not None and result.returncode != 0:
+            self.shutdown_failure("docker stop returned nonzero: " + str(result.returncode))
         after = exact()
         confirmed = after["running"] is False and after["status"] == "exited"
         try:
             self.event({"type": "stop", "instance": expected, "confirmed": confirmed,
                         "command_exit": result.returncode if result else None,
                         "stdout": result.stdout if result else "", "stderr": result.stderr if result else ""})
-        except OSError:
-            # The stderr fallback is deliberate: no successful-stop receipt can
-            # be claimed when persistence failed, even if the daemon stopped it.
+        except Exception:
+            self.shutdown_failure("stop receipt persistence failed")
             print("STOP receipt persistence failed; inspect retained instance", file=sys.stderr)
         p.require(confirmed, "STOP NOT CONFIRMED; FAILED/UNKNOWN; keep lease and intervene")
-        return after
+        return {**after, "shutdown_ok": getattr(self, "shutdown_ok", True),
+                "shutdown_failures": list(getattr(self, "shutdown_failures", []))}
 
     def stop_until_confirmed(self):
         while True:
             try:
                 return self.stop()
             except BaseException as error:
+                self.shutdown_failure("stop confirmation failed: " + str(error))
                 print("FAILED/UNKNOWN stop: " + str(error), file=sys.stderr)
                 try:
                     self.event({"type": "stop-failed", "error": str(error)})
@@ -335,15 +408,15 @@ class Runtime:
 
 def monitor(out, lease_fd):
     runtime = Runtime(out)
-    lease = read(Path(out) / "lease.json")
-    info = os.fstat(lease_fd)
-    lock = os.stat(lease["path"])
-    p.require((info.st_dev, info.st_ino) == (lock.st_dev, lock.st_ino), "inherited global lease descriptor mismatch")
-    # Never acquire another flock: the descriptor is the original driver's lease.
+    # Never acquire another flock: validate the original inherited descriptor
+    # inside containment cleanup, initially and again on every monitored cycle.
     last_inode = 0
     try:
+        lease = read(Path(out) / "lease.json")
+        check_lease(lease_fd, lease)
         while not (Path(out) / "stop.request.json").exists():
             tick = time.monotonic()
+            check_lease(lease_fd, lease)
             p.require(os.getppid() == lease["pid"] and parent_start(lease["pid"]) == lease["start_ticks"], "supervisor died/replaced")
             p.require(tick - runtime.started_mono < 1200 and abs((time.time() - runtime.started) - (tick - runtime.started_mono)) < 3, "1200-second monitor deadline/clock discontinuity")
             runtime.check_frozen()
@@ -354,21 +427,23 @@ def monitor(out, lease_fd):
             heartbeat = read(Path(out) / "supervisor-heartbeat.json")
             p.require(heartbeat["pid"] == lease["pid"] and heartbeat["instance"] == runtime.instance and 0 <= time.monotonic() - heartbeat["monotonic"] < 90, "supervisor heartbeat stale/mismatched")
             if (Path(out) / "bootstrap.ready.json").exists():
-                summary = runtime.status(runtime.phase())
-                allow_after = runtime.phase()
-                p.require(not summary["health_exception_used"] or allow_after, "bulk exception ended during status command")
+                runtime.phase()
+                summary = runtime.status()
+                runtime.phase()
                 runtime.backlog = p.backlog({"queue_bytes": summary["queue_bytes"], "lag_seconds": summary["durability_lag_seconds"], "previous_streak": runtime.backlog})["streak"]
                 runtime.event({"type": "status", "status": summary, "backlog_streak": runtime.backlog})
                 if tick - last_inode >= 60:
                     proof = runtime.bounded_exec(["/bin/bash", "/etc/fdb4/inode-readonly.sh"], 20, user="fdb")
                     p.inode_proof({"rows": [p.loads(line) for line in proof.splitlines()]})
                     last_inode = tick
+            check_lease(lease_fd, lease)
             write(Path(out) / "heartbeat.json", {"monotonic": time.monotonic(), "pid": os.getpid(), "instance": runtime.instance}, exclusive=False)
             time.sleep(max(0, 10 - (time.monotonic() - tick)))
     finally:
         # If the daemon cannot stop, retain the global lease and retry. There is
         # no safe automatic unlock with an unconfirmed live database.
-        runtime.stop_until_confirmed()
+        stopped = runtime.stop_until_confirmed()
+        p.require(stopped is not None and stopped.get("shutdown_ok") is True, "shutdown failed after containment")
 
 
 def strict_ready(runtime, guard, name, seconds, deadline=None, bootstrap=False):
@@ -376,7 +451,7 @@ def strict_ready(runtime, guard, name, seconds, deadline=None, bootstrap=False):
     end = deadline if deadline is not None else time.monotonic() + seconds
     while time.monotonic() < end:
         guard(deadline=end)
-        summary = runtime.status(False, bootstrap=bootstrap)
+        summary = runtime.status(bootstrap=bootstrap)
         guard(deadline=end)
         runtime.phase()
         sample = {"epoch": int(time.time()), "raw_path": runtime.last_stdout.name,
@@ -414,7 +489,7 @@ def run(args):
     out = Path(args.out).absolute()
     p.require(out.name == "ingest20k-" + P["run"] and not out.exists() and not out.is_symlink(), "new exact root required; never reuse")
     p.require(out.parent.resolve() == out.parent, "symlinked root parent rejected")
-    lock_path = Path(os.environ.get("FDB_LANE_LOCK", "/tmp/fdb-heavy-lane.lock")).absolute()
+    lock_path = lease_path()
     lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     session_epoch, session_monotonic = int(time.time()), time.monotonic()
@@ -422,8 +497,10 @@ def run(args):
     os.umask(0o077)
     out.mkdir()
     lease_info = os.fstat(lock_fd)
-    write(out / "lease.json", {"path": str(lock_path), "pid": os.getpid(), "start_ticks": parent_start(os.getpid()),
-                               "device": lease_info.st_dev, "inode": lease_info.st_ino, "descriptor": lock_fd})
+    lease = {"path": str(lock_path), "pid": os.getpid(), "start_ticks": parent_start(os.getpid()),
+             "device": lease_info.st_dev, "inode": lease_info.st_ino, "descriptor": lock_fd}
+    check_lease(lock_fd, lease)
+    write(out / "lease.json", lease)
     info_args = ["docker", "info", "--format", "{{.DockerRootDir}}"]
     write(out / "admission-docker-info.command.json", {"argv": info_args})
     with open(out / "admission-docker-info.stdout", "xb") as stdout, open(out / "admission-docker-info.stderr", "xb") as stderr:
@@ -441,6 +518,14 @@ def run(args):
     runtime = Runtime(out)
     attached = watcher = workload = None
     stop_state = None
+    commitments = {}
+
+    def remember(*names):
+        for name in names:
+            commitments[name] = p.sha(out / name)
+
+    remember("request.json", "lease.json", "admission-docker-info.command.json",
+             "admission-docker-info.stdout", "admission-docker-info.stderr", "admission-docker-info.exit.json")
     try:
         runtime.check_frozen(full=True)
         runtime.sequential()
@@ -453,8 +538,10 @@ def run(args):
             p.require(not runtime.command(["ss", "-H", "-ltn", "sport = :" + str(port)]).strip(), "candidate port already listening")
         samples = []
         for i in range(7):
+            check_lease(lock_fd, lease)
             if i:
                 time.sleep(10)
+            check_lease(lock_fd, lease)
             sample = host_sample()
             samples.append(sample)
             write(out / (f"quiet-{i}.json"), sample)
@@ -466,6 +553,7 @@ def run(args):
         runtime.sequential()
         labels = {**LABELS, "otel283.nonce": request["nonce"]}
         label_args = [item for k, v in labels.items() for item in ("--label", k + "=" + v)]
+        check_lease(lock_fd, lease)
         value = runtime.command(["docker", "volume", "create"] + label_args + [P["volume"]]).strip()
         p.require(value == P["volume"], "unexpected newly created volume")
         runtime.volume()
@@ -475,15 +563,18 @@ def run(args):
         for port in P["ports"]:
             argv += ["--publish", f"127.0.0.1:{port}:{port}"]
         argv += ["--env", "FDB4_OWNER=" + P["owner"], "--env", "FDB4_SESSION=" + P["session"], "--env", "FDB4_RUN=" + P["run"], "--env", "FDB_CLUSTER_FILE=/var/fdb/data/cluster/fdb.cluster", "--entrypoint", "/usr/bin/tini", P["image"], "-g", "--", "/bin/bash", "/etc/fdb4/container-entrypoint.sh", str(request["started_epoch"] + 1200)]
+        check_lease(lock_fd, lease)
         instance = runtime.command(argv).strip()
         p.require(p.hexstr(instance), "create returned invalid instance ID")
         write(out / "instance.json", {"instance": instance, **labels})
         runtime.instance = instance
         runtime.identity(running=False)
         with open(out / "server.stdout", "xb") as stdout, open(out / "server.stderr", "xb") as stderr:
+            check_lease(lock_fd, lease)
             attached = subprocess.Popen(["docker", "start", "--attach", instance], stdout=stdout, stderr=stderr, pass_fds=(lock_fd,))
         started_wait = time.monotonic()
         while not runtime.inspect(P["container"])["running"]:
+            check_lease(lock_fd, lease)
             p.require(attached.poll() is None and time.monotonic() - started_wait < 30, "attached server failed to start")
             time.sleep(1)
         write(out / "supervisor-heartbeat.json", {"pid": os.getpid(), "instance": instance, "monotonic": time.monotonic()}, exclusive=False)
@@ -492,6 +583,7 @@ def run(args):
         def supervised_wait(process=None, deadline=None, receipt=None):
             write(out / "supervisor-heartbeat.json", {"pid": os.getpid(), "instance": instance, "monotonic": time.monotonic()}, exclusive=False)
             while True:
+                check_lease(lock_fd, lease)
                 write(out / "supervisor-heartbeat.json", {"pid": os.getpid(), "instance": instance, "monotonic": time.monotonic()}, exclusive=False)
                 p.require(watcher.poll() is None and attached.poll() is None, "monitor or attached server exited")
                 heartbeat = out / "heartbeat.json"
@@ -522,9 +614,14 @@ def run(args):
         runtime.bounded_exec(["/bin/bash", "-c", layout, "ingest20k-layout", p.sha(HERE / "fdb.cluster.seed"), P["owner"] + " " + P["session"] + " " + P["run"]], 5)
         raw = runtime.bounded_exec(["/usr/bin/fdbcli", "-C", "/var/fdb/data/cluster/fdb.cluster", "--exec", "status json"])
         status = p.loads(raw)
-        p.unconfigured(status)
+        unconfigured = p.unconfigured(status)
+        unconfigured_raw = runtime.last_stdout
         runtime.check_frozen(full=True)
+        write(out / "bootstrap.unconfigured.json", {"instance": instance, "epoch": int(time.time()),
+              "reason": "fresh-owned-empty-layout-native-never-created-status",
+              "raw_path": unconfigured_raw.name, "raw_sha256": p.sha(unconfigured_raw), **unconfigured})
         write(out / "bootstrap.attempted.json", {"instance": instance, "epoch": int(time.time())})
+        remember("bootstrap.unconfigured.json", "bootstrap.attempted.json", unconfigured_raw.name)
         configured = runtime.bounded_exec(["/usr/bin/fdbcli", "-C", "/var/fdb/data/cluster/fdb.cluster", "--exec", "configure new single ssd-redwood-1 logs:=1 commit_proxies:=1 grv_proxies:=1 resolvers:=1"], 20)
         p.require("Database created" in configured.splitlines(), "configure did not return exact success; never retry")
         strict_ready(runtime, supervised_wait, "bootstrap.ready", 180, bootstrap=True)
@@ -534,6 +631,7 @@ def run(args):
                                        "policy_sha256": runtime.frozen, "binary_sha256": approval["binary_sha256"],
                                        "inode_stdout_sha256": p.sha(runtime.last_stdout), "probe_binary_sha256": approval["probe_sha256"],
                                        "probe_source_sha256": approval["probe_source_sha256"], "bootstrap_sha256": p.sha(out / "bootstrap.ready.json")})
+        remember("instance.json", "bootstrap.ready.json", "cow.ready.json", runtime.last_stdout.name)
 
         def stage(name, cap):
             runtime.check_frozen(full=True)
@@ -549,6 +647,7 @@ def run(args):
             p.phase(record)
             file = out / ("phase-" + name + ".json")
             write(file, record)
+            remember(file.name)
             write(out / "active-phase.json", {"stage": name, "sha256": p.sha(file)}, exclusive=False)
             return time.monotonic() + cap
 
@@ -557,6 +656,7 @@ def run(args):
             end = stage(name, cap)
             if mode is None:
                 strict_ready(runtime, supervised_wait, "drain.certificate", cap, end)
+                remember("drain.certificate.json")
             else:
                 argv = common + ["--mode", mode, "--timeout", str(cap) + "s", "--output", str(out / (mode + ".json"))]
                 if mode == "query":
@@ -570,11 +670,15 @@ def run(args):
                 result = read(out / (mode + ".json"))
                 p.require(result.get("mode") == mode, "evidence mode mismatch")
                 p.evidence(result, approval)
+                remember(mode + ".json", name + ".command.json", name + ".stdout", name + ".stderr", name + ".exit.json")
+                if mode == "ingest":
+                    remember("load.exited.json")
                 workload = None
             runtime.check_frozen(full=True)
             supervised_wait(deadline=end)
             runtime.phase()
-        write(out / "verification.complete.json", {"run": P["run"], "count": 100000, "source_revision": approval["source_revision"], "policy_sha256": runtime.frozen, "census_sha256": p.sha(out / "audit.json"), "oracle_sha256": p.sha(out / "query.json"), "drain_sha256": p.sha(out / "drain.certificate.json"), "cow_ready_sha256": p.sha(out / "cow.ready.json"), "claim": "100k fresh COW diagnostic only; no 20k/s, HA, production or SLO claim"})
+        write(out / "verification.complete.json", {"run": P["run"], "count": 100000, "source_revision": approval["source_revision"], "policy_sha256": runtime.frozen, "ingest_sha256": p.sha(out / "ingest.json"), "load_ack_sha256": p.sha(out / "load.exited.json"), "census_sha256": p.sha(out / "audit.json"), "oracle_sha256": p.sha(out / "query.json"), "drain_sha256": p.sha(out / "drain.certificate.json"), "cow_ready_sha256": p.sha(out / "cow.ready.json"), "claim": "100k fresh COW diagnostic only; no 20k/s, HA, production or SLO claim"})
+        remember("verification.complete.json")
     except BaseException as error:
         try:
             write(out / "FAILED.json", {"type": type(error).__name__, "error": str(error), "epoch": int(time.time())})
@@ -607,12 +711,30 @@ def run(args):
         if attached is not None:
             server_exit = attached.wait(timeout=15)
             write(out / "server.exit.json", {"exit": server_exit})
+            p.require(server_exit == 0, "attached server command failed; no completion")
         os.close(lock_fd)
     if not p.clean_stop(stop_state or {})["clean_stop"]:
         write(out / "FAILED_STOP.json", {"confirmed_stopped": True, "exit_code": (stop_state or {}).get("exit_code"),
                                        "oom": (stop_state or {}).get("oom"), "restarts": (stop_state or {}).get("restarts")})
         raise ValueError("server stopped but not clean exit0/noOOM/noRestart; no successful completion")
-    write(out / "complete.json", {"verification_sha256": p.sha(out / "verification.complete.json"), "stopped": True, "run": P["run"], "count": 100000})
+    runtime.check_frozen(full=True)
+    p.require(runtime.shutdown_ok and not list(out.glob("shutdown.failed-*.json")), "sticky shutdown failure; no completion")
+    for mode in ("ingest", "audit", "query"):
+        result = read(out / (mode + ".json"))
+        p.require(result.get("mode") == mode, "final evidence mode mismatch")
+        p.evidence(result, approval)
+    for name in ("bootstrap.ready.json", "drain.certificate.json"):
+        certificate = read(out / name)
+        p.require(certificate["instance"] == instance and certificate["policy_sha256"] == runtime.frozen,
+                  "final readiness certificate identity mismatch")
+        p.readiness({"samples": certificate["samples"]})
+        for sample in certificate["samples"]:
+            p.require(Path(sample["raw_path"]).name == sample["raw_path"]
+                      and p.sha(out / sample["raw_path"]) == sample["raw_sha256"], "readiness raw receipt changed")
+    inventory = final_inventory(out, commitments)
+    write(out / "final-inventory.json", inventory)
+    write(out / "complete.json", {"verification_sha256": p.sha(out / "verification.complete.json"),
+          "inventory_sha256": p.sha(out / "final-inventory.json"), "stopped": True, "run": P["run"], "count": 100000})
 
 
 def main():
