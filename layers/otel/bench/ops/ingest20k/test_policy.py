@@ -36,9 +36,9 @@ CLASSES = ("trace", "trace_absent", "span", "span_absent", "genai_response",
            "time_empty", "time_absent", "time_broad")
 
 
-def approval(run="prof20k0290", revision="1" * 40, batch=32, workers=2):
-    return dict(PROFILE, **RUNS[run], run=run, batch=batch, workers=workers,
-                schema="ingest20k_fresh100k_v1", approved=True,
+def approval(run="prof20k0290", revision="1" * 40, batch=32, workers=2, count=100000):
+    return dict(PROFILE, **RUNS[run], run=run, batch=batch, workers=workers, count=count,
+                schema="ingest20k_fresh1m_v1" if count == 1000000 else "ingest20k_fresh100k_v1", approved=True,
                 source_revision=revision, source_approved_revision=revision,
                 binary_sha256="b" * 64, input_manifest_sha256="c" * 64,
                 policy_sha256="d" * 64, policy_approved_sha256="d" * 64,
@@ -68,8 +68,8 @@ def readiness():
                          "durability_lag_seconds": 9.999} for i in range(3)]}
 
 
-def phase(run="prof20k0290", stage="load"):
-    a = approval(run)
+def phase(run="prof20k0290", stage="load", count=100000):
+    a = approval(run, count=count)
     return {**{k: a[k] for k in ("run", "session", "profile", "count", "source_revision",
                                "binary_sha256", "input_manifest_sha256", "policy_sha256")},
             "instance": "a" * 64, "started_epoch": 1000, "deadline_epoch": 2200,
@@ -77,26 +77,26 @@ def phase(run="prof20k0290", stage="load"):
             "stage_deadline_epoch": 1000 + {"load": 300, "drain": 300, "census": 120, "oracle": 120}[stage]}
 
 
-def evidence(mode, run="prof20k0290", revision="1" * 40, batch=32, workers=2):
+def evidence(mode, run="prof20k0290", revision="1" * 40, batch=32, workers=2, count=100000):
     raw = {"tool": "otelbench-v2", "backend": "fdb", "revision": revision,
            "mode": mode, "failures": 0,
-           "config": {"run": run, "backend": "fdb", "count": 100000, "tenants": 1,
+           "config": {"run": run, "backend": "fdb", "count": count, "tenants": 1,
                       "attributes": 8, "seed": 283, "match_every": 100, "batch": batch,
                       "save_mode": "batch", "workers": workers, "diagnostics": True,
                       "tenant": 0, "k": 100, "max_candidates": 2000000,
                       "max_bytes": 268435456, "hash_bytes": 32, "order": "time"}}
     if mode in ("ingest", "audit"):
-        raw["stats"] = {"rows": 100000, "attributes": 800000}
+        raw["stats"] = {"rows": count, "attributes": 8 * count}
         if mode == "audit":
-            raw["stats"]["structures"] = {name: {"keys": count} for name, count in (
-                ("records", 100000), ("eq_secondary", 800000), ("span_id_v2", 100000),
-                ("span_time_v2", 100000), ("owned_total", 1100002), ("eq_primary", 0))}
+            raw["stats"]["structures"] = {name: {"keys": keys} for name, keys in (
+                ("records", count), ("eq_secondary", 8 * count), ("span_id_v2", count),
+                ("span_time_v2", count), ("owned_total", 11 * count + 2), ("eq_primary", 0))}
     else:
         raw.update(suite="all", samples=[{"iteration": i, "class": CLASSES[i % 16],
                                         "ns": i, "result_digest": format(i, "064x")}
                                        for i in range(1600)])
         raw["config"]["iterations"] = 1600
-    return {"approved": approval(run, revision, batch, workers), "evidence": raw}
+    return {"approved": approval(run, revision, batch, workers, count), "evidence": raw}
 
 
 def bootstrap_get():
@@ -255,6 +255,81 @@ class PolicyTests(unittest.TestCase):
         receipt["approved"] = future
         receipt["evidence"]["config"]["run"] = "prof20k0292"
         self.assertEqual(self.cli("evidence", receipt), {"mode": "ingest", "verified": True})
+
+    def test_selected_1m_schema_and_complete_census_without_relaxing_caps_or_oracle(self):
+        policy = self.quiet_policy()
+        for count, schema in ((100000, "ingest20k_fresh100k_v1"), (1000000, "ingest20k_fresh1m_v1")):
+            self.assertEqual(policy.arm("prof20k0290", count=count),
+                             dict(PROFILE, **RUNS["prof20k0290"], run="prof20k0290", count=count))
+            self.assertEqual(approval(count=count)["schema"], schema)
+            self.assertEqual(self.cli("approval", approval(count=count)), {"approved": True})
+            self.reject("approval", approval(count=count), "schema",
+                        ["ingest20k_fresh100k_v1" if count == 1000000 else "ingest20k_fresh1m_v1"])
+        verified = 0
+        for run in RUNS:
+            for mode in ("ingest", "audit", "query"):
+                receipt = evidence(mode, run, batch=64, workers=16, count=1000000)
+                self.assertEqual(self.cli("evidence", receipt), {"mode": mode, "verified": True})
+                verified += 1
+                if mode in ("ingest", "audit"):
+                    self.assertEqual(receipt["evidence"]["stats"]["rows"], 1000000)
+                    self.assertEqual(receipt["evidence"]["stats"]["attributes"], 8000000)
+                if mode == "audit":
+                    self.assertEqual(receipt["evidence"]["stats"]["structures"], {
+                        "records": {"keys": 1000000}, "eq_secondary": {"keys": 8000000},
+                        "span_id_v2": {"keys": 1000000}, "span_time_v2": {"keys": 1000000},
+                        "owned_total": {"keys": 11000002}, "eq_primary": {"keys": 0}})
+                if mode == "query":
+                    self.assertEqual(receipt["evidence"]["config"]["iterations"], 1600)
+                    self.assertEqual(len(receipt["evidence"]["samples"]), 1600)
+        self.assertEqual(verified, 6)
+
+    def test_selected_count_rejects_substitution_mixed_offbyone_and_wrong_types(self):
+        for count in (100000, 1000000):
+            base = approval(count=count)
+            self.reject("approval", base, "count", [0, -1, 99999, 100001, 999999, 1000001,
+                                                       10000000, 100000000, True, False, float(count), str(count), None])
+            missing = dict(base)
+            del missing["count"]
+            self.cli("approval", missing, valid=False)
+            other = 100000 if count == 1000000 else 1000000
+            self.reject("approval", base, "count", [other])
+            for mode in ("ingest", "audit", "query"):
+                receipt = evidence(mode, count=count)
+                self.reject("evidence", receipt, "evidence.config.count",
+                            [other, count - 1, count + 1, 10000000, True, float(count), str(count), None])
+                receipt["approved"] = approval(count=other)
+                self.cli("evidence", receipt, valid=False)
+        receipt = evidence("audit", count=1000000)
+        for field, values in {
+            "rows": [100000, 999999, 1000001, 10000000, True, 1000000.0, None],
+            "attributes": [800000, 7999999, 8000001, 80000000, True, 8000000.0, None],
+        }.items():
+            self.reject("evidence", receipt, "evidence.stats." + field, values)
+        for name, expected, old in (("records", 1000000, 100000), ("eq_secondary", 8000000, 800000),
+                                    ("span_id_v2", 1000000, 100000), ("span_time_v2", 1000000, 100000),
+                                    ("owned_total", 11000002, 1100002), ("eq_primary", 0, 1)):
+            self.reject("evidence", receipt, "evidence.stats.structures." + name + ".keys",
+                        [old, expected - 1, expected + 1, True, float(expected), None])
+
+    def test_1m_phase_requires_explicit_sealed_expected_count_not_document_inference(self):
+        policy = self.quiet_policy()
+        for stage in ("load", "drain", "census", "oracle"):
+            record = phase(stage=stage, count=1000000)
+            self.assertEqual(policy.phase(record, count=1000000), {"phase_valid": True})
+            with self.assertRaises(ValueError):
+                policy.phase(record)
+            self.assertEqual(policy.phase(phase(stage=stage)), {"phase_valid": True})
+            record["count"] = 100000
+            with self.assertRaises(ValueError):
+                policy.phase(record, count=1000000)
+        for value in (999999, 1000001, 10000000, True, 1000000.0, "1000000", None):
+            record = phase(count=1000000)
+            record["count"] = value
+            with self.assertRaises(ValueError):
+                policy.phase(record, count=1000000)
+            with self.assertRaises(ValueError):
+                policy.phase(phase(count=1000000), count=value)
 
     def test_literal_arm_approval_missing_typed_hash_path_and_count_guards(self):
         for run in RUNS:

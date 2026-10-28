@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pure guards for one reviewed fresh 100k COW diagnostic arm."""
+"""Pure guards for one reviewed fresh COW diagnostic arm."""
 import hashlib
 import json
 import math
@@ -15,10 +15,11 @@ PROFILE = {"owner":"otel283-vxnar", "profile":"fdb4-4cpu-16g-ingest20k-v1",
 RUNTIME_FILES = ("policy.py", "driver.py", "status-check.jq", "foundationdb.conf", "fdb.cluster.seed", "container-entrypoint.sh", "deadline.sh", "inode-readonly.sh", "inode_flags.c", "build-probe.sh")
 
 
-def arm(run, batch=32, workers=2):
+def arm(run, batch=32, workers=2, count=100000):
     require(isinstance(run, str) and re.fullmatch(r"prof20k[0-9]{4}", run) is not None, "explicit reviewed fresh arm required")
     require(type(batch) is int and batch in (32, 64) and type(workers) is int and workers in (2, 4, 8, 16), "sealed batch/worker allowlist")
-    return {**PROFILE, "batch":batch, "workers":workers, "run":run, "session":run,
+    require(type(count) is int and count in (100000, 1000000), "sealed workload count allowlist")
+    return {**PROFILE, "count":count, "batch":batch, "workers":workers, "run":run, "session":run,
             "container":"otel283-fdb4-"+run+"-vxnar", "volume":"otel283-vxnar-fdb4-"+run+"16-v1"}
 
 
@@ -82,10 +83,12 @@ def floor_bytes(total):
 
 def approval(d):
     require(isinstance(d, dict), "one approval object required")
-    for key, value in arm(d.get("run"), d.get("batch"), d.get("workers")).items():
+    require("count" in d, "explicit workload count required")
+    for key, value in arm(d.get("run"), d.get("batch"), d.get("workers"), d["count"]).items():
         require(type(d.get(key)) is type(value) and d[key] == value, "literal arm mismatch: " + key)
     require(all(type(port) is int for port in d["ports"]), "integer ports required")
-    require(d.get("schema") == "ingest20k_fresh100k_v1" and d.get("approved") is True, "explicit arm approval required")
+    require(d.get("schema") == {100000:"ingest20k_fresh100k_v1", 1000000:"ingest20k_fresh1m_v1"}[d["count"]]
+            and d.get("approved") is True, "explicit count-matched arm approval required")
     require(hexstr(d.get("source_revision"),40) and d.get("source_approved_revision") == d["source_revision"], "explicitly approved application source required")
     for key in ("binary_sha256", "input_manifest_sha256", "policy_sha256", "probe_sha256", "probe_source_sha256"):
         require(hexstr(d.get(key)), "invalid immutable hash: " + key)
@@ -228,8 +231,8 @@ def backlog(d):
     return {"streak": streak}
 
 
-def phase(d):
-    expected = arm(d.get("run"))
+def phase(d, count=100000):
+    expected = arm(d.get("run"), count=count)
     for key in ("run", "session", "profile", "count"):
         require(type(d.get(key)) is type(expected[key]) and d[key] == expected[key], "phase identity: "+key)
     require(hexstr(d.get("source_revision"),40), "phase source revision")
@@ -252,7 +255,8 @@ def evidence(d, approved=None):
     require(d.get("tool") == "otelbench-v2" and d.get("backend") == "fdb" and d.get("revision") == approved["source_revision"], "wrong evidence source/backend")
     require(d.get("failures") == 0 and type(d.get("failures")) is int and ("error" not in d or type(d["error"]) is str and d["error"] == ""), "failed evidence")
     config = d.get("config", {})
-    expected = {"run": approved["run"], "backend": "fdb", "count": 100000, "tenants": 1,
+    count = approved["count"]
+    expected = {"run": approved["run"], "backend": "fdb", "count": count, "tenants": 1,
                 "attributes": 8, "seed": 283, "match_every": 100, "batch": approved["batch"], "save_mode": "batch",
                 "workers": approved["workers"], "diagnostics": True, "tenant": 0, "k": 100, "max_candidates": 2000000,
                 "max_bytes": 268435456, "hash_bytes": 32, "order": "time"}
@@ -261,12 +265,12 @@ def evidence(d, approved=None):
     require(mode in ("ingest", "audit", "query"), "wrong evidence mode")
     if mode in ("ingest", "audit"):
         stats = d.get("stats", {})
-        require(type(stats.get("rows")) is int and stats["rows"] == 100000, "incomplete load/source records")
-        require(type(stats.get("attributes")) is int and stats["attributes"] == 800000, "incomplete attributes")
+        require(type(stats.get("rows")) is int and stats["rows"] == count, "incomplete load/source records")
+        require(type(stats.get("attributes")) is int and stats["attributes"] == 8 * count, "incomplete attributes")
         if mode == "audit":
             structures = stats.get("structures", {})
-            counts = {"records": 100000, "eq_secondary": 800000, "span_id_v2": 100000,
-                      "span_time_v2": 100000, "owned_total": 1100002, "eq_primary": 0}
+            counts = {"records": count, "eq_secondary": 8 * count, "span_id_v2": count,
+                      "span_time_v2": count, "owned_total": 11 * count + 2, "eq_primary": 0}
             require(all(type(structures.get(k, {}).get("keys")) is int and structures[k]["keys"] == v for k, v in counts.items()), "incomplete structure census")
     else:
         require(d.get("suite") == "all" and type(config.get("iterations")) is int and config["iterations"] == 1600, "exact independent oracle suite required")

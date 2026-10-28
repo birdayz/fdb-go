@@ -84,7 +84,7 @@ class Lifecycle:
     """Respond at the OS/process boundary, retaining Runtime and policy guards."""
     instance = "a" * 64
 
-    def __init__(self, root, fault=None, batch=32, workers=2, revision="1" * 40):
+    def __init__(self, root, fault=None, batch=32, workers=2, revision="1" * 40, count=100000):
         self.root, self.fault = Path(root), fault
         self.now = 1000.0
         self.processes, self.calls, self.events = [], [], []
@@ -109,7 +109,7 @@ class Lifecycle:
             binary.write_text("offline bytes; never executable by this fixture\n")
             binary.chmod(0o555)
         self.out = self.root / "ingest20k-prof20k0290"
-        self.approved = fixtures.approval(batch=batch, workers=workers, revision=revision)
+        self.approved = fixtures.approval(batch=batch, workers=workers, revision=revision, count=count)
         self.approved.update(binary=str(self.binary), probe_binary=str(self.probe),
                              source_root=str(self.source), source_manifest=str(self.manifest),
                              out=str(self.out), binary_sha256=p.sha(self.binary),
@@ -266,6 +266,13 @@ class Lifecycle:
             self.now = 1781
             self.heartbeat()
         if path.name == "active-phase.json":
+            if value["stage"] == "load" and self.fault == "phase_count_100k":
+                phase_path = self.out / "phase-load.json"
+                phase = driver.read(phase_path)
+                phase["count"] = 100000
+                self.original_write(phase_path, phase, exclusive=False)
+                value = dict(value, sha256=p.sha(phase_path))
+                self.original_write(path, value, exclusive=False)
             self.events.append(("stage", value["stage"]))
             if value["stage"] == "load" and self.fault in ("cleanup_wait", "cleanup_kill"):
                 self.now += 1
@@ -433,13 +440,14 @@ class Lifecycle:
                      "/etc/fdb4/container-entrypoint.sh", str(request["started_epoch"] + 1200)]
         assert list(argv) == expected, "Docker launch argv differs from sealed profile"
 
-    def application_result(self, argv):
+    def application_result(self, argv, count=None):
         a = self.approved
+        count = a["count"] if count is None else count
         mode = argv[argv.index("--mode") + 1]
         assert mode in ("ingest", "audit", "query"), "unknown workload mode"
         cap = 300 if mode == "ingest" else 120
         expected = [str(self.binary), "--backend", "fdb", "--order", "time", "--cluster-file",
-                    str(driver.HERE / "fdb.cluster.seed"), "--run", a["run"], "--seed", "283", "--count", "100000",
+                    str(driver.HERE / "fdb.cluster.seed"), "--run", a["run"], "--seed", "283", "--count", str(count),
                     "--tenants", "1", "--attrs", "8", "--match-every", "100", "--batch", str(a["batch"]),
                     "--save-mode", "batch", "--workers", str(a["workers"]), "--diagnostics", "--k", "100",
                     "--max-candidates", "2000000", "--max-bytes", "268435456", "--revision", a["source_revision"],
@@ -452,7 +460,8 @@ class Lifecycle:
         for key in arguments:
             options[key] = True if key == "--diagnostics" else next(arguments)
         result = fixtures.evidence(mode, run=options["--run"], revision=options["--revision"],
-                                   batch=int(options["--batch"]), workers=int(options["--workers"]))["evidence"]
+                                   batch=int(options["--batch"]), workers=int(options["--workers"]),
+                                   count=int(options["--count"]))["evidence"]
         result["backend"], result["mode"] = options["--backend"], options["--mode"]
         for flag, key in (("--backend", "backend"), ("--order", "order"), ("--save-mode", "save_mode")):
             result["config"][key] = options[flag]
@@ -518,10 +527,14 @@ class Lifecycle:
                 kwargs["stdout"].flush()
             return FakeProcess(self, "attached")
         if str(argv[0]) == str(self.binary):
+            substituted_count = 100000 if self.fault == "command_count_100k" else None
+            if substituted_count is not None:
+                argv = list(argv)
+                argv[argv.index("--count") + 1] = str(substituted_count)
             self.calls.append(list(argv))
             mode = argv[argv.index("--mode") + 1]
             self.events.append(("workload", mode))
-            result = self.application_result(argv)
+            result = self.application_result(argv, count=substituted_count)
             if self.fault == "evidence:" + mode:
                 result["stats" if mode != "query" else "config"]["rows" if mode != "query" else "iterations"] = 1
             if self.fault == "mode:" + mode:
@@ -570,13 +583,13 @@ class Lifecycle:
 
 
 class LifecycleTests(unittest.TestCase):
-    def harness(self, fault=None, batch=32, workers=2, revision="1" * 40):
+    def harness(self, fault=None, batch=32, workers=2, revision="1" * 40, count=100000):
         previous = getattr(self, "active_harness", None)
         if previous is not None:
             previous.close()
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        harness = Lifecycle(temp.name, fault, batch=batch, workers=workers, revision=revision)
+        harness = Lifecycle(temp.name, fault, batch=batch, workers=workers, revision=revision, count=count)
         self.addCleanup(harness.close)
         self.active_harness = harness
         return harness.enter()
@@ -658,6 +671,53 @@ class LifecycleTests(unittest.TestCase):
         self.assertTrue({"ingest.json", "audit.json", "query.json", "load.exited.json",
                          "server.stdout", "server.stderr", "monitor.exit.json", "server.exit.json",
                          "lease.json", "request.json", "admission-docker-info.stdout"} <= expected)
+
+    def test_real_fresh1m_lifecycle_binds_commands_census_and_receipts(self):
+        h = self.harness(count=1000000)
+        h.invoke()
+        launched = [argv for argv in h.calls if argv[0] == str(h.binary)]
+        self.assertEqual(len(launched), 3)
+        for argv in launched:
+            self.assertEqual(argv[argv.index("--count") + 1], "1000000")
+            result = driver.read(Path(argv[argv.index("--output") + 1]))
+            self.assertEqual(result["config"]["count"], 1000000)
+            p.evidence(result, h.approved)
+        for mode in ("ingest", "audit"):
+            stats = driver.read(h.out / (mode + ".json"))["stats"]
+            self.assertEqual((stats["rows"], stats["attributes"]), (1000000, 8000000))
+        structures = driver.read(h.out / "audit.json")["stats"]["structures"]
+        self.assertEqual({name: value["keys"] for name, value in structures.items()},
+                         {"records": 1000000, "eq_secondary": 8000000, "span_id_v2": 1000000,
+                          "span_time_v2": 1000000, "owned_total": 11000002, "eq_primary": 0})
+        oracle = driver.read(h.out / "query.json")
+        self.assertEqual(oracle["config"]["iterations"], 1600)
+        self.assertEqual(len(oracle["samples"]), 1600)
+        for name in ("cow.ready", "phase-load", "phase-drain", "phase-census", "phase-oracle",
+                     "verification.complete", "complete"):
+            self.assertEqual(driver.read(h.out / (name + ".json"))["count"], 1000000)
+        for stage, cap in (("load", 300), ("drain", 300), ("census", 120), ("oracle", 120)):
+            phase = driver.read(h.out / ("phase-" + stage + ".json"))
+            self.assertEqual(phase["deadline_epoch"] - phase["started_epoch"], 1200)
+            self.assertEqual(phase["stage_deadline_epoch"] - phase["stage_started_epoch"], cap)
+            self.assertGreaterEqual(phase["deadline_epoch"] - phase["stage_started_epoch"], cap + 120)
+        complete = driver.read(h.out / "complete.json")
+        self.assertEqual(complete["verification_sha256"], p.sha(h.out / "verification.complete.json"))
+        self.assertFalse(h.running)
+
+    def test_fresh1m_rejects_substituted_100k_phase_and_launched_evidence(self):
+        for fault in ("phase_count_100k", "command_count_100k"):
+            with self.subTest(fault=fault):
+                h = self.harness(fault, count=1000000)
+                with self.assertRaisesRegex(ValueError, "phase binding changed|wrong evidence config"):
+                    h.invoke()
+                self.assertFalse((h.out / "complete.json").exists())
+                self.assertFalse(h.running)
+                if fault == "phase_count_100k":
+                    self.assertEqual(driver.read(h.out / "phase-load.json")["count"], 100000)
+                else:
+                    launched = next(argv for argv in h.calls if argv[0] == str(h.binary))
+                    self.assertEqual(launched[launched.index("--count") + 1], "100000")
+                    self.assertEqual(driver.read(h.out / "ingest.json")["config"]["count"], 100000)
 
     def test_real_lifecycle_nondefault_approved_pairs_bind_launched_evidence(self):
         for batch, workers in ((32, 4), (32, 8), (64, 2), (64, 4), (64, 8)):
