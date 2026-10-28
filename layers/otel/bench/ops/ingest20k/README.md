@@ -46,7 +46,7 @@ Redwood, FDB checksums/fsync and default queues remain unchanged. Workload is
 seed283, one tenant, eight attributes, match-every100, batch save mode, time order,
 K100, hash-bytes32, two-million candidates and 256 MiB query byte budget. The first
 run is **batch32/workers2**. Sealed configuration may admit batch32 or64 and workers2,
-4 or8 (integers only); this is not permission to escalate. Every later pair needs
+4,8 or16 (integers only); this is not permission to escalate. Every later pair needs
 root's explicit approval after stable lower arms, a new fresh run and all renewed
 gates. There is no automatic loop/sweep, and count/time/transaction guards stay fixed.
 The selected application's 1500ms transaction, 300KB estimated/500KB actual save,

@@ -17,7 +17,7 @@ RUNTIME_FILES = ("policy.py", "driver.py", "status-check.jq", "foundationdb.conf
 
 def arm(run, batch=32, workers=2):
     require(isinstance(run, str) and re.fullmatch(r"prof20k[0-9]{4}", run) is not None, "explicit reviewed fresh arm required")
-    require(type(batch) is int and batch in (32, 64) and type(workers) is int and workers in (2, 4, 8), "sealed batch/worker allowlist")
+    require(type(batch) is int and batch in (32, 64) and type(workers) is int and workers in (2, 4, 8, 16), "sealed batch/worker allowlist")
     return {**PROFILE, "batch":batch, "workers":workers, "run":run, "session":run,
             "container":"otel283-fdb4-"+run+"-vxnar", "volume":"otel283-vxnar-fdb4-"+run+"16-v1"}
 

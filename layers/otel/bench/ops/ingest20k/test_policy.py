@@ -227,11 +227,11 @@ class PolicyTests(unittest.TestCase):
                 ("backlog", {"queue_bytes": 536870913, "lag_seconds": 61, "previous_streak": 0}, {"streak": 1})):
             self.assertEqual(self.cli(kind, value), expected)
 
-    def test_all_six_explicit_config_pairs_bind_approval_and_evidence(self):
+    def test_all_eight_explicit_config_pairs_bind_approval_and_evidence(self):
         population = set()
         for run in RUNS:
             for batch in (32, 64):
-                for workers in (2, 4, 8):
+                for workers in (2, 4, 8, 16):
                     population.add((batch, workers))
                     approved = approval(run, "3" * 40, batch, workers)
                     self.assertEqual(self.cli("approval", approved), {"approved": True})
@@ -240,18 +240,18 @@ class PolicyTests(unittest.TestCase):
                         self.assertEqual(self.cli("evidence", base), {"mode": mode, "verified": True})
                         self.reject("evidence", base, "evidence.config.batch", [64 if batch == 32 else 32])
                         self.reject("evidence", base, "evidence.config.workers", [4 if workers == 2 else 2])
-        self.assertEqual(population, {(32, 2), (32, 4), (32, 8), (64, 2), (64, 4), (64, 8)})
+        self.assertEqual(population, {(32, 2), (32, 4), (32, 8), (32, 16), (64, 2), (64, 4), (64, 8), (64, 16)})
         for field, values in {
             "batch": [False, True, 0, 31, 33, 63, 65, 32.0, "32", None],
-            "workers": [False, True, 0, 1, 3, 5, 9, 2.0, "2", None],
+            "workers": [False, True, 0, 1, 3, 5, 9, 17, 32, 2.0, 16.0, "2", "16", None],
         }.items():
             self.reject("approval", approval(), field, values)
-        future = approval(batch=64, workers=8)
+        future = approval(batch=64, workers=16)
         future.update(run="prof20k0292", session="prof20k0292",
                       container="otel283-fdb4-prof20k0292-vxnar",
                       volume="otel283-vxnar-fdb4-prof20k029216-v1", out="/fixture/ingest20k-prof20k0292")
         self.assertEqual(self.cli("approval", future), {"approved": True})
-        receipt = evidence("ingest", batch=64, workers=8)
+        receipt = evidence("ingest", batch=64, workers=16)
         receipt["approved"] = future
         receipt["evidence"]["config"]["run"] = "prof20k0292"
         self.assertEqual(self.cli("evidence", receipt), {"mode": "ingest", "verified": True})
@@ -949,7 +949,7 @@ class DriverSafetyTests(unittest.TestCase):
     def test_arm_selection_is_literal_and_never_retained_identity(self):
         for run in RUNS:
             for batch in (32, 64):
-                for workers in (2, 4, 8):
+                for workers in (2, 4, 8, 16):
                     self.driver.select_arm(approval(run, batch=batch, workers=workers))
                     self.assertEqual(self.driver.P,
                                      dict(PROFILE, **RUNS[run], run=run, batch=batch, workers=workers))
