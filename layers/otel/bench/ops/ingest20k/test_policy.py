@@ -36,8 +36,15 @@ CLASSES = ("trace", "trace_absent", "span", "span_absent", "genai_response",
            "time_empty", "time_absent", "time_broad")
 
 
-def approval(run="prof20k0290", revision="1" * 40, batch=32, workers=2, count=100000):
-    return dict(PROFILE, **RUNS[run], run=run, batch=batch, workers=workers, count=count,
+STORAGE_PROFILES = (
+    {"record_compression": "none", "posting_value_format": "json", "bulk_index_conflicts": False, "hash_bytes": 32},
+    {"record_compression": "zlib-1", "posting_value_format": "tuple", "bulk_index_conflicts": True, "hash_bytes": 8},
+    {"record_compression": "brotli-4", "posting_value_format": "tuple", "bulk_index_conflicts": True, "hash_bytes": 8},
+)
+
+
+def approval(run="prof20k0290", revision="1" * 40, batch=32, workers=2, count=100000, storage_options=None):
+    result = dict(PROFILE, **RUNS[run], run=run, batch=batch, workers=workers, count=count,
                 schema="ingest20k_fresh1m_v1" if count == 1000000 else "ingest20k_fresh100k_v1", approved=True,
                 source_revision=revision, source_approved_revision=revision,
                 binary_sha256="b" * 64, input_manifest_sha256="c" * 64,
@@ -47,6 +54,9 @@ def approval(run="prof20k0290", revision="1" * 40, batch=32, workers=2, count=10
                 binary="/fixture/application", source_root="/fixture/source",
                 source_manifest="/fixture/manifest", probe_binary="/fixture/inode-flags",
                 out="/fixture/ingest20k-" + run)
+    if storage_options is not None:
+        result["storage_options"] = copy.deepcopy(storage_options)
+    return result
 
 
 def capacity():
@@ -68,16 +78,17 @@ def readiness():
                          "durability_lag_seconds": 9.999} for i in range(3)]}
 
 
-def phase(run="prof20k0290", stage="load", count=100000):
+def phase(run="prof20k0290", stage="load", count=100000, storage_options=None):
     a = approval(run, count=count)
-    return {**{k: a[k] for k in ("run", "session", "profile", "count", "source_revision",
+    return {**({"storage_options": copy.deepcopy(storage_options)} if storage_options is not None else {}),
+            **{k: a[k] for k in ("run", "session", "profile", "count", "source_revision",
                                "binary_sha256", "input_manifest_sha256", "policy_sha256")},
             "instance": "a" * 64, "started_epoch": 1000, "deadline_epoch": 2200,
             "now": 1001, "stage": stage, "stage_started_epoch": 1000,
             "stage_deadline_epoch": 1000 + {"load": 300, "drain": 300, "census": 120, "oracle": 120}[stage]}
 
 
-def evidence(mode, run="prof20k0290", revision="1" * 40, batch=32, workers=2, count=100000):
+def evidence(mode, run="prof20k0290", revision="1" * 40, batch=32, workers=2, count=100000, storage_options=None):
     raw = {"tool": "otelbench-v2", "backend": "fdb", "revision": revision,
            "mode": mode, "failures": 0,
            "config": {"run": run, "backend": "fdb", "count": count, "tenants": 1,
@@ -96,7 +107,9 @@ def evidence(mode, run="prof20k0290", revision="1" * 40, batch=32, workers=2, co
                                         "ns": i, "result_digest": format(i, "064x")}
                                        for i in range(1600)])
         raw["config"]["iterations"] = 1600
-    return {"approved": approval(run, revision, batch, workers, count), "evidence": raw}
+    if storage_options is not None:
+        raw["config"].update(copy.deepcopy(storage_options))
+    return {"approved": approval(run, revision, batch, workers, count, storage_options), "evidence": raw}
 
 
 def bootstrap_get():
@@ -330,6 +343,58 @@ class PolicyTests(unittest.TestCase):
                 policy.phase(record, count=1000000)
             with self.assertRaises(ValueError):
                 policy.phase(phase(count=1000000), count=value)
+
+    def test_optional_storage_profiles_bind_typed_evidence_and_do_not_admit_optimized_1m(self):
+        guard = importlib.import_module("policy")
+        for options in STORAGE_PROFILES:
+            self.cli("approval", approval(storage_options=options))
+            for mode in ("ingest", "audit", "query"):
+                candidate = evidence(mode, storage_options=options)
+                self.assertEqual(guard.evidence(candidate), {"mode": mode, "verified": True})
+                for key in options:
+                    missing = copy.deepcopy(candidate)
+                    del missing["evidence"]["config"][key]
+                    with self.assertRaises(ValueError):
+                        guard.evidence(missing)
+                    wrong = copy.deepcopy(candidate)
+                    wrong["evidence"]["config"][key] = {"record_compression": "none", "posting_value_format": "json",
+                                                            "bulk_index_conflicts": 1, "hash_bytes": True}[key]
+                    if key in ("bulk_index_conflicts", "hash_bytes") or options != STORAGE_PROFILES[0]:
+                        with self.assertRaises(ValueError):
+                            guard.evidence(wrong)
+                if options != STORAGE_PROFILES[0]:
+                    fallback = copy.deepcopy(candidate)
+                    fallback["evidence"]["config"].update(STORAGE_PROFILES[0])
+                    with self.assertRaises(ValueError):
+                        guard.evidence(fallback)
+            for stage in ("load", "drain", "census", "oracle"):
+                self.assertEqual(guard.phase(phase(stage=stage, storage_options=options)), {"phase_valid": True})
+            if options != STORAGE_PROFILES[0]:
+                with self.assertRaises(ValueError):
+                    guard.approval(approval(count=1000000, storage_options=options))
+                with self.assertRaises(ValueError):
+                    guard.phase(phase(count=1000000, storage_options=options), count=1000000)
+
+    def test_storage_options_exact_schema_types_and_finite_profile_combinations(self):
+        guard = importlib.import_module("policy")
+        valid = approval(storage_options=STORAGE_PROFILES[1])
+        invalid = [None, [], "zlib-1", True, {}, {**STORAGE_PROFILES[1], "unknown": 1}]
+        for key in STORAGE_PROFILES[1]:
+            missing = dict(STORAGE_PROFILES[1])
+            del missing[key]
+            invalid.append(missing)
+        for key, values in (("record_compression", (None, True, 1, "zlib-9", "brotli-1", "none")),
+                            ("posting_value_format", (None, True, 1, "json", "unknown")),
+                            ("bulk_index_conflicts", (None, 0, 1, "true", False)),
+                            ("hash_bytes", (None, True, 8.0, "8", 16, 32))):
+            invalid.extend({**STORAGE_PROFILES[1], key: value} for value in values)
+        for options in invalid:
+            with self.subTest(options=options):
+                candidate = {**valid, "storage_options": options}
+                with self.assertRaises(ValueError):
+                    guard.approval(candidate)
+        self.assertNotIn("storage_options", approval())
+        self.assertEqual(guard.evidence(evidence("ingest")), {"mode": "ingest", "verified": True})
 
     def test_literal_arm_approval_missing_typed_hash_path_and_count_guards(self):
         for run in RUNS:

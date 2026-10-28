@@ -56,6 +56,28 @@ relaxation: all time, resource, health, backlog, disk and transaction guards sta
 The selected application's 1500ms transaction, 300KB estimated/500KB actual save,
 one-second save and finite fresh-run retry guards remain in force.
 
+An optional sealed `storage_options` object has exactly four keys:
+`record_compression`, `posting_value_format`, `bulk_index_conflicts`, and
+`hash_bytes`. Only these typed combinations are admitted:
+
+| record compression | posting value format | bulk index conflicts | hash bytes |
+| --- | --- | --- | --- |
+| `none` | `json` | `false` | `32` |
+| `zlib-1` | `tuple` | `true` | `8` |
+| `brotli-4` | `tuple` | `true` | `8` |
+
+The optimized profiles admit **100,000 spans only**, not the separate 1M arm.
+Every choice remains bound to the explicitly approved source, binary and manifest
+hashes. These choices change no resource, health, durability or transaction cap.
+Ingest, audit and query receive all four explicit flags, including
+`--bulk-index-conflicts=false` when approved. All four typed evidence fields must
+be present and equal; missing fields never mean defaults. Each phase binds the
+same immutable option snapshot, independently of its refreshed pointer hash.
+Absent `storage_options` preserves the legacy argv and evidence checks for older
+binaries such as `c0317`; that control must omit the object. The explicit control
+profile requires a binary that emits the `false` evidence field rather than
+omitting it, and is not the legacy-binary control.
+
 ## Independent application and operations seals
 
 Application source revision is explicit, not the current operations checkout HEAD.

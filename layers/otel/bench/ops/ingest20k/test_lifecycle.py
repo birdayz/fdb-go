@@ -84,7 +84,7 @@ class Lifecycle:
     """Respond at the OS/process boundary, retaining Runtime and policy guards."""
     instance = "a" * 64
 
-    def __init__(self, root, fault=None, batch=32, workers=2, revision="1" * 40, count=100000):
+    def __init__(self, root, fault=None, batch=32, workers=2, revision="1" * 40, count=100000, storage_options=None):
         self.root, self.fault = Path(root), fault
         self.now = 1000.0
         self.processes, self.calls, self.events = [], [], []
@@ -109,7 +109,7 @@ class Lifecycle:
             binary.write_text("offline bytes; never executable by this fixture\n")
             binary.chmod(0o555)
         self.out = self.root / "ingest20k-prof20k0290"
-        self.approved = fixtures.approval(batch=batch, workers=workers, revision=revision, count=count)
+        self.approved = fixtures.approval(batch=batch, workers=workers, revision=revision, count=count, storage_options=storage_options)
         self.approved.update(binary=str(self.binary), probe_binary=str(self.probe),
                              source_root=str(self.source), source_manifest=str(self.manifest),
                              out=str(self.out), binary_sha256=p.sha(self.binary),
@@ -266,6 +266,13 @@ class Lifecycle:
             self.now = 1781
             self.heartbeat()
         if path.name == "active-phase.json":
+            if value["stage"] == "load" and self.fault == "storage_phase_tamper":
+                phase_path = self.out / "phase-load.json"
+                phase = driver.read(phase_path)
+                phase["storage_options"] = copy.deepcopy(fixtures.STORAGE_PROFILES[0])
+                self.original_write(phase_path, phase, exclusive=False)
+                value = dict(value, sha256=p.sha(phase_path))
+                self.original_write(path, value, exclusive=False)
             if value["stage"] == "load" and self.fault == "phase_count_100k":
                 phase_path = self.out / "phase-load.json"
                 phase = driver.read(phase_path)
@@ -450,15 +457,22 @@ class Lifecycle:
                     str(driver.HERE / "fdb.cluster.seed"), "--run", a["run"], "--seed", "283", "--count", str(count),
                     "--tenants", "1", "--attrs", "8", "--match-every", "100", "--batch", str(a["batch"]),
                     "--save-mode", "batch", "--workers", str(a["workers"]), "--diagnostics", "--k", "100",
-                    "--max-candidates", "2000000", "--max-bytes", "268435456", "--revision", a["source_revision"],
-                    "--mode", mode, "--timeout", str(cap) + "s", "--output", str(self.out / (mode + ".json"))]
+                    "--max-candidates", "2000000", "--max-bytes", "268435456", "--revision", a["source_revision"]]
+        if "storage_options" in a:
+            storage = a["storage_options"]
+            expected += ["--record-compression", storage["record_compression"], "--posting-value-format", storage["posting_value_format"],
+                         "--bulk-index-conflicts=" + str(storage["bulk_index_conflicts"]).lower(), "--hash-bytes", str(storage["hash_bytes"])]
+        expected += ["--mode", mode, "--timeout", str(cap) + "s", "--output", str(self.out / (mode + ".json"))]
         if mode == "query":
             expected += ["--suite", "all", "--iterations", "1600"]
         assert list(argv) == expected, "Application launch argv differs from sealed profile"
         options = {}
         arguments = iter(argv[1:])
         for key in arguments:
-            options[key] = True if key == "--diagnostics" else next(arguments)
+            if key.startswith("--bulk-index-conflicts="):
+                options["--bulk-index-conflicts"] = key.split("=", 1)[1] == "true"
+            else:
+                options[key] = True if key == "--diagnostics" else next(arguments)
         result = fixtures.evidence(mode, run=options["--run"], revision=options["--revision"],
                                    batch=int(options["--batch"]), workers=int(options["--workers"]),
                                    count=int(options["--count"]))["evidence"]
@@ -469,6 +483,10 @@ class Lifecycle:
                           ("--match-every", "match_every"), ("--k", "k"), ("--max-candidates", "max_candidates"), ("--max-bytes", "max_bytes")):
             result["config"][key] = int(options[flag])
         result["config"]["diagnostics"] = options["--diagnostics"]
+        if "storage_options" in a:
+            result["config"].update(record_compression=options["--record-compression"],
+                                     posting_value_format=options["--posting-value-format"],
+                                     bulk_index_conflicts=options["--bulk-index-conflicts"], hash_bytes=int(options["--hash-bytes"]))
         if mode == "query":
             result["suite"] = options["--suite"]
             result["config"]["iterations"] = int(options["--iterations"])
@@ -539,6 +557,10 @@ class Lifecycle:
                 result["stats" if mode != "query" else "config"]["rows" if mode != "query" else "iterations"] = 1
             if self.fault == "mode:" + mode:
                 result["mode"] = "wrong"
+            if self.fault == "storage_evidence_missing":
+                del result["config"]["bulk_index_conflicts"]
+            elif self.fault == "storage_evidence_fallback":
+                result["config"].update(fixtures.STORAGE_PROFILES[0])
             Path(argv[argv.index("--output") + 1]).write_text(json.dumps(result))
             process = FakeProcess(self, mode, 7 if self.fault == "exit:" + mode else 0)
             if self.fault == "source_during_load":
@@ -583,13 +605,13 @@ class Lifecycle:
 
 
 class LifecycleTests(unittest.TestCase):
-    def harness(self, fault=None, batch=32, workers=2, revision="1" * 40, count=100000):
+    def harness(self, fault=None, batch=32, workers=2, revision="1" * 40, count=100000, storage_options=None):
         previous = getattr(self, "active_harness", None)
         if previous is not None:
             previous.close()
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        harness = Lifecycle(temp.name, fault, batch=batch, workers=workers, revision=revision, count=count)
+        harness = Lifecycle(temp.name, fault, batch=batch, workers=workers, revision=revision, count=count, storage_options=storage_options)
         self.addCleanup(harness.close)
         self.active_harness = harness
         return harness.enter()
@@ -735,6 +757,50 @@ class LifecycleTests(unittest.TestCase):
                     self.assertEqual((result["config"]["batch"], result["config"]["workers"]), (batch, workers))
                     self.assertEqual(result["revision"], revision)
                     p.evidence(result, h.approved)
+
+    def test_storage_profiles_forward_exact_actual_argv_and_seal_every_phase(self):
+        for options in fixtures.STORAGE_PROFILES:
+            with self.subTest(options=options):
+                h = self.harness(storage_options=options)
+                h.invoke()
+                launched = [argv for argv in h.calls if argv[0] == str(h.binary)]
+                self.assertEqual(len(launched), 3)
+                for argv in launched:
+                    self.assertEqual(argv[argv.index("--record-compression") + 1], options["record_compression"])
+                    self.assertEqual(argv[argv.index("--posting-value-format") + 1], options["posting_value_format"])
+                    self.assertIn("--bulk-index-conflicts=" + str(options["bulk_index_conflicts"]).lower(), argv)
+                    self.assertEqual(argv[argv.index("--hash-bytes") + 1], str(options["hash_bytes"]))
+                    result = driver.read(Path(argv[argv.index("--output") + 1]))
+                    for key, value in options.items():
+                        self.assertIs(type(result["config"][key]), type(value))
+                        self.assertEqual(result["config"][key], value)
+                    p.evidence(result, h.approved)
+                    for flag in ("--record-compression", "--posting-value-format", "--hash-bytes"):
+                        missing = list(argv)
+                        at = missing.index(flag)
+                        del missing[at:at + 2]
+                        with self.assertRaisesRegex(AssertionError, "Application launch argv"):
+                            h.application_result(missing)
+                    missing = [arg for arg in argv if not arg.startswith("--bulk-index-conflicts=")]
+                    with self.assertRaisesRegex(AssertionError, "Application launch argv"):
+                        h.application_result(missing)
+                for stage in ("load", "drain", "census", "oracle"):
+                    self.assertEqual(driver.read(h.out / ("phase-" + stage + ".json"))["storage_options"], options)
+                self.assertTrue((h.out / "complete.json").exists())
+        h = self.harness()
+        h.invoke()
+        for argv in (argv for argv in h.calls if argv[0] == str(h.binary)):
+            self.assertFalse(any(arg.startswith(("--record-compression", "--posting-value-format", "--bulk-index-conflicts", "--hash-bytes")) for arg in argv))
+        self.assertNotIn("storage_options", driver.read(h.out / "phase-load.json"))
+
+    def test_storage_missing_fallback_evidence_and_rehashed_phase_tampering_fail(self):
+        for fault in ("storage_evidence_missing", "storage_evidence_fallback", "storage_phase_tamper"):
+            with self.subTest(fault=fault):
+                h = self.harness(fault, storage_options=fixtures.STORAGE_PROFILES[1])
+                with self.assertRaisesRegex(ValueError, "wrong evidence config|phase storage_options binding changed"):
+                    h.invoke()
+                self.assertFalse((h.out / "complete.json").exists())
+                self.assertFalse(h.running)
 
     def test_launch_boundary_rejects_changed_or_missing_sealed_arguments(self):
         h = self.harness(batch=64, workers=8)

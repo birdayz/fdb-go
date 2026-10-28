@@ -81,6 +81,23 @@ def floor_bytes(total):
     return ((numerator + 409599) // 409600) * 4096
 
 
+def storage_options(d):
+    if "storage_options" not in d:
+        return None
+    options = d["storage_options"]
+    keys = ("record_compression", "posting_value_format", "bulk_index_conflicts", "hash_bytes")
+    require(type(options) is dict and set(options) == set(keys), "exact storage_options schema required")
+    require(type(options["record_compression"]) is str and type(options["posting_value_format"]) is str
+            and type(options["bulk_index_conflicts"]) is bool and type(options["hash_bytes"]) is int,
+            "typed storage_options required")
+    profile = tuple(options[key] for key in keys)
+    require(profile in (("none", "json", False, 32), ("zlib-1", "tuple", True, 8),
+                        ("brotli-4", "tuple", True, 8)), "storage_options profile not approved")
+    if profile != ("none", "json", False, 32):
+        require(type(d.get("count")) is int and d["count"] == 100000, "optimized storage requires exactly 100000 spans")
+    return dict(options)
+
+
 def approval(d):
     require(isinstance(d, dict), "one approval object required")
     require("count" in d, "explicit workload count required")
@@ -97,6 +114,7 @@ def approval(d):
     for key in ("binary", "source_root", "source_manifest", "probe_binary", "out"):
         require(isinstance(d.get(key),str) and Path(d[key]).is_absolute(), "explicit absolute path: " + key)
     require(Path(d["out"]).name == "ingest20k-"+d["run"], "fresh exact output identity")
+    storage_options(d)
     if "new_host_inventory" in d:
         inventory = d["new_host_inventory"]
         require(type(inventory) is dict and set(inventory) == {"approved", "docker_daemon_id", "retained"}, "exact new-host inventory schema required")
@@ -245,6 +263,7 @@ def phase(d, count=100000):
     require(d["deadline_epoch"]-d["started_epoch"] == 1200, "absolute 1200-second deadline")
     require(d["started_epoch"] <= d["stage_started_epoch"] <= d["now"] < d["stage_deadline_epoch"] <= d["deadline_epoch"], "expired/outside phase")
     require(0 < d["stage_deadline_epoch"]-d["stage_started_epoch"] <= limits[d["stage"]], "stage cap")
+    storage_options(d)
     return {"phase_valid":True}
 
 
@@ -260,6 +279,9 @@ def evidence(d, approved=None):
                 "attributes": 8, "seed": 283, "match_every": 100, "batch": approved["batch"], "save_mode": "batch",
                 "workers": approved["workers"], "diagnostics": True, "tenant": 0, "k": 100, "max_candidates": 2000000,
                 "max_bytes": 268435456, "hash_bytes": 32, "order": "time"}
+    storage = storage_options(approved)
+    if storage is not None:
+        expected.update(storage)
     require(all(type(config.get(k)) is type(v) and config.get(k) == v for k, v in expected.items()), "wrong evidence config")
     mode = d.get("mode")
     require(mode in ("ingest", "audit", "query"), "wrong evidence mode")

@@ -257,6 +257,8 @@ class RuntimeFixture(unittest.TestCase):
         record.update({key: self.approved[key] for key in ("source_revision", "binary_sha256", "input_manifest_sha256", "policy_sha256")})
         record.update(started_epoch=2000, deadline_epoch=3200, now=2001,
                       stage_started_epoch=2000, stage_deadline_epoch=2300)
+        if "storage_options" in self.approved:
+            record["storage_options"] = copy.deepcopy(self.approved["storage_options"])
         path = self.out / "phase-load.json"
         store(path, record)
         store(self.out / "active-phase.json", {"stage": "load", "sha256": digest(path)})
@@ -711,6 +713,43 @@ class ObservationTests(RuntimeFixture):
         (self.out / "active-phase.json").unlink()
         with self.assertRaises(ValueError):
             self.runtime.phase()
+
+    def test_storage_phase_binding_ignores_refreshed_pointer_and_requires_presence(self):
+        self.approved["storage_options"] = copy.deepcopy(fixtures.STORAGE_PROFILES[1])
+        self.reseal()
+        path, record = self.install_phase()
+        self.assertIsNone(self.runtime.phase())
+        for options in (None, fixtures.STORAGE_PROFILES[0], fixtures.STORAGE_PROFILES[2],
+                        {**fixtures.STORAGE_PROFILES[1], "bulk_index_conflicts": 1},
+                        {**fixtures.STORAGE_PROFILES[1], "hash_bytes": True}):
+            changed = copy.deepcopy(record)
+            if options is None:
+                del changed["storage_options"]
+            else:
+                changed["storage_options"] = copy.deepcopy(options)
+            store(path, changed)
+            store(self.out / "active-phase.json", {"stage": "load", "sha256": digest(path)})
+            with self.assertRaises(ValueError):
+                self.runtime.phase()
+        del self.approved["storage_options"]
+        self.reseal()
+        path, record = self.install_phase()
+        record["storage_options"] = copy.deepcopy(fixtures.STORAGE_PROFILES[0])
+        store(path, record)
+        store(self.out / "active-phase.json", {"stage": "load", "sha256": digest(path)})
+        with self.assertRaisesRegex(ValueError, "phase storage_options binding changed"):
+            self.runtime.phase()
+
+    def test_runtime_storage_approval_is_an_immutable_detached_copy(self):
+        self.approved["storage_options"] = copy.deepcopy(fixtures.STORAGE_PROFILES[1])
+        self.reseal()
+        self.install_phase()
+        self.runtime.approval["storage_options"]["record_compression"] = "brotli-4"
+        self.approved["storage_options"]["hash_bytes"] = 32
+        self.assertEqual(dict(self.runtime.storage_options), fixtures.STORAGE_PROFILES[1])
+        with self.assertRaises(TypeError):
+            self.runtime.storage_options["record_compression"] = "none"
+        self.assertIsNone(self.runtime.phase())
 
     def test_resources_parses_both_du_populations_cgroup_pids_and_host_blocks(self):
         receipts = driver.allocated_tree(self.out)
