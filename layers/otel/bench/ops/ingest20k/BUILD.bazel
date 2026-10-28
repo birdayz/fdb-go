@@ -21,24 +21,47 @@ sh_test(
     ],
 )
 
-# Offline real adapters/lifecycle, shell fixtures and harmless deadline children.
+_INGEST20K_TEST_DATA = [
+    "build-probe.sh",
+    "container-entrypoint.sh",
+    "deadline.sh",
+    "driver.py",
+    "fdb.cluster.seed",
+    "foundationdb.conf",
+    "inode-readonly.sh",
+    "inode_flags.c",
+    "policy.py",
+    "status-check.jq",
+    "test_policy.py",
+    "test_runtime.py",
+    "test_lifecycle.py",
+    "test_shell.py",
+]
+
 sh_test(
-    name = "ingest20k_test",
+    name = "ingest20k_policy_test",
     srcs = ["test.sh"],
-    data = [
-        "build-probe.sh",
-        "container-entrypoint.sh",
-        "deadline.sh",
-        "driver.py",
-        "fdb.cluster.seed",
-        "foundationdb.conf",
-        "inode-readonly.sh",
-        "inode_flags.c",
-        "policy.py",
-        "status-check.jq",
-        "test_policy.py",
-        "test_runtime.py",
-        "test_lifecycle.py",
-        "test_shell.py",
-    ],
+    args = ["test_policy"],
+    data = _INGEST20K_TEST_DATA,
+)
+
+sh_test(
+    name = "ingest20k_runtime_test",
+    srcs = ["test.sh"],
+    args = ["test_runtime"],
+    data = _INGEST20K_TEST_DATA,
+)
+
+sh_test(
+    name = "ingest20k_lifecycle_test",
+    srcs = ["test.sh"],
+    args = ["test_lifecycle"],
+    data = _INGEST20K_TEST_DATA,
+)
+
+sh_test(
+    name = "ingest20k_shell_test",
+    srcs = ["test.sh"],
+    args = ["test_shell"],
+    data = _INGEST20K_TEST_DATA,
 )

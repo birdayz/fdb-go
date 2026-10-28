@@ -93,6 +93,8 @@ class Lifecycle:
         self.stopping = False
         self.closed = False
         self.configured = False
+        self.configure_completed = None
+        self.bootstrap_status_times = []
         self.injected = False
         self.quiet_count = 0
         self.source = self.root / "source"
@@ -179,7 +181,22 @@ class Lifecycle:
 
     def sleep(self, seconds):
         self.now += seconds
+        waiting = self.configured and not self.bootstrap_status_times and not self.injected
+        if waiting and self.fault in ("bootstrap_wait_lease", "bootstrap_wait_heartbeat", "bootstrap_wait_total", "bootstrap_wait_deadline", "bootstrap_wait_monitor"):
+            self.injected = True
+            if self.fault == "bootstrap_wait_lease":
+                self.lose_lease()
+            elif self.fault == "bootstrap_wait_total":
+                self.now += 1200
+            elif self.fault == "bootstrap_wait_deadline":
+                self.now += 179
+            elif self.fault == "bootstrap_wait_monitor":
+                next(process for process in self.processes if process.kind == "monitor").returncode = 9
         self.heartbeat()
+        if waiting and self.fault == "bootstrap_wait_heartbeat":
+            beat = driver.read(self.out / "heartbeat.json")
+            beat["monotonic"] = self.now - 61
+            self.original_write(self.out / "heartbeat.json", beat, exclusive=False)
 
     def heartbeat(self):
         if not self.out.exists():
@@ -345,6 +362,9 @@ class Lifecycle:
                 return (9 if self.fault == "layout" else 0), ""
             if command == "status json":
                 assert self.configured, "full status must not run before configure NEW"
+                if not (self.out / "bootstrap.ready.json").exists():
+                    assert self.now - self.configure_completed >= 5, "bootstrap status preceded first sampling interval"
+                    self.bootstrap_status_times.append(self.now)
                 raw = fixtures.status()
                 if self.fault == "bootstrap_warning":
                     raw["cluster"]["messages"] = [{"name": "batch_priority_transaction_start_probe_timeout"}]
@@ -360,6 +380,7 @@ class Lifecycle:
                 self.events.append(("configure", None))
                 assert sum(name == "configure" for name, _ in self.events) == 1, "configure must never retry"
                 self.configured = True
+                self.configure_completed = self.now
                 outcomes = {"configure": (0, "not created\n"), "already_configured": (0, "ERROR: Database already exists!\n"),
                             "configure_changed": (0, "Configuration changed\n"), "configure_extra": (0, "Database created\nunknown warning\n"),
                             "configure_malformed": (0, "Database created"), "configure_ambiguous": (0, ""),
@@ -792,6 +813,37 @@ class LifecycleTests(unittest.TestCase):
                 configured = sum(name == "configure" for name, _ in h.events)
                 self.assertEqual(configured, 0 if fault in before_configure else 1)
                 self.assertFalse(any(name == "workload" for name, _ in h.events))
+
+    def test_bootstrap_initial_sampling_delay_is_inside_original_readiness_budget(self):
+        h = self.harness()
+        with mock.patch.object(driver, "strict_ready", wraps=driver.strict_ready) as ready:
+            h.invoke()
+        bootstrap = next(call for call in ready.call_args_list if call.args[2] == "bootstrap.ready")
+        self.assertEqual(bootstrap.args[3], 180)
+        self.assertEqual(bootstrap.kwargs["deadline"], h.configure_completed + 180)
+        self.assertEqual(h.bootstrap_status_times[0], h.configure_completed + 5)
+        self.assertEqual(h.bootstrap_status_times, [h.configure_completed + offset for offset in (5, 10, 15)])
+        warning = self.rejected("bootstrap_warning")
+        self.assertEqual(warning.bootstrap_status_times, [warning.configure_completed + 5])
+        self.assertFalse((warning.out / "bootstrap.ready.json").exists())
+
+    def test_bootstrap_wait_guard_failures_prevent_first_status_and_load(self):
+        for fault, expected in (("bootstrap_wait_lease", "global lease descriptor/path identity lost"),
+                                ("bootstrap_wait_heartbeat", "monitor heartbeat stale/mismatched"),
+                                ("bootstrap_wait_total", "total deadline"),
+                                ("bootstrap_wait_deadline", "stage deadline"),
+                                ("bootstrap_wait_monitor", "monitor or attached server exited")):
+            with self.subTest(fault=fault):
+                h = self.harness(fault)
+                with self.assertRaisesRegex(ValueError, "^" + expected + "$"):
+                    h.invoke()
+                self.assertTrue(h.injected)
+                self.assertEqual(sum(name == "configure" for name, _ in h.events), 1)
+                self.assertEqual(h.bootstrap_status_times, [])
+                self.assertFalse(any(call[-1] == "status json" for call in h.calls))
+                self.assertFalse(any(name == "workload" for name, _ in h.events))
+                self.assertFalse((h.out / "complete.json").exists())
+                self.assertFalse(h.running)
 
     def test_full_next_stage_budget_rejects_unexpired_partial_admission(self):
         h = self.rejected("budget")
