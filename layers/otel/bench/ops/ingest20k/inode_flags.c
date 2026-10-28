@@ -34,6 +34,8 @@ static enum path_type path_kind(const char *path)
         path[sizeof(data_root) - 1] != '/')
         return PATH_INVALID;
     relative = path + sizeof(data_root);
+    if (strcmp(relative, "cluster") == 0)
+        return PATH_DIRECTORY;
     if (strcmp(relative, "cluster/fdb.cluster") == 0 ||
         strcmp(relative, ".otel283-owner") == 0)
         return PATH_REGULAR;

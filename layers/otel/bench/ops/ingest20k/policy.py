@@ -89,7 +89,7 @@ def approval(d):
     require(hexstr(d.get("source_revision"),40) and d.get("source_approved_revision") == d["source_revision"], "explicitly approved application source required")
     for key in ("binary_sha256", "input_manifest_sha256", "policy_sha256", "probe_sha256", "probe_source_sha256"):
         require(hexstr(d.get(key)), "invalid immutable hash: " + key)
-    require(d.get("policy_formal_ack_sha256") == d["policy_sha256"], "current policy ACK required")
+    require(d.get("policy_approved_sha256") == d["policy_sha256"], "explicitly approved current policy required")
     require(d.get("quiet_thresholds_approved") is True and d.get("growth_overshoot_accepted") is True, "quiet and observational-cap approvals required")
     for key in ("binary", "source_root", "source_manifest", "probe_binary", "out"):
         require(isinstance(d.get(key),str) and Path(d[key]).is_absolute(), "explicit absolute path: " + key)
@@ -199,7 +199,7 @@ def inode_proof(d):
     for row in facts:
         require(isinstance(row, dict) and isinstance(row.get("path"), str) and row["path"] not in paths, "duplicate/malformed inode path")
         path = row["path"]
-        directory = path == "/var/fdb/data" or path in ("/var/fdb/data/processes", "/var/fdb/data/traces") or re.fullmatch(r"/var/fdb/data/(processes|traces)/1488[3-6]", path)
+        directory = path == "/var/fdb/data" or path in ("/var/fdb/data/cluster", "/var/fdb/data/processes", "/var/fdb/data/traces") or re.fullmatch(r"/var/fdb/data/(processes|traces)/1488[3-6]", path)
         regular = path in ("/var/fdb/data/cluster/fdb.cluster", "/var/fdb/data/.otel283-owner") or re.fullmatch(r"/var/fdb/data/(processes|traces)/1488[3-6]/[A-Za-z0-9_.-]+", path)
         require((directory or regular) and len(Path(path).name) <= 255 and Path(path).name not in (".", ".."), "unexpected inode path")
         for key in ("flags", "uid", "dev", "ino", "nlink", "size", "allocated_bytes", "mount_id"):
@@ -209,7 +209,7 @@ def inode_proof(d):
         require(row["uid"] == 4059 and row["ino"] > 0 and row["mount_id"] > 0 and row["nlink"] > 0 and row.get("filesystem") == "btrfs" and row.get("nodatasum") == "NOT_EXPOSED", "inode ownership/filesystem facts")
         require((row["dev"], row["mount_id"]) == (facts[0]["dev"], facts[0]["mount_id"]), "inode mount/device mismatch")
         paths.add(path)
-    required = {"/var/fdb/data", "/var/fdb/data/processes", "/var/fdb/data/traces", "/var/fdb/data/cluster/fdb.cluster", "/var/fdb/data/.otel283-owner"}
+    required = {"/var/fdb/data", "/var/fdb/data/cluster", "/var/fdb/data/processes", "/var/fdb/data/traces", "/var/fdb/data/cluster/fdb.cluster", "/var/fdb/data/.otel283-owner"}
     required.update(f"/var/fdb/data/{area}/{port}" for area in ("processes", "traces") for port in range(14883, 14887))
     require(required <= paths, "required directories/metadata absent")
     for port in (14883, 14886):

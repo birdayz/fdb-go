@@ -22,7 +22,7 @@ static void test_paths(void)
     const char *invalid[] = {
         "", "/", "/var/fdb", "/var/fdb/data/", "/var/fdb/data-other",
         "/var/fdb/datax/processes", "/var/fdb/data//processes",
-        "/var/fdb/data/../data", "/var/fdb/data/cluster",
+        "/var/fdb/data/../data", "/var/fdb/data/cluster/", "/var/fdb/data/clusterx",
         "/var/fdb/data/cluster/fdb.cluster/extra", "/var/fdb/data/.otel283-owner/",
         "/var/fdb/data/tracesx", "/var/fdb/data/processesx/14883/x",
         "/var/fdb/data/processes/", "/var/fdb/data/processes/1488",
@@ -37,6 +37,7 @@ static void test_paths(void)
     const char *dirs[] = { "processes", "traces" };
     CHECK(path_kind(NULL) == PATH_INVALID);
     CHECK(path_kind("/var/fdb/data") == PATH_DIRECTORY);
+    CHECK(path_kind("/var/fdb/data/cluster") == PATH_DIRECTORY);
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); ++i) {
         snprintf(path, sizeof(path), "/var/fdb/data/%s", dirs[i]);
         CHECK(path_kind(path) == PATH_DIRECTORY);

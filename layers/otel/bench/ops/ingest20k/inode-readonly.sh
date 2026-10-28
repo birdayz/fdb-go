@@ -25,7 +25,7 @@ ingest20k_inventory() {
     relative=${path#"$root/"}
     [[ $relative =~ ^(cluster|processes|traces|processes/1488[3-6]|traces/1488[3-6])$ ]] || return 1
   done <<< "$listing"
-  for path in "$root" "$root/processes" "$root/traces"; do
+  for path in "$root" "$root/cluster" "$root/processes" "$root/traces"; do
     [[ -d "$path" ]] || return 1
     ingest20k_check_inode "$root" "$probe" "$uid" "$dev" "$path" || return
   done
