@@ -50,6 +50,14 @@ class FakeProcess:
                 result = json.loads(path.read_text())
                 result["stats"]["rows"] = 1
                 path.write_text(json.dumps(result))
+            if h.fault and h.fault.startswith(("rewrite:", "remove:")):
+                action, name = h.fault.split(":", 1)
+                path = h.out / name
+                if action == "rewrite":
+                    path.write_bytes(path.read_bytes() + b" \n")
+                else:
+                    path.unlink()
+                h.injected = True
             self.returncode = 8 if h.fault == "monitor_nonzero" else 0
         elif self.kind == "attached":
             if h.fault == "attached_wait":
@@ -203,6 +211,8 @@ class Lifecycle:
             self.injected = True
             raise OSError("offline receipt failure: " + path.name)
         result = self.original_write(path, value, exclusive)
+        if path.name == "quiet-6.json" and self.fault == "lease_before_volume":
+            self.lose_lease()
         if path.name == "cow.ready.json" and self.fault == "budget":
             # Not expired yet: the complete 300s stage plus 120s stop margin cannot fit.
             self.now = 1781
@@ -257,16 +267,27 @@ class Lifecycle:
             return 0, a["volume"] + "\n"
         if argv[:3] == ["docker", "volume", "inspect"]:
             request = json.loads((self.out / "request.json").read_text())
-            return 0, json.dumps({"name": a["volume"], "driver": "local", "scope": "local", "options": {},
-                                  "labels": {**driver.LABELS, "otel283.nonce": request["nonce"]}})
+            result = json.dumps({"name": a["volume"], "driver": "local", "scope": "local", "options": {},
+                                 "labels": {**driver.LABELS, "otel283.nonce": request["nonce"]}})
+            if self.fault == "lease_before_create":
+                self.lose_lease()
+            return 0, result
         if argv[:2] == ["docker", "create"]:
             self.assert_admitted()
             return 0, self.instance + "\n"
         if argv[:2] == ["docker", "inspect"]:
-            return 0, json.dumps(self.inspect())
+            result = json.dumps(self.inspect())
+            if self.fault == "lease_before_start" and argv[-1] == a["container"] and (self.out / "instance.json").exists() and not self.injected:
+                self.lose_lease()
+                self.injected = True
+            return 0, result
         if argv[:2] == ["docker", "exec"]:
             command = argv[-1]
             if "ingest20k-layout" in argv:
+                index = argv.index("ingest20k-layout")
+                assert argv[index - 1] == driver.LAYOUT_SCRIPT
+                assert argv[index + 1:] == ["/var/fdb/data", p.sha(driver.HERE / "fdb.cluster.seed"),
+                                            a["owner"] + " " + a["session"] + " " + a["run"]]
                 self.events.append(("layout", None))
                 return (9 if self.fault == "layout" else 0), ""
             if command == "status json":
@@ -309,6 +330,10 @@ class Lifecycle:
                 return subprocess.CompletedProcess(argv, 1, "", "offline strict health failure")
             if self.fault == "drain_backlog" and (self.out / "phase-drain.json").exists():
                 summary["queue_bytes"] = 16777216
+            if self.fault == "drain_deadline" and (self.out / "phase-drain.json").exists() and not self.injected:
+                self.now += 300
+                self.heartbeat()
+                self.injected = True
             return subprocess.CompletedProcess(argv, 0, json.dumps(summary), "")
         if list(argv[:2]) == ["docker", "stop"]:
             self.calls.append(list(argv))
@@ -356,8 +381,10 @@ class Lifecycle:
                 self.lose_lease()
             if self.fault == "total_deadline":
                 self.now += 1201
+                self.heartbeat()
             elif self.fault == mode + "_hang":
                 self.now += int(argv[argv.index("--timeout") + 1][:-1])
+                self.heartbeat()
             elif self.fault in ("cleanup_wait", "cleanup_kill"):
                 self.now += 301
             elif self.fault == "stop_nonzero":
@@ -427,6 +454,9 @@ class LifecycleTests(unittest.TestCase):
             self.assertGreaterEqual(record["deadline_epoch"] - record["stage_started_epoch"], cap + 120)
         complete = driver.read(h.out / "complete.json")
         self.assertEqual(complete["verification_sha256"], p.sha(h.out / "verification.complete.json"))
+        verification = driver.read(h.out / "verification.complete.json")
+        self.assertEqual(verification["ingest_sha256"], p.sha(h.out / "ingest.json"))
+        self.assertEqual(verification["load_ack_sha256"], p.sha(h.out / "load.exited.json"))
         inventory_path = h.out / "final-inventory.json"
         self.assertEqual(complete["inventory_sha256"], p.sha(inventory_path))
         inventory = driver.read(inventory_path)["files"]
@@ -495,7 +525,7 @@ class LifecycleTests(unittest.TestCase):
 
     def test_supervision_and_deadline_failures_never_complete(self):
         for fault in ("monitor_exited", "attached_exited", "heartbeat_absent", "heartbeat_stale", "heartbeat_pid",
-                      "heartbeat_instance", "total_deadline", "ingest_hang", "audit_hang", "query_hang", "lease_load",
+                      "heartbeat_instance", "lease_load",
                       "drain_backlog", "source_during_load", "manifest_during_load", "approval_during_load"):
             with self.subTest(fault=fault):
                 self.rejected(fault)
@@ -529,6 +559,112 @@ class LifecycleTests(unittest.TestCase):
                      "census.stdout", "census.stderr", "oracle.stdout", "oracle.stderr"):
             with self.subTest(raw=name):
                 self.rejected("open:" + name)
+
+    def test_lease_loss_at_each_immediate_create_start_boundary(self):
+        for fault, forbidden, required in (
+                ("lease_before_volume", ["docker", "volume", "create"], None),
+                ("lease_before_create", ["docker", "create"], ["docker", "volume", "inspect"]),
+                ("lease_before_start", ["docker", "start"], ["docker", "create"])):
+            with self.subTest(fault=fault):
+                h = self.harness(fault)
+                with self.assertRaisesRegex(ValueError, "^global lease descriptor/path identity lost$"):
+                    h.invoke()
+                self.assertEqual(h.quiet_count, 7)
+                if required:
+                    self.assertTrue(any(call[:len(required)] == required for call in h.calls))
+                self.assertFalse(any(call[:len(forbidden)] == forbidden for call in h.calls))
+                self.assertFalse((h.out / "complete.json").exists())
+                self.assertFalse(h.running)
+
+    def test_healthy_monitor_does_not_mask_total_or_each_stage_deadline(self):
+        for fault, expected in (("total_deadline", "total deadline"), ("ingest_hang", "stage deadline"),
+                                ("drain_deadline", "stage deadline"), ("audit_hang", "stage deadline"),
+                                ("query_hang", "stage deadline")):
+            with self.subTest(fault=fault):
+                h = self.harness(fault)
+                with self.assertRaisesRegex(ValueError, "^" + expected + "$"):
+                    h.invoke()
+                heartbeat = driver.read(h.out / "heartbeat.json")
+                self.assertLess(h.now - heartbeat["monotonic"], 60)
+                self.assertFalse((h.out / "complete.json").exists())
+                self.assertFalse(h.running)
+
+    def test_validation_time_evidence_ack_raw_and_verification_bytes_are_bound(self):
+        names = ["ingest.json", "audit.json", "query.json", "load.exited.json", "verification.complete.json"]
+        names += [stage + suffix for stage in ("load", "census", "oracle")
+                  for suffix in (".command.json", ".stdout", ".stderr", ".exit.json")]
+        cases = [("rewrite", name) for name in names]
+        cases += [("remove", name) for name in ("ingest.json", "load.exited.json", "load.stdout",
+                                                "oracle.stderr", "verification.complete.json")]
+        for action, name in cases:
+            with self.subTest(action=action, receipt=name):
+                h = self.harness(action + ":" + name)
+                with self.assertRaises((ValueError, OSError)) as error:
+                    h.invoke()
+                self.assertTrue(h.injected, "mutation never reached writer join")
+                if action == "rewrite" or name not in ("ingest.json",):
+                    self.assertEqual(str(error.exception), "validated receipt changed/missing: " + name)
+                if action == "rewrite" and name in ("ingest.json", "audit.json", "query.json"):
+                    # The rewrite is semantically valid; only the original-byte commitment rejects it.
+                    p.evidence(driver.read(h.out / name), h.approved)
+                self.assertFalse((h.out / "complete.json").exists())
+                self.assertFalse(h.running)
+
+    def test_completion_fsync_and_close_errors_after_real_bytes_never_publish(self):
+        for fault in ("fsync", "close"):
+            with self.subTest(fault=fault):
+                h = self.harness()
+                observed = []
+                pending_fds = {}
+                original_fsync = os.fsync
+
+                def observe(path):
+                    value = driver.read(path)
+                    self.assertEqual(value["verification_sha256"], p.sha(h.out / "verification.complete.json"))
+                    self.assertEqual(value["inventory_sha256"], p.sha(h.out / "final-inventory.json"))
+                    self.assertFalse((h.out / "complete.json").exists(), "success was visible before persistence")
+                    observed.append(path.read_bytes())
+
+                class CloseFailure:
+                    def __init__(self, stream, path):
+                        self.stream, self.path = stream, path
+                    def __enter__(self):
+                        self.stream.__enter__()
+                        return self.stream
+                    def __exit__(self, *args):
+                        self.stream.__exit__(*args)
+                        observe(self.path)
+                        raise OSError("offline completion close failure")
+
+                def open_completion(path, mode="r", *args, **kwargs):
+                    stream = h.open_file(path, mode, *args, **kwargs)
+                    path = Path(path)
+                    if path.name.startswith(".complete.json.") and mode == "x":
+                        pending_fds[stream.fileno()] = path
+                        if fault == "close":
+                            return CloseFailure(stream, path)
+                    return stream
+
+                def fsync(fd):
+                    original_fsync(fd)
+                    if fault == "fsync" and fd in pending_fds:
+                        observe(pending_fds[fd])
+                        raise OSError("offline completion fsync failure")
+
+                with mock.patch.object(driver, "open", side_effect=open_completion), mock.patch.object(driver.os, "fsync", side_effect=fsync):
+                    with self.assertRaisesRegex(OSError, "offline completion " + fault + " failure"):
+                        h.invoke()
+                self.assertEqual(len(observed), 1)
+                self.assertFalse((h.out / "complete.json").exists())
+                self.assertFalse(list(h.out.glob(".complete.json.*.pending")))
+                self.assertFalse(h.running)
+        # Exclusive publication must not replace a prior marker either.
+        path = h.root / "complete.json"
+        path.write_text("prior marker\n")
+        with self.assertRaises(FileExistsError):
+            h.original_write(path, {"new": True})
+        self.assertEqual(path.read_text(), "prior marker\n")
+        self.assertFalse(list(h.root.glob(".complete.json.*.pending")))
 
     def test_main_failure_has_no_completion(self):
         self.rejected("configure", main=True)

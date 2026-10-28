@@ -26,6 +26,11 @@ OLD = {
 }
 LABELS = {}
 
+# Production callers supply fixed container paths; offline fixtures supply private trees.
+MEMORY_SCRIPT = 'set -euo pipefail; cat "$1/memory.current"; cat "$1/memory.events"; code=0; pids=$(pgrep -x fdbserver) || code=$?; (( code <= 1 )); printf "%s\\n" "$pids" | sort -n'
+COUNTERS_SCRIPT = 'set -euo pipefail; membership=$(cat "$2"); [[ "$membership" == 0::/ ]]; [[ -r "$1/cgroup.controllers" ]]; printf "scope=whole_container_including_bootstrap_DD_monitor_and_workload\\nFILE=%s\\n%s\\n" "$2" "$membership"; for f in cpu.stat io.stat; do printf "FILE=%s/%s\\n" "$1" "$f"; cat "$1/$f"; done'
+LAYOUT_SCRIPT = 'set -euo pipefail; [[ $(cat "$1/.otel283-owner") == "$3" ]]; [[ $(sha256sum "$1/cluster/fdb.cluster" | cut -d" " -f1) == "$2" ]]; for port in 14883 14884 14885 14886; do [[ -s "$1/processes/$port/processId" ]]; done; existing=$(find "$1/processes" -type f \\( -name "storage-*.redwood-v1" -o -name "log2-*.sqlite*" -o -name "logqueue-*.fdq" \\) -print -quit); [[ -z "$existing" ]]'
+
 
 def select_arm(approved):
     global P, LABELS
@@ -37,7 +42,25 @@ INSPECT = '{"id":{{json .Id}},"name":{{json .Name}},"running":{{json .State.Runn
 
 def write(path, value, exclusive=True):
     text = json.dumps(value, sort_keys=True) + "\n"
-    if exclusive:
+    if exclusive and path.name == "complete.json":
+        temp = path.with_name(".complete.json." + uuid.uuid4().hex + ".pending")
+        published = False
+        try:
+            with open(temp, "x") as stream:
+                stream.write(text)
+                stream.flush()
+                os.fsync(stream.fileno())
+            # Hard-link publication is atomic and refuses an existing marker.
+            os.link(temp, path)
+            published = True
+        finally:
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError:
+                if published:
+                    path.unlink()
+                raise
+    elif exclusive:
         with open(path, "x") as stream:
             stream.write(text)
             stream.flush()
@@ -305,7 +328,7 @@ class Runtime:
         host_fsid = self.command(["stat", "-f", "-c", "%i", str(self.root)], timeout=3).strip()
         p.require(inside_fsid and inside_fsid == host_fsid, "data volume must share the actual Docker backing filesystem")
         p.require(fs.f_frsize * fs.f_blocks == self.total and os.stat(self.out).st_dev == os.stat(self.root).st_dev, "same-filesystem identity/total changed")
-        output = self.bounded_exec(["/bin/bash", "-c", 'set -euo pipefail; cat /sys/fs/cgroup/memory.current; cat /sys/fs/cgroup/memory.events; code=0; pids=$(pgrep -x fdbserver) || code=$?; (( code <= 1 )); printf "%s\\n" "$pids" | sort -n'], seconds=5)
+        output = self.bounded_exec(["/bin/bash", "-c", MEMORY_SCRIPT, "ingest20k-memory", "/sys/fs/cgroup"], seconds=5)
         rows = output.splitlines()
         usage = int(rows[0])
         events, pids = {}, []
@@ -342,8 +365,7 @@ class Runtime:
         self.event({"type": "capacity", **data, "server_pids": pids, "oom_events": events})
         # Raw counters are whole-container accounting, including bootstrap, DD,
         # monitoring and this workload; they are not per-run NAND/write amplification.
-        counters = 'set -euo pipefail; membership=$(cat /proc/self/cgroup); [[ "$membership" == 0::/ ]]; [[ -r /sys/fs/cgroup/cgroup.controllers ]]; printf "scope=whole_container_including_bootstrap_DD_monitor_and_workload\\nFILE=/proc/self/cgroup\\n%s\\n" "$membership"; for f in cpu.stat io.stat; do printf "FILE=/sys/fs/cgroup/%s\\n" "$f"; cat "/sys/fs/cgroup/$f"; done'
-        self.bounded_exec(["/bin/bash", "-c", counters], seconds=5)
+        self.bounded_exec(["/bin/bash", "-c", COUNTERS_SCRIPT, "ingest20k-counters", "/sys/fs/cgroup", "/proc/self/cgroup"], seconds=5)
         self.event({"type": "raw_cpu_io", "scope": "whole_container_including_bootstrap_DD_monitor_and_workload",
                     "raw_path": self.last_stdout.name, "raw_sha256": p.sha(self.last_stdout)})
         return data
@@ -610,8 +632,7 @@ def run(args):
             supervised_wait()
             time.sleep(1)
         # Configure exactly once only after explicit owner/layout/unconfigured proofs.
-        layout = 'set -euo pipefail; [[ $(cat /var/fdb/data/.otel283-owner) == "$2" ]]; [[ $(sha256sum /var/fdb/data/cluster/fdb.cluster | cut -d" " -f1) == "$1" ]]; for port in 14883 14884 14885 14886; do [[ -s /var/fdb/data/processes/$port/processId ]]; done; existing=$(find /var/fdb/data/processes -type f \\( -name "storage-*.redwood-v1" -o -name "log2-*.sqlite*" -o -name "logqueue-*.fdq" \\) -print -quit); [[ -z "$existing" ]]'
-        runtime.bounded_exec(["/bin/bash", "-c", layout, "ingest20k-layout", p.sha(HERE / "fdb.cluster.seed"), P["owner"] + " " + P["session"] + " " + P["run"]], 5)
+        runtime.bounded_exec(["/bin/bash", "-c", LAYOUT_SCRIPT, "ingest20k-layout", "/var/fdb/data", p.sha(HERE / "fdb.cluster.seed"), P["owner"] + " " + P["session"] + " " + P["run"]], 5)
         raw = runtime.bounded_exec(["/usr/bin/fdbcli", "-C", "/var/fdb/data/cluster/fdb.cluster", "--exec", "status json"])
         status = p.loads(raw)
         unconfigured = p.unconfigured(status)

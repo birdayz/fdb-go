@@ -119,6 +119,9 @@ class RuntimeFixture(unittest.TestCase):
         self.parent_pid = 123
         self.stop_confirm_after = 1
         self.inspect_doc = self.good_inspect()
+        self.protected_docs = {name: {"id": instance, "name": "/" + name, "running": False,
+                                     "status": "exited", "exit_code": 0, "oom": False, "restarts": 0}
+                               for name, instance in PROTECTED.items()}
         self.owned = copy.deepcopy(self.inspect_doc)
         self.volume_doc = {"name": self.approved["volume"], "driver": "local", "scope": "local",
                            "options": None, "labels": copy.deepcopy(self.inspect_doc["labels"])}
@@ -182,8 +185,7 @@ class RuntimeFixture(unittest.TestCase):
         if argv[:2] == ["docker", "inspect"]:
             name = argv[-1]
             if name in PROTECTED:
-                return json.dumps({"id": PROTECTED[name], "name": "/" + name, "running": False,
-                                   "status": "exited", "exit_code": 0, "oom": False, "restarts": 0}), 0
+                return json.dumps(self.protected_docs[name]), 0
             if name == self.approved["container"]:
                 return json.dumps(self.inspect_doc), 0
         if argv[:2] == ["docker", "ps"]:
@@ -203,9 +205,11 @@ class RuntimeFixture(unittest.TestCase):
                     raise self.get_failure
                 return self.proof, 0
             if command[:2] == ["/bin/bash", "-c"]:
-                if "memory.current" in command[2]:
+                if command[2] == driver.MEMORY_SCRIPT:
+                    self.assertEqual(command[3:], ["ingest20k-memory", "/sys/fs/cgroup"])
                     return self.cgroup, 0
-                if "cpu.stat io.stat" in command[2]:
+                if command[2] == driver.COUNTERS_SCRIPT:
+                    self.assertEqual(command[3:], ["ingest20k-counters", "/sys/fs/cgroup", "/proc/self/cgroup"])
                     return self.cpu_io, 0
         raise AssertionError("unexpected external process: " + repr(argv))
 
@@ -251,6 +255,183 @@ class RuntimeFixture(unittest.TestCase):
     def events(self):
         paths = list(self.out.glob("events-*.jsonl"))
         return [json.loads(row) for path in paths for row in path.read_text().splitlines()]
+
+
+class InlineScriptTests(unittest.TestCase):
+    """Execute the production programs, never a canned verdict for their guards."""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.log = self.root / "tools.log"
+        self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.defpath,
+                        TEST_ROOT=str(self.root), TEST_LOG=str(self.log), FAIL_READ="",
+                        PGREP_EXIT="0", PGREP_PIDS="104\n101\n103\n102")
+        scripts = {
+            "cat": '''#!/bin/bash
+set -eu
+for path in "$@"; do
+  printf 'cat %s\\n' "$path" >> "$TEST_LOG"
+  [[ "$path" == "$TEST_ROOT/"* ]] || exit 91
+  [[ "$path" != "$FAIL_READ" ]] || exit 73
+done
+exec /bin/cat "$@"
+''',
+            "pgrep": '''#!/bin/bash
+set -eu
+printf 'pgrep %s\\n' "$*" >> "$TEST_LOG"
+[[ $# == 2 && $1 == -x && $2 == fdbserver ]] || exit 92
+if [[ "$PGREP_EXIT" == 0 ]]; then printf '%s\\n' "$PGREP_PIDS"; fi
+exit "$PGREP_EXIT"
+''',
+            "find": '''#!/bin/bash
+set -eu
+[[ "$1" == "$TEST_ROOT/"* ]] || exit 93
+exec /usr/bin/find "$@"
+''',
+            "sha256sum": '''#!/bin/bash
+set -eu
+[[ "$1" == "$TEST_ROOT/"* ]] || exit 94
+exec /usr/bin/sha256sum "$@"
+''',
+        }
+        for name, text in scripts.items():
+            path = self.bin / name
+            path.write_text(text)
+            path.chmod(0o755)
+        self.cgroup_root = self.root / "synthetic-cgroup"
+        self.cgroup_root.mkdir()
+        self.cgroup_files = {
+            "memory.current": "2147483648\n",
+            "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+            "cgroup.controllers": "cpu io memory\n",
+            "cpu.stat": "usage_usec 1000\nuser_usec 700\nsystem_usec 300\n",
+            "io.stat": "8:0 rbytes=1 wbytes=2 rios=3 wios=4\n",
+        }
+        for name, text in self.cgroup_files.items():
+            (self.cgroup_root / name).write_text(text)
+        self.membership = self.root / "synthetic-membership"
+        self.membership.write_text("0::/\n")
+        self.data = self.root / "synthetic-data"
+        (self.data / "cluster").mkdir(parents=True)
+        self.seed = self.data / "cluster" / "fdb.cluster"
+        self.seed.write_text("otel20k:otel20k@127.0.0.1:14883\n")
+        self.seed_sha = digest(self.seed)
+        self.marker = "otel283-vxnar prof20k0290 prof20k0290"
+        (self.data / ".otel283-owner").write_text(self.marker + "\n")
+        for port in range(14883, 14887):
+            directory = self.data / "processes" / str(port)
+            directory.mkdir(parents=True)
+            (directory / "processId").write_text("fixture-process-" + str(port) + "\n")
+
+    def script(self, program, *args):
+        return subprocess.run(["/bin/bash", "-c", program, "offline-fixture", *map(str, args)],
+                              cwd=self.root, env=self.env, capture_output=True, text=True, timeout=5)
+
+    def layout(self):
+        return self.script(driver.LAYOUT_SCRIPT, self.data, self.seed_sha, self.marker)
+
+    def test_layout_exact_owner_seed_each_process_and_no_existing_engine_files(self):
+        before = {str(path.relative_to(self.data)): path.read_bytes()
+                  for path in self.data.rglob("*") if path.is_file()}
+        result = self.layout()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(before, {str(path.relative_to(self.data)): path.read_bytes()
+                                  for path in self.data.rglob("*") if path.is_file()})
+        self.assertIn("cat " + str(self.data / ".otel283-owner"), self.log.read_text())
+        marker = self.data / ".otel283-owner"
+        original = marker.read_bytes()
+        for content in (b"wrong owner\n", b""):
+            marker.write_bytes(content)
+            self.assertNotEqual(self.layout().returncode, 0)
+        marker.unlink()
+        self.assertNotEqual(self.layout().returncode, 0)
+        marker.write_bytes(original)
+        original = self.seed.read_bytes()
+        self.seed.write_bytes(original + b"changed")
+        self.assertNotEqual(self.layout().returncode, 0)
+        self.seed.unlink()
+        self.assertNotEqual(self.layout().returncode, 0)
+        self.seed.write_bytes(original)
+        for port in range(14883, 14887):
+            process = self.data / "processes" / str(port) / "processId"
+            original = process.read_bytes()
+            process.write_bytes(b"")
+            self.assertNotEqual(self.layout().returncode, 0, "empty processId " + str(port))
+            process.unlink()
+            self.assertNotEqual(self.layout().returncode, 0, "missing processId " + str(port))
+            process.write_bytes(original)
+        for filename in ("storage-fixture.redwood-v1", "log2-fixture.sqlite", "log2-fixture.sqlite-wal", "logqueue-fixture.fdq"):
+            existing = self.data / "processes" / "14883" / filename
+            existing.write_text("preexisting engine state\n")
+            self.assertNotEqual(self.layout().returncode, 0, filename)
+            existing.unlink()
+        self.env["FAIL_READ"] = str(marker)
+        self.assertNotEqual(self.layout().returncode, 0)
+        self.env["FAIL_READ"] = ""
+        self.assertEqual(self.layout().returncode, 0)
+        self.assertEqual(before, {str(path.relative_to(self.data)): path.read_bytes()
+                                  for path in self.data.rglob("*") if path.is_file()})
+
+    def test_memory_program_reads_fixture_files_sorts_pids_and_propagates_pgrep_errors(self):
+        result = self.script(driver.MEMORY_SCRIPT, self.cgroup_root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["2147483648", "low 0", "high 0", "max 0", "oom 0",
+                                                    "oom_kill 0", "oom_group_kill 0", "101", "102", "103", "104"])
+        self.assertIn("pgrep -x fdbserver", self.log.read_text())
+        self.env["PGREP_EXIT"] = "1"
+        result = self.script(driver.MEMORY_SCRIPT, self.cgroup_root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), self.cgroup_files["memory.current"].rstrip()
+                         + "\n" + self.cgroup_files["memory.events"].rstrip())
+        for code in (2, 127):
+            self.env["PGREP_EXIT"] = str(code)
+            self.assertNotEqual(self.script(driver.MEMORY_SCRIPT, self.cgroup_root).returncode, 0)
+        self.env["PGREP_EXIT"] = "0"
+        for name in ("memory.current", "memory.events"):
+            path = self.cgroup_root / name
+            path.unlink()
+            self.assertNotEqual(self.script(driver.MEMORY_SCRIPT, self.cgroup_root).returncode, 0)
+            path.write_text(self.cgroup_files[name])
+            self.env["FAIL_READ"] = str(path)
+            self.assertNotEqual(self.script(driver.MEMORY_SCRIPT, self.cgroup_root).returncode, 0)
+            self.env["FAIL_READ"] = ""
+        self.assertEqual(self.script(driver.MEMORY_SCRIPT, self.cgroup_root).returncode, 0)
+
+    def test_counter_program_requires_exact_membership_readable_controller_and_both_counters(self):
+        result = self.script(driver.COUNTERS_SCRIPT, self.cgroup_root, self.membership)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("scope=whole_container_including_bootstrap_DD_monitor_and_workload", result.stdout)
+        self.assertIn(self.cgroup_files["cpu.stat"], result.stdout)
+        self.assertIn(self.cgroup_files["io.stat"], result.stdout)
+        reads = self.log.read_text()
+        for path in (self.membership, self.cgroup_root / "cpu.stat", self.cgroup_root / "io.stat"):
+            self.assertIn("cat " + str(path), reads)
+        for membership in ("1:memory:/owned\n", "0::/unexpected\n", "0::/\n1:cpu:/\n", ""):
+            self.membership.write_text(membership)
+            self.assertNotEqual(self.script(driver.COUNTERS_SCRIPT, self.cgroup_root, self.membership).returncode, 0)
+        self.membership.write_text("0::/\n")
+        for path in (self.membership, self.cgroup_root / "cpu.stat", self.cgroup_root / "io.stat"):
+            original = path.read_bytes()
+            path.unlink()
+            self.assertNotEqual(self.script(driver.COUNTERS_SCRIPT, self.cgroup_root, self.membership).returncode, 0)
+            path.write_bytes(original)
+            self.env["FAIL_READ"] = str(path)
+            self.assertNotEqual(self.script(driver.COUNTERS_SCRIPT, self.cgroup_root, self.membership).returncode, 0)
+            self.env["FAIL_READ"] = ""
+        controller = self.cgroup_root / "cgroup.controllers"
+        original = controller.read_bytes()
+        controller.unlink()
+        self.assertNotEqual(self.script(driver.COUNTERS_SCRIPT, self.cgroup_root, self.membership).returncode, 0)
+        controller.symlink_to(self.cgroup_root / "unreadable-controller-target")
+        self.assertTrue(controller.is_symlink())
+        self.assertFalse(os.access(controller, os.R_OK))
+        self.assertNotEqual(self.script(driver.COUNTERS_SCRIPT, self.cgroup_root, self.membership).returncode, 0)
+        controller.unlink()
+        controller.write_bytes(original)
+        self.assertEqual(self.script(driver.COUNTERS_SCRIPT, self.cgroup_root, self.membership).returncode, 0)
 
 
 class ObservationTests(RuntimeFixture):
@@ -819,7 +1000,32 @@ class MonitorTests(unittest.TestCase):
                 self.assertTrue([event for event in case.events() if event["type"] == event_type], event_type)
             self.assertTrue(any("/etc/fdb4/inode-readonly.sh" in argv for argv in case.calls))
             self.assertTrue(any(argv[:3] == ["docker", "volume", "inspect"] for argv in case.calls))
+            retained = [argv[-1] for argv in case.calls if argv[:2] == ["docker", "inspect"] and argv[-1] in PROTECTED]
+            self.assertEqual(sorted(retained), sorted(PROTECTED), "positive iteration must check every retained instance")
             self.assertEqual(len([event for event in case.events() if event["type"] == "status"]), 1)
+
+    def test_monitor_retained_database_becoming_live_stops_only_owned_without_heartbeat_renewal(self):
+        with self.scenario() as case:
+            fd, _path, _lease, held = prepare_monitor(case)
+            live = sorted(PROTECTED)[0]
+            prior = []
+            def retained_starts_after_success(_seconds):
+                self.assertFalse(prior, "live retained database must prevent another successful iteration")
+                checked = [argv[-1] for argv in case.calls
+                           if argv[:2] == ["docker", "inspect"] and argv[-1] in PROTECTED]
+                self.assertEqual(sorted(checked), sorted(PROTECTED))
+                prior.append((case.out / "heartbeat.json").read_bytes())
+                case.protected_docs[live].update(running=True, status="running")
+            case.sleep_hook = retained_starts_after_success
+            with self.assertRaisesRegex(ValueError, "retained owned database"):
+                driver.monitor(case.out, fd)
+            self.assertEqual(len(prior), 1)
+            self.assertEqual((case.out / "heartbeat.json").read_bytes(), prior[0])
+            checks = [argv for argv in case.calls if argv[:2] == ["docker", "inspect"] and argv[-1] == live]
+            self.assertEqual(len(checks), 2, "retained instance must be re-observed after its state changes")
+            self.assertEqual(case.stops, [["docker", "stop", "--time", "60", INSTANCE]])
+            self.assertIs(case.protected_docs[live]["running"], True, "containment must not stop the protected instance")
+            self.assert_contained(case, fd, held)
 
     def test_monitor_initial_lease_input_failures_always_contain_under_original_lock(self):
         for fault in ("missing-record", "malformed-record", "missing-path", "replaced-path", "device", "inode", "invalid-fd", "wrong-fd"):

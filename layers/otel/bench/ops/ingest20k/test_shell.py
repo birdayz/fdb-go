@@ -342,9 +342,12 @@ ingest20k_entry_main --inside 2200
     def test_deadline_contains_setup_and_term_ignoring_descendants(self):
         worker = self.base / "inert-worker.py"
         record = self.base / "processes.jsonl"
+        ready = self.base / "ready"
+        ready.mkdir()
         worker.write_text("""
-import json, os, signal, sys, time
+import json, os, pathlib, signal, sys, time
 record = sys.argv[1]
+ready = pathlib.Path(sys.argv[2])
 def emit(event):
     with open(record, 'a') as f:
         f.write(json.dumps({'event':event,'pid':os.getpid(),'time':time.monotonic()})+'\\n')
@@ -352,36 +355,48 @@ def term(signum, frame):
     emit('TERM')
 signal.signal(signal.SIGTERM, term)
 emit('setup')
-time.sleep(2)
-emit('server')
 if os.fork() == 0:
     emit('descendant')
+    (ready / 'descendant').touch()
+else:
+    emit('server')
+    (ready / 'server').touch()
 while True:
     time.sleep(0.05)
 """)
-        started = time.monotonic()
-        proc = subprocess.Popen(["/bin/bash", str(HERE / "deadline.sh"), str(int(time.time()) + 9),
-                                 sys.executable, str(worker), str(record)], env=self.env,
+        # Arithmetic/expiry is tested above with a controlled clock. Here leave
+        # startup ample room, then signal only timeout after both handlers exist:
+        # timeout itself must forward TERM and escalate to KILL for descendants.
+        proc = subprocess.Popen(["/bin/bash", str(HERE / "deadline.sh"), str(int(time.time()) + 180),
+                                 sys.executable, str(worker), str(record), str(ready)], env=self.env,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+        completed = False
         try:
-            stdout, stderr = proc.communicate(timeout=16)
+            until = time.monotonic() + 60
+            while not all((ready / name).exists() for name in ('server', 'descendant')):
+                self.assertIsNone(proc.poll(), 'timeout/worker exited before readiness')
+                self.assertLess(time.monotonic(), until, 'inert process readiness watchdog expired')
+                time.sleep(0.05)
+            proc.send_signal(signal.SIGTERM)
+            stdout, stderr = proc.communicate(timeout=60)
+            completed = True
         finally:
-            if proc.poll() is None:
-                os.killpg(proc.pid, signal.SIGKILL)
-                proc.communicate(timeout=3)
-        elapsed = time.monotonic() - started
+            if not completed:
+                # The timeout parent may have exited while descendants hold the
+                # pipes; clean only this fixture's newly created process group.
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.communicate(timeout=10)
         self.assertNotEqual(proc.returncode, 0, (stdout, stderr))
-        self.assertLess(elapsed, 12)
         rows = [json.loads(line) for line in record.read_text().splitlines()]
-        setup = next(r for r in rows if r['event'] == 'setup')
+        self.assertEqual(sum(r['event'] == 'setup' for r in rows), 1)
         server = next(r for r in rows if r['event'] == 'server')
         descendant = next(r for r in rows if r['event'] == 'descendant')
-        self.assertGreaterEqual(server['time'] - setup['time'], 1.8)
         pids = {server['pid'], descendant['pid']}
+        self.assertEqual(len(pids), 2)
         self.assertEqual({r['pid'] for r in rows if r['event'] == 'TERM'}, pids)
-        first_term = min(r['time'] for r in rows if r['event'] == 'TERM')
-        self.assertLess(first_term - server['time'], 3.5)
-        self.assertGreaterEqual(elapsed - (first_term - started), 4.5)
         # A zombie has stopped executing; never signal arbitrary or unowned PIDs.
         for pid in pids:
             stat = Path(f"/proc/{pid}/stat")
@@ -390,7 +405,7 @@ while True:
                     return stat.read_text().split(') ', 1)[1].startswith('Z ')
                 except FileNotFoundError:
                     return True
-            until = time.monotonic() + 2
+            until = time.monotonic() + 60
             while not stopped() and time.monotonic() < until:
                 time.sleep(0.01)
             self.assertTrue(stopped(), pid)

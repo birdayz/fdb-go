@@ -39,7 +39,7 @@ CLASSES = ("trace", "trace_absent", "span", "span_absent", "genai_response",
 def approval(run="prof20k0290", revision="1" * 40, batch=32, workers=2):
     return dict(PROFILE, **RUNS[run], run=run, batch=batch, workers=workers,
                 schema="ingest20k_fresh100k_v1", approved=True,
-                source_revision=revision, source_formal_ack_revision=revision,
+                source_revision=revision, source_approved_revision=revision,
                 binary_sha256="b" * 64, input_manifest_sha256="c" * 64,
                 policy_sha256="d" * 64, policy_formal_ack_sha256="d" * 64,
                 probe_sha256="e" * 64, probe_source_sha256="f" * 64,
@@ -208,7 +208,7 @@ class PolicyTests(unittest.TestCase):
                 set_path(candidate, path, value)
                 self.cli(kind, candidate, valid=False)
 
-    def test_positive_population_both_arms_independent_reviewed_revisions(self):
+    def test_positive_population_both_arms_independent_approved_revisions(self):
         count = 0
         for run in RUNS:
             for revision in ("1" * 40, "2" * 40):
@@ -270,7 +270,7 @@ class PolicyTests(unittest.TestCase):
                 candidate = copy.deepcopy(base)
                 del candidate[field]
                 self.cli("approval", candidate, valid=False)
-            for field in ("source_revision", "source_formal_ack_revision"):
+            for field in ("source_revision", "source_approved_revision"):
                 self.reject("approval", base, field, ["g" * 40, "a" * 39, "a" * 41, "A" * 40])
             for field in ("binary_sha256", "input_manifest_sha256", "policy_sha256", "probe_sha256", "probe_source_sha256"):
                 self.reject("approval", base, field, ["g" * 64, "a" * 63, "a" * 65, "A" * 64])
@@ -280,10 +280,10 @@ class PolicyTests(unittest.TestCase):
             for field in ("binary", "source_root", "source_manifest", "probe_binary", "out"):
                 self.reject("approval", base, field, ["relative/path"])
 
-    def test_formal_acknowledgements_reject_other_well_formed_reviewed_identities(self):
+    def test_approvals_and_policy_ack_reject_other_well_formed_identities(self):
         base = approval()
         for field, replacement in (("source_revision", "2" * 40),
-                                   ("source_formal_ack_revision", "2" * 40),
+                                   ("source_approved_revision", "2" * 40),
                                    ("policy_sha256", "e" * 64),
                                    ("policy_formal_ack_sha256", "e" * 64)):
             self.reject("approval", base, field, [replacement])

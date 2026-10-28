@@ -86,7 +86,7 @@ def approval(d):
         require(type(d.get(key)) is type(value) and d[key] == value, "literal arm mismatch: " + key)
     require(all(type(port) is int for port in d["ports"]), "integer ports required")
     require(d.get("schema") == "ingest20k_fresh100k_v1" and d.get("approved") is True, "explicit arm approval required")
-    require(hexstr(d.get("source_revision"),40) and d.get("source_formal_ack_revision") == d["source_revision"], "reviewed application source required")
+    require(hexstr(d.get("source_revision"),40) and d.get("source_approved_revision") == d["source_revision"], "explicitly approved application source required")
     for key in ("binary_sha256", "input_manifest_sha256", "policy_sha256", "probe_sha256", "probe_source_sha256"):
         require(hexstr(d.get(key)), "invalid immutable hash: " + key)
     require(d.get("policy_formal_ack_sha256") == d["policy_sha256"], "current policy ACK required")
