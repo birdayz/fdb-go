@@ -23,7 +23,7 @@ ingest20k_inventory() {
   while IFS= read -r path; do
     [[ $path == "$root" ]] && continue
     relative=${path#"$root/"}
-    [[ $relative =~ ^(cluster|processes|traces|processes/1488[3-6]|traces/1488[3-6])$ ]] || return 1
+    [[ $relative =~ ^(cluster|processes|traces|processes/1488[3-6]|traces/1488[3-6]|processes/1488[36]/(serverCheckpoints|fetchedCheckpoints))$ ]] || return 1
   done <<< "$listing"
   for path in "$root" "$root/cluster" "$root/processes" "$root/traces"; do
     [[ -d "$path" ]] || return 1
@@ -35,12 +35,24 @@ ingest20k_inventory() {
       ingest20k_check_inode "$root" "$probe" "$uid" "$dev" "$path" || return
     done
   done
+  # FDB 3ea44ce1d9003ad095e408039e1f755c319c4dfb storageserver.actor.cpp:210,212,13981-14034 creates both before SSI acceptance/durability.
+  # Restore:14096-14105 recreates missing dirs; this fresh profile permits only these four, empty.
+  for port in 14883 14886; do
+    for name in serverCheckpoints fetchedCheckpoints; do
+      path="$root/processes/$port/$name"
+      [[ -d "$path" && ! -L "$path" ]] || return 1
+      first=$(find "$path" -mindepth 1 -maxdepth 1 -print -quit) || return
+      [[ -z "$first" ]] || return 1
+      ingest20k_check_inode "$root" "$probe" "$uid" "$dev" "$path" || return
+    done
+  done
   [[ -f "$root/cluster/fdb.cluster" && -f "$root/.otel283-owner" ]] || return 1
   listing=$(find "$root" -type f -print) || return
   [[ -n "$listing" ]] || return 1
   while IFS= read -r path; do
     relative=${path#"$root/"}
     [[ $relative =~ ^((processes|traces)/1488[3-6]/[A-Za-z0-9_.-]+|cluster/fdb\.cluster|\.otel283-owner)$ ]] || return 1
+    [[ ${path##*/} != serverCheckpoints && ${path##*/} != fetchedCheckpoints ]] || return 1
     ingest20k_check_inode "$root" "$probe" "$uid" "$dev" "$path" || return
     files=$((files + 1))
   done <<< "$listing"

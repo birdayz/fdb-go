@@ -189,11 +189,13 @@ def inode_proof(d):
     tail = rows[-1]
     require(tail.get("schema") == "ingest20k_inode_proof_v1" and type(tail.get("regular_files_verified")) is int and tail["regular_files_verified"] >= 6 and type(tail.get("primary_sets_verified")) is int and tail["primary_sets_verified"] == 3, "inode proof summary")
     facts, paths = rows[:-1], set()
+    checkpoint_names = ("serverCheckpoints", "fetchedCheckpoints")
+    checkpoint_dirs = {f"/var/fdb/data/processes/{port}/{name}" for port in (14883, 14886) for name in checkpoint_names}
     for row in facts:
         require(isinstance(row, dict) and isinstance(row.get("path"), str) and row["path"] not in paths, "duplicate/malformed inode path")
         path = row["path"]
-        directory = path == "/var/fdb/data" or path in ("/var/fdb/data/cluster", "/var/fdb/data/processes", "/var/fdb/data/traces") or re.fullmatch(r"/var/fdb/data/(processes|traces)/1488[3-6]", path)
-        regular = path in ("/var/fdb/data/cluster/fdb.cluster", "/var/fdb/data/.otel283-owner") or re.fullmatch(r"/var/fdb/data/(processes|traces)/1488[3-6]/[A-Za-z0-9_.-]+", path)
+        directory = path in checkpoint_dirs or path == "/var/fdb/data" or path in ("/var/fdb/data/cluster", "/var/fdb/data/processes", "/var/fdb/data/traces") or re.fullmatch(r"/var/fdb/data/(processes|traces)/1488[3-6]", path)
+        regular = (path in ("/var/fdb/data/cluster/fdb.cluster", "/var/fdb/data/.otel283-owner") or re.fullmatch(r"/var/fdb/data/(processes|traces)/1488[3-6]/[A-Za-z0-9_.-]+", path)) and Path(path).name not in checkpoint_names
         require((directory or regular) and len(Path(path).name) <= 255 and Path(path).name not in (".", ".."), "unexpected inode path")
         for key in ("flags", "uid", "dev", "ino", "nlink", "size", "allocated_bytes", "mount_id"):
             require(uint(row.get(key)), "invalid inode fact: " + key)
@@ -204,6 +206,7 @@ def inode_proof(d):
         paths.add(path)
     required = {"/var/fdb/data", "/var/fdb/data/cluster", "/var/fdb/data/processes", "/var/fdb/data/traces", "/var/fdb/data/cluster/fdb.cluster", "/var/fdb/data/.otel283-owner"}
     required.update(f"/var/fdb/data/{area}/{port}" for area in ("processes", "traces") for port in range(14883, 14887))
+    required.update(checkpoint_dirs)
     require(required <= paths, "required directories/metadata absent")
     for port in (14883, 14886):
         require(sum(bool(re.fullmatch(fr"/var/fdb/data/processes/{port}/storage-[0-9a-f]{{32}}\.redwood-v1", path)) for path in paths) == 1, "exact Redwood primary required")
