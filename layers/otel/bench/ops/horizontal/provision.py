@@ -160,9 +160,9 @@ def _remaining(plan, timeout, clock=time.time, *, active=False):
     return min(timeout, remaining)
 
 
-def _inventory_run(plan, runner, argv, clock=time.time):
+def _inventory_run(plan, runner, argv, clock=time.time, *, active=False):
     try:
-        return _call(runner, argv, timeout=_remaining(plan, 10, clock))
+        return _call(runner, argv, timeout=_remaining(plan, 10, clock, active=active))
     except (OSError, ProvisionError, subprocess.SubprocessError) as exc:
         return 1, '', str(exc)
 
@@ -254,7 +254,7 @@ def _arm(plan, out, state, popen, clock, sleep):
     os.chmod(log.name, 0o600)
     try:
         child = (popen or subprocess.Popen)(
-            [sys.executable, str(Path(__file__).resolve()), '--guard-plan', str(plan_path),
+            [sys.executable, '-B', str(Path(__file__).resolve()), '--guard-plan', str(plan_path),
              '--guard-out', str(Path(out).resolve())],
             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, close_fds=True)
     finally:
@@ -358,6 +358,40 @@ def _require_result(value, what):
     return stdout
 
 
+def _ipv6_absent(value):
+    if value is None:
+        return True
+    return (type(value) is dict and set(value) == {'id', 'ip', 'blocked', 'dns_ptr'}
+            and type(value['id']) is int and value['id'] == 0
+            and type(value['ip']) is str and value['ip'] == ''
+            and value['blocked'] is False
+            and type(value['dns_ptr']) is list and value['dns_ptr'] == [])
+
+
+def _capture_ip_snapshots(plan, state, resources, runner, clock):
+    # Keep the exact API strings even when a subsequent shape or ownership
+    # check refuses them. Capture both populations before validating either.
+    raw = {}
+    for kind in ('server', 'primary-ip'):
+        argv = [plan['hcloud'], kind, 'list', '-o', 'json']
+        started = clock()
+        rc, stdout, stderr = _inventory_run(plan, runner, argv, clock, active=True)
+        raw[kind] = dict(argv=argv, returncode=rc, stdout=stdout, stderr=stderr,
+                         epoch=started, finished_epoch=clock())
+    receipt = state / f'ip-snapshot-{time.time_ns()}.json'
+    _json(receipt, dict(read_only=True, before_validation=True, raw=raw))
+    resources.setdefault('primary_ip_snapshot_receipts', []).append(str(receipt))
+    _save_resources(state, resources)
+    result = {}
+    for kind, captured in raw.items():
+        if captured['returncode']:
+            raise ProvisionError(f'{kind}: IP proof listing failed: {captured["stderr"].strip()}')
+        items = _mc.parse_json_list(captured['stdout'], kind)
+        _inventory.ids(items, kind)
+        result[kind] = items
+    return result['server'], result['primary-ip']
+
+
 def _verified_ipv4(plan, resources, servers, ips, server):
     sid = server['id']
     if (sid not in resources['ids']['server'] or sid in resources['protected_ids']['server']
@@ -373,7 +407,7 @@ def _verified_ipv4(plan, resources, servers, ips, server):
     by_id = {ip['id']: ip for ip in ips}
     if (not isinstance(rid, int) or rid in resources['protected_ids']['primary-ip']
             or assigned != {rid} or references != {sid} or rid not in by_id
-            or (server.get('public_net') or {}).get('ipv6')):
+            or not _ipv6_absent((server.get('public_net') or {}).get('ipv6'))):
         raise ProvisionError('public IP assignment is not an exact new IPv4-only server assignment')
     ip = by_id[rid]
     if (ip.get('type') != 'ipv4' or ip.get('assignee_type') != 'server'
@@ -384,7 +418,7 @@ def _verified_ipv4(plan, resources, servers, ips, server):
 
 
 def _prove_ips(plan, state, resources, runner, clock=time.time, guard=None):
-    servers, ips = _list(plan, 'server', runner), _list(plan, 'primary-ip', runner)
+    servers, ips = _capture_ip_snapshots(plan, state, resources, runner, clock)
     mine = [s for s in servers if s['id'] in resources['ids']['server']]
     if len(mine) != len(resources['ids']['server']):
         raise ProvisionError('created server disappeared')
@@ -405,7 +439,7 @@ def _prove_ips(plan, state, resources, runner, clock=time.time, guard=None):
             _mutate(plan, state, repair['argv'], runner, clock, guard)
             repair['finished_epoch'] = clock()
             _save_resources(state, resources)
-            fresh_servers, ips = _list(plan, 'server', runner), _list(plan, 'primary-ip', runner)
+            fresh_servers, ips = _capture_ip_snapshots(plan, state, resources, runner, clock)
             matches = [s for s in fresh_servers if s['id'] == server['id']]
             if len(matches) != 1:
                 raise ProvisionError('IPv4 repair server disappeared before readback')
