@@ -197,7 +197,13 @@ failed diagnostic with retained receipts.
 Renewed admission is seven samples, each10–15s apart: MemAvailable>=24GiB,
 max-minus-min variation<=1GiB, CPU PSI some avg10<=5%, memory some<=0.1% and
 full<=0.01%, I/O full<=1%, and unchanged pswpin/pswpout. No empty-swap requirement
-or swap/kernel change. No post-failure threshold relaxation.
+or swap/kernel change. Admission may wait at most180s (up to19 samples10s apart)
+within the original1200s session, accepting only the latest seven consecutive
+samples that pass every unchanged threshold. Only typed, valid busy accounting
+is retried; malformed/nonfinite/missing accounting, decreasing counters, bad
+intervals, lease loss and deadlines fail immediately. Every `quiet-i.json` remains;
+`quiet.accepted.json` binds the accepted window's indices/raw hashes and prior
+busy reasons. No stage budget is shortened and no threshold is relaxed.
 
 Continuous guards: host>=8GiB, cgroup<90% of16GiB, no OOM/restart/PID replacement,
 exact new instance/owner/profile/session/nonce/image/mount/ports/resources and

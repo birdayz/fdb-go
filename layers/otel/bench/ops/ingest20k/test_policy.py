@@ -354,6 +354,117 @@ class PolicyTests(unittest.TestCase):
             self.reject(kind, factory(), "samples", [None, {}, "samples", True])
             self.reject(kind, factory(), "samples.1", [None, [], "sample", True])
 
+    def quiet_policy(self):
+        with mock.patch.object(sys, "path", [str(HERE), *sys.path]):
+            return importlib.import_module("policy")
+
+    def test_partial_quiet_observations_and_exact_full_proof_are_unchanged(self):
+        policy = self.quiet_policy()
+        for count in range(1, 8):
+            samples = quiet()["samples"][:count]
+            self.assertIsNone(policy.quiet_observations(samples))
+        for gap in (10, 15):
+            samples = quiet()["samples"]
+            for i, sample in enumerate(samples):
+                sample["epoch"] = i * gap
+            samples[0]["mem_available_bytes"] += GIB
+            self.assertIsNone(policy.quiet_observations(samples))
+            self.assertEqual(policy.quiet({"samples": samples}), {"quiet_samples": 7, "span_seconds": 6 * gap})
+        for count in (0, 1, 6, 8):
+            samples = (quiet()["samples"] * 2)[:count]
+            with self.assertRaises(ValueError) as error:
+                policy.quiet({"samples": samples})
+            self.assertIs(type(error.exception), ValueError)
+
+    def test_only_valid_known_busy_quiet_facts_raise_typed_busy(self):
+        policy = self.quiet_policy()
+        for field, value, reason in (
+                ("mem_available_bytes", 24 * GIB - 1, "below 24 GiB"),
+                ("mem_available_bytes", 25 * GIB + 1, "RAM unstable"),
+                ("cpu_psi_some_avg10", 5.001, "cpu_psi_some_avg10"),
+                ("memory_psi_some_avg10", 0.1001, "memory_psi_some_avg10"),
+                ("memory_psi_full_avg10", 0.0101, "memory_psi_full_avg10"),
+                ("io_psi_full_avg10", 1.001, "io_psi_full_avg10")):
+            samples = quiet()["samples"]
+            samples[0][field] = value
+            with self.assertRaises(policy.QuietBusy) as error:
+                policy.quiet_observations(samples)
+            self.assertIs(type(error.exception), policy.QuietBusy)
+            self.assertIn(reason, str(error.exception))
+            with self.assertRaises(policy.QuietBusy):
+                policy.quiet({"samples": samples})
+        for counter in ("pswpin", "pswpout"):
+            samples = quiet()["samples"]
+            for sample in samples[2:]:
+                sample[counter] += 1
+            with self.assertRaises(policy.QuietBusy) as error:
+                policy.quiet_observations(samples)
+            self.assertIn("swap I/O", str(error.exception))
+        for count in (1, 2, 7):
+            samples = quiet()["samples"][:count]
+            samples[0]["mem_available_bytes"] = 24 * GIB - 1
+            with self.assertRaises(policy.QuietBusy):
+                policy.quiet_observations(samples)
+
+    def test_malformed_quiet_facts_are_fatal_even_when_another_fact_is_busy(self):
+        policy = self.quiet_policy()
+        for value in (None, {}, [], "samples", True, tuple(quiet()["samples"]), quiet()["samples"] * 2):
+            with self.assertRaises(ValueError) as error:
+                policy.quiet_observations(value)
+            self.assertIs(type(error.exception), ValueError)
+        bad = {"epoch": [True, "0", -1, 0.5, 10 ** 18],
+               "mem_available_bytes": [True, "0", -1, 0.5, 10 ** 18],
+               "pswpin": [True, "17", -1, 0.5, 10 ** 18], "pswpout": [True, "23", -1, 0.5, 10 ** 18]}
+        for key in ("cpu_psi_some_avg10", "memory_psi_some_avg10", "memory_psi_full_avg10", "io_psi_full_avg10"):
+            bad[key] = [True, "0", -1, float("inf"), float("-inf"), float("nan")]
+        for malformed_index, busy_index in ((0, 6), (6, 0)):
+            for field, values in bad.items():
+                for value in values + [None]:
+                    samples = quiet()["samples"]
+                    samples[busy_index]["mem_available_bytes"] -= 1
+                    samples[malformed_index][field] = value
+                    with self.assertRaises(ValueError) as error:
+                        policy.quiet_observations(samples)
+                    self.assertIs(type(error.exception), ValueError, (field, value))
+                samples = quiet()["samples"]
+                samples[busy_index]["cpu_psi_some_avg10"] += 1
+                del samples[malformed_index][field]
+                with self.assertRaises(ValueError) as error:
+                    policy.quiet_observations(samples)
+                self.assertIs(type(error.exception), ValueError)
+            for malformed in (None, [], "sample", True):
+                samples = quiet()["samples"]
+                samples[busy_index]["mem_available_bytes"] -= 1
+                samples[malformed_index] = malformed
+                with self.assertRaises(ValueError) as error:
+                    policy.quiet_observations(samples)
+                self.assertIs(type(error.exception), ValueError)
+
+    def test_bad_quiet_intervals_or_decreasing_either_swap_counter_never_mean_busy(self):
+        policy = self.quiet_policy()
+        for epoch in (0, 9, 16):
+            samples = quiet()["samples"][:2]
+            samples[0]["cpu_psi_some_avg10"] += 1
+            samples[1]["epoch"] = epoch
+            with self.assertRaises(ValueError) as error:
+                policy.quiet_observations(samples)
+            self.assertIs(type(error.exception), ValueError)
+        for decreasing, increasing in (("pswpin", "pswpout"), ("pswpout", "pswpin")):
+            samples = quiet()["samples"][:2]
+            samples[0]["mem_available_bytes"] -= 1
+            samples[1][decreasing] -= 1
+            samples[1][increasing] += 1
+            with self.assertRaises(ValueError) as error:
+                policy.quiet_observations(samples)
+            self.assertIs(type(error.exception), ValueError)
+            self.assertIn("decreased", str(error.exception))
+        samples = quiet()["samples"]
+        samples[0]["mem_available_bytes"] -= 1
+        samples[-1]["pswpout"] -= 1
+        with self.assertRaises(ValueError) as error:
+            policy.quiet_observations(samples)
+        self.assertIs(type(error.exception), ValueError)
+
     def test_phase_every_stage_is_strict_short_and_bound_to_arm(self):
         for run in RUNS:
             for stage in ("load", "drain", "census", "oracle"):

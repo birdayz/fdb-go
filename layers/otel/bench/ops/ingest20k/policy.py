@@ -110,23 +110,45 @@ def capacity(d):
     return {"floor_bytes": floor, "allocated_bytes": d["allocated_bytes"]}
 
 
-def quiet(d):
-    samples = d.get("samples")
-    require(isinstance(samples, list) and len(samples) == 7, "exact seven quiet samples required")
+class QuietBusy(ValueError):
+    """Valid accounting that does not admit a quiet launch window."""
+
+
+def quiet_observations(samples):
+    require(isinstance(samples, list) and 1 <= len(samples) <= 7, "one to seven quiet observations required")
     limits = {"cpu_psi_some_avg10": 5.0, "memory_psi_some_avg10": 0.1,
               "memory_psi_full_avg10": 0.01, "io_psi_full_avg10": 1.0}
     for s in samples:
         require(isinstance(s, dict), "invalid quiet sample")
         require(uint(s.get("epoch")) and uint(s.get("mem_available_bytes")), "quiet time/RAM missing")
-        require(s["mem_available_bytes"] >= 24 * GiB, "launch below 24 GiB")
-        for key, limit in limits.items():
-            require(number(s.get(key)) and s[key] <= limit, "quiet PSI threshold: " + key)
+        for key in limits:
+            value = s.get(key)
+            require(type(value) in (int, float) and value >= 0
+                    and (type(value) is int or math.isfinite(value)), "quiet PSI accounting invalid: " + key)
         require(uint(s.get("pswpin")) and uint(s.get("pswpout")), "swap counters missing")
     for a, b in zip(samples, samples[1:]):
         require(10 <= b["epoch"] - a["epoch"] <= 15, "quiet samples not stable ten-second intervals")
-        require((b["pswpin"], b["pswpout"]) == (a["pswpin"], a["pswpout"]), "active swap I/O")
+        require(b["pswpin"] >= a["pswpin"] and b["pswpout"] >= a["pswpout"], "swap counters decreased")
+    # Busy classification follows validation of the entire window, never masks a failed observation.
+    reasons = []
     memory = [s["mem_available_bytes"] for s in samples]
-    require(max(memory) - min(memory) <= GiB, "host RAM unstable")
+    if min(memory) < 24 * GiB:
+        reasons.append("launch below 24 GiB")
+    for key, limit in limits.items():
+        if any(s[key] > limit for s in samples):
+            reasons.append("quiet PSI threshold: " + key)
+    if max(memory) - min(memory) > GiB:
+        reasons.append("host RAM unstable")
+    if any(b[key] > a[key] for a, b in zip(samples, samples[1:]) for key in ("pswpin", "pswpout")):
+        reasons.append("active swap I/O")
+    if reasons:
+        raise QuietBusy("; ".join(reasons))
+
+
+def quiet(d):
+    samples = d.get("samples")
+    require(isinstance(samples, list) and len(samples) == 7, "exact seven quiet samples required")
+    quiet_observations(samples)
     return {"quiet_samples": 7, "span_seconds": samples[-1]["epoch"] - samples[0]["epoch"]}
 
 
