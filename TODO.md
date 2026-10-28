@@ -2857,8 +2857,10 @@ regressions so they can be proposed upstream after the PoC.
   approval and review; no helper installation or filesystem change is approved.
   Initial formal review of `e4107200` returned NAK for missing overlapping-worker
   profiling assertions (F1) and retry/failure receipt assertions (F3, duplicate
-  F2). Close both with deterministic regressions, fast-lane validation and formal
-  re-review before using the new timing fields as measurement evidence.
+  F2). Both were fixed with deterministic regressions in `12b1c7da`; formal
+  re-review ACKed that commit. Its fast lane passed 179 targets (2 executed,
+  177 cached), with 1,323 OTel XML cases and zero failures/errors/skips. This is
+  instrumentation and guard validation, not a 20k/s result or full-suite proof.
 - [ ] Profile and accelerate real Record Layer ingestion before the final 10M load.
   Compare serial/pipelined/batch APIs on matched data and transaction budgets,
   then bounded independent transaction workers. Retain old/new index maintenance,

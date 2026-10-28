@@ -24,8 +24,8 @@ unchanged.
 * Real `FDBRecordStore.SaveRecord(proto.Message)` through a dynamic envelope
   containing complete synthetic OTLP `ResourceSpans` wire bytes. The registered
   `IndexMaintainerFactory` synchronously maintains custom secondary postings in
-  `Update(old,new)`. WRITE_ONLY explicitly invokes that override, not an embedded
-  standard-index method. Prefix deletion is refused; whole-store deletion clears
+  `Update(old,new)`. WRITE_ONLY explicitly invokes the custom full-maintenance
+  implementation, not an embedded standard-index method. Prefix deletion is refused; whole-store deletion clears
   the owned secondary structure. No SQL planner/core changes.
 * Typed/scoped exact string/int equality, newest **K DISTINCT traces** ordered by
   latest matching span timestamp descending, then trace ID descending. Full
@@ -374,7 +374,9 @@ are preserved.
 phase, including failed attempt phases and discarded preparation. These are not
 quantiles. Commit observations use isolated per-Run timers merged after each Run
 returns, so concurrent workers cannot contaminate each other's samples; the same
-successful-Run/observer boundaries apply as for `timer`.
+successful-Run/observer boundaries apply as for `timer`. The overlap regression
+covers both trace/time index layouts and exact joined moments; it does not force
+every worker completion or merge order.
 
 `client_metrics.before` and `.after` retain the existing client's cumulative
 snapshots without extra RPCs. Their explicit scope is the **whole database
