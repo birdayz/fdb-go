@@ -270,11 +270,14 @@ func testOtelTimeoutCommitRecovery(t *testing.T, ctx context.Context, cluster, o
 					state.mu.Unlock()
 				})
 				defer func() { b.ingestProbe = nil; b.ingestWait = nil; wrapped.SetAttemptObserver(nil); b.db = original }()
+				metricsBefore := b.raw.Metrics()
 				stats, err := b.Ingest(ctx)
+				metricsAfter := b.raw.Metrics()
 				state.joinPending()
 				b.ingestProbe, b.ingestWait = nil, nil
 				wrapped.SetAttemptObserver(nil)
 				b.db = original
+				assertOtelProfileClientMetrics(t, stats, metricsBefore, metricsAfter)
 				if err != nil {
 					t.Fatalf("public ambiguous commit recovery: %v", err)
 				}
@@ -317,6 +320,11 @@ func testOtelTimeoutCommitRecovery(t *testing.T, ctx context.Context, cluster, o
 				if len(problems) != 0 || len(prepared) != 1 || int64(len(attempts)) != wantAttempts || int64(entries) != wantAttempts || int64(len(sizes)) != wantAttempts {
 					t.Fatalf("prepared/replayed message population: prepared=%d attempts=%d entries=%d sizes=%v problems=%v", len(prepared), len(attempts), entries, sizes, problems)
 				}
+				assertOtelProfileMoments(t, stats, map[string]int64{
+					"preparation": int64(len(prepared)),
+					"manifest":    wantAttempts, "open": wantAttempts, "save": wantAttempts, "guard": wantAttempts,
+					"run": 2, "timeout_backoff": 1, "commit": 1,
+				})
 				for i, attempt := range attempts {
 					if !sameIngestReplayBatch(prepared[0], attempt) {
 						t.Fatalf("source attempt %d changed once-prepared messages/wire", i+1)

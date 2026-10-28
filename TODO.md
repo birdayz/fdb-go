@@ -2855,6 +2855,10 @@ regressions so they can be proposed upstream after the PoC.
   Fresh-volume profiling is blocked by the pinned image lacking `lsattr` for
   the inode-flags safety gate. A replacement read-only probe requires explicit
   approval and review; no helper installation or filesystem change is approved.
+  Initial formal review of `e4107200` returned NAK for missing overlapping-worker
+  profiling assertions (F1) and retry/failure receipt assertions (F3, duplicate
+  F2). Close both with deterministic regressions, fast-lane validation and formal
+  re-review before using the new timing fields as measurement evidence.
 - [ ] Profile and accelerate real Record Layer ingestion before the final 10M load.
   Compare serial/pipelined/batch APIs on matched data and transaction budgets,
   then bounded independent transaction workers. Retain old/new index maintenance,
