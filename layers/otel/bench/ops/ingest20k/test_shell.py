@@ -34,9 +34,9 @@ p = pathlib.Path(sys.argv[1])
 with open(os.environ['FIXTURE_LOG'], 'a') as f:
     f.write(json.dumps({'op':'GET', 'path':str(p),
                         'children':sorted(x.name for x in p.iterdir()) if p.is_dir() else None})+'\\n')
-if os.environ.get('FAIL_PROBE') in ('all', p.name):
+if os.environ.get('FAIL_PROBE') in ('all', p.name, str(p)):
     sys.exit(19)
-nocow = os.environ.get('NOCOW_PROBE') == p.name
+nocow = os.environ.get('NOCOW_PROBE') in (p.name, str(p))
 print(json.dumps({'path':str(p), 'flags':8388608 if nocow else 0, 'nocow':nocow}))
 if nocow: sys.exit(1)
 """)
@@ -93,6 +93,9 @@ bootstrap "$@"
         for directory in ("processes", "traces"):
             for port in range(14883, 14887):
                 (self.root / directory / str(port)).mkdir(parents=True)
+        for port in (14883, 14886):
+            for name in ("serverCheckpoints", "fetchedCheckpoints"):
+                (self.root / "processes" / str(port) / name).mkdir()
         uuid = "a" * 32
         names = [f"processes/14883/storage-{'b' * 32}.redwood-v1",
                  f"processes/14886/storage-{'c' * 32}.redwood-v1",
@@ -181,6 +184,8 @@ sys.exit(24)
         expected_files = {str(p) for p in self.root.rglob("*") if p.is_file()}
         expected_dirs = {str(self.root), str(self.root / "cluster"), str(self.root / "processes"), str(self.root / "traces")}
         expected_dirs |= {str(self.root / d / str(p)) for d in ("processes", "traces") for p in range(14883, 14887)}
+        expected_dirs |= {str(self.root / "processes" / str(p) / name)
+                          for p in (14883, 14886) for name in ("serverCheckpoints", "fetchedCheckpoints")}
         self.assertEqual({r["path"] for r in rows}, expected_files | expected_dirs)
         self.assertEqual(len(rows), len(expected_files | expected_dirs))
         self.assertEqual(summary, {"schema": "ingest20k_inode_proof_v1",
@@ -278,6 +283,92 @@ os.execv({real_stat!r}, [{real_stat!r}] + sys.argv[1:])
                     for tool in ("stat", "find"):
                         if (self.tools / tool).exists():
                             (self.tools / tool).unlink()
+                    if self.log.exists():
+                        self.log.unlink()
+
+    def test_checkpoint_directories_are_exact_empty_and_individually_get_verified(self):
+        for port in (14883, 14886):
+            for name in ("serverCheckpoints", "fetchedCheckpoints"):
+                for fault in ("missing", "symlink", "file", "child-file", "child-dir", "uid", "dev", "get", "nocow", "find"):
+                    with self.subTest(port=port, name=name, fault=fault), tempfile.TemporaryDirectory(dir=self.base) as temp:
+                        original = self.root
+                        self.root = Path(temp) / "data"
+                        self.root.mkdir()
+                        try:
+                            self.population()
+                            target = self.root / "processes" / str(port) / name
+                            env = self.env.copy()
+                            if fault in ("missing", "symlink", "file"):
+                                target.rmdir()
+                                if fault == "symlink":
+                                    target.symlink_to(original, target_is_directory=True)
+                                elif fault == "file":
+                                    target.write_text("not a directory")
+                            elif fault == "child-file":
+                                (target / "unexpected").write_text("not an empty checkpoint directory")
+                            elif fault == "child-dir":
+                                (target / "unexpected").mkdir()
+                            elif fault in ("uid", "dev"):
+                                real_stat = shutil.which("stat", path=os.defpath)
+                                self.assertIsNotNone(real_stat)
+                                self.tool("stat", f"""
+import os, sys
+if sys.argv[-1] == {str(target)!r} and sys.argv[2] == {'%u' if fault == 'uid' else '%d'!r}:
+    print({os.getuid() + 1 if fault == 'uid' else target.stat().st_dev + 1}); sys.exit(0)
+os.execv({real_stat!r}, [{real_stat!r}] + sys.argv[1:])
+""")
+                            elif fault == "get":
+                                env["FAIL_PROBE"] = str(target)
+                            elif fault == "nocow":
+                                env["NOCOW_PROBE"] = str(target)
+                            elif fault == "find":
+                                real_find = shutil.which("find", path=os.defpath)
+                                self.assertIsNotNone(real_find)
+                                self.tool("find", f"""
+import os, sys
+if sys.argv[1] == {str(target)!r}: sys.exit(23)
+os.execv({real_find!r}, [{real_find!r}] + sys.argv[1:])
+""")
+                            result = self.inventory(env=env)
+                            self.assertNotEqual(result.returncode, 0)
+                            self.assertNotIn('"schema":"ingest20k_inode_proof_v1"', result.stdout)
+                            observed = [e['path'] for e in self.events()]
+                            if fault in ("get", "nocow"):
+                                self.assertIn(str(target), observed)
+                                self.assertEqual(observed[-1], str(target))
+                                if fault == "nocow":
+                                    self.assertTrue(json.loads(result.stdout.splitlines()[-1])["nocow"])
+                            elif fault in ("uid", "dev", "missing", "symlink", "file", "child-file", "child-dir", "find"):
+                                self.assertNotIn(str(target), observed)
+                        finally:
+                            self.root = original
+                            for tool in ("stat", "find"):
+                                if (self.tools / tool).exists():
+                                    (self.tools / tool).unlink()
+                            if self.log.exists():
+                                self.log.unlink()
+        wrong_dirs = ("processes/14884/serverCheckpoints", "processes/14885/fetchedCheckpoints",
+                      "traces/14883/serverCheckpoints", "processes/14883/serverCheckpoint",
+                      "processes/14886/fetchedCheckpoints-extra")
+        reserved_files = tuple(f"{directory}/{name}" for directory in ("processes/14884", "processes/14885", "traces/14883")
+                               for name in ("serverCheckpoints", "fetchedCheckpoints"))
+        for relative, kind in [(p, "directory") for p in wrong_dirs] + [(p, "file") for p in reserved_files]:
+            with self.subTest(relative=relative, kind=kind), tempfile.TemporaryDirectory(dir=self.base) as temp:
+                original = self.root
+                self.root = Path(temp) / "data"
+                self.root.mkdir()
+                try:
+                    self.population()
+                    extra = self.root / relative
+                    if kind == "directory":
+                        extra.mkdir()
+                    else:
+                        extra.write_text("reserved checkpoint name is not a regular inode")
+                    result = self.inventory()
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotIn('"schema":"ingest20k_inode_proof_v1"', result.stdout)
+                finally:
+                    self.root = original
                     if self.log.exists():
                         self.log.unlink()
 

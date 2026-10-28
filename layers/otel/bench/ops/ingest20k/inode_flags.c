@@ -58,6 +58,10 @@ static enum path_type path_kind(const char *path)
     if (relative[5] != '/')
         return PATH_INVALID;
     leaf = relative + 6;
+    if (strncmp(path + sizeof(data_root), "processes/", 10) == 0 &&
+        (relative[4] == '3' || relative[4] == '6') &&
+        (strcmp(leaf, "serverCheckpoints") == 0 || strcmp(leaf, "fetchedCheckpoints") == 0))
+        return PATH_DIRECTORY;
     length = strlen(leaf);
     if (length == 0 || length > 255 || strcmp(leaf, ".") == 0 ||
         strcmp(leaf, "..") == 0)

@@ -116,6 +116,10 @@ def inode_proof():
         "log2-V_6-" + "c" * 32 + ".sqlite", "log2-V_6-" + "c" * 32 + ".sqlite-wal",
         "logqueue-V_6-" + "c" * 32 + "-0.fdq", "logqueue-V_6-" + "c" * 32 + "-1.fdq")]
     paths.append("/var/fdb/data/cluster")
+    # FDB 7.3.77 @ 3ea44ce1d9003ad095e408039e1f755c319c4dfb, storageserver.actor.cpp:210–212.
+    # Fresh:13981–13997 before 14007–14014; recovery:14096–14105 creates both directories.
+    paths += [f"/var/fdb/data/processes/{port}/{name}" for port in (14883, 14886)
+              for name in ("serverCheckpoints", "fetchedCheckpoints")]
     rows = [{"path": path, "flags": 0, "nocow": False, "compression_flag": False,
              "uid": 4059, "dev": 17, "ino": i + 1, "nlink": 1, "size": 0,
              "allocated_bytes": 0, "mount_id": 23, "filesystem": "btrfs", "nodatasum": "NOT_EXPOSED"}
@@ -712,22 +716,58 @@ class PolicyTests(unittest.TestCase):
 
     def test_get_inode_proof_positive_population_flags_and_summary(self):
         base = inode_proof()
-        self.assertEqual(len(base["rows"]), 21)
-        self.assertEqual(self.cli("inode_proof", base), {"inodes_verified": 20})
+        self.assertEqual(len(base["rows"]), 25)
+        self.assertEqual(self.cli("inode_proof", base), {"inodes_verified": 24})
         base["rows"][0].update(flags=4, compression_flag=True)
-        self.assertEqual(self.cli("inode_proof", base), {"inodes_verified": 20})
+        self.assertEqual(self.cli("inode_proof", base), {"inodes_verified": 24})
         extra = dict(base["rows"][0], path="/var/fdb/data/traces/14885/trace.1.json", ino=99)
         base["rows"].insert(-1, extra)
         base["rows"][-1]["regular_files_verified"] = 9
-        self.assertEqual(self.cli("inode_proof", base), {"inodes_verified": 21})
+        self.assertEqual(self.cli("inode_proof", base), {"inodes_verified": 25})
         for field, values in {"schema": [None, "wrong"], "regular_files_verified": [0, 7, 9, True, 8.0, None],
                               "primary_sets_verified": [0, 2, 4, True, 3.0, None]}.items():
-            self.reject("inode_proof", inode_proof(), "rows.20." + field, values)
+            self.reject("inode_proof", inode_proof(), "rows.24." + field, values)
         for value in (None, [], {}, True):
             self.reject("inode_proof", inode_proof(), "rows", [value])
         for count in (0, 1, 17, 19):
             candidate = inode_proof()
             candidate["rows"] = candidate["rows"][:count]
+            self.cli("inode_proof", candidate, valid=False)
+
+    def test_storage_checkpoint_directories_are_exact_required_owned_and_cow(self):
+        base = inode_proof()
+        paths = {f"/var/fdb/data/processes/{port}/{name}" for port in (14883, 14886)
+                 for name in ("serverCheckpoints", "fetchedCheckpoints")}
+        indices = [i for i, row in enumerate(base["rows"][:-1]) if row["path"] in paths]
+        self.assertEqual(len(indices), 4)
+        self.assertEqual({base["rows"][i]["path"] for i in indices}, paths)
+        self.assertEqual(base["rows"][-1]["regular_files_verified"], 8)
+        self.assertEqual(self.cli("inode_proof", base), {"inodes_verified": 24})
+        for i in indices:
+            self.assertEqual(base["rows"][i]["uid"], 4059)
+            self.assertIs(base["rows"][i]["nocow"], False)
+            candidate = inode_proof()
+            del candidate["rows"][i]
+            self.cli("inode_proof", candidate, valid=False)
+            for field, values in {"uid": [0, True], "flags": [0x00800000, None], "nocow": [True],
+                                  "dev": [18], "mount_id": [24], "ino": [0], "nlink": [0]}.items():
+                self.reject("inode_proof", base, f"rows.{i}." + field, values)
+            candidate = inode_proof()
+            del candidate["rows"][i]["compression_flag"]
+            self.cli("inode_proof", candidate, valid=False)
+        candidate = inode_proof()
+        candidate["rows"][-1]["regular_files_verified"] = 12
+        self.cli("inode_proof", candidate, valid=False)
+        wrong_paths = [f"/var/fdb/data/{area}/{port}/{name}"
+                       for area, port in (("processes", 14884), ("processes", 14885), ("processes", 14900),
+                                          ("traces", 14883), ("checkpoints", 14883))
+                       for name in ("serverCheckpoints", "fetchedCheckpoints")]
+        wrong_paths += [path + "/child" for path in sorted(paths)]
+        for path in wrong_paths:
+            candidate = inode_proof()
+            extra = dict(candidate["rows"][indices[0]], path=path, ino=99)
+            candidate["rows"].insert(-1, extra)
+            candidate["rows"][-1]["regular_files_verified"] = 9
             self.cli("inode_proof", candidate, valid=False)
 
     def test_cluster_directory_get_fact_is_required_owned_and_cow(self):
@@ -741,7 +781,7 @@ class PolicyTests(unittest.TestCase):
                           "compression_flag": False, "uid": 4059, "dev": 17, "ino": index + 1,
                           "nlink": 1, "size": 0, "allocated_bytes": 0, "mount_id": 23,
                           "filesystem": "btrfs", "nodatasum": "NOT_EXPOSED"})
-        self.assertEqual(self.cli("inode_proof", base), {"inodes_verified": 20})
+        self.assertEqual(self.cli("inode_proof", base), {"inodes_verified": 24})
         for field, values in {
             "uid": [0, 4058, 4060, True, 4059.0, None],
             "flags": [0x00800000, 0x00800004, -1, True, None],

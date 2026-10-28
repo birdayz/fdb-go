@@ -38,6 +38,21 @@ static void test_paths(void)
     CHECK(path_kind(NULL) == PATH_INVALID);
     CHECK(path_kind("/var/fdb/data") == PATH_DIRECTORY);
     CHECK(path_kind("/var/fdb/data/cluster") == PATH_DIRECTORY);
+    const char *checkpoints[] = { "serverCheckpoints", "fetchedCheckpoints" };
+    for (size_t i = 0; i < sizeof(checkpoints) / sizeof(checkpoints[0]); ++i) {
+        for (unsigned port = 14883; port <= 14886; ++port) {
+            snprintf(path, sizeof(path), "/var/fdb/data/processes/%u/%s", port, checkpoints[i]);
+            enum path_type expected = port == 14883 || port == 14886 ? PATH_DIRECTORY : PATH_REGULAR;
+            CHECK(path_kind(path) == expected);
+            CHECK(allowed_mode(S_IFDIR, path_kind(path)) == (expected == PATH_DIRECTORY));
+            CHECK(allowed_mode(S_IFREG, path_kind(path)) == (expected == PATH_REGULAR));
+        }
+        snprintf(path, sizeof(path), "/var/fdb/data/traces/14883/%s", checkpoints[i]);
+        CHECK(path_kind(path) == PATH_REGULAR);
+    }
+    CHECK(path_kind("/var/fdb/data/processes/14883/serverCheckpoint") == PATH_REGULAR);
+    CHECK(path_kind("/var/fdb/data/processes/14886/fetchedCheckpoints/") == PATH_INVALID);
+    CHECK(path_kind("/var/fdb/data/processes/14883/serverCheckpoints/child") == PATH_INVALID);
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); ++i) {
         snprintf(path, sizeof(path), "/var/fdb/data/%s", dirs[i]);
         CHECK(path_kind(path) == PATH_DIRECTORY);

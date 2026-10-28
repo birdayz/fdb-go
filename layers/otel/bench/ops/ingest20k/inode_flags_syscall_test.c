@@ -156,6 +156,13 @@ static int fake_openat(int parent, const char *name, int flags, ...)
     return fd;
 }
 
+static const char *checkpoint_paths[] = {
+    "/var/fdb/data/processes/14883/serverCheckpoints",
+    "/var/fdb/data/processes/14883/fetchedCheckpoints",
+    "/var/fdb/data/processes/14886/serverCheckpoints",
+    "/var/fdb/data/processes/14886/fetchedCheckpoints"
+};
+
 static int fake_fstat(int fd, struct stat *st)
 {
     check_fd(fd);
@@ -166,6 +173,10 @@ static int fake_fstat(int fd, struct stat *st)
     }
     memset(st, 0, sizeof(*st));
     st->st_mode = path_kind(state.fds[fd].path) == PATH_REGULAR ? S_IFREG : S_IFDIR;
+    for (size_t i = 0; i < sizeof(checkpoint_paths) / sizeof(checkpoint_paths[0]); ++i) {
+        if (strcmp(state.fds[fd].path, checkpoint_paths[i]) == 0)
+            st->st_mode = S_IFDIR; /* Native fixture kind, independent of the production grammar. */
+    }
     st->st_mode |= 0600;
     st->st_uid = 0; /* UID zero is data, not a rejected ownership policy. */
     st->st_dev = 12;
@@ -327,7 +338,11 @@ static void test_success(void)
     const char *paths[] = { "/var/fdb/data", "/var/fdb/data/.otel283-owner",
         "/var/fdb/data/cluster/fdb.cluster", "/var/fdb/data/traces",
         "/var/fdb/data/traces/14883", "/var/fdb/data/traces/14883/x",
-        "/var/fdb/data/processes/14886/x", "/var/fdb/data/cluster" };
+        "/var/fdb/data/processes/14886/x", "/var/fdb/data/cluster",
+        "/var/fdb/data/processes/14883/serverCheckpoints",
+        "/var/fdb/data/processes/14883/fetchedCheckpoints",
+        "/var/fdb/data/processes/14886/serverCheckpoints",
+        "/var/fdb/data/processes/14886/fetchedCheckpoints" };
     const uint32_t flags[] = { 0, FS_COMPR_FL, FS_NOCOW_FL, FS_NOCOW_FL | FS_COMPR_FL };
     for (size_t p = 0; p < sizeof(paths) / sizeof(paths[0]); ++p) {
         for (size_t f = 0; f < sizeof(flags) / sizeof(flags[0]); ++f) {
@@ -356,6 +371,28 @@ static void test_failed_reads(void)
     const enum fault inspect_faults[] = { STAT_ERROR, WRONG_TYPE, STATFS_ERROR,
         NOT_BTRFS, STATX_ERROR, MISSING_MOUNT_MASK, ZERO_MOUNT_ID };
     const char *path = "/var/fdb/data/traces/14883/x";
+    const enum fault checkpoint_faults[] = { IOCTL_ERROR, WRONG_TYPE, DIRECTORY_AS_FILE,
+        CROSS_DEVICE, CROSS_MOUNT, STATX_ERROR };
+    for (size_t p = 0; p < sizeof(checkpoint_paths) / sizeof(checkpoint_paths[0]); ++p) {
+        for (size_t f = 0; f < sizeof(checkpoint_faults) / sizeof(checkpoint_faults[0]); ++f) {
+            reset(checkpoint_faults[f], 4, 0);
+            CHECK(run(checkpoint_paths[p]) != 0);
+            CHECK(state.errors == 1 && state.output_length == 0);
+            CHECK(state.ioctls == (checkpoint_faults[f] == IOCTL_ERROR ? 1U : 0U));
+        }
+    }
+    const char *wrong_checkpoint_dirs[] = {
+        "/var/fdb/data/processes/14884/serverCheckpoints",
+        "/var/fdb/data/processes/14885/fetchedCheckpoints",
+        "/var/fdb/data/traces/14883/serverCheckpoints",
+        "/var/fdb/data/processes/14883/serverCheckpoint",
+        "/var/fdb/data/processes/14886/fetchedCheckpoints-extra"
+    };
+    for (size_t p = 0; p < sizeof(wrong_checkpoint_dirs) / sizeof(wrong_checkpoint_dirs[0]); ++p) {
+        reset(FILE_AS_DIRECTORY, 4, 0);
+        CHECK(run(wrong_checkpoint_dirs[p]) != 0);
+        CHECK(state.errors == 1 && state.ioctls == 0 && state.output_length == 0);
+    }
     reset(IOCTL_ERROR, 0, 0);
     CHECK(run("/var/fdb/data/cluster") != 0 && state.ioctls == 1);
     CHECK(state.errors == 1 && state.output_length == 0);
