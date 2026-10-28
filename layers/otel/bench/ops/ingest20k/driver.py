@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 import time
+from types import MappingProxyType
 import uuid
 
 sys.dont_write_bytecode = True
@@ -180,6 +181,8 @@ class Runtime:
         self.request_sha256 = p.sha(self.out / "request.json")
         self.approval = read(self.request["approval"])
         p.approval(self.approval)
+        storage = p.storage_options(self.approval)
+        self.storage_options = None if storage is None else MappingProxyType(storage)
         select_arm(self.approval)
         p.require(str(self.out) == self.approval["out"], "sealed output path mismatch")
         self.nonce = self.request["nonce"]
@@ -317,6 +320,9 @@ class Runtime:
         p.require(p.sha(path) == pointer["sha256"], "phase changed")
         phase = read(path)
         p.require(phase["instance"] == self.instance and all(phase[k] == self.approval[k] for k in ("count", "source_revision", "binary_sha256", "input_manifest_sha256", "policy_sha256")), "phase binding changed")
+        p.require(("storage_options" in phase) == (self.storage_options is not None)
+                  and (self.storage_options is None or p.storage_options(phase) == dict(self.storage_options)),
+                  "phase storage_options binding changed")
         phase["now"] = int(time.time())
         p.phase(phase, count=self.approval["count"])
 
@@ -729,6 +735,8 @@ def run(args):
             record = {k: P[k] for k in ("run", "session", "profile", "count")}
             record["source_revision"] = approval["source_revision"]
             record.update({k: approval[k] for k in ("binary_sha256", "input_manifest_sha256", "policy_sha256")})
+            if runtime.storage_options is not None:
+                record["storage_options"] = dict(runtime.storage_options)
             record.update(instance=instance, started_epoch=request["started_epoch"], deadline_epoch=request["started_epoch"] + 1200,
                           now=now, stage=name, stage_started_epoch=now, stage_deadline_epoch=now + cap)
             p.phase(record, count=approval["count"])
@@ -739,6 +747,12 @@ def run(args):
             return time.monotonic() + cap
 
         common = [request["binary"], "--backend", "fdb", "--order", "time", "--cluster-file", str(HERE / "fdb.cluster.seed"), "--run", P["run"], "--seed", "283", "--count", str(approval["count"]), "--tenants", "1", "--attrs", "8", "--match-every", "100", "--batch", str(approval["batch"]), "--save-mode", "batch", "--workers", str(approval["workers"]), "--diagnostics", "--k", "100", "--max-candidates", "2000000", "--max-bytes", "268435456", "--revision", approval["source_revision"]]
+        if runtime.storage_options is not None:
+            storage = runtime.storage_options
+            common += ["--record-compression", storage["record_compression"],
+                       "--posting-value-format", storage["posting_value_format"],
+                       "--bulk-index-conflicts=" + str(storage["bulk_index_conflicts"]).lower(),
+                       "--hash-bytes", str(storage["hash_bytes"])]
         for name, mode, cap in (("load", "ingest", 300), ("drain", None, 300), ("census", "audit", 120), ("oracle", "query", 120)):
             end = stage(name, cap)
             if mode is None:
