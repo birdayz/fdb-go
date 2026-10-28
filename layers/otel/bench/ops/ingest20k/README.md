@@ -1,6 +1,7 @@
-# Fresh 100k ingest profiling arm
+# Fresh ingest profiling arms
 
-This is preparation for **one** guarded 100,000-span diagnostic invocation, not a
+This is preparation for **one** guarded 100,000-span (default) or explicitly approved
+1,000,000-span backpressure diagnostic invocation, not a
 20k inserts/s result or authorization to start a server. Root must run the full
 fast lane, explicitly approve the tested diagnostic bytes, seal a configuration,
 and issue the run instruction. Formal policy/application review is deferred to
@@ -9,11 +10,11 @@ Prior NAK reports and findings remain part of the experiment's provenance. There
 Drop, native-filesystem change, installer, SETFLAGS, or durability-knob change.
 The old 13-file 10M profile, ready `rw1m0286` and every retained volume stay
 untouched. The final PoC ceiling remains 10 million spans; this profile admits
-only 100k.
+only 100k or explicit 1M, never 10M.
 
 ## One explicit arm
 
-`policy.arm(run, batch, workers)` admits only the explicit `prof20k` plus four-digit
+`policy.arm(run, batch, workers, count=100000)` admits only the explicit `prof20k` plus four-digit
 namespace; no run is a CLI default. The first intended arm is `prof20k0290`.
 Each invocation requires a new output directory and new exact container/volume:
 
@@ -48,7 +49,10 @@ K100, hash-bytes32, two-million candidates and 256 MiB query byte budget. The fi
 run is **batch32/workers2**. Sealed configuration may admit batch32 or64 and workers2,
 4,8 or16 (integers only); this is not permission to escalate. Every later pair needs
 root's explicit approval after stable lower arms, a new fresh run and all renewed
-gates. There is no automatic loop/sweep, and count/time/transaction guards stay fixed.
+gates. Count is a strict integer allowlist: 100000 (legacy default) or 1000000
+(explicit approval only); booleans, floats, strings and other populations are rejected.
+There is no automatic loop/sweep. The 1M arm measures backpressure, not a threshold
+relaxation: all time, resource, health, backlog, disk and transaction guards stay fixed.
 The selected application's 1500ms transaction, 300KB estimated/500KB actual save,
 one-second save and finite fresh-run retry guards remain in force.
 
@@ -68,9 +72,12 @@ The existing `--diagnostics` flag captures the new app's client metrics; no inve
 profiling flags are used. Original evidence is retained, including failures.
 
 The sealed approval is one strict JSON object containing **every literal** from
-`policy.arm(run)`, plus:
+`policy.arm(run, batch, workers, count)`, plus:
 
-- `schema: "ingest20k_fresh100k_v1"`, `approved: true`;
+- `schema: "ingest20k_fresh100k_v1"` exactly with `count: 100000`, or
+  `schema: "ingest20k_fresh1m_v1"` exactly with `count: 1000000`; `approved: true`;
+  mixed schema/count pairs are rejected. Every command, phase and completion receipt
+  binds the selected approval count, not a count inferred from its own evidence;
 - `source_revision` and identical `source_approved_revision` (explicit operator approval);
 - absolute `binary`, `source_root`, `source_manifest`, `probe_binary`, `out`;
 - `binary_sha256`, `input_manifest_sha256`, `probe_sha256`, `probe_source_sha256`;
@@ -266,8 +273,14 @@ The external client's CPU is **not** measured by these counters; no perf wrapper
 was added to complicate supervision. App phases/client metrics come first.
 
 A successful load alone is insufficient: final strict drain and source audit must
-prove100k records,800k equality postings,100k each native span/time index, zero
-primary equality keys and1,100,002 owned keys for the pinned layout. The independent
+prove the selected population for the pinned layout:
+
+| Approval | Records | Equality postings | Span-ID index | Time index | Primary equality | Owned keys |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fresh100k | 100,000 | 800,000 | 100,000 | 100,000 | 0 | 1,100,002 |
+| fresh1m | 1,000,000 | 8,000,000 | 1,000,000 | 1,000,000 | 0 | 11,000,002 |
+
+The independent
 `all` suite retains1600 samples:16 exact classes ×100, ordered iteration IDs,
 digests and zero failures. These checks retain the application query guards.
 `verification.complete.json` binds source/census/oracle/drain/GET commitments.
@@ -286,7 +299,10 @@ stop gate without a pending error. Earlier guard/monitor failures instead retain
 absence of `FAILED_STOP.json` is not proof of a clean stop. GNU timeout/Tini's actual normal
 shutdown behavior must pass this gate; it is not assumed. Server attachment exit is
 recorded separately, not invented.
-Neither file establishes20k/s, a production limit, HA or an SLO.
+Neither file establishes20k/s, a production limit, HA or an SLO. Report load-only
+throughput separately from load-through-drain throughput and retained queue/lag
+observations; a short successful ingest is not sustained throughput. The 1M arm
+may hit unchanged backpressure, deadline or memory guards and fail honestly.
 
 Raw directories are0700/files0600 and can contain private client metadata. No
 raw status, environment or full inspect is echoed publicly; native traces stay

@@ -35,7 +35,7 @@ LAYOUT_SCRIPT = 'set -euo pipefail; [[ $(cat "$1/.otel283-owner") == "$3" ]]; [[
 
 def select_arm(approved):
     global P, LABELS
-    P = p.arm(approved["run"], approved["batch"], approved["workers"])
+    P = p.arm(approved["run"], approved["batch"], approved["workers"], approved["count"])
     LABELS = {"otel283.owner": P["owner"], "otel283.profile": P["profile"], "otel283.session": P["session"], "otel283.run": P["run"]}
 
 INSPECT = '{"id":{{json .Id}},"name":{{json .Name}},"running":{{json .State.Running}},"status":{{json .State.Status}},"exit_code":{{json .State.ExitCode}},"oom":{{json .State.OOMKilled}},"restarts":{{json .RestartCount}},"pid":{{json .State.Pid}},"image":{{json .Config.Image}},"labels":{{json .Config.Labels}},"memory":{{json .HostConfig.Memory}},"swap":{{json .HostConfig.MemorySwap}},"cpu":{{json .HostConfig.NanoCpus}},"network":{{json .HostConfig.NetworkMode}},"ports":{{json .HostConfig.PortBindings}},"mounts":{{json .Mounts}},"logdriver":{{json .HostConfig.LogConfig.Type}},"cmd":{{json .Config.Cmd}}}'
@@ -316,9 +316,9 @@ class Runtime:
         path = self.out / ("phase-" + pointer["stage"] + ".json")
         p.require(p.sha(path) == pointer["sha256"], "phase changed")
         phase = read(path)
-        p.require(phase["instance"] == self.instance and all(phase[k] == self.approval[k] for k in ("source_revision", "binary_sha256", "input_manifest_sha256", "policy_sha256")), "phase binding changed")
+        p.require(phase["instance"] == self.instance and all(phase[k] == self.approval[k] for k in ("count", "source_revision", "binary_sha256", "input_manifest_sha256", "policy_sha256")), "phase binding changed")
         phase["now"] = int(time.time())
-        p.phase(phase)
+        p.phase(phase, count=self.approval["count"])
 
     def status(self, *, bootstrap=False):
         raw = self.bounded_exec(["/usr/bin/fdbcli", "-C", "/var/fdb/data/cluster/fdb.cluster", "--exec", "status json"])
@@ -714,7 +714,7 @@ def run(args):
         strict_ready(runtime, supervised_wait, "bootstrap.ready", 180, deadline=bootstrap_deadline, bootstrap=True)
         proof = runtime.bounded_exec(["/bin/bash", "/etc/fdb4/inode-readonly.sh"], 20, user="fdb")
         p.inode_proof({"rows": [p.loads(line) for line in proof.splitlines()]})
-        write(out / "cow.ready.json", {"instance": instance, "volume": P["volume"], "run": P["run"], "count": 100000,
+        write(out / "cow.ready.json", {"instance": instance, "volume": P["volume"], "run": P["run"], "count": approval["count"],
                                        "policy_sha256": runtime.frozen, "binary_sha256": approval["binary_sha256"],
                                        "inode_stdout_sha256": p.sha(runtime.last_stdout), "probe_binary_sha256": approval["probe_sha256"],
                                        "probe_source_sha256": approval["probe_source_sha256"], "bootstrap_sha256": p.sha(out / "bootstrap.ready.json")})
@@ -731,14 +731,14 @@ def run(args):
             record.update({k: approval[k] for k in ("binary_sha256", "input_manifest_sha256", "policy_sha256")})
             record.update(instance=instance, started_epoch=request["started_epoch"], deadline_epoch=request["started_epoch"] + 1200,
                           now=now, stage=name, stage_started_epoch=now, stage_deadline_epoch=now + cap)
-            p.phase(record)
+            p.phase(record, count=approval["count"])
             file = out / ("phase-" + name + ".json")
             write(file, record)
             remember(file.name)
             write(out / "active-phase.json", {"stage": name, "sha256": p.sha(file)}, exclusive=False)
             return time.monotonic() + cap
 
-        common = [request["binary"], "--backend", "fdb", "--order", "time", "--cluster-file", str(HERE / "fdb.cluster.seed"), "--run", P["run"], "--seed", "283", "--count", "100000", "--tenants", "1", "--attrs", "8", "--match-every", "100", "--batch", str(approval["batch"]), "--save-mode", "batch", "--workers", str(approval["workers"]), "--diagnostics", "--k", "100", "--max-candidates", "2000000", "--max-bytes", "268435456", "--revision", approval["source_revision"]]
+        common = [request["binary"], "--backend", "fdb", "--order", "time", "--cluster-file", str(HERE / "fdb.cluster.seed"), "--run", P["run"], "--seed", "283", "--count", str(approval["count"]), "--tenants", "1", "--attrs", "8", "--match-every", "100", "--batch", str(approval["batch"]), "--save-mode", "batch", "--workers", str(approval["workers"]), "--diagnostics", "--k", "100", "--max-candidates", "2000000", "--max-bytes", "268435456", "--revision", approval["source_revision"]]
         for name, mode, cap in (("load", "ingest", 300), ("drain", None, 300), ("census", "audit", 120), ("oracle", "query", 120)):
             end = stage(name, cap)
             if mode is None:
@@ -764,7 +764,7 @@ def run(args):
             runtime.check_frozen(full=True)
             supervised_wait(deadline=end)
             runtime.phase()
-        write(out / "verification.complete.json", {"run": P["run"], "count": 100000, "source_revision": approval["source_revision"], "policy_sha256": runtime.frozen, "ingest_sha256": p.sha(out / "ingest.json"), "load_ack_sha256": p.sha(out / "load.exited.json"), "census_sha256": p.sha(out / "audit.json"), "oracle_sha256": p.sha(out / "query.json"), "drain_sha256": p.sha(out / "drain.certificate.json"), "cow_ready_sha256": p.sha(out / "cow.ready.json"), "claim": "100k fresh COW diagnostic only; no 20k/s, HA, production or SLO claim"})
+        write(out / "verification.complete.json", {"run": P["run"], "count": approval["count"], "source_revision": approval["source_revision"], "policy_sha256": runtime.frozen, "ingest_sha256": p.sha(out / "ingest.json"), "load_ack_sha256": p.sha(out / "load.exited.json"), "census_sha256": p.sha(out / "audit.json"), "oracle_sha256": p.sha(out / "query.json"), "drain_sha256": p.sha(out / "drain.certificate.json"), "cow_ready_sha256": p.sha(out / "cow.ready.json"), "claim": str(approval["count"]) + " fresh COW backpressure diagnostic only; no 20k/s, HA, production or SLO claim"})
         remember("verification.complete.json")
     except BaseException as error:
         try:
@@ -823,7 +823,7 @@ def run(args):
     inventory = final_inventory(out, commitments)
     write(out / "final-inventory.json", inventory)
     write(out / "complete.json", {"verification_sha256": p.sha(out / "verification.complete.json"),
-          "inventory_sha256": p.sha(out / "final-inventory.json"), "stopped": True, "run": P["run"], "count": 100000})
+          "inventory_sha256": p.sha(out / "final-inventory.json"), "stopped": True, "run": P["run"], "count": approval["count"]})
 
 
 def main():
