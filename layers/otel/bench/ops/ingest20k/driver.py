@@ -254,15 +254,21 @@ class Runtime:
 
     def sequential(self):
         # One name per line; store only the list, never container environments or IPs.
+        retained = OLD
+        if "new_host_inventory" in self.approval:
+            inventory = self.approval["new_host_inventory"]
+            daemon_id = self.command(["docker", "info", "--format", "{{.ID}}"]).strip()
+            p.require(daemon_id == inventory["docker_daemon_id"], "new-host Docker daemon identity mismatch")
+            retained = inventory["retained"]
         all_names = self.command(["docker", "ps", "-a", "--filter", "name=^/otel283-", "--format", "{{.Names}}"])
         owned_ids = self.command(["docker", "ps", "-aq", "--filter", "label=otel283.owner=" + P["owner"]]).split()
-        targets = set(OLD) | {name for name in all_names.splitlines() if name.startswith(("otel283-fdb", "otel283-ch"))} | set(owned_ids)
+        targets = set(retained) | {name for name in all_names.splitlines() if name.startswith(("otel283-fdb", "otel283-ch"))} | set(owned_ids)
         for name in sorted(targets):
             d = self.inspect(name)
             if d["name"] == "/" + P["container"]:
                 continue
-            if name in OLD:
-                p.require(d["id"] == OLD[name], "protected retained instance identity changed")
+            if name in retained:
+                p.require(d["id"] == retained[name], "protected retained instance identity changed")
             p.require(d["running"] is False and d["status"] == "exited" and d["exit_code"] == 0 and d["oom"] is False and d["restarts"] == 0, "another retained owned database is not cleanly stopped")
 
     def check_frozen(self, full=False):

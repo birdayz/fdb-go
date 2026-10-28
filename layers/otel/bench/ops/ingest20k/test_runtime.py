@@ -122,6 +122,10 @@ class RuntimeFixture(unittest.TestCase):
         self.protected_docs = {name: {"id": instance, "name": "/" + name, "running": False,
                                      "status": "exited", "exit_code": 0, "oom": False, "restarts": 0}
                                for name, instance in PROTECTED.items()}
+        self.visible_names = list(PROTECTED)
+        self.visible_owned_ids = []
+        self.extra_inspects = {}
+        self.daemon_id = "fixture-new-daemon-123"
         self.owned = copy.deepcopy(self.inspect_doc)
         self.volume_doc = {"name": self.approved["volume"], "driver": "local", "scope": "local",
                            "options": None, "labels": copy.deepcopy(self.inspect_doc["labels"])}
@@ -180,16 +184,22 @@ class RuntimeFixture(unittest.TestCase):
             return (self.git_head + "\n" if argv[3:] == ["rev-parse", "HEAD"] else self.git_dirty), 0
         if argv[:2] == ["stat", "-f"]:
             return self.host_fsid + "\n", 0
+        if argv[:2] == ["docker", "info"]:
+            self.assertEqual(argv, ["docker", "info", "--format", "{{.ID}}"])
+            return self.daemon_id + "\n", 0
         if argv[:3] == ["docker", "volume", "inspect"]:
             return json.dumps(self.volume_doc), 0
         if argv[:2] == ["docker", "inspect"]:
             name = argv[-1]
             if name in PROTECTED:
-                return json.dumps(self.protected_docs[name]), 0
+                return (json.dumps(self.protected_docs[name]), 0) if name in self.protected_docs else ("No such container\n", 1)
             if name == self.approved["container"]:
                 return json.dumps(self.inspect_doc), 0
+            if name in self.extra_inspects:
+                return json.dumps(self.extra_inspects[name]), 0
         if argv[:2] == ["docker", "ps"]:
-            return ("\n".join(PROTECTED) + "\n" if "{{.Names}}" in argv else ""), 0
+            values = self.visible_names if "{{.Names}}" in argv else self.visible_owned_ids
+            return "\n".join(values) + ("\n" if values else ""), 0
         if argv[:2] == ["docker", "exec"]:
             if self.exec_failure:
                 raise self.exec_failure
@@ -432,6 +442,66 @@ exec /usr/bin/sha256sum "$@"
         controller.unlink()
         controller.write_bytes(original)
         self.assertEqual(self.script(driver.COUNTERS_SCRIPT, self.cgroup_root, self.membership).returncode, 0)
+
+
+class SequentialInventoryTests(RuntimeFixture):
+    def new_host(self):
+        self.approved["new_host_inventory"] = {"approved": True, "docker_daemon_id": self.daemon_id, "retained": {}}
+        self.visible_names = []
+        self.visible_owned_ids = []
+        self.reseal()
+
+    def test_absent_inventory_keeps_missing_and_wrong_original_id_failures(self):
+        self.visible_names = []
+        name = sorted(PROTECTED)[0]
+        document = self.protected_docs.pop(name)
+        with self.assertRaisesRegex(ValueError, "command failed; retained"):
+            self.runtime.sequential()
+        self.assertIn(["docker", "inspect", "--format", driver.INSPECT, name], self.calls)
+        self.assertFalse(any(call[:2] == ["docker", "info"] for call in self.calls))
+        self.protected_docs[name] = dict(document, id="e" * 64)
+        with self.assertRaisesRegex(ValueError, "protected retained instance identity changed"):
+            self.runtime.sequential()
+        self.assertEqual(driver.OLD, PROTECTED)
+
+    def test_explicit_empty_inventory_requires_actual_matching_daemon_command(self):
+        self.new_host()
+        self.runtime.sequential()
+        self.assertEqual(self.calls, [["docker", "info", "--format", "{{.ID}}"],
+                                     ["docker", "ps", "-a", "--filter", "name=^/otel283-", "--format", "{{.Names}}"],
+                                     ["docker", "ps", "-aq", "--filter", "label=otel283.owner=" + self.approved["owner"]]])
+        command = self.out / f"cmd-{os.getpid()}-000001.command.json"
+        self.assertEqual(driver.read(command)["argv"], self.calls[0])
+        for daemon_id in ("different-daemon", ""):
+            with self.subTest(daemon_id=daemon_id):
+                self.daemon_id = daemon_id
+                self.calls.clear()
+                with self.assertRaisesRegex(ValueError, "new-host Docker daemon identity mismatch"):
+                    self.runtime.sequential()
+                self.assertEqual(self.calls, [["docker", "info", "--format", "{{.ID}}"]])
+        self.daemon_id = "fixture-new-daemon-123"
+        self.approved["new_host_inventory"]["docker_daemon_id"] = "wrong-approved-daemon"
+        self.reseal()
+        self.calls.clear()
+        with self.assertRaisesRegex(ValueError, "new-host Docker daemon identity mismatch"):
+            self.runtime.sequential()
+        self.assertEqual(self.calls, [["docker", "info", "--format", "{{.ID}}"]])
+
+    def test_new_host_still_rejects_running_discovered_names_and_owned_ids(self):
+        self.new_host()
+        for discovery in ("name", "owner"):
+            with self.subTest(discovery=discovery):
+                target = "otel283-fdb4-unrelated" if discovery == "name" else "b" * 64
+                self.visible_names = [target] if discovery == "name" else []
+                self.visible_owned_ids = [target] if discovery == "owner" else []
+                self.extra_inspects[target] = {"id": "b" * 64, "name": "/unrelated-owned-db", "running": True,
+                                               "status": "running", "exit_code": 0, "oom": False, "restarts": 0}
+                with self.assertRaisesRegex(ValueError, "another retained owned database is not cleanly stopped"):
+                    self.runtime.sequential()
+                self.assertIn(["docker", "inspect", "--format", driver.INSPECT, target], self.calls)
+                self.extra_inspects[target].update(running=False, status="exited")
+                self.runtime.sequential()
+        self.assertFalse(self.stops, "inventory checks must not stop unrelated databases")
 
 
 class ObservationTests(RuntimeFixture):
@@ -1025,6 +1095,25 @@ class MonitorTests(unittest.TestCase):
             self.assertEqual(len(checks), 2, "retained instance must be re-observed after its state changes")
             self.assertEqual(case.stops, [["docker", "stop", "--time", "60", INSTANCE]])
             self.assertIs(case.protected_docs[live]["running"], True, "containment must not stop the protected instance")
+            self.assert_contained(case, fd, held)
+
+    def test_new_host_monitor_rechecks_actual_daemon_after_successful_iteration(self):
+        with self.scenario() as case:
+            case.approved["new_host_inventory"] = {"approved": True, "docker_daemon_id": case.daemon_id, "retained": {}}
+            case.visible_names = []
+            case.reseal()
+            fd, _path, _lease, held = prepare_monitor(case)
+            prior = []
+            def daemon_changes_after_success(_seconds):
+                self.assertFalse(prior)
+                prior.append((case.out / "heartbeat.json").read_bytes())
+                case.daemon_id = "different-daemon"
+            case.sleep_hook = daemon_changes_after_success
+            with self.assertRaisesRegex(ValueError, "new-host Docker daemon identity mismatch"):
+                driver.monitor(case.out, fd)
+            self.assertEqual(len(prior), 1)
+            self.assertEqual((case.out / "heartbeat.json").read_bytes(), prior[0])
+            self.assertEqual(sum(call == ["docker", "info", "--format", "{{.ID}}"] for call in case.calls), 2)
             self.assert_contained(case, fd, held)
 
     def test_monitor_initial_lease_input_failures_always_contain_under_original_lock(self):
