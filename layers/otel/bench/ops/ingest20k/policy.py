@@ -164,52 +164,15 @@ def readiness(d):
     return {"strict_samples": 3}
 
 
-def unconfigured(d):
-    cluster, client = d.get("cluster", {}), d.get("client", {})
-    require(cluster.get("connection_string") == "otel20k:otel20k@127.0.0.1:14883", "wrong fresh cluster seed")
-    require(cluster.get("recovery_state", {}).get("name") == "configuration_never_created", "never-created recovery required")
-    require("configuration" not in cluster or cluster["configuration"] in (None, {}), "existing configuration rejected")
-    require(client.get("coordinators", {}).get("quorum_reachable") is True and client.get("cluster_file", {}).get("up_to_date") is True, "new quorum/cluster file proof missing")
-    require(client.get("database_status", {}).get("available") is False and client["database_status"].get("healthy") is False, "new database must be unavailable/unhealthy")
-    require(type(client.get("messages")) is list and client["messages"] == [], "unexpected preconfigure client messages")
-    if "configuration" in client:
-        require(isinstance(client["configuration"], dict), "preconfigure client configuration shape")
-        require("messages" not in client["configuration"] or type(client["configuration"]["messages"]) is list and client["configuration"]["messages"] == [], "preconfigure configuration messages")
-    if "database_available" in cluster:
-        require(cluster["database_available"] is False, "preconfigure availability contradiction")
-    messages = cluster.get("messages")
-    require(isinstance(messages, list), "preconfigure cluster messages shape")
-    allowed = {"unreachable_master_worker":"master", "unreachable_dataDistributor_worker":"data_distributor",
-               "unreachable_ratekeeper_worker":"ratekeeper", "unreachable_consistencyScan_worker":"consistency_scan",
-               "unreadable_configuration":None}
-    names = []
-    for message in messages:
-        require(isinstance(message, dict) and isinstance(message.get("name"), str) and message["name"] in allowed, "unexpected preconfigure cluster message")
-        require(message["name"] not in names, "duplicate preconfigure message")
-        names.append(message["name"])
-    processes = cluster.get("processes", {})
-    require(isinstance(processes, dict), "preconfigure processes shape")
-    observed_roles = set()
-    addresses = set()
-    classes = {"127.0.0.1:14883":"storage", "127.0.0.1:14884":"transaction", "127.0.0.1:14885":"stateless", "127.0.0.1:14886":"storage"}
-    for process in processes.values():
-        require(isinstance(process, dict), "preconfigure process shape")
-        # Status.actor.cpp can leave partial worker objects after a metric fetch
-        # error; missing optional messages is not a fabricated empty error list.
-        if "messages" in process:
-            require(type(process["messages"]) is list and process["messages"] == [], "unexpected preconfigure process messages")
-        if "address" in process:
-            address = process["address"]
-            require(address in classes and address not in addresses, "preconfigure process address")
-            addresses.add(address)
-            require("class_type" not in process or process["class_type"] == classes[address], "preconfigure class mismatch")
-        if "roles" in process:
-            require(isinstance(process["roles"], list), "preconfigure role shape")
-            for role in process["roles"]:
-                require(isinstance(role, dict) and isinstance(role.get("role"), str) and role["role"], "preconfigure role entry")
-                observed_roles.add(role["role"])
-    require(all(allowed[name] is None or allowed[name] not in observed_roles for name in names), "preconfigure absence warning contradicts observed role")
-    return {"unconfigured": True, "canonical_messages": names}
+def bootstrap_get(d):
+    require(isinstance(d, dict) and d.get("path") == "/var/fdb/data", "initial GET root identity")
+    for key in ("flags", "uid", "dev", "ino", "nlink", "size", "allocated_bytes", "mount_id"):
+        require(uint(d.get(key)), "invalid initial GET fact: " + key)
+    require(d["flags"] < 2 ** 32 and d.get("nocow") is False and d["flags"] & 0x00800000 == 0, "initial GET NOCOW rejected")
+    require(type(d.get("compression_flag")) is bool and d["compression_flag"] == bool(d["flags"] & 4), "initial GET compression inconsistency")
+    require(d["uid"] == 0 and all(d[key] > 0 for key in ("dev", "ino", "mount_id", "nlink")), "initial GET ownership/inode identity")
+    require(d.get("filesystem") == "btrfs" and d.get("nodatasum") == "NOT_EXPOSED", "initial GET filesystem facts")
+    return {"bootstrap_get_valid": True}
 
 
 def inode_proof(d):
@@ -374,7 +337,7 @@ def clean_stop(d):
 
 def check(kind, d):
     require(isinstance(d,dict), "one JSON object required")
-    functions = {"approval":approval,"capacity":capacity,"quiet":quiet,"phase":phase,"readiness":readiness,"backlog":backlog,"evidence":evidence,"unconfigured":unconfigured,"inode_proof":inode_proof,"clean_stop":clean_stop,"startup_pending":startup_pending}
+    functions = {"approval":approval,"capacity":capacity,"quiet":quiet,"phase":phase,"readiness":readiness,"backlog":backlog,"evidence":evidence,"bootstrap_get":bootstrap_get,"inode_proof":inode_proof,"clean_stop":clean_stop,"startup_pending":startup_pending}
     require(kind in functions,"unknown predicate")
     return functions[kind](d)
 

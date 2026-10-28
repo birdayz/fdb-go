@@ -3,6 +3,7 @@
 import argparse
 import builtins
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -307,13 +308,22 @@ class Lifecycle:
                                  "labels": {**driver.LABELS, "otel283.nonce": request["nonce"]}})
             if self.fault == "lease_before_create":
                 self.lose_lease()
+            if self.fault == "bootstrap_volume" and any(name == "layout" for name, _ in self.events) and not self.injected:
+                document = json.loads(result)
+                document["labels"]["otel283.nonce"] = "wrong"
+                result = json.dumps(document)
+                self.injected = True
             return 0, result
         if argv[:2] == ["docker", "create"]:
             self.assert_admitted()
             self.assert_docker_create(argv)
             return 0, self.instance + "\n"
         if argv[:2] == ["docker", "inspect"]:
-            result = json.dumps(self.inspect())
+            document = self.inspect()
+            if self.fault == "bootstrap_identity" and any(name == "layout" for name, _ in self.events) and not self.injected:
+                document["labels"]["otel283.nonce"] = "wrong"
+                self.injected = True
+            result = json.dumps(document)
             if self.fault == "lease_before_start" and argv[-1] == a["container"] and (self.out / "instance.json").exists() and not self.injected:
                 self.lose_lease()
                 self.injected = True
@@ -326,20 +336,35 @@ class Lifecycle:
                 assert argv[index + 1:] == ["/var/fdb/data", p.sha(driver.HERE / "fdb.cluster.seed"),
                                             a["owner"] + " " + a["session"] + " " + a["run"]]
                 self.events.append(("layout", None))
+                if self.fault == "bootstrap_source":
+                    (self.source / "app.go").write_text("source changed before configure\n")
+                elif self.fault == "bootstrap_probe":
+                    self.probe.chmod(0o755)
+                    self.probe.write_text("probe changed before configure\n")
+                    self.probe.chmod(0o555)
                 return (9 if self.fault == "layout" else 0), ""
             if command == "status json":
-                raw = fixtures.status() if self.configured else fixtures.unconfigured()
-                if not self.configured:
-                    self.events.append(("unconfigured", None))
-                    if self.fault == "already_configured":
-                        raw = fixtures.status()
-                    elif self.fault == "unconfigured_message":
-                        raw["client"]["messages"] = [{"name": "unexpected"}]
+                assert self.configured, "full status must not run before configure NEW"
+                raw = fixtures.status()
+                if self.fault == "bootstrap_warning":
+                    raw["cluster"]["messages"] = [{"name": "batch_priority_transaction_start_probe_timeout"}]
                 return 0, json.dumps(raw)
-            if command.startswith("configure new "):
+            if command.startswith("configure "):
+                index = argv.index("/usr/bin/timeout")
+                assert argv[index:] == ["/usr/bin/timeout", "--kill-after=1s", "20s", "/usr/bin/fdbcli", "-C",
+                                       "/var/fdb/data/cluster/fdb.cluster", "--exec",
+                                       "configure new single ssd-redwood-1 logs:=1 commit_proxies:=1 grv_proxies:=1 resolvers:=1"]
+                assert (self.out / "bootstrap.authorized.json").is_file()
+                attempted = driver.read(self.out / "bootstrap.attempted.json")
+                assert attempted["authorization_sha256"] == p.sha(self.out / "bootstrap.authorized.json")
                 self.events.append(("configure", None))
+                assert sum(name == "configure" for name, _ in self.events) == 1, "configure must never retry"
                 self.configured = True
-                return 0, "not created\n" if self.fault == "configure" else "Database created\n"
+                outcomes = {"configure": (0, "not created\n"), "already_configured": (0, "ERROR: Database already exists!\n"),
+                            "configure_changed": (0, "Configuration changed\n"), "configure_extra": (0, "Database created\nunknown warning\n"),
+                            "configure_malformed": (0, "Database created"), "configure_ambiguous": (0, ""),
+                            "configure_failure": (9, ""), "configure_timeout": (124, "")}
+                return outcomes.get(self.fault, (0, "Database created\n"))
             if "/etc/fdb4/inode-readonly.sh" in argv:
                 proof = fixtures.inode_proof()
                 if self.fault == "inode":
@@ -426,7 +451,7 @@ class Lifecycle:
         if argv[0] == "jq":
             summary = {"aggregate_healthy_original": True,
                        "queue_bytes": 0, "durability_lag_seconds": 0}
-            if self.fault == "bootstrap_health":
+            if self.fault in ("bootstrap_health", "bootstrap_warning"):
                 return subprocess.CompletedProcess(argv, 1, "", "offline strict health failure")
             if self.fault == "drain_backlog" and (self.out / "phase-drain.json").exists():
                 summary["queue_bytes"] = 16777216
@@ -460,6 +485,16 @@ class Lifecycle:
             self.running = True
             self.had_started = True
             self.calls.append(list(argv))
+            root_get = copy.deepcopy(fixtures.inode_proof()["rows"][0])
+            root_get.update(uid=0, size=0, allocated_bytes=0)
+            if self.fault == "bootstrap_get_nocow":
+                root_get.update(nocow=True, flags=0x00800000)
+            raw = json.dumps(root_get) + "\n"
+            if self.fault == "bootstrap_get_malformed":
+                raw = "not JSON\n"
+            if self.fault != "bootstrap_get_missing":
+                kwargs["stdout"].write(raw.encode())
+                kwargs["stdout"].flush()
             return FakeProcess(self, "attached")
         if str(argv[0]) == str(self.binary):
             self.calls.append(list(argv))
@@ -501,6 +536,9 @@ class Lifecycle:
         if "stdout" in kwargs:
             kwargs["stdout"].write(text.encode())
             kwargs["stdout"].flush()
+        if self.fault == "configure_stderr" and any(str(value).startswith("configure ") for value in argv):
+            kwargs["stderr"].write(b"unknown configuration warning\n")
+            kwargs["stderr"].flush()
         return FakeProcess(self, "command", code)
 
     def invoke(self, main=False):
@@ -537,9 +575,35 @@ class LifecycleTests(unittest.TestCase):
         self.assertTrue((h.out / "complete.json").is_file())
         self.assertFalse((h.out / "FAILED.json").exists())
         events = [name for name, _ in h.events]
-        self.assertLess(events.index("layout"), events.index("unconfigured"))
-        self.assertLess(events.index("unconfigured"), events.index("configure"))
+        self.assertLess(events.index("layout"), events.index("bootstrap.authorized.json"))
+        self.assertLess(events.index("bootstrap.authorized.json"), events.index("bootstrap.attempted.json"))
+        self.assertLess(events.index("bootstrap.attempted.json"), events.index("configure"))
         self.assertEqual(events.count("configure"), 1)
+        authorization = driver.read(h.out / "bootstrap.authorized.json")
+        self.assertEqual(authorization["authority"], "native-configure-new-exclusive-initialization")
+        self.assertEqual(authorization["instance"], h.instance)
+        self.assertEqual(authorization["nonce"], driver.read(h.out / "request.json")["nonce"])
+        self.assertEqual((authorization["image"], authorization["volume"]), (h.approved["image"], h.approved["volume"]))
+        for key in ("source_revision", "binary_sha256", "input_manifest_sha256", "policy_sha256"):
+            self.assertEqual(authorization[key], h.approved[key])
+        self.assertEqual(authorization["seed_sha256"], p.sha(driver.HERE / "fdb.cluster.seed"))
+        self.assertFalse({"status", "quorum", "unconfigured"} & set(authorization))
+        self.assertEqual(set(authorization["proofs"]), {"layout", "identity", "volume", "source_head", "source_clean"})
+        for proof in authorization["proofs"].values():
+            raw = h.out / proof["raw_path"]
+            self.assertEqual(proof["raw_sha256"], p.sha(raw))
+            self.assertEqual(proof["command_sha256"], p.sha(raw.with_suffix(".command.json")))
+            self.assertEqual(proof["exit_sha256"], p.sha(raw.with_suffix(".exit.json")))
+            self.assertEqual(driver.read(raw.with_suffix(".exit.json"))["exit"], 0)
+        initial_get = (h.out / "server.stdout").read_bytes().splitlines(keepends=True)[0]
+        self.assertEqual(authorization["root_get"]["raw"].encode(), initial_get)
+        self.assertEqual(authorization["root_get"]["raw_sha256"], hashlib.sha256(initial_get).hexdigest())
+        self.assertEqual(authorization["root_get"]["facts"], p.loads(initial_get.decode()))
+        p.bootstrap_get(authorization["root_get"]["facts"])
+        attempted = driver.read(h.out / "bootstrap.attempted.json")
+        self.assertEqual(attempted["authorization_sha256"], p.sha(h.out / "bootstrap.authorized.json"))
+        configured = next(call for call in h.calls if any(str(value).startswith("configure ") for value in call))
+        self.assertEqual(configured[-1], "configure new single ssd-redwood-1 logs:=1 commit_proxies:=1 grv_proxies:=1 resolvers:=1")
         self.assertLess(events.index("bootstrap.ready.json"), events.index("cow.ready.json"))
         self.assertEqual([value for name, value in h.events if name == "stage"], ["load", "drain", "census", "oracle"])
         self.assertEqual([value for name, value in h.events if name == "workload"], ["ingest", "audit", "query"])
@@ -718,11 +782,15 @@ class LifecycleTests(unittest.TestCase):
                 self.assertFalse(any(x[:2] in (["docker", "create"], ["docker", "start"]) for x in h.calls))
 
     def test_bootstrap_guards_are_connected_and_configure_is_never_retried(self):
-        for fault in ("layout", "already_configured", "unconfigured_message", "configure", "inode", "bootstrap_health"):
+        before_configure = ("layout", "bootstrap_identity", "bootstrap_volume", "bootstrap_source", "bootstrap_probe",
+                            "bootstrap_get_missing", "bootstrap_get_malformed", "bootstrap_get_nocow")
+        after_attempt = ("already_configured", "configure", "configure_changed", "configure_extra", "configure_malformed",
+                         "configure_ambiguous", "configure_failure", "configure_timeout", "configure_stderr", "inode", "bootstrap_health", "bootstrap_warning")
+        for fault in before_configure + after_attempt:
             with self.subTest(fault=fault):
                 h = self.rejected(fault)
                 configured = sum(name == "configure" for name, _ in h.events)
-                self.assertEqual(configured, 0 if fault in ("layout", "already_configured", "unconfigured_message") else 1)
+                self.assertEqual(configured, 0 if fault in before_configure else 1)
                 self.assertFalse(any(name == "workload" for name, _ in h.events))
 
     def test_full_next_stage_budget_rejects_unexpired_partial_admission(self):
@@ -754,7 +822,7 @@ class LifecycleTests(unittest.TestCase):
                     self.assertTrue(work.terminated)
 
     def test_receipt_write_failures_never_complete(self):
-        for name in ("request.json", "quiet.accepted.json", "bootstrap.unconfigured.json", "bootstrap.attempted.json", "bootstrap.ready.json", "cow.ready.json",
+        for name in ("request.json", "quiet.accepted.json", "bootstrap.authorized.json", "bootstrap.attempted.json", "bootstrap.ready.json", "cow.ready.json",
                      "phase-load.json", "active-phase.json", "load.command.json", "load.exit.json",
                      "load.exited.json", "drain.certificate.json", "census.command.json", "census.exit.json",
                      "oracle.command.json", "oracle.exit.json", "verification.complete.json", "stop.request.json",

@@ -99,13 +99,10 @@ def evidence(mode, run="prof20k0290", revision="1" * 40, batch=32, workers=2):
     return {"approved": approval(run, revision, batch, workers), "evidence": raw}
 
 
-def unconfigured():
-    return {"cluster": {"connection_string": "otel20k:otel20k@127.0.0.1:14883",
-                        "recovery_state": {"name": "configuration_never_created"}, "configuration": None,
-                        "messages": []},
-            "client": {"coordinators": {"quorum_reachable": True}, "messages": [],
-                       "cluster_file": {"up_to_date": True},
-                       "database_status": {"available": False, "healthy": False}}}
+def bootstrap_get():
+    return {"path": "/var/fdb/data", "flags": 0, "nocow": False, "compression_flag": False,
+            "uid": 0, "dev": 17, "ino": 1, "nlink": 1, "size": 0, "allocated_bytes": 0,
+            "mount_id": 23, "filesystem": "btrfs", "nodatasum": "NOT_EXPOSED"}
 
 
 def inode_proof():
@@ -554,86 +551,42 @@ class PolicyTests(unittest.TestCase):
             sample["error"] = ""
         self.cli("evidence", base)
 
-    def test_fresh_unconfigured_proof_only_and_missing_fields(self):
-        for configuration in (None, {}):
-            base = unconfigured()
-            base["cluster"]["configuration"] = configuration
-            self.assertEqual(self.cli("unconfigured", base), {"unconfigured": True, "canonical_messages": []})
-        for path, values in {
-            "cluster.connection_string": [None, "", "otel10c:otel10c@127.0.0.1:14783"],
-            "cluster.recovery_state.name": [None, "fully_recovered", "configuration_missing"],
-            "cluster.configuration": [[], False, 0, "", {"logs": 1}],
-            "client.coordinators.quorum_reachable": [False, None, 1, "true"],
-            "client.cluster_file.up_to_date": [False, None, 1, "true"],
-            "client.database_status.available": [True, None, 0, "false"],
-        }.items():
-            self.reject("unconfigured", unconfigured(), path, values)
-            base = unconfigured()
-            parent = base
-            parts = path.split(".")
-            for part in parts[:-1]:
-                parent = parent[part]
-            del parent[parts[-1]]
-            if path == "cluster.configuration":
-                self.assertEqual(self.cli("unconfigured", base), {"unconfigured": True, "canonical_messages": []})
-            else:
-                self.cli("unconfigured", base, valid=False)
-        for section in ("client", "cluster"):
-            self.reject("unconfigured", unconfigured(), section, [None, {}, [], "wrong"])
+    def test_initial_bootstrap_get_uses_actual_root_json_shape_and_root_uid(self):
+        with mock.patch.object(sys, "path", [str(HERE), *sys.path]):
+            policy = importlib.import_module("policy")
+        fact = bootstrap_get()
+        self.assertNotIn("type", fact)
+        self.assertEqual(policy.bootstrap_get(fact), {"bootstrap_get_valid": True})
+        self.assertEqual(self.cli("bootstrap_get", fact), {"bootstrap_get_valid": True})
+        fact.update(flags=4, compression_flag=True)
+        self.assertEqual(policy.bootstrap_get(fact), {"bootstrap_get_valid": True})
+        self.assertEqual(self.cli("bootstrap_get", fact), {"bootstrap_get_valid": True})
+        self.assertEqual(inode_proof()["rows"][0]["uid"], 4059, "postconfigure UID contract must remain unchanged")
 
-    def test_preconfigure_native_absence_messages_are_exact_unique_and_role_consistent(self):
-        allowed = {"unreachable_master_worker": "master", "unreachable_dataDistributor_worker": "data_distributor",
-                   "unreachable_ratekeeper_worker": "ratekeeper", "unreachable_consistencyScan_worker": "consistency_scan",
-                   "unreadable_configuration": None}
-        for name, role in allowed.items():
-            value = unconfigured()
-            value["cluster"]["messages"] = [{"name": name}]
-            self.assertEqual(self.cli("unconfigured", value), {"unconfigured": True, "canonical_messages": [name]})
-            value["cluster"]["messages"].append({"name": name})
-            self.cli("unconfigured", value, valid=False)
-            if role:
-                value["cluster"]["messages"] = [{"name": name}]
-                value["cluster"]["processes"] = {"worker": {"roles": [{"role": role}]}}
-                self.cli("unconfigured", value, valid=False)
-        value = unconfigured()
-        value["cluster"]["messages"] = [{"name": name} for name in allowed]
-        self.assertEqual(self.cli("unconfigured", value),
-                         {"unconfigured": True, "canonical_messages": list(allowed)})
-        value["cluster"]["messages"].append({"name": "status_incomplete"})
-        self.cli("unconfigured", value, valid=False)
-        paths = {
-            "client.messages": [None, {}, "", [{"name": "status_incomplete"}], [{"name": "unreadable_configuration"}]],
-            "cluster.messages": [None, {}, "", [None], [{"name": 1}], [{"name": "status_incomplete"}],
-                                 [{"name": "batch_priority_transaction_start_probe_timeout"}]],
-            "client.database_status.healthy": [True, 0, None],
-            "cluster.database_available": [True, 0, None],
-            "client.configuration": [None, [], "configuration"],
-            "cluster.processes": [None, [], "processes"],
-        }
-        for path, values in paths.items():
-            self.reject("unconfigured", unconfigured(), path, values)
-        for section in ("client", "cluster"):
-            value = unconfigured()
-            del value[section]["messages"]
-            self.cli("unconfigured", value, valid=False)
-        for configuration in ({}, {"messages": []}):
-            value = unconfigured()
-            value["client"]["configuration"] = configuration
-            self.cli("unconfigured", value)
-        for messages in (None, {}, [{"name": "configuration_error"}]):
-            value = unconfigured()
-            value["client"]["configuration"] = {"messages": messages}
-            self.cli("unconfigured", value, valid=False)
-        for process in ({}, {"address": "127.0.0.1:14883", "class_type": "storage", "roles": [], "messages": []}):
-            value = unconfigured()
-            value["cluster"]["processes"] = {"partial": process}
-            self.cli("unconfigured", value)
-        for process in (None, {"messages": None}, {"messages": [{"name": "process_error"}]},
-                        {"address": "127.0.0.1:14683"}, {"address": "127.0.0.1:14883", "class_type": "stateless"},
-                        {"roles": None}, {"roles": [None]}, {"roles": [{"role": ""}]}):
-            value = unconfigured()
-            value["cluster"]["processes"] = {"worker": process}
-            self.cli("unconfigured", value, valid=False)
+    def test_initial_bootstrap_get_rejects_missing_malformed_or_non_cow_root_facts(self):
+        with mock.patch.object(sys, "path", [str(HERE), *sys.path]):
+            policy = importlib.import_module("policy")
+        for value in (None, {}, [], "GET", True):
+            with self.assertRaises(ValueError):
+                policy.bootstrap_get(value)
+        bad = {"path": ["/var/fdb/data/cluster", "/var/fdb/data/", "/var/fdb/data/../data", None],
+               "flags": [2 ** 32, 0x00800000, 0x00800004], "uid": [1, 4059],
+               "dev": [0], "ino": [0], "mount_id": [0], "nlink": [0],
+               "nocow": [True, 0, "false", None], "compression_flag": [True, 0, "false", None],
+               "filesystem": ["ext4", None], "nodatasum": [True, "verified", None]}
+        for field in ("flags", "uid", "dev", "ino", "mount_id", "nlink", "size", "allocated_bytes"):
+            bad.setdefault(field, []).extend([-1, True, 0.5, "0", 10 ** 18, None])
+        for field, values in bad.items():
+            for value in values:
+                fact = bootstrap_get()
+                fact[field] = value
+                with self.assertRaises(ValueError):
+                    policy.bootstrap_get(fact)
+        for field in bootstrap_get():
+            fact = bootstrap_get()
+            del fact[field]
+            with self.assertRaises(ValueError):
+                policy.bootstrap_get(fact)
 
     def test_native_startup_progress_population_and_optional_sections(self):
         names = ("reading_coordinated_state", "locking_coordinated_state", "locking_old_transaction_servers",
