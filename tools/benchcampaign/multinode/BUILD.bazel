@@ -1,5 +1,15 @@
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
+exports_files(
+    [
+        "inventory.py",
+        "mn_common.py",
+        "render_cloud_init.py",
+        "teardown_guard.py",
+    ],
+    visibility = ["//layers/otel/bench/ops/horizontal:__pkg__"],
+)
+
 # Standard-library unit tests for the multi-node campaign tooling. They use
 # temporary fixtures and fake command runners only: no hcloud, ssh or FDB.
 sh_test(

@@ -1,0 +1,27 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+_HORIZONTAL_TEST_DATA = [
+    "driver.py",
+    "policy.py",
+    "provision.py",
+    "test_horizontal.py",
+    "test_provision.py",
+    "//tools/benchcampaign/multinode:inventory.py",
+    "//tools/benchcampaign/multinode:mn_common.py",
+    "//tools/benchcampaign/multinode:render_cloud_init.py",
+    "//tools/benchcampaign/multinode:teardown_guard.py",
+]
+
+sh_test(
+    name = "horizontal_policy_runtime_test",
+    srcs = ["test.sh"],
+    args = ["test_horizontal"],
+    data = _HORIZONTAL_TEST_DATA,
+)
+
+sh_test(
+    name = "horizontal_provision_test",
+    srcs = ["test.sh"],
+    args = ["test_provision"],
+    data = _HORIZONTAL_TEST_DATA,
+)
