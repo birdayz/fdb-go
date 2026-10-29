@@ -34,7 +34,9 @@ in the sealed application, unmodified by these scripts.
 
 ## Fixed sequence and measurement
 
-1. Quiet-admit all five hosts over seven samples, ten seconds apart.
+1. Quiet-admit all five hosts over seven samples, with absolute monotonic starts
+   twelve seconds apart. Sampling overhead is included in that cadence; every
+   host's observed intervals must still be between ten and fifteen seconds.
 2. Run the two ×100k prerequisite on fresh 1-, 2-, then 3-storage-host clusters.
    Both independent runs need strict health, exact record/index census and the
    complete 1600-class query oracle. Preserve every result before promotion.

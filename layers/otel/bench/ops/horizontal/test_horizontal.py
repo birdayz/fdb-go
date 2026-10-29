@@ -239,6 +239,65 @@ class RuntimeTests(unittest.TestCase):
         with mock.patch.object(d.time, "time", return_value=7000):
             with self.assertRaises(ValueError): d.remaining(plan())
 
+    def test_quiet_absolute_cadence_includes_sequential_ssh_overhead(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now, starts, waits = [0.0], [], []
+            def sleep(seconds):
+                self.assertGreaterEqual(seconds, 0)
+                waits.append(seconds)
+                now[0] += seconds
+            campaign = d.Campaign(plan(), tmp, mock.Mock(), clock=lambda: int(now[0] * 10 ** 9), sleep=sleep)
+            campaign.nodes = {name: {} for name in ("node1", "node2", "node3", "client1", "client2")}
+            costs = [5.0, 5.6, 5.2, 5.7, 5.1, 5.3, 5.0]
+            def sample(initial=False):
+                self.assertTrue(initial)
+                starts.append(now[0])
+                cost = costs[len(starts)-1]
+                values = {}
+                for name in campaign.nodes:
+                    now[0] += cost / 5
+                    values[name] = dict(epoch=1000 + now[0], mem_available_bytes=32 * p.GIB,
+                                        pressure=dict(cpu_some=0, memory_some=0, memory_full=0, io_full=0))
+                return values
+            campaign.host_samples = sample
+            campaign.quiet()
+            self.assertEqual(len(starts), 7)
+            for i, start in enumerate(starts):
+                self.assertAlmostEqual(start, i * 12)
+            self.assertEqual(len(waits), 6)
+            self.assertAlmostEqual(sum(waits), 72 - sum(costs[:6]))
+            self.assertEqual(len(d.read(Path(tmp) / "quiet.json")["samples"]), 7)
+
+    def test_quiet_controller_overrun_does_not_waive_interval_guard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            now, waits = [0], []
+            campaign = d.Campaign(plan(), tmp, mock.Mock(), clock=lambda: now[0] * 10 ** 9, sleep=waits.append)
+            campaign.nodes = {"node1": {}}
+            def sample(initial=False):
+                now[0] += 16
+                return {"node1": dict(epoch=1000 + now[0], mem_available_bytes=32 * p.GIB,
+                                      pressure=dict(cpu_some=0, memory_some=0, memory_full=0, io_full=0))}
+            campaign.host_samples = sample
+            with self.assertRaisesRegex(ValueError, "intervals outside 10–15"):
+                campaign.quiet()
+            self.assertFalse(waits)
+            self.assertFalse((Path(tmp) / "quiet.json").exists())
+
+    def test_quiet_host_timestamps_still_require_ten_to_fifteen_seconds(self):
+        for interval in (9, 16):
+            with self.subTest(interval=interval), tempfile.TemporaryDirectory() as tmp:
+                now = [0]
+                def sleep(seconds): now[0] += seconds
+                campaign = d.Campaign(plan(), tmp, mock.Mock(), clock=lambda: int(now[0] * 10 ** 9), sleep=sleep)
+                campaign.nodes = {"node1": {}}
+                campaign.host_samples = mock.Mock(side_effect=[{"node1": dict(epoch=1000 + i * interval,
+                    mem_available_bytes=32 * p.GIB, pressure=dict(cpu_some=0, memory_some=0, memory_full=0, io_full=0))}
+                    for i in range(7)])
+                with self.assertRaisesRegex(ValueError, "intervals outside 10–15"):
+                    campaign.quiet()
+                self.assertEqual(campaign.host_samples.call_count, 7)
+                self.assertFalse((Path(tmp) / "quiet.json").exists())
+
     def test_startup_records_unhealthy_then_requires_three_strict_passes(self):
         with tempfile.TemporaryDirectory() as tmp:
             value = plan(); value["first_epoch"] = 10 ** 9

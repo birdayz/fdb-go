@@ -257,7 +257,12 @@ class Campaign:
 
     def quiet(self):
         samples = []
+        next_sample = self.clock()
         for i in range(7):
+            if i:
+                delay = (next_sample - self.clock()) / 10 ** 9
+                if delay > 0:
+                    self.sleep(delay)
             values = self.host_samples(initial=True)
             for value in values.values():
                 q = value["pressure"]
@@ -265,13 +270,13 @@ class Campaign:
                           and q["memory_some"] <= 0.1 and q["memory_full"] <= 0.01 and q["io_full"] <= 1,
                           "unchanged host quiet admission")
             samples.append(values)
-            if i != 6:
-                self.sleep(10)
+            # Include SSH time and leave jitter margin inside the 10–15s guard.
+            next_sample += 12 * 10 ** 9
         for name in self.nodes:
             memory = [s[name]["mem_available_bytes"] for s in samples]
             p.require(max(memory) - min(memory) <= p.GIB, "quiet memory variation")
             p.require(all(10 <= b[name]["epoch"] - a[name]["epoch"] <= 15 for a, b in zip(samples, samples[1:])),
-                      "quiet samples not stable ten-second intervals")
+                      "quiet sample intervals outside 10–15 seconds")
         write(self.out / "quiet.json", {"samples": samples})
 
     def status(self, layout):
