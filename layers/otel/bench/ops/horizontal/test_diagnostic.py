@@ -489,6 +489,57 @@ class DiagnosticTest(unittest.TestCase):
                     n.sample_frame(grant, bindings, dict(filesystem_device='8:1', devices=['8:1']), 0, 'baseline')
                 values[key] = old
 
+    def test_sample_frame_literal_missing_io_stat_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            values = {'cpu.max': '400000 100000', 'cpuset.cpus.effective': '0-3', 'memory.max': '17179869184',
+                      'memory.swap.max': '0', 'memory.current': '1000', 'memory.events': 'oom 0\noom_kill 0',
+                      'cpu.stat': '\n'.join(key+' 100' for key in ('usage_usec', 'user_usec', 'system_usec',
+                                                                  'nr_periods', 'nr_throttled', 'throttled_usec'))}
+            for name, value in values.items():
+                (root/name).write_text(value)
+            read = n.read_small
+            with mock.patch.object(n, 'command', return_value='/horizontal.slice/horizontal-fdb.slice'), \
+                 mock.patch.object(n, 'read_small', side_effect=lambda path, limit=65536: read(root/Path(path).name, limit)):
+                with self.assertRaises(FileNotFoundError) as failure:
+                    n.sample_frame(sampler_grant(), {}, dict(filesystem_device='8:1', devices=['8:1']), 0, 'baseline')
+            self.assertEqual(failure.exception.filename, str(root/'io.stat'))
+
+    def test_install_helpers_requires_owned_io_accounting_and_readable_stat_before_load(self):
+        for failure in (None, 'disabled', 'foreign', 'missing'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                provider = mock.Mock(); provider.copy_to_node.return_value = (0, '', '')
+                campaign = n.Diagnostic(plan(), tmp, provider)
+                campaign.nodes = {'node1': dict(id=101), 'client1': dict(id=102)}
+                campaign.remote_harness = '/srv/otel-horizontal/native-test/harness'
+                def run_on_node(plan, out, node, args, timeout):
+                    if args[0] == 'sha256sum':
+                        return 0, p.sha(n.HERE/'diagnostic.py')+'  diagnostic.py\n', ''
+                    if '--property=IOAccounting' in args:
+                        return 0, 'no\n' if failure == 'disabled' and node['id'] == 102 else 'yes\n', ''
+                    if '--property=ControlGroup' in args:
+                        group = '/foreign.slice' if failure == 'foreign' and node['id'] == 102 else '/horizontal.slice/'+args[2]
+                        return 0, group+'\n', ''
+                    if args[0] == 'cat':
+                        if failure == 'missing' and node['id'] == 102:
+                            return 1, '', 'cat: '+args[1]+': No such file or directory\n'
+                        return 0, '', ''  # A readable accounting file may be empty before any I/O.
+                    raise AssertionError(args)
+                provider.run_on_node.side_effect = run_on_node
+                with mock.patch.object(d.Campaign, 'install_helpers'), mock.patch.object(d, 'remaining', return_value=30):
+                    if failure:
+                        with self.assertRaises(ValueError):
+                            campaign.install_helpers()
+                        self.assertFalse((Path(tmp)/'client1-io-accounting.json').exists())
+                    else:
+                        campaign.install_helpers()
+                        for role, kind in (('node1', 'fdb'), ('client1', 'client')):
+                            unit = 'horizontal-'+kind+'.slice'
+                            self.assertEqual(d.read(Path(tmp)/(role+'-io-accounting.json')),
+                                             dict(node_id=campaign.nodes[role]['id'], role=role, unit=unit, IOAccounting='yes',
+                                                  io_stat_path='/sys/fs/cgroup/horizontal.slice/'+unit+'/io.stat', io_stat_raw=''))
+                self.assertEqual(provider.copy_to_node.call_count, 2)
+
     def test_sampler_frame_budget_is_checked_before_writing_payload(self):
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp); grant = sampler_grant(); grant['work'] = str(work)

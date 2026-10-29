@@ -617,12 +617,21 @@ class Diagnostic(d.Campaign):
 
     def install_helpers(self):
         super().install_helpers()
-        for node in self.nodes.values():
+        for role, node in self.nodes.items():
             rc, _, _ = self.provision.copy_to_node(self.plan, self.out / "provision", node, HERE / "diagnostic.py",
                                                    self.remote_harness + "/diagnostic.py")
             p.require(rc == 0, "copy diagnostic helper failed")
             result = self.command(node, ["sha256sum", self.remote_harness + "/diagnostic.py"])
             p.require(result.split()[0] == p.sha(HERE / "diagnostic.py"), "remote diagnostic helper changed")
+            unit = "horizontal-" + ("fdb" if role == "node1" else "client") + ".slice"
+            accounting = self.command(node, ["systemctl", "show", unit, "--property=IOAccounting", "--value"]).strip()
+            p.require(accounting == "yes", "diagnostic role slice I/O accounting is not enabled")
+            group = self.command(node, ["systemctl", "show", unit, "--property=ControlGroup", "--value"]).strip()
+            p.require(group == "/horizontal.slice/" + unit, "diagnostic role slice control group changed")
+            path = "/sys/fs/cgroup" + group + "/io.stat"
+            raw = self.command(node, ["cat", path])
+            d.write(self.out / (role + "-io-accounting.json"), {"node_id": node["id"], "role": role,
+                    "unit": unit, "IOAccounting": accounting, "io_stat_path": path, "io_stat_raw": raw})
 
     def diag(self, node, mode, path, *extra):
         return ["python3", "-B", self.remote_harness + "/diagnostic.py", mode,

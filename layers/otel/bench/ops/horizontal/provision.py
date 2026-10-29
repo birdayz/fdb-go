@@ -805,7 +805,8 @@ def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.s
         remote = REMOTE_BASE + '/' + plan['campaign']
         resources['remote_root'] = remote
         for kind in ('fdb', 'client'):
-            _mc.write_private(state / ('horizontal-' + kind + '.slice'), _slice(kind))
+            _mc.write_private(state / ('horizontal-' + kind + '.slice'),
+                              _slice(kind, io_accounting=plan['schema'] == 'otel_native_diagnostic_v1'))
         for role, node in resources['nodes'].items():
             until = min(clock() + 600, _active_deadline(plan))
             attempt = 0
@@ -1049,13 +1050,14 @@ Restart=no
                 storage_engine='ssd-redwood-1', log_engine='ssd-2', redundancy_mode='single')
 
 
-def _slice(kind):
+def _slice(kind, *, io_accounting=False):
+    accounting = 'IOAccounting=yes\n' if io_accounting else ''
     return f'''[Unit]
 Description=Horizontal campaign {kind} resource boundary
 [Slice]
 CPUAccounting=yes
 MemoryAccounting=yes
-AllowedCPUs=0-3
+{accounting}AllowedCPUs=0-3
 CPUQuota=400%
 MemoryMax=16G
 MemorySwapMax=0
@@ -1113,7 +1115,8 @@ def setup_cluster(plan, out, nodes, storage_hosts, armid, *, runner=None, clock=
             kind = 'fdb' if role.startswith('node') else 'client'
             slice_path = arm / ('horizontal-' + kind + '.slice')
             if not slice_path.exists():
-                _mc.write_private(slice_path, _slice(kind))
+                _mc.write_private(slice_path,
+                                  _slice(kind, io_accounting=plan['schema'] == 'otel_native_diagnostic_v1'))
             _require_result(copy_to_node(plan, out, node, slice_path,
                                          '/etc/systemd/system/horizontal-' + kind + '.slice', runner=runner), 'copy resource slice')
             for p in [p for p in layout['processes'] if p['node'] == role]:
