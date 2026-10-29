@@ -1,9 +1,11 @@
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 _HORIZONTAL_TEST_DATA = [
+    "diagnostic.py",
     "driver.py",
     "policy.py",
     "provision.py",
+    "test_diagnostic.py",
     "test_horizontal.py",
     "test_provision.py",
     "//tools/benchcampaign/multinode:inventory.py",
@@ -23,5 +25,12 @@ sh_test(
     name = "horizontal_provision_test",
     srcs = ["test.sh"],
     args = ["test_provision"],
+    data = _HORIZONTAL_TEST_DATA,
+)
+
+sh_test(
+    name = "native_diagnostic_test",
+    srcs = ["test.sh"],
+    args = ["test_diagnostic"],
     data = _HORIZONTAL_TEST_DATA,
 )

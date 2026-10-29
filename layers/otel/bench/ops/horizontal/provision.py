@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Five new, native-FDB campaign hosts; no API call occurs on import.
+"""Role-scoped new native-FDB campaign hosts; no API call occurs on import.
 
 Public API: prepare(plan, out), setup_cluster(plan, out, nodes, storage_hosts,
 armid), teardown(plan, out, resources), run_on_node, copy_to_node, ssh_argv.
@@ -91,10 +91,19 @@ def _checked(runner, argv, timeout=20):
     return stdout
 
 
+def _roles(plan):
+    schema = plan.get('schema') if type(plan) is dict else None
+    if schema == 'otel_horizontal_v1':
+        return ROLES
+    if schema == 'otel_native_diagnostic_v1':
+        return ('node1', 'client1')
+    raise ProvisionError('unknown campaign schema; no resource roles authorized')
+
+
 def _names(plan):
     prefix = plan['prefix']
     suffixes = {'network': 'net', 'firewall': 'fw', 'ssh-key': 'key', 'placement-group': 'spread'}
-    return {kind: ({f'{prefix}-{r}' for r in ROLES} if kind == 'server' else
+    return {kind: ({f'{prefix}-{r}' for r in _roles(plan)} if kind == 'server' else
                    {f'{prefix}-{suffixes[kind]}'}) for kind in DELETE_KINDS}
 
 
@@ -104,15 +113,22 @@ def _network(plan):
 
 def validate_plan(plan, out, clock=time.time):
     """Local-only validation. It neither calls hcloud nor executes sealed assets."""
-    if plan.get('schema') != 'otel_horizontal_v1' or plan.get('approved') is not True:
-        raise ProvisionError('an approved otel_horizontal_v1 plan is required')
+    roles = _roles(plan)
+    if plan.get('approved') is not True:
+        raise ProvisionError('an explicitly approved supported campaign plan is required')
+    if plan['schema'] == 'otel_native_diagnostic_v1':
+        for key, value in (('count', 100000), ('probe_count', 1000000), ('probe_seconds', 120)):
+            if type(plan.get(key)) is not int or plan[key] != value:
+                raise ProvisionError('diagnostic plan requires exact typed ' + key)
+        if any(key in plan for key in ('topologies', 'measured_topologies', 'prerequisite_topologies', 'selected_topologies', 'measured_count')):
+            raise ProvisionError('diagnostic plans cannot declare comparative topology fields')
     _mc.check_name(plan['prefix'])
     _mc.parse_campaign_label('campaign=' + plan['campaign'])
     for names in _names(plan).values():
         for name in names:
             _mc.check_name(name)
     if plan.get('location') != 'hel1' or plan.get('server_type') != 'ccx43':
-        raise ProvisionError('only five new ccx43 servers in hel1 are authorized')
+        raise ProvisionError(f'only {len(roles)} new ccx43 servers in hel1 are authorized')
     first, deadline = plan['first_epoch'], plan['deadline_epoch']
     if (not all(isinstance(v, int) and not isinstance(v, bool) for v in (first, deadline))
             or not 600 < deadline - first <= 7200 or first > clock()
@@ -176,6 +192,7 @@ def _list(plan, kind, runner):
 
 
 def _preflight(plan, baseline):
+    _roles(plan)
     protected_ids = {k: set(_inventory.ids(v, k)) for k, v in baseline.items()}
     for kind, items in baseline.items():
         for item in items:
@@ -436,7 +453,8 @@ def ssh_argv(plan, out, node, remote_args):
 def _authorized_node(plan, out, node):
     resources = _load(_state(out) / 'resources.json')
     matches = [n for n in resources['nodes'].values() if n['id'] == node.get('id')]
-    if (len(matches) != 1 or any(node.get(k) != matches[0].get(k)
+    if (set(resources['nodes']) != set(_roles(plan))
+            or len(matches) != 1 or any(node.get(k) != matches[0].get(k)
                                   for k in ('name', 'host', 'private_ip', 'known_hosts'))
             or node['id'] in resources['protected_ids']['server']
             or resources['campaign'] != plan['campaign']):
@@ -597,8 +615,9 @@ def _verify_provider_server(plan, resources, node, server, network_id, group_id)
             or (group.get('labels') or {}).get('campaign') != plan['campaign']
             or type(group.get('servers')) is not list
             or any(type(sid) is not int for sid in group['servers'])
-            or len(group['servers']) != 5 or set(group['servers']) != set(resources['ids']['server'])):
-        raise ProvisionError('server lacks exact owned five-host physical-spread membership')
+            or len(group['servers']) != len(_roles(plan))
+            or set(group['servers']) != set(resources['ids']['server'])):
+        raise ProvisionError('server lacks exact owned role-scoped physical-spread membership')
     if (server.get('id') != node['id'] or node['id'] in resources['protected_ids']['server']
             or server.get('name') != node['name']
             or (server.get('labels') or {}).get('campaign') != plan['campaign']
@@ -653,7 +672,7 @@ def _prove_ips(plan, state, resources, runner, clock=time.time, guard=None):
 
 
 def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.sleep):
-    """Provision exactly five new servers and install sealed native binaries.
+    """Provision exactly the schema's new servers and install sealed native binaries.
 
     Does not start FDB, run a workload, or make a health/readiness claim. A failed
     partial preparation immediately invokes cleanup. The auxiliary guard is not
@@ -661,6 +680,7 @@ def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.s
     lifetime guard must be armed by the caller before launching the controller.
     """
     validate_plan(plan, out, clock)
+    roles = _roles(plan)
     state = _state(out)
     state.mkdir(mode=0o700, parents=True, exist_ok=False)
     baseline_dir = state / 'baseline'
@@ -707,7 +727,7 @@ def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.s
     resources['pricing_receipt'] = str(state / 'live-pricing.json')
     _save_resources(state, resources)
     try:
-        hosts = [f'{plan["prefix"]}-{role}' for role in ROLES]
+        hosts = [f'{plan["prefix"]}-{role}' for role in roles]
         _cloud_init.generate_keys(state / 'host-keys', hosts,
                                    runner=lambda argv: _call(runner, argv, timeout=_remaining(plan, 20, clock, active=True)))
         cloud_dir = state / 'cloud-init'
@@ -747,9 +767,10 @@ def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.s
         key = _create(plan, state, resources, 'ssh-key',
                       [h, 'ssh-key', 'create', '--name', plan['prefix'] + '-key',
                        '--public-key-from-file', plan['controller_public_key'], *labels], runner, clock, guard)
-        for i, role in enumerate(ROLES):
+        for role in roles:
             name = f'{plan["prefix"]}-{role}'
-            private = str(_network(plan).network_address + (11 + i if i < 3 else 18 + i))
+            offset = 10+int(role[4:]) if role.startswith('node') else 20+int(role[6:])
+            private = str(_network(plan).network_address + offset)
             server = _create(plan, state, resources, 'server',
                              [h, 'server', 'create', '--name', name, '--type', 'ccx43',
                               '--location', 'hel1', '--image', 'ubuntu-24.04', '--ssh-key', str(key['id']),
@@ -773,8 +794,8 @@ def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.s
         members = [s['id'] for s in final_servers
                    if (s.get('labels') or {}).get('campaign') == plan['campaign']
                    or _mc.owned_name(s.get('name', ''), plan['prefix'])]
-        if len(members) != 5 or set(members) != set(resources['ids']['server']):
-            raise ProvisionError('final provider campaign membership is not exactly five owned servers')
+        if len(members) != len(roles) or set(members) != set(resources['ids']['server']):
+            raise ProvisionError('final provider campaign membership does not match its exact owned roles')
         for node in resources['nodes'].values():
             server = fresh[node['id']]
             _verified_ipv4(plan, resources, final_servers, final_ips, server)
@@ -965,22 +986,29 @@ def _guard(plan_path, out, *, runner=None, clock=time.time, sleep=time.sleep):
 
 
 def render_cluster(plan, nodes, storage_hosts, armid):
-    """Pure native R1 layout: fixed control placement; 1/2/3 storage hosts."""
+    """Pure native R1 layout: fixed control placement and schema-scoped storage hosts."""
+    roles = _roles(plan)
+    fdb_roles = tuple(role for role in roles if role.startswith('node'))
+    if plan['schema'] == 'otel_native_diagnostic_v1' and (type(nodes) is not dict or set(nodes) != set(roles)):
+        raise ProvisionError('diagnostic layout requires exactly node1 and client1')
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,40}', str(armid)):
         raise ProvisionError('unsafe arm ID')
-    if isinstance(storage_hosts, int) and not isinstance(storage_hosts, bool):
-        selected = list(ROLES[:storage_hosts]) if storage_hosts in (1, 2, 3) else []
+    if type(storage_hosts) is int:
+        selected = list(fdb_roles[:storage_hosts]) if 1 <= storage_hosts <= len(fdb_roles) else []
     else:
-        selected = list(storage_hosts)
-    if selected not in [list(ROLES[:n]) for n in (1, 2, 3)]:
-        raise ProvisionError('storage hosts must be the first 1, 2 or 3 campaign FDB hosts')
+        try:
+            selected = list(storage_hosts)
+        except TypeError as exc:
+            raise ProvisionError('storage hosts must name the schema-scoped FDB hosts') from exc
+    if selected not in [list(fdb_roles[:n]) for n in range(1, len(fdb_roles)+1)]:
+        raise ProvisionError('storage hosts must be an allowed prefix of the schema-scoped FDB hosts')
     root = REMOTE_BASE + '/' + plan['campaign'] + '/arms/' + str(armid)
     cluster = 'horizontal_' + str(armid).replace('-', '_') + ':' + hashlib.sha256(
         (plan['campaign'] + ':' + str(armid)).encode()).hexdigest()[:24] + '@' + nodes['node1']['private_ip'] + ':4500'
     classes = [(4500, 'stateless'), (4501, 'commit_proxy'), (4502, 'grv_proxy'),
                (4503, 'resolution'), (4504, 'transaction')]
     processes = []
-    for node in ROLES[:3]:
+    for node in fdb_roles:
         specs = (classes if node == 'node1' else []) + ([(4510, 'storage')] if node in selected else [])
         for port, cls in specs:
             storage = cls == 'storage'
@@ -1042,10 +1070,12 @@ def setup_cluster(plan, out, nodes, storage_hosts, armid, *, runner=None, clock=
     """
     state = _state(out)
     _check_window(plan, state, clock)
+    roles = _roles(plan)
+    fdb_roles = tuple(role for role in roles if role.startswith('node'))
+    if type(nodes) is not dict or set(nodes) != set(roles):
+        raise ProvisionError('exactly the schema-scoped prepared campaign nodes are required')
     for node in nodes.values():
         _authorized_node(plan, out, node)
-    if set(nodes) != set(ROLES):
-        raise ProvisionError('exactly the five prepared campaign nodes are required')
     layout = render_cluster(plan, nodes, storage_hosts, armid)
     arm = state / 'arms' / str(armid)
     arm.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -1054,7 +1084,7 @@ def setup_cluster(plan, out, nodes, storage_hosts, armid, *, runner=None, clock=
         previous = _load(active_path)
         if previous.get('campaign') != plan['campaign']:
             raise ProvisionError('previous arm is not campaign-owned')
-        for node in ROLES[:3]:
+        for node in fdb_roles:
             units = previous.get('units', {}).get(node, [])
             if any(not re.fullmatch(r'oh-' + re.escape(plan['prefix']) + r'-[A-Za-z0-9_-]+-\d+\.service', u)
                    for u in units):
@@ -1069,10 +1099,10 @@ def setup_cluster(plan, out, nodes, storage_hosts, armid, *, runner=None, clock=
     # therefore stopped by the next arm, even when its receipt was never written.
     active = dict(campaign=plan['campaign'], armid=str(armid),
                   units={node: [p['unit_name'] for p in layout['processes'] if p['node'] == node]
-                         for node in ROLES[:3]})
+                         for node in fdb_roles})
     _json(active_path, active, replace=True)
     try:
-        for role in ROLES:
+        for role in roles:
             node = nodes[role]
             root = layout['root']
             _require_result(run_on_node(plan, out, node,
@@ -1100,7 +1130,7 @@ def setup_cluster(plan, out, nodes, storage_hosts, armid, *, runner=None, clock=
             _require_result(run_on_node(plan, out, node, ['systemctl', 'daemon-reload'], runner=runner), 'reload own units')
             _require_result(run_on_node(plan, out, node, ['systemctl', 'start', 'horizontal-' + kind + '.slice'],
                                         runner=runner), 'activate own slice')
-        for role in ROLES[:3]:
+        for role in fdb_roles:
             if active['units'][role]:
                 _require_result(run_on_node(plan, out, nodes[role], ['systemctl', 'start', *active['units'][role]],
                                             runner=runner), 'start native FDB processes')
@@ -1112,7 +1142,7 @@ def setup_cluster(plan, out, nodes, storage_hosts, armid, *, runner=None, clock=
         return layout
     except BaseException:
         # Never globally stop FDB or access a machine outside the exact inventory.
-        for role in ROLES[:3]:
+        for role in fdb_roles:
             if active['units'][role]:
                 try:
                     run_on_node(plan, out, nodes[role], ['systemctl', 'stop', *active['units'][role]],

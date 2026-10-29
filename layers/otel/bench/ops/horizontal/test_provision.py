@@ -283,6 +283,176 @@ class ProvisionTest(unittest.TestCase):
         return p.prepare(self.plan, self.out, runner=self.cloud, popen=self.cloud.popen,
                          sleep=lambda seconds: None)
 
+    def diagnostic_plan(self):
+        self.plan.update(schema='otel_native_diagnostic_v1', count=100000,
+                         probe_count=1000000, probe_seconds=120)
+        return self.plan
+
+    def test_schema_roles_are_exact_and_unknown_or_untyped_schemas_fail_before_effects(self):
+        self.assertEqual(p._roles(self.plan), ('node1', 'node2', 'node3', 'client1', 'client2'))
+        self.assertIs(p._roles(self.plan), p.ROLES)
+        self.diagnostic_plan()
+        self.assertEqual(p._roles(self.plan), ('node1', 'client1'))
+        self.assertEqual(p._names(self.plan)['server'],
+                         {self.plan['prefix']+'-node1', self.plan['prefix']+'-client1'})
+        for bad in (None, True, 1, [], {}, '', 'otel_native_diagnostic_v2', 'otel_horizontal_v2'):
+            with self.subTest(schema=bad):
+                self.plan['schema'] = bad
+                with self.assertRaises(p.ProvisionError):
+                    self.prepare()
+        for bad_plan in (None, [], False, 'otel_native_diagnostic_v1'):
+            with self.assertRaises(p.ProvisionError):
+                p._roles(bad_plan)
+        self.assertFalse(self.cloud.calls)
+        self.assertFalse(self.cloud.create_counts)
+
+    def test_diagnostic_plan_requires_exact_typed_counts_and_no_comparative_arrays(self):
+        self.diagnostic_plan()
+        p.validate_plan(self.plan, self.out)
+        good = copy.deepcopy(self.plan)
+        for key in ('count', 'probe_count', 'probe_seconds'):
+            for bad in (None, True, str(good[key]), float(good[key]), good[key]+1):
+                self.plan.clear(); self.plan.update(good)
+                self.plan[key] = bad
+                with self.subTest(key=key, bad=bad), self.assertRaises(p.ProvisionError):
+                    self.prepare()
+            self.plan.clear(); self.plan.update(good); del self.plan[key]
+            with self.assertRaises(p.ProvisionError):
+                self.prepare()
+        for key in ('topologies', 'measured_topologies', 'prerequisite_topologies', 'selected_topologies', 'measured_count'):
+            self.plan.clear(); self.plan.update(good); self.plan[key] = 1000000 if key == 'measured_count' else [1]
+            with self.subTest(key=key), self.assertRaises(p.ProvisionError):
+                self.prepare()
+        self.assertFalse(self.cloud.calls)
+
+    def test_diagnostic_prepare_creates_exact_two_pinned_owned_hosts_and_preserves_caps(self):
+        self.diagnostic_plan()
+        resources = self.prepare()
+        self.assertTrue(resources['prepared'])
+        self.assertEqual(set(resources['nodes']), {'node1', 'client1'})
+        self.assertEqual(len(resources['ids']['server']), 2)
+        self.assertEqual(len(resources['primary_ip_proof']), 2)
+        self.assertEqual({role: node['private_ip'] for role, node in resources['nodes'].items()},
+                         {'node1': '10.93.0.11', 'client1': '10.93.0.21'})
+        created = [argv for argv, _ in self.cloud.calls if argv[1:3] == ['server', 'create']]
+        self.assertEqual({a[a.index('--name')+1] for a in created},
+                         {self.plan['prefix']+'-node1', self.plan['prefix']+'-client1'})
+        self.assertEqual(self.cloud.create_counts['server'], 2)
+        self.assertLess(self.cloud.events.index('guard-ready'), self.cloud.events.index('network create'))
+        state = p._state(self.out)
+        proof = p._load(state/'placement-proof.json')
+        self.assertEqual(set(proof['server_ids']), set(resources['ids']['server']))
+        self.assertEqual(len(proof['server_ids']), 2)
+        snapshots = p._load(resources['primary_ip_snapshot_receipts'][-1])
+        owned = [s for s in json.loads(snapshots['raw']['server']['stdout'])
+                 if s['id'] in resources['ids']['server']]
+        self.assertEqual(len(owned), 2)
+        for server in owned:
+            self.assertEqual(set(server['placement_group']['servers']), set(resources['ids']['server']))
+        for role, node in resources['nodes'].items():
+            argv = p.ssh_argv(self.plan, self.out, node, ['true'])
+            self.assertIn('StrictHostKeyChecking=yes', argv)
+            self.assertIn('HostKeyAlias='+node['name'], argv)
+            self.assertIn('UserKnownHostsFile='+node['known_hosts'], argv)
+            self.assertEqual(Path(node['known_hosts']).stat().st_mode & 0o777, 0o600)
+            self.assertEqual(node['slice'], 'horizontal-fdb.slice' if role == 'node1' else 'horizontal-client.slice')
+            receipt = p._load(state/(role+'-native.json'))
+            self.assertEqual(receipt['filesystem'], 'ext4')
+            self.assertEqual(receipt['floor_bytes'], p.disk_floor(receipt['total_bytes']))
+            self.assertTrue(receipt['fsync_preserved'])
+            self.assertTrue(receipt['checksums_preserved'])
+        self.assertFalse((state/'host-keys'/(self.plan['prefix']+'-node2')).exists())
+        self.assertIn('CPUQuota=400%', p._slice('fdb'))
+        self.assertIn('MemoryMax=16G', p._slice('client'))
+        forged = dict(resources['nodes']['node1'], id=self.cloud.baseline['server'][0]['id'])
+        before = len(self.cloud.calls)
+        with self.assertRaises(p.ProvisionError):
+            p.run_on_node(self.plan, self.out, forged, ['true'], runner=self.cloud)
+        self.assertEqual(len(self.cloud.calls), before)
+
+    def test_diagnostic_render_and_setup_run_only_six_processes_on_one_fdb_host(self):
+        self.diagnostic_plan()
+        resources = self.prepare()
+        nodes = resources['nodes']
+        rendered = p.render_cluster(self.plan, nodes, 1, 'rendered')
+        self.assertEqual(rendered['storage_hosts'], ['node1'])
+        self.assertEqual(len(rendered['processes']), 6)
+        self.assertEqual({x['node'] for x in rendered['processes']}, {'node1'})
+        self.assertEqual({x['process_class'] for x in rendered['processes']},
+                         {'stateless', 'commit_proxy', 'grv_proxy', 'resolution', 'transaction', 'storage'})
+        self.assertEqual(sum(x['memory_limit_bytes'] for x in rendered['processes']), 9*p.GIB)
+        storage = [x for x in rendered['processes'] if x['process_class'] == 'storage']
+        self.assertEqual(len(storage), 1)
+        self.assertEqual(storage[0]['memory_limit_bytes'], 4*p.GIB)
+        self.assertEqual(storage[0]['cache_mib'], 2048)
+        first = p.setup_cluster(self.plan, self.out, nodes, 1, 'diagnostic1', runner=self.cloud)
+        second = p.setup_cluster(self.plan, self.out, nodes, 1, 'diagnostic2', runner=self.cloud)
+        self.assertNotEqual(first['root'], second['root'])
+        self.assertEqual(first['configure'], p.CONFIGURE)
+        self.assertEqual(first['budgets'], second['budgets'])
+        active = p._load(p._state(self.out)/'active-arm.json')
+        self.assertEqual(set(active['units']), {'node1'})
+        self.assertEqual(len(active['units']['node1']), 6)
+        stops = [argv for argv, _ in self.cloud.calls if Path(argv[0]).name == 'ssh'
+                 and shlex.split(argv[-1])[:2] == ['systemctl', 'stop']]
+        self.assertEqual(len(stops), 1)
+        self.assertIn('root@'+nodes['node1']['host'], stops[0])
+        self.assertEqual(len(shlex.split(stops[0][-1])[2:]), 6)
+
+    def test_diagnostic_rejects_extra_missing_nodes_or_more_than_one_storage_host_without_commands(self):
+        self.diagnostic_plan()
+        resources = self.prepare()
+        nodes = resources['nodes']
+        before = len(self.cloud.calls)
+        for changed in ({'node1': nodes['node1']}, {'client1': nodes['client1']}, {},
+                        dict(nodes, node2=nodes['node1']), dict(nodes, client2=nodes['client1'])):
+            with self.subTest(keys=set(changed)):
+                with self.assertRaises(p.ProvisionError):
+                    p.render_cluster(self.plan, changed, 1, 'invalid')
+                with self.assertRaises(p.ProvisionError):
+                    p.setup_cluster(self.plan, self.out, changed, 1, 'invalid', runner=self.cloud)
+        for bad in (0, 2, 3, True, None, 1.0, '1', [], ['node2'], ['node1', 'node2']):
+            with self.subTest(storage_hosts=bad):
+                with self.assertRaises(p.ProvisionError):
+                    p.render_cluster(self.plan, nodes, bad, 'invalid')
+                with self.assertRaises(p.ProvisionError):
+                    p.setup_cluster(self.plan, self.out, nodes, bad, 'invalid', runner=self.cloud)
+        self.assertEqual(len(self.cloud.calls), before)
+
+    def test_diagnostic_teardown_restores_all_ten_protected_baseline_sets(self):
+        self.diagnostic_plan()
+        resources = self.prepare()
+        result = p.teardown(self.plan, self.out, resources, runner=self.cloud, sleep=lambda _: None)
+        self.assertTrue(result['passed'])
+        self.assertEqual(set(result['inventory']['kinds']), set(p.KINDS))
+        self.assertEqual(self.cloud.items, self.cloud.baseline)
+        self.assertEqual(sum(kind == 'server' for kind, _ in self.cloud.deleted), 2)
+        self.assertEqual(sum(kind == 'placement-group' for kind, _ in self.cloud.deleted), 1)
+        self.assertTrue(all(rid > 10 for _, rid in self.cloud.deleted))
+        self.assertFalse(any(kind == 'primary-ip' for kind, _ in self.cloud.deleted))
+
+    def test_diagnostic_partial_second_create_failure_cleans_only_its_two_owned_roles(self):
+        self.diagnostic_plan()
+        self.cloud.fail_after_create = ('server', 2)
+        with self.assertRaises(p.ProvisionError):
+            self.prepare()
+        self.assertEqual(self.cloud.items, self.cloud.baseline)
+        self.assertEqual(self.cloud.create_counts['server'], 2)
+        self.assertEqual(sum(kind == 'server' for kind, _ in self.cloud.deleted), 2)
+        self.assertTrue(p._load(p._state(self.out)/'teardown-complete.json')['passed'])
+
+    def test_diagnostic_cleanup_refuses_undeclared_horizontal_role(self):
+        self.diagnostic_plan()
+        resources = self.prepare()
+        rogue = dict(id=999, name=self.plan['prefix']+'-node2', labels=dict(campaign=self.plan['campaign']))
+        self.cloud.items['server'].append(rogue)
+        result = p.teardown(self.plan, self.out, resources, runner=self.cloud, sleep=lambda _: None)
+        self.assertFalse(result['passed'])
+        self.assertNotIn(('server', 999), self.cloud.deleted)
+        self.assertIn(rogue, self.cloud.items['server'])
+        self.assertTrue(result['refused'])
+        self.assertFalse((p._state(self.out)/'teardown-complete.json').exists())
+
     def creation_fixture(self):
         serial = getattr(self, '_creation_serial', 0)+1
         self._creation_serial = serial
@@ -640,6 +810,9 @@ class ProvisionTest(unittest.TestCase):
         resources = self.prepare()
         self.assertTrue(resources['prepared'])
         self.assertEqual(set(resources['nodes']), set(p.ROLES))
+        self.assertEqual({role: node['private_ip'] for role, node in resources['nodes'].items()},
+                         {'node1': '10.93.0.11', 'node2': '10.93.0.12', 'node3': '10.93.0.13',
+                          'client1': '10.93.0.21', 'client2': '10.93.0.22'})
         self.assertEqual(len(resources['ids']['server']), 5)
         self.assertEqual(len(resources['primary_ip_proof']), 5)
         self.assertEqual(len(resources['ids']['placement-group']), 1)
