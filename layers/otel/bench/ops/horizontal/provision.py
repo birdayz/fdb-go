@@ -110,6 +110,18 @@ def _storage_max_outstanding(plan):
     return value
 
 
+def _storage_process_count(plan):
+    if 'storage_process_count' not in plan:
+        return 1
+    value = plan['storage_process_count']
+    if (plan.get('schema') != 'otel_native_diagnostic_v1'
+            or type(value) is not int or value not in (1, 2)):
+        raise ProvisionError('storage_process_count requires diagnostic schema and exact integer 1 or 2')
+    if value == 2 and _storage_max_outstanding(plan) != 64:
+        raise ProvisionError('two storage processes require default max_outstanding 64')
+    return value
+
+
 def _names(plan):
     prefix = plan['prefix']
     suffixes = {'network': 'net', 'firewall': 'fw', 'ssh-key': 'key', 'placement-group': 'spread'}
@@ -127,6 +139,7 @@ def validate_plan(plan, out, clock=time.time):
     if plan.get('approved') is not True:
         raise ProvisionError('an explicitly approved supported campaign plan is required')
     _storage_max_outstanding(plan)
+    _storage_process_count(plan)
     if plan['schema'] == 'otel_native_diagnostic_v1':
         for key, value in (('count', 100000), ('probe_count', 1000000), ('probe_seconds', 120)):
             if type(plan.get(key)) is not int or plan[key] != value:
@@ -1001,6 +1014,9 @@ def render_cluster(plan, nodes, storage_hosts, armid):
     """Pure native R1 layout: fixed control placement and schema-scoped storage hosts."""
     roles = _roles(plan)
     max_outstanding = _storage_max_outstanding(plan)
+    storage_count = _storage_process_count(plan)
+    storage_memory_gib = 2 if storage_count == 2 else 4
+    storage_cache_mib = 1024 if storage_count == 2 else 2048
     fdb_roles = tuple(role for role in roles if role.startswith('node'))
     if plan['schema'] == 'otel_native_diagnostic_v1' and (type(nodes) is not dict or set(nodes) != set(roles)):
         raise ProvisionError('diagnostic layout requires exactly node1 and client1')
@@ -1022,7 +1038,8 @@ def render_cluster(plan, nodes, storage_hosts, armid):
                (4503, 'resolution'), (4504, 'transaction')]
     processes = []
     for node in fdb_roles:
-        specs = (classes if node == 'node1' else []) + ([(4510, 'storage')] if node in selected else [])
+        specs = (classes if node == 'node1' else []) + (
+            [(4510+i, 'storage') for i in range(storage_count)] if node in selected else [])
         for port, cls in specs:
             storage = cls == 'storage'
             address = f'{nodes[node]["private_ip"]}:{port}'
@@ -1031,8 +1048,8 @@ def render_cluster(plan, nodes, storage_hosts, armid):
                     '--cluster-file', root + '/fdb.cluster', '--public-address', address,
                     '--listen-address', address, '--class', cls, '--datadir', f'{root}/data/{port}',
                     '--logdir', root + '/logs', '--locality-machineid', node,
-                    '--locality-zoneid', node, '--memory', '4GiB' if storage else '1GiB',
-                    '--cache-memory', '2GiB' if storage else '64MiB', '--trace-format', 'json',
+                    '--locality-zoneid', node, '--memory', f'{storage_memory_gib}GiB' if storage else '1GiB',
+                    '--cache-memory', ('1GiB' if storage_count == 2 else '2GiB') if storage else '64MiB', '--trace-format', 'json',
                     '--maxlogssize', '128MiB', '--loggroup', plan['campaign']]
             if storage and max_outstanding == 128:
                 args += ['--knob_max_outstanding', '128']
@@ -1053,17 +1070,18 @@ Restart=no
                         'transaction': ['log'], 'storage': ['storage']}[cls]
             processes.append(dict(node=node, address=address, port=port, process_class=cls,
                                   args=args, unit_name=name + '.service', unit=unit,
-                                  memory_gib=4 if storage else 1, cache_mib=2048 if storage else 64,
-                                  memory_limit_bytes=(4 if storage else 1) * GIB,
+                                  memory_gib=storage_memory_gib if storage else 1, cache_mib=storage_cache_mib if storage else 64,
+                                  memory_limit_bytes=(storage_memory_gib if storage else 1) * GIB,
                                   machineid=node, zoneid=node, required_roles=required))
     layout = dict(root=root, cluster_text=cluster + '\n', remote_cluster_file=root + '/fdb.cluster',
                 storage_hosts=selected, processes=processes, configure=CONFIGURE,
                 budgets=dict(fdb_host=dict(cpu_quota_percent=400, allowed_cpus='0-3', memory_max_gib=16,
-                                           max_process_memory_gib=9, max_processes=6),
+                                           max_process_memory_gib=9, max_processes=5+storage_count),
                              client_host=dict(cpu_quota_percent=400, allowed_cpus='0-3', memory_max_gib=16)),
                 storage_engine='ssd-redwood-1', log_engine='ssd-2', redundancy_mode='single')
     if plan['schema'] == 'otel_native_diagnostic_v1':
         layout['storage_max_outstanding'] = max_outstanding
+        layout['storage_process_count'] = storage_count
     return layout
 
 

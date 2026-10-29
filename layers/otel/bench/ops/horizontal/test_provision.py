@@ -421,6 +421,119 @@ class ProvisionTest(unittest.TestCase):
             self.assertTrue(receipt['checksums_preserved'])
             self.assertEqual(receipt['floor_bytes'], p.disk_floor(receipt['total_bytes']))
 
+    def test_storage_process_count_rejects_untyped_legacy_and_two_ss_128_before_effects(self):
+        self.diagnostic_plan()
+        base = copy.deepcopy(self.plan)
+        nodes = {'node1': {'private_ip': '10.93.0.11'}, 'client1': {'private_ip': '10.93.0.21'}}
+        for bad in (None, True, False, 0, 3, 1.0, 2.0, '2', [], {}):
+            self.plan.clear(); self.plan.update(base); self.plan['storage_process_count'] = bad
+            with self.subTest(value=bad), self.assertRaises(p.ProvisionError):
+                self.prepare()
+            with self.assertRaises(p.ProvisionError):
+                p.render_cluster(self.plan, nodes, 1, 'invalid')
+        self.plan.clear(); self.plan.update(base)
+        self.plan.update(storage_process_count=2, storage_max_outstanding=128)
+        with self.assertRaises(p.ProvisionError):
+            self.prepare()
+        with self.assertRaises(p.ProvisionError):
+            p.render_cluster(self.plan, nodes, 1, 'invalid')
+        for count in (1, 2, None, True):
+            self.plan.clear(); self.plan.update(base)
+            self.plan.update(schema='otel_horizontal_v1', storage_process_count=count)
+            with self.subTest(schema='legacy', count=count), self.assertRaises(p.ProvisionError):
+                self.prepare()
+            with self.assertRaises(p.ProvisionError):
+                p.render_cluster(self.plan, {}, 1, 'invalid')
+        self.assertFalse(self.cloud.calls)
+        self.assertFalse(self.cloud.create_counts)
+
+    def test_storage_process_count_one_default_and_explicit_keep_exact_existing_process_bytes(self):
+        self.diagnostic_plan()
+        nodes = {'node1': {'private_ip': '10.93.0.11'}, 'client1': {'private_ip': '10.93.0.21'}}
+        omitted = p.render_cluster(self.plan, nodes, 1, 'same-arm')
+        self.plan['storage_process_count'] = 1
+        p.validate_plan(self.plan, self.out)
+        explicit = p.render_cluster(self.plan, nodes, 1, 'same-arm')
+        self.assertEqual(omitted, explicit)
+        self.assertEqual(omitted['storage_process_count'], 1)
+        self.assertEqual(omitted['budgets']['fdb_host']['max_processes'], 6)
+        legacy_plan = dict(self.plan, schema='otel_horizontal_v1'); del legacy_plan['storage_process_count']
+        legacy_nodes = {role: {'private_ip': '10.93.0.'+str(offset)} for role, offset in
+                        (('node1', 11), ('node2', 12), ('node3', 13), ('client1', 21), ('client2', 22))}
+        legacy = p.render_cluster(legacy_plan, legacy_nodes, 1, 'same-arm')
+        self.assertNotIn('storage_process_count', legacy)
+        self.assertEqual(omitted['processes'], legacy['processes'])
+        for new, old in zip(omitted['processes'], legacy['processes']):
+            self.assertEqual(new['args'], old['args'])
+            self.assertEqual(new['unit'].encode(), old['unit'].encode())
+        self.plan['storage_max_outstanding'] = 128
+        p.validate_plan(self.plan, self.out)
+        allowed = p.render_cluster(self.plan, nodes, 1, 'same-arm')
+        self.assertEqual(allowed['storage_process_count'], 1)
+        self.assertEqual(allowed['storage_max_outstanding'], 128)
+        self.assertEqual(len(allowed['processes']), 6)
+        self.assertFalse(self.cloud.calls)
+
+    def test_two_ss_default_64_uses_ports_4510_4511_with_same_aggregate_budgets_and_seven_units(self):
+        self.diagnostic_plan()
+        base = copy.deepcopy(self.plan)
+        self.plan['storage_process_count'] = 2
+        resources = self.prepare()
+        self.assertEqual(set(resources['nodes']), {'node1', 'client1'})
+        nodes = resources['nodes']
+        default = p.render_cluster(base, nodes, 1, 'same-arm')
+        changed = p.render_cluster(self.plan, nodes, 1, 'same-arm')
+        explicit_64 = dict(self.plan, storage_max_outstanding=64)
+        p.validate_plan(explicit_64, self.out)
+        self.assertEqual(p.render_cluster(explicit_64, nodes, 1, 'same-arm'), changed)
+        self.assertEqual(changed['storage_process_count'], 2)
+        self.assertEqual(changed['storage_max_outstanding'], 64)
+        self.assertEqual(changed['storage_hosts'], ['node1'])
+        self.assertEqual(len(changed['processes']), 7)
+        old_controls = [x for x in default['processes'] if x['process_class'] != 'storage']
+        new_controls = [x for x in changed['processes'] if x['process_class'] != 'storage']
+        self.assertEqual(len(new_controls), 5)
+        self.assertEqual(new_controls, old_controls)
+        storage = [x for x in changed['processes'] if x['process_class'] == 'storage']
+        self.assertEqual({x['port'] for x in storage}, {4510, 4511})
+        self.assertEqual({x['node'] for x in storage}, {'node1'})
+        old_storage = next(x for x in default['processes'] if x['process_class'] == 'storage')
+        for process in storage:
+            expected = list(old_storage['args'])
+            for flag, value in (('--public-address', '10.93.0.11:'+str(process['port'])),
+                                ('--listen-address', '10.93.0.11:'+str(process['port'])),
+                                ('--datadir', changed['root']+'/data/'+str(process['port'])),
+                                ('--memory', '2GiB'), ('--cache-memory', '1GiB')):
+                expected[expected.index(flag)+1] = value
+            self.assertEqual(process['args'], expected)
+            self.assertNotIn('--knob_max_outstanding', process['args'])
+            self.assertEqual(process['memory_limit_bytes'], 2*p.GIB)
+            self.assertEqual(process['cache_mib'], 1024)
+            self.assertEqual(process['unit'].encode(), old_storage['unit'].replace(
+                'ExecStart='+shlex.join(old_storage['args'])+'\n', 'ExecStart='+shlex.join(expected)+'\n').encode())
+        self.assertEqual(sum(x['memory_limit_bytes'] for x in storage), 4*p.GIB)
+        self.assertEqual(sum(x['cache_mib'] for x in storage), 2048)
+        self.assertEqual(sum(x['memory_limit_bytes'] for x in changed['processes']), 9*p.GIB)
+        expected_budgets = copy.deepcopy(default['budgets']); expected_budgets['fdb_host']['max_processes'] = 7
+        self.assertEqual(changed['budgets'], expected_budgets)
+        self.assertEqual(changed['budgets']['fdb_host']['cpu_quota_percent'], 400)
+        self.assertEqual(changed['budgets']['fdb_host']['memory_max_gib'], 16)
+        self.assertEqual(changed['configure'], default['configure'])
+        self.assertEqual(p._host_prepare_script(self.plan), p._host_prepare_script(base))
+        layout = p.setup_cluster(self.plan, self.out, nodes, 1, 'two-ss', runner=self.cloud)
+        self.assertEqual(p._load(layout['receipt'])['storage_process_count'], 2)
+        active = p._load(p._state(self.out)/'active-arm.json')
+        self.assertEqual(set(active['units']), {'node1'})
+        self.assertEqual(len(active['units']['node1']), 7)
+        arm = Path(layout['cluster_file']).parent
+        for process in layout['processes']:
+            self.assertEqual((arm/(process['node']+'-'+process['unit_name'])).read_bytes(), process['unit'].encode())
+        starts = [shlex.split(argv[-1]) for argv, _ in self.cloud.calls if Path(argv[0]).name == 'ssh'
+                  and shlex.split(argv[-1])[:2] == ['systemctl', 'start']
+                  and any(x.startswith('oh-') for x in shlex.split(argv[-1])[2:])]
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(set(starts[0][2:]), set(active['units']['node1']))
+
     def test_diagnostic_prepare_creates_exact_two_pinned_owned_hosts_and_preserves_caps(self):
         self.diagnostic_plan()
         resources = self.prepare()

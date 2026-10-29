@@ -52,7 +52,7 @@ def storage(options):
 def validate_plan(plan, *, check_assets=True):
     require(type(plan) is dict and plan.get("schema") == "otel_horizontal_v1" and plan.get("approved") is True,
             "explicit horizontal approval required")
-    require("storage_max_outstanding" not in plan, "storage I/O override is diagnostic-only")
+    require(not {"storage_max_outstanding", "storage_process_count"} & set(plan), "storage I/O override is diagnostic-only")
     for key in ("campaign", "prefix"):
         require(type(plan.get(key)) is str and re.fullmatch(r"[a-z][a-z0-9-]{7,47}", plan[key]), "invalid " + key)
     require(plan.get("location") == "hel1" and plan.get("server_type") == "ccx43", "sealed host catalog choice")
@@ -222,7 +222,7 @@ def strict_status(d, layout):
     actual = c["processes"]
     require(type(actual) is dict and len(actual) == len(expected), "exact native process population")
     require({x["address"] for x in actual.values()} == set(expected), "unexpected native process address")
-    data = {}
+    data, storage_processes = {}, {}
     exclusive_roles = {"storage", "log", "commit_proxy", "grv_proxy", "resolver"}
     for process in actual.values():
         spec = expected[process["address"]]
@@ -245,9 +245,21 @@ def strict_status(d, layout):
                                   "durable_bytes": storage_counter(role, "durable_bytes"),
                                   "stored_bytes": stored if integer(stored) else None,
                                   "shards": shards if integer(shards) else None, "storage_id": role.get("id")}
+            storage_processes[process["address"]] = {"node": spec["node"], **data[spec["node"]]}
     require(set(data) == set(layout["storage_hosts"]), "all selected storage hosts must be active")
-    return {"healthy": True, "queue_bytes": qos["worst_queue_bytes_storage_server"],
-            "lag_seconds": qos["worst_durability_lag_storage_server"]["seconds"], "storage": data}
+    result = {"healthy": True, "queue_bytes": qos["worst_queue_bytes_storage_server"],
+              "lag_seconds": qos["worst_durability_lag_storage_server"]["seconds"], "storage": data}
+    if layout.get("storage_process_count") == 2:
+        require(len(storage_processes) == 2 and {x["node"] for x in storage_processes.values()} == {"node1"},
+                "exact diagnostic two-storage-process population")
+        values = [storage_processes[address] for address in sorted(storage_processes)]
+        ids = [x["storage_id"] for x in values]
+        identified = all(type(x) is str and x for x in ids) and len(set(ids)) == 2
+        data["node1"] = {key: sum(x[key] for x in values) if identified and all(integer(x[key]) for x in values) else None
+                         for key in ("input_bytes", "durable_bytes", "stored_bytes", "shards")}
+        data["node1"]["storage_ids"] = [x["storage_id"] for x in values]
+        result["storage_processes"] = storage_processes
+    return result
 
 
 def distributed(before, during, hosts, after=()):

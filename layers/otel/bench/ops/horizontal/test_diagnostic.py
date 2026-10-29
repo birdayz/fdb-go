@@ -30,9 +30,9 @@ def plan():
     return value
 
 
-def sampler_grant(role="node1"):
+def sampler_grant(role="node1", storage_process_count=1):
     root = "/srv/otel-horizontal/native-test"
-    ports = (4500, 4501, 4502, 4503, 4504, 4510) if role == "node1" else ()
+    ports = (4500, 4501, 4502, 4503, 4504, *range(4510, 4510+storage_process_count)) if role == "node1" else ()
     processes = []
     for port in ports:
         args = [root+"/bin/fdbserver", "--public-address", "10.93.0.11:"+str(port),
@@ -40,12 +40,15 @@ def sampler_grant(role="node1"):
                 "--datadir", root+"/arms/diagnostic/data/"+str(port), "--loggroup", "native-test"]
         processes.append(dict(port=port, address="10.93.0.11:"+str(port), args=args,
                               unit_name="oh-native-test-diagnostic-"+str(port)+".service"))
-    return dict(schema="otel_native_sampler_v1", role=role, node_id=101 if role == "node1" else 102,
+    value = dict(schema="otel_native_sampler_v1", role=role, node_id=101 if role == "node1" else 102,
                 token="a"*64, producer_grant_sha256="b"*64, binary_sha256="c"*64, fdbserver_sha256="d"*64,
                 first_epoch=1000, deadline_epoch=8200, campaign="native-test", prefix="native-test",
                 root=root, work=root+"/diagnostics/prof20k9000-"+role,
                 arm_root=root+"/arms/diagnostic", binary=root+"/bin/otel-demo", run="prof20k9000",
                 processes=processes)
+    if storage_process_count == 2:
+        value['storage_process_count'] = 2
+    return value
 
 
 def process(pid, start, sequence=0, args=None):
@@ -80,13 +83,17 @@ def frame(grant, sequence):
                 pressure={key: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n" for key in ("cpu", "memory", "io")})
 
 
-def profile_fixture():
-    grants = {role: sampler_grant(role) for role in ("node1", "client1")}
+def profile_fixture(storage_process_count=1):
+    grants = {role: sampler_grant(role, storage_process_count) for role in ("node1", "client1")}
     frames = {role: [frame(grant, i) for i in range(12)] for role, grant in grants.items()}
     receipt = dict(started=True, pid=900, starttime_ticks=9000, node_id=grants['client1']['node_id'],
                    run=grants['client1']['run'], token=grants['client1']['token'],
                    grant_sha256=grants['client1']['producer_grant_sha256'])
     activity = [dict(storage={"node1": dict(storage_id="storage-native", input_bytes=value)}) for value in (10, 20, 30)]
+    if storage_process_count == 2:
+        activity = [dict(storage_processes={"10.93.0.11:"+str(port): dict(node='node1', storage_id='storage-'+str(port),
+                         input_bytes=value, durable_bytes=value-1, stored_bytes=20) for port in (4510, 4511)})
+                    for value in (10, 20, 30)]
     return frames, grants, receipt, activity
 
 
@@ -129,6 +136,55 @@ class DiagnosticTest(unittest.TestCase):
         candidate = plan()
         n.validate_plan(candidate, check_assets=False)
         self.assertNotIn('storage_max_outstanding', candidate)
+
+    def test_storage_process_profiles_are_exact_and_only_three_combinations_are_allowed(self):
+        for count, outstanding in ((1, 64), (1, 128), (2, 64)):
+            candidate = plan(); candidate.update(storage_process_count=count, storage_max_outstanding=outstanding)
+            self.assertIs(n.validate_plan(candidate, check_assets=False), candidate)
+        for value in (None, True, False, 1.0, 2.0, '2', 0, 3, {}, []):
+            candidate = plan(); candidate['storage_process_count'] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'storage process/I/O profile'):
+                n.validate_plan(candidate, check_assets=False)
+        candidate = plan(); candidate.update(storage_process_count=2, storage_max_outstanding=128)
+        with self.assertRaisesRegex(ValueError, 'storage process/I/O profile'):
+            n.validate_plan(candidate, check_assets=False)
+
+    def test_two_storage_profile_requires_seven_native_processes_and_both_ss_ids_exercised(self):
+        frames, grants, receipt, activity = profile_fixture(2)
+        for role in n.ROLES:
+            n.sampler_grant(grants[role])
+        self.assertEqual(len(grants['node1']['processes']), 7)
+        self.assertEqual(n.profile(frames, grants, receipt, activity, True)['verdict'], 'CAPTURED')
+        address = '10.93.0.11:4511'
+        for failure in ('idle', 'missing', 'reset', 'durable-reset', 'unknown', 'duplicate-id', 'changed-id'):
+            changed = copy.deepcopy(activity)
+            if failure == 'missing':
+                del changed[-1]['storage_processes'][address]
+            elif failure == 'reset':
+                changed[-1]['storage_processes'][address]['input_bytes'] = 0
+            elif failure == 'durable-reset':
+                changed[1]['storage_processes'][address]['durable_bytes'] = 0
+            elif failure == 'changed-id':
+                changed[-1]['storage_processes'][address]['storage_id'] = 'replacement'
+            else:
+                for sample in changed:
+                    value = sample['storage_processes'][address]
+                    if failure == 'idle': value['input_bytes'] = 10
+                    elif failure == 'unknown': value['durable_bytes'] = None
+                    elif failure == 'duplicate-id': value['storage_id'] = 'storage-4510'
+            with self.subTest(failure=failure):
+                result = n.profile(frames, grants, receipt, changed, True)
+                self.assert_inconclusive(result)
+                self.assertFalse(result['positive_native_activity'])
+                self.assertTrue(any('not exercised' in reason for reason in result['reasons']))
+        changed = copy.deepcopy(grants); changed['node1']['processes'].pop()
+        with self.assertRaisesRegex(ValueError, 'population'):
+            n.sampler_grant(changed['node1'])
+        self.assert_inconclusive(n.profile(frames, changed, receipt, activity, True))
+        for value in (None, True, 2.0, 3):
+            changed = copy.deepcopy(grants); changed['node1']['storage_process_count'] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'storage process count'):
+                n.sampler_grant(changed['node1'])
 
     def test_plan_rejects_wrong_schema_untyped_counts_and_relaxed_common_caps(self):
         for key, bad in (("schema", "otel_horizontal_v1"), ("approved", 1), ("count", True),
@@ -357,6 +413,30 @@ class DiagnosticTest(unittest.TestCase):
         for port in (4504, 4510):
             paths[port] = logs/('trace.10.93.0.11.'+str(port)+'.1790000000.Ab12CD.1.1.json')
         return arm, bindings, paths
+
+    def test_two_storage_trace_collection_covers_all_three_targets_under_one_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            arm, bindings, paths = self.trace_fixture(tmp)
+            extra = sampler_grant(storage_process_count=2)['processes'][-1]
+            bindings[extra['unit_name']] = dict(pid=999, starttime_ticks=9999, args=extra['args'],
+                                                address=extra['address'], port=4511)
+            paths[4511] = arm/'logs'/'trace.10.93.0.11.4511.1790000000.Ab12CD.1.1.json'
+            for port, path in paths.items():
+                line = json.dumps(dict(Type='AllEventTypes', Machine='10.93.0.11:'+str(port), LogGroup='native-test', Data='x'*80))+'\n'
+                path.write_text(line*20)
+            result = n.trace_tail(arm, 'native-test', bindings, budget=1536, storage_process_count=2)
+            self.assertEqual(result['bytes_read'], 1536)
+            self.assertEqual(result['coverage'], 'CAPTURED')
+            self.assertEqual({x['address'] for x in result['files']}, {'10.93.0.11:'+str(p) for p in (4504, 4510, 4511)})
+            self.assertTrue(all(x['complete_records'] > 0 and 'AllEventTypes' in x['complete_ndjson'] for x in result['files']))
+            paths[4511].unlink()
+            self.assertEqual(n.trace_tail(arm, 'native-test', bindings, storage_process_count=2)['coverage'], 'INCONCLUSIVE')
+            paths[4511].symlink_to(paths[4510])
+            with self.assertRaisesRegex(ValueError, 'symlink'):
+                n.trace_tail(arm, 'native-test', bindings, storage_process_count=2)
+            del bindings[extra['unit_name']]
+            with self.assertRaisesRegex(ValueError, 'targets'):
+                n.trace_tail(arm, 'native-test', bindings, storage_process_count=2)
 
     def test_literal_trace_tail_retains_all_event_types_and_maps_verified_process_not_threadid(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -640,6 +720,23 @@ class DiagnosticTest(unittest.TestCase):
             result = d.read(Path(tmp)/'campaign'/'diagnostic-result.json')
             self.assertIn('strict health failure', result['error'])
             self.assertFalse(result['accepted_throughput'])
+
+    def test_source_after_is_verified_and_written_even_when_cleanup_fails_or_raises(self):
+        for failure in ('false', 'exception'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                campaign, provider = self.diagnostic_controller(tmp)
+                campaign.wave = mock.Mock(side_effect=ValueError('strict health failure'))
+                if failure == 'false': provider.teardown.return_value = dict(passed=False, external_ids_missing=[999])
+                else: provider.teardown.side_effect = OSError('cleanup command failed')
+                with mock.patch.object(n, 'validate_plan'), mock.patch.object(d, 'remaining', return_value=30), \
+                     mock.patch.object(p, 'verify_source', side_effect=[dict(files=1), dict(files=1)]) as verify:
+                    with self.assertRaisesRegex((ValueError, OSError), 'cleanup'):
+                        campaign.run()
+                self.assertEqual(verify.call_count, 2)
+                self.assertEqual(d.read(Path(tmp)/'campaign'/'source-after.json'), dict(files=1))
+                self.assertEqual(d.read(Path(tmp)/'campaign'/'diagnostic-result.json')['error'], 'strict health failure')
+                if failure == 'false':
+                    self.assertFalse(d.read(Path(tmp)/'campaign'/'cleanup.json')['passed'])
 
     def test_remote_cli_readonly_validation_does_not_import_provider_or_start_controller(self):
         with tempfile.TemporaryDirectory() as tmp:

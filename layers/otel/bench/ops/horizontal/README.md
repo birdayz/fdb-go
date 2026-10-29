@@ -168,7 +168,7 @@ preserved for subsequent supervisor/controller checks.
 
 `diagnostic.py` is a separate, explicitly approved `otel_native_diagnostic_v1`
 protocol for exactly **one FDB host (`node1`) and one producer (`client1`)**. It
-uses the same sealed application/native binaries, single-R1 six-process layout,
+uses the same sealed application/native binaries, single-R1 default six-process layout,
 4-CPU/16-GiB slices, host ext4/fsync/checksum checks, transaction/save/retry guards,
 strict health rules, independent teardown supervisor and absolute lifetime limits.
 It does not change the five-node horizontal profile or adopt any existing host.
@@ -205,6 +205,20 @@ capacity. Every hardware, memory/cache, CPU, durability, transaction, row, healt
 and absolute-time guard remains unchanged; a fresh full 100k gate is still
 required before the 120-second probe, and the earlier 64 failure stays failed.
 
+Optional diagnostic-only `storage_process_count` is an exact integer **1 or 2**,
+with default **1**. Only `(count, max_outstanding)` profiles **(1,64), (1,128),
+(2,64)** are allowed. Two storage processes use ports4510/4511 on `node1`, each
+with **2GiB memory/1GiB cache**: aggregate storage remains **4GiB/2GiB**, controls
+remain five unchanged 1GiB processes, total configured FDB memory remains9GiB,
+and role CPU/memory limits stay **4CPU/16GiB**. Default one-process native argv
+and unit bytes remain unchanged. Two default64 processes provide128 aggregate
+I/O slots while adding actor parallelism, but also change cache partitioning,
+pagers and DD scheduling; this is not a pure actor-versus-I/O causal test.
+Diagnostic status preserves both exact SS addresses/IDs and counters, with
+explicit all-process host sums (unknown counters never become zero). Both SS
+identities must remain stable with positive input activity; an idle/missing/
+replaced process is **not exercised / INCONCLUSIVE**, not a two-actor result.
+
 Before producer release, both owned nodes start a one-second sampler inside their
 existing fixed role slice and supply two baseline frames. Frames bind the exact
 node, run, grant hash, token, boot ID and monotonic clock. They capture cgroup
@@ -223,7 +237,7 @@ Frames are incrementally copied during load, not first requested after an abort.
 `finally` aborts the producer, stops/reaps samplers and attempts bounded collection
 before owned-resource deletion; it never postpones an absolute cleanup deadline
 to fill a profile. The exact arm's regular, non-symlink storage-4510/log-4504 trace
-tails share a **16-MiB aggregate** budget across the run. File/address/log-group
+tails (plus storage-4511 for two SS) share a **16-MiB aggregate** budget across the run. File/address/log-group
 mapping is backed by verified native PID/start/cmdline; trace `ThreadID` is not a
 Linux TID. All NDJSON event types are retained, including Redwood, KAIO sync and
 Net2 run-loop records. Missing/zero-count histograms remain unavailable evidence.
@@ -247,5 +261,7 @@ python3 -B layers/otel/bench/ops/horizontal/diagnostic.py run \
 
 The existing immediate teardown CLI applies, with `--teardown-out` equal to
 `<new-diagnostic>/provision`; all ten resource kinds must exactly match this
-campaign's protected baseline. No profiling permission, package installation,
+campaign's protected baseline. Post-run source verification runs even when
+cleanup fails or raises; it does not turn a failed inventory gate into a pass.
+No profiling permission, package installation,
 perf invocation, sysctl, native knob or durability-setting change is implicit.

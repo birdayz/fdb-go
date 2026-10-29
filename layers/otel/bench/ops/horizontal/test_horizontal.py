@@ -99,6 +99,36 @@ class PolicyTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'diagnostic-only'):
                 p.validate_plan(candidate, check_assets=False)
 
+    def test_storage_process_count_is_diagnostic_only(self):
+        for value in (1, 2, True, None, 2.0):
+            candidate = plan(); candidate['storage_process_count'] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'diagnostic-only'):
+                p.validate_plan(candidate, check_assets=False)
+
+    def test_diagnostic_status_keeps_both_storage_ids_counters_and_unknowns_without_legacy_changes(self):
+        document, layout = status_fixture()
+        baseline = p.strict_status(document, layout)
+        self.assertNotIn('storage_processes', baseline)
+        layout['storage_process_count'] = 2
+        first = layout['processes'][0]; first['memory_limit_bytes'] = 2*p.GIB
+        second = copy.deepcopy(first); second['address'] = '10.93.0.2:4511'; layout['processes'].append(second)
+        one = document['cluster']['processes']['one']; one['memory']['limit_bytes'] = 2*p.GIB
+        one['roles'][0].update(id='ss-one', input_bytes=dict(counter=100), durable_bytes=dict(counter=60))
+        two = copy.deepcopy(one); two['address'] = second['address']
+        two['roles'][0].update(id='ss-two', input_bytes=dict(counter=200), durable_bytes=dict(counter=150))
+        document['cluster']['processes'] = {'two': two, 'one': one}
+        result = p.strict_status(document, layout)
+        self.assertEqual(set(result['storage_processes']), {first['address'], second['address']})
+        self.assertEqual(result['storage_processes'][first['address']]['storage_id'], 'ss-one')
+        self.assertEqual(result['storage_processes'][second['address']]['input_bytes'], 200)
+        self.assertEqual(result['storage']['node1']['input_bytes'], 300)
+        self.assertEqual(result['storage']['node1']['durable_bytes'], 210)
+        self.assertEqual(result['storage']['node1']['storage_ids'], ['ss-one', 'ss-two'])
+        del two['roles'][0]['durable_bytes']
+        self.assertIsNone(p.strict_status(document, layout)['storage']['node1']['durable_bytes'])
+        two['roles'][0]['id'] = 'ss-one'
+        self.assertIsNone(p.strict_status(document, layout)['storage']['node1']['input_bytes'])
+
     def test_selected_two_vs_three_study_binds_exact_population_without_mutating_plan(self):
         value = plan(); value["selected_topologies"] = [3, 2]; value["prerequisite_topologies"] = [3, 2, 1]
         before = copy.deepcopy(value)

@@ -3079,3 +3079,22 @@ regressions so they can be proposed upstream after the PoC.
   Supervisors were stopped only after that proof and PID/cmdline binding. No
   receipt was rewritten to PASS, no external resource was recreated or adopted,
   and original source/profile hashes stayed unchanged throughout runtime.
+  The storage-process-only `max_outstanding=128` follow-up also passed its fresh
+  100k gate and captured the failed 1M probe (45 FDB load frames /43.997 seconds).
+  Actual cmdline and native IOActive=128 verified the intervention; waiters still
+  grew and unchanged strict client health failed. The earlier 64 failure stays
+  failed; these sequential profiles establish neither causal CPU/I/O limits nor
+  accepted large-wave throughput. Both retries' global28 gates stayed failed on
+  independently removed external IDs; separate original17/owned-absence proofs
+  and manual 8,624-file/three-asset source verification were preserved. Post-run
+  source verification now runs in a nested finally even if cleanup fails/raises;
+  this evidence fix does not waive the failed inventory gate.
+- [ ] Runtime-verify the prepared diagnostic two-storage-process candidate in a
+  **new explicitly approved window**. Two colocated SS use 2GiB/1GiB cache each,
+  preserving aggregate4GiB/2GiB, CPU4/memory16GiB and unchanged controls/guards.
+  Only (storage processes, max_outstanding) profiles (1,64), (1,128), (2,64) are
+  permitted; retain every SS ID/counter and all three bounded native trace tails.
+  Both SS must be observed active or the capture is not-exercised/INCONCLUSIVE.
+  The candidate is offline-tested, **runtime UNVERIFIED**. The 16:10:38Z window
+  explicitly forgoes this launch: admission reserves/deadlines were not reset or
+  relaxed to squeeze in another paid attempt.
