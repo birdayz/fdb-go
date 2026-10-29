@@ -16,6 +16,7 @@ import fcntl
 import hashlib
 import ipaddress
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -245,6 +246,129 @@ def _mutate(plan, state, argv, runner, clock, guard):
         _check_window(plan, state, clock, guard)
         _command_receipt(plan, state, argv, clock)
         return _checked(runner, argv, timeout=_remaining(plan, 20, clock, active=True))
+
+
+def _attach_action(value, sid, nid, expected_id=None):
+    action = value.get('action') if type(value) is dict else None
+    if (type(action) is not dict or type(action.get('id')) is not int or action['id'] <= 0
+            or expected_id is not None and action['id'] != expected_id
+            or action.get('command') != 'attach_to_network'
+            or action.get('status') not in ('running', 'success', 'error')
+            or 'error' not in action or action['error'] is not None
+            or type(action.get('resources')) is not list):
+        raise ProvisionError('malformed, foreign, or failed network-attach action')
+    identities = []
+    for resource in action['resources']:
+        if (type(resource) is not dict or set(resource) != {'id', 'type'}
+                or type(resource['id']) is not int
+                or (resource['type'], resource['id']) not in (('server', sid), ('network', nid))):
+            raise ProvisionError('network-attach action names a foreign or malformed resource')
+        identities.append((resource['type'], resource['id']))
+    if (len(identities) not in (1, 2) or len(set(identities)) != len(identities)
+            or ('server', sid) not in identities or action['status'] == 'error'):
+        raise ProvisionError('network-attach action lacks its sole owned server or failed')
+    return action
+
+
+def _attach_network(plan, state, resources, server, network, private, runner, clock, guard, sleep):
+    """One POST, then bounded action polling and exact binding readback under the mutation lock."""
+    sid, nid = server.get('id'), network.get('id')
+    if (type(sid) is not int or sid <= 0 or sid not in resources['ids']['server']
+            or sid in resources['protected_ids']['server'] or server.get('name') not in _names(plan)['server']
+            or (server.get('labels') or {}).get('campaign') != plan['campaign']
+            or type(nid) is not int or nid <= 0 or nid not in resources['ids']['network']
+            or nid in resources['protected_ids']['network'] or network.get('name') != plan['prefix']+'-net'
+            or (network.get('labels') or {}).get('campaign') != plan['campaign']
+            or network.get('ip_range') != str(_network(plan))
+            or ipaddress.IPv4Address(private) not in _network(plan)):
+        raise ProvisionError('network attach requires exact new owned server/network IDs')
+    with _lock(state):
+        _check_window(plan, state, clock, guard)
+        until = min(clock() + 120, _active_deadline(plan))
+        if any(item.get('server_id') == sid for item in resources.get('network_attachments', [])):
+            raise ProvisionError('network attach was already submitted or attempted; refusing resubmission')
+        entry = dict(server_id=sid, network_id=nid, private_ip=private, started_epoch=clock(), calls=[])
+        resources.setdefault('network_attachments', []).append(entry)
+        _save_resources(state, resources)
+
+        def api(path, method='GET', data=None):
+            _check_window(plan, state, clock, guard)
+            left = until - clock()
+            if left <= 0:
+                raise ProvisionError('network-attach action exceeded 120-second operation budget')
+            argv = [plan['hcloud'], 'api', path, '--method', method]
+            if data is not None:
+                argv += ['--data', json.dumps(data, sort_keys=True)]
+            timeout = min(left, _remaining(plan, 20, clock, active=True))
+            started, timed_out = clock(), False
+            _command_receipt(plan, state, argv, clock)
+            try:
+                rc, stdout, stderr = _call(runner, argv, timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                rc, stdout, stderr, timed_out = None, exc.stdout or '', exc.stderr or '', True
+            except (OSError, subprocess.SubprocessError) as exc:
+                rc, stdout, stderr = None, '', str(exc)
+            stdout = stdout.decode('utf-8', errors='replace') if isinstance(stdout, bytes) else stdout
+            stderr = stderr.decode('utf-8', errors='replace') if isinstance(stderr, bytes) else stderr
+            receipt = state / f'attach-{sid}-call{len(entry["calls"])+1}.json'
+            _json(receipt, dict(argv=argv, returncode=rc, stdout=stdout, stderr=stderr,
+                                timed_out=timed_out, timeout_seconds=timeout,
+                                epoch=started, finished_epoch=clock()))
+            entry['calls'].append(str(receipt))
+            _save_resources(state, resources)
+            if timed_out or type(rc) is not int or rc != 0:
+                raise ProvisionError(f'network-attach API call failed; no resubmission: stdout={stdout!r}; stderr={stderr!r}')
+            def pairs(items):
+                result = {}
+                for key, value in items:
+                    if key in result:
+                        raise ProvisionError('duplicate network-attach response key')
+                    result[key] = value
+                return result
+            def constant(_):
+                raise ProvisionError('nonfinite attach response')
+            def finite(text):
+                value = float(text)
+                if not math.isfinite(value):
+                    raise ProvisionError('nonfinite attach response')
+                return value
+            try:
+                value = json.loads(stdout, object_pairs_hook=pairs, parse_constant=constant, parse_float=finite)
+            except (TypeError, ValueError) as exc:
+                raise ProvisionError('invalid network-attach API JSON') from exc
+            return value
+
+        response = api(f'/servers/{sid}/actions/attach_to_network', 'POST', dict(network=nid, ip=private))
+        candidate = response.get('action') if type(response) is dict else None
+        if type(candidate) is dict and type(candidate.get('id')) is int and candidate['id'] > 0:
+            entry['action_id'] = candidate['id']
+            _save_resources(state, resources)  # Preserve the returned action ID before validating other fields.
+        action = _attach_action(response, sid, nid)
+        aid = action['id']
+        while True:
+            action = _attach_action(api(f'/networks/actions/{aid}'), sid, nid, aid)
+            _check_window(plan, state, clock, guard)
+            if action['status'] == 'success':
+                break
+            if clock() >= until:
+                raise ProvisionError('network-attach action exceeded 120-second operation budget')
+            sleep(min(2, max(0, until-clock())))
+        response = api(f'/servers/{sid}')
+        actual = response.get('server') if type(response) is dict else None
+        private_net = actual.get('private_net') if type(actual) is dict else None
+        labels = actual.get('labels') if type(actual) is dict else None
+        if (type(actual) is not dict or type(actual.get('id')) is not int or actual['id'] != sid
+                or actual.get('name') != server['name']
+                or type(labels) is not dict or labels.get('campaign') != plan['campaign']
+                or type(private_net) is not list or len(private_net) != 1 or type(private_net[0]) is not dict
+                or type(private_net[0].get('network')) is not int or private_net[0]['network'] != nid
+                or private_net[0].get('ip') != private
+                or private_net[0].get('alias_ips') != []):
+            raise ProvisionError('successful network action lacks exact owned server private-network binding')
+        _check_window(plan, state, clock, guard)
+        entry.update(completed=True, finished_epoch=clock())
+        _save_resources(state, resources)
+        return actual
 
 
 def _arm(plan, out, state, popen, clock, sleep):
@@ -615,8 +739,7 @@ def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.s
                               str(cloud_dir / f'{name}.user-data'), *labels, '--label', 'role=' + role],
                              runner, clock, guard)
             current = _prove_ips(plan, state, resources, runner, clock, guard)[server['id']]
-            _mutate(plan, state, [h, 'server', 'attach-to-network', str(server['id']),
-                                 '--network', str(net['id']), '--ip', private], runner, clock, guard)
+            current = _attach_network(plan, state, resources, current, net, private, runner, clock, guard, sleep)
             _mutate(plan, state, [h, 'server', 'poweron', str(server['id'])], runner, clock, guard)
             node = dict(id=server['id'], name=name, role=role, created=current.get('created'),
                         host=current['public_net']['ipv4']['ip'], public_ipv4=current['public_net']['ipv4']['ip'],
