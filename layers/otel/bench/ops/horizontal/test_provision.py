@@ -35,6 +35,8 @@ class FakeCloud:
         self.create_counts = {}
         self.guard_ready = True
         self.guard_dead = False
+        self.readiness_results = []
+        self.readiness_calls = []
 
     def ident(self):
         self.next_id += 1
@@ -72,6 +74,12 @@ class FakeCloud:
             path.with_name(path.name+'.pub').write_text('ssh-ed25519 QUJD fake\n')
             return 0, '', ''
         if exe == 'ssh':
+            if shlex.split(argv[-1]) == ['cloud-init', 'status', '--wait']:
+                self.readiness_calls.append(list(argv))
+                result = self.readiness_results.pop(0) if self.readiness_results else (0, 'status: done\n', '')
+                if isinstance(result, BaseException):
+                    raise result
+                return result
             if 'initial disk floor' in argv[-1]:
                 total = 360*p.GIB
                 result = dict(filesystem='ext4', native=True, total_bytes=total,
@@ -230,6 +238,126 @@ class ProvisionTest(unittest.TestCase):
         pricing = p._load(resources['pricing_receipt'])
         self.assertTrue(pricing['read_only'])
         self.assertEqual(pricing['server_type']['prices'][0]['location'], 'hel1')
+
+    def test_horizontal_cloud_init_has_nonempty_key_types_and_preserves_pinned_keys(self):
+        resources = self.prepare()
+        state = p._state(self.out)
+        known = []
+        controller = p._cloud_init.read_public_key(self.plan['controller_public_key'])
+        for node in resources['nodes'].values():
+            host = node['name']
+            private, public = p._cloud_init.read_host_key(state / 'host-keys', host)
+            original = p._cloud_init.cloud_config(host, private, public, controller)
+            self.assertIn('ssh_genkeytypes: []\n', original)  # Shared/old emission is untouched.
+            emitted = (state / 'cloud-init' / (host + '.user-data')).read_text()
+            expected = original.replace('package_update: false', 'package_update: true')
+            expected = expected.replace('ssh_genkeytypes: []\n', 'ssh_genkeytypes: [ed25519]\n')
+            expected = expected.replace('package_upgrade: false',
+                                        'package_upgrade: false\npackages: [python3, chrony, jq]')
+            self.assertEqual(emitted, expected)
+            self.assertEqual(emitted.count('ssh_genkeytypes: [ed25519]\n'), 1)
+            self.assertIn('ssh_keys:\n  ed25519_private: |\n' + '\n'.join('    ' + line for line in private), emitted)
+            self.assertIn('  ed25519_public: ' + public + '\n', emitted)
+            known.append(host + ' ' + ' '.join(public.split()[:2]))
+            self.assertIn('UserKnownHostsFile=' + node['known_hosts'], node['ssh'])
+        self.assertEqual((state / 'cloud-init' / 'known_hosts').read_text(), '\n'.join(known) + '\n')
+
+    def test_unexpected_cloud_init_key_field_fails_before_cloud_creation(self):
+        original = p._cloud_init.cloud_config
+        with mock.patch.object(p._cloud_init, 'cloud_config', side_effect=lambda *args:
+                               original(*args).replace('ssh_genkeytypes: []\n', '')):
+            with self.assertRaisesRegex(p.ProvisionError, 'unexpected shared cloud-init'):
+                self.prepare()
+        self.assertFalse(self.cloud.create_counts)
+
+    def test_readiness_success_is_journaled_privately_before_admission(self):
+        resources = self.prepare()
+        state = p._state(self.out)
+        receipts = sorted(state.glob('*-readiness-*.json'))
+        self.assertEqual(len(receipts), 5)
+        self.assertEqual(len(self.cloud.readiness_calls), 5)
+        for path in receipts:
+            receipt = p._load(path)
+            self.assertEqual(receipt['returncode'], 0)
+            self.assertFalse(receipt['timed_out'])
+            self.assertEqual(receipt['stdout'], 'status: done\n')
+            self.assertEqual(receipt['stderr'], '')
+            self.assertGreater(receipt['timeout_seconds'], 0)
+            self.assertLessEqual(receipt['timeout_seconds'], 30)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertTrue(resources['prepared'])
+
+    def test_degraded_completed_readiness_fails_fast_keeps_raw_output_and_cleans(self):
+        self.cloud.readiness_results = [(2, 'status: done\n', 'ssh_genkeytypes: [] is too short\n')]
+        with self.assertRaisesRegex(p.ProvisionError, 'readiness failed \\(2\\).*ssh_genkeytypes'):
+            self.prepare()
+        state = p._state(self.out)
+        self.assertEqual(len(self.cloud.readiness_calls), 1)
+        receipt = p._load(state / 'node1-readiness-1.json')
+        self.assertEqual(receipt['returncode'], 2)
+        self.assertFalse(receipt['timed_out'])
+        self.assertEqual(receipt['stdout'], 'status: done\n')
+        self.assertEqual(receipt['stderr'], 'ssh_genkeytypes: [] is too short\n')
+        self.assertFalse(list(state.glob('*-native.json')))
+        self.assertTrue(p._load(state / 'teardown-complete.json')['passed'])
+        self.assertEqual(self.cloud.items, self.cloud.baseline)
+
+    def test_permanent_readiness_error_never_retries_or_accepts_later_success(self):
+        self.cloud.readiness_results = [(1, 'status: error\n', 'permanent module failure\n'), (0, 'status: done\n', '')]
+        with self.assertRaisesRegex(p.ProvisionError, 'readiness failed \\(1\\).*permanent module failure'):
+            self.prepare()
+        self.assertEqual(len(self.cloud.readiness_calls), 1)
+        self.assertEqual(len(self.cloud.readiness_results), 1)
+        self.assertEqual(self.cloud.items, self.cloud.baseline)
+        self.assertEqual(p._load(p._state(self.out) / 'node1-readiness-1.json')['returncode'], 1)
+
+    def test_readiness_timeout_and_ssh255_retry_but_never_count_as_success(self):
+        self.cloud.readiness_results = [p.subprocess.TimeoutExpired(['ssh'], 30, output=b'booting\n', stderr=b'not ready\n'),
+                                        (255, '', 'Connection refused\n'), (0, 'status: done\n', '')]
+        self.prepare()
+        state = p._state(self.out)
+        receipts = [p._load(state / ('node1-readiness-%d.json' % i)) for i in (1, 2, 3)]
+        self.assertTrue(receipts[0]['timed_out'])
+        self.assertIsNone(receipts[0]['returncode'])
+        self.assertEqual(receipts[0]['stdout'], 'booting\n')
+        self.assertEqual(receipts[0]['stderr'], 'not ready\n')
+        self.assertEqual(receipts[1]['returncode'], 255)
+        self.assertFalse(receipts[1]['timed_out'])
+        self.assertEqual(receipts[1]['stderr'], 'Connection refused\n')
+        self.assertEqual(receipts[2]['returncode'], 0)
+        self.assertEqual(len(self.cloud.readiness_calls), 7)
+
+    def test_readiness_timeout_then_degraded_is_fatal_not_timeout_waiver(self):
+        self.cloud.readiness_results = [p.subprocess.TimeoutExpired(['ssh'], 30), (2, 'degraded\n', 'invalid user-data\n')]
+        with self.assertRaisesRegex(p.ProvisionError, 'readiness failed \\(2\\)'):
+            self.prepare()
+        self.assertEqual(len(self.cloud.readiness_calls), 2)
+        self.assertEqual(self.cloud.items, self.cloud.baseline)
+        receipt = p._load(p._state(self.out) / 'node1-readiness-2.json')
+        self.assertEqual(receipt['stderr'], 'invalid user-data\n')
+
+    def test_readiness_transport_exception_is_journaled_then_fatal(self):
+        self.cloud.readiness_results = [OSError('SSH executable unavailable')]
+        with self.assertRaisesRegex(p.ProvisionError, 'SSH executable unavailable'):
+            self.prepare()
+        receipt = p._load(p._state(self.out) / 'node1-readiness-1.json')
+        self.assertIsNone(receipt['returncode'])
+        self.assertFalse(receipt['timed_out'])
+        self.assertEqual(receipt['stderr'], 'SSH executable unavailable')
+        self.assertEqual(self.cloud.items, self.cloud.baseline)
+
+    def test_readiness_timeout_cannot_reset_original_preparation_cap(self):
+        self.cloud.readiness_results = [p.subprocess.TimeoutExpired(['ssh'], 30), (0, 'status: done\n', '')]
+        now = [time.time()]
+        def sleep(seconds):
+            now[0] += 600
+        with self.assertRaisesRegex(p.ProvisionError, 'preparation budget'):
+            p.prepare(self.plan, self.out, runner=self.cloud, popen=self.cloud.popen,
+                      clock=lambda: now[0], sleep=sleep)
+        self.assertEqual(len(self.cloud.readiness_calls), 1)
+        self.assertEqual(len(self.cloud.readiness_results), 1)
+        self.assertTrue(p._load(p._state(self.out) / 'node1-readiness-1.json')['timed_out'])
+        self.assertEqual(self.cloud.items, self.cloud.baseline)
 
     def test_failed_guard_acknowledgment_means_no_cloud_mutations(self):
         self.cloud.guard_ready, self.cloud.guard_dead = False, True
