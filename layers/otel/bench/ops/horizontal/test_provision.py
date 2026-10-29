@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import tempfile
 import time
@@ -37,6 +38,14 @@ class FakeCloud:
         self.guard_dead = False
         self.readiness_results = []
         self.readiness_calls = []
+        self.attach_post_status = 'success'
+        self.attach_poll_statuses = []
+        self.attach_actions = {}
+        self.attach_api_calls = []
+        self.attach_post_exception = None
+        self.attach_action_mutator = None
+        self.attach_server_mutator = None
+        self.attach_call_hook = None
 
     def ident(self):
         self.next_id += 1
@@ -61,6 +70,68 @@ class FakeCloud:
                 return 1 if cloud.guard_dead else None
 
         return Child()
+
+    def _server_view(self, server):
+        value = copy.deepcopy(server)
+        gid = (value.get('placement_group') or {}).get('id')
+        groups = [g for g in self.items['placement-group'] if g['id'] == gid]
+        if groups:
+            value['placement_group'] = copy.deepcopy(groups[0])
+            value['placement_group']['servers'] = [s['id'] for s in self.items['server']
+                if (s.get('placement_group') or {}).get('id') == gid]
+        return value
+
+    def _attach_api(self, argv, timeout):
+        path = argv[2]
+        method = argv[argv.index('--method')+1] if '--method' in argv else 'GET'
+        self.attach_api_calls.append(dict(path=path, method=method, timeout=timeout, argv=list(argv)))
+        if self.attach_call_hook:
+            self.attach_call_hook(path, method, timeout)
+        post = re.fullmatch(r'/servers/(\d+)/actions/attach_to_network', path)
+        poll = re.fullmatch(r'/networks/actions/(\d+)', path)
+        describe = re.fullmatch(r'/servers/(\d+)', path)
+        if post:
+            if method != 'POST' or 'guard-ready' not in self.events:
+                raise AssertionError('attach POST method/guard mismatch')
+            sid = int(post[1])
+            data = json.loads(argv[argv.index('--data')+1])
+            aid = self.ident()
+            pending = dict(sid=sid, network=data['network'], ip=data['ip'], status=self.attach_post_status)
+            self.attach_actions[aid] = pending
+            phase = 'post'
+            if self.attach_post_exception:
+                raise self.attach_post_exception
+        elif poll:
+            if method != 'GET':
+                raise AssertionError('action poll must be GET')
+            aid = int(poll[1])
+            pending = self.attach_actions[aid]
+            sid = pending['sid']
+            if self.attach_poll_statuses:
+                pending['status'] = self.attach_poll_statuses.pop(0)
+            phase = 'poll'
+        elif describe:
+            if method != 'GET':
+                raise AssertionError('server readback must be GET')
+            sid = int(describe[1])
+            server = self._server_view(next(s for s in self.items['server'] if s['id'] == sid))
+            if self.attach_server_mutator:
+                self.attach_server_mutator(server)
+            return 0, json.dumps(dict(server=server)), ''
+        else:
+            raise AssertionError('unexpected API path: '+path)
+        action = dict(id=aid, command='attach_to_network', status=pending['status'], error=None,
+                      started='2026-10-29T09:30:32Z',
+                      finished='2026-10-29T09:30:51Z' if pending['status'] == 'success' else None,
+                      resources=[dict(type='server', id=sid), dict(type='network', id=pending['network'])])
+        if pending['status'] == 'error':
+            action['error'] = dict(code='attach_failed', message='simulated attach failure')
+        if pending['status'] == 'success':
+            server = next(s for s in self.items['server'] if s['id'] == sid)
+            server['private_net'] = [dict(network=pending['network'], ip=pending['ip'], alias_ips=[])]
+        if self.attach_action_mutator:
+            self.attach_action_mutator(action, phase)
+        return 0, json.dumps(dict(action=action)), ''
 
     def __call__(self, argv, timeout=120):
         self.calls.append((list(argv), timeout))
@@ -92,19 +163,15 @@ class FakeCloud:
         if argv[0] != self.plan['hcloud']:
             raise AssertionError('unexpected executable: ' + repr(argv))
         kind, verb = argv[1:3]
+        if kind == 'api':
+            return self._attach_api(argv, timeout)
         if kind == 'server-type':
             return 0, json.dumps(dict(name='ccx43', cpu_type='dedicated',
                     prices=[dict(location='hel1', price_hourly=dict(net='0.3000', gross='0.3570'))])), ''
         if verb == 'list':
             items = copy.deepcopy(self.items[kind])
             if kind == 'server':
-                for server in items:
-                    gid = (server.get('placement_group') or {}).get('id')
-                    groups = [g for g in self.items['placement-group'] if g['id'] == gid]
-                    if groups:
-                        server['placement_group'] = copy.deepcopy(groups[0])
-                        server['placement_group']['servers'] = [s['id'] for s in self.items['server']
-                            if (s.get('placement_group') or {}).get('id') == gid]
+                items = [self._server_view(server) for server in items]
             return 0, json.dumps(items), ''
         self.events.append(kind+' '+verb)
         if verb == 'create':
@@ -198,6 +265,225 @@ class ProvisionTest(unittest.TestCase):
     def prepare(self):
         return p.prepare(self.plan, self.out, runner=self.cloud, popen=self.cloud.popen,
                          sleep=lambda seconds: None)
+
+    def attachment_fixture(self):
+        serial = getattr(self, '_attachment_serial', 0) + 1
+        self._attachment_serial = serial
+        out = self.root / ('attachment-'+str(serial))
+        state = p._state(out)
+        state.mkdir(mode=0o700, parents=True)
+        cloud = FakeCloud(self.plan, out)
+        server = dict(id=101, name=self.plan['prefix']+'-node1', private_net=[],
+                      labels=dict(campaign=self.plan['campaign']),
+                      public_net=dict(ipv4=dict(id=103, ip='192.0.2.10'),
+                                      ipv6=copy.deepcopy(cloud.ipv6_descriptor)))
+        network = dict(id=102, name=self.plan['prefix']+'-net', ip_range='10.93.0.0/24',
+                       labels=dict(campaign=self.plan['campaign']))
+        cloud.items['server'].append(server)
+        cloud.items['network'].append(network)
+        cloud.next_id = 200
+        cloud.events.append('guard-ready')
+        resources = dict(campaign=self.plan['campaign'], prefix=self.plan['prefix'],
+                         ids={kind: [] for kind in p.KINDS}, nodes={},
+                         protected_ids={kind: [item['id'] for item in cloud.baseline[kind]] for kind in p.KINDS})
+        resources['ids']['server'] = [server['id']]
+        resources['ids']['network'] = [network['id']]
+        p._save_resources(state, resources)
+        now = [float(self.plan['first_epoch']+1)]
+        guard = mock.Mock()
+        guard.poll.return_value = None
+        return dict(out=out, state=state, cloud=cloud, server=server, network=network,
+                    resources=resources, now=now, guard=guard, private='10.93.0.11')
+
+    def attach(self, fixture, sleep=None):
+        if sleep is None:
+            def sleep(seconds):
+                fixture['now'][0] += seconds
+        return p._attach_network(self.plan, fixture['state'], fixture['resources'],
+                                 fixture['server'], fixture['network'], fixture['private'],
+                                 fixture['cloud'], lambda: fixture['now'][0], fixture['guard'], sleep)
+
+    def test_attach_success_persists_action_before_private_network_readback(self):
+        f = self.attachment_fixture()
+        self.attach(f)
+        calls = f['cloud'].attach_api_calls
+        self.assertEqual(sum(c['method'] == 'POST' for c in calls), 1)
+        self.assertEqual(calls[-1]['path'], '/servers/101')
+        self.assertTrue(any(c['path'] == '/networks/actions/201' for c in calls))
+        self.assertFalse(any(re.fullmatch(r'/servers/\d+/actions/\d+', c['path']) for c in calls))
+        self.assertEqual(f['server']['private_net'], [dict(network=102, ip=f['private'], alias_ips=[])])
+        journal = p._load(f['state'] / 'resources.json')
+        self.assertTrue(journal['network_attachments'])
+        self.assertIn('201', json.dumps(journal['network_attachments']))
+        self.assertTrue(all(0 < c['timeout'] <= 20 for c in calls))
+        raw = list(f['state'].glob('attach-*-call*.json'))
+        self.assertGreaterEqual(len(raw), 2)
+        for receipt in raw:
+            self.assertEqual(receipt.stat().st_mode & 0o777, 0o600)
+        evidence = json.dumps([p._load(path) for path in raw])
+        self.assertIn('attach_to_network', evidence)
+        self.assertIn('stdout', evidence)
+        self.assertIn('stderr', evidence)
+        self.assertNotIn('server poweron', f['cloud'].events)
+
+    def test_network_attach_actual_action_shape_and_no_resubmission(self):
+        actual = dict(action=dict(id=664525933777883, command='attach_to_network', status='success',
+                      started='2026-10-29T09:30:32Z', finished='2026-10-29T09:30:51Z',
+                      resources=[dict(type='server', id=173318580), dict(type='network', id=12786571)], error=None))
+        self.assertEqual(p._attach_action(actual, 173318580, 12786571, 664525933777883)['status'], 'success')
+        f = self.attachment_fixture()
+        self.attach(f)
+        before = len(f['cloud'].attach_api_calls)
+        with self.assertRaisesRegex(p.ProvisionError, 'resubmission'):
+            self.attach(f)
+        self.assertEqual(len(f['cloud'].attach_api_calls), before)
+
+    def test_attach_poll_rejects_changed_action_id_and_missing_error(self):
+        for field in ('id', 'error'):
+            f = self.attachment_fixture()
+            f['cloud'].attach_post_status = 'running'
+
+            def corrupt(action, phase):
+                if phase == 'poll':
+                    if field == 'id':
+                        action['id'] += 1
+                    else:
+                        del action['error']
+
+            f['cloud'].attach_action_mutator = corrupt
+            with self.assertRaises(p.ProvisionError):
+                self.attach(f)
+            self.assertEqual(sum(c['method'] == 'POST' for c in f['cloud'].attach_api_calls), 1)
+            self.assertFalse(any(c['path'] == '/servers/101' for c in f['cloud'].attach_api_calls))
+
+    def test_attach_running_longer_than_twenty_seconds_eventually_succeeds(self):
+        f = self.attachment_fixture()
+        cloud = f['cloud']
+        cloud.attach_post_status = 'running'
+        cloud.attach_poll_statuses = ['running']*6 + ['success']
+        started = f['now'][0]
+
+        def elapsed(path, method, timeout):
+            if method == 'GET' and '/actions/' in path:
+                f['now'][0] += 4
+
+        cloud.attach_call_hook = elapsed
+        self.attach(f)
+        self.assertGreater(f['now'][0]-started, 20)
+        self.assertLess(f['now'][0]-started, 120)
+        self.assertEqual(sum(c['method'] == 'POST' for c in cloud.attach_api_calls), 1)
+        self.assertEqual(cloud.attach_api_calls[-1]['path'], '/servers/101')
+        self.assertTrue(all(0 < c['timeout'] <= 20 for c in cloud.attach_api_calls))
+
+    def test_attach_action_may_omit_optional_network_resource(self):
+        f = self.attachment_fixture()
+        f['cloud'].attach_action_mutator = lambda action, phase: action.update(
+            resources=[dict(type='server', id=101)])
+        self.attach(f)
+        self.assertEqual(f['server']['private_net'][0]['network'], 102)
+
+    def test_attach_error_and_running_expiry_never_power_on_or_repeat_post(self):
+        for status in ('error', 'running'):
+            with self.subTest(status=status):
+                f = self.attachment_fixture()
+                f['cloud'].attach_post_status = status
+
+                def elapsed(path, method, timeout):
+                    if method == 'GET' and '/actions/' in path:
+                        f['now'][0] += min(timeout, 10)
+
+                f['cloud'].attach_call_hook = elapsed
+                with self.assertRaises(p.ProvisionError):
+                    self.attach(f)
+                self.assertEqual(sum(c['method'] == 'POST' for c in f['cloud'].attach_api_calls), 1)
+                self.assertFalse(any(c['path'] == '/servers/101' for c in f['cloud'].attach_api_calls))
+                self.assertNotIn('server poweron', f['cloud'].events)
+                self.assertTrue(p._load(f['state'] / 'resources.json')['network_attachments'])
+
+    def test_attach_malformed_or_foreign_actions_fail_closed_with_raw_evidence(self):
+        mutations = [('id', 0), ('id', True), ('id', '201'), ('command', 'rebuild'),
+                     ('command', None), ('status', 'unknown'), ('status', None),
+                     ('error', dict(code='unexpected', message='failure')),
+                     ('resources', []), ('resources', [dict(type='server', id=1)]),
+                     ('resources', [dict(type='server', id=101), dict(type='network', id=2)]),
+                     ('resources', [dict(type='server', id=True)]),
+                     ('resources', [dict(type='server', id=101), dict(type='server', id=101)]),
+                     ('resources', [dict(type='server', id=101, extra='unknown')]),
+                     ('resources', [dict(type='volume', id=101)])]
+        for field, value in mutations:
+            with self.subTest(field=field, value=value):
+                f = self.attachment_fixture()
+                f['cloud'].attach_action_mutator = lambda action, phase, k=field, v=value: action.update({k:v})
+                with self.assertRaises(p.ProvisionError):
+                    self.attach(f)
+                self.assertEqual(sum(c['method'] == 'POST' for c in f['cloud'].attach_api_calls), 1)
+                self.assertTrue(list(f['state'].glob('attach-*-call*.json')))
+                if field != 'id':
+                    journal = p._load(f['state'] / 'resources.json')
+                    self.assertIn('201', json.dumps(journal['network_attachments']))
+                self.assertNotIn('server poweron', f['cloud'].events)
+
+    def test_attach_success_requires_exact_owned_server_and_private_network_readback(self):
+        mutations = [lambda server: server.update(id=1),
+                     lambda server: server.update(name='foreign-server'),
+                     lambda server: server.update(labels=dict(campaign='foreign')),
+                     lambda server: server.update(private_net=[]),
+                     lambda server: server.update(private_net=[dict(network=2, ip='10.93.0.11', alias_ips=[])]),
+                     lambda server: server.update(private_net=[dict(network=102, ip='10.93.0.99', alias_ips=[])]),
+                     lambda server: server.update(private_net=[dict(network=102, ip='10.93.0.11', alias_ips=['10.93.0.99'])])]
+        for mutate in mutations:
+            f = self.attachment_fixture()
+            f['cloud'].attach_server_mutator = mutate
+            with self.assertRaises(p.ProvisionError):
+                self.attach(f)
+            self.assertEqual(sum(c['method'] == 'POST' for c in f['cloud'].attach_api_calls), 1)
+            self.assertTrue(list(f['state'].glob('attach-*-call*.json')))
+            self.assertNotIn('server poweron', f['cloud'].events)
+
+    def test_attach_post_timeout_is_not_replayed_and_raw_partial_output_survives_cleanup(self):
+        self.cloud.attach_post_exception = p.subprocess.TimeoutExpired(
+            ['hcloud', 'api'], 20, output='ambiguous-post-output', stderr='ambiguous-post-stderr')
+        with self.assertRaises((p.ProvisionError, p.subprocess.TimeoutExpired)):
+            self.prepare()
+        self.assertEqual(sum(c['method'] == 'POST' for c in self.cloud.attach_api_calls), 1)
+        self.assertEqual(self.cloud.items, self.cloud.baseline)
+        self.assertTrue(p._load(p._state(self.out) / 'teardown-complete.json')['passed'])
+        raw = list(p._state(self.out).glob('attach-*-call*.json'))
+        self.assertTrue(raw)
+        evidence = json.dumps([p._load(path) for path in raw])
+        self.assertIn('ambiguous-post-output', evidence)
+        self.assertIn('ambiguous-post-stderr', evidence)
+
+    def test_attach_aborts_on_original_active_deadline_dead_guard_or_cleanup_marker(self):
+        for reason in ('deadline', 'guard', 'marker'):
+            with self.subTest(reason=reason):
+                f = self.attachment_fixture()
+                if reason == 'deadline':
+                    f['now'][0] = self.plan['first_epoch']+6000
+                elif reason == 'guard':
+                    f['guard'].poll.return_value = 1
+                else:
+                    p._json(f['state'] / 'cleanup-started.json', dict(epoch=f['now'][0]))
+                with self.assertRaises(p.ProvisionError):
+                    self.attach(f)
+                self.assertFalse(f['cloud'].attach_api_calls)
+        for reason in ('deadline', 'guard', 'marker'):
+            f = self.attachment_fixture()
+            f['cloud'].attach_post_status = 'running'
+
+            def interrupt(seconds):
+                f['now'][0] += seconds
+                if reason == 'deadline':
+                    f['now'][0] = self.plan['first_epoch']+6000
+                elif reason == 'guard':
+                    f['guard'].poll.return_value = 1
+                elif not (f['state'] / 'cleanup-started.json').exists():
+                    p._json(f['state'] / 'cleanup-started.json', dict(epoch=f['now'][0]))
+
+            with self.assertRaises(p.ProvisionError):
+                self.attach(f, sleep=interrupt)
+            self.assertEqual(sum(c['method'] == 'POST' for c in f['cloud'].attach_api_calls), 1)
+            self.assertNotIn('server poweron', f['cloud'].events)
 
     def test_prepare_exact_five_spread_native_hosts_and_pinned_transports(self):
         resources = self.prepare()
