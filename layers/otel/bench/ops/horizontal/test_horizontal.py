@@ -93,6 +93,12 @@ class PolicyTests(unittest.TestCase):
         value["measured_count"] = 100000
         self.assertEqual(p.authorized_rows(value), 1200000)
 
+    def test_storage_max_outstanding_is_never_a_legacy_horizontal_option(self):
+        for value in (64, 128, True, None, 128.0, {'max_outstanding': 128}):
+            candidate = plan(); candidate['storage_max_outstanding'] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'diagnostic-only'):
+                p.validate_plan(candidate, check_assets=False)
+
     def test_selected_two_vs_three_study_binds_exact_population_without_mutating_plan(self):
         value = plan(); value["selected_topologies"] = [3, 2]; value["prerequisite_topologies"] = [3, 2, 1]
         before = copy.deepcopy(value)

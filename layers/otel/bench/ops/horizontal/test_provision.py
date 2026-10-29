@@ -338,6 +338,89 @@ class ProvisionTest(unittest.TestCase):
                 self.prepare()
         self.assertFalse(self.cloud.calls)
 
+    def test_storage_max_outstanding_rejects_malformed_and_all_legacy_usage_before_effects(self):
+        self.diagnostic_plan()
+        base = copy.deepcopy(self.plan)
+        for bad in (None, True, False, 0, 63, 65, 127, 129, 64.0, 128.0, '128', [], {}):
+            self.plan.clear(); self.plan.update(base); self.plan['storage_max_outstanding'] = bad
+            with self.subTest(schema='diagnostic', value=bad), self.assertRaises(p.ProvisionError):
+                self.prepare()
+            with self.assertRaises(p.ProvisionError):
+                p.render_cluster(self.plan, {'node1': {'private_ip': '10.93.0.11'},
+                                            'client1': {'private_ip': '10.93.0.21'}}, 1, 'invalid')
+        for value in (64, 128, None, True):
+            self.plan.clear(); self.plan.update(base); self.plan['schema'] = 'otel_horizontal_v1'
+            self.plan['storage_max_outstanding'] = value
+            with self.subTest(schema='legacy', value=value), self.assertRaises(p.ProvisionError):
+                self.prepare()
+            with self.assertRaises(p.ProvisionError):
+                p.render_cluster(self.plan, {}, 1, 'invalid')
+        self.assertFalse(self.cloud.calls)
+        self.assertFalse(self.cloud.create_counts)
+
+    def test_diagnostic_default_and_explicit_64_keep_legacy_argv_and_unit_bytes_identical(self):
+        self.diagnostic_plan()
+        nodes = {'node1': {'private_ip': '10.93.0.11'}, 'client1': {'private_ip': '10.93.0.21'}}
+        omitted = p.render_cluster(self.plan, nodes, 1, 'same-arm')
+        self.plan['storage_max_outstanding'] = 64
+        p.validate_plan(self.plan, self.out)
+        explicit = p.render_cluster(self.plan, nodes, 1, 'same-arm')
+        self.assertEqual(omitted, explicit)
+        self.assertEqual(omitted['storage_max_outstanding'], 64)
+        legacy_plan = dict(self.plan, schema='otel_horizontal_v1'); del legacy_plan['storage_max_outstanding']
+        legacy_nodes = {role: {'private_ip': '10.93.0.'+str(offset)} for role, offset in
+                        (('node1', 11), ('node2', 12), ('node3', 13), ('client1', 21), ('client2', 22))}
+        legacy = p.render_cluster(legacy_plan, legacy_nodes, 1, 'same-arm')
+        self.assertNotIn('storage_max_outstanding', legacy)
+        self.assertEqual(omitted['processes'], legacy['processes'])
+        for new, old in zip(omitted['processes'], legacy['processes']):
+            self.assertEqual(new['args'], old['args'])
+            self.assertEqual(new['unit'].encode(), old['unit'].encode())
+            self.assertNotIn('--knob_max_outstanding', new['args'])
+            self.assertNotIn('knob_max_outstanding', new['unit'])
+        self.assertFalse(self.cloud.calls)
+
+    def test_diagnostic_128_changes_only_storage_argv_and_preserves_all_resource_and_durability_guards(self):
+        self.diagnostic_plan()
+        base = copy.deepcopy(self.plan)
+        self.plan['storage_max_outstanding'] = 128
+        resources = self.prepare()
+        nodes = resources['nodes']
+        default = p.render_cluster(base, nodes, 1, 'same-arm')
+        changed = p.render_cluster(self.plan, nodes, 1, 'same-arm')
+        self.assertEqual(changed['storage_max_outstanding'], 128)
+        self.assertEqual(changed['budgets'], default['budgets'])
+        self.assertEqual(p._host_prepare_script(self.plan), p._host_prepare_script(base))
+        self.assertEqual(changed['configure'], default['configure'])
+        self.assertEqual(changed['storage_engine'], 'ssd-redwood-1')
+        self.assertEqual(changed['log_engine'], 'ssd-2')
+        self.assertEqual(len(changed['processes']), 6)
+        for new, old in zip(changed['processes'], default['processes']):
+            self.assertEqual({k: v for k, v in new.items() if k not in ('args', 'unit')},
+                             {k: v for k, v in old.items() if k not in ('args', 'unit')})
+            if new['process_class'] == 'storage':
+                self.assertEqual(new['args'], old['args']+['--knob_max_outstanding', '128'])
+                self.assertEqual(new['unit'].encode(), old['unit'].replace(
+                    'ExecStart='+shlex.join(old['args'])+'\n', 'ExecStart='+shlex.join(new['args'])+'\n').encode())
+                self.assertEqual(new['memory_limit_bytes'], 4*p.GIB)
+                self.assertEqual(new['cache_mib'], 2048)
+            else:
+                self.assertEqual(new, old)
+                self.assertNotIn('--knob_max_outstanding', new['args'])
+        layout = p.setup_cluster(self.plan, self.out, nodes, 1, 'storage-128', runner=self.cloud)
+        self.assertEqual(p._load(layout['receipt'])['storage_max_outstanding'], 128)
+        arm = Path(layout['cluster_file']).parent
+        for process in layout['processes']:
+            emitted = (arm/(process['node']+'-'+process['unit_name'])).read_bytes()
+            self.assertEqual(emitted, process['unit'].encode())
+            self.assertEqual(b'--knob_max_outstanding 128' in emitted, process['process_class'] == 'storage')
+        for role in ('node1', 'client1'):
+            receipt = p._load(p._state(self.out)/(role+'-native.json'))
+            self.assertEqual(receipt['filesystem'], 'ext4')
+            self.assertTrue(receipt['fsync_preserved'])
+            self.assertTrue(receipt['checksums_preserved'])
+            self.assertEqual(receipt['floor_bytes'], p.disk_floor(receipt['total_bytes']))
+
     def test_diagnostic_prepare_creates_exact_two_pinned_owned_hosts_and_preserves_caps(self):
         self.diagnostic_plan()
         resources = self.prepare()

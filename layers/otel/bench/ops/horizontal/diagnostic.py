@@ -32,12 +32,15 @@ def validate_plan(plan, *, check_assets=True):
               and type(plan.get("probe_seconds")) is int and plan["probe_seconds"] == 120,
               "fixed 100k gate, 1M diagnostic probe and 120-second probe cap required")
     p.require(type(plan.get("producers", 1)) is int and plan.get("producers", 1) == 1, "exactly one diagnostic producer")
+    p.require(type(plan.get("storage_max_outstanding", 64)) is int and plan.get("storage_max_outstanding", 64) in (64, 128),
+              "diagnostic storage_max_outstanding must be exactly integer 64 or 128")
     p.require(not set(plan) & {"topologies", "selected_topologies", "prerequisite_topologies",
                               "measured_topologies", "measured_count"}, "diagnostic is not a comparative topology study")
     # Reuse the common hardware, source, storage, asset and absolute-time guards.
     # This validation-only projection is never provisioned, written or executed.
     common = {**plan, "schema": "otel_horizontal_v1", "topologies": [1, 2, 3],
               "measured_topologies": [3, 2, 1], "measured_count": 100000}
+    common.pop("storage_max_outstanding", None)
     p.validate_plan(common, check_assets=check_assets)
     return plan
 
@@ -833,6 +836,8 @@ class Diagnostic(d.Campaign):
         d.write(self.out / "source-before.json", source)
         result = {"schema": "otel_native_diagnostic_result_v1", "diagnostic_only": True,
                   "accepted_throughput": False, "authorized_rows": 1100000, "producers": 1,
+                  "storage_max_outstanding": self.plan.get("storage_max_outstanding", 64),
+                  "approved_plan_sha256": p.sha(self.out / "approved-plan.json"),
                   "boundary": "one FDB host and one producer; sampler overhead included in fixed slices; not comparable to two-producer throughput"}
         try:
             self.resources = self.provision.prepare(self.plan, self.out / "provision")

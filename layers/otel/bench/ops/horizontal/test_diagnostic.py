@@ -116,6 +116,20 @@ class DiagnosticTest(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 n.validate_plan(bad, check_assets=False)
 
+    def test_storage_max_outstanding_is_optional_exact_integer_64_or_128(self):
+        for value in (64, 128):
+            candidate = plan(); candidate['storage_max_outstanding'] = value
+            before = copy.deepcopy(candidate)
+            self.assertIs(n.validate_plan(candidate, check_assets=False), candidate)
+            self.assertEqual(candidate, before)
+        for value in (None, True, False, 64.0, 128.0, '128', 0, 63, 65, 127, 129, [], {'max_outstanding': 128}):
+            candidate = plan(); candidate['storage_max_outstanding'] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'storage_max_outstanding'):
+                n.validate_plan(candidate, check_assets=False)
+        candidate = plan()
+        n.validate_plan(candidate, check_assets=False)
+        self.assertNotIn('storage_max_outstanding', candidate)
+
     def test_plan_rejects_wrong_schema_untyped_counts_and_relaxed_common_caps(self):
         for key, bad in (("schema", "otel_horizontal_v1"), ("approved", 1), ("count", True),
                          ("count", 100001), ("probe_count", 100000), ("probe_count", 1000000.0),
@@ -430,6 +444,7 @@ class DiagnosticTest(unittest.TestCase):
 
     def test_process_snapshot_and_native_bindings_use_exact_pid_starttime_cmdline_and_io(self):
         grant = sampler_grant()
+        grant['processes'][-1]['args'] += ['--knob_max_outstanding', '128']
         snapshots = {200+i: process(200+i, 5000+i, args=spec['args']) for i, spec in enumerate(grant['processes'])}
         def command(args, timeout=5):
             unit = args[2]
@@ -441,6 +456,10 @@ class DiagnosticTest(unittest.TestCase):
             self.assertEqual(len(bindings), 6)
             for spec in grant['processes']:
                 self.assertEqual(bindings[spec['unit_name']]['args'], spec['args'])
+            snapshots[205]['cmdline'] = [*grant['processes'][-1]['args'][:-1], '64']
+            with self.assertRaisesRegex(ValueError, 'command changed'):
+                n.native_bindings(grant)
+            snapshots[205]['cmdline'] = grant['processes'][-1]['args']
             snapshots[200]['cmdline'] = ['/foreign/bin/fdbserver']
             with self.assertRaisesRegex(ValueError, 'command changed'):
                 n.native_bindings(grant)
@@ -569,6 +588,7 @@ class DiagnosticTest(unittest.TestCase):
     def test_controller_valid_100k_gate_precedes_single_1m_probe_and_never_accepts_ack_rate(self):
         with tempfile.TemporaryDirectory() as tmp:
             campaign, provider = self.diagnostic_controller(tmp)
+            campaign.plan['storage_max_outstanding'] = 128
             gate = dict(count=100000, producers=1, healthy=True, ingest_valid=True, census_pass=True, oracle_pass=True)
             campaign.wave = mock.Mock(side_effect=[gate, dict(diagnostic_only=True, accepted_throughput=False)])
             with mock.patch.object(n, 'validate_plan'), mock.patch.object(p, 'verify_source', return_value=dict(files=1)), \
@@ -582,6 +602,10 @@ class DiagnosticTest(unittest.TestCase):
             result = d.read(Path(tmp)/'campaign'/'diagnostic-result.json')
             self.assertEqual(result['authorized_rows'], 1100000)
             self.assertEqual(result['producers'], 1)
+            self.assertEqual(result['storage_max_outstanding'], 128)
+            approved = Path(tmp)/'campaign'/'approved-plan.json'
+            self.assertEqual(d.read(approved), campaign.plan)
+            self.assertEqual(result['approved_plan_sha256'], p.sha(approved))
             self.assertTrue(result['diagnostic_only'])
             self.assertFalse(result['accepted_throughput'])
             self.assertNotIn('ack_rows_per_second', result)

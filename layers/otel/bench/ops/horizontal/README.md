@@ -185,6 +185,26 @@ is bounded to 120 seconds; it may stop short. Empty/incomplete ingest JSON leave
 the partial ACK count unknown. Diagnostic summaries never publish an accepted
 ACK-rate or capacity result, even if all ingestion and verification complete.
 
+The optional diagnostic-only `storage_max_outstanding` is an exact integer **64
+or 128**, default **64**. Omitted/64 adds no argument and preserves the original
+native unit/argv bytes. At 128, only storage-4510 receives
+`--knob_max_outstanding 128`; the five control/log processes stay at default 64.
+The effective value is recorded in the layout and diagnostic result, bound to the
+approved-plan receipt hash; the sampler verifies the full native cmdline. This is
+a **combined storage-process Flow/Redwood I/O-pipeline** perturbation, not a pure
+Redwood knob or evidence of physical-disk saturation. There is no
+`REDWOOD_IO_CONCURRENCY` knob and no arbitrary knob dictionary.
+
+Pinned FDB 7.3.77 source `3ea44ce1d9003ad095e408039e1f755c319c4dfb` defines
+`MAX_OUTSTANDING=64` in `flow/Knobs.cpp:181`, uses it for Redwood's pager I/O lock
+in `fdbserver/VersionedBTree.actor.cpp:2020` and for KAIO context/submission/
+completion limits in `fdbrpc/include/fdbrpc/AsyncFileKAIO.actor.h`. The argv spelling
+is accepted by `fdbserver.actor.cpp:1162,1214–1219` and `flow/include/flow/ArgParseUtil.h`'s
+hyphen/underscore normalization. `REDWOOD_IO_PRIORITIES` values are weights, not
+capacity. Every hardware, memory/cache, CPU, durability, transaction, row, health
+and absolute-time guard remains unchanged; a fresh full 100k gate is still
+required before the 120-second probe, and the earlier 64 failure stays failed.
+
 Before producer release, both owned nodes start a one-second sampler inside their
 existing fixed role slice and supply two baseline frames. Frames bind the exact
 node, run, grant hash, token, boot ID and monotonic clock. They capture cgroup

@@ -3058,3 +3058,24 @@ regressions so they can be proposed upstream after the PoC.
   two-host large-wave outcome and no new throughput or 20k claim. No further
   launch is authorized in that window; do not retry the quota, adopt external
   machines, or mutate/delete other work to manufacture capacity or equality.
+- [x] Capture the separate 2026-10-29 one-FDB-host/one-producer native diagnostic;
+  this completes attribution data collection, **not** the throughput/scaling task.
+  The first attempt released no producer: missing cgroup `io.stat` stopped both
+  samplers. Diagnostic-only I/O accounting fixed that prerequisite without
+  changing legacy slices or weakening the missing-file failure guard. The retry's
+  100k gate passed strict health, all 1,100,002 census keys and 1,600 oracle cases.
+  Its 1M probe then failed strict client health; partial completed rows remain
+  unknown and there is **no accepted large-wave/ACK-rate result**. Both stage
+  profiles were CAPTURED: prerequisite node/client load populations 17/17 frames;
+  probe 43/42 frames over 42.010/41.000 seconds, with the producer PID in 39 frames.
+  No cgroup CPU throttling was observed. Native full-interval storage main CPU
+  was about 0.84 core; Redwood I/O slots reached 64 with growing waiters. Biased
+  Net2 stacks and host-device busy/await do not establish a CPU or disk cause;
+  mixed 30-second KAIO windows are not pure-load latency evidence.
+  The protected twenty-eight-ID global cleanup gate **remains failed** because
+  the external campaign's owner independently removed all eleven of its IDs.
+  Fresh ten-kind verification separately proved the original seventeen IDs
+  exactly present and every owned ID absent; missing external IDs were enumerated.
+  Supervisors were stopped only after that proof and PID/cmdline binding. No
+  receipt was rewritten to PASS, no external resource was recreated or adopted,
+  and original source/profile hashes stayed unchanged throughout runtime.
