@@ -18,6 +18,19 @@ p = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(p)
 
 
+def legacy_slice_bytes(kind):
+    return f'''[Unit]
+Description=Horizontal campaign {kind} resource boundary
+[Slice]
+CPUAccounting=yes
+MemoryAccounting=yes
+AllowedCPUs=0-3
+CPUQuota=400%
+MemoryMax=16G
+MemorySwapMax=0
+'''.encode()
+
+
 class FakeCloud:
     def __init__(self, plan, out):
         self.plan, self.out = plan, out
@@ -398,6 +411,51 @@ class ProvisionTest(unittest.TestCase):
         self.assertEqual(len(stops), 1)
         self.assertIn('root@'+nodes['node1']['host'], stops[0])
         self.assertEqual(len(shlex.split(stops[0][-1])[2:]), 6)
+
+    def test_diagnostic_prepare_and_setup_slices_enable_only_io_accounting(self):
+        self.diagnostic_plan()
+        resources = self.prepare()
+        self.assertEqual(set(resources['nodes']), {'node1', 'client1'})
+        state = p._state(self.out)
+        for kind in ('fdb', 'client'):
+            legacy = legacy_slice_bytes(kind)
+            expected = legacy.replace(b'MemoryAccounting=yes\n', b'MemoryAccounting=yes\nIOAccounting=yes\n')
+            self.assertEqual(p._slice(kind).encode(), legacy)
+            self.assertEqual(p._slice(kind, io_accounting=True).encode(), expected)
+            self.assertEqual((state/('horizontal-'+kind+'.slice')).read_bytes(), expected)
+        layout = p.setup_cluster(self.plan, self.out, resources['nodes'], 1, 'diagnostic-slices', runner=self.cloud)
+        arm = Path(layout['cluster_file']).parent
+        for kind in ('fdb', 'client'):
+            name = 'horizontal-'+kind+'.slice'
+            expected = legacy_slice_bytes(kind).replace(b'MemoryAccounting=yes\n',
+                                                        b'MemoryAccounting=yes\nIOAccounting=yes\n')
+            self.assertEqual((arm/name).read_bytes(), expected)
+            self.assertEqual((state/name).read_bytes(), expected)
+            self.assertEqual(expected.count(b'IOAccounting=yes\n'), 1)
+            copies = [argv for argv, _ in self.cloud.calls if Path(argv[0]).name == 'scp'
+                      and argv[-1].endswith('/etc/systemd/system/'+name)]
+            self.assertEqual(len(copies), 2)
+            self.assertEqual({Path(argv[-2]) for argv in copies}, {state/name, arm/name})
+
+    def test_legacy_five_host_prepare_and_setup_slice_bytes_are_exactly_unchanged(self):
+        for kind in ('fdb', 'client'):
+            self.assertEqual(p._slice(kind).encode(), legacy_slice_bytes(kind))
+            self.assertEqual(p._slice(kind, io_accounting=False).encode(), legacy_slice_bytes(kind))
+        resources = self.prepare()
+        self.assertEqual(set(resources['nodes']), set(p.ROLES))
+        state = p._state(self.out)
+        for kind in ('fdb', 'client'):
+            self.assertEqual((state/('horizontal-'+kind+'.slice')).read_bytes(), legacy_slice_bytes(kind))
+        layout = p.setup_cluster(self.plan, self.out, resources['nodes'], 1, 'legacy-slices', runner=self.cloud)
+        arm = Path(layout['cluster_file']).parent
+        for kind, hosts in (('fdb', 3), ('client', 2)):
+            name = 'horizontal-'+kind+'.slice'
+            self.assertEqual((state/name).read_bytes(), legacy_slice_bytes(kind))
+            self.assertEqual((arm/name).read_bytes(), legacy_slice_bytes(kind))
+            copies = [argv for argv, _ in self.cloud.calls if Path(argv[0]).name == 'scp'
+                      and argv[-1].endswith('/etc/systemd/system/'+name)]
+            self.assertEqual(len(copies), hosts*2)
+            self.assertEqual({Path(argv[-2]) for argv in copies}, {state/name, arm/name})
 
     def test_diagnostic_rejects_extra_missing_nodes_or_more_than_one_storage_host_without_commands(self):
         self.diagnostic_plan()
