@@ -1,15 +1,311 @@
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
+filegroup(
+    name = "cpu_controller_support",
+    srcs = [
+        "mn_common.py",
+        "node_sampler.py",
+    ],
+    visibility = ["//tools/benchcampaign/campaigns/fdbmn-rfc282:__pkg__"],
+)
+
+filegroup(
+    name = "guarded_controller_support",
+    srcs = [
+        "campaign_cloud.py",
+        "campaign_safety.py",
+        "creation_ledger.py",
+        "inventory.py",
+        "mn_common.py",
+        "primary_ip_check.py",
+        "provision.py",
+        "teardown_guard.py",
+        "test_campaign_safety.py",
+    ],
+)
+
+sh_test(
+    name = "guarded_initialize_test",
+    srcs = ["test_guarded_initialize.sh"],
+    data = [
+        "test_guarded_initialize.py",
+        ":guarded_controller_support",
+    ],
+)
+
+sh_test(
+    name = "guarded_provenance_test",
+    srcs = ["test_guarded_provenance.sh"],
+    data = [
+        "test_guarded_initialize.py",
+        "test_guarded_provenance.py",
+        ":guarded_controller_support",
+    ],
+)
+
+sh_test(
+    name = "creation_ledger_test",
+    srcs = ["test_creation_ledger.sh"],
+    data = [
+        "creation_ledger.py",
+        "mn_common.py",
+        "test_creation_ledger.py",
+    ],
+)
+
+sh_test(
+    name = "creation_ledger_cost_test",
+    srcs = ["test_creation_ledger_cost.sh"],
+    data = [
+        "creation_ledger.py",
+        "mn_common.py",
+        "test_creation_ledger.py",
+        "test_creation_ledger_cost.py",
+    ],
+)
+
+sh_test(
+    name = "creation_ledger_normalizer_test",
+    srcs = ["test_creation_ledger_normalizer.sh"],
+    data = [
+        "creation_ledger.py",
+        "mn_common.py",
+        "test_creation_ledger.py",
+        "test_creation_ledger_normalizer.py",
+    ],
+)
+
+sh_test(
+    name = "campaign_concurrency_test",
+    srcs = ["test_campaign_concurrency.sh"],
+    data = [
+        "test_campaign_concurrency.py",
+        "test_guarded_initialize.py",
+        "test_guarded_orchestration.py",
+        ":guarded_controller_support",
+    ],
+)
+
+sh_test(
+    name = "campaign_verified_test",
+    srcs = ["test_campaign_verified.sh"],
+    data = [
+        "test_campaign_cloud.py",
+        "test_campaign_verified.py",
+        "test_guarded_cli.py",
+        ":guarded_controller_support",
+    ],
+)
+
+sh_test(
+    name = "campaign_acknowledgements_test",
+    srcs = ["test_campaign_acknowledgements.sh"],
+    data = [
+        "test_campaign_acknowledgements.py",
+        "test_campaign_cloud.py",
+        ":guarded_controller_support",
+    ],
+)
+
+sh_test(
+    name = "campaign_retirement_test",
+    srcs = ["test_campaign_retirement.sh"],
+    data = [
+        "test_campaign_retirement.py",
+        ":guarded_controller_support",
+    ],
+)
+
+sh_test(
+    name = "campaign_continuity_test",
+    srcs = ["test_campaign_continuity.sh"],
+    data = [
+        "test_campaign_acknowledgements.py",
+        "test_campaign_cloud.py",
+        "test_campaign_continuity.py",
+        ":guarded_controller_support",
+    ],
+)
+
+sh_test(
+    name = "campaign_canonical_test",
+    srcs = ["test_campaign_canonical.sh"],
+    data = [
+        "test_campaign_canonical.py",
+        ":guarded_controller_support",
+    ],
+)
+
+sh_test(
+    name = "campaign_server_identity_test",
+    srcs = ["test_campaign_server_identity.sh"],
+    data = [
+        "test_campaign_canonical.py",
+        "test_campaign_server_identity.py",
+        ":guarded_controller_support",
+    ],
+)
+
+sh_test(
+    name = "campaign_completion_absence_test",
+    srcs = ["test_campaign_completion_absence.sh"],
+    data = [
+        "test_campaign_completion_absence.py",
+        ":guarded_controller_support",
+    ],
+)
+
+sh_test(
+    name = "campaign_publication_test",
+    srcs = ["test_campaign_publication.sh"],
+    data = [
+        "test_campaign_publication.py",
+        ":guarded_controller_support",
+    ],
+)
+
+sh_test(
+    name = "campaign_recovery_progress_test",
+    srcs = ["test_campaign_recovery_progress.sh"],
+    data = [
+        "test_campaign_recovery_progress.py",
+        ":guarded_controller_support",
+    ],
+)
+
+sh_test(
+    name = "campaign_action_observations_test",
+    srcs = ["test_campaign_action_observations.sh"],
+    data = [
+        "test_campaign_action_observations.py",
+        "test_campaign_cloud.py",
+        ":guarded_controller_support",
+    ],
+)
+
+sh_test(
+    name = "campaign_timestamps_test",
+    srcs = ["test_campaign_timestamps.sh"],
+    data = [
+        "test_campaign_timestamps.py",
+        ":guarded_controller_support",
+    ],
+)
+
+sh_test(
+    name = "campaign_terminal_test",
+    srcs = ["test_campaign_terminal.sh"],
+    data = [
+        "test_campaign_terminal.py",
+        ":guarded_controller_support",
+    ],
+)
+
+sh_test(
+    name = "campaign_admission_test",
+    srcs = ["test_campaign_admission.sh"],
+    data = [
+        "test_campaign_admission.py",
+        ":guarded_controller_support",
+    ],
+)
+
+sh_test(
+    name = "campaign_lifetime_test",
+    srcs = ["test_campaign_lifetime.sh"],
+    data = [
+        "test_campaign_lifetime.py",
+        ":guarded_controller_support",
+    ],
+)
+
+sh_test(
+    name = "guarded_observation_test",
+    srcs = ["test_guarded_observation.sh"],
+    data = [
+        "test_guarded_observation.py",
+        "test_guarded_readbacks.py",
+        ":guarded_orchestration_support",
+    ],
+)
+
+sh_test(
+    name = "campaign_read_budgets_test",
+    srcs = ["test_campaign_read_budgets.sh"],
+    data = [
+        "test_campaign_cloud.py",
+        "test_campaign_read_budgets.py",
+        ":guarded_controller_support",
+    ],
+)
+
+filegroup(
+    name = "guarded_orchestration_support",
+    srcs = [
+        "test_guarded_initialize.py",
+        "test_guarded_orchestration.py",
+        ":guarded_controller_support",
+    ],
+)
+
+sh_test(
+    name = "guarded_orchestration_test",
+    srcs = ["test_guarded_orchestration.sh"],
+    data = [":guarded_orchestration_support"],
+)
+
+sh_test(
+    name = "guarded_guard_loop_test",
+    srcs = ["test_guarded_guard_loop.sh"],
+    data = [":guarded_orchestration_support"],
+)
+
+sh_test(
+    name = "guarded_repair_cli_test",
+    srcs = ["test_guarded_repair_cli.sh"],
+    data = [":guarded_orchestration_support"],
+)
+
+sh_test(
+    name = "guarded_checker_readback_test",
+    srcs = ["test_guarded_checker_readback.sh"],
+    data = [
+        "test_guarded_readbacks.py",
+        ":guarded_orchestration_support",
+    ],
+)
+
+sh_test(
+    name = "guarded_caller_budget_test",
+    srcs = ["test_guarded_caller_budget.sh"],
+    data = [
+        "test_guarded_readbacks.py",
+        ":guarded_orchestration_support",
+    ],
+)
+
+sh_test(
+    name = "guarded_inputs_test",
+    srcs = ["test_guarded_inputs.sh"],
+    data = [
+        "test_guarded_inputs.py",
+        "test_guarded_readbacks.py",
+        ":guarded_orchestration_support",
+    ],
+)
+
 # Standard-library unit tests for the multi-node campaign tooling. They use
 # temporary fixtures and fake command runners only: no hcloud, ssh or FDB.
-sh_test(
-    name = "multinode_test",
-    srcs = ["test.sh"],
-    data = [
+filegroup(
+    name = "multinode_test_inputs",
+    srcs = [
         "bench_runner_mn.py",
         "build_reconcile_input.py",
+        "campaign_cloud.py",
+        "campaign_safety.py",
         "client_campaign_mn.py",
         "cluster_gate.py",
+        "creation_ledger.py",
         "fdb_cluster.py",
         "inventory.py",
         "mn_common.py",
@@ -24,7 +320,11 @@ sh_test(
         "teardown_guard.py",
         "test_bench_runner_mn.py",
         "test_build_reconcile_input.py",
+        "test_campaign_cloud.py",
+        "test_campaign_safety.py",
         "test_client_campaign_mn.py",
+        "test_guarded_cli.py",
+        "test_guarded_recovery.py",
         "test_inventory.py",
         "test_multinode.py",
         "test_node_sampler.py",
@@ -39,4 +339,28 @@ sh_test(
         "//tools/clientbench/scripts:r3_plan.py",
         "//tools/clientbench/scripts:run.py",
     ],
+)
+
+sh_test(
+    name = "multinode_test",
+    srcs = ["test.sh"],
+    data = [":multinode_test_inputs"],
+)
+
+sh_test(
+    name = "campaign_safety_test",
+    srcs = ["test_campaign_safety.sh"],
+    data = [":multinode_test_inputs"],
+)
+
+sh_test(
+    name = "guarded_cli_test",
+    srcs = ["test_guarded_cli.sh"],
+    data = [":multinode_test_inputs"],
+)
+
+sh_test(
+    name = "guarded_recovery_test",
+    srcs = ["test_guarded_recovery.sh"],
+    data = [":multinode_test_inputs"],
 )

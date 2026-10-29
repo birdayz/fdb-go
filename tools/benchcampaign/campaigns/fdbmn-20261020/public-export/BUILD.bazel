@@ -1,5 +1,18 @@
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
+# Pure accounting helpers reused by the RFC-282 exporter; historical export
+# behavior and frozen publications remain unchanged.
+filegroup(
+    name = "analysis_helpers",
+    srcs = [
+        "export_public_results.py",
+        "export_throughput.py",
+        "m2_throughput.py",
+        "test_m2_throughput.py",
+    ],
+    visibility = ["//tools/benchcampaign/campaigns/fdbmn-rfc282:__pkg__"],
+)
+
 # Tiny offline fixtures; no private campaign inputs or estimators.
 sh_test(
     name = "export_public_results_test",

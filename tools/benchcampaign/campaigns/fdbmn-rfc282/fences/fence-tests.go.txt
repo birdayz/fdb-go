@@ -1,0 +1,80 @@
+func TestMeasurementFencesUseOriginalTimes(t *testing.T) {
+	t.Parallel()
+	warm := RunPhase(2, 1, func(i, w int) (int, error) { return 1, nil })
+	measured := RunPhase(17, 4, func(i, w int) (int, error) { return 1, nil })
+	fences, err := measured.measurementFences()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if measured.WallNS != measured.Ended.Sub(measured.Started).Nanoseconds() || measured.Started.Before(warm.Ended) {
+		t.Fatal("measured fences include warmup or disagree with the original wall window")
+	}
+	if fences["measured_started_unix_ns"] != measured.Started.UnixNano() || fences["measured_ended_unix_ns"] != measured.Ended.UnixNano() {
+		t.Fatal("fences were not derived from the measured phase")
+	}
+	for _, sample := range measured.Samples {
+		if sample.StartOffsetNS < 0 || sample.StartOffsetNS+sample.LatencyNS > measured.WallNS {
+			t.Fatalf("sample outside measured window: %+v", sample)
+		}
+	}
+}
+
+func TestMeasurementFencesRejectInvalidPhase(t *testing.T) {
+	t.Parallel()
+	start := time.Unix(1792000000, 123456789)
+	valid := Phase{Started: start, Ended: start.Add(123456789 * time.Nanosecond), WallNS: 123456789, Completed: 17}
+	for _, mutate := range []func(*Phase){
+		func(p *Phase) { p.Started, p.Ended = p.Ended, p.Started },
+		func(p *Phase) { p.Ended = p.Started },
+		func(p *Phase) { p.Started = time.Time{} },
+		func(p *Phase) { p.WallNS++ },
+		func(p *Phase) { p.Completed = 0 },
+		func(p *Phase) { p.Errors = 1 },
+	} {
+		p := valid
+		mutate(&p)
+		if fences, err := p.measurementFences(); err == nil || fences != nil {
+			t.Fatalf("invalid phase accepted: %+v", p)
+		}
+	}
+}
+
+func TestMeasurementFencesKeepNanosecondPrecision(t *testing.T) {
+	t.Parallel()
+	start := time.Unix(1792000000, 123456789)
+	p := Phase{Started: start, Ended: start.Add(987654321 * time.Nanosecond), WallNS: 987654321, Completed: 17}
+	fences, err := p.measurementFences()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "fences.json")
+	if err := WriteJSON(path, fences); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Format   string `json:"measured_fences_format"`
+		Start    int64  `json:"measured_started_unix_ns"`
+		End      int64  `json:"measured_ended_unix_ns"`
+		StartUTC string `json:"measured_started_utc"`
+		EndUTC   string `json:"measured_ended_utc"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Format != "fdb-bench-measured-fences/v1" || got.Start != start.UnixNano() || got.End != p.Ended.UnixNano() {
+		t.Fatalf("lost integer timestamp precision: %+v", got)
+	}
+	for _, endpoint := range []struct {
+		text string
+		want time.Time
+	}{{got.StartUTC, start}, {got.EndUTC, p.Ended}} {
+		parsed, err := time.Parse(time.RFC3339Nano, endpoint.text)
+		if err != nil || parsed.UnixNano() != endpoint.want.UnixNano() {
+			t.Fatalf("UTC fence disagrees with Unix ns: %q", endpoint.text)
+		}
+	}
+}

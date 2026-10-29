@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RFC-282 public results v2 observed cgroup accounting section",
+  "type": "object",
+  "required": ["format", "server_cgroup_accounting", "method"],
+  "properties": {
+    "format": {"const": "fdbmn-rfc282-public-results/v2"},
+    "server_cgroup_accounting": {
+      "type": "array",
+      "items": {"oneOf": [{"$ref": "#/$defs/observed"}, {"$ref": "#/$defs/unavailable"}]}
+    },
+    "method": {
+      "type": "object",
+      "required": ["server_cpu"],
+      "properties": {"server_cpu": {"$ref": "#/$defs/method"}}
+    }
+  },
+  "$defs": {
+    "phase": {"enum": ["M1w1", "M1w8", "M1w32", "M1w64", "M2rl", "M2skip"]},
+    "counter": {"type": "integer", "minimum": 0},
+    "seconds": {"type": "number", "minimum": 0},
+    "timestamp": {"type": "integer", "minimum": 1},
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observed_accounted_cpu_usec", "observed_accounted_cpu_seconds", "sample_bracket_started_unix_ns", "sample_bracket_ended_unix_ns", "sample_bracket_wall_ns", "observed_accounted_user_cpu_seconds", "observed_accounted_system_cpu_seconds", "sample_sequence", "inner_intervals", "observed_intervals", "temporal_selection_allowance_ns", "phase_correlation_range_ns", "processes"],
+      "properties": {
+        "observed_accounted_cpu_usec": {"$ref": "#/$defs/counter"},
+        "observed_accounted_cpu_seconds": {"$ref": "#/$defs/seconds"},
+        "sample_bracket_started_unix_ns": {"$ref": "#/$defs/timestamp"},
+        "sample_bracket_ended_unix_ns": {"$ref": "#/$defs/timestamp"},
+        "sample_bracket_wall_ns": {"type": "integer", "minimum": 1},
+        "observed_accounted_user_cpu_seconds": {"type": ["number", "null"], "minimum": 0},
+        "observed_accounted_system_cpu_seconds": {"type": ["number", "null"], "minimum": 0},
+        "sample_sequence": {"type": "array", "items": {"$ref": "#/$defs/counter"}, "minItems": 2, "maxItems": 2},
+        "inner_intervals": {"$ref": "#/$defs/counter"},
+        "observed_intervals": {"type": "integer", "minimum": 1},
+        "temporal_selection_allowance_ns": {"$ref": "#/$defs/counter"},
+        "phase_correlation_range_ns": {"$ref": "#/$defs/counter"},
+        "processes": {"enum": [5, 7]}
+      }
+    },
+    "observed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "case", "arm", "block", "status", "nodes", "observed_accounted_cpu_usec", "observed_accounted_cpu_seconds", "actual_window_cpu_available", "requested_window_started_unix_ns", "requested_window_ended_unix_ns", "window_kind", "scope"],
+      "properties": {
+        "phase": {"$ref": "#/$defs/phase"},
+        "case": {"type": "string", "minLength": 1},
+        "arm": {"enum": ["before", "final", "cgo", "final-ordinary", "final-remote"]},
+        "block": {"type": "integer", "minimum": 0, "maximum": 5},
+        "status": {"const": "observed"},
+        "nodes": {
+          "type": "object", "additionalProperties": false, "required": ["node1", "node2", "node3"],
+          "properties": {"node1": {"$ref": "#/$defs/node"}, "node2": {"$ref": "#/$defs/node"}, "node3": {"$ref": "#/$defs/node"}}
+        },
+        "observed_accounted_cpu_usec": {"$ref": "#/$defs/counter"},
+        "observed_accounted_cpu_seconds": {"$ref": "#/$defs/seconds"},
+        "actual_window_cpu_available": {"const": false},
+        "requested_window_started_unix_ns": {"$ref": "#/$defs/timestamp"},
+        "requested_window_ended_unix_ns": {"$ref": "#/$defs/timestamp"},
+        "window_kind": {"enum": ["measured-client-UTC-fences", "process-lifecycle-UTC"]},
+        "scope": {"const": "17 exclusive FDB unit cgroup published usage_usec deltas over three node-specific sample-read brackets; scheduler accounting debt is unquantified and runtime may originate outside the brackets"}
+      }
+    },
+    "unavailable": {
+      "type": "object", "additionalProperties": false,
+      "required": ["phase", "case", "status", "actual_window_cpu_available", "reason"],
+      "properties": {
+        "phase": {"$ref": "#/$defs/phase"}, "case": {"type": "string", "minLength": 1},
+        "status": {"const": "CPU-unavailable"}, "actual_window_cpu_available": {"const": false},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "method": {
+      "type": "object", "additionalProperties": false,
+      "required": ["metric", "source", "actual_window_cpu_available", "scheduler_accounting_debt", "fleet_aggregation", "execution_attribution"],
+      "properties": {
+        "metric": {"const": "observed-cgroup-accounting-delta"},
+        "source": {"const": "exclusive-cgroup-v2-usage-usec"},
+        "actual_window_cpu_available": {"const": false},
+        "scheduler_accounting_debt": {"const": "unquantified; runtime may originate outside sample-read brackets"},
+        "fleet_aggregation": {"const": "sum of observed deltas over three node-specific brackets"},
+        "execution_attribution": {"const": "unavailable; no actual-window CPU, bounds, CPU/op, rates or server ratio confidence intervals"}
+      }
+    }
+  }
+}
