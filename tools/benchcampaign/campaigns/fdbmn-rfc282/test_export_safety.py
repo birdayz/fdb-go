@@ -112,6 +112,56 @@ class SafetyTests(unittest.TestCase):
                 export.legacy_io.validate_public({'results.json': json.dumps(output) + '\n'},
                                                 {'identifiers': ['synthetic-private'], 'names': []})
 
+    def test_caller_provenance_and_chrony_fail_independently_without_partial_accounting(self):
+        reasons = dict(base_hash='R4/base receipt hash differs', boot='R4/sidecar process identity differs',
+                       pid='R4/sidecar process identity differs', starttime='R4/sidecar process identity differs',
+                       samples_hash='sidecar stop hash differs', units='R4/sidecar unit population differs',
+                       chrony_rc='sidecar chrony failed', chrony_parse='sidecar chrony invalid')
+        for mutation, reason in reasons.items():
+            with self.subTest(mutation=mutation):
+                inputs, report, layout, rows, parser = cpu_fixture()
+                healthy = export.cpu_rows(inputs, 'M2rl', report, layout, rows, parser)
+                self.assertEqual([row['status'] for row in healthy], ['observed', 'observed'])
+                self.assertEqual([row['observed_accounted_cpu_usec'] for row in healthy], [13940000, 13940000])
+                root = 'telemetry-cpu/M2rl/node1'
+                base_path = 'telemetry/M2rl/node1/receipt-start.json'
+                base = inputs.values[base_path]
+                if mutation == 'base_hash':
+                    report['inputs_sha256']['/srv/fdb-bench/' + base_path] = '0' * 64
+                if mutation == 'boot':
+                    base['boot_id'] = 'different-base-boot'
+                if mutation in ('pid', 'starttime'):
+                    identity = next(iter(base['units']['starttimes'].values()))
+                    identity[mutation] = 99999 if mutation == 'pid' else '99999'
+                if mutation in ('boot', 'pid', 'starttime'):
+                    report['inputs_sha256']['/srv/fdb-bench/' + base_path] = inputs.digest(base_path)
+                if mutation == 'samples_hash':
+                    inputs.values[root + '/receipt-stop.json']['samples_sha256'] = '0' * 64
+                if mutation == 'units':
+                    report['nodes']['node1']['units'].pop()
+                if mutation == 'chrony_rc':
+                    inputs.values[root + '/receipt-stop.json']['chrony']['rc'] = 1
+                if mutation == 'chrony_parse':
+                    parser = SimpleNamespace(parse_chrony_tracking=lambda text: ({}, ['invalid tracking']),
+                                             chrony_error_bound=lambda fields: Decimal('0'))
+                # Cross-source failures are not aliases for malformed sidecar identities/counters.
+                start, stop = (inputs.load(root + '/receipt-' + kind + '.json') for kind in ('start', 'stop'))
+                samples = [json.loads(line) for line in inputs.text(root + '/samples.jsonl').splitlines()]
+                export.server_cpu.validate_node(start, stop, samples, 'node1', 'M2rl',
+                                                export.server_cpu.unit_population(layout)['node1'], max_gap_ns=20_000_000)
+                before = copy.deepcopy(report)
+                processes = copy.deepcopy(rows)
+                result = export.cpu_rows(inputs, 'M2rl', report, layout, rows, parser)
+                self.assertEqual(len(result), 1)
+                self.assertEqual((result[0]['case'], result[0]['status'], result[0]['reason']),
+                                 ('small-limit1-forward', 'CPU-unavailable', reason))
+                fixtures.assert_accounting_only(self, result[0])
+                self.assertTrue(set(result[0]).isdisjoint({'arm', 'block', 'nodes', 'observed_accounted_cpu_usec',
+                                                         'observed_accounted_cpu_seconds'}))
+                self.assertEqual(report, before)
+                self.assertEqual(rows, processes)
+                self.assertEqual(report['cases'][0]['verdict'], 'clean')
+
     def test_malformed_last_arm_fence_omits_whole_case_without_private_diagnostics(self):
         for value in (None, [], {}, 1):
             with self.subTest(value=value):

@@ -56,6 +56,38 @@ class Tests(unittest.TestCase):
         c.pull = Mock(side_effect=lambda role, remote, local: b'synthetic archive')
         return c, layout, receipts
 
+    def test_real_constructor_accepts_external_campaign_and_refuses_checkout_before_writes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            external = root / 'external'
+            checkout = root / 'checkout'
+            external.mkdir()
+            checkout.mkdir()
+            (checkout / '.git').mkdir()
+            inside = checkout / 'campaign'
+            inside.mkdir()
+            for campaign in (external, inside):
+                (campaign / 'state.json').write_text(json.dumps(dict(deadline_epoch=1792000300)))
+            transport = Mock(side_effect=AssertionError('constructor must not dispatch transport'))
+            args = SimpleNamespace(campaign_dir=str(external), phase='M1w1', label=None, diagnostic=False)
+            c = controller.Controller(args, transport=transport)
+            self.assertEqual(c.base, external.resolve())
+            self.assertEqual(c.folder, external / 'phase-controller/M1w1')
+            self.assertTrue(c.folder.is_dir())
+            self.assertEqual(c.hard_deadline, 1792000300)
+            self.assertEqual(c.cpu_unit, 'fdb-mn-cpu-M1w1.service')
+            self.assertEqual(c.sampler_unit, 'fdb-mn-sampler-M1w1.service')
+            transport.assert_not_called()
+            before = {path.relative_to(checkout): path.read_bytes() for path in checkout.rglob('*') if path.is_file()}
+            args.campaign_dir = str(inside)
+            with self.assertRaisesRegex(controller.mn_common.GuardError, 'campaign directory .*inside a Git work tree'):
+                controller.Controller(args, transport=transport)
+            self.assertFalse((inside / 'phase-controller').exists())
+            self.assertEqual({path.relative_to(checkout): path.read_bytes() for path in checkout.rglob('*') if path.is_file()}, before)
+            self.assertEqual(sorted(path.relative_to(checkout).as_posix() for path in checkout.rglob('*')),
+                             ['.git', 'campaign', 'campaign/state.json'])
+            transport.assert_not_called()
+
     def start(self, c):
         with patch.object(controller.legacy.Controller, 'start_samplers') as original:
             c.start_samplers()

@@ -7,6 +7,7 @@ import itertools
 import hashlib
 import json
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 from decimal import Decimal
@@ -14,6 +15,7 @@ from types import SimpleNamespace
 import test_server_cpu
 
 import export_results as export
+import test_m2_throughput as m2_fixtures
 
 
 WORKLOADS = ('grv', 'get100', 'get1000', 'range100', 'set100', 'batchset50', 'batchset50x1000')
@@ -264,6 +266,48 @@ class PopulationTests(unittest.TestCase):
         for key in ('M1', 'M1_comparisons', 'M2_absolutes', 'M2_comparisons', 'server_cgroup_accounting'):
             self.assertEqual(result[key], [], key)
         self.assertEqual(inputs.verify_all.call_count, 2)
+
+    def test_new_m1_collector_refuses_process_population_identity_and_quota_before_measurement(self):
+        population = ('retained_missing', 'retained_duplicate', 'schedule_missing', 'schedule_duplicate',
+                      'r4_missing', 'r4_duplicate')
+        identities = ('block', 'position', 'arm', 'workload', 'workers', 'retained_workload', 'retained_workers')
+        for mutation in (*population, *identities, 'requested', 'warmup'):
+            with self.subTest(mutation=mutation):
+                inputs, specs, expected = population_fixture()
+                _, reports, analyses = export.population(inputs, 'analysis/current', expected)
+                def measured(raw, retained, samples):
+                    return dict(arm=retained['arm'], block=retained['block'], position=retained['position'],
+                                run_id=retained['run_id'], throughput_ops_per_second=100)
+                estimate = Mock(return_value=dict(blocks=6, ratio=1))
+                with patch.object(export.legacy_m1, 'measured_process', side_effect=measured) as measurement:
+                    healthy, comparisons = export.collect_m1(inputs, specs, expected, analyses, reports, estimate)
+                    self.assertEqual((len(healthy), len(comparisons), measurement.call_count, estimate.call_count),
+                                     (504, 588, 504, 84))
+                    measurement.reset_mock()
+                    estimate.reset_mock()
+                    retained = analyses['M1w1']['workloads']['grv']['per_run']
+                    schedule = inputs.values['results-raw/M1w1/grv/schedule.json']
+                    r4 = reports['M1w1']['cases'][0]['runs']
+                    for name, rows in (('retained', retained), ('schedule', schedule), ('r4', r4)):
+                        if mutation == name + '_missing': rows.pop()
+                        if mutation == name + '_duplicate': rows[-1] = copy.deepcopy(rows[0])
+                    job = schedule[0]
+                    if mutation == 'block': job['block'] = 5
+                    if mutation == 'position': job['position'] = 2
+                    if mutation == 'arm': job['arm'] = 'cgo'
+                    if mutation == 'workload': job['workload']['name'] = 'get100'
+                    if mutation == 'workers': job['workload']['workers'] = 8
+                    if mutation == 'retained_workload': retained[0]['workload'] = 'get100'
+                    if mutation == 'retained_workers': retained[0]['workers'] = 8
+                    raw = inputs.values['results-raw/M1w1/grv/' + retained[0]['run_id'] + '/summary.json']
+                    if mutation == 'requested': raw['requested'] -= 1
+                    if mutation == 'warmup': raw['warmup_completed'] -= 1
+                    reason = ('incomplete M1 case' if mutation in population else
+                              'M1 process identity differs' if mutation in identities else 'wrong M1 quota')
+                    with self.assertRaisesRegex(ValueError, reason):
+                        export.collect_m1(inputs, specs, expected, analyses, reports, estimate)
+                    measurement.assert_not_called()
+                    estimate.assert_not_called()
 
     def test_missing_duplicate_foreign_and_disagreed_population_refused(self):
         for mutation in ('missing', 'duplicate', 'foreign', 'eligibility', 'in_progress'):
@@ -568,6 +612,187 @@ class PopulationTests(unittest.TestCase):
         self.assertIn('R4/raw lifecycle window differs', result[0]['reason'])
         self.assertNotIn('observed_accounted_cpu_seconds', result[0])
         assert_accounting_only(self, result[0])
+
+    def test_hash_pinned_nonempty_export_preserves_performance_when_last_arm_cpu_is_unavailable(self):
+        inputs, _, expected = population_fixture()
+        for phase in ('M1w1', 'M1w8', 'M1w32', 'M1w64'):
+            for rec in inputs.values[f'reconcile/{phase}/report.json']['cases']:
+                if (phase, rec['case']) != ('M1w1', 'grv'):
+                    rec.update(verdict='unverifiable', unverifiable_reasons=['missing'])
+                    inputs.values[f'analysis/current/{phase}/summary.json']['workloads'][rec['case']]['status'] = 'N/A'
+        # Reuse declared raw M2 fixtures, but join them to the actual 16 protocol cells.
+        with patch.object(export.m2_export.old, 'PHASES', {'M2rl': (12, 1), 'M2skip': (4, 0)}):
+            m2 = m2_fixtures.fixture()
+        for phase in ('M2rl', 'M2skip'):
+            names = {f'case-{index}': case for index, case in enumerate(expected[phase])}
+            def rename(value):
+                if isinstance(value, dict):
+                    return {names.get(key, key): rename(item) for key, item in value.items()}
+                if isinstance(value, list):
+                    return [rename(item) for item in value]
+                return names.get(value, value) if isinstance(value, str) else value
+            for path, value in m2.json.items():
+                if '/' + phase + '/' in path:
+                    inputs.values[path.replace('analysis/measured-492817/', 'analysis/current/')] = rename(value)
+            samples = list(csv.DictReader(io.StringIO(m2.strings[f'results-raw/{phase}/metrics.csv'])))
+            for sample in samples:
+                sample['case'] = names[sample['case']]
+            inputs.values[f'results-raw/{phase}/metrics.csv'] = m2_fixtures.csv_text(samples)
+            for path, text in m2.strings.items():
+                if path.startswith(f'results-raw/{phase}/') and path.endswith('/process-time.txt'):
+                    inputs.values[path] = text.replace('0:03.99', '0:00.80').replace('50%', '500%' if 'final-remote' in path else '250%')
+            report = inputs.values[f'reconcile/{phase}/report.json']
+            for rec in report['cases']:
+                if rec['verdict'] != 'clean':
+                    rec.update(verdict='unverifiable', contaminated_reasons=[], unverifiable_reasons=['missing'])
+            current = inputs.values[f'analysis/current/{phase}/report.json']
+            for case in current['cases'].values():
+                if case['status'] == 'ok':
+                    for arm, metrics in case['absolutes'].items():
+                        metrics.update({metric: dict(median_of_process_repeat_medians=value) for metric, value in
+                            [('ns/op', 3500000 if arm == 'final-ordinary' else 1750000),
+                             ('B/op', 32), ('allocs/op', 2), ('prefix-B', 22)]})
+            for comparison in current['comparisons']:
+                comparison.update(gm=0.5, nominal_95_interval=[0.5, 0.5])
+        layout, units, _, _, lifecycle = test_server_cpu.fixture()
+        chrony = dict(rc=0, raw=('System time: 0.000000000 seconds fast of NTP time\n'
+            'Root delay: 0.000000000 seconds\nRoot dispersion: 0.000000000 seconds\nLeap status: Normal\n'))
+        for phase in ('M1w1', 'M2rl'):
+            report = inputs.values[f'reconcile/{phase}/report.json']
+            report.update(nodes={node: dict(units=sorted(units[node])) for node in units},
+                          clock=dict(client=dict(bound_s='0')), inputs_sha256={})
+            telemetry = test_server_cpu.fixture()[2]
+            for node, (start, stop, samples) in telemetry.items():
+                start['phase'] = stop['phase'] = phase
+                start['chrony'], stop['chrony'] = copy.deepcopy(chrony), copy.deepcopy(chrony)
+                root = f'telemetry-cpu/{phase}/{node}'
+                inputs.values[root + '/samples.jsonl'] = ''.join(json.dumps(sample) + '\n' for sample in samples)
+                stop['samples_sha256'] = hashlib.sha256(inputs.values[root + '/samples.jsonl'].encode()).hexdigest()
+                for kind, receipt in (('start', start), ('stop', stop)):
+                    inputs.values[root + f'/receipt-{kind}.json'] = receipt
+                    base = f'telemetry/{phase}/{node}/receipt-{kind}.json'
+                    inputs.values[base] = copy.deepcopy(receipt)
+                    report['inputs_sha256']['/srv/fdb-bench/' + base] = inputs.digest(base)
+            for rec in report['cases']:
+                if rec['verdict'] != 'clean':
+                    continue
+                for run in rec['runs']:
+                    run.update(copy.deepcopy(lifecycle))
+                    folder = f'results-raw/{phase}/' + ('grv/' if phase == 'M1w1' else '') + run['run_id']
+                    if phase == 'M1w1':
+                        inputs.values[folder + '/result.json'] = dict(run_id=run['run_id'])
+                    else:
+                        inputs.values[folder + '/result.json']['process_wall_ns'] = 800000000
+                    inputs.values[folder + '/result.json'].update(started_utc=run['start_utc'], ended_utc=run['end_utc'])
+        retained = inputs.values['analysis/current/M1w1/summary.json']['workloads']['grv']['per_run']
+        stream = io.StringIO(newline='')
+        writer = csv.DictWriter(stream, fieldnames=['index', 'worker', 'start_offset_ns', 'latency_ns',
+                                                   'attempts', 'phase', 'error', 'check_status'])
+        writer.writeheader()
+        writer.writerows(dict(index=index, worker=0, start_offset_ns=index * 10000, latency_ns=10000,
+                              attempts=1, phase='measure', error='', check_status='ok') for index in range(3000))
+        for run in retained:
+            run.update(successes=3000, observations=3000, errors=0, retries=0, mean_ns=10000, p50_ns=10000,
+                       p99_ns=10000, measured_wall_ns=200000000, process_cpu_ns=15000000,
+                       closed_loop_ops_per_second=15000, process_cpu_over_wall=0.075)
+            folder = 'results-raw/M1w1/grv/' + run['run_id']
+            inputs.values[folder + '/summary.json'].update(success=True, completed=3000, errors=0, warmup_errors=0,
+                persisted_validation='ok', retries=0, config=dict(workload='grv', workers=1, run_id=run['run_id'], block=run['block']),
+                stats_before=dict(process_user_cpu_us=0, process_system_cpu_us=0),
+                stats_after=dict(process_user_cpu_us=10000, process_system_cpu_us=5000), measured_wall_ns=200000000,
+                measured_fences_format='fdb-bench-measured-fences/v1', measured_started_unix_ns=1200000000,
+                measured_ended_unix_ns=1400000000, measured_started_utc='1970-01-01T00:00:01.2Z',
+                measured_ended_utc='1970-01-01T00:00:01.4Z')
+            inputs.values[folder + '/samples.csv'] = stream.getvalue()
+        inputs.values['cluster-ssd/layout.json'] = layout
+        inputs.repin_analysis()
+        seal_export_fixture(inputs, expected, clean=2)
+        multinode = Path(export.__file__).resolve().parents[2] / 'multinode'
+        common_spec = importlib.util.spec_from_file_location('rfc282_nonempty_common', multinode / 'mn_common.py')
+        common = importlib.util.module_from_spec(common_spec)
+        common_spec.loader.exec_module(common)
+        sampler_spec = importlib.util.spec_from_file_location('rfc282_nonempty_sampler', multinode / 'node_sampler.py')
+        parser = importlib.util.module_from_spec(sampler_spec)
+        with patch.dict('sys.modules', {'mn_common': common}):
+            sampler_spec.loader.exec_module(parser)
+        def bootstrap(pairs, rng, resamples):
+            self.assertEqual(pairs, [(15000, 15000)] * 6)
+            self.assertEqual(resamples, 20000)
+            return dict(blocks=6, ratio=1, ci95_low=1, ci95_high=1)
+        def paired(ratios, *, resamples, seed):
+            self.assertEqual((ratios, resamples, seed), ([2] * 6, 20000, 492817))
+            return dict(gm=2, nominal_95_interval=[2, 2], blocks=6, resamples=resamples, seed=seed)
+        bootstrap, paired = Mock(side_effect=bootstrap), Mock(side_effect=paired)
+        with tempfile.TemporaryDirectory() as temp:
+            def publish(label):
+                root = Path(temp) / label
+                root.mkdir()
+                manifest = []
+                for name, value in sorted(inputs.values.items()):
+                    text = value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+                    path = root / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(text)
+                    manifest.append(hashlib.sha256(text.encode()).hexdigest() + '  ' + name + '\n')
+                manifest_path = Path(temp) / (label + '.sha256')
+                manifest_path.write_text(''.join(manifest))
+                verified = export.legacy_io.VerifiedInputs(root, manifest_path)
+                result = export.export(verified, 'analysis/current', bootstrap, paired, parser)
+                text = json.dumps(result, sort_keys=True) + '\n'
+                export.legacy_io.validate_public({'results.json': text},
+                                                 dict(identifiers=['private-fixture-id'], names=['private-fixture-host']))
+                output = Path(temp) / (label + '-results.json')
+                output.write_text(text)
+                return json.loads(output.read_text()), verified
+            healthy, verified = publish('healthy')
+            self.assertEqual((bootstrap.call_count, paired.call_count), (3, 2))
+            self.assertEqual((healthy['coverage']['planned'], healthy['coverage']['clean'], healthy['coverage']['unverifiable']),
+                             (44, 2, 42))
+            self.assertTrue(healthy['performance_results_available'])
+            self.assertEqual([len(healthy[key]) for key in ('M1', 'M1_comparisons', 'M2', 'M2_absolutes', 'M2_comparisons',
+                                                          'server_cgroup_accounting')], [18, 21, 31, 2, 1, 30])
+            self.assertEqual({(row['arm'], row['block']) for row in healthy['M1']},
+                             {(arm, block) for arm in ('before', 'final', 'cgo') for block in range(6)})
+            self.assertTrue(all((row['measured_ops'], row['throughput_ops_per_second'], row['cpu_util_cores'], row['mean_ns'])
+                                == (3000, 15000, 0.075, 10000) for row in healthy['M1']))
+            self.assertEqual([(row['numerator'], row['denominator'], row['ratio']) for row in healthy['M1_comparisons'][:3]],
+                             [('final', 'before', 1), ('final', 'cgo', 1), ('before', 'cgo', 1)])
+            process = [row for row in healthy['M2'] if row['record_type'] == 'process']
+            self.assertEqual(len(process), 12)
+            self.assertEqual((process[0]['throughput_ops_per_second'], process[0]['lifecycle_cpu_util_cores'],
+                              process[0]['repeat_indices']), (1000, 2.5, [0, 1, 2]))
+            self.assertEqual([row['metrics']['ns/op'] for row in healthy['M2_absolutes']], [3500000, 1750000])
+            self.assertEqual(healthy['M2_comparisons'][0]['gm'], 0.5)
+            self.assertEqual([(row['metric'], row['ratio']) for row in healthy['M2'] if row['record_type'] == 'paired'],
+                             [('throughput_ops_per_second', 2), ('lifecycle_cpu_util_cores', 2)])
+            for row in healthy['M1'] + healthy['M2']:
+                self.assertTrue(set(row).isdisjoint({'run_id', 'source_run_id'}))
+            for row in healthy['server_cgroup_accounting']:
+                self.assertEqual(row['status'], 'observed')
+                self.assertEqual(row['observed_accounted_cpu_usec'], 3740000 if row['phase'] == 'M1w1' else 13940000)
+                assert_accounting_only(self, row)
+            self.assertEqual((healthy['method']['bootstrap_seed'], healthy['method']['resamples'], healthy['method']['paired_blocks']),
+                             (492817, 20000, 6))
+            self.assertEqual(healthy['method']['compiler_sha256'], '4' * 64)
+            # The final arm fails only the CPU join, after all performance collectors succeed.
+            last = retained[-1]['run_id']
+            self.assertEqual(inputs.values['reconcile/M1w1/report.json']['cases'][0]['runs'][-1]['run_id'], last)
+            inputs.values['results-raw/M1w1/grv/' + last + '/result.json']['ended_utc'] = '1970-01-01T00:00:01.8Z'
+            adverse, _ = publish('adverse')
+            self.assertEqual((bootstrap.call_count, paired.call_count), (6, 4))
+            for key in ('coverage', 'M1', 'M1_comparisons', 'M2', 'M2_absolutes', 'M2_comparisons', 'method'):
+                self.assertEqual(adverse[key], healthy[key], key)
+            self.assertTrue(adverse['performance_results_available'])
+            failed = [row for row in adverse['server_cgroup_accounting'] if row['phase'] == 'M1w1']
+            self.assertEqual(failed, [dict(phase='M1w1', case='grv', status='CPU-unavailable',
+                actual_window_cpu_available=False, reason='R4/raw lifecycle window differs')])
+            self.assertEqual([row for row in adverse['server_cgroup_accounting'] if row['phase'] == 'M2rl'],
+                             [row for row in healthy['server_cgroup_accounting'] if row['phase'] == 'M2rl'])
+            # Manifest verification is real, not the lightweight population fixture's mock.
+            verified.path('deploy/protocol.json').write_text('{}')
+            with self.assertRaisesRegex(ValueError, 'input SHA256 mismatch: deploy/protocol.json'):
+                export.export(verified, 'analysis/current', bootstrap, paired, parser)
+            self.assertEqual((bootstrap.call_count, paired.call_count), (6, 4))
 
     def test_export_wiring_retains_full_population_absolutes_and_source_identities(self):
         inputs, _, expected = population_fixture()

@@ -335,7 +335,7 @@ class SampleTest(unittest.TestCase):
         self.assertEqual(ns.parse_proc_stat(s['stat'])['cpu0'][0], 0)
         self.assertIn('oom_kill 0', s['vmstat'])
         self.assertEqual(s['procs'], {'fdb-bench-4500.service': None})
-        self.assertEqual(s['process_cpu_format'], ns.PROCESS_CPU_FORMAT)
+        self.assertEqual(s['process_cpu_format'], 'fdb-bench-process-cpu/v1')
         self.assertEqual(s['process_cpu'], {'fdb-bench-4500.service': None})
         self.assertIn('FileNotFoundError', s['process_cpu_errors']['fdb-bench-4500.service'])
 
@@ -505,6 +505,33 @@ class CgroupTest(Temp):
                 self.assertIn(self.unit, sample['cgroup_cpu_errors'])
                 self.assertIsNotNone(sample['process_cpu'][self.unit])
 
+    def test_component_only_resets_disqualify_even_when_total_usage_increases(self):
+        for component in ('user_usec', 'system_usec'):
+            with self.subTest(component=component):
+                host, receipt = self.host_and_receipt()
+                previous = {}
+                first = ns.take_sample(host, 0, 0, {self.unit: 1000}, receipt['cgroup_units'], previous)
+                baseline = previous[self.unit].copy()
+                self.assertEqual([baseline[key] for key in ('usage_usec', 'user_usec', 'system_usec')],
+                                 [100000, 60000, 40000])
+                self.assertIsNotNone(first['cgroup_cpu'][self.unit])
+                host.cgroup_overrides[self.path + '/cpu.stat'] = 'usage_usec 100002\nuser_usec 60001\nsystem_usec 40001\n'
+                healthy = ns.take_sample(host, 1, 1, {self.unit: 1000}, receipt['cgroup_units'], previous)
+                self.assertIsNotNone(healthy['cgroup_cpu'][self.unit])
+                self.assertNotIn('cgroup_cpu_errors', healthy)
+                accepted = previous[self.unit].copy()
+                counters = dict(usage_usec=100003, user_usec=60002, system_usec=40002)
+                counters[component] = accepted[component] - 1
+                self.assertGreater(counters['usage_usec'], accepted['usage_usec'])
+                other = 'system_usec' if component == 'user_usec' else 'user_usec'
+                self.assertGreater(counters[other], accepted[other])
+                host.cgroup_overrides[self.path + '/cpu.stat'] = ''.join(f'{key} {value}\n' for key, value in counters.items())
+                adverse = ns.take_sample(host, 2, 2, {self.unit: 1000}, receipt['cgroup_units'], previous)
+                self.assertIsNone(adverse['cgroup_cpu'][self.unit])
+                self.assertIn('cgroup CPU counter reset or schema changed', adverse['cgroup_cpu_errors'][self.unit])
+                self.assertIsNotNone(adverse['process_cpu'][self.unit])
+                self.assertEqual(previous[self.unit], accepted)
+
     def test_flag_off_has_no_cgroup_reads_or_extended_systemctl_properties(self):
         host = FakeHost(units=node_units([4500]))
         receipt = ns.build_receipt(host, 'start', 'node1', 'M1w1', {}, True, ns.UNIT_GLOB, [self.unit], None, [])
@@ -535,6 +562,45 @@ class CgroupTest(Temp):
             ns.run_sampler(host, out, 'node1', 'M1w1', {0, 1}, 0.01, 2, ns.UNIT_GLOB, [self.unit], None, [],
                            host.stop, cgroup_cpu=True)
         self.assertFalse((out / 'receipt-stop.json').exists())
+
+    def test_root_only_stop_change_refuses_receipt_with_unchanged_unit_identities(self):
+        for mutation in ('unchanged', 'device', 'inode', 'controllers'):
+            with self.subTest(mutation=mutation):
+                class RootChangeHost(FakeHost):
+                    def sleep(host, seconds):
+                        super().sleep(seconds)
+                        if host.stop.reason is not None:
+                            if mutation == 'device':
+                                host.directory_ids[ns.CGROUP_ROOT] = dict(device=43, inode=10)
+                            if mutation == 'inode':
+                                host.directory_ids[ns.CGROUP_ROOT] = dict(device=42, inode=11)
+                            if mutation == 'controllers':
+                                host.cgroup_overrides[ns.CGROUP_ROOT + '/cgroup.controllers'] = 'cpu io memory pids cpuset\n'
+                host = RootChangeHost(units=node_units([4500]), stop_at=1)
+                out = self.tmp / ('root-stop-' + mutation)
+                def run():
+                    return ns.run_sampler(host, out, 'node1', 'M1w1', {0, 1}, 0.01, 2, ns.UNIT_GLOB,
+                                          [self.unit], None, [], host.stop, cgroup_cpu=True)
+                if mutation == 'unchanged':
+                    stop = run()
+                    self.assertTrue((out / 'receipt-stop.json').is_file())
+                else:
+                    with self.assertRaisesRegex(mc.GuardError, 'cgroup identity or membership changed during sampling'):
+                        run()
+                    self.assertFalse((out / 'receipt-stop.json').exists())
+                start = json.loads((out / 'receipt-start.json').read_text())
+                identity = start['cgroup_units'][self.unit]
+                self.assertEqual(host.directory_identity(self.path),
+                                 dict(device=identity['device'], inode=identity['inode']))
+                self.assertEqual((host.units[self.unit]['pid'], str(host.units[self.unit]['starttime'])),
+                                 (identity['pid'], identity['starttime']))
+                samples = [json.loads(line) for line in (out / 'samples.jsonl').read_text().splitlines()]
+                self.assertTrue(samples)
+                self.assertTrue(all(sample['cgroup_cpu'][self.unit] is not None for sample in samples))
+                self.assertTrue(all(not sample.get('cgroup_cpu_errors') for sample in samples))
+                if mutation == 'unchanged':
+                    self.assertEqual(start['cgroup_v2'], stop['cgroup_v2'])
+                    self.assertEqual(start['cgroup_units'], stop['cgroup_units'])
 
     def test_cgroup_cli_rejects_implicit_duplicate_or_client_population(self):
         with contextlib.redirect_stderr(io.StringIO()):
@@ -567,13 +633,14 @@ class RunTest(Temp):
         samples = [json.loads(l) for l in lines]
         self.assertEqual([s['seq'] for s in samples], list(range(len(samples))))
         self.assertEqual(len(samples), 6)  # t = 0..4, then t = 5 taken on the stop signal
+        self.assertEqual([s['process_cpu_format'] for s in samples], ['fdb-bench-process-cpu/v1'] * 6)
         self.assertEqual(stop['stop_reason'], 'SIGTERM')
         self.assertEqual(stop['samples'], 6)
         self.assertEqual(stop['samples_sha256'], ns.sha256_file(out / 'samples.jsonl'))
         start = json.loads((out / 'receipt-start.json').read_text())
         self.assertEqual(start['kind'], 'start')
         for receipt in (start, stop):
-            self.assertEqual(receipt['process_cpu_format'], ns.PROCESS_CPU_FORMAT)
+            self.assertEqual(receipt['process_cpu_format'], 'fdb-bench-process-cpu/v1')
             self.assertEqual(receipt['clock_ticks_per_second'], 100)
         self.assertEqual(start['units']['names'], ['fdb-bench-4500.service', 'fdb-bench-4501.service'])
         self.assertEqual(start['units']['starttimes']['fdb-bench-4501.service'], dict(pid=1001, starttime='501'))

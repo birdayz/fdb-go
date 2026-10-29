@@ -435,7 +435,8 @@ class ImmediateRequesterTest(unittest.TestCase):
                 def hold_census(kind, seconds):
                     if kind == 'server' and not held.is_set():
                         held.set()
-                        if not release.wait(HARNESS_WAIT_SECONDS):
+                        # The guard must outlive the requester's independent scheduler allowance.
+                        if not release.wait(2 * HARNESS_WAIT_SECONDS):
                             raise AssertionError('test never released guard census')
                 f.cloud.before_list = hold_census
                 f.processes.pop(111)
@@ -470,9 +471,11 @@ class ImmediateRequesterTest(unittest.TestCase):
                         request_done.set()
                 thread = threading.Thread(target=requester, name='synthetic-immediate-requester', daemon=True)
                 thread.start()
-                bounded = request_done.wait(3)
                 try:
+                    bounded = request_done.wait(HARNESS_WAIT_SECONDS)
                     self.assertTrue(bounded, 'requester blocked on the real guard-held journal flock')
+                    self.assertFalse(release.is_set())
+                    self.assertFalse(guard.done.is_set(), 'guard exited before requester finished under its flock')
                     if errors:
                         raise errors[0]
                     self.assertEqual(len(result), 1)

@@ -1,6 +1,8 @@
 import copy
+import csv
+import io
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from helpers import legacy_m2
 import test_m2_throughput as fixture_source
@@ -107,6 +109,46 @@ class Tests(unittest.TestCase):
         self.assertEqual((method['eligible_cases'], method['process_rows']), (0, 0))
         self.assertEqual(len(rows), 16)
         self.assertEqual({r['record_type'] for r in rows}, {'omitted'})
+
+    def test_new_collector_refuses_each_raw_mismatch_before_estimation(self):
+        reasons = dict(missing_job='incomplete planned M2 process matrix',
+                       duplicate_job='duplicate/invalid M2 run identity',
+                       missing_repeat='incomplete M2 three-repeat process', duplicate_repeat='duplicate M2 sample',
+                       stored_median='M2 raw CSV/stored process median differs',
+                       process_identity='M2 successful process receipt identity differs',
+                       user_cpu='GNU time/process CPU receipt differs or is zero',
+                       system_cpu='GNU time/process CPU receipt differs or is zero')
+        for mutation, reason in reasons.items():
+            with self.subTest(mutation=mutation):
+                with patch.object(legacy_m2, 'PHASES', {'M2rl': (12, 1), 'M2skip': (4, 0)}):
+                    inputs = fixture_source.fixture()
+                expected = {phase: [case['key'] for case in inputs.json[f'results-raw/{phase}/plan.json']['cases']]
+                            for phase in ('M2rl', 'M2skip')}
+                estimate = Mock(return_value=dict(gm=2, nominal_95_interval=[2, 2], blocks=6, resamples=20000, seed=492817))
+                healthy, method = m2_export.collect(inputs, estimate, expected, 'analysis/measured-492817')
+                self.assertEqual((method['eligible_cases'], method['process_rows'], estimate.call_count), (1, 12, 2))
+                first = next(row for row in healthy if row['record_type'] == 'process')
+                self.assertEqual((first['throughput_ops_per_second'], first['lifecycle_cpu_util_cores']), (1000, 0.5))
+                estimate.reset_mock()
+                jobs = inputs.json['results-raw/M2rl/plan.json']['jobs']
+                first_id = jobs[0]['id']
+                if mutation == 'missing_job': jobs.pop()
+                if mutation == 'duplicate_job': jobs.append(copy.deepcopy(jobs[0]))
+                if mutation in ('missing_repeat', 'duplicate_repeat'):
+                    path = 'results-raw/M2rl/metrics.csv'
+                    values = list(csv.DictReader(io.StringIO(inputs.strings[path])))
+                    if mutation == 'missing_repeat': values.pop(0)
+                    else: values.append(copy.deepcopy(values[0]))
+                    inputs.strings[path] = fixture_source.csv_text(values)
+                if mutation == 'stored_median':
+                    inputs.json['analysis/measured-492817/M2rl/report.json']['comparisons'][0]['block_medians_denominator'][0] += 1
+                receipt = inputs.json['results-raw/M2rl/' + first_id + '/result.json']
+                if mutation == 'process_identity': receipt['run_id'] = 'foreign-process'
+                if mutation == 'user_cpu': receipt['process_user_cpu_seconds'] += 1
+                if mutation == 'system_cpu': receipt['process_system_cpu_seconds'] += 1
+                with self.assertRaisesRegex(ValueError, reason):
+                    m2_export.collect(inputs, estimate, expected, 'analysis/measured-492817')
+                estimate.assert_not_called()
 
     def test_foreign_expected_population_refused(self):
         inputs = fixture_source.fixture()

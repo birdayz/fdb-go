@@ -31,6 +31,15 @@ import test_campaign_safety as safety  # noqa: E402
 class CLIProvider(safety.Provider):
     """The CLI's host receipt also needs private-network provider readback."""
 
+    def materialize(self, kind, body):
+        payload = super().materialize(kind, body)
+        if kind == 'server':
+            server = payload['server']
+            address = '203.0.113.' + str(server['id'] - 91)
+            server['public_net']['ipv4']['ip'] = address
+            self.rows['server'][server['id']]['public_net']['ipv4']['ip'] = address
+        return payload
+
     def request(self, method, path, body=None, seconds=20):
         reply = super().request(method, path, body=body, seconds=seconds)
         if method == 'POST' and path.endswith('/actions/attach_to_network'):
@@ -220,7 +229,17 @@ class GuardedCLITest(unittest.TestCase):
         self.assertEqual({host['id'] for host in result['hosts'].values()}, {101, 102, 103, 104})
         self.assertEqual({host['name'] for host in result['hosts'].values()},
                          {'test-client', 'test-node1', 'test-node2', 'test-node3'})
-        self.assertEqual(json.loads((Path(args.work_dir) / 'hosts-all.json').read_text()), result['hosts'])
+        expected_hosts = {
+            'client': dict(id=101, name='test-client', public_ipv4='203.0.113.10', private=['10.42.0.13']),
+            'node1': dict(id=102, name='test-node1', public_ipv4='203.0.113.11', private=['10.42.0.14']),
+            'node2': dict(id=103, name='test-node2', public_ipv4='203.0.113.12', private=['10.42.0.15']),
+            'node3': dict(id=104, name='test-node3', public_ipv4='203.0.113.13', private=['10.42.0.16']),
+        }
+        published = json.loads((Path(args.work_dir) / 'hosts-all.json').read_text())
+        for hosts in (result['hosts'], published):
+            self.assertEqual({role: {key: host[key] for key in ('id', 'name', 'public_ipv4', 'private')}
+                              for role, host in hosts.items()}, expected_hosts)
+        self.assertEqual(published, result['hosts'])
         state = f.journal.read()
         self.assertEqual(len(state['owned']), 7)
         self.assertEqual(len(state['associations']), 4)
@@ -233,6 +252,12 @@ class GuardedCLITest(unittest.TestCase):
         self.assertEqual([path for _, path, _, _ in f.cloud.requests[-4:]],
                          [f'/servers/{rid}/actions/poweron' for rid in (101, 102, 103, 104)])
         self.assertEqual(f.deletes(), [])
+        requests = copy.deepcopy(f.cloud.requests)
+        check_args = self.ip_args('--role', 'node3')
+        with constructors(f):
+            self.assertEqual(pic.check(check_args), ([101, 102, 103, 104], [10101, 10102, 10103, 10104]))
+        self.assertEqual(json.loads(Path(check_args.state).read_text())['hosts'], expected_hosts)
+        self.assert_no_new_mutations(requests)
 
     def test_provision_profile_mismatch_refuses_without_mutation(self):
         f = self.f
@@ -426,7 +451,8 @@ class GuardedCLITest(unittest.TestCase):
         self.assertEqual(state['campaign_server_ids'], [101])
         self.assertEqual(state['campaign_primary_ip_ids'], [10101])
         self.assertEqual(state['status'], 'provisioned-through-client')
-        self.assertEqual(state['hosts']['client']['id'], 101)
+        self.assertEqual(state['hosts'], {'client': dict(id=101, name='test-client',
+            public_ipv4='203.0.113.10', private=['10.42.0.13'])})
         self.assertFalse(owned['direct_primary_ip_deletion_authorized'])
         self.assertEqual(owned['server_ids'], [101])
         self.assertEqual([(a['server_id'], a['id']) for a in owned['primary_ips']], [(101, 10101)])
