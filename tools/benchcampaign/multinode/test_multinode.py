@@ -173,34 +173,15 @@ class ProvisionTest(Temp):
             f.chmod(0o600)
         return self.args('--execute', '--teardown-deadline', str(1792020000 + 5 * 3600))
 
-    def test_preflight_refuses_collisions_before_any_create(self):
+    def test_legacy_execute_requires_ledger_and_never_calls_cli(self):
         args = self._ready()
-        runner = FakeRunner({('hcloud', 'network', 'list'): (0, json.dumps([{'name': 'ci-fleet', 'ip_range': '10.88.0.0/16'}]), '')},
-                            default=(0, '[]', ''))
-        with self.assertRaisesRegex(mc.GuardError, 'overlaps'):
+        runner = FakeRunner(default=(0, '[]', ''))
+        with self.assertRaisesRegex(mc.GuardError, 'requires --creation-ledger'):
             provision.run(args, runner=runner, now=1792020000, out=io.StringIO())
-        self.assertTrue(all(c[2] == 'list' for c in runner.calls))
+        self.assertEqual(runner.calls, [])
+        self.assertFalse((self.tmp / 'work').exists())
 
-    def test_execute_runs_in_order_and_records_hosts(self):
-        args = self._ready()
-
-        def describe(argv):
-            name = argv[3]
-            return 0, json.dumps(dict(id=1, name=name, public_net=dict(ipv4=dict(ip='198.51.100.9')),
-                                      private_net=[dict(ip='10.88.0.10')], labels={'campaign': 'mn-test'})), ''
-        runner = FakeRunner({('hcloud', 'server', 'list'): (0, '[]', ''), ('hcloud', 'network', 'list'): (0, '[]', ''),
-                             ('hcloud', 'firewall', 'list'): (0, '[]', ''), ('hcloud', 'server', 'describe'): describe})
-        result = provision.run(args, runner=runner, now=1792020000, out=io.StringIO())
-        self.assertTrue(result['executed'])
-        mutating = [c for c in runner.calls if c[2] not in ('list', 'describe')]
-        self.assertEqual(mutating, [[str(x) for x in c] for c in result['commands']])
-        self.assertTrue(all(f'deadline={1792020000 + 5 * 3600}' in c for c in mutating if c[2] == 'create'))
-        hosts = json.loads((self.tmp / 'work' / 'hosts-client-node1-node2-node3.json').read_text())
-        self.assertEqual(set(hosts), set(provision.ROLE_NAMES))
-        rules = json.loads((self.tmp / 'work' / 'firewall-rules.json').read_text())
-        self.assertEqual({r['protocol'] for r in rules}, {'tcp', 'icmp'})
-
-    def test_staged_client_then_nodes(self):
+    def test_legacy_staged_dry_run_plan(self):
         stage1 = provision.build_commands(self.args('--role', 'client'))[0]
         self.assertEqual([c[1:3] for c in stage1], [['network', 'create'], ['network', 'add-subnet'], ['firewall', 'create'],
                                                     ['server', 'create'], ['server', 'attach-to-network'], ['server', 'poweron']])
@@ -209,27 +190,13 @@ class ProvisionTest(Temp):
         stage2 = provision.build_commands(args)[0]
         self.assertFalse(any(c[1] in ('network', 'firewall', 'ssh-key') for c in stage2))
         self.assertEqual(sum(c[2] == 'create' for c in stage2), 3)
-        shared = {('hcloud', 'server', 'list'): (0, json.dumps([dict(name='fdb-bench-vpc-client')]), '')}
-        for kind, extra in [('network', dict(ip_range='10.88.0.0/24')), ('firewall', {})]:
-            shared[('hcloud', kind, 'list')] = (0, json.dumps([dict(name='fdb-bench-vpc' + ('-fw' if kind == 'firewall' else ''),
-                                                                   labels={'campaign': 'mn-test'}, **extra)]), '')
-        provision.preflight(args, FakeRunner(shared))
-        for kind in ['network', 'firewall']:
-            stranger = dict(shared)
-            stranger[('hcloud', kind, 'list')] = (0, json.dumps([dict(name='fdb-bench-vpc' + ('-fw' if kind == 'firewall' else ''),
-                                                                     labels={'campaign': 'other'}, ip_range='10.88.0.0/24')]), '')
-            with self.subTest(kind=kind), self.assertRaisesRegex(mc.GuardError, 'without label'):
-                provision.preflight(args, FakeRunner(stranger))
-        args.skip_shared = False
-        with self.assertRaisesRegex(mc.GuardError, 'already exists'):
-            provision.preflight(args, FakeRunner(shared))
 
-    def test_execute_stops_on_first_failure(self):
+    def test_missing_ledger_refuses_before_any_legacy_create_or_failure(self):
         args = self._ready()
         runner = FakeRunner({('hcloud', 'firewall', 'create'): (1, '', 'boom')}, default=(0, '[]', ''))
-        with self.assertRaisesRegex(mc.GuardError, 'teardown_guard'):
+        with self.assertRaisesRegex(mc.GuardError, 'requires --creation-ledger'):
             provision.run(args, runner=runner, now=1792020000, out=io.StringIO())
-        self.assertFalse(any(c[1] == 'server' and c[2] == 'create' for c in runner.calls))
+        self.assertEqual(runner.calls, [])
 
 
 class TeardownTest(Temp):
@@ -243,28 +210,14 @@ class TeardownTest(Temp):
             'network': [dict(id=31, name='fdb-bench-vpc', labels=mine), dict(id=32, name='ci-fleet', labels={'campaign': 'other'})],
         }
 
-    def runner(self, inventory, fail_first=()):
-        failures = collections.Counter(fail_first)
-
+    def runner(self, inventory):
         def lister(argv):
             return 0, json.dumps(inventory[argv[1]]), ''
-
-        def deleter(argv):
-            kind, rid = argv[1], int(argv[3])
-            if failures[(kind, rid)]:
-                failures[(kind, rid)] -= 1
-                return 1, '', 'resource in use'
-            inventory[kind] = [x for x in inventory[kind] if x['id'] != rid]
-            return 0, '', ''
-        answers = {}
-        for kind in tg.KINDS:
-            answers[('hcloud', kind, 'list')] = lister
-            answers[('hcloud', kind, 'delete')] = deleter
-        return FakeRunner(answers)
+        return FakeRunner({('hcloud', kind, 'list'): lister for kind in tg.KINDS})
 
     def args(self, *extra):
         return tg.parse_args(['--label', 'campaign=mn-test', '--prefix', 'fdb-bench-vpc', '--protect-name', 'sommer2026',
-                              '--protect-name', 'gh-runner-*', '--retry-seconds', '0', *extra])
+                              '--protect-name', 'gh-runner-*', *extra])
 
     def test_dry_run_deletes_nothing_and_refuses_strangers(self):
         inv = self.inventory()
@@ -278,26 +231,24 @@ class TeardownTest(Temp):
         self.assertEqual(owned, {'fdb-bench-vpc-client', 'fdb-bench-vpc-node1', 'fdb-bench-vpc-fw', 'fdb-bench-vpc'})
         self.assertEqual(refused, {'gh-runner-7', 'sommer2026', 'ci-fleet'})
 
-    def test_execute_deletes_only_owned_in_dependency_order(self):
+    def test_selector_execute_requires_ledger_before_discovery_or_delete(self):
         inv = self.inventory()
-        runner = self.runner(inv, fail_first=[('network', 31), ('network', 31)])
-        ok, receipt = tg.run(self.args('--execute', '--protect-id', '999'), runner=runner,
-                             clock=lambda: 1792020000, sleep=lambda s: None, out=io.StringIO())
-        deletes = [(c[1], int(c[3])) for c in runner.calls if c[2] == 'delete']
-        self.assertEqual(deletes, [('server', 11), ('server', 12), ('firewall', 21), ('network', 31),
-                                   ('network', 31), ('network', 31)])
-        self.assertEqual(receipt['remaining'], [])
-        self.assertEqual({x['name'] for x in inv['server']}, {'gh-runner-7', 'sommer2026'})
-        self.assertEqual([x['name'] for x in inv['network']], ['ci-fleet'])
-        self.assertFalse(ok)  # still nonzero: refused labelled strangers were reported
+        before = json.loads(json.dumps(inv))
+        runner = self.runner(inv)
+        with self.assertRaisesRegex(mc.GuardError, 'requires --creation-ledger'):
+            tg.run(self.args('--execute', '--protect-id', '999'), runner=runner,
+                   clock=lambda: 1792020000, sleep=lambda s: None, out=io.StringIO())
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(inv, before)
 
-    def test_survivor_makes_failure(self):
+    def test_matching_selector_server_is_not_deletion_provenance(self):
         inv = {k: [] for k in tg.KINDS}
         inv['server'] = [dict(id=11, name='fdb-bench-vpc-client', labels={'campaign': 'mn-test'})]
-        runner = self.runner(inv, fail_first=[('server', 11)])
-        ok, receipt = tg.run(self.args('--execute'), runner=runner, clock=lambda: 0, sleep=lambda s: None, out=io.StringIO())
-        self.assertFalse(ok)
-        self.assertEqual(receipt['remaining'], [dict(kind='server', id=11, name='fdb-bench-vpc-client')])
+        runner = self.runner(inv)
+        with self.assertRaisesRegex(mc.GuardError, 'requires --creation-ledger'):
+            tg.run(self.args('--execute'), runner=runner, clock=lambda: 0, sleep=lambda s: None, out=io.StringIO())
+        self.assertEqual(runner.calls, [])
+        self.assertEqual([server['id'] for server in inv['server']], [11])
 
     def test_label_rechecked_client_side(self):
         args = self.args()
@@ -305,23 +256,22 @@ class TeardownTest(Temp):
         self.assertEqual(owned, [])
         self.assertIn('label mismatch', refused[0]['reasons'])
 
-    def test_deadline_waits_then_acts(self):
-        inv = {k: [] for k in tg.KINDS}
-        inv['server'] = [dict(id=11, name='fdb-bench-vpc-client', labels={'campaign': 'mn-test'})]
+    def test_deadline_wait_is_independent_of_deletion_authority(self):
         now = [1792020000.0]
         sleeps = []
 
         def sleep(s):
             sleeps.append(s)
             now[0] += s
-        runner = self.runner(inv)
-        ok, _ = tg.run(self.args('--execute', '--deadline', str(1792020000 + 100), '--poll-seconds', '30',
-                                 '--receipt-dir', str(self.tmp / 'r')),
-                       runner=runner, clock=lambda: now[0], sleep=sleep, out=io.StringIO())
-        self.assertTrue(ok)
+        tg.wait_for_deadline(1792020100, clock=lambda: now[0], sleep=sleep, poll=30, out=io.StringIO())
         self.assertEqual(sleeps, [30, 30, 30, 10])
-        self.assertEqual(inv['server'], [])
-        self.assertEqual(len(list((self.tmp / 'r').glob('teardown-*-execute.json'))), 1)
+        self.assertEqual(now[0], 1792020100)
+        runner = self.runner(self.inventory())
+        with self.assertRaisesRegex(mc.GuardError, 'requires --creation-ledger'):
+            tg.run(self.args('--execute', '--deadline', str(1792020100)), runner=runner,
+                   clock=lambda: now[0], sleep=sleep, out=io.StringIO())
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(sleeps, [30, 30, 30, 10])
 
 
 def fake_host_key(d, host):

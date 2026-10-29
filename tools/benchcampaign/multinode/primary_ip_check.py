@@ -1,82 +1,84 @@
 #!/usr/bin/env python3
-"""Ownership check after one staged `provision.py --role R` server create.
+"""Fresh IP/cascade validation for exact journal-owned servers; never mutate an IP.
 
-Reads fresh `hcloud server list -o json` and `hcloud primary-ip list -o json`
-snapshots (it never calls hcloud and never changes an IP). Passes only if the
-campaign's servers are exactly PREFIX-<role> for the roles created so far, each
-carries the campaign label and no protected ID, and every public IP each server
-references is a primary IP assigned to that server with auto_delete=true. Run it
-before the next create; a failure stops provisioning for an owner decision.
-
-Records the server and primary-IP IDs in --state (a JSON object, created if
-absent) and writes --owned-output, so teardown can account for implicitly
-created primary IPs that carry no campaign label. Exit 0 pass, 2 refused.
+Historical selector/snapshot inputs are not ownership evidence. The checker reads
+fresh authenticated provider metadata, authorizes the committed server IDs and
+records complete allowed associations in the same creation journal. Known server
+provenance never waives a failed cascade check or authorizes deleting that server.
 """
 import argparse
+import contextlib
 import json
 from pathlib import Path
 import sys
 
 import mn_common as mc
+import campaign_cloud as cc
+import campaign_safety as cs
+import creation_ledger as cl
 
 ROLES = ('client', 'node1', 'node2', 'node3')
 
 
 def check(args):
+    cc.need(args.creation_ledger, 'primary-IP validation requires --creation-ledger; selectors are not ownership')
     campaign = mc.parse_campaign_label(args.label)
-    protected = set()
+    protected = {kind: set() for kind in mc.PROTECT_KINDS}
+    protected_names = []
     for path in args.protect_file:
-        protected |= set(mc.read_protect_file(path)['ids'])
+        policy = mc.read_protect_file(path, typed=True)
+        protected_names.extend(''.join(f'[{c}]' if c in '*?[' else c for c in name) for name in policy['names'])
+        for kind, ids in policy['by_kind'].items():
+            protected[kind].update(ids)
     for path in (args.state, args.owned_output):
         mc.require_outside_repo(path, 'output')
-    state_path = Path(args.state)
-    state = json.loads(state_path.read_text()) if state_path.exists() else {}
-    servers = json.loads(Path(args.server_json).read_text())
-    ips = json.loads(Path(args.primary_ip_json).read_text())
-    if not isinstance(servers, list) or not isinstance(ips, list):
-        raise mc.GuardError('server and primary-ip snapshots must be JSON lists')
-    roles = ROLES[:ROLES.index(args.role) + 1]
-    mine = [s for s in servers if mc.owned_name(s.get('name', ''), args.prefix)]
-    if {s['name'] for s in mine} != {f'{args.prefix}-{r}' for r in roles}:
-        raise mc.GuardError('unexpected campaign server set: ' + ', '.join(sorted(s['name'] for s in mine)))
-    owned = {}
-    for s in mine:
-        if (s.get('labels') or {}).get('campaign') != campaign or s['id'] in protected:
-            raise mc.GuardError(f'server {s["id"]} is unowned or protected')
-        owned[s['id']] = s
-    if not set(state.get('campaign_server_ids', [])) <= set(owned):
-        raise mc.GuardError('a previously recorded campaign server disappeared')
-    # Record the server IDs before the IP checks, so a failure still leaves exact IDs.
-    state['campaign_server_ids'] = sorted(owned)
-    state['hosts'] = {r: dict(id=s['id'], name=s['name'],
-                              public_ipv4=((s.get('public_net') or {}).get('ipv4') or {}).get('ip'),
-                              private=[n['ip'] for n in s.get('private_net', [])])
-                      for r in roles for s in mine if s['name'] == f'{args.prefix}-{r}'}
-    mc.write_private(state_path, json.dumps(state, indent=2) + '\n', exclusive=False)
-    by_id = {p['id']: p for p in ips}
-    owned_ips = {}
-    for sid, server in owned.items():
-        referenced = {v['id'] for family in ('ipv4', 'ipv6')
-                      if (v := (server.get('public_net') or {}).get(family)) and v.get('id')}
-        assigned = {p['id'] for p in ips if p.get('assignee_type') == 'server' and p.get('assignee_id') == sid}
-        if not referenced or referenced != assigned:
-            raise mc.GuardError(f'server {sid}: referenced IPs {sorted(referenced)} != assigned {sorted(assigned)}')
-        for rid in referenced:
-            ip = by_id[rid]
-            if rid in protected:
-                raise mc.GuardError(f'primary IP {rid} is protected')
-            if ip.get('auto_delete') is not True:
-                raise mc.GuardError(f'primary IP {rid}: auto_delete is not true')
-            owned_ips[rid] = dict(id=rid, server_id=sid, server_name=server['name'], auto_delete=True)
-    if not set(state.get('campaign_primary_ip_ids', [])) <= set(owned_ips):
-        raise mc.GuardError('a previously recorded campaign primary IP disappeared')
-    state['campaign_primary_ip_ids'] = sorted(owned_ips)
-    state['status'] = 'provisioned-through-' + args.role
-    mc.write_private(Path(args.owned_output), json.dumps(dict(
-        campaign=campaign, server_ids=sorted(owned), primary_ips=[owned_ips[i] for i in sorted(owned_ips)],
-        direct_primary_ip_deletion_authorized=False), indent=2) + '\n', exclusive=False)
-    mc.write_private(state_path, json.dumps(state, indent=2) + '\n', exclusive=False)
-    return sorted(owned), sorted(owned_ips)
+    previous = json.loads(cc.private_bytes(args.state)) if Path(args.state).exists() else {}
+    with contextlib.closing(cl.Journal(args.creation_ledger)) as journal:
+        header = journal.header
+        cc.need(campaign == header['campaign'] and args.prefix == header['prefix'], 'primary-IP campaign binding differs')
+        profile = cc.Profile(header['context']['context'], header['context']['config'])
+        cloud = cc.Cloud(profile, header['context'])
+        checker = cs.Campaign(journal, cloud)
+        checker.validate_pins()
+        checker.bind_protections(cs.protection_policy(protected_names, by_kind={kind: sorted(ids) for kind, ids in protected.items()}))
+        roles = ROLES[:ROLES.index(args.role) + 1]
+        with journal.locked() as state:
+            records = [r for r in state['owned'] if r['kind'] == 'server']
+            cc.need({r['name'] for r in records} == {f'{args.prefix}-{r}' for r in roles},
+                    'unexpected ledger-owned server set')
+            reads = lambda: checker._phase_budget(state)
+            servers = []
+            for record in records:
+                server = checker.describe_owned(state, 'server', record['id'], 'primary-check-exact-readback', reads)
+                if server is None:
+                    raise mc.GuardError('owned server absent or additionally protected')
+                servers.append(server)
+            ips = cloud.list('primary-ip', reads)
+            checker._observe_inventory(state, 'primary-ip', ips, 'primary-check-census')
+            for record, server in zip(records, servers):
+                cc.need(server['id'] not in protected['server'], 'owned server absent or additionally protected')
+                checker._authorize(state, 'server', server)
+                cc.need(not any(ip['id'] in protected['primary-ip'] and ip.get('assignee_id') == server['id'] for ip in ips),
+                        'additional primary-IP protection conflict')
+                checker.cascade(state, server, ips, reads)
+            server_ids = sorted(r['id'] for r in records)
+            associations = [a for a in state['associations'] if a['server_id'] in server_ids]
+            ip_ids = sorted(a['id'] for a in associations)
+            cc.need(set(previous.get('campaign_server_ids', [])) <= set(server_ids)
+                    and set(previous.get('campaign_primary_ip_ids', [])) <= set(ip_ids), 'previously recorded IDs disappeared')
+            state['events'].append(dict(event='primary-ip-check', server_ids=server_ids, unix_ns=checker.clock()))
+            journal.commit(state)
+    previous.update(campaign_server_ids=server_ids, campaign_primary_ip_ids=ip_ids,
+        status='provisioned-through-' + args.role,
+        hosts={role: dict(id=s['id'], name=s['name'], public_ipv4=s['public_net']['ipv4']['ip'],
+                         private=[n['ip'] for n in s['private_net']])
+               for role in roles for s in servers if s['name'] == f'{args.prefix}-{role}'})
+    owned = dict(campaign=campaign, server_ids=server_ids, primary_ips=associations,
+                 direct_primary_ip_deletion_authorized=False)
+    for path, value in [(args.state, previous), (args.owned_output, owned)]:
+        mc.private_dir(Path(path).parent)
+        cs.atomic_private(path, value)
+    return server_ids, ip_ids
 
 
 def parse_args(argv=None):
@@ -84,8 +86,9 @@ def parse_args(argv=None):
     ap.add_argument('--label', required=True, help='campaign=VALUE')
     ap.add_argument('--prefix', required=True)
     ap.add_argument('--role', choices=ROLES, required=True, help='the last role created')
-    ap.add_argument('--server-json', required=True)
-    ap.add_argument('--primary-ip-json', required=True)
+    ap.add_argument('--creation-ledger', help='mandatory exact creation provenance')
+    ap.add_argument('--server-json', help='historical snapshot option; never ownership authority')
+    ap.add_argument('--primary-ip-json', help='historical snapshot option; never ownership authority')
     ap.add_argument('--protect-file', action='append', default=[])
     ap.add_argument('--state', required=True, help='campaign state JSON, outside the repo')
     ap.add_argument('--owned-output', required=True, help='owned server/primary-IP record, outside the repo')
@@ -96,11 +99,11 @@ def main(argv=None):
     args = parse_args(argv)
     try:
         servers, ips = check(args)
-    except (OSError, ValueError, KeyError, mc.GuardError) as exc:
-        print(f'STOP: ownership check failed; report the IDs to the owner, do not continue or change IPs: {exc}',
-              file=sys.stderr)
+    except (OSError, ValueError, KeyError, TypeError, mc.GuardError) as exc:
+        reason = str(exc) if isinstance(exc, mc.GuardError) else type(exc).__name__
+        print('STOP: ownership check failed; retain IDs for the owner; never change IPs: ' + reason, file=sys.stderr)
         return 2
-    print(f'PASS: campaign servers {servers}; primary IPs {ips}; each assigned to an owned server with auto_delete=true.')
+    print(f'PASS: exact journal-owned servers {servers}; attributed auto-delete primary IPs {ips}.')
     return 0
 
 

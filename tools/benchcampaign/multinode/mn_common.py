@@ -112,24 +112,29 @@ PROTECT_KINDS = ('server', 'network', 'firewall', 'ssh-key', 'volume', 'primary-
                  'floating-ip', 'load-balancer', 'placement-group', 'certificate')
 
 
-def read_protect_file(path):
+def read_protect_file(path, typed=False, raw=None):
     """Read a private protected-resource list: one `kind<TAB>id<TAB>name[<TAB>cidr]`
     line per existing resource ('#' comments and blank lines ignored), as written
     by `inventory.py snapshot`. Returns dict(names, ids, cidrs). The file names the
     project's other resources, so it must live outside the repository."""
     require_outside_repo(path, 'protect file')
     try:
-        text = Path(path).read_text()
+        text = Path(path).read_text() if raw is None else raw.decode('utf-8')
     except (OSError, UnicodeDecodeError) as exc:
         raise GuardError(f'cannot read protect file {path}: {exc}') from None
     names, ids, cidrs = [], [], []
+    by_kind = {kind: [] for kind in PROTECT_KINDS}
     for number, line in enumerate(text.splitlines(), 1):
         if not line.strip() or line.startswith('#'):
             continue
         fields = line.split('\t')
         if len(fields) not in (3, 4) or fields[0] not in PROTECT_KINDS or not re.fullmatch(r'[0-9]+', fields[1]):
             raise GuardError(f'{path}:{number}: expected kind<TAB>id<TAB>name[<TAB>cidr]')
-        ids.append(int(fields[1]))
+        rid = int(fields[1])
+        if typed and (rid <= 0 or rid in by_kind[fields[0]]):
+            raise GuardError(f'{path}:{number}: invalid or duplicate typed resource ID')
+        ids.append(rid)
+        by_kind[fields[0]].append(rid)
         if fields[2]:
             names.append(fields[2])
         if len(fields) == 4 and fields[3]:
@@ -139,7 +144,10 @@ def read_protect_file(path):
                 raise GuardError(f'{path}:{number}: invalid network range') from None
     if not ids:
         raise GuardError(f'{path}: empty protect file')
-    return dict(names=names, ids=ids, cidrs=cidrs)
+    result = dict(names=names, ids=ids, cidrs=cidrs)
+    if typed:
+        result['by_kind'] = by_kind
+    return result
 
 
 def ip_in(network, address):

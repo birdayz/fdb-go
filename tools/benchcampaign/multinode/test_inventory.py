@@ -63,6 +63,29 @@ class ProtectFileTest(Temp):
             '# existing resources\nserver\t101\tci-runner-1\n\nnetwork\t201\tci-net\t10.66.0.0/16\nprimary-ip\t401\t\n'))
         self.assertEqual(got, dict(names=['ci-runner-1', 'ci-net'], ids=[101, 201, 401], cidrs=['10.66.0.0/16']))
 
+    def test_typed_protection_keeps_cross_kind_numeric_ids_separate(self):
+        path = self.protect('server\t101\tserver-name\nnetwork\t101\tnetwork-name\nprimary-ip\t101\t\n')
+        expected = dict(names=['server-name', 'network-name'], ids=[101, 101, 101], cidrs=[])
+        self.assertEqual(mc.read_protect_file(path), expected)
+        typed = mc.read_protect_file(path, typed=True)
+        self.assertEqual({key: typed[key] for key in expected}, expected)
+        self.assertEqual(set(typed['by_kind']), set(mc.PROTECT_KINDS))
+        self.assertEqual(typed['by_kind']['server'], [101])
+        self.assertEqual(typed['by_kind']['network'], [101])
+        self.assertEqual(typed['by_kind']['primary-ip'], [101])
+        self.assertTrue(all(not ids for kind, ids in typed['by_kind'].items()
+                            if kind not in {'server', 'network', 'primary-ip'}))
+
+    def test_typed_protection_rejects_zero_or_same_kind_duplicate_ids(self):
+        for text in ('server\t0\tx\n', 'network\t7\tx\nnetwork\t7\ty\n',
+                     'server\t101\tx\nserver\t101\tx\n'):
+            with self.subTest(text=text), self.assertRaisesRegex(mc.GuardError, 'typed resource ID'):
+                mc.read_protect_file(self.protect(text), typed=True)
+
+    def test_default_protection_return_contract_remains_legacy(self):
+        path = self.protect('server\t0\tx\nnetwork\t7\tnet\nnetwork\t7\talias\n')
+        self.assertEqual(mc.read_protect_file(path), dict(names=['x', 'net', 'alias'], ids=[0, 7, 7], cidrs=[]))
+
     def test_refusals(self):
         for text in ('', '# only a comment\n', 'server\tabc\tx\n', 'robot\t1\tx\n', 'server 1 x\n',
                      'server\t1\tx\ty\tz\n', 'network\t1\tx\tnot-a-cidr\n'):
@@ -205,18 +228,21 @@ class PrimaryIPTest(Temp):
                 '--protect-file', self.protect(protect)]
         return pic.main(argv)
 
-    def test_staged_pass_records_ids(self):
+    def test_staged_snapshots_cannot_create_ownership_without_ledger(self):
         others = [dict(id=101, name='ci-runner-1', labels={})]
-        self.assertEqual(self.run_check(others + [self.server(1, 'client', 11)], [self.ip(11, 1)]), 0)
-        servers = others + [self.server(1, 'client', 11), self.server(2, 'node1', 12)]
-        self.assertEqual(self.run_check(servers, [self.ip(11, 1), self.ip(12, 2)], role='node1'), 0)
-        state = json.loads((self.tmp / 'state.json').read_text())
-        self.assertEqual((state['campaign_server_ids'], state['campaign_primary_ip_ids']), ([1, 2], [11, 12]))
-        self.assertEqual(state['status'], 'provisioned-through-node1')
-        owned = json.loads((self.tmp / 'owned.json').read_text())
-        self.assertFalse(owned['direct_primary_ip_deletion_authorized'])
+        cases = [(others + [self.server(1, 'client', 11)], [self.ip(11, 1)], 'client'),
+                 (others + [self.server(1, 'client', 11), self.server(2, 'node1', 12)],
+                  [self.ip(11, 1), self.ip(12, 2)], 'node1')]
+        for servers, ips, role in cases:
+            with self.subTest(role=role):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertEqual(self.run_check(servers, ips, role=role), 2)
+                self.assertIn('requires --creation-ledger', err.getvalue())
+                self.assertFalse((self.tmp / 'state.json').exists())
+                self.assertFalse((self.tmp / 'owned.json').exists())
 
-    def test_refusals(self):
+    def test_legacy_snapshot_conflicts_do_not_bypass_mandatory_ledger(self):
         cases = {
             'unexpected campaign server set': ([self.server(1, 'client', 11)], [self.ip(11, 1)], 'node1', ''),
             'server 1 is unowned': ([self.server(1, 'client', 11, campaign='other')], [self.ip(11, 1)], 'client', ''),
@@ -234,39 +260,28 @@ class PrimaryIPTest(Temp):
                 with contextlib.redirect_stderr(err):
                     rc = self.run_check(servers, ips, role, protect or 'server\t999\tx\n')
                 self.assertEqual(rc, 2)
-                self.assertIn(reason, err.getvalue())
+                self.assertIn('requires --creation-ledger', err.getvalue())
+                self.assertFalse((self.tmp / 'state.json').exists())
+                self.assertFalse((self.tmp / 'owned.json').exists())
 
-    def test_disappeared_server_is_refused(self):
-        self.assertEqual(self.run_check([self.server(1, 'client', 11)], [self.ip(11, 1)]), 0)
+    def test_historical_state_is_not_ledger_and_is_not_overwritten(self):
+        state = self.tmp / 'state.json'
+        previous = dict(campaign_server_ids=[1], campaign_primary_ip_ids=[11], status='historical')
+        state.write_text(json.dumps(previous))
+        state.chmod(0o600)
+        before = state.read_bytes()
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             self.assertEqual(self.run_check([self.server(3, 'client', 13)], [self.ip(13, 3)]), 2)
-        self.assertIn('previously recorded campaign server disappeared', err.getvalue())
+        self.assertIn('requires --creation-ledger', err.getvalue())
+        self.assertEqual(state.read_bytes(), before)
+        self.assertFalse((self.tmp / 'owned.json').exists())
 
 
 
 # hcloud 1.70 prints `[]` for an empty list; anything else that is not a JSON
 # list of objects must fail closed rather than read as "nothing exists".
 BAD_LISTS = ['', 'null', '{}', 'false', '0', '""', '"[]"', '[1]', '[null]', '{"id": 1}', 'not json']
-
-
-class Recorder:
-    """Fake hcloud: per-kind list output (a string, or a callable of the call count), deletes recorded."""
-
-    def __init__(self, lists):
-        self.lists, self.calls = lists, []
-
-    def __call__(self, argv, timeout=None):
-        argv = [str(a) for a in argv]
-        self.calls.append(argv)
-        kind, verb = argv[1], argv[2]
-        if verb == 'list':
-            out = self.lists.get(kind, '[]')
-            return 0, out(self) if callable(out) else out, ''
-        return 0, '', ''
-
-    def deletes(self):
-        return [c for c in self.calls if c[2] == 'delete']
 
 
 class StrictListTest(Temp):
@@ -311,61 +326,77 @@ class StrictListTest(Temp):
                 self.assertEqual(inventory.verify(args, runner=Lister(project()), out=io.StringIO(), err=io.StringIO()), 1)
 
     def teardown_argv(self, *extra):
-        return ['--label', 'campaign=mn-test', '--prefix', 'fdb-bench-vpc', '--retry-seconds', '0', *extra]
+        return ['--label', 'campaign=mn-test', '--prefix', 'fdb-bench-vpc', *extra]
 
-    def test_teardown_discovery_fails_closed(self):
-        for bad in BAD_LISTS:
-            with self.subTest(output=bad):
-                runner = Recorder({'server': bad})
-                err = io.StringIO()
-                with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
-                    rc = tg.main(self.teardown_argv('--execute'), runner=runner)
-                self.assertEqual(rc, 2)
-                self.assertIn('REFUSED', err.getvalue())
-                self.assertEqual(runner.deletes(), [])
+    def test_teardown_execute_requires_ledger_without_any_legacy_runner_call(self):
+        calls = []
+        def forbidden_runner(argv, timeout=None):
+            calls.append(list(argv))
+            self.fail('ledger-less execution must not invoke legacy discovery or deletion')
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = tg.main(self.teardown_argv('--execute'), runner=forbidden_runner)
+        self.assertEqual(rc, 2)
+        self.assertIn('requires --creation-ledger', err.getvalue())
+        self.assertEqual(calls, [])
 
-    def test_teardown_post_delete_census_fails_closed(self):
-        owned = json.dumps([dict(id=11, name='fdb-bench-vpc-client', labels={'campaign': 'mn-test'})])
-        for bad in BAD_LISTS:
-            with self.subTest(output=bad):
-                # The first server listing finds the owned server; the census after the delete is unreadable.
-                runner = Recorder({'server': lambda r: owned if not r.deletes() else bad})
-                err = io.StringIO()
-                with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
-                    rc = tg.main(self.teardown_argv('--execute'), runner=runner)
-                self.assertEqual([c[3] for c in runner.deletes()], ['11'])
-                self.assertEqual(rc, 2)
-                self.assertIn('REFUSED', err.getvalue())
+    def test_teardown_unchanged_valid_protection_parses_then_reaches_the_ledger_gate(self):
+        path = self.protect('server\t101\texisting-server\nprimary-ip\t401\t\n')
+        original = Path(path).read_bytes()
+        argv = self.teardown_argv('--execute', '--protect-file', path)
+        args = tg.parse_args(argv)
+        self.assertEqual(args.protect_id, [101, 401])
+        self.assertEqual(args.protect_name, ['existing-server'])
+        self.assertEqual(args.typed_protection['server'], [101])
+        self.assertEqual(args.typed_protection['primary-ip'], [401])
+        self.assertTrue(all(not ids for kind, ids in args.typed_protection.items()
+                            if kind not in {'server', 'primary-ip'}))
+        calls = []
+        def forbidden_runner(argv, timeout=None):
+            calls.append(list(argv))
+            self.fail('valid protection does not waive the mandatory creation ledger')
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = tg.main(argv, runner=forbidden_runner)
+        self.assertEqual(rc, 2)
+        self.assertIn('requires --creation-ledger', err.getvalue())
+        self.assertNotIn('cannot read protect file', err.getvalue())
+        self.assertEqual(calls, [])
+        self.assertEqual(Path(path).read_bytes(), original)
 
-    def test_teardown_execute_deletes_nothing_without_a_valid_protect_file(self):
-        owned = json.dumps([dict(id=11, name='fdb-bench-vpc-client', labels={'campaign': 'mn-test'})])
-        cases = {'missing': None, 'empty': '', 'comments only': '# none\n\n', 'malformed id': 'server\tabc\tx\n',
-                 'unknown kind': 'robot\t1\tx\n', 'too many fields': 'server\t1\tx\ty\tz\n',
-                 'invalid range': 'network\t1\tx\tnot-a-cidr\n', 'not utf-8': b'server\t1\t\xff\n'}
-        for name, content in cases.items():
+    def test_teardown_invalid_protection_refuses_before_the_missing_ledger_gate(self):
+        cases = {
+            'missing': (None, 'cannot read protect file'),
+            'empty': ('', 'empty protect file'),
+            'comments only': ('# none\n\n', 'empty protect file'),
+            'malformed id': ('server\tabc\tx\n', 'expected kind<TAB>id<TAB>name'),
+            'unknown kind': ('robot\t1\tx\n', 'expected kind<TAB>id<TAB>name'),
+            'too many fields': ('server\t1\tx\ty\tz\n', 'expected kind<TAB>id<TAB>name'),
+            'invalid range': ('network\t1\tx\tnot-a-cidr\n', 'invalid network range'),
+            'not utf-8': (b'server\t1\t\xff\n', 'cannot read protect file'),
+            'directory': (None, 'cannot read protect file'),
+        }
+        for name, (content, reason) in cases.items():
             with self.subTest(name):
                 path = self.tmp / f'protect-{len(name)}-{name.replace(" ", "-")}.tsv'
-                if isinstance(content, bytes):
+                if name == 'directory':
+                    path.mkdir()
+                elif isinstance(content, bytes):
                     path.write_bytes(content)
                 elif content is not None:
                     path.write_text(content)
-                runner = Recorder({'server': owned})
+                calls = []
+                def forbidden_runner(argv, timeout=None):
+                    calls.append(list(argv))
+                    self.fail('invalid protection must refuse before legacy discovery or deletion')
                 err = io.StringIO()
                 with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
-                    rc = tg.main(self.teardown_argv('--execute', '--protect-file', str(path)), runner=runner)
+                    rc = tg.main(self.teardown_argv('--execute', '--protect-file', str(path)), runner=forbidden_runner)
                 self.assertEqual(rc, 2)
                 self.assertIn('REFUSED', err.getvalue())
-                self.assertEqual(runner.deletes(), [])
-                self.assertEqual(runner.calls, [])  # refused before discovery
-
-    def test_provision_preflight_fails_closed(self):
-        args = provision.parse_args(['--label', 'campaign=mn-test', '--controller-cidr', CTL, '--ssh-key-name', 'k',
-                                     '--cloud-init-dir', str(self.tmp), '--work-dir', str(self.tmp)])
-        for kind in ('server', 'network', 'firewall'):
-            for bad in BAD_LISTS:
-                with self.subTest(kind=kind, output=bad), self.assertRaises(mc.GuardError):
-                    provision.preflight(args, Recorder({kind: bad}))
-
+                self.assertIn(reason, err.getvalue())
+                self.assertNotIn('requires --creation-ledger', err.getvalue())
+                self.assertEqual(calls, [])
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
