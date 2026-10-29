@@ -2986,26 +2986,42 @@ regressions so they can be proposed upstream after the PoC.
   populations, failures, CPU/RAM, physical storage and write amplification. Keep
   cold/warm policy and durability boundaries explicit; the current local single-
   node runs are not HA/SLO proof. Stop at 10M; the former 100M load is out of scope.
-- [ ] Validate actual-OS cloud-init admission and complete the native horizontal
-  campaign in `layers/otel/bench/ops/horizontal/` under a newly approved runtime
-  window/budget. The 2026-10-29 attempt window produced **zero ingested rows and
-  no scaling proof**. Three provisioning attempts created eleven servers in total
-  (never more than five concurrently); all eleven were deleted and exact baseline
-  equality passed for all ten resource kinds / seventeen pre-existing IDs.
-  Provider SDK differences (disabled IPv6's typed zero/empty descriptor and
-  top-level HEL1 location) are now covered; the final attempt passed provider
-  identity/placement checks but the target image's cloud-init rejected `ssh_genkeytypes: []` as
-  too short and returned degraded status. The new horizontal emitter now uses
-  `[ed25519]` while preserving the supplied host-key pair and pinned known_hosts;
-  shared renderers/old profiles are unchanged. This correction still needs actual
-  target-image `cloud-init schema --system` and clean completion, not a degraded
-  exit-code waiver or inference from fake-runner tests. Verify the supplied-key
-  install path, exact SSH host-key match and non-TOFU transport on the actual OS
-  before admitting load. Then run real two-producer independent-store 100k gates
-  for 1/2/3 storage hosts, followed only after all gates pass by the preregistered
-  3/2/1 measured phase and full census/oracle checks. Keep all existing resource,
-  health, disk, transaction and row-count guards, an independently acknowledged
-  teardown supervisor before creation, and absolute cleanup deadlines. Preserve
-  all failed bootstrap receipts and separate measured active-topology cost from
+- [ ] Complete the native horizontal campaign in
+  `layers/otel/bench/ops/horizontal/` under a newly approved runtime window/budget;
+  there is still **no accepted paired census/oracle/throughput or scaling proof**.
+  Keep the two 2026-10-29 windows distinct:
+  - The earlier window ended with all eleven created servers deleted by
+    00:32:06Z, zero ingest, and exact baseline equality for all ten resource kinds
+    / seventeen pre-existing IDs. Provider SDK shape differences and invalid
+    empty `ssh_genkeytypes` blocked bootstrap; no health warning was waived.
+  - The fresh 09:29:51Z window actually validated all five hosts' pinned SSH,
+    cloud-init 26.1 user-data/vendor/network schemas and clean status, native
+    ext4/fsync/checksum preparation, quiet admission and one-host FDB startup.
+    Real two-producer independent-store 100k ingest then failed unchanged strict
+    health on `batch_priority_transaction_start_probe_timeout`; storage queue was
+    1,413,262,266 bytes and durability lag 33.702 s. One producer process exited
+    zero and the other was aborted, but the completed producer's `ingest.json`
+    was not retained, so do not claim a verified row count or paired result.
+    Failure collection now includes mode JSON under the existing size/symlink
+    guards. Larger two-/three-storage-host layouts remain unmeasured. A later
+    preregistered larger-first attempt hit the compound create CLI's 20-second
+    outer wait, before SSH or load; the provider action itself succeeded in seven
+    seconds (10:29:36–10:29:43Z), not an action timeout or three-host capacity
+    result. All fifteen
+    servers created across this fresh window were removed, and exact baseline
+    equality passed again for all ten resource kinds / seventeen IDs.
+  The horizontal emitter's nonempty `[ed25519]` preserves supplied host keys and
+  known_hosts; shared renderers/old profiles remain unchanged. Async network
+  attachment now records/polls the exact scoped network action and verifies the
+  owned server binding. The subsequent compound resource-create CLI operation
+  now has a bounded 120-second budget (HTTP requests remain capped at 30 seconds),
+  one invocation/no ambiguous resubmission, private raw attempt diagnostics and
+  unchanged active/hard deadlines; validate this correction in a future approved
+  campaign, not another launch in either closed window. Preregister prerequisite
+  order (`[1,2,3]` or `[3,2,1]`) before data; a failed gate remains fatal and all
+  three complete 100k pairs are required before the measured phase. Keep every
+  existing resource, health, disk, transaction and row-count guard, independent
+  teardown acknowledgement before creation, and absolute cleanup deadlines.
+  Retain failed/partial evidence and separate logical active-topology cost from
   rounded held-server/IPv4 charges. Single R1 is non-HA; role/counter observations
   alone cannot prove complete run-specific placement or that extra storage helped.

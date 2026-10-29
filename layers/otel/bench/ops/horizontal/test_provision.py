@@ -34,6 +34,11 @@ class FakeCloud:
         self.ipv6_descriptor = dict(id=0, ip='', blocked=False, dns_ptr=[])
         self.low_disk = False
         self.create_counts = {}
+        self.creation_delays = {}
+        self.creation_exceptions = {}
+        self.creation_outputs = {}
+        self.creation_clock = None
+        self.creation_invocations = []
         self.guard_ready = True
         self.guard_dead = False
         self.readiness_results = []
@@ -175,6 +180,8 @@ class FakeCloud:
             return 0, json.dumps(items), ''
         self.events.append(kind+' '+verb)
         if verb == 'create':
+            ordinal = self.create_counts.get(kind, 0)+1
+            self.creation_invocations.append(dict(kind=kind, ordinal=ordinal, timeout=timeout, argv=list(argv)))
             if 'guard-ready' not in self.events:
                 raise AssertionError('cloud mutation before guard acknowledgment')
             labels = dict(argv[i+1].split('=', 1) for i, a in enumerate(argv) if a == '--label')
@@ -199,9 +206,19 @@ class FakeCloud:
                     auto_delete=not self.bad_auto_delete, assignee_id=item['id'], assignee_type='server'))
             self.items[kind].append(item)
             self.create_counts[kind] = self.create_counts.get(kind, 0)+1
-            if self.fail_after_create == (kind, self.create_counts[kind]):
+            key = (kind, self.create_counts[kind])
+            delay = self.creation_delays.get(key, 0)
+            if self.creation_clock:
+                self.creation_clock(min(delay, timeout))
+            if delay > timeout:
+                raise p.subprocess.TimeoutExpired(argv, timeout,
+                    output='created-resource-pending-output', stderr='compound-create-timeout-stderr')
+            if key in self.creation_exceptions:
+                raise self.creation_exceptions[key]
+            if self.fail_after_create == key:
                 return 1, '', 'simulated response lost after API creation'
-            return 0, '', ''
+            stdout, stderr = self.creation_outputs.get(key, ('', ''))
+            return 0, stdout, stderr
         if kind == 'primary-ip' and verb == 'update':
             rid = int(argv[-1])
             if rid <= 10 or argv[3] != '--auto-delete=true':
@@ -265,6 +282,140 @@ class ProvisionTest(unittest.TestCase):
     def prepare(self):
         return p.prepare(self.plan, self.out, runner=self.cloud, popen=self.cloud.popen,
                          sleep=lambda seconds: None)
+
+    def creation_fixture(self):
+        serial = getattr(self, '_creation_serial', 0)+1
+        self._creation_serial = serial
+        out = self.root / ('creation-'+str(serial))
+        state = p._state(out)
+        state.mkdir(mode=0o700, parents=True)
+        cloud = FakeCloud(self.plan, out)
+        cloud.events.append('guard-ready')
+        baseline = state / 'baseline'
+        baseline.mkdir(mode=0o700)
+        for kind in p.KINDS:
+            p._json(baseline / ('before-'+kind+'.json'), cloud.baseline[kind])
+        resources = dict(campaign=self.plan['campaign'], prefix=self.plan['prefix'], nodes={},
+                         ids={kind: [] for kind in p.KINDS},
+                         protected_ids={kind: [i['id'] for i in cloud.baseline[kind]] for kind in p.KINDS})
+        p._save_resources(state, resources)
+        now = [float(self.plan['first_epoch']+1)]
+        cloud.creation_clock = lambda seconds: now.__setitem__(0, now[0]+seconds)
+        guard = mock.Mock()
+        guard.poll.return_value = None
+        argv = [self.plan['hcloud'], 'server', 'create', '--name', self.plan['prefix']+'-node1',
+                '--placement-group', '900', '--label', 'campaign='+self.plan['campaign']]
+        return dict(out=out, state=state, cloud=cloud, resources=resources, now=now, guard=guard, argv=argv)
+
+    def create(self, fixture, runner=None):
+        return p._create(self.plan, fixture['state'], fixture['resources'], 'server', fixture['argv'],
+                         runner or fixture['cloud'], lambda: fixture['now'][0], fixture['guard'])
+
+    def test_compound_create_takes_twenty_three_seconds_and_journals_raw_success(self):
+        f = self.creation_fixture()
+        f['cloud'].creation_delays[('server', 1)] = 23
+        f['cloud'].creation_outputs[('server', 1)] = ('raw-create-success\\n', 'raw-create-notice\\n')
+        start = f['now'][0]
+        created = self.create(f)
+        self.assertEqual(f['now'][0]-start, 23)
+        self.assertEqual(f['resources']['ids']['server'], [created['id']])
+        self.assertEqual(len(f['cloud'].creation_invocations), 1)
+        self.assertEqual(f['cloud'].creation_invocations[0]['timeout'], 120)
+        attempts = f['resources']['creation_attempts']
+        self.assertEqual(len(attempts), 1)
+        receipt = p._load(attempts[0])
+        self.assertEqual(receipt['kind'], 'server')
+        self.assertEqual(receipt['argv'], f['argv'])
+        self.assertEqual(receipt['returncode'], 0)
+        self.assertFalse(receipt['timed_out'])
+        self.assertEqual(receipt['timeout_seconds'], 120)
+        self.assertEqual(receipt['finished_epoch']-receipt['epoch'], 23)
+        self.assertEqual(receipt['stdout'], 'raw-create-success\\n')
+        self.assertEqual(receipt['stderr'], 'raw-create-notice\\n')
+        self.assertEqual(Path(attempts[0]).stat().st_mode & 0o777, 0o600)
+
+    def test_compound_create_timeout_after_120_seconds_is_not_resubmitted_and_cleans_ambiguous_id(self):
+        f = self.creation_fixture()
+        f['cloud'].creation_delays[('server', 1)] = 121
+        with self.assertRaises(p.ProvisionError):
+            self.create(f)
+        self.assertEqual(len(f['cloud'].creation_invocations), 1)
+        self.assertEqual(f['cloud'].creation_invocations[0]['timeout'], 120)
+        self.assertFalse(f['resources']['ids']['server'])
+        attempts = p._load(f['state'] / 'resources.json')['creation_attempts']
+        self.assertEqual(len(attempts), 1)
+        receipt = p._load(attempts[0])
+        self.assertTrue(receipt['timed_out'])
+        self.assertIsNone(receipt['returncode'])
+        self.assertIn('created-resource-pending-output', receipt['stdout'])
+        self.assertIn('compound-create-timeout-stderr', receipt['stderr'])
+        self.assertEqual(Path(attempts[0]).stat().st_mode & 0o777, 0o600)
+        result = p.teardown(self.plan, f['out'], f['resources'], runner=f['cloud'],
+                            clock=lambda: f['now'][0], sleep=lambda _: None)
+        self.assertTrue(result['passed'])
+        self.assertEqual(f['cloud'].items, f['cloud'].baseline)
+        self.assertEqual(len(f['cloud'].creation_invocations), 1)
+        self.assertTrue(all(rid > 10 for _, rid in f['cloud'].deleted))
+
+    def test_compound_create_uses_original_active_budget_and_does_not_adopt_after_expiry(self):
+        for delay in (3, 23):
+            with self.subTest(delay=delay):
+                f = self.creation_fixture()
+                f['now'][0] = self.plan['first_epoch']+5997
+                f['cloud'].creation_delays[('server', 1)] = delay
+                with self.assertRaises(p.ProvisionError):
+                    self.create(f)
+                self.assertEqual(len(f['cloud'].creation_invocations), 1)
+                self.assertEqual(f['cloud'].creation_invocations[0]['timeout'], 3)
+                self.assertFalse(f['resources']['ids']['server'])
+                self.assertFalse(any(a[1:3] == ['server', 'list'] for a, _ in f['cloud'].calls))
+                receipt = p._load(f['resources']['creation_attempts'][0])
+                self.assertEqual(receipt['timeout_seconds'], 3)
+                self.assertEqual(receipt['timed_out'], delay > 3)
+                self.assertEqual(receipt['returncode'], None if delay > 3 else 0)
+        f = self.creation_fixture()
+        f['now'][0] = self.plan['first_epoch']+6000
+        with self.assertRaises(p.ProvisionError):
+            self.create(f)
+        self.assertFalse(f['cloud'].creation_invocations)
+
+    def test_compound_create_os_and_subprocess_errors_are_journaled_without_resubmission(self):
+        for error in (OSError('simulated-create-os-error'), p.subprocess.SubprocessError('simulated-create-subprocess-error')):
+            f = self.creation_fixture()
+            f['cloud'].creation_exceptions[('server', 1)] = error
+            with self.assertRaises(p.ProvisionError):
+                self.create(f)
+            self.assertEqual(len(f['cloud'].creation_invocations), 1)
+            receipt = p._load(f['resources']['creation_attempts'][0])
+            self.assertIsNone(receipt['returncode'])
+            self.assertFalse(receipt['timed_out'])
+            self.assertIn(str(error), receipt['stderr'])
+            self.assertEqual(Path(f['resources']['creation_attempts'][0]).stat().st_mode & 0o777, 0o600)
+            result = p.teardown(self.plan, f['out'], f['resources'], runner=f['cloud'],
+                                clock=lambda: f['now'][0], sleep=lambda _: None)
+            self.assertTrue(result['passed'])
+            self.assertEqual(f['cloud'].items, f['cloud'].baseline)
+
+    def test_compound_create_never_adopts_protected_id_from_success_readback(self):
+        f = self.creation_fixture()
+        original = copy.deepcopy(f['cloud'].baseline['server'])
+
+        def protected_readback(argv, timeout=120):
+            rc, stdout, stderr = f['cloud'](argv, timeout=timeout)
+            if argv[1:3] == ['server', 'list']:
+                items = json.loads(stdout)
+                candidates = [item for item in items if item['name'] == self.plan['prefix']+'-node1']
+                candidates[0]['id'] = original[0]['id']
+                return rc, json.dumps(candidates), stderr
+            return rc, stdout, stderr
+
+        with self.assertRaises(p.ProvisionError):
+            self.create(f, runner=protected_readback)
+        self.assertFalse(f['resources']['ids']['server'])
+        self.assertEqual(f['cloud'].items['server'][0], original[0])
+        self.assertFalse(f['cloud'].deleted)
+        self.assertEqual(len(f['cloud'].creation_invocations), 1)
+        self.assertEqual(len(f['resources']['creation_attempts']), 1)
 
     def attachment_fixture(self):
         serial = getattr(self, '_attachment_serial', 0) + 1
