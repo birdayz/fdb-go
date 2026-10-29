@@ -451,10 +451,15 @@ class Campaign:
             self.install_helpers()
             self.quiet()
             gates = {}
-            # Complete every horizontal prerequisite before a possibly failing 1M
+            selected = self.plan.get("selected_topologies", self.plan["topologies"])
+            # Complete every selected horizontal prerequisite before a possibly failing 1M
             # arm can end the campaign. Measured arms use fresh native clusters.
             for phase in ("prerequisite", "measured"):
                 order = self.plan.get("prerequisite_topologies", self.plan["topologies"]) if phase == "prerequisite" else self.plan["measured_topologies"]
+                order = [hosts for hosts in order if hosts in selected]
+                if phase == "measured":
+                    for hosts in selected:
+                        p.require_promotion(gates.get(hosts), hosts)
                 for i, hosts in enumerate(order):
                     remaining(self.plan, reserve=2000)
                     if phase == "measured":

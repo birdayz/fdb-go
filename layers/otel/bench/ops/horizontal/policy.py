@@ -58,6 +58,10 @@ def validate_plan(plan, *, check_assets=True):
     require(plan.get("replication") == "single", "single-replica non-HA capacity experiment only")
     require(type(plan.get("topologies")) is list and len(plan["topologies"]) == 3
             and all(type(x) is int for x in plan["topologies"]) and plan["topologies"] == [1, 2, 3], "exact storage-host sweep")
+    if "selected_topologies" in plan:
+        selected = plan["selected_topologies"]
+        require(type(selected) is list and len(selected) == 2 and all(type(x) is int for x in selected)
+                and selected == [3, 2], "independent selected storage-host study must be exactly 3/2")
     if "prerequisite_topologies" in plan:
         order = plan["prerequisite_topologies"]
         require(type(order) is list and len(order) == 3 and all(type(x) is int for x in order)
@@ -112,7 +116,7 @@ def verify_source(plan):
 
 
 def authorized_rows(plan):
-    return 3 * 2 * (100000 + plan["measured_count"])
+    return len(plan.get("selected_topologies", plan["topologies"])) * 2 * (100000 + plan["measured_count"])
 
 
 def require_promotion(gate, hosts):
