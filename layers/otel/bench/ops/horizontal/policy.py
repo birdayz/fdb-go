@@ -67,8 +67,9 @@ def validate_plan(plan, *, check_assets=True):
         require(type(order) is list and len(order) == 3 and all(type(x) is int for x in order)
                 and order in ([1, 2, 3], [3, 2, 1]), "preregistered prerequisite storage-host order 1/2/3 or 3/2/1")
     require(type(plan.get("measured_topologies")) is list and len(plan["measured_topologies"]) == 3
-            and all(type(x) is int for x in plan["measured_topologies"]) and plan["measured_topologies"] == [3, 2, 1],
-            "preregistered measured storage-host order 3/2/1")
+            and all(type(x) is int for x in plan["measured_topologies"])
+            and plan["measured_topologies"] in ([3, 2, 1], [2, 3, 1]),
+            "preregistered measured storage-host order 3/2/1 or 2/3/1")
     require(type(plan.get("count")) is int and plan["count"] == 100000, "mandatory 100k prerequisite")
     require(type(plan.get("measured_count")) is int and plan["measured_count"] in (100000, 1000000), "explicit measured count")
     require(type(plan.get("batch")) is int and plan["batch"] in (32, 64)
@@ -139,12 +140,13 @@ def topology_cost(resources, storage_hosts, rate):
     require(net.is_finite() and gross.is_finite() and net > 0 and gross >= net, "live catalog cost required")
     active = storage_hosts + 2
     factor = Decimal(1000000) / Decimal(str(rate)) / Decimal(3600)
-    return {"active_topology_nodes": active, "held_billable_nodes": 5, "currency": resources.get("currency"),
+    return {"scope": "SERVER-ONLY", "excludes": ["IPv4", "traffic"],
+            "active_topology_nodes": active, "held_billable_nodes": 5, "currency": resources.get("currency"),
             "hourly_net": str(net * active), "hourly_gross": str(gross * active),
             "per_million_ack_rows_net": str(net * active * factor),
             "per_million_ack_rows_gross": str(gross * active * factor),
             "pricing_receipt_sha256": resources["pricing_receipt_sha256"],
-            "boundary": "logical active 3/4/5-node topology; all five reserved servers are billed separately"}
+            "boundary": "server-only logical active topology; IPv4 and traffic charges excluded; all five reserved servers are billed separately"}
 
 
 def bill_bound(resources, cleanup):
@@ -180,6 +182,18 @@ def rounded_server_bill(resources, cleanup):
             "net": str(Decimal(resources["price_hourly_net"]) * hours),
             "gross": str(Decimal(resources["price_hourly_gross"]) * hours),
             "boundary": "rounded server estimate from API creation/delete-ACK receipts; excludes IPv4; not an invoice"}
+
+
+def storage_counter(role, name):
+    if type(role) is not dict:
+        return None
+    metric = role.get(name)
+    value = metric.get("counter") if type(metric) is dict else None
+    if integer(value):
+        return value
+    if type(value) is float and number(value) and value.is_integer() and value <= 2 ** 53 - 1:
+        return int(value)
+    return None
 
 
 def strict_status(d, layout):
@@ -224,11 +238,12 @@ def strict_status(d, layout):
         require(type(process["messages"]) is list and not process["messages"], "process status warning")
         if "storage" in names:
             role = next(x for x in roles if x["role"] == "storage")
-            counter = role.get("bytes_input", {}).get("counter")
             stored = role.get("stored_bytes")
-            data[spec["node"]] = {"input_bytes": counter if integer(counter) else None,
+            shards = role.get("shards")
+            data[spec["node"]] = {"input_bytes": storage_counter(role, "input_bytes"),
+                                  "durable_bytes": storage_counter(role, "durable_bytes"),
                                   "stored_bytes": stored if integer(stored) else None,
-                                  "shards": role.get("shards"), "storage_id": role.get("id")}
+                                  "shards": shards if integer(shards) else None, "storage_id": role.get("id")}
     require(set(data) == set(layout["storage_hosts"]), "all selected storage hosts must be active")
     return {"healthy": True, "queue_bytes": qos["worst_queue_bytes_storage_server"],
             "lag_seconds": qos["worst_durability_lag_storage_server"]["seconds"], "storage": data}
@@ -236,7 +251,7 @@ def strict_status(d, layout):
 
 def distributed(before, during, hosts, after=()):
     """Unknown counters are inconclusive, never defaulted to zero or inferred from roles."""
-    reasons, deltas = [], {}
+    reasons, deltas, durable_deltas = [], {}, {}
     for node in hosts:
         start = before.get("storage", {}).get(node, {})
         counters = [x.get("storage", {}).get(node, {}).get("input_bytes") for x in during]
@@ -252,13 +267,22 @@ def distributed(before, during, hosts, after=()):
         if any(b < a for a, b in zip([start["input_bytes"]] + all_counters, all_counters)):
             reasons.append(node + ": storage counter decreased")
             continue
+        durable = [x.get("storage", {}).get(node, {}).get("durable_bytes") for x in [before, *during, *after]]
+        if any(x is not None for x in durable):
+            if not all(integer(x) for x in durable):
+                reasons.append(node + ": incomplete optional durable-byte counters")
+                continue
+            if any(b < a for a, b in zip(durable, durable[1:])):
+                reasons.append(node + ": durable counter decreased")
+                continue
+            durable_deltas[node] = max(durable[1:1 + len(during)]) - durable[0]
         delta = max(counters) - start["input_bytes"]
         deltas[node] = delta
         if delta < 1024 ** 2 or not any(integer(x) and x >= 1024 ** 2 for x in stored):
             reasons.append(node + ": insufficient observed data during the common load window")
     return {"observed_all_hosts": not reasons, "verdict": "OBSERVED_HOST_DATA_PROCESSING" if not reasons else "INCONCLUSIVE",
             "scaling_proof": "INCONCLUSIVE: counters include data distribution and background traffic",
-            "input_byte_deltas": deltas, "reasons": reasons,
+            "input_byte_deltas": deltas, "durable_byte_deltas": durable_deltas, "reasons": reasons,
             "post_drain_storage": [x.get("storage", {}) for x in after],
             "boundary": "native per-host data processing, not complete key placement or run-specific mutation coverage"}
 

@@ -2988,7 +2988,7 @@ regressions so they can be proposed upstream after the PoC.
   node runs are not HA/SLO proof. Stop at 10M; the former 100M load is out of scope.
 - [ ] Complete the native horizontal campaign in
   `layers/otel/bench/ops/horizontal/` under a newly approved runtime window/budget;
-  there is still **no accepted paired census/oracle/throughput or scaling proof**.
+  there is still **no accepted 1M-pair result or sustained 20k/scaling proof**.
   Keep the two 2026-10-29 windows distinct:
   - The earlier window ended with all eleven created servers deleted by
     00:32:06Z, zero ingest, and exact baseline equality for all ten resource kinds
@@ -3025,3 +3025,27 @@ regressions so they can be proposed upstream after the PoC.
   Retain failed/partial evidence and separate logical active-topology cost from
   rounded held-server/IPv4 charges. Single R1 is non-HA; role/counter observations
   alone cannot prove complete run-specific placement or that extra storage helped.
+- [ ] Establish sustained horizontal 20k ingestion and identify the native
+  CPU-versus-I/O limit; this work is **not completed**. In the fresh 2026-10-29
+  selected two-/three-storage-host study, both independent-store 100k pairs
+  passed strict health, full censuses and 1,600 oracle checks per producer:
+  three hosts acknowledged 200,000 rows at 7,217.2046666 common-wall rows/s;
+  two hosts acknowledged 200,000 rows at 6,318.8476102 rows/s. These are accepted
+  bounded 100k gates, not sustained 20k or 1M results. The subsequent three-host
+  1M-per-producer wave failed the unchanged strict batch-priority transaction
+  probe warning; the two-host 1M wave was not reached. The frozen failure status
+  reports node1 role input-minus-durable backlog 1,137,613,528 bytes and role
+  durability lag 39.0596 s; cluster QoS worst-queue/worst-lag fields are a separate
+  sampled family and must not be substituted for those per-role values.
+  All five owned servers were removed, exact original seventeen-ID / ten-kind
+  inventory equality passed, and source hashes stayed unchanged during the run.
+  Captured process CPU, device busy, memory, queue/lag and host pressure history
+  does not by itself identify CPU saturation, a single event-loop limit or a disk
+  bottleneck. Keep the CPU-versus-I/O cause unresolved until bounded measurements
+  discriminate it; queue growth alone is not causal proof. Future explicitly
+  preregistered two-host-first measurement still needs both fresh selected 100k
+  gates before measurement and must retain the failed three-host study, not waive
+  it. Native input/durable counter parsing and explicit server-only cost labels
+  apply to new captures; do not rewrite frozen rates, windows, populations or
+  verdicts. Any further paid run needs approval, independent teardown readiness,
+  original health/resource/transaction guards and a new fixed lifetime budget.
