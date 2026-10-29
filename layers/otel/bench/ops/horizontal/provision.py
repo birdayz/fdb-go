@@ -100,6 +100,16 @@ def _roles(plan):
     raise ProvisionError('unknown campaign schema; no resource roles authorized')
 
 
+def _storage_max_outstanding(plan):
+    if 'storage_max_outstanding' not in plan:
+        return 64
+    value = plan['storage_max_outstanding']
+    if (plan.get('schema') != 'otel_native_diagnostic_v1'
+            or type(value) is not int or value not in (64, 128)):
+        raise ProvisionError('storage_max_outstanding requires diagnostic schema and exact integer 64 or 128')
+    return value
+
+
 def _names(plan):
     prefix = plan['prefix']
     suffixes = {'network': 'net', 'firewall': 'fw', 'ssh-key': 'key', 'placement-group': 'spread'}
@@ -116,6 +126,7 @@ def validate_plan(plan, out, clock=time.time):
     roles = _roles(plan)
     if plan.get('approved') is not True:
         raise ProvisionError('an explicitly approved supported campaign plan is required')
+    _storage_max_outstanding(plan)
     if plan['schema'] == 'otel_native_diagnostic_v1':
         for key, value in (('count', 100000), ('probe_count', 1000000), ('probe_seconds', 120)):
             if type(plan.get(key)) is not int or plan[key] != value:
@@ -989,6 +1000,7 @@ def _guard(plan_path, out, *, runner=None, clock=time.time, sleep=time.sleep):
 def render_cluster(plan, nodes, storage_hosts, armid):
     """Pure native R1 layout: fixed control placement and schema-scoped storage hosts."""
     roles = _roles(plan)
+    max_outstanding = _storage_max_outstanding(plan)
     fdb_roles = tuple(role for role in roles if role.startswith('node'))
     if plan['schema'] == 'otel_native_diagnostic_v1' and (type(nodes) is not dict or set(nodes) != set(roles)):
         raise ProvisionError('diagnostic layout requires exactly node1 and client1')
@@ -1022,6 +1034,8 @@ def render_cluster(plan, nodes, storage_hosts, armid):
                     '--locality-zoneid', node, '--memory', '4GiB' if storage else '1GiB',
                     '--cache-memory', '2GiB' if storage else '64MiB', '--trace-format', 'json',
                     '--maxlogssize', '128MiB', '--loggroup', plan['campaign']]
+            if storage and max_outstanding == 128:
+                args += ['--knob_max_outstanding', '128']
             unit = f'''[Unit]
 Description=Native horizontal campaign {plan['campaign']} {armid} {node} {cls}
 After=network-online.target
@@ -1042,12 +1056,15 @@ Restart=no
                                   memory_gib=4 if storage else 1, cache_mib=2048 if storage else 64,
                                   memory_limit_bytes=(4 if storage else 1) * GIB,
                                   machineid=node, zoneid=node, required_roles=required))
-    return dict(root=root, cluster_text=cluster + '\n', remote_cluster_file=root + '/fdb.cluster',
+    layout = dict(root=root, cluster_text=cluster + '\n', remote_cluster_file=root + '/fdb.cluster',
                 storage_hosts=selected, processes=processes, configure=CONFIGURE,
                 budgets=dict(fdb_host=dict(cpu_quota_percent=400, allowed_cpus='0-3', memory_max_gib=16,
                                            max_process_memory_gib=9, max_processes=6),
                              client_host=dict(cpu_quota_percent=400, allowed_cpus='0-3', memory_max_gib=16)),
                 storage_engine='ssd-redwood-1', log_engine='ssd-2', redundancy_mode='single')
+    if plan['schema'] == 'otel_native_diagnostic_v1':
+        layout['storage_max_outstanding'] = max_outstanding
+    return layout
 
 
 def _slice(kind, *, io_accounting=False):
