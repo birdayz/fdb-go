@@ -4,7 +4,7 @@ set -euo pipefail
 module=$1
 shift
 case "$module" in
-    test_horizontal|test_provision) ;;
+    test_horizontal|test_provision|test_diagnostic) ;;
     *) echo 'Unknown test module' >&2; exit 2 ;;
 esac
 for argument in "$@"; do

@@ -163,3 +163,69 @@ The teardown output argument must exactly match the `prepare(plan, OUT)` argumen
 the driver uses `<campaign-output>/provision`. State currently resides one further
 `provision` subdirectory beneath that argument. Successful first cleanup proof is
 preserved for subsequent supervisor/controller checks.
+
+## Two-host native diagnostic (not a capacity result)
+
+`diagnostic.py` is a separate, explicitly approved `otel_native_diagnostic_v1`
+protocol for exactly **one FDB host (`node1`) and one producer (`client1`)**. It
+uses the same sealed application/native binaries, single-R1 six-process layout,
+4-CPU/16-GiB slices, host ext4/fsync/checksum checks, transaction/save/retry guards,
+strict health rules, independent teardown supervisor and absolute lifetime limits.
+It does not change the five-node horizontal profile or adopt any existing host.
+It cannot be compared with the two-producer throughput study.
+
+Use the common plan's asset, source, hardware, storage, CIDR, pricing, inventory
+and lifetime fields, but set `schema: otel_native_diagnostic_v1`, typed
+`count: 100000`, `probe_count: 1000000`, and `probe_seconds: 120`. Comparative fields
+(`topologies`, `selected_topologies`, either phase-order field and
+`measured_count`) are forbidden. The total configured insertion upper bound is
+**1.1M rows**. The 100k run must pass strict health, its full `11N+2` census and all
+1600 oracle checks before the distinct-Run 1M probe can start. The probe's ingest
+is bounded to 120 seconds; it may stop short. Empty/incomplete ingest JSON leaves
+the partial ACK count unknown. Diagnostic summaries never publish an accepted
+ACK-rate or capacity result, even if all ingestion and verification complete.
+
+Before producer release, both owned nodes start a one-second sampler inside their
+existing fixed role slice and supply two baseline frames. Frames bind the exact
+node, run, grant hash, token, boot ID and monotonic clock. They capture cgroup
+`cpu.stat` (including throttling) / `io.stat`, fixed resource limits, exact FDB
+PID/start/cmdline plus per-process I/O and per-thread CPU/wchan, filesystem and
+parent-device diskstats including available flush fields, and host CPU/memory/I/O
+pressure. The sampler's observational overhead is included in these slices;
+these are not old-profile performance measurements. Missing/changed identities,
+counter resets or incomplete required data produce **INCONCLUSIVE**. A usable
+capture also needs at least ten load frames spanning nine seconds, verified
+producer ready/release and actual PID/start receipt, and positive native input
+activity. Idle frames alone are not evidence of a CPU constraint. `CAPTURED` is a
+data-coverage label, not a health pass or automatic CPU-versus-I/O verdict.
+
+Frames are incrementally copied during load, not first requested after an abort.
+`finally` aborts the producer, stops/reaps samplers and attempts bounded collection
+before owned-resource deletion; it never postpones an absolute cleanup deadline
+to fill a profile. The exact arm's regular, non-symlink storage-4510/log-4504 trace
+tails share a **16-MiB aggregate** budget across the run. File/address/log-group
+mapping is backed by verified native PID/start/cmdline; trace `ThreadID` is not a
+Linux TID. All NDJSON event types are retained, including Redwood, KAIO sync and
+Net2 run-loop records. Missing/zero-count histograms remain unavailable evidence.
+Native input-minus-durable is MVCC memory accounting, not physical disk bytes;
+KAIO sync latency can include EIO/actor scheduling, not only kernel fdatasync.
+
+The remote harness contains only `diagnostic.py`, `driver.py` and `policy.py`;
+provider tooling is imported lazily by the controller execution branch only.
+Validation has no effects:
+
+```sh
+python3 -B layers/otel/bench/ops/horizontal/diagnostic.py run --plan /private/approved.json
+```
+
+After explicit approval, frozen tests/assets and independently acknowledged guard:
+
+```sh
+python3 -B layers/otel/bench/ops/horizontal/diagnostic.py run \
+  --plan /private/approved.json --output /private/new-diagnostic --execute-approved
+```
+
+The existing immediate teardown CLI applies, with `--teardown-out` equal to
+`<new-diagnostic>/provision`; all ten resource kinds must exactly match this
+campaign's protected baseline. No profiling permission, package installation,
+perf invocation, sysctl, native knob or durability-setting change is implicit.
