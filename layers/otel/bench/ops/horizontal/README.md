@@ -44,16 +44,22 @@ in the sealed application, unmodified by these scripts.
    Only typed `[1,2,3]` or `[3,2,1]` is accepted; order never adapts to results.
    Both independent runs need strict health, exact record/index census and the
    complete 1600-class query oracle. Preserve every result before promotion.
-3. Only after **all three** prerequisites pass, run two ×`measured_count` on fresh
+   An approved `selected_topologies: [3,2]` selects an independent two-versus-three
+   storage-host study; otherwise all three layouts remain selected. Both phase
+   orders are filtered to that fixed selection. The one-host layout is then
+   neither retested nor treated as a passing gate; prior failures remain failures.
+3. Only after **all selected** prerequisites pass, run two ×`measured_count` on fresh
    clusters in preregistered **3 → 2 → 1** storage-host order. The approved plan
    must contain typed `measured_topologies: [3,2,1]`; ordering is never adaptive.
    This order was fixed before any campaign result so a known small-layout 1M
    health failure cannot prevent measurements on the larger layouts.
 
 `measured_count` is explicitly 100000 or 1000000. The 1M choice inserts **6.6M
-rows total**, including prerequisites, below the cumulative 10M ceiling. An arm
-failure remains campaign-fatal; there are no health warning waivers or speculative
-continuation exceptions. All three actual 100k layouts precede the 1M phase.
+rows total** for the legacy all-three study, or **4.4M** with the explicit `[3,2]`
+selection, including prerequisites; both remain below the cumulative 10M ceiling.
+An arm failure remains campaign-fatal; there are no health warning waivers or
+speculative continuation exceptions. Every selected actual 100k pair must pass
+before any measured phase begins.
 Initial native recovery is bounded and every raw status is saved; admission needs
 three consecutive strict passes. Health failures during load, audit or drain are
 immediate failures. All four latency probes must be known and <5 seconds; warnings,
@@ -102,6 +108,11 @@ SHA-256. Source manifest lines are `sha256  relative-path`; actual nonempty sour
 files are hashed before and after the campaign, not merely the manifest text.
 Optional `prerequisite_topologies` preregisters `[1,2,3]` (the unchanged default)
 or `[3,2,1]`; `topologies` stays `[1,2,3]` and measured order stays `[3,2,1]`.
+Optional `selected_topologies` accepts only typed `[3,2]`, bound in the approved
+JSON before data; omission preserves the all-three study. A larger-first selected
+study still explicitly preregisters `prerequisite_topologies: [3,2,1]`, then filters
+both phase orders to `[3,2]`. It is not an adaptive retry or a waiver of the known
+one-host failure. Authorized rows are `2 * selected_layouts * (100000 + measured_count)`.
 A failed prerequisite is still campaign-fatal: accepted earlier gates remain
 receipts, not authorization to skip a failed gate or enter the measured phase.
 Optional `inventory_dir` binds to the root-sealed baseline; optional

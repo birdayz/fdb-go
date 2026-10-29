@@ -71,6 +71,25 @@ class PolicyTests(unittest.TestCase):
         value["measured_count"] = 100000
         self.assertEqual(p.authorized_rows(value), 1200000)
 
+    def test_selected_two_vs_three_study_binds_exact_population_without_mutating_plan(self):
+        value = plan(); value["selected_topologies"] = [3, 2]; value["prerequisite_topologies"] = [3, 2, 1]
+        before = copy.deepcopy(value)
+        p.validate_plan(value, check_assets=False)
+        self.assertEqual(value, before)
+        self.assertEqual(value["topologies"], [1, 2, 3])
+        self.assertEqual(value["measured_topologies"], [3, 2, 1])
+        self.assertEqual(p.authorized_rows(value), 4400000)
+        self.assertLess(p.authorized_rows(value), 10000000)
+        value["measured_count"] = 100000
+        self.assertEqual(p.authorized_rows(value), 800000)
+
+    def test_selected_topologies_rejects_empty_arbitrary_duplicate_or_untyped_values(self):
+        for selected in (None, True, [], [3], [2, 3], [3, 3], [2, 1], [3, 2, 1],
+                         [True, 2], [3, False], [3.0, 2], (3, 2), "3,2"):
+            with self.subTest(selected=selected):
+                value = plan(); value["selected_topologies"] = selected
+                with self.assertRaises(ValueError): p.validate_plan(value, check_assets=False)
+
     def test_plan_rejects_boolean_or_unapproved_values(self):
         for key, bad in (("approved", 1), ("measured_count", True), ("count", 1000000), ("batch", 128),
                          ("gomaxprocs", True), ("replication", "double"), ("deadline_epoch", 8201),
@@ -532,6 +551,48 @@ class RuntimeTests(unittest.TestCase):
                 self.assertEqual(provider.teardown.call_count, 1)
                 self.assertEqual(d.read(Path(tmp) / "campaign" / "approved-plan.json"), before)
                 self.assertEqual(value, before)
+
+    def test_selected_study_requires_both_gates_before_measurement_and_never_runs_one_host(self):
+        for invalid_gate in (None, "missing", "health", "census", "oracle"):
+            with self.subTest(invalid_gate=invalid_gate), tempfile.TemporaryDirectory() as tmp:
+                value = plan(); value["selected_topologies"] = [3, 2]; value["prerequisite_topologies"] = [3, 2, 1]
+                before = copy.deepcopy(value)
+                nodes = {name: dict(id=i + 1) for i, name in enumerate(("node1", "node2", "node3", "client1", "client2"))}
+                provider = mock.Mock(); provider.prepare.return_value = dict(nodes=nodes)
+                provider.teardown.return_value = dict(passed=True)
+                provider.setup_cluster.side_effect = lambda *args: dict(storage_hosts=args[3])
+                campaign = d.Campaign(value, Path(tmp) / "campaign", provider)
+                campaign.install_helpers = mock.Mock(); campaign.quiet = mock.Mock(); campaign.stable = mock.Mock()
+                campaign.host_samples = mock.Mock(return_value={n: dict(fdb_pids={}) for n in nodes})
+                calls = []
+                def wave(layout, hosts, count, number):
+                    self.assertIn(hosts, [3, 2])
+                    calls.append((hosts, count))
+                    gate = dict(storage_hosts=hosts, count_per_producer=count, healthy=True,
+                                both_censuses=True, both_oracles=True)
+                    if hosts == 2 and count == 100000 and invalid_gate is not None:
+                        if invalid_gate == "missing": return None
+                        field = {"health": "healthy", "census": "both_censuses", "oracle": "both_oracles"}[invalid_gate]
+                        gate[field] = False
+                    return gate
+                campaign.wave = wave
+                with mock.patch.object(p, "validate_plan"), mock.patch.object(p, "verify_source", return_value=dict(files=1)), \
+                     mock.patch.object(p, "bill_bound", return_value={}), mock.patch.object(p, "rounded_server_bill", return_value={}), \
+                     mock.patch.object(d, "remaining", return_value=30):
+                    if invalid_gate is None:
+                        campaign.run()
+                    else:
+                        with self.assertRaisesRegex(ValueError, "promotion requires"): campaign.run()
+                expected = [(3, 100000), (2, 100000)]
+                self.assertEqual(calls, expected + [(3, 1000000), (2, 1000000)] if invalid_gate is None else expected)
+                arms = [call.args[4] for call in provider.setup_cluster.call_args_list]
+                self.assertEqual(arms[:2], ["hosts3-prerequisite", "hosts2-prerequisite"])
+                self.assertFalse(any("hosts1" in arm for arm in arms))
+                self.assertEqual(provider.teardown.call_count, 1)
+                self.assertEqual(d.read(Path(tmp) / "campaign" / "approved-plan.json"), before)
+                self.assertEqual(value, before)
+                if invalid_gate is None:
+                    self.assertEqual(d.read(Path(tmp) / "campaign" / "measured.json")["inserted_rows"], 4400000)
 
     def test_failed_prerequisite_never_promotes_and_still_cleans_up(self):
         with tempfile.TemporaryDirectory() as tmp:
