@@ -2986,3 +2986,26 @@ regressions so they can be proposed upstream after the PoC.
   populations, failures, CPU/RAM, physical storage and write amplification. Keep
   cold/warm policy and durability boundaries explicit; the current local single-
   node runs are not HA/SLO proof. Stop at 10M; the former 100M load is out of scope.
+- [ ] Validate actual-OS cloud-init admission and complete the native horizontal
+  campaign in `layers/otel/bench/ops/horizontal/` under a newly approved runtime
+  window/budget. The 2026-10-29 attempt window produced **zero ingested rows and
+  no scaling proof**. Three provisioning attempts created eleven servers in total
+  (never more than five concurrently); all eleven were deleted and exact baseline
+  equality passed for all ten resource kinds / seventeen pre-existing IDs.
+  Provider SDK differences (disabled IPv6's typed zero/empty descriptor and
+  top-level HEL1 location) are now covered; the final attempt passed provider
+  identity/placement checks but the target image's cloud-init rejected `ssh_genkeytypes: []` as
+  too short and returned degraded status. The new horizontal emitter now uses
+  `[ed25519]` while preserving the supplied host-key pair and pinned known_hosts;
+  shared renderers/old profiles are unchanged. This correction still needs actual
+  target-image `cloud-init schema --system` and clean completion, not a degraded
+  exit-code waiver or inference from fake-runner tests. Verify the supplied-key
+  install path, exact SSH host-key match and non-TOFU transport on the actual OS
+  before admitting load. Then run real two-producer independent-store 100k gates
+  for 1/2/3 storage hosts, followed only after all gates pass by the preregistered
+  3/2/1 measured phase and full census/oracle checks. Keep all existing resource,
+  health, disk, transaction and row-count guards, an independently acknowledged
+  teardown supervisor before creation, and absolute cleanup deadlines. Preserve
+  all failed bootstrap receipts and separate measured active-topology cost from
+  rounded held-server/IPv4 charges. Single R1 is non-HA; role/counter observations
+  alone cannot prove complete run-specific placement or that extra storage helped.

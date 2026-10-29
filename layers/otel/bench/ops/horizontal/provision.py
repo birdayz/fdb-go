@@ -572,7 +572,11 @@ def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.s
         for host in hosts:
             path = cloud_dir / f'{host}.user-data'
             text = path.read_text().replace('package_update: false', 'package_update: true')
-            # Reuse the pre-generated host keys, not ssh-keyscan or TOFU.
+            # Cloud-init 25.2 requires a nonempty list; provided ssh_keys still
+            # selects its key-install branch rather than generating replacement keys.
+            if text.count('ssh_genkeytypes: []\n') != 1:
+                raise ProvisionError('unexpected shared cloud-init key-generation field')
+            text = text.replace('ssh_genkeytypes: []\n', 'ssh_genkeytypes: [ed25519]\n')
             text = text.replace('package_upgrade: false',
                                 'package_upgrade: false\npackages: [python3, chrony, jq]')
             _mc.write_private(path, text, exclusive=False)
@@ -641,16 +645,34 @@ def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.s
             _mc.write_private(state / ('horizontal-' + kind + '.slice'), _slice(kind))
         for role, node in resources['nodes'].items():
             until = min(clock() + 600, _active_deadline(plan))
+            attempt = 0
+            readiness_argv = ssh_argv(plan, out, node, ['cloud-init', 'status', '--wait'])
             while True:
                 _check_window(plan, state, clock, guard)
+                if clock() >= until:
+                    raise ProvisionError('cloud-init did not finish within preparation budget')
+                attempt += 1
+                started = clock()
+                timeout = _remaining(plan, min(30, max(1, until-clock())), clock, active=True)
+                timed_out = False
                 try:
-                    ready = _call(runner, ssh_argv(plan, out, node,
-                                  ['cloud-init', 'status', '--wait']),
-                                  timeout=_remaining(plan, min(30, max(1, until-clock())), clock, active=True))
-                except subprocess.TimeoutExpired:
-                    ready = (1, '', 'cloud-init not ready')
-                if ready[0] == 0:
+                    ready = _call(runner, readiness_argv, timeout=timeout)
+                except subprocess.TimeoutExpired as exc:
+                    timed_out = True
+                    ready = (None, exc.stdout or '', exc.stderr or '')
+                except OSError as exc:
+                    ready = (None, '', str(exc))
+                rc, stdout, stderr = ready
+                stdout = stdout.decode('utf-8', errors='replace') if isinstance(stdout, bytes) else stdout
+                stderr = stderr.decode('utf-8', errors='replace') if isinstance(stderr, bytes) else stderr
+                _json(state / f'{role}-readiness-{attempt}.json',
+                      dict(node_id=node['id'], argv=readiness_argv, returncode=rc, timed_out=timed_out,
+                           stdout=stdout, stderr=stderr, timeout_seconds=timeout,
+                           epoch=started, finished_epoch=clock()))
+                if not timed_out and type(rc) is int and rc == 0:
                     break
+                if not timed_out and (type(rc) is not int or rc != 255):
+                    raise ProvisionError(f'cloud-init readiness failed ({rc}): stdout={stdout!r}; stderr={stderr!r}')
                 if clock() >= until:
                     raise ProvisionError('cloud-init did not finish within preparation budget')
                 sleep(2)
