@@ -3049,3 +3049,12 @@ regressions so they can be proposed upstream after the PoC.
   apply to new captures; do not rewrite frozen rates, windows, populations or
   verdicts. Any further paid run needs approval, independent teardown readiness,
   original health/resource/transaction guards and a new fixed lifetime budget.
+  The subsequent fresh two-host-first rerun was blocked before SSH or load:
+  creation of the third owned server returned `dedicated core limit exceeded`
+  (`resource_limit_exceeded`). Only two owned servers were created; both were
+  deleted, and exact twenty-eight-ID / ten-kind baseline equality passed,
+  preserving the original seventeen IDs plus eleven external-campaign resources.
+  Source/profile checks stayed unchanged. This provider-quota rejection gives no
+  two-host large-wave outcome and no new throughput or 20k claim. No further
+  launch is authorized in that window; do not retry the quota, adopt external
+  machines, or mutate/delete other work to manufacture capacity or equality.
