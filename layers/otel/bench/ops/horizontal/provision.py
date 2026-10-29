@@ -417,6 +417,56 @@ def _verified_ipv4(plan, resources, servers, ips, server):
     return ip
 
 
+def _provider_location(server):
+    names = []
+    top = server.get('location')
+    legacy = server.get('datacenter')
+    if top is not None:
+        if type(top) is not dict or type(top.get('name')) is not str:
+            raise ProvisionError('malformed top-level server location')
+        names.append(top['name'])
+    if legacy is not None:
+        if (type(legacy) is not dict or type(legacy.get('location')) is not dict
+                or type(legacy['location'].get('name')) is not str):
+            raise ProvisionError('malformed legacy server location')
+        names.append(legacy['location']['name'])
+    if not names or any(name != 'hel1' for name in names):
+        raise ProvisionError('server location is missing, contradictory, or not hel1')
+    return 'hel1'
+
+
+def _verify_provider_server(plan, resources, node, server, network_id, group_id):
+    _provider_location(server)
+    st = server.get('server_type')
+    group = server.get('placement_group')
+    private = server.get('private_net')
+    if (type(st) is not dict or st.get('name') != 'ccx43' or st.get('cpu_type') != 'dedicated'
+            or type(st.get('cores')) is not int or st['cores'] != 16
+            or type(st.get('memory')) not in (int, float) or st['memory'] != 64
+            or type(st.get('disk')) is not int or st['disk'] != 360
+            or st.get('storage_type') != 'local' or st.get('architecture') != 'x86'
+            or type(server.get('primary_disk_size')) is not int or server['primary_disk_size'] != 360):
+        raise ProvisionError('server is not exact dedicated ccx43 16-core/64-GiB/360-GB local x86')
+    if (type(group) is not dict or group.get('id') != group_id
+            or group_id not in resources['ids']['placement-group']
+            or group_id in resources['protected_ids']['placement-group']
+            or group.get('type') != 'spread' or group.get('name') != plan['prefix']+'-spread'
+            or (group.get('labels') or {}).get('campaign') != plan['campaign']
+            or type(group.get('servers')) is not list
+            or any(type(sid) is not int for sid in group['servers'])
+            or len(group['servers']) != 5 or set(group['servers']) != set(resources['ids']['server'])):
+        raise ProvisionError('server lacks exact owned five-host physical-spread membership')
+    if (server.get('id') != node['id'] or node['id'] in resources['protected_ids']['server']
+            or server.get('name') != node['name']
+            or (server.get('labels') or {}).get('campaign') != plan['campaign']
+            or type(private) is not list or len(private) != 1 or type(private[0]) is not dict
+            or private[0].get('network') != network_id
+            or network_id not in resources['ids']['network']
+            or network_id in resources['protected_ids']['network']
+            or private[0].get('ip') != node['private_ip'] or private[0].get('alias_ips') != []):
+        raise ProvisionError('server lacks exact owned isolated-network membership')
+
+
 def _prove_ips(plan, state, resources, runner, clock=time.time, guard=None):
     servers, ips = _capture_ip_snapshots(plan, state, resources, runner, clock)
     mine = [s for s in servers if s['id'] in resources['ids']['server']]
@@ -572,19 +622,17 @@ def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.s
             node['scp_options'] = _ssh_options(plan, out, node)
             resources['nodes'][role] = node
             _save_resources(state, resources)
-        fresh = {s['id']: s for s in _list(plan, 'server', runner)}
+        final_servers, final_ips = _capture_ip_snapshots(plan, state, resources, runner, clock)
+        fresh = {s['id']: s for s in final_servers}
+        members = [s['id'] for s in final_servers
+                   if (s.get('labels') or {}).get('campaign') == plan['campaign']
+                   or _mc.owned_name(s.get('name', ''), plan['prefix'])]
+        if len(members) != 5 or set(members) != set(resources['ids']['server']):
+            raise ProvisionError('final provider campaign membership is not exactly five owned servers')
         for node in resources['nodes'].values():
             server = fresh[node['id']]
-            if ((server.get('placement_group') or {}).get('id') != group['id']
-                    or (server.get('server_type') or {}).get('name') != 'ccx43'
-                    or (server.get('server_type') or {}).get('cpu_type') != 'dedicated'
-                    or ((server.get('datacenter') or {}).get('location') or {}).get('name') != 'hel1'
-                    or (server.get('labels') or {}).get('campaign') != plan['campaign']
-                    or server.get('name') != node['name']
-                    or len(server.get('private_net') or []) != 1
-                    or server['private_net'][0].get('network') != net['id']
-                    or server['private_net'][0].get('ip') != node['private_ip']):
-                raise ProvisionError('server lacks exact isolated network / physical-spread assignment')
+            _verified_ipv4(plan, resources, final_servers, final_ips, server)
+            _verify_provider_server(plan, resources, node, server, net['id'], group['id'])
         _json(state / 'placement-proof.json', dict(type='spread', id=group['id'],
                                                    server_ids=resources['ids']['server']))
         remote = REMOTE_BASE + '/' + plan['campaign']

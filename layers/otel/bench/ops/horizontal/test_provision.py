@@ -88,7 +88,16 @@ class FakeCloud:
             return 0, json.dumps(dict(name='ccx43', cpu_type='dedicated',
                     prices=[dict(location='hel1', price_hourly=dict(net='0.3000', gross='0.3570'))])), ''
         if verb == 'list':
-            return 0, json.dumps(self.items[kind]), ''
+            items = copy.deepcopy(self.items[kind])
+            if kind == 'server':
+                for server in items:
+                    gid = (server.get('placement_group') or {}).get('id')
+                    groups = [g for g in self.items['placement-group'] if g['id'] == gid]
+                    if groups:
+                        server['placement_group'] = copy.deepcopy(groups[0])
+                        server['placement_group']['servers'] = [s['id'] for s in self.items['server']
+                            if (s.get('placement_group') or {}).get('id') == gid]
+            return 0, json.dumps(items), ''
         self.events.append(kind+' '+verb)
         if verb == 'create':
             if 'guard-ready' not in self.events:
@@ -101,8 +110,11 @@ class FakeCloud:
                 item['type'] = argv[argv.index('--type')+1]
             if kind == 'server':
                 item['created'] = p._mc.iso(int(time.time()))
-                item['server_type'] = dict(name='ccx43', cpu_type='dedicated')
-                item['datacenter'] = dict(location=dict(name='hel1'))
+                item['server_type'] = dict(name='ccx43', cpu_type='dedicated', cores=16,
+                                           memory=64, disk=360, storage_type='local', architecture='x86')
+                item['primary_disk_size'] = 360
+                item['location'] = dict(id=3, name='hel1', network_zone='eu-central')
+                item['datacenter'] = None
                 ipid = self.ident()
                 ip = '192.0.2.'+str(item['id']-90)
                 item.update(public_net=dict(ipv4=dict(id=ipid, ip=ip),
@@ -129,7 +141,7 @@ class FakeCloud:
         if verb == 'attach-to-network':
             node = next(i for i in self.items['server'] if i['id'] == int(argv[3]))
             node['private_net'] = [dict(network=int(argv[argv.index('--network')+1]),
-                                        ip=argv[argv.index('--ip')+1])]
+                                        ip=argv[argv.index('--ip')+1], alias_ips=[])]
             return 0, '', ''
         if verb in ('add-subnet', 'poweron'):
             # Existing resources must never be mutated by name or protected ID.
@@ -262,6 +274,57 @@ class ProvisionTest(unittest.TestCase):
         self.assertTrue(any(kind == 'placement-group' for kind, _ in self.cloud.deleted))
         self.assertEqual(sum(kind == 'server' for kind, _ in self.cloud.deleted), 3)
         self.assertFalse(any(kind == 'primary-ip' for kind, _ in self.cloud.deleted))
+
+    def test_provider_locations_accept_sdk_and_legacy_but_never_disagree(self):
+        for server in (dict(location=dict(name='hel1')),
+                       dict(location=dict(name='hel1'), datacenter=None),
+                       dict(datacenter=dict(location=dict(name='hel1'))),
+                       dict(location=dict(name='hel1'), datacenter=dict(location=dict(name='hel1')))):
+            self.assertEqual(p._provider_location(server), 'hel1')
+        bad = [{}, dict(location=None), dict(location={}), dict(location='hel1'),
+               dict(location=dict(name='fsn1')), dict(datacenter={}),
+               dict(location=dict(name='hel1'), datacenter=dict(location=dict(name='fsn1'))),
+               dict(location=dict(name='fsn1'), datacenter=dict(location=dict(name='hel1'))),
+               dict(location=dict(name='hel1'), datacenter=dict(location=None))]
+        for server in bad:
+            with self.subTest(server=server), self.assertRaises(p.ProvisionError):
+                p._provider_location(server)
+
+    def test_final_sdk_provider_shape_and_wrong_missing_membership_fail_closed(self):
+        resources = self.prepare()
+        snapshots = resources['primary_ip_snapshot_receipts']
+        final = p._load(snapshots[-1])
+        servers = json.loads(final['raw']['server']['stdout'])
+        node = resources['nodes']['node1']
+        server = next(s for s in servers if s['id'] == node['id'])
+        net, group = resources['ids']['network'][0], resources['ids']['placement-group'][0]
+        p._verify_provider_server(self.plan, resources, node, server, net, group)
+        self.assertIsNone(server['datacenter'])
+        self.assertEqual(server['location']['name'], 'hel1')
+        cases = [('server_type', 'name', 'ccx33'), ('server_type', 'cpu_type', 'shared'),
+                 ('server_type', 'cores', 8), ('server_type', 'cores', True),
+                 ('server_type', 'memory', 32), ('server_type', 'disk', 180),
+                 ('server_type', 'storage_type', 'network'), ('server_type', 'architecture', 'arm'),
+                 ('placement_group', 'type', 'unknown'), ('placement_group', 'id', 1)]
+        for section, field, wrong in cases:
+            for missing in (False, True):
+                changed = copy.deepcopy(server)
+                if missing:
+                    del changed[section][field]
+                else:
+                    changed[section][field] = wrong
+                with self.subTest(section=section, field=field, missing=missing), self.assertRaises(p.ProvisionError):
+                    p._verify_provider_server(self.plan, resources, node, changed, net, group)
+        for field, wrong in [('location', {}), ('primary_disk_size', 180), ('private_net', []),
+                             ('name', 'other-host'), ('labels', {})]:
+            changed = copy.deepcopy(server)
+            changed[field] = wrong
+            with self.subTest(field=field), self.assertRaises(p.ProvisionError):
+                p._verify_provider_server(self.plan, resources, node, changed, net, group)
+        changed = copy.deepcopy(server)
+        changed['private_net'][0]['network'] = 2
+        with self.assertRaises(p.ProvisionError):
+            p._verify_provider_server(self.plan, resources, node, changed, net, group)
 
     def test_exact_disabled_ipv6_shape_and_missing_null_are_absent(self):
         resources = self.prepare()
