@@ -44,12 +44,34 @@ def evidence(mode="ingest", count=100000):
     return value
 
 
+# Literal FoundationDB 7.3.77 storage-role excerpts, status/125.json SHA-256
+# 9217e508d014db1266a8f16659842d1f6eeb3ace6e62001cfe950df709c5166a.
+# Deliberately no shards field: these receipts did not report one.
+FDB_7377_STORAGE_ROLE_EXCERPTS = {
+    "node1": {"role": "storage", "id": "39b89ae0e65db0ec",
+              "input_bytes": {"counter": 508945128, "hz": 101654000, "roughness": 244084000},
+              "durable_bytes": {"counter": 96044, "hz": 0, "roughness": -1},
+              "mutation_bytes": {"counter": 98425653, "hz": 19660800, "roughness": 47208400},
+              "stored_bytes": 91995677},
+    "node2": {"role": "storage", "id": "75a15d807045b9c0",
+              "input_bytes": {"counter": 3508, "hz": 480.394, "roughness": 2401},
+              "durable_bytes": {"counter": 1106, "hz": 0, "roughness": -1},
+              "mutation_bytes": {"counter": 23321970, "hz": 4664320, "roughness": 22417400},
+              "stored_bytes": 6812500},
+    "node3": {"role": "storage", "id": "9d5b479f7838c7e4",
+              "input_bytes": {"counter": 4710, "hz": 720.797, "roughness": 3603},
+              "durable_bytes": {"counter": 1106, "hz": 0, "roughness": -1},
+              "mutation_bytes": {"counter": 17397423, "hz": 3479460, "roughness": 16653900},
+              "stored_bytes": 11439230},
+}
+
+
 def status_fixture():
     spec = dict(node="node1", address="10.93.0.2:4510", process_class="storage", required_roles=["storage"],
                 machineid="node1", zoneid="node1", memory_limit_bytes=4 * p.GIB)
     process = dict(address=spec["address"], class_type="storage", locality=dict(machineid="node1", zoneid="node1"),
                    memory=dict(rss_bytes=100, used_bytes=50, limit_bytes=4 * p.GIB), messages=[],
-                   roles=[dict(role="storage", id="storage-one", bytes_input=dict(counter=10), stored_bytes=20, shards=1)])
+                   roles=[dict(role="storage", id="storage-one", input_bytes=dict(counter=10), stored_bytes=20, shards=1)])
     c = dict(messages=[], database_available=True, data=dict(state=dict(healthy=True)),
              recovery_state=dict(name="fully_recovered"), degraded_processes=0,
              configuration=dict(storage_engine="ssd-redwood-1", log_engine="ssd-2", redundancy_mode="single",
@@ -82,6 +104,21 @@ class PolicyTests(unittest.TestCase):
         self.assertLess(p.authorized_rows(value), 10000000)
         value["measured_count"] = 100000
         self.assertEqual(p.authorized_rows(value), 800000)
+
+    def test_measured_order_accepts_only_the_two_typed_preregistered_orders(self):
+        for order in ([3, 2, 1], [2, 3, 1]):
+            value = plan(); value["measured_topologies"] = order
+            value["selected_topologies"] = [3, 2]
+            before = copy.deepcopy(value)
+            self.assertEqual(p.validate_plan(value, check_assets=False), value)
+            self.assertEqual(value, before)
+            self.assertEqual(p.authorized_rows(value), 4400000)
+        for order in (None, True, [], [3, 2], [3, 3, 1], [1, 2, 3], [1, 3, 2], [2, 1, 3], [3, 1, 2],
+                      [True, 3, 1], [2, 3, True], [2.0, 3, 1], [3, 2.0, 1], (2, 3, 1), "2,3,1"):
+            with self.subTest(order=order):
+                value = plan(); value["measured_topologies"] = order
+                with self.assertRaises(ValueError):
+                    p.validate_plan(value, check_assets=False)
 
     def test_selected_topologies_rejects_empty_arbitrary_duplicate_or_untyped_values(self):
         for selected in (None, True, [], [3], [2, 3], [3, 3], [2, 1], [3, 2, 1],
@@ -163,6 +200,12 @@ class PolicyTests(unittest.TestCase):
             self.assertEqual(result["active_topology_nodes"], active)
             self.assertEqual(result["held_billable_nodes"], 5)
             self.assertEqual(Decimal(result["hourly_gross"]), Decimal("0.526337") * active)
+            factor = Decimal(1000000) / Decimal(20000) / Decimal(3600)
+            self.assertEqual(Decimal(result["per_million_ack_rows_net"]), Decimal("0.4423") * active * factor)
+            self.assertEqual(Decimal(result["per_million_ack_rows_gross"]), Decimal("0.526337") * active * factor)
+            self.assertEqual(result["scope"], "SERVER-ONLY")
+            self.assertEqual(result["excludes"], ["IPv4", "traffic"])
+            self.assertIn("server-only", result["boundary"].lower())
         bill = p.bill_bound(resources, dict(finished_epoch=4601))
         self.assertEqual(bill["rounded_hours_per_server_upper_bound"], 2)
         self.assertEqual(bill["gross_upper_bound"], "5.263370")
@@ -206,6 +249,72 @@ class PolicyTests(unittest.TestCase):
 
 
 class StatusTests(unittest.TestCase):
+    def test_storage_counter_normalizes_only_bounded_integers_and_safe_integral_floats(self):
+        for name in ("input_bytes", "durable_bytes"):
+            for raw, expected in ((0, 0), (1, 1), (10**18-1, 10**18-1),
+                                  (2**53+1, 2**53+1), (0.0, 0), (1234.0, 1234),
+                                  (float(2**53-1), 2**53-1)):
+                with self.subTest(name=name, raw=raw):
+                    result = p.storage_counter({name: dict(counter=raw)}, name)
+                    self.assertIs(type(result), int)
+                    self.assertEqual(result, expected)
+            for raw in (None, True, False, "1", -1, -1.0, 0.5, 10**18,
+                        float(2**53), float(2**53+2), float("nan"), float("inf"), float("-inf"), [], {}):
+                with self.subTest(name=name, raw=raw):
+                    self.assertIsNone(p.storage_counter({name: dict(counter=raw)}, name))
+            for role in (None, [], True, "role", {}, {name: None}, {name: []},
+                         {name: "counter"}, {name: {}}, {name: dict(hz=99)}):
+                with self.subTest(name=name, role=role):
+                    self.assertIsNone(p.storage_counter(role, name))
+
+    def test_literal_fdb_7377_storage_role_excerpts_need_no_private_receipt(self):
+        expected = {"node1": (508945128, 96044, 91995677, "39b89ae0e65db0ec"),
+                    "node2": (3508, 1106, 6812500, "75a15d807045b9c0"),
+                    "node3": (4710, 1106, 11439230, "9d5b479f7838c7e4")}
+        for node, literal in FDB_7377_STORAGE_ROLE_EXCERPTS.items():
+            with self.subTest(node=node):
+                value, layout = status_fixture()
+                value["cluster"]["processes"]["one"]["roles"] = [copy.deepcopy(literal)]
+                parsed = p.strict_status(value, layout)
+                storage = parsed["storage"]["node1"]
+                self.assertTrue(parsed["healthy"])
+                self.assertEqual((storage["input_bytes"], storage["durable_bytes"],
+                                  storage["stored_bytes"], storage["storage_id"]), expected[node])
+                self.assertIsNone(storage["shards"])
+                self.assertNotIn("bytes_input", literal)
+                self.assertNotIn("shards", literal)
+
+    def test_status_uses_only_input_bytes_and_normalizes_optional_durable_counter(self):
+        value, layout = status_fixture()
+        role = value["cluster"]["processes"]["one"]["roles"][0]
+        role.update(input_bytes=dict(counter=1234.0), durable_bytes=dict(counter=99.0),
+                    bytes_input=dict(counter=999999))
+        parsed = p.strict_status(value, layout)["storage"]["node1"]
+        self.assertIs(type(parsed["input_bytes"]), int)
+        self.assertEqual(parsed["input_bytes"], 1234)
+        self.assertEqual(parsed["durable_bytes"], 99)
+        del role["input_bytes"]
+        self.assertIsNone(p.strict_status(value, layout)["storage"]["node1"]["input_bytes"])
+        for name in ("input_bytes", "durable_bytes"):
+            for raw in (True, "99", -1, 0.25, float("nan"), float("inf"), float(2**53), [], {}):
+                role[name] = dict(counter=raw)
+                with self.subTest(name=name, raw=raw):
+                    self.assertIsNone(p.strict_status(value, layout)["storage"]["node1"][name])
+
+    def test_stored_bytes_and_shards_remain_typed_integers_and_unknown_stays_none(self):
+        value, layout = status_fixture()
+        role = value["cluster"]["processes"]["one"]["roles"][0]
+        for name in ("stored_bytes", "shards"):
+            for raw in (0, 1, 10**18-1):
+                role[name] = raw
+                self.assertEqual(p.strict_status(value, layout)["storage"]["node1"][name], raw)
+            for raw in (None, True, False, "1", -1, 1.0, [], {}, 10**18):
+                role[name] = raw
+                with self.subTest(name=name, raw=raw):
+                    self.assertIsNone(p.strict_status(value, layout)["storage"]["node1"][name])
+            del role[name]
+            self.assertIsNone(p.strict_status(value, layout)["storage"]["node1"][name])
+
     def test_strict_status_positive_control(self):
         value, layout = status_fixture()
         result = p.strict_status(value, layout)
@@ -246,6 +355,59 @@ class StatusTests(unittest.TestCase):
         for bad_during, bad_after in (([], after), ([sample(None)], after), (during, [sample(0)]),
                                       (during, [sample(None)]), (during, [sample(3 * 1024 ** 2, "b")])):
             self.assertEqual(p.distributed(before, bad_during, ["node1"], bad_after)["verdict"], "INCONCLUSIVE")
+
+    def test_distribution_optional_durable_counters_must_be_known_and_monotone_everywhere(self):
+        def sample(counter, durable, identity="stable-storage"):
+            return dict(storage={"node1": dict(input_bytes=counter, durable_bytes=durable,
+                        stored_bytes=2*1024**2, storage_id=identity, shards=None)})
+        sequence = [sample(10, 5), sample(2*1024**2, 6), sample(3*1024**2, 7),
+                    sample(4*1024**2, 8), sample(5*1024**2, 9)]
+        result = p.distributed(sequence[0], sequence[1:3], ["node1"], sequence[3:])
+        self.assertEqual(result["verdict"], "OBSERVED_HOST_DATA_PROCESSING")
+        self.assertEqual(result["input_byte_deltas"]["node1"], 3*1024**2-10)
+        self.assertEqual(result["durable_byte_deltas"]["node1"], 2)
+        self.assertTrue(result["scaling_proof"].startswith("INCONCLUSIVE"))
+        for index in range(len(sequence)):
+            for missing in (False, True):
+                changed = copy.deepcopy(sequence)
+                storage = changed[index]["storage"]["node1"]
+                if missing:
+                    del storage["durable_bytes"]
+                else:
+                    storage["durable_bytes"] = None
+                with self.subTest(index=index, missing=missing):
+                    self.assertEqual(p.distributed(changed[0], changed[1:3], ["node1"], changed[3:])["verdict"],
+                                     "INCONCLUSIVE")
+        for index, bad in ((0, True), (1, 4), (2, 5), (3, 6), (4, 7), (1, "6"), (1, -1), (1, 6.0)):
+            changed = copy.deepcopy(sequence); changed[index]["storage"]["node1"]["durable_bytes"] = bad
+            with self.subTest(index=index, bad=bad):
+                self.assertEqual(p.distributed(changed[0], changed[1:3], ["node1"], changed[3:])["verdict"],
+                                 "INCONCLUSIVE")
+        legacy = copy.deepcopy(sequence)
+        for sample_value in legacy:
+            del sample_value["storage"]["node1"]["durable_bytes"]
+        self.assertTrue(p.distributed(legacy[0], legacy[1:3], ["node1"], legacy[3:])["observed_all_hosts"])
+        for sample_value in legacy:
+            sample_value["storage"]["node1"]["durable_bytes"] = None
+        self.assertTrue(p.distributed(legacy[0], legacy[1:3], ["node1"], legacy[3:])["observed_all_hosts"])
+
+    def test_distribution_requires_input_and_stable_identity_through_before_during_and_post_drain(self):
+        sequence = [dict(storage={"node1": dict(input_bytes=counter, stored_bytes=2*1024**2,
+                    storage_id="stable-storage")}) for counter in (10, 2*1024**2, 3*1024**2, 4*1024**2)]
+        self.assertTrue(p.distributed(sequence[0], sequence[1:3], ["node1"], sequence[3:])["observed_all_hosts"])
+        for index in range(len(sequence)):
+            for field, bad in (("input_bytes", None), ("input_bytes", True), ("input_bytes", "123"),
+                               ("input_bytes", -1), ("storage_id", None), ("storage_id", ""),
+                               ("storage_id", "different-storage")):
+                changed = copy.deepcopy(sequence); changed[index]["storage"]["node1"][field] = bad
+                with self.subTest(index=index, field=field, bad=bad):
+                    self.assertEqual(p.distributed(changed[0], changed[1:3], ["node1"], changed[3:])["verdict"],
+                                     "INCONCLUSIVE")
+        for index in (1, 2, 3):
+            changed = copy.deepcopy(sequence); changed[index]["storage"]["node1"]["input_bytes"] = 0
+            with self.subTest(reset_index=index):
+                self.assertEqual(p.distributed(changed[0], changed[1:3], ["node1"], changed[3:])["verdict"],
+                                 "INCONCLUSIVE")
 
 
 class RuntimeTests(unittest.TestCase):
@@ -593,6 +755,60 @@ class RuntimeTests(unittest.TestCase):
                 self.assertEqual(value, before)
                 if invalid_gate is None:
                     self.assertEqual(d.read(Path(tmp) / "campaign" / "measured.json")["inserted_rows"], 4400000)
+
+    def test_selected_two_then_three_measured_order_requires_both_fresh_gates_and_failure_is_fatal(self):
+        for failure in (None, "hosts3-prerequisite", "hosts2-prerequisite", "hosts2-measured"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                value = plan(); value["selected_topologies"] = [3, 2]
+                value["prerequisite_topologies"] = [3, 2, 1]; value["measured_topologies"] = [2, 3, 1]
+                before = copy.deepcopy(value)
+                nodes = {name: dict(id=i+1) for i, name in enumerate(("node1", "node2", "node3", "client1", "client2"))}
+                provider = mock.Mock(); provider.prepare.return_value = dict(nodes=nodes)
+                provider.teardown.return_value = dict(passed=True)
+                fresh = []
+
+                def setup(*args):
+                    layout = dict(storage_hosts=args[3], armid=args[4], fresh_instance=len(fresh)+1)
+                    fresh.append(layout)
+                    return layout
+
+                provider.setup_cluster.side_effect = setup
+                campaign = d.Campaign(value, Path(tmp)/"campaign", provider)
+                campaign.install_helpers = mock.Mock(); campaign.quiet = mock.Mock(); campaign.stable = mock.Mock()
+                campaign.host_samples = mock.Mock(return_value={name: dict(fdb_pids={}) for name in nodes})
+                calls = []
+
+                def wave(layout, hosts, count, number):
+                    if count == 1000000:
+                        self.assertEqual(calls[:2], [(3, 100000), (2, 100000)])
+                        self.assertIn(layout["armid"], ("hosts2-measured", "hosts3-measured"))
+                        self.assertGreater(layout["fresh_instance"], 2)
+                    calls.append((hosts, count))
+                    if layout["armid"] == failure:
+                        raise ValueError("strict study failure: "+failure)
+                    return dict(storage_hosts=hosts, count_per_producer=count, healthy=True,
+                                both_censuses=True, both_oracles=True)
+
+                campaign.wave = wave
+                with mock.patch.object(p, "validate_plan"), mock.patch.object(p, "verify_source", return_value=dict(files=1)), \
+                     mock.patch.object(p, "bill_bound", return_value={}), mock.patch.object(p, "rounded_server_bill", return_value={}), \
+                     mock.patch.object(d, "remaining", return_value=30):
+                    if failure:
+                        with self.assertRaisesRegex(ValueError, "strict study failure"):
+                            campaign.run()
+                    else:
+                        campaign.run()
+                full = [(3, 100000), (2, 100000), (2, 1000000), (3, 1000000)]
+                length = {None: 4, "hosts3-prerequisite": 1, "hosts2-prerequisite": 2, "hosts2-measured": 3}[failure]
+                self.assertEqual(calls, full[:length])
+                self.assertEqual([layout["armid"] for layout in fresh],
+                                 ["hosts3-prerequisite", "hosts2-prerequisite", "hosts2-measured", "hosts3-measured"][:length])
+                self.assertEqual(len({layout["fresh_instance"] for layout in fresh}), length)
+                self.assertEqual(provider.teardown.call_count, 1)
+                self.assertEqual(d.read(Path(tmp)/"campaign"/"approved-plan.json"), before)
+                self.assertEqual(value, before)
+                if failure:
+                    self.assertFalse((Path(tmp)/"campaign"/"measured.json").exists())
 
     def test_failed_prerequisite_never_promotes_and_still_cleans_up(self):
         with tempfile.TemporaryDirectory() as tmp:

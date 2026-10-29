@@ -49,10 +49,11 @@ in the sealed application, unmodified by these scripts.
    orders are filtered to that fixed selection. The one-host layout is then
    neither retested nor treated as a passing gate; prior failures remain failures.
 3. Only after **all selected** prerequisites pass, run two ×`measured_count` on fresh
-   clusters in preregistered **3 → 2 → 1** storage-host order. The approved plan
-   must contain typed `measured_topologies: [3,2,1]`; ordering is never adaptive.
-   This order was fixed before any campaign result so a known small-layout 1M
-   health failure cannot prevent measurements on the larger layouts.
+   clusters in the approved measured storage-host order. Only typed
+   `measured_topologies: [3,2,1]` or `[2,3,1]` is accepted, filtered to the selection;
+   ordering is never adaptive. The explicit two-host-first choice is a new
+   independent study after both fresh selected prerequisite gates, not a waiver
+   or replacement of a previously failed three-host measured wave.
 
 `measured_count` is explicitly 100000 or 1000000. The 1M choice inserts **6.6M
 rows total** for the legacy all-three study, or **4.4M** with the explicit `[3,2]`
@@ -79,17 +80,21 @@ outside that ingest interval, with host/native monitoring throughout. Raw app
 argv, stdout/stderr, exit receipts, evidence and native status remain local before
 teardown.
 
-Per-storage role IDs, native input-byte counters, stored bytes and shard fields
-are captured before/during/post-drain. Missing values, unknown IDs, role changes,
-counter resets (including post-drain), or <1MiB input/stored observations produce
-**INCONCLUSIVE**. Sufficient counters establish only observed per-host data
+Per-storage role IDs, native `input_bytes.counter`, optional
+`durable_bytes.counter`, stored bytes and shard fields are captured
+before/during/post-drain. Counter values must be nonnegative exact integers;
+finite integral floats are accepted only within the safe-integer range. Missing
+required input counters, unknown IDs, role changes, counter resets (including
+post-drain), or <1MiB input/stored observations produce **INCONCLUSIVE**. If any
+sample provides an optional durable counter, all its samples must be known and
+monotone. Absent shard fields remain unknown, never inferred as zero. Sufficient counters establish only observed per-host data
 processing: DD/background traffic is included. They are **not complete key
 placement, run-specific mutation coverage, or proof extra storage helped**. Raw
 ACK rates are retained; the scaling-proof field remains inconclusive.
 
-Topology cost uses live captured HEL1 hourly net/gross prices and measured common
-ACK/s for logical active **3/4/5-node** layouts (two clients plus selected FDB
-hosts). All **five held servers are actually billable throughout**. The separate
+Topology cost is explicitly labelled **SERVER-ONLY**: live captured HEL1 server
+hourly net/gross prices and measured common ACK/s for logical active **3/4/5-node**
+layouts (two clients plus selected FDB hosts), excluding IPv4 and traffic charges. All **five held servers are actually billable throughout**. The separate
 rounded-server estimate uses API creation/delete-ACK receipts, plus a conservative
 first-create-through-verified-cleanup bill bound. Neither is an invoice; IPv4 is
 excluded. Currency/VAT provenance must be supplied from sealed pricing metadata,
@@ -107,11 +112,12 @@ controller public/private keys, source root and binary/native/manifest paths wit
 SHA-256. Source manifest lines are `sha256  relative-path`; actual nonempty source
 files are hashed before and after the campaign, not merely the manifest text.
 Optional `prerequisite_topologies` preregisters `[1,2,3]` (the unchanged default)
-or `[3,2,1]`; `topologies` stays `[1,2,3]` and measured order stays `[3,2,1]`.
+or `[3,2,1]`; `topologies` stays `[1,2,3]`. Measured order explicitly accepts only
+`[3,2,1]` or `[2,3,1]`.
 Optional `selected_topologies` accepts only typed `[3,2]`, bound in the approved
 JSON before data; omission preserves the all-three study. A larger-first selected
 study still explicitly preregisters `prerequisite_topologies: [3,2,1]`, then filters
-both phase orders to `[3,2]`. It is not an adaptive retry or a waiver of the known
+the prerequisite order to `[3,2]` and the measured order to `[3,2]` or `[2,3]`. It is not an adaptive retry or a waiver of the known
 one-host failure. Authorized rows are `2 * selected_layouts * (100000 + measured_count)`.
 A failed prerequisite is still campaign-fatal: accepted earlier gates remain
 receipts, not authorization to skip a failed gate or enter the measured phase.
