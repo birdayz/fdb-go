@@ -80,6 +80,25 @@ class PolicyTests(unittest.TestCase):
                 value = plan(); value[key] = bad
                 with self.assertRaises(ValueError): p.validate_plan(value, check_assets=False)
 
+    def test_optional_prerequisite_order_is_explicit_and_does_not_rewrite_approval(self):
+        for order in (None, [1, 2, 3], [3, 2, 1]):
+            value = plan()
+            if order is not None:
+                value["prerequisite_topologies"] = order
+            before = copy.deepcopy(value)
+            p.validate_plan(value, check_assets=False)
+            self.assertEqual(value, before)
+            self.assertEqual(value["topologies"], [1, 2, 3])
+            self.assertEqual(value["measured_topologies"], [3, 2, 1])
+            self.assertEqual("prerequisite_topologies" in value, order is not None)
+
+    def test_optional_prerequisite_order_rejects_unknown_or_untyped_permutations(self):
+        for order in (None, True, [], [1, 2], [1, 1, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1],
+                      [3, 1, 2], [True, 2, 3], [3, 2, True], [3.0, 2, 1], (3, 2, 1), "3,2,1"):
+            with self.subTest(order=order):
+                value = plan(); value["prerequisite_topologies"] = order
+                with self.assertRaises(ValueError): p.validate_plan(value, check_assets=False)
+
     def test_storage_requires_all_typed_keys(self):
         for change in ({"bulk_index_conflicts": 1}, {"hash_bytes": True}, {"record_compression": "zstd"}):
             value = plan()["storage_options"]; value.update(change)
@@ -211,6 +230,39 @@ class StatusTests(unittest.TestCase):
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_collect_retains_completed_ingest_payload_when_pair_has_failed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); grant = dict(node_id=123, run="prof20k9000", work=tmp)
+            d.write(root / "plan.json", dict(grant=True))
+            payload = evidence("ingest")
+            d.write(root / "ingest.json", payload)
+            d.write(root / "ingest.exit.json", dict(exit=0))
+            (root / "ingest.stderr").write_text("paired run stopped by strict health guard\n")
+            with mock.patch.object(d, "client_plan", return_value=grant), mock.patch.object(d, "identity"), \
+                 mock.patch("builtins.print") as output:
+                d.main(["_collect", "--path", str(root / "plan.json"), "--node-id", "123"])
+            collected = json.loads(output.call_args.args[0])
+            self.assertEqual(collected["run"], "prof20k9000")
+            self.assertEqual(json.loads(collected["artifacts"]["ingest.json"]), payload)
+            self.assertEqual(json.loads(collected["artifacts"]["ingest.exit.json"]), dict(exit=0))
+            self.assertEqual(collected["artifacts"]["ingest.stderr"], "paired run stopped by strict health guard\n")
+            self.assertNotIn("audit.json", collected["artifacts"])
+            self.assertNotIn("query.json", collected["artifacts"])
+
+    def test_collect_payload_keeps_existing_symlink_and_size_guards(self):
+        for oversized in (False, True):
+            with self.subTest(oversized=oversized), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp); grant = dict(node_id=123, run="prof20k9000", work=tmp)
+                d.write(root / "plan.json", dict(grant=True))
+                path = root / "ingest.json"
+                if oversized:
+                    with path.open("wb") as stream: stream.truncate(16 * 1024 ** 2)
+                else:
+                    other = root / "other.json"; d.write(other, evidence("ingest")); path.symlink_to(other)
+                with mock.patch.object(d, "client_plan", return_value=grant), mock.patch.object(d, "identity"):
+                    with self.assertRaisesRegex(ValueError, "receipt size/type"):
+                        d.main(["_collect", "--path", str(root / "plan.json"), "--node-id", "123"])
+
     def test_json_duplicates_nonfinite_and_immutable_write(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "a.json"
@@ -444,6 +496,42 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(calls, [(1, 100000), (2, 100000), (3, 100000),
                                      (3, 1000000), (2, 1000000), (1, 1000000)])
             self.assertEqual(provider.teardown.call_count, 1)
+
+    def test_descending_prerequisites_are_preregistered_and_small_failure_stays_fatal(self):
+        for fail_small in (False, True):
+            with self.subTest(fail_small=fail_small), tempfile.TemporaryDirectory() as tmp:
+                value = plan(); value["prerequisite_topologies"] = [3, 2, 1]; value["measured_count"] = 100000
+                before = copy.deepcopy(value)
+                nodes = {name: dict(id=i + 1) for i, name in enumerate(("node1", "node2", "node3", "client1", "client2"))}
+                provider = mock.Mock(); provider.prepare.return_value = dict(nodes=nodes)
+                provider.teardown.return_value = dict(passed=True)
+                provider.setup_cluster.side_effect = lambda *args: dict(storage_hosts=args[3])
+                campaign = d.Campaign(value, Path(tmp) / "campaign", provider)
+                campaign.install_helpers = mock.Mock(); campaign.quiet = mock.Mock(); campaign.stable = mock.Mock()
+                campaign.host_samples = mock.Mock(return_value={n: dict(fdb_pids={}) for n in nodes})
+                calls = []
+                def wave(layout, hosts, count, number):
+                    calls.append((hosts, count))
+                    if fail_small and hosts == 1:
+                        raise ValueError("strict small-layout health failure")
+                    return dict(storage_hosts=hosts, count_per_producer=count, healthy=True,
+                                both_censuses=True, both_oracles=True)
+                campaign.wave = wave
+                with mock.patch.object(p, "validate_plan"), mock.patch.object(p, "verify_source", return_value=dict(files=1)), \
+                     mock.patch.object(p, "bill_bound", return_value={}), mock.patch.object(p, "rounded_server_bill", return_value={}), \
+                     mock.patch.object(d, "remaining", return_value=30):
+                    if fail_small:
+                        with self.assertRaisesRegex(ValueError, "strict small-layout health failure"): campaign.run()
+                    else:
+                        campaign.run()
+                expected = [(3, 100000), (2, 100000), (1, 100000)]
+                self.assertEqual(calls, expected if fail_small else expected * 2)
+                arms = [call.args[4] for call in provider.setup_cluster.call_args_list]
+                self.assertEqual(arms[:3], ["hosts3-prerequisite", "hosts2-prerequisite", "hosts1-prerequisite"])
+                self.assertEqual(len(arms), 3 if fail_small else 6)
+                self.assertEqual(provider.teardown.call_count, 1)
+                self.assertEqual(d.read(Path(tmp) / "campaign" / "approved-plan.json"), before)
+                self.assertEqual(value, before)
 
     def test_failed_prerequisite_never_promotes_and_still_cleans_up(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -58,6 +58,10 @@ def validate_plan(plan, *, check_assets=True):
     require(plan.get("replication") == "single", "single-replica non-HA capacity experiment only")
     require(type(plan.get("topologies")) is list and len(plan["topologies"]) == 3
             and all(type(x) is int for x in plan["topologies"]) and plan["topologies"] == [1, 2, 3], "exact storage-host sweep")
+    if "prerequisite_topologies" in plan:
+        order = plan["prerequisite_topologies"]
+        require(type(order) is list and len(order) == 3 and all(type(x) is int for x in order)
+                and order in ([1, 2, 3], [3, 2, 1]), "preregistered prerequisite storage-host order 1/2/3 or 3/2/1")
     require(type(plan.get("measured_topologies")) is list and len(plan["measured_topologies"]) == 3
             and all(type(x) is int for x in plan["measured_topologies"]) and plan["measured_topologies"] == [3, 2, 1],
             "preregistered measured storage-host order 3/2/1")

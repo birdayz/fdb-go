@@ -454,7 +454,7 @@ class Campaign:
             # Complete every horizontal prerequisite before a possibly failing 1M
             # arm can end the campaign. Measured arms use fresh native clusters.
             for phase in ("prerequisite", "measured"):
-                order = self.plan["topologies"] if phase == "prerequisite" else self.plan["measured_topologies"]
+                order = self.plan.get("prerequisite_topologies", self.plan["topologies"]) if phase == "prerequisite" else self.plan["measured_topologies"]
                 for i, hosts in enumerate(order):
                     remaining(self.plan, reserve=2000)
                     if phase == "measured":
@@ -519,7 +519,7 @@ def main(argv=None):
         elif a.mode == "_collect":
             artifacts = {}
             for mode in ("ingest", "audit", "query"):
-                for suffix in ("command.json", "exit.json", "stdout", "stderr"):
+                for suffix in ("json", "command.json", "exit.json", "stdout", "stderr"):
                     path = Path(grant["work"]) / (mode + "." + suffix)
                     if path.exists():
                         p.require(path.is_file() and not path.is_symlink() and path.stat().st_size < 16 * 1024 ** 2,
