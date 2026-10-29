@@ -37,7 +37,11 @@ in the sealed application, unmodified by these scripts.
 1. Quiet-admit all five hosts over seven samples, with absolute monotonic starts
    twelve seconds apart. Sampling overhead is included in that cadence; every
    host's observed intervals must still be between ten and fifteen seconds.
-2. Run the two ×100k prerequisite on fresh 1-, 2-, then 3-storage-host clusters.
+2. Run the two ×100k prerequisite on fresh storage-host layouts. The legacy
+   default remains **1 → 2 → 3**. An approved plan may explicitly preregister
+   `prerequisite_topologies: [3,2,1]` for a larger-first capacity study, so a
+   failing small layout cannot prevent observations on the larger layouts.
+   Only typed `[1,2,3]` or `[3,2,1]` is accepted; order never adapts to results.
    Both independent runs need strict health, exact record/index census and the
    complete 1600-class query oracle. Preserve every result before promotion.
 3. Only after **all three** prerequisites pass, run two ×`measured_count` on fresh
@@ -96,6 +100,10 @@ absolute first/deadline epochs, one controller /32 or /128, absolute hcloud wrap
 controller public/private keys, source root and binary/native/manifest paths with
 SHA-256. Source manifest lines are `sha256  relative-path`; actual nonempty source
 files are hashed before and after the campaign, not merely the manifest text.
+Optional `prerequisite_topologies` preregisters `[1,2,3]` (the unchanged default)
+or `[3,2,1]`; `topologies` stays `[1,2,3]` and measured order stays `[3,2,1]`.
+A failed prerequisite is still campaign-fatal: accepted earlier gates remain
+receipts, not authorization to skip a failed gate or enter the measured phase.
 Optional `inventory_dir` binds to the root-sealed baseline; optional
 `pricing_currency`, `pricing_vat_rate`, `pricing_metadata_source` identify currency
 and tax provenance. Use a private output directory outside every Git worktree.
