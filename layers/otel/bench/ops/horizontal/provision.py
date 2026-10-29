@@ -226,7 +226,26 @@ def _create(plan, state, resources, kind, argv, runner, clock, guard):
             resources['cleanup_epoch'] = plan['deadline_epoch'] - 600
             _save_resources(state, resources)
         _command_receipt(plan, state, argv, clock)
-        _checked(runner, argv, timeout=_remaining(plan, 20, clock, active=True))
+        started = clock()
+        timeout = _remaining(plan, 120, clock, active=True)
+        timed_out = False
+        try:
+            rc, stdout, stderr = _call(runner, argv, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            rc, stdout, stderr, timed_out = None, exc.stdout or '', exc.stderr or '', True
+        except (OSError, subprocess.SubprocessError) as exc:
+            rc, stdout, stderr = None, '', str(exc)
+        stdout = stdout.decode('utf-8', errors='replace') if isinstance(stdout, bytes) else stdout
+        stderr = stderr.decode('utf-8', errors='replace') if isinstance(stderr, bytes) else stderr
+        receipt = state / f'create-{kind}-{time.time_ns()}.json'
+        _json(receipt, dict(kind=kind, argv=argv, returncode=rc, stdout=stdout, stderr=stderr,
+                            timed_out=timed_out, timeout_seconds=timeout,
+                            epoch=started, finished_epoch=clock()))
+        resources.setdefault('creation_attempts', []).append(str(receipt))
+        _save_resources(state, resources)
+        if timed_out or type(rc) is not int or rc != 0:
+            raise ProvisionError(f'{kind}: create failed; no resubmission: stdout={stdout!r}; stderr={stderr!r}')
+        _check_window(plan, state, clock, guard)
         items = _list(plan, kind, runner)
         expected = argv[argv.index('--name') + 1]
         candidates = [i for i in items if i.get('name') == expected]
