@@ -34,6 +34,9 @@ def validate_plan(plan, *, check_assets=True):
     p.require(type(plan.get("producers", 1)) is int and plan.get("producers", 1) == 1, "exactly one diagnostic producer")
     p.require(type(plan.get("storage_max_outstanding", 64)) is int and plan.get("storage_max_outstanding", 64) in (64, 128),
               "diagnostic storage_max_outstanding must be exactly integer 64 or 128")
+    p.require(type(plan.get("storage_process_count", 1)) is int
+              and (plan.get("storage_process_count", 1), plan.get("storage_max_outstanding", 64)) in ((1, 64), (1, 128), (2, 64)),
+              "diagnostic storage process/I/O profile must be 1/64, 1/128 or 2/64")
     p.require(not set(plan) & {"topologies", "selected_topologies", "prerequisite_topologies",
                               "measured_topologies", "measured_count"}, "diagnostic is not a comparative topology study")
     # Reuse the common hardware, source, storage, asset and absolute-time guards.
@@ -41,6 +44,7 @@ def validate_plan(plan, *, check_assets=True):
     common = {**plan, "schema": "otel_horizontal_v1", "topologies": [1, 2, 3],
               "measured_topologies": [3, 2, 1], "measured_count": 100000}
     common.pop("storage_max_outstanding", None)
+    common.pop("storage_process_count", None)
     p.validate_plan(common, check_assets=check_assets)
     return plan
 
@@ -82,7 +86,9 @@ def sampler_grant(value):
               and p.hexstr(value.get("binary_sha256")), "sampler producer binding")
     p.require(type(value.get("prefix")) is str and re.fullmatch(r"[a-z][a-z0-9-]{7,47}", value["prefix"]), "sampler prefix")
     p.require(type(value.get("processes")) is list and all(type(x) is dict for x in value["processes"]), "sampler native process list")
-    expected_ports = {4500, 4501, 4502, 4503, 4504, 4510} if value["role"] == "node1" else set()
+    count = value.get("storage_process_count", 1)
+    p.require(type(count) is int and count in (1, 2), "sampler storage process count")
+    expected_ports = ({4500, 4501, 4502, 4503, 4504} | set(range(4510, 4510 + count))) if value["role"] == "node1" else set()
     p.require({x.get("port") for x in value["processes"]} == expected_ports
               and len(value["processes"]) == len(expected_ports), "exact diagnostic process population")
     for process in value["processes"]:
@@ -454,10 +460,32 @@ def profile(frames, grants, producer_receipt, activity, release_bound):
     counters = [x.get("storage", {}).get("node1", {}) for x in activity
                 if type(x) is dict and type(x.get("storage")) is dict
                 and type(x["storage"].get("node1")) is dict]
-    positive = (len(counters) >= 2 and all(type(x.get("storage_id")) is str and x["storage_id"] and x["storage_id"] == counters[0].get("storage_id")
-                and p.integer(x.get("input_bytes")) for x in counters)
-                and all(b["input_bytes"] >= a["input_bytes"] for a, b in zip(counters, counters[1:]))
-                and counters[-1]["input_bytes"] > counters[0]["input_bytes"])
+    def active(values):
+        return (len(values) >= 2 and all(type(x.get("storage_id")) is str and x["storage_id"] and x["storage_id"] == values[0].get("storage_id")
+                and p.integer(x.get("input_bytes")) for x in values)
+                and all(b["input_bytes"] >= a["input_bytes"] for a, b in zip(values, values[1:]))
+                and values[-1]["input_bytes"] > values[0]["input_bytes"])
+    positive = active(counters)
+    count = grants["node1"].get("storage_process_count", 1)
+    client_count = grants["client1"].get("storage_process_count", 1)
+    if type(count) is not int or count not in (1, 2) or type(client_count) is not int or client_count != count:
+        positive = False
+        reasons.append("sampler storage process counts differ or are untyped")
+    elif count == 2:
+        specs = grants["node1"]["processes"]
+        addresses = {x.get("address") for x in specs if type(x) is dict and x.get("port") in (4510, 4511)
+                     and type(x.get("address")) is str} if type(specs) is list else set()
+        samples = [x.get("storage_processes") for x in activity if type(x) is dict]
+        positive = (len(addresses) == 2 and len(samples) == len(activity) and len(samples) >= 2
+                    and all(type(x) is dict and set(x) == addresses and all(type(v) is dict for v in x.values()) for x in samples))
+        if positive:
+            for address in addresses:
+                values = [x[address] for x in samples]
+                durable = [x.get("durable_bytes") for x in values]
+                positive = positive and active(values) and all(p.integer(x) for x in durable) and all(b >= a for a, b in zip(durable, durable[1:]))
+            positive = positive and all(len({x["storage_id"] for x in sample.values()}) == 2 for sample in samples)
+        if not positive:
+            reasons.append("both diagnostic storage processes were not exercised with stable independent counters")
     if not positive:
         reasons.append("native input activity coverage unknown, reset or zero")
     return {"verdict": "CAPTURED" if not reasons else "INCONCLUSIVE", "populations": populations,
@@ -466,14 +494,16 @@ def profile(frames, grants, producer_receipt, activity, release_bound):
             "boundary": "observational profile only; native input includes MVCC/DD/background accounting, not physical I/O or causal CPU/disk proof"}
 
 
-def trace_tail(arm_root, campaign, bindings, budget=TRACE_BUDGET):
+def trace_tail(arm_root, campaign, bindings, budget=TRACE_BUDGET, *, storage_process_count=1):
+    p.require(type(storage_process_count) is int and storage_process_count in (1, 2), "trace storage process count")
     p.require(type(budget) is int and 0 <= budget <= TRACE_BUDGET, "aggregate native trace budget")
     arm = Path(arm_root)
     p.require(not any(x.is_symlink() for x in (arm, *arm.parents)) and arm.is_dir(), "native arm is not a real directory")
     logs = no_symlinks(arm / "logs", arm)
     p.require(logs.is_dir(), "native log directory missing")
-    targets = {x["address"]: x for x in bindings.values() if x["port"] in (4504, 4510)}
-    p.require(len(targets) == 2 and {x["port"] for x in targets.values()} == {4504, 4510}, "exact storage/log trace targets required")
+    ports = {4504} | set(range(4510, 4510 + storage_process_count))
+    targets = {x["address"]: x for x in bindings.values() if x["port"] in ports}
+    p.require(len(targets) == len(ports) and {x["port"] for x in targets.values()} == ports, "exact storage/log trace targets required")
     result = {"files": [], "errors": [], "bytes_read": 0, "budget": budget,
               "boundary": "raw bounded NDJSON tails, all event types; Machine/LogGroup map via verified native PID/start/cmdline, not trace ThreadID"}
     observed = {}
@@ -717,6 +747,8 @@ class Diagnostic(d.Campaign):
                                 "fdbserver_sha256": self.plan["fdbserver_sha256"], "run": run, "token": token,
                                 "producer_grant_sha256": p.sha(local),
                                 "processes": [x for x in layout["processes"] if x["node"] == role]}
+                if self.plan.get("storage_process_count", 1) == 2:
+                    sample_grant["storage_process_count"] = 2
                 sampler_grant(sample_grant)
                 path = directory / (role + "-sampler-plan.json"); d.write(path, sample_grant)
                 self.copy(node, path, sample_work + "/plan.json")
@@ -837,6 +869,7 @@ class Diagnostic(d.Campaign):
         result = {"schema": "otel_native_diagnostic_result_v1", "diagnostic_only": True,
                   "accepted_throughput": False, "authorized_rows": 1100000, "producers": 1,
                   "storage_max_outstanding": self.plan.get("storage_max_outstanding", 64),
+                  "storage_process_count": self.plan.get("storage_process_count", 1),
                   "approved_plan_sha256": p.sha(self.out / "approved-plan.json"),
                   "boundary": "one FDB host and one producer; sampler overhead included in fixed slices; not comparable to two-producer throughput"}
         try:
@@ -861,12 +894,14 @@ class Diagnostic(d.Campaign):
             result["error"] = str(exc)
             raise
         finally:
-            d.write(self.out / "diagnostic-result.json", result)
-            if self.resources is not None:
-                cleanup = self.provision.teardown(self.plan, self.out / "provision", self.resources)
-                d.write(self.out / "cleanup.json", cleanup)
-                p.require(cleanup.get("passed") is True, "diagnostic exact ten-kind baseline cleanup did not pass")
-            d.write(self.out / "source-after.json", p.verify_source(self.plan))
+            try:
+                d.write(self.out / "diagnostic-result.json", result)
+                if self.resources is not None:
+                    cleanup = self.provision.teardown(self.plan, self.out / "provision", self.resources)
+                    d.write(self.out / "cleanup.json", cleanup)
+                    p.require(cleanup.get("passed") is True, "diagnostic exact ten-kind baseline cleanup did not pass")
+            finally:
+                d.write(self.out / "source-after.json", p.verify_source(self.plan))
 
 
 def main(argv=None):
@@ -919,7 +954,8 @@ def main(argv=None):
             p.require(actual["starttime_ticks"] == bound["starttime_ticks"] and actual["cmdline"] == bound["args"],
                       "trace native process identity changed")
         arm = no_symlinks(grant["arm_root"], base)
-        print(json.dumps(trace_tail(arm, grant["campaign"], identity["bindings"], args.budget), sort_keys=True))
+        print(json.dumps(trace_tail(arm, grant["campaign"], identity["bindings"], args.budget,
+                                    storage_process_count=grant.get("storage_process_count", 1)), sort_keys=True))
 
 
 if __name__ == "__main__":
