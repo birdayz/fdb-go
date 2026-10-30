@@ -3207,5 +3207,27 @@ regressions so they can be proposed upstream after the PoC.
   Shared16MiB evidence/1GiB receipts and SESSION_FATAL OOM behavior remain intact.
   Original09:49:26–11:49:26Z lease,10:56:06Z setup and11:04:26Z measured-entry
   cutoffs are unchanged. No3x, stale1GiB baseline or sustained20k claim follows.
-  Follow-up runtime behavior is UNVERIFIED; no agent cloud actions, services or
-  infrastructure changes are authorized.
+  The foreground follow-up passed the fresh200k gate, then its750k measured wave
+  failed the exact batch-probe/storage-queue health guard. LogPID5493 stayed live
+  across139 gate/measured frames and reached1,452,507,136B RSS;14/55 load frames
+  exceeded the old1GiB cap without a native exit. This verifies the targeted
+  memory correction over the observed window, not general memory safety or20k.
+  Fresh1x never started a cluster/workload because the original setup reserve
+  expired; comparison stays INCONCLUSIVE. All six hosts/auxiliaries were deleted,
+  fresh exact17-ID/ten-kind equality passed, and source seals stayed unchanged.
+  Evidence: `/var/tmp/fdb-perf-scaling.v4O6xf/log2g/native-analysis.json`.
+- [ ] Test exact measured-range conditioning before adding more ingest workers or
+  hosts. The sealed app uses physical prefix `("otel_otelbench_v2", Run, "store")`;
+  gate Runs9310/9311 and measured Runs9313/9314 are disjoint. Early observed native
+  input concentrated85.1153% on one of six SS, with a1.499GB raw MVCC queue; these
+  counters include setup/DD activity, so cold-prefix causality is a hypothesis,
+  not proven shard-placement evidence. Count is part of corpus/owner identity;
+  simply reusing a100k Run with375k Count would violate existing guards. A future
+  FDB-only append experiment must transactionally authenticate ready100k, claim
+  loading475k with unchanged layout/corpus parameters, write only ordinals
+  [100000,475000), preserve all ordinary owner/old-image/conflict/transaction
+  checks, and publish ready475k only after375k acknowledged additions. Partial
+  failure must remain fail-closed, not implicit resume. Final census/query truth
+  must cover all475k; measured rates must count only375k additions. Generation is
+  prefix-stable, but this is a changed benchmark boundary requiring a fresh
+  same-protocol baseline. No application/storage change is implemented or implied.
