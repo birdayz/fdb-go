@@ -3147,3 +3147,12 @@ regressions so they can be proposed upstream after the PoC.
   old standalone/horizontal/diagnostic/session defaults remain unchanged. The
   candidate remains **runtime UNVERIFIED**; no new lease/resources are implied by
   offline implementation or tests, and earlier failures remain UNKNOWN/failed.
+  The first six-host attempt was interrupted during preparation before any stage
+  or producer-release receipt existed; the controller and independent watchdog
+  processes were no longer present and their former task owner was unavailable.
+  Investigate that supervision interruption before any future launch; its cause
+  is UNKNOWN, not a native throughput failure. Cleanup supervision was restored
+  under the original unchanged lease solely to delete the six owned hosts and
+  auxiliaries, with fresh exact17-ID/ten-kind inventory equality and unchanged
+  source seals. No scaling measurements completed, and the owner declined a
+  restart. Evidence: `/var/tmp/fdb-native-scaling.NjSZRv/`.
