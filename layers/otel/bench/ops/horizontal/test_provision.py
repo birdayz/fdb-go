@@ -361,11 +361,20 @@ class ProvisionTest(unittest.TestCase):
                          storage_process_count=2, storage_max_outstanding=64, prior_rows_upper=0)
         return self.plan
 
-    def scaling_plan(self):
+    def scaling_plan(self, *, managed_admitted=True):
+        output = self.root / 'campaign'
+        self.out = output / 'provision'
+        self.cloud.out = self.out
         self.plan.update(schema='otel_native_scaling_v1', replication='single', stages=[[1, 1], [2, 2], [3, 3]],
                          count=100000, measured_count=375000, measured_seconds=120, prior_rows_upper=7000000,
                          batch=64, workers=8, gomaxprocs=4, storage_process_count=3,
-                         storage_max_outstanding=64, storage_memory_profile='scaling3ss3g')
+                         storage_max_outstanding=64, storage_memory_profile='scaling3ss3g',
+                         managed_watch=dict(root=str(self.root / 'managed-watch'), output=str(output)))
+        if managed_admitted:
+            import supervisor
+            patch = mock.patch.object(supervisor, 'admit', return_value={'admitted': True})
+            self.managed_admit = patch.start()
+            self.addCleanup(patch.stop)
         return self.plan
 
     def scaling_nodes(self):
@@ -424,7 +433,7 @@ class ProvisionTest(unittest.TestCase):
                 with self.subTest(key=key, bad=bad), self.assertRaises(p.ProvisionError):
                     p.validate_plan(candidate, self.out)
         for key in ('stages', 'count', 'measured_count', 'measured_seconds', 'prior_rows_upper', 'batch', 'workers',
-                    'gomaxprocs', 'storage_process_count', 'storage_max_outstanding', 'storage_memory_profile', 'replication'):
+                    'gomaxprocs', 'storage_process_count', 'storage_max_outstanding', 'storage_memory_profile', 'replication', 'managed_watch'):
             candidate = dict(good); del candidate[key]
             with self.subTest(missing=key), self.assertRaises(p.ProvisionError):
                 p.validate_plan(candidate, self.out)
@@ -445,6 +454,152 @@ class ProvisionTest(unittest.TestCase):
                 p.validate_plan(dict(good, **{key: []}), self.out)
         self.assertFalse(self.cloud.calls)
         self.assertFalse(self.out.exists())
+
+    def test_scaling_managed_watch_configuration_is_required_and_exact_without_admission_effects(self):
+        self.scaling_plan(managed_admitted=False)
+        import supervisor
+        good = copy.deepcopy(self.plan)
+        for config in (None, True, {}, [], {'root': str(self.root/'watch')}, {'output': str(self.root/'campaign')},
+                       dict(good['managed_watch'], extra=True), dict(good['managed_watch'], root='relative'),
+                       dict(good['managed_watch'], output='relative')):
+            changed = dict(good, managed_watch=config)
+            with self.subTest(config=config), self.assertRaises(p.ProvisionError):
+                p.validate_plan(changed, self.out)
+        with mock.patch.object(supervisor, 'admit', side_effect=AssertionError('pure validation cannot admit')):
+            p.validate_plan(good, self.out)
+        self.assertFalse(self.cloud.calls)
+        self.assertFalse(self.out.exists())
+
+    def test_scaling_prepare_requires_managed_admission_before_even_inventory_or_guard_start(self):
+        self.scaling_plan(managed_admitted=False)
+        import supervisor
+        for reason in ('controller and watcher share runtime cgroup', 'unknown supervisor unit or process identity'):
+            with self.subTest(reason=reason), mock.patch.object(supervisor, 'admit', side_effect=ValueError(reason)) as admit:
+                with self.assertRaisesRegex(p.ProvisionError, reason):
+                    self.prepare()
+                admit.assert_called_once()
+                self.assertEqual(admit.call_args.args, (self.plan, self.out))
+                self.assertIs(admit.call_args.kwargs['clock'], time.time)
+                self.assertFalse(self.cloud.calls)
+                self.assertFalse(self.cloud.events)
+                self.assertFalse(self.cloud.create_counts)
+                self.assertFalse(self.out.exists())
+
+    def test_scaling_prepare_actual_admission_rejects_unknown_supervisor_before_any_cloud_call(self):
+        self.scaling_plan(managed_admitted=False)
+        import supervisor
+        actual_admit = supervisor.admit
+        proc_root = self.root / 'unknown-proc'
+        proc_root.mkdir(mode=0o700)
+        def fake_manager(argv, **kwargs):
+            return 1, '', 'unknown managed USER supervisor'
+        def admit(plan, out, *, clock):
+            return actual_admit(plan, out, runner=fake_manager, clock=clock, proc_root=proc_root)
+        with mock.patch.object(supervisor, 'admit', side_effect=admit) as invoked:
+            with self.assertRaisesRegex(p.ProvisionError, 'managed supervisor admission refused'):
+                self.prepare()
+            invoked.assert_called_once()
+        self.assertFalse(self.cloud.calls)
+        self.assertFalse(self.cloud.events)
+        self.assertFalse(self.cloud.create_counts)
+        self.assertFalse(self.out.exists())
+
+    def test_scaling_prepare_refuses_output_outside_exact_managed_run_before_admission(self):
+        self.scaling_plan(managed_admitted=False)
+        import supervisor
+        with mock.patch.object(supervisor, 'admit', side_effect=AssertionError('mismatched output must fail first')):
+            for out in (self.root/'other', Path(self.plan['managed_watch']['output']), self.out/'provision'):
+                with self.subTest(out=out), self.assertRaisesRegex(p.ProvisionError, 'output does not match'):
+                    p.prepare(self.plan, out, runner=self.cloud, popen=self.cloud.popen)
+        self.assertFalse(self.cloud.calls)
+        self.assertFalse(self.cloud.events)
+
+    def test_scaling_managed_admission_is_rechecked_before_create_attach_poweron_ssh_and_copy(self):
+        self.scaling_plan(); resources = self.prepare(); state = p._state(self.out)
+        server = next(item for item in self.cloud.items['server'] if item['id'] == resources['nodes']['node1']['id'])
+        network = next(item for item in self.cloud.items['network'] if item['id'] == resources['ids']['network'][0])
+        guard = mock.Mock(); guard.poll.return_value = None
+        before = len(self.cloud.calls)
+        self.managed_admit.reset_mock()
+        self.managed_admit.side_effect = ValueError('managed supervisor identity changed')
+        operations = {
+            'create': lambda: p._create(self.plan, state, resources, 'server',
+                [self.plan['hcloud'], 'server', 'create', '--name', self.plan['prefix']+'-node1'],
+                self.cloud, time.time, guard),
+            'attach': lambda: p._attach_network(self.plan, state, resources, server, network, server['private_net'][0]['ip'],
+                self.cloud, time.time, guard, lambda _: None),
+            'poweron': lambda: p._mutate(self.plan, state,
+                [self.plan['hcloud'], 'server', 'poweron', str(server['id'])], self.cloud, time.time, guard),
+            'ssh': lambda: p.run_on_node(self.plan, self.out, resources['nodes']['client3'], ['true'], runner=self.cloud),
+            'copy': lambda: p.copy_to_node(self.plan, self.out, resources['nodes']['client3'], self.plan['binary'],
+                p.REMOTE_BASE+'/'+self.plan['campaign']+'/bin/otel-demo', runner=self.cloud),
+        }
+        for name, operation in operations.items():
+            with self.subTest(operation=name), self.assertRaisesRegex(p.ProvisionError, 'supervisor identity changed'):
+                operation()
+            self.assertEqual(len(self.cloud.calls), before)
+            self.assertFalse(self.cloud.deleted)
+        self.assertEqual(self.managed_admit.call_count, len(operations))
+        self.assertTrue(all(call.args == (self.plan, self.out) for call in self.managed_admit.call_args_list))
+
+    def test_scaling_admission_loss_during_prepare_prevents_next_mutation_and_still_cleans_partial_resources(self):
+        self.scaling_plan()
+        for phase in ('first-create', 'attach', 'poweron'):
+            output = self.root / ('managed-'+phase)
+            self.out = output / 'provision'
+            self.plan['managed_watch']['output'] = str(output)
+            self.cloud = FakeCloud(self.plan, self.out)
+            def admit(plan, out, *, clock):
+                self.assertEqual(Path(out), self.out)
+                reached = {'first-create': 'keygen' in self.cloud.events,
+                           'attach': self.cloud.create_counts.get('server', 0) == 1,
+                           'poweron': any(call['path'].startswith('/servers/') and call['method'] == 'GET'
+                                          for call in self.cloud.attach_api_calls)}[phase]
+                if reached:
+                    raise ValueError('managed admission lost before '+phase)
+                return {'admitted': True}
+            self.managed_admit.side_effect = admit
+            with self.subTest(phase=phase), self.assertRaisesRegex(p.ProvisionError, 'admission lost before '+phase):
+                self.prepare()
+            self.assertTrue(p._load(p._state(self.out)/'teardown-complete.json')['passed'])
+            self.assertEqual(self.cloud.items, self.cloud.baseline)
+            self.assertNotIn('server poweron', self.cloud.events)
+            if phase == 'first-create':
+                self.assertFalse(self.cloud.create_counts)
+                self.assertFalse(self.cloud.attach_api_calls)
+                self.assertFalse(self.cloud.deleted)
+            elif phase == 'attach':
+                self.assertEqual(self.cloud.create_counts['server'], 1)
+                self.assertFalse(self.cloud.attach_api_calls)
+                self.assertTrue(self.cloud.deleted)
+            else:
+                self.assertEqual(self.cloud.create_counts['server'], 1)
+                self.assertEqual(sum(call['method'] == 'POST' for call in self.cloud.attach_api_calls), 1)
+                self.assertTrue(self.cloud.deleted)
+
+    def test_scaling_immutable_lease_refusal_precedes_managed_admission_and_teardown_bypasses_it(self):
+        self.scaling_plan(); resources = self.prepare(); state = p._state(self.out)
+        self.managed_admit.reset_mock()
+        self.managed_admit.side_effect = ValueError('managed supervisor admission lost')
+        changed = copy.deepcopy(self.plan); changed['managed_watch']['root'] = str(self.root/'different-watch')
+        with self.assertRaisesRegex(p.ProvisionError, 'immutable scaling lease'):
+            p._check_window(changed, state, time.time)
+        self.managed_admit.assert_not_called()
+        with self.assertRaisesRegex(p.ProvisionError, 'admission lost'):
+            p._check_window(self.plan, state, time.time)
+        self.assertEqual(self.managed_admit.call_count, 1)
+        cleanup = p.teardown(self.plan, self.out, resources, runner=self.cloud, sleep=lambda _: None)
+        self.assertTrue(cleanup['passed'])
+        self.assertEqual(self.cloud.items, self.cloud.baseline)
+        self.assertEqual(self.managed_admit.call_count, 1)
+
+    def test_legacy_prepare_does_not_require_or_consult_managed_supervisor(self):
+        import supervisor
+        with (mock.patch.object(supervisor, 'validate_config', side_effect=AssertionError('legacy config changed')),
+              mock.patch.object(supervisor, 'admit', side_effect=AssertionError('legacy admission changed'))):
+            resources = self.prepare()
+        self.assertTrue(resources['prepared'])
+        self.assertEqual(set(resources['nodes']), set(p.ROLES))
 
     def test_scaling_render_has_three_native_storage_processes_per_active_host_and_unchanged_controls(self):
         self.scaling_plan(); nodes = self.scaling_nodes()

@@ -152,6 +152,26 @@ def _storage_memory_profile(plan):
     return value
 
 
+def _managed_watch_config(plan):
+    import supervisor
+    try:
+        return supervisor.validate_config(plan)
+    except (OSError, ValueError) as exc:
+        raise ProvisionError('invalid managed supervisor configuration: ' + str(exc)) from exc
+
+
+def _admit_managed_watch(plan, out, clock):
+    """Active-work gate only; teardown must remain possible after admission fails."""
+    import supervisor
+    config = _managed_watch_config(plan)
+    if Path(out).resolve() != Path(config['output']) / 'provision':
+        raise ProvisionError('provision output does not match the managed supervisor configuration')
+    try:
+        supervisor.admit(plan, out, clock=clock)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise ProvisionError('managed supervisor admission refused: ' + str(exc)) from exc
+
+
 def _validate_scaling(plan):
     if plan.get('schema') != 'otel_native_scaling_v1':
         return
@@ -173,6 +193,7 @@ def _validate_scaling(plan):
     if any(key in plan for key in ('topologies', 'measured_topologies', 'prerequisite_topologies',
                                   'selected_topologies', 'probe_count', 'probe_seconds', 'cases')):
         raise ProvisionError('scaling plans cannot declare comparative or diagnostic case fields')
+    _managed_watch_config(plan)
 
 
 def _names(plan):
@@ -326,6 +347,8 @@ def _check_window(plan, state, clock, guard=None):
             or (state / 'cleanup-started.json').exists()
             or (guard is not None and guard.poll() is not None)):
         raise ProvisionError('cleanup has started, deadline reached, or lifetime guard exited')
+    if plan.get('schema') == 'otel_native_scaling_v1':
+        _admit_managed_watch(plan, state.parent, clock)
 
 
 def _save_resources(state, resources):
@@ -790,6 +813,8 @@ def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.s
     lifetime guard must be armed by the caller before launching the controller.
     """
     validate_plan(plan, out, clock)
+    if plan['schema'] == 'otel_native_scaling_v1':
+        _admit_managed_watch(plan, out, clock)
     roles = _roles(plan)
     state = _state(out)
     state.mkdir(mode=0o700, parents=True, exist_ok=False)

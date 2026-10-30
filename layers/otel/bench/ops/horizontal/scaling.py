@@ -12,6 +12,7 @@ import diagnostic as n
 import driver as d
 import policy as p
 import session as s
+import supervisor
 
 SCHEMA = "otel_native_scaling_v1"
 STAGES = [[1, 1], [2, 2], [3, 3]]
@@ -44,6 +45,7 @@ def validate_plan(plan, *, check_assets=True):
               ("storage_process_count", "storage_max_outstanding", "storage_memory_profile")}
     common.update(schema="otel_horizontal_v1", topologies=[1, 2, 3], measured_topologies=[3, 2, 1], measured_count=100000)
     p.validate_plan(common, check_assets=check_assets)
+    supervisor.validate_config(plan)
     return plan
 
 
@@ -180,14 +182,15 @@ class ScalingArm(n.Diagnostic):
         for node in self.nodes.values():
             self.copy(node, n.HERE / "session.py", self.remote_harness + "/session.py")
             self.copy(node, n.HERE / "scaling.py", self.remote_harness + "/scaling.py")
-            for name in ("session.py", "scaling.py"):
+            self.copy(node, n.HERE / "supervisor.py", self.remote_harness + "/supervisor.py")
+            for name in ("session.py", "scaling.py", "supervisor.py"):
                 p.require(self.command(node, ["sha256sum", self.remote_harness + "/" + name]).split()[0] == p.sha(n.HERE / name),
                           "scaling remote helper seal")
 
     def verify_helpers(self):
         super().verify_helpers()
         for node in self.nodes.values():
-            for name in ("session.py", "scaling.py"):
+            for name in ("session.py", "scaling.py", "supervisor.py"):
                 p.require(self.command(node, ["sha256sum", self.remote_harness + "/" + name]).split()[0] == p.sha(n.HERE / name),
                           "scaling remote helper changed")
 
@@ -522,6 +525,7 @@ class ScalingSession:
 
     def run(self):
         validate_plan(self.plan)
+        p.require(str(self.out) == self.plan["managed_watch"]["output"], "scaling output must match managed watch output")
         source = p.verify_source(self.plan)
         self.out.mkdir(mode=0o700, parents=True, exist_ok=False)
         d.write(self.out / "approved-plan.json", self.plan)
@@ -535,6 +539,7 @@ class ScalingSession:
         try:
             self.receipt_budget()
             d.remaining(self.plan, reserve=2000)
+            supervisor.register(self.plan, self.out)
             self.resources = self.provision.prepare(self.plan, self.provision_out)
             nodes = self.resources["nodes"]
             p.require(set(nodes) == ROLES, "exact six owned scaling nodes")

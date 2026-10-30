@@ -440,3 +440,85 @@ positive input/durable activity for all3/6/9 SS; unknown/reset/idle counters rem
 INCONCLUSIVE. No dead PID, truncated evidence or diagnostic capture restores health
 or authorizes reuse. The candidate remains **runtime UNVERIFIED** until a separate
 approved lease actually exercises these stages; prior failures remain unchanged.
+
+### Scaling cleanup must outlive the runtime unit
+
+The first six-host preparation attempt was interrupted by a confirmed
+`bruh-web.service` restart at07:09:51.371–07:09:52.320Z, immediately after client3
+readiness. Controller and nominally independent watchdog shared that service's
+`KillMode=control-group` failure domain. Another process group under the same
+runtime unit is not independent. Restart initiator/reason and individual child
+signals remain unknown; the older storage4510/PID12998 cause remains UNKNOWN.
+
+Scaling plans now additionally require exactly:
+
+```json
+"managed_watch": {
+  "root": "/private/campaign/watch",
+  "output": "/private/campaign/run"
+}
+```
+
+Both paths must be absolute, disjoint and outside the repository; execution output
+must match `managed_watch.output` exactly. This changes no legacy schema, native
+argv, application source, geometry, row ceiling or absolute lease rule.
+
+Offline file preparation only:
+
+```sh
+python3 -B layers/otel/bench/ops/horizontal/supervisor.py prepare --plan /private/campaign/approved-plan.json
+```
+
+This validates the approved plan/source/assets, then creates a new private watch
+root containing exact `plan.json`, `manifest.json`, eleven sealed helper files
+under `bundle/`, and `otel-native-watch-<campaign>.service`. It neither installs
+nor enables/starts any unit, executes a watch, nor accesses the cloud. Replacing
+an existing bundle or resetting its lease is refused. No new lease is implied by
+offline implementation/tests. **Explicit operator permission remains required**
+to install/start this USER-manager unit and perform a harmless local OS-isolation
+probe before another paid campaign. No install/start command is implicit here.
+
+The fixed template uses `Slice=-.slice`, `DefaultDependencies=no`, and its own
+`KillMode=control-group`: the watch must be a direct child of the USER manager's
+root cgroup, outside the runtime subtree. The installed fragment must equal the
+sealed template at the exact path recorded in `manifest.json`; foreign overrides
+and shared kill dependencies are rejected. Only its own generated RuntimeMax
+control drop-in is allowed. Exact unit/manager reachability is checked, not global
+manager health; unrelated failed units are not inspected or reset.
+
+The generated `ExecStartPre` runs the sealed helper's `bound --root ROOT --seal
+SEAL` mode. It verifies its own PID/full argv/cgroup/USER-manager parent, then may
+set **only its own exact unit's** RuntimeMax to the original remaining hard time
+(with startup margin). Every activation/restart recomputes remaining time, never
+renews the lease. Unit runtime bounds must fit the original monotonic deadline.
+Expiry exits77 (`RestartPreventExitStatus=77`), not a fresh watch lifetime.
+`ExecStart` runs `watch --root ROOT --seal SEAL`; the seal is in the actual kernel
+argv, binding plan, helper bundle and interpreter identity. These execution modes
+are for the separately authorized OS unit, not controller-side detachment.
+
+The ordinary scaling command registers its live PID/start/full argv, boot and
+runtime invocation. Before any create/attach/power-on and throughout active
+commands, admission checks the live external unit, exact manager parent/cgroup,
+registered controller, immutable bundle/source/assets and a <=3s healthy ACK
+bound to the controller receipt. A stale file, separate PGID in the runtime
+cgroup, reused PID, changed executable/command/boot/helper/source/deadline, unknown
+manager or dependency mismatch authorizes no active mutation/load. Read-only
+verification of an already activated and registered watch is:
+
+```sh
+python3 -B layers/otel/bench/ops/horizontal/supervisor.py verify --root /private/campaign/watch
+```
+
+The watch detects controller disappearance/replacement, runtime invocation
+changes, supervision uncertainty, and the original absolute cleanup time without
+relying on an EXIT trap. It writes an unhealthy heartbeat and uses existing exact
+owned teardown/protected inventory checks. Cleanup is not gated by active
+admission: startup bound/watch can still use the sealed cleanup bundle if original
+application/source health or runtime availability has failed. Successful cleanup
+requires `exit.json` with `passed:true`; hard-expiry/incomplete cleanup writes
+`passed:false` and exits77. Ready/unit-exit status alone is not cleanup proof.
+
+Tests use fake procfs, USER-manager replies, clocks and provider operations only.
+No OS unit is installed, started, killed or proved to survive a real runtime
+restart. **Actual OS isolation/survival remains UNVERIFIED** pending explicit
+operator authorization; this correction does not authorize a benchmark restart.
