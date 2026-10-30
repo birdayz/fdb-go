@@ -83,7 +83,7 @@ def _argv(manifest, root, mode):
 def _template(plan, manifest, root):
     return ("[Unit]\nDescription=Bounded owned native cleanup watch\nDefaultDependencies=no\nStopWhenUnneeded=no\n\n[Service]\nType=exec\n"
             "Slice=-.slice\nKillMode=control-group\nTimeoutStopSec=5s\nRestart=on-failure\nRestartPreventExitStatus=77\nRestartSec=1s\nRuntimeMaxSec=1s\n"
-            "Environment=" + json.dumps("PATH=" + manifest["path"]) + "\nExecStartPre=" + " ".join(_argv(manifest, root, "bound"))
+            "Environment=" + json.dumps("PATH=" + manifest["path"]) + "\nExecCondition=" + " ".join(_argv(manifest, root, "bound"))
             + "\nExecStart=" + " ".join(_argv(manifest, root, "watch")) + "\n")
 
 
@@ -403,7 +403,7 @@ def main(argv=None):
     if args.mode in ("bound", "watch"):
         p.require(args.seal == manifest["seal"], "OS-managed unit bootstrap seal mismatch")
         if time.time() >= plan["deadline_epoch"]:
-            raise SystemExit(77)  # RestartPreventExitStatus makes expiry permanent.
+            raise SystemExit(77)  # ExecCondition skips startup; MAIN watch uses RestartPreventExitStatus.
     if args.mode == "bound":
         print(json.dumps(bound(args.root), sort_keys=True))
     elif args.mode == "verify":

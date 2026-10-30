@@ -3169,7 +3169,7 @@ regressions so they can be proposed upstream after the PoC.
   separate PGIDs in the same runtime cgroup do not pass. Exact live PID/start/
   boot/argv, manager/unit/dependency identity, kernel-argv bundle seal, fresh
   registered-controller ACK, source/assets and original deadline are checked.
-  Its own ExecStartPre may set only its generated unit's remaining RuntimeMax;
+  Its own ExecCondition may set only its generated unit's remaining RuntimeMax;
   manual restart never renews lifetime. Controller loss/runtime invocation change
   or unknown supervision triggers existing exact owned cleanup without an EXIT
   marker. Active admission failure cannot block deletion; source/runtime faults

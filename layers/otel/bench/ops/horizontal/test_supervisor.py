@@ -282,7 +282,8 @@ class ManagedWatchBundleTests(SupervisorFixture):
             self.assertFalse(path.is_symlink(), path)
             self.assertEqual(path.stat().st_mode & 0o077, 0, path)
         text = (root / result["unit"]).read_text()
-        self.assertIn("ExecStartPre=", text)
+        self.assertIn("ExecCondition=" + " ".join(s._argv(manifest, root, "bound")) + "\n", text)
+        self.assertNotIn("ExecStartPre=", text)
         self.assertIn(" bound --root " + str(root), text)
         self.assertIn(" watch --root " + str(root), text)
         self.assertIn("RuntimeMaxSec=1s\n", text)
@@ -770,8 +771,13 @@ class ManagedWatchSealTests(SupervisorFixture):
         self.assertEqual(self.clock.sleeps, [])
         self.assertFalse((self.watch_root / "heartbeat.json").exists())
 
-    def test_main_bound_and_watch_require_seal_and_expiry_permanently_prevents_restart(self):
+    def test_condition_and_main_expiry_skip_or_prevent_restart_before_execution(self):
         self.live()
+        sealed_plan = (self.watch_root / "plan.json").read_bytes()
+        text = (self.watch_root / self.unit).read_text()
+        condition = next(line.removeprefix("ExecCondition=").split() for line in text.splitlines() if line.startswith("ExecCondition="))
+        self.assertNotIn("ExecStartPre=", text)
+        self.assertEqual(condition[3], "bound")
         with mock.patch.object(s, "bound", side_effect=AssertionError("expired bound cannot execute")), \
              mock.patch.object(s, "watch", side_effect=AssertionError("expired watch cannot execute")), \
              mock.patch.object(s.time, "time", return_value=8200):
@@ -783,13 +789,16 @@ class ManagedWatchSealTests(SupervisorFixture):
                     with self.subTest(mode=mode, seal=seal), self.assertRaisesRegex(ValueError, "bootstrap seal"):
                         s.main(args)
                 with self.subTest(mode=mode), self.assertRaises(SystemExit) as stopped:
-                    s.main([mode, "--root", str(self.watch_root), "--seal", self.manifest["seal"]])
+                    s.main(condition[3:] if mode == "bound" else [mode, "--root", str(self.watch_root), "--seal", self.manifest["seal"]])
                 self.assertEqual(stopped.exception.code, 77)
+        self.assertEqual(self.manager.mutations, [])
+        self.assertEqual((self.watch_root / "plan.json").read_bytes(), sealed_plan)
+        self.assertEqual(self.plan["deadline_epoch"] - self.plan["first_epoch"], 7200)
         self.assertFalse((self.watch_root / "heartbeat.json").exists())
 
 
 class ManagedWatchBoundTests(SupervisorFixture):
-    def test_execstartpre_bounds_restarts_to_remaining_original_deadline_not_fresh_lifetime(self):
+    def test_execcondition_bounds_restarts_to_remaining_original_deadline_not_fresh_lifetime(self):
         self.live()
         bound_argv = [*self.watch_argv[:3], "bound", *self.watch_argv[4:]]
         self.set_command(300, bound_argv)
@@ -814,7 +823,7 @@ class ManagedWatchBoundTests(SupervisorFixture):
             ["/usr/bin/systemctl", "--user", "set-property", "--runtime", self.unit, "RuntimeMaxSec=6995s"]])
         self.assertEqual(json.loads((self.watch_root / "plan.json").read_text())["deadline_epoch"], 8200)
 
-    def test_execstartpre_refuses_other_process_foreign_cgroup_and_expired_lease_before_effect(self):
+    def test_execcondition_refuses_other_process_foreign_cgroup_and_expired_lease_before_effect(self):
         self.live()
         with mock.patch.object(os, "getpid", return_value=200), self.assertRaises(ValueError):
             s.bound(self.watch_root, runner=self.manager, proc_root=self.proc.root, clock=self.clock)
@@ -829,7 +838,7 @@ class ManagedWatchBoundTests(SupervisorFixture):
                 s.bound(self.watch_root, runner=self.manager, proc_root=self.proc.root, clock=self.clock)
         self.assertEqual(self.manager.mutations, [])
 
-    def test_execstartpre_can_bound_own_cleanup_unit_when_runtime_is_inactive(self):
+    def test_execcondition_can_bound_own_cleanup_unit_when_runtime_is_inactive(self):
         self.live()
         self.set_command(300, [*self.watch_argv[:3], "bound", *self.watch_argv[4:]])
         self.manager.units["bruh-web.service"].update(ActiveState="inactive", SubState="dead", MainPID="0")
@@ -849,7 +858,7 @@ class ManagedWatchBoundTests(SupervisorFixture):
         self.assertEqual(receipt["deadline_epoch"], 8200)
         self.assertEqual(receipt["deadline_monotonic_us"], 7101000000)
 
-    def test_execstartpre_manager_failure_cannot_write_a_successful_new_bound(self):
+    def test_execcondition_manager_failure_cannot_write_a_successful_new_bound(self):
         self.live()
         original = (self.watch_root / "bound.json").read_bytes()
         self.set_command(300, [*self.watch_argv[:3], "bound", *self.watch_argv[4:]])
