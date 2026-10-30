@@ -20,6 +20,16 @@ def require(value, reason):
         raise ValueError(reason)
 
 
+def scaling_execution_mode(plan):
+    require(type(plan) is dict and plan.get("schema") == "otel_native_scaling_v1", "typed scaling execution mode required")
+    foreground, managed = "foreground_only" in plan, "managed_watch" in plan
+    require(foreground != managed, "exactly one explicit scaling execution mode required")
+    if foreground:
+        require(plan["foreground_only"] is True, "foreground_only must be exactly boolean true")
+        return "foreground_only"
+    return "managed_watch"
+
+
 def integer(value, minimum=0):
     return type(value) is int and minimum <= value < 10 ** 18
 

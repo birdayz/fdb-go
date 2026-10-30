@@ -45,7 +45,8 @@ def validate_plan(plan, *, check_assets=True):
               ("storage_process_count", "storage_max_outstanding", "storage_memory_profile")}
     common.update(schema="otel_horizontal_v1", topologies=[1, 2, 3], measured_topologies=[3, 2, 1], measured_count=100000)
     p.validate_plan(common, check_assets=check_assets)
-    supervisor.validate_config(plan)
+    if p.scaling_execution_mode(plan) == "managed_watch":
+        supervisor.validate_config(plan)
     return plan
 
 
@@ -525,7 +526,9 @@ class ScalingSession:
 
     def run(self):
         validate_plan(self.plan)
-        p.require(str(self.out) == self.plan["managed_watch"]["output"], "scaling output must match managed watch output")
+        mode = p.scaling_execution_mode(self.plan)
+        if mode == "managed_watch":
+            p.require(str(self.out) == self.plan["managed_watch"]["output"], "scaling output must match managed watch output")
         source = p.verify_source(self.plan)
         self.out.mkdir(mode=0o700, parents=True, exist_ok=False)
         d.write(self.out / "approved-plan.json", self.plan)
@@ -535,11 +538,14 @@ class ScalingSession:
                   "cumulative_rows_upper": self.plan["prior_rows_upper"] + AUTHORIZED_ROWS,
                   "first_epoch": self.plan["first_epoch"], "deadline_epoch": self.plan["deadline_epoch"],
                   "approved_plan_sha256": p.sha(self.out / "approved-plan.json"), "held_roles": sorted(ROLES),
-                  "held_host_count": 6, "boundary": BOUNDARY, "accepted_throughput": False}
+                  "held_host_count": 6, "boundary": BOUNDARY, "accepted_throughput": False,
+                  "execution_mode": "bounded_foreground" if mode == "foreground_only" else mode,
+                  "foreground_only": mode == "foreground_only"}
         try:
             self.receipt_budget()
             d.remaining(self.plan, reserve=2000)
-            supervisor.register(self.plan, self.out)
+            if mode == "managed_watch":
+                supervisor.register(self.plan, self.out)
             self.resources = self.provision.prepare(self.plan, self.provision_out)
             nodes = self.resources["nodes"]
             p.require(set(nodes) == ROLES, "exact six owned scaling nodes")
@@ -660,7 +666,8 @@ def main(argv=None):
             print(json.dumps({"validated": True, "schema": SCHEMA, "roles": sorted(ROLES), "nodes": 6, "stages": STAGES,
                 "authorized_rows": AUTHORIZED_ROWS, "cumulative_rows_upper": plan["prior_rows_upper"] + AUTHORIZED_ROWS,
                 "storage_process_count": 3, "storage_memory_profile": "scaling3ss3g", "primary_metric": "drained_rows_per_second",
-                "provisioned": False, "boundary": BOUNDARY}, sort_keys=True))
+                "provisioned": False, "boundary": BOUNDARY,
+                "execution_mode": "bounded_foreground" if p.scaling_execution_mode(plan) == "foreground_only" else "managed_watch"}, sort_keys=True))
             return
         p.require(args.output, "scaling output required")
         import provision

@@ -6,7 +6,8 @@ armid), teardown(plan, out, resources), run_on_node, copy_to_node, ssh_argv.
 Runners return (returncode, stdout, stderr) and accept argv, timeout=seconds.
 State, generated host keys, inventories and receipts must be outside Git.
 An auxiliary ordinary child guard is acknowledged before any cloud mutation.
-The caller must also arm a separately supervised foreground lifetime guard.
+The caller must also arm a separately supervised foreground lifetime guard,
+unless scaling explicitly selects foreground_only without independent survival.
 Active work stops at first_epoch+6000; cleanup starts by first_epoch+6600,
 with an absolute deadline no later than first_epoch+7200.
 """
@@ -152,6 +153,14 @@ def _storage_memory_profile(plan):
     return value
 
 
+def _scaling_mode(plan):
+    import policy
+    try:
+        return policy.scaling_execution_mode(plan)
+    except ValueError as exc:
+        raise ProvisionError(str(exc)) from exc
+
+
 def _managed_watch_config(plan):
     import supervisor
     try:
@@ -193,7 +202,8 @@ def _validate_scaling(plan):
     if any(key in plan for key in ('topologies', 'measured_topologies', 'prerequisite_topologies',
                                   'selected_topologies', 'probe_count', 'probe_seconds', 'cases')):
         raise ProvisionError('scaling plans cannot declare comparative or diagnostic case fields')
-    _managed_watch_config(plan)
+    if _scaling_mode(plan) == 'managed_watch':
+        _managed_watch_config(plan)
 
 
 def _names(plan):
@@ -347,7 +357,7 @@ def _check_window(plan, state, clock, guard=None):
             or (state / 'cleanup-started.json').exists()
             or (guard is not None and guard.poll() is not None)):
         raise ProvisionError('cleanup has started, deadline reached, or lifetime guard exited')
-    if plan.get('schema') == 'otel_native_scaling_v1':
+    if plan.get('schema') == 'otel_native_scaling_v1' and _scaling_mode(plan) == 'managed_watch':
         _admit_managed_watch(plan, state.parent, clock)
 
 
@@ -810,10 +820,11 @@ def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.s
     Does not start FDB, run a workload, or make a health/readiness claim. A failed
     partial preparation immediately invokes cleanup. The auxiliary guard is not
     canceled before exact baseline equality; a separately supervised foreground
-    lifetime guard must be armed by the caller before launching the controller.
+    lifetime guard must be armed by the caller before launching the controller,
+    except explicitly approved foreground_only scaling with no survival claim.
     """
     validate_plan(plan, out, clock)
-    if plan['schema'] == 'otel_native_scaling_v1':
+    if plan['schema'] == 'otel_native_scaling_v1' and _scaling_mode(plan) == 'managed_watch':
         _admit_managed_watch(plan, out, clock)
     roles = _roles(plan)
     state = _state(out)

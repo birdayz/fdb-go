@@ -441,7 +441,21 @@ INCONCLUSIVE. No dead PID, truncated evidence or diagnostic capture restores hea
 or authorizes reuse. The candidate remains **runtime UNVERIFIED** until a separate
 approved lease actually exercises these stages; prior failures remain unchanged.
 
-### Scaling cleanup must outlive the runtime unit
+### Explicit bounded foreground perf run
+
+For the directly approved foreground perf run, set `"foreground_only": true` and
+omit `managed_watch`. Exactly one execution mode is required: missing/both modes,
+false, integers and floats are rejected. Use the existing `scaling.py run --plan
+PLAN --output OUT --execute-approved` CLI directly in the foreground. No external
+watch, service, helper bundle, registration or managed admission is required.
+The existing internal auxiliary guard, bounded prepare, original2h deadline,
+source/health/ownership/disk/transaction checks and final cleanup remain unchanged.
+Results report `execution_mode: "bounded_foreground"` and `foreground_only:true`;
+this mode makes **no independent runtime-survival claim**. Six hosts are still
+prepared once and reused through the preregistered1/2/3 tiers; geometry and the
+2.85M authorized-row allocation are unchanged.
+
+### Optional managed cleanup mode
 
 The first six-host preparation attempt was interrupted by a confirmed
 `bruh-web.service` restart at07:09:51.371–07:09:52.320Z, immediately after client3
@@ -450,7 +464,7 @@ readiness. Controller and nominally independent watchdog shared that service's
 runtime unit is not independent. Restart initiator/reason and individual child
 signals remain unknown; the older storage4510/PID12998 cause remains UNKNOWN.
 
-Scaling plans now additionally require exactly:
+The optional managed-watch mode instead requires exactly:
 
 ```json
 "managed_watch": {

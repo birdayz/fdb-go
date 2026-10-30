@@ -455,6 +455,34 @@ class ProvisionTest(unittest.TestCase):
         self.assertFalse(self.cloud.calls)
         self.assertFalse(self.out.exists())
 
+    def test_foreground_scaling_prepares_and_cleans_without_managed_register_or_admission(self):
+        self.scaling_plan(managed_admitted=False)
+        del self.plan['managed_watch']; self.plan['foreground_only'] = True
+        import supervisor
+        with mock.patch.object(supervisor, 'validate_config', side_effect=AssertionError('foreground consulted managed config')), \
+             mock.patch.object(supervisor, 'register', side_effect=AssertionError('foreground registered managed watch')) as register, \
+             mock.patch.object(supervisor, 'admit', side_effect=AssertionError('foreground requested managed admission')) as admit:
+            resources = self.prepare()
+            self.assertIs(resources['prepared'], True)
+            self.assertEqual(len(resources['nodes']), 6)
+            layout = p.setup_cluster(self.plan, self.out, resources['nodes'], 1, 'scaling-1', runner=self.cloud)
+            self.assertEqual(layout['storage_process_count'], 3)
+            cleanup = p.teardown(self.plan, self.out, resources, runner=self.cloud, sleep=lambda seconds: None)
+            self.assertTrue(cleanup['passed'])
+            register.assert_not_called(); admit.assert_not_called()
+
+    def test_foreground_scaling_requires_exactly_one_explicit_typed_mode_before_effects(self):
+        self.scaling_plan(managed_admitted=False)
+        base = copy.deepcopy(self.plan); del base['managed_watch']
+        candidates = [base, dict(self.plan, foreground_only=True), dict(self.plan, foreground_only=False)]
+        candidates += [dict(base, foreground_only=value) for value in (False, 1, 0, 1.0, 0.0, None, 'true')]
+        for value in candidates:
+            self.plan.clear(); self.plan.update(value)
+            with self.subTest(plan=value), self.assertRaises(p.ProvisionError):
+                self.prepare()
+        self.assertFalse(self.cloud.calls)
+        self.assertFalse(self.cloud.create_counts)
+
     def test_scaling_managed_watch_configuration_is_required_and_exact_without_admission_effects(self):
         self.scaling_plan(managed_admitted=False)
         import supervisor
