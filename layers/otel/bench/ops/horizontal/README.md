@@ -330,3 +330,34 @@ Output is used directly: prepare/teardown-out is `/private/campaign/run/provisio
 state is `/private/campaign/run/provision/provision`, and case receipts are
 `/private/campaign/run/cases/<profile>`. There is no extra automatic `run` level.
 Standalone `diagnostic.py` retains its ordinary prepare/final-teardown lifecycle.
+
+### Fatal-process forensic evidence
+
+Before producer release, each sampler seals its exact live PID/start/full argv,
+boot identity, owned unit InvocationID/cgroup, and each target trace filename
+actually open by that PID. File seals include device/inode, minimum size and a
+bounded prefix hash; SSIDs are bound from the preceding strict status. The ready
+receipt includes the immutable identity-file SHA; the controller retains
+`<role>-native-identity.json` and verifies that SHA before release. Frames append
+`host_page_size` from actual `SC_PAGESIZE`; RSS pages must not assume4KiB.
+
+`native-traces.json` now also holds exact-unit exit/failure properties and bounded
+journal JSON. Only the sealed owned unit/arm and original sealed time range may
+be queried; journal ownership/invocation/time and trace Machine/LogGroup/SSID
+checks remain fail-closed. No core, dump, profiler, shell-embedded trace command,
+restart or health-recovery action is added. All unit/property/journal/prefix/raw
+trace bytes, including startup seals, count against the existing shared16MiB
+native-evidence allowance; the session-wide1GiB receipt ceiling is unchanged.
+
+If a native PID has died, read-only collection can retain **only previously
+sealed filenames**, never discover post-death siblings by address/prefix. Device,
+inode, prefix, path and grant bindings must still match. New rotations require
+another positive live identity/open-FD check. Reused PIDs, changed commands,
+foreign paths, symlinks and SSID mismatches refuse raw tails. Missing live identity
+is explicit `DEAD_OR_MISSING`, `forensic_only:true`, `coverage:INCONCLUSIVE`;
+collected bytes do not restore a health PASS or authorize `ARM_FAILURE` reuse.
+Unknown/truncated unit or journal facts remain unknown, not zero/success. Exit20
+can support native out-of-memory termination, but does not uniquely identify its
+RSS monitor; SIGKILL alone is not kernel-OOM proof. Old failed results and unknown
+causes remain unchanged. This postmortem path is offline-tested, runtime-unverified
+until a separately authorized bounded capture exercises it.

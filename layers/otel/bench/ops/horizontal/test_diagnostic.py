@@ -69,7 +69,7 @@ def frame(grant, sequence):
     return dict(schema="otel_native_frame_v1", node_id=grant["node_id"], role=grant["role"], run=grant["run"],
                 token=grant["token"], producer_grant_sha256=grant["producer_grant_sha256"], sequence=sequence,
                 phase="baseline" if sequence < 2 else "load", epoch=1000+sequence,
-                monotonic_ns=(sequence+1)*1000000000, boot_id="11111111-2222-3333-4444-555555555555", clock_ticks=100,
+                monotonic_ns=(sequence+1)*1000000000, boot_id="11111111-2222-3333-4444-555555555555", clock_ticks=100, host_page_size=4096,
                 cgroup=dict(path="/sys/fs/cgroup/horizontal-"+kind+".slice",
                     limits={"cpu.max": "400000 100000", "cpuset.cpus.effective": "0-3", "memory.max": "17179869184",
                             "memory.swap.max": "0", "memory.current": "1000", "memory.events": "oom 0\noom_kill 0"},
@@ -249,12 +249,17 @@ class DiagnosticTest(unittest.TestCase):
     def test_sampler_grants_bind_exact_role_population_paths_hashes_and_lifetime(self):
         for role in ("node1", "client1"):
             value = sampler_grant(role)
+            value.update(storage_ids={"10.93.0.11:4510": "a"*16} if role == "node1" else {},
+                         forensic_budget=n.TRACE_BUDGET if role == "node1" else 0)
             self.assertIs(n.sampler_grant(value), value)
             self.assertEqual(len(value["processes"]), 6 if role == "node1" else 0)
         changes = [("node_id", True), ("node_id", 0), ("role", "node2"), ("role", "client2"),
                    ("token", "bad"), ("producer_grant_sha256", None), ("binary_sha256", "bad"),
                    ("fdbserver_sha256", "bad"), ("prefix", "../foreign"),
                    ("deadline_epoch", 8201), ("run", "other-run"),
+                   ("forensic_budget", True), ("forensic_budget", -1), ("forensic_budget", n.TRACE_BUDGET+1),
+                   ("storage_ids", {}), ("storage_ids", {"10.93.0.11:4510": "not-an-ssid"}),
+                   ("storage_ids", {"10.93.0.11:4511": "a"*16}),
                    ("work", "/srv/otel-horizontal/native-test/arms/foreign"),
                    ("arm_root", "/srv/otel-horizontal/native-test/diagnostics/foreign"),
                    ("binary", "/srv/otel-horizontal/other-test/bin/otel-demo")]
@@ -337,7 +342,9 @@ class DiagnosticTest(unittest.TestCase):
         for role in n.ROLES:
             for key, bad in (("schema", "foreign"), ("node_id", 999), ("role", "foreign"), ("token", "f"*64),
                              ("run", "prof20k9999"), ("producer_grant_sha256", "e"*64),
-                             ("boot_id", "changed-boot"), ("sequence", 99), ("monotonic_ns", 1), ("epoch", float("nan"))):
+                             ("boot_id", "changed-boot"), ("host_page_size", None), ("host_page_size", True),
+                             ("host_page_size", 0), ("host_page_size", 16384),
+                             ("sequence", 99), ("monotonic_ns", 1), ("epoch", float("nan"))):
                 changed = copy.deepcopy(frames); changed[role][5][key] = bad
                 with self.subTest(role=role, key=key):
                     self.assert_inconclusive(n.profile(changed, grants, receipt, activity, True))
@@ -588,8 +595,10 @@ class DiagnosticTest(unittest.TestCase):
             return values[path.name]
         with mock.patch.object(n, 'command', return_value='/horizontal-fdb.slice'), \
              mock.patch.object(n, 'process_snapshot', side_effect=lambda pid: copy.deepcopy(by_pid[pid])), \
-             mock.patch.object(n, 'read_small', side_effect=read), mock.patch.object(n.os, 'sysconf', return_value=100):
+             mock.patch.object(n, 'read_small', side_effect=read), mock.patch.object(n.os, 'sysconf', side_effect=lambda key: {'SC_CLK_TCK': 100, 'SC_PAGESIZE': 16384}[key]):
             result = n.sample_frame(grant, bindings, dict(filesystem_device='8:1', devices=['8:1']), 0, 'baseline')
+            self.assertEqual(result['host_page_size'], 16384)
+            self.assertEqual(result['clock_ticks'], 100)
             self.assertEqual(result['cgroup']['cpu']['nr_throttled'], 100)
             self.assertEqual(result['device']['counters']['8:1']['flush_ios'], 100)
             self.assertEqual(n.frame_errors(result, grant), [])
@@ -658,6 +667,7 @@ class DiagnosticTest(unittest.TestCase):
             with mock.patch.object(n, 'sampler_grant', return_value=grant), mock.patch.object(d, 'identity'), \
                  mock.patch.object(n, 'no_symlinks', return_value=work), \
                  mock.patch.object(n, 'native_bindings', return_value={}), \
+                 mock.patch.object(n, 'seal_native_identity', return_value=dict(sealed_epoch=1001, boot_id='boot', unit_seals={}, trace_files=[], seal_bytes_read=0)), \
                  mock.patch.object(n, 'device_identity', return_value=dict(filesystem_device='8:1', devices=['8:1'])), \
                  mock.patch.object(n, 'sample_frame', return_value=frame(grant, 0)), \
                  mock.patch.object(n, 'FRAME_BUDGET', 128), mock.patch.object(n.time, 'time', return_value=1001), \
