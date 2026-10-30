@@ -37,6 +37,10 @@ def validate_plan(plan, *, check_assets=True):
     p.require(type(plan.get("storage_process_count", 1)) is int
               and (plan.get("storage_process_count", 1), plan.get("storage_max_outstanding", 64)) in ((1, 64), (1, 128), (2, 64)),
               "diagnostic storage process/I/O profile must be 1/64, 1/128 or 2/64")
+    memory = plan.get("storage_memory_profile", "baseline")
+    p.require(type(memory) is str and memory in ("baseline", "capacity16g")
+              and (memory == "baseline" or plan.get("storage_process_count", 1) == 2),
+              "diagnostic capacity16g memory profile requires two storage processes")
     p.require(not set(plan) & {"topologies", "selected_topologies", "prerequisite_topologies",
                               "measured_topologies", "measured_count"}, "diagnostic is not a comparative topology study")
     # Reuse the common hardware, source, storage, asset and absolute-time guards.
@@ -45,6 +49,7 @@ def validate_plan(plan, *, check_assets=True):
               "measured_topologies": [3, 2, 1], "measured_count": 100000}
     common.pop("storage_max_outstanding", None)
     common.pop("storage_process_count", None)
+    common.pop("storage_memory_profile", None)
     p.validate_plan(common, check_assets=check_assets)
     return plan
 
@@ -482,7 +487,8 @@ def profile(frames, grants, producer_receipt, activity, release_bound):
             for address in addresses:
                 values = [x[address] for x in samples]
                 durable = [x.get("durable_bytes") for x in values]
-                positive = positive and active(values) and all(p.integer(x) for x in durable) and all(b >= a for a, b in zip(durable, durable[1:]))
+                positive = (positive and active(values) and all(p.integer(x) for x in durable)
+                            and all(b >= a for a, b in zip(durable, durable[1:])) and durable[-1] > durable[0])
             positive = positive and all(len({x["storage_id"] for x in sample.values()}) == 2 for sample in samples)
         if not positive:
             reasons.append("both diagnostic storage processes were not exercised with stable independent counters")
@@ -644,27 +650,43 @@ def produce(path, verify=False):
 
 
 class Diagnostic(d.Campaign):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, arm_id="diagnostic", run_base=9800, **kwargs):
         super().__init__(*args, **kwargs)
+        p.require(arm_id in ("diagnostic", "session-capacity16g", "session-baseline")
+                  and type(run_base) is int and run_base in (9800, 9802), "fixed diagnostic arm/run identity")
+        self.arm_id, self.run_base = arm_id, run_base
+        self.last_wave_result = None
         self.trace_remaining = TRACE_BUDGET
 
     def install_helpers(self):
         super().install_helpers()
         for role, node in self.nodes.items():
-            rc, _, _ = self.provision.copy_to_node(self.plan, self.out / "provision", node, HERE / "diagnostic.py",
+            rc, _, _ = self.provision.copy_to_node(self.plan, self.provision_out, node, HERE / "diagnostic.py",
                                                    self.remote_harness + "/diagnostic.py")
             p.require(rc == 0, "copy diagnostic helper failed")
             result = self.command(node, ["sha256sum", self.remote_harness + "/diagnostic.py"])
             p.require(result.split()[0] == p.sha(HERE / "diagnostic.py"), "remote diagnostic helper changed")
-            unit = "horizontal-" + ("fdb" if role == "node1" else "client") + ".slice"
-            accounting = self.command(node, ["systemctl", "show", unit, "--property=IOAccounting", "--value"]).strip()
-            p.require(accounting == "yes", "diagnostic role slice I/O accounting is not enabled")
-            group = self.command(node, ["systemctl", "show", unit, "--property=ControlGroup", "--value"]).strip()
-            p.require(group == "/horizontal.slice/" + unit, "diagnostic role slice control group changed")
-            path = "/sys/fs/cgroup" + group + "/io.stat"
-            raw = self.command(node, ["cat", path])
-            d.write(self.out / (role + "-io-accounting.json"), {"node_id": node["id"], "role": role,
-                    "unit": unit, "IOAccounting": accounting, "io_stat_path": path, "io_stat_raw": raw})
+            self.verify_io_accounting(role, node)
+
+    def verify_io_accounting(self, role, node):
+        unit = "horizontal-" + ("fdb" if role == "node1" else "client") + ".slice"
+        accounting = self.command(node, ["systemctl", "show", unit, "--property=IOAccounting", "--value"]).strip()
+        p.require(accounting == "yes", "diagnostic role slice I/O accounting is not enabled")
+        group = self.command(node, ["systemctl", "show", unit, "--property=ControlGroup", "--value"]).strip()
+        p.require(group == "/horizontal.slice/" + unit, "diagnostic role slice control group changed")
+        path = "/sys/fs/cgroup" + group + "/io.stat"
+        raw = self.command(node, ["cat", path])
+        d.write(self.out / (role + "-io-accounting.json"), {"node_id": node["id"], "role": role,
+                "unit": unit, "IOAccounting": accounting, "io_stat_path": path, "io_stat_raw": raw})
+
+    def verify_helpers(self):
+        self.remote_root = "/srv/otel-horizontal/" + self.plan["campaign"]
+        self.remote_harness = self.remote_root + "/harness"
+        for role, node in self.nodes.items():
+            for name in ("driver.py", "policy.py", "diagnostic.py"):
+                value = self.command(node, ["sha256sum", self.remote_harness + "/" + name])
+                p.require(value.split()[0] == p.sha(HERE / name), "session remote helper changed")
+            self.verify_io_accounting(role, node)
 
     def diag(self, node, mode, path, *extra):
         return ["python3", "-B", self.remote_harness + "/diagnostic.py", mode,
@@ -672,7 +694,7 @@ class Diagnostic(d.Campaign):
 
     def spawn(self, node, args, directory, name):
         stdout, stderr = open(directory / (name + ".stdout"), "xb"), open(directory / (name + ".stderr"), "xb")
-        argv = self.provision.ssh_argv(self.plan, self.out / "provision", node, args)
+        argv = self.provision.ssh_argv(self.plan, self.provision_out, node, args)
         try:
             process = subprocess.Popen(argv, stdout=stdout, stderr=stderr)
         except BaseException:
@@ -680,14 +702,14 @@ class Diagnostic(d.Campaign):
         return process, stdout, stderr
 
     def copy(self, node, local, remote):
-        rc, _, _ = self.provision.copy_to_node(self.plan, self.out / "provision", node, local, remote)
+        rc, _, _ = self.provision.copy_to_node(self.plan, self.provision_out, node, local, remote)
         p.require(rc == 0, "diagnostic owned-file copy failed")
 
     def wait_file(self, node, path, cap=60, job=None):
         until = time.monotonic() + d.remaining(self.plan, cap)
         while time.monotonic() < until:
             p.require(job is None or job[0].poll() is None, "diagnostic helper exited before its ready receipt")
-            rc, _, _ = self.provision.run_on_node(self.plan, self.out / "provision", node,
+            rc, _, _ = self.provision.run_on_node(self.plan, self.provision_out, node,
                                                  ["test", "-f", str(path)], timeout=d.remaining(self.plan, 5))
             if rc == 0:
                 return self.read_remote(node, path)
@@ -699,7 +721,7 @@ class Diagnostic(d.Campaign):
         directory = self.out / name; directory.mkdir(mode=0o700)
         native_before = self.stable(layout)
         client = self.nodes["client1"]
-        run = "prof20k9800" if count == 100000 else "prof20k9801"
+        run = "prof20k%04d" % (self.run_base + (0 if count == 100000 else 1))
         work = self.remote_root + "/producers/" + run
         token = hashlib.sha256((self.plan["campaign"] + run).encode()).hexdigest()
         grant = {**{k: self.plan[k] for k in ("campaign", "first_epoch", "deadline_epoch", "binary_sha256", "source_revision",
@@ -776,6 +798,7 @@ class Diagnostic(d.Campaign):
             d.write(directory / "release.json", {"node_id": client["id"], "run": run, "token": token,
                     "grant_sha256": p.sha(local), "controller_before_ns": release_before, "controller_after_ns": self.clock()})
             receipt = self.wait_file(client, work + "/producer-started.json", 10)
+            result["observation_phase"] = "load"
             limit = time.monotonic() + d.remaining(self.plan, grant["diagnostic_seconds"])
             while producer_job[0].poll() is None:
                 p.require(time.monotonic() < limit, "diagnostic ingest observation cap")
@@ -790,7 +813,9 @@ class Diagnostic(d.Campaign):
             d.write(directory / "ingest.json", evidence); result["ingest_valid"] = True
             for role, sample_grant in grants.items():
                 self.command(self.nodes[role], self.diag(self.nodes[role], "_stop", sample_grant["work"] + "/plan.json"))
+            result["observation_phase"] = "drain"
             self.stable(layout, 300)
+            result["observation_phase"] = "verification"
             verification_job = self.spawn(client, self.diag(client, "_verify", work + "/plan.json"), directory, "verification")
             until = time.monotonic() + d.remaining(self.plan, 245)
             while verification_job[0].poll() is None:
@@ -811,7 +836,8 @@ class Diagnostic(d.Campaign):
                     try:
                         self.command(client, self.remote(client, "_abort", work + "/plan.json"), 5)
                         job[0].wait(timeout=8)
-                    except (ValueError, OSError, subprocess.SubprocessError):
+                    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+                        result.setdefault("collection_errors", []).append("producer abort/reap: " + str(exc))
                         job[0].terminate()
                         try: job[0].wait(timeout=3)
                         except subprocess.TimeoutExpired: job[0].kill(); job[0].wait(timeout=3)
@@ -855,10 +881,84 @@ class Diagnostic(d.Campaign):
             result["native_activity"] = activity
             result["profile"] = profile(frames, grants, receipt, activity, release_bound)
             d.write(directory / "frames.json", frames)
+            self.last_wave_result = result
             d.write(directory / "result.json", result)
         if error:
             raise error
         return result
+
+    def initial_result(self):
+        return {"schema": "otel_native_diagnostic_result_v1", "diagnostic_only": True,
+                "accepted_throughput": False, "authorized_rows": 1100000, "producers": 1,
+                "storage_max_outstanding": self.plan.get("storage_max_outstanding", 64),
+                "storage_process_count": self.plan.get("storage_process_count", 1),
+                "storage_memory_profile": self.plan.get("storage_memory_profile", "baseline"),
+                "approved_plan_sha256": p.sha(self.out / "approved-plan.json"),
+                "boundary": "one FDB host and one producer; sampler overhead included in fixed slices; not comparable to two-producer throughput"}
+
+    def _run_arm(self, result, *, helpers_ready=False):
+        p.require(set(self.nodes) == ROLES, "diagnostic exact two owned nodes")
+        if helpers_ready:
+            self.verify_helpers()
+        else:
+            self.install_helpers()
+        self.quiet()
+        d.remaining(self.plan, reserve=2000)
+        layout = self.provision.setup_cluster(self.plan, self.provision_out, self.nodes, 1, self.arm_id)
+        self.layouts.append(layout)
+        observations = self.host_samples()
+        self.pid_baseline = {"node1": observations["node1"]["fdb_pids"]}
+        self.stable(layout, startup=True)
+        gate = self.wave(layout, 100000, "prerequisite")
+        p.require(type(gate) is dict and type(gate.get("count")) is int and gate["count"] == 100000
+                  and type(gate.get("producers")) is int and gate["producers"] == 1
+                  and all(gate.get(k) is True for k in ("healthy", "ingest_valid", "census_pass", "oracle_pass")),
+                  "one-producer 100k health/census/oracle gate required before diagnostic probe")
+        result["prerequisite"] = gate
+        result["probe"] = self.wave(layout, 1000000, "probe")
+
+    def run_existing(self, resources, *, helpers_ready=False):
+        """Run one fresh arm on the caller's lease; never prepare/delete hosts."""
+        validate_plan(self.plan)
+        source = p.verify_source(self.plan)
+        self.out.mkdir(mode=0o700, parents=True, exist_ok=False)
+        d.write(self.out / "approved-plan.json", self.plan)
+        d.write(self.out / "source-before.json", source)
+        self.resources, self.nodes = resources, resources["nodes"]
+        result = self.initial_result()
+        try:
+            self._run_arm(result, helpers_ready=helpers_ready)
+        except BaseException as error:
+            result["error"] = str(error)
+            raise
+        finally:
+            try:
+                d.write(self.out / "diagnostic-result.json", result)
+            finally:
+                d.write(self.out / "source-after.json", p.verify_source(self.plan))
+        return result
+
+    def scope_bindings(self):
+        scopes = []
+        for offset, phase in enumerate(("prerequisite", "probe")):
+            path = self.out / phase / "producer-plan.json"
+            if not path.exists():
+                continue
+            grant = producer_grant(d.read(path))
+            p.require(grant["run"] == "prof20k%04d" % (self.run_base + offset)
+                      and grant["cluster_file"] == self.layouts[-1]["remote_cluster_file"], "session scope grant/arm binding")
+            result_path = self.out / phase / "result.json"
+            receipt = d.read(result_path).get("producer_process_receipt") if result_path.exists() else None
+            for mode in ("ingest", "audit", "query"):
+                argv = d.app_argv(grant, mode)
+                argv[argv.index("--timeout") + 1] = str(grant["diagnostic_seconds"] if mode == "ingest" else 120) + "s"
+                unit = "otel-native-" + grant["run"] + "-" + mode + ".scope"
+                value = {"node": "client1", "unit": unit, "args": argv,
+                         "cgroup": "/horizontal.slice/horizontal-client.slice/" + unit}
+                if mode == "ingest" and type(receipt) is dict and receipt.get("started") is True:
+                    value.update(pid=receipt["pid"], starttime_ticks=receipt["starttime_ticks"])
+                scopes.append(value)
+        return scopes
 
     def run(self):
         validate_plan(self.plan)
@@ -866,30 +966,11 @@ class Diagnostic(d.Campaign):
         self.out.mkdir(mode=0o700, parents=True, exist_ok=False)
         d.write(self.out / "approved-plan.json", self.plan)
         d.write(self.out / "source-before.json", source)
-        result = {"schema": "otel_native_diagnostic_result_v1", "diagnostic_only": True,
-                  "accepted_throughput": False, "authorized_rows": 1100000, "producers": 1,
-                  "storage_max_outstanding": self.plan.get("storage_max_outstanding", 64),
-                  "storage_process_count": self.plan.get("storage_process_count", 1),
-                  "approved_plan_sha256": p.sha(self.out / "approved-plan.json"),
-                  "boundary": "one FDB host and one producer; sampler overhead included in fixed slices; not comparable to two-producer throughput"}
+        result = self.initial_result()
         try:
-            self.resources = self.provision.prepare(self.plan, self.out / "provision")
+            self.resources = self.provision.prepare(self.plan, self.provision_out)
             self.nodes = self.resources["nodes"]
-            p.require(set(self.nodes) == ROLES, "diagnostic exact two owned nodes")
-            self.install_helpers(); self.quiet()
-            d.remaining(self.plan, reserve=2000)
-            layout = self.provision.setup_cluster(self.plan, self.out / "provision", self.nodes, 1, "diagnostic")
-            self.layouts.append(layout)
-            observations = self.host_samples()
-            self.pid_baseline = {"node1": observations["node1"]["fdb_pids"]}
-            self.stable(layout, startup=True)
-            gate = self.wave(layout, 100000, "prerequisite")
-            p.require(type(gate) is dict and type(gate.get("count")) is int and gate["count"] == 100000
-                      and type(gate.get("producers")) is int and gate["producers"] == 1
-                      and all(gate.get(k) is True for k in ("healthy", "ingest_valid", "census_pass", "oracle_pass")),
-                      "one-producer 100k health/census/oracle gate required before diagnostic probe")
-            result["prerequisite"] = gate
-            result["probe"] = self.wave(layout, 1000000, "probe")
+            self._run_arm(result)
         except BaseException as exc:
             result["error"] = str(exc)
             raise
@@ -897,7 +978,7 @@ class Diagnostic(d.Campaign):
             try:
                 d.write(self.out / "diagnostic-result.json", result)
                 if self.resources is not None:
-                    cleanup = self.provision.teardown(self.plan, self.out / "provision", self.resources)
+                    cleanup = self.provision.teardown(self.plan, self.provision_out, self.resources)
                     d.write(self.out / "cleanup.json", cleanup)
                     p.require(cleanup.get("passed") is True, "diagnostic exact ten-kind baseline cleanup did not pass")
             finally:

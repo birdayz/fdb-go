@@ -3098,3 +3098,16 @@ regressions so they can be proposed upstream after the PoC.
   The candidate is offline-tested, **runtime UNVERIFIED**. The 16:10:38Z window
   explicitly forgoes this launch: admission reserves/deadlines were not reset or
   relaxed to squeeze in another paid attempt.
+  The renewed approval now has an offline-tested bounded two-host Session
+  candidate: provision once, preregister capacity16g (two SS4GiB/2GiB cache each)
+  then baseline (two SS2GiB/1GiB each), both MAX_OUTSTANDING64. Memory/cache is
+  the only case variable; the independent storage queue/health limits stay fixed.
+  Every case has a fresh arm/datadir and its own full100k gate/1M120s probe;
+  exact owned-unit/scope quiescence and quiet admission separate cases without
+  deleting VMs. Only canonical receipt-bound batch-probe/storage-queue failures
+  with freshly passing fatal guards may end an arm rather than the Session.
+  Unknown/host/source/resource/identity/deadline faults still force cleanup.
+  Shared source/ownership lease, host history,16MiB traces/1GiB receipts and
+  original2h clocks never reset. The Session candidate remains **runtime
+  UNVERIFIED** until new sealed inputs/independent watchdog and explicit launch;
+  two cases add at most2.2M rows (4.8M prior upper gives7M cumulative, not100M).

@@ -149,6 +149,17 @@ class DiagnosticTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'storage process/I/O profile'):
             n.validate_plan(candidate, check_assets=False)
 
+    def test_capacity_memory_profile_requires_two_storage_processes_without_other_guard_changes(self):
+        for profile in ('baseline', 'capacity16g'):
+            candidate = plan(); candidate.update(storage_process_count=2, storage_memory_profile=profile)
+            self.assertIs(n.validate_plan(candidate, check_assets=False), candidate)
+        for value in ('capacity16g', 'other', None, True, {}, []):
+            candidate = plan(); candidate['storage_memory_profile'] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'memory profile'):
+                n.validate_plan(candidate, check_assets=False)
+        candidate = plan(); candidate['storage_memory_profile'] = 'baseline'
+        self.assertIs(n.validate_plan(candidate, check_assets=False), candidate)
+
     def test_two_storage_profile_requires_seven_native_processes_and_both_ss_ids_exercised(self):
         frames, grants, receipt, activity = profile_fixture(2)
         for role in n.ROLES:
@@ -156,7 +167,7 @@ class DiagnosticTest(unittest.TestCase):
         self.assertEqual(len(grants['node1']['processes']), 7)
         self.assertEqual(n.profile(frames, grants, receipt, activity, True)['verdict'], 'CAPTURED')
         address = '10.93.0.11:4511'
-        for failure in ('idle', 'missing', 'reset', 'durable-reset', 'unknown', 'duplicate-id', 'changed-id'):
+        for failure in ('idle', 'idle-durable', 'missing', 'reset', 'durable-reset', 'unknown', 'duplicate-id', 'changed-id'):
             changed = copy.deepcopy(activity)
             if failure == 'missing':
                 del changed[-1]['storage_processes'][address]
@@ -170,6 +181,7 @@ class DiagnosticTest(unittest.TestCase):
                 for sample in changed:
                     value = sample['storage_processes'][address]
                     if failure == 'idle': value['input_bytes'] = 10
+                    elif failure == 'idle-durable': value['durable_bytes'] = 9
                     elif failure == 'unknown': value['durable_bytes'] = None
                     elif failure == 'duplicate-id': value['storage_id'] = 'storage-4510'
             with self.subTest(failure=failure):
@@ -737,6 +749,36 @@ class DiagnosticTest(unittest.TestCase):
                 self.assertEqual(d.read(Path(tmp)/'campaign'/'diagnostic-result.json')['error'], 'strict health failure')
                 if failure == 'false':
                     self.assertFalse(d.read(Path(tmp)/'campaign'/'cleanup.json')['passed'])
+
+    def test_session_scope_bindings_use_unique_runs_exact_owned_app_argv_and_historical_pid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = n.Diagnostic(plan(), tmp, mock.Mock(), arm_id='session-baseline', run_base=9802)
+            root = '/srv/otel-horizontal/native-test'
+            cluster = root+'/arms/session-baseline/fdb.cluster'
+            campaign.layouts = [dict(remote_cluster_file=cluster)]
+            for offset, phase in enumerate(('prerequisite', 'probe')):
+                run = 'prof20k'+str(9802+offset)
+                grant = {**{k: campaign.plan[k] for k in ('campaign', 'first_epoch', 'deadline_epoch', 'binary_sha256',
+                         'source_revision', 'batch', 'workers', 'gomaxprocs', 'storage_options')},
+                         'schema': 'otel_horizontal_producer_v1', 'node_id': 102, 'run': run,
+                         'count': 100000 if offset == 0 else 1000000, 'independent_store': True,
+                         'diagnostic_only': True, 'diagnostic_seconds': 300 if offset == 0 else 120,
+                         'token': 'a'*64, 'binary': root+'/bin/otel-demo', 'cluster_file': cluster,
+                         'work': root+'/producers/'+run}
+                d.write(Path(tmp)/phase/'producer-plan.json', grant)
+                d.write(Path(tmp)/phase/'result.json', dict(producer_process_receipt=dict(started=True, pid=900+offset, starttime_ticks=9000+offset)))
+            scopes = campaign.scope_bindings()
+            self.assertEqual(len(scopes), 6)
+            self.assertEqual({x['unit'] for x in scopes}, {'otel-native-prof20k'+str(run)+'-'+mode+'.scope'
+                             for run in (9802, 9803) for mode in ('ingest', 'audit', 'query')})
+            for value in scopes:
+                self.assertEqual(value['node'], 'client1')
+                self.assertEqual(value['cgroup'], '/horizontal.slice/horizontal-client.slice/'+value['unit'])
+                self.assertEqual(value['args'][value['args'].index('--cluster-file')+1], cluster)
+                mode = value['args'][value['args'].index('--mode')+1]
+                self.assertEqual('pid' in value, mode == 'ingest')
+            self.assertEqual(scopes[0]['args'][scopes[0]['args'].index('--timeout')+1], '300s')
+            self.assertEqual(scopes[3]['args'][scopes[3]['args'].index('--timeout')+1], '120s')
 
     def test_remote_cli_readonly_validation_does_not_import_provider_or_start_controller(self):
         with tempfile.TemporaryDirectory() as tmp:

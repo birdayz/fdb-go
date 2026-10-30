@@ -5,6 +5,8 @@ _HORIZONTAL_TEST_DATA = [
     "driver.py",
     "policy.py",
     "provision.py",
+    "session.py",
+    "test_session.py",
     "test_diagnostic.py",
     "test_horizontal.py",
     "test_provision.py",
@@ -32,5 +34,12 @@ sh_test(
     name = "native_diagnostic_test",
     srcs = ["test.sh"],
     args = ["test_diagnostic"],
+    data = _HORIZONTAL_TEST_DATA,
+)
+
+sh_test(
+    name = "native_session_test",
+    srcs = ["test.sh"],
+    args = ["test_session"],
     data = _HORIZONTAL_TEST_DATA,
 )

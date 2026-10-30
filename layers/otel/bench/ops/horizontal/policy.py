@@ -52,7 +52,7 @@ def storage(options):
 def validate_plan(plan, *, check_assets=True):
     require(type(plan) is dict and plan.get("schema") == "otel_horizontal_v1" and plan.get("approved") is True,
             "explicit horizontal approval required")
-    require(not {"storage_max_outstanding", "storage_process_count"} & set(plan), "storage I/O override is diagnostic-only")
+    require(not {"storage_max_outstanding", "storage_process_count", "storage_memory_profile"} & set(plan), "storage I/O override is diagnostic-only")
     for key in ("campaign", "prefix"):
         require(type(plan.get(key)) is str and re.fullmatch(r"[a-z][a-z0-9-]{7,47}", plan[key]), "invalid " + key)
     require(plan.get("location") == "hel1" and plan.get("server_type") == "ccx43", "sealed host catalog choice")

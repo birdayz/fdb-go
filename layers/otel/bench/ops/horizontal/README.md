@@ -265,3 +265,68 @@ campaign's protected baseline. Post-run source verification runs even when
 cleanup fails or raises; it does not turn a failed inventory gate into a pass.
 No profiling permission, package installation,
 perf invocation, sysctl, native knob or durability-setting change is implicit.
+
+## Bounded two-host session
+
+`session.py` uses explicit `schema: otel_native_session_v1` to prepare exactly two
+new owned VMs **once**, not once per arm. The immutable approved lease retains its
+original `first_epoch`/`deadline_epoch`, independent watchdog, protected inventory,
+source/asset seals and all existing hardware, CPU4/memory16GiB, disk/fsync/checksum,
+transaction, size/retry, health and cleanup guards. It is not an interactive pool:
+both cases and helper bytes are preregistered and frozen before any resource starts.
+
+The session requires typed `count:100000`, `probe_count:1000000`,
+`probe_seconds:120`, `storage_process_count:2`, `storage_max_outstanding:64`, exact
+ordered `cases:["capacity16g","baseline"]`, and nonnegative integer
+`prior_rows_upper`. Its configured upper bound is2.2M rows; prior plus session must
+not exceed10M (4.8M prior gives7M). Case objects, arbitrary arguments and per-case
+clock overrides are not supported. `storage_memory_profile` belongs to each
+composed diagnostic arm, not the top-level session plan:
+
+- `capacity16g`: two SS, each4GiB memory/2GiB cache; configured native memory is
+  8GiB storage plus5GiB controls =13GiB within the unchanged16GiB slice.
+- `baseline`: two SS, each2GiB memory/1GiB cache; configured native memory is9GiB.
+
+This memory/cache profile does **not** raise `STORAGE_HARD_LIMIT_BYTES`, remove the
+independent storage-queue e-brake, or relax health limits. Both arms have two
+reactors and default64 I/O slots per SS; this is not a parallelism-isolating test.
+Every SS ID must remain stable, with positive input **and durable** counter deltas
+for `CAPTURED`; idle/unknown/reset evidence remains INCONCLUSIVE.
+
+Each case uses a fresh FDB arm/datadir and its own complete100k strict-health,
+11N+2 census/1600-oracle gate before its own1M/120s probe. Case runs are9800/9801
+then9802/9803. Old data and local receipts are retained. Between cases only exact
+owned native units/application scopes are stopped, with PID/start/cmdline/cgroup
+binding and quiescence proof; a fresh quiet admission precedes the next cluster.
+The two cases share the session-wide1GiB receipt ceiling and16MiB native-trace
+budget, and retain host/swap/resource observation history without resetting time.
+
+A failed case never becomes PASS or promotes its unpassed gate. Only the exact
+known batch-priority probe warning with storage-queue QoS, verified identities,
+released producer binding and freshly passing independent fatal guards is an
+`ARM_FAILURE`: collect, stop and prove the old cluster quiescent, then try the
+other fresh case. Every host/resource/OOM/swap/disk/source/identity/deadline or
+unknown-shape fault is `SESSION_FATAL` and immediately enters final cloud cleanup.
+No workload continues on an unhealthy old cluster. Final status separately lists
+failed cases and all-cases outcome; neither is an accepted throughput result.
+Final cleanup always runs, including unexpected controller failure via the
+independent watchdog. Failed global inventory gates stay failed; post-run source
+verification still runs if cleanup fails or raises.
+
+Validation has no provisioning effects:
+
+```sh
+python3 -B layers/otel/bench/ops/horizontal/session.py run --plan /private/session.json
+```
+
+After clean hooked validation, immutable inputs and independent guard readiness:
+
+```sh
+python3 -B layers/otel/bench/ops/horizontal/session.py run \
+  --plan /private/session.json --output /private/campaign/run --execute-approved
+```
+
+Output is used directly: prepare/teardown-out is `/private/campaign/run/provision`,
+state is `/private/campaign/run/provision/provision`, and case receipts are
+`/private/campaign/run/cases/<profile>`. There is no extra automatic `run` level.
+Standalone `diagnostic.py` retains its ordinary prepare/final-teardown lifecycle.
