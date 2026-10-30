@@ -377,6 +377,12 @@ class ProvisionTest(unittest.TestCase):
             self.addCleanup(patch.stop)
         return self.plan
 
+    def scaling_log_plan(self):
+        self.scaling_plan(managed_admitted=False)
+        del self.plan['managed_watch']
+        self.plan.update(foreground_only=True, log_memory_gib=2, stages=[[2, 2], [1, 1]], prior_rows_upper=8425000)
+        return self.plan
+
     def scaling_nodes(self):
         return {role: dict(private_ip='10.93.0.'+str(offset)) for role, offset in
                 (('node1', 11), ('node2', 12), ('node3', 13), ('client1', 21), ('client2', 22), ('client3', 23))}
@@ -671,6 +677,137 @@ class ProvisionTest(unittest.TestCase):
             self.assertEqual(layout['budgets']['client_host'], dict(cpu_quota_percent=400, allowed_cpus='0-3', memory_max_gib=16))
         self.assertEqual(self.plan, original)
         self.assertFalse(self.cloud.calls)
+
+    def test_scaling_log_memory_flag_changes_only_log_4504_memory_and_node1_budget(self):
+        self.scaling_log_plan(); nodes = self.scaling_nodes()
+        default = dict(self.plan, stages=[[1, 1], [2, 2], [3, 3]], prior_rows_upper=7000000)
+        del default['log_memory_gib']
+        for stage in (2, 1):
+            armid = 'scaling-'+str(stage)
+            baseline = p.render_cluster(default, nodes, stage, armid)
+            changed = p.render_cluster(self.plan, nodes, stage, armid)
+            self.assertNotIn('log_memory_gib', baseline)
+            self.assertEqual(changed['log_memory_gib'], 2)
+            self.assertEqual(changed['budgets']['fdb_host']['max_process_memory_gib'], 15)
+            self.assertEqual(sum(item['memory_gib'] for item in changed['processes'] if item['node'] == 'node1'), 15)
+            self.assertEqual(sum(item['memory_gib'] for item in changed['processes'] if item['node'] == 'node2'), 9 if stage == 2 else 0)
+            self.assertEqual(len(changed['processes']), 5+3*stage)
+            normalized = copy.deepcopy(changed)
+            del normalized['log_memory_gib']
+            normalized['budgets']['fdb_host']['max_process_memory_gib'] = 14
+            log_changes = 0
+            for index, (new, old) in enumerate(zip(changed['processes'], baseline['processes'])):
+                if new['port'] != 4504:
+                    self.assertEqual(new, old)
+                    continue
+                log_changes += 1
+                self.assertEqual(new['node'], 'node1')
+                self.assertEqual(new['process_class'], 'transaction')
+                self.assertEqual(new['required_roles'], ['log'])
+                expected = copy.deepcopy(old)
+                self.assertEqual(expected['args'][expected['args'].index('--memory')+1], '1GiB')
+                expected['args'][expected['args'].index('--memory')+1] = '2GiB'
+                expected['unit'] = expected['unit'].replace('ExecStart='+shlex.join(old['args'])+'\n',
+                                                          'ExecStart='+shlex.join(expected['args'])+'\n')
+                expected.update(memory_gib=2, memory_limit_bytes=2*p.GIB)
+                self.assertEqual(new, expected)
+                self.assertEqual(new['cache_mib'], 64)
+                self.assertEqual(new['args'][new['args'].index('--cache-memory')+1], '64MiB')
+                normalized['processes'][index] = old
+            self.assertEqual(log_changes, 1)
+            self.assertEqual(normalized, baseline)
+        self.assertFalse(self.cloud.calls)
+
+    def test_scaling_log_memory_flag_requires_typed_exact_foreground_2_then_1_and_exact_prior(self):
+        self.scaling_log_plan()
+        p.validate_plan(self.plan, self.out)
+        import policy
+        self.assertEqual(policy.scaling_stage_pairs(self.plan), [[2, 2], [1, 1]])
+        self.assertEqual(policy.scaling_authorized_rows(self.plan), 1425000)
+        self.assertEqual(self.plan['prior_rows_upper']+policy.scaling_authorized_rows(self.plan), 9850000)
+        good = copy.deepcopy(self.plan)
+        for value in (None, True, False, 0, 1, 3, 2.0, '2', [], {}):
+            with self.subTest(log_memory_gib=value), self.assertRaises(p.ProvisionError):
+                p.validate_plan(dict(good, log_memory_gib=value), self.out)
+        for stages in (None, [], [[1, 1], [2, 2]], [[2, 2]], [[1, 1], [2, 2], [3, 3]],
+                       [[2, 2], [1, True]], [[2.0, 2], [1, 1]], [(2, 2), [1, 1]], ((2, 2), (1, 1))):
+            with self.subTest(stages=stages), self.assertRaises(p.ProvisionError):
+                p.validate_plan(dict(good, stages=stages), self.out)
+        for prior in (None, True, -1, 0, 7000000, 8424999, 8425001, 8575001, 10000000, 8425000.0, '8425000'):
+            with self.subTest(prior=prior), self.assertRaises(p.ProvisionError):
+                p.validate_plan(dict(good, prior_rows_upper=prior), self.out)
+        for foreground in (None, False, 1, 1.0, 'true'):
+            with self.subTest(foreground_only=foreground), self.assertRaises(p.ProvisionError):
+                p.validate_plan(dict(good, foreground_only=foreground), self.out)
+        managed = dict(good, managed_watch=dict(root=str(self.root/'watch'), output=str(self.root/'campaign')))
+        del managed['foreground_only']
+        with self.assertRaises(p.ProvisionError):
+            p.validate_plan(managed, self.out)
+        missing_mode = dict(good); del missing_mode['foreground_only']
+        with self.assertRaises(p.ProvisionError):
+            p.validate_plan(missing_mode, self.out)
+        default = dict(good); del default['log_memory_gib']
+        with self.assertRaises(p.ProvisionError):
+            p.validate_plan(default, self.out)
+        nodes = self.scaling_nodes()
+        for hosts, armid in ((3, 'scaling-3'), (2, 'scaling-1'), (1, 'scaling-2')):
+            with self.subTest(hosts=hosts, armid=armid), self.assertRaises(p.ProvisionError):
+                p.render_cluster(good, nodes, hosts, armid)
+        self.assertFalse(self.cloud.calls)
+        self.assertFalse(self.out.exists())
+
+    def test_log_memory_flag_is_never_a_legacy_schema_override_even_at_one_gib(self):
+        original = copy.deepcopy(self.plan)
+        for schema in ('otel_horizontal_v1', 'otel_native_diagnostic_v1', 'otel_native_session_v1'):
+            for value in (None, True, 1, 2, 2.0):
+                changed = dict(original, schema=schema, log_memory_gib=value)
+                with self.subTest(schema=schema, value=value):
+                    with self.assertRaisesRegex(p.ProvisionError, 'scaling-only'):
+                        p.prepare(changed, self.out, runner=self.cloud, popen=self.cloud.popen)
+                    with self.assertRaisesRegex(p.ProvisionError, 'scaling-only'):
+                        p.render_cluster(changed, self.scaling_nodes(), 1, 'legacy')
+        self.assertFalse(self.cloud.calls)
+        self.assertFalse(self.cloud.events)
+
+    def test_scaling_log_two_gib_prepares_once_sets_up_2_then_1_and_stop_keeps_native_guards(self):
+        self.scaling_log_plan(); resources = self.prepare(); nodes = resources['nodes']; state = p._state(self.out)
+        lease = (state/'guard-plan.json').read_bytes()
+        prior_runner = self.cloud
+        for stage in (2, 1):
+            layout = p.setup_cluster(self.plan, self.out, nodes, stage, 'scaling-'+str(stage), runner=prior_runner)
+            self.assertEqual(p._load(state/'active-arm.json'), self.scaling_journal(layout, stage))
+            self.assertEqual(layout['log_memory_gib'], 2)
+            self.assertEqual(layout['budgets']['fdb_host']['max_process_memory_gib'], 15)
+            self.assertEqual(layout['budgets']['fdb_host']['memory_max_gib'], 16)
+            self.assertEqual(layout['budgets']['fdb_host']['cpu_quota_percent'], 400)
+            self.assertEqual(layout['budgets']['fdb_host']['allowed_cpus'], '0-3')
+            self.assertEqual(layout['storage_max_outstanding'], 64)
+            self.assertEqual(layout['storage_process_count'], 3)
+            self.assertEqual(layout['storage_memory_profile'], 'scaling3ss3g')
+            for item in layout['processes']:
+                emitted = Path(layout['cluster_file']).parent/(item['node']+'-'+item['unit_name'])
+                self.assertEqual(emitted.read_bytes(), item['unit'].encode())
+                if item['port'] == 4504:
+                    self.assertEqual(item['memory_limit_bytes'], 2*p.GIB)
+                elif item['process_class'] == 'storage':
+                    self.assertEqual(item['memory_limit_bytes'], 3*p.GIB)
+                    self.assertEqual(item['cache_mib'], 1024)
+                else:
+                    self.assertEqual(item['memory_limit_bytes'], p.GIB)
+            scopes = tuple(self.scaling_scope(layout, client) for client in range(1, stage+1))
+            runner = StopRunner(self.cloud, nodes, layout, scopes)
+            receipt = p.stop_owned_arm(self.plan, self.out, nodes, layout, scopes=scopes, runner=runner)
+            self.assertTrue(receipt['passed']); self.assertEqual(set(receipt['before']), set(nodes))
+            self.assertEqual((state/'guard-plan.json').read_bytes(), lease)
+            prior_runner = runner
+        self.assertEqual(self.cloud.create_counts['server'], 6)
+        self.assertEqual(self.cloud.events.count('guard-start'), 1)
+        for kind in ('fdb', 'client'):
+            text = (state/('horizontal-'+kind+'.slice')).read_text()
+            self.assertIn('MemoryMax=16G\nMemorySwapMax=0\n', text)
+            self.assertIn('IOAccounting=yes\n', text)
+        cleanup = p.teardown(self.plan, self.out, resources, runner=self.cloud, sleep=lambda _: None)
+        self.assertTrue(cleanup['passed']); self.assertEqual(self.cloud.items, self.cloud.baseline)
 
     def test_scaling_render_rejects_partial_nodes_nonprefix_and_cross_stage_ids_without_effects(self):
         self.scaling_plan(); nodes = self.scaling_nodes()

@@ -455,6 +455,37 @@ this mode makes **no independent runtime-survival claim**. Six hosts are still
 prepared once and reused through the preregistered1/2/3 tiers; geometry and the
 2.85M authorized-row allocation are unchanged.
 
+### Bounded log-memory follow-up
+
+The foreground run's pairs1 gate and measured wave passed (ACK6278.13374 rows/s,
+durable-drained3755.93940 rows/s, drain40.11s). Pairs2 passed both100k gates but
+its measured wave failed: transaction/log4504/PID15874 exited20 after its native
+RSS monitor reported `OutOfMemory` under `--memory 1GiB`. This is not a storage
+server or kernel OOM. The older storage4510/PID12998 cause remains UNKNOWN.
+All six hosts and auxiliaries were deleted with fresh exact17-ID/ten-kind
+protected inventory equality; source seals remained unchanged.
+
+The narrowly approved scaling-only follow-up sets `"log_memory_gib": 2`,
+`"foreground_only": true`, omits `managed_watch`, and requires exactly
+`"stages": [[2,2],[1,1]]` and `"prior_rows_upper": 8425000`. The optional field
+accepts only integer2. Its omission preserves the original1GiB log argv/layout
+and1/2/3 study. Only node1 transaction/log4504 changes to `--memory 2GiB`;
+cache64MiB, the other four1GiB controls, three3GiB storage processes/cache1GiB,
+4CPU/16GiB/swap0 slice and every other knob stay unchanged. Node1 configured
+process memory becomes15GiB, not a proof of memory safety.
+
+Prepare the same six fresh hosts once, run2x first, then a fresh same2GiB-log1x
+baseline. Each producer still needs its own100k gate before375k measured rows
+with the120s bound. The follow-up authorizes1.425M rows/four waves; prior8.425M
+includes the failed pairs2 allocation charged in full. Only the positively
+unissued original pairs3 allocation is reused: total9.85M remains below10M.
+The shared16MiB forensic/1GiB receipt bounds and SESSION_FATAL OOM handling are
+unchanged. The original09:49:26–11:49:26Z absolute lease,10:56:06Z setup cutoff
+and11:04:26Z measured-entry cutoff are not reset or extended. Efficiency uses
+the new same-profile1x baseline regardless of run order; no historical1GiB
+baseline,3x result or sustained20k claim is permitted. Runtime results for this
+follow-up remain UNVERIFIED until the owner runs it.
+
 ### Optional managed cleanup mode
 
 The first six-host preparation attempt was interrupted by a confirmed

@@ -94,6 +94,8 @@ def _checked(runner, argv, timeout=20):
 
 def _roles(plan):
     schema = plan.get('schema') if type(plan) is dict else None
+    if type(plan) is dict and 'log_memory_gib' in plan and schema != 'otel_native_scaling_v1':
+        raise ProvisionError('log_memory_gib is scaling-only')
     if schema == 'otel_horizontal_v1':
         return ROLES
     if schema in ('otel_native_diagnostic_v1', 'otel_native_session_v1'):
@@ -184,18 +186,18 @@ def _admit_managed_watch(plan, out, clock):
 def _validate_scaling(plan):
     if plan.get('schema') != 'otel_native_scaling_v1':
         return
-    stages = plan.get('stages')
-    if (type(stages) is not list or len(stages) != 3
-            or any(type(stage) is not list or len(stage) != 2
-                   or any(type(value) is not int for value in stage) for stage in stages)
-            or stages != [[1, 1], [2, 2], [3, 3]]):
-        raise ProvisionError('scaling stages must be exactly typed [[1,1],[2,2],[3,3]]')
+    import policy
+    try:
+        stages = policy.scaling_stage_pairs(plan)
+        authorized_rows = policy.scaling_authorized_rows(plan)
+    except ValueError as exc:
+        raise ProvisionError(str(exc)) from exc
     for key, value in (('count', 100000), ('measured_count', 375000), ('measured_seconds', 120),
                        ('batch', 64), ('workers', 8), ('gomaxprocs', 4)):
         if type(plan.get(key)) is not int or plan[key] != value:
             raise ProvisionError('scaling plan requires exact typed ' + key)
     if (type(plan.get('prior_rows_upper')) is not int or plan['prior_rows_upper'] < 0
-            or plan['prior_rows_upper'] + 2850000 > 10000000):
+            or plan['prior_rows_upper'] + authorized_rows > 10000000):
         raise ProvisionError('scaling cumulative row authorization exceeds ten million')
     if plan.get('replication') != 'single':
         raise ProvisionError('scaling requires single-replica capacity experiment')
@@ -204,6 +206,7 @@ def _validate_scaling(plan):
         raise ProvisionError('scaling plans cannot declare comparative or diagnostic case fields')
     if _scaling_mode(plan) == 'managed_watch':
         _managed_watch_config(plan)
+    return stages
 
 
 def _names(plan):
@@ -1138,8 +1141,9 @@ def render_cluster(plan, nodes, storage_hosts, armid):
     max_outstanding = _storage_max_outstanding(plan)
     storage_count = _storage_process_count(plan)
     memory_profile = _storage_memory_profile(plan)
-    _validate_scaling(plan)
+    stages = _validate_scaling(plan)
     scaling = plan['schema'] == 'otel_native_scaling_v1'
+    log_memory_gib = plan.get('log_memory_gib', 1) if scaling else 1
     if plan['schema'] == 'otel_native_session_v1':
         raise ProvisionError('session clusters must use an explicitly validated diagnostic case plan')
     storage_memory_gib = 4 if memory_profile == 'capacity16g' or storage_count == 1 else 2
@@ -1162,8 +1166,9 @@ def render_cluster(plan, nodes, storage_hosts, armid):
             raise ProvisionError('storage hosts must name the schema-scoped FDB hosts') from exc
     if selected not in [list(fdb_roles[:n]) for n in range(1, len(fdb_roles)+1)]:
         raise ProvisionError('storage hosts must be an allowed prefix of the schema-scoped FDB hosts')
-    if scaling and (type(armid) is not str or armid != 'scaling-' + str(len(selected))):
-        raise ProvisionError('scaling stage arm ID must match its active host prefix')
+    if scaling and (len(selected) not in [stage[0] for stage in stages]
+                    or type(armid) is not str or armid != 'scaling-' + str(len(selected))):
+        raise ProvisionError('scaling stage arm ID must match an approved active host prefix')
     root = REMOTE_BASE + '/' + plan['campaign'] + '/arms/' + str(armid)
     cluster = 'horizontal_' + str(armid).replace('-', '_') + ':' + hashlib.sha256(
         (plan['campaign'] + ':' + str(armid)).encode()).hexdigest()[:24] + '@' + nodes['node1']['private_ip'] + ':4500'
@@ -1175,13 +1180,14 @@ def render_cluster(plan, nodes, storage_hosts, armid):
             [(4510+i, 'storage') for i in range(storage_count)] if node in selected else [])
         for port, cls in specs:
             storage = cls == 'storage'
+            process_memory_gib = storage_memory_gib if storage else (log_memory_gib if port == 4504 else 1)
             address = f'{nodes[node]["private_ip"]}:{port}'
             name = f'oh-{plan["prefix"]}-{armid}-{port}'
             args = [REMOTE_BASE + '/' + plan['campaign'] + '/bin/fdbserver',
                     '--cluster-file', root + '/fdb.cluster', '--public-address', address,
                     '--listen-address', address, '--class', cls, '--datadir', f'{root}/data/{port}',
                     '--logdir', root + '/logs', '--locality-machineid', node,
-                    '--locality-zoneid', node, '--memory', f'{storage_memory_gib}GiB' if storage else '1GiB',
+                    '--locality-zoneid', node, '--memory', f'{process_memory_gib}GiB',
                     '--cache-memory', f'{storage_cache_mib//1024}GiB' if storage else '64MiB', '--trace-format', 'json',
                     '--maxlogssize', '128MiB', '--loggroup', plan['campaign']]
             if storage and max_outstanding == 128:
@@ -1203,17 +1209,19 @@ Restart=no
                         'transaction': ['log'], 'storage': ['storage']}[cls]
             processes.append(dict(node=node, address=address, port=port, process_class=cls,
                                   args=args, unit_name=name + '.service', unit=unit,
-                                  memory_gib=storage_memory_gib if storage else 1, cache_mib=storage_cache_mib if storage else 64,
-                                  memory_limit_bytes=(storage_memory_gib if storage else 1) * GIB,
+                                  memory_gib=process_memory_gib, cache_mib=storage_cache_mib if storage else 64,
+                                  memory_limit_bytes=process_memory_gib * GIB,
                                   machineid=node, zoneid=node, required_roles=required))
     layout = dict(root=root, cluster_text=cluster + '\n', remote_cluster_file=root + '/fdb.cluster',
                 storage_hosts=selected, processes=processes, configure=CONFIGURE,
                 budgets=dict(fdb_host=dict(cpu_quota_percent=400, allowed_cpus='0-3', memory_max_gib=16,
-                                           max_process_memory_gib=5+storage_count*storage_memory_gib, max_processes=5+storage_count),
+                                           max_process_memory_gib=5+storage_count*storage_memory_gib+log_memory_gib-1, max_processes=5+storage_count),
                              client_host=dict(cpu_quota_percent=400, allowed_cpus='0-3', memory_max_gib=16)),
                 storage_engine='ssd-redwood-1', log_engine='ssd-2', redundancy_mode='single')
     if scaling:
         layout['schema'] = 'otel_native_scaling_v1'
+        if 'log_memory_gib' in plan:
+            layout['log_memory_gib'] = log_memory_gib
     if plan['schema'] in ('otel_native_diagnostic_v1', 'otel_native_scaling_v1'):
         layout['storage_max_outstanding'] = max_outstanding
         layout['storage_process_count'] = storage_count

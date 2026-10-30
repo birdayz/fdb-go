@@ -13,6 +13,7 @@ _HORIZONTAL_TEST_DATA = [
     "test_forensics.py",
     "test_scaling.py",
     "test_scaling_forensics.py",
+    "test_scaling_log_memory.py",
     "test_supervisor.py",
     "test_horizontal.py",
     "test_provision.py",
@@ -68,6 +69,13 @@ sh_test(
     name = "native_scaling_forensics_test",
     srcs = ["test.sh"],
     args = ["test_scaling_forensics"],
+    data = _HORIZONTAL_TEST_DATA,
+)
+
+sh_test(
+    name = "native_scaling_log_memory_test",
+    srcs = ["test.sh"],
+    args = ["test_scaling_log_memory"],
     data = _HORIZONTAL_TEST_DATA,
 )
 
