@@ -102,6 +102,9 @@ def _sampler_kind(grant):
 
 def _scaling_population(value):
     _scaling_roles(value)
+    if "log_memory_gib" in value:
+        p.require(type(value["log_memory_gib"]) is int and value["log_memory_gib"] == 2
+                  and value["scaling_hosts"] in (1, 2), "exact follow-up scaling log memory profile required")
     p.require(type(value.get("storage_process_count")) is int and value["storage_process_count"] == 3
               and value.get("storage_memory_profile") == "scaling3ss3g", "exact scaling storage profile required")
     ports = (set(range(4500, 4505)) if value["role"] == "node1" else set())
@@ -123,7 +126,8 @@ def _scaling_population(value):
                     "--listen-address": address, "--class": "storage" if storage else classes[spec["port"]],
                     "--datadir": value["arm_root"] + "/data/" + str(spec["port"]), "--logdir": value["arm_root"] + "/logs",
                     "--locality-machineid": value["role"], "--locality-zoneid": value["role"],
-                    "--memory": "3GiB" if storage else "1GiB", "--cache-memory": "1GiB" if storage else "64MiB",
+                    "--memory": ("3GiB" if storage else "2GiB" if spec["port"] == 4504 and value.get("log_memory_gib") == 2 else "1GiB"),
+                    "--cache-memory": "1GiB" if storage else "64MiB",
                     "--trace-format": "json", "--maxlogssize": "128MiB", "--loggroup": value["campaign"]}
         p.require(len(args) == 1 + 2 * len(expected) and set(args[1::2]) == set(expected)
                   and all(args[index + 1] == expected[flag] for index, flag in enumerate(args) if index % 2),
@@ -479,6 +483,8 @@ def profile(frames, grants, producer_receipt, activity, release_bound, *, node_r
                 sampler_grant(grant)
             p.require(grants[node_role]["scaling_hosts"] == grants[client_role]["scaling_hosts"]
                       and grants[node_role]["node_id"] != grants[client_role]["node_id"]
+                      and ("log_memory_gib" in grants[node_role]) == ("log_memory_gib" in grants[client_role])
+                      and grants[node_role].get("log_memory_gib") == grants[client_role].get("log_memory_gib")
                       and all(grants[node_role][key] == grants[client_role][key]
                               for key in ("run", "token", "producer_grant_sha256", "campaign", "arm_root")),
                       "exact scaling pair binding required")

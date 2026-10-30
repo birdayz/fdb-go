@@ -30,6 +30,27 @@ def scaling_execution_mode(plan):
     return "managed_watch"
 
 
+def scaling_stage_pairs(plan):
+    require(type(plan) is dict and plan.get("schema") == "otel_native_scaling_v1", "typed scaling study required")
+    expected = [[1, 1], [2, 2], [3, 3]]
+    if "log_memory_gib" in plan:
+        require(type(plan["log_memory_gib"]) is int and plan["log_memory_gib"] == 2, "scaling log_memory_gib must be exactly integer 2")
+        require(scaling_execution_mode(plan) == "foreground_only", "log-memory followup requires explicit foreground mode")
+        require(type(plan.get("prior_rows_upper")) is int and plan["prior_rows_upper"] == 8425000, "log-memory followup prior issued upper must be 8425000")
+        expected = [[2, 2], [1, 1]]
+    stages = plan.get("stages")
+    require(type(stages) is list and stages == expected and all(type(stage) is list and len(stage) == 2
+            and all(type(value) is int for value in stage) for stage in stages), "exact preregistered scaling stage order required")
+    return expected
+
+
+def scaling_authorized_rows(plan):
+    rows = 475000 * sum(pair[1] for pair in scaling_stage_pairs(plan))
+    prior = plan.get("prior_rows_upper")
+    require(type(prior) is int and prior >= 0 and prior + rows <= 10000000, "scaling cumulative 10M row ceiling")
+    return rows
+
+
 def integer(value, minimum=0):
     return type(value) is int and minimum <= value < 10 ** 18
 
@@ -62,7 +83,7 @@ def storage(options):
 def validate_plan(plan, *, check_assets=True):
     require(type(plan) is dict and plan.get("schema") == "otel_horizontal_v1" and plan.get("approved") is True,
             "explicit horizontal approval required")
-    require(not {"storage_max_outstanding", "storage_process_count", "storage_memory_profile"} & set(plan), "storage I/O override is diagnostic-only")
+    require(not {"storage_max_outstanding", "storage_process_count", "storage_memory_profile", "log_memory_gib"} & set(plan), "storage I/O override is diagnostic-only")
     for key in ("campaign", "prefix"):
         require(type(plan.get(key)) is str and re.fullmatch(r"[a-z][a-z0-9-]{7,47}", plan[key]), "invalid " + key)
     require(plan.get("location") == "hel1" and plan.get("server_type") == "ccx43", "sealed host catalog choice")

@@ -27,22 +27,19 @@ BOUNDARY = ("independent namespaces in one single-replica FDB cluster per stage;
 def validate_plan(plan, *, check_assets=True):
     p.require(type(plan) is dict and plan.get("schema") == SCHEMA and plan.get("approved") is True,
               "explicit native scaling approval required")
-    stages = plan.get("stages")
-    p.require(type(stages) is list and stages == STAGES and all(type(x) is list and len(x) == 2
-              and all(type(v) is int for v in x) for x in stages), "exact ordered 1/1, 2/2, 3/3 scaling stages")
+    p.scaling_stage_pairs(plan)
     for key, value in (("count", 100000), ("measured_count", 375000), ("measured_seconds", 120),
                        ("batch", 64), ("workers", 8), ("gomaxprocs", 4),
                        ("storage_process_count", 3), ("storage_max_outstanding", 64)):
         p.require(type(plan.get(key)) is int and plan[key] == value, "fixed scaling field: " + key)
     p.require(type(plan.get("storage_memory_profile")) is str and plan["storage_memory_profile"] == "scaling3ss3g", "fixed three-storage-process memory geometry")
-    prior = plan.get("prior_rows_upper")
-    p.require(type(prior) is int and prior >= 0 and prior + AUTHORIZED_ROWS <= 10000000, "scaling cumulative 10M row ceiling")
+    p.scaling_authorized_rows(plan)
     p.require(not set(plan) & {"topologies", "selected_topologies", "prerequisite_topologies", "measured_topologies",
                               "probe_count", "probe_seconds", "cases"}, "scaling has only its exact preregistered stages")
     # Validation-only projection reuses common source/assets/hardware/lease guards.
     # It is never written or provisioned and cannot authorize extra rows.
     common = {key: value for key, value in plan.items() if key not in
-              ("storage_process_count", "storage_max_outstanding", "storage_memory_profile")}
+              ("storage_process_count", "storage_max_outstanding", "storage_memory_profile", "log_memory_gib")}
     common.update(schema="otel_horizontal_v1", topologies=[1, 2, 3], measured_topologies=[3, 2, 1], measured_count=100000)
     p.validate_plan(common, check_assets=check_assets)
     if p.scaling_execution_mode(plan) == "managed_watch":
@@ -124,14 +121,26 @@ def wave_metrics(rows, start_ns, ack_end_ns, drained_end_ns, load_samples, drain
             "timing_boundary": "controller common release through last complete ACK and through final three-sample strict stable drain; includes SSH/observation overhead"}
 
 
-def summarize_scaling(records):
+def summarize_scaling(records, expected_hosts=(1, 2, 3)):
     result = {"verdict": "INCONCLUSIVE", "near_linear": False, "efficiency_threshold": 0.90,
               "primary_metric": "drained_rows_per_second", "stages": [], "reasons": [], "boundary": BOUNDARY}
-    if type(records) is not list or len(records) != 3:
-        result["reasons"].append("all three preregistered stages required")
+    if type(expected_hosts) is not tuple or expected_hosts not in ((1, 2, 3), (1, 2)) or any(type(hosts) is not int for hosts in expected_hosts):
+        result["reasons"].append("exact preregistered comparison population required")
         return result
-    for hosts, record in enumerate(records, 1):
+    if expected_hosts == (1, 2):
+        result.update(tested_hosts=[1, 2], boundary=BOUNDARY.replace("active pairs scale 1/2/3", "active pairs scale 2 then 1 only"))
+    if type(records) is not list or len(records) != len(expected_hosts):
+        result["reasons"].append("all preregistered stages required")
+        return result
+    by_host = {record["hosts"]: record for record in records if type(record) is dict and type(record.get("hosts")) is int}
+    if len(by_host) != len(records) or set(by_host) != set(expected_hosts):
+        result["reasons"].append("exact distinct host populations required")
+        return result
+    ordered = [by_host[hosts] for hosts in expected_hosts]
+    for hosts, record in zip(expected_hosts, ordered):
         measured = record.get("measured", {}) if type(record) is dict else {}
+        if expected_hosts == (1, 2) and (type(record.get("log_memory_gib")) is not int or record["log_memory_gib"] != 2):
+            result["reasons"].append("stage%d lacks the same 2GiB log profile" % hosts)
         if (type(record) is not dict or type(record.get("hosts")) is not int or record["hosts"] != hosts
                 or type(record.get("producers")) is not int or record["producers"] != hosts or record.get("status") != "PASS"
                 or type(measured) is not dict or type(measured.get("count_per_producer")) is not int
@@ -145,8 +154,8 @@ def summarize_scaling(records):
             result["reasons"].append("stage%d lacks complete passing measured evidence" % hosts)
     if result["reasons"]:
         return result
-    baseline = records[0]["measured"]
-    for record in records:
+    baseline = by_host[1]["measured"]
+    for record in ordered:
         hosts, measured = record["hosts"], record["measured"]
         factor = measured["drained_rows_per_second"] / baseline["drained_rows_per_second"]
         result["stages"].append({"hosts": hosts, "scale_factor": factor, "efficiency": factor / hosts,
@@ -172,7 +181,7 @@ class ScalingArm(n.Diagnostic):
         active_roles(stage_hosts)
         self.arm_id = "scaling-" + str(stage_hosts)
         self.last_wave_result = None
-        self.remaining_waves = 6
+        self.remaining_waves = 2 * len(p.scaling_stage_pairs(self.plan))
         self.producer_plans = []
 
     def remote(self, node, mode, path):
@@ -235,6 +244,8 @@ class ScalingArm(n.Diagnostic):
                   "census_pass": False, "oracle_pass": False, "measurement_eligible": False,
                   "accepted_throughput": False, "diagnostic_only": True, "forensic_allocation": allocation,
                   "forensic_node_quotas": quotas, "active_roles": sorted(roles)}
+        if "log_memory_gib" in self.plan:
+            result["log_memory_gib"] = 2
         error = None
 
         def poll_frames():
@@ -286,6 +297,8 @@ class ScalingArm(n.Diagnostic):
                     "forensic_budget": quotas.get(role, 0), "processes": specs,
                     "storage_ids": {spec["address"]: before["storage_processes"][spec["address"]]["storage_id"]
                                     for spec in specs if spec["process_class"] == "storage"}}
+                if "log_memory_gib" in self.plan:
+                    sample_grant["log_memory_gib"] = self.plan["log_memory_gib"]
                 n.sampler_grant(sample_grant)
                 path = directory / (role + "-sampler-plan.json")
                 d.write(path, sample_grant)
@@ -476,6 +489,8 @@ class ScalingArm(n.Diagnostic):
         p.require(set(self.nodes) == ROLES, "exact six scaling hosts retained")
         result = {"schema": "otel_native_scaling_stage_v1", "hosts": self.stage_hosts, "producers": self.stage_hosts,
                   "diagnostic_only": True, "accepted_throughput": False, "status": "SESSION_FATAL"}
+        if "log_memory_gib" in self.plan:
+            result["log_memory_gib"] = 2
         try:
             if helpers_ready:
                 self.verify_helpers()
@@ -518,7 +533,7 @@ class ScalingSession:
         self.provision_out = self.out / "provision"
         self.arm_factory = arm_factory or ScalingArm
         self.resources = None
-        self.trace_remaining, self.remaining_waves = n.TRACE_BUDGET, 6
+        self.trace_remaining, self.remaining_waves = n.TRACE_BUDGET, 2 * len(p.scaling_stage_pairs(plan))
         self.observation_history = {}
 
     def receipt_budget(self):
@@ -527,6 +542,7 @@ class ScalingSession:
     def run(self):
         validate_plan(self.plan)
         mode = p.scaling_execution_mode(self.plan)
+        stages, rows = p.scaling_stage_pairs(self.plan), p.scaling_authorized_rows(self.plan)
         if mode == "managed_watch":
             p.require(str(self.out) == self.plan["managed_watch"]["output"], "scaling output must match managed watch output")
         source = p.verify_source(self.plan)
@@ -534,13 +550,15 @@ class ScalingSession:
         d.write(self.out / "approved-plan.json", self.plan)
         d.write(self.out / "source-before.json", source)
         result = {"schema": "otel_native_scaling_result_v1", "status": "SESSION_FATAL", "stages": [],
-                  "all_stages_passed": False, "authorized_rows": AUTHORIZED_ROWS,
-                  "cumulative_rows_upper": self.plan["prior_rows_upper"] + AUTHORIZED_ROWS,
+                  "all_stages_passed": False, "authorized_rows": rows,
+                  "cumulative_rows_upper": self.plan["prior_rows_upper"] + rows,
                   "first_epoch": self.plan["first_epoch"], "deadline_epoch": self.plan["deadline_epoch"],
                   "approved_plan_sha256": p.sha(self.out / "approved-plan.json"), "held_roles": sorted(ROLES),
                   "held_host_count": 6, "boundary": BOUNDARY, "accepted_throughput": False,
                   "execution_mode": "bounded_foreground" if mode == "foreground_only" else mode,
                   "foreground_only": mode == "foreground_only"}
+        if "log_memory_gib" in self.plan:
+            result.update(log_memory_gib=2, tested_hosts=[1, 2], boundary=BOUNDARY.replace("active pairs scale 1/2/3", "active pairs scale 2 then 1 only"))
         try:
             self.receipt_budget()
             d.remaining(self.plan, reserve=2000)
@@ -555,12 +573,14 @@ class ScalingSession:
                       and self.resources.get("prefix") == self.plan["prefix"] and all(type(x) is int and x > 0 for x in ids)
                       and len(set(ids)) == 6 and type(owned) is list and len(owned) == 6 and set(owned) == set(ids)
                       and type(protected) is list and not set(ids) & set(protected), "six exact newly owned unprotected resource identities")
-            for index, (hosts, producers) in enumerate(STAGES):
+            for index, (hosts, producers) in enumerate(stages):
                 self.receipt_budget()
                 out = self.out / "stages" / ("pairs" + str(hosts))
                 record = {"hosts": hosts, "producers": producers, "status": "SESSION_FATAL", "stage_result": str(out / "stage-result.json"),
                           "active_host_count": 2 * hosts, "held_host_count": 6, "active_storage_processes": 3 * hosts,
                           "active_cpu_quota": 8 * hosts, "active_memory_limit_bytes": 32 * p.GIB * hosts}
+                if "log_memory_gib" in self.plan:
+                    record["log_memory_gib"] = 2
                 result["stages"].append(record)
                 arm = self.arm_factory(self.plan, out, self.provision, stage_hosts=hosts, provision_out=self.provision_out, receipt_root=self.out)
                 arm.trace_remaining, arm.remaining_waves = self.trace_remaining, self.remaining_waves
@@ -599,7 +619,7 @@ class ScalingSession:
                         p.require(arm.observation_history is self.observation_history, "scaling host observation history reset")
                         self.trace_remaining = arm.trace_remaining
                         # A failed gate skips its measured wave without increasing any quota.
-                        self.remaining_waves = 6 - (index + 1) * 2
+                        self.remaining_waves = 2 * (len(stages) - index - 1)
                         record["trace_bytes_remaining"] = self.trace_remaining
                     except BaseException as error:
                         record.update(status="SESSION_FATAL", error=str(error))
@@ -631,7 +651,8 @@ class ScalingSession:
                 finally:
                     result["trace_bytes_remaining"] = self.trace_remaining
                     result["failed_stages"] = [x["hosts"] for x in result["stages"] if x["status"] != "PASS"]
-                    result["scaling"] = summarize_scaling(result["stages"]) if result["all_stages_passed"] and result.get("cleanup_passed") is True else summarize_scaling([])
+                    expected = tuple(sorted(pair[0] for pair in stages))
+                    result["scaling"] = summarize_scaling(result["stages"], expected_hosts=expected) if result["all_stages_passed"] and result.get("cleanup_passed") is True else summarize_scaling([], expected_hosts=expected)
                     d.write(self.out / "scaling-result.json", result)
         return result
 
@@ -663,11 +684,12 @@ def main(argv=None):
     if args.mode == "run":
         plan = validate_plan(d.read(args.plan))
         if not args.execute_approved:
-            print(json.dumps({"validated": True, "schema": SCHEMA, "roles": sorted(ROLES), "nodes": 6, "stages": STAGES,
-                "authorized_rows": AUTHORIZED_ROWS, "cumulative_rows_upper": plan["prior_rows_upper"] + AUTHORIZED_ROWS,
+            print(json.dumps({"validated": True, "schema": SCHEMA, "roles": sorted(ROLES), "nodes": 6, "stages": p.scaling_stage_pairs(plan),
+                "authorized_rows": p.scaling_authorized_rows(plan), "cumulative_rows_upper": plan["prior_rows_upper"] + p.scaling_authorized_rows(plan),
                 "storage_process_count": 3, "storage_memory_profile": "scaling3ss3g", "primary_metric": "drained_rows_per_second",
                 "provisioned": False, "boundary": BOUNDARY,
-                "execution_mode": "bounded_foreground" if p.scaling_execution_mode(plan) == "foreground_only" else "managed_watch"}, sort_keys=True))
+                "execution_mode": "bounded_foreground" if p.scaling_execution_mode(plan) == "foreground_only" else "managed_watch",
+                **({"log_memory_gib": 2, "tested_hosts": [1, 2], "boundary": BOUNDARY.replace("active pairs scale 1/2/3", "active pairs scale 2 then 1 only")} if "log_memory_gib" in plan else {})}, sort_keys=True))
             return
         p.require(args.output, "scaling output required")
         import provision

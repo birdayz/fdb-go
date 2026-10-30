@@ -15,13 +15,15 @@ import test_diagnostic as old
 import test_forensics as f
 
 
-def scaling_sampler(role="node2", hosts=3):
+def scaling_sampler(role="node2", hosts=3, *, log_memory_gib=None):
     grant = old.sampler_grant("node1" if role == "node1" else "client1")
     index = int(role[-1])
     grant.update(schema=n.SCALING_SAMPLER_SCHEMA, role=role, scaling_hosts=hosts,
                  node_id=100 + index if role.startswith("node") else 200 + index,
                  storage_process_count=3, storage_memory_profile="scaling3ss3g",
                  forensic_budget=n.TRACE_BUDGET, storage_ids={})
+    if log_memory_gib is not None:
+        grant["log_memory_gib"] = log_memory_gib
     grant["work"] = grant["root"] + "/diagnostics/" + grant["run"] + "-" + role
     grant["processes"] = []
     ports = list(range(4500, 4505)) if role == "node1" else []
@@ -35,7 +37,8 @@ def scaling_sampler(role="node2", hosts=3):
                    "--listen-address": address, "--class": "storage" if storage else classes[port],
                    "--datadir": grant["arm_root"] + "/data/" + str(port), "--logdir": grant["arm_root"] + "/logs",
                    "--locality-machineid": role, "--locality-zoneid": role,
-                   "--memory": "3GiB" if storage else "1GiB", "--cache-memory": "1GiB" if storage else "64MiB",
+                   "--memory": ("3GiB" if storage else "2GiB" if port == 4504 and log_memory_gib == 2 else "1GiB"),
+                   "--cache-memory": "1GiB" if storage else "64MiB",
                    "--trace-format": "json", "--maxlogssize": "128MiB", "--loggroup": grant["campaign"]}
         args = [grant["root"] + "/bin/fdbserver"]
         for flag, value in options.items():
@@ -47,9 +50,9 @@ def scaling_sampler(role="node2", hosts=3):
     return grant
 
 
-def scaling_profile(index=2, hosts=3):
+def scaling_profile(index=2, hosts=3, *, log_memory_gib=None):
     node, client = "node" + str(index), "client" + str(index)
-    grants = {role: scaling_sampler(role, hosts) for role in (node, client)}
+    grants = {role: scaling_sampler(role, hosts, log_memory_gib=log_memory_gib) for role in (node, client)}
     frames = {}
     for role, grant in grants.items():
         rows = [old.frame(grant, sequence) for sequence in range(12)]
@@ -68,8 +71,8 @@ def scaling_profile(index=2, hosts=3):
     return frames, grants, receipt, activity
 
 
-def evidence_fixture(root, role):
-    grant = scaling_sampler(role)
+def evidence_fixture(root, role, *, hosts=3, log_memory_gib=None):
+    grant = scaling_sampler(role, hosts, log_memory_gib=log_memory_gib)
     n.sampler_grant(grant)
     previous, owned = grant["root"], str(Path(root) / "owned")
     for key in ("root", "arm_root", "work", "binary"):
@@ -136,6 +139,93 @@ class ScalingForensicsTests(unittest.TestCase):
             result = n.collect_native_evidence(grant, identity, grant["forensic_budget"] if budget is None else budget,
                                                grant_sha256=f.GRANT_SHA, now_epoch=f.NOW_EPOCH, proc_root=proc_root)
         return result, calls
+
+    def test_followup_log_memory_flag_is_exact_integer_two_and_only_one_or_two_hosts(self):
+        for hosts in (1, 2):
+            for role in ("node1", "client1", *(("node2", "client2") if hosts == 2 else ())):
+                grant = scaling_sampler(role, hosts, log_memory_gib=2)
+                self.assertIs(n.sampler_grant(grant), grant)
+                for value in (None, True, False, 1, 3, 2.0, "2", [], {}):
+                    changed = copy.deepcopy(grant)
+                    changed["log_memory_gib"] = value
+                    with self.subTest(hosts=hosts, role=role, value=value), self.assertRaises(ValueError):
+                        n.sampler_grant(changed)
+        for role in ("node1", "node2", "node3", "client1", "client2", "client3"):
+            with self.subTest(role=role), self.assertRaises(ValueError):
+                n.sampler_grant(scaling_sampler(role, 3, log_memory_gib=2))
+
+    def test_followup_changes_only_log_memory_argv_and_omission_preserves_one_gib(self):
+        for role in ("node1", "node2", "client1", "client2"):
+            baseline = scaling_sampler(role, 2)
+            changed = scaling_sampler(role, 2, log_memory_gib=2)
+            self.assertNotIn("log_memory_gib", baseline)
+            n.sampler_grant(baseline)
+            n.sampler_grant(changed)
+            expected = copy.deepcopy(baseline)
+            expected["log_memory_gib"] = 2
+            for spec in expected["processes"]:
+                args = spec["args"]
+                self.assertEqual(args[args.index("--memory") + 1], "3GiB" if spec["port"] >= 4510 else "1GiB")
+                self.assertEqual(args[args.index("--cache-memory") + 1], "1GiB" if spec["port"] >= 4510 else "64MiB")
+                if spec["port"] == 4504:
+                    args[args.index("--memory") + 1] = "2GiB"
+            self.assertEqual(changed, expected)
+        for flag, memory in ((None, "2GiB"), (2, "1GiB")):
+            grant = scaling_sampler("node1", 2, log_memory_gib=flag)
+            args = next(spec["args"] for spec in grant["processes"] if spec["port"] == 4504)
+            args[args.index("--memory") + 1] = memory
+            with self.subTest(flag=flag, memory=memory), self.assertRaises(ValueError):
+                n.sampler_grant(grant)
+        legacy = old.sampler_grant()
+        before = copy.deepcopy(legacy)
+        self.assertIs(n.sampler_grant(legacy), legacy)
+        self.assertEqual(legacy, before)
+
+    def test_followup_profile_requires_matching_log_flag_presence_value_and_full_argv(self):
+        for hosts in (1, 2):
+            for index in range(1, hosts + 1):
+                pair = dict(node_role="node" + str(index), client_role="client" + str(index))
+                frames, grants, receipt, activity = scaling_profile(index, hosts, log_memory_gib=2)
+                self.assertEqual(n.profile(frames, grants, receipt, activity, True, **pair)["verdict"], "CAPTURED")
+                for failure in ("missing-node", "missing-client", "different-value", "changed-argv"):
+                    changed, rows = copy.deepcopy(grants), copy.deepcopy(frames)
+                    if failure == "missing-node":
+                        del changed[pair["node_role"]]["log_memory_gib"]
+                        if index == 1:
+                            for spec in changed[pair["node_role"]]["processes"]:
+                                if spec["port"] == 4504:
+                                    spec["args"][spec["args"].index("--memory") + 1] = "1GiB"
+                    elif failure == "missing-client": del changed[pair["client_role"]]["log_memory_gib"]
+                    elif failure == "different-value": changed[pair["client_role"]]["log_memory_gib"] = 1
+                    else:
+                        snapshot = next(iter(rows[pair["node_role"]][0]["native"].values()))
+                        snapshot["cmdline"] = ["/foreign/fdbserver"]
+                    with self.subTest(hosts=hosts, index=index, failure=failure):
+                        self.assertEqual(n.profile(rows, changed, receipt, activity, True, **pair)["verdict"], "INCONCLUSIVE")
+
+    def test_followup_two_gib_log_seal_keeps_oom_missing_pid_and_reuse_inconclusive_or_fatal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            grant, bindings, snapshots, paths, proc_root = evidence_fixture(tmp, "node1", hosts=2, log_memory_gib=2)
+            identity = self.seal(grant, bindings, snapshots, proc_root)
+            log = next(bound for bound in bindings.values() if bound["port"] == 4504)
+            seal = next(item for item in identity["trace_files"] if item["pid"] == log["pid"])
+            self.assertEqual(seal["args"], log["args"])
+            self.assertEqual(seal["args"][seal["args"].index("--memory") + 1], "2GiB")
+            result, _ = self.collect(grant, identity, snapshots, proc_root)
+            self.assertEqual(result["coverage"], "CAPTURED", result)
+            self.assertFalse(result["forensic_only"])
+            result, _ = self.collect(grant, identity, snapshots, proc_root, dead={log["pid"]},
+                change_properties=lambda props: props.update(Result="oom-kill", ExecMainPID="0"))
+            self.assertEqual(result["identity_verification"][next(unit for unit, bound in bindings.items() if bound["port"] == 4504)], "DEAD_OR_MISSING")
+            self.assertTrue(result["forensic_only"])
+            self.assertEqual(result["coverage"], "INCONCLUSIVE")
+            self.assertTrue(result["errors"])
+            self.assertNotIn("health_pass", result)
+            reused = copy.deepcopy(snapshots)
+            reused[log["pid"]]["starttime_ticks"] += 1
+            with self.snapshots(reused), mock.patch.object(n, "bounded_output") as commands, self.assertRaises(ValueError):
+                n.collect_native_evidence(grant, identity, grant_sha256=f.GRANT_SHA, now_epoch=f.NOW_EPOCH, proc_root=proc_root)
+            commands.assert_not_called()
 
     def test_exact_typed_host_role_process_id_and_budget_populations(self):
         self.assertEqual(n.ROLES, {"node1", "client1"})

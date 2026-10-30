@@ -3189,3 +3189,23 @@ regressions so they can be proposed upstream after the PoC.
   producer grant/release existed. Its unused2.85M allocation plus prior loaded
   upper7M remains9.85M; this is not unknown failed-row reclamation. No agent cloud
   actions or further infrastructure features are authorized by this code change.
+  The completed foreground run passed pairs1 (ACK6278.13374 rows/s, durable-drained
+  3755.93940 rows/s, drain40.11s) and both pairs2 gates, then failed pairs2 measured:
+  native transaction/log4504/PID15874 RSS-monitor `OutOfMemory`, exit20 under1GiB.
+  This is not a storage/kernel OOM; older storage4510/PID12998 remains UNKNOWN.
+  All six hosts/auxiliaries were deleted, fresh exact17-ID/ten-kind inventory
+  equality passed, and source seals stayed unchanged. Pairs3 was never issued.
+- [ ] Run only the separately approved bounded log-memory follow-up if the original
+  lease/cutoffs still fit after committed hook readiness. Optional scaling-only
+  `log_memory_gib:2` requires integer2, foreground true/no managed watch, exact
+  stages2/2 then1/1 and prior issued upper8425000. Only node1 transaction/log4504
+  changes1GiB→2GiB; cache64MiB, all other argv/knobs and16GiB/4CPU/swap0 slice stay
+  unchanged (node1 configured total15GiB). Six fresh hosts are prepared once and
+  reused;2x runs first, followed by a fresh same2GiB-log1x baseline. Per producer
+  100k gate+375k measured/120s yields1.425M/four waves, total9.85M. Failed pairs2
+  rows remain charged in full; only positively unissued pairs3 rows are reused.
+  Shared16MiB evidence/1GiB receipts and SESSION_FATAL OOM behavior remain intact.
+  Original09:49:26–11:49:26Z lease,10:56:06Z setup and11:04:26Z measured-entry
+  cutoffs are unchanged. No3x, stale1GiB baseline or sustained20k claim follows.
+  Follow-up runtime behavior is UNVERIFIED; no agent cloud actions, services or
+  infrastructure changes are authorized.
