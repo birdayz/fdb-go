@@ -110,6 +110,22 @@ class ScalingPlanTests(unittest.TestCase):
             with self.subTest(key=key, bad=bad), self.assertRaises(ValueError):
                 s.validate_plan(value, check_assets=False)
 
+    def test_explicit_foreground_mode_is_valid_without_managed_configuration(self):
+        value = plan(); del value["managed_watch"]; value["foreground_only"] = True
+        before = copy.deepcopy(value)
+        with mock.patch.object(s.supervisor, "validate_config", side_effect=AssertionError("foreground must not consult managed mode")):
+            self.assertIs(s.validate_plan(value, check_assets=False), value)
+        self.assertEqual(value, before)
+        self.assertEqual(p.scaling_execution_mode(value), "foreground_only")
+
+    def test_execution_mode_has_no_implicit_fallback_or_untyped_foreground_value(self):
+        base = plan(); del base["managed_watch"]
+        values = [base, dict(plan(), foreground_only=True), dict(plan(), foreground_only=False)]
+        values += [dict(base, foreground_only=bad) for bad in (False, 1, 0, 1.0, 0.0, None, "true", [], {})]
+        for value in values:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                s.validate_plan(value, check_assets=False)
+
     def test_managed_watch_configuration_is_required_and_uses_the_pure_supervisor_validator(self):
         value = plan(); del value["managed_watch"]
         with self.assertRaises(ValueError):
@@ -502,6 +518,28 @@ class ScalingSessionTests(unittest.TestCase):
              mock.patch.object(d, "remaining", return_value=30) as remaining, \
              mock.patch.object(s.supervisor, "register", side_effect=harness.register):
             yield source, remaining
+
+    def test_foreground_mode_never_registers_and_finally_cleans_after_success_or_native_fault(self):
+        for error in (None, ValueError("native PID vanished")):
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as tmp:
+                h = Harness(tmp, outcomes=(error, None, None))
+                del h.plan["managed_watch"]; h.plan["foreground_only"] = True
+                with self.running(h), \
+                     mock.patch.object(s.supervisor, "register", side_effect=AssertionError("foreground registered managed watch")) as register, \
+                     mock.patch.object(s.supervisor, "admit", side_effect=AssertionError("foreground requested managed admission")) as admit:
+                    if error is None:
+                        result = h.session.run()
+                        self.assertTrue(result["all_stages_passed"])
+                    else:
+                        with self.assertRaisesRegex(ValueError, "native PID vanished"):
+                            h.session.run()
+                    register.assert_not_called(); admit.assert_not_called()
+                result = d.read(h.out/"scaling-result.json")
+                self.assertEqual(result["execution_mode"], "bounded_foreground")
+                self.assertIs(result["foreground_only"], True)
+                h.provider.teardown.assert_called_once_with(h.plan, h.out/"provision", h.resources)
+                self.assertTrue((h.out/"source-after.json").is_file())
+                self.assertFalse(any(event[0] == "register" for event in h.events))
 
     def assert_finalized(self, h, *, source_calls=5):
         h.provider.prepare.assert_called_once_with(h.plan, h.out/"provision")

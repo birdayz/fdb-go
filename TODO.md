@@ -3178,3 +3178,14 @@ regressions so they can be proposed upstream after the PoC.
   new lease/resources is implied, and legacy native argv/application/rows remain
   unchanged. Preserve old native PID12998 cause UNKNOWN separately from the now
   confirmed runtime-restart failure domain.
+- [ ] Run the user's explicitly approved plain foreground scaling perf test with
+  `foreground_only:true` and no `managed_watch`; no external service/bundle or
+  managed admission/registration is required. The mode is explicit and typed,
+  reports `execution_mode:bounded_foreground`, and retains bounded prepare,
+  internal auxiliary guard, all existing source/health/ownership/disk/transaction
+  checks, immutable2h lease, final cleanup and six-host reuse across1/2/3 tiers.
+  There is no independent runtime-survival claim. The prior interrupted attempt
+  positively reached no ingest: no prepared completion, stage, active arm or
+  producer grant/release existed. Its unused2.85M allocation plus prior loaded
+  upper7M remains9.85M; this is not unknown failed-row reclamation. No agent cloud
+  actions or further infrastructure features are authorized by this code change.
