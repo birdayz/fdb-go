@@ -486,12 +486,14 @@ and shared kill dependencies are rejected. Only its own generated RuntimeMax
 control drop-in is allowed. Exact unit/manager reachability is checked, not global
 manager health; unrelated failed units are not inspected or reset.
 
-The generated `ExecStartPre` runs the sealed helper's `bound --root ROOT --seal
+The generated `ExecCondition` runs the sealed helper's `bound --root ROOT --seal
 SEAL` mode. It verifies its own PID/full argv/cgroup/USER-manager parent, then may
 set **only its own exact unit's** RuntimeMax to the original remaining hard time
 (with startup margin). Every activation/restart recomputes remaining time, never
 renews the lease. Unit runtime bounds must fit the original monotonic deadline.
-Expiry exits77 (`RestartPreventExitStatus=77`), not a fresh watch lifetime.
+An expired condition exits77, skipping `ExecStart` without failing the unit or
+triggering `Restart=on-failure`. `RestartPreventExitStatus=77` applies only to the
+MAIN watch's expiry, not to the condition; neither path renews the lease.
 `ExecStart` runs `watch --root ROOT --seal SEAL`; the seal is in the actual kernel
 argv, binding plan, helper bundle and interpreter identity. These execution modes
 are for the separately authorized OS unit, not controller-side detachment.
