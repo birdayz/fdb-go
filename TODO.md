@@ -3150,9 +3150,31 @@ regressions so they can be proposed upstream after the PoC.
   The first six-host attempt was interrupted during preparation before any stage
   or producer-release receipt existed; the controller and independent watchdog
   processes were no longer present and their former task owner was unavailable.
-  Investigate that supervision interruption before any future launch; its cause
-  is UNKNOWN, not a native throughput failure. Cleanup supervision was restored
+  Positive local evidence now establishes a common-mode runtime service restart:
+  `bruh-web.service` stopped07:09:51.371–07:09:52.304Z and started07:09:52.320Z,
+  3.297s after client3 readiness. Its `KillMode=control-group` covered both runtime
+  jobs; the watchdog was not genuinely independent. Restart initiator/reason and
+  individual child signals remain UNKNOWN, not a native throughput failure.
+  Evidence is `runtime-restart-evidence.json` in the campaign root. The older
+  storage4510/PID12998 cause remains UNKNOWN. Cleanup supervision was restored
   under the original unchanged lease solely to delete the six owned hosts and
   auxiliaries, with fresh exact17-ID/ten-kind inventory equality and unchanged
   source seals. No scaling measurements completed, and the owner declined a
   restart. Evidence: `/var/tmp/fdb-native-scaling.NjSZRv/`.
+- [ ] Obtain explicit operator authorization for a harmless local managed-watch
+  isolation probe before any future scaling launch. The scaling-only corrective
+  candidate adds offline private helper-bundle/USER-service preparation and live
+  pre-mutation admission, not automatic installation/start or runtime detachment.
+  The watch must be outside `bruh-web.service` at the USER-manager root slice;
+  separate PGIDs in the same runtime cgroup do not pass. Exact live PID/start/
+  boot/argv, manager/unit/dependency identity, kernel-argv bundle seal, fresh
+  registered-controller ACK, source/assets and original deadline are checked.
+  Its own ExecStartPre may set only its generated unit's remaining RuntimeMax;
+  manual restart never renews lifetime. Controller loss/runtime invocation change
+  or unknown supervision triggers existing exact owned cleanup without an EXIT
+  marker. Active admission failure cannot block deletion; source/runtime faults
+  still permit the sealed cleanup bundle. Tests use fake manager/procfs/clocks/
+  providers only. Actual OS survival remains **UNVERIFIED**, no unit activation or
+  new lease/resources is implied, and legacy native argv/application/rows remain
+  unchanged. Preserve old native PID12998 cause UNKNOWN separately from the now
+  confirmed runtime-restart failure domain.

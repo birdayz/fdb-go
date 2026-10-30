@@ -25,7 +25,8 @@ def plan():
     value.update(schema="otel_native_scaling_v1", stages=[[1, 1], [2, 2], [3, 3]],
                  measured_count=375000, measured_seconds=120, prior_rows_upper=0,
                  batch=64, workers=8, storage_process_count=3,
-                 storage_max_outstanding=64, storage_memory_profile="scaling3ss3g")
+                 storage_max_outstanding=64, storage_memory_profile="scaling3ss3g",
+                 managed_watch={"root": "/private/native-test/watch", "output": "/private/native-test/run"})
     return value
 
 
@@ -108,6 +109,16 @@ class ScalingPlanTests(unittest.TestCase):
             value = plan(); value[key] = bad
             with self.subTest(key=key, bad=bad), self.assertRaises(ValueError):
                 s.validate_plan(value, check_assets=False)
+
+    def test_managed_watch_configuration_is_required_and_uses_the_pure_supervisor_validator(self):
+        value = plan(); del value["managed_watch"]
+        with self.assertRaises(ValueError):
+            s.validate_plan(value, check_assets=False)
+        value = plan()
+        with mock.patch.object(s.supervisor, "validate_config", side_effect=ValueError("managed watch refused")) as validate:
+            with self.assertRaisesRegex(ValueError, "managed watch refused"):
+                s.validate_plan(value, check_assets=False)
+        validate.assert_called_once_with(value)
 
     def test_asset_projection_checks_hashes_and_refuses_symlinks_without_plan_mutation(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -423,9 +434,11 @@ class Harness:
         self.completed = [stage_result(hosts) for hosts in (1, 2, 3)]
         self.after_run = None
         self.host_error, self.stop_error, self.cleanup_error, self.prepare_error = None, None, None, None
+        self.watch_error = None
         self.stop_result = {"passed": True, "quiescent": True}
         self.cleanup_result = {"passed": True, "protected_baseline_restored": True}
         self.out = Path(root)/"campaign"/"run"
+        self.plan["managed_watch"] = {"root": str(self.out.parent/"watch"), "output": str(self.out)}
         assets = Path(root)/"assets"; assets.mkdir()
         for key in p.ASSETS:
             path = assets/key; path.write_text("sealed-"+key)
@@ -442,6 +455,12 @@ class Harness:
         self.provider.stop_owned_arm.side_effect = self.stop
         self.provider.teardown.side_effect = self.teardown
         self.session = s.ScalingSession(self.plan, self.out, self.provider, arm_factory=self.arm_factory)
+
+    def register(self, lease, out):
+        self.events.append(("register", lease, out))
+        if self.watch_error is not None:
+            raise self.watch_error
+        return {"registered": True}
 
     def prepare(self, lease, out):
         self.events.append(("prepare", lease, out))
@@ -480,11 +499,13 @@ class ScalingSessionTests(unittest.TestCase):
     @contextmanager
     def running(self, harness):
         with mock.patch.object(p, "verify_source", side_effect=harness.verify_source) as source, \
-             mock.patch.object(d, "remaining", return_value=30) as remaining:
+             mock.patch.object(d, "remaining", return_value=30) as remaining, \
+             mock.patch.object(s.supervisor, "register", side_effect=harness.register):
             yield source, remaining
 
     def assert_finalized(self, h, *, source_calls=5):
         h.provider.prepare.assert_called_once_with(h.plan, h.out/"provision")
+        self.assertEqual([event[1:] for event in h.events if event[0] == "register"], [(h.plan, h.out)])
         h.provider.teardown.assert_called_once_with(h.plan, h.out/"provision", h.resources)
         self.assertEqual(sum(event[0] == "source" for event in h.events), source_calls)
         self.assertEqual([event[0] for event in h.events[-2:]], ["cleanup", "source"])
@@ -518,7 +539,7 @@ class ScalingSessionTests(unittest.TestCase):
             self.assertEqual(result["cumulative_rows_upper"], 2850000)
             self.assertEqual(d.read(h.out/"scaling-result.json"), result)
             self.assertEqual(h.provider.stop_owned_arm.call_count, 3)
-            self.assertEqual([event[0] for event in h.events], ["source", "prepare"]+
+            self.assertEqual([event[0] for event in h.events], ["source", "register", "prepare"]+
                              [name for _ in range(3) for name in ("helpers", "quiet", "cluster", "prerequisite", "measured", "fresh-hosts", "source", "stop")]+
                              ["cleanup", "source"])
             self.assertEqual([event for event in h.events if event[0] == "helpers"],
@@ -721,6 +742,32 @@ class ScalingSessionTests(unittest.TestCase):
                 self.assertIs(result["accepted_throughput"], False)
                 self.assertEqual(h.provider.stop_owned_arm.call_count, 3)
 
+    def test_managed_watch_registration_failure_is_fatal_before_provision_and_still_checks_source_after(self):
+        for error in (ValueError("managed watch acknowledgement missing"), OSError("managed watch unavailable")):
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as tmp:
+                h = Harness(tmp); h.watch_error = error
+                with self.running(h), self.assertRaisesRegex(type(error), "managed watch"):
+                    h.session.run()
+                h.provider.prepare.assert_not_called(); h.provider.teardown.assert_not_called()
+                self.assertEqual(h.arms, [])
+                self.assertEqual([event[0] for event in h.events], ["source", "register", "source"])
+                self.assertEqual(d.read(h.out/"source-after.json")["source_files"], 1)
+                result = d.read(h.out/"scaling-result.json")
+                self.assertEqual(result["status"], "SESSION_FATAL")
+                self.assertIs(result["all_stages_passed"], False)
+                self.assertEqual(result["stages"], [])
+
+    def test_output_mismatch_is_rejected_before_source_registration_or_any_output_creation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            h = Harness(tmp); other = Path(tmp)/"other-run"; h.session.out = other
+            with self.running(h) as (source, remaining):
+                with self.assertRaisesRegex(ValueError, "output must match managed watch output"):
+                    h.session.run()
+                source.assert_not_called(); remaining.assert_not_called()
+            h.provider.prepare.assert_not_called(); h.provider.teardown.assert_not_called()
+            self.assertEqual(h.events, [])
+            self.assertFalse(h.out.exists()); self.assertFalse(other.exists())
+
     def test_zero_receipt_budget_prevents_provision_and_still_writes_source_after(self):
         with tempfile.TemporaryDirectory() as tmp:
             h = Harness(tmp)
@@ -922,6 +969,33 @@ class ScalingArmTests(unittest.TestCase):
                 arm.wave.assert_called_once_with(h.provider.setup_cluster.return_value, 100000, "prerequisite")
                 self.assertNotIn("measured", d.read(h.out/"stage-result.json"))
                 self.assertEqual(sum(event[0] == "source" for event in h.events), 2)
+
+    def test_remote_helpers_copy_and_seal_the_supervisor_dependency_on_all_six_hosts(self):
+        for mode in ("install_helpers", "verify_helpers"):
+            for changed in (False, True):
+                with self.subTest(mode=mode, changed=changed), tempfile.TemporaryDirectory() as tmp:
+                    h = Harness(tmp); arm = s.ScalingArm(h.plan, h.out, h.provider, stage_hosts=3)
+                    arm.nodes = h.resources["nodes"]
+                    arm.remote_harness = "/srv/otel-horizontal/native-test/harness"
+                    arm.copy = mock.Mock()
+                    def command(node, args):
+                        name = Path(args[1]).name
+                        digest = "0"*64 if changed and name == "supervisor.py" and node is arm.nodes["client3"] else p.sha(n.HERE/name)
+                        return digest+"  "+args[1]+"\n"
+                    arm.command = mock.Mock(side_effect=command)
+                    with mock.patch.object(n.Diagnostic, mode) as base:
+                        if changed:
+                            with self.assertRaisesRegex(ValueError, "scaling remote helper"):
+                                getattr(arm, mode)()
+                        else:
+                            getattr(arm, mode)()
+                    base.assert_called_once_with()
+                    for node in arm.nodes.values():
+                        arm.command.assert_any_call(node, ["sha256sum", arm.remote_harness+"/supervisor.py"])
+                        if mode == "install_helpers":
+                            arm.copy.assert_any_call(node, n.HERE/"supervisor.py", arm.remote_harness+"/supervisor.py")
+                    if mode == "verify_helpers":
+                        arm.copy.assert_not_called()
 
     def test_scope_bindings_and_remote_dispatch_use_each_typed_independent_run(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1304,6 +1378,7 @@ class ScalingCLITests(unittest.TestCase):
             with mock.patch("builtins.__import__", guarded_import), \
                  mock.patch.object(s, "ScalingSession", side_effect=AssertionError("session started")), \
                  mock.patch.object(p, "verify_source", side_effect=AssertionError("source effect")), \
+                 mock.patch.object(s.supervisor, "register", side_effect=AssertionError("watch registration effect")), \
                  mock.patch("builtins.print") as output:
                 s.main(["run", "--plan", str(path), "--output", str(h.out)])
             value = json.loads(output.call_args.args[0])
