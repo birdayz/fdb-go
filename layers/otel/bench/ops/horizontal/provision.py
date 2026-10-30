@@ -196,7 +196,7 @@ def _validate_scaling(plan):
                        ('batch', 64), ('workers', 8), ('gomaxprocs', 4)):
         if type(plan.get(key)) is not int or plan[key] != value:
             raise ProvisionError('scaling plan requires exact typed ' + key)
-    ceiling = 15000000 if plan.get('log_memory_gib') == 2 and plan.get('prior_rows_upper') == 9375000 else 10000000
+    ceiling = 20000000 if plan.get('log_memory_gib') == 2 and plan.get('prior_rows_upper') == 9375000 else 10000000
     if (type(plan.get('prior_rows_upper')) is not int or plan['prior_rows_upper'] < 0
             or plan['prior_rows_upper'] + authorized_rows > ceiling):
         raise ProvisionError('scaling cumulative row authorization exceeds ceiling')
