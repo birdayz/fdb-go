@@ -3108,6 +3108,20 @@ regressions so they can be proposed upstream after the PoC.
   with freshly passing fatal guards may end an arm rather than the Session.
   Unknown/host/source/resource/identity/deadline faults still force cleanup.
   Shared source/ownership lease, host history,16MiB traces/1GiB receipts and
-  original2h clocks never reset. The Session candidate remains **runtime
-  UNVERIFIED** until new sealed inputs/independent watchdog and explicit launch;
-  two cases add at most2.2M rows (4.8M prior upper gives7M cumulative, not100M).
+  original2h clocks never reset. Every Session requires sealed inputs, an
+  independent watchdog and explicit launch approval; its two cases add at most
+  2.2M rows (4.8M prior upper gives7M cumulative, not100M).
+  The first bounded Session did reuse the same two VMs across both cases; both
+  100k gates passed all1,100,002 census keys and1600 oracle checks. Capacity16g's
+  probe remained ARM_FAILURE on strict health; baseline's probe lost storage4510
+  PID12998 and correctly ended SESSION_FATAL. Cause remains **UNKNOWN**: cgroup
+  OOM counters were zero and the old collector required that dead PID to remain
+  readable, so final native traces were not retained. All owned resources were
+  deleted with exact17-ID/ten-kind inventory equality and unchanged source seals.
+  The forensic-only correction now seals live-open filenames/inodes/prefixes and
+  unit invocation identity before release, retains bounded owned postmortem
+  tails/unit exit/journal facts as INCONCLUSIVE, records actual SC_PAGESIZE, and
+  never restores health or reuse permission. It remains runtime-unverified;
+  archived failures/cause UNKNOWN are not rewritten. Any separately approved
+  single balanced repro retains the original absolute lease/deadline and adds at
+  most1.1M rows (7M prior upper ->8.1M), or is forgone if admission time has elapsed.

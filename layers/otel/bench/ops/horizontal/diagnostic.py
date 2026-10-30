@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import stat
 import subprocess
 import time
@@ -18,6 +19,12 @@ HERE = Path(__file__).resolve().parent
 MIB = 1024 ** 2
 TRACE_BUDGET = 16 * MIB
 FRAME_BUDGET = 16 * MIB
+FORENSIC_LIMIT = MIB
+PREFIX_BYTES = 4096
+TRACE_NAME = re.compile(r"trace\.(\d+\.\d+\.\d+\.\d+)\.(\d+)\.(\d+)\.([A-Za-z0-9]{6})\.(\d+)\.(\d+)\.json")
+UNIT_PROPERTIES = ("Id", "FragmentPath", "InvocationID", "ControlGroup", "ExecStart", "MainPID", "ExecMainPID",
+                   "ActiveState", "SubState", "Result", "ExecMainCode", "ExecMainStatus",
+                   "ExecMainStartTimestampMonotonic", "ExecMainExitTimestampMonotonic", "NRestarts")
 ROLES = {"node1", "client1"}
 DISK_FIELDS = ("read_ios", "read_merges", "read_sectors", "read_ms", "write_ios", "write_merges",
                "write_sectors", "write_ms", "in_flight", "io_ms", "weighted_io_ms", "discard_ios",
@@ -109,6 +116,12 @@ def sampler_grant(value):
                                ("--public-address", process.get("address"))):
             p.require(flag in args and args.index(flag) + 1 < len(args)
                       and args[args.index(flag) + 1] == expected, "sampler native argument binding")
+    if "storage_ids" in value:
+        ids = value["storage_ids"]
+        expected = {x["address"] for x in value["processes"] if x["port"] in (4510, 4511)}
+        p.require(type(ids) is dict and set(ids) == expected and all(p.hexstr(x, 16) for x in ids.values()), "sampler exact storage ID binding")
+    if "forensic_budget" in value:
+        p.require(type(value["forensic_budget"]) is int and 0 <= value["forensic_budget"] <= TRACE_BUDGET, "sampler forensic byte budget")
     return value
 
 
@@ -266,10 +279,12 @@ def sample_frame(grant, bindings, device, sequence, phase):
             counters[key] = int(value)
         p.require(fields[0] not in io, "duplicate cgroup I/O device")
         io[fields[0]] = counters
+    page_size = os.sysconf("SC_PAGESIZE")
+    p.require(p.integer(page_size, 1), "actual host page size unavailable")
     return {"schema": "otel_native_frame_v1", "node_id": grant["node_id"], "role": grant["role"], "run": grant["run"],
             "token": grant["token"], "producer_grant_sha256": grant["producer_grant_sha256"], "sequence": sequence,
             "phase": phase, "epoch": time.time(), "monotonic_ns": time.monotonic_ns(),
-            "boot_id": read_small("/proc/sys/kernel/random/boot_id", 128).strip(), "clock_ticks": os.sysconf("SC_CLK_TCK"),
+            "boot_id": read_small("/proc/sys/kernel/random/boot_id", 128).strip(), "clock_ticks": os.sysconf("SC_CLK_TCK"), "host_page_size": page_size,
             "cgroup": {"path": str(cg), "limits": limits, "cpu": cpu, "io": io, "io_raw": io_raw},
             "device": {**device, "counters": diskstats(read_small("/proc/diskstats", MIB), device["devices"])},
             "native": native, "producer": producer_process(grant) if grant["role"] == "client1" else None,
@@ -278,13 +293,16 @@ def sample_frame(grant, bindings, device, sequence, phase):
 
 def sample(path):
     grant = sampler_grant(d.read(path)); d.identity(grant["node_id"])
+    d.remaining(grant)
     base = Path("/srv/otel-horizontal") / grant["campaign"]
     work = no_symlinks(grant["work"], base)
     p.require(p.sha(path) == p.sha(work / "plan.json"), "sampler grant path mismatch")
     bindings = native_bindings(grant)
     device = device_identity(no_symlinks(grant["arm_root"], base))
+    sealed = seal_native_identity(grant, bindings)
     d.write(work / "identity.json", {"node_id": grant["node_id"], "grant_sha256": p.sha(path),
-            "bindings": bindings, "device": device, "observational_overhead": "sampler shares the fixed role slice; not a throughput comparison"})
+            "bindings": bindings, "device": device, **sealed,
+            "observational_overhead": "sampler shares the fixed role slice; not a throughput comparison"})
     sequence, size, origin = 0, 0, time.monotonic()
     with open(work / "frames.jsonl", "x") as stream:
         os.chmod(stream.name, 0o600)
@@ -303,7 +321,7 @@ def sample(path):
             if sequence == 2:
                 p.require(phase == "baseline", "two sampler baseline frames required before release")
                 d.write(work / "ready.json", {"node_id": grant["node_id"], "token": grant["token"],
-                        "grant_sha256": p.sha(path), "baseline_frames": 2})
+                        "grant_sha256": p.sha(path), "identity_sha256": p.sha(work / "identity.json"), "baseline_frames": 2})
             time.sleep(max(0, origin + sequence - time.monotonic()))
     d.write(work / "sampler-exit.json", {"frames": sequence, "bytes": size, "epoch": time.time()})
 
@@ -332,7 +350,7 @@ def frame_errors(frame, grant):
     if (frame.get("schema") != "otel_native_frame_v1" or not p.integer(frame.get("sequence"))
             or not p.integer(frame.get("monotonic_ns"), 1) or not p.number(frame.get("epoch"))
             or frame.get("phase") not in ("baseline", "load")
-            or type(frame.get("boot_id")) is not str or not frame["boot_id"]):
+            or type(frame.get("boot_id")) is not str or not frame["boot_id"] or not p.integer(frame.get("host_page_size"), 1)):
         errors.append("frame clock/phase/schema missing")
     cg = frame.get("cgroup", {})
     limits = cg.get("limits", {}) if type(cg) is dict else {}
@@ -418,7 +436,7 @@ def profile(frames, grants, producer_receipt, activity, release_bound):
                 if (frame.get("cgroup", {}).get("path") != previous.get("cgroup", {}).get("path")
                         or frame.get("device", {}).get("devices") != previous.get("device", {}).get("devices")):
                     reasons.append(role + ": cgroup/device identity changed"); break
-                if (frame.get("boot_id") != previous.get("boot_id")
+                if (frame.get("boot_id") != previous.get("boot_id") or frame.get("host_page_size") != previous.get("host_page_size")
                         or not p.integer(frame.get("monotonic_ns"), 1)
                         or frame["monotonic_ns"] <= previous.get("monotonic_ns", 0)
                         or frame.get("sequence") != previous.get("sequence", -1) + 1):
@@ -500,7 +518,146 @@ def profile(frames, grants, producer_receipt, activity, release_bound):
             "boundary": "observational profile only; native input includes MVCC/DD/background accounting, not physical I/O or causal CPU/disk proof"}
 
 
-def trace_tail(arm_root, campaign, bindings, budget=TRACE_BUDGET, *, storage_process_count=1):
+def bounded_output(args, max_bytes, timeout=5):
+    p.require(type(max_bytes) is int and 0 <= max_bytes <= TRACE_BUDGET, "bounded forensic command bytes")
+    p.require(p.number(timeout) and 0 < timeout <= 5, "bounded forensic command time")
+    if not max_bytes:
+        return {"exit": None, "raw_base64": "", "bytes_read": 0, "truncated": False, "skipped": True}
+    child = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    raw, truncated, timed_out = bytearray(), False, False
+    until = time.monotonic() + timeout
+    try:
+        while len(raw) < max_bytes:
+            remaining = until - time.monotonic()
+            if remaining <= 0 or not select.select([child.stdout], [], [], remaining)[0]:
+                timed_out = True
+                break
+            block = os.read(child.stdout.fileno(), min(65536, max_bytes - len(raw)))
+            if not block:
+                break
+            raw.extend(block)
+        truncated = len(raw) == max_bytes
+        if (truncated or timed_out) and child.poll() is None:
+            child.terminate()
+        try:
+            code = child.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            child.kill(); code = child.wait(timeout=1)
+    finally:
+        if child.poll() is None:
+            child.kill(); child.wait(timeout=1)
+        child.stdout.close()
+    return {"exit": code, "raw_base64": base64.b64encode(raw).decode(), "bytes_read": len(raw),
+            "truncated": truncated, "timed_out": timed_out}
+
+
+def _owned_bindings(grant, bindings):
+    specs = {x["unit_name"]: x for x in grant["processes"]}
+    p.require(type(bindings) is dict and set(bindings) == set(specs), "exact sealed native binding population")
+    armid = Path(grant["arm_root"]).name
+    for unit, bound in bindings.items():
+        spec = specs[unit]
+        p.require(unit == "oh-" + grant["prefix"] + "-" + armid + "-" + str(spec["port"]) + ".service"
+                  and type(bound) is dict and p.integer(bound.get("pid"), 1) and p.integer(bound.get("starttime_ticks"), 1)
+                  and all(bound.get(key) == spec[key] for key in ("args", "port", "address")), "sealed unit/arm/process binding mismatch")
+    p.require(len({x["pid"] for x in bindings.values()}) == len(bindings), "duplicate sealed native PID")
+
+
+def _live_binding(bound):
+    actual = process_snapshot(bound["pid"])
+    p.require(actual["pid"] == bound["pid"] and actual["starttime_ticks"] == bound["starttime_ticks"]
+              and actual["cmdline"] == bound["args"] and actual["exe"] == bound["args"][0], "trace native PID reuse or command changed")
+    return actual
+
+
+def _unit_properties(unit, raw):
+    result = {}
+    for line in raw.decode().splitlines():
+        key, separator, value = line.partition("=")
+        p.require(separator and key in UNIT_PROPERTIES and key not in result, "malformed owned unit properties")
+        result[key] = value
+    p.require(result.get("Id") == unit and result.get("FragmentPath") == "/etc/systemd/system/" + unit,
+              "forensic unit path/identity mismatch")
+    return result
+
+
+def seal_trace_files(grant, bindings, *, proc_root="/proc", budget=TRACE_BUDGET):
+    """Bind exact open filenames/inodes to positively live native processes."""
+    _owned_bindings(grant, bindings)
+    p.require(type(budget) is int and 0 <= budget <= TRACE_BUDGET, "trace seal byte budget")
+    arm = Path(grant["arm_root"])
+    p.require(not any(x.is_symlink() for x in (arm, *arm.parents)) and arm.is_dir(), "native seal arm is not a real owned directory")
+    logs = no_symlinks(arm / "logs", arm)
+    targets = [(unit, x) for unit, x in bindings.items() if x["port"] in (4504, 4510, 4511)]
+    result, remaining = [], budget
+    for index, (unit, bound) in enumerate(targets):
+        if not remaining:
+            break
+        _live_binding(bound)
+        candidates = []
+        for fd in (Path(proc_root) / str(bound["pid"]) / "fd").iterdir():
+            try:
+                target = Path(os.readlink(fd))
+                match = TRACE_NAME.fullmatch(target.name)
+                if not match or match[1] + ":" + match[2] != bound["address"]:
+                    continue
+                p.require(target.parent == logs, "open native trace escaped exact arm logs")
+                no_symlinks(target, arm)
+                info, opened = target.stat(), fd.stat()
+                p.require(stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) == (opened.st_dev, opened.st_ino),
+                          "native trace open-FD inode mismatch")
+                candidates.append(((int(match[3]), int(match[6])), target, info))
+            except FileNotFoundError:
+                continue
+        p.require(candidates, "no exact live-open native trace file to seal")
+        _, target, info = max(candidates, key=lambda x: x[0])
+        allowance = min(PREFIX_BYTES, remaining // (len(targets) - index), info.st_size)
+        if not allowance:
+            continue
+        fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            opened = os.fstat(fd)
+            p.require((opened.st_dev, opened.st_ino) == (info.st_dev, info.st_ino), "native trace changed while sealing")
+            prefix = os.read(fd, allowance)
+        finally:
+            os.close(fd)
+        _live_binding(bound)
+        remaining -= len(prefix)
+        result.append({"name": target.name, "path": str(target), "unit": unit, "address": bound["address"],
+                       "pid": bound["pid"], "starttime_ticks": bound["starttime_ticks"], "args": bound["args"],
+                       "device": info.st_dev, "inode": info.st_ino, "size_at_seal": info.st_size,
+                       "prefix_bytes": len(prefix), "prefix_sha256": hashlib.sha256(prefix).hexdigest(),
+                       "storage_id": grant.get("storage_ids", {}).get(bound["address"]), "sealed_epoch": time.time()})
+    return result
+
+
+def seal_native_identity(grant, bindings, *, proc_root="/proc"):
+    _owned_bindings(grant, bindings)
+    budget = min(grant.get("forensic_budget", TRACE_BUDGET), FORENSIC_LIMIT)
+    result = {"sealed_epoch": time.time(), "boot_id": read_small(Path(proc_root) / "sys/kernel/random/boot_id", 128).strip(),
+              "unit_seals": {}, "trace_files": [], "seal_bytes_read": 0}
+    for unit, bound in bindings.items():
+        allowance = min(4096, max(0, budget - result["seal_bytes_read"]))
+        if allowance < 4096:
+            break
+        _live_binding(bound)
+        value = bounded_output(["systemctl", "show", unit, *["--property=" + key for key in UNIT_PROPERTIES]], allowance)
+        result["seal_bytes_read"] += value["bytes_read"]
+        p.require(value["exit"] == 0 and not value["truncated"] and not value.get("timed_out"), "positive unit seal unavailable")
+        props = _unit_properties(unit, base64.b64decode(value["raw_base64"]))
+        expected_group = "/horizontal.slice/horizontal-fdb.slice/" + unit
+        p.require(p.hexstr(props.get("InvocationID"), 32) and props.get("MainPID") == str(bound["pid"])
+                  and props.get("ExecMainPID") == str(bound["pid"]) and props.get("ControlGroup") == expected_group
+                  and props.get("ActiveState") == "active", "positive native unit/PID/cgroup seal mismatch")
+        _live_binding(bound)
+        result["unit_seals"][unit] = {"invocation_id": props["InvocationID"], "properties": props}
+    result["trace_files"] = seal_trace_files(grant, bindings, proc_root=proc_root,
+                                             budget=max(0, budget - result["seal_bytes_read"]))
+    result["seal_bytes_read"] += sum(x["prefix_bytes"] for x in result["trace_files"])
+    return result
+
+
+def trace_tail(arm_root, campaign, bindings, budget=TRACE_BUDGET, *, storage_process_count=1, sealed_files=None, storage_ids=None):
     p.require(type(storage_process_count) is int and storage_process_count in (1, 2), "trace storage process count")
     p.require(type(budget) is int and 0 <= budget <= TRACE_BUDGET, "aggregate native trace budget")
     arm = Path(arm_root)
@@ -512,8 +669,27 @@ def trace_tail(arm_root, campaign, bindings, budget=TRACE_BUDGET, *, storage_pro
     p.require(len(targets) == len(ports) and {x["port"] for x in targets.values()} == ports, "exact storage/log trace targets required")
     result = {"files": [], "errors": [], "bytes_read": 0, "budget": budget,
               "boundary": "raw bounded NDJSON tails, all event types; Machine/LogGroup map via verified native PID/start/cmdline, not trace ThreadID"}
-    observed = {}
-    for path in logs.iterdir():
+    observed, seals = {}, {}
+    if sealed_files is not None:
+        p.require(type(sealed_files) is list, "sealed native trace file list")
+        for seal in sealed_files:
+            p.require(type(seal) is dict and type(seal.get("path")) is str, "sealed native trace path required")
+            path = Path(seal["path"])
+            match = TRACE_NAME.fullmatch(path.name)
+            unit = seal.get("unit")
+            p.require(type(seal) is dict and path.parent == logs and path.name == seal.get("name") and match
+                      and unit in bindings and all(seal.get(k) == bindings[unit].get(k) for k in ("address", "pid", "starttime_ticks", "args"))
+                      and match[1] + ":" + match[2] == seal["address"] and seal["address"] in targets
+                      and path.name not in seals and seal["address"] not in observed and p.integer(seal.get("prefix_bytes"), 1)
+                      and seal["prefix_bytes"] <= PREFIX_BYTES and p.hexstr(seal.get("prefix_sha256"))
+                      and p.integer(seal.get("size_at_seal")) and seal["size_at_seal"] >= seal["prefix_bytes"],
+                      "sealed native trace path/process binding mismatch")
+            p.require(not storage_ids or seal["address"] not in storage_ids or seal.get("storage_id") == storage_ids[seal["address"]],
+                      "sealed native trace storage ID mismatch")
+            no_symlinks(path, arm)
+            seals[path.name] = seal
+            observed[seal["address"]] = ((int(match[3]), int(match[6])), path)
+    for path in ([] if sealed_files is not None else logs.iterdir()):
         match = re.fullmatch(r"trace\.(\d+\.\d+\.\d+\.\d+)\.(\d+)\.(\d+)\.([A-Za-z0-9]{6})\.(\d+)\.(\d+)\.json", path.name)
         if match and match[1] + ":" + match[2] in targets:
             p.require(not path.is_symlink(), "native trace symlink refused")
@@ -522,7 +698,8 @@ def trace_tail(arm_root, campaign, bindings, budget=TRACE_BUDGET, *, storage_pro
             if address not in observed or key > observed[address][0]:
                 observed[address] = (key, path)
     entries = [x[1] for _, x in sorted(observed.items())]
-    result["selection"] = "latest observed file for each exact storage/log address"
+    result["selection"] = ("previously sealed exact native filenames only" if sealed_files is not None
+                           else "latest observed file for each exact storage/log address")
     for index, path in enumerate(entries):
         match = re.fullmatch(r"trace\.(\d+\.\d+\.\d+\.\d+)\.(\d+)\.(\d+)\.([A-Za-z0-9]{6})\.(\d+)\.(\d+)\.json", path.name)
         if not match:
@@ -540,6 +717,16 @@ def trace_tail(arm_root, campaign, bindings, budget=TRACE_BUDGET, *, storage_pro
             p.require(stat.S_ISREG(info.st_mode), "native trace is not a regular file")
             size = info.st_size
             allowance = remaining // (len(entries) - index)
+            seal = seals.get(path.name)
+            if seal is not None:
+                p.require((info.st_dev, info.st_ino) == (seal["device"], seal["inode"])
+                          and size >= seal["size_at_seal"], "sealed native trace inode/size changed")
+                if allowance < seal["prefix_bytes"]:
+                    continue  # No identity-prefix read or tail is authorized beyond this budget.
+                prefix = os.read(fd, seal["prefix_bytes"])
+                result["bytes_read"] += len(prefix)
+                p.require(hashlib.sha256(prefix).hexdigest() == seal["prefix_sha256"], "sealed native trace prefix changed")
+                allowance -= len(prefix)
             offset = max(0, size - allowance)
             os.lseek(fd, offset, os.SEEK_SET)
             raw = os.read(fd, size - offset)
@@ -556,6 +743,9 @@ def trace_tail(arm_root, campaign, bindings, budget=TRACE_BUDGET, *, storage_pro
             event = d.loads(line.decode())
             p.require(type(event) is dict and event.get("Machine") == address and event.get("LogGroup") == campaign,
                       "native trace Machine/LogGroup binding mismatch")
+            if storage_ids and address in storage_ids and (event.get("Type") in ("StorageMetrics", "StorageServerInit")
+                    or event.get("Type") == "Role" and event.get("As") == "StorageServer" and event.get("Transition") == "Begin"):
+                p.require(event.get("ID") == storage_ids[address], "native trace storage ID mismatch")
         bound = targets[address]
         result["files"].append({"name": path.name, "address": address, "pid": bound["pid"],
                                 "starttime_ticks": bound["starttime_ticks"], "args": bound["args"],
@@ -563,6 +753,121 @@ def trace_tail(arm_root, campaign, bindings, budget=TRACE_BUDGET, *, storage_pro
                                 "sha256": hashlib.sha256(raw).hexdigest(), "raw_base64": base64.b64encode(raw).decode(),
                                 "complete_records": len(complete.splitlines()), "complete_ndjson": complete.decode()})
     result["coverage"] = "CAPTURED" if {x["address"] for x in result["files"] if x["complete_records"]} == set(targets) else "INCONCLUSIVE"
+    return result
+
+
+def unit_forensics(grant, identity, budget, *, now_epoch):
+    """Read only exact sealed native units; never stop/restart or inspect cores."""
+    p.require(type(budget) is int and 0 <= budget <= TRACE_BUDGET, "unit forensic byte budget")
+    _owned_bindings(grant, identity.get("bindings"))
+    p.require(type(identity.get("unit_seals", {})) is dict and set(identity.get("unit_seals", {})) <= set(identity["bindings"]),
+              "foreign native unit seal")
+    start = identity.get("sealed_epoch")
+    p.require(p.number(start) and p.number(now_epoch) and grant["first_epoch"] <= start <= now_epoch
+              and now_epoch <= min(grant["first_epoch"] + 6000, grant["deadline_epoch"]), "forensic original arm time window")
+    result = {"schema": "otel_native_unit_forensics_v1", "units": {}, "bytes_read": 0, "errors": [], "start_epoch": start, "end_epoch": now_epoch}
+    limit = min(budget, FORENSIC_LIMIT)
+    until = time.monotonic() + min(20, grant["first_epoch"] + 6000 - now_epoch)
+    ordered = sorted(identity["bindings"].items(), key=lambda x: ({4510: 0, 4511: 1, 4504: 2}.get(x[1]["port"], 3), x[0]))
+    for unit, bound in ordered:
+        seal = identity.get("unit_seals", {}).get(unit)
+        if limit - result["bytes_read"] < 4096 or type(seal) is not dict or time.monotonic() >= until:
+            result["units"][unit] = {"status": "UNKNOWN", "reason": "no positive unit seal or remaining budget"}
+            continue
+        item = {"status": "INCONCLUSIVE", "pid": bound["pid"], "starttime_ticks": bound["starttime_ticks"]}
+        result["units"][unit] = item
+        value = bounded_output(["systemctl", "show", unit, *["--property=" + key for key in UNIT_PROPERTIES]], 4096,
+                               timeout=min(5, max(0.001, until - time.monotonic())))
+        result["bytes_read"] += value["bytes_read"]
+        try:
+            p.require(value["exit"] == 0 and not value["truncated"] and not value.get("timed_out"), "unit exit properties unavailable")
+            props = _unit_properties(unit, base64.b64decode(value["raw_base64"]))
+            p.require(props.get("InvocationID") == seal.get("invocation_id") and p.hexstr(props.get("InvocationID"), 32)
+                      and props.get("ExecMainPID") == str(bound["pid"])
+                      and props.get("MainPID") in ("0", str(bound["pid"]))
+                      and props.get("ControlGroup") in ("", "/horizontal.slice/horizontal-fdb.slice/" + unit),
+                      "unit invocation/PID/cgroup changed from positive seal")
+            item.update(properties=props, properties_raw_base64=value["raw_base64"])
+            allowance = min(65536, max(0, limit - result["bytes_read"]))
+            if not allowance:
+                continue
+            args = ["journalctl", "--unit=" + unit, "--since=@" + format(start, ".6f"),
+                    "--until=@" + format(now_epoch, ".6f"), "--output=json", "--no-pager", "--lines=128",
+                    "--output-fields=__REALTIME_TIMESTAMP,_SYSTEMD_UNIT,_SYSTEMD_INVOCATION_ID,UNIT,INVOCATION_ID,_PID,MESSAGE,PRIORITY,SYSLOG_IDENTIFIER"]
+            if time.monotonic() >= until:
+                continue
+            journal = bounded_output(args, allowance, timeout=min(5, max(0.001, until - time.monotonic())))
+            result["bytes_read"] += journal["bytes_read"]
+            p.require(journal["exit"] == 0 or journal["truncated"], "owned unit journal unavailable")
+            raw = base64.b64decode(journal["raw_base64"])
+            lines = raw.split(b"\n")[:-1]
+            for line in lines:
+                event = d.loads(line.decode())
+                owner = (event.get("_SYSTEMD_UNIT") == unit and event.get("_SYSTEMD_INVOCATION_ID") == props["InvocationID"]
+                         or event.get("UNIT") == unit and event.get("_PID") == "1"
+                         and event.get("INVOCATION_ID") in (None, props["InvocationID"]))
+                stamp = event.get("__REALTIME_TIMESTAMP")
+                p.require(type(stamp) is str and stamp.isdecimal() and owner
+                          and start <= int(stamp) / 1000000 <= now_epoch, "journal record escaped owned unit/invocation/time window")
+            retained = b"\n".join(lines) + (b"\n" if lines else b"")
+            item.update(journal={**journal, "raw_base64": base64.b64encode(retained).decode(),
+                                 "complete_records": len(lines), "partial_tail_bytes": len(raw) - len(retained)},
+                        status="RECORDED" if not journal["truncated"] and not journal.get("timed_out") else "INCONCLUSIVE")
+        except (AttributeError, KeyError, TypeError, ValueError) as error:
+            item["error"] = str(error)
+            result["errors"].append(unit + ": " + str(error))
+    return result
+
+
+def collect_native_evidence(grant, identity, budget=TRACE_BUDGET, *, grant_sha256, now_epoch=None, proc_root="/proc"):
+    """Postmortem reads retain old evidence, never restore live identity or health."""
+    p.require(type(budget) is int and 0 <= budget <= TRACE_BUDGET, "aggregate native forensic budget")
+    p.require(type(identity) is dict and identity.get("node_id") == grant["node_id"]
+              and identity.get("grant_sha256") == grant_sha256 and p.hexstr(grant_sha256), "trace identity receipt binding")
+    bindings = identity.get("bindings")
+    _owned_bindings(grant, bindings)
+    p.require(identity.get("boot_id") == read_small(Path(proc_root) / "sys/kernel/random/boot_id", 128).strip(), "native forensic boot identity changed")
+    seal_bytes = identity.get("seal_bytes_read")
+    p.require(type(seal_bytes) is int and 0 <= seal_bytes <= budget, "native identity seal byte budget")
+    now_epoch = time.time() if now_epoch is None else now_epoch
+    checks, dead = {}, False
+    for unit, bound in bindings.items():
+        try:
+            _live_binding(bound)
+            checks[unit] = "LIVE_MATCH"
+        except (FileNotFoundError, ProcessLookupError):
+            checks[unit], dead = "DEAD_OR_MISSING", True
+    units = unit_forensics(grant, identity, (budget - seal_bytes) // 4, now_epoch=now_epoch)
+    spent = seal_bytes + units["bytes_read"]
+    result = {"schema": "otel_native_forensic_evidence_v1", "files": [], "bytes_read": spent, "budget": budget, "identity_seal_bytes": seal_bytes,
+              "unit_forensics": units, "identity_verification": checks, "forensic_only": dead,
+              "coverage": "INCONCLUSIVE", "errors": list(units["errors"]),
+              "boundary": "sealed-file postmortem reads are forensic evidence only; missing live identity never becomes health PASS or ARM_FAILURE"}
+    selected = []
+    for seal in identity.get("trace_files", []):
+        p.require(type(seal) is dict and seal.get("unit") in bindings and p.number(seal.get("sealed_epoch"))
+                  and identity["sealed_epoch"] <= seal["sealed_epoch"] <= now_epoch, "sealed trace unit/time missing")
+        selected.append(seal)
+    # New rotations are admitted only under another positive live PID/start/argv
+    # check. After any death, no filename discovery by address/prefix is allowed.
+    if not dead and budget > spent:
+        selected = seal_trace_files(grant, bindings, proc_root=proc_root, budget=budget - spent)
+        spent += sum(x["prefix_bytes"] for x in selected)
+        result["bytes_read"] = spent
+    result["sealed_trace_files"] = selected
+    try:
+        traces = trace_tail(grant["arm_root"], grant["campaign"], bindings, budget - spent,
+                            storage_process_count=grant.get("storage_process_count", 1),
+                            sealed_files=selected, storage_ids=grant.get("storage_ids"))
+        result["files"] = traces["files"]
+        result["bytes_read"] += traces["bytes_read"]
+        result["trace_selection"] = traces["selection"]
+        if not dead and not result["errors"] and all(x.get("status") == "RECORDED" for x in units["units"].values()):
+            result["coverage"] = traces["coverage"]
+    except (OSError, KeyError, TypeError, ValueError) as error:
+        result["errors"].append("sealed trace refusal: " + str(error))
+        result["bytes_read"] = budget  # Conservative upper bound; no further reads or retries.
+        result["bytes_read_upper_bound_on_refusal"] = True
     return result
 
 
@@ -736,7 +1041,7 @@ class Diagnostic(d.Campaign):
         self.copy(client, local, work + "/plan.json")
         cluster_hash = self.command(client, ["sha256sum", layout["remote_cluster_file"]])
         p.require(cluster_hash.split()[0] == p.sha(layout["cluster_file"]), "diagnostic client cluster file changed")
-        grants, samplers, frames, cursors = {}, {}, {}, {}
+        grants, samplers, frames, cursors, identity_hashes = {}, {}, {}, {}, {}
         producer_job, verification_job, receipt, release_bound = None, None, None, False
         activity = [native_before]
         result = {"schema": "otel_native_wave_v1", "count": count, "producers": 1,
@@ -767,7 +1072,10 @@ class Diagnostic(d.Campaign):
                                 "root": self.remote_root, "work": sample_work, "arm_root": layout["root"],
                                 "binary": grant["binary"], "binary_sha256": grant["binary_sha256"],
                                 "fdbserver_sha256": self.plan["fdbserver_sha256"], "run": run, "token": token,
-                                "producer_grant_sha256": p.sha(local),
+                                "producer_grant_sha256": p.sha(local), "forensic_budget": self.trace_remaining if role == "node1" else 0,
+                                "storage_ids": {spec["address"]: (native_before["storage_processes"][spec["address"]]["storage_id"]
+                                                if self.plan.get("storage_process_count", 1) == 2 else native_before["storage"]["node1"]["storage_id"])
+                                                for spec in layout["processes"] if spec["node"] == role and spec["process_class"] == "storage"},
                                 "processes": [x for x in layout["processes"] if x["node"] == role]}
                 if self.plan.get("storage_process_count", 1) == 2:
                     sample_grant["storage_process_count"] = 2
@@ -781,8 +1089,14 @@ class Diagnostic(d.Campaign):
                 grants[role], frames[role], cursors[role] = sample_grant, [], 0
             for role, sample_grant in grants.items():
                 ready = self.wait_file(self.nodes[role], sample_grant["work"] + "/ready.json", job=samplers[role])
+                p.require(type(ready) is dict and p.hexstr(ready.get("identity_sha256")), "sampler positive identity seal missing")
+                identity = self.read_remote(self.nodes[role], sample_grant["work"] + "/identity.json")
+                identity_path = directory / (role + "-native-identity.json")
+                d.write(identity_path, identity)
+                identity_hashes[role] = p.sha(identity_path)
                 p.require(ready == {"node_id": self.nodes[role]["id"], "token": token, "baseline_frames": 2,
-                          "grant_sha256": p.sha(directory / (role + "-sampler-plan.json"))}, "sampler ready identity binding")
+                          "grant_sha256": p.sha(directory / (role + "-sampler-plan.json")),
+                          "identity_sha256": identity_hashes[role]}, "sampler ready identity binding")
                 d.write(directory / (role + "-sampler-ready.json"), ready)
             poll_frames()
             producer_job = self.spawn(client, self.diag(client, "_produce", work + "/plan.json"), directory, "producer")
@@ -868,18 +1182,24 @@ class Diagnostic(d.Campaign):
             if "node1" in grants:
                 try:
                     node = self.nodes["node1"]
+                    p.require("node1" in identity_hashes, "no pre-release positive native identity receipt")
                     traces = d.loads(self.command(node, self.diag(node, "_traces", grants["node1"]["work"] + "/plan.json",
-                                                                 "--budget", str(self.trace_remaining))))
+                                                                 "--budget", str(self.trace_remaining), "--identity-sha256", identity_hashes["node1"])))
                     p.require(type(traces.get("bytes_read")) is int and 0 <= traces["bytes_read"] <= self.trace_remaining,
                               "aggregate native trace response budget")
                     self.trace_remaining -= traces["bytes_read"]
                     d.write(directory / "native-traces.json", traces)
+                    if traces.get("errors") or traces.get("forensic_only") is True or traces.get("coverage") != "CAPTURED":
+                        result.setdefault("collection_errors", []).append("native forensic evidence is not live-verified: " + str(traces.get("errors", [])))
                 except (ValueError, OSError, subprocess.SubprocessError) as exc:
                     result.setdefault("collection_errors", []).append(str(exc))
             result["producer_process_receipt"] = receipt
             result["release_bound"] = release_bound
             result["native_activity"] = activity
             result["profile"] = profile(frames, grants, receipt, activity, release_bound)
+            if result.get("collection_errors"):
+                result["profile"]["verdict"] = "INCONCLUSIVE"
+                result["profile"].setdefault("reasons", []).append("forensic/collection failure does not restore live identity")
             d.write(directory / "frames.json", frames)
             self.last_wave_result = result
             d.write(directory / "result.json", result)
@@ -990,6 +1310,7 @@ def main(argv=None):
     ap.add_argument("mode", choices=("run", "_sample", "_frames", "_phase", "_stop", "_traces", "_produce", "_verify"))
     ap.add_argument("--plan"); ap.add_argument("--output"); ap.add_argument("--path")
     ap.add_argument("--node-id", type=int); ap.add_argument("--cursor", type=int, default=0)
+    ap.add_argument("--identity-sha256")
     ap.add_argument("--budget", type=int, default=TRACE_BUDGET); ap.add_argument("--execute-approved", action="store_true")
     args = ap.parse_args(argv)
     if args.mode == "run":
@@ -1028,15 +1349,11 @@ def main(argv=None):
         end = min(len(lines), args.cursor + 64)
         print(json.dumps({"cursor": end, "frames": [d.loads(x.decode()) for x in lines[args.cursor:end]]}, sort_keys=True))
     elif args.mode == "_traces":
-        identity = d.read(no_symlinks(work / "identity.json", base))
-        p.require(identity.get("node_id") == args.node_id and identity.get("grant_sha256") == p.sha(args.path), "trace identity receipt binding")
-        for unit, bound in identity["bindings"].items():
-            actual = process_snapshot(bound["pid"])
-            p.require(actual["starttime_ticks"] == bound["starttime_ticks"] and actual["cmdline"] == bound["args"],
-                      "trace native process identity changed")
-        arm = no_symlinks(grant["arm_root"], base)
-        print(json.dumps(trace_tail(arm, grant["campaign"], identity["bindings"], args.budget,
-                                    storage_process_count=grant.get("storage_process_count", 1)), sort_keys=True))
+        identity_path = no_symlinks(work / "identity.json", base)
+        p.require(p.hexstr(args.identity_sha256) and p.sha(identity_path) == args.identity_sha256, "pre-release native identity receipt changed")
+        identity = d.read(identity_path)
+        no_symlinks(grant["arm_root"], base)
+        print(json.dumps(collect_native_evidence(grant, identity, args.budget, grant_sha256=p.sha(args.path)), sort_keys=True))
 
 
 if __name__ == "__main__":

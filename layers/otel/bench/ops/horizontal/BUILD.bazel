@@ -8,6 +8,7 @@ _HORIZONTAL_TEST_DATA = [
     "session.py",
     "test_session.py",
     "test_diagnostic.py",
+    "test_forensics.py",
     "test_horizontal.py",
     "test_provision.py",
     "//tools/benchcampaign/multinode:inventory.py",
@@ -41,5 +42,12 @@ sh_test(
     name = "native_session_test",
     srcs = ["test.sh"],
     args = ["test_session"],
+    data = _HORIZONTAL_TEST_DATA,
+)
+
+sh_test(
+    name = "native_forensics_test",
+    srcs = ["test.sh"],
+    args = ["test_forensics"],
     data = _HORIZONTAL_TEST_DATA,
 )
