@@ -97,10 +97,16 @@ def _roles(plan):
         return ROLES
     if schema in ('otel_native_diagnostic_v1', 'otel_native_session_v1'):
         return ('node1', 'client1')
+    if schema == 'otel_native_scaling_v1':
+        return ('node1', 'node2', 'node3', 'client1', 'client2', 'client3')
     raise ProvisionError('unknown campaign schema; no resource roles authorized')
 
 
 def _storage_max_outstanding(plan):
+    if plan.get('schema') == 'otel_native_scaling_v1':
+        if type(plan.get('storage_max_outstanding')) is not int or plan['storage_max_outstanding'] != 64:
+            raise ProvisionError('scaling requires exact integer storage_max_outstanding 64')
+        return 64
     if 'storage_max_outstanding' not in plan:
         return 64
     value = plan['storage_max_outstanding']
@@ -112,6 +118,11 @@ def _storage_max_outstanding(plan):
 
 
 def _storage_process_count(plan):
+    if plan.get('schema') == 'otel_native_scaling_v1':
+        if type(plan.get('storage_process_count')) is not int or plan['storage_process_count'] != 3:
+            raise ProvisionError('scaling requires exact integer storage_process_count 3')
+        _storage_max_outstanding(plan)
+        return 3
     if 'storage_process_count' not in plan:
         return 1
     value = plan['storage_process_count']
@@ -125,6 +136,11 @@ def _storage_process_count(plan):
 
 
 def _storage_memory_profile(plan):
+    if plan.get('schema') == 'otel_native_scaling_v1':
+        if type(plan.get('storage_memory_profile')) is not str or plan['storage_memory_profile'] != 'scaling3ss3g':
+            raise ProvisionError('scaling requires storage_memory_profile scaling3ss3g')
+        _storage_process_count(plan)
+        return 'scaling3ss3g'
     if 'storage_memory_profile' not in plan:
         return 'baseline'
     value = plan['storage_memory_profile']
@@ -134,6 +150,29 @@ def _storage_memory_profile(plan):
     if value == 'capacity16g' and _storage_process_count(plan) != 2:
         raise ProvisionError('capacity16g requires exactly two storage processes')
     return value
+
+
+def _validate_scaling(plan):
+    if plan.get('schema') != 'otel_native_scaling_v1':
+        return
+    stages = plan.get('stages')
+    if (type(stages) is not list or len(stages) != 3
+            or any(type(stage) is not list or len(stage) != 2
+                   or any(type(value) is not int for value in stage) for stage in stages)
+            or stages != [[1, 1], [2, 2], [3, 3]]):
+        raise ProvisionError('scaling stages must be exactly typed [[1,1],[2,2],[3,3]]')
+    for key, value in (('count', 100000), ('measured_count', 375000), ('measured_seconds', 120),
+                       ('batch', 64), ('workers', 8), ('gomaxprocs', 4)):
+        if type(plan.get(key)) is not int or plan[key] != value:
+            raise ProvisionError('scaling plan requires exact typed ' + key)
+    if (type(plan.get('prior_rows_upper')) is not int or plan['prior_rows_upper'] < 0
+            or plan['prior_rows_upper'] + 2850000 > 10000000):
+        raise ProvisionError('scaling cumulative row authorization exceeds ten million')
+    if plan.get('replication') != 'single':
+        raise ProvisionError('scaling requires single-replica capacity experiment')
+    if any(key in plan for key in ('topologies', 'measured_topologies', 'prerequisite_topologies',
+                                  'selected_topologies', 'probe_count', 'probe_seconds', 'cases')):
+        raise ProvisionError('scaling plans cannot declare comparative or diagnostic case fields')
 
 
 def _names(plan):
@@ -155,6 +194,7 @@ def validate_plan(plan, out, clock=time.time):
     _storage_max_outstanding(plan)
     _storage_process_count(plan)
     _storage_memory_profile(plan)
+    _validate_scaling(plan)
     if plan['schema'] == 'otel_native_session_v1':
         if type(plan.get('cases')) is not list or plan['cases'] != ['capacity16g', 'baseline']:
             raise ProvisionError('session cases must be exactly capacity16g then baseline')
@@ -262,10 +302,15 @@ def _lock(state):
 
 def _check_window(plan, state, clock, guard=None):
     lease_path = state / 'guard-plan.json'
+    if plan.get('schema') == 'otel_native_scaling_v1' and not lease_path.exists():
+        raise ProvisionError('immutable scaling lease is missing')
     if lease_path.exists():
         lease = _load(lease_path)
         if any(plan.get(key) != lease.get(key) for key in ('campaign', 'prefix', 'first_epoch', 'deadline_epoch')):
             raise ProvisionError('campaign identity or original lease deadline changed')
+        if 'otel_native_scaling_v1' in (lease.get('schema'), plan.get('schema')):
+            if plan != lease or json.dumps(plan, sort_keys=True) != json.dumps(lease, sort_keys=True):
+                raise ProvisionError('immutable scaling lease or stage parameters changed')
         if lease.get('schema') == 'otel_native_session_v1':
             if plan.get('schema') == 'otel_native_session_v1':
                 expected, actual = lease, plan
@@ -520,6 +565,7 @@ def _authorized_node(plan, out, node):
     if (set(resources['nodes']) != set(_roles(plan))
             or len(matches) != 1 or any(node.get(k) != matches[0].get(k)
                                   for k in ('name', 'host', 'private_ip', 'known_hosts'))
+            or plan.get('schema') == 'otel_native_scaling_v1' and node.get('role') != matches[0].get('role')
             or node['id'] in resources['protected_ids']['server']
             or resources['campaign'] != plan['campaign']):
         raise ProvisionError('SSH target is not an exact campaign-owned node')
@@ -870,7 +916,7 @@ def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.s
         resources['remote_root'] = remote
         for kind in ('fdb', 'client'):
             _mc.write_private(state / ('horizontal-' + kind + '.slice'),
-                              _slice(kind, io_accounting=plan['schema'] in ('otel_native_diagnostic_v1', 'otel_native_session_v1')))
+                              _slice(kind, io_accounting=plan['schema'] in ('otel_native_diagnostic_v1', 'otel_native_session_v1', 'otel_native_scaling_v1')))
         for role, node in resources['nodes'].items():
             until = min(clock() + 600, _active_deadline(plan))
             attempt = 0
@@ -1056,13 +1102,19 @@ def render_cluster(plan, nodes, storage_hosts, armid):
     max_outstanding = _storage_max_outstanding(plan)
     storage_count = _storage_process_count(plan)
     memory_profile = _storage_memory_profile(plan)
+    _validate_scaling(plan)
+    scaling = plan['schema'] == 'otel_native_scaling_v1'
     if plan['schema'] == 'otel_native_session_v1':
         raise ProvisionError('session clusters must use an explicitly validated diagnostic case plan')
     storage_memory_gib = 4 if memory_profile == 'capacity16g' or storage_count == 1 else 2
     storage_cache_mib = 2048 if memory_profile == 'capacity16g' or storage_count == 1 else 1024
+    if scaling:
+        storage_memory_gib = 3
     fdb_roles = tuple(role for role in roles if role.startswith('node'))
     if plan['schema'] == 'otel_native_diagnostic_v1' and (type(nodes) is not dict or set(nodes) != set(roles)):
         raise ProvisionError('diagnostic layout requires exactly node1 and client1')
+    if scaling and (type(nodes) is not dict or set(nodes) != set(roles)):
+        raise ProvisionError('scaling layout requires exactly all six prepared roles')
     if not re.fullmatch(r'[A-Za-z0-9_-]{1,40}', str(armid)):
         raise ProvisionError('unsafe arm ID')
     if type(storage_hosts) is int:
@@ -1074,6 +1126,8 @@ def render_cluster(plan, nodes, storage_hosts, armid):
             raise ProvisionError('storage hosts must name the schema-scoped FDB hosts') from exc
     if selected not in [list(fdb_roles[:n]) for n in range(1, len(fdb_roles)+1)]:
         raise ProvisionError('storage hosts must be an allowed prefix of the schema-scoped FDB hosts')
+    if scaling and (type(armid) is not str or armid != 'scaling-' + str(len(selected))):
+        raise ProvisionError('scaling stage arm ID must match its active host prefix')
     root = REMOTE_BASE + '/' + plan['campaign'] + '/arms/' + str(armid)
     cluster = 'horizontal_' + str(armid).replace('-', '_') + ':' + hashlib.sha256(
         (plan['campaign'] + ':' + str(armid)).encode()).hexdigest()[:24] + '@' + nodes['node1']['private_ip'] + ':4500'
@@ -1122,7 +1176,9 @@ Restart=no
                                            max_process_memory_gib=5+storage_count*storage_memory_gib, max_processes=5+storage_count),
                              client_host=dict(cpu_quota_percent=400, allowed_cpus='0-3', memory_max_gib=16)),
                 storage_engine='ssd-redwood-1', log_engine='ssd-2', redundancy_mode='single')
-    if plan['schema'] == 'otel_native_diagnostic_v1':
+    if scaling:
+        layout['schema'] = 'otel_native_scaling_v1'
+    if plan['schema'] in ('otel_native_diagnostic_v1', 'otel_native_scaling_v1'):
         layout['storage_max_outstanding'] = max_outstanding
         layout['storage_process_count'] = storage_count
         layout['storage_memory_profile'] = memory_profile
@@ -1195,8 +1251,11 @@ print(json.dumps(dict(units=units, historical=historical, owned_residual=residua
 
 
 def _stop_specs(plan, nodes, layout, active, scopes):
-    if plan['schema'] not in ('otel_native_diagnostic_v1', 'otel_native_session_v1') or set(nodes) != {'node1', 'client1'}:
-        raise ProvisionError('owned-arm stop requires exactly the two native diagnostic nodes')
+    scaling = plan['schema'] == 'otel_native_scaling_v1'
+    roles = _roles(plan)
+    if (plan['schema'] not in ('otel_native_diagnostic_v1', 'otel_native_session_v1', 'otel_native_scaling_v1')
+            or type(nodes) is not dict or set(nodes) != set(roles)):
+        raise ProvisionError('owned-arm stop requires exactly the schema-scoped native nodes')
     armid = active.get('armid')
     if type(armid) is not str or not re.fullmatch(r'[A-Za-z0-9_-]{1,40}', armid):
         raise ProvisionError('invalid active arm ID')
@@ -1206,25 +1265,31 @@ def _stop_specs(plan, nodes, layout, active, scopes):
         if profile not in plan.get('cases', []):
             raise ProvisionError('active arm is not an approved session case')
         case.update(schema='otel_native_diagnostic_v1', storage_memory_profile=profile)
-    expected = render_cluster(case, nodes, 1, armid)
+    hosts = layout.get('storage_hosts') if scaling else 1
+    expected = render_cluster(case, nodes, hosts, armid)
     if layout.get('root') != expected['root'] or layout.get('processes') != expected['processes']:
         raise ProvisionError('active layout root or exact native process specifications changed')
-    units = {'node1': [item['unit_name'] for item in expected['processes']]}
+    if scaling and any(layout.get(key) != value for key, value in expected.items()):
+        raise ProvisionError('scaling layout differs from its exact stage specification')
+    units = ({role: [item['unit_name'] for item in expected['processes'] if item['node'] == role]
+              for role in roles} if scaling else {'node1': [item['unit_name'] for item in expected['processes']]})
     if active != dict(campaign=plan['campaign'], armid=armid, units=units):
         raise ProvisionError('active-arm journal does not exactly match the owned layout')
-    specs = {'node1': [], 'client1': []}
+    specs = {role: [] for role in roles}
     for item in expected['processes']:
-        specs['node1'].append(dict(unit=item['unit_name'], args=item['args'],
+        specs[item['node']].append(dict(unit=item['unit_name'], args=item['args'],
             cgroup='/horizontal.slice/horizontal-fdb.slice/'+item['unit_name']))
     if type(scopes) not in (tuple, list):
         raise ProvisionError('owned producer scopes must be an explicit sequence')
+    clients = {'client' + str(n) for n in range(1, len(expected['storage_hosts'])+1)} if scaling else {'client1'}
     seen = set()
     for item in scopes:
-        if type(item) is not dict or item.get('node') != 'client1':
+        if type(item) is not dict or item.get('node') not in clients:
             raise ProvisionError('producer scope is not on the exact owned client')
         unit, args = item.get('unit'), item.get('args')
-        match = re.fullmatch(r'otel-native-(prof20k[0-9]{4})-(ingest|audit|query)\.scope', unit or '')
-        if not match or unit in seen or type(args) is not list or not args or not all(type(x) is str for x in args):
+        match = re.fullmatch(r'otel-native-(prof20k[0-9]{4})-(ingest|audit|query)\.scope', unit) if type(unit) is str else None
+        identity = (item['node'], unit)
+        if not match or identity in seen or type(args) is not list or not args or not all(type(x) is str for x in args):
             raise ProvisionError('invalid, duplicate or unbound producer scope')
         def value(flag):
             if args.count(flag) != 1 or args.index(flag)+1 >= len(args):
@@ -1242,8 +1307,8 @@ def _stop_specs(plan, nodes, layout, active, scopes):
         if ('pid' in item) != ('starttime_ticks' in item) or any(
                 type(item[key]) is not int or item[key] <= 0 for key in ('pid', 'starttime_ticks') if key in item):
             raise ProvisionError('invalid historical producer identity')
-        seen.add(unit)
-        specs['client1'].append(dict(item, cgroup=cg))
+        seen.add(identity)
+        specs[item['node']].append(dict(item, cgroup=cg))
     return specs
 
 
@@ -1317,7 +1382,9 @@ def stop_owned_arm(plan, out, nodes, layout, *, scopes=(), runner=None, clock=ti
     try:
         with _lock(state):
             _check_window(plan, state, clock)
-            for node in nodes.values():
+            for role, node in nodes.items():
+                if plan['schema'] == 'otel_native_scaling_v1' and node.get('role') != role:
+                    raise ProvisionError('scaling role does not match its prepared node')
                 _authorized_node(plan, out, node)
             active = _load(state / 'active-arm.json')
             specs = _stop_specs(plan, nodes, layout, active, scopes)
@@ -1356,6 +1423,8 @@ def stop_owned_arm(plan, out, nodes, layout, *, scopes=(), runner=None, clock=ti
                 units = [item['unit'] for item in value['units'] if item['load_state'] != 'not-found']
                 if units:
                     _check_window(plan, state, clock)
+                    if plan['schema'] == 'otel_native_scaling_v1' and clock() >= until:
+                        raise ProvisionError('owned-arm quiescence proof exceeded its operation budget')
                     rc, stdout, stderr = run_on_node(plan, out, nodes[role], ['systemctl', 'stop', *units],
                                                     runner=runner, timeout=min(20, max(0.001, until-clock())))
                     receipt['actions'].append(dict(node=role, units=units, returncode=rc, stdout=stdout, stderr=stderr))
@@ -1400,7 +1469,9 @@ def setup_cluster(plan, out, nodes, storage_hosts, armid, *, runner=None, clock=
     fdb_roles = tuple(role for role in roles if role.startswith('node'))
     if type(nodes) is not dict or set(nodes) != set(roles):
         raise ProvisionError('exactly the schema-scoped prepared campaign nodes are required')
-    for node in nodes.values():
+    for role, node in nodes.items():
+        if plan['schema'] == 'otel_native_scaling_v1' and node.get('role') != role:
+            raise ProvisionError('scaling role does not match its prepared node')
         _authorized_node(plan, out, node)
     layout = render_cluster(plan, nodes, storage_hosts, armid)
     arm = state / 'arms' / str(armid)
@@ -1410,14 +1481,21 @@ def setup_cluster(plan, out, nodes, storage_hosts, armid, *, runner=None, clock=
         previous = _load(active_path)
         if previous.get('campaign') != plan['campaign']:
             raise ProvisionError('previous arm is not campaign-owned')
-        for node in fdb_roles:
-            units = previous.get('units', {}).get(node, [])
-            if any(not re.fullmatch(r'oh-' + re.escape(plan['prefix']) + r'-[A-Za-z0-9_-]+-\d+\.service', u)
-                   for u in units):
-                raise ProvisionError('previous arm has an unowned unit name')
-            if units:
-                _require_result(run_on_node(plan, out, nodes[node], ['systemctl', 'stop', *units],
-                                            runner=runner), 'stop previous campaign arm')
+        if plan['schema'] == 'otel_native_scaling_v1':
+            prior_id = previous.get('armid')
+            if prior_id not in ('scaling-1', 'scaling-2', 'scaling-3'):
+                raise ProvisionError('previous scaling stage arm ID is not owned')
+            prior = render_cluster(plan, nodes, int(prior_id[-1]), prior_id)
+            stop_owned_arm(plan, out, nodes, prior, scopes=(), runner=runner, clock=clock, sleep=sleep)
+        else:
+            for node in fdb_roles:
+                units = previous.get('units', {}).get(node, [])
+                if any(not re.fullmatch(r'oh-' + re.escape(plan['prefix']) + r'-[A-Za-z0-9_-]+-\d+\.service', u)
+                       for u in units):
+                    raise ProvisionError('previous arm has an unowned unit name')
+                if units:
+                    _require_result(run_on_node(plan, out, nodes[node], ['systemctl', 'stop', *units],
+                                                runner=runner), 'stop previous campaign arm')
     _mc.write_private(arm / 'fdb.cluster', layout['cluster_text'])
     layout['cluster_file'] = str(arm / 'fdb.cluster')
     native_bin = REMOTE_BASE + '/' + plan['campaign'] + '/bin'
@@ -1425,7 +1503,7 @@ def setup_cluster(plan, out, nodes, storage_hosts, armid, *, runner=None, clock=
     # therefore stopped by the next arm, even when its receipt was never written.
     active = dict(campaign=plan['campaign'], armid=str(armid),
                   units={node: [p['unit_name'] for p in layout['processes'] if p['node'] == node]
-                         for node in fdb_roles})
+                         for node in (roles if plan['schema'] == 'otel_native_scaling_v1' else fdb_roles)})
     _json(active_path, active, replace=True)
     try:
         for role in roles:
@@ -1440,7 +1518,7 @@ def setup_cluster(plan, out, nodes, storage_hosts, armid, *, runner=None, clock=
             slice_path = arm / ('horizontal-' + kind + '.slice')
             if not slice_path.exists():
                 _mc.write_private(slice_path,
-                                  _slice(kind, io_accounting=plan['schema'] in ('otel_native_diagnostic_v1', 'otel_native_session_v1')))
+                                  _slice(kind, io_accounting=plan['schema'] in ('otel_native_diagnostic_v1', 'otel_native_session_v1', 'otel_native_scaling_v1')))
             _require_result(copy_to_node(plan, out, node, slice_path,
                                          '/etc/systemd/system/horizontal-' + kind + '.slice', runner=runner), 'copy resource slice')
             for p in [p for p in layout['processes'] if p['node'] == role]:

@@ -361,3 +361,82 @@ can support native out-of-memory termination, but does not uniquely identify its
 RSS monitor; SIGKILL alone is not kernel-OOM proof. Old failed results and unknown
 causes remain unchanged. This postmortem path is offline-tested, runtime-unverified
 until a separately authorized bounded capture exercises it.
+
+### Controlled independent-namespace weak scaling
+
+`scaling.py run --plan /private/scaling-plan.json` performs local-only validation.
+Add `--output /private/scaling/run --execute-approved` only after sealing the
+approved inputs, the immutable two-hour lease and an independent cleanup watchdog.
+The output path is used directly; there is no automatic extra `run` directory.
+The schema is `otel_native_scaling_v1`, with the usual sealed hardware, source,
+binary, controller and asset fields plus these exact typed fields:
+
+```json
+{
+  "stages": [[1, 1], [2, 2], [3, 3]],
+  "count": 100000,
+  "measured_count": 375000,
+  "measured_seconds": 120,
+  "prior_rows_upper": 7000000,
+  "batch": 64,
+  "workers": 8,
+  "gomaxprocs": 4,
+  "storage_process_count": 3,
+  "storage_max_outstanding": 64,
+  "storage_memory_profile": "scaling3ss3g"
+}
+```
+
+Prepare exactly `node1..3` and `client1..3` once and retain all six through all
+stages. Stage N activates the first N FDB hosts and first N independent producers
+in one shared single-replica cluster. Each stage has a fresh cluster/datadir;
+every producer has distinct prerequisite and measured namespaces. Its own full
+100k health/census/1600-oracle gate precedes its 375k measured wave. The maximum
+new population is `(1+2+3)*(100000+375000)=2850000`; a 7M prior upper bound gives
+9.85M cumulative, with no failed-row reclamation or increased ceiling.
+
+The scaling-only geometry is three SS per active FDB host, ports4510..4512,
+each3GiB memory/1GiB cache/MAX64. Node1 retains the five1GiB control processes
+(total configured14GiB); other active FDB hosts configure9GiB. Every role host
+still uses CPU4/memory16GiB/swap0; every producer uses GOMAXPROCS4. This exercises
+three native storage main threads under fixed4CPU, not pure worker isolation or
+proven memory safety. Existing horizontal/diagnostic/session profiles and native
+argv are unchanged. Application/index/conflict/durability/timeout/retry/byte guards
+remain sealed and unchanged; complete committed rows and nonzero finite source
+phase histograms are required before rate calculation.
+
+All producers must be ready before the common release. ACK rate uses release to
+last controller-observed complete ACK; the **primary durable-drained rate** uses
+the same start through three strict stable drain observations (queue<16MiB,
+lag<10s). Census and oracle verification must then pass for every producer before
+any comparison is eligible. Queue/lag start/end/observed maxima and drain seconds
+are retained. Efficiency is drained rate divided by N times the passing1x baseline;
+near-linear requires all three eligible stages and efficiency>=0.90. ACK scaling
+is reported separately. A missing/failed/inconclusive baseline permits no scaling
+inference. This is one preregistered weak-scaling sample, not shared-corpus
+linearity, statistical repeatability, HA, or a sustained120s20k certificate.
+Active2N host resource counts are separate from all six held/billed hosts; raw
+pricing, creation and deletion receipts remain in the provision ledger.
+
+Only the canonical receipt-bound load-phase batch-probe/storage-queue failure,
+with freshly passing fatal guards and complete live evidence, may end one stage
+and proceed. Every other fault is SESSION_FATAL. Exact owned unit/scope/PID
+quiescence and fresh quiet admission separate stages without VM deletion; prior
+unit identity is rechecked before the next setup. Final cleanup and source checks
+always run, including cleanup failure. Host history and the original lease never
+reset. The shared16MiB native evidence budget reserves `remaining/remaining_waves`
+for each of six expected waves and splits that reservation fairly among active
+FDB hosts; unused bytes carry forward. Startup seals and every unit/journal/
+prefix/tail byte are charged. The shared1GiB receipt cap is unchanged.
+
+Receipts are rooted at `scaling-result.json`, with stage records under
+`stages/pairsN/{stage-result,session-stage,quiescence}.json`; wave evidence is under
+`stages/pairsN/{prerequisite,measured}/`. Each wave retains per-client producer
+plans/ingest/audit/query receipts, common `release.json`, frames and per-role
+pre-release native identity seals. Native captures are
+`nodeN-native-traces.json` (`otel_native_forensic_evidence_v1` with
+`otel_native_unit_forensics_v1`). Profiles require independent stable IDs and
+positive input/durable activity for all3/6/9 SS; unknown/reset/idle counters remain
+INCONCLUSIVE. No dead PID, truncated evidence or diagnostic capture restores health
+or authorizes reuse. The candidate remains **runtime UNVERIFIED** until a separate
+approved lease actually exercises these stages; prior failures remain unchanged.

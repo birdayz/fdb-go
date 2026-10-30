@@ -40,16 +40,32 @@ def validate_plan(plan, *, check_assets=True):
 def classify_arm_failure(error, document, layout, wave, *, fatal_guards_passed):
     """A termination decision, never a health waiver. Unknown shapes are fatal."""
     if (type(error) is not ValueError or str(error) != "strict client health" or fatal_guards_passed is not True
-            or type(wave) is not dict or wave.get("release_bound") is not True
+            or type(layout) is not dict or type(wave) is not dict or wave.get("release_bound") is not True
             or wave.get("observation_phase") != "load" or wave.get("error") != "strict client health"
             or type(wave.get("profile")) is not dict or wave["profile"].get("producer_process_bound") is not True):
         return False
     receipt = wave.get("producer_process_receipt")
     exits = wave.get("sampler_exits")
     errors = wave.get("collection_errors", [])
+    roles = n.ROLES
+    storage_population = layout.get("storage_process_count", 1)
+    if layout.get("schema") == "otel_native_scaling_v1":
+        hosts = layout.get("storage_hosts")
+        if (type(hosts) is not list or hosts not in (["node1"], ["node1", "node2"], ["node1", "node2", "node3"])
+                or type(storage_population) is not int or storage_population != 3):
+            return False
+        roles = {kind + str(i) for i in range(1, len(hosts) + 1) for kind in ("node", "client")}
+        storage_population *= len(hosts)
+        receipts = wave.get("producer_process_receipts")
+        clients = {role for role in roles if role.startswith("client")}
+        if (type(receipts) is not dict or set(receipts) != clients or receipt != receipts.get("client1")
+                or any(type(value) is not dict or value.get("started") is not True
+                       or not p.integer(value.get("pid"), 1) or not p.integer(value.get("starttime_ticks"), 1)
+                       for value in receipts.values())):
+            return False
     if (type(receipt) is not dict or receipt.get("started") is not True
             or not p.integer(receipt.get("pid"), 1) or not p.integer(receipt.get("starttime_ticks"), 1)
-            or type(exits) is not dict or set(exits) != n.ROLES
+            or type(exits) is not dict or set(exits) != roles
             or not all(type(value) is int and value == 0 for value in exits.values())
             or type(errors) is not list or errors):
         return False
@@ -89,7 +105,7 @@ def classify_arm_failure(error, document, layout, wave, *, fatal_guards_passed):
         storage_by_address = {process["address"]: role["id"] for process in processes.values()
                               for role in process["roles"] if role["role"] == "storage"}
         storage_ids = list(storage_by_address.values())
-        if (len(storage_ids) != layout.get("storage_process_count", 1)
+        if (len(storage_ids) != storage_population
                 or not all(type(x) is str and x for x in storage_ids) or len(set(storage_ids)) != len(storage_ids)):
             return False
         history = wave.get("native_activity")

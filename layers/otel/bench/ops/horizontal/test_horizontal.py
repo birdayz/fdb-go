@@ -85,6 +85,32 @@ def status_fixture():
         dict(processes=[spec], storage_hosts=["node1"])
 
 
+def scaling_status_fixture(hosts=3):
+    document, layout = status_fixture()
+    layout.update(schema='otel_native_scaling_v1', storage_process_count=3,
+                  storage_max_outstanding=64, storage_memory_profile='scaling3ss3g',
+                  storage_hosts=['node'+str(i) for i in range(1, hosts+1)], processes=[])
+    document['cluster']['processes'] = {}
+    classes = [(4500, 'stateless', ['master', 'cluster_controller']), (4501, 'commit_proxy', ['commit_proxy']),
+               (4502, 'grv_proxy', ['grv_proxy']), (4503, 'resolution', ['resolver']), (4504, 'transaction', ['log'])]
+    for index in range(1, hosts+1):
+        node = 'node'+str(index)
+        for port, cls, names in (classes if index == 1 else []) + [(port, 'storage', ['storage']) for port in (4510, 4511, 4512)]:
+            address = '10.93.0.'+str(10+index)+':'+str(port)
+            memory = (3 if cls == 'storage' else 1)*p.GIB
+            layout['processes'].append(dict(node=node, address=address, port=port, process_class=cls, required_roles=names,
+                                            machineid=node, zoneid=node, memory_limit_bytes=memory))
+            roles = [dict(role=name) for name in names]
+            if cls == 'storage':
+                value = 1000*index+port-4510
+                roles[0].update(id=node+'-ss-'+str(port), input_bytes=dict(counter=value),
+                                durable_bytes=dict(counter=value-100), stored_bytes=value-200, shards=port-4509)
+            document['cluster']['processes'][node+'-'+str(port)] = dict(address=address, class_type=cls,
+                locality=dict(machineid=node, zoneid=node), memory=dict(rss_bytes=100, used_bytes=50, limit_bytes=memory),
+                roles=roles, messages=[])
+    return document, layout
+
+
 class PolicyTests(unittest.TestCase):
     def test_exact_plan_and_row_population(self):
         value = plan()
@@ -128,6 +154,129 @@ class PolicyTests(unittest.TestCase):
         self.assertIsNone(p.strict_status(document, layout)['storage']['node1']['durable_bytes'])
         two['roles'][0]['id'] = 'ss-one'
         self.assertIsNone(p.strict_status(document, layout)['storage']['node1']['input_bytes'])
+
+    def test_scaling_status_has_exact_three_per_host_address_counters_and_sorted_distinct_ids(self):
+        for hosts in (1, 2, 3):
+            document, layout = scaling_status_fixture(hosts)
+            before = copy.deepcopy((document, layout))
+            result = p.strict_status(document, layout)
+            self.assertTrue(result['healthy'])
+            self.assertEqual(result['queue_bytes'], 0); self.assertEqual(result['lag_seconds'], 0)
+            self.assertEqual(len(result['storage_processes']), 3*hosts)
+            self.assertEqual(set(result['storage']), set(layout['storage_hosts']))
+            for index in range(1, hosts+1):
+                node = 'node'+str(index); aggregate = result['storage'][node]
+                self.assertEqual(aggregate, dict(input_bytes=3000*index+3, durable_bytes=3000*index-297,
+                                                stored_bytes=3000*index-597, shards=6,
+                                                storage_ids=[node+'-ss-'+str(port) for port in (4510, 4511, 4512)]))
+                for offset in (0, 1, 2):
+                    address = '10.93.0.'+str(10+index)+':'+str(4510+offset)
+                    self.assertEqual(result['storage_processes'][address], dict(node=node,
+                        input_bytes=1000*index+offset, durable_bytes=1000*index+offset-100,
+                        stored_bytes=1000*index+offset-200, shards=offset+1, storage_id=node+'-ss-'+str(4510+offset)))
+            self.assertEqual((document, layout), before)
+            document['cluster']['processes'] = dict(reversed(list(document['cluster']['processes'].items())))
+            layout['processes'].reverse()
+            self.assertEqual(p.strict_status(document, layout), result)
+            self.assertEqual(before[0]['cluster']['configuration'], document['cluster']['configuration'])
+            self.assertEqual(before[1]['storage_hosts'], layout['storage_hosts'])
+
+    def test_scaling_unknown_counters_are_not_zero_or_sibling_values_and_keep_peraddress_identity(self):
+        for key in ('input_bytes', 'durable_bytes', 'stored_bytes', 'shards'):
+            for raw in (None, True, '100', -1, float('nan'), float('inf'), {}):
+                document, layout = scaling_status_fixture()
+                role = document['cluster']['processes']['node2-4511']['roles'][0]
+                role[key] = dict(counter=raw) if key in ('input_bytes', 'durable_bytes') else raw
+                with self.subTest(key=key, raw=raw):
+                    result = p.strict_status(document, layout)
+                    self.assertIsNone(result['storage']['node2'][key])
+                    self.assertIsNone(result['storage_processes']['10.93.0.12:4511'][key])
+                    self.assertIsNotNone(result['storage_processes']['10.93.0.12:4510'][key])
+                    self.assertIsNotNone(result['storage_processes']['10.93.0.12:4512'][key])
+                    self.assertIsNotNone(result['storage']['node1'][key])
+                    self.assertIsNotNone(result['storage']['node3'][key])
+                    self.assertEqual(result['storage_processes']['10.93.0.12:4511']['storage_id'], 'node2-ss-4511')
+        document, layout = scaling_status_fixture()
+        role = document['cluster']['processes']['node3-4512']['roles'][0]
+        role['input_bytes'] = dict(counter=1234.0); del role['durable_bytes']; del role['shards']
+        result = p.strict_status(document, layout)
+        self.assertEqual(result['storage_processes']['10.93.0.13:4512']['input_bytes'], 1234)
+        self.assertIs(type(result['storage_processes']['10.93.0.13:4512']['input_bytes']), int)
+        self.assertIsNone(result['storage']['node3']['durable_bytes'])
+        self.assertIsNone(result['storage']['node3']['shards'])
+
+    def test_scaling_status_rejects_missing_duplicate_or_cross_host_storage_ids(self):
+        for value in (None, '', True, 123, [], {}):
+            document, layout = scaling_status_fixture()
+            document['cluster']['processes']['node3-4512']['roles'][0]['id'] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'storage identities'):
+                p.strict_status(document, layout)
+        for source, target in (('node1-4510', 'node1-4511'), ('node1-4510', 'node3-4512')):
+            document, layout = scaling_status_fixture()
+            document['cluster']['processes'][target]['roles'][0]['id'] = document['cluster']['processes'][source]['roles'][0]['id']
+            with self.subTest(source=source, target=target), self.assertRaisesRegex(ValueError, 'storage identities'):
+                p.strict_status(document, layout)
+
+    def test_scaling_status_rejects_empty_nonprefix_and_two_ss_per_host_even_with_self_consistent_layout(self):
+        for hosts in ([], ['node2'], ['node1', 'node3'], ['node1', 'node1'], ['node1', 'node2', 'node3', 'node4'],
+                      ('node1',), True, None):
+            document, layout = scaling_status_fixture()
+            layout['storage_hosts'] = hosts
+            with self.subTest(hosts=hosts), self.assertRaisesRegex(ValueError, 'storage-host prefix'):
+                p.strict_status(document, layout)
+        for key, bad in (('storage_process_count', 2), ('storage_process_count', 3.0), ('storage_process_count', True),
+                         ('storage_max_outstanding', 128), ('storage_max_outstanding', 64.0),
+                         ('storage_memory_profile', 'capacity16g'), ('storage_memory_profile', None)):
+            document, layout = scaling_status_fixture(); layout[key] = bad
+            with self.subTest(key=key, value=bad), self.assertRaisesRegex(ValueError, 'storage geometry'):
+                p.strict_status(document, layout)
+        for hosts in (1, 2, 3):
+            document, layout = scaling_status_fixture(hosts)
+            for index in range(1, hosts+1):
+                del document['cluster']['processes']['node'+str(index)+'-4512']
+            layout['processes'] = [item for item in layout['processes'] if item['port'] != 4512]
+            with self.subTest(hosts=hosts), self.assertRaisesRegex(ValueError, 'three-storage-process population'):
+                p.strict_status(document, layout)
+        document, layout = scaling_status_fixture(3)
+        layout['processes'] = []; document['cluster']['processes'] = {}
+        with self.assertRaises(ValueError):
+            p.strict_status(document, layout)
+        document, layout = scaling_status_fixture(3)
+        layout['processes'] = [item for item in layout['processes'] if item['node'] != 'node2' or item['port'] != 4512]
+        del document['cluster']['processes']['node2-4512']
+        with self.assertRaisesRegex(ValueError, 'three-storage-process population'):
+            p.strict_status(document, layout)
+
+    def test_scaling_status_rejects_wrong_peraddress_population_roles_and_physical_host_identity(self):
+        for change in ('missing', 'extra', 'duplicate', 'duplicate-spec', 'wrong-role', 'duplicate-role', 'wrong-host', 'wrong-memory'):
+            document, layout = scaling_status_fixture()
+            processes = document['cluster']['processes']
+            target = processes['node2-4512']
+            if change == 'missing':
+                del processes['node2-4512']
+            elif change == 'extra':
+                processes['foreign'] = copy.deepcopy(target); processes['foreign']['address'] = '10.93.0.12:4513'
+            elif change == 'duplicate':
+                target['address'] = processes['node2-4511']['address']
+            elif change == 'duplicate-spec':
+                layout['processes'].append(copy.deepcopy(layout['processes'][-1]))
+            elif change == 'wrong-role':
+                target['roles'] = [dict(role='log')]
+            elif change == 'duplicate-role':
+                target['roles'].append(copy.deepcopy(target['roles'][0]))
+            elif change == 'wrong-host':
+                target['locality']['machineid'] = 'node3'
+            elif change == 'wrong-memory':
+                target['memory']['limit_bytes'] = 4*p.GIB
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                p.strict_status(document, layout)
+        document, layout = scaling_status_fixture()
+        # Preserve total SS count but move one node2 SS to node3 in both descriptions.
+        spec = next(item for item in layout['processes'] if item['node'] == 'node2' and item['port'] == 4512)
+        spec['node'] = 'node3'; spec['machineid'] = 'node3'; spec['zoneid'] = 'node3'
+        target = document['cluster']['processes']['node2-4512']; target['locality'] = dict(machineid='node3', zoneid='node3')
+        with self.assertRaisesRegex(ValueError, 'three-storage-process population'):
+            p.strict_status(document, layout)
 
     def test_selected_two_vs_three_study_binds_exact_population_without_mutating_plan(self):
         value = plan(); value["selected_topologies"] = [3, 2]; value["prerequisite_topologies"] = [3, 2, 1]
