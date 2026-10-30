@@ -186,8 +186,11 @@ def observe(node_id, root):
 
 
 class Campaign:
-    def __init__(self, plan, out, provision, *, clock=time.monotonic_ns, sleep=time.sleep):
+    def __init__(self, plan, out, provision, *, clock=time.monotonic_ns, sleep=time.sleep, provision_out=None, receipt_root=None):
         self.plan, self.out, self.provision = plan, Path(out), provision
+        self.provision_out = Path(provision_out) if provision_out is not None else self.out / "provision"
+        self.receipt_root = Path(receipt_root) if receipt_root is not None else self.out
+        self.last_status_document = None
         self.clock, self.sleep = clock, sleep
         self.nodes, self.resources = {}, None
         self.sequence = 0
@@ -199,7 +202,7 @@ class Campaign:
         self.pid_baseline = None
 
     def receipt_budget(self):
-        size = sum(x.stat().st_size for x in self.out.rglob("*") if x.is_file())
+        size = sum(x.stat().st_size for x in self.receipt_root.rglob("*") if x.is_file())
         p.require(size < 1024 ** 3, "controller receipt allocation exceeds 1GiB")
 
     def command(self, node, args, cap=30):
@@ -207,7 +210,7 @@ class Campaign:
         with self.sequence_lock:
             self.sequence += 1
             sequence = self.sequence
-        rc, stdout, stderr = self.provision.run_on_node(self.plan, self.out / "provision", node, args,
+        rc, stdout, stderr = self.provision.run_on_node(self.plan, self.provision_out, node, args,
                                                        timeout=remaining(self.plan, cap))
         write(self.out / "commands" / (str(sequence) + ".json"), {"node_id": node["id"], "argv": args,
               "exit": rc, "stdout": stdout, "stderr": stderr, "controller_ns": self.clock()})
@@ -282,6 +285,7 @@ class Campaign:
     def status(self, layout):
         raw = self.command(self.nodes["node1"], [self.remote_root + "/bin/fdbcli", "-C", layout["remote_cluster_file"], "--exec", "status json"], 15)
         document = loads(raw)
+        self.last_status_document = document
         write(self.out / "status" / (str(self.sequence) + ".json"), {"raw": document, "controller_ns": self.clock()})
         return p.strict_status(document, layout)
 
@@ -324,7 +328,7 @@ class Campaign:
         for node in self.nodes.values():
             self.command(node, ["mkdir", "-p", self.remote_harness, self.remote_root + "/producers"])
             for name in ("driver.py", "policy.py"):
-                rc, _, _ = self.provision.copy_to_node(self.plan, self.out / "provision", node, HERE / name, self.remote_harness + "/" + name)
+                rc, _, _ = self.provision.copy_to_node(self.plan, self.provision_out, node, HERE / name, self.remote_harness + "/" + name)
                 p.require(rc == 0, "copy sealed helper failed")
                 result = self.command(node, ["sha256sum", self.remote_harness + "/" + name])
                 p.require(result.split()[0] == p.sha(HERE / name), "remote helper hash")
@@ -350,15 +354,15 @@ class Campaign:
                 self.command(node, ["mkdir", work])
                 local = directory / (name + "-plan.json")
                 write(local, grant)
-                rc, _, _ = self.provision.copy_to_node(self.plan, self.out / "provision", node, local, work + "/plan.json")
+                rc, _, _ = self.provision.copy_to_node(self.plan, self.provision_out, node, local, work + "/plan.json")
                 p.require(rc == 0, "copy producer grant failed")
                 # Every client's cluster file is copied independently and hash checked.
                 self.command(node, ["mkdir", "-p", str(Path(layout["remote_cluster_file"]).parent)])
-                rc, _, _ = self.provision.copy_to_node(self.plan, self.out / "provision", node, layout["cluster_file"], layout["remote_cluster_file"])
+                rc, _, _ = self.provision.copy_to_node(self.plan, self.provision_out, node, layout["cluster_file"], layout["remote_cluster_file"])
                 p.require(rc == 0, "copy client cluster file failed")
                 cluster_hash = self.command(node, ["sha256sum", layout["remote_cluster_file"]])
                 p.require(cluster_hash.split()[0] == p.sha(layout["cluster_file"]), "client cluster file hash changed")
-                command = self.provision.ssh_argv(self.plan, self.out / "provision", node, self.remote(node, "_produce", work + "/plan.json"))
+                command = self.provision.ssh_argv(self.plan, self.provision_out, node, self.remote(node, "_produce", work + "/plan.json"))
                 stdout, stderr = open(directory / (name + ".stdout"), "xb"), open(directory / (name + ".stderr"), "xb")
                 process = subprocess.Popen(command, stdout=stdout, stderr=stderr)
                 jobs.append((node, grant, local, process, stdout, stderr))
@@ -366,7 +370,7 @@ class Campaign:
             for node, grant, local, _, _, _ in jobs:
                 while time.monotonic() < ready_until:
                     # test -f is an expected nonzero while the remote helper starts.
-                    rc, _, _ = self.provision.run_on_node(self.plan, self.out / "provision", node,
+                    rc, _, _ = self.provision.run_on_node(self.plan, self.provision_out, node,
                                                          ["test", "-f", grant["work"] + "/ready.json"], timeout=remaining(self.plan, 5))
                     if rc == 0:
                         ready = self.read_remote(node, grant["work"] + "/ready.json")
@@ -392,7 +396,7 @@ class Campaign:
                 write(directory / (grant["run"] + "-ingest.json"), result)
             background.append(self.stable(layout, 300))
             for node, grant, local, _, _, _ in jobs:
-                command = self.provision.ssh_argv(self.plan, self.out / "provision", node, self.remote(node, "_verify", grant["work"] + "/plan.json"))
+                command = self.provision.ssh_argv(self.plan, self.provision_out, node, self.remote(node, "_verify", grant["work"] + "/plan.json"))
                 stdout, stderr = open(directory / (grant["run"] + "-verify.stdout"), "xb"), open(directory / (grant["run"] + "-verify.stderr"), "xb")
                 process = subprocess.Popen(command, stdout=stdout, stderr=stderr)
                 verify_jobs.append((node, grant, local, process, stdout, stderr))
@@ -445,7 +449,7 @@ class Campaign:
         write(self.out / "source-before.json", source_before)
         results = []
         try:
-            self.resources = self.provision.prepare(self.plan, self.out / "provision")
+            self.resources = self.provision.prepare(self.plan, self.provision_out)
             self.nodes = self.resources["nodes"]
             p.require(set(self.nodes) == {"client1", "client2", "node1", "node2", "node3"}, "exact five newly created nodes")
             self.install_helpers()
@@ -465,7 +469,7 @@ class Campaign:
                     if phase == "measured":
                         p.require_promotion(gates[hosts], hosts)
                     armid = "hosts%d-%s" % (hosts, phase)
-                    layout = self.provision.setup_cluster(self.plan, self.out / "provision", self.nodes, hosts, armid)
+                    layout = self.provision.setup_cluster(self.plan, self.provision_out, self.nodes, hosts, armid)
                     self.layouts.append(layout)
                     self.pid_baseline = None
                     processes = self.host_samples()
@@ -484,7 +488,7 @@ class Campaign:
             # Partial prepare failures clean themselves. The root-owned separately
             # tracked supervisor supplies independence; provision's child is auxiliary.
             if self.resources is not None:
-                cleanup = self.provision.teardown(self.plan, self.out / "provision", self.resources)
+                cleanup = self.provision.teardown(self.plan, self.provision_out, self.resources)
                 write(self.out / "cleanup.json", cleanup)
                 write(self.out / "actual-bill-bound.json", p.bill_bound(self.resources, cleanup))
                 write(self.out / "rounded-server-bill.json", p.rounded_server_bill(self.resources, cleanup))

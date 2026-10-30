@@ -95,7 +95,7 @@ def _roles(plan):
     schema = plan.get('schema') if type(plan) is dict else None
     if schema == 'otel_horizontal_v1':
         return ROLES
-    if schema == 'otel_native_diagnostic_v1':
+    if schema in ('otel_native_diagnostic_v1', 'otel_native_session_v1'):
         return ('node1', 'client1')
     raise ProvisionError('unknown campaign schema; no resource roles authorized')
 
@@ -104,8 +104,9 @@ def _storage_max_outstanding(plan):
     if 'storage_max_outstanding' not in plan:
         return 64
     value = plan['storage_max_outstanding']
-    if (plan.get('schema') != 'otel_native_diagnostic_v1'
-            or type(value) is not int or value not in (64, 128)):
+    if (plan.get('schema') not in ('otel_native_diagnostic_v1', 'otel_native_session_v1')
+            or type(value) is not int or value not in (64, 128)
+            or plan['schema'] == 'otel_native_session_v1' and value != 64):
         raise ProvisionError('storage_max_outstanding requires diagnostic schema and exact integer 64 or 128')
     return value
 
@@ -114,11 +115,24 @@ def _storage_process_count(plan):
     if 'storage_process_count' not in plan:
         return 1
     value = plan['storage_process_count']
-    if (plan.get('schema') != 'otel_native_diagnostic_v1'
-            or type(value) is not int or value not in (1, 2)):
+    if (plan.get('schema') not in ('otel_native_diagnostic_v1', 'otel_native_session_v1')
+            or type(value) is not int or value not in (1, 2)
+            or plan['schema'] == 'otel_native_session_v1' and value != 2):
         raise ProvisionError('storage_process_count requires diagnostic schema and exact integer 1 or 2')
     if value == 2 and _storage_max_outstanding(plan) != 64:
         raise ProvisionError('two storage processes require default max_outstanding 64')
+    return value
+
+
+def _storage_memory_profile(plan):
+    if 'storage_memory_profile' not in plan:
+        return 'baseline'
+    value = plan['storage_memory_profile']
+    if (plan.get('schema') != 'otel_native_diagnostic_v1' or type(value) is not str
+            or value not in ('baseline', 'capacity16g')):
+        raise ProvisionError('storage_memory_profile is diagnostic-only baseline or capacity16g')
+    if value == 'capacity16g' and _storage_process_count(plan) != 2:
+        raise ProvisionError('capacity16g requires exactly two storage processes')
     return value
 
 
@@ -140,7 +154,17 @@ def validate_plan(plan, out, clock=time.time):
         raise ProvisionError('an explicitly approved supported campaign plan is required')
     _storage_max_outstanding(plan)
     _storage_process_count(plan)
-    if plan['schema'] == 'otel_native_diagnostic_v1':
+    _storage_memory_profile(plan)
+    if plan['schema'] == 'otel_native_session_v1':
+        if type(plan.get('cases')) is not list or plan['cases'] != ['capacity16g', 'baseline']:
+            raise ProvisionError('session cases must be exactly capacity16g then baseline')
+        if (type(plan.get('storage_process_count')) is not int or plan['storage_process_count'] != 2
+                or type(plan.get('storage_max_outstanding')) is not int or plan['storage_max_outstanding'] != 64):
+            raise ProvisionError('session requires two storage processes and max_outstanding 64')
+        if (type(plan.get('prior_rows_upper')) is not int or plan['prior_rows_upper'] < 0
+                or plan['prior_rows_upper'] + 2200000 > 10000000):
+            raise ProvisionError('session cumulative row authorization exceeds ten million')
+    if plan['schema'] in ('otel_native_diagnostic_v1', 'otel_native_session_v1'):
         for key, value in (('count', 100000), ('probe_count', 1000000), ('probe_seconds', 120)):
             if type(plan.get(key)) is not int or plan[key] != value:
                 raise ProvisionError('diagnostic plan requires exact typed ' + key)
@@ -237,6 +261,22 @@ def _lock(state):
 
 
 def _check_window(plan, state, clock, guard=None):
+    lease_path = state / 'guard-plan.json'
+    if lease_path.exists():
+        lease = _load(lease_path)
+        if any(plan.get(key) != lease.get(key) for key in ('campaign', 'prefix', 'first_epoch', 'deadline_epoch')):
+            raise ProvisionError('campaign identity or original lease deadline changed')
+        if lease.get('schema') == 'otel_native_session_v1':
+            if plan.get('schema') == 'otel_native_session_v1':
+                expected, actual = lease, plan
+            elif plan.get('schema') == 'otel_native_diagnostic_v1' and plan.get('storage_memory_profile') in lease['cases']:
+                skip = {'schema', 'cases', 'prior_rows_upper', 'storage_memory_profile'}
+                expected = {k: v for k, v in lease.items() if k not in skip}
+                actual = {k: v for k, v in plan.items() if k not in skip}
+            else:
+                raise ProvisionError('session only authorizes explicit diagnostic case profiles')
+            if json.dumps(actual, sort_keys=True) != json.dumps(expected, sort_keys=True):
+                raise ProvisionError('immutable session lease or common case parameters changed')
     if (clock() >= _active_deadline(plan)
             or (state / 'cleanup-started.json').exists()
             or (guard is not None and guard.poll() is not None)):
@@ -830,7 +870,7 @@ def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.s
         resources['remote_root'] = remote
         for kind in ('fdb', 'client'):
             _mc.write_private(state / ('horizontal-' + kind + '.slice'),
-                              _slice(kind, io_accounting=plan['schema'] == 'otel_native_diagnostic_v1'))
+                              _slice(kind, io_accounting=plan['schema'] in ('otel_native_diagnostic_v1', 'otel_native_session_v1')))
         for role, node in resources['nodes'].items():
             until = min(clock() + 600, _active_deadline(plan))
             attempt = 0
@@ -1015,8 +1055,11 @@ def render_cluster(plan, nodes, storage_hosts, armid):
     roles = _roles(plan)
     max_outstanding = _storage_max_outstanding(plan)
     storage_count = _storage_process_count(plan)
-    storage_memory_gib = 2 if storage_count == 2 else 4
-    storage_cache_mib = 1024 if storage_count == 2 else 2048
+    memory_profile = _storage_memory_profile(plan)
+    if plan['schema'] == 'otel_native_session_v1':
+        raise ProvisionError('session clusters must use an explicitly validated diagnostic case plan')
+    storage_memory_gib = 4 if memory_profile == 'capacity16g' or storage_count == 1 else 2
+    storage_cache_mib = 2048 if memory_profile == 'capacity16g' or storage_count == 1 else 1024
     fdb_roles = tuple(role for role in roles if role.startswith('node'))
     if plan['schema'] == 'otel_native_diagnostic_v1' and (type(nodes) is not dict or set(nodes) != set(roles)):
         raise ProvisionError('diagnostic layout requires exactly node1 and client1')
@@ -1049,7 +1092,7 @@ def render_cluster(plan, nodes, storage_hosts, armid):
                     '--listen-address', address, '--class', cls, '--datadir', f'{root}/data/{port}',
                     '--logdir', root + '/logs', '--locality-machineid', node,
                     '--locality-zoneid', node, '--memory', f'{storage_memory_gib}GiB' if storage else '1GiB',
-                    '--cache-memory', ('1GiB' if storage_count == 2 else '2GiB') if storage else '64MiB', '--trace-format', 'json',
+                    '--cache-memory', f'{storage_cache_mib//1024}GiB' if storage else '64MiB', '--trace-format', 'json',
                     '--maxlogssize', '128MiB', '--loggroup', plan['campaign']]
             if storage and max_outstanding == 128:
                 args += ['--knob_max_outstanding', '128']
@@ -1076,12 +1119,13 @@ Restart=no
     layout = dict(root=root, cluster_text=cluster + '\n', remote_cluster_file=root + '/fdb.cluster',
                 storage_hosts=selected, processes=processes, configure=CONFIGURE,
                 budgets=dict(fdb_host=dict(cpu_quota_percent=400, allowed_cpus='0-3', memory_max_gib=16,
-                                           max_process_memory_gib=9, max_processes=5+storage_count),
+                                           max_process_memory_gib=5+storage_count*storage_memory_gib, max_processes=5+storage_count),
                              client_host=dict(cpu_quota_percent=400, allowed_cpus='0-3', memory_max_gib=16)),
                 storage_engine='ssd-redwood-1', log_engine='ssd-2', redundancy_mode='single')
     if plan['schema'] == 'otel_native_diagnostic_v1':
         layout['storage_max_outstanding'] = max_outstanding
         layout['storage_process_count'] = storage_count
+        layout['storage_memory_profile'] = memory_profile
     return layout
 
 
@@ -1097,6 +1141,251 @@ CPUQuota=400%
 MemoryMax=16G
 MemorySwapMax=0
 '''
+
+
+_STOP_PROBE = r'''import json, os, pathlib, re, subprocess, sys
+request = json.loads(sys.argv[1])
+def proc(pid):
+    root = pathlib.Path('/proc') / str(pid)
+    try:
+        stat = (root / 'stat').read_text()
+        fields = stat[stat.rfind(') ') + 2:].split()
+        raw = (root / 'cmdline').read_bytes()
+        if len(raw) > 65536: raise RuntimeError('process command exceeds bound')
+        args = raw.rstrip(b'\0').decode().split('\0') if raw else []
+        groups = (root / 'cgroup').read_text().splitlines()
+        unified = [line[3:] for line in groups if line.startswith('0::')]
+        if len(unified) != 1: raise RuntimeError('process unified cgroup missing')
+        return dict(pid=pid, starttime_ticks=int(fields[19]), args=args,
+                    exe=os.readlink(root / 'exe'), cgroup=unified[0])
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+units = []
+for item in request['units']:
+    done = subprocess.run(['systemctl', 'show', item['unit'], '--property=LoadState',
+        '--property=ActiveState', '--property=MainPID', '--property=ControlGroup'],
+        capture_output=True, text=True, timeout=5)
+    props = dict(line.split('=', 1) for line in done.stdout.splitlines() if '=' in line)
+    if done.returncode and props.get('LoadState') != 'not-found':
+        raise RuntimeError('cannot read exact owned unit: ' + done.stderr)
+    cg = pathlib.Path('/sys/fs/cgroup' + item['cgroup'])
+    if not cg.resolve().is_relative_to('/sys/fs/cgroup'): raise RuntimeError('cgroup escaped')
+    pids = set()
+    if cg.exists():
+        for file in [cg / 'cgroup.procs', *cg.rglob('*/cgroup.procs')]:
+            if file.exists():
+                for value in file.read_text().split():
+                    if not re.fullmatch('[0-9]+', value): raise RuntimeError('invalid cgroup PID')
+                    pids.add(int(value))
+    main = int(props.get('MainPID', '0'))
+    units.append(dict(unit=item['unit'], load_state=props.get('LoadState'),
+        active_state=props.get('ActiveState'), control_group=props.get('ControlGroup', ''),
+        main_pid=main, main=proc(main) if main else None,
+        pids=[value for pid in sorted(pids) if (value := proc(pid)) is not None]))
+historical = {str(pid): proc(pid) for pid in request['historical']}
+residual = []
+for entry in pathlib.Path('/proc').iterdir():
+    if entry.name.isdigit():
+        value = proc(int(entry.name))
+        if value and (value['exe'].removesuffix(' (deleted)') in request['binaries']
+                      or value['args'] and value['args'][0] in request['binaries']):
+            residual.append(value)
+print(json.dumps(dict(units=units, historical=historical, owned_residual=residual)))
+'''
+
+
+def _stop_specs(plan, nodes, layout, active, scopes):
+    if plan['schema'] not in ('otel_native_diagnostic_v1', 'otel_native_session_v1') or set(nodes) != {'node1', 'client1'}:
+        raise ProvisionError('owned-arm stop requires exactly the two native diagnostic nodes')
+    armid = active.get('armid')
+    if type(armid) is not str or not re.fullmatch(r'[A-Za-z0-9_-]{1,40}', armid):
+        raise ProvisionError('invalid active arm ID')
+    case = dict(plan)
+    if plan['schema'] == 'otel_native_session_v1':
+        profile = layout.get('storage_memory_profile')
+        if profile not in plan.get('cases', []):
+            raise ProvisionError('active arm is not an approved session case')
+        case.update(schema='otel_native_diagnostic_v1', storage_memory_profile=profile)
+    expected = render_cluster(case, nodes, 1, armid)
+    if layout.get('root') != expected['root'] or layout.get('processes') != expected['processes']:
+        raise ProvisionError('active layout root or exact native process specifications changed')
+    units = {'node1': [item['unit_name'] for item in expected['processes']]}
+    if active != dict(campaign=plan['campaign'], armid=armid, units=units):
+        raise ProvisionError('active-arm journal does not exactly match the owned layout')
+    specs = {'node1': [], 'client1': []}
+    for item in expected['processes']:
+        specs['node1'].append(dict(unit=item['unit_name'], args=item['args'],
+            cgroup='/horizontal.slice/horizontal-fdb.slice/'+item['unit_name']))
+    if type(scopes) not in (tuple, list):
+        raise ProvisionError('owned producer scopes must be an explicit sequence')
+    seen = set()
+    for item in scopes:
+        if type(item) is not dict or item.get('node') != 'client1':
+            raise ProvisionError('producer scope is not on the exact owned client')
+        unit, args = item.get('unit'), item.get('args')
+        match = re.fullmatch(r'otel-native-(prof20k[0-9]{4})-(ingest|audit|query)\.scope', unit or '')
+        if not match or unit in seen or type(args) is not list or not args or not all(type(x) is str for x in args):
+            raise ProvisionError('invalid, duplicate or unbound producer scope')
+        def value(flag):
+            if args.count(flag) != 1 or args.index(flag)+1 >= len(args):
+                raise ProvisionError('missing or duplicate producer scope argument: '+flag)
+            return args[args.index(flag)+1]
+        cg = '/horizontal.slice/horizontal-client.slice/'+unit
+        root = REMOTE_BASE+'/'+plan['campaign']
+        output = value('--output')
+        if (item.get('cgroup') != cg or args[0] != root+'/bin/otel-demo'
+                or value('--cluster-file') != expected['remote_cluster_file']
+                or value('--run') != match[1] or value('--mode') != match[2]
+                or value('--timeout') not in (('120s', '300s') if match[2] == 'ingest' else ('120s',))
+                or not output.startswith(root+'/producers/') or '..' in Path(output).parts):
+            raise ProvisionError('producer scope path, run, mode or cgroup is not owned')
+        if ('pid' in item) != ('starttime_ticks' in item) or any(
+                type(item[key]) is not int or item[key] <= 0 for key in ('pid', 'starttime_ticks') if key in item):
+            raise ProvisionError('invalid historical producer identity')
+        seen.add(unit)
+        specs['client1'].append(dict(item, cgroup=cg))
+    return specs
+
+
+def _validate_stop_snapshot(snapshot, specs, historical, *, stopped=False):
+    if type(snapshot) is not dict or type(snapshot.get('units')) is not list or type(snapshot.get('historical')) is not dict:
+        raise ProvisionError('malformed owned-arm process snapshot')
+    expected = {item['unit']: item for item in specs}
+    if len(snapshot['units']) != len(expected) or {item.get('unit') for item in snapshot['units']} != set(expected):
+        raise ProvisionError('owned-arm snapshot has missing or foreign units')
+    live, quiet = {}, True
+    def verify(value, spec):
+        if (type(value) is not dict or type(value.get('pid')) is not int or value['pid'] <= 0
+                or type(value.get('starttime_ticks')) is not int or value['starttime_ticks'] <= 0
+                or value.get('args') != spec['args'] or value.get('exe') != spec['args'][0]
+                or value.get('cgroup') != spec['cgroup']):
+            raise ProvisionError('live PID/start/full command/cgroup does not match its owned unit')
+        if value['pid'] in live and live[value['pid']] != value:
+            raise ProvisionError('PID identity changed within its snapshot')
+        live[value['pid']] = value
+    for unit in snapshot['units']:
+        spec = expected[unit['unit']]
+        if (unit.get('load_state') not in ('loaded', 'not-found')
+                or unit.get('active_state') not in ('active', 'activating', 'deactivating', 'inactive', 'failed')
+                or unit.get('control_group') not in ('', spec['cgroup'])
+                or type(unit.get('main_pid')) is not int or unit['main_pid'] < 0
+                or type(unit.get('pids')) is not list):
+            raise ProvisionError('owned unit/cgroup state is unknown or foreign')
+        if bool(unit['main_pid']) != (unit.get('main') is not None):
+            raise ProvisionError('MainPID is not bound to a complete process snapshot')
+        if (unit['pids'] or unit.get('main') is not None) and unit['control_group'] != spec['cgroup']:
+            raise ProvisionError('live owned unit has an unknown control group')
+        for value in unit['pids']:
+            verify(value, spec)
+        if unit.get('main') is not None:
+            verify(unit['main'], spec)
+            if unit['main_pid'] != unit['main']['pid']:
+                raise ProvisionError('MainPID does not match its process snapshot')
+        if stopped and (unit['pids'] or unit.get('main') is not None or unit['main_pid']
+                        or unit['active_state'] not in ('inactive', 'failed')):
+            quiet = False
+    if set(snapshot['historical']) != {str(pid) for pid in historical}:
+        raise ProvisionError('historical PID proof population changed')
+    for raw_pid, spec in historical.items():
+        value = snapshot['historical'][str(raw_pid)]
+        if value is not None:
+            if type(value) is not dict or type(value.get('starttime_ticks')) is not int:
+                raise ProvisionError('malformed historical PID snapshot')
+            if value['starttime_ticks'] != spec['starttime_ticks']:
+                if raw_pid in live:
+                    raise ProvisionError('live owned unit PID was reused or changed identity')
+                continue  # A different start time is a different process, never ours to stop.
+            verify(value, spec)
+            if stopped:
+                quiet = False
+    residual = snapshot.get('owned_residual')
+    if type(residual) is not list or any(type(x) is not dict or x.get('pid') not in live
+                                       or x != live[x['pid']] for x in residual):
+        raise ProvisionError('unmapped owned FDB/application residual process')
+    if len(residual) != len(live) or {x['pid'] for x in residual} != set(live):
+        raise ProvisionError('owned process snapshot and residual census disagree')
+    return quiet and not live if stopped else True, live
+
+
+def stop_owned_arm(plan, out, nodes, layout, *, scopes=(), runner=None, clock=time.time, sleep=time.sleep):
+    """Stop only an exactly journaled native arm; retain all data and the original lease."""
+    state = _state(out)
+    receipt = dict(passed=False, started_epoch=clock(), root=layout.get('root'), before={}, after={}, actions=[],
+                   boundary='owned process/unit quiescence only; host quiet admission and disk floors remain mandatory')
+    path = state / f'stop-arm-{time.time_ns()}.json'
+    receipt['receipt_path'] = str(path)
+    try:
+        with _lock(state):
+            _check_window(plan, state, clock)
+            for node in nodes.values():
+                _authorized_node(plan, out, node)
+            active = _load(state / 'active-arm.json')
+            specs = _stop_specs(plan, nodes, layout, active, scopes)
+            receipt['armid'] = active['armid']
+            historical = {role: {item['pid']: item for item in values if 'pid' in item} for role, values in specs.items()}
+            until = min(clock()+120, _active_deadline(plan))
+            def probe(role, phase):
+                _check_window(plan, state, clock)
+                if clock() >= until:
+                    raise ProvisionError('owned-arm quiescence proof exceeded its operation budget')
+                root = REMOTE_BASE+'/'+plan['campaign']
+                request = dict(units=specs[role], historical=list(historical[role]),
+                               binaries=[root+'/bin/fdbserver', root+'/bin/otel-demo'])
+                timed_out = False
+                try:
+                    rc, stdout, stderr = run_on_node(plan, out, nodes[role],
+                        ['python3', '-c', _STOP_PROBE, json.dumps(request)], runner=runner,
+                        timeout=min(20, until-clock()))
+                except subprocess.TimeoutExpired as exc:
+                    rc, stdout, stderr, timed_out = None, exc.stdout or '', exc.stderr or '', True
+                stdout = stdout.decode(errors='replace') if isinstance(stdout, bytes) else stdout
+                stderr = stderr.decode(errors='replace') if isinstance(stderr, bytes) else stderr
+                receipt[phase][role] = dict(returncode=rc, stdout=stdout, stderr=stderr, timed_out=timed_out, epoch=clock())
+                _json(path, receipt, replace=True)
+                if type(rc) is not int or rc != 0:
+                    raise ProvisionError('owned-arm identity probe failed: '+stderr)
+                return json.loads(stdout)
+            for role in specs:
+                value = probe(role, 'before')
+                _, live = _validate_stop_snapshot(value, specs[role], historical[role])
+                for pid, process in live.items():
+                    spec = next(item for item in specs[role] if item['cgroup'] == process['cgroup'])
+                    historical[role][pid] = dict(spec, pid=pid, starttime_ticks=process['starttime_ticks'])
+            for role in specs:
+                value = json.loads(receipt['before'][role]['stdout'])
+                units = [item['unit'] for item in value['units'] if item['load_state'] != 'not-found']
+                if units:
+                    _check_window(plan, state, clock)
+                    rc, stdout, stderr = run_on_node(plan, out, nodes[role], ['systemctl', 'stop', *units],
+                                                    runner=runner, timeout=min(20, max(0.001, until-clock())))
+                    receipt['actions'].append(dict(node=role, units=units, returncode=rc, stdout=stdout, stderr=stderr))
+                    _json(path, receipt, replace=True)
+                    if rc:
+                        raise ProvisionError('failed to stop exact owned units: '+stderr)
+            while True:
+                quiet = True
+                for role in specs:
+                    value = probe(role, 'after')
+                    passed, _ = _validate_stop_snapshot(value, specs[role], historical[role], stopped=True)
+                    quiet &= passed
+                if quiet:
+                    break
+                sleep(min(1, max(0, until-clock())))
+            if _load(state / 'active-arm.json') != active:
+                raise ProvisionError('active arm changed during its quiescence proof')
+            receipt.update(passed=True, quiescent=True, finished_epoch=clock())
+            _json(path, receipt, replace=True)
+            return receipt
+    except BaseException as exc:
+        receipt.update(error=str(exc), finished_epoch=clock())
+        _json(path, receipt, replace=True)
+        if not (state / 'cleanup-started.json').exists():
+            try:
+                _json(state / 'cleanup-started.json', dict(epoch=clock(), reason='owned-arm stop proof failed'))
+            except (FileExistsError, ProvisionError):
+                if not (state / 'cleanup-started.json').exists():
+                    raise
+        raise ProvisionError('owned-arm stop proof failed; hard teardown required; receipt='+str(path)+': '+str(exc)) from exc
 
 
 def setup_cluster(plan, out, nodes, storage_hosts, armid, *, runner=None, clock=time.time, sleep=time.sleep):
@@ -1151,7 +1440,7 @@ def setup_cluster(plan, out, nodes, storage_hosts, armid, *, runner=None, clock=
             slice_path = arm / ('horizontal-' + kind + '.slice')
             if not slice_path.exists():
                 _mc.write_private(slice_path,
-                                  _slice(kind, io_accounting=plan['schema'] == 'otel_native_diagnostic_v1'))
+                                  _slice(kind, io_accounting=plan['schema'] in ('otel_native_diagnostic_v1', 'otel_native_session_v1')))
             _require_result(copy_to_node(plan, out, node, slice_path,
                                          '/etc/systemd/system/horizontal-' + kind + '.slice', runner=runner), 'copy resource slice')
             for p in [p for p in layout['processes'] if p['node'] == role]:

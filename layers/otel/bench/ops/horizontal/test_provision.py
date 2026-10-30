@@ -266,6 +266,60 @@ class FakeCloud:
         raise AssertionError('unhandled fake command: ' + repr(argv))
 
 
+class StopRunner:
+    """Fake exact /proc+cgroup snapshots for the owned-arm stop protocol."""
+    def __init__(self, cloud, nodes, layout, scopes=()):
+        self.cloud, self.nodes = cloud, nodes
+        self.records, self.stopped, self.stop_commands = {}, set(), []
+        self.reused, self.linger, self.mutate = {}, False, None
+        for index, item in enumerate(layout['processes']):
+            self.records[(item['node'], item['unit_name'])] = dict(pid=500+index, starttime_ticks=10000+index,
+                args=item['args'], exe=item['args'][0],
+                cgroup='/horizontal.slice/horizontal-fdb.slice/'+item['unit_name'])
+        for index, item in enumerate(scopes):
+            self.records[(item['node'], item['unit'])] = dict(pid=item.get('pid', 900+index),
+                starttime_ticks=item.get('starttime_ticks', 9000+index), args=item['args'],
+                exe=item['args'][0], cgroup=item['cgroup'])
+
+    def live(self, role):
+        return {unit: value for (node, unit), value in self.records.items()
+                if node == role and (self.linger or (node, unit) not in self.stopped)}
+
+    def __call__(self, argv, timeout=120):
+        if Path(argv[0]).name != 'ssh':
+            return self.cloud(argv, timeout=timeout)
+        target = next(value for value in argv if value.startswith('root@'))[5:]
+        role = next(role for role, node in self.nodes.items() if node['host'] == target)
+        args = shlex.split(argv[-1])
+        if args[:2] == ['systemctl', 'stop']:
+            for unit in args[2:]:
+                if (role, unit) not in self.records:
+                    raise AssertionError('stop attempted an undeclared unit')
+                self.stopped.add((role, unit))
+            self.stop_commands.append((role, args[2:]))
+            return 0, '', ''
+        if args[:3] != ['python3', '-c', p._STOP_PROBE]:
+            return self.cloud(argv, timeout=timeout)
+        request = json.loads(args[3]); current = self.live(role)
+        units = []
+        for spec in request['units']:
+            value = current.get(spec['unit'])
+            service = spec['unit'].endswith('.service')
+            units.append(dict(unit=spec['unit'], load_state='loaded' if value else 'not-found',
+                active_state='active' if value else 'inactive', control_group=spec['cgroup'] if value else '',
+                main_pid=value['pid'] if value and service else 0,
+                main=copy.deepcopy(value) if value and service else None,
+                pids=[copy.deepcopy(value)] if value else []))
+        historical = {}
+        for pid in request['historical']:
+            values = [value for value in current.values() if value['pid'] == pid]
+            historical[str(pid)] = copy.deepcopy(values[0] if values else self.reused.get(pid))
+        result = dict(units=units, historical=historical, owned_residual=copy.deepcopy(list(current.values())))
+        if self.mutate:
+            self.mutate(role, 'after' if self.stop_commands else 'before', result)
+        return 0, json.dumps(result), ''
+
+
 class ProvisionTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='horizontal-provision-test-')
@@ -300,6 +354,230 @@ class ProvisionTest(unittest.TestCase):
         self.plan.update(schema='otel_native_diagnostic_v1', count=100000,
                          probe_count=1000000, probe_seconds=120)
         return self.plan
+
+    def session_plan(self):
+        self.diagnostic_plan()
+        self.plan.update(schema='otel_native_session_v1', cases=['capacity16g', 'baseline'],
+                         storage_process_count=2, storage_max_outstanding=64, prior_rows_upper=0)
+        return self.plan
+
+    def case_plan(self, profile):
+        case = dict(self.plan, schema='otel_native_diagnostic_v1', storage_memory_profile=profile)
+        case.pop('cases', None); case.pop('prior_rows_upper', None)
+        return case
+
+    def owned_scope(self, layout, mode='ingest', history=True):
+        root = p.REMOTE_BASE+'/'+self.plan['campaign']; run = 'prof20k9000'
+        unit = 'otel-native-'+run+'-'+mode+'.scope'
+        args = [root+'/bin/otel-demo', '--backend', 'fdb', '--order', 'time', '--cluster-file', layout['remote_cluster_file'],
+                '--run', run, '--seed', '283', '--count', '1000000', '--tenants', '1', '--attrs', '8',
+                '--match-every', '100', '--batch', '32', '--save-mode', 'batch', '--workers', '4', '--diagnostics',
+                '--k', '100', '--max-candidates', '2000000', '--max-bytes', '268435456', '--revision', 'a'*40,
+                '--record-compression', 'brotli-4', '--posting-value-format', 'tuple', '--bulk-index-conflicts=true',
+                '--hash-bytes', '8', '--mode', mode, '--timeout', '120s', '--output', root+'/producers/'+run+'/'+mode+'.json']
+        if mode == 'query':
+            args += ['--suite', 'all', '--iterations', '1600']
+        scope = dict(node='client1', unit=unit, args=args, cgroup='/horizontal.slice/horizontal-client.slice/'+unit)
+        if history:
+            scope.update(pid=900, starttime_ticks=9000)
+        return scope
+
+    def test_session_plan_has_two_immutable_roles_cases_rows_and_original_deadline(self):
+        self.session_plan()
+        self.assertEqual(p._roles(self.plan), ('node1', 'client1'))
+        for prior in (0, 7800000):
+            self.plan['prior_rows_upper'] = prior
+            p.validate_plan(self.plan, self.out)
+        base = copy.deepcopy(self.plan)
+        bads = [('cases', ['baseline', 'capacity16g']), ('cases', ['capacity16g']), ('cases', True),
+                ('prior_rows_upper', True), ('prior_rows_upper', -1), ('prior_rows_upper', 7800001),
+                ('prior_rows_upper', 0.0), ('storage_process_count', 1), ('storage_process_count', True),
+                ('storage_max_outstanding', 128), ('storage_max_outstanding', 64.0),
+                ('storage_memory_profile', 'baseline')]
+        for key, bad in bads:
+            self.plan.clear(); self.plan.update(base); self.plan[key] = bad
+            with self.subTest(key=key, value=bad), self.assertRaises(p.ProvisionError):
+                self.prepare()
+        self.plan.clear(); self.plan.update(base)
+        for key in ('cases', 'prior_rows_upper', 'storage_process_count', 'storage_max_outstanding'):
+            changed = dict(base); del changed[key]
+            with self.subTest(missing=key), self.assertRaises(p.ProvisionError):
+                p.validate_plan(changed, self.out)
+        self.assertFalse(self.cloud.calls)
+
+    def test_capacity_profile_changes_only_two_storage_memory_cache_within_same_role_cap(self):
+        self.diagnostic_plan(); self.plan['storage_process_count'] = 2
+        nodes = {'node1': {'private_ip': '10.93.0.11'}, 'client1': {'private_ip': '10.93.0.21'}}
+        baseline = p.render_cluster(self.plan, nodes, 1, 'same-arm')
+        explicit = dict(self.plan, storage_memory_profile='baseline')
+        self.assertEqual(p.render_cluster(explicit, nodes, 1, 'same-arm'), baseline)
+        capacity = dict(self.plan, storage_memory_profile='capacity16g')
+        p.validate_plan(capacity, self.out)
+        wide = p.render_cluster(capacity, nodes, 1, 'same-arm')
+        self.assertEqual(wide['storage_memory_profile'], 'capacity16g')
+        self.assertEqual(sum(x['memory_limit_bytes'] for x in wide['processes']), 13*p.GIB)
+        self.assertEqual(sum(x['memory_limit_bytes'] for x in wide['processes'] if x['process_class'] == 'storage'), 8*p.GIB)
+        self.assertEqual(sum(x['cache_mib'] for x in wide['processes'] if x['process_class'] == 'storage'), 4096)
+        self.assertEqual(wide['budgets']['fdb_host']['max_process_memory_gib'], 13)
+        self.assertEqual(wide['budgets']['fdb_host']['max_processes'], 7)
+        self.assertEqual(wide['budgets']['fdb_host']['memory_max_gib'], 16)
+        self.assertEqual(wide['budgets']['fdb_host']['cpu_quota_percent'], 400)
+        self.assertEqual(p._host_prepare_script(capacity), p._host_prepare_script(explicit))
+        for new, old in zip(wide['processes'], baseline['processes']):
+            if new['process_class'] != 'storage':
+                self.assertEqual(new, old)
+            else:
+                args = list(old['args']); args[args.index('--memory')+1] = '4GiB'; args[args.index('--cache-memory')+1] = '2GiB'
+                self.assertEqual(new['args'], args)
+                self.assertEqual(new['memory_limit_bytes'], 4*p.GIB)
+                self.assertEqual(new['cache_mib'], 2048)
+        for schema, count, profile in (('otel_horizontal_v1', 2, 'baseline'), ('otel_native_session_v1', 2, 'baseline'),
+                                       ('otel_native_diagnostic_v1', 1, 'capacity16g'),
+                                       ('otel_native_diagnostic_v1', 2, True), ('otel_native_diagnostic_v1', 2, 'other')):
+            changed = dict(self.plan, schema=schema, storage_process_count=count, storage_memory_profile=profile)
+            with self.subTest(schema=schema, count=count, profile=profile), self.assertRaises(p.ProvisionError):
+                p.validate_plan(changed, self.out)
+        self.assertFalse(self.cloud.calls)
+
+    def test_session_prepares_once_and_only_case_memory_profile_can_vary_under_original_lease(self):
+        self.session_plan()
+        resources = self.prepare()
+        self.assertEqual(set(resources['nodes']), {'node1', 'client1'})
+        state = p._state(self.out)
+        baseline_before = {kind: (state/'baseline'/('before-'+kind+'.json')).read_bytes() for kind in p.KINDS}
+        for kind in ('fdb', 'client'):
+            self.assertIn('IOAccounting=yes\n', (state/('horizontal-'+kind+'.slice')).read_text())
+        case = self.case_plan('capacity16g')
+        layout = p.setup_cluster(case, self.out, resources['nodes'], 1, 'capacity16g', runner=self.cloud)
+        self.assertEqual(layout['budgets']['fdb_host']['max_process_memory_gib'], 13)
+        self.assertEqual(self.cloud.create_counts['server'], 2)
+        self.assertEqual(self.cloud.events.count('guard-start'), 1)
+        for key, bad in (('first_epoch', self.plan['first_epoch']+1), ('deadline_epoch', self.plan['deadline_epoch']+1),
+                         ('campaign', 'other-campaign'), ('prefix', 'other-prefix'), ('location', 'fsn1'), ('binary_sha256', '0'*64)):
+            changed = dict(case); changed[key] = bad
+            before = len(self.cloud.calls)
+            with self.subTest(key=key), self.assertRaises(p.ProvisionError):
+                p.setup_cluster(changed, self.out, resources['nodes'], 1, 'forbidden', runner=self.cloud)
+            self.assertEqual(len(self.cloud.calls), before)
+        self.assertEqual({kind: (state/'baseline'/('before-'+kind+'.json')).read_bytes() for kind in p.KINDS}, baseline_before)
+        with self.assertRaises(p.ProvisionError):
+            p.render_cluster(self.plan, resources['nodes'], 1, 'unselected-session')
+
+    def test_stop_owned_arm_proves_native_and_scope_identity_then_preserves_old_arm_data(self):
+        self.session_plan(); resources = self.prepare(); nodes = resources['nodes']; case = self.case_plan('capacity16g')
+        layout = p.setup_cluster(case, self.out, nodes, 1, 'capacity16g', runner=self.cloud)
+        scope = self.owned_scope(layout); runner = StopRunner(self.cloud, nodes, layout, (scope,))
+        arm = Path(layout['cluster_file']).parent
+        before = {path.name: path.read_bytes() for path in arm.iterdir() if path.is_file()}
+        active_before = p._load(p._state(self.out)/'active-arm.json')
+        receipt = p.stop_owned_arm(case, self.out, nodes, layout, scopes=(scope,), runner=runner)
+        self.assertTrue(receipt['passed']); self.assertTrue(receipt['quiescent'])
+        self.assertEqual(Path(receipt['receipt_path']).stat().st_mode & 0o777, 0o600)
+        self.assertEqual(set(receipt['before']), {'node1', 'client1'})
+        self.assertEqual(set(receipt['after']), {'node1', 'client1'})
+        self.assertEqual(len(runner.stop_commands), 2)
+        self.assertEqual(set(runner.stop_commands[0][1]), set(active_before['units']['node1']))
+        self.assertEqual(runner.stop_commands[1], ('client1', [scope['unit']]))
+        self.assertEqual(p._load(p._state(self.out)/'active-arm.json'), active_before)
+        self.assertEqual({path.name: path.read_bytes() for path in arm.iterdir() if path.is_file()}, before)
+        self.assertFalse((p._state(self.out)/'cleanup-started.json').exists())
+        baseline = self.case_plan('baseline')
+        second = p.setup_cluster(baseline, self.out, nodes, 1, 'baseline', runner=self.cloud)
+        self.assertNotEqual(second['root'], layout['root'])
+        self.assertEqual(second['budgets']['fdb_host']['max_process_memory_gib'], 9)
+        self.assertEqual(self.cloud.create_counts['server'], 2)
+        result = p.teardown(self.plan, self.out, resources, runner=self.cloud, sleep=lambda _: None)
+        self.assertTrue(result['passed']); self.assertEqual(self.cloud.items, self.cloud.baseline)
+
+    def test_stop_owned_arm_allows_inactive_scope_and_historical_pid_reuse_without_killing_it(self):
+        self.session_plan(); resources = self.prepare(); nodes = resources['nodes']; case = self.case_plan('baseline')
+        layout = p.setup_cluster(case, self.out, nodes, 1, 'baseline', runner=self.cloud)
+        scope = self.owned_scope(layout); runner = StopRunner(self.cloud, nodes, layout, (scope,))
+        runner.stopped.add(('client1', scope['unit']))
+        runner.reused[scope['pid']] = dict(pid=scope['pid'], starttime_ticks=99999, args=['/usr/bin/sleep', '1'],
+                                         exe='/usr/bin/sleep', cgroup='/system.slice/unrelated.service')
+        receipt = p.stop_owned_arm(self.plan, self.out, nodes, layout, scopes=(scope,), runner=runner)
+        self.assertTrue(receipt['passed'])
+        self.assertEqual([role for role, _ in runner.stop_commands], ['node1'])
+        self.assertFalse(any(scope['unit'] in units for _, units in runner.stop_commands))
+
+    def test_stop_owned_arm_accepts_audit_query_scopes_without_historical_pid_receipts(self):
+        self.session_plan(); resources = self.prepare(); nodes = resources['nodes']; case = self.case_plan('baseline')
+        layout = p.setup_cluster(case, self.out, nodes, 1, 'baseline', runner=self.cloud)
+        scopes = (self.owned_scope(layout, 'audit', False), self.owned_scope(layout, 'query', False))
+        runner = StopRunner(self.cloud, nodes, layout, scopes)
+        receipt = p.stop_owned_arm(case, self.out, nodes, layout, scopes=scopes, runner=runner)
+        self.assertTrue(receipt['passed'])
+        self.assertEqual(set(runner.stop_commands[-1][1]), {item['unit'] for item in scopes})
+
+    def test_stop_owned_arm_rejects_mismatched_live_process_and_arms_hard_cleanup(self):
+        self.session_plan(); resources = self.prepare(); nodes = resources['nodes']; case = self.case_plan('baseline')
+        layout = p.setup_cluster(case, self.out, nodes, 1, 'baseline', runner=self.cloud)
+        runner = StopRunner(self.cloud, nodes, layout)
+        unit = layout['processes'][0]['unit_name']; runner.records[('node1', unit)]['args'] = ['/foreign/fdbserver']
+        with self.assertRaisesRegex(p.ProvisionError, 'hard teardown required'):
+            p.stop_owned_arm(case, self.out, nodes, layout, runner=runner)
+        self.assertFalse(runner.stop_commands)
+        self.assertTrue((p._state(self.out)/'cleanup-started.json').is_file())
+        receipts = list(p._state(self.out).glob('stop-arm-*.json'))
+        self.assertEqual(len(receipts), 1)
+        self.assertFalse(p._load(receipts[0])['passed'])
+        self.assertFalse(self.cloud.deleted)
+
+    def test_stop_owned_arm_never_stops_a_main_pid_without_its_before_identity_snapshot(self):
+        self.session_plan(); resources = self.prepare(); nodes = resources['nodes']; case = self.case_plan('baseline')
+        layout = p.setup_cluster(case, self.out, nodes, 1, 'baseline', runner=self.cloud)
+        runner = StopRunner(self.cloud, nodes, layout)
+        def omit_main(role, phase, value):
+            if role == 'node1' and phase == 'before':
+                self.assertGreater(value['units'][0]['main_pid'], 0)
+                value['units'][0]['main'] = None
+        runner.mutate = omit_main
+        with self.assertRaisesRegex(p.ProvisionError, 'MainPID is not bound'):
+            p.stop_owned_arm(case, self.out, nodes, layout, runner=runner)
+        self.assertFalse(runner.stop_commands)
+        self.assertTrue((p._state(self.out)/'cleanup-started.json').is_file())
+        receipts = list(p._state(self.out).glob('stop-arm-*.json'))
+        self.assertEqual(len(receipts), 1)
+        receipt = p._load(receipts[0])
+        self.assertFalse(receipt['passed'])
+        raw = json.loads(receipt['before']['node1']['stdout'])
+        self.assertGreater(raw['units'][0]['main_pid'], 0)
+        self.assertIsNone(raw['units'][0]['main'])
+        self.assertFalse(self.cloud.deleted)
+
+    def test_stop_owned_arm_rejects_foreign_journal_scope_and_unmapped_residual_without_stopping_them(self):
+        self.session_plan(); resources = self.prepare(); nodes = resources['nodes']; case = self.case_plan('baseline')
+        layout = p.setup_cluster(case, self.out, nodes, 1, 'baseline', runner=self.cloud)
+        active = p._load(p._state(self.out)/'active-arm.json')
+        scope = self.owned_scope(layout); scope['unit'] = 'other.scope'
+        runner = StopRunner(self.cloud, nodes, layout)
+        with self.assertRaises(p.ProvisionError):
+            p._stop_specs(case, nodes, layout, active, (scope,))
+        forged = copy.deepcopy(active); forged['units']['node1'].append('protected.service')
+        with self.assertRaises(p.ProvisionError):
+            p._stop_specs(case, nodes, layout, forged, ())
+        def residual(role, phase, value):
+            if role == 'client1':
+                value['owned_residual'].append(dict(pid=999, args=['foreign']))
+        runner.mutate = residual
+        with self.assertRaises(p.ProvisionError):
+            p.stop_owned_arm(case, self.out, nodes, layout, runner=runner)
+        self.assertFalse(runner.stop_commands)
+        self.assertTrue((p._state(self.out)/'cleanup-started.json').exists())
+
+    def test_stop_owned_arm_quiescence_timeout_cannot_continue_or_reset_the_original_lease(self):
+        self.session_plan(); resources = self.prepare(); nodes = resources['nodes']; case = self.case_plan('baseline')
+        layout = p.setup_cluster(case, self.out, nodes, 1, 'baseline', runner=self.cloud)
+        runner = StopRunner(self.cloud, nodes, layout); runner.linger = True
+        now = [float(self.plan['first_epoch']+1)]
+        def sleep(seconds): now[0] += seconds
+        with self.assertRaises(p.ProvisionError):
+            p.stop_owned_arm(case, self.out, nodes, layout, runner=runner, clock=lambda: now[0], sleep=sleep)
+        self.assertLessEqual(now[0], self.plan['first_epoch']+121)
+        self.assertTrue((p._state(self.out)/'cleanup-started.json').exists())
+        with self.assertRaises(p.ProvisionError):
+            p.setup_cluster(self.case_plan('capacity16g'), self.out, nodes, 1, 'must-not-run', runner=self.cloud)
 
     def test_schema_roles_are_exact_and_unknown_or_untyped_schemas_fail_before_effects(self):
         self.assertEqual(p._roles(self.plan), ('node1', 'node2', 'node3', 'client1', 'client2'))
