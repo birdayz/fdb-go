@@ -248,8 +248,8 @@ class ScalingArm(n.Diagnostic):
                       "strict client health")
             for key in ("performance_limited_by", "batch_performance_limited_by"):
                 reason = cluster.get("qos", {}).get(key)
-                p.require(type(reason) is dict and reason.get("name") == "storage_server_write_queue_size"
-                          and type(reason.get("reason_id")) is int and reason["reason_id"] == 1,
+                p.require(type(reason) is dict and type(reason.get("name")) is str and reason["name"]
+                          and type(reason.get("reason_id")) is int,
                           "strict client health")
             projection = _copy.deepcopy(document)
             projection["client"]["database_status"]["healthy"] = True

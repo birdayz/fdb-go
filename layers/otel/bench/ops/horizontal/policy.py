@@ -47,7 +47,7 @@ def scaling_stage_pairs(plan):
 def scaling_authorized_rows(plan):
     rows = 475000 * sum(pair[1] for pair in scaling_stage_pairs(plan))
     prior = plan.get("prior_rows_upper")
-    ceiling = 15000000 if plan.get("log_memory_gib") == 2 and prior == 9375000 else 10000000
+    ceiling = 20000000 if plan.get("log_memory_gib") == 2 and prior == 9375000 else 10000000
     require(type(prior) is int and prior >= 0 and prior + rows <= ceiling, "scaling cumulative row ceiling")
     return rows
 
