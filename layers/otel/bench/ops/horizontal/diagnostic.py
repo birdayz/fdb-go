@@ -26,6 +26,7 @@ UNIT_PROPERTIES = ("Id", "FragmentPath", "InvocationID", "ControlGroup", "ExecSt
                    "ActiveState", "SubState", "Result", "ExecMainCode", "ExecMainStatus",
                    "ExecMainStartTimestampMonotonic", "ExecMainExitTimestampMonotonic", "NRestarts")
 ROLES = {"node1", "client1"}
+SCALING_SAMPLER_SCHEMA = "otel_native_scaling_sampler_v1"
 DISK_FIELDS = ("read_ios", "read_merges", "read_sectors", "read_ms", "write_ios", "write_merges",
                "write_sectors", "write_ms", "in_flight", "io_ms", "weighted_io_ms", "discard_ios",
                "discard_merges", "discard_sectors", "discard_ms", "flush_ios", "flush_ms")
@@ -81,10 +82,70 @@ def no_symlinks(path, base):
     return path
 
 
+def _scaling_roles(value):
+    hosts = value.get("scaling_hosts")
+    p.require(value.get("schema") == SCALING_SAMPLER_SCHEMA and type(hosts) is int and 1 <= hosts <= 3,
+              "typed scaling sampler host count required")
+    roles = {kind + str(index) for kind in ("node", "client") for index in range(1, hosts + 1)}
+    p.require(type(value.get("role")) is str and value["role"] in roles, "active scaling sampler role required")
+    return roles
+
+
+def _sampler_kind(grant):
+    if grant.get("schema") == SCALING_SAMPLER_SCHEMA:
+        _scaling_roles(grant)
+        return "fdb" if grant["role"].startswith("node") else "client"
+    p.require(grant.get("schema") == "otel_native_sampler_v1" and grant.get("role") in ROLES,
+              "typed diagnostic sampler role required")
+    return "fdb" if grant["role"] == "node1" else "client"
+
+
+def _scaling_population(value):
+    _scaling_roles(value)
+    p.require(type(value.get("storage_process_count")) is int and value["storage_process_count"] == 3
+              and value.get("storage_memory_profile") == "scaling3ss3g", "exact scaling storage profile required")
+    ports = (set(range(4500, 4505)) if value["role"] == "node1" else set())
+    if value["role"].startswith("node"):
+        ports |= set(range(4510, 4513))
+    specs = value.get("processes")
+    p.require(type(specs) is list and all(type(x) is dict and type(x.get("port")) is int for x in specs)
+              and len(specs) == len(ports) and {x["port"] for x in specs} == ports,
+              "exact scaling native process population")
+    for spec in specs:
+        args, address = spec.get("args"), spec.get("address")
+        p.require(type(args) is list and args and all(type(x) is str for x in args)
+                  and args[0] == value["root"] + "/bin/fdbserver" and type(address) is str
+                  and re.fullmatch(r"\d+\.\d+\.\d+\.\d+:" + str(spec["port"]), address),
+                  "scaling native binary/address binding")
+        storage = spec["port"] >= 4510
+        classes = {4500: "stateless", 4501: "commit_proxy", 4502: "grv_proxy", 4503: "resolution", 4504: "transaction"}
+        expected = {"--cluster-file": value["arm_root"] + "/fdb.cluster", "--public-address": address,
+                    "--listen-address": address, "--class": "storage" if storage else classes[spec["port"]],
+                    "--datadir": value["arm_root"] + "/data/" + str(spec["port"]), "--logdir": value["arm_root"] + "/logs",
+                    "--locality-machineid": value["role"], "--locality-zoneid": value["role"],
+                    "--memory": "3GiB" if storage else "1GiB", "--cache-memory": "1GiB" if storage else "64MiB",
+                    "--trace-format": "json", "--maxlogssize": "128MiB", "--loggroup": value["campaign"]}
+        p.require(len(args) == 1 + 2 * len(expected) and set(args[1::2]) == set(expected)
+                  and all(args[index + 1] == expected[flag] for index, flag in enumerate(args) if index % 2),
+                  "scaling native exact argv/profile binding")
+    ids = value.get("storage_ids")
+    addresses = {x.get("address") for x in specs if x["port"] in range(4510, 4513)}
+    p.require(type(ids) is dict and len(addresses) == (3 if ports else 0) and set(ids) == addresses
+              and all(p.hexstr(x, 16) for x in ids.values()) and len(set(ids.values())) == len(ids),
+              "sampler exact scaling storage ID binding")
+    p.require(type(value.get("forensic_budget")) is int and 0 <= value["forensic_budget"] <= TRACE_BUDGET,
+              "sampler scaling forensic byte budget")
+    return ports
+
+
 def sampler_grant(value):
-    p.require(type(value) is dict and value.get("schema") == "otel_native_sampler_v1"
-              and value.get("role") in ROLES and type(value.get("node_id")) is int and value["node_id"] > 0,
+    p.require(type(value) is dict and value.get("schema") in ("otel_native_sampler_v1", SCALING_SAMPLER_SCHEMA)
+              and type(value.get("node_id")) is int and value["node_id"] > 0,
               "typed diagnostic sampler identity required")
+    scaling = value["schema"] == SCALING_SAMPLER_SCHEMA
+    p.require(scaling or value.get("role") in ROLES, "typed diagnostic sampler identity required")
+    if scaling:
+        _scaling_population(value)
     for key in ("token", "producer_grant_sha256", "fdbserver_sha256"):
         p.require(p.hexstr(value.get(key)), "sampler seal: " + key)
     p.require(type(value.get("first_epoch")) is int and type(value.get("deadline_epoch")) is int
@@ -99,8 +160,11 @@ def sampler_grant(value):
     p.require(type(value.get("prefix")) is str and re.fullmatch(r"[a-z][a-z0-9-]{7,47}", value["prefix"]), "sampler prefix")
     p.require(type(value.get("processes")) is list and all(type(x) is dict for x in value["processes"]), "sampler native process list")
     count = value.get("storage_process_count", 1)
-    p.require(type(count) is int and count in (1, 2), "sampler storage process count")
-    expected_ports = ({4500, 4501, 4502, 4503, 4504} | set(range(4510, 4510 + count))) if value["role"] == "node1" else set()
+    p.require(type(count) is int and count in ((3,) if scaling else (1, 2)), "sampler storage process count")
+    expected_ports = (({4500, 4501, 4502, 4503, 4504} | set(range(4510, 4510 + count)))
+                      if value["role"] == "node1" else set())
+    if scaling:
+        expected_ports = _scaling_population(value)
     p.require({x.get("port") for x in value["processes"]} == expected_ports
               and len(value["processes"]) == len(expected_ports), "exact diagnostic process population")
     for process in value["processes"]:
@@ -118,7 +182,7 @@ def sampler_grant(value):
                       and args[args.index(flag) + 1] == expected, "sampler native argument binding")
     if "storage_ids" in value:
         ids = value["storage_ids"]
-        expected = {x["address"] for x in value["processes"] if x["port"] in (4510, 4511)}
+        expected = {x["address"] for x in value["processes"] if x["port"] in range(4510, 4510 + count)}
         p.require(type(ids) is dict and set(ids) == expected and all(p.hexstr(x, 16) for x in ids.values()), "sampler exact storage ID binding")
     if "forensic_budget" in value:
         p.require(type(value["forensic_budget"]) is int and 0 <= value["forensic_budget"] <= TRACE_BUDGET, "sampler forensic byte budget")
@@ -256,7 +320,7 @@ def sample_frame(grant, bindings, device, sequence, phase):
         p.require(snapshot["starttime_ticks"] == bound["starttime_ticks"] and snapshot["cmdline"] == bound["args"],
                   "native process PID/starttime changed")
         native[unit] = snapshot
-    kind = "fdb" if grant["role"] == "node1" else "client"
+    kind = _sampler_kind(grant)
     group = command(["systemctl", "show", "horizontal-" + kind + ".slice", "--property=ControlGroup", "--value"])
     cg = (Path("/sys/fs/cgroup") / group.lstrip("/")).resolve()
     p.require(group and cg.is_relative_to("/sys/fs/cgroup"), "diagnostic cgroup escaped")
@@ -287,7 +351,7 @@ def sample_frame(grant, bindings, device, sequence, phase):
             "boot_id": read_small("/proc/sys/kernel/random/boot_id", 128).strip(), "clock_ticks": os.sysconf("SC_CLK_TCK"), "host_page_size": page_size,
             "cgroup": {"path": str(cg), "limits": limits, "cpu": cpu, "io": io, "io_raw": io_raw},
             "device": {**device, "counters": diskstats(read_small("/proc/diskstats", MIB), device["devices"])},
-            "native": native, "producer": producer_process(grant) if grant["role"] == "client1" else None,
+            "native": native, "producer": producer_process(grant) if kind == "client" else None,
             "pressure": {kind: read_small("/proc/pressure/" + kind) for kind in ("cpu", "memory", "io")}}
 
 
@@ -353,6 +417,12 @@ def frame_errors(frame, grant):
             or type(frame.get("boot_id")) is not str or not frame["boot_id"] or not p.integer(frame.get("host_page_size"), 1)):
         errors.append("frame clock/phase/schema missing")
     cg = frame.get("cgroup", {})
+    if grant.get("schema") == SCALING_SAMPLER_SCHEMA:
+        kind = _sampler_kind(grant)
+        if type(cg) is not dict or cg.get("path") != "/sys/fs/cgroup/horizontal.slice/horizontal-" + kind + ".slice":
+            errors.append("frame scaling role slice mismatch")
+        if kind == "fdb" and frame.get("producer") is not None:
+            errors.append("frame producer on native scaling role")
     limits = cg.get("limits", {}) if type(cg) is dict else {}
     quota, period = map(int, limits.get("cpu.max", "0 1").split())
     if (quota != period * 4 or period <= 0 or limits.get("cpuset.cpus.effective") != "0-3"
@@ -391,12 +461,31 @@ def frame_errors(frame, grant):
     return errors
 
 
-def profile(frames, grants, producer_receipt, activity, release_bound):
+def profile(frames, grants, producer_receipt, activity, release_bound, *, node_role="node1", client_role="client1"):
     reasons, populations = [], {}
-    if type(grants) is not dict or set(grants) != ROLES or type(frames) is not dict or set(frames) != ROLES:
+    pair = {node_role, client_role} if type(node_role) is str and type(client_role) is str else set()
+    matching = (type(node_role) is str and re.fullmatch(r"node[1-3]", node_role)
+                and client_role == "client" + node_role[-1])
+    if not matching or type(grants) is not dict or set(grants) != pair or type(frames) is not dict or set(frames) != pair:
         return {"verdict": "INCONCLUSIVE", "reasons": ["exact two-role profile population required"],
                 "populations": {}, "producer_process_bound": False, "positive_native_activity": False,
                 "accepted_throughput": False}
+    scaling = any(type(x) is dict and x.get("schema") == SCALING_SAMPLER_SCHEMA for x in grants.values())
+    if scaling or pair != ROLES:
+        try:
+            for role, grant in grants.items():
+                p.require(type(grant) is dict and grant.get("schema") == SCALING_SAMPLER_SCHEMA
+                          and grant.get("role") == role, "typed scaling pair role required")
+                sampler_grant(grant)
+            p.require(grants[node_role]["scaling_hosts"] == grants[client_role]["scaling_hosts"]
+                      and grants[node_role]["node_id"] != grants[client_role]["node_id"]
+                      and all(grants[node_role][key] == grants[client_role][key]
+                              for key in ("run", "token", "producer_grant_sha256", "campaign", "arm_root")),
+                      "exact scaling pair binding required")
+        except (AttributeError, KeyError, TypeError, ValueError) as error:
+            return {"verdict": "INCONCLUSIVE", "reasons": ["invalid scaling sampler pair: " + str(error)],
+                    "populations": {}, "producer_process_bound": False, "positive_native_activity": False,
+                    "accepted_throughput": False}
     for role, grant in grants.items():
         if (type(grant) is not dict or not all(k in grant for k in
                 ("node_id", "role", "run", "token", "producer_grant_sha256", "processes"))):
@@ -467,39 +556,39 @@ def profile(frames, grants, producer_receipt, activity, release_bound):
                            for k in DISK_FIELDS if k != "in_flight"):
                         reasons.append(role + ": device counter reset or missing"); break
             previous = frame
-    client_rows = frames.get("client1") if type(frames.get("client1")) is list else []
+    client_rows = frames.get(client_role) if type(frames.get(client_role)) is list else []
     pids = [x.get("producer") for x in client_rows
             if type(x) is dict and x.get("phase") == "load" and type(x.get("producer")) is dict]
     producer_known = (type(producer_receipt) is dict and producer_receipt.get("started") is True
-                      and producer_receipt.get("node_id") == grants["client1"]["node_id"]
-                      and producer_receipt.get("run") == grants["client1"]["run"]
-                      and producer_receipt.get("token") == grants["client1"]["token"]
-                      and producer_receipt.get("grant_sha256") == grants["client1"]["producer_grant_sha256"]
+                      and producer_receipt.get("node_id") == grants[client_role]["node_id"]
+                      and producer_receipt.get("run") == grants[client_role]["run"]
+                      and producer_receipt.get("token") == grants[client_role]["token"]
+                      and producer_receipt.get("grant_sha256") == grants[client_role]["producer_grant_sha256"]
                       and p.integer(producer_receipt.get("pid"), 1) and p.integer(producer_receipt.get("starttime_ticks"), 1)
                       and any(x.get("pid") == producer_receipt["pid"] and x.get("starttime_ticks") == producer_receipt["starttime_ticks"] for x in pids))
     if not release_bound or not producer_known:
         reasons.append("producer ready/release/process binding is unknown")
     activity = activity if type(activity) is list else []
-    counters = [x.get("storage", {}).get("node1", {}) for x in activity
+    counters = [x.get("storage", {}).get(node_role, {}) for x in activity
                 if type(x) is dict and type(x.get("storage")) is dict
-                and type(x["storage"].get("node1")) is dict]
+                and type(x["storage"].get(node_role)) is dict]
     def active(values):
         return (len(values) >= 2 and all(type(x.get("storage_id")) is str and x["storage_id"] and x["storage_id"] == values[0].get("storage_id")
                 and p.integer(x.get("input_bytes")) for x in values)
                 and all(b["input_bytes"] >= a["input_bytes"] for a, b in zip(values, values[1:]))
                 and values[-1]["input_bytes"] > values[0]["input_bytes"])
     positive = active(counters)
-    count = grants["node1"].get("storage_process_count", 1)
-    client_count = grants["client1"].get("storage_process_count", 1)
-    if type(count) is not int or count not in (1, 2) or type(client_count) is not int or client_count != count:
+    count = grants[node_role].get("storage_process_count", 1)
+    client_count = grants[client_role].get("storage_process_count", 1)
+    if type(count) is not int or count not in ((3,) if scaling else (1, 2)) or type(client_count) is not int or client_count != count:
         positive = False
         reasons.append("sampler storage process counts differ or are untyped")
-    elif count == 2:
-        specs = grants["node1"]["processes"]
-        addresses = {x.get("address") for x in specs if type(x) is dict and x.get("port") in (4510, 4511)
+    elif count in (2, 3):
+        specs = grants[node_role]["processes"]
+        addresses = {x.get("address") for x in specs if type(x) is dict and x.get("port") in range(4510, 4510 + count)
                      and type(x.get("address")) is str} if type(specs) is list else set()
         samples = [x.get("storage_processes") for x in activity if type(x) is dict]
-        positive = (len(addresses) == 2 and len(samples) == len(activity) and len(samples) >= 2
+        positive = (len(addresses) == count and len(samples) == len(activity) and len(samples) >= 2
                     and all(type(x) is dict and set(x) == addresses and all(type(v) is dict for v in x.values()) for x in samples))
         if positive:
             for address in addresses:
@@ -507,9 +596,14 @@ def profile(frames, grants, producer_receipt, activity, release_bound):
                 durable = [x.get("durable_bytes") for x in values]
                 positive = (positive and active(values) and all(p.integer(x) for x in durable)
                             and all(b >= a for a, b in zip(durable, durable[1:])) and durable[-1] > durable[0])
-            positive = positive and all(len({x["storage_id"] for x in sample.values()}) == 2 for sample in samples)
+            positive = positive and all(len({x["storage_id"] for x in sample.values()}) == count for sample in samples)
+            if scaling:
+                positive = positive and all(value.get("node") == node_role
+                            and value.get("storage_id") == grants[node_role]["storage_ids"][address]
+                            for sample in samples for address, value in sample.items())
         if not positive:
-            reasons.append("both diagnostic storage processes were not exercised with stable independent counters")
+            reasons.append(("all scaling" if scaling else "both diagnostic")
+                           + " storage processes were not exercised with stable independent counters")
     if not positive:
         reasons.append("native input activity coverage unknown, reset or zero")
     return {"verdict": "CAPTURED" if not reasons else "INCONCLUSIVE", "populations": populations,
@@ -552,6 +646,10 @@ def bounded_output(args, max_bytes, timeout=5):
 
 
 def _owned_bindings(grant, bindings):
+    if grant.get("schema") == SCALING_SAMPLER_SCHEMA:
+        _scaling_population(grant)
+    else:
+        _sampler_kind(grant)
     specs = {x["unit_name"]: x for x in grant["processes"]}
     p.require(type(bindings) is dict and set(bindings) == set(specs), "exact sealed native binding population")
     armid = Path(grant["arm_root"]).name
@@ -585,10 +683,13 @@ def seal_trace_files(grant, bindings, *, proc_root="/proc", budget=TRACE_BUDGET)
     """Bind exact open filenames/inodes to positively live native processes."""
     _owned_bindings(grant, bindings)
     p.require(type(budget) is int and 0 <= budget <= TRACE_BUDGET, "trace seal byte budget")
+    if grant.get("schema") == SCALING_SAMPLER_SCHEMA:
+        p.require(budget <= grant["forensic_budget"], "scaling trace seal per-host byte budget exceeded")
     arm = Path(grant["arm_root"])
     p.require(not any(x.is_symlink() for x in (arm, *arm.parents)) and arm.is_dir(), "native seal arm is not a real owned directory")
     logs = no_symlinks(arm / "logs", arm)
-    targets = [(unit, x) for unit, x in bindings.items() if x["port"] in (4504, 4510, 4511)]
+    ports = {4504} | set(range(4510, 4510 + grant.get("storage_process_count", 1)))
+    targets = [(unit, x) for unit, x in bindings.items() if x["port"] in ports]
     result, remaining = [], budget
     for index, (unit, bound) in enumerate(targets):
         if not remaining:
@@ -636,6 +737,8 @@ def seal_native_identity(grant, bindings, *, proc_root="/proc"):
     budget = min(grant.get("forensic_budget", TRACE_BUDGET), FORENSIC_LIMIT)
     result = {"sealed_epoch": time.time(), "boot_id": read_small(Path(proc_root) / "sys/kernel/random/boot_id", 128).strip(),
               "unit_seals": {}, "trace_files": [], "seal_bytes_read": 0}
+    if grant.get("schema") == SCALING_SAMPLER_SCHEMA:
+        result.update(sampler_schema=grant["schema"], role=grant["role"], scaling_hosts=grant["scaling_hosts"])
     for unit, bound in bindings.items():
         allowance = min(4096, max(0, budget - result["seal_bytes_read"]))
         if allowance < 4096:
@@ -657,14 +760,31 @@ def seal_native_identity(grant, bindings, *, proc_root="/proc"):
     return result
 
 
-def trace_tail(arm_root, campaign, bindings, budget=TRACE_BUDGET, *, storage_process_count=1, sealed_files=None, storage_ids=None):
-    p.require(type(storage_process_count) is int and storage_process_count in (1, 2), "trace storage process count")
+def trace_tail(arm_root, campaign, bindings, budget=TRACE_BUDGET, *, storage_process_count=1, sealed_files=None, storage_ids=None,
+               require_log=True, scaling_grant=None):
+    p.require(type(require_log) is bool, "trace log requirement must be typed")
+    if scaling_grant is not None:
+        p.require(type(scaling_grant) is dict and scaling_grant.get("schema") == SCALING_SAMPLER_SCHEMA,
+                  "typed scaling trace grant required")
+        _owned_bindings(scaling_grant, bindings)
+        p.require(type(budget) is int and 0 <= budget <= scaling_grant["forensic_budget"],
+                  "scaling trace per-host byte budget exceeded")
+        p.require(scaling_grant["arm_root"] == str(arm_root) and scaling_grant["campaign"] == campaign
+                  and scaling_grant["storage_process_count"] == storage_process_count
+                  and scaling_grant["storage_ids"] == storage_ids and scaling_grant["role"].startswith("node")
+                  and require_log == (scaling_grant["role"] == "node1")
+                  and (require_log or all(x["port"] != 4504 for x in bindings.values())),
+                  "exact scaling per-host trace population required")
+    else:
+        p.require(require_log, "storage-only traces require a positive typed scaling grant")
+    p.require(type(storage_process_count) is int and storage_process_count in ((3,) if scaling_grant is not None else (1, 2)),
+              "trace storage process count")
     p.require(type(budget) is int and 0 <= budget <= TRACE_BUDGET, "aggregate native trace budget")
     arm = Path(arm_root)
     p.require(not any(x.is_symlink() for x in (arm, *arm.parents)) and arm.is_dir(), "native arm is not a real directory")
     logs = no_symlinks(arm / "logs", arm)
     p.require(logs.is_dir(), "native log directory missing")
-    ports = {4504} | set(range(4510, 4510 + storage_process_count))
+    ports = ({4504} if require_log else set()) | set(range(4510, 4510 + storage_process_count))
     targets = {x["address"]: x for x in bindings.values() if x["port"] in ports}
     p.require(len(targets) == len(ports) and {x["port"] for x in targets.values()} == ports, "exact storage/log trace targets required")
     result = {"files": [], "errors": [], "bytes_read": 0, "budget": budget,
@@ -826,6 +946,11 @@ def collect_native_evidence(grant, identity, budget=TRACE_BUDGET, *, grant_sha25
               and identity.get("grant_sha256") == grant_sha256 and p.hexstr(grant_sha256), "trace identity receipt binding")
     bindings = identity.get("bindings")
     _owned_bindings(grant, bindings)
+    if grant.get("schema") == SCALING_SAMPLER_SCHEMA:
+        p.require(budget <= grant["forensic_budget"], "scaling per-host forensic byte budget exceeded")
+        p.require(identity.get("sampler_schema") == grant["schema"] and identity.get("role") == grant["role"]
+                  and type(identity.get("scaling_hosts")) is int and identity["scaling_hosts"] == grant["scaling_hosts"],
+                  "scaling native identity role/host binding changed")
     p.require(identity.get("boot_id") == read_small(Path(proc_root) / "sys/kernel/random/boot_id", 128).strip(), "native forensic boot identity changed")
     seal_bytes = identity.get("seal_bytes_read")
     p.require(type(seal_bytes) is int and 0 <= seal_bytes <= budget, "native identity seal byte budget")
@@ -843,6 +968,8 @@ def collect_native_evidence(grant, identity, budget=TRACE_BUDGET, *, grant_sha25
               "unit_forensics": units, "identity_verification": checks, "forensic_only": dead,
               "coverage": "INCONCLUSIVE", "errors": list(units["errors"]),
               "boundary": "sealed-file postmortem reads are forensic evidence only; missing live identity never becomes health PASS or ARM_FAILURE"}
+    if grant.get("schema") == SCALING_SAMPLER_SCHEMA:
+        result.update(node_id=grant["node_id"], role=grant["role"], scaling_hosts=grant["scaling_hosts"], grant_sha256=grant_sha256)
     selected = []
     for seal in identity.get("trace_files", []):
         p.require(type(seal) is dict and seal.get("unit") in bindings and p.number(seal.get("sealed_epoch"))
@@ -858,7 +985,9 @@ def collect_native_evidence(grant, identity, budget=TRACE_BUDGET, *, grant_sha25
     try:
         traces = trace_tail(grant["arm_root"], grant["campaign"], bindings, budget - spent,
                             storage_process_count=grant.get("storage_process_count", 1),
-                            sealed_files=selected, storage_ids=grant.get("storage_ids"))
+                            sealed_files=selected, storage_ids=grant.get("storage_ids"),
+                            require_log=grant.get("schema") != SCALING_SAMPLER_SCHEMA or grant["role"] == "node1",
+                            scaling_grant=grant if grant.get("schema") == SCALING_SAMPLER_SCHEMA else None)
         result["files"] = traces["files"]
         result["bytes_read"] += traces["bytes_read"]
         result["trace_selection"] = traces["selection"]
@@ -974,7 +1103,11 @@ class Diagnostic(d.Campaign):
             self.verify_io_accounting(role, node)
 
     def verify_io_accounting(self, role, node):
-        unit = "horizontal-" + ("fdb" if role == "node1" else "client") + ".slice"
+        native = role == "node1"
+        if self.plan.get("schema") == "otel_native_scaling_v1":
+            _scaling_roles({"schema": SCALING_SAMPLER_SCHEMA, "scaling_hosts": 3, "role": role})
+            native = role.startswith("node")
+        unit = "horizontal-" + ("fdb" if native else "client") + ".slice"
         accounting = self.command(node, ["systemctl", "show", unit, "--property=IOAccounting", "--value"]).strip()
         p.require(accounting == "yes", "diagnostic role slice I/O accounting is not enabled")
         group = self.command(node, ["systemctl", "show", unit, "--property=ControlGroup", "--value"]).strip()

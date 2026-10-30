@@ -3122,6 +3122,28 @@ regressions so they can be proposed upstream after the PoC.
   unit invocation identity before release, retains bounded owned postmortem
   tails/unit exit/journal facts as INCONCLUSIVE, records actual SC_PAGESIZE, and
   never restores health or reuse permission. It remains runtime-unverified;
-  archived failures/cause UNKNOWN are not rewritten. Any separately approved
-  single balanced repro retains the original absolute lease/deadline and adds at
-  most1.1M rows (7M prior upper ->8.1M), or is forgone if admission time has elapsed.
+  archived failures/cause UNKNOWN are not rewritten. The original setup cutoff
+  closed before forensic readiness, so the draft single balanced repro was
+  forgone without creating resources or resetting/extending that lease.
+- [ ] Execute the separately authorized bounded independent-namespace weak-scaling
+  candidate only after its OPS inputs, new immutable2h lease and independent
+  watchdog are sealed. `otel_native_scaling_v1` prepares six ccx43 HEL1 role hosts
+  once and reuses them for ordered active (storage hosts,producers)1/1,2/2,3/3
+  stages with fresh clusters and independent namespaces. Each producer must pass
+  its own100k exact census/1600-oracle gate before375k measured rows; authorized
+  2.85M plus prior7M remains9.85M, with no failed-row reclamation. The scaling-only
+  profile is3SS/host each3GiB/cache1GiB/MAX64, node1 controls5x1GiB, fixed4CPU/
+  16GiB/swap0 and GOMAX4. It is not proven memory-safe or pure worker isolation.
+  The primary metric is common release through strict stable durable drain;
+  last-complete-ACK rate is separate. All3 eligible measured stages and a passing1x
+  baseline are required for drained efficiency>=0.90 near-linearity. Missing/idle/
+  reset SS counters stay INCONCLUSIVE. No shared-corpus/statistical/sustained120s
+  20k claim follows from this bounded one-sample weak-scaling experiment. Canonical
+  strict queue failures alone may end a stage after fresh fatal guards; unknown
+  native/host/source/identity/deadline faults remain SESSION_FATAL. Exact owned
+  quiescence plus fresh quiet admission separates stages, all6 VMs remain billed,
+  and final cleanup/source checks always run. Shared16MiB evidence reserves all6
+  waves fairly (startup seals included, unused carryforward);1GiB receipts and
+  old standalone/horizontal/diagnostic/session defaults remain unchanged. The
+  candidate remains **runtime UNVERIFIED**; no new lease/resources are implied by
+  offline implementation or tests, and earlier failures remain UNKNOWN/failed.

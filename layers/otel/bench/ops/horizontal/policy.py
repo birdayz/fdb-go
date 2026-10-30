@@ -218,7 +218,21 @@ def strict_status(d, layout):
     require(integer(qos["worst_queue_bytes_storage_server"]) and number(qos["worst_durability_lag_storage_server"]["seconds"])
             and type(qos["performance_limited_by"]) is dict
             and type(qos["performance_limited_by"].get("name")) is str and qos["performance_limited_by"]["name"], "native QoS shape")
+    scaling = layout.get("schema") == "otel_native_scaling_v1"
     expected = {x["address"]: x for x in layout["processes"]}
+    if scaling:
+        hosts = layout.get("storage_hosts")
+        require(type(hosts) is list and hosts in (["node1"], ["node1", "node2"], ["node1", "node2", "node3"]),
+                "exact scaling storage-host prefix")
+        require(type(layout.get("storage_process_count")) is int and layout["storage_process_count"] == 3
+                and type(layout.get("storage_max_outstanding")) is int and layout["storage_max_outstanding"] == 64
+                and layout.get("storage_memory_profile") == "scaling3ss3g", "fixed scaling storage geometry")
+        require(len(expected) == len(layout["processes"]), "distinct scaling process addresses")
+        storage_specs = [x for x in layout["processes"] if "storage" in x["required_roles"]]
+        require(len(storage_specs) == 3 * len(hosts)
+                and {x["node"] for x in storage_specs} == set(hosts)
+                and all(len([x for x in storage_specs if x["node"] == node]) == 3 for node in hosts),
+                "exact scaling three-storage-process population per host")
     actual = c["processes"]
     require(type(actual) is dict and len(actual) == len(expected), "exact native process population")
     require({x["address"] for x in actual.values()} == set(expected), "unexpected native process address")
@@ -228,6 +242,8 @@ def strict_status(d, layout):
         spec = expected[process["address"]]
         roles = process["roles"]
         require(type(roles) is list and roles and all(type(x.get("role")) is str and x["role"] for x in roles), "native roles shape")
+        if scaling:
+            require(len([x for x in roles if x["role"] == "storage"]) <= 1, "one scaling storage role per address")
         names = {x["role"] for x in roles}
         required = set(spec["required_roles"])
         require(required <= names and not (exclusive_roles - required) & names, "exact process role placement")
@@ -249,7 +265,21 @@ def strict_status(d, layout):
     require(set(data) == set(layout["storage_hosts"]), "all selected storage hosts must be active")
     result = {"healthy": True, "queue_bytes": qos["worst_queue_bytes_storage_server"],
               "lag_seconds": qos["worst_durability_lag_storage_server"]["seconds"], "storage": data}
-    if layout.get("storage_process_count") == 2:
+    if scaling:
+        require(len(storage_processes) == 3 * len(hosts)
+                and all(sum(x["node"] == node for x in storage_processes.values()) == 3 for node in hosts),
+                "exact scaling per-address storage population")
+        ids = [x["storage_id"] for x in storage_processes.values()]
+        require(all(type(value) is str and value for value in ids) and len(set(ids)) == len(ids),
+                "distinct nonempty scaling storage identities")
+        for node in hosts:
+            values = [storage_processes[address] for address in sorted(storage_processes)
+                      if storage_processes[address]["node"] == node]
+            data[node] = {key: sum(x[key] for x in values) if all(integer(x[key]) for x in values) else None
+                          for key in ("input_bytes", "durable_bytes", "stored_bytes", "shards")}
+            data[node]["storage_ids"] = [x["storage_id"] for x in values]
+        result["storage_processes"] = storage_processes
+    elif layout.get("storage_process_count") == 2:
         require(len(storage_processes) == 2 and {x["node"] for x in storage_processes.values()} == {"node1"},
                 "exact diagnostic two-storage-process population")
         values = [storage_processes[address] for address in sorted(storage_processes)]

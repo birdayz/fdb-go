@@ -361,6 +361,33 @@ class ProvisionTest(unittest.TestCase):
                          storage_process_count=2, storage_max_outstanding=64, prior_rows_upper=0)
         return self.plan
 
+    def scaling_plan(self):
+        self.plan.update(schema='otel_native_scaling_v1', replication='single', stages=[[1, 1], [2, 2], [3, 3]],
+                         count=100000, measured_count=375000, measured_seconds=120, prior_rows_upper=7000000,
+                         batch=64, workers=8, gomaxprocs=4, storage_process_count=3,
+                         storage_max_outstanding=64, storage_memory_profile='scaling3ss3g')
+        return self.plan
+
+    def scaling_nodes(self):
+        return {role: dict(private_ip='10.93.0.'+str(offset)) for role, offset in
+                (('node1', 11), ('node2', 12), ('node3', 13), ('client1', 21), ('client2', 22), ('client3', 23))}
+
+    def scaling_journal(self, layout, stage):
+        return dict(campaign=self.plan['campaign'], armid='scaling-'+str(stage),
+                    units={role: [item['unit_name'] for item in layout['processes'] if item['node'] == role]
+                           for role in p._roles(self.plan)})
+
+    def scaling_scope(self, layout, client, mode='ingest', history=True):
+        scope = self.owned_scope(layout, mode, history)
+        old = 'prof20k9000'; run = 'prof20k'+str(9300+client)
+        scope['node'] = 'client'+str(client)
+        scope['unit'] = scope['unit'].replace(old, run)
+        scope['cgroup'] = scope['cgroup'].replace(old, run)
+        scope['args'] = [value.replace(old, run) for value in scope['args']]
+        for flag, value in (('--count', '375000'), ('--batch', '64'), ('--workers', '8')):
+            scope['args'][scope['args'].index(flag)+1] = value
+        return scope
+
     def case_plan(self, profile):
         case = dict(self.plan, schema='otel_native_diagnostic_v1', storage_memory_profile=profile)
         case.pop('cases', None); case.pop('prior_rows_upper', None)
@@ -381,6 +408,332 @@ class ProvisionTest(unittest.TestCase):
         if history:
             scope.update(pid=900, starttime_ticks=9000)
         return scope
+
+    def test_scaling_plan_is_exact_typed_six_role_fixed_geometry_and_bounded_row_authorization(self):
+        self.scaling_plan()
+        roles = ('node1', 'node2', 'node3', 'client1', 'client2', 'client3')
+        self.assertEqual(p._roles(self.plan), roles)
+        self.assertEqual(p._names(self.plan)['server'], {self.plan['prefix']+'-'+role for role in roles})
+        for prior in (0, 7000000, 7150000):
+            p.validate_plan(dict(self.plan, prior_rows_upper=prior), self.out)
+        good = copy.deepcopy(self.plan)
+        for key in ('count', 'measured_count', 'measured_seconds', 'batch', 'workers', 'gomaxprocs',
+                    'storage_process_count', 'storage_max_outstanding'):
+            for bad in (None, True, False, str(good[key]), float(good[key]), good[key]+1):
+                candidate = dict(good); candidate[key] = bad
+                with self.subTest(key=key, bad=bad), self.assertRaises(p.ProvisionError):
+                    p.validate_plan(candidate, self.out)
+        for key in ('stages', 'count', 'measured_count', 'measured_seconds', 'prior_rows_upper', 'batch', 'workers',
+                    'gomaxprocs', 'storage_process_count', 'storage_max_outstanding', 'storage_memory_profile', 'replication'):
+            candidate = dict(good); del candidate[key]
+            with self.subTest(missing=key), self.assertRaises(p.ProvisionError):
+                p.validate_plan(candidate, self.out)
+        for stages in (None, True, [], [[1, 1]], [[3, 3], [2, 2], [1, 1]], [[1, 2], [2, 2], [3, 3]],
+                       [[True, 1], [2, 2], [3, 3]], [[1, 1], [2.0, 2], [3, 3]], [[1, 1], [2, 2], [3, True]],
+                       [(1, 1), [2, 2], [3, 3]], ((1, 1), (2, 2), (3, 3)), [[1, 1], [2, 2], [3, 3], [3, 3]]):
+            with self.subTest(stages=stages), self.assertRaises(p.ProvisionError):
+                p.validate_plan(dict(good, stages=stages), self.out)
+        for prior in (None, True, -1, 7150001, 7000000.0, '7000000'):
+            with self.subTest(prior=prior), self.assertRaises(p.ProvisionError):
+                p.validate_plan(dict(good, prior_rows_upper=prior), self.out)
+        for profile in (None, True, 'baseline', 'capacity16g', 'scaling3ss3g ', 3):
+            with self.subTest(profile=profile), self.assertRaises(p.ProvisionError):
+                p.validate_plan(dict(good, storage_memory_profile=profile), self.out)
+        for key in ('topologies', 'measured_topologies', 'selected_topologies', 'prerequisite_topologies',
+                    'probe_count', 'probe_seconds', 'cases'):
+            with self.subTest(forbidden=key), self.assertRaises(p.ProvisionError):
+                p.validate_plan(dict(good, **{key: []}), self.out)
+        self.assertFalse(self.cloud.calls)
+        self.assertFalse(self.out.exists())
+
+    def test_scaling_render_has_three_native_storage_processes_per_active_host_and_unchanged_controls(self):
+        self.scaling_plan(); nodes = self.scaling_nodes()
+        original = copy.deepcopy(self.plan)
+        for stage in (1, 2, 3):
+            armid = 'scaling-'+str(stage)
+            layout = p.render_cluster(self.plan, nodes, stage, armid)
+            self.assertEqual(layout, p.render_cluster(self.plan, nodes, ['node'+str(i) for i in range(1, stage+1)], armid))
+            self.assertEqual(layout['schema'], 'otel_native_scaling_v1')
+            self.assertEqual(layout['storage_memory_profile'], 'scaling3ss3g')
+            self.assertEqual(layout['storage_process_count'], 3)
+            self.assertEqual(layout['storage_max_outstanding'], 64)
+            self.assertEqual(layout['storage_hosts'], ['node'+str(i) for i in range(1, stage+1)])
+            self.assertEqual(len(layout['processes']), 5+3*stage)
+            controls = [x for x in layout['processes'] if x['process_class'] != 'storage']
+            legacy = dict(self.plan, schema='otel_horizontal_v1')
+            for key in ('storage_process_count', 'storage_max_outstanding', 'storage_memory_profile'):
+                del legacy[key]
+            old_controls = [x for x in p.render_cluster(legacy, nodes, stage, armid)['processes'] if x['process_class'] != 'storage']
+            self.assertEqual(controls, old_controls)
+            self.assertEqual([x['port'] for x in controls], [4500, 4501, 4502, 4503, 4504])
+            self.assertEqual({x['node'] for x in controls}, {'node1'})
+            self.assertEqual([x['memory_limit_bytes'] for x in controls], [p.GIB]*5)
+            storage = [x for x in layout['processes'] if x['process_class'] == 'storage']
+            self.assertEqual(len(storage), 3*stage)
+            for index in range(1, 4):
+                role = 'node'+str(index)
+                items = [x for x in layout['processes'] if x['node'] == role]
+                self.assertEqual(sum(x['memory_gib'] for x in items), (14 if index == 1 else 9) if index <= stage else 0)
+                self.assertEqual([x['port'] for x in storage if x['node'] == role], [4510, 4511, 4512] if index <= stage else [])
+            for item in storage:
+                self.assertEqual(item['args'][item['args'].index('--memory')+1], '3GiB')
+                self.assertEqual(item['args'][item['args'].index('--cache-memory')+1], '1GiB')
+                self.assertEqual(item['memory_limit_bytes'], 3*p.GIB)
+                self.assertEqual(item['cache_mib'], 1024)
+                self.assertEqual(item['machineid'], item['node']); self.assertEqual(item['zoneid'], item['node'])
+                self.assertNotIn('--knob_max_outstanding', item['args'])
+                self.assertIn('ExecStart='+shlex.join(item['args'])+'\n', item['unit'])
+            self.assertEqual(layout['budgets']['fdb_host'], dict(cpu_quota_percent=400, allowed_cpus='0-3',
+                             memory_max_gib=16, max_process_memory_gib=14, max_processes=8))
+            self.assertEqual(layout['budgets']['client_host'], dict(cpu_quota_percent=400, allowed_cpus='0-3', memory_max_gib=16))
+        self.assertEqual(self.plan, original)
+        self.assertFalse(self.cloud.calls)
+
+    def test_scaling_render_rejects_partial_nodes_nonprefix_and_cross_stage_ids_without_effects(self):
+        self.scaling_plan(); nodes = self.scaling_nodes()
+        for role in p._roles(self.plan):
+            partial = dict(nodes); del partial[role]
+            with self.subTest(missing=role), self.assertRaises(p.ProvisionError):
+                p.render_cluster(self.plan, partial, 1, 'scaling-1')
+        for hosts in (True, False, None, 0, 4, 1.0, [], ['node2'], ['node1', 'node3'], ['node1', 'node1'], ['node1', 'client1']):
+            with self.subTest(hosts=hosts), self.assertRaises(p.ProvisionError):
+                p.render_cluster(self.plan, nodes, hosts, 'scaling-1')
+        for stage in (1, 2, 3):
+            for armid in ('scaling-0', 'scaling-4', 'stage-'+str(stage), 'scaling-'+str(4-stage), None, True, '../bad'):
+                if armid == 'scaling-'+str(stage):
+                    continue
+                with self.subTest(stage=stage, armid=armid), self.assertRaises(p.ProvisionError):
+                    p.render_cluster(self.plan, nodes, stage, armid)
+        for key in ('count', 'stages', 'storage_process_count', 'storage_max_outstanding', 'storage_memory_profile'):
+            invalid = dict(self.plan); del invalid[key]
+            with self.subTest(missing=key), self.assertRaises(p.ProvisionError):
+                p.render_cluster(invalid, nodes, 1, 'scaling-1')
+        self.assertFalse(self.cloud.calls)
+
+    def test_scaling_prepares_all_six_once_installs_client3_assets_and_keeps_one_immutable_stage_lease(self):
+        self.scaling_plan(); resources = self.prepare(); nodes = resources['nodes']; state = p._state(self.out)
+        lease = (state/'guard-plan.json').read_bytes()
+        baseline = {kind: (state/'baseline'/('before-'+kind+'.json')).read_bytes() for kind in p.KINDS}
+        self.assertEqual(set(nodes), set(p._roles(self.plan)))
+        self.assertEqual(self.cloud.create_counts['server'], 6)
+        self.assertEqual(self.cloud.events.count('guard-start'), 1)
+        client = nodes['client3']
+        self.assertEqual(client['private_ip'], '10.93.0.23')
+        self.assertEqual(client['slice'], 'horizontal-client.slice')
+        self.assertTrue((state/'client3-native.json').is_file())
+        self.assertTrue((state/'client3-readiness-1.json').is_file())
+        for kind in ('fdb', 'client'):
+            text = (state/('horizontal-'+kind+'.slice')).read_text()
+            self.assertEqual(text.encode(), legacy_slice_bytes(kind).replace(b'AllowedCPUs', b'IOAccounting=yes\nAllowedCPUs'))
+        client_copies = [argv for argv, _ in self.cloud.calls if argv[0] == 'scp' and argv[-1].startswith('root@'+client['host']+':')]
+        for asset, destination in (('binary', 'otel-demo'), ('fdbserver', 'fdbserver'), ('fdbcli', 'fdbcli')):
+            matching = [argv for argv in client_copies if argv[-1].endswith('/bin/'+destination)]
+            self.assertEqual(len(matching), 1)
+            self.assertEqual(matching[0][-2], self.plan[asset])
+            self.assertIn('StrictHostKeyChecking=yes', matching[0])
+            self.assertIn('HostKeyAlias='+client['name'], matching[0])
+        prior_runner = self.cloud
+        for stage in (1, 2, 3):
+            prior_stops = list(prior_runner.stop_commands) if stage > 1 else []
+            layout = p.setup_cluster(self.plan, self.out, nodes, stage, 'scaling-'+str(stage), runner=prior_runner)
+            if stage > 1:
+                self.assertEqual(prior_runner.stop_commands, prior_stops)
+            active = p._load(state/'active-arm.json')
+            self.assertEqual(active, self.scaling_journal(layout, stage))
+            self.assertEqual({key for key, values in active['units'].items() if values}, {'node'+str(i) for i in range(1, stage+1)})
+            scopes = tuple(self.scaling_scope(layout, client) for client in range(1, stage+1))
+            runner = StopRunner(self.cloud, nodes, layout, scopes)
+            arm = Path(layout['cluster_file']).parent
+            before = {path.name: path.read_bytes() for path in arm.iterdir() if path.is_file()}
+            receipt = p.stop_owned_arm(self.plan, self.out, nodes, layout, scopes=scopes, runner=runner)
+            prior_runner = runner
+            self.assertTrue(receipt['passed']); self.assertTrue(receipt['quiescent'])
+            self.assertEqual(set(receipt['before']), set(nodes)); self.assertEqual(set(receipt['after']), set(nodes))
+            self.assertEqual({role for role, _ in runner.stop_commands},
+                             {'node'+str(i) for i in range(1, stage+1)} | {'client'+str(i) for i in range(1, stage+1)})
+            self.assertEqual(sum(len(units) for _, units in runner.stop_commands), 5+4*stage)
+            self.assertEqual({path.name: path.read_bytes() for path in arm.iterdir() if path.is_file()}, before)
+            self.assertEqual(p._load(state/'active-arm.json'), active)
+            self.assertEqual((state/'guard-plan.json').read_bytes(), lease)
+            self.assertFalse((state/'cleanup-started.json').exists())
+        self.assertEqual(self.cloud.create_counts['server'], 6)
+        self.assertEqual(self.cloud.events.count('guard-start'), 1)
+        self.assertFalse(self.cloud.deleted)
+        self.assertEqual({kind: (state/'baseline'/('before-'+kind+'.json')).read_bytes() for kind in p.KINDS}, baseline)
+        result = p.teardown(self.plan, self.out, resources, runner=self.cloud, sleep=lambda _: None)
+        self.assertTrue(result['passed']); self.assertEqual(self.cloud.items, self.cloud.baseline)
+
+    def test_scaling_runtime_rejects_any_lease_mutation_schema_projection_or_role_alias_before_effects(self):
+        self.scaling_plan(); resources = self.prepare(); nodes = resources['nodes']; state = p._state(self.out)
+        original = (state/'guard-plan.json').read_bytes()
+        for key, value in (('schema', 'otel_native_diagnostic_v1'), ('stages', [[3, 3], [2, 2], [1, 1]]),
+                           ('first_epoch', self.plan['first_epoch']+1), ('deadline_epoch', self.plan['deadline_epoch']+1),
+                           ('prior_rows_upper', 0), ('measured_count', 100000), ('workers', 4),
+                           ('stages', [(1, 1), (2, 2), (3, 3)]), ('batch', 64.0),
+                           ('storage_process_count', 2), ('storage_memory_profile', 'capacity16g'), ('unapproved_extra', True)):
+            changed = dict(self.plan); changed[key] = value
+            before = len(self.cloud.calls)
+            with self.subTest(key=key), self.assertRaises(p.ProvisionError):
+                p.setup_cluster(changed, self.out, nodes, 1, 'scaling-1', runner=self.cloud)
+            self.assertEqual(len(self.cloud.calls), before)
+        reordered = dict(reversed(list(self.plan.items())))
+        p._check_window(reordered, state, time.time)
+        aliased = dict(nodes); aliased['client2'], aliased['client3'] = aliased['client3'], aliased['client2']
+        before = len(self.cloud.calls)
+        with self.assertRaises(p.ProvisionError):
+            p.setup_cluster(self.plan, self.out, aliased, 1, 'scaling-1', runner=self.cloud)
+        self.assertEqual(len(self.cloud.calls), before)
+        self.assertEqual((state/'guard-plan.json').read_bytes(), original)
+        (state/'guard-plan.json').unlink()
+        with self.assertRaisesRegex(p.ProvisionError, 'lease is missing'):
+            p._check_window(self.plan, state, time.time)
+
+    def test_scaling_next_setup_reproves_prior_main_pid_identity_before_any_stop_or_new_start(self):
+        self.scaling_plan(); nodes = self.prepare()['nodes']; state = p._state(self.out)
+        layout = p.setup_cluster(self.plan, self.out, nodes, 1, 'scaling-1', runner=self.cloud)
+        runner = StopRunner(self.cloud, nodes, layout)
+        stopped = p.stop_owned_arm(self.plan, self.out, nodes, layout, runner=runner)
+        self.assertTrue(stopped['passed'])
+        active_before = (state/'active-arm.json').read_bytes()
+        runner.stop_commands.clear()
+        # The prior quiet proof cannot authorize a later changed MainPID.
+        unit = layout['processes'][0]['unit_name']
+        runner.stopped.remove(('node1', unit))
+        runner.records[('node1', unit)].update(pid=999, starttime_ticks=99999,
+                                             args=['/foreign/process'], exe='/foreign/process')
+        before = len(self.cloud.calls)
+        with self.assertRaisesRegex(p.ProvisionError, 'full command/cgroup'):
+            p.setup_cluster(self.plan, self.out, nodes, 2, 'scaling-2', runner=runner)
+        self.assertFalse(runner.stop_commands)
+        self.assertFalse(any(argv[0] == 'ssh' and shlex.split(argv[-1])[:2] == ['systemctl', 'start']
+                             for argv, _ in self.cloud.calls[before:]))
+        self.assertEqual((state/'active-arm.json').read_bytes(), active_before)
+        self.assertTrue((state/'cleanup-started.json').exists())
+        self.assertFalse(self.cloud.deleted)
+
+    def test_scaling_next_setup_refuses_unmapped_prior_application_residual_without_stopping_it(self):
+        self.scaling_plan(); nodes = self.prepare()['nodes']; state = p._state(self.out)
+        layout = p.setup_cluster(self.plan, self.out, nodes, 1, 'scaling-1', runner=self.cloud)
+        scope = self.scaling_scope(layout, 1)
+        runner = StopRunner(self.cloud, nodes, layout, (scope,))
+        with self.assertRaisesRegex(p.ProvisionError, 'unmapped owned'):
+            p.setup_cluster(self.plan, self.out, nodes, 2, 'scaling-2', runner=runner)
+        self.assertFalse(runner.stop_commands)
+        self.assertEqual(p._load(state/'active-arm.json')['armid'], 'scaling-1')
+        self.assertTrue((state/'cleanup-started.json').exists())
+
+    def test_scaling_stop_specs_derive_exact_stage_journal_and_only_active_client_scopes(self):
+        self.scaling_plan(); nodes = self.scaling_nodes()
+        for stage in (1, 2, 3):
+            layout = p.render_cluster(self.plan, nodes, stage, 'scaling-'+str(stage))
+            active = self.scaling_journal(layout, stage)
+            scopes = tuple(self.scaling_scope(layout, client, mode, False) for client in range(1, stage+1)
+                           for mode in ('ingest', 'audit', 'query'))
+            specs = p._stop_specs(self.plan, nodes, layout, active, scopes)
+            self.assertEqual(set(specs), set(nodes))
+            for index in range(1, 4):
+                self.assertEqual(len(specs['node'+str(index)]), (8 if index == 1 else 3) if index <= stage else 0)
+                self.assertEqual(len(specs['client'+str(index)]), 3 if index <= stage else 0)
+            for role in nodes:
+                changed = copy.deepcopy(active); del changed['units'][role]
+                with self.subTest(stage=stage, missing=role), self.assertRaises(p.ProvisionError):
+                    p._stop_specs(self.plan, nodes, layout, changed, ())
+            for role in nodes:
+                changed = copy.deepcopy(active); changed['units'][role].append('protected.service')
+                with self.subTest(stage=stage, extra=role), self.assertRaises(p.ProvisionError):
+                    p._stop_specs(self.plan, nodes, layout, changed, ())
+            changed = copy.deepcopy(layout); changed['processes'][0]['args'].append('--foreign')
+            with self.assertRaises(p.ProvisionError):
+                p._stop_specs(self.plan, nodes, changed, active, ())
+            for key, bad in (('schema', None), ('storage_hosts', ['node2']), ('storage_process_count', 2),
+                             ('storage_memory_profile', 'capacity16g'), ('root', '/foreign'), ('remote_cluster_file', '/foreign')):
+                changed = dict(layout); changed[key] = bad
+                with self.subTest(stage=stage, key=key), self.assertRaises(p.ProvisionError):
+                    p._stop_specs(self.plan, nodes, changed, active, ())
+            scope = self.scaling_scope(layout, 1)
+            for bad in (None, True, {}, [scope, scope], [dict(scope, node='node1')], [dict(scope, unit='foreign.scope')],
+                        [dict(scope, cgroup='/foreign')], [dict(scope, pid=True)], [dict(scope, starttime_ticks=-1)]):
+                with self.subTest(stage=stage, scopes=bad), self.assertRaises(p.ProvisionError):
+                    p._stop_specs(self.plan, nodes, layout, active, bad)
+            if stage < 3:
+                with self.assertRaises(p.ProvisionError):
+                    p._stop_specs(self.plan, nodes, layout, active, (self.scaling_scope(layout, stage+1),))
+        self.assertFalse(self.cloud.calls)
+
+    def test_scaling_stop_rejects_idle_host_residual_vacuity_before_any_stop_and_arms_cleanup(self):
+        self.scaling_plan(); nodes = self.prepare()['nodes']
+        layout = p.setup_cluster(self.plan, self.out, nodes, 1, 'scaling-1', runner=self.cloud)
+        runner = StopRunner(self.cloud, nodes, layout)
+        def residual(role, phase, snapshot):
+            if role == 'client3':
+                self.assertEqual(snapshot['units'], [])
+                snapshot['owned_residual'].append(dict(pid=999, args=['foreign']))
+        runner.mutate = residual
+        with self.assertRaisesRegex(p.ProvisionError, 'unmapped owned'):
+            p.stop_owned_arm(self.plan, self.out, nodes, layout, runner=runner)
+        self.assertFalse(runner.stop_commands)
+        self.assertTrue((p._state(self.out)/'cleanup-started.json').is_file())
+        self.assertFalse(self.cloud.deleted)
+
+    def test_scaling_stop_requires_every_active_pid_command_cgroup_and_final_absence(self):
+        self.scaling_plan(); nodes = self.prepare()['nodes']
+        layout = p.setup_cluster(self.plan, self.out, nodes, 3, 'scaling-3', runner=self.cloud)
+        scopes = tuple(self.scaling_scope(layout, client) for client in (1, 2, 3))
+        specs = p._stop_specs(self.plan, nodes, layout, self.scaling_journal(layout, 3), scopes)
+        for role in nodes:
+            spec = specs[role][0]
+            value = dict(pid=1, starttime_ticks=100, args=spec['args'], exe=spec['args'][0], cgroup=spec['cgroup'])
+            snapshot = dict(units=[dict(unit=spec['unit'], load_state='loaded', active_state='active',
+                            control_group=spec['cgroup'], main_pid=1, main=value, pids=[value])],
+                            historical={}, owned_residual=[value])
+            self.assertTrue(p._validate_stop_snapshot(snapshot, [spec], {})[0])
+            self.assertFalse(p._validate_stop_snapshot(snapshot, [spec], {}, stopped=True)[0])
+            for empty in (dict(units=[], historical={}, owned_residual=[]),
+                          dict(snapshot, owned_residual=[])):
+                with self.subTest(role=role, snapshot=empty), self.assertRaises(p.ProvisionError):
+                    p._validate_stop_snapshot(empty, [spec], {})
+            for key, bad in (('pid', True), ('starttime_ticks', 0), ('args', ['/foreign']), ('exe', '/foreign'), ('cgroup', '/foreign')):
+                changed = copy.deepcopy(snapshot)
+                for process in (changed['units'][0]['main'], changed['units'][0]['pids'][0], changed['owned_residual'][0]):
+                    process[key] = bad
+                with self.subTest(role=role, key=key), self.assertRaises(p.ProvisionError):
+                    p._validate_stop_snapshot(changed, [spec], {})
+        scope = scopes[2]; runner = StopRunner(self.cloud, nodes, layout, scopes)
+        runner.records[('client3', scope['unit'])]['cgroup'] = '/foreign'
+        with self.assertRaisesRegex(p.ProvisionError, 'full command/cgroup'):
+            p.stop_owned_arm(self.plan, self.out, nodes, layout, scopes=scopes, runner=runner)
+        self.assertFalse(runner.stop_commands)
+
+    def test_scaling_stop_obeys_operation_budget_absolute_deadline_and_cannot_renew_lease(self):
+        self.scaling_plan(); nodes = self.prepare()['nodes']; state = p._state(self.out)
+        layout = p.setup_cluster(self.plan, self.out, nodes, 3, 'scaling-3', runner=self.cloud)
+        lease = (state/'guard-plan.json').read_bytes()
+        runner = StopRunner(self.cloud, nodes, layout); runner.linger = True
+        now = [float(self.plan['first_epoch']+5995)]
+        def sleep(seconds): now[0] += seconds
+        with self.assertRaises(p.ProvisionError):
+            p.stop_owned_arm(self.plan, self.out, nodes, layout, runner=runner, clock=lambda: now[0], sleep=sleep)
+        self.assertLessEqual(now[0], self.plan['first_epoch']+6000)
+        self.assertEqual((state/'guard-plan.json').read_bytes(), lease)
+        self.assertTrue((state/'cleanup-started.json').exists())
+        before = len(self.cloud.calls)
+        with self.assertRaises(p.ProvisionError):
+            p.setup_cluster(self.plan, self.out, nodes, 1, 'scaling-1', runner=self.cloud)
+        self.assertEqual(len(self.cloud.calls), before)
+        self.assertFalse(self.cloud.deleted)
+
+    def test_scaling_stop_operation_budget_cannot_expire_during_all_six_before_proofs_then_stop(self):
+        self.scaling_plan(); nodes = self.prepare()['nodes']
+        layout = p.setup_cluster(self.plan, self.out, nodes, 1, 'scaling-1', runner=self.cloud)
+        runner = StopRunner(self.cloud, nodes, layout); now = [float(self.plan['first_epoch']+1)]
+        def elapsed(role, phase, snapshot):
+            if phase == 'before' and role == 'client3':
+                now[0] += 121
+        runner.mutate = elapsed
+        with self.assertRaisesRegex(p.ProvisionError, 'operation budget'):
+            p.stop_owned_arm(self.plan, self.out, nodes, layout, runner=runner, clock=lambda: now[0])
+        self.assertFalse(runner.stop_commands)
+        self.assertTrue((p._state(self.out)/'cleanup-started.json').exists())
 
     def test_session_plan_has_two_immutable_roles_cases_rows_and_original_deadline(self):
         self.session_plan()
