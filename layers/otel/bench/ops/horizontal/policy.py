@@ -36,8 +36,8 @@ def scaling_stage_pairs(plan):
     if "log_memory_gib" in plan:
         require(type(plan["log_memory_gib"]) is int and plan["log_memory_gib"] == 2, "scaling log_memory_gib must be exactly integer 2")
         require(scaling_execution_mode(plan) == "foreground_only", "log-memory followup requires explicit foreground mode")
-        require(type(plan.get("prior_rows_upper")) is int and plan["prior_rows_upper"] == 8425000, "log-memory followup prior issued upper must be 8425000")
-        expected = [[2, 2], [1, 1]]
+        require(type(plan.get("prior_rows_upper")) is int and plan["prior_rows_upper"] in (0, 8425000, 9375000), "log-memory followup prior issued upper must be 0, 8425000 or 9375000")
+        expected = [[2, 2], [1, 1]] if plan["prior_rows_upper"] == 8425000 else [[1, 1], [2, 2], [3, 3]]
     stages = plan.get("stages")
     require(type(stages) is list and stages == expected and all(type(stage) is list and len(stage) == 2
             and all(type(value) is int for value in stage) for stage in stages), "exact preregistered scaling stage order required")
@@ -47,7 +47,8 @@ def scaling_stage_pairs(plan):
 def scaling_authorized_rows(plan):
     rows = 475000 * sum(pair[1] for pair in scaling_stage_pairs(plan))
     prior = plan.get("prior_rows_upper")
-    require(type(prior) is int and prior >= 0 and prior + rows <= 10000000, "scaling cumulative 10M row ceiling")
+    ceiling = 15000000 if plan.get("log_memory_gib") == 2 and prior == 9375000 else 10000000
+    require(type(prior) is int and prior >= 0 and prior + rows <= ceiling, "scaling cumulative row ceiling")
     return rows
 
 

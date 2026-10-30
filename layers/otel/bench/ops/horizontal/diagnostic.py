@@ -104,7 +104,7 @@ def _scaling_population(value):
     _scaling_roles(value)
     if "log_memory_gib" in value:
         p.require(type(value["log_memory_gib"]) is int and value["log_memory_gib"] == 2
-                  and value["scaling_hosts"] in (1, 2), "exact follow-up scaling log memory profile required")
+                  and value["scaling_hosts"] in (1, 2, 3), "exact follow-up scaling log memory profile required")
     p.require(type(value.get("storage_process_count")) is int and value["storage_process_count"] == 3
               and value.get("storage_memory_profile") == "scaling3ss3g", "exact scaling storage profile required")
     ports = (set(range(4500, 4505)) if value["role"] == "node1" else set())

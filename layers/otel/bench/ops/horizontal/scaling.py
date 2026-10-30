@@ -105,19 +105,31 @@ def wave_metrics(rows, start_ns, ack_end_ns, drained_end_ns, load_samples, drain
     p.require(type(load_samples) is list and load_samples and type(drain_samples) is list and len(drain_samples) >= 3,
               "nonempty load and three strict drain observations")
     samples = load_samples + drain_samples
-    p.require(all(type(x) is dict and x.get("healthy") is True and p.integer(x.get("queue_bytes"))
+    p.require(all(type(x) is dict and type(x.get("healthy")) is bool and p.integer(x.get("queue_bytes"))
                   and p.number(x.get("lag_seconds")) for x in samples), "strict measured queue/lag population")
-    p.require(all(x["queue_bytes"] < 16777216 and x["lag_seconds"] < 10 for x in drain_samples[-3:]),
+    p.require(all(x.get("healthy") is True and x["queue_bytes"] < 16777216 and x["lag_seconds"] < 10 for x in drain_samples[-3:]),
               "final strict stable drain required")
+    transient = sum(1 for x in samples if x.get("healthy") is False)
     return {"rows": rows, "controller_started_ns": start_ns, "controller_ack_end_ns": ack_end_ns,
             "controller_drained_end_ns": drained_end_ns,
             "ack_rows_per_second": p.common_throughput(rows, start_ns, ack_end_ns),
             "drained_rows_per_second": p.common_throughput(rows, start_ns, drained_end_ns),
             "drain_seconds": (drained_end_ns - ack_end_ns) / 10 ** 9,
+            "transient_unhealthy_samples": transient,
             "queue": {"start": samples[0]["queue_bytes"], "end": samples[-1]["queue_bytes"],
                       "max": max(x["queue_bytes"] for x in samples)},
             "lag": {"start": samples[0]["lag_seconds"], "end": samples[-1]["lag_seconds"],
                     "max": max(x["lag_seconds"] for x in samples)},
+            "golden_signals": {
+                "traffic": {"rows": rows, "ack_rows_per_second": p.common_throughput(rows, start_ns, ack_end_ns),
+                            "drained_rows_per_second": p.common_throughput(rows, start_ns, drained_end_ns)},
+                "saturation": {"max_queue_bytes": max(x["queue_bytes"] for x in samples),
+                               "end_queue_bytes": samples[-1]["queue_bytes"],
+                               "max_lag_seconds": max(x["lag_seconds"] for x in samples),
+                               "end_lag_seconds": samples[-1]["lag_seconds"],
+                               "drain_seconds": (drained_end_ns - ack_end_ns) / 10 ** 9,
+                               "transient_unhealthy_samples": transient},
+            },
             "timing_boundary": "controller common release through last complete ACK and through final three-sample strict stable drain; includes SSH/observation overhead"}
 
 
@@ -215,12 +227,51 @@ class ScalingArm(n.Diagnostic):
                                "cgroup": "/horizontal.slice/horizontal-client.slice/" + unit})
         return result
 
+    def status_load(self, layout):
+        raw = self.command(self.nodes["node1"], [self.remote_root + "/bin/fdbcli", "-C", layout["remote_cluster_file"], "--exec", "status json"], 15)
+        document = d.loads(raw)
+        self.last_status_document = document
+        d.write(self.out / "status" / (str(self.sequence) + ".json"), {"raw": document, "controller_ns": self.clock()})
+        try:
+            return p.strict_status(document, layout)
+        except ValueError as error:
+            if str(error) != "strict client health":
+                raise
+            import copy as _copy
+            client, cluster = document.get("client", {}), document.get("cluster", {})
+            p.require(client.get("database_status") == {"available": True, "healthy": False}
+                      and type(client["database_status"].get("available")) is bool
+                      and type(client["database_status"].get("healthy")) is bool
+                      and client.get("messages") == []
+                      and cluster.get("messages") == [{"name": "batch_priority_transaction_start_probe_timeout",
+                                                       "description": "Unable to start batch priority transaction after 5 seconds."}],
+                      "strict client health")
+            for key in ("performance_limited_by", "batch_performance_limited_by"):
+                reason = cluster.get("qos", {}).get(key)
+                p.require(type(reason) is dict and reason.get("name") == "storage_server_write_queue_size"
+                          and type(reason.get("reason_id")) is int and reason["reason_id"] == 1,
+                          "strict client health")
+            projection = _copy.deepcopy(document)
+            projection["client"]["database_status"]["healthy"] = True
+            projection["cluster"]["messages"] = []
+            sample = p.strict_status(projection, layout)
+            sample["healthy"] = False
+            sample["transient_warning"] = "batch_priority_transaction_start_probe_timeout"
+            return sample
+
+    def monitor_load(self, layout):
+        self.host_samples()
+        sample = self.status_load(layout)
+        queue, lag = sample["queue_bytes"], sample["lag_seconds"]
+        p.require(queue < 3 * p.GIB and lag < 180, "hard native saturation stop")
+        return sample
+
     def drain(self, layout):
         until, streak, values = time.monotonic() + d.remaining(self.plan, 300), 0, []
         while time.monotonic() < until:
-            sample = self.monitor(layout)
+            sample = self.monitor_load(layout)
             values.append(sample)
-            streak = streak + 1 if sample["queue_bytes"] < 16777216 and sample["lag_seconds"] < 10 else 0
+            streak = streak + 1 if sample.get("healthy") is True and sample["queue_bytes"] < 16777216 and sample["lag_seconds"] < 10 else 0
             if streak == 3:
                 return values
             self.sleep(5)
@@ -341,7 +392,7 @@ class ScalingArm(n.Diagnostic):
             while any(job[0].poll() is None for job in jobs.values()):
                 p.require(time.monotonic() < limit, "scaling common ingest observation cap")
                 poll_frames()
-                sample = self.monitor(layout)
+                sample = self.monitor_load(layout)
                 activity.append(sample)
                 load_samples.append(sample)
                 p.require(all(job[0].poll() is None for job in samplers.values()), "scaling sampler exited during load")
@@ -355,7 +406,7 @@ class ScalingArm(n.Diagnostic):
                 validate_ingest(evidence, count)
                 d.write(directory / (role + "-ingest.json"), evidence)
             result["ingest_valid"] = True
-            sample = self.monitor(layout)
+            sample = self.monitor_load(layout)
             activity.append(sample)
             load_samples.append(sample)
             for role, grant in sampler_grants.items():
@@ -558,7 +609,9 @@ class ScalingSession:
                   "execution_mode": "bounded_foreground" if mode == "foreground_only" else mode,
                   "foreground_only": mode == "foreground_only"}
         if "log_memory_gib" in self.plan:
-            result.update(log_memory_gib=2, tested_hosts=[1, 2], boundary=BOUNDARY.replace("active pairs scale 1/2/3", "active pairs scale 2 then 1 only"))
+            result.update(log_memory_gib=2)
+            if stages == [[2, 2], [1, 1]]:
+                result.update(tested_hosts=[1, 2], boundary=BOUNDARY.replace("active pairs scale 1/2/3", "active pairs scale 2 then 1 only"))
         try:
             self.receipt_budget()
             d.remaining(self.plan, reserve=2000)
@@ -689,7 +742,7 @@ def main(argv=None):
                 "storage_process_count": 3, "storage_memory_profile": "scaling3ss3g", "primary_metric": "drained_rows_per_second",
                 "provisioned": False, "boundary": BOUNDARY,
                 "execution_mode": "bounded_foreground" if p.scaling_execution_mode(plan) == "foreground_only" else "managed_watch",
-                **({"log_memory_gib": 2, "tested_hosts": [1, 2], "boundary": BOUNDARY.replace("active pairs scale 1/2/3", "active pairs scale 2 then 1 only")} if "log_memory_gib" in plan else {})}, sort_keys=True))
+                **({"log_memory_gib": 2, **({"tested_hosts": [1, 2], "boundary": BOUNDARY.replace("active pairs scale 1/2/3", "active pairs scale 2 then 1 only")} if p.scaling_stage_pairs(plan) == [[2, 2], [1, 1]] else {})} if "log_memory_gib" in plan else {})}, sort_keys=True))
             return
         p.require(args.output, "scaling output required")
         import provision

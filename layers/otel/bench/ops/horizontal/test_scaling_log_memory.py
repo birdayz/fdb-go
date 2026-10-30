@@ -95,7 +95,7 @@ class FollowupPlanTests(unittest.TestCase):
                 s.validate_plan(value, check_assets=False)
 
     def test_fixed_prior_rows_and_absolute_cumulative_ceiling_are_not_resettable(self):
-        for prior in (None, True, False, -1, 0, 7000000, 8424999, 8425001, 8575000, 8575001,
+        for prior in (None, True, False, -1, 0, 7000000, 8424999, 8425001, 8575000, 8575001, 9375000,
                       8425000.0, "8425000"):
             value = plan(); value["prior_rows_upper"] = prior
             with self.subTest(prior=prior), self.assertRaises(ValueError):
