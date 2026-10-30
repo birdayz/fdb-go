@@ -140,9 +140,9 @@ class ScalingForensicsTests(unittest.TestCase):
                                                grant_sha256=f.GRANT_SHA, now_epoch=f.NOW_EPOCH, proc_root=proc_root)
         return result, calls
 
-    def test_followup_log_memory_flag_is_exact_integer_two_and_only_one_or_two_hosts(self):
-        for hosts in (1, 2):
-            for role in ("node1", "client1", *(("node2", "client2") if hosts == 2 else ())):
+    def test_followup_log_memory_flag_is_exact_integer_two_and_only_one_to_three_hosts(self):
+        for hosts in (1, 2, 3):
+            for role in ("node1", "client1", *(("node2", "client2") if hosts >= 2 else ()), *(("node3", "client3") if hosts == 3 else ())):
                 grant = scaling_sampler(role, hosts, log_memory_gib=2)
                 self.assertIs(n.sampler_grant(grant), grant)
                 for value in (None, True, False, 1, 3, 2.0, "2", [], {}):
@@ -150,9 +150,6 @@ class ScalingForensicsTests(unittest.TestCase):
                     changed["log_memory_gib"] = value
                     with self.subTest(hosts=hosts, role=role, value=value), self.assertRaises(ValueError):
                         n.sampler_grant(changed)
-        for role in ("node1", "node2", "node3", "client1", "client2", "client3"):
-            with self.subTest(role=role), self.assertRaises(ValueError):
-                n.sampler_grant(scaling_sampler(role, 3, log_memory_gib=2))
 
     def test_followup_changes_only_log_memory_argv_and_omission_preserves_one_gib(self):
         for role in ("node1", "node2", "client1", "client2"):

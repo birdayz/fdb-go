@@ -285,7 +285,7 @@ class ScalingMetricsTests(unittest.TestCase):
             with self.subTest(drain=drain), self.assertRaises(ValueError):
                 self.metrics(drain=drain)
         for phase in ("load", "drain"):
-            for key, bad in (("healthy", False), ("healthy", 1), ("healthy", None),
+            for key, bad in (("healthy", 1), ("healthy", None),
                              ("queue_bytes", True), ("queue_bytes", 0.0), ("queue_bytes", -1),
                              ("queue_bytes", None), ("lag_seconds", True), ("lag_seconds", -1),
                              ("lag_seconds", float("nan")), ("lag_seconds", float("inf")),
@@ -298,6 +298,16 @@ class ScalingMetricsTests(unittest.TestCase):
                 values = [sample(), sample(), sample()]; del values[0][key]
                 with self.subTest(phase=phase, missing=key), self.assertRaises(ValueError):
                     self.metrics(**{phase: values})
+        transient_load = [sample(100, 1), {**sample(200, 4), "healthy": False}]
+        transient_drain = [{**sample(500, 12), "healthy": False}, sample(9, .3), sample(5, .2), sample(0, .1)]
+        metrics = self.metrics(load=transient_load, drain=transient_drain)
+        self.assertEqual(metrics["transient_unhealthy_samples"], 2)
+        self.assertEqual(metrics["golden_signals"]["saturation"]["transient_unhealthy_samples"], 2)
+        for index in (1, 2, 3):
+            bad_drain = [sample(500, 5), sample(9, .3), sample(5, .2), sample(0, .1)]
+            bad_drain[index]["healthy"] = False
+            with self.subTest(final_drain_index=index), self.assertRaises(ValueError):
+                self.metrics(drain=bad_drain)
 
     def test_every_one_of_last_three_drain_samples_must_be_below_both_strict_thresholds(self):
         for index in (0, 1, 2):
@@ -1116,6 +1126,7 @@ class WaveHarness:
                             "storage": {"node"+str(i): {"input_bytes": 100} for i in range(1, hosts+1)}}
         self.arm.stable = mock.Mock(return_value=self.observation)
         self.arm.monitor = mock.Mock(side_effect=lambda layout: copy.deepcopy(self.observation))
+        self.arm.monitor_load = mock.Mock(side_effect=lambda layout: copy.deepcopy(self.observation))
         self.arm.command = mock.Mock(side_effect=self.command)
         self.arm.copy = mock.Mock(side_effect=self.copy)
         self.arm.spawn = mock.Mock(side_effect=self.spawn)
