@@ -47,6 +47,9 @@ func metadata(c Config) (*recordlayer.RecordMetaData, *recordlayer.Index, error)
 	idx.Type = indexType
 	idx.SetOption("hash_bytes", strconv.Itoa(c.HashBytes))
 	idx.SetOption("order", c.Order)
+	if c.PostingValueFormat == "tuple" {
+		idx.SetOption("value_format", "tuple")
+	}
 	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(d.ParentFile()).SetSplitLongRecords(true)
 	b.GetRecordType("Envelope").SetPrimaryKey(recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.Field("trace_id"), recordlayer.Field("span_id")))
 	b.AddIndex("Envelope", idx)

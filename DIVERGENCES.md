@@ -4691,6 +4691,36 @@ progress by the runner's retries in both engines. Java jumps only after a range
 fails every runner attempt. No stored byte differs; the built ranges are the same
 kind of primary-key ranges.
 
+## Brotli record compression (Go-only extension)
+
+Java 4.14.2.0's `TransformedRecordSerializer` accepts compression version 1
+only: a version byte, a big-endian uncompressed length and a zlib stream.
+Go preserves that default format and its compression, encryption and validation
+behavior. Brotli never replaces the contents of a version-1 frame.
+
+`TransformedRecordSerializerBuilder.SetGoOnlyBrotliCompression(level)` explicitly
+opts a serializer into writing and reading version 2 at levels 0 through 4.
+The version-2 body contains a version byte, a big-endian uint32 uncompressed
+length, a big-endian CRC32C checksum of the uncompressed union, and a Brotli
+stream. Compression is retained only when the complete body is smaller than
+the original union. The outer transformation prefix, compress-then-encrypt
+order, split-record storage, primary keys and index maintenance are unchanged.
+The original protobuf union, including unknown fields, is recovered on load.
+This option does not compress index keys or custom index values.
+
+Java and non-opted Go serializers reject version 2 with an unknown-compression-
+version error. Brotli-enabled serializers also read bare, clear-prefixed and
+version-1 records. A subsequent `SetCompressWhenSerializing(false)` disables
+compressed writes without revoking version-2 read permission, allowing a Go
+application to rewrite records through the normal save path. There is no
+Java-side migration or automatic store-wide rewrite.
+
+Version-2 uncompressed records are capped at 10,000,000 bytes, checked before
+encoding or allocating decoded output. Decoding is bounded and rejects
+truncated streams, wrong lengths, trailing input and checksum mismatches.
+Released codec states can retain plaintext in their windows, as the existing
+zlib free lists do; reuse is bounded and does not provide memory zeroization.
+
 Java's `infiniteLoopProtection`, which fails a build after the same range is picked
 1000 times in a row, is not ported either. A Go claim is built until nothing in it
 is missing, and a chunk that keeps failing ends the build after the lessen-work

@@ -25,6 +25,14 @@ Each campaign's reports live in a folder named after the campaign.
 - [fdb-perf-20261009](fdb-perf-20261009/README.md): one dedicated VM, rounds
   R1–R18 of pure-Go vs CGo client comparisons, including the R17 confirmatory
   round and its preregistration.
+- [OTel ingest 1x/2x/3x on Kubernetes + Cilium](otel-ingest-25k-k8s-cilium-scaling.md):
+  six `ccx43` hosts, k3s + Cilium native routing, fdb-kubernetes-operator
+  v2.38.0, FDB 7.3.77 `single` redundancy with up to 18 Redwood storage servers.
+  Record Layer span ingest with 11 KV writes per span reached 25,387.9 ACKed and
+  21,697.6 drained spans/s at 3x. The verdict is `NEAR_LINEAR`: 108.3% drained
+  efficiency and 89.5% ACK efficiency. The report covers the root causes found
+  on the way (TLog memory monitor, cold-range hotspot, topology) and the run's
+  limits (one run, not sustained, no HA).
 
 The two 2026-10-14 campaigns keep their frozen protocol versions under `protocol/`
 ([single-node](hcloud-rebench-20261014/protocol/),

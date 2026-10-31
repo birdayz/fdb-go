@@ -31,6 +31,9 @@ type Config struct {
 	MatchEvery         int    `json:"match_every"`
 	Batch              int    `json:"batch"`
 	SaveMode           string `json:"save_mode"`
+	RecordCompression  string `json:"record_compression,omitempty"`
+	PostingValueFormat string `json:"posting_value_format,omitempty"`
+	BulkIndexConflicts bool   `json:"bulk_index_conflicts,omitempty"`
 	Workers            int    `json:"workers"`
 	Diagnostics        bool   `json:"diagnostics"`
 	CHBatch            int    `json:"ch_batch"`
@@ -48,7 +51,7 @@ type Config struct {
 }
 
 func DefaultConfig() Config {
-	return Config{Seed: 283, Count: 10000, Tenants: 10, Attributes: 8, MatchEvery: 100, Batch: 32, SaveMode: "pipelined", Workers: 1, CHBatch: 8192, CHBatchBytes: 8 << 20, CHIndexGranularity: 8192, CHQueryTransport: "http", K: 100, Iterations: 20, MaxCandidates: 20000, MaxBytes: 4 << 20, HashBytes: 32, Order: "trace"}
+	return Config{Seed: 283, Count: 10000, Tenants: 10, Attributes: 8, MatchEvery: 100, Batch: 32, SaveMode: "pipelined", RecordCompression: "none", PostingValueFormat: "json", Workers: 1, CHBatch: 8192, CHBatchBytes: 8 << 20, CHIndexGranularity: 8192, CHQueryTransport: "http", K: 100, Iterations: 20, MaxCandidates: 20000, MaxBytes: 4 << 20, HashBytes: 32, Order: "trace"}
 }
 
 func (c Config) Validate() error {
@@ -57,6 +60,27 @@ func (c Config) Validate() error {
 	}
 	if c.Count < 1 || c.Count > 100000000 || c.Tenants < 1 || c.Tenants > (c.Count+1)/2 || c.Attributes < 4 || c.Attributes > 128 || c.MatchEvery < 1 || c.Batch < 1 || c.Batch > 64 || (c.SaveMode != "serial" && c.SaveMode != "pipelined" && c.SaveMode != "batch") || c.Workers < 1 || c.Workers > 8 || c.CHBatch < 1 || c.CHBatch > 65536 || c.CHBatchBytes < 1 || c.CHBatchBytes > 64<<20 || c.Tenant < 0 || c.Tenant >= c.Tenants || c.K < 1 || c.K > 10000 || c.Iterations < 1 || c.Iterations > 100000 || c.MaxCandidates < 1 || c.MaxCandidates > 100000000 || c.MaxBytes < 1 || c.HashBytes < 1 || c.HashBytes > 32 || (c.Order != "trace" && c.Order != "time") {
 		return fail("config", "bounds", "invalid corpus/query bounds")
+	}
+	switch c.RecordCompression {
+	case "", "none":
+	case "zlib-1", "brotli-0", "brotli-1", "brotli-3", "brotli-4":
+		if c.Backend != "fdb" {
+			return fail("config", "record compression", "Record Layer compression requires the FDB backend")
+		}
+	default:
+		return fail("config", "record compression", "record compression must be none, zlib-1, brotli-0, brotli-1, brotli-3, or brotli-4")
+	}
+	switch c.PostingValueFormat {
+	case "", "json":
+	case "tuple":
+		if c.Backend != "fdb" {
+			return fail("config", "posting values", "tuple postings require the FDB backend")
+		}
+	default:
+		return fail("config", "posting values", "posting value format must be json or tuple")
+	}
+	if c.BulkIndexConflicts && (c.Backend != "fdb" || c.SaveMode != "batch") {
+		return fail("config", "bulk index conflicts", "bulk index conflicts require the FDB batch save mode")
 	}
 	if c.CHIndexGranularity < 1 || c.CHIndexGranularity > 8192 {
 		return fail("config", "CH index granularity", "index granularity must be 1..8192 for fresh tables")
@@ -373,10 +397,16 @@ type Manifest struct {
 	HashBytes          int    `json:"hash_bytes"`
 	Backend            string `json:"backend"`
 	CHIndexGranularity int    `json:"ch_index_granularity,omitempty"`
+	RecordCompression  string `json:"record_compression,omitempty"`
+	PostingValueFormat string `json:"posting_value_format,omitempty"`
 }
 
 func manifest(c Config, state string) Manifest {
 	m := Manifest{Tool: ToolVersion, Run: c.Run, Corpus: corpusIdentity(c), State: state, Order: c.Order, HashBytes: c.HashBytes, Backend: c.Backend}
+	m.RecordCompression = recordCompressionMode(c.RecordCompression)
+	if c.PostingValueFormat == "tuple" {
+		m.PostingValueFormat = "tuple"
+	}
 	// CH table settings are layout identity, not source identity. Omit this
 	// field for FDB so existing V2 manifests retain their exact wire format.
 	if c.Backend == "ch-map" || c.Backend == "ch-attrs" {
@@ -391,6 +421,16 @@ func checkManifest(c Config, m Manifest, ready bool) error {
 	}
 	if (c.Backend == "ch-map" || c.Backend == "ch-attrs") && (m.CHIndexGranularity < 1 || m.CHIndexGranularity != c.CHIndexGranularity) {
 		return fail("ownership", "manifest", "CH index granularity missing or mismatched; refusing access")
+	}
+	if m.RecordCompression != recordCompressionMode(c.RecordCompression) {
+		return fail("ownership", "manifest", "Record Layer compression missing or mismatched; refusing access")
+	}
+	valueFormat := ""
+	if c.PostingValueFormat == "tuple" {
+		valueFormat = "tuple"
+	}
+	if m.PostingValueFormat != valueFormat {
+		return fail("ownership", "manifest", "covering posting value format missing or mismatched; refusing access")
 	}
 	if ready && m.State != "ready" {
 		return failf("ownership", "manifest", "run is not ready (state %q); explicit owned drop only", m.State)

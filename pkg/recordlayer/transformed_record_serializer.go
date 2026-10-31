@@ -134,6 +134,10 @@ type TransformedRecordSerializer struct {
 	// is the process-wide lists. A test gives one serializer private lists to
 	// observe its reuse.
 	zlib *zlibFreeLists
+	// Brotli is an explicit Go-only format; unset readers reject it.
+	goOnlyBrotliCompression bool
+	brotliCompressionLevel  int
+	brotli                  *brotliFreeLists
 }
 
 func (s *TransformedRecordSerializer) zlibLists() *zlibFreeLists {
@@ -173,6 +177,17 @@ func (b *TransformedRecordSerializerBuilder) SetCompressWhenSerializing(v bool) 
 // SetCompressionLevel takes Java's Deflater levels: -1 (the default) or 0-9.
 func (b *TransformedRecordSerializerBuilder) SetCompressionLevel(level int) *TransformedRecordSerializerBuilder {
 	b.s.compressionLevel = level
+	return b
+}
+
+// SetGoOnlyBrotliCompression enables compression version 2, which Java cannot
+// read, at a level from 0 through 4. It also permits reading that format. A later
+// SetCompressWhenSerializing(false) disables compressed writes, not this read
+// permission. SetCompressionLevel continues to select only Java's zlib level.
+func (b *TransformedRecordSerializerBuilder) SetGoOnlyBrotliCompression(level int) *TransformedRecordSerializerBuilder {
+	b.s.goOnlyBrotliCompression = true
+	b.s.brotliCompressionLevel = level
+	b.s.compressWhenSerializing = true
 	return b
 }
 
@@ -230,6 +245,9 @@ func (b *TransformedRecordSerializerBuilder) SetRandom(r io.Reader) *Transformed
 // compressed fails (compress).
 func (b *TransformedRecordSerializerBuilder) Build() (*TransformedRecordSerializer, error) {
 	s := b.s
+	if s.goOnlyBrotliCompression && (s.brotliCompressionLevel < 0 || s.brotliCompressionLevel > maxBrotliCompressionLevel) {
+		return nil, &RecordCoreArgumentError{Message: "Go-only Brotli compression level must be 0 through 4"}
+	}
 	if !s.jce {
 		// TransformedRecordSerializer.Builder.build (:568-571): the plain
 		// class has no key, so it refuses to be built encrypting.
@@ -436,6 +454,12 @@ func (s *TransformedRecordSerializer) decryptAndDecompress(st *transformState) e
 		}
 	}
 	if st.compressed {
+		if len(st.data) >= compressionHeaderSize && st.data[0] == brotliCompressionVersion {
+			if !s.goOnlyBrotliCompression {
+				return serializationError("unknown compression version")
+			}
+			return decompressBrotliTransformed(st, s.brotliLists())
+		}
 		return decompressTransformed(st, s.zlibLists())
 	}
 	return nil
@@ -445,6 +469,9 @@ func (s *TransformedRecordSerializer) decryptAndDecompress(st *transformState) e
 // a body of more than five bytes, and only when the deflated form is strictly
 // shorter than the body less the five-byte header.
 func (s *TransformedRecordSerializer) compress(st *transformState) error {
+	if s.goOnlyBrotliCompression {
+		return s.compressBrotli(st)
+	}
 	if len(st.data) <= compressionHeaderSize {
 		return nil
 	}

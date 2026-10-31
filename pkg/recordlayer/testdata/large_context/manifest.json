@@ -1,0 +1,1197 @@
+{
+  "schema": 1,
+  "kind": "distinct_repository_code_and_technical_docs_not_user_traffic",
+  "source_revision": "4af32c3bc68698fbe26438a2f84f82ba5ec8d23f",
+  "tokenizer": "tiktoken",
+  "tokenizer_version": "0.12.0",
+  "encoding": "cl100k_base",
+  "mergeable_ranks_sha256": "9ffba3a60b8f6c08b789518b16bd6aeaa3aa39a7c996059a5ed1d16fdeb06d28",
+  "context_tokens": 500000,
+  "context_bytes": 1984939,
+  "context_sha256": "9d87c39763ce5bfa5740a187098e9c2cd64ae7f1b75fc926ad8babc07202a9dd",
+  "messages_json_tokens": 566941,
+  "messages_json_bytes": 2091980,
+  "messages_json_sha256": "a3634fb2272e3a9a683ea856b2219700b89b09190a41809e2b240d8811f5dc4e",
+  "sources": [
+    {
+      "path": "pkg/recordlayer/execute_state.go",
+      "sha256": "41da728c8215e4479f4fb5b54442ce3cf8d7be1bdff2007c3792df51998b5db9",
+      "source_bytes": 14559,
+      "context_offset": 0,
+      "header_bytes": 50,
+      "block_bytes": 14620,
+      "included_block_bytes": 14620,
+      "included_source_bytes": 14559
+    },
+    {
+      "path": "pkg/recordlayer/constants.go",
+      "sha256": "1423a489b0d106f42b6d8f4530cfbf52ba20c7d88112ac4ef9ddf75ebf5c4918",
+      "source_bytes": 4770,
+      "context_offset": 14620,
+      "header_bytes": 46,
+      "block_bytes": 4827,
+      "included_block_bytes": 4827,
+      "included_source_bytes": 4770
+    },
+    {
+      "path": "pkg/recordlayer/rank_scan.go",
+      "sha256": "943f5ddb2ca076be92629740bc41d31e36a955039fd1f56efc4be152076b1f9b",
+      "source_bytes": 5776,
+      "context_offset": 19447,
+      "header_bytes": 46,
+      "block_bytes": 5833,
+      "included_block_bytes": 5833,
+      "included_source_bytes": 5776
+    },
+    {
+      "path": "pkg/recordlayer/time_window_leaderboard.go",
+      "sha256": "f02c56aae0ceafd74205551655acc839d4d97211971947d0b29bde295d9ee799",
+      "source_bytes": 16225,
+      "context_offset": 25280,
+      "header_bytes": 60,
+      "block_bytes": 16296,
+      "included_block_bytes": 16296,
+      "included_source_bytes": 16225
+    },
+    {
+      "path": "docs/compatibility.md",
+      "sha256": "880ac2363c5731f1c16cfd172f733fa414e86598600d3031fd46c4dd4cf21b08",
+      "source_bytes": 18807,
+      "context_offset": 41576,
+      "header_bytes": 39,
+      "block_bytes": 18857,
+      "included_block_bytes": 18857,
+      "included_source_bytes": 18807
+    },
+    {
+      "path": "pkg/recordlayer/index_scan_vector_options.go",
+      "sha256": "d54cc3076795af5080b6b94cc2d965bfca8042d7bc1b62df64352b6fcfd571e2",
+      "source_bytes": 4253,
+      "context_offset": 60433,
+      "header_bytes": 62,
+      "block_bytes": 4326,
+      "included_block_bytes": 4326,
+      "included_source_bytes": 4253
+    },
+    {
+      "path": "pkg/recordlayer/remote_fetch_api_version.go",
+      "sha256": "d1197bed436e87ccd21f59f6fed89dbfd2db7dc1a321a013213c5b537b6f889f",
+      "source_bytes": 711,
+      "context_offset": 64759,
+      "header_bytes": 61,
+      "block_bytes": 783,
+      "included_block_bytes": 783,
+      "included_source_bytes": 711
+    },
+    {
+      "path": "pkg/recordlayer/index_maintenance_filter.go",
+      "sha256": "228c1a00fd86c17ea9d3795199e4c6223596ad42f3a1e7b611a92c07be3c9146",
+      "source_bytes": 7899,
+      "context_offset": 65542,
+      "header_bytes": 61,
+      "block_bytes": 7971,
+      "included_block_bytes": 7971,
+      "included_source_bytes": 7899
+    },
+    {
+      "path": "pkg/recordlayer/rank_index_maintainer.go",
+      "sha256": "452226935855f5906b2dd008c5a6bfae540416576d2e9e5dee644ef9c5def662",
+      "source_bytes": 16921,
+      "context_offset": 73513,
+      "header_bytes": 58,
+      "block_bytes": 16990,
+      "included_block_bytes": 16990,
+      "included_source_bytes": 16921
+    },
+    {
+      "path": "docs/design-keyspace.md",
+      "sha256": "e8201c769dde0c1fe277eafcbcfaf2c73b2e009f2937557074e696c29865250d",
+      "source_bytes": 4198,
+      "context_offset": 90503,
+      "header_bytes": 41,
+      "block_bytes": 4250,
+      "included_block_bytes": 4250,
+      "included_source_bytes": 4198
+    },
+    {
+      "path": "pkg/recordlayer/locatable_resolver.go",
+      "sha256": "9a27d86f7146b5d4e927a9717f296988461c92b3e905c2aa9eaa57bc3e07e207",
+      "source_bytes": 17513,
+      "context_offset": 94753,
+      "header_bytes": 55,
+      "block_bytes": 17579,
+      "included_block_bytes": 17579,
+      "included_source_bytes": 17513
+    },
+    {
+      "path": "pkg/recordlayer/subspace_key_identity.go",
+      "sha256": "049d93368ce6ebc49f2b2251e253ad18394762bbdb0de3ab3bd7c1b367775288",
+      "source_bytes": 12021,
+      "context_offset": 112332,
+      "header_bytes": 58,
+      "block_bytes": 12090,
+      "included_block_bytes": 12090,
+      "included_source_bytes": 12021
+    },
+    {
+      "path": "pkg/recordlayer/atomic_index_helpers.go",
+      "sha256": "493a5dde43c5272979b23aecaa2f1f085cc111917e0641a70b2eeda1829fe37d",
+      "source_bytes": 9067,
+      "context_offset": 124422,
+      "header_bytes": 57,
+      "block_bytes": 9135,
+      "included_block_bytes": 9135,
+      "included_source_bytes": 9067
+    },
+    {
+      "path": "pkg/recordlayer/store_timer.go",
+      "sha256": "3f868c6b11fe69c78e818bce81ef458932c1131514cada6f66a20b463e2220f5",
+      "source_bytes": 17740,
+      "context_offset": 133557,
+      "header_bytes": 48,
+      "block_bytes": 17799,
+      "included_block_bytes": 17799,
+      "included_source_bytes": 17740
+    },
+    {
+      "path": "docs/upgrade.md",
+      "sha256": "18418accae9a201772e4133c85059f2942c3ad2712f2acd3fbcd0d14a91f9959",
+      "source_bytes": 5221,
+      "context_offset": 151356,
+      "header_bytes": 33,
+      "block_bytes": 5265,
+      "included_block_bytes": 5265,
+      "included_source_bytes": 5221
+    },
+    {
+      "path": "pkg/recordlayer/collate_function_key_expression.go",
+      "sha256": "a79adb8d176815fc8f7f915800aa97d9ff461e264ac8532ba4672c67165df5ed",
+      "source_bytes": 8644,
+      "context_offset": 156621,
+      "header_bytes": 68,
+      "block_bytes": 8723,
+      "included_block_bytes": 8723,
+      "included_source_bytes": 8644
+    },
+    {
+      "path": "pkg/recordlayer/existence_check.go",
+      "sha256": "b599864e97ad17cba41f4b4f6f5709042964d4b7674d2820b084a28509857735",
+      "source_bytes": 6131,
+      "context_offset": 165344,
+      "header_bytes": 52,
+      "block_bytes": 6194,
+      "included_block_bytes": 6194,
+      "included_source_bytes": 6131
+    },
+    {
+      "path": "pkg/recordlayer/atomic_mutation.go",
+      "sha256": "227ac9f7e30819252ba6a6ec7c9a5652e119fc7acb5515c59d40fa54b68ba6ab",
+      "source_bytes": 18950,
+      "context_offset": 171538,
+      "header_bytes": 52,
+      "block_bytes": 19013,
+      "included_block_bytes": 19013,
+      "included_source_bytes": 18950
+    },
+    {
+      "path": "pkg/recordlayer/index_carry_class.go",
+      "sha256": "518fa5cf1da477784c0dd2b361b11012801188562d391cbdd012de3bcdc4226c",
+      "source_bytes": 5550,
+      "context_offset": 190551,
+      "header_bytes": 54,
+      "block_bytes": 5615,
+      "included_block_bytes": 5615,
+      "included_source_bytes": 5550
+    },
+    {
+      "path": "docs/wire-format-static-vs-logic.md",
+      "sha256": "e57279f1eb0c0d95067b457a2be8ae74049e8eeb6a9cda7f5a8c029b93da7625",
+      "source_bytes": 5617,
+      "context_offset": 196166,
+      "header_bytes": 53,
+      "block_bytes": 5681,
+      "included_block_bytes": 5681,
+      "included_source_bytes": 5617
+    },
+    {
+      "path": "pkg/recordlayer/text_tokenizer.go",
+      "sha256": "6941cbbb10c5be3fd82aab8f82d196b8060739f2e82ed7e35f92fc49026fac4e",
+      "source_bytes": 12989,
+      "context_offset": 201847,
+      "header_bytes": 51,
+      "block_bytes": 13051,
+      "included_block_bytes": 13051,
+      "included_source_bytes": 12989
+    },
+    {
+      "path": "pkg/recordlayer/count_index_maintainer.go",
+      "sha256": "a30da259f386e3f4b37d909ce879a4a8833cadd186d8b110894a846202462926",
+      "source_bytes": 9982,
+      "context_offset": 214898,
+      "header_bytes": 59,
+      "block_bytes": 10052,
+      "included_block_bytes": 10052,
+      "included_source_bytes": 9982
+    },
+    {
+      "path": "pkg/recordlayer/java_serialization.go",
+      "sha256": "539dc4900cdcc690d454bbe10fd89da6aece90838ed01bfe3fe1fb79b0a3fe08",
+      "source_bytes": 9692,
+      "context_offset": 224950,
+      "header_bytes": 55,
+      "block_bytes": 9758,
+      "included_block_bytes": 9758,
+      "included_source_bytes": 9692
+    },
+    {
+      "path": "pkg/recordlayer/record_key_cursor.go",
+      "sha256": "86aa332df566cddf1db8c4f52c4d7f60f4721927c51a274958fc98171c533721",
+      "source_bytes": 9649,
+      "context_offset": 234708,
+      "header_bytes": 54,
+      "block_bytes": 9714,
+      "included_block_bytes": 9714,
+      "included_source_bytes": 9649
+    },
+    {
+      "path": "docs/vbase-osdi-2023.md",
+      "sha256": "a65587f5f71b0a7b3eca1fa8e0c91245a1a45979ea2fb6ee60282d0d1bd82c8d",
+      "source_bytes": 21244,
+      "context_offset": 244422,
+      "header_bytes": 41,
+      "block_bytes": 21296,
+      "included_block_bytes": 21296,
+      "included_source_bytes": 21244
+    },
+    {
+      "path": "pkg/recordlayer/bunched_map_iterator.go",
+      "sha256": "55f58a2ce18ce6bb43a2c955202c42f4ee18ef2d60d2c7551f74c118abd8bb89",
+      "source_bytes": 14625,
+      "context_offset": 265718,
+      "header_bytes": 57,
+      "block_bytes": 14693,
+      "included_block_bytes": 14693,
+      "included_source_bytes": 14625
+    },
+    {
+      "path": "pkg/recordlayer/throttled_retrying_iterator.go",
+      "sha256": "29af062229f4658cd07dda8c54dcb8f6d7436b723af480cafa5f81170d935fc1",
+      "source_bytes": 6233,
+      "context_offset": 280411,
+      "header_bytes": 64,
+      "block_bytes": 6308,
+      "included_block_bytes": 6308,
+      "included_source_bytes": 6233
+    },
+    {
+      "path": "pkg/recordlayer/text_index_maintainer.go",
+      "sha256": "7b7b46d17595f91c614e09826f429c10e591daee6ff4ec515761372bf526e7eb",
+      "source_bytes": 19818,
+      "context_offset": 286719,
+      "header_bytes": 58,
+      "block_bytes": 19887,
+      "included_block_bytes": 19887,
+      "included_source_bytes": 19818
+    },
+    {
+      "path": "pkg/recordlayer/scan_properties.go",
+      "sha256": "786ea7f27b01d03d36953efb7212d6668013dd7a4ace3be8bda91e1a4074de64",
+      "source_bytes": 16470,
+      "context_offset": 306606,
+      "header_bytes": 52,
+      "block_bytes": 16533,
+      "included_block_bytes": 16533,
+      "included_source_bytes": 16470
+    },
+    {
+      "path": "docs/fdb-cgo-parity.md",
+      "sha256": "75a5d2733aec616ad89469482eab4b08c37609938f7e7e7a289139d7053e0811",
+      "source_bytes": 4074,
+      "context_offset": 323139,
+      "header_bytes": 40,
+      "block_bytes": 4125,
+      "included_block_bytes": 4125,
+      "included_source_bytes": 4074
+    },
+    {
+      "path": "pkg/recordlayer/record_function.go",
+      "sha256": "2d6f466bd61749f6720e9d3bde0e5c624e5b955a3840d25c3c6f53c51e138845",
+      "source_bytes": 6559,
+      "context_offset": 327264,
+      "header_bytes": 52,
+      "block_bytes": 6622,
+      "included_block_bytes": 6622,
+      "included_source_bytes": 6559
+    },
+    {
+      "path": "pkg/recordlayer/doc.go",
+      "sha256": "4c6be506f6f908a4d26508806f5cfa64abad8172b85044841d9dd7d8f7a8ca36",
+      "source_bytes": 1518,
+      "context_offset": 333886,
+      "header_bytes": 40,
+      "block_bytes": 1569,
+      "included_block_bytes": 1569,
+      "included_source_bytes": 1518
+    },
+    {
+      "path": "pkg/recordlayer/record_version.go",
+      "sha256": "95931622fe35f108229bc37d0aa85720065f5d48f508101c52a91277b745c026",
+      "source_bytes": 13543,
+      "context_offset": 335455,
+      "header_bytes": 51,
+      "block_bytes": 13605,
+      "included_block_bytes": 13605,
+      "included_source_bytes": 13543
+    },
+    {
+      "path": "pkg/recordlayer/store_api.go",
+      "sha256": "36ee6d4f044c17fe499aead866ce567f4937a1ea8ea52c1af209635cbc52d007",
+      "source_bytes": 26786,
+      "context_offset": 349060,
+      "header_bytes": 46,
+      "block_bytes": 26843,
+      "included_block_bytes": 26843,
+      "included_source_bytes": 26786
+    },
+    {
+      "path": "docs/graefe-cascades-1995.md",
+      "sha256": "e6832295affa7ab5fdb0991cc91e3fee530bc8ade88db955f91b42eb4e4c4590",
+      "source_bytes": 18133,
+      "context_offset": 375903,
+      "header_bytes": 46,
+      "block_bytes": 18190,
+      "included_block_bytes": 18190,
+      "included_source_bytes": 18133
+    },
+    {
+      "path": "pkg/recordlayer/key_expression_cardinality.go",
+      "sha256": "07fe1f3c9871304ed6d603a4c45649d3b639f5747335f3b8ab36f49c66150d39",
+      "source_bytes": 10051,
+      "context_offset": 394093,
+      "header_bytes": 63,
+      "block_bytes": 10125,
+      "included_block_bytes": 10125,
+      "included_source_bytes": 10051
+    },
+    {
+      "path": "pkg/recordlayer/pending_writes_queue.go",
+      "sha256": "bc0909d765bda187fd6e627a335cc66c43756660da44b7aa37b8424fad6b24e7",
+      "source_bytes": 8918,
+      "context_offset": 404218,
+      "header_bytes": 57,
+      "block_bytes": 8986,
+      "included_block_bytes": 8986,
+      "included_source_bytes": 8918
+    },
+    {
+      "path": "pkg/recordlayer/endpoint_type.go",
+      "sha256": "0c102f71d858fce04add44d3934f3bdf490931fe1dd4e7898688bbbba5b61023",
+      "source_bytes": 1292,
+      "context_offset": 413204,
+      "header_bytes": 50,
+      "block_bytes": 1353,
+      "included_block_bytes": 1353,
+      "included_source_bytes": 1292
+    },
+    {
+      "path": "pkg/recordlayer/time_window_leaderboard_maintainer.go",
+      "sha256": "edd98bc01bf6046fe0becc1d81798c319801f372808d6b39620357e93334f9e9",
+      "source_bytes": 37171,
+      "context_offset": 414557,
+      "header_bytes": 71,
+      "block_bytes": 37253,
+      "included_block_bytes": 37253,
+      "included_source_bytes": 37171
+    },
+    {
+      "path": "docs/mt-saas.md",
+      "sha256": "ae389d75380f27a351fa07b9b8c26c58bf2430e46afb8e8de7102005313cacf7",
+      "source_bytes": 65116,
+      "context_offset": 451810,
+      "header_bytes": 33,
+      "block_bytes": 65160,
+      "included_block_bytes": 65160,
+      "included_source_bytes": 65116
+    },
+    {
+      "path": "pkg/recordlayer/split_helper.go",
+      "sha256": "de0dc247528ec4b98009d4a5aa7816c827f231a2620d7228fa29b9826d61d889",
+      "source_bytes": 22076,
+      "context_offset": 516970,
+      "header_bytes": 49,
+      "block_bytes": 22136,
+      "included_block_bytes": 22136,
+      "included_source_bytes": 22076
+    },
+    {
+      "path": "pkg/recordlayer/transformed_record_serializer_brotli.go",
+      "sha256": "6d0d5322895d0d685e4069ae04809d287af170c8125bff1008f9e77b8ad825c7",
+      "source_bytes": 4557,
+      "context_offset": 539106,
+      "header_bytes": 73,
+      "block_bytes": 4641,
+      "included_block_bytes": 4641,
+      "included_source_bytes": 4557
+    },
+    {
+      "path": "pkg/recordlayer/key_value_cursor.go",
+      "sha256": "daec640fb56b3d7f1f4c7d008356fc39f57cf58863c9a8b3b51c0963bf21ddde",
+      "source_bytes": 21144,
+      "context_offset": 543747,
+      "header_bytes": 53,
+      "block_bytes": 21208,
+      "included_block_bytes": 21208,
+      "included_source_bytes": 21144
+    },
+    {
+      "path": "pkg/recordlayer/store_vector_search.go",
+      "sha256": "31fbf55dc65b232fb8fe1404cf860646e032c92d3ae4cfcc7ba94223ab54777e",
+      "source_bytes": 12252,
+      "context_offset": 564955,
+      "header_bytes": 56,
+      "block_bytes": 12319,
+      "included_block_bytes": 12319,
+      "included_source_bytes": 12252
+    },
+    {
+      "path": "docs/operations.md",
+      "sha256": "0c950f3641fa62f7515c183c1ce6246f42c412d1ab984655213116c4b0e211e5",
+      "source_bytes": 13785,
+      "context_offset": 577274,
+      "header_bytes": 36,
+      "block_bytes": 13832,
+      "included_block_bytes": 13832,
+      "included_source_bytes": 13785
+    },
+    {
+      "path": "pkg/recordlayer/metadata_local_descriptor.go",
+      "sha256": "efbf65d66e00915fd5ca38d2bcd06a855739593d6f7ed34fc9efe81881192dc3",
+      "source_bytes": 8418,
+      "context_offset": 591106,
+      "header_bytes": 62,
+      "block_bytes": 8491,
+      "included_block_bytes": 8491,
+      "included_source_bytes": 8418
+    },
+    {
+      "path": "pkg/recordlayer/chained_cursor.go",
+      "sha256": "a2d841843c1e12add23e944c7d738235b9b55253726a8a0850cd3b99705e17c6",
+      "source_bytes": 4534,
+      "context_offset": 599597,
+      "header_bytes": 51,
+      "block_bytes": 4596,
+      "included_block_bytes": 4596,
+      "included_source_bytes": 4534
+    },
+    {
+      "path": "pkg/recordlayer/index.go",
+      "sha256": "62c5b668ebdbc38b86f1447dfedfbdd960048c7d1458fe56753ea4efc18c66e5",
+      "source_bytes": 42748,
+      "context_offset": 604193,
+      "header_bytes": 42,
+      "block_bytes": 42801,
+      "included_block_bytes": 42801,
+      "included_source_bytes": 42748
+    },
+    {
+      "path": "pkg/recordlayer/store_delete_where.go",
+      "sha256": "06a787f4687424c4291e9fc1b3ed1af55050f2c429d95f2e1efa01ab79eabc6f",
+      "source_bytes": 29274,
+      "context_offset": 646994,
+      "header_bytes": 55,
+      "block_bytes": 29340,
+      "included_block_bytes": 29340,
+      "included_source_bytes": 29274
+    },
+    {
+      "path": "pkg/recordlayer/keystore_key_manager.go",
+      "sha256": "6361be1fab717d0286d481381305d64c66fc3aac83ee47eb4ce88069dccf46da",
+      "source_bytes": 24870,
+      "context_offset": 676334,
+      "header_bytes": 57,
+      "block_bytes": 24938,
+      "included_block_bytes": 24938,
+      "included_source_bytes": 24870
+    },
+    {
+      "path": "pkg/recordlayer/index_state.go",
+      "sha256": "0bb41ed68ed56caeb7c2a31e561f6b9b426241c3dd77d20a3880a4770da4c79b",
+      "source_bytes": 36822,
+      "context_offset": 701272,
+      "header_bytes": 48,
+      "block_bytes": 36881,
+      "included_block_bytes": 36881,
+      "included_source_bytes": 36822
+    },
+    {
+      "path": "pkg/recordlayer/metadata_validate_records.go",
+      "sha256": "5cb92b61789041bcf0de1edccd99902c4e2b91d08c7f8b6731f369d3ad139852",
+      "source_bytes": 7301,
+      "context_offset": 738153,
+      "header_bytes": 62,
+      "block_bytes": 7374,
+      "included_block_bytes": 7374,
+      "included_source_bytes": 7301
+    },
+    {
+      "path": "pkg/recordlayer/indexing_heartbeat.go",
+      "sha256": "ff332953e153500afdd749c4da4a8151669286b88512c1d91a08c354e0348d34",
+      "source_bytes": 12322,
+      "context_offset": 745527,
+      "header_bytes": 55,
+      "block_bytes": 12388,
+      "included_block_bytes": 12388,
+      "included_source_bytes": 12322
+    },
+    {
+      "path": "pkg/recordlayer/online_indexer.go",
+      "sha256": "a165b63e368b44bbd0fc284c0041679aab50c9ac9d2af16db1a4d223742755cd",
+      "source_bytes": 108248,
+      "context_offset": 757915,
+      "header_bytes": 51,
+      "block_bytes": 108310,
+      "included_block_bytes": 108310,
+      "included_source_bytes": 108248
+    },
+    {
+      "path": "pkg/recordlayer/range_set.go",
+      "sha256": "06e5b9d0a3ff642b70a0ef7ed45257a3b64dfcad70b917e07b9e54200358756c",
+      "source_bytes": 11128,
+      "context_offset": 866225,
+      "header_bytes": 46,
+      "block_bytes": 11185,
+      "included_block_bytes": 11185,
+      "included_source_bytes": 11128
+    },
+    {
+      "path": "pkg/recordlayer/retry_predicate.go",
+      "sha256": "80a14d4848e32e3740ef203b3afa88440a30d7fb3b60e7f5a860d1febbf3a2f6",
+      "source_bytes": 3477,
+      "context_offset": 877410,
+      "header_bytes": 52,
+      "block_bytes": 3540,
+      "included_block_bytes": 3540,
+      "included_source_bytes": 3477
+    },
+    {
+      "path": "pkg/recordlayer/atomic_mutation_index_maintainer.go",
+      "sha256": "e013178811606a7f6f177b9382d425731ad7b07cb99f2595a08cf1a330cb2141",
+      "source_bytes": 16002,
+      "context_offset": 880950,
+      "header_bytes": 69,
+      "block_bytes": 16082,
+      "included_block_bytes": 16082,
+      "included_source_bytes": 16002
+    },
+    {
+      "path": "pkg/recordlayer/index_scan.go",
+      "sha256": "cb2a6d052f694b2d87bc9ac4e38260510d329368948bb4b0476bc9fa9084782a",
+      "source_bytes": 30484,
+      "context_offset": 897032,
+      "header_bytes": 47,
+      "block_bytes": 30542,
+      "included_block_bytes": 30542,
+      "included_source_bytes": 30484
+    },
+    {
+      "path": "pkg/recordlayer/text_cursor.go",
+      "sha256": "118362ccf37f05ca8fc76dac09fee2401cee3b428061891acccbced5fa832d77",
+      "source_bytes": 8355,
+      "context_offset": 927574,
+      "header_bytes": 48,
+      "block_bytes": 8414,
+      "included_block_bytes": 8414,
+      "included_source_bytes": 8355
+    },
+    {
+      "path": "pkg/recordlayer/long_arithmetic_function.go",
+      "sha256": "a62d31aab347eaa86e57843be35a61bce01cbc0da72d0368a64606bc8c102ea7",
+      "source_bytes": 15291,
+      "context_offset": 935988,
+      "header_bytes": 61,
+      "block_bytes": 15363,
+      "included_block_bytes": 15363,
+      "included_source_bytes": 15291
+    },
+    {
+      "path": "pkg/recordlayer/merge_cursor.go",
+      "sha256": "1f0d86cc03ed7fa2490cfa9f1651e0f76ee5adc0f7163dfa4f4d761b096cbf7f",
+      "source_bytes": 26271,
+      "context_offset": 951351,
+      "header_bytes": 49,
+      "block_bytes": 26331,
+      "included_block_bytes": 26331,
+      "included_source_bytes": 26271
+    },
+    {
+      "path": "pkg/recordlayer/jceks.go",
+      "sha256": "ac688345bd300e22a79d9581bcb9e03ce32a827bfeeee91819551e20cf874928",
+      "source_bytes": 11018,
+      "context_offset": 977682,
+      "header_bytes": 42,
+      "block_bytes": 11071,
+      "included_block_bytes": 11071,
+      "included_source_bytes": 11018
+    },
+    {
+      "path": "pkg/recordlayer/attempt_loop.go",
+      "sha256": "e70d1f5c9bf8e3ae0eacebfb26939154d17d451d56d12913ea2e162b1d2040c8",
+      "source_bytes": 12175,
+      "context_offset": 988753,
+      "header_bytes": 49,
+      "block_bytes": 12235,
+      "included_block_bytes": 12235,
+      "included_source_bytes": 12175
+    },
+    {
+      "path": "pkg/recordlayer/kv_scan_range.go",
+      "sha256": "9eddced32e6989d6df6f77402fb7ea560fd1d9fe422c218000a69d289fdde926",
+      "source_bytes": 6855,
+      "context_offset": 1000988,
+      "header_bytes": 50,
+      "block_bytes": 6916,
+      "included_block_bytes": 6916,
+      "included_source_bytes": 6855
+    },
+    {
+      "path": "pkg/recordlayer/permuted_min_max_index_maintainer.go",
+      "sha256": "e2a5c410abaa63e40395e835ee4a36917cef7292f047b4ab57ccec893bd40d25",
+      "source_bytes": 22301,
+      "context_offset": 1007904,
+      "header_bytes": 70,
+      "block_bytes": 22382,
+      "included_block_bytes": 22382,
+      "included_source_bytes": 22301
+    },
+    {
+      "path": "pkg/recordlayer/index_maintainer.go",
+      "sha256": "b8d944c5479d337ac06a37f7c0d0d57b3607ea2a752e9623de4af6a0252024fb",
+      "source_bytes": 35909,
+      "context_offset": 1030286,
+      "header_bytes": 53,
+      "block_bytes": 35973,
+      "included_block_bytes": 35973,
+      "included_source_bytes": 35909
+    },
+    {
+      "path": "pkg/recordlayer/errors.go",
+      "sha256": "58ccf6ecd859685a08d74e8fc57844c14cc91a5058322139d2fd5105b6a9b207",
+      "source_bytes": 34911,
+      "context_offset": 1066259,
+      "header_bytes": 43,
+      "block_bytes": 34965,
+      "included_block_bytes": 34965,
+      "included_source_bytes": 34911
+    },
+    {
+      "path": "pkg/recordlayer/standard_index_maintainer_api.go",
+      "sha256": "765554977b5f2bcd80153046e10b31718e5f5c5e7aa6bb527054f24432d6cd46",
+      "source_bytes": 2954,
+      "context_offset": 1101224,
+      "header_bytes": 66,
+      "block_bytes": 3031,
+      "included_block_bytes": 3031,
+      "included_source_bytes": 2954
+    },
+    {
+      "path": "pkg/recordlayer/permuted_min_null_semantics.go",
+      "sha256": "c126115949808766c2b65e7a474932dee856b8d5c83012a51be1c34fdaccc8cd",
+      "source_bytes": 7579,
+      "context_offset": 1104255,
+      "header_bytes": 64,
+      "block_bytes": 7654,
+      "included_block_bytes": 7654,
+      "included_source_bytes": 7579
+    },
+    {
+      "path": "pkg/recordlayer/dimensions_key_expression.go",
+      "sha256": "c05c2d6f0a0716e647405ec49f06fe60bb92fc2458fc3647e10dcd822d98fe3f",
+      "source_bytes": 2486,
+      "context_offset": 1111909,
+      "header_bytes": 62,
+      "block_bytes": 2559,
+      "included_block_bytes": 2559,
+      "included_source_bytes": 2486
+    },
+    {
+      "path": "pkg/recordlayer/key_expression_validate.go",
+      "sha256": "3c371ce609b76cf1e977bedcdb7798de14d10ba70d127a8a3f950c508426621f",
+      "source_bytes": 10940,
+      "context_offset": 1114468,
+      "header_bytes": 60,
+      "block_bytes": 11011,
+      "included_block_bytes": 11011,
+      "included_source_bytes": 10940
+    },
+    {
+      "path": "pkg/recordlayer/cursor_combinators.go",
+      "sha256": "89ad370838ea3449d6b89db6cf3b052e87412fb8ee9bc74ad778d366400f7f6c",
+      "source_bytes": 34567,
+      "context_offset": 1125479,
+      "header_bytes": 55,
+      "block_bytes": 34633,
+      "included_block_bytes": 34633,
+      "included_source_bytes": 34567
+    },
+    {
+      "path": "pkg/recordlayer/indexing_heartbeat_admin.go",
+      "sha256": "ac353d2dbfcb1f5725c740d9f21b85fae8609ceccb273bf2ab2af45065dad95a",
+      "source_bytes": 10702,
+      "context_offset": 1160112,
+      "header_bytes": 61,
+      "block_bytes": 10774,
+      "included_block_bytes": 10774,
+      "included_source_bytes": 10702
+    },
+    {
+      "path": "pkg/recordlayer/aggregate_function.go",
+      "sha256": "b18b4b34c1daa58d48e191a556af9142ecacb2ac4d46267d060165b1b16c6489",
+      "source_bytes": 24201,
+      "context_offset": 1170886,
+      "header_bytes": 55,
+      "block_bytes": 24267,
+      "included_block_bytes": 24267,
+      "included_source_bytes": 24201
+    },
+    {
+      "path": "pkg/recordlayer/sliding_window_index_validation.go",
+      "sha256": "222acc84865c555956d620fc4563d3f5ed42d976ce694e936b08923ee6f18b6d",
+      "source_bytes": 5954,
+      "context_offset": 1195153,
+      "header_bytes": 68,
+      "block_bytes": 6033,
+      "included_block_bytes": 6033,
+      "included_source_bytes": 5954
+    },
+    {
+      "path": "pkg/recordlayer/utf8_strings.go",
+      "sha256": "eeb521107ebe7aa512c94d3e7288a5df78baabcc4e5e7815159663a612d6a9c8",
+      "source_bytes": 3157,
+      "context_offset": 1201186,
+      "header_bytes": 49,
+      "block_bytes": 3217,
+      "included_block_bytes": 3217,
+      "included_source_bytes": 3157
+    },
+    {
+      "path": "pkg/recordlayer/metadata.go",
+      "sha256": "9eb4e4a2e4d7f9ea489e1d8e55497c69356f444be2b02ab83ebcab9c505e05d5",
+      "source_bytes": 101908,
+      "context_offset": 1204403,
+      "header_bytes": 45,
+      "block_bytes": 101964,
+      "included_block_bytes": 101964,
+      "included_source_bytes": 101908
+    },
+    {
+      "path": "pkg/recordlayer/statistics.go",
+      "sha256": "2e83fdafee9708b4d9fe40f79612bed1ef68761b78014839f893c972e964f13e",
+      "source_bytes": 44356,
+      "context_offset": 1306367,
+      "header_bytes": 47,
+      "block_bytes": 44414,
+      "included_block_bytes": 44414,
+      "included_source_bytes": 44356
+    },
+    {
+      "path": "pkg/recordlayer/index_maintainer_registry.go",
+      "sha256": "18c6103034aa09189e02c15f9ed6b3202e7a6678649119b20f193750ea8d0299",
+      "source_bytes": 4877,
+      "context_offset": 1350781,
+      "header_bytes": 62,
+      "block_bytes": 4950,
+      "included_block_bytes": 4950,
+      "included_source_bytes": 4877
+    },
+    {
+      "path": "pkg/recordlayer/cursor_pipelined.go",
+      "sha256": "04dc43a1edad7fdfa35f95812c20d89b07e9e787715e83a4c395d29e41764124",
+      "source_bytes": 5744,
+      "context_offset": 1355731,
+      "header_bytes": 53,
+      "block_bytes": 5808,
+      "included_block_bytes": 5808,
+      "included_source_bytes": 5744
+    },
+    {
+      "path": "pkg/recordlayer/cursor_util.go",
+      "sha256": "bd5f25fde3c4ac536874ce88c698b28e8338982217657be0c6e08814fb9ed469",
+      "source_bytes": 5727,
+      "context_offset": 1361539,
+      "header_bytes": 48,
+      "block_bytes": 5786,
+      "included_block_bytes": 5786,
+      "included_source_bytes": 5727
+    },
+    {
+      "path": "pkg/recordlayer/indexing_throttle.go",
+      "sha256": "4750975a1ed0603b7cf57b3e1c52bdc6991aeb43a0fff39534462bf8c003ad28",
+      "source_bytes": 10223,
+      "context_offset": 1367325,
+      "header_bytes": 54,
+      "block_bytes": 10288,
+      "included_block_bytes": 10288,
+      "included_source_bytes": 10223
+    },
+    {
+      "path": "pkg/recordlayer/store_typed.go",
+      "sha256": "22cfb905459847ce75ff109d7cb6d61d51259b4f3af2a2263d517f8c59924161",
+      "source_bytes": 9811,
+      "context_offset": 1377613,
+      "header_bytes": 48,
+      "block_bytes": 9870,
+      "included_block_bytes": 9870,
+      "included_source_bytes": 9811
+    },
+    {
+      "path": "pkg/recordlayer/max_ever_version_index_maintainer.go",
+      "sha256": "19d31fcb6fae2d059f4a7b4ece07f0766688efb0606a451d6dd043e7c5063422",
+      "source_bytes": 7763,
+      "context_offset": 1387483,
+      "header_bytes": 70,
+      "block_bytes": 7844,
+      "included_block_bytes": 7844,
+      "included_source_bytes": 7763
+    },
+    {
+      "path": "pkg/recordlayer/indexing_range_set.go",
+      "sha256": "b1bca4ce112fa666425c6551a7e3cc738a346132fafe65f681c1fdc46d058236",
+      "source_bytes": 3167,
+      "context_offset": 1395327,
+      "header_bytes": 55,
+      "block_bytes": 3233,
+      "included_block_bytes": 3233,
+      "included_source_bytes": 3167
+    },
+    {
+      "path": "pkg/recordlayer/text_index_serializer.go",
+      "sha256": "b75a820f46dc6a96c2aca4ab9122544a2ff83a2b416b9765e6656c390eb22ad3",
+      "source_bytes": 12276,
+      "context_offset": 1398560,
+      "header_bytes": 58,
+      "block_bytes": 12345,
+      "included_block_bytes": 12345,
+      "included_source_bytes": 12276
+    },
+    {
+      "path": "pkg/recordlayer/jce_cipher.go",
+      "sha256": "599caef2474903b870a59265c5c7c11aa97ff38ae3d5cf965805ec05c846c5c9",
+      "source_bytes": 15509,
+      "context_offset": 1410905,
+      "header_bytes": 47,
+      "block_bytes": 15567,
+      "included_block_bytes": 15567,
+      "included_source_bytes": 15509
+    },
+    {
+      "path": "pkg/recordlayer/row_number_window_predicate.go",
+      "sha256": "9e8559a4023fb1f3a0053dba7b49856b0ce305ee1df6c866ae2dd9ed239b1785",
+      "source_bytes": 15684,
+      "context_offset": 1426472,
+      "header_bytes": 64,
+      "block_bytes": 15759,
+      "included_block_bytes": 15759,
+      "included_source_bytes": 15684
+    },
+    {
+      "path": "pkg/recordlayer/proto_names.go",
+      "sha256": "1d67ae64b7accecf276fd998321834e4765e2ddc93a149bfa08715daf577e770",
+      "source_bytes": 1980,
+      "context_offset": 1442231,
+      "header_bytes": 48,
+      "block_bytes": 2039,
+      "included_block_bytes": 2039,
+      "included_source_bytes": 1980
+    },
+    {
+      "path": "pkg/recordlayer/store_primary_key_boundaries.go",
+      "sha256": "76fc777125a846c5ca046abc05c76f3ddd26fe80a56549e95173ad5a1386cbb0",
+      "source_bytes": 2695,
+      "context_offset": 1444270,
+      "header_bytes": 65,
+      "block_bytes": 2771,
+      "included_block_bytes": 2771,
+      "included_source_bytes": 2695
+    },
+    {
+      "path": "pkg/recordlayer/tuple_ordering.go",
+      "sha256": "a2c8c50f6f80e50ffdcb44abf7229e601dc2a2c1faf70b634b42e76060805430",
+      "source_bytes": 2213,
+      "context_offset": 1447041,
+      "header_bytes": 51,
+      "block_bytes": 2275,
+      "included_block_bytes": 2275,
+      "included_source_bytes": 2213
+    },
+    {
+      "path": "pkg/recordlayer/dedup_cursor.go",
+      "sha256": "87a0a6b1fea709aebb6257d11dd86d9fd7b8666d5ebff8902b4ad0309874c09a",
+      "source_bytes": 5531,
+      "context_offset": 1449316,
+      "header_bytes": 49,
+      "block_bytes": 5591,
+      "included_block_bytes": 5591,
+      "included_source_bytes": 5531
+    },
+    {
+      "path": "pkg/recordlayer/record_wire_map_order.go",
+      "sha256": "9a99acb8c51b0d920cb1b5e60844fd16dd84fde0369ab791df9b3083d896af0a",
+      "source_bytes": 33943,
+      "context_offset": 1454907,
+      "header_bytes": 58,
+      "block_bytes": 34012,
+      "included_block_bytes": 34012,
+      "included_source_bytes": 33943
+    },
+    {
+      "path": "pkg/recordlayer/fallback_cursor.go",
+      "sha256": "6e7df8664e0fd88a4d8ac629c6e33d802ca3360670d12d694fcc83469fb667c3",
+      "source_bytes": 2580,
+      "context_offset": 1488919,
+      "header_bytes": 52,
+      "block_bytes": 2643,
+      "included_block_bytes": 2643,
+      "included_source_bytes": 2580
+    },
+    {
+      "path": "pkg/recordlayer/store_builder.go",
+      "sha256": "667073920ac2c95ceff7426285fe1c5f42891e380981c1e5c084ef850904d1bd",
+      "source_bytes": 66408,
+      "context_offset": 1491562,
+      "header_bytes": 50,
+      "block_bytes": 66469,
+      "included_block_bytes": 66469,
+      "included_source_bytes": 66408
+    },
+    {
+      "path": "pkg/recordlayer/indexing_mutual.go",
+      "sha256": "e9c59890d047d52638f332345e4df9f9605e2641b5b8ca534d173241d15ccf30",
+      "source_bytes": 16018,
+      "context_offset": 1558031,
+      "header_bytes": 52,
+      "block_bytes": 16081,
+      "included_block_bytes": 16081,
+      "included_source_bytes": 16018
+    },
+    {
+      "path": "pkg/recordlayer/database.go",
+      "sha256": "d9556ebcde52cd62d8ac8814db896e511b1c5443cd9d9c400cebe0effba7bdd9",
+      "source_bytes": 64601,
+      "context_offset": 1574112,
+      "header_bytes": 45,
+      "block_bytes": 64657,
+      "included_block_bytes": 64657,
+      "included_source_bytes": 64601
+    },
+    {
+      "path": "pkg/recordlayer/list_key_expression.go",
+      "sha256": "27f2d15ce7ebb6e594c139cd02fff152ea8021b6fda5558ca18151cc7068d107",
+      "source_bytes": 4707,
+      "context_offset": 1638769,
+      "header_bytes": 56,
+      "block_bytes": 4774,
+      "included_block_bytes": 4774,
+      "included_source_bytes": 4707
+    },
+    {
+      "path": "pkg/recordlayer/cursor.go",
+      "sha256": "0cb57d756abced0cbee675c818ad12f7ff4376cfb542dc0142c8f9bb420b4a95",
+      "source_bytes": 15788,
+      "context_offset": 1643543,
+      "header_bytes": 43,
+      "block_bytes": 15842,
+      "included_block_bytes": 15842,
+      "included_source_bytes": 15788
+    },
+    {
+      "path": "pkg/recordlayer/index_validator.go",
+      "sha256": "d43a0048e30659c2273b8d7c942e0b77722145ad46ba242e96beb882eb45c655",
+      "source_bytes": 21843,
+      "context_offset": 1659385,
+      "header_bytes": 52,
+      "block_bytes": 21906,
+      "included_block_bytes": 21906,
+      "included_source_bytes": 21843
+    },
+    {
+      "path": "pkg/recordlayer/order_function_key_expression.go",
+      "sha256": "c21a5d155748bec65c477e09fbeb059783a2b0a01a20946ce5e4ef434deea53c",
+      "source_bytes": 2996,
+      "context_offset": 1681291,
+      "header_bytes": 66,
+      "block_bytes": 3073,
+      "included_block_bytes": 3073,
+      "included_source_bytes": 2996
+    },
+    {
+      "path": "pkg/recordlayer/store_version.go",
+      "sha256": "0c7f4dd5ccfba9b55cf3cbef0c8e4823da4a096659f31cc3e9514b91180d6ce2",
+      "source_bytes": 11067,
+      "context_offset": 1684364,
+      "header_bytes": 50,
+      "block_bytes": 11128,
+      "included_block_bytes": 11128,
+      "included_source_bytes": 11067
+    },
+    {
+      "path": "pkg/recordlayer/runner.go",
+      "sha256": "25ace0d41407b12dee0127d41597408b1446498060863d8d2be6796c251eafef",
+      "source_bytes": 13350,
+      "context_offset": 1695492,
+      "header_bytes": 43,
+      "block_bytes": 13404,
+      "included_block_bytes": 13404,
+      "included_source_bytes": 13350
+    },
+    {
+      "path": "pkg/recordlayer/index_maintainer_queue.go",
+      "sha256": "6af3b37b383eeede33886afed7c6aef5bc178bf553badaa5442ccda18b65df21",
+      "source_bytes": 6324,
+      "context_offset": 1708896,
+      "header_bytes": 59,
+      "block_bytes": 6394,
+      "included_block_bytes": 6394,
+      "included_source_bytes": 6324
+    },
+    {
+      "path": "pkg/recordlayer/metadata_store.go",
+      "sha256": "46fc177983ec958d4601c09fdaf0369c1407e6c20405753e8fcc3cdaf00d8804",
+      "source_bytes": 7132,
+      "context_offset": 1715290,
+      "header_bytes": 51,
+      "block_bytes": 7194,
+      "included_block_bytes": 7194,
+      "included_source_bytes": 7132
+    },
+    {
+      "path": "pkg/recordlayer/split_key_expression.go",
+      "sha256": "5cc1a5a9de05fe06c52130f7179e75ddf2f3002208f9e28b46fb85253f45b537",
+      "source_bytes": 3608,
+      "context_offset": 1722484,
+      "header_bytes": 57,
+      "block_bytes": 3676,
+      "included_block_bytes": 3676,
+      "included_source_bytes": 3608
+    },
+    {
+      "path": "pkg/recordlayer/index_options_vector.go",
+      "sha256": "754ec299ebc48a6a8cfc833a03343a3d36927e2481f985061fbe74118d6775fb",
+      "source_bytes": 11235,
+      "context_offset": 1726160,
+      "header_bytes": 57,
+      "block_bytes": 11303,
+      "included_block_bytes": 11303,
+      "included_source_bytes": 11235
+    },
+    {
+      "path": "pkg/recordlayer/scan_limiter_state.go",
+      "sha256": "0d1d15e58018581064f053abb668d298269427453e924bdb211938b80a7941b3",
+      "source_bytes": 5549,
+      "context_offset": 1737463,
+      "header_bytes": 55,
+      "block_bytes": 5615,
+      "included_block_bytes": 5615,
+      "included_source_bytes": 5549
+    },
+    {
+      "path": "pkg/recordlayer/version_index_maintainer.go",
+      "sha256": "fccba897455a9c147b601c8fe12c30412499ef06b28ba0641bfaa8430d5bd567",
+      "source_bytes": 8832,
+      "context_offset": 1743078,
+      "header_bytes": 61,
+      "block_bytes": 8904,
+      "included_block_bytes": 8904,
+      "included_source_bytes": 8832
+    },
+    {
+      "path": "pkg/recordlayer/index_remote_fetch.go",
+      "sha256": "b92ec08465ce24c6ddfcc7d999c4cf529be19ad2b983a571648e5b05a56a04c5",
+      "source_bytes": 15501,
+      "context_offset": 1751982,
+      "header_bytes": 55,
+      "block_bytes": 15567,
+      "included_block_bytes": 15567,
+      "included_source_bytes": 15501
+    },
+    {
+      "path": "pkg/recordlayer/proto_closed_enums.go",
+      "sha256": "d277da6d50cba9d961ea48b64b090a5446220d011d96b3f2e82616da674493ea",
+      "source_bytes": 38400,
+      "context_offset": 1767549,
+      "header_bytes": 55,
+      "block_bytes": 38466,
+      "included_block_bytes": 38466,
+      "included_source_bytes": 38400
+    },
+    {
+      "path": "pkg/recordlayer/bitmap_value_index_maintainer.go",
+      "sha256": "0fee85b52b6063719bcb660a09e2e94a132d069c5fbd0aa7292251d909ab5b43",
+      "source_bytes": 24886,
+      "context_offset": 1806015,
+      "header_bytes": 66,
+      "block_bytes": 24963,
+      "included_block_bytes": 24963,
+      "included_source_bytes": 24886
+    },
+    {
+      "path": "pkg/recordlayer/index_cursor_limits.go",
+      "sha256": "246677b5e4790f6d8f7a354803f7bcd884873f6ec44ddce4e75bcdb781307e47",
+      "source_bytes": 2688,
+      "context_offset": 1830978,
+      "header_bytes": 56,
+      "block_bytes": 2755,
+      "included_block_bytes": 2755,
+      "included_source_bytes": 2688
+    },
+    {
+      "path": "pkg/recordlayer/raw_split_cursor.go",
+      "sha256": "0a054281ac19e3ae3dc9f0521d485014f73e8bc4eeb3fa3009921195f098a91b",
+      "source_bytes": 8146,
+      "context_offset": 1833733,
+      "header_bytes": 53,
+      "block_bytes": 8210,
+      "included_block_bytes": 8210,
+      "included_source_bytes": 8146
+    },
+    {
+      "path": "pkg/recordlayer/metadata_export.go",
+      "sha256": "4421ac87a4a76d2acad7ebab843138200061c02aaf10153dace6cabcc2369c1f",
+      "source_bytes": 1492,
+      "context_offset": 1841943,
+      "header_bytes": 52,
+      "block_bytes": 1555,
+      "included_block_bytes": 1555,
+      "included_source_bytes": 1492
+    },
+    {
+      "path": "pkg/recordlayer/record_count.go",
+      "sha256": "e366328e4b606c122b80a3309d03a9b71bd70e401d7705c256f42131bfbe021a",
+      "source_bytes": 21831,
+      "context_offset": 1843498,
+      "header_bytes": 49,
+      "block_bytes": 21891,
+      "included_block_bytes": 21891,
+      "included_source_bytes": 21831
+    },
+    {
+      "path": "pkg/recordlayer/store.go",
+      "sha256": "ac39e741b2c0449c25dd91a96e12164b01d2cfc4b4de47789d470a67cb5d08e4",
+      "source_bytes": 113357,
+      "context_offset": 1865389,
+      "header_bytes": 42,
+      "block_bytes": 113410,
+      "included_block_bytes": 113410,
+      "included_source_bytes": 113357
+    },
+    {
+      "path": "pkg/recordlayer/metadata_proto.go",
+      "sha256": "287726b7c8e8527fbbd5dfeff7cd1865af9242cab80ff4c3bdc6a0c421e210e8",
+      "source_bytes": 74568,
+      "context_offset": 1978799,
+      "header_bytes": 51,
+      "block_bytes": 74630,
+      "included_block_bytes": 6140,
+      "included_source_bytes": 6089
+    }
+  ]
+}

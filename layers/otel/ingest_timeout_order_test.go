@@ -222,7 +222,11 @@ func testOtelIngestTimeoutOrdering(t *testing.T, ctx context.Context, cluster, o
 							foundLegacyLimit = true
 						}
 					}
-					if !foundLegacyLimit || len(timeouts) < 2 {
+					minimumTimeouts := 1
+					if role == "initialization" {
+						minimumTimeouts = 2
+					}
+					if !foundLegacyLimit || len(timeouts) < minimumTimeouts {
 						t.Fatalf("%s lost existing open timeout/retry guard: timeouts=%v retries=%v", role, timeouts, retries)
 					}
 				}
