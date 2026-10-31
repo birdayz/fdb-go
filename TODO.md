@@ -2044,10 +2044,15 @@ Owner resumed this workstream; see [the observability contract](docs/observabili
 Preserve C++ 7.3.77 wire IDs, sampled-parent inheritance, GRV batch roots, and
 transaction outcomes. SDK/exporter setup and shutdown remain application-owned.
 
-- [ ] Verify managed span cleanup on read/write success, terminal errors,
-  cancellation, panic, retries, and reset/cancel racing a blocked span start.
-  Implementation and regressions are in `span_lifecycle_unit_test.go` and
-  `span_otel_test.go`; require the fast and full lanes before closing this item.
+- [x] Managed span lifetimes: read/write success, terminal errors, cancellation,
+  panic, retries, reset/cancel racing blocked starts, and parented commit/reuse.
+  `span_lifecycle_unit_test.go` and real-FDB `span_otel_test.go` cover ownership,
+  lock boundaries, waiter cancellation and panic cleanup. The retirement fence
+  was mutation-checked: removing it compiled and failed the cancel/helper-return
+  regressions; restoration passed. Code at `30c2638e8` passed `just test`,
+  `just test-full`, and `just test-race` (fast target set under race, not full-race),
+  with frozen input manifests and code-review ACK. Broader OTel coverage remains
+  open below.
 - [ ] Instrument pipelined point reads through `GetPipelined`/`PendingGet`, which
   the `fdb` facade uses on its successful path. Own the operation span through
   reply, fallback, cancellation handoff, commit drain, and retirement; end it once
