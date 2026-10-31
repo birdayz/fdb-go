@@ -3269,6 +3269,13 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 		if idx.IsAtomicMutationIndex() {
 			continue
 		}
+		// Only types whose entries are per-record key tuples opt in to the
+		// value-scan candidate; Java's factory default builds no candidate
+		// (IndexMaintainerFactory.createMatchCandidates), so a custom or exotic
+		// type fails closed rather than having its layout misread as VALUE entries.
+		if !valueScanCandidateIndexType(idx.Type) {
+			continue
+		}
 		if sparse && idx.Type != recordlayer.IndexTypeValue && idx.Type != recordlayer.IndexTypeVersion {
 			// A sparse non-value index (e.g. a filtered PERMUTED_MIN/MAX)
 			// must not degrade into a value-scan candidate either — no
@@ -3283,6 +3290,20 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 	}
 
 	return candidates
+}
+
+// valueScanCandidateIndexType reports whether an index of this type gets a
+// VALUE-scan match candidate: the types whose Java factories call
+// expandValueIndexMatchCandidate (Value, Version, Rank BY_VALUE and
+// PermutedMinMax BY_VALUE). TEXT, MULTIDIMENSIONAL, TIME_WINDOW_LEADERBOARD and
+// registered custom types store entries a value scan would misread.
+func valueScanCandidateIndexType(indexType string) bool {
+	switch indexType {
+	case recordlayer.IndexTypeValue, recordlayer.IndexTypeVersion, recordlayer.IndexTypeRank,
+		recordlayer.IndexTypePermutedMin, recordlayer.IndexTypePermutedMax:
+		return true
+	}
+	return false
 }
 
 // runFromResolutionPostPasses is the SINGLE ordered sequence of mandatory
