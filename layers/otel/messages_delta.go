@@ -47,6 +47,7 @@ const (
 	messageCompressMin     = 64
 	messageBrotliLevel     = 4
 	messageTxnSplitBytes   = 250_000 // PersistMessageBlobsDB batch target
+	messageFTSSplitBytes   = 80_000  // PersistAndIndexMessageBlobsDB / IndexMessageSpansDB batch target (accounts for per-key FDB txn overhead)
 	messageTxnBudgetBytes  = 300_000 // PersistMessageBlobs admission bound
 	messageTxnGuardBytes   = 500_000 // approximate-size guard after writes
 	messageReconstructWave = 64      // blobs per ReconstructResourceSpansDB transaction

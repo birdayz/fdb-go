@@ -11,7 +11,11 @@ import (
 	"time"
 
 	"fdb.dev/layers/otel"
+	"fdb.dev/layers/otel/collector"
 )
+
+// runCollectorBenchmark is the collector-bench entry point; tests replace it.
+var runCollectorBenchmark = collector.RunBenchmark
 
 type backendOpener func(context.Context, otel.Config, string, string) (otel.Backend, error)
 
@@ -34,7 +38,7 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 	var confirm bool
 	var timeout time.Duration
 	flags.StringVar(&backend, "backend", "", "required: fdb, ch-map, or ch-attrs")
-	flags.StringVar(&mode, "mode", "", "required: ingest, query, audit, drop")
+	flags.StringVar(&mode, "mode", "", "required: ingest, query, audit, drop, or collector-bench (fdb only)")
 	flags.StringVar(&c.Run, "run", "", "required fresh owned namespace [a-z0-9_]{8,48}; no destructive default")
 	flags.Uint64Var(&c.Seed, "seed", c.Seed, "deterministic corpus seed")
 	flags.IntVar(&c.Count, "count", c.Count, "unique synthetic span population")
@@ -67,6 +71,12 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 	flags.StringVar(&revision, "revision", "unrecorded", "actual source revision for evidence receipt")
 	flags.DurationVar(&timeout, "timeout", 10*time.Minute, "whole-command context deadline")
 	flags.BoolVar(&confirm, "confirm-drop", false, "required with drop; only matching owned run manifest may be removed")
+	bench := collector.DefaultCollectorBenchConfig()
+	flags.IntVar(&bench.Conversations, "conversations", bench.Conversations, "collector-bench: synthetic multi-turn GenAI conversations, one trace each")
+	flags.IntVar(&bench.TurnsPerConversation, "turns", bench.TurnsPerConversation, "collector-bench: turns per conversation; one span per turn, each turn the parent of the next")
+	flags.IntVar(&bench.Producers, "producers", bench.Producers, "collector-bench: concurrent ConsumeTraces callers")
+	flags.BoolVar(&bench.EnableMessageDeltas, "enable-message-deltas", bench.EnableMessageDeltas, "collector-bench: content-addressed GenAI message delta storage")
+	flags.BoolVar(&bench.EnableMessageFullText, "enable-message-fts", bench.EnableMessageFullText, "collector-bench: GenAI message full-text index and fts_* query classes")
 	if err := flags.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return 0
@@ -78,7 +88,8 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	if flags.NArg() != 0 || timeout <= 0 || (mode != "ingest" && mode != "query" && mode != "audit" && mode != "drop") || backend != "fdb" && backend != "ch-map" && backend != "ch-attrs" {
+	collectorBench := mode == "collector-bench" && backend == "fdb"
+	if flags.NArg() != 0 || timeout <= 0 || (mode != "ingest" && mode != "query" && mode != "audit" && mode != "drop" && !collectorBench) || backend != "fdb" && backend != "ch-map" && backend != "ch-attrs" {
 		fmt.Fprintln(stderr, "explicit valid backend/mode required; see -help")
 		return 2
 	}
@@ -89,6 +100,13 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 	if mode == "drop" && !confirm {
 		fmt.Fprintln(stderr, "drop requires --confirm-drop")
 		return 2
+	}
+	if collectorBench {
+		bench = collectorBenchConfig(flags, bench, c, cluster, revision)
+		if err := bench.Validate(); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
 	}
 	var writer io.Writer = stdout
 	var file *os.File
@@ -104,6 +122,9 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
+	if collectorBench {
+		return writeCollectorBench(ctx, bench, writer, file, stderr)
+	}
 	e := otel.NewEvidence(c, backend, mode, suite, revision)
 	started := time.Now()
 	b, err := open(ctx, c, cluster, chURL)
@@ -146,4 +167,57 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 	}
 	return 0
 }
+
+// collectorBenchConfig applies the shared flags that were set explicitly;
+// unset ones keep the collector-bench defaults, which differ from ingest's.
+func collectorBenchConfig(flags *flag.FlagSet, bench collector.CollectorBenchConfig, c otel.Config, cluster, revision string) collector.CollectorBenchConfig {
+	bench.ClusterFile, bench.Run, bench.Revision = cluster, c.Run, revision
+	flags.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "seed":
+			bench.Seed = c.Seed
+		case "tenant":
+			bench.Tenant = c.Tenant
+		case "record-compression":
+			bench.RecordCompression = c.RecordCompression
+		case "posting-value-format":
+			bench.PostingValueFormat = c.PostingValueFormat
+		case "hash-bytes":
+			bench.HashBytes = c.HashBytes
+		case "order":
+			bench.Order = c.Order
+		case "iterations":
+			bench.QueryIterations = c.Iterations
+		case "batch":
+			bench.ExporterBatchSize = c.Batch
+		case "workers":
+			bench.ExporterWorkers = c.Workers
+		}
+	})
+	return bench
+}
+
+func writeCollectorBench(ctx context.Context, bench collector.CollectorBenchConfig, writer io.Writer, file *os.File, stderr io.Writer) int {
+	report, err := runCollectorBenchmark(ctx, bench)
+	if err != nil && report.Error == "" {
+		report.Error = err.Error()
+	}
+	enc := json.NewEncoder(writer)
+	enc.SetIndent("", "  ")
+	if encodeErr := enc.Encode(report); encodeErr != nil {
+		fmt.Fprintln(stderr, encodeErr)
+		return 1
+	}
+	if file != nil {
+		if syncErr := file.Sync(); syncErr != nil {
+			fmt.Fprintln(stderr, syncErr)
+			return 1
+		}
+	}
+	if err != nil {
+		return 1
+	}
+	return 0
+}
+
 func main() { os.Exit(execute(os.Args[1:], os.Stdout, os.Stderr, openBackend)) }

@@ -770,9 +770,9 @@ func testTraceExistential(t *testing.T, cluster string, mutate func(*ExporterCon
 	model := Attribute{"span", "gen_ai.request.model", "string", "gpt-4o"}
 	failed := Attribute{"span", "gen_ai.tool.status", "string", "failed"}
 	m := func(tr, sp string, start int64) SpanMatch { return SpanMatch{tr, sp, start} }
-	hitT1 := TraceExistentialHit{T1, 200, [][]SpanMatch{{m(T1, s(11), 100), m(T1, s(13), 50)}, {m(T1, s(12), 200)}}, nil}
-	hitT2 := TraceExistentialHit{T2, 300, [][]SpanMatch{{m(T2, s(21), 300)}, {m(T2, s(21), 300)}}, nil}
-	hitT5 := TraceExistentialHit{T5, 600, [][]SpanMatch{{m(T5, s(51), 600)}, {m(T5, s(52), 50)}}, nil}
+	hitT1 := TraceExistentialHit{T1, 200, [][]SpanMatch{{m(T1, s(11), 100), m(T1, s(13), 50)}, {m(T1, s(12), 200)}}, nil, nil}
+	hitT2 := TraceExistentialHit{T2, 300, [][]SpanMatch{{m(T2, s(21), 300)}, {m(T2, s(21), 300)}}, nil, nil}
+	hitT5 := TraceExistentialHit{T5, 600, [][]SpanMatch{{m(T5, s(51), 600)}, {m(T5, s(52), 50)}}, nil, nil}
 	for name, c := range map[string]struct {
 		q    TraceExistentialQuery
 		want []TraceExistentialHit
@@ -782,7 +782,7 @@ func testTraceExistential(t *testing.T, cluster string, mutate func(*ExporterCon
 		"window":     {TraceExistentialQuery{Clauses: []Attribute{model, failed}, TimeWindow: &TimeRange{Start: 0, End: 250}}, []TraceExistentialHit{hitT1}},
 		"empty join": {TraceExistentialQuery{Clauses: []Attribute{model, {"span", "gen_ai.tool.status", "string", "ok"}}}, []TraceExistentialHit{}},
 		"single": {TraceExistentialQuery{Clauses: []Attribute{failed}}, []TraceExistentialHit{
-			{T4, 500, [][]SpanMatch{{m(T4, s(41), 500)}}, nil}, {T2, 300, [][]SpanMatch{{m(T2, s(21), 300)}}, nil}, {T1, 200, [][]SpanMatch{{m(T1, s(12), 200)}}, nil}, {T5, 50, [][]SpanMatch{{m(T5, s(52), 50)}}, nil},
+			{T4, 500, [][]SpanMatch{{m(T4, s(41), 500)}}, nil, nil}, {T2, 300, [][]SpanMatch{{m(T2, s(21), 300)}}, nil, nil}, {T1, 200, [][]SpanMatch{{m(T1, s(12), 200)}}, nil, nil}, {T5, 50, [][]SpanMatch{{m(T5, s(52), 50)}}, nil, nil},
 		}},
 	} {
 		got, err := e.QueryTraceExistential(ctx, c.q)

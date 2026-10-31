@@ -1014,12 +1014,15 @@ func (x *TracesExporter) batchLoop() {
 }
 
 func (x *TracesExporter) dispatch(b batch) {
+	x.mu.Lock()
+	x.stats.Flushes++
+	x.mu.Unlock()
 	select {
 	case x.batches <- b:
-		x.mu.Lock()
-		x.stats.Flushes++
-		x.mu.Unlock()
 	case <-x.workCtx.Done():
+		x.mu.Lock()
+		x.stats.Flushes--
+		x.mu.Unlock()
 		x.complete(b.parts, otel.ExportStats{}, fmt.Errorf("%s: export abandoned: %w", ComponentType, x.workCtx.Err()))
 	}
 }
