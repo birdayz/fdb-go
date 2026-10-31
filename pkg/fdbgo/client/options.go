@@ -97,23 +97,20 @@ func WithTracingSampleRate(rate float64) Option {
 	return func(o *openOptions) { o.tracingSampleRate = rate }
 }
 
-// WithTracer sets the OpenTelemetry tracer used to EXPORT client-side trace spans
-// (the C++ ITracer analog — NoopTracer default, pluggable backend). The pure-Go
-// client always GENERATES + propagates a SpanContext on the wire (RFC-115 §4 Layer 1)
-// regardless of this; WithTracer adds the export half. Pass any
-// go.opentelemetry.io/otel/trace.Tracer (from your OTLP/Jaeger/Datadog TracerProvider);
-// the client emits a "Transaction" span plus per-operation child spans (getValue,
-// getRange, commit, GRV, …), seeded with the same traceID it puts on the wire so
-// FDB server-side spans land in the same trace. nil (the default) → an internal no-op
-// tracer: zero telemetry, zero allocation on the hot path, no OTEL SDK pulled in.
-// Spans are recorded only for sampled transactions (see WithTracingSampleRate).
+// WithTracer sets the application-owned OpenTelemetry export backend. A sampled
+// attempt emits a "Transaction" span and native-read children (getValue, getKey,
+// getRange). Wire propagation is independent: exported spans share the wire trace
+// ID, but use SDK-generated span IDs. There are no separate commit or GRV spans.
+// nil (the default) disables export without constructing OTel contexts or spans;
+// the client does not install a global provider or depend on an SDK or exporter.
+// WithTracingSampleRate gates export before the provider's own sampler.
 //
-// CAVEAT (span lifetime): the per-transaction "Transaction" span ends on commit
-// success, OnError retry, Reset, or Cancel. Database.Transact/TransactCtx always hit
-// one of these, so they are safe. A RAW Database.CreateTransaction() handle that you
-// read from (starting the span) and then ABANDON without committing/Reset/Cancel will
-// LEAK that span (it is never ended) — only matters with a real tracer AND a sampled
-// transaction. Always Reset() or Cancel() a raw handle you don't commit.
+// Managed Transact and ReadTransact helpers end their spans on every exit. Raw
+// CreateTransaction handles require commit success, OnError retry, Reset, or Cancel
+// to end a started span. Always Cancel or Reset an uncommitted raw handle.
+// Callbacks are synchronous: keep them bounded and do not call transaction
+// methods from a tracer or span processor, including Reset and Cancel. The application
+// owns provider flushing and shutdown; Database.Close does not shut it down.
 func WithTracer(t oteltrace.Tracer) Option {
 	return func(o *openOptions) { o.tracer = t }
 }

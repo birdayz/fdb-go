@@ -211,10 +211,8 @@ func WithRangeByteCeiling(n int64) Option { return client.WithRangeByteCeiling(n
 // unsampled. RFC-115 §4.
 func WithTracingSampleRate(rate float64) Option { return client.WithTracingSampleRate(rate) }
 
-// WithTracer sets the OpenTelemetry tracer that EXPORTS client-side trace spans
-// (a "Transaction" span + per-operation child spans), seeded with the same traceID the
-// client puts on the wire. Pass any go.opentelemetry.io/otel/trace.Tracer; nil (the
-// default) is a no-op (zero telemetry, no OTEL SDK pulled in). RFC-115 §4 Layer 2.
+// WithTracer sets the application-owned OpenTelemetry tracer for client spans.
+// See [client.WithTracer] for sampling, span ownership, and callback restrictions.
 func WithTracer(t oteltrace.Tracer) Option { return client.WithTracer(t) }
 
 // defaultBootstrapTimeout bounds the initial coordinator connection so an

@@ -2037,3 +2037,35 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   SA5011 replacement is available. Staticcheck 2026.2 retired SA5011 in `5161aaa18`;
   nogo's enabled x/tools `nilness` checks proven-nil uses but not that pattern.
   See CHANGELOG.md, Unreleased.
+
+## OpenTelemetry production hardening
+
+Owner resumed this workstream; see [the observability contract](docs/observability.md).
+Preserve C++ 7.3.77 wire IDs, sampled-parent inheritance, GRV batch roots, and
+transaction outcomes. SDK/exporter setup and shutdown remain application-owned.
+
+- [ ] Verify managed span cleanup on read/write success, terminal errors,
+  cancellation, panic, retries, and reset/cancel racing a blocked span start.
+  Implementation and regressions are in `span_lifecycle_unit_test.go` and
+  `span_otel_test.go`; require the fast and full lanes before closing this item.
+- [ ] Instrument pipelined point reads through `GetPipelined`/`PendingGet`, which
+  the `fdb` facade uses on its successful path. Own the operation span through
+  reply, fallback, cancellation handoff, commit drain, and retirement; end it once
+  without adding SDK callbacks under pending-read or turnover locks. Prove the
+  facade path against real FDB, not only synchronous `client.Get`.
+- [ ] Add bounded error/status telemetry to exported operation and attempt spans.
+  Preserve error identities and avoid exporting raw keys, values, SQL, tenant
+  identifiers, or arbitrary application error messages. Include failure-path
+  and success-after-retry assertions, not just span-name presence.
+- [ ] Define and test late `SPAN_PARENT` export behavior. The wire context changes
+  immediately, but an already-started SDK span cannot be reparented; current
+  export correlation follows the new parent only after retry/reset. The guide
+  requires parent injection before the first read/commit. Preserve the existing
+  C++ wire option semantics when improving the additive export boundary.
+- [ ] Add an explicit OTel-context parenting API and round-trip tests if automatic
+  request-trace joining is wanted. Current Go contexts carry cancellation only;
+  `SetSpanParent` is the explicit FDB hook. Do not make an SDK span the authority
+  for FDB wire IDs or change batched-GRV roots to simplify a trace waterfall.
+- [ ] Optional OTel metrics adapter over `MetricsSource`/`StoreTimer`: define
+  units, aggregation/temporality and cardinality; keep SDK/exporter dependencies
+  out of core transaction execution. Existing Prometheus adapters remain valid.

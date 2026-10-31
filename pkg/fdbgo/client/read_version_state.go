@@ -12,7 +12,7 @@ import (
 // The retained native commit shares the GRV, not the public resetPromise or
 // transaction. Reset replaces this state after dropping the old actor.
 type readVersionState struct {
-	// Lock order: readVersionMu → traceMu, never the reverse. Never held over I/O.
+	// Never held over I/O or tracer callbacks.
 	readVersionMu      sync.Mutex
 	readVersion        int64
 	hasReadVersion     bool
@@ -65,11 +65,12 @@ func (state *nativeReadState) readVersionForCommit(ctx context.Context) (int64, 
 }
 
 func (tx *Transaction) cachedOrFetchReadVersion(ctx context.Context, extraFlags uint32) (int64, bool, error) {
+	tx.ensureTxSpan(ctx)
 	return tx.readVersionState.cachedOrFetchReadVersion(ctx, nil, extraFlags, tx)
 }
 
-// owner supplies public admission-error mapping, span initialization and, when
-// request is nil, the request options, read only once a fetch starts. Detached
+// owner supplies public admission-error mapping and, when request is nil,
+// the request options, read only once a fetch starts. Detached
 // native work passes its captured request and a nil owner, and observes its own
 // context instead.
 func (state *readVersionState) cachedOrFetchReadVersion(ctx context.Context, request *readVersionRequest, extraFlags uint32, owner *Transaction) (int64, bool, error) {
@@ -81,9 +82,6 @@ func (state *readVersionState) cachedOrFetchReadVersion(ctx context.Context, req
 		}
 		if state.metricStart.IsZero() {
 			state.metricStart = time.Now()
-			if owner != nil {
-				owner.ensureTxSpan()
-			}
 		}
 		if state.hasReadVersion {
 			rv, userSet := state.readVersion, state.userSetReadVersion
