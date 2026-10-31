@@ -465,7 +465,7 @@ func TestExecuteFlagForwarding(t *testing.T) {
 		t.Run(saveMode, func(t *testing.T) {
 			t.Parallel()
 			args := []string{"-backend=ch-attrs", "-mode=drop", "-confirm-drop", "-run=flag_test_run", "-seed=42", "-count=24", "-tenants=3", "-attrs=12", "-match-every=2", "-batch=4", "-ch-batch=5", "-ch-batch-bytes=4096", "-tenant=1", "-k=2", "-iterations=3", "-max-candidates=99", "-max-bytes=12345", "-hash-bytes=1", "-order=time", "-cluster-file=owned.cluster", "-ch-url=http://owned.invalid:8123", "-timeout=37s", "-revision=flag-revision", "-suite=mixed", "-save-mode=" + saveMode, "-workers=2", "-diagnostics", "-ch-query-transport=native", "-ch-native-addr=127.0.0.1:9000", "-ch-index-granularity=512"}
-			want := otel.Config{Run: "flag_test_run", Backend: "ch-attrs", Seed: 42, Count: 24, Tenants: 3, Attributes: 12, MatchEvery: 2, Batch: 4, CHBatch: 5, CHBatchBytes: 4096, Tenant: 1, K: 2, Iterations: 3, MaxCandidates: 99, MaxBytes: 12345, HashBytes: 1, Order: "time", SaveMode: saveMode, Workers: 2, Diagnostics: true, CHQueryTransport: "native", CHNativeAddr: "127.0.0.1:9000", CHIndexGranularity: 512}
+			want := otel.Config{Run: "flag_test_run", Backend: "ch-attrs", Seed: 42, Count: 24, Tenants: 3, Attributes: 12, MatchEvery: 2, Batch: 4, CHBatch: 5, CHBatchBytes: 4096, Tenant: 1, K: 2, Iterations: 3, MaxCandidates: 99, MaxBytes: 12345, HashBytes: 1, Order: "time", SaveMode: saveMode, RecordCompression: "none", PostingValueFormat: "json", Workers: 2, Diagnostics: true, CHQueryTransport: "native", CHNativeAddr: "127.0.0.1:9000", CHIndexGranularity: 512}
 			b := &fakeBackend{t: t}
 			var stdout, stderr bytes.Buffer
 			code := execute(args, &stdout, &stderr, func(ctx context.Context, c otel.Config, cluster, chURL string) (otel.Backend, error) {

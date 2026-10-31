@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "collector",
+    srcs = ["collector.go"],
+    importpath = "fdb.dev/layers/otel/collector",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//layers/otel",
+        "@in_gopkg_yaml_v3//:yaml_v3",
+        "@io_opentelemetry_go_proto_otlp//trace/v1:trace",
+    ],
+)
+
+go_test(
+    name = "collector_test",
+    timeout = "long",
+    srcs = ["collector_test.go"],
+    embed = [":collector"],
+    deps = [
+        "//layers/otel",
+        "//pkg/testcontainers/foundationdb",
+        "@in_gopkg_yaml_v3//:yaml_v3",
+        "@io_opentelemetry_go_proto_otlp//common/v1:common",
+        "@io_opentelemetry_go_proto_otlp//resource/v1:resource",
+        "@io_opentelemetry_go_proto_otlp//trace/v1:trace",
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

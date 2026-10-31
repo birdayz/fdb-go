@@ -34,8 +34,8 @@ func assertOtelCommittedPostings(t *testing.T, ctx context.Context, b *FDBBacken
 		t.Fatalf("committed posting population %d want %d", len(postings), count)
 	}
 	for key, value := range postings {
-		var covered coveringValue
-		if err := json.Unmarshal([]byte(value), &covered); err != nil {
+		covered, err := decodeCoveringValue([]byte(value), b.cfg.PostingValueFormat)
+		if err != nil {
 			t.Fatal(err)
 		}
 		prefix, err := otelSecondary(b).Unpack(fdb.Key(key))

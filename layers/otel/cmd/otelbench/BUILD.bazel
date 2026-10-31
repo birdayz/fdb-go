@@ -16,7 +16,10 @@ go_library(
 
 go_test(
     name = "otelbench_test",
-    srcs = ["main_test.go"],
+    srcs = [
+        "main_test.go",
+        "record_compression_test.go",
+    ],
     embed = [":otelbench_lib"],
     deps = ["//layers/otel"],
 )

@@ -241,11 +241,20 @@ func assertPostingDiffMutations(t *testing.T, capture *postingDiffCapture, clear
 }
 
 func testOtelPostingDiff(t *testing.T, ctx context.Context, cluster, order string) {
+	testOtelPostingDiffFormat(t, ctx, cluster, order, "json")
+}
+
+func testOtelTuplePostingDiff(t *testing.T, ctx context.Context, cluster, order string) {
+	testOtelPostingDiffFormat(t, ctx, cluster, order, "tuple")
+}
+
+func testOtelPostingDiffFormat(t *testing.T, ctx context.Context, cluster, order, valueFormat string) {
 	t.Helper()
 	for _, requested := range []int{32, 64} {
 		t.Run(fmt.Sprintf("batch_%d", requested), func(t *testing.T) {
 			c := testConfig()
 			c.Count, c.Tenants, c.Batch, c.Workers, c.SaveMode, c.Order = 64, 1, requested, 1, "batch", order
+			c.PostingValueFormat = valueFormat
 			probe, err := prepareIngestBatch(ctx, c, 0)
 			if err != nil {
 				t.Fatal(err)
@@ -363,11 +372,12 @@ func testOtelPostingDiff(t *testing.T, ctx context.Context, cluster, order strin
 			t.Logf("actual batch mutation bytes: requested=%d effective=%d rootbytes=%d fresh=%d identicalreplay=%d", requested, wantRows, len(b.root.Bytes()), freshSize, replaySize)
 		})
 	}
-	t.Run("admission_and_write_only", func(t *testing.T) { testOtelPostingDiffAdmissionAndWriteOnly(t, ctx, cluster, order) })
+	t.Run("admission_and_write_only", func(t *testing.T) { testOtelPostingDiffAdmissionAndWriteOnly(t, ctx, cluster, order, valueFormat) })
 }
 
-func testOtelPostingDiffAdmissionAndWriteOnly(t *testing.T, ctx context.Context, cluster, order string) {
+func testOtelPostingDiffAdmissionAndWriteOnly(t *testing.T, ctx context.Context, cluster, order, valueFormat string) {
 	c := testConfig()
+	c.PostingValueFormat = valueFormat
 	c.Count, c.Tenants, c.HashBytes, c.Order = 1, 1, 1, order
 	b := openOtelFixture(t, ctx, cluster, c, true)
 	s := Generate(b.cfg, 0)

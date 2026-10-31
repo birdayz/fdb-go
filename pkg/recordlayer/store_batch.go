@@ -7,6 +7,8 @@ package recordlayer
 import (
 	"encoding/binary"
 	"fmt"
+	"maps"
+	"slices"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -16,6 +18,17 @@ import (
 // unsplitSuffix is the pre-computed tuple for the unsplit record suffix (0).
 // Used by PackConcatWithPrefix to avoid appendToTuple allocation.
 var unsplitSuffix = tuple.Tuple{unsplitRecord}
+
+// BatchSaveOptions controls transaction-local batch execution, not stored layout.
+type BatchSaveOptions struct {
+	// CoalesceIndexWriteConflicts widens write conflicts over every metadata
+	// index's primary and secondary subspaces, including indexes this batch does
+	// not update. All normal read and write conflicts remain. A client that
+	// coalesces overlapping conflicts can ship fewer ranges; the live approximate
+	// transaction size need not decrease. Index readers that also write may see
+	// additional conflicts. No record, header, or index-state range is widened.
+	CoalesceIndexWriteConflicts bool
+}
 
 // SaveRecordBatch saves multiple records with pipelined existence checks.
 //
@@ -28,6 +41,15 @@ var unsplitSuffix = tuple.Tuple{unsplitRecord}
 // saved in the current transaction.
 func (store *FDBRecordStore) SaveRecordBatch(
 	records []proto.Message,
+) ([]*FDBStoredRecord[proto.Message], error) {
+	return store.SaveRecordBatchWithOptions(records, BatchSaveOptions{})
+}
+
+// SaveRecordBatchWithOptions saves as SaveRecordBatch does, then applies the
+// requested conflict widening only after every normal save has succeeded.
+func (store *FDBRecordStore) SaveRecordBatchWithOptions(
+	records []proto.Message,
+	options BatchSaveOptions,
 ) ([]*FDBStoredRecord[proto.Message], error) {
 	if len(records) == 0 {
 		return nil, nil
@@ -67,6 +89,9 @@ func (store *FDBRecordStore) SaveRecordBatch(
 				return nil, fmt.Errorf("record %d: %w", i, err)
 			}
 			results[i] = saved
+		}
+		if err := store.addBatchIndexWriteConflicts(options); err != nil {
+			return nil, err
 		}
 		return results, nil
 	}
@@ -357,7 +382,35 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		tx.AddBytes(countFDBKey, buf[:])
 	}
 
+	if err := store.addBatchIndexWriteConflicts(options); err != nil {
+		return nil, err
+	}
 	return results, nil
+}
+
+func (store *FDBRecordStore) addBatchIndexWriteConflicts(options BatchSaveOptions) error {
+	if !options.CoalesceIndexWriteConflicts {
+		return nil
+	}
+	var ranges []fdb.KeyRange
+	indexes := store.metaData.GetAllIndexes()
+	for _, name := range slices.Sorted(maps.Keys(indexes)) {
+		index := indexes[name]
+		for _, prefix := range [][]byte{store.indexSubspace(index).Bytes(), store.indexSecondarySubspace(index).Bytes()} {
+			// PrefixRange also covers an aggregate entry at the subspace key itself.
+			r, err := fdb.PrefixRange(prefix)
+			if err != nil {
+				return fmt.Errorf("batch index %q write-conflict range: %w", name, err)
+			}
+			ranges = append(ranges, r)
+		}
+	}
+	for _, r := range ranges {
+		if err := store.context.Transaction().AddWriteConflictRange(r); err != nil {
+			return fmt.Errorf("batch index write conflict: %w", err)
+		}
+	}
+	return nil
 }
 
 // The sequential legacy fallback must refuse a later collated record before

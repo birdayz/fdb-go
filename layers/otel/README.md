@@ -78,6 +78,54 @@ V1 receipts/binaries (including the initial ingest-profile commits) remain
 historical evidence, not compatible V2 measurements. No storage compatibility
 or direct before/after performance claim is made across this fixture change.
 
+## Record Layer bulk saves and compression
+
+`--save-mode=batch` uses `StoreBuilder.PrefetchRecordBatch` to overlap snapshot
+cache warming with store opening, then `FDBRecordStore.SaveRecordBatch`:
+authoritative old-record loads are pipelined, and every record still passes through the store serializer,
+record-count handling and synchronous old/new index maintenance. Transaction
+ownership, 1500-ms timeout, one-second save-plus-guard limit, 300-KB conservative
+batch estimate and 500-KB actual transaction guard are unchanged.
+
+`--record-compression` selects `none` (the default), `zlib-1`, `brotli-0`,
+`brotli-1`, `brotli-3` or `brotli-4` for fresh FDB runs. It configures the Record Layer's
+`TransformedRecordSerializer` through `StoreBuilder.SetSerializer`, before normal
+split-record storage. OTLP messages, envelopes, primary keys, eight complete
+covering postings and both native indexes are unchanged. This setting compresses
+**primary record values only**, not posting values or keys. Its byte reduction
+must not be presented as the same reduction in total storage or physical I/O.
+The compression choice is immutable run ownership, not part of source-corpus
+identity. Use the same choice for ingestion, reads, audits and explicit drops;
+a mismatch is refused before accessing the run.
+
+`--posting-value-format=tuple` stores each complete covering projection as a
+standard FDB tuple `(scope,key,type,value,start_ns)` instead of JSON. This removes
+repeated JSON field names without shortening the original values or changing any
+posting key. It is an immutable fresh-run index option; query decoding uses the
+maintainer's metadata, not a caller-provided format guess. The default remains
+legacy JSON.
+
+`--bulk-index-conflicts` selects `SaveRecordBatchWithOptions` with conservative
+index write-conflict coalescing. Normal implicit write conflicts and all normal
+read conflicts remain. Extra write ranges cover only owned index subspaces, never
+the record subspace. The client can coalesce contained ranges in eligible commits;
+this reduces shipped conflict-vector overhead, not stored posting count or bytes.
+The live transaction-size estimate does not perform this coalescing and can grow
+slightly, so the unchanged 500-KB guard still applies. This execution option is not
+part of stored layout identity.
+
+Zlib uses the existing Java-compatible version-1 format. Brotli explicitly uses
+`SetGoOnlyBrotliCompression` and version 2: **Java and default Go serializers
+cannot read those records**. Use it only for Go-only stores. The Record Layer
+checks lengths and checksums, retains clear values when compression does not
+shrink them, and continues to decode and validate old records before replacing
+or deleting them. See [compatibility](../../docs/compatibility.md) and
+[the format boundary](../../DIVERGENCES.md#brotli-record-compression-go-only-extension).
+
+The bounded compression integration samples report primary/posting/key bytes
+and actual transaction-size estimates for the same source population. They are
+correctness and byte-cost measurements, not sustained ingest-rate results.
+
 ## Stored-population evidence
 
 The first completed V2 scale gate stored **1,000,000 spans** on 2026-10-27,
@@ -353,10 +401,21 @@ of 1031. Fresh retries are not internal `source_replays`. The optional
 `timeout_backoff` phase measures application waits separately from Run time.
 The `phase_nanos` preparation/manifest/open/save/guard/run totals overlap across
 workers and parent/child phases: do not add them or label them critical-path,
-GRV, or server latency. Run time includes retry backoff and observer callbacks;
+GRV, or server latency. Source attempts issue the owner read before opening the
+store, then validate ownership before saving; manifest timing includes the
+concurrent store-open interval, and both retain their authoritative reads.
+Batch saves also prefetch snapshot record ranges into the same transaction's
+RYW cache alongside metadata reads; normal saves still load old images, validate
+all persisted layouts, and add their ordinary conflicts. Batch `save` timing
+includes prefetch, overlapping metadata work, and normal saves, so it is not
+comparable to a save-only interval. The unchanged one-second save+guard bound
+starts before prefetch; neither retries nor fresh Runs reuse old-image caches.
+Run time includes retry backoff and observer callbacks;
 the context-scoped timer does not capture database-policy retry-delay events.
-`approximate_mutation_bytes` sums successful size samples,
-including attempts that later fail a guard or commit, not persisted storage.
+`approximate_mutation_bytes` is the historical receipt field name for the sum of
+successful `GetApproximateSize` samples: mutations, read/write conflict ranges and
+FDB accounting overhead, including attempts that later fail a guard or commit.
+It is not a count of persisted mutation bytes, wire bytes or physical storage.
 `timer` is a native StoreTimer snapshot taken after workers join; event kind
 identifies units (timed `CumulativeValue` is nanoseconds; size `Count` is bytes).
 Native commit timing includes successful precommit/commit work **and the

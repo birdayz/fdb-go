@@ -203,6 +203,7 @@ func TestRealRecordLayerCoveringIndexes(t *testing.T) {
 		}{
 			{"ingest_pool_bounds", testOtelIngestPoolBounds},
 			{"batch_replacement", testOtelBatchReplacement},
+			{"tuple_batch_replacement", testOtelTupleBatchReplacement},
 			{"save_api_dispatch", testOtelSaveAPIDispatch},
 			{"ingest_replay", testOtelIngestReplay},
 			{"selective_v2", testOtelSelectiveV2},
@@ -213,8 +214,12 @@ func TestRealRecordLayerCoveringIndexes(t *testing.T) {
 			{"source_timeout_ordering", testOtelIngestTimeoutOrdering},
 			{"source_timeout_drop_safety", testOtelTimeoutDropSafety},
 			{"ingest_profiling", testOtelIngestProfiling},
+			{"ingest_read_wave", testOtelIngestReadWave},
+			{"ingest_prefetch", testOtelIngestPrefetch},
+			{"record_compression", testOtelRecordCompression},
 			{"failed_ingest_preparation", testOtelIngestFailedPreparation},
 			{"posting_diff", testOtelPostingDiff},
+			{"tuple_posting_diff", testOtelTuplePostingDiff},
 		} {
 			t.Run(order+"_"+check.name, func(t *testing.T) {
 				t.Parallel()

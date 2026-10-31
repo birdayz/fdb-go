@@ -9,7 +9,16 @@ import (
 )
 
 func testOtelBatchReplacement(t *testing.T, ctx context.Context, cluster, order string) {
+	testOtelBatchReplacementFormat(t, ctx, cluster, order, "json", "none", false)
+}
+
+func testOtelTupleBatchReplacement(t *testing.T, ctx context.Context, cluster, order string) {
+	testOtelBatchReplacementFormat(t, ctx, cluster, order, "tuple", "brotli-1", true)
+}
+
+func testOtelBatchReplacementFormat(t *testing.T, ctx context.Context, cluster, order, valueFormat, compression string, bulk bool) {
 	c := testConfig()
+	c.PostingValueFormat, c.RecordCompression, c.BulkIndexConflicts = valueFormat, compression, bulk
 	c.Count, c.Tenants, c.Batch, c.Workers, c.SaveMode, c.Diagnostics, c.Order = 3, 1, 3, 1, "batch", true, order
 	b := openOtelFixture(t, ctx, cluster, c, false)
 	c = b.cfg

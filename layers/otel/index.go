@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"strconv"
+	"unicode/utf8"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -28,7 +29,8 @@ func (postingFactory) ValidateIndexOptions(i *recordlayer.Index) error {
 	if i.Options["order"] != "trace" && i.Options["order"] != "time" {
 		return fail("config", "index options", "order must be trace or time")
 	}
-	return nil
+	_, err = normalizePostingValueFormat(i.Options["value_format"])
+	return err
 }
 
 func (postingFactory) ValidateChangedOptions(_, _ *recordlayer.Index, changed map[string]bool) error {
@@ -46,7 +48,11 @@ func (f postingFactory) NewIndexMaintainer(s recordlayer.IndexMaintainerState) (
 	if err != nil {
 		return nil, err
 	}
-	return &postingMaintainer{StandardIndexMaintainer: *recordlayer.NewStandardIndexMaintainer(s), secondary: s.Store.IndexSecondarySubspace(s.Index), width: width, order: s.Index.Options["order"]}, nil
+	format, err := normalizePostingValueFormat(s.Index.Options["value_format"])
+	if err != nil {
+		return nil, err
+	}
+	return &postingMaintainer{StandardIndexMaintainer: *recordlayer.NewStandardIndexMaintainer(s), secondary: s.Store.IndexSecondarySubspace(s.Index), width: width, order: s.Index.Options["order"], valueFormat: format}, nil
 }
 
 func hashWidth(i *recordlayer.Index) (int, error) {
@@ -59,9 +65,10 @@ func hashWidth(i *recordlayer.Index) (int, error) {
 
 type postingMaintainer struct {
 	recordlayer.StandardIndexMaintainer
-	secondary subspace.Subspace
-	width     int
-	order     string
+	secondary   subspace.Subspace
+	width       int
+	order       string
+	valueFormat string
 }
 type coveringValue struct {
 	Attribute Attribute `json:"a"`
@@ -100,7 +107,75 @@ func postingSuffix(s Span, order string) tuple.Tuple {
 	return tuple.Tuple{s.Trace, s.ID}
 }
 
+func normalizePostingValueFormat(format string) (string, error) {
+	switch format {
+	case "", "json":
+		return "json", nil
+	case "tuple":
+		return format, nil
+	default:
+		return "", fail("config", "index options", "value_format must be json or tuple")
+	}
+}
+
+func encodeCoveringValue(value coveringValue, format string) ([]byte, error) {
+	switch format {
+	case "", "json":
+		return json.Marshal(value)
+	case "tuple":
+		a := value.Attribute
+		return tuple.Tuple{a.Scope, a.Key, a.Type, a.Value, value.Start}.Pack(), nil
+	default:
+		return nil, fail("config", "covering posting", "value_format must be json or tuple")
+	}
+}
+
+func decodeCoveringValue(value []byte, format string) (coveringValue, error) {
+	var out coveringValue
+	switch format {
+	case "", "json":
+		if err := json.Unmarshal(value, &out); err != nil {
+			return out, wrap("corruption", "covering posting", err)
+		}
+		return out, nil
+	case "tuple":
+		fields, err := tuple.Unpack(value)
+		if err != nil {
+			return out, wrap("corruption", "covering posting", err)
+		}
+		if len(fields) != 5 {
+			return out, fail("corruption", "covering posting", "expected five tuple fields")
+		}
+		strings := [4]*string{&out.Attribute.Scope, &out.Attribute.Key, &out.Attribute.Type, &out.Attribute.Value}
+		for i, field := range strings {
+			text, ok := fields[i].(string)
+			if !ok || !utf8.ValidString(text) {
+				return coveringValue{}, fail("corruption", "covering posting", "expected UTF-8 string tuple field")
+			}
+			*field = text
+		}
+		start, ok := fields[4].(int64)
+		if !ok {
+			return coveringValue{}, fail("corruption", "covering posting", "expected int64 tuple timestamp")
+		}
+		if len(out.Attribute.Key) > 1024 || len(out.Attribute.Value) > 64000 {
+			return coveringValue{}, fail("corruption", "covering posting", "projection exceeds prototype coverage cap")
+		}
+		out.Start = start
+		return out, nil
+	default:
+		return out, fail("config", "covering posting", "value_format must be json or tuple")
+	}
+}
+
 func postings(ss subspace.Subspace, width int, order string, record *recordlayer.FDBStoredRecord[proto.Message]) ([]posting, error) {
+	return postingsWithFormat(ss, width, order, "json", record)
+}
+
+func postingsWithFormat(ss subspace.Subspace, width int, order, format string, record *recordlayer.FDBStoredRecord[proto.Message]) ([]posting, error) {
+	if _, err := normalizePostingValueFormat(format); err != nil {
+		return nil, err
+	}
 	if record == nil {
 		return nil, nil
 	}
@@ -113,7 +188,7 @@ func postings(ss subspace.Subspace, width int, order string, record *recordlayer
 		if len(a.Key) > 1024 || len(a.Value) > 64000 {
 			return nil, fail("admission", "covering projection", "projection exceeds prototype coverage cap")
 		}
-		v, err := json.Marshal(coveringValue{a, s.Start})
+		v, err := encodeCoveringValue(coveringValue{a, s.Start}, format)
 		if err != nil {
 			return nil, err
 		}
@@ -161,11 +236,11 @@ func (m *postingMaintainer) Update(old, new *recordlayer.FDBStoredRecord[proto.M
 }
 
 func (m *postingMaintainer) update(old, new *recordlayer.FDBStoredRecord[proto.Message], skipUnchanged bool) error {
-	before, err := postings(m.secondary, m.width, m.order, old)
+	before, err := postingsWithFormat(m.secondary, m.width, m.order, m.valueFormat, old)
 	if err != nil {
 		return err
 	}
-	after, err := postings(m.secondary, m.width, m.order, new)
+	after, err := postingsWithFormat(m.secondary, m.width, m.order, m.valueFormat, new)
 	if err != nil {
 		return err
 	}
@@ -231,9 +306,9 @@ func (m *postingMaintainer) Query(c Config, a Attribute) (QueryResult, error) {
 		if out.Candidates > c.MaxCandidates || out.Bytes > c.MaxBytes {
 			return out, failf("budget", "equality", "candidates=%d logical_bytes=%d", out.Candidates, out.Bytes)
 		}
-		var v coveringValue
-		if err := json.Unmarshal(kv.Value, &v); err != nil {
-			return out, wrap("corruption", "covering posting", err)
+		v, err := decodeCoveringValue(kv.Value, m.valueFormat)
+		if err != nil {
+			return out, err
 		}
 		if v.Attribute != a {
 			continue

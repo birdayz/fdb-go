@@ -42,10 +42,12 @@ type FDBBackend struct {
 	root, store   subspace.Subspace
 	md            *recordlayer.RecordMetaData
 	idx           *recordlayer.Index
+	serializer    *recordlayer.TransformedRecordSerializer
 	lastWork      QueryResult
 	auditPageHook func(context.Context, *recordlayer.FDBRecordContext, int) error
 	ingestProbe   func(ingestEvent)
 	ingestWait    func(context.Context, time.Duration) error
+	ingestClock   func() time.Time
 }
 
 func OpenFDB(c Config, cluster string) (*FDBBackend, error) {
@@ -82,8 +84,13 @@ func OpenFDBContext(ctx context.Context, c Config, cluster string) (*FDBBackend,
 		raw.Close()
 		return nil, err
 	}
+	serializer, err := recordSerializer(c.RecordCompression)
+	if err != nil {
+		raw.Close()
+		return nil, err
+	}
 	root := subspace.Sub("otel_otelbench_v2", c.Run)
-	return &FDBBackend{cfg: c, raw: raw, db: recordlayer.NewFDBDatabase(raw), root: root, store: root.Sub("store"), md: md, idx: idx}, nil
+	return &FDBBackend{cfg: c, raw: raw, db: recordlayer.NewFDBDatabase(raw), root: root, store: root.Sub("store"), md: md, idx: idx, serializer: serializer}, nil
 }
 func (b *FDBBackend) Close()                     { b.raw.Close() }
 func (b *FDBBackend) LastQueryWork() QueryResult { return b.lastWork }
@@ -91,14 +98,27 @@ func configureRecordTimeout(rc *recordlayer.FDBRecordContext) error {
 	return rc.Transaction().Options().SetTimeout(1500)
 }
 
-func (b *FDBBackend) open(rc *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
+func configureStoreContext(rc *recordlayer.FDBRecordContext) error {
 	if err := configureRecordTimeout(rc); err != nil {
+		return err
+	}
+	return rc.Transaction().Options().SetRetryLimit(10)
+}
+
+func (b *FDBBackend) open(rc *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
+	if err := configureStoreContext(rc); err != nil {
 		return nil, err
 	}
-	if err := rc.Transaction().Options().SetRetryLimit(10); err != nil {
-		return nil, err
-	}
-	return recordlayer.NewStoreBuilder().SetContext(rc).SetMetaDataProvider(b.md).SetSubspace(b.store).CreateOrOpen()
+	return b.openConfigured(rc)
+}
+
+// openConfigured requires transaction options to be set before issuing reads.
+func (b *FDBBackend) openConfigured(rc *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
+	return b.storeBuilder(rc).CreateOrOpen()
+}
+
+func (b *FDBBackend) storeBuilder(rc *recordlayer.FDBRecordContext) *recordlayer.StoreBuilder {
+	return recordlayer.NewStoreBuilder().SetContext(rc).SetMetaDataProvider(b.md).SetSubspace(b.store).SetSerializer(b.serializer)
 }
 
 func (b *FDBBackend) readManifest(rc *recordlayer.FDBRecordContext, ready bool) error {
@@ -109,6 +129,10 @@ func (b *FDBBackend) readManifest(rc *recordlayer.FDBRecordContext, ready bool) 
 	if err != nil {
 		return err
 	}
+	return b.checkManifestBytes(wire, ready)
+}
+
+func (b *FDBBackend) checkManifestBytes(wire []byte, ready bool) error {
 	if len(wire) == 0 {
 		return fail("ownership", "manifest", "run has no ownership manifest")
 	}

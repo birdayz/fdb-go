@@ -160,9 +160,22 @@ func (b *FDBBackend) prepareBatch(ctx context.Context, lo int) (preparedBatch, e
 	return batch, err
 }
 
+// prefetchIngestRecords fills only this transaction's RYW cache. Snapshot
+// reads add no conflicts; normal saves still load/validate every old image.
+func (b *FDBBackend) prefetchIngestRecords(rc *recordlayer.FDBRecordContext, batch preparedBatch) *recordlayer.RecordBatchPrefetch {
+	if b.cfg.SaveMode != "batch" {
+		return nil
+	}
+	return b.storeBuilder(rc).PrefetchRecordBatch(batch.messages)
+}
+
 func (b *FDBBackend) saveIngestBatchRun(ctx context.Context, batch preparedBatch, d *ingestRecorder) error {
 	started := time.Now()
 	runTimer := d.newRunTimer()
+	clock := time.Now
+	if b.ingestClock != nil {
+		clock = b.ingestClock
+	}
 	var attempts int64
 	_, err := b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
 		attempts++
@@ -170,24 +183,50 @@ func (b *FDBBackend) saveIngestBatchRun(ctx context.Context, batch preparedBatch
 		if d != nil {
 			rc.SetTimer(runTimer)
 		}
-		phase := time.Now()
-		err := b.readManifest(rc, false)
-		d.phase("manifest", phase)
-		if err != nil {
+		manifestStarted := time.Now()
+		if err := configureStoreContext(rc); err != nil {
+			d.phase("manifest", manifestStarted)
 			return nil, err
 		}
-		phase = time.Now()
-		store, err := b.open(rc)
-		d.phase("open", phase)
-		if err != nil {
-			return nil, err
-		}
-		// Preserve the original save + guard elapsed bound, independently of
-		// the optional instrumentation and the transaction's 1500ms timeout.
+		// Issue the authoritative owner read before normal store-open reads,
+		// but do not wait for it before starting their independent read wave.
+		owner := rc.Transaction().Get(b.root.Sub("owner").FDBKey())
+		// Charge all prefetch work, including overlap with metadata reads,
+		// to the unchanged save+guard elapsed bound.
+		saveBudgetStarted := clock()
 		saveStarted := time.Now()
+		pending := b.prefetchIngestRecords(rc, batch)
+		phase := time.Now()
+		store, openErr := b.openConfigured(rc)
+		d.phase("open", phase)
+		wire, err := owner.Get()
+		if err == nil {
+			err = b.checkManifestBytes(wire, false)
+		}
+		d.phase("manifest", manifestStarted)
+		// Preserve owner-error precedence and never save or commit on failure.
+		// Any transaction-local create/rebuild work from open is then discarded.
+		if err != nil {
+			return nil, err
+		}
+		if openErr != nil {
+			return nil, openErr
+		}
+		if b.cfg.SaveMode != "batch" {
+			saveBudgetStarted = clock()
+			saveStarted = time.Now()
+		}
+		if pending != nil {
+			if err := pending.Wait(); err != nil {
+				d.phase("save", saveStarted)
+				return nil, err
+			}
+		}
+		// Prefetch never substitutes a save: normal Record Layer loads add the
+		// canonical conflicts and handle every persisted layout/old image.
 		switch b.cfg.SaveMode {
 		case "batch":
-			_, err = store.SaveRecordBatch(batch.messages)
+			_, err = store.SaveRecordBatchWithOptions(batch.messages, recordlayer.BatchSaveOptions{CoalesceIndexWriteConflicts: b.cfg.BulkIndexConflicts})
 		case "pipelined":
 			_, err = store.SaveRecordsPipelined(batch.messages, recordlayer.RecordExistenceCheckNone)
 		default:
@@ -207,7 +246,7 @@ func (b *FDBBackend) saveIngestBatchRun(ctx context.Context, batch preparedBatch
 		if err != nil {
 			return nil, err
 		}
-		elapsed := time.Since(saveStarted)
+		elapsed := clock().Sub(saveBudgetStarted)
 		d.size(n)
 		if n > 500000 || elapsed > time.Second {
 			return nil, failf("budget", "ingest transaction", "transaction guard exceeded: bytes=%d elapsed=%s", n, elapsed)
