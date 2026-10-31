@@ -54,21 +54,25 @@ type SpanQueryPage struct {
 // TraceExistentialQuery is RFC-283 section 6.1's trace existential: each
 // clause is satisfied by some (possibly different) witness in the same trace.
 // LogClauses match trace-correlated logs through their LOG_TRACE correlation.
+// MessageClauses match GenAI message text; they take no Limit or Continuation.
 type TraceExistentialQuery struct {
-	Clauses    []Attribute `json:"clauses"`
-	LogClauses []Attribute `json:"log_clauses,omitempty"`
-	TimeWindow *TimeRange  `json:"time_window,omitempty"`
-	Limit      int         `json:"limit,omitempty"`
+	Clauses        []Attribute            `json:"clauses"`
+	LogClauses     []Attribute            `json:"log_clauses,omitempty"`
+	MessageClauses []MessageFullTextQuery `json:"message_clauses,omitempty"`
+	TimeWindow     *TimeRange             `json:"time_window,omitempty"`
+	Limit          int                    `json:"limit,omitempty"`
 }
 
 // TraceExistentialHit retains every verified witness per clause: Witnesses[i]
-// satisfies Clauses[i] and LogWitnesses[j] satisfies LogClauses[j], newest first.
+// satisfies Clauses[i], LogWitnesses[j] satisfies LogClauses[j] and
+// MessageWitnesses[k] satisfies MessageClauses[k], newest first.
 // Latest is the newest witness timestamp across all clauses.
 type TraceExistentialHit struct {
-	Trace        string        `json:"trace_id"`
-	Latest       int64         `json:"latest"`
-	Witnesses    [][]SpanMatch `json:"witnesses"`
-	LogWitnesses [][]LogMatch  `json:"log_witnesses,omitempty"`
+	Trace            string             `json:"trace_id"`
+	Latest           int64              `json:"latest"`
+	Witnesses        [][]SpanMatch      `json:"witnesses"`
+	LogWitnesses     [][]LogMatch       `json:"log_witnesses,omitempty"`
+	MessageWitnesses [][]MessageSpanHit `json:"message_witnesses,omitempty"`
 }
 
 type TraceExistentialResult struct {
@@ -264,11 +268,20 @@ func continuationMAC(secret, payload []byte) []byte {
 }
 
 func signContinuation(secret []byte, run string, tenant int, order string, digest, last []byte) []byte {
-	payload := tuple.Tuple{continuationVersion, continuationKind, run, int64(tenant), order, digest, last}.Pack()
+	return signContinuationKind(secret, continuationKind, run, tenant, order, digest, last)
+}
+
+// signContinuationKind signs a token of one query family; kind is authenticated.
+func signContinuationKind(secret []byte, kind, run string, tenant int, order string, digest, last []byte) []byte {
+	payload := tuple.Tuple{continuationVersion, kind, run, int64(tenant), order, digest, last}.Pack()
 	return append(payload, continuationMAC(secret, payload)...)
 }
 
 func parseContinuation(token []byte) (*continuation, error) {
+	return parseContinuationKind(token, continuationKind)
+}
+
+func parseContinuationKind(token []byte, want string) (*continuation, error) {
 	const op = "continuation"
 	if len(token) <= sha256.Size || len(token) > maxContinuationBytes {
 		return nil, fail("config", op, "malformed continuation token length")
@@ -290,7 +303,7 @@ func parseContinuation(token []byte) (*continuation, error) {
 	c.order, ook = fields[4].(string)
 	c.digest, dok = fields[5].([]byte)
 	c.last, lok = fields[6].([]byte)
-	if !vok || !kok || !rok || !tok || !ook || !dok || !lok || version != continuationVersion || kind != continuationKind {
+	if !vok || !kok || !rok || !tok || !ook || !dok || !lok || version != continuationVersion || kind != want {
 		return nil, fail("config", op, "unsupported continuation token")
 	}
 	return c, nil
@@ -300,21 +313,8 @@ func parseContinuation(token []byte) (*continuation, error) {
 // query, and returns the validated last emitted sort key.
 func (c *continuation) verify(secret []byte, b *FDBBackend, digest []byte) (tuple.Tuple, error) {
 	const op = "continuation"
-	if len(secret) == 0 {
-		return nil, fail("corruption", op, "continuation signing key is absent for this run")
-	}
-	if !hmac.Equal(c.mac, continuationMAC(secret, c.payload)) {
-		return nil, fail("corruption", op, "continuation token failed authentication")
-	}
-	switch {
-	case c.run != b.cfg.Run:
-		return nil, fail("config", op, "continuation belongs to another run")
-	case c.tenant != int64(b.cfg.Tenant):
-		return nil, fail("config", op, "continuation belongs to another tenant")
-	case c.order != b.cfg.Order:
-		return nil, fail("config", op, "continuation belongs to another posting order")
-	case !bytes.Equal(c.digest, digest):
-		return nil, fail("config", op, "continuation belongs to another query")
+	if err := c.authenticate(secret, b, digest); err != nil {
+		return nil, err
 	}
 	last, err := tuple.Unpack(c.last)
 	if err != nil {
@@ -324,6 +324,28 @@ func (c *continuation) verify(secret []byte, b *FDBBackend, digest []byte) (tupl
 		return nil, err
 	}
 	return last, nil
+}
+
+// authenticate checks the MAC, then the token's run, tenant, order and query.
+func (c *continuation) authenticate(secret []byte, b *FDBBackend, digest []byte) error {
+	const op = "continuation"
+	if len(secret) == 0 {
+		return fail("corruption", op, "continuation signing key is absent for this run")
+	}
+	if !hmac.Equal(c.mac, continuationMAC(secret, c.payload)) {
+		return fail("corruption", op, "continuation token failed authentication")
+	}
+	switch {
+	case c.run != b.cfg.Run:
+		return fail("config", op, "continuation belongs to another run")
+	case c.tenant != int64(b.cfg.Tenant):
+		return fail("config", op, "continuation belongs to another tenant")
+	case c.order != b.cfg.Order:
+		return fail("config", op, "continuation belongs to another posting order")
+	case !bytes.Equal(c.digest, digest):
+		return fail("config", op, "continuation belongs to another query")
+	}
+	return nil
 }
 
 func checkSortKey(t tuple.Tuple, order string) error {
@@ -691,6 +713,7 @@ func scanSpanWitnesses(tx fdb.ReadTransaction, pm *postingMaintainer, tenant int
 type traceWitnesses struct {
 	spans [][]SpanMatch
 	logs  [][]LogMatch
+	msgs  [][]MessageSpanHit
 }
 
 // QueryTraceExistential unions each clause's witnesses over the complete term
@@ -699,7 +722,7 @@ func (b *FDBBackend) QueryTraceExistential(ctx context.Context, q TraceExistenti
 	const op = "trace existential"
 	b.lastWork = QueryResult{}
 	out := TraceExistentialResult{Hits: []TraceExistentialHit{}}
-	n := len(q.Clauses) + len(q.LogClauses)
+	n := len(q.Clauses) + len(q.LogClauses) + len(q.MessageClauses)
 	if n == 0 || n > maxQueryPredicates {
 		return out, failf("config", op, "expected 1..%d clauses", maxQueryPredicates)
 	}
@@ -712,6 +735,17 @@ func (b *FDBBackend) QueryTraceExistential(ctx context.Context, q TraceExistenti
 		if err := validateQueryAttribute(op, a, logAttributeScopes...); err != nil {
 			return out, err
 		}
+	}
+	msgPlans := make([]*messageQueryPlan, len(q.MessageClauses))
+	for i, mq := range q.MessageClauses {
+		if mq.Limit != 0 || len(mq.Continuation) > 0 {
+			return out, fail("config", op, "message clauses take no limit or continuation")
+		}
+		p, err := newMessageQueryPlan(op, mq, 0)
+		if err != nil {
+			return out, err
+		}
+		msgPlans[i] = p
 	}
 	if q.Limit < 0 {
 		return out, fail("config", op, "limit must not be negative")
@@ -760,6 +794,11 @@ func (b *FDBBackend) QueryTraceExistential(ctx context.Context, q TraceExistenti
 							tw.logs[i] = l
 						}
 					}
+					for i, m := range f.msgs {
+						if m != nil {
+							tw.msgs[i] = m
+						}
+					}
 				}
 			}
 			return len(joined) > 0
@@ -770,7 +809,7 @@ func (b *FDBBackend) QueryTraceExistential(ctx context.Context, q TraceExistenti
 			}
 			tw := found[trace]
 			if tw == nil {
-				tw = &traceWitnesses{spans: make([][]SpanMatch, len(q.Clauses)), logs: make([][]LogMatch, len(q.LogClauses))}
+				tw = &traceWitnesses{spans: make([][]SpanMatch, len(q.Clauses)), logs: make([][]LogMatch, len(q.LogClauses)), msgs: make([][]MessageSpanHit, len(q.MessageClauses))}
 				found[trace] = tw
 			}
 			return tw
@@ -814,6 +853,20 @@ func (b *FDBBackend) QueryTraceExistential(ctx context.Context, q TraceExistenti
 				return nil, nil
 			}
 		}
+		for i, p := range msgPlans {
+			found := map[string]*traceWitnesses{}
+			err := b.runMessageQuery(ctx, tx, pm, p, nil, w, 0, budget, func(h MessageSpanHit, _ []byte) {
+				if tw := entry(found, h.Trace); tw != nil {
+					tw.msgs[i] = append(tw.msgs[i], h)
+				}
+			})
+			if err != nil {
+				return nil, err
+			}
+			if !join(found) {
+				return nil, nil
+			}
+		}
 		for tr, tw := range joined {
 			hit := TraceExistentialHit{Trace: tr, Latest: -1, Witnesses: tw.spans}
 			for _, ws := range tw.spans {
@@ -836,6 +889,25 @@ func (b *FDBBackend) QueryTraceExistential(ctx context.Context, q TraceExistenti
 					return ls[x].EventID < ls[y].EventID
 				})
 				hit.Latest = max(hit.Latest, ls[0].Time)
+			}
+			if len(tw.msgs) > 0 {
+				hit.MessageWitnesses = tw.msgs
+			}
+			for _, ms := range tw.msgs {
+				sort.Slice(ms, func(x, y int) bool {
+					a, c := ms[x], ms[y]
+					if a.Start != c.Start {
+						return a.Start > c.Start
+					}
+					if a.Span != c.Span {
+						return a.Span < c.Span
+					}
+					if a.AttributeKey != c.AttributeKey {
+						return a.AttributeKey < c.AttributeKey
+					}
+					return a.MessageHash < c.MessageHash
+				})
+				hit.Latest = max(hit.Latest, ms[0].Start)
 			}
 			out.Hits = append(out.Hits, hit)
 		}
@@ -1043,6 +1115,9 @@ func (e *Exporter) QuerySameSpan(ctx context.Context, q SameSpanQuery) (SpanQuer
 
 // QueryTraceExistential returns the newest traces satisfying every clause, with witnesses.
 func (e *Exporter) QueryTraceExistential(ctx context.Context, q TraceExistentialQuery) (TraceExistentialResult, error) {
+	if len(q.MessageClauses) > 0 && !e.cfg.EnableMessageFullText {
+		return TraceExistentialResult{Hits: []TraceExistentialHit{}}, fail("config", "trace existential", "message clauses need enable_message_full_text")
+	}
 	if err := e.begin("trace existential"); err != nil {
 		return TraceExistentialResult{Hits: []TraceExistentialHit{}}, err
 	}

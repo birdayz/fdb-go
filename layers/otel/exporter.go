@@ -61,11 +61,14 @@ type ExporterConfig struct {
 	RecordCompression   string `json:"record_compression" yaml:"record_compression"`
 	BulkIndexConflicts  bool   `json:"bulk_index_conflicts" yaml:"bulk_index_conflicts"`
 	EnableMessageDeltas bool   `json:"enable_message_deltas" yaml:"enable_message_deltas"`
-	BatchSize           int    `json:"batch_size" yaml:"batch_size"`
-	Workers             int    `json:"workers" yaml:"workers"`
-	MaxCandidates       int    `json:"max_candidates" yaml:"max_candidates"`
-	MaxBytes            int64  `json:"max_bytes" yaml:"max_bytes"`
-	K                   int    `json:"k" yaml:"k"`
+	// EnableMessageFullText decomposes GenAI messages (as EnableMessageDeltas
+	// does) and indexes their text and span back references for search.
+	EnableMessageFullText bool  `json:"enable_message_full_text" yaml:"enable_message_full_text"`
+	BatchSize             int   `json:"batch_size" yaml:"batch_size"`
+	Workers               int   `json:"workers" yaml:"workers"`
+	MaxCandidates         int   `json:"max_candidates" yaml:"max_candidates"`
+	MaxBytes              int64 `json:"max_bytes" yaml:"max_bytes"`
+	K                     int   `json:"k" yaml:"k"`
 }
 
 func DefaultExporterConfig() ExporterConfig {
@@ -127,6 +130,7 @@ type ExportStats struct {
 	NormalizedSpans     int64             `json:"normalized_spans"`
 	UnindexedAttributes int64             `json:"unindexed_attributes"`
 	MessageDeltas       MessageDeltaStats `json:"message_deltas,omitempty"`
+	MessageFTS          MessageFTSStats   `json:"message_fts,omitempty"`
 }
 
 // SpanNotFoundError reports a LoadSpanOTLP identity absent from the tenant.
@@ -248,7 +252,8 @@ func (e *Exporter) ExportResourceSpans(ctx context.Context, spans []*tracepb.Res
 	defer e.active.Done()
 	var deltaBlobs []*MessageBlob
 	var deltaStats MessageDeltaStats
-	if e.cfg.EnableMessageDeltas && len(spans) > 0 {
+	decompose := e.cfg.EnableMessageDeltas || e.cfg.EnableMessageFullText
+	if decompose && len(spans) > 0 {
 		var err error
 		spans, deltaBlobs, deltaStats, err = DecomposeResourceSpans(ctx, spans, e.cfg.Tenant)
 		if err != nil {
@@ -261,11 +266,24 @@ func (e *Exporter) ExportResourceSpans(ctx context.Context, spans []*tracepb.Res
 		return stats, err
 	}
 	if len(deltaBlobs) > 0 {
-		if _, err := PersistMessageBlobsDB(ctx, e.backend.db, e.backend.root, e.cfg.Tenant, deltaBlobs); err != nil {
+		if e.cfg.EnableMessageFullText {
+			_, fts, err := PersistAndIndexMessageBlobsDB(ctx, e.backend.db, e.backend.root, e.cfg.Tenant, deltaBlobs)
+			stats.MessageFTS = fts
+			if err != nil {
+				return stats, err
+			}
+		} else if _, err := PersistMessageBlobsDB(ctx, e.backend.db, e.backend.root, e.cfg.Tenant, deltaBlobs); err != nil {
 			return stats, err
 		}
 	}
-	err = e.commitExport(ctx, partitionExport(items, e.cfg.BatchSize), &stats)
+	if err = e.commitExport(ctx, partitionExport(items, e.cfg.BatchSize), &stats); err != nil || !e.cfg.EnableMessageFullText {
+		return stats, err
+	}
+	// References follow the committed records; a failed call is repaired by re-export.
+	refs, err := IndexMessageSpansDB(ctx, e.backend.db, e.backend.root, e.cfg.Tenant, e.cfg.Order, spans)
+	stats.MessageFTS.SpanRefs += refs.SpanRefs
+	stats.MessageFTS.Bytes += refs.Bytes
+	stats.MessageFTS.Transactions += refs.Transactions
 	return stats, err
 }
 
@@ -775,7 +793,7 @@ func (e *Exporter) LoadSpanOTLP(ctx context.Context, traceID, spanID string) (*t
 		}
 		r := record.Record.ProtoReflect()
 		out, err = restoreOTLP(r.Get(r.Descriptor().Fields().ByName("otlp")).Bytes())
-		if err != nil || !e.cfg.EnableMessageDeltas {
+		if err != nil || !(e.cfg.EnableMessageDeltas || e.cfg.EnableMessageFullText) {
 			return nil, err
 		}
 		reconstructed, err := ReconstructResourceSpans(ctx, rc, b.root, e.cfg.Tenant, []*tracepb.ResourceSpans{out})

@@ -11,15 +11,22 @@ go_library(
     srcs = ["main.go"],
     importpath = "fdb.dev/layers/otel/cmd/otelbench",
     visibility = ["//visibility:private"],
-    deps = ["//layers/otel"],
+    deps = [
+        "//layers/otel",
+        "//layers/otel/collector",
+    ],
 )
 
 go_test(
     name = "otelbench_test",
     srcs = [
+        "collector_bench_test.go",
         "main_test.go",
         "record_compression_test.go",
     ],
     embed = [":otelbench_lib"],
-    deps = ["//layers/otel"],
+    deps = [
+        "//layers/otel",
+        "//layers/otel/collector",
+    ],
 )
