@@ -488,14 +488,15 @@ func (b *RecordMetaDataBuilder) validateIndex(idx *Index, recordTypeNames []stri
 		}
 	} else if err := validateIndexType(idx, b.storeRecordVersions); err != nil {
 		return err
-	} else if canonicalIndexType(idx.Type) == IndexTypeVector {
-		// The plain VECTOR validator's option half, as Java runs it at build.
+	} else {
+		// The option half of a registered factory's validator (the plain VECTOR
+		// one or a custom type's), as Java runs IndexValidator.validate at build.
 		factory, err := lookupIndexMaintainerFactory(idx)
 		var notLinked *IndexMaintainerNotLinkedError
 		switch {
 		case errors.As(err, &notLinked):
-			// Plain meta-data stays loadable without vectorindex (e.g. by tools that
-			// never maintain it); using the index refuses instead.
+			// Plain meta-data stays loadable without the implementing package
+			// (e.g. by tools that never maintain it); using the index refuses instead.
 		case err != nil:
 			return err
 		case factory != nil:

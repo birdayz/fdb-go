@@ -81,6 +81,20 @@ func evaluateGroupingKeys(store IndexStoreContext, index *Index, record *FDBStor
 	return result, nil
 }
 
+// UpdateWhileWriteOnlyNonIdempotent is updateWhileWriteOnlyNonIdempotent for an
+// IndexMaintainer implemented outside this package: its UpdateWhileWriteOnly
+// passes its own update, so the online build's range set and BY_INDEX source
+// decide which records reach it. store is the maintainer's
+// StandardIndexMaintainer.Store(); with none, update always runs.
+func UpdateWhileWriteOnlyNonIdempotent(
+	oldRecord, newRecord *FDBStoredRecord[proto.Message],
+	index *Index,
+	store IndexStoreContext,
+	update func(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error,
+) error {
+	return updateWhileWriteOnlyNonIdempotent(oldRecord, newRecord, index, store, index.Type, update)
+}
+
 // updateWhileWriteOnlyNonIdempotent is Java's
 // StandardIndexMaintainer.updateWhileWriteOnly for a non-idempotent index
 // (StandardIndexMaintainer.java:255-328): a record is applied to an index under
