@@ -313,4 +313,32 @@ func testOtelIngestPrefetch(t *testing.T, ctx context.Context, cluster, order st
 			}
 		})
 	}
+	// Exporter commits are bounded by their transaction timeout, not the
+	// benchmark's 1s elapsed guard; the size guard still applies to both.
+	t.Run("exporter_elapsed_exempt", func(t *testing.T) {
+		c := testConfig()
+		c.Count, c.Tenants, c.Batch, c.Workers, c.Diagnostics, c.SaveMode, c.Order = 1, 1, 1, 1, true, "batch", order
+		b := openOtelFixture(t, ctx, cluster, c, false)
+		initializeIngestPrefetchRoot(t, ctx, b)
+		wrapped := newIngestReadWaveTransactor(b, ctx)
+		wrapped.wantTimeout = exporterTxnTimeout.Milliseconds()
+		now := time.Now()
+		b.ingestClock = func() time.Time { return now }
+		wrapped.afterPrefetch = func(*ingestReadWaveAttempt) { now = now.Add(2 * time.Second) }
+		original := b.db
+		b.db = recordlayer.NewFDBDatabaseWithTransactor(wrapped, b.raw)
+		defer func() { b.db, b.ingestClock = original, nil }()
+		batch, err := prepareIngestBatch(ctx, b.cfg, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := b.saveIngestBatch(withExporterTxns(ctx), batch, newIngestRecorder(true)); err != nil {
+			t.Fatalf("exporter commit hit the benchmark elapsed guard: %v", err)
+		}
+		if len(wrapped.attempts) != 1 || wrapped.attempts[0].timeout != exporterTxnTimeout.Milliseconds() {
+			t.Fatalf("exporter commit attempts %d, want 1 with the %v timeout", len(wrapped.attempts), exporterTxnTimeout)
+		}
+		b.db = original
+		assertOtelSource(t, ctx, b, Generate(b.cfg, 0))
+	})
 }

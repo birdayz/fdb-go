@@ -16,6 +16,7 @@ import (
 
 type ingestReadWaveAttempt struct {
 	timeout, retries                            int64
+	wantTimeout                                 int64 // 0 means the benchmark's 1500
 	reads, owners, headers, states, resolutions int
 	recordWrites, headerWrites                  int
 	prefetches, resolved, normalRanges          int
@@ -25,8 +26,12 @@ type ingestReadWaveAttempt struct {
 }
 
 func (s *ingestReadWaveAttempt) read() {
-	if s.timeout != 1500 || s.retries != 10 {
-		s.problems = append(s.problems, "read before timeout1500/retry10")
+	want := s.wantTimeout
+	if want == 0 {
+		want = 1500
+	}
+	if s.timeout != want || s.retries != 10 {
+		s.problems = append(s.problems, fmt.Sprintf("read before timeout%d/retry10", want))
 	}
 	s.reads++
 }
@@ -194,6 +199,7 @@ type ingestReadWaveTransactor struct {
 	afterPrefetch                        func(*ingestReadWaveAttempt)
 	beforeAttempt                        func(int) error
 	injectCode, count                    int
+	wantTimeout                          int64 // expected transaction timeout; 0 means 1500
 	attempts                             []*ingestReadWaveAttempt
 }
 
@@ -220,7 +226,7 @@ func (d *ingestReadWaveTransactor) TransactCtx(ctx context.Context, fn func(fdb.
 				return nil, err
 			}
 		}
-		state := &ingestReadWaveAttempt{expectedPrefetches: d.count, storageStart: d.Database.Metrics().TransactionGetRangeRequests}
+		state := &ingestReadWaveAttempt{expectedPrefetches: d.count, wantTimeout: d.wantTimeout, storageStart: d.Database.Metrics().TransactionGetRangeRequests}
 		d.attempts = append(d.attempts, state)
 		result, err := fn(ingestReadWaveTransaction{WritableTransaction: tx, driver: d, state: state})
 		state.storageEnd = d.Database.Metrics().TransactionGetRangeRequests

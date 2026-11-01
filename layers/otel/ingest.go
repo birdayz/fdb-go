@@ -188,14 +188,6 @@ func (b *FDBBackend) saveIngestBatchRun(ctx context.Context, batch preparedBatch
 			d.phase("manifest", manifestStarted)
 			return nil, err
 		}
-		// An Exporter commit waits out ratekeeper's GRV throttling before the
-		// elapsed guard starts: that wait is backpressure, not save work.
-		if isExporterTxn(ctx) {
-			if _, err := rc.GetReadVersion(); err != nil {
-				d.phase("manifest", manifestStarted)
-				return nil, err
-			}
-		}
 		// Issue the authoritative owner read before normal store-open reads,
 		// but do not wait for it before starting their independent read wave.
 		owner := rc.Transaction().Get(b.root.Sub("owner").FDBKey())
@@ -256,7 +248,11 @@ func (b *FDBBackend) saveIngestBatchRun(ctx context.Context, batch preparedBatch
 		}
 		elapsed := clock().Sub(saveBudgetStarted)
 		d.size(n)
-		if n > 500000 || elapsed > time.Second {
+		// The 1s elapsed bound is the ingest benchmark's methodology. Exporter
+		// commits are bounded by exporterTxnTimeout and FDB's 5s read window
+		// instead: on saturated storage, reads alone exceed 1s (measured 1.4s
+		// for a 152KB batch at 2x), which is backpressure, not oversized work.
+		if n > 500000 || (elapsed > time.Second && !isExporterTxn(ctx)) {
 			return nil, failf("budget", "ingest transaction", "transaction guard exceeded: bytes=%d elapsed=%s", n, elapsed)
 		}
 		return nil, nil
