@@ -735,6 +735,35 @@ func messageBlobWriteBytes(root subspace.Subspace, tenant int, b *MessageBlob) i
 	return b.StoredBytes() + key*len(b.chunks)
 }
 
+// GetApproximateSize charges each mutation sizeof(MutationRef) and each
+// conflict range sizeof(KeyRangeRef) on top of their key and value bytes
+// (pkg/fdbgo/client/transaction.go).
+const (
+	txnMutationBytes = 44
+	txnConflictBytes = 24
+)
+
+// txnSetBytes is one Set's approximate size: the mutation plus its implicit
+// [key, key+\x00) write conflict range.
+func txnSetBytes(key, value int) int {
+	return txnMutationBytes + key + value + txnConflictBytes + 2*key + 1
+}
+
+// messageBlobTxnBytes is what persistMessageBlobsTxn adds to the approximate
+// size for one written blob: the subspace ClearRange counts both bounds as a
+// mutation and again as a write conflict range, then each chunk is a Set.
+// Transaction fit is decided by this, not by messageBlobWriteBytes, which
+// counts only stored rows and undercounts small blobs about threefold.
+func messageBlobTxnBytes(root subspace.Subspace, tenant int, b *MessageBlob) int {
+	space := messageBlobSpace(root, tenant, b.hash)
+	bound := len(space.Bytes()) + 1
+	n := txnMutationBytes + txnConflictBytes + 4*bound
+	for j, c := range b.chunks {
+		n += txnSetBytes(len(space.Sub(int64(j)).Bytes()), len(c))
+	}
+	return n
+}
+
 func messageTxnGuard(op string, rc *recordlayer.FDBRecordContext) error {
 	n, err := rc.Transaction().GetApproximateSize().Get()
 	if err != nil {
@@ -800,7 +829,7 @@ func PersistMessageBlobs(ctx context.Context, rc *recordlayer.FDBRecordContext, 
 	}
 	total := 0
 	for _, b := range unique {
-		total += messageBlobWriteBytes(root, tenant, b)
+		total += messageBlobTxnBytes(root, tenant, b)
 	}
 	if total > messageTxnBudgetBytes {
 		return MessagePersistStats{}, failf("admission", op, "message blobs of %d bytes exceed the %d-byte transaction budget; use PersistMessageBlobsDB", total, messageTxnBudgetBytes)
@@ -858,7 +887,7 @@ func PersistMessageBlobsDB(ctx context.Context, db *recordlayer.FDBDatabase, roo
 	var batch []*MessageBlob
 	size := 0
 	for _, b := range unique {
-		n := messageBlobWriteBytes(root, tenant, b)
+		n := messageBlobTxnBytes(root, tenant, b)
 		if n > messageTxnSplitBytes {
 			jobs = append(jobs, persistJob{staged: b})
 			continue

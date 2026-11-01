@@ -570,7 +570,7 @@ func PersistAndIndexMessageBlobs(ctx context.Context, rc *recordlayer.FDBRecordC
 	var rows []messageFTSWrite
 	tokens := map[string]bool{}
 	for i, b := range unique {
-		total += messageBlobWriteBytes(root, tenant, b)
+		total += messageBlobTxnBytes(root, tenant, b)
 		if indexed[i] {
 			fts.SkippedBlobs++
 			continue
@@ -580,7 +580,7 @@ func PersistAndIndexMessageBlobs(ctx context.Context, rc *recordlayer.FDBRecordC
 			return MessagePersistStats{}, MessageFTSStats{}, err
 		}
 		for _, w := range r {
-			total += len(w.key) + len(w.value)
+			total += txnSetBytes(len(w.key), len(w.value))
 		}
 		for _, t := range toks {
 			tokens[t] = true
