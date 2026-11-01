@@ -19,6 +19,8 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -51,6 +53,7 @@ const (
 	messageTxnBudgetBytes  = 300_000 // PersistMessageBlobs admission bound
 	messageTxnGuardBytes   = 500_000 // approximate-size guard after writes
 	messageReconstructWave = 64      // blobs per ReconstructResourceSpansDB transaction
+	messageWorkers         = 8       // concurrent transactions per *DB persist/index call
 
 	messageBlobVersion = 1
 	messageCodecRaw    = 0
@@ -558,6 +561,92 @@ func canceled(ctx context.Context, op string) error {
 	return nil
 }
 
+// runMessageJobs runs job(ctx, i) for i in [0, n) on at most messageWorkers
+// goroutines. Jobs must be independent. The first failure cancels the jobs in
+// flight and not yet started and is the returned error; failures reported
+// after it are consequences of that cancellation and are dropped.
+func runMessageJobs(ctx context.Context, op string, n int, job func(context.Context, int) error) error {
+	switch n {
+	case 0:
+		return nil
+	case 1:
+		return job(ctx, 0)
+	}
+	workCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var (
+		mu       sync.Mutex
+		firstErr error
+		done     int
+		next     atomic.Int64
+		workers  sync.WaitGroup
+	)
+	for range min(messageWorkers, n) {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for {
+				i := int(next.Add(1) - 1)
+				if i >= n || workCtx.Err() != nil {
+					return
+				}
+				err := job(workCtx, i)
+				mu.Lock()
+				if err != nil {
+					if firstErr == nil {
+						firstErr = err
+						cancel()
+					}
+				} else {
+					done++
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	workers.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
+	if done != n {
+		return wrap("canceled", op, ctx.Err())
+	}
+	return nil
+}
+
+// parallelMessageWork runs CPU-only fn(i) for i in [0, n) on at most
+// messageWorkers goroutines and returns the error of the lowest failing
+// index, as a serial loop would. Indices are claimed in order, so every index
+// below a recorded failure has run when the workers stop.
+func parallelMessageWork(n int, fn func(int) error) error {
+	errs := make([]error, n)
+	var next atomic.Int64
+	var failed atomic.Bool
+	var workers sync.WaitGroup
+	for range min(messageWorkers, n) {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for !failed.Load() {
+				i := int(next.Add(1) - 1)
+				if i >= n {
+					return
+				}
+				if errs[i] = fn(i); errs[i] != nil {
+					failed.Store(true)
+				}
+			}
+		}()
+	}
+	workers.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // DecomposeResourceSpans returns clones of spans in which every GenAI content
 // attribute is replaced by a manifest, plus this call's unique blobs in
 // first-reference order. The input is never modified.
@@ -721,7 +810,9 @@ func PersistMessageBlobs(ctx context.Context, rc *recordlayer.FDBRecordContext, 
 
 // PersistMessageBlobsDB writes blobs in bounded transactions of at most about
 // 250KB. A blob larger than that is staged: its tail chunks commit first and
-// chunk 0, which makes it readable, commits last.
+// chunk 0, which makes it readable, commits last. Batches and staged blobs
+// touch disjoint blobs and run on up to messageWorkers concurrent workers;
+// each staged blob's transactions stay in order on one worker.
 func PersistMessageBlobsDB(ctx context.Context, db *recordlayer.FDBDatabase, root subspace.Subspace, tenant int, blobs []*MessageBlob) (MessagePersistStats, error) {
 	const op = "message persist"
 	var stats MessagePersistStats
@@ -735,51 +826,63 @@ func PersistMessageBlobsDB(ctx context.Context, db *recordlayer.FDBDatabase, roo
 	if err != nil {
 		return stats, err
 	}
-	run := func(fn func(*recordlayer.FDBRecordContext) (MessagePersistStats, error)) error {
-		var got MessagePersistStats
-		_, err := db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
-			if err := configureRecordTimeout(rc); err != nil {
+	var mu sync.Mutex
+	// runner binds a job's context; every committed transaction is counted,
+	// including those of a job that later fails.
+	runner := func(ctx context.Context) func(func(*recordlayer.FDBRecordContext) (MessagePersistStats, error)) error {
+		return func(fn func(*recordlayer.FDBRecordContext) (MessagePersistStats, error)) error {
+			var got MessagePersistStats
+			_, err := db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+				if err := configureRecordTimeout(rc); err != nil {
+					return nil, err
+				}
+				var err error
+				got, err = fn(rc)
 				return nil, err
+			})
+			if err == nil {
+				got.Transactions = 1
+				mu.Lock()
+				stats.add(got)
+				mu.Unlock()
 			}
-			var err error
-			got, err = fn(rc)
-			return nil, err
-		})
-		if err == nil {
-			got.Transactions = 1
-			stats.add(got)
+			return err
 		}
-		return err
 	}
+	// A job is either one batch of small blobs or one staged blob.
+	type persistJob struct {
+		batch  []*MessageBlob
+		staged *MessageBlob
+	}
+	var jobs []persistJob
 	var batch []*MessageBlob
 	size := 0
-	flush := func() error {
-		if len(batch) == 0 {
-			return nil
-		}
-		b := batch
-		batch, size = nil, 0
-		return run(func(rc *recordlayer.FDBRecordContext) (MessagePersistStats, error) {
-			return persistMessageBlobsTxn(ctx, rc, root, tenant, b)
-		})
-	}
 	for _, b := range unique {
 		n := messageBlobWriteBytes(root, tenant, b)
 		if n > messageTxnSplitBytes {
-			if err := persistStagedMessageBlob(ctx, run, root, tenant, b); err != nil {
-				return stats, err
-			}
+			jobs = append(jobs, persistJob{staged: b})
 			continue
 		}
-		if size+n > messageTxnSplitBytes {
-			if err := flush(); err != nil {
-				return stats, err
-			}
+		if len(batch) > 0 && size+n > messageTxnSplitBytes {
+			jobs = append(jobs, persistJob{batch: batch})
+			batch, size = nil, 0
 		}
 		batch = append(batch, b)
 		size += n
 	}
-	return stats, flush()
+	if len(batch) > 0 {
+		jobs = append(jobs, persistJob{batch: batch})
+	}
+	err = runMessageJobs(ctx, op, len(jobs), func(ctx context.Context, i int) error {
+		run := runner(ctx)
+		if j := jobs[i]; j.staged != nil {
+			return persistStagedMessageBlob(ctx, run, root, tenant, j.staged)
+		}
+		return run(func(rc *recordlayer.FDBRecordContext) (MessagePersistStats, error) {
+			return persistMessageBlobsTxn(ctx, rc, root, tenant, jobs[i].batch)
+		})
+	})
+	return stats, err
 }
 
 func persistStagedMessageBlob(ctx context.Context, run func(func(*recordlayer.FDBRecordContext) (MessagePersistStats, error)) error, root subspace.Subspace, tenant int, b *MessageBlob) error {

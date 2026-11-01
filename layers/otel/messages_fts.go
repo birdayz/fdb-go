@@ -31,6 +31,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -608,7 +609,11 @@ func PersistAndIndexMessageBlobs(ctx context.Context, rc *recordlayer.FDBRecordC
 // PersistAndIndexMessageBlobsDB persists blobs with PersistMessageBlobsDB and
 // tokenizes only blobs without metadata, in bounded transactions. A blob's
 // metadata commits after all of its postings, so an interrupted call is
-// completed by the next one.
+// completed by the next one: a blob whose rows fit one transaction commits
+// them together, and a larger blob commits its final rows and metadata only
+// after its other posting transactions. Independent transactions run on up to
+// messageWorkers concurrent workers. IndexedBlobs and TokenPostings count
+// blobs whose metadata committed.
 func PersistAndIndexMessageBlobsDB(ctx context.Context, db *recordlayer.FDBDatabase, root subspace.Subspace, tenant int, blobs []*MessageBlob) (MessagePersistStats, MessageFTSStats, error) {
 	const op = "message fts index"
 	var fts MessageFTSStats
@@ -622,8 +627,11 @@ func PersistAndIndexMessageBlobsDB(ctx context.Context, db *recordlayer.FDBDatab
 	if err != nil {
 		return MessagePersistStats{}, fts, err
 	}
+	var mu sync.Mutex
 	indexed := make([]bool, len(unique))
-	for lo := 0; lo < len(unique); lo += msgMetaProbeWave {
+	waves := (len(unique) + msgMetaProbeWave - 1) / msgMetaProbeWave
+	err = runMessageJobs(ctx, op, waves, func(ctx context.Context, w int) error {
+		lo := w * msgMetaProbeWave
 		wave := unique[lo:min(lo+msgMetaProbeWave, len(unique))]
 		var got []bool
 		_, err := db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
@@ -635,68 +643,121 @@ func PersistAndIndexMessageBlobsDB(ctx context.Context, db *recordlayer.FDBDatab
 			return nil, err
 		})
 		if err != nil {
-			return MessagePersistStats{}, fts, err
+			return err
 		}
-		copy(indexed[lo:], got)
+		copy(indexed[lo:], got) // waves own disjoint ranges
+		mu.Lock()
 		fts.Transactions++
+		mu.Unlock()
+		return nil
+	})
+	if err != nil {
+		return MessagePersistStats{}, fts, err
 	}
 	persist, err := PersistMessageBlobsDB(ctx, db, root, tenant, unique)
 	if err != nil {
 		return persist, fts, err
 	}
-	var batch []messageFTSWrite
-	size := 0
-	flush := func() error {
-		if len(batch) == 0 {
-			return nil
-		}
-		rows := batch
-		batch, size = nil, 0
-		var n int64
-		_, err := db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
-			if err := configureStoreContext(rc); err != nil {
-				return nil, err
-			}
-			if err := canceled(ctx, op); err != nil {
-				return nil, err
-			}
-			n = writeMessageFTSRows(rc, rows)
-			return nil, messageTxnGuard(op, rc)
-		})
-		if err == nil {
-			fts.Bytes += n
-			fts.Transactions++
-		}
-		return err
-	}
-	tokens := map[string]bool{}
+
+	// Tokenize every blob without metadata before the first index write, so
+	// an admission failure leaves no partial index.
+	var todo []*MessageBlob
 	for i, b := range unique {
 		if indexed[i] {
 			fts.SkippedBlobs++
+		} else {
+			todo = append(todo, b)
+		}
+	}
+	rows := make([][]messageFTSWrite, len(todo))
+	toks := make([][]string, len(todo))
+	if err := parallelMessageWork(len(todo), func(i int) error {
+		var err error
+		rows[i], toks[i], err = messageFTSRows(root, tenant, todo[i])
+		return err
+	}); err != nil {
+		return persist, fts, err
+	}
+
+	// A job is one transaction; blobs and postings count the blobs whose
+	// metadata row it commits.
+	type ftsJob struct {
+		rows            []messageFTSWrite
+		blobs, postings int
+	}
+	var jobs, finals []ftsJob
+	var cur ftsJob
+	size := 0
+	for _, r := range rows {
+		n := 0
+		for _, w := range r {
+			n += len(w.key) + len(w.value)
+		}
+		if n <= messageFTSSplitBytes {
+			// The whole blob, metadata last, commits in one transaction.
+			if len(cur.rows) > 0 && size+n > messageFTSSplitBytes {
+				jobs = append(jobs, cur)
+				cur, size = ftsJob{}, 0
+			}
+			cur.rows = append(cur.rows, r...)
+			cur.blobs++
+			cur.postings += len(r) - 1
+			size += n
 			continue
 		}
-		rows, toks, err := messageFTSRows(root, tenant, b)
-		if err != nil {
-			return persist, fts, err
-		}
-		for _, r := range rows {
-			n := len(r.key) + len(r.value)
-			if size+n > messageFTSSplitBytes {
-				if err := flush(); err != nil {
-					return persist, fts, err
-				}
+		// Earlier chunks are independent; the final chunk carries the
+		// metadata row and runs only after every earlier chunk committed.
+		lo, chunk := 0, 0
+		for j, w := range r {
+			k := len(w.key) + len(w.value)
+			if j > lo && chunk+k > messageFTSSplitBytes {
+				jobs = append(jobs, ftsJob{rows: r[lo:j]})
+				lo, chunk = j, 0
 			}
-			batch = append(batch, r)
-			size += n
+			chunk += k
 		}
-		for _, t := range toks {
+		finals = append(finals, ftsJob{rows: r[lo:], blobs: 1, postings: len(r) - 1})
+	}
+	if len(cur.rows) > 0 {
+		jobs = append(jobs, cur)
+	}
+	write := func(phase []ftsJob) error {
+		return runMessageJobs(ctx, op, len(phase), func(ctx context.Context, i int) error {
+			j := phase[i]
+			var n int64
+			_, err := db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+				if err := configureStoreContext(rc); err != nil {
+					return nil, err
+				}
+				if err := canceled(ctx, op); err != nil {
+					return nil, err
+				}
+				n = writeMessageFTSRows(rc, j.rows)
+				return nil, messageTxnGuard(op, rc)
+			})
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			fts.Bytes += n
+			fts.Transactions++
+			fts.IndexedBlobs += j.blobs
+			fts.TokenPostings += j.postings
+			mu.Unlock()
+			return nil
+		})
+	}
+	if err := write(jobs); err != nil {
+		return persist, fts, err
+	}
+	if err := write(finals); err != nil {
+		return persist, fts, err
+	}
+	tokens := map[string]bool{}
+	for _, ts := range toks {
+		for _, t := range ts {
 			tokens[t] = true
 		}
-		fts.IndexedBlobs++
-		fts.TokenPostings += len(rows) - 1
-	}
-	if err := flush(); err != nil {
-		return persist, fts, err
 	}
 	fts.UniqueTokens = len(tokens)
 	return persist, fts, nil
@@ -1130,7 +1191,9 @@ func IndexMessageSpans(ctx context.Context, rc *recordlayer.FDBRecordContext, ro
 // IndexMessageSpansDB is IndexMessageSpans over bounded transactions. A group
 // whose writes fit one transaction reads and replaces its references
 // atomically; a larger one commits its clears and sets in later transactions,
-// each reference together with its reverse row.
+// each reference together with its reverse row. Groups cover disjoint spans and
+// run on up to messageWorkers concurrent workers; a group's own transactions
+// stay in order.
 func IndexMessageSpansDB(ctx context.Context, db *recordlayer.FDBDatabase, root subspace.Subspace, tenant int, order string, spans []*tracepb.ResourceSpans) (MessageFTSStats, error) {
 	const op = "message span index"
 	var stats MessageFTSStats
@@ -1147,7 +1210,8 @@ func IndexMessageSpansDB(ctx context.Context, db *recordlayer.FDBDatabase, root 
 	if err != nil {
 		return stats, err
 	}
-	run := func(fn func(*recordlayer.FDBRecordContext) (MessageFTSStats, error)) error {
+	var mu sync.Mutex
+	run := func(ctx context.Context, fn func(*recordlayer.FDBRecordContext) (MessageFTSStats, error)) error {
 		var got MessageFTSStats
 		_, err := db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
 			if err := configureStoreContext(rc); err != nil {
@@ -1159,11 +1223,13 @@ func IndexMessageSpansDB(ctx context.Context, db *recordlayer.FDBDatabase, root 
 		})
 		if err == nil {
 			got.Transactions = 1
+			mu.Lock()
 			stats.add(got)
+			mu.Unlock()
 		}
 		return err
 	}
-	writeChunks := func(units []messageRefUnit) error {
+	writeChunks := func(ctx context.Context, units []messageRefUnit) error {
 		for lo := 0; lo < len(units); {
 			hi, size := lo, 0
 			for hi < len(units) && (hi == lo || size+units[hi].size() <= messageFTSSplitBytes) {
@@ -1171,7 +1237,7 @@ func IndexMessageSpansDB(ctx context.Context, db *recordlayer.FDBDatabase, root 
 				hi++
 			}
 			chunk := units[lo:hi]
-			if err := run(func(rc *recordlayer.FDBRecordContext) (MessageFTSStats, error) {
+			if err := run(ctx, func(rc *recordlayer.FDBRecordContext) (MessageFTSStats, error) {
 				if err := canceled(ctx, op); err != nil {
 					return MessageFTSStats{}, err
 				}
@@ -1184,40 +1250,45 @@ func IndexMessageSpansDB(ctx context.Context, db *recordlayer.FDBDatabase, root 
 		}
 		return nil
 	}
-	var group []*messageSpanPlan
-	var groupSets [][]messageRefUnit
-	size := 0
-	flush := func() error {
-		if len(group) == 0 {
-			return nil
-		}
-		g, gs := group, groupSets
-		group, groupSets, size = nil, nil, 0
-		var overflow []messageRefUnit
-		if err := run(func(rc *recordlayer.FDBRecordContext) (MessageFTSStats, error) {
-			s, o, err := indexMessageSpanGroup(ctx, rc, root, tenant, order, g, gs, messageFTSSplitBytes)
-			overflow = o
-			return s, err
-		}); err != nil {
-			return err
-		}
-		return writeChunks(overflow)
+	// Encode every plan before the first write, so an admission failure
+	// leaves no partial references.
+	type spanGroup struct {
+		plans []*messageSpanPlan
+		sets  [][]messageRefUnit
 	}
+	var groups []spanGroup
+	var cur spanGroup
+	size := 0
 	for _, p := range plans {
 		sets, n, err := messageRefSets(root, tenant, order, p)
 		if err != nil {
 			return stats, err
 		}
-		if len(group) > 0 && (len(group) == msgSpanGroupSpans || size+n > messageFTSSplitBytes) {
-			if err := flush(); err != nil {
-				return stats, err
-			}
+		if len(cur.plans) > 0 && (len(cur.plans) == msgSpanGroupSpans || size+n > messageFTSSplitBytes) {
+			groups = append(groups, cur)
+			cur, size = spanGroup{}, 0
 		}
-		group = append(group, p)
-		groupSets = append(groupSets, sets)
+		cur.plans = append(cur.plans, p)
+		cur.sets = append(cur.sets, sets)
 		size += n
 	}
-	return stats, flush()
+	if len(cur.plans) > 0 {
+		groups = append(groups, cur)
+	}
+	err = runMessageJobs(ctx, op, len(groups), func(ctx context.Context, i int) error {
+		g := groups[i]
+		var overflow []messageRefUnit
+		if err := run(ctx, func(rc *recordlayer.FDBRecordContext) (MessageFTSStats, error) {
+			s, o, err := indexMessageSpanGroup(ctx, rc, root, tenant, order, g.plans, g.sets, messageFTSSplitBytes)
+			overflow = o
+			return s, err
+		}); err != nil {
+			return err
+		}
+		// Clears precede sets, so a group's chunks commit in order.
+		return writeChunks(ctx, overflow)
+	})
+	return stats, err
 }
 
 // ---------------------------------------------------------------------------
