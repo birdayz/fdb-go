@@ -177,7 +177,7 @@ func (b *FDBBackend) saveIngestBatchRun(ctx context.Context, batch preparedBatch
 		clock = b.ingestClock
 	}
 	var attempts int64
-	_, err := b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+	_, err := runTxnSlot(ctx, b.db, "ingest batch", func(rc *recordlayer.FDBRecordContext) (any, error) {
 		attempts++
 		b.observeIngestRun("attempt", batch, runTimer)
 		if d != nil {
@@ -187,6 +187,14 @@ func (b *FDBBackend) saveIngestBatchRun(ctx context.Context, batch preparedBatch
 		if err := configureStoreContext(rc); err != nil {
 			d.phase("manifest", manifestStarted)
 			return nil, err
+		}
+		// An Exporter commit waits out ratekeeper's GRV throttling before the
+		// elapsed guard starts: that wait is backpressure, not save work.
+		if isExporterTxn(ctx) {
+			if _, err := rc.GetReadVersion(); err != nil {
+				d.phase("manifest", manifestStarted)
+				return nil, err
+			}
 		}
 		// Issue the authoritative owner read before normal store-open reads,
 		// but do not wait for it before starting their independent read wave.

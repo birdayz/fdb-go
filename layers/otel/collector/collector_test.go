@@ -415,7 +415,7 @@ func fullPrimaryConfig() Config {
 		Exporter: otel.ExporterConfig{
 			ClusterFile: "/etc/foundationdb/fdb.cluster", Run: "prod_traces_01", Tenant: 42, Order: "trace", HashBytes: 16,
 			PostingValueFormat: "json", RecordCompression: "zlib-1", BulkIndexConflicts: false, BatchSize: 32, Workers: 6,
-			MaxCandidates: 5000, MaxBytes: 1 << 20, K: 25,
+			MaxCandidates: 5000, MaxBytes: 1 << 20, K: 25, MaxInFlightTransactions: 32,
 		},
 		Timeout: 12 * time.Second,
 		SendingQueue: QueueConfig{

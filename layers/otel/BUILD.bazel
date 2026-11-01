@@ -25,6 +25,7 @@ go_library(
         "query_advanced.go",
         "record.go",
         "record_compression.go",
+        "txn_limit.go",
     ],
     importpath = "fdb.dev/layers/otel",
     visibility = ["//visibility:public"],
@@ -100,6 +101,7 @@ go_test(
         "query_replay_test.go",
         "record_compression_test.go",
         "selectivity_test.go",
+        "txn_limit_test.go",
     ],
     embed = [":otel"],
     deps = [

@@ -116,7 +116,7 @@ func validExporterConfig() ExporterConfig {
 }
 
 func TestExporterConfigDefaults(t *testing.T) {
-	want := ExporterConfig{Order: "time", HashBytes: 8, PostingValueFormat: "tuple", RecordCompression: "brotli-4", BulkIndexConflicts: true, BatchSize: 64, Workers: 8, MaxCandidates: 20000, MaxBytes: 4 << 20, K: 100}
+	want := ExporterConfig{Order: "time", HashBytes: 8, PostingValueFormat: "tuple", RecordCompression: "brotli-4", BulkIndexConflicts: true, BatchSize: 64, Workers: 8, MaxCandidates: 20000, MaxBytes: 4 << 20, K: 100, MaxInFlightTransactions: 32}
 	if got := DefaultExporterConfig(); got != want {
 		t.Fatalf("defaults: got %+v want %+v", got, want)
 	}
@@ -143,6 +143,7 @@ workers: 4
 max_candidates: 500
 max_bytes: 1048576
 k: 25
+max_inflight_transactions: 7
 `
 	cases := []struct {
 		name string
@@ -155,9 +156,10 @@ k: 25
 		}},
 		{"explicit false overrides true default", "bulk_index_conflicts: false\n", func(c *ExporterConfig) { c.BulkIndexConflicts = false }},
 		{"explicit zero overrides nonzero default", "max_candidates: 0\nworkers: 0\n", func(c *ExporterConfig) { c.MaxCandidates, c.Workers = 0, 0 }},
+		{"max_inflight_transactions only", "max_inflight_transactions: 1024\n", func(c *ExporterConfig) { c.MaxInFlightTransactions = 1024 }},
 		{"unknown keys are ignored", "run: live_run_0001\nnot_a_field: 7\n", func(c *ExporterConfig) { c.Run = "live_run_0001" }},
 		{"every field", full, func(c *ExporterConfig) {
-			*c = ExporterConfig{ClusterFile: "/var/fdb/fdb.cluster", Run: "live_run_full", Tenant: 42, Order: "trace", HashBytes: 32, PostingValueFormat: "json", RecordCompression: "none", BulkIndexConflicts: false, BatchSize: 16, Workers: 4, MaxCandidates: 500, MaxBytes: 1 << 20, K: 25}
+			*c = ExporterConfig{ClusterFile: "/var/fdb/fdb.cluster", Run: "live_run_full", Tenant: 42, Order: "trace", HashBytes: 32, PostingValueFormat: "json", RecordCompression: "none", BulkIndexConflicts: false, BatchSize: 16, Workers: 4, MaxCandidates: 500, MaxBytes: 1 << 20, K: 25, MaxInFlightTransactions: 7}
 		}},
 	}
 	for _, tc := range cases {
@@ -204,7 +206,7 @@ k: 25
 
 	t.Run("round trip", func(t *testing.T) {
 		want := validExporterConfig()
-		want.Tenant, want.Order, want.BulkIndexConflicts, want.MaxBytes = 9, "trace", false, 12345
+		want.Tenant, want.Order, want.BulkIndexConflicts, want.MaxBytes, want.MaxInFlightTransactions = 9, "trace", false, 12345, 5
 		wire, err := yaml.Marshal(want)
 		if err != nil {
 			t.Fatal(err)
@@ -218,7 +220,7 @@ k: 25
 		}
 	})
 
-	for _, doc := range []string{"batch_size: not-a-number\n", "tenant: [1, 2]\n", "bulk_index_conflicts: maybe\n", "max_bytes: {a: 1}\n"} {
+	for _, doc := range []string{"batch_size: not-a-number\n", "tenant: [1, 2]\n", "bulk_index_conflicts: maybe\n", "max_bytes: {a: 1}\n", "max_inflight_transactions: many\n"} {
 		t.Run("rejects "+strings.TrimSpace(doc), func(t *testing.T) {
 			var got ExporterConfig
 			err := yaml.Unmarshal([]byte(doc), &got)
@@ -241,10 +243,10 @@ func TestExporterConfigJSON(t *testing.T) {
 			c.ClusterFile, c.Run, c.Tenant = "/tmp/fdb.cluster", "live_run_0001", 3
 		}},
 		{"explicit false overrides true default", `{"bulk_index_conflicts":false}`, func(c *ExporterConfig) { c.BulkIndexConflicts = false }},
-		{"explicit zero overrides nonzero default", `{"k":0,"hash_bytes":0}`, func(c *ExporterConfig) { c.K, c.HashBytes = 0, 0 }},
+		{"explicit zero overrides nonzero default", `{"k":0,"hash_bytes":0,"max_inflight_transactions":0}`, func(c *ExporterConfig) { c.K, c.HashBytes, c.MaxInFlightTransactions = 0, 0, 0 }},
 		{"unknown keys are ignored", `{"run":"live_run_0001","extra":true}`, func(c *ExporterConfig) { c.Run = "live_run_0001" }},
-		{"every field", `{"cluster_file":"/var/fdb/fdb.cluster","run":"live_run_full","tenant":42,"order":"trace","hash_bytes":32,"posting_value_format":"json","record_compression":"zlib-1","bulk_index_conflicts":false,"batch_size":16,"workers":4,"max_candidates":500,"max_bytes":1048576,"k":25}`, func(c *ExporterConfig) {
-			*c = ExporterConfig{ClusterFile: "/var/fdb/fdb.cluster", Run: "live_run_full", Tenant: 42, Order: "trace", HashBytes: 32, PostingValueFormat: "json", RecordCompression: "zlib-1", BulkIndexConflicts: false, BatchSize: 16, Workers: 4, MaxCandidates: 500, MaxBytes: 1 << 20, K: 25}
+		{"every field", `{"cluster_file":"/var/fdb/fdb.cluster","run":"live_run_full","tenant":42,"order":"trace","hash_bytes":32,"posting_value_format":"json","record_compression":"zlib-1","bulk_index_conflicts":false,"batch_size":16,"workers":4,"max_candidates":500,"max_bytes":1048576,"k":25,"max_inflight_transactions":64}`, func(c *ExporterConfig) {
+			*c = ExporterConfig{ClusterFile: "/var/fdb/fdb.cluster", Run: "live_run_full", Tenant: 42, Order: "trace", HashBytes: 32, PostingValueFormat: "json", RecordCompression: "zlib-1", BulkIndexConflicts: false, BatchSize: 16, Workers: 4, MaxCandidates: 500, MaxBytes: 1 << 20, K: 25, MaxInFlightTransactions: 64}
 		}},
 	}
 	for _, tc := range cases {
@@ -292,7 +294,7 @@ func TestExporterConfigJSON(t *testing.T) {
 
 	t.Run("round trip", func(t *testing.T) {
 		want := validExporterConfig()
-		want.Tenant, want.PostingValueFormat, want.RecordCompression, want.Workers = 7, "json", "none", 3
+		want.Tenant, want.PostingValueFormat, want.RecordCompression, want.Workers, want.MaxInFlightTransactions = 7, "json", "none", 3, 1
 		wire, err := json.Marshal(want)
 		if err != nil {
 			t.Fatal(err)
@@ -306,7 +308,7 @@ func TestExporterConfigJSON(t *testing.T) {
 		}
 	})
 
-	for _, doc := range []string{`{"batch_size":"64"}`, `{"max_bytes":1.5}`, `{"tenant":[1]}`, `{"bulk_index_conflicts":"yes"}`} {
+	for _, doc := range []string{`{"batch_size":"64"}`, `{"max_bytes":1.5}`, `{"tenant":[1]}`, `{"bulk_index_conflicts":"yes"}`, `{"max_inflight_transactions":"32"}`} {
 		t.Run("rejects "+doc, func(t *testing.T) {
 			var got ExporterConfig
 			err := json.Unmarshal([]byte(doc), &got)
@@ -334,6 +336,8 @@ func TestExporterConfigValidate(t *testing.T) {
 		{"batch_size 64", func(c *ExporterConfig) { c.BatchSize = 64 }},
 		{"workers 1", func(c *ExporterConfig) { c.Workers = 1 }},
 		{"workers 16", func(c *ExporterConfig) { c.Workers = 16 }},
+		{"max_inflight_transactions 1", func(c *ExporterConfig) { c.MaxInFlightTransactions = 1 }},
+		{"max_inflight_transactions 1024", func(c *ExporterConfig) { c.MaxInFlightTransactions = 1024 }},
 		{"tenant 0", func(c *ExporterConfig) { c.Tenant = 0 }},
 		{"last tenant", func(c *ExporterConfig) { c.Tenant = exporterTenants - 1 }},
 		{"run 8 chars", func(c *ExporterConfig) { c.Run = "abcd_123" }},
@@ -373,6 +377,9 @@ func TestExporterConfigValidate(t *testing.T) {
 		{"batch_size 65", func(c *ExporterConfig) { c.BatchSize = 65 }, "batch_size must be 1..64"},
 		{"workers 0", func(c *ExporterConfig) { c.Workers = 0 }, "workers must be 1..16"},
 		{"workers 17", func(c *ExporterConfig) { c.Workers = 17 }, "workers must be 1..16"},
+		{"max_inflight_transactions 0", func(c *ExporterConfig) { c.MaxInFlightTransactions = 0 }, "max_inflight_transactions must be 1..1024"},
+		{"max_inflight_transactions negative", func(c *ExporterConfig) { c.MaxInFlightTransactions = -1 }, "max_inflight_transactions must be 1..1024"},
+		{"max_inflight_transactions 1025", func(c *ExporterConfig) { c.MaxInFlightTransactions = 1025 }, "max_inflight_transactions must be 1..1024"},
 		{"negative tenant", func(c *ExporterConfig) { c.Tenant = -1 }, "tenant must be 0.."},
 		{"tenant past range", func(c *ExporterConfig) { c.Tenant = exporterTenants }, "tenant must be 0.."},
 		{"missing run", func(c *ExporterConfig) { c.Run = "" }, "run must be"},

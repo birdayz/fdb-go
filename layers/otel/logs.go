@@ -482,9 +482,10 @@ func partitionLogs(items []preparedLog, size int) []logBatch {
 
 // saveLogBatch replaces each log atomically: it reads the prior version with
 // conflicts, retracts that version's index entries and writes the new ones.
+// A fresh Run after a maybe-committed 1031 rereads and replaces the same logs.
 func (b *FDBBackend) saveLogBatch(ctx context.Context, batch logBatch) (int64, error) {
 	var replaced int64
-	_, err := b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+	err := runIdempotentTxn(ctx, b.db, "log batch", func(rc *recordlayer.FDBRecordContext) (any, error) {
 		replaced = 0
 		if err := configureStoreContext(rc); err != nil {
 			return nil, err
@@ -553,6 +554,7 @@ func (e *Exporter) ExportLogs(ctx context.Context, logs []LogRecord) (LogExportS
 		return stats, err
 	}
 	defer e.active.Done()
+	ctx = withExporterTxns(withTxnLimiter(ctx, e.txnSlots))
 	b := e.backend
 	receiver := time.Now().UnixNano()
 	var items []preparedLog
@@ -729,9 +731,10 @@ func (b *FDBBackend) loadLogs(tx fdb.ReadTransaction, ids []string, budget *quer
 	return out, nil
 }
 
-// readLogs runs fn in one bounded, ownership-checked read transaction.
+// readLogs runs fn in one bounded, ownership-checked read transaction,
+// repeated on a fresh Run after a 1031.
 func (b *FDBBackend) readLogs(ctx context.Context, op string, fn func(fdb.ReadTransaction, *queryBudget) error) error {
-	_, err := b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+	read := func(rc *recordlayer.FDBRecordContext) (any, error) {
 		if err := configureStoreContext(rc); err != nil {
 			return nil, err
 		}
@@ -739,7 +742,8 @@ func (b *FDBBackend) readLogs(ctx context.Context, op string, fn func(fdb.ReadTr
 			return nil, err
 		}
 		return nil, fn(rc.ReadTransaction(false), b.newBudget(op))
-	})
+	}
+	_, err := retryQuery(ctx, op, func(ctx context.Context) (any, error) { return b.db.Run(ctx, read) })
 	return err
 }
 

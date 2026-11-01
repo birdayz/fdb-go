@@ -72,9 +72,14 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 	flags.DurationVar(&timeout, "timeout", 10*time.Minute, "whole-command context deadline")
 	flags.BoolVar(&confirm, "confirm-drop", false, "required with drop; only matching owned run manifest may be removed")
 	bench := collector.DefaultCollectorBenchConfig()
-	flags.IntVar(&bench.Conversations, "conversations", bench.Conversations, "collector-bench: synthetic multi-turn GenAI conversations, one trace each")
+	flags.IntVar(&bench.Conversations, "conversations", bench.Conversations, "collector-bench: synthetic multi-turn GenAI conversations, one trace each; ignored with --duration")
 	flags.IntVar(&bench.TurnsPerConversation, "turns", bench.TurnsPerConversation, "collector-bench: turns per conversation; one span per turn, each turn the parent of the next")
 	flags.IntVar(&bench.Producers, "producers", bench.Producers, "collector-bench: concurrent ConsumeTraces callers")
+	flags.DurationVar(&bench.Duration, "duration", bench.Duration, "collector-bench: sustained ingest duration, at most 1h (e.g. 10m); 0 ingests the fixed --conversations corpus")
+	flags.DurationVar(&bench.ReportInterval, "report-interval", bench.ReportInterval, "collector-bench: time-series window length")
+	flags.DurationVar(&bench.Warmup, "warmup", bench.Warmup, "collector-bench: initial load excluded from the steady-state rate; must be shorter than --duration")
+	flags.IntVar(&bench.QueryWorkers, "query-workers", bench.QueryWorkers, "collector-bench: goroutines running verified queries against committed data during ingest")
+	flags.IntVar(&bench.NumConsumers, "consumers", bench.NumConsumers, "collector-bench: sending_queue.num_consumers export workers")
 	flags.BoolVar(&bench.EnableMessageDeltas, "enable-message-deltas", bench.EnableMessageDeltas, "collector-bench: content-addressed GenAI message delta storage")
 	flags.BoolVar(&bench.EnableMessageFullText, "enable-message-fts", bench.EnableMessageFullText, "collector-bench: GenAI message full-text index and fts_* query classes")
 	if err := flags.Parse(args); err != nil {
@@ -104,6 +109,11 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 	if collectorBench {
 		bench = collectorBenchConfig(flags, bench, c, cluster, revision)
 		if err := bench.Validate(); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+		var err error
+		if timeout, err = collectorBenchTimeout(flags, timeout, bench.Duration); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 2
 		}
@@ -195,6 +205,24 @@ func collectorBenchConfig(flags *flag.FlagSet, bench collector.CollectorBenchCon
 		}
 	})
 	return bench
+}
+
+// collectorBenchDrain is the default allowance beyond --duration for the final
+// flush, the fidelity audit and the post-ingest query phase.
+const collectorBenchDrain = 10 * time.Minute
+
+// collectorBenchTimeout extends the default deadline to cover a sustained run;
+// an explicit --timeout must exceed --duration.
+func collectorBenchTimeout(flags *flag.FlagSet, timeout, duration time.Duration) (time.Duration, error) {
+	explicit := false
+	flags.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "timeout" })
+	if !explicit {
+		return max(timeout, duration+collectorBenchDrain), nil
+	}
+	if duration > 0 && timeout <= duration {
+		return 0, fmt.Errorf("--timeout %s must exceed --duration %s", timeout, duration)
+	}
+	return timeout, nil
 }
 
 func writeCollectorBench(ctx context.Context, bench collector.CollectorBenchConfig, writer io.Writer, file *os.File, stderr io.Writer) int {

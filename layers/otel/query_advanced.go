@@ -1108,9 +1108,11 @@ func (e *Exporter) QuerySameSpan(ctx context.Context, q SameSpanQuery) (SpanQuer
 		return SpanQueryPage{Spans: []SpanMatch{}, Order: e.cfg.Order}, err
 	}
 	defer e.active.Done()
-	e.queryMu.Lock()
-	defer e.queryMu.Unlock()
-	return e.backend.QuerySameSpan(ctx, q)
+	return retryQuery(ctx, "same-span query", func(ctx context.Context) (SpanQueryPage, error) {
+		e.queryMu.Lock()
+		defer e.queryMu.Unlock()
+		return e.backend.QuerySameSpan(ctx, q)
+	})
 }
 
 // QueryTraceExistential returns the newest traces satisfying every clause, with witnesses.
@@ -1122,9 +1124,11 @@ func (e *Exporter) QueryTraceExistential(ctx context.Context, q TraceExistential
 		return TraceExistentialResult{Hits: []TraceExistentialHit{}}, err
 	}
 	defer e.active.Done()
-	e.queryMu.Lock()
-	defer e.queryMu.Unlock()
-	return e.backend.QueryTraceExistential(ctx, q)
+	return retryQuery(ctx, "trace existential", func(ctx context.Context) (TraceExistentialResult, error) {
+		e.queryMu.Lock()
+		defer e.queryMu.Unlock()
+		return e.backend.QueryTraceExistential(ctx, q)
+	})
 }
 
 // TraverseTraceGraph returns the observed parent/child/link topology of one trace.
@@ -1133,7 +1137,9 @@ func (e *Exporter) TraverseTraceGraph(ctx context.Context, traceID string) (Trac
 		return TraceGraph{}, err
 	}
 	defer e.active.Done()
-	e.queryMu.Lock()
-	defer e.queryMu.Unlock()
-	return e.backend.TraverseTraceGraph(ctx, traceID)
+	return retryQuery(ctx, "trace graph", func(ctx context.Context) (TraceGraph, error) {
+		e.queryMu.Lock()
+		defer e.queryMu.Unlock()
+		return e.backend.TraverseTraceGraph(ctx, traceID)
+	})
 }

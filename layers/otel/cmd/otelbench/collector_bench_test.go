@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"fdb.dev/layers/otel/collector"
 )
@@ -19,14 +20,20 @@ func collectorBenchArgs(extra ...string) []string {
 	return append([]string{"-backend=fdb", "-mode=collector-bench", "-run=cli_bench_run", "-cluster-file=/nonexistent/fdb.cluster", "-revision=test-revision"}, extra...)
 }
 
+// benchDeadlines records the command deadline left when each stubbed run started.
+var benchDeadlines []time.Duration
+
 func stubCollectorBench(t *testing.T, err error) *[]collector.CollectorBenchConfig {
 	t.Helper()
 	var calls []collector.CollectorBenchConfig
+	benchDeadlines = nil
 	prev := runCollectorBenchmark
 	runCollectorBenchmark = func(ctx context.Context, cfg collector.CollectorBenchConfig) (collector.CollectorBenchReport, error) {
-		if _, ok := ctx.Deadline(); !ok {
+		deadline, ok := ctx.Deadline()
+		if !ok {
 			t.Error("collector bench ran without the command deadline")
 		}
+		benchDeadlines = append(benchDeadlines, time.Until(deadline))
 		calls = append(calls, cfg)
 		r := collector.CollectorBenchReport{Tool: collector.CollectorBenchTool, Mode: "collector-bench", Config: cfg.WithDefaults()}
 		return r, err
@@ -59,12 +66,17 @@ func TestExecuteCollectorBenchDefaults(t *testing.T) {
 	if r.Tool != collector.CollectorBenchTool || r.Mode != "collector-bench" || r.Config != want || r.Error != "" {
 		t.Fatalf("report %+v", r)
 	}
+	// A fixed-corpus run keeps the 10m default command deadline.
+	if len(benchDeadlines) != 1 || benchDeadlines[0] > 10*time.Minute || benchDeadlines[0] < 9*time.Minute {
+		t.Fatalf("deadline %v", benchDeadlines)
+	}
 }
 
 func TestExecuteCollectorBenchFlags(t *testing.T) {
 	calls := stubCollectorBench(t, nil)
 	path := filepath.Join(t.TempDir(), "bench.json")
 	args := collectorBenchArgs("--conversations=7", "--turns=3", "--producers=2", "--enable-message-deltas=false", "--enable-message-fts=false",
+		"--duration=10m", "--report-interval=5s", "--warmup=30s", "--query-workers=3", "--consumers=16",
 		"-seed=9", "-tenant=1", "-iterations=4", "-batch=16", "-workers=2", "-order=trace", "-hash-bytes=4", "-record-compression=zlib-1", "-posting-value-format=json", "-output="+path)
 	var stdout, stderr bytes.Buffer
 	if code := execute(args, &stdout, &stderr, nil); code != 0 || stdout.Len() != 0 || stderr.Len() != 0 {
@@ -73,6 +85,7 @@ func TestExecuteCollectorBenchFlags(t *testing.T) {
 	want := collector.DefaultCollectorBenchConfig()
 	want.ClusterFile, want.Run, want.Revision = "/nonexistent/fdb.cluster", "cli_bench_run", "test-revision"
 	want.Conversations, want.TurnsPerConversation, want.Producers = 7, 3, 2
+	want.Duration, want.ReportInterval, want.Warmup, want.QueryWorkers, want.NumConsumers = 10*time.Minute, 5*time.Second, 30*time.Second, 3, 16
 	want.EnableMessageDeltas, want.EnableMessageFullText = false, false
 	want.Seed, want.Tenant, want.QueryIterations, want.ExporterBatchSize, want.ExporterWorkers = 9, 1, 4, 16, 2
 	want.Order, want.HashBytes, want.RecordCompression, want.PostingValueFormat = "trace", 4, "zlib-1", "json"
@@ -85,6 +98,28 @@ func TestExecuteCollectorBenchFlags(t *testing.T) {
 	}
 	if r := decodeCollectorReport(t, data); r.Config != want {
 		t.Fatalf("report config %+v, want %+v", r.Config, want)
+	}
+	// Without --timeout the deadline covers the duration plus the drain allowance.
+	if len(benchDeadlines) != 1 || benchDeadlines[0] > 20*time.Minute || benchDeadlines[0] < 19*time.Minute {
+		t.Fatalf("deadline %v", benchDeadlines)
+	}
+}
+
+func TestExecuteCollectorBenchExplicitTimeout(t *testing.T) {
+	calls := stubCollectorBench(t, nil)
+	var stdout, stderr bytes.Buffer
+	if code := execute(collectorBenchArgs("--duration=2m", "--timeout=3m"), &stdout, &stderr, nil); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, &stderr)
+	}
+	if len(*calls) != 1 || (*calls)[0].Duration != 2*time.Minute || len(benchDeadlines) != 1 || benchDeadlines[0] > 3*time.Minute || benchDeadlines[0] < 2*time.Minute {
+		t.Fatalf("calls %+v deadlines %v", *calls, benchDeadlines)
+	}
+	stdout.Reset()
+	if code := execute(collectorBenchArgs("--duration=5m", "--timeout=5m"), &stdout, &stderr, nil); code != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "--timeout 5m0s must exceed --duration 5m0s") {
+		t.Fatalf("timeout not above duration: exit=%d stderr=%q", code, &stderr)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("rejected timeout reached the runner: %+v", *calls)
 	}
 }
 
@@ -109,6 +144,17 @@ func TestExecuteCollectorBenchRejections(t *testing.T) {
 		collectorBenchArgs("--turns=-1"),
 		collectorBenchArgs("--turns=201"),
 		collectorBenchArgs("--producers=-2"),
+		collectorBenchArgs("--duration=-1s"),
+		collectorBenchArgs("--duration=2h"),
+		collectorBenchArgs("--duration=30s"),
+		collectorBenchArgs("--duration=bad"),
+		collectorBenchArgs("--report-interval=1ms"),
+		collectorBenchArgs("--warmup=-1s"),
+		collectorBenchArgs("--duration=1m", "--warmup=1m"),
+		collectorBenchArgs("--query-workers=-1"),
+		collectorBenchArgs("--query-workers=65"),
+		collectorBenchArgs("--consumers=-1"),
+		collectorBenchArgs("--consumers=65"),
 		collectorBenchArgs("--enable-message-fts=bad"),
 		collectorBenchArgs("positional"),
 	} {

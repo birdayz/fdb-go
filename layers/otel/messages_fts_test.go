@@ -641,6 +641,7 @@ func TestMessageFullTextRealFDB(t *testing.T) {
 	t.Run("corruption", func(t *testing.T) { t.Parallel(); testMessageFTSCorruption(t, cluster) })
 	t.Run("trace_existential", func(t *testing.T) { t.Parallel(); testMessageFTSExistential(t, cluster) })
 	t.Run("record_context_api", func(t *testing.T) { t.Parallel(); testMessageFTSRecordContext(t, cluster) })
+	t.Run("rare_term_intersection", func(t *testing.T) { t.Parallel(); testMessageFTSRareTerm(t, cluster) })
 }
 
 func testMessageFTSConversation(t *testing.T, cluster, form, order string) {
@@ -899,6 +900,14 @@ func testMessageFTSBudget(t *testing.T, cluster string) {
 		}
 		_, err = e.QueryTraceExistential(ctx, TraceExistentialQuery{MessageClauses: []MessageFullTextQuery{{Query: "turn"}}})
 		requireOtelBudget(t, err)
+		// The intersection's probes and point reads are charged too.
+		for _, mode := range []string{MessageMatchAll, MessageMatchPhrase} {
+			page, err = e.QueryMessageFullText(ctx, MessageFullTextQuery{Query: "user turn", Mode: mode})
+			requireOtelBudget(t, err)
+			if page.Candidates == 0 || page.Continuation != nil {
+				t.Fatalf("%s %s: intersection budget failure: %+v", name, mode, page)
+			}
+		}
 		empty, err := e.QueryMessageFullText(ctx, MessageFullTextQuery{Query: "zeppelin"})
 		if err != nil || len(empty.Hits) != 0 || empty.Candidates != 0 {
 			t.Fatalf("%s: absent term: %+v %v", name, empty, err)
@@ -1131,4 +1140,203 @@ func testMessageFTSRecordContext(t *testing.T, cluster string) {
 	requireTyped[*ConfigError](t, "bad order", err)
 	_, _, err = PersistAndIndexMessageBlobsDB(ctx, db, root, 3, blobs)
 	requireTyped[*AdmissionError](t, "wrong tenant", err)
+}
+
+// testMessageFTSRareTerm pins the all/phrase intersection: a query pairing a
+// term in every message with a rare one reads the rare term's postings, the
+// common term's first probe page and point reads, never the common term's
+// whole posting list, and answers exactly as a full read of every list does.
+func testMessageFTSRareTerm(t *testing.T, cluster string) {
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
+	defer cancel()
+	e := openFTSExporter(t, ctx, cluster, nil)
+	tenant, db, root := e.Config().Tenant, e.backend.db, e.backend.root
+	const spans, per = 60, 10
+	const n = spans * per
+	rare := map[int]string{7: "zircon common filler", 123: "zircon common filler", 456: "zircon common filler", 599: "common filler zircon"}
+	text := func(i int) string {
+		head, parity := "common filler", "even"
+		if r, ok := rare[i]; ok {
+			head = r
+		}
+		if i%2 == 1 {
+			parity = "odd"
+		}
+		return fmt.Sprintf("%s item%d %s", head, i, parity)
+	}
+	role := func(i int) string { return map[bool]string{true: "user", false: "assistant"}[i%2 == 0] }
+	input := make([]*tracepb.ResourceSpans, 0, spans)
+	for s := 1; s <= spans; s++ {
+		msgs := make([]deltaMsg, per)
+		for j := range msgs {
+			i := (s-1)*per + j
+			msgs[j] = deltaMsg{role(i), text(i)}
+		}
+		input = append(input, deltaSpan(s, deltaKV("gen_ai.input.messages", deltaMessages("array", msgs))))
+	}
+	stats, err := e.ExportResourceSpans(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.MessageFTS.IndexedBlobs != n || stats.MessageFTS.SpanRefs != n {
+		t.Fatalf("corpus FTS stats %+v", stats.MessageFTS)
+	}
+	_, blobs, _, err := DecomposeResourceSpans(ctx, input, tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hashOf := map[string][32]byte{}
+	for _, b := range blobs {
+		_, got, err := ExtractMessageText(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hashOf[got] = b.Hash()
+	}
+	if len(hashOf) != n {
+		t.Fatalf("%d distinct message texts, want %d", len(hashOf), n)
+	}
+	common := deltaBlobRows(t, ctx, db, messageFTSTerm(root, tenant, "common"))
+	if len(common) != n || len(deltaBlobRows(t, ctx, db, messageFTSTerm(root, tenant, "zircon"))) != len(rare) {
+		t.Fatalf("fixture postings: common %d", len(common))
+	}
+
+	// match runs the new path and the previous full read of every term's
+	// postings in one snapshot and returns both answers and the new path's work.
+	match := func(q MessageFullTextQuery) (got, full []*messageCandidate, work, fullWork int) {
+		t.Helper()
+		plan, err := newMessageQueryPlan("test", q, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = deltaRun(t, ctx, db, func(rc *recordlayer.FDBRecordContext) error {
+			tx := rc.ReadTransaction(false)
+			budget := &queryBudget{op: "test", maxCandidates: 1 << 30, maxBytes: 1 << 40}
+			if got, err = matchMessageBlobs(tx, root, tenant, plan, budget); err != nil {
+				return err
+			}
+			oracle := &queryBudget{op: "test", maxCandidates: 1 << 30, maxBytes: 1 << 40}
+			all, err := unionMessagePostings(tx, root, tenant, plan.terms, oracle)
+			if err != nil {
+				return err
+			}
+			full, work, fullWork = filterMessageCandidates(plan, all), budget.candidates, oracle.candidates
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("%+v: %v", q, err)
+		}
+		return got, full, work, fullWork
+	}
+
+	for _, c := range []struct {
+		name string
+		q    MessageFullTextQuery
+		want func(i int) bool
+		rare bool // bounded by the rare term
+	}{
+		{"all rare", MessageFullTextQuery{Query: "zircon common"}, func(i int) bool { _, ok := rare[i]; return ok }, true},
+		{"all rare role", MessageFullTextQuery{Query: "common zircon", Role: "assistant"}, func(i int) bool { _, ok := rare[i]; return ok && i%2 == 1 }, true},
+		{"phrase rare", MessageFullTextQuery{Query: "zircon common", Mode: MessageMatchPhrase}, func(i int) bool { return rare[i] == "zircon common filler" }, true},
+		{"phrase rare tail", MessageFullTextQuery{Query: "filler zircon", Mode: MessageMatchPhrase}, func(i int) bool { return i == 599 }, true},
+		{"phrase rare absent", MessageFullTextQuery{Query: "common zircon", Mode: MessageMatchPhrase}, func(int) bool { return false }, true},
+		{"all rare item", MessageFullTextQuery{Query: "filler item123"}, func(i int) bool { return i == 123 }, true},
+		{"all common", MessageFullTextQuery{Query: "common filler"}, func(int) bool { return true }, false},
+		{"all common half", MessageFullTextQuery{Query: "common even"}, func(i int) bool { return i%2 == 0 }, false},
+		{"all common role", MessageFullTextQuery{Query: "filler odd", Role: "assistant"}, func(i int) bool { return i%2 == 1 }, false},
+		{"all common wrong role", MessageFullTextQuery{Query: "common even", Role: "assistant"}, func(int) bool { return false }, false},
+		{"phrase common", MessageFullTextQuery{Query: "common filler", Mode: MessageMatchPhrase}, func(int) bool { return true }, false},
+		{"phrase common reversed", MessageFullTextQuery{Query: "filler common", Mode: MessageMatchPhrase}, func(int) bool { return false }, false},
+	} {
+		want := map[string]bool{}
+		for i := range n {
+			if c.want(i) {
+				h := hashOf[text(i)]
+				want[hex.EncodeToString(h[:])] = true
+			}
+		}
+		got, full, work, fullWork := match(c.q)
+		if !reflect.DeepEqual(got, full) || len(got) != len(want) {
+			t.Fatalf("%s: intersection %d candidates, full read %d, want %d", c.name, len(got), len(full), len(want))
+		}
+		if fullWork < n {
+			t.Fatalf("%s: full read charged %d rows, fewer than the common term's %d postings", c.name, fullWork, n)
+		}
+		if c.rare && work > msgFTSProbeRows+3*len(rare) {
+			t.Fatalf("%s: intersection charged %d rows, more than the probe page and rare postings allow", c.name, work)
+		}
+		q := c.q
+		q.Limit = 2 * n
+		hits, _ := ftsDrain(t, ctx, e, q)
+		if len(hits) != len(want) {
+			t.Fatalf("%s: %d hits, want %d", c.name, len(hits), len(want))
+		}
+		for _, h := range hits {
+			if !want[h.MessageHash] || (c.q.Role != "" && h.Role != c.q.Role) {
+				t.Fatalf("%s: unexpected hit %+v", c.name, h)
+			}
+		}
+		if c.rare {
+			// Matching, verification and span references stay far below the
+			// common term's posting count.
+			page, err := e.QueryMessageFullText(ctx, q)
+			if err != nil || len(page.Hits) != len(want) {
+				t.Fatalf("%s: page %+v %v", c.name, page, err)
+			}
+			if page.Candidates > msgFTSProbeRows+8*len(rare) || page.Candidates >= n/2 {
+				t.Fatalf("%s: page charged %d candidates against %d common postings", c.name, page.Candidates, n)
+			}
+		}
+	}
+
+	// A rare message whose common posting lies beyond the first probe page is
+	// reached only by a point read; that read keeps the posting checks, and
+	// its absence means no match.
+	commonKey := func(h [32]byte) fdb.Key { return messageFTSTerm(root, tenant, "common").Pack(tuple.Tuple{h[:]}) }
+	probed := common[msgFTSProbeRows-1].Key
+	target := -1
+	for _, i := range []int{7, 123, 456, 599} {
+		if bytes.Compare(commonKey(hashOf[text(i)]), probed) > 0 {
+			target = i
+			break
+		}
+	}
+	if target < 0 {
+		t.Fatal("fixture: every rare message's common posting lies within the probe page")
+	}
+	key := commonKey(hashOf[text(target)])
+	original := ftsGet(t, ctx, db, key)
+	if original == nil {
+		t.Fatal("fixture: point-read posting missing")
+	}
+	q := MessageFullTextQuery{Query: "zircon common", Limit: 2 * n}
+	enc, _, positions, err := decodeMessagePosting(original)
+	if err != nil || enc != messageEncodingAny {
+		t.Fatalf("fixture posting encoding %q: %v", enc, err)
+	}
+	otherRole := map[string]string{"user": "assistant", "assistant": "user"}[role(target)]
+	for name, v := range map[string][]byte{
+		"point-read role":     encodeMessagePosting(enc, otherRole, positions),
+		"point-read encoding": encodeMessagePosting(messageEncodingJSON, role(target), positions),
+		"point-read bytes":    {1, 2, 3},
+	} {
+		ftsSet(t, ctx, db, key, v)
+		_, err := e.QueryMessageFullText(ctx, q)
+		requireTyped[*CorruptionError](t, name, err)
+	}
+	ftsSet(t, ctx, db, key, nil)
+	hits, _ := ftsDrain(t, ctx, e, q)
+	targetHash := hashOf[text(target)]
+	if len(hits) != len(rare)-1 {
+		t.Fatalf("missing point-read posting: %d hits, want %d", len(hits), len(rare)-1)
+	}
+	for _, h := range hits {
+		if h.MessageHash == hex.EncodeToString(targetHash[:]) {
+			t.Fatalf("message without its common posting matched: %+v", h)
+		}
+	}
+	ftsSet(t, ctx, db, key, original)
+	if got := ftsCount(t, ctx, e, q); got != len(rare) {
+		t.Fatalf("restored: %d hits, want %d", got, len(rare))
+	}
 }

@@ -3,12 +3,17 @@ package collector
 // bench.go drives the full fdb_otel production path end to end: synthetic
 // multi-turn GenAI conversations flow from concurrent producers through the
 // Collector sending queue into *otel.Exporter (message delta dedup and message
-// full-text indexing), followed by correlated OTLP logs, a bit-for-bit
-// LoadSpanOTLP reconstruction audit, and a verified query latency suite.
+// full-text indexing) together with their correlated OTLP logs, while query
+// workers run verified queries against committed data. Ingest is either a
+// fixed corpus or a sustained, duration-bounded load reported as a time
+// series; a bit-for-bit LoadSpanOTLP reconstruction audit and a verified query
+// latency suite follow. Conversations are regenerated from (seed, run, c) on
+// demand, so no request outlives its export.
 
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -17,6 +22,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"fdb.dev/layers/otel"
@@ -28,19 +34,33 @@ import (
 
 const (
 	// CollectorBenchTool identifies collector-bench reports.
-	CollectorBenchTool = "otelbench-collector-bench-v1"
+	CollectorBenchTool = "otelbench-collector-bench-v2"
 
-	maxBenchConversations = 100_000
-	maxBenchTurns         = 200
-	maxBenchProducers     = 256
-	maxBenchIterations    = 1_000_000
-	maxBenchSamples       = 16
-	benchTokenBuckets     = 50
-	benchFillerBytes      = 400
-	benchBaseTimeNs       = int64(1_700_000_000_000_000_000)
+	maxBenchConversations  = 100_000_000
+	maxBenchTurns          = 200
+	maxBenchProducers      = 256
+	maxBenchIterations     = 1_000_000
+	maxBenchQueryWorkers   = 64
+	maxBenchDuration       = time.Hour
+	minBenchReportInterval = 100 * time.Millisecond
+	maxBenchSamples        = 16
+	benchBlockSize         = 50
+	benchFillerBytes       = 400
+	benchBaseTimeNs        = int64(1_700_000_000_000_000_000)
+	benchLogBatch          = 256
+	benchLogFlushInterval  = 200 * time.Millisecond
+	benchLogAttempts       = 5
+	benchQueryIdle         = 10 * time.Millisecond
+	// Budget bounds: one encoded message element, and one span reference,
+	// posting or metadata row.
+	benchMessageBytes = 1024
+	benchRowBytes     = 512
 
 	benchInputKey  = "gen_ai.input.messages"
 	benchOutputKey = "gen_ai.output.messages"
+
+	benchPhaseLoad  = "load"
+	benchPhaseDrain = "drain"
 )
 
 // Query classes measured by RunBenchmark, in execution order. The four fts_*
@@ -59,30 +79,36 @@ const (
 // CollectorBenchQueryClasses lists every query class in execution order.
 var CollectorBenchQueryClasses = []string{QueryFTSSingleToken, QueryFTSPhraseFirstTurn, QueryFTSMultiTurnHistory, QueryFTSSameSpanPreds, QuerySameSpanConjunction, QueryTraceExistential3, QueryTraceGraph, QueryLogsByTrace}
 
-// CollectorBenchConfig configures RunBenchmark. Zero numeric and string fields
-// take DefaultCollectorBenchConfig values; booleans are used as given.
+// CollectorBenchConfig configures RunBenchmark. Zero numeric, duration and
+// string fields take DefaultCollectorBenchConfig values (Duration defaults to
+// 0, the fixed corpus); booleans are used as given. With Duration > 0,
+// producers ingest until the deadline and Conversations is ignored.
 type CollectorBenchConfig struct {
-	ClusterFile           string `json:"cluster_file"`
-	Run                   string `json:"run"`
-	Tenant                int    `json:"tenant"`
-	Seed                  uint64 `json:"seed"`
-	Conversations         int    `json:"conversations"`
-	TurnsPerConversation  int    `json:"turns_per_conversation"`
-	Producers             int    `json:"producers"`
-	NumConsumers          int    `json:"num_consumers"`
-	QueueSize             int    `json:"queue_size"`
-	BatchMinSize          int    `json:"batch_min_size"`
-	BatchMaxSize          int    `json:"batch_max_size"`
-	ExporterBatchSize     int    `json:"exporter_batch_size"`
-	ExporterWorkers       int    `json:"exporter_workers"`
-	RecordCompression     string `json:"record_compression"`
-	PostingValueFormat    string `json:"posting_value_format"`
-	HashBytes             int    `json:"hash_bytes"`
-	Order                 string `json:"order"`
-	EnableMessageDeltas   bool   `json:"enable_message_deltas"`
-	EnableMessageFullText bool   `json:"enable_message_full_text"`
-	QueryIterations       int    `json:"query_iterations"`
-	Revision              string `json:"revision"`
+	ClusterFile           string        `json:"cluster_file"`
+	Run                   string        `json:"run"`
+	Tenant                int           `json:"tenant"`
+	Seed                  uint64        `json:"seed"`
+	Conversations         int           `json:"conversations"`
+	TurnsPerConversation  int           `json:"turns_per_conversation"`
+	Duration              time.Duration `json:"duration_ns"`
+	ReportInterval        time.Duration `json:"report_interval_ns"`
+	Warmup                time.Duration `json:"warmup_ns"`
+	Producers             int           `json:"producers"`
+	NumConsumers          int           `json:"num_consumers"`
+	QueryWorkers          int           `json:"query_workers"`
+	QueueSize             int           `json:"queue_size"`
+	BatchMinSize          int           `json:"batch_min_size"`
+	BatchMaxSize          int           `json:"batch_max_size"`
+	ExporterBatchSize     int           `json:"exporter_batch_size"`
+	ExporterWorkers       int           `json:"exporter_workers"`
+	RecordCompression     string        `json:"record_compression"`
+	PostingValueFormat    string        `json:"posting_value_format"`
+	HashBytes             int           `json:"hash_bytes"`
+	Order                 string        `json:"order"`
+	EnableMessageDeltas   bool          `json:"enable_message_deltas"`
+	EnableMessageFullText bool          `json:"enable_message_full_text"`
+	QueryIterations       int           `json:"query_iterations"`
+	Revision              string        `json:"revision"`
 }
 
 // DefaultCollectorBenchConfig returns the defaults; cluster_file and run
@@ -92,8 +118,11 @@ func DefaultCollectorBenchConfig() CollectorBenchConfig {
 		Seed:                  283,
 		Conversations:         100,
 		TurnsPerConversation:  15,
+		ReportInterval:        10 * time.Second,
+		Warmup:                60 * time.Second,
 		Producers:             8,
 		NumConsumers:          4,
+		QueryWorkers:          2,
 		QueueSize:             10000,
 		BatchMinSize:          64,
 		BatchMaxSize:          256,
@@ -110,7 +139,8 @@ func DefaultCollectorBenchConfig() CollectorBenchConfig {
 	}
 }
 
-// WithDefaults fills zero numeric and string fields from DefaultCollectorBenchConfig.
+// WithDefaults fills zero numeric, duration and string fields from
+// DefaultCollectorBenchConfig.
 func (c CollectorBenchConfig) WithDefaults() CollectorBenchConfig {
 	d := DefaultCollectorBenchConfig()
 	for _, f := range []struct{ v, d *int }{
@@ -118,6 +148,7 @@ func (c CollectorBenchConfig) WithDefaults() CollectorBenchConfig {
 		{&c.TurnsPerConversation, &d.TurnsPerConversation},
 		{&c.Producers, &d.Producers},
 		{&c.NumConsumers, &d.NumConsumers},
+		{&c.QueryWorkers, &d.QueryWorkers},
 		{&c.QueueSize, &d.QueueSize},
 		{&c.BatchMinSize, &d.BatchMinSize},
 		{&c.BatchMaxSize, &d.BatchMaxSize},
@@ -125,6 +156,13 @@ func (c CollectorBenchConfig) WithDefaults() CollectorBenchConfig {
 		{&c.ExporterWorkers, &d.ExporterWorkers},
 		{&c.HashBytes, &d.HashBytes},
 		{&c.QueryIterations, &d.QueryIterations},
+	} {
+		if *f.v == 0 {
+			*f.v = *f.d
+		}
+	}
+	for _, f := range []struct{ v, d *time.Duration }{
+		{&c.ReportInterval, &d.ReportInterval}, {&c.Warmup, &d.Warmup},
 	} {
 		if *f.v == 0 {
 			*f.v = *f.d
@@ -153,8 +191,20 @@ func (c CollectorBenchConfig) Validate() error {
 	if c.TurnsPerConversation < 1 || c.TurnsPerConversation > maxBenchTurns {
 		errs = append(errs, fmt.Errorf("turns_per_conversation must be 1..%d", maxBenchTurns))
 	}
+	if c.Duration < 0 || c.Duration > maxBenchDuration {
+		errs = append(errs, fmt.Errorf("duration must be 0..%s", maxBenchDuration))
+	}
+	if c.ReportInterval < minBenchReportInterval || c.ReportInterval > maxBenchDuration {
+		errs = append(errs, fmt.Errorf("report_interval must be %s..%s", minBenchReportInterval, maxBenchDuration))
+	}
+	if c.Warmup < 0 || c.Duration > 0 && c.Warmup >= c.Duration {
+		errs = append(errs, errors.New("warmup must be non-negative and shorter than duration"))
+	}
 	if c.Producers < 1 || c.Producers > maxBenchProducers {
 		errs = append(errs, fmt.Errorf("producers must be 1..%d", maxBenchProducers))
+	}
+	if c.QueryWorkers < 1 || c.QueryWorkers > maxBenchQueryWorkers {
+		errs = append(errs, fmt.Errorf("query_workers must be 1..%d", maxBenchQueryWorkers))
 	}
 	if c.QueryIterations < 1 || c.QueryIterations > maxBenchIterations {
 		errs = append(errs, fmt.Errorf("query_iterations must be 1..%d", maxBenchIterations))
@@ -174,10 +224,26 @@ func (c CollectorBenchConfig) Validate() error {
 	return nil
 }
 
-func (c CollectorBenchConfig) spans() int { return c.Conversations * c.TurnsPerConversation }
+// benchQueryBudget returns the per-query candidate and logical-byte budgets.
+// They cover one block of benchBlockSize conversations, doubled for headroom,
+// and do not depend on the corpus size: a query that scans the corpus fails
+// on its budget instead of silently slowing down as a sustained run grows.
+func benchQueryBudget(turns, k int) (int, int64) {
+	n := int64(turns)
+	// References to one block's user (or assistant) messages: message j of a
+	// conversation is in the history of turns j..n.
+	refs := benchBlockSize * n * (n + 1) / 2
+	// The existential class reads a block's span, log and message postings,
+	// meta plus blob rows of every message and every reference; the K-limited
+	// classes add page-bounded verification and predicate probes (64 a batch).
+	rows := benchBlockSize*(4*n+1) + refs + 4*int64(k+64)
+	// This also covers one trace stored without decomposition, whose n spans
+	// carry n(n+4) message elements.
+	bytes := refs*benchRowBytes + benchBlockSize*n*(2*benchMessageBytes+3*benchRowBytes)
+	return int(2*rows + 1000), 2*bytes + 1<<20
+}
 
-// collectorConfig maps the benchmark onto the fdb_otel exporter. Query budgets
-// grow with the corpus because the existential span clause scans every span.
+// collectorConfig maps the benchmark onto the fdb_otel exporter.
 func (c CollectorBenchConfig) collectorConfig() *Config {
 	cc := defaultConfig()
 	e := &cc.Exporter
@@ -185,8 +251,7 @@ func (c CollectorBenchConfig) collectorConfig() *Config {
 	e.Order, e.HashBytes, e.PostingValueFormat, e.RecordCompression = c.Order, c.HashBytes, c.PostingValueFormat, c.RecordCompression
 	e.EnableMessageDeltas, e.EnableMessageFullText = c.EnableMessageDeltas, c.EnableMessageFullText
 	e.BatchSize, e.Workers = c.ExporterBatchSize, c.ExporterWorkers
-	e.MaxCandidates = max(e.MaxCandidates, 4*c.spans()+1000)
-	e.MaxBytes = max(e.MaxBytes, int64(c.spans())*4096)
+	e.MaxCandidates, e.MaxBytes = benchQueryBudget(c.TurnsPerConversation, e.K)
 	cc.Timeout = 2 * time.Minute
 	cc.SendingQueue = QueueConfig{
 		Enabled: true, NumConsumers: c.NumConsumers, QueueSize: c.QueueSize, BlockOnOverflow: true,
@@ -196,7 +261,19 @@ func (c CollectorBenchConfig) collectorConfig() *Config {
 	return &cc
 }
 
-// CollectorBenchCorpus describes the synthetic workload. TotalMessageElements
+// CollectorBenchEffective is the load shape the run actually used.
+type CollectorBenchEffective struct {
+	Load           string `json:"load"` // "duration" or "fixed"
+	Duration       string `json:"duration"`
+	ReportInterval string `json:"report_interval"`
+	Warmup         string `json:"warmup"`
+	Producers      int    `json:"producers"`
+	NumConsumers   int    `json:"num_consumers"`
+	QueryWorkers   int    `json:"query_workers"`
+	BlockSize      int    `json:"block_size"`
+}
+
+// CollectorBenchCorpus describes the ingested workload. TotalMessageElements
 // counts every message element across all spans' content attributes;
 // UniqueMessageElements counts distinct elements (2 per turn plus the shared
 // system instructions and two tool definitions).
@@ -210,9 +287,11 @@ type CollectorBenchCorpus struct {
 	UniqueMessageElements int64 `json:"unique_message_elements"`
 }
 
-// CollectorBenchIngest reports phase 1. Export sums the ExportStats of every
+// CollectorBenchIngest reports phase 1, from the first produced conversation
+// until every span and log is flushed. Export sums the ExportStats of every
 // successful sink call; its MessageDeltas.UniqueMessages counts per-batch
 // uniques, while MessageFTS.IndexedBlobs counts blobs first indexed in FDB.
+// Logs are exported in batches during ingest; LogWallNs sums those calls.
 type CollectorBenchIngest struct {
 	IngestWallNs      int64               `json:"ingest_wall_ns"`
 	SpansPerSec       float64             `json:"spans_per_sec"`
@@ -222,7 +301,80 @@ type CollectorBenchIngest struct {
 	Export            otel.ExportStats    `json:"export"`
 	FailedExportCalls int64               `json:"failed_export_calls"`
 	LogWallNs         int64               `json:"log_wall_ns"`
+	LogCalls          int64               `json:"log_calls"`
+	FailedLogCalls    int64               `json:"failed_log_calls"`
 	Logs              otel.LogExportStats `json:"logs"`
+}
+
+// CollectorBenchWindow is one report interval of ingest, offsets relative to
+// the ingest start. Phase "load" windows cover the producers, which stop at
+// the deadline once their last request is admitted; "drain" windows cover
+// the final span and log flush. Counters are deltas over the window;
+// ExportLatency covers export calls completed in it; QueuedSpans, Watermark and
+// the memory figures are sampled at its end.
+type CollectorBenchWindow struct {
+	Phase         string         `json:"phase"`
+	StartNs       int64          `json:"start_ns"`
+	EndNs         int64          `json:"end_ns"`
+	ExportedSpans int64          `json:"exported_spans"`
+	Messages      int64          `json:"messages"`
+	RawInputBytes int64          `json:"raw_input_bytes"`
+	Logs          int64          `json:"logs"`
+	ExportCalls   int64          `json:"export_calls"`
+	FailedCalls   int64          `json:"failed_calls"`
+	Retries       int64          `json:"retries"`
+	Queries       int64          `json:"queries"`
+	ExportLatency otel.Histogram `json:"export_latency"`
+	QueuedSpans   int            `json:"queued_spans"`
+	Watermark     int64          `json:"watermark"`
+	SpansPerSec   float64        `json:"spans_per_sec"`
+	SysBytes      uint64         `json:"sys_bytes"`
+	HeapInuse     uint64         `json:"heap_inuse_bytes"`
+}
+
+// CollectorBenchRate is a throughput over a set of windows.
+type CollectorBenchRate struct {
+	Windows        int     `json:"windows"`
+	WallNs         int64   `json:"wall_ns"`
+	Spans          int64   `json:"spans"`
+	SpansPerSec    float64 `json:"spans_per_sec"`
+	MessagesPerSec float64 `json:"messages_per_sec"`
+	RawBytesPerSec float64 `json:"raw_bytes_per_sec"`
+	LogsPerSec     float64 `json:"logs_per_sec"`
+}
+
+// CollectorBenchRates reports the whole run (every window) and the steady
+// state: load windows starting at or after Warmup.
+type CollectorBenchRates struct {
+	WholeRun    CollectorBenchRate `json:"whole_run"`
+	SteadyState CollectorBenchRate `json:"steady_state"`
+}
+
+// CollectorBenchWatermark reports the commit watermark: the highest W such
+// that every conversation <= W has all its spans exported and its log
+// written (-1 for none). Tracked is the number of conversations above W the
+// tracker still holds; PeakTracked its maximum. Anomalies count exports of
+// unknown, already committed or over-full conversations.
+type CollectorBenchWatermark struct {
+	Conversations int   `json:"conversations"`
+	Watermark     int64 `json:"watermark"`
+	Tracked       int   `json:"tracked"`
+	PeakTracked   int   `json:"peak_tracked"`
+	Anomalies     int64 `json:"anomalies"`
+}
+
+// CollectorBenchMemory reports the peak runtime.MemStats sampled each window.
+type CollectorBenchMemory struct {
+	PeakSysBytes       uint64 `json:"peak_sys_bytes"`
+	PeakHeapInuseBytes uint64 `json:"peak_heap_inuse_bytes"`
+}
+
+// CollectorBenchUnderLoad reports the query classes run by QueryWorkers
+// during ingest against committed data; QPS is per class over WallNs.
+type CollectorBenchUnderLoad struct {
+	Workers int                            `json:"workers"`
+	WallNs  int64                          `json:"wall_ns"`
+	Queries map[string]CollectorBenchQuery `json:"queries"`
 }
 
 // CollectorBenchFidelity reports the phase 2 LoadSpanOTLP audit.
@@ -244,41 +396,85 @@ type CollectorBenchQuery struct {
 	Error      string         `json:"error,omitempty"`
 }
 
-// CollectorBenchReport is the collector-bench evidence receipt.
+// CollectorBenchReport is the collector-bench evidence receipt. Queries holds
+// the post-ingest phase; UnderLoad the queries run during ingest.
 type CollectorBenchReport struct {
-	Tool     string                         `json:"tool"`
-	Mode     string                         `json:"mode"`
-	Revision string                         `json:"revision"`
-	Go       string                         `json:"go"`
-	Start    string                         `json:"start_utc"`
-	Config   CollectorBenchConfig           `json:"config"`
-	Exporter otel.ExporterConfig            `json:"exporter_config"`
-	Corpus   CollectorBenchCorpus           `json:"corpus"`
-	Ingest   CollectorBenchIngest           `json:"ingest"`
-	Fidelity CollectorBenchFidelity         `json:"fidelity"`
-	Queries  map[string]CollectorBenchQuery `json:"queries"`
-	Failures int                            `json:"failures"`
-	WallNs   int64                          `json:"wall_ns"`
-	Error    string                         `json:"error,omitempty"`
-	Boundary string                         `json:"boundary"`
+	Tool      string                         `json:"tool"`
+	Mode      string                         `json:"mode"`
+	Revision  string                         `json:"revision"`
+	Go        string                         `json:"go"`
+	Start     string                         `json:"start_utc"`
+	Config    CollectorBenchConfig           `json:"config"`
+	Effective CollectorBenchEffective        `json:"effective"`
+	Exporter  otel.ExporterConfig            `json:"exporter_config"`
+	Corpus    CollectorBenchCorpus           `json:"corpus"`
+	Ingest    CollectorBenchIngest           `json:"ingest"`
+	Series    []CollectorBenchWindow         `json:"series"`
+	Rates     CollectorBenchRates            `json:"rates"`
+	Watermark CollectorBenchWatermark        `json:"watermark"`
+	Memory    CollectorBenchMemory           `json:"memory"`
+	UnderLoad CollectorBenchUnderLoad        `json:"under_load"`
+	Fidelity  CollectorBenchFidelity         `json:"fidelity"`
+	Queries   map[string]CollectorBenchQuery `json:"queries"`
+	Failures  int                            `json:"failures"`
+	WallNs    int64                          `json:"wall_ns"`
+	Error     string                         `json:"error,omitempty"`
+	Boundary  string                         `json:"boundary"`
 }
 
-// benchSink sums ExportStats over successful calls into the real exporter.
+// benchSink wraps the real exporter: it sums ExportStats over successful
+// calls, times every call, and credits exported spans to their conversations.
 type benchSink struct {
-	exp    *otel.Exporter
-	mu     sync.Mutex
-	stats  otel.ExportStats
-	failed int64
+	exp   *otel.Exporter
+	track *benchTracker
+
+	mu       sync.Mutex
+	stats    otel.ExportStats
+	calls    int64
+	failed   int64
+	spans    int64
+	messages int64
+	rawBytes int64
+	latency  []int64 // calls completed since the last window cut
 }
 
 func (s *benchSink) ExportResourceSpans(ctx context.Context, spans []*tracepb.ResourceSpans) (otel.ExportStats, error) {
+	var n, msgs, raw int64
+	convs := map[int]int{}
+	for _, rs := range spans {
+		raw += int64(proto.Size(rs))
+		for _, ss := range rs.GetScopeSpans() {
+			for _, sp := range ss.GetSpans() {
+				if sp == nil {
+					continue
+				}
+				n++
+				msgs += benchSpanMessages(sp)
+				c, ok := benchConversationOf(sp.TraceId)
+				if !ok {
+					c = -1
+				}
+				convs[c]++
+			}
+		}
+	}
+	t0 := time.Now()
 	st, err := s.exp.ExportResourceSpans(ctx, spans)
+	d := time.Since(t0).Nanoseconds()
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.calls++
+	s.latency = append(s.latency, d)
 	if err != nil {
 		s.failed++
 	} else {
 		addExportStats(&s.stats, st)
+		s.spans += n
+		s.messages += msgs
+		s.rawBytes += raw
+	}
+	s.mu.Unlock()
+	if err == nil {
+		s.track.spansExported(convs)
 	}
 	return st, err
 }
@@ -289,6 +485,18 @@ func (s *benchSink) snapshot() (otel.ExportStats, int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.stats, s.failed
+}
+
+// benchSpanMessages counts the message elements of a span's content attributes.
+func benchSpanMessages(sp *tracepb.Span) int64 {
+	var n int64
+	for _, kv := range sp.Attributes {
+		switch kv.Key {
+		case benchInputKey, benchOutputKey, "gen_ai.system_instructions", "gen_ai.tool.definitions":
+			n += int64(len(kv.Value.GetArrayValue().GetValues()))
+		}
+	}
+	return n
 }
 
 func addExportStats(dst *otel.ExportStats, s otel.ExportStats) {
@@ -314,6 +522,118 @@ func addExportStats(dst *otel.ExportStats, s otel.ExportStats) {
 	f.SpanRefs += n.SpanRefs
 	f.Bytes += n.Bytes
 	f.Transactions += n.Transactions
+}
+
+// addLogStats sums every counter; EventIDs are not retained.
+func addLogStats(dst *otel.LogExportStats, s otel.LogExportStats) {
+	dst.ReceivedLogs += s.ReceivedLogs
+	dst.DuplicateLogs += s.DuplicateLogs
+	dst.GeneratedIDs += s.GeneratedIDs
+	dst.Logs += s.Logs
+	dst.Batches += s.Batches
+	dst.Replaced += s.Replaced
+	dst.Correlated += s.Correlated
+	dst.LogicalBytes += s.LogicalBytes
+	dst.StoredBytes += s.StoredBytes
+	dst.UnindexedAttributes += s.UnindexedAttributes
+}
+
+// ---------------------------------------------------------------------------
+// Commit watermark
+// ---------------------------------------------------------------------------
+
+type benchCommit struct {
+	spans uint8 // turns <= maxBenchTurns < 256
+	log   bool
+}
+
+// benchTracker maintains the commit watermark. It holds two bytes for each
+// conversation above the watermark only, so its memory follows the in-flight
+// window rather than the corpus.
+type benchTracker struct {
+	turns   int
+	claimed *atomic.Int64 // conversations handed to producers
+
+	mu        sync.Mutex
+	base      int // lowest uncommitted conversation; the watermark is base-1
+	window    []benchCommit
+	peak      int
+	anomalies int64
+	watermark atomic.Int64
+}
+
+func newBenchTracker(turns int, claimed *atomic.Int64) *benchTracker {
+	t := &benchTracker{turns: turns, claimed: claimed}
+	t.watermark.Store(-1)
+	return t
+}
+
+// slot returns c's entry, or nil for a conversation never claimed or already
+// committed; callers hold t.mu.
+func (t *benchTracker) slot(c int) *benchCommit {
+	if c < t.base || int64(c) >= t.claimed.Load() {
+		t.anomalies++
+		return nil
+	}
+	for len(t.window) <= c-t.base {
+		t.window = append(t.window, benchCommit{})
+	}
+	t.peak = max(t.peak, len(t.window))
+	return &t.window[c-t.base]
+}
+
+// spansExported credits successfully exported spans per conversation.
+func (t *benchTracker) spansExported(counts map[int]int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for c, n := range counts {
+		s := t.slot(c)
+		if s == nil {
+			continue
+		}
+		if int(s.spans)+n > t.turns {
+			t.anomalies++
+			continue
+		}
+		s.spans += uint8(n)
+	}
+	t.advance()
+}
+
+// logsWritten marks conversations whose log has been written.
+func (t *benchTracker) logsWritten(convs []int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, c := range convs {
+		s := t.slot(c)
+		if s == nil {
+			continue
+		}
+		if s.log {
+			t.anomalies++
+		}
+		s.log = true
+	}
+	t.advance()
+}
+
+func (t *benchTracker) advance() {
+	i := 0
+	for i < len(t.window) && int(t.window[i].spans) == t.turns && t.window[i].log {
+		i++
+	}
+	t.window = t.window[i:]
+	t.base += i
+	t.watermark.Store(int64(t.base) - 1)
+}
+
+// Watermark returns the highest W with every conversation <= W committed.
+func (t *benchTracker) Watermark() int64 { return t.watermark.Load() }
+
+func (t *benchTracker) state() (tracked, peak int, anomalies int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.window), t.peak, t.anomalies
 }
 
 // ---------------------------------------------------------------------------
@@ -413,171 +733,203 @@ func benchMessage(role, text string) *commonpb.AnyValue {
 
 func benchClone(v *commonpb.AnyValue) *commonpb.AnyValue { return proto.Clone(v).(*commonpb.AnyValue) }
 
-// BenchUserText is turn k's new user message text in conversation c.
+// benchBlock is the block of benchBlockSize consecutive conversations that
+// shares c's incident tokens, so a block query's answer is fixed once the
+// block is committed, whatever the corpus size.
+func benchBlock(c int) int { return c / benchBlockSize }
+
+// benchBlockMembers is the number of conversations of block b in a corpus of total.
+func benchBlockMembers(b, total int) int {
+	return max(min(benchBlockSize, total-b*benchBlockSize), 0)
+}
+
+// BenchUserText is turn k's new user message text in conversation c. The
+// conv_<c> token is the selective term of the phrase classes.
 func BenchUserText(seed uint64, c, k int) string {
-	return fmt.Sprintf("user turn %d conversation %d incident_token_%d shard_key_%d: investigate latency spike in region hel1 service checkout.", k, c, c%benchTokenBuckets, (c*31+k)%97) + benchFiller(seed, c, k, "user")
+	return fmt.Sprintf("user turn %d conversation %d conv_%d incident_token_%d shard_key_%d: investigate latency spike in region hel1 service checkout.", k, c, c, benchBlock(c), (c*31+k)%97) + benchFiller(seed, c, k, "user")
 }
 
 // BenchAssistantText is turn k's assistant reply text in conversation c.
 func BenchAssistantText(seed uint64, c, k int) string {
-	return fmt.Sprintf("assistant turn %d conversation %d resolved_token_%d: root cause identified in storage queue.", k, c, c%benchTokenBuckets) + benchFiller(seed, c, k, "assistant")
+	return fmt.Sprintf("assistant turn %d conversation %d resolved_token_%d: root cause identified in storage queue.", k, c, benchBlock(c)) + benchFiller(seed, c, k, "assistant")
 }
 
-type benchConversation struct {
-	trace   []byte
-	spans   [][]byte // span IDs, index k-1 for turn k
-	starts  []int64
-	request *tracepb.ResourceSpans
-}
-
-func (b *benchConversation) traceHex() string     { return hex.EncodeToString(b.trace) }
-func (b *benchConversation) spanHex(k int) string { return hex.EncodeToString(b.spans[k-1]) }
-
-type benchCorpus struct {
-	convs  []*benchConversation
-	logs   []otel.LogRecord
-	traces map[string]int // trace hex -> conversation
-	stats  CollectorBenchCorpus
-}
-
-// newBenchCorpus deterministically builds one ResourceSpans request per
-// conversation: turn 1 is the root span and turn k's parent is turn k-1.
-func newBenchCorpus(c CollectorBenchConfig) *benchCorpus {
-	n := c.TurnsPerConversation
-	system := benchArray(benchKvlist(benchKV("type", benchStr("text")), benchKV("content", benchStr(benchSystemPrompt))))
-	tools := make([]*commonpb.AnyValue, len(benchTools))
-	for i, t := range benchTools {
-		tools[i] = benchKvlist(benchKV("type", benchStr("function")), benchKV("name", benchStr(t.name)), benchKV("description", benchStr(t.description)), benchKV("parameters", benchStr(t.parameters)))
+// benchConversationOf decodes the conversation index from the first 8 bytes
+// of a benchmark trace ID.
+func benchConversationOf(trace []byte) (int, bool) {
+	if len(trace) != 16 {
+		return 0, false
 	}
+	c := binary.BigEndian.Uint64(trace[:8])
+	if c >= maxBenchConversations {
+		return 0, false
+	}
+	return int(c), true
+}
+
+func benchStart(c, k int) int64 {
+	return benchBaseTimeNs + int64(c)*60_000_000_000 + int64(k)*2_000_000_000
+}
+
+// benchGen regenerates any conversation from (seed, run, c); nothing per
+// conversation is retained.
+type benchGen struct {
+	seed   uint64
+	run    string
+	tenant int
+	turns  int
+	system *commonpb.AnyValue
+	tools  []*commonpb.AnyValue
+}
+
+func newBenchGen(c CollectorBenchConfig) *benchGen {
+	g := &benchGen{seed: c.Seed, run: c.Run, tenant: c.Tenant, turns: c.TurnsPerConversation}
+	g.system = benchArray(benchKvlist(benchKV("type", benchStr("text")), benchKV("content", benchStr(benchSystemPrompt))))
+	for _, t := range benchTools {
+		g.tools = append(g.tools, benchKvlist(benchKV("type", benchStr("function")), benchKV("name", benchStr(t.name)), benchKV("description", benchStr(t.description)), benchKV("parameters", benchStr(t.parameters))))
+	}
+	return g
+}
+
+// traceID is c big-endian followed by 8 digest bytes, which are nonzero.
+func (g *benchGen) traceID(c int) []byte {
+	d := benchDigest(g.seed, g.run, "trace", c, 0)
+	id := make([]byte, 16)
+	binary.BigEndian.PutUint64(id, uint64(c))
+	copy(id[8:], d[:8])
+	nonzero(id[8:])
+	return id
+}
+
+func (g *benchGen) spanID(c, k int) []byte {
+	d := benchDigest(g.seed, g.run, "span", c, k)
+	return nonzero(d[:8:8])
+}
+
+func (g *benchGen) traceHex(c int) string   { return hex.EncodeToString(g.traceID(c)) }
+func (g *benchGen) spanHex(c, k int) string { return hex.EncodeToString(g.spanID(c, k)) }
+func (g *benchGen) convID(c int) string     { return fmt.Sprintf("conv-%s-%d", g.run, c) }
+func (g *benchGen) logEventID(c int) string { return fmt.Sprintf("%s-log-%d", g.run, c) }
+
+// request builds conversation c's ResourceSpans: turn 1 is the root span and
+// turn k's parent is turn k-1.
+func (g *benchGen) request(c int) *tracepb.ResourceSpans {
+	n := g.turns
 	providers := [...]string{"openai", "anthropic"}
-	out := &benchCorpus{traces: make(map[string]int, c.Conversations)}
-	out.stats = CollectorBenchCorpus{
-		Conversations:         c.Conversations,
-		TurnsPerConversation:  n,
-		Spans:                 c.spans(),
-		Logs:                  c.Conversations,
-		TotalMessageElements:  int64(c.Conversations) * int64(n*(n+1)+3*n),
-		UniqueMessageElements: int64(2*c.spans() + 1 + len(benchTools)),
-	}
-	for ci := range c.Conversations {
-		td := benchDigest(c.Seed, c.Run, "trace", ci, 0)
-		conv := &benchConversation{trace: nonzero(td[:16:16])}
-		convID := fmt.Sprintf("conv-%s-%d", c.Run, ci)
-		var history []*commonpb.AnyValue
-		spans := make([]*tracepb.Span, 0, n)
-		for k := 1; k <= n; k++ {
-			sd := benchDigest(c.Seed, c.Run, "span", ci, k)
-			id := nonzero(sd[:8:8])
-			start := benchBaseTimeNs + int64(ci)*60_000_000_000 + int64(k)*2_000_000_000
-			user := benchMessage("user", BenchUserText(c.Seed, ci, k))
-			reply := benchMessage("assistant", BenchAssistantText(c.Seed, ci, k))
-			history = append(history, user)
-			input := make([]*commonpb.AnyValue, len(history))
-			for i, m := range history {
-				input[i] = benchClone(m)
-			}
-			toolDefs := make([]*commonpb.AnyValue, len(tools))
-			for i, t := range tools {
-				toolDefs[i] = benchClone(t)
-			}
-			sp := &tracepb.Span{
-				TraceId:           conv.trace,
-				SpanId:            id,
-				Name:              "chat gpt-4o",
-				Kind:              tracepb.Span_SPAN_KIND_CLIENT,
-				StartTimeUnixNano: uint64(start),
-				EndTimeUnixNano:   uint64(start + 1_500_000_000),
-				Attributes: []*commonpb.KeyValue{
-					benchKV("gen_ai.operation.name", benchStr("chat")),
-					benchKV("gen_ai.provider.name", benchStr(providers[ci%len(providers)])),
-					benchKV("gen_ai.request.model", benchStr("gpt-4o")),
-					benchKV("gen_ai.conversation.id", benchStr(convID)),
-					benchKV("gen_ai.turn.number", &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: int64(k)}}),
-					benchKV("gen_ai.system_instructions", benchClone(system)),
-					benchKV("gen_ai.tool.definitions", benchArray(toolDefs...)),
-					benchKV(benchInputKey, benchArray(input...)),
-					benchKV(benchOutputKey, benchArray(benchClone(reply))),
-				},
-			}
-			if k > 1 {
-				sp.ParentSpanId = conv.spans[k-2]
-			}
-			history = append(history, reply)
-			conv.spans = append(conv.spans, id)
-			conv.starts = append(conv.starts, start)
-			spans = append(spans, sp)
+	trace := g.traceID(c)
+	block := benchBlock(c)
+	var history []*commonpb.AnyValue
+	var parent []byte
+	spans := make([]*tracepb.Span, 0, n)
+	for k := 1; k <= n; k++ {
+		id := g.spanID(c, k)
+		start := benchStart(c, k)
+		user := benchMessage("user", BenchUserText(g.seed, c, k))
+		reply := benchMessage("assistant", BenchAssistantText(g.seed, c, k))
+		history = append(history, user)
+		input := make([]*commonpb.AnyValue, len(history))
+		for i, m := range history {
+			input[i] = benchClone(m)
 		}
-		conv.request = &tracepb.ResourceSpans{
-			Resource: &resourcepb.Resource{Attributes: []*commonpb.KeyValue{
-				benchKV("service.name", benchStr("checkout-agent")),
-				benchKV("deployment.environment", benchStr("bench")),
-				benchKV("tenant.ordinal", &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: int64(c.Tenant)}}),
-			}},
-			SchemaUrl: "https://opentelemetry.io/schemas/1.37.0",
-			ScopeSpans: []*tracepb.ScopeSpans{{
-				Scope: &commonpb.InstrumentationScope{Name: "fdb.dev/otelbench/genai", Version: "1"},
-				Spans: spans,
-			}},
+		toolDefs := make([]*commonpb.AnyValue, len(g.tools))
+		for i, t := range g.tools {
+			toolDefs[i] = benchClone(t)
 		}
-		out.stats.RawInputBytes += int64(proto.Size(conv.request))
-		out.traces[conv.traceHex()] = ci
-		out.convs = append(out.convs, conv)
-		out.logs = append(out.logs, otel.LogRecord{
-			EventID:            fmt.Sprintf("%s-log-%d", c.Run, ci),
-			Timestamp:          conv.starts[0] + 1_000_000,
-			TraceID:            conv.traceHex(),
-			SpanID:             conv.spanHex(1),
-			SeverityText:       "ERROR",
-			SeverityNumber:     17,
-			Body:               benchStr(fmt.Sprintf("checkout latency spike in conversation %d: storage queue saturated", ci)),
-			ResourceAttributes: []*commonpb.KeyValue{benchKV("service.name", benchStr("checkout-agent"))},
-			ScopeName:          "fdb.dev/otelbench/genai",
+		sp := &tracepb.Span{
+			TraceId:           trace,
+			SpanId:            id,
+			ParentSpanId:      parent,
+			Name:              "chat gpt-4o",
+			Kind:              tracepb.Span_SPAN_KIND_CLIENT,
+			StartTimeUnixNano: uint64(start),
+			EndTimeUnixNano:   uint64(start + 1_500_000_000),
 			Attributes: []*commonpb.KeyValue{
-				benchKV("log.severity", benchStr("ERROR")),
-				benchKV("incident.bucket", benchStr(fmt.Sprintf("bucket_%d", ci%benchTokenBuckets))),
+				benchKV("gen_ai.operation.name", benchStr("chat")),
+				benchKV("gen_ai.provider.name", benchStr(providers[c%len(providers)])),
+				benchKV("gen_ai.request.model", benchStr("gpt-4o")),
+				benchKV("gen_ai.conversation.id", benchStr(g.convID(c))),
+				benchKV("incident.block", benchStr(fmt.Sprintf("block_%d", block))),
+				benchKV("gen_ai.turn.number", &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: int64(k)}}),
+				benchKV("gen_ai.system_instructions", benchClone(g.system)),
+				benchKV("gen_ai.tool.definitions", benchArray(toolDefs...)),
+				benchKV(benchInputKey, benchArray(input...)),
+				benchKV(benchOutputKey, benchArray(benchClone(reply))),
 			},
-		})
-	}
-	return out
-}
-
-// single returns the stored projection of turn k: its own resource, scope and span.
-func (b *benchConversation) single(k int) *tracepb.ResourceSpans {
-	rs, ss := b.request, b.request.ScopeSpans[0]
-	return proto.Clone(&tracepb.ResourceSpans{Resource: rs.Resource, SchemaUrl: rs.SchemaUrl, ScopeSpans: []*tracepb.ScopeSpans{{Scope: ss.Scope, SchemaUrl: ss.SchemaUrl, Spans: []*tracepb.Span{ss.Spans[k-1]}}}}).(*tracepb.ResourceSpans)
-}
-
-type benchSample struct {
-	conv, turn int
-	want       *tracepb.ResourceSpans
-}
-
-// samples picks min(Conversations, 16) evenly spread conversations and their
-// first and final turns; the final turn carries the longest history.
-func (bc *benchCorpus) samples() []benchSample {
-	c := len(bc.convs)
-	n := bc.stats.TurnsPerConversation
-	count := min(c, maxBenchSamples)
-	var out []benchSample
-	for s := range count {
-		ci := s * c / count
-		for _, k := range slices.Compact([]int{1, n}) {
-			out = append(out, benchSample{ci, k, bc.convs[ci].single(k)})
 		}
+		history = append(history, reply)
+		parent = id
+		spans = append(spans, sp)
+	}
+	return &tracepb.ResourceSpans{
+		Resource: &resourcepb.Resource{Attributes: []*commonpb.KeyValue{
+			benchKV("service.name", benchStr("checkout-agent")),
+			benchKV("deployment.environment", benchStr("bench")),
+			benchKV("tenant.ordinal", &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: int64(g.tenant)}}),
+		}},
+		SchemaUrl: "https://opentelemetry.io/schemas/1.37.0",
+		ScopeSpans: []*tracepb.ScopeSpans{{
+			Scope: &commonpb.InstrumentationScope{Name: "fdb.dev/otelbench/genai", Version: "1"},
+			Spans: spans,
+		}},
+	}
+}
+
+// log is conversation c's correlated log, attached to its root span.
+func (g *benchGen) log(c int) otel.LogRecord {
+	return otel.LogRecord{
+		EventID:            g.logEventID(c),
+		Timestamp:          benchStart(c, 1) + 1_000_000,
+		TraceID:            g.traceHex(c),
+		SpanID:             g.spanHex(c, 1),
+		SeverityText:       "ERROR",
+		SeverityNumber:     17,
+		Body:               benchStr(fmt.Sprintf("checkout latency spike in conversation %d: storage queue saturated", c)),
+		ResourceAttributes: []*commonpb.KeyValue{benchKV("service.name", benchStr("checkout-agent"))},
+		ScopeName:          "fdb.dev/otelbench/genai",
+		Attributes: []*commonpb.KeyValue{
+			benchKV("log.severity", benchStr("ERROR")),
+			benchKV("incident.bucket", benchStr(fmt.Sprintf("bucket_%d", benchBlock(c)))),
+		},
+	}
+}
+
+// benchSingle returns the stored projection of turn k: its own resource, scope and span.
+func benchSingle(req *tracepb.ResourceSpans, k int) *tracepb.ResourceSpans {
+	ss := req.ScopeSpans[0]
+	return proto.Clone(&tracepb.ResourceSpans{Resource: req.Resource, SchemaUrl: req.SchemaUrl, ScopeSpans: []*tracepb.ScopeSpans{{Scope: ss.Scope, SchemaUrl: ss.SchemaUrl, Spans: []*tracepb.Span{ss.Spans[k-1]}}}}).(*tracepb.ResourceSpans)
+}
+
+// benchCorpusStats describes total conversations of turns spans each.
+func benchCorpusStats(turns, total int, raw int64) CollectorBenchCorpus {
+	n := turns
+	out := CollectorBenchCorpus{
+		Conversations:        total,
+		TurnsPerConversation: n,
+		Spans:                total * n,
+		Logs:                 total,
+		RawInputBytes:        raw,
+		TotalMessageElements: int64(total) * int64(n*(n+1)+3*n),
+	}
+	if total > 0 {
+		out.UniqueMessageElements = int64(2*total*n + 1 + len(benchTools))
 	}
 	return out
 }
 
-// bucketSize is the number of conversations c with c % 50 == t.
-func (bc *benchCorpus) bucketSize(t int) int {
-	c := len(bc.convs)
-	if t >= c {
-		return 0
+// benchSamples picks min(total, 16) conversations spread evenly over the corpus.
+func benchSamples(total int) []int {
+	count := min(total, maxBenchSamples)
+	out := make([]int, count)
+	for s := range count {
+		out[s] = s * total / count
 	}
-	return (c-1-t)/benchTokenBuckets + 1
+	return out
 }
 
-func (bc *benchCorpus) bucketMod() int { return min(benchTokenBuckets, len(bc.convs)) }
+// benchSpread maps iteration i of iters evenly onto [0, n).
+func benchSpread(i, iters, n int) int {
+	return int(uint64(i%iters) * uint64(n) / uint64(iters))
+}
 
 // ---------------------------------------------------------------------------
 // RunBenchmark
@@ -588,11 +940,20 @@ func (bc *benchCorpus) bucketMod() int { return min(benchTokenBuckets, len(bc.co
 func RunBenchmark(ctx context.Context, cfg CollectorBenchConfig) (CollectorBenchReport, error) {
 	cfg = cfg.WithDefaults()
 	started := time.Now()
+	load := "fixed"
+	if cfg.Duration > 0 {
+		load = "duration"
+	}
 	r := CollectorBenchReport{
 		Tool: CollectorBenchTool, Mode: "collector-bench", Revision: cfg.Revision, Go: runtime.Version(),
 		Start: started.UTC().Format(time.RFC3339Nano), Config: cfg, Queries: map[string]CollectorBenchQuery{},
-		Boundary: "synthetic deterministic multi-turn GenAI conversations through the fdb_otel Collector sending queue into one FDB run; " +
-			"closed-loop single-client diagnostic, not SLO/HA evidence; query answers verified against the generated model",
+		Effective: CollectorBenchEffective{
+			Load: load, Duration: cfg.Duration.String(), ReportInterval: cfg.ReportInterval.String(), Warmup: cfg.Warmup.String(),
+			Producers: cfg.Producers, NumConsumers: cfg.NumConsumers, QueryWorkers: cfg.QueryWorkers, BlockSize: benchBlockSize,
+		},
+		UnderLoad: CollectorBenchUnderLoad{Workers: cfg.QueryWorkers, Queries: map[string]CollectorBenchQuery{}},
+		Boundary: "synthetic deterministic multi-turn GenAI conversations and correlated logs through the fdb_otel Collector sending queue into one FDB run; " +
+			"one producer host, closed-loop producers and query workers, not SLO/HA evidence; query answers verified against the generated model",
 	}
 	err := runBenchmark(ctx, cfg, &r)
 	r.WallNs = time.Since(started).Nanoseconds()
@@ -605,24 +966,46 @@ func RunBenchmark(ctx context.Context, cfg CollectorBenchConfig) (CollectorBench
 	return r, err
 }
 
-func runBenchmark(ctx context.Context, cfg CollectorBenchConfig, r *CollectorBenchReport) (err error) {
+// benchRun is the state that lives for the whole ingest. It holds no
+// per-conversation request or log: the Collector queue is the only buffer.
+type benchRun struct {
+	cfg     CollectorBenchConfig
+	gen     *benchGen
+	x       *TracesExporter
+	sink    *benchSink
+	track   *benchTracker
+	logs    *benchLogWriter
+	queries []benchQuery
+	load    *benchLoad
+	claimed atomic.Int64
+	raw     atomic.Int64
+	total   int
+	start   time.Time
+
+	seriesMu sync.Mutex
+	phase    string
+	prevEnd  time.Duration
+	prev     benchCounters
+	windows  []CollectorBenchWindow
+	memory   CollectorBenchMemory
+}
+
+func runBenchmark(ctx context.Context, cfg CollectorBenchConfig, rep *CollectorBenchReport) (err error) {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
 	cc := cfg.collectorConfig()
-	r.Exporter = cc.Exporter
-	corpus := newBenchCorpus(cfg)
-	r.Corpus = corpus.stats
-	samples := corpus.samples()
-
-	sink := &benchSink{}
+	rep.Exporter = cc.Exporter
+	r := &benchRun{cfg: cfg, gen: newBenchGen(cfg), phase: benchPhaseLoad}
+	r.track = newBenchTracker(cfg.TurnsPerConversation, &r.claimed)
+	r.sink = &benchSink{track: r.track}
 	x, err := NewFactory().CreateTraces(Settings{ID: ComponentID{Type: ComponentType, Name: "bench"}, Open: func(ctx context.Context, ec otel.ExporterConfig) (Sink, error) {
 		e, err := otel.NewExporter(ctx, ec)
 		if err != nil {
 			return nil, err
 		}
-		sink.exp = e
-		return sink, nil
+		r.sink.exp = e
+		return r.sink, nil
 	}}, cc)
 	if err != nil {
 		return err
@@ -637,89 +1020,465 @@ func runBenchmark(ctx context.Context, cfg CollectorBenchConfig, r *CollectorBen
 			err = fmt.Errorf("collector bench shutdown: %w", serr)
 		}
 	}()
-	exp := sink.exp
+	r.x = x
+	exp := r.sink.exp
+	r.logs = &benchLogWriter{gen: r.gen, exp: exp, track: r.track, in: make(chan int, benchLogBatch)}
+	r.queries = benchQueries(cfg, r.gen, exp)
+	r.load = newBenchLoad(r.queries)
 
-	// Phase 1: concurrent producers through the sending queue, then logs.
-	ingestStart := time.Now()
-	jobs := make(chan *benchConversation)
-	var wg sync.WaitGroup
+	// Phase 1: producers, logs and query workers until the deadline or the
+	// fixed corpus is admitted, then flush.
+	ingestErr := r.ingest(ctx, rep)
+	r.report(rep)
+	for _, q := range rep.UnderLoad.Queries {
+		rep.Failures += q.Failures
+	}
+	if ingestErr != nil {
+		return ingestErr
+	}
+	n := cfg.TurnsPerConversation
+	if s := rep.Ingest.Collector; s.ExportedSpans != int64(r.total*n) || s.FailedSpans != 0 {
+		return fmt.Errorf("collector bench ingest: exported %d of %d spans, %d failed", s.ExportedSpans, r.total*n, s.FailedSpans)
+	}
+	if w := rep.Watermark; w.Watermark != int64(r.total)-1 || w.Tracked != 0 || w.Anomalies != 0 {
+		return fmt.Errorf("collector bench ingest: commit watermark %d with %d tracked and %d anomalies, want %d", w.Watermark, w.Tracked, w.Anomalies, r.total-1)
+	}
+
+	// Phase 2: bit-for-bit reconstruction of sampled spans.
+	for _, c := range benchSamples(r.total) {
+		req := r.gen.request(c)
+		for _, k := range slices.Compact([]int{1, n}) {
+			got, err := exp.LoadSpanOTLP(ctx, r.gen.traceHex(c), r.gen.spanHex(c, k))
+			rep.Fidelity.CheckedSpans++
+			switch {
+			case err != nil:
+				rep.Fidelity.Mismatches++
+				rep.Fidelity.Errors = append(rep.Fidelity.Errors, fmt.Sprintf("conversation %d turn %d: %v", c, k, err))
+			case !proto.Equal(got, benchSingle(req, k)):
+				rep.Fidelity.Mismatches++
+				rep.Fidelity.Errors = append(rep.Fidelity.Errors, fmt.Sprintf("conversation %d turn %d: reconstructed span differs from the original", c, k))
+			}
+		}
+	}
+	rep.Failures += rep.Fidelity.Mismatches
+
+	// Phase 3: verified query classes over the whole ingested corpus.
+	for _, q := range r.queries {
+		res := measureQuery(ctx, cfg.QueryIterations, func(ctx context.Context, i int) (int, error) {
+			return q.run(ctx, r.postTarget(q, i))
+		})
+		rep.Queries[q.class] = res
+		rep.Failures += res.Failures
+	}
+	return ctx.Err()
+}
+
+// ingest runs phase 1 and returns its first error.
+func (r *benchRun) ingest(ctx context.Context, rep *CollectorBenchReport) error {
+	cfg := r.cfg
+	ictx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	r.start = time.Now()
+	limit := cfg.Conversations
+	var deadline time.Time
+	if cfg.Duration > 0 {
+		limit, deadline = maxBenchConversations, r.start.Add(cfg.Duration)
+	}
+
+	sampleStop, sampleDone := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(sampleDone)
+		t := time.NewTicker(cfg.ReportInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				r.cut(false)
+			case <-sampleStop:
+				return
+			}
+		}
+	}()
+	logDone := make(chan error, 1)
+	go func() {
+		err := r.logs.run(ictx)
+		if err != nil {
+			cancel(err)
+		}
+		logDone <- err
+	}()
+	queryStop := make(chan struct{})
+	var queryWG sync.WaitGroup
+	var next atomic.Int64
+	for range cfg.QueryWorkers {
+		queryWG.Go(func() { r.queryWorker(ictx, queryStop, &next) })
+	}
+
+	var producers sync.WaitGroup
 	var errMu sync.Mutex
 	var produceErrs []error
 	for range cfg.Producers {
-		wg.Go(func() {
-			for conv := range jobs {
-				if err := x.ConsumeTraces(ctx, []*tracepb.ResourceSpans{conv.request}); err != nil {
+		producers.Go(func() {
+			for ictx.Err() == nil && (deadline.IsZero() || time.Now().Before(deadline)) {
+				c := int(r.claimed.Add(1) - 1)
+				if c >= limit {
+					return
+				}
+				req := r.gen.request(c)
+				r.raw.Add(int64(proto.Size(req)))
+				if err := r.x.ConsumeTraces(ictx, []*tracepb.ResourceSpans{req}); err != nil {
 					errMu.Lock()
-					produceErrs = append(produceErrs, err)
+					produceErrs = append(produceErrs, fmt.Errorf("conversation %d: %w", c, err))
 					errMu.Unlock()
+					cancel(err)
+					return
+				}
+				select {
+				case r.logs.in <- c:
+				case <-ictx.Done():
+					return
 				}
 			}
 		})
 	}
-feed:
-	for _, conv := range corpus.convs {
-		select {
-		case jobs <- conv:
-		case <-ctx.Done():
-			break feed
-		}
-	}
-	close(jobs)
-	wg.Wait()
-	flushErr := x.Flush(ctx)
-	ingestWall := time.Since(ingestStart)
-	in := &r.Ingest
-	in.IngestWallNs = ingestWall.Nanoseconds()
-	if secs := ingestWall.Seconds(); secs > 0 {
-		in.SpansPerSec = float64(corpus.stats.Spans) / secs
-		in.MessagesPerSec = float64(corpus.stats.TotalMessageElements) / secs
-		in.RawBytesPerSec = float64(corpus.stats.RawInputBytes) / secs
-	}
-	in.Collector = x.Stats()
-	in.Export, in.FailedExportCalls = sink.snapshot()
+	producers.Wait()
+	close(queryStop)
+	queryWG.Wait()
+	rep.UnderLoad.WallNs = time.Since(r.start).Nanoseconds()
+	r.total = min(int(r.claimed.Load()), limit)
+	r.cut(true)
+	r.seriesMu.Lock()
+	r.phase = benchPhaseDrain
+	r.seriesMu.Unlock()
+
+	flushErr := r.x.Flush(ictx)
+	close(r.logs.in)
+	logErr := <-logDone
+	rep.Ingest.IngestWallNs = time.Since(r.start).Nanoseconds()
+	close(sampleStop)
+	<-sampleDone
+	r.cut(true)
+
+	// One failure cancels the others, so report all of them.
+	var errs []error
 	if len(produceErrs) > 0 {
-		return fmt.Errorf("collector bench ingest: %d rejected requests: %w", len(produceErrs), errors.Join(produceErrs[:min(len(produceErrs), 4)]...))
+		errs = append(errs, fmt.Errorf("collector bench ingest: %d rejected requests: %w", len(produceErrs), errors.Join(produceErrs[:min(len(produceErrs), 4)]...)))
+	}
+	if logErr != nil {
+		errs = append(errs, logErr)
 	}
 	if flushErr != nil {
-		return fmt.Errorf("collector bench flush: %w", flushErr)
+		errs = append(errs, fmt.Errorf("collector bench flush: %w", flushErr))
 	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if s := in.Collector; s.ExportedSpans != int64(corpus.stats.Spans) || s.FailedSpans != 0 {
-		return fmt.Errorf("collector bench ingest: exported %d of %d spans, %d failed", s.ExportedSpans, corpus.stats.Spans, s.FailedSpans)
-	}
-	logStart := time.Now()
-	in.Logs, err = exp.ExportLogs(ctx, corpus.logs)
-	in.LogWallNs = time.Since(logStart).Nanoseconds()
-	in.Logs.EventIDs = nil
-	if err != nil {
-		return fmt.Errorf("collector bench logs: %w", err)
-	}
+	return errors.Join(append(errs, ctx.Err())...)
+}
 
-	// Phase 2: bit-for-bit reconstruction of sampled spans.
-	for _, s := range samples {
-		conv := corpus.convs[s.conv]
-		got, err := exp.LoadSpanOTLP(ctx, conv.traceHex(), conv.spanHex(s.turn))
-		r.Fidelity.CheckedSpans++
-		switch {
-		case err != nil:
-			r.Fidelity.Mismatches++
-			r.Fidelity.Errors = append(r.Fidelity.Errors, fmt.Sprintf("conversation %d turn %d: %v", s.conv, s.turn, err))
-		case !proto.Equal(got, s.want):
-			r.Fidelity.Mismatches++
-			r.Fidelity.Errors = append(r.Fidelity.Errors, fmt.Sprintf("conversation %d turn %d: reconstructed span differs from the original", s.conv, s.turn))
+// report fills the ingest sections of the report from the run state.
+func (r *benchRun) report(rep *CollectorBenchReport) {
+	cfg := r.cfg
+	rep.Corpus = benchCorpusStats(cfg.TurnsPerConversation, r.total, r.raw.Load())
+	in := &rep.Ingest
+	if secs := float64(in.IngestWallNs) / 1e9; secs > 0 {
+		in.SpansPerSec = float64(rep.Corpus.Spans) / secs
+		in.MessagesPerSec = float64(rep.Corpus.TotalMessageElements) / secs
+		in.RawBytesPerSec = float64(rep.Corpus.RawInputBytes) / secs
+	}
+	in.Collector = r.x.Stats()
+	in.Export, in.FailedExportCalls = r.sink.snapshot()
+	r.logs.mu.Lock()
+	in.Logs, in.LogWallNs, in.LogCalls, in.FailedLogCalls = r.logs.stats, r.logs.wallNs, r.logs.calls, r.logs.failed
+	r.logs.mu.Unlock()
+	r.seriesMu.Lock()
+	rep.Series = slices.Clone(r.windows)
+	rep.Memory = r.memory
+	r.seriesMu.Unlock()
+	rep.Rates = benchRates(rep.Series, cfg.Warmup)
+	tracked, peak, anomalies := r.track.state()
+	rep.Watermark = CollectorBenchWatermark{Conversations: r.total, Watermark: r.track.Watermark(), Tracked: tracked, PeakTracked: peak, Anomalies: anomalies}
+	rep.UnderLoad.Queries = r.load.results(time.Duration(rep.UnderLoad.WallNs))
+}
+
+// benchCounters are cumulative ingest counters; windows are their deltas.
+type benchCounters struct {
+	spans, messages, rawBytes, logs, calls, failed, retries, queries int64
+}
+
+// counters reads the cumulative counters and takes the export-call latencies
+// recorded since the previous call, under one sink lock so they agree.
+func (r *benchRun) counters() (benchCounters, Stats, []int64) {
+	st := r.x.Stats()
+	var c benchCounters
+	r.sink.mu.Lock()
+	c.spans, c.messages, c.rawBytes, c.calls, c.failed = r.sink.spans, r.sink.messages, r.sink.rawBytes, r.sink.calls, r.sink.failed
+	latency := r.sink.latency
+	r.sink.latency = nil
+	r.sink.mu.Unlock()
+	r.logs.mu.Lock()
+	c.logs = r.logs.stats.Logs
+	r.logs.mu.Unlock()
+	c.retries, c.queries = st.Retries, r.load.done.Load()
+	return c, st, latency
+}
+
+// cut closes the current window in the run's current phase. Windows under a
+// millisecond are merged into the next one, except the last of a phase.
+func (r *benchRun) cut(final bool) {
+	r.seriesMu.Lock()
+	defer r.seriesMu.Unlock()
+	now := time.Since(r.start)
+	if now <= r.prevEnd || !final && now-r.prevEnd < time.Millisecond {
+		return
+	}
+	cur, st, latency := r.counters()
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	p := r.prev
+	w := CollectorBenchWindow{
+		Phase: r.phase, StartNs: r.prevEnd.Nanoseconds(), EndNs: now.Nanoseconds(),
+		ExportedSpans: cur.spans - p.spans, Messages: cur.messages - p.messages, RawInputBytes: cur.rawBytes - p.rawBytes,
+		Logs: cur.logs - p.logs, ExportCalls: cur.calls - p.calls, FailedCalls: cur.failed - p.failed,
+		Retries: cur.retries - p.retries, Queries: cur.queries - p.queries,
+		ExportLatency: benchHistogram(latency), QueuedSpans: st.QueuedSpans, Watermark: r.track.Watermark(),
+		SysBytes: ms.Sys, HeapInuse: ms.HeapInuse,
+	}
+	w.SpansPerSec = float64(w.ExportedSpans) / (now - r.prevEnd).Seconds()
+	r.memory.PeakSysBytes = max(r.memory.PeakSysBytes, ms.Sys)
+	r.memory.PeakHeapInuseBytes = max(r.memory.PeakHeapInuseBytes, ms.HeapInuse)
+	r.windows = append(r.windows, w)
+	r.prev, r.prevEnd = cur, now
+}
+
+// benchRates sums every window for the whole run, and load windows starting
+// at or after warmup for the steady state.
+func benchRates(windows []CollectorBenchWindow, warmup time.Duration) CollectorBenchRates {
+	rate := func(keep func(CollectorBenchWindow) bool) CollectorBenchRate {
+		var out CollectorBenchRate
+		var msgs, raw, logs int64
+		for _, w := range windows {
+			if !keep(w) {
+				continue
+			}
+			out.Windows++
+			out.WallNs += w.EndNs - w.StartNs
+			out.Spans += w.ExportedSpans
+			msgs += w.Messages
+			raw += w.RawInputBytes
+			logs += w.Logs
 		}
+		if secs := float64(out.WallNs) / 1e9; secs > 0 {
+			out.SpansPerSec = float64(out.Spans) / secs
+			out.MessagesPerSec = float64(msgs) / secs
+			out.RawBytesPerSec = float64(raw) / secs
+			out.LogsPerSec = float64(logs) / secs
+		}
+		return out
 	}
-	r.Failures += r.Fidelity.Mismatches
+	return CollectorBenchRates{
+		WholeRun: rate(func(CollectorBenchWindow) bool { return true }),
+		SteadyState: rate(func(w CollectorBenchWindow) bool {
+			return w.Phase == benchPhaseLoad && w.StartNs >= warmup.Nanoseconds()
+		}),
+	}
+}
 
-	// Phase 3: verified query classes.
-	for _, q := range benchQueries(cfg, corpus, exp) {
-		res := measureQuery(ctx, cfg.QueryIterations, q.run)
-		r.Queries[q.class] = res
-		r.Failures += res.Failures
+// benchLogWriter exports produced conversations' logs in batches and marks
+// them written in the tracker. Its channel bounds the backlog.
+type benchLogWriter struct {
+	gen   *benchGen
+	exp   *otel.Exporter
+	track *benchTracker
+	in    chan int
+
+	mu     sync.Mutex
+	stats  otel.LogExportStats
+	calls  int64
+	failed int64
+	wallNs int64
+}
+
+// run batches until in is closed, flushing every benchLogBatch logs or
+// benchLogFlushInterval.
+func (w *benchLogWriter) run(ctx context.Context) error {
+	tick := time.NewTicker(benchLogFlushInterval)
+	defer tick.Stop()
+	batch := make([]int, 0, benchLogBatch)
+	for {
+		select {
+		case c, ok := <-w.in:
+			if !ok {
+				return w.flush(ctx, batch)
+			}
+			if batch = append(batch, c); len(batch) < benchLogBatch {
+				continue
+			}
+		case <-tick.C:
+		}
+		if err := w.flush(ctx, batch); err != nil {
+			return err
+		}
+		batch = batch[:0]
 	}
-	return ctx.Err()
+}
+
+func (w *benchLogWriter) flush(ctx context.Context, batch []int) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	records := make([]otel.LogRecord, len(batch))
+	for i, c := range batch {
+		records[i] = w.gen.log(c)
+	}
+	backoff := 250 * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		t0 := time.Now()
+		st, err := w.exp.ExportLogs(ctx, records)
+		d := time.Since(t0).Nanoseconds()
+		w.mu.Lock()
+		w.calls++
+		w.wallNs += d
+		if err != nil {
+			w.failed++
+		} else {
+			addLogStats(&w.stats, st)
+		}
+		w.mu.Unlock()
+		if err == nil {
+			w.track.logsWritten(batch)
+			return nil
+		}
+		if attempt == benchLogAttempts || ctx.Err() != nil {
+			return fmt.Errorf("collector bench logs: %w", err)
+		}
+		t := time.NewTimer(backoff)
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			t.Stop()
+			return fmt.Errorf("collector bench logs: %w", errors.Join(err, ctx.Err()))
+		}
+		backoff *= 2
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Queries
+// ---------------------------------------------------------------------------
+
+// benchTarget selects what one query iteration asks about: a conversation,
+// or for block classes a block and its member count.
+type benchTarget struct {
+	iter, conv, block, size int
+}
+
+// benchQuery is one verified query class.
+type benchQuery struct {
+	class string
+	block bool
+	run   func(context.Context, benchTarget) (int, error)
+}
+
+// postTarget spreads post-ingest iterations evenly over the whole corpus.
+func (r *benchRun) postTarget(q benchQuery, i int) benchTarget {
+	t := benchTarget{iter: i}
+	if q.block {
+		t.block = benchSpread(i, r.cfg.QueryIterations, (r.total+benchBlockSize-1)/benchBlockSize)
+		t.size = benchBlockMembers(t.block, r.total)
+	} else {
+		t.conv = benchSpread(i, r.cfg.QueryIterations, r.total)
+	}
+	return t
+}
+
+// benchLoad accumulates the under-load query results.
+type benchLoad struct {
+	mu      sync.Mutex
+	classes map[string]*benchLoadClass
+	done    atomic.Int64
+}
+
+type benchLoadClass struct {
+	attempts, failures int
+	rows               int64
+	samples            []int64
+	err                string
+}
+
+func newBenchLoad(queries []benchQuery) *benchLoad {
+	l := &benchLoad{classes: map[string]*benchLoadClass{}}
+	for _, q := range queries {
+		l.classes[q.class] = &benchLoadClass{}
+	}
+	return l
+}
+
+func (l *benchLoad) record(class string, rows int, d int64, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	c := l.classes[class]
+	c.attempts++
+	if err != nil {
+		c.failures++
+		if c.err == "" {
+			c.err = fmt.Sprintf("iteration %d: %v", c.attempts-1, err)
+		}
+	} else {
+		c.rows += int64(rows)
+		c.samples = append(c.samples, d)
+	}
+	l.done.Add(1)
+}
+
+func (l *benchLoad) results(wall time.Duration) map[string]CollectorBenchQuery {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make(map[string]CollectorBenchQuery, len(l.classes))
+	for class, c := range l.classes {
+		q := CollectorBenchQuery{Iterations: c.attempts, Failures: c.failures, Rows: c.rows, WallNs: wall.Nanoseconds(), Error: c.err, Histogram: benchHistogram(slices.Clone(c.samples))}
+		if secs := wall.Seconds(); secs > 0 {
+			q.QPS = float64(len(c.samples)) / secs
+		}
+		out[class] = q
+	}
+	return out
+}
+
+// queryWorker runs the classes round-robin against committed data only:
+// conversations at or below the watermark and blocks wholly below it.
+func (r *benchRun) queryWorker(ctx context.Context, stop <-chan struct{}, next *atomic.Int64) {
+	idle := time.NewTimer(0)
+	defer idle.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+		i := int(next.Add(1) - 1)
+		q := r.queries[i%len(r.queries)]
+		committed := int(r.track.Watermark() + 1)
+		state := r.cfg.Seed ^ uint64(i)*0x9e3779b97f4a7c15
+		pick := int(splitmix64(&state) >> 1)
+		t := benchTarget{iter: i}
+		avail := committed
+		if q.block {
+			avail = committed / benchBlockSize
+			t.block, t.size = pick%max(avail, 1), benchBlockSize
+		} else {
+			t.conv = pick % max(avail, 1)
+		}
+		if avail == 0 {
+			idle.Reset(benchQueryIdle)
+			select {
+			case <-stop:
+				return
+			case <-idle.C:
+			}
+			continue
+		}
+		t0 := time.Now()
+		rows, err := q.run(ctx, t)
+		r.load.record(q.class, rows, time.Since(t0).Nanoseconds(), err)
+	}
 }
 
 func measureQuery(ctx context.Context, iterations int, run func(context.Context, int) (int, error)) CollectorBenchQuery {
@@ -759,19 +1518,17 @@ func benchHistogram(samples []int64) otel.Histogram {
 	return otel.Histogram{Population: len(samples), Min: samples[0], P50: q(50), P95: q(95), P99: q(99), Max: samples[len(samples)-1]}
 }
 
-type benchQuery struct {
-	class string
-	run   func(context.Context, int) (int, error)
-}
-
-func benchQueries(cfg CollectorBenchConfig, corpus *benchCorpus, exp *otel.Exporter) []benchQuery {
+func benchQueries(cfg CollectorBenchConfig, gen *benchGen, exp *otel.Exporter) []benchQuery {
 	n := cfg.TurnsPerConversation
-	convs := len(corpus.convs)
 	k := exp.Config().K
-	mod := corpus.bucketMod()
-	inBucket := func(trace string, t int) bool {
-		c, ok := corpus.traces[trace]
-		return ok && c%benchTokenBuckets == t
+	// inBlock checks the trace is exactly the generated trace of a member of block b.
+	inBlock := func(trace string, b int) bool {
+		raw, err := hex.DecodeString(trace)
+		if err != nil {
+			return false
+		}
+		c, ok := benchConversationOf(raw)
+		return ok && benchBlock(c) == b && trace == gen.traceHex(c)
 	}
 	checkHits := func(hits []otel.MessageSpanHit, want int, ok func(otel.MessageSpanHit) error) (int, error) {
 		if len(hits) != want {
@@ -795,56 +1552,54 @@ func benchQueries(cfg CollectorBenchConfig, corpus *benchCorpus, exp *otel.Expor
 	var out []benchQuery
 	if cfg.EnableMessageFullText {
 		out = append(out,
-			benchQuery{QueryFTSSingleToken, func(ctx context.Context, i int) (int, error) {
-				t := i % mod
-				page, err := exp.QueryMessageFullText(ctx, otel.MessageFullTextQuery{Query: fmt.Sprintf("incident_token_%d", t), Mode: otel.MessageMatchAll, Role: "user"})
+			benchQuery{QueryFTSSingleToken, true, func(ctx context.Context, t benchTarget) (int, error) {
+				page, err := exp.QueryMessageFullText(ctx, otel.MessageFullTextQuery{Query: fmt.Sprintf("incident_token_%d", t.block), Mode: otel.MessageMatchAll, Role: "user"})
 				if err != nil {
 					return 0, err
 				}
 				// User message j of each conversation is in the input of turns j..n.
-				return checkHits(page.Hits, min(corpus.bucketSize(t)*n*(n+1)/2, k), func(h otel.MessageSpanHit) error {
-					if h.Role != "user" || h.AttributeKey != benchInputKey || !inBucket(h.Trace, t) {
+				return checkHits(page.Hits, min(t.size*n*(n+1)/2, k), func(h otel.MessageSpanHit) error {
+					if h.Role != "user" || h.AttributeKey != benchInputKey || !inBlock(h.Trace, t.block) {
 						return fmt.Errorf("unexpected hit %+v", h)
 					}
 					return nil
 				})
 			}},
-			benchQuery{QueryFTSPhraseFirstTurn, func(ctx context.Context, i int) (int, error) {
-				c, turn := i%convs, i%n+1
-				page, err := exp.QueryMessageFullText(ctx, otel.MessageFullTextQuery{Query: fmt.Sprintf("user turn %d conversation %d", turn, c), Mode: otel.MessageMatchPhrase, FirstTurnOnly: true})
+			benchQuery{QueryFTSPhraseFirstTurn, false, func(ctx context.Context, t benchTarget) (int, error) {
+				c, turn := t.conv, t.iter%n+1
+				page, err := exp.QueryMessageFullText(ctx, otel.MessageFullTextQuery{Query: fmt.Sprintf("user turn %d conversation %d conv_%d", turn, c, c), Mode: otel.MessageMatchPhrase, FirstTurnOnly: true})
 				if err != nil {
 					return 0, err
 				}
-				conv := corpus.convs[c]
+				trace, span := gen.traceHex(c), gen.spanHex(c, turn)
 				return checkHits(page.Hits, 1, func(h otel.MessageSpanHit) error {
-					if h.Trace != conv.traceHex() || h.Span != conv.spanHex(turn) || h.AttributeKey != benchInputKey || h.Role != "user" {
+					if h.Trace != trace || h.Span != span || h.AttributeKey != benchInputKey || h.Role != "user" {
 						return fmt.Errorf("hit %+v, want conversation %d turn %d", h, c, turn)
 					}
 					return nil
 				})
 			}},
-			benchQuery{QueryFTSMultiTurnHistory, func(ctx context.Context, i int) (int, error) {
-				c := i % convs
-				page, err := exp.QueryMessageFullText(ctx, otel.MessageFullTextQuery{Query: fmt.Sprintf("user turn 1 conversation %d", c), Mode: otel.MessageMatchPhrase, AttributeKey: benchInputKey})
+			benchQuery{QueryFTSMultiTurnHistory, false, func(ctx context.Context, t benchTarget) (int, error) {
+				c := t.conv
+				page, err := exp.QueryMessageFullText(ctx, otel.MessageFullTextQuery{Query: fmt.Sprintf("user turn 1 conversation %d conv_%d", c, c), Mode: otel.MessageMatchPhrase, AttributeKey: benchInputKey})
 				if err != nil {
 					return 0, err
 				}
-				conv := corpus.convs[c]
+				trace := gen.traceHex(c)
 				return checkHits(page.Hits, min(n, k), func(h otel.MessageSpanHit) error {
-					if h.Trace != conv.traceHex() || h.AttributeKey != benchInputKey || !slices.Equal(h.TurnOrdinals, []int{0}) {
+					if h.Trace != trace || h.AttributeKey != benchInputKey || !slices.Equal(h.TurnOrdinals, []int{0}) {
 						return fmt.Errorf("hit %+v outside conversation %d's first message", h, c)
 					}
 					return nil
 				})
 			}},
-			benchQuery{QueryFTSSameSpanPreds, func(ctx context.Context, i int) (int, error) {
-				t := i % mod
-				page, err := exp.QueryMessageFullText(ctx, otel.MessageFullTextQuery{Query: fmt.Sprintf("incident_token_%d", t), FirstTurnOnly: true, Predicates: []otel.Attribute{chat, model}})
+			benchQuery{QueryFTSSameSpanPreds, true, func(ctx context.Context, t benchTarget) (int, error) {
+				page, err := exp.QueryMessageFullText(ctx, otel.MessageFullTextQuery{Query: fmt.Sprintf("incident_token_%d", t.block), FirstTurnOnly: true, Predicates: []otel.Attribute{chat, model}})
 				if err != nil {
 					return 0, err
 				}
-				return checkHits(page.Hits, min(corpus.bucketSize(t)*n, k), func(h otel.MessageSpanHit) error {
-					if h.Role != "user" || h.AttributeKey != benchInputKey || !inBucket(h.Trace, t) {
+				return checkHits(page.Hits, min(t.size*n, k), func(h otel.MessageSpanHit) error {
+					if h.Role != "user" || h.AttributeKey != benchInputKey || !inBlock(h.Trace, t.block) {
 						return fmt.Errorf("unexpected hit %+v", h)
 					}
 					return nil
@@ -853,10 +1608,9 @@ func benchQueries(cfg CollectorBenchConfig, corpus *benchCorpus, exp *otel.Expor
 		)
 	}
 	out = append(out,
-		benchQuery{QuerySameSpanConjunction, func(ctx context.Context, i int) (int, error) {
-			c := i % convs
-			conv := corpus.convs[c]
-			convID := otel.Attribute{Scope: "span", Key: "gen_ai.conversation.id", Type: "string", Value: fmt.Sprintf("conv-%s-%d", cfg.Run, c)}
+		benchQuery{QuerySameSpanConjunction, false, func(ctx context.Context, t benchTarget) (int, error) {
+			c := t.conv
+			convID := otel.Attribute{Scope: "span", Key: "gen_ai.conversation.id", Type: "string", Value: gen.convID(c)}
 			page, err := exp.QuerySameSpan(ctx, otel.SameSpanQuery{Predicates: []otel.Attribute{convID, chat, model}})
 			if err != nil {
 				return 0, err
@@ -864,36 +1618,40 @@ func benchQueries(cfg CollectorBenchConfig, corpus *benchCorpus, exp *otel.Expor
 			if len(page.Spans) != min(n, k) {
 				return len(page.Spans), fmt.Errorf("%d spans, want %d", len(page.Spans), min(n, k))
 			}
+			trace := gen.traceHex(c)
+			ids := map[string]bool{}
+			for turn := 1; turn <= n; turn++ {
+				ids[gen.spanHex(c, turn)] = true
+			}
 			seen := map[string]bool{}
 			for _, s := range page.Spans {
-				if s.Trace != conv.traceHex() || seen[s.ID] || !slices.ContainsFunc(conv.spans, func(id []byte) bool { return hex.EncodeToString(id) == s.ID }) {
+				if s.Trace != trace || seen[s.ID] || !ids[s.ID] {
 					return len(page.Spans), fmt.Errorf("unexpected span %+v for conversation %d", s, c)
 				}
 				seen[s.ID] = true
 			}
 			return len(page.Spans), nil
 		}},
-		benchQuery{QueryTraceExistential3, func(ctx context.Context, i int) (int, error) {
-			t := i % mod
+		benchQuery{QueryTraceExistential3, true, func(ctx context.Context, t benchTarget) (int, error) {
 			q := otel.TraceExistentialQuery{
-				Clauses:    []otel.Attribute{chat},
-				LogClauses: []otel.Attribute{{Scope: otel.LogScopeRecord, Key: "incident.bucket", Type: "string", Value: fmt.Sprintf("bucket_%d", t)}},
+				Clauses:    []otel.Attribute{{Scope: "span", Key: "incident.block", Type: "string", Value: fmt.Sprintf("block_%d", t.block)}},
+				LogClauses: []otel.Attribute{{Scope: otel.LogScopeRecord, Key: "incident.bucket", Type: "string", Value: fmt.Sprintf("bucket_%d", t.block)}},
 			}
 			if cfg.EnableMessageFullText {
-				q.MessageClauses = []otel.MessageFullTextQuery{{Query: fmt.Sprintf("resolved_token_%d", t), Role: "assistant", FirstTurnOnly: true}}
+				q.MessageClauses = []otel.MessageFullTextQuery{{Query: fmt.Sprintf("resolved_token_%d", t.block), Role: "assistant", FirstTurnOnly: true}}
 			}
 			res, err := exp.QueryTraceExistential(ctx, q)
 			if err != nil {
 				return 0, err
 			}
-			want := min(corpus.bucketSize(t), k)
+			want := min(t.size, k)
 			if len(res.Hits) != want {
 				return len(res.Hits), fmt.Errorf("%d traces, want %d", len(res.Hits), want)
 			}
 			seen := map[string]bool{}
 			for _, h := range res.Hits {
-				if !inBucket(h.Trace, t) || seen[h.Trace] {
-					return len(res.Hits), fmt.Errorf("unexpected trace %s for bucket %d", h.Trace, t)
+				if !inBlock(h.Trace, t.block) || seen[h.Trace] {
+					return len(res.Hits), fmt.Errorf("unexpected trace %s for block %d", h.Trace, t.block)
 				}
 				seen[h.Trace] = true
 				if len(h.Witnesses) != 1 || len(h.Witnesses[0]) == 0 || len(h.LogWitnesses) != 1 || len(h.LogWitnesses[0]) == 0 || len(h.MessageWitnesses) != len(q.MessageClauses) {
@@ -907,26 +1665,24 @@ func benchQueries(cfg CollectorBenchConfig, corpus *benchCorpus, exp *otel.Expor
 			}
 			return len(res.Hits), nil
 		}},
-		benchQuery{QueryTraceGraph, func(ctx context.Context, i int) (int, error) {
-			c := i % convs
-			conv := corpus.convs[c]
-			g, err := exp.TraverseTraceGraph(ctx, conv.traceHex())
+		benchQuery{QueryTraceGraph, false, func(ctx context.Context, t benchTarget) (int, error) {
+			c := t.conv
+			g, err := exp.TraverseTraceGraph(ctx, gen.traceHex(c))
 			if err != nil {
 				return 0, err
 			}
-			if len(g.Spans) != n || len(g.Roots) != 1 || g.Roots[0] != conv.spanHex(1) || g.MaxDepth != n-1 || len(g.Orphans) != 0 || len(g.Cycles) != 0 {
+			if len(g.Spans) != n || len(g.Roots) != 1 || g.Roots[0] != gen.spanHex(c, 1) || g.MaxDepth != n-1 || len(g.Orphans) != 0 || len(g.Cycles) != 0 {
 				return len(g.Spans), fmt.Errorf("conversation %d graph: %d spans, roots %v, max depth %d, orphans %v, cycles %v", c, len(g.Spans), g.Roots, g.MaxDepth, g.Orphans, g.Cycles)
 			}
 			return len(g.Spans), nil
 		}},
-		benchQuery{QueryLogsByTrace, func(ctx context.Context, i int) (int, error) {
-			c := i % convs
-			conv := corpus.convs[c]
-			logs, err := exp.QueryLogsByTrace(ctx, conv.traceHex(), "")
+		benchQuery{QueryLogsByTrace, false, func(ctx context.Context, t benchTarget) (int, error) {
+			c := t.conv
+			logs, err := exp.QueryLogsByTrace(ctx, gen.traceHex(c), "")
 			if err != nil {
 				return 0, err
 			}
-			if len(logs) != 1 || logs[0].EventID != corpus.logs[c].EventID || logs[0].SpanID != conv.spanHex(1) {
+			if len(logs) != 1 || logs[0].EventID != gen.logEventID(c) || logs[0].SpanID != gen.spanHex(c, 1) {
 				return len(logs), fmt.Errorf("conversation %d: %d correlated logs, want its one log", c, len(logs))
 			}
 			return len(logs), nil

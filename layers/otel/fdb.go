@@ -95,7 +95,7 @@ func OpenFDBContext(ctx context.Context, c Config, cluster string) (*FDBBackend,
 func (b *FDBBackend) Close()                     { b.raw.Close() }
 func (b *FDBBackend) LastQueryWork() QueryResult { return b.lastWork }
 func configureRecordTimeout(rc *recordlayer.FDBRecordContext) error {
-	return rc.Transaction().Options().SetTimeout(1500)
+	return rc.Transaction().Options().SetTimeout(txnTimeout(rc.Context()).Milliseconds())
 }
 
 func configureStoreContext(rc *recordlayer.FDBRecordContext) error {

@@ -634,7 +634,7 @@ func PersistAndIndexMessageBlobsDB(ctx context.Context, db *recordlayer.FDBDatab
 		lo := w * msgMetaProbeWave
 		wave := unique[lo:min(lo+msgMetaProbeWave, len(unique))]
 		var got []bool
-		_, err := db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+		err := runIdempotentTxn(ctx, db, op, func(rc *recordlayer.FDBRecordContext) (any, error) {
 			if err := configureStoreContext(rc); err != nil {
 				return nil, err
 			}
@@ -725,7 +725,7 @@ func PersistAndIndexMessageBlobsDB(ctx context.Context, db *recordlayer.FDBDatab
 		return runMessageJobs(ctx, op, len(phase), func(ctx context.Context, i int) error {
 			j := phase[i]
 			var n int64
-			_, err := db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+			err := runIdempotentTxn(ctx, db, op, func(rc *recordlayer.FDBRecordContext) (any, error) {
 				if err := configureStoreContext(rc); err != nil {
 					return nil, err
 				}
@@ -1213,7 +1213,7 @@ func IndexMessageSpansDB(ctx context.Context, db *recordlayer.FDBDatabase, root 
 	var mu sync.Mutex
 	run := func(ctx context.Context, fn func(*recordlayer.FDBRecordContext) (MessageFTSStats, error)) error {
 		var got MessageFTSStats
-		_, err := db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+		err := runIdempotentTxn(ctx, db, op, func(rc *recordlayer.FDBRecordContext) (any, error) {
 			if err := configureStoreContext(rc); err != nil {
 				return nil, err
 			}
@@ -1425,18 +1425,88 @@ func (p *messageQueryPlan) match(c *messageCandidate) bool {
 	return true
 }
 
-// matchMessageBlobs reads every query term's postings in one pipelined wave
-// and returns the matching messages ordered by hash.
+const (
+	msgFTSProbeRows = 128  // first page of each term's postings in an intersection
+	msgFTSPointWave = 1024 // pipelined posting point reads per wave
+)
+
+type messagePosting struct {
+	encoding, role string
+	positions      []int
+}
+
+// decodeMessagePostingRow validates one msg_fts_v1 row below a term prefix.
+func decodeMessagePostingRow(prefix subspace.Subspace, kv fdb.KeyValue) ([32]byte, messagePosting, error) {
+	var h [32]byte
+	k, err := prefix.Unpack(kv.Key)
+	if err != nil || len(k) != 1 {
+		return h, messagePosting{}, fail("corruption", "message posting", "malformed message posting key")
+	}
+	hb, ok := k[0].([]byte)
+	if !ok || len(hb) != 32 {
+		return h, messagePosting{}, fail("corruption", "message posting", "malformed message digest in posting key")
+	}
+	enc, role, pos, err := decodeMessagePosting(kv.Value)
+	if err != nil {
+		return h, messagePosting{}, err
+	}
+	copy(h[:], hb)
+	return h, messagePosting{enc, role, pos}, nil
+}
+
+// addPosting records term's posting, requiring every posting of one message
+// to agree on encoding and role.
+func (c *messageCandidate) addPosting(term string, p messagePosting) error {
+	if c.encoding != p.encoding || c.role != p.role {
+		return fail("corruption", "message posting", "postings of one message disagree on encoding or role")
+	}
+	c.postings[term] = p.positions
+	return nil
+}
+
+// matchMessageBlobs returns the messages matching plan, ordered by hash.
+// "any" unions every term's postings; "all" and "phrase" intersect them at a
+// cost proportional to the rarest term.
 func matchMessageBlobs(tx fdb.ReadTransaction, root subspace.Subspace, tenant int, plan *messageQueryPlan, budget *queryBudget) ([]*messageCandidate, error) {
-	prefixes := make([]subspace.Subspace, len(plan.terms))
-	pending := make([]fdb.RangeResult, len(plan.terms))
+	var cands []*messageCandidate
+	var err error
+	if plan.mode == MessageMatchAny || len(plan.terms) == 1 {
+		cands, err = unionMessagePostings(tx, root, tenant, plan.terms, budget)
+	} else {
+		cands, err = intersectMessagePostings(tx, root, tenant, plan, budget)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return filterMessageCandidates(plan, cands), nil
+}
+
+// filterMessageCandidates keeps candidates passing the role filter and the
+// plan's mode, ordered by hash.
+func filterMessageCandidates(plan *messageQueryPlan, cands []*messageCandidate) []*messageCandidate {
+	out := make([]*messageCandidate, 0, len(cands))
+	for _, c := range cands {
+		if (plan.role == "" || c.role == plan.role) && plan.match(c) {
+			out = append(out, c)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i].hash[:], out[j].hash[:]) < 0 })
+	return out
+}
+
+// unionMessagePostings reads every term's complete postings in one pipelined
+// wave and returns one candidate per message holding any term.
+func unionMessagePostings(tx fdb.ReadTransaction, root subspace.Subspace, tenant int, terms []string, budget *queryBudget) ([]*messageCandidate, error) {
+	prefixes := make([]subspace.Subspace, len(terms))
+	pending := make([]fdb.RangeResult, len(terms))
 	limit := max(budget.maxCandidates-budget.candidates, 0) + 1
-	for i, term := range plan.terms {
+	for i, term := range terms {
 		prefixes[i] = messageFTSTerm(root, tenant, term)
 		pending[i] = tx.GetRange(prefixes[i], fdb.RangeOptions{Limit: limit, Mode: fdb.StreamingModeWantAll})
 	}
 	byHash := map[[32]byte]*messageCandidate{}
-	for i, term := range plan.terms {
+	var out []*messageCandidate
+	for i, term := range terms {
 		rows, err := pending[i].GetSliceWithError()
 		if err != nil {
 			return nil, err
@@ -1445,38 +1515,152 @@ func matchMessageBlobs(tx fdb.ReadTransaction, root subspace.Subspace, tenant in
 			if err := budget.charge(kv); err != nil {
 				return nil, err
 			}
-			k, err := prefixes[i].Unpack(kv.Key)
-			if err != nil || len(k) != 1 {
-				return nil, fail("corruption", "message posting", "malformed message posting key")
-			}
-			hb, ok := k[0].([]byte)
-			if !ok || len(hb) != 32 {
-				return nil, fail("corruption", "message posting", "malformed message digest in posting key")
-			}
-			enc, role, pos, err := decodeMessagePosting(kv.Value)
+			h, p, err := decodeMessagePostingRow(prefixes[i], kv)
 			if err != nil {
 				return nil, err
 			}
-			var h [32]byte
-			copy(h[:], hb)
 			c := byHash[h]
 			if c == nil {
-				c = &messageCandidate{hash: h, encoding: enc, role: role, postings: map[string][]int{}}
+				c = &messageCandidate{hash: h, encoding: p.encoding, role: p.role, postings: map[string][]int{}}
 				byHash[h] = c
-			} else if c.encoding != enc || c.role != role {
-				return nil, fail("corruption", "message posting", "postings of one message disagree on encoding or role")
+				out = append(out, c)
 			}
-			c.postings[term] = pos
+			if err := c.addPosting(term, p); err != nil {
+				return nil, err
+			}
 		}
 	}
-	out := make([]*messageCandidate, 0, len(byHash))
-	for _, c := range byHash {
-		if (plan.role == "" || c.role == plan.role) && plan.match(c) {
-			out = append(out, c)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i].hash[:], out[j].hash[:]) < 0 })
 	return out, nil
+}
+
+// messageTermScan is one term's postings read so far, in key order from the
+// start of its range up to (excluding) begin.
+type messageTermScan struct {
+	term       string
+	prefix     subspace.Subspace
+	begin, end fdb.Key
+	rows       map[[32]byte]messagePosting
+	hashes     [][32]byte
+	done       bool
+}
+
+// intersectMessagePostings returns the messages holding every term. It reads
+// each term's postings in pages, the first msgFTSProbeRows rows and then
+// doubling, until some term's range is exhausted; the exhausted term with the
+// fewest postings supplies the candidates. A candidate's posting for another
+// term comes from that term's rows already read or, beyond them, a point read.
+func intersectMessagePostings(tx fdb.ReadTransaction, root subspace.Subspace, tenant int, plan *messageQueryPlan, budget *queryBudget) ([]*messageCandidate, error) {
+	scans := make([]*messageTermScan, len(plan.terms))
+	for i, term := range plan.terms {
+		prefix := messageFTSTerm(root, tenant, term)
+		bk, ek := prefix.FDBRangeKeys()
+		scans[i] = &messageTermScan{term: term, prefix: prefix, begin: bk.FDBKey(), end: ek.FDBKey(), rows: map[[32]byte]messagePosting{}}
+	}
+	var driver *messageTermScan
+	for page := msgFTSProbeRows; driver == nil; page *= 2 {
+		// A page past the remaining budget would only be read to fail.
+		limit := min(page, max(budget.maxCandidates-budget.candidates, 0)+1)
+		pending := make([]fdb.RangeResult, len(scans))
+		for i, s := range scans {
+			pending[i] = tx.GetRange(fdb.KeyRange{Begin: s.begin, End: s.end}, fdb.RangeOptions{Limit: limit, Mode: fdb.StreamingModeWantAll})
+		}
+		for i, s := range scans {
+			rows, err := pending[i].GetSliceWithError()
+			if err != nil {
+				return nil, err
+			}
+			for _, kv := range rows {
+				if err := budget.charge(kv); err != nil {
+					return nil, err
+				}
+				h, p, err := decodeMessagePostingRow(s.prefix, kv)
+				if err != nil {
+					return nil, err
+				}
+				s.rows[h] = p
+				s.hashes = append(s.hashes, h)
+			}
+			if len(rows) < limit {
+				s.done = true
+			} else {
+				s.begin = append(append(fdb.Key(nil), rows[len(rows)-1].Key...), 0)
+			}
+		}
+		for _, s := range scans {
+			if s.done && (driver == nil || len(s.hashes) < len(driver.hashes)) {
+				driver = s
+			}
+		}
+	}
+
+	// Resolve every candidate's other terms from rows already read; a hash
+	// absent from a term's scanned key range lacks that term.
+	cands := make([]*messageCandidate, 0, len(driver.hashes))
+	for _, h := range driver.hashes {
+		p := driver.rows[h]
+		if plan.role != "" && p.role != plan.role {
+			continue
+		}
+		c := &messageCandidate{hash: h, encoding: p.encoding, role: p.role, postings: map[string][]int{driver.term: p.positions}}
+		alive := true
+		for _, s := range scans {
+			if s == driver {
+				continue
+			}
+			if q, ok := s.rows[h]; ok {
+				if err := c.addPosting(s.term, q); err != nil {
+					return nil, err
+				}
+			} else if s.done || bytes.Compare(s.prefix.Pack(tuple.Tuple{h[:]}), s.begin) < 0 {
+				alive = false
+			}
+		}
+		if alive {
+			cands = append(cands, c)
+		}
+	}
+
+	type pointRead struct {
+		cand *messageCandidate
+		scan *messageTermScan
+		key  fdb.Key
+	}
+	var reads []pointRead
+	for _, c := range cands {
+		for _, s := range scans {
+			if _, ok := c.postings[s.term]; !ok {
+				reads = append(reads, pointRead{c, s, s.prefix.Pack(tuple.Tuple{c.hash[:]})})
+			}
+		}
+	}
+	for lo := 0; lo < len(reads); lo += msgFTSPointWave {
+		wave := reads[lo:min(lo+msgFTSPointWave, len(reads))]
+		pending := make([]fdb.FutureByteSlice, len(wave))
+		for i, r := range wave {
+			pending[i] = tx.Get(r.key)
+		}
+		for i, r := range wave {
+			v, err := pending[i].Get()
+			if err != nil {
+				return nil, err
+			}
+			if len(v) == 0 {
+				continue // the message lacks this term; match rejects it
+			}
+			kv := fdb.KeyValue{Key: r.key, Value: v}
+			if err := budget.charge(kv); err != nil {
+				return nil, err
+			}
+			_, p, err := decodeMessagePostingRow(r.scan.prefix, kv)
+			if err != nil {
+				return nil, err
+			}
+			if err := r.cand.addPosting(r.scan.term, p); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return cands, nil
 }
 
 // verifyMessageCandidates checks each message's metadata and digest-verified
@@ -1943,7 +2127,9 @@ func (e *Exporter) QueryMessageFullText(ctx context.Context, q MessageFullTextQu
 		return empty, err
 	}
 	defer e.active.Done()
-	e.queryMu.Lock()
-	defer e.queryMu.Unlock()
-	return e.backend.QueryMessageFullText(ctx, q)
+	return retryQuery(ctx, op, func(ctx context.Context) (MessageFullTextPage, error) {
+		e.queryMu.Lock()
+		defer e.queryMu.Unlock()
+		return e.backend.QueryMessageFullText(ctx, q)
+	})
 }

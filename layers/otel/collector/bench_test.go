@@ -2,12 +2,15 @@ package collector
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -52,44 +55,56 @@ func benchMessageText(t *testing.T, v *commonpb.AnyValue) (string, string) {
 	return role, text
 }
 
-func TestCollectorBenchCorpus(t *testing.T) {
+func benchStringAttr(t *testing.T, kvs []*commonpb.KeyValue, key string) string {
+	t.Helper()
+	for _, kv := range kvs {
+		if kv.Key == key {
+			return kv.Value.GetStringValue()
+		}
+	}
+	t.Fatalf("attributes lack %s", key)
+	return ""
+}
+
+func TestCollectorBenchGenerator(t *testing.T) {
 	t.Parallel()
 	cfg := benchUnitConfig().WithDefaults()
-	n, convs := cfg.TurnsPerConversation, cfg.Conversations
-	corpus := newBenchCorpus(cfg)
-	again := newBenchCorpus(cfg)
-	want := CollectorBenchCorpus{
-		Conversations: convs, TurnsPerConversation: n, Spans: convs * n, Logs: convs,
-		TotalMessageElements: int64(convs * (n*(n+1) + 3*n)), UniqueMessageElements: int64(2*convs*n + 3),
-	}
+	const n, convs = 5, 6
+	gen, again := newBenchGen(cfg), newBenchGen(cfg)
 	var raw int64
 	var requests []*tracepb.ResourceSpans
 	spanIDs := map[string]bool{}
-	for c, conv := range corpus.convs {
-		if !proto.Equal(conv.request, again.convs[c].request) || !slices.Equal(conv.trace, again.convs[c].trace) {
+	for c := range convs {
+		req := gen.request(c)
+		if !proto.Equal(req, again.request(c)) {
 			t.Fatalf("conversation %d is not deterministic", c)
 		}
-		if corpus.traces[conv.traceHex()] != c {
-			t.Fatalf("trace index of conversation %d", c)
+		trace := gen.traceID(c)
+		if got, ok := benchConversationOf(trace); !ok || got != c {
+			t.Fatalf("trace %x decodes to conversation %d, %v; want %d", trace, got, ok, c)
 		}
-		raw += int64(proto.Size(conv.request))
-		requests = append(requests, conv.request)
-		spans := conv.request.ScopeSpans[0].Spans
+		raw += int64(proto.Size(req))
+		requests = append(requests, req)
+		spans := req.ScopeSpans[0].Spans
 		if len(spans) != n {
 			t.Fatalf("conversation %d has %d spans", c, len(spans))
 		}
 		for i, sp := range spans {
 			k := i + 1
 			spanIDs[hex.EncodeToString(sp.SpanId)] = true
-			if !slices.Equal(sp.TraceId, conv.trace) || !slices.Equal(sp.SpanId, conv.spans[i]) {
+			if !slices.Equal(sp.TraceId, trace) || !slices.Equal(sp.SpanId, gen.spanID(c, k)) {
 				t.Fatalf("conversation %d turn %d identity", c, k)
 			}
-			if k == 1 && len(sp.ParentSpanId) != 0 || k > 1 && !slices.Equal(sp.ParentSpanId, conv.spans[i-1]) {
+			if k == 1 && len(sp.ParentSpanId) != 0 || k > 1 && !slices.Equal(sp.ParentSpanId, gen.spanID(c, k-1)) {
 				t.Fatalf("conversation %d turn %d parent %x", c, k, sp.ParentSpanId)
 			}
 			if benchAttr(t, sp, "gen_ai.turn.number").GetIntValue() != int64(k) || benchAttr(t, sp, "gen_ai.conversation.id").GetStringValue() != fmt.Sprintf("conv-bench_unit_run-%d", c) ||
-				benchAttr(t, sp, "gen_ai.request.model").GetStringValue() != "gpt-4o" || benchAttr(t, sp, "gen_ai.operation.name").GetStringValue() != "chat" {
+				benchAttr(t, sp, "gen_ai.request.model").GetStringValue() != "gpt-4o" || benchAttr(t, sp, "gen_ai.operation.name").GetStringValue() != "chat" ||
+				benchAttr(t, sp, "incident.block").GetStringValue() != "block_0" {
 				t.Fatalf("conversation %d turn %d attributes %v", c, k, sp.Attributes)
+			}
+			if got := benchSpanMessages(sp); got != int64(2*k+3) {
+				t.Fatalf("conversation %d turn %d counts %d messages, want %d", c, k, got, 2*k+3)
 			}
 			input := benchAttr(t, sp, benchInputKey).GetArrayValue().GetValues()
 			output := benchAttr(t, sp, benchOutputKey).GetArrayValue().GetValues()
@@ -97,10 +112,11 @@ func TestCollectorBenchCorpus(t *testing.T) {
 				len(benchAttr(t, sp, "gen_ai.system_instructions").GetArrayValue().GetValues()) != 1 {
 				t.Fatalf("conversation %d turn %d message shape", c, k)
 			}
-			if role, text := benchMessageText(t, input[len(input)-1]); role != "user" || text != BenchUserText(cfg.Seed, c, k) || len(text) < benchFillerBytes {
+			if role, text := benchMessageText(t, input[len(input)-1]); role != "user" || text != BenchUserText(cfg.Seed, c, k) || len(text) < benchFillerBytes ||
+				!strings.Contains(text, fmt.Sprintf(" conversation %d conv_%d incident_token_0 ", c, c)) {
 				t.Fatalf("conversation %d turn %d user message %q/%q", c, k, role, text)
 			}
-			if role, text := benchMessageText(t, output[0]); role != "assistant" || text != BenchAssistantText(cfg.Seed, c, k) {
+			if role, text := benchMessageText(t, output[0]); role != "assistant" || text != BenchAssistantText(cfg.Seed, c, k) || !strings.Contains(text, " resolved_token_0:") {
 				t.Fatalf("conversation %d turn %d reply %q/%q", c, k, role, text)
 			}
 			if k > 1 {
@@ -110,15 +126,25 @@ func TestCollectorBenchCorpus(t *testing.T) {
 					t.Fatalf("conversation %d turn %d does not extend turn %d's history", c, k, k-1)
 				}
 			}
+			if single := benchSingle(req, k); len(single.ScopeSpans) != 1 || len(single.ScopeSpans[0].Spans) != 1 || !proto.Equal(single.ScopeSpans[0].Spans[0], sp) || !proto.Equal(single.Resource, req.Resource) {
+				t.Fatalf("conversation %d turn %d single projection", c, k)
+			}
 		}
-		l := corpus.logs[c]
-		if l.TraceID != conv.traceHex() || l.SpanID != conv.spanHex(1) || l.EventID == "" {
+		l := gen.log(c)
+		if l.TraceID != hex.EncodeToString(trace) || l.SpanID != gen.spanHex(c, 1) || l.EventID != fmt.Sprintf("bench_unit_run-log-%d", c) ||
+			benchStringAttr(t, l.Attributes, "incident.bucket") != "bucket_0" || !proto.Equal(l.Body, again.log(c).Body) {
 			t.Fatalf("conversation %d log %+v", c, l)
 		}
 	}
-	want.RawInputBytes = raw
-	if corpus.stats != want || len(corpus.traces) != convs || len(spanIDs) != convs*n {
-		t.Fatalf("corpus stats %+v, want %+v (%d traces, %d spans)", corpus.stats, want, len(corpus.traces), len(spanIDs))
+	want := CollectorBenchCorpus{
+		Conversations: convs, TurnsPerConversation: n, Spans: convs * n, Logs: convs, RawInputBytes: raw,
+		TotalMessageElements: int64(convs * (n*(n+1) + 3*n)), UniqueMessageElements: int64(2*convs*n + 3),
+	}
+	if got := benchCorpusStats(n, convs, raw); got != want || len(spanIDs) != convs*n {
+		t.Fatalf("corpus stats %+v, want %+v (%d span IDs)", got, want, len(spanIDs))
+	}
+	if got := benchCorpusStats(n, 0, 0); got != (CollectorBenchCorpus{TurnsPerConversation: n}) {
+		t.Fatalf("empty corpus stats %+v", got)
 	}
 	_, blobs, st, err := otel.DecomposeResourceSpans(t.Context(), requests, cfg.Tenant)
 	if err != nil {
@@ -127,19 +153,10 @@ func TestCollectorBenchCorpus(t *testing.T) {
 	if st.TotalMessages != want.TotalMessageElements || st.UniqueMessages != want.UniqueMessageElements || len(blobs) != int(want.UniqueMessageElements) || st.SavedBytes <= 0 {
 		t.Fatalf("decomposition %+v, want %d total / %d unique", st, want.TotalMessageElements, want.UniqueMessageElements)
 	}
-	samples := corpus.samples()
-	if len(samples) != 2*convs {
-		t.Fatalf("%d samples", len(samples))
-	}
-	for _, s := range samples {
-		if s.turn != 1 && s.turn != n || !proto.Equal(s.want.ScopeSpans[0].Spans[0], corpus.convs[s.conv].request.ScopeSpans[0].Spans[s.turn-1]) {
-			t.Fatalf("sample %d/%d", s.conv, s.turn)
-		}
-	}
 	// Filler never contains a query token, so answers are decided by prefixes.
 	for _, s := range benchSentences {
 		lower := strings.ToLower(s)
-		for _, bad := range []string{"user", "turn", "conversation", "assistant", "token", "resolved"} {
+		for _, bad := range []string{"user", "turn", "conversation", "conv", "assistant", "token", "resolved", "block", "bucket"} {
 			if strings.Contains(lower, bad) {
 				t.Fatalf("filler %q contains %q", s, bad)
 			}
@@ -150,20 +167,235 @@ func TestCollectorBenchCorpus(t *testing.T) {
 	}
 }
 
-func TestCollectorBenchBuckets(t *testing.T) {
+func TestCollectorBenchBlocksAndIDs(t *testing.T) {
 	t.Parallel()
-	cfg := benchUnitConfig().WithDefaults()
-	cfg.Conversations, cfg.TurnsPerConversation = 120, 1
-	corpus := newBenchCorpus(cfg)
-	if corpus.bucketMod() != 50 || corpus.bucketSize(0) != 3 || corpus.bucketSize(19) != 3 || corpus.bucketSize(20) != 2 || corpus.bucketSize(49) != 2 {
-		t.Fatalf("bucket sizes %d %d %d %d", corpus.bucketSize(0), corpus.bucketSize(19), corpus.bucketSize(20), corpus.bucketSize(49))
+	for c, b := range map[int]int{0: 0, 49: 0, 50: 1, 99: 1, 100: 2, 123_456: 2469} {
+		if got := benchBlock(c); got != b {
+			t.Fatalf("block(%d) = %d, want %d", c, got, b)
+		}
 	}
-	if s := corpus.samples(); len(s) != 16 || s[1].conv != 7 || s[15].conv != 112 || s[0].turn != 1 {
-		t.Fatalf("samples %+v", s)
+	for _, tc := range []struct{ b, total, want int }{{0, 120, 50}, {1, 120, 50}, {2, 120, 20}, {3, 120, 0}, {0, 6, 6}, {1, 6, 0}, {0, 0, 0}} {
+		if got := benchBlockMembers(tc.b, tc.total); got != tc.want {
+			t.Fatalf("members(%d, %d) = %d, want %d", tc.b, tc.total, got, tc.want)
+		}
 	}
-	small := newBenchCorpus(benchUnitConfig().WithDefaults())
-	if small.bucketMod() != 6 || small.bucketSize(5) != 1 || small.bucketSize(6) != 0 {
-		t.Fatal("small corpus buckets")
+	if s := benchSamples(120); len(s) != 16 || s[0] != 0 || s[1] != 7 || s[15] != 112 {
+		t.Fatalf("samples %v", s)
+	}
+	if s := benchSamples(6); !slices.Equal(s, []int{0, 1, 2, 3, 4, 5}) || len(benchSamples(0)) != 0 {
+		t.Fatalf("small samples %v", s)
+	}
+	for i := range 12 {
+		if got := benchSpread(i, 12, 6); got != i/2 {
+			t.Fatalf("spread(%d, 12, 6) = %d", i, got)
+		}
+	}
+	prev := -1
+	for i := range 100 {
+		got := benchSpread(i, 100, 800_000)
+		if got <= prev || got >= 800_000 {
+			t.Fatalf("spread(%d, 100, 800000) = %d after %d", i, got, prev)
+		}
+		prev = got
+	}
+	if benchSpread(3, 4, 1) != 0 || benchSpread(14, 12, 6) != 1 {
+		t.Fatal("spread wraps")
+	}
+
+	gen := newBenchGen(benchUnitConfig().WithDefaults())
+	seen := map[string]bool{}
+	for _, c := range []int{0, 1, 49, 50, 12_345_678, maxBenchConversations - 1} {
+		id := gen.traceID(c)
+		if len(id) != 16 || binary.BigEndian.Uint64(id[:8]) != uint64(c) || !slices.ContainsFunc(id[8:], func(b byte) bool { return b != 0 }) {
+			t.Fatalf("trace ID %x of conversation %d", id, c)
+		}
+		if got, ok := benchConversationOf(id); !ok || got != c {
+			t.Fatalf("decode %x = %d, %v", id, got, ok)
+		}
+		if seen[hex.EncodeToString(id)] || len(gen.spanID(c, 1)) != 8 || slices.Equal(gen.spanID(c, 1), gen.spanID(c, 2)) {
+			t.Fatalf("conversation %d identities collide", c)
+		}
+		seen[hex.EncodeToString(id)] = true
+	}
+	over := make([]byte, 16)
+	binary.BigEndian.PutUint64(over, maxBenchConversations)
+	if _, ok := benchConversationOf(over); ok {
+		t.Fatal("decoded a conversation beyond the cap")
+	}
+	if _, ok := benchConversationOf(make([]byte, 15)); ok {
+		t.Fatal("decoded a short trace ID")
+	}
+
+	// The selective terms survive query tokenization as single tokens.
+	toks, err := otel.TokenizeQueryText(BenchUserText(11, 123, 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(toks, "conv_123") || !slices.Contains(toks, "incident_token_2") || slices.Contains(toks, "conv") {
+		t.Fatalf("user text tokens %v", toks)
+	}
+	phrase, err := otel.TokenizeQueryText("user turn 2 conversation 123 conv_123")
+	if err != nil || !slices.Equal(phrase, toks[:6]) {
+		t.Fatalf("phrase tokens %v, %v; text starts %v", phrase, err, toks[:6])
+	}
+}
+
+func TestBenchTracker(t *testing.T) {
+	t.Parallel()
+	var claimed atomic.Int64
+	claimed.Store(5)
+	tr := newBenchTracker(3, &claimed)
+	check := func(step string, wantW int64, wantTracked int, wantAnomalies int64) {
+		t.Helper()
+		tracked, _, anomalies := tr.state()
+		if tr.Watermark() != wantW || tracked != wantTracked || anomalies != wantAnomalies {
+			t.Fatalf("%s: watermark %d tracked %d anomalies %d, want %d %d %d", step, tr.Watermark(), tracked, anomalies, wantW, wantTracked, wantAnomalies)
+		}
+	}
+	check("empty", -1, 0, 0)
+	tr.spansExported(map[int]int{1: 3})
+	tr.logsWritten([]int{1})
+	check("conversation 1 complete before 0", -1, 2, 0)
+	tr.spansExported(map[int]int{0: 2})
+	tr.logsWritten([]int{0})
+	check("conversation 0 lacks a span", -1, 2, 0)
+	tr.spansExported(map[int]int{0: 1, 2: 3})
+	check("0 and 1 complete", 1, 1, 0)
+	tr.spansExported(map[int]int{0: 1})
+	check("already committed", 1, 1, 1)
+	tr.spansExported(map[int]int{5: 1, -1: 1})
+	check("unclaimed and undecodable", 1, 1, 3)
+	tr.spansExported(map[int]int{3: 4})
+	check("over-full", 1, 2, 4)
+	tr.logsWritten([]int{2, 2})
+	check("duplicate log", 2, 1, 5)
+	tr.spansExported(map[int]int{3: 3, 4: 3})
+	tr.logsWritten([]int{4, 3})
+	check("all committed", 4, 0, 5)
+	if _, peak, _ := tr.state(); peak != 3 {
+		t.Fatalf("peak tracked %d, want 3", peak)
+	}
+	if size := reflect.TypeFor[benchCommit]().Size(); size != 2 {
+		t.Fatalf("benchCommit is %d bytes, want 2", size)
+	}
+}
+
+// retains reports a path from typ to a forbidden type, not descending into skip.
+func retains(typ reflect.Type, forbidden, skip []reflect.Type) string {
+	seen := map[reflect.Type]bool{}
+	var walk func(reflect.Type, string) string
+	walk = func(t reflect.Type, path string) string {
+		if slices.Contains(forbidden, t) {
+			return path
+		}
+		if seen[t] || slices.Contains(skip, t) {
+			return ""
+		}
+		seen[t] = true
+		switch t.Kind() {
+		case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Chan:
+			return walk(t.Elem(), path+"[]")
+		case reflect.Map:
+			if p := walk(t.Key(), path+"{key}"); p != "" {
+				return p
+			}
+			return walk(t.Elem(), path+"{}")
+		case reflect.Struct:
+			for i := range t.NumField() {
+				f := t.Field(i)
+				if p := walk(f.Type, path+"."+f.Name); p != "" {
+					return p
+				}
+			}
+		}
+		return ""
+	}
+	return walk(typ, typ.Name())
+}
+
+// The ingest state retains no request, span or log; the Collector queue and
+// the exporter are the bounded buffers under test and are not walked.
+func TestBenchRunRetainsNoCorpus(t *testing.T) {
+	t.Parallel()
+	forbidden := []reflect.Type{reflect.TypeFor[tracepb.ResourceSpans](), reflect.TypeFor[tracepb.ScopeSpans](), reflect.TypeFor[tracepb.Span](), reflect.TypeFor[otel.LogRecord]()}
+	skip := []reflect.Type{reflect.TypeFor[TracesExporter](), reflect.TypeFor[otel.Exporter]()}
+	if p := retains(reflect.TypeFor[benchRun](), forbidden, skip); p != "" {
+		t.Fatalf("benchRun retains corpus data at %s", p)
+	}
+	// Positive controls: the walker finds retention through every container
+	// kind, and the skipped queue does hold requests.
+	for name, typ := range map[string]reflect.Type{
+		"slice": reflect.TypeFor[struct{ reqs []*tracepb.ResourceSpans }](),
+		"map":   reflect.TypeFor[struct{ logs map[int]otel.LogRecord }](),
+		"chan":  reflect.TypeFor[struct{ ch chan *tracepb.Span }](),
+		"nested": reflect.TypeFor[struct {
+			c *struct{ s [2]*tracepb.ScopeSpans }
+		}](),
+		"queue": reflect.TypeFor[TracesExporter](),
+	} {
+		if retains(typ, forbidden, nil) == "" {
+			t.Errorf("%s: retention not detected", name)
+		}
+	}
+	if p := retains(reflect.TypeFor[struct{ x *TracesExporter }](), forbidden, skip); p != "" {
+		t.Fatalf("skipped queue reported at %s", p)
+	}
+}
+
+func TestBenchQueryBudget(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		turns, k   int
+		candidates int
+		bytes      int64
+	}{
+		// refs = 50*n(n+1)/2; rows = 50(4n+1) + refs + 4(k+64);
+		// bytes = 512 refs + 50n(2*1024 + 3*512).
+		{5, 100, 2*(1050+750+656) + 1000, 2*(750*512+250*3584) + 1<<20},
+		{15, 100, 2*(3050+6000+656) + 1000, 2*(6000*512+750*3584) + 1<<20},
+		{1, 10, 2*(250+50+296) + 1000, 2*(50*512+50*3584) + 1<<20},
+	} {
+		c, b := benchQueryBudget(tc.turns, tc.k)
+		if c != tc.candidates || b != tc.bytes {
+			t.Fatalf("budget(%d, %d) = %d, %d; want %d, %d", tc.turns, tc.k, c, b, tc.candidates, tc.bytes)
+		}
+	}
+	// The budget is independent of the corpus size and the load shape.
+	small := benchUnitConfig().WithDefaults()
+	large := small
+	large.Conversations, large.Duration, large.Warmup = maxBenchConversations, time.Hour, time.Minute
+	cs, cl := small.collectorConfig().Exporter, large.collectorConfig().Exporter
+	if cs.MaxCandidates != 5912 || cs.MaxBytes != 3_608_576 || cl.MaxCandidates != cs.MaxCandidates || cl.MaxBytes != cs.MaxBytes || cs.K != 100 {
+		t.Fatalf("budgets %d/%d and %d/%d", cs.MaxCandidates, cs.MaxBytes, cl.MaxCandidates, cl.MaxBytes)
+	}
+	if err := large.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBenchRates(t *testing.T) {
+	t.Parallel()
+	s := int64(time.Second)
+	windows := []CollectorBenchWindow{
+		{Phase: benchPhaseLoad, StartNs: 0, EndNs: s, ExportedSpans: 10, Messages: 20, RawInputBytes: 100, Logs: 1},
+		{Phase: benchPhaseLoad, StartNs: s, EndNs: 3 * s, ExportedSpans: 40, Messages: 80, RawInputBytes: 400, Logs: 4},
+		{Phase: benchPhaseDrain, StartNs: 3 * s, EndNs: 4 * s, ExportedSpans: 6, Messages: 12, RawInputBytes: 60, Logs: 2},
+	}
+	r := benchRates(windows, time.Second)
+	if r.WholeRun != (CollectorBenchRate{Windows: 3, WallNs: 4 * s, Spans: 56, SpansPerSec: 14, MessagesPerSec: 28, RawBytesPerSec: 140, LogsPerSec: 1.75}) {
+		t.Fatalf("whole run %+v", r.WholeRun)
+	}
+	if r.SteadyState != (CollectorBenchRate{Windows: 1, WallNs: 2 * s, Spans: 40, SpansPerSec: 20, MessagesPerSec: 40, RawBytesPerSec: 200, LogsPerSec: 2}) {
+		t.Fatalf("steady state %+v", r.SteadyState)
+	}
+	if r := benchRates(windows, 0); r.SteadyState.Windows != 2 || r.SteadyState.Spans != 50 {
+		t.Fatalf("no warmup %+v", r.SteadyState)
+	}
+	if r := benchRates(windows, 10*time.Second); r.SteadyState != (CollectorBenchRate{}) {
+		t.Fatalf("warmup past the load %+v", r.SteadyState)
+	}
+	if r := benchRates(nil, 0); r != (CollectorBenchRates{}) {
+		t.Fatalf("no windows %+v", r)
 	}
 }
 
@@ -174,10 +406,18 @@ func TestCollectorBenchConfigValidate(t *testing.T) {
 	if got := (CollectorBenchConfig{ClusterFile: "/c", Run: "bench_unit_run", EnableMessageDeltas: true, EnableMessageFullText: true}).WithDefaults(); got != want {
 		t.Fatalf("WithDefaults = %+v, want %+v", got, want)
 	}
+	if want.Duration != 0 || want.ReportInterval != 10*time.Second || want.Warmup != time.Minute || want.QueryWorkers != 2 || want.NumConsumers != 4 {
+		t.Fatalf("load defaults %+v", want)
+	}
 	if err := want.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	if err := benchUnitConfig().Validate(); err != nil {
+		t.Fatal(err)
+	}
+	sustained := benchUnitConfig()
+	sustained.Duration, sustained.QueryWorkers, sustained.NumConsumers = maxBenchDuration, maxBenchQueryWorkers, 16
+	if err := sustained.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	cc := benchUnitConfig().WithDefaults().collectorConfig()
@@ -188,22 +428,31 @@ func TestCollectorBenchConfigValidate(t *testing.T) {
 		t.Fatalf("exporter %+v", e)
 	}
 	for name, mutate := range map[string]func(*CollectorBenchConfig){
-		"cluster file":   func(c *CollectorBenchConfig) { c.ClusterFile = "" },
-		"run":            func(c *CollectorBenchConfig) { c.Run = "BAD" },
-		"conversations":  func(c *CollectorBenchConfig) { c.Conversations = -1 },
-		"many convs":     func(c *CollectorBenchConfig) { c.Conversations = maxBenchConversations + 1 },
-		"turns":          func(c *CollectorBenchConfig) { c.TurnsPerConversation = maxBenchTurns + 1 },
-		"producers":      func(c *CollectorBenchConfig) { c.Producers = -1 },
-		"iterations":     func(c *CollectorBenchConfig) { c.QueryIterations = -1 },
-		"queue":          func(c *CollectorBenchConfig) { c.QueueSize = 4 },
-		"batch min":      func(c *CollectorBenchConfig) { c.BatchMinSize = 2000 },
-		"batch max":      func(c *CollectorBenchConfig) { c.BatchMaxSize = 2 },
-		"consumers":      func(c *CollectorBenchConfig) { c.NumConsumers = maxConsumers + 1 },
-		"exporter batch": func(c *CollectorBenchConfig) { c.ExporterBatchSize = 65 },
-		"workers":        func(c *CollectorBenchConfig) { c.ExporterWorkers = 17 },
-		"order":          func(c *CollectorBenchConfig) { c.Order = "random" },
-		"hash bytes":     func(c *CollectorBenchConfig) { c.HashBytes = 33 },
-		"compression":    func(c *CollectorBenchConfig) { c.RecordCompression = "lz4" },
+		"cluster file":    func(c *CollectorBenchConfig) { c.ClusterFile = "" },
+		"run":             func(c *CollectorBenchConfig) { c.Run = "BAD" },
+		"conversations":   func(c *CollectorBenchConfig) { c.Conversations = -1 },
+		"many convs":      func(c *CollectorBenchConfig) { c.Conversations = maxBenchConversations + 1 },
+		"turns":           func(c *CollectorBenchConfig) { c.TurnsPerConversation = maxBenchTurns + 1 },
+		"duration":        func(c *CollectorBenchConfig) { c.Duration = -time.Second },
+		"long duration":   func(c *CollectorBenchConfig) { c.Duration = maxBenchDuration + time.Second },
+		"report interval": func(c *CollectorBenchConfig) { c.ReportInterval = time.Millisecond },
+		"long interval":   func(c *CollectorBenchConfig) { c.ReportInterval = maxBenchDuration + time.Second },
+		"warmup":          func(c *CollectorBenchConfig) { c.Warmup = -time.Second },
+		"warmup past run": func(c *CollectorBenchConfig) { c.Duration, c.Warmup = 5*time.Second, 5*time.Second },
+		"default warmup":  func(c *CollectorBenchConfig) { c.Duration = 30 * time.Second },
+		"producers":       func(c *CollectorBenchConfig) { c.Producers = -1 },
+		"query workers":   func(c *CollectorBenchConfig) { c.QueryWorkers = -1 },
+		"many workers":    func(c *CollectorBenchConfig) { c.QueryWorkers = maxBenchQueryWorkers + 1 },
+		"iterations":      func(c *CollectorBenchConfig) { c.QueryIterations = -1 },
+		"queue":           func(c *CollectorBenchConfig) { c.QueueSize = 4 },
+		"batch min":       func(c *CollectorBenchConfig) { c.BatchMinSize = 2000 },
+		"batch max":       func(c *CollectorBenchConfig) { c.BatchMaxSize = 2 },
+		"consumers":       func(c *CollectorBenchConfig) { c.NumConsumers = maxConsumers + 1 },
+		"exporter batch":  func(c *CollectorBenchConfig) { c.ExporterBatchSize = 65 },
+		"workers":         func(c *CollectorBenchConfig) { c.ExporterWorkers = 17 },
+		"order":           func(c *CollectorBenchConfig) { c.Order = "random" },
+		"hash bytes":      func(c *CollectorBenchConfig) { c.HashBytes = 33 },
+		"compression":     func(c *CollectorBenchConfig) { c.RecordCompression = "lz4" },
 	} {
 		cfg := benchUnitConfig()
 		mutate(&cfg)
@@ -211,9 +460,21 @@ func TestCollectorBenchConfigValidate(t *testing.T) {
 			t.Errorf("%s: invalid config accepted", name)
 		}
 		r, err := RunBenchmark(t.Context(), cfg)
-		if err == nil || r.Error == "" || r.Tool != CollectorBenchTool || r.Mode != "collector-bench" || r.Config != cfg.WithDefaults() || len(r.Queries) != 0 {
+		if err == nil || r.Error == "" || r.Tool != CollectorBenchTool || r.Mode != "collector-bench" || r.Config != cfg.WithDefaults() || len(r.Queries) != 0 || len(r.Series) != 0 {
 			t.Errorf("%s: RunBenchmark = %+v, %v", name, r, err)
 		}
+	}
+}
+
+func TestAddLogStats(t *testing.T) {
+	t.Parallel()
+	one := otel.LogExportStats{ReceivedLogs: 1, DuplicateLogs: 2, GeneratedIDs: 3, Logs: 4, Batches: 5, Replaced: 6, Correlated: 7, LogicalBytes: 8, StoredBytes: 9, UnindexedAttributes: 10, EventIDs: []string{"a"}}
+	var sum otel.LogExportStats
+	addLogStats(&sum, one)
+	addLogStats(&sum, one)
+	want := otel.LogExportStats{ReceivedLogs: 2, DuplicateLogs: 4, GeneratedIDs: 6, Logs: 8, Batches: 10, Replaced: 12, Correlated: 14, LogicalBytes: 16, StoredBytes: 18, UnindexedAttributes: 20}
+	if !reflect.DeepEqual(sum, want) {
+		t.Fatalf("sum %+v, want %+v", sum, want)
 	}
 }
 
@@ -291,17 +552,20 @@ func TestRunBenchmarkRealFDB(t *testing.T) {
 	total, unique := convs*(n*(n+1)+3*n), 2*convs*n+3
 	r, err := RunBenchmark(ctx, cfg)
 	if err != nil || r.Error != "" || r.Failures != 0 {
-		t.Fatalf("RunBenchmark: %v (report error %q, failures %d, fidelity %+v, queries %+v)", err, r.Error, r.Failures, r.Fidelity, r.Queries)
+		t.Fatalf("RunBenchmark: %v (report error %q, failures %d, fidelity %+v, queries %+v, under load %+v)", err, r.Error, r.Failures, r.Fidelity, r.Queries, r.UnderLoad)
 	}
 	if r.Corpus.Spans != convs*n || r.Corpus.TotalMessageElements != int64(total) || r.Corpus.UniqueMessageElements != int64(unique) || r.Corpus.RawInputBytes == 0 {
 		t.Fatalf("corpus %+v", r.Corpus)
+	}
+	if r.Effective != (CollectorBenchEffective{Load: "fixed", Duration: "0s", ReportInterval: "10s", Warmup: "1m0s", Producers: 3, NumConsumers: 1, QueryWorkers: 2, BlockSize: benchBlockSize}) {
+		t.Fatalf("effective %+v", r.Effective)
 	}
 	in := r.Ingest
 	if s := in.Collector; s.AcceptedRequests != convs || s.AcceptedSpans != convs*n || s.ExportedSpans != convs*n || s.StoredSpans != convs*n ||
 		s.RejectedSpans != 0 || s.FailedSpans != 0 || s.QueuedSpans != 0 || s.Flushes < 2 || s.Exports < s.Flushes {
 		t.Fatalf("collector stats %+v", s)
 	}
-	if in.IngestWallNs <= 0 || in.SpansPerSec <= 0 || in.MessagesPerSec <= 0 || in.FailedExportCalls != 0 {
+	if in.IngestWallNs <= 0 || in.SpansPerSec <= 0 || in.MessagesPerSec <= 0 || in.FailedExportCalls != 0 || in.LogCalls < 1 || in.FailedLogCalls != 0 || in.LogWallNs <= 0 {
 		t.Fatalf("ingest %+v", in)
 	}
 	if e := in.Export; e.ReceivedSpans != convs*n || e.Spans != convs*n || e.MessageDeltas.TotalMessages != int64(total) || e.MessageDeltas.ReusedMessages <= 0 ||
@@ -316,27 +580,37 @@ func TestRunBenchmarkRealFDB(t *testing.T) {
 	if in.Logs.Logs != convs || in.Logs.Correlated != convs || in.Logs.EventIDs != nil {
 		t.Fatalf("log stats %+v", in.Logs)
 	}
+	if r.Watermark != (CollectorBenchWatermark{Conversations: convs, Watermark: convs - 1, PeakTracked: r.Watermark.PeakTracked}) || r.Watermark.PeakTracked < 1 {
+		t.Fatalf("watermark %+v", r.Watermark)
+	}
+	checkBenchSeries(t, r)
 	if r.Fidelity.CheckedSpans != 2*convs || r.Fidelity.Mismatches != 0 {
 		t.Fatalf("fidelity %+v", r.Fidelity)
 	}
+	// One block holds all six conversations.
 	wantRows := map[string]int64{
-		QueryFTSSingleToken:      iters * n * (n + 1) / 2,
+		QueryFTSSingleToken:      iters * convs * n * (n + 1) / 2,
 		QueryFTSPhraseFirstTurn:  iters,
 		QueryFTSMultiTurnHistory: iters * n,
-		QueryFTSSameSpanPreds:    iters * n,
+		QueryFTSSameSpanPreds:    iters * convs * n,
 		QuerySameSpanConjunction: iters * n,
-		QueryTraceExistential3:   iters,
+		QueryTraceExistential3:   iters * convs,
 		QueryTraceGraph:          iters * n,
 		QueryLogsByTrace:         iters,
 	}
-	if len(r.Queries) != len(CollectorBenchQueryClasses) {
-		t.Fatalf("query classes %v", r.Queries)
+	if len(r.Queries) != len(CollectorBenchQueryClasses) || len(r.UnderLoad.Queries) != len(CollectorBenchQueryClasses) {
+		t.Fatalf("query classes %v, under load %v", r.Queries, r.UnderLoad.Queries)
 	}
 	for _, class := range CollectorBenchQueryClasses {
 		q, ok := r.Queries[class]
 		if !ok || q.Iterations != iters || q.Failures != 0 || q.Error != "" || q.Rows != wantRows[class] || q.Histogram.Population != iters ||
 			q.Histogram.Min <= 0 || q.Histogram.Max < q.Histogram.P99 || q.QPS <= 0 {
 			t.Fatalf("%s: %+v, want %d rows", class, q, wantRows[class])
+		}
+		// Fewer than one block commits during a fixed run, so only
+		// conversation classes may run under load; none may fail.
+		if u := r.UnderLoad.Queries[class]; u.Failures != 0 || u.Histogram.Population != u.Iterations {
+			t.Fatalf("%s under load: %+v", class, u)
 		}
 	}
 
@@ -371,5 +645,118 @@ func TestRunBenchmarkRealFDB(t *testing.T) {
 		if q := p.Queries[class]; q.Iterations != 2 || q.Failures != 0 || q.Histogram.Population != 2 {
 			t.Fatalf("plain %s: %+v", class, q)
 		}
+	}
+}
+
+// checkBenchSeries checks the windows tile the ingest, run load then drain,
+// carry a monotone watermark and sum to the corpus totals.
+func checkBenchSeries(t *testing.T, r CollectorBenchReport) {
+	t.Helper()
+	if len(r.Series) == 0 {
+		t.Fatal("no time series windows")
+	}
+	var sum CollectorBenchWindow
+	end, wm, phase := int64(0), int64(-1), benchPhaseLoad
+	for i, w := range r.Series {
+		if w.StartNs != end || w.EndNs <= w.StartNs || w.Watermark < wm || (w.Phase != phase && (phase != benchPhaseLoad || w.Phase != benchPhaseDrain)) ||
+			w.ExportLatency.Population != int(w.ExportCalls) || w.SysBytes == 0 || w.HeapInuse == 0 {
+			t.Fatalf("window %d %+v after end %d watermark %d phase %s", i, w, end, wm, phase)
+		}
+		end, wm, phase = w.EndNs, w.Watermark, w.Phase
+		sum.ExportedSpans += w.ExportedSpans
+		sum.Messages += w.Messages
+		sum.RawInputBytes += w.RawInputBytes
+		sum.Logs += w.Logs
+		sum.ExportCalls += w.ExportCalls
+		sum.FailedCalls += w.FailedCalls
+		sum.Retries += w.Retries
+	}
+	last := r.Series[len(r.Series)-1]
+	if last.Phase != benchPhaseDrain || last.Watermark != int64(r.Corpus.Conversations)-1 || last.QueuedSpans != 0 || end > r.Ingest.IngestWallNs+int64(time.Second) {
+		t.Fatalf("final window %+v, ingest wall %d", last, r.Ingest.IngestWallNs)
+	}
+	s := r.Ingest.Collector
+	if sum.ExportedSpans != int64(r.Corpus.Spans) || sum.Messages != r.Corpus.TotalMessageElements || sum.Logs != int64(r.Corpus.Logs) ||
+		sum.ExportCalls != s.Exports || sum.FailedCalls != r.Ingest.FailedExportCalls || sum.Retries != s.Retries || sum.RawInputBytes <= 0 {
+		t.Fatalf("window sums %+v, corpus %+v, collector %+v", sum, r.Corpus, s)
+	}
+	if w := r.Rates.WholeRun; w.Windows != len(r.Series) || w.Spans != int64(r.Corpus.Spans) || w.WallNs != end || w.SpansPerSec <= 0 {
+		t.Fatalf("whole-run rate %+v", w)
+	}
+	if r.Memory.PeakSysBytes == 0 || r.Memory.PeakHeapInuseBytes == 0 || r.Memory.PeakHeapInuseBytes > r.Memory.PeakSysBytes {
+		t.Fatalf("memory %+v", r.Memory)
+	}
+}
+
+func TestRunBenchmarkDurationRealFDB(t *testing.T) {
+	t.Parallel()
+	cluster := benchClusterFile(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Minute)
+	defer cancel()
+
+	cfg := benchUnitConfig()
+	cfg.ClusterFile, cfg.Run = cluster, freshCollectorRun(t)
+	cfg.Duration, cfg.ReportInterval, cfg.Warmup = 6*time.Second, time.Second, time.Second
+	cfg.TurnsPerConversation, cfg.Producers, cfg.NumConsumers, cfg.QueryWorkers = 3, 4, 2, 2
+	cfg.QueueSize, cfg.QueryIterations = 60, 4
+	const n = 3
+	r, err := RunBenchmark(ctx, cfg)
+	if err != nil || r.Error != "" || r.Failures != 0 {
+		t.Fatalf("RunBenchmark: %v (report error %q, failures %d, watermark %+v, fidelity %+v, queries %+v, under load %+v)", err, r.Error, r.Failures, r.Watermark, r.Fidelity, r.Queries, r.UnderLoad)
+	}
+	if r.Effective != (CollectorBenchEffective{Load: "duration", Duration: "6s", ReportInterval: "1s", Warmup: "1s", Producers: 4, NumConsumers: 2, QueryWorkers: 2, BlockSize: benchBlockSize}) {
+		t.Fatalf("effective %+v", r.Effective)
+	}
+	// Conversations is ignored; under-load block classes need a committed block.
+	convs := r.Corpus.Conversations
+	if convs <= cfg.Conversations || convs < benchBlockSize || r.Corpus.Spans != convs*n || r.Corpus.Logs != convs {
+		t.Fatalf("corpus %+v", r.Corpus)
+	}
+	if s := r.Ingest.Collector; s.AcceptedRequests != int64(convs) || s.ExportedSpans != int64(convs*n) || s.FailedSpans != 0 || s.QueuedSpans != 0 {
+		t.Fatalf("collector stats %+v", s)
+	}
+	if r.Ingest.Logs.Logs != int64(convs) || r.Ingest.Logs.Correlated != int64(convs) || r.Ingest.FailedLogCalls != 0 {
+		t.Fatalf("logs %+v", r.Ingest)
+	}
+	checkBenchSeries(t, r)
+	load := 0
+	for _, w := range r.Series {
+		if w.Phase == benchPhaseLoad {
+			load++
+		}
+	}
+	if load < 4 || r.Series[load-1].EndNs < cfg.Duration.Nanoseconds() {
+		t.Fatalf("%d load windows %+v", load, r.Series)
+	}
+	if s := r.Rates.SteadyState; s.Windows < 3 || s.Windows >= load || s.SpansPerSec <= 0 || s.MessagesPerSec <= 0 || s.LogsPerSec <= 0 || s.WallNs < 3*int64(time.Second) {
+		t.Fatalf("steady-state rate %+v of %d load windows", s, load)
+	}
+	// Every conversation committed; the tracker held only the in-flight window.
+	if w := r.Watermark; w.Conversations != convs || w.Watermark != int64(convs)-1 || w.Tracked != 0 || w.Anomalies != 0 || w.PeakTracked < 1 {
+		t.Fatalf("watermark %+v", w)
+	}
+	if r.UnderLoad.Workers != 2 || r.UnderLoad.WallNs < cfg.Duration.Nanoseconds() || len(r.UnderLoad.Queries) != len(CollectorBenchQueryClasses) {
+		t.Fatalf("under load %+v", r.UnderLoad)
+	}
+	var ops int64
+	for _, w := range r.Series {
+		ops += w.Queries
+	}
+	for _, class := range CollectorBenchQueryClasses {
+		u := r.UnderLoad.Queries[class]
+		if u.Iterations == 0 || u.Failures != 0 || u.Error != "" || u.Histogram.Population != u.Iterations || u.Rows <= 0 || u.QPS <= 0 || u.WallNs != r.UnderLoad.WallNs {
+			t.Fatalf("%s under load: %+v", class, u)
+		}
+		ops -= int64(u.Iterations)
+		q := r.Queries[class]
+		if q.Iterations != 4 || q.Failures != 0 || q.Error != "" || q.Histogram.Population != 4 {
+			t.Fatalf("%s after ingest: %+v", class, q)
+		}
+	}
+	if ops != 0 {
+		t.Fatalf("window query counts disagree with the classes by %d", ops)
+	}
+	if r.Fidelity.CheckedSpans != 2*maxBenchSamples || r.Fidelity.Mismatches != 0 {
+		t.Fatalf("fidelity %+v", r.Fidelity)
 	}
 }
