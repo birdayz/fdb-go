@@ -2,8 +2,10 @@ package otel
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -96,13 +98,47 @@ func runIdempotentTxn(ctx context.Context, db *recordlayer.FDBDatabase, op strin
 	return wrap("operation", op, last)
 }
 
-// retryQuery repeats a read-only query call after a 1031, at most
-// maxQueryRetries times; every other outcome is returned unchanged.
+// isTransientReadError reports whether a read-only call may succeed on a
+// fresh transaction. Besides 1031 these are the read- and GRV-side codes
+// OnError retries, which surface once a transaction's retry limit runs out:
+// measured, process_behind while storage servers catch up with the first
+// write burst on a fresh cluster. Commit-side codes cannot occur on reads.
+func isTransientReadError(err error) bool {
+	if isSourceTimeout(err) {
+		return true
+	}
+	var code int
+	var value fdb.Error
+	var pointer *fdb.Error
+	switch {
+	case errors.As(err, &value):
+		code = value.Code
+	case errors.As(err, &pointer) && pointer != nil:
+		code = pointer.Code
+	default:
+		return false
+	}
+	switch code {
+	case 1007, // transaction_too_old
+		1009, // future_version
+		1037, // process_behind
+		1038, // database_locked
+		1051, // batch_transaction_throttled
+		1078, // grv_proxy_memory_limit_exceeded
+		1213, // tag_throttled
+		1223: // proxy_tag_throttled
+		return true
+	}
+	return false
+}
+
+// retryQuery repeats a read-only query call after a transient read error, at
+// most maxQueryRetries times; every other outcome is returned unchanged.
 func retryQuery[T any](ctx context.Context, op string, call func(context.Context) (T, error)) (T, error) {
 	qctx := withExporterTxns(ctx)
 	for retry := 0; ; retry++ {
 		out, err := call(qctx)
-		if !isSourceTimeout(err) {
+		if !isTransientReadError(err) {
 			return out, err
 		}
 		if retry == maxQueryRetries {

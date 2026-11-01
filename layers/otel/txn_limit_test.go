@@ -66,6 +66,22 @@ func TestRetryQuery(t *testing.T) {
 			t.Fatalf("exhaustion lost the 1031 cause: %v", err)
 		}
 	})
+	t.Run("transient read errors are retried", func(t *testing.T) {
+		t.Parallel()
+		for _, code := range []int{1007, 1009, 1037, 1038, 1051, 1078, 1213, 1223} {
+			calls := 0
+			got, err := retryQuery(t.Context(), "q", func(ctx context.Context) (int, error) {
+				calls++
+				if calls == 1 {
+					return 0, fdb.Error{Code: code}
+				}
+				return 7, nil
+			})
+			if err != nil || got != 7 || calls != 2 {
+				t.Fatalf("code %d: got %d, %v after %d calls", code, got, err, calls)
+			}
+		}
+	})
 	t.Run("other errors are returned once", func(t *testing.T) {
 		t.Parallel()
 		for _, want := range []error{fdb.Error{Code: 1020}, wrap("budget", "q", timeout), errors.New("boom")} {
