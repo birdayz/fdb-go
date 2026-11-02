@@ -153,6 +153,22 @@ differences, not changes to stored records or index/range-set bytes. See
 [RFC-279](../rfcs/279-mutual-indexing-boundaries.md) and
 [DIVERGENCES.md](../DIVERGENCES.md#mutual-indexing-has-no-anyjumper-rfc-279).
 
+### Text queries
+
+`recordlayer.TextScan` executes Java's `TextScan.scan` for every TEXT comparison
+type, and `PlanTextQuery` builds the plan `RecordQueryPlanner.planText` builds.
+Their entries, records and continuations use Java's encodings (including the
+Guava 33 Bloom filters in a `TEXT_CONTAINS_ALL_PREFIXES` continuation), so each
+engine resumes the other's continuations. The intersections of
+`TEXT_CONTAINS_ALL`, `TEXT_CONTAINS_PHRASE` and `TEXT_CONTAINS_ALL_WITHIN` seek
+instead of streaming each token: without an out-of-band limit their pages are
+Java's; under a scanned-records, byte or time limit Go reads less per row, so a
+page can hold more rows than Java's, and every continuation still resumes at the
+same next row. `TEXT_CONTAINS_ANY_PREFIX` and multi-token
+`TEXT_CONTAINS_ALL_PREFIXES` return rows in the order Java's merge returns them
+when every token read is already complete; Java's order over FDB is the order
+reads complete. See DIVERGENCES.md, "TEXT queries".
+
 ### Vector defaults are layer-specific
 
 `DefaultHNSWConfig` is a low-level HNSW configuration, not a general promise about

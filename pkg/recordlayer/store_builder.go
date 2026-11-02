@@ -1138,6 +1138,7 @@ type StoreBuilder struct {
 	maintenanceFilter         IndexMaintenanceFilter       // nil = IndexMaintenanceFilterNormal
 	serializer                *TransformedRecordSerializer // nil = write the bare union message
 	goOnlyCollation           bool                         // see SetGoOnlyCollation
+	pipelineSizer             PipelineSizer                // nil = DefaultPipelineSizer; see SetPipelineSizer
 }
 
 // NewStoreBuilder creates a new store builder
@@ -1195,6 +1196,7 @@ func (b *StoreBuilder) copyBuilder() *StoreBuilder {
 		maintenanceFilter:         b.maintenanceFilter,
 		serializer:                b.serializer,
 		goOnlyCollation:           b.goOnlyCollation,
+		pipelineSizer:             b.pipelineSizer,
 	}
 	if b.formatVersion != nil {
 		v := *b.formatVersion
@@ -1349,6 +1351,7 @@ func (b *StoreBuilder) newStore() *FDBRecordStore {
 		maintenanceFilter:   b.maintenanceFilter,
 		serializer:          b.serializer,
 		goOnlyCollation:     b.goOnlyCollation,
+		pipelineSizer:       b.pipelineSizer,
 	}
 	if b.assumeAllIndexesReadable {
 		store.indexStates = make(map[string]IndexState)

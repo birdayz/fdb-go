@@ -73,6 +73,37 @@ type mergeChildState[T any] struct {
 	// what keeps a read-ahead error from being bundled with (and discarding)
 	// a match that was already decided.
 	needsAdvance bool
+	// seek, when set, discards this child's values up to a comparison key by
+	// repositioning the child instead of pulling every value before it (see
+	// childSeeker). Nil for a child that can only stream.
+	seek childSeeker
+}
+
+// childSeeker repositions a merge child so that its next value is the first
+// one whose comparison key is at or past target in scan order, and returns the
+// child's continuation after the values it passed over: the continuation Java's
+// IntersectionCursorBase leaves on a child after consuming each of those values
+// in turn. Called only while the child holds a value whose key sorts before
+// target.
+type childSeeker func(ctx context.Context, target tuple.Tuple) (RecordCursorContinuation, error)
+
+// discardTo discards this child's held value, and every later one before
+// target, as non-matching. Java (IntersectionCursorBase.java:131) consumes
+// one value per round; a seeking child skips the whole run in one step and
+// ends with the same cached continuation, so later matches and continuations
+// are unchanged and only the values read differ.
+func (s *mergeChildState[T]) discardTo(ctx context.Context, target tuple.Tuple) error {
+	if s.seek == nil {
+		s.consume()
+		return nil
+	}
+	cont, err := s.seek(ctx, target)
+	if err != nil {
+		return err
+	}
+	s.continuation = cont
+	s.needsAdvance = true
+	return nil
 }
 
 // advance fetches the next result from this child's cursor. Mirrors Java
@@ -164,7 +195,25 @@ func IntersectionResume[T any](
 		return Empty[T]()
 	}
 	return &intersectionCursor[T]{
-		children: newMergeChildren(cursors, compKeyFunc, resume),
+		children: newMergeChildren(cursors, compKeyFunc, resume, nil),
+		reverse:  reverse,
+	}
+}
+
+// intersectionSeeking is IntersectionResume whose children discard
+// non-matching values through seekers[i] when it is non-nil.
+func intersectionSeeking[T any](
+	cursors []RecordCursor[T],
+	seekers []childSeeker,
+	compKeyFunc ComparisonKeyFunc[T],
+	reverse bool,
+	resume []IntersectionChildResume,
+) RecordCursor[T] {
+	if len(cursors) == 0 {
+		return Empty[T]()
+	}
+	return &intersectionCursor[T]{
+		children: newMergeChildren(cursors, compKeyFunc, resume, seekers),
 		reverse:  reverse,
 	}
 }
@@ -176,6 +225,7 @@ func newMergeChildren[T any](
 	cursors []RecordCursor[T],
 	compKeyFunc ComparisonKeyFunc[T],
 	resume []IntersectionChildResume,
+	seekers []childSeeker,
 ) []*mergeChildState[T] {
 	children := make([]*mergeChildState[T], len(cursors))
 	for i, c := range cursors {
@@ -184,6 +234,9 @@ func newMergeChildren[T any](
 			compKeyFunc:  compKeyFunc,
 			continuation: initialIntersectionContinuation(resume, i),
 			needsAdvance: true, // first pull is due, same as any post-consume() child
+		}
+		if i < len(seekers) {
+			children[i].seek = seekers[i]
 		}
 	}
 	return children
@@ -324,7 +377,9 @@ func (c *intersectionCursor[T]) OnNext(ctx context.Context) (RecordCursorResult[
 				return RecordCursorResult[T]{}, neqErr
 			}
 			if neq != 0 {
-				child.consume()
+				if err := child.discardTo(ctx, maxKey); err != nil {
+					return RecordCursorResult[T]{}, err
+				}
 			}
 		}
 	}
@@ -545,7 +600,25 @@ func IntersectionMultiResume[T any](
 		return Empty[[]T]()
 	}
 	return &intersectionMultiCursor[T]{
-		children: newMergeChildren(cursors, compKeyFunc, resume),
+		children: newMergeChildren(cursors, compKeyFunc, resume, nil),
+		reverse:  reverse,
+	}
+}
+
+// intersectionMultiSeeking is IntersectionMultiResume whose children discard
+// non-matching values through seekers[i] when it is non-nil.
+func intersectionMultiSeeking[T any](
+	cursors []RecordCursor[T],
+	seekers []childSeeker,
+	compKeyFunc ComparisonKeyFunc[T],
+	reverse bool,
+	resume []IntersectionChildResume,
+) RecordCursor[[]T] {
+	if len(cursors) == 0 {
+		return Empty[[]T]()
+	}
+	return &intersectionMultiCursor[T]{
+		children: newMergeChildren(cursors, compKeyFunc, resume, seekers),
 		reverse:  reverse,
 	}
 }
@@ -666,7 +739,9 @@ func (c *intersectionMultiCursor[T]) OnNext(ctx context.Context) (RecordCursorRe
 				return RecordCursorResult[[]T]{}, neqErr
 			}
 			if neq != 0 {
-				child.consume()
+				if err := child.discardTo(ctx, maxKey); err != nil {
+					return RecordCursorResult[[]T]{}, err
+				}
 			}
 		}
 	}

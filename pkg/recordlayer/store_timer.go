@@ -145,6 +145,19 @@ var (
 	CountDeleteIndexKeyBytes   = Event{"delete_index_key_bytes", "Delete Index Key Bytes", KindSize}
 	CountDeleteIndexValueBytes = Event{"delete_index_value_bytes", "Delete Index Value Bytes", KindSize}
 
+	// Entries a scan cursor produced — Java's FDBStoreTimer.Counts.LOAD_SCAN_ENTRY
+	// and LOAD_TEXT_ENTRY, both incremented per entry by TextCursor.onNext
+	// (TextCursor.java:101-103).
+	CountLoadScanEntry = Event{"load_scan_entry", "number of entries loaded by some scan", KindCount}
+	CountLoadTextEntry = Event{"load_text_entry", "number of text entries loaded", KindCount}
+
+	// Go-only TEXT scan read costs, so a caller can budget a text query: the
+	// raw BunchedMap key-values a text scan read, their key+value bytes, and
+	// the times a leapfrog intersection reopened a token scan further ahead.
+	CountTextScanKeyValues = Event{"text_scan_key_values", "Text Scan Key-Values Read", KindCount}
+	CountTextScanBytes     = Event{"text_scan_bytes", "Text Scan Bytes Read", KindSize}
+	CountTextScanSeeks     = Event{"text_scan_seeks", "Text Scan Seeks", KindCount}
+
 	// CountTransactionSizeWarning is Go-only: a transaction crossed
 	// ContextConfig.TransactionSizeWarnBytes (Java has no such threshold).
 	CountTransactionSizeWarning = Event{"transaction_size_warning", "Transaction Size Warning", KindCount}

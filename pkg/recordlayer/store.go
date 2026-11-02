@@ -166,7 +166,9 @@ type FDBRecordStore struct {
 	serializer *TransformedRecordSerializer
 	// goOnlyCollation is StoreBuilder.SetGoOnlyCollation: the store may hold
 	// Go collation keys (GoOnlyCollationError).
-	goOnlyCollation    bool
+	goOnlyCollation bool
+	// pipelineSizer is StoreBuilder.SetPipelineSizer; nil is DefaultPipelineSizer.
+	pipelineSizer      PipelineSizer
 	context            *FDBRecordContext
 	metaData           *RecordMetaData
 	subspace           subspace.Subspace
@@ -286,6 +288,7 @@ func (store *FDBRecordStore) builderFrom(ctx *FDBRecordContext) *StoreBuilder {
 		maintenanceFilter:  store.maintenanceFilter,
 		serializer:         store.serializer,
 		goOnlyCollation:    store.goOnlyCollation,
+		pipelineSizer:      store.pipelineSizer,
 		formatVersion:      &formatVersion,
 	}
 }
@@ -1570,7 +1573,8 @@ func (store *FDBRecordStore) createIndexMaintainer(index *Index) (IndexMaintaine
 		return newBitmapValueIndexMaintainer(index, idxSubspace, tx, store)
 	case IndexTypeText:
 		secSubspace := store.indexSecondarySubspace(index)
-		return newTextIndexMaintainerWithTimer(index, idxSubspace, secSubspace, tx, store, store.context.Timer())
+		return newTextIndexMaintainerWithTimer(index, idxSubspace, secSubspace, tx, store, store.context.Timer(),
+			store.GetPipelineSize(PipelineOperationTextIndexUpdate))
 	case IndexTypeTimeWindowLeaderboard:
 		secSubspace := store.indexSecondarySubspace(index)
 		return newTimeWindowLeaderboardIndexMaintainer(index, idxSubspace, secSubspace, tx, store)

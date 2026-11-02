@@ -155,22 +155,69 @@ func (m *BunchedMap) Get(tx fdb.WritableTransaction, ss subspace.Subspace, key t
 // Returns (oldValue, true, nil) if the key already existed, (nil, false, nil) if new.
 // Matches Java's BunchedMap.put().
 func (m *BunchedMap) Put(tx fdb.WritableTransaction, ss subspace.Subspace, key tuple.Tuple, value []int) ([]int, bool, error) {
+	return m.startPut(tx, ss, key, value).finish()
+}
+
+// pendingBunchedPut is a Put whose snapshot read is in flight. That read is
+// the put's only I/O, so puts into different maps can have theirs in flight
+// together, as the futures BunchedMap.put returns do in Java (BunchedMap.java:
+// 477-550); finish applies the put's writes and conflict ranges on the
+// caller's goroutine.
+type pendingBunchedPut struct {
+	m           *BunchedMap
+	tx          fdb.WritableTransaction
+	subspaceKey []byte
+	keyBytes    []byte
+	key         tuple.Tuple
+	value       []int
+	read        *pendingSnapshotRead
+}
+
+// pendingSnapshotRead is a snapshot range read running on its own goroutine.
+// The pure-Go client resolves a range's key selectors with GetKey round trips
+// before it reads the range, and both block, so a read in flight is a
+// goroutine; transactions are safe for concurrent reads.
+type pendingSnapshotRead struct {
+	done chan struct{}
+	kvs  []fdb.KeyValue
+	err  error
+}
+
+func startSnapshotRead(tx fdb.WritableTransaction, r fdb.SelectorRange) *pendingSnapshotRead {
+	p := &pendingSnapshotRead{done: make(chan struct{})}
+	snap := tx.Snapshot()
+	go func() {
+		defer close(p.done)
+		p.kvs, p.err = snap.GetRange(r, fdb.RangeOptions{}).GetSliceWithError()
+	}()
+	return p
+}
+
+func (p *pendingSnapshotRead) wait() ([]fdb.KeyValue, error) {
+	<-p.done
+	return p.kvs, p.err
+}
+
+// startPut issues Put's read.
+func (m *BunchedMap) startPut(tx fdb.WritableTransaction, ss subspace.Subspace, key tuple.Tuple, value []int) *pendingBunchedPut {
 	subspaceKey := ss.Bytes()
 	keyBytes := joinBytes(subspaceKey, m.serializer.SerializeKey(key))
 
 	// Snapshot range read to find signpost before and after the key.
 	// Java: tr.snapshot().getRange(lastLessOrEqual(keyBytes), firstGreaterThan(keyBytes).add(1), ...)
-	snap := tx.Snapshot()
 	endSel := fdb.FirstGreaterThan(fdb.Key(keyBytes))
 	endSel.Offset++ // .add(1) in Java
-	rr := snap.GetRange(
-		fdb.SelectorRange{
-			Begin: fdb.LastLessOrEqual(fdb.Key(keyBytes)),
-			End:   endSel,
-		},
-		fdb.RangeOptions{},
-	)
-	keyValues, err := rr.GetSliceWithError()
+	read := startSnapshotRead(tx, fdb.SelectorRange{
+		Begin: fdb.LastLessOrEqual(fdb.Key(keyBytes)),
+		End:   endSel,
+	})
+	return &pendingBunchedPut{m: m, tx: tx, subspaceKey: subspaceKey, keyBytes: keyBytes, key: key, value: value, read: read}
+}
+
+// finish waits for the put's read and applies it.
+func (p *pendingBunchedPut) finish() ([]int, bool, error) {
+	m, tx, subspaceKey, keyBytes, key, value := p.m, p.tx, p.subspaceKey, p.keyBytes, p.key, p.value
+	keyValues, err := p.read.wait()
 	if err != nil {
 		return nil, false, err
 	}
@@ -211,9 +258,35 @@ func (m *BunchedMap) Put(tx fdb.WritableTransaction, ss subspace.Subspace, key t
 // Returns (oldValue, true, nil) if found and removed, (nil, false, nil) if not found.
 // Matches Java's BunchedMap.remove().
 func (m *BunchedMap) Remove(tx fdb.WritableTransaction, ss subspace.Subspace, key tuple.Tuple) ([]int, bool, error) {
-	subspaceKey := ss.Bytes()
+	return m.startRemove(tx, ss, key).finish()
+}
 
-	kv, found, err := m.entryForKey(tx, subspaceKey, key)
+// pendingBunchedRemove is a Remove whose entryForKey read is issued, the
+// remove's only I/O (BunchedMap.remove, BunchedMap.java:617-640); finish
+// completes its writes and conflict ranges.
+type pendingBunchedRemove struct {
+	m           *BunchedMap
+	tx          fdb.WritableTransaction
+	subspaceKey []byte
+	key         tuple.Tuple
+	entry       *pendingEntryForKey
+	err         error
+}
+
+// startRemove issues Remove's read.
+func (m *BunchedMap) startRemove(tx fdb.WritableTransaction, ss subspace.Subspace, key tuple.Tuple) *pendingBunchedRemove {
+	subspaceKey := ss.Bytes()
+	entry, err := m.startEntryForKey(tx, subspaceKey, key)
+	return &pendingBunchedRemove{m: m, tx: tx, subspaceKey: subspaceKey, key: key, entry: entry, err: err}
+}
+
+// finish waits for the remove's read and applies it.
+func (p *pendingBunchedRemove) finish() ([]int, bool, error) {
+	if p.err != nil {
+		return nil, false, p.err
+	}
+	m, tx, subspaceKey, key := p.m, p.tx, p.subspaceKey, p.key
+	kv, found, err := p.entry.finish()
 	if err != nil {
 		return nil, false, err
 	}
@@ -332,25 +405,45 @@ func (m *BunchedMap) VerifyIntegrity(tx fdb.ReadTransaction, ss subspace.Subspac
 // "When reading a map key, add a read conflict key to the corresponding
 // key in the DB regardless of DB keys actually read."
 func (m *BunchedMap) entryForKey(tx fdb.WritableTransaction, subspaceKey []byte, key tuple.Tuple) (fdb.KeyValue, bool, error) {
+	p, err := m.startEntryForKey(tx, subspaceKey, key)
+	if err != nil {
+		return fdb.KeyValue{}, false, err
+	}
+	return p.finish()
+}
+
+// pendingEntryForKey is entryForKey with its read in flight (BunchedMap.java:
+// 195-230 returns the read's future).
+type pendingEntryForKey struct {
+	m           *BunchedMap
+	subspaceKey []byte
+	keyBytes    []byte
+	read        *pendingSnapshotRead
+}
+
+// startEntryForKey adds entryForKey's read conflict key and issues its read.
+func (m *BunchedMap) startEntryForKey(tx fdb.WritableTransaction, subspaceKey []byte, key tuple.Tuple) (*pendingEntryForKey, error) {
 	keyBytes := joinBytes(subspaceKey, m.serializer.SerializeKey(key))
 
 	// Add a read conflict key for the map key being accessed.
 	// This is unconditional, matching Java's entryForKey() which always
 	// calls tr.addReadConflictKey(keyBytes).
 	if err := tx.AddReadConflictKey(fdb.Key(keyBytes)); err != nil {
-		return fdb.KeyValue{}, false, err
+		return nil, err
 	}
 
 	// Snapshot range read: lastLessOrEqual(keyBytes) to firstGreaterThan(keyBytes).
-	snap := tx.Snapshot()
-	rr := snap.GetRange(
-		fdb.SelectorRange{
-			Begin: fdb.LastLessOrEqual(fdb.Key(keyBytes)),
-			End:   fdb.FirstGreaterThan(fdb.Key(keyBytes)),
-		},
-		fdb.RangeOptions{},
-	)
-	keyValues, err := rr.GetSliceWithError()
+	read := startSnapshotRead(tx, fdb.SelectorRange{
+		Begin: fdb.LastLessOrEqual(fdb.Key(keyBytes)),
+		End:   fdb.FirstGreaterThan(fdb.Key(keyBytes)),
+	})
+	return &pendingEntryForKey{m: m, subspaceKey: subspaceKey, keyBytes: keyBytes, read: read}, nil
+}
+
+// finish waits for the read and picks the signpost that holds the key.
+func (p *pendingEntryForKey) finish() (fdb.KeyValue, bool, error) {
+	m, subspaceKey, keyBytes := p.m, p.subspaceKey, p.keyBytes
+	keyValues, err := p.read.wait()
 	if err != nil {
 		return fdb.KeyValue{}, false, err
 	}

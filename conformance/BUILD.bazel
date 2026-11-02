@@ -859,6 +859,8 @@ go_test(
         "sum_index_conformance_test.go",
         "testdata_test.go",
         "text_index_conformance_test.go",
+        "text_index_pipeline_conformance_test.go",
+        "text_query_conformance_test.go",
         "time_window_leaderboard_conformance_test.go",
         "transformed_serializer_conformance_test.go",
         "transient_fdb_error_test.go",

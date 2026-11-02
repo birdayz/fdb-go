@@ -115,9 +115,23 @@ type BunchedMapMultiIterator struct {
 	rangeIter rangeIterator
 	iterErr   error // sticky error from Advance/Get
 
+	// tx and the range bounds let seekTo reopen the range read at a later key.
+	tx         fdb.ReadTransaction
+	beginBytes []byte
+	endBytes   []byte
+
+	// seekTarget, while non-nil, makes advance skip the entries of
+	// seekSubspaceKey that sort before it in scan order (see seekTo).
+	seekTarget      tuple.Tuple
+	seekSubspaceKey []byte
+
 	// Continuation state
 	continuation          []byte
 	continuationSatisfied bool
+	// continuationKey, while non-nil, skips the entries of the map
+	// continuationKeySubspace at or before it in scan order.
+	continuationKey         tuple.Tuple
+	continuationKeySubspace []byte
 
 	// Current subspace state
 	currentSubspace       subspace.Subspace
@@ -177,6 +191,9 @@ func NewBunchedMapMultiIteratorWithCallback(
 		reverse:               reverse,
 		limit:                 limit,
 		callback:              callback,
+		tx:                    tx,
+		beginBytes:            beginBytes,
+		endBytes:              endBytes,
 		continuation:          continuation,
 		continuationSatisfied: continuation == nil,
 		entryIndex:            -1,
@@ -337,65 +354,14 @@ func (it *BunchedMapMultiIterator) advance() {
 					return
 				}
 				it.continuationSatisfied = true
-
-				// Deserialize this bunch and find entries after the continuation key.
-				boundaryKey, err := it.serializer.DeserializeKey(kv.Key, len(nextSubspaceKey), len(kv.Key)-len(nextSubspaceKey))
-				if err != nil {
-					it.iterErr = err
-					it.done = true
-					return
-				}
-				entries, err := it.serializer.DeserializeEntries(boundaryKey, kv.Value)
-				if err != nil {
-					it.iterErr = err
-					it.done = true
-					return
-				}
-
-				it.currentSubspace = nextSubspace
-				it.currentSubspaceKey = nextSubspaceKey
-				it.currentSubspaceSuffix = nextSubspaceSuffix
-				tag, err := it.splitter.SubspaceTag(nextSubspace)
-				if err != nil {
-					it.iterErr = err
-					it.done = true
-					return
-				}
-				it.currentSubspaceTag = tag
-
-				// Find the first entry strictly past the continuation key.
-				startIdx := -1
-				if it.reverse {
-					for i := len(entries) - 1; i >= 0; i-- {
-						if compareTuples(continuationKey, entries[i].Key) > 0 {
-							startIdx = i
-							break
-						}
-					}
-				} else {
-					for i := 0; i < len(entries); i++ {
-						if compareTuples(continuationKey, entries[i].Key) < 0 {
-							startIdx = i
-							break
-						}
-					}
-				}
-
-				if startIdx >= 0 {
-					it.currentEntries = entries
-					it.entryIndex = startIdx
-					e := entries[startIdx]
-					it.nextEntry = &BunchedMapScanEntry{
-						Subspace:    it.currentSubspace,
-						SubspaceTag: it.currentSubspaceTag,
-						Key:         e.Key,
-						Value:       e.Value,
-					}
-					return
-				}
-				// No entries past the continuation key in this bunch.
-				// Do NOT set currentEntries — the bunch is fully consumed.
-				continue
+				// The entries of this map up to the continuation key are skipped
+				// below, bunch after bunch, until one is past it: Java hands the
+				// key to the map's BunchedMapIterator (BunchedMapMultiIterator.java:
+				// 136-139), whose filter stays on across bunches
+				// (BunchedMapIterator.java:126-138). The key's own bunch can sort
+				// after the bunch this read starts at.
+				it.continuationKey = continuationKey
+				it.continuationKeySubspace = nextSubspaceKey
 			} else if bytes.Compare(nextSubspaceSuffix, it.continuation)*(boolToInt(!it.reverse)-boolToInt(it.reverse)) > 0 {
 				// Past the continuation subspace, satisfied.
 				it.continuationSatisfied = true
@@ -422,6 +388,47 @@ func (it *BunchedMapMultiIterator) advance() {
 			continue
 		}
 
+		startIdx := 0
+		if it.reverse {
+			startIdx = len(entries) - 1
+		}
+		if it.continuationKey != nil {
+			if !bytes.Equal(nextSubspaceKey, it.continuationKeySubspace) {
+				// The continuation's map ended without an entry past the key;
+				// Java's next map iterator starts with no continuation key.
+				it.continuationKey = nil
+			} else {
+				startIdx = -1
+				for i := range entries {
+					j := i
+					if it.reverse {
+						j = len(entries) - 1 - i
+					}
+					c := compareTuples(it.continuationKey, entries[j].Key)
+					if (!it.reverse && c < 0) || (it.reverse && c > 0) {
+						startIdx = j
+						break
+					}
+				}
+				if startIdx < 0 {
+					continue // every entry of this bunch is at or before the key
+				}
+				it.continuationKey = nil
+			}
+		}
+		if it.seekTarget != nil {
+			var skip bool
+			startIdx, skip, err = it.seekWithin(nextSubspaceKey, entries)
+			if err != nil {
+				it.iterErr = err
+				it.done = true
+				return
+			}
+			if skip {
+				continue
+			}
+		}
+
 		it.currentSubspace = nextSubspace
 		it.currentSubspaceKey = nextSubspaceKey
 		it.currentSubspaceSuffix = nextSubspaceSuffix
@@ -433,11 +440,6 @@ func (it *BunchedMapMultiIterator) advance() {
 		}
 		it.currentSubspaceTag = tag
 		it.currentEntries = entries
-
-		startIdx := 0
-		if it.reverse {
-			startIdx = len(entries) - 1
-		}
 		it.entryIndex = startIdx
 		e := entries[startIdx]
 		it.nextEntry = &BunchedMapScanEntry{
@@ -462,6 +464,108 @@ func (it *BunchedMapMultiIterator) GetContinuation() []byte {
 	}
 	// Continuation = subspaceSuffix + serializedKey
 	return append(append([]byte{}, it.currentSubspaceSuffix...), it.serializer.SerializeKey(it.lastKey)...)
+}
+
+// seekTo repositions the iterator so that the next entry it returns is the
+// first entry of the current map at or after target in scan order (at or
+// below it for a reverse scan), as if every entry before it had been returned.
+// GetContinuation afterwards is the one Java's streaming iteration holds
+// after returning the last skipped entry, so a resume is unchanged.
+//
+// Precondition: the scanned range lies within one map, an entry has been
+// returned (with no entry buffered by HasNext) and target sorts strictly after
+// it in scan order. Every entry a seek reads or passes over is then in the
+// current map, so GetContinuation keeps Java's form. Entries of the current
+// bunch are searched in memory; otherwise the range read is reopened at the
+// bunch that can contain target: a bunch is keyed by its first entry, so the
+// target's bunch is the last one whose key is below the target key.
+//
+// Not part of Java's BunchedMapMultiIterator: it is the seek the leapfrog text
+// intersection uses (see DIVERGENCES.md, "TEXT intersection seeks").
+func (it *BunchedMapMultiIterator) seekTo(target tuple.Tuple) {
+	if it.done || it.nextEntry != nil || it.lastKey == nil || it.currentSubspaceKey == nil {
+		return
+	}
+	if it.currentEntries != nil {
+		if it.reverse {
+			for j := it.entryIndex - 1; j >= 0; j-- {
+				if compareTuples(it.currentEntries[j].Key, target) <= 0 {
+					it.entryIndex = j + 1
+					it.lastKey = it.currentEntries[j+1].Key
+					return
+				}
+			}
+		} else {
+			for j := it.entryIndex + 1; j < len(it.currentEntries); j++ {
+				if compareTuples(it.currentEntries[j].Key, target) >= 0 {
+					it.entryIndex = j - 1
+					it.lastKey = it.currentEntries[j-1].Key
+					return
+				}
+			}
+		}
+	}
+
+	// The target lies beyond the in-memory bunch. Its bunch is in the current
+	// map and no earlier than the current bunch, so both selectors resolve
+	// inside the scanned range.
+	endpoint := append(append([]byte{}, it.currentSubspaceKey...), it.serializer.SerializeKey(target)...)
+	var rangeResult fdb.RangeResult
+	if it.reverse {
+		// The bunch after the target's one holds the entry that precedes the
+		// target in a reverse scan, so the read includes it: end past the first
+		// key greater than the endpoint.
+		rangeResult = it.tx.GetRange(fdb.SelectorRange{
+			Begin: fdb.FirstGreaterOrEqual(fdb.Key(it.beginBytes)),
+			End:   fdb.KeySelector{Key: fdb.Key(endpoint), OrEqual: true, Offset: 2},
+		}, fdb.RangeOptions{Reverse: true})
+	} else {
+		rangeResult = it.tx.GetRange(fdb.SelectorRange{
+			Begin: fdb.LastLessThan(fdb.Key(endpoint)),
+			End:   fdb.FirstGreaterOrEqual(fdb.Key(it.endBytes)),
+		}, fdb.RangeOptions{Reverse: false})
+	}
+	it.rangeIter = rangeResult.Iterator()
+	it.currentEntries = nil
+	it.entryIndex = -1
+	it.seekTarget = target
+	it.seekSubspaceKey = it.currentSubspaceKey
+}
+
+// seekWithin applies a pending seek to a freshly read bunch of the map
+// subspaceKey. It returns the index of the first entry at or past the target
+// in scan order, or skip=true when the whole bunch sorts before the target.
+// Entries passed over become the iterator's last key.
+func (it *BunchedMapMultiIterator) seekWithin(subspaceKey []byte, entries []BunchedEntry[tuple.Tuple, []int]) (int, bool, error) {
+	if !bytes.Equal(subspaceKey, it.seekSubspaceKey) {
+		// The reopened read starts in the target's map and ends with the scanned
+		// range, which lies within it (seekTo's precondition).
+		return 0, false, &BunchedMapException{Message: "seek read a bunch outside the map it seeks in"}
+	}
+	if it.reverse {
+		for j := len(entries) - 1; j >= 0; j-- {
+			if compareTuples(entries[j].Key, it.seekTarget) <= 0 {
+				if j < len(entries)-1 {
+					it.lastKey = entries[j+1].Key
+				}
+				it.seekTarget = nil
+				return j, false, nil
+			}
+		}
+		it.lastKey = entries[0].Key
+		return 0, true, nil
+	}
+	for j := range entries {
+		if compareTuples(entries[j].Key, it.seekTarget) >= 0 {
+			if j > 0 {
+				it.lastKey = entries[j-1].Key
+			}
+			it.seekTarget = nil
+			return j, false, nil
+		}
+	}
+	it.lastKey = entries[len(entries)-1].Key
+	return 0, true, nil
 }
 
 // Cancel stops the iterator.

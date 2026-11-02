@@ -2375,6 +2375,12 @@ tracked only.
 - [x] **Low:** rank and text edges: `GetNth` returns a key where Java returns null; a
   non-int64 rank bound becomes an unbounded scan (`extractRankValue`); TEXT silently skips
   non-string columns. Fixed in #1003 (RFC-275).
+- [ ] **Low:** the generic merge cursors (`Union`, `UnorderedUnion`, `ProbableIntersection`,
+  `pkg/recordlayer/union_cursor.go`, `probable_intersection_cursor.go`) and the executor's
+  QueryResult-typed `mergeSortCursor`/`unorderedUnionCursor`
+  (`query/executor/executor_new_plans.go`) are two ports of the same Java cursors; the executor
+  should use the generic ones. Neither records Java's `QUERY_INTERSECTION*`/`QUERY_UNION*`
+  timer counts, and `TextScan` does not record `QUERY_TEXT_FILTER*`.
 
 ### Go FDB client
 

@@ -40,9 +40,13 @@ type textIndexMaintainer struct {
 	addAggressiveConflictRanges bool
 	omitPositionLists           bool
 	bunchedMap                  *BunchedMap
+	timer                       *StoreTimer
+	// pipelineSize is the store's pipeline size for TEXT_INDEX_UPDATE: how many
+	// token maps one record's update reads concurrently.
+	pipelineSize int
 }
 
-func newTextIndexMaintainerWithTimer(index *Index, indexSubspace subspace.Subspace, secSubspace subspace.Subspace, tx fdb.WritableTransaction, store IndexStoreContext, timer *StoreTimer) (*textIndexMaintainer, error) {
+func newTextIndexMaintainerWithTimer(index *Index, indexSubspace subspace.Subspace, secSubspace subspace.Subspace, tx fdb.WritableTransaction, store IndexStoreContext, timer *StoreTimer, pipelineSize int) (*textIndexMaintainer, error) {
 	tokenizer, err := getTextTokenizer(index)
 	if err != nil {
 		return nil, fmt.Errorf("text index %q: %w", index.Name, err)
@@ -72,6 +76,8 @@ func newTextIndexMaintainerWithTimer(index *Index, indexSubspace subspace.Subspa
 		addAggressiveConflictRanges: getTextAggressiveConflictRanges(index),
 		omitPositionLists:           getTextOmitPositions(index),
 		bunchedMap:                  bm,
+		timer:                       timer,
+		pipelineSize:                pipelineSize,
 	}, nil
 }
 
@@ -375,8 +381,29 @@ func (m *textIndexMaintainer) updateOneKey(record *FDBStoredRecord[proto.Message
 		m.tx.AddWriteConflictRange(indexRange)
 	}
 
-	// For each token, update the BunchedMap.
+	// Put (or remove) the record in each token's BunchedMap, with up to the
+	// store's TEXT_INDEX_UPDATE pipeline size of their reads in flight: Java's
+	// RecordCursor.fromIterator(positionMap).forEachAsync(..., pipelineSize)
+	// (TextIndexMaintainer.java:337-353). Each token is a different map, so an
+	// operation's read never depends on another's writes. The reads run
+	// concurrently; each operation's writes and conflict ranges are applied on
+	// this goroutine in issue order, and the first failure is returned.
+	pipelineSize := m.pipelineSize
+	if pipelineSize < 1 {
+		pipelineSize = 1
+	}
+	pending := make([]func() error, 0, min(pipelineSize, len(positionMap)))
+	completeOldest := func() error {
+		finish := pending[0]
+		pending = pending[1:]
+		return finish()
+	}
 	for token, positions := range positionMap {
+		if len(pending) == pipelineSize {
+			if err := completeOldest(); err != nil {
+				return err
+			}
+		}
 		var subspaceTuple tuple.Tuple
 		if groupingKey == nil {
 			subspaceTuple = tuple.Tuple{token}
@@ -388,22 +415,32 @@ func (m *textIndexMaintainer) updateOneKey(record *FDBStoredRecord[proto.Message
 		mapSubspace := m.indexSubspace.Sub(tupleToTupleElements(subspaceTuple)...)
 
 		if remove {
-			_, _, err := m.bunchedMap.Remove(m.tx, mapSubspace, groupedKey)
-			if err != nil {
-				return fmt.Errorf("text index remove token %q: %w", token, err)
-			}
+			op := m.bunchedMap.startRemove(m.tx, mapSubspace, groupedKey)
+			pending = append(pending, func() error {
+				if _, _, err := op.finish(); err != nil {
+					return fmt.Errorf("text index remove token %q: %w", token, err)
+				}
+				return nil
+			})
 		} else {
 			value := positions
 			if m.omitPositionLists {
 				value = nil
 			}
-			_, _, err := m.bunchedMap.Put(m.tx, mapSubspace, groupedKey, value)
-			if err != nil {
-				return fmt.Errorf("text index put token %q: %w", token, err)
-			}
+			op := m.bunchedMap.startPut(m.tx, mapSubspace, groupedKey, value)
+			pending = append(pending, func() error {
+				if _, _, err := op.finish(); err != nil {
+					return fmt.Errorf("text index put token %q: %w", token, err)
+				}
+				return nil
+			})
 		}
 	}
-
+	for len(pending) > 0 {
+		if err := completeOldest(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -418,17 +455,25 @@ func (m *textIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStor
 // The scan range should cover the token(s) to search for.
 // Matches Java's TextIndexMaintainer.scan().
 func (m *textIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) RecordCursor[*IndexEntry] {
+	cursor, _ := m.scanText(scanRange, continuation, scanProperties)
+	return cursor
+}
+
+// scanText is Scan that also returns the underlying textCursor, which a
+// leapfrog intersection seeks. The two are the same cursor when no skip is
+// requested.
+func (m *textIndexMaintainer) scanText(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) (RecordCursor[*IndexEntry], *textCursor) {
 	textPosition := textFieldPosition(m.index.RootExpression)
 	splitter := NewTextSubspaceSplitter(m.indexSubspace, textPosition+1)
 
 	byteRange := scanRange.ToFDBRange(m.indexSubspace)
 
-	// Adjust limit for skip (matching Java's clearSkipAndAdjustLimit).
+	// Java (TextIndexMaintainer.java:531-532) hands the cursor and the
+	// iterator the properties with the skip folded into the row limit, and
+	// applies the skip on top (TextIndexMaintainer.java:549-552).
 	skip := scanProperties.ExecuteProperties.Skip
-	adjustedLimit := scanProperties.ExecuteProperties.ReturnedRowLimit
-	if skip > 0 && adjustedLimit > 0 {
-		adjustedLimit = saturatingAdd(adjustedLimit, skip)
-	}
+	withAdjustedLimit := scanProperties.WithExecuteProperties(scanProperties.ExecuteProperties.ClearSkipAndAdjustLimit())
+	adjustedLimit := withAdjustedLimit.ExecuteProperties.ReturnedRowLimit
 
 	// Determine the read transaction (snapshot vs serializable).
 	var readTx fdb.ReadTransaction
@@ -442,7 +487,7 @@ func (m *textIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, sc
 	// pass the callback to the iterator. This matches Java's pattern
 	// where scanMulti() receives a Consumer<KeyValue> that feeds the
 	// ByteScanLimiter.
-	textCur, kvCallback := newTextCursorWithByteTracking(m.index, scanProperties)
+	textCur, kvCallback := newTextCursorWithByteTracking(m.index, withAdjustedLimit, m.timer)
 
 	iterator := NewBunchedMapMultiIteratorWithCallback(
 		readTx,
@@ -462,7 +507,7 @@ func (m *textIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, sc
 	if skip > 0 {
 		cursor = SkipCursor(cursor, skip)
 	}
-	return cursor
+	return cursor, textCur
 }
 
 // CanDeleteWhere is Java's TextIndexMaintainer.canDeleteWhere, which delegates

@@ -4784,3 +4784,62 @@ Java's `infiniteLoopProtection`, which fails a build after the same range is pic
 1000 times in a row, is not ported either. A Go claim is built until nothing in it
 is missing, and a chunk that keeps failing ends the build after the lessen-work
 retries, so no build picks one range forever.
+
+## TEXT queries
+
+`recordlayer.TextScan` ports `TextScan.scan` (TextScan.java:160-262) and its
+merge cursors; `PlanTextQuery` ports `RecordQueryPlanner.planText`
+(RecordQueryPlanner.java:1702-1734). Entries, records and continuations are
+Java's, so a continuation from either engine resumes in the other. Pinned by
+`conformance/text_query_conformance_test.go` (target `//conformance:conformance_test`,
+tag `conformance_java`) and `pkg/recordlayer/text_scan_seek_test.go`.
+
+### TEXT intersections seek (intentional, result-preserving cost divergence)
+
+Java intersects the token scans of `TEXT_CONTAINS_ALL`, `TEXT_CONTAINS_PHRASE`
+and `TEXT_CONTAINS_ALL_WITHIN` by streaming each one in primary-key order
+(`IntersectionCursorBase.computeNextResultStates`, IntersectionCursorBase.java:
+111-145), one entry of each non-maximal child per round, so one rare token
+intersected with common ones reads the common tokens' postings one by one
+between its candidates. Go discards a token scan's entries below the candidate key by
+seeking: within the bunch in memory, otherwise by reopening the range read at the
+bunch that holds the candidate (a bunch is keyed by its first entry, so that is
+the last bunch keyed below the candidate). The seeking child's cached
+continuation is that of the last entry passed over, the one Java holds after
+consuming the same entries one by one, so the matches, their order and every
+continuation are Java's. Only the key-values read differ: Go reads at most two
+bunches per token per candidate. On the 1200-record corpus of
+`text_scan_seek_test.go` (rare ∩ common ∩ frequent) that is 10 key-values
+against Java's 77; the test derives both counts.
+
+Out-of-band limits are charged per entry read, so under a scanned-records, byte
+or time limit a Go page can hold more rows than Java's page for the same
+budget; the continuation at each stop still resumes at the next row both engines
+return. The read costs are exposed as `CountTextScanKeyValues`,
+`CountTextScanBytes` and `CountTextScanSeeks` on the store timer, Java's
+`LOAD_SCAN_ENTRY`/`LOAD_TEXT_ENTRY` per entry, and the bytes as the scan's
+`ScanLimiterState.BytesScanned`.
+
+### Unordered TEXT merges are serial
+
+Java's `UnorderedUnionCursor` (`TEXT_CONTAINS_ANY_PREFIX`) and
+`ProbableIntersectionCursor` (multi-token `TEXT_CONTAINS_ALL_PREFIXES`) return
+rows as child reads complete (MergeCursor.whenAny, MergeCursor.java:115-136), so
+their order over FDB varies run to run. Go pulls children in index order, which
+is Java's order when every child's next result is already complete; the
+in-memory conformance pins this order and the continuation bytes, including the
+Bloom filters. Over a store both engines return the same set of rows; a resumed
+non-strict `TEXT_CONTAINS_ALL_PREFIXES` may add different Bloom false positives
+in each, as Java may between its own runs.
+
+`ProbableIntersectionCursorState` remembers seen keys in a `HashSet<List<Object>>`,
+where a `byte[]` element compares by identity, so Java never matches two equal
+byte-array primary keys from different children within one pass. Go compares
+keys by their tuple encoding and matches them.
+
+The Bloom filter is Guava 33's (`optimalNumOfHashFunctions(p)`); a Java
+deployment on a Guava whose sizing differs writes a continuation Go still reads
+(the serialized form carries the hash count) but sizes fresh filters differently.
+
+The merge cursors do not record Java's `QUERY_INTERSECTION*`, `QUERY_UNION*` and
+`QUERY_TEXT_FILTER*` timer counts.
