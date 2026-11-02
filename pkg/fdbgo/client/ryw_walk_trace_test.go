@@ -333,7 +333,7 @@ func (tc keyTrace) run(t *testing.T) {
 	m := newMemStorage(tc.storage...)
 	c.mu.Lock()
 	w := c.newGetKeyWalkLocked(c.viewLocked(!tc.snapshot), tc.sel, []byte("\xff"))
-	w.startLocked()
+	w.start()
 	c.mu.Unlock()
 	if err := w.run(context.Background(), m.native); err != nil {
 		t.Fatal(err)

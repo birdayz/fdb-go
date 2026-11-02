@@ -30,6 +30,17 @@ func checkPseq(t *testing.T, step string, s *pseq[int], want []int) {
 		if got := s.search(func(v *int) bool { return indexOf(want, v) >= k }); got != k {
 			t.Fatalf("%s: search(index >= %d) = %d", step, k, got)
 		}
+		var sc pcursor[int]
+		sc.seekFirst(s, func(v *int) bool { return indexOf(want, v) >= k })
+		if sc.idx != k || sc.valid() != (k < len(want)) || (sc.valid() && *sc.item() != want[k]) {
+			t.Fatalf("%s: seekFirst(index >= %d) at %d valid %t", step, k, sc.idx, sc.valid())
+		}
+		var cc pcursor[int]
+		cc.copyFrom(&sc)
+		cc.prev()
+		if cc.idx != k-1 || cc.valid() != (k > 0) || (cc.valid() && *cc.item() != want[k-1]) || sc.idx != k {
+			t.Fatalf("%s: prev of a copy at %d moved to %d (original at %d)", step, k, cc.idx, sc.idx)
+		}
 		j, prev := s.before(func(v *int) bool { return indexOf(want, v) >= k })
 		if j != k-1 || (k > 0) != (prev != nil) || (prev != nil && *prev != want[k-1]) {
 			t.Fatalf("%s: before(index >= %d) = %d, %v", step, k, j, prev)
@@ -46,6 +57,12 @@ func checkPseq(t *testing.T, step string, s *pseq[int], want []int) {
 			}
 			if c.valid() && *c.item() != want[i] {
 				t.Fatalf("%s: forward cursor from %d at %d: %d, want %d", step, start, i, *c.item(), want[i])
+			}
+			if c.valid() {
+				next := c.peekNext()
+				if (i+1 < len(want)) != (next != nil) || (next != nil && *next != want[i+1]) {
+					t.Fatalf("%s: peekNext at %d = %v", step, i, next)
+				}
 			}
 			c.next()
 		}

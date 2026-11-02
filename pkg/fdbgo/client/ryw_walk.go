@@ -4,20 +4,25 @@ import (
 	"bytes"
 	"context"
 	"sort"
+	"sync"
 
 	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // rywWalk is C++ getRangeValue / getRangeValueBack (ReadYourWrites.actor.cpp:592-813,
-// 896-1123) and read(GetKeyReq) (:140-160) as a state machine (RFC-262 D5). It runs
-// under c.mu between suspension points, which are exactly C++'s waits: a storage
-// read (U8), the prologue's nested getKey (P3) and the loop's nested getKey (L3).
-// Iterators live only inside one critical section; every resumption that continues
-// the loop re-resolves the selectors first, as C++ does.
+// 896-1123) and read(GetKeyReq) (:140-160) as a state machine (RFC-262 D5). Its
+// suspension points are exactly C++'s waits: a storage read (U8), the prologue's
+// nested getKey (P3) and the loop's nested getKey (L3). Between them it reads an
+// immutable version of the write map and an immutable snapshot of the snapshot
+// cache taken under c.mu at issue and after each wait, so it runs without the
+// lock: the step is atomic as C++'s actor step is, against the cache state when
+// the step began. Only the storage reply's insert takes c.mu. Every resumption
+// that continues the loop re-resolves the selectors first, as C++ does.
 type rywWalk struct {
 	c       *rywCache
 	view    *rywWrites // the owner's version, or nil = the snapshot cache alone (A2.2); borrowed
-	gen     uint64     // c.gen at issue
+	cache   pseq[cacheEntry]
+	gen     uint64 // c.gen at issue
 	maxKey  []byte
 	reverse bool
 	getKey  bool // read(GetKeyReq) (A9)
@@ -39,6 +44,9 @@ type rywWalk struct {
 
 	// onRequest, when set, sees each storage request as it is built (S1 traces).
 	onRequest func(walkRequest)
+
+	// its are the walk's iterators, reused by every step: it, itEnd and two copies.
+	its [4]rywIter
 }
 
 type walkPC uint8
@@ -62,26 +70,62 @@ type rywRangeResult struct {
 	more, readToBegin, readThroughEnd bool
 }
 
-// newRangeWalkLocked starts nothing; startLocked runs it to its first wait.
+// newRangeWalkLocked starts nothing; start runs it to its first wait. view must
+// stay immutable while the walk runs: the live version only while c.mu is held,
+// a pinned one until it is unpinned.
 func (c *rywCache) newRangeWalkLocked(view *rywWrites, begin, end KeySelector, limits rangeLimits, reverse bool, maxKey []byte) *rywWalk {
-	return &rywWalk{
-		c: c, view: view, gen: c.gen, maxKey: maxKey, reverse: reverse,
+	c.checkViewLocked(view)
+	return c.rangeWalk(view, c.serverCache.snapshot(), c.gen, begin, end, limits, reverse, maxKey)
+}
+
+// rangeWalk is a walk over view and the cache snapshot cache, issued at gen.
+func (c *rywCache) rangeWalk(view *rywWrites, cache pseq[cacheEntry], gen uint64, begin, end KeySelector, limits rangeLimits, reverse bool, maxKey []byte) *rywWalk {
+	w := walkPool.Get().(*rywWalk)
+	its := w.its
+	*w = rywWalk{
+		c: c, view: view, cache: cache, gen: gen, maxKey: maxKey, reverse: reverse,
 		begin: begin, end: end, limits: limits,
 		actualBeginOffset: begin.Offset, actualEndOffset: end.Offset, // RYW:607-608, 911-912
+		its: its,
 	}
+	return w
+}
+
+// walkPool keeps walks with their iterators' storage, which C++ keeps on the
+// actor's frame: a read allocates neither once warm.
+var walkPool = sync.Pool{New: func() any { return new(rywWalk) }}
+
+// release returns the walk, and a nested walk it still holds, to walkPool. The
+// caller has taken its result; nothing may use the walk afterwards.
+func (w *rywWalk) release() {
+	if w.sub != nil {
+		w.sub.release()
+	}
+	its := w.its
+	for i := range its {
+		its[i].scrub()
+	}
+	*w = rywWalk{its: its}
+	walkPool.Put(w)
 }
 
 // newGetKeyWalkLocked is read(GetKeyReq) (RYW:140-160): a limit-1 range walk,
 // forward from sel to FGE(maxKey) for offset > 0, else backward from FGE("") to
 // sel with its offset incremented (:151).
 func (c *rywCache) newGetKeyWalkLocked(view *rywWrites, sel KeySelector, maxKey []byte) *rywWalk {
+	c.checkViewLocked(view)
+	return c.getKeyWalk(view, c.serverCache.snapshot(), c.gen, sel, maxKey)
+}
+
+// getKeyWalk is newGetKeyWalkLocked over view and the cache snapshot cache.
+func (c *rywCache) getKeyWalk(view *rywWrites, cache pseq[cacheEntry], gen uint64, sel KeySelector, maxKey []byte) *rywWalk {
 	one := rangeLimits{rows: 1, minRows: 1, bytes: byteLimitUnlimited} // GetRangeLimits(1)
 	var w *rywWalk
 	if sel.Offset > 0 {
-		w = c.newRangeWalkLocked(view, sel, firstGreaterOrEqual(maxKey), one, false, maxKey)
+		w = c.rangeWalk(view, cache, gen, sel, firstGreaterOrEqual(maxKey), one, false, maxKey)
 	} else {
 		sel.Offset++
-		w = c.newRangeWalkLocked(view, firstGreaterOrEqual(allKeysBegin), sel, one, true, maxKey)
+		w = c.rangeWalk(view, cache, gen, firstGreaterOrEqual(allKeysBegin), sel, one, true, maxKey)
 	}
 	w.getKey = true
 	return w
@@ -126,9 +170,9 @@ func (w *rywWalk) keyResult() []byte {
 	return w.result[0].Key
 }
 
-// startLocked runs the prologue (P1-P3) and the loop to the first wait.
-func (w *rywWalk) startLocked() {
-	it, itEnd := w.resolveBothLocked()
+// start runs the prologue (P1-P3) and the loop to the first wait.
+func (w *rywWalk) start() {
+	it, itEnd := w.resolveBoth()
 	// P2 (RYW:614-619, 918-923).
 	if w.actualBeginOffset >= w.actualEndOffset && bytes.Compare(w.begin.Key, w.end.Key) >= 0 {
 		w.returnEmpty(false, false)
@@ -141,55 +185,64 @@ func (w *rywWalk) startLocked() {
 	}
 	// P3 (RYW:621-638): a nested getKey of the crossed bound.
 	if !w.reverse && !w.end.isFirstGreaterOrEqual() && bytes.Compare(w.begin.Key, w.end.Key) > 0 {
-		w.startSubLocked(w.end, pcAwaitPreKey)
+		w.startSub(w.end, pcAwaitPreKey)
 		return
 	}
 	if w.reverse && !w.begin.isFirstGreaterOrEqual() && bytes.Compare(w.begin.Key, w.end.Key) > 0 { // :925
-		w.startSubLocked(w.begin, pcAwaitPreKey)
+		w.startSub(w.begin, pcAwaitPreKey)
 		return
 	}
-	w.loopLocked(it, itEnd)
+	w.loop(it, itEnd)
 }
 
-// resolveBothLocked re-resolves both selectors: begin into it and end into itEnd
+// resolveBoth re-resolves both selectors: begin into it and end into itEnd
 // forward (RYW:611-612), end into it and begin into itEnd backward (:914-916).
-func (w *rywWalk) resolveBothLocked() (it, itEnd *rywIter) {
-	it, itEnd = w.c.newIterLocked(w.view), w.c.newIterLocked(w.view)
+func (w *rywWalk) resolveBoth() (it, itEnd *rywIter) {
+	it, itEnd = &w.its[0], &w.its[1]
+	initIter(it, w.c, w.view, &w.cache)
+	initIter(itEnd, w.c, w.view, &w.cache)
 	if !w.reverse {
-		w.resolveLocked(&w.begin, it, &w.actualBeginOffset)
-		w.resolveLocked(&w.end, itEnd, &w.actualEndOffset)
+		w.resolve(&w.begin, it, &w.actualBeginOffset)
+		w.resolve(&w.end, itEnd, &w.actualEndOffset)
 	} else {
-		w.resolveLocked(&w.end, it, &w.actualEndOffset)
-		w.resolveLocked(&w.begin, itEnd, &w.actualBeginOffset)
+		w.resolve(&w.end, it, &w.actualEndOffset)
+		w.resolve(&w.begin, itEnd, &w.actualBeginOffset)
 	}
 	return it, itEnd
 }
 
-// startSubLocked starts the nested read(GetKeyReq(sel)) on the same version and
-// runs it to its first wait, as the nested actor runs synchronously until then. If
-// it finishes without waiting, the parent resumes at once.
-func (w *rywWalk) startSubLocked(sel KeySelector, pc walkPC) {
-	w.sub = w.c.newGetKeyWalkLocked(w.view, sel, w.maxKey)
-	w.sub.gen = w.gen
+// copyIter is it's copy in the walk's spare iterator i (2 or 3).
+func (w *rywWalk) copyIter(i int, it *rywIter) *rywIter {
+	c := &w.its[i]
+	c.copyFrom(it)
+	return c
+}
+
+// startSub starts the nested read(GetKeyReq(sel)) on the same version and cache
+// snapshot and runs it to its first wait, as the nested actor runs synchronously
+// until then. If it finishes without waiting, the parent resumes at once.
+func (w *rywWalk) startSub(sel KeySelector, pc walkPC) {
+	w.sub = w.c.getKeyWalk(w.view, w.cache, w.gen, sel, w.maxKey)
 	w.sub.onRequest = w.onRequest
-	w.sub.startLocked()
+	w.sub.start()
 	w.pc = pc
 	if !w.sub.done() {
 		return
 	}
 	if pc == pcAwaitPreKey {
-		w.resumePreKeyLocked(w.sub.keyResult(), w.sub.err)
+		w.resumePreKey(w.sub.keyResult(), w.sub.err)
 	} else {
 		w.resumeLoopKey(w.sub.keyResult(), w.sub.err)
 	}
 }
 
-// resumePreKeyLocked continues after P3's nested getKey (RYW:623-638, 927-940).
-func (w *rywWalk) resumePreKeyLocked(resolved []byte, err error) {
+// resumePreKey continues after P3's nested getKey (RYW:623-638, 927-940).
+func (w *rywWalk) resumePreKey(resolved []byte, err error) {
 	if err != nil {
 		w.fail(err)
 		return
 	}
+	w.sub.release() // resolved is the cache's or the write map's key, not the walk's
 	w.sub = nil
 	if len(resolved) == 0 {
 		w.readToBegin = true
@@ -216,8 +269,8 @@ func (w *rywWalk) resumePreKeyLocked(resolved []byte, err error) {
 			return
 		}
 	}
-	it, itEnd := w.resolveBothLocked()
-	w.loopLocked(it, itEnd)
+	it, itEnd := w.resolveBoth()
+	w.loop(it, itEnd)
 }
 
 // resumeLoopKey continues after L3's nested getKey: set the flags and the bound,
@@ -228,6 +281,7 @@ func (w *rywWalk) resumeLoopKey(resolved []byte, err error) {
 		w.fail(err)
 		return
 	}
+	w.sub.release()
 	w.sub = nil
 	if len(resolved) == 0 {
 		w.readToBegin = true
@@ -243,9 +297,9 @@ func (w *rywWalk) resumeLoopKey(resolved []byte, err error) {
 	w.epilogue()
 }
 
-// resumeStorageLocked continues after a storage read: insert the reply into the
-// snapshot cache (U9) and re-resolve both selectors (U10), then the loop.
-func (w *rywWalk) resumeStorageLocked(r nativeRangeResult, err error) {
+// acceptStorageLocked takes a storage reply: it inserts it into the snapshot cache
+// (U9) and takes the cache snapshot the walk resumes on (resumeStorage).
+func (w *rywWalk) acceptStorageLocked(known storageKnown, err error) {
 	if w.gen != w.c.gen {
 		// The transaction was reset while the read waited: C++ kills the read through
 		// resetPromise, which wins over whatever the storage read returns
@@ -258,25 +312,47 @@ func (w *rywWalk) resumeStorageLocked(r nativeRangeResult, err error) {
 		w.fail(err)
 		return
 	}
-	var b, e []byte
-	var ok bool
-	if !w.reverse {
-		b, e, ok = knownKeyRange(r, w.req.begin, w.req.end)
-		if ok {
-			w.c.serverCache.insert(b, e, r.kvs)
-		}
-	} else {
-		b, e, ok = knownKeyRangeBack(r, w.req.begin, w.req.end)
-		if ok {
-			asc := make([]KeyValue, len(r.kvs))
-			for i, kv := range r.kvs {
-				asc[len(r.kvs)-1-i] = kv
-			}
-			w.c.serverCache.insert(b, e, asc) // RYW:1068-1072
-		}
+	if known.ok {
+		w.c.serverCache.insertOwned(known.begin, known.end, known.kvs)
 	}
-	it, itEnd := w.resolveBothLocked()
-	w.loopLocked(it, itEnd)
+	w.cache = w.c.serverCache.snapshot()
+}
+
+// storageKnown is what a storage reply makes known (getKnownKeyRange), its rows
+// ascending: prepared before the reply's insert takes c.mu.
+type storageKnown struct {
+	begin, end []byte
+	kvs        []KeyValue
+	ok         bool
+}
+
+// known computes the reply's known range and rows (U9). The rows are the
+// reply's own, which nothing writes; a reverse reply is reversed into a new slice.
+func (w *rywWalk) known(r nativeRangeResult, err error) storageKnown {
+	if err != nil {
+		return storageKnown{}
+	}
+	var k storageKnown
+	if !w.reverse {
+		k.begin, k.end, k.ok = knownKeyRange(r, w.req.begin, w.req.end)
+		k.kvs = r.kvs
+		return k
+	}
+	k.begin, k.end, k.ok = knownKeyRangeBack(r, w.req.begin, w.req.end)
+	if k.ok {
+		asc := make([]KeyValue, len(r.kvs))
+		for i, kv := range r.kvs {
+			asc[len(r.kvs)-1-i] = kv
+		}
+		k.kvs = asc // RYW:1068-1072
+	}
+	return k
+}
+
+// resumeStorage re-resolves both selectors (U10) and continues the loop.
+func (w *rywWalk) resumeStorage() {
+	it, itEnd := w.resolveBoth()
+	w.loop(it, itEnd)
 }
 
 // run drives the walk's waits without holding c.mu.
@@ -286,10 +362,16 @@ func (w *rywWalk) run(ctx context.Context, native nativeRangeFunc) error {
 		switch w.pc {
 		case pcAwaitStorage:
 			res, err := native(ctx, w.req.begin, w.req.end, w.req.limits, w.reverse) // U8 / U8'
-			c.withLock(func() { w.resumeStorageLocked(res, err) })
+			known := w.known(res, err)
+			c.withLock(func() { w.acceptStorageLocked(known, err) })
+			if w.pc != pcDone {
+				w.resumeStorage()
+			}
 		case pcAwaitPreKey:
 			err := w.sub.run(ctx, native)
-			c.withLock(func() { w.resumePreKeyLocked(w.sub.keyResult(), err) })
+			// The nested read's replies are in the cache the parent re-resolves on.
+			c.withLock(func() { w.cache = c.serverCache.snapshot() })
+			w.resumePreKey(w.sub.keyResult(), err)
 		case pcAwaitLoopKey:
 			err := w.sub.run(ctx, native)
 			w.resumeLoopKey(w.sub.keyResult(), err)
@@ -300,34 +382,35 @@ func (w *rywWalk) run(ctx context.Context, native nativeRangeFunc) error {
 	return w.err
 }
 
-// resolveLocked is resolveKeySelectorFromCache (RYW:409-485, A3).
-func (w *rywWalk) resolveLocked(sel *KeySelector, it *rywIter, actualOffset *int32) {
+// resolve is resolveKeySelectorFromCache (RYW:409-485, A3).
+func (w *rywWalk) resolve(sel *KeySelector, it *rywIter, actualOffset *int32) {
 	*sel = sel.removeOrEqual() // :420
 	alreadyExhausted := sel.Offset == 1
 	it.skip(sel.Key) // :424
-	if sel.Offset <= 0 && bytes.Equal(it.begin, sel.Key) && len(sel.Key) != 0 {
+	if sel.Offset <= 0 && it.b.compare(rywBoundary{key: sel.Key}) == 0 && len(sel.Key) != 0 {
 		it.prev() // :426-427
 	}
-	keykey := sel.Key
+	maxKey := rywBoundary{key: w.maxKey}
+	keykey := rywBoundary{key: sel.Key}
 	// :433-439
-	for sel.Offset > 1 && !it.unreadable() && !it.unknown() && bytes.Compare(it.end, w.maxKey) < 0 {
+	for sel.Offset > 1 && !it.unreadable() && !it.unknown() && it.e.compare(maxKey) < 0 {
 		if it.isKV() {
 			sel.Offset--
 		}
 		it.next()
-		keykey = it.begin
+		keykey = it.b
 	}
 	// :440-452
-	for sel.Offset < 1 && !it.unreadable() && !it.unknown() && len(it.begin) != 0 {
+	for sel.Offset < 1 && !it.unreadable() && !it.unknown() && !it.atStart() {
 		if it.isKV() {
 			sel.Offset++
 			if sel.Offset == 1 {
-				keykey = it.begin
+				keykey = it.b
 				break
 			}
 		}
 		it.prev()
-		keykey = it.end
+		keykey = it.e
 	}
 	if !alreadyExhausted {
 		*actualOffset = sel.Offset // :454-456
@@ -342,11 +425,11 @@ func (w *rywWalk) resolveLocked(sel *KeySelector, it *rywIter, actualOffset *int
 		*sel = firstGreaterOrEqual(w.maxKey)
 		return
 	}
-	for !it.unreadable() && it.empty() && bytes.Compare(it.end, w.maxKey) < 0 { // :472-476
+	for !it.unreadable() && it.empty() && it.e.compare(maxKey) < 0 { // :472-476
 		it.next()
-		keykey = it.begin
+		keykey = it.b
 	}
-	sel.Key = keykey
+	sel.Key = keykey.materialize()
 }
 
 // clearLimit is A4's counted-clear cap (RYW:701, 1007).
@@ -357,11 +440,11 @@ func clearLimit(requestCount int) int {
 	return 1 << min(requestCount, 20)
 }
 
-// loopLocked runs the loop (RYW:641-797 forward, 945-1109 backward) until a wait
+// loop runs the loop (RYW:641-797 forward, 945-1109 backward) until a wait
 // or the end.
-func (w *rywWalk) loopLocked(it, itEnd *rywIter) {
+func (w *rywWalk) loop(it, itEnd *rywIter) {
 	if w.reverse {
-		w.loopBackLocked(it, itEnd)
+		w.loopBack(it, itEnd)
 		return
 	}
 	for {
@@ -386,11 +469,11 @@ func (w *rywWalk) loopLocked(it, itEnd *rywIter) {
 				w.epilogue()
 				return
 			}
-			w.startSubLocked(w.end, pcAwaitLoopKey)
+			w.startSub(w.end, pcAwaitLoopKey)
 			return
 		}
 		// L4 (:679-683)
-		if !it.unreadable() && !it.unknown() && bytes.Compare(it.begin, itEnd.begin) > 0 {
+		if !it.unreadable() && !it.unknown() && it.b.compare(itEnd.b) > 0 {
 			if w.end.isFirstGreaterOrEqual() {
 				w.epilogue()
 				return
@@ -405,7 +488,7 @@ func (w *rywWalk) loopLocked(it, itEnd *rywIter) {
 		}
 		// L6 (:688-690)
 		if it.same(itEnd) && ((!it.unreadable() && !it.unknown()) ||
-			(w.begin.Offset > 0 && w.end.isFirstGreaterOrEqual() && bytes.Equal(w.end.Key, it.begin))) {
+			(w.begin.Offset > 0 && w.end.isFirstGreaterOrEqual() && it.b.compare(rywBoundary{key: w.end.Key}) == 0)) {
 			w.epilogue()
 			return
 		}
@@ -416,20 +499,20 @@ func (w *rywWalk) loopLocked(it, itEnd *rywIter) {
 		}
 		switch {
 		case it.unknown():
-			if w.unknownLocked(it, itEnd) {
+			if w.readUnknown(it, itEnd) {
 				return
 			}
 		case it.isKV():
-			w.kvForwardLocked(it)
+			w.kvForward(it)
 		default:
 			it.next() // E (:795-796)
 		}
 	}
 }
 
-// unknownLocked is U (RYW:692-771). It reports true when the walk suspended or
+// readUnknown is U (RYW:692-771). It reports true when the walk suspended or
 // ended.
-func (w *rywWalk) unknownLocked(it, itEnd *rywIter) bool {
+func (w *rywWalk) readUnknown(it, itEnd *rywIter) bool {
 	// U1 (:693-697)
 	if w.limits.hasByteLimit() && w.limits.hasSatisfiedMinRows() && len(w.result) > 0 && w.itemsPast >= 1-w.end.Offset {
 		w.more = true
@@ -437,17 +520,17 @@ func (w *rywWalk) unknownLocked(it, itEnd *rywIter) bool {
 		return true
 	}
 	// U2 (:699-703)
-	ucEnd := it.clone()
+	ucEnd := w.copyIter(2, it)
 	singleClears := 0
 	limit := clearLimit(w.requestCount)
-	if bytes.Compare(it.begin, itEnd.begin) < 0 {
+	if it.b.compare(itEnd.b) < 0 {
 		singleClears = min(skipUncached(ucEnd, itEnd, limit+100), limit)
 	}
 	// U3 (:705-721)
 	var readEnd KeySelector
 	switch {
 	case !ucEnd.same(itEnd):
-		readEnd = firstGreaterOrEqual(ucEnd.end)
+		readEnd = firstGreaterOrEqual(ucEnd.endKey())
 		if w.end.Offset < 1 {
 			w.additionalRows += int64(1 - w.end.Offset)
 		}
@@ -467,8 +550,8 @@ func (w *rywWalk) unknownLocked(it, itEnd *rywIter) bool {
 	switch {
 	case w.begin.isFirstGreaterOrEqual():
 		k := w.begin.Key
-		if bytes.Compare(it.begin, k) > 0 {
-			k = it.begin
+		if it.b.compare(rywBoundary{key: k}) > 0 {
+			k = it.beginKey()
 		}
 		w.begin = firstGreaterOrEqual(k)
 		readBegin = w.begin
@@ -477,7 +560,7 @@ func (w *rywWalk) unknownLocked(it, itEnd *rywIter) bool {
 		w.additionalRows += int64(w.begin.Offset - 1)
 	default:
 		readBegin = w.begin
-		n := countUncachedBack(it.clone(), limit)
+		n := countUncachedBack(w.copyIter(3, it), limit)
 		readBegin.Offset -= int32(n)
 		w.additionalRows += int64(n)
 	}
@@ -501,8 +584,8 @@ func (w *rywWalk) await(req walkRequest) {
 	}
 }
 
-// kvForwardLocked is K (RYW:772-794).
-func (w *rywWalk) kvForwardLocked(it *rywIter) {
+// kvForward is K (RYW:772-794).
+func (w *rywWalk) kvForward(it *rywIter) {
 	if _, ok := it.kv(); !ok { // a matched CompareAndClear
 		it.next()
 		return
@@ -529,8 +612,8 @@ func (w *rywWalk) decrement(kv KeyValue) {
 	w.limits.decrement(1, size)
 }
 
-// loopBackLocked is getRangeValueBack's loop (RYW:945-1109).
-func (w *rywWalk) loopBackLocked(it, itEnd *rywIter) {
+// loopBack is getRangeValueBack's loop (RYW:945-1109).
+func (w *rywWalk) loopBack(it, itEnd *rywIter) {
 	for {
 		if it.broken || itEnd.broken {
 			w.fail(&wire.FDBError{Code: ErrInternalError})
@@ -553,11 +636,11 @@ func (w *rywWalk) loopBackLocked(it, itEnd *rywIter) {
 				w.epilogue()
 				return
 			}
-			w.startSubLocked(w.begin, pcAwaitLoopKey)
+			w.startSub(w.begin, pcAwaitLoopKey)
 			return
 		}
 		// L4' (:983-988)
-		if w.itemsPast >= w.begin.Offset-1 && !it.unreadable() && !it.unknown() && bytes.Compare(it.begin, itEnd.begin) < 0 {
+		if w.itemsPast >= w.begin.Offset-1 && !it.unreadable() && !it.unknown() && it.b.compare(itEnd.b) < 0 {
 			if w.begin.isFirstGreaterOrEqual() {
 				w.epilogue()
 				return
@@ -571,7 +654,7 @@ func (w *rywWalk) loopBackLocked(it, itEnd *rywIter) {
 			return
 		}
 		// L6' (:993-997)
-		if w.end.isFirstGreaterOrEqual() && bytes.Equal(w.end.Key, it.begin) {
+		if w.end.isFirstGreaterOrEqual() && it.b.compare(rywBoundary{key: w.end.Key}) == 0 {
 			if w.itemsPast >= w.begin.Offset-1 && it.same(itEnd) {
 				w.epilogue()
 				return
@@ -587,7 +670,7 @@ func (w *rywWalk) loopBackLocked(it, itEnd *rywIter) {
 			return
 		}
 		if it.unknown() {
-			if w.unknownBackLocked(it, itEnd) {
+			if w.readUnknownBack(it, itEnd) {
 				return
 			}
 			continue
@@ -618,8 +701,8 @@ func (w *rywWalk) loopBackLocked(it, itEnd *rywIter) {
 	}
 }
 
-// unknownBackLocked is U' (RYW:999-1081).
-func (w *rywWalk) unknownBackLocked(it, itEnd *rywIter) bool {
+// readUnknownBack is U' (RYW:999-1081).
+func (w *rywWalk) readUnknownBack(it, itEnd *rywIter) bool {
 	// U1' (:1000-1003): no hasSatisfiedMinRows term, kept verbatim (A7).
 	if w.limits.hasByteLimit() && len(w.result) > 0 && w.itemsPast >= w.begin.Offset-1 {
 		w.more = true
@@ -627,17 +710,17 @@ func (w *rywWalk) unknownBackLocked(it, itEnd *rywIter) bool {
 		return true
 	}
 	// U2' (:1005-1009)
-	ucEnd := it.clone()
+	ucEnd := w.copyIter(2, it)
 	singleClears := 0
 	limit := clearLimit(w.requestCount)
-	if bytes.Compare(it.begin, itEnd.begin) > 0 {
+	if it.b.compare(itEnd.b) > 0 {
 		singleClears = min(skipUncachedBack(ucEnd, itEnd, limit+100), limit)
 	}
 	// U3' (:1011-1026)
 	var readBegin KeySelector
 	switch {
 	case !ucEnd.same(itEnd):
-		readBegin = firstGreaterOrEqual(ucEnd.begin)
+		readBegin = firstGreaterOrEqual(ucEnd.beginKey())
 		if w.begin.Offset > 1 {
 			w.additionalRows += int64(w.begin.Offset - 1)
 		}
@@ -657,8 +740,8 @@ func (w *rywWalk) unknownBackLocked(it, itEnd *rywIter) bool {
 	switch {
 	case w.end.isFirstGreaterOrEqual():
 		k := w.end.Key
-		if bytes.Compare(it.end, k) < 0 {
-			k = it.end
+		if it.e.compare(rywBoundary{key: k}) < 0 {
+			k = it.endKey()
 		}
 		w.end = firstGreaterOrEqual(k)
 		readEnd = w.end
@@ -667,7 +750,7 @@ func (w *rywWalk) unknownBackLocked(it, itEnd *rywIter) bool {
 		w.additionalRows += int64(1 - w.end.Offset)
 	default:
 		readEnd = w.end
-		n := countUncached(it.clone(), w.maxKey, limit)
+		n := countUncached(w.copyIter(3, it), w.maxKey, limit)
 		readEnd.Offset += int32(n)
 		w.additionalRows += int64(n)
 	}
@@ -715,7 +798,7 @@ func (w *rywWalk) epilogue() {
 // at a multi-key empty or an unreadable segment; back up to an unknown segment. It
 // returns the single-key empties crossed.
 func skipUncached(it, end *rywIter, iterationLimit int) int {
-	b, e := it.begin, it.end
+	b, e := it.b, it.e
 	singleEmpty := 0
 	for !it.same(end) {
 		iterationLimit--
@@ -723,7 +806,7 @@ func skipUncached(it, end *rywIter, iterationLimit int) int {
 			break
 		}
 		if it.unreadable() || it.empty() {
-			if it.unreadable() || !isKeyAfter(e, b) {
+			if it.unreadable() || !e.isKeyAfter(b) {
 				for (it.unreadable() || !it.unknown()) && !it.broken {
 					it.prev()
 				}
@@ -734,7 +817,7 @@ func skipUncached(it, end *rywIter, iterationLimit int) int {
 			b = e
 		}
 		it.next()
-		e = it.end
+		e = it.e
 	}
 	for (it.unreadable() || !it.unknown()) && !it.broken {
 		it.prev()
@@ -747,11 +830,12 @@ func countUncached(it *rywIter, maxKey []byte, maxClears int) int {
 	if maxClears <= 0 {
 		return 0
 	}
-	b, e := it.begin, it.end
+	b, e := it.b, it.e
+	last := rywBoundary{key: maxKey}
 	singleEmpty := 0
-	for bytes.Compare(e, maxKey) < 0 {
+	for e.compare(last) < 0 {
 		if it.unreadable() || it.empty() {
-			if it.unreadable() || !isKeyAfter(e, b) {
+			if it.unreadable() || !e.isKeyAfter(b) {
 				return singleEmpty
 			}
 			singleEmpty++
@@ -762,14 +846,14 @@ func countUncached(it *rywIter, maxKey []byte, maxClears int) int {
 			b = e
 		}
 		it.next()
-		e = it.end
+		e = it.e
 	}
 	return singleEmpty
 }
 
 // skipUncachedBack is RYW:841-871.
 func skipUncachedBack(it, end *rywIter, iterationLimit int) int {
-	b, e := it.begin, it.end
+	b, e := it.b, it.e
 	singleEmpty := 0
 	for !it.same(end) {
 		iterationLimit--
@@ -777,7 +861,7 @@ func skipUncachedBack(it, end *rywIter, iterationLimit int) int {
 			break
 		}
 		if it.unreadable() || it.empty() {
-			if it.unreadable() || !isKeyAfter(e, b) {
+			if it.unreadable() || !e.isKeyAfter(b) {
 				for (it.unreadable() || !it.unknown()) && !it.broken {
 					it.next()
 				}
@@ -788,7 +872,7 @@ func skipUncachedBack(it, end *rywIter, iterationLimit int) int {
 			e = b
 		}
 		it.prev()
-		b = it.begin
+		b = it.b
 	}
 	for (it.unreadable() || !it.unknown()) && !it.broken {
 		it.next()
@@ -801,11 +885,11 @@ func countUncachedBack(it *rywIter, maxClears int) int {
 	if maxClears <= 0 {
 		return 0
 	}
-	b, e := it.begin, it.end
+	b, e := it.b, it.e
 	singleEmpty := 0
-	for len(b) > 0 {
+	for b.size() > 0 {
 		if it.unreadable() || it.empty() {
-			if it.unreadable() || !isKeyAfter(e, b) {
+			if it.unreadable() || !e.isKeyAfter(b) {
 				return singleEmpty
 			}
 			singleEmpty++
@@ -816,7 +900,7 @@ func countUncachedBack(it *rywIter, maxClears int) int {
 			e = b
 		}
 		it.prev()
-		b = it.begin
+		b = it.b
 	}
 	return singleEmpty
 }

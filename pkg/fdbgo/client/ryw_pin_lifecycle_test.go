@@ -400,7 +400,7 @@ func TestRYWResetWhileAwaitingStorage(t *testing.T) {
 		c.mu.Lock()
 		view := c.pinWritesLocked()
 		w := c.newGetKeyWalkLocked(view, fgtSel("a"), []byte("\xff"))
-		w.startLocked()
+		w.start()
 		c.mu.Unlock()
 		native := func(ctx context.Context, b, e KeySelector, l rangeLimits, rev bool) (nativeRangeResult, error) {
 			c.reset() // the transaction resets while the request is in flight
@@ -456,7 +456,7 @@ func TestRYWCancelDuringNestedGetKey(t *testing.T) {
 	// begin FGE(n) > end (c, false, 5): P2 does not apply (offsets 1 < 5), so P3
 	// resolves end with a nested getKey (RYW:621).
 	w := c.newRangeWalkLocked(view, firstGreaterOrEqual([]byte("n")), KeySelector{Key: []byte("c"), Offset: 5}, rangeLimits{rows: -1, minRows: 1, bytes: -1}, false, []byte("\xff"))
-	w.startLocked()
+	w.start()
 	c.mu.Unlock()
 	if w.pc != pcAwaitPreKey || w.sub == nil || w.sub.pc != pcAwaitStorage {
 		t.Fatalf("walk pc %d, want a nested getKey awaiting storage", w.pc)

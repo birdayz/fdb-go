@@ -185,12 +185,15 @@ func (rr goRangeResult) selectorLimit(remaining int) int {
 }
 
 // startSelectors issues a selector read, as GetRange issues batch 1.
+//
+// The selector keys are the range result's own copies (cloneSelectorRange, advance),
+// never modified, so the client keeps them rather than copying them again.
 func (rr goRangeResult) startSelectors(b rangeBounds, limit, byteTarget int) *client.PendingRange {
 	limit = rr.selectorLimit(limit)
 	if rr.snapshot {
-		return rr.tx.inner.Snapshot().StartGetRangeSelectors(rr.tx.ctx, b.beginSel, b.endSel, limit, byteTarget, rr.options.Reverse)
+		return rr.tx.inner.Snapshot().StartGetRangeOwnedSelectors(rr.tx.ctx, b.beginSel, b.endSel, limit, byteTarget, rr.options.Reverse)
 	}
-	return rr.tx.inner.StartGetRangeSelectors(rr.tx.ctx, b.beginSel, b.endSel, limit, byteTarget, rr.options.Reverse)
+	return rr.tx.inner.StartGetRangeOwnedSelectors(rr.tx.ctx, b.beginSel, b.endSel, limit, byteTarget, rr.options.Reverse)
 }
 
 // readBounds reads one batch of what is left of the range.
@@ -198,11 +201,11 @@ func (rr goRangeResult) readBounds(b rangeBounds, limit, byteTarget int) ([]clie
 	if !b.selectors {
 		return rr.doRange(b.begin, b.end, limit, byteTarget)
 	}
-	limit = rr.selectorLimit(limit)
+	limit = rr.selectorLimit(limit) // the selector keys are owned, as in startSelectors
 	if rr.snapshot {
-		return rr.tx.inner.Snapshot().GetRangeSelectors(rr.tx.ctx, b.beginSel, b.endSel, limit, byteTarget, rr.options.Reverse)
+		return rr.tx.inner.Snapshot().GetRangeOwnedSelectors(rr.tx.ctx, b.beginSel, b.endSel, limit, byteTarget, rr.options.Reverse)
 	}
-	return rr.tx.inner.GetRangeSelectors(rr.tx.ctx, b.beginSel, b.endSel, limit, byteTarget, rr.options.Reverse)
+	return rr.tx.inner.GetRangeOwnedSelectors(rr.tx.ctx, b.beginSel, b.endSel, limit, byteTarget, rr.options.Reverse)
 }
 
 // doRange issues one range read carrying BOTH dimensions: a row budget and a per-fetch byte

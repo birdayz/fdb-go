@@ -110,3 +110,142 @@ func BenchmarkRYWConcurrentReads(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkRYWBunchedMapPuts is TEXT index maintenance as the Record Layer runs
+// it in a message transaction: pending writes, then BunchedMap puts with 128
+// snapshot selector reads in flight (lastLessOrEqual(k) .. firstGreaterThan(k)+1
+// under a cancellable context, as StartGetRangeSelectors issues them for the
+// facade), each completed in issue order and followed by the put's writes: a
+// Set of the bunch, a Clear of a split-off key and a write conflict key. One op
+// is one transaction's puts; its pending writes are made outside the timer, and
+// ns/put divides by the puts.
+func BenchmarkRYWBunchedMapPuts(b *testing.B) {
+	const (
+		storageKeys = 50000
+		puts        = 2048
+		depth       = 128
+	)
+	st := newBenchStorage(storageKeys)
+	value := bytes.Repeat([]byte("p"), 200)
+	for _, writes := range []int{1000, 20000} {
+		b.Run(fmt.Sprintf("writes=%d", writes), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				b.StopTimer()
+				ctx, cancel := context.WithCancel(context.Background())
+				tx := &Transaction{}
+				tx.nativeRange = st.native
+				for i := 0; i < writes; i++ {
+					j := (i * 7919) % storageKeys
+					tx.Set(fmt.Appendf(nil, "t/%07d/w", j*4+1), value)
+				}
+				b.StartTimer()
+				type put struct {
+					key []byte
+					p   *PendingRange
+				}
+				ring := make([]put, 0, depth)
+				finish := func(p put) {
+					if _, _, err := p.p.Get(); err != nil {
+						b.Fatal(err)
+					}
+					tx.Set(p.key, value)
+					tx.Clear(append(p.key[:len(p.key):len(p.key)], 'x'))
+					tx.AddWriteConflictKey(p.key)
+				}
+				for i := 0; i < puts; i++ {
+					if len(ring) == depth {
+						finish(ring[0])
+						ring = ring[1:]
+					}
+					// Never before the first storage key: memStorage sets no readToBegin.
+					key := fmt.Appendf(nil, "t/%07d/q", (1+(i*104729)%(storageKeys-1))*4)
+					end := KeySelector{Key: key, OrEqual: true, Offset: 2}   // firstGreaterThan(k).add(1)
+					begin := KeySelector{Key: key, OrEqual: true, Offset: 0} // lastLessOrEqual(k)
+					ring = append(ring, put{key: key, p: tx.Snapshot().StartGetRangeSelectors(ctx, begin, end, 0, 0, false)})
+				}
+				for _, p := range ring {
+					finish(p)
+				}
+				cancel()
+			}
+			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*puts), "ns/put")
+		})
+	}
+}
+
+// BenchmarkRYWCachedReads prices reads the RYW cache answers whole, under a
+// cancellable context as the facade passes it: a snapshot selector read over a
+// span already read, and a Get of a pending write. C++ answers both without a
+// location lookup or a cancellation callback.
+func BenchmarkRYWCachedReads(b *testing.B) {
+	st := newBenchStorage(1000)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tx := &Transaction{}
+	tx.nativeRange = st.native
+	key := []byte("t/0000400/q")
+	written := []byte("t/0000400/w")
+	tx.Set(written, []byte("entry"))
+	begin := KeySelector{Key: key, OrEqual: true, Offset: 0} // lastLessOrEqual(k)
+	end := KeySelector{Key: key, OrEqual: true, Offset: 2}   // firstGreaterThan(k).add(1)
+	if _, _, err := tx.Snapshot().GetRangeSelectors(ctx, begin, end, 0, 0, false); err != nil {
+		b.Fatal(err)
+	}
+	b.Run("selector", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, _, err := tx.Snapshot().GetRangeSelectors(ctx, begin, end, 0, 0, false); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("get", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if v, err := tx.Snapshot().Get(ctx, written); err != nil || v == nil {
+				b.Fatal(v, err)
+			}
+		}
+	})
+}
+
+// BenchmarkCommitConflictVectors is a message transaction's BunchedMap puts as
+// writes and conflicts (Java's per-put calls: a read conflict range, a Set, a
+// Clear, a write conflict key and a write conflict range), then the vectors its
+// commit sizes and ships. One op is one transaction; ns/put divides by the puts.
+func BenchmarkCommitConflictVectors(b *testing.B) {
+	const puts = 2048
+	value := bytes.Repeat([]byte("p"), 200)
+	keys := make([][]byte, puts)
+	for i := range keys {
+		keys[i] = fmt.Appendf(nil, "t/%07d/q", (1+(i*104729)%49999)*4)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		tx := &Transaction{}
+		for _, key := range keys {
+			_ = tx.AddReadConflictRange(key, append(key[:len(key):len(key)], 0xff))
+			tx.Set(key, value)
+			tx.Clear(append(key[:len(key):len(key)], 'x'))
+			tx.AddWriteConflictKey(key)
+			_ = tx.AddWriteConflictRange(append(key[:len(key):len(key)], 'a'), append(key[:len(key):len(key)], 'b'))
+		}
+		tx.conflictMu.Lock()
+		muts, writes, reads := tx.mutations, tx.writeConflicts, tx.readConflicts
+		tx.conflictMu.Unlock()
+		benchCommitVectors(tx, muts, writes, reads)
+	}
+	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*puts), "ns/put")
+}
+
+// benchCommitVectors is Commit's vector construction after validation.
+func benchCommitVectors(tx *Transaction, muts []Mutation, writes, reads []KeyRange) {
+	shipMuts, sized, coalesced := coalesceCommitVectors(muts, writes, false)
+	shipReads := shipReadConflicts(reads, false)
+	shipReads, sc, added := tx.selfConflictShipReads(sized, shipReads)
+	ship := finalizeShipConflicts(sized, sc, added, coalesced)
+	if len(shipMuts) == 0 || len(ship) == 0 || len(shipReads) == 0 {
+		panic("empty commit vectors")
+	}
+}

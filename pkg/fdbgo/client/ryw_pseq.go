@@ -413,6 +413,23 @@ func (c *pcursor[T]) seekFirst(s *pseq[T], pred func(*T) bool) {
 
 func (c *pcursor[T]) valid() bool { return len(c.path) > 0 }
 
+// peekNext is the item after the current one without moving, nil at the end;
+// the cursor must be valid.
+func (c *pcursor[T]) peekNext() *T {
+	n := c.path[len(c.path)-1]
+	if n.right != nil {
+		for n = n.right; n.left != nil; n = n.left {
+		}
+		return &n.item
+	}
+	for i := len(c.path) - 1; i > 0; i-- {
+		if c.path[i-1].left == c.path[i] {
+			return &c.path[i-1].item
+		}
+	}
+	return nil
+}
+
 // item is the current item; the cursor must be valid. It must not be written.
 func (c *pcursor[T]) item() *T { return &c.path[len(c.path)-1].item }
 

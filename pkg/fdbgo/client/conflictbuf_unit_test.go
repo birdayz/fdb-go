@@ -100,8 +100,9 @@ func TestConflictBufAlloc_SmallThenOversizedRequest(t *testing.T) {
 	tx.addReadConflicts([][2][]byte{first})
 	second := rangeOf('c', 'd', 50000)
 	tx.addReadConflicts([][2][]byte{second})
-	if len(tx.conflictBuf) != 100100 || cap(tx.conflictBuf) < 100100 {
-		t.Fatalf("oversized promotion: len=%d cap=%d, need 100100 bytes", len(tx.conflictBuf), cap(tx.conflictBuf))
+	// The second range gets a chunk of its own; the first stays in the small one.
+	if len(tx.conflictBuf) != 100000 || cap(tx.conflictBuf) < 100000 {
+		t.Fatalf("oversized promotion: len=%d cap=%d, need a 100000-byte chunk", len(tx.conflictBuf), cap(tx.conflictBuf))
 	}
 	assertConflictRanges(t, tx.readConflicts, [][2][]byte{first, second})
 	overwriteFreeConflictBuf(tx)

@@ -34,8 +34,8 @@ type selectorRangeRead struct {
 	maxKey            []byte
 	disabled          bool     // RYW disabled: readThrough (RYW:187-215)
 	walk              *rywWalk // the RYW and snapshot-cache routes
-	// view is the pinned write-map version (RFC-262 D11): set when the walk did not
-	// finish at issue and reads the write map. Released once, in complete.
+	// view is the pinned write-map version (RFC-262 D11): set when the walk reads
+	// the write map, which it does without c.mu. Released once, in complete.
 	view           *rywWrites
 	localConflicts [][2][]byte // a read answered at issue: its filtered conflict
 	finished       bool        // answered by the synchronous checks; nothing to run
@@ -81,34 +81,43 @@ func (tx *Transaction) issueSelectorRange(parent context.Context, begin, end Key
 		r.disabled = true
 	} else {
 		c := &tx.ryw
+		backstop := tx.rangeReadBackstop()
 		var panicked bool
 		c.withLock(func() {
-			// As keyRead: the walk runs to its first wait on the caller's goroutine, and a
-			// panic fails the read with nothing locked, pinned or leased (RFC-110).
-			panicked = tx.rangeReadBackstop().run(func() {
+			// As keyRead: c.mu covers only pinning the version and snapshotting the
+			// cache; the walk then runs to its first wait on the caller's goroutine,
+			// and a panic fails the read with nothing locked, pinned or leased (RFC-110).
+			panicked = backstop.run(func() {
 				var view *rywWrites
 				if !snapshot || tx.snapshotRYWDisableCount <= 0 {
-					view = c.liveLocked() // RYWIterator (:378-395); nil: SnapshotCache::iterator (:366-377)
+					// RYWIterator (:378-395); nil: SnapshotCache::iterator (:366-377)
+					view = c.pinWritesLocked()
+					r.view = view
 				}
 				r.walk = c.newRangeWalkLocked(view, r.begin, r.end, r.limits, reverse, r.maxKey)
-				r.walk.onRequest = tx.walkOnRequest
-				r.walk.startLocked()
-				switch {
-				case r.walk.done():
-					r.local = true
-					if r.walk.err == nil && !snapshot {
-						b, e := rywRangeConflictSpan(r.begin, r.end, r.walk.rangeResult(), reverse, r.maxKey)
-						r.localConflicts = view.conflictRanges(b, e)
-					}
-				case view != nil:
-					r.view = c.pinWritesLocked()
-				}
 			})
 			if panicked && r.view != nil {
 				c.unpinWritesLocked(r.view)
 				r.view = nil
 			}
 		})
+		if !panicked {
+			panicked = backstop.run(func() {
+				r.walk.onRequest = tx.walkOnRequest
+				r.walk.start()
+				if r.walk.done() {
+					r.local = true
+					if r.walk.err == nil && !snapshot {
+						b, e := rywRangeConflictSpan(r.begin, r.end, r.walk.rangeResult(), reverse, r.maxKey)
+						r.localConflicts = r.view.conflictRanges(b, e)
+					}
+				}
+			})
+			if panicked && r.view != nil {
+				c.withLock(func() { c.unpinWritesLocked(r.view) })
+				r.view = nil
+			}
+		}
 		if panicked {
 			return r.finish(nil, false, tx.trackReadOperation(ctx, &wire.FDBError{Code: ErrInternalError}))
 		}
@@ -150,6 +159,8 @@ func (r *selectorRangeRead) read(clone bool) ([]KeyValue, bool, error) {
 	if r.disabled {
 		return r.readThrough()
 	}
+	// Its rows are the cache's and the write map's, not the walk's.
+	defer func() { r.walk.release(); r.walk = nil }()
 	tx, ctx := r.tx, r.ctx
 	if !r.local {
 		storage := tx.nativeRange
@@ -317,12 +328,34 @@ type issuedRangeRead interface {
 // limit 0 and -1 are unlimited rows; byteTarget 0 is no byte limit. Commit
 // waits for the read whether or not Get is called (RYW:1767).
 func (tx *Transaction) StartGetRangeSelectors(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse bool) *PendingRange {
-	return tx.startSelectorRange(ctx, begin, end, limit, byteTarget, reverse, false)
+	return tx.startSelectorRange(ctx, ownedSelector(begin), ownedSelector(end), limit, byteTarget, reverse, false)
 }
 
 // StartGetRangeSelectors is the snapshot form of Transaction.StartGetRangeSelectors.
 func (s *Snapshot) StartGetRangeSelectors(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse bool) *PendingRange {
-	return s.tx.startSelectorRange(ctx, begin, end, limit, byteTarget, reverse, true)
+	return s.tx.startSelectorRange(ctx, ownedSelector(begin), ownedSelector(end), limit, byteTarget, reverse, true)
+}
+
+// StartGetRangeOwnedSelectors is StartGetRangeSelectors for selectors whose keys
+// the caller hands over: it never modifies them afterwards, so the read keeps
+// them instead of copying them.
+func (tx *Transaction) StartGetRangeOwnedSelectors(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse bool) *PendingRange {
+	return tx.startSelectorRange(ctx, handedSelector(begin), handedSelector(end), limit, byteTarget, reverse, false)
+}
+
+// StartGetRangeOwnedSelectors is the snapshot form of Transaction.StartGetRangeOwnedSelectors.
+func (s *Snapshot) StartGetRangeOwnedSelectors(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse bool) *PendingRange {
+	return s.tx.startSelectorRange(ctx, handedSelector(begin), handedSelector(end), limit, byteTarget, reverse, true)
+}
+
+// GetRangeOwnedSelectors is StartGetRangeOwnedSelectors waited for in the call.
+func (tx *Transaction) GetRangeOwnedSelectors(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
+	return tx.issueSelectorRange(ctx, handedSelector(begin), handedSelector(end), limit, byteTarget, reverse, false).run(true)
+}
+
+// GetRangeOwnedSelectors is the snapshot form of Transaction.GetRangeOwnedSelectors.
+func (s *Snapshot) GetRangeOwnedSelectors(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
+	return s.tx.issueSelectorRange(ctx, handedSelector(begin), handedSelector(end), limit, byteTarget, reverse, true).run(true)
 }
 
 // GetRangeSelectors is StartGetRangeSelectors waited for in the call.
@@ -345,8 +378,17 @@ func ownedSelector(s KeySelector) KeySelector {
 	return s
 }
 
+// handedSelector is ownedSelector for a key the caller handed over.
+func handedSelector(s KeySelector) KeySelector {
+	if s.Key == nil {
+		s.Key = []byte{}
+	}
+	return s
+}
+
+// startSelectorRange takes owned selectors.
 func (tx *Transaction) startSelectorRange(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse, snapshot bool) *PendingRange {
-	r := tx.issueSelectorRange(ctx, ownedSelector(begin), ownedSelector(end), limit, byteTarget, reverse, snapshot)
+	r := tx.issueSelectorRange(ctx, begin, end, limit, byteTarget, reverse, snapshot)
 	if r.finished || r.local {
 		p := &PendingRange{done: closedDone}
 		p.state.Store(pendingClaimed)

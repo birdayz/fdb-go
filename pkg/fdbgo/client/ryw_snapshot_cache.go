@@ -22,12 +22,15 @@ type snapshotCache struct {
 	entries pseq[cacheEntry]
 	// node0 holds the first entries' nodes, so the common 1-2 point read path
 	// allocates none; nodesLent records that entries may hand them out.
-	node0      [2]pnode[cacheEntry]
-	nodesLent  bool
-	kv0        [2]KeyValue
-	keyBuf     [64]byte
-	kvUsed     int
-	keyBufUsed int
+	node0     [2]pnode[cacheEntry]
+	nodesLent bool
+	// snapshotted records that a walk took a snapshot (snapshot): reset then
+	// leaves the inline storage to it.
+	snapshotted bool
+	kv0         [2]KeyValue
+	keyBuf      [64]byte
+	kvUsed      int
+	keyBufUsed  int
 
 	// kvsTouched counts cached KeyValues examined by the range walk since the last
 	// reset. It exists to make the walk's cost observable: the walk is supposed to do
@@ -63,6 +66,12 @@ type cacheEntry struct {
 // reset clears all cached state.
 func (sc *snapshotCache) reset() {
 	sc.entries = pseq[cacheEntry]{}
+	if sc.snapshotted {
+		// A walk may still read a snapshot holding the inline nodes, keys and
+		// rows: they are never handed out again.
+		sc.nodesLent, sc.kvUsed, sc.keyBufUsed = true, len(sc.kv0), len(sc.keyBuf)
+		return
+	}
 	sc.node0 = [2]pnode[cacheEntry]{}
 	sc.nodesLent = false
 	sc.kv0 = [2]KeyValue{}
@@ -140,6 +149,16 @@ func (sc *snapshotCache) entryList() []cacheEntry { return sc.entries.appendTo(n
 // arena-allocated and has no eviction), so bounding memory here would diverge.
 // Only the per-insert cost is being brought back in line.
 func (sc *snapshotCache) insert(begin, end []byte, kvs []KeyValue) {
+	sc.insertKVs(begin, end, kvs, false)
+}
+
+// insertOwned is insert that keeps begin, end and kvs, which nothing writes,
+// instead of copying them: the walk prepares them before it takes c.mu.
+func (sc *snapshotCache) insertOwned(begin, end []byte, kvs []KeyValue) {
+	sc.insertKVs(begin, end, kvs, true)
+}
+
+func (sc *snapshotCache) insertKVs(begin, end []byte, kvs []KeyValue, owned bool) {
 	if bytes.Compare(begin, end) >= 0 {
 		return
 	}
@@ -195,10 +214,13 @@ func (sc *snapshotCache) insert(begin, end []byte, kvs []KeyValue) {
 		return bytes.Compare(kvs[k].Key, newEnd) >= 0
 	})
 
-	fresh := cacheEntry{
-		begin: append([]byte(nil), newBegin...),
-		end:   append([]byte(nil), newEnd...),
-		kvs:   copyKVs(kvs[lok:hik]),
+	fresh := cacheEntry{begin: newBegin, end: newEnd, kvs: kvs[lok:hik:hik]}
+	if !owned {
+		fresh = cacheEntry{
+			begin: append([]byte(nil), newBegin...),
+			end:   append([]byte(nil), newEnd...),
+			kvs:   copyKVs(kvs[lok:hik]),
+		}
 	}
 
 	switch hi - lo {
@@ -374,13 +396,23 @@ func reversedKVs(kvs []KeyValue) []KeyValue {
 	return out
 }
 
+// snapshot returns the entries as they are now, for a walk that reads them
+// without rywCache.mu: later inserts copy what they change.
+func (sc *snapshotCache) snapshot() pseq[cacheEntry] {
+	sc.snapshotted = true
+	return sc.entries.share()
+}
+
 // getKey checks if a single key's server state is cached. Returns (value, true)
 // if the key falls within a known range. value is nil if the key doesn't exist
 // at the server. Returns (nil, false) if the key's range is unknown.
-func (sc *snapshotCache) getKey(key []byte) ([]byte, bool) {
+func (sc *snapshotCache) getKey(key []byte) ([]byte, bool) { return cacheGetKey(&sc.entries, key) }
+
+// cacheGetKey is getKey over entries or a snapshot of them.
+func cacheGetKey(entries *pseq[cacheEntry], key []byte) ([]byte, bool) {
 	// Find the entry containing key: the first one ending after key, when it
 	// begins at or before key (entries are sorted and non-overlapping).
-	_, e := sc.entries.find(func(e *cacheEntry) bool {
+	_, e := entries.find(func(e *cacheEntry) bool {
 		return bytes.Compare(e.end, key) > 0
 	})
 	if e == nil || bytes.Compare(e.begin, key) > 0 {

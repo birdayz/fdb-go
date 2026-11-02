@@ -245,7 +245,7 @@ func TestRYWIterMatchesCandidateOracle(t *testing.T) {
 			it := c.newIterLocked(w)
 			or := &oracleIter{c: c, w: w}
 			check := func(step string) {
-				got := iterState(it.begin, it.end, it.typ, it.sentinel)
+				got := iterState(it.beginKey(), it.endKey(), it.typ, it.sentinel)
 				want := iterState(or.begin, or.end, or.typ, or.sentinel)
 				if got != want {
 					fail("%s: iterator %s, oracle %s", step, got, want)
@@ -307,7 +307,7 @@ func TestRYWIterMatchesCandidateOracle(t *testing.T) {
 				if kvsString(gotB) != kvsString(wantB) {
 					fail("skipContiguousBack(%q) from %q: %s, oracle %s", bound, p, kvsString(gotB), kvsString(wantB))
 				}
-				if s, o := iterState(itB.begin, itB.end, itB.typ, itB.sentinel), iterState(orB.begin, orB.end, orB.typ, orB.sentinel); s != o {
+				if s, o := iterState(itB.beginKey(), itB.endKey(), itB.typ, itB.sentinel), iterState(orB.begin, orB.end, orB.typ, orB.sentinel); s != o {
 					fail("after skipContiguousBack(%q) from %q: iterator %s, oracle %s", bound, p, s, o)
 				}
 				if len(gotB) > 1 {

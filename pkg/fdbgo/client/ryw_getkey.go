@@ -64,6 +64,11 @@ var allKeysBegin = []byte{}
 // segTypeAtLocked computes the merged segment type for the segment beginning at p.
 // Caller holds c.mu.
 func (c *rywCache) segTypeAtLocked(w *rywWrites, p []byte) rywSegType {
+	return segTypeAt(&c.serverCache.entries, w, p)
+}
+
+// segTypeAt is segTypeAtLocked over a cache snapshot.
+func segTypeAt(cached *pseq[cacheEntry], w *rywWrites, p []byte) rywSegType {
 	if w != nil {
 		// Unreadable gate (RFC-098): reaching a pending-versionstamp segment or
 		// an SVK candidate range during resolution throws in C++ (the cursor
@@ -94,7 +99,7 @@ func (c *rywCache) segTypeAtLocked(w *rywWrites, p []byte) rywSegType {
 				return segKV
 			}
 			// Unresolved atomic chain: resolve over the storage base for its TYPE.
-			base, known := c.serverCache.getKey(p)
+			base, known := cacheGetKey(cached, p)
 			if !known {
 				return segUnknown // DEPENDENT_WRITE over unknown base — must read server.
 			}
@@ -115,7 +120,7 @@ func (c *rywCache) segTypeAtLocked(w *rywWrites, p []byte) rywSegType {
 		}
 		// Unmodified — fall through to the cache view.
 	}
-	val, known := c.serverCache.getKey(p)
+	val, known := cacheGetKey(cached, p)
 	if !known {
 		return segUnknown
 	}
@@ -189,13 +194,29 @@ func (cur *rywSegCursor) prev() {
 type rywBoundary struct {
 	key   []byte
 	after bool
+	// extra counts zero bytes past after's, for the successor of a successor
+	// (ExtStringRef extra_zero_bytes, SnapshotCache.h:30-120).
+	extra int
 }
 
 func (b rywBoundary) size() int {
 	if b.after {
-		return len(b.key) + 1
+		return len(b.key) + 1 + b.extra
 	}
 	return len(b.key)
+}
+
+// keyAfter is ExtStringRef::keyAfter: one more zero byte.
+func (b rywBoundary) keyAfter() rywBoundary {
+	if !b.after {
+		return rywBoundary{key: b.key, after: true}
+	}
+	return rywBoundary{key: b.key, after: true, extra: b.extra + 1}
+}
+
+// isKeyAfter reports b == keyAfter(a) (ExtStringRef::isKeyAfter).
+func (b rywBoundary) isKeyAfter(a rywBoundary) bool {
+	return b.size() == a.size()+1 && b.compare(a.keyAfter()) == 0
 }
 
 func (b rywBoundary) compare(other rywBoundary) int {
@@ -218,7 +239,9 @@ func (b rywBoundary) compare(other rywBoundary) int {
 
 func (b rywBoundary) materialize() []byte {
 	if b.after {
-		return keyAfterBytes(b.key)
+		r := make([]byte, b.size())
+		copy(r, b.key)
+		return r
 	}
 	return b.key
 }

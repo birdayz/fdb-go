@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"math"
 	"slices"
+	"sort"
 	"sync"
 
 	"fdb.dev/pkg/fdbgo/wire"
@@ -447,20 +448,45 @@ func coalesceCommitVectors(rawMuts []Mutation, rawConflicts []KeyRange, rywDisab
 // finalizeShipConflicts appends the self-conflict range (added by maybeMakeSelfConflicting AFTER the 2101
 // gate, so it is unsized — matching C++, which adds it after the transaction_too_large check,
 // NativeAPI.actor.cpp:6858) to the SIZED write-conflict snapshot, re-coalescing when the txn coalesces.
-// Works from the snapshot (rawConflicts) — NOT a live re-read of tx.writeConflicts — so a Set racing this
+// Works from the snapshot (sized) — NOT a live re-read of tx.writeConflicts — so a Set racing this
 // Commit cannot ship an unvalidated/unsized conflict range whose mutation was excluded from the frozen
 // op-log. Pure + unit-testable.
-func finalizeShipConflicts(rawConflicts []KeyRange, sc KeyRange, scAdded, coalesced bool) []KeyRange {
-	base := rawConflicts
-	if scAdded {
-		base = append(append(make([]KeyRange, 0, len(rawConflicts)+1), rawConflicts...), sc)
-		if coalesced {
-			return coalesceOwnedWriteConflicts(base)
-		}
-	} else if coalesced {
-		return coalesceWriteConflicts(base)
+//
+// sized is coalesceCommitVectors's sizeConflicts, already coalesced when coalesced is set, so the
+// self-conflict range is merged into it in one pass instead of sorting the whole vector again.
+func finalizeShipConflicts(sized []KeyRange, sc KeyRange, scAdded, coalesced bool) []KeyRange {
+	if !scAdded {
+		return sized
 	}
-	return base
+	if coalesced {
+		return insertCoalesced(sized, sc)
+	}
+	return append(append(make([]KeyRange, 0, len(sized)+1), sized...), sc)
+}
+
+// insertCoalesced returns a new vector holding coalesceOwnedWriteConflicts(rs + r)
+// for an rs that coalesceOwnedWriteConflicts produced (sorted, each end below the
+// next begin): r absorbs the ranges it overlaps or touches, as the sequential
+// merge would.
+func insertCoalesced(rs []KeyRange, r KeyRange) []KeyRange {
+	i := sort.Search(len(rs), func(i int) bool { return bytes.Compare(rs[i].End, r.Begin) >= 0 })
+	j := i
+	for j < len(rs) && bytes.Compare(rs[j].Begin, r.End) <= 0 {
+		j++
+	}
+	merged := r
+	if i < j {
+		if bytes.Compare(rs[i].Begin, merged.Begin) < 0 {
+			merged.Begin = rs[i].Begin
+		}
+		if bytes.Compare(rs[j-1].End, merged.End) > 0 {
+			merged.End = rs[j-1].End
+		}
+	}
+	out := make([]KeyRange, 0, len(rs)-(j-i)+1)
+	out = append(out, rs[:i]...)
+	out = append(out, merged)
+	return append(out, rs[j:]...)
 }
 
 // atomic records an atomic mutation.
@@ -1033,7 +1059,12 @@ func (c *rywCache) localRangeLocked(w *rywWrites, begin, end []byte, limit, byte
 // segmentValueLocked is RYWIterator::kv for a segment already classified segKV.
 // Resolve against cached storage without rewriting dependent/unreadable flags.
 func (c *rywCache) segmentValueLocked(w *rywWrites, key []byte) []byte {
-	base, _ := c.serverCache.getKey(key)
+	return segmentValueAt(&c.serverCache.entries, w, key)
+}
+
+// segmentValueAt is segmentValueLocked over a cache snapshot.
+func segmentValueAt(cached *pseq[cacheEntry], w *rywWrites, key []byte) []byte {
+	base, _ := cacheGetKey(cached, key)
 	if w == nil {
 		return base
 	}

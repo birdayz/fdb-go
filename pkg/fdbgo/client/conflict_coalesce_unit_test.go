@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"math/rand/v2"
 	"slices"
 	"testing"
 )
@@ -52,7 +53,11 @@ func TestCommitConflictCoalescing(t *testing.T) {
 							want = append(want, sc)
 						}
 					}
-					got := finalizeShipConflicts(snapshot, sc, added, coalesced)
+					sized := snapshot // coalesceCommitVectors's sizeConflicts
+					if coalesced {
+						sized = coalesceWriteConflicts(snapshot)
+					}
+					got := finalizeShipConflicts(sized, sc, added, coalesced)
 					if !slices.EqualFunc(got, want, equalCommitConflictRange) {
 						t.Fatalf("added=%v coalesced=%v: got %q, want %q", added, coalesced, got, want)
 					}
@@ -81,6 +86,7 @@ func TestCommitConflictCoalescingAllocations(t *testing.T) {
 		{Begin: []byte("a"), End: []byte("c")},
 	}
 	sc := KeyRange{Begin: []byte("d"), End: []byte("f")}
+	sized := coalesceWriteConflicts(in)
 	var got []KeyRange
 	if allocs := testing.AllocsPerRun(100, func() {
 		got = coalesceWriteConflicts(in)
@@ -91,11 +97,46 @@ func TestCommitConflictCoalescingAllocations(t *testing.T) {
 		t.Fatalf("coalescing got %q, want [a,e)", got)
 	}
 	if allocs := testing.AllocsPerRun(100, func() {
-		got = finalizeShipConflicts(in, sc, true, true)
+		got = finalizeShipConflicts(sized, sc, true, true)
 	}); allocs != 1 {
 		t.Errorf("finalization allocations = %v, want 1 owned vector", allocs)
 	}
 	if len(got) != 1 || string(got[0].Begin) != "a" || string(got[0].End) != "f" {
 		t.Fatalf("finalization got %q, want [a,f)", got)
+	}
+}
+
+// insertCoalesced must equal coalescing the whole vector again, and the
+// presence check over coalesced vectors must equal the sorted-copy walk, for
+// overlapping, touching, nested and empty ranges.
+func TestInsertCoalescedMatchesCoalesce(t *testing.T) {
+	t.Parallel()
+	rng := rand.New(rand.NewPCG(7, 11))
+	key := func() []byte { return []byte{byte('a' + rng.IntN(12))} }
+	ranges := func(n int) []KeyRange {
+		out := make([]KeyRange, n)
+		for i := range out {
+			b, e := key(), key()
+			if bytes.Compare(b, e) > 0 {
+				b, e = e, b
+			}
+			out[i] = KeyRange{Begin: b, End: e}
+		}
+		return out
+	}
+	for iter := range 20000 {
+		raw := ranges(rng.IntN(8))
+		r := ranges(1)[0]
+		sized := coalesceWriteConflicts(raw)
+		want := coalesceOwnedWriteConflicts(append(slices.Clone(raw), r))
+		if got := insertCoalesced(sized, r); !slices.EqualFunc(got, want, equalCommitConflictRange) {
+			t.Fatalf("iter %d: insertCoalesced(%q, %q) = %q, want %q", iter, sized, r, got, want)
+		}
+		// Commit intersects the shipped read map; it used to pair it with the raw writes.
+		reads := shipReadConflicts(ranges(rng.IntN(5)), false)
+		_, want2 := intersectRanges(raw, reads)
+		if got := conflictRangesIntersect(sized, reads); got != want2 {
+			t.Fatalf("iter %d: intersect(%q, %q) = %v, want %v", iter, raw, reads, got, want2)
+		}
 	}
 }

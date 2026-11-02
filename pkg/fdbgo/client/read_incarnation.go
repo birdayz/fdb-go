@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"time"
 	"weak"
 
@@ -77,11 +78,77 @@ type readOperation struct {
 	// nothing: a context derived from it ends with its own cancel or with the
 	// incarnation, not with the operation.
 	joined bool
+	// deferred marks an operation whose parent can be cancelled: it ends with
+	// the parent or the incarnation, whichever ends first. The context merging
+	// the two is derived only when something waits on the operation or asks
+	// the context package for its cause: an operation the RYW cache answers
+	// only checks Err, as C++ answers it without an actor or a cancellation
+	// callback (ReadYourWrites.actor.cpp:378-406). Context is the parent.
+	deferred bool
+	released atomic.Bool              // a deferred operation's release ran
+	merge    atomic.Pointer[opMerged] // a deferred operation's merged context, once derived
+}
+
+// opMerged is the context merging a deferred operation's parent and incarnation.
+type opMerged struct {
+	ctx    context.Context
+	cancel context.CancelCauseFunc
+	stop   func() bool
+}
+
+func (m *opMerged) end() {
+	m.stop()
+	m.cancel(nil)
+}
+
+// merged derives the context a cancellable parent got eagerly before: a child
+// of the parent that the incarnation's end cancels with its cause. Derived after
+// release, it is already cancelled, as the eager one was by then.
+func (op *readOperation) merged() context.Context {
+	if m := op.merge.Load(); m != nil {
+		return m.ctx
+	}
+	ctx, cancel := context.WithCancelCause(op.Context)
+	inc := op.inc
+	m := &opMerged{ctx: ctx, cancel: cancel}
+	m.stop = context.AfterFunc(inc.ctx, func() { cancel(context.Cause(inc.ctx)) })
+	if inc.ctx.Err() != nil {
+		cancel(context.Cause(inc.ctx))
+	}
+	if !op.merge.CompareAndSwap(nil, m) {
+		m.end()
+		return op.merge.Load().ctx
+	}
+	// Release sets released before it loads merge: one of the two ends it.
+	if op.released.Load() {
+		m.end()
+	}
+	return ctx
+}
+
+// endDeferred ends a deferred operation: its merged context, if derived, and its lease.
+func (op *readOperation) endDeferred() {
+	op.released.Store(true)
+	if m := op.merge.Load(); m != nil {
+		m.end()
+	}
+	op.lease.release()
+}
+
+// derivedMerge is the merged context if derived, else nil.
+func (op *readOperation) derivedMerge() context.Context {
+	if m := op.merge.Load(); m != nil {
+		return m.ctx
+	}
+	return nil
 }
 
 func (op *readOperation) Done() <-chan struct{} {
 	if op.joined {
 		return op.inc.ctx.Done()
+	}
+	if op.deferred {
+		return op.merged().Done()
 	}
 	return op.Context.Done()
 }
@@ -90,12 +157,45 @@ func (op *readOperation) Err() error {
 	if op.joined {
 		return op.inc.ctx.Err()
 	}
+	if op.deferred {
+		if ctx := op.derivedMerge(); ctx != nil {
+			return ctx.Err()
+		}
+		// What the merged context reports once either end has reached it.
+		if err := op.Context.Err(); err != nil {
+			return err
+		}
+		return op.inc.ctx.Err()
+	}
 	return op.Context.Err()
 }
+
+// cancelCtxKey is the key context.Cause looks its cancellation up by.
+var cancelCtxKey = func() any {
+	var p causeKeyProbe
+	_ = context.Cause(&p)
+	return p.key
+}()
+
+type causeKeyProbe struct {
+	context.Context
+	key any
+}
+
+func (p *causeKeyProbe) Value(key any) any { p.key = key; return nil }
+func (p *causeKeyProbe) Err() error        { return nil }
 
 func (op *readOperation) Value(key any) any {
 	if k, ok := key.(readContextKey); ok && k.tx == op.tx {
 		return op
+	}
+	if op.deferred {
+		// Caller values are the parent's either way; the cancellation the
+		// context package looks up (Cause, children) is the merged one's.
+		if ctx := op.derivedMerge(); ctx != nil || key == cancelCtxKey {
+			return op.merged().Value(key)
+		}
+		return op.Context.Value(key)
 	}
 	v := op.Context.Value(key)
 	if v == nil && op.joined {
@@ -358,28 +458,18 @@ func (tx *Transaction) opContextWithLease(parent context.Context, issued bool) (
 		}
 		return op, opRelease{lease: op.lease}, op.lease
 	}
-	ctx, cancel := context.WithCancelCause(parent)
-	stop := context.AfterFunc(inc.ctx, func() { cancel(context.Cause(inc.ctx)) })
-	tx.readErrMu.Lock()
-	cause = inc.cause
-	tx.readErrMu.Unlock()
 	if cause != nil {
 		inc.cancel(cause)
-		cancel(cause)
 	}
-	op := &readOperation{Context: ctx, readAdmission: readAdmission{tx: tx, inc: inc, parent: parent}}
-	op.lease = tx.enterReadStateInto(ctx, inc, true, issued, &op.leaseStorage)
+	// The merged context is derived when first needed (see deferred).
+	op := &readOperation{Context: parent, readAdmission: readAdmission{tx: tx, inc: inc, parent: parent}, deferred: true}
+	op.lease = tx.enterReadStateInto(op, inc, true, issued, &op.leaseStorage)
 	if op.lease != nil {
 		// The lease pins this incarnation's slot across reset. Preserve even a
 		// clean entry through nested work; later poison gates later operations.
 		op.entryErr = tx.deferredErr.Load()
 	}
-	owned := op.lease
-	return op, opRelease{fn: func() {
-		stop()
-		cancel(nil)
-		owned.release()
-	}}, owned
+	return op, opRelease{fn: op.endDeferred}, op.lease
 }
 
 func (tx *Transaction) readOperation(ctx context.Context) *readOperation {

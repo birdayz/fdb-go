@@ -20,9 +20,9 @@ type keyRead struct {
 	snapshot bool
 	disabled bool     // RYW disabled: NativeAPI getKey (RYW:176-185)
 	walk     *rywWalk // the RYW and snapshot-cache routes
-	// view is the pinned version (D11): set when the walk did not finish at issue
-	// and reads the write map; the conflict is filtered through it. Released once,
-	// in complete.
+	// view is the pinned version (D11): set when the walk reads the write map,
+	// which it does without c.mu; the conflict is filtered through it. Released
+	// once, in complete.
 	view *rywWrites
 	// localConflicts is the filtered conflict of a read answered at issue, computed
 	// then through the version it read.
@@ -52,35 +52,44 @@ func (tx *Transaction) issueKey(parent context.Context, sel KeySelector, snapsho
 		r.disabled = true
 	} else {
 		c := &tx.ryw
+		backstop := tx.rangeReadBackstop()
 		var panicked bool
 		c.withLock(func() {
-			// The walk runs to its first wait here, on the caller's goroutine: a panic
+			// c.mu covers only pinning the version and snapshotting the cache; the
+			// walk then runs to its first wait on the caller's goroutine. A panic
 			// fails the read (RFC-110) and leaves nothing locked, pinned or leased.
-			panicked = tx.rangeReadBackstop().run(func() {
+			panicked = backstop.run(func() {
 				var view *rywWrites
 				if !snapshot || tx.snapshotRYWDisableCount <= 0 {
-					view = c.liveLocked() // RYWIterator (A2.3); nil: SnapshotCache::iterator (A2.2)
+					// RYWIterator (A2.3); nil: SnapshotCache::iterator (A2.2)
+					view = c.pinWritesLocked()
+					r.view = view
 				}
 				r.walk = c.newGetKeyWalkLocked(view, sel, tx.maxReadKey())
-				r.walk.onRequest = tx.walkOnRequest
-				r.walk.startLocked()
-				switch {
-				case r.walk.done():
-					r.local = true
-					if r.walk.err == nil && !snapshot {
-						if b, e := getKeyConflictSpan(sel, r.walk.keyResult()); bytes.Compare(b, e) < 0 {
-							r.localConflicts = view.conflictRanges(b, e)
-						}
-					}
-				case view != nil:
-					r.view = c.pinWritesLocked()
-				}
 			})
 			if panicked && r.view != nil {
 				c.unpinWritesLocked(r.view)
 				r.view = nil
 			}
 		})
+		if !panicked {
+			panicked = backstop.run(func() {
+				r.walk.onRequest = tx.walkOnRequest
+				r.walk.start()
+				if r.walk.done() {
+					r.local = true
+					if r.walk.err == nil && !snapshot {
+						if b, e := getKeyConflictSpan(sel, r.walk.keyResult()); bytes.Compare(b, e) < 0 {
+							r.localConflicts = r.view.conflictRanges(b, e)
+						}
+					}
+				}
+			})
+			if panicked && r.view != nil {
+				c.withLock(func() { c.unpinWritesLocked(r.view) })
+				r.view = nil
+			}
+		}
 		if panicked {
 			return r.finish(nil, tx.trackReadOperation(ctx, &wire.FDBError{Code: ErrInternalError}))
 		}
@@ -138,6 +147,7 @@ func (r *keyRead) read() ([]byte, error) {
 		}
 		return resolved, tx.trackReadOperation(ctx, nil)
 	}
+	defer func() { r.walk.release(); r.walk = nil }() // the key is cloned below; nothing else is the walk's
 	if !r.local {
 		storage := tx.nativeRange
 		native := func(ctx context.Context, begin, end KeySelector, limits rangeLimits, reverse bool) (nativeRangeResult, error) {

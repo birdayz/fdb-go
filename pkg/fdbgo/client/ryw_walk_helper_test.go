@@ -113,7 +113,7 @@ func (c *rywCache) cacheDump() string {
 func runWalk(c *rywCache, view *rywWrites, begin, end KeySelector, limits rangeLimits, reverse bool, maxKey []byte, m *memStorage) (*rywWalk, error) {
 	c.mu.Lock()
 	w := c.newRangeWalkLocked(view, begin, end, limits, reverse, maxKey)
-	w.startLocked()
+	w.start()
 	c.mu.Unlock()
 	return w, w.run(context.Background(), m.native)
 }
@@ -123,7 +123,7 @@ func runWalk(c *rywCache, view *rywWrites, begin, end KeySelector, limits rangeL
 func testGetKey(c *rywCache, sel KeySelector, maxKey []byte, includeWrites bool, m *memStorage) ([]byte, error) {
 	c.mu.Lock()
 	w := c.newGetKeyWalkLocked(c.viewLocked(includeWrites), sel, maxKey)
-	w.startLocked()
+	w.start()
 	c.mu.Unlock()
 	if err := w.run(context.Background(), m.native); err != nil {
 		return nil, err
