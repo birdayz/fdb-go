@@ -673,6 +673,10 @@ func TestMessageSegments(t *testing.T) {
 		t.Fatalf("small text: %d segments, %v", len(segs), err)
 	}
 	tok := messageTokenizer{}
+	// A segment's postings are the TEXT index entries it adds.
+	if m, err := tok.TokenizeToMap(small, 0, recordlayer.TokenizerModeIndex); err != nil || segs[0].postings != len(m) {
+		t.Fatalf("small text: %d postings, want %d (%v)", segs[0].postings, len(m), err)
+	}
 	for _, c := range []struct {
 		name     string
 		text     string
@@ -722,6 +726,9 @@ func TestMessageSegments(t *testing.T) {
 				}
 				if len(distinct) > c.distinct || len(s.text) > messageSegmentBytes {
 					t.Fatalf("segment %d: %d distinct tokens, %d bytes", i, len(distinct), len(s.text))
+				}
+				if m, err := tok.TokenizeToMap(s.text, 0, recordlayer.TokenizerModeIndex); err != nil || s.postings != len(m) || s.postings != len(distinct) {
+					t.Fatalf("segment %d: %d postings, want %d (%v)", i, s.postings, len(m), err)
 				}
 				if i > 0 && end-s.offset != messageSegmentOverlap {
 					t.Fatalf("segments %d and %d overlap by %d tokens", i-1, i, end-s.offset)

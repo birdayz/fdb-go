@@ -247,10 +247,12 @@ func init() {
 }
 
 // messageSegment is one indexed slice of a message's text: whole tokens
-// offset..offset+n-1 of the message.
+// offset..offset+n-1 of the message. Postings is its number of distinct
+// indexed tokens, the TEXT index entries it adds.
 type messageSegment struct {
-	text   string
-	offset int
+	text     string
+	offset   int
+	postings int
 }
 
 // segmentMessageText cuts text into segments of at most the given number of
@@ -276,7 +278,7 @@ func segmentMessageText(text string, distinct int) ([]messageSegment, int, error
 		}
 	}
 	if len(set) <= distinct && len(text) <= messageSegmentBytes {
-		return []messageSegment{{text: text}}, unindexed, nil
+		return []messageSegment{{text: text, postings: len(set)}}, unindexed, nil
 	}
 	// Byte spans of the tokens: the word segments of the whole text that yield
 	// a token, as the default tokenizer's break iterator does.
@@ -332,7 +334,7 @@ func segmentMessageText(text string, distinct int) ([]messageSegment, int, error
 				return nil, 0, fail("admission", op, "segment does not tokenize to its tokens")
 			}
 		}
-		out = append(out, messageSegment{text: seg, offset: s})
+		out = append(out, messageSegment{text: seg, offset: s, postings: len(seen)})
 		if e == len(whole) {
 			return out, unindexed, nil
 		}

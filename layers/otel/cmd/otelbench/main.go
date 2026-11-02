@@ -30,9 +30,11 @@ func execute(args []string, stdout, stderr io.Writer, open backendOpener) int {
 	return executeContext(context.Background(), args, stdout, stderr, open)
 }
 
-func executeContext(parent context.Context, args []string, stdout, stderr io.Writer, open backendOpener) int {
+func executeContext(parent context.Context, args []string, stdout, stderr io.Writer, open backendOpener) (code int) {
 	flags := flag.NewFlagSet("otelbench", flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	var profiling profileFlags
+	profiling.register(flags)
 	c := otel.DefaultConfig()
 	var backend, mode, cluster, chURL, output, suite, revision string
 	var confirm bool
@@ -106,6 +108,10 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, "drop requires --confirm-drop")
 		return 2
 	}
+	if err := profiling.validate(); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
 	if collectorBench {
 		bench = collectorBenchConfig(flags, bench, c, cluster, revision)
 		if err := bench.Validate(); err != nil {
@@ -117,6 +123,20 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 			fmt.Fprintln(stderr, err)
 			return 2
 		}
+		// By default the profiles cover the steady phase.
+		explicit := false
+		flags.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "profile-start" })
+		if !explicit {
+			profiling.start = bench.Warmup
+		}
+	}
+	var prof *profiler
+	if profiling.enabled() {
+		var err error
+		if prof, err = newProfiler(profiling); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
 	}
 	var writer io.Writer = stdout
 	var file *os.File
@@ -124,11 +144,27 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 		var err error
 		file, err = os.OpenFile(output, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
+			if prof != nil {
+				prof.abort()
+			}
 			fmt.Fprintln(stderr, err)
 			return 2
 		}
 		defer file.Close()
 		writer = file
+	}
+	if prof != nil {
+		prof.begin()
+		// The run's report is written either way; a profiling failure only
+		// changes the exit status.
+		defer func() {
+			if err := prof.close(); err != nil {
+				fmt.Fprintln(stderr, "profiling:", err)
+				if code == 0 {
+					code = 1
+				}
+			}
+		}()
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()

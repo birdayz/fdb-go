@@ -8,7 +8,10 @@ go_binary(
 
 go_library(
     name = "otelbench_lib",
-    srcs = ["main.go"],
+    srcs = [
+        "main.go",
+        "profile.go",
+    ],
     importpath = "fdb.dev/layers/otel/cmd/otelbench",
     visibility = ["//visibility:private"],
     deps = [
@@ -22,6 +25,7 @@ go_test(
     srcs = [
         "collector_bench_test.go",
         "main_test.go",
+        "profile_test.go",
         "record_compression_test.go",
     ],
     embed = [":otelbench_lib"],

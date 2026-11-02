@@ -751,11 +751,7 @@ func planMessage(tenant int, el *messageElement, fulltext bool, distinct int) (*
 			if s.offset > 0 {
 				m.Set(f.ByName("token_offset"), protoreflect.ValueOfInt64(int64(s.offset)))
 			}
-			tokens, err := messageTokenizer{}.TokenizeToMap(s.text, recordlayer.GlobalMinVersion, recordlayer.TokenizerModeIndex)
-			if err != nil {
-				return nil, typedError("config", op, "tokenizer", err)
-			}
-			p.postings += int64(len(tokens))
+			p.postings += int64(s.postings)
 		}
 		if i < len(chunks) {
 			m.Set(f.ByName("raw"), protoreflect.ValueOfBytes(chunks[i]))

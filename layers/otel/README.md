@@ -467,6 +467,49 @@ FDB-sized synchronous tiny-part workload. **Load wall times are bulk preparation
 comparisons, not equal real-time acknowledgment semantics.** No nonidempotent
 external effects run in an FDB retry closure.
 
+### Profiling otelbench
+
+Every mode can write Go profiles of one window of its run. Each flag names a
+new file; an existing file or a bad path fails the command before any work.
+
+| Flag | Profile |
+| --- | --- |
+| `--cpuprofile FILE` | CPU samples during the window |
+| `--memprofile FILE` | heap at the end of the window, and at its start in `FILE.start` |
+| `--blockprofile FILE` | goroutine blocking during the window |
+| `--mutexprofile FILE` | mutex contention during the window |
+| `--trace FILE` | Go execution trace of the window (`go tool trace`) |
+
+The window starts `--profile-start` after the run starts and lasts
+`--profile-duration` (0, the default, lasts until the run ends). In
+`collector-bench`, `--profile-start` defaults to `--warmup`, so the profiles
+cover the steady phase; set `--profile-duration` to stop before the final
+flush, audit and post-ingest queries. A run that ends before the window opens
+still writes its report and exits 1. `--blockprofilerate` (default 10000:
+one sample per 10 µs blocked) and `--mutexprofilefraction` (default 100) set
+the sampling rates, enabled only during the window.
+
+The heap profile's allocation counts are cumulative for the process; the
+window's allocations are the difference from the start snapshot:
+
+```sh
+otelbench --backend fdb --mode collector-bench ... --duration 120s --warmup 20s \
+  --profile-duration 90s --cpuprofile cpu.pprof --memprofile heap.pprof \
+  --blockprofile block.pprof --mutexprofile mutex.pprof
+go tool pprof -top otelbench cpu.pprof
+go tool pprof -sample_index=alloc_space -base heap.pprof.start otelbench heap.pprof
+```
+
+Profiling costs CPU while enabled (the CPU profiler samples at 100 Hz; the
+block and mutex profilers at the rates above); compare throughput only between
+runs profiled alike.
+
+Garbage collection is about a fifth of a GenAI collector-bench run's CPU (the
+TEXT index maintenance allocates about 2.5 MB per span). Like any Go
+Collector, the exporter's process takes `GOGC` and `GOMEMLIMIT` from its
+environment; on a 4-vCPU box, `GOGC=200` cut client CPU per span from about
+10 to 8 ms in one run.
+
 ## Exporter transaction policy
 
 The SDK/Collector `Exporter` does not use the benchmark's retry limit or
