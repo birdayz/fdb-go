@@ -16,30 +16,104 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 )
 
-var (
-	descriptorOnce     sync.Once
-	envelopeDescriptor protoreflect.MessageDescriptor
-	descriptorError    error
+// Message storage layouts, part of a run's stored layout identity.
+const (
+	messagesNone     = ""
+	messagesDeltas   = "deltas"   // Message records; spans carry manifests
+	messagesFullText = "fulltext" // plus the message TEXT index and span back references
 )
 
-func envelopeType() (protoreflect.MessageDescriptor, error) {
+// Index subspace keys of the message layout are small integers so every
+// index key carries two bytes of prefix instead of the index name.
+const (
+	messageHashIndexName     = "message_hash_v1"
+	messageLargeIndexName    = "message_large_v1"
+	messageTextIndexName     = "message_text_v1"
+	envelopeMessageIndexName = "envelope_message_v1"
+	messageTextIndexKey      = int64(20)
+	envelopeMessageIndexKey  = int64(21)
+	messageHashIndexKey      = int64(23)
+	messageLargeIndexKey     = int64(24)
+)
+
+var (
+	descriptorOnce  sync.Once
+	recordFiles     [2]protoreflect.FileDescriptor
+	descriptorError error
+)
+
+// recordFile returns the record descriptors of a run: the base layout has only
+// Envelope; the message layouts add Message records and the Envelope messages
+// field, so the base layout's descriptor is unchanged for existing runs.
+func recordFile(messages string) (protoreflect.FileDescriptor, error) {
 	descriptorOnce.Do(func() {
 		field := func(name string, n int32, t descriptorpb.FieldDescriptorProto_Type) *descriptorpb.FieldDescriptorProto {
 			return &descriptorpb.FieldDescriptorProto{Name: proto.String(name), Number: proto.Int32(n), Type: t.Enum(), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()}
 		}
-		union := field("envelope", 1, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE)
-		union.TypeName = proto.String(".otelbench.Envelope")
-		fd, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{Name: proto.String("otelbench.proto"), Package: proto.String("otelbench"), Syntax: proto.String("proto2"), MessageType: []*descriptorpb.DescriptorProto{{Name: proto.String("Envelope"), Field: []*descriptorpb.FieldDescriptorProto{field("tenant", 1, descriptorpb.FieldDescriptorProto_TYPE_INT64), field("trace_id", 2, descriptorpb.FieldDescriptorProto_TYPE_STRING), field("span_id", 3, descriptorpb.FieldDescriptorProto_TYPE_STRING), field("start_ns", 4, descriptorpb.FieldDescriptorProto_TYPE_INT64), field("otlp", 5, descriptorpb.FieldDescriptorProto_TYPE_BYTES), field("ordinal", 6, descriptorpb.FieldDescriptorProto_TYPE_INT64)}}, {Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{union}}}}, nil)
-		descriptorError = err
-		if err == nil {
-			envelopeDescriptor = fd.Messages().ByName("Envelope")
+		repeatedField := func(name string, n int32, t descriptorpb.FieldDescriptorProto_Type) *descriptorpb.FieldDescriptorProto {
+			f := field(name, n, t)
+			f.Label = descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
+			return f
+		}
+		message := func(name, typeName string, n int32, repeated bool) *descriptorpb.FieldDescriptorProto {
+			f := field(name, n, descriptorpb.FieldDescriptorProto_TYPE_MESSAGE)
+			f.TypeName = proto.String(typeName)
+			if repeated {
+				f.Label = descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
+			}
+			return f
+		}
+		const (
+			i64   = descriptorpb.FieldDescriptorProto_TYPE_INT64
+			boolT = descriptorpb.FieldDescriptorProto_TYPE_BOOL
+			str   = descriptorpb.FieldDescriptorProto_TYPE_STRING
+			bytes = descriptorpb.FieldDescriptorProto_TYPE_BYTES
+		)
+		envelope := func(withMessages bool) *descriptorpb.DescriptorProto {
+			d := &descriptorpb.DescriptorProto{Name: proto.String("Envelope"), Field: []*descriptorpb.FieldDescriptorProto{field("tenant", 1, i64), field("trace_id", 2, str), field("span_id", 3, str), field("start_ns", 4, i64), field("otlp", 5, bytes), field("ordinal", 6, i64)}}
+			if withMessages {
+				// The messages this span references (messages.go).
+				d.Field = append(d.Field, message("messages", ".otelbench.MessageRef", 7, true))
+			}
+			return d
+		}
+		base := &descriptorpb.FileDescriptorProto{Name: proto.String("otelbench.proto"), Package: proto.String("otelbench"), Syntax: proto.String("proto2"), MessageType: []*descriptorpb.DescriptorProto{envelope(false), {Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{message("envelope", ".otelbench.Envelope", 1, false)}}}}
+		withMessages := &descriptorpb.FileDescriptorProto{Name: proto.String("otelbench.proto"), Package: proto.String("otelbench"), Syntax: proto.String("proto2"), MessageType: []*descriptorpb.DescriptorProto{
+			envelope(true),
+			{Name: proto.String("MessageRef"), Field: []*descriptorpb.FieldDescriptorProto{field("writer", 1, i64), field("seq", 2, i64), field("attribute", 3, i64), field("newest", 4, boolT), repeatedField("ordinals", 5, i64)}},
+			// One part of a stored message (messages.go); part 0 carries the header.
+			{Name: proto.String("Message"), Field: []*descriptorpb.FieldDescriptorProto{field("tenant", 1, i64), field("writer", 2, i64), field("seq", 3, i64), field("part", 4, i64), field("hash", 5, bytes), field("role", 6, str), field("text", 7, str), field("token_offset", 8, i64), field("raw", 9, bytes), field("encoding", 10, str), field("raw_bytes", 11, i64), field("parts", 12, i64), field("unindexed_tokens", 13, i64), repeatedField("large", 14, i64), field("shard", 15, i64)}},
+			{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{message("envelope", ".otelbench.Envelope", 1, false), message("message", ".otelbench.Message", 2, false)}},
+		}}
+		for i, fdp := range []*descriptorpb.FileDescriptorProto{base, withMessages} {
+			fd, err := protodesc.NewFile(fdp, nil)
+			if err != nil {
+				descriptorError = err
+				return
+			}
+			recordFiles[i] = fd
 		}
 	})
-	return envelopeDescriptor, descriptorError
+	if descriptorError != nil {
+		return nil, descriptorError
+	}
+	if messages == messagesNone {
+		return recordFiles[0], nil
+	}
+	return recordFiles[1], nil
+}
+
+// envelopeType is the base layout's Envelope, used by the fixture corpus.
+func envelopeType() (protoreflect.MessageDescriptor, error) {
+	fd, err := recordFile(messagesNone)
+	if err != nil {
+		return nil, err
+	}
+	return fd.Messages().ByName("Envelope"), nil
 }
 
 func metadata(c Config) (*recordlayer.RecordMetaData, *recordlayer.Index, error) {
-	d, err := envelopeType()
+	fd, err := recordFile(c.Messages)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -50,11 +124,37 @@ func metadata(c Config) (*recordlayer.RecordMetaData, *recordlayer.Index, error)
 	if c.PostingValueFormat == "tuple" {
 		idx.SetOption("value_format", "tuple")
 	}
-	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(d.ParentFile()).SetSplitLongRecords(true)
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(fd).SetSplitLongRecords(true)
 	b.GetRecordType("Envelope").SetPrimaryKey(recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.Field("trace_id"), recordlayer.Field("span_id")))
 	b.AddIndex("Envelope", idx)
 	b.AddIndex("Envelope", recordlayer.NewIndex(spanIndexName, recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.Field("span_id"), recordlayer.Field("start_ns"))))
 	b.AddIndex("Envelope", recordlayer.NewIndex(timeIndexName, recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.Field("start_ns"), recordlayer.Field("trace_id"))))
+	if c.Messages != messagesNone {
+		b.GetRecordType("Message").SetPrimaryKey(recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.Field("writer"), recordlayer.Field("seq"), recordlayer.Field("part")))
+		// (tenant, digest) -> message; only part 0 has a digest, and a unique
+		// index ignores the null digests of other parts.
+		dedup := recordlayer.NewIndex(messageHashIndexName, recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.Field("hash")))
+		dedup.SetOption(recordlayer.IndexOptionUnique, "true")
+		dedup.SetSubspaceKey(messageHashIndexKey)
+		b.AddIndex("Message", dedup)
+	}
+	if c.Messages == messagesFullText {
+		text := recordlayer.NewIndex(messageTextIndexName, recordlayer.GroupBy(recordlayer.Field("text"), recordlayer.Field("tenant"), recordlayer.Field("role"), recordlayer.Field("shard")))
+		text.Type = recordlayer.IndexTypeText
+		text.SetOption(recordlayer.IndexOptionTextTokenizerName, messageTokenizerName)
+		text.SetSubspaceKey(messageTextIndexKey)
+		b.AddIndex("Message", text)
+		// (tenant, writer, seq, newest, attribute, (ordinals), start_ns) ->
+		// span: every (span, attribute) reference of a message.
+		refs := recordlayer.NewIndex(envelopeMessageIndexName, recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.NestFanOut("messages", recordlayer.Concat(recordlayer.Field("writer"), recordlayer.Field("seq"), recordlayer.Field("newest"), recordlayer.Field("attribute"), recordlayer.FieldConcatenate("ordinals"))), recordlayer.Field("start_ns")))
+		refs.SetSubspaceKey(envelopeMessageIndexKey)
+		b.AddIndex("Envelope", refs)
+		// (tenant) -> multi-part messages: only their part 0 has a large
+		// element, so other messages add no entry.
+		large := recordlayer.NewIndex(messageLargeIndexName, recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.FanOut("large")))
+		large.SetSubspaceKey(messageLargeIndexKey)
+		b.AddIndex("Message", large)
+	}
 	md, err := b.Build()
 	return md, idx, err
 }

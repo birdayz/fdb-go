@@ -424,29 +424,35 @@ func (b *FDBBackend) ensureContinuationSecret(ctx context.Context) ([]byte, erro
 // openPostings checks run ownership and readability and returns the typed
 // equality maintainer whose layout (width, order, value format) the scans use.
 func (b *FDBBackend) openPostings(rc *recordlayer.FDBRecordContext, op string) (*postingMaintainer, error) {
+	_, pm, err := b.openPostingsStore(rc, op)
+	return pm, err
+}
+
+// openPostingsStore is openPostings that also returns the opened store.
+func (b *FDBBackend) openPostingsStore(rc *recordlayer.FDBRecordContext, op string) (*recordlayer.FDBRecordStore, *postingMaintainer, error) {
 	if err := b.readManifest(rc, true); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	store, err := b.open(rc)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	state, err := store.ReadIndexState(b.idx.Name)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !state.IsScannable() {
-		return nil, fail("ownership", op, "index is not readable")
+		return nil, nil, fail("ownership", op, "index is not readable")
 	}
 	m, err := store.GetIndexMaintainer(b.idx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	pm, ok := recordlayer.IndexMaintainerAs[*postingMaintainer](m)
 	if !ok {
-		return nil, fail("config", op, "custom scanner not linked")
+		return nil, nil, fail("config", op, "custom scanner not linked")
 	}
-	return pm, nil
+	return store, pm, nil
 }
 
 // decodeSpanPosting validates one posting below its term prefix and returns
@@ -531,6 +537,11 @@ func (b *FDBBackend) QuerySameSpan(ctx context.Context, q SameSpanQuery) (SpanQu
 	plan, err := newSameSpanPlan(q, b.cfg.K)
 	if err != nil {
 		return page, err
+	}
+	for _, a := range plan.preds {
+		if err := checkMessageAttributeQuery(op, a, b.cfg.Messages != messagesNone); err != nil {
+			return page, err
+		}
 	}
 	var token *continuation
 	if len(q.Continuation) > 0 {
@@ -730,6 +741,9 @@ func (b *FDBBackend) QueryTraceExistential(ctx context.Context, q TraceExistenti
 		if err := validateQueryAttribute(op, a, "resource", "scope", "span"); err != nil {
 			return out, err
 		}
+		if err := checkMessageAttributeQuery(op, a, b.cfg.Messages != messagesNone); err != nil {
+			return out, err
+		}
 	}
 	for _, a := range q.LogClauses {
 		if err := validateQueryAttribute(op, a, logAttributeScopes...); err != nil {
@@ -738,6 +752,9 @@ func (b *FDBBackend) QueryTraceExistential(ctx context.Context, q TraceExistenti
 	}
 	msgPlans := make([]*messageQueryPlan, len(q.MessageClauses))
 	for i, mq := range q.MessageClauses {
+		if b.cfg.Messages != messagesFullText {
+			return out, fail("config", op, "message clauses need the fulltext message layout")
+		}
 		if mq.Limit != 0 || len(mq.Continuation) > 0 {
 			return out, fail("config", op, "message clauses take no limit or continuation")
 		}
@@ -762,7 +779,7 @@ func (b *FDBBackend) QueryTraceExistential(ctx context.Context, q TraceExistenti
 	_, err = b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
 		out = TraceExistentialResult{Hits: []TraceExistentialHit{}}
 		budget = b.newBudget(op)
-		pm, err := b.openPostings(rc, op)
+		store, pm, err := b.openPostingsStore(rc, op)
 		if err != nil {
 			return nil, err
 		}
@@ -855,7 +872,7 @@ func (b *FDBBackend) QueryTraceExistential(ctx context.Context, q TraceExistenti
 		}
 		for i, p := range msgPlans {
 			found := map[string]*traceWitnesses{}
-			err := b.runMessageQuery(ctx, tx, pm, p, nil, w, 0, budget, func(h MessageSpanHit, _ []byte) {
+			err := b.runMessageQuery(ctx, store, pm, p, nil, w, 0, budget, func(h MessageSpanHit, _ []byte) {
 				if tw := entry(found, h.Trace); tw != nil {
 					tw.msgs[i] = append(tw.msgs[i], h)
 				}
@@ -905,7 +922,7 @@ func (b *FDBBackend) QueryTraceExistential(ctx context.Context, q TraceExistenti
 					if a.AttributeKey != c.AttributeKey {
 						return a.AttributeKey < c.AttributeKey
 					}
-					return a.MessageHash < c.MessageHash
+					return a.MessageID < c.MessageID
 				})
 				hit.Latest = max(hit.Latest, ms[0].Start)
 			}

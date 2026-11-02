@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/client"
@@ -48,6 +49,8 @@ type FDBBackend struct {
 	ingestProbe   func(ingestEvent)
 	ingestWait    func(context.Context, time.Duration) error
 	ingestClock   func() time.Time
+	writers       messageWriters
+	inflight      sync.Map // messageDigest -> *inflightMessage
 }
 
 func OpenFDB(c Config, cluster string) (*FDBBackend, error) {
@@ -137,7 +140,11 @@ func (b *FDBBackend) openConfigured(rc *recordlayer.FDBRecordContext) (*recordla
 }
 
 func (b *FDBBackend) storeBuilder(rc *recordlayer.FDBRecordContext) *recordlayer.StoreBuilder {
-	return recordlayer.NewStoreBuilder().SetContext(rc).SetMetaDataProvider(b.md).SetSubspace(b.store).SetSerializer(b.serializer)
+	builder := recordlayer.NewStoreBuilder().SetContext(rc).SetMetaDataProvider(b.md).SetSubspace(b.store).SetSerializer(b.serializer)
+	if b.cfg.Messages == messagesFullText {
+		builder.SetPipelineSizer(messagePipelineSizer)
+	}
+	return builder
 }
 
 func (b *FDBBackend) readManifest(rc *recordlayer.FDBRecordContext, ready bool) error {
@@ -165,6 +172,9 @@ func (b *FDBBackend) checkManifestBytes(wire []byte, ready bool) error {
 func (b *FDBBackend) Query(ctx context.Context, a Attribute) (QueryResult, error) {
 	b.lastWork = QueryResult{}
 	out := QueryResult{Hits: []Hit{}}
+	if err := checkMessageAttributeQuery("query", a, b.cfg.Messages != messagesNone); err != nil {
+		return out, err
+	}
 	_, err := b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
 		out = QueryResult{Hits: []Hit{}}
 		b.lastWork = QueryResult{}

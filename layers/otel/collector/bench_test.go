@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"fdb.dev/layers/otel"
+	"fdb.dev/pkg/recordlayer"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
@@ -146,12 +147,28 @@ func TestCollectorBenchGenerator(t *testing.T) {
 	if got := benchCorpusStats(n, 0, 0); got != (CollectorBenchCorpus{TurnsPerConversation: n}) {
 		t.Fatalf("empty corpus stats %+v", got)
 	}
-	_, blobs, st, err := otel.DecomposeResourceSpans(t.Context(), requests, cfg.Tenant)
-	if err != nil {
-		t.Fatal(err)
+	// The elements are what the exporter stores once each.
+	var total int64
+	unique := map[string]bool{}
+	for _, req := range requests {
+		for _, sp := range req.ScopeSpans[0].Spans {
+			for _, kv := range sp.Attributes {
+				if !otel.IsMessageDeltaAttribute(kv.Key) {
+					continue
+				}
+				for _, el := range kv.Value.GetArrayValue().GetValues() {
+					wire, err := proto.MarshalOptions{Deterministic: true}.Marshal(el)
+					if err != nil {
+						t.Fatal(err)
+					}
+					total++
+					unique[string(wire)] = true
+				}
+			}
+		}
 	}
-	if st.TotalMessages != want.TotalMessageElements || st.UniqueMessages != want.UniqueMessageElements || len(blobs) != int(want.UniqueMessageElements) || st.SavedBytes <= 0 {
-		t.Fatalf("decomposition %+v, want %d total / %d unique", st, want.TotalMessageElements, want.UniqueMessageElements)
+	if total != want.TotalMessageElements || int64(len(unique)) != want.UniqueMessageElements {
+		t.Fatalf("elements %d total / %d unique, want %d / %d", total, len(unique), want.TotalMessageElements, want.UniqueMessageElements)
 	}
 	// Filler never contains a query token, so answers are decided by prefixes.
 	for _, s := range benchSentences {
@@ -227,14 +244,14 @@ func TestCollectorBenchBlocksAndIDs(t *testing.T) {
 	}
 
 	// The selective terms survive query tokenization as single tokens.
-	toks, err := otel.TokenizeQueryText(BenchUserText(11, 123, 2))
+	toks, err := recordlayer.DefaultTextTokenizerInstance().TokenizeToList(BenchUserText(11, 123, 2), 0, recordlayer.TokenizerModeQuery)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Contains(toks, "conv_123") || !slices.Contains(toks, "incident_token_2") || slices.Contains(toks, "conv") {
 		t.Fatalf("user text tokens %v", toks)
 	}
-	phrase, err := otel.TokenizeQueryText("user turn 2 conversation 123 conv_123")
+	phrase, err := recordlayer.DefaultTextTokenizerInstance().TokenizeToList("user turn 2 conversation 123 conv_123", 0, recordlayer.TokenizerModeQuery)
 	if err != nil || !slices.Equal(phrase, toks[:6]) {
 		t.Fatalf("phrase tokens %v, %v; text starts %v", phrase, err, toks[:6])
 	}
@@ -497,7 +514,7 @@ func TestAddExportStats(t *testing.T) {
 	one := otel.ExportStats{
 		ReceivedSpans: 1, DuplicateSpans: 2, Spans: 3, Batches: 4, LogicalBytes: 5, NormalizedSpans: 6, UnindexedAttributes: 7,
 		MessageDeltas: otel.MessageDeltaStats{TotalMessages: 8, UniqueMessages: 9, ReusedMessages: 10, RawMessageBytes: 11, StoredDeltaBytes: 12, SavedBytes: 13},
-		MessageFTS:    otel.MessageFTSStats{IndexedBlobs: 14, SkippedBlobs: 15, UniqueTokens: 16, TokenPostings: 17, SpanRefs: 18, Bytes: 19, Transactions: 20},
+		Messages:      otel.MessageStoreStats{Written: 14, Present: 15, Parts: 16, Postings: 17, UnindexedTokens: 18, References: 19, Transactions: 20, Retries: 21, TextIndexWrites: 22, TextIndexKeyBytes: 23, TextIndexValueBytes: 24, TextIndexReadBytes: 25, WallNs: 26, TxnNs: 27},
 	}
 	var sum otel.ExportStats
 	addExportStats(&sum, one)
@@ -505,7 +522,7 @@ func TestAddExportStats(t *testing.T) {
 	want := otel.ExportStats{
 		ReceivedSpans: 2, DuplicateSpans: 4, Spans: 6, Batches: 8, LogicalBytes: 10, NormalizedSpans: 12, UnindexedAttributes: 14,
 		MessageDeltas: otel.MessageDeltaStats{TotalMessages: 16, UniqueMessages: 18, ReusedMessages: 20, RawMessageBytes: 22, StoredDeltaBytes: 24, SavedBytes: 26},
-		MessageFTS:    otel.MessageFTSStats{IndexedBlobs: 28, SkippedBlobs: 30, UniqueTokens: 32, TokenPostings: 34, SpanRefs: 36, Bytes: 38, Transactions: 40},
+		Messages:      otel.MessageStoreStats{Written: 28, Present: 30, Parts: 32, Postings: 34, UnindexedTokens: 36, References: 38, Transactions: 40, Retries: 42, TextIndexWrites: 44, TextIndexKeyBytes: 46, TextIndexValueBytes: 48, TextIndexReadBytes: 50, WallNs: 52, TxnNs: 54},
 	}
 	if sum != want {
 		t.Fatalf("sum %+v, want %+v", sum, want)
@@ -573,9 +590,9 @@ func TestRunBenchmarkRealFDB(t *testing.T) {
 		t.Fatalf("export stats %+v", e)
 	}
 	// One consumer exports batches serially, so every unique message is
-	// tokenized exactly once across all batches.
-	if f := in.Export.MessageFTS; f.IndexedBlobs != unique || f.SpanRefs != total || f.TokenPostings == 0 || f.UniqueTokens == 0 || f.Bytes == 0 {
-		t.Fatalf("FTS stats %+v", f)
+	// stored once; every span references each of its elements once.
+	if f := in.Export.Messages; f.Written != int64(unique) || f.References != int64(total) || f.Postings == 0 || f.TextIndexWrites == 0 {
+		t.Fatalf("message stats %+v", f)
 	}
 	if in.Logs.Logs != convs || in.Logs.Correlated != convs || in.Logs.EventIDs != nil {
 		t.Fatalf("log stats %+v", in.Logs)
@@ -615,14 +632,14 @@ func TestRunBenchmarkRealFDB(t *testing.T) {
 	}
 
 	// Re-running on the same run is an idempotent replace: nothing is
-	// tokenized again and every answer is unchanged.
+	// stored again and every answer is unchanged.
 	cfg.QueryIterations = 1
 	again, err := RunBenchmark(ctx, cfg)
 	if err != nil || again.Failures != 0 {
 		t.Fatalf("re-run: %v, %+v", err, again)
 	}
-	if f := again.Ingest.Export.MessageFTS; f.IndexedBlobs != 0 || f.SkippedBlobs < unique || f.SpanRefs != total {
-		t.Fatalf("re-run FTS stats %+v", f)
+	if f := again.Ingest.Export.Messages; f.Written != 0 || f.Present < int64(unique) || f.TextIndexWrites != 0 || f.References != int64(total) {
+		t.Fatalf("re-run message stats %+v", f)
 	}
 	if again.Ingest.Collector.StoredSpans != convs*n || again.Ingest.Logs.Replaced != convs || again.Fidelity.Mismatches != 0 {
 		t.Fatalf("re-run ingest %+v fidelity %+v", again.Ingest, again.Fidelity)
@@ -638,7 +655,7 @@ func TestRunBenchmarkRealFDB(t *testing.T) {
 	if err != nil || p.Failures != 0 {
 		t.Fatalf("plain run: %v, %+v", err, p)
 	}
-	if len(p.Queries) != 4 || p.Ingest.Export.MessageDeltas != (otel.MessageDeltaStats{}) || p.Ingest.Export.MessageFTS != (otel.MessageFTSStats{}) || p.Fidelity.CheckedSpans != 6 {
+	if len(p.Queries) != 4 || p.Ingest.Export.MessageDeltas != (otel.MessageDeltaStats{}) || p.Ingest.Export.Messages != (otel.MessageStoreStats{}) || p.Fidelity.CheckedSpans != 6 {
 		t.Fatalf("plain report %+v", p)
 	}
 	for _, class := range []string{QuerySameSpanConjunction, QueryTraceExistential3, QueryTraceGraph, QueryLogsByTrace} {

@@ -1,0 +1,1661 @@
+package otel
+
+// GenAI message storage on standard Record Layer records.
+//
+// Turn k of an agent conversation repeats turns 1..k-1 in
+// gen_ai.input.messages. Each message element is stored once per tenant as a
+// Message record and the span attribute is replaced by a manifest of message
+// IDs, so per-span storage is O(turn) instead of O(history bytes). A unique
+// value index on (tenant, SHA-256 digest) deduplicates content. Record
+// splitting and the store's record compression handle message bytes; only a
+// message too large for one transaction is cut into parts (planMessage).
+//
+// A message ID is (writer, seq): each message transaction holds one writer
+// exclusively and numbers its new messages in increasing seq. The Message
+// primary key is (tenant, writer, seq, part), so every TEXT index posting a
+// writer adds lands after that writer's earlier ones: the BunchedMap appends
+// to the writer's last bunch instead of rewriting a bunch at a random digest
+// position, and concurrent writers never share the bunch they modify.
+//
+// The fulltext layout adds a TEXT index over each part's text, grouped by
+// tenant, role and writer shard, and lists on every span the messages it
+// references (Envelope.messages: attribute, positions, and whether the message
+// is the attribute's newest element), indexed by (tenant, writer, seq, newest,
+// attribute, (ordinals), start_ns). The list depends only on the span, so a
+// span's references are written blind with the span and replaced with it.
+//
+// Message records are immutable, shared by every span of the tenant that
+// references them, and never collected.
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"math"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
+)
+
+const (
+	messageHashDomain = "otel_msg_v1\x00"
+	// messageHashBytes is the stored SHA-256 prefix of the dedup index.
+	messageHashBytes = 16
+
+	// Element encodings; part of the hash domain so equal bytes in different
+	// encodings never alias.
+	messageEncodingAny  = "otlp_any"
+	messageEncodingJSON = "json"
+
+	maxMessageBytes    = 16 << 20 // RFC-283 §5.2 proposed decoded object admission
+	maxMessageManifest = 64_000   // the covering-projection cap in index.go
+
+	messageManifestMagic   = "OTMD"
+	messageManifestVersion = 2
+
+	// A message whose raw bytes or indexed text exceed one part is stored as
+	// several Message records written in separate transactions, part 0 last.
+	// A part holds at most messagePartRawBytes of raw element bytes (split by
+	// the Record Layer into 100KB values) and one text segment.
+	messagePartRawBytes = 1 << 20
+	// A text segment has at most messageSegmentTokens distinct tokens and
+	// messageSegmentBytes bytes, so its largest position list stays below the
+	// 100KB value limit. Each distinct token is one BunchedMap put; it rewrites
+	// at most two bunch values of at most 10KB each (bunched_map.go), about
+	// 150 bytes measured. A part whose transaction exceeds the 10MB limit
+	// anyway is cut again with a quarter of the distinct tokens per segment,
+	// down to messageSegmentMinTokens, whose worst case is about 400KB.
+	messageSegmentTokens    = 1024
+	messageSegmentMinTokens = 16
+	messageSegmentBytes     = 64 << 10
+	// Consecutive segments share messageSegmentOverlap tokens, so every phrase
+	// of up to maxMessageQueryTerms tokens lies wholly inside one segment.
+	maxMessageQueryTerms  = 16
+	messageSegmentOverlap = maxMessageQueryTerms - 1
+	// Parts of one large message share a transaction while its approximate
+	// size stays below messagePartTxnBytes.
+	messagePartTxnBytes = 2 << 20
+
+	// Tokens longer than maxIndexedTokenBytes are not indexed (their position
+	// is kept): a token is part of an index key, which FDB caps at 10KB.
+	maxIndexedTokenBytes = 1024
+	maxMessageTextDepth  = 10000 // proto.Unmarshal's default recursion limit
+	maxMessageRoleBytes  = 1024
+
+	// messageTxnMessages bounds the small messages saved per transaction. A
+	// transaction commits one value per bunch it rewrote however often, so
+	// larger transactions write fewer bytes (bench: 31.9, 17.4 and 10.8 KB of
+	// mutations per span at 1, 8 and 32) but conflict more; at 96 they time out.
+	messageTxnMessages = 32
+	messageWorkers     = 8                 // concurrent transactions per message persist call
+	messageWriterLimit = messageTextShards // message writers per backend
+	// messageTextShards is the number of TEXT index groups per (tenant, role).
+	messageTextShards = 16
+	// messageTextPipeline is the TEXT_INDEX_UPDATE pipeline size.
+	messageTextPipeline = 128
+
+	messageTokenizerName = "otel_message_v1"
+)
+
+// Attribute codes stored in Envelope.messages.
+var messageAttributeKeys = [...]string{1: "gen_ai.input.messages", 2: "gen_ai.output.messages", 3: "gen_ai.system_instructions", 4: "gen_ai.tool.definitions"}
+
+func messageAttributeCode(key string) int64 {
+	for i, k := range messageAttributeKeys {
+		if i > 0 && k == key {
+			return int64(i)
+		}
+	}
+	return -1
+}
+
+// IsMessageDeltaAttribute reports whether key is a GenAI content attribute
+// whose value the message layouts replace with a manifest.
+func IsMessageDeltaAttribute(key string) bool { return messageAttributeCode(key) > 0 }
+
+// Manifest layouts describe how the elements reassemble into the original
+// attribute value.
+const (
+	messageLayoutNone  byte = iota // KeyValue.Value was nil
+	messageLayoutValue             // the whole AnyValue is one element
+	messageLayoutArray             // ArrayValue; each element is an AnyValue
+	messageLayoutJSON              // StringValue holding a JSON array; elements are raw JSON
+)
+
+const messageLayoutCount = 4
+
+type messageDigest [messageHashBytes]byte
+
+func messageHash(tenant int, encoding string, element []byte) messageDigest {
+	h := sha256.New()
+	h.Write([]byte(messageHashDomain))
+	h.Write([]byte(strconv.Itoa(tenant)))
+	h.Write([]byte{0})
+	h.Write([]byte(encoding))
+	h.Write([]byte{0})
+	h.Write(element)
+	var sum [sha256.Size]byte
+	h.Sum(sum[:0])
+	var out messageDigest
+	copy(out[:], sum[:])
+	return out
+}
+
+// messagePipelineSizer reads up to messageTextPipeline token maps of one
+// message's TEXT index update at once (Java's TEXT_INDEX_UPDATE pipeline,
+// default 10): a message transaction's latency is its rounds of BunchedMap
+// reads, and a message has about 60 distinct tokens.
+func messagePipelineSizer(op recordlayer.PipelineOperation) int {
+	if op == recordlayer.PipelineOperationTextIndexUpdate {
+		return messageTextPipeline
+	}
+	return recordlayer.DefaultPipelineSizer(op)
+}
+
+// messageID names a stored message: the writer that stored it and its
+// sequence number there. Both are positive.
+type messageID struct {
+	writer, seq int64
+}
+
+func (id messageID) valid() bool { return id.writer > 0 && id.seq > 0 }
+
+func (id messageID) less(o messageID) bool {
+	return id.writer < o.writer || (id.writer == o.writer && id.seq < o.seq)
+}
+
+func (id messageID) String() string {
+	return strconv.FormatInt(id.writer, 10) + "." + strconv.FormatInt(id.seq, 10)
+}
+
+// MessageDeltaStats counts one export call's decomposition. Byte counts are
+// protobuf sizes of attribute values and of the call's unique elements.
+type MessageDeltaStats struct {
+	TotalMessages    int64 `json:"total_messages"`
+	UniqueMessages   int64 `json:"unique_messages"`
+	ReusedMessages   int64 `json:"reused_messages"`
+	RawMessageBytes  int64 `json:"raw_message_bytes"`
+	StoredDeltaBytes int64 `json:"stored_delta_bytes"`
+	SavedBytes       int64 `json:"saved_bytes"`
+}
+
+// MessageStoreStats counts one export call's message persistence. Text index
+// counters come from the Record Layer's BunchedMap instrumentation of bunch
+// values written with Set, in committed attempts only; postings appended with
+// AppendIfFits are Postings minus TextIndexWrites at most.
+type MessageStoreStats struct {
+	Written         int64 `json:"written"`
+	Present         int64 `json:"present"`
+	Parts           int64 `json:"parts"`
+	Postings        int64 `json:"postings"`
+	UnindexedTokens int64 `json:"unindexed_tokens"`
+	// References counts the Envelope.messages entries of committed spans.
+	References   int64 `json:"references"`
+	Transactions int64 `json:"transactions"`
+	Retries      int64 `json:"retries"`
+	// Bunch values set, their key and value bytes, and bunch bytes read.
+	TextIndexWrites     int64 `json:"text_index_writes"`
+	TextIndexKeyBytes   int64 `json:"text_index_key_bytes"`
+	TextIndexValueBytes int64 `json:"text_index_value_bytes"`
+	TextIndexReadBytes  int64 `json:"text_index_read_bytes"`
+	// WallNs is the persist phase's wall time; TxnNs sums the message
+	// transactions' durations, write-slot waits and retries included.
+	WallNs int64 `json:"wall_ns"`
+	TxnNs  int64 `json:"txn_ns"`
+}
+
+// Add sums every counter of o into s.
+func (s *MessageStoreStats) Add(o MessageStoreStats) {
+	s.Written += o.Written
+	s.Present += o.Present
+	s.Parts += o.Parts
+	s.Postings += o.Postings
+	s.UnindexedTokens += o.UnindexedTokens
+	s.References += o.References
+	s.Transactions += o.Transactions
+	s.Retries += o.Retries
+	s.TextIndexWrites += o.TextIndexWrites
+	s.TextIndexKeyBytes += o.TextIndexKeyBytes
+	s.TextIndexValueBytes += o.TextIndexValueBytes
+	s.TextIndexReadBytes += o.TextIndexReadBytes
+	s.WallNs += o.WallNs
+	s.TxnNs += o.TxnNs
+}
+
+// ---------------------------------------------------------------------------
+// Manifests
+// ---------------------------------------------------------------------------
+
+// messageManifest is the decoded replacement value of one attribute.
+type messageManifest struct {
+	layout byte
+	ids    []messageID
+	head   []byte
+	tail   []byte
+	seps   [][]byte // nil means every separator is ","
+}
+
+func (m *messageManifest) encoding() string {
+	if m.layout == messageLayoutJSON {
+		return messageEncodingJSON
+	}
+	return messageEncodingAny
+}
+
+func (m *messageManifest) encode() []byte {
+	out := make([]byte, 0, 8+len(m.ids)*6+len(m.head)+len(m.tail))
+	out = append(out, messageManifestMagic...)
+	out = append(out, messageManifestVersion, m.layout)
+	out = binary.AppendUvarint(out, uint64(len(m.ids)))
+	for _, id := range m.ids {
+		out = binary.AppendUvarint(out, uint64(id.writer))
+		out = binary.AppendUvarint(out, uint64(id.seq))
+	}
+	if m.layout != messageLayoutJSON {
+		return out
+	}
+	out = binary.AppendUvarint(out, uint64(len(m.head)))
+	out = append(out, m.head...)
+	out = binary.AppendUvarint(out, uint64(len(m.tail)))
+	out = append(out, m.tail...)
+	if m.seps == nil {
+		return append(out, 0)
+	}
+	out = append(out, 1)
+	for _, s := range m.seps {
+		out = binary.AppendUvarint(out, uint64(len(s)))
+		out = append(out, s...)
+	}
+	return out
+}
+
+type byteReader struct {
+	b   []byte
+	bad bool
+}
+
+func (r *byteReader) take(n int) []byte {
+	if r.bad || n < 0 || n > len(r.b) {
+		r.bad = true
+		return nil
+	}
+	out := r.b[:n]
+	r.b = r.b[n:]
+	return out
+}
+
+func (r *byteReader) uvarint(max uint64) int {
+	if r.bad {
+		return 0
+	}
+	v, n := binary.Uvarint(r.b)
+	if n <= 0 || v > max {
+		r.bad = true
+		return 0
+	}
+	r.b = r.b[n:]
+	return int(v)
+}
+
+func (r *byteReader) byte1() byte {
+	b := r.take(1)
+	if b == nil {
+		return 0
+	}
+	return b[0]
+}
+
+// parseMessageManifest decodes a manifest attribute value.
+func parseMessageManifest(v *commonpb.AnyValue) (*messageManifest, error) {
+	wire, ok := v.GetValue().(*commonpb.AnyValue_BytesValue)
+	if !ok {
+		return nil, fail("corruption", "message manifest", "attribute is not a message manifest")
+	}
+	r := &byteReader{b: wire.BytesValue}
+	if string(r.take(len(messageManifestMagic))) != messageManifestMagic || r.byte1() != messageManifestVersion {
+		return nil, fail("corruption", "message manifest", "bad manifest magic or version")
+	}
+	m := &messageManifest{layout: r.byte1()}
+	n := r.uvarint(maxMessageManifest / 2)
+	if r.bad || m.layout >= messageLayoutCount {
+		return nil, fail("corruption", "message manifest", "bad manifest layout")
+	}
+	m.ids = make([]messageID, n)
+	for i := range m.ids {
+		m.ids[i] = messageID{int64(r.uvarint(math.MaxInt64)), int64(r.uvarint(math.MaxInt64))}
+		if !r.bad && !m.ids[i].valid() {
+			r.bad = true
+		}
+	}
+	if m.layout == messageLayoutJSON {
+		m.head = r.take(r.uvarint(maxMessageManifest))
+		m.tail = r.take(r.uvarint(maxMessageManifest))
+		switch r.byte1() {
+		case 0:
+		case 1:
+			m.seps = make([][]byte, max(n-1, 0))
+			for i := range m.seps {
+				m.seps[i] = r.take(r.uvarint(maxMessageManifest))
+			}
+		default:
+			r.bad = true
+		}
+	}
+	if r.bad || len(r.b) != 0 {
+		return nil, fail("corruption", "message manifest", "truncated or trailing manifest bytes")
+	}
+	switch {
+	case m.layout == messageLayoutNone && n != 0, m.layout == messageLayoutValue && n != 1, m.layout == messageLayoutJSON && n < 1:
+		return nil, failf("corruption", "message manifest", "layout %d with %d elements", m.layout, n)
+	}
+	return m, nil
+}
+
+// splitJSONMessages returns the raw elements and framing of a JSON array, or
+// ok=false when s is not a non-empty array that reassembles byte-for-byte.
+func splitJSONMessages(s string) (elems []string, head, tail string, seps []string, ok bool) {
+	dec := json.NewDecoder(strings.NewReader(s))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('[') {
+		return nil, "", "", nil, false
+	}
+	prev := -1
+	for dec.More() {
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return nil, "", "", nil, false
+		}
+		end := int(dec.InputOffset())
+		start := end - len(raw)
+		if start < 0 || start < prev || s[start:end] != string(raw) {
+			return nil, "", "", nil, false
+		}
+		if prev < 0 {
+			head = s[:start]
+		} else {
+			seps = append(seps, s[prev:start])
+		}
+		elems = append(elems, s[start:end])
+		prev = end
+	}
+	if tok, err := dec.Token(); err != nil || tok != json.Delim(']') || prev < 0 {
+		return nil, "", "", nil, false
+	}
+	if strings.TrimLeft(s[dec.InputOffset():], " \t\r\n") != "" {
+		return nil, "", "", nil, false
+	}
+	tail = s[prev:]
+	var b strings.Builder
+	b.WriteString(head)
+	for i, e := range elems {
+		if i > 0 {
+			b.WriteString(seps[i-1])
+		}
+		b.WriteString(e)
+	}
+	b.WriteString(tail)
+	return elems, head, tail, seps, b.String() == s
+}
+
+func marshalMessageValue(v *commonpb.AnyValue) ([]byte, error) {
+	wire, err := proto.MarshalOptions{Deterministic: true}.Marshal(v)
+	if err != nil {
+		return nil, wrap("admission", "message element encode", err)
+	}
+	return wire, nil
+}
+
+// splitMessageValue chooses the layout for one attribute value. Array layout
+// requires that dropping the shell loses nothing: no unknown fields there.
+func splitMessageValue(v *commonpb.AnyValue) (*messageManifest, [][]byte, error) {
+	if v == nil {
+		return &messageManifest{layout: messageLayoutNone}, nil, nil
+	}
+	switch x := v.GetValue().(type) {
+	case *commonpb.AnyValue_ArrayValue:
+		if len(v.ProtoReflect().GetUnknown()) == 0 && (x.ArrayValue == nil || len(x.ArrayValue.ProtoReflect().GetUnknown()) == 0) {
+			var values []*commonpb.AnyValue
+			if x.ArrayValue != nil {
+				values = x.ArrayValue.Values
+			}
+			elems := make([][]byte, 0, len(values))
+			for _, e := range values {
+				if e == nil {
+					return nil, nil, fail("admission", "message element encode", "nil array element")
+				}
+				wire, err := marshalMessageValue(e)
+				if err != nil {
+					return nil, nil, err
+				}
+				elems = append(elems, wire)
+			}
+			return &messageManifest{layout: messageLayoutArray}, elems, nil
+		}
+	case *commonpb.AnyValue_StringValue:
+		if len(v.ProtoReflect().GetUnknown()) == 0 {
+			if parts, head, tail, seps, ok := splitJSONMessages(x.StringValue); ok {
+				m := &messageManifest{layout: messageLayoutJSON, head: []byte(head), tail: []byte(tail)}
+				for _, s := range seps {
+					if s != "," {
+						m.seps = make([][]byte, len(seps))
+						for i, s := range seps {
+							m.seps[i] = []byte(s)
+						}
+						break
+					}
+				}
+				elems := make([][]byte, len(parts))
+				for i, p := range parts {
+					elems[i] = []byte(p)
+				}
+				return m, elems, nil
+			}
+		}
+	}
+	wire, err := marshalMessageValue(v)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &messageManifest{layout: messageLayoutValue}, [][]byte{wire}, nil
+}
+
+// forEachMessageAttribute visits every content attribute of each span and its
+// events, with the span it belongs to.
+func forEachMessageAttribute(rs *tracepb.ResourceSpans, fn func(*tracepb.Span, *commonpb.KeyValue) error) error {
+	visit := func(sp *tracepb.Span, kvs []*commonpb.KeyValue) error {
+		for _, kv := range kvs {
+			if kv != nil && IsMessageDeltaAttribute(kv.Key) {
+				if err := fn(sp, kv); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	for _, ss := range rs.GetScopeSpans() {
+		for _, sp := range ss.GetSpans() {
+			if sp == nil {
+				continue
+			}
+			if err := visit(sp, sp.GetAttributes()); err != nil {
+				return err
+			}
+			for _, ev := range sp.GetEvents() {
+				if err := visit(sp, ev.GetAttributes()); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func canceled(ctx context.Context, op string) error {
+	if err := ctx.Err(); err != nil {
+		return wrap("canceled", op, err)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Decomposition
+// ---------------------------------------------------------------------------
+
+// messageElement is one encoded message element, unique within its call. Its
+// ID is set when the call stores or finds it.
+type messageElement struct {
+	digest   messageDigest
+	encoding string
+	raw      []byte
+	id       messageID
+	trace    string // of the first span referencing it
+}
+
+// messageUse is one (message, attribute) reference of a span: the message's
+// positions in the span's first value of the attribute, and whether it is that
+// value's last element (the turn that introduced it).
+type messageUse struct {
+	element   *messageElement
+	attribute int64
+	ordinals  []int
+	newest    bool
+}
+
+// messageSite is one decomposed attribute value.
+type messageSite struct {
+	kv       *commonpb.KeyValue
+	manifest *messageManifest
+	elements []*messageElement
+}
+
+type messageDecomposition struct {
+	spans    []*tracepb.ResourceSpans
+	elements []*messageElement // unique, in first-reference order
+	sites    []messageSite
+	// uses maps a span key (trace hex + span hex) to its unique references in
+	// attribute order; a later duplicate of a span identity replaces it.
+	uses  map[string][]messageUse
+	stats MessageDeltaStats
+}
+
+func spanKey(sp *tracepb.Span) string {
+	return hex.EncodeToString(sp.TraceId) + hex.EncodeToString(sp.SpanId)
+}
+
+// messagePlaceholderID encodes at least as long as any real ID, so a span
+// admitted with placeholder manifests stays admissible with the real ones.
+var messagePlaceholderID = messageID{math.MaxInt64, math.MaxInt64}
+
+// decomposeMessages returns clones of spans in which every GenAI content
+// attribute is replaced by a placeholder manifest, with the call's unique
+// elements; encodeManifests installs the real manifests once the elements
+// have IDs. The input is never modified.
+func decomposeMessages(ctx context.Context, spans []*tracepb.ResourceSpans, tenant int) (*messageDecomposition, error) {
+	const op = "message decompose"
+	d := &messageDecomposition{spans: make([]*tracepb.ResourceSpans, len(spans)), uses: map[string][]messageUse{}}
+	byDigest := map[messageDigest]*messageElement{}
+	for i, rs := range spans {
+		if err := canceled(ctx, op); err != nil {
+			return nil, err
+		}
+		if rs == nil {
+			continue
+		}
+		clone := proto.Clone(rs).(*tracepb.ResourceSpans)
+		var current *tracepb.Span
+		var uses []messageUse
+		seen := map[int64]bool{} // attribute codes of the current span
+		flush := func() {
+			if current != nil {
+				d.uses[spanKey(current)] = uses
+			}
+			uses, seen = nil, map[int64]bool{}
+		}
+		err := forEachMessageAttribute(clone, func(sp *tracepb.Span, kv *commonpb.KeyValue) error {
+			if sp != current {
+				flush()
+				current = sp
+			}
+			m, raws, err := splitMessageValue(kv.Value)
+			if err != nil {
+				return err
+			}
+			site := messageSite{kv: kv, manifest: m, elements: make([]*messageElement, len(raws))}
+			code := messageAttributeCode(kv.Key)
+			// The span's first value of an attribute describes its references.
+			first := !seen[code]
+			seen[code] = true
+			position := map[*messageElement]int{}
+			for j, e := range raws {
+				if len(e) > maxMessageBytes {
+					return failf("admission", op, "message element of %d bytes exceeds %d", len(e), maxMessageBytes)
+				}
+				h := messageHash(tenant, m.encoding(), e)
+				el := byDigest[h]
+				if el == nil {
+					el = &messageElement{digest: h, encoding: m.encoding(), raw: e, trace: hex.EncodeToString(sp.TraceId)}
+					byDigest[h] = el
+					d.elements = append(d.elements, el)
+					d.stats.StoredDeltaBytes += int64(len(e))
+				}
+				site.elements[j] = el
+				d.stats.TotalMessages++
+				if !first {
+					continue
+				}
+				if i, ok := position[el]; ok {
+					uses[i].ordinals = append(uses[i].ordinals, j)
+				} else {
+					position[el] = len(uses)
+					uses = append(uses, messageUse{element: el, attribute: code, ordinals: []int{j}})
+				}
+			}
+			if first && len(raws) > 0 {
+				uses[position[site.elements[len(raws)-1]]].newest = true
+			}
+			if kv.Value != nil {
+				d.stats.RawMessageBytes += int64(proto.Size(kv.Value))
+			}
+			d.sites = append(d.sites, site)
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		flush()
+		d.spans[i] = clone
+	}
+	if err := d.encodeManifests(true); err != nil {
+		return nil, err
+	}
+	d.stats.UniqueMessages = int64(len(d.elements))
+	d.stats.ReusedMessages = d.stats.TotalMessages - d.stats.UniqueMessages
+	return d, nil
+}
+
+// encodeManifests replaces each decomposed attribute value by its manifest,
+// with placeholder IDs or the elements' IDs.
+func (d *messageDecomposition) encodeManifests(placeholder bool) error {
+	const op = "message decompose"
+	var manifestBytes int64
+	for _, s := range d.sites {
+		s.manifest.ids = make([]messageID, len(s.elements))
+		for i, el := range s.elements {
+			switch {
+			case placeholder:
+				s.manifest.ids[i] = messagePlaceholderID
+			case !el.id.valid():
+				return fail("operation", op, "message element has no stored ID")
+			default:
+				s.manifest.ids[i] = el.id
+			}
+		}
+		wire := s.manifest.encode()
+		if len(wire) > maxMessageManifest {
+			return failf("admission", op, "%s manifest of %d bytes exceeds %d", s.kv.Key, len(wire), maxMessageManifest)
+		}
+		s.kv.Value = &commonpb.AnyValue{Value: &commonpb.AnyValue_BytesValue{BytesValue: wire}}
+		manifestBytes += int64(proto.Size(s.kv.Value))
+	}
+	if !placeholder {
+		var raw int64
+		for _, el := range d.elements {
+			raw += int64(len(el.raw))
+		}
+		d.stats.StoredDeltaBytes = raw + manifestBytes
+		d.stats.SavedBytes = d.stats.RawMessageBytes - d.stats.StoredDeltaBytes
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Message records
+// ---------------------------------------------------------------------------
+
+// messagePlan is one element's Message records, part 0 (the header) first.
+// Writer and seq are set when a transaction assigns the element its ID.
+type messagePlan struct {
+	element   *messageElement
+	records   []proto.Message
+	raw       int64 // raw bytes in the records
+	postings  int64 // distinct (token, part) postings
+	unindexed int64
+}
+
+func messageDescriptor() (protoreflect.MessageDescriptor, error) {
+	fd, err := recordFile(messagesFullText)
+	if err != nil {
+		return nil, err
+	}
+	return fd.Messages().ByName("Message"), nil
+}
+
+// planMessage builds an element's records. Every part carries the role; part
+// i holds raw chunk i and text segment i; part 0 also holds the digest,
+// encoding, raw length, part count and the number of tokens too long to index.
+func planMessage(tenant int, el *messageElement, fulltext bool, distinct int) (*messagePlan, error) {
+	const op = "message records"
+	d, err := messageDescriptor()
+	if err != nil {
+		return nil, err
+	}
+	p := &messagePlan{element: el}
+	var role string
+	var segments []messageSegment
+	if fulltext {
+		var text string
+		role, text, err = extractMessageText(el.encoding, el.raw)
+		if err != nil {
+			return nil, err
+		}
+		if len(role) > maxMessageRoleBytes {
+			return nil, failf("admission", op, "message role of %d bytes exceeds %d", len(role), maxMessageRoleBytes)
+		}
+		n := 0
+		segments, n, err = segmentMessageText(text, distinct)
+		if err != nil {
+			return nil, err
+		}
+		p.unindexed = int64(n)
+	}
+	var chunks [][]byte
+	for rest := el.raw; len(rest) > 0; {
+		k := min(len(rest), messagePartRawBytes)
+		chunks = append(chunks, rest[:k:k])
+		rest = rest[k:]
+	}
+	parts := max(len(chunks), len(segments), 1)
+	f := d.Fields()
+	for i := range parts {
+		m := dynamicpb.NewMessage(d)
+		m.Set(f.ByName("tenant"), protoreflect.ValueOfInt64(int64(tenant)))
+		m.Set(f.ByName("part"), protoreflect.ValueOfInt64(int64(i)))
+		if fulltext {
+			m.Set(f.ByName("role"), protoreflect.ValueOfString(role))
+		}
+		if i < len(segments) {
+			s := segments[i]
+			m.Set(f.ByName("text"), protoreflect.ValueOfString(s.text))
+			if s.offset > 0 {
+				m.Set(f.ByName("token_offset"), protoreflect.ValueOfInt64(int64(s.offset)))
+			}
+			tokens, err := messageTokenizer{}.TokenizeToMap(s.text, recordlayer.GlobalMinVersion, recordlayer.TokenizerModeIndex)
+			if err != nil {
+				return nil, typedError("config", op, "tokenizer", err)
+			}
+			p.postings += int64(len(tokens))
+		}
+		if i < len(chunks) {
+			m.Set(f.ByName("raw"), protoreflect.ValueOfBytes(chunks[i]))
+			p.raw += int64(len(chunks[i]))
+		}
+		if i == 0 {
+			m.Set(f.ByName("hash"), protoreflect.ValueOfBytes(el.digest[:]))
+			m.Set(f.ByName("encoding"), protoreflect.ValueOfString(el.encoding))
+			m.Set(f.ByName("raw_bytes"), protoreflect.ValueOfInt64(int64(len(el.raw))))
+			m.Set(f.ByName("parts"), protoreflect.ValueOfInt64(int64(parts)))
+			if p.unindexed > 0 {
+				m.Set(f.ByName("unindexed_tokens"), protoreflect.ValueOfInt64(p.unindexed))
+			}
+			if fulltext && len(segments) > 1 {
+				m.Mutable(f.ByName("large")).List().Append(protoreflect.ValueOfInt64(1))
+			}
+		}
+		p.records = append(p.records, m)
+	}
+	return p, nil
+}
+
+func setMessageID(m proto.Message, id messageID) {
+	r := m.ProtoReflect()
+	f := r.Descriptor().Fields()
+	r.Set(f.ByName("writer"), protoreflect.ValueOfInt64(id.writer))
+	r.Set(f.ByName("seq"), protoreflect.ValueOfInt64(id.seq))
+	r.Set(f.ByName("shard"), protoreflect.ValueOfInt64(messageShard(id.writer)))
+}
+
+// messageShard is the TEXT index group of a writer's messages. A backend has
+// at most messageTextShards writers, each in its own shard (takeWriter), so
+// its writers never share a token's BunchedMap, and each appends behind the
+// lower, finished writers of its shard. Writers of several backends may share
+// a shard; they then insert into one BunchedMap, which is correct and can
+// conflict.
+func messageShard(writer int64) int64 { return writer % messageTextShards }
+
+func messageKey(tenant int, id messageID, part int) tuple.Tuple {
+	return tuple.Tuple{int64(tenant), id.writer, id.seq, int64(part)}
+}
+
+// messageTimerStats reads the BunchedMap counters of one message transaction.
+func messageTimerStats(t *recordlayer.StoreTimer, s *MessageStoreStats) {
+	s.TextIndexWrites = t.GetCount(recordlayer.CountSaveIndexKey)
+	s.TextIndexKeyBytes = t.GetCount(recordlayer.CountSaveIndexKeyBytes)
+	s.TextIndexValueBytes = t.GetCount(recordlayer.CountSaveIndexValueBytes)
+	s.TextIndexReadBytes = t.GetCount(recordlayer.CountLoadIndexKeyBytes) + t.GetCount(recordlayer.CountLoadIndexValueBytes)
+}
+
+// ---------------------------------------------------------------------------
+// Writers
+// ---------------------------------------------------------------------------
+
+// messageWriter numbers the messages its holder stores. A writer is held by
+// one transaction at a time, so its seqs are stored in increasing order.
+type messageWriter struct {
+	id   int64
+	next int64 // the last seq handed out
+}
+
+// messageWriters bounds a backend's writers to messageWriterLimit: every
+// writer's region of a token's postings ends at the next writer's first
+// posting, so a writer that is not the last rewrites that boundary bunch, and
+// fewer writers each reach past it sooner.
+type messageWriters struct {
+	once   sync.Once
+	slots  chan struct{}
+	mu     sync.Mutex
+	free   []*messageWriter
+	shards [messageTextShards]bool // shards of this backend's writers
+}
+
+// acquireWriter waits for a writer slot, then takes an idle writer or
+// registers a new one: writer IDs come from a counter in the run's subspace,
+// so no two handles share one.
+func (b *FDBBackend) acquireWriter(ctx context.Context) (*messageWriter, error) {
+	b.writers.once.Do(func() { b.writers.slots = make(chan struct{}, messageWriterLimit) })
+	select {
+	case b.writers.slots <- struct{}{}:
+	case <-ctx.Done():
+		return nil, wrap("canceled", "message writer", ctx.Err())
+	}
+	w, err := b.takeWriter(ctx)
+	if err != nil {
+		<-b.writers.slots
+	}
+	return w, err
+}
+
+func (b *FDBBackend) takeWriter(ctx context.Context) (*messageWriter, error) {
+	b.writers.mu.Lock()
+	if n := len(b.writers.free); n > 0 {
+		w := b.writers.free[n-1]
+		b.writers.free = b.writers.free[:n-1]
+		b.writers.mu.Unlock()
+		return w, nil
+	}
+	// The writer slots bound the writers to messageTextShards, so a shard is free.
+	shard := int64(0)
+	for b.writers.shards[shard] {
+		shard++
+	}
+	b.writers.shards[shard] = true
+	b.writers.mu.Unlock()
+	key := b.root.Sub("message_writers").FDBKey()
+	var id int64
+	_, err := runTxnSlot(ctx, b.db, "message writer", func(rc *recordlayer.FDBRecordContext) (any, error) {
+		if err := configureRecordTimeout(rc); err != nil {
+			return nil, err
+		}
+		v, err := rc.Transaction().Get(key).Get()
+		if err != nil {
+			return nil, err
+		}
+		last := int64(0)
+		if len(v) > 0 {
+			t, err := tuple.Unpack(v)
+			ok := false
+			if err == nil && len(t) == 1 {
+				last, ok = t[0].(int64)
+			}
+			if !ok || last < 1 {
+				return nil, fail("corruption", "message writer", "malformed writer counter")
+			}
+		}
+		// The first ID above every allocated one in this backend's free shard.
+		id = last + 1 + ((shard-(last+1))%messageTextShards+messageTextShards)%messageTextShards
+		rc.Transaction().Set(key, tuple.Tuple{id}.Pack())
+		return nil, nil
+	})
+	if err != nil {
+		b.writers.mu.Lock()
+		b.writers.shards[shard] = false
+		b.writers.mu.Unlock()
+		return nil, err
+	}
+	return &messageWriter{id: id}, nil
+}
+
+func (b *FDBBackend) releaseWriter(w *messageWriter) {
+	b.writers.mu.Lock()
+	b.writers.free = append(b.writers.free, w)
+	b.writers.mu.Unlock()
+	<-b.writers.slots
+}
+
+// ---------------------------------------------------------------------------
+// Persistence
+// ---------------------------------------------------------------------------
+
+// hashIndexRange is the dedup index range of one digest.
+func hashIndexRange(space []byte, tenant int, digest messageDigest) (fdb.KeyRange, error) {
+	return fdb.PrefixRange(append(append([]byte(nil), space...), tuple.Tuple{int64(tenant), digest[:]}.Pack()...))
+}
+
+// decodeHashEntry reads the message ID from a dedup index entry.
+func decodeHashEntry(space []byte, kv fdb.KeyValue) (messageID, error) {
+	t, err := tuple.Unpack(kv.Key[len(space):])
+	var id messageID
+	ok := err == nil && len(t) == 5
+	var part int64
+	if ok {
+		id.writer, ok = t[2].(int64)
+	}
+	if ok {
+		id.seq, ok = t[3].(int64)
+	}
+	if ok {
+		part, ok = t[4].(int64)
+	}
+	if !ok || part != 0 || !id.valid() {
+		return messageID{}, fail("corruption", "message dedup index", "malformed message hash index entry")
+	}
+	return id, nil
+}
+
+// readMessagePresence reads, in one snapshot transaction, which elements are
+// already stored. It is a hint: writes recheck presence.
+func (b *FDBBackend) readMessagePresence(ctx context.Context, tenant int, elements []*messageElement) (map[messageDigest]messageID, error) {
+	const op = "message presence"
+	var found map[messageDigest]messageID
+	_, err := runTxnSlot(ctx, b.db, op, func(rc *recordlayer.FDBRecordContext) (any, error) {
+		found = map[messageDigest]messageID{}
+		if err := b.readManifest(rc, true); err != nil {
+			return nil, err
+		}
+		store, err := b.open(rc)
+		if err != nil {
+			return nil, err
+		}
+		snap := rc.Transaction().Snapshot()
+		hashSpace := store.IndexSubspace(b.md.GetIndex(messageHashIndexName)).Bytes()
+		hashes := make([]fdb.RangeResult, len(elements))
+		for i, el := range elements {
+			r, err := hashIndexRange(hashSpace, tenant, el.digest)
+			if err != nil {
+				return nil, err
+			}
+			hashes[i] = snap.GetRange(r, fdb.RangeOptions{Limit: 1})
+		}
+		for i, el := range elements {
+			rows, err := hashes[i].GetSliceWithError()
+			if err != nil {
+				return nil, err
+			}
+			if len(rows) > 0 {
+				id, err := decodeHashEntry(hashSpace, rows[0])
+				if err != nil {
+					return nil, err
+				}
+				found[el.digest] = id
+			}
+		}
+		return nil, nil
+	})
+	return found, err
+}
+
+// messageTxn is one message transaction's body; it runs with the store open
+// and a writer held, and returns its counters.
+type messageTxn func(store *recordlayer.FDBRecordStore, hashSpace []byte) (MessageStoreStats, error)
+
+// runMessageTxn runs body in one transaction, counting retries and the
+// committed attempt's BunchedMap work.
+func (b *FDBBackend) runMessageTxn(ctx context.Context, stats *MessageStoreStats, mu *sync.Mutex, body messageTxn) error {
+	const op = "message persist"
+	var got MessageStoreStats
+	var attempts int64
+	started := time.Now()
+	_, err := runTxnSlot(ctx, b.db, op, func(rc *recordlayer.FDBRecordContext) (any, error) {
+		attempts++
+		timer := recordlayer.NewStoreTimer()
+		rc.SetTimer(timer)
+		store, err := b.open(rc)
+		if err != nil {
+			return nil, err
+		}
+		if got, err = body(store, store.IndexSubspace(b.md.GetIndex(messageHashIndexName)).Bytes()); err != nil {
+			return nil, err
+		}
+		messageTimerStats(timer, &got)
+		return nil, nil
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	stats.Retries += max(attempts-1, 0)
+	stats.TxnNs += time.Since(started).Nanoseconds()
+	if err == nil {
+		got.Transactions = 1
+		stats.Add(got)
+	}
+	return err
+}
+
+// readHashes issues serializable dedup-index reads for plans' digests, so a
+// concurrent writer of the same message conflicts with this transaction.
+func readHashes(store *recordlayer.FDBRecordStore, hashSpace []byte, tenant int, plans []*messagePlan) ([]messageID, error) {
+	pending := make([]fdb.RangeResult, len(plans))
+	for i, p := range plans {
+		r, err := hashIndexRange(hashSpace, tenant, p.element.digest)
+		if err != nil {
+			return nil, err
+		}
+		pending[i] = store.Context().Transaction().GetRange(r, fdb.RangeOptions{Limit: 1})
+	}
+	out := make([]messageID, len(plans))
+	for i := range plans {
+		rows, err := pending[i].GetSliceWithError()
+		if err != nil {
+			return nil, err
+		}
+		if len(rows) > 0 {
+			if out[i], err = decodeHashEntry(hashSpace, rows[0]); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return out, nil
+}
+
+// writeMessages saves every absent element's records and sets every
+// element's ID. Small messages share transactions of at most
+// messageTxnMessages; a multi-part message commits its parts 1.. before part
+// 0, so a stored part 0 means a complete message.
+func (b *FDBBackend) writeMessages(ctx context.Context, tenant int, plans []*messagePlan, fulltext bool) (MessageStoreStats, error) {
+	const op = "message persist"
+	var mu sync.Mutex
+	var stats MessageStoreStats
+	// Messages first referenced by one trace usually share rare tokens (its
+	// conversation's identifiers), so one writer stores them in order rather
+	// than several writers inserting into the same young token bunches.
+	type job struct {
+		groups [][]*messagePlan // transactions, run in order
+		large  *messagePlan
+	}
+	var jobs []job
+	var byTrace [][]*messagePlan
+	index := map[string]int{}
+	for _, p := range plans {
+		if len(p.records) > 1 {
+			jobs = append(jobs, job{large: p})
+			continue
+		}
+		i, ok := index[p.element.trace]
+		if !ok {
+			i = len(byTrace)
+			index[p.element.trace] = i
+			byTrace = append(byTrace, nil)
+		}
+		byTrace[i] = append(byTrace[i], p)
+	}
+	var cur job
+	var curN int
+	var curRaw int64
+	flush := func() {
+		if len(cur.groups) > 0 {
+			jobs = append(jobs, cur)
+		}
+		cur, curN, curRaw = job{}, 0, 0
+	}
+	for _, unit := range byTrace {
+		if curN > 0 && curN+len(unit) > messageTxnMessages {
+			flush()
+		}
+		for _, p := range unit {
+			if curN > 0 && (curN == messageTxnMessages || curRaw+p.raw > messagePartRawBytes) {
+				cur.groups = append(cur.groups, nil)
+				curN, curRaw = 0, 0
+			}
+			if len(cur.groups) == 0 {
+				cur.groups = append(cur.groups, nil)
+			}
+			g := &cur.groups[len(cur.groups)-1]
+			*g = append(*g, p)
+			curN++
+			curRaw += p.raw
+		}
+	}
+	flush()
+	err := runMessageJobs(ctx, op, len(jobs), func(ctx context.Context, i int) error {
+		w, err := b.acquireWriter(ctx)
+		if err != nil {
+			return err
+		}
+		defer b.releaseWriter(w)
+		j := jobs[i]
+		if j.large != nil {
+			return b.writeWithFallback(ctx, tenant, w, []*messagePlan{j.large}, fulltext, &stats, &mu, func() error {
+				return b.writeLargeMessage(ctx, tenant, w, j.large, &stats, &mu)
+			})
+		}
+		for _, g := range j.groups {
+			if err := b.writeWithFallback(ctx, tenant, w, g, fulltext, &stats, &mu, func() error {
+				return b.writeSmallMessages(ctx, tenant, w, g, &stats, &mu)
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return stats, err
+}
+
+// writeWithFallback runs write and, while it fails with a transaction over
+// FDB's size limit, stores plans again cut into smaller segments.
+func (b *FDBBackend) writeWithFallback(ctx context.Context, tenant int, w *messageWriter, plans []*messagePlan, fulltext bool, stats *MessageStoreStats, mu *sync.Mutex, write func() error) error {
+	err := write()
+	for distinct := messageSegmentTokens / 4; fulltext && distinct >= messageSegmentMinTokens && isTransactionTooLarge(err); distinct /= 4 {
+		for _, p := range plans {
+			if p, err = planMessage(tenant, p.element, true, distinct); err != nil {
+				return err
+			}
+			if err = b.writeLargeMessage(ctx, tenant, w, p, stats, mu); err != nil {
+				break
+			}
+		}
+	}
+	return err
+}
+
+// isTransactionTooLarge reports FDB's transaction_too_large (2101).
+func isTransactionTooLarge(err error) bool {
+	code, ok := fdbErrorCode(err)
+	return ok && code == 2101
+}
+
+// writeSmallMessages saves single-part messages in one transaction, numbering
+// the absent ones in w.
+func (b *FDBBackend) writeSmallMessages(ctx context.Context, tenant int, w *messageWriter, plans []*messagePlan, stats *MessageStoreStats, mu *sync.Mutex) error {
+	const op = "message persist"
+	base := w.next
+	used := int64(len(plans))
+	err := b.runMessageTxn(ctx, stats, mu, func(store *recordlayer.FDBRecordStore, hashSpace []byte) (MessageStoreStats, error) {
+		var s MessageStoreStats
+		found, err := readHashes(store, hashSpace, tenant, plans)
+		if err != nil {
+			return s, err
+		}
+		seq := base
+		var absent []*messagePlan
+		var records []proto.Message
+		for k, p := range plans {
+			if found[k].valid() {
+				p.element.id = found[k]
+				s.Present++
+				continue
+			}
+			seq++
+			p.element.id = messageID{w.id, seq}
+			setMessageID(p.records[0], p.element.id)
+			absent = append(absent, p)
+			records = append(records, p.records[0])
+		}
+		// The saves' existence reads, pipelined into the transaction's cache.
+		if err := store.AsBuilder().PrefetchRecordBatch(records).Wait(); err != nil {
+			return s, err
+		}
+		for _, p := range absent {
+			if err := canceled(ctx, op); err != nil {
+				return s, err
+			}
+			if _, err := store.SaveRecord(p.records[0]); err != nil {
+				return s, err
+			}
+			s.Written++
+			s.Parts++
+			s.Postings += p.postings
+			s.UnindexedTokens += p.unindexed
+		}
+		used = seq - base
+		return s, nil
+	})
+	if err != nil {
+		used = int64(len(plans)) // a failed attempt may have committed any of them
+	}
+	w.next = base + used
+	return err
+}
+
+// writeLargeMessage writes parts 1.. in transactions that share parts while
+// the approximate size stays below messagePartTxnBytes, then part 0. Each
+// transaction first checks the digest, so it stops once the message is stored.
+func (b *FDBBackend) writeLargeMessage(ctx context.Context, tenant int, w *messageWriter, p *messagePlan, stats *MessageStoreStats, mu *sync.Mutex) error {
+	const op = "message persist"
+	w.next++
+	id := messageID{w.id, w.next}
+	for _, r := range p.records {
+		setMessageID(r, id)
+	}
+	present := false
+	check := func(store *recordlayer.FDBRecordStore, hashSpace []byte) (bool, error) {
+		found, err := readHashes(store, hashSpace, tenant, []*messagePlan{p})
+		if err != nil || !found[0].valid() {
+			return false, err
+		}
+		p.element.id = found[0]
+		return true, nil
+	}
+	for next := 1; next < len(p.records) && !present; {
+		lo := next
+		err := b.runMessageTxn(ctx, stats, mu, func(store *recordlayer.FDBRecordStore, hashSpace []byte) (MessageStoreStats, error) {
+			next = lo
+			var err error
+			if present, err = check(store, hashSpace); err != nil || present {
+				return MessageStoreStats{Present: 1}, err
+			}
+			var s MessageStoreStats
+			for next < len(p.records) {
+				if err := canceled(ctx, op); err != nil {
+					return s, err
+				}
+				if _, err := store.SaveRecord(p.records[next]); err != nil {
+					return s, err
+				}
+				next++
+				s.Parts++
+				n, err := store.Context().Transaction().GetApproximateSize().Get()
+				if err != nil {
+					return s, err
+				}
+				if n >= messagePartTxnBytes {
+					break
+				}
+			}
+			return s, nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+	if present {
+		return nil
+	}
+	return b.runMessageTxn(ctx, stats, mu, func(store *recordlayer.FDBRecordStore, hashSpace []byte) (MessageStoreStats, error) {
+		present, err := check(store, hashSpace)
+		if err != nil || present {
+			return MessageStoreStats{Present: 1}, err
+		}
+		if _, err := store.SaveRecord(p.records[0]); err != nil {
+			return MessageStoreStats{}, err
+		}
+		p.element.id = id
+		return MessageStoreStats{Written: 1, Parts: 1, Postings: p.postings, UnindexedTokens: p.unindexed}, nil
+	})
+}
+
+// runMessageJobs runs job(ctx, i) for i in [0, n) on at most messageWorkers
+// goroutines. Jobs must be independent. The first failure cancels the jobs in
+// flight and not yet started and is the returned error.
+func runMessageJobs(ctx context.Context, op string, n int, job func(context.Context, int) error) error {
+	switch n {
+	case 0:
+		return nil
+	case 1:
+		return job(ctx, 0)
+	}
+	workCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var (
+		mu       sync.Mutex
+		firstErr error
+		done     int
+		next     atomic.Int64
+		workers  sync.WaitGroup
+	)
+	for range min(messageWorkers, n) {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for {
+				i := int(next.Add(1) - 1)
+				if i >= n || workCtx.Err() != nil {
+					return
+				}
+				err := job(workCtx, i)
+				mu.Lock()
+				if err != nil {
+					if firstErr == nil {
+						firstErr = err
+						cancel()
+					}
+				} else {
+					done++
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	workers.Wait()
+	if firstErr != nil {
+		return firstErr
+	}
+	if done != n {
+		return wrap("canceled", op, ctx.Err())
+	}
+	return nil
+}
+
+// parallelMessageWork runs CPU-only fn(i) for i in [0, n) on at most
+// messageWorkers goroutines and returns the error of the lowest failing index.
+func parallelMessageWork(n int, fn func(int) error) error {
+	errs := make([]error, n)
+	var next atomic.Int64
+	var failed atomic.Bool
+	var workers sync.WaitGroup
+	for range min(messageWorkers, n) {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for !failed.Load() {
+				i := int(next.Add(1) - 1)
+				if i >= n {
+					return
+				}
+				if errs[i] = fn(i); errs[i] != nil {
+					failed.Store(true)
+				}
+			}
+		}()
+	}
+	workers.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Span back references
+// ---------------------------------------------------------------------------
+
+// setEnvelopeMessages lists a span's references in its Envelope, with the
+// elements' IDs (the placeholder before they have one, which encodes at least
+// as long as any real ID).
+func setEnvelopeMessages(m proto.Message, uses []messageUse) {
+	r := m.ProtoReflect()
+	field := r.Descriptor().Fields().ByName("messages")
+	r.Clear(field)
+	if len(uses) == 0 {
+		return
+	}
+	list := r.Mutable(field).List()
+	for _, u := range uses {
+		id := u.element.id
+		if !id.valid() {
+			id = messagePlaceholderID
+		}
+		ref := list.NewElement().Message()
+		f := ref.Descriptor().Fields()
+		ref.Set(f.ByName("writer"), protoreflect.ValueOfInt64(id.writer))
+		ref.Set(f.ByName("seq"), protoreflect.ValueOfInt64(id.seq))
+		ref.Set(f.ByName("newest"), protoreflect.ValueOfBool(u.newest))
+		ref.Set(f.ByName("attribute"), protoreflect.ValueOfInt64(u.attribute))
+		ords := ref.Mutable(f.ByName("ordinals")).List()
+		for _, o := range u.ordinals {
+			ords.Append(protoreflect.ValueOfInt64(int64(o)))
+		}
+		list.Append(protoreflect.ValueOfMessage(ref))
+	}
+}
+
+// inflightMessage is a message one export call of this backend is storing;
+// other calls that need it wait for its ID instead of storing it again.
+type inflightMessage struct {
+	done chan struct{}
+	id   messageID // valid once done, if the store succeeded
+}
+
+// persistMessages stores the call's elements, giving each an ID, before any
+// span commits. An element another call of this backend is storing is
+// awaited, not stored again: concurrent stores of one message conflict on the
+// dedup index and retry their whole transactions. The dedup index read still
+// decides between writers of different backends.
+func (e *Exporter) persistMessages(ctx context.Context, d *messageDecomposition) (stats MessageStoreStats, err error) {
+	b := e.backend
+	if len(d.elements) == 0 {
+		return stats, nil
+	}
+	started := time.Now()
+	defer func() { stats.WallNs = time.Since(started).Nanoseconds() }()
+	found, err := b.readMessagePresence(ctx, e.cfg.Tenant, d.elements)
+	if err != nil {
+		return stats, err
+	}
+	stats.Transactions++
+	var owned, awaited []*messageElement
+	var waits []*inflightMessage
+	var claims []*inflightMessage
+	for _, el := range d.elements {
+		if id, ok := found[el.digest]; ok {
+			el.id = id
+			stats.Present++
+			continue
+		}
+		claim := &inflightMessage{done: make(chan struct{})}
+		if other, loaded := b.inflight.LoadOrStore(el.digest, claim); loaded {
+			awaited = append(awaited, el)
+			waits = append(waits, other.(*inflightMessage))
+			continue
+		}
+		owned = append(owned, el)
+		claims = append(claims, claim)
+	}
+	written, err := e.storeMessages(ctx, owned)
+	stats.Add(written)
+	// Release the claims before waiting for others' (no call waits holding one).
+	// After a failure an element's ID may name an uncommitted attempt, so the
+	// waiters store theirs themselves.
+	for i, el := range owned {
+		if err == nil {
+			claims[i].id = el.id
+		}
+		b.inflight.Delete(el.digest)
+		close(claims[i].done)
+	}
+	if err != nil {
+		return stats, err
+	}
+	var retry []*messageElement
+	for i, el := range awaited {
+		select {
+		case <-waits[i].done:
+		case <-ctx.Done():
+			return stats, wrap("canceled", "message persist", ctx.Err())
+		}
+		if el.id = waits[i].id; el.id.valid() {
+			stats.Present++
+		} else {
+			retry = append(retry, el) // the other call failed
+		}
+	}
+	written, err = e.storeMessages(ctx, retry)
+	stats.Add(written)
+	return stats, err
+}
+
+// storeMessages plans every element before the first write, so an admission
+// failure leaves nothing behind, then writes them.
+func (e *Exporter) storeMessages(ctx context.Context, elements []*messageElement) (MessageStoreStats, error) {
+	if len(elements) == 0 {
+		return MessageStoreStats{}, nil
+	}
+	fulltext := e.cfg.messageLayout() == messagesFullText
+	plans := make([]*messagePlan, len(elements))
+	if err := parallelMessageWork(len(elements), func(i int) error {
+		var err error
+		plans[i], err = planMessage(e.cfg.Tenant, elements[i], fulltext, messageSegmentTokens)
+		return err
+	}); err != nil {
+		return MessageStoreStats{}, err
+	}
+	if err := canceled(ctx, "message persist"); err != nil {
+		return MessageStoreStats{}, err
+	}
+	return e.backend.writeMessages(ctx, e.cfg.Tenant, plans, fulltext)
+}
+
+// ---------------------------------------------------------------------------
+// Reconstruction
+// ---------------------------------------------------------------------------
+
+type storedSite struct {
+	kv       *commonpb.KeyValue
+	manifest *messageManifest
+}
+
+// reconstructMessages restores decomposed spans in the caller's transaction:
+// it reads every referenced part 0 in one pipelined wave, then the remaining
+// raw parts of multi-part messages in a second.
+func reconstructMessages(ctx context.Context, store *recordlayer.FDBRecordStore, tenant int, spans []*tracepb.ResourceSpans) ([]*tracepb.ResourceSpans, error) {
+	p, err := planReconstruct(ctx, spans)
+	if err != nil {
+		return nil, err
+	}
+	raws, err := loadMessages(store, tenant, p.refs, p.encodings)
+	if err != nil {
+		return nil, err
+	}
+	return p.apply(raws)
+}
+
+// reconstructPlan is the manifests of clones of decomposed spans and the
+// messages they reference, in first-reference order.
+type reconstructPlan struct {
+	spans     []*tracepb.ResourceSpans
+	sites     []storedSite
+	refs      []messageID
+	encodings map[messageID]string
+}
+
+func planReconstruct(ctx context.Context, spans []*tracepb.ResourceSpans) (*reconstructPlan, error) {
+	const op = "message reconstruct"
+	out := make([]*tracepb.ResourceSpans, len(spans))
+	var sites []storedSite
+	encodings := map[messageID]string{}
+	var refs []messageID
+	for i, rs := range spans {
+		if err := canceled(ctx, op); err != nil {
+			return nil, err
+		}
+		if rs == nil {
+			continue
+		}
+		clone := proto.Clone(rs).(*tracepb.ResourceSpans)
+		err := forEachMessageAttribute(clone, func(_ *tracepb.Span, kv *commonpb.KeyValue) error {
+			m, err := parseMessageManifest(kv.Value)
+			if err != nil {
+				return err
+			}
+			for _, id := range m.ids {
+				if prev, ok := encodings[id]; ok {
+					if prev != m.encoding() {
+						return fail("corruption", op, "message referenced with two encodings")
+					}
+					continue
+				}
+				encodings[id] = m.encoding()
+				refs = append(refs, id)
+			}
+			sites = append(sites, storedSite{kv, m})
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		out[i] = clone
+	}
+	return &reconstructPlan{spans: out, sites: sites, refs: refs, encodings: encodings}, nil
+}
+
+// apply installs the original attribute values from the raw elements.
+func (p *reconstructPlan) apply(raws map[messageID][]byte) ([]*tracepb.ResourceSpans, error) {
+	const op = "message reconstruct"
+	sites, out := p.sites, p.spans
+	element := func(id messageID) (*commonpb.AnyValue, error) {
+		v := &commonpb.AnyValue{}
+		if err := proto.Unmarshal(raws[id], v); err != nil {
+			return nil, typedError("corruption", op, "message element decode", err)
+		}
+		return v, nil
+	}
+	for _, s := range sites {
+		m := s.manifest
+		switch m.layout {
+		case messageLayoutNone:
+			s.kv.Value = nil
+		case messageLayoutValue:
+			v, err := element(m.ids[0])
+			if err != nil {
+				return nil, err
+			}
+			s.kv.Value = v
+		case messageLayoutArray:
+			arr := &commonpb.ArrayValue{Values: make([]*commonpb.AnyValue, len(m.ids))}
+			for i, id := range m.ids {
+				v, err := element(id)
+				if err != nil {
+					return nil, err
+				}
+				arr.Values[i] = v
+			}
+			s.kv.Value = &commonpb.AnyValue{Value: &commonpb.AnyValue_ArrayValue{ArrayValue: arr}}
+		case messageLayoutJSON:
+			var b strings.Builder
+			b.Write(m.head)
+			for i, id := range m.ids {
+				if i > 0 {
+					if m.seps == nil {
+						b.WriteByte(',')
+					} else {
+						b.Write(m.seps[i-1])
+					}
+				}
+				b.Write(raws[id])
+			}
+			b.Write(m.tail)
+			s.kv.Value = &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: b.String()}}
+		}
+	}
+	return out, nil
+}
+
+// loadMessages returns the raw element bytes of each message.
+func loadMessages(store *recordlayer.FDBRecordStore, tenant int, refs []messageID, encodings map[messageID]string) (map[messageID][]byte, error) {
+	const op = "message reconstruct"
+	heads := make([]recordlayer.PendingRead[*recordlayer.FDBStoredRecord[proto.Message]], len(refs))
+	for i, id := range refs {
+		heads[i] = store.LoadRecordAsync(messageKey(tenant, id, 0), nil)
+	}
+	type rest struct {
+		id    messageID
+		size  int64
+		parts []recordlayer.PendingRead[*recordlayer.FDBStoredRecord[proto.Message]]
+	}
+	var more []rest
+	out := make(map[messageID][]byte, len(refs))
+	for i, id := range refs {
+		r, err := heads[i].Get()
+		if err != nil {
+			return nil, err
+		}
+		if r == nil {
+			return nil, failf("corruption", op, "missing message %d/%d", id.writer, id.seq)
+		}
+		m := r.Record.ProtoReflect()
+		f := m.Descriptor().Fields()
+		parts, size := m.Get(f.ByName("parts")).Int(), m.Get(f.ByName("raw_bytes")).Int()
+		if m.Get(f.ByName("encoding")).String() != encodings[id] || parts < 1 || size < 0 || size > maxMessageBytes {
+			return nil, failf("corruption", op, "message %d/%d header disagrees with its manifest", id.writer, id.seq)
+		}
+		raw := m.Get(f.ByName("raw")).Bytes()
+		if int64(len(raw)) == size {
+			out[id] = raw
+			continue
+		}
+		x := rest{id: id, size: size}
+		out[id] = append([]byte(nil), raw...)
+		for p := int64(1); p < parts && p*messagePartRawBytes < size; p++ {
+			x.parts = append(x.parts, store.LoadRecordAsync(messageKey(tenant, id, int(p)), nil))
+		}
+		more = append(more, x)
+	}
+	for _, x := range more {
+		for _, pr := range x.parts {
+			r, err := pr.Get()
+			if err != nil {
+				return nil, err
+			}
+			if r == nil {
+				return nil, failf("corruption", op, "missing part of message %d/%d", x.id.writer, x.id.seq)
+			}
+			m := r.Record.ProtoReflect()
+			out[x.id] = append(out[x.id], m.Get(m.Descriptor().Fields().ByName("raw")).Bytes()...)
+		}
+		if int64(len(out[x.id])) != x.size {
+			return nil, failf("corruption", op, "message %d/%d has %d raw bytes, header says %d", x.id.writer, x.id.seq, len(out[x.id]), x.size)
+		}
+	}
+	return out, nil
+}

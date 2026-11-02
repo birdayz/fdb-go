@@ -54,15 +54,17 @@ const (
 
 // ExporterConfig is shared by the SDK exporter and the Collector exporter.
 type ExporterConfig struct {
-	ClusterFile         string `json:"cluster_file" yaml:"cluster_file"`
-	Run                 string `json:"run" yaml:"run"`
-	Tenant              int    `json:"tenant" yaml:"tenant"`
-	Order               string `json:"order" yaml:"order"`
-	HashBytes           int    `json:"hash_bytes" yaml:"hash_bytes"`
-	PostingValueFormat  string `json:"posting_value_format" yaml:"posting_value_format"`
-	RecordCompression   string `json:"record_compression" yaml:"record_compression"`
-	BulkIndexConflicts  bool   `json:"bulk_index_conflicts" yaml:"bulk_index_conflicts"`
-	EnableMessageDeltas bool   `json:"enable_message_deltas" yaml:"enable_message_deltas"`
+	ClusterFile        string `json:"cluster_file" yaml:"cluster_file"`
+	Run                string `json:"run" yaml:"run"`
+	Tenant             int    `json:"tenant" yaml:"tenant"`
+	Order              string `json:"order" yaml:"order"`
+	HashBytes          int    `json:"hash_bytes" yaml:"hash_bytes"`
+	PostingValueFormat string `json:"posting_value_format" yaml:"posting_value_format"`
+	RecordCompression  string `json:"record_compression" yaml:"record_compression"`
+	BulkIndexConflicts bool   `json:"bulk_index_conflicts" yaml:"bulk_index_conflicts"`
+	// EnableMessageDeltas stores each GenAI message once per tenant as Message
+	// records and replaces the span attribute with a manifest of digests.
+	EnableMessageDeltas bool `json:"enable_message_deltas" yaml:"enable_message_deltas"`
 	// EnableMessageFullText decomposes GenAI messages (as EnableMessageDeltas
 	// does) and indexes their text and span back references for search.
 	EnableMessageFullText bool  `json:"enable_message_full_text" yaml:"enable_message_full_text"`
@@ -82,7 +84,7 @@ type ExporterConfig struct {
 }
 
 func DefaultExporterConfig() ExporterConfig {
-	return ExporterConfig{Order: "time", HashBytes: 8, PostingValueFormat: "tuple", RecordCompression: "brotli-4", BulkIndexConflicts: true, BatchSize: 64, Workers: 8, MaxCandidates: 20000, MaxBytes: 4 << 20, K: 100, MaxInFlightTransactions: defaultMaxInFlightTransactions, TransactionTimeout: defaultExporterTxnTimeout}
+	return ExporterConfig{Order: "time", HashBytes: 8, PostingValueFormat: "tuple", RecordCompression: "brotli-4", BulkIndexConflicts: false, BatchSize: 64, Workers: 8, MaxCandidates: 20000, MaxBytes: 4 << 20, K: 100, MaxInFlightTransactions: defaultMaxInFlightTransactions, TransactionTimeout: defaultExporterTxnTimeout}
 }
 
 // exporterConfigFields is ExporterConfig without its JSON methods.
@@ -151,7 +153,18 @@ func (c ExporterConfig) Validate() error {
 // backendConfig maps the live exporter onto the batch-save FDB backend. Workers
 // is the exporter's own pool; the backend value is unused by live saves.
 func (c ExporterConfig) backendConfig() Config {
-	return Config{Run: c.Run, Backend: "fdb", Seed: exporterSeed, Count: exporterCount, Tenants: exporterTenants, Attributes: 4, MatchEvery: 1, Batch: c.BatchSize, SaveMode: "batch", RecordCompression: c.RecordCompression, PostingValueFormat: c.PostingValueFormat, BulkIndexConflicts: c.BulkIndexConflicts, Workers: 1, CHBatch: 8192, CHBatchBytes: 8 << 20, CHIndexGranularity: 8192, CHQueryTransport: "http", Tenant: c.Tenant, K: c.K, Iterations: 1, MaxCandidates: c.MaxCandidates, MaxBytes: c.MaxBytes, HashBytes: c.HashBytes, Order: c.Order}
+	return Config{Run: c.Run, Backend: "fdb", Seed: exporterSeed, Count: exporterCount, Tenants: exporterTenants, Attributes: 4, MatchEvery: 1, Batch: c.BatchSize, SaveMode: "batch", RecordCompression: c.RecordCompression, PostingValueFormat: c.PostingValueFormat, BulkIndexConflicts: c.BulkIndexConflicts, Workers: 1, CHBatch: 8192, CHBatchBytes: 8 << 20, CHIndexGranularity: 8192, CHQueryTransport: "http", Tenant: c.Tenant, K: c.K, Iterations: 1, MaxCandidates: c.MaxCandidates, MaxBytes: c.MaxBytes, HashBytes: c.HashBytes, Order: c.Order, Messages: c.messageLayout()}
+}
+
+// messageLayout is the stored message layout the flags select.
+func (c ExporterConfig) messageLayout() string {
+	switch {
+	case c.EnableMessageFullText:
+		return messagesFullText
+	case c.EnableMessageDeltas:
+		return messagesDeltas
+	}
+	return messagesNone
 }
 
 // ExportStats describes one ExportResourceSpans call. Committed counters cover
@@ -165,7 +178,7 @@ type ExportStats struct {
 	NormalizedSpans     int64             `json:"normalized_spans"`
 	UnindexedAttributes int64             `json:"unindexed_attributes"`
 	MessageDeltas       MessageDeltaStats `json:"message_deltas,omitempty"`
-	MessageFTS          MessageFTSStats   `json:"message_fts,omitempty"`
+	Messages            MessageStoreStats `json:"messages,omitempty"`
 }
 
 // SpanNotFoundError reports a LoadSpanOTLP identity absent from the tenant.
@@ -293,41 +306,43 @@ func (e *Exporter) ExportResourceSpans(ctx context.Context, spans []*tracepb.Res
 	}
 	defer e.active.Done()
 	ctx = withTxnLimiter(e.txnContext(ctx), e.txnSlots)
-	var deltaBlobs []*MessageBlob
-	var deltaStats MessageDeltaStats
-	decompose := e.cfg.EnableMessageDeltas || e.cfg.EnableMessageFullText
-	if decompose && len(spans) > 0 {
+	var decomposed *messageDecomposition
+	var uses map[string][]messageUse // span references, fulltext only
+	layout := e.cfg.messageLayout()
+	if layout != messagesNone && len(spans) > 0 {
 		var err error
-		spans, deltaBlobs, deltaStats, err = DecomposeResourceSpans(ctx, spans, e.cfg.Tenant)
-		if err != nil {
+		if decomposed, err = decomposeMessages(ctx, spans, e.cfg.Tenant); err != nil {
 			return ExportStats{}, err
 		}
+		spans = decomposed.spans
+		if layout == messagesFullText {
+			uses = decomposed.uses
+		}
 	}
-	items, stats, err := e.prepareExport(ctx, spans)
-	stats.MessageDeltas = deltaStats
+	// With placeholder manifests and references this admits every span
+	// before any write.
+	items, stats, err := e.prepareExport(ctx, spans, uses)
+	if err != nil || decomposed == nil {
+		if err == nil {
+			err = e.commitExport(ctx, partitionExport(items, e.cfg.BatchSize), &stats)
+		}
+		return stats, err
+	}
+	// Messages precede the spans that reference them.
+	stored, err := e.persistMessages(ctx, decomposed)
+	stats.Messages = stored
+	if err == nil {
+		err = decomposed.encodeManifests(false)
+	}
 	if err != nil {
 		return stats, err
 	}
-	if len(deltaBlobs) > 0 {
-		if e.cfg.EnableMessageFullText {
-			_, fts, err := PersistAndIndexMessageBlobsDB(ctx, e.backend.db, e.backend.root, e.cfg.Tenant, deltaBlobs)
-			stats.MessageFTS = fts
-			if err != nil {
-				return stats, err
-			}
-		} else if _, err := PersistMessageBlobsDB(ctx, e.backend.db, e.backend.root, e.cfg.Tenant, deltaBlobs); err != nil {
-			return stats, err
-		}
-	}
-	if err = e.commitExport(ctx, partitionExport(items, e.cfg.BatchSize), &stats); err != nil || !e.cfg.EnableMessageFullText {
+	final, finalStats, err := e.prepareExport(ctx, decomposed.spans, uses)
+	if err != nil {
 		return stats, err
 	}
-	// References follow the committed records; a failed call is repaired by re-export.
-	refs, err := IndexMessageSpansDB(ctx, e.backend.db, e.backend.root, e.cfg.Tenant, e.cfg.Order, spans)
-	stats.MessageFTS.SpanRefs += refs.SpanRefs
-	stats.MessageFTS.Bytes += refs.Bytes
-	stats.MessageFTS.Transactions += refs.Transactions
-	return stats, err
+	finalStats.MessageDeltas, finalStats.Messages = decomposed.stats, stored
+	return finalStats, e.commitExport(ctx, partitionExport(final, e.cfg.BatchSize), &finalStats)
 }
 
 func (e *Exporter) commitExport(ctx context.Context, batches []preparedBatch, stats *ExportStats) error {
@@ -362,6 +377,7 @@ func (e *Exporter) commitExport(ctx context.Context, batches []preparedBatch, st
 					stats.Spans += int64(len(batch.messages))
 					stats.Batches++
 					stats.LogicalBytes += batch.logicalBytes
+					stats.Messages.References += batch.references
 				}
 				mu.Unlock()
 			}
@@ -396,6 +412,7 @@ func partitionExport(items []exportSpan, size int) []preparedBatch {
 		}
 		cur.messages = append(cur.messages, it.message)
 		cur.logicalBytes += it.logical
+		cur.references += int64(it.references)
 		cur.estimate += it.cost
 		cur.next = i + 1
 	}
@@ -407,6 +424,7 @@ func partitionExport(items []exportSpan, size int) []preparedBatch {
 
 type exportSpan struct {
 	key        string
+	references int // Envelope.messages entries
 	message    proto.Message
 	logical    int64
 	cost       int
@@ -458,6 +476,22 @@ func canonicalAttributes(kvs []*commonpb.KeyValue) canonicalSet {
 		} else {
 			out.unindexed++
 		}
+	}
+	return out
+}
+
+// withoutMessageAttributes leaves decomposed GenAI message attributes out of
+// the equality index: their stored values are manifests, which no query
+// names; QueryMessageFullText searches their text instead.
+func withoutMessageAttributes(set canonicalSet) canonicalSet {
+	out := canonicalSet{changed: set.changed, unindexed: set.unindexed}
+	for _, kv := range set.indexed {
+		if IsMessageDeltaAttribute(kv.Key) {
+			out.changed = true
+			out.unindexed++
+			continue
+		}
+		out.indexed = append(out.indexed, kv)
 	}
 	return out
 }
@@ -553,7 +587,7 @@ func appendCanonicalJSON(dst []byte, v *commonpb.AnyValue) []byte {
 
 // prepareExport splits every span into its own single-span ResourceSpans with
 // canonical indexed attributes; later duplicates of one identity replace earlier.
-func (e *Exporter) prepareExport(ctx context.Context, in []*tracepb.ResourceSpans) ([]exportSpan, ExportStats, error) {
+func (e *Exporter) prepareExport(ctx context.Context, in []*tracepb.ResourceSpans, uses map[string][]messageUse) ([]exportSpan, ExportStats, error) {
 	var stats ExportStats
 	var out []exportSpan
 	position := map[string]int{}
@@ -586,6 +620,9 @@ func (e *Exporter) prepareExport(ctx context.Context, in []*tracepb.ResourceSpan
 				}
 				stats.ReceivedSpans++
 				spanSet := canonicalAttributes(sp.Attributes)
+				if e.cfg.messageLayout() != messagesNone {
+					spanSet = withoutMessageAttributes(spanSet)
+				}
 				span := sp
 				if spanSet.changed {
 					span = proto.Clone(sp).(*tracepb.Span)
@@ -609,7 +646,11 @@ func (e *Exporter) prepareExport(ctx context.Context, in []*tracepb.ResourceSpan
 					unknown = protowire.AppendTag(unknown, fidelityField, protowire.BytesType)
 					single.ProtoReflect().SetUnknown(protowire.AppendBytes(unknown, payload))
 				}
-				item, err := e.envelope(single, resourceSet.indexed, scopeSet.indexed, spanSet.indexed)
+				var refs []messageUse
+				if uses != nil {
+					refs = uses[spanKey(sp)]
+				}
+				item, err := e.envelope(single, refs, resourceSet.indexed, scopeSet.indexed, spanSet.indexed)
 				if err != nil {
 					return nil, stats, err
 				}
@@ -683,7 +724,7 @@ func validSpanIdentity(b []byte, size int) bool {
 	return false
 }
 
-func (e *Exporter) envelope(single *tracepb.ResourceSpans, lists ...[]*commonpb.KeyValue) (exportSpan, error) {
+func (e *Exporter) envelope(single *tracepb.ResourceSpans, refs []messageUse, lists ...[]*commonpb.KeyValue) (exportSpan, error) {
 	sp := single.ScopeSpans[0].Spans[0]
 	if !validSpanIdentity(sp.TraceId, 16) || !validSpanIdentity(sp.SpanId, 8) {
 		return exportSpan{}, fail("admission", "OTLP identity", "expected nonzero 16-byte trace and 8-byte span identifiers")
@@ -702,13 +743,18 @@ func (e *Exporter) envelope(single *tracepb.ResourceSpans, lists ...[]*commonpb.
 			cost += 2 * (len(kv.Key) + len(value) + 256)
 		}
 	}
+	// Each reference is a record field and one index entry of about 100 bytes.
+	for _, u := range refs {
+		cost += 2 * (128 + 10*len(u.ordinals))
+	}
 	if cost > exportSpanBudget {
 		return exportSpan{}, fail("admission", "export batch", "single span exceeds conservative 300KB transaction estimate")
 	}
-	d, err := envelopeType()
+	fd, err := recordFile(e.cfg.messageLayout())
 	if err != nil {
 		return exportSpan{}, err
 	}
+	d := fd.Messages().ByName("Envelope")
 	trace, span := hex.EncodeToString(sp.TraceId), hex.EncodeToString(sp.SpanId)
 	m := dynamicpb.NewMessage(d)
 	f := d.Fields()
@@ -718,7 +764,10 @@ func (e *Exporter) envelope(single *tracepb.ResourceSpans, lists ...[]*commonpb.
 	m.Set(f.ByName("span_id"), protoreflect.ValueOfString(span))
 	m.Set(f.ByName("start_ns"), protoreflect.ValueOfInt64(int64(sp.StartTimeUnixNano)))
 	m.Set(f.ByName("otlp"), protoreflect.ValueOfBytes(wire))
-	return exportSpan{key: trace + span, message: m, logical: int64(len(wire)), cost: cost}, nil
+	if len(refs) > 0 {
+		setEnvelopeMessages(m, refs)
+	}
+	return exportSpan{key: trace + span, references: len(refs), message: m, logical: int64(len(wire)), cost: cost}, nil
 }
 
 // restoreOTLP returns the stored span with its original attribute lists.
@@ -837,10 +886,10 @@ func (e *Exporter) LoadSpanOTLP(ctx context.Context, traceID, spanID string) (*t
 		}
 		r := record.Record.ProtoReflect()
 		out, err = restoreOTLP(r.Get(r.Descriptor().Fields().ByName("otlp")).Bytes())
-		if err != nil || !(e.cfg.EnableMessageDeltas || e.cfg.EnableMessageFullText) {
+		if err != nil || b.cfg.Messages == messagesNone {
 			return nil, err
 		}
-		reconstructed, err := ReconstructResourceSpans(ctx, rc, b.root, e.cfg.Tenant, []*tracepb.ResourceSpans{out})
+		reconstructed, err := reconstructMessages(ctx, store, e.cfg.Tenant, []*tracepb.ResourceSpans{out})
 		if err != nil {
 			return nil, err
 		}

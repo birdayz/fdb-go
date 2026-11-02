@@ -112,7 +112,8 @@ the record subspace. The client can coalesce contained ranges in eligible commit
 this reduces shipped conflict-vector overhead, not stored posting count or bytes.
 The live transaction-size estimate does not perform this coalescing and can grow
 slightly, so the unchanged 500-KB guard still applies. This execution option is not
-part of stored layout identity.
+part of stored layout identity. It cannot be combined with message storage (see
+"GenAI message storage", write conflicts); the exporter default is off.
 
 Zlib uses the existing Java-compatible version-1 format. Brotli explicitly uses
 `SetGoOnlyBrotliCompression` and version 2: **Java and default Go serializers
@@ -491,6 +492,83 @@ context is `canceled`. FDB `1xxx` codes, including `transaction_timed_out`
 are `operation`. The Collector's `IsPermanent` retries `transient`, `budget`
 and `canceled` errors and drops `config`, `admission`, `ownership`,
 `corruption` and `operation` errors.
+
+## GenAI message storage
+
+`enable_message_deltas` and `enable_message_full_text` store each element of
+`gen_ai.input.messages`, `gen_ai.output.messages`,
+`gen_ai.system_instructions` and `gen_ai.tool.definitions` (span and event
+attributes) once per tenant as a `Message` record, and replace the attribute
+value with a manifest of message IDs. `LoadSpanOTLP` restores the original
+value byte for byte. The layout is stored run identity: the owner manifest
+records `"messages": "deltas"` or `"fulltext"`, and a run written without it,
+including one written by the earlier `msg_blob_v1` blob layout, is refused
+before any read.
+
+* **Records and keys.** A message ID is `(writer, seq)`. A message transaction
+  holds one writer exclusively and numbers its new messages in order, so the
+  `Message` primary key `(tenant, writer, seq, part)` makes each writer's TEXT
+  postings follow its earlier ones. A unique value index `message_hash_v1` on
+  `(tenant, SHA-256 prefix of 16 bytes)` deduplicates content; a message
+  transaction reads it serializably, so concurrent writers of one message
+  conflict and the loser reuses the stored ID. A present message costs no
+  write at all. The digest prefix is 128 bits per tenant.
+* **Text index.** `fulltext` adds a standard TEXT index `message_text_v1` on
+  each part's text, grouped by `(tenant, role, shard)`, with positions. A
+  backend holds at most 16 writers, each in its own shard (`writer mod 16`),
+  so concurrent writers never modify one BunchedMap; a query scans the 16
+  shards of a role concurrently and unions them. Without shards every writer
+  appends to the same token maps and rewrites the bunch at its boundary with
+  the next writer (bench: 3777 retries in 8352 message transactions, 9.5x the
+  bunch writes, 515 instead of 719 spans/s). Its tokenizer,
+  `otel_message_v1`, is the default tokenizer except that a token longer than
+  1024 bytes is not indexed (its position is kept): a token is part of an
+  index key, which FDB caps at 10 KB. Such tokens are counted in
+  `messages.unindexed_tokens`, and a query naming one is refused. The text is
+  stored next to the raw element; record compression removes the duplicate
+  (measured: +1.9 B per bench message with zlib-1, +5.1 B with brotli-4). A
+  function key expression over the raw bytes is not an option: a TEXT index
+  requires a string field at the text position (Java
+  `TextIndexMaintainerFactory.java:117-127`; a function validates as its
+  arguments, `FunctionKeyExpression.java:218-220`).
+* **Large messages.** A message is admitted up to 16 MB. Its raw bytes are cut
+  into parts of at most 1 MB (each split by the Record Layer into 100 KB
+  values) and its text into segments of at most 1024 distinct tokens and
+  64 KB; consecutive segments share 15 tokens, so every phrase of up to the 16
+  query terms lies in one segment. Each part's TEXT postings are written by one
+  transaction; a part whose transaction exceeds FDB's 10 MB limit is cut again
+  with a quarter of the distinct tokens, down to 16. Parts 1.. commit before
+  part 0, so a stored part 0 means a complete message. An "all" query also
+  checks every multi-part message (`message_large_v1`) for terms in different
+  segments; that check costs one bounded scan per multi-part message and term.
+* **Back references.** `fulltext` lists on each span every message it
+  references (`Envelope.messages`: writer, seq, attribute code, the message's
+  positions in the span's first value of that attribute, and whether it is
+  that value's newest element). The list depends only on the span, so it is
+  written blind with the span and replaced with it; there is no cross-span
+  read and no ordering between export calls. `envelope_message_v1` indexes it
+  as `(tenant, writer, seq, newest, attribute, (positions), start_ns)`. A query
+  reads one range per matching message, all ranges in flight together, and
+  loads no span record. `FirstTurnOnly` keeps the references in which the
+  message is the newest element, which is the turn that introduced it
+  whatever order the spans arrive in. The cost is one index entry per
+  (span, attribute, message): turn k of a conversation references its whole
+  history, so a conversation of n turns has O(n^2) entries (bench, 12 turns:
+  about 17 references and 1.8 KB of mutations per span).
+* **Queries.** `QueryMessageFullText` and `TraceExistentialQuery.MessageClauses`
+  match message text with the Record Layer's `TextScan` (ALL, ANY and PHRASE,
+  leapfrog intersections). Hits name the message by `message_id`
+  (`writer.seq`); the content digest, prefix chains, matched terms and
+  positions of the earlier layout are not reported. Message attributes hold
+  manifests and are not equality-indexed; equality predicates on them are
+  refused.
+* **Write conflicts.** Message transactions read `message_hash_v1` and the
+  TEXT index serializably. `bulk_index_conflicts` would widen every span
+  batch's write conflicts over all of the store's indexes, including these,
+  so each span batch commit would abort the message transactions running
+  beside it (measured with FDB's `report_conflicting_keys`: every conflicted
+  message transaction reported all of its index read ranges). The two are
+  refused together, and the exporter default is off.
 
 ## Repeated local campaign
 

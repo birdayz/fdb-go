@@ -29,6 +29,7 @@ go_test(
     deps = [
         "//layers/otel",
         "//pkg/fdbgo/fdb",
+        "//pkg/recordlayer",
         "//pkg/testcontainers/foundationdb",
         "@in_gopkg_yaml_v3//:yaml_v3",
         "@io_opentelemetry_go_proto_otlp//common/v1:common",

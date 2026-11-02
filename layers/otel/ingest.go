@@ -90,6 +90,7 @@ type preparedBatch struct {
 	messages     []proto.Message
 	logicalBytes int64
 	estimate     int
+	references   int64 // Envelope.messages entries, exporter batches only
 }
 
 // prepareIngestBatch runs outside retry closures. Each bounded, disjoint batch

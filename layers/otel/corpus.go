@@ -48,6 +48,8 @@ type Config struct {
 	MaxBytes           int64  `json:"max_bytes"`
 	HashBytes          int    `json:"hash_bytes"`
 	Order              string `json:"order"`
+	// Messages is the GenAI message storage layout: "", "deltas" or "fulltext".
+	Messages string `json:"messages,omitempty"`
 }
 
 func DefaultConfig() Config {
@@ -79,8 +81,23 @@ func (c Config) Validate() error {
 	default:
 		return fail("config", "posting values", "posting value format must be json or tuple")
 	}
+	switch c.Messages {
+	case messagesNone:
+	case messagesDeltas, messagesFullText:
+		if c.Backend != "fdb" {
+			return fail("config", "message layout", "message records require the FDB backend")
+		}
+	default:
+		return fail("config", "message layout", "message layout must be empty, deltas or fulltext")
+	}
 	if c.BulkIndexConflicts && (c.Backend != "fdb" || c.SaveMode != "batch") {
 		return fail("config", "bulk index conflicts", "bulk index conflicts require the FDB batch save mode")
+	}
+	// Coalesced write conflicts cover every index of the store, including the
+	// message indexes that each message transaction reads: every span batch
+	// commit would abort the message transactions running beside it.
+	if c.BulkIndexConflicts && c.Messages != messagesNone {
+		return fail("config", "bulk index conflicts", "bulk index conflicts cannot be combined with message storage")
 	}
 	if c.CHIndexGranularity < 1 || c.CHIndexGranularity > 8192 {
 		return fail("config", "CH index granularity", "index granularity must be 1..8192 for fresh tables")
@@ -399,6 +416,8 @@ type Manifest struct {
 	CHIndexGranularity int    `json:"ch_index_granularity,omitempty"`
 	RecordCompression  string `json:"record_compression,omitempty"`
 	PostingValueFormat string `json:"posting_value_format,omitempty"`
+	// Messages is Config.Messages; absent for runs without message storage.
+	Messages string `json:"messages,omitempty"`
 }
 
 func manifest(c Config, state string) Manifest {
@@ -407,6 +426,7 @@ func manifest(c Config, state string) Manifest {
 	if c.PostingValueFormat == "tuple" {
 		m.PostingValueFormat = "tuple"
 	}
+	m.Messages = c.Messages
 	// CH table settings are layout identity, not source identity. Omit this
 	// field for FDB so existing V2 manifests retain their exact wire format.
 	if c.Backend == "ch-map" || c.Backend == "ch-attrs" {
@@ -431,6 +451,12 @@ func checkManifest(c Config, m Manifest, ready bool) error {
 	}
 	if m.PostingValueFormat != valueFormat {
 		return fail("ownership", "manifest", "covering posting value format missing or mismatched; refusing access")
+	}
+	if m.Messages != c.Messages {
+		if m.Messages == messagesNone {
+			return failf("ownership", "manifest", "run has no %s message record layout: it stores no messages or predates message records (msg_blob_v1 layout); refusing access, use a fresh run", c.Messages)
+		}
+		return failf("ownership", "manifest", "run uses message layout %q, not %q; refusing access", m.Messages, c.Messages)
 	}
 	if ready && m.State != "ready" {
 		return failf("ownership", "manifest", "run is not ready (state %q); explicit owned drop only", m.State)

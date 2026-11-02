@@ -514,14 +514,7 @@ func addExportStats(dst *otel.ExportStats, s otel.ExportStats) {
 	d.RawMessageBytes += m.RawMessageBytes
 	d.StoredDeltaBytes += m.StoredDeltaBytes
 	d.SavedBytes += m.SavedBytes
-	f, n := &dst.MessageFTS, s.MessageFTS
-	f.IndexedBlobs += n.IndexedBlobs
-	f.SkippedBlobs += n.SkippedBlobs
-	f.UniqueTokens += n.UniqueTokens
-	f.TokenPostings += n.TokenPostings
-	f.SpanRefs += n.SpanRefs
-	f.Bytes += n.Bytes
-	f.Transactions += n.Transactions
+	dst.Messages.Add(s.Messages)
 }
 
 // addLogStats sums every counter; EventIDs are not retained.
@@ -1536,7 +1529,7 @@ func benchQueries(cfg CollectorBenchConfig, gen *benchGen, exp *otel.Exporter) [
 		}
 		seen := map[string]bool{}
 		for _, h := range hits {
-			key := h.Trace + "/" + h.Span + "/" + h.AttributeKey + "/" + h.MessageHash
+			key := h.Trace + "/" + h.Span + "/" + h.AttributeKey + "/" + h.MessageID
 			if seen[key] {
 				return len(hits), fmt.Errorf("duplicate hit %s", key)
 			}

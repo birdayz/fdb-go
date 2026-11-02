@@ -274,10 +274,8 @@ func testExporterTxnLimit(t *testing.T, cluster string) {
 	if got, err := e.QueryLogsByTrace(ctx, ftsTrace(1), ""); err != nil || len(got) != 0 {
 		t.Fatalf("query with held slot: %d logs, %v", len(got), err)
 	}
-	for _, name := range []string{messageBlobSubspace, msgMetaSubspace} {
-		if got := deltaBlobRows(t, ctx, e.backend.db, e.backend.root.Sub(name)); len(got) != 0 {
-			t.Fatalf("%d %s rows written while the slot was held", len(got), name)
-		}
+	if got := ftsIndexEntries(t, ctx, e, messageHashIndexName, nil); got != 0 {
+		t.Fatalf("%d messages written while the slot was held", got)
 	}
 	<-e.txnSlots
 
@@ -288,7 +286,7 @@ func testExporterTxnLimit(t *testing.T, cluster string) {
 		}
 	}
 	n := deltaTurns
-	if stats.Spans != int64(n) || stats.MessageFTS.IndexedBlobs != 2*n+3 || stats.MessageFTS.SpanRefs != n*(n+1)+3*n {
+	if stats.Spans != int64(n) || stats.Messages.Written != int64(2*n+3) || stats.Messages.References != int64(n*(n+1)+3*n) {
 		t.Fatalf("export stats %+v", stats)
 	}
 	if logStats.Logs != 2 {
@@ -518,7 +516,7 @@ func testExporterCallsAbsorb(t *testing.T, cluster string) {
 		t.Fatal(err)
 	}
 	n := deltaTurns
-	if stats.Spans != int64(n) || stats.MessageFTS.IndexedBlobs != 2*n+3 || stats.MessageFTS.SpanRefs != n*(n+1)+3*n {
+	if stats.Spans != int64(n) || stats.Messages.Written != int64(2*n+3) || stats.Messages.References != int64(n*(n+1)+3*n) {
 		t.Fatalf("export stats %+v", stats)
 	}
 	if logStats, err := e.ExportLogs(ctx, txnTestLogs()); err != nil || logStats.Logs != 2 {

@@ -3368,3 +3368,28 @@ regressions so they can be proposed upstream after the PoC.
   must cover all475k; measured rates must count only375k additions. Generation is
   prefix-stable, but this is a changed benchmark boundary requiring a fresh
   same-protocol baseline. No application/storage change is implemented or implied.
+
+### OTel GenAI messages on Record Layer TEXT indexes (2026-11-02)
+
+`layers/otel/messages*.go` stores GenAI messages as `Message` records with a
+standard TEXT index (README "GenAI message storage"). Open findings, measured
+on the ccx43 bench box with `measure.py --storage 6 --duration 180s`:
+
+- [ ] **The client, not the cluster, bounds message ingest** (719 spans/s,
+  `limited_by: workload`, 0 message retries). A 60 s CPU profile of otelbench
+  in the steady phase uses 13 of 16 cores: 44% in the pure-Go client's RYW
+  cache (`rywCache.walkCandidatesLocked`/`walkBoundsLocked`/
+  `cacheCandidatesLocked`, mostly `bytes.Compare`), reached from the BunchedMap
+  reads of TEXT index maintenance in message transactions; 12% GC. 95% of the
+  mutex wait is the per-transaction `rywCache.withLock`, taken by the 128
+  pipelined TEXT index updates of one transaction. Needed (pkg/fdbgo/client):
+  cheaper RYW resolution of selector reads in a transaction with thousands of
+  writes, and less lock hold time.
+- [ ] **Phrase queries cost twice the earlier layout** (bench p50 15 ms against
+  6-8 ms): the TEXT phrase scan of 16 writer shards per role dominates
+  (`fts_phrase_first_turn`, `fts_multi_turn_history`).
+- [ ] **`bulk_index_conflicts` widens over every index of the store.** The
+  Record Layer option also covers indexes of record types the batch does not
+  save; restricting it to the batch's types would let span batches coalesce
+  without aborting message transactions (pkg/recordlayer scope). Until then
+  the otel layer refuses the combination.

@@ -150,7 +150,7 @@ func TestManifestEveryAxis(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		set  func(*Manifest)
-	}{{"tool", func(m *Manifest) { m.Tool += "x" }}, {"run", func(m *Manifest) { m.Run += "x" }}, {"corpus", func(m *Manifest) { m.Corpus += "x" }}, {"order", func(m *Manifest) { m.Order = "time" }}, {"hash", func(m *Manifest) { m.HashBytes = 1 }}, {"backend", func(m *Manifest) { m.Backend = "ch-attrs" }}, {"state", func(m *Manifest) { m.State = "loading" }}} {
+	}{{"tool", func(m *Manifest) { m.Tool += "x" }}, {"run", func(m *Manifest) { m.Run += "x" }}, {"corpus", func(m *Manifest) { m.Corpus += "x" }}, {"order", func(m *Manifest) { m.Order = "time" }}, {"hash", func(m *Manifest) { m.HashBytes = 1 }}, {"backend", func(m *Manifest) { m.Backend = "ch-attrs" }}, {"state", func(m *Manifest) { m.State = "loading" }}, {"messages", func(m *Manifest) { m.Messages = messagesFullText }}} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := manifest(c, "ready")
 			tc.set(&m)
