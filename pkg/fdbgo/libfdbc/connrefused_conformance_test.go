@@ -265,7 +265,11 @@ func killStorage(t *testing.T, ctx context.Context, f crFixture, addr string) st
 	if err != nil {
 		t.Fatal(err)
 	}
-	pid, err := containerExec(ctx, f.container, fmt.Sprintf(`pgrep -f -- '--listen-address 0\.0\.0\.0:%s( |$)'`, port))
+	// Match the fdbserver itself (-x: process name), not the bash subshell
+	// that started it in the background, whose command line also carries
+	// the listen address.
+	pid, err := containerExec(ctx, f.container, fmt.Sprintf(
+		`for p in $(pgrep -x fdbserver); do tr '\0' ' ' < /proc/$p/cmdline | grep -qE -- '--listen-address 0\.0\.0\.0:%s( |$)' && echo $p; done; true`, port))
 	pid = strings.TrimSpace(pid)
 	if err != nil || pid == "" || strings.Contains(pid, "\n") {
 		t.Fatalf("find the fdbserver on port %s: %q %v", port, pid, err)
