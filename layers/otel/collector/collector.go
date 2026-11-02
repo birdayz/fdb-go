@@ -1119,8 +1119,14 @@ func (x *TracesExporter) consumeLoop() {
 		// A permanent failure fails the whole merged call before any write;
 		// re-export each source's part so only the offending request fails.
 		for _, p := range b.parts {
-			st, err := x.exportWithRetry(x.workCtx, p.spans)
-			x.complete([]request{p}, st, err)
+			if cerr := x.workCtx.Err(); cerr != nil {
+				// Abandoned before its own attempt: the merged failure may
+				// belong to another part, so it is reported, not wrapped.
+				x.complete([]request{p}, otel.ExportStats{}, fmt.Errorf("%s: export abandoned after its merged batch failed (%v): %w", ComponentType, err, cerr))
+				continue
+			}
+			st, perr := x.exportWithRetry(x.workCtx, p.spans)
+			x.complete([]request{p}, st, perr)
 		}
 	}
 }
@@ -1136,7 +1142,13 @@ func (x *TracesExporter) exportWithRetry(ctx context.Context, spans []*tracepb.R
 		x.mu.Lock()
 		x.stats.Exports++
 		x.mu.Unlock()
-		if err == nil || !r.Enabled || IsPermanent(err) || ctx.Err() != nil {
+		if err == nil {
+			return st, nil
+		}
+		if ctx.Err() != nil {
+			return st, abandonedExport(ctx, err)
+		}
+		if !r.Enabled || IsPermanent(err) {
 			return st, err
 		}
 		if r.MaxElapsedTime > 0 && time.Since(started)+interval > r.MaxElapsedTime {
@@ -1150,10 +1162,20 @@ func (x *TracesExporter) exportWithRetry(ctx context.Context, spans []*tracepb.R
 		case <-wait.C:
 		case <-ctx.Done():
 			wait.Stop()
-			return st, errors.Join(err, ctx.Err())
+			return st, abandonedExport(ctx, err)
 		}
 		interval = min(2*interval, r.MaxInterval)
 	}
+}
+
+// abandonedExport is the failure of an export whose worker context ended
+// after an attempt failed with err: it reports both, whether the cancellation
+// landed during the attempt or during the backoff wait.
+func abandonedExport(ctx context.Context, err error) error {
+	if errors.Is(err, ctx.Err()) {
+		return err
+	}
+	return errors.Join(err, ctx.Err())
 }
 
 // record updates counters for one export outcome; callers hold x.mu.

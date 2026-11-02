@@ -1953,6 +1953,91 @@ func TestTracesExporterLifecycle(t *testing.T) {
 			t.Fatalf("stats = %+v", st)
 		}
 	})
+
+	// The cancellation lands during the attempt, not during a backoff wait:
+	// the attempt fails only once its context is done, with an error that
+	// does not wrap the cancellation.
+	t.Run("shutdown_deadline_cancels_attempt", func(t *testing.T) {
+		t.Parallel()
+		started := make(chan struct{})
+		sink := &fakeSink{export: func(ctx context.Context, call int, _ []string) (otel.ExportStats, error) {
+			if call == 0 {
+				close(started)
+			}
+			<-ctx.Done()
+			return otel.ExportStats{}, errTransient
+		}}
+		x := newUnitExporter(t, unitConfig(func(c *Config) {
+			c.RetryOnFailure = RetryConfig{Enabled: true, InitialInterval: time.Hour, MaxInterval: time.Hour}
+		}), sink)
+		if err := x.Start(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if err := x.ConsumeTraces(t.Context(), testRequest("s", 0, 2)); err != nil {
+			t.Fatal(err)
+		}
+		<-started
+		short, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		err := x.Shutdown(short)
+		cancel()
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Shutdown = %v, want deadline", err)
+		}
+		waitFor(t, "sink close", func() bool { return sink.shutdownCount() == 1 })
+		err = flush(t, x)
+		if !errors.Is(err, errTransient) || !errors.Is(err, context.Canceled) {
+			t.Fatalf("abandoned export failure = %v", err)
+		}
+		if st := x.Stats(); st.FailedSpans != 2 || st.QueuedSpans != 0 || st.Retries != 0 || st.Exports != 1 {
+			t.Fatalf("stats = %+v", st)
+		}
+	})
+
+	// A merged batch whose attempt fails permanently while the worker is
+	// cancelled is not re-exported part by part: every part is abandoned with
+	// the cancellation, and the merged failure is not attributed to it.
+	t.Run("shutdown_deadline_abandons_merged_parts", func(t *testing.T) {
+		t.Parallel()
+		poison := &otel.OtelError{Kind: "admission", Op: "export", Message: "poisoned span"}
+		started := make(chan struct{})
+		sink := &fakeSink{export: func(ctx context.Context, call int, _ []string) (otel.ExportStats, error) {
+			if call == 0 {
+				close(started)
+			}
+			<-ctx.Done()
+			return otel.ExportStats{}, poison
+		}}
+		x := newUnitExporter(t, unitConfig(func(c *Config) {
+			c.SendingQueue.Batch = BatchConfig{FlushTimeout: time.Hour, MinSize: 6, MaxSize: 6}
+		}), sink)
+		if err := x.Start(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		for _, prefix := range []string{"a", "b", "c"} {
+			if err := x.ConsumeTraces(t.Context(), testRequest(prefix, 0, 2)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		<-started
+		short, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		err := x.Shutdown(short)
+		cancel()
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Shutdown = %v, want deadline", err)
+		}
+		waitFor(t, "sink close", func() bool { return sink.shutdownCount() == 1 })
+		err = flush(t, x)
+		if !errors.Is(err, context.Canceled) || errors.Is(err, poison) || IsPermanent(err) {
+			t.Fatalf("abandoned merged parts = %v", err)
+		}
+		requireErrContains(t, err, "export abandoned after its merged batch failed")
+		if n := sink.callCount(); n != 1 {
+			t.Fatalf("sink called %d times, want only the merged attempt", n)
+		}
+		if st := x.Stats(); st.FailedSpans != 6 || st.QueuedSpans != 0 {
+			t.Fatalf("stats = %+v", st)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
