@@ -861,7 +861,7 @@ func PersistMessageBlobsDB(ctx context.Context, db *recordlayer.FDBDatabase, roo
 	runner := func(ctx context.Context) func(func(*recordlayer.FDBRecordContext) (MessagePersistStats, error)) error {
 		return func(fn func(*recordlayer.FDBRecordContext) (MessagePersistStats, error)) error {
 			var got MessagePersistStats
-			err := runIdempotentTxn(ctx, db, op, func(rc *recordlayer.FDBRecordContext) (any, error) {
+			_, err := runTxnSlot(ctx, db, op, func(rc *recordlayer.FDBRecordContext) (any, error) {
 				if err := configureRecordTimeout(rc); err != nil {
 					return nil, err
 				}

@@ -36,6 +36,9 @@ type (
 	AuditError       struct{ *OtelError }
 	OracleError      struct{ *OtelError }
 	OperationError   struct{ *OtelError }
+	// TransientError is an FDB failure a new call can pass: a transaction
+	// timeout or a retryable condition that outlasted the timeout.
+	TransientError struct{ *OtelError }
 )
 
 func typedError(kind, op, message string, cause error) error {
@@ -57,6 +60,8 @@ func typedError(kind, op, message string, cause error) error {
 		return &AuditError{e}
 	case "oracle":
 		return &OracleError{e}
+	case "transient":
+		return &TransientError{e}
 	default:
 		return &OperationError{e}
 	}

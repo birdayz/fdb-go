@@ -465,6 +465,33 @@ FDB-sized synchronous tiny-part workload. **Load wall times are bulk preparation
 comparisons, not equal real-time acknowledgment semantics.** No nonidempotent
 external effects run in an FDB retry closure.
 
+## Exporter transaction policy
+
+The SDK/Collector `Exporter` does not use the benchmark's retry limit or
+1.5-second timeout. Every Exporter transaction, read or write, runs with no
+retry limit (`RETRY_LIMIT -1`) and the `transaction_timeout` setting (Go
+duration, default `10s`, valid `1s`..`5m`). FDB's OnError loop retries
+retryable codes such as `process_behind`, `transaction_too_old`,
+`future_version` and `not_committed` inside one transaction until it commits,
+the timeout expires or the caller's context ends. The timeout runs from
+transaction creation across all retries and includes GRV waits, which take
+seconds under ratekeeper throttling. It must be set because a caller's context
+does not end the wait for a dispatched commit
+(`rfcs/280-client-retry-and-close-bounds.md` §4). The default covers about 5 s
+of GRV queueing plus FDB's 5 s MVCC window. Exporter span batches have no fresh
+Runs and no 1-second elapsed guard. The 500 KB size guard still applies.
+A batch that times out fails its export call.
+
+The export calls report a failed transaction with an error kind for retry
+decisions. Domain errors keep their kind: `admission`, `config`, `ownership`
+and `corruption` are permanent, and `budget` is retryable. An ended caller
+context is `canceled`. FDB `1xxx` codes, including `transaction_timed_out`
+(1031), and Record Layer retriable errors are `transient`. Other FDB codes
+(`15xx` platform errors, `2xxx` illegal operations, `4xxx` internal errors) and unclassified errors
+are `operation`. The Collector's `IsPermanent` retries `transient`, `budget`
+and `canceled` errors and drops `config`, `admission`, `ownership`,
+`corruption` and `operation` errors.
+
 ## Repeated local campaign
 
 `bench/local_campaign.sh` runs all five physical arms against already-running,

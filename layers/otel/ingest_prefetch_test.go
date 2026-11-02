@@ -314,14 +314,15 @@ func testOtelIngestPrefetch(t *testing.T, ctx context.Context, cluster, order st
 		})
 	}
 	// Exporter commits are bounded by their transaction timeout, not the
-	// benchmark's 1s elapsed guard; the size guard still applies to both.
+	// benchmark's 1s elapsed guard, and have no retry limit; the size guard
+	// still applies to both.
 	t.Run("exporter_elapsed_exempt", func(t *testing.T) {
 		c := testConfig()
 		c.Count, c.Tenants, c.Batch, c.Workers, c.Diagnostics, c.SaveMode, c.Order = 1, 1, 1, 1, true, "batch", order
 		b := openOtelFixture(t, ctx, cluster, c, false)
 		initializeIngestPrefetchRoot(t, ctx, b)
 		wrapped := newIngestReadWaveTransactor(b, ctx)
-		wrapped.wantTimeout = exporterTxnTimeout.Milliseconds()
+		wrapped.wantTimeout = defaultExporterTxnTimeout.Milliseconds()
 		now := time.Now()
 		b.ingestClock = func() time.Time { return now }
 		wrapped.afterPrefetch = func(*ingestReadWaveAttempt) { now = now.Add(2 * time.Second) }
@@ -332,13 +333,57 @@ func testOtelIngestPrefetch(t *testing.T, ctx context.Context, cluster, order st
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := b.saveIngestBatch(withExporterTxns(ctx), batch, newIngestRecorder(true)); err != nil {
+		if err := b.saveIngestBatch(withExporterTxns(ctx, defaultExporterTxnTimeout), batch, newIngestRecorder(true)); err != nil {
 			t.Fatalf("exporter commit hit the benchmark elapsed guard: %v", err)
 		}
-		if len(wrapped.attempts) != 1 || wrapped.attempts[0].timeout != exporterTxnTimeout.Milliseconds() {
-			t.Fatalf("exporter commit attempts %d, want 1 with the %v timeout", len(wrapped.attempts), exporterTxnTimeout)
+		if len(wrapped.attempts) != 1 || wrapped.attempts[0].timeout != defaultExporterTxnTimeout.Milliseconds() || wrapped.attempts[0].retries != noRetryLimit {
+			t.Fatalf("exporter commit attempts %+v, want 1 with the %v timeout and no retry limit", wrapped.attempts, defaultExporterTxnTimeout)
 		}
 		b.db = original
 		assertOtelSource(t, ctx, b, Generate(b.cfg, 0))
 	})
+	// An exporter batch is one Run: FDB's OnError loop absorbs a retryable
+	// code in the same transaction, and a 1031 fails the batch as a transient
+	// error without the benchmark's fresh Runs.
+	for _, code := range []int{1020, 1031} {
+		t.Run(fmt.Sprintf("exporter_inject_%d", code), func(t *testing.T) {
+			c := testConfig()
+			c.Count, c.Tenants, c.Batch, c.Workers, c.Diagnostics, c.SaveMode, c.Order = 1, 1, 1, 1, true, "batch", order
+			b := openOtelFixture(t, ctx, cluster, c, false)
+			initializeIngestPrefetchRoot(t, ctx, b)
+			wrapped := newIngestReadWaveTransactor(b, ctx)
+			wrapped.wantTimeout = defaultExporterTxnTimeout.Milliseconds()
+			wrapped.injectCode = code
+			original := b.db
+			b.db = recordlayer.NewFDBDatabaseWithTransactor(wrapped, b.raw)
+			defer func() { b.db = original }()
+			var runs []error
+			b.db.SetAttemptObserver(func(_ recordlayer.AttemptCall, err error) { runs = append(runs, err) })
+			batch, err := prepareIngestBatch(ctx, b.cfg, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = b.saveIngestBatch(withExporterTxns(ctx, defaultExporterTxnTimeout), batch, nil)
+			if len(runs) != 1 {
+				t.Fatalf("exporter batch made %d Record Layer attempts, want 1: %v", len(runs), runs)
+			}
+			for i, state := range wrapped.attempts {
+				if len(state.problems) != 0 || state.retries != noRetryLimit {
+					t.Fatalf("attempt %d: %+v", i, state)
+				}
+			}
+			b.db = original
+			if code == 1020 {
+				if err != nil || len(wrapped.attempts) != 2 {
+					t.Fatalf("injected 1020: err=%v attempts=%d, want success on the second OnError attempt", err, len(wrapped.attempts))
+				}
+				assertOtelSource(t, ctx, b, Generate(b.cfg, 0))
+				return
+			}
+			requireOtelKind(t, err, "transient")
+			if got, ok := fdbErrorCode(err); !ok || got != 1031 || len(wrapped.attempts) != 1 {
+				t.Fatalf("injected 1031: err=%v attempts=%d, want one attempt failing with 1031", err, len(wrapped.attempts))
+			}
+		})
+	}
 }

@@ -66,7 +66,12 @@ func (d *ingestRecorder) freshRetry() {
 
 // A 1031 can be maybe-committed and is terminal to FDB OnError. Fresh source
 // Runs must reread old images; replaying captured mutations would be unsafe.
+// An Exporter batch is one Run: its timeout and the caller's context bound it,
+// and a 1031 fails the export call with the classified error.
 func (b *FDBBackend) saveIngestBatch(ctx context.Context, batch preparedBatch, d *ingestRecorder) error {
+	if isExporterTxn(ctx) {
+		return b.saveIngestBatchRun(ctx, batch, d)
+	}
 	var last error
 	for run := 0; run < maxSourceRuns; run++ {
 		if last = ctx.Err(); last != nil {

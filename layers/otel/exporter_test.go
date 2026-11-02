@@ -116,7 +116,7 @@ func validExporterConfig() ExporterConfig {
 }
 
 func TestExporterConfigDefaults(t *testing.T) {
-	want := ExporterConfig{Order: "time", HashBytes: 8, PostingValueFormat: "tuple", RecordCompression: "brotli-4", BulkIndexConflicts: true, BatchSize: 64, Workers: 8, MaxCandidates: 20000, MaxBytes: 4 << 20, K: 100, MaxInFlightTransactions: 32}
+	want := ExporterConfig{Order: "time", HashBytes: 8, PostingValueFormat: "tuple", RecordCompression: "brotli-4", BulkIndexConflicts: true, BatchSize: 64, Workers: 8, MaxCandidates: 20000, MaxBytes: 4 << 20, K: 100, MaxInFlightTransactions: 32, TransactionTimeout: 10 * time.Second}
 	if got := DefaultExporterConfig(); got != want {
 		t.Fatalf("defaults: got %+v want %+v", got, want)
 	}
@@ -144,6 +144,7 @@ max_candidates: 500
 max_bytes: 1048576
 k: 25
 max_inflight_transactions: 7
+transaction_timeout: 45s
 `
 	cases := []struct {
 		name string
@@ -157,9 +158,11 @@ max_inflight_transactions: 7
 		{"explicit false overrides true default", "bulk_index_conflicts: false\n", func(c *ExporterConfig) { c.BulkIndexConflicts = false }},
 		{"explicit zero overrides nonzero default", "max_candidates: 0\nworkers: 0\n", func(c *ExporterConfig) { c.MaxCandidates, c.Workers = 0, 0 }},
 		{"max_inflight_transactions only", "max_inflight_transactions: 1024\n", func(c *ExporterConfig) { c.MaxInFlightTransactions = 1024 }},
+		{"transaction_timeout only", "transaction_timeout: 2m30s\n", func(c *ExporterConfig) { c.TransactionTimeout = 150 * time.Second }},
+		{"transaction_timeout zero", "transaction_timeout: 0s\n", func(c *ExporterConfig) { c.TransactionTimeout = 0 }},
 		{"unknown keys are ignored", "run: live_run_0001\nnot_a_field: 7\n", func(c *ExporterConfig) { c.Run = "live_run_0001" }},
 		{"every field", full, func(c *ExporterConfig) {
-			*c = ExporterConfig{ClusterFile: "/var/fdb/fdb.cluster", Run: "live_run_full", Tenant: 42, Order: "trace", HashBytes: 32, PostingValueFormat: "json", RecordCompression: "none", BulkIndexConflicts: false, BatchSize: 16, Workers: 4, MaxCandidates: 500, MaxBytes: 1 << 20, K: 25, MaxInFlightTransactions: 7}
+			*c = ExporterConfig{ClusterFile: "/var/fdb/fdb.cluster", Run: "live_run_full", Tenant: 42, Order: "trace", HashBytes: 32, PostingValueFormat: "json", RecordCompression: "none", BulkIndexConflicts: false, BatchSize: 16, Workers: 4, MaxCandidates: 500, MaxBytes: 1 << 20, K: 25, MaxInFlightTransactions: 7, TransactionTimeout: 45 * time.Second}
 		}},
 	}
 	for _, tc := range cases {
@@ -207,9 +210,13 @@ max_inflight_transactions: 7
 	t.Run("round trip", func(t *testing.T) {
 		want := validExporterConfig()
 		want.Tenant, want.Order, want.BulkIndexConflicts, want.MaxBytes, want.MaxInFlightTransactions = 9, "trace", false, 12345, 5
+		want.TransactionTimeout = 1500 * time.Millisecond
 		wire, err := yaml.Marshal(want)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if !strings.Contains(string(wire), "transaction_timeout: 1.5s\n") {
+			t.Fatalf("transaction_timeout is not a Go duration:\n%s", wire)
 		}
 		var got ExporterConfig
 		if err := yaml.Unmarshal(wire, &got); err != nil {
@@ -220,7 +227,7 @@ max_inflight_transactions: 7
 		}
 	})
 
-	for _, doc := range []string{"batch_size: not-a-number\n", "tenant: [1, 2]\n", "bulk_index_conflicts: maybe\n", "max_bytes: {a: 1}\n", "max_inflight_transactions: many\n"} {
+	for _, doc := range []string{"batch_size: not-a-number\n", "tenant: [1, 2]\n", "bulk_index_conflicts: maybe\n", "max_bytes: {a: 1}\n", "max_inflight_transactions: many\n", "transaction_timeout: 10\n", "transaction_timeout: soon\n"} {
 		t.Run("rejects "+strings.TrimSpace(doc), func(t *testing.T) {
 			var got ExporterConfig
 			err := yaml.Unmarshal([]byte(doc), &got)
@@ -243,10 +250,13 @@ func TestExporterConfigJSON(t *testing.T) {
 			c.ClusterFile, c.Run, c.Tenant = "/tmp/fdb.cluster", "live_run_0001", 3
 		}},
 		{"explicit false overrides true default", `{"bulk_index_conflicts":false}`, func(c *ExporterConfig) { c.BulkIndexConflicts = false }},
-		{"explicit zero overrides nonzero default", `{"k":0,"hash_bytes":0,"max_inflight_transactions":0}`, func(c *ExporterConfig) { c.K, c.HashBytes, c.MaxInFlightTransactions = 0, 0, 0 }},
+		{"explicit zero overrides nonzero default", `{"k":0,"hash_bytes":0,"max_inflight_transactions":0,"transaction_timeout":"0s"}`, func(c *ExporterConfig) {
+			c.K, c.HashBytes, c.MaxInFlightTransactions, c.TransactionTimeout = 0, 0, 0, 0
+		}},
+		{"transaction_timeout only", `{"transaction_timeout":"2m30s"}`, func(c *ExporterConfig) { c.TransactionTimeout = 150 * time.Second }},
 		{"unknown keys are ignored", `{"run":"live_run_0001","extra":true}`, func(c *ExporterConfig) { c.Run = "live_run_0001" }},
-		{"every field", `{"cluster_file":"/var/fdb/fdb.cluster","run":"live_run_full","tenant":42,"order":"trace","hash_bytes":32,"posting_value_format":"json","record_compression":"zlib-1","bulk_index_conflicts":false,"batch_size":16,"workers":4,"max_candidates":500,"max_bytes":1048576,"k":25,"max_inflight_transactions":64}`, func(c *ExporterConfig) {
-			*c = ExporterConfig{ClusterFile: "/var/fdb/fdb.cluster", Run: "live_run_full", Tenant: 42, Order: "trace", HashBytes: 32, PostingValueFormat: "json", RecordCompression: "zlib-1", BulkIndexConflicts: false, BatchSize: 16, Workers: 4, MaxCandidates: 500, MaxBytes: 1 << 20, K: 25, MaxInFlightTransactions: 64}
+		{"every field", `{"cluster_file":"/var/fdb/fdb.cluster","run":"live_run_full","tenant":42,"order":"trace","hash_bytes":32,"posting_value_format":"json","record_compression":"zlib-1","bulk_index_conflicts":false,"batch_size":16,"workers":4,"max_candidates":500,"max_bytes":1048576,"k":25,"max_inflight_transactions":64,"transaction_timeout":"45s"}`, func(c *ExporterConfig) {
+			*c = ExporterConfig{ClusterFile: "/var/fdb/fdb.cluster", Run: "live_run_full", Tenant: 42, Order: "trace", HashBytes: 32, PostingValueFormat: "json", RecordCompression: "zlib-1", BulkIndexConflicts: false, BatchSize: 16, Workers: 4, MaxCandidates: 500, MaxBytes: 1 << 20, K: 25, MaxInFlightTransactions: 64, TransactionTimeout: 45 * time.Second}
 		}},
 	}
 	for _, tc := range cases {
@@ -295,9 +305,13 @@ func TestExporterConfigJSON(t *testing.T) {
 	t.Run("round trip", func(t *testing.T) {
 		want := validExporterConfig()
 		want.Tenant, want.PostingValueFormat, want.RecordCompression, want.Workers, want.MaxInFlightTransactions = 7, "json", "none", 3, 1
+		want.TransactionTimeout = 1500 * time.Millisecond
 		wire, err := json.Marshal(want)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if !strings.Contains(string(wire), `"transaction_timeout":"1.5s"`) || strings.Count(string(wire), "transaction_timeout") != 1 {
+			t.Fatalf("transaction_timeout is not one Go duration string: %s", wire)
 		}
 		var got ExporterConfig
 		if err := json.Unmarshal(wire, &got); err != nil {
@@ -308,7 +322,7 @@ func TestExporterConfigJSON(t *testing.T) {
 		}
 	})
 
-	for _, doc := range []string{`{"batch_size":"64"}`, `{"max_bytes":1.5}`, `{"tenant":[1]}`, `{"bulk_index_conflicts":"yes"}`, `{"max_inflight_transactions":"32"}`} {
+	for _, doc := range []string{`{"batch_size":"64"}`, `{"max_bytes":1.5}`, `{"tenant":[1]}`, `{"bulk_index_conflicts":"yes"}`, `{"max_inflight_transactions":"32"}`, `{"transaction_timeout":10000000000}`, `{"transaction_timeout":"soon"}`} {
 		t.Run("rejects "+doc, func(t *testing.T) {
 			var got ExporterConfig
 			err := json.Unmarshal([]byte(doc), &got)
@@ -338,6 +352,8 @@ func TestExporterConfigValidate(t *testing.T) {
 		{"workers 16", func(c *ExporterConfig) { c.Workers = 16 }},
 		{"max_inflight_transactions 1", func(c *ExporterConfig) { c.MaxInFlightTransactions = 1 }},
 		{"max_inflight_transactions 1024", func(c *ExporterConfig) { c.MaxInFlightTransactions = 1024 }},
+		{"transaction_timeout 1s", func(c *ExporterConfig) { c.TransactionTimeout = time.Second }},
+		{"transaction_timeout 5m", func(c *ExporterConfig) { c.TransactionTimeout = 5 * time.Minute }},
 		{"tenant 0", func(c *ExporterConfig) { c.Tenant = 0 }},
 		{"last tenant", func(c *ExporterConfig) { c.Tenant = exporterTenants - 1 }},
 		{"run 8 chars", func(c *ExporterConfig) { c.Run = "abcd_123" }},
@@ -380,6 +396,10 @@ func TestExporterConfigValidate(t *testing.T) {
 		{"max_inflight_transactions 0", func(c *ExporterConfig) { c.MaxInFlightTransactions = 0 }, "max_inflight_transactions must be 1..1024"},
 		{"max_inflight_transactions negative", func(c *ExporterConfig) { c.MaxInFlightTransactions = -1 }, "max_inflight_transactions must be 1..1024"},
 		{"max_inflight_transactions 1025", func(c *ExporterConfig) { c.MaxInFlightTransactions = 1025 }, "max_inflight_transactions must be 1..1024"},
+		{"transaction_timeout 0", func(c *ExporterConfig) { c.TransactionTimeout = 0 }, "transaction_timeout must be 1s..5m0s"},
+		{"transaction_timeout negative", func(c *ExporterConfig) { c.TransactionTimeout = -time.Second }, "transaction_timeout must be 1s..5m0s"},
+		{"transaction_timeout 999ms", func(c *ExporterConfig) { c.TransactionTimeout = 999 * time.Millisecond }, "transaction_timeout must be 1s..5m0s"},
+		{"transaction_timeout over 5m", func(c *ExporterConfig) { c.TransactionTimeout = 5*time.Minute + time.Millisecond }, "transaction_timeout must be 1s..5m0s"},
 		{"negative tenant", func(c *ExporterConfig) { c.Tenant = -1 }, "tenant must be 0.."},
 		{"tenant past range", func(c *ExporterConfig) { c.Tenant = exporterTenants }, "tenant must be 0.."},
 		{"missing run", func(c *ExporterConfig) { c.Run = "" }, "run must be"},

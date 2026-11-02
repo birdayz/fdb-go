@@ -634,7 +634,7 @@ func PersistAndIndexMessageBlobsDB(ctx context.Context, db *recordlayer.FDBDatab
 		lo := w * msgMetaProbeWave
 		wave := unique[lo:min(lo+msgMetaProbeWave, len(unique))]
 		var got []bool
-		err := runIdempotentTxn(ctx, db, op, func(rc *recordlayer.FDBRecordContext) (any, error) {
+		_, err := runTxnSlot(ctx, db, op, func(rc *recordlayer.FDBRecordContext) (any, error) {
 			if err := configureStoreContext(rc); err != nil {
 				return nil, err
 			}
@@ -725,7 +725,7 @@ func PersistAndIndexMessageBlobsDB(ctx context.Context, db *recordlayer.FDBDatab
 		return runMessageJobs(ctx, op, len(phase), func(ctx context.Context, i int) error {
 			j := phase[i]
 			var n int64
-			err := runIdempotentTxn(ctx, db, op, func(rc *recordlayer.FDBRecordContext) (any, error) {
+			_, err := runTxnSlot(ctx, db, op, func(rc *recordlayer.FDBRecordContext) (any, error) {
 				if err := configureStoreContext(rc); err != nil {
 					return nil, err
 				}
@@ -1213,7 +1213,7 @@ func IndexMessageSpansDB(ctx context.Context, db *recordlayer.FDBDatabase, root 
 	var mu sync.Mutex
 	run := func(ctx context.Context, fn func(*recordlayer.FDBRecordContext) (MessageFTSStats, error)) error {
 		var got MessageFTSStats
-		err := runIdempotentTxn(ctx, db, op, func(rc *recordlayer.FDBRecordContext) (any, error) {
+		_, err := runTxnSlot(ctx, db, op, func(rc *recordlayer.FDBRecordContext) (any, error) {
 			if err := configureStoreContext(rc); err != nil {
 				return nil, err
 			}
@@ -2127,9 +2127,7 @@ func (e *Exporter) QueryMessageFullText(ctx context.Context, q MessageFullTextQu
 		return empty, err
 	}
 	defer e.active.Done()
-	return retryQuery(ctx, op, func(ctx context.Context) (MessageFullTextPage, error) {
-		e.queryMu.Lock()
-		defer e.queryMu.Unlock()
-		return e.backend.QueryMessageFullText(ctx, q)
-	})
+	e.queryMu.Lock()
+	defer e.queryMu.Unlock()
+	return e.backend.QueryMessageFullText(e.txnContext(ctx), q)
 }

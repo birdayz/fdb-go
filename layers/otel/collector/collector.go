@@ -64,9 +64,11 @@ func permanent(format string, args ...any) error {
 }
 
 // IsPermanent reports whether retrying err cannot succeed: invalid input,
-// configuration, ownership or corruption failures, or a shut-down exporter.
-// Transient FDB, budget and per-attempt timeout failures are retryable because
-// ExportResourceSpans is an idempotent replace of each span identity.
+// configuration, ownership or corruption failures, a shut-down exporter, or an
+// "operation" failure such as an illegal FDB operation. Transient FDB failures
+// (kind "transient", including transaction timeouts), budget failures and
+// "canceled" per-attempt deadlines are retryable because ExportResourceSpans
+// is an idempotent replace of each span identity.
 func IsPermanent(err error) bool {
 	if err == nil {
 		return false

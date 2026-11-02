@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -15,93 +16,85 @@ import (
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 )
 
-func TestExporterTxnTimeout(t *testing.T) {
+func TestTxnPolicyContext(t *testing.T) {
 	t.Parallel()
 	if got := txnTimeout(context.Background()); got != benchTxnTimeout || isExporterTxn(context.Background()) {
 		t.Fatalf("default timeout %v exporter=%v, want the 1.5s benchmark bound", got, isExporterTxn(context.Background()))
 	}
-	ctx := withExporterTxns(withTxnLimiter(t.Context(), make(chan struct{}, 1)))
-	if got := txnTimeout(ctx); got != exporterTxnTimeout || !isExporterTxn(ctx) {
+	ctx := withExporterTxns(withTxnLimiter(t.Context(), make(chan struct{}, 1)), 3*time.Second)
+	if got := txnTimeout(ctx); got != 3*time.Second || !isExporterTxn(ctx) {
 		t.Fatalf("exporter timeout %v exporter=%v", got, isExporterTxn(ctx))
 	}
-	// Queries run under the exporter timeout even when the caller's ctx has none.
-	_, err := retryQuery(t.Context(), "q", func(qctx context.Context) (int, error) {
-		if txnTimeout(qctx) != exporterTxnTimeout {
-			return 0, errors.New("query ran without the exporter timeout")
-		}
-		return 0, nil
-	})
-	if err != nil {
-		t.Fatal(err)
+	if _, ok := ctx.Value(txnLimiterKey{}).(chan struct{}); !ok {
+		t.Fatal("exporter policy dropped the limiter")
 	}
 }
 
-func TestRetryQuery(t *testing.T) {
+func TestExporterTxnError(t *testing.T) {
 	t.Parallel()
-	timeout := fdb.Error{Code: 1031}
-	t.Run("succeeds after timeouts", func(t *testing.T) {
-		t.Parallel()
-		calls := 0
-		got, err := retryQuery(t.Context(), "q", func(ctx context.Context) (int, error) {
-			calls++
-			if calls <= maxQueryRetries {
-				return 0, timeout
-			}
-			return 7, nil
-		})
-		if err != nil || got != 7 || calls != maxQueryRetries+1 {
-			t.Fatalf("got %d, %v after %d calls", got, err, calls)
-		}
-	})
-	t.Run("exhaustion wraps the timeout", func(t *testing.T) {
-		t.Parallel()
-		calls := 0
-		_, err := retryQuery(t.Context(), "q", func(ctx context.Context) (int, error) { calls++; return 0, &timeout })
-		if calls != maxQueryRetries+1 {
-			t.Fatalf("calls=%d want %d", calls, maxQueryRetries+1)
-		}
-		requireOtelKind(t, err, "operation")
-		var code *fdb.Error
-		if !errors.As(err, &code) || code.Code != 1031 || !isSourceTimeout(err) {
-			t.Fatalf("exhaustion lost the 1031 cause: %v", err)
-		}
-	})
-	t.Run("transient read errors are retried", func(t *testing.T) {
-		t.Parallel()
-		for _, code := range []int{1007, 1009, 1037, 1038, 1051, 1078, 1213, 1223} {
-			calls := 0
-			got, err := retryQuery(t.Context(), "q", func(ctx context.Context) (int, error) {
-				calls++
-				if calls == 1 {
-					return 0, fdb.Error{Code: code}
+	live := t.Context()
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	admission := fail("admission", "q", "bad span")
+	budget := wrap("budget", "q", fdb.Error{Code: 1031})
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		err  error
+		kind string // "" means err is returned unchanged
+		code int    // FDB code the result must still carry, 0 for none
+	}{
+		{"admission kept", live, admission, "", 0},
+		{"corruption kept", live, fail("corruption", "q", "bad row"), "", 0},
+		{"ownership kept", live, fail("ownership", "q", "not ours"), "", 0},
+		{"budget kept", live, budget, "", 1031},
+		{"canceled kept", live, wrap("canceled", "q", context.Canceled), "", 0},
+		{"timeout", live, fdb.Error{Code: 1031}, "transient", 1031},
+		{"timeout pointer", live, &fdb.Error{Code: 1031}, "transient", 1031},
+		{"wrapped timeout", live, fmt.Errorf("commit: %w", fdb.Error{Code: 1031}), "transient", 1031},
+		{"transaction_too_old", live, fdb.Error{Code: 1007}, "transient", 1007},
+		{"not_committed", live, fdb.Error{Code: 1020}, "transient", 1020},
+		{"commit_unknown_result", live, fdb.Error{Code: 1021}, "transient", 1021},
+		{"transaction_cancelled", live, fdb.Error{Code: 1025}, "transient", 1025},
+		{"process_behind", live, fdb.Error{Code: 1037}, "transient", 1037},
+		{"proxy_tag_throttled", live, fdb.Error{Code: 1223}, "transient", 1223},
+		{"record layer retriable", live, &recordlayer.RecordCoreRetriableTransactionError{Message: "retry"}, "transient", 0},
+		{"platform_error", live, fdb.Error{Code: 1500}, "operation", 1500},
+		{"transaction_too_large", live, fdb.Error{Code: 2101}, "operation", 2101},
+		{"key_too_large", live, fdb.Error{Code: 2102}, "operation", 2102},
+		{"internal_error", live, fdb.Error{Code: 4100}, "operation", 4100},
+		{"plain error", live, errors.New("boom"), "operation", 0},
+		{"deadline error", live, context.DeadlineExceeded, "canceled", 0},
+		{"canceled caller, FDB error", canceled, fdb.Error{Code: 1025}, "canceled", 1025},
+		{"canceled caller, plain error", canceled, errors.New("boom"), "canceled", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := exporterTxnError(tc.ctx, "op", tc.err)
+			if tc.kind == "" {
+				if got != tc.err {
+					t.Fatalf("domain error changed: %v -> %v", tc.err, got)
 				}
-				return 7, nil
-			})
-			if err != nil || got != 7 || calls != 2 {
-				t.Fatalf("code %d: got %d, %v after %d calls", code, got, err, calls)
+			} else {
+				requireOtelKind(t, got, tc.kind)
+				if !errors.Is(got, tc.err) {
+					t.Fatalf("classification lost the cause: %v", got)
+				}
 			}
-		}
-	})
-	t.Run("other errors are returned once", func(t *testing.T) {
-		t.Parallel()
-		for _, want := range []error{fdb.Error{Code: 1020}, wrap("budget", "q", timeout), errors.New("boom")} {
-			calls := 0
-			_, err := retryQuery(t.Context(), "q", func(ctx context.Context) (int, error) { calls++; return 0, want })
-			if calls != 1 || err != want {
-				t.Fatalf("%v: calls=%d err=%v", want, calls, err)
+			if code, ok := fdbErrorCode(got); tc.code != 0 && (!ok || code != tc.code) {
+				t.Fatalf("code %d, %v; want %d", code, ok, tc.code)
 			}
-		}
-	})
-	t.Run("canceled during backoff", func(t *testing.T) {
-		t.Parallel()
-		ctx, cancel := context.WithCancel(t.Context())
-		calls := 0
-		_, err := retryQuery(ctx, "q", func(ctx context.Context) (int, error) { calls++; cancel(); return 0, timeout })
-		if calls != 1 || !errors.Is(err, context.Canceled) {
-			t.Fatalf("calls=%d err=%v", calls, err)
-		}
-		requireOtelKind(t, err, "canceled")
-	})
+			if tc.ctx == canceled && !errors.Is(got, context.Canceled) {
+				t.Fatalf("canceled caller missing from %v", got)
+			}
+		})
+	}
+	var transient *TransientError
+	if !errors.As(exporterTxnError(live, "op", fdb.Error{Code: 1031}), &transient) {
+		t.Fatal("timeout is not a TransientError")
+	}
+	if exporterTxnError(live, "op", nil) != nil {
+		t.Fatal("nil error classified")
+	}
 }
 
 func TestWithTxnLimiterNil(t *testing.T) {
@@ -125,9 +118,14 @@ func TestTxnLimitRealFDB(t *testing.T) {
 	t.Run("limit_bounds_concurrency", func(t *testing.T) { t.Parallel(); testTxnLimitBound(t, fixture) })
 	t.Run("no_limiter_no_limit", func(t *testing.T) { t.Parallel(); testTxnLimitAbsent(t, fixture) })
 	t.Run("canceled_waiter", func(t *testing.T) { t.Parallel(); testTxnLimitCanceled(t, fixture) })
-	t.Run("fresh_run_on_1031", func(t *testing.T) { t.Parallel(); testTxnFreshRetry(t, fixture) })
-	t.Run("slot_free_during_backoff", func(t *testing.T) { t.Parallel(); testTxnBackoffReleasesSlot(t, fixture) })
+	t.Run("bench_errors_unclassified", func(t *testing.T) { t.Parallel(); testTxnBenchErrors(t, fixture) })
+	t.Run("exporter_absorbs_retryable", func(t *testing.T) { t.Parallel(); testExporterTxnAbsorbs(t, fixture) })
+	t.Run("bench_retry_limit", func(t *testing.T) { t.Parallel(); testBenchTxnRetryLimit(t, fixture) })
+	t.Run("exporter_timeout_bounds", func(t *testing.T) { t.Parallel(); testExporterTxnTimeoutBound(t, fixture) })
+	t.Run("exporter_deadline_bounds", func(t *testing.T) { t.Parallel(); testExporterTxnDeadlineBound(t, fixture) })
 	t.Run("exporter_attaches_limiter", func(t *testing.T) { t.Parallel(); testExporterTxnLimit(t, cluster) })
+	t.Run("exporter_calls_absorb_retryable", func(t *testing.T) { t.Parallel(); testExporterCallsAbsorb(t, cluster) })
+	t.Run("exporter_calls_fail_transient", func(t *testing.T) { t.Parallel(); testExporterCallsFail(t, cluster) })
 }
 
 type txnFixture func(*testing.T) (context.Context, *recordlayer.FDBDatabase, subspace.Subspace)
@@ -223,9 +221,6 @@ func testTxnLimitCanceled(t *testing.T, fixture txnFixture) {
 	if !errors.Is(err, context.Canceled) || ran {
 		t.Fatalf("waiter: err=%v ran=%t", err, ran)
 	}
-	if err := runIdempotentTxn(waitCtx, db, "limit test", fn); !errors.Is(err, context.Canceled) || ran {
-		t.Fatalf("idempotent waiter: err=%v ran=%t", err, ran)
-	}
 
 	// A canceled context does not take a free slot.
 	<-slots
@@ -233,122 +228,6 @@ func testTxnLimitCanceled(t *testing.T, fixture txnFixture) {
 	requireOtelKind(t, err, "canceled")
 	if ran || len(slots) != 0 {
 		t.Fatalf("canceled caller ran=%t held=%d", ran, len(slots))
-	}
-}
-
-func testTxnFreshRetry(t *testing.T, fixture txnFixture) {
-	ctx, db, root := fixture(t)
-	timeout := fdb.Error{Code: 1031}
-	rows := func(t *testing.T, space subspace.Subspace) []fdb.KeyValue {
-		t.Helper()
-		return deltaBlobRows(t, ctx, db, space)
-	}
-	for _, k := range []int{1, 3} {
-		t.Run("timeouts_"+strconv.Itoa(k), func(t *testing.T) {
-			space := root.Sub("fresh", int64(k))
-			key, value := space.Sub("doc").FDBKey(), []byte("v")
-			var calls, writes int
-			slots := make(chan struct{}, 1)
-			err := runIdempotentTxn(withTxnLimiter(ctx, slots), db, "retry test", func(rc *recordlayer.FDBRecordContext) (any, error) {
-				calls++
-				if len(slots) != 1 {
-					return nil, errors.New("attempt ran without its slot")
-				}
-				current, err := rc.Transaction().Get(key).Get()
-				if err != nil {
-					return nil, err
-				}
-				// Idempotent set: write only if the expected value is absent.
-				if string(current) != string(value) {
-					rc.Transaction().Set(key, value)
-					writes++
-				}
-				if calls == 1 {
-					// The first timed-out attempt is maybe-committed: land it.
-					if err := deltaRun(t, ctx, db, func(rc *recordlayer.FDBRecordContext) error {
-						rc.Transaction().Set(key, value)
-						return nil
-					}); err != nil {
-						return nil, err
-					}
-				}
-				if calls <= k {
-					return nil, timeout
-				}
-				return nil, nil
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			// Only the first attempt saw the key absent; fresh Runs reread it.
-			if calls != k+1 || writes != 1 || len(slots) != 0 {
-				t.Fatalf("calls=%d writes=%d held=%d, want %d calls and 1 write", calls, writes, len(slots), k+1)
-			}
-			if got := rows(t, space); len(got) != 1 || string(got[0].Value) != "v" {
-				t.Fatalf("rows %v", got)
-			}
-		})
-	}
-
-	t.Run("other_errors_not_retried", func(t *testing.T) {
-		for _, want := range []error{wrap("budget", "retry test", timeout), fail("corruption", "retry test", "bad row"), errors.New("boom")} {
-			calls := 0
-			err := runIdempotentTxn(ctx, db, "retry test", func(*recordlayer.FDBRecordContext) (any, error) { calls++; return nil, want })
-			if calls != 1 || !errors.Is(err, want) {
-				t.Fatalf("%v: calls=%d err=%v", want, calls, err)
-			}
-			var got, expected *OtelError
-			if errors.As(want, &expected) && (!errors.As(err, &got) || got.Kind != expected.Kind) {
-				t.Fatalf("error kind changed: %v -> %v", want, err)
-			}
-		}
-	})
-
-	t.Run("exhaustion", func(t *testing.T) {
-		calls := 0
-		err := runIdempotentTxn(ctx, db, "retry test", func(*recordlayer.FDBRecordContext) (any, error) { calls++; return nil, timeout })
-		if calls != maxSourceRuns {
-			t.Fatalf("calls=%d want %d", calls, maxSourceRuns)
-		}
-		requireOtelKind(t, err, "operation")
-		var code fdb.Error
-		if !errors.As(err, &code) || code.Code != 1031 || !isSourceTimeout(err) {
-			t.Fatalf("exhaustion lost the 1031 cause: %v", err)
-		}
-	})
-}
-
-func testTxnBackoffReleasesSlot(t *testing.T, fixture txnFixture) {
-	ctx, db, _ := fixture(t)
-	slots := make(chan struct{}, 1)
-	lctx := withTxnLimiter(ctx, slots)
-	var calls atomic.Int64
-	seen := make(chan int64, 1)
-	other := make(chan error, 1)
-	err := runIdempotentTxn(lctx, db, "backoff test", func(*recordlayer.FDBRecordContext) (any, error) {
-		if calls.Add(1) > 1 {
-			return nil, nil
-		}
-		// A second caller queues on the held slot before this attempt times out.
-		go func() {
-			_, err := runTxnSlot(lctx, db, "backoff test", func(*recordlayer.FDBRecordContext) (any, error) {
-				seen <- calls.Load()
-				return nil, nil
-			})
-			other <- err
-		}()
-		time.Sleep(200 * time.Millisecond)
-		return nil, fdb.Error{Code: 1031}
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := <-other; err != nil {
-		t.Fatal(err)
-	}
-	// The queued caller ran between the attempts, not after the retry finished.
-	if got := <-seen; got != 1 || calls.Load() != 2 {
-		t.Fatalf("queued caller saw %d attempts, total %d; want it between attempts 1 and 2", got, calls.Load())
 	}
 }
 
@@ -425,4 +304,279 @@ func testExporterTxnLimit(t *testing.T, cluster string) {
 	if len(e.txnSlots) != 0 {
 		t.Fatalf("%d slots leaked", len(e.txnSlots))
 	}
+}
+
+// attemptRecorder records every Record Layer attempt-loop execution of db.
+func attemptRecorder(db *recordlayer.FDBDatabase) func() []error {
+	var mu sync.Mutex
+	var runs []error
+	db.SetAttemptObserver(func(_ recordlayer.AttemptCall, err error) {
+		mu.Lock()
+		runs = append(runs, err)
+		mu.Unlock()
+	})
+	return func() []error {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]error(nil), runs...)
+	}
+}
+
+// A benchmark caller gets Run's error unchanged.
+func testTxnBenchErrors(t *testing.T, fixture txnFixture) {
+	ctx, db, _ := fixture(t)
+	for _, want := range []error{fdb.Error{Code: 2101}, errors.New("boom")} {
+		_, err := runTxnSlot(ctx, db, "bench", func(*recordlayer.FDBRecordContext) (any, error) { return nil, want })
+		var domain *OtelError
+		if !errors.Is(err, want) || errors.As(err, &domain) {
+			t.Fatalf("benchmark error classified: %v -> %v", want, err)
+		}
+	}
+}
+
+// An Exporter transaction has no retry limit: FDB's OnError loop absorbs a
+// retryable code injected more often than the benchmark's limit of 10, in one
+// Record Layer attempt and one write slot, and only the last execution commits.
+func testExporterTxnAbsorbs(t *testing.T, fixture txnFixture) {
+	ctx, db, root := fixture(t)
+	runs := attemptRecorder(db)
+	for _, tc := range []struct{ code, k int }{{1007, 15}, {1009, 15}, {1020, 4}, {1037, 4}} {
+		key := root.Sub("absorb", int64(tc.code)).FDBKey()
+		slots := make(chan struct{}, 1)
+		before := len(runs())
+		calls := 0
+		_, err := runTxnSlot(withTxnLimiter(withExporterTxns(ctx, time.Minute), slots), db, "absorb", func(rc *recordlayer.FDBRecordContext) (any, error) {
+			if err := configureStoreContext(rc); err != nil {
+				return nil, err
+			}
+			calls++
+			if len(slots) != 1 {
+				return nil, errors.New("execution ran without its slot")
+			}
+			rc.Transaction().Set(key, []byte(strconv.Itoa(calls)))
+			if calls <= tc.k {
+				return nil, fdb.Error{Code: tc.code}
+			}
+			return nil, nil
+		})
+		got := runs()[before:]
+		if err != nil || calls != tc.k+1 || len(got) != 1 || got[0] != nil || len(slots) != 0 {
+			t.Fatalf("code %d: err=%v calls=%d attempts=%v held=%d; want %d calls in one attempt", tc.code, err, calls, got, len(slots), tc.k+1)
+		}
+		var value []byte
+		if err := deltaRun(t, ctx, db, func(rc *recordlayer.FDBRecordContext) error {
+			var err error
+			value, err = rc.Transaction().Get(key).Get()
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if string(value) != strconv.Itoa(tc.k+1) {
+			t.Fatalf("code %d: committed %q, want only execution %d", tc.code, value, tc.k+1)
+		}
+	}
+}
+
+// The benchmark keeps its retry limit of 10: OnError gives up after 11
+// executions and the Record Layer runs a second transaction.
+func testBenchTxnRetryLimit(t *testing.T, fixture txnFixture) {
+	ctx, db, _ := fixture(t)
+	runs := attemptRecorder(db)
+	calls := 0
+	_, err := runTxnSlot(ctx, db, "bench", func(rc *recordlayer.FDBRecordContext) (any, error) {
+		if err := configureStoreContext(rc); err != nil {
+			return nil, err
+		}
+		calls++
+		if calls <= 15 {
+			return nil, fdb.Error{Code: 1009}
+		}
+		return nil, nil
+	})
+	got := runs()
+	if err != nil || calls != 16 || len(got) != 2 || got[1] != nil {
+		t.Fatalf("err=%v calls=%d attempts=%v; want 16 calls in two attempts", err, calls, got)
+	}
+	if code, ok := fdbErrorCode(got[0]); !ok || code != 1009 {
+		t.Fatalf("first attempt ended with %v, want the retry-limited 1009", got[0])
+	}
+}
+
+// The transaction timeout ends an Exporter transaction whose retryable error
+// never clears, as a transient 1031 from one Record Layer attempt.
+func testExporterTxnTimeoutBound(t *testing.T, fixture txnFixture) {
+	ctx, db, _ := fixture(t)
+	runs := attemptRecorder(db)
+	const timeout = 500 * time.Millisecond
+	calls := 0
+	started := time.Now()
+	_, err := runTxnSlot(withExporterTxns(ctx, timeout), db, "timeout test", func(rc *recordlayer.FDBRecordContext) (any, error) {
+		if err := configureStoreContext(rc); err != nil {
+			return nil, err
+		}
+		calls++
+		return nil, fdb.Error{Code: 1009}
+	})
+	elapsed := time.Since(started)
+	requireOtelKind(t, err, "transient")
+	if code, ok := fdbErrorCode(err); !ok || code != 1031 {
+		t.Fatalf("timeout error %v, want 1031", err)
+	}
+	if elapsed < timeout || elapsed > timeout+5*time.Second {
+		t.Fatalf("ended after %v, want the %v transaction timeout", elapsed, timeout)
+	}
+	if got := runs(); calls <= benchTxnRetryLimit+1 || len(got) != 1 {
+		t.Fatalf("calls=%d attempts=%v; want more than %d calls in one attempt", calls, got, benchTxnRetryLimit+1)
+	}
+}
+
+// The caller's deadline ends an Exporter transaction before a longer
+// transaction timeout, as a canceled error.
+func testExporterTxnDeadlineBound(t *testing.T, fixture txnFixture) {
+	ctx, db, _ := fixture(t)
+	runs := attemptRecorder(db)
+	const deadline = 500 * time.Millisecond
+	short, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+	calls := 0
+	started := time.Now()
+	_, err := runTxnSlot(withExporterTxns(short, time.Minute), db, "deadline test", func(rc *recordlayer.FDBRecordContext) (any, error) {
+		if err := configureStoreContext(rc); err != nil {
+			return nil, err
+		}
+		calls++
+		return nil, fdb.Error{Code: 1009}
+	})
+	elapsed := time.Since(started)
+	requireOtelKind(t, err, "canceled")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("deadline error %v lacks context.DeadlineExceeded", err)
+	}
+	if elapsed > deadline+5*time.Second {
+		t.Fatalf("ended after %v, want the %v deadline", elapsed, deadline)
+	}
+	if got := runs(); calls <= benchTxnRetryLimit+1 || len(got) != 1 {
+		t.Fatalf("calls=%d attempts=%v; want more than %d calls in one attempt", calls, got, benchTxnRetryLimit+1)
+	}
+}
+
+// retryInjector fails the first k executions of every transaction (k < 0:
+// every execution) with code after the body succeeded, as a commit would.
+type retryInjector struct {
+	fdb.Database
+	code, k int
+
+	mu           sync.Mutex
+	transactions int
+	minimum      int // fewest executions of a transaction that succeeded
+}
+
+func (r *retryInjector) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	return r.TransactCtx(context.Background(), fn)
+}
+
+func (r *retryInjector) TransactCtx(ctx context.Context, fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	executions := 0
+	result, err := r.Database.TransactCtx(ctx, func(tx fdb.WritableTransaction) (any, error) {
+		executions++
+		result, err := fn(tx)
+		if err == nil && (r.k < 0 || executions <= r.k) {
+			return nil, fdb.Error{Code: r.code}
+		}
+		return result, err
+	})
+	if err == nil {
+		r.mu.Lock()
+		if r.transactions == 0 || executions < r.minimum {
+			r.minimum = executions
+		}
+		r.transactions++
+		r.mu.Unlock()
+	}
+	return result, err
+}
+
+func txnTestLogs() []LogRecord {
+	return []LogRecord{
+		{EventID: "policy-1", Timestamp: ftsBase, TraceID: ftsTrace(1), SpanID: ftsSpan(1), Attributes: []*commonpb.KeyValue{exKV("phase", exStr("one"))}},
+		{EventID: "policy-2", Timestamp: ftsBase + 1, TraceID: ftsTrace(1), SpanID: ftsSpan(1)},
+	}
+}
+
+// Every Exporter transaction, write and read, absorbs 12 injected
+// future_version errors, more than the benchmark's retry limit, and the calls
+// succeed with complete results.
+func testExporterCallsAbsorb(t *testing.T, cluster string) {
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
+	defer cancel()
+	e := openFTSExporter(t, ctx, cluster, nil)
+	const k = 12
+	inject := &retryInjector{Database: e.backend.raw, code: 1009, k: k}
+	e.backend.db = recordlayer.NewFDBDatabaseWithTransactor(inject, e.backend.raw)
+	stats, err := e.ExportResourceSpans(ctx, deltaConversation(deltaTurns, "array"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := deltaTurns
+	if stats.Spans != int64(n) || stats.MessageFTS.IndexedBlobs != 2*n+3 || stats.MessageFTS.SpanRefs != n*(n+1)+3*n {
+		t.Fatalf("export stats %+v", stats)
+	}
+	if logStats, err := e.ExportLogs(ctx, txnTestLogs()); err != nil || logStats.Logs != 2 {
+		t.Fatalf("log export %+v, %v", logStats, err)
+	}
+	if got, err := e.QueryLogsByTrace(ctx, ftsTrace(1), ""); err != nil || len(got) != 2 {
+		t.Fatalf("logs after export: %d, %v", len(got), err)
+	}
+	if hits, _ := ftsDrain(t, ctx, e, MessageFullTextQuery{Query: "user turn 3", Mode: MessageMatchPhrase}); len(hits) == 0 {
+		t.Fatal("no full-text hits")
+	}
+	inject.mu.Lock()
+	defer inject.mu.Unlock()
+	if inject.transactions == 0 || inject.minimum != k+1 {
+		t.Fatalf("%d transactions, fewest executions %d; want every one to absorb %d failures", inject.transactions, inject.minimum, k)
+	}
+}
+
+// A timed-out or deadline-ended Exporter transaction fails ExportResourceSpans
+// and ExportLogs with a retryable kind, not "operation".
+func testExporterCallsFail(t *testing.T, cluster string) {
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
+	defer cancel()
+	input := deltaConversation(deltaTurns, "array")
+	exporter := func(timeout time.Duration) *Exporter {
+		e := openTestExporter(t, ctx, cluster, func(c *ExporterConfig) { c.TransactionTimeout = timeout })
+		e.backend.db = recordlayer.NewFDBDatabaseWithTransactor(&retryInjector{Database: e.backend.raw, code: 1009, k: -1}, e.backend.raw)
+		return e
+	}
+	calls := func(e *Exporter, ctx context.Context) map[string]error {
+		_, spanErr := e.ExportResourceSpans(ctx, input)
+		_, logErr := e.ExportLogs(ctx, txnTestLogs())
+		return map[string]error{"spans": spanErr, "logs": logErr}
+	}
+
+	t.Run("transaction_timeout", func(t *testing.T) {
+		e := exporter(minExporterTxnTimeout)
+		for name, err := range calls(e, ctx) {
+			requireOtelKind(t, err, "transient")
+			var transient *TransientError
+			if code, ok := fdbErrorCode(err); !ok || code != 1031 || !errors.As(err, &transient) {
+				t.Fatalf("%s: %v, want a TransientError carrying 1031", name, err)
+			}
+		}
+	})
+	t.Run("context_deadline", func(t *testing.T) {
+		e := exporter(time.Minute)
+		short, stop := context.WithTimeout(ctx, 500*time.Millisecond)
+		defer stop()
+		started := time.Now()
+		for name, err := range calls(e, short) {
+			requireOtelKind(t, err, "canceled")
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("%s: %v lacks context.DeadlineExceeded", name, err)
+			}
+		}
+		if elapsed := time.Since(started); elapsed > 10*time.Second {
+			t.Fatalf("deadline-bounded calls took %v under a 1m transaction timeout", elapsed)
+		}
+	})
 }

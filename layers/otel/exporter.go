@@ -6,10 +6,12 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"math"
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -72,20 +74,44 @@ type ExporterConfig struct {
 	// MaxInFlightTransactions bounds this Exporter's concurrent write
 	// transactions across all export calls (1..1024).
 	MaxInFlightTransactions int `json:"max_inflight_transactions" yaml:"max_inflight_transactions"`
+	// TransactionTimeout bounds each Exporter transaction, read or write,
+	// including its GRV wait, commit and every OnError retry; there is no retry
+	// limit. The caller's context also bounds it, except for a dispatched
+	// commit. A Go duration string ("10s"), 1s..5m, default 10s.
+	TransactionTimeout time.Duration `json:"transaction_timeout" yaml:"transaction_timeout"`
 }
 
 func DefaultExporterConfig() ExporterConfig {
-	return ExporterConfig{Order: "time", HashBytes: 8, PostingValueFormat: "tuple", RecordCompression: "brotli-4", BulkIndexConflicts: true, BatchSize: 64, Workers: 8, MaxCandidates: 20000, MaxBytes: 4 << 20, K: 100, MaxInFlightTransactions: defaultMaxInFlightTransactions}
+	return ExporterConfig{Order: "time", HashBytes: 8, PostingValueFormat: "tuple", RecordCompression: "brotli-4", BulkIndexConflicts: true, BatchSize: 64, Workers: 8, MaxCandidates: 20000, MaxBytes: 4 << 20, K: 100, MaxInFlightTransactions: defaultMaxInFlightTransactions, TransactionTimeout: defaultExporterTxnTimeout}
+}
+
+// exporterConfigFields is ExporterConfig without its JSON methods.
+type exporterConfigFields ExporterConfig
+
+// exporterConfigJSON writes TransactionTimeout as a Go duration string; the
+// outer field shadows the embedded one.
+type exporterConfigJSON struct {
+	exporterConfigFields
+	TransactionTimeout string `json:"transaction_timeout"`
+}
+
+func (c ExporterConfig) MarshalJSON() ([]byte, error) {
+	return json.Marshal(exporterConfigJSON{exporterConfigFields(c), c.TransactionTimeout.String()})
 }
 
 // UnmarshalJSON starts from DefaultExporterConfig so omitted fields keep defaults.
 func (c *ExporterConfig) UnmarshalJSON(data []byte) error {
-	type plain ExporterConfig
-	p := plain(DefaultExporterConfig())
+	d := DefaultExporterConfig()
+	p := exporterConfigJSON{exporterConfigFields(d), d.TransactionTimeout.String()}
 	if err := json.Unmarshal(data, &p); err != nil {
 		return wrap("config", "exporter JSON", err)
 	}
-	*c = ExporterConfig(p)
+	timeout, err := time.ParseDuration(p.TransactionTimeout)
+	if err != nil {
+		return wrap("config", "exporter JSON", fmt.Errorf("transaction_timeout: %w", err))
+	}
+	*c = ExporterConfig(p.exporterConfigFields)
+	c.TransactionTimeout = timeout
 	return nil
 }
 
@@ -112,6 +138,9 @@ func (c ExporterConfig) Validate() error {
 	}
 	if c.MaxInFlightTransactions < 1 || c.MaxInFlightTransactions > maxInFlightTransactionsLimit {
 		return failf("config", "exporter", "max_inflight_transactions must be 1..%d", maxInFlightTransactionsLimit)
+	}
+	if c.TransactionTimeout < minExporterTxnTimeout || c.TransactionTimeout > maxExporterTxnTimeout {
+		return failf("config", "exporter", "transaction_timeout must be %s..%s", minExporterTxnTimeout, maxExporterTxnTimeout)
 	}
 	if c.Tenant < 0 || c.Tenant >= exporterTenants {
 		return failf("config", "exporter", "tenant must be 0..%d", exporterTenants-1)
@@ -170,7 +199,7 @@ func NewExporter(ctx context.Context, cfg ExporterConfig) (*Exporter, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := b.initializeLiveRun(ctx); err != nil {
+	if err := b.initializeLiveRun(withExporterTxns(ctx, cfg.TransactionTimeout)); err != nil {
 		b.Close()
 		return nil, err
 	}
@@ -207,6 +236,11 @@ func (b *FDBBackend) initializeLiveRun(ctx context.Context) error {
 }
 
 func (e *Exporter) Config() ExporterConfig { return e.cfg }
+
+// txnContext applies the Exporter's transaction policy to work under ctx.
+func (e *Exporter) txnContext(ctx context.Context) context.Context {
+	return withExporterTxns(ctx, e.cfg.TransactionTimeout)
+}
 
 func (e *Exporter) begin(op string) error {
 	e.mu.Lock()
@@ -258,7 +292,7 @@ func (e *Exporter) ExportResourceSpans(ctx context.Context, spans []*tracepb.Res
 		return ExportStats{}, err
 	}
 	defer e.active.Done()
-	ctx = withExporterTxns(withTxnLimiter(ctx, e.txnSlots))
+	ctx = withTxnLimiter(e.txnContext(ctx), e.txnSlots)
 	var deltaBlobs []*MessageBlob
 	var deltaStats MessageDeltaStats
 	decompose := e.cfg.EnableMessageDeltas || e.cfg.EnableMessageFullText
@@ -315,7 +349,7 @@ func (e *Exporter) commitExport(ctx context.Context, batches []preparedBatch, st
 				if workCtx.Err() != nil {
 					continue
 				}
-				// saveIngestBatch carries the ingest guards and fresh Runs on 1031.
+				// saveIngestBatch carries the ingest guards; one Run per batch.
 				err := e.backend.saveIngestBatch(workCtx, batch, nil)
 				mu.Lock()
 				if err != nil {
@@ -734,11 +768,9 @@ func (e *Exporter) Query(ctx context.Context, a Attribute) (QueryResult, error) 
 		return QueryResult{Hits: []Hit{}}, err
 	}
 	defer e.active.Done()
-	return retryQuery(ctx, "query", func(ctx context.Context) (QueryResult, error) {
-		e.queryMu.Lock()
-		defer e.queryMu.Unlock()
-		return e.backend.Query(ctx, a)
-	})
+	e.queryMu.Lock()
+	defer e.queryMu.Unlock()
+	return e.backend.Query(e.txnContext(ctx), a)
 }
 
 func (e *Exporter) Trace(ctx context.Context, traceID string) ([]SpanHit, error) {
@@ -746,11 +778,9 @@ func (e *Exporter) Trace(ctx context.Context, traceID string) ([]SpanHit, error)
 		return []SpanHit{}, err
 	}
 	defer e.active.Done()
-	return retryQuery(ctx, "trace", func(ctx context.Context) ([]SpanHit, error) {
-		e.queryMu.Lock()
-		defer e.queryMu.Unlock()
-		return e.backend.Trace(ctx, traceID)
-	})
+	e.queryMu.Lock()
+	defer e.queryMu.Unlock()
+	return e.backend.Trace(e.txnContext(ctx), traceID)
 }
 
 func (e *Exporter) Span(ctx context.Context, spanID string) ([]SpanMatch, error) {
@@ -758,11 +788,9 @@ func (e *Exporter) Span(ctx context.Context, spanID string) ([]SpanMatch, error)
 		return []SpanMatch{}, err
 	}
 	defer e.active.Done()
-	return retryQuery(ctx, "span", func(ctx context.Context) ([]SpanMatch, error) {
-		e.queryMu.Lock()
-		defer e.queryMu.Unlock()
-		return e.backend.Span(ctx, spanID)
-	})
+	e.queryMu.Lock()
+	defer e.queryMu.Unlock()
+	return e.backend.Span(e.txnContext(ctx), spanID)
 }
 
 func (e *Exporter) Time(ctx context.Context, interval TimeRange) (QueryResult, error) {
@@ -770,11 +798,9 @@ func (e *Exporter) Time(ctx context.Context, interval TimeRange) (QueryResult, e
 		return QueryResult{Hits: []Hit{}}, err
 	}
 	defer e.active.Done()
-	return retryQuery(ctx, "time", func(ctx context.Context) (QueryResult, error) {
-		e.queryMu.Lock()
-		defer e.queryMu.Unlock()
-		return e.backend.Time(ctx, interval)
-	})
+	e.queryMu.Lock()
+	defer e.queryMu.Unlock()
+	return e.backend.Time(e.txnContext(ctx), interval)
 }
 
 // LoadSpanOTLP returns one stored span as a single-span ResourceSpans with the
@@ -787,6 +813,7 @@ func (e *Exporter) LoadSpanOTLP(ctx context.Context, traceID, spanID string) (*t
 		return nil, err
 	}
 	defer e.active.Done()
+	ctx = e.txnContext(ctx)
 	var out *tracepb.ResourceSpans
 	b := e.backend
 	load := func(rc *recordlayer.FDBRecordContext) (any, error) {
@@ -820,7 +847,7 @@ func (e *Exporter) LoadSpanOTLP(ctx context.Context, traceID, spanID string) (*t
 		out = reconstructed[0]
 		return nil, nil
 	}
-	_, err := retryQuery(ctx, "load span", func(ctx context.Context) (any, error) { return b.db.Run(ctx, load) })
+	_, err := b.db.Run(ctx, load)
 	return out, err
 }
 

@@ -16,7 +16,7 @@ import (
 
 type ingestReadWaveAttempt struct {
 	timeout, retries                            int64
-	wantTimeout                                 int64 // 0 means the benchmark's 1500
+	wantTimeout                                 int64 // 0 means the benchmark's 1500 with retry limit 10; else an exporter timeout without one
 	reads, owners, headers, states, resolutions int
 	recordWrites, headerWrites                  int
 	prefetches, resolved, normalRanges          int
@@ -26,12 +26,12 @@ type ingestReadWaveAttempt struct {
 }
 
 func (s *ingestReadWaveAttempt) read() {
-	want := s.wantTimeout
+	want, retries := s.wantTimeout, int64(noRetryLimit)
 	if want == 0 {
-		want = 1500
+		want, retries = 1500, benchTxnRetryLimit
 	}
-	if s.timeout != want || s.retries != 10 {
-		s.problems = append(s.problems, fmt.Sprintf("read before timeout%d/retry10", want))
+	if s.timeout != want || s.retries != retries {
+		s.problems = append(s.problems, fmt.Sprintf("read before timeout%d/retry%d", want, retries))
 	}
 	s.reads++
 }

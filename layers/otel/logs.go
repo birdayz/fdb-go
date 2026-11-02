@@ -482,10 +482,9 @@ func partitionLogs(items []preparedLog, size int) []logBatch {
 
 // saveLogBatch replaces each log atomically: it reads the prior version with
 // conflicts, retracts that version's index entries and writes the new ones.
-// A fresh Run after a maybe-committed 1031 rereads and replaces the same logs.
 func (b *FDBBackend) saveLogBatch(ctx context.Context, batch logBatch) (int64, error) {
 	var replaced int64
-	err := runIdempotentTxn(ctx, b.db, "log batch", func(rc *recordlayer.FDBRecordContext) (any, error) {
+	_, err := runTxnSlot(ctx, b.db, "log batch", func(rc *recordlayer.FDBRecordContext) (any, error) {
 		replaced = 0
 		if err := configureStoreContext(rc); err != nil {
 			return nil, err
@@ -554,7 +553,7 @@ func (e *Exporter) ExportLogs(ctx context.Context, logs []LogRecord) (LogExportS
 		return stats, err
 	}
 	defer e.active.Done()
-	ctx = withExporterTxns(withTxnLimiter(ctx, e.txnSlots))
+	ctx = withTxnLimiter(e.txnContext(ctx), e.txnSlots)
 	b := e.backend
 	receiver := time.Now().UnixNano()
 	var items []preparedLog
@@ -731,8 +730,7 @@ func (b *FDBBackend) loadLogs(tx fdb.ReadTransaction, ids []string, budget *quer
 	return out, nil
 }
 
-// readLogs runs fn in one bounded, ownership-checked read transaction,
-// repeated on a fresh Run after a 1031.
+// readLogs runs fn in one bounded, ownership-checked read transaction.
 func (b *FDBBackend) readLogs(ctx context.Context, op string, fn func(fdb.ReadTransaction, *queryBudget) error) error {
 	read := func(rc *recordlayer.FDBRecordContext) (any, error) {
 		if err := configureStoreContext(rc); err != nil {
@@ -743,7 +741,7 @@ func (b *FDBBackend) readLogs(ctx context.Context, op string, fn func(fdb.ReadTr
 		}
 		return nil, fn(rc.ReadTransaction(false), b.newBudget(op))
 	}
-	_, err := retryQuery(ctx, op, func(ctx context.Context) (any, error) { return b.db.Run(ctx, read) })
+	_, err := b.db.Run(ctx, read)
 	return err
 }
 
@@ -767,7 +765,7 @@ func (e *Exporter) QueryLogsByTrace(ctx context.Context, traceID, spanID string)
 	defer e.active.Done()
 	b := e.backend
 	out := []LogRecord{}
-	err := b.readLogs(ctx, op, func(tx fdb.ReadTransaction, budget *queryBudget) error {
+	err := b.readLogs(e.txnContext(ctx), op, func(tx fdb.ReadTransaction, budget *queryBudget) error {
 		out = []LogRecord{}
 		space := logTraceSpace(b.root, b.cfg.Tenant)
 		prefix := tuple.Tuple{traceID}
@@ -906,7 +904,7 @@ func (e *Exporter) QueryLogsByAttribute(ctx context.Context, a Attribute, limit 
 	defer e.active.Done()
 	b := e.backend
 	out := []LogRecord{}
-	err := b.readLogs(ctx, op, func(tx fdb.ReadTransaction, budget *queryBudget) error {
+	err := b.readLogs(e.txnContext(ctx), op, func(tx fdb.ReadTransaction, budget *queryBudget) error {
 		out = []LogRecord{}
 		var matches []LogMatch
 		seen := map[string]bool{}

@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -12,30 +13,41 @@ import (
 const (
 	defaultMaxInFlightTransactions = 32
 	maxInFlightTransactionsLimit   = 1024
-
-	// maxQueryRetries bounds fresh calls of a read-only Exporter query after a 1031.
-	maxQueryRetries = 3
 )
 
-type txnLimiterKey struct{}
-
-// Transaction timeouts run from creation, so they include the GRV wait. Under
-// ratekeeper throttling that wait is FDB's backpressure and lasts seconds; the
-// span-ingest benchmark's 1.5s bound would turn it into transaction_timed_out
-// (measured: GRV 0.5-1.7s at a full storage write queue) instead of latency.
-// Exporter transactions therefore get 10s: up to ~5s of GRV queueing plus the
-// 5s MVCC window. An export call's own deadline is the Collector's timeout.
+// The span-ingest benchmark's transaction policy: a 1.5s timeout and, for store
+// transactions, at most 10 OnError retries (configureStoreContext).
 const (
 	benchTxnTimeout    = 1500 * time.Millisecond
-	exporterTxnTimeout = 10 * time.Second
+	benchTxnRetryLimit = 10
+)
+
+// Exporter transactions have no retry limit; ExporterConfig.TransactionTimeout
+// and the caller's context bound them. A timeout runs from transaction creation
+// and spans every OnError retry, so it includes GRV waits, which under
+// ratekeeper throttling last seconds (measured: GRV 0.5-1.7s at a full storage
+// write queue). 10s covers about 5s of GRV queueing plus FDB's 5s MVCC window.
+// It must be set: a dispatched commit outlives the caller's context
+// (rfcs/280-client-retry-and-close-bounds.md §4), so the timeout is its only
+// bound. Below 1s ordinary GRV backpressure would fail transactions; above 5m,
+// the Collector's default retry_on_failure.max_elapsed_time, one transaction
+// would outlast a whole retry budget.
+const (
+	defaultExporterTxnTimeout = 10 * time.Second
+	minExporterTxnTimeout     = time.Second
+	maxExporterTxnTimeout     = 5 * time.Minute
+	// noRetryLimit disables the OnError retry limit (FDB_TR_OPTION_RETRY_LIMIT -1).
+	noRetryLimit = -1
 )
 
 type txnTimeoutKey struct{}
 
-// withExporterTxns marks ctx as carrying Exporter transactions: they use
-// exporterTxnTimeout, and the ingest guard clock starts after the read version.
-func withExporterTxns(ctx context.Context) context.Context {
-	return context.WithValue(ctx, txnTimeoutKey{}, exporterTxnTimeout)
+type txnLimiterKey struct{}
+
+// withExporterTxns marks ctx as carrying Exporter transactions: they run with
+// timeout and no retry limit, and the ingest guard does not bound their elapsed time.
+func withExporterTxns(ctx context.Context, timeout time.Duration) context.Context {
+	return context.WithValue(ctx, txnTimeoutKey{}, timeout)
 }
 
 // txnTimeout is the transaction timeout for work under ctx.
@@ -62,7 +74,9 @@ func withTxnLimiter(ctx context.Context, slots chan struct{}) context.Context {
 
 // runTxnSlot is db.Run holding one of ctx's write slots, if ctx carries a
 // limiter. The slot is taken before Run so waiting for it does not count
-// against the transaction timeout, and is released when Run returns.
+// against the transaction timeout, and is released when Run returns. An
+// Exporter transaction's error is classified by exporterTxnError; other
+// callers receive Run's error unchanged.
 func runTxnSlot(ctx context.Context, db *recordlayer.FDBDatabase, op string, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
 	if slots, _ := ctx.Value(txnLimiterKey{}).(chan struct{}); slots != nil {
 		if err := ctx.Err(); err != nil {
@@ -75,77 +89,58 @@ func runTxnSlot(ctx context.Context, db *recordlayer.FDBDatabase, op string, fn 
 		}
 		defer func() { <-slots }()
 	}
-	return db.Run(ctx, fn)
+	out, err := db.Run(ctx, fn)
+	if isExporterTxn(ctx) {
+		err = exporterTxnError(ctx, op, err)
+	}
+	return out, err
 }
 
-// runIdempotentTxn is runTxnSlot with fresh Runs on 1031, which OnError treats
-// as terminal and which may have committed. Callers' fn must be an idempotent
-// replace that rereads its state (blob chunk 0, deterministic FTS rows and
-// metadata, reverse span rows, prior log rows) or writes the same blind sets,
-// so redoing a maybe-committed attempt is safe. The slot is free during backoff.
-func runIdempotentTxn(ctx context.Context, db *recordlayer.FDBDatabase, op string, fn func(*recordlayer.FDBRecordContext) (any, error)) error {
-	var last error
-	for run := 0; run < maxSourceRuns; run++ {
-		if run > 0 {
-			if err := waitSourceBackoff(ctx, sourceRunBackoff(run)); err != nil {
-				return wrap("canceled", op, err)
-			}
-		}
-		if _, last = runTxnSlot(ctx, db, op, fn); !isSourceTimeout(last) {
-			return last
-		}
+// exporterTxnError classifies an Exporter transaction's final error for a
+// caller deciding whether to retry the call. FDB's OnError loop has already
+// retried every retryable code within the transaction timeout, so what is left
+// is permanent for this transaction but not necessarily for a new call:
+//   - an error with a domain kind keeps it (admission, ownership, corruption,
+//     budget, canceled, ...);
+//   - an ended caller context is "canceled";
+//   - FDB's 1xxx "normal failure" codes (flow/include/flow/error_definitions.h:
+//     31-32 at 7.3.77), which include transaction_timed_out (1031) and every
+//     code OnError retries, are "transient", as is a Record Layer retriable error;
+//   - any other error, including FDB's 15xx platform, 2xxx illegal-operation
+//     and 4xxx internal codes (:156, :187-188, :391), is "operation".
+func exporterTxnError(ctx context.Context, op string, err error) error {
+	if err == nil {
+		return nil
 	}
-	return wrap("operation", op, last)
+	var domain *OtelError
+	if errors.As(err, &domain) {
+		return err
+	}
+	if cerr := ctx.Err(); cerr != nil {
+		if !errors.Is(err, cerr) {
+			err = fmt.Errorf("%w (last error: %w)", cerr, err)
+		}
+		return wrap("canceled", op, err)
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return wrap("canceled", op, err)
+	}
+	var retriable *recordlayer.RecordCoreRetriableTransactionError
+	if code, ok := fdbErrorCode(err); ok && code >= 1000 && code < 1500 || errors.As(err, &retriable) {
+		return wrap("transient", op, err)
+	}
+	return wrap("operation", op, err)
 }
 
-// isTransientReadError reports whether a read-only call may succeed on a
-// fresh transaction. Besides 1031 these are the read- and GRV-side codes
-// OnError retries, which surface once a transaction's retry limit runs out:
-// measured, process_behind while storage servers catch up with the first
-// write burst on a fresh cluster. Commit-side codes cannot occur on reads.
-func isTransientReadError(err error) bool {
-	if isSourceTimeout(err) {
-		return true
-	}
-	var code int
+// fdbErrorCode returns the FDB error code err carries, in either form.
+func fdbErrorCode(err error) (int, bool) {
 	var value fdb.Error
+	if errors.As(err, &value) {
+		return value.Code, true
+	}
 	var pointer *fdb.Error
-	switch {
-	case errors.As(err, &value):
-		code = value.Code
-	case errors.As(err, &pointer) && pointer != nil:
-		code = pointer.Code
-	default:
-		return false
+	if errors.As(err, &pointer) && pointer != nil {
+		return pointer.Code, true
 	}
-	switch code {
-	case 1007, // transaction_too_old
-		1009, // future_version
-		1037, // process_behind
-		1038, // database_locked
-		1051, // batch_transaction_throttled
-		1078, // grv_proxy_memory_limit_exceeded
-		1213, // tag_throttled
-		1223: // proxy_tag_throttled
-		return true
-	}
-	return false
-}
-
-// retryQuery repeats a read-only query call after a transient read error, at
-// most maxQueryRetries times; every other outcome is returned unchanged.
-func retryQuery[T any](ctx context.Context, op string, call func(context.Context) (T, error)) (T, error) {
-	qctx := withExporterTxns(ctx)
-	for retry := 0; ; retry++ {
-		out, err := call(qctx)
-		if !isTransientReadError(err) {
-			return out, err
-		}
-		if retry == maxQueryRetries {
-			return out, wrap("operation", op, err)
-		}
-		if werr := waitSourceBackoff(ctx, sourceRunBackoff(retry+1)); werr != nil {
-			return out, wrap("canceled", op, werr)
-		}
-	}
+	return 0, false
 }

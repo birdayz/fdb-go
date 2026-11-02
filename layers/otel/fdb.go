@@ -94,15 +94,34 @@ func OpenFDBContext(ctx context.Context, c Config, cluster string) (*FDBBackend,
 }
 func (b *FDBBackend) Close()                     { b.raw.Close() }
 func (b *FDBBackend) LastQueryWork() QueryResult { return b.lastWork }
+
+// configureRecordTimeout sets the timeout of ctx's transaction policy. An
+// Exporter transaction also lifts the retry limit 0 that Record Layer Run sets
+// on each attempt, so FDB's OnError loop retries it until the timeout or the
+// caller's context ends it. Both options persist across OnError retries and the
+// timeout runs from transaction creation (fdbclient/ReadYourWrites.actor.cpp:
+// 1510, 1576-1578, 2570-2576 at 7.3.77).
 func configureRecordTimeout(rc *recordlayer.FDBRecordContext) error {
-	return rc.Transaction().Options().SetTimeout(txnTimeout(rc.Context()).Milliseconds())
+	options := rc.Transaction().Options()
+	if err := options.SetTimeout(txnTimeout(rc.Context()).Milliseconds()); err != nil {
+		return err
+	}
+	if isExporterTxn(rc.Context()) {
+		return options.SetRetryLimit(noRetryLimit)
+	}
+	return nil
 }
 
+// configureStoreContext is configureRecordTimeout plus the benchmark's retry
+// limit for benchmark transactions.
 func configureStoreContext(rc *recordlayer.FDBRecordContext) error {
 	if err := configureRecordTimeout(rc); err != nil {
 		return err
 	}
-	return rc.Transaction().Options().SetRetryLimit(10)
+	if isExporterTxn(rc.Context()) {
+		return nil
+	}
+	return rc.Transaction().Options().SetRetryLimit(benchTxnRetryLimit)
 }
 
 func (b *FDBBackend) open(rc *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {

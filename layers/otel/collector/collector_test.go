@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"fdb.dev/layers/otel"
+	"fdb.dev/pkg/fdbgo/fdb"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -364,6 +365,7 @@ exporters:
     max_candidates: 5000
     max_bytes: 1048576
     k: 25
+    transaction_timeout: 20s
     timeout: 12s
     sending_queue:
       enabled: true
@@ -415,7 +417,7 @@ func fullPrimaryConfig() Config {
 		Exporter: otel.ExporterConfig{
 			ClusterFile: "/etc/foundationdb/fdb.cluster", Run: "prod_traces_01", Tenant: 42, Order: "trace", HashBytes: 16,
 			PostingValueFormat: "json", RecordCompression: "zlib-1", BulkIndexConflicts: false, BatchSize: 32, Workers: 6,
-			MaxCandidates: 5000, MaxBytes: 1 << 20, K: 25, MaxInFlightTransactions: 32,
+			MaxCandidates: 5000, MaxBytes: 1 << 20, K: 25, MaxInFlightTransactions: 32, TransactionTimeout: 20 * time.Second,
 		},
 		Timeout: 12 * time.Second,
 		SendingQueue: QueueConfig{
@@ -906,6 +908,12 @@ func TestFactory(t *testing.T) {
 	}
 }
 
+// exporterTimeout is the shape in which the Exporter reports a transaction
+// that timed out (1031): kind "transient" wrapping the FDB error.
+func exporterTimeout() error {
+	return &otel.TransientError{OtelError: &otel.OtelError{Kind: "transient", Op: "ingest batch", Cause: fdb.Error{Code: 1031}}}
+}
+
 func TestIsPermanent(t *testing.T) {
 	t.Parallel()
 	oe := func(kind string) *otel.OtelError { return &otel.OtelError{Kind: kind, Op: "unit", Message: kind} }
@@ -920,7 +928,17 @@ func TestIsPermanent(t *testing.T) {
 		{ErrNotRunning, false},
 		{oe("budget"), false},
 		{oe("canceled"), false},
+		{oe("transient"), false},
 		{&otel.QueryBudgetError{OtelError: oe("budget")}, false},
+		{exporterTimeout(), false},
+		{fmt.Errorf("fdb_otel: retries exhausted after 1s: %w", exporterTimeout()), false},
+		{&otel.TransientError{OtelError: &otel.OtelError{Kind: "transient", Op: "log batch", Cause: &fdb.Error{Code: 1037}}}, false},
+		{&otel.OtelError{Kind: "canceled", Op: "export", Cause: fmt.Errorf("%w (last error: %w)", context.DeadlineExceeded, fdb.Error{Code: 1020})}, false},
+		{fdb.Error{Code: 1031}, false},
+		// "operation" is permanent whatever its cause, so the Exporter must
+		// not report a timeout in this shape.
+		{&otel.OperationError{OtelError: &otel.OtelError{Kind: "operation", Op: "ingest batch starting 0", Cause: fdb.Error{Code: 1031}}}, true},
+		{&otel.OperationError{OtelError: &otel.OtelError{Kind: "operation", Op: "ingest batch", Cause: fdb.Error{Code: 2101}}}, true},
 		{oe("config"), true},
 		{oe("admission"), true},
 		{oe("ownership"), true},
@@ -1476,6 +1494,24 @@ func TestRetryTransientErrorsWithExponentialBackoff(t *testing.T) {
 		}
 	}
 	if st := x.Stats(); st.Exports != 5 || st.Retries != 4 || st.ExportedSpans != 2 || st.FailedSpans != 0 || st.Flushes != 0 || st.AcceptedRequests != 1 {
+		t.Fatalf("stats = %+v", st)
+	}
+}
+
+// An Exporter transaction timeout is retried, not dropped.
+func TestRetryTransientTransactionTimeout(t *testing.T) {
+	t.Parallel()
+	sink := &fakeSink{export: func(_ context.Context, call int, names []string) (otel.ExportStats, error) {
+		if call == 0 {
+			return otel.ExportStats{}, exporterTimeout()
+		}
+		return okStats(len(names)), nil
+	}}
+	x := startUnitExporter(t, syncConfig(RetryConfig{Enabled: true, InitialInterval: time.Millisecond, MaxInterval: time.Millisecond}), sink)
+	if err := x.ConsumeTraces(t.Context(), testRequest("t", 0, 3)); err != nil {
+		t.Fatalf("export after a transaction timeout: %v", err)
+	}
+	if st := x.Stats(); st.Exports != 2 || st.Retries != 1 || st.ExportedSpans != 3 || st.FailedSpans != 0 {
 		t.Fatalf("stats = %+v", st)
 	}
 }
