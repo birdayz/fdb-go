@@ -154,19 +154,48 @@ func TestResolveFallback(t *testing.T) {
 		}
 	})
 
-	t.Run("all_teardown_flattens_to_all_alternatives", func(t *testing.T) {
+	t.Run("all_teardown_stays_maybe_delivered", func(t *testing.T) {
 		t.Parallel()
-		// Every fallback replica is torn down → the default arm flattens to
-		// all_alternatives_failed (1006), which getValueImpl absorbs via
-		// invalidate+relocate — the C++ loadBalance exhaustion outcome. It must
-		// NOT flatten to errReplyTimeout (a teardown is not a slow server) and
-		// must NOT surface the raw 1030 (C++ never propagates it from reads).
+		// Every fallback replica is torn down → the scan returns the
+		// maybeDelivered failure itself. C++ loadBalance keeps retrying such
+		// alternatives with backoff and raises all_alternatives_failed only once
+		// the FailureMonitor marks all of them failed (LoadBalance.actor.h:604-635,
+		// 682-686); getValueImpl paces it with lbRetry and never surfaces it. It
+		// must NOT flatten to errReplyTimeout (a teardown is not a slow server).
 		_, err := resolveFallback(live(), nil, servers, 0, 1, func(ServerInfo) ([]byte, error) {
 			return nil, &transport.ConnClosedError{}
 		})
+		if !isMaybeDelivered(err) || errors.Is(err, errReplyTimeout) {
+			t.Fatalf("all-replicas teardown must stay request_maybe_delivered (1030); got %v", err)
+		}
+	})
+
+	t.Run("all_connect_refused_stays_maybe_delivered", func(t *testing.T) {
+		t.Parallel()
+		// The hedge's dial and every fallback dial fail: the coded connect failure
+		// is returned, not all_alternatives_failed.
+		refused := transport.NewConnectFailedError("s", errors.New("connection refused"))
+		_, err := resolveFallback(live(), refused, servers, 0, 1, func(ServerInfo) ([]byte, error) {
+			return nil, refused
+		})
+		if !isMaybeDelivered(err) {
+			t.Fatalf("all-replicas connect failure must stay request_maybe_delivered (1030); got %v", err)
+		}
+	})
+
+	t.Run("maybe_delivered_with_unclassified_flattens", func(t *testing.T) {
+		t.Parallel()
+		// One unreachable replica and one unclassified answer: the unclassified
+		// answer still flattens the outcome to all_alternatives_failed.
+		_, err := resolveFallback(live(), nil, servers, 0, 1, func(s ServerInfo) ([]byte, error) {
+			if s.Address == "s2" {
+				return nil, &transport.ConnClosedError{}
+			}
+			return nil, fdbErr(1000)
+		})
 		var fe *wire.FDBError
 		if !errors.As(err, &fe) || fe.Code != ErrAllAlternativesFailed {
-			t.Fatalf("all-replicas teardown must flatten to all_alternatives_failed (1006); got %v", err)
+			t.Fatalf("want all_alternatives_failed (1006); got %v", err)
 		}
 	})
 

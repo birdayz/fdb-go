@@ -307,11 +307,19 @@ func TestColdPeerFailedGenerationDoesNotTrapNewSenders(t *testing.T) {
 	sendAwait(t, ctx, old.done, "failed dial completion")
 	_, permit, err := db.getOrDialForSend(ctx, "peer")
 	permit.Release()
-	if !errors.Is(err, secondFailure) || dials.Load() != 2 {
+	// Each generation's waiters see its own dial failure, coded as a connect failure.
+	cause := func(err error) error {
+		var connectFailed *transport.ConnectFailedError
+		if errors.As(err, &connectFailed) {
+			return connectFailed.Cause()
+		}
+		return err
+	}
+	if !errors.Is(cause(err), secondFailure) || dials.Load() != 2 {
 		t.Fatalf("new caller joined failed generation: err=%v dials=%d", err, dials.Load())
 	}
 	resumeOnce.Do(func() { close(resume) })
-	if err := <-result; !errors.Is(err, firstFailure) {
+	if err := <-result; !errors.Is(cause(err), firstFailure) {
 		t.Fatalf("old waiter migrated generations: %v", err)
 	}
 }

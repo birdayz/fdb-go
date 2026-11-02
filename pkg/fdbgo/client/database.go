@@ -477,12 +477,28 @@ func (db *database) getCommitProxy() (*ProxyInfo, int64, error) {
 	}
 	n := len(info.CommitProxies)
 	idx := db.proxyRR.nextCommit(n)
-	// basicLoadBalance skips permanently failed alternatives (LoadBalance.actor.h:790);
-	// with none left the commit waits for a proxy change, as for an empty set.
+	// basicLoadBalance skips permanently failed alternatives and failed addresses
+	// (LoadBalance.actor.h:779-793); with no endpoint left the commit waits for a
+	// proxy change, as for an empty set. When every remaining address is failed C++
+	// waits for one to come back (:795-805); Go's dial of the first one is that probe
+	// (failure_monitor.go); a refused probe reports commit_unknown_result, as C++
+	// does for any refused connect (NativeAPI.actor.cpp:6731-6773).
+	now := nowSeconds()
+	var probe *ProxyInfo
 	for i := 0; i < n; i++ {
-		if p := &info.CommitProxies[(idx+i)%n]; !db.failMon.endpointFailed(p.Address, p.Token) {
+		p := &info.CommitProxies[(idx+i)%n]
+		if db.failMon.endpointFailed(p.Address, p.Token) {
+			continue
+		}
+		if db.failMon == nil || !db.failMon.excluded(p.Address, now) {
 			return p, info.Epoch, nil
 		}
+		if probe == nil {
+			probe = p
+		}
+	}
+	if probe != nil {
+		return probe, info.Epoch, nil
 	}
 	return nil, 0, fmt.Errorf("no live commit proxies")
 }
@@ -621,8 +637,14 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 		db.connMu.Lock()
 		defer db.connMu.Unlock()
 		switch {
+		case dialErr != nil && db.ctx.Err() != nil:
+			call.err = db.ctx.Err() // the database closed; no peer failed
 		case dialErr != nil:
-			call.err = dialErr
+			// Every waiter sees the failed connect as C++'s peer disconnect:
+			// request_maybe_delivered, never the raw dial error. The dial ctx is
+			// bound to db.ctx, so its expiry is a connect timeout, as C++'s
+			// CONNECTION_MONITOR_TIMEOUT is (FlowTransport.actor.cpp:852-869).
+			call.err = transport.NewConnectFailedError(addr, dialErr)
 		case db.ctx.Err() != nil:
 			// The database closed while we dialed: Close() drains the pool under connMu,
 			// so a conn pooled now would never be reaped (leaking its read/write/monitor

@@ -171,7 +171,9 @@ func TestGetOrDialConn_OwnerCancelDoesNotFailWaiters(t *testing.T) {
 	// The shared dial is still alive — complete it and confirm the live waiter sees
 	// the dial's actual result, NOT the owner's cancellation.
 	close(release)
-	if e := <-waiterErr; !errors.Is(e, sharedDialErr) {
+	// The waiter sees the dial failure coded as a connect failure carrying it.
+	var connectFailed *transport.ConnectFailedError
+	if e := <-waiterErr; !errors.As(e, &connectFailed) || !errors.Is(connectFailed.Cause(), sharedDialErr) {
 		t.Fatalf("a live waiter must get the shared dial result, not the owner's cancellation: got %v", e)
 	}
 }

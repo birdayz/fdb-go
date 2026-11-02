@@ -46,9 +46,9 @@ const (
 	// transient one. C++ has no such cap (it relies on the transaction
 	// timeout); this is the bounded-client analog.
 	maxSelectorResolutionSteps = 1000
-	// maxRelocateRetries bounds a range read's relocations after wrong_shard_server,
-	// all_alternatives_failed or a maybe-delivered teardown; C++ relies on the
-	// transaction timeout (default 5s).
+	// maxRelocateRetries bounds a range read's relocations after wrong_shard_server
+	// or all_alternatives_failed; C++ relies on the transaction timeout (default 5s).
+	// A maybe-delivered failure is loadBalance's own unbounded retry (lbRetry).
 	maxRelocateRetries = 5
 )
 
@@ -159,6 +159,7 @@ func (tx *Transaction) getKeyImplWithReplyWait(ctx context.Context, readVersion 
 	needsRangeFallback := false
 	var tags readTagSample
 	redraw := true
+	var lb lbRetry
 	for {
 		// C++ short-circuits: if key == allKeysEnd → offset > 0 → return allKeysEnd
 		// if key == "" && offset <= 0 → return "" (empty key)
@@ -205,11 +206,17 @@ func (tx *Transaction) getKeyImplWithReplyWait(ctx context.Context, readVersion 
 				}
 				continue
 			}
-			// A maybeDelivered teardown (1030/1100: the storage connection died
-			// under the in-flight RPC) takes the same arm: C++ loadBalance
-			// retries another alternative and exhausts to all_alternatives_failed,
-			// which this arm already absorbs.
-			if isWrongShardServer(err) || isAllAlternativesFailed(err) || isMaybeDelivered(err) {
+			// maybeDelivered (1030/1100: a failed connect or a teardown on every
+			// replica tried) is loadBalance's own unbounded retry (lbRetry); it is
+			// re-located as getValueImpl explains, without charging shardRetries.
+			if isMaybeDelivered(err) {
+				tx.db.locCache.invalidate(selectorKey, tx.tenantId, isBackward)
+				if err := lb.wait(ctx, len(loc.Servers)); err != nil {
+					return nil, false, err
+				}
+				continue
+			}
+			if isWrongShardServer(err) || isAllAlternativesFailed(err) {
 				// Native range reads switch to exact fallback on an initial wrong-shard reply.
 				if progressSteps == 0 && isWrongShardServer(err) {
 					needsRangeFallback = true
@@ -229,6 +236,7 @@ func (tx *Transaction) getKeyImplWithReplyWait(ctx context.Context, readVersion 
 			}
 			return nil, false, err
 		}
+		lb = lbRetry{} // the next request is a new loadBalance call
 
 		if progressSteps == 0 {
 			needsRangeFallback = needsRangeFallback || keyResolutionNeedsRangeFallback(replyKey, replyOrEqual, replyOffset, loc, isBackward)
@@ -451,6 +459,7 @@ func (tx *Transaction) getValueSampled(parentCtx context.Context, key []byte, ca
 func (tx *Transaction) getValueImpl(ctx context.Context, key []byte, carried *readTagSample) ([]byte, error) {
 	tx.hadRead.Store(true) // a read was issued (RFC-059 poison signal)
 	timeoutRetries := 0
+	var lb lbRetry
 	var tags readTagSample
 	redraw := carried == nil
 	if carried != nil {
@@ -489,11 +498,20 @@ func (tx *Transaction) getValueImpl(ctx context.Context, key []byte, carried *re
 			}
 			continue
 		}
+		// maybeDelivered (1030/1100: a failed connect or a teardown on every
+		// replica tried) is loadBalance's own unbounded retry (lbRetry), not a
+		// relocation attempt. Go re-locates anyway: it has no sustained-failure
+		// all_alternatives_failed to make it re-locate later, as C++ does.
+		if isMaybeDelivered(err) {
+			attempts--
+			tx.db.locCache.invalidate(key, tx.tenantId, false)
+			if err := lb.wait(ctx, len(loc.Servers)); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		// wrong_shard_server or all_alternatives_failed → invalidate cache, retry.
-		// maybeDelivered (1030/1100, a connection teardown under the in-flight
-		// RPC) joins them: C++ loadBalance retries another alternative and
-		// exhausts to all_alternatives_failed — same absorption, same bound.
-		if isWrongShardServer(err) || isAllAlternativesFailed(err) || isMaybeDelivered(err) {
+		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
 			tx.db.locCache.invalidate(key, tx.tenantId, false)
 			if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
 				return nil, err
@@ -756,6 +774,7 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 	curEnd := end
 	relocateRetries := 0
 	timeoutRetries := 0
+	var lb lbRetry
 	// C++ getRange's own loop, before any getRangeFallback, reports readThrough when the
 	// first reply's rows end a shard the range continues past (NativeAPI.actor.cpp:4762,
 	// 4795-4799). A byte-targeted call then stops; wrong_shard_server falls back (:4864-4870).
@@ -863,13 +882,15 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 						}
 						continue // re-send same shard
 					}
-					// maybeDelivered (1030/1100: the storage connection died
-					// under the in-flight RPC) takes the same arm — C++
-					// loadBalance retries another alternative and exhausts to
-					// all_alternatives_failed, which this arm already absorbs.
+					// maybeDelivered (1030/1100: a failed connect or a teardown on
+					// every replica tried) re-locates the same way but is
+					// loadBalance's own unbounded retry, paced by lbRetry rather
+					// than charged to relocateRetries (see getValueImpl).
 					if isWrongShardServer(err) || isAllAlternativesFailed(err) || isMaybeDelivered(err) {
-						relocateRetries++
-						if relocateRetries > maxRelocateRetries {
+						delay := wrongShardRetryDelay
+						if isMaybeDelivered(err) {
+							delay = lb.next(len(loc.Servers))
+						} else if relocateRetries++; relocateRetries > maxRelocateRetries {
 							// Surface a RETRYABLE transaction_too_old (not the
 							// terminal all_alternatives_failed): the read path
 							// absorbs all_alternatives_failed and lets the
@@ -887,7 +908,7 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 						} else {
 							curBegin = shardBegin
 						}
-						if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
+						if err := sleepCtx(ctx, delay); err != nil {
 							return nil, false, nil, err
 						}
 						relocated = true
@@ -895,6 +916,7 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 					}
 					return nil, false, nil, err
 				}
+				lb = lbRetry{} // the next request is a new loadBalance call
 				if firstReply {
 					firstReply = false
 					if byteLimited && len(kvs) > 0 && !more {
@@ -1153,13 +1175,12 @@ func isAllAlternativesFailed(err error) bool {
 // or broken_promise (1100) — C++ loadBalance's maybeDelivered classification
 // (LoadBalance.actor.h:344: `maybeDelivered = errCode == error_code_broken_promise
 // || errCode == error_code_request_maybe_delivered`). The transport delivers a
-// coded 1030 for every connection teardown, so this is how a read loop
-// recognizes "the connection under my in-flight RPC died". For reads
-// (AtMostOnce::False) C++ retries another alternative and, on exhaustion,
-// surfaces all_alternatives_failed to the read's own retry loop — never the raw
-// teardown code to the application. The Go read loops mirror that by treating
-// maybeDelivered exactly like all_alternatives_failed: invalidate the location,
-// bounded retry, and on exhaustion a RETRYABLE transaction_too_old. The commit
+// coded 1030 for every connection teardown and the client for every failed
+// connect (transport.ConnectFailedError), so this is how a read loop recognizes
+// "the connection to my replica failed". For reads (AtMostOnce::False) C++
+// loadBalance retries alternatives with backoff, unbounded, and never surfaces
+// the code to the application. The Go read loops mirror that with lbRetry,
+// re-locating each time (see getValueImpl). The commit
 // path consults this too, but converts instead of retrying: commit runs through
 // basicLoadBalance at AtMostOnce::True, which forbids a re-send, so commitpath.go
 // normalises maybeDelivered to commit_unknown_result. Its four TRANSPORT arms do
@@ -1199,21 +1220,30 @@ func isFutureVersionOrProcessBehind(err error) bool {
 // A maybeDelivered teardown (1030/1100 — one replica's connection died under the RPC) deliberately
 // matches NO case: it must not end the scan (unlike wrong_shard/all_alternatives it says nothing about
 // the other replicas — C++ loadBalance simply moves to the next alternative, LoadBalance.actor.h:344
-// with the false return at :377) and must not be remembered as a timeout. When every replica is torn
-// down the default arm flattens to all_alternatives_failed, which getValueImpl absorbs via
-// invalidate+relocate — the same exhaustion outcome as C++ loadBalance.
+// with the false return at :377) and must not be remembered as a timeout. When every failure was
+// maybeDelivered (a failed connect or a teardown on each replica) it is returned as is: C++ loadBalance
+// keeps retrying with backoff and raises all_alternatives_failed only when the FailureMonitor marks
+// every alternative failed (LoadBalance.actor.h:604-635, 682-686), so getValueImpl paces it with lbRetry.
+// Any other unclassified failure still flattens to all_alternatives_failed.
 func resolveFallback(ctx context.Context, hedgeErr error, servers []ServerInfo, bestIdx, secondIdx int, trySingle func(ServerInfo) ([]byte, error)) ([]byte, error) {
 	// A cancelled/expired CALLER context propagates IMMEDIATELY — a cancelled read must return ctx.Err(),
 	// never a remembered version error or a flattened timeout. Gate on ctx.Err() (the real READ context),
-	// NOT errors.Is on a per-server error: a cold dial / RPC timeout to an unreachable replica surfaces as
-	// a wrapped context.DeadlineExceeded under the db-scoped DefaultRPCTimeout while the read context is
-	// still LIVE, and that must fall back to other replicas rather than abort the scan. Checked at
+	// NOT errors.Is on a per-server error: a per-server deadline can surface as a wrapped
+	// context.DeadlineExceeded while the read context is still LIVE, and that must fall back to other
+	// replicas rather than abort the scan (a failed connect is coded 1030 instead). Checked at
 	// entry (covers the no-untried-fallback case) and after each replica in the loop below.
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 	sawTimeout := isServerTimeout(hedgeErr)
-	var versionErr error
+	var versionErr, maybeDelivered error
+	unclassified := false
+	switch {
+	case isMaybeDelivered(hedgeErr):
+		maybeDelivered = hedgeErr
+	case hedgeErr != nil && !sawTimeout:
+		unclassified = true
+	}
 	for i, server := range servers {
 		if i == bestIdx || i == secondIdx {
 			continue // already tried by the hedge
@@ -1234,6 +1264,12 @@ func resolveFallback(ctx context.Context, hedgeErr error, servers []ServerInfo, 
 			sawTimeout = true // remember, keep scanning healthy replicas
 		case isWrongShardServer(err) || isAllAlternativesFailed(err):
 			return nil, err // definitive: all replicas share the shard assignment → re-locate
+		case isMaybeDelivered(err):
+			if maybeDelivered == nil {
+				maybeDelivered = err // this replica is unreachable; keep scanning
+			}
+		default:
+			unclassified = true
 		}
 	}
 	switch {
@@ -1243,14 +1279,16 @@ func resolveFallback(ctx context.Context, hedgeErr error, servers []ServerInfo, 
 		// Prefer the timeout (getValue re-sends without a pointless cache invalidation — the location
 		// is fine, the servers were slow) over flattening to all_alternatives_failed.
 		return nil, errReplyTimeout
+	case maybeDelivered != nil && !unclassified:
+		return nil, maybeDelivered
 	default:
 		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 	}
 }
 
 // isServerTimeout reports whether a per-replica error is a slow/unreachable-server TIMEOUT — either an RPC
-// reply timeout (errReplyTimeout) or a wrapped context.DeadlineExceeded from a cold dial / RPC under the
-// db-scoped DefaultRPCTimeout. resolveFallback calls this only AFTER confirming the caller's read context
+// reply timeout (errReplyTimeout) or a wrapped context.DeadlineExceeded from a per-server deadline (a
+// connect timeout is coded request_maybe_delivered, not this). resolveFallback calls this only AFTER confirming the caller's read context
 // is still live (ctx.Err()==nil), so a DeadlineExceeded here is a per-server deadline, never caller
 // cancellation. Such a timeout must be remembered as a timeout — surfaced as errReplyTimeout so getValue
 // re-sends to the same location — NOT dropped and flattened to all_alternatives_failed (1006), which
@@ -1594,6 +1632,7 @@ func (tx *Transaction) watchPoll(watchCtx context.Context, watchCancel context.C
 	// all_alternatives is bounded (a relocate storm); the SS poll-signals below are unbounded — the
 	// watch keeps polling, as C++ does.
 	wrongShardRetries := 0
+	var lb lbRetry
 	for {
 		if err := watchCtx.Err(); err != nil {
 			return err
@@ -1611,6 +1650,16 @@ func (tx *Transaction) watchPoll(watchCtx context.Context, watchCancel context.C
 		if watchErr == nil {
 			return nil
 		}
+		// Every replica failed maybe-delivered: watchValue's loadBalance retries it
+		// itself, unbounded (lbRetry); re-located as getValueImpl explains.
+		if isMaybeDelivered(watchErr) {
+			tx.db.locCache.invalidate(key, tenantID, false)
+			if err := lb.wait(watchCtx, len(loc.Servers)); err != nil {
+				return err
+			}
+			continue
+		}
+		lb = lbRetry{}
 		delay, retryable, invalidate := classifyWatchError(watchErr)
 		if !retryable {
 			return watchErr
@@ -1702,10 +1751,12 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 	var sendCleanup sendGuard
 	defer sendCleanup.close()
 
+	var lastErr error
 	for _, server := range order {
 		conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
 		if err != nil {
 			tx.db.handleDialError(ctx, server.Address)
+			lastErr = err
 			continue
 		}
 		sendCleanup.permit = permit
@@ -1720,6 +1771,7 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 			replyHandle.Cancel()
 			replyCleanup.release()
 			tx.db.handleReadConnError(server.Address, conn, err)
+			lastErr = err
 			continue
 		}
 		// Long-poll: no short timeout. Use the caller's context deadline.
@@ -1728,14 +1780,25 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 			replyCleanup.release()
 			if resp.Err != nil {
 				tx.db.handleReadConnError(server.Address, conn, resp.Err)
+				lastErr = resp.Err
 				continue
 			}
-			return parseWatchValueReply(resp.Body)
+			err := parseWatchValueReply(resp.Body)
+			tx.db.noteBrokenPromise(err, server.Address, watchToken)
+			return err
 		case <-ctx.Done():
 			replyHandle.Cancel()
 			replyCleanup.release()
 			return ctx.Err()
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Every replica failed to connect or tore down: loadBalance's own retry, which
+	// WatchPoll paces with lbRetry, not an all_alternatives_failed (see resolveFallback).
+	if isMaybeDelivered(lastErr) {
+		return lastErr
 	}
 	return &wire.FDBError{Code: ErrAllAlternativesFailed}
 }

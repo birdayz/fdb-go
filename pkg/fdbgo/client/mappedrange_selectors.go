@@ -119,6 +119,7 @@ func (tx *Transaction) getMappedRangeSelectors(ctx context.Context, begin, end K
 	var tags readTagSample
 	redraw := true
 	timeoutRetries := 0
+	var lb lbRetry
 	for {
 		if bytes.Compare(begin.Key, end.Key) >= 0 {
 			return output, nil
@@ -147,7 +148,11 @@ func (tx *Transaction) getMappedRangeSelectors(ctx context.Context, begin, end K
 				if isWrongShardServer(err) {
 					return tx.getMappedRangeSelectorFallback(ctx, originalBegin, originalEnd, mapper, originalLimits, readVersion, reverse)
 				}
-				if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
+				delay := wrongShardRetryDelay
+				if isMaybeDelivered(err) {
+					delay = lb.next(len(loc.Servers)) // loadBalance's own retry pacing (lbRetry)
+				}
+				if err := sleepCtx(ctx, delay); err != nil {
 					return mappedRangeResult{}, err
 				}
 				continue
@@ -164,6 +169,7 @@ func (tx *Transaction) getMappedRangeSelectors(ctx context.Context, begin, end K
 			}
 			return mappedRangeResult{}, err
 		}
+		lb = lbRetry{} // the next request is a new loadBalance call
 		if (more && len(rows) == 0) || (limits.rows != -1 && len(rows) > limits.rows) {
 			return mappedRangeResult{}, &wire.FDBError{Code: ErrInternalError}
 		}
@@ -240,6 +246,7 @@ func (tx *Transaction) getMappedRangeSelectorExact(ctx context.Context, begin, e
 	var tags readTagSample
 	redraw := true
 	timeoutRetries := 0
+	var lb lbRetry
 	for {
 		locations, err := tx.mappedExactLocations(ctx, begin, end, reverse)
 		if err != nil {
@@ -263,7 +270,11 @@ func (tx *Transaction) getMappedRangeSelectorExact(ctx context.Context, begin, e
 						begin = loc.ShardBegin
 					}
 					tx.db.locCache.invalidateRange(begin, end, tx.tenantId)
-					if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
+					delay := wrongShardRetryDelay
+					if isMaybeDelivered(err) {
+						delay = lb.next(len(loc.Servers)) // loadBalance's own retry pacing (lbRetry)
+					}
+					if err := sleepCtx(ctx, delay); err != nil {
 						return mappedRangeResult{}, err
 					}
 					break
@@ -280,6 +291,7 @@ func (tx *Transaction) getMappedRangeSelectorExact(ctx context.Context, begin, e
 				}
 				return mappedRangeResult{}, err
 			}
+			lb = lbRetry{} // the next request is a new loadBalance call
 			if (more && len(rows) == 0) || (limits.rows != -1 && len(rows) > limits.rows) {
 				return mappedRangeResult{}, &wire.FDBError{Code: ErrInternalError}
 			}

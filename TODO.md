@@ -2332,6 +2332,17 @@ tracked only.
   Decide whether to keep it. Kept in #1011 (RFC-280): libfdb_c's transaction timeout and
   `Cancel` end the wait as Go's do; the `TransactCtx` doc names the `fdb_future_cancel`
   difference.
+- [ ] **Connect-failure residuals** (after the refused-connect fix: a failed dial is now
+  request_maybe_delivered and storage reads retry it unbounded with loadBalance's backoff).
+  (a) Recovery timing: C++ resumes a waiting read when connectionKeeper's reconnect
+  succeeds (`okFuture`, LoadBalance.actor.h:618-635); Go polls with `lbRetry` (up to 5 s
+  apart), so after a long outage Go's next try can land past the MVCC window and see 1007
+  where libfdb_c would not. (b) Go marks an address failed on its first connect failure;
+  C++ only after `FAILURE_DETECTION_DELAY` (FlowTransport.actor.cpp:920-930). (c) GRV and
+  location queries do not skip failure-monitor-failed proxies (basicLoadBalance does,
+  LoadBalance.actor.h:779-793): latency only, never an error. (d) `OpenDatabase`'s eager
+  bootstrap returns an error wrapping the coded coordinator connect failure when its
+  context ends; `fdb_create_database` has no such error.
 
 ### SQL
 

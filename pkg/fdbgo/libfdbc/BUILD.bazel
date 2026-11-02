@@ -89,3 +89,30 @@ go_test(
         "//pkg/testcontainers/foundationdb",
     ],
 )
+
+# Kills storage processes of two multi-process clusters to compare both clients'
+# connect-refused contract; heavyweight, so it runs only in the full lane.
+go_test(
+    name = "connrefused_conformance_test",
+    timeout = "long",
+    srcs = ["connrefused_conformance_test.go"],
+    gotags = ["libfdbc"],
+    pure = "off",
+    tags = [
+        "resources:cpu:2",
+        "resources:memory:2500",
+        "test-full",
+    ],
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+    deps = [
+        ":libfdbc_native",
+        "//pkg/fdbgo/fdb",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
+        "@com_github_testcontainers_testcontainers_go//exec",
+    ],
+)

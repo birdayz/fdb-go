@@ -50,6 +50,38 @@ func (db *database) endOther(o rpcAccount) {
 	db.queueModel.endRequest(o.addr, o.delta, readFailureLatency(o.err, o.start), false)
 }
 
+// lbRetry paces a read that C++ loadBalance would retry itself: every alternative
+// tried failed maybe-delivered (a failed connect, a torn-down connection or an
+// in-band 1030/1100). checkAndProcessResultImpl returns false for that outcome at
+// AtMostOnce::False (LoadBalance.actor.h:344-377), so loadBalance takes the next
+// alternative at once and, after a full pass, backs off from
+// LOAD_BALANCE_START_BACKOFF by LOAD_BALANCE_BACKOFF_RATE up to
+// LOAD_BALANCE_MAX_BACKOFF (LoadBalance.actor.h:682-686, 721-725; flow/Knobs.cpp:274-276).
+// There is no retry bound: the read waits for a replica to answer or for the
+// transaction to end, so the failure never reaches the application.
+type lbRetry struct {
+	attempts int
+	backoff  time.Duration
+}
+
+// next records a failed attempt over n alternatives and returns the delay
+// before the next one.
+func (r *lbRetry) next(n int) time.Duration {
+	r.attempts++
+	if r.attempts >= n {
+		r.backoff = min(loadBalanceMaxBackoff, max(loadBalanceStartBackoff, time.Duration(float64(r.backoff)*loadBalanceBackoffRate)))
+	}
+	return r.backoff
+}
+
+// wait records a failed attempt over n alternatives and sleeps its delay.
+func (r *lbRetry) wait(ctx context.Context, n int) error {
+	if d := r.next(n); d > 0 {
+		return sleepCtx(ctx, d)
+	}
+	return ctx.Err()
+}
+
 // altFailureDelay is C++'s allAlternativesFailedDelay, jittered like delayJittered
 // (flow.h:1481-1484).
 func (db *database) altFailureDelay() time.Duration {

@@ -416,6 +416,7 @@ go_test(
 )
 
 # gazelle:exclude conn_identity_unit_test.go
+# gazelle:exclude connect_failure_unit_test.go
 # gazelle:exclude location_cache_unit_test.go
 # gazelle:exclude metrics_shards_unit_test.go
 # gazelle:exclude metrics_lifetime_unit_test.go
@@ -425,6 +426,7 @@ go_test(
     name = "conn_location_unit_test",
     srcs = [
         "conn_identity_unit_test.go",
+        "connect_failure_unit_test.go",
         "decode_failure_unit_test.go",
         "fdberror_assert_test.go",
         "hedge_budget_helpers_test.go",

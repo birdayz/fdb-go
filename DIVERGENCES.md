@@ -3214,11 +3214,24 @@ claim of equivalent retry semantics. References to Go below are at `d5c031525`.
 Go's shared plain/mapped storage scanner, `rangeScanImpl`, keeps two counters
 for each invocation (`pkg/fdbgo/client/readpath.go:664-682`):
 
-- The relocation counter increments for `wrong_shard_server`,
-  `all_alternatives_failed`, or a maybe-delivered connection failure. With
+- The relocation counter increments for `wrong_shard_server` or
+  `all_alternatives_failed`. With
   `maxRelocateRetries = 5`, the sixth qualifying failure returns **1007
   `transaction_too_old`**, before another relocation; the first five invalidate
   the shard's cached location and retry (`readpath.go:671`, `:773-800`).
+- A maybe-delivered failure on every replica tried (a refused or timed-out
+  connect, a torn-down connection, an in-band 1030/1100) is **not** counted. It is
+  `loadBalance`'s own retry, which C++ never bounds: the next alternative at once,
+  then `LOAD_BALANCE_START_BACKOFF` doubling to `LOAD_BALANCE_MAX_BACKOFF`
+  (`LoadBalance.actor.h:344-377`, `:682-686`, `:721-725`). Go paces it the same
+  way (`lbRetry`, `read_send.go`) in every storage read loop (get, getKey, range,
+  native range, mapped range, watch), so a read whose only replica refuses
+  connections waits for it as libfdb_c does. Go still re-locates on each such
+  retry: it has no sustained-failure `all_alternatives_failed` (C++ raises it once
+  the FailureMonitor has marked every alternative failed, after
+  `FAILURE_DETECTION_DELAY`, `FlowTransport.actor.cpp:920-930`) to re-locate later.
+  Pinned by `client/connect_failure_unit_test.go` and
+  `libfdbc/connrefused_conformance_test.go`.
 - The reply-timeout counter allows **10 re-sends** of the same shard request.
   `maxReadTimeoutRetries = 10` and the pre-incremented `> 10` check mean that
   **the eleventh reply timeout** returns synthesized **1007**, not the tenth

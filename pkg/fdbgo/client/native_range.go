@@ -73,6 +73,7 @@ func (tx *Transaction) nativeGetRangeAt(ctx context.Context, begin, end KeySelec
 	l := nativeRangeLoop{begin: begin, end: end, limits: limits, reverse: reverse}
 	l.start()
 	relocateRetries, timeoutRetries := 0, 0
+	var lb lbRetry
 	var materializedBytes int64
 	var tags readTagSample
 	redraw := true
@@ -105,7 +106,12 @@ func (tx *Transaction) nativeGetRangeAt(ctx context.Context, begin, end KeySelec
 			case isWrongShardServer(err): // :4858-4870, invalidate then fall back
 				tx.db.locCache.invalidate(locationKey, tx.tenantId, backward)
 				return tx.nativeGetRangeFallback(ctx, originalBegin, originalEnd, originalLimits, readVersion, reverse)
-			case isAllAlternativesFailed(err) || isMaybeDelivered(err): // :4858-4863, 4873
+			case isMaybeDelivered(err): // loadBalance's own unbounded retry; re-located as getValueImpl explains
+				tx.db.locCache.invalidate(locationKey, tx.tenantId, backward)
+				if err := lb.wait(ctx, len(loc.Servers)); err != nil {
+					return nativeRangeResult{}, err
+				}
+			case isAllAlternativesFailed(err): // :4858-4863, 4873
 				relocateRetries++
 				if relocateRetries > maxRelocateRetries {
 					return nativeRangeResult{}, &wire.FDBError{Code: ErrTransactionTooOld}
@@ -119,6 +125,9 @@ func (tx *Transaction) nativeGetRangeAt(ctx context.Context, begin, end KeySelec
 			}
 			continue
 		}
+		// The next request is a new loadBalance call.
+		lb = lbRetry{}
+
 		if ceiling := tx.db.rangeByteCeiling; ceiling > 0 { // RFC-115 §2, as rangeScanImpl
 			for i := range kvs {
 				materializedBytes += plainRangeScanOps.sizeBytes(&kvs[i])
