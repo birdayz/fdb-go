@@ -206,6 +206,8 @@ type TransactionDefaults struct {
 	HasRetryLimit  bool
 	ReadSystemKeys bool // read \xff/* keys by default
 	AccessSysKeys  bool // read+write \xff/* keys by default
+	// ReportConflictingKeys is FDB_DB_OPTION_TRANSACTION_REPORT_CONFLICTING_KEYS (702).
+	ReportConflictingKeys bool
 }
 
 // database is the per-database state container (unexported).
@@ -1143,6 +1145,7 @@ func (d *Database) createTransaction(transactScoped bool) *Transaction {
 	if td.AccessSysKeys {
 		tx.SetAccessSystemKeys()
 	}
+	tx.reportConflictingKeys = td.ReportConflictingKeys
 	// Generate the per-transaction trace span (RFC-115 §4) — a real, default-unsampled
 	// SpanContext stamped on every request, matching C++ (which never sends a zero span).
 	// No SPAN_PARENT can be set yet, so this is regenerateSpan's fresh-span branch.

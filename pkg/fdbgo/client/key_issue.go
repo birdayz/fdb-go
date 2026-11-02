@@ -171,9 +171,9 @@ func (r *keyRead) read() ([]byte, error) {
 				return nil, tx.trackReadOperation(ctx, err)
 			}
 		} else if b, e := getKeyConflictSpan(sel, key); bytes.Compare(b, e) < 0 {
-			// Filtered through the read's own version (RYW:388, 322-351).
-			var ranges [][2][]byte
-			tx.ryw.withLock(func() { ranges = r.view.conflictRanges(b, e) })
+			// Filtered through the read's own version (RYW:388, 322-351). A pinned
+			// version is immutable, so this needs no lock.
+			ranges := r.view.conflictRanges(b, e)
 			if err := tx.addReadConflictsFor(ctx, ranges); err != nil {
 				return nil, tx.trackReadOperation(ctx, err)
 			}

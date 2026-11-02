@@ -13,8 +13,9 @@ The official Go binding (`github.com/apple/foundationdb/bindings/go`) wraps `lib
 **Pre-1.0; not declared production-ready.** This is an independent implementation,
 not a promise of complete Apple C binding API parity. Some options are unsupported
 and others are accepted without effect; consult the [option behavior matrix](fdb/OPTIONS.md)
-before migrating. In particular, authorization tokens, automatic idempotency,
-conflicting-key reporting and special-key-space operations have support boundaries.
+before migrating. In particular, authorization tokens, automatic idempotency
+and special-key-space operations have support boundaries (only
+`\xff\xff/transaction/conflicting_keys/` is served).
 See [project status](../../STATUS.md) for validation scope and
 [compatibility](../../docs/compatibility.md) before choosing a deployment.
 

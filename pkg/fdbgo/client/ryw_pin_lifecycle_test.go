@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,33 +18,29 @@ import (
 
 // fingerprint is a deep, deterministic dump of a version: entries with their
 // atomic stacks and bytes, the slices, the flags and the nodes. The lazy derived
-// indexes (sortedKeys, the node build) are built first, so whether a reader has
+// indexes (the sorted store, the node build) are built first, so whether a reader has
 // built them does not change it.
 func (w *rywWrites) fingerprint() string {
 	w.ensureSorted()
 	var b strings.Builder
-	keys := make([]string, 0, len(w.writes))
-	for k := range w.writes {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := w.writeKeys()
 	for _, k := range keys {
-		e := w.writes[k]
+		e, _ := w.entry(k)
 		fmt.Fprintf(&b, "%q=%q abs=%t dep=%t atom=%t unr=%t [", k, e.value, e.absent, e.dependent, e.hasAtomics, e.unreadable)
 		for _, m := range e.atomics {
 			fmt.Fprintf(&b, "%d:%x ", m.typ, m.param)
 		}
 		b.WriteString("]\n")
 	}
-	fmt.Fprintf(&b, "sorted=%q\ncleared=", w.sortedKeys)
-	for _, r := range w.cleared {
+	fmt.Fprintf(&b, "sorted=%q\ncleared=", keys)
+	for _, r := range rangeList(&w.cleared) {
 		fmt.Fprintf(&b, "[%q,%q)", r.begin, r.end)
 	}
 	b.WriteString("\nunreadable=")
-	for _, r := range w.unreadableRanges {
+	for _, r := range rangeList(&w.unreadableRanges) {
 		fmt.Fprintf(&b, "[%q,%q)", r.begin, r.end)
 	}
-	fmt.Fprintf(&b, "\nunreadableKeys=%q bypass=%t\n", w.unreadableKeys, w.bypassUnreadable)
+	fmt.Fprintf(&b, "\nunreadableKeys=%q bypass=%t\n", w.unreadableKeys.appendTo(nil), w.bypassUnreadable)
 	w.nodes.build()
 	b.WriteString(w.nodes.dump())
 	return b.String()
@@ -260,7 +255,7 @@ func TestRYWWalkRejectsPrivateSpan(t *testing.T) {
 				for _, w := range []*rywWrites{nil, c.w, pinned} {
 					c.newIterLocked(w).skip([]byte("a")) // snapshot, live and pinned remain valid
 				}
-				if span.nodes.sorted != nil || span.nodes.log != nil {
+				if span.nodes.built || span.nodes.log != nil {
 					t.Fatal("private-span precondition: nodes are not empty")
 				}
 				func() {
@@ -271,7 +266,7 @@ func TestRYWWalkRejectsPrivateSpan(t *testing.T) {
 					}()
 					c.newIterLocked(span).skip([]byte("a"))
 				}()
-				if span.nodes.sorted != nil || span.nodes.log != nil {
+				if span.nodes.built || span.nodes.log != nil {
 					t.Fatal("private span reached the node builder before rejection")
 				}
 			})
@@ -330,7 +325,7 @@ func TestRYWPinnedAtomicStackUnchanged(t *testing.T) {
 	tx.Atomic(MutAddValue, []byte("k"), pinNum(2)) // coalesceOverAtomics rewrites the top
 	tx.ryw.mu.Lock()
 	after := pinned.fingerprint()
-	live := tx.ryw.liveLocked().writes["k"]
+	live, _ := tx.ryw.liveLocked().entry("k")
 	tx.ryw.mu.Unlock()
 	if before != after {
 		t.Fatalf("pinned version changed:\n%s\n%s", before, after)
@@ -369,7 +364,7 @@ func TestRYWMergeBatchOnlyOnPrivateSpan(t *testing.T) {
 	if before != after {
 		t.Fatalf("mergeBatch changed the pinned live version")
 	}
-	if !span.writes["k"].hasAtomics && span.writes["k"].value == nil {
+	if merged, _ := span.entry("k"); !merged.hasAtomics && merged.value == nil {
 		t.Fatalf("the span did not take the merge")
 	}
 	for name, w := range map[string]*rywWrites{"live": c.w, "pinned": pinned} {

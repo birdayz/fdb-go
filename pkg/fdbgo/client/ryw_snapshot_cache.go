@@ -15,9 +15,15 @@ import (
 // architecture.
 //
 // Thread safety: callers must hold rywCache.mu when accessing this struct.
+//
+// entries is a pseq (C++ keeps them in an IndexedSet, SnapshotCache.h:143), so a
+// fetch inserts its fragment in O(log n) and the walk's iterator steps in O(1).
 type snapshotCache struct {
-	entries    []cacheEntry
-	entry0     [2]cacheEntry
+	entries pseq[cacheEntry]
+	// node0 holds the first entries' nodes, so the common 1-2 point read path
+	// allocates none; nodesLent records that entries may hand them out.
+	node0      [2]pnode[cacheEntry]
+	nodesLent  bool
 	kv0        [2]KeyValue
 	keyBuf     [64]byte
 	kvUsed     int
@@ -56,9 +62,9 @@ type cacheEntry struct {
 
 // reset clears all cached state.
 func (sc *snapshotCache) reset() {
-	clear(sc.entries)
-	sc.entries = nil
-	sc.entry0 = [2]cacheEntry{}
+	sc.entries = pseq[cacheEntry]{}
+	sc.node0 = [2]pnode[cacheEntry]{}
+	sc.nodesLent = false
 	sc.kv0 = [2]KeyValue{}
 	sc.kvUsed = 0
 	sc.keyBufUsed = 0
@@ -90,15 +96,24 @@ func (sc *snapshotCache) insertPoint(key, value []byte) {
 			rows = []KeyValue{{Key: k, Value: value}}
 		}
 	}
-	if len(sc.entries) == 0 {
-		if sc.entries == nil {
-			sc.entries = sc.entry0[:0]
-		}
-		sc.entries = append(sc.entries, cacheEntry{begin: k, end: end, kvs: rows})
+	if sc.entries.Len() == 0 {
+		sc.lendNodes()
+		sc.entries.insert(0, cacheEntry{begin: k, end: end, kvs: rows})
 		return
 	}
 	sc.insert(k, end, rows)
 }
+
+// lendNodes gives entries the inline nodes, once per reset.
+func (sc *snapshotCache) lendNodes() {
+	if !sc.nodesLent {
+		sc.entries.free = sc.node0[:]
+		sc.nodesLent = true
+	}
+}
+
+// entryList returns the entries in order.
+func (sc *snapshotCache) entryList() []cacheEntry { return sc.entries.appendTo(nil) }
 
 // insert marks [begin, end) as known with the given KVs (must be sorted
 // ascending by key).
@@ -131,7 +146,8 @@ func (sc *snapshotCache) insert(begin, end []byte, kvs []KeyValue) {
 
 	newBegin := begin
 	newEnd := end
-	n := len(sc.entries)
+	es := &sc.entries
+	sc.lendNodes()
 
 	// Trim the front past an existing entry that STRICTLY contains newBegin.
 	// C++: `begin = itb.it->endKey`, guarded by `!itb.is_unknown_range() &&
@@ -139,20 +155,20 @@ func (sc *snapshotCache) insert(begin, end []byte, kvs []KeyValue) {
 	// deliberately not trimmed past — it is superseded below instead. An entry
 	// ending exactly at newBegin does not contain it (end is exclusive), which
 	// is the adjacent-page case and must not trim either.
-	if i := sort.Search(n, func(i int) bool {
-		return bytes.Compare(sc.entries[i].end, newBegin) > 0
-	}); i < n && bytes.Compare(sc.entries[i].begin, newBegin) < 0 {
-		newBegin = sc.entries[i].end
+	if _, e := es.find(func(e *cacheEntry) bool {
+		return bytes.Compare(e.end, newBegin) > 0
+	}); e != nil && bytes.Compare(e.begin, newBegin) < 0 {
+		newBegin = e.end
 	}
 
 	// Trim the back to the start of an existing entry that STRICTLY contains
 	// newEnd. C++: `ite._prevUnknown(); end = ite.endKey()`, reached only when
 	// the segment holding keys.end is not an unknown range — an entry ending
 	// exactly at newEnd does not hold it, so it must not trim.
-	if j := sort.Search(n, func(j int) bool {
-		return bytes.Compare(sc.entries[j].begin, newEnd) >= 0
-	}); j > 0 && bytes.Compare(sc.entries[j-1].end, newEnd) > 0 {
-		newEnd = sc.entries[j-1].begin
+	if j := es.search(func(e *cacheEntry) bool {
+		return bytes.Compare(e.begin, newEnd) >= 0
+	}); j > 0 && bytes.Compare(es.at(j-1).end, newEnd) > 0 {
+		newEnd = es.at(j - 1).begin
 	}
 
 	if bytes.Compare(newBegin, newEnd) >= 0 {
@@ -163,11 +179,11 @@ func (sc *snapshotCache) insert(begin, end []byte, kvs []KeyValue) {
 	// the only entry that could straddle either end was what the trim moved that
 	// end to. So [lo, hi) is exactly the set of entries strictly inside, which
 	// this fetch supersedes wholesale (same read version, so same contents).
-	lo := sort.Search(n, func(i int) bool {
-		return bytes.Compare(sc.entries[i].begin, newBegin) >= 0
+	lo := es.search(func(e *cacheEntry) bool {
+		return bytes.Compare(e.begin, newBegin) >= 0
 	})
-	hi := sort.Search(n, func(i int) bool {
-		return bytes.Compare(sc.entries[i].end, newEnd) > 0
+	hi := es.search(func(e *cacheEntry) bool {
+		return bytes.Compare(e.end, newEnd) > 0
 	})
 
 	// Keep only the values that fall inside the trimmed range. kvs is sorted, so
@@ -187,14 +203,12 @@ func (sc *snapshotCache) insert(begin, end []byte, kvs []KeyValue) {
 
 	switch hi - lo {
 	case 0:
-		sc.entries = append(sc.entries, cacheEntry{})
-		copy(sc.entries[lo+1:], sc.entries[lo:])
-		sc.entries[lo] = fresh
+		es.insert(lo, fresh)
 	case 1:
-		sc.entries[lo] = fresh
+		es.set(lo, fresh)
 	default:
-		sc.entries[lo] = fresh
-		sc.entries = append(sc.entries[:lo+1], sc.entries[hi:]...)
+		es.delete(lo, hi)
+		es.insert(lo, fresh)
 	}
 }
 
@@ -244,8 +258,7 @@ func (sc *snapshotCache) getRangeKVs(begin, end []byte) ([]KeyValue, bool) {
 // already carries the slow path's clear-headroom, with the merge limiting itself
 // afterwards.
 func (sc *snapshotCache) getRangeKVsLimited(begin, end []byte, budget int, reverse bool) ([]KeyValue, bool) {
-	n := len(sc.entries)
-	if n == 0 || bytes.Compare(begin, end) >= 0 {
+	if sc.entries.Len() == 0 || bytes.Compare(begin, end) >= 0 {
 		return nil, false
 	}
 	if reverse {
@@ -253,19 +266,19 @@ func (sc *snapshotCache) getRangeKVsLimited(begin, end []byte, budget int, rever
 	}
 
 	// Find the first entry whose end > begin (could contain begin).
-	i := sort.Search(n, func(i int) bool {
-		return bytes.Compare(sc.entries[i].end, begin) > 0
+	i, first := sc.entries.find(func(e *cacheEntry) bool {
+		return bytes.Compare(e.end, begin) > 0
 	})
 
-	if i >= n || bytes.Compare(sc.entries[i].begin, begin) > 0 {
+	if first == nil || bytes.Compare(first.begin, begin) > 0 {
 		return nil, false // begin is not covered
 	}
 
 	// Walk entries ascending, collecting KVs, checking for gaps.
 	var result []KeyValue
 	cur := begin
-	for j := i; j < n; j++ {
-		e := &sc.entries[j]
+	for it := sc.entries.cursor(i); it.valid(); it.next() {
+		e := it.item()
 		if bytes.Compare(e.begin, cur) > 0 {
 			return nil, false // gap
 		}
@@ -311,11 +324,9 @@ func (sc *snapshotCache) getRangeKVsLimited(begin, end []byte, budget int, rever
 // C++'s counterpart is getRangeValueBack, whose cache walk bounds itself the same way
 // (ReadYourWrites.actor.cpp:1091).
 func (sc *snapshotCache) getRangeKVsBack(begin, end []byte, budget int) ([]KeyValue, bool) {
-	n := len(sc.entries)
-
 	// Last entry that can hold a key below end.
-	j := sort.Search(n, func(i int) bool {
-		return bytes.Compare(sc.entries[i].begin, end) >= 0
+	j := sc.entries.search(func(e *cacheEntry) bool {
+		return bytes.Compare(e.begin, end) >= 0
 	}) - 1
 	if j < 0 {
 		return nil, false
@@ -323,8 +334,8 @@ func (sc *snapshotCache) getRangeKVsBack(begin, end []byte, budget int) ([]KeyVa
 
 	var desc []KeyValue
 	cur := end // everything at or above cur is accounted for
-	for ; j >= 0; j-- {
-		e := &sc.entries[j]
+	for it := sc.entries.cursor(j); it.valid(); it.prev() {
+		e := it.item()
 		if bytes.Compare(e.end, cur) < 0 {
 			return nil, false // gap between this entry and what we already covered
 		}
@@ -367,21 +378,13 @@ func reversedKVs(kvs []KeyValue) []KeyValue {
 // if the key falls within a known range. value is nil if the key doesn't exist
 // at the server. Returns (nil, false) if the key's range is unknown.
 func (sc *snapshotCache) getKey(key []byte) ([]byte, bool) {
-	n := len(sc.entries)
-	if n == 0 {
-		return nil, false
-	}
-
-	// Find entry containing key: last entry with begin <= key, check key < end.
-	i := sort.Search(n, func(i int) bool {
-		return bytes.Compare(sc.entries[i].begin, key) > 0
+	// Find the entry containing key: the first one ending after key, when it
+	// begins at or before key (entries are sorted and non-overlapping).
+	_, e := sc.entries.find(func(e *cacheEntry) bool {
+		return bytes.Compare(e.end, key) > 0
 	})
-	if i == 0 {
+	if e == nil || bytes.Compare(e.begin, key) > 0 {
 		return nil, false
-	}
-	e := &sc.entries[i-1]
-	if bytes.Compare(key, e.end) >= 0 {
-		return nil, false // key is past this entry's range
 	}
 
 	// Key is in [e.begin, e.end). Binary search the KVs.
@@ -398,15 +401,15 @@ func (sc *snapshotCache) getKey(key []byte) ([]byte, bool) {
 // origin: begin moves up forward, end moves down in reverse.
 func (sc *snapshotCache) skipKnownEmpty(begin, end []byte, reverse bool) ([]byte, []byte) {
 	origBegin, origEnd := begin, end
-	es := sc.entries
+	es := &sc.entries
 	for bytes.Compare(begin, end) < 0 {
 		if reverse {
 			// The entry holding the keys just below end.
-			j := sort.Search(len(es), func(i int) bool { return bytes.Compare(es[i].begin, end) >= 0 }) - 1
-			if j < 0 || bytes.Compare(es[j].end, end) < 0 {
+			j := es.search(func(e *cacheEntry) bool { return bytes.Compare(e.begin, end) >= 0 }) - 1
+			if j < 0 || bytes.Compare(es.at(j).end, end) < 0 {
 				break
 			}
-			e := &es[j]
+			e := es.at(j)
 			k := sort.Search(len(e.kvs), func(k int) bool { return bytes.Compare(e.kvs[k].Key, end) >= 0 })
 			if k > 0 && bytes.Compare(e.kvs[k-1].Key, begin) >= 0 {
 				break
@@ -414,11 +417,10 @@ func (sc *snapshotCache) skipKnownEmpty(begin, end []byte, reverse bool) ([]byte
 			end = e.begin
 			continue
 		}
-		i := sort.Search(len(es), func(i int) bool { return bytes.Compare(es[i].end, begin) > 0 })
-		if i == len(es) || bytes.Compare(es[i].begin, begin) > 0 {
+		_, e := es.find(func(e *cacheEntry) bool { return bytes.Compare(e.end, begin) > 0 })
+		if e == nil || bytes.Compare(e.begin, begin) > 0 {
 			break
 		}
-		e := &es[i]
 		k := sort.Search(len(e.kvs), func(k int) bool { return bytes.Compare(e.kvs[k].Key, begin) >= 0 })
 		if k < len(e.kvs) && bytes.Compare(e.kvs[k].Key, end) < 0 {
 			break
@@ -439,16 +441,16 @@ func (sc *snapshotCache) skipKnownEmpty(begin, end []byte, reverse bool) ([]byte
 // knownPast reports whether the cache knows the position adjacent to key in scan
 // direction: keyAfter(key) forward, the keys just below key in reverse.
 func (sc *snapshotCache) knownPast(key []byte, reverse bool) bool {
-	es := sc.entries
+	es := &sc.entries
 	if reverse {
-		i := sort.Search(len(es), func(i int) bool { return bytes.Compare(es[i].begin, key) >= 0 })
-		return i > 0 && bytes.Compare(es[i-1].end, key) >= 0
+		i := es.search(func(e *cacheEntry) bool { return bytes.Compare(e.begin, key) >= 0 })
+		return i > 0 && bytes.Compare(es.at(i-1).end, key) >= 0
 	}
-	i := sort.Search(len(es), func(i int) bool { return bytes.Compare(es[i].begin, key) > 0 })
-	if i > 0 && bytes.Compare(es[i-1].end, key) > 0 && !isKeyAfter(es[i-1].end, key) {
+	i := es.search(func(e *cacheEntry) bool { return bytes.Compare(e.begin, key) > 0 })
+	if i > 0 && bytes.Compare(es.at(i-1).end, key) > 0 && !isKeyAfter(es.at(i-1).end, key) {
 		return true
 	}
-	return i < len(es) && isKeyAfter(es[i].begin, key)
+	return i < es.Len() && isKeyAfter(es.at(i).begin, key)
 }
 
 // isKeyAfter reports a == keyAfter(b) without allocating.

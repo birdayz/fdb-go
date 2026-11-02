@@ -27,12 +27,23 @@ type commitInput struct {
 	metricStart    time.Time
 	commitStarted  time.Time
 	versionstamp   *versionstampCompletion
+
+	// reportConflictingKeys is CommitTransactionRef.report_conflicting_keys (NativeAPI.actor.cpp:6887-6889).
+	reportConflictingKeys bool
 }
 
 type commitOutcome struct {
 	version int64
 	batchID uint16
 	epoch   int64
+	// conflictReply marks a not_committed delivered in-band as CommitID{invalidVersion}
+	// (CommitProxyServer.actor.cpp:2448-2464): the reply that replaces the transaction's
+	// conflicting keys with conflictingKeys, nil when it carried no indices
+	// (NativeAPI.actor.cpp:6700-6717).
+	conflictReply      bool
+	conflictIndices    []int32
+	hasConflictIndices bool
+	conflictingKeys    *conflictingKeyMap
 }
 
 // captureCommit runs under the caller's execution lease. Operands stay in the
@@ -59,7 +70,7 @@ func (tx *Transaction) captureCommitVectors(muts []Mutation, mutsOwned bool, wri
 	input := &commitInput{
 		db: tx.db, tenantID: tx.tenantId, lockAware: tx.lockAware, isDummy: tx.isDummy,
 		span: tx.currentSpan(), tags: append([]string(nil), tx.tags...),
-		muts: muts, readConflicts: reads,
+		muts: muts, readConflicts: reads, reportConflictingKeys: tx.reportConflictingKeys,
 		writeConflicts: writeConflicts,
 	}
 	tx.readVersionMu.Lock()

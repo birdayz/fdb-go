@@ -74,27 +74,27 @@ func TestForwardCacheDescriptorAllocations(t *testing.T) {
 	rows := []KeyValue{{Key: []byte("b"), Value: []byte("first")}, {Key: []byte("y"), Value: []byte("last")}}
 	reverseRows := []KeyValue{rows[1], rows[0]}
 	var c rywCache
-	entries := make([]cacheEntry, 0, 1)
 	var calls int
 	check := func() {
 		calls++
-		if len(c.serverCache.entries) != 1 || len(c.serverCache.entries[0].kvs) != 2 || string(c.serverCache.entries[0].kvs[0].Key) != "b" || string(c.serverCache.entries[0].kvs[1].Key) != "y" {
-			t.Fatalf("nonempty cache control = %v", c.serverCache.entries)
+		es := &c.serverCache.entries
+		if es.Len() != 1 || len(es.at(0).kvs) != 2 || string(es.at(0).kvs[0].Key) != "b" || string(es.at(0).kvs[1].Key) != "y" {
+			t.Fatalf("nonempty cache control = %v", c.serverCache.entryList())
 		}
 	}
 	const samples = 1000
 	direct := testing.AllocsPerRun(samples, func() {
-		c.serverCache.entries = entries
+		c.serverCache.reset()
 		c.serverCache.insert(begin, end, rows)
 		check()
 	})
 	forward := testing.AllocsPerRun(samples, func() {
-		c.serverCache.entries = entries
+		c.serverCache.reset()
 		c.cacheServerResult(begin, end, rows, false, false)
 		check()
 	})
 	reverse := testing.AllocsPerRun(samples, func() {
-		c.serverCache.entries = entries
+		c.serverCache.reset()
 		c.cacheServerResult(begin, end, reverseRows, false, true)
 		check()
 	})

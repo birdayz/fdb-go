@@ -137,6 +137,10 @@ func (input *commitInput) commitNative(ctx context.Context) (result commitOutcom
 	outcome, commitErr := parseCommitOutcome(resp.Body)
 	outcome.epoch = result.epoch
 	result = outcome
+	if result.conflictReply && result.hasConflictIndices {
+		// The indices name the read_conflict_ranges this request shipped (NativeAPI.actor.cpp:6711-6716).
+		result.conflictingKeys = newConflictingKeyMap(result.conflictIndices, input.readConflicts)
+	}
 	if commitErr != nil {
 		var fdbErr *wire.FDBError
 		if !errors.As(commitErr, &fdbErr) {
@@ -502,6 +506,8 @@ func buildCommitInputRequest(input *commitInput, replyToken transport.UID) (body
 			WriteConflictRanges: writeCRs,
 			Mutations:           mutations,
 			ReadSnapshot:        readSnapshotVersion,
+			// NativeAPI.actor.cpp:6887-6889.
+			Report_conflicting_keys: input.reportConflictingKeys,
 			// Lock_aware is intentionally NOT set: libfdb_c sets only the request FLAG
 			// (FLAG_IS_LOCK_AWARE below; NativeAPI.actor.cpp:6878) and the commit proxy re-derives
 			// transaction.lock_aware from the flag server-side (CommitProxyServer.actor.cpp:221).
@@ -573,7 +579,11 @@ func parseCommitOutcome(data []byte) (commitOutcome, error) {
 	// 6653 success-gate, :6726 throw). Without this check a conflict-shaped
 	// CommitID would read as a SUCCESSFUL commit at version -1.
 	if reply.Version == InvalidVersion {
-		return commitOutcome{}, &wire.FDBError{Code: ErrNotCommitted}
+		return commitOutcome{
+			conflictReply:      true,
+			conflictIndices:    reply.ConflictingKRIndices,
+			hasConflictIndices: reply.HasConflictingKRIndices,
+		}, &wire.FDBError{Code: ErrNotCommitted}
 	}
 	return commitOutcome{version: reply.Version, batchID: reply.TxnBatchId}, nil
 }

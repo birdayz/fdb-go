@@ -50,6 +50,10 @@ type selectorRangeRead struct {
 // the checks in C++ order, the route (readWithConflictRange, :397-406), the walk
 // to its first wait, the pin, and registration in the commit barrier.
 func (tx *Transaction) issueSelectorRange(parent context.Context, begin, end KeySelector, limit, byteTarget int, reverse, snapshot bool) *selectorRangeRead {
+	if tx.routesSpecialKeyRange(begin.Key, end.Key) { // RYW:1716-1721, before every other check
+		r := &selectorRangeRead{tx: tx, release: noopRelease}
+		return r.finish(tx.specialKeyRange(begin, end, limit, byteTarget, reverse))
+	}
 	ctx, release, counted := tx.opContextFor(parent, true)
 	r := &selectorRangeRead{tx: tx, ctx: ctx, release: release, reverse: reverse, snapshot: snapshot}
 	if err := tx.checkReadState(ctx); err != nil { // used_during_commit, resetPromise (:1732-1737)
@@ -176,7 +180,7 @@ func (r *selectorRangeRead) read(clone bool) ([]KeyValue, bool, error) {
 		ranges := r.localConflicts
 		if !r.local {
 			b, e := rywRangeConflictSpan(r.begin, r.end, res, r.reverse, r.maxKey)
-			tx.ryw.withLock(func() { ranges = r.view.conflictRanges(b, e) })
+			ranges = r.view.conflictRanges(b, e) // a pinned version is immutable: no lock
 		}
 		if err := tx.addReadConflictsFor(ctx, ranges); err != nil {
 			return nil, false, tx.trackReadOperation(ctx, err)

@@ -135,7 +135,7 @@ func nodesAgree(w *rywWrites) error {
 	for bytes.Compare(p, allKeysEnd) < 0 {
 		seg := w.nodes.segmentAt(p)
 		b, e := seg.begin.materialize(), seg.end.materialize()
-		entry, hasEntry := w.writes[string(b)]
+		entry, hasEntry := w.entry(string(b))
 		if seg.op {
 			if !hasEntry {
 				return fmt.Errorf("operation segment [%q,%q) has no writes entry", b, e)
@@ -144,7 +144,7 @@ func nodesAgree(w *rywWrites) error {
 				return fmt.Errorf("operation segment %q unreadable %t, stores say %t", b, seg.unreadable, want)
 			}
 		} else {
-			for k := range w.writes {
+			for _, k := range w.writeKeys() {
 				if bytes.Compare([]byte(k), b) >= 0 && bytes.Compare([]byte(k), e) < 0 && !w.isUnreadable([]byte(k)) {
 					return fmt.Errorf("range segment [%q,%q) holds the entry %q", b, e, k)
 				}

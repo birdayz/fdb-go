@@ -94,16 +94,16 @@ func materializedRYWBounds(c *rywCache, hi []byte, includeWrites bool) [][]byte 
 		bounds = append(bounds, key, append(append([]byte{}, key...), 0))
 	}
 	if includeWrites {
-		for key := range c.liveLocked().writes {
+		for _, key := range c.liveLocked().writeKeys() {
 			addKey([]byte(key))
 		}
-		for _, ranges := range [][]rywRange{c.liveLocked().cleared, c.liveLocked().unreadableRanges} {
+		for _, ranges := range [][]rywRange{rangeList(&c.liveLocked().cleared), rangeList(&c.liveLocked().unreadableRanges)} {
 			for _, r := range ranges {
 				bounds = append(bounds, r.begin, r.end)
 			}
 		}
 	}
-	for _, entry := range c.serverCache.entries {
+	for _, entry := range c.serverCache.entryList() {
 		bounds = append(bounds, entry.begin, entry.end)
 		for _, kv := range entry.kvs {
 			addKey(kv.Key)
@@ -231,9 +231,10 @@ func TestRYWBoundarySuccessorsOwnTheirStorage(t *testing.T) {
 	key := make([]byte, 1, 16)
 	copy(key[:cap(key)], bytes.Repeat([]byte{0xee}, cap(key)))
 	key[0] = 'a'
-	c := &rywCache{serverCache: snapshotCache{entries: []cacheEntry{{
+	c := &rywCache{}
+	c.serverCache.entries.insert(0, cacheEntry{
 		begin: []byte("a"), end: []byte("b"), kvs: []KeyValue{{Key: key, Value: []byte("v")}},
-	}}}}
+	})
 	_, first := c.mergedBoundsLocked(key, []byte{0xff}, c.viewLocked(true))
 	if string(first) != "a\x00" || cap(first) != len(first) || key[:cap(key)][1] != 0xee {
 		t.Fatalf("successor did not use independent exact-capacity storage: %x, cap=%d", first, cap(first))

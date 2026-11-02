@@ -287,6 +287,14 @@ var replyAsserters = map[string]func(t *testing.T, data []byte){
 			t.Fatal("parseCommitReply = nil, want not_committed (1020)")
 		}
 		assertFDBErrorCode(t, err, ErrNotCommitted)
+		// conflictingKRIndices is a VectorRef<int> (CommitProxyInterface.h:193) the C++
+		// constructor filled with {0, 2}: a count, then the ints, not a byte string.
+		out, err := parseCommitOutcome(data)
+		assertFDBErrorCode(t, err, ErrNotCommitted)
+		if !out.conflictReply || !out.hasConflictIndices || len(out.conflictIndices) != 2 ||
+			out.conflictIndices[0] != 0 || out.conflictIndices[1] != 2 {
+			t.Fatalf("commit outcome %+v, want an in-band conflict with indices [0 2]", out)
+		}
 	},
 	"WatchValueReply_basic": func(t *testing.T, data []byte) {
 		// Production path: a non-error reply means "key changed".

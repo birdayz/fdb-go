@@ -103,7 +103,7 @@ func keysOf(kvs []KeyValue) string {
 // cacheDump renders the snapshot cache entries.
 func (c *rywCache) cacheDump() string {
 	var b strings.Builder
-	for _, e := range c.serverCache.entries {
+	for _, e := range c.serverCache.entryList() {
 		fmt.Fprintf(&b, "[%q,%q){%s} ", e.begin, e.end, keysOf(e.kvs))
 	}
 	return strings.TrimSpace(b.String())

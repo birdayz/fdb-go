@@ -213,7 +213,9 @@ struct GoEmitterV5 {
                 break;
             case FieldKind::Optional:
                 fprintf(f, "\tHas%s bool   // slot %d, optional tag\n", gn.c_str(), fd.vtableSlot);
-                if (fd.optScalar) {
+                if (fd.optInt32Vector) {
+                    fprintf(f, "\t%s    []int32 // slot %d, optional vector of int32\n", gn.c_str(), fd.vtableSlot + 1);
+                } else if (fd.optScalar) {
                     // Optional<scalar> (Optional<UID> [16]byte, or Optional<primitive> int64/…):
                     // a fixed-size scalar value behind the union reloff, not []byte.
                     fprintf(f, "\t%s    %s // slot %d, optional scalar value\n", gn.c_str(), fd.scalar.goType, fd.vtableSlot + 1);
@@ -369,7 +371,10 @@ private:
                 // (flat_buffers.h:1022-1037, LoadAlternative :863-886); otherwise empty.
                 fprintf(f, "\tif %s.FieldPresent(%s) && %s.ReadUint8(%s) == 1 && %s.FieldPresent(%s + 1) {\n",
                         rv, slot.c_str(), rv, slot.c_str(), rv, slot.c_str());
-                if (fd.optScalar && fd.optScalarIsArray) {
+                if (fd.optInt32Vector) {
+                    // [u32 count][count int32s] behind the union reloff (flat_buffers.h:1205-1232).
+                    fprintf(f, "\t\tm.%s = %s.ReadVectorInt32(%s + 1)\n", gn.c_str(), rv, slot.c_str());
+                } else if (fd.optScalar && fd.optScalarIsArray) {
                     // Optional<UID>: the union RelativeOffset points at a BARE fixed-size scalar
                     // (no length prefix, unlike ReadBytes). Read raw + copy into the [16]byte array.
                     fprintf(f, "\t\tcopy(m.%s[:], %s.ReadRelOffRaw(%s + 1, %d))\n",
@@ -457,7 +462,18 @@ private:
                     fprintf(f, "\tm.%s.precomputeSize(ps)\n", gn.c_str());
                 break;
             case FieldKind::Optional:
-                if (fd.optScalar) {
+                if (fd.optInt32Vector) {
+                    // C++ save(VectorLike) (flat_buffers.h:1205-1232): a message writer for the
+                    // n*4 element bytes at start-4, the count at start = RightAlign(cbs+n*4, 4)+4.
+                    fprintf(f, "\tif m.Has%s {\n", gn.c_str());
+                    fprintf(f, "\t\tif n := len(m.%s); n > 0 {\n", gn.c_str());
+                    fprintf(f, "\t\t\tself := ps.GetMessageWriter(n * 4)\n");
+                    fprintf(f, "\t\t\tstart := wire.RightAlign(ps.CurrentBufferSize+n*4, 4) + 4\n");
+                    fprintf(f, "\t\t\tps.Write(start)\n");
+                    fprintf(f, "\t\t\tself.WriteToAt(ps, start-4)\n");
+                    fprintf(f, "\t\t} else {\n\t\t\tps.VisitDynamicSize(0)\n\t\t}\n");
+                    fprintf(f, "\t}\n");
+                } else if (fd.optScalar) {
                     // Optional<scalar> (UID or primitive): reserve a BARE fixed-size scalar
                     // payload (no length prefix) — C++ SaveAlternative writes it at cbs+sizeof
                     // (flat_buffers.h:848), same as the Variant scalar arm. Size-driven, so this
@@ -579,7 +595,24 @@ private:
                             (safeParam(gn) + "Start").c_str(), gn.c_str());
                 break;
             case FieldKind::Optional:
-                if (fd.optScalar && fd.optScalarIsArray) {
+                if (fd.optInt32Vector) {
+                    // C++ save(VectorLike) (flat_buffers.h:1205-1232), as in precomputeSize:
+                    // elements at the writer's final location, the count just past them.
+                    auto offVar = safeParam(gn) + "Off";
+                    fprintf(f, "\tif m.Has%s {\n", gn.c_str());
+                    fprintf(f, "\t\tif n := len(m.%s); n > 0 {\n", gn.c_str());
+                    fprintf(f, "\t\t\tself := wb.GetMessageWriter(n*4, false)\n");
+                    fprintf(f, "\t\t\tfor i, v := range m.%s {\n", gn.c_str());
+                    fprintf(f, "\t\t\t\tvar b [4]byte\n");
+                    fprintf(f, "\t\t\t\tbinary.LittleEndian.PutUint32(b[:], uint32(v))\n");
+                    fprintf(f, "\t\t\t\tself.WriteScalar(b[:], i*4)\n");
+                    fprintf(f, "\t\t\t}\n");
+                    fprintf(f, "\t\t\twb.WriteUint32(uint32(n), self.FinalLocation+4)\n");
+                    fprintf(f, "\t\t\tself.WriteToAt(self.FinalLocation)\n");
+                    fprintf(f, "\t\t\t%s = wb.CurrentBufferSize\n", offVar.c_str());
+                    fprintf(f, "\t\t} else {\n\t\t\t%s, _ = wb.VisitDynamicSize(nil)\n\t\t}\n", offVar.c_str());
+                    fprintf(f, "\t}\n");
+                } else if (fd.optScalar && fd.optScalarIsArray) {
                     // Optional<UID>: write the bare [16]byte OUT-OF-LINE at cbs+size (C++
                     // SaveAlternative, flat_buffers.h:848); the 1-byte tag + 4-byte reloff
                     // (written into self below) point at it. No length prefix.

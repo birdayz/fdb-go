@@ -152,7 +152,7 @@ func TestRYWObsoleteBaseReleased(t *testing.T) {
 			if !c.base.empty() {
 				t.Fatal("obsolete embedded version retains its graph after last unpin")
 			}
-			if !reset && string(c.w.writes["new"].value) != "v" {
+			if e, _ := c.w.entry("new"); !reset && string(e.value) != "v" {
 				t.Fatal("releasing obsolete base damaged the live clone")
 			}
 		})

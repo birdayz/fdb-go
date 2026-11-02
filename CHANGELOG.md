@@ -122,7 +122,12 @@ Each is described in full under Compatibility or Changed below.
   classification in `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77. Changed since
   v0.1.0: `SetReadLockAware` and `SetSizeLimit` (see Changed), and `Transaction.SetTimeout` outside
   [0, INT_MAX] records a deferred 2006 (`invalid_option_value`) like libfdb_c, where a negative
-  value used to disable the timeout (0 still disables it).
+  value used to disable the timeout (0 still disables it). `SetReportConflictingKeys`,
+  `SetTransactionReportConflictingKeys` and `SetSpecialKeySpaceRelaxed` are now honored instead of
+  returning `UnsupportedOptionError`: a `not_committed` leaves its conflicting read ranges under
+  `\xff\xff/transaction/conflicting_keys/`. Other special-key reads fail with
+  `special_keys_cross_module_read` (2112), `special_keys_no_module_found` (2113) or
+  `unsupported_operation` (2108) instead of `key_outside_legal_range` (2004).
 - **Continuation tokens:** key-value cursor tokens (index, COUNT/atomic, BITMAP_VALUE and record scans) strip Java's range common prefix (`KeyValueCursorBase.calculatePrefixLength`), so a token is valid only for the range that minted it, as in Java. Restart paged queries across this encoding correction (#871).
 - **DSN booleans are strictly `true`/`false`** (any case): a bare `?flag`, `1`/`0`, `t`/`f`,
   `yes`/`no` and `on`/`off` now fail at open with 22023.

@@ -29,12 +29,13 @@ import (
 // catches it.
 func assertSnapshotCacheInvariants(t *testing.T, sc *snapshotCache, tag string) {
 	t.Helper()
-	for i, e := range sc.entries {
+	entries := sc.entryList()
+	for i, e := range entries {
 		if bytes.Compare(e.begin, e.end) >= 0 {
 			t.Fatalf("%s: entry %d is empty or inverted: %q..%q", tag, i, e.begin, e.end)
 		}
 		if i > 0 {
-			prev := sc.entries[i-1]
+			prev := entries[i-1]
 			// Sorted AND non-overlapping in one comparison: the previous
 			// entry must end at or before this one begins.
 			if bytes.Compare(prev.end, e.begin) > 0 {
@@ -150,7 +151,7 @@ func TestSnapshotCache_InsertSequencesHoldInvariants(t *testing.T) {
 				assertSnapshotCacheInvariants(t, &sc, fmt.Sprintf("%s after step %d", tc.name, i))
 			}
 			var got []string
-			for _, e := range sc.entries {
+			for _, e := range sc.entryList() {
 				got = append(got, string(e.begin)+".."+string(e.end))
 			}
 			if len(got) != len(tc.want) {

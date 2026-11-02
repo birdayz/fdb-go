@@ -367,6 +367,17 @@ template <class T> bool optionalInnerIsTable() {
     return false;
 }
 
+// An Optional<VectorRef<int>> (CommitID.conflictingKRIndices, CommitProxyInterface.h:193) is a
+// count-prefixed vector of 4-byte ints (save(VectorLike), flat_buffers.h:1205-1232), not a byte
+// string: read as length-prefixed bytes, the element count would be taken as a byte length.
+template <class T> struct is_int32_vector : std::false_type {};
+template <> struct is_int32_vector<VectorRef<int, VecSerStrategy::FlatBuffers>> : std::true_type {};
+template <class V> struct is_int32_vector<Standalone<V>> : is_int32_vector<V> {};
+template <class T> bool optionalInnerIsInt32Vector() {
+    if constexpr (optional_inner_t<T>::is) return is_int32_vector<typename optional_inner_t<T>::type>::value;
+    return false;
+}
+
 // An Optional<scalar-T> (UID, arithmetic, enum) is a bare out-of-line value behind the union
 // offset (flat_buffers.h:848); fb_size gives only the offset's 4 bytes, not the inner's size.
 template <class T> bool optionalInnerIsScalar() {
@@ -417,6 +428,7 @@ struct FieldDesc {
     bool optScalarIsArray = false; // ...and that scalar is the fixed [16]byte UID (slice codegen);
                                    // false ⇒ arithmetic/enum primitive (value encode/decode codegen)
     bool optTable = false;         // Optional<T> of a table with no Go type: presence only
+    bool optInt32Vector = false;   // Optional<VectorRef<int>>: a []int32, count-prefixed
 };
 
 template <class ParentT>
@@ -470,7 +482,10 @@ private:
             break;
         case FieldKind::Optional:
             // C++ Optional<T> via union_like_traits: alternatives = pack<T>.
-            if (optionalInnerIsScalar<T>()) {
+            if (optionalInnerIsInt32Vector<T>()) {
+                fd.optInt32Vector = true;
+                fd.nestedGoType = "";
+            } else if (optionalInnerIsScalar<T>()) {
                 // Optional<scalar-T>: the alternative is a bare out-of-line scalar — capture its
                 // ScalarInfo + REAL inner size (fb_size<Optional<T>> is the union's 4-byte
                 // RelativeOffset, not the inner width), so the codegen emits the scalar path

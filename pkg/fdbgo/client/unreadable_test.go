@@ -100,9 +100,9 @@ func TestRYW_UnreadableKeysIndex(t *testing.T) {
 		c.mu.Unlock()
 		t.Fatalf("cap after clearRange = %q, want nil", got)
 	}
-	if len(c.liveLocked().unreadableKeys) != 0 {
+	if c.liveLocked().unreadableKeys.Len() != 0 {
 		c.mu.Unlock()
-		t.Fatalf("unreadableKeys after clearRange = %q, want empty", c.liveLocked().unreadableKeys)
+		t.Fatalf("unreadableKeys after clearRange = %q, want empty", c.liveLocked().unreadableKeys.appendTo(nil))
 	}
 	c.mu.Unlock()
 }

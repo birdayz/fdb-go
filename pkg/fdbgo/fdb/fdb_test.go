@@ -2156,16 +2156,13 @@ func TestDatabaseOptions_Stubs(t *testing.T) {
 	g.Expect(opts.SetSnapshotRywDisable()).NotTo(HaveOccurred())
 	g.Expect(opts.SetTransactionCausalReadRisky()).NotTo(HaveOccurred())
 	g.Expect(opts.SetTransactionLoggingMaxFieldLength(1000)).NotTo(HaveOccurred())
-	// DB-level defaults for options the per-tx setters reject must ALSO fail loud (consistent
+	g.Expect(opts.SetTransactionReportConflictingKeys()).NotTo(HaveOccurred())
+	// The DB default for an option the per-tx setter rejects must ALSO fail loud (consistent
 	// fail-loud taxonomy across both surfaces; a silent DB default re-opens the migration trap).
-	for _, set := range []func() error{
-		opts.SetTransactionReportConflictingKeys,
-		opts.SetTransactionAutomaticIdempotency,
-	} {
-		var uoe *fdb.UnsupportedOptionError
-		g.Expect(errors.As(set(), &uoe)).To(BeTrue(), "DB-default must reject with *fdb.UnsupportedOptionError")
-		g.Expect(uoe.FDBCode()).To(Equal(2007))
-	}
+	var uoe *fdb.UnsupportedOptionError
+	g.Expect(errors.As(opts.SetTransactionAutomaticIdempotency(), &uoe)).To(BeTrue(),
+		"DB-default must reject with *fdb.UnsupportedOptionError")
+	g.Expect(uoe.FDBCode()).To(Equal(2007))
 	g.Expect(opts.SetTransactionBypassUnreadable()).NotTo(HaveOccurred())
 	g.Expect(opts.SetTransactionIncludePortInAddress()).NotTo(HaveOccurred())
 	g.Expect(opts.SetTransactionUsedDuringCommitProtectionDisable()).NotTo(HaveOccurred())
@@ -2239,6 +2236,8 @@ func TestTransactionOptions_Stubs(t *testing.T) {
 	g.Expect(opts.SetTag("test-tag")).NotTo(HaveOccurred())
 	g.Expect(opts.SetSizeLimit(10_000_000)).NotTo(HaveOccurred())
 	g.Expect(opts.SetMaxRetryDelay(1000)).NotTo(HaveOccurred())
+	g.Expect(opts.SetReportConflictingKeys()).NotTo(HaveOccurred())
+	g.Expect(opts.SetSpecialKeySpaceRelaxed()).NotTo(HaveOccurred())
 
 	// Options that fail UNSAFE if silently ignored (RFC-111 P1.3): the pure-Go
 	// backend rejects them with UnsupportedOptionError rather than the old silent
@@ -2251,18 +2250,11 @@ func TestTransactionOptions_Stubs(t *testing.T) {
 		{"authorization_token", func() error { return opts.SetAuthorizationToken("token") }},
 		{"raw_access", opts.SetRawAccess},
 		{"automatic_idempotency", opts.SetAutomaticIdempotency},
-		{"report_conflicting_keys", opts.SetReportConflictingKeys},
 		{"bypass_storage_quota", opts.SetBypassStorageQuota},
-		// Both configure the special-key-space module, which the pure-Go
-		// backend does not implement at all. Accepting them silently answered
-		// "granted" to a request for an absent capability — and for
-		// enable_writes that is not a permission bit but the switch that arms
-		// libfdb_c's specialKeySpace->commit() translation step, so a silent
-		// nil reported an enabled configuration change that never happens.
-		// report_conflicting_keys above is rejected precisely BECAUSE this
-		// module is missing; the two options that configure the missing module
-		// cannot be the ones that get a pass.
-		{"special_key_space_relaxed", opts.SetSpecialKeySpaceRelaxed},
+		// enable_writes is not a permission bit but the switch that arms libfdb_c's
+		// specialKeySpace->commit() translation step, which the pure-Go backend does
+		// not have, so a silent nil would report an enabled configuration change that
+		// never happens.
 		{"special_key_space_enable_writes", opts.SetSpecialKeySpaceEnableWrites},
 	} {
 		err := tc.set()

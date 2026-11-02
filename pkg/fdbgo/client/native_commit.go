@@ -134,6 +134,11 @@ func (n *nativeCommit) run(caller context.Context, input *commitInput, tok cache
 			if err == nil && tx.readLife == completion.inc {
 				tx.committedVersion = result.version
 			}
+			// The in-band conflict reply replaces the conflicting keys of the state it
+			// committed from (NativeAPI.actor.cpp:6700-6717); after a reset that state is gone.
+			if result.conflictReply && tx.readLife == completion.inc {
+				tx.conflictingKeys.Store(result.conflictingKeys)
+			}
 			completion.finishNativeLocked(result, err)
 		}
 		n.selectResult(err, true, panicked)

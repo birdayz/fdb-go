@@ -1400,6 +1400,25 @@ failure-gated in both, `:888-900` — RFC-111.)
 | A string-strategy vector whose elements do not fill its blob | `ASSERT` in `dynamic_size_traits<VectorRef<T, String>>::load` (`Arena.h:1514-1525`) | `Parse<T>StringVector` fails with `*wire.StringVectorError` | Same rule; an error instead of an assertion. |
 | The locations reply's endpoint scan for a server without a slot-2 endpoint | No scan: C++ decodes the `StorageServerInterface` | Scans the slots the schema defines, not the vtable length the reply claims | The scan is Go's own; bounding it keeps a reply's cost linear in its size. |
 
+### Special key space reads (`\xff\xff` .. `\xff\xff\xff`)
+
+At API version 630 and later, get and getRange inside the special key space go to a port of
+`SpecialKeySpace` (`pkg/fdbgo/client/specialkeys.go`; `SpecialKeySpace.actor.cpp:61-80, 120-493,
+711-729`, `ReadYourWrites.actor.cpp:1634-1638, 1716-1721`): the module table and its
+`special_keys_cross_module_read` (2112) / `special_keys_no_module_found` (2113) checks,
+`SPECIAL_KEY_SPACE_RELAXED`, selector normalization, limits and direction, and
+`\xff\xff/transaction/conflicting_keys/` with `REPORT_CONFLICTING_KEYS` (712) and its database
+default (702). getKey and getMappedRange are not routed, as in C++. What differs:
+
+| Aspect | C++ `libfdb_c` | Go | Why |
+|---|---|---|---|
+| `\xff\xff/transaction/read_conflict_range/`, `.../write_conflict_range/` (`NativeAPI.actor.cpp:1748-1753`) | Render the RYW read-conflict map and write map (`ReadYourWrites.actor.cpp:2121-2215`) | A read that reaches either impl, or a selector that moves into one, fails with `unsupported_operation` (2108) | They need the RYW conflict maps, which are being rewritten; failing is never a wrong answer (TODO.md). |
+| Every other module (`status/json`, `connection_string`, `cluster_file_path`, `cluster_id`, `worker_interfaces`, `metrics`, `management`, `configuration`, `global_config`, `tracing`, `error_message`, `actor_lineage`, `actor_profiler_conf`) | Served by impls that need cluster, process or client state | Each module is one unserved range: any read or selector move that reaches it fails with 2108, including parts of a module where C++ has no impl and would read nothing | A superset of the C++ impl ranges, so no read that C++ answers from such an impl is answered here. |
+| Special-key writes, `SPECIAL_KEY_SPACE_ENABLE_WRITES` | Write modules and `specialKeySpace->commit` | Not implemented; the option is `UnsupportedOptionError` | Unchanged. |
+| A conflict index outside the shipped read conflict ranges | Undefined (`read_conflict_ranges[i]` out of bounds, `NativeAPI.actor.cpp:6713`) | Ignored | The proxy maps every index from the request (`CommitProxyServer.actor.cpp:2448-2462`). |
+| A selector key longer than the maximum key size | Truncated by `KeySelectorRef::setKey` at the C binding | Used as given | No conflicting key reaches the 30 000-byte system key limit. |
+| API version below 630 | Answers a few literal keys (`ReadYourWrites.actor.cpp:1640-1672, 1722-1729`) | Not routed: such reads fail `key_outside_legal_range` (2004), as before | Those keys need cluster state the client does not expose; the failure is explicit. |
+
 ---
 
 ## RFC-164 WS-5 — Go-only divergence reservoir audit

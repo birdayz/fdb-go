@@ -31,12 +31,12 @@ var CommitIDTemplate = wire.NewMessageTemplate(
 const CommitIDMaxAlign = 8
 
 type CommitID struct {
-	Version                 int64  // slot 0
-	TxnBatchId              uint16 // slot 1
-	HasMetadataVersion      bool   // slot 2, optional tag
-	MetadataVersion         []byte // slot 3, optional value
-	HasConflictingKRIndices bool   // slot 4, optional tag
-	ConflictingKRIndices    []byte // slot 5, optional value
+	Version                 int64   // slot 0
+	TxnBatchId              uint16  // slot 1
+	HasMetadataVersion      bool    // slot 2, optional tag
+	MetadataVersion         []byte  // slot 3, optional value
+	HasConflictingKRIndices bool    // slot 4, optional tag
+	ConflictingKRIndices    []int32 // slot 5, optional vector of int32
 }
 
 // UnmarshalFromReader decodes m from r; on error m holds a partial decode.
@@ -66,7 +66,7 @@ func (m *CommitID) decode(r *wire.Reader, b *wire.DecodeBudget) error {
 		m.HasMetadataVersion = true
 	}
 	if r.FieldPresent(CommitIDSlotConflictingKRIndices) && r.ReadUint8(CommitIDSlotConflictingKRIndices) == 1 && r.FieldPresent(CommitIDSlotConflictingKRIndices+1) {
-		m.ConflictingKRIndices = r.ReadBytes(CommitIDSlotConflictingKRIndices + 1)
+		m.ConflictingKRIndices = r.ReadVectorInt32(CommitIDSlotConflictingKRIndices + 1)
 		m.HasConflictingKRIndices = true
 	}
 	if err := r.Err(); err != nil {
@@ -83,7 +83,14 @@ func (m *CommitID) precomputeSize(ps *wire.PrecomputeSize) int {
 		ps.VisitDynamicSize(len(m.MetadataVersion))
 	}
 	if m.HasConflictingKRIndices {
-		ps.VisitDynamicSize(len(m.ConflictingKRIndices))
+		if n := len(m.ConflictingKRIndices); n > 0 {
+			self := ps.GetMessageWriter(n * 4)
+			start := wire.RightAlign(ps.CurrentBufferSize+n*4, 4) + 4
+			ps.Write(start)
+			self.WriteToAt(ps, start-4)
+		} else {
+			ps.VisitDynamicSize(0)
+		}
 	}
 	{
 		n := ps.GetMessageWriter(int(CommitIDVTable[1]))
@@ -102,7 +109,19 @@ func (m *CommitID) writeToBuffer(wb *wire.WriteToBuffer, vtableStart int, tmpl *
 		metadataVersionOff, _ = wb.VisitDynamicSize(m.MetadataVersion)
 	}
 	if m.HasConflictingKRIndices {
-		conflictingKRIndicesOff, _ = wb.VisitDynamicSize(m.ConflictingKRIndices)
+		if n := len(m.ConflictingKRIndices); n > 0 {
+			self := wb.GetMessageWriter(n*4, false)
+			for i, v := range m.ConflictingKRIndices {
+				var b [4]byte
+				binary.LittleEndian.PutUint32(b[:], uint32(v))
+				self.WriteScalar(b[:], i*4)
+			}
+			wb.WriteUint32(uint32(n), self.FinalLocation+4)
+			self.WriteToAt(self.FinalLocation)
+			conflictingKRIndicesOff = wb.CurrentBufferSize
+		} else {
+			conflictingKRIndicesOff, _ = wb.VisitDynamicSize(nil)
+		}
 	}
 	selfW := wb.GetMessageWriter(int(CommitIDVTable[1]), true)
 	selfStart := selfW.FinalLocation

@@ -3,7 +3,6 @@ package client
 import (
 	"bytes"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -15,14 +14,14 @@ import (
 // [keyAfter(k), next) unless next is keyAfter(k); a node without one gives
 // [k, next) (WriteMap.cpp:312-347, WriteMap.h:176-177).
 //
-// The five mutators below are the only writers of sorted, each a line-for-line
+// The five mutators below are the only writers of seq, each a line-for-line
 // port of its C++ counterpart's effect on keys and flags. Keys handed to a
 // mutator are retained and must never be written afterwards; clone shares them.
 //
 // Lazy build: until build is first called, mutators append to log, so a
-// write-only transaction pays O(1) per write instead of an O(n) slice insert.
-// build replays the log in order, merging each run of consecutive mutate ops in
-// one sorted pass (mergeMutates). After the first build, mutators apply directly.
+// write-only transaction pays O(1) per write instead of an O(log n) insert.
+// build replays the log in order, merging a long run of consecutive mutate ops
+// in one sorted pass (mergeMutates). After the first build, mutators apply directly.
 type rywNode struct {
 	key []byte
 	op  bool // the C++ operation stack is non-empty
@@ -31,8 +30,11 @@ type rywNode struct {
 }
 
 type rywNodes struct {
-	sorted []rywNode   // by key; nil until the first build, then holds the sentinels
-	log    []rywNodeOp // structural ops not yet applied (only while sorted == nil)
+	// seq holds the nodes by key once built, the sentinels included. It is a
+	// persistent sequence, as C++'s PTree is, so clone is O(1).
+	seq   pseq[rywNode]
+	built bool
+	log   []rywNodeOp // structural ops not yet applied (only while !built)
 	// first holds the log's first op, so a transaction's first write allocates
 	// no log. clone copies the log out of it.
 	first [1]rywNodeOp
@@ -89,7 +91,7 @@ func equalsKeyAfter(key, compareKey []byte) bool {
 // mutate is WriteMap::mutate (WriteMap.cpp:87-158), structural effect only.
 // versionstamp is operation == SetVersionstampedValue || SetVersionstampedKey.
 func (n *rywNodes) mutate(key []byte, addConflict, versionstamp bool) {
-	if n.sorted == nil {
+	if !n.built {
 		n.logOp(rywNodeOp{kind: rywNodeOpMutate, begin: key, addConflict: addConflict, versionstamp: versionstamp})
 		return
 	}
@@ -103,7 +105,7 @@ func (n *rywNodes) clear(begin, end []byte, addConflict bool) {
 	if bytes.Compare(begin, end) >= 0 {
 		return
 	}
-	if n.sorted == nil {
+	if !n.built {
 		n.logOp(rywNodeOp{kind: rywNodeOpClear, begin: begin, end: end, addConflict: addConflict})
 		return
 	}
@@ -116,7 +118,7 @@ func (n *rywNodes) addConflictRange(begin, end []byte) {
 	if bytes.Compare(begin, end) >= 0 {
 		return
 	}
-	if n.sorted == nil {
+	if !n.built {
 		n.logOp(rywNodeOp{kind: rywNodeOpConflict, begin: begin, end: end})
 		return
 	}
@@ -130,26 +132,27 @@ func (n *rywNodes) addUnmodifiedAndUnreadableRange(begin, end []byte) {
 	if bytes.Compare(begin, end) >= 0 {
 		return
 	}
-	if n.sorted == nil {
+	if !n.built {
 		n.logOp(rywNodeOp{kind: rywNodeOpUnreadable, begin: begin, end: end})
 		return
 	}
 	n.applyUnreadableRange(begin, end)
 }
 
-// clone returns a copy that shares keys (never written after insertion) but no
-// slice storage, so mutating either never changes the other.
+// clone returns a copy that shares keys (never written after insertion) and,
+// in O(1), the node sequence; mutating either never changes the other.
 func (n *rywNodes) clone() rywNodes {
-	return rywNodes{sorted: slices.Clone(n.sorted), log: slices.Clone(n.log)}
+	return rywNodes{seq: n.seq.share(), built: n.built, log: slices.Clone(n.log)}
 }
 
 // build applies the pending log. Idempotent; the owner calls it under its lock
 // before any query, and every query calls it too (a no-op once built).
 func (n *rywNodes) build() {
-	if n.sorted != nil {
+	if n.built {
 		return
 	}
-	n.sorted = rywNodeSentinels()
+	n.built = true
+	n.seq.build(rywNodeSentinels())
 	log := n.log
 	n.log = nil
 	for i := 0; i < len(log); {
@@ -158,7 +161,15 @@ func (n *rywNodes) build() {
 			for j < len(log) && log[j].kind == rywNodeOpMutate {
 				j++
 			}
-			n.mergeMutates(log[i:j])
+			// A run short against the nodes applies in O(log n) per op; a long one
+			// merges in one O(n) pass. Both are the ops applied in order.
+			if run := log[i:j]; len(run) < n.seq.Len()/8 {
+				for _, op := range run {
+					n.applyMutate(op.begin, op.addConflict, op.versionstamp)
+				}
+			} else {
+				n.mergeMutates(run)
+			}
 			i = j
 			continue
 		}
@@ -177,17 +188,18 @@ func (n *rywNodes) build() {
 
 // --- WriteMap::iterator ---------------------------------------------------------
 
-// rywNodeIter ports WriteMap::iterator (WriteMap.h:152-205) over a sorted node
-// slice: i is the entry (finger[beginLen-1]), i+1 the next entry
-// (finger[endLen-1]); offset false is the operation at entry, true the range after it.
+// rywNodeIter ports WriteMap::iterator (WriteMap.h:152-205) over the node
+// sequence by index, for the mutators: i is the entry (finger[beginLen-1]), i+1
+// the next entry (finger[endLen-1]); offset false is the operation at entry,
+// true the range after it. The walk iterates with rywNodeCursor instead.
 type rywNodeIter struct {
-	s      []rywNode
+	s      *pseq[rywNode]
 	i      int
 	offset bool
 }
 
-func (it *rywNodeIter) entry() *rywNode     { return &it.s[it.i] }   // WriteMap.h:195
-func (it *rywNodeIter) nextEntry() *rywNode { return &it.s[it.i+1] } // WriteMap.h:196
+func (it *rywNodeIter) entry() *rywNode     { return it.s.at(it.i) }     // WriteMap.h:195
+func (it *rywNodeIter) nextEntry() *rywNode { return it.s.at(it.i + 1) } // WriteMap.h:196
 
 func (it *rywNodeIter) isClearedRange() bool    { return it.offset && it.entry().followingCleared }  // :165
 func (it *rywNodeIter) isUnmodifiedRange() bool { return it.offset && !it.entry().followingCleared } // :166
@@ -231,8 +243,8 @@ func (it *rywNodeIter) keyAtBegin() bool { return !it.offset || !it.entry().op }
 // no containing segment in C++ (its finger would be empty); it clamps to the
 // sentinel segment [\xff\xff, \xff\xff\x00).
 func (it *rywNodeIter) skip(key []byte) {
-	j := sort.Search(len(it.s), func(j int) bool { return bytes.Compare(it.s[j].key, key) > 0 })
-	it.i = min(j-1, len(it.s)-2)
+	j := it.s.search(func(nd *rywNode) bool { return bytes.Compare(nd.key, key) > 0 })
+	it.i = min(j-1, it.s.Len()-2)
 	it.offset = !it.entry().op || !bytes.Equal(it.entry().key, key) // :346
 }
 
@@ -256,29 +268,27 @@ func (it *rywNodeIter) dec() {
 	}
 }
 
-func (n *rywNodes) iter() rywNodeIter { return rywNodeIter{s: n.sorted} }
+func (n *rywNodes) iter() rywNodeIter { return rywNodeIter{s: &n.seq} }
 
 // --- PTreeImpl helpers ----------------------------------------------------------
 
 // insert is PTreeImpl::insert (VersionedMap.h:284-303): an equal key replaces
 // the node (:288-289).
 func (n *rywNodes) insert(node rywNode) {
-	i, found := slices.BinarySearchFunc(n.sorted, node.key, func(e rywNode, k []byte) int { return bytes.Compare(e.key, k) })
-	if found {
-		n.sorted[i] = node
+	i, at := n.seq.find(func(e *rywNode) bool { return bytes.Compare(e.key, node.key) >= 0 })
+	if at != nil && bytes.Equal(at.key, node.key) {
+		n.seq.set(i, node)
 		return
 	}
-	n.sorted = slices.Insert(n.sorted, i, node)
+	n.seq.insert(i, node)
 }
 
 // removeRange is PTreeImpl::remove(begin, end) (VersionedMap.h:409-444): every
 // node with begin <= key < end, the bounds being ExtStringRefs.
 func (n *rywNodes) removeRange(begin, end rywBoundary) {
-	lo := sort.Search(len(n.sorted), func(j int) bool { return (rywBoundary{key: n.sorted[j].key}).compare(begin) >= 0 })
-	hi := sort.Search(len(n.sorted), func(j int) bool { return (rywBoundary{key: n.sorted[j].key}).compare(end) >= 0 })
-	if lo < hi {
-		n.sorted = slices.Delete(n.sorted, lo, hi)
-	}
+	lo := n.seq.search(func(nd *rywNode) bool { return (rywBoundary{key: nd.key}).compare(begin) >= 0 })
+	hi := n.seq.search(func(nd *rywNode) bool { return (rywBoundary{key: nd.key}).compare(end) >= 0 })
+	n.seq.delete(lo, hi)
 }
 
 // --- mutator ports --------------------------------------------------------------
@@ -310,11 +320,25 @@ func mutatedEntry(key []byte, e rywNode, offset, addConflict, versionstamp bool)
 
 // applyMutate is WriteMap::mutate (WriteMap.cpp:87-158) on built nodes.
 func (n *rywNodes) applyMutate(key []byte, addConflict, versionstamp bool) {
-	it := n.iter()
-	it.skip(key) // :89-91
+	// skip(key) (:89-91): the entry is the last node <= key, which for a key below
+	// allKeys.end is never past the node skip clamps to.
+	i, e := n.seq.before(func(nd *rywNode) bool { return bytes.Compare(nd.key, key) > 0 })
+	if i > n.seq.Len()-2 {
+		it := n.iter()
+		it.skip(key)
+		n.insert(mutatedEntry(key, *it.entry(), it.offset, addConflict, versionstamp))
+		return
+	}
+	at := bytes.Equal(e.key, key)
+	node := mutatedEntry(key, *e, !e.op || !at, addConflict, versionstamp) // offset (:346)
 	// :102-123 insert a node at key; :124-156 remove the node at key and insert
-	// the updated one. Both are an insert at key (VersionedMap.h:288-289).
-	n.insert(mutatedEntry(key, *it.entry(), it.offset, addConflict, versionstamp))
+	// the updated one. Both are an insert at key (VersionedMap.h:288-289): the
+	// node at key is replaced, or the new one goes right after the entry.
+	if at {
+		n.seq.set(i, node)
+	} else {
+		n.seq.insert(i+1, node)
+	}
 }
 
 // mergeMutates applies a run of consecutive mutate ops in one sorted pass. It is
@@ -328,18 +352,19 @@ func (n *rywNodes) applyMutate(key []byte, addConflict, versionstamp bool) {
 // detached the log, and clone never shares it.
 func (n *rywNodes) mergeMutates(run []rywNodeOp) {
 	slices.SortFunc(run, func(a, b rywNodeOp) int { return bytes.Compare(a.begin, b.begin) })
-	out := make([]rywNode, 0, len(n.sorted)+len(run))
+	sorted := n.seq.appendTo(make([]rywNode, 0, n.seq.Len()))
+	out := make([]rywNode, 0, len(sorted)+len(run))
 	si := 0
 	for g := 0; g < len(run); {
 		key := run[g].begin
-		for si < len(n.sorted) && bytes.Compare(n.sorted[si].key, key) < 0 {
-			out = append(out, n.sorted[si])
+		for si < len(sorted) && bytes.Compare(sorted[si].key, key) < 0 {
+			out = append(out, sorted[si])
 			si++
 		}
 		var cur rywNode
-		have := si < len(n.sorted) && bytes.Equal(n.sorted[si].key, key)
+		have := si < len(sorted) && bytes.Equal(sorted[si].key, key)
 		if have {
-			cur = n.sorted[si]
+			cur = sorted[si]
 			si++
 		}
 		for ; g < len(run) && bytes.Equal(run[g].begin, key); g++ {
@@ -352,7 +377,7 @@ func (n *rywNodes) mergeMutates(run []rywNodeOp) {
 		}
 		out = append(out, cur)
 	}
-	n.sorted = append(out, n.sorted[si:]...)
+	n.seq.build(append(out, sorted[si:]...))
 }
 
 // applyClear is WriteMap::clear (WriteMap.cpp:160-203) on built nodes.
@@ -549,22 +574,22 @@ func (n *rywNodes) applyClearNoConflict(begin, end []byte) {
 // rywBoundary.
 func (n *rywNodes) floorCeil(p []byte) (floor, ceil rywBoundary) {
 	n.build()
-	s := n.sorted
-	f := sort.Search(len(s), func(j int) bool { return bytes.Compare(s[j].key, p) > 0 }) - 1
-	nd := s[f]
-	hasNext := f+1 < len(s)
+	s := &n.seq
+	f := s.search(func(nd *rywNode) bool { return bytes.Compare(nd.key, p) > 0 }) - 1
+	nd := s.at(f)
+	hasNext := f+1 < s.Len()
 	if !bytes.Equal(nd.key, p) {
 		// p > nd.key, so p >= keyAfter(nd.key); the next node is > p, so it is not
 		// keyAfter(nd.key) and an operation node contributes that boundary.
 		floor = rywBoundary{key: nd.key, after: nd.op}
 	} else {
 		floor = rywBoundary{key: nd.key}
-		if nd.op && (!hasNext || !equalsKeyAfter(nd.key, s[f+1].key)) {
+		if nd.op && (!hasNext || !equalsKeyAfter(nd.key, s.at(f+1).key)) {
 			return floor, rywBoundary{key: nd.key, after: true}
 		}
 	}
 	if hasNext {
-		ceil = rywBoundary{key: s[f+1].key}
+		ceil = rywBoundary{key: s.at(f + 1).key}
 	}
 	return floor, ceil
 }
@@ -573,12 +598,11 @@ func (n *rywNodes) floorCeil(p []byte) (floor, ceil rywBoundary) {
 // when x is the empty key.
 func (n *rywNodes) prevBoundary(x []byte) rywBoundary {
 	n.build()
-	s := n.sorted
-	f := sort.Search(len(s), func(j int) bool { return bytes.Compare(s[j].key, x) >= 0 }) - 1
+	f := n.seq.search(func(nd *rywNode) bool { return bytes.Compare(nd.key, x) >= 0 }) - 1
 	if f < 0 {
 		return rywBoundary{key: allKeysBegin}
 	}
-	nd := s[f]
+	nd := n.seq.at(f)
 	// nd.key < x <= the next node, so keyAfter(nd.key) < x unless it is x itself;
 	// a next node equal to keyAfter(nd.key) would then be x, which is that case.
 	return rywBoundary{key: nd.key, after: nd.op && !equalsKeyAfter(nd.key, x)}
@@ -607,7 +631,7 @@ func (it *rywNodeIter) seg() rywNodeSeg {
 func (n *rywNodes) dump() string {
 	n.build()
 	var b strings.Builder
-	for _, nd := range n.sorted {
+	for _, nd := range n.seq.appendTo(nil) {
 		b.WriteString(strconv.Quote(string(nd.key)))
 		b.WriteByte(' ')
 		b.WriteString(nd.flagString())

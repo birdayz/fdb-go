@@ -284,6 +284,12 @@ type txOptions struct {
 	readSystemKeys  bool // READ_SYSTEM_KEYS: allows reading \xff/* keys
 	writeSystemKeys bool // ACCESS_SYSTEM_KEYS: allows reading AND writing \xff/* keys
 
+	// reportConflictingKeys: REPORT_CONFLICTING_KEYS (712), shipped as the commit's
+	// report_conflicting_keys (NativeAPI.actor.cpp:6887-6889). specialKeySpaceRelaxed:
+	// SPECIAL_KEY_SPACE_RELAXED, special-key range reads may span modules (specialkeys.go).
+	reportConflictingKeys  bool
+	specialKeySpaceRelaxed bool
+
 	// tags: transaction tags for tag-based throttling.
 	// Set via SetTag(). Used in backoff calculation for tag_throttled errors.
 	// C++ keeps tags across retries (not cleared by internal reset).
@@ -565,6 +571,11 @@ type Transaction struct {
 	// writes so that Get/GetRange within the same transaction see Set/Clear
 	// mutations that haven't been committed yet.
 	ryw rywCache
+
+	// conflictingKeys is TransactionState::conflictingKeys: replaced by each in-band
+	// conflict reply (NativeAPI.actor.cpp:6700-6717), kept across reset and OnError
+	// (cloneAndReset, :3531), read by \xff\xff/transaction/conflicting_keys/.
+	conflictingKeys atomic.Pointer[conflictingKeyMap]
 }
 
 // TransactionPriority controls the GRV request priority.
@@ -611,6 +622,9 @@ type Snapshot struct {
 // Snapshot reads retain the storage cache; pending writes are included unless
 // snapshot RYW is net-disabled (snapshotRYWDisableCount > 0).
 func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
+	if s.tx.routesSpecialKey(key) { // RYW:1634-1638
+		return s.tx.getSpecialKey(key)
+	}
 	ctx, cancel := s.tx.opContext(ctx)
 	defer cancel()
 	if err := s.tx.checkReadState(ctx); err != nil {
@@ -809,6 +823,9 @@ func (tx *Transaction) readVersionForOperation(parentCtx context.Context, extraF
 
 // Get reads a single key. Returns nil if the key doesn't exist.
 func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
+	if tx.routesSpecialKey(key) { // RYW:1634-1638
+		return tx.getSpecialKey(key)
+	}
 	ctx, cancel := tx.opContext(ctx)
 	defer cancel()
 	if err := tx.checkReadState(ctx); err != nil {
@@ -842,6 +859,10 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 // Returns (nil, pending, nil) for server requests (call pending.Resolve() to get value).
 // Returns (nil, nil, err) for errors during send.
 func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte, pending *PendingGet, err error) {
+	if tx.routesSpecialKey(key) { // RYW:1634-1638
+		val, err = tx.getSpecialKey(key)
+		return val, nil, err
+	}
 	ctx, opCancel, owned := tx.opContextWithLease(ctx, false)
 	op := tx.readOperation(ctx)
 	defer owned.release() // only this invocation's send-phase lease
@@ -870,7 +891,7 @@ func (tx *Transaction) GetPipelined(ctx context.Context, key []byte) (val []byte
 		tx.ryw.mu.Lock()
 		w := tx.ryw.liveLocked()
 		value, known, readErr := tx.ryw.localPointLocked(w, key)
-		entry := w.writes[string(key)]
+		entry, _ := w.entryOf(key)
 		tx.ryw.mu.Unlock()
 		if known {
 			return bytes.Clone(value), nil, tx.trackReadOperation(ctx, readErr)
@@ -3529,6 +3550,11 @@ func (tx *Transaction) applyOptionDefaults(userReset bool) {
 	tx.useGrvCache = false
 	tx.skipGrvCache = false
 	tx.writeConflictsDisabled = false
+	// REPORT_CONFLICTING_KEYS is NativeAPI-level (TransactionOptions::clear, :6143) and
+	// SPECIAL_KEY_SPACE_RELAXED RYW-level (options.reset, RYW:2079); the DB default
+	// TRANSACTION_REPORT_CONFLICTING_KEYS is re-applied with the persistent options (:2722).
+	tx.reportConflictingKeys = td.ReportConflictingKeys
+	tx.specialKeySpaceRelaxed = false
 	if !userReset {
 		return // OnError retry: PRESERVE the per-txn persistent options (timeout / retryLimit / maxRetryDelay).
 	}

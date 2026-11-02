@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"sort"
 	"sync"
 
 	"fdb.dev/pkg/fdbgo/transport"
@@ -503,13 +502,13 @@ func (tx *Transaction) addMappedRangeConflictMustUnmodified(ctx context.Context,
 	w := c.liveLocked()
 	w.ensureSorted()
 	prefixEnd := end
-	if i := sort.SearchStrings(w.sortedKeys, string(begin)); i < len(w.sortedKeys) && w.sortedKeys[i] < string(end) {
-		prefixEnd = []byte(w.sortedKeys[i])
+	if _, x := w.sorted.find(func(x *rywWrite) bool { return x.key >= string(begin) }); x != nil && x.key < string(end) {
+		prefixEnd = []byte(x.key)
 	}
-	if i := sort.Search(len(w.cleared), func(i int) bool {
-		return bytes.Compare(w.cleared[i].end, begin) > 0
-	}); i < len(w.cleared) && bytes.Compare(w.cleared[i].begin, prefixEnd) < 0 {
-		prefixEnd = w.cleared[i].begin
+	if _, r := w.cleared.find(func(r *rywRange) bool {
+		return bytes.Compare(r.end, begin) > 0
+	}); r != nil && bytes.Compare(r.begin, prefixEnd) < 0 {
+		prefixEnd = r.begin
 		if bytes.Compare(prefixEnd, begin) < 0 {
 			prefixEnd = begin
 		}

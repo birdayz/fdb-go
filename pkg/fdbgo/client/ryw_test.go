@@ -690,12 +690,12 @@ func TestRYWGetRange_ClearRangeOptimized(t *testing.T) {
 	c.mu.Lock()
 	for i := 30; i < 60; i++ {
 		key := fmt.Sprintf("A%02d", i)
-		if _, ok := c.liveLocked().writes[key]; ok {
+		if _, ok := c.liveLocked().entry(key); ok {
 			t.Errorf("key %s should have been cleared from writes", key)
 		}
 	}
 	// A00..A29 and A60..A99 should still exist.
-	count := len(c.liveLocked().writes)
+	count := c.liveLocked().numWrites()
 	c.mu.Unlock()
 	if count != 70 {
 		t.Errorf("expected 70 remaining writes, got %d", count)
@@ -890,42 +890,42 @@ func TestRYWClearedRangeMerge(t *testing.T) {
 	c.addClearedRange([]byte("I"), []byte("K"))
 
 	c.mu.Lock()
-	if len(c.liveLocked().cleared) != 3 {
-		t.Fatalf("expected 3 cleared ranges, got %d", len(c.liveLocked().cleared))
+	if c.liveLocked().cleared.Len() != 3 {
+		t.Fatalf("expected 3 cleared ranges, got %d", c.liveLocked().cleared.Len())
 	}
 	c.mu.Unlock()
 
 	// Merge overlapping: [D,F) overlaps [E,G) → should merge to [D,G)
 	c.addClearedRange([]byte("D"), []byte("F"))
 	c.mu.Lock()
-	if len(c.liveLocked().cleared) != 3 {
-		t.Fatalf("expected 3 cleared ranges after overlap merge, got %d", len(c.liveLocked().cleared))
+	if c.liveLocked().cleared.Len() != 3 {
+		t.Fatalf("expected 3 cleared ranges after overlap merge, got %d", c.liveLocked().cleared.Len())
 	}
 	c.mu.Unlock()
 
 	// Adjacent: [C,D) bridges [A,C) and [D,G) → should merge to [A,G)
 	c.addClearedRange([]byte("C"), []byte("D"))
 	c.mu.Lock()
-	if len(c.liveLocked().cleared) != 2 {
-		t.Fatalf("expected 2 cleared ranges after adjacent merge, got %d: %v", len(c.liveLocked().cleared), c.liveLocked().cleared)
+	if c.liveLocked().cleared.Len() != 2 {
+		t.Fatalf("expected 2 cleared ranges after adjacent merge, got %d: %v", c.liveLocked().cleared.Len(), rangeList(&c.liveLocked().cleared))
 	}
 	// Verify: [A,G) and [I,K)
-	if string(c.liveLocked().cleared[0].begin) != "A" || string(c.liveLocked().cleared[0].end) != "G" {
-		t.Errorf("range[0]: expected [A,G), got [%s,%s)", c.liveLocked().cleared[0].begin, c.liveLocked().cleared[0].end)
+	if string(c.liveLocked().cleared.at(0).begin) != "A" || string(c.liveLocked().cleared.at(0).end) != "G" {
+		t.Errorf("range[0]: expected [A,G), got [%s,%s)", c.liveLocked().cleared.at(0).begin, c.liveLocked().cleared.at(0).end)
 	}
-	if string(c.liveLocked().cleared[1].begin) != "I" || string(c.liveLocked().cleared[1].end) != "K" {
-		t.Errorf("range[1]: expected [I,K), got [%s,%s)", c.liveLocked().cleared[1].begin, c.liveLocked().cleared[1].end)
+	if string(c.liveLocked().cleared.at(1).begin) != "I" || string(c.liveLocked().cleared.at(1).end) != "K" {
+		t.Errorf("range[1]: expected [I,K), got [%s,%s)", c.liveLocked().cleared.at(1).begin, c.liveLocked().cleared.at(1).end)
 	}
 	c.mu.Unlock()
 
 	// Span all: [A,Z) merges everything into one.
 	c.addClearedRange([]byte("A"), []byte("Z"))
 	c.mu.Lock()
-	if len(c.liveLocked().cleared) != 1 {
-		t.Fatalf("expected 1 cleared range after spanning merge, got %d", len(c.liveLocked().cleared))
+	if c.liveLocked().cleared.Len() != 1 {
+		t.Fatalf("expected 1 cleared range after spanning merge, got %d", c.liveLocked().cleared.Len())
 	}
-	if string(c.liveLocked().cleared[0].begin) != "A" || string(c.liveLocked().cleared[0].end) != "Z" {
-		t.Errorf("range[0]: expected [A,Z), got [%s,%s)", c.liveLocked().cleared[0].begin, c.liveLocked().cleared[0].end)
+	if string(c.liveLocked().cleared.at(0).begin) != "A" || string(c.liveLocked().cleared.at(0).end) != "Z" {
+		t.Errorf("range[0]: expected [A,Z), got [%s,%s)", c.liveLocked().cleared.at(0).begin, c.liveLocked().cleared.at(0).end)
 	}
 	c.mu.Unlock()
 }
@@ -1163,7 +1163,8 @@ func BenchmarkRYWAddClearedRange(b *testing.B) {
 		c.addClearedRange(newBegin, newEnd)
 		// Remove it to keep the benchmark repeatable.
 		c.mu.Lock()
-		c.liveLocked().cleared = c.liveLocked().cleared[:len(c.liveLocked().cleared)-1]
+		cl := &c.liveLocked().cleared
+		cl.delete(cl.Len()-1, cl.Len())
 		c.mu.Unlock()
 	}
 }

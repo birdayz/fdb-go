@@ -244,19 +244,17 @@ func (c *rywCache) buildSegmentsLocked(hi []byte, includeWrites bool) []rywSegme
 	add(allKeysBegin)
 	add(hi)
 	if includeWrites {
-		c.liveLocked().ensureSorted()
-		for _, k := range c.liveLocked().sortedKeys {
+		for _, k := range c.liveLocked().writeKeys() {
 			kb := []byte(k)
 			add(kb)
 			add(keyAfterBytes(kb))
 		}
-		for _, r := range c.liveLocked().cleared {
+		for _, r := range rangeList(&c.liveLocked().cleared) {
 			add(r.begin)
 			add(r.end)
 		}
 	}
-	for i := range c.serverCache.entries {
-		e := &c.serverCache.entries[i]
+	for _, e := range c.serverCache.entryList() {
 		add(e.begin)
 		add(e.end)
 		for _, kv := range e.kvs {

@@ -2,9 +2,7 @@ package client
 
 import (
 	"bytes"
-	"maps"
 	"slices"
-	"sort"
 	"unsafe"
 )
 
@@ -17,19 +15,23 @@ func stringBytes(s string) []byte { return unsafe.Slice(unsafe.StringData(s), le
 // writes" (WriteMap.h:158-160). The live version is rywCache.w; a writer that
 // finds it pinned replaces it with a clone first (mutableWritesLocked), so a
 // read that pinned a version keeps seeing it until it unpins. All fields are
-// guarded by rywCache.mu.
+// guarded by rywCache.mu, except that a pinned version is only read.
+//
+// Its ordered stores are persistent sequences (pseq): the clone a write after a
+// pin needs is O(1), and the write then copies only its O(log n) path, as C++
+// gets from the persistent PTree under WriteMap (VersionedMap.h).
 type rywWrites struct {
-	// writes maps key → written value. Present means Set was called.
-	// entry.value == nil means the key was Set to empty bytes, NOT cleared.
-	writes map[string]rywEntry
-
-	// Built lazily, then kept sorted across mutations to avoid re-sorting on reads.
-	// Inserting or deleting a key still shifts an O(N) slice suffix.
-	sortedKeys []string
+	// writes maps key → written value until the first ordered access; then
+	// sorted holds the entries and writes is nil. A write-only transaction
+	// keeps O(1) writes. entry.value == nil means the key was Set to empty
+	// bytes, NOT cleared.
+	writes   map[string]rywEntry
+	sorted   pseq[rywWrite]
+	isSorted bool
 
 	// cleared is a sorted, non-overlapping list of [begin, end) byte ranges
 	// that were ClearRange'd.
-	cleared []rywRange
+	cleared pseq[rywRange]
 
 	// unreadableRanges: sorted, non-overlapping SVK candidate-stamp ranges (RFC-098).
 	// Contract: a read REACHING a range throws accessed_unreadable (1036) unless
@@ -38,11 +40,11 @@ type rywWrites struct {
 	// span. Pending writes inside a range are KEPT — a deliberate divergence from
 	// C++'s span-wipe; rationale + observability analysis in RFC-098 ("the SVK
 	// candidate range in the Go write map").
-	unreadableRanges []rywRange
+	unreadableRanges pseq[rywRange]
 
 	// A separate index keeps unreadable-cap checks proportional to unreadable keys,
 	// without building the full write-key index for an otherwise write-only transaction.
-	unreadableKeys []string
+	unreadableKeys pseq[string]
 
 	// bypassUnreadable mirrors FDB_TR_OPTION_BYPASS_UNREADABLE
 	// (ReadYourWrites.actor.cpp:2611-2613, applied only to points at :98): point reads of
@@ -56,6 +58,12 @@ type rywWrites struct {
 
 	// pins counts the reads holding this version.
 	pins int
+}
+
+// rywWrite is one sorted write-map entry.
+type rywWrite struct {
+	key string
+	e   rywEntry
 }
 
 func newRYWWrites() *rywWrites { return &rywWrites{} }
@@ -94,9 +102,12 @@ func (c *rywCache) withLock(fn func()) {
 }
 
 // pinWritesLocked pins the live version for a read that will outlive the
-// critical section. Caller holds c.mu.
+// critical section. Its lazy indexes are built first, so the pinned version is
+// never written again. Caller holds c.mu.
 func (c *rywCache) pinWritesLocked() *rywWrites {
 	w := c.liveLocked()
+	w.ensureSorted()
+	w.nodes.build()
 	w.pins++
 	if c.onPin != nil {
 		observed := false
@@ -136,8 +147,8 @@ func (c *rywCache) dropObsoleteBaseLocked() {
 
 // empty reports a version holding nothing (a zero rywWrites).
 func (w *rywWrites) empty() bool {
-	return w.writes == nil && w.sortedKeys == nil && w.cleared == nil && w.unreadableRanges == nil &&
-		w.unreadableKeys == nil && w.nodes.sorted == nil && w.nodes.log == nil
+	return w.writes == nil && !w.isSorted && w.sorted.root == nil && w.cleared.root == nil &&
+		w.unreadableRanges.root == nil && w.unreadableKeys.root == nil && !w.nodes.built && w.nodes.log == nil
 }
 
 // mutableWritesLocked is the live version, cloned first if a read pins it. Every
@@ -153,82 +164,164 @@ func (c *rywCache) mutableWritesLocked() *rywWrites {
 	return c.w
 }
 
-// clone copies the version: the map with entries by value and atomic stacks
-// re-sliced (coalesceOverAtomics rewrites stack[top] in place), the slices, and
-// the nodes. Key, value and parameter bytes are shared; they are never written
-// after insertion.
+// clone snapshots the version in O(1): the copy shares every node, and each side
+// copies what it later changes. Key, value and parameter bytes and atomic stacks
+// are shared; they are never written after insertion.
 func (w *rywWrites) clone() *rywWrites {
-	n := &rywWrites{
-		writes:           maps.Clone(w.writes),
-		sortedKeys:       slices.Clone(w.sortedKeys),
-		cleared:          slices.Clone(w.cleared),
-		unreadableRanges: slices.Clone(w.unreadableRanges),
-		unreadableKeys:   slices.Clone(w.unreadableKeys),
+	w.ensureSorted()
+	return &rywWrites{
+		sorted:           w.sorted.share(),
+		isSorted:         true,
+		cleared:          w.cleared.share(),
+		unreadableRanges: w.unreadableRanges.share(),
+		unreadableKeys:   w.unreadableKeys.share(),
 		bypassUnreadable: w.bypassUnreadable,
 		nodes:            w.nodes.clone(),
 	}
-	for k, e := range n.writes {
-		if e.hasAtomics {
-			e.atomics = slices.Clone(e.atomics)
-			n.writes[k] = e
-		}
-	}
-	return n
 }
 
-// ensureSorted builds sortedKeys on first use after construction or reset.
-// Must be called under c.mu.
+// ensureSorted moves the entries into the sorted store on the first ordered
+// access after construction or reset. Must be called under c.mu.
 func (w *rywWrites) ensureSorted() {
-	if w.sortedKeys != nil {
+	if w.isSorted {
 		return
 	}
-	if len(w.writes) == 0 {
-		w.sortedKeys = []string{}
+	items := make([]rywWrite, 0, len(w.writes))
+	for k, e := range w.writes {
+		items = append(items, rywWrite{key: k, e: e})
+	}
+	slices.SortFunc(items, func(a, b rywWrite) int { return compareStrings(a.key, b.key) })
+	w.sorted.build(items)
+	w.writes = nil
+	w.isSorted = true
+}
+
+func compareStrings(a, b string) int {
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	}
+	return 0
+}
+
+// numWrites is the number of keys with an operation.
+func (w *rywWrites) numWrites() int {
+	if w.isSorted {
+		return w.sorted.Len()
+	}
+	return len(w.writes)
+}
+
+// writeIndex is the index of the first sorted entry whose key is >= k. The
+// version must be sorted.
+func (w *rywWrites) writeIndex(k string) int {
+	return w.sorted.search(func(x *rywWrite) bool { return x.key >= k })
+}
+
+// writeIndexOf is writeIndex for a byte key, without converting it.
+func (w *rywWrites) writeIndexOf(k []byte) int {
+	return w.sorted.search(func(x *rywWrite) bool { return x.key >= string(k) })
+}
+
+// entryOf is entry for a byte key, without converting it.
+func (w *rywWrites) entryOf(k []byte) (rywEntry, bool) {
+	if !w.isSorted {
+		e, ok := w.writes[string(k)]
+		return e, ok
+	}
+	if _, x := w.sorted.find(func(x *rywWrite) bool { return x.key >= string(k) }); x != nil && x.key == string(k) {
+		return x.e, true
+	}
+	return rywEntry{}, false
+}
+
+// writeAt is the sorted entry at index i; it must not be written.
+func (w *rywWrites) writeAt(i int) *rywWrite { return w.sorted.at(i) }
+
+// writeKeys returns the written keys in order.
+func (w *rywWrites) writeKeys() []string {
+	w.ensureSorted()
+	keys := make([]string, 0, w.sorted.Len())
+	for cur := w.sorted.cursor(0); cur.valid(); cur.next() {
+		keys = append(keys, cur.item().key)
+	}
+	return keys
+}
+
+// entry returns the entry for key k.
+func (w *rywWrites) entry(k string) (rywEntry, bool) {
+	if !w.isSorted {
+		e, ok := w.writes[k]
+		return e, ok
+	}
+	if _, x := w.sorted.find(func(x *rywWrite) bool { return x.key >= k }); x != nil && x.key == k {
+		return x.e, true
+	}
+	return rywEntry{}, false
+}
+
+// putEntry stores the entry for key k, inserting the key if it is new.
+func (w *rywWrites) putEntry(k string, e rywEntry) {
+	if !w.isSorted {
+		if w.writes == nil {
+			w.writes = make(map[string]rywEntry)
+		}
+		w.writes[k] = e
 		return
 	}
-	w.sortedKeys = make([]string, 0, len(w.writes))
-	for k := range w.writes {
-		w.sortedKeys = append(w.sortedKeys, k)
+	i, x := w.sorted.find(func(x *rywWrite) bool { return x.key >= k })
+	if x != nil && x.key == k {
+		w.sorted.mutAt(i).e = e
+		return
 	}
-	sort.Strings(w.sortedKeys)
+	w.sorted.insert(i, rywWrite{key: k, e: e})
 }
 
-func (w *rywWrites) insertSortedKey(k string) {
-	if w.sortedKeys == nil {
-		return // not built yet; ensureSortedLocked builds it on demand
+// deleteEntry removes the entry for key k and returns it.
+func (w *rywWrites) deleteEntry(k string) (rywEntry, bool) {
+	if !w.isSorted {
+		e, ok := w.writes[k]
+		if ok {
+			delete(w.writes, k)
+		}
+		return e, ok
 	}
-	i, _ := slices.BinarySearch(w.sortedKeys, k)
-	w.sortedKeys = slices.Insert(w.sortedKeys, i, k)
+	i, x := w.sorted.find(func(x *rywWrite) bool { return x.key >= k })
+	if x == nil || x.key != k {
+		return rywEntry{}, false
+	}
+	e := x.e
+	w.sorted.delete(i, i+1)
+	return e, true
 }
 
-func (w *rywWrites) removeSortedKey(k string) {
-	if i, found := slices.BinarySearch(w.sortedKeys, k); found {
-		w.sortedKeys = slices.Delete(w.sortedKeys, i, i+1)
+// rangeIndex is the first index whose range satisfies pred over a sorted,
+// non-overlapping range list.
+func rangeIndex(s *pseq[rywRange], pred func(r *rywRange) bool) int { return s.search(pred) }
+
+// rangeContaining returns the range of the sorted, non-overlapping list s that
+// contains key: the first one ending after key, when it begins at or before it.
+func rangeContaining(s *pseq[rywRange], key []byte) *rywRange {
+	_, r := s.find(func(r *rywRange) bool { return bytes.Compare(r.end, key) > 0 })
+	if r != nil && bytes.Compare(r.begin, key) <= 0 {
+		return r
 	}
+	return nil
 }
+
+// rangeList returns the ranges in order.
+func rangeList(s *pseq[rywRange]) []rywRange { return s.appendTo(nil) }
 
 func (w *rywWrites) isCleared(key []byte) bool {
-	// Binary search: cleared is sorted by begin, non-overlapping.
-	// Find the last range whose begin <= key, then check key < end.
-	n := len(w.cleared)
-	if n == 0 {
-		return false
-	}
-	i := sort.Search(n, func(i int) bool {
-		return bytes.Compare(w.cleared[i].begin, key) > 0
-	})
-	// i is the first range with begin > key. Check i-1.
-	if i == 0 {
-		return false
-	}
-	r := w.cleared[i-1]
-	return bytes.Compare(key, r.end) < 0
+	return rangeContaining(&w.cleared, key) != nil
 }
 
 // A point conflict check does not need to build the full write-key index.
 // Matches updateConflictMap (ReadYourWrites.actor.cpp:322-332). Caller holds c.mu.
 func (w *rywWrites) conflictForKey(key []byte) bool {
-	if e, ok := w.writes[string(key)]; ok {
+	if e, ok := w.entryOf(key); ok {
 		return e.isDependentLocked() // operation key: conflict iff DEPENDENT_WRITE
 	}
 	if w.isCleared(key) {
@@ -248,9 +341,10 @@ func (w *rywWrites) conflictForKey(key []byte) bool {
 //   - INDEPENDENT write key (plain Set, folded atomic, matched-CAC phantom) → NO conflict.
 //   - CLEARED range (no operation key) → NO conflict.
 //
-// Adjacent qualifying sub-ranges are coalesced. Caller holds c.mu. The over-conflict that the
-// old full-range conflict caused (on INDEPENDENT writes + cleared ranges) is thereby removed,
-// matching C++ exactly. (RFC-058 sub-edge b.)
+// Adjacent qualifying sub-ranges are coalesced. The over-conflict that the old full-range
+// conflict caused (on INDEPENDENT writes + cleared ranges) is thereby removed, matching C++
+// exactly. (RFC-058 sub-edge b.) It visits only the writes and cleared ranges in [begin, end).
+// Caller holds c.mu, or the version is pinned (immutable).
 func (w *rywWrites) conflictRanges(begin, end []byte) [][2][]byte {
 	if bytes.Compare(begin, end) >= 0 {
 		return nil
@@ -260,39 +354,46 @@ func (w *rywWrites) conflictRanges(begin, end []byte) [][2][]byte {
 	// Collect the segment boundaries within [begin, end]: begin, end, every write key in
 	// range AND its keyAfter (so an operation occupies its own single-key segment [k,
 	// keyAfter(k)) and the following gap is classified separately), and every cleared-range
-	// bound clamped into the window.
-	bounds := [][]byte{append([]byte(nil), begin...), append([]byte(nil), end...)}
-	addBound := func(b []byte) {
+	// bound clamped into the window. Each write key's segment carries its entry.
+	type bound struct {
+		key   []byte
+		entry *rywEntry // the operation at key, when [key, keyAfter(key)) is its segment
+	}
+	bounds := []bound{{key: append([]byte(nil), begin...)}, {key: append([]byte(nil), end...)}}
+	addBound := func(b []byte, e *rywEntry) {
 		if bytes.Compare(b, begin) > 0 && bytes.Compare(b, end) < 0 {
-			bounds = append(bounds, append([]byte(nil), b...))
+			bounds = append(bounds, bound{key: append([]byte(nil), b...), entry: e})
 		}
 	}
-	wStart := sort.SearchStrings(w.sortedKeys, string(begin))
-	for i := wStart; i < len(w.sortedKeys) && w.sortedKeys[i] < string(end); i++ {
-		k := []byte(w.sortedKeys[i])
-		addBound(k)
-		addBound(keyAfterBytes(k))
-	}
-	for _, r := range w.cleared {
-		if bytes.Compare(r.begin, end) >= 0 {
-			break
+	for cur := w.sorted.cursor(w.writeIndexOf(begin)); cur.valid() && cur.item().key < string(end); cur.next() {
+		x := cur.item()
+		k := []byte(x.key)
+		if bytes.Equal(k, begin) {
+			bounds[0].entry = &x.e
 		}
-		if bytes.Compare(r.end, begin) <= 0 {
-			continue
-		}
-		addBound(r.begin)
-		addBound(r.end)
+		addBound(k, &x.e)
+		addBound(keyAfterBytes(k), nil)
 	}
-	sort.Slice(bounds, func(i, j int) bool { return bytes.Compare(bounds[i], bounds[j]) < 0 })
+	first := rangeIndex(&w.cleared, func(r *rywRange) bool { return bytes.Compare(r.end, begin) > 0 })
+	for cur := w.cleared.cursor(first); cur.valid() && bytes.Compare(cur.item().begin, end) < 0; cur.next() {
+		r := cur.item()
+		addBound(r.begin, nil)
+		addBound(r.end, nil)
+	}
+	slices.SortFunc(bounds, func(a, b bound) int { return bytes.Compare(a.key, b.key) })
 
 	var out [][2][]byte
 	for i := 0; i+1 < len(bounds); i++ {
-		lo, hi := bounds[i], bounds[i+1]
+		lo, hi := bounds[i].key, bounds[i+1].key
 		if bytes.Equal(lo, hi) {
 			continue // deduped boundary
 		}
+		entry := bounds[i].entry
+		for j := i - 1; entry == nil && j >= 0 && bytes.Equal(bounds[j].key, lo); j-- {
+			entry = bounds[j].entry // a duplicate of lo that carries its entry
+		}
 		conflict := false
-		if entry, ok := w.writes[string(lo)]; ok && bytes.Equal(hi, keyAfterBytes(lo)) {
+		if entry != nil && bytes.Equal(hi, keyAfterBytes(lo)) {
 			// Operation key occupying the single-key segment [lo, keyAfter(lo)).
 			conflict = entry.isDependentLocked()
 		} else if w.isCleared(lo) {
@@ -315,92 +416,48 @@ func (w *rywWrites) conflictRanges(begin, end []byte) [][2][]byte {
 
 func (w *rywWrites) hasWritesInRange(begin, end []byte) bool {
 	w.ensureSorted()
-	if len(w.sortedKeys) == 0 {
-		return false
-	}
-	// Binary search: find the first key >= begin.
-	i := sort.SearchStrings(w.sortedKeys, string(begin))
-	// If that key is < end, there's a write in range.
-	return i < len(w.sortedKeys) && w.sortedKeys[i] < string(end)
+	// The first key >= begin: if it is < end, there's a write in range.
+	_, x := w.sorted.find(func(x *rywWrite) bool { return x.key >= string(begin) })
+	return x != nil && x.key < string(end)
 }
 
 func (w *rywWrites) hasClearsInRange(begin, end []byte) bool {
-	// Binary search: find the last cleared range that could overlap [begin, end).
-	// Two ranges [a,b) and [c,d) overlap iff a < d && c < b.
-	// Cleared ranges are sorted by begin and non-overlapping.
-	n := len(w.cleared)
-	if n == 0 {
-		return false
-	}
-	// Find the first range with begin >= end (definitely can't overlap).
-	i := sort.Search(n, func(i int) bool {
-		return bytes.Compare(w.cleared[i].begin, end) >= 0
-	})
-	// The candidate is the range just before i (largest begin < end).
-	// Since ranges are non-overlapping and sorted, if this one doesn't
-	// overlap, no earlier range can either (their end <= this one's begin).
-	if i > 0 && bytes.Compare(w.cleared[i-1].end, begin) > 0 {
-		return true
-	}
-	return false
+	// Two ranges [a,b) and [c,d) overlap iff a < d && c < b. Cleared ranges are
+	// sorted by begin and non-overlapping, so the candidate is the range just before
+	// the first one with begin >= end (largest begin < end): if it does not overlap,
+	// no earlier range can either (their end <= this one's begin).
+	i := rangeIndex(&w.cleared, func(r *rywRange) bool { return bytes.Compare(r.begin, end) >= 0 })
+	return i > 0 && bytes.Compare(w.cleared.at(i-1).end, begin) > 0
 }
 
-func (w *rywWrites) addClearedRange(begin, end []byte) {
-	n := len(w.cleared)
-	if n == 0 {
-		w.cleared = []rywRange{{
-			begin: append([]byte(nil), begin...),
-			end:   append([]byte(nil), end...),
-		}}
-		return
-	}
-
-	// Binary search to find the overlap window.
-	// Ranges are sorted by begin, non-overlapping.
+// addRange merges [begin, end) into a sorted, non-overlapping range list,
+// joining the ranges it overlaps or touches.
+func addRange(s *pseq[rywRange], begin, end []byte) {
 	// A range r overlaps/is-adjacent to [begin, end) if r.begin <= end && begin <= r.end.
+	// [loIdx, hiIdx) are those ranges: ends are sorted too, as ranges do not overlap.
+	hiIdx := rangeIndex(s, func(r *rywRange) bool { return bytes.Compare(r.begin, end) > 0 })
+	loIdx := rangeIndex(s, func(r *rywRange) bool { return bytes.Compare(r.end, begin) >= 0 })
 
-	// First overlapping range: last range with begin <= end.
-	// We find the first range with begin > end, then look back.
-	hiIdx := sort.Search(n, func(i int) bool {
-		return bytes.Compare(w.cleared[i].begin, end) > 0
-	})
-	// Last overlapping range: first range with end >= begin.
-	// We find the first range whose end > begin, starting from 0.
-	// Since ranges are sorted and non-overlapping, end values are also sorted.
-	loIdx := sort.Search(n, func(i int) bool {
-		return bytes.Compare(w.cleared[i].end, begin) >= 0
-	})
-
-	// [loIdx, hiIdx) are the ranges that overlap or are adjacent.
 	newBegin := append([]byte(nil), begin...)
 	newEnd := append([]byte(nil), end...)
-
-	for i := loIdx; i < hiIdx; i++ {
-		if bytes.Compare(w.cleared[i].begin, newBegin) < 0 {
-			newBegin = w.cleared[i].begin
+	if loIdx < hiIdx {
+		if r := s.at(loIdx); bytes.Compare(r.begin, newBegin) < 0 {
+			newBegin = r.begin
 		}
-		if bytes.Compare(w.cleared[i].end, newEnd) > 0 {
-			newEnd = w.cleared[i].end
+		if r := s.at(hiIdx - 1); bytes.Compare(r.end, newEnd) > 0 {
+			newEnd = r.end
 		}
 	}
-
-	// Replace [loIdx, hiIdx) with the merged range.
 	merged := rywRange{begin: newBegin, end: newEnd}
-	overlapCount := hiIdx - loIdx
-	if overlapCount == 0 {
-		// No overlaps — insert at loIdx.
-		w.cleared = append(w.cleared, rywRange{})
-		copy(w.cleared[loIdx+1:], w.cleared[loIdx:])
-		w.cleared[loIdx] = merged
-	} else if overlapCount == 1 {
-		// Replace single overlapping range in-place.
-		w.cleared[loIdx] = merged
-	} else {
-		// Replace multiple overlapping ranges with one.
-		w.cleared[loIdx] = merged
-		w.cleared = append(w.cleared[:loIdx+1], w.cleared[hiIdx:]...)
+	if hiIdx-loIdx == 1 {
+		s.set(loIdx, merged)
+		return
 	}
+	s.delete(loIdx, hiIdx)
+	s.insert(loIdx, merged)
 }
+
+func (w *rywWrites) addClearedRange(begin, end []byte) { addRange(&w.cleared, begin, end) }
 
 // addUnreadableRange merges [begin, end) into the SVK candidate-stamp
 // unreadable ranges (sorted, non-overlapping; same shape as `cleared`).
@@ -409,37 +466,41 @@ func (w *rywWrites) addUnreadableRange(begin, end []byte) {
 	if bytes.Compare(begin, end) >= 0 {
 		return
 	}
-	n := len(w.unreadableRanges)
-	hiIdx := sort.Search(n, func(i int) bool {
-		return bytes.Compare(w.unreadableRanges[i].begin, end) > 0
-	})
-	loIdx := sort.Search(n, func(i int) bool {
-		return bytes.Compare(w.unreadableRanges[i].end, begin) >= 0
-	})
-	newBegin := append([]byte(nil), begin...)
-	newEnd := append([]byte(nil), end...)
-	for i := loIdx; i < hiIdx; i++ {
-		if bytes.Compare(w.unreadableRanges[i].begin, newBegin) < 0 {
-			newBegin = w.unreadableRanges[i].begin
-		}
-		if bytes.Compare(w.unreadableRanges[i].end, newEnd) > 0 {
-			newEnd = w.unreadableRanges[i].end
-		}
+	addRange(&w.unreadableRanges, begin, end)
+}
+
+// subtractRange removes [begin, end) from a sorted, non-overlapping range
+// list, splitting a range that straddles the span. Used to make cleared spans
+// readable again (C++ gets this free from the shared PTree: clear() inserts
+// readable entries over the span, WriteMap.cpp:195).
+func subtractRange(s *pseq[rywRange], begin, end []byte) {
+	if s.Len() == 0 || bytes.Compare(begin, end) >= 0 {
+		return
 	}
-	merged := append([]rywRange(nil), w.unreadableRanges[:loIdx]...)
-	merged = append(merged, rywRange{begin: newBegin, end: newEnd})
-	merged = append(merged, w.unreadableRanges[hiIdx:]...)
-	w.unreadableRanges = merged
+	// [lo, hi) overlap the span: only the first can keep a left remainder and
+	// only the last a right one.
+	lo := rangeIndex(s, func(r *rywRange) bool { return bytes.Compare(r.end, begin) > 0 })
+	hi := rangeIndex(s, func(r *rywRange) bool { return bytes.Compare(r.begin, end) >= 0 })
+	if lo >= hi {
+		return
+	}
+	var keep []rywRange
+	if r := s.at(lo); bytes.Compare(r.begin, begin) < 0 {
+		keep = append(keep, rywRange{begin: r.begin, end: append([]byte(nil), begin...)})
+	}
+	if r := s.at(hi - 1); bytes.Compare(r.end, end) > 0 {
+		keep = append(keep, rywRange{begin: append([]byte(nil), end...), end: r.end})
+	}
+	s.delete(lo, hi)
+	for i, r := range keep {
+		s.insert(lo+i, r)
+	}
 }
 
 // isUnreadable reports whether key falls inside an SVK candidate-stamp
 // unreadable range. Caller holds c.mu.
 func (w *rywWrites) isUnreadable(key []byte) bool {
-	// First range with end > key; key is inside iff that range's begin <= key.
-	i := sort.Search(len(w.unreadableRanges), func(i int) bool {
-		return bytes.Compare(w.unreadableRanges[i].end, key) > 0
-	})
-	return i < len(w.unreadableRanges) && bytes.Compare(w.unreadableRanges[i].begin, key) <= 0
+	return rangeContaining(&w.unreadableRanges, key) != nil
 }
 
 // firstUnreadableIn returns the begin of the first unreadable range
@@ -448,13 +509,11 @@ func (w *rywWrites) isUnreadable(key []byte) bool {
 // (ReadYourWrites.actor.cpp:685 limit-break precedes the :692 throw).
 // Caller holds c.mu.
 func (w *rywWrites) firstUnreadableIn(begin, end []byte) []byte {
-	i := sort.Search(len(w.unreadableRanges), func(i int) bool {
-		return bytes.Compare(w.unreadableRanges[i].end, begin) > 0
-	})
-	if i < len(w.unreadableRanges) && bytes.Compare(w.unreadableRanges[i].begin, end) < 0 {
+	_, r := w.unreadableRanges.find(func(r *rywRange) bool { return bytes.Compare(r.end, begin) > 0 })
+	if r != nil && bytes.Compare(r.begin, end) < 0 {
 		// The intersection starts at max(range.begin, begin).
-		if bytes.Compare(w.unreadableRanges[i].begin, begin) > 0 {
-			return w.unreadableRanges[i].begin
+		if bytes.Compare(r.begin, begin) > 0 {
+			return r.begin
 		}
 		return begin
 	}
@@ -467,14 +526,16 @@ func (w *rywWrites) firstUnreadableIn(begin, end []byte) []byte {
 // and non-overlapping, so only the last range with r.begin < end can
 // intersect). Caller holds c.mu.
 func (w *rywWrites) lastUnreadableIn(begin, end []byte) []byte {
-	i := sort.Search(len(w.unreadableRanges), func(i int) bool {
-		return bytes.Compare(w.unreadableRanges[i].begin, end) >= 0
-	}) - 1
-	if i < 0 || bytes.Compare(w.unreadableRanges[i].end, begin) <= 0 {
+	i := rangeIndex(&w.unreadableRanges, func(r *rywRange) bool { return bytes.Compare(r.begin, end) >= 0 }) - 1
+	if i < 0 {
 		return nil
 	}
-	if bytes.Compare(w.unreadableRanges[i].end, end) < 0 {
-		return w.unreadableRanges[i].end
+	r := w.unreadableRanges.at(i)
+	if bytes.Compare(r.end, begin) <= 0 {
+		return nil
+	}
+	if bytes.Compare(r.end, end) < 0 {
+		return r.end
 	}
 	return end
 }
@@ -491,16 +552,16 @@ func (w *rywWrites) lastUnreadableIn(begin, end []byte) []byte {
 func (w *rywWrites) unreadableScanCap(begin, end []byte, reverse bool) []byte {
 	// Fast path: no unreadable state at all — the overwhelmingly common case.
 	// The dedicated unreadable index avoids building or scanning all write keys.
-	if len(w.unreadableKeys) == 0 && len(w.unreadableRanges) == 0 {
+	if w.unreadableKeys.Len() == 0 && w.unreadableRanges.Len() == 0 {
 		return nil
 	}
 	var cap_ []byte
 	if !reverse {
 		cap_ = w.firstUnreadableIn(begin, end)
 		// Smallest unreadable entry key in [begin, end).
-		if i := sort.SearchStrings(w.unreadableKeys, string(begin)); i < len(w.unreadableKeys) && w.unreadableKeys[i] < string(end) {
-			if k := w.unreadableKeys[i]; cap_ == nil || k < string(cap_) {
-				cap_ = []byte(k)
+		if _, k := w.unreadableKeys.find(func(k *string) bool { return *k >= string(begin) }); k != nil && *k < string(end) {
+			if cap_ == nil || *k < string(cap_) {
+				cap_ = []byte(*k)
 			}
 		}
 		return cap_
@@ -511,8 +572,8 @@ func (w *rywWrites) unreadableScanCap(begin, end []byte, reverse bool) []byte {
 	// matters: a reverse scan iterates downward from end, so the highest
 	// unreadable key is the first one it can reach — any lower entries sit
 	// behind it (the forward path symmetrically needs only the smallest).
-	if i := sort.SearchStrings(w.unreadableKeys, string(end)) - 1; i >= 0 && w.unreadableKeys[i] >= string(begin) {
-		kb := append([]byte(w.unreadableKeys[i]), 0)
+	if i := w.unreadableKeys.search(func(k *string) bool { return *k >= string(end) }) - 1; i >= 0 && *w.unreadableKeys.at(i) >= string(begin) {
+		kb := append([]byte(*w.unreadableKeys.at(i)), 0)
 		if cap_ == nil || string(kb) > string(cap_) {
 			cap_ = kb
 		}
@@ -523,21 +584,19 @@ func (w *rywWrites) unreadableScanCap(begin, end []byte, reverse bool) []byte {
 // insertUnreadableKey adds k to the sorted unreadableKeys index (no-op
 // if present). Called when an entry's unreadable flag transitions on.
 func (w *rywWrites) insertUnreadableKey(k string) {
-	i := sort.SearchStrings(w.unreadableKeys, k)
-	if i < len(w.unreadableKeys) && w.unreadableKeys[i] == k {
+	i, x := w.unreadableKeys.find(func(x *string) bool { return *x >= k })
+	if x != nil && *x == k {
 		return
 	}
-	w.unreadableKeys = append(w.unreadableKeys, "")
-	copy(w.unreadableKeys[i+1:], w.unreadableKeys[i:])
-	w.unreadableKeys[i] = k
+	w.unreadableKeys.insert(i, k)
 }
 
 // removeUnreadableKey drops k from the unreadableKeys index. Called when
 // an unreadable entry is deleted (clear/clearRange — the only flag-off paths).
 func (w *rywWrites) removeUnreadableKey(k string) {
-	i := sort.SearchStrings(w.unreadableKeys, k)
-	if i < len(w.unreadableKeys) && w.unreadableKeys[i] == k {
-		w.unreadableKeys = append(w.unreadableKeys[:i], w.unreadableKeys[i+1:]...)
+	i, x := w.unreadableKeys.find(func(x *string) bool { return *x >= k })
+	if x != nil && *x == k {
+		w.unreadableKeys.delete(i, i+1)
 	}
 }
 
