@@ -634,7 +634,7 @@ func (store *FDBRecordStore) deleteRecord(primaryKey tuple.Tuple, typed *typedRe
 
 	// Update secondary indexes
 	if store.metaData.HasIndexes() && oldMsg != nil {
-		if err := store.updateSecondaryIndexes(oldStoredRecord, nil); err != nil {
+		if err := store.updateSecondaryIndexes(oldStoredRecord, nil, nil); err != nil {
 			return false, err
 		}
 	}
@@ -680,7 +680,7 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,
 ) (*FDBStoredRecord[proto.Message], error) {
-	return store.saveRecordInternal(record, existenceCheck, nil, VersionstampSaveBehaviorDefault, false, nil, nil)
+	return store.saveRecordInternal(record, existenceCheck, nil, VersionstampSaveBehaviorDefault, false, nil, nil, nil)
 }
 
 // SaveRecordWithVersion saves a record with the version behavior chooses from version (nil,
@@ -691,7 +691,7 @@ func (store *FDBRecordStore) SaveRecordWithVersion(
 	version *FDBRecordVersion,
 	behavior VersionstampSaveBehavior,
 ) (*FDBStoredRecord[proto.Message], error) {
-	return store.saveRecordInternal(record, existenceCheck, version, behavior, false, nil, nil)
+	return store.saveRecordInternal(record, existenceCheck, version, behavior, false, nil, nil, nil)
 }
 
 // SaveRecordsPipelined saves records in order as SaveRecordWithOptions would
@@ -711,7 +711,7 @@ func (store *FDBRecordStore) SaveRecordsPipelined(
 		window := records[start:min(start+DefaultPipelineSize, len(records))]
 		loads := store.startExistingRecordLoads(tx, window)
 		for i, record := range window {
-			stored, err := store.saveRecordInternal(record, existenceCheck, nil, VersionstampSaveBehaviorDefault, false, &loads[i], nil)
+			stored, err := store.saveRecordInternal(record, existenceCheck, nil, VersionstampSaveBehaviorDefault, false, &loads[i], nil, nil)
 			if err != nil {
 				return nil, err
 			}
@@ -830,6 +830,7 @@ func (store *FDBRecordStore) saveTargetFor(record proto.Message, version *FDBRec
 
 // saveRecordInternal reuses a preloaded target or prepares one with the requested version behavior.
 // overrideLock bypasses the update lock; typed supplies a typed store's serializer.
+// written, when not nil, collects the indexes whose own data the save updated.
 func (store *FDBRecordStore) saveRecordInternal(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,
@@ -838,6 +839,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 	overrideLock bool,
 	load *existingRecordLoad,
 	typed *typedRecordSerializer,
+	written indexWriteSet,
 ) (*FDBStoredRecord[proto.Message], error) {
 	startTime := time.Now()
 	var target saveTarget
@@ -1030,7 +1032,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 				Store:      store,
 			}
 		}
-		if err := store.updateSecondaryIndexes(oldStoredRecord, newStoredRecord); err != nil {
+		if err := store.updateSecondaryIndexes(oldStoredRecord, newStoredRecord, written); err != nil {
 			return nil, err
 		}
 	}
@@ -1263,7 +1265,8 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 // updated straightforwardly. When types differ (cross-type overwrite), indexes
 // are partitioned into three sets: old-only (delete entries), new-only (insert
 // entries), and common (update entries). Matches Java's FDBRecordStore.updateSecondaryIndexes().
-func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+// written, when not nil, collects each index whose own data was updated.
+func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBStoredRecord[proto.Message], written indexWriteSet) error {
 	if err := store.ensureStoreStateLoadedErr(); err != nil {
 		return fmt.Errorf("load store state: %w", err)
 	}
@@ -1271,12 +1274,12 @@ func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBSto
 	defer store.stateMu.RUnlock()
 	store.indexStateView.maintenance.RLock()
 	defer store.indexStateView.maintenance.RUnlock()
-	return store.updateSecondaryIndexesLocked(oldRecord, newRecord)
+	return store.updateSecondaryIndexesLocked(oldRecord, newRecord, written)
 }
 
 // updateSecondaryIndexesLocked is the lock-free variant for use when the caller
 // already holds stateMu.RLock and the shared maintenance read lock (e.g. SaveRecordBatch).
-func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *FDBStoredRecord[proto.Message], written indexWriteSet) error {
 	if oldRecord == nil && newRecord == nil {
 		return nil
 	}
@@ -1305,7 +1308,7 @@ func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *
 			if !maintain {
 				continue
 			}
-			if err := store.updateOneIndex(index, oldRecord, newRecord); err != nil {
+			if err := store.updateOneIndex(index, oldRecord, newRecord, written); err != nil {
 				return err
 			}
 		}
@@ -1317,7 +1320,7 @@ func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *
 			if !maintain {
 				continue
 			}
-			if err := store.updateOneIndex(index, oldRecord, newRecord); err != nil {
+			if err := store.updateOneIndex(index, oldRecord, newRecord, written); err != nil {
 				return err
 			}
 		}
@@ -1339,19 +1342,19 @@ func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *
 
 	// Delete entries from indexes that only the old type had.
 	for _, index := range oldOnly {
-		if err := store.updateOneIndex(index, oldRecord, nil); err != nil {
+		if err := store.updateOneIndex(index, oldRecord, nil, written); err != nil {
 			return err
 		}
 	}
 	// Insert entries into indexes that only the new type has.
 	for _, index := range newOnly {
-		if err := store.updateOneIndex(index, nil, newRecord); err != nil {
+		if err := store.updateOneIndex(index, nil, newRecord, written); err != nil {
 			return err
 		}
 	}
 	// Update entries in indexes shared by both types.
 	for _, index := range commonIndexes {
-		if err := store.updateOneIndex(index, oldRecord, newRecord); err != nil {
+		if err := store.updateOneIndex(index, oldRecord, newRecord, written); err != nil {
 			return err
 		}
 	}
@@ -1414,7 +1417,9 @@ func partitionIndexes(oldIndexes, newIndexes []*Index) (common, oldOnly, newOnly
 // updateOneIndex routes to UpdateWhileWriteOnly or Update based on index state.
 // Matches Java's FDBRecordStore.updateIndexes() per-index dispatch.
 // updateOneIndex updates a single index. Caller must hold stateMu (read or write).
-func (store *FDBRecordStore) updateOneIndex(index *Index, oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+// written, when not nil, collects the index when its maintainer ran: a queued
+// or disabled index's own data is not written.
+func (store *FDBRecordStore) updateOneIndex(index *Index, oldRecord, newRecord *FDBStoredRecord[proto.Message], written indexWriteSet) error {
 	maintainer, err := store.getIndexMaintainer(index)
 	if err != nil {
 		return err
@@ -1440,12 +1445,14 @@ func (store *FDBRecordStore) updateOneIndex(index *Index, oldRecord, newRecord *
 		return nil
 	}
 	if state.IsWriteOnlyNoQueue() {
+		written.add(index)
 		if err := maintainer.UpdateWhileWriteOnly(oldRecord, newRecord); err != nil {
 			return err
 		}
 		store.context.addToSessionSet(WriteOnlyIndexesUpdated, index.Name)
 		return nil
 	}
+	written.add(index)
 	if err := maintainer.Update(oldRecord, newRecord); err != nil {
 		return err
 	}

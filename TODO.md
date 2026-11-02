@@ -604,6 +604,17 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   warmup/continuation regressions. The point/exact-range warm-cache cases are covered by
   `TestSelectorRange_KnownReadReduction`; this is not an authorization for a new campaign.
 
+- [ ] **Special key space beyond `conflicting_keys/`.** The pure-Go client serves
+  `\xff\xff/transaction/conflicting_keys/` (`client/specialkeys.go`, conformance
+  `//pkg/fdbgo/libfdbc:conflicting_keys_conformance_test`); every other read impl fails
+  with `unsupported_operation` (DIVERGENCES.md, "Special key space reads"). Next, after
+  the RYW rewrite lands: `read_conflict_range/` and `write_conflict_range/`
+  (`ReadYourWrites.actor.cpp:2121-2215`, waiting on pending reads first, `SpecialKeySpace.actor.cpp:690-699`),
+  which would let the Go differentials read Go's conflict ranges the way the libfdb_c arms
+  do. Then `status/json`, `connection_string`, `cluster_file_path` and `cluster_id`
+  (`NativeAPI.actor.cpp:1763-1834`), and special-key writes with
+  `SPECIAL_KEY_SPACE_ENABLE_WRITES` (2114-2116). Each with a libfdb_c conformance case.
+
 ## 1. WS-E — scalar/SQL semantics and statement execution — ACTIVE
 
 - [x] Invalid UTF-8 rejection on SQL, nested bindings and record writes; copied
@@ -3385,11 +3396,28 @@ on the ccx43 bench box with `measure.py --storage 6 --duration 180s`:
   pipelined TEXT index updates of one transaction. Needed (pkg/fdbgo/client):
   cheaper RYW resolution of selector reads in a transaction with thousands of
   writes, and less lock hold time.
+  Client side done (unmeasured on the bench box): a Set after any pinned read
+  cloned the whole write map (O(writes) per Set), and every walk step re-derived
+  its segment with ~10 binary searches. The write map, its cleared/unreadable
+  lists, the WriteMap nodes and the snapshot cache now sit on persistent
+  sequences (`ryw_pseq.go`, O(1) snapshot, O(log n) path copy), the walk
+  iterator is RYWIterator's two-cursor composition (O(1) amortized steps), and
+  conflict filtering on a pinned version runs outside the lock.
+  `BenchmarkRYWConcurrentReads` (//pkg/fdbgo/client:range_selector_unit_test,
+  20k writes, 2048 reads from 128 goroutines): 950 ms -> 91 ms per transaction,
+  2.84 GB -> 46 MB. Open: re-measure otelbench; walk steps still run under the
+  per-transaction lock (they read the shared snapshot cache, C++'s atomic actor
+  step). Running them lock-free needs a per-step persistent snapshot of the
+  cache and no inline-storage reuse after reset (`node0`, `keyBuf`, `kv0`).
 - [ ] **Phrase queries cost twice the earlier layout** (bench p50 15 ms against
   6-8 ms): the TEXT phrase scan of 16 writer shards per role dominates
   (`fts_phrase_first_turn`, `fts_multi_turn_history`).
-- [ ] **`bulk_index_conflicts` widens over every index of the store.** The
-  Record Layer option also covers indexes of record types the batch does not
-  save; restricting it to the batch's types would let span batches coalesce
-  without aborting message transactions (pkg/recordlayer scope). Until then
-  the otel layer refuses the combination.
+- [ ] **`bulk_index_conflicts` widens over every index of the store.** Record
+  Layer side done: `BatchSaveOptions.CoalesceIndexWriteConflicts` now covers
+  only the indexes whose maintainer the batch ran (the saved and overwritten
+  records' types, multi-type and universal indexes, not disabled or queued),
+  pinned by "Batch index write-conflict coalescing scope" in
+  `pkg/recordlayer/store_batch_conflicts_test.go`. layers/otel accepts the
+  combination again (exporter default on): with it, 0 message-transaction
+  conflicts and 728 spans/s in 180 s (`report_conflicting_keys`), against 719
+  with it off.

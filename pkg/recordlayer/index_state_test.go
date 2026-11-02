@@ -62,7 +62,7 @@ var _ = Describe("IndexState", func() {
 			}
 			tx.Cancel()
 			var canceled fdb.Error
-			Expect(errors.As(store.updateSecondaryIndexes(record, nil), &canceled)).To(BeTrue())
+			Expect(errors.As(store.updateSecondaryIndexes(record, nil, nil), &canceled)).To(BeTrue())
 			Expect(canceled.Code).To(Equal(1025))
 		})
 	}
@@ -84,7 +84,7 @@ var _ = Describe("IndexState", func() {
 			Expect(err).NotTo(HaveOccurred())
 			index := md.GetIndex("Order$price")
 			store.stateMu.RLock()
-			err = store.updateOneIndex(index, nil, record)
+			err = store.updateOneIndex(index, nil, record, nil)
 			store.stateMu.RUnlock()
 			Expect(err).NotTo(HaveOccurred())
 			rows, err := rtx.Transaction().GetRange(store.IndexSubspace(index), fdb.RangeOptions{}).GetSliceWithError()
@@ -1233,9 +1233,9 @@ var _ = Describe("Replacement retirement", func() {
 			other.RecordType = md.GetRecordType("Customer")
 			tx.Cancel()
 			if reverse {
-				err = store.updateSecondaryIndexes(&other, saved)
+				err = store.updateSecondaryIndexes(&other, saved, nil)
 			} else {
-				err = store.updateSecondaryIndexes(saved, &other)
+				err = store.updateSecondaryIndexes(saved, &other, nil)
 			}
 			var canceled fdb.Error
 			Expect(errors.As(err, &canceled)).To(BeTrue())

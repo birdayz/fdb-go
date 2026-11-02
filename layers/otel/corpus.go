@@ -93,12 +93,6 @@ func (c Config) Validate() error {
 	if c.BulkIndexConflicts && (c.Backend != "fdb" || c.SaveMode != "batch") {
 		return fail("config", "bulk index conflicts", "bulk index conflicts require the FDB batch save mode")
 	}
-	// Coalesced write conflicts cover every index of the store, including the
-	// message indexes that each message transaction reads: every span batch
-	// commit would abort the message transactions running beside it.
-	if c.BulkIndexConflicts && c.Messages != messagesNone {
-		return fail("config", "bulk index conflicts", "bulk index conflicts cannot be combined with message storage")
-	}
 	if c.CHIndexGranularity < 1 || c.CHIndexGranularity > 8192 {
 		return fail("config", "CH index granularity", "index granularity must be 1..8192 for fresh tables")
 	}

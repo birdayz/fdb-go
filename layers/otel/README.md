@@ -112,8 +112,9 @@ the record subspace. The client can coalesce contained ranges in eligible commit
 this reduces shipped conflict-vector overhead, not stored posting count or bytes.
 The live transaction-size estimate does not perform this coalescing and can grow
 slightly, so the unchanged 500-KB guard still applies. This execution option is not
-part of stored layout identity. It cannot be combined with message storage (see
-"GenAI message storage", write conflicts); the exporter default is off.
+part of stored layout identity. The widened ranges cover only the indexes the
+batch maintains, so they never touch the message indexes (see "GenAI message
+storage", write conflicts).
 
 Zlib uses the existing Java-compatible version-1 format. Brotli explicitly uses
 `SetGoOnlyBrotliCompression` and version 2: **Java and default Go serializers
@@ -563,12 +564,13 @@ before any read.
   manifests and are not equality-indexed; equality predicates on them are
   refused.
 * **Write conflicts.** Message transactions read `message_hash_v1` and the
-  TEXT index serializably. `bulk_index_conflicts` would widen every span
-  batch's write conflicts over all of the store's indexes, including these,
-  so each span batch commit would abort the message transactions running
-  beside it (measured with FDB's `report_conflicting_keys`: every conflicted
-  message transaction reported all of its index read ranges). The two are
-  refused together, and the exporter default is off.
+  TEXT index serializably. `bulk_index_conflicts` widens a span batch's write
+  conflicts over the indexes of the record types it saves (Envelope), not over
+  the Message indexes, so span batches and message transactions do not
+  conflict. When it covered every index of the store, each span batch commit
+  aborted the message transactions beside it (measured with FDB's
+  `report_conflicting_keys`: 5241 message conflicts in 120 s, each reporting
+  all of its read ranges; now 0 in 180 s).
 
 ## Repeated local campaign
 

@@ -21,12 +21,25 @@ var unsplitSuffix = tuple.Tuple{unsplitRecord}
 
 // BatchSaveOptions controls transaction-local batch execution, not stored layout.
 type BatchSaveOptions struct {
-	// CoalesceIndexWriteConflicts widens write conflicts over every metadata
-	// index's primary and secondary subspaces, including indexes this batch does
-	// not update. All normal read and write conflicts remain. A client that
-	// coalesces overlapping conflicts can ship fewer ranges; the live approximate
-	// transaction size need not decrease. Index readers that also write may see
-	// additional conflicts. No record, header, or index-state range is widened.
+	// CoalesceIndexWriteConflicts adds, once the whole batch has saved, a write
+	// conflict over the primary and the secondary subspace of each index whose
+	// maintainer this batch ran: an index that applies to a saved record's type
+	// or to the type of a record it overwrote (a multi-type index on either,
+	// and every universal index such as COUNT or VERSION), and that is not
+	// disabled or write-only with a pending-write queue. Indexes of other
+	// record types get no added range, so readers of only those indexes see no
+	// conflict from the batch, as without the option.
+	//
+	// The ranges are added on top of the batch's normal conflicts and suppress
+	// none of them: each write keeps the conflict it has without the option (a
+	// versionstamped VERSION entry gets its own from the commit proxy). Every
+	// conflict of the batch therefore remains, and a client that coalesces overlapping
+	// ranges can ship fewer, wider ones; the live approximate transaction size
+	// need not decrease. Readers that also write and read anywhere in a covered
+	// index (not only the keys the batch changed) may see additional conflicts.
+	// No record, header, record-count, index-state, uniqueness-violation,
+	// sliding-window, or pending-queue range is widened, and a failed batch adds
+	// none.
 	CoalesceIndexWriteConflicts bool
 }
 
@@ -83,14 +96,15 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 			return nil, err
 		}
 		results := make([]*FDBStoredRecord[proto.Message], len(records))
+		written := options.indexWriteSet()
 		for i, rec := range records {
-			saved, err := store.SaveRecord(rec)
+			saved, err := store.saveRecordInternal(rec, RecordExistenceCheckNone, nil, VersionstampSaveBehaviorDefault, false, nil, nil, written)
 			if err != nil {
 				return nil, fmt.Errorf("record %d: %w", i, err)
 			}
 			results[i] = saved
 		}
-		if err := store.addBatchIndexWriteConflicts(options); err != nil {
+		if err := store.addBatchIndexWriteConflicts(written); err != nil {
 			return nil, err
 		}
 		return results, nil
@@ -226,6 +240,7 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 	store.indexStateView.maintenance.RLock()
 	defer store.indexStateView.maintenance.RUnlock()
 	lockChecked := false
+	written := options.indexWriteSet()
 
 	for i := range pending {
 		p := &pending[i]
@@ -368,7 +383,7 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 				Version:    oldVersion,
 			}
 		}
-		if err := store.updateSecondaryIndexesLocked(oldRecord, stored); err != nil {
+		if err := store.updateSecondaryIndexesLocked(oldRecord, stored, written); err != nil {
 			return nil, fmt.Errorf("record %d: index update: %w", i, err)
 		}
 
@@ -382,20 +397,39 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 		tx.AddBytes(countFDBKey, buf[:])
 	}
 
-	if err := store.addBatchIndexWriteConflicts(options); err != nil {
+	if err := store.addBatchIndexWriteConflicts(written); err != nil {
 		return nil, err
 	}
 	return results, nil
 }
 
-func (store *FDBRecordStore) addBatchIndexWriteConflicts(options BatchSaveOptions) error {
+// indexWriteSet collects, by name, the indexes whose maintainer a save ran
+// (readable or write-only without a queue). A nil set collects nothing.
+type indexWriteSet map[string]*Index
+
+func (s indexWriteSet) add(index *Index) {
+	if s != nil {
+		s[index.Name] = index
+	}
+}
+
+// indexWriteSet returns the set a batch with these options collects into: nil
+// unless index write conflicts are coalesced.
+func (options BatchSaveOptions) indexWriteSet() indexWriteSet {
 	if !options.CoalesceIndexWriteConflicts {
 		return nil
 	}
+	return indexWriteSet{}
+}
+
+// addBatchIndexWriteConflicts adds the coalesced conflicts of
+// CoalesceIndexWriteConflicts over the indexes the batch updated, in name order.
+// Every write keeps its own normal conflict range; these prefixes only add to
+// those conflicts, never replace one.
+func (store *FDBRecordStore) addBatchIndexWriteConflicts(written indexWriteSet) error {
 	var ranges []fdb.KeyRange
-	indexes := store.metaData.GetAllIndexes()
-	for _, name := range slices.Sorted(maps.Keys(indexes)) {
-		index := indexes[name]
+	for _, name := range slices.Sorted(maps.Keys(written)) {
+		index := written[name]
 		for _, prefix := range [][]byte{store.indexSubspace(index).Bytes(), store.indexSecondarySubspace(index).Bytes()} {
 			// PrefixRange also covers an aggregate entry at the subspace key itself.
 			r, err := fdb.PrefixRange(prefix)

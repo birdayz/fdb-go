@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sync"
 
 	"fdb.dev/gen/demopb"
@@ -381,6 +382,228 @@ var _ = Describe("Batch index write-conflict coalescing", func() {
 			var conflict fdb.Error
 			Expect(errors.As(reader.Commit(), &conflict)).To(BeTrue())
 			Expect(conflict.Code).To(Equal(1020))
+		}
+	})
+})
+
+var _ = Describe("Batch index write-conflict coalescing scope", func() {
+	ctx := context.Background()
+	options := BatchSaveOptions{CoalesceIndexWriteConflicts: true}
+	// Order and Customer each own indexes, share a multi-type index and every
+	// universal index; TypedRecord has only the universal ones.
+	metadata := func(legacy bool) *RecordMetaData {
+		b := baseBuilder().SetSplitLongRecords(!legacy)
+		b.AddIndex("Order", NewIndex("order_price", Field("price")))
+		b.AddIndex("Customer", NewIndex("customer_price", Field("price")))
+		email := NewIndex("customer_email", Field("email"))
+		email.Options[IndexOptionUnique] = "true"
+		b.AddIndex("Customer", email)
+		b.AddMultiTypeIndex([]string{"Order", "Customer"}, NewIndex("order_customer_price", Field("price")))
+		b.AddUniversalIndex(NewCountIndex("record_count", Ungrouped(EmptyKey())))
+		if !legacy {
+			b.SetStoreRecordVersions(true)
+			b.AddUniversalIndex(NewVersionIndex("versions", VersionKey()))
+		}
+		md, err := b.Build()
+		Expect(err).NotTo(HaveOccurred())
+		return md
+	}
+	format := func(legacy bool) int32 {
+		if legacy {
+			return 4
+		}
+		return 0
+	}
+	open := func(rc *FDBRecordContext, md *RecordMetaData, root subspace.Subspace, legacy bool) *FDBRecordStore {
+		b := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root)
+		if legacy {
+			b.SetFormatVersion(format(legacy))
+		}
+		s, err := b.CreateOrOpen()
+		Expect(err).NotTo(HaveOccurred())
+		return s
+	}
+	transaction := func() *FDBRecordContext {
+		tx, err := sharedDB.CreateTransaction()
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(tx.Cancel)
+		return sharedDB.NewRecordContext(tx)
+	}
+	commit := func(md *RecordMetaData, root subspace.Subspace, legacy bool, body func(*FDBRecordStore) error) {
+		_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			return nil, body(open(rc, md, root, legacy))
+		})
+		Expect(err).NotTo(HaveOccurred())
+	}
+	order := func(id int64, price int32) proto.Message {
+		return &demopb.Order{OrderId: proto.Int64(id), Price: proto.Int32(price)}
+	}
+	customer := func(id int64, price int32) proto.Message {
+		return &demopb.Customer{CustomerId: proto.Int64(id), Price: proto.Int32(price), Email: proto.String(fmt.Sprintf("c%d@example.com", id))}
+	}
+	typed := func(id int64) proto.Message {
+		return &demopb.TypedRecord{Id: proto.Int64(id), Price: proto.Int32(int32(id))}
+	}
+	// expected is the primary and secondary prefix range of each named index,
+	// in name order, as the batch adds them.
+	expected := func(s *FDBRecordStore, md *RecordMetaData, names ...string) []fdb.KeyRange {
+		var out []fdb.KeyRange
+		for _, name := range slices.Sorted(slices.Values(names)) {
+			index := md.GetIndex(name)
+			Expect(index).NotTo(BeNil(), name)
+			for _, ss := range []subspace.Subspace{s.IndexSubspace(index), s.IndexSecondarySubspace(index)} {
+				r, err := fdb.PrefixRange(ss.Bytes())
+				Expect(err).NotTo(HaveOccurred())
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+
+	for _, legacy := range []bool{false, true} {
+		layout := "modern"
+		if legacy {
+			layout = "legacy bare key"
+		}
+		It("covers exactly the indexes the batch's saved and overwritten types maintain for "+layout, func() {
+			md, root := metadata(legacy), specSubspace()
+			universal := []string{"record_count"}
+			if !legacy {
+				universal = append(universal, "versions")
+			}
+			orderIndexes := append([]string{"order_price", "order_customer_price"}, universal...)
+			customerIndexes := append([]string{"customer_price", "customer_email", "order_customer_price"}, universal...)
+			allIndexes := append([]string{"order_price", "customer_price", "customer_email", "order_customer_price"}, universal...)
+			for _, c := range []struct {
+				name    string
+				records []proto.Message
+				want    []string
+			}{
+				{"one type", []proto.Message{order(1, 10), order(2, 20)}, orderIndexes},
+				{"other type", []proto.Message{customer(1, 10)}, customerIndexes},
+				{"only universal indexes", []proto.Message{typed(1)}, universal},
+				{"type with universal-only type", []proto.Message{typed(1), order(2, 20)}, orderIndexes},
+				{"two types", []proto.Message{order(1, 10), customer(2, 20)}, allIndexes},
+			} {
+				caseRoot := root.Sub(c.name)
+				commit(md, caseRoot, legacy, func(*FDBRecordStore) error { return nil })
+				rc := transaction()
+				probe := &batchConflictProbeTransaction{WritableTransaction: rc.Transaction()}
+				rc.tx = probe
+				s := open(rc, md, caseRoot, legacy)
+				probe.added = nil
+				_, err := s.SaveRecordBatchWithOptions(c.records, options)
+				Expect(err).NotTo(HaveOccurred(), c.name)
+				Expect(probe.added).To(Equal(expected(s, md, c.want...)), c.name)
+				Expect(rc.Commit()).To(Succeed(), c.name)
+			}
+
+			// A primary key reused by another type removes the old record's
+			// entries from the old type's indexes, so those are covered too.
+			overwriteRoot := root.Sub("cross-type overwrite")
+			commit(md, overwriteRoot, legacy, func(s *FDBRecordStore) error {
+				_, err := s.SaveRecord(customer(7, 70))
+				return err
+			})
+			rc := transaction()
+			probe := &batchConflictProbeTransaction{WritableTransaction: rc.Transaction()}
+			rc.tx = probe
+			s := open(rc, md, overwriteRoot, legacy)
+			probe.added = nil
+			_, err := s.SaveRecordBatchWithOptions([]proto.Message{order(7, 71)}, options)
+			Expect(err).NotTo(HaveOccurred())
+			// Before the coalesced ranges, the overwrite adds its normal write
+			// conflict over the whole old record, as Java's clearPreviousSplitRecord
+			// does (SplitHelper.java:357-359, split_helper.go clearRecordKeys). Java
+			// skips that clear for an unsplit bare-key record with size info
+			// (SplitHelper.java:152), so the legacy layout adds none.
+			var want []fdb.KeyRange
+			if !legacy {
+				begin, end := overwriteRoot.Sub(RecordKey, int64(7)).FDBRangeKeys()
+				want = append(want, fdb.KeyRange{Begin: begin, End: end})
+			}
+			want = append(want, expected(s, md, allIndexes...)...)
+			Expect(probe.added).To(Equal(want))
+			rows, err := rc.Transaction().GetRange(s.IndexSubspace(md.GetIndex("customer_price")), fdb.RangeOptions{}).GetSliceWithError()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rows).To(BeEmpty(), "the overwrite did write the old type's index")
+			Expect(rc.Commit()).To(Succeed())
+		})
+	}
+
+	It("skips disabled indexes and covers write-only ones", func() {
+		md, root := metadata(false), specSubspace()
+		commit(md, root, false, func(s *FDBRecordStore) error {
+			if _, err := s.MarkIndexDisabled("order_price"); err != nil {
+				return err
+			}
+			_, err := s.MarkIndexWriteOnly("order_customer_price")
+			return err
+		})
+		rc := transaction()
+		probe := &batchConflictProbeTransaction{WritableTransaction: rc.Transaction()}
+		rc.tx = probe
+		s := open(rc, md, root, false)
+		probe.added = nil
+		_, err := s.SaveRecordBatchWithOptions([]proto.Message{order(1, 10)}, options)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(probe.added).To(Equal(expected(s, md, "order_customer_price", "record_count", "versions")))
+	})
+
+	It("conflicts with concurrent readers of the batch's indexes only", func() {
+		md := metadata(false)
+		for _, coalesce := range []bool{false, true} {
+			root := specSubspace().Sub(coalesce)
+			commit(md, root, false, func(*FDBRecordStore) error { return nil })
+			type reader struct {
+				name      string
+				ranges    func(*FDBRecordStore) []fdb.KeyRange
+				conflicts bool
+			}
+			whole := func(names ...string) func(*FDBRecordStore) []fdb.KeyRange {
+				return func(s *FDBRecordStore) []fdb.KeyRange { return expected(s, md, names...) }
+			}
+			readers := []reader{
+				// The batch writes price 5; this reader's range holds no
+				// entry the batch changes, so only the widened range reaches it.
+				{"untouched part of the type's own index", func(s *FDBRecordStore) []fdb.KeyRange {
+					ss := s.IndexSubspace(md.GetIndex("order_price"))
+					return []fdb.KeyRange{{Begin: ss.Pack(tuple.Tuple{int64(1000)}), End: ss.Pack(tuple.Tuple{int64(2000)})}}
+				}, coalesce},
+				{"the type's own index", whole("order_price"), true},
+				{"multi-type index", whole("order_customer_price"), true},
+				{"universal COUNT index", whole("record_count"), true},
+				// A versionstamped index key has no client conflict range; the
+				// commit proxy adds its final key's (CommitProxyServer.actor.cpp:211-213).
+				{"universal VERSION index", whole("versions"), true},
+				{"other type's indexes", whole("customer_price", "customer_email"), false},
+			}
+			contexts := make([]*FDBRecordContext, len(readers))
+			for i, r := range readers {
+				contexts[i] = transaction()
+				s := open(contexts[i], md, root, false)
+				for _, kr := range r.ranges(s) {
+					_, err := contexts[i].Transaction().GetRange(kr, fdb.RangeOptions{}).GetSliceWithError()
+					Expect(err).NotTo(HaveOccurred())
+				}
+				contexts[i].Transaction().Set(root.Sub("reader", i).FDBKey(), []byte(r.name))
+			}
+			writer := transaction()
+			ws := open(writer, md, root, false)
+			opt := BatchSaveOptions{CoalesceIndexWriteConflicts: coalesce}
+			_, err := ws.SaveRecordBatchWithOptions([]proto.Message{order(1, 5), order(2, 5)}, opt)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(writer.Commit()).To(Succeed())
+			for i, r := range readers {
+				err := contexts[i].Commit()
+				if !r.conflicts {
+					Expect(err).NotTo(HaveOccurred(), "coalesce=%v reader of %s", coalesce, r.name)
+					continue
+				}
+				var conflict fdb.Error
+				Expect(errors.As(err, &conflict)).To(BeTrue(), "coalesce=%v reader of %s: %v", coalesce, r.name, err)
+				Expect(conflict.Code).To(Equal(1020))
+			}
 		}
 	})
 })

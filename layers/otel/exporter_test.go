@@ -116,7 +116,7 @@ func validExporterConfig() ExporterConfig {
 }
 
 func TestExporterConfigDefaults(t *testing.T) {
-	want := ExporterConfig{Order: "time", HashBytes: 8, PostingValueFormat: "tuple", RecordCompression: "brotli-4", BulkIndexConflicts: false, BatchSize: 64, Workers: 8, MaxCandidates: 20000, MaxBytes: 4 << 20, K: 100, MaxInFlightTransactions: 32, TransactionTimeout: 10 * time.Second}
+	want := ExporterConfig{Order: "time", HashBytes: 8, PostingValueFormat: "tuple", RecordCompression: "brotli-4", BulkIndexConflicts: true, BatchSize: 64, Workers: 8, MaxCandidates: 20000, MaxBytes: 4 << 20, K: 100, MaxInFlightTransactions: 32, TransactionTimeout: 10 * time.Second}
 	if got := DefaultExporterConfig(); got != want {
 		t.Fatalf("defaults: got %+v want %+v", got, want)
 	}
@@ -155,7 +155,7 @@ transaction_timeout: 45s
 		{"partial keeps omitted defaults", "cluster_file: /tmp/fdb.cluster\nrun: live_run_0001\ntenant: 3\n", func(c *ExporterConfig) {
 			c.ClusterFile, c.Run, c.Tenant = "/tmp/fdb.cluster", "live_run_0001", 3
 		}},
-		{"explicit true overrides false default", "bulk_index_conflicts: true\n", func(c *ExporterConfig) { c.BulkIndexConflicts = true }},
+		{"explicit false overrides true default", "bulk_index_conflicts: false\n", func(c *ExporterConfig) { c.BulkIndexConflicts = false }},
 		{"explicit zero overrides nonzero default", "max_candidates: 0\nworkers: 0\n", func(c *ExporterConfig) { c.MaxCandidates, c.Workers = 0, 0 }},
 		{"max_inflight_transactions only", "max_inflight_transactions: 1024\n", func(c *ExporterConfig) { c.MaxInFlightTransactions = 1024 }},
 		{"transaction_timeout only", "transaction_timeout: 2m30s\n", func(c *ExporterConfig) { c.TransactionTimeout = 150 * time.Second }},
@@ -249,7 +249,7 @@ func TestExporterConfigJSON(t *testing.T) {
 		{"partial keeps omitted defaults", `{"cluster_file":"/tmp/fdb.cluster","run":"live_run_0001","tenant":3}`, func(c *ExporterConfig) {
 			c.ClusterFile, c.Run, c.Tenant = "/tmp/fdb.cluster", "live_run_0001", 3
 		}},
-		{"explicit true overrides false default", `{"bulk_index_conflicts":true}`, func(c *ExporterConfig) { c.BulkIndexConflicts = true }},
+		{"explicit false overrides true default", `{"bulk_index_conflicts":false}`, func(c *ExporterConfig) { c.BulkIndexConflicts = false }},
 		{"explicit zero overrides nonzero default", `{"k":0,"hash_bytes":0,"max_inflight_transactions":0,"transaction_timeout":"0s"}`, func(c *ExporterConfig) {
 			c.K, c.HashBytes, c.MaxInFlightTransactions, c.TransactionTimeout = 0, 0, 0, 0
 		}},
@@ -370,6 +370,8 @@ func TestExporterConfigValidate(t *testing.T) {
 		{"bulk conflicts off", func(c *ExporterConfig) { c.BulkIndexConflicts = false }},
 		{"bulk conflicts without messages", func(c *ExporterConfig) { c.BulkIndexConflicts = true }},
 		{"full text without bulk conflicts", func(c *ExporterConfig) { c.EnableMessageFullText = true }},
+		{"bulk conflicts with full text", func(c *ExporterConfig) { c.BulkIndexConflicts, c.EnableMessageFullText = true, true }},
+		{"bulk conflicts with deltas", func(c *ExporterConfig) { c.BulkIndexConflicts, c.EnableMessageDeltas = true, true }},
 		{"k 1", func(c *ExporterConfig) { c.K = 1 }},
 		{"k 10000", func(c *ExporterConfig) { c.K = 10000 }},
 		{"max_candidates 1", func(c *ExporterConfig) { c.MaxCandidates = 1 }},
@@ -419,8 +421,6 @@ func TestExporterConfigValidate(t *testing.T) {
 		{"max_bytes 0", func(c *ExporterConfig) { c.MaxBytes = 0 }, "invalid corpus/query bounds"},
 		{"unknown compression", func(c *ExporterConfig) { c.RecordCompression = "gzip" }, "record compression must be"},
 		{"unknown posting format", func(c *ExporterConfig) { c.PostingValueFormat = "proto" }, "posting value format must be"},
-		{"bulk conflicts with full text", func(c *ExporterConfig) { c.BulkIndexConflicts, c.EnableMessageFullText = true, true }, "cannot be combined with message storage"},
-		{"bulk conflicts with deltas", func(c *ExporterConfig) { c.BulkIndexConflicts, c.EnableMessageDeltas = true, true }, "cannot be combined with message storage"},
 	}
 	for _, tc := range invalid {
 		t.Run("invalid "+tc.name, func(t *testing.T) {

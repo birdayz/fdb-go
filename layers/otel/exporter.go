@@ -84,7 +84,7 @@ type ExporterConfig struct {
 }
 
 func DefaultExporterConfig() ExporterConfig {
-	return ExporterConfig{Order: "time", HashBytes: 8, PostingValueFormat: "tuple", RecordCompression: "brotli-4", BulkIndexConflicts: false, BatchSize: 64, Workers: 8, MaxCandidates: 20000, MaxBytes: 4 << 20, K: 100, MaxInFlightTransactions: defaultMaxInFlightTransactions, TransactionTimeout: defaultExporterTxnTimeout}
+	return ExporterConfig{Order: "time", HashBytes: 8, PostingValueFormat: "tuple", RecordCompression: "brotli-4", BulkIndexConflicts: true, BatchSize: 64, Workers: 8, MaxCandidates: 20000, MaxBytes: 4 << 20, K: 100, MaxInFlightTransactions: defaultMaxInFlightTransactions, TransactionTimeout: defaultExporterTxnTimeout}
 }
 
 // exporterConfigFields is ExporterConfig without its JSON methods.
