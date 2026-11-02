@@ -8,6 +8,9 @@ package recordlayer
 import (
 	"bytes"
 	"fmt"
+	"slices"
+	"sort"
+	"sync"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -168,7 +171,6 @@ type pendingBunchedPut struct {
 	tx          fdb.WritableTransaction
 	subspaceKey []byte
 	keyBytes    []byte
-	key         tuple.Tuple
 	value       []int
 	read        *pendingSnapshotRead
 }
@@ -201,7 +203,8 @@ func (p *pendingSnapshotRead) wait() ([]fdb.KeyValue, error) {
 // startPut issues Put's read.
 func (m *BunchedMap) startPut(tx fdb.WritableTransaction, ss subspace.Subspace, key tuple.Tuple, value []int) *pendingBunchedPut {
 	subspaceKey := ss.Bytes()
-	keyBytes := joinBytes(subspaceKey, m.serializer.SerializeKey(key))
+	// joinBytes(subspaceKey, SerializeKey(key)) in one allocation.
+	keyBytes := key.PackWithPrefix(subspaceKey)
 
 	// Snapshot range read to find signpost before and after the key.
 	// Java: tr.snapshot().getRange(lastLessOrEqual(keyBytes), firstGreaterThan(keyBytes).add(1), ...)
@@ -211,12 +214,12 @@ func (m *BunchedMap) startPut(tx fdb.WritableTransaction, ss subspace.Subspace, 
 		Begin: fdb.LastLessOrEqual(fdb.Key(keyBytes)),
 		End:   endSel,
 	})
-	return &pendingBunchedPut{m: m, tx: tx, subspaceKey: subspaceKey, keyBytes: keyBytes, key: key, value: value, read: read}
+	return &pendingBunchedPut{m: m, tx: tx, subspaceKey: subspaceKey, keyBytes: keyBytes, value: value, read: read}
 }
 
 // finish waits for the put's read and applies it.
 func (p *pendingBunchedPut) finish() ([]int, bool, error) {
-	m, tx, subspaceKey, keyBytes, key, value := p.m, p.tx, p.subspaceKey, p.keyBytes, p.key, p.value
+	m, tx, subspaceKey, keyBytes, value := p.m, p.tx, p.subspaceKey, p.keyBytes, p.value
 	keyValues, err := p.read.wait()
 	if err != nil {
 		return nil, false, err
@@ -246,12 +249,50 @@ func (p *pendingBunchedPut) finish() ([]int, bool, error) {
 		return nil, false, &BunchedMapException{Message: "database key after map key compared incorrectly"}
 	}
 
-	newEntry := bunchedEntry{Key: key, Value: value}
-	oldValue, hadOld, err := m.insertEntry(tx, subspaceKey, keyBytes, key, value, kvBefore, kvAfter, newEntry)
+	// The new entry's key is its packed tuple, as Java's serializeKey caches
+	// it in the key (Tuple.pack).
+	newEntry := bunchItem{key: keyBytes[len(subspaceKey):], positions: value}
+	oldValue, hadOld, err := m.insertEntry(tx, subspaceKey, keyBytes, value, kvBefore, kvAfter, newEntry)
 	if err != nil {
 		return nil, false, err
 	}
 	return oldValue, hadOld, nil
+}
+
+// bunchItemPool holds the item lists put and remove decode bunches into.
+// Items only point into a put's read results and keys, never into anything a
+// transaction keeps, so a list is reused once its operation is done.
+var bunchItemPool = sync.Pool{New: func() any {
+	items := make([]bunchItem, 0, textIndexBunchSize+1)
+	return &items
+}}
+
+// decodeBunch decodes the bunch at kv (a key of the map at subspaceKey) into a
+// pooled item list; release returns the list. It fails where Java's
+// deserializeKey or deserializeEntries do.
+func decodeBunch(subspaceKey []byte, kv *fdb.KeyValue, what string) (items []bunchItem, release func(), err error) {
+	pooled := bunchItemPool.Get().(*[]bunchItem)
+	items, err = decodeBunchItems(kv.Key[len(subspaceKey):], kv.Value, (*pooled)[:0])
+	release = func() {
+		clear(items[:cap(items)])
+		*pooled = items[:0]
+		bunchItemPool.Put(pooled)
+	}
+	if err != nil {
+		release()
+		return nil, nil, fmt.Errorf("bunched map %s: deserialize entries: %w", what, err)
+	}
+	return items, release, nil
+}
+
+// searchBunch is the index of the first item whose key is not less than key.
+// Java scans for it linearly (insertEntry: while compare(key, entry) > 0);
+// the entries of a bunch are in key order (invariant 1 of the Grand Theory
+// of Conflict Ranges, checked by verifyIntegrity), so a binary search finds
+// the same index. Keys compare by their packed bytes, as Java's
+// Tuple.compareTo does for tuples that carry them.
+func searchBunch(items []bunchItem, key []byte) int {
+	return sort.Search(len(items), func(i int) bool { return bytes.Compare(key, items[i].key) <= 0 })
 }
 
 // Remove removes a key from the map.
@@ -294,67 +335,60 @@ func (p *pendingBunchedRemove) finish() ([]int, bool, error) {
 		return nil, false, nil
 	}
 
-	mapKey, err := m.serializer.DeserializeKey(kv.Key, len(subspaceKey), len(kv.Key)-len(subspaceKey))
+	entryList, release, err := decodeBunch(subspaceKey, &kv, "remove")
 	if err != nil {
-		return nil, false, fmt.Errorf("bunched map remove: deserialize key: %w", err)
+		return nil, false, err
 	}
-	entryList, err := m.serializer.DeserializeEntries(mapKey, kv.Value)
-	if err != nil {
-		return nil, false, fmt.Errorf("bunched map remove: deserialize entries: %w", err)
-	}
+	defer release()
 
-	foundIndex := -1
-	for i, entry := range entryList {
-		if tupleEqual(entry.Key, key) {
-			foundIndex = i
-			break
-		}
-	}
-
-	if foundIndex == -1 {
+	// Java finds the entry equal to key by a linear scan (BunchedMap.java:
+	// 622-628); the bunch is in key order, so the search finds the same one.
+	keyBytes := key.PackWithPrefix(subspaceKey)
+	foundIndex := searchBunch(entryList, keyBytes[len(subspaceKey):])
+	if foundIndex == len(entryList) || !bytes.Equal(entryList[foundIndex].key, keyBytes[len(subspaceKey):]) {
 		return nil, false, nil
 	}
-
-	oldEntry := entryList[foundIndex]
+	oldValue, err := itemPositions(&entryList[foundIndex])
+	if err != nil {
+		return nil, false, err
+	}
 
 	// Read conflict range over entries being rewritten.
 	m.addEntryListReadConflictRange(tx, subspaceKey, kv.Key, entryList)
 
 	// Write conflict key for the map key being modified.
-	keyBytes := joinBytes(subspaceKey, m.serializer.SerializeKey(key))
 	if err := tx.AddWriteConflictKey(fdb.Key(keyBytes)); err != nil {
 		return nil, false, err
 	}
 
 	if len(entryList) == 1 {
-		// Only entry — just delete the signpost.
-		m.instrumentDelete(kv.Key, kv.Value)
+		// Only entry — just delete the signpost. Java instruments the delete
+		// without the old value here (BunchedMap.java:639-640).
 		tx.Clear(fdb.Key(kv.Key))
+		m.instrumentDelete(kv.Key, nil)
 	} else {
 		// Remove the entry and re-serialize.
-		newEntryList := make([]bunchedEntry, 0, len(entryList)-1)
-		newEntryList = append(newEntryList, entryList[:foundIndex]...)
-		newEntryList = append(newEntryList, entryList[foundIndex+1:]...)
+		newEntryList := slices.Delete(entryList, foundIndex, foundIndex+1)
 
-		var newKey []byte
+		var newKey, oldBytes []byte
 		if foundIndex == 0 {
 			// Removed first entry: signpost must change to the new first entry.
-			m.instrumentDelete(kv.Key, kv.Value)
 			tx.Clear(fdb.Key(kv.Key))
-			newKey = joinBytes(subspaceKey, m.serializer.SerializeKey(newEntryList[0].Key))
+			m.instrumentDelete(kv.Key, kv.Value)
+			newKey = joinBytes(subspaceKey, newEntryList[0].key)
 		} else {
-			newKey = kv.Key
+			newKey, oldBytes = kv.Key, kv.Value
 		}
 
-		newValue, err := m.serializer.SerializeEntries(newEntryList)
+		newValue, err := serializeBunchItems(newEntryList)
 		if err != nil {
 			return nil, false, fmt.Errorf("bunched map remove: %w", err)
 		}
-		m.instrumentWrite(newKey, newValue, kv.Value)
 		tx.Set(fdb.Key(newKey), newValue)
+		m.instrumentWrite(newKey, newValue, oldBytes)
 	}
 
-	return oldEntry.Value, true, nil
+	return oldValue, true, nil
 }
 
 // VerifyIntegrity checks that all signpost keys and entries within bunches
@@ -470,8 +504,8 @@ func (p *pendingEntryForKey) finish() (fdb.KeyValue, bool, error) {
 // addEntryListReadConflictRange adds a read conflict range covering all entries
 // in the entry list. Range is [signpostKey, lastEntryKey + 0x00).
 // Matches Java's BunchedMap.addEntryListReadConflictRange().
-func (m *BunchedMap) addEntryListReadConflictRange(tx fdb.WritableTransaction, subspaceKey, keyBytes []byte, entryList []bunchedEntry) {
-	end := joinBytes(subspaceKey, m.serializer.SerializeKey(entryList[len(entryList)-1].Key), zeroArray)
+func (m *BunchedMap) addEntryListReadConflictRange(tx fdb.WritableTransaction, subspaceKey, keyBytes []byte, entryList []bunchItem) {
+	end := joinBytes(subspaceKey, entryList[len(entryList)-1].key, zeroArray)
 	// Ignore errors — matches Java which doesn't check return value.
 	_ = tx.AddReadConflictRange(fdb.KeyRange{
 		Begin: fdb.Key(keyBytes),
@@ -481,14 +515,14 @@ func (m *BunchedMap) addEntryListReadConflictRange(tx fdb.WritableTransaction, s
 
 // insertAlone creates a new signpost with a single entry.
 // Matches Java's BunchedMap.insertAlone().
-func (m *BunchedMap) insertAlone(tx fdb.WritableTransaction, keyBytes []byte, entry bunchedEntry) error {
+func (m *BunchedMap) insertAlone(tx fdb.WritableTransaction, keyBytes []byte, entry bunchItem) error {
 	_ = tx.AddReadConflictKey(fdb.Key(keyBytes))
-	valueBytes, err := m.serializer.SerializeEntries([]bunchedEntry{entry})
+	valueBytes, err := serializeBunchItems([]bunchItem{entry})
 	if err != nil {
 		return err
 	}
-	m.instrumentWrite(keyBytes, valueBytes, nil)
 	tx.Set(fdb.Key(keyBytes), valueBytes)
+	m.instrumentWrite(keyBytes, valueBytes, nil)
 	return nil
 }
 
@@ -496,23 +530,23 @@ func (m *BunchedMap) insertAlone(tx fdb.WritableTransaction, keyBytes []byte, en
 // but without size checking.
 // Matches Java's BunchedMap.writeEntryListWithoutChecking().
 func (m *BunchedMap) writeEntryListWithoutChecking(tx fdb.WritableTransaction, subspaceKey, keyBytes []byte,
-	oldKv *fdb.KeyValue, newKey []byte, entryList []bunchedEntry, serializedBytes []byte,
+	oldKv *fdb.KeyValue, newKey []byte, entryList []bunchItem, serializedBytes []byte,
 ) {
 	// Order matters: add read conflict range BEFORE writing (see Java comment about
 	// explicit read conflict ranges skipping keys in write cache).
 	m.addEntryListReadConflictRange(tx, subspaceKey, newKey, entryList)
 
 	if oldKv != nil && !bytes.Equal(oldKv.Key, newKey) {
-		m.instrumentDelete(oldKv.Key, oldKv.Value)
 		tx.Clear(fdb.Key(oldKv.Key))
+		m.instrumentDelete(oldKv.Key, oldKv.Value)
 	}
 
 	var oldValue []byte
 	if oldKv != nil && bytes.Equal(oldKv.Key, newKey) {
 		oldValue = oldKv.Value
 	}
-	m.instrumentWrite(newKey, serializedBytes, oldValue)
 	tx.Set(fdb.Key(newKey), serializedBytes)
+	m.instrumentWrite(newKey, serializedBytes, oldValue)
 
 	if !bytes.Equal(keyBytes, newKey) {
 		_ = tx.AddWriteConflictKey(fdb.Key(keyBytes))
@@ -523,15 +557,18 @@ func (m *BunchedMap) writeEntryListWithoutChecking(tx fdb.WritableTransaction, s
 // isFirst/isLast indicate position relative to the insertion point.
 // Matches Java's BunchedMap.writeEntryList().
 func (m *BunchedMap) writeEntryList(tx fdb.WritableTransaction, subspaceKey, keyBytes []byte,
-	oldKv *fdb.KeyValue, newKey []byte, entryList []bunchedEntry,
+	oldKv *fdb.KeyValue, newKey []byte, entryList []bunchItem,
 	kvAfter *fdb.KeyValue, isFirst, isLast bool,
 ) error {
-	serializedBytes, err := m.serializer.SerializeEntries(entryList)
+	// Java serializes the list before choosing a branch; only the size decides
+	// the branch, and the append branch writes no full list, so the list is
+	// encoded only where it is written.
+	serializedSize, err := bunchItemsSize(entryList)
 	if err != nil {
 		return err
 	}
 
-	if len(serializedBytes) > bunchedMapMaxValueSize {
+	if serializedSize > bunchedMapMaxValueSize {
 		if isFirst || len(entryList) == 1 {
 			if err := m.insertAlone(tx, keyBytes, entryList[0]); err != nil {
 				return err
@@ -544,44 +581,47 @@ func (m *BunchedMap) writeEntryList(tx fdb.WritableTransaction, subspaceKey, key
 			// Split down the middle.
 			splitPoint := len(entryList) / 2
 			firstEntries := entryList[:splitPoint]
-			firstSerialized, err := m.serializer.SerializeEntries(firstEntries)
+			firstSerialized, err := serializeBunchItems(firstEntries)
 			if err != nil {
 				return err
 			}
 			secondEntries := entryList[splitPoint:]
-			secondSerialized, err := m.serializer.SerializeEntries(secondEntries)
+			secondSerialized, err := serializeBunchItems(secondEntries)
 			if err != nil {
 				return err
 			}
 			m.writeEntryListWithoutChecking(tx, subspaceKey, keyBytes, oldKv, newKey, firstEntries, firstSerialized)
-			secondKey := joinBytes(subspaceKey, m.serializer.SerializeKey(secondEntries[0].Key))
+			secondKey := joinBytes(subspaceKey, secondEntries[0].key)
 			m.writeEntryListWithoutChecking(tx, subspaceKey, keyBytes, nil, secondKey, secondEntries, secondSerialized)
 		}
 	} else {
 		if m.serializer.CanAppend() && isLast && len(entryList) > 1 && oldKv != nil && bytes.Equal(oldKv.Key, newKey) {
 			// APPEND_IF_FITS optimization.
 			m.addEntryListReadConflictRange(tx, subspaceKey, newKey, entryList)
-			appendBytes, err := m.serializer.SerializeEntry(entryList[len(entryList)-1].Key, entryList[len(entryList)-1].Value)
+			appendBytes, err := serializeBunchItem(&entryList[len(entryList)-1])
 			if err != nil {
 				return err
 			}
 			tx.AppendIfFits(fdb.Key(newKey), appendBytes)
+			// Java instruments the appended bytes, without the old value as
+			// the total size grows (BunchedMap.java:345).
+			m.instrumentWrite(newKey, appendBytes, nil)
 			_ = tx.AddWriteConflictKey(fdb.Key(keyBytes))
 		} else {
-			m.writeEntryListWithoutChecking(tx, subspaceKey, keyBytes, oldKv, newKey, entryList, serializedBytes)
+			m.writeEntryListWithoutChecking(tx, subspaceKey, keyBytes, oldKv, newKey, entryList, encodeBunchItems(entryList, serializedSize))
 		}
 
 		// Write conflict ranges for "gaps" claimed during expansion.
 		if isFirst && len(entryList) >= 2 {
 			begin := keyBytes
-			end := joinBytes(subspaceKey, m.serializer.SerializeKey(entryList[1].Key))
+			end := joinBytes(subspaceKey, entryList[1].key)
 			_ = tx.AddWriteConflictRange(fdb.KeyRange{
 				Begin: fdb.Key(begin),
 				End:   fdb.Key(end),
 			})
 		}
 		if isLast && len(entryList) >= 2 {
-			begin := joinBytes(subspaceKey, m.serializer.SerializeKey(entryList[len(entryList)-2].Key))
+			begin := joinBytes(subspaceKey, entryList[len(entryList)-2].key)
 			end := keyBytes
 			_ = tx.AddWriteConflictRange(fdb.KeyRange{
 				Begin: fdb.Key(begin),
@@ -596,29 +636,24 @@ func (m *BunchedMap) writeEntryList(tx fdb.WritableTransaction, subspaceKey, key
 // a standalone signpost if kvAfter doesn't exist or is full.
 // Matches Java's BunchedMap.insertAfter().
 func (m *BunchedMap) insertAfter(tx fdb.WritableTransaction, subspaceKey, keyBytes []byte,
-	kvAfter *fdb.KeyValue, entry bunchedEntry,
+	kvAfter *fdb.KeyValue, entry bunchItem,
 ) error {
 	if kvAfter == nil {
 		return m.insertAlone(tx, keyBytes, entry)
 	}
 
-	afterKey, err := m.serializer.DeserializeKey(kvAfter.Key, len(subspaceKey), len(kvAfter.Key)-len(subspaceKey))
+	afterEntryList, release, err := decodeBunch(subspaceKey, kvAfter, "insert after")
 	if err != nil {
-		return fmt.Errorf("bunched map insert after: deserialize key: %w", err)
+		return err
 	}
-	afterEntryList, err := m.serializer.DeserializeEntries(afterKey, kvAfter.Value)
-	if err != nil {
-		return fmt.Errorf("bunched map insert after: deserialize entries: %w", err)
-	}
+	defer release()
 
 	if len(afterEntryList) >= m.bunchSize {
 		return m.insertAlone(tx, keyBytes, entry)
 	}
 
 	// Prepend our entry to the next bunch's list.
-	newEntryList := make([]bunchedEntry, 0, len(afterEntryList)+1)
-	newEntryList = append(newEntryList, entry)
-	newEntryList = append(newEntryList, afterEntryList...)
+	newEntryList := slices.Insert(afterEntryList, 0, entry)
 	return m.writeEntryList(tx, subspaceKey, keyBytes, kvAfter, keyBytes, newEntryList, nil, true, false)
 }
 
@@ -626,7 +661,7 @@ func (m *BunchedMap) insertAfter(tx fdb.WritableTransaction, subspaceKey, keyByt
 // Returns (oldValue, true, nil) if the key already existed, (nil, false, nil) if new.
 // Matches Java's BunchedMap.insertEntry().
 func (m *BunchedMap) insertEntry(tx fdb.WritableTransaction, subspaceKey, keyBytes []byte,
-	key tuple.Tuple, value []int, kvBefore, kvAfter *fdb.KeyValue, entry bunchedEntry,
+	value []int, kvBefore, kvAfter *fdb.KeyValue, entry bunchItem,
 ) ([]int, bool, error) {
 	if kvBefore == nil {
 		if err := m.insertAfter(tx, subspaceKey, keyBytes, kvAfter, entry); err != nil {
@@ -635,45 +670,37 @@ func (m *BunchedMap) insertEntry(tx fdb.WritableTransaction, subspaceKey, keyByt
 		return nil, false, nil
 	}
 
-	beforeKey, err := m.serializer.DeserializeKey(kvBefore.Key, len(subspaceKey), len(kvBefore.Key)-len(subspaceKey))
+	beforeEntryList, release, err := decodeBunch(subspaceKey, kvBefore, "insert")
 	if err != nil {
-		return nil, false, fmt.Errorf("bunched map insert: deserialize key: %w", err)
+		return nil, false, err
 	}
-	beforeEntryList, err := m.serializer.DeserializeEntries(beforeKey, kvBefore.Value)
-	if err != nil {
-		return nil, false, fmt.Errorf("bunched map insert: deserialize entries: %w", err)
-	}
+	defer release()
 
 	// Find insertion point.
-	insertIndex := 0
-	for insertIndex < len(beforeEntryList) && compareTuples(key, beforeEntryList[insertIndex].Key) > 0 {
-		insertIndex++
-	}
+	insertIndex := searchBunch(beforeEntryList, entry.key)
 
-	if insertIndex < len(beforeEntryList) && compareTuples(key, beforeEntryList[insertIndex].Key) == 0 {
+	if insertIndex < len(beforeEntryList) && bytes.Equal(entry.key, beforeEntryList[insertIndex].key) {
 		// Key already exists — update if value differs.
-		oldEntry := beforeEntryList[insertIndex]
-		if !positionListsEqual(oldEntry.Value, value) {
-			newEntryList := make([]bunchedEntry, len(beforeEntryList))
-			copy(newEntryList, beforeEntryList)
-			newEntryList[insertIndex] = entry
+		oldValue, err := itemPositions(&beforeEntryList[insertIndex])
+		if err != nil {
+			return nil, false, err
+		}
+		if !positionListsEqual(oldValue, value) {
+			beforeEntryList[insertIndex] = entry
 			if err := m.writeEntryList(tx, subspaceKey, keyBytes, kvBefore, kvBefore.Key,
-				newEntryList, kvAfter, false, false); err != nil {
+				beforeEntryList, kvAfter, false, false); err != nil {
 				return nil, false, err
 			}
 		} else {
 			// Value unchanged — just add read conflict key for linearizability.
 			_ = tx.AddReadConflictKey(fdb.Key(keyBytes))
 		}
-		return oldEntry.Value, true, nil
+		return oldValue, true, nil
 	}
 
 	if insertIndex < len(beforeEntryList) {
 		// Inserting in the middle of the bunch.
-		newEntryList := make([]bunchedEntry, 0, len(beforeEntryList)+1)
-		newEntryList = append(newEntryList, beforeEntryList[:insertIndex]...)
-		newEntryList = append(newEntryList, entry)
-		newEntryList = append(newEntryList, beforeEntryList[insertIndex:]...)
+		newEntryList := slices.Insert(beforeEntryList, insertIndex, entry)
 
 		if len(newEntryList) <= m.bunchSize {
 			if err := m.writeEntryList(tx, subspaceKey, keyBytes, kvBefore, kvBefore.Key,
@@ -688,7 +715,7 @@ func (m *BunchedMap) insertEntry(tx fdb.WritableTransaction, subspaceKey, keyByt
 				return nil, false, err
 			}
 			secondEntries := newEntryList[splitPoint:]
-			secondKey := joinBytes(subspaceKey, m.serializer.SerializeKey(secondEntries[0].Key))
+			secondKey := joinBytes(subspaceKey, secondEntries[0].key)
 			if err := m.writeEntryList(tx, subspaceKey, keyBytes, nil, secondKey,
 				secondEntries, kvAfter, false, false); err != nil {
 				return nil, false, err
@@ -700,9 +727,7 @@ func (m *BunchedMap) insertEntry(tx fdb.WritableTransaction, subspaceKey, keyByt
 	// Inserting after all entries in the before bunch.
 	if len(beforeEntryList) < m.bunchSize {
 		// Append to the end of the current bunch.
-		newEntryList := make([]bunchedEntry, 0, len(beforeEntryList)+1)
-		newEntryList = append(newEntryList, beforeEntryList...)
-		newEntryList = append(newEntryList, entry)
+		newEntryList := append(beforeEntryList, entry)
 		if err := m.writeEntryList(tx, subspaceKey, keyBytes, kvBefore, kvBefore.Key,
 			newEntryList, kvAfter, false, true); err != nil {
 			return nil, false, err

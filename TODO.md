@@ -3405,10 +3405,45 @@ on the ccx43 bench box with `measure.py --storage 6 --duration 180s`:
   conflict filtering on a pinned version runs outside the lock.
   `BenchmarkRYWConcurrentReads` (//pkg/fdbgo/client:range_selector_unit_test,
   20k writes, 2048 reads from 128 goroutines): 950 ms -> 91 ms per transaction,
-  2.84 GB -> 46 MB. Open: re-measure otelbench; walk steps still run under the
-  per-transaction lock (they read the shared snapshot cache, C++'s atomic actor
-  step). Running them lock-free needs a per-step persistent snapshot of the
-  cache and no inline-storage reuse after reset (`node0`, `keyBuf`, `kv0`).
+  2.84 GB -> 46 MB.
+  Second round (profile at 7cf0eda3c): the walk runs outside `rywCache.mu` on
+  the pinned write-map version and a persistent snapshot of the cache; the lock
+  covers only pinning, snapshotting and accepting a storage reply. Walks and
+  their iterators are pooled, boundaries are lazy (no `keyAfter` copies), the
+  facade's selector copies are kept (`StartGetRangeOwnedSelectors`), a
+  cancellable caller context is merged with the transaction's only when
+  something waits (a cached RYW read derives none), point writes share one
+  arena copy of `key\x00` between mutation and conflict range, the conflict
+  arena grows in chunks without copying, and Commit coalesces the write
+  conflicts once (the self-conflict check and range reuse that vector).
+  `BenchmarkRYWBunchedMapPuts` (writes=20000): 40.6 -> 36.9 µs/put, 38.3 ->
+  26.5 MB, 268k -> 206k allocs per transaction; a cached selector read 3.2 ->
+  2.1 µs, 34 -> 13 allocs; a cached Get 0.83 -> 0.30 µs, 8 -> 3 allocs.
+  Open: re-measure otelbench. Most remaining allocations are path copies of
+  the persistent sequences after each pinned read (write map, nodes, cleared
+  list, cache); C++ PTree updates a node in its spare version slot instead
+  (fat nodes, VersionedMap.h). Write conflicts are still kept twice, per
+  operation for Commit and in the WriteMap nodes; building the commit vector
+  from the nodes, as C++ does (RYW:1997-2071), needs the RYW update inside the
+  commit snapshot's lock and a size counter for GetApproximateSize, and keeps
+  the per-operation list for RYW-disabled and versionstamped transactions.
+- [ ] **TEXT index maintenance CPU in message transactions** (otelbench
+  profile at 7cf0eda3c: ~60% of client CPU). Record Layer side done: a
+  BunchedMap put or remove keeps each stored key's packed bytes, as Java's
+  `Tuple.fromBytes` does, validating instead of unpacking them, compares by
+  those bytes (`Tuple.compareTo`) with a binary search over the sorted bunch,
+  and writes canonical position lists back as stored; tuples elsewhere compare
+  element-wise (`compareTuples`, `TupleUtil.compareItems`); the default
+  tokenizer streams word segments. `BenchmarkTextBunchedMapPut/append`
+  11.1 µs, 7.3 KB, 126 allocs -> 2.7 µs, 1.0 KB, 25 allocs. Per-put conflict
+  ranges equal Java's and are pinned by "BunchedMap operation conformance";
+  the conflict-range share of the profile is client cost (pkg/fdbgo/client).
+  Fixed on the way: the APPEND_IF_FITS path did not instrument its write, a
+  remove passed the wrong old value to its instrumentation, and a stored key
+  with a non-canonical encoding was rewritten canonically (Java keeps it).
+  Open: re-profile otelbench; each put still starts a goroutine for its
+  snapshot read (`startSnapshotRead`); `DeserializeEntries` (scans, Get)
+  still unpacks every key.
 - [ ] **Phrase queries cost twice the earlier layout** (bench p50 15 ms against
   6-8 ms): the TEXT phrase scan of 16 writer shards per role dominates
   (`fts_phrase_first_turn`, `fts_multi_turn_history`).

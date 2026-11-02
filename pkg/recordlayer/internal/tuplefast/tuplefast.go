@@ -317,6 +317,102 @@ func SubspaceUnpack(key []byte, prefixLen int) (tuple.Tuple, error) {
 	return Unpack(key[prefixLen:])
 }
 
+// Validate reports whether Unpack(b) would fail, without decoding: it walks
+// the elements as fastDecodeTuple does and returns an error exactly where
+// Unpack would. It allocates only for the error.
+func Validate(b []byte) error {
+	_, err := validateTuple(b, false)
+	return err
+}
+
+// validateTuple is fastDecodeTuple's framing without its values: the same
+// cases in the same order, each with the same length checks.
+func validateTuple(b []byte, nested bool) (int, error) {
+	i := 0
+	for i < len(b) {
+		var off int
+		switch c := b[i]; {
+		case c == tcNil:
+			if !nested {
+				off = 1
+			} else if i+1 < len(b) && b[i+1] == 0xff {
+				off = 2
+			} else {
+				return i + 1, nil
+			}
+		case c == tcBytes || c == tcString:
+			if len(b)-i < 2 {
+				return i, fmt.Errorf("truncated bytes/string at offset 0 (len=%d)", len(b)-i)
+			}
+			idx := findTerminator(b[i+1:])
+			if idx < 0 {
+				return i, fmt.Errorf("unterminated bytes/string element")
+			}
+			off = idx + 2
+		case tcNegIntStart+1 < c && c < tcPosIntEnd,
+			tcNegIntStart+1 == c && i+1 < len(b) && (b[i+1]&0x80 != 0):
+			// fastDecodeInt; code 0x0c with a high second byte is its 8-byte case.
+			n := int(c) - tcIntZero
+			if n < 0 {
+				n = -n
+			}
+			if 1+n > len(b)-i {
+				return i, fmt.Errorf("truncated integer at offset 0 (need %d bytes, have %d)", 1+n, len(b)-i)
+			}
+			off = 1 + n
+		case tcNegIntStart <= c && c <= tcPosIntEnd:
+			// fastDecodeBigInt.
+			if len(b)-i < 2 {
+				return i, fmt.Errorf("truncated big integer at offset 0")
+			}
+			offset, length := 1, 8
+			if c == tcNegIntStart || c == tcPosIntEnd {
+				length = int(b[i+1])
+				if c == tcNegIntStart {
+					length ^= 0xff
+				}
+				offset++
+			}
+			if offset+length > len(b)-i {
+				return i, fmt.Errorf("truncated big integer (need %d bytes, have %d)", offset+length, len(b)-i)
+			}
+			off = offset + length
+		case c == tcFloat:
+			if i+5 > len(b) {
+				return i, fmt.Errorf("insufficient bytes for float at %d", i)
+			}
+			off = 5
+		case c == tcDouble:
+			if i+9 > len(b) {
+				return i, fmt.Errorf("insufficient bytes for double at %d", i)
+			}
+			off = 9
+		case c == tcTrue || c == tcFalse:
+			off = 1
+		case c == tcUUID:
+			if i+17 > len(b) {
+				return i, fmt.Errorf("insufficient bytes for UUID at %d", i)
+			}
+			off = 17
+		case c == tcVersionstamp:
+			if i+versionstampLen+1 > len(b) {
+				return i, fmt.Errorf("insufficient bytes for Versionstamp at %d", i)
+			}
+			off = versionstampLen + 1
+		case c == TypeCodeNested:
+			n, err := validateTuple(b[i+1:], true)
+			if err != nil {
+				return i, err
+			}
+			off = n + 1
+		default:
+			return i, fmt.Errorf("unknown tuple typecode 0x%02x at %d", c, i)
+		}
+		i += off
+	}
+	return i, nil
+}
+
 func fastDecodeTuple(b []byte, nested bool) (tuple.Tuple, int, error) {
 	// Pre-allocate based on byte length. A typical tuple element is 5-10 bytes
 	// (1-byte type code + 1-8 bytes of payload). Avoids slice grow operations.

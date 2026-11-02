@@ -120,35 +120,14 @@ func (m *permutedMinMaxIndexMaintainer) getGroupingCount() int {
 
 // shouldUpdateExtremum returns true if newValue should replace oldValue.
 // For MAX: newValue > oldValue. For MIN: newValue < oldValue.
-// Uses tuple byte comparison (same as FDB ordering).
+// Java's Type.shouldUpdateExtremum compares with Tuple's natural order, as
+// compareTuples does.
 func (m *permutedMinMaxIndexMaintainer) shouldUpdateExtremum(oldValue, newValue tuple.Tuple) bool {
 	cmp := compareTuples(oldValue, newValue)
 	if m.isMax {
 		return cmp < 0 // old < new means new is bigger → replace old with new
 	}
 	return cmp > 0 // old > new means new is smaller → replace old with new
-}
-
-// compareTuples compares two tuples by their packed byte representation.
-// Returns negative if a < b, positive if a > b, 0 if equal.
-func compareTuples(a, b tuple.Tuple) int {
-	ap := a.Pack()
-	bp := b.Pack()
-	for i := 0; i < len(ap) && i < len(bp); i++ {
-		if ap[i] < bp[i] {
-			return -1
-		}
-		if ap[i] > bp[i] {
-			return 1
-		}
-	}
-	if len(ap) < len(bp) {
-		return -1
-	}
-	if len(ap) > len(bp) {
-		return 1
-	}
-	return 0
 }
 
 // Update handles insert/delete/update with permuted subspace maintenance.

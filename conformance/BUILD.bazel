@@ -775,6 +775,7 @@ go_test(
         "benchmark_comparison_test.go",
         "bitmap_value_index_conformance_test.go",
         "bound_exists_source_conformance_test.go",
+        "bunched_map_conformance_test.go",
         "clear_when_zero_conformance_test.go",
         "clustered_cte_scope_conformance_test.go",
         "composite_index_conformance_test.go",

@@ -79,6 +79,8 @@ class ConformanceServer {
         new BitmapValueIndexSteps(),
         new TextIndexSteps(),
         new TextQuerySteps(),
+        new BunchedMapSteps(),
+        new TupleCompareSteps(),
         new TimeWindowLeaderboardSteps(),
         new MultidimensionalIndexSteps(),
         new VectorIndexSteps(),

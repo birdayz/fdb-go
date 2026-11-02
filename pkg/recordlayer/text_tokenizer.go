@@ -171,27 +171,29 @@ func (t *DefaultTextTokenizer) TokenizeToList(text string, version int, mode Tok
 }
 
 // breakIteratorWrapper turns word segments into tokens as Java's
-// DefaultTextTokenizer.BreakIteratorWrapper does.
+// DefaultTextTokenizer.BreakIteratorWrapper does. Like Java's BreakIterator,
+// it finds the next word boundary only when the next token is asked for.
 type breakIteratorWrapper struct {
-	segments []string
-	pos      int
-	next     *string
+	remaining string // the text after the last segment taken
+	state     int    // uniseg's word-boundary state across segments
+	next      string
+	hasNext   bool
 }
 
 func newBreakIteratorWrapper(text string) *breakIteratorWrapper {
-	return &breakIteratorWrapper{
-		segments: wordSegments(text),
-		pos:      0,
-	}
+	return &breakIteratorWrapper{remaining: text, state: -1}
 }
 
 func (b *breakIteratorWrapper) HasNext() bool {
-	if b.next != nil {
+	if b.hasNext {
 		return true
 	}
-	for b.pos < len(b.segments) {
-		segment := b.segments[b.pos]
-		b.pos++
+	for len(b.remaining) > 0 {
+		var segment string
+		segment, b.remaining, b.state = uniseg.FirstWordInString(b.remaining, b.state)
+		if segment == "" {
+			continue
+		}
 
 		// NFKD normalize the segment.
 		normalized := norm.NFKD.String(segment)
@@ -202,8 +204,7 @@ func (b *breakIteratorWrapper) HasNext() bool {
 		}
 
 		// Lowercase then strip combining marks (Unicode category M).
-		token := stripMarks(lowerWord(normalized))
-		b.next = &token
+		b.next, b.hasNext = stripMarks(lowerWord(normalized)), true
 		return true
 	}
 	return false
@@ -211,8 +212,8 @@ func (b *breakIteratorWrapper) HasNext() bool {
 
 func (b *breakIteratorWrapper) Next() string {
 	if b.HasNext() {
-		token := *b.next
-		b.next = nil
+		token := b.next
+		b.next, b.hasNext = "", false
 		return token
 	}
 	panic("no more tokens")
@@ -269,6 +270,9 @@ func isCased(r rune) bool {
 // stripMarks removes all Unicode combining marks (category M: Mn, Mc, Me)
 // from the string. Matches Java's Pattern.compile("\\p{M}+").
 func stripMarks(s string) string {
+	if !hasMark(s) {
+		return s
+	}
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
@@ -277,6 +281,21 @@ func stripMarks(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// hasMark reports whether s has a combining mark. ASCII has none.
+func hasMark(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			for _, r := range s[i:] {
+				if unicode15.In(r, unicode15.Mn, unicode15.Mc, unicode15.Me) {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	return false
 }
 
 // wordSegments splits text into word segments using UAX #29 Unicode Text Segmentation.
