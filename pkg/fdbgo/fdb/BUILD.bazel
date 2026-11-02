@@ -73,6 +73,7 @@ go_test(
         "range_owned_internal_test.go",
         "range_owned_test.go",
         "range_result_internal_test.go",
+        "range_selector_test.go",
         "range_test.go",
         "retry_predicate_pin_test.go",
         "ryw_test.go",

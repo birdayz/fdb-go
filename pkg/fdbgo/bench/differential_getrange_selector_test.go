@@ -17,10 +17,11 @@ import (
 // (fresh differential axis). TestInterop_SelectorRange covers exactly one committed
 // shape ([LastLessOrEqual, FirstGreaterThan), offset=1); TestDifferential_RangeRead
 // uses plain prefix (key) ranges. Neither probes selector bounds with non-trivial
-// OFFSETS, which the Go facade resolves by a separate GetKey round-trip per bound
-// (resolveSelector → tx.GetKey) and THEN a key-range read — a decompose-then-range
-// composition that C++ resolves integrated with the scan. This pins that composition
-// against libfdb_c.
+// OFFSETS, which both clients resolve inside the range read: the RYW walk and the
+// storage server, with the selectors in the GetKeyValuesRequest (RFC-262 D10;
+// ReadYourWrites.actor.cpp:592-813, NativeAPI.actor.cpp:4651-4679). This pins the
+// results against libfdb_c; client:selector_range_conformance_test pins the
+// read-conflict ranges.
 //
 // Determinism: both clients pin the SAME read version and read identical committed
 // storage, so go==cgo is a clean assertion. Clamp: all bound selectors are chosen to
@@ -142,11 +143,12 @@ func stripPfx(kvs []kvPair, pfx string) []kvPair {
 }
 
 // TestDifferential_GetRangeSelectorRYW pins GetRange with key-SELECTOR bounds over the
-// READ-YOUR-WRITES view (pending writes merged with storage). This is the higher-risk
-// composition: the Go facade resolves each bound via GetKey-over-RYW and THEN does a
-// GetRange-over-RYW, whereas C++ resolves the selectors integrated with the merged scan.
-// Pending clears/sets at or near a resolved bound — and offsets stepping across a pending
-// add/clear — are where the decompose-then-range composition could diverge from libfdb_c.
+// READ-YOUR-WRITES view (pending writes merged with storage), serializable and snapshot.
+// Both clients resolve the selectors in the walk over the write map and snapshot cache
+// (getRangeValue / getRangeValueBack, ReadYourWrites.actor.cpp:592-813, 896-1123).
+// Pending clears/sets at or near a resolved bound, offsets stepping across them, a begin
+// key above the end key (the walk's nested getKey, :621-638, 925-940) and limits with
+// reverse are where the two could diverge.
 func TestDifferential_GetRangeSelectorRYW(t *testing.T) {
 	t.Parallel()
 	ns := strings.ReplaceAll(t.Name(), "/", "_")
@@ -171,13 +173,7 @@ func TestDifferential_GetRangeSelectorRYW(t *testing.T) {
 		}
 	})
 
-	cases := []struct {
-		name       string
-		pending    []pendMut
-		begin, end srbSpec
-		limit      int
-		reverse    bool
-	}{
+	cases := []rywSelectorCase{
 		// Pending CLEAR of the key a backward begin selector resolves to: LLE(k07) over
 		// the RYW view (k07 cleared) must resolve to k06, not k07.
 		{"clear_begin_anchor", []pendMut{{true, "k07", 0}}, srbSpec{"k07", true, 0}, srbSpec{"k15", false, 1}, 0, false},
@@ -193,77 +189,108 @@ func TestDifferential_GetRangeSelectorRYW(t *testing.T) {
 		{"reverse_clear_mid", []pendMut{{true, "k10", 0}}, srbSpec{"k05", false, 1}, srbSpec{"k16", false, 1}, 0, true},
 		// Pending set near the begin anchor + a limit.
 		{"set_at_begin_anchor_limit", []pendMut{{false, "k09a", 77}}, srbSpec{"k09", true, 1}, srbSpec{"k14", false, 1}, 4, false},
+		// BunchedMap's put read: lastLessOrEqual(k) .. firstGreaterThan(k)+1, k a new pending key.
+		{"bunched_put_new_key", []pendMut{{false, "k07a", 55}}, srbSpec{"k07a", true, 0}, srbSpec{"k07a", true, 1 + 1}, 0, false},
+		// The same read with the neighbours cleared: both selectors step over pending clears.
+		{"bunched_put_cleared_neighbours", []pendMut{{true, "k07", 0}, {true, "k08", 0}, {false, "k07a", 55}}, srbSpec{"k07a", true, 0}, srbSpec{"k07a", true, 1 + 1}, 0, false},
+		// Begin key above end key with an end offset that resolves past the begin: the walk's
+		// nested getKey of the end selector before the loop.
+		{"begin_above_end_key", []pendMut{{true, "k11", 0}}, srbSpec{"k12", false, 0 - 2}, srbSpec{"k10", true, 1 + 2}, 0, false},
+		{"begin_above_end_key_reverse", []pendMut{{false, "k11a", 66}}, srbSpec{"k12", false, 0 - 2}, srbSpec{"k10", true, 1 + 2}, 0, true},
+		// Reverse with offsets on both selectors, pending writes inside, and a limit cutting it.
+		{"reverse_offsets_limit", []pendMut{{true, "k09", 0}, {false, "k10a", 44}}, srbSpec{"k04", true, 1 + 2}, srbSpec{"k15", false, 0 - 1}, 3, true},
+		// Forward end offset beyond 1 stepping over pending clears, with a limit.
+		{"end_offset_over_clears_limit", []pendMut{{true, "k13", 0}, {true, "k14", 0}}, srbSpec{"k10", false, 0}, srbSpec{"k12", true, 1 + 3}, 4, false},
 	}
 
 	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			const maxAttempts = 12
-			for attempt := 0; ; attempt++ {
-				if attempt >= maxAttempts {
-					t.Fatalf("%s: retryable errors did not clear in %d attempts", tc.name, maxAttempts)
-				}
-				v := freshSharedVersion(t)
-				goTxn, err := goClient.CreateTransaction()
-				if err != nil {
-					t.Fatalf("go CreateTransaction: %v", err)
-				}
-				cTxn, err := cgoClient.CreateTransaction()
-				if err != nil {
-					goTxn.Cancel()
-					t.Fatalf("cgo CreateTransaction: %v", err)
-				}
-				goTxn.SetReadVersion(v)
-				cTxn.SetReadVersion(v)
-				for _, m := range tc.pending {
-					if m.clear {
-						goTxn.Clear(gofdb.Key(goPfx + m.key))
-						cTxn.Clear(cgofdb.Key(cPfx + m.key))
-					} else {
-						goTxn.Set(gofdb.Key(goPfx+m.key), []byte{m.val})
-						cTxn.Set(cgofdb.Key(cPfx+m.key), []byte{m.val})
-					}
-				}
-				retry := func() bool {
-					defer goTxn.Cancel()
-					defer cTxn.Cancel()
-					goKVs, goErr := goTxn.GetRange(gofdb.SelectorRange{Begin: goSrbSel(goPfx, tc.begin), End: goSrbSel(goPfx, tc.end)},
-						gofdb.RangeOptions{Limit: tc.limit, Reverse: tc.reverse}).GetSliceWithError()
-					cKVs, cErr := cTxn.GetRange(cgofdb.SelectorRange{Begin: cgoSrbSel(cPfx, tc.begin), End: cgoSrbSel(cPfx, tc.end)},
-						cgofdb.RangeOptions{Limit: tc.limit, Reverse: tc.reverse, Mode: cgofdb.StreamingModeWantAll}).GetSliceWithError()
-					if isFDBRetryable(goErr) || isFDBRetryable(cErr) {
-						return true
-					}
-					if (goErr == nil) != (cErr == nil) {
-						t.Fatalf("%s: error mismatch: go=%v cgo=%v", tc.name, goErr, cErr)
-					}
-					if goErr != nil {
-						// Both errored — codes must agree.
-						if fdbErrorCode(goErr) != fdbErrorCode(cErr) {
-							t.Fatalf("%s: both errored but codes differ: go=%d (%v) cgo=%d (%v)",
-								tc.name, fdbErrorCode(goErr), goErr, fdbErrorCode(cErr), cErr)
-						}
-						return false
-					}
-					gp := stripPfx(normGo(goKVs), goPfx)
-					cp := stripPfx(normC(cKVs), cPfx)
-					if len(gp) != len(cp) {
-						t.Fatalf("%s: RYW selector-range count differs: go=%d cgo=%d\n go=%v\ncgo=%v", tc.name, len(gp), len(cp), gp, cp)
-					}
-					for i := range gp {
-						if !bytes.Equal(gp[i].k, cp[i].k) || !bytes.Equal(gp[i].v, cp[i].v) {
-							t.Fatalf("%s: RYW pair %d differs: go=(%s,%x) cgo=(%s,%x)", tc.name, i, gp[i].k, gp[i].v, cp[i].k, cp[i].v)
-						}
-					}
-					return false
-				}()
-				if retry {
-					continue
-				}
-				return
+		for _, snapshot := range []bool{false, true} {
+			tc, snapshot := tc, snapshot
+			t.Run(fmt.Sprintf("%s/snapshot=%t", tc.name, snapshot), func(t *testing.T) {
+				t.Parallel()
+				checkRYWSelectorCase(t, tc, snapshot, goPfx, cPfx)
+			})
+		}
+	}
+}
+
+type rywSelectorCase struct {
+	name       string
+	pending    []pendMut
+	begin, end srbSpec
+	limit      int
+	reverse    bool
+}
+
+func checkRYWSelectorCase(t *testing.T, tc rywSelectorCase, snapshot bool, goPfx, cPfx string) {
+	const maxAttempts = 12
+	for attempt := 0; ; attempt++ {
+		if attempt >= maxAttempts {
+			t.Fatalf("%s: retryable errors did not clear in %d attempts", tc.name, maxAttempts)
+		}
+		v := freshSharedVersion(t)
+		goTxn, err := goClient.CreateTransaction()
+		if err != nil {
+			t.Fatalf("go CreateTransaction: %v", err)
+		}
+		cTxn, err := cgoClient.CreateTransaction()
+		if err != nil {
+			goTxn.Cancel()
+			t.Fatalf("cgo CreateTransaction: %v", err)
+		}
+		goTxn.SetReadVersion(v)
+		cTxn.SetReadVersion(v)
+		for _, m := range tc.pending {
+			if m.clear {
+				goTxn.Clear(gofdb.Key(goPfx + m.key))
+				cTxn.Clear(cgofdb.Key(cPfx + m.key))
+			} else {
+				goTxn.Set(gofdb.Key(goPfx+m.key), []byte{m.val})
+				cTxn.Set(cgofdb.Key(cPfx+m.key), []byte{m.val})
 			}
-		})
+		}
+		retry := func() bool {
+			defer goTxn.Cancel()
+			defer cTxn.Cancel()
+			var goReader gofdb.ReadTransaction = goTxn
+			var cReader cgofdb.ReadTransaction = cTxn
+			if snapshot {
+				goReader, cReader = goTxn.Snapshot(), cTxn.Snapshot()
+			}
+			goKVs, goErr := goReader.GetRange(gofdb.SelectorRange{Begin: goSrbSel(goPfx, tc.begin), End: goSrbSel(goPfx, tc.end)},
+				gofdb.RangeOptions{Limit: tc.limit, Reverse: tc.reverse}).GetSliceWithError()
+			cKVs, cErr := cReader.GetRange(cgofdb.SelectorRange{Begin: cgoSrbSel(cPfx, tc.begin), End: cgoSrbSel(cPfx, tc.end)},
+				cgofdb.RangeOptions{Limit: tc.limit, Reverse: tc.reverse, Mode: cgofdb.StreamingModeWantAll}).GetSliceWithError()
+			if isFDBRetryable(goErr) || isFDBRetryable(cErr) {
+				return true
+			}
+			if (goErr == nil) != (cErr == nil) {
+				t.Fatalf("%s: error mismatch: go=%v cgo=%v", tc.name, goErr, cErr)
+			}
+			if goErr != nil {
+				// Both errored — codes must agree.
+				if fdbErrorCode(goErr) != fdbErrorCode(cErr) {
+					t.Fatalf("%s: both errored but codes differ: go=%d (%v) cgo=%d (%v)",
+						tc.name, fdbErrorCode(goErr), goErr, fdbErrorCode(cErr), cErr)
+				}
+				return false
+			}
+			gp := stripPfx(normGo(goKVs), goPfx)
+			cp := stripPfx(normC(cKVs), cPfx)
+			if len(gp) != len(cp) {
+				t.Fatalf("%s: RYW selector-range count differs: go=%d cgo=%d\n go=%v\ncgo=%v", tc.name, len(gp), len(cp), gp, cp)
+			}
+			for i := range gp {
+				if !bytes.Equal(gp[i].k, cp[i].k) || !bytes.Equal(gp[i].v, cp[i].v) {
+					t.Fatalf("%s: RYW pair %d differs: go=(%s,%x) cgo=(%s,%x)", tc.name, i, gp[i].k, gp[i].v, cp[i].k, cp[i].v)
+				}
+			}
+			return false
+		}()
+		if retry {
+			continue
+		}
+		return
 	}
 }
 

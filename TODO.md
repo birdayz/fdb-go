@@ -265,6 +265,19 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     `getRangeValue` with `GetRangeLimits(1)` (`ReadYourWrites.actor.cpp:140-160`); the
     offset beyond the first row becomes `additionalRows` (`:731-749`), which
     `setRequestLimits` adds to the one-row limit (`:569-575`).
+  - [x] Selector ranges (RFC-262 phase 4, D10, plain ranges): a range read with a selector
+    of offset other than 1 is one getRange, not a `GetKey` per selector and then a range.
+    The client's `StartGetRangeSelectors`/`GetRangeSelectors` (`pkg/fdbgo/client/range_selector_issue.go`)
+    run the ported walk over `nativeGetRange`, or `readThrough` with RYW disabled, and add
+    `addConflictRange(GetRangeReq)` / `getRangeFinished` conflicts (`ReadYourWrites.actor.cpp:187-215,
+    245-319, 1711-1769`; `NativeAPI.actor.cpp:4558-4586`). Pinned by
+    `//pkg/fdbgo/client:selector_range_conformance_test` (test-full, rows and read conflicts
+    against libfdb_c on small shards), `//pkg/fdbgo/client:range_selector_unit_test`,
+    `TestSelectorRangeReadSendsOneStorageRequest` (`storage_plumbing_fdb_test`),
+    `TestGetRange_SelectorRangeIsOneStorageRead` and `TestConflictRange_SelectorGetRange_Native`
+    (`//pkg/fdbgo/fdb:fdb_test`), and `TestDifferential_GetRangeSelectorRYW` (bench, test-full).
+    Open: ranges whose selectors both have offset 1 still take the exact-range merge path
+    (phase 3 above); there is no selector-range wire-golden scenario yet.
   - [x] `clear_range_then_set`: libfdb_c sends a clear split around a later set in it,
     as `writeRangeToNativeTransaction` emits one clear per cleared stretch of the write map
     (`ReadYourWrites.actor.cpp:2001-2018`); Go sends the whole clear. The stored data is the
@@ -2027,12 +2040,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   allocation (GC is ~39% of planner CPU); split 2, vector indexes out of
   `pkg/recordlayer` behind a maintainer registry (58 -> ~38 test targets per
   vector change); a Bazel cache shared by both CI runners.
-- [ ] `pkg/fdbgo`: bound GetRange selector resolution by the range end. The facade
-  resolves a non-trivial selector with an unbounded `GetKey` first
-  (`pkg/fdbgo/fdb/range_result.go:413-470`, `pkg/fdbgo/client/ryw_getkey.go`), so an
-  overshooting index-scan Skip reads, and in serializable mode conflicts on, keys past the
-  range. libfdb_c resolves within the read (ReadYourWrites.actor.cpp:725-760) and conflicts
-  on the requested range (:246-282). Client team.
+- [x] `pkg/fdbgo`: bound GetRange selector resolution by the range end. The facade used to
+  resolve a non-trivial selector with an unbounded `GetKey` first, so an overshooting
+  index-scan Skip read, and in serializable mode conflicted on, keys past the range. A
+  selector range is now one read, resolved inside it as in libfdb_c (RFC-262 phase 4, see
+  the wire-divergence entry); mapped reads are unchanged.
 - [ ] `pkg/fdbgo`: make `GetAddressesForKey` transactional. Go answers from the location
   cache (`pkg/fdbgo/client/transaction.go:2698`); libfdb_c 7.3.77 starts the transaction and
   reads `\xff/serverTag`, the key's `\xff/keyServers` entry and the server interfaces at the

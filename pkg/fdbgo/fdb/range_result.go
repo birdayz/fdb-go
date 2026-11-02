@@ -44,10 +44,38 @@ type goRangeResult struct {
 // binding does (bindings/go/src/fdb/transaction.go:295-296); every Iterator and
 // GetSliceWithError of the RangeResult starts from it (range.go:173-176).
 type firstBatch struct {
-	begin, end []byte // the resolved range
-	limit      int    // the row budget batch 1 was issued with
-	pending    *client.PendingRange
-	err        error // a failure before any read was issued
+	rangeBounds     // the range batch 1 reads
+	limit       int // the row budget batch 1 was issued with
+	pending     *client.PendingRange
+	err         error // a failure before any read was issued
+}
+
+// rangeBounds is what is left of a range read: the resolved keys while both
+// selectors are trivial (firstGreaterOrEqual / firstGreaterThan), otherwise the
+// selectors themselves, which the client resolves within each read as
+// fdb_transaction_get_range does (ReadYourWrites.actor.cpp:592-813, 896-1123).
+type rangeBounds struct {
+	begin, end       []byte
+	selectors        bool // read by beginSel/endSel instead of begin/end
+	beginSel, endSel client.KeySelector
+}
+
+// advance moves the bounds past a batch whose last row is last, as Apple's
+// fetchNextBatch does: FirstGreaterThan(last) as the forward begin,
+// FirstGreaterOrEqual(last) as the reverse end, the other selector kept
+// (bindings/go/src/fdb/range.go:229-233). last is the caller's and is copied.
+// A selector range stays one: C++ reads every batch through getRangeValue.
+func (b *rangeBounds) advance(last []byte, reverse bool) {
+	switch {
+	case !b.selectors && reverse:
+		b.end = append([]byte(nil), last...)
+	case !b.selectors:
+		b.begin = keyAfter(last)
+	case reverse:
+		b.endSel = client.KeySelector{Key: bytes.Clone(last), Offset: 1}
+	default:
+		b.beginSel = client.KeySelector{Key: bytes.Clone(last), OrEqual: true, Offset: 1}
+	}
 }
 
 func newRangeResult(tx *transaction, r Range, options RangeOptions) RangeResult {
@@ -80,19 +108,23 @@ func startRangeResult(rr goRangeResult, r Range) goRangeResult {
 		return rr
 	}
 	if !isExact {
-		// Selector resolution reads; C++ rejects first on the raw selector keys.
 		bs, es := r.FDBRangeKeySelectors()
-		b, e := bs.FDBKeySelector().Key.FDBKey(), es.FDBKeySelector().Key.FDBKey()
+		bsel, esel := bs.FDBKeySelector(), es.FDBKeySelector()
+		if !isTrivialSelector(bsel) || !isTrivialSelector(esel) {
+			// The client checks, resolves and reads in one getRange (RYW:1711-1770).
+			f.selectors = true
+			f.beginSel, f.endSel = clientSelector(bsel), clientSelector(esel)
+			f.limit = effectiveLimit(rr.options.Limit)
+			f.pending = rr.startSelectors(f.rangeBounds, f.limit, byteTarget)
+			return rr
+		}
+		// Both selectors are byte keys: C++ rejects first on the raw selector keys.
+		b, e := bsel.Key.FDBKey(), esel.Key.FDBKey()
 		if err := rangecheck.Check(rr.tx.ctx, rr.tx.inner, b, e, rr.options.Limit); err != nil {
 			f.err = convertError(err)
 			return rr
 		}
-		begin, end, err := resolveRange(rr.tx, r, rr.snapshot)
-		if err != nil {
-			f.err = convertError(err)
-			return rr
-		}
-		f.begin, f.end = begin, end
+		f.begin, f.end = resolveRange(r)
 	}
 	f.limit = effectiveLimit(rr.options.Limit) // a limit < -1 stays as is, for the client's 2012
 	if rr.snapshot {
@@ -142,8 +174,35 @@ func effectiveLimit(limit int) int {
 	return limit
 }
 
-func (rr goRangeResult) doRangeWithLimit(begin, end []byte, limit int) ([]client.KeyValue, bool, error) {
-	return rr.doRange(begin, end, limit, client.ByteLimitUnlimited)
+// selectorLimit is the row limit a selector read passes the client: the caller's
+// unlimited 0 or -1 stays unlimited, as fdb_c passes it (fdb_c.cpp:991-994), so
+// the RYW layer sizes its storage reads as C++ does; otherwise what is left.
+func (rr goRangeResult) selectorLimit(remaining int) int {
+	if rr.options.Limit == 0 || rr.options.Limit == -1 {
+		return 0
+	}
+	return remaining
+}
+
+// startSelectors issues a selector read, as GetRange issues batch 1.
+func (rr goRangeResult) startSelectors(b rangeBounds, limit, byteTarget int) *client.PendingRange {
+	limit = rr.selectorLimit(limit)
+	if rr.snapshot {
+		return rr.tx.inner.Snapshot().StartGetRangeSelectors(rr.tx.ctx, b.beginSel, b.endSel, limit, byteTarget, rr.options.Reverse)
+	}
+	return rr.tx.inner.StartGetRangeSelectors(rr.tx.ctx, b.beginSel, b.endSel, limit, byteTarget, rr.options.Reverse)
+}
+
+// readBounds reads one batch of what is left of the range.
+func (rr goRangeResult) readBounds(b rangeBounds, limit, byteTarget int) ([]client.KeyValue, bool, error) {
+	if !b.selectors {
+		return rr.doRange(b.begin, b.end, limit, byteTarget)
+	}
+	limit = rr.selectorLimit(limit)
+	if rr.snapshot {
+		return rr.tx.inner.Snapshot().GetRangeSelectors(rr.tx.ctx, b.beginSel, b.endSel, limit, byteTarget, rr.options.Reverse)
+	}
+	return rr.tx.inner.GetRangeSelectors(rr.tx.ctx, b.beginSel, b.endSel, limit, byteTarget, rr.options.Reverse)
 }
 
 // doRange issues one range read carrying BOTH dimensions: a row budget and a per-fetch byte
@@ -175,16 +234,11 @@ func (rr goRangeResult) GetSliceWithError() ([]KeyValue, error) {
 	}
 	// Apple reads the rest in one more pass (range.go:139-153); an unlimited byte target
 	// lets the client drain it in as few requests as the server allows.
-	begin, end, remaining := f.begin, f.end, f.limit-len(kvs)
+	bounds, remaining := f.rangeBounds, f.limit-len(kvs)
 	for more && remaining > 0 && len(kvs) > 0 {
-		last := kvs[len(kvs)-1].Key
-		if rr.options.Reverse {
-			end = append([]byte(nil), last...)
-		} else {
-			begin = keyAfter(last)
-		}
+		bounds.advance(kvs[len(kvs)-1].Key, rr.options.Reverse)
 		var rest []client.KeyValue
-		rest, more, err = rr.doRangeWithLimit(begin, end, remaining)
+		rest, more, err = rr.readBounds(bounds, remaining, client.ByteLimitUnlimited)
 		if err != nil {
 			return nil, convertError(err)
 		}
@@ -235,13 +289,12 @@ func (rr goRangeResult) Iterator() RangeIterator {
 		return &goRangeIterator{err: f.err}
 	}
 	return &goRangeIterator{
-		rr:        rr,
-		begin:     f.begin,
-		end:       f.end,
-		remaining: f.limit,
-		iteration: 1,
-		index:     -1,
-		first:     f.pending,
+		rr:          rr,
+		rangeBounds: f.rangeBounds,
+		remaining:   f.limit,
+		iteration:   1,
+		index:       -1,
+		first:       f.pending,
 	}
 }
 
@@ -262,9 +315,8 @@ func EffectiveRowLimit(limit int) int { return effectiveLimit(limit) }
 // Call Advance() before each Get(). Get() is idempotent — it returns the
 // current element without advancing. Only Advance() moves forward.
 type goRangeIterator struct {
-	rr        goRangeResult
-	begin     []byte
-	end       []byte
+	rr goRangeResult
+	rangeBounds
 	remaining int
 	iteration int
 
@@ -305,7 +357,7 @@ func (ri *goRangeIterator) Advance() bool {
 	}
 
 	// Fetch the next batch as a serializable read (unless the whole RangeResult is a
-	// snapshot — doRangeWithLimit honors rr.snapshot). EVERY batch adds its own
+	// snapshot — readBounds honors rr.snapshot). EVERY batch adds its own
 	// read-conflict, clamped to the extent it returned (RFC-121); since each batch reads a
 	// distinct contiguous sub-range ([ri.begin, ri.end) advances below), the union of the
 	// per-batch conflicts covers exactly the consumed range — matching the C client, where
@@ -343,7 +395,7 @@ func (ri *goRangeIterator) Advance() bool {
 			ri.err = err
 			return false
 		}
-		kvs, more, err = ri.rr.doRange(ri.begin, ri.end, batch, byteTarget)
+		kvs, more, err = ri.rr.readBounds(ri.rangeBounds, batch, byteTarget)
 	}
 	ri.iteration++
 
@@ -372,14 +424,7 @@ func (ri *goRangeIterator) Advance() bool {
 	ri.remaining -= len(ri.kvs)
 
 	// Update the scan boundary for the next batch.
-	lastKey := ri.kvs[len(ri.kvs)-1].Key
-	if ri.rr.options.Reverse {
-		// Next batch: end at the last key we received (exclusive).
-		ri.end = append([]byte(nil), lastKey...)
-	} else {
-		// Next batch: begin after the last key we received.
-		ri.begin = keyAfter(lastKey)
-	}
+	ri.advance(ri.kvs[len(ri.kvs)-1].Key, ri.rr.options.Reverse)
 
 	if !more {
 		ri.exhausted = true
@@ -409,76 +454,37 @@ func (ri *goRangeIterator) MustGet() KeyValue {
 	return kv
 }
 
-// isTrivialSelector returns true when the selector is FirstGreaterOrEqual
-// (OrEqual=false, Offset=1) — the only form that can be resolved by just
-// extracting the key bytes. Matches Apple Go binding convention.
+// isTrivialSelector reports whether the selector names a byte key without
+// reading: firstGreaterOrEqual(k) is k and firstGreaterThan(k) is k+\x00, which is
+// what removeOrEqual makes of it (FDBTypes.h:645-650). Every other selector is
+// resolved by the client within the range read.
 func isTrivialSelector(ks KeySelector) bool {
-	return !ks.OrEqual && ks.Offset == 1
+	return ks.Offset == 1
 }
 
-// resolveSelector resolves a key selector to raw bytes. Trivial selectors
-// (FirstGreaterOrEqual) are resolved locally; all others require a GetKey
-// round-trip to the database.
-//
-// snapshot must mirror the enclosing range read: a snapshot range read must
-// resolve its selectors via the SNAPSHOT GetKey, which adds no read-conflict
-// range. Resolving a snapshot range read's selector via the non-snapshot
-// GetKey registers a spurious read-conflict range and breaks snapshot
-// isolation — a snapshot-only transaction could fail commit with
-// not_committed(1020) where libfdb_c adds zero conflicts. C++ gates
-// addConflictRange on !snapshot and resolves the selector within the same
-// snapshot read (ReadYourWrites.actor.cpp:387-388).
-func resolveSelector(tx *transaction, ks KeySelector, snapshot bool) ([]byte, error) {
-	if isTrivialSelector(ks) {
-		// FirstGreaterOrEqual(k) — trivial, no round-trip needed.
-		// Defensive copy to avoid sharing caller's backing array.
-		key := ks.Key.FDBKey()
-		out := make([]byte, len(key))
-		copy(out, key)
-		return out, nil
-	}
-	if ks.OrEqual && ks.Offset == 1 {
+// clientSelector converts an owned (already cloned) selector. The offset is a C
+// int, as Apple's binding passes C.int(Offset).
+func clientSelector(ks KeySelector) client.KeySelector {
+	return client.KeySelector{Key: ks.Key.FDBKey(), OrEqual: ks.OrEqual, Offset: int32(ks.Offset)}
+}
+
+// resolveSelector returns the byte key of a trivial selector, a fresh copy.
+func resolveSelector(ks KeySelector) []byte {
+	key := ks.Key.FDBKey()
+	if ks.OrEqual {
 		// FirstGreaterThan(k) = FirstGreaterOrEqual(k + \x00).
-		// Resolve client-side to avoid unnecessary GetKey round-trip.
-		key := ks.Key.FDBKey()
 		out := make([]byte, len(key)+1)
 		copy(out, key)
-		return out, nil
+		return out
 	}
-	// OrEqual values match the wire convention. Pass directly. Snapshot range
-	// reads resolve via the snapshot GetKey so no read-conflict range is added.
-	if snapshot {
-		k, err := tx.inner.Snapshot().GetKey(tx.ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))
-		if err != nil {
-			return nil, err
-		}
-		return k, nil
-	}
-	k, err := tx.inner.GetKey(tx.ctx, ks.Key.FDBKey(), ks.OrEqual, int32(ks.Offset))
-	if err != nil {
-		return nil, err
-	}
-	return k, nil
+	out := make([]byte, len(key))
+	copy(out, key)
+	return out
 }
 
-// resolveRange extracts begin/end byte slices from a Range. For ExactRange
-// the keys are used directly. For non-trivial key selectors (anything other
-// than FirstGreaterOrEqual) the selector is resolved via GetKey — through the
-// snapshot GetKey when snapshot is true, so selector resolution adds no
-// read-conflict range for a snapshot range read.
-func resolveRange(tx *transaction, r Range, snapshot bool) (begin, end []byte, err error) {
-	if er, ok := r.(ExactRange); ok {
-		b, e := er.FDBRangeKeys()
-		return b.FDBKey(), e.FDBKey(), nil
-	}
+// resolveRange returns the byte range of a selector range whose selectors are
+// both trivial.
+func resolveRange(r Range) (begin, end []byte) {
 	bs, es := r.FDBRangeKeySelectors()
-	begin, err = resolveSelector(tx, bs.FDBKeySelector(), snapshot)
-	if err != nil {
-		return nil, nil, err
-	}
-	end, err = resolveSelector(tx, es.FDBKeySelector(), snapshot)
-	if err != nil {
-		return nil, nil, err
-	}
-	return begin, end, nil
+	return resolveSelector(bs.FDBKeySelector()), resolveSelector(es.FDBKeySelector())
 }

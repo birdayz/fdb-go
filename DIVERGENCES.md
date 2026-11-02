@@ -1194,18 +1194,37 @@ Skip=MaxInt32 selector offsets where Java's differ", which builds Java's selecto
 the read. PR #917's raw mapped-range `MappedRangeSkipReader` treats a forward `MaxInt32` as an exact
 skip instead; reconcile the two before RFC-258 wires mapped Skip into index scans.
 
-### Pure-Go selector resolution is not bounded by the scan range
+### Pure-Go selector resolution is not bounded by the scan range (RESOLVED for plain ranges)
 
-`libfdb_c` resolves a skipped selector inside the range read: RYW reads the extra rows from
-`firstGreaterOrEqual` of the selector key and stops at the other bound
-(`ReadYourWrites.actor.cpp:725-760`), and the read conflict covers the requested range
-(`:246-282`). The pure-Go facade resolves a non-trivial selector first with a `GetKey` that is not
-bounded by the range (`pkg/fdbgo/fdb/range_result.go:413-470`, `pkg/fdbgo/client/ryw_getkey.go`).
-When Skip overshoots the remaining entries, Go reads keys beyond the far bound until the selector
-resolves and, in a serializable transaction, adds them to the read-conflict range. A very large
-Skip over a large keyspace can fail before resolving (the resolver stops after 2^28 keys,
-`ryw_getkey.go:567`, or the transaction ages out). The rows returned are the same. Tracked in
-TODO.md for `pkg/fdbgo`.
+`libfdb_c` resolves a range read's selectors inside the read. Under RYW,
+`getRangeValue`/`getRangeValueBack` resolve them against the write map and snapshot cache
+and send the rest to storage inside the range request (`ReadYourWrites.actor.cpp:592-813,
+896-1123`). The storage server resolves them within its shard, and a selector that leaves the
+shard goes through `getRangeFallback` (`NativeAPI.actor.cpp:4457-4500, 4651-4679`). The read
+conflict is `addConflictRange(GetRangeReq)` (`ReadYourWrites.actor.cpp:245-319`), or with
+RYW disabled `getRangeFinished`'s range (`NativeAPI.actor.cpp:4558-4586`).
+
+The pure-Go facade used to resolve each non-trivial selector first with a separate `GetKey`.
+That read was not bounded by the range, so an overshooting index-scan Skip read keys past
+the far bound and, in a serializable transaction, added them to the read-conflict range. It
+also cost up to three sequential reads per selector range. The facade now issues one
+selector read (`pkg/fdbgo/client/range_selector_issue.go`, RFC-262 D10). That read runs the
+ported walk over `nativeGetRange`, or `readThrough` with RYW disabled. It returns the rows,
+read-conflict ranges and error codes libfdb_c does. Later batches keep the other selector,
+as Apple's binding does. Pinned by:
+
+- `//pkg/fdbgo/client:selector_range_conformance_test` (test-full): rows and coalesced
+  read-conflict ranges against libfdb_c on a small-shard cluster, including fallbacks
+  across shards.
+- `//pkg/fdbgo/client:range_selector_unit_test`: rows against a model, and one storage
+  request per cold read.
+- `TestSelectorRangeReadSendsOneStorageRequest` in `//pkg/fdbgo/client:storage_plumbing_fdb_test`.
+- `TestGetRange_SelectorRangeIsOneStorageRead` and `TestConflictRange_SelectorGetRange_Native`
+  in `//pkg/fdbgo/fdb:fdb_test`.
+- `TestDifferential_GetRangeSelectorRYW` in `//pkg/fdbgo/bench:bench_test` (test-full).
+
+Mapped range reads are unchanged: they still resolve a skipped selector before the mapped
+request (`pkg/fdbgo/client/mappedrange_skip.go`).
 
 ### Single-range query index scans pass Skip to the index cursor (RESOLVED)
 

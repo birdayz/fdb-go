@@ -259,7 +259,7 @@ func (tx *Transaction) waitIssuedReads(ctx context.Context, inc *readIncarnation
 
 // PendingRange is a started range read, like the future fdb_transaction_get_range returns.
 type PendingRange struct {
-	r     *rangeRead
+	r     issuedRangeRead
 	state atomic.Int32 // pendingReady → pendingClaimed by whichever of the goroutine or Get runs r
 	done  chan struct{}
 	kvs   []KeyValue // shared RYW/cache storage; Get copies
@@ -314,6 +314,11 @@ func (tx *Transaction) startRange(ctx context.Context, begin, end []byte, limit,
 		p.kvs, p.more, p.err = r.run(false)
 		return p
 	}
+	return tx.startPendingRange(r)
+}
+
+// startPendingRange runs an issued read that must wait on a background goroutine.
+func (tx *Transaction) startPendingRange(r issuedRangeRead) *PendingRange {
 	p := &PendingRange{r: r, done: make(chan struct{})}
 	hook := tx.beforeRangeGoroutine
 	go func() {

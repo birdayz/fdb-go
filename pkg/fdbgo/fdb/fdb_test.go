@@ -1325,7 +1325,7 @@ func TestReadTransactRetry(t *testing.T) {
 
 // TestGetRangeWithSelectorRange verifies that GetRange works with
 // non-trivial key selectors (LastLessOrEqual, FirstGreaterThan).
-// These require a GetKey round trip to resolve before the range scan.
+// The client resolves them inside the range read, as libfdb_c does.
 func TestGetRangeWithSelectorRange(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)

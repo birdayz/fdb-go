@@ -837,8 +837,8 @@ func (tx *simTxn) getKey(sel fdb.Selectable, snapshot bool) fdb.FutureKey {
 // so the span is [resolved, base); a naive [base, keyAfter(resolved)) would be inverted and add
 // no conflict at all on reverse cursors.
 //
-// GetRange shares this: for a bound the real backend has to resolve with an actual GetKey, the
-// resolution ITSELF is a read and takes this range. See the call site there.
+// A selector range read takes it only for the getKey readThrough issues with RYW disabled
+// (selectorFetch); otherwise its selectors are resolved within the read.
 func (tx *simTxn) addGetKeyConflictRange(ks fdb.KeySelector, resolved []byte) {
 	selKey := []byte(ks.Key.FDBKey())
 	var cBegin, cEnd []byte
@@ -862,20 +862,6 @@ func (tx *simTxn) addGetKeyConflictRange(ks fdb.KeySelector, resolved []byte) {
 	}
 }
 
-// selectorResolvesViaGetKey reports whether the real backend has to issue an actual GetKey to
-// turn ks into a byte key, mirroring fdb/range_result.go resolveSelector's two client-side
-// short-circuits: FirstGreaterOrEqual(k) IS k, and FirstGreaterThan(k) is keyAfter(k). Every
-// other selector costs a GetKey — which is a READ, and therefore takes a conflict range.
-func selectorResolvesViaGetKey(ks fdb.KeySelector) bool {
-	if !ks.OrEqual && ks.Offset == 1 { // FirstGreaterOrEqual
-		return false
-	}
-	if ks.OrEqual && ks.Offset == 1 { // FirstGreaterThan
-		return false
-	}
-	return true
-}
-
 func (tx *simTxn) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResult {
 	return tx.getRange(r, options, false)
 }
@@ -888,11 +874,12 @@ func (tx *simTxn) getRange(r fdb.Range, options fdb.RangeOptions, snapshot bool)
 	return rr
 }
 
-// resolveRangeForRead turns a range request's selectors into the raw [begin, end) a fetch reads
-// over, and records the conflict ranges that resolution itself takes. It is the sim's
-// resolveRange (fdb/range_result.go), and like it, it runs once per
-// GetRange() call.
-func (tx *simTxn) resolveRangeForRead(r fdb.Range, snapshot bool) (begin, end []byte, err error) {
+// resolveRangeForRead turns a range whose selectors are both trivial (isTrivialSelector) into
+// the raw [begin, end) a fetch reads over. It is the client's exact-range path
+// (fdb/range_result.go resolveRange): firstGreaterOrEqual(k) is k and firstGreaterThan(k) is
+// keyAfter(k), with no read. A range with any other selector is a selector read
+// (selectorFetch). It runs once per GetRange() call.
+func (tx *simTxn) resolveRangeForRead(r fdb.Range) (begin, end []byte, err error) {
 	// transaction_cancelled(1025) before anything else, as on every other read entry point
 	// (C++ RYW getRange checks resetPromise first, ReadYourWrites.actor.cpp:1736-1737).
 	if tx.cancelled.Load() {
@@ -900,46 +887,11 @@ func (tx *simTxn) resolveRangeForRead(r fdb.Range, snapshot bool) (begin, end []
 	}
 	tx.ensureReadVersion()
 	beginSel, endSel := r.FDBRangeKeySelectors()
-	bks, eks := beginSel.FDBKeySelector(), endSel.FDBKeySelector()
-
-	// The bounds are the RESOLVED keys, not the raw selector anchors: the real backend resolves
-	// a non-trivial selector to a key BEFORE issuing the read (fdb/range_result.go
-	// resolveRange). Taking the anchor instead under-conflicts on a backward selector —
-	// LastLessThan(k) resolves BELOW k, so rows the transaction really read fall outside the
-	// recorded range and a concurrent write to them does not conflict.
-	// Built only when a bound actually needs it. buildView clones, maps and SORTS the
-	// WHOLE keyspace, and resolveRangeBound's two trivial arms return before reading a
-	// single element of it — so for every exact range in the tree (KeyRange, subspace,
-	// Tuple all report FirstGreaterOrEqual bounds) this was an O(keyspace·log keyspace)
-	// build per GetRange whose result was discarded unread. It measured 17.7% of total
-	// CPU in `sort.Strings` alone on a 20k-row SimFDB scan benchmark, on the read path
-	// that every SimFDB-backed test drives.
-	//
-	// selectorResolvesViaGetKey is the same predicate resolveRangeBound branches on, not
-	// a second opinion about it, which is what makes the nil safe: a selector it reports
-	// false for cannot reach the view, and the conflict loop below only resolves the ones
-	// it reports true for.
-	var view []fdb.KeyValue
-	if selectorResolvesViaGetKey(bks) || selectorResolvesViaGetKey(eks) {
-		view = tx.buildView()
-	}
-	begin = resolveRangeBound(view, bks)
-	end = resolveRangeBound(view, eks)
-
-	if !snapshot {
-		// Resolving a non-trivial bound is itself a READ. The real backend turns such a bound
-		// into a key by issuing a non-snapshot GetKey (fdb/range_result.go resolveRange ->
-		// resolveSelector), and that GetKey takes its own conflict range over the span it had
-		// to scan. Omitting it under-conflicts in a way the range extent alone cannot express:
-		// when both bounds resolve to the SAME key the range is empty and contributes nothing,
-		// yet the resolution still read the keyspace between each anchor and its resolved key.
-		// A concurrent write there conflicts on real FDB and did not here.
-		for _, ks := range [2]fdb.KeySelector{bks, eks} {
-			if selectorResolvesViaGetKey(ks) {
-				tx.addGetKeyConflictRange(ks, resolveRangeBound(view, ks))
-			}
-		}
-	}
+	// No view: trivial bounds never read one. Building it cloned, mapped and SORTED the whole
+	// keyspace per GetRange, measured at 17.7% of total CPU in `sort.Strings` alone on a 20k-row
+	// SimFDB scan benchmark (TestTrivialRangeBoundsBuildNoWholeKeyspaceView).
+	begin = resolveRangeBound(nil, beginSel.FDBKeySelector())
+	end = resolveRangeBound(nil, endSel.FDBKeySelector())
 
 	// The client's guard: an INVERTED requested range records no data conflict at all
 	// (client/transaction.go:1290-1293). Without it a degenerate or inverted [begin,end)
@@ -952,30 +904,19 @@ func (tx *simTxn) resolveRangeForRead(r fdb.Range, snapshot bool) (begin, end []
 	return begin, end, nil
 }
 
-// resolveRangeBound returns the byte key a GetRange bound resolves to, mirroring the real
-// backend's resolveSelector case for case (fdb/range_result.go:309-355) so the conflict
-// extent SimFDB records is the one the client would have recorded:
+// resolveRangeBound returns the byte key a range bound resolves to over view:
 //
-//   - FirstGreaterOrEqual(k) is trivial and resolves to k with no lookup. Every exact range
-//     in the tree (KeyRange, subspace, Tuple) reports its bounds as FirstGreaterOrEqual of
-//     its raw keys, so this arm is also what keeps phantom protection intact for the common
-//     case: [a,z) stays [a,z) including its leading and trailing gaps, rather than narrowing
-//     to the first and last keys that happen to exist. The backend's separate ExactRange
-//     short-circuit is a round-trip optimization it needs and SimFDB does not — there is no
-//     GetKey to avoid here, and adding the branch would only duplicate this arm.
+//   - FirstGreaterOrEqual(k) is k with no lookup. Every exact range in the tree (KeyRange,
+//     subspace, Tuple) reports FirstGreaterOrEqual bounds, so this arm also keeps phantom
+//     protection for the common case: [a,z) stays [a,z) including its leading and trailing
+//     gaps, rather than narrowing to the first and last keys that happen to exist.
 //   - FirstGreaterThan(k) (OrEqual && Offset==1) resolves to keyAfter(k) in the KEY SPACE,
-//     not to the next key that exists. The distinction is observable: resolving to an
-//     existing key would pull the gap between k and that key into the conflict range and
-//     over-conflict on an insert there.
-//   - everything else (LastLessThan / LastLessOrEqual / any other offset) needs the GetKey
-//     resolution, which is index-based over the merged view, with GetKey's own clamps: the
-//     empty key before the first key, endKeyMarker past the last.
+//     not to the next key that exists. Resolving to an existing key would pull the gap
+//     between k and that key into the range.
+//   - every other selector is resolved over the merged view, with getKey's clamps: the empty
+//     key before the first key, endKeyMarker past the last. view must be built for these.
 func resolveRangeBound(view []fdb.KeyValue, ks fdb.KeySelector) []byte {
-	// The two trivial arms are gated on selectorResolvesViaGetKey rather than on a
-	// second copy of its predicates: getRange SKIPS building the view when that
-	// function reports false for both bounds, so a drift between the two would not
-	// be a wrong answer, it would be a nil view reaching the index walk below.
-	if !selectorResolvesViaGetKey(ks) {
+	if isTrivialSelector(ks) {
 		if ks.OrEqual { // FirstGreaterThan(k) == FirstGreaterOrEqual(k+\x00)
 			return keyAfter([]byte(ks.Key.FDBKey()))
 		}

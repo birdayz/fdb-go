@@ -36,6 +36,7 @@ go_library(
         "pending_get.go",
         "range_issue.go",
         "range_limits.go",
+        "range_selector_issue.go",
         "read_incarnation.go",
         "read_send.go",
         "read_tags.go",
@@ -336,6 +337,38 @@ go_test(
     deps = ["//pkg/fdbgo/wire"],
 )
 
+# gazelle:exclude range_selector_unit_test.go
+go_test(
+    name = "range_selector_unit_test",
+    srcs = [
+        "range_selector_unit_test.go",
+        "ryw_walk_helper_test.go",
+    ],
+    embed = [":client"],
+)
+
+# Compares selector range reads and their read-conflict ranges with libfdb_c on a
+# three-process small-shard cluster; heavyweight, so it runs only in the full lane.
+# gazelle:exclude selector_range_conformance_test.go
+go_test(
+    name = "selector_range_conformance_test",
+    timeout = "long",
+    srcs = [
+        "ryw_walk_helper_test.go",
+        "selector_range_conformance_test.go",
+    ],
+    embed = [":client"],
+    tags = [
+        "resources:cpu:2",
+        "resources:memory:2500",
+        "test-full",
+    ],
+    deps = [
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_apple_foundationdb_bindings_go//src/fdb",
+    ],
+)
+
 # gazelle:exclude ryw_walk_trace_test.go
 # gazelle:exclude ryw_nodes_property_test.go
 go_test(
@@ -456,11 +489,14 @@ go_test(
 
 # gazelle:exclude read_tags_plumbing_fdb_test.go
 # gazelle:exclude storage_plumbing_fdb_test.go
+# gazelle:exclude range_selector_requests_fdb_test.go
 go_test(
     name = "storage_plumbing_fdb_test",
     srcs = [
+        "range_selector_requests_fdb_test.go",
         "read_tags_helpers_test.go",
         "read_tags_plumbing_fdb_test.go",
+        "ryw_walk_helper_test.go",
         "storage_plumbing_fdb_test.go",
         "testmain_test.go",
         "wire_recorder_test.go",

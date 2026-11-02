@@ -793,7 +793,7 @@ func TestInterop_LastLessOrEqual(t *testing.T) {
 
 // TestInterop_SelectorRange verifies that GetRange with non-trivial key
 // selectors (LastLessOrEqual/FirstGreaterThan) produces identical results
-// across Go and CGo. This exercises the resolveSelector path in range_result.go.
+// across Go and CGo. This exercises the selector range read (client StartGetRangeSelectors).
 func TestInterop_SelectorRange(t *testing.T) {
 	prefix := "interop_sr_"
 

@@ -995,6 +995,25 @@ example the second half of `TestRYWWriteOverlayRequestBytesClampedAndDoubled`,
 
 ### D10. Selector ranges, RYW-disabled routing, facade limits (phase 4)
 
+**Status: implemented for plain selector ranges.** `pkg/fdbgo/client/range_selector_issue.go`
+implements the client API, the checks, both routes and the conflict port below. The facade
+change is in `pkg/fdbgo/fdb/range_result.go`.
+
+The facade departs from the plan in one way: a range whose selectors both have offset 1 is
+an exact range, so it still takes the byte-key path until phase 3. A selector range keeps
+using the selector read for its continuations. `getRangeReadThrough` still serves exact
+ranges with RYW disabled.
+
+Pinned by:
+
+- `//pkg/fdbgo/client:selector_range_conformance_test` (test-full): rows and read-conflict
+  ranges against libfdb_c on a small-shard cluster.
+- `//pkg/fdbgo/client:range_selector_unit_test`.
+- `TestSelectorRangeReadSendsOneStorageRequest` in `//pkg/fdbgo/client:storage_plumbing_fdb_test`.
+- `TestGetRange_SelectorRangeIsOneStorageRead` and `TestConflictRange_SelectorGetRange_Native`
+  in `//pkg/fdbgo/fdb:fdb_test`.
+- `TestDifferential_GetRangeSelectorRYW` in `//pkg/fdbgo/bench:bench_test`.
+
 Today the facade resolves a selector range with two `GetKey` calls and reads the resolved
 byte range (`fdb/range_result.go:81-95, 414-466`). That sends different requests, adds two
 getKey conflicts instead of one range conflict, and never reaches P3, L3, U3's
@@ -1076,7 +1095,11 @@ byte-identical (checked by `diff` of the old sections, recorded in the PR).
    `getkey_*` divergences; `go-divergences.diff` keeps only `set_then_range`. Reports the D1
    benchmark and the D1b build benchmark.
 3. **Range reads.** D7, D9. Closes `set_then_range`; `go-divergences.diff` is empty.
+   *Status: open.* Byte-key ranges still run the iterative merge (`rywRangeRead.run`),
+   and the RYW-disabled exact path still uses `getRangeReadThrough`.
 4. **Selector ranges and RYW-disabled routing.** D10, with new lab scenarios (S3).
+   *Status: done for plain selector ranges, ahead of phase 3.* See D10's status note.
+   No S3 lab scenario has been added yet.
 
 ## Executable spec
 
