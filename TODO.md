@@ -3443,7 +3443,9 @@ on the ccx43 bench box with `measure.py --storage 6 --duration 180s`:
   bound; the position-indexed sequences still copy about half an insert's
   path (C++ PTree keeps no subtree sizes); every pipelined read that is not
   answered locally still runs on its own goroutine (`startPendingRange`);
-  the op-log copies each Set's key and value besides the write map.
+  the op-log copied each Set's key and value besides the write map (fixed
+  by the fourth round, "RYW CPU in TEXT-maintenance-shaped transactions" in
+  section 0).
 - [ ] **TEXT index maintenance CPU in message transactions** (otelbench
   profile at 7cf0eda3c: ~60% of client CPU). Record Layer side done: a
   BunchedMap put or remove keeps each stored key's packed bytes, as Java's
