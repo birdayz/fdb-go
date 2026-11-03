@@ -197,11 +197,14 @@ func bootstrapCRDouble(t *testing.T, ctx context.Context, container *foundationd
 	for i, class := range []string{"log", "log", "log", "storage", "storage"} {
 		port := container.FDBPort() + i + 1
 		dir := fmt.Sprintf("/var/fdb/data/connrefused%d", i+1)
+		// Double requires distinct zones (ManagementAPI.actor.cpp:309-313).
+		// Defaults share one host-local ID, forcing every team to include the primary.
 		cmd := fmt.Sprintf(
 			"mkdir -p %s && fdbserver --listen-address 0.0.0.0:%d --public-address %s "+
 				"--cluster-file /var/fdb/fdb.cluster --datadir %s --logdir /var/fdb/logs "+
-				"--class %s --knob_disable_posix_kernel_aio=1 >/var/fdb/logs/connrefused%d.out 2>&1 &",
-			dir, port, net.JoinHostPort(host, strconv.Itoa(port)), dir, class, i+1)
+				"--class %s --locality-zoneid=connrefused-%d --locality-machineid=connrefused-%d "+
+				"--knob_disable_posix_kernel_aio=1 >/var/fdb/logs/connrefused%d.out 2>&1 &",
+			dir, port, net.JoinHostPort(host, strconv.Itoa(port)), dir, class, port, port, i+1)
 		if _, err := containerExec(ctx, container, cmd); err != nil {
 			t.Fatalf("start dedicated %s process on port %d: %v", class, port, err)
 		}
