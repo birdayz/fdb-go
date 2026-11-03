@@ -31,6 +31,8 @@ type snapshotCache struct {
 	keyBuf      [64]byte
 	kvUsed      int
 	keyBufUsed  int
+	// cur is insertKVs's cursor, kept for its path storage; empty between calls.
+	cur pcursor[cacheEntry]
 
 	// kvsTouched counts cached KeyValues examined by the range walk since the last
 	// reset. It exists to make the walk's cost observable: the walk is supposed to do
@@ -174,20 +176,30 @@ func (sc *snapshotCache) insertKVs(begin, end []byte, kvs []KeyValue, owned bool
 	// deliberately not trimmed past — it is superseded below instead. An entry
 	// ending exactly at newBegin does not contain it (end is exclusive), which
 	// is the adjacent-page case and must not trim either.
-	if _, e := es.find(func(e *cacheEntry) bool {
-		return bytes.Compare(e.end, newBegin) > 0
-	}); e != nil && bytes.Compare(e.begin, newBegin) < 0 {
-		newBegin = e.end
+	// Two skips, as C++'s itb and ite (SnapshotCache.h:351-354), also bound [lo, hi):
+	// entries are disjoint, so a trimmed end only moves lo up or hi down by one.
+	c := &sc.cur
+	defer func() { *c = pcursor[cacheEntry]{path: scrubPath(c.path)} }()
+	c.seekFirst(es, func(e *cacheEntry) bool { return bytes.Compare(e.end, newBegin) > 0 })
+	lo := c.idx
+	if c.valid() {
+		if e := c.item(); bytes.Compare(e.begin, newBegin) < 0 {
+			newBegin, lo = e.end, lo+1
+		}
 	}
 
 	// Trim the back to the start of an existing entry that STRICTLY contains
 	// newEnd. C++: `ite._prevUnknown(); end = ite.endKey()`, reached only when
 	// the segment holding keys.end is not an unknown range — an entry ending
 	// exactly at newEnd does not hold it, so it must not trim.
-	if j := es.search(func(e *cacheEntry) bool {
-		return bytes.Compare(e.begin, newEnd) >= 0
-	}); j > 0 && bytes.Compare(es.at(j-1).end, newEnd) > 0 {
-		newEnd = es.at(j - 1).begin
+	end0 := newEnd
+	c.seekFirstFrom(es, func(e *cacheEntry) bool { return bytes.Compare(e.begin, end0) >= 0 })
+	hi := c.idx
+	if hi > 0 {
+		c.prev()
+		if e := c.item(); bytes.Compare(e.end, newEnd) > 0 {
+			newEnd, hi = e.begin, hi-1
+		}
 	}
 
 	if bytes.Compare(newBegin, newEnd) >= 0 {
@@ -198,12 +210,6 @@ func (sc *snapshotCache) insertKVs(begin, end []byte, kvs []KeyValue, owned bool
 	// the only entry that could straddle either end was what the trim moved that
 	// end to. So [lo, hi) is exactly the set of entries strictly inside, which
 	// this fetch supersedes wholesale (same read version, so same contents).
-	lo := es.search(func(e *cacheEntry) bool {
-		return bytes.Compare(e.begin, newBegin) >= 0
-	})
-	hi := es.search(func(e *cacheEntry) bool {
-		return bytes.Compare(e.end, newEnd) > 0
-	})
 
 	// Keep only the values that fall inside the trimmed range. kvs is sorted, so
 	// this is a slice of the caller's page, never a merge with cached values.
@@ -299,7 +305,7 @@ func (sc *snapshotCache) getRangeKVsLimited(begin, end []byte, budget int, rever
 	// Walk entries ascending, collecting KVs, checking for gaps.
 	var result []KeyValue
 	cur := begin
-	for it := sc.entries.cursor(i); it.valid(); it.next() {
+	for it := sc.entries.finger(i); it.valid(); it.next() {
 		e := it.item()
 		if bytes.Compare(e.begin, cur) > 0 {
 			return nil, false // gap
@@ -356,7 +362,7 @@ func (sc *snapshotCache) getRangeKVsBack(begin, end []byte, budget int) ([]KeyVa
 
 	var desc []KeyValue
 	cur := end // everything at or above cur is accounted for
-	for it := sc.entries.cursor(j); it.valid(); it.prev() {
+	for it := sc.entries.finger(j); it.valid(); it.prev() {
 		e := it.item()
 		if bytes.Compare(e.end, cur) < 0 {
 			return nil, false // gap between this entry and what we already covered
@@ -498,9 +504,8 @@ func cloneReadKVs(kvs []KeyValue) []KeyValue {
 	return cloneReadKVsInto(make([]KeyValue, len(kvs)), kvs)
 }
 
-// cloneReadKVsInPlace is cloneReadKVs for a slice its caller alone holds (its
-// rows may alias shared storage, the slice itself must not be shared): each
-// row's bytes are replaced by the copy, sparing a second slice.
+// cloneReadKVsInPlace is cloneReadKVs into kvs itself, for a slice only its
+// caller holds (its rows' bytes may be shared).
 func cloneReadKVsInPlace(kvs []KeyValue) []KeyValue {
 	if len(kvs) == 0 {
 		return kvs

@@ -380,20 +380,24 @@ func (w *rywWrites) appendConflictSpans(dst []conflictSpan, begin, end []byte) [
 	w.ensureSorted()
 	first := len(dst)
 	emit := func(lo, hi rywBoundary) {
-		if n := len(dst); n > first && dst[n-1].end.compare(lo) == 0 {
+		if n := len(dst); n > first && dst[n-1].end.equal(lo) {
 			dst[n-1].end = hi
 			return
 		}
 		dst = append(dst, conflictSpan{begin: lo, end: hi})
 	}
-	wc := w.sorted.cursor(w.writeIndexOf(begin))
-	cc := w.cleared.cursor(rangeIndex(&w.cleared, func(r *rywRange) bool { return bytes.Compare(r.end, begin) > 0 }))
+	// Fingers allocate nothing, on the live version or a pinned one; each is
+	// placed by one descent (lower_bound, VersionedMap.h:188-200).
+	var wc pfinger[rywWrite]
+	wc.seekFirst(&w.sorted, func(x *rywWrite) bool { return x.key >= string(begin) })
+	var cc pfinger[rywRange]
+	cc.seekFirst(&w.cleared, func(r *rywRange) bool { return bytes.Compare(r.end, begin) > 0 })
 	cur, last := rywBoundary{key: begin}, rywBoundary{key: end}
 	for cur.compare(last) < 0 {
 		if wc.valid() {
 			x := wc.item()
 			key := rywBoundary{key: stringBytes(x.key)}
-			if key.compare(cur) == 0 {
+			if key.equal(cur) {
 				// Operation key occupying the single-key segment [key, keyAfter(key)): nothing
 				// lies strictly between a key and its successor, so the segment ends in range.
 				next := key.keyAfter()
@@ -467,13 +471,17 @@ func (w *rywWrites) hasClearsInRange(begin, end []byte) bool {
 // addRange merges [begin, end) into a sorted, non-overlapping range list,
 // joining the ranges it overlaps or touches.
 func addRange(s *pseq[rywRange], begin, end []byte) {
+	addRangeOwned(s, append([]byte(nil), begin...), append([]byte(nil), end...))
+}
+
+// addRangeOwned is addRange keeping begin and end, which nobody writes.
+func addRangeOwned(s *pseq[rywRange], begin, end []byte) {
 	// A range r overlaps/is-adjacent to [begin, end) if r.begin <= end && begin <= r.end.
 	// [loIdx, hiIdx) are those ranges: ends are sorted too, as ranges do not overlap.
 	hiIdx := rangeIndex(s, func(r *rywRange) bool { return bytes.Compare(r.begin, end) > 0 })
 	loIdx := rangeIndex(s, func(r *rywRange) bool { return bytes.Compare(r.end, begin) >= 0 })
 
-	newBegin := append([]byte(nil), begin...)
-	newEnd := append([]byte(nil), end...)
+	newBegin, newEnd := begin, end
 	if loIdx < hiIdx {
 		if r := s.at(loIdx); bytes.Compare(r.begin, newBegin) < 0 {
 			newBegin = r.begin
@@ -491,7 +499,8 @@ func addRange(s *pseq[rywRange], begin, end []byte) {
 	s.insert(loIdx, merged)
 }
 
-func (w *rywWrites) addClearedRange(begin, end []byte) { addRange(&w.cleared, begin, end) }
+// addClearedRangeOwned is addClearedRange keeping begin and end, which nobody writes.
+func (w *rywWrites) addClearedRangeOwned(begin, end []byte) { addRangeOwned(&w.cleared, begin, end) }
 
 // addUnreadableRange merges [begin, end) into the SVK candidate-stamp
 // unreadable ranges (sorted, non-overlapping; same shape as `cleared`).

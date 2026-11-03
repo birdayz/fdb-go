@@ -25,10 +25,9 @@ import (
 //   - transaction_too_large (2101) is DEFERRED to commit, so it NEVER pre-empts an eager
 //     error — it only fires when no per-mutation op is itself invalid.
 //
-// The Go client defers all validation to commit, so it reproduces "first eagerly-invalid op
-// wins" by validating per-mutation in MUTATION order (= call order), with the versionstamp-
-// offset check sitting in that same loop after the size checks and before the deferred
-// transaction-size check (transaction.go). Before the fix the versionstamp check ran AFTER
+// The Go client defers each invalid op at its call as libfdb_c does (deferIllegalLocked), so the
+// first wins; within an op the versionstamp-offset check follows the size checks (validateMutation).
+// Before the fix the versionstamp check ran AFTER
 // the size check (separate loop), so the four "versionstamp op first" cases returned 2101/
 // 2102/2103 instead of 2000 — the red→green proof.
 func TestDifferential_VersionstampValidationOrder(t *testing.T) {

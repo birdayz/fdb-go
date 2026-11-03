@@ -2,10 +2,14 @@ package client
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"slices"
 	"testing"
+
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // conflictMapKeys is a small keyspace whose keys include each other's
@@ -216,4 +220,111 @@ func conflictRangesBySort(w *rywWrites, begin, end []byte) [][2][]byte {
 		}
 	}
 	return out
+}
+
+// The write map's arena hands out capped, never-nil slices whose bytes are
+// never handed out again, whatever their sizes, so a kept key or value cannot
+// change under the version or read holding it.
+func TestRYWKeepArenaNeverReuses(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+	rng := rand.New(rand.NewPCG(1, 2))
+	type kept struct {
+		b    []byte
+		want byte
+	}
+	var all []kept
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if s := c.keepLocked(0); s == nil || len(s) != 0 {
+		t.Fatal("an empty kept slice must be non-nil and empty")
+	}
+	for i := range 5000 {
+		n := rng.IntN(64)
+		switch rng.IntN(50) {
+		case 0:
+			n = keepChunkMax/4 - rng.IntN(2) // at the own-allocation bound
+		case 1:
+			n = 3000 + rng.IntN(6000) // larger than a young chunk
+		}
+		s := c.keepLocked(n)
+		if len(s) != n || cap(s) != n {
+			t.Fatalf("keep %d: len %d cap %d", n, len(s), cap(s))
+		}
+		for _, b := range s {
+			if b != 0 {
+				t.Fatalf("keep %d: not zeroed", n)
+			}
+		}
+		fill := byte(i)
+		for j := range s {
+			s[j] = fill
+		}
+		all = append(all, kept{s, fill})
+	}
+	for i, k := range all {
+		for _, b := range k.b {
+			if b != k.want {
+				t.Fatalf("kept slice %d was overwritten", i)
+			}
+		}
+	}
+}
+
+// An explicit write conflict does not consume NEXT_WRITE_NO_WRITE_CONFLICT_RANGE:
+// only writes do (RYW addWriteConflictRange, ReadYourWrites.actor.cpp:2461-2500).
+func TestExplicitWriteConflictKeepsNextWriteFlag(t *testing.T) {
+	t.Parallel()
+	for _, rywDisabled := range []bool{false, true} {
+		tx := &Transaction{rywDisabled: rywDisabled}
+		tx.SetNextWriteNoWriteConflictRange()
+		tx.AddWriteConflictKey([]byte("k9"))
+		tx.Set([]byte("k10"), []byte("v"))
+		tx.Set([]byte("k11"), []byte("v"))
+		got := fmt.Sprintf("%q", tx.writeConflictRanges())
+		want := fmt.Sprintf("%q", []KeyRange{{Begin: []byte("k11"), End: []byte("k11\x00")}, {Begin: []byte("k9"), End: []byte("k9\x00")}})
+		if rywDisabled {
+			want = fmt.Sprintf("%q", []KeyRange{{Begin: []byte("k9"), End: []byte("k9\x00")}, {Begin: []byte("k11"), End: []byte("k11\x00")}})
+		}
+		if got != want {
+			t.Fatalf("rywDisabled=%v: write conflicts %s, want %s (k9 kept, k10's skipped)", rywDisabled, got, want)
+		}
+	}
+}
+
+// An illegal write's error fails every later operation, RYW on and off, first one winning: RYW throws it
+// in the call (RYW:2228-2241, 2301-2348, 2372, 2420) and libfdb_c defers it (ThreadSafeTransaction.cpp:589-640).
+func TestIllegalWriteIsDeferred(t *testing.T) {
+	t.Parallel()
+	big := bytes.Repeat([]byte("v"), 100001)
+	for name, tc := range map[string]struct {
+		write func(tx *Transaction)
+		code  int
+	}{
+		"set value":           {func(tx *Transaction) { tx.Set([]byte("k"), big) }, 2103},
+		"append value":        {func(tx *Transaction) { tx.Atomic(MutAppendIfFits, []byte("k"), big) }, 2103},
+		"set key size":        {func(tx *Transaction) { tx.Set(bytes.Repeat([]byte("k"), 10001), []byte("v")) }, 2102},
+		"set system key":      {func(tx *Transaction) { tx.Set([]byte("\xff\x05"), []byte("v")) }, 2004},
+		"clear system key":    {func(tx *Transaction) { tx.Clear([]byte("\xff\x05")) }, 2004},
+		"clear range end":     {func(tx *Transaction) { _ = tx.ClearRange([]byte("a"), []byte("\xff\x01")) }, 2004},
+		"clear range empty":   {func(tx *Transaction) { _ = tx.ClearRange([]byte("\xff\x01"), []byte("\xff\x01")) }, 2004},
+		"clear range invert":  {func(tx *Transaction) { _ = tx.ClearRange([]byte("b"), []byte("a")) }, ErrInvertedRange},
+		"first of two writes": {func(tx *Transaction) { tx.Clear([]byte("\xff\x05")); tx.Set([]byte("k"), big) }, 2004},
+	} {
+		for _, rywDisabled := range []bool{false, true} {
+			tx := &Transaction{rywDisabled: rywDisabled}
+			tx.Set([]byte("k"), []byte("v"))
+			tc.write(tx)
+			ctx := context.Background()
+			_, getErr := tx.Get(ctx, []byte("k"))
+			_, _, rangeErr := tx.GetRange(ctx, []byte("a"), []byte("z"), 0)
+			commitErr := tx.Commit(ctx)
+			for op, err := range map[string]error{"Get": getErr, "GetRange": rangeErr, "Commit": commitErr} {
+				var fe *wire.FDBError
+				if !errors.As(err, &fe) || fe.Code != tc.code {
+					t.Errorf("%s, rywDisabled=%v: %s = %v, want %d", name, rywDisabled, op, err, tc.code)
+				}
+			}
+		}
+	}
 }

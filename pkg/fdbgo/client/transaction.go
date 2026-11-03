@@ -333,6 +333,8 @@ type txOptions struct {
 	// nativeRange, when set, replaces nativeGetRange under the RYW walk (a test seam
 	// for hermetic walk and pin-lifecycle tests).
 	nativeRange nativeRangeFunc
+	// nativeGet, when set, replaces getValue under Get (a test seam for issued Gets).
+	nativeGet func(ctx context.Context, key []byte) ([]byte, error)
 	// walkOnRequest, when set, sees each storage request a getKey walk builds (a
 	// test seam).
 	walkOnRequest func(walkRequest)
@@ -458,9 +460,9 @@ type Transaction struct {
 	// GetPipelined/Watch; Commit, the metrics paths, GetApproximateSize and
 	// GetVersionstamp gate explicitly), Store(nil)ed only on reset.
 	//
-	// Sources, matching C++: an invalid op-code passed to Atomic() (2018/2004/2000 —
-	// RYW::atomicOp's throw, ReadYourWrites.actor.cpp:2235; recorded store-if-unset
-	// under conflictMu, linearized with the preceding-mutation scan — see Atomic()) and
+	// Sources, matching C++: an illegal Set/Clear/ClearRange/Atomic (deferIllegalLocked: RYW
+	// set/clear/atomicOp throw in the call, :2228-2241, 2301-2348, 2372, 2420), an inverted
+	// ClearRange (2005, ThreadSafeTransaction.cpp:633-634), an invalid Atomic op-code and
 	// SetReadYourWritesDisable after a read/write (2000 — RYW setOptionImpl's throw,
 	// :2534-2542; the option is NOT applied, matching the C++ throw-before-assign), and
 	// SetSizeLimit out of [32, 1e7], including a DB default (2006, extractIntOption).
@@ -627,31 +629,12 @@ type Snapshot struct {
 // Snapshot reads retain the storage cache; pending writes are included unless
 // snapshot RYW is net-disabled (snapshotRYWDisableCount > 0).
 func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
-	if s.tx.routesSpecialKey(key) { // RYW:1634-1638
-		return s.tx.getSpecialKey(key)
-	}
-	ctx, cancel := s.tx.opContext(ctx)
-	defer cancel()
-	if err := s.tx.checkReadState(ctx); err != nil {
-		return nil, s.tx.trackReadOperation(ctx, err)
-	}
-	// Same system key check as regular Get.
-	if bytes.Compare(key, s.tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
-		return nil, &wire.FDBError{Code: 2004}
-	}
-	s.tx.hadRead.Store(true)
-	// Disabling snapshot RYW ignores writes, not the snapshot cache. Only
-	// disabling all RYW selects NativeAPI read-through (C++ RYW :400-403).
-	if s.tx.rywDisabled {
-		v, err := s.tx.getValue(ctx, key)
-		return v, s.tx.trackReadOperation(ctx, err)
-	}
-	if s.tx.snapshotRYWDisableCount > 0 {
-		v, err := s.tx.ryw.getSnapshot(ctx, key, s.tx.getValue)
-		return bytes.Clone(v), s.tx.trackReadOperation(ctx, err)
-	}
-	v, err := s.tx.ryw.get(ctx, key, s.tx.getValue)
-	return bytes.Clone(v), s.tx.trackReadOperation(ctx, err)
+	return s.tx.issueGet(ctx, key, true, false).wait()
+}
+
+// StartGet is the snapshot form of Transaction.StartGet.
+func (s *Snapshot) StartGet(ctx context.Context, key []byte) *PendingValue {
+	return s.tx.startGet(ctx, key, true)
 }
 
 // GetKey resolves a key selector without adding a read conflict range.
@@ -828,32 +811,158 @@ func (tx *Transaction) readVersionForOperation(parentCtx context.Context, extraF
 
 // Get reads a single key. Returns nil if the key doesn't exist.
 func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
-	if tx.routesSpecialKey(key) { // RYW:1634-1638
-		return tx.getSpecialKey(key)
+	return tx.issueGet(ctx, key, false, false).wait()
+}
+
+// StartGet issues a Get in the call, as fdb_transaction_get does (ThreadSafeTransaction.cpp:426-434);
+// Commit waits for its server read whether or not Get is called (RYW:1690-1691, 1358-1359).
+func (tx *Transaction) StartGet(ctx context.Context, key []byte) *PendingValue {
+	return tx.startGet(ctx, key, false)
+}
+
+// PendingValue is a Get issued in the call; Get waits for its value.
+type PendingValue struct {
+	done  chan struct{} // closed once value and err are set
+	value []byte
+	err   error
+}
+
+// Ready reports a value already decided: Get does not wait.
+func (p *PendingValue) Ready() bool {
+	select {
+	case <-p.done:
+		return true
+	default:
+		return false
 	}
-	ctx, cancel := tx.opContext(ctx)
-	defer cancel()
+}
+
+// Get returns the value; every call returns the same result.
+func (p *PendingValue) Get() ([]byte, error) {
+	<-p.done
+	return p.value, p.err
+}
+
+// startGet runs the server read on its own goroutine, as C++ runs the read's actor unawaited,
+// so its lease and Commit's barrier never wait for the caller.
+func (tx *Transaction) startGet(parent context.Context, key []byte, snapshot bool) *PendingValue {
+	g := tx.issueGet(parent, key, snapshot, true)
+	if g.finish == nil {
+		return &PendingValue{done: closedDone, value: g.value, err: g.err}
+	}
+	p := &PendingValue{done: make(chan struct{})}
+	go func() {
+		defer close(p.done)
+		if tx.rangeReadBackstop().run(func() { p.value, p.err = g.finish() }) {
+			p.value, p.err = nil, &wire.FDBError{Code: ErrInternalError} // RFC-110
+		}
+	}()
+	return p
+}
+
+// issuedGet is a Get past its issue: its value, or what waits for it.
+type issuedGet struct {
+	value  []byte
+	err    error
+	finish func() ([]byte, error) // nil when the value was decided at issue
+}
+
+func (g issuedGet) wait() ([]byte, error) {
+	if g.finish != nil {
+		return g.finish()
+	}
+	return g.value, g.err
+}
+
+// issueGet is RYW get (ReadYourWrites.actor.cpp:1631-1693) split at its wait; a server read
+// counts in Commit's barrier (`reading`, :1690-1691). copyKey keeps the key for a later finish.
+func (tx *Transaction) issueGet(parent context.Context, key []byte, snapshot, copyKey bool) issuedGet {
+	if tx.routesSpecialKey(key) { // RYW:1634-1638
+		v, err := tx.getSpecialKey(key)
+		return issuedGet{value: v, err: err}
+	}
+	ctx, cancel, counted := tx.opContextFor(parent, true)
 	if err := tx.checkReadState(ctx); err != nil {
-		return nil, tx.trackReadOperation(ctx, err)
+		err = tx.trackReadOperation(ctx, err)
+		cancel()
+		return issuedGet{err: err}
 	}
 	// C++ RYW::getValue: if (key >= getMaxReadKey() && key != metadataVersionKey)
 	if bytes.Compare(key, tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
-		return nil, &wire.FDBError{Code: 2004} // key_outside_legal_range
+		cancel()
+		return issuedGet{err: &wire.FDBError{Code: 2004}} // key_outside_legal_range
 	}
 	tx.hadRead.Store(true)
 	// Special keys (\xff\xff prefix) don't add read conflicts — C++ resolves
 	// them internally without going through the resolver conflict map. The conflict
 	// is routed through the RYW filter so a read served by a local independent write
 	// adds no read-conflict, matching libfdb_c (RFC-121 D2).
-	if !isSpecialKey(key) {
+	if !snapshot && !isSpecialKey(key) {
 		tx.addReadConflictForKeyRYW(key)
 	}
-	if tx.rywDisabled {
-		v, err := tx.getValue(ctx, key)
-		return v, tx.trackReadOperation(ctx, err)
+	if !tx.rywDisabled {
+		// Disabling snapshot RYW ignores writes, not the snapshot cache. Only
+		// disabling all RYW selects NativeAPI read-through (C++ RYW :400-403).
+		var r pointRead
+		if snapshot && tx.snapshotRYWDisableCount > 0 {
+			r = tx.ryw.issueGetSnapshot(key)
+		} else {
+			r = tx.ryw.issueGet(key)
+		}
+		if r.known {
+			v, err := bytes.Clone(r.value), tx.trackReadOperation(ctx, r.err)
+			cancel()
+			return issuedGet{value: v, err: err}
+		}
+		if copyKey {
+			r.key = bytes.Clone(r.key)
+		}
+		return tx.finishPointRead(ctx, tx.issuedReadRelease(ctx, cancel, counted), r)
 	}
-	v, err := tx.ryw.get(ctx, key, tx.getValue)
-	return bytes.Clone(v), tx.trackReadOperation(ctx, err)
+	if copyKey {
+		key = bytes.Clone(key)
+	}
+	return tx.finishGetValue(ctx, tx.issuedReadRelease(ctx, cancel, counted), key)
+}
+
+// issuedReadRelease ends a server read: a borrowed lease does not count in
+// Commit's barrier, so the read enters it on its own (enterIssuedRead).
+func (tx *Transaction) issuedReadRelease(ctx context.Context, cancel context.CancelFunc, counted bool) func() {
+	if counted {
+		return cancel
+	}
+	inc := tx.enterIssuedRead(ctx)
+	return func() {
+		tx.leaveIssuedRead(inc)
+		cancel()
+	}
+}
+
+// finishGetValue is a Get without RYW past its issue. The closures live in their
+// own functions so that a Get answered at issue moves nothing to the heap.
+func (tx *Transaction) finishGetValue(ctx context.Context, release func(), key []byte) issuedGet {
+	return issuedGet{finish: func() ([]byte, error) {
+		defer release()
+		v, err := tx.pointServerRead()(ctx, key)
+		return v, tx.trackReadOperation(ctx, err)
+	}}
+}
+
+// finishPointRead is a RYW Get past its issue (see finishGetValue).
+func (tx *Transaction) finishPointRead(ctx context.Context, release func(), r pointRead) issuedGet {
+	return issuedGet{finish: func() ([]byte, error) {
+		defer release()
+		v, err := r.finish(ctx, tx.pointServerRead())
+		return bytes.Clone(v), tx.trackReadOperation(ctx, err)
+	}}
+}
+
+// pointServerRead is NativeAPI getValue, or its test seam.
+func (tx *Transaction) pointServerRead() func(context.Context, []byte) ([]byte, error) {
+	if tx.nativeGet != nil {
+		return tx.nativeGet
+	}
+	return tx.getValue
 }
 
 // GetPipelined sends a GetValue request and returns a PendingGet that can be
@@ -1198,12 +1307,19 @@ func (tx *Transaction) maxReadKey() []byte {
 }
 
 // maxWriteKey returns the maximum writable key for this transaction.
+// The result is shared and read-only: callers only compare against it.
 func (tx *Transaction) maxWriteKey() []byte {
 	if tx.writeSystemKeys {
-		return []byte{0xff, 0xff}
+		return maxWriteKeySystem
 	}
-	return []byte{0xff}
+	return maxWriteKeyUser
 }
+
+// maxWriteKey's bounds, never written.
+var (
+	maxWriteKeySystem = []byte{0xff, 0xff}
+	maxWriteKeyUser   = []byte{0xff}
+)
 
 // metadataVersionKeyBytes is \xff/metadataVersion — exempt from system key checks.
 // C++ RYW: `key != metadataVersionKey` in getValue check.
@@ -1371,12 +1487,23 @@ func (tx *Transaction) stateSet(key, value []byte) {
 	defer tx.conflictMu.Unlock()
 	if tx.rywDisabled {
 		m, after := tx.ownPointMutationLocked(MutSetValue, key, value)
-		tx.mutations = append(tx.mutations, m)
+		tx.appendMutationLocked(m)
 		tx.writeConflictLocked(after[:len(key):len(key)], after, true)
 		return
 	}
-	tx.mutations = append(tx.mutations, tx.ownMutationLocked(MutSetValue, key, value))
-	tx.ryw.setWith(key, value, tx.writeConflictPointLocked(key))
+	// The op-log shares the bytes the write map keeps: one copy, as C++ RYW
+	// keeps one in its arena (ReadYourWrites.actor.cpp:2337-2353).
+	k, v := tx.ryw.setWith(key, value, tx.writeConflictPointLocked(key))
+	tx.appendMutationLocked(Mutation{Type: MutSetValue, Key: nilIfNil(key, k), Value: nilIfNil(value, v)})
+}
+
+// nilIfNil is kept, or nil when the caller passed nil: the op-log keeps the
+// caller's nil, as ownMutationLocked does.
+func nilIfNil(caller, kept []byte) []byte {
+	if caller == nil {
+		return nil
+	}
+	return kept
 }
 
 // consumeNextWriteNoConflict resets the one-shot NEXT_WRITE_NO_WRITE_CONFLICT_RANGE
@@ -1394,11 +1521,8 @@ func (tx *Transaction) stateClear(key []byte) {
 	// C++ clear(KeyRef) drops an oversized single-key clear entirely
 	// (NativeAPI.actor.cpp:6045-6047): no mutation, no conflict range, no RYW write —
 	// but the no-conflict flag is still consumed (RYW :2407, above the size check).
-	// BUT C++ RYW clear() checks the legal-range FIRST (ReadYourWrites.actor.cpp:2419-2424): an
-	// out-of-legal-range key (e.g. an oversized \xff system key on a non-system txn) is
-	// key_outside_legal_range (2004), NOT silently dropped by the size-clamp. So only size-drop a
-	// key WITHIN the legal range; an illegal key falls through and is buffered, so the commit gate's
-	// legal-range check reports 2004 (mirroring Set/ClearRange).
+	// RYW clear() checks the legal range before the size drop (ReadYourWrites.actor.cpp:2419-2424): an
+	// out-of-range key, even an oversized one, falls through and becomes the deferred 2004.
 	legal := bytes.Compare(key, tx.maxWriteKey()) < 0 || bytes.Equal(key, metadataVersionKeyBytes)
 	if legal && len(key) > getMaxClearKeySize(key) {
 		tx.consumeNextWriteNoConflict()
@@ -1406,20 +1530,35 @@ func (tx *Transaction) stateClear(key []byte) {
 	}
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()
+	if !tx.rywDisabled {
+		// The op-log shares the key\x00 the write map keeps (RYW:2426-2435).
+		end := tx.ryw.clearWith(key, tx.writeConflictPointLocked(key))
+		tx.appendMutationLocked(Mutation{Type: MutClearRange, Key: nilIfNil(key, end[:len(key):len(key)]), Value: end})
+		tx.singleKeyClearCount++ // C++ charges this mutation sizeof(KeyRangeRef), not MutationRef (RYW:2431)
+		return
+	}
 	// One owned copy of key\x00 serves the mutation's begin and end and the conflict range.
 	m, end := tx.ownPointMutationLocked(MutClearRange, key, nil)
 	m.Value = end
-	tx.mutations = append(tx.mutations, m)
+	tx.appendMutationLocked(m)
 	tx.singleKeyClearCount++ // C++ charges this mutation sizeof(KeyRangeRef), not MutationRef (RYW:2431)
-	addConflict := tx.writeConflictLocked(end[:len(key):len(key)], end, true)
-	if !tx.rywDisabled {
-		tx.ryw.clearWith(key, addConflict)
-	}
+	tx.writeConflictLocked(end[:len(key):len(key)], end, true)
 }
 
 func (tx *Transaction) stateClearRange(begin, end []byte) error {
 	if bytes.Compare(begin, end) > 0 {
-		return &wire.FDBError{Code: ErrInvertedRange}
+		// libfdb_c throws inverted_range inside the network-thread lambda, so it is
+		// also the deferred error (ThreadSafeTransaction.cpp:626-640).
+		err := &wire.FDBError{Code: ErrInvertedRange}
+		tx.recordDeferredError(err)
+		return err
+	}
+	// RYW clear(range) checks the legal range before its empty return (ReadYourWrites.actor.cpp:2358,
+	// 2370-2372, 2396): consume the flag, defer the error, buffer nothing.
+	if maxKey := tx.maxWriteKey(); bytes.Compare(begin, maxKey) > 0 || bytes.Compare(end, maxKey) > 0 {
+		tx.consumeNextWriteNoConflict()
+		tx.recordDeferredError(&wire.FDBError{Code: 2004}) // key_outside_legal_range
+		return nil
 	}
 	// C++ clear(KeyRangeRef) clamps oversized range keys to maxSize+1 bytes rather
 	// than rejecting (NativeAPI.actor.cpp:6019-6028) — there are no stored keys
@@ -1439,12 +1578,16 @@ func (tx *Transaction) stateClearRange(begin, end []byte) error {
 	}
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()
-	m := tx.ownMutationLocked(MutClearRange, begin, end)
-	tx.mutations = append(tx.mutations, m)
-	addConflict := tx.writeConflictLocked(m.Key, m.Value, true)
 	if !tx.rywDisabled {
-		tx.ryw.clearRangeWith(begin, end, addConflict)
+		// The op-log shares the bounds the write map keeps (RYW:2395-2402).
+		addConflict := tx.writeConflictLocked(begin, end, true) // charges only, with RYW
+		b, e := tx.ryw.clearRangeWith(begin, end, addConflict)
+		tx.appendMutationLocked(Mutation{Type: MutClearRange, Key: nilIfNil(begin, b), Value: nilIfNil(end, e)})
+		return nil
 	}
+	m := tx.ownMutationLocked(MutClearRange, begin, end)
+	tx.appendMutationLocked(m)
+	tx.writeConflictLocked(m.Key, m.Value, true)
 	return nil
 }
 
@@ -1486,11 +1629,8 @@ func (tx *Transaction) stateAtomic(op MutationType, key, operand []byte) {
 		default:
 			code = ErrInvalidMutationType // 2018
 		}
-		// C++ throws the FIRST illegal op EAGERLY (ReadYourWrites.actor.cpp:2226-2235). A mutation
-		// buffered BEFORE this bad Atomic that is itself illegal came first and out-ranks the bad-op
-		// code; only if every preceding mutation is legal is THIS bad op the first illegal
-		// one. Compute under conflictMu for a consistent preceding-mutation snapshot; store-if-unset
-		// keeps the first bad Atomic's verdict (race-free vs Commit's lock-free Load).
+		// C++ throws in the call (ReadYourWrites.actor.cpp:2226-2235); an earlier illegal write was
+		// deferred at its own call, and the first deferred error is kept.
 		tx.recordDeferredError(&wire.FDBError{Code: code})
 		return
 	}
@@ -1521,7 +1661,7 @@ func (tx *Transaction) stateAtomic(op MutationType, key, operand []byte) {
 	// byte-identical whether the placeholder held zeros or the min-bound stamp — but the commit-REQUEST
 	// wire bytes now match the reference clients (the same key also feeds the RYW read model below). A
 	// malformed key (no room for the offset/stamp) commits as-is; the commit-path validation reports
-	// client_invalid_operation — the same error C++ raises eagerly, deferred to Commit by Go's void Atomic().
+	// client_invalid_operation — C++ throws it in the call; Go defers it the same way (deferIllegalLocked).
 	mutKey := key
 	var svkUnreadBegin, svkUnreadEnd []byte
 	svkTransformed := false
@@ -1546,11 +1686,11 @@ func (tx *Transaction) stateAtomic(op MutationType, key, operand []byte) {
 	tx.conflictMu.Lock()
 	var after []byte // keyAfter(key), sharing the mutation's key bytes
 	if op == MutSetVersionstampedKey {
-		tx.mutations = append(tx.mutations, tx.ownMutationLocked(op, mutKey, operand))
+		tx.appendMutationLocked(tx.ownMutationLocked(op, mutKey, operand))
 	} else {
 		var m Mutation
 		m, after = tx.ownPointMutationLocked(op, key, operand)
-		tx.mutations = append(tx.mutations, m)
+		tx.appendMutationLocked(m)
 	}
 	// Atomic ops add a write conflict range but NOT a read conflict range —
 	// EXCEPT SetVersionstampedKey. Its key carries an incomplete versionstamp
@@ -1629,13 +1769,8 @@ func placeVersionstamp(dst []byte, version int64, txnNumber uint16) {
 	binary.BigEndian.PutUint16(dst[8:10], txnNumber)
 }
 
-// validateMutation returns the eager-validation error a buffered mutation would throw, or nil if it
-// is legal. C++ set()/atomicOp()/clear() throw these EAGERLY at the call (ReadYourWrites.actor.cpp);
-// our Set/Clear/Atomic are void, so we defer to commit — but the per-mutation checks and their order
-// match libfdb_c, and the commit loop walks mutations in call order so the FIRST illegal op wins.
-// Pure (no tx.state mutation): callers mark the txn errored. maxWrite is tx.maxWriteKey(), hoisted.
-// Shared by the commit-time loop AND Atomic()'s invalid-op poison (which must defer to an earlier
-// illegal buffered mutation).
+// validateMutation returns the error C++ set/atomicOp/clear throw for m in the call, checked in
+// libfdb_c's order, or nil. deferIllegalLocked records it at each write; Commit's loop is a backstop.
 func (tx *Transaction) validateMutation(m Mutation, maxWrite []byte) error {
 	if bytes.Equal(m.Key, metadataVersionKeyBytes) && m.Type != MutClearRange {
 		// C++ RYW::atomicOp (:2226-2229) and set() (:2300): the ONLY legal mutation to
@@ -1661,8 +1796,8 @@ func (tx *Transaction) validateMutation(m Mutation, maxWrite []byte) error {
 		}
 		return nil
 	}
-	// set()/atomicOp() reject oversized keys/values (the C binding aborts the process on the throw;
-	// we reject the commit so the oversized data never reaches the shared cluster — see sizelimits.go).
+	// set()/atomicOp() reject oversized keys/values (RYW:2238-2241, 2345-2348); the throw becomes the
+	// deferred error, in libfdb_c (ThreadSafeTransaction.cpp:611-617) and here.
 	// hasRawAccess: C++ sets options.rawAccess for RAW_ACCESS/ACCESS_SYSTEM_KEYS/READ_SYSTEM_KEYS
 	// (NativeAPI.actor.cpp:7159-7170); ACCESS==writeSystemKeys, READ==readSystemKeys, either raising
 	// the non-system key limit by the tenant-prefix slack (KEY_SIZE_LIMIT+8). But that +8 slack is the
@@ -1671,8 +1806,8 @@ func (tx *Transaction) validateMutation(m Mutation, maxWrite []byte) error {
 	// gated on the no-tenant case (C++ forbids raw-access options on tenant transactions for this).
 	rawAccess := (tx.writeSystemKeys || tx.readSystemKeys) && tx.tenantId < 0
 	// C++ checks key/operand size EAGERLY in atomicOp on the ORIGINAL user bytes (RYW:2237-2242), BEFORE
-	// appending the API<520 versionstamp offset suffix (:2250-2261). Go defers this to commit, where the
-	// buffered mutation already carries that client-added suffix (2B for SVK — the versionstampKeyRange
+	// appending the API<520 versionstamp offset suffix (:2250-2261). Go checks the buffered mutation,
+	// which already carries that client-added suffix (2B for SVK — the versionstampKeyRange
 	// transform preserves it, transaction.go:1516; 4B for SVV) — so it must be discounted here, else a
 	// boundary-sized legacy value is spuriously value_too_large. At apiVersion>=520 there is no
 	// client-added suffix (nothing to discount); the user-provided offset there IS counted by C++, which
@@ -1692,10 +1827,8 @@ func (tx *Transaction) validateMutation(m Mutation, maxWrite []byte) error {
 	if valLen > valueSizeLimit {
 		return &wire.FDBError{Code: 2103} // value_too_large
 	}
-	// Versionstamp offset validation → client_invalid_operation (2000). C++ atomicOp validates this
-	// EAGERLY; deferred here but kept AFTER the size checks (an oversized versionstamp key/value
-	// reports 2102/2103, not 2000) and walked in call order so the FIRST eagerly-invalid op wins
-	// (TestDifferential_VersionstampValidationOrder). Precedes the deferred transaction-size 2101.
+	// Versionstamp offset validation → client_invalid_operation (2000), after the size checks (an
+	// oversized versionstamp key/value reports 2102/2103), as atomicOp checks in the call.
 	switch m.Type {
 	case MutSetVersionstampedKey:
 		if err := validateVersionstampOffset(m.Key); err != nil {
@@ -1838,7 +1971,7 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 		return poison
 	}
 
-	// C++ RYW write checks (deferred to commit since our Set/Clear are void):
+	// A backstop for the RYW write checks deferIllegalLocked records at each call:
 	// - set(): if key == metadataVersionKey → client_invalid_operation
 	//          if key >= maxWriteKey → key_outside_legal_range
 	// - atomicOp(): if key == metadataVersionKey → ONLY SetVersionstampedValue with operand ==
@@ -2921,67 +3054,33 @@ func (tx *Transaction) conflictBufAlloc(n int) []byte {
 	return tx.conflictBuf[start : start+n : start+n]
 }
 
-// addWriteConflictForKey adds a write conflict range [key, key\x00). Takes
-// conflictMu itself — used by the public AddWriteConflictKey and the dummy-tx
-// builder. The Set/Clear/Atomic paths instead call addWriteConflictForKeyLocked
-// while already holding the lock, so the mutation and its conflict append
-// atomically (see Set).
+// addWriteConflictForKey and addWriteConflict add an explicit native-list write conflict for the dummy
+// transaction and tests, leaving NEXT_WRITE_NO_WRITE_CONFLICT_RANGE to the next write as RYW does.
 func (tx *Transaction) addWriteConflictForKey(key []byte) {
 	tx.conflictMu.Lock()
-	tx.addWriteConflictForKeyLocked(key)
-	tx.conflictMu.Unlock()
+	defer tx.conflictMu.Unlock()
+	if !tx.writeConflictsDisabled {
+		tx.appendWriteConflictPointListLocked(key)
+	}
 }
 
-// addWriteConflictForKeyLocked appends a write conflict range [key, key\x00)
-// using the shared conflictBuf. Caller MUST hold conflictMu.
-//
-// nextWriteNoConflict is read AND cleared here on the Set/Clear/Atomic path, so
-// two concurrent writes would race on it without the lock. writeConflictsDisabled
-// short-circuits WITHOUT touching nextWriteNoConflict — exact prior semantics.
-func (tx *Transaction) addWriteConflictForKeyLocked(key []byte) bool {
-	if tx.writeConflictsDisabled {
-		return false
+func (tx *Transaction) addWriteConflict(begin, end []byte) {
+	tx.conflictMu.Lock()
+	defer tx.conflictMu.Unlock()
+	if !tx.writeConflictsDisabled {
+		tx.appendWriteConflictListLocked(begin, end, false)
 	}
-	if tx.nextWriteNoConflict {
-		tx.nextWriteNoConflict = false
-		return false
-	}
+}
+
+// appendWriteConflictPointListLocked appends [key, key\x00) to the native list,
+// copied into the conflict arena. Caller holds conflictMu.
+func (tx *Transaction) appendWriteConflictPointListLocked(key []byte) {
 	n := len(key)
 	buf := tx.conflictBufAlloc(n + n + 1)
 	copy(buf, key)
 	copy(buf[n:], key)
 	buf[2*n] = 0 // explicit zero — pooled buffer may have stale data
 	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:n:n], End: buf[n : n+n+1]})
-	return true
-}
-
-// addWriteConflict adds a write conflict range [begin, end). Takes conflictMu
-// itself (public AddWriteConflictRange); the Clear/ClearRange paths call the
-// Locked variant under the already-held lock.
-func (tx *Transaction) addWriteConflict(begin, end []byte) {
-	tx.conflictMu.Lock()
-	tx.addWriteConflictLocked(begin, end)
-	tx.conflictMu.Unlock()
-}
-
-// addWriteConflictLocked appends a write conflict range [begin, end). Caller
-// MUST hold conflictMu.
-// It reports whether it recorded the range: C++'s addWriteConflict argument to
-// the write map (RFC-262 D1b).
-func (tx *Transaction) addWriteConflictLocked(begin, end []byte) bool {
-	if tx.writeConflictsDisabled {
-		return false
-	}
-	if tx.nextWriteNoConflict {
-		tx.nextWriteNoConflict = false
-		return false
-	}
-	buf := tx.conflictBufAlloc(len(begin) + len(end))
-	nb := len(begin)
-	copy(buf, begin)
-	copy(buf[nb:], end)
-	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: buf[:nb:nb], End: buf[nb:]})
-	return true
 }
 
 // selfConflictPrefix is C++ makeSelfConflicting's key prefix "\xFF/SC/" (NativeAPI.actor.cpp:5953).
@@ -3399,12 +3498,13 @@ func (tx *Transaction) stateAddWriteConflictKey(key []byte) {
 		tx.conflictMu.Lock()
 		end = tx.conflictBufAlloc(n + 1)
 		tx.conflictMu.Unlock()
+		copy(end, key)
+		end[n] = 0 // explicit zero — pooled buffer may have stale data
 	} else {
-		// The write map's nodes keep the bounds, past any reset of the arena.
-		end = make([]byte, n+1)
+		// The write map's nodes keep the bounds: copied into its arena, as C++
+		// copies the range into the RYW arena (ReadYourWrites.actor.cpp:2496).
+		end = tx.ryw.keepKeyAfter(key)
 	}
-	copy(end, key)
-	end[n] = 0 // explicit zero — pooled buffer may have stale data
 	tx.deferWriteConflictRange(end[:n:n], end, true)
 }
 
@@ -3412,7 +3512,7 @@ func (tx *Transaction) stateAddWriteConflictKey(key []byte) {
 // (ThreadSafeTransaction.cpp:659-663): onMainThreadVoid records a throw as the deferred error
 // and skips the work once one is set (ThreadHelper.actor.h:50-61).
 // owned marks begin and end as bytes the transaction keeps and nobody writes: the conflict
-// arena's without RYW, a heap copy for the write map's nodes with it.
+// arena's without RYW, the write map's arena (keepLocked) with it.
 func (tx *Transaction) deferWriteConflictRange(begin, end []byte, owned bool) {
 	if tx.deferredErr.Load() != nil {
 		return
@@ -3422,24 +3522,49 @@ func (tx *Transaction) deferWriteConflictRange(begin, end []byte, owned bool) {
 	}
 }
 
-// recordDeferredError stores poison unless an error is deferred. Go buffers illegal mutations that
-// C++ throws eagerly (RYW:2226-2235, :2344-2348), so the earliest one out-ranks poison.
-func (tx *Transaction) recordDeferredError(poison *wire.FDBError) {
-	tx.conflictMu.Lock()
-	defer tx.conflictMu.Unlock()
+// appendMutationLocked appends m to the op-log; an illegal m becomes the deferred
+// error, as C++ throws it in the call. Caller holds conflictMu.
+func (tx *Transaction) appendMutationLocked(m Mutation) {
+	tx.growMutationsLocked()
+	tx.mutations = append(tx.mutations, m)
+	tx.deferIllegalLocked(m)
+}
+
+// growMutationsLocked doubles a full op-log: append's 1.25x growth would copy a
+// large one several times over. Caller holds conflictMu.
+func (tx *Transaction) growMutationsLocked() {
+	if len(tx.mutations) == cap(tx.mutations) {
+		grown := make([]Mutation, len(tx.mutations), max(2*cap(tx.mutations), 64))
+		copy(grown, tx.mutations)
+		tx.mutations = grown
+	}
+}
+
+// deferIllegalLocked defers an illegal write's error: RYW throws it in the call (RYW:2301-2348, 2420, 2228-2241)
+// and libfdb_c keeps the first throw (ThreadSafeTransaction.cpp:589-617). Caller holds conflictMu.
+func (tx *Transaction) deferIllegalLocked(m Mutation) {
 	if tx.deferredErr.Load() != nil {
 		return
 	}
-	maxWrite := tx.maxWriteKey()
-	for _, m := range tx.mutations {
-		if earlier := tx.validateMutation(m, maxWrite); earlier != nil {
-			var fe *wire.FDBError
-			if errors.As(earlier, &fe) {
-				poison = fe
-			}
-			break
-		}
+	if err := tx.validateMutation(m, tx.maxWriteKey()); err != nil {
+		tx.deferErrorLocked(err)
 	}
+}
+
+// deferErrorLocked stores err as the deferred error unless one is set; kept
+// apart so that a legal write takes no address for errors.As.
+func (tx *Transaction) deferErrorLocked(err error) {
+	var fe *wire.FDBError
+	if errors.As(err, &fe) {
+		tx.deferredErr.CompareAndSwap(nil, fe)
+	}
+}
+
+// recordDeferredError stores poison unless an error is deferred, as libfdb_c keeps the first throw
+// (ThreadHelper.actor.h:44-61); under conflictMu so Commit's snapshot orders it against the op-log.
+func (tx *Transaction) recordDeferredError(poison *wire.FDBError) {
+	tx.conflictMu.Lock()
+	defer tx.conflictMu.Unlock()
 	tx.deferredErr.CompareAndSwap(nil, poison)
 }
 
@@ -3469,7 +3594,7 @@ func (tx *Transaction) addWriteConflictRangeRYW(begin, end []byte, owned bool) *
 	// conflictMu with the decision; without it, in the native list (:2488-2491).
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()
-	if tx.writeConflictLocked(begin, end, owned) && !tx.rywDisabled {
+	if tx.explicitWriteConflictLocked(begin, end, owned) && !tx.rywDisabled {
 		tx.ryw.addConflictRangeOwned(begin, end, owned)
 	}
 	return nil

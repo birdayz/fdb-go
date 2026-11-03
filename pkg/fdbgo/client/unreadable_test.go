@@ -460,13 +460,9 @@ func TestFDB_Unreadable_Matrix(t *testing.T) {
 		}
 	})
 
-	t.Run("commit_poison_precedes_validation", func(t *testing.T) {
-		// C++ commit() waits on ryw->reading before ANY commit work (:1358 —
-		// before writeRangeToNativeTransaction and tr.commit's checks). Go
-		// defers the oversized-key rejection to commit (set() is void; C++
-		// throws 2102 eagerly at set() — documented divergence), so the poison
-		// check must precede that validation: a poisoned commit carrying an
-		// oversized key reports the read's 1036, not key_too_large (2102).
+	t.Run("deferred_write_error_precedes_read_poison", func(t *testing.T) {
+		// set() throws key_too_large in the call (RYW:2345), deferred by libfdb_c; commit checks the
+		// deferred error before waiting on the failed read (ThreadSafeTransaction.cpp:666-671).
 		t.Parallel()
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
@@ -477,7 +473,7 @@ func TestFDB_Unreadable_Matrix(t *testing.T) {
 			t.Fatal("Get of pending SVV did not fail")
 		}
 		tx.Set(make([]byte, 10001), []byte("v"))
-		assertFDBErrorCode(t, tx.Commit(ctx), ErrAccessedUnreadable)
+		assertFDBErrorCode(t, tx.Commit(ctx), 2102) // key_too_large
 	})
 
 	t.Run("commit_drains_inflight_pipelined_read", func(t *testing.T) {

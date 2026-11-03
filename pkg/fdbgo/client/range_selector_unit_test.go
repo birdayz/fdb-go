@@ -385,10 +385,8 @@ func TestSelectorRangeChecks(t *testing.T) {
 	}
 }
 
-// A selector read's rows are the caller's: writing their bytes or the slice
-// changes neither the snapshot cache, the write map, the storage reply nor
-// another read's rows, whether the read waited in the call, answered from the
-// cache at issue, or was started and got twice.
+// A selector read's rows are the caller's: writing them changes no cache, write
+// map, reply or other read's rows, on every read route and for a second Get.
 func TestSelectorRangeRowsAreTheCallers(t *testing.T) {
 	t.Parallel()
 	m := newMemStorage(selectorStorageKeys...)
@@ -454,6 +452,57 @@ func TestSelectorRangeRowsAreTheCallers(t *testing.T) {
 	}
 	if len(m.requests) != 1 {
 		t.Fatalf("%d storage requests, want 1 (the rest from the cache)", len(m.requests))
+	}
+}
+
+// A started getKey's key is the caller's, each Get its own copy, whether it
+// resolved to a stored key, a written key or one storage returned.
+func TestStartedGetKeyIsTheCallers(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, snapshot := range []bool{false, true} {
+		m := newMemStorage(selectorStorageKeys...)
+		tx := &Transaction{}
+		tx.nativeRange = m.native
+		tx.Set([]byte("e"), []byte("ve"))
+		for _, tc := range []struct {
+			sel  KeySelector
+			want string
+		}{
+			{KeySelector{Key: []byte("e"), OrEqual: true, Offset: 0}, "e"}, // the written key
+			{KeySelector{Key: []byte("e"), OrEqual: true, Offset: 1}, "f"}, // from storage
+			{KeySelector{Key: []byte("e"), OrEqual: true, Offset: 1}, "f"}, // from the cache
+			{KeySelector{Key: []byte("e"), Offset: 0}, "d"},
+		} {
+			var p *PendingKey
+			if snapshot {
+				p = tx.Snapshot().StartGetKey(ctx, tc.sel)
+			} else {
+				p = tx.StartGetKey(ctx, tc.sel)
+			}
+			first, err1 := p.Get()
+			second, err2 := p.Get()
+			if err1 != nil || err2 != nil || string(first) != tc.want || string(second) != tc.want {
+				t.Fatalf("snapshot=%t %v: Get %q (%v), %q (%v); want %q", snapshot, tc.sel, first, err1, second, err2, tc.want)
+			}
+			for i := range first {
+				first[i] = '#'
+			}
+			if string(second) != tc.want {
+				t.Fatalf("snapshot=%t %v: two Gets share a key", snapshot, tc.sel)
+			}
+		}
+		if len(m.requests) == 0 {
+			t.Fatalf("snapshot=%t: no getKey reached storage", snapshot)
+		}
+		for _, tc := range []struct{ sel, want string }{{"e", "e"}, {"f", "f"}, {"d", "d"}} {
+			if k, err := tx.GetKey(ctx, []byte(tc.sel), true, 0); err != nil || string(k) != tc.want {
+				t.Fatalf("snapshot=%t: after writing returned keys: GetKey(%q) = %q, %v", snapshot, tc.sel, k, err)
+			}
+		}
+		if got := keysOf(m.kvs); !strings.Contains(got, "d,f") {
+			t.Fatalf("snapshot=%t: storage keys written through a result: %s", snapshot, got)
+		}
 	}
 }
 

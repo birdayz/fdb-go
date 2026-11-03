@@ -358,6 +358,45 @@ go_test(
     ],
 )
 
+# RYW and conflict-range conformance of the Go client against libfdb_c: one
+# transaction script per scenario, run by both, transcripts compared. Like the
+# GuardiANN Java probes it compiles only the engine-free suite files, so Bazel
+# reruns it when the FDB client, the Java server or the spec changes, not on
+# every engine change. Hand-maintained (# keep).
+# gazelle:exclude ryw_script_conformance_test.go
+
+# keep
+go_test(
+    name = "ryw_script_conformance_test",
+    size = "large",
+    srcs = [
+        "conformance_suite_test.go",
+        "fdb_env_test.go",
+        "java_invoker_test.go",
+        "ryw_script_conformance_test.go",
+    ],
+    data = [
+        ":conformance_server",
+    ],
+    tags = [
+        "conformance_java",
+        "resources:memory:500",
+    ],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_google_uuid//:uuid",
+        "@com_github_onsi_ginkgo_v2//:ginkgo",
+        "@com_github_onsi_ginkgo_v2//types",
+        "@com_github_onsi_gomega//:gomega",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+        "@rules_go//go/runfiles",
+    ],
+)
+
 # The RFC-257 parity specs (the upgrade's JVM comparisons of what each engine
 # accepts, writes and reads) run in their own target for the reason
 # rfc257_oracle_test does: conformance_test measured 14m14s of its 900s on CI

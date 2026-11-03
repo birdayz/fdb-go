@@ -377,16 +377,13 @@ func TestCoalesceOverAtomics_EmptyOperandStaysPresent(t *testing.T) {
 	}
 }
 
-// TestRywAtomic_EmptyOperandFirstInTxn drives the same defect through the PRODUCTION path
-// rather than the fold helper directly: rywCache.atomic copies the operand out of the shared
-// byteBuf via allocBytes, and allocBytes(0) on a still-unallocated buffer returns a NIL slice.
-// So the divergence is armed exactly when a zero-length atomic operand is the first one in the
-// transaction — the shape FuzzDifferential minimised to.
+// TestRywAtomic_EmptyOperandFirstInTxn drives the same defect through the PRODUCTION path:
+// a zero-length operand that is the transaction's first, the shape FuzzDifferential minimised to.
 func TestRywAtomic_EmptyOperandFirstInTxn(t *testing.T) {
 	t.Parallel()
 	c := &rywCache{}
 	key := []byte("c")
-	c.atomic(MutAndV2, key, []byte{})     // empty operand, first in the txn -> allocBytes(0)
+	c.atomic(MutAndV2, key, []byte{})     // empty operand, first in the txn
 	c.atomic(MutAndV2, key, []byte{0x30}) // folds onto it
 	c.mu.Lock()
 	entry, _ := c.liveLocked().entry(string(key))

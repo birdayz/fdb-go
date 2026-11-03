@@ -20,9 +20,7 @@ import (
 // immutable, so it needs no lock. Like C++, which walks RYWIterator by value,
 // a walk keeps its iterators and reuses their storage; the segment keys stay
 // boundaries (C++ ExtStringRef) until a caller needs their bytes. A skip
-// searches from the cursors' current positions while they are on the same
-// versions (seekFirstFrom), so re-resolving a selector near the last one costs
-// O(log distance) compares rather than a descent from the root.
+// searches from the cursors' positions (seekFirstFrom) while on the same versions.
 type rywIter struct {
 	c      *rywCache
 	w      *rywWrites
@@ -32,15 +30,17 @@ type rywIter struct {
 	// ents is the last written entry looked up (entryOf): the walk meets written
 	// keys in key order, so the next lookup is a short finger search from it.
 	ents pcursor[rywWrite]
-	// opValue is the value of an operation segment classified KV: the entry's,
-	// or its atomics resolved over the cached base, so kv does not resolve
-	// them again. opFound reports that the segment's key has an entry.
+	// opValue is a written KV's value, resolved once for kv; opFound reports
+	// that the segment's key has an entry.
 	opValue []byte
 	opFound bool
 	// opBase and opAtomics are a KV segment's pending atomics over the cached
 	// base, until kv resolves them into opValue.
 	opBase    []byte
 	opAtomics []rywMutation
+	// opPending marks a write classified KV without its entry (typeMap over a
+	// known cache segment); segType looks the entry up.
+	opPending bool
 	// beginCmp and endCmp are begin_key_cmp and end_key_cmp: the cache
 	// iterator's begin (end) key compared with the write iterator's.
 	beginCmp, endCmp int
@@ -104,9 +104,8 @@ func (it *rywIter) scrub() {
 	it.writes.cur.path, it.cache.ent.path, it.ents.path = wp, cp, ep
 }
 
-// scrubPath clears the nodes a cursor path held and returns it empty. A path
-// only grows by appending, so the slots ever written are a prefix of its
-// capacity, ending at the first nil.
+// scrubPath clears the nodes a cursor path held and returns it empty: written
+// slots, filled by append only, end at the first nil.
 func scrubPath[T any](p []*pnode[T]) []*pnode[T] {
 	p = p[:cap(p)]
 	n := 0
@@ -117,14 +116,15 @@ func scrubPath[T any](p []*pnode[T]) []*pnode[T] {
 	return p[:0]
 }
 
-// copyFrom makes it a copy of o, keeping its cursors' storage. The entry
-// cursor is a lookup hint and is not copied.
+// copyFrom makes it a copy of o, keeping its cursors' storage; the entry
+// cursor too, as a copy's lookups are near o's.
 func (it *rywIter) copyFrom(o *rywIter) {
 	writes, cache, ents := it.writes, it.cache, it.ents
 	*it = *o
 	it.writes, it.cache, it.ents = writes, cache, ents
 	it.writes.copyFrom(&o.writes)
 	it.cache.copyFrom(&o.cache)
+	it.ents.copyFrom(&o.ents)
 }
 
 func (it *rywIter) clone() *rywIter {
@@ -203,7 +203,7 @@ var (
 func (it *rywIter) settle() {
 	it.sentinel = it.writes.offset && bytes.Equal(it.writes.entry().key, allKeysEnd)
 	if it.sentinel {
-		it.b, it.e, it.typ = sentinelBegin, sentinelBoundEnd, segEmpty
+		it.b, it.e, it.typ, it.opPending = sentinelBegin, sentinelBoundEnd, segEmpty, false
 		return
 	}
 	it.b = it.writes.beginKey()
@@ -217,44 +217,21 @@ func (it *rywIter) settle() {
 	it.typ = it.classify()
 }
 
-// classify is RYWIterator::type (RYWIterator.cpp:44-49) in segTypeAtLocked's
-// terms: the write map decides an unreadable, cleared or written segment, and
-// the cache an unmodified one. A written key's type comes from its entry,
-// resolved against the cached base. The node flags agree with the stores
-// segTypeAtLocked reads (TestRYWNodesAgreeWithStores). A written segment is
-// the single key [k, keyAfter(k)), so its begin is k itself.
+// classify is RYWIterator::type (RYWIterator.cpp:44-49). A write over a known
+// cache segment is KV pending its entry (typeMap, :25-42); segType resolves it.
 func (it *rywIter) classify() rywSegType {
 	wr := &it.writes
+	it.opPending = false
 	if wr.isUnreadable() {
 		return segUnreadable
 	}
 	if wr.isOperation() {
-		entry, ok := it.entryOf(it.b.key)
-		it.opValue, it.opFound, it.opBase, it.opAtomics = nil, ok, nil, nil
-		if !ok {
-			return segTypeAt(it.cached, it.w, it.b.key)
-		}
-		if !entry.hasAtomics {
-			if entry.absent {
-				return segPhantom
-			}
-			it.opValue = entry.value
+		it.opValue, it.opFound, it.opBase, it.opAtomics = nil, false, nil, nil
+		if it.cache.typ() != segUnknown {
+			it.opPending = true
 			return segKV
 		}
-		base, known := it.cache.value()
-		if !known {
-			return segUnknown // DEPENDENT_WRITE over unknown base — must read server.
-		}
-		// The type needs no value (RYWIterator.cpp:44-49); kv resolves it once.
-		cleared, unresolved := atomicsOutcome(base, entry.atomics)
-		switch {
-		case unresolved:
-			return segUnreadable
-		case cleared:
-			return segPhantom
-		}
-		it.opBase, it.opAtomics = base, entry.atomics
-		return segKV
+		return it.classifyOp()
 	}
 	if wr.isClearedRange() {
 		return segEmpty
@@ -262,9 +239,49 @@ func (it *rywIter) classify() rywSegType {
 	return it.cache.typ()
 }
 
-// entryOf is it.w.entryOf(key), as a finger search from the entry looked up
-// last. A pinned version is sorted and immutable; the hint is used only while
-// it is on the version's current root.
+// segType is the segment's type with a pending write classified: KV, or
+// segPhantom for a matched CompareAndClear.
+func (it *rywIter) segType() rywSegType {
+	if it.opPending {
+		it.opPending = false
+		it.typ = it.classifyOp()
+	}
+	return it.typ
+}
+
+// classifyOp classifies a readable write from its entry, which every operation
+// node has (TestRYWNodesAgreeWithStores); a written segment begins at its key.
+func (it *rywIter) classifyOp() rywSegType {
+	entry, ok := it.entryOf(it.b.key)
+	it.opValue, it.opFound, it.opBase, it.opAtomics = nil, ok, nil, nil
+	if !ok {
+		return segTypeAt(it.cached, it.w, it.b.key)
+	}
+	if !entry.hasAtomics {
+		if entry.absent {
+			return segPhantom
+		}
+		it.opValue = entry.value
+		return segKV
+	}
+	base, known := it.cache.value()
+	if !known {
+		return segUnknown // DEPENDENT_WRITE over unknown base — must read server.
+	}
+	// The type needs no value (RYWIterator.cpp:44-49); kv resolves it once.
+	cleared, unresolved := atomicsOutcome(base, entry.atomics)
+	switch {
+	case unresolved:
+		return segUnreadable
+	case cleared:
+		return segPhantom
+	}
+	it.opBase, it.opAtomics = base, entry.atomics
+	return segKV
+}
+
+// entryOf is it.w.entryOf(key), searched from the entry looked up last while
+// that is on the same (pinned, immutable) version.
 func (it *rywIter) entryOf(key []byte) (rywEntry, bool) {
 	w := it.w
 	if !w.isSorted {
@@ -279,12 +296,8 @@ func (it *rywIter) entryOf(key []byte) (rywEntry, bool) {
 	return rywEntry{}, false
 }
 
-// same is it == itEnd (RYWIterator.cpp:114-116): both component iterators at
-// the same position, compared as C++ compares them (the cache entry and offset,
-// SnapshotCache.h:255; the write-map node and offset, WriteMap.h:186-188),
-// without comparing keys. Both iterators read the same versions, whose
-// positions and segments correspond one to one: a step or skip never rests on
-// a degenerate (empty) segment.
+// same is it == itEnd (RYWIterator.cpp:114-116, SnapshotCache.h:255, WriteMap.h:186-188):
+// positions, not keys; on one version no step or skip rests on an empty segment.
 func (it *rywIter) same(o *rywIter) bool {
 	return it.cache.offset == o.cache.offset && it.cache.ent.idx == o.cache.ent.idx &&
 		it.writes.offset == o.writes.offset && it.writes.cur.idx == o.writes.cur.idx
@@ -299,7 +312,7 @@ func (it *rywIter) isKV() bool       { return it.typ == segKV || it.typ == segPh
 // CompareAndClear (RYWIterator.cpp:82-87). Only on a KV segment: the cache's
 // key, or the written key (a write segment begins at its key, not a successor).
 func (it *rywIter) kv() (KeyValue, bool) {
-	if it.typ != segKV {
+	if it.segType() != segKV {
 		return KeyValue{}, false
 	}
 	if !it.writes.isOperation() {
@@ -313,7 +326,7 @@ func (it *rywIter) kv() (KeyValue, bool) {
 		it.opValue, _, _ = resolveAtomics(it.opBase, it.opAtomics) // once, as RYWIterator::kv (RYWIterator.cpp:73-87)
 		it.opBase, it.opAtomics = nil, nil
 	}
-	return KeyValue{Key: key, Value: it.opValue}, true // classify's value
+	return KeyValue{Key: key, Value: it.opValue}, true // classifyOp's value
 }
 
 // skipContiguous is RYWIterator::skipContiguous (RYWIterator.cpp:128-133) over
@@ -333,8 +346,9 @@ func (it *rywIter) skipContiguous(bound []byte) []KeyValue {
 		b = we
 	}
 	kvs, i := it.cache.kvs(), it.cache.kvIndex()
-	// offset = 2 * lower_bound(values[i+1:], bound): the KV just below it.
-	j := i + 1 + sort.Search(len(kvs)-i-1, func(n int) bool { return (rywBoundary{key: kvs[i+1+n].Key}).compare(b) >= 0 })
+	// offset = 2 * lower_bound(values[i+1:], bound): the KV just below it. The
+	// search gallops from i+1, so a short run costs O(log run) compares.
+	j := gallopSearch(i+1, len(kvs), i+1, func(n int) bool { return (rywBoundary{key: kvs[n].Key}).compare(b) >= 0 })
 	if j-1 > i {
 		it.cache.offset = 2*(j-1) + 2
 		it.updateCmp()
@@ -359,8 +373,8 @@ func (it *rywIter) skipContiguousBack(bound []byte) []KeyValue {
 		}
 	}
 	kvs, i := it.cache.kvs(), it.cache.kvIndex()
-	// offset = 2 * lower_bound(values[:i], bound) + 2.
-	j := sort.Search(i, func(n int) bool { return (rywBoundary{key: kvs[n].Key}).compare(b) >= 0 })
+	// offset = 2 * lower_bound(values[:i], bound) + 2, galloping down from i.
+	j := gallopSearch(0, i, i, func(n int) bool { return (rywBoundary{key: kvs[n].Key}).compare(b) >= 0 })
 	if j < i {
 		it.cache.offset = 2*j + 2
 		it.updateCmp()
@@ -371,7 +385,7 @@ func (it *rywIter) skipContiguousBack(bound []byte) []KeyValue {
 
 // rywNodeCursor is WriteMap::iterator (WriteMap.h:152-205, WriteMap.cpp:312-347)
 // for the walk: a cursor at entry() and the node after it, so a step is O(1)
-// amortized. The mutators use rywNodeIter, which addresses nodes by index.
+// amortized. The mutators use rywNodeIter, with an inline finger.
 type rywNodeCursor struct {
 	seq    *pseq[rywNode]
 	cur    pcursor[rywNode]
@@ -448,9 +462,9 @@ func (it *rywNodeCursor) dec() {
 	}
 }
 
-// rywCacheCursor is SnapshotCache::iterator (SnapshotCache.h:146-297) over the
+// rywCacheCursor is SnapshotCache::iterator (SnapshotCache.h:175-306) over the
 // cache entries, with C++'s degenerate first entry ["", "") and last entry
-// [\xff\xff, \xff\xff\0) (:310-313) implied: index Len is the last one. offset 0
+// [\xff\xff, \xff\xff\0) (:309-312) implied: index Len is the last one. offset 0
 // is the unknown range before entry i; offset 1 the empty range from its begin
 // to its first value; 2k+2 the KV of value k; 2k+3 the empty range after it.
 type rywCacheCursor struct {
@@ -485,9 +499,9 @@ func (c *rywCacheCursor) kvs() []KeyValue { _, _, kvs := c.entry(); return kvs }
 // kvIndex is the index of the current KV's value; only on a KV segment.
 func (c *rywCacheCursor) kvIndex() int { return (c.offset - 2) >> 1 }
 
-func (c *rywCacheCursor) segments() int { return 2 * (len(c.kvs()) + 1) } // :152
+func (c *rywCacheCursor) segments() int { return 2 * (len(c.kvs()) + 1) } // :167
 
-// typ is SnapshotCache::iterator::type (:169-175) in segment types.
+// typ is SnapshotCache::iterator::type (:193-199) in segment types.
 func (c *rywCacheCursor) typ() rywSegType {
 	switch {
 	case c.offset == 0:
@@ -520,7 +534,7 @@ func (c *rywCacheCursor) prevEndKey() []byte {
 	return c.prevEnd
 }
 
-// beginKey is SnapshotCache.h:184-194.
+// beginKey is SnapshotCache.h:208-217.
 func (c *rywCacheCursor) beginKey() rywBoundary {
 	switch c.offset {
 	case 0:
@@ -532,7 +546,7 @@ func (c *rywCacheCursor) beginKey() rywBoundary {
 	return rywBoundary{key: c.kvs()[(c.offset-2)>>1].Key, after: c.offset&1 == 1}
 }
 
-// endKey is SnapshotCache.h:195-202.
+// endKey is SnapshotCache.h:218-225.
 func (c *rywCacheCursor) endKey() rywBoundary {
 	begin, end, kvs := c.entry()
 	switch {
@@ -544,7 +558,7 @@ func (c *rywCacheCursor) endKey() rywBoundary {
 	return rywBoundary{key: kvs[(c.offset-1)>>1].Key, after: c.offset&1 == 0}
 }
 
-// inc is operator++ (:208-219): degenerate segments are skipped.
+// inc is operator++ (:231-242): degenerate segments are skipped.
 func (c *rywCacheCursor) inc() {
 	orig := c.endKey()
 	for {
@@ -555,13 +569,13 @@ func (c *rywCacheCursor) inc() {
 			c.ent.next()
 			c.prevEnd, c.known = end, true
 		}
-		if c.endKey().compare(orig) != 0 {
+		if !c.endKey().equal(orig) { // ExtStringRef ==, sizes first
 			return
 		}
 	}
 }
 
-// dec is operator-- (:220-231).
+// dec is operator-- (:243-254).
 func (c *rywCacheCursor) dec() {
 	orig := c.beginKey()
 	for {
@@ -571,29 +585,39 @@ func (c *rywCacheCursor) dec() {
 			c.known = false
 			c.offset = c.segments() - 1
 		}
-		if c.beginKey().compare(orig) != 0 {
+		if !c.beginKey().equal(orig) {
 			return
 		}
 	}
 }
 
-// skip is SnapshotCache::iterator::skip (:236-254): the segment containing key.
+// skip is SnapshotCache::iterator::skip (:258-275): the segment containing key.
 func (c *rywCacheCursor) skip(key []byte) {
-	if bytes.Equal(key, allKeysEnd) { // :238-242
+	if bytes.Equal(key, allKeysEnd) { // :260-264
 		c.ent.reset(c.es, c.es.Len())
 		c.offset, c.known = 1, false
 		return
 	}
-	// lastLessOrEqual(key) among the entries: the one before the first entry
-	// beginning after key; none is the degenerate first entry. The search starts
-	// from the cursor's entry while the snapshot is the same.
+	// lastLessOrEqual(key) (:266), then lower_bound in its values (:271-272), each
+	// from the cursor's position while it is on the same snapshot and entry.
+	var was *cacheEntry
+	hint := (c.offset - 1) >> 1 // the first value at or after the old position
+	if c.ent.valid() && c.ent.root == c.es.root {
+		was = c.ent.item()
+	}
 	c.ent.seekFirstFrom(c.es, func(e *cacheEntry) bool { return bytes.Compare(e.begin, key) > 0 })
 	c.ent.prev()
 	prevEnd := allKeysBegin
 	if c.ent.valid() {
 		e := c.ent.item()
 		if bytes.Compare(key, e.end) < 0 {
-			idx := sort.Search(len(e.kvs), func(n int) bool { return bytes.Compare(e.kvs[n].Key, key) >= 0 })
+			ge := func(n int) bool { return bytes.Compare(e.kvs[n].Key, key) >= 0 }
+			var idx int
+			if e == was {
+				idx = gallopSearch(0, len(e.kvs), hint, ge)
+			} else {
+				idx = sort.Search(len(e.kvs), ge)
+			}
 			c.offset, c.known = idx*2+1, false
 			if idx < len(e.kvs) && bytes.Equal(e.kvs[idx].Key, key) {
 				c.offset++
@@ -604,4 +628,39 @@ func (c *rywCacheCursor) skip(key []byte) {
 	}
 	c.ent.next() // key >= it->endKey: the unknown range before the next entry
 	c.offset, c.prevEnd, c.known = 0, prevEnd, true
+}
+
+// gallopSearch is lo + sort.Search(hi-lo, ...), searched outward from hint by
+// doubling steps: an answer d away costs O(log d) calls of pred.
+func gallopSearch(lo, hi, hint int, pred func(int) bool) int {
+	hint = max(lo, min(hint, hi))
+	// The answer is in (f, t]: pred(f) is false or f == lo-1, pred(t) is true or t == hi.
+	f, t := lo-1, hi
+	if hint < hi && !pred(hint) {
+		f = hint
+		for step := 1; f+step < t; step <<= 1 {
+			if pred(f + step) {
+				t = f + step
+				break
+			}
+			f += step
+		}
+	} else {
+		t = hint
+		for step := 1; t-step > f; step <<= 1 {
+			if !pred(t - step) {
+				f = t - step
+				break
+			}
+			t -= step
+		}
+	}
+	for f+1 < t { // binary search of (f, t)
+		if m := int(uint(f+t) >> 1); pred(m) {
+			t = m
+		} else {
+			f = m
+		}
+	}
+	return t
 }

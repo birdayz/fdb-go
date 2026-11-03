@@ -361,11 +361,8 @@ func TestDifferential_VersionstampTuplePack(t *testing.T) {
 // mutation with a bad offset (negative, offset+10 > body, operand too small to hold the 4-byte
 // suffix, empty body) must be REJECTED with the same error code (2000, client_invalid_operation)
 // by both clients, surfaced at Commit (the client-side guard, before the server's commit-time
-// silent skip). The tight-valid boundary (offset+10 == body) must COMMIT cleanly (code 0). Go
-// defers the check to commit (the per-mutation validation loop in Transaction.Commit, "Atomic()
-// is void"; ordering vs the size/key/value checks is pinned by
-// TestDifferential_VersionstampValidationOrder); libfdb_c rejects at
-// the atomicOp call — both surface at commit. go==cgo asserted.
+// silent skip). The tight-valid boundary (offset+10 == body) must COMMIT cleanly (code 0). Both
+// clients throw at the atomicOp call and defer the error to commit. go==cgo asserted.
 func TestDifferential_VersionstampErrors(t *testing.T) {
 	t.Parallel()
 	ns := strings.ReplaceAll(t.Name(), "/", "_")

@@ -384,12 +384,25 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   RFC-262 sender with follow-ups under concurrent same-peer and independent-peer
   traffic, reporting throughput, client CPU, allocations and mutex/block profiles.
   Single-thread loopback RPC measurements do not establish contention cost.
-- [ ] **Reads after an illegal Set precede its deferred verdict.** `stateSet`
-  (`transaction.go:1268-1284`) buffers illegal keys/values until commit validation;
-  C++ RYW set throws before modifying WriteMap (`ReadYourWrites.actor.cpp:2344-2353`)
-  and the thread-safe wrapper defers that error. A later GetKey/conflict filter can
-  therefore observe a Go write that C++ never installed. Align mutation admission
-  and first-error ordering, with an illegal-Set-then-read/conflict regression.
+- [x] **Reads after an illegal Set precede its deferred verdict.** `stateSet`
+  buffered illegal keys/values until commit validation; C++ RYW set throws before
+  modifying WriteMap (`ReadYourWrites.actor.cpp:2344-2353`) and the thread-safe
+  wrapper defers that error. A later GetKey/conflict filter could therefore observe
+  a Go write that C++ never installed.
+  Fixed: Set/Clear/ClearRange/Atomic make an illegal write's error the deferred
+  error in the call (`deferIllegalLocked`), so every later read, GetKey and Commit
+  fails with it; an illegal ClearRange endpoint buffers nothing. An illegal
+  Set/Clear/Atomic still enters the write map, which no operation can then
+  observe. Pinned by `TestIllegalWriteIsDeferred` (Get, GetRange, Commit; RYW on
+  and off) and `//conformance:ryw_script_conformance_test` against libfdb_c.
+- [ ] **Option errors are deferred in libfdb_c.** libfdb_c runs `setOption` on the
+  network thread and records its throw as the deferred error
+  (`ThreadSafeTransaction.cpp:730-743`), so `SetAccessSystemKeys`/`SetReadSystemKeys`
+  on a tenant transaction return success and the next Get/Commit fails with 2007
+  (`NativeAPI.actor.cpp:7159-7171`). The Go facade returns `TenantOptionError` (2007)
+  from the option call (`pkg/fdbgo/fdb/options.go`), and later operations succeed.
+  Found by `//conformance:ryw_script_conformance_test`, which leaves the scenario out
+  until this is aligned; audit the other option errors the same way.
 - [ ] **Transaction options during in-flight operations.** Option setters (`SetLockAware`,
   `SetReadLockAware`, GRV cache, tags, priority, `SetAutoThrottleTag`) write plain
   `Transaction` fields under a shared state lease, while in-flight operations read them:
@@ -530,6 +543,34 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   `primaryReplied` because decoding happens after the hedge helper returns; the
   transport-error unit cases do not cover server error bodies. Port both reply
   paths with encoded-response integration regressions and a synctest per arm.
+- [ ] **RYW CPU in TEXT-maintenance-shaped transactions** (GenAI exporter
+  profile, 128 messages per transaction, about 7000 BunchedMap postings).
+  `BenchmarkRYWTextMaintenance` 103 -> 77 ms, 27.6 -> 21.7 MB, 180k -> 117k
+  allocs per transaction. Baseline ff5040d25 (no `pkg/fdbgo` change up to
+  0776ed68e) with the benchmark file back-ported; candidate the pre-review
+  daa69f001 tree. Go 1.27.3, `//pkg/fdbgo/client:range_selector_unit_test`
+  fastbuild binaries, `-test.benchtime 10x`, three interleaved runs per binary,
+  medians shown; 24 threads, host load about 18, so wall times are noisy.
+  The write map keeps its bytes in a never-reused arena shared by the op-log
+  for Set/Clear/ClearRange (the op-log no longer copies each Set beside the
+  write map); WriteMap::addConflictRange inserts by iterator position; the
+  read-conflict map merges with one search; the mutators and short scans
+  iterate with PTreeFinger-style fingers; walks classify written segments
+  without their entry, skip from the current position and insert replies with
+  C++'s two searches; atomics skip no-op node mutates; QueueModel keeps
+  per-server locks. Conformance against libfdb_c
+  (`//conformance:ryw_script_conformance_test`) found and pinned three fixes:
+  a snapshot Get, and a Get that falls back from the pipelined path (a key
+  with pending atomics), issued before a later write no longer sees it
+  (StartGet, issued in the call; Commit waits for it), an explicit write
+  conflict no longer consumes NEXT_WRITE_NO_WRITE_CONFLICT_RANGE, and an
+  illegal write is the deferred error for later operations, as libfdb_c's
+  eager throw is.
+  Open: every server read still derives a merged cancellable context
+  (`readOperation.merged`, propagateCancel contention); a written key's entry
+  is still found by a root search per walk (C++ keeps the operation stack in
+  the WriteMap node); inserts after a pin still copy about half the path;
+  RYW selector reads served from the cache cost about 10 µs each.
 
 ## 1. WS-E — scalar/SQL semantics and statement execution — ACTIVE
 

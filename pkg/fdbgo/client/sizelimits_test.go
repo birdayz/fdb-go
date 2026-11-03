@@ -10,8 +10,8 @@ import (
 )
 
 // Client-side key/value size-limit parity with libfdb_c — C2 differential.
-// The C binding aborts the process on an oversized set/atomicOp; we reject the
-// commit (set/atomic) or clamp the range (clear) instead. See sizelimits.go.
+// An oversized set/atomicOp is the deferred error, as in libfdb_c; an oversized
+// clear clamps the range. See sizelimits.go.
 
 func sizeErrCode(t *testing.T, err error) int {
 	t.Helper()

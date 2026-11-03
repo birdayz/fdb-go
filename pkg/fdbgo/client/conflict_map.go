@@ -123,29 +123,37 @@ func (n *rywNodes) appendWriteConflictsIn(dst []KeyRange, a *boundaryArena, lo, 
 	return dst
 }
 
-// insertReadConflictLocked merges [b, e) into the read-conflict map, as
-// readConflicts.insert(range, true) does (ReadYourWrites.actor.cpp:328, 345;
-// KeyRangeMap.h:304-350): ranges it overlaps or touches join it. A range the map
-// already covers costs two searches and copies nothing; otherwise only the new
-// outer bounds are copied into the conflict arena. An empty range adds nothing.
-// Caller holds conflictMu.
+// insertReadConflictLocked merges [b, e) into the read-conflict map (readConflicts.insert, RYW:328,
+// 345): a covered range copies nothing; new outer bounds go to the conflict arena. Caller holds conflictMu.
 func (tx *Transaction) insertReadConflictLocked(b, e rywBoundary) {
 	if b.compare(e) >= 0 {
 		return
 	}
 	s := &tx.readMap
+	// lo is the first range ending at or after b: the first it overlaps or touches.
 	lo := s.search(func(r *rywRange) bool { return (rywBoundary{key: r.end}).compare(b) >= 0 })
-	hi := s.search(func(r *rywRange) bool { return (rywBoundary{key: r.begin}).compare(e) > 0 })
+	hi := lo
 	var merged rywRange
 	keepBegin, keepEnd := false, false
-	if lo < hi {
-		first, last := s.at(lo), s.at(hi-1)
-		keepBegin = (rywBoundary{key: first.begin}).compare(b) <= 0
-		keepEnd = (rywBoundary{key: last.end}).compare(e) >= 0
-		if keepBegin && keepEnd && hi-lo == 1 {
-			return // covered
+	if lo < s.Len() {
+		c := s.finger(lo)
+		first := c.item()
+		if (rywBoundary{key: first.begin}).compare(e) <= 0 {
+			keepBegin = (rywBoundary{key: first.begin}).compare(b) <= 0
+			if keepBegin && (rywBoundary{key: first.end}).compare(e) >= 0 {
+				return // covered
+			}
+			// The ranges beginning at or before e join it; ranges never touch, so
+			// they are consecutive from lo.
+			last := first
+			for c.next(); c.valid() && (rywBoundary{key: c.item().begin}).compare(e) <= 0; c.next() {
+				last = c.item()
+				hi++
+			}
+			hi++ // first
+			keepEnd = (rywBoundary{key: last.end}).compare(e) >= 0
+			merged.begin, merged.end = first.begin, last.end
 		}
-		merged.begin, merged.end = first.begin, last.end
 	}
 	if !keepBegin {
 		merged.begin = tx.ownBoundaryLocked(b)
@@ -153,12 +161,15 @@ func (tx *Transaction) insertReadConflictLocked(b, e rywBoundary) {
 	if !keepEnd {
 		merged.end = tx.ownBoundaryLocked(e)
 	}
-	if hi-lo == 1 {
+	switch hi - lo {
+	case 0:
+		s.insert(lo, merged)
+	case 1:
 		s.set(lo, merged)
-		return
+	default:
+		s.delete(lo, hi)
+		s.insert(lo, merged)
 	}
-	s.delete(lo, hi)
-	s.insert(lo, merged)
 }
 
 // ownBoundaryLocked copies a bound into the conflict arena. Caller holds conflictMu.
@@ -300,15 +311,9 @@ func (tx *Transaction) conflictRangesNowLocked() (reads, writes []KeyRange) {
 	return s.readConflicts(tx.rywDisabled), writes
 }
 
-// writeConflictLocked decides whether a write adds its conflict range [begin,
-// end) and records it: without RYW in the native list, copied unless owned;
-// with RYW the caller records it in the write map's nodes under the same lock,
-// and GetApproximateSize is charged what the list would hold. Caller holds conflictMu.
-//
-// NEXT_WRITE_NO_WRITE_CONFLICT_RANGE is read AND cleared here, so two concurrent
-// writes would race on it without the lock. writeConflictsDisabled short-circuits
-// WITHOUT touching nextWriteNoConflict.
-func (tx *Transaction) writeConflictLocked(begin, end []byte, owned bool) bool {
+// takeWriteConflictLocked reports whether a write adds its conflict range: not under SetWriteConflictsDisabled,
+// nor under NEXT_WRITE_NO_WRITE_CONFLICT_RANGE, which it consumes (RYW:2085-2091). Caller holds conflictMu.
+func (tx *Transaction) takeWriteConflictLocked() bool {
 	if tx.writeConflictsDisabled {
 		return false
 	}
@@ -316,10 +321,23 @@ func (tx *Transaction) writeConflictLocked(begin, end []byte, owned bool) bool {
 		tx.nextWriteNoConflict = false
 		return false
 	}
+	return true
+}
+
+// recordWriteConflictLocked records [begin, end): with RYW the caller puts it in the write map and only the
+// size is charged here; without RYW the native list keeps it. Caller holds conflictMu.
+func (tx *Transaction) recordWriteConflictLocked(begin, end []byte, owned bool) bool {
 	if !tx.rywDisabled {
 		tx.rywConflictSize += int64(len(begin)+len(end)) + sizeofKeyRangeRef
 		return true
 	}
+	tx.appendWriteConflictListLocked(begin, end, owned)
+	return true
+}
+
+// appendWriteConflictListLocked appends [begin, end) to the native list, copied
+// into the conflict arena unless owned. Caller holds conflictMu.
+func (tx *Transaction) appendWriteConflictListLocked(begin, end []byte, owned bool) {
 	if !owned {
 		buf := tx.conflictBufAlloc(len(begin) + len(end))
 		nb := len(begin)
@@ -328,24 +346,31 @@ func (tx *Transaction) writeConflictLocked(begin, end []byte, owned bool) bool {
 		begin, end = buf[:nb:nb], buf[nb:]
 	}
 	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: begin, End: end})
-	return true
+}
+
+// writeConflictLocked is a write's conflict range: taken, then recorded.
+func (tx *Transaction) writeConflictLocked(begin, end []byte, owned bool) bool {
+	return tx.takeWriteConflictLocked() && tx.recordWriteConflictLocked(begin, end, owned)
+}
+
+// explicitWriteConflictLocked is addWriteConflictRange's: it ignores the next-write flag, which only writes
+// consume (RYW:2461-2500 vs :2220, 2328, 2358, 2407). Caller holds conflictMu.
+func (tx *Transaction) explicitWriteConflictLocked(begin, end []byte, owned bool) bool {
+	return !tx.writeConflictsDisabled && tx.recordWriteConflictLocked(begin, end, owned)
 }
 
 // writeConflictPointLocked is writeConflictLocked for [key, keyAfter(key)),
 // which only the native list materializes. Caller holds conflictMu.
 func (tx *Transaction) writeConflictPointLocked(key []byte) bool {
+	if !tx.takeWriteConflictLocked() {
+		return false
+	}
 	if !tx.rywDisabled {
-		if tx.writeConflictsDisabled {
-			return false
-		}
-		if tx.nextWriteNoConflict {
-			tx.nextWriteNoConflict = false
-			return false
-		}
 		tx.rywConflictSize += int64(2*len(key)+1) + sizeofKeyRangeRef
 		return true
 	}
-	return tx.addWriteConflictForKeyLocked(key)
+	tx.appendWriteConflictPointListLocked(key)
+	return true
 }
 
 // commitVectors builds the mutations and write conflicts a commit sizes and

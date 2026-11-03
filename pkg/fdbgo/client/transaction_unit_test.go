@@ -333,20 +333,17 @@ func TestAddWriteConflictForKey_DisabledWhenWriteConflictsDisabled(t *testing.T)
 	}
 }
 
-func TestAddWriteConflictForKey_ConsumesNextWriteNoConflict(t *testing.T) {
+// An explicit write conflict leaves NEXT_WRITE_NO_WRITE_CONFLICT_RANGE to the next
+// write: only writes consume it (RYW:2461-2500 against :2220, 2328, 2358, 2407).
+func TestAddWriteConflictForKey_KeepsNextWriteNoConflict(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{txOptions: txOptions{nextWriteNoConflict: true}}
 	tx.addWriteConflictForKey([]byte("k"))
-	if len(tx.writeConflictRanges()) != 0 {
-		t.Errorf("nextWriteNoConflict must skip first append, got len=%d", len(tx.writeConflictRanges()))
+	if got := tx.writeConflictRanges(); len(got) != 1 {
+		t.Errorf("an explicit write conflict must be recorded, got %q", got)
 	}
-	if tx.nextWriteNoConflict {
-		t.Error("nextWriteNoConflict must auto-reset to false after one mutation")
-	}
-	// Subsequent mutation MUST add a conflict (auto-reset semantics).
-	tx.addWriteConflictForKey([]byte("k2"))
-	if len(tx.writeConflictRanges()) != 1 {
-		t.Errorf("after auto-reset, second mutation must append, got len=%d", len(tx.writeConflictRanges()))
+	if !tx.nextWriteNoConflict {
+		t.Error("an explicit write conflict must not consume nextWriteNoConflict")
 	}
 }
 
@@ -364,11 +361,11 @@ func TestAddWriteConflict_ExplicitRange_DisabledFlags(t *testing.T) {
 		t.Parallel()
 		tx := &Transaction{txOptions: txOptions{nextWriteNoConflict: true}}
 		tx.addWriteConflict([]byte("a"), []byte("z"))
-		if len(tx.writeConflictRanges()) != 0 {
-			t.Errorf("nextWriteNoConflict must skip explicit range, got len=%d", len(tx.writeConflictRanges()))
+		if got := tx.writeConflictRanges(); len(got) != 1 {
+			t.Errorf("an explicit range must be recorded under nextWriteNoConflict, got %q", got)
 		}
-		if tx.nextWriteNoConflict {
-			t.Error("nextWriteNoConflict must auto-reset")
+		if !tx.nextWriteNoConflict {
+			t.Error("an explicit range must leave nextWriteNoConflict armed")
 		}
 	})
 }

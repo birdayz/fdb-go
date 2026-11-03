@@ -189,18 +189,17 @@ func (n *rywNodes) build() {
 
 // --- WriteMap::iterator ---------------------------------------------------------
 
-// rywNodeIter ports WriteMap::iterator (WriteMap.h:152-205) over the node
-// sequence by index, for the mutators: i is the entry (finger[beginLen-1]), i+1
-// the next entry (finger[endLen-1]); offset false is the operation at entry,
-// true the range after it. The walk iterates with rywNodeCursor instead.
+// rywNodeIter is WriteMap::iterator (WriteMap.h:152-205) for the mutators, which
+// stop iterating before they change the nodes; the walk uses rywNodeCursor.
 type rywNodeIter struct {
 	s      *pseq[rywNode]
-	i      int
-	offset bool
+	cur    pfinger[rywNode] // at entry(), finger[beginLen-1] (WriteMap.h:195, :203)
+	next   *rywNode         // nextEntry(), finger[endLen-1] (:196)
+	offset bool             // false: the operation at entry; true: the range after it
 }
 
-func (it *rywNodeIter) entry() *rywNode     { return it.s.at(it.i) }     // WriteMap.h:195
-func (it *rywNodeIter) nextEntry() *rywNode { return it.s.at(it.i + 1) } // WriteMap.h:196
+func (it *rywNodeIter) entry() *rywNode     { return it.cur.item() } // WriteMap.h:195
+func (it *rywNodeIter) nextEntry() *rywNode { return it.next }       // WriteMap.h:196
 
 func (it *rywNodeIter) isClearedRange() bool    { return it.offset && it.entry().followingCleared }  // :165
 func (it *rywNodeIter) isUnmodifiedRange() bool { return it.offset && !it.entry().followingCleared } // :166
@@ -244,8 +243,12 @@ func (it *rywNodeIter) keyAtBegin() bool { return !it.offset || !it.entry().op }
 // no containing segment in C++ (its finger would be empty); it clamps to the
 // sentinel segment [\xff\xff, \xff\xff\x00).
 func (it *rywNodeIter) skip(key []byte) {
-	j := it.s.search(func(nd *rywNode) bool { return bytes.Compare(nd.key, key) > 0 })
-	it.i = min(j-1, it.s.Len()-2)
+	it.cur.seekFirst(it.s, func(nd *rywNode) bool { return bytes.Compare(nd.key, key) > 0 })
+	if last := it.s.Len() - 1; it.cur.idx > last {
+		it.cur.reset(it.s, last) // past afterAllKeys: the entry is allKeys.end (:339-340)
+	}
+	it.next = it.cur.item()
+	it.cur.prev()
 	it.offset = !it.entry().op || !bytes.Equal(it.entry().key, key) // :346
 }
 
@@ -254,7 +257,8 @@ func (it *rywNodeIter) inc() {
 	if !it.offset && !equalsKeyAfter(it.entry().key, it.nextEntry().key) { // :313
 		it.offset = true // :314
 	} else {
-		it.i++                     // :316-318
+		it.cur.next() // :316-318
+		it.next = it.cur.peekNext()
 		it.offset = !it.entry().op // :319
 	}
 }
@@ -264,7 +268,8 @@ func (it *rywNodeIter) dec() {
 	if it.offset && it.entry().op { // :324
 		it.offset = false // :325
 	} else {
-		it.i--                                                                            // :327-329
+		it.next = it.cur.item() // :327-329
+		it.cur.prev()
 		it.offset = !it.entry().op || !equalsKeyAfter(it.entry().key, it.nextEntry().key) // :330
 	}
 }
@@ -400,8 +405,8 @@ func (n *rywNodes) applyClear(begin, end []byte, addConflict bool) {
 	}
 
 	insertEnd := (it.isUnmodifiedRange() || !it.isConflictRange() || it.isUnreadable()) &&
-		(!it.keyAtBegin() || it.beginKey().compare(endB) != 0) // :179-180
-	endCoalesceClear := it.isClearedRange() && it.beginKey().compare(endB) == 0 &&
+		(!it.keyAtBegin() || !it.beginKey().equal(endB)) // :179-180
+	endCoalesceClear := it.isClearedRange() && it.beginKey().equal(endB) &&
 		it.isConflictRange() && !it.isUnreadable() // :181-182
 	endConflict := it.isConflictRange() // :183
 	endCleared := it.isClearedRange()   // :184
@@ -436,8 +441,8 @@ func (n *rywNodes) applyUnreadableRange(begin, end []byte) {
 	}
 
 	insertEnd := (it.isClearedRange() || it.isConflictRange() || !it.isUnreadable()) &&
-		(!it.keyAtBegin() || it.beginKey().compare(endB) != 0) // :218-219
-	endCoalesceUnmodified := it.isUnmodifiedRange() && it.beginKey().compare(endB) == 0 &&
+		(!it.keyAtBegin() || !it.beginKey().equal(endB)) // :218-219
+	endCoalesceUnmodified := it.isUnmodifiedRange() && it.beginKey().equal(endB) &&
 		!it.isConflictRange() && it.isUnreadable() // :220-221
 	endConflict := it.isConflictRange() // :222
 	endCleared := it.isClearedRange()   // :223
@@ -456,19 +461,22 @@ func (n *rywNodes) applyUnreadableRange(begin, end []byte) {
 	}
 }
 
-// applyConflictRange is WriteMap::addConflictRange (WriteMap.cpp:244-302) on
-// built nodes. C++ removes then re-inserts each changed node (removals,
-// :255, :272, :293-298); every removal has an insertion at the same key, and an
-// insert at an equal key replaces (VersionedMap.h:288-289), so the insertions
-// alone are the same edit.
+// applyConflictRange is WriteMap::addConflictRange (WriteMap.cpp:244-302) on built nodes, with its
+// edits applied by iterator position, the insertion its "SOMEDAY" (:298) asks for.
 func (n *rywNodes) applyConflictRange(begin, end []byte) {
 	endB := rywBoundary{key: end}
 	it := n.iter()
 	it.skip(begin) // :246-248
 
-	var insertions []rywNode                                    // :251
+	type edit struct {
+		at      int
+		replace bool
+		node    rywNode
+	}
+	var buf [4]edit
+	edits := buf[:0]                                            // :250-251
 	if e := it.entry(); !e.followingConflict || !e.isConflict { // :253
-		insertions = append(insertions, rywNode{ // :257-263
+		node := rywNode{ // :257-263
 			key:                 begin,
 			op:                  it.isOperation(), // OperationStack(it.op()) or OperationStack()
 			followingCleared:    e.followingCleared,
@@ -476,7 +484,12 @@ func (n *rywNodes) applyConflictRange(begin, end []byte) {
 			isConflict:          true,
 			followingUnreadable: e.followingUnreadable,
 			isUnreadable:        e.isUnreadable,
-		})
+		}
+		if bytes.Equal(e.key, begin) { // removals.push_back(keys.begin) (:254-256)
+			edits = append(edits, edit{at: it.cur.idx, replace: true, node: node})
+		} else {
+			edits = append(edits, edit{at: it.cur.idx + 1, node: node})
+		}
 	}
 
 	for it.endKey().compare(endB) < 0 { // :266
@@ -485,25 +498,33 @@ func (n *rywNodes) applyConflictRange(begin, end []byte) {
 			c := *e // :269-273
 			c.followingConflict = true
 			c.isConflict = true
-			insertions = append(insertions, c)
+			edits = append(edits, edit{at: it.cur.idx, replace: true, node: c})
 		}
 	}
 
 	// ASSERT(it.beginKey() != keys.end) (:277)
 	if e := it.entry(); !e.followingConflict || !e.isConflict { // :278
-		isCleared := e.followingCleared                           // :279
-		isUnreadable := e.isUnreadable                            // :280
-		followingUnreadable := e.followingUnreadable              // :281
-		it.inc()                                                  // :282
-		if !it.keyAtBegin() || it.beginKey().compare(endB) != 0 { // :284-287
-			insertions = append(insertions, rywNode{
+		isCleared := e.followingCleared              // :279
+		isUnreadable := e.isUnreadable               // :280
+		followingUnreadable := e.followingUnreadable // :281
+		// end lies in the segment of the entry at this position: a new node
+		// at end follows that entry.
+		at := it.cur.idx + 1
+		it.inc()                                            // :282
+		if !it.keyAtBegin() || !it.beginKey().equal(endB) { // :284-287
+			edits = append(edits, edit{at: at, node: rywNode{
 				key: end, followingCleared: isCleared, followingUnreadable: followingUnreadable, isUnreadable: isUnreadable,
-			})
+			}})
 		}
 	}
 
-	for _, node := range insertions { // :300-302
-		n.insert(node)
+	// :293-302, by position: from the last, so earlier positions stay valid.
+	for i := len(edits) - 1; i >= 0; i-- {
+		if e := edits[i]; e.replace {
+			n.seq.set(e.at, e.node)
+		} else {
+			n.seq.insert(e.at, e.node)
+		}
 	}
 }
 
@@ -534,12 +555,12 @@ func (n *rywNodes) applyClearNoConflict(begin, end []byte) {
 		}
 	}
 
-	if it.endKey().compare(endB) == 0 { // :555-556
+	if it.endKey().equal(endB) { // :555-556
 		it.inc()
 	}
 	// ASSERT(it.beginKey() <= keys.end && keys.end < it.endKey()) (:558)
 
-	beginIsEnd := it.beginKey().compare(endB) == 0
+	beginIsEnd := it.beginKey().equal(endB)
 	insertEnd := ((it.isUnmodifiedRange() || it.isUnreadable()) && (!it.keyAtBegin() || !beginIsEnd)) ||
 		(it.entry().isConflict && !it.entry().followingConflict && beginIsEnd && !it.keyAtBegin()) // :560-563
 	endCleared := it.isClearedRange() // :564

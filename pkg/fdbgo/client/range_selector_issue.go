@@ -72,7 +72,7 @@ func (tx *Transaction) issueSelectorRange(parent context.Context, begin, end Key
 	if !r.limits.isValid() { // :1749-1750
 		return r.finish(nil, false, &wire.FDBError{Code: ErrRangeLimitsInvalid})
 	}
-	r.begin, r.end = begin.removeOrEqual(), end.removeOrEqual()                       // :1752-1756
+	r.begin, r.end = removeOrEqualPair(begin, end)                                    // :1752-1756
 	if r.begin.Offset >= r.end.Offset && bytes.Compare(r.begin.Key, r.end.Key) >= 0 { // :1758-1761
 		return r.finish(nil, false, nil)
 	}
@@ -200,10 +200,8 @@ func (r *selectorRangeRead) read(clone bool) ([]KeyValue, bool, error) {
 	}
 	kvs := res.kvs
 	if clone {
-		// The rows' bytes are the snapshot cache's (a storage reply's, kept as the
-		// cache's, C++ keeps the reply's arena) and the write map's: one copy for
-		// the caller, who may write them. The slice is the walk's own, built by
-		// append and released with the walk, so the copies replace the rows in it.
+		// The rows' bytes are the cache's and the write map's, the caller may write
+		// them; the slice is the walk's own, so the copies replace its rows.
 		kvs = cloneReadKVsInPlace(kvs)
 	}
 	return kvs, res.more, tx.trackReadOperation(ctx, nil)
@@ -274,6 +272,23 @@ func (r *selectorRangeRead) complete() {
 	}
 	r.tx.leaveIssuedRead(r.inc)
 	r.release()
+}
+
+// removeOrEqualPair is removeOrEqual of both selectors (RYW:1752-1756) with their
+// successors in one allocation, as in C++'s request arena; selector keys are never written.
+func removeOrEqualPair(begin, end KeySelector) (KeySelector, KeySelector) {
+	if !begin.OrEqual || !end.OrEqual || bytes.Equal(begin.Key, allKeysEnd) || bytes.Equal(end.Key, allKeysEnd) {
+		return begin.removeOrEqual(), end.removeOrEqual()
+	}
+	if bytes.Equal(begin.Key, end.Key) {
+		k := keyAfterBytes(begin.Key)
+		return KeySelector{Key: k, Offset: begin.Offset}, KeySelector{Key: k, Offset: end.Offset}
+	}
+	nb := len(begin.Key) + 1
+	buf := make([]byte, nb+len(end.Key)+1)
+	copy(buf, begin.Key)
+	copy(buf[nb:], end.Key)
+	return KeySelector{Key: buf[:nb:nb], Offset: begin.Offset}, KeySelector{Key: buf[nb:], Offset: end.Offset}
 }
 
 // rywRangeConflictSpan is addConflictRange(GetRangeReq<false>) (RYW:245-281) and

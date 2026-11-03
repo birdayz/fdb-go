@@ -478,6 +478,18 @@ Each is described in full under Compatibility or Changed below.
   - A mutual chunk commits once its transaction passes the time or write limit.
   - The mutual FULL phase builds a claimed fragment to its end before it moves on, so
     concurrent builders keep to their own fragments.
+- Pure-Go client, matching libfdb_c 7.3.77 (pinned by `//conformance:ryw_script_conformance_test`):
+  - An illegal Set, Clear, ClearRange or Atomic (oversized key or value, key outside the legal
+    range, metadataVersion misuse, an inverted or out-of-range ClearRange even when empty) is the
+    transaction's deferred error from that call on: later reads and the commit report it, where it
+    used to fail only the commit. A commit after such a write and a failed read reports the write's
+    error (e.g. 2102), not the read's.
+  - `AddWriteConflictKey`/`AddWriteConflictRange` are recorded under
+    `SetNextWriteNoWriteConflictRange` and leave the option to the next write; they used to be
+    dropped and consume it.
+  - A Get is issued at the call: `Snapshot().Get`, and `Get` of a key with pending atomics, no
+    longer see writes made after the call. Commit waits for such a read whether or not it was
+    awaited, and fails with its error; new `client.Transaction.StartGet`/`Snapshot.StartGet`.
 - Pure-Go client (RFC-280): `GetEstimatedRangeSizeBytes` and `GetRangeSplitPoints` retry `wrong_shard_server`, `all_alternatives_failed` and (for size estimates) `future_version` until the context or transaction timeout ends them, as libfdb_c does, instead of failing with `all_alternatives_failed` (1006) after 50 rounds; each request is sent as libfdb_c's load balancer sends it, with no 5 s reply timeout, a backoff after a round without a reply, and the all-alternatives-failed wait (ended by a recovery) when every replica is down. A positive-skip mapped-range read returns a retryable `transaction_too_old` after 10 reply-timeout re-sends instead of re-sending forever. A failed connection is closed after the pool lock is released, so a slow TLS close no longer stalls connection lookups.
 - Built-in TEXT tokenization, casing/name lookup and Go-only collated keys use frozen Unicode-15 data, so compiler upgrades preserve existing terms, positions and keys; pre-existing Java differences remain explicit in `docs/compatibility.md` (RFC-265).
 - Ordinary, covering and fetch query index scans over one physical range pass Skip to the index cursor, as Java's plans do: skipped entries no longer count against scan-record or byte limits, and their records are not loaded. Multi-range and residual key-filter scans, and the mapped reads of remote-fetch plans, still skip once above the combined cursor.

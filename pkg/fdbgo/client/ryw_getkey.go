@@ -219,7 +219,19 @@ func (b rywBoundary) isKeyAfter(a rywBoundary) bool {
 	return b.size() == a.size()+1 && b.compare(a.keyAfter()) == 0
 }
 
+// equal is ExtStringRef == (SnapshotCache.h:119-121): the sizes first, so only
+// boundaries of one size compare their bytes.
+func (b rywBoundary) equal(o rywBoundary) bool {
+	if b.after != o.after || b.extra != o.extra {
+		return b.size() == o.size() && b.compare(o) == 0
+	}
+	return bytes.Equal(b.key, o.key) // one shape: the sizes are the key lengths
+}
+
 func (b rywBoundary) compare(other rywBoundary) int {
+	if !b.after && !other.after { // plain keys: no successor zeros to account for
+		return bytes.Compare(b.key, other.key)
+	}
 	n := min(len(b.key), len(other.key))
 	if c := bytes.Compare(b.key[:n], other.key[:n]); c != 0 {
 		return c

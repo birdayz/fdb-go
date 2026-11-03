@@ -86,9 +86,7 @@ func TestNativeReadTagSampling(t *testing.T) {
 					q := tx.db.queueModel
 					delta := q.startRequest(real.Address)
 					defer q.endRequest(real.Address, delta, 0, false)
-					q.mu.Lock()
-					q.getOrCreate(real.Address).smoothOutstanding.estimate = 1
-					q.mu.Unlock()
+					setServer(q, real.Address, func(d *queueData) { d.smoothOutstanding.estimate = 1 })
 					// A new database has no second-request budget, so the dead primary is
 					// never hedged: its failure moves on to the real server.
 					if best, next := q.chooseTopTwo(servers); best != 0 || next != 1 {

@@ -24,9 +24,8 @@ type rywWalk struct {
 	its [4]rywIter
 }
 
-// rywWalkState is the walk apart from its iterators, so that issuing and
-// releasing a pooled walk assign it alone: a whole-rywWalk assignment builds a
-// several-kilobyte temporary, whose frame grows a fresh goroutine's stack.
+// rywWalkState is the walk apart from its iterators: assigning a whole rywWalk
+// builds a kilobytes-large temporary, which grows a fresh goroutine's stack.
 type rywWalkState struct {
 	c       *rywCache
 	view    *rywWrites // the owner's version, or nil = the snapshot cache alone (A2.2); borrowed
@@ -200,9 +199,8 @@ func (w *rywWalk) start() {
 
 // resolveBoth re-resolves both selectors: begin into it and end into itEnd
 // forward (RYW:611-612), end into it and begin into itEnd backward (:914-916).
-// it keeps its position from the last resolution, and itEnd starts as a copy
-// of it, so each skip searches from nearby (rywIter.skip): a range's two
-// selectors are usually close, and a resumption re-resolves where it stopped.
+// it keeps its last position and itEnd starts as its copy, so each skip searches
+// from nearby: a range's selectors are usually close.
 func (w *rywWalk) resolveBoth() (it, itEnd *rywIter) {
 	it, itEnd = &w.its[0], &w.its[1]
 	initIter(it, w.c, w.view, &w.cache)
@@ -394,7 +392,7 @@ func (w *rywWalk) resolve(sel *KeySelector, it *rywIter, actualOffset *int32) {
 	*sel = sel.removeOrEqual() // :420
 	alreadyExhausted := sel.Offset == 1
 	it.skip(sel.Key) // :424
-	if sel.Offset <= 0 && it.b.compare(rywBoundary{key: sel.Key}) == 0 && len(sel.Key) != 0 {
+	if sel.Offset <= 0 && it.b.equal(rywBoundary{key: sel.Key}) && len(sel.Key) != 0 {
 		it.prev() // :426-427
 	}
 	maxKey := rywBoundary{key: w.maxKey}
@@ -495,7 +493,7 @@ func (w *rywWalk) loop(it, itEnd *rywIter) {
 		}
 		// L6 (:688-690)
 		if it.same(itEnd) && ((!it.unreadable() && !it.unknown()) ||
-			(w.begin.Offset > 0 && w.end.isFirstGreaterOrEqual() && it.b.compare(rywBoundary{key: w.end.Key}) == 0)) {
+			(w.begin.Offset > 0 && w.end.isFirstGreaterOrEqual() && it.b.equal(rywBoundary{key: w.end.Key}))) {
 			w.epilogue()
 			return
 		}
@@ -607,8 +605,17 @@ func (w *rywWalk) kvForward(it *rywIter) {
 		w.decrement(run[count])
 	}
 	w.itemsPast += int32(len(run) - count)
+	w.reserve(count)
 	w.result = append(w.result, run[:count]...)
 	it.next()
+}
+
+// reserve gives a first run of one row room for a second, as a selector
+// range's rows often come in separate runs.
+func (w *rywWalk) reserve(count int) {
+	if w.result == nil && count == 1 && !w.limits.isReached() {
+		w.result = make([]KeyValue, 0, 2)
+	}
 }
 
 func (w *rywWalk) decrement(kv KeyValue) {
@@ -661,7 +668,7 @@ func (w *rywWalk) loopBack(it, itEnd *rywIter) {
 			return
 		}
 		// L6' (:993-997)
-		if w.end.isFirstGreaterOrEqual() && it.b.compare(rywBoundary{key: w.end.Key}) == 0 {
+		if w.end.isFirstGreaterOrEqual() && it.b.equal(rywBoundary{key: w.end.Key}) {
 			if w.itemsPast >= w.begin.Offset-1 && it.same(itEnd) {
 				w.epilogue()
 				return
@@ -695,6 +702,7 @@ func (w *rywWalk) loopBack(it, itEnd *rywIter) {
 					w.decrement(run[len(run)-count-1])
 				}
 				w.itemsPast += int32(len(run) - count)
+				w.reserve(count)
 				for i := 0; i < count; i++ {
 					w.result = append(w.result, run[len(run)-i-1])
 				}

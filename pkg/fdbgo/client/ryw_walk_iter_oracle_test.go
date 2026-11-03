@@ -246,15 +246,28 @@ func TestRYWIterMatchesCandidateOracle(t *testing.T) {
 			it := c.newIterLocked(w)
 			or := &oracleIter{c: c, w: w}
 			check := func(step string) {
-				got := iterState(it.beginKey(), it.endKey(), it.typ, it.sentinel)
-				want := iterState(or.begin, or.end, or.typ, or.sentinel)
-				if got != want {
-					fail("%s: iterator %s, oracle %s", step, got, want)
+				// The walk reads the type through these before kv classifies a pending
+				// write: they must already agree with the oracle.
+				if it.isKV() != (or.typ == segKV || or.typ == segPhantom) || it.unknown() != (or.typ == segUnknown) ||
+					it.unreadable() != (or.typ == segUnreadable) || it.empty() != (or.typ == segEmpty) {
+					fail("%s: iterator type %d (pending %t), oracle %d", step, it.typ, it.opPending, or.typ)
 				}
+				if it.opPending {
+					counts["pending"]++
+					if or.typ == segPhantom {
+						counts["pendingPhantom"]++
+					}
+				}
+				// kv first, as the walk calls it: it classifies a pending write itself.
 				gkv, gok := it.kv()
 				wkv, wok := or.kv()
 				if gok != wok || !bytes.Equal(gkv.Key, wkv.Key) || !bytes.Equal(gkv.Value, wkv.Value) || (gkv.Value == nil) != (wkv.Value == nil) {
 					fail("%s: kv %q=%q (%t), oracle %q=%q (%t)", step, gkv.Key, gkv.Value, gok, wkv.Key, wkv.Value, wok)
+				}
+				got := iterState(it.beginKey(), it.endKey(), it.segType(), it.sentinel)
+				want := iterState(or.begin, or.end, or.typ, or.sentinel)
+				if got != want {
+					fail("%s: iterator %s, oracle %s", step, got, want)
 				}
 				counts[fmt.Sprintf("type%d", it.typ)]++
 			}
@@ -308,7 +321,7 @@ func TestRYWIterMatchesCandidateOracle(t *testing.T) {
 			for _, p := range probes {
 				it.skip(p)
 				or.skip(p)
-				if it.typ != segKV {
+				if or.typ != segKV { // it stays pending: skipContiguous's kv classifies it
 					continue
 				}
 				bound := probes[rng.Intn(len(probes))]
@@ -329,7 +342,7 @@ func TestRYWIterMatchesCandidateOracle(t *testing.T) {
 				if kvsString(gotB) != kvsString(wantB) {
 					fail("skipContiguousBack(%q) from %q: %s, oracle %s", bound, p, kvsString(gotB), kvsString(wantB))
 				}
-				if s, o := iterState(itB.beginKey(), itB.endKey(), itB.typ, itB.sentinel), iterState(orB.begin, orB.end, orB.typ, orB.sentinel); s != o {
+				if s, o := iterState(itB.beginKey(), itB.endKey(), itB.segType(), itB.sentinel), iterState(orB.begin, orB.end, orB.typ, orB.sentinel); s != o {
 					fail("after skipContiguousBack(%q) from %q: iterator %s, oracle %s", bound, p, s, o)
 				}
 				if len(gotB) > 1 {
@@ -339,7 +352,7 @@ func TestRYWIterMatchesCandidateOracle(t *testing.T) {
 		}
 		c.mu.Unlock()
 	}
-	for _, k := range []string{"type0", "type1", "type2", "type3", "type4", "prev", "contiguous", "contiguousBack", "same=true", "same=false"} {
+	for _, k := range []string{"type0", "type1", "type2", "type3", "type4", "prev", "contiguous", "contiguousBack", "same=true", "same=false", "pending", "pendingPhantom"} {
 		if counts[k] == 0 {
 			t.Fatalf("vacuous oracle comparison: %s never seen; counts %v", k, counts)
 		}

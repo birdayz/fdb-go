@@ -451,3 +451,77 @@ func BenchmarkPseqPinnedWrites(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkRYWTextMaintenance is the TEXT index maintenance of one message
+// transaction as the GenAI exporter profile shows it: ~7000 postings over a
+// range the transaction already read (cached), each a BunchedMap put with 128
+// snapshot reads in flight, lastLessOrEqual(k) .. firstGreaterThan(k)+1 under a
+// cancellable context. Each posting completes in issue order and then writes as
+// BunchedMap.writeEntryList does: the entry list's read conflict range, an
+// AppendIfFits to the bunch (or, every fourth posting, a rewrite: Set of the
+// bunch and Clear of a split-off key), a write conflict key, and the gap write
+// conflict range. Keys sit under a 64-byte subspace prefix. One op is one
+// transaction; its first full read is outside the timer; ns/posting divides by
+// the postings.
+func BenchmarkRYWTextMaintenance(b *testing.B) {
+	const (
+		bunches  = 4096
+		postings = 7000
+		depth    = 128
+	)
+	prefix := benchLongPrefix
+	st := newBenchStoragePrefixed(bunches, prefix)
+	value := bytes.Repeat([]byte("p"), 300)
+	entry := bytes.Repeat([]byte("e"), 24)
+	keys := make([][]byte, postings)
+	for i := range keys {
+		keys[i] = fmt.Appendf(nil, "%st/%07d/q%02d", prefix, (1+(i*104729)%(bunches-1))*4, i%7)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		b.StopTimer()
+		ctx, cancel := context.WithCancel(context.Background())
+		tx := &Transaction{}
+		tx.nativeRange = st.native
+		// The transaction read the range before: the reads below are cached.
+		if _, _, err := tx.Snapshot().GetRangeSelectors(ctx, firstGreaterOrEqual([]byte(prefix)), firstGreaterOrEqual([]byte(prefix+"u")), 0, 0, false); err != nil {
+			b.Fatal(err)
+		}
+		b.StartTimer()
+		type put struct {
+			i int
+			p *PendingRange
+		}
+		ring := make([]put, 0, depth)
+		finish := func(p put) {
+			kvs, _, err := p.p.Get()
+			if err != nil || len(kvs) == 0 {
+				b.Fatal(kvs, err)
+			}
+			key, bunch := keys[p.i], kvs[0].Key
+			_ = tx.AddReadConflictRange(bunch, append(key[:len(key):len(key)], 0))
+			if p.i%4 == 3 {
+				tx.Set(bunch, value)
+				tx.Clear(append(bunch[:len(bunch):len(bunch)], 'x'))
+			} else {
+				tx.Atomic(MutAppendIfFits, bunch, entry)
+			}
+			tx.AddWriteConflictKey(key)
+			_ = tx.AddWriteConflictRange(bunch, key)
+		}
+		for i := range keys {
+			if len(ring) == depth {
+				finish(ring[0])
+				ring = ring[1:]
+			}
+			begin := KeySelector{Key: keys[i], OrEqual: true, Offset: 0} // lastLessOrEqual(k)
+			end := KeySelector{Key: keys[i], OrEqual: true, Offset: 2}   // firstGreaterThan(k).add(1)
+			ring = append(ring, put{i: i, p: tx.Snapshot().StartGetRangeSelectors(ctx, begin, end, 0, 0, false)})
+		}
+		for _, p := range ring {
+			finish(p)
+		}
+		cancel()
+	}
+	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*postings), "ns/posting")
+}

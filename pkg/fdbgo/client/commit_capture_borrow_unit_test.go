@@ -26,7 +26,18 @@ func borrowTx(n int, fill byte) *Transaction {
 	}
 	tx.Atomic(MutAddValue, []byte("borrow/counter"), []byte{fill, 0, 0, 0})
 	tx.AddReadConflictKey([]byte("borrow/read"))
+	carveSlab(tx) // sizes the slab for the same writes after a reset
 	return tx
+}
+
+// carveSlab writes what the slab holds with RYW on: atomic operands in the op-log
+// and read-conflict bounds. (RYW Sets keep their bytes in the write map's arena.)
+func carveSlab(tx *Transaction) {
+	for i := range 10 {
+		key := []byte(fmt.Sprintf("borrow/key/%04d", i))
+		tx.Atomic(MutAppendIfFits, key, bytes.Repeat([]byte{'z'}, 32))
+		_ = tx.AddReadConflictRange(key, append(key, 'z'))
+	}
 }
 
 func captureUnderLease(tx *Transaction) *commitInput {
@@ -118,9 +129,7 @@ func TestRetryReusesSlabOnlyWhenSoleHolder(t *testing.T) {
 				input.release()
 			}
 			tx.reset(false)
-			for i := range 50 {
-				tx.Set([]byte(fmt.Sprintf("borrow/key/%04d", i)), bytes.Repeat([]byte{'z'}, 100))
-			}
+			carveSlab(tx)
 			reused := unsafe.SliceData(tx.conflictBuf) == backing
 			if reused != released {
 				t.Fatalf("retry reused the slab=%t, want %t", reused, released)
@@ -140,7 +149,9 @@ func TestRetryReusesSlabOnlyWhenSoleHolder(t *testing.T) {
 // install one; otherwise post-commit reset would pool it under a fresh handle.
 func TestCaptureCommitTracksOwnerlessSlab(t *testing.T) {
 	t.Parallel()
-	tx := &Transaction{}
+	// Without RYW the op-log copies the Set into the slab (with RYW it shares
+	// the write map's bytes instead).
+	tx := &Transaction{rywDisabled: true}
 	defer tx.Cancel()
 	tx.conflictBuf = make([]byte, 0, 4096)
 	tx.Set([]byte("ownerless"), []byte("value"))
@@ -223,9 +234,7 @@ func TestConcurrentResetDuringCommitKeepsCapturedBytes(t *testing.T) {
 				case "postcommit":
 					tx.postCommitReset()
 				}
-				for i := range 50 {
-					tx.Set([]byte(fmt.Sprintf("borrow/key/%04d", i)), bytes.Repeat([]byte{'z'}, 100))
-				}
+				carveSlab(tx)
 			}()
 			wg.Wait()
 			input.release()

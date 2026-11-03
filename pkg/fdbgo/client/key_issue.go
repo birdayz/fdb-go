@@ -108,20 +108,24 @@ func (r *keyRead) finish(key []byte, err error) *keyRead {
 }
 
 // run performs the read's I/O and records its read conflict. Exactly once.
-func (r *keyRead) run() (key []byte, err error) {
+func (r *keyRead) run() (key []byte, err error) { return r.runKey(true) }
+
+// runKey is run; with clone false the key may be the snapshot cache's or the
+// write map's, never written, for a PendingKey whose Get copies it.
+func (r *keyRead) runKey(clone bool) (key []byte, err error) {
 	if r.finished {
 		return r.key, r.err
 	}
 	defer r.complete()
 	// RFC-110: a panic fails the read before complete() releases Commit's wait.
 	pb := r.tx.rangeReadBackstop()
-	if pb.run(func() { key, err = r.read() }) {
+	if pb.run(func() { key, err = r.read(clone) }) {
 		return nil, r.tx.trackReadOperation(r.ctx, &wire.FDBError{Code: ErrInternalError})
 	}
 	return key, err
 }
 
-func (r *keyRead) read() ([]byte, error) {
+func (r *keyRead) read(clone bool) ([]byte, error) {
 	tx, ctx, sel := r.tx, r.ctx, r.sel
 	if r.disabled {
 		resolved, err := tx.getKey(ctx, sel.Key, sel.OrEqual, sel.Offset)
@@ -147,7 +151,7 @@ func (r *keyRead) read() ([]byte, error) {
 		}
 		return resolved, tx.trackReadOperation(ctx, nil)
 	}
-	defer func() { r.walk.release(); r.walk = nil }() // the key is cloned below; nothing else is the walk's
+	defer func() { r.walk.release(); r.walk = nil }() // the key is the cache's or the write map's, not the walk's
 	if !r.local {
 		storage := tx.nativeRange
 		native := func(ctx context.Context, begin, end KeySelector, limits rangeLimits, reverse bool) (nativeRangeResult, error) {
@@ -174,7 +178,10 @@ func (r *keyRead) read() ([]byte, error) {
 	} else if r.walk.err != nil {
 		return nil, tx.trackReadOperation(ctx, r.walk.err)
 	}
-	key := bytes.Clone(r.walk.keyResult())
+	key := r.walk.keyResult() // the cache's, the write map's or a constant: never written
+	if clone {
+		key = bytes.Clone(key)
+	}
 	if !r.snapshot { // RYW getKey adds its conflict for every key (RYW:1695-1709, 230-243)
 		if r.local {
 			if err := tx.addReadConflictSpansFor(ctx, r.localConflicts); err != nil {
@@ -250,7 +257,7 @@ func (p *PendingKey) execute() {
 	defer close(p.done)
 	r := p.r
 	p.r = nil
-	p.key, p.err = r.run()
+	p.key, p.err = r.runKey(false) // Get copies
 }
 
 // StartGetKey starts a getKey and returns at once. The selector is resolved against
@@ -273,7 +280,7 @@ func (tx *Transaction) startKey(ctx context.Context, sel KeySelector, snapshot b
 	if r.finished || r.local {
 		p := &PendingKey{done: closedDone}
 		p.state.Store(pendingClaimed)
-		p.key, p.err = r.run()
+		p.key, p.err = r.runKey(false)
 		return p
 	}
 	p := &PendingKey{r: r, done: make(chan struct{})}

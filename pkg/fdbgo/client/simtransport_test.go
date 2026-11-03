@@ -560,16 +560,16 @@ func TestSimInlineFutureVersion_QueueModelBackoff(t *testing.T) {
 				t.Fatalf("read err = %v, want FDBError %d surfaced from the inline channel", readErr, tc.code)
 			}
 			// The read-path wiring fired: the QueueModel recorded the backoff. Copy
-			// the fields out UNDER the lock — prod reads them under queueModel.mu
-			// (loadbalance.go), so the test must too.
-			db.db.queueModel.mu.Lock()
-			d := db.db.queueModel.servers[addr]
+			// the fields out UNDER the lock — prod reads them under the server's
+			// queueData.mu (loadbalance.go), so the test must too.
+			v, found := db.db.queueModel.servers.Load(addr)
 			var failedUntil, backoff float64
-			found := d != nil
 			if found {
+				d := v.(*queueData)
+				d.mu.Lock()
 				failedUntil, backoff = d.failedUntil, d.futureVersionBackoff
+				d.mu.Unlock()
 			}
-			db.db.queueModel.mu.Unlock()
 			if !found {
 				t.Fatalf("no QueueModel entry for storage addr %s", addr)
 			}

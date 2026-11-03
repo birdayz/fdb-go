@@ -246,8 +246,10 @@ it cannot self-poison; the catch handles cross-path races where Java/libfdb_c
 would poison identically.
 
 Pinned by matrix rows `commit_poisoned_by_swallowed_read_error` (poison +
-Reset clears) and `commit_poison_precedes_validation` (1036 outranks the
-commit-deferred 2102), plus the differential poisoning asserts on both clients.
+Reset clears) and `deferred_write_error_precedes_read_poison` (the illegal
+write's 2102, deferred at the call, outranks the later read's poison 1036, as
+libfdb_c keeps the first throw), plus the differential poisoning asserts on both
+clients.
 
 ### The SVK candidate range in the Go write map: `unreadableRanges` + the deliberate span-wipe divergence
 

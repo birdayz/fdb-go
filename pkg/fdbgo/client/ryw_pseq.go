@@ -96,6 +96,14 @@ func (n *pnode[T]) rightAt(at uint64) *pnode[T] {
 	return n.right
 }
 
+// child is PTree::child (VersionedMap.h:54-59): the right child when right is set.
+func (n *pnode[T]) child(right bool, at uint64) *pnode[T] {
+	if right {
+		return n.rightAt(at)
+	}
+	return n.leftAt(at)
+}
+
 func psize[T any](n *pnode[T], at uint64) int {
 	if n == nil {
 		return 0
@@ -483,27 +491,7 @@ func (c *pcursor[T]) reset(s *pseq[T], i int) {
 	c.seek(i)
 }
 
-func (c *pcursor[T]) seek(i int) {
-	c.path, c.idx = c.path[:0], i
-	if i < 0 || i >= psize(c.root, c.at) {
-		return
-	}
-	n := c.root
-	for {
-		c.path = append(c.path, n)
-		l, r := n.kids(c.at)
-		ls := psize(l, c.at)
-		switch {
-		case i < ls:
-			n = l
-		case i == ls:
-			return
-		default:
-			i -= ls + 1
-			n = r
-		}
-	}
-}
+func (c *pcursor[T]) seek(i int) { c.path, c.idx = pathSeek(c.path, c.root, c.at, i), i }
 
 // copyFrom moves the cursor to o's position, reusing its path storage.
 func (c *pcursor[T]) copyFrom(o *pcursor[T]) {
@@ -518,96 +506,110 @@ func (c *pcursor[T]) seekFirst(s *pseq[T], pred func(*T) bool) {
 	if c.path == nil {
 		c.path = make([]*pnode[T], 0, 32)
 	}
-	c.path = c.path[:0]
-	at := c.at
-	found, depth, i, base := false, 0, psize(s.root, at), 0
-	for n := s.root; n != nil; {
-		c.path = append(c.path, n)
-		l, r := n.kids(at)
-		ls := psize(l, at)
-		if pred(&n.item) {
-			found, depth, i = true, len(c.path), base+ls
-			n = l
-		} else {
-			base += ls + 1
-			n = r
-		}
-	}
-	c.idx = i
-	if !found {
-		c.path = c.path[:0]
-		return
-	}
-	c.path = c.path[:depth] // the descent's prefix ending at the answer
+	c.path, c.idx = pathSeekFirst(c.path, s.root, c.at, pred)
 }
 
 func (c *pcursor[T]) valid() bool { return len(c.path) > 0 }
 
 // peekNext is the item after the current one without moving, nil at the end;
 // the cursor must be valid.
-func (c *pcursor[T]) peekNext() *T {
-	n := c.path[len(c.path)-1]
-	if r := n.rightAt(c.at); r != nil {
+func (c *pcursor[T]) peekNext() *T { return pathPeekNext(c.path, c.at) }
+
+// item is the current item; the cursor must be valid. It must not be written.
+func (c *pcursor[T]) item() *T { return &c.path[len(c.path)-1].item }
+
+func (c *pcursor[T]) next() { c.move(true) }
+
+func (c *pcursor[T]) prev() { c.move(false) }
+
+func (c *pcursor[T]) move(forward bool) {
+	if forward {
+		c.idx++
+	} else {
+		c.idx--
+	}
+	if len(c.path) == 0 {
+		c.seek(c.idx)
+		return
+	}
+	c.path = pathMove(c.path, c.at, forward)
+}
+
+// pathSeek returns path, emptied, extended from root to index i; empty off the ends.
+func pathSeek[T any](path []*pnode[T], root *pnode[T], at uint64, i int) []*pnode[T] {
+	path = path[:0]
+	if i < 0 || i >= psize(root, at) {
+		return path
+	}
+	for n := root; ; {
+		path = append(path, n)
+		l, r := n.kids(at)
+		ls := psize(l, at)
+		switch {
+		case i < ls:
+			n = l
+		case i == ls:
+			return path
+		default:
+			i -= ls + 1
+			n = r
+		}
+	}
+}
+
+// pathSeekFirst is PTreeImpl::lower_bound with its finger trim (VersionedMap.h:188-200):
+// the path to the first item satisfying pred, empty when none, and its index.
+func pathSeekFirst[T any](path []*pnode[T], root *pnode[T], at uint64, pred func(*T) bool) ([]*pnode[T], int) {
+	path = path[:0]
+	depth, i, base := 0, psize(root, at), 0
+	for n := root; n != nil; {
+		path = append(path, n)
+		l, r := n.kids(at)
+		ls := psize(l, at)
+		if pred(&n.item) {
+			depth, i = len(path), base+ls
+			n = l
+		} else {
+			base += ls + 1
+			n = r
+		}
+	}
+	return path[:depth], i
+}
+
+// pathPeekNext is the item after the end of a non-empty path, nil at the end.
+func pathPeekNext[T any](path []*pnode[T], at uint64) *T {
+	n := path[len(path)-1]
+	if r := n.rightAt(at); r != nil {
 		for n = r; ; {
-			l := n.leftAt(c.at)
+			l := n.leftAt(at)
 			if l == nil {
-				break
+				return &n.item
 			}
 			n = l
 		}
-		return &n.item
 	}
-	for i := len(c.path) - 1; i > 0; i-- {
-		if c.path[i-1].leftAt(c.at) == c.path[i] {
-			return &c.path[i-1].item
+	for i := len(path) - 1; i > 0; i-- {
+		if path[i-1].leftAt(at) == path[i] {
+			return &path[i-1].item
 		}
 	}
 	return nil
 }
 
-// item is the current item; the cursor must be valid. It must not be written.
-func (c *pcursor[T]) item() *T { return &c.path[len(c.path)-1].item }
-
-func (c *pcursor[T]) next() {
-	c.idx++
-	if len(c.path) == 0 {
-		c.seek(c.idx)
-		return
-	}
-	n := c.path[len(c.path)-1]
-	if r := n.rightAt(c.at); r != nil {
-		for n = r; n != nil; n = n.leftAt(c.at) {
-			c.path = append(c.path, n)
+// pathMove is PTreeImpl::move<forward> (VersionedMap.h:213-230) on a non-empty path.
+func pathMove[T any](path []*pnode[T], at uint64, forward bool) []*pnode[T] {
+	if c := path[len(path)-1].child(forward, at); c != nil {
+		for ; c != nil; c = c.child(!forward, at) {
+			path = append(path, c)
 		}
-		return
+		return path
 	}
 	for {
-		child := c.path[len(c.path)-1]
-		c.path = c.path[:len(c.path)-1]
-		if len(c.path) == 0 || c.path[len(c.path)-1].leftAt(c.at) == child {
-			return
-		}
-	}
-}
-
-func (c *pcursor[T]) prev() {
-	c.idx--
-	if len(c.path) == 0 {
-		c.seek(c.idx)
-		return
-	}
-	n := c.path[len(c.path)-1]
-	if l := n.leftAt(c.at); l != nil {
-		for n = l; n != nil; n = n.rightAt(c.at) {
-			c.path = append(c.path, n)
-		}
-		return
-	}
-	for {
-		child := c.path[len(c.path)-1]
-		c.path = c.path[:len(c.path)-1]
-		if len(c.path) == 0 || c.path[len(c.path)-1].rightAt(c.at) == child {
-			return
+		child := path[len(path)-1]
+		path = path[:len(path)-1]
+		if len(path) == 0 || path[len(path)-1].child(forward, at) != child {
+			return path
 		}
 	}
 }
@@ -705,4 +707,78 @@ func (c *pcursor[T]) descend(n *pnode[T], base int, pred func(*T) bool) bool {
 	}
 	c.path = c.path[:depth]
 	return true
+}
+
+// pfingerN is PTreeFinger::N (VersionedMap.h:79-83): a random treap of n items
+// is about 4.3 ln n deep.
+const pfingerN = 96
+
+// pfinger keeps its path inline like PTreeFinger (VersionedMap.h:76-131): short reads allocate nothing.
+// Kept cursors (the walk's pooled iterators, the snapshot cache's insert cursor) reuse pcursor paths.
+type pfinger[T any] struct {
+	root *pnode[T]
+	at   uint64
+	idx  int // the index of the current item; -1 or Len off the ends
+	n    int // path[:n] is root to the current node; 0 off either end
+	path [pfingerN]*pnode[T]
+}
+
+// finger returns a finger at index i; i == -1 or i == Len are off the ends.
+func (s *pseq[T]) finger(i int) pfinger[T] {
+	f := pfinger[T]{root: s.root, at: s.rv}
+	f.seek(i)
+	return f
+}
+
+// fit takes a path built in f.path as f's. Outgrowing the array is
+// PTreeFinger::push_back's ASSERT (VersionedMap.h:119-122).
+func (f *pfinger[T]) fit(p []*pnode[T]) {
+	if cap(p) != pfingerN {
+		panic("pfinger: treap deeper than PTreeFinger::N")
+	}
+	f.n = len(p)
+}
+
+// reset moves the finger to index i of s.
+func (f *pfinger[T]) reset(s *pseq[T], i int) {
+	f.root, f.at = s.root, s.rv
+	f.seek(i)
+}
+
+func (f *pfinger[T]) seek(i int) {
+	f.idx = i
+	f.fit(pathSeek(f.path[:0], f.root, f.at, i))
+}
+
+// seekFirst moves the finger to the first item of s satisfying pred; off the end when none does.
+func (f *pfinger[T]) seekFirst(s *pseq[T], pred func(*T) bool) {
+	f.root, f.at = s.root, s.rv
+	p, i := pathSeekFirst(f.path[:0], s.root, s.rv, pred)
+	f.idx = i
+	f.fit(p)
+}
+
+func (f *pfinger[T]) valid() bool { return f.n > 0 }
+
+// item is the current item; the finger must be valid. It must not be written.
+func (f *pfinger[T]) item() *T { return &f.path[f.n-1].item }
+
+// peekNext is the item after the current one, nil at the end; the finger must be valid.
+func (f *pfinger[T]) peekNext() *T { return pathPeekNext(f.path[:f.n], f.at) }
+
+func (f *pfinger[T]) next() { f.move(true) }
+
+func (f *pfinger[T]) prev() { f.move(false) }
+
+func (f *pfinger[T]) move(forward bool) {
+	if forward {
+		f.idx++
+	} else {
+		f.idx--
+	}
+	if f.n == 0 {
+		f.seek(f.idx)
+		return
+	}
+	f.fit(pathMove(f.path[:f.n], f.at, forward))
 }

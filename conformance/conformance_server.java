@@ -88,6 +88,7 @@ class ConformanceServer {
         new SqlPlanSteps(),
         new WsfRecordLayerSteps(),
         new TransformedSerializerSteps(),
+        new RywScriptSteps(),
     };
 
     private static class StepEntry {

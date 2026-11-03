@@ -216,11 +216,9 @@ func (c *refusalCluster) cache(servers ...ServerInfo) {
 // preferRefused makes the QueueModel rank the refusing replica first, so the
 // first attempt deterministically dials it.
 func (c *refusalCluster) preferRefused() {
-	q := c.db.queueModel
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	d := q.getOrCreate(liveSSAddr)
-	d.smoothOutstanding.total, d.smoothOutstanding.estimate, d.smoothOutstanding.time = 100, 100, nowSeconds()
+	setServer(c.db.queueModel, liveSSAddr, func(d *queueData) {
+		d.smoothOutstanding.total, d.smoothOutstanding.estimate, d.smoothOutstanding.time = 100, 100, nowSeconds()
+	})
 }
 
 // readOp is one storage read run through its production retry loop.

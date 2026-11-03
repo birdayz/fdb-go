@@ -42,6 +42,17 @@ func checkPseq(t *testing.T, step string, s *pseq[int], want []int) {
 		if cc.idx != k-1 || cc.valid() != (k > 0) || (cc.valid() && *cc.item() != want[k-1]) || sc.idx != k {
 			t.Fatalf("%s: prev of a copy at %d moved to %d (original at %d)", step, k, cc.idx, sc.idx)
 		}
+		var sf pfinger[int]
+		sf.seekFirst(s, func(v *int) bool { return indexOf(want, v) >= k })
+		if sf.idx != k || sf.valid() != (k < len(want)) || (sf.valid() && *sf.item() != want[k]) {
+			t.Fatalf("%s: finger seekFirst(index >= %d) at %d valid %t", step, k, sf.idx, sf.valid())
+		}
+		cf := sf // a finger is a value: its copy moves alone
+		cf.prev()
+		if cf.idx != k-1 || cf.valid() != (k > 0) || (cf.valid() && *cf.item() != want[k-1]) || sf.idx != k ||
+			(sf.valid() && *sf.item() != want[k]) {
+			t.Fatalf("%s: prev of a finger copy at %d moved to %d (original at %d)", step, k, cf.idx, sf.idx)
+		}
 		j, prev := s.before(func(v *int) bool { return indexOf(want, v) >= k })
 		if j != k-1 || (k > 0) != (prev != nil) || (prev != nil && *prev != want[k-1]) {
 			t.Fatalf("%s: before(index >= %d) = %d, %v", step, k, j, prev)
@@ -84,6 +95,107 @@ func checkPseq(t *testing.T, step string, s *pseq[int], want []int) {
 				t.Fatalf("%s: a clone moved with its original", step)
 			}
 		}
+		checkFinger(t, step, s, want, start)
+	}
+}
+
+// checkFinger walks fingers from start both ways and back past each end,
+// comparing every step with the reference.
+func checkFinger(t *testing.T, step string, s *pseq[int], want []int, start int) {
+	t.Helper()
+	at := func(f *pfinger[int], i int, dir string) {
+		t.Helper()
+		if f.valid() != (i >= 0 && i < len(want)) || f.idx != i || (f.valid() && *f.item() != want[i]) {
+			t.Fatalf("%s: %s finger from %d at %d: valid %t idx %d", step, dir, start, i, f.valid(), f.idx)
+		}
+		if f.valid() {
+			next := f.peekNext()
+			if (i+1 < len(want)) != (next != nil) || (next != nil && *next != want[i+1]) {
+				t.Fatalf("%s: finger peekNext at %d = %v", step, i, next)
+			}
+		}
+	}
+	f := s.finger(start)
+	i := start
+	for ; i <= len(want); i++ {
+		at(&f, i, "forward")
+		f.next()
+	}
+	for i--; i >= start; i-- { // back from past the end
+		f.prev()
+		at(&f, i, "returning")
+	}
+	var g pfinger[int]
+	g.reset(s, start)
+	for i = start; i >= -1; i-- {
+		at(&g, i, "backward")
+		g.prev()
+	}
+	g.next()
+	at(&g, -1, "returning backward")
+	g.next()
+	at(&g, 0, "returning backward")
+}
+
+// A finger lives in its value: walking one allocates nothing. Not parallel:
+// AllocsPerRun counts process-wide allocations.
+func TestPfingerAllocatesNothing(t *testing.T) {
+	var s pseq[int]
+	for i := 0; i < 1000; i++ {
+		s.insert(i, i)
+	}
+	sum := 0
+	allocs := testing.AllocsPerRun(10, func() {
+		for f := s.finger(0); f.valid(); f.next() {
+			sum += *f.item()
+		}
+		var f pfinger[int]
+		f.seekFirst(&s, func(v *int) bool { return *v >= 500 })
+		for ; f.valid(); f.prev() {
+			sum -= *f.item()
+		}
+	})
+	if allocs != 0 || sum == 0 {
+		t.Fatalf("finger walks allocated %v times (sum %d)", allocs, sum)
+	}
+}
+
+// A path deeper than PTreeFinger::N is C++'s ASSERT (VersionedMap.h:119-122):
+// the finger panics rather than write past its storage. A random treap never
+// gets there; a chain of nodes does.
+func TestPfingerDepthBound(t *testing.T) {
+	t.Parallel()
+	var root *pnode[int]
+	for i := pfingerN; i >= 0; i-- { // a left chain of pfingerN+1 nodes
+		root = &pnode[int]{left: root, item: i, size: int32(pfingerN + 1 - i)}
+	}
+	s := pseq[int]{root: root}
+	// In order, the chain's deepest node comes first: index 1 is pfingerN deep.
+	f := s.finger(1)
+	if !f.valid() || *f.item() != pfingerN-1 || f.n != pfingerN {
+		t.Fatalf("a finger at depth %d holds %v", pfingerN, f.valid())
+	}
+	f.next()
+	f.prev()
+	if !f.valid() || *f.item() != pfingerN-1 || f.n != pfingerN {
+		t.Fatalf("a finger moved back to depth %d holds %v", pfingerN, f.valid())
+	}
+	// Each way of reaching depth pfingerN+1 panics: a seek, a step, and a lower_bound
+	// descent that passes it even though its answer is shallower (VersionedMap.h:188-200).
+	for name, deep := range map[string]func(){
+		"seek":      func() { s.finger(0) },
+		"prev":      func() { g := s.finger(1); g.prev() },
+		"seekFirst": func() { var g pfinger[int]; g.seekFirst(&s, func(v *int) bool { return *v < pfingerN }) },
+	} {
+		func() {
+			defer func() {
+				if r := recover(); r != "pfinger: treap deeper than PTreeFinger::N" {
+					t.Fatalf("%s past depth %d recovered %v", name, pfingerN, r)
+				}
+			}()
+			deep()
+			t.Fatalf("%s past PTreeFinger::N did not panic", name)
+		}()
 	}
 }
 
