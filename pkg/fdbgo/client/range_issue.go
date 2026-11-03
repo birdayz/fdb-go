@@ -41,6 +41,10 @@ const (
 // issueRange runs a range read's synchronous part: entry checks, path choice,
 // the issue-time write view, and registration in the commit barrier.
 func (tx *Transaction) issueRange(parent context.Context, begin, end []byte, limit, byteTarget int, reverse, snapshot bool) *rangeRead {
+	if tx.routesSpecialKeyRange(begin, end) { // RYW:1716-1721, before every other check
+		r := &rangeRead{tx: tx, release: noopRelease}
+		return r.finish(tx.specialKeyRange(firstGreaterOrEqual(begin), firstGreaterOrEqual(end), limit, byteTarget, reverse))
+	}
 	ctx, release, counted := tx.opContextFor(parent, true)
 	r := &rangeRead{tx: tx, ctx: ctx, release: release, begin: begin, end: end, limit: limit, reverse: reverse, snapshot: snapshot}
 	if err := tx.checkReadState(ctx); err != nil {
@@ -94,6 +98,10 @@ func init() {
 // C++ order: deferred error and cancellation, 2004, then 2012 (ReadYourWrites.actor.cpp:1736-1749).
 // The facade resolves the selectors only after it passes.
 func (tx *Transaction) checkRangeArgs(ctx context.Context, beginKey, endKey []byte, limit int) error {
+	if tx.routesSpecialKeyRange(beginKey, endKey) {
+		// RYW:1716-1721 routes before these checks; the routed read raises its own.
+		return tx.specialKeyEntryError()
+	}
 	ctx, release := tx.opContext(ctx)
 	defer release()
 	if err := tx.checkReadState(ctx); err != nil {
@@ -218,9 +226,9 @@ func (r *rangeRead) addConflicts(kvs []KeyValue, more bool) error {
 	case r.path == rangePathRYWDisabled || !r.ryw.writesAtIssue:
 		return tx.addReadConflictsFor(r.ctx, [][2][]byte{{cBegin, cEnd}}) // no local writes to filter
 	case r.ryw.known:
-		return tx.addReadConflictsFor(r.ctx, r.ryw.localConflicts)
+		return tx.addReadConflictSpansFor(r.ctx, r.ryw.localConflicts)
 	default:
-		return tx.addReadConflictsFor(r.ctx, r.ryw.conflictRanges(cBegin, cEnd))
+		return tx.addReadConflictSpansFor(r.ctx, r.ryw.conflictRanges(cBegin, cEnd))
 	}
 }
 
@@ -230,8 +238,8 @@ func (r *rangeRead) complete() {
 	r.release()
 }
 
-// waitIssuedReads is Commit's wait on `reading` (ReadYourWrites.actor.cpp:1359-1360): issued
-// range reads and watch setups finish, recording conflict or error, before commit is built.
+// waitIssuedReads is Commit's wait on `reading` (ReadYourWrites.actor.cpp:1359-1360): issued reads
+// (Get, GetKey, GetRange) and watch setups finish, recording conflict or error, before commit is built.
 func (tx *Transaction) waitIssuedReads(ctx context.Context, inc *readIncarnation) error {
 	for {
 		tx.readErrMu.Lock()
@@ -259,7 +267,7 @@ func (tx *Transaction) waitIssuedReads(ctx context.Context, inc *readIncarnation
 
 // PendingRange is a started range read, like the future fdb_transaction_get_range returns.
 type PendingRange struct {
-	r     *rangeRead
+	r     issuedRangeRead
 	state atomic.Int32 // pendingReady → pendingClaimed by whichever of the goroutine or Get runs r
 	done  chan struct{}
 	kvs   []KeyValue // shared RYW/cache storage; Get copies
@@ -314,6 +322,11 @@ func (tx *Transaction) startRange(ctx context.Context, begin, end []byte, limit,
 		p.kvs, p.more, p.err = r.run(false)
 		return p
 	}
+	return tx.startPendingRange(r)
+}
+
+// startPendingRange runs an issued read that must wait on a background goroutine.
+func (tx *Transaction) startPendingRange(r issuedRangeRead) *PendingRange {
 	p := &PendingRange{r: r, done: make(chan struct{})}
 	hook := tx.beforeRangeGoroutine
 	go func() {

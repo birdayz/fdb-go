@@ -80,7 +80,8 @@ func TestRYWDependentPointReadUsesIssueTimeStack(t *testing.T) {
 				}
 				if laterName == "none" {
 					c.mu.Lock()
-					folded := !c.liveLocked().writes[string(key)].hasAtomics
+					entry, _ := c.liveLocked().entry(string(key))
+					folded := !entry.hasAtomics
 					c.mu.Unlock()
 					if folded {
 						t.Fatal("the read folded its result into the write map")

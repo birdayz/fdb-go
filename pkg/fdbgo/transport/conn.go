@@ -351,6 +351,37 @@ func (e *ConnClosedError) Unwrap() []error {
 	return []error{ErrConnClosed, &wire.FDBError{Code: codeRequestMaybeDelivered}}
 }
 
+// ConnectFailedError is a failed connect to a peer, as a request waiting on that
+// connect observes it. C++ connectionKeeper turns any connect or handshake failure,
+// including its CONNECTION_MONITOR_TIMEOUT, into connection_failed
+// (FlowTransport.actor.cpp:819-869, Net2.actor.cpp:363-391 and 413-430), discards the peer's
+// unsent unreliable packets and fires peer->disconnect (FlowTransport.actor.cpp:933,
+// 1001-1004). Every tryGetReply queued on the peer then completes with
+// request_maybe_delivered (fdbrpc.h:797-816, genericactors.actor.h:380-385), whether
+// or not its packet ever left the client. So this matches errors.As(err,
+// **wire.FDBError) with code 1030 and nothing else: the dial error is message-only,
+// so a dial timeout cannot match a caller's context probes.
+type ConnectFailedError struct {
+	Addr  string
+	cause error
+}
+
+// NewConnectFailedError codes cause, the error of a failed dial to addr.
+func NewConnectFailedError(addr string, cause error) *ConnectFailedError {
+	return &ConnectFailedError{Addr: addr, cause: cause}
+}
+
+func (e *ConnectFailedError) Error() string {
+	return "connect to " + e.Addr + " failed (request_maybe_delivered): " + e.cause.Error()
+}
+
+func (e *ConnectFailedError) Unwrap() error {
+	return &wire.FDBError{Code: codeRequestMaybeDelivered}
+}
+
+// Cause returns the dial error, for diagnostics.
+func (e *ConnectFailedError) Cause() error { return e.cause }
+
 // errConnClosed is the shared no-cause teardown value. A single value (not a
 // fresh allocation per site) so the cheap hot paths (SendFrame/Flush ctx.Done
 // arms) stay allocation-free.

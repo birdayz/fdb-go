@@ -261,30 +261,23 @@ func (o goTransactionOptions) Tags() []string {
 	return o.tx.inner.Tags()
 }
 
+// SetReportConflictingKeys sets REPORT_CONFLICTING_KEYS: after a not_committed the read
+// conflict ranges that conflicted are readable under \xff\xff/transaction/conflicting_keys/
+// ("1" where a range begins, "0" where it ends), as in libfdb_c. The map survives OnError and
+// Reset; the option does not (it is not persistent).
 func (o goTransactionOptions) SetReportConflictingKeys() error {
-	// Fails unsafe if ignored: the caller sets this to read back the conflicting key ranges via
-	// the \xff\xff/transaction/conflicting_keys/ special-key module after a not_committed. The
-	// pure-Go client implements neither the commit-request field (CommitTransactionRef
-	// .report_conflicting_keys, which the proxy reads — CommitProxyServer.actor.cpp:2448) nor the
-	// special-key read-back, so silently no-op'ing would leave the caller with empty/erroring
-	// results and no signal. Report it, matching SetRawAccess/SetAuthorizationToken; the libfdb_c
-	// backend forwards it normally.
-	return &UnsupportedOptionError{Option: "report_conflicting_keys"}
+	o.tx.inner.SetReportConflictingKeys()
+	return nil
 }
 
+// SetSpecialKeySpaceRelaxed sets SPECIAL_KEY_SPACE_RELAXED: a special-key range read may
+// span modules, or none, instead of failing with special_keys_cross_module_read (2112) /
+// special_keys_no_module_found (2113) (ReadYourWrites.actor.cpp:2603-2605). The pure-Go
+// client serves only \xff\xff/transaction/conflicting_keys/; a read that reaches any other
+// module's data fails with unsupported_operation (2108), relaxed or not.
 func (o goTransactionOptions) SetSpecialKeySpaceRelaxed() error {
-	// Fails unsafe if ignored. In libfdb_c this relaxes a client-side READ restriction: by
-	// default a special-key range read must intersect exactly one module, and a cross-module
-	// or no-module read raises special_keys_cross_module_read (2112) /
-	// special_keys_no_module_found (2113) (error_definitions.h:251-252); the option sets
-	// options.specialKeySpaceRelaxed (ReadYourWrites.actor.cpp:2602-2605) to permit zero or
-	// more. The pure-Go client implements no special-key-space module at all, so there is no
-	// restriction to relax and the reads the caller is relaxing FOR cannot succeed either. A
-	// silent nil answers "granted" to a request for a capability that is absent — the same
-	// migration trap SetReportConflictingKeys guards against, and for the same reason: that
-	// option is rejected precisely BECAUSE this module is missing, so silently accepting the
-	// options that configure the missing module is not a position this file can hold.
-	return &UnsupportedOptionError{Option: "special_key_space_relaxed"}
+	o.tx.inner.SetSpecialKeySpaceRelaxed()
+	return nil
 }
 
 func (o goTransactionOptions) SetSpecialKeySpaceEnableWrites() error {
@@ -293,8 +286,8 @@ func (o goTransactionOptions) SetSpecialKeySpaceEnableWrites() error {
 	// options.specialKeySpaceChangeConfiguration (ReadYourWrites.actor.cpp:2607-2610), which
 	// makes commit run specialKeySpace->commit(ryw) (:1356) — the step that turns writes to
 	// \xff\xff/management/... into the real configuration mutations they stand for. Without it
-	// such a write raises special_keys_write_disabled (2114). The pure-Go client has neither
-	// the module nor that commit step, so a silent nil tells a caller their configuration
+	// such a write raises special_keys_write_disabled (2114). The pure-Go client has no
+	// special-key write module nor that commit step, so a silent nil tells a caller their configuration
 	// change is enabled while the write is either dropped or shipped as a literal \xff\xff key
 	// that means nothing — the intended cluster change silently does not happen.
 	return &UnsupportedOptionError{Option: "special_key_space_enable_writes"}
@@ -395,7 +388,7 @@ func (o goTransactionOptions) SetBypassStorageQuota() error {
 	// pure-Go client never sets FLAG_BYPASS_STORAGE_QUOTA (0x4) on the commit request
 	// (commitpath.go), so a silent no-op ships the commit WITHOUT the bypass and it is rejected
 	// with storage_quota_exceeded — the requested write-admission is dropped with no signal.
-	// Report it, matching SetRawAccess/SetReportConflictingKeys; the libfdb_c backend forwards it.
+	// Report it, matching SetRawAccess; the libfdb_c backend forwards it.
 	return &UnsupportedOptionError{Option: "bypass_storage_quota"}
 }
 
@@ -504,14 +497,17 @@ func (o DatabaseOptions) SetTransactionCausalReadRisky() error {
 }
 func (o DatabaseOptions) SetTransactionLoggingMaxFieldLength(_ int64) error { return nil }
 
-// DB-level defaults for the options the per-transaction setters reject (RFC-111 P1.3): keep the
-// fail-loud taxonomy consistent across both surfaces — a DB default that silently swallows
-// report_conflicting_keys / automatic_idempotency would re-open the same migration trap the
-// per-tx SetReportConflictingKeys/SetAutomaticIdempotency now guard against.
+// SetTransactionReportConflictingKeys sets TRANSACTION_REPORT_CONFLICTING_KEYS: every new
+// transaction, and every Reset or OnError retry of one, starts with REPORT_CONFLICTING_KEYS.
 func (o DatabaseOptions) SetTransactionReportConflictingKeys() error {
-	return &UnsupportedOptionError{Option: "report_conflicting_keys"}
+	if o.db != nil {
+		o.db.inner.SetTransactionReportConflictingKeys()
+	}
+	return nil
 }
 
+// SetTransactionAutomaticIdempotency rejects the DB default like the per-transaction
+// SetAutomaticIdempotency (RFC-111 P1.3): a silent default would re-open the same trap.
 func (o DatabaseOptions) SetTransactionAutomaticIdempotency() error {
 	return &UnsupportedOptionError{Option: "automatic_idempotency"}
 }

@@ -25,8 +25,8 @@ func TestRYWNodeLogStorageCost(t *testing.T) {
 	for i := 0; i < 10000; i++ {
 		n.mutate([]byte(fmt.Sprintf("k%05d", i)), true, false)
 	}
-	if n.sorted != nil || len(n.log) != 10000 {
-		t.Fatalf("write-only nodes: built=%t log length=%d", n.sorted != nil, len(n.log))
+	if n.built || len(n.log) != 10000 {
+		t.Fatalf("write-only nodes: built=%t log length=%d", n.built, len(n.log))
 	}
 	t.Logf("node log: entry=%d B length=%d capacity=%d live-records=%d B reserved=%d B (excludes keys and stores)", entryBytes, len(n.log), cap(n.log), uintptr(len(n.log))*entryBytes, uintptr(cap(n.log))*entryBytes)
 }
@@ -465,7 +465,7 @@ func nodeBoundaryList(t testing.TB, n *rywNodes) string {
 
 func checkNodesInvariants(t *testing.T, n *rywNodes) {
 	t.Helper()
-	s := n.sorted
+	s := n.seq.appendTo(nil)
 	if len(s) < 3 || len(s[0].key) != 0 || !bytes.Equal(s[len(s)-2].key, allKeysEnd) ||
 		!bytes.Equal(s[len(s)-1].key, afterAllKeysBytes) {
 		t.Fatalf("sentinels missing:\n%s", n.dump())

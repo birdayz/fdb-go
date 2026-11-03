@@ -46,9 +46,9 @@ const (
 	// transient one. C++ has no such cap (it relies on the transaction
 	// timeout); this is the bounded-client analog.
 	maxSelectorResolutionSteps = 1000
-	// maxRelocateRetries bounds a range read's relocations after wrong_shard_server,
-	// all_alternatives_failed or a maybe-delivered teardown; C++ relies on the
-	// transaction timeout (default 5s).
+	// maxRelocateRetries bounds a range read's relocations after wrong_shard_server
+	// or all_alternatives_failed; C++ relies on the transaction timeout (default 5s).
+	// A maybe-delivered failure is loadBalance's own unbounded retry (lbRetry).
 	maxRelocateRetries = 5
 )
 
@@ -159,6 +159,7 @@ func (tx *Transaction) getKeyImplWithReplyWait(ctx context.Context, readVersion 
 	needsRangeFallback := false
 	var tags readTagSample
 	redraw := true
+	var lb lbRetry
 	for {
 		// C++ short-circuits: if key == allKeysEnd → offset > 0 → return allKeysEnd
 		// if key == "" && offset <= 0 → return "" (empty key)
@@ -178,6 +179,7 @@ func (tx *Transaction) getKeyImplWithReplyWait(ctx context.Context, readVersion 
 		// through the location lookup + proxy request + invalidate, mirroring C++ getKey's
 		// Reverse{k.isBackward()} (NativeAPI:3787-3788). See keySelectorIsBackward for the predicate.
 		isBackward := keySelectorIsBackward(orEqual, offset)
+		lb.observe = tx.db.onReadBackoff.Load()
 		loc, err := tx.db.locCache.locateWithReplyWait(tx.db, ctx, selectorKey, tx.tenantId, tx.currentSpan(), isBackward, replyWait)
 		if err != nil {
 			return nil, false, fmt.Errorf("locate key: %w", err)
@@ -189,7 +191,7 @@ func (tx *Transaction) getKeyImplWithReplyWait(ctx context.Context, readVersion 
 		if redraw {
 			tags = tx.sampleReadTags() // GetKeyRequest per loop iteration (NativeAPI.actor.cpp:3806)
 		}
-		replyKey, replyOrEqual, replyOffset, err := tx.sendGetKey(ctx, readVersion, selectorKey, orEqual, offset, loc.Servers, tags, replyWait)
+		replyKey, replyOrEqual, replyOffset, err := tx.sendGetKeyPaced(ctx, readVersion, selectorKey, orEqual, offset, loc.Servers, tags, replyWait, &lb)
 		redraw = err == nil || readTagRetry(err)
 		if err != nil {
 			// Reply timeout (slow-but-alive server): re-send, bounded, then a
@@ -205,11 +207,14 @@ func (tx *Transaction) getKeyImplWithReplyWait(ctx context.Context, readVersion 
 				}
 				continue
 			}
-			// A maybeDelivered teardown (1030/1100: the storage connection died
-			// under the in-flight RPC) takes the same arm: C++ loadBalance
-			// retries another alternative and exhausts to all_alternatives_failed,
-			// which this arm already absorbs.
-			if isWrongShardServer(err) || isAllAlternativesFailed(err) || isMaybeDelivered(err) {
+			// maybeDelivered (1030/1100: a failed connect or a teardown on every
+			// replica tried) is loadBalance's own unbounded retry (lbRetry); it is
+			// re-located as getValueImpl explains, without charging shardRetries.
+			if isMaybeDelivered(err) {
+				tx.db.locCache.invalidate(selectorKey, tx.tenantId, isBackward)
+				continue
+			}
+			if isWrongShardServer(err) || isAllAlternativesFailed(err) {
 				// Native range reads switch to exact fallback on an initial wrong-shard reply.
 				if progressSteps == 0 && isWrongShardServer(err) {
 					needsRangeFallback = true
@@ -229,6 +234,7 @@ func (tx *Transaction) getKeyImplWithReplyWait(ctx context.Context, readVersion 
 			}
 			return nil, false, err
 		}
+		lb = lbRetry{observe: tx.db.onReadBackoff.Load()} // the next request is a new loadBalance call
 
 		if progressSteps == 0 {
 			needsRangeFallback = needsRangeFallback || keyResolutionNeedsRangeFallback(replyKey, replyOrEqual, replyOffset, loc, isBackward)
@@ -268,14 +274,16 @@ func keyResolutionNeedsRangeFallback(key []byte, orEqual bool, offset int32, loc
 // to determine if the selector is fully resolved. Matches C++ getKey() which uses
 // the reply's KeySelector to drive the resolution loop.
 func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, selectorKey []byte, orEqual bool, offset int32, servers []ServerInfo, tags readTagSample, replyWait func(context.Context)) ([]byte, bool, int32, error) {
+	return tx.sendGetKeyPaced(ctx, readVersion, selectorKey, orEqual, offset, servers, tags, replyWait, nil)
+}
+
+func (tx *Transaction) sendGetKeyPaced(ctx context.Context, readVersion int64, selectorKey []byte, orEqual bool, offset int32, servers []ServerInfo, tags readTagSample, replyWait func(context.Context), lb *lbRetry) ([]byte, bool, int32, error) {
+	alternatives := len(servers)
 	servers, ok := tx.db.failMon.liveServers(servers, EndpointGetKey)
 	if !ok {
 		return nil, false, 0, tx.db.allAlternativesFailed(ctx)
 	}
-	bestIdx, secondIdx := tx.db.queueModel.chooseTopTwo(servers)
-	if !tx.db.hedgeEnabled.Load() {
-		secondIdx = -1
-	}
+	alts := newReadAlternatives(tx.db, servers, alternatives, lb)
 
 	// Capture tx fields before closures (see sendGetValue comment).
 	lockAware := tx.lockAware || tx.readLockAware
@@ -320,38 +328,35 @@ func (tx *Transaction) sendGetKey(ctx context.Context, readVersion int64, select
 		}
 	}
 
-	primary := makeSender(servers[bestIdx])
-	var secondary sendFunc
-	var hedgeDelay time.Duration
-	if secondIdx >= 0 {
-		secondary = makeSender(servers[secondIdx])
-		hedgeDelay = tx.db.queueModel.secondDelay(servers[bestIdx].Address, servers[secondIdx].Address)
-	}
-	result := sendFrameWithHedge(ctx, tx.db.queueModel, hedgeDelay, primary, secondary, tx.readRPCTimeout())
-
-	// End every started request that did not become the winner (hedge losers;
-	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
-	// permanently and biases server selection. RFC-010 #5.
-	for _, o := range result.others {
-		tx.db.endOther(o)
-	}
-
-	if result.addr != "" {
-		if result.connErr {
-			tx.db.handleReadConnError(result.addr, result.conn, result.err)
-			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
-		} else if result.err != nil {
-			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
+	result := alts.start(ctx, makeSender, tx.readRPCTimeout())
+	for {
+		tx.db.finishReadRPC(result)
+		err := result.err
+		var key []byte
+		var replyOrEqual bool
+		var replyOffset int32
+		if err == nil {
+			var penalty float64
+			key, replyOrEqual, replyOffset, penalty, err = parseGetKeyReply(result.body)
+			tx.db.noteReadBrokenPromise(err, servers, result.addr, EndpointGetKey)
+			tx.db.queueModel.endRequestFull(result.addr, result.delta, time.Since(result.start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
+			alts.fail(ctx, err)
 		}
+		if ctx.Err() != nil && err != nil {
+			return nil, false, 0, ctx.Err()
+		}
+		if !isMaybeDelivered(err) {
+			return key, replyOrEqual, replyOffset, err
+		}
+		next, ok := alts.advance(ctx, makeSender, tx.readRPCTimeout())
+		if !ok {
+			if ctx.Err() != nil {
+				return nil, false, 0, ctx.Err()
+			}
+			return nil, false, 0, err
+		}
+		result = next
 	}
-	if result.err != nil {
-		return nil, false, 0, result.err
-	}
-
-	key, replyOrEqual, replyOffset, penalty, err := parseGetKeyReply(result.body)
-	tx.db.noteReadBrokenPromise(err, servers, result.addr, EndpointGetKey)
-	tx.db.queueModel.endRequestFull(result.addr, result.delta, time.Since(result.start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
-	return key, replyOrEqual, replyOffset, err
 }
 
 func buildGetKeyRequest(selectorKey []byte, orEqual bool, offset int32, version int64, lockAware bool, tenantId int64, span types.SpanContext, tags readTagSample, replyToken transport.UID) ([]byte, *[]byte) {
@@ -451,6 +456,7 @@ func (tx *Transaction) getValueSampled(parentCtx context.Context, key []byte, ca
 func (tx *Transaction) getValueImpl(ctx context.Context, key []byte, carried *readTagSample) ([]byte, error) {
 	tx.hadRead.Store(true) // a read was issued (RFC-059 poison signal)
 	timeoutRetries := 0
+	lb := lbRetry{observe: tx.db.onReadBackoff.Load()}
 	var tags readTagSample
 	redraw := carried == nil
 	if carried != nil {
@@ -468,7 +474,7 @@ func (tx *Transaction) getValueImpl(ctx context.Context, key []byte, carried *re
 		if redraw {
 			tags = tx.sampleReadTags() // GetValueRequest per loop iteration (NativeAPI.actor.cpp:3681)
 		}
-		val, err := tx.sendGetValue(ctx, key, loc.Servers, tags)
+		val, err := tx.sendGetValuePaced(ctx, key, loc.Servers, tags, &lb)
 		if err == nil {
 			return val, nil
 		}
@@ -489,11 +495,15 @@ func (tx *Transaction) getValueImpl(ctx context.Context, key []byte, carried *re
 			}
 			continue
 		}
+		// maybeDelivered (1030/1100 on every replica tried) is loadBalance's own unbounded retry, paced per
+		// request by sendGetValuePaced; Go re-locates as it has no later all_alternatives_failed to do so.
+		if isMaybeDelivered(err) {
+			attempts--
+			tx.db.locCache.invalidate(key, tx.tenantId, false)
+			continue
+		}
 		// wrong_shard_server or all_alternatives_failed → invalidate cache, retry.
-		// maybeDelivered (1030/1100, a connection teardown under the in-flight
-		// RPC) joins them: C++ loadBalance retries another alternative and
-		// exhausts to all_alternatives_failed — same absorption, same bound.
-		if isWrongShardServer(err) || isAllAlternativesFailed(err) || isMaybeDelivered(err) {
+		if isWrongShardServer(err) || isAllAlternativesFailed(err) {
 			tx.db.locCache.invalidate(key, tx.tenantId, false)
 			if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
 				return nil, err
@@ -512,15 +522,18 @@ func (tx *Transaction) getValueImpl(ctx context.Context, key []byte, carried *re
 }
 
 func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []ServerInfo, tags readTagSample) ([]byte, error) {
+	return tx.sendGetValuePaced(ctx, key, servers, tags, nil)
+}
+
+// sendGetValuePaced is sendGetValue counting each maybe-delivered request as one loadBalance
+// attempt in lb, which delays the request after it (LoadBalance.actor.h:301-308, 682-686, 721-725).
+func (tx *Transaction) sendGetValuePaced(ctx context.Context, key []byte, servers []ServerInfo, tags readTagSample, lb *lbRetry) ([]byte, error) {
+	alternatives := len(servers)
 	servers, ok := tx.db.failMon.liveServers(servers, EndpointGetValue)
 	if !ok {
 		return nil, tx.db.allAlternativesFailed(ctx)
 	}
-	// Pick best + second-best for speculative hedge.
-	bestIdx, secondIdx := tx.db.queueModel.chooseTopTwo(servers)
-	if !tx.db.hedgeEnabled.Load() {
-		secondIdx = -1 // disable hedge
-	}
+	alts := newReadAlternatives(tx.db, servers, alternatives, lb)
 
 	// Capture tx fields before building closures. The makeSender closures may
 	// execute in goroutines (via hedge), and postCommitReset can clear these
@@ -570,45 +583,31 @@ func (tx *Transaction) sendGetValue(ctx context.Context, key []byte, servers []S
 		}
 	}
 
-	primary := makeSender(servers[bestIdx])
-	var secondary sendFunc
-	var hedgeDelay time.Duration
-	if secondIdx >= 0 {
-		secondary = makeSender(servers[secondIdx])
-		hedgeDelay = tx.db.queueModel.secondDelay(servers[bestIdx].Address, servers[secondIdx].Address)
-	}
-	result := sendFrameWithHedge(ctx, tx.db.queueModel, hedgeDelay, primary, secondary, tx.readRPCTimeout())
-
-	// End every started request that did not become the winner (hedge losers;
-	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
-	// permanently and biases server selection. RFC-010 #5.
-	for _, o := range result.others {
-		tx.db.endOther(o)
-	}
-
-	// Process result.
-	if result.addr != "" {
-		if result.connErr {
-			tx.db.handleReadConnError(result.addr, result.conn, result.err)
-			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
-		} else if result.err != nil {
-			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
+	result := alts.start(ctx, makeSender, tx.readRPCTimeout())
+	tx.db.finishReadRPC(result)
+	err := result.err
+	var val []byte
+	if err == nil {
+		var penalty float64
+		val, penalty, err = parseGetValueReply(result.body)
+		tx.db.noteReadBrokenPromise(err, servers, result.addr, EndpointGetValue)
+		tx.db.queueModel.endRequestFull(result.addr, result.delta, time.Since(result.start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
+		alts.fail(ctx, err)
+		if !isMaybeDelivered(err) {
+			return val, err
 		}
 	}
-	if result.err != nil {
-		// Hedge failed — fall back to remaining servers sequentially (see resolveFallback).
-		if !result.triedSecondary {
-			secondIdx = -1
-		}
-		return resolveFallback(ctx, result.err, servers, bestIdx, secondIdx, func(server ServerInfo) ([]byte, error) {
-			return tx.sendGetValueToServer(ctx, key, server, readVersion, lockAware, tenantId, tags)
-		})
+	secondIdx := alts.second
+	if !result.triedSecondary {
+		secondIdx = -1
 	}
-
-	val, penalty, err := parseGetValueReply(result.body)
-	tx.db.noteReadBrokenPromise(err, servers, result.addr, EndpointGetValue)
-	tx.db.queueModel.endRequestFull(result.addr, result.delta, time.Since(result.start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
-	return val, err
+	var pace func() error
+	if lb != nil {
+		pace = func() error { return lb.pace(ctx, alternatives, 1) }
+	}
+	return resolveFallbackPaced(ctx, err, servers, alts.best, secondIdx, func(server ServerInfo) ([]byte, error) {
+		return tx.sendGetValueToServer(ctx, key, server, readVersion, lockAware, tenantId, tags)
+	}, pace)
 }
 
 // sendGetValueToServer is a single-server fallback after hedge failure.
@@ -714,7 +713,7 @@ func (e *RangeMaterializationLimitError) Error() string {
 type rangeScanOps[T any] struct {
 	// send issues one shard-local request at the scan's limits and read version
 	// and parses its reply.
-	send func(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo, tags readTagSample) ([]T, bool, error)
+	send func(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo, tags readTagSample, lb lbRetry) ([]T, bool, error, lbRetry)
 	// key returns the PRIMARY key of an element. For a mapped row this is the
 	// primary (index) row's key, never a secondary key: it drives shard
 	// re-query bounds, which are bounds in the primary range only.
@@ -735,7 +734,7 @@ var plainRangeScanOps = rangeScanOps[KeyValue]{
 
 func (tx *Transaction) getRangeImpl(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool) ([]KeyValue, bool, []byte, error) {
 	ops := plainRangeScanOps
-	ops.send = tx.sendGetRange
+	ops.send = tx.sendGetRangePaced
 	return rangeScanImpl(tx, ctx, begin, end, limits, readVersion, reverse, ops)
 }
 
@@ -756,6 +755,7 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 	curEnd := end
 	relocateRetries := 0
 	timeoutRetries := 0
+	lb := lbRetry{observe: tx.db.onReadBackoff.Load()}
 	// C++ getRange's own loop, before any getRangeFallback, reports readThrough when the
 	// first reply's rows end a shard the range continues past (NativeAPI.actor.cpp:4762,
 	// 4795-4799). A byte-targeted call then stops; wrong_shard_server falls back (:4864-4870).
@@ -843,7 +843,8 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 				if redraw {
 					tags = tx.sampleReadTags() // a request per send (NativeAPI.actor.cpp:4303, 4684)
 				}
-				kvs, more, err := ops.send(ctx, shardBegin, shardEnd, limits, readVersion, reverse, loc.Servers, tags)
+				kvs, more, err, nextRetry := ops.send(ctx, shardBegin, shardEnd, limits, readVersion, reverse, loc.Servers, tags, lb)
+				lb = nextRetry
 				redraw = err == nil || readTagRetry(err)
 				if err != nil {
 					// Reply timeout (a slow-but-alive server): the location is
@@ -863,13 +864,15 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 						}
 						continue // re-send same shard
 					}
-					// maybeDelivered (1030/1100: the storage connection died
-					// under the in-flight RPC) takes the same arm — C++
-					// loadBalance retries another alternative and exhausts to
-					// all_alternatives_failed, which this arm already absorbs.
+					// maybeDelivered (1030/1100: a failed connect or a teardown on
+					// every replica tried) re-locates the same way but is
+					// loadBalance's own unbounded retry, paced by lbRetry rather
+					// than charged to relocateRetries (see getValueImpl).
 					if isWrongShardServer(err) || isAllAlternativesFailed(err) || isMaybeDelivered(err) {
-						relocateRetries++
-						if relocateRetries > maxRelocateRetries {
+						delay := wrongShardRetryDelay
+						if isMaybeDelivered(err) {
+							delay = 0 // each request was already paced by the sender
+						} else if relocateRetries++; relocateRetries > maxRelocateRetries {
 							// Surface a RETRYABLE transaction_too_old (not the
 							// terminal all_alternatives_failed): the read path
 							// absorbs all_alternatives_failed and lets the
@@ -887,7 +890,7 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 						} else {
 							curBegin = shardBegin
 						}
-						if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
+						if err := sleepCtx(ctx, delay); err != nil {
 							return nil, false, nil, err
 						}
 						relocated = true
@@ -895,6 +898,7 @@ func rangeScanImpl[T any](tx *Transaction, ctx context.Context, begin, end []byt
 					}
 					return nil, false, nil, err
 				}
+				lb = lbRetry{observe: tx.db.onReadBackoff.Load()} // the next request is a new loadBalance call
 				if firstReply {
 					firstReply = false
 					if byteLimited && len(kvs) > 0 && !more {
@@ -1008,6 +1012,11 @@ func (tx *Transaction) sendGetRange(ctx context.Context, begin, end []byte, limi
 	return sendRangeRPC(tx, ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), limits, readVersion, reverse, servers, tags, plainRangeRPCOps)
 }
 
+func (tx *Transaction) sendGetRangePaced(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo, tags readTagSample, lb lbRetry) ([]KeyValue, bool, error, lbRetry) {
+	rows, more, err := sendRangeRPCPaced(tx, ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), limits, readVersion, reverse, servers, tags, plainRangeRPCOps, &lb)
+	return rows, more, err, lb
+}
+
 // plainRangeRPCOps sends a GetKeyValuesRequest.
 var plainRangeRPCOps = rangeRPCOps[KeyValue]{
 	endpoint: EndpointGetKeyValues,
@@ -1038,6 +1047,11 @@ type rangeRPCOps[T any] struct {
 // divides a scan into batches. The request is sent at readVersion, the version the read's
 // operation captured (NativeAPI.actor.cpp:4617-4618).
 func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end KeySelector, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo, tags readTagSample, ops rangeRPCOps[T]) ([]T, bool, error) {
+	return sendRangeRPCPaced(tx, ctx, begin, end, limits, readVersion, reverse, servers, tags, ops, nil)
+}
+
+func sendRangeRPCPaced[T any](tx *Transaction, ctx context.Context, begin, end KeySelector, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo, tags readTagSample, ops rangeRPCOps[T], lb *lbRetry) ([]T, bool, error) {
+	alternatives := len(servers)
 	// C++ transformRangeLimits, called from BOTH range loops (getExactRange:4299, getRange:4681).
 	wireLimit, wireLimitBytes := transformRangeLimits(limits, reverse)
 	servers, ok := tx.db.failMon.liveServers(servers, ops.endpoint)
@@ -1045,10 +1059,7 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end KeySel
 		return nil, false, tx.db.allAlternativesFailed(ctx)
 	}
 
-	bestIdx, secondIdx := tx.db.queueModel.chooseTopTwo(servers)
-	if !tx.db.hedgeEnabled.Load() {
-		secondIdx = -1
-	}
+	alts := newReadAlternatives(tx.db, servers, alternatives, lb)
 
 	// Capture tx fields before closures (see sendGetValue comment).
 	lockAware := tx.lockAware || tx.readLockAware
@@ -1093,38 +1104,34 @@ func sendRangeRPC[T any](tx *Transaction, ctx context.Context, begin, end KeySel
 		}
 	}
 
-	primary := makeSender(servers[bestIdx])
-	var secondary sendFunc
-	var hedgeDelay time.Duration
-	if secondIdx >= 0 {
-		secondary = makeSender(servers[secondIdx])
-		hedgeDelay = tx.db.queueModel.secondDelay(servers[bestIdx].Address, servers[secondIdx].Address)
-	}
-	result := sendFrameWithHedge(ctx, tx.db.queueModel, hedgeDelay, primary, secondary, tx.readRPCTimeout())
-
-	// End every started request that did not become the winner (hedge losers;
-	// both arms on timeout/cancel) exactly once, else its QueueModel delta leaks
-	// permanently and biases server selection. RFC-010 #5.
-	for _, o := range result.others {
-		tx.db.endOther(o)
-	}
-
-	if result.addr != "" {
-		if result.connErr {
-			tx.db.handleReadConnError(result.addr, result.conn, result.err)
-			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
-		} else if result.err != nil {
-			tx.db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
+	result := alts.start(ctx, makeSender, tx.readRPCTimeout())
+	for {
+		tx.db.finishReadRPC(result)
+		err := result.err
+		var kvs []T
+		var more bool
+		if err == nil {
+			var penalty float64
+			kvs, more, penalty, err = ops.parse(result.body)
+			tx.db.noteReadBrokenPromise(err, servers, result.addr, ops.endpoint)
+			tx.db.queueModel.endRequestFull(result.addr, result.delta, time.Since(result.start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
+			alts.fail(ctx, err)
 		}
+		if ctx.Err() != nil && err != nil {
+			return nil, false, ctx.Err()
+		}
+		if !isMaybeDelivered(err) {
+			return kvs, more, err
+		}
+		next, ok := alts.advance(ctx, makeSender, tx.readRPCTimeout())
+		if !ok {
+			if ctx.Err() != nil {
+				return nil, false, ctx.Err()
+			}
+			return nil, false, err
+		}
+		result = next
 	}
-	if result.err != nil {
-		return nil, false, result.err
-	}
-
-	kvs, more, penalty, err := ops.parse(result.body)
-	tx.db.noteReadBrokenPromise(err, servers, result.addr, ops.endpoint)
-	tx.db.queueModel.endRequestFull(result.addr, result.delta, time.Since(result.start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
-	return kvs, more, err
 }
 
 // fdbErrorCode returns err's FDB error code. errors.AsType, unlike errors.As,
@@ -1153,13 +1160,12 @@ func isAllAlternativesFailed(err error) bool {
 // or broken_promise (1100) — C++ loadBalance's maybeDelivered classification
 // (LoadBalance.actor.h:344: `maybeDelivered = errCode == error_code_broken_promise
 // || errCode == error_code_request_maybe_delivered`). The transport delivers a
-// coded 1030 for every connection teardown, so this is how a read loop
-// recognizes "the connection under my in-flight RPC died". For reads
-// (AtMostOnce::False) C++ retries another alternative and, on exhaustion,
-// surfaces all_alternatives_failed to the read's own retry loop — never the raw
-// teardown code to the application. The Go read loops mirror that by treating
-// maybeDelivered exactly like all_alternatives_failed: invalidate the location,
-// bounded retry, and on exhaustion a RETRYABLE transaction_too_old. The commit
+// coded 1030 for every connection teardown and the client for every failed
+// connect (transport.ConnectFailedError), so this is how a read loop recognizes
+// "the connection to my replica failed". For reads (AtMostOnce::False) C++
+// loadBalance retries alternatives with backoff, unbounded, and never surfaces
+// the code to the application. The Go read loops mirror that with lbRetry,
+// re-locating each time (see getValueImpl). The commit
 // path consults this too, but converts instead of retrying: commit runs through
 // basicLoadBalance at AtMostOnce::True, which forbids a re-send, so commitpath.go
 // normalises maybeDelivered to commit_unknown_result. Its four TRANSPORT arms do
@@ -1199,21 +1205,35 @@ func isFutureVersionOrProcessBehind(err error) bool {
 // A maybeDelivered teardown (1030/1100 — one replica's connection died under the RPC) deliberately
 // matches NO case: it must not end the scan (unlike wrong_shard/all_alternatives it says nothing about
 // the other replicas — C++ loadBalance simply moves to the next alternative, LoadBalance.actor.h:344
-// with the false return at :377) and must not be remembered as a timeout. When every replica is torn
-// down the default arm flattens to all_alternatives_failed, which getValueImpl absorbs via
-// invalidate+relocate — the same exhaustion outcome as C++ loadBalance.
+// with the false return at :377) and must not be remembered as a timeout. When every failure was
+// maybeDelivered (a failed connect or a teardown on each replica) it is returned as is: C++ loadBalance
+// keeps retrying with backoff and raises all_alternatives_failed only when the FailureMonitor marks
+// every alternative failed (LoadBalance.actor.h:604-635, 682-686); the pace callback paces each one.
+// Any other unclassified failure still flattens to all_alternatives_failed.
 func resolveFallback(ctx context.Context, hedgeErr error, servers []ServerInfo, bestIdx, secondIdx int, trySingle func(ServerInfo) ([]byte, error)) ([]byte, error) {
+	return resolveFallbackPaced(ctx, hedgeErr, servers, bestIdx, secondIdx, trySingle, nil)
+}
+
+// resolveFallbackPaced is resolveFallback calling pace, when set, after each maybe-delivered replica.
+func resolveFallbackPaced(ctx context.Context, hedgeErr error, servers []ServerInfo, bestIdx, secondIdx int, trySingle func(ServerInfo) ([]byte, error), pace func() error) ([]byte, error) {
 	// A cancelled/expired CALLER context propagates IMMEDIATELY — a cancelled read must return ctx.Err(),
 	// never a remembered version error or a flattened timeout. Gate on ctx.Err() (the real READ context),
-	// NOT errors.Is on a per-server error: a cold dial / RPC timeout to an unreachable replica surfaces as
-	// a wrapped context.DeadlineExceeded under the db-scoped DefaultRPCTimeout while the read context is
-	// still LIVE, and that must fall back to other replicas rather than abort the scan. Checked at
+	// NOT errors.Is on a per-server error: a per-server deadline can surface as a wrapped
+	// context.DeadlineExceeded while the read context is still LIVE, and that must fall back to other
+	// replicas rather than abort the scan (a failed connect is coded 1030 instead). Checked at
 	// entry (covers the no-untried-fallback case) and after each replica in the loop below.
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 	sawTimeout := isServerTimeout(hedgeErr)
-	var versionErr error
+	var versionErr, maybeDelivered error
+	unclassified := false
+	switch {
+	case isMaybeDelivered(hedgeErr):
+		maybeDelivered = hedgeErr
+	case hedgeErr != nil && !sawTimeout:
+		unclassified = true
+	}
 	for i, server := range servers {
 		if i == bestIdx || i == secondIdx {
 			continue // already tried by the hedge
@@ -1234,6 +1254,17 @@ func resolveFallback(ctx context.Context, hedgeErr error, servers []ServerInfo, 
 			sawTimeout = true // remember, keep scanning healthy replicas
 		case isWrongShardServer(err) || isAllAlternativesFailed(err):
 			return nil, err // definitive: all replicas share the shard assignment → re-locate
+		case isMaybeDelivered(err):
+			if maybeDelivered == nil {
+				maybeDelivered = err // this replica is unreachable; keep scanning
+			}
+			if pace != nil {
+				if err := pace(); err != nil {
+					return nil, err
+				}
+			}
+		default:
+			unclassified = true
 		}
 	}
 	switch {
@@ -1243,14 +1274,16 @@ func resolveFallback(ctx context.Context, hedgeErr error, servers []ServerInfo, 
 		// Prefer the timeout (getValue re-sends without a pointless cache invalidation — the location
 		// is fine, the servers were slow) over flattening to all_alternatives_failed.
 		return nil, errReplyTimeout
+	case maybeDelivered != nil && !unclassified:
+		return nil, maybeDelivered
 	default:
 		return nil, &wire.FDBError{Code: ErrAllAlternativesFailed}
 	}
 }
 
 // isServerTimeout reports whether a per-replica error is a slow/unreachable-server TIMEOUT — either an RPC
-// reply timeout (errReplyTimeout) or a wrapped context.DeadlineExceeded from a cold dial / RPC under the
-// db-scoped DefaultRPCTimeout. resolveFallback calls this only AFTER confirming the caller's read context
+// reply timeout (errReplyTimeout) or a wrapped context.DeadlineExceeded from a per-server deadline (a
+// connect timeout is coded request_maybe_delivered, not this). resolveFallback calls this only AFTER confirming the caller's read context
 // is still live (ctx.Err()==nil), so a DeadlineExceeded here is a per-server deadline, never caller
 // cancellation. Such a timeout must be remembered as a timeout — surfaced as errReplyTimeout so getValue
 // re-sends to the same location — NOT dropped and flattened to all_alternatives_failed (1006), which
@@ -1594,6 +1627,7 @@ func (tx *Transaction) watchPoll(watchCtx context.Context, watchCancel context.C
 	// all_alternatives is bounded (a relocate storm); the SS poll-signals below are unbounded — the
 	// watch keeps polling, as C++ does.
 	wrongShardRetries := 0
+	lb := lbRetry{observe: tx.db.onReadBackoff.Load()}
 	for {
 		if err := watchCtx.Err(); err != nil {
 			return err
@@ -1607,10 +1641,17 @@ func (tx *Transaction) watchPoll(watchCtx context.Context, watchCancel context.C
 		}
 
 		// A WatchValueRequest per iteration (NativeAPI.actor.cpp:3970).
-		watchErr := tx.sendWatch(watchCtx, key, value, readVersion, watchSpan, loc.Servers, tx.db.sampleTagSet(tags))
+		watchErr := tx.sendWatchPaced(watchCtx, key, value, readVersion, watchSpan, loc.Servers, tx.db.sampleTagSet(tags), &lb)
 		if watchErr == nil {
 			return nil
 		}
+		// Every replica failed maybe-delivered: watchValue's loadBalance retries it itself,
+		// unbounded, paced per request by sendWatchPaced; re-located as getValueImpl explains.
+		if isMaybeDelivered(watchErr) {
+			tx.db.locCache.invalidate(key, tenantID, false)
+			continue
+		}
+		lb = lbRetry{}
 		delay, retryable, invalidate := classifyWatchError(watchErr)
 		if !retryable {
 			return watchErr
@@ -1686,6 +1727,13 @@ func buildWatchValueRequest(key, value []byte, readVersion int64, tenantId int64
 }
 
 func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVersion int64, span types.SpanContext, servers []ServerInfo, tags readTagSample) error {
+	return tx.sendWatchPaced(ctx, key, value, readVersion, span, servers, tags, nil)
+}
+
+// sendWatchPaced is sendWatch counting each maybe-delivered request as one loadBalance attempt
+// in lb, which delays the request after it (LoadBalance.actor.h:301-308, 721-725).
+func (tx *Transaction) sendWatchPaced(ctx context.Context, key, value []byte, readVersion int64, span types.SpanContext, servers []ServerInfo, tags readTagSample, lb *lbRetry) error {
+	alternatives := len(servers)
 	servers, ok := tx.db.failMon.liveServers(servers, EndpointWatchValue)
 	if !ok {
 		return tx.db.allAlternativesFailed(ctx)
@@ -1702,10 +1750,21 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 	var sendCleanup sendGuard
 	defer sendCleanup.close()
 
+	var lastErr error
+	fail := func(err error) error {
+		lastErr = err
+		if lb != nil && isMaybeDelivered(err) {
+			return lb.pace(ctx, alternatives, 1)
+		}
+		return nil
+	}
 	for _, server := range order {
 		conn, permit, err := tx.db.getOrDialForSend(ctx, server.Address)
 		if err != nil {
 			tx.db.handleDialError(ctx, server.Address)
+			if err := fail(err); err != nil {
+				return err
+			}
 			continue
 		}
 		sendCleanup.permit = permit
@@ -1720,6 +1779,9 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 			replyHandle.Cancel()
 			replyCleanup.release()
 			tx.db.handleReadConnError(server.Address, conn, err)
+			if err := fail(err); err != nil {
+				return err
+			}
 			continue
 		}
 		// Long-poll: no short timeout. Use the caller's context deadline.
@@ -1728,14 +1790,33 @@ func (tx *Transaction) sendWatch(ctx context.Context, key, value []byte, readVer
 			replyCleanup.release()
 			if resp.Err != nil {
 				tx.db.handleReadConnError(server.Address, conn, resp.Err)
+				if err := fail(resp.Err); err != nil {
+					return err
+				}
 				continue
 			}
-			return parseWatchValueReply(resp.Body)
+			err := parseWatchValueReply(resp.Body)
+			tx.db.noteBrokenPromise(err, server.Address, watchToken)
+			if isMaybeDelivered(err) {
+				if paceErr := fail(err); paceErr != nil {
+					return paceErr
+				}
+				continue
+			}
+			return err
 		case <-ctx.Done():
 			replyHandle.Cancel()
 			replyCleanup.release()
 			return ctx.Err()
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Every replica failed to connect or tore down: loadBalance's own retry, paced above,
+	// not an all_alternatives_failed (see resolveFallback).
+	if isMaybeDelivered(lastErr) {
+		return lastErr
 	}
 	return &wire.FDBError{Code: ErrAllAlternativesFailed}
 }

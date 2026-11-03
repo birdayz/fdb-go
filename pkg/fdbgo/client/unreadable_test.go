@@ -29,8 +29,8 @@ func svkKey(prefix []byte) []byte {
 
 // TestRYW_UnreadableCapScanNotQuadratic pins the unreadable-cap scan cost on
 // the getRange fast path. unreadableScanCapLocked runs on EVERY getRange; its
-// first version called ensureSortedLocked, which rebuilds sortedKeys O(N log N)
-// after every write invalidation — interleaved set/getRange transactions went
+// first version re-sorted the whole write map (O(N log N))
+// after every write — interleaved set/getRange transactions went
 // quadratic and the recordlayer suite timed out at its 900s budget. The scan
 // now uses the dedicated unreadableKeys index (and short-circuits when there is
 // no unreadable state), so this interleaved loop is O(N log N) total. The 30s
@@ -56,7 +56,7 @@ func TestRYW_UnreadableCapScanNotQuadratic(t *testing.T) {
 		c.mu.Unlock()
 	}
 	if elapsed := time.Since(start); elapsed > 30*time.Second {
-		t.Fatalf("50k interleaved set+capScan took %v — the per-read sortedKeys rebuild is back", elapsed)
+		t.Fatalf("50k interleaved set+capScan took %v — the per-read write-map sort is back", elapsed)
 	}
 }
 
@@ -100,9 +100,9 @@ func TestRYW_UnreadableKeysIndex(t *testing.T) {
 		c.mu.Unlock()
 		t.Fatalf("cap after clearRange = %q, want nil", got)
 	}
-	if len(c.liveLocked().unreadableKeys) != 0 {
+	if c.liveLocked().unreadableKeys.Len() != 0 {
 		c.mu.Unlock()
-		t.Fatalf("unreadableKeys after clearRange = %q, want empty", c.liveLocked().unreadableKeys)
+		t.Fatalf("unreadableKeys after clearRange = %q, want empty", c.liveLocked().unreadableKeys.appendTo(nil))
 	}
 	c.mu.Unlock()
 }
@@ -460,13 +460,9 @@ func TestFDB_Unreadable_Matrix(t *testing.T) {
 		}
 	})
 
-	t.Run("commit_poison_precedes_validation", func(t *testing.T) {
-		// C++ commit() waits on ryw->reading before ANY commit work (:1358 —
-		// before writeRangeToNativeTransaction and tr.commit's checks). Go
-		// defers the oversized-key rejection to commit (set() is void; C++
-		// throws 2102 eagerly at set() — documented divergence), so the poison
-		// check must precede that validation: a poisoned commit carrying an
-		// oversized key reports the read's 1036, not key_too_large (2102).
+	t.Run("deferred_write_error_precedes_read_poison", func(t *testing.T) {
+		// set() throws key_too_large in the call (RYW:2345), deferred by libfdb_c; commit checks the
+		// deferred error before waiting on the failed read (ThreadSafeTransaction.cpp:666-671).
 		t.Parallel()
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
@@ -477,11 +473,11 @@ func TestFDB_Unreadable_Matrix(t *testing.T) {
 			t.Fatal("Get of pending SVV did not fail")
 		}
 		tx.Set(make([]byte, 10001), []byte("v"))
-		assertFDBErrorCode(t, tx.Commit(ctx), ErrAccessedUnreadable)
+		assertFDBErrorCode(t, tx.Commit(ctx), 2102) // key_too_large
 	})
 
 	t.Run("commit_drains_inflight_pipelined_read", func(t *testing.T) {
-		// C++ wait(ryw->reading) at commit (:1358) is a COMPLETION BARRIER —
+		// C++ wait(ryw->reading) at commit (:1360) is a COMPLETION BARRIER —
 		// AndFuture::getFuture() is waitForAll (genericactors.actor.h:1907),
 		// which waits for in-flight read futures and propagates their errors —
 		// not just a sample of already-recorded failures. A pipelined read

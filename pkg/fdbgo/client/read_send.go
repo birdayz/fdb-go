@@ -50,6 +50,125 @@ func (db *database) endOther(o rpcAccount) {
 	db.queueModel.endRequest(o.addr, o.delta, readFailureLatency(o.err, o.start), false)
 }
 
+// lbRetry paces a read that C++ loadBalance would retry itself: every alternative
+// tried failed maybe-delivered (a failed connect, a torn-down connection or an
+// in-band 1030/1100). checkAndProcessResultImpl returns false for that outcome at
+// AtMostOnce::False (LoadBalance.actor.h:344-377), so loadBalance takes the next
+// alternative at once and, after a full pass, backs off from
+// LOAD_BALANCE_START_BACKOFF by LOAD_BALANCE_BACKOFF_RATE up to
+// LOAD_BALANCE_MAX_BACKOFF (LoadBalance.actor.h:682-686, 721-725; flow/Knobs.cpp:274-276).
+// There is no retry bound: the read waits for a replica to answer or for the
+// transaction to end, so the failure never reaches the application.
+type lbRetry struct {
+	attempts int
+	backoff  time.Duration
+	observe  *func(int, time.Duration)
+}
+
+// next records a failed attempt over n alternatives and returns the delay
+// before the next one.
+func (r *lbRetry) next(n int) time.Duration {
+	r.attempts++
+	if r.attempts >= n {
+		r.backoff = min(loadBalanceMaxBackoff, max(loadBalanceStartBackoff, time.Duration(float64(r.backoff)*loadBalanceBackoffRate)))
+	}
+	return r.backoff
+}
+
+// wait records a failed attempt over n alternatives and sleeps its delay.
+func (r *lbRetry) wait(ctx context.Context, n int) error { return r.pace(ctx, n, 1) }
+
+// pace records k failed requests over n alternatives, one loadBalance attempt each
+// (LoadBalance.actor.h:682-686, 721-725), and sleeps the delay before the next request.
+func (r *lbRetry) pace(ctx context.Context, n, k int) error {
+	for range k {
+		r.next(n)
+	}
+	if r.observe != nil {
+		(*r.observe)(r.attempts, r.backoff)
+	}
+	if r.backoff > 0 {
+		return sleepCtx(ctx, r.backoff)
+	}
+	return ctx.Err()
+}
+
+// readAlternatives keeps one loadBalance pass from reselecting its best replica
+// after a maybe-delivered reply (LoadBalance.actor.h:728).
+type readAlternatives struct {
+	db                 *database
+	servers            []ServerInfo
+	tried              []bool
+	best, second, next int
+	alternatives       int
+	lb                 *lbRetry
+}
+
+func newReadAlternatives(db *database, servers []ServerInfo, alternatives int, lb *lbRetry) *readAlternatives {
+	best, second := db.queueModel.chooseTopTwo(servers)
+	next := second
+	if !db.hedgeEnabled.Load() {
+		second = -1
+	}
+	return &readAlternatives{db: db, servers: servers, tried: make([]bool, len(servers)), best: best, second: second, next: next, alternatives: alternatives, lb: lb}
+}
+
+func (a *readAlternatives) fail(ctx context.Context, err error) {
+	if a.lb != nil && isMaybeDelivered(err) {
+		_ = a.lb.pace(ctx, a.alternatives, 1)
+	}
+}
+
+func (a *readAlternatives) sender(i int, makeSender func(ServerInfo) sendFunc) sendFunc {
+	return func() inFlightRPC {
+		a.tried[i] = true
+		return makeSender(a.servers[i])()
+	}
+}
+
+func (a *readAlternatives) start(ctx context.Context, makeSender func(ServerInfo) sendFunc, timeout time.Duration) hedgeResult {
+	var secondary sendFunc
+	var delay time.Duration
+	if a.second >= 0 {
+		secondary = a.sender(a.second, makeSender)
+		delay = a.db.queueModel.secondDelay(a.servers[a.best].Address, a.servers[a.second].Address)
+	}
+	return sendFrameWithHedgePaced(ctx, a.db.queueModel, delay, a.sender(a.best, makeSender), secondary, timeout, func(err error) { a.fail(ctx, err) })
+}
+
+func (a *readAlternatives) advance(ctx context.Context, makeSender func(ServerInfo) sendFunc, timeout time.Duration) (hedgeResult, bool) {
+	if ctx.Err() != nil {
+		return hedgeResult{err: ctx.Err()}, false
+	}
+	i := a.next
+	if i < 0 || a.tried[i] {
+		i = -1
+		for j := range a.servers {
+			if !a.tried[j] {
+				i = j
+				break
+			}
+		}
+	}
+	if i < 0 {
+		return hedgeResult{}, false
+	}
+	return sendFrameWithHedgePaced(ctx, a.db.queueModel, 0, a.sender(i, makeSender), nil, timeout, func(err error) { a.fail(ctx, err) }), true
+}
+
+// finishReadRPC releases every started hedge request exactly once.
+func (db *database) finishReadRPC(result hedgeResult) {
+	for _, other := range result.others {
+		db.endOther(other)
+	}
+	if result.addr != "" && result.err != nil {
+		if result.connErr {
+			db.handleReadConnError(result.addr, result.conn, result.err)
+		}
+		db.queueModel.endRequest(result.addr, result.delta, readFailureLatency(result.err, result.start), false)
+	}
+}
+
 // altFailureDelay is C++'s allAlternativesFailedDelay, jittered like delayJittered
 // (flow.h:1481-1484).
 func (db *database) altFailureDelay() time.Duration {

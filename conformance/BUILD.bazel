@@ -245,6 +245,7 @@ go_test(
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_ginkgo_v2//types",
         "@com_github_onsi_gomega//:gomega",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//encoding/prototext",
         "@org_golang_google_protobuf//proto",
@@ -309,6 +310,7 @@ go_test(
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_ginkgo_v2//types",
         "@com_github_onsi_gomega//:gomega",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protoreflect",
@@ -352,6 +354,45 @@ go_test(
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_ginkgo_v2//types",
         "@com_github_onsi_gomega//:gomega",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
+        "@org_golang_google_protobuf//encoding/protojson",
+        "@org_golang_google_protobuf//proto",
+        "@rules_go//go/runfiles",
+    ],
+)
+
+# Go client vs libfdb_c transaction scripts; engine-free suite files only, so engine changes don't rerun it.
+# Its own container raises FUTURE_VERSION_DELAY to hold reads at future versions open. Hand-maintained (# keep).
+# gazelle:exclude ryw_script_conformance_test.go
+
+# keep
+go_test(
+    name = "ryw_script_conformance_test",
+    size = "large",
+    srcs = [
+        "conformance_suite_test.go",
+        "fdb_env_test.go",
+        "java_invoker_test.go",
+        "ryw_script_conformance_test.go",
+    ],
+    data = [
+        ":conformance_server",
+    ],
+    env = {"CONFORMANCE_FDB_KNOBS": "future_version_delay=3600"},
+    tags = [
+        "conformance_java",
+        "resources:memory:500",
+    ],
+    deps = [
+        "//pkg/fdbgo/fdb",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/fdbgo/fdb/tuple",
+        "//pkg/testcontainers/foundationdb",
+        "@com_github_google_uuid//:uuid",
+        "@com_github_onsi_ginkgo_v2//:ginkgo",
+        "@com_github_onsi_ginkgo_v2//types",
+        "@com_github_onsi_gomega//:gomega",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//proto",
         "@rules_go//go/runfiles",
@@ -423,6 +464,7 @@ go_test(
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_ginkgo_v2//types",
         "@com_github_onsi_gomega//:gomega",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//encoding/prototext",
         "@org_golang_google_protobuf//encoding/protowire",
@@ -500,6 +542,7 @@ go_test(
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_ginkgo_v2//types",
         "@com_github_onsi_gomega//:gomega",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//encoding/prototext",
         "@org_golang_google_protobuf//proto",
@@ -631,6 +674,7 @@ go_test(
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_ginkgo_v2//types",
         "@com_github_onsi_gomega//:gomega",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//encoding/prototext",
         "@org_golang_google_protobuf//proto",
@@ -703,6 +747,7 @@ go_test(
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_ginkgo_v2//types",
         "@com_github_onsi_gomega//:gomega",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//encoding/prototext",
         "@org_golang_google_protobuf//proto",
@@ -879,6 +924,7 @@ go_test(
         "@com_github_onsi_ginkgo_v2//:ginkgo",
         "@com_github_onsi_ginkgo_v2//types",
         "@com_github_onsi_gomega//:gomega",
+        "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@org_golang_google_protobuf//encoding/protojson",
         "@org_golang_google_protobuf//encoding/prototext",
         "@org_golang_google_protobuf//proto",

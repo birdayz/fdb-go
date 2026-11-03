@@ -20,13 +20,13 @@ type keyRead struct {
 	snapshot bool
 	disabled bool     // RYW disabled: NativeAPI getKey (RYW:176-185)
 	walk     *rywWalk // the RYW and snapshot-cache routes
-	// view is the pinned version (D11): set when the walk did not finish at issue
-	// and reads the write map; the conflict is filtered through it. Released once,
-	// in complete.
+	// view is the pinned version (D11): set when the walk reads the write map,
+	// which it does without c.mu; the conflict is filtered through it. Released
+	// once, in complete.
 	view *rywWrites
 	// localConflicts is the filtered conflict of a read answered at issue, computed
 	// then through the version it read.
-	localConflicts [][2][]byte
+	localConflicts []conflictSpan
 	finished       bool // answered by the synchronous checks; nothing to run
 	local          bool // the walk finished at issue
 	key            []byte
@@ -37,6 +37,9 @@ type keyRead struct {
 // issueKey runs a getKey's synchronous part: entry checks, routing, the walk to its
 // first wait, the pin, and registration in the commit barrier.
 func (tx *Transaction) issueKey(parent context.Context, sel KeySelector, snapshot bool) *keyRead {
+	// The read owns its selector, as C++ copies it (ThreadSafeTransaction.cpp:436-437):
+	// its key can become a snapshot-cache bound.
+	sel.Key = bytes.Clone(sel.Key)
 	ctx, release, counted := tx.opContextFor(parent, true)
 	r := &keyRead{tx: tx, ctx: ctx, release: release, sel: sel, snapshot: snapshot}
 	if err := tx.checkReadState(ctx); err != nil {
@@ -52,35 +55,44 @@ func (tx *Transaction) issueKey(parent context.Context, sel KeySelector, snapsho
 		r.disabled = true
 	} else {
 		c := &tx.ryw
+		backstop := tx.rangeReadBackstop()
 		var panicked bool
 		c.withLock(func() {
-			// The walk runs to its first wait here, on the caller's goroutine: a panic
+			// c.mu covers only pinning the version and snapshotting the cache; the
+			// walk then runs to its first wait on the caller's goroutine. A panic
 			// fails the read (RFC-110) and leaves nothing locked, pinned or leased.
-			panicked = tx.rangeReadBackstop().run(func() {
+			panicked = backstop.run(func() {
 				var view *rywWrites
 				if !snapshot || tx.snapshotRYWDisableCount <= 0 {
-					view = c.liveLocked() // RYWIterator (A2.3); nil: SnapshotCache::iterator (A2.2)
+					// RYWIterator (A2.3); nil: SnapshotCache::iterator (A2.2)
+					view = c.pinWritesLocked()
+					r.view = view
 				}
 				r.walk = c.newGetKeyWalkLocked(view, sel, tx.maxReadKey())
-				r.walk.onRequest = tx.walkOnRequest
-				r.walk.startLocked()
-				switch {
-				case r.walk.done():
-					r.local = true
-					if r.walk.err == nil && !snapshot {
-						if b, e := getKeyConflictSpan(sel, r.walk.keyResult()); bytes.Compare(b, e) < 0 {
-							r.localConflicts = view.conflictRanges(b, e)
-						}
-					}
-				case view != nil:
-					r.view = c.pinWritesLocked()
-				}
 			})
 			if panicked && r.view != nil {
 				c.unpinWritesLocked(r.view)
 				r.view = nil
 			}
 		})
+		if !panicked {
+			panicked = backstop.run(func() {
+				r.walk.onRequest = tx.walkOnRequest
+				r.walk.start()
+				if r.walk.done() {
+					r.local = true
+					if r.walk.err == nil && !snapshot {
+						if b, e := getKeyConflictSpan(sel, r.walk.keyResult()); bytes.Compare(b, e) < 0 {
+							r.localConflicts = r.view.appendConflictSpans(nil, b, e)
+						}
+					}
+				}
+			})
+			if panicked && r.view != nil {
+				c.withLock(func() { c.unpinWritesLocked(r.view) })
+				r.view = nil
+			}
+		}
 		if panicked {
 			return r.finish(nil, tx.trackReadOperation(ctx, &wire.FDBError{Code: ErrInternalError}))
 		}
@@ -99,20 +111,24 @@ func (r *keyRead) finish(key []byte, err error) *keyRead {
 }
 
 // run performs the read's I/O and records its read conflict. Exactly once.
-func (r *keyRead) run() (key []byte, err error) {
+func (r *keyRead) run() (key []byte, err error) { return r.runKey(true) }
+
+// runKey is run; with clone false the key may be the snapshot cache's or the
+// write map's, never written, for a PendingKey whose Get copies it.
+func (r *keyRead) runKey(clone bool) (key []byte, err error) {
 	if r.finished {
 		return r.key, r.err
 	}
 	defer r.complete()
 	// RFC-110: a panic fails the read before complete() releases Commit's wait.
 	pb := r.tx.rangeReadBackstop()
-	if pb.run(func() { key, err = r.read() }) {
+	if pb.run(func() { key, err = r.read(clone) }) {
 		return nil, r.tx.trackReadOperation(r.ctx, &wire.FDBError{Code: ErrInternalError})
 	}
 	return key, err
 }
 
-func (r *keyRead) read() ([]byte, error) {
+func (r *keyRead) read(clone bool) ([]byte, error) {
 	tx, ctx, sel := r.tx, r.ctx, r.sel
 	if r.disabled {
 		resolved, err := tx.getKey(ctx, sel.Key, sel.OrEqual, sel.Offset)
@@ -138,6 +154,7 @@ func (r *keyRead) read() ([]byte, error) {
 		}
 		return resolved, tx.trackReadOperation(ctx, nil)
 	}
+	defer func() { r.walk.release(); r.walk = nil }() // the key is the cache's or the write map's, not the walk's
 	if !r.local {
 		storage := tx.nativeRange
 		native := func(ctx context.Context, begin, end KeySelector, limits rangeLimits, reverse bool) (nativeRangeResult, error) {
@@ -164,17 +181,20 @@ func (r *keyRead) read() ([]byte, error) {
 	} else if r.walk.err != nil {
 		return nil, tx.trackReadOperation(ctx, r.walk.err)
 	}
-	key := bytes.Clone(r.walk.keyResult())
+	key := r.walk.keyResult() // the cache's, the write map's or a constant: never written
+	if clone {
+		key = bytes.Clone(key)
+	}
 	if !r.snapshot { // RYW getKey adds its conflict for every key (RYW:1695-1709, 230-243)
 		if r.local {
-			if err := tx.addReadConflictsFor(ctx, r.localConflicts); err != nil {
+			if err := tx.addReadConflictSpansFor(ctx, r.localConflicts); err != nil {
 				return nil, tx.trackReadOperation(ctx, err)
 			}
 		} else if b, e := getKeyConflictSpan(sel, key); bytes.Compare(b, e) < 0 {
-			// Filtered through the read's own version (RYW:388, 322-351).
-			var ranges [][2][]byte
-			tx.ryw.withLock(func() { ranges = r.view.conflictRanges(b, e) })
-			if err := tx.addReadConflictsFor(ctx, ranges); err != nil {
+			// Filtered through the read's own version (RYW:388, 322-351). A pinned
+			// version is immutable, so this needs no lock.
+			var scratch [4]conflictSpan
+			if err := tx.addReadConflictSpansFor(ctx, r.view.appendConflictSpans(scratch[:0], b, e)); err != nil {
 				return nil, tx.trackReadOperation(ctx, err)
 			}
 		}
@@ -240,7 +260,7 @@ func (p *PendingKey) execute() {
 	defer close(p.done)
 	r := p.r
 	p.r = nil
-	p.key, p.err = r.run()
+	p.key, p.err = r.runKey(false) // Get copies
 }
 
 // StartGetKey starts a getKey and returns at once. The selector is resolved against
@@ -256,14 +276,11 @@ func (s *Snapshot) StartGetKey(ctx context.Context, sel KeySelector) *PendingKey
 }
 
 func (tx *Transaction) startKey(ctx context.Context, sel KeySelector, snapshot bool) *PendingKey {
-	// The read outlives the call, so it owns its selector: C++ copies the
-	// KeySelector before dispatch (ThreadSafeTransaction.cpp:436-442).
-	sel.Key = bytes.Clone(sel.Key)
-	r := tx.issueKey(ctx, sel, snapshot)
+	r := tx.issueKey(ctx, sel, snapshot) // which copies the selector
 	if r.finished || r.local {
 		p := &PendingKey{done: closedDone}
 		p.state.Store(pendingClaimed)
-		p.key, p.err = r.run()
+		p.key, p.err = r.runKey(false)
 		return p
 	}
 	p := &PendingKey{r: r, done: make(chan struct{})}

@@ -22,8 +22,8 @@ import (
 //     since metadataVersionKey >= maxWriteKey.
 //
 // The Go client previously short-circuited metadataVersionKey with a blanket `continue`, so it
-// committed ALL of these silently (code 0) — a write-path divergence. The fix enforces the C++
-// contract in the per-mutation commit validation loop (transaction.go). go==cgo==wantCode pinned.
+// committed ALL of these silently (code 0) — a write-path divergence. validateMutation enforces the
+// C++ contract at the call (deferIllegalLocked); the commit loop is a backstop. go==cgo==wantCode pinned.
 //
 // metadataVersionKey is GLOBAL (not prefixed); the one legal case commits a metadata-version
 // bump, which FDB is explicitly designed to handle concurrently (these writes do not create

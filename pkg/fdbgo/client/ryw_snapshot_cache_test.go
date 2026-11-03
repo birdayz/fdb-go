@@ -93,9 +93,9 @@ func TestSnapshotCache_AdjacentInsertsStayFragmented(t *testing.T) {
 	kvs, ok := sc.getRangeKVs([]byte("a"), []byte("f"))
 	g.Expect(ok).To(BeTrue())
 	g.Expect(kvs).To(HaveLen(4))
-	g.Expect(sc.entries).To(HaveLen(2))
-	g.Expect(sc.entries[0].end).To(Equal([]byte("c")))
-	g.Expect(sc.entries[1].begin).To(Equal([]byte("c")))
+	g.Expect(sc.entryList()).To(HaveLen(2))
+	g.Expect(sc.entryList()[0].end).To(Equal([]byte("c")))
+	g.Expect(sc.entryList()[1].begin).To(Equal([]byte("c")))
 }
 
 // An insert whose front overlaps a known entry is TRIMMED to the unknown
@@ -118,11 +118,11 @@ func TestSnapshotCache_OverlappingInsertTrimsToUnknownSuffix(t *testing.T) {
 		{Key: []byte("e"), Value: []byte("5")},
 	})
 
-	g.Expect(sc.entries).To(HaveLen(2))
-	g.Expect(sc.entries[0].begin).To(Equal([]byte("a")))
-	g.Expect(sc.entries[0].end).To(Equal([]byte("d")))
-	g.Expect(sc.entries[1].begin).To(Equal([]byte("d")))
-	g.Expect(sc.entries[1].end).To(Equal([]byte("f")))
+	g.Expect(sc.entryList()).To(HaveLen(2))
+	g.Expect(sc.entryList()[0].begin).To(Equal([]byte("a")))
+	g.Expect(sc.entryList()[0].end).To(Equal([]byte("d")))
+	g.Expect(sc.entryList()[1].begin).To(Equal([]byte("d")))
+	g.Expect(sc.entryList()[1].end).To(Equal([]byte("f")))
 
 	// [a,f) is fully covered; "b" is absent because the cached [a,d) already
 	// asserted it does not exist at this read version.
@@ -145,7 +145,7 @@ func TestSnapshotCache_SpanningInsertErasesInteriorFragments(t *testing.T) {
 	var sc snapshotCache
 	sc.insert([]byte("a"), []byte("c"), []KeyValue{{Key: []byte("a"), Value: []byte("1")}})
 	sc.insert([]byte("e"), []byte("g"), []KeyValue{{Key: []byte("f"), Value: []byte("6")}})
-	g.Expect(sc.entries).To(HaveLen(2))
+	g.Expect(sc.entryList()).To(HaveLen(2))
 
 	sc.insert([]byte("a"), []byte("i"), []KeyValue{
 		{Key: []byte("a"), Value: []byte("1")},
@@ -153,9 +153,9 @@ func TestSnapshotCache_SpanningInsertErasesInteriorFragments(t *testing.T) {
 		{Key: []byte("h"), Value: []byte("8")},
 	})
 
-	g.Expect(sc.entries).To(HaveLen(1))
-	g.Expect(sc.entries[0].begin).To(Equal([]byte("a")))
-	g.Expect(sc.entries[0].end).To(Equal([]byte("i")))
+	g.Expect(sc.entryList()).To(HaveLen(1))
+	g.Expect(sc.entryList()[0].begin).To(Equal([]byte("a")))
+	g.Expect(sc.entryList()[0].end).To(Equal([]byte("i")))
 
 	kvs, ok := sc.getRangeKVs([]byte("a"), []byte("i"))
 	g.Expect(ok).To(BeTrue())
@@ -175,13 +175,13 @@ func TestSnapshotCache_InsertOfKnownRangeIsNoOp(t *testing.T) {
 
 	var sc snapshotCache
 	sc.insert([]byte("a"), []byte("z"), []KeyValue{{Key: []byte("m"), Value: []byte("1")}})
-	before := sc.entries
+	before := sc.entryList()
 
 	sc.insert([]byte("c"), []byte("f"), []KeyValue{{Key: []byte("d"), Value: []byte("9")}})
 
-	g.Expect(sc.entries).To(HaveLen(1))
-	g.Expect(sc.entries[0].begin).To(Equal(before[0].begin))
-	g.Expect(sc.entries[0].end).To(Equal(before[0].end))
+	g.Expect(sc.entryList()).To(HaveLen(1))
+	g.Expect(sc.entryList()[0].begin).To(Equal(before[0].begin))
+	g.Expect(sc.entryList()[0].end).To(Equal(before[0].end))
 	// The cached range already asserted "d" does not exist; a later insert
 	// claiming otherwise must not be able to rewrite it.
 	v, known := sc.getKey([]byte("d"))
@@ -208,8 +208,8 @@ func TestSnapshotCache_SequentialScanIsLinear(t *testing.T) {
 		sc.insert(key(p*pageSize), key((p+1)*pageSize), kvs)
 	}
 
-	g.Expect(sc.entries).To(HaveLen(pages))
-	for _, e := range sc.entries {
+	g.Expect(sc.entryList()).To(HaveLen(pages))
+	for _, e := range sc.entryList() {
 		g.Expect(e.kvs).To(HaveLen(pageSize))
 	}
 

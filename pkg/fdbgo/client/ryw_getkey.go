@@ -64,6 +64,11 @@ var allKeysBegin = []byte{}
 // segTypeAtLocked computes the merged segment type for the segment beginning at p.
 // Caller holds c.mu.
 func (c *rywCache) segTypeAtLocked(w *rywWrites, p []byte) rywSegType {
+	return segTypeAt(&c.serverCache.entries, w, p)
+}
+
+// segTypeAt is segTypeAtLocked over a cache snapshot.
+func segTypeAt(cached *pseq[cacheEntry], w *rywWrites, p []byte) rywSegType {
 	if w != nil {
 		// Unreadable gate (RFC-098): reaching a pending-versionstamp segment or
 		// an SVK candidate range during resolution throws in C++ (the cursor
@@ -72,13 +77,14 @@ func (c *rywCache) segTypeAtLocked(w *rywWrites, p []byte) rywSegType {
 		// The entry flag is the single source of truth: atomic() sets it for
 		// every versionstamped op, so checking the chain again would be
 		// dead code (same gate shape as rywCache.get and GetPipelined).
-		if entry, ok := w.writes[string(p)]; ok && entry.unreadable {
+		entry, ok := w.entryOf(p)
+		if ok && entry.unreadable {
 			return segUnreadable
 		}
 		if w.isUnreadable(p) {
 			return segUnreadable
 		}
-		if entry, ok := w.writes[string(p)]; ok {
+		if ok {
 			// p is a pending write key (single-key segment [p, p+\x00)). getKey classifies
 			// by SEGMENT TYPE (C++ RYWIterator type()), NOT by resolved value — the resolved
 			// value only matters for Get/GetRange.
@@ -93,11 +99,11 @@ func (c *rywCache) segTypeAtLocked(w *rywWrites, p []byte) rywSegType {
 				return segKV
 			}
 			// Unresolved atomic chain: resolve over the storage base for its TYPE.
-			base, known := c.serverCache.getKey(p)
+			base, known := cacheGetKey(cached, p)
 			if !known {
 				return segUnknown // DEPENDENT_WRITE over unknown base — must read server.
 			}
-			_, cleared, unresolved := resolveAtomics(base, entry.atomics)
+			cleared, unresolved := atomicsOutcome(base, entry.atomics)
 			if unresolved {
 				return segUnreadable
 			}
@@ -114,7 +120,7 @@ func (c *rywCache) segTypeAtLocked(w *rywWrites, p []byte) rywSegType {
 		}
 		// Unmodified — fall through to the cache view.
 	}
-	val, known := c.serverCache.getKey(p)
+	val, known := cacheGetKey(cached, p)
 	if !known {
 		return segUnknown
 	}
@@ -128,7 +134,7 @@ func (c *rywCache) segTypeAtLocked(w *rywWrites, p []byte) rywSegType {
 //
 // rywSegCursor walks the same merged-segment partition as the (now test-only)
 // buildSegmentsLocked materializer, but LAZILY: it computes each segment's [begin, end)
-// on demand from the underlying sorted structures (sortedKeys, cleared, snapshotCache)
+// on demand from the underlying sorted structures (the write keys, cleared, snapshotCache)
 // via bounded boundary searches, so getKey costs O(walk distance · log N) instead of
 // O(N) materialization per call. It mirrors C++ RYWIterator: next()/prev() are a single
 // MERGED-boundary skip (not independent per-view bumps), so the two views can't desync.
@@ -188,16 +194,44 @@ func (cur *rywSegCursor) prev() {
 type rywBoundary struct {
 	key   []byte
 	after bool
+	// extra counts zero bytes past after's, for the successor of a successor
+	// (ExtStringRef extra_zero_bytes, SnapshotCache.h:30-120).
+	extra int
 }
 
 func (b rywBoundary) size() int {
 	if b.after {
-		return len(b.key) + 1
+		return len(b.key) + 1 + b.extra
 	}
 	return len(b.key)
 }
 
+// keyAfter is ExtStringRef::keyAfter: one more zero byte.
+func (b rywBoundary) keyAfter() rywBoundary {
+	if !b.after {
+		return rywBoundary{key: b.key, after: true}
+	}
+	return rywBoundary{key: b.key, after: true, extra: b.extra + 1}
+}
+
+// isKeyAfter reports b == keyAfter(a) (ExtStringRef::isKeyAfter).
+func (b rywBoundary) isKeyAfter(a rywBoundary) bool {
+	return b.size() == a.size()+1 && b.compare(a.keyAfter()) == 0
+}
+
+// equal is ExtStringRef == (SnapshotCache.h:119-121): the sizes first, so only
+// boundaries of one size compare their bytes.
+func (b rywBoundary) equal(o rywBoundary) bool {
+	if b.after != o.after || b.extra != o.extra {
+		return b.size() == o.size() && b.compare(o) == 0
+	}
+	return bytes.Equal(b.key, o.key) // one shape: the sizes are the key lengths
+}
+
 func (b rywBoundary) compare(other rywBoundary) int {
+	if !b.after && !other.after { // plain keys: no successor zeros to account for
+		return bytes.Compare(b.key, other.key)
+	}
 	n := min(len(b.key), len(other.key))
 	if c := bytes.Compare(b.key[:n], other.key[:n]); c != 0 {
 		return c
@@ -217,7 +251,9 @@ func (b rywBoundary) compare(other rywBoundary) int {
 
 func (b rywBoundary) materialize() []byte {
 	if b.after {
-		return keyAfterBytes(b.key)
+		r := make([]byte, b.size())
+		copy(r, b.key)
+		return r
 	}
 	return b.key
 }
@@ -252,7 +288,7 @@ func (b rywBoundary) materialize() []byte {
 // Nothing above uses coalescing. Merging adjacent ranges would only turn end_j <=
 // begin_{j+1} into a strict <, which the argument never appeals to.
 //
-// Key sources (sortedKeys, and the kvs inside cache entries) reduce to the same shape.
+// Key sources (the write keys, and the kvs inside cache entries) reduce to the same shape.
 // Within one entry, kvs is sorted, so with ki = first kv >= p the floor contribution is
 // kvs[ki-1] or its keyAfter and the ceil contribution is kvs[ki] or keyAfter(kvs[ki-1]);
 // the extra -2 index is conservative slack, since keyAfter(kvs[ki-2]) <= kvs[ki-1].
@@ -281,18 +317,20 @@ func (c *rywCache) boundCandidatesLocked(p, hi []byte, w *rywWrites, visit func(
 	add(hi)
 	if w != nil {
 		w.ensureSorted()
-		i := sort.Search(len(w.sortedKeys), func(i int) bool { return w.sortedKeys[i] >= string(p) })
+		nw := w.sorted.Len()
+		i := w.writeIndexOf(p)
 		for j := i - 2; j <= i+1; j++ {
-			if j >= 0 && j < len(w.sortedKeys) {
-				addKey([]byte(w.sortedKeys[j]))
+			if j >= 0 && j < nw {
+				addKey(stringBytes(w.writeAt(j).key))
 			}
 		}
-		n := len(w.cleared)
-		lo := sort.Search(n, func(i int) bool { return bytes.Compare(w.cleared[i].end, p) > 0 })
+		n := w.cleared.Len()
+		lo := w.cleared.search(func(r *rywRange) bool { return bytes.Compare(r.end, p) > 0 })
 		for j := lo - 1; j <= lo+1; j++ {
 			if j >= 0 && j < n {
-				add(w.cleared[j].begin)
-				add(w.cleared[j].end)
+				r := w.cleared.at(j)
+				add(r.begin)
+				add(r.end)
 			}
 		}
 		// SVK candidate stamp ranges are segments of their own (C++ inserts
@@ -302,12 +340,13 @@ func (c *rywCache) boundCandidatesLocked(p, hi []byte, w *rywWrites, visit func(
 		// unknown segment that starts BELOW the range, and a selector walk
 		// crosses it where libfdb_c throws (RFC-098). Same sorted +
 		// non-overlapping lo-1..lo+1 window argument as cleared above.
-		un := len(w.unreadableRanges)
-		ulo := sort.Search(un, func(i int) bool { return bytes.Compare(w.unreadableRanges[i].end, p) > 0 })
+		un := w.unreadableRanges.Len()
+		ulo := w.unreadableRanges.search(func(r *rywRange) bool { return bytes.Compare(r.end, p) > 0 })
 		for j := ulo - 1; j <= ulo+1; j++ {
 			if j >= 0 && j < un {
-				add(w.unreadableRanges[j].begin)
-				add(w.unreadableRanges[j].end)
+				r := w.unreadableRanges.at(j)
+				add(r.begin)
+				add(r.end)
 			}
 		}
 	}
@@ -319,16 +358,17 @@ func (c *rywCache) boundCandidatesLocked(p, hi []byte, w *rywWrites, visit func(
 func (c *rywCache) cacheCandidatesLocked(p []byte, addBound func(rywBoundary)) {
 	add := func(k []byte) { addBound(rywBoundary{key: k}) }
 	addKey := func(k []byte) { add(k); addBound(rywBoundary{key: k, after: true}) }
-	es := c.serverCache.entries
-	n := len(es)
-	lo := sort.Search(n, func(i int) bool { return bytes.Compare(es[i].end, p) > 0 })
+	es := &c.serverCache.entries
+	n := es.Len()
+	lo := es.search(func(e *cacheEntry) bool { return bytes.Compare(e.end, p) > 0 })
 	for j := lo - 1; j <= lo+1; j++ {
 		if j < 0 || j >= n {
 			continue
 		}
-		add(es[j].begin)
-		add(es[j].end)
-		kvs := es[j].kvs
+		e := es.at(j)
+		add(e.begin)
+		add(e.end)
+		kvs := e.kvs
 		ki := sort.Search(len(kvs), func(i int) bool { return bytes.Compare(kvs[i].Key, p) >= 0 })
 		for m := ki - 2; m <= ki+1; m++ {
 			if m >= 0 && m < len(kvs) {

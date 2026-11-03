@@ -8,15 +8,13 @@ package fdb_test
 // reverse): a concurrent writer (tr2) commits between a reader's pinned read version and its commit, and
 // the resolver's verdict is checked against ground truth (a fresh re-read on tr4).
 //
-// THE LOAD-BEARING FACT (RFC-125 §3): Go does NOT resolve a selector range server-side. The fdb facade
-// (range_result.go resolveSelector) resolves each non-trivial selector with a separate GetKey round-trip
-// (the two TRIVIAL forms — firstGreaterOrEqual = !orEqual,offset 1; and firstGreaterThan = orEqual,offset 1
-// → k+\x00 — resolve client-side with NO GetKey and so NO getKey conflict; the random onEqual exercises
-// both), then issues getRange over the resolved [begin,end). So Go's read-conflict coverage for a selector
-// getRange is the UNION of getKey(beginSel) ∪ getKey(endSel) ∪ getRange conflicts — vs C++'s single
-// combined addConflictRange(GetRangeReq). The FDB-C-dev review proved the union ⊇ C++'s range across the
-// offset/orEqual/reverse/limit/more cross-product (no under-conflict hole, incl. the trivial-selector
-// fast paths that skip GetKey). This test is the empirical proof of that across the random selector space.
+// Selector resolution (RFC-262 D10): as in C++, a selector range is ONE getRange. With RYW the client's
+// walk resolves the selectors against the write map and snapshot cache and reads the rest from storage
+// with the selectors in the request (ReadYourWrites.actor.cpp:592-813, 896-1123), and the read adds
+// addConflictRange(GetRangeReq) (:245-320). With RYW disabled it is NativeAPI getRange with
+// getRangeFinished's conflict (NativeAPI.actor.cpp:4558-4586), the C++ workload's own Transaction. The
+// workload runs both. Exact equality of the ranges with libfdb_c is pinned by the client's
+// TestSelectorRangeConformance; this test is the resolver-side oracle.
 //
 // THE ORACLE (RFC-125 §4.3), asymmetric and deliberate:
 //   - UNDER-conflict — `!foundConflict && resultChanged` → t.Fatalf. The serializability teeth: a
@@ -24,13 +22,13 @@ package fdb_test
 //     conflict-generation architecture (it only asserts "no conflict ⟹ your read was still valid").
 //   - OVER-conflict — `foundConflict && !resultChanged && no documented C++ exception` → SAFE for Go
 //     (aborted where it could have committed; never a correctness defect, per RFC-121), so it is counted
-//     and logged, NOT fatal: Go's getKey-then-range union is architecturally wider than C++'s combined
-//     resolution.
+//     and logged, NOT fatal: the four exceptions were written for NativeAPI ranges, not RYW's, and
+//     version-pinned commits in a shared cluster see rare environmental not_committed.
 //   - ANTI-VACUITY (the teeth must be LOADED): resultChangedCount>0 (the under-conflict check ran with a
 //     true antecedent), withConflicts>0, withoutConflicts>0.
 //
-// This test drives the REAL fdb facade (no mirrored resolveSelector → no drift): GetSliceWithError →
-// resolveRange → resolveSelector → tx.GetKey/tx.GetRange is the one production conflict-generation path.
+// This test drives the REAL fdb facade: GetSliceWithError → client StartGetRangeSelectors is the one
+// production conflict-generation path.
 //
 // Determinism / flake-freedom: seeded RNG, no timing assertions (the conflict verdict is decided by
 // read-version ordering via tr3.SetReadVersion, not the clock). Guard-key isolation (§4.1) bounds every
@@ -52,6 +50,19 @@ type conflictRangeWorkload struct {
 	prefix      string
 	maxKeySpace int
 	maxOffset   int
+	// native reads with RYW disabled in EXACT mode: one NativeAPI getRange of GetRangeLimits(limit), as
+	// the C++ workload's Transaction reads (ConflictRange.actor.cpp:145-148, 164-168).
+	native bool
+}
+
+// prepare sets a reader's options before its first operation.
+func (w *conflictRangeWorkload) prepare(t *testing.T, tr fdb.Transaction) {
+	t.Helper()
+	if w.native {
+		if err := tr.Options().SetReadYourWritesDisable(); err != nil {
+			t.Fatalf("SetReadYourWritesDisable: %v", err)
+		}
+	}
 }
 
 // Keyspace layout inside the unique prefix (RFC-125 §4.1). The "C"<"D" (0x43<0x44) prefix byte keeps
@@ -114,14 +125,16 @@ func (w *conflictRangeWorkload) reset(tr fdb.Transaction, rng *rand.Rand) map[in
 	return inserted
 }
 
-// query runs one selector getRange and materializes it (GetSliceWithError triggers the conflict
-// generation: resolveRange → resolveSelector(GetKey for non-trivial) → getRange). The selectors mirror
-// C++ KeySelectorRef(myKey, onEqual, offset) exactly.
+// query runs one selector getRange and materializes it (GetSliceWithError adds the read's conflict).
+// The selectors mirror C++ KeySelectorRef(myKey, onEqual, offset) exactly.
 func (w *conflictRangeWorkload) query(tr fdb.Transaction, q selectorQuery) ([]fdb.KeyValue, error) {
 	begin := fdb.KeySelector{Key: fdb.Key(w.dkey(q.keyA)), OrEqual: q.onEqualA, Offset: q.offsetA}
 	end := fdb.KeySelector{Key: fdb.Key(w.dkey(q.keyB)), OrEqual: q.onEqualB, Offset: q.offsetB}
-	rr := tr.GetRange(fdb.SelectorRange{Begin: begin, End: end},
-		fdb.RangeOptions{Limit: q.limit, Reverse: q.reverse})
+	opts := fdb.RangeOptions{Limit: q.limit, Reverse: q.reverse}
+	if w.native {
+		opts.Mode = fdb.StreamingModeExact
+	}
+	rr := tr.GetRange(fdb.SelectorRange{Begin: begin, End: end}, opts)
 	return rr.GetSliceWithError()
 }
 
@@ -360,6 +373,7 @@ func (w *conflictRangeWorkload) attempt(t *testing.T, db fdb.Database, rng *rand
 			if err != nil {
 				t.Fatalf("CreateTransaction(tr1): %v", err)
 			}
+			w.prepare(t, tr1)
 			q = w.randomQuery(rng)
 			res, qerr := w.query(tr1, q)
 			if qerr != nil {
@@ -391,6 +405,7 @@ func (w *conflictRangeWorkload) attempt(t *testing.T, db fdb.Database, rng *rand
 		if err != nil {
 			t.Fatalf("CreateTransaction(tr3): %v", err)
 		}
+		w.prepare(t, tr3)
 		rv, rverr := tr2.GetReadVersion().Get()
 		if rverr != nil {
 			if code, ok := codeOf(rverr); ok && fdb.IsRetryable(code) {
@@ -443,6 +458,7 @@ func (w *conflictRangeWorkload) attempt(t *testing.T, db fdb.Database, rng *rand
 			if err != nil {
 				t.Fatalf("CreateTransaction(tr4): %v", err)
 			}
+			w.prepare(t, tr4)
 			res, qerr := w.query(tr4, q)
 			if qerr != nil {
 				if code, ok := codeOf(qerr); ok && fdb.IsRetryable(code) {
@@ -533,6 +549,17 @@ func TestConflictRange_SelectorGetRange_NoMissedConflict(t *testing.T) {
 
 	w := &conflictRangeWorkload{prefix: "crworkload_" + t.Name() + "_", maxKeySpace: 100, maxOffset: 5}
 	w.run(t, db, 1, 120)
+}
+
+// TestConflictRange_SelectorGetRange_Native is the workload as C++ runs it: every reader is a NativeAPI
+// transaction (RYW disabled) reading one getRange of GetRangeLimits(limit), so the read conflict is
+// getRangeFinished's (NativeAPI.actor.cpp:4558-4586) for a selector range the storage server resolved.
+func TestConflictRange_SelectorGetRange_Native(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	w := &conflictRangeWorkload{prefix: "crnative_" + t.Name() + "_", maxKeySpace: 100, maxOffset: 5, native: true}
+	w.run(t, db, 2, 120)
 }
 
 // TestConflictRange_TrivialBeginReverseMore is the FDB-C-dev-requested deterministic regression (RFC-125

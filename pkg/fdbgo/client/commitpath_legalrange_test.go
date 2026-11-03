@@ -84,11 +84,8 @@ func TestClear_OversizedSystemKey(t *testing.T) {
 }
 
 // TestAtomic_InvalidOp_DefersToEarlierIllegalMutation pins C++ "the FIRST illegal op throws"
-// (ReadYourWrites.actor.cpp:2226-2234, eager). Go defers Set/Atomic validation to Commit, so the
-// bad-Atomic poison must defer to an EARLIER illegal buffered mutation: a
-// system-key Set BEFORE an invalid-op Atomic surfaces the Set's key_outside_legal_range (2004), not
-// the Atomic's invalid_mutation_type (2018); the reverse order surfaces 2018. Revert-proof: a poison
-// that out-ranks the buffered-mutation loop returns 2018 for the first (Set-before-Atomic) case.
+// (ReadYourWrites.actor.cpp:2226-2234): each illegal write is deferred at its call, the first one
+// kept, so a system-key Set before an invalid-op Atomic surfaces 2004 and the reverse order 2018.
 func TestAtomic_InvalidOp_DefersToEarlierIllegalMutation(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)

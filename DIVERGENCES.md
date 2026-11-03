@@ -1194,18 +1194,37 @@ Skip=MaxInt32 selector offsets where Java's differ", which builds Java's selecto
 the read. PR #917's raw mapped-range `MappedRangeSkipReader` treats a forward `MaxInt32` as an exact
 skip instead; reconcile the two before RFC-258 wires mapped Skip into index scans.
 
-### Pure-Go selector resolution is not bounded by the scan range
+### Pure-Go selector resolution is not bounded by the scan range (RESOLVED for plain ranges)
 
-`libfdb_c` resolves a skipped selector inside the range read: RYW reads the extra rows from
-`firstGreaterOrEqual` of the selector key and stops at the other bound
-(`ReadYourWrites.actor.cpp:725-760`), and the read conflict covers the requested range
-(`:246-282`). The pure-Go facade resolves a non-trivial selector first with a `GetKey` that is not
-bounded by the range (`pkg/fdbgo/fdb/range_result.go:413-470`, `pkg/fdbgo/client/ryw_getkey.go`).
-When Skip overshoots the remaining entries, Go reads keys beyond the far bound until the selector
-resolves and, in a serializable transaction, adds them to the read-conflict range. A very large
-Skip over a large keyspace can fail before resolving (the resolver stops after 2^28 keys,
-`ryw_getkey.go:567`, or the transaction ages out). The rows returned are the same. Tracked in
-TODO.md for `pkg/fdbgo`.
+`libfdb_c` resolves a range read's selectors inside the read. Under RYW,
+`getRangeValue`/`getRangeValueBack` resolve them against the write map and snapshot cache
+and send the rest to storage inside the range request (`ReadYourWrites.actor.cpp:592-813,
+896-1123`). The storage server resolves them within its shard, and a selector that leaves the
+shard goes through `getRangeFallback` (`NativeAPI.actor.cpp:4457-4500, 4651-4679`). The read
+conflict is `addConflictRange(GetRangeReq)` (`ReadYourWrites.actor.cpp:245-319`), or with
+RYW disabled `getRangeFinished`'s range (`NativeAPI.actor.cpp:4558-4586`).
+
+The pure-Go facade used to resolve each non-trivial selector first with a separate `GetKey`.
+That read was not bounded by the range, so an overshooting index-scan Skip read keys past
+the far bound and, in a serializable transaction, added them to the read-conflict range. It
+also cost up to three sequential reads per selector range. The facade now issues one
+selector read (`pkg/fdbgo/client/range_selector_issue.go`, RFC-262 D10). That read runs the
+ported walk over `nativeGetRange`, or `readThrough` with RYW disabled. It returns the rows,
+read-conflict ranges and error codes libfdb_c does. Later batches keep the other selector,
+as Apple's binding does. Pinned by:
+
+- `//pkg/fdbgo/client:selector_range_conformance_test` (test-full): rows and coalesced
+  read-conflict ranges against libfdb_c on a small-shard cluster, including fallbacks
+  across shards.
+- `//pkg/fdbgo/client:range_selector_unit_test`: rows against a model, and one storage
+  request per cold read.
+- `TestSelectorRangeReadSendsOneStorageRequest` in `//pkg/fdbgo/client:storage_plumbing_fdb_test`.
+- `TestGetRange_SelectorRangeIsOneStorageRead` and `TestConflictRange_SelectorGetRange_Native`
+  in `//pkg/fdbgo/fdb:fdb_test`.
+- `TestDifferential_GetRangeSelectorRYW` in `//pkg/fdbgo/bench:bench_test` (test-full).
+
+Mapped range reads are unchanged: they still resolve a skipped selector before the mapped
+request (`pkg/fdbgo/client/mappedrange_skip.go`).
 
 ### Single-range query index scans pass Skip to the index cursor (RESOLVED)
 
@@ -1380,6 +1399,25 @@ failure-gated in both, `:888-900` — RFC-111.)
 | A commit reply (`CommitID` or ErrorOr envelope) that does not decode | Malformed wire has no defined decode result; an uncertain dispatched commit is fenced before `commit_unknown_result` (`NativeAPI.actor.cpp:6730-6750`) | A malformed post-send reply goes through the dummy-transaction fence and returns `commit_unknown_result`; a failed fence propagates its error instead | The proxy may have applied the commit. A terminal decode error would incorrectly hide that uncertainty. |
 | A string-strategy vector whose elements do not fill its blob | `ASSERT` in `dynamic_size_traits<VectorRef<T, String>>::load` (`Arena.h:1514-1525`) | `Parse<T>StringVector` fails with `*wire.StringVectorError` | Same rule; an error instead of an assertion. |
 | The locations reply's endpoint scan for a server without a slot-2 endpoint | No scan: C++ decodes the `StorageServerInterface` | Scans the slots the schema defines, not the vtable length the reply claims | The scan is Go's own; bounding it keeps a reply's cost linear in its size. |
+
+### Special key space reads (`\xff\xff` .. `\xff\xff\xff`)
+
+At API version 630 and later, get and getRange inside the special key space go to a port of
+`SpecialKeySpace` (`pkg/fdbgo/client/specialkeys.go`; `SpecialKeySpace.actor.cpp:61-80, 120-493,
+711-729`, `ReadYourWrites.actor.cpp:1634-1638, 1716-1721`): the module table and its
+`special_keys_cross_module_read` (2112) / `special_keys_no_module_found` (2113) checks,
+`SPECIAL_KEY_SPACE_RELAXED`, selector normalization, limits and direction, and
+`\xff\xff/transaction/conflicting_keys/` with `REPORT_CONFLICTING_KEYS` (712) and its database
+default (702). getKey and getMappedRange are not routed, as in C++. What differs:
+
+| Aspect | C++ `libfdb_c` | Go | Why |
+|---|---|---|---|
+| `\xff\xff/transaction/read_conflict_range/`, `.../write_conflict_range/` (`NativeAPI.actor.cpp:1748-1753`) | Render the RYW read-conflict map and write map (`ReadYourWrites.actor.cpp:2121-2215`) | A read that reaches either impl, or a selector that moves into one, fails with `unsupported_operation` (2108) | Not yet served from the RYW conflict maps; failing is never a wrong answer (TODO.md, "Serve the read_conflict_range/ and write_conflict_range/ special keys"). |
+| Every other module (`status/json`, `connection_string`, `cluster_file_path`, `cluster_id`, `worker_interfaces`, `metrics`, `management`, `configuration`, `global_config`, `tracing`, `error_message`, `actor_lineage`, `actor_profiler_conf`) | Served by impls that need cluster, process or client state | Each module is one unserved range: any read or selector move that reaches it fails with 2108, including parts of a module where C++ has no impl and would read nothing | A superset of the C++ impl ranges, so no read that C++ answers from such an impl is answered here. |
+| Special-key writes, `SPECIAL_KEY_SPACE_ENABLE_WRITES` | Write modules and `specialKeySpace->commit` | Not implemented; the option is `UnsupportedOptionError` | Unchanged. |
+| A conflict index outside the shipped read conflict ranges | Undefined (`read_conflict_ranges[i]` out of bounds, `NativeAPI.actor.cpp:6713`) | Ignored | The proxy maps every index from the request (`CommitProxyServer.actor.cpp:2448-2462`). |
+| A selector key longer than the maximum key size | Truncated by `KeySelectorRef::setKey` at the C binding | Used as given | No conflicting key reaches the 30 000-byte system key limit. |
+| API version below 630 | Answers a few literal keys (`ReadYourWrites.actor.cpp:1640-1672, 1722-1729`) | Not routed: such reads fail `key_outside_legal_range` (2004), as before | Those keys need cluster state the client does not expose; the failure is explicit. |
 
 ---
 
@@ -3209,21 +3247,42 @@ its first commit whatever the outcome, and a second commit is refused with that 
 
 **Decision: keep Go's bounded storage-range retries.** This is an intentional
 availability/error-behavior difference from FoundationDB C++ **7.3.77**, not a
-claim of equivalent retry semantics. References to Go below are at `d5c031525`.
+claim of equivalent retry semantics. Go is cited by symbol, not line.
 
 Go's shared plain/mapped storage scanner, `rangeScanImpl`, keeps two counters
-for each invocation (`pkg/fdbgo/client/readpath.go:664-682`):
+for each invocation (`relocateRetries`, `timeoutRetries` in `pkg/fdbgo/client/readpath.go`):
 
-- The relocation counter increments for `wrong_shard_server`,
-  `all_alternatives_failed`, or a maybe-delivered connection failure. With
+- The relocation counter increments for `wrong_shard_server` or
+  `all_alternatives_failed`. With
   `maxRelocateRetries = 5`, the sixth qualifying failure returns **1007
   `transaction_too_old`**, before another relocation; the first five invalidate
-  the shard's cached location and retry (`readpath.go:671`, `:773-800`).
+  the shard's cached location and retry (`maxRelocateRetries`, `rangeScanImpl`).
+- A maybe-delivered failure on every replica tried (a refused or timed-out
+  connect, a torn-down connection, an in-band 1030/1100) is **not** counted. It is
+  `loadBalance`'s own retry, which C++ never bounds: the next alternative at once,
+  then `LOAD_BALANCE_START_BACKOFF` doubling to `LOAD_BALANCE_MAX_BACKOFF`
+  (`LoadBalance.actor.h:301-308`, `:344-377`, `:682-686`, `:721-725`). Go paces it
+  with `lbRetry` (`read_send.go`) in every storage read loop, so a read whose only
+  replica refuses connections waits for it as libfdb_c does. Get, GetKey, plain,
+  native and mapped range reads advance through sender-local alternatives before
+  returning an exhausted pass for relocation (`readAlternatives`); Watch likewise
+  tries every replica in its pass (`sendWatchPaced`). Each observed maybe-delivered
+  failure counts as one attempt, including a failed primary whose secondary
+  succeeds; sequential alternatives are paced before the next request. Canceled
+  hedge laggards are not failures. Concurrent hedges can count two observed
+  failures where C++ counts the concurrent pair once (`LoadBalance.actor.h:682`),
+  so backoff can grow sooner for that case. Go still re-locates after each
+  exhausted maybe-delivered pass: it has no sustained-failure
+  `all_alternatives_failed` (C++ raises it once the FailureMonitor has marked every
+  alternative failed, after
+  `FAILURE_DETECTION_DELAY`, `FlowTransport.actor.cpp:920-930`) to re-locate later.
+  Pinned by `client/connect_failure_unit_test.go` and
+  `libfdbc/connrefused_conformance_test.go`.
 - The reply-timeout counter allows **10 re-sends** of the same shard request.
   `maxReadTimeoutRetries = 10` and the pre-incremented `> 10` check mean that
   **the eleventh reply timeout** returns synthesized **1007**, not the tenth
-  (`readpath.go:33-40`, `:755-771`). The internal `errReplyTimeout` comes from
-  the RPC reply timer, not a caller cancellation (`pkg/fdbgo/client/rpc.go:53-71`).
+  (`maxReadTimeoutRetries`, `rangeScanImpl`). The internal `errReplyTimeout` comes
+  from the RPC reply timer, not a caller cancellation (`waitReply`, `pkg/fdbgo/client/rpc.go`).
 
 The positive-skip mapped selector loops (`mappedrange_selectors.go`) apply the same
 reply-timeout cap (RFC-280). Storage metrics (`GetEstimatedRangeSizeBytes`,

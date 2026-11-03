@@ -231,7 +231,7 @@ func TestExactRangeHonorsMinRows(t *testing.T) {
 			}
 			var requests []string
 			ops := plainRangeScanOps
-			ops.send = func(_ context.Context, b, e []byte, l rangeLimits, readVersion int64, _ bool, _ []ServerInfo, _ readTagSample) ([]KeyValue, bool, error) {
+			ops.send = func(_ context.Context, b, e []byte, l rangeLimits, readVersion int64, _ bool, _ []ServerInfo, _ readTagSample, retry lbRetry) ([]KeyValue, bool, error, lbRetry) {
 				limit, limitBytes := transformRangeLimits(l, reverse)
 				requests = append(requests, fmt.Sprintf("%s..%s %+v v%d wire=%d/%d", b, e, l, readVersion, limit, limitBytes))
 				if len(requests) > len(replies) {
@@ -241,7 +241,7 @@ func TestExactRangeHonorsMinRows(t *testing.T) {
 				for _, k := range replies[len(requests)-1] {
 					kvs = append(kvs, KeyValue{Key: []byte(k), Value: []byte("0123456789")})
 				}
-				return kvs, true, nil
+				return kvs, true, nil, retry
 			}
 			kvs, more, _, err := rangeScanImpl(tx, context.Background(), []byte("a"), []byte("z"), rangeLimits{-1, 3, 1}, 42, reverse, ops)
 			if err != nil {

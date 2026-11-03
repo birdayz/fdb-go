@@ -295,7 +295,7 @@ func TestHedgeTimerStagesAndAccounting(t *testing.T) {
 						}
 						delete(started, account.addr)
 						qm.endRequest(account.addr, account.delta, 0, false)
-						if qm.getOrCreate(account.addr).smoothOutstanding.total != 0 {
+						if totalOf(qm, account.addr) != 0 {
 							t.Fatalf("outstanding request leaked: %s", account.addr)
 						}
 					}

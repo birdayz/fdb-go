@@ -3,14 +3,12 @@ package simfdb
 // A GetRange over a non-trivial key selector must record its read-conflict range over
 // the keys it ACTUALLY read, not over the selector's anchor key.
 //
-// The real backend makes that unavoidable: for anything other than FirstGreaterOrEqual
-// it resolves each selector through GetKey and hands the RESOLVED byte keys to
-// client.Transaction.GetRange, which derives the conflict extent from them
-// (fdb/range_result.go resolveRange; client/transaction.go:1291). SimFDB implements the
-// same fdb.Range interface, so taking the raw anchors instead makes it disagree with
-// the backend it is meant to model — and it disagrees in the dangerous direction for a
-// backward selector, where the resolved key is BELOW the anchor and the recorded range
-// therefore MISSES rows the transaction read.
+// The real backend resolves the selectors inside one getRange and records C++'s
+// addConflictRange(GetRangeReq) (ReadYourWrites.actor.cpp:245-319): from the selectors
+// and the rows returned, so a backward begin selector's span reaches down to the first
+// row it returned (selector_range.go). Taking the raw anchors alone would disagree in the
+// dangerous direction for a backward selector, where the resolved key is BELOW the anchor
+// and the recorded range would MISS rows the transaction read.
 //
 // This is not a hypothetical selector shape: bunched_map_iterator.go:199 scans with
 // fdb.LastLessThan for its continuation endpoint.
@@ -139,21 +137,15 @@ func TestSelectorRange_ForwardBeginDoesNotOverConflict(t *testing.T) {
 // whose bounds resolve by two different mechanisms, and pins it behaviourally — by what a
 // concurrent writer does to the reader's commit — rather than by the shape of the recorded list.
 //
-// The two ends resolve differently, deliberately: LastLessThan needs the GetKey lookup and lands
-// on an existing key ("b"), while FirstGreaterThan resolves in the KEY SPACE to keyAfter("f") =
-// "f\x00" with no lookup at all. Treating the end as "h" would be a bug: it would drag the gap
-// between "f\x00" and "h" into the coverage and abort an insert at "g".
+// The two ends resolve differently, deliberately: LastLessThan lands on an existing key ("b"),
+// while FirstGreaterThan is FirstGreaterOrEqual("f\x00") after removeOrEqual. C++'s span is
+// [d, f\x00) lowered to the first row "b" (ReadYourWrites.actor.cpp:253-270): [b, f\x00).
+// Treating the end as "h" would be a bug: it would drag the gap between "f\x00" and "h" into
+// the coverage and abort an insert at "g".
 //
-// This test used to assert the exact COUNT and ORDER of the recorded ranges — ["b","d") for the
-// resolving GetKey, then ["b","f\x00") for the extent — with the justification that "the two
-// spans are not nested". They ARE nested: ["b","d") sits wholly inside ["b","f\x00"). Nothing
-// observable distinguishes recording them separately from recording their union, so the count
-// assertion was pinning a representation, not a behaviour, and it stood in the way of teaching
-// SimFDB to coalesce read-conflict ranges the way a real client does. What actually matters is
-// the COVERAGE, which is what is asserted here.
-//
-// The case where the resolution read is genuinely NOT covered by the extent — where dropping it
-// would lose a real conflict — is TestSelectorRange_ResolutionReadConflictsOutsideTheExtent.
+// The assertion is on COVERAGE, what a concurrent writer does to the commit, not on the shape
+// of the recorded list. The case where no row is read but the selector's span still conflicts
+// is TestSelectorRange_ResolutionReadConflictsOutsideTheExtent.
 func TestSelectorRange_ResolvedBoundsDecideWhatConflicts(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -163,7 +155,7 @@ func TestSelectorRange_ResolvedBoundsDecideWhatConflicts(t *testing.T) {
 	}{
 		{"a", 0, "below the resolved begin \"b\": never read"},
 		{"b", 1020, "the resolved begin itself"},
-		{"c", 1020, "inside the span the resolving GetKey scanned AND inside the extent"},
+		{"c", 1020, "between the resolved begin and the begin anchor"},
 		{"e", 1020, "inside the extent"},
 		{"f", 1020, "the last key inside the extent (end resolves to f\\x00)"},
 		{"g", 0, "in the gap ABOVE the key-space-resolved end: resolving to \"h\" would over-conflict here"},
@@ -181,7 +173,7 @@ func TestSelectorRange_ResolvedBoundsDecideWhatConflicts(t *testing.T) {
 			}
 			tx := handle.(*simTxn)
 			rr := tx.GetRange(fdb.SelectorRange{
-				Begin: fdb.LastLessThan(k("d")),     // GetKey resolution -> "b"
+				Begin: fdb.LastLessThan(k("d")),     // resolves to "b"
 				End:   fdb.FirstGreaterThan(k("f")), // key-space resolution -> "f\x00"
 			}, fdb.RangeOptions{})
 			if _, err := rr.GetSliceWithError(); err != nil {
@@ -207,15 +199,13 @@ func TestSelectorRange_ResolvedBoundsDecideWhatConflicts(t *testing.T) {
 	}
 }
 
-// TestSelectorRange_ResolutionReadConflictsOutsideTheExtent is the case that makes the
-// resolving GetKey's own conflict range load-bearing rather than redundant.
+// TestSelectorRange_ResolutionReadConflictsOutsideTheExtent is the case where the read returns
+// nothing yet still conflicts.
 //
-// Here the two bounds resolve to the SAME key, so the range extent is EMPTY and contributes
-// nothing at all. The backward begin bound still had to be resolved by a real GetKey, and that
-// GetKey scanned the keyspace between its anchor and the key it landed on. A concurrent write
-// in THAT span conflicts on real FDB, and would not conflict here if the resolution read were
-// dropped — which is precisely what a reader looking at the nested case above might conclude was
-// safe.
+// Here the two bounds resolve to the SAME key, so no row is read. The backward begin bound
+// still depended on the keyspace between its anchor and the key it landed on. C++ covers it:
+// with begin.key "d" >= end.key "b", addConflictRange takes [end.key, begin.key) = [b, d)
+// (ReadYourWrites.actor.cpp:258-260). A concurrent write in that span conflicts on real FDB.
 func TestSelectorRange_ResolutionReadConflictsOutsideTheExtent(t *testing.T) {
 	t.Parallel()
 	db := New(nil)
@@ -226,8 +216,7 @@ func TestSelectorRange_ResolutionReadConflictsOutsideTheExtent(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	tx := handle.(*simTxn)
-	// LastLessThan("d") resolves to "b" (a GetKey over ["b","d")); the end resolves to "b" too,
-	// so the extent is ["b","b") — empty.
+	// LastLessThan("d") resolves to "b"; the end resolves to "b" too, so no row is read.
 	rr := tx.GetRange(fdb.SelectorRange{
 		Begin: fdb.LastLessThan(k("d")),
 		End:   fdb.FirstGreaterOrEqual(k("b")),
@@ -240,7 +229,7 @@ func TestSelectorRange_ResolutionReadConflictsOutsideTheExtent(t *testing.T) {
 		t.Fatalf("expected an empty read, got %d rows — the range shape changed", len(kvs))
 	}
 
-	// "c" lies in the span the resolving GetKey scanned and in no extent whatsoever.
+	// "c" lies in [b, d), the span the begin selector's resolution depended on.
 	if _, err := db.Transact(func(w fdb.WritableTransaction) (any, error) {
 		w.Set(k("c"), []byte("concurrent"))
 		return nil, nil
@@ -254,9 +243,9 @@ func TestSelectorRange_ResolutionReadConflictsOutsideTheExtent(t *testing.T) {
 		got = errCode(t, err)
 	}
 	if got != 1020 {
-		t.Fatalf("commit code = %d, want 1020: the range extent is EMPTY, so the only thing "+
-			"that can conflict here is the GetKey that resolved the backward bound — dropping "+
-			"it silently loses a conflict real FDB takes (conflicts were %v)",
+		t.Fatalf("commit code = %d, want 1020: the read returned no rows, but the backward "+
+			"begin's resolution depended on [b, d), which C++ addConflictRange covers — "+
+			"dropping it silently loses a conflict real FDB takes (conflicts were %v)",
 			got, conflictStrings(tx))
 	}
 }

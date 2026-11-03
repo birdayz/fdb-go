@@ -14,15 +14,35 @@ func budgetModel(budget float64) *QueueModel {
 
 // setSecondBudget gives a live database's model budget second requests' worth.
 func setSecondBudget(q *QueueModel, budget float64) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	q.secondBudget = budget
+	setSecondState(q, q.multiplier(), budget)
+}
+
+// setSecondState sets the second-request pair and its idle flag under secondMu.
+func setSecondState(q *QueueModel, multiplier, budget float64) {
+	q.secondMu.Lock()
+	defer q.secondMu.Unlock()
+	q.secondMultiplier, q.secondBudget = multiplier, budget
+	q.secondIdle.Store(multiplier == 1.0 && budget == secondRequestMaxBudget)
 }
 
 func secondState(q *QueueModel) (budget, multiplier float64) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
+	q.secondMu.Lock()
+	defer q.secondMu.Unlock()
 	return q.secondBudget, q.secondMultiplier
+}
+
+// totalOf returns a server's raw smoothOutstanding running total (the leak sentinel).
+func totalOf(qm *QueueModel, addr string) (total float64) {
+	withServer(qm, addr, func(d *queueData) { total = d.smoothOutstanding.total })
+	return total
+}
+
+// withServer runs fn on addr's queueData under its lock.
+func withServer(q *QueueModel, addr string, fn func(d *queueData)) {
+	d := q.getOrCreate(addr)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	fn(d)
 }
 
 // checkSecondModel checks C++'s literal budget rules after lone replies or one

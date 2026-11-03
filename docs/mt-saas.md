@@ -73,9 +73,9 @@ renameable. A 40-character tenant ID costs 40 bytes on every key in the tenant's
 
 Nothing in the layer bounds that. `ParseDBPath` validates structure only — leading `/`, no empty
 segments (`pkg/relational/core/keyspace/keyspace.go:63-76`) — and the only length enforcement is
-FDB's 10 000-byte key limit, applied **at commit**, not at write time
-(`pkg/fdbgo/client/sizelimits.go:17`, `:10-12`). An absurd tenant ID therefore fails late, as a
-commit error that does not name the path. Cap the length in your provisioning code.
+FDB's 10 000-byte key limit (`keySizeLimit`, `pkg/fdbgo/client/sizelimits.go:13`). The Set
+returns nothing; the next read or the commit fails with key_too_large (2102), an error that does
+not name the path. Cap the length in your provisioning code.
 
 ### Why native FDB tenants are not used
 

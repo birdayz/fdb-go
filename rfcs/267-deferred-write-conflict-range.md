@@ -41,7 +41,8 @@ implementation adds a note there.
 
 Go's `AddWriteConflictKey` (`transaction.go:3248-3274`) already follows steps 2-5 for the
 single-key form, including the rule that an earlier illegal mutation, which Go buffers
-until commit, keeps its earlier verdict (C++ would have recorded it first).
+until commit, keeps its earlier verdict (C++ would have recorded it first). Superseded: an
+illegal write now defers its error at the call (`deferIllegalLocked`), and the first wins.
 
 ## Fix
 
@@ -54,6 +55,7 @@ Split `stateAddWriteConflictRange` into the synchronous part and the network-thr
 - The deferred part is today's `AddWriteConflictKey` body: return if `deferredErr` is
   set (step 3); run the legal-range check, clamp and conflict-map insert; on 2004 record
   the earliest illegal buffered mutation's code, else 2004, with `CompareAndSwap(nil, …)`.
+  (Superseded: illegal writes defer their own error at the call, so 2004 is stored as is.)
 
 The facade's `AddWriteConflictRange` return then carries only `inverted_range`, as with
 the Apple binding over libfdb_c. Doc comments on both layers say so.
@@ -73,7 +75,8 @@ is refused before anything is sent, as before when callers propagated the error.
 ## Performance
 
 One extra atomic load per call on the legal path. The illegal path scans buffered
-mutations once, as the key form already does.
+mutations once, as the key form already does. (Superseded: there is no scan; the first
+deferred error wins.)
 
 ## Test plan
 

@@ -3699,12 +3699,12 @@ func TestErrorPredicateRetryableNotCommitted_CPort(t *testing.T) {
 	{
 		tx := db.CreateTransaction()
 		tx.Set([]byte(t.Name()+"_sc_key"), []byte("val"))
-		if len(tx.writeConflicts) == 0 {
+		if len(tx.writeConflictRanges()) == 0 {
 			t.Fatal("Set should have added a write conflict")
 		}
 		_ = tx.OnError(context.Background(), &wire.FDBError{Code: ErrNotCommitted})
-		if len(tx.readConflicts) != 0 {
-			t.Errorf("1020 must NOT inject self-conflicts, got %d readConflicts", len(tx.readConflicts))
+		if n := len(tx.readConflictRanges()); n != 0 {
+			t.Errorf("1020 must NOT inject self-conflicts, got %d readConflicts", n)
 		}
 	}
 
@@ -3722,17 +3722,17 @@ func TestErrorPredicateRetryableNotCommitted_CPort(t *testing.T) {
 	{
 		tx := db.CreateTransaction()
 		tx.Set([]byte(t.Name()+"_mc_key"), []byte("val"))
-		origWC := make([]KeyRange, len(tx.writeConflicts))
-		copy(origWC, tx.writeConflicts)
+		origWC := tx.writeConflictRanges() // a new vector
 		if len(origWC) == 0 {
 			t.Fatal("Set should have added a write conflict")
 		}
 		_ = tx.OnError(context.Background(), &wire.FDBError{Code: ErrCommitUnknownResult})
-		if len(tx.readConflicts) != len(origWC) {
-			t.Errorf("1021 self-conflict: got %d readConflicts, want %d",
-				len(tx.readConflicts), len(origWC))
+		reads := tx.readConflictRanges()
+		if len(reads) != len(origWC) {
+			t.Fatalf("1021 self-conflict: got %d readConflicts, want %d",
+				len(reads), len(origWC))
 		}
-		for i, rc := range tx.readConflicts {
+		for i, rc := range reads {
 			if string(rc.Begin) != string(origWC[i].Begin) || string(rc.End) != string(origWC[i].End) {
 				t.Errorf("readConflict[%d]: got [%q,%q), want [%q,%q)",
 					i, rc.Begin, rc.End, origWC[i].Begin, origWC[i].End)

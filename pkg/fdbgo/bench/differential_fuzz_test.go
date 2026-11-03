@@ -24,7 +24,7 @@ import (
 // Min→MinV2 / And→AndV2 op-code upgrade (NativeAPI.actor.cpp:5990-5994) applies
 // identically. Reads pin a fresh shared read version (the RFC-053 L3 GRV-skew lesson).
 // Excluded: SetVersionstampedKey/Value (stamp = commit version, not byte-comparable),
-// oversized keys/values (the C binding aborts the process), conflicts (control-plane).
+// oversized keys/values (a deferred error, covered by the size tests), conflicts (control-plane).
 
 const (
 	fzSet = iota

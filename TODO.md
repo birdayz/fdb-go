@@ -265,6 +265,18 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     `getRangeValue` with `GetRangeLimits(1)` (`ReadYourWrites.actor.cpp:140-160`); the
     offset beyond the first row becomes `additionalRows` (`:731-749`), which
     `setRequestLimits` adds to the one-row limit (`:569-575`).
+  - [x] Selector ranges (RFC-262 phase 4, D10, plain ranges): a range read with a selector
+    of offset other than 1 is one getRange, not a `GetKey` per selector and then a range.
+    The client's `StartGetRangeSelectors`/`GetRangeSelectors` (`pkg/fdbgo/client/range_selector_issue.go`)
+    run the ported walk over `nativeGetRange`, or `readThrough` with RYW disabled, and add
+    `addConflictRange(GetRangeReq)` / `getRangeFinished` conflicts (`ReadYourWrites.actor.cpp:187-215,
+    245-319, 1711-1769`; `NativeAPI.actor.cpp:4558-4586`). Pinned by
+    `//pkg/fdbgo/client:selector_range_conformance_test` (test-full, rows and read conflicts
+    against libfdb_c on small shards), `//pkg/fdbgo/client:range_selector_unit_test`,
+    `TestSelectorRangeReadSendsOneStorageRequest` (`storage_plumbing_fdb_test`),
+    `TestGetRange_SelectorRangeIsOneStorageRead` and `TestConflictRange_SelectorGetRange_Native`
+    (`//pkg/fdbgo/fdb:fdb_test`), and `TestDifferential_GetRangeSelectorRYW` (bench, test-full).
+    Remaining work: "Selector ranges: offset-1 merge path and a wire golden" (section 0).
   - [x] `clear_range_then_set`: libfdb_c sends a clear split around a later set in it,
     as `writeRangeToNativeTransaction` emits one clear per cleared stretch of the write map
     (`ReadYourWrites.actor.cpp:2001-2018`); Go sends the whole clear. The stored data is the
@@ -371,12 +383,17 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   RFC-262 sender with follow-ups under concurrent same-peer and independent-peer
   traffic, reporting throughput, client CPU, allocations and mutex/block profiles.
   Single-thread loopback RPC measurements do not establish contention cost.
-- [ ] **Reads after an illegal Set precede its deferred verdict.** `stateSet`
-  (`transaction.go:1268-1284`) buffers illegal keys/values until commit validation;
-  C++ RYW set throws before modifying WriteMap (`ReadYourWrites.actor.cpp:2344-2353`)
-  and the thread-safe wrapper defers that error. A later GetKey/conflict filter can
-  therefore observe a Go write that C++ never installed. Align mutation admission
-  and first-error ordering, with an illegal-Set-then-read/conflict regression.
+- [x] **Reads after an illegal Set precede its deferred verdict.** `stateSet`
+  buffered illegal keys/values until commit validation; C++ RYW set throws before
+  modifying WriteMap (`ReadYourWrites.actor.cpp:2344-2353`) and the thread-safe
+  wrapper defers that error. A later GetKey/conflict filter could therefore observe
+  a Go write that C++ never installed.
+  Fixed: Set/Clear/ClearRange/Atomic make an illegal write's error the deferred
+  error in the call (`deferIllegalLocked`), so every later read, GetKey and Commit
+  fails with it; an illegal ClearRange endpoint buffers nothing. An illegal
+  Set/Clear/Atomic still enters the write map, which no operation can then
+  observe. Pinned by `TestIllegalWriteIsDeferred` (Get, GetRange, Commit; RYW on
+  and off) and `//conformance:ryw_script_conformance_test` against libfdb_c.
 - [ ] **Transaction options during in-flight operations.** Option setters (`SetLockAware`,
   `SetReadLockAware`, GRV cache, tags, priority, `SetAutoThrottleTag`) write plain
   `Transaction` fields under a shared state lease, while in-flight operations read them:
@@ -517,6 +534,73 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   `primaryReplied` because decoding happens after the hedge helper returns; the
   transport-error unit cases do not cover server error bodies. Port both reply
   paths with encoded-response integration regressions and a synctest per arm.
+- [ ] **RYW CPU in TEXT-maintenance-shaped transactions** (GenAI exporter
+  profile, 128 messages per transaction, about 7000 BunchedMap postings).
+  `BenchmarkRYWTextMaintenance` (one transaction: 7000 BunchedMap postings
+  over a warmed cached range under a 64-byte prefix, serial snapshot selector
+  reads with deferred consumption of up to 128 completed futures, not active
+  concurrent reads or write-map pins; each posting adds the entry list's read
+  conflict, an AppendIfFits to its bunch or every fourth a Set plus a split-off
+  Clear, a write conflict key and the gap's write conflict range) in an **intermediate-tree experiment**:
+  314 -> 90 ms, 65.8 -> 21.5 MB, 433k -> 117k allocs per transaction.
+  These are not a before/after measurement of the PR: the required equivalent
+  workload comparison against merge-base a7349ff65 remains outstanding.
+  Baseline e71d2b44c, the PR's first
+  commit with the selector-range API the benchmark uses (the merge-base
+  a7349ff65 has neither it nor the test target), with only this benchmark
+  copied in; candidate 14b5dd156 (`pkg/fdbgo` tree 79198abcd). Go 1.27.3,
+  `//pkg/fdbgo/client:range_selector_unit_test` fastbuild binaries,
+  `-test.benchtime 10x`, five interleaved rounds per binary, medians shown
+  (base 294-376 ms, change 77-98 ms); 24 threads at host load about 36, so
+  wall times are noisy; bytes and allocs are stable to 0.01%.
+  The write map keeps its bytes in a never-reused arena shared by the op-log
+  for Set/Clear/ClearRange (the op-log no longer copies each Set beside the
+  write map); WriteMap::addConflictRange inserts by iterator position; the
+  read-conflict map merges with one search; the mutators and short scans
+  iterate with PTreeFinger-style fingers; walks classify written segments
+  without their entry, skip from the current position and insert replies with
+  C++'s two searches; atomics skip no-op node mutates; QueueModel keeps
+  per-server locks. Conformance against libfdb_c
+  (`//conformance:ryw_script_conformance_test`) found and pinned three fixes:
+  a snapshot Get, and a Get that falls back from the pipelined path (a key
+  with pending atomics), issued before a later write no longer sees it
+  (StartGet, issued in the call; Commit waits for it), an explicit write
+  conflict no longer consumes NEXT_WRITE_NO_WRITE_CONFLICT_RANGE, and an
+  illegal write is the deferred error for later operations, as libfdb_c's
+  eager throw is.
+  Open: every server read still derives a merged cancellable context
+  (`readOperation.merged`, propagateCancel contention); a written key's entry
+  is still found by a root search per walk (C++ keeps the operation stack in
+  the WriteMap node); inserts after a pin still copy about half the path;
+  RYW selector reads served from the cache cost about 10 µs each.
+- [ ] **Option errors are deferred in libfdb_c.** libfdb_c runs `setOption` on the
+  network thread and records its throw as the deferred error
+  (`ThreadSafeTransaction.cpp:730-743`), so `SetAccessSystemKeys`/`SetReadSystemKeys`
+  on a tenant transaction return success and the next Get/Commit fails with 2007
+  (`NativeAPI.actor.cpp:7159-7171`). The Go facade returns `TenantOptionError` (2007)
+  from the option call (`pkg/fdbgo/fdb/options.go`), and later operations succeed.
+  Found by `//conformance:ryw_script_conformance_test`, which leaves the scenario out
+  until this is aligned; audit the other option errors the same way.
+- [ ] **Serve the read_conflict_range/ and write_conflict_range/ special keys.** Go fails
+  reads of `\xff\xff/transaction/read_conflict_range/` and `.../write_conflict_range/` with
+  2108 (DIVERGENCES.md, special key space). C++ renders the RYW read-conflict map and the
+  write map's conflict flags (`ReadYourWrites.actor.cpp:2121-2215`), after waiting on
+  pending reads (`SpecialKeySpace.actor.cpp:690-699`). Go now has both maps
+  (`conflict_map.go`); serve the modules from them, with a libfdb_c conformance case.
+- [ ] **Selector ranges: offset-1 merge path and a wire golden.** Ranges whose selectors
+  both have offset 1 still take the exact-range merge path (RFC-262 phase 3), not the
+  ported selector walk, and there is no selector-range wire-golden scenario. Route them
+  through the walk where C++ does, and add the golden.
+
+- [ ] **Deferred — SimFDB selector-cache overfetch precision.** The simulator keeps
+  conservative logical knowledge from successful point/GetKey reads and consumed range
+  batches; it does not reproduce every extra offset/lookahead row cached by the native
+  RYW storage replies. A later crossed-selector read warmed only by those extra rows can
+  therefore still over-conflict. Before claiming complete cache-history parity, model
+  `knownKeyRange` / `knownKeyRangeBack` from the effective storage request and reply
+  (`ReadYourWrites.actor.cpp:487-508,816-839`, Go `client/ryw_walk.go`), with differential
+  warmup/continuation regressions. The point/exact-range warm-cache cases are covered by
+  `TestSelectorRange_KnownReadReduction`; this is not an authorization for a new campaign.
 
 ## 1. WS-E — scalar/SQL semantics and statement execution — ACTIVE
 
@@ -2027,12 +2111,11 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   allocation (GC is ~39% of planner CPU); split 2, vector indexes out of
   `pkg/recordlayer` behind a maintainer registry (58 -> ~38 test targets per
   vector change); a Bazel cache shared by both CI runners.
-- [ ] `pkg/fdbgo`: bound GetRange selector resolution by the range end. The facade
-  resolves a non-trivial selector with an unbounded `GetKey` first
-  (`pkg/fdbgo/fdb/range_result.go:413-470`, `pkg/fdbgo/client/ryw_getkey.go`), so an
-  overshooting index-scan Skip reads, and in serializable mode conflicts on, keys past the
-  range. libfdb_c resolves within the read (ReadYourWrites.actor.cpp:725-760) and conflicts
-  on the requested range (:246-282). Client team.
+- [x] `pkg/fdbgo`: bound GetRange selector resolution by the range end. The facade used to
+  resolve a non-trivial selector with an unbounded `GetKey` first, so an overshooting
+  index-scan Skip read, and in serializable mode conflicted on, keys past the range. A
+  selector range is now one read, resolved inside it as in libfdb_c (RFC-262 phase 4, see
+  the wire-divergence entry); mapped reads are unchanged.
 - [ ] `pkg/fdbgo`: make `GetAddressesForKey` transactional. Go answers from the location
   cache (`pkg/fdbgo/client/transaction.go:2698`); libfdb_c 7.3.77 starts the transaction and
   reads `\xff/serverTag`, the key's `\xff/keyServers` entry and the server interfaces at the
@@ -2332,6 +2415,17 @@ tracked only.
   Decide whether to keep it. Kept in #1011 (RFC-280): libfdb_c's transaction timeout and
   `Cancel` end the wait as Go's do; the `TransactCtx` doc names the `fdb_future_cancel`
   difference.
+- [ ] **Connect-failure residuals** (after the refused-connect fix: a failed dial is now
+  request_maybe_delivered and storage reads retry it unbounded with loadBalance's backoff).
+  (a) Recovery timing: C++ resumes a waiting read when connectionKeeper's reconnect
+  succeeds (`okFuture`, LoadBalance.actor.h:618-635); Go polls with `lbRetry` (up to 5 s
+  apart), so after a long outage Go's next try can land past the MVCC window and see 1007
+  where libfdb_c would not. (b) Go marks an address failed on its first connect failure;
+  C++ only after `FAILURE_DETECTION_DELAY` (FlowTransport.actor.cpp:920-930). (c) GRV and
+  location queries do not skip failure-monitor-failed proxies (basicLoadBalance does,
+  LoadBalance.actor.h:779-793): latency only, never an error. (d) `OpenDatabase`'s eager
+  bootstrap returns an error wrapping the coded coordinator connect failure when its
+  context ends; `fdb_create_database` has no such error.
 
 ### SQL
 

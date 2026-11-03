@@ -116,12 +116,12 @@ func TestHedgeSenderDelay(t *testing.T) {
 					tx.readVersion = 1
 					tx.rpcTimeoutOverride = time.Minute
 					sentinel := q.startRequest(backupAddr)
-					q.mu.Lock()
-					q.getOrCreate(primaryAddr).latency = timing.primaryLatency
-					q.getOrCreate(backupAddr).latency = 0.008
-					q.getOrCreate(backupAddr).smoothOutstanding.estimate = 1
-					q.secondMultiplier, q.secondBudget = 3, 1
-					q.mu.Unlock()
+					withServer(q, primaryAddr, func(d *queueData) { d.latency = timing.primaryLatency })
+					withServer(q, backupAddr, func(d *queueData) {
+						d.latency = 0.008
+						d.smoothOutstanding.estimate = 1
+					})
+					setSecondState(q, 3, 1)
 					defer q.endRequest(backupAddr, sentinel, 0, false)
 					if best, next := q.chooseTopTwo(servers); best != 0 || next != 1 {
 						t.Fatalf("selection = %d,%d, want primary then backup", best, next)
@@ -188,10 +188,8 @@ func TestHedgeSenderDelay(t *testing.T) {
 					if budget, multiplier := secondState(q); budget != 0 || math.Abs(multiplier-3.01) > 1e-12 {
 						t.Fatalf("budget=%v multiplier=%v, want 0 and 3.01", budget, multiplier)
 					}
-					q.mu.Lock()
-					primaryOutstanding := q.getOrCreate(primaryAddr).smoothOutstanding.total
-					backupOutstanding := q.getOrCreate(backupAddr).smoothOutstanding.total
-					q.mu.Unlock()
+					primaryOutstanding := totalOf(q, primaryAddr)
+					backupOutstanding := totalOf(q, backupAddr)
 					if primaryOutstanding != 0 || backupOutstanding != sentinel {
 						t.Fatalf("outstanding = %v,%v, want 0,%v", primaryOutstanding, backupOutstanding, sentinel)
 					}

@@ -612,7 +612,7 @@ func TestDifferential_TenantVersionstampedValue(t *testing.T) {
 
 // TestDifferential_TenantVersionstampErrors pins that the offset-VALIDATION boundary is
 // identical in a tenant. Both clients validate the USER operand (pre-prefix) — C++ at the
-// atomicOp() call (before applyTenantPrefix), Go in the per-mutation commit loop on m.Key
+// atomicOp() call (before applyTenantPrefix), Go at the call too (deferIllegalLocked) on m.Key
 // (before buildCommitTransactionRequest applies the prefix). So the tenant prefix must NOT
 // shift the boundary: offset+10==body still commits; +1 still rejects (2000). A bug that
 // validated the POST-+8 offset would move the boundary by 8 in a tenant and diverge here.

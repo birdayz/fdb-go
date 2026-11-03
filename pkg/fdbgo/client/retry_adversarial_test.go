@@ -43,21 +43,21 @@ func TestOnError_SelfConflicting_CommitUnknown(t *testing.T) {
 	// After reset + self-conflicting, read conflicts should include the
 	// original write conflicts. The original readConflicts are cleared by
 	// reset(), and write conflicts are copied before reset.
-	if len(tx.readConflicts) != 2 {
-		t.Fatalf("expected 2 read conflicts (from self-conflicting), got %d", len(tx.readConflicts))
+	if len(tx.readConflictRanges()) != 2 {
+		t.Fatalf("expected 2 read conflicts (from self-conflicting), got %d", len(tx.readConflictRanges()))
 	}
 
 	// Verify the copied ranges match the original writes.
-	if string(tx.readConflicts[0].Begin) != "a" || string(tx.readConflicts[0].End) != "b" {
-		t.Errorf("readConflicts[0]: got [%q,%q), want [a,b)", tx.readConflicts[0].Begin, tx.readConflicts[0].End)
+	if string(tx.readConflictRanges()[0].Begin) != "a" || string(tx.readConflictRanges()[0].End) != "b" {
+		t.Errorf("readConflicts[0]: got [%q,%q), want [a,b)", tx.readConflictRanges()[0].Begin, tx.readConflictRanges()[0].End)
 	}
-	if string(tx.readConflicts[1].Begin) != "x" || string(tx.readConflicts[1].End) != "z" {
-		t.Errorf("readConflicts[1]: got [%q,%q), want [x,z)", tx.readConflicts[1].Begin, tx.readConflicts[1].End)
+	if string(tx.readConflictRanges()[1].Begin) != "x" || string(tx.readConflictRanges()[1].End) != "z" {
+		t.Errorf("readConflicts[1]: got [%q,%q), want [x,z)", tx.readConflictRanges()[1].Begin, tx.readConflictRanges()[1].End)
 	}
 
 	// Write conflicts should be cleared by reset.
-	if len(tx.writeConflicts) != 0 {
-		t.Errorf("writeConflicts should be cleared after reset, got %d", len(tx.writeConflicts))
+	if len(tx.writeConflictRanges()) != 0 {
+		t.Errorf("writeConflicts should be cleared after reset, got %d", len(tx.writeConflictRanges()))
 	}
 }
 
@@ -76,11 +76,11 @@ func TestOnError_SelfConflicting_ClusterVersionChanged(t *testing.T) {
 		t.Fatalf("OnError should retry cluster_version_changed, got: %v", err)
 	}
 
-	if len(tx.readConflicts) != 1 {
-		t.Fatalf("expected 1 read conflict from self-conflicting, got %d", len(tx.readConflicts))
+	if len(tx.readConflictRanges()) != 1 {
+		t.Fatalf("expected 1 read conflict from self-conflicting, got %d", len(tx.readConflictRanges()))
 	}
-	if string(tx.readConflicts[0].Begin) != "k" {
-		t.Errorf("readConflicts[0].Begin: got %q, want k", tx.readConflicts[0].Begin)
+	if string(tx.readConflictRanges()[0].Begin) != "k" {
+		t.Errorf("readConflicts[0].Begin: got %q, want k", tx.readConflictRanges()[0].Begin)
 	}
 }
 
@@ -101,8 +101,8 @@ func TestOnError_NotCommitted_NoSelfConflicting(t *testing.T) {
 	}
 
 	// NOT self-conflicting — readConflicts should be empty after reset.
-	if len(tx.readConflicts) != 0 {
-		t.Errorf("expected 0 read conflicts (not_committed is NOT maybe_committed), got %d", len(tx.readConflicts))
+	if len(tx.readConflictRanges()) != 0 {
+		t.Errorf("expected 0 read conflicts (not_committed is NOT maybe_committed), got %d", len(tx.readConflictRanges()))
 	}
 }
 

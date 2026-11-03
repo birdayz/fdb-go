@@ -67,6 +67,7 @@ go_test(
     srcs = [
         "bench_test.go",
         "commit_marshal_test.go",
+        "commitid_conflict_test.go",
         "decode_failure_test.go",
         "erroror_test.go",
         "gkslr_manual_test.go",

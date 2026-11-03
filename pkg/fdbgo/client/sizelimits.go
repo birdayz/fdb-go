@@ -1,15 +1,11 @@
 package client
 
 // Client-side key/value size limits, mirroring CLIENT_KNOBS in C++
-// (fdbclient/ClientKnobs.cpp). The official C binding ABORTS the process when a
-// write exceeds these: fdb_transaction_set/atomic_op are void and wrap the call
-// in CATCH_AND_DIE (bindings/c/fdb_c.cpp), so the key_too_large/value_too_large
-// thrown by ReadYourWrites.actor.cpp::set/atomicOp (:2237-2241, :2344-2348)
-// terminates the process. We never abort in library code (design principle #4),
-// so instead:
-//   - set()/atomicOp() oversized key/value → reject the COMMIT with the same error
-//     code, deferred like the other RYW write checks (our Set/Atomic are void too).
-//     The oversized data never reaches the shared cluster, which is the point.
+// (fdbclient/ClientKnobs.cpp). RYW set/atomicOp throw key_too_large/value_too_large
+// (ReadYourWrites.actor.cpp:2238-2241, 2345-2348), which libfdb_c keeps as the deferred
+// error (ThreadSafeTransaction.cpp:589-617):
+//   - set()/atomicOp() oversized key/value → the deferred error, reported by later reads
+//     and the commit (deferIllegalLocked); the data never reaches the cluster.
 //   - clear() oversized keys → CLAMP the range (or DROP a single-key clear),
 //     exactly as C++ clear() does (NativeAPI.actor.cpp:6019-6047) — clear never
 //     throws, it translates an oversized range to an equivalent smaller one.

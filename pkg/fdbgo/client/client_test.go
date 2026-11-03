@@ -120,8 +120,8 @@ func TestTransactionSet(t *testing.T) {
 	if string(tx.mutations[0].Key) != "key1" {
 		t.Errorf("mutation 0 key: got %q, want %q", tx.mutations[0].Key, "key1")
 	}
-	if len(tx.writeConflicts) != 2 {
-		t.Errorf("write conflicts: got %d, want 2", len(tx.writeConflicts))
+	if n := len(tx.writeConflictRanges()); n != 2 {
+		t.Errorf("write conflicts: got %d, want 2", n)
 	}
 }
 
@@ -282,9 +282,9 @@ func TestCommitUnknownResult_SelfConflicting(t *testing.T) {
 	tx.Set([]byte("key_b"), []byte("val"))
 	tx.ClearRange([]byte("range_begin"), []byte("range_end"))
 
-	// Capture write conflicts before OnError resets them.
-	originalWriteConflicts := make([]KeyRange, len(tx.writeConflicts))
-	copy(originalWriteConflicts, tx.writeConflicts)
+	// Capture write conflicts before OnError resets them. Disjoint ranges: with RYW the
+	// write map's runs are these three in key order.
+	originalWriteConflicts := tx.writeConflictRanges() // a new vector
 	if len(originalWriteConflicts) != 3 {
 		t.Fatalf("expected 3 write conflicts, got %d", len(originalWriteConflicts))
 	}
@@ -300,17 +300,18 @@ func TestCommitUnknownResult_SelfConflicting(t *testing.T) {
 	if len(tx.mutations) != 0 {
 		t.Errorf("mutations should be cleared, got %d", len(tx.mutations))
 	}
-	if len(tx.writeConflicts) != 0 {
-		t.Errorf("writeConflicts should be cleared, got %d", len(tx.writeConflicts))
+	if n := len(tx.writeConflictRanges()); n != 0 {
+		t.Errorf("writeConflicts should be cleared, got %d", n)
 	}
 
 	// But readConflicts should contain the ORIGINAL write conflicts
 	// (self-conflicting for double-apply protection).
-	if len(tx.readConflicts) != len(originalWriteConflicts) {
+	reads := tx.readConflictRanges()
+	if len(reads) != len(originalWriteConflicts) {
 		t.Fatalf("readConflicts: got %d, want %d (self-conflicts from writes)",
-			len(tx.readConflicts), len(originalWriteConflicts))
+			len(reads), len(originalWriteConflicts))
 	}
-	for i, rc := range tx.readConflicts {
+	for i, rc := range reads {
 		if string(rc.Begin) != string(originalWriteConflicts[i].Begin) ||
 			string(rc.End) != string(originalWriteConflicts[i].End) {
 			t.Errorf("readConflict[%d]: got [%q,%q), want [%q,%q)",
@@ -324,8 +325,8 @@ func TestCommitUnknownResult_SelfConflicting(t *testing.T) {
 	tx2.Set([]byte("key"), []byte("val"))
 	err2 := fmt.Errorf("commit: %w", &wire.FDBError{Code: ErrNotCommitted})
 	tx2.OnError(context.Background(), err2)
-	if len(tx2.readConflicts) != 0 {
-		t.Errorf("1020 should NOT inject self-conflicts, got %d readConflicts", len(tx2.readConflicts))
+	if n := len(tx2.readConflictRanges()); n != 0 {
+		t.Errorf("1020 should NOT inject self-conflicts, got %d readConflicts", n)
 	}
 }
 
@@ -338,8 +339,10 @@ func TestClusterVersionChanged_SelfConflicting(t *testing.T) {
 	tx.Set([]byte("key_a"), []byte("val"))
 	tx.Set([]byte("key_b"), []byte("val"))
 
-	originalWriteConflicts := make([]KeyRange, len(tx.writeConflicts))
-	copy(originalWriteConflicts, tx.writeConflicts)
+	originalWriteConflicts := tx.writeConflictRanges() // a new vector
+	if len(originalWriteConflicts) != 2 {
+		t.Fatalf("expected 2 write conflicts, got %d", len(originalWriteConflicts))
+	}
 
 	err := fmt.Errorf("commit: %w", &wire.FDBError{Code: ErrClusterVersionChanged})
 	result := tx.OnError(context.Background(), err)
@@ -348,12 +351,12 @@ func TestClusterVersionChanged_SelfConflicting(t *testing.T) {
 	}
 
 	// Self-conflicts injected: write conflicts → read conflicts.
-	if len(tx.readConflicts) != len(originalWriteConflicts) {
+	if n := len(tx.readConflictRanges()); n != len(originalWriteConflicts) {
 		t.Fatalf("readConflicts: got %d, want %d (self-conflicts)",
-			len(tx.readConflicts), len(originalWriteConflicts))
+			n, len(originalWriteConflicts))
 	}
-	if len(tx.writeConflicts) != 0 {
-		t.Errorf("writeConflicts should be cleared, got %d", len(tx.writeConflicts))
+	if n := len(tx.writeConflictRanges()); n != 0 {
+		t.Errorf("writeConflicts should be cleared, got %d", n)
 	}
 }
 
@@ -378,7 +381,7 @@ func TestApproximateCommitSize_SizesSnapshotNotLiveBuffer(t *testing.T) {
 	tx.mutations = append([]Mutation{}, snapshot...)
 	tx.mutations = append(tx.mutations, Mutation{Type: MutSetValue, Key: []byte("big"), Value: make([]byte, 20_000_000)})
 
-	snapSize := tx.approximateCommitSize(snapshot, tx.readConflicts, nil)
+	snapSize := tx.approximateCommitSize(snapshot, tx.readConflictRanges(), nil)
 	if snapSize > sizeofMutationRef+100 {
 		t.Fatalf("approximateCommitSize sized the live buffer (%d), not the validated snapshot — a small commit would spuriously hit 2101", snapSize)
 	}

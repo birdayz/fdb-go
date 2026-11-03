@@ -238,9 +238,9 @@ func TestCommit_ShipsSelfConflictRange_Wire(t *testing.T) {
 	// SAME pre-SC snapshot. Feeding the pre-SC snapshot (NOT live tx.writeConflicts, which maybeMakeSelf-
 	// Conflicting mutates to contain the SC) makes SC enter ONLY via the `sc` param — so this test reds if
 	// the P1 sc-append is reverted.
-	_, _, coalesced := coalesceCommitVectors(tx.mutations, tx.writeConflicts, tx.rywDisabled)
-	writeSnap := append([]KeyRange(nil), tx.writeConflicts...)
-	sc, _, scAdded := tx.maybeMakeSelfConflicting(writeSnap, tx.readConflicts)
+	writeSnap := tx.writeConflictRanges() // a new vector
+	_, _, coalesced := coalesceCommitVectors(tx.mutations, writeSnap, tx.rywDisabled)
+	sc, _, scAdded := tx.maybeMakeSelfConflicting(writeSnap, tx.readConflictRanges())
 	shipConflicts := finalizeShipConflicts(writeSnap, sc, scAdded, coalesced)
 
 	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations, shipConflicts)
@@ -278,7 +278,7 @@ func TestMaybeMakeSelfConflicting_DecidesOnFrozenSnapshot(t *testing.T) {
 		{Begin: []byte("a"), End: []byte("a\x00")},
 		{Begin: []byte("b"), End: []byte("b\x00")},
 	}
-	if _, _, scAdded := tx.maybeMakeSelfConflicting(writeSnap, tx.readConflicts); !scAdded {
+	if _, _, scAdded := tx.maybeMakeSelfConflicting(writeSnap, tx.readConflictRanges()); !scAdded {
 		t.Fatal("#28 round-3: SC decision must use the frozen write snapshot [a] (which ships), not live " +
 			"tx.writeConflicts — a racing Set on read key \"b\" wrongly suppressed the self-conflict range")
 	}
@@ -297,7 +297,7 @@ func TestRywAtomic_ChainFolds(t *testing.T) {
 		c.atomic(MutAddValue, key, le8(1))
 	}
 	c.mu.Lock()
-	entry := c.liveLocked().writes[string(key)]
+	entry, _ := c.liveLocked().entry(string(key))
 	c.mu.Unlock()
 	if !entry.hasAtomics {
 		t.Fatal("expected a pending atomic chain on an unread key")
@@ -377,19 +377,16 @@ func TestCoalesceOverAtomics_EmptyOperandStaysPresent(t *testing.T) {
 	}
 }
 
-// TestRywAtomic_EmptyOperandFirstInTxn drives the same defect through the PRODUCTION path
-// rather than the fold helper directly: rywCache.atomic copies the operand out of the shared
-// byteBuf via allocBytes, and allocBytes(0) on a still-unallocated buffer returns a NIL slice.
-// So the divergence is armed exactly when a zero-length atomic operand is the first one in the
-// transaction — the shape FuzzDifferential minimised to.
+// TestRywAtomic_EmptyOperandFirstInTxn drives the same defect through the PRODUCTION path:
+// a zero-length operand that is the transaction's first, the shape FuzzDifferential minimised to.
 func TestRywAtomic_EmptyOperandFirstInTxn(t *testing.T) {
 	t.Parallel()
 	c := &rywCache{}
 	key := []byte("c")
-	c.atomic(MutAndV2, key, []byte{})     // empty operand, first in the txn -> allocBytes(0)
+	c.atomic(MutAndV2, key, []byte{})     // empty operand, first in the txn
 	c.atomic(MutAndV2, key, []byte{0x30}) // folds onto it
 	c.mu.Lock()
-	entry := c.liveLocked().writes[string(key)]
+	entry, _ := c.liveLocked().entry(string(key))
 	c.mu.Unlock()
 	if len(entry.atomics) != 1 {
 		t.Fatalf("chain length = %d, want 1 (AndV2 is associative and always folds)", len(entry.atomics))

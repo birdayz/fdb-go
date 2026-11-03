@@ -40,7 +40,8 @@ type hedgeResult struct {
 	connErr bool // true if connection error (not a reply error)
 	others  []rpcAccount
 	// triedSecondary reports that the secondary send was attempted.
-	triedSecondary bool
+	triedSecondary  bool
+	failureObserved bool
 }
 
 // sendFrameWithHedge races the primary against a budget-funded secondary, or
@@ -53,13 +54,22 @@ func sendFrameWithHedge(
 	secondary sendFunc, // may be nil if only 1 server
 	timeout time.Duration,
 ) hedgeResult {
+	return sendFrameWithHedgePaced(ctx, model, hedgeDelay, primary, secondary, timeout, nil)
+}
+
+// The failure callback runs before advancing an internally failed alternative.
+func sendFrameWithHedgePaced(ctx context.Context, model *QueueModel, hedgeDelay time.Duration, primary, secondary sendFunc, timeout time.Duration, failed func(error)) (out hedgeResult) {
+	defer func() { observeHedgeFailure(&out, failed) }()
 	// Send to primary immediately.
 	pResult := primary()
 	primaryCleanup := replyGuard{handle: pResult.replyHandle}
 	defer primaryCleanup.close()
 	if pResult.err != nil {
 		noteLoneSendFailure(ctx, model)
-		if secondary != nil {
+		if failed != nil {
+			failed(pResult.err)
+		}
+		if secondary != nil && ctx.Err() == nil {
 			sResult := secondary()
 			if sResult.err != nil {
 				noteLoneSendFailure(ctx, model)
@@ -69,7 +79,7 @@ func sendFrameWithHedge(
 			out.triedSecondary = true
 			return out
 		}
-		return hedgeResult{err: pResult.err, connErr: true}
+		return hedgeResult{err: pResult.err, connErr: true, failureObserved: true}
 	}
 
 	if secondary == nil {
@@ -83,14 +93,14 @@ func sendFrameWithHedge(
 	select {
 	case resp := <-pResult.replyCh:
 		primaryCleanup.release()
-		return primaryReplied(ctx, model, pResult, resp, secondary, timeout)
+		return primaryReplied(ctx, model, pResult, resp, secondary, timeout, failed)
 
 	case <-timer.C:
 		// choose takes the first request's reply before the delay (:694, :710).
 		select {
 		case resp := <-pResult.replyCh:
 			primaryCleanup.release()
-			return primaryReplied(ctx, model, pResult, resp, secondary, timeout)
+			return primaryReplied(ctx, model, pResult, resp, secondary, timeout, failed)
 		default:
 		}
 		if ctx.Err() != nil {
@@ -99,11 +109,14 @@ func sendFrameWithHedge(
 		}
 		if !model.spendSecond() {
 			primaryCleanup.transfer()
-			return retryPrimaryReply(ctx, model, waitLoneReply(ctx, model, pResult, timeout), secondary, timeout)
+			return retryPrimaryReply(ctx, model, waitLoneReply(ctx, model, pResult, timeout), secondary, timeout, failed)
 		}
 		sResult := secondary()
 		primaryCleanup.transfer()
 		if sResult.err != nil {
+			if failed != nil {
+				failed(sResult.err)
+			}
 			// Paid for but unsent: the primary is waited for alone without
 			// accruing, as loadBalance's !stream branch (:640-647).
 			out := waitForReply(ctx, pResult, timeout)
@@ -131,18 +144,25 @@ func sendFrameWithHedge(
 
 // primaryReplied accrues a lone reply and advances a failed alternative
 // (LoadBalance.actor.h:694-708, nextAlt at :728).
-func primaryReplied(ctx context.Context, model *QueueModel, p inFlightRPC, resp transport.Response, secondary sendFunc, timeout time.Duration) hedgeResult {
+func primaryReplied(ctx context.Context, model *QueueModel, p inFlightRPC, resp transport.Response, secondary sendFunc, timeout time.Duration, failed func(error)) hedgeResult {
 	model.firstReplied()
-	return retryPrimaryReply(ctx, model, processReply(p, resp), secondary, timeout)
+	return retryPrimaryReply(ctx, model, processReply(p, resp), secondary, timeout, failed)
 }
 
-func retryPrimaryReply(ctx context.Context, model *QueueModel, res hedgeResult, secondary sendFunc, timeout time.Duration) hedgeResult {
+func retryPrimaryReply(ctx context.Context, model *QueueModel, res hedgeResult, secondary sendFunc, timeout time.Duration, failed func(error)) hedgeResult {
 	if res.err == nil || !res.connErr || !movesToNextAlternative(ctx, res.err) {
+		return res
+	}
+	observeHedgeFailure(&res, failed)
+	if ctx.Err() != nil {
 		return res
 	}
 	sResult := secondary()
 	if sResult.err != nil {
 		noteLoneSendFailure(ctx, model)
+		if failed != nil {
+			failed(sResult.err)
+		}
 		res.triedSecondary = true
 		return res
 	}
@@ -150,6 +170,15 @@ func retryPrimaryReply(ctx context.Context, model *QueueModel, res hedgeResult, 
 	out.triedSecondary = true
 	out.others = append(out.others, rpcAccount{addr: res.addr, conn: res.conn, delta: res.delta, start: res.start, err: res.err})
 	return out
+}
+
+func observeHedgeFailure(result *hedgeResult, failed func(error)) {
+	if result.err != nil && !result.failureObserved {
+		result.failureObserved = true
+		if failed != nil {
+			failed(result.err)
+		}
+	}
 }
 
 // waitLoneReply accrues a lone reply or transport failure, but not a timeout

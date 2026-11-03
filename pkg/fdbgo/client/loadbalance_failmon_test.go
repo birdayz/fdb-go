@@ -88,9 +88,7 @@ func TestQueueModelReadmitsRecoveredServer(t *testing.T) {
 	// Recover s1, and push s2 into QueueModel future_version backoff so s1 is the
 	// SOLE eligible candidate — proving s1 was re-admitted, not just randomly picked.
 	qm.failMon.markAlive("s1:4500")
-	qm.mu.Lock()
-	qm.getOrCreate("s2:4500").failedUntil = nowSeconds() + 60
-	qm.mu.Unlock()
+	withServer(qm, "s2:4500", func(d *queueData) { d.failedUntil = nowSeconds() + 60 })
 
 	if s, _ := qm.chooseServer(servers); s.Address != "s1:4500" {
 		t.Fatalf("recovered s1 should be the sole eligible candidate, got %s", s.Address)

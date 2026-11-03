@@ -73,6 +73,7 @@ func (tx *Transaction) nativeGetRangeAt(ctx context.Context, begin, end KeySelec
 	l := nativeRangeLoop{begin: begin, end: end, limits: limits, reverse: reverse}
 	l.start()
 	relocateRetries, timeoutRetries := 0, 0
+	lb := lbRetry{observe: tx.db.onReadBackoff.Load()}
 	var materializedBytes int64
 	var tags readTagSample
 	redraw := true
@@ -89,7 +90,7 @@ func (tx *Transaction) nativeGetRangeAt(ctx context.Context, begin, end KeySelec
 		if redraw {
 			tags = tx.sampleReadTags() // one native request (:4684), before loadBalance waits
 		}
-		kvs, more, err := sendRangeRPC(tx, ctx, reqBegin, reqEnd, l.limits, readVersion, reverse, loc.Servers, tags, plainRangeRPCOps)
+		kvs, more, err := sendRangeRPCPaced(tx, ctx, reqBegin, reqEnd, l.limits, readVersion, reverse, loc.Servers, tags, plainRangeRPCOps, &lb)
 		redraw = err == nil || readTagRetry(err)
 		if err != nil {
 			switch {
@@ -105,7 +106,9 @@ func (tx *Transaction) nativeGetRangeAt(ctx context.Context, begin, end KeySelec
 			case isWrongShardServer(err): // :4858-4870, invalidate then fall back
 				tx.db.locCache.invalidate(locationKey, tx.tenantId, backward)
 				return tx.nativeGetRangeFallback(ctx, originalBegin, originalEnd, originalLimits, readVersion, reverse)
-			case isAllAlternativesFailed(err) || isMaybeDelivered(err): // :4858-4863, 4873
+			case isMaybeDelivered(err): // loadBalance's own unbounded retry; re-located as getValueImpl explains
+				tx.db.locCache.invalidate(locationKey, tx.tenantId, backward)
+			case isAllAlternativesFailed(err): // :4858-4863, 4873
 				relocateRetries++
 				if relocateRetries > maxRelocateRetries {
 					return nativeRangeResult{}, &wire.FDBError{Code: ErrTransactionTooOld}
@@ -119,6 +122,9 @@ func (tx *Transaction) nativeGetRangeAt(ctx context.Context, begin, end KeySelec
 			}
 			continue
 		}
+		// The next request is a new loadBalance call.
+		lb = lbRetry{observe: tx.db.onReadBackoff.Load()}
+
 		if ceiling := tx.db.rangeByteCeiling; ceiling > 0 { // RFC-115 §2, as rangeScanImpl
 			for i := range kvs {
 				materializedBytes += plainRangeScanOps.sizeBytes(&kvs[i])

@@ -267,46 +267,49 @@ func TestDifferentialArm_AtomicSelector(t *testing.T) {
 		s := s
 		t.Run(s.name, func(t *testing.T) {
 			t.Parallel()
-			runArm(t, "atomicsel", s.seed, s.n, func(rng *mrand.Rand) armProgram {
-				mask := randMask(rng)
-				lo := rng.IntN(nKeys)
-				hi := lo + 1 + rng.IntN(nKeys-lo)
-				k1, k2 := rng.IntN(selectorKinds), rng.IntN(selectorKinds)
-				atomicKey := rng.IntN(nKeys)
-				atomicKind := rng.IntN(4) // Add / Max / Min / ByteMax
-				probe := rng.IntN(nKeys)
-				reverse := rng.IntN(2) == 0
-				return func(t *testing.T, db fdb.BackendDatabase, prefix string) (bool, []string) {
-					seedArmKeys(t, db, prefix, mask)
-					tx, err := db.CreateWritableTransaction()
-					if err != nil {
-						t.Fatalf("create: %v", err)
-					}
-					ak := armKey(prefix, atomicKey)
-					param := []byte{byte(atomicKind + 1), 0, 0, 0, 0, 0, 0, 0}
-					switch atomicKind {
-					case 0:
-						tx.Add(ak, param)
-					case 1:
-						tx.Max(ak, param)
-					case 2:
-						tx.Min(ak, param)
-					default:
-						tx.ByteMax(ak, param)
-					}
-					var rows []string
-					for _, kv := range tx.GetRange(fdb.SelectorRange{
-						Begin: selectorFor(k1, armKey(prefix, lo)),
-						End:   selectorFor(k2, armKey(prefix, hi)),
-					}, fdb.RangeOptions{Reverse: reverse}).GetSliceOrPanic() {
-						rows = append(rows, string(kv.Key)+"="+fmt.Sprintf("%x", kv.Value))
-					}
-					concurrentSet(t, db, armKey(prefix, probe), []byte{0xEE})
-					tx.Set(armKey(prefix, nKeys+5), []byte("x"))
-					return tx.Commit().Get() == nil, rows
-				}
-			})
+			runArm(t, "atomicsel", s.seed, s.n, atomicSelectorArm)
 		})
+	}
+}
+
+// atomicSelectorArm draws one atomic × selector program from rng.
+func atomicSelectorArm(rng *mrand.Rand) armProgram {
+	mask := randMask(rng)
+	lo := rng.IntN(nKeys)
+	hi := lo + 1 + rng.IntN(nKeys-lo)
+	k1, k2 := rng.IntN(selectorKinds), rng.IntN(selectorKinds)
+	atomicKey := rng.IntN(nKeys)
+	atomicKind := rng.IntN(4) // Add / Max / Min / ByteMax
+	probe := rng.IntN(nKeys)
+	reverse := rng.IntN(2) == 0
+	return func(t *testing.T, db fdb.BackendDatabase, prefix string) (bool, []string) {
+		seedArmKeys(t, db, prefix, mask)
+		tx, err := db.CreateWritableTransaction()
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		ak := armKey(prefix, atomicKey)
+		param := []byte{byte(atomicKind + 1), 0, 0, 0, 0, 0, 0, 0}
+		switch atomicKind {
+		case 0:
+			tx.Add(ak, param)
+		case 1:
+			tx.Max(ak, param)
+		case 2:
+			tx.Min(ak, param)
+		default:
+			tx.ByteMax(ak, param)
+		}
+		var rows []string
+		for _, kv := range tx.GetRange(fdb.SelectorRange{
+			Begin: selectorFor(k1, armKey(prefix, lo)),
+			End:   selectorFor(k2, armKey(prefix, hi)),
+		}, fdb.RangeOptions{Reverse: reverse}).GetSliceOrPanic() {
+			rows = append(rows, string(kv.Key)+"="+fmt.Sprintf("%x", kv.Value))
+		}
+		concurrentSet(t, db, armKey(prefix, probe), []byte{0xEE})
+		tx.Set(armKey(prefix, nKeys+5), []byte("x"))
+		return tx.Commit().Get() == nil, rows
 	}
 }
 

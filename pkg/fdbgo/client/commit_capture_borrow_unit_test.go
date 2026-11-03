@@ -12,7 +12,7 @@ import (
 
 var borrowReplyToken = transport.UID{First: 7, Second: 9}
 
-// borrowTx buffers every operand kind; 50 Sets promote it to the bulk slab.
+// borrowTx buffers every operand kind; carveSlab promotes the reusable slab.
 func borrowTx(n int, fill byte) *Transaction {
 	tx := &Transaction{readVersionState: &readVersionState{}}
 	tx.tenantId = NoTenantID
@@ -26,16 +26,35 @@ func borrowTx(n int, fill byte) *Transaction {
 	}
 	tx.Atomic(MutAddValue, []byte("borrow/counter"), []byte{fill, 0, 0, 0})
 	tx.AddReadConflictKey([]byte("borrow/read"))
+	carveSlab(tx) // sizes the slab for the same writes after a reset
 	return tx
 }
 
+// carveSlab writes what the slab holds with RYW on: atomic operands in the op-log
+// and read-conflict bounds. (RYW Sets keep their bytes in the write map's arena.)
+func carveSlab(tx *Transaction) {
+	for i := range 10 {
+		key := []byte(fmt.Sprintf("borrow/key/%04d", i))
+		tx.Atomic(MutAppendIfFits, key, bytes.Repeat([]byte{'z'}, 32))
+		_ = tx.AddReadConflictRange(key, append(key, 'z'))
+	}
+}
+
 func captureUnderLease(tx *Transaction) *commitInput {
+	input, _ := captureUnderLeaseWrites(tx)
+	return input
+}
+
+// captureUnderLeaseWrites is captureUnderLease, also returning the write-conflict
+// vector it handed the capture (with RYW built from the write map's conflict flags).
+func captureUnderLeaseWrites(tx *Transaction) (*commitInput, []KeyRange) {
 	lease := tx.enterState()
 	defer lease.release()
 	tx.conflictMu.Lock()
-	muts, writes := tx.mutations, tx.writeConflicts
+	muts := tx.mutations
 	tx.conflictMu.Unlock()
-	return tx.captureCommit(muts, writes)
+	writes := tx.writeConflictRanges()
+	return tx.captureCommit(muts, writes), writes
 }
 
 // deepCopyInput is the pre-borrow capture: every operand in fresh storage.
@@ -69,7 +88,7 @@ func TestCaptureCommitBorrowsSlabInsteadOfCopying(t *testing.T) {
 	t.Parallel()
 	tx := borrowTx(50, 'a')
 	defer tx.Cancel()
-	input := captureUnderLease(tx)
+	input, writes := captureUnderLeaseWrites(tx)
 	if input.slab == nil || input.slab != tx.conflictBufOwner || input.slab.borrows.Load() != 1 {
 		t.Fatal("capture did not borrow the current slab")
 	}
@@ -79,10 +98,10 @@ func TestCaptureCommitBorrowsSlabInsteadOfCopying(t *testing.T) {
 			t.Fatalf("mutation %d was copied instead of borrowed", i)
 		}
 	}
-	if &input.muts[0] == &tx.mutations[0] || &input.writeConflicts[0] == &tx.writeConflicts[0] {
+	if &input.muts[0] == &tx.mutations[0] || &input.writeConflicts[0] == &writes[0] {
 		t.Fatal("capture shares a vector a retry refills in place")
 	}
-	if owned := tx.captureCommitVectors(input.muts, true, nil, false, nil, false); &owned.muts[0] != &input.muts[0] {
+	if owned := tx.captureCommitVectors(input.muts, true, nil, false, nil); &owned.muts[0] != &input.muts[0] {
 		t.Fatal("an owned mutation vector was copied again")
 	} else {
 		owned.release()
@@ -110,9 +129,7 @@ func TestRetryReusesSlabOnlyWhenSoleHolder(t *testing.T) {
 				input.release()
 			}
 			tx.reset(false)
-			for i := range 50 {
-				tx.Set([]byte(fmt.Sprintf("borrow/key/%04d", i)), bytes.Repeat([]byte{'z'}, 100))
-			}
+			carveSlab(tx)
 			reused := unsafe.SliceData(tx.conflictBuf) == backing
 			if reused != released {
 				t.Fatalf("retry reused the slab=%t, want %t", reused, released)
@@ -132,7 +149,9 @@ func TestRetryReusesSlabOnlyWhenSoleHolder(t *testing.T) {
 // install one; otherwise post-commit reset would pool it under a fresh handle.
 func TestCaptureCommitTracksOwnerlessSlab(t *testing.T) {
 	t.Parallel()
-	tx := &Transaction{}
+	// Without RYW the op-log copies the Set into the slab (with RYW it shares
+	// the write map's bytes instead).
+	tx := &Transaction{rywDisabled: true}
 	defer tx.Cancel()
 	tx.conflictBuf = make([]byte, 0, 4096)
 	tx.Set([]byte("ownerless"), []byte("value"))
@@ -175,7 +194,7 @@ func TestConflictBoundsAreCapacityCapped(t *testing.T) {
 	tx := borrowTx(2, 'a')
 	defer tx.Cancel()
 	_ = tx.AddReadConflictRange([]byte("cap/a"), []byte("cap/z"))
-	for _, rs := range [][]KeyRange{tx.readConflicts, tx.writeConflicts} {
+	for _, rs := range [][]KeyRange{tx.readConflictRanges(), tx.writeConflictRanges()} {
 		for i, r := range rs {
 			if cap(r.Begin) != len(r.Begin) || cap(r.End) != len(r.End) {
 				t.Fatalf("range %d: begin %d/%d end %d/%d (len/cap)", i, len(r.Begin), cap(r.Begin), len(r.End), cap(r.End))
@@ -215,9 +234,7 @@ func TestConcurrentResetDuringCommitKeepsCapturedBytes(t *testing.T) {
 				case "postcommit":
 					tx.postCommitReset()
 				}
-				for i := range 50 {
-					tx.Set([]byte(fmt.Sprintf("borrow/key/%04d", i)), bytes.Repeat([]byte{'z'}, 100))
-				}
+				carveSlab(tx)
 			}()
 			wg.Wait()
 			input.release()
@@ -233,13 +250,22 @@ func TestCoalescedMutationsNeverAliasTheOpLog(t *testing.T) {
 	for _, n := range []int{1, 2, 50} {
 		tx := borrowTx(n, 'a')
 		for _, muts := range [][]Mutation{tx.mutations, tx.mutations[:n]} {
-			ship, _, coalesced := coalesceCommitVectors(muts, tx.writeConflicts, false)
+			ship, _, coalesced := coalesceCommitVectors(muts, tx.writeConflictRanges(), false)
 			if !coalesced || len(ship) == 0 {
 				t.Fatalf("n=%d: precondition: want a coalesced vector", n)
 			}
 			if unsafe.SliceData(ship) == unsafe.SliceData(muts) {
 				t.Fatalf("n=%d: coalesced mutations alias the op-log vector", n)
 			}
+		}
+		// With RYW commitAdmitted ships the vector commitVectors materializes from the write map.
+		tx.conflictMu.Lock()
+		snap := tx.snapshotConflictsLocked()
+		tx.conflictMu.Unlock()
+		ship, owned, _, _, _ := tx.commitVectors(tx.mutations, &snap)
+		snap.release(tx)
+		if !owned || len(ship) == 0 || unsafe.SliceData(ship) == unsafe.SliceData(tx.mutations) {
+			t.Fatalf("n=%d: commitVectors mutations owned=%t len=%d alias the op-log vector", n, owned, len(ship))
 		}
 		tx.Cancel()
 	}

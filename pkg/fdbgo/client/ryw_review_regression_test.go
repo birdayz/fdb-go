@@ -56,17 +56,18 @@ func TestRYWStartGetKeyOwnsSelector(t *testing.T) {
 				if len(m.requests) != 1 || string(m.requests[0].begin.Key) != wantBegin {
 					t.Fatalf("requests = %+v, want begin %q", m.requests, wantBegin)
 				}
+				reads := tx.readConflictRanges()
 				if snapshot {
-					if len(tx.readConflicts) != 0 {
-						t.Fatalf("snapshot added conflicts: %+v", tx.readConflicts)
+					if len(reads) != 0 {
+						t.Fatalf("snapshot added conflicts: %+v", reads)
 					}
 				} else {
 					wantEnd := "a\x00"
 					if afterReply {
 						wantEnd = "c\x00"
 					}
-					if len(tx.readConflicts) != 1 || string(tx.readConflicts[0].Begin) != wantBegin || string(tx.readConflicts[0].End) != wantEnd {
-						t.Fatalf("conflicts = %+v, want [%q,%q)", tx.readConflicts, wantBegin, wantEnd)
+					if len(reads) != 1 || string(reads[0].Begin) != wantBegin || string(reads[0].End) != wantEnd {
+						t.Fatalf("conflicts = %+v, want [%q,%q)", reads, wantBegin, wantEnd)
 					}
 				}
 			})
@@ -152,7 +153,7 @@ func TestRYWObsoleteBaseReleased(t *testing.T) {
 			if !c.base.empty() {
 				t.Fatal("obsolete embedded version retains its graph after last unpin")
 			}
-			if !reset && string(c.w.writes["new"].value) != "v" {
+			if e, _ := c.w.entry("new"); !reset && string(e.value) != "v" {
 				t.Fatal("releasing obsolete base damaged the live clone")
 			}
 		})
@@ -222,7 +223,7 @@ func TestGetKeyReadThroughResetBeatsLateOutcome(t *testing.T) {
 					}
 					<-resetDone
 				})
-				if len(tx.readConflicts) != 0 {
+				if len(tx.readConflictRanges()) != 0 {
 					t.Fatal("retired read-through outcome added conflicts")
 				}
 			})
@@ -340,10 +341,8 @@ func TestCompletedReadCannotPublishAfterReset(t *testing.T) {
 					t.Fatalf("failed watch setup retained %d watch contexts", remaining)
 				}
 			}
-			tx.conflictMu.Lock()
-			defer tx.conflictMu.Unlock()
-			if len(tx.readConflicts) != 0 {
-				t.Fatalf("new incarnation inherited old conflicts: %+v", tx.readConflicts)
+			if reads := tx.readConflictRanges(); len(reads) != 0 {
+				t.Fatalf("new incarnation inherited old conflicts: %+v", reads)
 			}
 		})
 	}
@@ -371,8 +370,8 @@ func TestWatchSetupPublishesLiveReadConflict(t *testing.T) {
 	if n := db.outstandingWatches.Load(); n != 1 {
 		t.Fatalf("successful watch setup reserved %d slots, want 1", n)
 	}
-	if len(tx.readConflicts) != 1 || string(tx.readConflicts[0].Begin) != string(key) || string(tx.readConflicts[0].End) != string(key)+"\x00" {
-		t.Fatalf("watch conflicts = %+v, want [%q,%q)", tx.readConflicts, key, keyAfterBytes(key))
+	if reads := tx.readConflictRanges(); len(reads) != 1 || string(reads[0].Begin) != string(key) || string(reads[0].End) != string(key)+"\x00" {
+		t.Fatalf("watch conflicts = %+v, want [%q,%q)", reads, key, keyAfterBytes(key))
 	}
 }
 
@@ -453,7 +452,8 @@ func TestAddWriteConflictRangeLegalRangeIsDeferred(t *testing.T) {
 					maxWrite = "\xff\xff"
 				}
 				tx.Set([]byte("a"), []byte("v"))
-				before, conflicts := liveOf(&tx.ryw).fingerprint(), len(tx.writeConflicts)
+				// The vector, not its length: a recorded range would coalesce with [a, a\x00).
+				before, conflicts := liveOf(&tx.ryw).fingerprint(), fmt.Sprintf("%q", tx.writeConflictRanges())
 				if err := tx.AddWriteConflictRange([]byte(r[0]), []byte(r[1])); err != nil {
 					t.Fatalf("AddWriteConflictRange returned %v, want nil (the error is deferred)", err)
 				}
@@ -462,7 +462,7 @@ func TestAddWriteConflictRangeLegalRangeIsDeferred(t *testing.T) {
 					if code, _ := fdbErrorCode(err); code != 2004 {
 						t.Fatalf("next GetKey = %v, want deferred key_outside_legal_range", err)
 					}
-					if liveOf(&tx.ryw).fingerprint() != before || len(tx.writeConflicts) != conflicts {
+					if liveOf(&tx.ryw).fingerprint() != before || fmt.Sprintf("%q", tx.writeConflictRanges()) != conflicts {
 						t.Fatal("illegal write-conflict range was recorded")
 					}
 					if code, _ := fdbErrorCode(tx.Commit(context.Background())); code != 2004 {
@@ -482,11 +482,11 @@ func TestAddWriteConflictRangeInvertedIsImmediate(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}
 	tx.Set([]byte("a"), []byte("v"))
-	before, conflicts := liveOf(&tx.ryw).fingerprint(), len(tx.writeConflicts)
+	before, conflicts := liveOf(&tx.ryw).fingerprint(), fmt.Sprintf("%q", tx.writeConflictRanges())
 	if code, _ := fdbErrorCode(tx.AddWriteConflictRange([]byte("b"), []byte("a"))); code != 2005 {
 		t.Fatalf("inverted range code %d, want inverted_range (2005) from the call", code)
 	}
-	if tx.deferredErr.Load() != nil || liveOf(&tx.ryw).fingerprint() != before || len(tx.writeConflicts) != conflicts {
+	if tx.deferredErr.Load() != nil || liveOf(&tx.ryw).fingerprint() != before || fmt.Sprintf("%q", tx.writeConflictRanges()) != conflicts {
 		t.Fatal("inverted range was deferred or recorded")
 	}
 	if _, err := tx.StartGetKey(context.Background(), firstGreaterOrEqual([]byte("a"))).Get(); err != nil {
@@ -513,11 +513,11 @@ func TestAddWriteConflictRangePreservesDeferredOrder(t *testing.T) {
 	if code, _ := fdbErrorCode(tx.Commit(context.Background())); code != 2102 {
 		t.Fatalf("earlier oversized Set lost to conflict-range error: code %d, want key_too_large (2102)", code)
 	}
-	before, conflicts := liveOf(&tx.ryw).fingerprint(), len(tx.writeConflicts)
+	before, conflicts := liveOf(&tx.ryw).fingerprint(), fmt.Sprintf("%q", tx.writeConflictRanges())
 	if err := tx.AddWriteConflictRange([]byte("a"), []byte("b")); err != nil {
 		t.Fatalf("legal range after a deferred error returned %v, want nil", err)
 	}
-	if liveOf(&tx.ryw).fingerprint() != before || len(tx.writeConflicts) != conflicts {
+	if liveOf(&tx.ryw).fingerprint() != before || fmt.Sprintf("%q", tx.writeConflictRanges()) != conflicts {
 		t.Fatal("a write-conflict range executed after a deferred error")
 	}
 }
@@ -569,7 +569,9 @@ func TestAddReadConflictRangeLegalRangeIsDeferred(t *testing.T) {
 					maxRead = "\xff\xff"
 				}
 				tx.Set([]byte("a"), []byte("v"))
-				conflicts := len(tx.readConflicts)
+				if prior := tx.readConflictRanges(); len(prior) != 0 {
+					t.Fatalf("precondition: a Set added read conflicts %q", prior)
+				}
 				if a.key {
 					tx.AddReadConflictKey([]byte(a.begin))
 				} else if err := tx.AddReadConflictRange([]byte(a.begin), []byte(a.end)); err != nil {
@@ -581,7 +583,7 @@ func TestAddReadConflictRangeLegalRangeIsDeferred(t *testing.T) {
 					if code, _ := fdbErrorCode(err); code != 2004 {
 						t.Fatalf("next GetKey = %v, want deferred key_outside_legal_range", err)
 					}
-					if len(tx.readConflicts) != conflicts {
+					if len(tx.readConflictRanges()) != 0 {
 						t.Fatal("illegal read-conflict range was recorded")
 					}
 					if code, _ := fdbErrorCode(tx.Commit(context.Background())); code != 2004 {
@@ -597,7 +599,7 @@ func TestAddReadConflictRangeLegalRangeIsDeferred(t *testing.T) {
 					if a.begin < a.end {
 						want = []KeyRange{{Begin: []byte(a.begin), End: []byte(a.end)}}
 					}
-					if got := tx.readConflicts[conflicts:]; fmt.Sprintf("%q", got) != fmt.Sprintf("%q", want) {
+					if got := tx.readConflictRanges(); fmt.Sprintf("%q", got) != fmt.Sprintf("%q", want) {
 						t.Fatalf("legal read conflict recorded %q, want %q", got, want)
 					}
 				}
@@ -612,11 +614,11 @@ func TestAddReadConflictRangeInvertedIsImmediate(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}
 	tx.Set([]byte("a"), []byte("v"))
-	conflicts := len(tx.readConflicts)
+	conflicts := fmt.Sprintf("%q", tx.readConflictRanges())
 	if code, _ := fdbErrorCode(tx.AddReadConflictRange([]byte("c"), []byte("b"))); code != 2005 {
 		t.Fatalf("inverted range code %d, want inverted_range (2005) from the call", code)
 	}
-	if tx.deferredErr.Load() != nil || len(tx.readConflicts) != conflicts {
+	if tx.deferredErr.Load() != nil || fmt.Sprintf("%q", tx.readConflictRanges()) != conflicts {
 		t.Fatal("inverted range was deferred or recorded")
 	}
 	if _, err := tx.StartGetKey(context.Background(), firstGreaterOrEqual([]byte("a"))).Get(); err != nil {
@@ -645,13 +647,13 @@ func TestAddReadConflictRangePreservesDeferredOrder(t *testing.T) {
 			} else if err := tx.AddReadConflictRange([]byte("\xff\xffx"), []byte("\xff\xffy")); err != nil {
 				t.Fatalf("illegal range returned %v, want nil", err)
 			}
-			conflicts := len(tx.readConflicts)
+			conflicts := fmt.Sprintf("%q", tx.readConflictRanges())
 			if key {
 				tx.AddReadConflictKey([]byte("b"))
 			} else if err := tx.AddReadConflictRange([]byte("b"), []byte("c")); err != nil {
 				t.Fatalf("legal range after a deferred error returned %v, want nil", err)
 			}
-			if len(tx.readConflicts) != conflicts {
+			if fmt.Sprintf("%q", tx.readConflictRanges()) != conflicts {
 				t.Fatal("a read-conflict range executed after a deferred error")
 			}
 			if code, _ := fdbErrorCode(tx.Commit(context.Background())); code != 2102 {
@@ -707,19 +709,19 @@ func TestAddReadConflictKeyMatchesRangeForm(t *testing.T) {
 						if e := tx.deferredErr.Load(); e != nil {
 							code = e.Code
 						}
-						got[i] = fmt.Sprintf("deferred=%d conflicts=%q", code, tx.readConflicts)
+						got[i] = fmt.Sprintf("deferred=%d conflicts=%q", code, tx.readConflictRanges())
 					}
 					if got[0] != got[1] {
 						t.Fatalf("key form: %s\nrange form: %s", got[0], got[1])
 					}
 					switch name {
 					case "over_limit", "far_over_limit", "sys_over_limit":
-						if len(txs[0].readConflicts) != 0 {
-							t.Fatalf("oversized key recorded %d read conflicts, want none", len(txs[0].readConflicts))
+						if n := len(txs[0].readConflictRanges()); n != 0 {
+							t.Fatalf("oversized key recorded %d read conflicts, want none", n)
 						}
 					case "at_limit":
-						if len(txs[0].readConflicts) != 1 {
-							t.Fatalf("key at the size limit recorded %d read conflicts, want 1", len(txs[0].readConflicts))
+						if n := len(txs[0].readConflictRanges()); n != 1 {
+							t.Fatalf("key at the size limit recorded %d read conflicts, want 1", n)
 						}
 					}
 				})
@@ -750,7 +752,7 @@ func TestGetKeyMaxSentinelConflict(t *testing.T) {
 	if err != nil || string(k) != "\xffa" {
 		t.Fatalf("LLT(max) = %q, %v", k, err)
 	}
-	if len(tx.readConflicts) != 1 || string(tx.readConflicts[0].Begin) != "\xffa" || string(tx.readConflicts[0].End) != "\xff\xff" {
-		t.Fatalf("LLT(max) conflicts = %+v", tx.readConflicts)
+	if reads := tx.readConflictRanges(); len(reads) != 1 || string(reads[0].Begin) != "\xffa" || string(reads[0].End) != "\xff\xff" {
+		t.Fatalf("LLT(max) conflicts = %+v", reads)
 	}
 }

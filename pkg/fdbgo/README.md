@@ -13,8 +13,9 @@ The official Go binding (`github.com/apple/foundationdb/bindings/go`) wraps `lib
 **Pre-1.0; not declared production-ready.** This is an independent implementation,
 not a promise of complete Apple C binding API parity. Some options are unsupported
 and others are accepted without effect; consult the [option behavior matrix](fdb/OPTIONS.md)
-before migrating. In particular, authorization tokens, automatic idempotency,
-conflicting-key reporting and special-key-space operations have support boundaries.
+before migrating. In particular, authorization tokens, automatic idempotency
+and special-key-space operations have support boundaries (only
+`\xff\xff/transaction/conflicting_keys/` is served).
 See [project status](../../STATUS.md) for validation scope and
 [compatibility](../../docs/compatibility.md) before choosing a deployment.
 
@@ -295,7 +296,7 @@ source/tests when evaluating behavior.
 | Auto-reset after commit | No auto-reset at API >= 410 | `postCommitReset()` clears state for reuse | Design choice: Go API expects tx reuse after commit |
 | `onProxiesChanged` | Wakes commit/GRV/location on proxy topology change | `proxiesChanged` broadcast wakes commit reply + GRV/location backoff loops | Matching C++: immediate wake-up on proxy failover |
 | `FLAG_FIRST_IN_BATCH` | Commit flag for priority ordering | Not exposed | Missing API surface, no behavioral gap |
-| `getRange` RYW merge | Segment-tree `RYWIterator` with demand-fetch + SnapshotCache | Iterative fetch+merge with SnapshotCache (sorted interval map) | Matching C++: server reads cached and reused within a transaction. SnapshotCache + iterative merge loop. |
+| `getRange` RYW merge | Segment-tree `RYWIterator` with demand-fetch + SnapshotCache | Byte-key ranges: iterative fetch+merge with SnapshotCache (sorted interval map). Selector ranges: the ported `getRangeValue` walk, selectors sent to storage in the range request (RFC-262 D10) | Matching C++: server reads cached and reused within a transaction; a selector range is one getRange, no getKey per selector. |
 | `getKey` boundary short-circuit | Returns `""` or `\xFF\xFF` without network | Same (implemented dayshift-6b) | Matching C++ |
 | `tag_throttled` custom delay | Uses `cx->throttledTags` + TAG_THROTTLE_RECHECK_INTERVAL | `tagThrottles.maxDuration` with same capping | Matching C++: max(backoff, min(7s, tagDuration)) |
 | `proxy_tag_throttled` accumulated delay | Tracks `proxyTagThrottledDuration`, sends back to proxy | Tracks duration but not yet sent back to proxy in GRV request | Rate feedback incomplete (LOW); throttle still works via standard backoff |

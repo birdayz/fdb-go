@@ -429,11 +429,9 @@ func (g *transcriptGate) layout(t *testing.T) string {
 	}
 	sort.Strings(sorted)
 	q := g.db.db.queueModel
-	q.mu.Lock()
 	for i, a := range sorted {
-		q.getOrCreate(a).failedUntil = nowSeconds() + 3600 + float64(i)
+		withServer(q, a, func(d *queueData) { d.failedUntil = nowSeconds() + 3600 + float64(i) })
 	}
-	q.mu.Unlock()
 	return b.String()
 }
 

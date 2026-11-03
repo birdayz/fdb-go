@@ -73,6 +73,7 @@ go_test(
         "range_owned_internal_test.go",
         "range_owned_test.go",
         "range_result_internal_test.go",
+        "range_selector_test.go",
         "range_test.go",
         "retry_predicate_pin_test.go",
         "ryw_test.go",
@@ -100,6 +101,14 @@ go_test(
         "//pkg/testcontainers/foundationdb",
         "@com_github_onsi_gomega//:gomega",
     ],
+)
+
+# gazelle:exclude get_issue_unit_test.go
+go_test(
+    name = "get_issue_unit_test",
+    srcs = ["get_issue_unit_test.go"],
+    embed = [":fdb"],
+    deps = ["//pkg/fdbgo/client"],
 )
 
 # gazelle:exclude range_result_alloc_unit_test.go

@@ -59,22 +59,16 @@ func (tr Transaction) Get(key KeyConvertible) FutureByteSlice {
 		// ErrNeedFullRYW (the key has pending atomics needing a server read +
 		// merge) or a layer-2 locate/send failure (e.g. every located connection
 		// dropped between getOrDial and SendFrameDeferred, surfaced as
-		// all_alternatives_failed / 1006). Re-drive through the full
-		// ryw.get()/getValue path, which does the RYW merge AND the local
-		// wrong-shard/all-alternatives retry loop.
+		// all_alternatives_failed / 1006). Re-drive through StartGet, whose
+		// server read does the RYW merge AND the local wrong-shard/all-alternatives retry loop.
 		//
 		// This MUST fall back for all of them, not just ErrNeedFullRYW: 1006 is
 		// retried locally by getValue, but Transact.OnError does NOT retry 1006
 		// (the read path is expected to absorb it), so surfacing it here would
 		// turn a transient send failure into a failed transaction (RFC-010 #3).
-		// A genuinely terminal error (e.g.
-		// key_outside_legal_range) re-fails identically in inner.Get — nothing is
-		// masked, and the illegal frame was already rejected before send.
-		k = bytes.Clone(k)
-		return newFutureByteSlice(func() ([]byte, error) {
-			v, gerr := inner.Get(ctx, k)
-			return v, convertError(gerr)
-		})
+		// A genuinely terminal error (e.g. key_outside_legal_range) re-fails identically in
+		// StartGet, issued in the call as fdb_transaction_get is (ThreadSafeTransaction.cpp:426-434).
+		return startedFutureByteSlice(inner.StartGet(ctx, k))
 	}
 	if pending != nil {
 		// Server request in flight — future resolves when response arrives.
@@ -220,13 +214,9 @@ func (tr Transaction) ClearBytes(key []byte) {
 	tr.t.inner.Clear(key)
 }
 
-// ClearRange removes all keys k such that begin <= k < end.
-// The Apple binding's ClearRange is void because mutations are buffered
-// locally with no I/O. Our pure Go client validates begin <= end and
-// returns inverted_range (2005) on violation. We suppress all errors to
-// match the Apple void API contract. Today the only possible error is
-// inverted_range; if the client adds new error paths, this should be
-// revisited (see client.Transaction.ClearRange).
+// ClearRange removes all keys k such that begin <= k < end. The call's error is
+// dropped, as the Apple API is void; inverted_range and key_outside_legal_range
+// become the deferred error for later reads and Commit, as in libfdb_c.
 func (tr Transaction) ClearRange(er ExactRange) {
 	begin, end := er.FDBRangeKeys()
 	_ = tr.t.inner.ClearRange(begin.FDBKey(), end.FDBKey())

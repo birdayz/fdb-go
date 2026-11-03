@@ -56,14 +56,16 @@ if you need them.
 | `SetAuthorizationToken` | The request would be sent **unauthenticated** — auth bypass / wrong tenant scoping. |
 | `SetRawAccess` | Bypasses tenant-mode scoping; a silent no-op would tenant-scope a read meant for the raw keyspace (wrong data on a shared cluster). *Stricter than libfdb_c, which rejects raw-access only under a tenant and otherwise no-ops it; the pure-Go backend rejects unconditionally (fail-safe).* |
 | `SetAutomaticIdempotency` | Caller expects auto idempotency IDs so a `commit_unknown_result` is safely retryable; the pure-Go client does not generate them. |
-| `SetReportConflictingKeys` | Caller sets it to read the conflicting ranges back out of `\xff\xff/transaction/conflicting_keys/` after a `not_committed`. The pure-Go client sets neither the commit-request field nor the special-key read-back, so a no-op leaves the caller with empty results and no signal. |
 | `SetBypassStorageQuota` | Caller is forcing a write through a full storage quota. The pure-Go client never sets `FLAG_BYPASS_STORAGE_QUOTA`, so a no-op ships the commit *without* the bypass and it is rejected with `storage_quota_exceeded` — the requested write-admission is dropped silently. |
-| `SetSpecialKeySpaceRelaxed` | Relaxes libfdb_c's one-module-per-read restriction on special-key reads (`special_keys_cross_module_read` 2112 / `special_keys_no_module_found` 2113). The pure-Go backend has no special-key-space module, so there is no restriction to relax and the reads it is relaxed *for* cannot succeed either. |
-| `SetSpecialKeySpaceEnableWrites` | Not a permission bit: in libfdb_c it arms `specialKeySpace->commit()`, the step that translates writes to `\xff\xff/management/...` into real configuration mutations (without it, `special_keys_write_disabled` 2114). The pure-Go backend has neither the module nor that commit step, so a no-op reports "writes enabled" while the intended cluster change silently does not happen. |
+| `SetSpecialKeySpaceEnableWrites` | Not a permission bit: in libfdb_c it arms `specialKeySpace->commit()`, the step that translates writes to `\xff\xff/management/...` into real configuration mutations (without it, `special_keys_write_disabled` 2114). The pure-Go backend has no special-key write module nor that commit step, so a no-op reports "writes enabled" while the intended cluster change silently does not happen. |
 
-The database-level defaults reject for the same reasons, keeping the taxonomy
-identical on both surfaces: `SetTransactionReportConflictingKeys`,
-`SetTransactionAutomaticIdempotency`.
+The database-level default rejects for the same reason, keeping the taxonomy
+identical on both surfaces: `SetTransactionAutomaticIdempotency`.
+
+`SetReportConflictingKeys`, its database default `SetTransactionReportConflictingKeys`
+and `SetSpecialKeySpaceRelaxed` are honored: the conflicting ranges of a
+`not_committed` are readable under `\xff\xff/transaction/conflicting_keys/`, as in
+libfdb_c (`pkg/fdbgo/client/specialkeys.go`).
 
 ### Accepted but ignored — no-op (fails **safe**)
 
@@ -86,8 +88,10 @@ durability / strong consistency). They are accepted as no-ops:
   (trace files, knobs, TLS-via-option-API; Apple exposes ~48) is not implemented.
   TLS is configured via `WithTLSConfig` / the cluster `:tls` suffix + `FDB_TLS_*`
   instead (RFC-051).
-- **Special-key-space module** (`\xff\xff/status/json`,
-  `\xff\xff/transaction/conflicting_keys`, …) — absent.
+- **Special-key-space modules** other than `\xff\xff/transaction/conflicting_keys/`
+  (`\xff\xff/status/json`, `\xff\xff/transaction/read_conflict_range/`, management, …)
+  — a read that reaches one fails with `unsupported_operation` (2108); special-key
+  writes are not implemented.
 - **Multi-version / external client** — by design (pure-Go is single-version).
 - `Database.RebootWorker` — returns `errNotSupported`; `GetMainThreadBusyness`
   absent; `LocalityGetBoundaryKeys` honors its `readVersion` arg (RFC-111 P1.6).

@@ -206,6 +206,8 @@ type TransactionDefaults struct {
 	HasRetryLimit  bool
 	ReadSystemKeys bool // read \xff/* keys by default
 	AccessSysKeys  bool // read+write \xff/* keys by default
+	// ReportConflictingKeys is FDB_DB_OPTION_TRANSACTION_REPORT_CONFLICTING_KEYS (702).
+	ReportConflictingKeys bool
 }
 
 // database is the per-database state container (unexported).
@@ -401,6 +403,8 @@ type database struct {
 	afterMetricsShardResult      atomic.Pointer[func(int)]
 	// beforeAltFailureWait runs when a request starts waiting for an excluded replica (tests).
 	beforeAltFailureWait atomic.Pointer[func()]
+	// onReadBackoff observes Get/Watch retry accounting before the delay (tests).
+	onReadBackoff atomic.Pointer[func(attempts int, delay time.Duration)]
 	// Test seams: set the delay before dispatch; observe actual-live recovery checks.
 	altFailureDelayOverride time.Duration
 	afterAltRecoveryCheck   atomic.Pointer[func(bool)]
@@ -477,12 +481,24 @@ func (db *database) getCommitProxy() (*ProxyInfo, int64, error) {
 	}
 	n := len(info.CommitProxies)
 	idx := db.proxyRR.nextCommit(n)
-	// basicLoadBalance skips permanently failed alternatives (LoadBalance.actor.h:790);
-	// with none left the commit waits for a proxy change, as for an empty set.
+	// basicLoadBalance skips failed endpoints and addresses (LoadBalance.actor.h:779-805); with
+	// every address failed, Go's dial of the first is C++'s wait for one to come back.
+	now := nowSeconds()
+	var probe *ProxyInfo
 	for i := 0; i < n; i++ {
-		if p := &info.CommitProxies[(idx+i)%n]; !db.failMon.endpointFailed(p.Address, p.Token) {
+		p := &info.CommitProxies[(idx+i)%n]
+		if db.failMon.endpointFailed(p.Address, p.Token) {
+			continue
+		}
+		if db.failMon == nil || !db.failMon.excluded(p.Address, now) {
 			return p, info.Epoch, nil
 		}
+		if probe == nil {
+			probe = p
+		}
+	}
+	if probe != nil {
+		return probe, info.Epoch, nil
 	}
 	return nil, 0, fmt.Errorf("no live commit proxies")
 }
@@ -621,8 +637,12 @@ func (db *database) dialAndPool(addr string, call *dialCall) {
 		db.connMu.Lock()
 		defer db.connMu.Unlock()
 		switch {
+		case dialErr != nil && db.ctx.Err() != nil:
+			call.err = db.ctx.Err() // the database closed; no peer failed
 		case dialErr != nil:
-			call.err = dialErr
+			// A failed connect, including the dial ctx's expiry, is C++'s peer disconnect:
+			// request_maybe_delivered, not the raw dial error (FlowTransport.actor.cpp:852-869).
+			call.err = transport.NewConnectFailedError(addr, dialErr)
 		case db.ctx.Err() != nil:
 			// The database closed while we dialed: Close() drains the pool under connMu,
 			// so a conn pooled now would never be reaped (leaking its read/write/monitor
@@ -1121,6 +1141,7 @@ func (d *Database) createTransaction(transactScoped bool) *Transaction {
 	if td.AccessSysKeys {
 		tx.SetAccessSystemKeys()
 	}
+	tx.reportConflictingKeys = td.ReportConflictingKeys
 	// Generate the per-transaction trace span (RFC-115 §4) — a real, default-unsampled
 	// SpanContext stamped on every request, matching C++ (which never sends a zero span).
 	// No SPAN_PARENT can be set yet, so this is regenerateSpan's fresh-span branch.

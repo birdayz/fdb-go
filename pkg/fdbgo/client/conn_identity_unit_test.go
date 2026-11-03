@@ -510,9 +510,7 @@ func TestFallbackSendFailureBudget(t *testing.T) {
 					accrued = 0
 				}
 				checkSecondModel(t, db.queueModel, 0, accrued, false)
-				db.queueModel.mu.Lock()
-				outstanding := db.queueModel.getOrCreate(armAddr).smoothOutstanding.total
-				db.queueModel.mu.Unlock()
+				outstanding := totalOf(db.queueModel, armAddr)
 				if outstanding != 0 {
 					t.Fatalf("fallback failure leaked outstanding delta %v", outstanding)
 				}

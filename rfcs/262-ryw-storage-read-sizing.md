@@ -806,6 +806,15 @@ TODO.md for a follow-up that ports the mapped sender and changes those bytes on 
 
 ### D5. The walk: `rywWalk`
 
+**Status: implemented, with the walk outside `c.mu`.** The walk reads a pinned write-map
+version and an immutable snapshot of the snapshot cache (`snapshotCache.snapshot`), so it
+resolves and loops without the lock; its iterators persist in `w.its` across waits and
+resume from their last position. `c.mu` is taken at issue (pin and snapshot), to insert a
+storage reply (`acceptStorageLocked`, `insertOwned`) and to re-snapshot the cache after that
+reply and after P3's nested getKey. The methods below are now `start`, `acceptStorageLocked`
+plus `resumeStorage`, and `resumePreKey`; D6, D7 and D11's `startLocked` is `start`, run
+after the pin and snapshot under `c.mu`. The sketch below is the original lock-held design.
+
 A new file `ryw_walk.go` holds A3-A9 as Go code with the C++ line in a comment at each
 step. Because the walk releases `c.mu` across storage I/O and computes its first request at
 issue, it is a state machine whose suspension points are exactly C++'s `wait`s.
@@ -995,10 +1004,29 @@ example the second half of `TestRYWWriteOverlayRequestBytesClampedAndDoubled`,
 
 ### D10. Selector ranges, RYW-disabled routing, facade limits (phase 4)
 
-Today the facade resolves a selector range with two `GetKey` calls and reads the resolved
-byte range (`fdb/range_result.go:81-95, 414-466`). That sends different requests, adds two
-getKey conflicts instead of one range conflict, and never reaches P3, L3, U3's
-`end.offset < 1` branch or A5's `bytes == 0` branch. Phase 4:
+**Status: implemented for plain selector ranges.** `pkg/fdbgo/client/range_selector_issue.go`
+implements the client API, the checks, both routes and the conflict port below. The facade
+change is in `pkg/fdbgo/fdb/range_result.go`.
+
+The facade departs from the plan in one way: a range whose selectors both have offset 1 is
+an exact range, so it still takes the byte-key path until phase 3. A selector range keeps
+using the selector read for its continuations. `getRangeReadThrough` still serves exact
+ranges with RYW disabled.
+
+Pinned by:
+
+- `//pkg/fdbgo/client:selector_range_conformance_test` (test-full): rows and read-conflict
+  ranges against libfdb_c on a small-shard cluster.
+- `//pkg/fdbgo/client:range_selector_unit_test`.
+- `TestSelectorRangeReadSendsOneStorageRequest` in `//pkg/fdbgo/client:storage_plumbing_fdb_test`.
+- `TestGetRange_SelectorRangeIsOneStorageRead` and `TestConflictRange_SelectorGetRange_Native`
+  in `//pkg/fdbgo/fdb:fdb_test`.
+- `TestDifferential_GetRangeSelectorRYW` in `//pkg/fdbgo/bench:bench_test`.
+
+Before D10, the facade resolved a selector range with two `GetKey` calls and read the
+resolved byte range. That sent different requests, added two getKey conflicts instead of
+one range conflict, and never reached P3, L3, U3's `end.offset < 1` branch or A5's
+`bytes == 0` branch. Phase 4:
 
 - Client API: `StartGetRangeSelectors(ctx, begin, end KeySelector, limit, byteTarget int,
   reverse bool)` and the snapshot form; the byte-key API wraps FGE selectors. Entry checks
@@ -1076,7 +1104,11 @@ byte-identical (checked by `diff` of the old sections, recorded in the PR).
    `getkey_*` divergences; `go-divergences.diff` keeps only `set_then_range`. Reports the D1
    benchmark and the D1b build benchmark.
 3. **Range reads.** D7, D9. Closes `set_then_range`; `go-divergences.diff` is empty.
+   *Status: open.* Byte-key ranges still run the iterative merge (`rywRangeRead.run`),
+   and the RYW-disabled exact path still uses `getRangeReadThrough`.
 4. **Selector ranges and RYW-disabled routing.** D10, with new lab scenarios (S3).
+   *Status: done for plain selector ranges, ahead of phase 3.* See D10's status note.
+   No S3 lab scenario has been added yet.
 
 ## Executable spec
 

@@ -78,18 +78,22 @@ func mappedRangeShardSelectors(begin, end KeySelector, shard LocationResult, rev
 }
 
 func (tx *Transaction) sendGetMappedSelectors(ctx context.Context, begin, end KeySelector, mapper []byte, limits mappedRangeLimits, readVersion int64, reverse bool, servers []ServerInfo, tags readTagSample) ([]MappedKeyValue, bool, error) {
+	return tx.sendGetMappedSelectorsPaced(ctx, begin, end, mapper, limits, readVersion, reverse, servers, tags, nil)
+}
+
+func (tx *Transaction) sendGetMappedSelectorsPaced(ctx context.Context, begin, end KeySelector, mapper []byte, limits mappedRangeLimits, readVersion int64, reverse bool, servers []ServerInfo, tags readTagSample, lb *lbRetry) ([]MappedKeyValue, bool, error) {
 	// FDB 7.3.77 constructs a KeyRange before rejecting resolved inversion.
 	if !mappedSelectorIsFGE(begin) || !mappedSelectorIsFGE(end) || bytes.Compare(begin.Key, end.Key) >= 0 {
 		return nil, false, &wire.FDBError{Code: ErrInternalError}
 	}
 	rows, byteTarget := limits.requestLimits()
 	requestLimits := rangeLimits{rows: clampInt32(int64(rows)), minRows: 1, bytes: clampInt32(int64(byteTarget))}
-	return sendRangeRPC(tx, ctx, begin, end, requestLimits, readVersion, reverse, servers, tags, rangeRPCOps[MappedKeyValue]{
+	return sendRangeRPCPaced(tx, ctx, begin, end, requestLimits, readVersion, reverse, servers, tags, rangeRPCOps[MappedKeyValue]{
 		endpoint: EndpointGetMappedKeyValues,
 		build:    buildGetMappedKeyValuesRequest(mapper),
 		putBuf:   func(bufp *[]byte) { getMappedKeyValuesBufPool.Put(bufp) },
 		parse:    parseGetMappedKeyValuesReply,
-	})
+	}, lb)
 }
 
 func (tx *Transaction) appendMappedSelectorRows(result *mappedRangeResult, rows []MappedKeyValue, materializedBytes *int64) error {
@@ -119,6 +123,7 @@ func (tx *Transaction) getMappedRangeSelectors(ctx context.Context, begin, end K
 	var tags readTagSample
 	redraw := true
 	timeoutRetries := 0
+	lb := lbRetry{observe: tx.db.onReadBackoff.Load()}
 	for {
 		if bytes.Compare(begin.Key, end.Key) >= 0 {
 			return output, nil
@@ -139,7 +144,7 @@ func (tx *Transaction) getMappedRangeSelectors(ctx context.Context, begin, end K
 		if redraw {
 			tags = tx.sampleReadTags() // GetMappedKeyValuesRequest per iteration (NativeAPI.actor.cpp:4684)
 		}
-		rows, more, err := tx.sendGetMappedSelectors(ctx, reqBegin, reqEnd, mapper, limits, readVersion, reverse, loc.Servers, tags)
+		rows, more, err := tx.sendGetMappedSelectorsPaced(ctx, reqBegin, reqEnd, mapper, limits, readVersion, reverse, loc.Servers, tags, &lb)
 		redraw = err == nil || readTagRetry(err)
 		if err != nil {
 			if isWrongShardServer(err) || isAllAlternativesFailed(err) || isMaybeDelivered(err) {
@@ -147,7 +152,11 @@ func (tx *Transaction) getMappedRangeSelectors(ctx context.Context, begin, end K
 				if isWrongShardServer(err) {
 					return tx.getMappedRangeSelectorFallback(ctx, originalBegin, originalEnd, mapper, originalLimits, readVersion, reverse)
 				}
-				if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
+				delay := wrongShardRetryDelay
+				if isMaybeDelivered(err) {
+					delay = 0 // each request was already paced by the sender
+				}
+				if err := sleepCtx(ctx, delay); err != nil {
 					return mappedRangeResult{}, err
 				}
 				continue
@@ -164,6 +173,7 @@ func (tx *Transaction) getMappedRangeSelectors(ctx context.Context, begin, end K
 			}
 			return mappedRangeResult{}, err
 		}
+		lb = lbRetry{observe: tx.db.onReadBackoff.Load()} // the next request is a new loadBalance call
 		if (more && len(rows) == 0) || (limits.rows != -1 && len(rows) > limits.rows) {
 			return mappedRangeResult{}, &wire.FDBError{Code: ErrInternalError}
 		}
@@ -240,6 +250,7 @@ func (tx *Transaction) getMappedRangeSelectorExact(ctx context.Context, begin, e
 	var tags readTagSample
 	redraw := true
 	timeoutRetries := 0
+	lb := lbRetry{observe: tx.db.onReadBackoff.Load()}
 	for {
 		locations, err := tx.mappedExactLocations(ctx, begin, end, reverse)
 		if err != nil {
@@ -253,7 +264,7 @@ func (tx *Transaction) getMappedRangeSelectorExact(ctx context.Context, begin, e
 			if redraw {
 				tags = tx.sampleReadTags() // a request per send (NativeAPI.actor.cpp:4303)
 			}
-			rows, more, err := tx.sendGetMappedSelectors(ctx, mappedSelectorFGE(loc.ShardBegin), mappedSelectorFGE(loc.ShardEnd), mapper, limits, readVersion, reverse, loc.Servers, tags)
+			rows, more, err := tx.sendGetMappedSelectorsPaced(ctx, mappedSelectorFGE(loc.ShardBegin), mappedSelectorFGE(loc.ShardEnd), mapper, limits, readVersion, reverse, loc.Servers, tags, &lb)
 			redraw = err == nil || readTagRetry(err)
 			if err != nil {
 				if isWrongShardServer(err) || isAllAlternativesFailed(err) || isMaybeDelivered(err) {
@@ -263,7 +274,11 @@ func (tx *Transaction) getMappedRangeSelectorExact(ctx context.Context, begin, e
 						begin = loc.ShardBegin
 					}
 					tx.db.locCache.invalidateRange(begin, end, tx.tenantId)
-					if err := sleepCtx(ctx, wrongShardRetryDelay); err != nil {
+					delay := wrongShardRetryDelay
+					if isMaybeDelivered(err) {
+						delay = 0 // each request was already paced by the sender
+					}
+					if err := sleepCtx(ctx, delay); err != nil {
 						return mappedRangeResult{}, err
 					}
 					break
@@ -280,6 +295,7 @@ func (tx *Transaction) getMappedRangeSelectorExact(ctx context.Context, begin, e
 				}
 				return mappedRangeResult{}, err
 			}
+			lb = lbRetry{observe: tx.db.onReadBackoff.Load()} // the next request is a new loadBalance call
 			if (more && len(rows) == 0) || (limits.rows != -1 && len(rows) > limits.rows) {
 				return mappedRangeResult{}, &wire.FDBError{Code: ErrInternalError}
 			}

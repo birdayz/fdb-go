@@ -112,14 +112,8 @@ type conflictScenario struct {
 // selectorKinds is the number of selector shapes the sweeps draw from.
 const selectorKinds = 6
 
-// selectorFor maps a selector kind to the selector over base. Shared by the GetKey arm and
-// the selector-range arm so both cover the identical kinds.
-//
-// The four named constructors all have |Offset| <= 1, which is the only case the client can
-// resolve WITHOUT issuing a GetKey — so a sweep restricted to them never exercises the
-// multi-step offset walk, where the resolved key is several keys away from the anchor and the
-// conflict span is correspondingly wide. Kinds 4 and 5 are the explicit large-offset forms, one
-// forward and one backward.
+// selectorFor maps a selector kind to the selector over base, for the GetKey and selector-range arms.
+// Kinds 4 and 5 walk several keys from the anchor (forward, backward); the named forms move at most one.
 func selectorFor(kind int, base fdb.Key) fdb.KeySelector {
 	switch kind {
 	case 0:
@@ -233,25 +227,7 @@ func runDifferentialConflictOutcome(t *testing.T, seed uint64, scenarios int) {
 	rng := mrand.New(mrand.NewPCG(seed, 0))
 
 	for i := 0; i < scenarios; i++ {
-		var seeded [nKeys]bool
-		for j := 0; j < nKeys; j++ {
-			seeded[j] = rng.IntN(2) == 0 // ~50% → sparse: gaps, sometimes empty sub-ranges
-		}
-		lo := rng.IntN(nKeys)
-		hi := lo + 1 + rng.IntN(nKeys-lo) // (lo, nKeys]
-		s := conflictScenario{
-			prefix:   fmt.Sprintf("diff/%d/%d/%d/", os.Getpid(), seed, i),
-			seeded:   seeded,
-			readMode: rng.IntN(4), // point Get / GetKey / exact-key range / SELECTOR range
-			readPt:   rng.IntN(nKeys),
-			selKind:  rng.IntN(selectorKinds),
-			selKind2: rng.IntN(selectorKinds),
-			readLo:   lo,
-			readHi:   hi,
-			limit:    rng.IntN(6), // 0..5 (0 = unlimited)
-			reverse:  rng.IntN(2) == 0,
-			probe:    rng.IntN(nKeys),
-		}
+		s := nextConflictScenario(rng, seed, i)
 		simOut := runConflictScenario(t, sim, s)
 		realOut := runConflictScenario(t, real, s)
 		if simOut != realOut {
@@ -260,5 +236,29 @@ func runDifferentialConflictOutcome(t *testing.T, seed uint64, scenarios int) {
 				"runDifferentialConflictOutcome(t, %d, %d).",
 				seed, i, s, simOut, realOut, seed, scenarios)
 		}
+	}
+}
+
+// nextConflictScenario draws scenario i of a sweep from rng. The draw order is the sweep's
+// replay contract: a seed and a scenario index name one scenario.
+func nextConflictScenario(rng *mrand.Rand, seed uint64, i int) conflictScenario {
+	var seeded [nKeys]bool
+	for j := 0; j < nKeys; j++ {
+		seeded[j] = rng.IntN(2) == 0 // ~50% → sparse: gaps, sometimes empty sub-ranges
+	}
+	lo := rng.IntN(nKeys)
+	hi := lo + 1 + rng.IntN(nKeys-lo) // (lo, nKeys]
+	return conflictScenario{
+		prefix:   fmt.Sprintf("diff/%d/%d/%d/", os.Getpid(), seed, i),
+		seeded:   seeded,
+		readMode: rng.IntN(4), // point Get / GetKey / exact-key range / SELECTOR range
+		readPt:   rng.IntN(nKeys),
+		selKind:  rng.IntN(selectorKinds),
+		selKind2: rng.IntN(selectorKinds),
+		readLo:   lo,
+		readHi:   hi,
+		limit:    rng.IntN(6), // 0..5 (0 = unlimited)
+		reverse:  rng.IntN(2) == 0,
+		probe:    rng.IntN(nKeys),
 	}
 }

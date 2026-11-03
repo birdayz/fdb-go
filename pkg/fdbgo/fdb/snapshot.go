@@ -1,8 +1,6 @@
 package fdb
 
 import (
-	"bytes"
-
 	"fdb.dev/pkg/fdbgo/client"
 )
 
@@ -18,11 +16,9 @@ type Snapshot struct {
 
 func (sn Snapshot) Get(key KeyConvertible) FutureByteSlice {
 	inner, ctx := sn.s.tx.inner, sn.s.tx.ctx
-	k := bytes.Clone(key.FDBKey())
-	return newFutureByteSlice(func() ([]byte, error) {
-		v, err := inner.Snapshot().Get(ctx, k)
-		return v, convertError(err)
-	})
+	// Issued in the call, like fdb_transaction_get (ThreadSafeTransaction.cpp:426-434):
+	// a later write is not visible to it.
+	return startedFutureByteSlice(inner.Snapshot().StartGet(ctx, key.FDBKey()))
 }
 
 func (sn Snapshot) GetKey(sel Selectable) FutureKey {

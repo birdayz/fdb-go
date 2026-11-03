@@ -7,6 +7,78 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb"
 )
 
+type rangeBoundSelectorFunc func() fdb.KeySelector
+
+func (f rangeBoundSelectorFunc) FDBKeySelector() fdb.KeySelector { return f() }
+
+type rangeBoundRangeFunc func() (fdb.Selectable, fdb.Selectable)
+
+func (f rangeBoundRangeFunc) FDBRangeKeySelectors() (fdb.Selectable, fdb.Selectable) {
+	return f()
+}
+
+func TestTrivialRangeBoundsConvertCustomSelectorsOnce(t *testing.T) {
+	t.Parallel()
+	for _, reverse := range []bool{false, true} {
+		for _, snapshot := range []bool{false, true} {
+			t.Run(fmt.Sprintf("reverse=%t/snapshot=%t", reverse, snapshot), func(t *testing.T) {
+				t.Parallel()
+				db := New(nil)
+				seedKeys(t, db, "b", "f", "h")
+				tx := db.newTxn()
+				rangeCalls, beginCalls, endCalls := 0, 0, 0
+				begin := rangeBoundSelectorFunc(func() fdb.KeySelector {
+					beginCalls++
+					if beginCalls == 1 {
+						return fdb.FirstGreaterOrEqual(k("b"))
+					}
+					return fdb.FirstGreaterOrEqual(k("f"))
+				})
+				end := rangeBoundSelectorFunc(func() fdb.KeySelector {
+					endCalls++
+					return fdb.FirstGreaterOrEqual(k("m"))
+				})
+				r := rangeBoundRangeFunc(func() (fdb.Selectable, fdb.Selectable) {
+					rangeCalls++
+					return begin, end
+				})
+				var reader fdb.ReadTransaction = tx
+				if snapshot {
+					reader = tx.Snapshot()
+				}
+				rr := reader.GetRange(r, fdb.RangeOptions{Reverse: reverse})
+				if rangeCalls != 1 || beginCalls != 1 || endCalls != 1 {
+					t.Fatalf("issue conversions: range=%d begin=%d end=%d, want 1 each", rangeCalls, beginCalls, endCalls)
+				}
+				// Consumption must retain the rows fetched before this local write.
+				tx.Set(k("b"), []byte("late"))
+				kvs, err := rr.GetSliceWithError()
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := "b,f,h"
+				if reverse {
+					want = "h,f,b"
+				}
+				if got := rowKeys(kvs); got != want {
+					t.Fatalf("rows %q, want %q", got, want)
+				}
+				for _, kv := range kvs {
+					if string(kv.Value) != "v" {
+						t.Fatalf("row %q has value %q, want issue-time v", kv.Key, kv.Value)
+					}
+				}
+				if rangeCalls != 1 || beginCalls != 1 || endCalls != 1 {
+					t.Fatalf("consumption conversions: range=%d begin=%d end=%d, want 1 each", rangeCalls, beginCalls, endCalls)
+				}
+				if got := concurrentWriteConflicts(t, db, tx, "b"); got != !snapshot {
+					t.Fatalf("write at first bound: conflicted=%t, want %t (recorded %v)", got, !snapshot, conflictStrings(tx))
+				}
+			})
+		}
+	}
+}
+
 // TestTrivialRangeBoundsBuildNoWholeKeyspaceView is a cost pin with a guard in
 // BOTH directions, because either direction failing is a real defect.
 //

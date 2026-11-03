@@ -131,10 +131,7 @@ func (n *nativeCommit) run(caller context.Context, input *commitInput, tok cache
 		tx := completion.tx
 		tx.readErrMu.Lock()
 		if panicked == nil {
-			if err == nil && tx.readLife == completion.inc {
-				tx.committedVersion = result.version
-			}
-			completion.finishNativeLocked(result, err)
+			tx.finishNativeCommitLocked(completion, result, err)
 		}
 		n.selectResult(err, true, panicked)
 		completion.inc.removeNativeLocked(n)
@@ -149,4 +146,16 @@ func (n *nativeCommit) run(caller context.Context, input *commitInput, tok cache
 		}
 	}
 	n.deliver()
+}
+
+// Native diagnostics belong to the committing incarnation, not its replacement
+// (NativeAPI.actor.cpp:6700-6717); the caller holds readErrMu across publication.
+func (tx *Transaction) finishNativeCommitLocked(completion *versionstampCompletion, result commitOutcome, err error) {
+	if err == nil && tx.readLife == completion.inc {
+		tx.committedVersion = result.version
+	}
+	if result.conflictReply && tx.readLife == completion.inc {
+		tx.conflictingKeys.Store(result.conflictingKeys)
+	}
+	completion.finishNativeLocked(result, err)
 }

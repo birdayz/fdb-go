@@ -214,11 +214,6 @@ func applyCallerAccounting(qm *QueueModel, res hedgeResult) {
 	}
 }
 
-// totalOf returns a server's raw smoothOutstanding running total (the leak sentinel).
-func totalOf(qm *QueueModel, addr string) float64 {
-	return qm.getOrCreate(addr).smoothOutstanding.total
-}
-
 // TestRaceReplies_AccountsEveryStartedRequest pins RFC-010 #5: every request
 // that startRequest was called for must be recoverable for endRequest. The
 // winner is in result.addr/delta; every OTHER started request (the loser, or

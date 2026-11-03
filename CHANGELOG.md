@@ -127,7 +127,12 @@ Each is described in full under Compatibility or Changed below.
   classification in `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77. Changed since
   v0.1.0: `SetReadLockAware` and `SetSizeLimit` (see Changed), and `Transaction.SetTimeout` outside
   [0, INT_MAX] records a deferred 2006 (`invalid_option_value`) like libfdb_c, where a negative
-  value used to disable the timeout (0 still disables it).
+  value used to disable the timeout (0 still disables it). `SetReportConflictingKeys`,
+  `SetTransactionReportConflictingKeys` and `SetSpecialKeySpaceRelaxed` are now honored instead of
+  returning `UnsupportedOptionError`: a `not_committed` leaves its conflicting read ranges under
+  `\xff\xff/transaction/conflicting_keys/`. Other special-key reads fail with
+  `special_keys_cross_module_read` (2112), `special_keys_no_module_found` (2113) or
+  `unsupported_operation` (2108) instead of `key_outside_legal_range` (2004).
 - **Continuation tokens:** key-value cursor tokens (index, COUNT/atomic, BITMAP_VALUE and record scans) strip Java's range common prefix (`KeyValueCursorBase.calculatePrefixLength`), so a token is valid only for the range that minted it, as in Java. Restart paged queries across this encoding correction (#871).
 - **DSN booleans are strictly `true`/`false`** (any case): a bare `?flag`, `1`/`0`, `t`/`f`,
   `yes`/`no` and `on`/`off` now fail at open with 22023.
@@ -479,6 +484,30 @@ Each is described in full under Compatibility or Changed below.
   - A mutual chunk commits once its transaction passes the time or write limit.
   - The mutual FULL phase builds a claimed fragment to its end before it moves on, so
     concurrent builders keep to their own fragments.
+- Pure-Go client: a failed connect is `transport.ConnectFailedError`, which matches only
+  `request_maybe_delivered` (1030); the dial error is message-only (`Cause()`), so
+  `errors.Is(err, syscall.ECONNREFUSED)` no longer matches. Storage reads retry it with
+  libfdb_c's load-balancer backoff and no attempt limit; a commit through a refusing proxy ends
+  in `commit_unknown_result` (1021), as with libfdb_c.
+- Pure-Go client: a range read whose key selectors have an offset other than 1 is one storage
+  request, as libfdb_c's RYW selector walk does, instead of a `GetKey` per selector first; its
+  read conflict is the scanned span (`addConflictRange(GetRangeReq)`), not the resolved keys.
+  New `client.Transaction`/`Snapshot` `StartGetRangeSelectors`, `GetRangeSelectors` and the
+  `...OwnedSelectors` variants.
+- Pure-Go client, matching libfdb_c 7.3.77 (pinned by `//conformance:ryw_script_conformance_test`):
+  - An illegal Set, Clear, ClearRange or Atomic (oversized key or value, key outside the legal
+    range, metadataVersion misuse) is the transaction's deferred error from that call on: later
+    reads and the commit report it, where it used to fail only the commit. A commit after such a
+    write and an earlier failed read reports the write's error (e.g. 2102), not the read's.
+  - Newly failing: an inverted ClearRange (2005; `fdb.Transaction.ClearRange` used to drop it and
+    commit) and an out-of-range ClearRange that is empty or clamps to empty (2004; used to be
+    accepted) now fail later reads and the commit.
+  - `AddWriteConflictKey`/`AddWriteConflictRange` are recorded under
+    `SetNextWriteNoWriteConflictRange` and leave the option to the next write; they used to be
+    dropped and consume it.
+  - A Get is issued at the call: `Snapshot().Get`, and `Get` of a key with pending atomics, no
+    longer see writes made after the call. Commit waits for such a read whether or not it was
+    awaited, and fails with its error; new `client.Transaction.StartGet`/`Snapshot.StartGet`.
 - Pure-Go client (RFC-280): `GetEstimatedRangeSizeBytes` and `GetRangeSplitPoints` retry `wrong_shard_server`, `all_alternatives_failed` and (for size estimates) `future_version` until the context or transaction timeout ends them, as libfdb_c does, instead of failing with `all_alternatives_failed` (1006) after 50 rounds; each request is sent as libfdb_c's load balancer sends it, with no 5 s reply timeout, a backoff after a round without a reply, and the all-alternatives-failed wait (ended by a recovery) when every replica is down. A positive-skip mapped-range read returns a retryable `transaction_too_old` after 10 reply-timeout re-sends instead of re-sending forever. A failed connection is closed after the pool lock is released, so a slow TLS close no longer stalls connection lookups.
 - Built-in TEXT tokenization, casing/name lookup and Go-only collated keys use frozen Unicode-15 data, so compiler upgrades preserve existing terms, positions and keys; pre-existing Java differences remain explicit in `docs/compatibility.md` (RFC-265).
 - Ordinary, covering and fetch query index scans over one physical range pass Skip to the index cursor, as Java's plans do: skipped entries no longer count against scan-record or byte limits, and their records are not loaded. Multi-range and residual key-filter scans, and the mapped reads of remote-fetch plans, still skip once above the combined cursor.

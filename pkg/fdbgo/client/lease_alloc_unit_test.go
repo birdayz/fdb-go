@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"runtime"
 	"testing"
@@ -54,23 +55,31 @@ func TestReadOperationContextAllocations(t *testing.T) {
 	cancellable, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// An uncancellable parent needs no derived context: the operation and its
-	// release are all it allocates.
+	// release are all it allocates. A cancellable one derives its merged context
+	// only when waited on, so an operation answered without waiting (a cached
+	// RYW read) allocates as little.
 	for _, tc := range []struct {
 		name   string
 		parent context.Context
+		wait   bool
 		max    float64
 	}{
-		{"background", context.Background(), 2},
-		{"value", context.WithValue(context.Background(), operationValueKey{}, "caller"), 2},
-		{"cancellable", cancellable, 8},
+		{"background", context.Background(), true, 2},
+		{"value", context.WithValue(context.Background(), operationValueKey{}, "caller"), true, 2},
+		{"cancellable", cancellable, true, 9},
+		{"cancellable-unwaited", cancellable, false, 2},
 	} {
-		name, parent := tc.name, tc.parent
+		name, parent, wait := tc.name, tc.parent, tc.wait
 		t.Run(name, func(t *testing.T) {
 			tx := &Transaction{}
 			defer tx.Cancel()
 			n := testing.AllocsPerRun(100, func() {
 				ctx, release, _ := tx.opContextFor(parent, true)
-				_ = ctx.Done()
+				if wait {
+					_ = ctx.Done()
+				} else if ctx.Err() != nil {
+					t.Fatal("live operation reports an error")
+				}
 				release()
 			})
 			if n > tc.max {
@@ -441,4 +450,89 @@ func TestTimeoutAdmittedCallbackLosesToRearm(t *testing.T) {
 	}
 	fire()
 	requireTimeoutCode(t, context.Cause(inc.ctx), ErrTransactionTimedOut)
+}
+
+// A cancellable parent's operation derives its merged context only when waited
+// on, and behaves as the eagerly derived one did whichever end comes first,
+// before or after the derivation.
+func TestReadOperationDeferredMerge(t *testing.T) {
+	t.Parallel()
+	errParent := errors.New("parent cause")
+	waitDone := func(t *testing.T, what string, done <-chan struct{}) {
+		t.Helper()
+		select {
+		case <-done:
+		case <-time.After(time.Minute):
+			t.Fatalf("%s did not end", what)
+		}
+	}
+	for _, derive := range []bool{false, true} {
+		t.Run(fmt.Sprintf("parent/derive=%v", derive), func(t *testing.T) {
+			t.Parallel()
+			parent, cancel := context.WithCancelCause(context.WithValue(context.Background(), operationValueKey{}, "caller"))
+			tx := &Transaction{}
+			defer tx.Cancel()
+			ctx, release := tx.opContext(parent)
+			defer release()
+			if op := tx.readOperation(ctx); op == nil || !op.deferred || op.derivedMerge() != nil {
+				t.Fatal("cancellable parent: operation derived its context at admission")
+			}
+			if ctx.Value(operationValueKey{}) != "caller" || ctx.Err() != nil {
+				t.Fatal("deferred operation lost the parent's value or reports an error")
+			}
+			if derive {
+				_ = ctx.Done()
+			}
+			cancel(errParent)
+			waitDone(t, "operation", ctx.Done())
+			if !errors.Is(ctx.Err(), context.Canceled) || !errors.Is(context.Cause(ctx), errParent) {
+				t.Fatalf("interruption = (%v, %v), want the parent's", ctx.Err(), context.Cause(ctx))
+			}
+		})
+		t.Run(fmt.Sprintf("incarnation/derive=%v", derive), func(t *testing.T) {
+			t.Parallel()
+			parent, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			tx := &Transaction{}
+			ctx, release := tx.opContext(parent)
+			defer release()
+			var child context.Context
+			if derive {
+				var stop context.CancelFunc
+				child, stop = context.WithCancel(ctx)
+				defer stop()
+			}
+			tx.Cancel()
+			if !derive {
+				// Err observes the end without deriving.
+				if !errors.Is(ctx.Err(), context.Canceled) {
+					t.Fatalf("Err = %v, want canceled", ctx.Err())
+				}
+				child = ctx
+			}
+			waitDone(t, "operation", ctx.Done())
+			waitDone(t, "child", child.Done())
+			var fdbErr *wire.FDBError
+			if !errors.As(context.Cause(ctx), &fdbErr) || fdbErr.Code != ErrTransactionCancelled {
+				t.Fatalf("cause = %v, want the transaction's cancellation", context.Cause(ctx))
+			}
+		})
+		t.Run(fmt.Sprintf("release/derive=%v", derive), func(t *testing.T) {
+			t.Parallel()
+			parent, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			tx := &Transaction{}
+			defer tx.Cancel()
+			ctx, release := tx.opContext(parent)
+			if derive {
+				_ = ctx.Done()
+			}
+			release()
+			// Derived during or after release, the merged context has ended.
+			waitDone(t, "released operation", ctx.Done())
+			if parent.Err() != nil {
+				t.Fatal("release cancelled the parent")
+			}
+		})
+	}
 }
