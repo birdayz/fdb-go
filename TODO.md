@@ -540,14 +540,15 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   over a cached range under a 64-byte prefix, 128 snapshot selector reads in
   flight; each posting adds the entry list's read conflict, an AppendIfFits to
   its bunch or every fourth a Set plus a split-off Clear, a write conflict key
-  and the gap's write conflict range) 115 -> 83 ms, 27.6 -> 21.5 MB,
-  180k -> 117k allocs per transaction. Baseline the tree before this round
-  (`pkg/fdbgo` of f93654f81, identical at 97e6e7c9a where measured) with the
-  benchmark file copied in; candidate this round's final tree. Go 1.27.3,
+  and the gap's write conflict range) 314 -> 90 ms, 65.8 -> 21.5 MB,
+  433k -> 117k allocs per transaction. Baseline e71d2b44c, the PR's first
+  commit with the selector-range API the benchmark uses (the merge-base
+  a7349ff65 has neither it nor the test target), with only this benchmark
+  copied in; candidate 14b5dd156 (`pkg/fdbgo` tree 79198abcd). Go 1.27.3,
   `//pkg/fdbgo/client:range_selector_unit_test` fastbuild binaries,
   `-test.benchtime 10x`, five interleaved rounds per binary, medians shown
-  (base 108-118 ms, change 80-92 ms); 24 threads at host load about 18, so
-  wall times are noisy; bytes and allocs are stable to 0.1%.
+  (base 294-376 ms, change 77-98 ms); 24 threads at host load about 36, so
+  wall times are noisy; bytes and allocs are stable to 0.01%.
   The write map keeps its bytes in a never-reused arena shared by the op-log
   for Set/Clear/ClearRange (the op-log no longer copies each Set beside the
   write map); WriteMap::addConflictRange inserts by iterator position; the
