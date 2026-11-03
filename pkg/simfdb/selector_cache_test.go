@@ -106,6 +106,47 @@ func TestSelectorRange_KnownReadReduction(t *testing.T) {
 	}
 }
 
+// A matched CompareAndClear remains a KV operation slot even when kv() is null (RYWIterator.cpp:25-52,78-88).
+// Reducing that slot avoids readThroughEnd on crossed bounds (ReadYourWrites.actor.cpp:437-442,611-618).
+func TestSelectorRange_MatchedCompareAndClearOperationSlot(t *testing.T) {
+	t.Parallel()
+	for _, preparation := range []string{"set", "snapshot-get"} {
+		for _, probe := range []string{"n", "z", "m"} {
+			t.Run(preparation+"/probe="+probe, func(t *testing.T) {
+				t.Parallel()
+				db := New(nil)
+				seedKeys(t, db, "b", "f", "h", "m", "n")
+				tx := db.newTxn()
+				wantBegin := "m\x00"
+				if preparation == "set" {
+					tx.Set(k("m"), []byte("v"))
+				} else {
+					if value, err := tx.Snapshot().Get(k("m")).Get(); err != nil || string(value) != "v" {
+						t.Fatalf("snapshot Get(m) = %q, %v", value, err)
+					}
+					wantBegin = "m"
+				}
+				tx.CompareAndClear(k("m"), []byte("v"))
+				r := fdb.SelectorRange{
+					Begin: fdb.FirstGreaterOrEqual(k("z")),
+					End:   fdb.KeySelector{Key: k("m"), Offset: 2},
+				}
+				rows, err := tx.GetRange(r, fdb.RangeOptions{}).GetSliceWithError()
+				if err != nil || len(rows) != 0 {
+					t.Fatalf("crossed GetRange after matched CompareAndClear = %v, %v; want empty", rows, err)
+				}
+				if len(tx.readConflicts) != 1 || !bytes.Equal(tx.readConflicts[0].begin, []byte(wantBegin)) || string(tx.readConflicts[0].end) != "z" {
+					t.Fatalf("read conflicts = %v, want [%q,%q)", conflictStrings(tx), wantBegin, "z")
+				}
+				wantConflict := probe == "n" || probe == "m" && preparation == "snapshot-get"
+				if got := concurrentWriteConflicts(t, db, tx, probe); got != wantConflict {
+					t.Fatalf("writer at %q: reader conflicted=%t, want %t", probe, got, wantConflict)
+				}
+			})
+		}
+	}
+}
+
 func TestKnownReadKnowledgeLifecycle(t *testing.T) {
 	t.Parallel()
 	for _, boundary := range []string{"Reset", "OnError", "Commit", "SetReadVersion", "RYWDisabled"} {

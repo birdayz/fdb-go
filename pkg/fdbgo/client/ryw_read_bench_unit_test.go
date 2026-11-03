@@ -421,8 +421,8 @@ func BenchmarkPseqPinnedWrites(b *testing.B) {
 	}
 }
 
-// BenchmarkRYWTextMaintenance: one op is a transaction of 7000 BunchedMap postings over a cached range,
-// 128 snapshot selector reads in flight, each followed by the posting's writes; ns/posting per posting.
+// BenchmarkRYWTextMaintenance issues serial warmed snapshot selector reads for 7000 BunchedMap postings,
+// deferring consumption of up to 128 completed futures before each posting's writes; ns/posting per posting.
 func BenchmarkRYWTextMaintenance(b *testing.B) {
 	const (
 		bunches  = 4096

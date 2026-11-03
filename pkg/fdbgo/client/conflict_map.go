@@ -224,7 +224,8 @@ func (tx *Transaction) snapshotConflictsLocked() conflictSnapshot {
 	if n := &s.view.nodes; n.built {
 		s.nodes = rywNodes{seq: n.seq.share(), built: true}
 	} else {
-		s.nodes = rywNodes{log: n.log[:len(n.log):len(n.log)]} // logged ops are never written
+		// A later read builds these nodes by sorting their log in place (rywNodes.mergeMutates).
+		s.nodes = rywNodes{log: slices.Clone(n.log)}
 	}
 	tx.ryw.mu.Unlock()
 	return s

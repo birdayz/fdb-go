@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"slices"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/wire"
 )
@@ -86,6 +87,76 @@ func TestWriteConflictsFromLogMatchBuiltNodes(t *testing.T) {
 				t.Fatalf("iter %d %v: log %q, built from the log %q", iter, ops, fromLog, got)
 			}
 		}
+	}
+}
+
+// Commit freezes the write map before materializing native vectors (RYW:1392, WriteMap.h:158-160).
+// A first selector read may build its lazy nodes, but must not rewrite that frozen log.
+func TestCommitLazyLogSnapshotVersusFirstSelectorRead(t *testing.T) {
+	t.Parallel()
+	for _, count := range []int{2, 4096} {
+		t.Run(fmt.Sprintf("writes=%d", count), func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			tx := &Transaction{}
+			defer tx.Cancel()
+			wantWrites := make([]KeyRange, count)
+			for i := count - 1; i >= 0; i-- {
+				key := fmt.Appendf(nil, "k%06d", i)
+				tx.Set(key, []byte("v"))
+				wantWrites[i] = KeyRange{Begin: key, End: keyAfterBytes(key)}
+			}
+			tx.conflictMu.Lock()
+			muts := tx.mutations
+			snap := tx.snapshotConflictsLocked()
+			tx.conflictMu.Unlock()
+			defer snap.release(tx)
+			if snap.view == nil || snap.view.nodes.built || snap.nodes.built || len(snap.nodes.log) != count {
+				t.Fatal("commit did not capture the unbuilt, descending write-only log")
+			}
+			before := slices.Clone(snap.nodes.log)
+			start := make(chan struct{})
+			readDone := make(chan error, 1)
+			go func() {
+				<-start
+				key, err := tx.Snapshot().GetKey(ctx, wantWrites[0].Begin, false, 1)
+				if err == nil && !bytes.Equal(key, wantWrites[0].Begin) {
+					err = fmt.Errorf("first GetKey = %q, want %q", key, wantWrites[0].Begin)
+				}
+				readDone <- err
+			}()
+			close(start)
+			ship, owned, conflicts, fresh, coalesced := tx.commitVectors(muts, &snap)
+			select {
+			case err := <-readDone:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			if !snap.view.nodes.built {
+				t.Fatal("the first public selector read did not build the commit-pinned live nodes")
+			}
+			if !slices.EqualFunc(snap.nodes.log, before, func(a, b rywNodeOp) bool {
+				return a.kind == b.kind && bytes.Equal(a.begin, b.begin) && bytes.Equal(a.end, b.end) &&
+					a.addConflict == b.addConflict && a.versionstamp == b.versionstamp
+			}) {
+				t.Fatal("first selector read rewrote the frozen commit log")
+			}
+			if !owned || !fresh || !coalesced || len(ship) != count || !slices.EqualFunc(conflicts, wantWrites, equalCommitConflictRange) {
+				t.Fatalf("commit vectors: owned=%t fresh=%t coalesced=%t mutations=%d conflicts=%q", owned, fresh, coalesced, len(ship), conflicts)
+			}
+			for i, m := range ship {
+				if m.Type != MutSetValue || !bytes.Equal(m.Key, wantWrites[i].Begin) || string(m.Value) != "v" {
+					t.Fatalf("shipped mutation %d = %+v", i, m)
+				}
+			}
+			if len(snap.readConflicts(false)) != 0 || len(tx.readConflictRanges()) != 0 {
+				t.Fatal("snapshot selector read added a read conflict")
+			}
+		})
 	}
 }
 

@@ -537,10 +537,11 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
 - [ ] **RYW CPU in TEXT-maintenance-shaped transactions** (GenAI exporter
   profile, 128 messages per transaction, about 7000 BunchedMap postings).
   `BenchmarkRYWTextMaintenance` (one transaction: 7000 BunchedMap postings
-  over a cached range under a 64-byte prefix, 128 snapshot selector reads in
-  flight; each posting adds the entry list's read conflict, an AppendIfFits to
-  its bunch or every fourth a Set plus a split-off Clear, a write conflict key
-  and the gap's write conflict range) in an **intermediate-tree experiment**:
+  over a warmed cached range under a 64-byte prefix, serial snapshot selector
+  reads with deferred consumption of up to 128 completed futures, not active
+  concurrent reads or write-map pins; each posting adds the entry list's read
+  conflict, an AppendIfFits to its bunch or every fourth a Set plus a split-off
+  Clear, a write conflict key and the gap's write conflict range) in an **intermediate-tree experiment**:
   314 -> 90 ms, 65.8 -> 21.5 MB, 433k -> 117k allocs per transaction.
   These are not a before/after measurement of the PR: the required equivalent
   workload comparison against merge-base a7349ff65 remains outstanding.
