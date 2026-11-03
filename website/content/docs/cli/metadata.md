@@ -277,10 +277,12 @@ fdb rl meta catalog get orders_tpl
 Supply the cluster file with `--cluster-file` or a context. A relational
 context can set `database` and `schema` instead of a keyspace and metadata
 source; SQL, statistics, and native Record Layer commands can use those
-defaults. An explicit `--database` does not inherit the context's schema;
-pass `--schema` for table queries. A schema-only override retains the context's
-database. Do not combine SQL catalog addressing with `--descriptor-set` or
-`--meta-file`.
+defaults. Native Record Layer commands inherit the complete database/schema
+pair or require both override flags. For SQL and statistics, an explicit
+`--database` does not inherit the context's schema; pass `--schema` for table
+queries. A schema-only override retains the context's database only for SQL
+and statistics. Do not combine SQL catalog addressing with `--descriptor-set`
+or `--meta-file`.
 
 ---
 

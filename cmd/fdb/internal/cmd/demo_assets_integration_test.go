@@ -41,9 +41,8 @@ func TestIntegration_DemoAssets_BootstrapSeedAndDiscoverPrimaryKey(t *testing.T)
 	seedPath := demoAssetPath(t, "seed.sql")
 	bindConfig(t) // t.Setenv, not parallel: do not replace any sibling's config.
 
-	// Run the shipped files byte-for-byte, not a hand-maintained DDL/DML copy.
-	// The demo's database/template are reserved to this test in the disposable
-	// shared fixture; the other CLI fixtures use different database addresses.
+	// Run the shipped files byte-for-byte; reserve their database/template
+	// to this test so the disposable shared fixture stays isolated.
 	const database = "/FRL/demo"
 	run := func(args ...string) (string, string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

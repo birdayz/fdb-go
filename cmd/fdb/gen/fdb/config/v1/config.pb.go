@@ -313,9 +313,8 @@ func (*MetadataSource_MetaStoreKeyspace) isMetadataSource_Source() {}
 
 func (*MetadataSource_DescriptorSet) isMetadataSource_Source() {}
 
-// DescriptorSetSource reads a google.protobuf.FileDescriptorSet, including its
-// imports. Produce it with buf build --as-file-descriptor-set or protoc
-// --descriptor_set_out with --include_imports.
+// DescriptorSetSource reads a dependency-complete google.protobuf.FileDescriptorSet.
+// Use buf build --as-file-descriptor-set or protoc --descriptor_set_out --include_imports.
 type DescriptorSetSource struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Path  string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`

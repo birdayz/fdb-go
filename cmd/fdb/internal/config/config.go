@@ -28,6 +28,17 @@ const (
 // does not exist in the loaded config.
 var ErrNoContext = errors.New("context not found")
 
+// ContextNotFoundError identifies a selected context that is absent from the config.
+type ContextNotFoundError struct {
+	Name string
+}
+
+func (e *ContextNotFoundError) Error() string {
+	return fmt.Sprintf("%s: %q", ErrNoContext, e.Name)
+}
+
+func (e *ContextNotFoundError) Unwrap() error { return ErrNoContext }
+
 // Path returns the effective config path — FDB_CONFIG env var if set,
 // else ~/.fdb/config.yaml.
 func Path() (string, error) {
@@ -176,5 +187,5 @@ func ResolveContext(cfg *configv1.Config, name string) (*configv1.Context, error
 			return ctx, nil
 		}
 	}
-	return nil, fmt.Errorf("%w: %q", ErrNoContext, name)
+	return nil, &ContextNotFoundError{Name: name}
 }

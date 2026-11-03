@@ -232,6 +232,62 @@ func (r *sqlWorkflowPipeReader) Read(p []byte) (int, error) {
 	return r.File.Read(p)
 }
 
+// sqlWorkflowDeadlineContext preserves the timeout cause across the readiness gate.
+type sqlWorkflowDeadlineContext struct {
+	context.Context
+}
+
+func (c sqlWorkflowDeadlineContext) Err() error {
+	if errors.Is(context.Cause(c.Context), context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return c.Context.Err()
+}
+
+func sqlWorkflowGatedDeadline(timeout time.Duration) (context.Context, context.CancelFunc, func()) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	arm := func() {
+		deadline, stop := context.WithTimeout(ctx, timeout)
+		context.AfterFunc(deadline, func() {
+			cancel(deadline.Err())
+			stop()
+		})
+	}
+	return sqlWorkflowDeadlineContext{ctx}, func() { cancel(context.Canceled) }, arm
+}
+
+func TestSQLWorkflow_DeadlineWaitsForReadiness(t *testing.T) {
+	t.Parallel()
+	// An immediately expiring deadline must still remain live until explicitly armed.
+	ctx, cancel, arm := sqlWorkflowGatedDeadline(0)
+	defer cancel()
+	ready := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		close(ready)
+		<-release
+		arm()
+	}()
+	<-ready
+	if err := ctx.Err(); err != nil {
+		t.Errorf("deadline expired before activation: %v", err)
+	}
+	select {
+	case <-ctx.Done():
+		t.Error("deadline signaled before activation")
+	default:
+	}
+	close(release)
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("activated deadline did not expire")
+	}
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("activated deadline error = %v", ctx.Err())
+	}
+}
+
 func TestSQLWorkflow_CancelBlockedPipe(t *testing.T) {
 	t.Setenv("FDB_CONFIG", filepath.Join(t.TempDir(), "missing.yaml"))
 	for _, deadline := range []bool{false, true} {
@@ -247,9 +303,10 @@ func TestSQLWorkflow_CancelBlockedPipe(t *testing.T) {
 			flags := sqlWorkflowDescriptorFlags(t, reader)
 			var ctx context.Context
 			var cancel context.CancelFunc
+			var arm func()
 			wantErr := context.Canceled
 			if deadline {
-				ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+				ctx, cancel, arm = sqlWorkflowGatedDeadline(time.Second)
 				wantErr = context.DeadlineExceeded
 			} else {
 				ctx, cancel = context.WithCancel(context.Background())
@@ -290,7 +347,9 @@ func TestSQLWorkflow_CancelBlockedPipe(t *testing.T) {
 			if ctx.Err() != nil {
 				t.Fatalf("context expired before read-start proof: %v", ctx.Err())
 			}
-			if !deadline {
+			if deadline {
+				arm()
+			} else {
 				cancel()
 			}
 			// Keep the writer open: only cancellation/deadline can stop the read.
@@ -384,7 +443,18 @@ func runSQLWorkflowStdinHelper(mode string) int {
 	case "cancel":
 		ctx, cancel = signal.NotifyContext(context.Background(), os.Interrupt)
 	case "deadline":
-		ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+		var arm func()
+		ctx, cancel, arm = sqlWorkflowGatedDeadline(2 * time.Second)
+		control := os.NewFile(3, "deadline-activation")
+		defer control.Close()
+		go func() {
+			var activation [1]byte
+			if _, err := io.ReadFull(control, activation[:]); err != nil {
+				cancel()
+				return
+			}
+			arm()
+		}()
 		wantErr = context.DeadlineExceeded
 	default:
 		fmt.Fprintln(os.Stderr, "unknown stdin helper mode:", mode)
@@ -470,6 +540,17 @@ func TestSQLWorkflow_InheritedStdin(t *testing.T) {
 			cmd.Env = append(os.Environ(), sqlWorkflowStdinHelper+"="+mode,
 				"FDB_CONFIG="+filepath.Join(t.TempDir(), "missing.yaml"), "HOME="+t.TempDir())
 			cmd.Stdin = reader
+			var activate *os.File
+			if mode == "deadline" {
+				control, activation, err := os.Pipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer control.Close()
+				defer activation.Close()
+				cmd.ExtraFiles = []*os.File{control}
+				activate = activation
+			}
 			var out, errOut bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &out, &errOut
 			if err := cmd.Start(); err != nil {
@@ -503,6 +584,10 @@ func TestSQLWorkflow_InheritedStdin(t *testing.T) {
 				}
 				if mode == "cancel" {
 					if err := cmd.Process.Signal(os.Interrupt); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					if _, err := activate.Write([]byte{1}); err != nil {
 						t.Fatal(err)
 					}
 				}

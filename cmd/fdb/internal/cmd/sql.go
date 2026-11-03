@@ -181,7 +181,8 @@ func newSQLCmd() *cobra.Command {
 func resolveSQLAddress(cmd *cobra.Command, contextName, clusterFile, database, schema string) (*storeTarget, error) {
 	target, err := (&storeAddressFlags{contextName: contextName, clusterFile: clusterFile}).resolve()
 	if err != nil {
-		if !errors.Is(err, config.ErrNoContext) || contextName != "" {
+		var missingContext *config.ContextNotFoundError
+		if !errors.Is(err, config.ErrNoContext) || errors.As(err, &missingContext) || contextName != "" {
 			return nil, err
 		}
 		// An explicit database can use default cluster-file discovery without

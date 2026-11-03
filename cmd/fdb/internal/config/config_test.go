@@ -172,9 +172,16 @@ func TestResolveContext_FallsBackToCurrent(t *testing.T) {
 func TestResolveContext_MissingName(t *testing.T) {
 	t.Parallel()
 	cfg := &configv1.Config{Contexts: []*configv1.Context{{Name: "prod"}}}
-	_, err := ResolveContext(cfg, "nope")
-	if !errors.Is(err, ErrNoContext) {
-		t.Errorf("error = %v, want errors.Is ErrNoContext", err)
+	for _, name := range []string{"nope", ""} {
+		cfg.CurrentContext = "nope"
+		_, err := ResolveContext(cfg, name)
+		var missing *ContextNotFoundError
+		if !errors.Is(err, ErrNoContext) || !errors.As(err, &missing) || missing.Name != "nope" {
+			t.Fatalf("selected context %q: error = %v, want named missing context nope", name, err)
+		}
+		if err.Error() != `context not found: "nope"` {
+			t.Fatalf("selected context message = %q", err)
+		}
 	}
 }
 
@@ -182,8 +189,9 @@ func TestResolveContext_NoCurrentAndNoName(t *testing.T) {
 	t.Parallel()
 	cfg := &configv1.Config{Contexts: []*configv1.Context{{Name: "prod"}}}
 	_, err := ResolveContext(cfg, "")
-	if !errors.Is(err, ErrNoContext) {
-		t.Errorf("error = %v, want errors.Is ErrNoContext", err)
+	var missing *ContextNotFoundError
+	if !errors.Is(err, ErrNoContext) || errors.As(err, &missing) {
+		t.Errorf("error = %v, want unselected ErrNoContext, not a missing selected name", err)
 	}
 }
 

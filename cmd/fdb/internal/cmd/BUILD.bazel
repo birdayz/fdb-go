@@ -98,6 +98,7 @@ go_test(
         "record_test.go",
         "record_type_names_user_facing_test.go",
         "root_test.go",
+        "sql_context_selection_test.go",
         "sql_identifier_names_integration_test.go",
         "sql_integration_test.go",
         "sql_test.go",

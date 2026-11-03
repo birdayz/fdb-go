@@ -83,9 +83,8 @@ message MetadataSource {
   }
 }
 
-// DescriptorSetSource reads a google.protobuf.FileDescriptorSet, including its
-// imports. Produce it with buf build --as-file-descriptor-set or protoc
-// --descriptor_set_out with --include_imports.
+// DescriptorSetSource reads a dependency-complete google.protobuf.FileDescriptorSet.
+// Use buf build --as-file-descriptor-set or protoc --descriptor_set_out --include_imports.
 message DescriptorSetSource {
   string path = 1;
 
