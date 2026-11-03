@@ -110,6 +110,14 @@ func (tx *simTxn) selectorFetch(begin, end fdb.KeySelector, limit, byteTarget in
 	// only when the read did not stop on a limit (RYW:799-811, 1111-1120).
 	readToBegin := bIdx < 0 || eIdx < 0
 	readThroughEnd := bIdx > len(view) || eIdx > len(view)
+	// Crossed anchors resolve the far bound with getKey in the prologue (RYW:621-638,
+	// 925-942). Its maxKey result sets readThroughEnd even exactly one past the last key.
+	if bytes.Compare(begin.Key.FDBKey(), end.Key.FDBKey()) > 0 {
+		if reverse && !isTrivialSelector(begin) && bIdx >= len(view) ||
+			!reverse && !isTrivialSelector(end) && eIdx >= len(view) {
+			readThroughEnd = true
+		}
+	}
 	if reverse {
 		readToBegin = readToBegin && !more
 	} else {

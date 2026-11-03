@@ -5,10 +5,12 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
 	"testing"
+	"weak"
 )
 
 // Selector range reads resolve their selectors inside the range read (RFC-262
@@ -506,8 +508,76 @@ func TestStartedGetKeyIsTheCallers(t *testing.T) {
 	}
 }
 
-// Reads finished at issue from inline point entries keep their bytes across a
-// Reset that reuses the inline storage: reset leaves it to the reads' snapshot.
+// Building the three sentinel nodes must preserve a full-keyspace conflict
+// (WriteMap.cpp:245-294), even though no extra node boundary is needed.
+func TestSelectorReadKeepsFullKeyspaceWriteConflict(t *testing.T) {
+	t.Parallel()
+	tx := &Transaction{writeSystemKeys: true, readSystemKeys: true}
+	tx.nativeRange = newMemStorage().native
+	if err := tx.AddWriteConflictRange(allKeysBegin, allKeysEnd); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := tx.Snapshot().GetRangeSelectors(context.Background(), firstGreaterOrEqual([]byte("a")), firstGreaterOrEqual([]byte("b")), 0, 0, false); err != nil {
+		t.Fatal(err)
+	}
+	tx.ryw.mu.Lock()
+	nodes := tx.ryw.liveLocked().nodes.seq.Len()
+	empty := tx.ryw.writesEmptyLocked()
+	tx.ryw.mu.Unlock()
+	if nodes != 3 || empty {
+		t.Fatalf("built map: %d nodes, empty=%t; want three flagged sentinels", nodes, empty)
+	}
+	tx.conflictMu.Lock()
+	s := tx.snapshotConflictsLocked()
+	tx.conflictMu.Unlock()
+	defer s.release(tx)
+	ranges, _ := s.writeConflicts()
+	if len(ranges) != 1 || !bytes.Equal(ranges[0].Begin, allKeysBegin) || !bytes.Equal(ranges[0].End, allKeysEnd) {
+		t.Fatalf("commit write conflicts = %q, want the full keyspace", ranges)
+	}
+}
+
+// A completed walk no longer roots old cache storage after reset, while an
+// outstanding snapshot owns its old allocation independently of the cache.
+func TestResetDetachesCompletedWalkCacheStorage(t *testing.T) {
+	t.Parallel()
+	c := &rywCache{}
+	m := newMemStorage("a", "b", "c")
+	w, err := runWalk(c, nil, firstGreaterOrEqual([]byte("a")), firstGreaterOrEqual([]byte("z")), newRangeLimits(0, 0), false, allKeysEnd, m)
+	if err != nil || len(w.rangeResult().kvs) != 3 {
+		t.Fatalf("walk: %v, %v", w.rangeResult().kvs, err)
+	}
+	w.release()
+	if c.serverCache.snapshotCacheStorage == nil || c.serverCache.node0[0].item.kvs == nil {
+		t.Fatal("positive control: the completed walk did not populate small-cache storage")
+	}
+	retired := weak.Make(c.serverCache.snapshotCacheStorage)
+	c.reset()
+	if c.serverCache.snapshotCacheStorage != nil || c.serverCache.entries.root != nil {
+		t.Fatal("reset retained the completed walk's cache allocation")
+	}
+	for i := 0; i < 20 && retired.Value() != nil; i++ {
+		runtime.GC()
+	}
+	if retired.Value() != nil {
+		t.Fatal("a completed walk's storage is still strongly reachable after reset")
+	}
+	c.serverCache.insertPoint([]byte("a"), []byte("va"))
+	old := c.serverCache.snapshot()
+	c.reset()
+	c.serverCache.insertPoint([]byte("x"), []byte("vx"))
+	if es := old.appendTo(nil); len(es) != 1 || len(es[0].kvs) != 1 || string(es[0].kvs[0].Key) != "a" || string(es[0].kvs[0].Value) != "va" {
+		t.Fatalf("a held snapshot changed after fresh cache allocation: %q", es)
+	}
+	c.reset()
+	if c.serverCache.snapshotCacheStorage != nil {
+		t.Fatal("a later reset retained its cache allocation")
+	}
+	runtime.KeepAlive(c)
+}
+
+// Reads finished at issue from small-cache entries keep their bytes across Reset,
+// even when new point reads allocate fresh cache storage.
 func TestLocalReadsKeepInlineCacheBytesAcrossReset(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

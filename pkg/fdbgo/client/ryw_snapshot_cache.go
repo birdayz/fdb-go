@@ -20,17 +20,9 @@ import (
 // fetch inserts its fragment in O(log n) and the walk's iterator steps in O(1).
 type snapshotCache struct {
 	entries pseq[cacheEntry]
-	// node0 holds the first entries' nodes, so the common 1-2 point read path
-	// allocates none; nodesLent records that entries may hand them out.
-	node0     [2]pnode[cacheEntry]
-	nodesLent bool
-	// snapshotted records that a walk took a snapshot (snapshot): reset then
-	// leaves the inline storage to it.
-	snapshotted bool
-	kv0         [2]KeyValue
-	keyBuf      [64]byte
-	kvUsed      int
-	keyBufUsed  int
+	// The small-cache allocation belongs to its snapshots, not the transaction:
+	// reset detaches it, so completed walks do not retain old replies forever.
+	*snapshotCacheStorage
 	// cur is insertKVs's cursor, kept for its path storage; empty between calls.
 	cur pcursor[cacheEntry]
 
@@ -42,6 +34,15 @@ type snapshotCache struct {
 	// one that stops at 1024). Read only by tests; an int increment on the walk is not
 	// measurable against the byte comparisons it accompanies.
 	kvsTouched uint64
+}
+
+type snapshotCacheStorage struct {
+	node0      [2]pnode[cacheEntry]
+	nodesLent  bool
+	kv0        [2]KeyValue
+	keyBuf     [64]byte
+	kvUsed     int
+	keyBufUsed int
 }
 
 // cacheEntry represents a contiguous range of known server state.
@@ -68,22 +69,13 @@ type cacheEntry struct {
 // reset clears all cached state.
 func (sc *snapshotCache) reset() {
 	sc.entries = pseq[cacheEntry]{}
-	if sc.snapshotted {
-		// A walk may still read a snapshot holding the inline nodes, keys and
-		// rows: they are never handed out again.
-		sc.nodesLent, sc.kvUsed, sc.keyBufUsed = true, len(sc.kv0), len(sc.keyBuf)
-		return
-	}
-	sc.node0 = [2]pnode[cacheEntry]{}
-	sc.nodesLent = false
-	sc.kv0 = [2]KeyValue{}
-	sc.kvUsed = 0
-	sc.keyBufUsed = 0
+	sc.snapshotCacheStorage = nil
 }
 
 // insertPoint caches [key, key+\x00) in inline storage when capacity allows,
 // avoiding per-Get slice/row allocations on the common 1-2 point read path.
 func (sc *snapshotCache) insertPoint(key, value []byte) {
+	sc.ensureStorage()
 	need := len(key) + 1
 	var buf []byte
 	if sc.keyBufUsed+need <= len(sc.keyBuf) {
@@ -115,8 +107,15 @@ func (sc *snapshotCache) insertPoint(key, value []byte) {
 	sc.insert(k, end, rows)
 }
 
-// lendNodes gives entries the inline nodes, once per reset.
+func (sc *snapshotCache) ensureStorage() {
+	if sc.snapshotCacheStorage == nil {
+		sc.snapshotCacheStorage = new(snapshotCacheStorage)
+	}
+}
+
+// lendNodes gives entries the small-cache nodes, once per reset.
 func (sc *snapshotCache) lendNodes() {
+	sc.ensureStorage()
 	if !sc.nodesLent {
 		sc.entries.free = sc.node0[:]
 		sc.nodesLent = true
@@ -329,7 +328,7 @@ func (sc *snapshotCache) getRangeKVsLimited(begin, end []byte, budget int, rever
 			if bytes.Compare(kv.Key, end) >= 0 {
 				break
 			}
-			if sc.keyBufUsed > 0 && len(e.kvs) == 1 {
+			if sc.snapshotCacheStorage != nil && sc.keyBufUsed > 0 && len(e.kvs) == 1 {
 				kv.Key = bytes.Clone(kv.Key)
 			}
 			sc.kvsTouched++
@@ -376,7 +375,7 @@ func (sc *snapshotCache) getRangeKVsBack(begin, end []byte, budget int) ([]KeyVa
 			if bytes.Compare(kv.Key, begin) < 0 {
 				break
 			}
-			if sc.keyBufUsed > 0 && len(e.kvs) == 1 {
+			if sc.snapshotCacheStorage != nil && sc.keyBufUsed > 0 && len(e.kvs) == 1 {
 				kv.Key = bytes.Clone(kv.Key)
 			}
 			sc.kvsTouched++
@@ -405,7 +404,6 @@ func reversedKVs(kvs []KeyValue) []KeyValue {
 // snapshot returns the entries as they are now, for a walk that reads them
 // without rywCache.mu: later inserts copy what they change.
 func (sc *snapshotCache) snapshot() pseq[cacheEntry] {
-	sc.snapshotted = true
 	return sc.entries.share()
 }
 
@@ -465,7 +463,7 @@ func (sc *snapshotCache) skipKnownEmpty(begin, end []byte, reverse bool) ([]byte
 		}
 		begin = e.end
 	}
-	if sc.keyBufUsed > 0 {
+	if sc.snapshotCacheStorage != nil && sc.keyBufUsed > 0 {
 		if len(begin) != len(origBegin) || (len(begin) > 0 && &begin[0] != &origBegin[0]) {
 			begin = bytes.Clone(begin)
 		}

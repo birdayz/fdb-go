@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -404,6 +405,95 @@ func TestReadRetriesUntilRefusingReplicaAccepts(t *testing.T) {
 				t.Fatalf("read retried %d refusals in %v, want at least the 70ms of backoff", refused, elapsed)
 			}
 		})
+	}
+}
+
+// The production loops keep one lbRetry across relocation, charging every refused
+// replica rather than one pass (LoadBalance.actor.h:682-686, 721-725).
+func TestReadLoopsPaceEveryRefusedReplica(t *testing.T) {
+	t.Parallel()
+	cases := 0
+	for _, op := range storageReadOps() {
+		if op.name != "get value" && op.name != "watch" {
+			continue
+		}
+		cases++
+		t.Run(op.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			c := newRefusalCluster(t, ctx, 2)
+			var attempts []int
+			var delays []time.Duration
+			observe := func(n int, d time.Duration) { attempts = append(attempts, n); delays = append(delays, d) }
+			c.db.onReadBackoff.Store(&observe)
+			c.cache(
+				ServerInfo{Address: refusedSSAddr, Token: liveSSToken},
+				ServerInfo{Address: "10.9.9.8:4500", Token: liveSSToken},
+				ServerInfo{Address: "10.9.9.7:4500", Token: liveSSToken})
+			if err := runRead(t, ctx, c, op); err != nil {
+				t.Fatalf("read after refused replicas: %v", err)
+			}
+			if got := c.refusals.Load(); got != 5 {
+				t.Fatalf("refusals = %d, want three initial and two relocated", got)
+			}
+			want := []time.Duration{0, 0, 10 * time.Millisecond, 20 * time.Millisecond, 40 * time.Millisecond}
+			if !slices.Equal(attempts, []int{1, 2, 3, 4, 5}) || !slices.Equal(delays, want) {
+				t.Fatalf("attempts=%v delays=%v, want 1..5 and %v", attempts, delays, want)
+			}
+		})
+	}
+	if cases != 2 {
+		t.Fatalf("retry-loop population=%d, want Get and Watch", cases)
+	}
+}
+
+// Literal 1030 replies take the same loadBalance path as failed connects
+// (LoadBalance.actor.h:344-377), not an unpaced relocation loop.
+func TestReadLoopsPaceEncodedMaybeDelivered(t *testing.T) {
+	t.Parallel()
+	cases := 0
+	for _, op := range storageReadOps() {
+		if op.name != "get value" && op.name != "watch" {
+			continue
+		}
+		cases++
+		t.Run(op.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			c := newRefusalCluster(t, ctx, 0)
+			var attempts []int
+			var delays []time.Duration
+			observe := func(n int, d time.Duration) { attempts = append(attempts, n); delays = append(delays, d) }
+			c.db.onReadBackoff.Store(&observe)
+			c.cache(ServerInfo{Address: liveSSAddr, Token: liveSSToken})
+			result := make(chan error, 1)
+			go func() { result <- op.run(ctx, c.tx) }()
+			for i := range 4 {
+				f, ok := c.storage.recv(ctx)
+				if !ok {
+					t.Fatalf("request %d did not reach storage", i+1)
+				}
+				token, reply := op.reply(t, f.body)
+				if i < 3 {
+					reply = (&types.ErrorOrError{ErrorCode: ErrRequestMaybeDelivered}).MarshalFDB()
+				}
+				if err := transport.WriteFrame(c.storage.server, token, reply, false); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := <-result; err != nil {
+				t.Fatalf("read after three encoded 1030 replies: %v", err)
+			}
+			want := []time.Duration{10 * time.Millisecond, 20 * time.Millisecond, 40 * time.Millisecond}
+			if !slices.Equal(attempts, []int{1, 2, 3}) || !slices.Equal(delays, want) {
+				t.Fatalf("attempts=%v delays=%v, want 1..3 and %v", attempts, delays, want)
+			}
+		})
+	}
+	if cases != 2 {
+		t.Fatalf("encoded-reply population=%d, want Get and Watch", cases)
 	}
 }
 

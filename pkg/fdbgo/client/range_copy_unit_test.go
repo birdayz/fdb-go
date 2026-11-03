@@ -99,8 +99,9 @@ func TestForwardCacheDescriptorAllocations(t *testing.T) {
 		check()
 	})
 	t.Logf("cache descriptor allocations: forward=%.0f reverse=%.0f insert=%.0f calls=%d", forward, reverse, direct, calls)
-	if calls != 3*(samples+1) || direct != 3 {
-		t.Fatalf("cache control: calls=%d insert=%.0f, want %d/3", calls, direct, 3*(samples+1))
+	// The fourth allocation is the independently collectible small-cache owner.
+	if calls != 3*(samples+1) || direct != 4 {
+		t.Fatalf("cache control: calls=%d insert=%.0f, want %d/4", calls, direct, 3*(samples+1))
 	}
 	if forward != direct {
 		t.Errorf("forward pre-cache copy adds %.0f allocations, want 0", forward-direct)

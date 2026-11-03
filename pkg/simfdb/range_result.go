@@ -41,11 +41,12 @@ func (r *simRangeResult) issueFirst() {
 		return
 	}
 	beginSel, endSel := r.r.FDBRangeKeySelectors()
-	if bks, eks := beginSel.FDBKeySelector(), endSel.FDBKeySelector(); !isTrivialSelector(bks) || !isTrivialSelector(eks) {
+	bks, eks := beginSel.FDBKeySelector(), endSel.FDBKeySelector()
+	if !isTrivialSelector(bks) || !isTrivialSelector(eks) {
 		r.issueFirstSelectors(f, bks, eks, byteTarget)
 		return
 	}
-	begin, end, err := r.tx.resolveRangeForRead(r.r)
+	begin, end, err := r.tx.resolveRangeForRead(fdb.SelectorRange{Begin: bks, End: eks})
 	if err != nil {
 		f.err = err
 		return

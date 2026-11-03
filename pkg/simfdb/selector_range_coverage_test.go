@@ -225,6 +225,70 @@ func TestSelectorRange_ReadToBeginAndThroughEnd(t *testing.T) {
 	}
 }
 
+// Crossed anchors trigger a nested getKey in the RYW prologue (:621-638, 925-942).
+// Resolving exactly one past the last row returns maxKey and sets readThroughEnd.
+func TestSelectorRange_CrossedBoundsReadThroughEnd(t *testing.T) {
+	t.Parallel()
+	forward := fdb.SelectorRange{Begin: fdb.KeySelector{Key: k("z"), Offset: -2}, End: fdb.KeySelector{Key: k("m"), Offset: 2}}
+	reverse := fdb.SelectorRange{Begin: fdb.KeySelector{Key: k("m"), Offset: 2}, End: fdb.KeySelector{Key: k("h"), Offset: 3}}
+	cases := []struct {
+		name         string
+		r            fdb.SelectorRange
+		options      fdb.RangeOptions
+		rows         string
+		rywTail      bool
+		disabledTail bool
+	}{
+		{"forward", forward, fdb.RangeOptions{}, "f,h,m", true, false},
+		{"reverse", reverse, fdb.RangeOptions{Reverse: true}, "", true, true},
+		{"forward-limited", forward, fdb.RangeOptions{Limit: 1}, "f", false, false},
+		{"uncrossed", fdb.SelectorRange{Begin: fdb.FirstGreaterOrEqual(k("h")), End: fdb.KeySelector{Key: k("m"), Offset: 2}}, fdb.RangeOptions{}, "h,m", false, false},
+	}
+	for _, tc := range cases {
+		for _, rywDisabled := range []bool{false, true} {
+			for _, snapshot := range []bool{false, true} {
+				for _, probe := range []string{"zz", "a"} {
+					t.Run(fmt.Sprintf("%s/rywDisabled=%t/snapshot=%t/probe=%s", tc.name, rywDisabled, snapshot, probe), func(t *testing.T) {
+						t.Parallel()
+						db := New(nil)
+						seedKeys(t, db, "b", "f", "h", "m")
+						tx := db.newTxn()
+						if rywDisabled {
+							if err := tx.Options().SetReadYourWritesDisable(); err != nil {
+								t.Fatal(err)
+							}
+						}
+						var reader fdb.ReadTransaction = tx
+						if snapshot {
+							reader = tx.Snapshot()
+						}
+						kvs, err := reader.GetRange(tc.r, tc.options).GetSliceWithError()
+						if err != nil {
+							t.Fatal(err)
+						}
+						if got := rowKeys(kvs); got != tc.rows {
+							t.Fatalf("rows %q, want %q", got, tc.rows)
+						}
+						if snapshot && len(tx.readConflicts) != 0 {
+							t.Fatalf("snapshot recorded %v", conflictStrings(tx))
+						}
+						tail := tc.rywTail
+						if rywDisabled {
+							// NativeAPI lacks the RYW prologue; only reverse readThrough's
+							// getKey of the end selector protects the user-keyspace tail.
+							tail = tc.disabledTail
+						}
+						want := probe == "zz" && tail && !snapshot
+						if got := concurrentWriteConflicts(t, db, tx, probe); got != want {
+							t.Fatalf("write at %q: conflicted=%t, want %t (recorded %v)", probe, got, want, conflictStrings(tx))
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
 // TestSelectorRange_CancelAndLimitChecks pins the selector route's checks in RYW getRange's order,
 // cancelled (1025) then a limit below -1 (2012) (ReadYourWrites.actor.cpp:1736-1750), on both
 // consumers, and a Cancel between batches failing the next one.

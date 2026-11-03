@@ -3,18 +3,21 @@
 package libfdbc_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -27,15 +30,8 @@ import (
 	tcexec "github.com/testcontainers/testcontainers-go/exec"
 )
 
-// These tests run one fault against both clients: a storage server process is
-// killed, so every connect to its address is refused, exactly the transport
-// failure libfdb_c turns into request_maybe_delivered and absorbs in loadBalance
-// (FlowTransport.actor.cpp:852-869, 933, 1001-1004; genericactors.actor.h:380-385;
-// LoadBalance.actor.h:344-377, 604-635). The observable contract both must meet:
-// no non-FDB error reaches the application, a read on a shard with a live replica
-// completes from it, a read on a shard whose only replica refuses waits until the
-// replica is back, and any error code surfaced is an FDB code the transaction's
-// OnError retries, with the same final outcome on both clients.
+// Each read runs once in its own process; endpoint-specific client traces prove
+// it encountered the killed storage server before that same read is recovered.
 
 // readKinds are the storage reads the record layer issues.
 var readKinds = []string{"get", "getkey", "getrange"}
@@ -135,21 +131,6 @@ func fdbCode(err error) (int, bool) {
 	return 0, false
 }
 
-// requireSurfacedRetryable fails on a non-FDB error or a code OnError does not retry.
-func requireSurfacedRetryable(t *testing.T, who string, errs []error) {
-	t.Helper()
-	for _, err := range errs {
-		code, ok := fdbCode(err)
-		if !ok {
-			t.Errorf("%s: non-FDB error reached the application: %v", who, err)
-			continue
-		}
-		if !gofdb.IsOnErrorRetryable(code) {
-			t.Errorf("%s: surfaced FDB error %d is not retried by OnError: %v", who, code, err)
-		}
-	}
-}
-
 func startCRCluster(t *testing.T, ctx context.Context, f *crFixture, opts ...testcontainers.ContainerCustomizer) {
 	t.Helper()
 	startup, cancel := context.WithTimeout(ctx, 2*time.Minute)
@@ -218,31 +199,76 @@ func storageAddresses(t *testing.T, f crFixture, key []byte) []string {
 	return addrs
 }
 
-// pickVictim returns a seeded key and the address of one of its replicas that
-// is a storage-class process (never the primary, which hosts the coordinator),
-// waiting for data distribution when needed. minReplicas is the replica count
-// the key's team must have.
-func pickVictim(t *testing.T, ctx context.Context, f crFixture, minReplicas int) (int, string) {
+// pickStorageTeam requires the whole team to be non-primary storage processes;
+// killing it must not stop the coordinator, GRV proxy or location proxy.
+func pickStorageTeam(t *testing.T, ctx context.Context, f crFixture, replicas int) (int, []string) {
 	t.Helper()
 	primary := ":" + strconv.Itoa(f.container.FDBPort())
 	deadline := time.Now().Add(2 * time.Minute)
 	for {
+		status, err := f.container.FDBCLIExec(ctx, "status json")
+		if err != nil {
+			t.Fatalf("check storage process roles: %v\n%s", err, status)
+		}
+		safe, err := crStorageOnlyAddresses([]byte(status))
+		if err != nil {
+			t.Fatal(err)
+		}
 		for i := range f.n {
 			addrs := storageAddresses(t, f, f.key(i))
-			if len(addrs) < minReplicas {
+			if len(addrs) != replicas {
 				continue
 			}
+			storageOnly := true
 			for _, a := range addrs {
-				if !strings.HasSuffix(a, primary) {
-					return i, a
+				if strings.HasSuffix(a, primary) || !safe[a] {
+					storageOnly = false
 				}
+			}
+			if storageOnly {
+				return i, addrs
 			}
 		}
 		if time.Now().After(deadline) || ctx.Err() != nil {
-			t.Fatalf("no seeded key has a replica on a storage-class process")
+			t.Fatalf("no seeded key has a team of exactly %d non-primary storage processes; status:\n%s", replicas, status)
 		}
 		time.Sleep(2 * time.Second)
 	}
+}
+
+func crStorageOnlyAddresses(raw []byte) (map[string]bool, error) {
+	var status struct {
+		Cluster struct {
+			Processes map[string]struct {
+				Address string `json:"address"`
+				Roles   []struct {
+					Role string `json:"role"`
+				} `json:"roles"`
+			} `json:"processes"`
+		} `json:"cluster"`
+	}
+	if err := json.Unmarshal(raw, &status); err != nil {
+		return nil, fmt.Errorf("decode storage roles: %w", err)
+	}
+	if len(status.Cluster.Processes) == 0 {
+		return nil, fmt.Errorf("status has no process population")
+	}
+	safe := make(map[string]bool)
+	for _, process := range status.Cluster.Processes {
+		storageOnly := len(process.Roles) > 0
+		for _, role := range process.Roles {
+			if role.Role != "storage" {
+				storageOnly = false
+			}
+		}
+		if storageOnly {
+			if process.Address == "" {
+				return nil, fmt.Errorf("storage-only process has no address")
+			}
+			safe[process.Address] = true
+		}
+	}
+	return safe, nil
 }
 
 func containerExec(ctx context.Context, c *foundationdbtc.Container, cmd string) (string, error) {
@@ -297,65 +323,416 @@ func killStorage(t *testing.T, ctx context.Context, f crFixture, addr string) st
 	return "nohup " + strings.TrimSpace(args) + " >/dev/null 2>&1 &"
 }
 
-// A read whose shard has a refusing replica and a live one completes from the
-// live one, with no error, on both clients.
+func requireCRRefused(t *testing.T, addr string) {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", addr, time.Second)
+	if conn != nil {
+		conn.Close()
+	}
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Fatalf("storage peer %s is no longer refusing connections: %v", addr, err)
+	}
+}
+
+const crWorkerEnv = "FDBGO_CONNECT_REFUSED_WORKER"
+
+type crWorkerConfig struct {
+	Client, Kind, ClusterFile, Prefix, Dir string
+	N, ValueSize, Key                      int
+}
+
+type crReadResult struct {
+	Got, Error string
+	Code       int
+	FDBError   bool
+}
+
+// Native network configuration is process-wide, so each operation gets a fresh
+// process with tracing enabled before either client opens a database.
+func TestLibFDBC_ConnectRefusedWorker(t *testing.T) {
+	raw := os.Getenv(crWorkerEnv)
+	if raw == "" {
+		return
+	}
+	var cfg crWorkerConfig
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	f := crFixture{clusterFile: cfg.ClusterFile, prefix: []byte(cfg.Prefix), n: cfg.N, valueSize: cfg.ValueSize}
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	issue := func() {
+		crWriteFile(t, filepath.Join(cfg.Dir, "ready"), nil)
+		crWaitFile(t, ctx, filepath.Join(cfg.Dir, "issue"))
+		crWriteFile(t, filepath.Join(cfg.Dir, "issued"), nil)
+	}
+	var got string
+	var readErr error
+	switch cfg.Client {
+	case "pure-Go":
+		log, err := os.Create(filepath.Join(cfg.Dir, "trace", "go.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer log.Close()
+		slog.SetDefault(slog.New(slog.NewJSONHandler(log, nil)))
+		gofdb.MustAPIVersion(730)
+		db, err := gofdb.OpenDatabase(cfg.ClusterFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		tr, err := db.CreateTransaction()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tr.Cancel()
+		if err := tr.Options().SetTimeout(30000); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tr.GetReadVersion().Get(); err != nil {
+			t.Fatal(err)
+		}
+		issue()
+		got, readErr = goRead(tr, f, cfg.Kind, cfg.Key)
+	case "libfdb_c":
+		cgofdb.MustAPIVersion(730)
+		if err := cgofdb.Options().SetTraceEnable(filepath.Join(cfg.Dir, "trace")); err != nil {
+			t.Fatal(err)
+		}
+		if err := cgofdb.Options().SetTraceFormat("json"); err != nil {
+			t.Fatal(err)
+		}
+		db, err := cgofdb.OpenDatabase(cfg.ClusterFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		tr, err := db.CreateTransaction()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tr.Cancel()
+		if err := tr.Options().SetTimeout(30000); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tr.GetReadVersion().Get(); err != nil {
+			t.Fatal(err)
+		}
+		issue()
+		got, readErr = cRead(tr, f, cfg.Kind, cfg.Key)
+	default:
+		t.Fatalf("unknown client %q", cfg.Client)
+	}
+	result := crReadResult{Got: got}
+	if readErr != nil {
+		result.Error = readErr.Error()
+		result.Code, result.FDBError = fdbCode(readErr)
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crWriteFile(t, filepath.Join(cfg.Dir, "result"), data)
+}
+
+func crWriteFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func crWaitFile(t *testing.T, ctx context.Context, path string) {
+	t.Helper()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("waiting for %s: %v", path, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+type crWorker struct {
+	cfg    crWorkerConfig
+	done   chan struct{}
+	output []byte
+	err    error
+}
+
+func startCRWorker(t *testing.T, ctx context.Context, f crFixture, client, kind string, key int) *crWorker {
+	t.Helper()
+	w := &crWorker{cfg: crWorkerConfig{Client: client, Kind: kind, ClusterFile: f.clusterFile,
+		Prefix: string(f.prefix), Dir: t.TempDir(), N: f.n, ValueSize: f.valueSize, Key: key}, done: make(chan struct{})}
+	if err := os.Mkdir(filepath.Join(w.cfg.Dir, "trace"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(w.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	cmd := exec.CommandContext(childCtx, os.Args[0], "-test.run=^TestLibFDBC_ConnectRefusedWorker$", "-test.v")
+	cmd.Env = append(os.Environ(), crWorkerEnv+"="+string(data))
+	go func() {
+		w.output, w.err = cmd.CombinedOutput()
+		close(w.done)
+	}()
+	t.Cleanup(func() { cancel(); <-w.done })
+	ready, stop := context.WithTimeout(ctx, 20*time.Second)
+	defer stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(filepath.Join(w.cfg.Dir, "ready")); err == nil {
+			return w
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		select {
+		case <-w.done:
+			t.Fatalf("%s %s: worker exited before READY: %v\n%s", client, kind, w.err, w.output)
+		case <-ready.Done():
+			t.Fatalf("%s %s: worker did not prepare a read version: %v", client, kind, ready.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+// A new process has no storage traffic before ISSUE. Match the failed endpoint,
+// not a process-wide counter; ignore the final line until its write is complete.
+func crRefusedPeer(data []byte, client string, peers []string) (string, error) {
+	if client != "pure-Go" && client != "libfdb_c" {
+		return "", fmt.Errorf("unknown trace client %q", client)
+	}
+	lines := bytes.Split(data, []byte{'\n'})
+	for _, line := range lines[:len(lines)-1] {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var event struct {
+			Type, PeerAddr string
+			ErrorCode      json.RawMessage
+			Message        string `json:"msg"`
+			Address        string `json:"address"`
+		}
+		if err := json.Unmarshal(line, &event); err != nil {
+			return "", fmt.Errorf("decode client trace: %w", err)
+		}
+		var addr string
+		switch client {
+		case "pure-Go":
+			if event.Message == "fdbgo: connection to server failed" {
+				addr = event.Address
+			}
+		case "libfdb_c":
+			code := string(bytes.TrimSpace(event.ErrorCode))
+			if (event.Type == "ConnectionClosed" || event.Type == "IncompatibleConnectionClosed") &&
+				(code == "1026" || code == `"1026"`) {
+				addr = event.PeerAddr
+			}
+		}
+		for _, peer := range peers {
+			if addr != "" && addr == peer {
+				return addr, nil
+			}
+		}
+	}
+	return "", nil
+}
+
+func TestConnectRefusedTraceGate(t *testing.T) {
+	t.Parallel()
+	const peer = "127.0.0.1:4501"
+	for _, tc := range []struct {
+		name, client, trace, want string
+		peers                     []string
+		wantError                 bool
+	}{
+		{name: "empty", client: "libfdb_c", peers: []string{peer}},
+		{name: "blank", client: "libfdb_c", trace: "\n", peers: []string{peer}},
+		{name: "partial", client: "libfdb_c", trace: `{`, peers: []string{peer}},
+		{name: "malformed", client: "libfdb_c", trace: "{\n", peers: []string{peer}, wantError: true},
+		{name: "unknown_client", client: "unknown", wantError: true},
+		{name: "no_peers", client: "libfdb_c", trace: `{"Type":"ConnectionClosed","PeerAddr":"127.0.0.1:4501","ErrorCode":"1026"}` + "\n"},
+		{name: "wrong_peer", client: "libfdb_c", trace: `{"Type":"ConnectionClosed","PeerAddr":"127.0.0.1:4502","ErrorCode":"1026"}` + "\n", peers: []string{peer}},
+		{name: "connect_not_failure", client: "libfdb_c", trace: `{"Type":"ConnectingTo","PeerAddr":"127.0.0.1:4501","ErrorCode":"1026"}` + "\n", peers: []string{peer}},
+		{name: "wrong_error", client: "libfdb_c", trace: `{"Type":"ConnectionClosed","PeerAddr":"127.0.0.1:4501","ErrorCode":"1025"}` + "\n", peers: []string{peer}},
+		{name: "missing_error", client: "libfdb_c", trace: `{"Type":"ConnectionClosed","PeerAddr":"127.0.0.1:4501"}` + "\n", peers: []string{peer}},
+		{name: "native", client: "libfdb_c", trace: `{"Type":"ConnectionClosed","PeerAddr":"127.0.0.1:4501","ErrorCode":"1026"}` + "\n", peers: []string{peer}, want: peer},
+		{name: "numeric_error", client: "libfdb_c", trace: `{"Type":"ConnectionClosed","PeerAddr":"127.0.0.1:4501","ErrorCode":1026}` + "\n", peers: []string{peer}, want: peer},
+		{name: "incompatible", client: "libfdb_c", trace: `{"Type":"IncompatibleConnectionClosed","PeerAddr":"127.0.0.1:4501","ErrorCode":"1026"}` + "\n", peers: []string{"127.0.0.1:4502", peer}, want: peer},
+		{name: "go", client: "pure-Go", trace: `{"msg":"fdbgo: connection to server failed","address":"127.0.0.1:4501"}` + "\n", peers: []string{peer}, want: peer},
+		{name: "go_wrong_message", client: "pure-Go", trace: `{"msg":"connected","address":"127.0.0.1:4501"}` + "\n", peers: []string{peer}},
+		{name: "go_wrong_peer", client: "pure-Go", trace: `{"msg":"fdbgo: connection to server failed","address":"127.0.0.1:4502"}` + "\n", peers: []string{peer}},
+		{name: "go_ignores_native", client: "pure-Go", trace: `{"Type":"ConnectionClosed","PeerAddr":"127.0.0.1:4501","ErrorCode":"1026"}` + "\n", peers: []string{peer}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := crRefusedPeer([]byte(tc.trace), tc.client, tc.peers)
+			if (err != nil) != tc.wantError || got != tc.want {
+				t.Fatalf("peer=%q err=%v, want peer=%q error=%t", got, err, tc.want, tc.wantError)
+			}
+		})
+	}
+}
+
+func TestConnectRefusedStorageTopology(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, status string
+		want         []string
+		wantError    bool
+	}{
+		{name: "malformed", status: `{`, wantError: true},
+		{name: "no_processes", status: `{}`, wantError: true},
+		{name: "no_roles", status: `{"cluster":{"processes":{"p":{"address":"a"}}}}`},
+		{name: "unknown_role", status: `{"cluster":{"processes":{"p":{"address":"a","roles":[{}]}}}}`},
+		{name: "missing_address", status: `{"cluster":{"processes":{"p":{"roles":[{"role":"storage"}]}}}}`, wantError: true},
+		{name: "mixed_roles", status: `{"cluster":{"processes":{"p":{"address":"a","roles":[{"role":"storage"},{"role":"grv_proxy"}]}}}}`},
+		{name: "storage_only", status: `{"cluster":{"processes":{"p":{"address":"a","roles":[{"role":"storage"},{"role":"storage"}]},"q":{"address":"b","roles":[{"role":"storage"}]}}}}`, want: []string{"a", "b"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := crStorageOnlyAddresses([]byte(tc.status))
+			if (err != nil) != tc.wantError || len(got) != len(tc.want) {
+				t.Fatalf("safe=%v err=%v, want safe=%v error=%t", got, err, tc.want, tc.wantError)
+			}
+			for _, addr := range tc.want {
+				if !got[addr] {
+					t.Fatalf("safe=%v is missing %s", got, addr)
+				}
+			}
+		})
+	}
+}
+
+func (w *crWorker) requirePending(t *testing.T) {
+	t.Helper()
+	if data, err := os.ReadFile(filepath.Join(w.cfg.Dir, "result")); err == nil {
+		t.Fatalf("%s %s: raw read completed before recovery: %s", w.cfg.Client, w.cfg.Kind, data)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	select {
+	case <-w.done:
+		t.Fatalf("%s %s: worker exited before recovery: %v\n%s", w.cfg.Client, w.cfg.Kind, w.err, w.output)
+	default:
+	}
+}
+
+func (w *crWorker) issueAndAwaitRefusal(t *testing.T, ctx context.Context, peers []string) string {
+	t.Helper()
+	crWriteFile(t, filepath.Join(w.cfg.Dir, "issue"), nil)
+	gate, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	crWaitFile(t, gate, filepath.Join(w.cfg.Dir, "issued"))
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		w.requirePending(t)
+		var traceDump bytes.Buffer
+		files, err := os.ReadDir(filepath.Join(w.cfg.Dir, "trace"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, file := range files {
+			if file.IsDir() {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(w.cfg.Dir, "trace", file.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			fmt.Fprintf(&traceDump, "\n--- %s ---\n%s", file.Name(), data)
+			peer, err := crRefusedPeer(data, w.cfg.Client, peers)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if peer != "" {
+				w.requirePending(t)
+				t.Logf("%s %s: raw read encountered refusing storage peer %s", w.cfg.Client, w.cfg.Kind, peer)
+				return peer
+			}
+		}
+		select {
+		case <-gate.Done():
+			t.Fatalf("%s %s: no per-operation refusal trace for %v before recovery: %v\n%s", w.cfg.Client, w.cfg.Kind, peers, gate.Err(), traceDump.String())
+		case <-ticker.C:
+		}
+	}
+}
+
+func (w *crWorker) requireResult(t *testing.T, ctx context.Context, want string) {
+	t.Helper()
+	select {
+	case <-ctx.Done():
+		t.Fatalf("%s %s: raw read did not recover: %v", w.cfg.Client, w.cfg.Kind, ctx.Err())
+	case <-w.done:
+	}
+	if w.err != nil {
+		t.Fatalf("%s %s: worker failed: %v\n%s", w.cfg.Client, w.cfg.Kind, w.err, w.output)
+	}
+	data, err := os.ReadFile(filepath.Join(w.cfg.Dir, "result"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result crReadResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Error != "" || result.Got != want {
+		t.Fatalf("%s %s: same raw read returned %.80q, error=%q FDB=%t code=%d; want %.80q without an application retry",
+			w.cfg.Client, w.cfg.Kind, result.Got, result.Error, result.FDBError, result.Code, want)
+	}
+}
+
+// Both replicas start down. Once this read's trace identifies a refused peer,
+// only the other replica returns; the same future must recover through it.
 func TestLibFDBC_ConnectRefusedReplicaUsesAnotherReplica(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 	f := crFixture{prefix: []byte(t.Name() + "/"), n: 20, valueSize: 64}
 	startCRCluster(t, ctx, &f, foundationdbtc.WithProcessCount(4), foundationdbtc.WithRedundancyMode("double"))
-	k, victim := pickVictim(t, ctx, f, 2)
-	killStorage(t, ctx, f, victim)
+	for _, client := range []string{"pure-Go", "libfdb_c"} {
+		for _, kind := range readKinds {
+			k, team := pickStorageTeam(t, ctx, f, 2)
+			worker := startCRWorker(t, ctx, f, client, kind, k)
+			restart := make(map[string]string, len(team))
+			for _, peer := range team {
+				restart[peer] = killStorage(t, ctx, f, peer)
+			}
+			victim := worker.issueAndAwaitRefusal(t, ctx, team)
+			for _, peer := range team {
+				if peer != victim {
+					if _, err := containerExec(ctx, f.container, restart[peer]); err != nil {
+						t.Fatalf("restart alternate %s: %v", peer, err)
+					}
+				}
+			}
+			worker.requireResult(t, ctx, f.want(kind, k))
+			requireCRRefused(t, victim)
+			if _, err := containerExec(ctx, f.container, restart[victim]); err != nil {
+				t.Fatalf("restore victim %s after the read: %v", victim, err)
+			}
+		}
+	}
 
+	// This watch check asserts availability, not which replica the watch selected.
+	k, team := pickStorageTeam(t, ctx, f, 2)
+	killStorage(t, ctx, f, team[0])
 	cdb, err := cgofdb.OpenDatabase(f.clusterFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	const rounds = 5
-	var goFailures int64
-	for round := range rounds {
-		// A fresh pure-Go handle per round has no failure-monitor memory, so it
-		// dials the refusing replica again rather than excluding it.
-		godb, err := gofdb.OpenDatabase(f.clusterFile)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, kind := range readKinds {
-			gtr, err := godb.CreateTransaction()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := gtr.Options().SetTimeout(30000); err != nil {
-				t.Fatal(err)
-			}
-			goGot, goErr := goRead(gtr, f, kind, k)
-			ctr, err := cdb.CreateTransaction()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := ctr.Options().SetTimeout(30000); err != nil {
-				t.Fatal(err)
-			}
-			cGot, cErr := cRead(ctr, f, kind, k)
-			goCode, _ := fdbCode(goErr)
-			cCode, _ := fdbCode(cErr)
-			if goErr != nil || cErr != nil {
-				t.Errorf("round %d %s: a live replica exists, so no error may surface: pure-Go %v (code %d), libfdb_c %v (code %d)", round, kind, goErr, goCode, cErr, cCode)
-				continue
-			}
-			if want := f.want(kind, k); goGot != want || cGot != want {
-				t.Errorf("round %d %s: pure-Go %q, libfdb_c %q, want %q", round, kind, goGot, cGot, want)
-			}
-		}
-		goFailures += godb.Metrics().ClientConnectionFailures
-		godb.Close()
-	}
-	if goFailures == 0 {
-		t.Fatal("positive control: the pure-Go client never dialed the refusing replica")
-	}
-
-	// A watch on the key fires through the live replica on both clients.
+	defer cdb.Close()
 	setter, err := gofdb.OpenDatabase(f.clusterFile)
 	if err != nil {
 		t.Fatal(err)
@@ -405,9 +782,8 @@ func TestLibFDBC_ConnectRefusedReplicaUsesAnotherReplica(t *testing.T) {
 	}
 }
 
-// A read whose only replica refuses connections waits, on both clients, until the
-// replica is back, then completes; nothing but OnError-retryable FDB codes reaches
-// the transaction, and the outcome is the same on both clients.
+// Each single-replica read must report a refused-peer trace while still pending,
+// then finish from its original transaction after the storage process returns.
 func TestLibFDBC_ConnectRefusedOnlyReplicaWaitsForIt(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
@@ -422,95 +798,17 @@ func TestLibFDBC_ConnectRefusedOnlyReplicaWaitsForIt(t *testing.T) {
 		foundationdbtc.WithKnob("max_shard_bytes", "50000"),
 		foundationdbtc.WithKnob("shard_bytes_ratio", "2"),
 		foundationdbtc.WithKnob("storage_metrics_polling_delay", "1"))
-	k, victim := pickVictim(t, ctx, f, 1)
-	restart := killStorage(t, ctx, f, victim)
-
-	cdb, err := cgofdb.OpenDatabase(f.clusterFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	godb, err := gofdb.OpenDatabase(f.clusterFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer godb.Close()
-
-	type outcome struct {
-		client, kind string
-		got          string
-		err          error
-		surfaced     []error
-	}
-	var mu sync.Mutex
-	var finished int
-	outcomes := make(chan outcome, 2*len(readKinds))
-	run := func(client, kind string, loop func(record func(error)) (any, error)) {
-		var surfaced []error
-		got, err := loop(func(e error) {
-			if e != nil {
-				surfaced = append(surfaced, e)
+	for _, client := range []string{"pure-Go", "libfdb_c"} {
+		for _, kind := range readKinds {
+			k, team := pickStorageTeam(t, ctx, f, 1)
+			worker := startCRWorker(t, ctx, f, client, kind, k)
+			restart := killStorage(t, ctx, f, team[0])
+			victim := worker.issueAndAwaitRefusal(t, ctx, team)
+			requireCRRefused(t, victim)
+			if _, err := containerExec(ctx, f.container, restart); err != nil {
+				t.Fatalf("restart sole replica %s: %v", victim, err)
 			}
-		})
-		mu.Lock()
-		finished++
-		mu.Unlock()
-		s, _ := got.(string)
-		outcomes <- outcome{client, kind, s, err, surfaced}
-	}
-	for _, kind := range readKinds {
-		go run("pure-Go", kind, func(record func(error)) (any, error) {
-			return godb.ReadTransact(func(tr gofdb.ReadTransaction) (any, error) {
-				_ = tr.Options().SetTimeout(120000)
-				got, err := goRead(tr, f, kind, k)
-				record(err)
-				return got, err
-			})
-		})
-		go run("libfdb_c", kind, func(record func(error)) (any, error) {
-			return cdb.ReadTransact(func(tr cgofdb.ReadTransaction) (any, error) {
-				_ = tr.Options().SetTimeout(120000)
-				got, err := cRead(tr, f, kind, k)
-				record(err)
-				return got, err
-			})
-		})
-	}
-
-	// While the replica refuses, every read is still waiting on both clients.
-	time.Sleep(3 * time.Second)
-	mu.Lock()
-	early := finished
-	mu.Unlock()
-	if early != 0 {
-		t.Errorf("%d reads finished while their only replica refused connections; libfdb_c waits for it", early)
-	}
-	if _, err := containerExec(ctx, f.container, restart); err != nil {
-		t.Fatalf("restart %s: %v", victim, err)
-	}
-
-	results := map[string]map[string]outcome{"pure-Go": {}, "libfdb_c": {}}
-	for range 2 * len(readKinds) {
-		select {
-		case o := <-outcomes:
-			results[o.client][o.kind] = o
-		case <-ctx.Done():
-			t.Fatalf("reads did not complete after %s came back", victim)
+			worker.requireResult(t, ctx, f.want(kind, k))
 		}
-	}
-	for _, kind := range readKinds {
-		goOut, cOut := results["pure-Go"][kind], results["libfdb_c"][kind]
-		for _, o := range []outcome{goOut, cOut} {
-			requireSurfacedRetryable(t, o.client+" "+kind, o.surfaced)
-			if o.err != nil {
-				t.Errorf("%s %s: the transaction failed: %v", o.client, kind, o.err)
-			}
-			if want := f.want(kind, k); o.err == nil && o.got != want {
-				t.Errorf("%s %s: got %.40q, want %.40q", o.client, kind, o.got, want)
-			}
-		}
-		t.Logf("%s: surfaced to the retry loop: pure-Go %v, libfdb_c %v", kind, goOut.surfaced, cOut.surfaced)
-	}
-	if godb.Metrics().ClientConnectionFailures == 0 {
-		t.Fatal("positive control: the pure-Go client never dialed the refusing replica")
 	}
 }

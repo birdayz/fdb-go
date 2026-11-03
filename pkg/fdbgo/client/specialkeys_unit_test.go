@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/transport"
@@ -93,12 +94,13 @@ func TestConflictingKeyMap_Build(t *testing.T) {
 	}
 	// A range up to \xff\xff ends at conflictingKeysRange.end, outside every read.
 	m = newConflictingKeyMap([]int32{0}, []KeyRange{{Begin: []byte("\xff/x"), End: []byte("\xff\xff")}})
-	if got := skRows(readConflictingKeys(&Transaction{}, conflictingKeysBegin, conflictingKeysEnd)); len(got) != 0 {
+	if got := skRows(readConflictingKeys(&skReadView{}, conflictingKeysBegin, conflictingKeysEnd)); len(got) != 0 {
 		t.Fatalf("nil map read: %q", got)
 	}
 	tx := skTx()
 	tx.conflictingKeys.Store(m)
-	if got := skRows(readConflictingKeys(tx, conflictingKeysBegin, conflictingKeysEnd)); !reflect.DeepEqual(got, []string{"\xff/x=1"}) {
+	view := tx.skReadView()
+	if got := skRows(readConflictingKeys(&view, conflictingKeysBegin, conflictingKeysEnd)); !reflect.DeepEqual(got, []string{"\xff/x=1"}) {
 		t.Fatalf("map ending at the module end: %q", got)
 	}
 }
@@ -242,6 +244,98 @@ func TestSpecialKeys_ConflictingKeysReads(t *testing.T) {
 	// An empty map, or none, reads nothing.
 	if kvs, _, err := skTx().specialKeyRange(modBegin, modEnd, 0, 0, false); err != nil || len(kvs) != 0 {
 		t.Errorf("no map: %q %v", skRows(kvs), err)
+	}
+}
+
+// Selector resolution and collection must use one map, as the synchronous C++ impl does
+// (SpecialKeySpace.actor.cpp:166-175, 350-351, 419-429, 711-729).
+func TestSpecialKeys_ConflictingKeysReadSnapshot(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		old, next  []string
+		begin, end KeySelector
+		want       []string
+		wantNext   []string
+		reads      int
+	}{
+		{
+			name: "end normalization then collection",
+			old:  []string{"a", "b"}, next: []string{"c", "d"},
+			begin: KeySelector{Key: conflictingKeysBegin, Offset: 1},
+			end:   KeySelector{Key: conflictingKeysBegin, Offset: 2},
+			want:  []string{"a=1"}, wantNext: []string{"c=1"}, reads: 2,
+		},
+		{
+			name: "begin normalization then collection",
+			old:  []string{"a", "b"}, next: []string{"c", "d"},
+			begin: KeySelector{Key: conflictingKeysBegin, Offset: 2},
+			end:   KeySelector{Key: conflictingKeysEnd, Offset: 1},
+			want:  []string{"b=0"}, wantNext: []string{"d=0"}, reads: 2,
+		},
+		{
+			name: "between selector normalizations",
+			old:  []string{"a", "b", "e", "f"}, next: []string{"c", "d", "g", "h"},
+			begin: KeySelector{Key: conflictingKeysBegin, Offset: 2},
+			end:   KeySelector{Key: conflictingKeysBegin, Offset: 4},
+			want:  []string{"b=0", "e=1"}, wantNext: []string{"d=0", "g=1"}, reads: 3,
+		},
+	} {
+		for _, reverse := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/reverse=%v", tc.name, reverse), func(t *testing.T) {
+				t.Parallel()
+				tx := skTx(tc.old...)
+				next := skTx(tc.next...).conflictingKeys.Load()
+				view := tx.skReadView()
+
+				// Wrap only this read's impl table; parallel tests keep the global table intact.
+				impls := *view.impls
+				impls.entries = append([]skRangeEntry[*skReadImpl](nil), impls.entries...)
+				i := impls.rangeContaining(conflictingKeysBegin)
+				impl := *impls.entries[i].value
+				impls.entries[i].value = &impl
+				view.impls = &impls
+
+				publish, published, stop := make(chan struct{}), make(chan struct{}), make(chan struct{})
+				defer close(stop)
+				go func() {
+					select {
+					case <-publish:
+						// The same immutable-map publication used by a failed native commit.
+						tx.conflictingKeys.Store(next)
+						close(published)
+					case <-stop:
+					}
+				}()
+				read, calls := impl.read, 0
+				impl.read = func(view *skReadView, begin, end []byte) []KeyValue {
+					pairs := read(view, begin, end)
+					calls++
+					if calls == 1 {
+						close(publish)
+						<-published
+					}
+					return pairs
+				}
+				rows, more, err := view.skGetRange(tc.begin, tc.end, newRangeLimits(0, 0), reverse)
+				want := append([]string(nil), tc.want...)
+				wantNext := append([]string(nil), tc.wantNext...)
+				if reverse {
+					slices.Reverse(want)
+					slices.Reverse(wantNext)
+				}
+				if err != nil || more || !reflect.DeepEqual(skRows(rows), want) {
+					t.Fatalf("pinned read: rows %q more %v err %v, want %q", skRows(rows), more, err, want)
+				}
+				if calls != tc.reads || tx.conflictingKeys.Load() != next {
+					t.Fatalf("publication not exercised: reads=%d want=%d current=%p want=%p", calls, tc.reads, tx.conflictingKeys.Load(), next)
+				}
+				rows, more, err = tx.specialKeyRange(tc.begin, tc.end, 0, 0, reverse)
+				if err != nil || more || !reflect.DeepEqual(skRows(rows), wantNext) {
+					t.Fatalf("next read: rows %q more %v err %v, want %q", skRows(rows), more, err, wantNext)
+				}
+			})
+		}
 	}
 }
 

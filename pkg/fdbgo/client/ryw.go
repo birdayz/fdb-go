@@ -203,8 +203,24 @@ func (c *rywCache) isEmpty() bool {
 // reached the write map (WriteMap.cpp:88, 161, 206, 245). Caller holds c.mu.
 func (c *rywCache) writesEmptyLocked() bool {
 	w := c.liveLocked()
-	nodesEmpty := len(w.nodes.log) == 0 && (!w.nodes.built || w.nodes.seq.Len() <= 3) // the sentinels
-	return w.numWrites() == 0 && w.cleared.Len() == 0 && nodesEmpty
+	if w.numWrites() != 0 || w.cleared.Len() != 0 || len(w.nodes.log) != 0 {
+		return false
+	}
+	if !w.nodes.built {
+		return true
+	}
+	if w.nodes.seq.Len() != 3 {
+		return false
+	}
+	// A full-keyspace conflict can flag the existing sentinels without adding
+	// a boundary (WriteMap.cpp:245-294); their count alone is not emptiness.
+	for i := 0; i < 3; i++ {
+		n := w.nodes.seq.at(i)
+		if n.op || n.followingCleared || n.followingConflict || n.isConflict || n.followingUnreadable || n.isUnreadable {
+			return false
+		}
+	}
+	return true
 }
 
 // reset clears all cached state.

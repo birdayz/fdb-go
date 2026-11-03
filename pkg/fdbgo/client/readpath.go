@@ -459,7 +459,7 @@ func (tx *Transaction) getValueSampled(parentCtx context.Context, key []byte, ca
 func (tx *Transaction) getValueImpl(ctx context.Context, key []byte, carried *readTagSample) ([]byte, error) {
 	tx.hadRead.Store(true) // a read was issued (RFC-059 poison signal)
 	timeoutRetries := 0
-	var lb lbRetry
+	lb := lbRetry{observe: tx.db.onReadBackoff.Load()}
 	var tags readTagSample
 	redraw := carried == nil
 	if carried != nil {
@@ -640,6 +640,11 @@ func (tx *Transaction) sendGetValuePaced(ctx context.Context, key []byte, server
 	val, penalty, err := parseGetValueReply(result.body)
 	tx.db.noteReadBrokenPromise(err, servers, result.addr, EndpointGetValue)
 	tx.db.queueModel.endRequestFull(result.addr, result.delta, time.Since(result.start), err == nil, isFutureVersionOrProcessBehind(err), penalty)
+	if lb != nil && isMaybeDelivered(err) {
+		if paceErr := lb.pace(ctx, alternatives, 1); paceErr != nil {
+			return nil, paceErr
+		}
+	}
 	return val, err
 }
 
@@ -1656,7 +1661,7 @@ func (tx *Transaction) watchPoll(watchCtx context.Context, watchCancel context.C
 	// all_alternatives is bounded (a relocate storm); the SS poll-signals below are unbounded — the
 	// watch keeps polling, as C++ does.
 	wrongShardRetries := 0
-	var lb lbRetry
+	lb := lbRetry{observe: tx.db.onReadBackoff.Load()}
 	for {
 		if err := watchCtx.Err(); err != nil {
 			return err
@@ -1826,6 +1831,12 @@ func (tx *Transaction) sendWatchPaced(ctx context.Context, key, value []byte, re
 			}
 			err := parseWatchValueReply(resp.Body)
 			tx.db.noteBrokenPromise(err, server.Address, watchToken)
+			if isMaybeDelivered(err) {
+				if paceErr := fail(err); paceErr != nil {
+					return paceErr
+				}
+				continue
+			}
 			return err
 		case <-ctx.Done():
 			replyHandle.Cancel()

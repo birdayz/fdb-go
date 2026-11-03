@@ -159,7 +159,8 @@ class RywScriptSteps extends ConformanceBase {
             default:
                 int limit = s.has("limit") ? s.get("limit").getAsInt() : 0;
                 boolean reverse = s.has("reverse") && s.get("reverse").getAsBoolean();
-                return rt.getRange(selector(s, "b"), selector(s, "es"), limit, reverse, StreamingMode.WANT_ALL)
+                StreamingMode mode = s.has("exact") && s.get("exact").getAsBoolean() ? StreamingMode.EXACT : StreamingMode.WANT_ALL;
+                return rt.getRange(selector(s, "b"), selector(s, "es"), limit, reverse, mode)
                     .asList().thenApply(rows -> kvs(rows, 0));
         }
     }

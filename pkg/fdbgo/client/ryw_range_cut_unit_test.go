@@ -338,7 +338,7 @@ func TestRYWCacheHitsDoNotScaleStorageRequestBytes(t *testing.T) {
 }
 
 // Completed PendingRange futures and narrowed skipKnownEmpty bounds answered from
-// inline point-cache entries retain immutable bytes across reset, and reset clears node0.
+// small-cache point entries retain immutable bytes across reset, which detaches old storage.
 func TestPendingRangeRetainsPointCachedKeyAcrossReset(t *testing.T) {
 	t.Parallel()
 	for _, reverse := range []bool{false, true} {
@@ -413,7 +413,7 @@ func TestPendingRangeRetainsPointCachedKeyAcrossReset(t *testing.T) {
 		})
 	}
 
-	// Growing sc.entries past the node0 capacity (2) to heap and resetting clears node0.
+	// Growing past the small-cache node capacity must not retain that storage after reset.
 	var sc snapshotCache
 	sc.insertPoint([]byte("a"), []byte("va"))
 	sc.insert([]byte("m"), []byte("n"), []KeyValue{{Key: []byte("m1"), Value: []byte("vm")}})
@@ -422,7 +422,7 @@ func TestPendingRangeRetainsPointCachedKeyAcrossReset(t *testing.T) {
 		t.Fatalf("positive control: the first entries did not use node0: %+v", sc.node0)
 	}
 	sc.reset()
-	if sc.node0[0].item.kvs != nil || sc.node0[1].item.kvs != nil || sc.node0[0].item.begin != nil || sc.node0[1].item.begin != nil || sc.entries.Len() != 0 {
-		t.Fatalf("reset left stale references in node0: %+v", sc.node0)
+	if sc.snapshotCacheStorage != nil || sc.entries.Len() != 0 {
+		t.Fatal("reset retained the old cache storage")
 	}
 }

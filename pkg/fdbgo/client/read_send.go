@@ -62,6 +62,7 @@ func (db *database) endOther(o rpcAccount) {
 type lbRetry struct {
 	attempts int
 	backoff  time.Duration
+	observe  *func(int, time.Duration)
 }
 
 // next records a failed attempt over n alternatives and returns the delay
@@ -82,6 +83,9 @@ func (r *lbRetry) wait(ctx context.Context, n int) error { return r.pace(ctx, n,
 func (r *lbRetry) pace(ctx context.Context, n, k int) error {
 	for range k {
 		r.next(n)
+	}
+	if r.observe != nil {
+		(*r.observe)(r.attempts, r.backoff)
 	}
 	if r.backoff > 0 {
 		return sleepCtx(ctx, r.backoff)

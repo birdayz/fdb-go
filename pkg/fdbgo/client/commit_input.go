@@ -44,8 +44,8 @@ type commitOutcome struct {
 	conflictingKeys    *conflictingKeyMap
 }
 
-// captureCommitVectors runs under the caller's execution lease. It ships reads, the commit's own vector,
-// and copies muts and writeConflicts unless owned: a retry refills them. Operands stay in the borrowed slab.
+// captureCommitVectors copies unowned vectors under the execution lease, since retries refill them.
+// Operands stay in borrowed reusable slabs or the write map's immutable, never-reused arena.
 func (tx *Transaction) captureCommitVectors(muts []Mutation, mutsOwned bool, writeConflicts []KeyRange, conflictsOwned bool, reads []KeyRange) *commitInput {
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()

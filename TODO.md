@@ -540,8 +540,11 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   over a cached range under a 64-byte prefix, 128 snapshot selector reads in
   flight; each posting adds the entry list's read conflict, an AppendIfFits to
   its bunch or every fourth a Set plus a split-off Clear, a write conflict key
-  and the gap's write conflict range) 314 -> 90 ms, 65.8 -> 21.5 MB,
-  433k -> 117k allocs per transaction. Baseline e71d2b44c, the PR's first
+  and the gap's write conflict range) in an **intermediate-tree experiment**:
+  314 -> 90 ms, 65.8 -> 21.5 MB, 433k -> 117k allocs per transaction.
+  These are not a before/after measurement of the PR: the required equivalent
+  workload comparison against merge-base a7349ff65 remains outstanding.
+  Baseline e71d2b44c, the PR's first
   commit with the selector-range API the benchmark uses (the merge-base
   a7349ff65 has neither it nor the test target), with only this benchmark
   copied in; candidate 14b5dd156 (`pkg/fdbgo` tree 79198abcd). Go 1.27.3,

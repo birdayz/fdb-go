@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,6 +43,7 @@ type rywStep struct {
 	ES      *rywSel `json:"es,omitempty"`
 	Code    int     `json:"code,omitempty"`
 	Limit   int     `json:"limit,omitempty"`
+	Exact   bool    `json:"exact,omitempty"`
 	Reverse bool    `json:"reverse,omitempty"`
 	Snap    bool    `json:"snap,omitempty"`
 	ID      string  `json:"id,omitempty"`
@@ -109,6 +111,15 @@ func sGetKey(tx string, sel *rywSel, snap bool, id string) rywStep {
 func sRange(tx string, b, e *rywSel, limit int, reverse, snap bool, id string) rywStep {
 	return rywStep{Tx: tx, Op: "getRange", B: b, ES: e, Limit: limit, Reverse: reverse, Snap: snap, ID: id}
 }
+
+// EXACT with a bounded fixture avoids Java asList issuing later batches across writes
+// (RangeQuery.java:79-96; fdb_c.cpp:1002-1011 maps WANT_ALL to byte-limited SERIAL).
+func sExactRange(tx string, b, e *rywSel, reverse, snap bool, id string) rywStep {
+	s := sRange(tx, b, e, 1000, reverse, snap, id)
+	s.Exact = true
+	return s
+}
+
 func sAwait(tx, id string) rywStep       { return rywStep{Tx: tx, Op: "await", ID: id} }
 func sCommit(tx string) rywStep          { return rywStep{Tx: tx, Op: "commit"} }
 func sConflicting(tx string) rywStep     { return rywStep{Tx: tx, Op: "conflicting"} }
@@ -307,8 +318,12 @@ func runGoRYWScript(tenant gofdb.Tenant, steps []rywStep, progress *atomic.Int64
 					return hex.EncodeToString(key), nil
 				}
 			default:
+				mode := gofdb.StreamingModeWantAll
+				if s.Exact {
+					mode = gofdb.StreamingModeExact
+				}
 				r := rt.GetRange(gofdb.SelectorRange{Begin: rywSelector(s.B), End: rywSelector(s.ES)},
-					gofdb.RangeOptions{Limit: s.Limit, Reverse: s.Reverse, Mode: gofdb.StreamingModeWantAll})
+					gofdb.RangeOptions{Limit: s.Limit, Reverse: s.Reverse, Mode: mode})
 				wait = func() (string, error) {
 					rows, gerr := r.GetSliceWithError()
 					if gerr != nil {
@@ -720,10 +735,10 @@ func rywScenarios() []rywScenario {
 			sAtomic("a", rywAppendIfFits, "d", "+"),
 			sGet("a", "d", snap, "r1"),
 			sGet("a", "e", snap, "r2"),
-			sRange("a", lle("c"), plus(fgt("c"), 1), 0, false, snap, "r3"),
-			sRange("a", fge("a"), fge("z"), 0, false, snap, "r4"),
+			sExactRange("a", lle("c"), plus(fgt("c"), 1), false, snap, "r3"),
+			sExactRange("a", fge("a"), fge("z"), false, snap, "r4"),
 			sGetKey("a", fgt("b"), snap, "r5"),
-			sRange("a", fge("f"), fge("j"), 0, true, snap, "r6"),
+			sExactRange("a", fge("f"), fge("j"), true, snap, "r6"),
 			sAtomic("a", rywAppendIfFits, "d", "++"), sSet("a", "e", "late"), sSet("a", "c", "C2"),
 			sSet("a", "b2", "new"), sClear("a", "c"), sClearRange("a", "a", "b"), sClearRange("a", "g", "i"),
 			sAtomic("a", rywAdd, "f", "\x01"),
@@ -748,7 +763,21 @@ func rywScenarios() []rywScenario {
 				sc.expect("a", "await", 0, hx("d+"))
 				sc.expect("a", "await", 1, hx("e"))
 				sc.expect("a", "await", 2, hkv("c", hx("c"), "d", hx("d+")))
+				oldValues := make(map[string]string)
+				var oldKeys []string
+				for i := 0; i < len(issueSeed); i += 2 {
+					oldKeys = append(oldKeys, issueSeed[i])
+					oldValues[issueSeed[i]] = issueSeed[i+1]
+				}
+				oldValues["d"] = "d+"
+				sort.Strings(oldKeys)
+				var oldRange []string
+				for _, k := range oldKeys {
+					oldRange = append(oldRange, k, hx(oldValues[k]))
+				}
+				sc.expect("a", "await", 3, hkv(oldRange...))
 				sc.expect("a", "await", 4, hx("c"))
+				sc.expect("a", "await", 5, hkv("i", hx("i"), "h", hx("h"), "g", hx("g"), "f", hx("f")))
 				sc.expect("a", "get", 2, hx("d+++"))
 				sc.expect("a", "get", 3, hx("late"))
 				for i, m := range mKeys {

@@ -77,7 +77,7 @@ var skModuleBoundaries = []struct {
 type skReadImpl struct {
 	name            string
 	supportsTenants bool // SpecialKeySpace.actor.h:63, 306, 315, 324
-	read            func(tx *Transaction, begin, end []byte) []KeyValue
+	read            func(view *skReadView, begin, end []byte) []KeyValue
 }
 
 func (impl *skReadImpl) unsupported() error {
@@ -225,8 +225,8 @@ func newConflictingKeyMap(indices []int32, reads []KeyRange) *conflictingKeyMap 
 
 // readConflictingKeys is ConflictingKeysImpl::getRange (SKS:711-729): the map's
 // boundaries whose key lies in [begin, end), nothing when no conflict was reported.
-func readConflictingKeys(tx *Transaction, begin, end []byte) []KeyValue {
-	m := tx.conflictingKeys.Load()
+func readConflictingKeys(view *skReadView, begin, end []byte) []KeyValue {
+	m := view.conflictingKeys
 	if m == nil {
 		return nil
 	}
@@ -289,8 +289,25 @@ func (tx *Transaction) specialKeyRange(begin, end KeySelector, limit, byteTarget
 	return cloneReadKVs(kvs), more, err
 }
 
-// skGetRange is SpecialKeySpace::getRange (SKS:450-472).
+// ConflictingKeysImpl is synchronous on C++'s network thread (SKS:166-175, 711-729).
+// Pin its immutable map so concurrent commit publication cannot split one read's phases.
+type skReadView struct {
+	tx              *Transaction
+	conflictingKeys *conflictingKeyMap
+	impls           *skRangeMap[*skReadImpl]
+}
+
+func (tx *Transaction) skReadView() skReadView {
+	return skReadView{tx: tx, conflictingKeys: tx.conflictingKeys.Load(), impls: skReadImpls}
+}
+
 func (tx *Transaction) skGetRange(begin, end KeySelector, limits rangeLimits, reverse bool) ([]KeyValue, bool, error) {
+	view := tx.skReadView()
+	return view.skGetRange(begin, end, limits, reverse)
+}
+
+// skGetRange is SpecialKeySpace::getRange (SKS:450-472).
+func (view *skReadView) skGetRange(begin, end KeySelector, limits rangeLimits, reverse bool) ([]KeyValue, bool, error) {
 	if !limits.isValid() {
 		return nil, false, &wire.FDBError{Code: ErrRangeLimitsInvalid}
 	}
@@ -301,13 +318,13 @@ func (tx *Transaction) skGetRange(begin, end KeySelector, limits rangeLimits, re
 	if begin.Offset >= end.Offset && bytes.Compare(begin.Key, end.Key) >= 0 {
 		return nil, false, nil
 	}
-	return tx.skAggregate(begin, end, limits, reverse)
+	return view.skAggregate(begin, end, limits, reverse)
 }
 
 // skAggregate is getRangeAggregationActor (SKS:313-448).
-func (tx *Transaction) skAggregate(begin, end KeySelector, limits rangeLimits, reverse bool) ([]KeyValue, bool, error) {
+func (view *skReadView) skAggregate(begin, end KeySelector, limits rangeLimits, reverse bool) ([]KeyValue, bool, error) {
 	boundBegin, boundEnd := specialKeysBegin, specialKeysEnd
-	if !tx.specialKeySpaceRelaxed {
+	if !view.tx.specialKeySpaceRelaxed {
 		i := skModules.rangeContaining(begin.Key)
 		mb, me := skModules.entries[i].key, skModules.entries[i+1].key
 		if bytes.Compare(mb, end.Key) > 0 || bytes.Compare(end.Key, me) > 0 {
@@ -318,11 +335,11 @@ func (tx *Transaction) skAggregate(begin, end KeySelector, limits rangeLimits, r
 		}
 		boundBegin, boundEnd = mb, me
 	}
-	beginOffset, err := tx.skNormalize(&begin, boundBegin, boundEnd)
+	beginOffset, err := view.skNormalize(&begin, boundBegin, boundEnd)
 	if err != nil {
 		return nil, false, err
 	}
-	endOffset, err := tx.skNormalize(&end, boundBegin, boundEnd)
+	endOffset, err := view.skNormalize(&end, boundBegin, boundEnd)
 	if err != nil {
 		return nil, false, err
 	}
@@ -335,10 +352,10 @@ func (tx *Transaction) skAggregate(begin, end KeySelector, limits rangeLimits, r
 	if bytes.Compare(begin.Key, end.Key) >= 0 {
 		return nil, false, nil // an empty [begin, end) reads nothing from any impl
 	}
-	lo, hi := skReadImpls.rangeContaining(begin.Key), skReadImpls.lowerBound(end.Key) // :363-364
-	if tx.tenantId != NoTenantID {                                                    // :366-380
+	lo, hi := view.impls.rangeContaining(begin.Key), view.impls.lowerBound(end.Key) // :363-364
+	if view.tx.tenantId != NoTenantID {                                             // :366-380
 		for i := lo; i < hi; i++ {
-			impl := skReadImpls.entries[i].value
+			impl := view.impls.entries[i].value
 			if impl == nil {
 				continue
 			}
@@ -352,14 +369,14 @@ func (tx *Transaction) skAggregate(begin, end KeySelector, limits rangeLimits, r
 	}
 	var result []KeyValue
 	visit := func(i int) (bool, error) {
-		impl := skReadImpls.entries[i].value
+		impl := view.impls.entries[i].value
 		if impl == nil {
 			return false, nil
 		}
 		if err := impl.unsupported(); err != nil {
 			return false, err
 		}
-		kb, ke := skReadImpls.entries[i].key, skReadImpls.entries[i+1].key
+		kb, ke := view.impls.entries[i].key, view.impls.entries[i+1].key
 		keyStart, keyEnd := kb, ke
 		if skContains(kb, ke, begin.Key) {
 			keyStart = begin.Key
@@ -367,7 +384,7 @@ func (tx *Transaction) skAggregate(begin, end KeySelector, limits rangeLimits, r
 		if skContains(kb, ke, end.Key) {
 			keyEnd = end.Key
 		}
-		pairs := impl.read(tx, keyStart, keyEnd)
+		pairs := impl.read(view, keyStart, keyEnd)
 		for j := range pairs {
 			if reverse {
 				j = len(pairs) - 1 - j
@@ -399,17 +416,17 @@ func (tx *Transaction) skAggregate(begin, end KeySelector, limits rangeLimits, r
 // skNormalize is normalizeKeySelectorActor (SKS:216-265): it moves ks to the standard
 // form over the impls inside the boundary, clamping to the boundary when it runs out.
 // It returns the offset left before the clamp.
-func (tx *Transaction) skNormalize(ks *KeySelector, boundBegin, boundEnd []byte) (int32, error) {
+func (view *skReadView) skNormalize(ks *KeySelector, boundBegin, boundEnd []byte) (int32, error) {
 	var i int
 	if ks.Offset < 1 {
-		i = skReadImpls.rangeContainingKeyBefore(ks.Key)
+		i = view.impls.rangeContainingKeyBefore(ks.Key)
 	} else {
-		i = skReadImpls.rangeContaining(ks.Key)
+		i = view.impls.rangeContaining(ks.Key)
 	}
-	for (ks.Offset < 1 && bytes.Compare(skReadImpls.entries[i].key, boundBegin) >= 0) ||
-		(ks.Offset > 1 && bytes.Compare(skReadImpls.entries[i].key, boundEnd) < 0) {
-		if impl := skReadImpls.entries[i].value; impl != nil {
-			if err := tx.skMoveOver(impl, skReadImpls.entries[i].key, skReadImpls.entries[i+1].key, ks); err != nil {
+	for (ks.Offset < 1 && bytes.Compare(view.impls.entries[i].key, boundBegin) >= 0) ||
+		(ks.Offset > 1 && bytes.Compare(view.impls.entries[i].key, boundEnd) < 0) {
+		if impl := view.impls.entries[i].value; impl != nil {
+			if err := view.skMoveOver(impl, view.impls.entries[i].key, view.impls.entries[i+1].key, ks); err != nil {
 				return 0, err
 			}
 		}
@@ -435,11 +452,11 @@ func (tx *Transaction) skNormalize(ks *KeySelector, boundBegin, boundEnd []byte)
 }
 
 // skMoveOver is moveKeySelectorOverRangeActor (SKS:128-206) over the impl on [kb, ke).
-func (tx *Transaction) skMoveOver(impl *skReadImpl, kb, ke []byte, ks *KeySelector) error {
+func (view *skReadView) skMoveOver(impl *skReadImpl, kb, ke []byte, ks *KeySelector) error {
 	if err := impl.unsupported(); err != nil {
 		return err
 	}
-	if tx.tenantId != NoTenantID && !impl.supportsTenants {
+	if view.tx.tenantId != NoTenantID && !impl.supportsTenants {
 		return &wire.FDBError{Code: ErrIllegalTenantAccess}
 	}
 	start, end := kb, ke
@@ -450,7 +467,7 @@ func (tx *Transaction) skMoveOver(impl *skReadImpl, kb, ke []byte, ks *KeySelect
 			start = ks.Key
 		}
 	}
-	pairs := impl.read(tx, start, end)
+	pairs := impl.read(view, start, end)
 	n := int64(len(pairs))
 	if n == 0 {
 		return nil

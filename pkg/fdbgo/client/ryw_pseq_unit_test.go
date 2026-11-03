@@ -334,7 +334,11 @@ func TestPseqCopiesOnlyChangedNodes(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		s.insert(i, i)
 	}
-	if allocs := testing.AllocsPerRun(10, func() { s.set(500, 7) }); allocs != 0 {
+	index := 500
+	if s.root.item == index {
+		index++
+	}
+	if allocs := testing.AllocsPerRun(10, func() { s.set(index, 7) }); allocs != 0 {
 		t.Fatalf("an unshared set allocated %v times, want 0", allocs)
 	}
 	if allocs := testing.AllocsPerRun(10, func() { s.insert(500, 9); s.delete(500, 501) }); allocs > 1 {
@@ -342,9 +346,9 @@ func TestPseqCopiesOnlyChangedNodes(t *testing.T) {
 	}
 	snap := s.share()
 	before := pseqNodes(s.root)
-	s.set(500, 8)
-	if *snap.at(500) != 7 || *s.at(500) != 8 {
-		t.Fatalf("snapshot %d live %d, want 7 and 8", *snap.at(500), *s.at(500))
+	s.set(index, 8)
+	if *snap.at(index) != 7 || *s.at(index) != 8 {
+		t.Fatalf("snapshot %d live %d, want 7 and 8", *snap.at(index), *s.at(index))
 	}
 	if s.root != snap.root {
 		t.Fatal("a set below the root copied the root")
@@ -353,9 +357,9 @@ func TestPseqCopiesOnlyChangedNodes(t *testing.T) {
 		t.Fatalf("set after share added %d nodes, want the one it changed", added)
 	}
 	// A second write at the same version reuses the slot and the copy.
-	s.set(500, 10)
-	if added := pseqNodes(s.root, snap.root) - before; added != 1 || *snap.at(500) != 7 {
-		t.Fatalf("a second set at one version added %d nodes, snapshot reads %d", added, *snap.at(500))
+	s.set(index, 10)
+	if added := pseqNodes(s.root, snap.root) - before; added != 1 || *snap.at(index) != 7 {
+		t.Fatalf("a second set at one version added %d nodes, snapshot reads %d", added, *snap.at(index))
 	}
 }
 

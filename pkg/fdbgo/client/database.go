@@ -403,6 +403,8 @@ type database struct {
 	afterMetricsShardResult      atomic.Pointer[func(int)]
 	// beforeAltFailureWait runs when a request starts waiting for an excluded replica (tests).
 	beforeAltFailureWait atomic.Pointer[func()]
+	// onReadBackoff observes Get/Watch retry accounting before the delay (tests).
+	onReadBackoff atomic.Pointer[func(attempts int, delay time.Duration)]
 	// Test seams: set the delay before dispatch; observe actual-live recovery checks.
 	altFailureDelayOverride time.Duration
 	afterAltRecoveryCheck   atomic.Pointer[func(bool)]
