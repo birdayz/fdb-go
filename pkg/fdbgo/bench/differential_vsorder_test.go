@@ -27,9 +27,7 @@ import (
 //
 // The Go client defers each invalid op at its call as libfdb_c does (deferIllegalLocked), so the
 // first wins; within an op the versionstamp-offset check follows the size checks (validateMutation).
-// Before the fix the versionstamp check ran AFTER
-// the size check (separate loop), so the four "versionstamp op first" cases returned 2101/
-// 2102/2103 instead of 2000 — the red→green proof.
+// The four "versionstamp op first" cases fail if a later op's size error outranks it (2101/2102/2103, not 2000).
 func TestDifferential_VersionstampValidationOrder(t *testing.T) {
 	t.Parallel()
 	pfx := fmt.Sprintf("vsord_%d_", os.Getpid())

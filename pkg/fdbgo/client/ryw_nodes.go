@@ -587,49 +587,6 @@ func (n *rywNodes) applyClearNoConflict(begin, end []byte) {
 
 // --- boundary queries (RFC-262 D2) ----------------------------------------------
 //
-// The write-side boundaries are every node's key, plus keyAfter(key) for an
-// operation node unless the next node's key is exactly keyAfter(key): the
-// beginKey of every segment the iterator visits (WriteMap.cpp:312-322).
-
-// floorCeil returns the largest write-side boundary <= p and the smallest > p.
-// The sentinels guarantee both for p < \xff\xff\x00; past that ceil is the zero
-// rywBoundary.
-func (n *rywNodes) floorCeil(p []byte) (floor, ceil rywBoundary) {
-	n.build()
-	s := &n.seq
-	f := s.search(func(nd *rywNode) bool { return bytes.Compare(nd.key, p) > 0 }) - 1
-	nd := s.at(f)
-	hasNext := f+1 < s.Len()
-	if !bytes.Equal(nd.key, p) {
-		// p > nd.key, so p >= keyAfter(nd.key); the next node is > p, so it is not
-		// keyAfter(nd.key) and an operation node contributes that boundary.
-		floor = rywBoundary{key: nd.key, after: nd.op}
-	} else {
-		floor = rywBoundary{key: nd.key}
-		if nd.op && (!hasNext || !equalsKeyAfter(nd.key, s.at(f+1).key)) {
-			return floor, rywBoundary{key: nd.key, after: true}
-		}
-	}
-	if hasNext {
-		ceil = rywBoundary{key: s.at(f + 1).key}
-	}
-	return floor, ceil
-}
-
-// prevBoundary returns the largest write-side boundary < x, or allKeys.begin
-// when x is the empty key.
-func (n *rywNodes) prevBoundary(x []byte) rywBoundary {
-	n.build()
-	f := n.seq.search(func(nd *rywNode) bool { return bytes.Compare(nd.key, x) >= 0 }) - 1
-	if f < 0 {
-		return rywBoundary{key: allKeysBegin}
-	}
-	nd := n.seq.at(f)
-	// nd.key < x <= the next node, so keyAfter(nd.key) < x unless it is x itself;
-	// a next node equal to keyAfter(nd.key) would then be x, which is that case.
-	return rywBoundary{key: nd.key, after: nd.op && !equalsKeyAfter(nd.key, x)}
-}
-
 // segmentAt returns the node-derived write segment containing p
 // (WriteMap::iterator::skip, WriteMap.cpp:335-347).
 func (n *rywNodes) segmentAt(p []byte) rywNodeSeg {

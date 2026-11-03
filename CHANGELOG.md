@@ -478,6 +478,16 @@ Each is described in full under Compatibility or Changed below.
   - A mutual chunk commits once its transaction passes the time or write limit.
   - The mutual FULL phase builds a claimed fragment to its end before it moves on, so
     concurrent builders keep to their own fragments.
+- Pure-Go client: a failed connect is `transport.ConnectFailedError`, which matches only
+  `request_maybe_delivered` (1030); the dial error is message-only (`Cause()`), so
+  `errors.Is(err, syscall.ECONNREFUSED)` no longer matches. Storage reads retry it with
+  libfdb_c's load-balancer backoff and no attempt limit; a commit through a refusing proxy ends
+  in `commit_unknown_result` (1021), as with libfdb_c.
+- Pure-Go client: a range read whose key selectors have an offset other than 1 is one storage
+  request, as libfdb_c's RYW selector walk does, instead of a `GetKey` per selector first; its
+  read conflict is the scanned span (`addConflictRange(GetRangeReq)`), not the resolved keys.
+  New `client.Transaction`/`Snapshot` `StartGetRangeSelectors`, `GetRangeSelectors` and the
+  `...OwnedSelectors` variants.
 - Pure-Go client, matching libfdb_c 7.3.77 (pinned by `//conformance:ryw_script_conformance_test`):
   - An illegal Set, Clear, ClearRange or Atomic (oversized key or value, key outside the legal
     range, metadataVersion misuse) is the transaction's deferred error from that call on: later

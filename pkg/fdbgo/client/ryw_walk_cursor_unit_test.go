@@ -69,9 +69,11 @@ func insertKVsReference(sc *snapshotCache, begin, end []byte, kvs []KeyValue) {
 	}
 }
 
-func cacheEntriesString(sc *snapshotCache) string {
+func cacheEntriesString(sc *snapshotCache) string { return entriesString(sc.entryList()) }
+
+func entriesString(es []cacheEntry) string {
 	var b bytes.Buffer
-	for _, e := range sc.entryList() {
+	for _, e := range es {
 		fmt.Fprintf(&b, "[%q,%q)%d ", e.begin, e.end, len(e.kvs))
 		for _, kv := range e.kvs {
 			fmt.Fprintf(&b, "%q ", kv.Key)
@@ -81,7 +83,7 @@ func cacheEntriesString(sc *snapshotCache) string {
 }
 
 // The two-skip insert (SnapshotCache.h:345-382) leaves the entries the four
-// searches did, over inserts that trim either end, supersede or are absorbed.
+// searches did, and snapshots taken between inserts keep their entries.
 func TestSnapshotCacheInsertMatchesReference(t *testing.T) {
 	t.Parallel()
 	rng := rand.New(rand.NewSource(2625))
@@ -89,6 +91,11 @@ func TestSnapshotCacheInsertMatchesReference(t *testing.T) {
 	cases := map[string]int{}
 	for h := 0; h < 3000; h++ {
 		var got, want snapshotCache
+		type held struct {
+			snap pseq[cacheEntry]
+			want string
+		}
+		var snaps []held
 		for i, n := 0, 1+rng.Intn(12); i < n; i++ {
 			a, z := keys[rng.Intn(len(keys))], keys[rng.Intn(len(keys))]
 			if a > z {
@@ -124,13 +131,20 @@ func TestSnapshotCacheInsertMatchesReference(t *testing.T) {
 			if got.cur.root != nil || len(got.cur.path) != 0 {
 				t.Fatalf("insert left its cursor on the entries")
 			}
+			for _, s := range snaps {
+				if g := entriesString(s.snap.appendTo(nil)); g != s.want {
+					t.Fatalf("history %d step %d: a snapshot changed: %s, taken as %s", h, i, g, s.want)
+				}
+				cases["snapshotChecked"]++
+			}
 			if rng.Intn(3) == 0 {
-				got.snapshot()
+				s := got.snapshot()
+				snaps = append(snaps, held{s, entriesString(s.appendTo(nil))})
 				want.snapshot()
 			}
 		}
 	}
-	for _, k := range []string{"trimFront", "trimBack", "supersede", "absorbed"} {
+	for _, k := range []string{"trimFront", "trimBack", "supersede", "absorbed", "snapshotChecked"} {
 		if cases[k] == 0 {
 			t.Fatalf("vacuous: no insert hit %s; %v", k, cases)
 		}
@@ -162,5 +176,47 @@ func TestRemoveOrEqualPairMatchesRemoveOrEqual(t *testing.T) {
 				t.Fatalf("%v %v: begin's capacity overlaps end's key", b, e)
 			}
 		}
+	}
+}
+
+// A storage reply's rows go into the cache uncopied, and a warm cached walk
+// reuses its pooled iterator storage: it allocates only its result.
+// Not parallel: AllocsPerRun counts the process's allocations.
+func TestRYWWalkKeepsReplyRowsAndPoolsItsStorage(t *testing.T) {
+	c := &rywCache{}
+	m := newMemStorage("a", "b", "c", "d")
+	var reply []KeyValue
+	m.reply = func(_ int, req walkRequest) (nativeRangeResult, error) {
+		r := m.answer(req, false)
+		reply = r.kvs
+		return r, nil
+	}
+	limits, maxKey := newRangeLimits(0, 0), []byte("\xff")
+	begin, end := firstGreaterOrEqual([]byte("a")), firstGreaterOrEqual([]byte("z"))
+	w, err := runWalk(c, nil, begin, end, limits, false, maxKey, m)
+	if err != nil || keysOf(w.rangeResult().kvs) != "a,b,c,d" {
+		t.Fatalf("cold walk: %v, %v", w.rangeResult().kvs, err)
+	}
+	w.release()
+	es := c.serverCache.entryList()
+	if len(es) != 1 || len(es[0].kvs) != 4 || &es[0].kvs[0] != &reply[0] || &es[0].kvs[3].Value[0] != &m.kvs[3].Value[0] {
+		t.Fatalf("the cache holds copies of the reply's rows: %s", c.cacheDump())
+	}
+	end = firstGreaterOrEqual([]byte("c"))
+	allocs := testing.AllocsPerRun(200, func() {
+		c.mu.Lock()
+		w := c.newRangeWalkLocked(nil, begin, end, limits, false, maxKey)
+		c.mu.Unlock()
+		w.start()
+		if !w.done() || len(w.rangeResult().kvs) != 2 {
+			panic("the cached walk did not finish at issue")
+		}
+		w.release()
+	})
+	if allocs > 1 {
+		t.Fatalf("a warm cached walk allocates %v times, want 1 (its result)", allocs)
+	}
+	if len(m.requests) != 1 {
+		t.Fatalf("%d storage requests, want 1", len(m.requests))
 	}
 }

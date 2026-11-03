@@ -5,29 +5,8 @@ import (
 	"sync/atomic"
 )
 
-// pseq is a persistent sequence, an implicit treap: the structure of C++ PTree
-// (fdbclient/include/fdbclient/VersionedMap.h:39-450), which the WriteMap is
-// built on, indexed by position instead of by key. A snapshot (share) is O(1).
-//
-// Versions follow PTree. Each node has a spare slot (PTree::pointer[2] with
-// lastUpdateVersion and replacedPointer, VersionedMap.h:46-59) replacing one
-// child and the subtree size as of a version: a reader at an older version keeps
-// the old child. A writer that changes one child of a node fills a free slot
-// instead of copying the node (PTreeImpl::update, :133-173), so the node's
-// parent, and the path above it, are left alone; only a node whose slot is taken
-// is copied. A sequence reads at version rv; a writer stamps what it changes
-// with ver, a fresh version taken after its last snapshot, and owns the nodes
-// it created at ver, which it updates in place. A shared node's fields are never
-// written apart from a free slot, which is published by an atomic stamp, so
-// readers of older versions may run concurrently with the writer.
-//
-// Only one sequence of a lineage, the head, writes slots. A snapshot (share) and
-// a sequence that handed its writing on (handoff) are frozen: they read at their
-// version forever and, if written, copy every shared node they change.
-//
-// Ordered stores keep their items sorted and locate positions with search.
-// Item fields that point to memory (slices) are shared between snapshots and
-// must never be written in place.
+// pseq is C++ PTree (VersionedMap.h:39-450) indexed by position, with its versioned spare slots (:46-59);
+// only the head writes slots, and frozen versions (share, handoff) copy what they change.
 type pseq[T any] struct {
 	root *pnode[T]
 	// rv is the version read: a slot stamped at or before it is visible.
@@ -54,7 +33,7 @@ type pnode[T any] struct {
 	size, spareSize int32
 	prio            uint32
 	spareRight      bool
-	item            T
+	item            T // shared by every version holding the node: never write its memory in place
 }
 
 // pslot marks a stamp as a written spare slot's version (PTree::updated).
@@ -62,9 +41,8 @@ const pslot = 1 << 63
 
 var pseqOwners atomic.Uint64
 
-// spareAt reports whether n's slot is visible at version at (PTree::child,
-// :54-59). Flipping pslot leaves a slot's version, and puts a creation stamp
-// above every version, in one comparison.
+// spareAt reports whether n's slot is visible at version at (PTree::child, VersionedMap.h:54-59);
+// flipping pslot puts a creation stamp above every version.
 func (n *pnode[T]) spareAt(at uint64) bool {
 	return atomic.LoadUint64(&n.stamp)^pslot <= at
 }
@@ -126,10 +104,7 @@ func (s *pseq[T]) own() {
 	}
 }
 
-// alloc returns storage for a node. Nodes come from chunks that double up to
-// pchunkMax, where C++ takes PTree nodes from FastAllocator pools
-// (VersionedMap.h:46) rather than the heap one by one. A
-// chunk is garbage collected once none of its nodes is reachable; no node is
+// alloc takes nodes from chunks, as C++ from FastAllocator pools (VersionedMap.h:46); no node is
 // handed out twice, so a version a reader holds is never overwritten.
 func (s *pseq[T]) alloc() *pnode[T] {
 	if len(s.free) == 0 {
@@ -148,10 +123,8 @@ func (s *pseq[T]) copyOf(n, l, r *pnode[T], size int32) *pnode[T] {
 	return c
 }
 
-// update returns n with children l and r: n itself when nothing changes, n
-// written in place when s created it at this version, n with its slot written
-// when one child changes and the slot is free or s wrote it, else a copy
-// (PTreeImpl::update, VersionedMap.h:133-173). s must own a version.
+// update is PTreeImpl::update (VersionedMap.h:133-173): n in place if s created it at this version,
+// else n with its free (or own) slot taking the one changed child, else a copy. s must own a version.
 func (s *pseq[T]) update(n, l, r *pnode[T]) *pnode[T] {
 	at := s.rv
 	size := int32(1 + psize(l, at) + psize(r, at))
@@ -210,10 +183,8 @@ func (s *pseq[T]) share() pseq[T] {
 	return pseq[T]{root: s.root, rv: s.rv, frozen: true}
 }
 
-// handoff returns a sequence that takes over s's contents and writing, and
-// leaves s a frozen snapshot of them: for a writer that moves to a clone while
-// readers keep the original. s's root and version, which readers load, are not
-// written.
+// handoff moves s's writing to the returned sequence and freezes s for its readers; it does not
+// write s.root or s.rv, which they load.
 func (s *pseq[T]) handoff() pseq[T] {
 	h := pseq[T]{root: s.root, rv: s.rv, frozen: s.frozen, free: s.free, chunk: s.chunk}
 	s.ver, s.frozen, s.free = 0, true, nil
@@ -465,9 +436,8 @@ func (s *pseq[T]) appendTo(dst []T) []T {
 	return dst
 }
 
-// pcursor walks a sequence in either direction, O(1) amortized per step. It
-// reads the nodes of one snapshot at its version, so it stays valid while that
-// version's nodes are not written in place.
+// pcursor walks one version of a sequence either way, O(1) amortized per step; it is valid while
+// that version's nodes are not written in place.
 type pcursor[T any] struct {
 	root *pnode[T]
 	at   uint64
@@ -614,22 +584,8 @@ func pathMove[T any](path []*pnode[T], at uint64, forward bool) []*pnode[T] {
 	}
 }
 
-func (c *pcursor[T]) clone() pcursor[T] {
-	return pcursor[T]{root: c.root, at: c.at, path: append(make([]*pnode[T], 0, max(32, cap(c.path))), c.path...), idx: c.idx}
-}
-
-// seekFirstFrom is seekFirst started from the cursor's position, a finger
-// search: an answer d items away costs O(log d) expected predicate calls, not
-// O(log n). It needs the cursor on s's version (c.root == s.root, read at s.rv);
-// otherwise it is seekFirst. A version a reader holds is never overwritten: its
-// nodes are not written in place and slots stamped later are invisible at c.at,
-// and the cursor's reference keeps its root from being reused.
-//
-// From the current node x the items before x are x.left, then each ancestor
-// below whose right subtree x lies (with that ancestor's left subtree, and so
-// on up), and symmetrically after x. So the search climbs the path only as far
-// as the nearest ancestor on the far side of the answer, then descends the one
-// subtree between, as from the root.
+// seekFirstFrom is seekFirst as a finger search from the cursor, O(log d) for an answer d items away:
+// it climbs to the nearest ancestor past the answer, then descends. Off s's version it is seekFirst.
 func (c *pcursor[T]) seekFirstFrom(s *pseq[T], pred func(*T) bool) {
 	if len(c.path) == 0 || c.root != s.root || c.at != s.rv {
 		c.seekFirst(s, pred)
@@ -638,9 +594,8 @@ func (c *pcursor[T]) seekFirstFrom(s *pseq[T], pred func(*T) bool) {
 	p := c.path
 	cur, idx := len(p)-1, c.idx // p[cur] is at index idx
 	if pred(&p[cur].item) {
-		// The answer is p[cur] or before it. Climb while the nearest ancestor
-		// before p[cur] (the last step down to p[cur] that went right) satisfies
-		// pred: everything between the two is p[cur].left.
+		// The answer is p[cur] or before: climb while the nearest ancestor before p[cur]
+		// satisfies pred; everything between the two is p[cur].left.
 		for {
 			i := cur - 1
 			for i >= 0 && p[i].rightAt(c.at) != p[i+1] {
@@ -685,9 +640,8 @@ func (c *pcursor[T]) seekFirstFrom(s *pseq[T], pred func(*T) bool) {
 	}
 }
 
-// descend extends the path down subtree n, whose first item is at index base,
-// to its first item satisfying pred. It reports false, the path unchanged,
-// when none does.
+// descend extends the path down subtree n (first item at index base) to its first item
+// satisfying pred; false, with the path unchanged, when none does.
 func (c *pcursor[T]) descend(n *pnode[T], base int, pred func(*T) bool) bool {
 	start, depth := len(c.path), 0
 	for n != nil {

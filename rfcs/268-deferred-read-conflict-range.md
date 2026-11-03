@@ -100,7 +100,8 @@ instead of the call, and for the key form at all.
 
 The key form gains one atomic load, two byte comparisons against a 1-2 byte bound and a
 length check on the legal path; the range form gains one atomic load. The illegal path
-scans buffered mutations once, as the write forms do.
+scans buffered mutations once, as the write forms do. (Superseded: there is no scan; the
+first deferred error wins.)
 
 ## Test plan
 

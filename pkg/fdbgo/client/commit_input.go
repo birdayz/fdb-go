@@ -36,31 +36,19 @@ type commitOutcome struct {
 	version int64
 	batchID uint16
 	epoch   int64
-	// conflictReply marks a not_committed delivered in-band as CommitID{invalidVersion}
-	// (CommitProxyServer.actor.cpp:2448-2464): the reply that replaces the transaction's
-	// conflicting keys with conflictingKeys, nil when it carried no indices
-	// (NativeAPI.actor.cpp:6700-6717).
+	// conflictReply marks an in-band not_committed (CommitProxyServer.actor.cpp:2448-2464), whose
+	// conflictingKeys, nil without indices, replace the transaction's (NativeAPI.actor.cpp:6700-6717).
 	conflictReply      bool
 	conflictIndices    []int32
 	hasConflictIndices bool
 	conflictingKeys    *conflictingKeyMap
 }
 
-// captureCommit runs under the caller's execution lease. Operands stay in the
-// borrowed slab or in heap buffers nothing rewrites; vectors, which a retry refills, are copied.
-func (tx *Transaction) captureCommit(muts []Mutation, writeConflicts []KeyRange) *commitInput {
-	return tx.captureCommitVectors(muts, false, writeConflicts, false, nil, false)
-}
-
-// captureCommitVectors takes muts, and writeConflicts, as is when the caller
-// owns that vector. With readsFrozen, reads is the commit's own read-conflict
-// vector, shipped as is; otherwise the transaction's read conflicts are copied.
-func (tx *Transaction) captureCommitVectors(muts []Mutation, mutsOwned bool, writeConflicts []KeyRange, conflictsOwned bool, reads []KeyRange, readsFrozen bool) *commitInput {
+// captureCommitVectors runs under the caller's execution lease. It ships reads, the commit's own vector,
+// and copies muts and writeConflicts unless owned: a retry refills them. Operands stay in the borrowed slab.
+func (tx *Transaction) captureCommitVectors(muts []Mutation, mutsOwned bool, writeConflicts []KeyRange, conflictsOwned bool, reads []KeyRange) *commitInput {
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()
-	if !readsFrozen {
-		reads = tx.readConflictRangesLocked()
-	}
 	if !mutsOwned {
 		muts = slices.Clone(muts)
 	}
@@ -155,7 +143,7 @@ func (tx *Transaction) commitDummyTransaction(ctx context.Context) error {
 	tx.conflictMu.Lock()
 	reads, writes := tx.conflictRangesNowLocked() // new vectors
 	tx.conflictMu.Unlock()
-	input := tx.captureCommitVectors(nil, false, writes, true, reads, true)
+	input := tx.captureCommitVectors(nil, false, writes, true, reads)
 	defer input.release()
 	lease.release()
 	return input.commitDummyTransaction(ctx)

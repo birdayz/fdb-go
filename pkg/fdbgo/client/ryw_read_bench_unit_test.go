@@ -52,12 +52,8 @@ func (s *benchStorage) exact(_ context.Context, begin, end []byte, limit, _ int,
 	return rows, more, nil, nil
 }
 
-// BenchmarkRYWConcurrentReads is Record Layer TEXT index maintenance in one
-// transaction: many pending writes, then 2048 reads from 128 concurrent readers
-// (or one, to price a read without contention), each issuing BunchedMap's
-// selector reads (lastLessOrEqual(k) .. firstGreaterThan(k)+1, as a snapshot and
-// as a serializable read), getKeys and exact range reads, and writing the entry
-// it read for. One op is one transaction; ns/read divides by the reads it issues.
+// BenchmarkRYWConcurrentReads is one transaction's TEXT maintenance: pending writes, then BunchedMap
+// reads from 128 concurrent readers (or one), each followed by a write. ns/read divides by the reads.
 func BenchmarkRYWConcurrentReads(b *testing.B) {
 	const (
 		storageKeys = 50000
@@ -117,15 +113,8 @@ func BenchmarkRYWConcurrentReads(b *testing.B) {
 	}
 }
 
-// BenchmarkRYWBunchedMapPuts is TEXT index maintenance as the Record Layer runs
-// it in a message transaction: pending writes, then BunchedMap puts with 128
-// snapshot selector reads in flight (lastLessOrEqual(k) .. firstGreaterThan(k)+1
-// under a cancellable context, as StartGetRangeSelectors issues them for the
-// facade), each completed in issue order and followed by the put's writes: a
-// Set of the bunch, a Clear of a split-off key and a write conflict key. One op
-// is one transaction's puts; its pending writes are made outside the timer, and
-// ns/put divides by the puts. The prefix cases put every key under a 64-byte
-// subspace prefix, the shape of TEXT index keys.
+// BenchmarkRYWBunchedMapPuts is a message transaction's BunchedMap puts with 128 snapshot selector reads
+// in flight, each completed in order and followed by its writes; prefix cases use 64-byte key prefixes.
 func BenchmarkRYWBunchedMapPuts(b *testing.B) {
 	const (
 		storageKeys = 50000
@@ -189,13 +178,8 @@ func BenchmarkRYWBunchedMapPuts(b *testing.B) {
 // benchLongPrefix is a 64-byte subspace prefix, the shape of TEXT index keys.
 var benchLongPrefix = "\x15\x02" + strings.Repeat("subspace", 7) + "\x00\x02text\x00\x14"
 
-// BenchmarkRYWSelectorReads prices the selector walk alone: BunchedMap's
-// snapshot reads lastLessOrEqual(k) .. firstGreaterThan(k)+1, one after another,
-// in a transaction holding pending writes and clears between the stored keys,
-// so each walk resolves its selectors across write-map and cache segments,
-// reads storage once and resolves again. One op is one transaction's reads;
-// its pending writes, and a first read that builds the write map, are outside
-// the timer, and ns/read divides by the reads.
+// BenchmarkRYWSelectorReads prices BunchedMap's selector walk alone, one read at a time, across
+// pending writes and clears; setup is outside the timer and ns/read divides by the reads.
 func BenchmarkRYWSelectorReads(b *testing.B) {
 	const (
 		storageKeys = 50000
@@ -240,10 +224,8 @@ func BenchmarkRYWSelectorReads(b *testing.B) {
 	}
 }
 
-// BenchmarkRYWCachedReads prices reads the RYW cache answers whole, under a
-// cancellable context as the facade passes it: a snapshot selector read over a
-// span already read, and a Get of a pending write. C++ answers both without a
-// location lookup or a cancellation callback.
+// BenchmarkRYWCachedReads prices reads the RYW cache answers whole, which C++ answers without a
+// location lookup or a cancellation callback: a selector read of a read span, a Get of a write.
 func BenchmarkRYWCachedReads(b *testing.B) {
 	st := newBenchStorage(1000)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -276,10 +258,8 @@ func BenchmarkRYWCachedReads(b *testing.B) {
 	})
 }
 
-// BenchmarkCommitConflictVectors is a message transaction's BunchedMap puts as
-// writes and conflicts (Java's per-put calls: a read conflict range, a Set, a
-// Clear, a write conflict key and a write conflict range), then the vectors its
-// commit sizes and ships. One op is one transaction; ns/put divides by the puts.
+// BenchmarkCommitConflictVectors is a message transaction's BunchedMap puts as Java's per-put writes and
+// conflicts, then the vectors its commit ships. ns/put divides by the puts.
 func BenchmarkCommitConflictVectors(b *testing.B) {
 	const puts = 2048
 	value := bytes.Repeat([]byte("p"), 200)
@@ -318,12 +298,8 @@ func benchCommitVectors(tx *Transaction) {
 	}
 }
 
-// BenchmarkRYWConflictCalls is BunchedMap's conflict pattern in a message
-// transaction: puts land in bunches of 16 consecutive entries, and each put
-// adds the read conflict range of its bunch's entry list (already covered by
-// the bunch's earlier puts), a read conflict key, the bunch's Set, a write
-// conflict key and a write conflict range over the entry. One op is one
-// transaction including its commit vectors; ns/put divides by the puts.
+// BenchmarkRYWConflictCalls is BunchedMap's conflict calls in a message transaction, puts in bunches
+// of 16 entries, with the commit vectors. ns/put divides by the puts.
 func BenchmarkRYWConflictCalls(b *testing.B) {
 	const (
 		puts  = 2048
@@ -354,12 +330,8 @@ func BenchmarkRYWConflictCalls(b *testing.B) {
 	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*puts), "ns/put")
 }
 
-// BenchmarkRYWAppendIfFits is BunchedMap's APPEND_IF_FITS put in a message
-// transaction: rounds of puts over a few hundred bunches, each a snapshot read
-// of the bunch left in flight (pinning the write map), a read conflict key and
-// a ~50-byte append. Half the bunches were rewritten by a Set earlier in the
-// transaction, half exist only in storage. Then the commit vectors. One op is
-// one transaction; ns/append divides by the appends.
+// BenchmarkRYWAppendIfFits is BunchedMap's APPEND_IF_FITS puts, each after a snapshot read left in
+// flight (a pinned write map), then the commit vectors. ns/append divides by the appends.
 func BenchmarkRYWAppendIfFits(b *testing.B) {
 	const (
 		bunches = 256
@@ -404,11 +376,8 @@ func BenchmarkRYWAppendIfFits(b *testing.B) {
 	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*bunches*rounds), "ns/append")
 }
 
-// BenchmarkPseqPinnedWrites prices the write map's sequences under pinned reads:
-// a snapshot before every write, as each in-flight read pins the live version.
-// One op is an insert and a delete at random positions, each after a snapshot;
-// the last 128 snapshots stay alive, as 128 reads in flight hold them. find
-// prices a search of the live sequence and of the oldest snapshot it keeps.
+// BenchmarkPseqPinnedWrites prices pseq writes with a snapshot before each, 128 kept alive as reads in
+// flight hold them; find searches the live sequence and the oldest snapshot.
 func BenchmarkPseqPinnedWrites(b *testing.B) {
 	for _, n := range []int{1000, 20000} {
 		setup := func() (*pseq[rywWrite], []pseq[rywWrite], *rand.Rand) {
@@ -452,8 +421,8 @@ func BenchmarkPseqPinnedWrites(b *testing.B) {
 	}
 }
 
-// BenchmarkRYWTextMaintenance is one message transaction's TEXT index maintenance: BunchedMap
-// puts over a cached range with 128 snapshot selector reads in flight (TODO.md describes it).
+// BenchmarkRYWTextMaintenance: one op is a transaction of 7000 BunchedMap postings over a cached range,
+// 128 snapshot selector reads in flight, each followed by the posting's writes; ns/posting per posting.
 func BenchmarkRYWTextMaintenance(b *testing.B) {
 	const (
 		bunches  = 4096

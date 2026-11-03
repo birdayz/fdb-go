@@ -132,7 +132,7 @@ func TestInsertCoalescedMatchesCoalesce(t *testing.T) {
 		if got := insertCoalesced(sized, r); !slices.EqualFunc(got, want, equalCommitConflictRange) {
 			t.Fatalf("iter %d: insertCoalesced(%q, %q) = %q, want %q", iter, sized, r, got, want)
 		}
-		// Commit intersects the shipped read map; it used to pair it with the raw writes.
+		// Commit intersects the shipped read map: presence over the coalesced writes equals presence over the raw ones.
 		reads := shipReadConflicts(ranges(rng.IntN(5)), false)
 		_, want2 := intersectRanges(raw, reads)
 		if got := conflictRangesIntersect(sized, reads); got != want2 {

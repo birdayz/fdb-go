@@ -17,6 +17,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	"github.com/onsi/ginkgo/v2/types"
 	. "github.com/onsi/gomega"
+	"github.com/testcontainers/testcontainers-go"
 )
 
 var (
@@ -34,7 +35,7 @@ var _ = BeforeSuite(func() {
 	GinkgoWriter.Println("🚀 Starting shared FDB container for test suite...")
 
 	// Start ONE container per parallel node
-	opts := append(runOptions(foundationdbtc.Run), foundationdbtc.WithAPIVersion(720), foundationdbtc.WithDirectIP())
+	opts := []testcontainers.ContainerCustomizer{foundationdbtc.WithAPIVersion(720), foundationdbtc.WithDirectIP()}
 	knobs := serverKnobs()
 	GinkgoWriter.Printf("FDB server knobs from CONFORMANCE_FDB_KNOBS: %q\n", knobs)
 	for _, k := range knobs {
@@ -70,11 +71,6 @@ var _ = AfterSuite(func() {
 		Expect(foundationdbtc.Terminate(suiteCtx, sharedContainer)).To(Succeed())
 	}
 })
-
-// runOptions returns an empty slice of run's option type, so options can be appended without naming it.
-func runOptions[E any](_ func(context.Context, string, ...E) (*foundationdbtc.Container, error)) []E {
-	return nil
-}
 
 // serverKnobs parses CONFORMANCE_FDB_KNOBS ("name=value,..."), set by a target's env.
 func serverKnobs() [][2]string {

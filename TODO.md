@@ -276,8 +276,7 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     `TestSelectorRangeReadSendsOneStorageRequest` (`storage_plumbing_fdb_test`),
     `TestGetRange_SelectorRangeIsOneStorageRead` and `TestConflictRange_SelectorGetRange_Native`
     (`//pkg/fdbgo/fdb:fdb_test`), and `TestDifferential_GetRangeSelectorRYW` (bench, test-full).
-    Open: ranges whose selectors both have offset 1 still take the exact-range merge path
-    (phase 3 above); there is no selector-range wire-golden scenario yet.
+    Remaining work: "Selector ranges: offset-1 merge path and a wire golden" (section 0).
   - [x] `clear_range_then_set`: libfdb_c sends a clear split around a later set in it,
     as `writeRangeToNativeTransaction` emits one clear per cleared stretch of the write map
     (`ReadYourWrites.actor.cpp:2001-2018`); Go sends the whole clear. The stored data is the
@@ -577,6 +576,16 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   from the option call (`pkg/fdbgo/fdb/options.go`), and later operations succeed.
   Found by `//conformance:ryw_script_conformance_test`, which leaves the scenario out
   until this is aligned; audit the other option errors the same way.
+- [ ] **Serve the read_conflict_range/ and write_conflict_range/ special keys.** Go fails
+  reads of `\xff\xff/transaction/read_conflict_range/` and `.../write_conflict_range/` with
+  2108 (DIVERGENCES.md, special key space). C++ renders the RYW read-conflict map and the
+  write map's conflict flags (`ReadYourWrites.actor.cpp:2121-2215`), after waiting on
+  pending reads (`SpecialKeySpace.actor.cpp:690-699`). Go now has both maps
+  (`conflict_map.go`); serve the modules from them, with a libfdb_c conformance case.
+- [ ] **Selector ranges: offset-1 merge path and a wire golden.** Ranges whose selectors
+  both have offset 1 still take the exact-range merge path (RFC-262 phase 3), not the
+  ported selector walk, and there is no selector-range wire-golden scenario. Route them
+  through the walk where C++ does, and add the golden.
 
 ## 1. WS-E — scalar/SQL semantics and statement execution — ACTIVE
 

@@ -130,3 +130,59 @@ func testGetKey(c *rywCache, sel KeySelector, maxKey []byte, includeWrites bool,
 	}
 	return w.keyResult(), nil
 }
+
+// newIterLocked is an iterator over w (live or pinned) and the live cache.
+func (c *rywCache) newIterLocked(w *rywWrites) *rywIter {
+	c.checkViewLocked(w)
+	it := &rywIter{}
+	initIter(it, w, &c.serverCache.entries)
+	return it
+}
+
+func (it *rywIter) clone() *rywIter {
+	n := &rywIter{}
+	n.copyFrom(it)
+	return n
+}
+
+// The write-side boundaries are every node's key, plus keyAfter(key) for an
+// operation node unless the next node is keyAfter(key) (WriteMap.cpp:312-322).
+
+// floorCeil returns the largest write-side boundary <= p and the smallest > p.
+// The sentinels guarantee both for p < \xff\xff\x00; past that ceil is the zero
+// rywBoundary.
+func (n *rywNodes) floorCeil(p []byte) (floor, ceil rywBoundary) {
+	n.build()
+	s := &n.seq
+	f := s.search(func(nd *rywNode) bool { return bytes.Compare(nd.key, p) > 0 }) - 1
+	nd := s.at(f)
+	hasNext := f+1 < s.Len()
+	if !bytes.Equal(nd.key, p) {
+		// p > nd.key, so p >= keyAfter(nd.key); the next node is > p, so it is not
+		// keyAfter(nd.key) and an operation node contributes that boundary.
+		floor = rywBoundary{key: nd.key, after: nd.op}
+	} else {
+		floor = rywBoundary{key: nd.key}
+		if nd.op && (!hasNext || !equalsKeyAfter(nd.key, s.at(f+1).key)) {
+			return floor, rywBoundary{key: nd.key, after: true}
+		}
+	}
+	if hasNext {
+		ceil = rywBoundary{key: s.at(f + 1).key}
+	}
+	return floor, ceil
+}
+
+// prevBoundary returns the largest write-side boundary < x, or allKeys.begin
+// when x is the empty key.
+func (n *rywNodes) prevBoundary(x []byte) rywBoundary {
+	n.build()
+	f := n.seq.search(func(nd *rywNode) bool { return bytes.Compare(nd.key, x) >= 0 }) - 1
+	if f < 0 {
+		return rywBoundary{key: allKeysBegin}
+	}
+	nd := n.seq.at(f)
+	// nd.key < x <= the next node, so keyAfter(nd.key) < x unless it is x itself;
+	// a next node equal to keyAfter(nd.key) would then be x, which is that case.
+	return rywBoundary{key: nd.key, after: nd.op && !equalsKeyAfter(nd.key, x)}
+}

@@ -129,7 +129,7 @@ type rywRange struct {
 	end   []byte
 }
 
-// keepLocked returns n zero bytes the write map keeps, as RYW copies into its arena (RYW:2400, 2496):
+// keepLocked returns n zero bytes the write map keeps, as RYW copies into its arena (RYW:2400, 2498):
 // bytes are handed out once and never rewritten, so holders keep them past a reset. Never nil; c.mu held.
 func (c *rywCache) keepLocked(n int) []byte {
 	switch {
@@ -199,9 +199,8 @@ func (c *rywCache) isEmpty() bool {
 	return c.writesEmptyLocked() && c.serverCache.entries.Len() == 0
 }
 
-// writesEmptyLocked is WriteMap::empty(): false once anything reached the write
-// map, a conflict-only or unreadable range included (WriteMap.cpp:88, 161, 206,
-// 245). Caller holds c.mu.
+// writesEmptyLocked is WriteMap::empty(): false once anything, even a conflict or unreadable range,
+// reached the write map (WriteMap.cpp:88, 161, 206, 245). Caller holds c.mu.
 func (c *rywCache) writesEmptyLocked() bool {
 	w := c.liveLocked()
 	nodesEmpty := len(w.nodes.log) == 0 && (!w.nodes.built || w.nodes.seq.Len() <= 3) // the sentinels
@@ -331,9 +330,8 @@ func (c *rywCache) materializeCommit() []Mutation {
 	return c.liveLocked().materializeCommit()
 }
 
-// materializeCommit is rywCache.materializeCommit on this version: the caller
-// holds c.mu or the version is pinned (immutable). Keys and values alias the
-// write map's bytes, which are never written; keyAfter bounds are new.
+// materializeCommit is rywCache.materializeCommit on a version locked or pinned; keys and values
+// alias the write map's bytes, which are never written.
 func (w *rywWrites) materializeCommit() []Mutation {
 	w.ensureSorted()
 	var a boundaryArena
@@ -510,10 +508,7 @@ func coalesceCommitVectors(rawMuts []Mutation, rawConflicts []KeyRange, rywDisab
 // NativeAPI.actor.cpp:6858) to the SIZED write-conflict snapshot, re-coalescing when the txn coalesces.
 // Works from the snapshot (sized) — NOT a live re-read of tx.writeConflicts — so a Set racing this
 // Commit cannot ship an unvalidated/unsized conflict range whose mutation was excluded from the frozen
-// op-log. Pure + unit-testable.
-//
-// sized is coalesceCommitVectors's sizeConflicts, already coalesced when coalesced is set, so the
-// self-conflict range is merged into it in one pass instead of sorting the whole vector again.
+// op-log. Pure + unit-testable. A coalesced sized takes the range in one merge pass, not a re-sort.
 func finalizeShipConflicts(sized []KeyRange, sc KeyRange, scAdded, coalesced bool) []KeyRange {
 	if !scAdded {
 		return sized
@@ -524,10 +519,8 @@ func finalizeShipConflicts(sized []KeyRange, sc KeyRange, scAdded, coalesced boo
 	return append(append(make([]KeyRange, 0, len(sized)+1), sized...), sc)
 }
 
-// insertCoalesced returns a new vector holding coalesceOwnedWriteConflicts(rs + r)
-// for an rs that coalesceOwnedWriteConflicts produced (sorted, each end below the
-// next begin): r absorbs the ranges it overlaps or touches, as the sequential
-// merge would.
+// insertCoalesced returns coalesceOwnedWriteConflicts(rs + r) as a new vector for an rs it produced:
+// r absorbs the ranges it overlaps or touches.
 func insertCoalesced(rs []KeyRange, r KeyRange) []KeyRange {
 	i := sort.Search(len(rs), func(i int) bool { return bytes.Compare(rs[i].End, r.Begin) >= 0 })
 	j := i
@@ -1682,10 +1675,8 @@ func resolveAtomics(base []byte, atomics []rywMutation) (result []byte, cleared,
 	return base, cleared, false
 }
 
-// atomicsOutcome is resolveAtomics's cleared and unresolved flags without its
-// value. Only a trailing CompareAndClear depends on the value it compares, so
-// other chains are classified without folding operands, as C++
-// RYWIterator::type reads segment types, not values (RYWIterator.cpp:44-49).
+// atomicsOutcome is resolveAtomics's flags without folding operands, which only a trailing
+// CompareAndClear needs, as RYWIterator::type reads types, not values (RYWIterator.cpp:44-49).
 func atomicsOutcome(base []byte, atomics []rywMutation) (cleared, unresolved bool) {
 	for _, m := range atomics {
 		if isUnresolvedVersionstamp(m.typ) {
@@ -1955,16 +1946,8 @@ func doAppendIfFits(base, param []byte) []byte {
 	return result
 }
 
-// appendIfFitsOwned is doAppendIfFits for a write-map value or operand v whose
-// backing array the key's live write-map lineage owns up to length owned (0:
-// none); such a v is stored capped (len == cap). C++ copies existing+operand into
-// the RYW arena on every coalesce (Atomic.h:114-137); appending in place into
-// doubling capacity keeps the cost per append proportional to the operand.
-// Only bytes past len(v) are written: a pinned version, a read result or a
-// materialized mutation sharing v sees it unchanged (WriteMap.h:158-160), and,
-// being capped, none of them can append into the owned bytes. Only the live
-// version extends a value, so no two writers share the spare bytes.
-// Over VALUE_SIZE_LIMIT, v is returned unchanged, as C++ does (Atomic.h:123-126).
+// appendIfFitsOwned is doAppendIfFits (Atomic.h:114-137) appending in place past len(v), into bytes only
+// the live lineage owns (owned; v is capped), so versions sharing v see it unchanged (WriteMap.h:158-160).
 func appendIfFitsOwned(v []byte, owned int32, param []byte) ([]byte, int32) {
 	n := len(v) + len(param)
 	switch {
@@ -2019,11 +2002,8 @@ func resolveAtomicsBypass(base []byte, atomics []rywMutation) (result []byte, cl
 // range, RFC-098).
 func (c *rywCache) addUnreadableRange(begin, end []byte) { c.addUnreadableRangeKeeping(begin, end) }
 
-// addUnreadableRangeKeeping is addUnreadableRange returning the write-conflict
-// runs it removes from the nodes. C++ addUnmodifiedAndUnreadableRange drops the
-// span's operations and conflict flags together (WriteMap.cpp:205-242); Go keeps
-// the span's pending writes (RFC-098), so the caller keeps their conflicts.
-// The nodes are built first, so later writes do not replay the log.
+// addUnreadableRangeKeeping returns the conflict runs it removes from the nodes: unlike C++
+// (WriteMap.cpp:205-242) Go keeps the span's writes (RFC-098), so the caller keeps their conflicts.
 func (c *rywCache) addUnreadableRangeKeeping(begin, end []byte) (kept []KeyRange) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

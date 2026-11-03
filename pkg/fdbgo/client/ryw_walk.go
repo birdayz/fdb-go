@@ -14,10 +14,10 @@ import (
 // suspension points are exactly C++'s waits: a storage read (U8), the prologue's
 // nested getKey (P3) and the loop's nested getKey (L3). Between them it reads an
 // immutable version of the write map and an immutable snapshot of the snapshot
-// cache taken under c.mu at issue and after each wait, so it runs without the
-// lock: the step is atomic as C++'s actor step is, against the cache state when
-// the step began. Only the storage reply's insert takes c.mu. Every resumption
-// that continues the loop re-resolves the selectors first, as C++ does.
+// cache, so it runs without the lock: the step is atomic as C++'s actor step is.
+// It takes c.mu at issue, to insert a storage reply and to re-snapshot the cache
+// after that reply and after the prologue's getKey. Every resumption that
+// continues the loop re-resolves the selectors first, as C++ does.
 type rywWalk struct {
 	rywWalkState
 	// its are the walk's iterators, reused by every step: it, itEnd and two copies.
@@ -203,7 +203,7 @@ func (w *rywWalk) start() {
 // from nearby: a range's selectors are usually close.
 func (w *rywWalk) resolveBoth() (it, itEnd *rywIter) {
 	it, itEnd = &w.its[0], &w.its[1]
-	initIter(it, w.c, w.view, &w.cache)
+	initIter(it, w.view, &w.cache)
 	if !w.reverse {
 		w.resolve(&w.begin, it, &w.actualBeginOffset)
 		itEnd.copyFrom(it)

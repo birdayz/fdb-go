@@ -89,10 +89,11 @@ func checkPseq(t *testing.T, step string, s *pseq[int], want []int) {
 			if c.valid() && *c.item() != want[i] {
 				t.Fatalf("%s: backward cursor from %d at %d: %d, want %d", step, start, i, *c.item(), want[i])
 			}
-			d := c.clone()
+			var d pcursor[int]
+			d.copyFrom(&c)
 			c.prev()
-			if d.idx != i || d.valid() != (i >= 0 && i < len(want)) {
-				t.Fatalf("%s: a clone moved with its original", step)
+			if d.idx != i || d.valid() != (i >= 0 && i < len(want)) || (d.valid() && *d.item() != want[i]) {
+				t.Fatalf("%s: a copy moved with its original", step)
 			}
 		}
 		checkFinger(t, step, s, want, start)
@@ -208,9 +209,8 @@ type pseqRef struct {
 	want []int
 }
 
-// Random histories of every mutator on a head and on its frozen versions, with
-// snapshots and handoffs taken along the way: every version must keep its
-// contents however the others change after it, whichever of them writes slots.
+// Random histories of every mutator on a head and its frozen versions, with snapshots and handoffs:
+// every version keeps its contents however the others change after it.
 func TestPseqMatchesSlice(t *testing.T) {
 	t.Parallel()
 	rng := rand.New(rand.NewSource(17))
@@ -327,10 +327,8 @@ func pseqNodes(roots ...*pnode[int]) int {
 	return len(seen)
 }
 
-// An unshared sequence updates its nodes in place. After a snapshot, a set
-// copies only the node it changes: its parent takes the copy in its spare slot
-// (PTreeImpl::update, VersionedMap.h:129-165), so the path above stays shared.
-// Not parallel: AllocsPerRun counts process-wide allocations.
+// After a snapshot a set copies only its node, which the parent takes in its slot (PTreeImpl::update,
+// VersionedMap.h:133-173). Not parallel: AllocsPerRun counts process-wide allocations.
 func TestPseqCopiesOnlyChangedNodes(t *testing.T) {
 	var s pseq[int]
 	for i := 0; i < 1000; i++ {
@@ -361,11 +359,8 @@ func TestPseqCopiesOnlyChangedNodes(t *testing.T) {
 	}
 }
 
-// With a snapshot before every write, as pinned reads take them, a set copies
-// only until it reaches a node whose slot is free: a constant amortized number
-// of nodes where path copying copies the whole O(log n) path. An insert changes
-// every ancestor's size, so each ancestor fills its slot or, when that is taken,
-// is copied: about half the path.
+// With a snapshot before every write a set copies O(1) amortized nodes, not the O(log n) path; an
+// insert changes every ancestor's size, so it still copies about half the path.
 func TestPseqWritesAfterSnapshotsCopyLittle(t *testing.T) {
 	t.Parallel()
 	rng := rand.New(rand.NewSource(5))
@@ -400,9 +395,8 @@ func TestPseqWritesAfterSnapshotsCopyLittle(t *testing.T) {
 	t.Logf("nodes created per write after a snapshot: set %.2f, insert %.2f; path depth %.1f", sets, inserts, avgDepth)
 }
 
-// Readers of frozen versions run while the head writes slots into the nodes
-// they read, as pinned RYW reads do without the cache lock. Under the race
-// detector this checks the slot publication; without it, the contents.
+// Readers of frozen versions run while the head writes slots into their nodes, as pinned RYW reads
+// do without the lock: under the race detector this checks the slots' publication.
 func TestPseqFrozenReadersRunWithWriter(t *testing.T) {
 	t.Parallel()
 	rng := rand.New(rand.NewSource(3))

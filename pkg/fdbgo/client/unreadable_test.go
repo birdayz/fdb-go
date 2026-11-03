@@ -29,8 +29,8 @@ func svkKey(prefix []byte) []byte {
 
 // TestRYW_UnreadableCapScanNotQuadratic pins the unreadable-cap scan cost on
 // the getRange fast path. unreadableScanCapLocked runs on EVERY getRange; its
-// first version called ensureSortedLocked, which rebuilds sortedKeys O(N log N)
-// after every write invalidation — interleaved set/getRange transactions went
+// first version re-sorted the whole write map (O(N log N))
+// after every write — interleaved set/getRange transactions went
 // quadratic and the recordlayer suite timed out at its 900s budget. The scan
 // now uses the dedicated unreadableKeys index (and short-circuits when there is
 // no unreadable state), so this interleaved loop is O(N log N) total. The 30s
@@ -56,7 +56,7 @@ func TestRYW_UnreadableCapScanNotQuadratic(t *testing.T) {
 		c.mu.Unlock()
 	}
 	if elapsed := time.Since(start); elapsed > 30*time.Second {
-		t.Fatalf("50k interleaved set+capScan took %v — the per-read sortedKeys rebuild is back", elapsed)
+		t.Fatalf("50k interleaved set+capScan took %v — the per-read write-map sort is back", elapsed)
 	}
 }
 
@@ -477,7 +477,7 @@ func TestFDB_Unreadable_Matrix(t *testing.T) {
 	})
 
 	t.Run("commit_drains_inflight_pipelined_read", func(t *testing.T) {
-		// C++ wait(ryw->reading) at commit (:1358) is a COMPLETION BARRIER —
+		// C++ wait(ryw->reading) at commit (:1360) is a COMPLETION BARRIER —
 		// AndFuture::getFuture() is waitForAll (genericactors.actor.h:1907),
 		// which waits for in-flight read futures and propagates their errors —
 		// not just a sample of already-recorded failures. A pipelined read

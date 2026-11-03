@@ -37,6 +37,9 @@ type keyRead struct {
 // issueKey runs a getKey's synchronous part: entry checks, routing, the walk to its
 // first wait, the pin, and registration in the commit barrier.
 func (tx *Transaction) issueKey(parent context.Context, sel KeySelector, snapshot bool) *keyRead {
+	// The read owns its selector, as C++ copies it (ThreadSafeTransaction.cpp:436-437):
+	// its key can become a snapshot-cache bound.
+	sel.Key = bytes.Clone(sel.Key)
 	ctx, release, counted := tx.opContextFor(parent, true)
 	r := &keyRead{tx: tx, ctx: ctx, release: release, sel: sel, snapshot: snapshot}
 	if err := tx.checkReadState(ctx); err != nil {
@@ -273,10 +276,7 @@ func (s *Snapshot) StartGetKey(ctx context.Context, sel KeySelector) *PendingKey
 }
 
 func (tx *Transaction) startKey(ctx context.Context, sel KeySelector, snapshot bool) *PendingKey {
-	// The read outlives the call, so it owns its selector: C++ copies the
-	// KeySelector before dispatch (ThreadSafeTransaction.cpp:436-442).
-	sel.Key = bytes.Clone(sel.Key)
-	r := tx.issueKey(ctx, sel, snapshot)
+	r := tx.issueKey(ctx, sel, snapshot) // which copies the selector
 	if r.finished || r.local {
 		p := &PendingKey{done: closedDone}
 		p.state.Store(pendingClaimed)

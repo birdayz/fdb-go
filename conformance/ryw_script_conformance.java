@@ -92,7 +92,7 @@ class RywScriptSteps extends ConformanceBase {
                     return null;
                 case "sleep":
                     try {
-                        Thread.sleep(s.get("code").getAsInt());
+                        Thread.sleep(s.get("ms").getAsInt());
                     } catch (InterruptedException e) {
                         throw new RuntimeException(e);
                     }

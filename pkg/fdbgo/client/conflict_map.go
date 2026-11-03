@@ -5,17 +5,8 @@ import (
 	"slices"
 )
 
-// conflict_map.go keeps a RYW transaction's conflict ranges where C++ keeps
-// them. Write conflicts are flags on the write map's nodes (WriteMap entries'
-// is_conflict / following_keys_conflict, WriteMap.h:72-76), set by the write
-// that adds them under the same lock as its mutation; read conflicts are a
-// coalescing range map (ReadYourWritesTransaction::readConflicts, a
-// CoalescedKeyRefRangeMap<bool>, ReadYourWrites.h:237) whose bounds live in the
-// transaction's conflict arena. Commit builds both vectors in one ordered pass
-// (writeRangeToNativeTransaction, ReadYourWrites.actor.cpp:1392-1399, 2020-2071).
-// Without RYW the native transaction's vectors are kept as added, in
-// tx.readConflicts and tx.writeConflicts, which also hold the self-conflicting
-// ranges and whatever a caller placed there directly.
+// With RYW, write conflicts are write-map node flags (WriteMap.h:72-76) and read conflicts a coalescing
+// map (ReadYourWrites.h:237), as in C++; without it, tx.readConflicts and tx.writeConflicts as added.
 
 // boundaryArena materializes the keyAfter bounds of vectors built from the
 // write map; plain bounds alias write-map keys, which are never written.
@@ -36,19 +27,8 @@ func (a *boundaryArena) bytes(b rywBoundary) []byte {
 	return s
 }
 
-// appendWriteConflicts appends the write-conflict ranges of a built node
-// sequence: writeRangeToNativeTransaction's conflict pass over
-// [StringRef(), allKeys.end) (ReadYourWrites.actor.cpp:2020-2033, 2069-2071),
-// a range per maximal run of conflict segments, in key order. Segments follow
-// WriteMap::iterator (WriteMap.cpp:312-322): an operation node is its key's
-// segment [k, keyAfter(k)) with is_conflict, then, unless the next node is
-// keyAfter(k), the range to the next node with following_keys_conflict; any
-// other node starts the range to the next node.
-//
-// Nodes not yet built hold their operations in the log; the conflict runs are
-// then the union of the logged conflict ranges, coalesced, which is what
-// replaying them would flag (WriteMap only ever sets conflict flags), without
-// building the nodes.
+// appendWriteConflicts appends a range per run of conflict segments (ReadYourWrites.actor.cpp:2020-2033);
+// unbuilt nodes give the logged ranges' union, which is what replay would flag: WriteMap only sets them.
 func (n *rywNodes) appendWriteConflicts(dst []KeyRange, a *boundaryArena) []KeyRange {
 	return n.appendWriteConflictsIn(dst, a, allKeysBegin, allKeysEnd)
 }
@@ -212,9 +192,8 @@ func (tx *Transaction) addReadConflictLocked(begin, end []byte) {
 // conflictSnapshot is what Commit freezes with the mutations, under conflictMu.
 type conflictSnapshot struct {
 	ryw bool // the conflicts are the write map's and the read-conflict map's
-	// view is the pinned write-map version with RYW, nil without or when the
-	// transaction wrote nothing. Its nodes may be built by a later read; nodes is
-	// their state when frozen.
+	// view is the pinned write-map version, nil without RYW or writes; a later read may build its
+	// nodes, so nodes keeps their state when frozen.
 	view  *rywWrites
 	nodes rywNodes
 	// readMap is the read-conflict map with RYW.
@@ -224,9 +203,8 @@ type conflictSnapshot struct {
 	reads, writes []KeyRange
 }
 
-// snapshotConflictsLocked freezes the conflicts with the mutations. The write map is
-// updated under conflictMu too, so the pinned version holds exactly the frozen
-// operations. Caller holds conflictMu; the snapshot must be released.
+// snapshotConflictsLocked freezes the conflicts with the mutations, which also change under conflictMu.
+// Caller holds conflictMu; the snapshot must be released.
 func (tx *Transaction) snapshotConflictsLocked() conflictSnapshot {
 	s := conflictSnapshot{
 		reads:  tx.readConflicts[:len(tx.readConflicts):len(tx.readConflicts)],
@@ -262,9 +240,8 @@ func (s *conflictSnapshot) release(tx *Transaction) {
 	}
 }
 
-// writeConflicts returns the snapshot's write-conflict ranges: the list as added
-// without RYW; with RYW the nodes' conflict runs, coalesced with anything in the
-// list. fresh reports a vector the caller owns.
+// writeConflicts returns the list as added without RYW, else the nodes' runs coalesced with the list;
+// fresh reports a vector the caller owns.
 func (s *conflictSnapshot) writeConflicts() (ranges []KeyRange, fresh bool) {
 	if !s.ryw {
 		return s.writes, false
@@ -280,9 +257,8 @@ func (s *conflictSnapshot) writeConflicts() (ranges []KeyRange, fresh bool) {
 	return out, true
 }
 
-// readConflicts returns the read-conflict ranges a commit ships: the list as
-// added without RYW (shipReadConflicts); with RYW the map's ranges in order,
-// coalesced with anything in the list. Always a new vector.
+// readConflicts returns, as a new vector, the list as added without RYW, else the map's ranges
+// coalesced with the list.
 func (s *conflictSnapshot) readConflicts(rywDisabled bool) []KeyRange {
 	if !s.ryw {
 		return shipReadConflicts(s.reads, rywDisabled)
@@ -298,10 +274,8 @@ func (s *conflictSnapshot) readConflicts(rywDisabled bool) []KeyRange {
 	return out
 }
 
-// conflictRangesNowLocked returns the transaction's current read and write
-// conflict ranges as a commit would ship them, for the paths that need them
-// outside a commit (the dummy transaction, OnError's maybe-committed retry), as new
-// vectors. Caller holds conflictMu.
+// conflictRangesNowLocked returns, as new vectors, the conflicts a commit would ship now, for the dummy
+// transaction and OnError's maybe-committed retry. Caller holds conflictMu.
 func (tx *Transaction) conflictRangesNowLocked() (reads, writes []KeyRange) {
 	s := tx.snapshotConflictsLocked()
 	defer s.release(tx)
@@ -381,14 +355,8 @@ func (tx *Transaction) writeConflictPointLocked(key []byte) bool {
 	return true
 }
 
-// commitVectors builds the mutations and write conflicts a commit sizes and
-// ships (#28 / RFC-172). With RYW it is writeRangeToNativeTransaction's pass
-// over the frozen write map (ReadYourWrites.actor.cpp:1392, 1997-2071): the
-// coalesced mutations and the nodes' conflict runs; a transaction carrying a
-// versionstamped op ships its op-log as is (coalesceCommitVectors) with the
-// write map's conflicts. Without RYW the op-log and the conflict list ship as
-// added. mutsOwned and conflictsFresh report new vectors; coalesced reports
-// conflicts sorted and merged.
+// commitVectors is writeRangeToNativeTransaction's pass (ReadYourWrites.actor.cpp:1392, 1997-2071), or the
+// op-log with a versionstamp; mutsOwned/conflictsFresh report new vectors, coalesced sorted conflicts.
 func (tx *Transaction) commitVectors(muts []Mutation, s *conflictSnapshot) (shipMuts []Mutation, mutsOwned bool, conflicts []KeyRange, conflictsFresh, coalesced bool) {
 	if !s.ryw {
 		shipMuts, conflicts, _ = coalesceCommitVectors(muts, s.writes, true)
@@ -401,36 +369,22 @@ func (tx *Transaction) commitVectors(muts []Mutation, s *conflictSnapshot) (ship
 	return s.view.materializeCommit(), true, conflicts, conflictsFresh, true
 }
 
-// readConflictRangesLocked returns the read conflicts as a new vector: without
-// RYW the list as added; with it the read-conflict map, coalesced with anything
-// in the list. Caller holds conflictMu.
-func (tx *Transaction) readConflictRangesLocked() []KeyRange {
-	if tx.rywDisabled {
-		return slices.Clone(tx.readConflicts)
-	}
-	out := make([]KeyRange, 0, tx.readMap.Len()+len(tx.readConflicts))
-	for c := tx.readMap.cursor(0); c.valid(); c.next() {
-		out = append(out, KeyRange{Begin: c.item().begin, End: c.item().end})
-	}
-	if len(tx.readConflicts) > 0 {
-		out = readConflictMap(append(out, tx.readConflicts...))
-	}
-	return out
-}
-
-// readConflictRanges returns the transaction's read conflicts as a new vector, as
-// a commit would ship them before the self-conflicting range: with RYW sorted and
-// coalesced (the map, merged with anything in the list), without it as added.
+// readConflictRanges returns the read conflicts a commit would ship now, before the
+// self-conflicting range, as a new vector.
 func (tx *Transaction) readConflictRanges() []KeyRange {
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()
 	return tx.readConflictRangesLocked()
 }
 
-// writeConflictRanges returns the transaction's write conflicts as a new vector,
-// as a commit would ship them before the self-conflicting range: with RYW the
-// write map's conflict runs, sorted and coalesced with anything in the list;
-// without it the list as added.
+// readConflictRangesLocked is readConflictRanges under conflictMu.
+func (tx *Transaction) readConflictRangesLocked() []KeyRange {
+	reads, _ := tx.conflictRangesNowLocked()
+	return reads
+}
+
+// writeConflictRanges returns the write conflicts a commit would ship now, before the
+// self-conflicting range, as a new vector.
 func (tx *Transaction) writeConflictRanges() []KeyRange {
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()

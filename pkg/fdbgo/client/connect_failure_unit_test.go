@@ -18,12 +18,8 @@ import (
 	"fdb.dev/pkg/fdbgo/wire/types"
 )
 
-// A failed connect reaches a request as C++'s peer disconnect does: connectionKeeper
-// turns it into connection_failed and fires peer->disconnect, and tryGetReply then
-// completes with request_maybe_delivered (FlowTransport.actor.cpp:852-869, 933,
-// 1001-1004; genericactors.actor.h:380-385). These tests drive that fault (a refused
-// connect) through every client path that dials and pin that no raw dial error
-// escapes and that reads complete as libfdb_c's do.
+// A refused connect reaches a request as C++'s peer disconnect, request_maybe_delivered
+// (FlowTransport.actor.cpp:852-869, 1001-1004); these tests drive it through every dialing path.
 
 const (
 	// refusedSSAddr is a storage replica whose port has no listener.
@@ -95,8 +91,7 @@ func TestConnectFailureIsRequestMaybeDelivered(t *testing.T) {
 	})
 }
 
-// lbRetry is loadBalance's backoff: none until every alternative was tried, then
-// LOAD_BALANCE_START_BACKOFF doubling to LOAD_BALANCE_MAX_BACKOFF
+// lbRetry is loadBalance's backoff: none until every alternative was tried, then doubling
 // (LoadBalance.actor.h:682-686, 721-725; flow/Knobs.cpp:274-276).
 func TestLBRetryBackoff(t *testing.T) {
 	t.Parallel()
@@ -264,6 +259,23 @@ func rangeRequestReply(t *testing.T, body []byte) (transport.UID, []byte) {
 	return replyToken(req.Reply.Token), oneRowRangeReply()
 }
 
+func mappedRequestReply(t *testing.T, body []byte) (transport.UID, []byte) {
+	t.Helper()
+	var req types.GetMappedKeyValuesRequest
+	if err := req.UnmarshalFDB(body); err != nil {
+		t.Fatal(err)
+	}
+	return replyToken(req.Reply.Token), replyVector(t, "GetMappedKeyValuesReply_getrange")
+}
+
+// mappedRows checks the two rows of GetMappedKeyValuesReply_getrange came back.
+func mappedRows(r mappedRangeResult, err error) error {
+	if err == nil && (len(r.rows) != 2 || string(r.rows[0].Key) != "idx_r") {
+		err = fmt.Errorf("mapped rows %v", r.rows)
+	}
+	return err
+}
+
 func storageReadOps() []readOp {
 	key := []byte("k")
 	return []readOp{
@@ -307,6 +319,14 @@ func storageReadOps() []readOp {
 			}
 			return err
 		}, rangeRequestReply},
+		{"mapped range", func(ctx context.Context, tx *Transaction) error {
+			r, err := tx.getMappedRangeSelectors(ctx, mappedSelectorFGE(key), mappedSelectorFGE([]byte("l")), []byte("m"), newMappedRangeLimits(2, ByteLimitUnlimited), 1, false)
+			return mappedRows(r, err)
+		}, mappedRequestReply},
+		{"mapped range exact", func(ctx context.Context, tx *Transaction) error {
+			r, err := tx.getMappedRangeSelectorExact(ctx, key, []byte("l"), []byte("m"), newMappedRangeLimits(2, ByteLimitUnlimited), 1, false)
+			return mappedRows(r, err)
+		}, mappedRequestReply},
 		{"watch", func(ctx context.Context, tx *Transaction) error {
 			return tx.watchPoll(ctx, nil, key, nil, 1, types.SpanContext{}, nil)
 		}, func(t *testing.T, body []byte) (transport.UID, []byte) {
@@ -372,11 +392,62 @@ func TestReadRetriesUntilRefusingReplicaAccepts(t *testing.T) {
 			defer cancel()
 			c := newRefusalCluster(t, ctx, refused)
 			c.cache(ServerInfo{Address: liveSSAddr, Token: liveSSToken})
+			start := time.Now()
 			if err := runRead(t, ctx, c, op); err != nil {
 				t.Fatalf("read whose only replica refused %d connects: %v", refused, err)
 			}
 			if got := c.refusals.Load(); got != refused {
 				t.Fatalf("refused connects = %d, want %d", got, refused)
+			}
+			// One alternative: loadBalance waits 10, 20 and 40 ms after the refusals (lbRetry).
+			if elapsed := time.Since(start); elapsed < 70*time.Millisecond {
+				t.Fatalf("read retried %d refusals in %v, want at least the 70ms of backoff", refused, elapsed)
+			}
+		})
+	}
+}
+
+// getValue and watch try every replica in one pass; each refused request is one loadBalance
+// attempt, so the backoff starts after the pass (LoadBalance.actor.h:301-308, 682-686, 721-725).
+func TestReadPacesEachRefusedReplica(t *testing.T) {
+	t.Parallel()
+	servers := []ServerInfo{
+		{Address: refusedSSAddr, Token: liveSSToken},
+		{Address: "10.9.9.8:4500", Token: liveSSToken},
+		{Address: "10.9.9.7:4500", Token: liveSSToken},
+	}
+	for _, tc := range []struct {
+		name  string
+		hedge bool
+		send  func(ctx context.Context, tx *Transaction, lb *lbRetry) error
+	}{
+		{"get value", false, func(ctx context.Context, tx *Transaction, lb *lbRetry) error {
+			_, err := tx.sendGetValuePaced(ctx, []byte("k"), servers, readTagSample{}, lb)
+			return err
+		}},
+		{"get value hedged", true, func(ctx context.Context, tx *Transaction, lb *lbRetry) error {
+			_, err := tx.sendGetValuePaced(ctx, []byte("k"), servers, readTagSample{}, lb)
+			return err
+		}},
+		{"watch", false, func(ctx context.Context, tx *Transaction, lb *lbRetry) error {
+			return tx.sendWatchPaced(ctx, []byte("k"), nil, 1, types.SpanContext{}, servers, readTagSample{}, lb)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			c := newRefusalCluster(t, ctx, 0)
+			c.db.hedgeEnabled.Store(tc.hedge)
+			var lb lbRetry
+			if err := tc.send(ctx, c.tx, &lb); !isMaybeDelivered(err) {
+				t.Fatalf("every replica refused: want request_maybe_delivered, got %v", err)
+			}
+			if got := c.refusals.Load(); got != int32(len(servers)) {
+				t.Fatalf("refused connects = %d, want one per replica", got)
+			}
+			if lb.attempts != len(servers) || lb.backoff != loadBalanceStartBackoff {
+				t.Fatalf("after one pass: %d attempts, backoff %v; want %d and %v", lb.attempts, lb.backoff, len(servers), loadBalanceStartBackoff)
 			}
 		})
 	}
@@ -441,10 +512,8 @@ func TestStorageSendRefusedIsMaybeDelivered(t *testing.T) {
 	}
 }
 
-// A commit whose proxy refuses the connect is commit_unknown_result after the
-// fence, as tryCommit makes of basicLoadBalance's AtMostOnce request_maybe_delivered
-// (LoadBalance.actor.h:828-830; NativeAPI.actor.cpp:6638-6643, 6731-6773). C++
-// cannot tell an unsent request from a lost one, so neither does Go.
+// A refused commit proxy is commit_unknown_result, as tryCommit makes of AtMostOnce
+// request_maybe_delivered (LoadBalance.actor.h:828-830; NativeAPI.actor.cpp:6731-6773).
 func TestCommitProxyRefusedIsCommitUnknownResult(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -463,9 +532,8 @@ func TestCommitProxyRefusedIsCommitUnknownResult(t *testing.T) {
 	}
 }
 
-// basicLoadBalance skips a commit proxy whose address the FailureMonitor reports
-// failed (LoadBalance.actor.h:779-793); with every one failed, Go probes rather
-// than failing the commit outright.
+// basicLoadBalance skips a failed commit proxy address (LoadBalance.actor.h:779-793);
+// with every one failed, Go probes rather than failing the commit.
 func TestGetCommitProxySkipsFailedAddress(t *testing.T) {
 	t.Parallel()
 	db := &database{failMon: newFailureMonitor()}

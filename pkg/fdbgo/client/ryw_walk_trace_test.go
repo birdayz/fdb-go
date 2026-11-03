@@ -305,6 +305,16 @@ func TestRYWWalkTraces(t *testing.T) {
 			reqs: []string{`[("a",false,1) ("c",false,3)) rows=3 minRows=3 bytes=-1 wire=-3/80000`},
 			rows: "d", more: true,
 		},
+		{
+			// P3 (RYW:621-638): begin.key > end.key, so the nested getKey resolves end first
+			// (offset 5, A5 +4 rows); its reply c..o covers [n,o), and the parent re-resolves
+			// on the refreshed cache snapshot without a request of its own.
+			name:    "P3-crossed-bound-reuses-the-nested-reply",
+			storage: []string{"a", "b", "c", "d", "e", "n", "o", "p"},
+			begin:   fgeS("n"), end: sel("c", false, 5), limits: lim(10, 1, -1),
+			reqs: []string{`[("c",false,1) ("\xff",false,1)) rows=5 minRows=5 bytes=-1 wire=5/80000`},
+			rows: "n",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

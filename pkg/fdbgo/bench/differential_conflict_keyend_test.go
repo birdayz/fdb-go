@@ -15,8 +15,8 @@ import (
 // Single-key conflict END exactness — that AddReadConflictKey(k) / AddWriteConflictKey(k) register
 // [k, k\x00) and not [k, strinc(k)).
 //
-// The client builds that end itself (Go: addReadConflictForKey, and rywCache.keepKeyAfter for an
-// explicit write conflict, lay down key||0x00 and slice the key out of it), so a port can get it wrong, and
+// The client builds that end itself (Go: keepKeyAfter slices the write key out of key||0x00;
+// addReadConflictForKey uses a keyAfter boundary, or key||key||0x00 without RYW), so a port can get it wrong, and
 // TestDifferential_{Read,Write}ConflictRange CANNOT see the mistake. strinc("…r5") is exactly
 // "…r6", so under the wrong construction the range is [r5, r6) and that suite's key_other_r6 probe
 // still sits on the EXCLUSIVE end — it does not conflict either way. Verified by mutation: with

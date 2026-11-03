@@ -75,9 +75,16 @@ func (r *lbRetry) next(n int) time.Duration {
 }
 
 // wait records a failed attempt over n alternatives and sleeps its delay.
-func (r *lbRetry) wait(ctx context.Context, n int) error {
-	if d := r.next(n); d > 0 {
-		return sleepCtx(ctx, d)
+func (r *lbRetry) wait(ctx context.Context, n int) error { return r.pace(ctx, n, 1) }
+
+// pace records k failed requests over n alternatives, one loadBalance attempt each
+// (LoadBalance.actor.h:682-686, 721-725), and sleeps the delay before the next request.
+func (r *lbRetry) pace(ctx context.Context, n, k int) error {
+	for range k {
+		r.next(n)
+	}
+	if r.backoff > 0 {
+		return sleepCtx(ctx, r.backoff)
 	}
 	return ctx.Err()
 }

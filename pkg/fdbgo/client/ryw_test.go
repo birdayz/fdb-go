@@ -930,23 +930,22 @@ func TestRYWClearedRangeMerge(t *testing.T) {
 	c.mu.Unlock()
 }
 
-// TestRYWGetRange_AtomicOnClearedKeyInvalidatesSortedKeys reproduces the bug
-// where atomic() on a cleared key adds a new write without invalidating
-// sortedKeys, causing getRange to miss the write via the fast path.
-func TestRYWGetRange_AtomicOnClearedKeyInvalidatesSortedKeys(t *testing.T) {
+// TestRYWGetRange_AtomicOnClearedKeyIsSeen: an atomic on a cleared key, after the
+// sorted entries were built, adds a write that getRange must see.
+func TestRYWGetRange_AtomicOnClearedKeyIsSeen(t *testing.T) {
 	t.Parallel()
 	c := &rywCache{}
 
 	// Step 1: set a key to force sorted keys to be built.
 	c.set([]byte("X"), []byte("x"))
 
-	// Step 2: trigger ensureSortedLocked via hasWritesInRangeLocked.
+	// Step 2: a read builds the sorted entries (ensureSorted).
 	mockServer := func(ctx context.Context, begin, end []byte, limit int, _ int, reverse bool) ([]KeyValue, bool, error) {
 		return nil, false, nil
 	}
 	c.getRange(context.Background(), []byte("X"), []byte("Z"), 10, ByteLimitUnlimited, false, mockServer)
 
-	// Step 3: clearRange [A, B) — no writes in range, sortedKeys stays valid.
+	// Step 3: clearRange [A, B), over no writes.
 	c.clearRange([]byte("A"), []byte("B"))
 
 	// Step 4: atomic on cleared key "A" — resolves to new write.

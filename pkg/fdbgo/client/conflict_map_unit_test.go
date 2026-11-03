@@ -182,7 +182,7 @@ func conflictRangesBySort(w *rywWrites, begin, end []byte) [][2][]byte {
 		addBound(k, &x.e)
 		addBound(keyAfterBytes(k), nil)
 	}
-	first := rangeIndex(&w.cleared, func(r *rywRange) bool { return bytes.Compare(r.end, begin) > 0 })
+	first := w.cleared.search(func(r *rywRange) bool { return bytes.Compare(r.end, begin) > 0 })
 	for cur := w.cleared.cursor(first); cur.valid() && bytes.Compare(cur.item().begin, end) < 0; cur.next() {
 		r := cur.item()
 		addBound(r.begin, nil)

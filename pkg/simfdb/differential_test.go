@@ -112,14 +112,8 @@ type conflictScenario struct {
 // selectorKinds is the number of selector shapes the sweeps draw from.
 const selectorKinds = 6
 
-// selectorFor maps a selector kind to the selector over base. Shared by the GetKey arm and
-// the selector-range arm so both cover the identical kinds.
-//
-// The four named constructors all have |Offset| <= 1, which is the only case the client can
-// resolve WITHOUT issuing a GetKey — so a sweep restricted to them never exercises the
-// multi-step offset walk, where the resolved key is several keys away from the anchor and the
-// conflict span is correspondingly wide. Kinds 4 and 5 are the explicit large-offset forms, one
-// forward and one backward.
+// selectorFor maps a selector kind to the selector over base, for the GetKey and selector-range arms.
+// Kinds 4 and 5 walk several keys from the anchor (forward, backward); the named forms move at most one.
 func selectorFor(kind int, base fdb.Key) fdb.KeySelector {
 	switch kind {
 	case 0:

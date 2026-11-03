@@ -260,7 +260,7 @@ func TestRYWWalkRejectsPrivateSpan(t *testing.T) {
 				}
 				func() {
 					defer func() {
-						if got := recover(); got != "rywCache.newIterLocked: the write-map version is neither live nor pinned" {
+						if got := recover(); got != "rywCache.checkViewLocked: the write-map version is neither live nor pinned" {
 							t.Errorf("private span panic = %v, want the version-ownership guard", got)
 						}
 					}()

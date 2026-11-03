@@ -47,6 +47,7 @@ type rywStep struct {
 	ID      string  `json:"id,omitempty"`
 	Opt     string  `json:"opt,omitempty"`
 	RV      int64   `json:"rv,omitempty"`
+	MS      int     `json:"ms,omitempty"` // sleep's duration in milliseconds
 }
 
 // Mutation type codes (fdb_c_options.g.h).
@@ -116,7 +117,7 @@ func sNoWriteConflict(tx string) rywStep { return sOpt(tx, "nextWriteNoWriteConf
 func sRV(tx string, v int64) rywStep     { return rywStep{Tx: tx, Op: "setReadVersion", RV: v} }
 func sReset(tx string) rywStep           { return rywStep{Tx: tx, Op: "reset"} }
 func sCancel(tx string) rywStep          { return rywStep{Tx: tx, Op: "cancel"} }
-func sSleep(tx string, ms int) rywStep   { return rywStep{Tx: tx, Op: "sleep", Code: ms} }
+func sSleep(tx string, ms int) rywStep   { return rywStep{Tx: tx, Op: "sleep", MS: ms} }
 func sOnError(tx string, code int) rywStep {
 	return rywStep{Tx: tx, Op: "onError", Code: code}
 }
@@ -261,7 +262,7 @@ func runGoRYWScript(tenant gofdb.Tenant, steps []rywStep, progress *atomic.Int64
 		case "cancel":
 			tr.Cancel()
 		case "sleep":
-			time.Sleep(time.Duration(s.Code) * time.Millisecond)
+			time.Sleep(time.Duration(s.MS) * time.Millisecond)
 		case "onError":
 			if err = tr.OnError(gofdb.Error{Code: s.Code}).Get(); err == nil {
 				result = "ok"

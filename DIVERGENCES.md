@@ -1412,7 +1412,7 @@ default (702). getKey and getMappedRange are not routed, as in C++. What differs
 
 | Aspect | C++ `libfdb_c` | Go | Why |
 |---|---|---|---|
-| `\xff\xff/transaction/read_conflict_range/`, `.../write_conflict_range/` (`NativeAPI.actor.cpp:1748-1753`) | Render the RYW read-conflict map and write map (`ReadYourWrites.actor.cpp:2121-2215`) | A read that reaches either impl, or a selector that moves into one, fails with `unsupported_operation` (2108) | They need the RYW conflict maps, which are being rewritten; failing is never a wrong answer (TODO.md). |
+| `\xff\xff/transaction/read_conflict_range/`, `.../write_conflict_range/` (`NativeAPI.actor.cpp:1748-1753`) | Render the RYW read-conflict map and write map (`ReadYourWrites.actor.cpp:2121-2215`) | A read that reaches either impl, or a selector that moves into one, fails with `unsupported_operation` (2108) | Not yet served from the RYW conflict maps; failing is never a wrong answer (TODO.md, "Serve the read_conflict_range/ and write_conflict_range/ special keys"). |
 | Every other module (`status/json`, `connection_string`, `cluster_file_path`, `cluster_id`, `worker_interfaces`, `metrics`, `management`, `configuration`, `global_config`, `tracing`, `error_message`, `actor_lineage`, `actor_profiler_conf`) | Served by impls that need cluster, process or client state | Each module is one unserved range: any read or selector move that reaches it fails with 2108, including parts of a module where C++ has no impl and would read nothing | A superset of the C++ impl ranges, so no read that C++ answers from such an impl is answered here. |
 | Special-key writes, `SPECIAL_KEY_SPACE_ENABLE_WRITES` | Write modules and `specialKeySpace->commit` | Not implemented; the option is `UnsupportedOptionError` | Unchanged. |
 | A conflict index outside the shipped read conflict ranges | Undefined (`read_conflict_ranges[i]` out of bounds, `NativeAPI.actor.cpp:6713`) | Ignored | The proxy maps every index from the request (`CommitProxyServer.actor.cpp:2448-2462`). |
@@ -3247,24 +3247,29 @@ its first commit whatever the outcome, and a second commit is refused with that 
 
 **Decision: keep Go's bounded storage-range retries.** This is an intentional
 availability/error-behavior difference from FoundationDB C++ **7.3.77**, not a
-claim of equivalent retry semantics. References to Go below are at `d5c031525`.
+claim of equivalent retry semantics. Go is cited by symbol, not line.
 
 Go's shared plain/mapped storage scanner, `rangeScanImpl`, keeps two counters
-for each invocation (`pkg/fdbgo/client/readpath.go:664-682`):
+for each invocation (`relocateRetries`, `timeoutRetries` in `pkg/fdbgo/client/readpath.go`):
 
 - The relocation counter increments for `wrong_shard_server` or
   `all_alternatives_failed`. With
   `maxRelocateRetries = 5`, the sixth qualifying failure returns **1007
   `transaction_too_old`**, before another relocation; the first five invalidate
-  the shard's cached location and retry (`readpath.go:671`, `:773-800`).
+  the shard's cached location and retry (`maxRelocateRetries`, `rangeScanImpl`).
 - A maybe-delivered failure on every replica tried (a refused or timed-out
   connect, a torn-down connection, an in-band 1030/1100) is **not** counted. It is
   `loadBalance`'s own retry, which C++ never bounds: the next alternative at once,
   then `LOAD_BALANCE_START_BACKOFF` doubling to `LOAD_BALANCE_MAX_BACKOFF`
-  (`LoadBalance.actor.h:344-377`, `:682-686`, `:721-725`). Go paces it the same
-  way (`lbRetry`, `read_send.go`) in every storage read loop (get, getKey, range,
-  native range, mapped range, watch), so a read whose only replica refuses
-  connections waits for it as libfdb_c does. Go still re-locates on each such
+  (`LoadBalance.actor.h:301-308`, `:344-377`, `:682-686`, `:721-725`). Go paces it
+  with `lbRetry` (`read_send.go`) in every storage read loop, so a read whose only
+  replica refuses connections waits for it as libfdb_c does. get and watch try
+  every replica in a pass and count each request as one attempt, as C++ does
+  (`sendGetValuePaced`, `sendWatchPaced`), except that a get's hedged pair counts
+  twice (C++ counts a concurrent pair once) and is slept after rather than its
+  second request delayed. getKey, range, native range and mapped range
+  count one attempt per hedged send (at most two replicas), so their backoff can
+  start after up to twice as many requests as C++'s. Go still re-locates on each such
   retry: it has no sustained-failure `all_alternatives_failed` (C++ raises it once
   the FailureMonitor has marked every alternative failed, after
   `FAILURE_DETECTION_DELAY`, `FlowTransport.actor.cpp:920-930`) to re-locate later.
@@ -3273,8 +3278,8 @@ for each invocation (`pkg/fdbgo/client/readpath.go:664-682`):
 - The reply-timeout counter allows **10 re-sends** of the same shard request.
   `maxReadTimeoutRetries = 10` and the pre-incremented `> 10` check mean that
   **the eleventh reply timeout** returns synthesized **1007**, not the tenth
-  (`readpath.go:33-40`, `:755-771`). The internal `errReplyTimeout` comes from
-  the RPC reply timer, not a caller cancellation (`pkg/fdbgo/client/rpc.go:53-71`).
+  (`maxReadTimeoutRetries`, `rangeScanImpl`). The internal `errReplyTimeout` comes
+  from the RPC reply timer, not a caller cancellation (`waitReply`, `pkg/fdbgo/client/rpc.go`).
 
 The positive-skip mapped selector loops (`mappedrange_selectors.go`) apply the same
 reply-timeout cap (RFC-280). Storage metrics (`GetEstimatedRangeSizeBytes`,

@@ -16,7 +16,7 @@ import (
 //
 // Thread safety: callers must hold rywCache.mu when accessing this struct.
 //
-// entries is a pseq (C++ keeps them in an IndexedSet, SnapshotCache.h:143), so a
+// entries is a pseq (C++ keeps them in an IndexedSet, SnapshotCache.h:172), so a
 // fetch inserts its fragment in O(log n) and the walk's iterator steps in O(1).
 type snapshotCache struct {
 	entries pseq[cacheEntry]
@@ -53,8 +53,8 @@ type snapshotCache struct {
 // each fetch leaves its own fragment, is the normal case. Non-overlap is a
 // contract, not a coincidence: getRangeKVs walks entries in order and emits
 // every kv in [begin, end) it finds, so its no-duplicate guarantee is exactly
-// the statement that no key is covered by two entries. getKey stops at the last
-// entry whose begin <= key and would silently read past a shadowed one.
+// the statement that no key is covered by two entries. getKey takes the first
+// entry ending after key, so an overlapping entry behind it would be shadowed.
 //
 // insert is the sole writer and the sole thing keeping the invariant true; it
 // has no self-healing property (see its comment), so the invariant is pinned

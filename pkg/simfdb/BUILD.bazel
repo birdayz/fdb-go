@@ -66,6 +66,7 @@ go_test(
         "ryw_conflict_direct_test.go",
         "ryw_conflict_test.go",
         "selector_conflict_test.go",
+        "selector_range_coverage_test.go",
         "selector_range_replay_test.go",
         "selector_range_test.go",
         "simfdb_more_test.go",

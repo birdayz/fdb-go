@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"slices"
+	"strings"
 	"unsafe"
 )
 
@@ -10,21 +11,14 @@ import (
 // writes them, so a node can share the key with the map entry.
 func stringBytes(s string) []byte { return unsafe.Slice(unsafe.StringData(s), len(s)) }
 
-// rywWrites is one version of the write map (RFC-262 D1). A pinned version is
-// immutable: it is the C++ WriteMap::iterator snapshot, "unaffected by future
-// writes" (WriteMap.h:158-160). The live version is rywCache.w; a writer that
-// finds it pinned replaces it with a clone first (mutableWritesLocked), so a
-// read that pinned a version keeps seeing it until it unpins. All fields are
-// guarded by rywCache.mu, except that a pinned version is only read.
-//
-// Its ordered stores are persistent sequences (pseq): the clone a write after a
-// pin needs is O(1), and the write then copies only its O(log n) path, as C++
-// gets from the persistent PTree under WriteMap (VersionedMap.h).
+// bytesString views b as a string for a lookup that does not keep it; b must not change meanwhile.
+func bytesString(b []byte) string { return unsafe.String(unsafe.SliceData(b), len(b)) }
+
+// rywWrites is one write-map version (RFC-262 D1), guarded by rywCache.mu; a pinned one is only read, as
+// WriteMap::iterator's snapshot (WriteMap.h:158-160), except a commit pin's nodes (pinWritesForCommitLocked).
 type rywWrites struct {
-	// writes maps key → written value until the first ordered access; then
-	// sorted holds the entries and writes is nil. A write-only transaction
-	// keeps O(1) writes. entry.value == nil means the key was Set to empty
-	// bytes, NOT cleared.
+	// writes holds the entries until the first ordered access moves them to sorted, so a write-only
+	// transaction keeps O(1) writes. entry.value == nil is a Set to empty bytes, not a clear.
 	writes   map[string]rywEntry
 	sorted   pseq[rywWrite]
 	isSorted bool
@@ -101,31 +95,15 @@ func (c *rywCache) withLock(fn func()) {
 	fn()
 }
 
-// pinWritesLocked pins the live version for a read that will outlive the
-// critical section. Its lazy indexes are built first, so the pinned version is
-// never written again. Caller holds c.mu.
+// pinWritesLocked pins the live version for a read that outlives the critical section, with its
+// lazy indexes built so the read never writes it. Caller holds c.mu.
 func (c *rywCache) pinWritesLocked() *rywWrites {
-	w := c.liveLocked()
-	w.ensureSorted()
-	w.nodes.build()
-	w.pins++
-	if c.onPin != nil {
-		observed := false
-		defer func() {
-			if !observed { // a panicking observer never transfers the pin to the caller
-				w.pins--
-				c.dropObsoleteBaseLocked()
-			}
-		}()
-		c.onPin(w, true)
-		observed = true
-	}
-	return w
+	c.liveLocked().nodes.build()
+	return c.pinWritesForCommitLocked()
 }
 
-// pinWritesForCommitLocked pins the live version for a commit, which reads its
-// sorted writes and cleared ranges but not its nodes: a write-only transaction's
-// nodes stay unbuilt (the commit takes their log). Caller holds c.mu.
+// pinWritesForCommitLocked pins the live version for a commit, which copies the nodes' log: they may
+// stay unbuilt, and a later build under c.mu may fill them in. Caller holds c.mu.
 func (c *rywCache) pinWritesForCommitLocked() *rywWrites {
 	w := c.liveLocked()
 	w.ensureSorted()
@@ -212,20 +190,10 @@ func (w *rywWrites) ensureSorted() {
 	for k, e := range w.writes {
 		items = append(items, rywWrite{key: k, e: e})
 	}
-	slices.SortFunc(items, func(a, b rywWrite) int { return compareStrings(a.key, b.key) })
+	slices.SortFunc(items, func(a, b rywWrite) int { return strings.Compare(a.key, b.key) })
 	w.sorted.build(items)
 	w.writes = nil
 	w.isSorted = true
-}
-
-func compareStrings(a, b string) int {
-	switch {
-	case a < b:
-		return -1
-	case a > b:
-		return 1
-	}
-	return 0
 }
 
 // numWrites is the number of keys with an operation.
@@ -243,21 +211,10 @@ func (w *rywWrites) writeIndex(k string) int {
 }
 
 // writeIndexOf is writeIndex for a byte key, without converting it.
-func (w *rywWrites) writeIndexOf(k []byte) int {
-	return w.sorted.search(func(x *rywWrite) bool { return x.key >= string(k) })
-}
+func (w *rywWrites) writeIndexOf(k []byte) int { return w.writeIndex(bytesString(k)) }
 
 // entryOf is entry for a byte key, without converting it.
-func (w *rywWrites) entryOf(k []byte) (rywEntry, bool) {
-	if !w.isSorted {
-		e, ok := w.writes[string(k)]
-		return e, ok
-	}
-	if _, x := w.sorted.find(func(x *rywWrite) bool { return x.key >= string(k) }); x != nil && x.key == string(k) {
-		return x.e, true
-	}
-	return rywEntry{}, false
-}
+func (w *rywWrites) entryOf(k []byte) (rywEntry, bool) { return w.entry(bytesString(k)) }
 
 // writeAt is the sorted entry at index i; it must not be written.
 func (w *rywWrites) writeAt(i int) *rywWrite { return w.sorted.at(i) }
@@ -319,10 +276,6 @@ func (w *rywWrites) deleteEntry(k string) (rywEntry, bool) {
 	return e, true
 }
 
-// rangeIndex is the first index whose range satisfies pred over a sorted,
-// non-overlapping range list.
-func rangeIndex(s *pseq[rywRange], pred func(r *rywRange) bool) int { return s.search(pred) }
-
 // rangeContaining returns the range of the sorted, non-overlapping list s that
 // contains key: the first one ending after key, when it begins at or before it.
 func rangeContaining(s *pseq[rywRange], key []byte) *rywRange {
@@ -352,27 +305,12 @@ func (w *rywWrites) conflictForKey(key []byte) bool {
 	return true // unmodified gap: a DB read resolved it
 }
 
-// conflictSpan is one read-conflict sub-range. Its bounds alias the read's own
-// bounds and write-map bytes, which are never written after insertion, and keep
-// keyAfter virtual: nothing is copied until the read-conflict map keeps a bound.
+// conflictSpan is one read-conflict sub-range; its bounds alias bytes never written and keep keyAfter
+// virtual, so nothing is copied until the read-conflict map keeps a bound.
 type conflictSpan struct{ begin, end rywBoundary }
 
-// appendConflictSpans walks the write-map over [begin, end) and appends the maximal
-// sub-ranges that must be added to the read-conflict map — a faithful port of C++
-// updateConflictMap (ReadYourWrites.actor.cpp:335-351), which iterates the WriteMap (NOT the
-// merged RYWIterator — the snapshot cache is irrelevant) and records a conflict for a segment
-// iff `is_unmodified_range() || (is_operation() && !is_independent())`. I.e.:
-//   - UNMODIFIED gap (no write key, not cleared) → conflict (a DB read resolved it).
-//   - operation key with isDependentLocked() (DEPENDENT_WRITE — a standalone atomic that read
-//     the DB base) → conflict, as the single key [k, keyAfter(k)).
-//   - INDEPENDENT write key (plain Set, folded atomic, matched-CAC phantom) → NO conflict.
-//   - CLEARED range (no operation key) → NO conflict.
-//
-// Adjacent qualifying sub-ranges are coalesced. (RFC-058 sub-edge b.) Like the C++ iterator it
-// moves forward from segment to segment: one cursor over the writes and one over the cleared
-// ranges, each positioned once, so a step compares against the next boundary only. It visits only
-// the writes and cleared ranges in [begin, end) and allocates nothing but dst's growth.
-// Caller holds c.mu, or the version is pinned (immutable).
+// appendConflictSpans is updateConflictMap (ReadYourWrites.actor.cpp:335-351): the coalesced segments of
+// [begin, end) that are unmodified or dependent operations. Caller holds c.mu or the version is pinned.
 func (w *rywWrites) appendConflictSpans(dst []conflictSpan, begin, end []byte) []conflictSpan {
 	if bytes.Compare(begin, end) >= 0 {
 		return dst
@@ -386,8 +324,7 @@ func (w *rywWrites) appendConflictSpans(dst []conflictSpan, begin, end []byte) [
 		}
 		dst = append(dst, conflictSpan{begin: lo, end: hi})
 	}
-	// Fingers allocate nothing, on the live version or a pinned one; each is
-	// placed by one descent (lower_bound, VersionedMap.h:188-200).
+	// Fingers allocate nothing, on the live version or a pinned one (VersionedMap.h:188-200).
 	var wc pfinger[rywWrite]
 	wc.seekFirst(&w.sorted, func(x *rywWrite) bool { return x.key >= string(begin) })
 	var cc pfinger[rywRange]
@@ -439,19 +376,6 @@ func (w *rywWrites) appendConflictSpans(dst []conflictSpan, begin, end []byte) [
 	return dst
 }
 
-// conflictRanges is appendConflictSpans with the bounds copied out.
-func (w *rywWrites) conflictRanges(begin, end []byte) [][2][]byte {
-	spans := w.appendConflictSpans(nil, begin, end)
-	if len(spans) == 0 {
-		return nil
-	}
-	out := make([][2][]byte, len(spans))
-	for i, s := range spans {
-		out[i] = [2][]byte{bytes.Clone(s.begin.materialize()), bytes.Clone(s.end.materialize())}
-	}
-	return out
-}
-
 func (w *rywWrites) hasWritesInRange(begin, end []byte) bool {
 	w.ensureSorted()
 	// The first key >= begin: if it is < end, there's a write in range.
@@ -460,11 +384,9 @@ func (w *rywWrites) hasWritesInRange(begin, end []byte) bool {
 }
 
 func (w *rywWrites) hasClearsInRange(begin, end []byte) bool {
-	// Two ranges [a,b) and [c,d) overlap iff a < d && c < b. Cleared ranges are
-	// sorted by begin and non-overlapping, so the candidate is the range just before
-	// the first one with begin >= end (largest begin < end): if it does not overlap,
-	// no earlier range can either (their end <= this one's begin).
-	i := rangeIndex(&w.cleared, func(r *rywRange) bool { return bytes.Compare(r.begin, end) >= 0 })
+	// The ranges are sorted and disjoint: only the last one beginning before end can overlap
+	// [begin, end), as every earlier one ends before it begins.
+	i := w.cleared.search(func(r *rywRange) bool { return bytes.Compare(r.begin, end) >= 0 })
 	return i > 0 && bytes.Compare(w.cleared.at(i-1).end, begin) > 0
 }
 
@@ -478,8 +400,8 @@ func addRange(s *pseq[rywRange], begin, end []byte) {
 func addRangeOwned(s *pseq[rywRange], begin, end []byte) {
 	// A range r overlaps/is-adjacent to [begin, end) if r.begin <= end && begin <= r.end.
 	// [loIdx, hiIdx) are those ranges: ends are sorted too, as ranges do not overlap.
-	hiIdx := rangeIndex(s, func(r *rywRange) bool { return bytes.Compare(r.begin, end) > 0 })
-	loIdx := rangeIndex(s, func(r *rywRange) bool { return bytes.Compare(r.end, begin) >= 0 })
+	hiIdx := s.search(func(r *rywRange) bool { return bytes.Compare(r.begin, end) > 0 })
+	loIdx := s.search(func(r *rywRange) bool { return bytes.Compare(r.end, begin) >= 0 })
 
 	newBegin, newEnd := begin, end
 	if loIdx < hiIdx {
@@ -512,18 +434,16 @@ func (w *rywWrites) addUnreadableRange(begin, end []byte) {
 	addRange(&w.unreadableRanges, begin, end)
 }
 
-// subtractRange removes [begin, end) from a sorted, non-overlapping range
-// list, splitting a range that straddles the span. Used to make cleared spans
-// readable again (C++ gets this free from the shared PTree: clear() inserts
-// readable entries over the span, WriteMap.cpp:195).
+// subtractRange removes [begin, end) from a sorted, disjoint range list, splitting a straddling range,
+// as C++ clear() makes a span readable again (WriteMap.cpp:195).
 func subtractRange(s *pseq[rywRange], begin, end []byte) {
 	if s.Len() == 0 || bytes.Compare(begin, end) >= 0 {
 		return
 	}
 	// [lo, hi) overlap the span: only the first can keep a left remainder and
 	// only the last a right one.
-	lo := rangeIndex(s, func(r *rywRange) bool { return bytes.Compare(r.end, begin) > 0 })
-	hi := rangeIndex(s, func(r *rywRange) bool { return bytes.Compare(r.begin, end) >= 0 })
+	lo := s.search(func(r *rywRange) bool { return bytes.Compare(r.end, begin) > 0 })
+	hi := s.search(func(r *rywRange) bool { return bytes.Compare(r.begin, end) >= 0 })
 	if lo >= hi {
 		return
 	}
@@ -569,7 +489,7 @@ func (w *rywWrites) firstUnreadableIn(begin, end []byte) []byte {
 // and non-overlapping, so only the last range with r.begin < end can
 // intersect). Caller holds c.mu.
 func (w *rywWrites) lastUnreadableIn(begin, end []byte) []byte {
-	i := rangeIndex(&w.unreadableRanges, func(r *rywRange) bool { return bytes.Compare(r.begin, end) >= 0 }) - 1
+	i := w.unreadableRanges.search(func(r *rywRange) bool { return bytes.Compare(r.begin, end) >= 0 }) - 1
 	if i < 0 {
 		return nil
 	}

@@ -806,6 +806,15 @@ TODO.md for a follow-up that ports the mapped sender and changes those bytes on 
 
 ### D5. The walk: `rywWalk`
 
+**Status: implemented, with the walk outside `c.mu`.** The walk reads a pinned write-map
+version and an immutable snapshot of the snapshot cache (`snapshotCache.snapshot`), so it
+resolves and loops without the lock; its iterators persist in `w.its` across waits and
+resume from their last position. `c.mu` is taken at issue (pin and snapshot), to insert a
+storage reply (`acceptStorageLocked`, `insertOwned`) and to re-snapshot the cache after that
+reply and after P3's nested getKey. The methods below are now `start`, `acceptStorageLocked`
+plus `resumeStorage`, and `resumePreKey`; D6, D7 and D11's `startLocked` is `start`, run
+after the pin and snapshot under `c.mu`. The sketch below is the original lock-held design.
+
 A new file `ryw_walk.go` holds A3-A9 as Go code with the C++ line in a comment at each
 step. Because the walk releases `c.mu` across storage I/O and computes its first request at
 issue, it is a state machine whose suspension points are exactly C++'s `wait`s.
@@ -1014,10 +1023,10 @@ Pinned by:
   in `//pkg/fdbgo/fdb:fdb_test`.
 - `TestDifferential_GetRangeSelectorRYW` in `//pkg/fdbgo/bench:bench_test`.
 
-Today the facade resolves a selector range with two `GetKey` calls and reads the resolved
-byte range (`fdb/range_result.go:81-95, 414-466`). That sends different requests, adds two
-getKey conflicts instead of one range conflict, and never reaches P3, L3, U3's
-`end.offset < 1` branch or A5's `bytes == 0` branch. Phase 4:
+Before D10, the facade resolved a selector range with two `GetKey` calls and read the
+resolved byte range. That sent different requests, added two getKey conflicts instead of
+one range conflict, and never reached P3, L3, U3's `end.offset < 1` branch or A5's
+`bytes == 0` branch. Phase 4:
 
 - Client API: `StartGetRangeSelectors(ctx, begin, end KeySelector, limit, byteTarget int,
   reverse bool)` and the snapshot form; the byte-key API wraps FGE selectors. Entry checks

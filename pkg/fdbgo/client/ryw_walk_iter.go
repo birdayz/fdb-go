@@ -5,24 +5,9 @@ import (
 	"sort"
 )
 
-// rywIter is the walk's iterator (RFC-262 D2): C++ RYWIterator over one version
-// of the write map (w), or SnapshotCache::iterator when w is nil (A2.2). Like
-// RYWIterator (RYWIterator.cpp:94-126) it composes two iterators, the write
-// map's (rywNodeCursor) and the snapshot cache's (rywCacheCursor): its segment
-// is their intersection, and a step advances whichever ends (or begins) first,
-// in O(1) amortized time. Its segments are therefore the union of the write
-// map's node boundaries (D1b) and the snapshot cache's boundaries, over ["",
-// \xff\xff), plus the sentinel [\xff\xff, \xff\xff\0), which is EMPTY
-// (SnapshotCache.h:308-313, WriteMap.h:129-134). With w nil the write side is
-// the sentinel nodes alone, an unmodified range over the whole keyspace.
-//
-// It reads one version of the write map and one snapshot of the cache, both
-// immutable, so it needs no lock. Like C++, which walks RYWIterator by value,
-// a walk keeps its iterators and reuses their storage; the segment keys stay
-// boundaries (C++ ExtStringRef) until a caller needs their bytes. A skip
-// searches from the cursors' positions (seekFirstFrom) while on the same versions.
+// rywIter is RYWIterator (RYWIterator.cpp:94-126): the intersection of the write
+// map's and the snapshot cache's segments, over immutable versions so without a lock.
 type rywIter struct {
-	c      *rywCache
 	w      *rywWrites
 	cached *pseq[cacheEntry] // the cache snapshot the cache cursor reads
 	writes rywNodeCursor
@@ -65,19 +50,11 @@ var sentinelNodes = func() *pseq[rywNode] {
 	return s
 }()
 
-// newIterLocked is an iterator over w (live or pinned) and the live cache.
-func (c *rywCache) newIterLocked(w *rywWrites) *rywIter {
-	c.checkViewLocked(w)
-	it := &rywIter{}
-	initIter(it, c, w, &c.serverCache.entries)
-	return it
-}
-
 // checkViewLocked rejects a version a walk may not read: the legacy private
 // spans have no node boundaries and are neither live nor pinned.
 func (c *rywCache) checkViewLocked(w *rywWrites) {
 	if w != nil && w != c.w && w.pins <= 0 {
-		panic("rywCache.newIterLocked: the write-map version is neither live nor pinned")
+		panic("rywCache.checkViewLocked: the write-map version is neither live nor pinned")
 	}
 	if w != nil {
 		w.nodes.build()
@@ -86,12 +63,12 @@ func (c *rywCache) checkViewLocked(w *rywWrites) {
 
 // initIter points it at w and the cache snapshot, keeping its cursors' storage.
 // w's nodes must be built.
-func initIter(it *rywIter, c *rywCache, w *rywWrites, cached *pseq[cacheEntry]) {
+func initIter(it *rywIter, w *rywWrites, cached *pseq[cacheEntry]) {
 	nodes := sentinelNodes
 	if w != nil {
 		nodes = &w.nodes.seq
 	}
-	it.c, it.w, it.cached = c, w, cached
+	it.w, it.cached = w, cached
 	it.writes.seq = nodes
 	it.cache.es = cached
 	it.broken, it.sentinel = false, false
@@ -125,12 +102,6 @@ func (it *rywIter) copyFrom(o *rywIter) {
 	it.writes.copyFrom(&o.writes)
 	it.cache.copyFrom(&o.cache)
 	it.ents.copyFrom(&o.ents)
-}
-
-func (it *rywIter) clone() *rywIter {
-	n := &rywIter{}
-	n.copyFrom(it)
-	return n
 }
 
 // beginKey and endKey are the segment's keys as bytes; a key successor is
@@ -308,9 +279,8 @@ func (it *rywIter) unknown() bool    { return it.typ == segUnknown }
 func (it *rywIter) empty() bool      { return it.typ == segEmpty }
 func (it *rywIter) isKV() bool       { return it.typ == segKV || it.typ == segPhantom }
 
-// kv is RYWIterator::kv: the segment's key and value, false for a matched
-// CompareAndClear (RYWIterator.cpp:82-87). Only on a KV segment: the cache's
-// key, or the written key (a write segment begins at its key, not a successor).
+// kv is RYWIterator::kv (RYWIterator.cpp:73-87): the segment's key and value,
+// false for a matched CompareAndClear.
 func (it *rywIter) kv() (KeyValue, bool) {
 	if it.segType() != segKV {
 		return KeyValue{}, false
@@ -329,13 +299,8 @@ func (it *rywIter) kv() (KeyValue, bool) {
 	return KeyValue{Key: key, Value: it.opValue}, true // classifyOp's value
 }
 
-// skipContiguous is RYWIterator::skipContiguous (RYWIterator.cpp:128-133) over
-// SnapshotCache::iterator::skipContiguous (SnapshotCache.h:276-282): on a cache KV
-// under an unmodified write segment, land on the last value of the same cache
-// entry that is < min(bound, the write segment's end). It returns the values
-// from the current one to the landing, in key order. Elsewhere it returns the
-// current KV alone. A snapshot-cache-only iterator has no write segment to cap
-// the run. The run is valid until the next call.
+// skipContiguous is RYWIterator::skipContiguous (RYWIterator.cpp:128-133, SnapshotCache.h:276-282);
+// it returns the run passed, in key order, valid until the next call.
 func (it *rywIter) skipContiguous(bound []byte) []KeyValue {
 	if !it.writes.isUnmodifiedRange() {
 		it.one[0], _ = it.kv()
@@ -357,10 +322,8 @@ func (it *rywIter) skipContiguous(bound []byte) []KeyValue {
 	return kvs[i:j]
 }
 
-// skipContiguousBack is RYWIterator::skipContiguousBack (RYWIterator.cpp:135-140)
-// over SnapshotCache.h:283-290: land on the first value of the same entry that
-// is >= max(bound, keyAfter(the write segment's begin)). It returns the values
-// from the landing to the current one, in key order.
+// skipContiguousBack is RYWIterator::skipContiguousBack (RYWIterator.cpp:135-140,
+// SnapshotCache.h:283-290); it returns the run passed, in key order.
 func (it *rywIter) skipContiguousBack(bound []byte) []KeyValue {
 	if !it.writes.isUnmodifiedRange() {
 		it.one[0], _ = it.kv()
@@ -384,8 +347,7 @@ func (it *rywIter) skipContiguousBack(bound []byte) []KeyValue {
 }
 
 // rywNodeCursor is WriteMap::iterator (WriteMap.h:152-205, WriteMap.cpp:312-347)
-// for the walk: a cursor at entry() and the node after it, so a step is O(1)
-// amortized. The mutators use rywNodeIter, with an inline finger.
+// for the walk, which searches from its position; the mutators use rywNodeIter.
 type rywNodeCursor struct {
 	seq    *pseq[rywNode]
 	cur    pcursor[rywNode]
@@ -462,11 +424,8 @@ func (it *rywNodeCursor) dec() {
 	}
 }
 
-// rywCacheCursor is SnapshotCache::iterator (SnapshotCache.h:175-306) over the
-// cache entries, with C++'s degenerate first entry ["", "") and last entry
-// [\xff\xff, \xff\xff\0) (:309-312) implied: index Len is the last one. offset 0
-// is the unknown range before entry i; offset 1 the empty range from its begin
-// to its first value; 2k+2 the KV of value k; 2k+3 the empty range after it.
+// rywCacheCursor is SnapshotCache::iterator (SnapshotCache.h:175-306); index Len is
+// C++'s degenerate last entry [\xff\xff, \xff\xff\0) (:309-312).
 type rywCacheCursor struct {
 	es     *pseq[cacheEntry]
 	ent    pcursor[cacheEntry]

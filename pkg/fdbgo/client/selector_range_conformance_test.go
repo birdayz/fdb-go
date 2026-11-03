@@ -298,6 +298,9 @@ func (env *selConfEnv) runC(t *testing.T, q selConfQuery, version int64) selConf
 	}
 	if q.warmBegin != "" {
 		if _, err := tr.Snapshot().GetRange(cgofdb.KeyRange{Begin: cgofdb.Key(q.warmBegin), End: cgofdb.Key(q.warmE)}, cgofdb.RangeOptions{}).GetSliceWithError(); err != nil {
+			if code := errorCodeOf(err); code == ErrTransactionTooOld {
+				return selConfResult{code: code}
+			}
 			t.Fatalf("C warm read: %v", err)
 		}
 	}
@@ -333,6 +336,9 @@ func (env *selConfEnv) runC(t *testing.T, q selConfQuery, version int64) selConf
 	module := "\xff\xff/transaction/read_conflict_range/"
 	kvs, err := tr.GetRange(cgofdb.KeyRange{Begin: cgofdb.Key(module), End: cgofdb.Key(module + "\xff\xff")}, cgofdb.RangeOptions{}).GetSliceWithError()
 	if err != nil {
+		if code := errorCodeOf(err); code == ErrTransactionTooOld {
+			return selConfResult{code: code}
+		}
 		t.Fatalf("read %s: %v", module, err)
 	}
 	// The module lists the map's boundaries: "1" opens a conflict range, "0" closes it.
@@ -384,6 +390,9 @@ func (env *selConfEnv) runGo(t *testing.T, ctx context.Context, q selConfQuery, 
 		for byteTarget := 4096; ; byteTarget = 80000 {
 			kvs, more, err := tx.Snapshot().GetRangeSelectors(ctx, b, e, 0, byteTarget, false)
 			if err != nil {
+				if code := errorCodeOf(err); code == ErrTransactionTooOld {
+					return selConfResult{code: code}
+				}
 				t.Fatalf("Go warm read: %v", err)
 			}
 			if len(kvs) == 0 || !more {
@@ -447,23 +456,35 @@ func TestSelectorRangeConformance(t *testing.T) {
 	rng := rand.New(rand.NewSource(26210))
 	var fallbacks atomic.Int64
 	const queries = 900
-	var nonEmpty, withConflicts, withOps, crossShard, rywDisabled, snapshots int
+	var nonEmpty, withConflicts, withOps, crossShard, rywDisabled, snapshots, tooOldRetries int
 	shardOf := func(k []byte) int {
 		return sort.Search(len(env.boundaries), func(i int) bool { return env.boundaries[i] > string(k) })
 	}
 	for i := 0; i < queries; i++ {
 		q := env.randomQuery(rng)
-		ctr, err := env.cdb.CreateTransaction()
-		if err != nil {
-			t.Fatal(err)
+		var c, g selConfResult
+		for attempt := 1; ; attempt++ {
+			ctr, err := env.cdb.CreateTransaction()
+			if err != nil {
+				t.Fatal(err)
+			}
+			version, err := ctr.GetReadVersion().Get()
+			ctr.Cancel()
+			if err != nil {
+				t.Fatalf("read version: %v", err)
+			}
+			c = env.runC(t, q, version)
+			g = env.runGo(t, ctx, q, version, &fallbacks)
+			// transaction_too_old on either side is the clock (a stall past the MVCC window), not a
+			// client difference: rerun both at a new read version.
+			if c.code != ErrTransactionTooOld && g.code != ErrTransactionTooOld {
+				break
+			}
+			if attempt == 5 {
+				t.Fatalf("query %d %s: transaction_too_old on %d read versions (C %d, Go %d)", i, q, attempt, c.code, g.code)
+			}
+			tooOldRetries++
 		}
-		version, err := ctr.GetReadVersion().Get()
-		ctr.Cancel()
-		if err != nil {
-			t.Fatalf("read version: %v", err)
-		}
-		c := env.runC(t, q, version)
-		g := env.runGo(t, ctx, q, version, &fallbacks)
 		if c.code != g.code {
 			t.Fatalf("query %d %s: error code C %d, Go %d", i, q, c.code, g.code)
 		}
@@ -497,8 +518,8 @@ func TestSelectorRangeConformance(t *testing.T) {
 			snapshots++
 		}
 	}
-	t.Logf("queries=%d nonEmpty=%d withConflicts=%d withOps=%d crossShard=%d rywDisabled=%d snapshot=%d goFallbackResolutions=%d",
-		queries, nonEmpty, withConflicts, withOps, crossShard, rywDisabled, snapshots, fallbacks.Load())
+	t.Logf("queries=%d nonEmpty=%d withConflicts=%d withOps=%d crossShard=%d rywDisabled=%d snapshot=%d goFallbackResolutions=%d tooOldRetries=%d",
+		queries, nonEmpty, withConflicts, withOps, crossShard, rywDisabled, snapshots, fallbacks.Load(), tooOldRetries)
 	// The comparisons must have had something to compare.
 	if nonEmpty < queries/3 || withConflicts < queries/5 || withOps < queries/3 || crossShard == 0 || rywDisabled < queries/10 || snapshots < queries/5 {
 		t.Fatal("population too thin; see the counts above")

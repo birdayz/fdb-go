@@ -506,6 +506,75 @@ func TestStartedGetKeyIsTheCallers(t *testing.T) {
 	}
 }
 
+// Reads finished at issue from inline point entries keep their bytes across a
+// Reset that reuses the inline storage: reset leaves it to the reads' snapshot.
+func TestLocalReadsKeepInlineCacheBytesAcrossReset(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	tx := &Transaction{}
+	tx.nativeRange = newMemStorage().native
+	c := &tx.ryw
+	c.mu.Lock()
+	c.serverCache.insertPoint([]byte("a"), []byte("va"))
+	c.serverCache.insert([]byte("a\x00"), []byte("b"), nil)
+	c.serverCache.insertPoint([]byte("b"), []byte("vb"))
+	inline := c.serverCache.kvUsed == 2 && c.serverCache.keyBufUsed > 0 && c.serverCache.node0[0].item.begin != nil
+	c.mu.Unlock()
+	if !inline {
+		t.Fatal("positive control: the points are not in the inline storage")
+	}
+	pr := tx.Snapshot().StartGetRangeSelectors(ctx, firstGreaterOrEqual([]byte("a")), firstGreaterOrEqual([]byte("b\x00")), 0, 0, false)
+	pk := tx.Snapshot().StartGetKey(ctx, KeySelector{Key: []byte("a"), OrEqual: true, Offset: 1})
+	tx.Reset()
+	c.mu.Lock()
+	c.serverCache.insertPoint([]byte("x"), []byte("vx"))
+	c.serverCache.insertPoint([]byte("y"), []byte("vy"))
+	c.mu.Unlock()
+	if kvs, _, err := pr.Get(); err != nil || len(kvs) != 2 || string(kvs[0].Key) != "a" || string(kvs[0].Value) != "va" || string(kvs[1].Key) != "b" || string(kvs[1].Value) != "vb" {
+		t.Fatalf("range read after Reset: %q, %v; want a=va b=vb", kvs, err)
+	}
+	if k, err := pk.Get(); err != nil || string(k) != "b" {
+		t.Fatalf("getKey after Reset: %q, %v; want b", k, err)
+	}
+}
+
+// GetKey copies its selector: a caller rewriting its key buffer afterwards must
+// not move the bound of the cache entry the read's reply made known.
+func TestGetKeyOwnsItsSelectorKey(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name            string
+		orEqual         bool
+		offset          int32
+		resolved        string
+		rewrite         byte
+		begin, end, got string
+	}{
+		{"forward", false, 1, "n", 'a', "a1", "c", "a1,a2,b"}, // FGE(m): entry [m, n\x00)
+		{"reverse", false, 0, "l", 'z', "n", "y1", "n,y0"},    // LLT(m): entry [l, m)
+	} {
+		for _, snapshot := range []bool{false, true} {
+			m := newMemStorage(selectorStorageKeys...)
+			tx := &Transaction{}
+			tx.nativeRange = m.native
+			buf := []byte("m")
+			getKey := tx.GetKey
+			if snapshot {
+				getKey = tx.Snapshot().GetKey
+			}
+			if k, err := getKey(ctx, buf, tc.orEqual, tc.offset); err != nil || string(k) != tc.resolved {
+				t.Fatalf("%s snapshot=%t: GetKey = %q, %v; want %q", tc.name, snapshot, k, err, tc.resolved)
+			}
+			buf[0] = tc.rewrite
+			kvs, _, err := tx.Snapshot().GetRangeSelectors(ctx, firstGreaterOrEqual([]byte(tc.begin)), firstGreaterOrEqual([]byte(tc.end)), 0, 0, false)
+			if err != nil || keysOf(kvs) != tc.got {
+				t.Fatalf("%s snapshot=%t: after the caller rewrote its key, rows %s, %v; want %s", tc.name, snapshot, keysOf(kvs), err, tc.got)
+			}
+		}
+	}
+}
+
 // The facade passes a selector's key to the read, which must own it.
 func TestSelectorRangeOwnsSelectorKeys(t *testing.T) {
 	t.Parallel()

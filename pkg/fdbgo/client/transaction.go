@@ -480,7 +480,7 @@ type Transaction struct {
 	// of C++'s ryw->reading AndFuture. Contract: a failed tracked read — even one
 	// whose error the caller swallowed — fails a later Commit with that same error
 	// until reset (commit waits on reading before ANY commit work,
-	// ReadYourWrites.actor.cpp:1358-1359; resetRyow swaps the AndFuture, :2715).
+	// ReadYourWrites.actor.cpp:1359-1360; resetRyow swaps the AndFuture, :2715).
 	// Which reads are tracked vs excluded (metrics ops, eager validation, ctx
 	// cancellation) and why watch-setup failures never poison: RFC-098 ("a failed
 	// read poisons the transaction's commit" + the completion-barrier addendum).
@@ -1244,10 +1244,8 @@ func (tx *Transaction) readConflictForKeyRYW(key []byte) bool {
 	if tx.rywDisabled {
 		return true
 	}
-	// Single-key classification via conflictForKeyLocked (one map lookup, no write-map re-sort) —
-	// NOT conflictRangesLocked, whose ensureSortedLocked re-sorts the whole write map on every call.
-	// Get is the hot path (every record load); routing it through the range walk made a write-heavy
-	// txn (e.g. a 10K-record bulk save, each save doing a split-marker Get) O(n²·log n).
+	// One map lookup (conflictForKey), not the range path (appendConflictSpans): Get is the hot
+	// path, and a range walk per Get made write-heavy transactions quadratic.
 	tx.ryw.mu.Lock()
 	defer tx.ryw.mu.Unlock()
 	return tx.ryw.liveLocked().conflictForKey(key)
@@ -1906,7 +1904,7 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 	}()
 	// C++ commit() waits on ryw->reading before ANY commit work — before the
 	// RYW-disabled branch, the read-only fast path, and the size checks
-	// (ReadYourWrites.actor.cpp:1358-1359). That wait is a COMPLETION BARRIER
+	// (ReadYourWrites.actor.cpp:1359-1360). That wait is a COMPLETION BARRIER
 	// for in-flight reads, not just a sample of past failures: drain any
 	// outstanding pipelined reads first (Resolve is idempotent — a later
 	// future .Get() returns the memo), so a read whose reply is still in
@@ -2100,7 +2098,7 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 	if tx.db != nil {
 		commitTok = tx.db.grvCache.token()
 	}
-	input := tx.captureCommitVectors(shipMuts, mutsOwned, shipConflicts, conflictsOwned, shipReads, true)
+	input := tx.captureCommitVectors(shipMuts, mutsOwned, shipConflicts, conflictsOwned, shipReads)
 	defer func() {
 		if input != nil {
 			input.release()
