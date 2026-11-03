@@ -3,10 +3,111 @@ package cascades
 import (
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
+
+func TestImplementSimpleSelectTextAccessQuantifiers(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		kind        expressions.QuantifierKind
+		nullOnEmpty bool
+	}{
+		{name: "for each", kind: expressions.QuantifierForEach},
+		{name: "existential", kind: expressions.QuantifierExistential},
+		{name: "null on empty", kind: expressions.QuantifierForEach, nullOnEmpty: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			row := values.NewRecordType("T", false, []values.Field{{Name: "BODY", Ordinal: 0, FieldType: values.NullableString}})
+			scan, err := plans.NewRecordQueryScanPlan([]string{"T"}, row, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			inner := expressions.InitialOf(scan)
+			pm := NewPlanPropertiesMap()
+			pm.Add(scan)
+			inner.SetPlanProperties(pm)
+			q := expressions.ForEachQuantifier(inner)
+			if tc.kind == expressions.QuantifierExistential {
+				q = expressions.ExistentialQuantifier(inner)
+			} else if tc.nullOnEmpty {
+				q = expressions.ForEachNullOnEmptyQuantifier(inner)
+			}
+			object, err := q.RequireFlowedObjectValue()
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := values.ResolveFieldOrdinals(object, []int{0})
+			if err != nil {
+				t.Fatal(err)
+			}
+			predicate := predicates.NewComparisonPredicate(body, predicates.Comparison{
+				Type: predicates.ComparisonTextContainsAll, Operand: values.LiteralValue("hello"),
+			})
+			selectExpr, err := expressions.NewSelectExpression(object, []expressions.Quantifier{q}, []predicates.QueryPredicate{predicate})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := NewPlanContextFromMatchCandidates([]MatchCandidate{&TextIndexMatchCandidate{
+				Name: "text", Columns: []string{"BODY"}, RecordTypes: []string{"T"}, TokenizerName: "default", RowType: row,
+			}})
+			results, err := FireImplementationRuleWithContext(NewImplementSimpleSelectRule(), expressions.InitialOf(selectExpr), ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(results) == 0 {
+				t.Fatal("rule yielded no implementations")
+			}
+			wantText := tc.kind == expressions.QuantifierForEach && !tc.nullOnEmpty
+			foundText := false
+			for _, result := range results {
+				plan, ok := result.(plans.RecordQueryPlan)
+				if !ok {
+					t.Fatalf("implementation is not a physical plan: %T", result)
+				}
+				var visit func(plans.RecordQueryPlan)
+				visit = func(node plans.RecordQueryPlan) {
+					if _, ok := node.(*plans.RecordQueryTextIndexPlan); ok {
+						foundText = true
+						if !wantText {
+							t.Fatalf("text access bypassed the quantifier wrapper: %s", plan.Explain())
+						}
+					}
+					for _, child := range node.GetChildren() {
+						visit(child)
+					}
+				}
+				visit(plan)
+				if wantText {
+					continue
+				}
+				filter, ok := plan.(*plans.RecordQueryPredicatesFilterPlan)
+				if !ok {
+					t.Fatalf("expected residual text filter, got %T", plan)
+				}
+				wrapped := filter.GetInner()
+				if tc.kind == expressions.QuantifierExistential {
+					if _, ok := wrapped.(*plans.RecordQueryFirstOrDefaultPlan); !ok {
+						t.Fatalf("expected FirstOrDefault under filter, got %T", wrapped)
+					}
+				} else if _, ok := wrapped.(*plans.RecordQueryDefaultOnEmptyPlan); !ok {
+					t.Fatalf("expected DefaultOnEmpty under filter, got %T", wrapped)
+				}
+				children := wrapped.GetChildren()
+				if len(children) != 1 || children[0] != scan {
+					t.Fatal("quantifier wrapper did not retain the base scan")
+				}
+			}
+			if wantText && !foundText {
+				t.Fatal("for-each positive control did not offer text access")
+			}
+		})
+	}
+}
 
 func TestTextCandidateEligibility(t *testing.T) {
 	t.Parallel()

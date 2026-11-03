@@ -91,7 +91,7 @@ func (r *Resolver) walkTextFunction(name string, typ predicates.ComparisonType, 
 		comparison.TextTokenizerName = s
 	}
 	if _, err := recordlayer.GetTextTokenizer(comparison.TextTokenizerName); err != nil {
-		return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s tokenizer %q is not registered: %v", name, comparison.TextTokenizerName, err)
+		return nil, api.WrapStatedError(api.ErrCodeInvalidParameter, fmt.Sprintf("%s tokenizer %q is not registered", name, comparison.TextTokenizerName), err)
 	}
 	return &predicateValue{pred: predicates.NewComparisonPredicate(args[0], comparison)}, nil
 }

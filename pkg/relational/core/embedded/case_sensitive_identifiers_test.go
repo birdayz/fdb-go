@@ -14,6 +14,8 @@ func TestCaseSensitiveIdentifiers(t *testing.T) {
 		{`select count(*) from "Q" where abs(v) > 0`, `select count(*) from "Q" where abs("v") > 0`},
 		{`insert into TaBlE1 values (1, 'foo')`, `insert into "TaBlE1" values (1, 'foo')`},
 		{`select f3(col1), cardinality(a) from t`, `select "f3"("col1"), cardinality("a") from "t"`},
+		{`SELECT text_contains_all(body,'red'), TEXT_CONTAINS_ALL_WITHIN(body,'red blue',2) FROM docs`, `SELECT text_contains_all("body",'red'), TEXT_CONTAINS_ALL_WITHIN("body",'red blue',2) FROM "docs"`},
+		{`SELECT "TEXT_CONTAINS_ALL"(body,'red') FROM docs`, `SELECT "TEXT_CONTAINS_ALL"("body",'red') FROM "docs"`},
 		{`not sql at all (`, `not sql at all (`},
 	} {
 		if got := caseSensitiveIdentifiers(c.in); got != c.want {

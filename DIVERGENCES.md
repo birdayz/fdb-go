@@ -16,7 +16,9 @@ not every one has been re-measured on 4.14.2.0.
 Go exposes `CREATE FULLTEXT INDEX ... ON table(text_column) [PARTITION BY (...)]`
 and the seven `TEXT_CONTAINS_*` SQL functions as a Go extension. Java Relational
 4.14.2.0 has only the reserved `FULLTEXT` lexer token, not these parser productions
-or built-ins (checked against the exact `4.14.2.0` source tag). SQL resolves its
+or built-ins (checked against the exact `4.14.2.0` source tag). Unquoted
+`TEXT_CONTAINS_*` names resolve to Go's built-ins before same-named schema
+functions; quoted names still resolve to schema functions. SQL resolves its
 tokenizer name explicitly (default: `default`) at the tokenizer's maximum
 version, and declines older-version indexes so adding an index cannot change
 the SQL predicate's meaning. Lower-level Record Layer comparisons retain

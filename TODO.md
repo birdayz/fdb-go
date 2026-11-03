@@ -3585,6 +3585,16 @@ these claims; the implementation notes below are not controlled comparisons.
 
 ## TEXT SQL access paths
 
+- [ ] Recover and diagnose the historical RFC-258 fail-on-scan-limit failure
+  cited during PR #1025 validation. The named conformance case is
+  `matches writes outside the range and fail-on-scan-limit` in
+  `conformance/index_remote_fetch_conformance_test.go`; the failing assertion,
+  fetch method, original output and cause have not been recovered. PR CI runs
+  41599086248 and 41607664254 do not contain that failure; the retained local
+  log was overwritten by a passing run. Recover the original full-lane log/BEP
+  or session evidence, then add a deterministic regression or fix. A rerun pass
+  does not establish that this failure was unrelated or fixed.
+
 - [ ] Text access with an unbound grouping column (`PARTITION BY (tenant, shard)`
   queried with `tenant = ?` only). Correct execution needs the distinct values
   of the unbound column under the bound prefix: a skip scan over the TEXT index

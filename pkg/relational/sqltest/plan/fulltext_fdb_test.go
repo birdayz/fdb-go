@@ -10,8 +10,18 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/executor"
 	"fdb.dev/pkg/relational/sqltest/testkit"
 )
+
+func explainFullText(t *testing.T, ctx context.Context, db *sql.DB, query string, args ...any) string {
+	t.Helper()
+	var plan string
+	if err := db.QueryRowContext(ctx, "EXPLAIN "+query, args...).Scan(&plan); err != nil {
+		t.Fatalf("EXPLAIN %s: %v", query, err)
+	}
+	return plan
+}
 
 func TestFDBFullTextSQL(t *testing.T) {
 	t.Parallel()
@@ -88,26 +98,24 @@ func TestFDBFullTextSQL(t *testing.T) {
 	if _, err := db.QueryContext(ctx, "SELECT id FROM plain_docs WHERE TEXT_CONTAINS_ALL_WITHIN(body,'red blue',0)"); err == nil || !strings.Contains(err.Error(), "positive integer") {
 		t.Fatalf("distance 0: %v", err)
 	}
-	// The parameterized queries below plan as their literal forms do.
-	for _, literal := range []string{
-		"SELECT id FROM docs WHERE tenant=1 AND TEXT_CONTAINS_ALL(body,'red') AND id>1 ORDER BY id DESC LIMIT 1",
-		"SELECT COUNT(*) FROM docs WHERE tenant=1 AND TEXT_CONTAINS_ALL_WITHIN(body,'red blue',2)",
-		"SELECT COUNT(*) FROM docs WHERE tenant=1 AND TEXT_CONTAINS_ALL(body,'blue')",
-	} {
-		if plan := testkit.ExplainVia(t, ctx, db, literal); !strings.Contains(plan, "TextIndexScan(BODY_TEXT") {
-			t.Fatalf("%s: %s", literal, plan)
-		}
-	}
 	// A text predicate is a boolean column, evaluated on each row.
-	var projected bool
-	if err := db.QueryRowContext(ctx, "SELECT TEXT_CONTAINS_ALL(body,'blue') FROM docs WHERE id=1").Scan(&projected); err != nil || !projected {
-		t.Fatalf("projected text predicate=%v err=%v", projected, err)
+	for _, tc := range []struct {
+		id   int64
+		want sql.NullBool
+	}{{1, sql.NullBool{Bool: true, Valid: true}}, {7, sql.NullBool{Valid: true}}, {8, sql.NullBool{}}} {
+		var projected sql.NullBool
+		if err := db.QueryRowContext(ctx, "SELECT TEXT_CONTAINS_ALL(body,'blue') FROM docs WHERE id=?", tc.id).Scan(&projected); err != nil || projected != tc.want {
+			t.Fatalf("id=%d projected text predicate=%v want=%v err=%v", tc.id, projected, tc.want, err)
+		}
 	}
 	query := "SELECT id FROM docs WHERE tenant=? AND TEXT_CONTAINS_ALL(body,?) AND id>1 ORDER BY id DESC LIMIT 1"
 	for _, tc := range []struct {
 		term string
 		want int64
 	}{{"red", 7}, {"blue", 3}, {"cafe", 5}} {
+		if plan := explainFullText(t, ctx, db, query, int64(1), tc.term); !strings.Contains(plan, "TextIndexScan(BODY_TEXT") {
+			t.Fatalf("term=%s: %s", tc.term, plan)
+		}
 		var id int64
 		if err := db.QueryRowContext(ctx, query, int64(1), tc.term).Scan(&id); err != nil {
 			t.Fatal(err)
@@ -120,12 +128,22 @@ func TestFDBFullTextSQL(t *testing.T) {
 		distance int64
 		count    int64
 	}{{1, 1}, {2, 2}, {1, 1}, {2, 2}} {
+		query := "SELECT COUNT(*) FROM docs WHERE tenant=1 AND TEXT_CONTAINS_ALL_WITHIN(body,'red blue',?)"
+		if plan := explainFullText(t, ctx, db, query, tc.distance); !strings.Contains(plan, "TextIndexScan(BODY_TEXT") {
+			t.Fatalf("distance=%d: %s", tc.distance, plan)
+		}
 		var count int64
-		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM docs WHERE tenant=1 AND TEXT_CONTAINS_ALL_WITHIN(body,'red blue',?)", tc.distance).Scan(&count); err != nil {
+		if err := db.QueryRowContext(ctx, query, tc.distance).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		if count != tc.count {
 			t.Fatalf("distance=%d cached result=%d want=%d", tc.distance, count, tc.count)
+		}
+	}
+	for _, distance := range []int64{0, -1} {
+		var count int64
+		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM docs WHERE tenant=1 AND TEXT_CONTAINS_ALL_WITHIN(body,'red blue',?)", distance).Scan(&count); err == nil || !strings.Contains(err.Error(), "positive integer") {
+			t.Fatalf("cached distance=%d count=%d err=%v", distance, count, err)
 		}
 	}
 	if _, err := db.ExecContext(ctx, "UPDATE docs SET body='yellow' WHERE id=1"); err != nil {
@@ -192,11 +210,10 @@ func TestFDBFullTextPartitionInList(t *testing.T) {
 		{"tenant=1 AND shard IN (1,2) AND TEXT_CONTAINS_PHRASE(body,'red blue')", nil, []int64{2, 7}},
 	} {
 		query := "SELECT id FROM docs WHERE " + tc.where + " ORDER BY id"
-		literal := strings.Replace(query, "tenant=? AND shard IN (?,?) AND TEXT_CONTAINS_ALL(body,?)", "tenant=1 AND shard IN (0,2) AND TEXT_CONTAINS_ALL(body,'red')", 1)
-		plan := testkit.ExplainVia(t, ctx, db, literal)
+		plan := explainFullText(t, ctx, db, query, tc.args...)
 		bound := strings.Contains(tc.where, " IN ")
 		if strings.Contains(plan, "TextIndexScan(BODY_TEXT") != bound || bound && !strings.Contains(plan, "InJoin(") {
-			t.Fatalf("%s: %s", literal, plan)
+			t.Fatalf("%s: %s", query, plan)
 		}
 		if got := collect(query, tc.args...); !reflect.DeepEqual(got, tc.want) {
 			t.Fatalf("%s: got %v want %v", query, got, tc.want)
@@ -213,6 +230,97 @@ func TestFDBFullTextPartitionInList(t *testing.T) {
 		}
 		if got := collect(join); !reflect.DeepEqual(got, []int64{2, 7}) {
 			t.Fatalf("%s: got %v", join, got)
+		}
+	}
+}
+
+func TestFDBFullTextQuantifiersAndMacroResolution(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := testkit.SetupPlanShapeDB(t, "fulltext_quantifiers", "CREATE TABLE tenants(id BIGINT, PRIMARY KEY(id)) CREATE TABLE docs(id BIGINT, tenant BIGINT, body STRING, PRIMARY KEY(id)) CREATE FULLTEXT INDEX body_text ON docs(body) CREATE TABLE plain_docs(id BIGINT, tenant BIGINT, body STRING, PRIMARY KEY(id)) CREATE FUNCTION TEXT_CONTAINS_ALL(IN body STRING, IN term STRING) RETURNS BOOLEAN RETURN FALSE")
+	if _, err := db.ExecContext(ctx, "INSERT INTO tenants VALUES (1),(2),(3)"); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"docs", "plain_docs"} {
+		if _, err := db.ExecContext(ctx, "INSERT INTO "+table+" VALUES (1,1,'red'),(2,1,'blue'),(3,2,'blue')"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		query string
+		want  []int64
+		shape string
+	}{
+		{"SELECT t.id FROM tenants t WHERE EXISTS (SELECT d.id FROM %s d WHERE d.tenant=t.id AND TEXT_CONTAINS_ALL(d.body,'red')) ORDER BY t.id", []int64{1}, "FirstOrDefault"},
+		{"SELECT t.id FROM tenants t LEFT JOIN %s d ON d.tenant=t.id AND TEXT_CONTAINS_ALL(d.body,'red') ORDER BY t.id", []int64{1, 2, 3}, "DefaultOnEmpty"},
+	} {
+		for _, table := range []string{"docs", "plain_docs"} {
+			query := fmt.Sprintf(tc.query, table)
+			plan := testkit.ExplainVia(t, ctx, db, query)
+			if !strings.Contains(plan, tc.shape) {
+				t.Fatalf("%s: missing %s: %s", query, tc.shape, plan)
+			}
+			if got := testkit.GetInts(t, ctx, db, query); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("%s: got %v want %v", query, got, tc.want)
+			}
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		want []int64
+		text bool
+	}{{"TEXT_CONTAINS_ALL", []int64{1}, true}, {`"TEXT_CONTAINS_ALL"`, nil, false}} {
+		query := "SELECT id FROM docs WHERE " + tc.name + "(body,'red') ORDER BY id"
+		if plan := testkit.ExplainVia(t, ctx, db, query); strings.Contains(plan, "TextIndexScan(BODY_TEXT") != tc.text {
+			t.Fatalf("%s: %s", query, plan)
+		}
+		if got := testkit.GetInts(t, ctx, db, query); !reflect.DeepEqual(got, tc.want) {
+			t.Fatalf("%s: got %v want %v", query, got, tc.want)
+		}
+	}
+}
+
+func TestFDBFullTextNaNPartition(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := testkit.SetupPlanShapeDB(t, "fulltext_nan", "CREATE TABLE docs(id BIGINT, tenant DOUBLE, body STRING, PRIMARY KEY(id)) CREATE FULLTEXT INDEX body_text ON docs(body) PARTITION BY (tenant) CREATE TABLE plain_docs(id BIGINT, tenant DOUBLE, body STRING, PRIMARY KEY(id))")
+	for _, table := range []string{"docs", "plain_docs"} {
+		if _, err := db.ExecContext(ctx, "INSERT INTO "+table+" VALUES (1,?,'red'),(2,1.0,'red'),(3,?,'blue')", math.NaN(), math.NaN()); err != nil {
+			t.Fatal(err)
+		}
+		query := "SELECT id FROM " + table + " WHERE tenant=? AND TEXT_CONTAINS_ALL(body,'red') ORDER BY id"
+		if plan := explainFullText(t, ctx, db, query, math.NaN()); strings.Contains(plan, "TextIndexScan(BODY_TEXT") != (table == "docs") {
+			t.Fatalf("%s: %s", query, plan)
+		}
+		rows, err := db.QueryContext(ctx, query, math.NaN())
+		if table == "docs" {
+			if err == nil {
+				rows.Next()
+				err = rows.Err()
+				rows.Close()
+			}
+			var unsupported *executor.UnsupportedPhysicalFloatEquivalenceError
+			if !errors.As(err, &unsupported) {
+				t.Fatalf("NaN text partition: %T %v", err, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			got = append(got, id)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil || !reflect.DeepEqual(got, []int64{1}) {
+			t.Fatalf("NaN fallback: got %v err=%v", got, err)
 		}
 	}
 }

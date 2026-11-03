@@ -96,7 +96,9 @@ with default tokenizer/version options, not a separate SQL storage format.
 `TEXT_CONTAINS_ALL_WITHIN` takes
 `(field, query, positive_constant_distance [, constant_tokenizer_name])`.
 A constant is a literal or a bound parameter. The functions are boolean
-expressions, usable in a WHERE clause or a projection.
+expressions, usable in a WHERE clause or a projection. Unquoted
+`TEXT_CONTAINS_*` calls resolve to built-ins before same-named schema functions;
+quote the function name to call such a schema function instead.
 The field and query must be STRING (query parameters are allowed). SQL resolves
 an omitted tokenizer name explicitly to `default`; an explicit name uses that
 registered tokenizer's maximum supported version on both indexed and residual

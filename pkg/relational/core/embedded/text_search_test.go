@@ -3,6 +3,7 @@ package embedded
 import (
 	"context"
 	"database/sql/driver"
+	"errors"
 	"strings"
 	"testing"
 
@@ -175,9 +176,44 @@ func TestFullTextJoinAndProjectionPlans(t *testing.T) {
 		"SELECT d.id FROM tenants t, docs d WHERE d.tenant = t.id AND TEXT_CONTAINS_ALL(d.body,'red')",
 		"SELECT id, TEXT_CONTAINS_ALL(body,'red') FROM docs WHERE tenant = 1",
 	} {
-		if _, err := PlanRecordQueryWithMetadata(query, template.Underlying(), nil); err != nil {
+		plan, err := PlanRecordQueryWithMetadata(query, template.Underlying(), nil)
+		if err != nil {
 			t.Fatalf("%s: %v", query, err)
 		}
+		if strings.Contains(query, "tenants t") && !strings.Contains(plan.Explain(), "TextIndexScan(BODY_TEXT") {
+			t.Fatalf("join did not bind text partition: %s", plan.Explain())
+		}
+	}
+}
+
+func TestFullTextCaseSensitiveAndMacroResolution(t *testing.T) {
+	t.Parallel()
+	const ddl = "CREATE TABLE docs(id BIGINT, body STRING, PRIMARY KEY(id)) CREATE FULLTEXT INDEX body_text ON docs(body) CREATE FUNCTION TEXT_CONTAINS_ALL(IN body STRING, IN term STRING) RETURNS BOOLEAN RETURN FALSE"
+	template, err := BuildSchemaTemplateFromDDL(ddl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{
+		"SELECT ID FROM DOCS WHERE text_contains_all(BODY,'red')",
+		caseSensitiveIdentifiers("SELECT ID FROM DOCS WHERE text_contains_all(BODY,'red')"),
+	} {
+		plan, err := PlanRecordQueryWithMetadata(query, template.Underlying(), nil)
+		if err != nil || !strings.Contains(plan.Explain(), "TextIndexScan(BODY_TEXT") {
+			t.Fatalf("%s: plan=%v err=%v", query, plan, err)
+		}
+	}
+	plan, err := PlanRecordQueryWithMetadata(`SELECT id FROM docs WHERE "TEXT_CONTAINS_ALL"(body,'red')`, template.Underlying(), nil)
+	if err != nil || strings.Contains(plan.Explain(), "TextIndexScan") {
+		t.Fatalf("quoted macro: plan=%v err=%v", plan, err)
+	}
+}
+
+func TestFullTextUnknownTokenizerPreservesCause(t *testing.T) {
+	t.Parallel()
+	_, err := PlanPhysicalForTestWithBoundLiterals("SELECT id FROM docs WHERE TEXT_CONTAINS_ALL(body,'red','not_registered_text_test')", "CREATE TABLE docs(id BIGINT, body STRING, PRIMARY KEY(id))", nil, nil, nil)
+	var metadataError *recordlayer.MetaDataError
+	if !errors.As(err, &metadataError) {
+		t.Fatalf("unknown tokenizer lost metadata cause: %T %v", err, err)
 	}
 }
 
@@ -201,7 +237,7 @@ func TestFullTextSQLTypeAndArity(t *testing.T) {
 		{"TEXT_CONTAINS_PHRASE(body, 7)", "argument 2 must be STRING"},
 		{"TEXT_CONTAINS_ALL_WITHIN(body, 'hello', -1)", "distance must be a positive integer"},
 		{"TEXT_CONTAINS_ALL_WITHIN(body, 'hello', 0)", "distance must be a positive integer"},
-		{"TEXT_CONTAINS_ALL_WITHIN(body, 'hello', 1.5)", "distance must be an integer constant"},
+		{"TEXT_CONTAINS_ALL_WITHIN(body, 'hello', 1.5)", "distance must be an integer constant, got float64"},
 		{"TEXT_CONTAINS_ALL_WITHIN(body, 'hello', id)", "distance must be an integer constant"},
 		{"TEXT_CONTAINS_ALL(body, 'hello', id)", "tokenizer must be a constant STRING"},
 		{"TEXT_CONTAINS_ALL(body, 'hello', 7)", "tokenizer must be a constant STRING"},

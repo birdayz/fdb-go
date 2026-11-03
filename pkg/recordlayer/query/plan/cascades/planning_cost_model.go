@@ -997,7 +997,7 @@ func collectSargedAliases(e expressions.RelationalExpression) map[values.Correla
 
 // collectSargedComparisons walks the physical plan tree and collects the
 // Comparisons bounding its scans. It is Go's only port of
-// ComparisonsProperty.ComparisonsVisitor, and it reproduces two of that
+// ComparisonsProperty.ComparisonsVisitor, and it reproduces three of that
 // visitor's behaviours:
 //
 //   - evaluateAtExpression unions the child results with the node's OWN
@@ -1010,6 +1010,8 @@ func collectSargedAliases(e expressions.RelationalExpression) map[values.Correla
 //     fold over the legs, so only comparisons carried by ALL legs survive, and
 //     the intersection node contributes none of its own. Dispatched off the
 //     IntersectionExpression marker, as Java dispatches off the visit override.
+//   - visitRecordQueryTextIndexPlan contributes its grouping and suffix
+//     comparisons through textScanComparisons.
 //
 // The visitor's remaining behaviours are deliberately NOT reproduced, and the
 // list is open rather than closed — it is what the Java class holds today:
@@ -1019,7 +1021,6 @@ func collectSargedAliases(e expressions.RelationalExpression) map[values.Correla
 //   - visitRecordQueryScoreForRankPlan REPLACES the child result with the
 //     ranks' comparisons. Go's score-for-rank plan is a pass-through union
 //     here; it is unreachable rather than agreed, as no query constructs it.
-//     visitRecordQueryTextIndexPlan is reproduced (textScanComparisons).
 //   - evaluateAtRef unions ALL members of a Reference; this descends
 //     firstPhysicalChild only. That narrowing is the cost model's convention
 //     for walking a concrete candidate (see concretePlanCounts) and predates
