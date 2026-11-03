@@ -2436,6 +2436,29 @@ class ProvisionTest(unittest.TestCase):
         again = p.teardown(self.plan, self.out, resources, runner=self.cloud, sleep=lambda _: None)
         self.assertTrue(again['passed'])
 
+    def test_teardown_outlasts_slow_asynchronous_server_deletion(self):
+        # Hetzner deletes servers asynchronously; until that completes, the
+        # campaign firewall refuses deletion as resource_in_use. Observed in a
+        # real campaign for longer than the old four-pass budget allowed.
+        resources = self.prepare()
+        refusals, backoffs = [6], []
+
+        def slow_cloud(argv, timeout=120):
+            if argv[1:3] == ['firewall', 'delete'] and refusals[0] > 0:
+                refusals[0] -= 1
+                return 1, '', 'hcloud: firewall with ID %s is still in use (resource_in_use)\n' % argv[3]
+            return self.cloud(argv, timeout=timeout)
+
+        result = p.teardown(self.plan, self.out, resources, runner=slow_cloud, sleep=backoffs.append)
+        self.assertTrue(result['passed'])
+        self.assertEqual(refusals[0], 0)
+        self.assertEqual(self.cloud.items, self.cloud.baseline)
+        refused = [a for a in result['actions'] if a['kind'] == 'firewall' and a['returncode'] != 0]
+        self.assertEqual(len(refused), 6)
+        self.assertGreater(len(backoffs), 4)
+        self.assertTrue(all(0 < s <= p.TEARDOWN_MAX_BACKOFF for s in backoffs))
+        self.assertEqual(backoffs, sorted(backoffs))
+
     def test_protected_missing_id_and_unowned_resource_never_pass_verification(self):
         resources = self.prepare()
         missing = self.cloud.items['certificate'].pop()

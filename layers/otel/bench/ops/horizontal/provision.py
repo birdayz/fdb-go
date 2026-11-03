@@ -44,6 +44,9 @@ CONFIGURE = ('configure new single ssd-redwood-1 logs:=1 commit_proxies:=1 '
 REMOTE_BASE = '/srv/otel-horizontal'
 FDB_VERSION = '7.3.77'
 GIB = 1024 ** 3
+TEARDOWN_PASSES = 40          # re-discovery passes; with backoff about 10 minutes
+TEARDOWN_MAX_BACKOFF = 15     # seconds between passes, growing by 2 s per pass
+TEARDOWN_DELETE_TIMEOUT = 30  # seconds for one hcloud delete, which waits for its action
 
 
 class ProvisionError(RuntimeError):
@@ -1063,7 +1066,11 @@ def teardown(plan, out, resources=None, *, runner=None, clock=time.time, sleep=t
     receipt = dict(passed=False, actions=[], refused=[], errors=[], deadline_epoch=plan['deadline_epoch'])
     with _lock(state):
         # Re-discover on each pass: a timed-out create may have reached the API.
-        for attempt in range(4):
+        # Server deletion is asynchronous; until it completes, the firewall,
+        # network and placement group refuse deletion as resource_in_use.
+        # Keep passing with backoff (about 10 minutes in total) instead of
+        # giving up after a few seconds; the deadline reserve still bounds it.
+        for attempt in range(TEARDOWN_PASSES):
             remaining = 0
             for kind in DELETE_KINDS:
                 try:
@@ -1077,7 +1084,7 @@ def teardown(plan, out, resources=None, *, runner=None, clock=time.time, sleep=t
                         try:
                             _command_receipt(plan, state, argv, clock)
                             started = clock()
-                            rc, stdout, stderr = _call(runner, argv, timeout=_remaining(plan, 10, clock))
+                            rc, stdout, stderr = _call(runner, argv, timeout=_remaining(plan, TEARDOWN_DELETE_TIMEOUT, clock))
                             receipt['actions'].append(dict(kind=kind, id=entry['id'], returncode=rc,
                                                            stdout=stdout, stderr=stderr, attempt=attempt,
                                                            epoch=started, finished_epoch=clock()))
@@ -1089,7 +1096,7 @@ def teardown(plan, out, resources=None, *, runner=None, clock=time.time, sleep=t
                 break
             if clock() >= plan['deadline_epoch'] - 110:
                 break
-            sleep(2)
+            sleep(min(2 * (attempt + 1), TEARDOWN_MAX_BACKOFF))
         verify_dir = state / f'verify-{time.time_ns()}'
         args = SimpleNamespace(inventory=str(state / 'baseline'), output_dir=str(verify_dir), hcloud=plan['hcloud'])
         try:
