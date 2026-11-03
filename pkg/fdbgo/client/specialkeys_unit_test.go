@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire"
@@ -99,7 +101,9 @@ func TestConflictingKeyMap_Build(t *testing.T) {
 	}
 	tx := skTx()
 	tx.conflictingKeys.Store(m)
+	lease := tx.enterState()
 	view := tx.skReadView()
+	lease.release()
 	if got := skRows(readConflictingKeys(&view, conflictingKeysBegin, conflictingKeysEnd)); !reflect.DeepEqual(got, []string{"\xff/x=1"}) {
 		t.Fatalf("map ending at the module end: %q", got)
 	}
@@ -286,7 +290,9 @@ func TestSpecialKeys_ConflictingKeysReadSnapshot(t *testing.T) {
 				t.Parallel()
 				tx := skTx(tc.old...)
 				next := skTx(tc.next...).conflictingKeys.Load()
+				lease := tx.enterState()
 				view := tx.skReadView()
+				lease.release()
 
 				// Wrap only this read's impl table; parallel tests keep the global table intact.
 				impls := *view.impls
@@ -436,9 +442,24 @@ func TestSpecialKeys_Routing(t *testing.T) {
 	if err := tx.checkRangeArgs(ctx, conflictingKeysBegin, conflictingKeysEnd, -5); err != nil {
 		t.Errorf("checkRangeArgs on a routed range: %v (the routed read checks its own limits)", err)
 	}
-	if reads := tx.readConflictRanges(); tx.hadRead.Load() || len(reads) != 0 || tx.readLife != nil {
-		t.Errorf("routed reads touched read state: hadRead=%v conflicts=%d readLife=%v",
-			tx.hadRead.Load(), len(reads), tx.readLife)
+	if reads := tx.readConflictRanges(); tx.hadRead.Load() || len(reads) != 0 {
+		t.Errorf("routed reads touched read state: hadRead=%v conflicts=%d", tx.hadRead.Load(), len(reads))
+	}
+	tx.readErrMu.Lock()
+	if tx.readLife == nil {
+		tx.readErrMu.Unlock()
+		t.Fatal("routed reads never acquired a state lease")
+	}
+	users, issued := tx.readLife.users, tx.readLife.issuedReads
+	tx.readErrMu.Unlock()
+	if users != 0 || issued != 0 {
+		t.Errorf("routed reads retained admission: users=%d issued=%d", users, issued)
+	}
+
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if value, err := tx.Get(canceled, skKey("a")); err != nil || string(value) != "1" {
+		t.Errorf("routed read checked parent cancellation: value=%q err=%v", value, err)
 	}
 
 	tx.deferredErr.Store(&wire.FDBError{Code: 2006})
@@ -471,6 +492,119 @@ func TestSpecialKeys_Routing(t *testing.T) {
 		if got := tx.routesSpecialKey([]byte(tc.b)); got != tc.wantKey {
 			t.Errorf("routesSpecialKey(api %d, %q) = %v", tc.api, tc.b, got)
 		}
+	}
+}
+
+// Routed reads and reset run synchronously on C++'s network thread
+// (ThreadSafeTransaction.cpp:426-433, 779-781; SpecialKeySpace.actor.cpp:331-352).
+func TestSpecialKeys_ReadLeaseBlocksReset(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	begin, end := []byte("\xff\xff/aaa"), []byte("\xff\xff/aab")
+	emptyValue := func(value []byte, err error) error {
+		if value != nil {
+			return fmt.Errorf("unknown-module point read returned %q", value)
+		}
+		return err
+	}
+	emptyRange := func(rows []KeyValue, more bool, err error) error {
+		if len(rows) != 0 || more {
+			return fmt.Errorf("unknown-module range returned rows=%q more=%v", skRows(rows), more)
+		}
+		return err
+	}
+	for name, read := range map[string]func(*Transaction) error{
+		"Get":               func(tx *Transaction) error { return emptyValue(tx.Get(ctx, begin)) },
+		"Snapshot.Get":      func(tx *Transaction) error { return emptyValue(tx.Snapshot().Get(ctx, begin)) },
+		"StartGet":          func(tx *Transaction) error { return emptyValue(tx.StartGet(ctx, begin).Get()) },
+		"GetRange":          func(tx *Transaction) error { return emptyRange(tx.GetRange(ctx, begin, end, 0)) },
+		"Snapshot.GetRange": func(tx *Transaction) error { return emptyRange(tx.Snapshot().GetRange(ctx, begin, end, 0)) },
+		"StartGetRange":     func(tx *Transaction) error { return emptyRange(tx.StartGetRange(ctx, begin, end, 0, 0, false).Get()) },
+		"GetRangeSelectors": func(tx *Transaction) error {
+			return emptyRange(tx.GetRangeSelectors(ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), 0, 0, false))
+		},
+		"Snapshot.StartGetRangeSelectors": func(tx *Transaction) error {
+			return emptyRange(tx.Snapshot().StartGetRangeSelectors(ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), 0, 0, false).Get())
+		},
+	} {
+		for _, userReset := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/userReset=%v", name, userReset), func(t *testing.T) {
+				t.Parallel()
+				tx := skTx()
+				t.Cleanup(tx.Cancel)
+				tx.SetSpecialKeySpaceRelaxed()
+				entered, resume := make(chan struct{}), make(chan struct{})
+				readDone, resetDone := make(chan struct{}), make(chan struct{})
+				var resumeOnce sync.Once
+				resumeRead := func() { resumeOnce.Do(func() { close(resume) }) }
+				wait := func(done <-chan struct{}) {
+					t.Helper()
+					select {
+					case <-done:
+					case <-time.After(5 * time.Second):
+						t.Fatal("timed out waiting for special-key/reset barrier")
+					}
+				}
+				resetStarted := false
+				defer func() {
+					resumeRead()
+					wait(readDone)
+					if resetStarted {
+						wait(resetDone)
+					}
+				}()
+				tx.beforeSpecialKeyRead = func() { close(entered); <-resume }
+				var readErr error
+				go func() { readErr = read(tx); close(readDone) }()
+				wait(entered)
+				tx.readErrMu.Lock()
+				old := tx.readLife
+				users, issued := old.users, old.issuedReads
+				tx.readErrMu.Unlock()
+				if users != 1 || issued != 0 {
+					t.Fatalf("routed admission: users=%d issued=%d, want 1/0", users, issued)
+				}
+				resetStarted = true
+				go func() { tx.reset(userReset); close(resetDone) }()
+				wait(old.ctx.Done())
+				tx.readErrMu.Lock()
+				waiting := tx.readReady != nil && old.drained != nil && old.users == 1
+				tx.readErrMu.Unlock()
+				if !waiting {
+					t.Fatal("reset did not wait for the routed read's execution lease")
+				}
+				select {
+				case <-resetDone:
+					t.Fatal("reset completed before the routed read released its lease")
+				default:
+				}
+				resumeRead()
+				wait(readDone)
+				wait(resetDone)
+				if readErr != nil {
+					t.Fatalf("old relaxed read: %v", readErr)
+				}
+				tx.beforeSpecialKeyRead = nil
+				if err := read(tx); skCode(err) != ErrSpecialKeysNoModuleFound {
+					t.Fatalf("successor read: %v, want 2113", err)
+				}
+			})
+		}
+	}
+}
+
+func TestSpecialKeys_ReadViewOptionsSnapshot(t *testing.T) {
+	t.Parallel()
+	tx := skTx()
+	t.Cleanup(tx.Cancel)
+	tx.SetSpecialKeySpaceRelaxed()
+	lease := tx.enterState()
+	view := tx.skReadView()
+	lease.release()
+	tx.Reset()
+	rows, more, err := view.skGetRange(firstGreaterOrEqual([]byte("\xff\xff/aaa")), firstGreaterOrEqual([]byte("\xff\xff/aab")), newRangeLimits(0, 0), false)
+	if err != nil || len(rows) != 0 || more {
+		t.Fatalf("captured relaxed view changed after reset: rows=%q more=%v err=%v", skRows(rows), more, err)
 	}
 }
 

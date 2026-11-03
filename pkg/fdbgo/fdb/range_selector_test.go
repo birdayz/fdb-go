@@ -2,6 +2,7 @@ package fdb_test
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -72,6 +73,73 @@ func TestGetRange_SelectorRangeIsOneStorageRead(t *testing.T) {
 				return nil, nil
 			}); err != nil {
 				t.Fatalf("%s: %v", name, err)
+			}
+		}
+	}
+}
+
+// RYW routes original selector anchors before sentinel-aware removeOrEqual
+// (ReadYourWrites.actor.cpp:1716-1721; FDBTypes.h:581-593, 645-649).
+func TestGetRange_SpecialKeySelectorBoundaries(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	prefix := []byte(t.Name() + "/")
+	key := func(s string) fdb.Key { return fdb.Key(append(bytes.Clone(prefix), s...)) }
+	if _, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
+		tr.Set(key("a"), []byte("a"))
+		tr.Set(key("b"), []byte("b"))
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		rng  fdb.SelectorRange
+		code int
+		want string
+	}{
+		{"all-keys-end", fdb.SelectorRange{
+			Begin: fdb.FirstGreaterOrEqual(fdb.Key("\xff\xff")),
+			End:   fdb.FirstGreaterThan(fdb.Key("\xff\xff")),
+		}, 0, ""},
+		{"special-space-end", fdb.SelectorRange{
+			Begin: fdb.FirstGreaterOrEqual(fdb.Key("\xff\xff/transaction/")),
+			End:   fdb.FirstGreaterThan(fdb.Key("\xff\xff\xff")),
+		}, 2112, ""},
+		{"ordinary-first-greater-than", fdb.SelectorRange{
+			Begin: fdb.FirstGreaterThan(key("a")),
+			End:   fdb.FirstGreaterOrEqual(key("c")),
+		}, 0, "b"},
+	} {
+		for _, snapshot := range []bool{false, true} {
+			for _, reverse := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/snapshot=%v/reverse=%v", tc.name, snapshot, reverse), func(t *testing.T) {
+					tr, err := db.CreateTransaction()
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(tr.Cancel)
+					var reader fdb.ReadTransaction = tr
+					if snapshot {
+						reader = tr.Snapshot()
+					}
+					rows, err := reader.GetRange(tc.rng, fdb.RangeOptions{Reverse: reverse}).GetSliceWithError()
+					code := 0
+					if err != nil {
+						var fe fdb.Error
+						if !errors.As(err, &fe) {
+							t.Fatal(err)
+						}
+						code = fe.Code
+					}
+					var got []string
+					for _, row := range rows {
+						got = append(got, string(bytes.TrimPrefix(row.Key, prefix)))
+					}
+					if code != tc.code || strings.Join(got, ",") != tc.want {
+						t.Fatalf("rows=%q code=%d err=%v, want rows=%q code=%d", got, code, err, tc.want, tc.code)
+					}
+				})
 			}
 		}
 	}

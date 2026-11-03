@@ -38,10 +38,10 @@ func TestRangeReplyAccumulationAllocations(t *testing.T) {
 	body := rangeCopyReply([]KeyValue{{Key: []byte("b"), Value: []byte("value")}}, false)
 	ops := plainRangeScanOps
 	var sends int
-	ops.send = func(context.Context, []byte, []byte, rangeLimits, int64, bool, []ServerInfo, readTagSample) ([]KeyValue, bool, error) {
+	ops.send = func(context.Context, []byte, []byte, rangeLimits, int64, bool, []ServerInfo, readTagSample, lbRetry) ([]KeyValue, bool, error, lbRetry) {
 		sends++
 		rows, more, _, err := parseGetKeyValuesReply(body)
-		return rows, more, err
+		return rows, more, err, lbRetry{}
 	}
 	check := func(rows []KeyValue, more bool, err error) {
 		if err != nil || more || len(rows) != 1 || string(rows[0].Key) != "b" || string(rows[0].Value) != "value" {
@@ -54,7 +54,8 @@ func TestRangeReplyAccumulationAllocations(t *testing.T) {
 		if err != nil || len(locations) != 1 {
 			t.Fatalf("location control = %v, %v", locations, err)
 		}
-		check(ops.send(ctx, begin, end, newRangeLimits(2, ByteLimitUnlimited), 0, false, locations[0].Servers, readTagSample{}))
+		rows, more, err, _ := ops.send(ctx, begin, end, newRangeLimits(2, ByteLimitUnlimited), 0, false, locations[0].Servers, readTagSample{}, lbRetry{})
+		check(rows, more, err)
 	})
 	scan := testing.AllocsPerRun(samples, func() {
 		rows, more, _, err := rangeScanImpl(tx, ctx, begin, end, newRangeLimits(2, ByteLimitUnlimited), 0, false, ops)
@@ -140,7 +141,7 @@ func testRangeReplyOwnership[T any](t *testing.T, ops rangeScanOps[T], row func(
 				calls := 0
 				wantErr := errors.New("later reply failed")
 				localOps := ops
-				localOps.send = func(ctx context.Context, begin, end []byte, gotLimits rangeLimits, _ int64, gotReverse bool, _ []ServerInfo, _ readTagSample) ([]T, bool, error) {
+				localOps.send = func(ctx context.Context, begin, end []byte, gotLimits rangeLimits, _ int64, gotReverse bool, _ []ServerInfo, _ readTagSample, retry lbRetry) ([]T, bool, error, lbRetry) {
 					gotLimit := int(gotLimits.rows)
 					calls++
 					wantLimit := limit
@@ -154,7 +155,7 @@ func testRangeReplyOwnership[T any](t *testing.T, ops rangeScanOps[T], row func(
 						t.Fatal("scan direction changed")
 					}
 					if calls == 1 {
-						return backing[:1], true, nil
+						return backing[:1], true, nil, retry
 					}
 					if calls != 2 && !(outcome == "retry" && calls == 3) {
 						t.Fatalf("unexpected send %d", calls)
@@ -163,19 +164,19 @@ func testRangeReplyOwnership[T any](t *testing.T, ops rangeScanOps[T], row func(
 						t.Fatalf("next request = %q..%q", begin, end)
 					}
 					if outcome == "retry" && calls == 2 {
-						return nil, false, errReplyTimeout
+						return nil, false, errReplyTimeout, retry
 					}
 					if outcome == "empty-later" {
-						return make([]T, 0, 3), false, nil
+						return make([]T, 0, 3), false, nil, retry
 					}
 					if outcome == "error" {
-						return nil, false, wantErr
+						return nil, false, wantErr, retry
 					}
 					if outcome == "cancel" {
 						cancel()
-						return nil, false, ctx.Err()
+						return nil, false, ctx.Err(), retry
 					}
-					return []T{row(nextKey)}, false, nil
+					return []T{row(nextKey)}, false, nil, retry
 				}
 				got, more, _, err := rangeScanImpl(tx, ctx, []byte("a"), []byte("z"), newRangeLimits(limit, target), 0, reverse, localOps)
 				switch outcome {
@@ -227,12 +228,12 @@ func testRangeReplyOwnership[T any](t *testing.T, ops rangeScanOps[T], row func(
 			}
 			calls := 0
 			localOps := ops
-			localOps.send = func(context.Context, []byte, []byte, rangeLimits, int64, bool, []ServerInfo, readTagSample) ([]T, bool, error) {
+			localOps.send = func(context.Context, []byte, []byte, rangeLimits, int64, bool, []ServerInfo, readTagSample, lbRetry) ([]T, bool, error, lbRetry) {
 				calls++
 				if calls == 1 {
-					return make([]T, 0, 2), false, nil
+					return make([]T, 0, 2), false, nil, lbRetry{}
 				}
-				return []T{row(key)}, false, nil
+				return []T{row(key)}, false, nil, lbRetry{}
 			}
 			got, more, _, err := rangeScanImpl(tx, context.Background(), []byte("a"), []byte("z"), newRangeLimits(0, ByteLimitUnlimited), 0, reverse, localOps)
 			if err != nil || more || len(got) != 1 || calls != 2 || string(ops.key(&got[0])) != key {
@@ -251,9 +252,9 @@ func testRangeReplyOwnership[T any](t *testing.T, ops rangeScanOps[T], row func(
 			}
 			calls := 0
 			localOps := ops
-			localOps.send = func(context.Context, []byte, []byte, rangeLimits, int64, bool, []ServerInfo, readTagSample) ([]T, bool, error) {
+			localOps.send = func(context.Context, []byte, []byte, rangeLimits, int64, bool, []ServerInfo, readTagSample, lbRetry) ([]T, bool, error, lbRetry) {
 				calls++
-				return empty, false, nil
+				return empty, false, nil, lbRetry{}
 			}
 			got, more, _, err := rangeScanImpl(tx, context.Background(), []byte("a"), []byte("z"), newRangeLimits(0, ByteLimitUnlimited), 0, false, localOps)
 			if err != nil || more || got != nil || calls != 1 {
@@ -347,7 +348,7 @@ func scanWith(t *testing.T, shards [][2]string, begin, end string, byteTarget in
 	}
 	var requests []string
 	ops := plainRangeScanOps
-	ops.send = func(_ context.Context, b, e []byte, gotLimits rangeLimits, _ int64, _ bool, _ []ServerInfo, _ readTagSample) ([]KeyValue, bool, error) {
+	ops.send = func(_ context.Context, b, e []byte, gotLimits rangeLimits, _ int64, _ bool, _ []ServerInfo, _ readTagSample, retry lbRetry) ([]KeyValue, bool, error, lbRetry) {
 		requests = append(requests, fmt.Sprintf("%s..%s/%d", b, e, gotLimits.bytes))
 		if len(requests) > len(replies) {
 			t.Fatalf("unexpected request %s", requests[len(requests)-1])
@@ -357,7 +358,7 @@ func scanWith(t *testing.T, shards [][2]string, begin, end string, byteTarget in
 		for _, k := range r.rows {
 			kvs = append(kvs, KeyValue{Key: []byte(k), Value: []byte("0123456789")})
 		}
-		return kvs, r.more, r.err
+		return kvs, r.more, r.err, retry
 	}
 	kvs, more, readThrough, err := rangeScanImpl(tx, context.Background(), []byte(begin), []byte(end), newRangeLimits(0, byteTarget), 0, reverse, ops)
 	if err != nil {

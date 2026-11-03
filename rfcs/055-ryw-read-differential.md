@@ -105,9 +105,12 @@ must agree the result is readable.
 
 ### Excluded (unchanged from RFC-054, same reasons)
 
-Versionstamp (stamp unknown pre-commit *and* not byte-comparable), oversized (C
-aborts), conflicts/control-plane. Snapshot reads (`Snapshot().Get`) bypass RYW by
-design — out of scope for the *RYW* differential (covered separately if needed).
+Versionstamp (stamp unknown pre-commit *and* not byte-comparable), oversized
+operands (this workload compares successful RYW reads; dedicated boundary/script
+cases cover deferred errors on later reads and commit), conflicts/control-plane.
+Oversized operands are safe to probe in-process, not process-aborting inputs.
+Snapshot reads (`Snapshot().Get`) bypass RYW by design — out of scope for the
+*RYW* differential (covered separately if needed).
 
 ## Performance
 

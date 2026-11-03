@@ -73,7 +73,7 @@ func (tx *Transaction) nativeGetRangeAt(ctx context.Context, begin, end KeySelec
 	l := nativeRangeLoop{begin: begin, end: end, limits: limits, reverse: reverse}
 	l.start()
 	relocateRetries, timeoutRetries := 0, 0
-	var lb lbRetry
+	lb := lbRetry{observe: tx.db.onReadBackoff.Load()}
 	var materializedBytes int64
 	var tags readTagSample
 	redraw := true
@@ -90,7 +90,7 @@ func (tx *Transaction) nativeGetRangeAt(ctx context.Context, begin, end KeySelec
 		if redraw {
 			tags = tx.sampleReadTags() // one native request (:4684), before loadBalance waits
 		}
-		kvs, more, err := sendRangeRPC(tx, ctx, reqBegin, reqEnd, l.limits, readVersion, reverse, loc.Servers, tags, plainRangeRPCOps)
+		kvs, more, err := sendRangeRPCPaced(tx, ctx, reqBegin, reqEnd, l.limits, readVersion, reverse, loc.Servers, tags, plainRangeRPCOps, &lb)
 		redraw = err == nil || readTagRetry(err)
 		if err != nil {
 			switch {
@@ -108,9 +108,6 @@ func (tx *Transaction) nativeGetRangeAt(ctx context.Context, begin, end KeySelec
 				return tx.nativeGetRangeFallback(ctx, originalBegin, originalEnd, originalLimits, readVersion, reverse)
 			case isMaybeDelivered(err): // loadBalance's own unbounded retry; re-located as getValueImpl explains
 				tx.db.locCache.invalidate(locationKey, tx.tenantId, backward)
-				if err := lb.wait(ctx, len(loc.Servers)); err != nil {
-					return nativeRangeResult{}, err
-				}
 			case isAllAlternativesFailed(err): // :4858-4863, 4873
 				relocateRetries++
 				if relocateRetries > maxRelocateRetries {
@@ -126,7 +123,7 @@ func (tx *Transaction) nativeGetRangeAt(ctx context.Context, begin, end KeySelec
 			continue
 		}
 		// The next request is a new loadBalance call.
-		lb = lbRetry{}
+		lb = lbRetry{observe: tx.db.onReadBackoff.Load()}
 
 		if ceiling := tx.db.rangeByteCeiling; ceiling > 0 { // RFC-115 §2, as rangeScanImpl
 			for i := range kvs {

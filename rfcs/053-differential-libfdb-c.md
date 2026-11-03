@@ -204,15 +204,14 @@ Tracked here as C2 surfaces them (the corpus discipline: find → fix → pin).
 2. **No client-side key/value size-limit enforcement** (found during L1
    investigation, fixed in this branch). The Go client never rejected oversized
    keys/values; C++ `set`/`atomicOp` throw `key_too_large`(2102)/`value_too_large`
-   (2103) at the call (NativeAPI.actor.cpp:5963-5966,5985-5988) and the C binding
-   *aborts the process* (`CATCH_AND_DIE`, bindings/c/fdb_c.cpp). A Go app could thus
-   ship a >100 KB value or >10 KB key to the **shared cluster** that the C/Java
-   clients reject client-side — a real stability divergence. We never abort in
-   library code, so: `set`/`atomic` reject the **commit** with the same codes
-   (`KEY_SIZE_LIMIT`=10000, `SYSTEM_KEY_SIZE_LIMIT`=30000, `VALUE_SIZE_LIMIT`=
-   100000), deferred like the existing RYW write-checks — the oversized data never
-   reaches the cluster. (Since superseded: the error is deferred at the call, so later
-   reads fail with it too, as libfdb_c's deferred throw does.) `clear` instead **clamps** an oversized range key to
+   (2103) on the network thread (NativeAPI.actor.cpp:5963-5966,5985-5988).
+   `onMainThreadVoid` catches that throw in the transaction's deferred-error slot
+   (ThreadHelper.actor.h:50-58), so the C binding does not abort. The Go client
+   now likewise records the error at the write call, buffers no illegal mutation,
+   and reports the error on subsequent reads and commit. Limits are
+   `KEY_SIZE_LIMIT`=10000, `SYSTEM_KEY_SIZE_LIMIT`=30000, `VALUE_SIZE_LIMIT`=
+   100000; oversized data never reaches the shared cluster.
+   `clear` instead **clamps** an oversized range key to
    `maxSize+1` and **drops** an oversized single-key clear, exactly as C++ `clear`
    does (NativeAPI.actor.cpp:6019-6047 — it translates, never throws). Pinned by
    `sizelimits_test.go` (reject codes, accept-at-limit, system-key higher limit,

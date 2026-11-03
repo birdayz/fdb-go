@@ -300,6 +300,38 @@ func (r *ckRun) scenario() {
 	r.must("no_module", err, 2113)
 	_, err = errs.Get(fdb.Key("\xff\xff/aaa")).Get()
 	r.must("get_no_module", err, 2113)
+	// Original anchors route before removeOrEqual (RYW:1716-1721); keyAfter preserves
+	// allKeysEnd (FDBTypes.h:581-593), while the special-space end remains a module error.
+	for _, tc := range []struct {
+		name string
+		rng  fdb.SelectorRange
+		code int
+	}{
+		{"selector_all_keys_end", fdb.SelectorRange{
+			Begin: fdb.FirstGreaterOrEqual(fdb.Key("\xff\xff")),
+			End:   fdb.FirstGreaterThan(fdb.Key("\xff\xff")),
+		}, 0},
+		{"selector_special_space_end", fdb.SelectorRange{
+			Begin: fdb.FirstGreaterOrEqual(fdb.Key("\xff\xff/transaction/")),
+			End:   fdb.FirstGreaterThan(fdb.Key("\xff\xff\xff")),
+		}, 2112},
+	} {
+		for _, snapshot := range []bool{false, true} {
+			for _, reverse := range []bool{false, true} {
+				var reader fdb.ReadTransaction = errs
+				if snapshot {
+					reader = errs.Snapshot()
+				}
+				step := fmt.Sprintf("%s/snapshot=%v/reverse=%v", tc.name, snapshot, reverse)
+				rows, readErr := r.rangeRead(reader, tc.rng, fdb.RangeOptions{Reverse: reverse})
+				r.record(step, rows, readErr)
+				r.must(step+"/code", readErr, tc.code)
+				if len(rows) != 0 {
+					t.Fatalf("%s: rows %q, want empty", step, r.render(rows))
+				}
+			}
+		}
+	}
 	errs.Cancel()
 	relaxed := r.newTx()
 	if err := relaxed.Options().SetSpecialKeySpaceRelaxed(); err != nil {

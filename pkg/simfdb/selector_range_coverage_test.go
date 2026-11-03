@@ -231,6 +231,10 @@ func TestSelectorRange_CrossedBoundsReadThroughEnd(t *testing.T) {
 	t.Parallel()
 	forward := fdb.SelectorRange{Begin: fdb.KeySelector{Key: k("z"), Offset: -2}, End: fdb.KeySelector{Key: k("m"), Offset: 2}}
 	reverse := fdb.SelectorRange{Begin: fdb.KeySelector{Key: k("m"), Offset: 2}, End: fdb.KeySelector{Key: k("h"), Offset: 3}}
+	clearSetM := func(tx *simTxn) {
+		tx.Clear(k("m"))
+		tx.Set(k("m"), []byte("v"))
+	}
 	cases := []struct {
 		name         string
 		r            fdb.SelectorRange
@@ -238,11 +242,20 @@ func TestSelectorRange_CrossedBoundsReadThroughEnd(t *testing.T) {
 		rows         string
 		rywTail      bool
 		disabledTail bool
+		prepare      func(*simTxn)
 	}{
-		{"forward", forward, fdb.RangeOptions{}, "f,h,m", true, false},
-		{"reverse", reverse, fdb.RangeOptions{Reverse: true}, "", true, true},
-		{"forward-limited", forward, fdb.RangeOptions{Limit: 1}, "f", false, false},
-		{"uncrossed", fdb.SelectorRange{Begin: fdb.FirstGreaterOrEqual(k("h")), End: fdb.KeySelector{Key: k("m"), Offset: 2}}, fdb.RangeOptions{}, "h,m", false, false},
+		{"forward", forward, fdb.RangeOptions{}, "f,h,m", true, false, nil},
+		{"reverse", reverse, fdb.RangeOptions{Reverse: true}, "", true, true, nil},
+		{"forward-limited", forward, fdb.RangeOptions{Limit: 1}, "f", false, false, nil},
+		{"uncrossed", fdb.SelectorRange{Begin: fdb.FirstGreaterOrEqual(k("h")), End: fdb.KeySelector{Key: k("m"), Offset: 2}}, fdb.RangeOptions{}, "h,m", false, false, nil},
+		{"forward/local-m", forward, fdb.RangeOptions{}, "f,h,m", false, false, func(tx *simTxn) { tx.Set(k("m"), []byte("v")) }},
+		{"reverse/local-m", reverse, fdb.RangeOptions{Reverse: true}, "", false, true, func(tx *simTxn) { tx.Set(k("m"), []byte("v")) }},
+		{"forward/unrelated-set", forward, fdb.RangeOptions{}, "f,h,m", true, false, func(tx *simTxn) { tx.Set(k("b"), []byte("v")) }},
+		{"reverse/unrelated-set", reverse, fdb.RangeOptions{Reverse: true}, "", true, true, func(tx *simTxn) { tx.Set(k("b"), []byte("v")) }},
+		{"forward/dependent-m", forward, fdb.RangeOptions{}, "f,h,m", true, false, func(tx *simTxn) { tx.Add(k("m"), []byte{1}) }},
+		{"reverse/dependent-m", reverse, fdb.RangeOptions{Reverse: true}, "", true, true, func(tx *simTxn) { tx.Add(k("m"), []byte{1}) }},
+		{"forward/clear-set-m", forward, fdb.RangeOptions{}, "f,h,m", false, false, clearSetM},
+		{"reverse/clear-set-m", reverse, fdb.RangeOptions{Reverse: true}, "", false, true, clearSetM},
 	}
 	for _, tc := range cases {
 		for _, rywDisabled := range []bool{false, true} {
@@ -257,6 +270,9 @@ func TestSelectorRange_CrossedBoundsReadThroughEnd(t *testing.T) {
 							if err := tx.Options().SetReadYourWritesDisable(); err != nil {
 								t.Fatal(err)
 							}
+						}
+						if tc.prepare != nil {
+							tc.prepare(tx)
 						}
 						var reader fdb.ReadTransaction = tx
 						if snapshot {
@@ -285,6 +301,122 @@ func TestSelectorRange_CrossedBoundsReadThroughEnd(t *testing.T) {
 					})
 				}
 			}
+		}
+	}
+}
+
+func TestSelectorRange_LocalWriteReduction(t *testing.T) {
+	t.Parallel()
+	setM := func(tx *simTxn) { tx.Set(k("m"), []byte("v")) }
+	clearM := func(tx *simTxn) { tx.Clear(k("m")) }
+	cases := []struct {
+		name       string
+		prepare    func(*simTxn)
+		anchor     string
+		offset     int
+		wantKey    string
+		wantOffset int
+	}{
+		{"storage-unknown", nil, "m", 2, "m", 2},
+		{"local-forward", setM, "m", 2, "m\x00", 1},
+		{"local-backward", setM, "m\x00", 0, "m", 1},
+		{"local-trivial", setM, "m", 1, "m", 1},
+		{"trivial-at-max", setM, "\xff", 1, "\xff", 1},
+		{"backward-boundary", setM, "m", 0, "m", 0},
+		{"clear-forward", clearM, "m", 2, "m\x00", 2},
+		{"clear-backward", clearM, "m\x00", 0, "m", 0},
+		{"clear-trivial", clearM, "m", 1, "m\x00", 1},
+		{"set-clear", func(tx *simTxn) {
+			setM(tx)
+			clearM(tx)
+		}, "m", 2, "m\x00", 2},
+		{"clear-set", func(tx *simTxn) {
+			clearM(tx)
+			setM(tx)
+		}, "m", 2, "m\x00", 1},
+		{"dependent-atomic", func(tx *simTxn) {
+			tx.Add(k("m"), []byte{1})
+		}, "m", 2, "m", 2},
+		{"atomic-over-set", func(tx *simTxn) {
+			setM(tx)
+			tx.Add(k("m"), []byte{1})
+		}, "m", 2, "m\x00", 1},
+		{"atomic-over-clear", func(tx *simTxn) {
+			clearM(tx)
+			tx.Add(k("m"), []byte{1})
+		}, "m", 2, "m\x00", 1},
+		{"known-absent-operation", func(tx *simTxn) {
+			setM(tx)
+			tx.CompareAndClear(k("m"), []byte("v"))
+		}, "m", 2, "m\x00", 2},
+		{"unreadable-key", func(tx *simTxn) {
+			tx.SetVersionstampedValue(k("m"), versionstampOperand())
+			setM(tx)
+		}, "m", 2, "m", 2},
+		{"unreadable-range", func(tx *simTxn) {
+			tx.ClearRange(fdb.KeyRange{Begin: k(""), End: endKeyMarker})
+			tx.addUnreadableRange([]byte("m"), []byte("n"))
+		}, "l", 2, "m", 2},
+		{"known-left-end", func(tx *simTxn) {
+			tx.ClearRange(fdb.KeyRange{Begin: k(""), End: k("m")})
+		}, "b", 0, "", 1},
+		{"known-right-end", func(tx *simTxn) {
+			tx.ClearRange(fdb.KeyRange{Begin: k("m"), End: endKeyMarker})
+		}, "m", 2, "\xff", 1},
+		{"backward-from-max", func(tx *simTxn) {
+			tx.ClearRange(fdb.KeyRange{Begin: k("m"), End: endKeyMarker})
+		}, "\xff", 0, "m", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			db := New(nil)
+			seedKeys(t, db, "b", "f", "h", "m")
+			tx := db.newTxn()
+			if tc.prepare != nil {
+				tc.prepare(tx)
+			}
+			tx.ensureReadVersion()
+			segments := tx.selectorWriteSegments(tx.buildView())
+			got := reduceSelectorFromWrites(fdb.KeySelector{Key: k(tc.anchor), Offset: tc.offset}, segments)
+			if string(got.Key.FDBKey()) != tc.wantKey || got.Offset != tc.wantOffset || got.OrEqual {
+				t.Fatalf("reduced selector = %q/%d/orEqual=%t, want %q/%d/orEqual=false", got.Key.FDBKey(), got.Offset, got.OrEqual, tc.wantKey, tc.wantOffset)
+			}
+		})
+	}
+}
+
+// Inverted nontrivial selectors return before conflict registration (RYW:1758-1760,
+// NAPI:5830-5832), even though their anchors enclose concurrently writable keys.
+func TestSelectorRange_InvertedRecordsNoConflict(t *testing.T) {
+	t.Parallel()
+	for _, reverse := range []bool{false, true} {
+		for _, rywDisabled := range []bool{false, true} {
+			t.Run(fmt.Sprintf("reverse=%t/rywDisabled=%t", reverse, rywDisabled), func(t *testing.T) {
+				t.Parallel()
+				db := New(nil)
+				seedKeys(t, db, "b", "f", "h", "m")
+				tx := db.newTxn()
+				if rywDisabled {
+					if err := tx.Options().SetReadYourWritesDisable(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				r := fdb.SelectorRange{Begin: fdb.LastLessThan(k("m")), End: fdb.LastLessThan(k("b"))}
+				rows, err := tx.GetRange(r, fdb.RangeOptions{Reverse: reverse}).GetSliceWithError()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(rows) != 0 {
+					t.Fatalf("inverted selector range returned %q, want no rows", rowKeys(rows))
+				}
+				if len(tx.readConflicts) != 0 {
+					t.Fatalf("inverted selector range recorded %v", conflictStrings(tx))
+				}
+				if concurrentWriteConflicts(t, db, tx, "f") {
+					t.Fatal("inverted selector read conflicted with a write between its anchors")
+				}
+			})
 		}
 	}
 }

@@ -2,6 +2,7 @@ package simfdb
 
 import (
 	"bytes"
+	"sort"
 
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 )
@@ -57,6 +58,115 @@ func selectorsInverted(begin, end fdb.KeySelector) bool {
 	return begin.Offset >= end.Offset && bytes.Compare(begin.Key.FDBKey(), end.Key.FDBKey()) >= 0
 }
 
+type selectorWriteSegment struct {
+	begin, end []byte
+	known, kv  bool
+}
+
+// selectorWriteSegments distinguishes locally known keys/clears from storage-dependent gaps.
+func (tx *simTxn) selectorWriteSegments(view []fdb.KeyValue) []selectorWriteSegment {
+	if len(tx.buffer) == 0 {
+		return nil
+	}
+	wm := tx.buildWriteMap()
+	bounds := [][]byte{nil, endKeyMarker}
+	add := func(key []byte) {
+		if len(key) > 0 && bytes.Compare(key, endKeyMarker) < 0 {
+			bounds = append(bounds, key)
+		}
+	}
+	for key := range wm.ops {
+		add([]byte(key))
+		add(keyAfter([]byte(key)))
+	}
+	for _, cleared := range wm.cleared {
+		add(cleared.begin)
+		add(cleared.end)
+	}
+	for key := range tx.unreadable {
+		add([]byte(key))
+		add(keyAfter([]byte(key)))
+	}
+	for _, unreadable := range tx.unreadableRanges {
+		add(unreadable.begin)
+		add(unreadable.end)
+	}
+	sort.Slice(bounds, func(i, j int) bool { return bytes.Compare(bounds[i], bounds[j]) < 0 })
+	present := make(map[string]bool, len(view))
+	for _, row := range view {
+		present[string(row.Key)] = true
+	}
+	var segments []selectorWriteSegment
+	for i := 0; i+1 < len(bounds); i++ {
+		lo, hi := bounds[i], bounds[i+1]
+		if bytes.Equal(lo, hi) {
+			continue
+		}
+		segment := selectorWriteSegment{begin: lo, end: hi}
+		if !tx.isUnreadable(lo) {
+			if op, ok := wm.ops[string(lo)]; ok {
+				segment.known = !op.dependent
+				segment.kv = segment.known && present[string(lo)]
+			} else {
+				segment.known = wm.isCleared(lo)
+			}
+		}
+		segments = append(segments, segment)
+	}
+	return segments
+}
+
+// reduceSelectorFromWrites is resolveKeySelectorFromCache's known-segment walk (RYW:422-483),
+// stopping at storage-dependent or unreadable data rather than resolving against all rows.
+func reduceSelectorFromWrites(sel fdb.KeySelector, segments []selectorWriteSegment) fdb.KeySelector {
+	if len(segments) == 0 {
+		return sel
+	}
+	key := []byte(sel.Key.FDBKey())
+	i := sort.Search(len(segments), func(i int) bool { return bytes.Compare(segments[i].end, key) > 0 })
+	if i == len(segments) {
+		if sel.Offset > 0 {
+			return sel
+		}
+		i--
+	}
+	if sel.Offset <= 0 && i > 0 && bytes.Equal(segments[i].begin, key) {
+		i--
+	}
+	for sel.Offset > 1 && segments[i].known && bytes.Compare(segments[i].end, endKeyMarker) < 0 {
+		if segments[i].kv {
+			sel.Offset--
+		}
+		i++
+		key = segments[i].begin
+	}
+	for sel.Offset < 1 && segments[i].known && len(segments[i].begin) != 0 {
+		if segments[i].kv {
+			sel.Offset++
+			if sel.Offset == 1 {
+				key = segments[i].begin
+				break
+			}
+		}
+		i--
+		key = segments[i].end
+	}
+	if segments[i].known {
+		if sel.Offset < 1 {
+			return fdb.FirstGreaterOrEqual(fdb.Key{})
+		}
+		if sel.Offset > 1 {
+			return fdb.FirstGreaterOrEqual(endKeyMarker)
+		}
+	}
+	for segments[i].known && !segments[i].kv && bytes.Compare(segments[i].end, endKeyMarker) < 0 {
+		i++
+		key = segments[i].begin
+	}
+	sel.Key = fdb.Key(key)
+	return sel
+}
+
 // selectorFetch is one getRange over selectors: one batch, its rows and more, and its read
 // conflict when the read is not a snapshot.
 func (tx *simTxn) selectorFetch(begin, end fdb.KeySelector, limit, byteTarget int, reverse, snapshot bool) ([]fdb.KeyValue, bool, error) {
@@ -110,11 +220,13 @@ func (tx *simTxn) selectorFetch(begin, end fdb.KeySelector, limit, byteTarget in
 	// only when the read did not stop on a limit (RYW:799-811, 1111-1120).
 	readToBegin := bIdx < 0 || eIdx < 0
 	readThroughEnd := bIdx > len(view) || eIdx > len(view)
-	// Crossed anchors resolve the far bound with getKey in the prologue (RYW:621-638,
-	// 925-942). Its maxKey result sets readThroughEnd even exactly one past the last key.
-	if bytes.Compare(begin.Key.FDBKey(), end.Key.FDBKey()) > 0 {
-		if reverse && !isTrivialSelector(begin) && bIdx >= len(view) ||
-			!reverse && !isTrivialSelector(end) && eIdx >= len(view) {
+	// The prologue tests selectors after local reduction (RYW:611-626, 914-930).
+	// A still-nontrivial crossed bound's getKey sets readThroughEnd at maxKey.
+	segments := tx.selectorWriteSegments(view)
+	reducedBegin, reducedEnd := reduceSelectorFromWrites(begin, segments), reduceSelectorFromWrites(end, segments)
+	if bytes.Compare(reducedBegin.Key.FDBKey(), reducedEnd.Key.FDBKey()) > 0 {
+		if reverse && !isTrivialSelector(reducedBegin) && bIdx >= len(view) ||
+			!reverse && !isTrivialSelector(reducedEnd) && eIdx >= len(view) {
 			readThroughEnd = true
 		}
 	}

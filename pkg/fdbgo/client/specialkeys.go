@@ -262,15 +262,12 @@ func (tx *Transaction) specialKeyEntryError() error {
 	return nil
 }
 
-// noopRelease is a routed range read's release: it holds no operation lease.
+// noopRelease is a routed range read's release: its synchronous state lease is already released.
 func noopRelease() {}
 
 // getSpecialKey is a routed get: SpecialKeySpace::getActor (SKS:474-489), a getRange of
 // [key, keyAfter(key)).
 func (tx *Transaction) getSpecialKey(key []byte) ([]byte, error) {
-	if err := tx.specialKeyEntryError(); err != nil {
-		return nil, err
-	}
 	limits := rangeLimits{rows: skTooMany, minRows: 1, bytes: byteLimitUnlimited}
 	kvs, _, err := tx.skGetRange(firstGreaterOrEqual(key), firstGreaterOrEqual(keyAfterSelectorKey(key)), limits, false)
 	if err != nil || len(kvs) == 0 {
@@ -282,9 +279,6 @@ func (tx *Transaction) getSpecialKey(key []byte) ([]byte, error) {
 // specialKeyRange is a routed getRange with the C binding's limits (fdb_c.cpp:989-994:
 // 0 is unlimited). The rows are the caller's.
 func (tx *Transaction) specialKeyRange(begin, end KeySelector, limit, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
-	if err := tx.specialKeyEntryError(); err != nil {
-		return nil, false, err
-	}
 	kvs, more, err := tx.skGetRange(begin, end, newRangeLimits(limit, byteTarget), reverse)
 	return cloneReadKVs(kvs), more, err
 }
@@ -292,16 +286,30 @@ func (tx *Transaction) specialKeyRange(begin, end KeySelector, limit, byteTarget
 // ConflictingKeysImpl is synchronous on C++'s network thread (SKS:166-175, 711-729).
 // Pin its immutable map so concurrent commit publication cannot split one read's phases.
 type skReadView struct {
-	tx              *Transaction
+	relaxed         bool
+	tenantID        int64
 	conflictingKeys *conflictingKeyMap
 	impls           *skRangeMap[*skReadImpl]
 }
 
+// skReadView snapshots reset-owned options while the caller holds a state lease.
 func (tx *Transaction) skReadView() skReadView {
-	return skReadView{tx: tx, conflictingKeys: tx.conflictingKeys.Load(), impls: skReadImpls}
+	return skReadView{
+		relaxed: tx.specialKeySpaceRelaxed, tenantID: tx.tenantId,
+		conflictingKeys: tx.conflictingKeys.Load(), impls: skReadImpls,
+	}
 }
 
 func (tx *Transaction) skGetRange(begin, end KeySelector, limits rangeLimits, reverse bool) ([]KeyValue, bool, error) {
+	// Serialize the synchronous routed read with reset, without joining Commit's reading barrier.
+	lease := tx.enterState()
+	defer lease.release()
+	if tx.beforeSpecialKeyRead != nil {
+		tx.beforeSpecialKeyRead()
+	}
+	if err := tx.specialKeyEntryError(); err != nil {
+		return nil, false, err
+	}
 	view := tx.skReadView()
 	return view.skGetRange(begin, end, limits, reverse)
 }
@@ -324,7 +332,7 @@ func (view *skReadView) skGetRange(begin, end KeySelector, limits rangeLimits, r
 // skAggregate is getRangeAggregationActor (SKS:313-448).
 func (view *skReadView) skAggregate(begin, end KeySelector, limits rangeLimits, reverse bool) ([]KeyValue, bool, error) {
 	boundBegin, boundEnd := specialKeysBegin, specialKeysEnd
-	if !view.tx.specialKeySpaceRelaxed {
+	if !view.relaxed {
 		i := skModules.rangeContaining(begin.Key)
 		mb, me := skModules.entries[i].key, skModules.entries[i+1].key
 		if bytes.Compare(mb, end.Key) > 0 || bytes.Compare(end.Key, me) > 0 {
@@ -353,7 +361,7 @@ func (view *skReadView) skAggregate(begin, end KeySelector, limits rangeLimits, 
 		return nil, false, nil // an empty [begin, end) reads nothing from any impl
 	}
 	lo, hi := view.impls.rangeContaining(begin.Key), view.impls.lowerBound(end.Key) // :363-364
-	if view.tx.tenantId != NoTenantID {                                             // :366-380
+	if view.tenantID != NoTenantID {                                                // :366-380
 		for i := lo; i < hi; i++ {
 			impl := view.impls.entries[i].value
 			if impl == nil {
@@ -456,7 +464,7 @@ func (view *skReadView) skMoveOver(impl *skReadImpl, kb, ke []byte, ks *KeySelec
 	if err := impl.unsupported(); err != nil {
 		return err
 	}
-	if view.tx.tenantId != NoTenantID && !impl.supportsTenants {
+	if view.tenantID != NoTenantID && !impl.supportsTenants {
 		return &wire.FDBError{Code: ErrIllegalTenantAccess}
 	}
 	start, end := kb, ke

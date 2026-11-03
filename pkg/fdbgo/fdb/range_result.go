@@ -110,7 +110,9 @@ func startRangeResult(rr goRangeResult, r Range) goRangeResult {
 	if !isExact {
 		bs, es := r.FDBRangeKeySelectors()
 		bsel, esel := bs.FDBKeySelector(), es.FDBKeySelector()
-		if !isTrivialSelector(bsel) || !isTrivialSelector(esel) {
+		// Special-key routing precedes removeOrEqual (RYW:1716-1721); keep sentinel anchors intact.
+		specialAnchor := bytes.HasPrefix(bsel.Key.FDBKey(), []byte("\xff\xff")) || bytes.HasPrefix(esel.Key.FDBKey(), []byte("\xff\xff"))
+		if !isTrivialSelector(bsel) || !isTrivialSelector(esel) || specialAnchor {
 			// The client checks, resolves and reads in one getRange (RYW:1711-1770).
 			f.selectors = true
 			f.beginSel, f.endSel = clientSelector(bsel), clientSelector(esel)

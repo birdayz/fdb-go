@@ -133,9 +133,10 @@ type refusalCluster struct {
 	refusals   atomic.Int32
 	refuseLive int32
 	liveDials  atomic.Int32
+	locations  atomic.Int32
 }
 
-func newRefusalCluster(t *testing.T, ctx context.Context, refuseLive int32) *refusalCluster {
+func newRefusalCluster(t *testing.T, ctx context.Context, refuseLive int32, locationReply ...[]byte) *refusalCluster {
 	t.Helper()
 	c := &refusalCluster{proxy: newIdentityPeer(t), storage: newIdentityPeer(t), refuseLive: refuseLive}
 	db := &database{
@@ -178,14 +179,17 @@ func newRefusalCluster(t *testing.T, ctx context.Context, refuseLive int32) *ref
 	c.tx = (&Database{db: db}).CreateTransaction()
 	c.tx.SetReadVersion(1)
 	t.Cleanup(func() { closeIdentityDatabase(db) })
-	c.serveLocations(t, ctx)
+	c.serveLocations(t, ctx, locationReply...)
 	return c
 }
 
-// serveLocations answers every location query with [a, z) on liveSSAddr.
-func (c *refusalCluster) serveLocations(t *testing.T, ctx context.Context) {
+// serveLocations repeats the configured reply, defaulting to [a, z) on liveSSAddr.
+func (c *refusalCluster) serveLocations(t *testing.T, ctx context.Context, locationReply ...[]byte) {
 	t.Helper()
 	reply := metricsReplacementLocationsReply(t, [2]string{"a", "z"})
+	if len(locationReply) > 0 {
+		reply = locationReply[0]
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -198,6 +202,7 @@ func (c *refusalCluster) serveLocations(t *testing.T, ctx context.Context) {
 			if req.UnmarshalFDB(f.body) != nil {
 				continue
 			}
+			c.locations.Add(1)
 			_ = transport.WriteFrame(c.proxy.server, replyToken(req.Reply.Token), reply, false)
 		}
 	}()
@@ -497,6 +502,373 @@ func TestReadLoopsPaceEncodedMaybeDelivered(t *testing.T) {
 	}
 }
 
+// Relocation must keep both peers; otherwise it can hide a sender that repeatedly
+// reselects the lower-metric 1030 responder.
+func retryReplicaLocations(t *testing.T) []byte {
+	t.Helper()
+	first := locationsReplyVector(t)
+	second := slices.Clone(first)
+	ep := slot2EndpointReader(t, second)
+	ip := ep
+	for _, slot := range []int{types.EndpointSlotAddresses, types.NetworkAddressListSlotAddress, types.NetworkAddressSlotIp} {
+		var err error
+		ip, err = ip.ReadNestedReader(slot)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	field := ip.ObjectPos() + ip.FieldOffset(types.IPAddressSlotAddr+1)
+	target := field + int(binary.LittleEndian.Uint32(second[field:]))
+	binary.LittleEndian.PutUint32(second[target:], 0x0a010204)
+	binary.LittleEndian.PutUint64(second[ep.ObjectPos()+ep.FieldOffset(types.EndpointSlotToken):], 0x7575757575757575)
+	_, server := firstLocation(t, first)
+	b := make([]byte, 8)
+	binary.LittleEndian.PutUint32(b[4:], types.GetKeyServerLocationsReplyFileID)
+	b, root := appendObject(b, 0, 9, 8, 4)
+	b[root+8] = 2
+	b, reply := appendObject(b, root+4, int(types.GetKeyServerLocationsReplyVTable[1]), types.GetKeyServerLocationsReplyVTable[2:]...)
+	results := len(b)
+	field = reply + int(types.GetKeyServerLocationsReplyVTable[2])
+	binary.LittleEndian.PutUint32(b[field:], uint32(results-field))
+	b = binary.LittleEndian.AppendUint32(b, 1)
+	slot := len(b)
+	b = binary.LittleEndian.AppendUint32(b, 0)
+	b, pair := appendObject(b, slot, int(types.LocationPairVTable[1]), types.LocationPairVTable[2:]...)
+	b, keyRange := appendObject(b, pair+int(types.LocationPairVTable[2]), int(types.KeyRangeRefVTable[1]), types.KeyRangeRefVTable[2:]...)
+	b = appendString(b, keyRange+int(types.KeyRangeRefVTable[2]), "a")
+	b = appendString(b, keyRange+int(types.KeyRangeRefVTable[3]), "z")
+	field = pair + int(types.LocationPairVTable[3])
+	binary.LittleEndian.PutUint32(b[field:], uint32(len(b)-field))
+	b = binary.LittleEndian.AppendUint32(b, 2)
+	slots := len(b)
+	b = append(b, make([]byte, 8)...)
+	for i, vector := range [][]byte{first, second} {
+		for len(b)%8 != 0 {
+			b = append(b, 0)
+		}
+		binary.LittleEndian.PutUint32(b[slots+4*i:], uint32(len(b)+server.ObjectPos()-slots-4*i))
+		b = append(b, vector...)
+	}
+	return b
+}
+
+func retryReplicaCluster(t *testing.T, ctx context.Context) (*refusalCluster, *identityPeer, []ServerInfo) {
+	t.Helper()
+	reply := retryReplicaLocations(t)
+	entries, err := parseGetKeyServerLocationsReply(reply)
+	if err != nil || len(entries) != 1 || len(entries[0].servers) != 2 {
+		t.Fatalf("two-peer location reply = %+v, %v", entries, err)
+	}
+	servers := entries[0].servers
+	if servers[0].Address != liveSSAddr || servers[1].Address != "10.1.2.4:4500" || servers[0].Token == servers[1].Token {
+		t.Fatalf("two distinct replica interfaces = %+v", servers)
+	}
+	c := newRefusalCluster(t, ctx, 0, reply)
+	backup := newIdentityPeer(t)
+	dial := c.db.dialFn
+	var once sync.Once
+	c.db.dialFn = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if addr != servers[1].Address {
+			return dial(ctx, network, addr)
+		}
+		var conn net.Conn
+		once.Do(func() { conn = backup.client })
+		if conn == nil {
+			return nil, errors.New("test: backup redialed")
+		}
+		return conn, nil
+	}
+	c.cache(servers...)
+	return c, backup, servers
+}
+
+// These seven affected paths also pin complete values, not only successful errors;
+// Watch is an eighth, already-progressing control.
+func retryReplicaReadOps() []readOp {
+	ops := storageReadOps()
+	plain := func(kvs []KeyValue, err error) error {
+		if err == nil && (len(kvs) != 1 || string(kvs[0].Key) != "k1" || string(kvs[0].Value) != "v1") {
+			return fmt.Errorf("plain rows = %v, want k1=v1", kvs)
+		}
+		return err
+	}
+	mapped := func(rows []MappedKeyValue, err error) error {
+		if err != nil {
+			return err
+		}
+		if len(rows) != 2 || string(rows[0].Key) != "idx_r" || string(rows[0].Value) != "pfx_r" || rows[0].Kind != MappedResultGetRange ||
+			len(rows[0].GetRange.Rows) != 2 || string(rows[0].GetRange.Rows[0].Key) != "pfx_r_1" || string(rows[0].GetRange.Rows[0].Value) != "sub_1" ||
+			string(rows[0].GetRange.Rows[1].Key) != "pfx_r_2" || string(rows[0].GetRange.Rows[1].Value) != "sub_2" || rows[0].GetRange.More ||
+			string(rows[1].Key) != "idx_e" || string(rows[1].Value) != "pfx_e" || rows[1].Kind != MappedResultGetRange || len(rows[1].GetRange.Rows) != 0 || rows[1].GetRange.More {
+			return fmt.Errorf("mapped rows = %+v, want both primary rows and exact secondary values", rows)
+		}
+		return nil
+	}
+	for i := range ops {
+		switch ops[i].name {
+		case "get range":
+			ops[i].run = func(ctx context.Context, tx *Transaction) error {
+				rows, more, _, err := tx.getRangeImpl(ctx, []byte("k"), []byte("l"), newRangeLimits(10, 0), 1, false)
+				if err == nil && more {
+					return errors.New("plain range unexpectedly reports more")
+				}
+				return plain(rows, err)
+			}
+		case "native range":
+			ops[i].run = func(ctx context.Context, tx *Transaction) error {
+				r, err := tx.nativeGetRangeAt(ctx, firstGreaterOrEqual([]byte("k")), firstGreaterOrEqual([]byte("l")), newRangeLimits(10, 0), 1, false)
+				if err == nil && r.more {
+					return errors.New("native range unexpectedly reports more")
+				}
+				return plain(r.kvs, err)
+			}
+		case "mapped range":
+			ops[i].run = func(ctx context.Context, tx *Transaction) error {
+				r, err := tx.getMappedRangeSelectors(ctx, mappedSelectorFGE([]byte("k")), mappedSelectorFGE([]byte("l")), []byte("m"), newMappedRangeLimits(2, ByteLimitUnlimited), 1, false)
+				if err == nil && !r.more {
+					return errors.New("mapped row limit did not report more")
+				}
+				return mapped(r.rows, err)
+			}
+		case "mapped range exact":
+			ops[i].run = func(ctx context.Context, tx *Transaction) error {
+				r, err := tx.getMappedRangeSelectorExact(ctx, []byte("k"), []byte("l"), []byte("m"), newMappedRangeLimits(2, ByteLimitUnlimited), 1, false)
+				if err == nil && !r.more {
+					return errors.New("mapped row limit did not report more")
+				}
+				return mapped(r.rows, err)
+			}
+		}
+	}
+	return append(ops, readOp{"mapped generic exact", func(ctx context.Context, tx *Transaction) error {
+		rows, more, err := tx.getMappedRangeImpl(ctx, []byte("k"), []byte("l"), []byte("m"), 2, ByteLimitUnlimited, 1, false)
+		if err == nil && !more {
+			return errors.New("generic mapped row limit did not report more")
+		}
+		return mapped(rows, err)
+	}, mappedRequestReply})
+}
+
+func TestReadHedgePacesFailuresNotCanceledLaggards(t *testing.T) {
+	t.Parallel()
+	cases := 0
+	for _, op := range retryReplicaReadOps() {
+		if op.name != "get value" && op.name != "get key" && op.name != "native range" {
+			continue
+		}
+		cases++
+		for _, mode := range []string{"refused", "reply-failure", "canceled-laggard"} {
+			t.Run(op.name+"/"+mode, func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
+				var c *refusalCluster
+				var backup *identityPeer
+				var servers []ServerInfo
+				if mode == "refused" {
+					c = newRefusalCluster(t, ctx, 0)
+					backup = c.storage
+					servers = []ServerInfo{{Address: refusedSSAddr, Token: liveSSToken}, {Address: liveSSAddr, Token: liveSSToken}}
+					c.cache(servers...)
+				} else {
+					c, backup, servers = retryReplicaCluster(t, ctx)
+				}
+				c.db.hedgeEnabled.Store(true)
+				sentinel := c.db.queueModel.startRequest(servers[1].Address)
+				withServer(c.db.queueModel, servers[1].Address, func(d *queueData) { d.smoothOutstanding.estimate = sentinel })
+				defer func() {
+					c.db.queueModel.endRequest(servers[1].Address, sentinel, 0, false)
+					if total := totalOf(c.db.queueModel, servers[1].Address); total != 0 {
+						t.Errorf("outstanding after sentinel release = %v, want 0", total)
+					}
+				}()
+				if mode == "canceled-laggard" {
+					setSecondState(c.db.queueModel, 1, 1)
+					withServer(c.db.queueModel, servers[0].Address, func(d *queueData) { d.latency = .1 })
+				}
+				var attempts []int
+				var delays []time.Duration
+				observe := func(n int, d time.Duration) { attempts = append(attempts, n); delays = append(delays, d) }
+				c.db.onReadBackoff.Store(&observe)
+				done := make(chan struct{})
+				var readErr error
+				go func() { defer close(done); readErr = op.run(ctx, c.tx) }()
+				defer func() { cancel(); <-done }()
+				if mode != "refused" {
+					if _, ok := c.storage.recv(ctx); !ok {
+						t.Fatal("primary request missing")
+					}
+					if mode == "reply-failure" {
+						_ = c.storage.server.Close()
+					}
+				}
+				frame, ok := backup.recv(ctx)
+				if !ok {
+					t.Fatal("backup request missing")
+				}
+				token, reply := op.reply(t, frame.body)
+				if err := transport.WriteFrame(backup.server, token, reply, false); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case <-done:
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+				if readErr != nil {
+					t.Fatalf("successful backup: %v", readErr)
+				}
+				if mode == "canceled-laggard" {
+					if len(attempts) != 0 || len(delays) != 0 {
+						t.Fatalf("canceled laggard counted as failure: %v %v", attempts, delays)
+					}
+				} else if !slices.Equal(attempts, []int{1}) || !slices.Equal(delays, []time.Duration{0}) {
+					t.Fatalf("one real failure hidden by successful hedge: attempts=%v delays=%v", attempts, delays)
+				}
+				if a, b := totalOf(c.db.queueModel, servers[0].Address), totalOf(c.db.queueModel, servers[1].Address); a != 0 || b != sentinel {
+					t.Fatalf("hedge outstanding = %v,%v, want 0,%v", a, b, sentinel)
+				}
+				if c.db.failMon.isFailed(servers[0].Address) != (mode != "canceled-laggard") {
+					t.Fatalf("wrong primary failure state for %s", mode)
+				}
+			})
+		}
+	}
+	if cases != 3 {
+		t.Fatalf("hedge sender population = %d, want Get/GetKey/range", cases)
+	}
+}
+
+func TestReadLoopsAdvancePastEncodedMaybeDelivered(t *testing.T) {
+	t.Parallel()
+	ops := retryReplicaReadOps()
+	if len(ops) != 8 {
+		t.Fatalf("retry population = %d, want seven affected paths plus Watch", len(ops))
+	}
+	for _, op := range ops {
+		for _, allMaybe := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/all-maybe=%t", op.name, allMaybe), func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
+				c, backup, servers := retryReplicaCluster(t, ctx)
+				c.db.hedgeEnabled.Store(false)
+				sentinel := c.db.queueModel.startRequest(servers[1].Address)
+				withServer(c.db.queueModel, servers[1].Address, func(d *queueData) { d.smoothOutstanding.estimate = sentinel })
+				defer func() {
+					c.db.queueModel.endRequest(servers[1].Address, sentinel, 0, false)
+					if total := totalOf(c.db.queueModel, servers[1].Address); total != 0 {
+						t.Errorf("outstanding after sentinel release = %v, want 0", total)
+					}
+				}()
+				if best, second := c.db.queueModel.chooseTopTwo(servers); best != 0 || second != 1 {
+					t.Fatalf("positive selection control = %d,%d, want lower-metric A then busier B", best, second)
+				}
+				var attempts []int
+				var delays []time.Duration
+				var pacedAt []time.Time
+				observe := func(n int, d time.Duration) {
+					attempts = append(attempts, n)
+					delays = append(delays, d)
+					pacedAt = append(pacedAt, time.Now())
+				}
+				c.db.onReadBackoff.Store(&observe)
+				done := make(chan struct{})
+				var readErr error
+				go func() { defer close(done); readErr = op.run(ctx, c.tx) }()
+				defer func() { cancel(); <-done }()
+				count := 2
+				if allMaybe {
+					count = 4
+				}
+				var receivedAt []time.Time
+				for i := range count {
+					var frame identityFrame
+					var peer *identityPeer
+					select {
+					case frame = <-c.storage.frames:
+						peer = c.storage
+					case frame = <-backup.frames:
+						peer = backup
+					case <-done:
+						t.Fatalf("read completed before request %d: %v", i+1, readErr)
+					case <-ctx.Done():
+						t.Fatalf("request %d: %v", i+1, ctx.Err())
+					}
+					receivedAt = append(receivedAt, time.Now())
+					if (peer == c.storage) != (i%2 == 0) {
+						t.Fatalf("request %d revisited a peer before its alternative; want A,B passes", i+1)
+					}
+					endpoint := EndpointGetValue
+					switch op.name {
+					case "get key":
+						endpoint = EndpointGetKey
+					case "get range", "native range":
+						endpoint = EndpointGetKeyValues
+					case "mapped range", "mapped range exact", "mapped generic exact":
+						endpoint = EndpointGetMappedKeyValues
+					case "watch":
+						endpoint = EndpointWatchValue
+					}
+					if want := getAdjustedEndpoint(servers[i%2].Token, endpoint); frame.token != want {
+						t.Fatalf("request %d endpoint = %v, want %v", i+1, frame.token, want)
+					}
+					token, reply := op.reply(t, frame.body)
+					if i < count-1 {
+						reply = (&types.ErrorOrError{ErrorCode: 1030}).MarshalFDB()
+					}
+					if err := transport.WriteFrame(peer.server, token, reply, false); err != nil {
+						t.Fatal(err)
+					}
+				}
+				select {
+				case <-done:
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+				if readErr != nil {
+					t.Fatalf("read through healthy busier backup: %v", readErr)
+				}
+				wantAttempts, wantDelays := []int{1}, []time.Duration{0}
+				wantLocations := int32(0)
+				if allMaybe {
+					wantAttempts, wantDelays = []int{1, 2, 3}, []time.Duration{0, 10 * time.Millisecond, 20 * time.Millisecond}
+					wantLocations = 1
+				}
+				if !slices.Equal(attempts, wantAttempts) || !slices.Equal(delays, wantDelays) {
+					t.Fatalf("attempts=%v delays=%v, want %v %v", attempts, delays, wantAttempts, wantDelays)
+				}
+				for i, delay := range delays {
+					if elapsed := receivedAt[i+1].Sub(pacedAt[i]); elapsed < delay {
+						t.Fatalf("attempt %d next request after %v, want >= %v", i+1, elapsed, delay)
+					}
+				}
+				if got := c.locations.Load(); got != wantLocations {
+					t.Fatalf("relocations = %d, want %d", got, wantLocations)
+				}
+				if a, b := totalOf(c.db.queueModel, servers[0].Address), totalOf(c.db.queueModel, servers[1].Address); a != 0 || b != sentinel {
+					t.Fatalf("outstanding A=%v B=%v, want 0 and preserved %v", a, b, sentinel)
+				}
+				for _, server := range servers {
+					if c.db.failMon.isFailed(server.Address) {
+						t.Fatalf("encoded 1030 failed address %s", server.Address)
+					}
+					withServer(c.db.queueModel, server.Address, func(d *queueData) {
+						if d.failedUntil != 0 || d.futureVersionBackoff != futureVersionInitialBackoff {
+							t.Errorf("1030 created QueueModel failure state: %+v", d)
+						}
+					})
+				}
+				for _, endpoint := range []int{EndpointGetValue, EndpointGetKey, EndpointGetKeyValues, EndpointGetMappedKeyValues, EndpointWatchValue} {
+					if live, ok := c.db.failMon.liveServers(servers, endpoint); !ok || len(live) != 2 {
+						t.Fatalf("1030 excluded endpoint %d: %+v %t", endpoint, live, ok)
+					}
+				}
+			})
+		}
+	}
+}
+
 // getValue and watch try every replica in one pass; each refused request is one loadBalance
 // attempt, so the backoff starts after the pass (LoadBalance.actor.h:301-308, 682-686, 721-725).
 func TestReadPacesEachRefusedReplica(t *testing.T) {
@@ -572,11 +944,11 @@ func TestStorageSendRefusedIsMaybeDelivered(t *testing.T) {
 		send func(ctx context.Context, tx *Transaction) error
 	}{
 		{"get key", func(ctx context.Context, tx *Transaction) error {
-			_, _, _, err := tx.sendGetKey(ctx, 1, []byte("k"), false, 1, servers, readTagSample{}, nil)
+			_, _, _, err := tx.sendGetKey(ctx, 1, []byte("k"), false, 1, servers[:1], readTagSample{}, nil)
 			return err
 		}},
 		{"get range", func(ctx context.Context, tx *Transaction) error {
-			_, _, err := sendRangeRPC(tx, ctx, KeySelector{Key: []byte("k")}, KeySelector{Key: []byte("l")}, newRangeLimits(10, 0), 1, false, servers, readTagSample{}, plainRangeRPCOps)
+			_, _, err := sendRangeRPC(tx, ctx, KeySelector{Key: []byte("k")}, KeySelector{Key: []byte("l")}, newRangeLimits(10, 0), 1, false, servers[:1], readTagSample{}, plainRangeRPCOps)
 			return err
 		}},
 	} {

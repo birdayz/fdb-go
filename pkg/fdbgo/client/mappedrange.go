@@ -233,9 +233,9 @@ var mappedRangeScanOps = rangeScanOps[MappedKeyValue]{
 	},
 }
 
-func (tx *Transaction) sendGetMappedRange(mapper []byte) func(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo, tags readTagSample) ([]MappedKeyValue, bool, error) {
-	return func(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo, tags readTagSample) ([]MappedKeyValue, bool, error) {
-		return sendRangeRPC(tx, ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), limits, readVersion, reverse, servers, tags, rangeRPCOps[MappedKeyValue]{
+func (tx *Transaction) sendGetMappedRange(mapper []byte) func(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo, tags readTagSample, lb lbRetry) ([]MappedKeyValue, bool, error, lbRetry) {
+	return func(ctx context.Context, begin, end []byte, limits rangeLimits, readVersion int64, reverse bool, servers []ServerInfo, tags readTagSample, lb lbRetry) ([]MappedKeyValue, bool, error, lbRetry) {
+		rows, more, err := sendRangeRPCPaced(tx, ctx, firstGreaterOrEqual(begin), firstGreaterOrEqual(end), limits, readVersion, reverse, servers, tags, rangeRPCOps[MappedKeyValue]{
 			// getMappedKeyValues is adjusted endpoint 14, NOT 3. The field is
 			// DECLARED immediately after getKeyValues (StorageServerInterface.h:103)
 			// but is assigned getAdjustedEndpoint(14) (:184-185) — it was appended
@@ -246,7 +246,8 @@ func (tx *Transaction) sendGetMappedRange(mapper []byte) func(ctx context.Contex
 			build:    buildGetMappedKeyValuesRequest(mapper),
 			putBuf:   func(bufp *[]byte) { getMappedKeyValuesBufPool.Put(bufp) },
 			parse:    parseGetMappedKeyValuesReply,
-		})
+		}, &lb)
+		return rows, more, err, lb
 	}
 }
 

@@ -43,6 +43,7 @@ type crFixture struct {
 	prefix      []byte
 	n           int
 	valueSize   int
+	double      bool
 }
 
 func (f crFixture) key(i int) []byte {
@@ -135,6 +136,9 @@ func startCRCluster(t *testing.T, ctx context.Context, f *crFixture, opts ...tes
 	t.Helper()
 	startup, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
+	if f.double {
+		opts = append(opts, foundationdbtc.WithoutInit())
+	}
 	container, err := foundationdbtc.Run(startup, "", append([]testcontainers.ContainerCustomizer{foundationdbtc.WithDirectIP()}, opts...)...)
 	if err != nil {
 		if foundationdbtc.SkipWithoutDocker(err) {
@@ -147,6 +151,9 @@ func startCRCluster(t *testing.T, ctx context.Context, f *crFixture, opts ...tes
 		defer cancel()
 		foundationdbtc.TerminateT(t, stop, container)
 	})
+	if f.double {
+		bootstrapCRDouble(t, startup, container)
+	}
 	content, err := container.ClusterFile(startup)
 	if err != nil {
 		t.Fatal(err)
@@ -176,6 +183,50 @@ func startCRCluster(t *testing.T, ctx context.Context, f *crFixture, opts ...tes
 		}); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
+	}
+}
+
+// Dedicated logs must exist before initial recruitment: storage-class processes
+// otherwise take log roles and cannot safely form the two-process fault team.
+func bootstrapCRDouble(t *testing.T, ctx context.Context, container *foundationdbtc.Container) {
+	t.Helper()
+	host, _, err := net.SplitHostPort(container.InternalAddress())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, class := range []string{"log", "log", "log", "storage", "storage"} {
+		port := container.FDBPort() + i + 1
+		dir := fmt.Sprintf("/var/fdb/data/connrefused%d", i+1)
+		cmd := fmt.Sprintf(
+			"mkdir -p %s && fdbserver --listen-address 0.0.0.0:%d --public-address %s "+
+				"--cluster-file /var/fdb/fdb.cluster --datadir %s --logdir /var/fdb/logs "+
+				"--class %s --knob_disable_posix_kernel_aio=1 >/var/fdb/logs/connrefused%d.out 2>&1 &",
+			dir, port, net.JoinHostPort(host, strconv.Itoa(port)), dir, class, i+1)
+		if _, err := containerExec(ctx, container, cmd); err != nil {
+			t.Fatalf("start dedicated %s process on port %d: %v", class, port, err)
+		}
+		ready, cancel := context.WithTimeout(ctx, 15*time.Second)
+		ticker := time.NewTicker(20 * time.Millisecond)
+		addr := net.JoinHostPort(host, strconv.Itoa(port))
+		for {
+			conn, err := (&net.Dialer{Timeout: time.Second}).DialContext(ready, "tcp", addr)
+			if err == nil {
+				conn.Close()
+				break
+			}
+			select {
+			case <-ready.Done():
+				ticker.Stop()
+				cancel()
+				t.Fatalf("dedicated %s process did not listen on %s before configure-new: %v", class, addr, err)
+			case <-ticker.C:
+			}
+		}
+		ticker.Stop()
+		cancel()
+	}
+	if err := container.InitializeDatabase(ctx); err != nil {
+		t.Fatalf("initialize double cluster with dedicated log and storage processes: %v", err)
 	}
 }
 
@@ -470,8 +521,10 @@ type crWorker struct {
 
 func startCRWorker(t *testing.T, ctx context.Context, f crFixture, client, kind string, key int) *crWorker {
 	t.Helper()
-	w := &crWorker{cfg: crWorkerConfig{Client: client, Kind: kind, ClusterFile: f.clusterFile,
-		Prefix: string(f.prefix), Dir: t.TempDir(), N: f.n, ValueSize: f.valueSize, Key: key}, done: make(chan struct{})}
+	w := &crWorker{cfg: crWorkerConfig{
+		Client: client, Kind: kind, ClusterFile: f.clusterFile,
+		Prefix: string(f.prefix), Dir: t.TempDir(), N: f.n, ValueSize: f.valueSize, Key: key,
+	}, done: make(chan struct{})}
 	if err := os.Mkdir(filepath.Join(w.cfg.Dir, "trace"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -699,8 +752,8 @@ func TestLibFDBC_ConnectRefusedReplicaUsesAnotherReplica(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
-	f := crFixture{prefix: []byte(t.Name() + "/"), n: 20, valueSize: 64}
-	startCRCluster(t, ctx, &f, foundationdbtc.WithProcessCount(4), foundationdbtc.WithRedundancyMode("double"))
+	f := crFixture{prefix: []byte(t.Name() + "/"), n: 20, valueSize: 64, double: true}
+	startCRCluster(t, ctx, &f, foundationdbtc.WithRedundancyMode("double"))
 	for _, client := range []string{"pure-Go", "libfdb_c"} {
 		for _, kind := range readKinds {
 			k, team := pickStorageTeam(t, ctx, f, 2)
@@ -732,7 +785,6 @@ func TestLibFDBC_ConnectRefusedReplicaUsesAnotherReplica(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cdb.Close()
 	setter, err := gofdb.OpenDatabase(f.clusterFile)
 	if err != nil {
 		t.Fatal(err)

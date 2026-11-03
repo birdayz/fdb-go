@@ -2,11 +2,13 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"math"
 	"os"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire"
@@ -475,4 +477,156 @@ func TestReplyGroundTruth(t *testing.T) {
 			t.Errorf("asserter %s has no vector in testdata.json", name)
 		}
 	}
+}
+
+func requireNativeConflictBounds(t *testing.T, m *conflictingKeyMap, bounds ...string) {
+	t.Helper()
+	if m == nil || len(m.entries) != len(bounds) {
+		t.Fatalf("conflict map=%+v, want %d boundaries", m, len(bounds))
+	}
+	for i, bound := range bounds {
+		wantKey := append(bytes.Clone(conflictingKeysBegin), bound...)
+		wantValue := "1"
+		if i%2 != 0 {
+			wantValue = "0"
+		}
+		if !bytes.Equal(m.entries[i].Key, wantKey) || string(m.entries[i].Value) != wantValue {
+			t.Fatalf("conflict boundary %d=%q/%q, want %q/%q", i, m.entries[i].Key, m.entries[i].Value, wantKey, wantValue)
+		}
+	}
+}
+
+// Gate after decoding: Reset cancels a wire wait before it can test stale publication.
+func TestNativeConflictPublicationUsesCommittingIncarnation(t *testing.T) {
+	t.Parallel()
+	for _, reset := range []bool{false, true} {
+		name := "live"
+		if reset {
+			name = "replaced"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			tx := &Transaction{}
+			defer tx.Cancel()
+			lease := tx.enterState()
+			tx.readErrMu.Lock()
+			completion := tx.newVersionstampLocked(lease.inc)
+			completion.claimed = true
+			tx.readErrMu.Unlock()
+			lease.release()
+			retained := newConflictingKeyMap([]int32{0}, []KeyRange{{Begin: []byte("q"), End: []byte("r")}})
+			tx.conflictingKeys.Store(retained)
+			result, err := parseCommitOutcome(replyVector(t, "CommitID_conflict"))
+			assertFDBErrorCode(t, err, 1020)
+			if !result.conflictReply || !result.hasConflictIndices || len(result.conflictIndices) != 2 || result.conflictIndices[0] != 0 || result.conflictIndices[1] != 2 {
+				t.Fatalf("decoded conflict outcome=%+v, want indices [0 2]", result)
+			}
+			result.conflictingKeys = newConflictingKeyMap(result.conflictIndices, []KeyRange{
+				{Begin: []byte("a"), End: []byte("b")},
+				{Begin: []byte("c"), End: []byte("d")},
+				{Begin: []byte("e"), End: []byte("f")},
+			})
+			decoded, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			go func() {
+				defer close(done)
+				close(decoded)
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return
+				}
+				tx.readErrMu.Lock()
+				tx.finishNativeCommitLocked(completion, result, err)
+				tx.readErrMu.Unlock()
+			}()
+			<-decoded
+			if reset {
+				tx.Reset()
+				if tx.conflictingKeys.Load() != retained {
+					t.Fatal("Reset dropped the retained conflict map")
+				}
+				lease := tx.enterState()
+				if lease.inc == completion.inc {
+					t.Fatal("Reset did not replace the committing incarnation")
+				}
+				lease.release()
+				retained = newConflictingKeyMap([]int32{0}, []KeyRange{{Begin: []byte("r"), End: []byte("s")}})
+				tx.conflictingKeys.Store(retained)
+			}
+			close(release)
+			select {
+			case <-done:
+			case <-ctx.Done():
+				t.Fatal("decoded native completion did not finish")
+			}
+			if reset {
+				if tx.conflictingKeys.Load() != retained {
+					t.Fatal("retired native conflict replaced the successor's map")
+				}
+				requireNativeConflictBounds(t, tx.conflictingKeys.Load(), "r", "s")
+				assertFDBErrorCode(t, completion.err, ErrTransactionCancelled)
+			} else {
+				if tx.conflictingKeys.Load() != result.conflictingKeys {
+					t.Fatal("live native conflict was not published")
+				}
+				requireNativeConflictBounds(t, tx.conflictingKeys.Load(), "a", "b", "e", "f")
+				assertFDBErrorCode(t, completion.err, 2020)
+			}
+		})
+	}
+}
+
+func TestNativeConflictPublicationFromWire(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	peer := newIdentityPeer(t)
+	db, _ := identityDatabase(ctx, peer)
+	defer closeIdentityDatabase(db)
+	db.dbInfo.Store(&DBInfo{CommitProxies: []ProxyInfo{{Address: armAddr, Token: armToken}}})
+	db.minAcceptableReadVersion.Store(&minAcceptableStamp{epoch: db.grvCache.epochNow(), version: 1})
+	tx := (&Database{db: db}).CreateTransaction()
+	defer tx.Cancel()
+	tx.SetReadVersion(1)
+	tx.SetReportConflictingKeys()
+	for _, kr := range []KeyRange{
+		{Begin: []byte("a"), End: []byte("b")},
+		{Begin: []byte("c"), End: []byte("d")},
+		{Begin: []byte("e"), End: []byte("f")},
+	} {
+		if err := tx.AddReadConflictRange(kr.Begin, kr.End); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tx.Set([]byte("a"), []byte("v"))
+	done := make(chan error, 1)
+	go func() { done <- tx.Commit(ctx) }()
+	frame, ok := peer.recv(ctx)
+	if !ok {
+		t.Fatal("native commit did not reach the proxy")
+	}
+	var req types.CommitTransactionRequest
+	if err := req.UnmarshalFDB(frame.body); err != nil {
+		t.Fatal(err)
+	}
+	if !req.Transaction.Report_conflicting_keys || len(req.Transaction.ReadConflictRanges) != 3 {
+		t.Fatalf("commit report flag=%t reads=%+v, want three captured ranges", req.Transaction.Report_conflicting_keys, req.Transaction.ReadConflictRanges)
+	}
+	for i, bounds := range [][2]string{{"a", "b"}, {"c", "d"}, {"e", "f"}} {
+		if got := req.Transaction.ReadConflictRanges[i]; string(got.Begin) != bounds[0] || string(got.End) != bounds[1] {
+			t.Fatalf("wire read %d=%+v, want %v", i, got, bounds)
+		}
+	}
+	if err := transport.WriteFrame(peer.server, replyToken(req.Reply.Token), replyVector(t, "CommitID_conflict"), false); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		assertFDBErrorCode(t, err, 1020)
+	case <-ctx.Done():
+		t.Fatal("native conflict commit did not finish")
+	}
+	requireNativeConflictBounds(t, tx.conflictingKeys.Load(), "a", "b", "e", "f")
 }

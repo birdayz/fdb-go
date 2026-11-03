@@ -328,6 +328,8 @@ type txOptions struct {
 	// afterRangeReply parks an issued range read after a storage reply, before
 	// it merges the reply or records its conflict.
 	afterRangeReply func()
+	// beforeSpecialKeyRead parks a routed read after state admission, before its snapshot.
+	beforeSpecialKeyRead func()
 	// beforeReadConflict pauses a completed read before publishing its conflicts.
 	beforeReadConflict func()
 	// nativeRange, when set, replaces nativeGetRange under the RYW walk (a test seam
