@@ -33,6 +33,19 @@ Each campaign's reports live in a folder named after the campaign.
   efficiency and 89.5% ACK efficiency. The report covers the root causes found
   on the way (TLog memory monitor, cold-range hotspot, topology) and the run's
   limits (one run, not sustained, no HA).
+- [GenAI/OTel collector ingest 1x/2x/3x on Kubernetes + Cilium](otel-genai-collector-ingest-k8s-scaling.md):
+  the same six-host setup running a sustained 10-minute Collector pipeline
+  (spans, correlated logs, deduplicated messages with a TEXT index, queries
+  under load; 600 s including 60 s warmup). Nine measured runs
+  (`k8s-fts6`..`k8s-fts13`, `k8s-fts14c`) for PR #1023 took 1x from
+  666 to 2,785 spans/s and 3x to 8,178 spans/s (97.9% efficiency), and cut
+  storage mutations from 34 to 6.6 KB per span at 1x. Producers use independent
+  stores in one shared FDB cluster per stage. `fts14c` had zero ingest/query
+  failures, but its original cleanup gate failed; a later read-only inventory
+  recheck passed. These experiments are not correctness evidence. The report
+  traces the bottlenecks in order (storage-bound layout, client CPU, single-flight
+  writers, TEXT read round trips) and includes a box-3 CPU profile of the
+  remaining cost.
 
 The two 2026-10-14 campaigns keep their frozen protocol versions under `protocol/`
 ([single-node](hcloud-rebench-20261014/protocol/),
