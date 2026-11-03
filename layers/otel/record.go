@@ -19,21 +19,23 @@ import (
 // Message storage layouts, part of a run's stored layout identity.
 const (
 	messagesNone     = ""
-	messagesDeltas   = "deltas"   // Message records; spans carry manifests
-	messagesFullText = "fulltext" // plus the message TEXT index and span back references
+	messagesDeltas   = "deltas"      // Message records; spans carry manifests
+	messagesFullText = "fulltext_v2" // plus the message TEXT index and span back references
 )
 
 // Index subspace keys of the message layout are small integers so every
 // index key carries two bytes of prefix instead of the index name.
 const (
-	messageHashIndexName     = "message_hash_v1"
-	messageLargeIndexName    = "message_large_v1"
-	messageTextIndexName     = "message_text_v1"
-	envelopeMessageIndexName = "envelope_message_v1"
-	messageTextIndexKey      = int64(20)
-	envelopeMessageIndexKey  = int64(21)
-	messageHashIndexKey      = int64(23)
-	messageLargeIndexKey     = int64(24)
+	messageHashIndexName  = "message_hash_v1"
+	messageLargeIndexName = "message_large_v1"
+	messageTextIndexName  = "message_text_v1"
+	envelopeRefsIndexName = "envelope_refs_v1"
+	messageTextIndexKey   = int64(20)
+	envelopeRefsIndexKey  = int64(22)
+	messageHashIndexKey   = int64(23)
+	messageLargeIndexKey  = int64(24)
+	// messageTraceTypeKey leads every MessageTrace primary key.
+	messageTraceTypeKey = "mt"
 )
 
 var (
@@ -65,25 +67,26 @@ func recordFile(messages string) (protoreflect.FileDescriptor, error) {
 		}
 		const (
 			i64   = descriptorpb.FieldDescriptorProto_TYPE_INT64
-			boolT = descriptorpb.FieldDescriptorProto_TYPE_BOOL
 			str   = descriptorpb.FieldDescriptorProto_TYPE_STRING
 			bytes = descriptorpb.FieldDescriptorProto_TYPE_BYTES
 		)
 		envelope := func(withMessages bool) *descriptorpb.DescriptorProto {
 			d := &descriptorpb.DescriptorProto{Name: proto.String("Envelope"), Field: []*descriptorpb.FieldDescriptorProto{field("tenant", 1, i64), field("trace_id", 2, str), field("span_id", 3, str), field("start_ns", 4, i64), field("otlp", 5, bytes), field("ordinal", 6, i64)}}
 			if withMessages {
-				// The messages this span references (messages.go).
-				d.Field = append(d.Field, message("messages", ".otelbench.MessageRef", 7, true))
+				// The messages this span references, packed (messages.go).
+				d.Field = append(d.Field, message("ref_chunks", ".otelbench.RefChunk", 8, true))
 			}
 			return d
 		}
 		base := &descriptorpb.FileDescriptorProto{Name: proto.String("otelbench.proto"), Package: proto.String("otelbench"), Syntax: proto.String("proto2"), MessageType: []*descriptorpb.DescriptorProto{envelope(false), {Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{message("envelope", ".otelbench.Envelope", 1, false)}}}}
 		withMessages := &descriptorpb.FileDescriptorProto{Name: proto.String("otelbench.proto"), Package: proto.String("otelbench"), Syntax: proto.String("proto2"), MessageType: []*descriptorpb.DescriptorProto{
 			envelope(true),
-			{Name: proto.String("MessageRef"), Field: []*descriptorpb.FieldDescriptorProto{field("writer", 1, i64), field("seq", 2, i64), field("attribute", 3, i64), field("newest", 4, boolT), repeatedField("ordinals", 5, i64)}},
+			{Name: proto.String("RefChunk"), Field: []*descriptorpb.FieldDescriptorProto{field("chunk", 1, i64), field("refs", 2, bytes)}},
+			// A message occurs in a trace (messages.go).
+			{Name: proto.String("MessageTrace"), Field: []*descriptorpb.FieldDescriptorProto{field("tenant", 1, i64), field("writer", 2, i64), field("seq", 3, i64), field("trace_id", 4, str)}},
 			// One part of a stored message (messages.go); part 0 carries the header.
 			{Name: proto.String("Message"), Field: []*descriptorpb.FieldDescriptorProto{field("tenant", 1, i64), field("writer", 2, i64), field("seq", 3, i64), field("part", 4, i64), field("hash", 5, bytes), field("role", 6, str), field("text", 7, str), field("token_offset", 8, i64), field("raw", 9, bytes), field("encoding", 10, str), field("raw_bytes", 11, i64), field("parts", 12, i64), field("unindexed_tokens", 13, i64), repeatedField("large", 14, i64), field("shard", 15, i64)}},
-			{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{message("envelope", ".otelbench.Envelope", 1, false), message("message", ".otelbench.Message", 2, false)}},
+			{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{message("envelope", ".otelbench.Envelope", 1, false), message("message", ".otelbench.Message", 2, false), message("message_trace", ".otelbench.MessageTrace", 3, false)}},
 		}}
 		for i, fdp := range []*descriptorpb.FileDescriptorProto{base, withMessages} {
 			fd, err := protodesc.NewFile(fdp, nil)
@@ -131,6 +134,9 @@ func metadata(c Config) (*recordlayer.RecordMetaData, *recordlayer.Index, error)
 	b.AddIndex("Envelope", recordlayer.NewIndex(timeIndexName, recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.Field("start_ns"), recordlayer.Field("trace_id"))))
 	if c.Messages != messagesNone {
 		b.GetRecordType("Message").SetPrimaryKey(recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.Field("writer"), recordlayer.Field("seq"), recordlayer.Field("part")))
+		// The string record type key keeps markers apart from the other
+		// records, whose primary keys start with the integer tenant.
+		b.GetRecordType("MessageTrace").SetRecordTypeKey(messageTraceTypeKey).SetPrimaryKey(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("tenant"), recordlayer.Field("writer"), recordlayer.Field("seq"), recordlayer.Field("trace_id")))
 		// (tenant, digest) -> message; only part 0 has a digest, and a unique
 		// index ignores the null digests of other parts.
 		dedup := recordlayer.NewIndex(messageHashIndexName, recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.Field("hash")))
@@ -144,10 +150,11 @@ func metadata(c Config) (*recordlayer.RecordMetaData, *recordlayer.Index, error)
 		text.SetOption(recordlayer.IndexOptionTextTokenizerName, messageTokenizerName)
 		text.SetSubspaceKey(messageTextIndexKey)
 		b.AddIndex("Message", text)
-		// (tenant, writer, seq, newest, attribute, (ordinals), start_ns) ->
-		// span: every (span, attribute) reference of a message.
-		refs := recordlayer.NewIndex(envelopeMessageIndexName, recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.NestFanOut("messages", recordlayer.Concat(recordlayer.Field("writer"), recordlayer.Field("seq"), recordlayer.Field("newest"), recordlayer.Field("attribute"), recordlayer.FieldConcatenate("ordinals"))), recordlayer.Field("start_ns")))
-		refs.SetSubspaceKey(envelopeMessageIndexKey)
+		// (tenant, trace_id, start_ns, chunk, span_id) -> packed references:
+		// one entry per span (per 16KB of references), so a trace's spans and
+		// what they reference are one range.
+		refs := recordlayer.NewIndex(envelopeRefsIndexName, recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.Field("trace_id"), recordlayer.Field("start_ns"), recordlayer.NestFanOut("ref_chunks", recordlayer.Concat(recordlayer.Field("chunk"), recordlayer.Field("refs")))), 4))
+		refs.SetSubspaceKey(envelopeRefsIndexKey)
 		b.AddIndex("Envelope", refs)
 		// (tenant) -> multi-part messages: only their part 0 has a large
 		// element, so other messages add no entry.

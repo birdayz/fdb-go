@@ -545,9 +545,10 @@ and `canceled` errors and drops `config`, `admission`, `ownership`,
 attributes) once per tenant as a `Message` record, and replace the attribute
 value with a manifest of message IDs. `LoadSpanOTLP` restores the original
 value byte for byte. The layout is stored run identity: the owner manifest
-records `"messages": "deltas"` or `"fulltext"`, and a run written without it,
-including one written by the earlier `msg_blob_v1` blob layout, is refused
-before any read.
+records `"messages": "deltas"` or `"fulltext_v2"`, and a run written without it,
+including one written by the earlier `msg_blob_v1` blob layout or by the
+`"fulltext"` layout with one index entry per reference, is refused before any
+read.
 
 * **Records and keys.** A message ID is `(writer, seq)`. A message transaction
   holds one writer exclusively and numbers its new messages in order, so the
@@ -586,19 +587,27 @@ before any read.
   checks every multi-part message (`message_large_v1`) for terms in different
   segments; that check costs one bounded scan per multi-part message and term.
 * **Back references.** `fulltext` lists on each span every message it
-  references (`Envelope.messages`: writer, seq, attribute code, the message's
-  positions in the span's first value of that attribute, and whether it is
-  that value's newest element). The list depends only on the span, so it is
-  written blind with the span and replaced with it; there is no cross-span
-  read and no ordering between export calls. `envelope_message_v1` indexes it
-  as `(tenant, writer, seq, newest, attribute, (positions), start_ns)`. A query
-  reads one range per matching message, all ranges in flight together, and
-  loads no span record. `FirstTurnOnly` keeps the references in which the
-  message is the newest element, which is the turn that introduced it
-  whatever order the spans arrive in. The cost is one index entry per
-  (span, attribute, message): turn k of a conversation references its whole
-  history, so a conversation of n turns has O(n^2) entries (bench, 12 turns:
-  about 17 references and 1.8 KB of mutations per span).
+  references, packed (`Envelope.ref_chunks`: writer, seq, attribute code, the
+  message's positions in the span's first value of that attribute, and
+  whether it is that value's newest element). The list depends only on the
+  span, so it is written blind with the span and replaced with it.
+  `envelope_refs_v1` keeps it as the value of one entry per span (per 16 KB of
+  references) under `(tenant, trace_id, start_ns)`, so a trace's spans and
+  their references are one range. A `MessageTrace` record per (message,
+  trace) names the traces a message occurs in; an export call saves the ones
+  it does not find (snapshot read, before its spans commit; a backend
+  remembers up to 2^18 it knows to be stored). Concurrent writers of one marker
+  conflict on the save's existence read, and the retry finds it. A marker
+  outlives a span that stops referencing the message, which costs a query
+  only a range it filters out. A query reads each matching message's markers,
+  then each of their traces' reference entries, every range of a round in
+  flight together, and loads no span record. `FirstTurnOnly` keeps the
+  references in which the message is the newest element, which is the turn
+  that introduced it whatever order the spans arrive in. Turn k of a
+  conversation references its whole history: that costs one mutation per
+  span and O(k) value bytes, plus one marker per new message of the trace
+  (bench, 12 turns: 2.2 markers and 0.6 KB of mutations per span, against
+  15.7 mutations and 1.8 KB for one index entry per reference).
 * **Queries.** `QueryMessageFullText` and `TraceExistentialQuery.MessageClauses`
   match message text with the Record Layer's `TextScan` (ALL, ANY and PHRASE,
   leapfrog intersections). Hits name the message by `message_id`

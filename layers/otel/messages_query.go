@@ -446,13 +446,48 @@ func messageRefKey(order, trace, span string, start int64, attribute int64, id m
 	return t.Pack()
 }
 
-// messageRefReads bounds the reference range reads in flight at once.
+// messageRefReads bounds the range reads in flight at once.
 const messageRefReads = 256
 
+// pipelinedRanges reads every range with up to messageRefReads in flight,
+// at most limit() entries each, charging each entry to budget, and passes
+// range i's entries to visit.
+func pipelinedRanges(ctx context.Context, tx fdb.ReadTransaction, ranges []fdb.KeyRange, budget *queryBudget, visit func(i int, kv fdb.KeyValue) error) error {
+	const op = "message full-text query"
+	for lo := 0; lo < len(ranges); lo += messageRefReads {
+		if err := canceled(ctx, op); err != nil {
+			return err
+		}
+		hi := min(lo+messageRefReads, len(ranges))
+		// No range returns more entries than the budget has left.
+		limit := max(budget.maxCandidates-budget.candidates, 0) + 1
+		pending := make([]fdb.RangeResult, hi-lo)
+		for i := lo; i < hi; i++ {
+			pending[i-lo] = tx.GetRange(ranges[i], fdb.RangeOptions{Limit: limit, Mode: fdb.StreamingModeWantAll})
+		}
+		for i := lo; i < hi; i++ {
+			rows, err := pending[i-lo].GetSliceWithError()
+			if err != nil {
+				return err
+			}
+			for _, kv := range rows {
+				if err := budget.charge(kv); err != nil {
+					return err
+				}
+				if err := visit(i, kv); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // messageRefs returns every reference of the plan's matching messages inside
-// the window, unordered. Each matching message's references are one range of
-// envelope_message_v1 (the newest ones only for FirstTurnOnly); the ranges are
-// read concurrently and need no span record.
+// the window, unordered. A message's MessageTrace records name the traces it
+// occurs in; each such trace's envelope_refs_v1 range lists every span of
+// the trace with the references it holds. Both rounds of ranges are read
+// concurrently, and no span record is loaded.
 func (b *FDBBackend) messageRefs(ctx context.Context, store *recordlayer.FDBRecordStore, plan *messageQueryPlan, w timeWindow, budget *queryBudget) ([]messageRef, error) {
 	const op = "message full-text query"
 	cands, err := b.matchMessages(ctx, store, plan, budget)
@@ -460,82 +495,95 @@ func (b *FDBBackend) messageRefs(ctx context.Context, store *recordlayer.FDBReco
 		return nil, err
 	}
 	tenant := int64(b.cfg.Tenant)
-	space := store.IndexSubspace(b.md.GetIndex(envelopeMessageIndexName)).Bytes()
 	tx := store.Context().ReadTransaction(false)
-	var out []messageRef
-	for lo := 0; lo < len(cands); lo += messageRefReads {
-		if err := canceled(ctx, op); err != nil {
+	bad := fail("corruption", op, "malformed message trace record key")
+
+	// Round 1: the traces of each matching message.
+	records := store.RecordsSubspace()
+	ranges := make([]fdb.KeyRange, len(cands))
+	for i, c := range cands {
+		r, err := fdb.PrefixRange(records.Pack(tuple.Tuple{messageTraceTypeKey, tenant, c.id.writer, c.id.seq}))
+		if err != nil {
 			return nil, err
 		}
-		batch := cands[lo:min(lo+messageRefReads, len(cands))]
-		// No range returns more entries than the budget has left.
-		limit := max(budget.maxCandidates-budget.candidates, 0) + 1
-		pending := make([]fdb.RangeResult, len(batch))
-		for i, c := range batch {
-			prefix := tuple.Tuple{tenant, c.id.writer, c.id.seq}
-			if plan.firstTurn {
-				prefix = append(prefix, true)
-				if plan.attribute > 0 {
-					prefix = append(prefix, plan.attribute)
-				}
-			}
-			r, err := fdb.PrefixRange(append(append([]byte(nil), space...), prefix.Pack()...))
-			if err != nil {
-				return nil, err
-			}
-			pending[i] = tx.GetRange(r, fdb.RangeOptions{Limit: limit, Mode: fdb.StreamingModeWantAll})
-		}
-		for i, c := range batch {
-			rows, err := pending[i].GetSliceWithError()
-			if err != nil {
-				return nil, err
-			}
-			for _, kv := range rows {
-				if err := budget.charge(kv); err != nil {
-					return nil, err
-				}
-				r, err := decodeMessageRef(space, kv, tenant, c.id)
-				if err != nil {
-					return nil, err
-				}
-				if (plan.attribute > 0 && r.attribute != plan.attribute) || !w.contains(r.start) {
-					continue
-				}
-				r.cand = c
-				out = append(out, r)
-			}
-		}
+		ranges[i] = r
 	}
-	return out, nil
-}
+	byTrace := map[string]map[messageID]*messageCandidate{}
+	var traces []string
+	if err := pipelinedRanges(ctx, tx, ranges, budget, func(i int, kv fdb.KeyValue) error {
+		t, err := records.Unpack(kv.Key)
+		// (type key, tenant, writer, seq, trace_id) and the split suffix.
+		if err != nil || len(t) < 5 {
+			return bad
+		}
+		trace, ok := t[4].(string)
+		if !ok || !validIdentity(trace, 16) {
+			return bad
+		}
+		set := byTrace[trace]
+		if set == nil {
+			set = map[messageID]*messageCandidate{}
+			byTrace[trace] = set
+			traces = append(traces, trace)
+		}
+		set[cands[i].id] = cands[i]
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 
-// decodeMessageRef decodes one envelope_message_v1 entry of message id:
-// (tenant, writer, seq, newest, attribute, (ordinals), start_ns, trace_id,
-// span_id).
-func decodeMessageRef(space []byte, kv fdb.KeyValue, tenant int64, id messageID) (messageRef, error) {
-	bad := fail("corruption", "message references", "malformed message reference index entry")
-	t, err := tuple.Unpack(kv.Key[len(space):])
-	if err != nil || len(t) != 9 || t[0] != tenant || t[1] != id.writer || t[2] != id.seq {
-		return messageRef{}, bad
-	}
-	_, nok := t[3].(bool)
-	attr, aok := t[4].(int64)
-	ords, ook := t[5].(tuple.Tuple)
-	start, sok := t[6].(int64)
-	trace, tok := t[7].(string)
-	span, pok := t[8].(string)
-	if !nok || !aok || !ook || !sok || !tok || !pok || attr < 1 || attr >= int64(len(messageAttributeKeys)) || len(ords) == 0 || !validIdentity(trace, 16) || !validIdentity(span, 8) {
-		return messageRef{}, bad
-	}
-	r := messageRef{trace: trace, span: span, start: start, attribute: attr, ordinals: make([]int, len(ords))}
-	for i, o := range ords {
-		n, ok := o.(int64)
-		if !ok || n < 0 {
-			return messageRef{}, bad
+	// Round 2: every span of those traces, with its references.
+	sort.Strings(traces)
+	space := store.IndexSubspace(b.md.GetIndex(envelopeRefsIndexName))
+	ranges = ranges[:0]
+	for _, trace := range traces {
+		r, err := fdb.PrefixRange(space.Pack(tuple.Tuple{tenant, trace}))
+		if err != nil {
+			return nil, err
 		}
-		r.ordinals[i] = int(n)
+		ranges = append(ranges, r)
 	}
-	return r, nil
+	var out []messageRef
+	badRef := fail("corruption", op, "malformed span reference index entry")
+	err = pipelinedRanges(ctx, tx, ranges, budget, func(i int, kv fdb.KeyValue) error {
+		trace := traces[i]
+		// (tenant, trace_id, start_ns, chunk) and the primary key's span_id;
+		// tenant and trace_id are not repeated.
+		k, err := space.Unpack(kv.Key)
+		if err != nil || len(k) != 5 || k[0] != tenant || k[1] != trace {
+			return badRef
+		}
+		start, sok := k[2].(int64)
+		span, pok := k[4].(string)
+		if !sok || !pok || !validIdentity(span, 8) {
+			return badRef
+		}
+		if !w.contains(start) {
+			return nil
+		}
+		v, err := tuple.Unpack(kv.Value)
+		if err != nil || len(v) != 1 {
+			return badRef
+		}
+		chunk, ok := v[0].([]byte)
+		if !ok {
+			return badRef
+		}
+		refs, err := unpackSpanRefs(chunk)
+		if err != nil {
+			return err
+		}
+		set := byTrace[trace]
+		for _, r := range refs {
+			c := set[r.id]
+			if c == nil || (plan.attribute > 0 && r.attribute != plan.attribute) || (plan.firstTurn && !r.newest) {
+				continue
+			}
+			out = append(out, messageRef{cand: c, trace: trace, span: span, start: start, attribute: r.attribute, ordinals: r.ordinals})
+		}
+		return nil
+	})
+	return out, err
 }
 
 type messageProbeSpan struct {

@@ -334,6 +334,13 @@ func (e *Exporter) ExportResourceSpans(ctx context.Context, spans []*tracepb.Res
 	if err == nil {
 		err = decomposed.encodeManifests(false)
 	}
+	if err == nil && uses != nil {
+		// A message's traces precede the spans that reference it.
+		var markers int64
+		markers, err = e.persistTraceMarkers(ctx, decomposed)
+		stored.TraceMarkers += markers
+		stats.Messages = stored
+	}
 	if err != nil {
 		return stats, err
 	}
@@ -743,9 +750,13 @@ func (e *Exporter) envelope(single *tracepb.ResourceSpans, refs []messageUse, li
 			cost += 2 * (len(kv.Key) + len(value) + 256)
 		}
 	}
-	// Each reference is a record field and one index entry of about 100 bytes.
+	// The packed references are stored in the record and again as the value
+	// of one envelope_refs_v1 entry per chunk.
 	for _, u := range refs {
-		cost += 2 * (128 + 10*len(u.ordinals))
+		cost += 2 * (32 + 10*len(u.ordinals))
+	}
+	if len(refs) > 0 {
+		cost += 512
 	}
 	if cost > exportSpanBudget {
 		return exportSpan{}, fail("admission", "export batch", "single span exceeds conservative 300KB transaction estimate")
@@ -765,7 +776,7 @@ func (e *Exporter) envelope(single *tracepb.ResourceSpans, refs []messageUse, li
 	m.Set(f.ByName("start_ns"), protoreflect.ValueOfInt64(int64(sp.StartTimeUnixNano)))
 	m.Set(f.ByName("otlp"), protoreflect.ValueOfBytes(wire))
 	if len(refs) > 0 {
-		setEnvelopeMessages(m, refs)
+		setEnvelopeRefs(m, refs)
 	}
 	return exportSpan{key: trace + span, references: len(refs), message: m, logical: int64(len(wire)), cost: cost}, nil
 }

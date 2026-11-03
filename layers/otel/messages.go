@@ -34,6 +34,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -96,10 +97,12 @@ const (
 	maxMessageRoleBytes  = 1024
 
 	// messageTxnMessages bounds the small messages saved per transaction. A
-	// transaction commits one value per bunch it rewrote however often, so
-	// larger transactions write fewer bytes (bench: 31.9, 17.4 and 10.8 KB of
-	// mutations per span at 1, 8 and 32) but conflict more; at 96 they time out.
-	messageTxnMessages = 32
+	// transaction commits one mutation per TEXT bunch it appended to however
+	// often, so larger transactions write fewer mutations: bench, 12-turn
+	// conversations, 26.0, 16.0 and 10.9 TEXT mutations per span at 32, 64 and
+	// 128 messages, at 0.4 and 1.3 s per transaction for 32 and 128. Each
+	// writer has its own TEXT shard, so the size does not add conflicts.
+	messageTxnMessages = 128
 	messageWorkers     = 8                 // concurrent transactions per message persist call
 	messageWriterLimit = messageTextShards // message writers per backend
 	// messageTextShards is the number of TEXT index groups per (tenant, role).
@@ -202,8 +205,10 @@ type MessageStoreStats struct {
 	Parts           int64 `json:"parts"`
 	Postings        int64 `json:"postings"`
 	UnindexedTokens int64 `json:"unindexed_tokens"`
-	// References counts the Envelope.messages entries of committed spans.
+	// References counts the (message, attribute) references of committed
+	// spans; TraceMarkers the MessageTrace records saved.
 	References   int64 `json:"references"`
+	TraceMarkers int64 `json:"trace_markers"`
 	Transactions int64 `json:"transactions"`
 	Retries      int64 `json:"retries"`
 	// Bunch values set, their key and value bytes, and bunch bytes read.
@@ -225,6 +230,7 @@ func (s *MessageStoreStats) Add(o MessageStoreStats) {
 	s.Postings += o.Postings
 	s.UnindexedTokens += o.UnindexedTokens
 	s.References += o.References
+	s.TraceMarkers += o.TraceMarkers
 	s.Transactions += o.Transactions
 	s.Retries += o.Retries
 	s.TextIndexWrites += o.TextIndexWrites
@@ -1346,34 +1352,240 @@ func parallelMessageWork(n int, fn func(int) error) error {
 // Span back references
 // ---------------------------------------------------------------------------
 
-// setEnvelopeMessages lists a span's references in its Envelope, with the
+// messageRefChunkBytes bounds one envelope_refs_v1 value (FDB values are at
+// most 100KB); a span with more references has several entries.
+const messageRefChunkBytes = 16 << 10
+
+// spanRef is one reference of a span: a message, the attribute, the message's
+// positions in the span's first value of the attribute, and whether it is
+// that value's newest element.
+type spanRef struct {
+	id        messageID
+	attribute int64
+	newest    bool
+	ordinals  []int
+}
+
+// spanRefFields is the number of tuple elements of one packed reference:
+// (writer, seq, attribute, newest, (ordinals)).
+const spanRefFields = 5
+
+// packSpanRefs packs a span's references into chunks of at most
+// messageRefChunkBytes, each the tuple of their fields in order, with the
 // elements' IDs (the placeholder before they have one, which encodes at least
 // as long as any real ID).
-func setEnvelopeMessages(m proto.Message, uses []messageUse) {
-	r := m.ProtoReflect()
-	field := r.Descriptor().Fields().ByName("messages")
-	r.Clear(field)
-	if len(uses) == 0 {
-		return
-	}
-	list := r.Mutable(field).List()
+func packSpanRefs(uses []messageUse) [][]byte {
+	var chunks [][]byte
+	var cur []byte
 	for _, u := range uses {
 		id := u.element.id
 		if !id.valid() {
 			id = messagePlaceholderID
 		}
-		ref := list.NewElement().Message()
-		f := ref.Descriptor().Fields()
-		ref.Set(f.ByName("writer"), protoreflect.ValueOfInt64(id.writer))
-		ref.Set(f.ByName("seq"), protoreflect.ValueOfInt64(id.seq))
-		ref.Set(f.ByName("newest"), protoreflect.ValueOfBool(u.newest))
-		ref.Set(f.ByName("attribute"), protoreflect.ValueOfInt64(u.attribute))
-		ords := ref.Mutable(f.ByName("ordinals")).List()
-		for _, o := range u.ordinals {
-			ords.Append(protoreflect.ValueOfInt64(int64(o)))
+		ords := make(tuple.Tuple, len(u.ordinals))
+		for i, o := range u.ordinals {
+			ords[i] = int64(o)
 		}
-		list.Append(protoreflect.ValueOfMessage(ref))
+		newest := int64(0)
+		if u.newest {
+			newest = 1
+		}
+		ref := tuple.Tuple{id.writer, id.seq, u.attribute, newest, ords}.Pack()
+		if len(cur) > 0 && len(cur)+len(ref) > messageRefChunkBytes {
+			chunks = append(chunks, cur)
+			cur = nil
+		}
+		cur = append(cur, ref...)
 	}
+	if len(cur) > 0 {
+		chunks = append(chunks, cur)
+	}
+	return chunks
+}
+
+// unpackSpanRefs decodes one chunk of packSpanRefs.
+func unpackSpanRefs(b []byte) ([]spanRef, error) {
+	bad := fail("corruption", "message references", "malformed span reference chunk")
+	t, err := tuple.Unpack(b)
+	if err != nil || len(t)%spanRefFields != 0 {
+		return nil, bad
+	}
+	out := make([]spanRef, 0, len(t)/spanRefFields)
+	for i := 0; i < len(t); i += spanRefFields {
+		w, wok := t[i].(int64)
+		s, sok := t[i+1].(int64)
+		a, aok := t[i+2].(int64)
+		n, nok := t[i+3].(int64)
+		ords, ook := t[i+4].(tuple.Tuple)
+		r := spanRef{id: messageID{w, s}, attribute: a, newest: n == 1, ordinals: make([]int, len(ords))}
+		if !wok || !sok || !aok || !nok || !ook || !r.id.valid() || a < 1 || a >= int64(len(messageAttributeKeys)) || (n != 0 && n != 1) || len(ords) == 0 {
+			return nil, bad
+		}
+		for j, o := range ords {
+			v, ok := o.(int64)
+			if !ok || v < 0 {
+				return nil, bad
+			}
+			r.ordinals[j] = int(v)
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// setEnvelopeRefs lists a span's references in its Envelope, packed.
+func setEnvelopeRefs(m proto.Message, uses []messageUse) {
+	r := m.ProtoReflect()
+	field := r.Descriptor().Fields().ByName("ref_chunks")
+	r.Clear(field)
+	chunks := packSpanRefs(uses)
+	if len(chunks) == 0 {
+		return
+	}
+	list := r.Mutable(field).List()
+	for i, c := range chunks {
+		e := list.NewElement().Message()
+		f := e.Descriptor().Fields()
+		e.Set(f.ByName("chunk"), protoreflect.ValueOfInt64(int64(i)))
+		e.Set(f.ByName("refs"), protoreflect.ValueOfBytes(c))
+		list.Append(protoreflect.ValueOfMessage(e))
+	}
+}
+
+// traceMarker is a MessageTrace record: message id occurs in trace.
+type traceMarker struct {
+	id    messageID
+	trace string
+}
+
+// markerCache remembers the markers this backend knows to be committed; a run
+// never deletes one. It holds at most markerCacheSize, forgetting the oldest.
+type markerCache struct {
+	mu   sync.Mutex
+	set  map[traceMarker]struct{}
+	ring []traceMarker
+	next int
+}
+
+const markerCacheSize = 1 << 18
+
+func (c *markerCache) has(k traceMarker) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.set[k]
+	return ok
+}
+
+func (c *markerCache) add(ks []traceMarker) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.set == nil {
+		c.set = make(map[traceMarker]struct{}, markerCacheSize)
+		c.ring = make([]traceMarker, 0, markerCacheSize)
+	}
+	for _, k := range ks {
+		if _, ok := c.set[k]; ok {
+			continue
+		}
+		if len(c.ring) < markerCacheSize {
+			c.ring = append(c.ring, k)
+		} else {
+			delete(c.set, c.ring[c.next])
+			c.ring[c.next] = k
+			c.next = (c.next + 1) % markerCacheSize
+		}
+		c.set[k] = struct{}{}
+	}
+}
+
+// messageMarkerTxn bounds the markers checked and saved per transaction.
+const messageMarkerTxn = 512
+
+// persistTraceMarkers saves a MessageTrace record for every (message, trace)
+// pair the call's spans reference that is not stored yet, before any span
+// commits: a query finds a message's traces through them. Presence is read
+// at snapshot isolation; two calls saving one marker conflict on the save's
+// own existence read, and the retry finds it present.
+func (e *Exporter) persistTraceMarkers(ctx context.Context, d *messageDecomposition) (int64, error) {
+	const op = "message trace markers"
+	b := e.backend
+	tenant := int64(e.cfg.Tenant)
+	seen := map[traceMarker]bool{}
+	var pending []traceMarker
+	for key, uses := range d.uses {
+		trace := key[:32]
+		for _, u := range uses {
+			k := traceMarker{u.element.id, trace}
+			if !k.id.valid() {
+				return 0, fail("operation", op, "message element has no stored ID")
+			}
+			if !seen[k] && !b.markers.has(k) {
+				seen[k] = true
+				pending = append(pending, k)
+			}
+		}
+	}
+	sort.Slice(pending, func(i, j int) bool {
+		if pending[i].id != pending[j].id {
+			return pending[i].id.less(pending[j].id)
+		}
+		return pending[i].trace < pending[j].trace
+	})
+	d2, err := recordFile(e.cfg.messageLayout())
+	if err != nil {
+		return 0, err
+	}
+	desc := d2.Messages().ByName("MessageTrace")
+	var written int64
+	for lo := 0; lo < len(pending); lo += messageMarkerTxn {
+		group := pending[lo:min(lo+messageMarkerTxn, len(pending))]
+		var n int64
+		_, err := runTxnSlot(ctx, b.db, op, func(rc *recordlayer.FDBRecordContext) (any, error) {
+			n = 0
+			store, err := b.open(rc)
+			if err != nil {
+				return nil, err
+			}
+			records := store.RecordsSubspace()
+			reads := make([]fdb.RangeResult, len(group))
+			for i, k := range group {
+				r, err := fdb.PrefixRange(records.Pack(tuple.Tuple{messageTraceTypeKey, tenant, k.id.writer, k.id.seq, k.trace}))
+				if err != nil {
+					return nil, err
+				}
+				reads[i] = rc.Transaction().Snapshot().GetRange(r, fdb.RangeOptions{Limit: 1})
+			}
+			var absent []proto.Message
+			for i, k := range group {
+				rows, err := reads[i].GetSliceWithError()
+				if err != nil {
+					return nil, err
+				}
+				if len(rows) > 0 {
+					continue
+				}
+				m := dynamicpb.NewMessage(desc)
+				f := desc.Fields()
+				m.Set(f.ByName("tenant"), protoreflect.ValueOfInt64(tenant))
+				m.Set(f.ByName("writer"), protoreflect.ValueOfInt64(k.id.writer))
+				m.Set(f.ByName("seq"), protoreflect.ValueOfInt64(k.id.seq))
+				m.Set(f.ByName("trace_id"), protoreflect.ValueOfString(k.trace))
+				absent = append(absent, m)
+			}
+			if len(absent) == 0 {
+				return nil, nil
+			}
+			n = int64(len(absent))
+			_, err = store.SaveRecordBatch(absent)
+			return nil, err
+		})
+		if err != nil {
+			return written, err
+		}
+		written += n
+		b.markers.add(group)
+	}
+	return written, nil
 }
 
 // inflightMessage is a message one export call of this backend is storing;

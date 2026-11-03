@@ -51,6 +51,7 @@ type FDBBackend struct {
 	ingestClock   func() time.Time
 	writers       messageWriters
 	inflight      sync.Map // messageDigest -> *inflightMessage
+	markers       markerCache
 }
 
 func OpenFDB(c Config, cluster string) (*FDBBackend, error) {

@@ -181,6 +181,7 @@ func TestMessageRecordsRealFDB(t *testing.T) {
 	t.Run("budgets", func(t *testing.T) { t.Parallel(); testMessageBudget(t, cluster) })
 	t.Run("trace_existential", func(t *testing.T) { t.Parallel(); testMessageExistential(t, cluster) })
 	t.Run("rare_term_intersection", func(t *testing.T) { t.Parallel(); testMessageRareTerm(t, cluster) })
+	t.Run("chunked_references", func(t *testing.T) { t.Parallel(); testMessageChunkedRefs(t, cluster) })
 	t.Run("large_message", func(t *testing.T) { t.Parallel(); testMessageLarge(t, cluster) })
 	t.Run("concurrent_same_message", func(t *testing.T) { t.Parallel(); testMessageConcurrentSave(t, cluster) })
 	t.Run("layout_rejection", func(t *testing.T) { t.Parallel(); testMessageLayoutRejection(t, cluster) })
@@ -204,7 +205,8 @@ func testMessageConversation(t *testing.T, cluster, form, order string) {
 		t.Fatalf("export stats %+v", stats)
 	}
 	// Each message is stored once; every span lists each of its elements.
-	if m := stats.Messages; m.Written != int64(2*n+3) || m.Present != 0 || m.Parts != m.Written || m.Postings == 0 || m.References != int64(refs) || m.Transactions < 2 || m.TextIndexWrites == 0 {
+	// The trace gets one marker per distinct message.
+	if m := stats.Messages; m.Written != int64(2*n+3) || m.Present != 0 || m.Parts != m.Written || m.Postings == 0 || m.References != int64(refs) || m.TraceMarkers != int64(2*n+3) || m.Transactions < 2 || m.TextIndexWrites == 0 {
 		t.Fatalf("first message stats %+v", m)
 	}
 	requireDeltaSpansEqual(t, input, before)
@@ -213,7 +215,7 @@ func testMessageConversation(t *testing.T, cluster, form, order string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m := again.Messages; m.Written != 0 || m.Present != int64(2*n+3) || m.Postings != 0 || m.TextIndexWrites != 0 || m.TextIndexKeyBytes != 0 || m.References != int64(refs) || m.Transactions != 1 {
+	if m := again.Messages; m.Written != 0 || m.Present != int64(2*n+3) || m.Postings != 0 || m.TextIndexWrites != 0 || m.TextIndexKeyBytes != 0 || m.References != int64(refs) || m.TraceMarkers != 0 || m.Transactions != 1 {
 		t.Fatalf("idempotent re-export message stats %+v", m)
 	}
 	for k, want := range before {
@@ -232,8 +234,14 @@ func testMessageConversation(t *testing.T, cluster, form, order string) {
 	if got := ftsIndexEntries(t, ctx, e, messageHashIndexName, tuple.Tuple{tenant}); got != 2*n+3 {
 		t.Fatalf("dedup index holds %d messages", got)
 	}
-	if got := ftsIndexEntries(t, ctx, e, envelopeMessageIndexName, tuple.Tuple{tenant}); got != refs {
-		t.Fatalf("%d message references, want %d", got, refs)
+	// One reference entry per span, and one marker per message of the trace
+	// even when another backend writes the trace again.
+	if got := ftsIndexEntries(t, ctx, e, envelopeRefsIndexName, tuple.Tuple{tenant, trace}); got != n {
+		t.Fatalf("%d span reference entries, want %d", got, n)
+	}
+	other := openFTSExporter(t, ctx, cluster, func(c *ExporterConfig) { c.Run = e.Config().Run; c.Order = order })
+	if third, err := other.ExportResourceSpans(ctx, input); err != nil || third.Messages.TraceMarkers != 0 {
+		t.Fatalf("re-export through a fresh backend: %+v %v", third.Messages, err)
 	}
 	if got := ftsIndexEntries(t, ctx, e, messageLargeIndexName, tuple.Tuple{tenant}); got != 0 {
 		t.Fatalf("%d large messages", got)
@@ -477,7 +485,7 @@ func testMessageBudget(t *testing.T, cluster string) {
 	_, err = off.QueryTraceExistential(ctx, TraceExistentialQuery{MessageClauses: []MessageFullTextQuery{{Query: "turn"}}})
 	requireTyped[*ConfigError](t, "existential full text disabled", err)
 	deltas := openTestExporter(t, ctx, cluster, func(c *ExporterConfig) { c.EnableMessageDeltas = true })
-	if deltas.backend.md.GetIndex(messageTextIndexName) != nil || deltas.backend.md.GetIndex(envelopeMessageIndexName) != nil {
+	if deltas.backend.md.GetIndex(messageTextIndexName) != nil || deltas.backend.md.GetIndex(envelopeRefsIndexName) != nil {
 		t.Fatal("the deltas layout has no text index or back references")
 	}
 	_, err = deltas.backend.QueryMessageFullText(ctx, MessageFullTextQuery{Query: "turn"})
@@ -561,6 +569,44 @@ func testMessageExistential(t *testing.T, cluster string) {
 // testMessageRareTerm pins the leapfrog intersection: pairing a term in
 // every message with a rare one reads far fewer entries than the common
 // term's postings, and answers exactly.
+// testMessageChunkedRefs exports spans whose references exceed one
+// envelope_refs_v1 value; every reference stays findable, in every chunk.
+func testMessageChunkedRefs(t *testing.T, cluster string) {
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
+	defer cancel()
+	e := openFTSExporter(t, ctx, cluster, nil)
+	const n = 2500
+	msgs := make([]deltaMsg, n)
+	for i := range msgs {
+		msgs[i] = deltaMsg{"user", fmt.Sprintf("wombat%d numbat", i)}
+	}
+	// Two spans of one trace: the second repeats the first's input.
+	spans := sameTrace([]*tracepb.ResourceSpans{
+		deltaSpan(70, deltaKV("gen_ai.input.messages", deltaMessages("array", msgs))),
+		deltaSpan(71, deltaKV("gen_ai.input.messages", deltaMessages("array", append(msgs, deltaMsg{"user", "last wombat"})))),
+	})
+	stats, err := e.ExportResourceSpans(ctx, spans)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := stats.Messages; m.References != 2*n+1 || m.TraceMarkers != n+1 {
+		t.Fatalf("message stats %+v", m)
+	}
+	if got := ftsIndexEntries(t, ctx, e, envelopeRefsIndexName, tuple.Tuple{int64(e.Config().Tenant), ftsTrace(70)}); got < 4 {
+		t.Fatalf("%d span reference entries, want at least two chunks per span", got)
+	}
+	for _, i := range []int{0, n / 2, n - 1} {
+		hits, _ := ftsDrain(t, ctx, e, MessageFullTextQuery{Query: fmt.Sprintf("wombat%d", i)})
+		if len(hits) != 2 || !reflect.DeepEqual(hits[0].TurnOrdinals, []int{i}) || !reflect.DeepEqual(hits[1].TurnOrdinals, []int{i}) {
+			t.Fatalf("wombat%d: %+v", i, hits)
+		}
+		first, _ := ftsDrain(t, ctx, e, MessageFullTextQuery{Query: fmt.Sprintf("wombat%d", i), FirstTurnOnly: true})
+		if want := map[bool]int{true: 1, false: 0}[i == n-1]; len(first) != want || (want == 1 && first[0].Span != ftsSpan(70)) {
+			t.Fatalf("wombat%d first turn: %+v", i, first)
+		}
+	}
+}
+
 func testMessageRareTerm(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
 	defer cancel()

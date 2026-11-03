@@ -842,38 +842,76 @@ func TestMessageUses(t *testing.T) {
 		}
 	}
 
-	// The Envelope lists them with the element IDs, or the placeholder.
+	// The Envelope packs them with the element IDs, or the placeholder.
 	fd, err := recordFile(messagesFullText)
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := dynamicpb.NewMessage(fd.Messages().ByName("Envelope"))
 	ex.id = messageID{3, 7}
-	setEnvelopeMessages(m, want)
-	list := m.Get(m.Descriptor().Fields().ByName("messages")).List()
-	if list.Len() != 3 {
-		t.Fatalf("%d references", list.Len())
+	setEnvelopeRefs(m, want)
+	list := m.Get(m.Descriptor().Fields().ByName("ref_chunks")).List()
+	if list.Len() != 1 {
+		t.Fatalf("%d chunks", list.Len())
 	}
-	ref := func(i int) (int64, int64, bool, int64, []int64) {
-		r := list.Get(i).Message()
-		f := r.Descriptor().Fields()
-		ords := r.Get(f.ByName("ordinals")).List()
-		var o []int64
-		for j := range ords.Len() {
-			o = append(o, ords.Get(j).Int())
-		}
-		return r.Get(f.ByName("writer")).Int(), r.Get(f.ByName("seq")).Int(), r.Get(f.ByName("newest")).Bool(), r.Get(f.ByName("attribute")).Int(), o
+	c := list.Get(0).Message()
+	refs, err := unpackSpanRefs(c.Get(c.Descriptor().Fields().ByName("refs")).Bytes())
+	if err != nil || c.Get(c.Descriptor().Fields().ByName("chunk")).Int() != 0 {
+		t.Fatal(err)
 	}
-	if w, s, n, a, o := ref(0); w != 3 || s != 7 || !n || a != in || !slices.Equal(o, []int64{0, 2}) {
-		t.Fatalf("reference 0: %d %d %v %d %v", w, s, n, a, o)
+	wantRefs := []spanRef{
+		{id: messageID{3, 7}, attribute: in, newest: true, ordinals: []int{0, 2}},
+		{id: messagePlaceholderID, attribute: in, ordinals: []int{1}},
+		{id: messagePlaceholderID, attribute: out, newest: true, ordinals: []int{0}},
 	}
-	if w, s, n, a, _ := ref(1); w != messagePlaceholderID.writer || s != messagePlaceholderID.seq || n || a != in {
-		t.Fatalf("reference 1: %d %d %v %d", w, s, n, a)
+	if !reflect.DeepEqual(refs, wantRefs) {
+		t.Fatalf("references %+v, want %+v", refs, wantRefs)
 	}
 	// Setting again replaces the list.
-	setEnvelopeMessages(m, want[:1])
-	if list := m.Get(m.Descriptor().Fields().ByName("messages")).List(); list.Len() != 1 {
-		t.Fatalf("%d references after replacement", list.Len())
+	setEnvelopeRefs(m, want[:1])
+	if list := m.Get(m.Descriptor().Fields().ByName("ref_chunks")).List(); list.Len() != 1 {
+		t.Fatalf("%d chunks after replacement", list.Len())
+	}
+	setEnvelopeRefs(m, nil)
+	if m.Has(m.Descriptor().Fields().ByName("ref_chunks")) {
+		t.Fatal("a span without references keeps chunks")
+	}
+}
+
+// TestSpanRefChunks checks that a long history is cut into chunks of at most
+// messageRefChunkBytes that decode, in order, to every reference.
+func TestSpanRefChunks(t *testing.T) {
+	t.Parallel()
+	var uses []messageUse
+	var want []spanRef
+	for i := range 5000 {
+		el := &messageElement{id: messageID{int64(i%16 + 1), int64(i + 1)}}
+		ords := []int{i, i + 7}
+		uses = append(uses, messageUse{element: el, attribute: 1 + int64(i%4), ordinals: ords, newest: i == 4999})
+		want = append(want, spanRef{id: el.id, attribute: 1 + int64(i%4), ordinals: ords, newest: i == 4999})
+	}
+	chunks := packSpanRefs(uses)
+	if len(chunks) < 2 {
+		t.Fatalf("%d chunks", len(chunks))
+	}
+	var got []spanRef
+	for i, c := range chunks {
+		if len(c) > messageRefChunkBytes {
+			t.Fatalf("chunk %d has %d bytes", i, len(c))
+		}
+		refs, err := unpackSpanRefs(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, refs...)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatal("chunks do not decode to the references")
+	}
+	for _, bad := range [][]byte{{0xff}, tuple.Tuple{int64(1), int64(2), int64(1), int64(0)}.Pack(), tuple.Tuple{int64(1), int64(2), int64(9), int64(0), tuple.Tuple{int64(0)}}.Pack(), tuple.Tuple{int64(1), int64(2), int64(1), int64(2), tuple.Tuple{int64(0)}}.Pack(), tuple.Tuple{int64(1), int64(2), int64(1), int64(0), tuple.Tuple{}}.Pack()} {
+		if _, err := unpackSpanRefs(bad); err == nil {
+			t.Fatalf("malformed chunk %x accepted", bad)
+		}
 	}
 }
 
