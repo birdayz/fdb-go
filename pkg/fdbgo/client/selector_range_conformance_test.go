@@ -455,13 +455,22 @@ func TestSelectorRangeConformance(t *testing.T) {
 
 	rng := rand.New(rand.NewSource(26210))
 	var fallbacks atomic.Int64
-	const queries = 900
+	boundedOvershoots := []selConfQuery{
+		{begin: KeySelector{Key: []byte(selConfKey(selConfKeys - 2)), Offset: 3}, end: firstGreaterOrEqual([]byte(selConfPrefix + "z"))},
+		{begin: KeySelector{Key: []byte(selConfKey(2)), Offset: 0}, end: KeySelector{Key: []byte(selConfKey(4)), Offset: -4}, reverse: true},
+	}
+	queries := 900 + len(boundedOvershoots)
 	var nonEmpty, withConflicts, withOps, crossShard, rywDisabled, snapshots, tooOldRetries int
 	shardOf := func(k []byte) int {
 		return sort.Search(len(env.boundaries), func(i int) bool { return env.boundaries[i] > string(k) })
 	}
 	for i := 0; i < queries; i++ {
-		q := env.randomQuery(rng)
+		var q selConfQuery
+		if i < len(boundedOvershoots) {
+			q = boundedOvershoots[i]
+		} else {
+			q = env.randomQuery(rng)
+		}
 		var c, g selConfResult
 		for attempt := 1; ; attempt++ {
 			ctr, err := env.cdb.CreateTransaction()
@@ -498,6 +507,13 @@ func TestSelectorRangeConformance(t *testing.T) {
 		}
 		if !slices.Equal(c.conflicts, g.conflicts) {
 			t.Fatalf("query %d %s: rows %s\n  C read conflicts  %q\n  Go read conflicts %q", i, q, keysOf(c.rows), c.conflicts, g.conflicts)
+		}
+		if i < len(boundedOvershoots) {
+			want := [][2]string{{string(q.begin.Key), string(q.end.Key)}}
+			if len(c.rows) != 0 || !slices.Equal(c.conflicts, want) {
+				t.Fatalf("bounded overshoot %d: C rows %s conflicts %q, want empty rows and %q", i, keysOf(c.rows), c.conflicts, want)
+			}
+			t.Logf("bounded overshoot reverse=%t: C/Go empty rows and exact conflicts %q", q.reverse, want)
 		}
 		if len(c.rows) > 0 {
 			nonEmpty++

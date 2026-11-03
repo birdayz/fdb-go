@@ -147,6 +147,58 @@ func TestSelectorRange_MatchedCompareAndClearOperationSlot(t *testing.T) {
 	}
 }
 
+// Bounded native demand clears boundary flags when selector offsets cross (RYW:653-655,957-959).
+func TestSelectorRange_BoundedOvershootConflicts(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		r          fdb.SelectorRange
+		reverse    bool
+		begin, end string
+		probes     []string
+	}{
+		{
+			name: "forward",
+			r: fdb.SelectorRange{
+				Begin: fdb.KeySelector{Key: k("m"), Offset: 3},
+				End:   fdb.FirstGreaterOrEqual(k("z")),
+			},
+			begin: "m", end: "z", probes: []string{"m", "n", "z", "zz"},
+		},
+		{
+			name: "reverse",
+			r: fdb.SelectorRange{
+				Begin: fdb.KeySelector{Key: k("h"), Offset: 0},
+				End:   fdb.KeySelector{Key: k("m"), Offset: -4},
+			},
+			reverse: true, begin: "h", end: "m", probes: []string{"a", "h", "k", "m"},
+		},
+	}
+	for _, tc := range cases {
+		for _, limit := range []int{0, 1} {
+			for _, probe := range tc.probes {
+				t.Run(fmt.Sprintf("%s/limit=%d/probe=%s", tc.name, limit, probe), func(t *testing.T) {
+					t.Parallel()
+					db := New(nil)
+					seedKeys(t, db, "b", "f", "h", "m")
+					tx := db.newTxn()
+					rows, err := tx.GetRange(tc.r, fdb.RangeOptions{Limit: limit, Reverse: tc.reverse}).GetSliceWithError()
+					if err != nil || len(rows) != 0 {
+						t.Fatalf("bounded overshoot rows = %v, %v; want empty", rows, err)
+					}
+					if len(tx.readConflicts) != 1 || string(tx.readConflicts[0].begin) != tc.begin || string(tx.readConflicts[0].end) != tc.end {
+						t.Fatalf("read conflicts = %v, want [%q,%q)", conflictStrings(tx), tc.begin, tc.end)
+					}
+					wantConflict := probe >= tc.begin && probe < tc.end
+					if got := concurrentWriteConflicts(t, db, tx, probe); got != wantConflict {
+						t.Fatalf("writer at %q: reader conflicted=%t, want %t", probe, got, wantConflict)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestKnownReadKnowledgeLifecycle(t *testing.T) {
 	t.Parallel()
 	for _, boundary := range []string{"Reset", "OnError", "Commit", "SetReadVersion", "RYWDisabled"} {

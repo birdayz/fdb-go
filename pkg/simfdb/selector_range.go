@@ -69,8 +69,8 @@ func (tx *simTxn) selectorWriteSegments(view []fdb.KeyValue) []selectorWriteSegm
 	return tx.selectorSegments(view, false)
 }
 
-func (tx *simTxn) selectorSegments(view []fdb.KeyValue, allKnown bool) []selectorWriteSegment {
-	if !allKnown && len(tx.buffer) == 0 && len(tx.knownReads) == 0 {
+func (tx *simTxn) selectorSegments(view []fdb.KeyValue, allKnown bool, extra ...keyRange) []selectorWriteSegment {
+	if !allKnown && len(tx.buffer) == 0 && len(tx.knownReads) == 0 && len(extra) == 0 {
 		return nil
 	}
 	wm := tx.buildWriteMap()
@@ -80,12 +80,22 @@ func (tx *simTxn) selectorSegments(view []fdb.KeyValue, allKnown bool) []selecto
 			bounds = append(bounds, key)
 		}
 	}
-	for _, known := range tx.knownReads {
-		add(known.begin)
-		add(known.end)
+	readKnown := func(key []byte) bool {
+		for _, r := range extra {
+			if bytes.Compare(r.begin, key) <= 0 && bytes.Compare(key, r.end) < 0 {
+				return true
+			}
+		}
+		return tx.readKnown(key)
+	}
+	for _, ranges := range [][]keyRange{tx.knownReads, extra} {
+		for _, known := range ranges {
+			add(known.begin)
+			add(known.end)
+		}
 	}
 	for _, row := range view {
-		if allKnown || tx.readKnown(row.Key) {
+		if allKnown || readKnown(row.Key) {
 			add(row.Key)
 			add(keyAfter(row.Key))
 		}
@@ -120,10 +130,10 @@ func (tx *simTxn) selectorSegments(view []fdb.KeyValue, allKnown bool) []selecto
 		segment := selectorWriteSegment{begin: lo, end: hi, unreadable: tx.isUnreadable(lo)}
 		if !segment.unreadable {
 			if op, ok := wm.ops[string(lo)]; ok {
-				segment.known = allKnown || !op.dependent || tx.readKnown(lo)
+				segment.known = allKnown || !op.dependent || readKnown(lo)
 				segment.kv = segment.known // operation slots include matched CompareAndClear
 			} else {
-				segment.known = allKnown || wm.isCleared(lo) || tx.readKnown(lo)
+				segment.known = allKnown || wm.isCleared(lo) || readKnown(lo)
 				segment.kv = segment.known && present[string(lo)]
 			}
 		}
@@ -244,15 +254,28 @@ func (tx *simTxn) selectorFetch(begin, end fdb.KeySelector, limit, byteTarget in
 		tx.addFilteredReadConflict(cb, ce) // adds the range as is: RYW is disabled
 		return kvs, more, nil
 	}
-	// The walk sets readToBegin when a selector resolves before the first key and
-	// readThroughEnd when one resolves more than one key past the last
-	// (resolveKeySelectorFromCache, RYW:458-470); the epilogue keeps the scan direction's flag
-	// only when the read did not stop on a limit (RYW:799-811, 1111-1120).
 	readToBegin := bIdx < 0 || eIdx < 0
 	readThroughEnd := bIdx > len(view) || eIdx > len(view)
-	// The prologue reduces against knowledge preceding this fetch (RYW:611-626, 914-930).
-	// A still-nontrivial crossed bound's getKey sets readThroughEnd at maxKey.
-	if bytes.Compare(reducedBegin.Key.FDBKey(), reducedEnd.Key.FDBKey()) > 0 {
+	if bytes.Compare(reducedBegin.Key.FDBKey(), reducedEnd.Key.FDBKey()) <= 0 {
+		// Native demand stays inside the opposite bound (RYW:705-741,1011-1045).
+		readBegin, readEnd := reducedBegin, reducedEnd
+		if readBegin.Offset > 1 {
+			readBegin = fdb.FirstGreaterOrEqual(readBegin.Key)
+		}
+		if readEnd.Offset < 1 {
+			readEnd = fdb.FirstGreaterOrEqual(readEnd.Key)
+		}
+		known := tx.selectorSegments(view, false, keyRange{resolveRangeBound(view, readBegin), resolveRangeBound(view, readEnd)})
+		rb, ab := reduceSelectorKnown(begin, known)
+		re, ae := reduceSelectorKnown(end, known)
+		readToBegin = ab < 1 && len(rb.Key.FDBKey()) == 0 || ae < 1 && len(re.Key.FDBKey()) == 0
+		readThroughEnd = ab > 1 && bytes.Equal(rb.Key.FDBKey(), endKeyMarker) || ae > 1 && bytes.Equal(re.Key.FDBKey(), endKeyMarker)
+		// Crossed-offset early-empty exits discard both flags (RYW:653-655,957-959).
+		if len(kvs) == 0 && ab >= ae && bytes.Compare(rb.Key.FDBKey(), re.Key.FDBKey()) >= 0 {
+			readToBegin, readThroughEnd = false, false
+		}
+	} else {
+		// A crossed bound's nested getKey can reach maxKey (RYW:621-638,925-942).
 		if reverse && !isTrivialSelector(reducedBegin) && bIdx >= len(view) ||
 			!reverse && !isTrivialSelector(reducedEnd) && eIdx >= len(view) {
 			readThroughEnd = true
