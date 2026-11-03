@@ -3,6 +3,7 @@ package client
 import (
 	"math/rand"
 	"slices"
+	"sync"
 	"testing"
 )
 
@@ -90,24 +91,31 @@ func checkPseq(t *testing.T, step string, s *pseq[int], want []int) {
 // the reference items are distinct.
 func indexOf(want []int, v *int) int { return slices.Index(want, *v) }
 
-// Random histories of every mutator, with snapshots taken along the way that
-// must keep their contents however the sequence changes after them.
+// pseqRef is a sequence under test and the reference slice it must equal.
+type pseqRef struct {
+	s    pseq[int]
+	want []int
+}
+
+// Random histories of every mutator on a head and on its frozen versions, with
+// snapshots and handoffs taken along the way: every version must keep its
+// contents however the others change after it, whichever of them writes slots.
 func TestPseqMatchesSlice(t *testing.T) {
 	t.Parallel()
 	rng := rand.New(rand.NewSource(17))
 	next := 0
 	fresh := func() int { next++; return next }
-	type snap struct {
-		s    pseq[int]
-		want []int
-	}
 	ops := map[string]int{}
 	for h := 0; h < 300; h++ {
-		var s pseq[int]
-		var want []int
-		var snaps []snap
-		for i := 0; i < 1+rng.Intn(60); i++ {
-			switch op := rng.Intn(9); op {
+		seqs := []*pseqRef{{}} // seqs[0] is the head
+		for i := 0; i < 1+rng.Intn(80); i++ {
+			target := seqs[0]
+			if len(seqs) > 1 && rng.Intn(5) == 0 {
+				target = seqs[1+rng.Intn(len(seqs)-1)]
+				ops["frozen write"]++
+			}
+			s, want := &target.s, target.want
+			switch op := rng.Intn(10); op {
 			case 0, 1, 2:
 				p := rng.Intn(len(want) + 1)
 				v := fresh()
@@ -139,15 +147,14 @@ func TestPseqMatchesSlice(t *testing.T) {
 				want = slices.Delete(want, a, b)
 				ops["delete"]++
 			case 6:
-				snaps = append(snaps, snap{s.share(), slices.Clone(want)})
+				seqs = append(seqs, &pseqRef{s.share(), slices.Clone(want)})
 				ops["share"]++
 			case 7:
 				a, b := rng.Intn(len(want)+1), rng.Intn(len(want)+1)
 				if a > b {
 					a, b = b, a
 				}
-				sub := s.slice(a, b)
-				snaps = append(snaps, snap{sub, slices.Clone(want[a:b])})
+				seqs = append(seqs, &pseqRef{s.slice(a, b), slices.Clone(want[a:b])})
 				ops["slice"]++
 			case 8:
 				n := rng.Intn(20)
@@ -158,28 +165,62 @@ func TestPseqMatchesSlice(t *testing.T) {
 				s.build(want)
 				want = slices.Clone(want)
 				ops["build"]++
+			case 9:
+				// The writer moves to the returned sequence; s keeps its version.
+				moved := &pseqRef{s.handoff(), slices.Clone(want)}
+				if target == seqs[0] {
+					seqs[0] = moved
+					seqs = append(seqs, target)
+				} else {
+					seqs = append(seqs, moved)
+				}
+				ops["handoff"]++
 			}
-			checkPseq(t, "live", &s, want)
-		}
-		for i := range snaps {
-			checkPseq(t, "snapshot", &snaps[i].s, snaps[i].want)
-			// A snapshot is a sequence of its own: writing it leaves the others alone.
-			if n := snaps[i].s.Len(); n > 0 {
-				snaps[i].s.set(rng.Intn(n), -1)
+			target.want = want
+			checkPseq(t, "written", s, want)
+			if i%8 == 0 {
+				for j, r := range seqs {
+					if got := r.s.appendTo(nil); !slices.Equal(got, r.want) {
+						t.Fatalf("history %d step %d: sequence %d holds %v, want %v", h, i, j, got, r.want)
+					}
+				}
 			}
 		}
-		checkPseq(t, "live after snapshot writes", &s, want)
+		for _, r := range seqs {
+			checkPseq(t, "version", &r.s, r.want)
+		}
 	}
-	for _, op := range []string{"insert", "set", "mutAt", "delete", "share", "slice", "build"} {
+	for _, op := range []string{"insert", "set", "mutAt", "delete", "share", "slice", "build", "handoff", "frozen write"} {
 		if ops[op] == 0 {
 			t.Fatalf("history never ran %s: %v", op, ops)
 		}
 	}
 }
 
-// An unshared sequence updates its nodes in place; a shared one copies only its path.
+// pseqNodes counts the distinct nodes reachable from s's root at any version.
+func pseqNodes(roots ...*pnode[int]) int {
+	seen := map[*pnode[int]]bool{}
+	var walk func(n *pnode[int])
+	walk = func(n *pnode[int]) {
+		if n == nil || seen[n] {
+			return
+		}
+		seen[n] = true
+		walk(n.left)
+		walk(n.right)
+		walk(n.spare)
+	}
+	for _, r := range roots {
+		walk(r)
+	}
+	return len(seen)
+}
+
+// An unshared sequence updates its nodes in place. After a snapshot, a set
+// copies only the node it changes: its parent takes the copy in its spare slot
+// (PTreeImpl::update, VersionedMap.h:129-165), so the path above stays shared.
 // Not parallel: AllocsPerRun counts process-wide allocations.
-func TestPseqCopiesOnlySharedPaths(t *testing.T) {
+func TestPseqCopiesOnlyChangedNodes(t *testing.T) {
 	var s pseq[int]
 	for i := 0; i < 1000; i++ {
 		s.insert(i, i)
@@ -187,37 +228,123 @@ func TestPseqCopiesOnlySharedPaths(t *testing.T) {
 	if allocs := testing.AllocsPerRun(10, func() { s.set(500, 7) }); allocs != 0 {
 		t.Fatalf("an unshared set allocated %v times, want 0", allocs)
 	}
+	if allocs := testing.AllocsPerRun(10, func() { s.insert(500, 9); s.delete(500, 501) }); allocs > 1 {
+		t.Fatalf("an unshared insert and delete allocated %v times, want at most the new node", allocs)
+	}
 	snap := s.share()
+	before := pseqNodes(s.root)
 	s.set(500, 8)
 	if *snap.at(500) != 7 || *s.at(500) != 8 {
 		t.Fatalf("snapshot %d live %d, want 7 and 8", *snap.at(500), *s.at(500))
 	}
+	if s.root != snap.root {
+		t.Fatal("a set below the root copied the root")
+	}
+	if added := pseqNodes(s.root, snap.root) - before; added != 1 {
+		t.Fatalf("set after share added %d nodes, want the one it changed", added)
+	}
+	// A second write at the same version reuses the slot and the copy.
+	s.set(500, 10)
+	if added := pseqNodes(s.root, snap.root) - before; added != 1 || *snap.at(500) != 7 {
+		t.Fatalf("a second set at one version added %d nodes, snapshot reads %d", added, *snap.at(500))
+	}
+}
+
+// With a snapshot before every write, as pinned reads take them, a set copies
+// only until it reaches a node whose slot is free: a constant amortized number
+// of nodes where path copying copies the whole O(log n) path. An insert changes
+// every ancestor's size, so each ancestor fills its slot or, when that is taken,
+// is copied: about half the path.
+func TestPseqWritesAfterSnapshotsCopyLittle(t *testing.T) {
+	t.Parallel()
+	rng := rand.New(rand.NewSource(5))
+	var s pseq[int]
+	for i := 0; i < 1<<14; i++ {
+		s.insert(i, i)
+	}
 	depth := 0
-	for n, i := s.root, 500; n != nil; depth++ {
-		ls := psize(n.left)
-		if i == ls {
-			break
-		} else if i < ls {
-			n = n.left
-		} else {
-			i -= ls + 1
-			n = n.right
+	for i := 0; i < s.Len(); i += 97 {
+		c := s.cursor(i)
+		depth += len(c.path)
+	}
+	avgDepth := float64(depth) / float64((s.Len()+96)/97)
+	// created counts the nodes n writes add, every version they leave kept alive.
+	created := func(n int, write func()) float64 {
+		roots := []*pnode[int]{s.root}
+		before := pseqNodes(roots...)
+		for i := 0; i < n; i++ {
+			roots = append(roots, s.share().root)
+			write()
+		}
+		return float64(pseqNodes(append(roots, s.root)...)-before) / float64(n)
+	}
+	sets := created(2000, func() { s.set(rng.Intn(s.Len()), -1) })
+	if sets > 3 {
+		t.Fatalf("a set after a snapshot created %.2f nodes on average, want at most 3 (path depth %.1f)", sets, avgDepth)
+	}
+	inserts := created(2000, func() { s.insert(rng.Intn(s.Len()+1), -2) })
+	if inserts > 0.65*avgDepth {
+		t.Fatalf("an insert after a snapshot created %.2f nodes on average, want at most 0.65 of the path depth %.1f", inserts, avgDepth)
+	}
+	t.Logf("nodes created per write after a snapshot: set %.2f, insert %.2f; path depth %.1f", sets, inserts, avgDepth)
+}
+
+// Readers of frozen versions run while the head writes slots into the nodes
+// they read, as pinned RYW reads do without the cache lock. Under the race
+// detector this checks the slot publication; without it, the contents.
+func TestPseqFrozenReadersRunWithWriter(t *testing.T) {
+	t.Parallel()
+	rng := rand.New(rand.NewSource(3))
+	var s pseq[int]
+	want := make([]int, 0, 4096)
+	for i := 0; i < 2000; i++ {
+		want = append(want, i)
+	}
+	s.build(want)
+	var wg sync.WaitGroup
+	errs := make(chan string, 64)
+	for r := 0; r < 32; r++ {
+		snap, ref := s.share(), slices.Clone(want)
+		if r%2 == 0 { // the head moves on and this version stays behind
+			moved := s.handoff()
+			snap, s = s, moved
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for pass := 0; pass < 3; pass++ {
+				if got := snap.appendTo(nil); !slices.Equal(got, ref) {
+					errs <- "a frozen version changed under its reader"
+					return
+				}
+				for c := snap.cursor(snap.Len() - 1); c.valid(); c.prev() {
+					if *c.item() != ref[c.idx] {
+						errs <- "a cursor over a frozen version read a later write"
+						return
+					}
+				}
+			}
+		}()
+		for w := 0; w < 50; w++ {
+			switch p := rng.Intn(len(want)); rng.Intn(3) {
+			case 0:
+				s.insert(p, -w)
+				want = slices.Insert(want, p, -w)
+			case 1:
+				s.set(p, -w)
+				want[p] = -w
+			default:
+				s.delete(p, p+1)
+				want = slices.Delete(want, p, p+1)
+			}
 		}
 	}
-	copied := 0
-	var walk func(a, b *pnode[int])
-	walk = func(a, b *pnode[int]) {
-		if a == nil || b == nil {
-			return
-		}
-		if a != b {
-			copied++
-			walk(a.left, b.left)
-			walk(a.right, b.right)
-		}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Fatal(e)
 	}
-	walk(s.root, snap.root)
-	if copied != depth+1 {
-		t.Fatalf("set after share copied %d nodes, want the %d on its path", copied, depth+1)
+	if got := s.appendTo(nil); !slices.Equal(got, want) {
+		t.Fatal("the head lost writes made while frozen versions were read")
 	}
 }

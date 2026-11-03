@@ -37,9 +37,9 @@ type selectorRangeRead struct {
 	// view is the pinned write-map version (RFC-262 D11): set when the walk reads
 	// the write map, which it does without c.mu. Released once, in complete.
 	view           *rywWrites
-	localConflicts [][2][]byte // a read answered at issue: its filtered conflict
-	finished       bool        // answered by the synchronous checks; nothing to run
-	local          bool        // the walk finished at issue
+	localConflicts []conflictSpan // a read answered at issue: its filtered conflict
+	finished       bool           // answered by the synchronous checks; nothing to run
+	local          bool           // the walk finished at issue
 	kvs            []KeyValue
 	more           bool
 	err            error
@@ -109,7 +109,7 @@ func (tx *Transaction) issueSelectorRange(parent context.Context, begin, end Key
 					r.local = true
 					if r.walk.err == nil && !snapshot {
 						b, e := rywRangeConflictSpan(r.begin, r.end, r.walk.rangeResult(), reverse, r.maxKey)
-						r.localConflicts = r.view.conflictRanges(b, e)
+						r.localConflicts = r.view.appendConflictSpans(nil, b, e)
 					}
 				}
 			})
@@ -188,18 +188,23 @@ func (r *selectorRangeRead) read(clone bool) ([]KeyValue, bool, error) {
 	}
 	res := r.walk.rangeResult()
 	if !r.snapshot { // addConflictRange after a successful read only (RYW:387-388)
-		ranges := r.localConflicts
+		spans := r.localConflicts
 		if !r.local {
+			var scratch [4]conflictSpan
 			b, e := rywRangeConflictSpan(r.begin, r.end, res, r.reverse, r.maxKey)
-			ranges = r.view.conflictRanges(b, e) // a pinned version is immutable: no lock
+			spans = r.view.appendConflictSpans(scratch[:0], b, e) // a pinned version is immutable: no lock
 		}
-		if err := tx.addReadConflictsFor(ctx, ranges); err != nil {
+		if err := tx.addReadConflictSpansFor(ctx, spans); err != nil {
 			return nil, false, tx.trackReadOperation(ctx, err)
 		}
 	}
 	kvs := res.kvs
 	if clone {
-		kvs = cloneReadKVs(kvs)
+		// The rows' bytes are the snapshot cache's (a storage reply's, kept as the
+		// cache's, C++ keeps the reply's arena) and the write map's: one copy for
+		// the caller, who may write them. The slice is the walk's own, built by
+		// append and released with the walk, so the copies replace the rows in it.
+		kvs = cloneReadKVsInPlace(kvs)
 	}
 	return kvs, res.more, tx.trackReadOperation(ctx, nil)
 }

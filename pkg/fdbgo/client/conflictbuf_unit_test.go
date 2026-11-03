@@ -54,59 +54,83 @@ func TestConflictBufAlloc_SmallFirstRequestUsesSmallBuffer(t *testing.T) {
 	}
 }
 
+// forEachConflictStore runs f with read conflicts in the RYW read-conflict map,
+// whose bounds are carved one at a time, and in the native list, which carves
+// a range's bounds together.
+func forEachConflictStore(t *testing.T, f func(t *testing.T, rywDisabled bool)) {
+	for _, rywDisabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rywDisabled=%t", rywDisabled), func(t *testing.T) {
+			t.Parallel()
+			f(t, rywDisabled)
+		})
+	}
+}
+
 // Overflowing the small buffer goes straight to the bulk tier and leaves the
 // ranges already carved from the small buffer intact.
 func TestConflictBufAlloc_SmallOverflowPromotesToBulkAndKeepsRanges(t *testing.T) {
 	t.Parallel()
-	tx := &Transaction{}
-	first, second := rangeOf('a', 'b', 100), rangeOf('c', 'd', 300)
-	tx.addReadConflicts([][2][]byte{first})
-	smallOwner := tx.conflictBufOwner
-	tx.addReadConflicts([][2][]byte{second}) // 200 + 600 bytes overflows 512
-	if tx.conflictBufOwner == nil || tx.conflictBufOwner == smallOwner {
-		t.Fatal("promotion did not transfer ownership to the bulk buffer")
-	}
-	if got := cap(tx.conflictBuf); got < 32768 {
-		t.Fatalf("CONFLICTBUF_PROMOTION: overflow grew to a %d-byte buffer, want >= 32768", got)
-	}
-	want := [][2][]byte{first, second}
-	assertConflictRanges(t, tx.readConflicts, want)
-	overwriteFreeConflictBuf(tx)
-	assertConflictRanges(t, tx.readConflicts, want)
+	forEachConflictStore(t, func(t *testing.T, rywDisabled bool) {
+		tx := &Transaction{rywDisabled: rywDisabled}
+		first, second := rangeOf('a', 'b', 100), rangeOf('c', 'd', 300)
+		tx.addReadConflicts([][2][]byte{first})
+		smallOwner := tx.conflictBufOwner
+		tx.addReadConflicts([][2][]byte{second}) // 200 + 600 bytes overflows 512
+		if tx.conflictBufOwner == nil || tx.conflictBufOwner == smallOwner {
+			t.Fatal("promotion did not transfer ownership to the bulk buffer")
+		}
+		if got := cap(tx.conflictBuf); got < 32768 {
+			t.Fatalf("CONFLICTBUF_PROMOTION: overflow grew to a %d-byte buffer, want >= 32768", got)
+		}
+		want := [][2][]byte{first, second}
+		assertConflictRanges(t, tx.readConflictRanges(), want)
+		overwriteFreeConflictBuf(tx)
+		assertConflictRanges(t, tx.readConflictRanges(), want)
+	})
 }
 
 // Growing past the bulk tier keeps every range carved before the growth.
 func TestConflictBufAlloc_BulkGrowthKeepsPriorRanges(t *testing.T) {
 	t.Parallel()
-	tx := &Transaction{conflictBuf: make([]byte, 0, 32768)}
-	var want [][2][]byte
-	for i := 0; i < 40; i++ { // 40 * 1200 bytes passes 32768
-		r := rangeOf(byte(2*i+1), byte(2*i+2), 600)
-		want = append(want, r)
-		tx.addReadConflicts([][2][]byte{r})
-	}
-	if got := cap(tx.conflictBuf); got < 40*1200 {
-		t.Fatalf("cap=%d, want >= %d", got, 40*1200)
-	}
-	assertConflictRanges(t, tx.readConflicts, want)
-	overwriteFreeConflictBuf(tx)
-	assertConflictRanges(t, tx.readConflicts, want)
+	forEachConflictStore(t, func(t *testing.T, rywDisabled bool) {
+		tx := &Transaction{rywDisabled: rywDisabled, conflictBuf: make([]byte, 0, 32768)}
+		var want [][2][]byte
+		for i := 0; i < 40; i++ { // 40 * 1200 bytes passes 32768; disjoint, ascending ranges
+			r := rangeOf(byte(2*i+1), byte(2*i+2), 600)
+			want = append(want, r)
+			tx.addReadConflicts([][2][]byte{r})
+		}
+		if got := cap(tx.conflictBuf); got < 40*1200 {
+			t.Fatalf("cap=%d, want >= %d", got, 40*1200)
+		}
+		assertConflictRanges(t, tx.readConflictRanges(), want)
+		overwriteFreeConflictBuf(tx)
+		assertConflictRanges(t, tx.readConflictRanges(), want)
+	})
 }
 
 func TestConflictBufAlloc_SmallThenOversizedRequest(t *testing.T) {
 	t.Parallel()
-	tx := &Transaction{}
-	first := rangeOf('a', 'b', 50)
-	tx.addReadConflicts([][2][]byte{first})
-	second := rangeOf('c', 'd', 50000)
-	tx.addReadConflicts([][2][]byte{second})
-	// The second range gets a chunk of its own; the first stays in the small one.
-	if len(tx.conflictBuf) != 100000 || cap(tx.conflictBuf) < 100000 {
-		t.Fatalf("oversized promotion: len=%d cap=%d, need a 100000-byte chunk", len(tx.conflictBuf), cap(tx.conflictBuf))
-	}
-	assertConflictRanges(t, tx.readConflicts, [][2][]byte{first, second})
-	overwriteFreeConflictBuf(tx)
-	assertConflictRanges(t, tx.readConflicts, [][2][]byte{first, second})
+	forEachConflictStore(t, func(t *testing.T, rywDisabled bool) {
+		tx := &Transaction{rywDisabled: rywDisabled}
+		first := rangeOf('a', 'b', 50)
+		tx.addReadConflicts([][2][]byte{first})
+		second := rangeOf('c', 'd', 50000)
+		tx.addReadConflicts([][2][]byte{second})
+		// The last oversized request gets a chunk of its own; the first range stays in the
+		// small one. The native list carves the second range's bounds as one request, the
+		// read-conflict map each bound as it keeps it (conflict_map.go ownBoundaryLocked).
+		last := 100000
+		if !rywDisabled {
+			last = 50000
+		}
+		if len(tx.conflictBuf) != last || cap(tx.conflictBuf) < last {
+			t.Fatalf("oversized promotion: len=%d cap=%d, need a %d-byte chunk", len(tx.conflictBuf), cap(tx.conflictBuf), last)
+		}
+		assertConflictRanges(t, tx.readConflictRanges(), [][2][]byte{first, second})
+		overwriteFreeConflictBuf(tx)
+		assertConflictRanges(t, tx.readConflictRanges(), [][2][]byte{first, second})
+	})
 }
 
 // Retry reset lets us overwrite owned storage deterministically without racing
@@ -152,7 +176,7 @@ func TestOnError1021_SelfConflictsSurviveConflictBufReuse(t *testing.T) {
 		t.Fatalf("OnError(1021): %v", err)
 	}
 	overwriteFreeConflictBuf(tx)
-	assertConflictRanges(t, tx.readConflicts, want)
+	assertConflictRanges(t, tx.readConflictRanges(), want)
 }
 
 func TestConflictBufCancelRetainsOwnedStorage(t *testing.T) {
@@ -165,7 +189,7 @@ func TestConflictBufCancelRetainsOwnedStorage(t *testing.T) {
 	if tx.conflictBufOwner != owner || len(tx.conflictBuf) == 0 || &tx.conflictBuf[0] != backing {
 		t.Fatal("Cancel released storage that pending operations may still reference")
 	}
-	assertConflictRanges(t, tx.readConflicts, [][2][]byte{{key, []byte("cancel-conflict\x00")}})
+	assertConflictRanges(t, tx.readConflictRanges(), [][2][]byte{{key, []byte("cancel-conflict\x00")}})
 }
 
 func TestConflictBufPoolSizeClasses(t *testing.T) {

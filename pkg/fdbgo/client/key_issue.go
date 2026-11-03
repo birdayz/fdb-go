@@ -26,7 +26,7 @@ type keyRead struct {
 	view *rywWrites
 	// localConflicts is the filtered conflict of a read answered at issue, computed
 	// then through the version it read.
-	localConflicts [][2][]byte
+	localConflicts []conflictSpan
 	finished       bool // answered by the synchronous checks; nothing to run
 	local          bool // the walk finished at issue
 	key            []byte
@@ -80,7 +80,7 @@ func (tx *Transaction) issueKey(parent context.Context, sel KeySelector, snapsho
 					r.local = true
 					if r.walk.err == nil && !snapshot {
 						if b, e := getKeyConflictSpan(sel, r.walk.keyResult()); bytes.Compare(b, e) < 0 {
-							r.localConflicts = r.view.conflictRanges(b, e)
+							r.localConflicts = r.view.appendConflictSpans(nil, b, e)
 						}
 					}
 				}
@@ -177,14 +177,14 @@ func (r *keyRead) read() ([]byte, error) {
 	key := bytes.Clone(r.walk.keyResult())
 	if !r.snapshot { // RYW getKey adds its conflict for every key (RYW:1695-1709, 230-243)
 		if r.local {
-			if err := tx.addReadConflictsFor(ctx, r.localConflicts); err != nil {
+			if err := tx.addReadConflictSpansFor(ctx, r.localConflicts); err != nil {
 				return nil, tx.trackReadOperation(ctx, err)
 			}
 		} else if b, e := getKeyConflictSpan(sel, key); bytes.Compare(b, e) < 0 {
 			// Filtered through the read's own version (RYW:388, 322-351). A pinned
 			// version is immutable, so this needs no lock.
-			ranges := r.view.conflictRanges(b, e)
-			if err := tx.addReadConflictsFor(ctx, ranges); err != nil {
+			var scratch [4]conflictSpan
+			if err := tx.addReadConflictSpansFor(ctx, r.view.appendConflictSpans(scratch[:0], b, e)); err != nil {
 				return nil, tx.trackReadOperation(ctx, err)
 			}
 		}

@@ -58,11 +58,12 @@ func TestAddReadConflictForKeyRYW(t *testing.T) {
 
 	assertSingleFull := func(t *testing.T, tx *Transaction) {
 		t.Helper()
-		if len(tx.readConflicts) != 1 {
-			t.Fatalf("want 1 single-key conflict, got %d: %v", len(tx.readConflicts), tx.readConflicts)
+		reads := tx.readConflictRanges()
+		if len(reads) != 1 {
+			t.Fatalf("want 1 single-key conflict, got %d: %v", len(reads), reads)
 		}
-		if !bytes.Equal(tx.readConflicts[0].Begin, full.Begin) || !bytes.Equal(tx.readConflicts[0].End, full.End) {
-			t.Fatalf("conflict [%q,%q), want [%q,%q)", tx.readConflicts[0].Begin, tx.readConflicts[0].End, full.Begin, full.End)
+		if !bytes.Equal(reads[0].Begin, full.Begin) || !bytes.Equal(reads[0].End, full.End) {
+			t.Fatalf("conflict [%q,%q), want [%q,%q)", reads[0].Begin, reads[0].End, full.Begin, full.End)
 		}
 	}
 
@@ -88,8 +89,8 @@ func TestAddReadConflictForKeyRYW(t *testing.T) {
 		tx := &Transaction{}
 		tx.ryw.set(key, []byte("v"))
 		tx.addReadConflictForKeyRYW(key)
-		if len(tx.readConflicts) != 0 {
-			t.Fatalf("read served by a local Set must add no read-conflict, got %v", tx.readConflicts)
+		if reads := tx.readConflictRanges(); len(reads) != 0 {
+			t.Fatalf("read served by a local Set must add no read-conflict, got %v", reads)
 		}
 	})
 
@@ -99,8 +100,8 @@ func TestAddReadConflictForKeyRYW(t *testing.T) {
 		tx := &Transaction{}
 		tx.ryw.addClearedRange([]byte("a"), []byte("z"))
 		tx.addReadConflictForKeyRYW(key)
-		if len(tx.readConflicts) != 0 {
-			t.Fatalf("read served by a local clear must add no read-conflict, got %v", tx.readConflicts)
+		if reads := tx.readConflictRanges(); len(reads) != 0 {
+			t.Fatalf("read served by a local clear must add no read-conflict, got %v", reads)
 		}
 	})
 }

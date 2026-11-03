@@ -342,9 +342,9 @@ func TestSpecialKeys_Routing(t *testing.T) {
 	if err := tx.checkRangeArgs(ctx, conflictingKeysBegin, conflictingKeysEnd, -5); err != nil {
 		t.Errorf("checkRangeArgs on a routed range: %v (the routed read checks its own limits)", err)
 	}
-	if tx.hadRead.Load() || len(tx.readConflicts) != 0 || tx.readLife != nil {
+	if reads := tx.readConflictRanges(); tx.hadRead.Load() || len(reads) != 0 || tx.readLife != nil {
 		t.Errorf("routed reads touched read state: hadRead=%v conflicts=%d readLife=%v",
-			tx.hadRead.Load(), len(tx.readConflicts), tx.readLife)
+			tx.hadRead.Load(), len(reads), tx.readLife)
 	}
 
 	tx.deferredErr.Store(&wire.FDBError{Code: 2006})

@@ -431,10 +431,8 @@ func (env *selConfEnv) runGo(t *testing.T, ctx context.Context, q selConfQuery, 
 			begin = firstGreaterThan(last)
 		}
 	}
-	tx.conflictMu.Lock()
-	conflicts := readConflictMap(slices.Clone(tx.readConflicts))
-	tx.conflictMu.Unlock()
-	for _, r := range conflicts {
+	// The C module coalesces the native list too when RYW is disabled.
+	for _, r := range readConflictMap(tx.readConflictRanges()) {
 		res.conflicts = append(res.conflicts, [2]string{string(r.Begin), string(r.End)})
 	}
 	return res

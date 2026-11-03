@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"unsafe"
 
 	"fdb.dev/pkg/fdbgo/wire"
 )
@@ -76,6 +77,8 @@ type rywEntry struct {
 	dependent bool
 	// If true, this entry has pending atomic mutations instead of a plain Set.
 	hasAtomics bool
+	// valueOwned is the owned length of value's backing array (appendIfFitsOwned).
+	valueOwned int32
 	atomics    []rywMutation
 	// unreadable: a versionstamped op landed on this key, making it UNREADABLE for
 	// the transaction's lifetime — reads reaching it throw accessed_unreadable (1036)
@@ -112,7 +115,9 @@ func (e *rywEntry) isDependentLocked() bool {
 
 // rywMutation represents a single atomic mutation.
 type rywMutation struct {
-	typ   MutationType
+	typ MutationType
+	// owned is the owned length of param's backing array (appendIfFitsOwned).
+	owned int32
 	param []byte
 }
 
@@ -149,8 +154,16 @@ func (c *rywCache) allocBytes(n int) []byte {
 func (c *rywCache) isEmpty() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.writesEmptyLocked() && c.serverCache.entries.Len() == 0
+}
+
+// writesEmptyLocked is WriteMap::empty(): false once anything reached the write
+// map, a conflict-only or unreadable range included (WriteMap.cpp:88, 161, 206,
+// 245). Caller holds c.mu.
+func (c *rywCache) writesEmptyLocked() bool {
 	w := c.liveLocked()
-	return w.numWrites() == 0 && w.cleared.Len() == 0 && c.serverCache.entries.Len() == 0
+	nodesEmpty := len(w.nodes.log) == 0 && (!w.nodes.built || w.nodes.seq.Len() <= 3) // the sentinels
+	return w.numWrites() == 0 && w.cleared.Len() == 0 && nodesEmpty
 }
 
 // reset clears all cached state.
@@ -274,8 +287,15 @@ func (c *rywCache) clearRangeWith(begin, end []byte, addConflict bool) {
 func (c *rywCache) materializeCommit() []Mutation {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	w := c.liveLocked()
+	return c.liveLocked().materializeCommit()
+}
+
+// materializeCommit is rywCache.materializeCommit on this version: the caller
+// holds c.mu or the version is pinned (immutable). Keys and values alias the
+// write map's bytes, which are never written; keyAfter bounds are new.
+func (w *rywWrites) materializeCommit() []Mutation {
 	w.ensureSorted()
+	var a boundaryArena
 	out := make([]Mutation, 0, w.cleared.Len()+w.numWrites())
 	// Pass 1 — clears (w.cleared is kept sorted + non-overlapping by addClearedRangeLocked).
 	// A key with an operation is not a cleared segment of the C++ write map, so
@@ -287,9 +307,9 @@ func (c *rywCache) materializeCommit() []Mutation {
 		for wc := w.sorted.cursor(w.writeIndexOf(r.begin)); wc.valid() && wc.item().key < string(r.end); wc.next() {
 			key := wc.item().key
 			if string(begin) < key {
-				out = append(out, Mutation{Type: MutClearRange, Key: begin, Value: []byte(key)})
+				out = append(out, Mutation{Type: MutClearRange, Key: begin, Value: stringBytes(key)})
 			}
-			begin = keyAfterBytes([]byte(key))
+			begin = a.bytes(rywBoundary{key: stringBytes(key), after: true})
 		}
 		if bytes.Compare(begin, r.end) < 0 {
 			out = append(out, Mutation{Type: MutClearRange, Key: begin, Value: r.end})
@@ -298,7 +318,7 @@ func (c *rywCache) materializeCommit() []Mutation {
 	// Pass 2 — per-key operations in sorted key order.
 	for wc := w.sorted.cursor(0); wc.valid(); wc.next() {
 		e := wc.item().e
-		key := []byte(wc.item().key)
+		key := stringBytes(wc.item().key)
 		switch {
 		case e.hasAtomics:
 			for _, m := range e.atomics {
@@ -308,9 +328,7 @@ func (c *rywCache) materializeCommit() []Mutation {
 			// A matched CompareAndClear resolved to "no value" → C++ SetValue(absent) → tr.clear(key),
 			// i.e. a single-key ClearRange [key, key+\x00). (An absent entry is an operation key in the
 			// write map, emitted in pass 2, NOT a cleared range from pass 1.)
-			end := make([]byte, len(key)+1)
-			copy(end, key)
-			out = append(out, Mutation{Type: MutClearRange, Key: key, Value: end})
+			out = append(out, Mutation{Type: MutClearRange, Key: key, Value: a.bytes(rywBoundary{key: key, after: true})})
 		default:
 			out = append(out, Mutation{Type: MutSetValue, Key: key, Value: e.value})
 		}
@@ -521,6 +539,16 @@ func (c *rywCache) atomicWith(op MutationType, key, param []byte, addConflict bo
 			// coalesces the op onto the stack TOP; the bottom (dependence) is unchanged, so
 			// keep entry.dependent. A matched CompareAndClear → a phantom is_kv slot
 			// (absent), NOT a cleared range (the key stays an operation in the write-map).
+			if op == MutAppendIfFits {
+				// C++ coalesce SetValue+AppendIfFits → SetValue(doAppendIfFits) (WriteMap.cpp:388-391).
+				entry.value, entry.valueOwned = appendIfFitsOwned(entry.value, entry.valueOwned, param)
+				if entry.value == nil {
+					entry.value = []byte{} // present-empty, as below
+				}
+				entry.absent = false
+				w.putEntry(k, entry)
+				return
+			}
 			val, clr := applyAtomic(op, entry.value, param)
 			if !clr && val == nil {
 				// A non-clear op that resolved to EMPTY (e.g. doMax(_, "")) is present-empty,
@@ -530,6 +558,7 @@ func (c *rywCache) atomicWith(op MutationType, key, param []byte, addConflict bo
 				val = []byte{}
 			}
 			entry.value = val
+			entry.valueOwned = 0
 			entry.absent = clr
 			w.putEntry(k, entry)
 			return
@@ -559,6 +588,7 @@ func (c *rywCache) atomicWith(op MutationType, key, param []byte, addConflict bo
 	// read time. Drop any prior plain value (e.g. a pending Set superseded by a
 	// versionstamped op) so a reader never mistakes it for a resolved value.
 	entry.value = nil
+	entry.valueOwned = 0
 	paramCopy := c.allocBytes(len(param))
 	copy(paramCopy, param)
 	// Coalesce onto the pending chain (C++ WriteMap::coalesceOver at insert time, WriteMap.cpp:106/144):
@@ -677,9 +707,9 @@ type rywRangeRead struct {
 	more              bool
 	err               error
 	unreadableCap     []byte
-	writesAtIssue     bool        // local writes or clears in [begin, end) at issue
-	view              *rywWrites  // their state, a private copy for a read that must fetch
-	localConflicts    [][2][]byte // a local answer's filtered read conflict, computed at issue
+	writesAtIssue     bool           // local writes or clears in [begin, end) at issue
+	view              *rywWrites     // their state, a private copy for a read that must fetch
+	localConflicts    []conflictSpan // a local answer's filtered read conflict, computed at issue
 }
 
 // issueRangeInto answers the read from local state when it can, deciding its read conflict in the
@@ -694,7 +724,7 @@ func (c *rywCache) issueRangeInto(r *rywRangeRead, begin, end []byte, limit, byt
 		r.known, r.rows, r.more, r.err = true, rows, more, err
 		if wantConflicts && err == nil && r.writesAtIssue {
 			if cb, ce := rangeConflictExtent(begin, end, rows, more, reverse); bytes.Compare(cb, ce) < 0 {
-				r.localConflicts = w.conflictRanges(cb, ce)
+				r.localConflicts = w.appendConflictSpans(nil, cb, ce)
 			}
 		}
 		return
@@ -741,11 +771,11 @@ func (c *rywCache) cachedRangeLocked(begin, end []byte, limit, byteTarget int, r
 // conflictRanges filters [begin, end) through the issue-time write state (view must be set):
 // C++ addConflictRange walks the read's own iterator (ReadYourWrites.actor.cpp:388).
 // The view is this read's private copy, sharing only immutable nodes, so no lock is held.
-func (r *rywRangeRead) conflictRanges(begin, end []byte) [][2][]byte {
+func (r *rywRangeRead) conflictRanges(begin, end []byte) []conflictSpan {
 	if bytes.Compare(begin, end) >= 0 {
 		return nil
 	}
-	return r.view.conflictRanges(begin, end)
+	return r.view.appendConflictSpans(nil, begin, end)
 }
 
 // rangeServerFunc is the storage range read under the RYW layer. readThrough, when set, is
@@ -1518,9 +1548,16 @@ func coalesceOverAtomics(stack []rywMutation, newMut rywMutation) []rywMutation 
 	// to empty (ByteMin over ""), whose nil result is the next fold's base. Normalizing here
 	// covers both; downstream readers of param use it only in operand position, where the do*
 	// primitives test len() and nil is indistinguishable from empty.
-	combined, _ := applyAtomic(top.typ, existing(top.param), newMut.param)
+	var folded rywMutation
+	if top.typ == MutAppendIfFits {
+		// C++ coalesce AppendIfFits+AppendIfFits → AppendIfFits(doAppendIfFits) (WriteMap.cpp:392-394).
+		folded.param, folded.owned = appendIfFitsOwned(existing(top.param), top.owned, newMut.param)
+	} else {
+		folded.param, _ = applyAtomic(top.typ, existing(top.param), newMut.param)
+	}
+	folded.typ = top.typ
 	stack = slices.Clone(stack)
-	stack[len(stack)-1].param = combined
+	stack[len(stack)-1] = folded
 	return stack
 }
 
@@ -1552,6 +1589,23 @@ func resolveAtomics(base []byte, atomics []rywMutation) (result []byte, cleared,
 		}
 	}
 	return base, cleared, false
+}
+
+// atomicsOutcome is resolveAtomics's cleared and unresolved flags without its
+// value. Only a trailing CompareAndClear depends on the value it compares, so
+// other chains are classified without folding operands, as C++
+// RYWIterator::type reads segment types, not values (RYWIterator.cpp:44-49).
+func atomicsOutcome(base []byte, atomics []rywMutation) (cleared, unresolved bool) {
+	for _, m := range atomics {
+		if isUnresolvedVersionstamp(m.typ) {
+			return false, true
+		}
+	}
+	if len(atomics) == 0 || atomics[len(atomics)-1].typ != MutCompareAndClear {
+		return false, false
+	}
+	_, cleared, _ = resolveAtomics(base, atomics)
+	return cleared, false
 }
 
 // applyAtomic applies an atomic mutation to a base value, mirroring the C++
@@ -1810,6 +1864,35 @@ func doAppendIfFits(base, param []byte) []byte {
 	return result
 }
 
+// appendIfFitsOwned is doAppendIfFits for a write-map value or operand v whose
+// backing array the key's live write-map lineage owns up to length owned (0:
+// none); such a v is stored capped (len == cap). C++ copies existing+operand into
+// the RYW arena on every coalesce (Atomic.h:114-137); appending in place into
+// doubling capacity keeps the cost per append proportional to the operand.
+// Only bytes past len(v) are written: a pinned version, a read result or a
+// materialized mutation sharing v sees it unchanged (WriteMap.h:158-160), and,
+// being capped, none of them can append into the owned bytes. Only the live
+// version extends a value, so no two writers share the spare bytes.
+// Over VALUE_SIZE_LIMIT, v is returned unchanged, as C++ does (Atomic.h:123-126).
+func appendIfFitsOwned(v []byte, owned int32, param []byte) ([]byte, int32) {
+	n := len(v) + len(param)
+	switch {
+	case len(v) == 0:
+		return doAppendIfFits(v, param), 0
+	case len(param) == 0 || n > valueSizeLimit:
+		return v, owned
+	case int(owned) >= n:
+		buf := unsafe.Slice(unsafe.SliceData(v), owned)
+		copy(buf[len(v):n], param)
+		return buf[:n:n], owned
+	}
+	c := min(max(2*n, 64), valueSizeLimit)
+	buf := make([]byte, n, c)
+	copy(buf, v)
+	copy(buf[len(v):], param)
+	return buf[:n:n], int32(c)
+}
+
 // doCompareAndClear — C++ doCompareAndClear. If absent or equal → clear.
 func doCompareAndClear(base, param []byte) ([]byte, bool) {
 	if base == nil || bytes.Equal(base, param) {
@@ -1843,14 +1926,25 @@ func resolveAtomicsBypass(base []byte, atomics []rywMutation) (result []byte, cl
 
 // addUnreadableRange marks [begin, end) unreadable (SVK candidate stamp
 // range, RFC-098).
-func (c *rywCache) addUnreadableRange(begin, end []byte) {
+func (c *rywCache) addUnreadableRange(begin, end []byte) { c.addUnreadableRangeKeeping(begin, end) }
+
+// addUnreadableRangeKeeping is addUnreadableRange returning the write-conflict
+// runs it removes from the nodes. C++ addUnmodifiedAndUnreadableRange drops the
+// span's operations and conflict flags together (WriteMap.cpp:205-242); Go keeps
+// the span's pending writes (RFC-098), so the caller keeps their conflicts.
+// The nodes are built first, so later writes do not replay the log.
+func (c *rywCache) addUnreadableRangeKeeping(begin, end []byte) (kept []KeyRange) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	w := c.mutableWritesLocked()
 	if b, e, ok := nodeRange(begin, end); ok {
+		w.nodes.build()
+		var a boundaryArena
+		kept = w.nodes.appendWriteConflictsIn(nil, &a, b, e)
 		w.nodes.addUnmodifiedAndUnreadableRange(b, e) // RYW:2272
 	}
 	w.addUnreadableRange(begin, end)
+	return kept
 }
 
 // nodeKey reports a key inside the keyspace the write map's nodes cover. C++
@@ -1868,15 +1962,31 @@ func nodeRange(begin, end []byte) (b, e []byte, ok bool) {
 	if bytes.Compare(begin, end) >= 0 {
 		return nil, nil, false
 	}
-	return bytes.Clone(begin), bytes.Clone(end), true
+	buf := make([]byte, len(begin)+len(end)) // one allocation for both bounds
+	copy(buf, begin)
+	copy(buf[len(begin):], end)
+	return buf[:len(begin):len(begin)], buf[len(begin):], true
 }
 
 // addConflictRange is RYW addWriteConflictRange with RYW enabled: conflict-only
 // nodes in the write map, no operation (ReadYourWrites.actor.cpp:2493-2499,
 // WriteMap.cpp:244-302).
-func (c *rywCache) addConflictRange(begin, end []byte) {
+func (c *rywCache) addConflictRange(begin, end []byte) { c.addConflictRangeOwned(begin, end, false) }
+
+// addConflictRangeOwned is addConflictRange; owned bounds are never written and
+// the nodes keep them without a copy.
+func (c *rywCache) addConflictRangeOwned(begin, end []byte, owned bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if owned {
+		if bytes.Compare(end, allKeysEnd) > 0 {
+			end = allKeysEnd
+		}
+		if bytes.Compare(begin, end) < 0 {
+			c.mutableWritesLocked().nodes.addConflictRange(begin, end)
+		}
+		return
+	}
 	if b, e, ok := nodeRange(begin, end); ok {
 		c.mutableWritesLocked().nodes.addConflictRange(b, e)
 	}

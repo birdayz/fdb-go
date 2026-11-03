@@ -103,7 +103,7 @@ func segTypeAt(cached *pseq[cacheEntry], w *rywWrites, p []byte) rywSegType {
 			if !known {
 				return segUnknown // DEPENDENT_WRITE over unknown base — must read server.
 			}
-			_, cleared, unresolved := resolveAtomics(base, entry.atomics)
+			cleared, unresolved := atomicsOutcome(base, entry.atomics)
 			if unresolved {
 				return segUnreadable
 			}

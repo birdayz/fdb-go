@@ -123,6 +123,27 @@ func (c *rywCache) pinWritesLocked() *rywWrites {
 	return w
 }
 
+// pinWritesForCommitLocked pins the live version for a commit, which reads its
+// sorted writes and cleared ranges but not its nodes: a write-only transaction's
+// nodes stay unbuilt (the commit takes their log). Caller holds c.mu.
+func (c *rywCache) pinWritesForCommitLocked() *rywWrites {
+	w := c.liveLocked()
+	w.ensureSorted()
+	w.pins++
+	if c.onPin != nil {
+		observed := false
+		defer func() {
+			if !observed { // a panicking observer never transfers the pin to the caller
+				w.pins--
+				c.dropObsoleteBaseLocked()
+			}
+		}()
+		c.onPin(w, true)
+		observed = true
+	}
+	return w
+}
+
 // unpinWritesLocked releases a pin taken by pinWritesLocked. Caller holds c.mu.
 func (c *rywCache) unpinWritesLocked(w *rywWrites) {
 	if w.pins <= 0 {
@@ -164,17 +185,18 @@ func (c *rywCache) mutableWritesLocked() *rywWrites {
 	return c.w
 }
 
-// clone snapshots the version in O(1): the copy shares every node, and each side
-// copies what it later changes. Key, value and parameter bytes and atomic stacks
-// are shared; they are never written after insertion.
+// clone snapshots the version in O(1): the copy shares every node and takes over
+// writing them (pseq.handoff), and w keeps reading its version. Key, value and
+// parameter bytes and atomic stacks are shared; they are never written after
+// insertion (appendIfFitsOwned writes only past a slice's length).
 func (w *rywWrites) clone() *rywWrites {
 	w.ensureSorted()
 	return &rywWrites{
-		sorted:           w.sorted.share(),
+		sorted:           w.sorted.handoff(),
 		isSorted:         true,
-		cleared:          w.cleared.share(),
-		unreadableRanges: w.unreadableRanges.share(),
-		unreadableKeys:   w.unreadableKeys.share(),
+		cleared:          w.cleared.handoff(),
+		unreadableRanges: w.unreadableRanges.handoff(),
+		unreadableKeys:   w.unreadableKeys.handoff(),
 		bypassUnreadable: w.bypassUnreadable,
 		nodes:            w.nodes.clone(),
 	}
@@ -330,8 +352,13 @@ func (w *rywWrites) conflictForKey(key []byte) bool {
 	return true // unmodified gap: a DB read resolved it
 }
 
-// conflictRanges walks the write-map over [begin, end) and returns the maximal
-// sub-ranges that must be added to the getKey read-conflict map — a faithful port of C++
+// conflictSpan is one read-conflict sub-range. Its bounds alias the read's own
+// bounds and write-map bytes, which are never written after insertion, and keep
+// keyAfter virtual: nothing is copied until the read-conflict map keeps a bound.
+type conflictSpan struct{ begin, end rywBoundary }
+
+// appendConflictSpans walks the write-map over [begin, end) and appends the maximal
+// sub-ranges that must be added to the read-conflict map — a faithful port of C++
 // updateConflictMap (ReadYourWrites.actor.cpp:335-351), which iterates the WriteMap (NOT the
 // merged RYWIterator — the snapshot cache is irrelevant) and records a conflict for a segment
 // iff `is_unmodified_range() || (is_operation() && !is_independent())`. I.e.:
@@ -341,75 +368,82 @@ func (w *rywWrites) conflictForKey(key []byte) bool {
 //   - INDEPENDENT write key (plain Set, folded atomic, matched-CAC phantom) → NO conflict.
 //   - CLEARED range (no operation key) → NO conflict.
 //
-// Adjacent qualifying sub-ranges are coalesced. The over-conflict that the old full-range
-// conflict caused (on INDEPENDENT writes + cleared ranges) is thereby removed, matching C++
-// exactly. (RFC-058 sub-edge b.) It visits only the writes and cleared ranges in [begin, end).
+// Adjacent qualifying sub-ranges are coalesced. (RFC-058 sub-edge b.) Like the C++ iterator it
+// moves forward from segment to segment: one cursor over the writes and one over the cleared
+// ranges, each positioned once, so a step compares against the next boundary only. It visits only
+// the writes and cleared ranges in [begin, end) and allocates nothing but dst's growth.
 // Caller holds c.mu, or the version is pinned (immutable).
-func (w *rywWrites) conflictRanges(begin, end []byte) [][2][]byte {
+func (w *rywWrites) appendConflictSpans(dst []conflictSpan, begin, end []byte) []conflictSpan {
 	if bytes.Compare(begin, end) >= 0 {
-		return nil
+		return dst
 	}
 	w.ensureSorted()
+	first := len(dst)
+	emit := func(lo, hi rywBoundary) {
+		if n := len(dst); n > first && dst[n-1].end.compare(lo) == 0 {
+			dst[n-1].end = hi
+			return
+		}
+		dst = append(dst, conflictSpan{begin: lo, end: hi})
+	}
+	wc := w.sorted.cursor(w.writeIndexOf(begin))
+	cc := w.cleared.cursor(rangeIndex(&w.cleared, func(r *rywRange) bool { return bytes.Compare(r.end, begin) > 0 }))
+	cur, last := rywBoundary{key: begin}, rywBoundary{key: end}
+	for cur.compare(last) < 0 {
+		if wc.valid() {
+			x := wc.item()
+			key := rywBoundary{key: stringBytes(x.key)}
+			if key.compare(cur) == 0 {
+				// Operation key occupying the single-key segment [key, keyAfter(key)): nothing
+				// lies strictly between a key and its successor, so the segment ends in range.
+				next := key.keyAfter()
+				if x.e.isDependentLocked() {
+					emit(cur, next)
+				}
+				cur = next
+				wc.next()
+				continue
+			}
+		}
+		// A gap up to the next boundary: the next write key, the next cleared bound or end.
+		hi := last
+		if wc.valid() {
+			if key := (rywBoundary{key: stringBytes(wc.item().key)}); key.compare(hi) < 0 {
+				hi = key
+			}
+		}
+		for cc.valid() && (rywBoundary{key: cc.item().end}).compare(cur) <= 0 {
+			cc.next()
+		}
+		cleared := false
+		if cc.valid() {
+			r := cc.item()
+			if rb := (rywBoundary{key: r.begin}); rb.compare(cur) <= 0 {
+				cleared = true // CLEARED range — no DB read.
+				if re := (rywBoundary{key: r.end}); re.compare(hi) < 0 {
+					hi = re
+				}
+			} else if rb.compare(hi) < 0 {
+				hi = rb
+			}
+		}
+		if !cleared {
+			emit(cur, hi) // UNMODIFIED gap — a DB read resolved it.
+		}
+		cur = hi
+	}
+	return dst
+}
 
-	// Collect the segment boundaries within [begin, end]: begin, end, every write key in
-	// range AND its keyAfter (so an operation occupies its own single-key segment [k,
-	// keyAfter(k)) and the following gap is classified separately), and every cleared-range
-	// bound clamped into the window. Each write key's segment carries its entry.
-	type bound struct {
-		key   []byte
-		entry *rywEntry // the operation at key, when [key, keyAfter(key)) is its segment
+// conflictRanges is appendConflictSpans with the bounds copied out.
+func (w *rywWrites) conflictRanges(begin, end []byte) [][2][]byte {
+	spans := w.appendConflictSpans(nil, begin, end)
+	if len(spans) == 0 {
+		return nil
 	}
-	bounds := []bound{{key: append([]byte(nil), begin...)}, {key: append([]byte(nil), end...)}}
-	addBound := func(b []byte, e *rywEntry) {
-		if bytes.Compare(b, begin) > 0 && bytes.Compare(b, end) < 0 {
-			bounds = append(bounds, bound{key: append([]byte(nil), b...), entry: e})
-		}
-	}
-	for cur := w.sorted.cursor(w.writeIndexOf(begin)); cur.valid() && cur.item().key < string(end); cur.next() {
-		x := cur.item()
-		k := []byte(x.key)
-		if bytes.Equal(k, begin) {
-			bounds[0].entry = &x.e
-		}
-		addBound(k, &x.e)
-		addBound(keyAfterBytes(k), nil)
-	}
-	first := rangeIndex(&w.cleared, func(r *rywRange) bool { return bytes.Compare(r.end, begin) > 0 })
-	for cur := w.cleared.cursor(first); cur.valid() && bytes.Compare(cur.item().begin, end) < 0; cur.next() {
-		r := cur.item()
-		addBound(r.begin, nil)
-		addBound(r.end, nil)
-	}
-	slices.SortFunc(bounds, func(a, b bound) int { return bytes.Compare(a.key, b.key) })
-
-	var out [][2][]byte
-	for i := 0; i+1 < len(bounds); i++ {
-		lo, hi := bounds[i].key, bounds[i+1].key
-		if bytes.Equal(lo, hi) {
-			continue // deduped boundary
-		}
-		entry := bounds[i].entry
-		for j := i - 1; entry == nil && j >= 0 && bytes.Equal(bounds[j].key, lo); j-- {
-			entry = bounds[j].entry // a duplicate of lo that carries its entry
-		}
-		conflict := false
-		if entry != nil && bytes.Equal(hi, keyAfterBytes(lo)) {
-			// Operation key occupying the single-key segment [lo, keyAfter(lo)).
-			conflict = entry.isDependentLocked()
-		} else if w.isCleared(lo) {
-			conflict = false // CLEARED range — no DB read.
-		} else {
-			conflict = true // UNMODIFIED gap — a DB read resolved it.
-		}
-		if !conflict {
-			continue
-		}
-		// Coalesce with the previous sub-range if adjacent.
-		if n := len(out); n > 0 && bytes.Equal(out[n-1][1], lo) {
-			out[n-1][1] = append([]byte(nil), hi...)
-		} else {
-			out = append(out, [2][]byte{append([]byte(nil), lo...), append([]byte(nil), hi...)})
-		}
+	out := make([][2][]byte, len(spans))
+	for i, s := range spans {
+		out[i] = [2][]byte{bytes.Clone(s.begin.materialize()), bytes.Clone(s.end.materialize())}
 	}
 	return out
 }

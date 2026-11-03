@@ -59,7 +59,7 @@ func (tx *Transaction) captureCommitVectors(muts []Mutation, mutsOwned bool, wri
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()
 	if !readsFrozen {
-		reads = slices.Clone(tx.readConflicts)
+		reads = tx.readConflictRangesLocked()
 	}
 	if !mutsOwned {
 		muts = slices.Clone(muts)
@@ -153,9 +153,9 @@ func (input *commitInput) publishSuccess(started time.Time, tok cacheToken, resu
 func (tx *Transaction) commitDummyTransaction(ctx context.Context) error {
 	lease := tx.enterState()
 	tx.conflictMu.Lock()
-	writeConflicts := tx.writeConflicts
+	reads, writes := tx.conflictRangesNowLocked() // new vectors
 	tx.conflictMu.Unlock()
-	input := tx.captureCommit(nil, writeConflicts)
+	input := tx.captureCommitVectors(nil, false, writes, true, reads, true)
 	defer input.release()
 	lease.release()
 	return input.commitDummyTransaction(ctx)

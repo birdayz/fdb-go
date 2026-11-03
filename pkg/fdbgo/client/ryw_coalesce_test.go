@@ -238,9 +238,9 @@ func TestCommit_ShipsSelfConflictRange_Wire(t *testing.T) {
 	// SAME pre-SC snapshot. Feeding the pre-SC snapshot (NOT live tx.writeConflicts, which maybeMakeSelf-
 	// Conflicting mutates to contain the SC) makes SC enter ONLY via the `sc` param — so this test reds if
 	// the P1 sc-append is reverted.
-	_, _, coalesced := coalesceCommitVectors(tx.mutations, tx.writeConflicts, tx.rywDisabled)
-	writeSnap := append([]KeyRange(nil), tx.writeConflicts...)
-	sc, _, scAdded := tx.maybeMakeSelfConflicting(writeSnap, tx.readConflicts)
+	writeSnap := tx.writeConflictRanges() // a new vector
+	_, _, coalesced := coalesceCommitVectors(tx.mutations, writeSnap, tx.rywDisabled)
+	sc, _, scAdded := tx.maybeMakeSelfConflicting(writeSnap, tx.readConflictRanges())
 	shipConflicts := finalizeShipConflicts(writeSnap, sc, scAdded, coalesced)
 
 	body, bufp := buildCommitTransactionRequest(tx, transport.UID{First: 1, Second: 2}, tx.mutations, shipConflicts)
@@ -278,7 +278,7 @@ func TestMaybeMakeSelfConflicting_DecidesOnFrozenSnapshot(t *testing.T) {
 		{Begin: []byte("a"), End: []byte("a\x00")},
 		{Begin: []byte("b"), End: []byte("b\x00")},
 	}
-	if _, _, scAdded := tx.maybeMakeSelfConflicting(writeSnap, tx.readConflicts); !scAdded {
+	if _, _, scAdded := tx.maybeMakeSelfConflicting(writeSnap, tx.readConflictRanges()); !scAdded {
 		t.Fatal("#28 round-3: SC decision must use the frozen write snapshot [a] (which ships), not live " +
 			"tx.writeConflicts — a racing Set on read key \"b\" wrongly suppressed the self-conflict range")
 	}

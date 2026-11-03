@@ -495,6 +495,22 @@ func cloneReadKVs(kvs []KeyValue) []KeyValue {
 	if len(kvs) == 0 {
 		return kvs
 	}
+	return cloneReadKVsInto(make([]KeyValue, len(kvs)), kvs)
+}
+
+// cloneReadKVsInPlace is cloneReadKVs for a slice its caller alone holds (its
+// rows may alias shared storage, the slice itself must not be shared): each
+// row's bytes are replaced by the copy, sparing a second slice.
+func cloneReadKVsInPlace(kvs []KeyValue) []KeyValue {
+	if len(kvs) == 0 {
+		return kvs
+	}
+	return cloneReadKVsInto(kvs, kvs)
+}
+
+// cloneReadKVsInto writes into out, len(kvs) long, the rows of kvs with their
+// bytes copied into one arena; out may be kvs itself.
+func cloneReadKVsInto(out, kvs []KeyValue) []KeyValue {
 	size := 0
 	for _, kv := range kvs {
 		size += len(kv.Key) + len(kv.Value)
@@ -509,7 +525,6 @@ func cloneReadKVs(kvs []KeyValue) []KeyValue {
 		arena = arena[len(src):]
 		return dst
 	}
-	out := make([]KeyValue, len(kvs))
 	for i, kv := range kvs {
 		out[i] = KeyValue{Key: clone(kv.Key), Value: clone(kv.Value)}
 	}

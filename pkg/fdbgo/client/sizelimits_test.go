@@ -201,8 +201,8 @@ func TestClear_NoOpConsumesNextWriteNoConflict(t *testing.T) {
 			t.Fatal("oversized Clear did not consume nextWriteNoConflict (C++ RYW :2407)")
 		}
 		tx.Set([]byte("k2"), []byte("v")) // next real write must add its range
-		if len(tx.writeConflicts) != 1 {
-			t.Fatalf("flag leaked: follow-up Set added %d conflict ranges, want 1", len(tx.writeConflicts))
+		if len(tx.writeConflictRanges()) != 1 {
+			t.Fatalf("flag leaked: follow-up Set added %d conflict ranges, want 1", len(tx.writeConflictRanges()))
 		}
 	})
 	t.Run("clamped_empty_range", func(t *testing.T) {
@@ -223,8 +223,8 @@ func TestClear_NoOpConsumesNextWriteNoConflict(t *testing.T) {
 			t.Fatal("clamped-empty ClearRange did not consume nextWriteNoConflict (C++ RYW)")
 		}
 		tx.Set([]byte("k2"), []byte("v"))
-		if len(tx.writeConflicts) != 1 {
-			t.Fatalf("flag leaked: follow-up Set added %d conflict ranges, want 1", len(tx.writeConflicts))
+		if len(tx.writeConflictRanges()) != 1 {
+			t.Fatalf("flag leaked: follow-up Set added %d conflict ranges, want 1", len(tx.writeConflictRanges()))
 		}
 	})
 }
@@ -238,8 +238,8 @@ func TestClear_DropsOversizedKey(t *testing.T) {
 	if len(tx.mutations) != 0 {
 		t.Fatalf("oversized single-key Clear must be dropped (C++ NativeAPI:6045-6047); got %d mutations", len(tx.mutations))
 	}
-	if len(tx.writeConflicts) != 0 {
-		t.Fatalf("dropped Clear must add no write-conflict range; got %d", len(tx.writeConflicts))
+	if len(tx.writeConflictRanges()) != 0 {
+		t.Fatalf("dropped Clear must add no write-conflict range; got %d", len(tx.writeConflictRanges()))
 	}
 }
 

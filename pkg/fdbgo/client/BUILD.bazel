@@ -10,6 +10,7 @@ go_library(
         "clusterfile_lookup.go",
         "commit_input.go",
         "commitpath.go",
+        "conflict_map.go",
         "coordinator.go",
         "database.go",
         "ddsketch.go",
@@ -90,6 +91,7 @@ go_library(
 # gazelle:exclude ownership_unit_test.go
 # gazelle:exclude read_result_ownership_unit_test.go
 # gazelle:exclude range_copy_unit_test.go
+# gazelle:exclude ryw_append_unit_test.go
 go_test(
     name = "ownership_unit_test",
     srcs = [
@@ -97,6 +99,7 @@ go_test(
         "ownership_unit_test.go",
         "range_copy_unit_test.go",
         "read_result_ownership_unit_test.go",
+        "ryw_append_unit_test.go",
     ],
     embed = [":client"],
     deps = ["//pkg/fdbgo/wire/types"],
@@ -150,9 +153,13 @@ go_test(
 )
 
 # gazelle:exclude conflict_coalesce_unit_test.go
+# gazelle:exclude conflict_map_unit_test.go
 go_test(
     name = "conflict_coalesce_unit_test",
-    srcs = ["conflict_coalesce_unit_test.go"],
+    srcs = [
+        "conflict_coalesce_unit_test.go",
+        "conflict_map_unit_test.go",
+    ],
     embed = [":client"],
 )
 
@@ -412,9 +419,13 @@ go_test(
 )
 
 # gazelle:exclude ryw_pseq_unit_test.go
+# gazelle:exclude ryw_pseq_finger_unit_test.go
 go_test(
     name = "ryw_pseq_unit_test",
-    srcs = ["ryw_pseq_unit_test.go"],
+    srcs = [
+        "ryw_pseq_finger_unit_test.go",
+        "ryw_pseq_unit_test.go",
+    ],
     embed = [":client"],
 )
 

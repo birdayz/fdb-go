@@ -404,8 +404,13 @@ type Transaction struct {
 	readConflicts       []KeyRange
 	writeConflicts      []KeyRange
 	singleKeyClearCount int
-	conflictBuf         []byte       // backing store for conflict keys and mutation operands
-	conflictBufOwner    *conflictBuf // pool handle, avoids alloc on Put
+	// With RYW, read conflicts are the coalescing readMap and write conflicts
+	// are the write map's node flags (conflict_map.go); rywConflictSize is what
+	// GetApproximateSize charges for them, as it would for the lists.
+	readMap          pseq[rywRange]
+	rywConflictSize  int64
+	conflictBuf      []byte       // backing store for conflict keys and mutation operands
+	conflictBufOwner *conflictBuf // pool handle, avoids alloc on Put
 
 	// Retry-loop state — owned by the Run/OnError driver goroutine (never
 	// touched by concurrent data ops). creationTime anchors the SetTimeout
@@ -1078,10 +1083,21 @@ func (tx *Transaction) addGetKeyConflictRange(selKey []byte, orEqual bool, offse
 		tx.addReadConflict(begin, end)
 		return
 	}
+	tx.addReadConflictRYW(begin, end) // atomic insert of the filtered sub-ranges
+}
+
+// addReadConflictRYW is updateConflictMap over [begin, end) (ReadYourWrites.actor.cpp:335-351):
+// the live write map's filtered sub-ranges, inserted into the read-conflict map together. The
+// write map changes only under conflictMu, so the filter and the inserts see one version; the
+// sub-ranges alias it and the read's bounds, and only what the map keeps is copied.
+func (tx *Transaction) addReadConflictRYW(begin, end []byte) {
+	tx.conflictMu.Lock()
+	defer tx.conflictMu.Unlock()
+	var scratch [4]conflictSpan
 	tx.ryw.mu.Lock()
-	ranges := tx.ryw.liveLocked().conflictRanges(begin, end)
+	spans := tx.ryw.liveLocked().appendConflictSpans(scratch[:0], begin, end)
 	tx.ryw.mu.Unlock()
-	tx.addReadConflicts(ranges) // atomic append of the filtered sub-ranges
+	tx.addReadConflictSpansLocked(spans)
 }
 
 // addReadConflictForKeyRYW records the read-conflict for a single-key Get, routed through the
@@ -1343,34 +1359,24 @@ func (tx *Transaction) ownPointMutationLocked(typ MutationType, key, value []byt
 	return m, buf[: n+1 : n+1]
 }
 
-// addWriteConflictOwnedLocked is addWriteConflictLocked for bytes the transaction
-// already owns and never writes. Caller holds conflictMu.
-func (tx *Transaction) addWriteConflictOwnedLocked(begin, end []byte) bool {
-	if tx.writeConflictsDisabled {
-		return false
-	}
-	if tx.nextWriteNoConflict {
-		tx.nextWriteNoConflict = false
-		return false
-	}
-	tx.writeConflicts = append(tx.writeConflicts, KeyRange{Begin: begin, End: end})
-	return true
-}
-
 func (tx *Transaction) stateSet(key, value []byte) {
 	// The mutation and its write-conflict range must become visible to a
 	// concurrent Commit snapshot as ONE atomic unit — otherwise the snapshot
 	// could ship the mutation without its conflict range, so a concurrent
 	// transaction that read the key would not be conflicted (a missed conflict,
 	// not just a spurious one). Hold conflictMu across both appends.
+	// The write map, which holds the write conflict with RYW, is updated under the
+	// same lock (conflict_map.go).
 	tx.conflictMu.Lock()
-	m, after := tx.ownPointMutationLocked(MutSetValue, key, value)
-	tx.mutations = append(tx.mutations, m)
-	addConflict := tx.addWriteConflictOwnedLocked(after[:len(key):len(key)], after)
-	tx.conflictMu.Unlock()
-	if !tx.rywDisabled {
-		tx.ryw.setWith(key, value, addConflict)
+	defer tx.conflictMu.Unlock()
+	if tx.rywDisabled {
+		m, after := tx.ownPointMutationLocked(MutSetValue, key, value)
+		tx.mutations = append(tx.mutations, m)
+		tx.writeConflictLocked(after[:len(key):len(key)], after, true)
+		return
 	}
+	tx.mutations = append(tx.mutations, tx.ownMutationLocked(MutSetValue, key, value))
+	tx.ryw.setWith(key, value, tx.writeConflictPointLocked(key))
 }
 
 // consumeNextWriteNoConflict resets the one-shot NEXT_WRITE_NO_WRITE_CONFLICT_RANGE
@@ -1399,13 +1405,13 @@ func (tx *Transaction) stateClear(key []byte) {
 		return
 	}
 	tx.conflictMu.Lock()
+	defer tx.conflictMu.Unlock()
 	// One owned copy of key\x00 serves the mutation's begin and end and the conflict range.
 	m, end := tx.ownPointMutationLocked(MutClearRange, key, nil)
 	m.Value = end
 	tx.mutations = append(tx.mutations, m)
 	tx.singleKeyClearCount++ // C++ charges this mutation sizeof(KeyRangeRef), not MutationRef (RYW:2431)
-	addConflict := tx.addWriteConflictOwnedLocked(end[:len(key):len(key)], end)
-	tx.conflictMu.Unlock()
+	addConflict := tx.writeConflictLocked(end[:len(key):len(key)], end, true)
 	if !tx.rywDisabled {
 		tx.ryw.clearWith(key, addConflict)
 	}
@@ -1432,9 +1438,10 @@ func (tx *Transaction) stateClearRange(begin, end []byte) error {
 		return nil
 	}
 	tx.conflictMu.Lock()
-	tx.mutations = append(tx.mutations, tx.ownMutationLocked(MutClearRange, begin, end))
-	addConflict := tx.addWriteConflictLocked(begin, end)
-	tx.conflictMu.Unlock()
+	defer tx.conflictMu.Unlock()
+	m := tx.ownMutationLocked(MutClearRange, begin, end)
+	tx.mutations = append(tx.mutations, m)
+	addConflict := tx.writeConflictLocked(m.Key, m.Value, true)
 	if !tx.rywDisabled {
 		tx.ryw.clearRangeWith(begin, end, addConflict)
 	}
@@ -1557,16 +1564,22 @@ func (tx *Transaction) stateAtomic(op MutationType, key, operand []byte) {
 	if op == MutSetVersionstampedKey {
 		tx.nextWriteNoConflict = false
 	} else {
-		addConflict = tx.addWriteConflictOwnedLocked(after[:len(key):len(key)], after)
+		addConflict = tx.writeConflictLocked(after[:len(key):len(key)], after, true)
 	}
-	tx.conflictMu.Unlock()
+	// The write map is updated under the same lock (conflict_map.go).
+	defer tx.conflictMu.Unlock()
 	if !tx.rywDisabled {
 		if svkTransformed {
 			// SVK is RANGE-unreadable in the RYW model (RFC-098; C++
 			// ReadYourWrites.actor.cpp:2263-2277): the entire candidate stamp range
 			// [key@minStamp, key@\xff…) becomes unreadable, and the pending entry is stored at the
 			// min-bound-transformed key (mutKey) — the SAME key committed above, matching C++.
-			tx.ryw.addUnreadableRange(svkUnreadBegin, svkUnreadEnd)
+			// The conflicts of the writes Go keeps in the span move to the list
+			// (charged there by GetApproximateSize instead).
+			for _, kr := range tx.ryw.addUnreadableRangeKeeping(svkUnreadBegin, svkUnreadEnd) {
+				tx.rywConflictSize -= int64(len(kr.Begin)+len(kr.End)) + sizeofKeyRangeRef
+				tx.writeConflicts = append(tx.writeConflicts, kr)
+			}
 			tx.ryw.atomicWith(op, mutKey, operand, false)
 			return
 		}
@@ -1808,9 +1821,10 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 	// release — we only iterate [0:len) and a concurrent append writes beyond it.
 	tx.conflictMu.Lock()
 	muts := tx.mutations
-	writeConflictsSnap := tx.writeConflicts
-	nWriteConflicts := len(writeConflictsSnap)
-	readConflictsSnap := tx.readConflicts[:len(tx.readConflicts):len(tx.readConflicts)]
+	// With RYW the write map, its write conflicts and the read-conflict map are
+	// frozen with the mutations: writes update them under conflictMu.
+	conflicts := tx.snapshotConflictsLocked()
+	defer conflicts.release(tx)
 	// Re-read the deferred error UNDER the snapshot lock, linearized with `muts`: the
 	// entry check (above) can miss an Atomic(badOp) that races this Commit and stores the poison —
 	// under conflictMu — AFTER that entry Load but BEFORE this snapshot. Reading it here, in the same
@@ -1847,7 +1861,7 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 	// and it is derived from the already-validated `muts` SNAPSHOT, so a Set racing this Commit can never
 	// ship or be sized unvalidated. The ship-decision (coalesce vs raw; the versionstamp/rywDisabled
 	// carve-outs) lives in coalesceCommitVectors so it is unit-testable outside this inline flow.
-	shipMuts, sizeConflicts, coalesced := coalesceCommitVectors(muts, writeConflictsSnap[:nWriteConflicts], tx.rywDisabled)
+	shipMuts, mutsOwned, sizeConflicts, conflictsFresh, coalesced := tx.commitVectors(muts, &conflicts)
 	nativeStarted = true
 	if len(shipMuts) == 0 && len(sizeConflicts) == 0 {
 		// Read-only transaction — no commit needed.
@@ -1866,7 +1880,9 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 	// vector, frozen with the mutations above: C++ materializes its read-conflict
 	// map into the native transaction before sizing it (ReadYourWrites.actor.cpp:
 	// 1394-1399; NativeAPI.actor.cpp:6818, 6835).
-	shipReads := shipReadConflicts(readConflictsSnap, tx.rywDisabled)
+	shipReads := conflicts.readConflicts(tx.rywDisabled)
+	// The vectors alias only bytes nobody writes: the pinned version can go.
+	conflicts.release(tx)
 
 	// Transaction-size limit (transaction_too_large, 2101), in C++ commitMutations
 	// order (NativeAPI.actor.cpp:6797-6836):
@@ -1915,8 +1931,8 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 	// the intersection and the shipped vector are those of the snapshot without sorting it again.
 	shipReads, sc, scAdded := tx.selfConflictShipReads(sizeConflicts, shipReads)
 	shipConflicts := finalizeShipConflicts(sizeConflicts, sc, scAdded, coalesced)
-	// Coalescing more than one range built a new vector, as did adding the self-conflicting range.
-	conflictsOwned := scAdded || coalesced && nWriteConflicts > 1
+	// Adding the self-conflicting range built a new vector.
+	conflictsOwned := scAdded || conflictsFresh
 
 	// No read version yet means no reads, so no causal consistency: a risky GRV, as
 	// C++ tryCommit (NativeAPI.actor.cpp:6576-6578). ReadSnapshot=0 would crash the server.
@@ -1946,7 +1962,7 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 	if tx.db != nil {
 		commitTok = tx.db.grvCache.token()
 	}
-	input := tx.captureCommitVectors(shipMuts, coalesced, shipConflicts, conflictsOwned, shipReads, true)
+	input := tx.captureCommitVectors(shipMuts, mutsOwned, shipConflicts, conflictsOwned, shipReads, true)
 	defer func() {
 		if input != nil {
 			input.release()
@@ -2546,8 +2562,9 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 		// reset() reuses. Without a deep copy, retry writes overwrite the same
 		// buffer positions, corrupting the selfConflicts data.
 		tx.conflictMu.Lock()
-		selfConflicts := make([]KeyRange, len(tx.writeConflicts))
-		for i, kr := range tx.writeConflicts {
+		_, writes := tx.conflictRangesNowLocked() // with RYW, the write map's
+		selfConflicts := make([]KeyRange, len(writes))
+		for i, kr := range writes {
 			buf := make([]byte, len(kr.Begin)+len(kr.End))
 			copy(buf, kr.Begin)
 			copy(buf[len(kr.Begin):], kr.End)
@@ -2706,6 +2723,7 @@ func (tx *Transaction) stateGetApproximateSize() (int64, error) {
 	// indistinguishable from a ClearRange(k, k+\x00), so correct the overcharge here from the Clear()-
 	// call count (the write-conflict half already matched: both charge sizeof(KeyRangeRef)).
 	size -= int64(tx.singleKeyClearCount) * (sizeofMutationRef - sizeofKeyRangeRef)
+	size += tx.rywConflictSize // the RYW conflicts, held in the read map and the write map's nodes
 	return size, nil
 }
 
@@ -2827,22 +2845,23 @@ func keyAfterBytes(key []byte) []byte {
 func (tx *Transaction) addReadConflictForKey(key []byte) {
 	n := len(key)
 	tx.conflictMu.Lock()
+	defer tx.conflictMu.Unlock()
+	if !tx.rywDisabled {
+		tx.rywConflictSize += int64(2*n+1) + sizeofKeyRangeRef
+		tx.insertReadConflictLocked(rywBoundary{key: key}, rywBoundary{key: key, after: true})
+		return
+	}
 	buf := tx.conflictBufAlloc(n + n + 1)
 	copy(buf, key)
 	copy(buf[n:], key)
 	buf[2*n] = 0 // explicit zero — pooled buffer may have stale data
 	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:n:n], End: buf[n : n+n+1]})
-	tx.conflictMu.Unlock()
 }
 
 // addReadConflict adds a read conflict range using the shared conflictBuf.
 func (tx *Transaction) addReadConflict(begin, end []byte) {
 	tx.conflictMu.Lock()
-	buf := tx.conflictBufAlloc(len(begin) + len(end))
-	nb := len(begin)
-	copy(buf, begin)
-	copy(buf[nb:], end)
-	tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:nb:nb], End: buf[nb:]})
+	tx.addReadConflictLocked(begin, end)
 	tx.conflictMu.Unlock()
 }
 
@@ -2863,12 +2882,7 @@ func (tx *Transaction) addReadConflicts(ranges [][2][]byte) {
 
 func (tx *Transaction) addReadConflictsLocked(ranges [][2][]byte) {
 	for _, r := range ranges {
-		begin, end := r[0], r[1]
-		buf := tx.conflictBufAlloc(len(begin) + len(end))
-		nb := len(begin)
-		copy(buf, begin)
-		copy(buf[nb:], end)
-		tx.readConflicts = append(tx.readConflicts, KeyRange{Begin: buf[:nb:nb], End: buf[nb:]})
+		tx.addReadConflictLocked(r[0], r[1])
 	}
 }
 
@@ -3343,10 +3357,7 @@ func (tx *Transaction) addReadConflictRangeRYW(begin, end []byte) *wire.FDBError
 		tx.addReadConflict(begin, end)
 		return nil
 	}
-	tx.ryw.mu.Lock()
-	ranges := tx.ryw.liveLocked().conflictRanges(begin, end)
-	tx.ryw.mu.Unlock()
-	tx.addReadConflicts(ranges) // atomic append: a concurrent Commit sees all sub-ranges or none
+	tx.addReadConflictRYW(begin, end) // atomic: a concurrent Commit sees all sub-ranges or none
 	return nil
 }
 
@@ -3383,18 +3394,25 @@ func (tx *Transaction) stateAddWriteConflictKey(key []byte) {
 		return
 	}
 	n := len(key)
-	tx.conflictMu.Lock()
-	end := tx.conflictBufAlloc(n + 1)
+	var end []byte
+	if tx.rywDisabled {
+		tx.conflictMu.Lock()
+		end = tx.conflictBufAlloc(n + 1)
+		tx.conflictMu.Unlock()
+	} else {
+		// The write map's nodes keep the bounds, past any reset of the arena.
+		end = make([]byte, n+1)
+	}
 	copy(end, key)
 	end[n] = 0 // explicit zero — pooled buffer may have stale data
-	tx.conflictMu.Unlock()
 	tx.deferWriteConflictRange(end[:n:n], end, true)
 }
 
 // deferWriteConflictRange is ThreadSafeTransaction::addWriteConflictRange
 // (ThreadSafeTransaction.cpp:659-663): onMainThreadVoid records a throw as the deferred error
 // and skips the work once one is set (ThreadHelper.actor.h:50-61).
-// owned marks begin and end as conflict-arena bytes the transaction keeps.
+// owned marks begin and end as bytes the transaction keeps and nobody writes: the conflict
+// arena's without RYW, a heap copy for the write map's nodes with it.
 func (tx *Transaction) deferWriteConflictRange(begin, end []byte, owned bool) {
 	if tx.deferredErr.Load() != nil {
 		return
@@ -3447,15 +3465,12 @@ func (tx *Transaction) addWriteConflictRangeRYW(begin, end []byte, owned bool) *
 	if bytes.Compare(begin, end) >= 0 {
 		return nil // C++ r.empty() → returns without recording a conflict range
 	}
-	if owned {
-		tx.conflictMu.Lock()
-		tx.addWriteConflictOwnedLocked(begin, end)
-		tx.conflictMu.Unlock()
-	} else {
-		tx.addWriteConflict(begin, end)
-	}
-	if !tx.rywDisabled {
-		tx.ryw.addConflictRange(begin, end) // RYW:2493-2499
+	// With RYW the range lives only in the write map (RYW:2493-2499), updated under
+	// conflictMu with the decision; without it, in the native list (:2488-2491).
+	tx.conflictMu.Lock()
+	defer tx.conflictMu.Unlock()
+	if tx.writeConflictLocked(begin, end, owned) && !tx.rywDisabled {
+		tx.ryw.addConflictRangeOwned(begin, end, owned)
 	}
 	return nil
 }
@@ -3483,9 +3498,11 @@ func (tx *Transaction) postCommitResetFields() {
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
 	tx.singleKeyClearCount = 0 // cleared with mutations (GetApproximateSize accounting)
+	tx.readMap, tx.rywConflictSize = pseq[rywRange]{}, 0
 	tx.dropConflictBufLocked()
-	tx.conflictMu.Unlock()
+	// The write map holds the RYW write conflicts: reset with the lists, under the same lock.
 	tx.ryw.reset()
+	tx.conflictMu.Unlock()
 	tx.deferredErr.Store(nil) // C++ resetRyow clears deferredError (ReadYourWrites.actor.cpp:2719)
 	tx.hadRead.Store(false)
 	// RFC-115 §4 Layer 2: end this committed transaction's "Transaction" otel span and
@@ -3553,8 +3570,10 @@ func (tx *Transaction) resetFields(userReset bool) {
 	} else {
 		tx.conflictBuf = tx.conflictBuf[:0] // reuse buffer for retry
 	}
-	tx.conflictMu.Unlock()
+	tx.readMap, tx.rywConflictSize = pseq[rywRange]{}, 0
+	// The write map holds the RYW write conflicts: reset with the lists, under the same lock.
 	tx.ryw.reset()
+	tx.conflictMu.Unlock()
 	tx.deferredErr.Store(nil) // C++ resetRyow clears deferredError (ReadYourWrites.actor.cpp:2719)
 	tx.hadRead.Store(false)
 	// RFC-171 (#9/#14): re-apply the Database-level option defaults. NON-persistent options

@@ -140,9 +140,10 @@ func (n *rywNodes) addUnmodifiedAndUnreadableRange(begin, end []byte) {
 }
 
 // clone returns a copy that shares keys (never written after insertion) and,
-// in O(1), the node sequence; mutating either never changes the other.
+// in O(1), the node sequence, whose writing it takes over (pseq.handoff);
+// mutating either never changes the other.
 func (n *rywNodes) clone() rywNodes {
-	return rywNodes{seq: n.seq.share(), built: n.built, log: slices.Clone(n.log)}
+	return rywNodes{seq: n.seq.handoff(), built: n.built, log: slices.Clone(n.log)}
 }
 
 // build applies the pending log. Idempotent; the owner calls it under its lock

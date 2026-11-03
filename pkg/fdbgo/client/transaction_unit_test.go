@@ -284,10 +284,10 @@ func TestAddReadConflictForKey_EncodesHalfOpenRange(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}
 	tx.addReadConflictForKey([]byte("k"))
-	if len(tx.readConflicts) != 1 {
-		t.Fatalf("readConflicts len: got %d, want 1", len(tx.readConflicts))
+	if len(tx.readConflictRanges()) != 1 {
+		t.Fatalf("readConflicts len: got %d, want 1", len(tx.readConflictRanges()))
 	}
-	r := tx.readConflicts[0]
+	r := tx.readConflictRanges()[0]
 	if string(r.Begin) != "k" || string(r.End) != "k\x00" {
 		t.Errorf("range: got [%q,%q), want [k,k\\x00)", r.Begin, r.End)
 	}
@@ -297,10 +297,10 @@ func TestAddReadConflict_AppendsExplicitRange(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{}
 	tx.addReadConflict([]byte("aa"), []byte("zz"))
-	if len(tx.readConflicts) != 1 {
-		t.Fatalf("readConflicts len: got %d, want 1", len(tx.readConflicts))
+	if len(tx.readConflictRanges()) != 1 {
+		t.Fatalf("readConflicts len: got %d, want 1", len(tx.readConflictRanges()))
 	}
-	r := tx.readConflicts[0]
+	r := tx.readConflictRanges()[0]
 	if string(r.Begin) != "aa" || string(r.End) != "zz" {
 		t.Errorf("range: got [%q,%q), want [aa,zz)", r.Begin, r.End)
 	}
@@ -312,12 +312,12 @@ func TestAddReadConflictForKey_MultipleAppendsShareBackingBuffer(t *testing.T) {
 	for _, k := range []string{"a", "bb", "ccc"} {
 		tx.addReadConflictForKey([]byte(k))
 	}
-	if len(tx.readConflicts) != 3 {
-		t.Fatalf("readConflicts len: got %d, want 3", len(tx.readConflicts))
+	if len(tx.readConflictRanges()) != 3 {
+		t.Fatalf("readConflicts len: got %d, want 3", len(tx.readConflictRanges()))
 	}
 	wantBegins := []string{"a", "bb", "ccc"}
 	wantEnds := []string{"a\x00", "bb\x00", "ccc\x00"}
-	for i, r := range tx.readConflicts {
+	for i, r := range tx.readConflictRanges() {
 		if string(r.Begin) != wantBegins[i] || string(r.End) != wantEnds[i] {
 			t.Errorf("range[%d]: got [%q,%q), want [%q,%q)", i, r.Begin, r.End, wantBegins[i], wantEnds[i])
 		}
@@ -328,8 +328,8 @@ func TestAddWriteConflictForKey_DisabledWhenWriteConflictsDisabled(t *testing.T)
 	t.Parallel()
 	tx := &Transaction{txOptions: txOptions{writeConflictsDisabled: true}}
 	tx.addWriteConflictForKey([]byte("k"))
-	if len(tx.writeConflicts) != 0 {
-		t.Errorf("writeConflictsDisabled=true must skip append, got len=%d", len(tx.writeConflicts))
+	if len(tx.writeConflictRanges()) != 0 {
+		t.Errorf("writeConflictsDisabled=true must skip append, got len=%d", len(tx.writeConflictRanges()))
 	}
 }
 
@@ -337,16 +337,16 @@ func TestAddWriteConflictForKey_ConsumesNextWriteNoConflict(t *testing.T) {
 	t.Parallel()
 	tx := &Transaction{txOptions: txOptions{nextWriteNoConflict: true}}
 	tx.addWriteConflictForKey([]byte("k"))
-	if len(tx.writeConflicts) != 0 {
-		t.Errorf("nextWriteNoConflict must skip first append, got len=%d", len(tx.writeConflicts))
+	if len(tx.writeConflictRanges()) != 0 {
+		t.Errorf("nextWriteNoConflict must skip first append, got len=%d", len(tx.writeConflictRanges()))
 	}
 	if tx.nextWriteNoConflict {
 		t.Error("nextWriteNoConflict must auto-reset to false after one mutation")
 	}
 	// Subsequent mutation MUST add a conflict (auto-reset semantics).
 	tx.addWriteConflictForKey([]byte("k2"))
-	if len(tx.writeConflicts) != 1 {
-		t.Errorf("after auto-reset, second mutation must append, got len=%d", len(tx.writeConflicts))
+	if len(tx.writeConflictRanges()) != 1 {
+		t.Errorf("after auto-reset, second mutation must append, got len=%d", len(tx.writeConflictRanges()))
 	}
 }
 
@@ -356,16 +356,16 @@ func TestAddWriteConflict_ExplicitRange_DisabledFlags(t *testing.T) {
 		t.Parallel()
 		tx := &Transaction{txOptions: txOptions{writeConflictsDisabled: true}}
 		tx.addWriteConflict([]byte("a"), []byte("z"))
-		if len(tx.writeConflicts) != 0 {
-			t.Errorf("disabled flag must skip explicit range, got len=%d", len(tx.writeConflicts))
+		if len(tx.writeConflictRanges()) != 0 {
+			t.Errorf("disabled flag must skip explicit range, got len=%d", len(tx.writeConflictRanges()))
 		}
 	})
 	t.Run("nextWriteNoConflict", func(t *testing.T) {
 		t.Parallel()
 		tx := &Transaction{txOptions: txOptions{nextWriteNoConflict: true}}
 		tx.addWriteConflict([]byte("a"), []byte("z"))
-		if len(tx.writeConflicts) != 0 {
-			t.Errorf("nextWriteNoConflict must skip explicit range, got len=%d", len(tx.writeConflicts))
+		if len(tx.writeConflictRanges()) != 0 {
+			t.Errorf("nextWriteNoConflict must skip explicit range, got len=%d", len(tx.writeConflictRanges()))
 		}
 		if tx.nextWriteNoConflict {
 			t.Error("nextWriteNoConflict must auto-reset")
@@ -440,9 +440,9 @@ func TestPostCommitReset_ClearsTransactionalState(t *testing.T) {
 		t.Errorf("readVersion fields not cleared: has=%v userSet=%v ver=%d",
 			tx.hasReadVersion, tx.userSetReadVersion, tx.readVersion)
 	}
-	if len(tx.mutations) != 0 || len(tx.readConflicts) != 0 || len(tx.writeConflicts) != 0 {
+	if len(tx.mutations) != 0 || len(tx.readConflictRanges()) != 0 || len(tx.writeConflictRanges()) != 0 {
 		t.Errorf("slices not cleared: muts=%d rc=%d wc=%d",
-			len(tx.mutations), len(tx.readConflicts), len(tx.writeConflicts))
+			len(tx.mutations), len(tx.readConflictRanges()), len(tx.writeConflictRanges()))
 	}
 }
 

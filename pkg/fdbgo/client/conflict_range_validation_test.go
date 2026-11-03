@@ -58,10 +58,10 @@ func TestAddConflictRange_ClampsOversizedKeys(t *testing.T) {
 		if err := tx.AddReadConflictRange(begin, end); err != nil {
 			t.Fatalf("AddReadConflictRange: %v", err)
 		}
-		if len(tx.readConflicts) != 1 {
-			t.Fatalf("want 1 recorded read conflict, got %d", len(tx.readConflicts))
+		if len(tx.readConflictRanges()) != 1 {
+			t.Fatalf("want 1 recorded read conflict, got %d", len(tx.readConflictRanges()))
 		}
-		r := tx.readConflicts[0]
+		r := tx.readConflictRanges()[0]
 		if len(r.Begin) != nonSysMax+1 || len(r.End) != nonSysMax+1 {
 			t.Fatalf("endpoints not clamped to %d: begin=%d end=%d", nonSysMax+1, len(r.Begin), len(r.End))
 		}
@@ -77,8 +77,8 @@ func TestAddConflictRange_ClampsOversizedKeys(t *testing.T) {
 		if err := tx.AddReadConflictRange(begin, end); err != nil {
 			t.Fatalf("AddReadConflictRange: %v", err)
 		}
-		if len(tx.readConflicts) != 0 {
-			t.Fatalf("an oversized range that clamps to empty must be dropped, got %d conflicts", len(tx.readConflicts))
+		if len(tx.readConflictRanges()) != 0 {
+			t.Fatalf("an oversized range that clamps to empty must be dropped, got %d conflicts", len(tx.readConflictRanges()))
 		}
 	})
 
@@ -91,10 +91,10 @@ func TestAddConflictRange_ClampsOversizedKeys(t *testing.T) {
 		if err := tx.AddWriteConflictRange(begin, end); err != nil {
 			t.Fatalf("AddWriteConflictRange: %v", err)
 		}
-		if len(tx.writeConflicts) != 1 {
-			t.Fatalf("want 1 recorded write conflict, got %d", len(tx.writeConflicts))
+		if len(tx.writeConflictRanges()) != 1 {
+			t.Fatalf("want 1 recorded write conflict, got %d", len(tx.writeConflictRanges()))
 		}
-		r := tx.writeConflicts[0]
+		r := tx.writeConflictRanges()[0]
 		if len(r.Begin) != nonSysMax+1 || len(r.End) != nonSysMax+1 {
 			t.Fatalf("endpoints not clamped to %d: begin=%d end=%d", nonSysMax+1, len(r.Begin), len(r.End))
 		}
@@ -109,8 +109,8 @@ func TestAddConflictRange_ClampsOversizedKeys(t *testing.T) {
 		if err := tx.AddWriteConflictRange(begin, end); err != nil {
 			t.Fatalf("AddWriteConflictRange: %v", err)
 		}
-		if len(tx.writeConflicts) != 0 {
-			t.Fatalf("an oversized range that clamps to empty must be dropped, got %d conflicts", len(tx.writeConflicts))
+		if len(tx.writeConflictRanges()) != 0 {
+			t.Fatalf("an oversized range that clamps to empty must be dropped, got %d conflicts", len(tx.writeConflictRanges()))
 		}
 	})
 
@@ -127,10 +127,10 @@ func TestAddConflictRange_ClampsOversizedKeys(t *testing.T) {
 		if err := tx.AddReadConflictRange(begin, end); err != nil {
 			t.Fatalf("AddReadConflictRange: %v", err)
 		}
-		if len(tx.readConflicts) != 1 {
-			t.Fatalf("want 1 recorded read conflict via the RYW filter, got %d", len(tx.readConflicts))
+		if len(tx.readConflictRanges()) != 1 {
+			t.Fatalf("want 1 recorded read conflict via the RYW filter, got %d", len(tx.readConflictRanges()))
 		}
-		r := tx.readConflicts[0]
+		r := tx.readConflictRanges()[0]
 		if len(r.Begin) != nonSysMax+1 || len(r.End) != nonSysMax+1 {
 			t.Fatalf("RYW-enabled path did not clamp to %d: begin=%d end=%d", nonSysMax+1, len(r.Begin), len(r.End))
 		}

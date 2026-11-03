@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -336,7 +337,7 @@ func TestSelectorRangeConflict(t *testing.T) {
 				t.Fatal(err)
 			}
 			var got [][2]string
-			for _, r := range readConflictMap(slices.Clone(tx.readConflicts)) {
+			for _, r := range tx.readConflictRanges() {
 				got = append(got, [2]string{string(r.Begin), string(r.End)})
 			}
 			if !slices.Equal(got, tc.want) {
@@ -348,8 +349,8 @@ func TestSelectorRangeConflict(t *testing.T) {
 			if _, _, err := snap.Snapshot().GetRangeSelectors(context.Background(), tc.begin, tc.end, tc.limit, 0, tc.reverse); err != nil {
 				t.Fatal(err)
 			}
-			if len(snap.readConflicts) != 0 {
-				t.Fatalf("snapshot read added conflicts %v", snap.readConflicts)
+			if reads := snap.readConflictRanges(); len(reads) != 0 {
+				t.Fatalf("snapshot read added conflicts %v", reads)
 			}
 		})
 	}
@@ -379,8 +380,80 @@ func TestSelectorRangeChecks(t *testing.T) {
 			t.Errorf("%s: rows %d more %t err %v, want code %d and no rows", tc.name, len(kvs), more, err, tc.want)
 		}
 	}
-	if len(m.requests) != 0 || len(tx.readConflicts) != 0 {
-		t.Fatalf("rejected reads sent %d requests and added %d conflicts", len(m.requests), len(tx.readConflicts))
+	if reads := tx.readConflictRanges(); len(m.requests) != 0 || len(reads) != 0 {
+		t.Fatalf("rejected reads sent %d requests and added %d conflicts", len(m.requests), len(reads))
+	}
+}
+
+// A selector read's rows are the caller's: writing their bytes or the slice
+// changes neither the snapshot cache, the write map, the storage reply nor
+// another read's rows, whether the read waited in the call, answered from the
+// cache at issue, or was started and got twice.
+func TestSelectorRangeRowsAreTheCallers(t *testing.T) {
+	t.Parallel()
+	m := newMemStorage(selectorStorageKeys...)
+	tx := &Transaction{}
+	tx.nativeRange = m.native
+	tx.Set([]byte("e"), []byte("ve-written"))
+	ctx := context.Background()
+	begin := KeySelector{Key: []byte("e"), OrEqual: true, Offset: 0} // lastLessOrEqual(e)
+	end := KeySelector{Key: []byte("e"), OrEqual: true, Offset: 2}   // firstGreaterThan(e)+1
+	want := "e=ve-written f=vf"                                      // the written e, then storage's f
+	render := func(kvs []KeyValue) string {
+		var parts []string
+		for _, kv := range kvs {
+			parts = append(parts, string(kv.Key)+"="+string(kv.Value))
+		}
+		return strings.Join(parts, " ")
+	}
+	scribble := func(kvs []KeyValue) {
+		for i := range kvs {
+			for j := range kvs[i].Key {
+				kvs[i].Key[j] = '#'
+			}
+			for j := range kvs[i].Value {
+				kvs[i].Value[j] = '#'
+			}
+			kvs[i] = KeyValue{Key: []byte("x"), Value: []byte("x")}
+		}
+	}
+	reads := []func() ([]KeyValue, bool, error){
+		func() ([]KeyValue, bool, error) { return tx.Snapshot().GetRangeSelectors(ctx, begin, end, 0, 0, false) }, // storage
+		func() ([]KeyValue, bool, error) { return tx.Snapshot().GetRangeSelectors(ctx, begin, end, 0, 0, false) }, // cache
+		func() ([]KeyValue, bool, error) { return tx.GetRangeSelectors(ctx, begin, end, 0, 0, false) },
+		func() ([]KeyValue, bool, error) {
+			return tx.Snapshot().StartGetRangeSelectors(ctx, begin, end, 0, 0, false).Get()
+		},
+	}
+	var held [][]KeyValue
+	for i, read := range reads {
+		kvs, _, err := read()
+		if err != nil || render(kvs) != want {
+			t.Fatalf("read %d: rows %s, err %v; want %s", i, render(kvs), err, want)
+		}
+		held = append(held, kvs)
+	}
+	p := tx.Snapshot().StartGetRangeSelectors(ctx, begin, end, 0, 0, false)
+	first, _, err1 := p.Get()
+	second, _, err2 := p.Get()
+	if err1 != nil || err2 != nil || render(first) != want || render(second) != want {
+		t.Fatalf("Get twice: %s (%v), %s (%v)", render(first), err1, render(second), err2)
+	}
+	held = append(held, first)
+	for _, kvs := range held {
+		scribble(kvs)
+	}
+	if render(second) != want {
+		t.Fatalf("a second Get shares the first's rows: %s", render(second))
+	}
+	if kvs, _, err := tx.Snapshot().GetRangeSelectors(ctx, begin, end, 0, 0, false); err != nil || render(kvs) != want {
+		t.Fatalf("after writing returned rows: %s, err %v; want %s", render(kvs), err, want)
+	}
+	if got := render(m.kvs[4:6]); got != "d=vd f=vf" {
+		t.Fatalf("storage rows written through a result: %s", got)
+	}
+	if len(m.requests) != 1 {
+		t.Fatalf("%d storage requests, want 1 (the rest from the cache)", len(m.requests))
 	}
 }
 

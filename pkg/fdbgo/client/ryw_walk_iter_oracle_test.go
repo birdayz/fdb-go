@@ -171,6 +171,7 @@ func TestRYWIterMatchesCandidateOracle(t *testing.T) {
 	}
 	probes = append(probes, allKeysEnd, sentinelEnd)
 	rng := rand.New(rand.NewSource(2620))
+	sameRng := rand.New(rand.NewSource(2621)) // leaves rng's histories as they were
 	counts := map[string]int{}
 	for h := 0; h < 1500; h++ {
 		c := &rywCache{}
@@ -257,10 +258,29 @@ func TestRYWIterMatchesCandidateOracle(t *testing.T) {
 				}
 				counts[fmt.Sprintf("type%d", it.typ)]++
 			}
+			// sameAs checks it == o (C++ compares positions) against a key comparison:
+			// iterators on one version are at the same segment iff they begin alike.
+			sameAs := func(step string, a, o *rywIter) {
+				want := bytes.Equal(a.beginKey(), o.beginKey()) && a.sentinel == o.sentinel
+				if got := a.same(o); got != want || o.same(a) != want {
+					fail("%s: same %t for segments at %q and %q", step, got, a.beginKey(), o.beginKey())
+				}
+				counts[fmt.Sprintf("same=%t", want)]++
+			}
+			other := c.newIterLocked(w)
 			for _, p := range probes {
 				it.skip(p)
 				or.skip(p)
 				check(fmt.Sprintf("skip(%q)", p))
+				other.skip(probes[sameRng.Intn(len(probes))])
+				sameAs(fmt.Sprintf("skip(%q)", p), it, other)
+			}
+			// A stepped iterator is at the position a skip to its segment lands on.
+			stepped := func(step string) {
+				fresh := c.newIterLocked(w)
+				fresh.skip(it.beginKey())
+				sameAs(step, it, fresh)
+				sameAs(step, it, other)
 			}
 			// Forward from "" to the sentinel, then backward to "".
 			it.skip(allKeysBegin)
@@ -272,6 +292,7 @@ func TestRYWIterMatchesCandidateOracle(t *testing.T) {
 				it.next()
 				or.skip(or.end)
 				check("next")
+				stepped("next")
 			}
 			for steps := 0; len(or.begin) > 0; steps++ {
 				if steps > 200 {
@@ -280,6 +301,7 @@ func TestRYWIterMatchesCandidateOracle(t *testing.T) {
 				it.prev()
 				or.prev()
 				check("prev")
+				stepped("prev")
 				counts["prev"]++
 			}
 			// Contiguous runs from every KV, toward every probe bound.
@@ -317,7 +339,7 @@ func TestRYWIterMatchesCandidateOracle(t *testing.T) {
 		}
 		c.mu.Unlock()
 	}
-	for _, k := range []string{"type0", "type1", "type2", "type3", "type4", "prev", "contiguous", "contiguousBack"} {
+	for _, k := range []string{"type0", "type1", "type2", "type3", "type4", "prev", "contiguous", "contiguousBack", "same=true", "same=false"} {
 		if counts[k] == 0 {
 			t.Fatalf("vacuous oracle comparison: %s never seen; counts %v", k, counts)
 		}

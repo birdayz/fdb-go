@@ -57,12 +57,13 @@ func TestAddGetKeyConflictRange_RYWDisabledFullSpan(t *testing.T) {
 	txDisabled := &Transaction{txOptions: txOptions{rywDisabled: true}}
 	txDisabled.ryw.set([]byte("c"), []byte("v"))
 	txDisabled.addGetKeyConflictRange([]byte("a"), true, 1, []byte("z"))
-	if len(txDisabled.readConflicts) != 1 {
-		t.Fatalf("rywDisabled: want 1 full-span conflict, got %d: %v", len(txDisabled.readConflicts), txDisabled.readConflicts)
+	disabled := txDisabled.readConflictRanges()
+	if len(disabled) != 1 {
+		t.Fatalf("rywDisabled: want 1 full-span conflict, got %d: %v", len(disabled), disabled)
 	}
-	if !bytes.Equal(txDisabled.readConflicts[0].Begin, wantBegin) || !bytes.Equal(txDisabled.readConflicts[0].End, wantEnd) {
+	if !bytes.Equal(disabled[0].Begin, wantBegin) || !bytes.Equal(disabled[0].End, wantEnd) {
 		t.Fatalf("rywDisabled span: got [%q,%q) want [%q,%q)",
-			txDisabled.readConflicts[0].Begin, txDisabled.readConflicts[0].End, wantBegin, wantEnd)
+			disabled[0].Begin, disabled[0].End, wantBegin, wantEnd)
 	}
 
 	// CONTRAST — RYW ENABLED → the same independent write at "c" IS filtered out
@@ -70,10 +71,11 @@ func TestAddGetKeyConflictRange_RYWDisabledFullSpan(t *testing.T) {
 	txEnabled := &Transaction{}
 	txEnabled.ryw.set([]byte("c"), []byte("v"))
 	txEnabled.addGetKeyConflictRange([]byte("a"), true, 1, []byte("z"))
-	if len(txEnabled.readConflicts) == 0 {
+	enabled := txEnabled.readConflictRanges()
+	if len(enabled) == 0 {
 		t.Fatalf("RYW-enabled: expected unmodified-gap conflicts, got none")
 	}
-	for _, r := range txEnabled.readConflicts {
+	for _, r := range enabled {
 		if bytes.Compare(r.Begin, []byte("c")) <= 0 && bytes.Compare([]byte("c"), r.End) < 0 {
 			t.Fatalf("RYW-enabled: independent write \"c\" must be filtered out of the conflict, "+
 				"but it is covered by [%q,%q)", r.Begin, r.End)

@@ -226,9 +226,9 @@ func (r *rangeRead) addConflicts(kvs []KeyValue, more bool) error {
 	case r.path == rangePathRYWDisabled || !r.ryw.writesAtIssue:
 		return tx.addReadConflictsFor(r.ctx, [][2][]byte{{cBegin, cEnd}}) // no local writes to filter
 	case r.ryw.known:
-		return tx.addReadConflictsFor(r.ctx, r.ryw.localConflicts)
+		return tx.addReadConflictSpansFor(r.ctx, r.ryw.localConflicts)
 	default:
-		return tx.addReadConflictsFor(r.ctx, r.ryw.conflictRanges(cBegin, cEnd))
+		return tx.addReadConflictSpansFor(r.ctx, r.ryw.conflictRanges(cBegin, cEnd))
 	}
 }
 

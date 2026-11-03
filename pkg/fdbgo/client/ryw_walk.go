@@ -19,6 +19,15 @@ import (
 // the step began. Only the storage reply's insert takes c.mu. Every resumption
 // that continues the loop re-resolves the selectors first, as C++ does.
 type rywWalk struct {
+	rywWalkState
+	// its are the walk's iterators, reused by every step: it, itEnd and two copies.
+	its [4]rywIter
+}
+
+// rywWalkState is the walk apart from its iterators, so that issuing and
+// releasing a pooled walk assign it alone: a whole-rywWalk assignment builds a
+// several-kilobyte temporary, whose frame grows a fresh goroutine's stack.
+type rywWalkState struct {
 	c       *rywCache
 	view    *rywWrites // the owner's version, or nil = the snapshot cache alone (A2.2); borrowed
 	cache   pseq[cacheEntry]
@@ -29,7 +38,7 @@ type rywWalk struct {
 
 	begin, end                         KeySelector
 	limits                             rangeLimits
-	result                             []KeyValue
+	result                             []KeyValue // the walk's own slice (append from nil); rows alias the cache and write map
 	more                               bool
 	additionalRows                     int64
 	itemsPast                          int32 // itemsPastEnd / itemsPastBegin
@@ -44,9 +53,6 @@ type rywWalk struct {
 
 	// onRequest, when set, sees each storage request as it is built (S1 traces).
 	onRequest func(walkRequest)
-
-	// its are the walk's iterators, reused by every step: it, itEnd and two copies.
-	its [4]rywIter
 }
 
 type walkPC uint8
@@ -80,13 +86,11 @@ func (c *rywCache) newRangeWalkLocked(view *rywWrites, begin, end KeySelector, l
 
 // rangeWalk is a walk over view and the cache snapshot cache, issued at gen.
 func (c *rywCache) rangeWalk(view *rywWrites, cache pseq[cacheEntry], gen uint64, begin, end KeySelector, limits rangeLimits, reverse bool, maxKey []byte) *rywWalk {
-	w := walkPool.Get().(*rywWalk)
-	its := w.its
-	*w = rywWalk{
+	w := walkPool.Get().(*rywWalk) // released walks hold zero state and scrubbed iterators
+	w.rywWalkState = rywWalkState{
 		c: c, view: view, cache: cache, gen: gen, maxKey: maxKey, reverse: reverse,
 		begin: begin, end: end, limits: limits,
 		actualBeginOffset: begin.Offset, actualEndOffset: end.Offset, // RYW:607-608, 911-912
-		its: its,
 	}
 	return w
 }
@@ -101,11 +105,10 @@ func (w *rywWalk) release() {
 	if w.sub != nil {
 		w.sub.release()
 	}
-	its := w.its
-	for i := range its {
-		its[i].scrub()
+	for i := range w.its {
+		w.its[i].scrub()
 	}
-	*w = rywWalk{its: its}
+	w.rywWalkState = rywWalkState{}
 	walkPool.Put(w)
 }
 
@@ -197,15 +200,19 @@ func (w *rywWalk) start() {
 
 // resolveBoth re-resolves both selectors: begin into it and end into itEnd
 // forward (RYW:611-612), end into it and begin into itEnd backward (:914-916).
+// it keeps its position from the last resolution, and itEnd starts as a copy
+// of it, so each skip searches from nearby (rywIter.skip): a range's two
+// selectors are usually close, and a resumption re-resolves where it stopped.
 func (w *rywWalk) resolveBoth() (it, itEnd *rywIter) {
 	it, itEnd = &w.its[0], &w.its[1]
 	initIter(it, w.c, w.view, &w.cache)
-	initIter(itEnd, w.c, w.view, &w.cache)
 	if !w.reverse {
 		w.resolve(&w.begin, it, &w.actualBeginOffset)
+		itEnd.copyFrom(it)
 		w.resolve(&w.end, itEnd, &w.actualEndOffset)
 	} else {
 		w.resolve(&w.end, it, &w.actualEndOffset)
+		itEnd.copyFrom(it)
 		w.resolve(&w.begin, itEnd, &w.actualBeginOffset)
 	}
 	return it, itEnd

@@ -520,6 +520,30 @@ func (tx *Transaction) addReadConflictsFor(ctx context.Context, ranges [][2][]by
 	}
 	tx.conflictMu.Lock()
 	defer tx.conflictMu.Unlock()
+	if err := tx.admitReadConflictLocked(ctx); err != nil {
+		return err
+	}
+	tx.addReadConflictsLocked(ranges)
+	return nil
+}
+
+// addReadConflictSpansFor is addReadConflictsFor for a read's filtered conflict spans.
+func (tx *Transaction) addReadConflictSpansFor(ctx context.Context, spans []conflictSpan) error {
+	if hook := tx.beforeReadConflict; hook != nil {
+		hook()
+	}
+	tx.conflictMu.Lock()
+	defer tx.conflictMu.Unlock()
+	if err := tx.admitReadConflictLocked(ctx); err != nil {
+		return err
+	}
+	tx.addReadConflictSpansLocked(spans)
+	return nil
+}
+
+// admitReadConflictLocked reports why a read's conflict may not join the
+// transaction: its incarnation ended. Caller holds conflictMu.
+func (tx *Transaction) admitReadConflictLocked(ctx context.Context) error {
 	if ctx != nil {
 		if op := tx.readOperation(ctx); op != nil {
 			tx.readErrMu.Lock()
@@ -533,7 +557,6 @@ func (tx *Transaction) addReadConflictsFor(ctx context.Context, ranges [][2][]by
 			}
 		}
 	}
-	tx.addReadConflictsLocked(ranges)
 	return nil
 }
 
