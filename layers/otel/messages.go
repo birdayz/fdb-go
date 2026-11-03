@@ -1311,17 +1311,15 @@ func (b *FDBBackend) writeSmallMessages(ctx context.Context, tenant int, w *mess
 			absent = append(absent, p)
 			records = append(records, p.records[0])
 		}
-		// The saves' existence reads, pipelined into the transaction's cache.
-		if err := store.AsBuilder().PrefetchRecordBatch(records).Wait(); err != nil {
+		if err := canceled(ctx, op); err != nil {
+			return s, err
+		}
+		// One batch: the existence reads and the TEXT bunch reads each take
+		// one round trip for all records.
+		if _, err := store.SaveRecordBatch(records); err != nil {
 			return s, err
 		}
 		for _, p := range absent {
-			if err := canceled(ctx, op); err != nil {
-				return s, err
-			}
-			if _, err := store.SaveRecord(p.records[0]); err != nil {
-				return s, err
-			}
 			p.element.written = true
 			s.Written++
 			s.Parts++
