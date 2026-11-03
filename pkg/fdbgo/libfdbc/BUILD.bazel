@@ -132,6 +132,7 @@ go_test(
         "//pkg/fdbgo/fdb",
         "//pkg/testcontainers/foundationdb",
         "@com_github_apple_foundationdb_bindings_go//src/fdb",
+        "@com_github_docker_docker//pkg/stdcopy",
         "@com_github_testcontainers_testcontainers_go//:testcontainers-go",
         "@com_github_testcontainers_testcontainers_go//exec",
     ],

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -26,6 +27,7 @@ import (
 	"fdb.dev/pkg/fdbgo/libfdbc"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 	cgofdb "github.com/apple/foundationdb/bindings/go/src/fdb"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/testcontainers/testcontainers-go"
 	tcexec "github.com/testcontainers/testcontainers-go/exec"
 )
@@ -266,13 +268,16 @@ func pickStorageTeam(t *testing.T, ctx context.Context, f crFixture, replicas in
 	primary := ":" + strconv.Itoa(f.container.FDBPort())
 	deadline := time.Now().Add(2 * time.Minute)
 	for {
-		status, err := f.container.FDBCLIExec(ctx, "status json")
+		status, diagnostic, err := crStorageStatus(ctx, f.container)
 		if err != nil {
-			t.Fatalf("check storage process roles: %v\n%s", err, status)
+			t.Fatalf("check storage process roles: %v\nstdout:\n%s\nstderr:\n%s", err, status, diagnostic)
+		}
+		if diagnostic != "" {
+			t.Logf("storage role status stderr:\n%s", diagnostic)
 		}
 		safe, err := crStorageOnlyAddresses([]byte(status))
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("%v\nstdout:\n%s\nstderr:\n%s", err, status, diagnostic)
 		}
 		for i := range f.n {
 			addrs := storageAddresses(t, f, f.key(i))
@@ -294,6 +299,44 @@ func pickStorageTeam(t *testing.T, ctx context.Context, f crFixture, replicas in
 		}
 		time.Sleep(2 * time.Second)
 	}
+}
+
+// fdbcli prints JSON to stdout and warnings to stderr (StatusCommand.actor.cpp:212,1302-1307).
+// Keep them separate: exec.Multiplexed appends stderr after stdout, invalidating strict JSON.
+func crStorageStatus(ctx context.Context, c *foundationdbtc.Container) (string, string, error) {
+	argv := []string{"/usr/bin/fdbcli", "--exec", "status json"}
+	if deadline, ok := ctx.Deadline(); ok {
+		seconds := max(1, int(math.Ceil(time.Until(deadline).Seconds())))
+		argv = append([]string{"timeout", "-s", "KILL", strconv.Itoa(seconds)}, argv...)
+	}
+	type result struct {
+		stdout, stderr string
+		err            error
+	}
+	done := make(chan result, 1)
+	go func() {
+		code, reader, err := c.Exec(ctx, argv)
+		var stdout, stderr string
+		if err == nil {
+			stdout, stderr, err = crStatusStreams(reader)
+		}
+		if err == nil && code != 0 {
+			err = fmt.Errorf("fdbcli status json exited %d", code)
+		}
+		done <- result{stdout, stderr, err}
+	}()
+	select {
+	case r := <-done:
+		return r.stdout, r.stderr, r.err
+	case <-ctx.Done():
+		return "", "", ctx.Err()
+	}
+}
+
+func crStatusStreams(reader io.Reader) (string, string, error) {
+	var stdout, stderr bytes.Buffer
+	_, err := stdcopy.StdCopy(&stdout, &stderr, reader)
+	return stdout.String(), stderr.String(), err
 }
 
 func crStorageOnlyAddresses(raw []byte) (map[string]bool, error) {
@@ -652,6 +695,41 @@ func TestConnectRefusedTraceGate(t *testing.T) {
 			got, err := crRefusedPeer([]byte(tc.trace), tc.client, tc.peers)
 			if (err != nil) != tc.wantError || got != tc.want {
 				t.Fatalf("peer=%q err=%v, want peer=%q error=%t", got, err, tc.want, tc.wantError)
+			}
+		})
+	}
+}
+
+func TestConnectRefusedStorageStatusStreams(t *testing.T) {
+	t.Parallel()
+	const valid = `{"cluster":{"processes":{"p":{"address":"a","roles":[{"role":"storage"}]}}}}`
+	for _, tc := range []struct {
+		name, stdout, stderr string
+		wantError            bool
+	}{
+		{name: "json", stdout: valid},
+		{name: "warning", stdout: valid, stderr: "WARNING: Long delay (Ctrl-C to interrupt)\n"},
+		{name: "stdout_warning", stdout: valid + "\nWARNING: unexpected stdout", wantError: true},
+		{name: "second_json", stdout: valid + "\n{}", wantError: true},
+		{name: "truncated_json", stdout: valid[:len(valid)-1], stderr: "WARNING: Long delay\n", wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var raw bytes.Buffer
+			for _, stream := range []struct {
+				kind stdcopy.StdType
+				text string
+			}{{stdcopy.Stdout, tc.stdout}, {stdcopy.Stderr, tc.stderr}} {
+				if _, err := io.WriteString(stdcopy.NewStdWriter(&raw, stream.kind), stream.text); err != nil {
+					t.Fatal(err)
+				}
+			}
+			stdout, stderr, err := crStatusStreams(&raw)
+			if err != nil || stdout != tc.stdout || stderr != tc.stderr {
+				t.Fatalf("decoded streams stdout=%q stderr=%q err=%v; want stdout=%q stderr=%q", stdout, stderr, err, tc.stdout, tc.stderr)
+			}
+			safe, err := crStorageOnlyAddresses([]byte(stdout))
+			if (err != nil) != tc.wantError || err == nil && !safe["a"] {
+				t.Fatalf("safe=%v err=%v, want error=%t and strict storage-only address a", safe, err, tc.wantError)
 			}
 		})
 	}
