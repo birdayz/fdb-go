@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -416,6 +417,47 @@ func TestBenchRates(t *testing.T) {
 	}
 }
 
+func TestBenchCPU(t *testing.T) {
+	t.Parallel()
+	ms := int64(time.Millisecond)
+	prev := benchCPUSample{user: 100 * ms, sys: 50 * ms, gc: 10 * ms, assist: 1 * ms, dedicated: 2 * ms, idle: 3 * ms, pause: ms / 2}
+	cur := benchCPUSample{user: 2100 * ms, sys: 1050 * ms, gc: 640 * ms, assist: 101 * ms, dedicated: 302 * ms, idle: 203 * ms, pause: ms}
+	// 3 s of CPU over 2 s wall on 4 Ps, 1500 spans.
+	c := benchCPUDelta(prev, cur, 2000*ms, 1500, 4, 8)
+	want := CollectorBenchCPU{
+		UserNs: 2000 * ms, SysNs: 1000 * ms, TotalNs: 3000 * ms,
+		GCNs: 630 * ms, GCAssistNs: 100 * ms, GCDedicatedNs: 300 * ms, GCIdleNs: 200 * ms, GCPauseNs: ms / 2,
+		CoresUsed: 1.5, Utilization: 0.375, MsPerSpan: 2, GCFraction: 0.21, GOMAXPROCS: 4, NumCPU: 8,
+	}
+	if c != want {
+		t.Fatalf("delta %+v, want %+v", c, want)
+	}
+	if z := benchCPUDelta(cur, cur, 0, 0, 4, 8); z != (CollectorBenchCPU{GOMAXPROCS: 4, NumCPU: 8}) {
+		t.Fatalf("empty interval %+v", z)
+	}
+
+	// Rates sum the windows' counters and derive over their wall and spans.
+	s := int64(time.Second)
+	windows := []CollectorBenchWindow{
+		{Phase: benchPhaseLoad, StartNs: 0, EndNs: s, ExportedSpans: 100, CPU: benchCPUDelta(benchCPUSample{}, benchCPUSample{user: s, gc: s / 10}, s, 100, 4, 8)},
+		{Phase: benchPhaseLoad, StartNs: s, EndNs: 3 * s, ExportedSpans: 1000, CPU: benchCPUDelta(benchCPUSample{}, benchCPUSample{user: 5 * s, sys: s, gc: s}, 2*s, 1000, 4, 8)},
+		{Phase: benchPhaseDrain, StartNs: 3 * s, EndNs: 4 * s, ExportedSpans: 0, CPU: benchCPUDelta(benchCPUSample{}, benchCPUSample{user: s}, s, 0, 4, 8)},
+	}
+	r := benchRates(windows, time.Second)
+	if got, want := r.SteadyState.CPU, (CollectorBenchCPU{UserNs: 5 * s, SysNs: s, TotalNs: 6 * s, GCNs: s, CoresUsed: 3, Utilization: 0.75, MsPerSpan: 6, GCFraction: 1.0 / 6, GOMAXPROCS: 4, NumCPU: 8}); got != want {
+		t.Fatalf("steady CPU %+v, want %+v", got, want)
+	}
+	if got, want := r.WholeRun.CPU, (CollectorBenchCPU{UserNs: 7 * s, SysNs: s, TotalNs: 8 * s, GCNs: s + s/10, CoresUsed: 2, Utilization: 0.5, MsPerSpan: 8000.0 / 1100, GCFraction: 1.1 / 8, GOMAXPROCS: 4, NumCPU: 8}); got != want {
+		t.Fatalf("whole-run CPU %+v, want %+v", got, want)
+	}
+
+	// The live sample moves forward and reports the runtime's processors.
+	c, next := benchCPUWindow(benchCPUSample{}, s, 1)
+	if next.user+next.sys <= 0 || c.TotalNs != next.user+next.sys || c.GOMAXPROCS != runtime.GOMAXPROCS(0) || c.NumCPU != runtime.NumCPU() {
+		t.Fatalf("live sample %+v from %+v", c, next)
+	}
+}
+
 func TestCollectorBenchConfigValidate(t *testing.T) {
 	t.Parallel()
 	want := DefaultCollectorBenchConfig()
@@ -699,6 +741,9 @@ func checkBenchSeries(t *testing.T, r CollectorBenchReport) {
 	}
 	if w := r.Rates.WholeRun; w.Windows != len(r.Series) || w.Spans != int64(r.Corpus.Spans) || w.WallNs != end || w.SpansPerSec <= 0 {
 		t.Fatalf("whole-run rate %+v", w)
+	}
+	if c := r.Rates.WholeRun.CPU; c.TotalNs <= 0 || c.UserNs <= 0 || c.CoresUsed <= 0 || c.MsPerSpan <= 0 || c.GOMAXPROCS < 1 || c.NumCPU < 1 {
+		t.Fatalf("whole-run CPU %+v", c)
 	}
 	if r.Memory.PeakSysBytes == 0 || r.Memory.PeakHeapInuseBytes == 0 || r.Memory.PeakHeapInuseBytes > r.Memory.PeakSysBytes {
 		t.Fatalf("memory %+v", r.Memory)

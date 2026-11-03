@@ -330,6 +330,8 @@ type CollectorBenchWindow struct {
 	SpansPerSec   float64        `json:"spans_per_sec"`
 	SysBytes      uint64         `json:"sys_bytes"`
 	HeapInuse     uint64         `json:"heap_inuse_bytes"`
+	// CPU is the process's CPU over the window.
+	CPU CollectorBenchCPU `json:"cpu"`
 }
 
 // CollectorBenchRate is a throughput over a set of windows.
@@ -341,6 +343,8 @@ type CollectorBenchRate struct {
 	MessagesPerSec float64 `json:"messages_per_sec"`
 	RawBytesPerSec float64 `json:"raw_bytes_per_sec"`
 	LogsPerSec     float64 `json:"logs_per_sec"`
+	// CPU sums the windows' CPU; its ratios are over WallNs and Spans.
+	CPU CollectorBenchCPU `json:"cpu"`
 }
 
 // CollectorBenchRates reports the whole run (every window) and the steady
@@ -979,6 +983,7 @@ type benchRun struct {
 	phase    string
 	prevEnd  time.Duration
 	prev     benchCounters
+	prevCPU  benchCPUSample
 	windows  []CollectorBenchWindow
 	memory   CollectorBenchMemory
 }
@@ -1071,6 +1076,7 @@ func (r *benchRun) ingest(ctx context.Context, rep *CollectorBenchReport) error 
 	cfg := r.cfg
 	ictx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
+	r.prevCPU = readBenchCPU()
 	r.start = time.Now()
 	limit := cfg.Conversations
 	var deadline time.Time
@@ -1235,6 +1241,7 @@ func (r *benchRun) cut(final bool) {
 		SysBytes: ms.Sys, HeapInuse: ms.HeapInuse,
 	}
 	w.SpansPerSec = float64(w.ExportedSpans) / (now - r.prevEnd).Seconds()
+	w.CPU, r.prevCPU = benchCPUWindow(r.prevCPU, w.EndNs-w.StartNs, w.ExportedSpans)
 	r.memory.PeakSysBytes = max(r.memory.PeakSysBytes, ms.Sys)
 	r.memory.PeakHeapInuseBytes = max(r.memory.PeakHeapInuseBytes, ms.HeapInuse)
 	r.windows = append(r.windows, w)
@@ -1257,7 +1264,9 @@ func benchRates(windows []CollectorBenchWindow, warmup time.Duration) CollectorB
 			msgs += w.Messages
 			raw += w.RawInputBytes
 			logs += w.Logs
+			out.CPU.add(w.CPU)
 		}
+		out.CPU.derive(out.WallNs, out.Spans)
 		if secs := float64(out.WallNs) / 1e9; secs > 0 {
 			out.SpansPerSec = float64(out.Spans) / secs
 			out.MessagesPerSec = float64(msgs) / secs
@@ -1544,7 +1553,8 @@ func benchQueries(cfg CollectorBenchConfig, gen *benchGen, exp *otel.Exporter) [
 	model := otel.Attribute{Scope: "span", Key: "gen_ai.request.model", Type: "string", Value: "gpt-4o"}
 	var out []benchQuery
 	if cfg.EnableMessageFullText {
-		out = append(out,
+		out = append(
+			out,
 			benchQuery{QueryFTSSingleToken, true, func(ctx context.Context, t benchTarget) (int, error) {
 				page, err := exp.QueryMessageFullText(ctx, otel.MessageFullTextQuery{Query: fmt.Sprintf("incident_token_%d", t.block), Mode: otel.MessageMatchAll, Role: "user"})
 				if err != nil {
@@ -1600,7 +1610,8 @@ func benchQueries(cfg CollectorBenchConfig, gen *benchGen, exp *otel.Exporter) [
 			}},
 		)
 	}
-	out = append(out,
+	out = append(
+		out,
 		benchQuery{QuerySameSpanConjunction, false, func(ctx context.Context, t benchTarget) (int, error) {
 			c := t.conv
 			convID := otel.Attribute{Scope: "span", Key: "gen_ai.conversation.id", Type: "string", Value: gen.convID(c)}

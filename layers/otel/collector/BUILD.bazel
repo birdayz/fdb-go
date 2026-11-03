@@ -4,6 +4,7 @@ go_library(
     name = "collector",
     srcs = [
         "bench.go",
+        "bench_cpu.go",
         "collector.go",
     ],
     importpath = "fdb.dev/layers/otel/collector",
