@@ -527,9 +527,11 @@ func (p *Path) ToTuple() tuple.Tuple {
 	return t
 }
 
-// ToSubspace converts this path to an FDB subspace.
+// ToSubspace is the subspace whose prefix is the packed path tuple: Java's
+// KeySpacePath.toSubspace, new Subspace(toTuple()). A path's subspace holds
+// every subspace below it.
 func (p *Path) ToSubspace() subspace.Subspace {
-	return subspace.Sub(p.ToTuple())
+	return subspace.Sub(p.ToTuple()...)
 }
 
 // DirectoryName returns the name of the current directory.

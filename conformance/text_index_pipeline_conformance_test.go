@@ -123,4 +123,52 @@ var _ = Describe("TEXT index pipelined update conformance", func() {
 		Expect(goStore.SaveCustomerJava(ctx, again)).To(Succeed())
 		expectSameIndex("cross-engine update")
 	})
+
+	// Java's TextIndexMaintainer.update writes the record's tokenizer version
+	// on every insert, whether or not the record has text, rewrites it on an
+	// update only when it differs from the index's, and clears it on delete
+	// (TextIndexMaintainer.java:438-484). Both engines leave the same keys.
+	It("writes and clears each record's tokenizer version key as Java does", func() {
+		versionKeys := func(s *TextIndexConformanceStore) int {
+			var n int
+			_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				secondary := s.Keyspace.Sub(recordlayer.IndexSecondarySpaceKey, s.TextIndex.SubspaceTupleKey())
+				kvs, err := rtx.Transaction().GetRange(secondary, fdb.RangeOptions{}).GetSliceWithError()
+				n = len(kvs)
+				return nil, err
+			})
+			Expect(err).NotTo(HaveOccurred())
+			return n
+		}
+		customer := func(id int64, name *string, email string) *demopb.Customer {
+			return &demopb.Customer{CustomerId: proto.Int64(id), Name: name, Email: proto.String(email)}
+		}
+		for _, step := range []struct {
+			name   string
+			save   *demopb.Customer
+			delete int64
+			live   int
+		}{
+			{name: "insert without text", save: customer(1, nil, "a"), live: 1},
+			{name: "insert with empty text", save: customer(2, proto.String(""), "b"), live: 2},
+			{name: "insert with text", save: customer(3, proto.String("alpha beta"), "c"), live: 3},
+			{name: "update without a text change", save: customer(3, proto.String("alpha beta"), "c2"), live: 3},
+			{name: "update adding text", save: customer(1, proto.String("gamma"), "a"), live: 3},
+			{name: "update changing text", save: customer(3, proto.String("beta delta"), "c2"), live: 3},
+			{name: "delete without text", delete: 2, live: 2},
+			{name: "delete with text", delete: 3, live: 1},
+		} {
+			if step.save != nil {
+				Expect(goStore.SaveCustomerGo(ctx, step.save)).To(Succeed(), step.name)
+				Expect(javaStore.SaveCustomerJava(ctx, step.save)).To(Succeed(), step.name)
+			} else {
+				deleted, err := goStore.DeleteCustomerGo(ctx, step.delete)
+				Expect(err).NotTo(HaveOccurred(), step.name)
+				Expect(deleted).To(BeTrue(), step.name)
+				Expect(javaStore.DeleteCustomerJava(ctx, step.delete)).To(Succeed(), step.name)
+			}
+			expectSameIndex(step.name)
+			Expect(versionKeys(goStore)).To(Equal(step.live), step.name)
+		}
+	})
 })

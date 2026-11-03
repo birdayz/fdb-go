@@ -81,6 +81,7 @@ class ConformanceServer {
         new TextQuerySteps(),
         new BunchedMapSteps(),
         new TupleCompareSteps(),
+        new KeySpaceSteps(),
         new TimeWindowLeaderboardSteps(),
         new MultidimensionalIndexSteps(),
         new VectorIndexSteps(),

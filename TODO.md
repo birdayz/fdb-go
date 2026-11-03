@@ -3467,6 +3467,18 @@ on the ccx43 bench box with `measure.py --storage 6 --duration 180s`:
   542 -> 280 µs per 128 puts. Open: the pure-Go client still starts one
   goroutine per read it cannot answer locally (`startPendingRange`, client
   scope); `DeserializeEntries` (scans, Get) still unpacks every key.
+- [ ] **Record Layer KeySpace over the directory layer** (for layers/otel's
+  directory_v1 layout). Done: `keyspace.Path.ToSubspace` is Java's
+  `new Subspace(toTuple())` (it packed the tuple as one nested element), and
+  `recordlayer.DirectoryLayerDirectory` / `KeySpaceResolver` port Java's
+  DirectoryLayerDirectory over its default scope `ExtendedDirectoryLayer.global`
+  (`ExtendedDirectoryLayerGlobal`), pinned by "KeySpace path and directory
+  layer conformance". Open, against Java's KeySpace: `KeySpace.PathFromTuple`
+  does not reverse-resolve a DirectoryLayerDirectory's longs (Java's
+  `pathFromKey`), a DirectoryLayerDirectory refuses a long value (Java looks
+  it up), and `runChild` (resolveWithMetadata's child transaction) takes a
+  fresh read version where Java's runAsyncBorrowingReadVersion borrows the
+  parent's.
 - [ ] **Phrase queries cost twice the earlier layout** (bench p50 15 ms against
   6-8 ms): the TEXT phrase scan of 16 writer shards per role dominates
   (`fts_phrase_first_turn`, `fts_multi_turn_history`).

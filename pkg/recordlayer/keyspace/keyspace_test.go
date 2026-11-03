@@ -445,14 +445,48 @@ func TestToSubspace(t *testing.T) {
 	path, err := ks.Path(ctx, "app", "myapp")
 	g.Expect(err).NotTo(HaveOccurred())
 
+	// Java's new Subspace(toTuple()): the prefix is the packed path tuple,
+	// its elements flattened, not one nested tuple.
 	ss := path.ToSubspace()
-	g.Expect(ss.Bytes()).NotTo(BeEmpty())
-	// The subspace packs via subspace.Sub which may add prefix bytes.
-	// Just verify it round-trips correctly through Pack/Unpack.
-	packed := ss.Pack(tuple.Tuple{"extra"})
-	g.Expect(packed).NotTo(BeEmpty())
-	// Verify the path tuple is embedded in the subspace
 	g.Expect(path.ToTuple()).To(Equal(tuple.Tuple{"myapp"}))
+	g.Expect(ss.Bytes()).To(Equal(tuple.Tuple{"myapp"}.Pack()))
+	g.Expect([]byte(ss.Pack(tuple.Tuple{"extra"}))).To(Equal(tuple.Tuple{"myapp", "extra"}.Pack()))
+}
+
+// A child path's subspace lies inside its parent's, at every depth, and its
+// range covers exactly the child's keys.
+func TestToSubspaceNestsUnderParent(t *testing.T) {
+	t.Parallel()
+	g := NewWithT(t)
+
+	root := NewDirectory("root", KeyTypeNull)
+	app := NewDirectory("app", KeyTypeString)
+	user := NewDirectory("user", KeyTypeLong)
+	mustAdd(t, user, NewConstantDirectory("docs", KeyTypeLong, int64(1)))
+	mustAdd(t, app, user)
+	mustAdd(t, root, app)
+	ks := NewKeySpace(root)
+
+	p1, err := ks.Path(ctx, "app", "a")
+	g.Expect(err).NotTo(HaveOccurred())
+	p2, err := p1.Add(ctx, "user", int64(300))
+	g.Expect(err).NotTo(HaveOccurred())
+	p3, err := p2.Add(ctx, "docs", nil)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(p3.ToSubspace().Bytes()).To(Equal(tuple.Tuple{"a", int64(300), int64(1)}.Pack()))
+	for _, pair := range [][2]*Path{{p1, p2}, {p2, p3}, {p1, p3}} {
+		parent, child := pair[0].ToSubspace(), pair[1].ToSubspace()
+		g.Expect(parent.Contains(child)).To(BeTrue(), "%s inside %s", pair[1], pair[0])
+		_, err := parent.Unpack(child)
+		g.Expect(err).NotTo(HaveOccurred())
+	}
+	r, err := p2.ToRange()
+	g.Expect(err).NotTo(HaveOccurred())
+	begin, end := p2.ToSubspace().FDBRangeKeys()
+	g.Expect(r.Begin).To(Equal(begin.FDBKey()))
+	g.Expect(r.End).To(Equal(end.FDBKey()))
+	g.Expect([]byte(r.Begin.FDBKey())).To(Equal(append(tuple.Tuple{"a", int64(300)}.Pack(), 0x00)))
 }
 
 func TestPathFlatten(t *testing.T) {

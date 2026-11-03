@@ -14,11 +14,12 @@ import (
 // LocatableResolver maps string names to compact int64 values and back.
 // Used by DirectoryLayerDirectory for string→long key compression.
 //
-// Phase 2: this interface defines the contract. Phase 3 will add
-// ScopedDirectoryLayer that uses FDB's directory layer for persistent
-// resolution with metadata.
-//
-// Matches Java's LocatableResolver (abstract class).
+// Java's LocatableResolver, bound to its database: its resolve(timer, name)
+// and reverseLookup(timer, value). The FDB-backed scopes (the directory
+// layer's ExtendedDirectoryLayer.global and ScopedDirectoryLayer.global, and
+// ScopedInterningLayer) implement it as recordlayer.KeySpaceResolver, and
+// recordlayer.DirectoryLayerDirectory is Java's DirectoryLayerDirectory over
+// it.
 type LocatableResolver interface {
 	// Resolve maps a name to a compact int64. Creates the mapping if absent.
 	Resolve(ctx context.Context, name string) (int64, error)
