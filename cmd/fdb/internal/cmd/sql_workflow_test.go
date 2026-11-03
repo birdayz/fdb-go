@@ -798,6 +798,41 @@ func TestIntegration_SQLWorkflow_StdinAndContext(t *testing.T) {
 		}
 	})
 
+	t.Run("explicit empty input flags never execute stdin", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "not-selected.sql")
+		if err := os.WriteFile(path, []byte("DELETE FROM items;\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, tc := range []struct {
+			name string
+			args []string
+		}{
+			{name: "empty command", args: []string{"-c", ""}},
+			{name: "empty command precedes file", args: []string{"-c", "", "-f", path}},
+			{name: "empty file", args: []string{"-f", ""}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				out, errOut, err := runSQLWorkflow(t, "DELETE FROM items;\n", append([]string{"sql"}, tc.args...)...)
+				if tc.name == "empty file" {
+					var pathErr *os.PathError
+					if !errors.As(err, &pathErr) || pathErr.Op != "open" || pathErr.Path != "" {
+						t.Fatalf("empty -f must fail opening its path: %v", err)
+					}
+				} else if err != nil {
+					t.Fatalf("empty -c must be a no-op: %v", err)
+				}
+				if out != "" || errOut != "" {
+					t.Fatalf("empty input flags produced output: stdout=%q stderr=%q", out, errOut)
+				}
+				out, _, err = runSQLWorkflow(t, "", "sql", "-c", "SELECT count(*) AS n FROM items;", "-o", "json")
+				var rows []map[string]int64
+				if err != nil || json.Unmarshal([]byte(out), &rows) != nil || len(rows) != 1 || rows[0]["N"] != 2 {
+					t.Fatalf("empty input flag executed stdin or a lower-priority file: stdout=%q error=%v", out, err)
+				}
+			})
+		}
+	})
+
 	t.Run("schema override retains the context database", func(t *testing.T) {
 		if out, _, err := runSQLWorkflow(t, "", "sql", "-c", "CREATE SCHEMA "+database+"/other WITH TEMPLATE fdbstats_sql_workflow_tpl"); err != nil {
 			t.Fatalf("create other schema: %v\n%s", err, out)

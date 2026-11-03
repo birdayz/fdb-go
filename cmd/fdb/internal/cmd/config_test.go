@@ -438,6 +438,95 @@ func TestConfigUseContext_PersistsAndConfirms(t *testing.T) {
 	}
 }
 
+func TestConfigCommandsIgnoreLegacyConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		legacyHome bool
+		legacyEnv  bool
+		newSource  string
+	}{
+		{name: "legacy home", legacyHome: true},
+		{name: "legacy environment", legacyEnv: true},
+		{name: "both legacy sources", legacyHome: true, legacyEnv: true},
+		{name: "new home wins", legacyHome: true, legacyEnv: true, newSource: "home"},
+		{name: "new environment wins", legacyHome: true, legacyEnv: true, newSource: "environment"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("FDB_CONFIG", "")
+			if err := os.Unsetenv("FDB_CONFIG"); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("FRL_CONFIG", "")
+			files := make(map[string]string)
+			write := func(path, name string) {
+				t.Helper()
+				raw := "current_context: " + name + "\ncontexts:\n  - name: " + name + "\n    cluster_file: /" + name + ".cluster\n    keyspace_path: /" + name + "\n"
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				files[path] = raw
+			}
+			if tc.legacyHome {
+				write(filepath.Join(home, ".frl", "config.yaml"), "legacy-home")
+			}
+			if tc.legacyEnv {
+				path := filepath.Join(home, "legacy-env.yaml")
+				write(path, "legacy-env")
+				t.Setenv("FRL_CONFIG", path)
+			}
+			path := filepath.Join(home, ".fdb", "config.yaml")
+			if tc.newSource == "environment" {
+				write(path, "new-home")
+				path = filepath.Join(home, "explicit-new.yaml")
+				t.Setenv("FDB_CONFIG", path)
+			}
+			if tc.newSource != "" {
+				write(path, "selected-new")
+			}
+			run := func(args ...string) (string, error) {
+				t.Helper()
+				root := NewRoot()
+				var out bytes.Buffer
+				root.SetOut(&out)
+				root.SetErr(&out)
+				root.SetArgs(append([]string{"config"}, args...))
+				err := root.Execute()
+				return out.String(), err
+			}
+			if out, err := run("path"); err != nil || strings.TrimSpace(out) != path {
+				t.Fatalf("config path=%q error=%v, want %s", out, err, path)
+			}
+			for _, command := range []string{"current-context", "view"} {
+				out, err := run(command, "-o", "json")
+				if tc.newSource == "" {
+					if err == nil || out != "" || !strings.Contains(err.Error(), path) {
+						t.Fatalf("%s loaded a legacy source: output=%q error=%v", command, out, err)
+					}
+					continue
+				}
+				var got map[string]any
+				if err != nil || json.Unmarshal([]byte(out), &got) != nil || got["name"] != "selected-new" {
+					t.Fatalf("%s ignored the new source: output=%q error=%v", command, out, err)
+				}
+				if command == "view" && got["cluster_file"] != "/selected-new.cluster" {
+					t.Fatalf("view selected the wrong cluster: %s", out)
+				}
+			}
+			for path, want := range files {
+				data, err := os.ReadFile(path)
+				if err != nil || string(data) != want {
+					t.Fatalf("read-only config command changed %s: data=%q error=%v", path, data, err)
+				}
+			}
+		})
+	}
+}
+
 func TestConfigGetContexts_Empty(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(""), 0o600); err != nil {

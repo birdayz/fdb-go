@@ -10,16 +10,19 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/core/catalog"
 )
 
 func TestRunCatalogRead_RejectsUnsupportedReader(t *testing.T) {
@@ -99,16 +102,21 @@ func TestCountCatalogDatabasesRejectsUnboundedBatch(t *testing.T) {
 
 type statusCatalogCountBackend struct {
 	fdb.Database
-	attempts int
-	injected bool
+	attempts  int
+	succeeded int
+	failFirst bool
+	injected  bool
 }
 
 func (b *statusCatalogCountBackend) ReadTransactCtx(ctx context.Context, fn func(fdb.ReadTransaction) (any, error)) (any, error) {
 	b.attempts++
 	result, err := b.Database.ReadTransactCtx(ctx, fn)
-	if b.attempts == 1 && err == nil {
-		b.injected = true
-		return nil, fdb.Error{Code: 1020}
+	if err == nil {
+		b.succeeded++
+		if b.failFirst && b.attempts == 1 {
+			b.injected = true
+			return nil, fdb.Error{Code: 1020}
+		}
 	}
 	return result, err
 }
@@ -253,6 +261,7 @@ INSERT INTO ITEMS VALUES (1, 'status');
 	if err != nil {
 		t.Fatalf("resolve status schema: %v", err)
 	}
+	statusCatalogBudgetChecks(t, ctx, clusterFile, db, rec)
 	for _, store := range []struct {
 		name string
 		ss   subspace.Subspace
@@ -268,7 +277,7 @@ INSERT INTO ITEMS VALUES (1, 'status');
 	}
 	before := snapshotStoreBytes(t, clusterFile, root)
 	t.Run("catalog-batched-count", func(t *testing.T) {
-		backend := &statusCatalogCountBackend{Database: db}
+		backend := &statusCatalogCountBackend{Database: db, failFirst: true}
 		paged := recordlayer.NewFDBDatabaseWithTransactor(backend, db)
 		count, err := countCatalogDatabasesBatched(ctx, paged, 1)
 		if err != nil || count != 2 {
@@ -313,6 +322,133 @@ INSERT INTO ITEMS VALUES (1, 'status');
 			}
 		})
 	}
+	t.Run("status-corrupt-catalog", func(t *testing.T) {
+		key := relationalKeyspace().CatalogSubspace().Pack(tuple.Tuple{recordlayer.StoreInfoKey})
+		corrupt := []byte{0xff}
+		original, err := rec.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+			raw, err := rctx.Transaction().Get(key).Get()
+			if err != nil {
+				return nil, err
+			}
+			if len(raw) == 0 || bytes.Equal(raw, corrupt) {
+				return nil, fmt.Errorf("catalog corruption fixture has no valid original header")
+			}
+			rctx.Transaction().Set(key, corrupt)
+			return raw, nil
+		})
+		if err != nil {
+			t.Fatalf("corrupt existing catalog header: %v", err)
+		}
+		defer func() {
+			restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			_, err := rec.Run(restoreCtx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+				rctx.Transaction().Set(key, original.([]byte))
+				return nil, nil
+			})
+			if err != nil {
+				t.Errorf("restore catalog header: %v", err)
+			}
+		}()
+		corrupted := snapshotStoreBytes(t, clusterFile, root)
+		if corrupted == before {
+			t.Fatal("catalog corruption did not change the persisted header")
+		}
+		report := runReadOnlyStatus(t, targets[0].flags)
+		if !strings.HasPrefix(report.Catalog, "error: ") || report.Store != "ok" || report.Metadata != targets[0].presentMeta {
+			t.Fatalf("corrupt catalog must report an error without losing independent checks: %+v", report)
+		}
+		if after := snapshotStoreBytes(t, clusterFile, root); after != corrupted {
+			t.Fatalf("status changed keys while reporting catalog corruption\nbefore:\n%s\nafter:\n%s", corrupted, after)
+		}
+	})
+}
+
+type statusCatalogStepClock struct{ calls atomic.Int64 }
+
+func (c *statusCatalogStepClock) Now() time.Time {
+	return dst.Epoch.Add(time.Duration(c.calls.Add(1)) * 4 * time.Second)
+}
+
+func statusCatalogBudgetChecks(t *testing.T, ctx context.Context, clusterFile string, db fdb.Database, rec *recordlayer.FDBDatabase) {
+	t.Helper()
+	root := subspace.Sub()
+	before := snapshotStoreBytes(t, clusterFile, root)
+	t.Run("catalog-count-time-budget", func(t *testing.T) {
+		backend := &statusCatalogCountBackend{Database: db}
+		clock := &statusCatalogStepClock{}
+		paged := recordlayer.NewFDBDatabaseWithTransactor(backend, db).SetEnv(&dst.Env{Clock: clock})
+		count, err := countCatalogDatabasesBatched(ctx, paged, 256)
+		if err != nil || count != 2 || backend.succeeded < 2 || clock.calls.Load() == 0 {
+			t.Fatalf("time-bounded count=(%d, %v), successful batches=%d clock calls=%d; want two databases across multiple batches", count, err, backend.succeeded, clock.calls.Load())
+		}
+		if after := snapshotStoreBytes(t, clusterFile, root); after != before {
+			t.Fatal("time-bounded count changed catalog or application keys")
+		}
+	})
+	t.Run("catalog-count-byte-budget", func(t *testing.T) {
+		md, err := catalog.BuildCatalogMetaData()
+		if err != nil {
+			t.Fatal(err)
+		}
+		const extraDatabases = 110
+		records := make([]*gen.Databases, extraDatabases)
+		payloadBytes := 0
+		for i := range records {
+			id := fmt.Sprintf("/FRL/BYTE_BUDGET_%03d_%s", i, strings.Repeat("X", 5000))
+			records[i] = &gen.Databases{DATABASE_ID: proto.String(id)}
+			payloadBytes += len(tuple.Tuple{catalog.DatabaseInfoRecordTypeKey, id}.Pack()) + proto.Size(records[i])
+		}
+		if payloadBytes <= 1<<20 || extraDatabases+2 >= 256 {
+			t.Fatal("byte fixture must exceed one MiB without reaching the returned-row limit")
+		}
+		update := func(remove bool) error {
+			_, err := rec.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := recordlayer.NewStoreBuilder().SetContext(rctx).
+					SetSubspace(relationalKeyspace().CatalogSubspace()).SetMetaDataProvider(md).
+					SetSkipPossiblyRebuild(true).Open()
+				if err != nil {
+					return nil, err
+				}
+				for _, record := range records {
+					if remove {
+						deleted, err := store.DeleteRecord(tuple.Tuple{catalog.DatabaseInfoRecordTypeKey, record.GetDATABASE_ID()})
+						if err != nil {
+							return nil, err
+						}
+						if !deleted {
+							return nil, fmt.Errorf("byte-budget fixture record was not deleted")
+						}
+					} else if _, err := store.SaveRecord(record); err != nil {
+						return nil, err
+					}
+				}
+				return nil, nil
+			})
+			return err
+		}
+		if err := update(false); err != nil {
+			t.Fatalf("seed byte-budget catalog: %v", err)
+		}
+		defer func() {
+			if err := update(true); err != nil {
+				t.Errorf("remove byte-budget fixture: %v", err)
+			} else if after := snapshotStoreBytes(t, clusterFile, root); after != before {
+				t.Error("byte-budget fixture cleanup did not restore original keys")
+			}
+		}()
+		seeded := snapshotStoreBytes(t, clusterFile, root)
+		backend := &statusCatalogCountBackend{Database: db}
+		paged := recordlayer.NewFDBDatabaseWithTransactor(backend, db).
+			SetEnv(&dst.Env{Clock: dst.NewSimClock(dst.Epoch)})
+		count, err := countCatalogDatabasesBatched(ctx, paged, 256)
+		if err != nil || count != extraDatabases+2 || backend.succeeded < 2 {
+			t.Fatalf("byte-bounded count=(%d, %v), successful batches=%d; want %d databases across multiple batches", count, err, backend.succeeded, extraDatabases+2)
+		}
+		if after := snapshotStoreBytes(t, clusterFile, root); after != seeded {
+			t.Fatal("byte-bounded count changed catalog or application keys")
+		}
+	})
 }
 
 func assertReadOnlyCatalogList(t *testing.T, clusterFile, command, wantJSON string) {

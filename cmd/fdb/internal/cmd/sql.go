@@ -150,9 +150,9 @@ func newSQLCmd() *cobra.Command {
 			defer db.Close()
 			defer runner.close()
 			switch {
-			case cmdline != "":
+			case cmd.Flags().Changed("command"):
 				return runner.runOnce(cmdline)
-			case filePath != "":
+			case cmd.Flags().Changed("file"):
 				return runner.runFile(filePath)
 			case !isTerminalReader(cmd.InOrStdin()):
 				return runner.runScript(cmd.InOrStdin(), "stdin")
@@ -176,9 +176,8 @@ func newSQLCmd() *cobra.Command {
 	return c
 }
 
-// resolveSQLAddress shares context defaults between SQL and statistics. Names
-// stay as spelled until the SQL connection normalizes them, including quotes.
-// An explicit database selects a new address: it never inherits the old schema.
+// Preserve quoted names until SQL normalization; an explicit database must not
+// inherit a schema from a different context address.
 func resolveSQLAddress(cmd *cobra.Command, contextName, clusterFile, database, schema string) (*storeTarget, error) {
 	target, err := (&storeAddressFlags{contextName: contextName, clusterFile: clusterFile}).resolve()
 	if err != nil {

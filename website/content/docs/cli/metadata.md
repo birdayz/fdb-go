@@ -573,8 +573,10 @@ The relational-layer side of the CLI. `fdb sql` is a psql-style REPL
 reads the relational catalog at `__SYS/CATALOG` — schema auto-discovery
 with no `meta_file` wiring. Neither needs `keyspace_path` or a metadata
 source in the context; they address stores by `--database`/`--schema`.
-Plain-core clusters (no relational layer) get a clear "no relational
-catalog on this cluster" error pointing back at Path A/B.
+Without a relational catalog, `databases`, `schemas`, and `templates` return
+successful empty listings without creating a persisted catalog; `get` fails
+because the requested template does not exist. Native Record Layer stores use
+the metadata sources in Path A/B instead.
 
 ## Planner statistics
 

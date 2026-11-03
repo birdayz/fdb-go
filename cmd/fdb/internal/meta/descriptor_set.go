@@ -64,7 +64,8 @@ func (s *DescriptorSetSource) Load(ctx context.Context) (*recordlayer.RecordMeta
 	if err != nil {
 		return nil, fmt.Errorf("load %s: resolve records file: %w", s.Name(), err)
 	}
-	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(fd).SetRecordsSourceProto(records)
+	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(fd).SetRecordsSourceProto(records).
+		SetDependenciesSourceProtos(set.GetFile())
 	if s.Version != nil {
 		builder.SetVersion(int(*s.Version))
 	}

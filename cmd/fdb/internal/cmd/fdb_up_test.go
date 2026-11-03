@@ -1,14 +1,104 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/structpb"
+
+	configv1 "fdb.dev/cmd/fdb/gen/fdb/config/v1"
+	"fdb.dev/cmd/fdb/internal/config"
 )
+
+func TestFdbUpPersistsReplacementOfIncompatibleContext(t *testing.T) {
+	for _, address := range []string{"relational", "tuple"} {
+		t.Run(address, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			t.Setenv("FDB_CONFIG", path)
+			metadata := &configv1.MetadataSource{Source: &configv1.MetadataSource_MetaFile{MetaFile: "schema.pb"}}
+			selected := &configv1.Context{Name: "replace", ClusterFile: "/old.cluster", Metadata: metadata}
+			if address == "relational" {
+				selected.Database, selected.Schema = "/FRL/old", "main"
+			} else {
+				selected.KeyspaceTuple = &structpb.ListValue{Values: []*structpb.Value{structpb.NewStringValue("old")}}
+			}
+			other := &configv1.Context{Name: "other", ClusterFile: "/other.cluster", KeyspacePath: "/other"}
+			if err := config.SaveTo(path, &configv1.Config{CurrentContext: "other", Contexts: []*configv1.Context{other, selected}}); err != nil {
+				t.Fatal(err)
+			}
+			const name = "fdb-context-replacement"
+			const port = 4507
+			cluster := fdbClusterString(port) + "\n"
+			created := false
+			run := func(_ context.Context, args ...string) (string, error) {
+				switch args[0] {
+				case "ps":
+					if created {
+						return strings.Repeat("a", 64), nil
+					}
+					return "", nil
+				case "image":
+					return "", nil
+				case "run":
+					created = true
+					return strings.Repeat("a", 64), nil
+				case "exec":
+					if args[2] == "cat" {
+						return cluster, nil
+					}
+					return "The database is available", nil
+				default:
+					t.Fatalf("unexpected Docker command: %q", args)
+					return "", nil
+				}
+			}
+			cmd := newDevUpCmdWithDocker(func(context.Context) error { return nil }, run,
+				func(context.Context, string, io.Writer) error { t.Fatal("present image pulled"); return nil })
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{"--name", name, "--context", "replace", "--keyspace", "/new/native", "--port", "4507", "-o", "json"})
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			if err := cmd.ExecuteContext(ctx); err != nil {
+				t.Fatalf("dev up: %v\n%s", err, out.String())
+			}
+			clusterFile := filepath.Join(filepath.Dir(path), name+".cluster")
+			var result map[string]string
+			if err := json.Unmarshal(out.Bytes(), &result); err != nil || result["cluster_file"] != clusterFile || result["context"] != "replace" || result["container"] != name {
+				t.Fatalf("dev up output=%s error=%v", out.String(), err)
+			}
+			if data, err := os.ReadFile(clusterFile); err != nil || string(data) != cluster {
+				t.Fatalf("cluster file=%q error=%v, want %q", data, err, cluster)
+			}
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.GetCurrentContext() != "replace" || len(cfg.GetContexts()) != 2 || !proto.Equal(cfg.GetContexts()[0], other) {
+				t.Fatalf("dev up did not activate only the replaced context: %v", cfg)
+			}
+			target, err := (&storeAddressFlags{}).resolve()
+			if err != nil {
+				t.Fatalf("resolve persisted default context: %v", err)
+			}
+			got := target.cfgCtx
+			if target.relational() || target.clusterFile() != clusterFile || got.GetKeyspacePath() != "/new/native" || got.GetKeyspaceTuple() != nil || got.GetDatabase() != "" || got.GetSchema() != "" || !proto.Equal(got.GetMetadata(), metadata) {
+				t.Fatalf("persisted replacement resolved the wrong address or lost metadata: %v", got)
+			}
+		})
+	}
+}
 
 func TestFdbUpPullPrecedesStartupDeadline(t *testing.T) {
 	t.Parallel()

@@ -59,6 +59,9 @@ type RecordMetaData struct {
 	// protodesc.ToFileDescriptorProto reconstruction is the only source.
 	recordsSourceProto *descriptorpb.FileDescriptorProto
 
+	// Imported source protos retain presence and unknown fields lost by reflection.
+	dependencySourceProtos map[string]*descriptorpb.FileDescriptorProto
+
 	// Schema version
 	version int
 
@@ -286,6 +289,7 @@ type RecordMetaDataBuilder struct {
 	recordTypes              map[string]*RecordType
 	fileDescriptor           protoreflect.FileDescriptor
 	recordsSourceProto       *descriptorpb.FileDescriptorProto
+	dependencySourceProtos   map[string]*descriptorpb.FileDescriptorProto
 	version                  int
 	recordCountKey           KeyExpression
 	storeRecordVersions      bool
@@ -490,6 +494,18 @@ func (m *RecordMetaData) FileDescriptor() protoreflect.FileDescriptor { return m
 // source proto must survive to serialization untouched.
 func (b *RecordMetaDataBuilder) SetRecordsSourceProto(fdp *descriptorpb.FileDescriptorProto) *RecordMetaDataBuilder {
 	b.recordsSourceProto = fdp
+	return b
+}
+
+// SetDependenciesSourceProtos retains original imported descriptors for serialization.
+// Only transitive dependencies of the records descriptor are emitted.
+func (b *RecordMetaDataBuilder) SetDependenciesSourceProtos(files []*descriptorpb.FileDescriptorProto) *RecordMetaDataBuilder {
+	b.dependencySourceProtos = make(map[string]*descriptorpb.FileDescriptorProto, len(files))
+	for _, file := range files {
+		if file != nil {
+			b.dependencySourceProtos[file.GetName()] = file
+		}
+	}
 	return b
 }
 
@@ -1253,6 +1269,13 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	if b.recordsSourceProto != nil {
 		recordsSourceProto = proto.Clone(b.recordsSourceProto).(*descriptorpb.FileDescriptorProto)
 	}
+	var dependencySourceProtos map[string]*descriptorpb.FileDescriptorProto
+	if len(b.dependencySourceProtos) > 0 {
+		dependencySourceProtos = make(map[string]*descriptorpb.FileDescriptorProto, len(b.dependencySourceProtos))
+		for name, file := range b.dependencySourceProtos {
+			dependencySourceProtos[name] = proto.Clone(file).(*descriptorpb.FileDescriptorProto)
+		}
+	}
 
 	// No record-type-key binding happens here, deliberately. A key expression
 	// graph can be shared by more than one metadata build, so anything this
@@ -1307,6 +1330,7 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		recordTypes:             types,
 		fileDescriptor:          b.fileDescriptor,
 		recordsSourceProto:      recordsSourceProto,
+		dependencySourceProtos:  dependencySourceProtos,
 		version:                 b.version,
 		recordCountKey:          b.recordCountKey,
 		storeRecordVersions:     b.storeRecordVersions,

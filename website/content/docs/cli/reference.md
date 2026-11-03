@@ -384,8 +384,9 @@ fdb rl meta catalog repair --database <uri> --all-schemas [--concurrency N] [--y
 ```
 
 Every catalog command accepts `--context` and `--cluster-file`. They use the
-relational catalog, not a context's Record Layer metadata source. A cluster
-without a relational catalog returns an error.
+relational catalog, not a context's Record Layer metadata source. Without a
+relational catalog, `databases`, `schemas`, and `templates` succeed with empty
+listings; `get` fails because the requested template does not exist.
 
 | Command | Behavior |
 |---|---|

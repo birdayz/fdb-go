@@ -51,8 +51,8 @@ func newInstallerFixture(t *testing.T) *installerFixture {
 		"uname": `#!/bin/sh
 set -eu
 case "$*" in
-  -s) printf 'Linux\n' ;;
-  -m) printf 'x86_64\n' ;;
+  -s) printf '%s\n' "${INSTALL_FIXTURE_OS:-Linux}" ;;
+  -m) printf '%s\n' "${INSTALL_FIXTURE_ARCH:-x86_64}" ;;
   *) exit 91 ;;
 esac
 `,
@@ -139,6 +139,8 @@ func (f *installerFixture) run(t *testing.T, overrides map[string]string, args .
 		"FDB_VERSION":          "7.3.77",
 		"INSTALL_FIXTURE_ROOT": f.root,
 		"INSTALL_FIXTURE_LOG":  f.log,
+		"INSTALL_FIXTURE_OS":   "Linux",
+		"INSTALL_FIXTURE_ARCH": "x86_64",
 		// Old installer settings must neither override nor supply defaults.
 		"FRL_VERSION":     "cmd/frl/v9.9.9",
 		"FRL_INSTALL_DIR": filepath.Join(f.root, "legacy"),
@@ -324,6 +326,55 @@ func TestCLIInstallerRefusesLegacyArchivesAndInvalidChecksums(t *testing.T) {
 			f.requests(t, urls...)
 			if _, err := os.Stat(f.installDir); !os.IsNotExist(err) {
 				t.Fatalf("failed verification created an install directory: %v", err)
+			}
+		})
+	}
+}
+
+func TestCLIInstallerSourceBuildGuidance(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"help", "api-failure", "empty-releases", "nested-releases", "unsupported-os", "unsupported-architecture"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			f := newInstallerFixture(t)
+			env := map[string]string{"FDB_CLI_VERSION": "latest"}
+			var args, requests []string
+			want := ""
+			switch mode {
+			case "help":
+				args = []string{"--help"}
+				want = "build from a current checkout:"
+			case "api-failure":
+				if err := os.Remove(filepath.Join(f.root, "releases.json")); err != nil {
+					t.Fatal(err)
+				}
+				want = "could not reach the GitHub release API"
+			case "empty-releases":
+				f.write(t, "releases.json", []byte("[]"))
+				want = "has published no releases"
+			case "nested-releases":
+				f.write(t, "releases.json", []byte(`[{"tag_name":"cmd/fdb/v0.2.0"}]`))
+				want = "none tagged vX.Y.Z"
+			case "unsupported-os":
+				env["INSTALL_FIXTURE_OS"] = "UnsupportedOS"
+				want = "unsupported OS: UnsupportedOS"
+			case "unsupported-architecture":
+				env["INSTALL_FIXTURE_ARCH"] = "unsupported-arch"
+				want = "unsupported architecture: unsupported-arch"
+			}
+			if mode == "api-failure" || mode == "empty-releases" || mode == "nested-releases" {
+				requests = []string{"https://api.example.invalid/project/releases?per_page=100"}
+			}
+			out, err := f.run(t, env, args...)
+			if (err == nil) != (mode == "help") || !strings.Contains(out, want) {
+				t.Fatalf("%s: error=%v, want %q\n%s", mode, err, want, out)
+			}
+			if !strings.Contains(out, "https://fdb.dev/docs/cli/#install") || strings.Contains(out, "go install fdb.dev/cmd/fdb@latest") {
+				t.Fatalf("source guidance must work before the first renamed CLI release:\n%s", out)
+			}
+			f.requests(t, requests...)
+			if _, err := os.Stat(f.installDir); !os.IsNotExist(err) {
+				t.Fatalf("guidance installed a binary: %v", err)
 			}
 		})
 	}

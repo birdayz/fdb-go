@@ -158,6 +158,11 @@ func TestDescriptorSetSource_PreservesInputDescriptorPresence(t *testing.T) {
 	// must retain that presence as well as an omitted field json_name.
 	records.Syntax = proto.String("proto2")
 	descriptorField(t, descriptorMessage(t, records, "Customer"), "id").JsonName = nil
+	dependency := descriptorFile(t, input, "details.proto")
+	dependency.Syntax = proto.String("proto2")
+	dependency.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 0x07}) // Unknown field 100, varint 7.
+	address := descriptorMessage(t, dependency, "Contact").GetNestedType()[0]
+	descriptorField(t, address, "city").JsonName = nil
 	md, err := (&DescriptorSetSource{Path: writeDescriptorSet(t, input)}).Load(t.Context())
 	if err != nil {
 		t.Fatalf("Load compiler descriptors with explicit default presence: %v", err)
@@ -167,6 +172,27 @@ func TestDescriptorSetSource_PreservesInputDescriptorPresence(t *testing.T) {
 		t.Fatalf("ToProto: %v", err)
 	}
 	assertCompilerDescriptorProtos(t, output, input)
+	var buf bytes.Buffer
+	if err := recordlayer.WriteRecordMetaData(md, &buf); err != nil {
+		t.Fatalf("serialize presence-sensitive metadata: %v", err)
+	}
+	restored, err := (&FileSource{Path: writeDescriptorBytes(t, "presence-meta.pb", buf.Bytes())}).Load(t.Context())
+	if err != nil {
+		t.Fatalf("reload presence-sensitive metadata: %v", err)
+	}
+	fromProto, err := recordlayer.RecordMetaDataFromProto(output)
+	if err != nil {
+		t.Fatalf("rebuild presence-sensitive metadata: %v", err)
+	}
+	output.Dependencies[0].Syntax = nil
+	output.Dependencies[0].ProtoReflect().SetUnknown(nil)
+	for _, source := range []*recordlayer.RecordMetaData{md, restored, fromProto} {
+		got, err := source.ToProto()
+		if err != nil {
+			t.Fatalf("serialize retained dependency sources: %v", err)
+		}
+		assertCompilerDescriptorProtos(t, got, input)
+	}
 }
 
 func TestDescriptorSetSource_ExplicitSelectionAmongRecordsFiles(t *testing.T) {

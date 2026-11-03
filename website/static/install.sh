@@ -9,8 +9,8 @@
 # its sha256 against the release's checksums.txt, and installs atomically.
 # Never uses sudo.
 #
-# Prefer the Go toolchain? This is equivalent (slower, builds from source):
-#   go install fdb.dev/cmd/fdb@latest
+# To build from a current checkout instead, see:
+#   https://fdb.dev/docs/cli/#install
 #
 # The whole script runs from main() at the bottom, so a truncated download
 # can't execute a half-script.
@@ -66,8 +66,8 @@ environment:
   FDB_API_URL          GitHub API base for "latest" resolution
                        default: https://api.github.com/repos/birdayz/fdb-go
 
-prefer the Go toolchain? equivalent, builds from source:
-  go install fdb.dev/cmd/fdb@latest
+build from a current checkout:
+  https://fdb.dev/docs/cli/#install
 EOF
 }
 
@@ -133,12 +133,12 @@ detect_platform() {
         MINGW*|MSYS*|CYGWIN*|Windows_NT)
             die "FoundationDB has no native Windows client story, so neither does fdb.
        Use WSL and run this installer inside it (the linux binary is static)." ;;
-        *)  die "unsupported OS: $(uname -s). Try: go install fdb.dev/cmd/fdb@latest" ;;
+        *)  die "unsupported OS: $(uname -s). Build from source: https://fdb.dev/docs/cli/#install" ;;
     esac
     case "$(uname -m)" in
         x86_64|amd64)  ARCH=amd64 ;;
         arm64|aarch64) ARCH=arm64 ;;
-        *)  die "unsupported architecture: $(uname -m). Try: go install fdb.dev/cmd/fdb@latest" ;;
+        *)  die "unsupported architecture: $(uname -m). Build from source: https://fdb.dev/docs/cli/#install" ;;
     esac
     # One static binary per OS/arch. No glibc/musl split needed: pure Go,
     # no cgo, so the linux binary runs on Debian, Alpine, NixOS, scratch.
@@ -157,7 +157,7 @@ resolve_version() {
        Retry, or skip the lookup by pinning a version:
          FDB_CLI_VERSION=vX.Y.Z sh install.sh
        Releases: $REPO_URL/releases
-       Or build from source: go install fdb.dev/cmd/fdb@latest"
+       Build from a current checkout: https://fdb.dev/docs/cli/#install"
     fi
 
     # The API returns releases newest-first. Only root vX.Y.Z tags qualify;
@@ -172,12 +172,12 @@ resolve_version() {
             die "$REPO_URL has published no releases, so there is no binary to install.
        The release list was fetched successfully and is empty -- this is not a
        network or rate-limit problem, and no FDB_CLI_VERSION pin will help.
-       Build from source instead (same binary, needs the Go toolchain):
-         go install fdb.dev/cmd/fdb@latest"
+       Build from a current checkout:
+         https://fdb.dev/docs/cli/#install"
         fi
         die "$REPO_URL has releases, but none tagged vX.Y.Z --
        the fdb CLI has not been released from this repository yet.
-       Build from source instead: go install fdb.dev/cmd/fdb@latest"
+       Build from a current checkout: https://fdb.dev/docs/cli/#install"
     fi
     info "latest release: fdb $VERSION"
 }

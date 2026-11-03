@@ -24,10 +24,7 @@ import (
 // the relational-layer catalog at tuple(nil, nil, 0) (`__SYS/__SYS/CATALOG`).
 // Commands under this node discover schemas/databases/templates without
 // the operator having to configure `meta_file` or `meta_store_keyspace`.
-//
-// Plain-core clusters (no relational layer deployed) have an empty
-// `__SYS/CATALOG` subspace; the subcommands surface the "no catalog
-// on this cluster" error cleanly and suggest the non-catalog flows.
+
 func newMetaCatalogCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "catalog",
@@ -36,9 +33,10 @@ func newMetaCatalogCmd() *cobra.Command {
 			"fdb-relational stores every database / schema / template on " +
 			"the cluster. Operators on a relational cluster get schema " +
 			"auto-discovery without wiring `meta_file` or " +
-			"`meta_store_keyspace`; plain-core clusters (no relational " +
-			"layer) return an empty-catalog error so you know to fall " +
-			"back to --meta-file.\n\n" +
+			"`meta_store_keyspace`. Without a relational catalog, " +
+			"databases, schemas, and templates return successful empty " +
+			"listings; get fails because the requested template does not exist. " +
+			"Native Record Layer stores use a separate metadata source.\n\n" +
 			"Never writes RAW bytes into `__SYS/CATALOG` — that namespace " +
 			"is owned by the relational layer, and scribbling on it from " +
 			"`fdb` would corrupt the cluster for real relational clients. " +

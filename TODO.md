@@ -2155,7 +2155,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   terms with Java differentials. Widen the direct-caller Unicode guard to
   identifier/name callers and helper indirection; route or explicitly exclude
   the remaining `strings.EqualFold`/`strings.ToUpper` uses in
-  `pkg/internal/querycensus` and `cmd/frl`, which are outside the RFC-265 pin.
+  `pkg/internal/querycensus` and `cmd/fdb`, which are outside the RFC-265 pin.
   Evidence: [RFC-265](rfcs/265-unicode15-compatibility-pin.md#java-fidelity-and-deliberately-retained-divergences),
   `conformance/testdata/unicode15_java.json`, immutable
   `tools/unicode15baseline/testdata/go1.26.10.json` and the raw write/update/delete
