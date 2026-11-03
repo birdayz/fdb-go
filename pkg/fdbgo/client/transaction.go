@@ -460,10 +460,11 @@ type Transaction struct {
 	// GetPipelined/Watch; Commit, the metrics paths, GetApproximateSize and
 	// GetVersionstamp gate explicitly), Store(nil)ed only on reset.
 	//
-	// Sources, matching C++: an illegal Set/Clear/ClearRange/Atomic (deferIllegalLocked: RYW
-	// set/clear/atomicOp throw in the call, :2228-2241, 2301-2348, 2372, 2420), an inverted
-	// ClearRange (2005, ThreadSafeTransaction.cpp:633-634), an invalid Atomic op-code and
-	// SetReadYourWritesDisable after a read/write (2000 — RYW setOptionImpl's throw,
+	// Sources, matching C++: an illegal Set/Clear/Atomic (deferIllegalLocked: RYW
+	// set/clear/atomicOp throw in the call, :2228-2241, 2301-2348, 2420); a ClearRange that is
+	// inverted (2005, ThreadSafeTransaction.cpp:633-634) or out of range (2004, :2370-2372),
+	// both from stateClearRange; an invalid Atomic op-code (2018, or 2004/2000 by key —
+	// atomicOp :2226-2235); SetReadYourWritesDisable after a read/write (2000 — RYW setOptionImpl's throw,
 	// :2534-2542; the option is NOT applied, matching the C++ throw-before-assign), and
 	// SetSizeLimit out of [32, 1e7], including a DB default (2006, extractIntOption).
 	// SetTimeout outside [0, INT_MAX] (2006 — extractIntOption's throw, also not applied).
@@ -815,7 +816,7 @@ func (tx *Transaction) Get(ctx context.Context, key []byte) ([]byte, error) {
 }
 
 // StartGet issues a Get in the call, as fdb_transaction_get does (ThreadSafeTransaction.cpp:426-434);
-// Commit waits for its server read whether or not Get is called (RYW:1690-1691, 1358-1359).
+// Commit waits for its server read whether or not Get is called (RYW:1690-1691, 1359-1360).
 func (tx *Transaction) StartGet(ctx context.Context, key []byte) *PendingValue {
 	return tx.startGet(ctx, key, false)
 }
@@ -853,25 +854,30 @@ func (tx *Transaction) startGet(parent context.Context, key []byte, snapshot boo
 	p := &PendingValue{done: make(chan struct{})}
 	go func() {
 		defer close(p.done)
+		defer g.release()
+		// RFC-110: a panic fails the read, recorded before release lets Commit past its wait.
 		if tx.rangeReadBackstop().run(func() { p.value, p.err = g.finish() }) {
-			p.value, p.err = nil, &wire.FDBError{Code: ErrInternalError} // RFC-110
+			p.value, p.err = nil, tx.trackReadOperation(g.ctx, &wire.FDBError{Code: ErrInternalError})
 		}
 	}()
 	return p
 }
 
-// issuedGet is a Get past its issue: its value, or what waits for it.
+// issuedGet is a Get past its issue: its value, or the server read and its release.
 type issuedGet struct {
-	value  []byte
-	err    error
-	finish func() ([]byte, error) // nil when the value was decided at issue
+	value   []byte
+	err     error
+	ctx     context.Context
+	finish  func() ([]byte, error) // nil when the value was decided at issue
+	release func()
 }
 
 func (g issuedGet) wait() ([]byte, error) {
-	if g.finish != nil {
-		return g.finish()
+	if g.finish == nil {
+		return g.value, g.err
 	}
-	return g.value, g.err
+	defer g.release()
+	return g.finish()
 }
 
 // issueGet is RYW get (ReadYourWrites.actor.cpp:1631-1693) split at its wait; a server read
@@ -882,14 +888,17 @@ func (tx *Transaction) issueGet(parent context.Context, key []byte, snapshot, co
 		return issuedGet{value: v, err: err}
 	}
 	ctx, cancel, counted := tx.opContextFor(parent, true)
+	handedOff := false
+	defer func() { // also on a panic, which would otherwise leak a counted lease
+		if !handedOff {
+			cancel()
+		}
+	}()
 	if err := tx.checkReadState(ctx); err != nil {
-		err = tx.trackReadOperation(ctx, err)
-		cancel()
-		return issuedGet{err: err}
+		return issuedGet{err: tx.trackReadOperation(ctx, err)}
 	}
 	// C++ RYW::getValue: if (key >= getMaxReadKey() && key != metadataVersionKey)
 	if bytes.Compare(key, tx.maxReadKey()) >= 0 && !bytes.Equal(key, metadataVersionKeyBytes) {
-		cancel()
 		return issuedGet{err: &wire.FDBError{Code: 2004}} // key_outside_legal_range
 	}
 	tx.hadRead.Store(true)
@@ -910,24 +919,26 @@ func (tx *Transaction) issueGet(parent context.Context, key []byte, snapshot, co
 			r = tx.ryw.issueGet(key)
 		}
 		if r.known {
-			v, err := bytes.Clone(r.value), tx.trackReadOperation(ctx, r.err)
-			cancel()
-			return issuedGet{value: v, err: err}
+			return issuedGet{value: bytes.Clone(r.value), err: tx.trackReadOperation(ctx, r.err)}
 		}
 		if copyKey {
 			r.key = bytes.Clone(r.key)
 		}
-		return tx.finishPointRead(ctx, tx.issuedReadRelease(ctx, cancel, counted), r)
+		release := tx.enterIssuedReadRelease(ctx, cancel, counted)
+		handedOff = true
+		return tx.finishPointRead(ctx, release, r)
 	}
 	if copyKey {
 		key = bytes.Clone(key)
 	}
-	return tx.finishGetValue(ctx, tx.issuedReadRelease(ctx, cancel, counted), key)
+	release := tx.enterIssuedReadRelease(ctx, cancel, counted)
+	handedOff = true
+	return tx.finishGetValue(ctx, release, key)
 }
 
-// issuedReadRelease ends a server read: a borrowed lease does not count in
-// Commit's barrier, so the read enters it on its own (enterIssuedRead).
-func (tx *Transaction) issuedReadRelease(ctx context.Context, cancel context.CancelFunc, counted bool) func() {
+// enterIssuedReadRelease counts a server read in Commit's barrier and returns what ends it: a
+// borrowed lease does not count, so the read enters on its own, as range reads do at issue.
+func (tx *Transaction) enterIssuedReadRelease(ctx context.Context, cancel context.CancelFunc, counted bool) func() {
 	if counted {
 		return cancel
 	}
@@ -941,8 +952,7 @@ func (tx *Transaction) issuedReadRelease(ctx context.Context, cancel context.Can
 // finishGetValue is a Get without RYW past its issue. The closures live in their
 // own functions so that a Get answered at issue moves nothing to the heap.
 func (tx *Transaction) finishGetValue(ctx context.Context, release func(), key []byte) issuedGet {
-	return issuedGet{finish: func() ([]byte, error) {
-		defer release()
+	return issuedGet{ctx: ctx, release: release, finish: func() ([]byte, error) {
 		v, err := tx.pointServerRead()(ctx, key)
 		return v, tx.trackReadOperation(ctx, err)
 	}}
@@ -950,8 +960,7 @@ func (tx *Transaction) finishGetValue(ctx context.Context, release func(), key [
 
 // finishPointRead is a RYW Get past its issue (see finishGetValue).
 func (tx *Transaction) finishPointRead(ctx context.Context, release func(), r pointRead) issuedGet {
-	return issuedGet{finish: func() ([]byte, error) {
-		defer release()
+	return issuedGet{ctx: ctx, release: release, finish: func() ([]byte, error) {
 		v, err := r.finish(ctx, tx.pointServerRead())
 		return bytes.Clone(v), tx.trackReadOperation(ctx, err)
 	}}
@@ -1660,14 +1669,14 @@ func (tx *Transaction) stateAtomic(op MutationType, key, operand []byte) {
 	// [pos,pos+10) with the ASSIGNED stamp and strips the 4-byte offset, so the STORED record is
 	// byte-identical whether the placeholder held zeros or the min-bound stamp — but the commit-REQUEST
 	// wire bytes now match the reference clients (the same key also feeds the RYW read model below). A
-	// malformed key (no room for the offset/stamp) commits as-is; the commit-path validation reports
-	// client_invalid_operation — C++ throws it in the call; Go defers it the same way (deferIllegalLocked).
+	// malformed key (no room for the offset/stamp) is buffered as-is; client_invalid_operation is
+	// deferred at the call (deferIllegalLocked), as C++ throws it there.
 	mutKey := key
 	var svkUnreadBegin, svkUnreadEnd []byte
 	svkTransformed := false
 	// Only transform a raw key that is in the legal WRITE range. C++ getVersionstampKeyRange rejects an
 	// out-of-legal-range key BEFORE transforming (ReadYourWrites.actor.cpp:2266); leaving an out-of-range
-	// raw key un-transformed keeps the commit-path validateMutation checking the RAW key, so a \xff
+	// raw key un-transformed keeps validateMutation (at the call) checking the RAW key, so a \xff
 	// placeholder at offset 0 (a raw system key on a non-system txn) still reports key_outside_legal_range
 	// (2004). Transforming it first would hide the leading \xff behind the read-version/zero stamp and
 	// bypass the check. For a placeholder at offset > 0 the leading byte is unchanged by the
@@ -1788,12 +1797,8 @@ func (tx *Transaction) validateMutation(m Mutation, maxWrite []byte) error {
 		return &wire.FDBError{Code: 2004} // key_outside_legal_range
 	}
 	if m.Type == MutClearRange {
-		// ClearRange: also check end key (stored in Value). C++ clear(range): if (range.begin >
-		// maxKey || range.end > maxKey) → reject. Clear key SIZES are clamped at build time
-		// (Clear/ClearRange), matching C++ clear()'s translate-not-reject — so no key_too_large here.
-		if bytes.Compare(m.Value, maxWrite) > 0 {
-			return &wire.FDBError{Code: 2004}
-		}
+		// stateClearRange owns clear(range)'s end check (RYW:2370-2372) and buffers no range past it;
+		// clear sizes are clamped, not rejected, as C++ clear() translates them.
 		return nil
 	}
 	// set()/atomicOp() reject oversized keys/values (RYW:2238-2241, 2345-2348); the throw becomes the
@@ -1989,8 +1994,8 @@ func (tx *Transaction) commitAdmitted(ctx context.Context, completion *versionst
 	// #28 (RFC-172): ship the COALESCED RYW write map, not the unfolded op-log. libfdb_c commits
 	// writeRangeToNativeTransaction's materialized vector (clears-first + per-key folded op stacks) plus
 	// coalesced write-conflict ranges, so a txn that hammers one key ships O(distinct keys) mutations, not
-	// O(ops) — Go otherwise trips 2101 where libfdb_c/Java commit fine. Validation above stays over `muts`
-	// (call order) to preserve C++'s call-time error precedence; only the SIZED+SHIPPED vector is coalesced,
+	// O(ops) — Go otherwise trips 2101 where libfdb_c/Java commit fine. The backstop validation above stays
+	// over `muts` (call order); call-time precedence is deferIllegalLocked's. Only the SIZED+SHIPPED vector is coalesced,
 	// and it is derived from the already-validated `muts` SNAPSHOT, so a Set racing this Commit can never
 	// ship or be sized unvalidated. The ship-decision (coalesce vs raw; the versionstamp/rywDisabled
 	// carve-outs) lives in coalesceCommitVectors so it is unit-testable outside this inline flow.
@@ -3502,7 +3507,7 @@ func (tx *Transaction) stateAddWriteConflictKey(key []byte) {
 		end[n] = 0 // explicit zero — pooled buffer may have stale data
 	} else {
 		// The write map's nodes keep the bounds: copied into its arena, as C++
-		// copies the range into the RYW arena (ReadYourWrites.actor.cpp:2496).
+		// copies the range into the RYW arena (ReadYourWrites.actor.cpp:2498).
 		end = tx.ryw.keepKeyAfter(key)
 	}
 	tx.deferWriteConflictRange(end[:n:n], end, true)

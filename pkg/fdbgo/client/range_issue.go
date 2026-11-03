@@ -238,8 +238,8 @@ func (r *rangeRead) complete() {
 	r.release()
 }
 
-// waitIssuedReads is Commit's wait on `reading` (ReadYourWrites.actor.cpp:1359-1360): issued
-// range reads and watch setups finish, recording conflict or error, before commit is built.
+// waitIssuedReads is Commit's wait on `reading` (ReadYourWrites.actor.cpp:1359-1360): issued reads
+// (Get, GetKey, GetRange) and watch setups finish, recording conflict or error, before commit is built.
 func (tx *Transaction) waitIssuedReads(ctx context.Context, inc *readIncarnation) error {
 	for {
 		tx.readErrMu.Lock()

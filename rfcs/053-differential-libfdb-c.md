@@ -211,7 +211,8 @@ Tracked here as C2 surfaces them (the corpus discipline: find → fix → pin).
    library code, so: `set`/`atomic` reject the **commit** with the same codes
    (`KEY_SIZE_LIMIT`=10000, `SYSTEM_KEY_SIZE_LIMIT`=30000, `VALUE_SIZE_LIMIT`=
    100000), deferred like the existing RYW write-checks — the oversized data never
-   reaches the cluster. `clear` instead **clamps** an oversized range key to
+   reaches the cluster. (Since superseded: the error is deferred at the call, so later
+   reads fail with it too, as libfdb_c's deferred throw does.) `clear` instead **clamps** an oversized range key to
    `maxSize+1` and **drops** an oversized single-key clear, exactly as C++ `clear`
    does (NativeAPI.actor.cpp:6019-6047 — it translates, never throws). Pinned by
    `sizelimits_test.go` (reject codes, accept-at-limit, system-key higher limit,

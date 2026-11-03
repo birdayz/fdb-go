@@ -214,13 +214,9 @@ func (tr Transaction) ClearBytes(key []byte) {
 	tr.t.inner.Clear(key)
 }
 
-// ClearRange removes all keys k such that begin <= k < end.
-// The Apple binding's ClearRange is void because mutations are buffered
-// locally with no I/O. Our pure Go client validates begin <= end and
-// returns inverted_range (2005) on violation. We suppress all errors to
-// match the Apple void API contract. Today the only possible error is
-// inverted_range; if the client adds new error paths, this should be
-// revisited (see client.Transaction.ClearRange).
+// ClearRange removes all keys k such that begin <= k < end. The call's error is
+// dropped, as the Apple API is void; inverted_range and key_outside_legal_range
+// become the deferred error for later reads and Commit, as in libfdb_c.
 func (tr Transaction) ClearRange(er ExactRange) {
 	begin, end := er.FDBRangeKeys()
 	_ = tr.t.inner.ClearRange(begin.FDBKey(), end.FDBKey())

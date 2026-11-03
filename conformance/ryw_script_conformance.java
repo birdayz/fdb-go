@@ -25,11 +25,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
-/**
- * Runs a transaction script against libfdb_c through fdb-java, step by step and in
- * order, for ryw_script_conformance_test.go, which runs the same script with the Go
- * client and compares the transcripts. Every format here has its twin there.
- */
+/** Runs ryw_script_conformance_test.go's transaction scripts on libfdb_c; every format has its Go twin there. */
 class RywScriptSteps extends ConformanceBase {
     private static final byte[] CONFLICTING_BEGIN =
         "\u00ff\u00ff/transaction/conflicting_keys/".getBytes(StandardCharsets.ISO_8859_1);
@@ -71,7 +67,6 @@ class RywScriptSteps extends ConformanceBase {
                         case "reportConflictingKeys": tr.options().setReportConflictingKeys(); break;
                         case "nextWriteNoWriteConflictRange": tr.options().setNextWriteNoWriteConflictRange(); break;
                         case "readYourWritesDisable": tr.options().setReadYourWritesDisable(); break;
-                        case "accessSystemKeys": tr.options().setAccessSystemKeys(); break;
                         default: throw new IllegalArgumentException("unknown option " + s.get("opt"));
                     }
                     return null;
@@ -94,6 +89,13 @@ class RywScriptSteps extends ConformanceBase {
                     return null;
                 case "cancel":
                     tr.cancel();
+                    return null;
+                case "sleep":
+                    try {
+                        Thread.sleep(s.get("code").getAsInt());
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
+                    }
                     return null;
                 case "onError":
                     // fdb-java hands the reset native transaction to a new object.

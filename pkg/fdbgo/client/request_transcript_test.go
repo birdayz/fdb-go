@@ -430,7 +430,7 @@ func (g *transcriptGate) layout(t *testing.T) string {
 	sort.Strings(sorted)
 	q := g.db.db.queueModel
 	for i, a := range sorted {
-		setServer(q, a, func(d *queueData) { d.failedUntil = nowSeconds() + 3600 + float64(i) })
+		withServer(q, a, func(d *queueData) { d.failedUntil = nowSeconds() + 3600 + float64(i) })
 	}
 	return b.String()
 }

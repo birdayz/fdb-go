@@ -395,14 +395,6 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   Set/Clear/Atomic still enters the write map, which no operation can then
   observe. Pinned by `TestIllegalWriteIsDeferred` (Get, GetRange, Commit; RYW on
   and off) and `//conformance:ryw_script_conformance_test` against libfdb_c.
-- [ ] **Option errors are deferred in libfdb_c.** libfdb_c runs `setOption` on the
-  network thread and records its throw as the deferred error
-  (`ThreadSafeTransaction.cpp:730-743`), so `SetAccessSystemKeys`/`SetReadSystemKeys`
-  on a tenant transaction return success and the next Get/Commit fails with 2007
-  (`NativeAPI.actor.cpp:7159-7171`). The Go facade returns `TenantOptionError` (2007)
-  from the option call (`pkg/fdbgo/fdb/options.go`), and later operations succeed.
-  Found by `//conformance:ryw_script_conformance_test`, which leaves the scenario out
-  until this is aligned; audit the other option errors the same way.
 - [ ] **Transaction options during in-flight operations.** Option setters (`SetLockAware`,
   `SetReadLockAware`, GRV cache, tags, priority, `SetAutoThrottleTag`) write plain
   `Transaction` fields under a shared state lease, while in-flight operations read them:
@@ -545,12 +537,18 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   paths with encoded-response integration regressions and a synctest per arm.
 - [ ] **RYW CPU in TEXT-maintenance-shaped transactions** (GenAI exporter
   profile, 128 messages per transaction, about 7000 BunchedMap postings).
-  `BenchmarkRYWTextMaintenance` 103 -> 77 ms, 27.6 -> 21.7 MB, 180k -> 117k
-  allocs per transaction. Baseline ff5040d25 (no `pkg/fdbgo` change up to
-  0776ed68e) with the benchmark file back-ported; candidate the pre-review
-  daa69f001 tree. Go 1.27.3, `//pkg/fdbgo/client:range_selector_unit_test`
-  fastbuild binaries, `-test.benchtime 10x`, three interleaved runs per binary,
-  medians shown; 24 threads, host load about 18, so wall times are noisy.
+  `BenchmarkRYWTextMaintenance` (one transaction: 7000 BunchedMap postings
+  over a cached range under a 64-byte prefix, 128 snapshot selector reads in
+  flight; each posting adds the entry list's read conflict, an AppendIfFits to
+  its bunch or every fourth a Set plus a split-off Clear, a write conflict key
+  and the gap's write conflict range) 115 -> 83 ms, 27.6 -> 21.5 MB,
+  180k -> 117k allocs per transaction. Baseline the tree before this round
+  (`pkg/fdbgo` of f93654f81, identical at 97e6e7c9a where measured) with the
+  benchmark file copied in; candidate this round's final tree. Go 1.27.3,
+  `//pkg/fdbgo/client:range_selector_unit_test` fastbuild binaries,
+  `-test.benchtime 10x`, five interleaved rounds per binary, medians shown
+  (base 108-118 ms, change 80-92 ms); 24 threads at host load about 18, so
+  wall times are noisy; bytes and allocs are stable to 0.1%.
   The write map keeps its bytes in a never-reused arena shared by the op-log
   for Set/Clear/ClearRange (the op-log no longer copies each Set beside the
   write map); WriteMap::addConflictRange inserts by iterator position; the
@@ -571,6 +569,14 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   is still found by a root search per walk (C++ keeps the operation stack in
   the WriteMap node); inserts after a pin still copy about half the path;
   RYW selector reads served from the cache cost about 10 µs each.
+- [ ] **Option errors are deferred in libfdb_c.** libfdb_c runs `setOption` on the
+  network thread and records its throw as the deferred error
+  (`ThreadSafeTransaction.cpp:730-743`), so `SetAccessSystemKeys`/`SetReadSystemKeys`
+  on a tenant transaction return success and the next Get/Commit fails with 2007
+  (`NativeAPI.actor.cpp:7159-7171`). The Go facade returns `TenantOptionError` (2007)
+  from the option call (`pkg/fdbgo/fdb/options.go`), and later operations succeed.
+  Found by `//conformance:ryw_script_conformance_test`, which leaves the scenario out
+  until this is aligned; audit the other option errors the same way.
 
 ## 1. WS-E — scalar/SQL semantics and statement execution — ACTIVE
 

@@ -32,19 +32,17 @@ func secondState(q *QueueModel) (budget, multiplier float64) {
 }
 
 // totalOf returns a server's raw smoothOutstanding running total (the leak sentinel).
-func totalOf(qm *QueueModel, addr string) float64 {
-	d := qm.getOrCreate(addr)
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.smoothOutstanding.total
+func totalOf(qm *QueueModel, addr string) (total float64) {
+	withServer(qm, addr, func(d *queueData) { total = d.smoothOutstanding.total })
+	return total
 }
 
-// setServer runs set on addr's queueData under its lock.
-func setServer(q *QueueModel, addr string, set func(d *queueData)) {
+// withServer runs fn on addr's queueData under its lock.
+func withServer(q *QueueModel, addr string, fn func(d *queueData)) {
 	d := q.getOrCreate(addr)
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	set(d)
+	fn(d)
 }
 
 // checkSecondModel checks C++'s literal budget rules after lone replies or one

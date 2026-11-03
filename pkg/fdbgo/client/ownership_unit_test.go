@@ -185,7 +185,7 @@ func TestMutationInputsOwnedByTransaction(t *testing.T) {
 			Mutation{Type: MutSetVersionstampedKey, Key: append([]byte(nil), svk...), Value: operand},
 			nil,
 		},
-		// A malformed key is buffered as given and validated at commit.
+		// A malformed key is buffered as given; its error is deferred at the call.
 		{
 			"SetVersionstampedKeyMalformed", []byte("ab"), operand, func(tx *Transaction, k, v []byte) { tx.Atomic(MutSetVersionstampedKey, k, v) },
 			Mutation{Type: MutSetVersionstampedKey, Key: []byte("ab"), Value: operand},

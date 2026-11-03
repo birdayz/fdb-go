@@ -234,8 +234,11 @@ pipelined futures resolve on other goroutines):
   whole-transaction via resetPromise; recording it would poison commits
   libfdb_c would allow).
 - **Checked** in `Commit` after `checkTimeout` (a fired timebomb sits in
-  resetPromise, surfaced before the actor's wait(reading)) and before all
-  commit-time mutation validation and the read-only fast path.
+  resetPromise, surfaced before the actor's wait(reading)) and after the
+  deferred error, which now holds an illegal write's error from its call
+  (ThreadSafeTransaction.cpp:666-671 checks it before RYW commit waits on
+  `reading`); before the commit-time validation backstop and the read-only
+  fast path.
 - **Cleared** in `reset()` and `postCommitReset()`.
 
 Blast radius note: code that swallows a read error and then commits now fails
@@ -246,10 +249,11 @@ it cannot self-poison; the catch handles cross-path races where Java/libfdb_c
 would poison identically.
 
 Pinned by matrix rows `commit_poisoned_by_swallowed_read_error` (poison +
-Reset clears) and `deferred_write_error_precedes_read_poison` (the illegal
-write's 2102, deferred at the call, outranks the later read's poison 1036, as
-libfdb_c keeps the first throw), plus the differential poisoning asserts on both
-clients.
+Reset clears) and `deferred_write_error_precedes_read_poison` (an earlier read's
+1036 sits in `reading`, not the deferred slot, so the later illegal write's
+deferred 2102 outranks it: Commit checks the deferred error first,
+ThreadSafeTransaction.cpp:666-671), plus the differential poisoning asserts on
+both clients.
 
 ### The SVK candidate range in the Go write map: `unreadableRanges` + the deliberate span-wipe divergence
 

@@ -116,8 +116,8 @@ func TestHedgeSenderDelay(t *testing.T) {
 					tx.readVersion = 1
 					tx.rpcTimeoutOverride = time.Minute
 					sentinel := q.startRequest(backupAddr)
-					setServer(q, primaryAddr, func(d *queueData) { d.latency = timing.primaryLatency })
-					setServer(q, backupAddr, func(d *queueData) {
+					withServer(q, primaryAddr, func(d *queueData) { d.latency = timing.primaryLatency })
+					withServer(q, backupAddr, func(d *queueData) {
 						d.latency = 0.008
 						d.smoothOutstanding.estimate = 1
 					})

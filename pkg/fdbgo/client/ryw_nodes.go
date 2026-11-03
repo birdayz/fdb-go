@@ -462,7 +462,7 @@ func (n *rywNodes) applyUnreadableRange(begin, end []byte) {
 }
 
 // applyConflictRange is WriteMap::addConflictRange (WriteMap.cpp:244-302) on built nodes, with its
-// edits applied by iterator position, the insertion its "SOMEDAY" (:298) asks for.
+// edits applied by iterator position, the insertion its "SOMEDAY" (:292) asks for.
 func (n *rywNodes) applyConflictRange(begin, end []byte) {
 	endB := rywBoundary{key: end}
 	it := n.iter()

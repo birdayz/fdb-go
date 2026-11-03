@@ -33,7 +33,8 @@ func (tx *Transaction) Clear(key []byte) {
 // ClearRange deletes all keys in [begin, end).
 // Returns inverted_range (2005) if begin > end; C++ ThreadSafeTransaction::clear
 // raises it as the transaction's deferred error (ThreadSafeTransaction.cpp:626-640).
-// Zero-width ranges (begin == end) are silently ignored, matching C++.
+// A zero-width range inside the legal range is ignored; outside it, it defers
+// key_outside_legal_range (2004) as C++ does (ReadYourWrites.actor.cpp:2370-2372, 2396).
 func (tx *Transaction) ClearRange(begin, end []byte) error {
 	lease := tx.enterState()
 	defer lease.release()

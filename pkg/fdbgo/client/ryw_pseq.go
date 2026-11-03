@@ -720,7 +720,8 @@ type pfinger[T any] struct {
 	at   uint64
 	idx  int // the index of the current item; -1 or Len off the ends
 	n    int // path[:n] is root to the current node; 0 off either end
-	path [pfingerN]*pnode[T]
+	// C++ asserts once a path reaches N nodes (push_back's ASSERT(size_ < N)).
+	path [pfingerN - 1]*pnode[T]
 }
 
 // finger returns a finger at index i; i == -1 or i == Len are off the ends.
@@ -730,10 +731,10 @@ func (s *pseq[T]) finger(i int) pfinger[T] {
 	return f
 }
 
-// fit takes a path built in f.path as f's. Outgrowing the array is
-// PTreeFinger::push_back's ASSERT (VersionedMap.h:119-122).
+// fit takes a path built in f.path as f's. Outgrowing the array, by an answer or a descent,
+// is PTreeFinger::push_back's ASSERT (VersionedMap.h:119-122).
 func (f *pfinger[T]) fit(p []*pnode[T]) {
-	if cap(p) != pfingerN {
+	if cap(p) != len(f.path) {
 		panic("pfinger: treap deeper than PTreeFinger::N")
 	}
 	f.n = len(p)

@@ -131,12 +131,13 @@ func (tx *Transaction) insertReadConflictLocked(b, e rywBoundary) {
 	}
 	s := &tx.readMap
 	// lo is the first range ending at or after b: the first it overlaps or touches.
-	lo := s.search(func(r *rywRange) bool { return (rywBoundary{key: r.end}).compare(b) >= 0 })
+	var c pfinger[rywRange]
+	c.seekFirst(s, func(r *rywRange) bool { return (rywBoundary{key: r.end}).compare(b) >= 0 })
+	lo := c.idx
 	hi := lo
 	var merged rywRange
 	keepBegin, keepEnd := false, false
-	if lo < s.Len() {
-		c := s.finger(lo)
+	if c.valid() {
 		first := c.item()
 		if (rywBoundary{key: first.begin}).compare(e) <= 0 {
 			keepBegin = (rywBoundary{key: first.begin}).compare(b) <= 0
@@ -326,13 +327,12 @@ func (tx *Transaction) takeWriteConflictLocked() bool {
 
 // recordWriteConflictLocked records [begin, end): with RYW the caller puts it in the write map and only the
 // size is charged here; without RYW the native list keeps it. Caller holds conflictMu.
-func (tx *Transaction) recordWriteConflictLocked(begin, end []byte, owned bool) bool {
+func (tx *Transaction) recordWriteConflictLocked(begin, end []byte, owned bool) {
 	if !tx.rywDisabled {
 		tx.rywConflictSize += int64(len(begin)+len(end)) + sizeofKeyRangeRef
-		return true
+		return
 	}
 	tx.appendWriteConflictListLocked(begin, end, owned)
-	return true
 }
 
 // appendWriteConflictListLocked appends [begin, end) to the native list, copied
@@ -350,13 +350,21 @@ func (tx *Transaction) appendWriteConflictListLocked(begin, end []byte, owned bo
 
 // writeConflictLocked is a write's conflict range: taken, then recorded.
 func (tx *Transaction) writeConflictLocked(begin, end []byte, owned bool) bool {
-	return tx.takeWriteConflictLocked() && tx.recordWriteConflictLocked(begin, end, owned)
+	if !tx.takeWriteConflictLocked() {
+		return false
+	}
+	tx.recordWriteConflictLocked(begin, end, owned)
+	return true
 }
 
 // explicitWriteConflictLocked is addWriteConflictRange's: it ignores the next-write flag, which only writes
 // consume (RYW:2461-2500 vs :2220, 2328, 2358, 2407). Caller holds conflictMu.
 func (tx *Transaction) explicitWriteConflictLocked(begin, end []byte, owned bool) bool {
-	return !tx.writeConflictsDisabled && tx.recordWriteConflictLocked(begin, end, owned)
+	if tx.writeConflictsDisabled {
+		return false
+	}
+	tx.recordWriteConflictLocked(begin, end, owned)
+	return true
 }
 
 // writeConflictPointLocked is writeConflictLocked for [key, keyAfter(key)),

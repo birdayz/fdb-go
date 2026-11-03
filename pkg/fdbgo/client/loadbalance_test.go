@@ -84,7 +84,7 @@ func TestQueueModelSkipsFailedServers(t *testing.T) {
 	servers := makeServers("s1:4500", "s2:4500")
 
 	// Mark s1 as failed by setting failedUntil far in the future.
-	setServer(qm, "s1:4500", func(d *queueData) { d.failedUntil = nowSeconds() + 60 })
+	withServer(qm, "s1:4500", func(d *queueData) { d.failedUntil = nowSeconds() + 60 })
 
 	s, _ := qm.chooseServer(servers)
 	if s.Address != "s2:4500" {
@@ -99,8 +99,8 @@ func TestQueueModelAllFailedPicksEarliestExpiry(t *testing.T) {
 
 	now := nowSeconds()
 	// s1 fails until now+1s, s2 fails until now+10s.
-	setServer(qm, "s1:4500", func(d *queueData) { d.failedUntil = now + 1.0 })
-	setServer(qm, "s2:4500", func(d *queueData) { d.failedUntil = now + 10.0 })
+	withServer(qm, "s1:4500", func(d *queueData) { d.failedUntil = now + 1.0 })
+	withServer(qm, "s2:4500", func(d *queueData) { d.failedUntil = now + 10.0 })
 
 	s, _ := qm.chooseServer(servers)
 	// Both failed, pick s1 (expires sooner).

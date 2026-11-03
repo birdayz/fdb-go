@@ -41,7 +41,8 @@ implementation adds a note there.
 
 Go's `AddWriteConflictKey` (`transaction.go:3248-3274`) already follows steps 2-5 for the
 single-key form, including the rule that an earlier illegal mutation, which Go buffers
-until commit, keeps its earlier verdict (C++ would have recorded it first).
+until commit, keeps its earlier verdict (C++ would have recorded it first). Superseded: an
+illegal write now defers its error at the call (`deferIllegalLocked`), and the first wins.
 
 ## Fix
 

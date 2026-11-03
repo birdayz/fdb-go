@@ -77,6 +77,8 @@ Mirror RFC-267's write-side split in `pkg/fdbgo/client/transaction.go`:
   scan inline in `Atomic` (`transaction.go:1408-1426`) become one
   `recordDeferredError(poison)`, store-if-unset under `conflictMu`. Go buffers illegal
   mutations until commit; C++ would have recorded the earlier mutation's error first.
+  Superseded: each illegal write now defers its own error at the call (`deferIllegalLocked`),
+  so `recordDeferredError` is a plain first-wins store and the scan is gone.
 
 The facade's `AddReadConflictRange` return then carries only `inverted_range`, and
 `AddReadConflictKey` keeps returning `nil`, as with the Apple binding over libfdb_c

@@ -15,12 +15,12 @@ import (
 // Single-key conflict END exactness — that AddReadConflictKey(k) / AddWriteConflictKey(k) register
 // [k, k\x00) and not [k, strinc(k)).
 //
-// The client builds that end itself (Go: addReadConflictForKey / addWriteConflictForKeyLocked lay
-// down key||key||0x00 and slice the end out of it), so it is a place a port can get wrong, and
+// The client builds that end itself (Go: addReadConflictForKey, and rywCache.keepKeyAfter for an
+// explicit write conflict, lay down key||0x00 and slice the key out of it), so a port can get it wrong, and
 // TestDifferential_{Read,Write}ConflictRange CANNOT see the mistake. strinc("…r5") is exactly
 // "…r6", so under the wrong construction the range is [r5, r6) and that suite's key_other_r6 probe
 // still sits on the EXCLUSIVE end — it does not conflict either way. Verified by mutation: with
-// addWriteConflictForKeyLocked ending at strinc(key), all seven TestDifferential_WriteConflictRange
+// the single-key write end at strinc(key), all seven TestDifferential_WriteConflictRange
 // subtests still PASS. The gap is dimensional — every existing probe sits at or beyond strinc(k),
 // and the two constructions only disagree STRICTLY INSIDE (k, strinc(k)).
 //
@@ -204,10 +204,8 @@ func keyEndConfirm(worker, iter, probeIdx int, probe string) bool {
 }
 
 // keyEndProbeGo registers a single-key WRITE conflict on k through the Go client, then has a
-// reader pinned before that commit read-conflict `probe` and commit. Set/Clear and the explicit
-// AddWriteConflictKey share addWriteConflictForKeyLocked, and the reader exercises
-// addReadConflictForKey, so both single-key end constructions are on this path. ok=false means the
-// attempt hit a transient error and carries no verdict.
+// reader pinned before that commit read-conflict `probe` and commit: the explicit write end is
+// keepKeyAfter's, the read end addReadConflictForKey's. ok=false is a transient error, no verdict.
 func keyEndProbeGo(pfx, probe string) (conflicted bool, ok bool) {
 	rng, err := gofdb.PrefixRange([]byte(pfx))
 	if err != nil {

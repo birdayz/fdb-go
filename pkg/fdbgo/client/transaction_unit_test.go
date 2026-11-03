@@ -993,7 +993,7 @@ func TestAtomic_APIVersionSub520VersionstampSuffix(t *testing.T) {
 
 // TestValidateMutation_LegacyVersionstampSizeDiscount pins a subtlety of the api<520 versionstamp fix:
 // the client-added offset suffix (2B SVK / 4B SVV) must NOT count toward the key/value size limit at the
-// deferred commit-time check, because C++ checks size EAGERLY on the ORIGINAL user bytes (RYW:2237-2242)
+// call-time check (deferIllegalLocked), because C++ checks size EAGERLY on the ORIGINAL user bytes (RYW:2237-2242)
 // BEFORE appending the suffix (:2250-2261). Without the discount a boundary-sized legacy value is
 // spuriously value_too_large. At api>=520 the offset is user-provided and DOES count (no discount).
 // Revert-proof: dropping the discount block reds the two "at the limit" legacy cases.

@@ -499,7 +499,7 @@ func addRangeOwned(s *pseq[rywRange], begin, end []byte) {
 	s.insert(loIdx, merged)
 }
 
-// addClearedRangeOwned is addClearedRange keeping begin and end, which nobody writes.
+// addClearedRangeOwned merges [begin, end) into cleared, keeping begin and end, which nobody writes.
 func (w *rywWrites) addClearedRangeOwned(begin, end []byte) { addRangeOwned(&w.cleared, begin, end) }
 
 // addUnreadableRange merges [begin, end) into the SVK candidate-stamp

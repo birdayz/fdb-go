@@ -216,7 +216,7 @@ func (c *refusalCluster) cache(servers ...ServerInfo) {
 // preferRefused makes the QueueModel rank the refusing replica first, so the
 // first attempt deterministically dials it.
 func (c *refusalCluster) preferRefused() {
-	setServer(c.db.queueModel, liveSSAddr, func(d *queueData) {
+	withServer(c.db.queueModel, liveSSAddr, func(d *queueData) {
 		d.smoothOutstanding.total, d.smoothOutstanding.estimate, d.smoothOutstanding.time = 100, 100, nowSeconds()
 	})
 }

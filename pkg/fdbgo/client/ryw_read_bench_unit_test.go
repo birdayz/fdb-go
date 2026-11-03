@@ -452,17 +452,8 @@ func BenchmarkPseqPinnedWrites(b *testing.B) {
 	}
 }
 
-// BenchmarkRYWTextMaintenance is the TEXT index maintenance of one message
-// transaction as the GenAI exporter profile shows it: ~7000 postings over a
-// range the transaction already read (cached), each a BunchedMap put with 128
-// snapshot reads in flight, lastLessOrEqual(k) .. firstGreaterThan(k)+1 under a
-// cancellable context. Each posting completes in issue order and then writes as
-// BunchedMap.writeEntryList does: the entry list's read conflict range, an
-// AppendIfFits to the bunch (or, every fourth posting, a rewrite: Set of the
-// bunch and Clear of a split-off key), a write conflict key, and the gap write
-// conflict range. Keys sit under a 64-byte subspace prefix. One op is one
-// transaction; its first full read is outside the timer; ns/posting divides by
-// the postings.
+// BenchmarkRYWTextMaintenance is one message transaction's TEXT index maintenance: BunchedMap
+// puts over a cached range with 128 snapshot selector reads in flight (TODO.md describes it).
 func BenchmarkRYWTextMaintenance(b *testing.B) {
 	const (
 		bunches  = 4096

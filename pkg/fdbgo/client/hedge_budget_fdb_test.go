@@ -268,7 +268,7 @@ func TestGetValueFallbackTriesUnhedgedBackup(t *testing.T) {
 	q := db.db.queueModel
 	delta := q.startRequest(backup)
 	defer q.endRequest(backup, delta, 0, false)
-	setServer(q, backup, func(d *queueData) { d.smoothOutstanding.estimate = 1 })
+	withServer(q, backup, func(d *queueData) { d.smoothOutstanding.estimate = 1 })
 	if best, next := q.chooseTopTwo(servers); best != 0 || next != 1 {
 		t.Fatalf("selection = %d,%d; want the lost replica first", best, next)
 	}
@@ -310,7 +310,7 @@ func TestWatchLeavesQueueModel(t *testing.T) {
 	snap := func() snapshot {
 		q := db.db.queueModel
 		var s snapshot
-		setServer(q, addr, func(d *queueData) { s.latency, s.outstanding = d.latency, d.smoothOutstanding.total })
+		withServer(q, addr, func(d *queueData) { s.latency, s.outstanding = d.latency, d.smoothOutstanding.total })
 		s.budget, s.multiplier = secondState(q)
 		return s
 	}

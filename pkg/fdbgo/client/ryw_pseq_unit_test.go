@@ -160,41 +160,40 @@ func TestPfingerAllocatesNothing(t *testing.T) {
 	}
 }
 
-// A path deeper than PTreeFinger::N is C++'s ASSERT (VersionedMap.h:119-122):
-// the finger panics rather than write past its storage. A random treap never
-// gets there; a chain of nodes does.
+// A path reaching PTreeFinger::N nodes is C++'s ASSERT (VersionedMap.h:119-122): the finger panics.
+// A random treap never gets there; a chain of nodes does.
 func TestPfingerDepthBound(t *testing.T) {
 	t.Parallel()
 	var root *pnode[int]
-	for i := pfingerN; i >= 0; i-- { // a left chain of pfingerN+1 nodes
-		root = &pnode[int]{left: root, item: i, size: int32(pfingerN + 1 - i)}
+	for i := pfingerN - 1; i >= 0; i-- { // a left chain of pfingerN nodes
+		root = &pnode[int]{left: root, item: i, size: int32(pfingerN - i)}
 	}
 	s := pseq[int]{root: root}
-	// In order, the chain's deepest node comes first: index 1 is pfingerN deep.
+	// In order, the chain's deepest node comes first: index 1 is pfingerN-1 deep.
 	f := s.finger(1)
-	if !f.valid() || *f.item() != pfingerN-1 || f.n != pfingerN {
-		t.Fatalf("a finger at depth %d holds %v", pfingerN, f.valid())
+	if !f.valid() || *f.item() != pfingerN-2 || f.n != pfingerN-1 {
+		t.Fatalf("a finger at depth %d holds %v", pfingerN-1, f.valid())
 	}
 	f.next()
 	f.prev()
-	if !f.valid() || *f.item() != pfingerN-1 || f.n != pfingerN {
-		t.Fatalf("a finger moved back to depth %d holds %v", pfingerN, f.valid())
+	if !f.valid() || *f.item() != pfingerN-2 || f.n != pfingerN-1 {
+		t.Fatalf("a finger moved back to depth %d holds %v", pfingerN-1, f.valid())
 	}
-	// Each way of reaching depth pfingerN+1 panics: a seek, a step, and a lower_bound
+	// Each way of reaching depth pfingerN panics: a seek, a step, and a lower_bound
 	// descent that passes it even though its answer is shallower (VersionedMap.h:188-200).
 	for name, deep := range map[string]func(){
 		"seek":      func() { s.finger(0) },
 		"prev":      func() { g := s.finger(1); g.prev() },
-		"seekFirst": func() { var g pfinger[int]; g.seekFirst(&s, func(v *int) bool { return *v < pfingerN }) },
+		"seekFirst": func() { var g pfinger[int]; g.seekFirst(&s, func(v *int) bool { return *v < pfingerN-1 }) },
 	} {
 		func() {
 			defer func() {
 				if r := recover(); r != "pfinger: treap deeper than PTreeFinger::N" {
-					t.Fatalf("%s past depth %d recovered %v", name, pfingerN, r)
+					t.Fatalf("%s to depth %d recovered %v", name, pfingerN, r)
 				}
 			}()
 			deep()
-			t.Fatalf("%s past PTreeFinger::N did not panic", name)
+			t.Fatalf("%s to PTreeFinger::N did not panic", name)
 		}()
 	}
 }

@@ -149,9 +149,22 @@ func (c *rywCache) keepLocked(n int) []byte {
 func (c *rywCache) keepKeyAfter(key []byte) []byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.keepKeyAfterLocked(key)
+}
+
+// keepKeyAfterLocked is keepKeyAfter. Caller holds c.mu.
+func (c *rywCache) keepKeyAfterLocked(key []byte) []byte {
 	s := c.keepLocked(len(key) + 1)
 	copy(s, key)
 	return s
+}
+
+// keepPairLocked copies begin and end into one arena block; begin is capped. Caller holds c.mu.
+func (c *rywCache) keepPairLocked(begin, end []byte) (b, e []byte) {
+	buf := c.keepLocked(len(begin) + len(end))
+	copy(buf, begin)
+	copy(buf[len(begin):], end)
+	return buf[:len(begin):len(begin)], buf[len(begin):]
 }
 
 // keepChunkMax caps the write map's arena chunks.
@@ -164,16 +177,13 @@ func (c *rywCache) keepCopyLocked(b []byte) []byte {
 	return s
 }
 
-// keepRangeLocked is nodeRange with the bounds kept in the arena, one block for
-// both. Caller holds c.mu.
+// keepRangeLocked is nodeClip with both bounds copied into one arena block. Caller holds c.mu.
 func (c *rywCache) keepRangeLocked(begin, end []byte) (b, e []byte, ok bool) {
 	if begin, end, ok = nodeClip(begin, end); !ok {
 		return nil, nil, false
 	}
-	buf := c.keepLocked(len(begin) + len(end))
-	copy(buf, begin)
-	copy(buf[len(begin):], end)
-	return buf[:len(begin):len(begin)], buf[len(begin):], true
+	b, e = c.keepPairLocked(begin, end)
+	return b, e, true
 }
 
 // isEmpty reports whether the RYW layer holds no PENDING WRITE state (writes/cleared) and no
@@ -249,8 +259,7 @@ func (c *rywCache) clearWith(key []byte, addConflict bool) []byte {
 	defer c.mu.Unlock()
 	w := c.mutableWritesLocked()
 	// One kept copy of key\x00 serves the nodes and the cleared range.
-	end := c.keepLocked(len(key) + 1)
-	copy(end, key)
+	end := c.keepKeyAfterLocked(key)
 	key = end[:len(key):len(key)]
 	if b, e, ok := nodeClip(key, end); ok {
 		w.nodes.clear(b, e, addConflict)
@@ -277,10 +286,7 @@ func (c *rywCache) clearRangeWith(begin, end []byte, addConflict bool) (keptBegi
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	w := c.mutableWritesLocked()
-	buf := c.keepLocked(len(begin) + len(end)) // one kept copy for the nodes and the cleared range
-	copy(buf, begin)
-	copy(buf[len(begin):], end)
-	begin, end = buf[:len(begin):len(begin)], buf[len(begin):]
+	begin, end = c.keepPairLocked(begin, end) // one kept copy for the nodes and the cleared range
 	if b, e, ok := nodeClip(begin, end); ok {
 		w.nodes.clear(b, e, addConflict)
 	}
@@ -2034,8 +2040,8 @@ func (c *rywCache) addUnreadableRangeKeeping(begin, end []byte) (kept []KeyRange
 
 // nodeKey reports a key inside the keyspace the write map's nodes cover. C++
 // rejects every write and conflict range past getMaxWriteKey before it reaches
-// the write map (RYW:2353, 2466-2468); Go buffers an illegal Set or Clear until
-// commit, so the nodes skip what lies at or past the \xff\xff sentinel.
+// the write map (RYW:2353, 2466-2468); Go still buffers an illegal Set or Clear (its
+// error deferred at the call), so the nodes skip what lies at or past the \xff\xff sentinel.
 func nodeKey(key []byte) bool { return bytes.Compare(key, allKeysEnd) < 0 }
 
 // nodeClip is [begin, end) clipped to the nodes' keyspace; ok is false when

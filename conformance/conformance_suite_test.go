@@ -5,7 +5,10 @@ package conformance_test
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,11 +34,17 @@ var _ = BeforeSuite(func() {
 	GinkgoWriter.Println("🚀 Starting shared FDB container for test suite...")
 
 	// Start ONE container per parallel node
-	sharedContainer, err = foundationdbtc.Run(setupCtx, "",
-		foundationdbtc.WithAPIVersion(720),
-		foundationdbtc.WithDirectIP(),
-	)
+	opts := append(runOptions(foundationdbtc.Run), foundationdbtc.WithAPIVersion(720), foundationdbtc.WithDirectIP())
+	knobs := serverKnobs()
+	GinkgoWriter.Printf("FDB server knobs from CONFORMANCE_FDB_KNOBS: %q\n", knobs)
+	for _, k := range knobs {
+		opts = append(opts, foundationdbtc.WithKnob(k[0], k[1]))
+	}
+	sharedContainer, err = foundationdbtc.Run(setupCtx, "", opts...)
 	Expect(err).NotTo(HaveOccurred())
+	for _, k := range knobs {
+		expectServerKnob(setupCtx, sharedContainer, k[0], k[1])
+	}
 
 	// Open ONE database connection for the entire suite.
 	// Pure Go client bootstrap is expensive (~1-2s per connection).
@@ -61,6 +70,42 @@ var _ = AfterSuite(func() {
 		Expect(foundationdbtc.Terminate(suiteCtx, sharedContainer)).To(Succeed())
 	}
 })
+
+// runOptions returns an empty slice of run's option type, so options can be appended without naming it.
+func runOptions[E any](_ func(context.Context, string, ...E) (*foundationdbtc.Container, error)) []E {
+	return nil
+}
+
+// serverKnobs parses CONFORMANCE_FDB_KNOBS ("name=value,..."), set by a target's env.
+func serverKnobs() [][2]string {
+	var knobs [][2]string
+	for _, kv := range strings.Split(os.Getenv("CONFORMANCE_FDB_KNOBS"), ",") {
+		if kv == "" {
+			continue
+		}
+		name, value, ok := strings.Cut(kv, "=")
+		Expect(ok).To(BeTrue(), "CONFORMANCE_FDB_KNOBS entry %q is not name=value", kv)
+		knobs = append(knobs, [2]string{name, value})
+	}
+	return knobs
+}
+
+// expectServerKnob waits until an fdbserver runs with the knob (fdb.bash passes it as "--knob_name value");
+// recovery may restart the process.
+func expectServerKnob(ctx context.Context, c *foundationdbtc.Container, name, value string) {
+	want := `(^|\s)--knob_` + regexp.QuoteMeta(name) + `[= ]` + regexp.QuoteMeta(value) + `(\s|$)`
+	Eventually(func() string {
+		_, out, err := c.Exec(ctx, []string{
+			"/bin/bash", "-c",
+			`pgrep fdbserver | while read pid; do tr '\0' ' ' < /proc/$pid/cmdline; echo; done`,
+		})
+		if err != nil {
+			return err.Error()
+		}
+		b, _ := io.ReadAll(out)
+		return string(b)
+	}).WithTimeout(30 * time.Second).WithPolling(500 * time.Millisecond).Should(MatchRegexp(want))
+}
 
 func TestConformance(t *testing.T) {
 	RegisterFailHandler(Fail)

@@ -480,10 +480,12 @@ Each is described in full under Compatibility or Changed below.
     concurrent builders keep to their own fragments.
 - Pure-Go client, matching libfdb_c 7.3.77 (pinned by `//conformance:ryw_script_conformance_test`):
   - An illegal Set, Clear, ClearRange or Atomic (oversized key or value, key outside the legal
-    range, metadataVersion misuse, an inverted or out-of-range ClearRange even when empty) is the
-    transaction's deferred error from that call on: later reads and the commit report it, where it
-    used to fail only the commit. A commit after such a write and a failed read reports the write's
-    error (e.g. 2102), not the read's.
+    range, metadataVersion misuse) is the transaction's deferred error from that call on: later
+    reads and the commit report it, where it used to fail only the commit. A commit after such a
+    write and an earlier failed read reports the write's error (e.g. 2102), not the read's.
+  - Newly failing: an inverted ClearRange (2005; `fdb.Transaction.ClearRange` used to drop it and
+    commit) and an out-of-range ClearRange that is empty or clamps to empty (2004; used to be
+    accepted) now fail later reads and the commit.
   - `AddWriteConflictKey`/`AddWriteConflictRange` are recorded under
     `SetNextWriteNoWriteConflictRange` and leave the option to the next write; they used to be
     dropped and consume it.

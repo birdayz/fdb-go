@@ -2,13 +2,8 @@
 
 package conformance_test
 
-// RYW and conflict-range conformance against libfdb_c: each scenario is one
-// transaction script, run step by step by the Go client and by libfdb_c 7.3.77
-// through fdb-java (ryw_script_conformance.java), each in a fresh tenant of its
-// own. The transcripts (read results, error codes, commit outcomes and the
-// conflicting_keys special keys) must be identical. A scenario also pins the
-// lines its point depends on, so a run in which both sides read or conflict
-// nothing does not pass as agreement.
+// RYW and conflict-range conformance: each scenario script runs on the Go client and on libfdb_c
+// (ryw_script_conformance.java); transcripts must match and contain the scenario's pinned lines.
 
 import (
 	"bytes"
@@ -121,6 +116,7 @@ func sNoWriteConflict(tx string) rywStep { return sOpt(tx, "nextWriteNoWriteConf
 func sRV(tx string, v int64) rywStep     { return rywStep{Tx: tx, Op: "setReadVersion", RV: v} }
 func sReset(tx string) rywStep           { return rywStep{Tx: tx, Op: "reset"} }
 func sCancel(tx string) rywStep          { return rywStep{Tx: tx, Op: "cancel"} }
+func sSleep(tx string, ms int) rywStep   { return rywStep{Tx: tx, Op: "sleep", Code: ms} }
 func sOnError(tx string, code int) rywStep {
 	return rywStep{Tx: tx, Op: "onError", Code: code}
 }
@@ -164,10 +160,6 @@ func rywErr(err error) (string, error) {
 	var fe gofdb.Error
 	if errors.As(err, &fe) {
 		return fmt.Sprintf("err=%d", fe.Code), nil
-	}
-	var coded interface{ FDBCode() int } // the facade's option errors
-	if errors.As(err, &coded) {
-		return fmt.Sprintf("err=%d", coded.FDBCode()), nil
 	}
 	return "", err
 }
@@ -244,8 +236,6 @@ func runGoRYWScript(tenant gofdb.Tenant, steps []rywStep, progress *atomic.Int64
 				err = tr.Options().SetNextWriteNoWriteConflictRange()
 			case "readYourWritesDisable":
 				err = tr.Options().SetReadYourWritesDisable()
-			case "accessSystemKeys":
-				err = tr.Options().SetAccessSystemKeys()
 			default:
 				return nil, fmt.Errorf("unknown option %q", s.Opt)
 			}
@@ -270,6 +260,8 @@ func runGoRYWScript(tenant gofdb.Tenant, steps []rywStep, progress *atomic.Int64
 			tr.Reset()
 		case "cancel":
 			tr.Cancel()
+		case "sleep":
+			time.Sleep(time.Duration(s.Code) * time.Millisecond)
 		case "onError":
 			if err = tr.OnError(gofdb.Error{Code: s.Code}).Get(); err == nil {
 				result = "ok"
@@ -506,9 +498,8 @@ func seededKeys(prefix string, n int) []rywStep {
 	return seedSteps(kv...)
 }
 
-// rywScenarios builds the corpus. Writer "b" commits between reader "a"'s read
-// version and its commit, so whatever a's shipped read-conflict set covers of
-// b's writes conflicts.
+// rywScenarios builds the corpus. Writer "b" commits between reader "a"'s read version
+// and its commit, so a's shipped read conflicts decide what conflicts.
 func rywScenarios() []rywScenario {
 	var scs []rywScenario
 	add := func(sc rywScenario, pins func(sc *rywScenario)) {
@@ -716,9 +707,8 @@ func rywScenarios() []rywScenario {
 			})
 	}
 
-	// Reads issued before later writes and completed after them see the write map
-	// as it was at issue (the read's RYWIterator is built before its first wait,
-	// ReadYourWrites.actor.cpp:382; WriteMap versions, WriteMap.h:158).
+	// Reads issued before later writes see the write map as at issue: the read's RYWIterator
+	// is built before its first wait (ReadYourWrites.actor.cpp:382; WriteMap.h:158).
 	mKeys := digits("m", 10)
 	issueSeed := append([]string(nil), seedKV...)
 	for _, m := range mKeys {
@@ -797,11 +787,8 @@ func rywScenarios() []rywScenario {
 		sc.expect("r", "conflicting", 0, conflictingRanges("k1", "k1\x00", "k2", "k2\x00", "k3", "k3\x00",
 			"k3a", "k3a\x00", "k6", "k6\x00", "k7", "k7\x00", "k9", "k9\x00"))
 	})
-	// Disabling RYW after a conflict-only write is client_invalid_operation (2000), as it is
-	// after any write (ReadYourWrites.actor.cpp:2536-2540). set_option itself succeeds: the
-	// error becomes the deferred error (ThreadSafeTransaction.cpp:730-743), so the next read
-	// and the commit fail. Read conflicts added before RYW is disabled are not shipped
-	// (commit flushes readConflicts only with RYW, ReadYourWrites.actor.cpp:1361-1399).
+	// Disabling RYW after any write is 2000 (ReadYourWrites.actor.cpp:2536-2540), deferred by set_option
+	// (ThreadSafeTransaction.cpp:730-743); earlier read conflicts are not shipped (RYW:1361-1399).
 	add(rywScenario{name: "disable RYW after conflict-only write", steps: cat(seededKeys("k", 3), []rywStep{
 		sWCK("a", "k1"), sOpt("a", "readYourWritesDisable"), sGet("a", "k2", false, ""),
 		sRCR("c", "k1", "k2"), sOpt("c", "readYourWritesDisable"), sGRV("c"), sSet("c", "zz", "c"),
@@ -812,11 +799,8 @@ func rywScenarios() []rywScenario {
 		sc.expect("c", "commit", 0, "ok")
 	})
 
-	// (d) AppendIfFits: a result over VALUE_SIZE_LIMIT (100000) leaves the value as it was
-	// (doAppendIfFits, Atomic.h:114-125). The write map coalesces consecutive appends into
-	// one operand (WriteMap.cpp:385-391), so 30000 + 20000 bytes no longer fit on 60000
-	// and neither does the 10000 after them; an operand over the limit is value_too_large
-	// (ReadYourWrites.actor.cpp:2240-2241), deferred to the next read and the commit.
+	// (d) AppendIfFits over VALUE_SIZE_LIMIT keeps the value (Atomic.h:114-125); pending appends coalesce into
+	// one operand (WriteMap.cpp:385-391); an operand over the limit is a deferred 2103 (RYW:2240-2241).
 	big := func(c byte, n int) string { return string(bytes.Repeat([]byte{c}, n)) }
 	add(rywScenario{name: "append if fits sequences", steps: cat(seedSteps("p1", big('a', 60000)), []rywStep{
 		sAtomic("a", rywAppendIfFits, "p1", big('b', 30000)),
@@ -846,18 +830,15 @@ func rywScenarios() []rywScenario {
 		sc.expect("check", "get", 2, hx("xyz"))
 		sc.expect("check", "get", 3, hx("u"))
 	})
-	// An un-awaited read is in RYW's `reading` (ReadYourWrites.actor.cpp:1690-1691): commit
-	// waits for it (:1358-1359), its future still delivers, and its failure fails the commit.
+	// An un-awaited read is in RYW's `reading` (ReadYourWrites.actor.cpp:1690-1691): commit waits
+	// for it (:1359-1360), its future still delivers, and its failure (rv=1: 1007) fails the commit.
 	add(rywScenario{name: "commit waits for un-awaited reads", steps: cat(seededKeys("k", 3), []rywStep{
 		sGet("a", "k1", true, "ra"), sSet("a", "zz", "a"), sCommit("a"), sAwait("a", "ra"),
 		sAtomic("b", rywAdd, "k2", "\x01"), sGet("b", "k2", false, "rb"), sSet("b", "zz", "b"), sCommit("b"), sAwait("b", "rb"),
 		// Read version 1 is long past the MVCC window: the read fails, and so must the read-only commit.
 		sRV("c", 1), sGet("c", "k3", true, "rc"), sCommit("c"), sAwait("c", "rc"),
 		sRV("d", 1), sAtomic("d", rywAdd, "k3", "\x01"), sGet("d", "k3", false, "rd"), sCommit("d"), sAwait("d", "rd"),
-		// Two seconds of versions ahead: storage holds the reads for FUTURE_VERSION_DELAY, then fails
-		// them with future_version (ServerKnobs.cpp:977, storageserver.actor.cpp:2238).
-		sRV("e", -2_000_000), sGet("e", "k1", true, "re"), sAtomic("e", rywAdd, "k2", "\x01"), sGet("e", "k2", false, "re2"),
-		sCommit("e"), sAwait("e", "re"), sAwait("e", "re2"),
+		// No future-version (1009) shape: this target raises FUTURE_VERSION_DELAY to hold reads open.
 	})}, func(sc *rywScenario) {
 		sc.expect("a", "commit", 0, "ok")
 		sc.expect("a", "await", 0, hx("vk1"))
@@ -865,21 +846,21 @@ func rywScenarios() []rywScenario {
 		sc.expect("b", "await", 0, hx("w"))
 		sc.expect("c", "commit", 0, "err=1007")
 		sc.expect("d", "commit", 0, "err=1007")
-		sc.expect("e", "commit", 0, "err=1009")
-		sc.expect("e", "await", 0, "err=1009")
-		sc.expect("e", "await", 1, "err=1009")
 	})
-	// Reset, Cancel and OnError with an un-awaited read held pending at a future read version
-	// (a read that already returned would deliver), then the transaction's next read.
+	// Reset, Cancel and OnError with un-awaited reads that storage holds open (a version far ahead,
+	// FUTURE_VERSION_DELAY raised by this target's knob), then the transaction's next read.
 	for _, end := range []string{"reset", "cancel", "onError"} {
 		for _, atomicKey := range []bool{false, true} {
-			tx := []rywStep{sRV("a", -2_000_000)}
+			tx := []rywStep{sRV("a", -1_000_000_000_000)}
 			if atomicKey {
 				tx = append(tx, sAtomic("a", rywAdd, "k1", "\x01"), sGet("a", "k1", false, "r1"))
 			} else {
 				tx = append(tx, sGet("a", "k1", true, "r1"))
 			}
 			tx = append(tx, sGet("a", "k2", false, "r2"), sSet("a", "zz", "a"))
+			if !atomicKey { // a stall past the default 1 s FUTURE_VERSION_DELAY must not change the outcome
+				tx = append(tx, sSleep("a", 1500))
+			}
 			switch end {
 			case "reset":
 				tx = append(tx, sReset("a"))
