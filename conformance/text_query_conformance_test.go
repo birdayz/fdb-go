@@ -7,8 +7,8 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -25,8 +25,7 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/relational/core/embedded"
 )
 
 // TextQuerySpec is one text query run by both engines: TextQuerySteps.Spec in
@@ -220,13 +219,23 @@ func javaPage(raw map[string]any) textPage {
 
 // textQueryMetaData is TextQuerySteps.createTextQueryMetaData.
 func textQueryMetaData() (*recordlayer.RecordMetaData, error) {
+	return textQueryMetaDataWith("name_text", "grouped_text", "suffix_text")
+}
+
+// textQueryMetaDataWith is textQueryMetaData with only the named indexes.
+func textQueryMetaDataWith(names ...string) (*recordlayer.RecordMetaData, error) {
 	builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
 	builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
 	builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
 	builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
-	builder.AddIndex("Customer", recordlayer.NewTextIndex("name_text", recordlayer.Field("name")))
-	builder.AddIndex("Customer", recordlayer.NewTextIndex("grouped_text", recordlayer.GroupBy(recordlayer.Field("name"), recordlayer.Field("email"))))
-	builder.AddIndex("Customer", recordlayer.NewTextIndex("suffix_text", recordlayer.Concat(recordlayer.Field("name"), recordlayer.Field("price"))))
+	indexes := map[string]*recordlayer.Index{
+		"name_text":    recordlayer.NewTextIndex("name_text", recordlayer.Field("name")),
+		"grouped_text": recordlayer.NewTextIndex("grouped_text", recordlayer.GroupBy(recordlayer.Field("name"), recordlayer.Field("email"))),
+		"suffix_text":  recordlayer.NewTextIndex("suffix_text", recordlayer.Concat(recordlayer.Field("name"), recordlayer.Field("price"))),
+	}
+	for _, name := range names {
+		builder.AddIndex("Customer", indexes[name])
+	}
 	return builder.Build()
 }
 
@@ -965,20 +974,8 @@ var _ = Describe("TEXT query execution conformance", Ordered, ContinueOnFailure,
 		Expect(timer.GetCount(recordlayer.CountTextScanKeyValues)).To(Equal(baselineTimer.GetCount(recordlayer.CountTextScanKeyValues)))
 	})
 
-	// sqlTextPlan runs the plan the Cascades planner builds for a SQL text
-	// predicate (a Go extension): a RecordQueryTextIndexPlan executed through
-	// recordlayer.TextScan per bound group, under a primary-key distinct for
-	// the prefix comparisons, with a strict TEXT_CONTAINS_ALL_PREFIXES
-	// predicate re-evaluated on each record as the residual filter does.
-	sqlTextTypes := map[string]predicates.ComparisonType{
-		"TEXT_CONTAINS_ALL":          predicates.ComparisonTextContainsAll,
-		"TEXT_CONTAINS_ALL_WITHIN":   predicates.ComparisonTextContainsAllWithin,
-		"TEXT_CONTAINS_ANY":          predicates.ComparisonTextContainsAny,
-		"TEXT_CONTAINS_PHRASE":       predicates.ComparisonTextContainsPhrase,
-		"TEXT_CONTAINS_PREFIX":       predicates.ComparisonTextContainsPrefix,
-		"TEXT_CONTAINS_ALL_PREFIXES": predicates.ComparisonTextContainsAllPrefixes,
-		"TEXT_CONTAINS_ANY_PREFIX":   predicates.ComparisonTextContainsAnyPrefix,
-	}
+	// sqlTextPlan plans the spec as SQL (a Go extension) over metadata holding
+	// only the spec's index, as Java's query allows only that index, and runs it.
 	sqlPrefix := func(s TextQuerySpec) bool { return strings.Contains(s.Type, "PREFIX") }
 	sqlTextPlan := func(s TextQuerySpec) textPage {
 		var page textPage
@@ -987,33 +984,30 @@ var _ = Describe("TEXT query execution conformance", Ordered, ContinueOnFailure,
 			if err != nil {
 				return nil, err
 			}
-			keyTypes := []values.Type{values.NullableString}
-			var grouping []values.Value
-			if s.Grouping != nil {
-				grouping = []values.Value{values.LiteralValue(*s.Grouping)}
-				keyTypes = append(keyTypes, values.NullableString)
+			args := fmt.Sprintf(`"name", '%s'`, *s.Text)
+			if s.Type == "TEXT_CONTAINS_ALL_WITHIN" {
+				args += fmt.Sprintf(", %d", s.MaxDistance)
 			}
-			comparison := predicates.Comparison{Type: sqlTextTypes[s.Type], Operand: values.LiteralValue(*s.Text), TextMaxDistance: s.MaxDistance, TextStrictPrefix: s.Strict}
-			customer := executor.PositionalTypeForRecordLayout((&demopb.Customer{}).ProtoReflect().Descriptor(), false)
-			textPlan, err := plans.NewRecordQueryTextIndexPlan(s.Index, plans.TextScan{IndexName: s.Index, Predicate: &comparison, Grouping: grouping, KeyTypes: keyTypes}, customer, s.Reverse)
+			where := s.Type + "(" + args + ")"
+			if s.Grouping != nil {
+				where = fmt.Sprintf(`"email" = '%s' AND %s`, *s.Grouping, where)
+			}
+			planMetaData, err := textQueryMetaDataWith(s.Index)
 			if err != nil {
 				return nil, err
 			}
-			var plan plans.RecordQueryPlan = textPlan
-			if sqlPrefix(s) {
-				if plan, err = plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(plan); err != nil {
-					return nil, err
-				}
+			plan, err := embedded.PlanRecordQueryWithMetadata(`SELECT "customer_id" FROM "Customer" WHERE `+where, planMetaData, nil)
+			if err != nil {
+				return nil, err
+			}
+			Expect(plan.Explain()).To(ContainSubstring("TextIndexScan("+s.Index), s.String())
+			if s.Strict {
+				// The probable intersection's false positives meet the residual.
+				Expect(plan.Explain()).To(MatchRegexp(`PredicatesFilter\(.*TextIndexScan`), s.String())
 			}
 			cursor, err := executor.ExecutePlan(ctx, plan, store, executor.EmptyEvaluationContext(), continuationBytes(s), goExecuteProperties(s))
 			if err != nil {
 				return nil, err
-			}
-			if s.Strict {
-				cursor = recordlayer.FilterErrCursor(cursor, func(r executor.QueryResult) (bool, error) {
-					match, err := comparison.EvalAgainst(r.Record.Record.(*demopb.Customer).GetName(), *s.Text)
-					return match == predicates.TriTrue, err
-				})
 			}
 			page, err = drainGoPage(ctx, cursor, func(r executor.QueryResult) string { return fmt.Sprint(r.PrimaryKey[0].(int64)) })
 			return nil, err
@@ -1033,41 +1027,88 @@ var _ = Describe("TEXT query execution conformance", Ordered, ContinueOnFailure,
 		return out
 	}
 
-	It("executes the SQL text index plan with the records Java's RecordQueryPlanner returns", func() {
+	It("plans SQL text predicates into the records Java's RecordQueryPlanner returns", func() {
 		for _, base := range append(append([]TextQuerySpec{}, ordered...), unordered...) {
 			if base.SuffixLow != nil || base.Text == nil || (base.Type == "TEXT_CONTAINS_ALL_PREFIXES" && !base.Strict) {
 				continue // SQL builds no suffix range, tokenizes a string comparand and is strict
 			}
-			for _, reverse := range []bool{false, true} {
-				for _, limit := range []int{0, 37} {
-					if limit > 0 && base.Strict {
-						continue // the residual filter sits below the row limit
-					}
-					s := base
-					s.Limit = limit
-					// Java's planner scans forward without a sort
-					// (RecordQueryPlanner.java:1716); a reverse scan returns the
-					// forward entries backwards.
-					javaItems := items(allPages(s, func(s TextQuerySpec) textPage { p, _ := javaPlan(s); return p }))
-					s.Reverse = reverse
-					goItems := items(allPages(s, sqlTextPlan))
-					unorderedMerge := (s.Type == "TEXT_CONTAINS_ALL_PREFIXES" || s.Type == "TEXT_CONTAINS_ANY_PREFIX") && len(goTextComparisonTokens(s)) > 1
-					switch {
-					case unorderedMerge:
-						Expect(distinct(goItems)).To(Equal(distinct(javaItems)), s.String())
-					case sqlPrefix(s) && reverse:
-						Expect(distinct(goItems)).To(Equal(distinct(javaItems)), s.String())
-					case sqlPrefix(s):
-						// Both distincts drop the repeats of their own page only.
-						Expect(firstOccurrences(goItems)).To(Equal(firstOccurrences(javaItems)), s.String())
-					case reverse:
-						slices.Reverse(javaItems)
-						Expect(goItems).To(Equal(javaItems), s.String())
-					default:
-						Expect(goItems).To(Equal(javaItems), s.String())
-					}
+			for _, limit := range []int{0, 37} {
+				s := base
+				s.Limit = limit
+				javaItems := items(allPages(s, func(s TextQuerySpec) textPage { p, _ := javaPlan(s); return p }))
+				goItems := items(allPages(s, sqlTextPlan))
+				unorderedMerge := (s.Type == "TEXT_CONTAINS_ALL_PREFIXES" || s.Type == "TEXT_CONTAINS_ANY_PREFIX") && len(goTextComparisonTokens(s)) > 1
+				switch {
+				case unorderedMerge:
+					Expect(distinct(goItems)).To(Equal(distinct(javaItems)), s.String())
+				case sqlPrefix(s):
+					// Both distincts drop the repeats of their own page only.
+					Expect(firstOccurrences(goItems)).To(Equal(firstOccurrences(javaItems)), s.String())
+				default:
+					Expect(goItems).To(Equal(javaItems), s.String())
 				}
 			}
+		}
+	})
+
+	It("evaluates SQL text predicates as Java's TextComparison.eval does", func() {
+		sqlTypes := map[string]predicates.ComparisonType{
+			"TEXT_CONTAINS_ALL":          predicates.ComparisonTextContainsAll,
+			"TEXT_CONTAINS_ALL_WITHIN":   predicates.ComparisonTextContainsAllWithin,
+			"TEXT_CONTAINS_ANY":          predicates.ComparisonTextContainsAny,
+			"TEXT_CONTAINS_PHRASE":       predicates.ComparisonTextContainsPhrase,
+			"TEXT_CONTAINS_PREFIX":       predicates.ComparisonTextContainsPrefix,
+			"TEXT_CONTAINS_ALL_PREFIXES": predicates.ComparisonTextContainsAllPrefixes,
+			"TEXT_CONTAINS_ANY_PREFIX":   predicates.ComparisonTextContainsAnyPrefix,
+		}
+		documents := []string{"The quick brown fox jumps over the lazy dog", "", "fox", "quick quick fox fox", "prefix prelude present"}
+		specs := []TextQuerySpec{
+			{Type: "TEXT_CONTAINS_ALL", Text: strPtr("fox dog")},
+			{Type: "TEXT_CONTAINS_ALL", Text: strPtr("fox cat")},
+			{Type: "TEXT_CONTAINS_ALL", Text: strPtr("")},
+			{Type: "TEXT_CONTAINS_ANY", Text: strPtr("cat dog")},
+			{Type: "TEXT_CONTAINS_PHRASE", Text: strPtr("quick brown fox")},
+			{Type: "TEXT_CONTAINS_PHRASE", Tokens: []string{"quick", "", "fox"}},
+			{Type: "TEXT_CONTAINS_PHRASE", Tokens: []string{"", ""}},
+			{Type: "TEXT_CONTAINS_ALL_WITHIN", Text: strPtr("quick fox"), MaxDistance: 0},
+			{Type: "TEXT_CONTAINS_ALL_WITHIN", Text: strPtr("quick fox"), MaxDistance: 1},
+			{Type: "TEXT_CONTAINS_ALL_WITHIN", Text: strPtr("quick fox"), MaxDistance: 2},
+			{Type: "TEXT_CONTAINS_ALL_WITHIN", Text: strPtr("fox dog"), MaxDistance: 0},
+			{Type: "TEXT_CONTAINS_PREFIX", Text: strPtr("jum")},
+			{Type: "TEXT_CONTAINS_PREFIX", Text: strPtr("")},
+			{Type: "TEXT_CONTAINS_PREFIX", Tokens: []string{"pre", "fox"}},
+			{Type: "TEXT_CONTAINS_ALL_PREFIXES", Text: strPtr("qu la"), Strict: true},
+			{Type: "TEXT_CONTAINS_ALL_PREFIXES", Text: strPtr("pre pres"), Strict: true},
+			{Type: "TEXT_CONTAINS_ANY_PREFIX", Text: strPtr("ca do")},
+		}
+		documentsJSON, err := json.Marshal(documents)
+		Expect(err).NotTo(HaveOccurred())
+		for _, s := range specs {
+			var raw struct {
+				Results []string `json:"results"`
+			}
+			Expect(java.InvokeAs(ctx, "textComparisonEval", map[string]any{"specJson": s.String(), "valuesJson": string(documentsJSON)}, &raw)).To(Succeed())
+			var comparand any
+			if s.Tokens != nil {
+				comparand = s.Tokens
+			} else {
+				comparand = *s.Text
+			}
+			comparison := predicates.Comparison{Type: sqlTypes[s.Type], TextMaxDistance: s.MaxDistance, TextStrictPrefix: s.Strict}
+			var goResults []string
+			for _, document := range documents {
+				result, err := comparison.EvalAgainst(document, comparand)
+				var argErr *recordlayer.RecordCoreArgumentError
+				switch {
+				case errors.As(err, &argErr):
+					goResults = append(goResults, "RecordCoreArgumentException")
+				case err != nil:
+					goResults = append(goResults, err.Error())
+				default:
+					goResults = append(goResults, map[predicates.TriBool]string{predicates.TriTrue: "true", predicates.TriFalse: "false", predicates.TriUnknown: "null"}[result])
+				}
+			}
+			Expect(goResults).To(Equal(raw.Results), s.String())
 		}
 	})
 

@@ -43,7 +43,7 @@ func (r *Resolver) walkTextFunction(name string, typ predicates.ComparisonType, 
 		arity = 3
 	}
 	if len(args) != arity && len(args) != arity+1 {
-		return nil, api.NewErrorf(api.ErrCodeCannotConvertType, "%s requires %d arguments and an optional literal tokenizer name", name, arity)
+		return nil, api.NewErrorf(api.ErrCodeCannotConvertType, "%s requires %d arguments and an optional constant tokenizer name", name, arity)
 	}
 	for i := 0; i < 2; i++ {
 		t := args[i].Type()
@@ -56,32 +56,34 @@ func (r *Resolver) walkTextFunction(name string, typ predicates.ComparisonType, 
 		distanceValue, _ := specialize(args[2])
 		distance, ok := values.EvaluateConstant(distanceValue)
 		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeCannotConvertType, "%s distance must be an integer literal", name)
+			return nil, api.NewErrorf(api.ErrCodeCannotConvertType, "%s distance must be an integer constant", name)
 		}
+		// Java's window comparison never evicts at distance 0 while its scan
+		// matches nothing, so SQL requires a positive distance.
 		switch d := distance.(type) {
 		case int64:
-			if d < 0 || int64(int(d)) != d {
-				return nil, api.NewErrorf(api.ErrCodeCannotConvertType, "%s distance is out of range", name)
+			if d < 1 || int64(int(d)) != d {
+				return nil, api.NewErrorf(api.ErrCodeCannotConvertType, "%s distance must be a positive integer", name)
 			}
 			comparison.TextMaxDistance = int(d)
 		case int32:
-			if d < 0 {
-				return nil, api.NewErrorf(api.ErrCodeCannotConvertType, "%s distance is negative", name)
+			if d < 1 {
+				return nil, api.NewErrorf(api.ErrCodeCannotConvertType, "%s distance must be a positive integer", name)
 			}
 			comparison.TextMaxDistance = int(d)
 		default:
-			return nil, api.NewErrorf(api.ErrCodeCannotConvertType, "%s distance must be an integer literal, got %s", name, fmt.Sprintf("%T", distance))
+			return nil, api.NewErrorf(api.ErrCodeCannotConvertType, "%s distance must be an integer constant, got %s", name, fmt.Sprintf("%T", distance))
 		}
 	}
 	if len(args) == arity+1 {
 		tokenizerValue, _ := specialize(args[arity])
 		tokenizer, ok := values.EvaluateConstant(tokenizerValue)
 		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeCannotConvertType, "%s tokenizer must be a literal STRING", name)
+			return nil, api.NewErrorf(api.ErrCodeCannotConvertType, "%s tokenizer must be a constant STRING", name)
 		}
 		s, ok := tokenizer.(string)
 		if !ok {
-			return nil, api.NewErrorf(api.ErrCodeCannotConvertType, "%s tokenizer must be a literal STRING", name)
+			return nil, api.NewErrorf(api.ErrCodeCannotConvertType, "%s tokenizer must be a constant STRING", name)
 		}
 		if s == "" {
 			s = recordlayer.DefaultTextTokenizerName
@@ -89,7 +91,7 @@ func (r *Resolver) walkTextFunction(name string, typ predicates.ComparisonType, 
 		comparison.TextTokenizerName = s
 	}
 	if _, err := recordlayer.GetTextTokenizer(comparison.TextTokenizerName); err != nil {
-		return nil, err
+		return nil, api.NewErrorf(api.ErrCodeInvalidParameter, "%s tokenizer %q is not registered: %v", name, comparison.TextTokenizerName, err)
 	}
 	return &predicateValue{pred: predicates.NewComparisonPredicate(args[0], comparison)}, nil
 }

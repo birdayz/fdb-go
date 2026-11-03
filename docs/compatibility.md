@@ -43,9 +43,10 @@ and is ignored for distance checks. If no positions remain, the positional test
 passes. This is **not proof of exact phrase/proximity occurrence**. Like Java's
 text planner, Go declines positional and prefix-set text access paths when index
 metadata omits positions; ALL, ANY and singleton PREFIX remain eligible.
-Grouping columns must all be bound, by an equality or an IN list, and carry
-authoritative physical key types in the typed scan; an IN list runs the text
-scan once per element under an IN join. Suffix bounds (which the SQL planner
+Grouping columns must all be bound, by an equality, an IN list or a join
+column, and carry authoritative physical key types in the typed scan; an IN
+list runs the text scan once per element under an IN join. A NaN equality on
+a FLOAT or DOUBLE grouping column fails the text scan. Suffix bounds (which the SQL planner
 does not build) are applied to the group's posting keys rather than seeked, so
 a bound cannot skip matches inside a bunch whose first key precedes it. Prefix
 scans cannot also have suffix bounds. A grouping column without a binding
@@ -91,9 +92,11 @@ TEXT index
 with default tokenizer/version options, not a separate SQL storage format.
 `TEXT_CONTAINS_ALL`, `TEXT_CONTAINS_ANY`, `TEXT_CONTAINS_PHRASE`,
 `TEXT_CONTAINS_PREFIX`, `TEXT_CONTAINS_ALL_PREFIXES` and
-`TEXT_CONTAINS_ANY_PREFIX` take `(field, query [, literal_tokenizer_name])`.
+`TEXT_CONTAINS_ANY_PREFIX` take `(field, query [, constant_tokenizer_name])`.
 `TEXT_CONTAINS_ALL_WITHIN` takes
-`(field, query, nonnegative_literal_distance [, literal_tokenizer_name])`.
+`(field, query, positive_constant_distance [, constant_tokenizer_name])`.
+A constant is a literal or a bound parameter. The functions are boolean
+expressions, usable in a WHERE clause or a projection.
 The field and query must be STRING (query parameters are allowed). SQL resolves
 an omitted tokenizer name explicitly to `default`; an explicit name uses that
 registered tokenizer's maximum supported version on both indexed and residual

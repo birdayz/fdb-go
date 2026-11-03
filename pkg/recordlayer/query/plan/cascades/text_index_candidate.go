@@ -13,18 +13,17 @@ import (
 // TextIndexMatchCandidate describes a text access path. Text comparisons never
 // enter ordinary ComparisonRanges: their posting streams require a text scan.
 type TextIndexMatchCandidate struct {
-	Name                   string
-	Columns                []string
-	RecordTypes            []string
-	GroupingCount          int
-	TokenizerName          string
-	TokenizerVersion       int
-	TokenizerMaxVersion    int
-	RequireLatestTokenizer bool
-	OmitPositions          bool
-	CreatesDuplicates      bool
-	RowType                values.Type
-	KeyTypes               []values.Type
+	Name                string
+	Columns             []string
+	RecordTypes         []string
+	GroupingCount       int
+	TokenizerName       string
+	TokenizerVersion    int
+	TokenizerMaxVersion int
+	OmitPositions       bool
+	CreatesDuplicates   bool
+	RowType             values.Type
+	KeyTypes            []values.Type
 }
 
 func (c *TextIndexMatchCandidate) CandidateName() string                              { return c.Name }
@@ -83,7 +82,9 @@ func textAccessAlternatives(ctx PlanContext, inner plans.RecordQueryPlan, preds 
 				continue
 			}
 			requestedTokenizer := cp.Comparison.TextTokenizerName
-			if requestedTokenizer != "" && (requestedTokenizer != c.TokenizerName || (c.RequireLatestTokenizer && c.TokenizerVersion != c.TokenizerMaxVersion)) {
+			// A named tokenizer evaluates at its latest version, so only an
+			// index at that version returns the same records.
+			if requestedTokenizer != "" && (requestedTokenizer != c.TokenizerName || c.TokenizerVersion != c.TokenizerMaxVersion) {
 				continue
 			}
 			typ := cp.Comparison.Type
@@ -91,9 +92,8 @@ func textAccessAlternatives(ctx PlanContext, inner plans.RecordQueryPlan, preds 
 				continue
 			}
 			grouping := make([]values.Value, c.GroupingCount)
-			// A strict TEXT_CONTAINS_ALL_PREFIXES scan is a probable
-			// intersection with false positives, so the predicate stays as a
-			// filter over the scan (RecordQueryPlanner.java:1721-1728).
+			// A strict probable intersection keeps its predicate as a filter
+			// (RecordQueryPlanner.java:1721-1728).
 			strictPrefixes := typ == predicates.ComparisonTextContainsAllPrefixes && cp.Comparison.TextStrictPrefix
 			consumed := map[int]bool{textIndex: !strictPrefixes}
 			for i, col := range c.Columns[:c.GroupingCount] {
@@ -103,10 +103,8 @@ func textAccessAlternatives(ctx PlanContext, inner plans.RecordQueryPlan, preds 
 						continue
 					}
 					f, ok := values.AsFieldValue(eq.Operand)
-					// The binding may come from an outer quantifier, as an IN
-					// list's element does under an IN join (Java's planner binds
-					// it as a parameter of RecordQueryInValuesJoinPlan), but
-					// never from the scanned row itself.
+					// An outer binding (an IN element, a join column) is a group;
+					// a value of the scanned row is not.
 					_, selfCorrelated := values.GetCorrelatedToOfValue(eq.Comparison.Operand)[alias]
 					if ok && textFieldMatchesColumn(f, col, alias) && !selfCorrelated {
 						grouping[i] = eq.Comparison.Operand
@@ -130,7 +128,7 @@ func textAccessAlternatives(ctx PlanContext, inner plans.RecordQueryPlan, preds 
 				continue
 			}
 			var access plans.RecordQueryPlan = plan
-			if c.CreatesDuplicates || typ == predicates.ComparisonTextContainsPrefix || typ == predicates.ComparisonTextContainsAllPrefixes || typ == predicates.ComparisonTextContainsAnyPrefix {
+			if c.CreatesDuplicates || typ.IsTextPrefix() {
 				distinct, e := plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(access)
 				if e != nil {
 					continue

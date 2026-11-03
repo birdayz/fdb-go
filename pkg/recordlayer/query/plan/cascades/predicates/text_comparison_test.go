@@ -62,9 +62,8 @@ func TestTextComparisonRejectsInvalidInputs(t *testing.T) {
 			t.Fatalf("got %v for %#v", err, tc)
 		}
 	}
-	// Comparisons.TextComparison.eval's own refusals (Comparisons.java:
-	// 2588-2590, 2608-2611): a non-string value, and a prefix comparison
-	// whose comparand is not exactly one token ("" tokenizes to none).
+	// TextComparison.eval refuses a non-string value and a prefix that is not
+	// one token (Comparisons.java:2588-2590, 2608-2611).
 	for _, tc := range []struct {
 		typ         ComparisonType
 		left, right any

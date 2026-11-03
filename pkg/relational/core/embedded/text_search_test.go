@@ -108,6 +108,7 @@ func TestFullTextPartitionInListPlan(t *testing.T) {
 	}{
 		{"SELECT id FROM docs WHERE tenant=1 AND shard IN (1,2,3) AND TEXT_CONTAINS_ALL(body,'red blue')", true},
 		{"SELECT id FROM docs WHERE tenant IN (1,2) AND shard IN (3,4) AND TEXT_CONTAINS_ANY(body,'red')", true},
+		{"SELECT id FROM docs WHERE tenant=1 AND shard=2 AND TEXT_CONTAINS_ALL(body,'red')", true},
 		// A grouping value from the scanned row is not a binding.
 		{"SELECT id FROM docs WHERE tenant=1 AND shard=other AND TEXT_CONTAINS_ALL(body,'red')", false},
 		{"SELECT id FROM docs WHERE tenant=1 AND TEXT_CONTAINS_ALL(body,'red')", false},
@@ -119,15 +120,63 @@ func TestFullTextPartitionInListPlan(t *testing.T) {
 		if got := strings.Contains(plan.Explain(), "TextIndexScan(BODY_TEXT"); got != tc.text {
 			t.Fatalf("%s: text access=%v: %s", tc.query, got, plan.Explain())
 		}
+		// An IN list is an IN join: the scan runs once per list element.
+		if strings.Contains(tc.query, " IN ") && !strings.HasPrefix(plan.Explain(), "InJoin(") {
+			t.Fatalf("%s: no IN join: %s", tc.query, plan.Explain())
+		}
 	}
 }
 
 func TestFullTextDDLRejectsInvalidShape(t *testing.T) {
 	t.Parallel()
-	const base = "CREATE TABLE docs(id BIGINT, body STRING, PRIMARY KEY(id)) "
-	for _, ddl := range []string{"CREATE FULLTEXT INDEX bad ON docs(id)", "CREATE FULLTEXT INDEX bad ON docs(body,id)", "CREATE FULLTEXT INDEX bad ON docs(body DESC)", "CREATE FULLTEXT INDEX bad ON docs(missing)", "CREATE FULLTEXT INDEX bad ON missing(body)"} {
-		if _, err := BuildSchemaTemplateFromDDL(base + ddl); err == nil {
-			t.Fatalf("accepted %s", ddl)
+	const base = "CREATE TABLE docs(id BIGINT, n BIGINT, tags STRING ARRAY, body STRING, PRIMARY KEY(id)) "
+	for _, tc := range []struct{ ddl, message string }{
+		{"CREATE FULLTEXT INDEX bad ON docs(n)", `column "N" must be scalar string`},
+		{"CREATE FULLTEXT INDEX bad ON docs(body,id)", "exactly one indexed column"},
+		{"CREATE FULLTEXT INDEX bad ON docs(body DESC)", "per-column ordering"},
+		{"CREATE FULLTEXT INDEX bad ON docs(missing)", `unknown column "MISSING"`},
+		{"CREATE FULLTEXT INDEX bad ON missing(body)", `references unknown table "MISSING"`},
+		{"CREATE FULLTEXT INDEX bad ON docs(body) PARTITION BY (n DESC)", "PARTITION BY \"BAD\": per-column ordering"},
+		{"CREATE FULLTEXT INDEX bad ON docs(body) PARTITION BY (missing)", `unknown column "MISSING"`},
+		{"CREATE FULLTEXT INDEX bad ON docs(body) PARTITION BY (tags)", `column "TAGS" must be scalar`},
+	} {
+		if _, err := BuildSchemaTemplateFromDDL(base + tc.ddl); err == nil || !strings.Contains(err.Error(), tc.message) {
+			t.Fatalf("%s: error=%v, want %q", tc.ddl, err, tc.message)
+		}
+	}
+}
+
+// TestFullTextIndexSourceResolvesEscapedTableButNotAQualifier mirrors
+// TestDDL_IndexOnSourceResolvesEscapedTableButNotAQualifier for FULLTEXT.
+func TestFullTextIndexSourceResolvesEscapedTableButNotAQualifier(t *testing.T) {
+	t.Parallel()
+	if _, err := BuildSchemaTemplateFromDDL(`CREATE TABLE "MY$TABLE" (id BIGINT, body STRING, PRIMARY KEY (id)) CREATE FULLTEXT INDEX t ON "MY$TABLE" (body)`); err != nil {
+		t.Fatalf("escaped table: %v", err)
+	}
+	for _, ddl := range []string{
+		`CREATE TABLE "S.T" (id BIGINT, body STRING, PRIMARY KEY (id)) CREATE FULLTEXT INDEX t ON S.T (body)`,
+		`CREATE TABLE t (id BIGINT, body STRING, PRIMARY KEY (id)) CREATE FULLTEXT INDEX t ON S.T (body)`,
+	} {
+		if _, err := BuildSchemaTemplateFromDDL(ddl); err == nil || !strings.Contains(err.Error(), `references unknown table "S.T"`) {
+			t.Fatalf("%s: error=%v", ddl, err)
+		}
+	}
+}
+
+// TestFullTextJoinAndProjectionPlans: a join column binds the partition, and
+// a text predicate is a boolean in a projection.
+func TestFullTextJoinAndProjectionPlans(t *testing.T) {
+	t.Parallel()
+	template, err := BuildSchemaTemplateFromDDL("CREATE TABLE tenants(id BIGINT, PRIMARY KEY(id)) CREATE TABLE docs(id BIGINT, tenant BIGINT, body STRING, PRIMARY KEY(id)) CREATE FULLTEXT INDEX body_text ON docs(body) PARTITION BY (tenant)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{
+		"SELECT d.id FROM tenants t, docs d WHERE d.tenant = t.id AND TEXT_CONTAINS_ALL(d.body,'red')",
+		"SELECT id, TEXT_CONTAINS_ALL(body,'red') FROM docs WHERE tenant = 1",
+	} {
+		if _, err := PlanRecordQueryWithMetadata(query, template.Underlying(), nil); err != nil {
+			t.Fatalf("%s: %v", query, err)
 		}
 	}
 }
@@ -146,9 +195,20 @@ func TestFullTextSQLTypeAndArity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, predicate := range []string{"TEXT_CONTAINS_ALL(id, 'hello')", "TEXT_CONTAINS_ANY(body)", "TEXT_CONTAINS_PHRASE(body, 7)", "TEXT_CONTAINS_ALL_WITHIN(body, 'hello', -1)", "TEXT_CONTAINS_ALL(body, 'hello', id)", "TEXT_CONTAINS_ALL_WITHIN(body, 'hello', 1.5)"} {
-		if _, err := PlanRecordQueryWithMetadata("SELECT id FROM docs WHERE "+predicate, template.Underlying(), nil); err == nil {
-			t.Fatalf("accepted %s", predicate)
+	for _, tc := range []struct{ predicate, message string }{
+		{"TEXT_CONTAINS_ALL(id, 'hello')", "argument 1 must be STRING"},
+		{"TEXT_CONTAINS_ANY(body)", "requires 2 arguments"},
+		{"TEXT_CONTAINS_PHRASE(body, 7)", "argument 2 must be STRING"},
+		{"TEXT_CONTAINS_ALL_WITHIN(body, 'hello', -1)", "distance must be a positive integer"},
+		{"TEXT_CONTAINS_ALL_WITHIN(body, 'hello', 0)", "distance must be a positive integer"},
+		{"TEXT_CONTAINS_ALL_WITHIN(body, 'hello', 1.5)", "distance must be an integer constant"},
+		{"TEXT_CONTAINS_ALL_WITHIN(body, 'hello', id)", "distance must be an integer constant"},
+		{"TEXT_CONTAINS_ALL(body, 'hello', id)", "tokenizer must be a constant STRING"},
+		{"TEXT_CONTAINS_ALL(body, 'hello', 7)", "tokenizer must be a constant STRING"},
+		{"TEXT_CONTAINS_ALL(body, 'hello', 'not_registered')", `tokenizer "not_registered" is not registered`},
+	} {
+		if _, err := PlanRecordQueryWithMetadata("SELECT id FROM docs WHERE "+tc.predicate, template.Underlying(), nil); err == nil || !strings.Contains(err.Error(), tc.message) {
+			t.Fatalf("%s: error=%v, want %q", tc.predicate, err, tc.message)
 		}
 	}
 	for _, predicate := range []string{"TEXT_CONTAINS_ALL(body,'hello')", "TEXT_CONTAINS_ALL(body,'hello','default')", "TEXT_CONTAINS_ANY(body,'hello')", "TEXT_CONTAINS_PHRASE(body,'hello')", "TEXT_CONTAINS_ALL_WITHIN(body,'hello',2)", "TEXT_CONTAINS_PREFIX(body,'hel')", "TEXT_CONTAINS_ALL_PREFIXES(body,'hel wor')", "TEXT_CONTAINS_ANY_PREFIX(body,'hel wor')"} {

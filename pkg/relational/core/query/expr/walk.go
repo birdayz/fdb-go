@@ -1302,6 +1302,12 @@ func promoteVariadicArguments(args []values.Value, common values.Type) []values.
 	return out
 }
 
+// isBareNameBuiltin reports a built-in that a schema macro cannot shadow.
+func isBareNameBuiltin(name string) bool {
+	_, text := textFunctionType(unicode15.ToUpperString(name))
+	return text || unicode15.EqualFold(name, "CARDINALITY")
+}
+
 // walkUserDefinedScalarFunction handles `name '(' args ')'` calls whose
 // name is a bare ID (the grammar's UserDefinedScalarFunctionCall). The
 // bare-name built-ins, including CARDINALITY and TEXT_CONTAINS_*, parse here
@@ -1324,7 +1330,7 @@ func (r *Resolver) walkUserDefinedScalarFunction(udf *antlrgen.UserDefinedScalar
 	if ok && nameNode.DOUBLE_QUOTE_ID() != nil && nameNode.GetText() == `"`+SQLFunctionArgument+`"` {
 		return r.walkSQLFunctionArgument(udf.NamedOrUnnamedFunctionArgs())
 	}
-	if ok && !(nameNode.ID() != nil && unicode15.EqualFold(nameNode.ID().GetText(), "CARDINALITY")) {
+	if ok && !(nameNode.ID() != nil && isBareNameBuiltin(nameNode.ID().GetText())) {
 		if v, isMacro, err := r.walkMacroCall(udf); isMacro || err != nil {
 			return v, err
 		}

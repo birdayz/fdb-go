@@ -17,9 +17,8 @@ import (
 	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
-// Version zero indexes the first word; version one indexes the last word.
-// Both QUERY and INDEX modes use the selected version, deliberately exposing
-// a fallback/index mismatch if the planner overlooks version compatibility.
+// Version 0 indexes the first word and version 1 the last, in both modes, so
+// a planner that ignores the version returns different records.
 type sqlTextVersionTokenizer struct{ name string }
 
 func (t *sqlTextVersionTokenizer) Name() string  { return t.name }

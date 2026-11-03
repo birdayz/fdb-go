@@ -289,6 +289,22 @@ class TextQuerySteps extends ConformanceBase {
         }
     }
 
+    /** TextComparison.eval of the spec's comparison on each value: true, false, null or the exception class. */
+    @ConformanceStep("textComparisonEval")
+    public Map<String, Object> textComparisonEval(String specJson, String valuesJson) {
+        Spec spec = new Gson().fromJson(specJson, Spec.class);
+        List<String> values = new Gson().fromJson(valuesJson, new TypeToken<List<String>>(){}.getType());
+        List<Object> results = new ArrayList<>();
+        for (String value : values) {
+            try {
+                results.add(String.valueOf(comparison(spec).eval(null, EvaluationContext.EMPTY, value)));
+            } catch (RuntimeException e) {
+                results.add(e.getClass().getSimpleName());
+            }
+        }
+        return Map.of("results", results);
+    }
+
     /**
      * Complete in-memory children make unordered merge execution deterministic.
      */

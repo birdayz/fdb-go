@@ -33,15 +33,22 @@ with one `TextScan` per physical group, and the query continuation is that
 set's envelope around the group's `TextScan` continuation. A typed suffix range
 (never built by the SQL planner, as Java's `TextScanPlanner` never builds one)
 is applied by filtering the group's postings rather than handed to `TextScan`:
-Java's and Go's `TextScan` seek a suffix range's start in the bunched map,
-whose keys are each bunch's first posting, and so miss postings of a bunch
-that begins before the range. SQL's `TEXT_CONTAINS_ALL_PREFIXES` is strict, so
+Go's `TextScan` seeks a suffix range's start in the bunched map, whose keys
+are each bunch's first posting, and so misses postings of a bunch that begins
+before the range. Java's builds the same range (`TextScan.java:443-450`), so
+it is expected to behave alike; no Java probe pins it yet (TODO.md). A NaN
+equality on a FLOAT or DOUBLE partition column fails the text scan, as vector
+and aggregate partitions do, where record filtering would match the NaN group.
+SQL's `TEXT_CONTAINS_ALL_PREFIXES` is strict, so
 like Java's `RecordQueryPlanner` (`RecordQueryPlanner.java:1721-1728`) the
 plan keeps the predicate as a filter over the probable intersection, which
 can return false positives. Probabilistic tuning is not exposed (Java's
-`Text.containsAllPrefixes` defaults). A grouping column bound by an IN list
-runs the text scan once per element under an IN join, as Java plans an IN list
-over a text index. Residual evaluation is Java's `TextComparison.eval`: a
+`Text.containsAllPrefixes` defaults). A grouping column bound by an IN list or
+a join column runs the text scan once per outer row, as Java plans an IN list
+over a text index. SQL requires `TEXT_CONTAINS_ALL_WITHIN`'s distance to be
+positive: at distance 0 Java's `TextComparison.eval` never evicts its window
+(any distance matches) while its scan matches nothing, and Go's evaluation
+does the same. Residual evaluation is Java's `TextComparison.eval`: a
 prefix comparand that is not exactly one token (`''`) fails there, while the
 text scan returns no records for it, as in Java. Both implementations retain Java's
 permissive positional treatment of known-present tokens with omitted position

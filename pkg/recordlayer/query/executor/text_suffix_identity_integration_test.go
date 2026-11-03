@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -89,8 +90,9 @@ func TestIntegrationTextSuffixBounds(t *testing.T) {
 			return nil, e
 		}
 		_, e = ExecutePlan(context.Background(), p, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
-		var invalid *predicates.TextComparisonError
-		if !errors.As(e, &invalid) {
+		// Java's RecordCoreException (TextScan.java:429-431).
+		var invalid *recordlayer.RecordCoreError
+		if !errors.As(e, &invalid) || invalid.IndexName != index.Name {
 			t.Fatalf("prefix suffix error=%v", e)
 		}
 		return nil, nil
@@ -168,7 +170,8 @@ func TestIntegrationTextContinuationRejectsChangedBindings(t *testing.T) {
 					defer c.Close()
 					_, e = c.OnNext(context.Background())
 				}
-				if (e == nil) != tc.valid {
+				var mismatch *recordlayer.ContinuationParseError
+				if tc.valid && e != nil || !tc.valid && (!errors.As(e, &mismatch) || !strings.Contains(e.Error(), "fingerprint does not match")) {
 					t.Fatalf("%v %s resume=%v expected valid=%v", typ, tc.name, e, tc.valid)
 				}
 				return nil, nil

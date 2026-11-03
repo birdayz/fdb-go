@@ -643,6 +643,28 @@ func TestCollectSargedComparisons_PrimaryScanCountsAsSarg(t *testing.T) {
 	}
 }
 
+// TestCollectSargedComparisons_TextScanGroupingCountsAsSarg: an IN element
+// binding a text index's grouping column bounds the text scan
+// (ComparisonsProperty.visitRecordQueryTextIndexPlan).
+func TestCollectSargedComparisons_TextScanGroupingCountsAsSarg(t *testing.T) {
+	t.Parallel()
+	binding := values.NamedCorrelationIdentifier("x")
+	text := mustCostConstruct(plans.NewRecordQueryTextIndexPlan("text", plans.TextScan{
+		Predicate: &predicates.Comparison{Type: predicates.ComparisonTextContainsAll, Operand: values.LiteralValue("red")},
+		Grouping:  []values.Value{costModelQOV(t, binding, values.NotNullLong)},
+	}, costModelRowType(), false))
+	inJoin := mustCostConstruct(plans.NewRecordQueryInJoinPlan(text, "x", false, false))
+	if penalty, applicable := compareInOperator(inJoin); !applicable || penalty != 0 {
+		t.Errorf("compareInOperator = (%d, %v), want (0, true)", penalty, applicable)
+	}
+	unbound := mustCostConstruct(plans.NewRecordQueryTextIndexPlan("text", plans.TextScan{
+		Predicate: &predicates.Comparison{Type: predicates.ComparisonTextContainsAll, Operand: values.LiteralValue("red")},
+	}, costModelRowType(), false))
+	if penalty, _ := compareInOperator(mustCostConstruct(plans.NewRecordQueryInJoinPlan(unbound, "x", false, false))); penalty != 1 {
+		t.Errorf("an unbound text scan's IN join penalty = %d, want 1", penalty)
+	}
+}
+
 // TestCollectSargedComparisons_NodeComparisonsUnionWithChildren pins the other
 // half of evaluateAtExpression: a node contributes its OWN comparisons IN
 // ADDITION TO its children's, rather than either shadowing the other.

@@ -78,8 +78,14 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 		}
 	}
 
+	// A text access replaces the scan; it cannot also take the FirstOrDefault
+	// or DefaultOnEmpty wrap an existential or null-on-empty input needs.
+	plainInput := innerQuantifier.Kind() == expressions.QuantifierForEach && !innerQuantifier.IsNullOnEmpty()
 	for _, partition := range partitions {
 		for _, innerPlan := range partition.GetPlans() {
+			if !plainInput {
+				break
+			}
 			alternatives, residuals := textAccessAlternatives(call.Context, innerPlan, queryPredicates, innerQuantifier.GetAlias())
 			for i, access := range alternatives {
 				q := expressions.NamedPhysicalQuantifier(innerQuantifier.GetAlias(), call.MemoizeFinalExpression(access))

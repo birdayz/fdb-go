@@ -86,6 +86,9 @@ func TestTextComparisonEval(t *testing.T) {
 		// quick and fox are two positions apart.
 		{NewTextWithMaxDistanceComparison("quick fox", 1, "", ""), boolPtr(false)},
 		{NewTextWithMaxDistanceComparison("quick fox", 2, "", ""), boolPtr(true)},
+		// Java's window never evicts at distance 0: the tokens may be anywhere.
+		{NewTextWithMaxDistanceComparison("quick dog", 0, "", ""), boolPtr(true)},
+		{NewTextWithMaxDistanceComparison("quick cat", 0, "", ""), boolPtr(false)},
 		{NewTextComparisonTokens(TextContainsAll, []string{""}, "", ""), nil},
 	}
 	for _, c := range cases {

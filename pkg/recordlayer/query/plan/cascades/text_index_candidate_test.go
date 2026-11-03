@@ -34,7 +34,7 @@ func TestTextCandidateEligibility(t *testing.T) {
 		omit, group, bind   bool
 		tokenizer           string
 		version, maxVersion int
-		strict              bool
+		strictPrefix        bool
 		want                bool
 	}{
 		{name: "all", typ: predicates.ComparisonTextContainsAll, want: true},
@@ -50,17 +50,19 @@ func TestTextCandidateEligibility(t *testing.T) {
 		{name: "group missing", typ: predicates.ComparisonTextContainsAll, group: true},
 		{name: "explicit default", typ: predicates.ComparisonTextContainsAll, tokenizer: "default", want: true},
 		{name: "tokenizer mismatch", typ: predicates.ComparisonTextContainsAll, tokenizer: "other"},
-		{name: "SQL older version", typ: predicates.ComparisonTextContainsAll, tokenizer: "default", maxVersion: 1, strict: true},
-		{name: "RecordLayer older version", typ: predicates.ComparisonTextContainsAll, tokenizer: "default", maxVersion: 1, want: true},
+		{name: "named tokenizer older version", typ: predicates.ComparisonTextContainsAll, tokenizer: "default", maxVersion: 1},
+		{name: "any tokenizer older version", typ: predicates.ComparisonTextContainsAll, maxVersion: 1, want: true},
+		{name: "strict all prefixes", typ: predicates.ComparisonTextContainsAllPrefixes, strictPrefix: true, want: true},
+		{name: "all prefixes", typ: predicates.ComparisonTextContainsAllPrefixes, want: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := &TextIndexMatchCandidate{Name: "text", Columns: []string{"BODY"}, RecordTypes: []string{"T"}, TokenizerName: "default", OmitPositions: tc.omit, RowType: row, TokenizerVersion: tc.version, TokenizerMaxVersion: tc.maxVersion, RequireLatestTokenizer: tc.strict}
+			c := &TextIndexMatchCandidate{Name: "text", Columns: []string{"BODY"}, RecordTypes: []string{"T"}, TokenizerName: "default", OmitPositions: tc.omit, RowType: row, TokenizerVersion: tc.version, TokenizerMaxVersion: tc.maxVersion}
 			if tc.group {
 				c.Columns = []string{"TENANT", "BODY"}
 				c.GroupingCount = 1
 			}
 			context := NewPlanContextFromMatchCandidates([]MatchCandidate{c})
-			preds := []predicates.QueryPredicate{predicates.NewComparisonPredicate(body, predicates.Comparison{Type: tc.typ, Operand: values.LiteralValue("hello"), TextTokenizerName: tc.tokenizer})}
+			preds := []predicates.QueryPredicate{predicates.NewComparisonPredicate(body, predicates.Comparison{Type: tc.typ, Operand: values.LiteralValue("hello"), TextTokenizerName: tc.tokenizer, TextStrictPrefix: tc.strictPrefix})}
 			if tc.bind {
 				preds = append(preds, predicates.NewComparisonPredicate(tenant, predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1))))
 			}
@@ -69,8 +71,14 @@ func TestTextCandidateEligibility(t *testing.T) {
 				t.Fatalf("alternatives=%d want eligible=%v", len(alternatives), tc.want)
 			}
 			if tc.want {
-				if len(residuals[0]) != 0 {
-					t.Fatalf("unconsumed predicates=%v", residuals[0])
+				// Only a strict probable intersection keeps its text predicate.
+				kept := len(residuals[0]) == 1
+				if kept {
+					cp, ok := residuals[0][0].(*predicates.ComparisonPredicate)
+					kept = ok && cp.Comparison.Type == predicates.ComparisonTextContainsAllPrefixes
+				}
+				if kept != tc.strictPrefix || !tc.strictPrefix && len(residuals[0]) != 0 {
+					t.Fatalf("residual predicates=%v", residuals[0])
 				}
 				if !computeStoredRecord(alternatives[0]) {
 					t.Fatal("text access does not publish stored records")

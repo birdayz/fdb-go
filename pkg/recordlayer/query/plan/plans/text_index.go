@@ -16,11 +16,8 @@ import (
 // TextScan encapsulates the information necessary to scan a text-based
 // index. Mirrors Java's `com.apple.foundationdb.record.query.plan.TextScan`.
 //
-// The Cascades planner builds it for SQL full-text predicates (a Go
-// extension; Java's Cascades planner has no text access path). The typed
-// Predicate, Grouping and Suffix fields are executable: the executor binds
-// them and runs recordlayer.TextScan, the port of Java's TextScan, once per
-// bound physical group. The string fields describe the scan for explain.
+// The typed fields are what the executor runs (through recordlayer.TextScan);
+// the string fields are descriptive and only TextComparison is explained.
 type TextScan struct {
 	Predicate *predicates.Comparison
 	KeyTypes  []values.Type
@@ -28,14 +25,11 @@ type TextScan struct {
 	Suffix    []*predicates.ComparisonRange
 	// IndexName is the name of the text index being scanned.
 	IndexName string
-	// GroupingComparisons is a human-readable description of the
-	// grouping-key prefix comparisons (may be empty).
+	// GroupingComparisons and SuffixComparisons describe the bounds; the
+	// Cascades planner leaves them empty.
 	GroupingComparisons string
-	// TextComparison is a human-readable description of the text
-	// comparison (e.g. "TEXT_CONTAINS_ALL 'hello world'").
-	TextComparison string
-	// SuffixComparisons is a human-readable description of the suffix
-	// comparisons (may be empty).
+	// TextComparison names the comparison; the planner sets its type symbol.
+	TextComparison    string
 	SuffixComparisons string
 }
 
@@ -72,6 +66,13 @@ func (p *RecordQueryTextIndexPlan) GetIndexName() string { return p.indexName }
 
 // GetTextScan returns the text scan descriptor.
 func (p *RecordQueryTextIndexPlan) GetTextScan() TextScan { return copyTextScan(p.textScan) }
+
+// WithTextScan returns a copy scanning with the given descriptor.
+func (p *RecordQueryTextIndexPlan) WithTextScan(scan TextScan) *RecordQueryTextIndexPlan {
+	cp := *p
+	cp.textScan = copyTextScan(scan)
+	return &cp
+}
 
 func copyTextScan(scan TextScan) TextScan {
 	scan.KeyTypes = append([]values.Type(nil), scan.KeyTypes...)
@@ -153,9 +154,8 @@ func (p *RecordQueryTextIndexPlan) WithQuantifiers(qs []expressions.Quantifier) 
 	return p, nil
 }
 
-// GetCorrelatedToWithoutChildren reports the correlations of the grouping
-// bindings, suffix comparisons and text comparand: a grouping column bound by
-// an IN list's element correlates the scan to the IN join's outer quantifier.
+// GetCorrelatedToWithoutChildren reports the bindings' correlations, such as
+// an IN join's element bound to a grouping column.
 func (p *RecordQueryTextIndexPlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
 	out := scanComparisonCorrelations(p.textScan.Suffix)
 	operands := append([]values.Value(nil), p.textScan.Grouping...)

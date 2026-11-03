@@ -3596,8 +3596,9 @@ these claims; the implementation notes below are not controlled comparisons.
   as a text access.
 - [ ] `TextScan` with a suffix range seeks the range start in the bunched map
   (`BunchedMap.scanMulti`), whose keys are each bunch's first posting, and so
-  misses postings of a bunch that begins before the range. Java has the same
-  behaviour; its planner never builds a suffix range. The SQL executor filters
+  misses postings of a bunch that begins before the range. Java builds the same
+  range and is expected to behave alike, unverified; its planner never builds
+  a suffix range. The SQL executor filters
   whole-group postings instead (`executeTextIndexScan`). A Java conformance
   probe pinning the miss, and a seek to the bunch before the range start,
   remain to be done.

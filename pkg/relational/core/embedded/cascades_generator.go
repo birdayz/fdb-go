@@ -3226,38 +3226,9 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 		// so it fails closed.
 		sparse := idx.HasFilteringPredicate()
 		if idx.Type == recordlayer.IndexTypeText {
-			if !sparse {
+			if layout, err := recordlayer.DescribeTextIndex(idx); !sparse && err == nil && !layout.TokenizedPrimaryKey {
 				def := &metadataIndexDef{idx: idx, md: c.md}
-				grouping := 0
-				if g, ok := idx.RootExpression.(*recordlayer.GroupingKeyExpression); ok {
-					grouping = g.GetGroupingCount()
-				}
-				textInPrimaryKey := false
-				for _, position := range idx.PrimaryKeyComponentPositions() {
-					if position == grouping {
-						textInPrimaryKey = true
-					}
-				}
-				if textInPrimaryKey {
-					continue
-				}
-				tokenizer := idx.Options[recordlayer.IndexOptionTextTokenizerName]
-				if tokenizer == "" {
-					tokenizer = recordlayer.DefaultTextTokenizerName
-				}
-				registeredTokenizer, tokenizerErr := recordlayer.GetTextTokenizer(tokenizer)
-				if tokenizerErr != nil {
-					continue
-				}
-				version := recordlayer.GlobalMinVersion
-				if configured, present := idx.Options[recordlayer.IndexOptionTextTokenizerVersion]; present {
-					parsed, versionErr := recordlayer.JavaParseInt(configured)
-					if versionErr != nil {
-						continue
-					}
-					version = int(parsed)
-				}
-				candidates = append(candidates, &cascades.TextIndexMatchCandidate{Name: idx.Name, Columns: def.IndexColumnNames(), RecordTypes: def.IndexRecordTypes(), GroupingCount: grouping, TokenizerName: tokenizer, TokenizerVersion: version, TokenizerMaxVersion: registeredTokenizer.MaxVersion(), RequireLatestTokenizer: true, OmitPositions: idx.GetBooleanOption(recordlayer.IndexOptionTextOmitPositions, false), CreatesDuplicates: idx.CreatesDuplicates(), RowType: def.IndexRowType(), KeyTypes: def.IndexKeyComponentTypes()})
+				candidates = append(candidates, &cascades.TextIndexMatchCandidate{Name: idx.Name, Columns: def.IndexColumnNames(), RecordTypes: def.IndexRecordTypes(), GroupingCount: layout.TextPosition, TokenizerName: layout.Tokenizer.Name(), TokenizerVersion: layout.TokenizerVersion, TokenizerMaxVersion: layout.Tokenizer.MaxVersion(), OmitPositions: idx.GetBooleanOption(recordlayer.IndexOptionTextOmitPositions, false), CreatesDuplicates: idx.CreatesDuplicates(), RowType: def.IndexRowType(), KeyTypes: def.IndexKeyComponentTypes()})
 			}
 			continue
 		}
@@ -5350,6 +5321,9 @@ func isAllowedFunction(name string) bool {
 		"BITMAP_BUCKET_OFFSET", "BITMAP_BIT_POSITION",
 		// Vector distances are DistanceValues (expr.distanceOperatorForFunc).
 		"EUCLIDEAN_DISTANCE", "EUCLIDEAN_SQUARE_DISTANCE", "COSINE_DISTANCE", "DOT_PRODUCT_DISTANCE",
+		// Text predicates are text ComparisonPredicates (expr.walkTextFunction).
+		"TEXT_CONTAINS_ALL", "TEXT_CONTAINS_ALL_WITHIN", "TEXT_CONTAINS_ANY", "TEXT_CONTAINS_PHRASE",
+		"TEXT_CONTAINS_PREFIX", "TEXT_CONTAINS_ALL_PREFIXES", "TEXT_CONTAINS_ANY_PREFIX",
 		`"` + expr.SQLFunctionArgument + `"`:
 		return true
 	}

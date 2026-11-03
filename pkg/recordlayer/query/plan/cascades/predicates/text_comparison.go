@@ -15,6 +15,11 @@ func (t ComparisonType) IsText() bool {
 	return t >= ComparisonTextContainsAll && t <= ComparisonTextContainsAnyPrefix
 }
 
+// IsTextPrefix reports a text comparison whose scan reads token prefixes.
+func (t ComparisonType) IsTextPrefix() bool {
+	return t == ComparisonTextContainsPrefix || t == ComparisonTextContainsAllPrefixes || t == ComparisonTextContainsAnyPrefix
+}
+
 // TextComparisonError reports an invalid text predicate or comparand.
 type TextComparisonError struct{ Message string }
 
@@ -42,14 +47,8 @@ func recordLayerTextType(t ComparisonType) (recordlayer.TextComparisonType, bool
 	return 0, false
 }
 
-// RecordLayerTextComparison builds the Record Layer comparison
-// (Comparisons.TextComparison and its TextWithMaxDistanceComparison and
-// TextContainsAllPrefixesComparison subclasses) for this text comparison and
-// an evaluated comparand. A string comparand is tokenized by whoever uses the
-// comparison (the index tokenizer for a scan, the comparison's tokenizer for
-// evaluation); a list of strings is used as given, "" standing for a stop
-// word, as in Java's Text.containsAll(List). A nil comparand returns nil: Java
-// evaluates a comparison without comparand tokens to null.
+// RecordLayerTextComparison is Java's Comparisons.TextComparison for an
+// evaluated comparand: a string to tokenize, or a token list; nil for NULL.
 func (c Comparison) RecordLayerTextComparison(comparand any) (*recordlayer.TextComparison, error) {
 	typ, ok := recordLayerTextType(c.Type)
 	if !ok {

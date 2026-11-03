@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 func TestIntegrationTextSharedLimitsAndCancellation(t *testing.T) {
@@ -186,5 +189,52 @@ func TestIntegrationTextOmittedPositionsAndRebuild(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestIntegrationTextPlanGuards: the executor refuses a text plan whose
+// bindings or comparison do not fit the index.
+func TestIntegrationTextPlanGuards(t *testing.T) {
+	t.Parallel()
+	index := recordlayer.NewTextIndex("text_idx", recordlayer.GroupBy(recordlayer.Nest("flower", recordlayer.Field("type")), recordlayer.Field("price")))
+	store := setupStore(t, index)
+	all := predicates.Comparison{Type: predicates.ComparisonTextContainsAll, Operand: values.LiteralValue("red")}
+	grouping := []values.Value{values.LiteralValue(int64(1))}
+	keyTypes := []values.Type{values.NullableInt, values.NullableString}
+	other := all
+	other.TextTokenizerName = "other"
+	null := all
+	null.Operand = values.NewNullValue(values.NullableString)
+	for _, tc := range []struct {
+		name         string
+		scan         plans.TextScan
+		continuation []byte
+		message      string
+	}{
+		{"missing grouping", plans.TextScan{Predicate: &all, KeyTypes: keyTypes}, nil, "equality bindings for every grouping column"},
+		{"short key types", plans.TextScan{Predicate: &all, Grouping: grouping}, nil, "key types do not cover"},
+		{"tokenizer", plans.TextScan{Predicate: &other, Grouping: grouping, KeyTypes: keyTypes}, nil, "tokenizer does not match"},
+		{"null resume", plans.TextScan{Predicate: &null, Grouping: grouping, KeyTypes: keyTypes}, []byte{1}, "cannot resume an empty text query"},
+		{"no comparison", plans.TextScan{Grouping: grouping, KeyTypes: keyTypes}, nil, "requires a typed text comparison"},
+	} {
+		_, err := testDB.Run(context.Background(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			s, e := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).SetSubspace(store.Subspace()).Open()
+			if e != nil {
+				return nil, e
+			}
+			p, e := plans.NewRecordQueryTextIndexPlan(index.Name, tc.scan, integrationOrderType(), false)
+			if e != nil {
+				return nil, e
+			}
+			_, e = ExecutePlan(context.Background(), p, s, EmptyEvaluationContext(), tc.continuation, recordlayer.DefaultExecuteProperties())
+			var invalid *predicates.TextComparisonError
+			if !errors.As(e, &invalid) || !strings.Contains(e.Error(), tc.message) {
+				t.Fatalf("%s: error=%v", tc.name, e)
+			}
+			return nil, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }

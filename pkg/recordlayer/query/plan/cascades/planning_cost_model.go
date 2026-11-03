@@ -1017,11 +1017,9 @@ func collectSargedAliases(e expressions.RelationalExpression) map[values.Correla
 //   - Unwrapping RecordQueryCoveringIndexPlan has no Go analogue at all:
 //     covering is a flag on the index plan, not a wrapper around it.
 //   - visitRecordQueryScoreForRankPlan REPLACES the child result with the
-//     ranks' comparisons, and visitRecordQueryTextIndexPlan contributes the
-//     text scan's grouping and text comparisons. Go's score-for-rank plan is a
-//     pass-through union here and its text-index plan contributes nothing. Both
-//     are unreachable rather than agreed: neither plan is constructed outside
-//     tests, so no query can reach either arm.
+//     ranks' comparisons. Go's score-for-rank plan is a pass-through union
+//     here; it is unreachable rather than agreed, as no query constructs it.
+//     visitRecordQueryTextIndexPlan is reproduced (textScanComparisons).
 //   - evaluateAtRef unions ALL members of a Reference; this descends
 //     firstPhysicalChild only. That narrowing is the cost model's convention
 //     for walking a concrete candidate (see concretePlanCounts) and predates
@@ -1061,6 +1059,25 @@ func collectSargedComparisons(e expressions.RelationalExpression) []*predicates.
 		for _, c := range comparisonsFromRanges(p.GetScanComparisons()) {
 			out = addComparisonToSet(out, c)
 		}
+	}
+	if p, ok := e.(*plans.RecordQueryTextIndexPlan); ok {
+		for _, c := range textScanComparisons(p.GetTextScan()) {
+			out = addComparisonToSet(out, c)
+		}
+	}
+	return out
+}
+
+// textScanComparisons is ComparisonsVisitor.visitRecordQueryTextIndexPlan
+// (ComparisonsProperty.java:154-164): the grouping comparisons and the text
+// comparison, not the suffix.
+func textScanComparisons(scan plans.TextScan) []*predicates.Comparison {
+	var out []*predicates.Comparison
+	for _, g := range scan.Grouping {
+		out = append(out, &predicates.Comparison{Type: predicates.ComparisonEquals, Operand: g})
+	}
+	if scan.Predicate != nil {
+		out = append(out, scan.Predicate)
 	}
 	return out
 }

@@ -280,9 +280,15 @@ func derivePlanTypes() []reflect.Type {
 var specimens = map[string]specimen{
 	"RecordQueryTextIndexPlan": {
 		build: func(t *testing.T) (RecordQueryPlan, map[string]*values.RecordConstructorValue) {
-			s := sentinel()
-			p := mustFinalizeConstruct(NewRecordQueryTextIndexPlan("TEXT", TextScan{Grouping: []values.Value{s}}, finalizeRowType("T"), false))
-			return p, map[string]*values.RecordConstructorValue{"textScan": s}
+			group, suffix, comparand := sentinel(), sentinel(), sentinel()
+			p := mustFinalizeConstruct(NewRecordQueryTextIndexPlan("TEXT", TextScan{
+				Grouping:  []values.Value{group},
+				Suffix:    []*predicates.ComparisonRange{sentinelRange(t, suffix)},
+				Predicate: &predicates.Comparison{Type: predicates.ComparisonTextContainsAll, Operand: comparand},
+			}, finalizeRowType("T"), false))
+			return p, map[string]*values.RecordConstructorValue{
+				"textScan[grouping]": group, "textScan[suffix]": suffix, "textScan[predicate]": comparand,
+			}
 		},
 	},
 	"RecordQueryAggregateIndexPlan": {

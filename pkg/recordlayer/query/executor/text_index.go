@@ -19,16 +19,8 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// executeTextIndexScan is RecordQueryTextIndexPlan.executeEntries
-// (RecordQueryTextIndexPlan.java:96-104) followed by the record fetch: every
-// posting stream, intersection, union and position filter is
-// recordlayer.TextScan's.
-//
-// Java binds the grouping columns to one tuple. SQL equality can name several
-// physical groups (a DOUBLE grouping column's -0.0 and +0.0 are distinct tuple
-// elements), so the grouping equalities bind to a scan range set with one
-// leaf per physical group, and each leaf runs a TextScan with that group's
-// key. A leaf resumes from TextScan's own continuation.
+// executeTextIndexScan runs recordlayer.TextScan once per physical group the
+// grouping bindings name (SQL's -0.0 = 0.0 names two), then fetches records.
 func executeTextIndexScan(ctx context.Context, p *plans.RecordQueryTextIndexPlan, store *recordlayer.FDBRecordStore, eval *EvaluationContext, continuation []byte, props recordlayer.ExecuteProperties) (recordlayer.RecordCursor[QueryResult], error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -47,40 +39,26 @@ func executeTextIndexScan(ctx context.Context, p *plans.RecordQueryTextIndexPlan
 	if idx.HasFilteringPredicate() {
 		return nil, &FilteredIndexPlanError{IndexName: idx.Name}
 	}
-	grouping := 0
-	if g, ok := idx.RootExpression.(*recordlayer.GroupingKeyExpression); ok {
-		grouping = g.GetGroupingCount()
+	layout, err := recordlayer.DescribeTextIndex(idx)
+	if err != nil {
+		return nil, err
 	}
-	for _, position := range idx.PrimaryKeyComponentPositions() {
-		if position == grouping {
-			return nil, &predicates.TextComparisonError{Message: "text scan cannot reconstruct a primary key trimmed into the tokenized text column"}
-		}
+	if layout.TokenizedPrimaryKey {
+		return nil, &predicates.TextComparisonError{Message: "text scan cannot reconstruct a primary key trimmed into the tokenized text column"}
 	}
+	grouping, tokenizer, version := layout.TextPosition, layout.Tokenizer, layout.TokenizerVersion
 	if len(scan.Grouping) != grouping {
 		return nil, &predicates.TextComparisonError{Message: "text scan requires equality bindings for every grouping column"}
+	}
+	if len(scan.Suffix) > 0 && scan.Predicate.Type.IsTextPrefix() {
+		// TextScan.scanTokenPrefix (TextScan.java:429-431).
+		return nil, &recordlayer.RecordCoreError{Message: "text prefix comparison included inequality scan comparison", IndexName: idx.Name}
 	}
 	if len(scan.KeyTypes) < grouping+1+len(scan.Suffix) {
 		return nil, &predicates.TextComparisonError{Message: "text scan key types do not cover its grouping and suffix columns"}
 	}
-	tokenizer, err := recordlayer.GetTextTokenizer(idx.Options[recordlayer.IndexOptionTextTokenizerName])
-	if err != nil {
-		return nil, err
-	}
 	if requested := scan.Predicate.TextTokenizerName; requested != "" && requested != tokenizer.Name() {
 		return nil, &predicates.TextComparisonError{Message: "text query tokenizer does not match index tokenizer"}
-	}
-	version := recordlayer.GlobalMinVersion
-	if s, ok := idx.Options[recordlayer.IndexOptionTextTokenizerVersion]; ok {
-		v, e := recordlayer.JavaParseInt(s)
-		if e != nil {
-			return nil, e
-		}
-		version = int(v)
-	}
-	typ := scan.Predicate.Type
-	if len(scan.Suffix) > 0 && (typ == predicates.ComparisonTextContainsPrefix || typ == predicates.ComparisonTextContainsAnyPrefix || typ == predicates.ComparisonTextContainsAllPrefixes) {
-		// TextScan.scanTokenPrefix (TextScan.java:429-431).
-		return nil, &predicates.TextComparisonError{Message: "text prefix comparison included inequality scan comparison"}
 	}
 	var comparand any
 	if scan.Predicate.Operand != nil {
@@ -104,8 +82,7 @@ func executeTextIndexScan(ctx context.Context, p *plans.RecordQueryTextIndexPlan
 		return nil, err
 	}
 
-	// The range set runs over the grouping and suffix columns: the index key
-	// without its token column.
+	// The range set runs over the index key without its token column.
 	comps := make([]*predicates.ComparisonRange, 0, grouping+len(scan.Suffix))
 	for _, v := range scan.Grouping {
 		comps = append(comps, predicates.EmptyComparisonRange().Merge(&predicates.Comparison{Type: predicates.ComparisonEquals, Operand: v}).Range)
@@ -114,8 +91,7 @@ func executeTextIndexScan(ctx context.Context, p *plans.RecordQueryTextIndexPlan
 	keyTypes := make([]values.Type, 0, len(comps))
 	keyTypes = append(keyTypes, scan.KeyTypes[:grouping]...)
 	keyTypes = append(keyTypes, scan.KeyTypes[grouping+1:grouping+1+len(scan.Suffix)]...)
-	// Each physical group is its own leaf: a range covering both zero groups
-	// would interleave their tokens.
+	// No terminal-zero widening: one range over both zero groups mixes tokens.
 	spec, err := bindScanComparisonsToRangeSetWithTerminalWidening(comps, keyTypes, scanBindContext(eval), p.IsReverse(),
 		textScanRuntimeSalt(p.HashCodeWithoutChildren(), tokenizer.Name(), version, terms), false)
 	if err != nil {
@@ -137,11 +113,8 @@ func executeTextIndexScan(ctx context.Context, p *plans.RecordQueryTextIndexPlan
 		if e != nil || len(scan.Suffix) == 0 {
 			return cursor, e
 		}
-		// TextScan seeks a suffix range's start in the bunched map, whose keys
-		// are each bunch's first posting, and so skips the postings of a bunch
-		// that starts before the range (Java's planner never builds a suffix
-		// range, TextScanPlanner.java:126). The leaf scans the whole group and
-		// keeps the postings inside the range.
+		// TextScan's suffix seek misses a bunch that starts before the range
+		// (DIVERGENCES.md); scan the group and filter. No planner builds one.
 		bounds := rng.ToFDBRange(subspace.FromBytes(nil))
 		begin, end := bounds.Begin.FDBKey(), bounds.End.FDBKey()
 		return recordlayer.FilterCursor(cursor, func(entry *recordlayer.IndexEntry) bool {
@@ -170,10 +143,8 @@ func textScanTerms(comparison *recordlayer.TextComparison, tokenizer recordlayer
 	}
 }
 
-// textScanRuntimeSalt binds a continuation to the scanned tokens as well as
-// the plan: a parameterized comparand changes the token streams that the
-// continuation positions. Every term, stop-word slots included, is
-// length-framed so that different term lists never share an identity.
+// textScanRuntimeSalt binds a continuation to the length-framed terms too: a
+// parameter changes the token streams it positions.
 func textScanRuntimeSalt(planHash uint64, tokenizer string, version int, terms []string) string {
 	encoded := binary.BigEndian.AppendUint64(nil, planHash)
 	encoded = binary.BigEndian.AppendUint64(encoded, uint64(version))
