@@ -213,7 +213,7 @@ func TestRYWWalkKeepsReplyRowsAndPoolsItsStorage(t *testing.T) {
 		}
 		w.release()
 	})
-	if allocs > 1 {
+	if !walkPoolRaceInstrumented && allocs > 1 {
 		t.Fatalf("a warm cached walk allocates %v times, want 1 (its result)", allocs)
 	}
 	if len(m.requests) != 1 {
