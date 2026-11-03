@@ -1,0 +1,14 @@
+syntax = "proto2";
+
+package fdb.cli.meta.testdata;
+
+import "record_metadata_options.proto";
+
+message Contact {
+  option (com.apple.foundationdb.record.record).usage = NESTED;
+
+  message Address {
+    option (com.apple.foundationdb.record.record).usage = NESTED;
+    optional string city = 1;
+  }
+}

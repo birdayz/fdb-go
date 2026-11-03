@@ -1,6 +1,17 @@
 load("@protobuf//bazel:java_proto_library.bzl", "java_proto_library")
 load("@protobuf//bazel:proto_library.bzl", "proto_library")
 
+filegroup(
+    name = "cli_example_sources",
+    srcs = [
+        "record_key_expression.proto",
+        "record_metadata.proto",
+        "record_metadata_options.proto",
+        "record_query_plan.proto",
+    ],
+    visibility = ["//cmd/fdb:__subpackages__"],
+)
+
 proto_library(
     name = "apple_proto",
     srcs = glob(["*.proto"]),

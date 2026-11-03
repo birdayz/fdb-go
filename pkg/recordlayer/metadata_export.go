@@ -12,7 +12,7 @@ import (
 // wire format — the same bytes FDBMetaDataStore writes into FDB.
 //
 // Intended for apps with programmatic metadata that want to ship a .pb
-// artifact alongside their binaries so operator tooling (e.g. `frl --meta-file`)
+// artifact alongside their binaries so operator tooling (e.g. `fdb rl meta get --meta-file`)
 // can introspect the store without adopting FDBMetaDataStore. Typical use:
 //
 //	func main() {

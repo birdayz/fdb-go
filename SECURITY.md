@@ -48,7 +48,7 @@ The CI scan excludes `pkg/testcontainers` and `pkg/relational/sqltest`, whose
 shared `testkit` imports the container helpers. These helpers wrap Docker's
 client SDK for tests and developer/stress tools (including `factory-run`,
 `factory-migrate`, `fdb-binding-stress`, and `sql-diff-stress`); neither the
-production library nor the released `frl` CLI imports them. The exclusion is
+production library nor the released `fdb` CLI imports them. The exclusion is
 not a clean bill of health for the dependency graph or developer workloads.
 
 The legacy `github.com/docker/docker` module has open advisories concerning

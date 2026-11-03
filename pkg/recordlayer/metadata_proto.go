@@ -82,10 +82,15 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 		md.Records = protodesc.ToFileDescriptorProto(m.fileDescriptor)
 	}
 
-	// 2. Dependencies (transitive)
+	// Java emits all transitive dependencies from a filename-keyed TreeMap.
 	deps := collectDependencies(m.fileDescriptor)
+	sort.Slice(deps, func(i, j int) bool { return deps[i].Path() < deps[j].Path() })
 	for _, dep := range deps {
-		md.Dependencies = append(md.Dependencies, protodesc.ToFileDescriptorProto(dep))
+		if source := m.dependencySourceProtos[dep.Path()]; source != nil {
+			md.Dependencies = append(md.Dependencies, proto.Clone(source).(*descriptorpb.FileDescriptorProto))
+		} else {
+			md.Dependencies = append(md.Dependencies, protodesc.ToFileDescriptorProto(dep))
+		}
 	}
 
 	// 3. Build index → record type name mapping
@@ -286,6 +291,7 @@ func RecordMetaDataFromProto(md *gen.MetaData, opts ...MetaDataProtoOption) (*Re
 		return nil, builder.buildErrors[0]
 	}
 	builder.SetRecordsSourceProto(recordsSource)
+	builder.SetDependenciesSourceProtos(md.Dependencies)
 
 	// 2b. The unmodelled fields, carried verbatim for re-emission.
 	builder.preserved = preservedMetaDataFieldsFromProto(md)

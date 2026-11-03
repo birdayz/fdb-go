@@ -78,7 +78,7 @@ func TestFDB_CollectedStatisticsDriveJoinOrder(t *testing.T) {
 		}
 
 		if useStats {
-			// Collect through the driver connection, the way `frl stats` will.
+			// Collect through the driver connection, the way `fdb rl stats` will.
 			conn, cErr := db.Conn(ctx)
 			if cErr != nil {
 				t.Fatalf("conn: %v", cErr)

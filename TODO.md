@@ -2155,7 +2155,7 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   terms with Java differentials. Widen the direct-caller Unicode guard to
   identifier/name callers and helper indirection; route or explicitly exclude
   the remaining `strings.EqualFold`/`strings.ToUpper` uses in
-  `pkg/internal/querycensus` and `cmd/frl`, which are outside the RFC-265 pin.
+  `pkg/internal/querycensus` and `cmd/fdb`, which are outside the RFC-265 pin.
   Evidence: [RFC-265](rfcs/265-unicode15-compatibility-pin.md#java-fidelity-and-deliberately-retained-divergences),
   `conformance/testdata/unicode15_java.json`, immutable
   `tools/unicode15baseline/testdata/go1.26.10.json` and the raw write/update/delete
@@ -2644,3 +2644,16 @@ establish vulnerable-code reachability in the published Go library.
   [#1](https://github.com/birdayz/fdb-go/security/dependabot/1). GitHub labels them runtime
   dependencies and listed no patched module version. Determine affected library/test/tool
   paths and remediation, rather than assuming either production exposure or a false positive.
+
+## CLI follow-ups
+
+- [ ] Replace `cmd/fdb/internal/cmd/sql.go`'s line-oriented `splitStatements` with
+  grammar-aware script boundaries shared by `-f` and redirected stdin, preserving
+  fail-fast statement numbering and already-completed statements. Live reproduction:
+  `SELECT order_id FROM orders WHERE order_id = 1; SELECT order_id FROM orders WHERE order_id = 2;`
+  on one line reaches the driver as a batch and fails with `0A000: multi-statement
+  batches must be DDL/DML only`; the same queries on separate lines work. The
+  current boundary is pinned in `TestIntegration_SQLWorkflow_StdinAndContext`'s
+  same-line-query subtest. Account for quoted semicolons, comments, and schema
+  template/function bodies rather than introducing another text splitter. The
+  website SQL reference documents the separate-line workaround.

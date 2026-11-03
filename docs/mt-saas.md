@@ -732,8 +732,8 @@ builds and leaves the choice of backend free.
 layer either — see [`operations.md` §7](operations.md#7-backup--restore) for the `fdbbackup` /
 `fdbrestore` commands. The pure-Go client has no `fdbbackup` protocol support: the backup error
 codes exist as a string table (`pkg/fdbgo/fdb/error.go:344`) and nothing else; there is no backup
-agent, no task bucket, no log-ranges handling. `frl` has no `export`, `import`, `backup` or
-`restore` subcommand (the complete set is registered at `cmd/frl/internal/cmd/root.go:51-61`).
+agent, no task bucket, no log-ranges handling. `fdb` has no `export`, `import`, `backup` or
+`restore` subcommand (the complete set is registered at `cmd/fdb/internal/cmd/root.go`).
 
 So a restore is a **whole-cluster** operation. Restoring one tenant to a point in time by restoring
 the cluster means restoring every other tenant to that point in time too.
@@ -741,8 +741,8 @@ the cluster means restoring every other tenant to that point in time too.
 **Per-tenant restore is not built. It is buildable, and it is a real build — do not scope it as a
 script.** The raw primitives are all exported: a tenant's data is one contiguous subspace,
 `subspace.FDBRangeKeys()` gives its bounds (used exactly that way at
-`cmd/frl/internal/cmd/store_dump.go:129`), `frl keyspace resolve` prints the prefix
-(`cmd/frl/internal/cmd/keyspace.go:26`), and `GetRange`/`Set`/`ClearRange` are ordinary client calls
+`cmd/fdb/internal/cmd/store_dump.go:129`), `fdb rl keyspace resolve` prints the prefix
+(`cmd/fdb/internal/cmd/keyspace.go:26`), and `GetRange`/`Set`/`ClearRange` are ordinary client calls
 (`pkg/fdbgo/fdb/transaction.go:100`, `:209`, `:236`). Nothing in the layer copies a range, though —
 the only whole-subspace bulk operation is destructive (`DeleteAllRecords`,
 `pkg/recordlayer/store.go:888`).
@@ -751,15 +751,15 @@ Three things make the naive version wrong, and they are the actual content of th
 
 - **No cross-transaction snapshot.** Each scan is one transaction, bounded by FDB's 5 s / 10 MB
   limits, so a store larger than one transaction is copied at drifting read versions. The only
-  freeze available is `frl store lock forbid-record-update`
-  (`cmd/frl/internal/cmd/store_write.go:52`).
+  freeze available is `fdb rl store lock forbid-record-update`
+  (`cmd/fdb/internal/cmd/store_write.go:52`).
 - **Record versions need explicit capture and replay.** A copier can preserve each complete
   stored version with `SaveRecordWithVersion` and `VersionstampSaveBehaviorIfPresent`
   (RFC-275). Ordinary `SaveRecordWithOptions` can mint new versions instead; the CLI output
   below does not capture versions, so a CLI scan/put round trip still loses them.
-- **The CLI is not a capture format.** `frl store dump` prints value *lengths*, not bytes
-  (`cmd/frl/internal/cmd/store_dump.go:188`), and `frl record scan` emits three fields —
-  `primary_key`, `record_type`, `record` (`cmd/frl/internal/cmd/record.go:186`) — with no record
+- **The CLI is not a capture format.** `fdb rl store dump` prints value *lengths*, not bytes
+  (`cmd/fdb/internal/cmd/store_dump.go:188`), and `fdb rl record scan` emits three fields —
+  `primary_key`, `record_type`, `record` (`cmd/fdb/internal/cmd/record.go:186`) — with no record
   version, no index state and no store header. A scan/put round trip is lossy.
 
 `formatVersionIncarnation` (`pkg/recordlayer/store.go:50`, "Incarnation counter for cross-cluster
@@ -777,9 +777,9 @@ strength of "the data is just a key range".
 
 ### Index builds fan out across a fleet — but not within one tenant
 
-**This gap is now partly closed.** `frl index build --all-schemas --database /FRL/tenants` builds every
+**This gap is now partly closed.** `fdb rl index build --all-schemas --database /FRL/tenants` builds every
 pending index across every schema in a database in one invocation, and
-`frl meta catalog repair --all-schemas --database /FRL/tenants` is the migration equivalent (rebind
+`fdb rl meta catalog repair --all-schemas --database /FRL/tenants` is the migration equivalent (rebind
 every tenant onto the latest template version). Passing an index name narrows the roll-out to that
 one index; omitting it builds whatever each tenant owes. The library primitive is
 `pkg/relational/core/fleet` if you want it in your own control plane rather than via the CLI.
@@ -875,7 +875,7 @@ reaches it (`pkg/relational/sqldriver/evolution_added_index_gate_fdb_test.go:56`
 
 What changed is the fan-out around it. `pkg/relational/core/fleet` iterates `ListSchemasInDatabase`
 and calls `RepairSchema` per tenant in its own transaction, and
-`frl meta catalog repair --all-schemas` exposes that to operators. So the *rebind* half of a
+`fdb rl meta catalog repair --all-schemas` exposes that to operators. So the *rebind* half of a
 migration ships.
 
 The half that still does not ship is **producing the new template version from SQL**. Templates
@@ -887,8 +887,8 @@ would close this — is specified in [`rfc-schema-migration.md`](rfc-schema-migr
 and is not implemented.
 
 So the fleet-migration story today is: bump the template version through the Go metadata builder
-and `fleet.SaveTemplate` → `frl meta catalog repair --database <db> --all-schemas` to rebind every
-tenant → `frl index build --database <db> --all-schemas` to build what the rebind left DISABLED.
+and `fleet.SaveTemplate` → `fdb rl meta catalog repair --database <db> --all-schemas` to rebind every
+tenant → `fdb rl index build --database <db> --all-schemas` to build what the rebind left DISABLED.
 **Both fan-out loops now ship.** What you still write yourself is only the first step — producing
 the new template version — because no SQL DDL reaches it.
 
@@ -899,7 +899,7 @@ Java has `OnlineIndexScrubber` with `scrubDanglingIndexEntries()` and `scrubMiss
 `fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/OnlineIndexScrubber.java:43`,
 `:92`, `:103`) — chunked, throttled, resumable, and repairing. **Go has no equivalent**, and says so
 at `pkg/recordlayer/index_state.go:567` ("the scrubbing subspaces (Go has no index scrubbing)").
-There is no `frl index scrub` (`grep scrub cmd/frl/` is empty) and no repair entry point anywhere.
+There is no `fdb rl index scrub` (`grep scrub cmd/fdb/` is empty) and no repair entry point anywhere.
 
 What Go *does* have is a **detection-only** API: `FDBRecordStore.ValidateIndex`
 (`pkg/recordlayer/index_validation.go:39`, Java's `StandardIndexMaintainer.validateEntries()`),
@@ -933,7 +933,7 @@ format version 14** (`store_builder.go:1196` → `formatVersionCurrent`,
 `pkg/recordlayer/store.go:51-52`), **while Java's default for a new store is 7**
 (`FormatVersion.java:215-216`, `CACHEABLE_STATE(7)` at `:133`; Java's *maximum supported* is also
 14). A Go binary opening a tenant store upgrades that store's header in place unless you call
-`SetFormatVersion` explicitly — and `frl index build` exposes no flag for it, so the CLI always runs
+`SetFormatVersion` explicitly — and `fdb rl index build` exposes no flag for it, so the CLI always runs
 at its binary's newest. This divergence is booked in `DIVERGENCES.md`; treat it as a deployment
 decision, not an implementation detail.
 

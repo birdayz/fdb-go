@@ -540,9 +540,9 @@ const (
 	// (MARK_READABLE), or a mutual build its peers completed.
 	IndexBuildOutcomeBuilt
 	// IndexBuildOutcomeLeftAlone: the call neither built nor published. That
-	// covers two cases: the primary index was READABLE under CONTINUE (what frl
+	// covers two cases: the primary index was READABLE under CONTINUE (what fdb
 	// reports as already readable), or MARK_READABLE was resolved with
-	// publication disabled (unreachable from frl, which always publishes).
+	// publication disabled (unreachable from fdb, which always publishes).
 	IndexBuildOutcomeLeftAlone
 	// IndexBuildOutcomePublished: the call published the targets without
 	// building them (MARK_READABLE).

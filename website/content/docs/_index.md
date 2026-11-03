@@ -1,6 +1,6 @@
 ---
 title: Docs
-description: "Build fdb-go from source, compare its three FoundationDB APIs, and review readiness and compatibility boundaries."
+description: "Use the fdb CLI, build with the FoundationDB Go APIs, and review project readiness and compatibility boundaries."
 next: getting-started
 weight: 1
 ---
@@ -11,6 +11,7 @@ engine. The client works without either higher layer.
 
 {{< cards >}}
   {{< card link="getting-started" title="Getting started" icon="play" subtitle="Build from source and run the examples locally." >}}
+  {{< card link="cli" title="fdb CLI" icon="terminal" subtitle="Protobuf records, indexes, SQL, cluster connections, and command reference." >}}
   {{< card link="benchmarks" title="Benchmarks" icon="chart-bar" subtitle="Preregistered single-node and 4-node VPC benchmark campaigns." >}}
   {{< card link="maturity" title="Status & compatibility" icon="shield-check" subtitle="Readiness, version targets, test coverage, and Java interoperability." >}}
   {{< card link="https://github.com/birdayz/fdb-go/blob/master/docs/operations.md" title="Operator guide" icon="book-open" subtitle="Transactions, index builds, backups, and observability." >}}

@@ -1,0 +1,451 @@
+package cmd
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	configv1 "fdb.dev/cmd/fdb/gen/fdb/config/v1"
+	"fdb.dev/cmd/fdb/internal/config"
+	"fdb.dev/cmd/fdb/internal/meta"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/core/functions"
+)
+
+// storeAddressFlags is the shared flag set for every store-touching
+// command. Two addressing modes (RFC-174 §3.1 — layered addressing):
+//
+//   - record-layer: context keyspace_path or typed tuple + a metadata source
+//     (descriptor set, serialized metadata file, or FDBMetaDataStore)
+//   - relational:   --database /path --schema name — keyspace resolved
+//     via the relational keyspace layout, metadata from the catalog's
+//     schema-pinned template version (catalogSource)
+//
+// The modes are mutually exclusive per invocation; --database/--schema
+// override the context's keyspace_path + metadata entirely.
+type storeAddressFlags struct {
+	contextName   string
+	metaFile      string
+	descriptorSet string
+	recordsFile   string
+	metaVersion   metadataVersionValue
+	database      string
+	schema        string
+	clusterFile   string
+	keyspaceTuple string // JSON array (--keyspace-tuple)
+}
+
+// register declares the flags on c. withMetadata is false for commands
+// that do not need record definitions (store info / store dump).
+func (f *storeAddressFlags) register(c *cobra.Command, withMetadata bool) {
+	c.Flags().StringVar(&f.contextName, "context", "", "context name to use")
+	if withMetadata {
+		c.Flags().StringVar(&f.metaFile, "meta-file", "", "path to MetaData.pb; overrides context.metadata")
+		c.Flags().StringVar(&f.descriptorSet, "descriptor-set", "", "path to a FileDescriptorSet with imports; derive metadata from protobuf options")
+		c.Flags().StringVar(&f.recordsFile, "records-file", "", "records .proto import path within --descriptor-set (required when ambiguous)")
+		c.Flags().Var(&f.metaVersion, "meta-version", "metadata version for --descriptor-set (default: derive from annotations)")
+	}
+	c.Flags().StringVar(&f.database, "database", "", "relational database URI (with --schema; overrides keyspace_path)")
+	c.Flags().StringVar(&f.schema, "schema", "", "relational schema name (with --database)")
+	c.Flags().StringVar(&f.clusterFile, "cluster-file", "", "FDB cluster file; overrides the context's cluster_file — chains with `fdb dev up`")
+	c.Flags().StringVar(&f.keyspaceTuple, "keyspace-tuple", "", `typed keyspace as a JSON array, e.g. '["myapp", 42, {"uuid": "…"}]'`)
+}
+
+// metadataVersionValue keeps an explicit version zero distinct from an unset
+// override. Descriptor input cannot recover application metadata-version history.
+type metadataVersionValue struct{ value *int32 }
+
+func (v *metadataVersionValue) String() string {
+	if v == nil || v.value == nil {
+		return ""
+	}
+	return strconv.FormatInt(int64(*v.value), 10)
+}
+
+func (v *metadataVersionValue) Set(raw string) error {
+	n, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil || n < 0 {
+		return fmt.Errorf("metadata version must be a non-negative int32, got %q", raw)
+	}
+	version := int32(n)
+	v.value = &version
+	return nil
+}
+
+func (*metadataVersionValue) Type() string { return "int32" }
+
+// relational reports whether the relational addressing mode is active.
+func (f *storeAddressFlags) relational() bool {
+	return f.database != "" || f.schema != ""
+}
+
+// validate enforces the mode rules: --database and --schema come as a
+// pair, don't mix with file metadata sources (two competing definitions) or
+// --keyspace-tuple (two competing keyspaces).
+func (f *storeAddressFlags) validate() error {
+	if (f.database == "") != (f.schema == "") {
+		return fmt.Errorf("relational addressing needs both flags — pass --database AND --schema")
+	}
+	if f.metaFile != "" && f.descriptorSet != "" {
+		return fmt.Errorf("conflicting metadata sources: choose --meta-file or --descriptor-set")
+	}
+	if f.descriptorSet == "" && (f.recordsFile != "" || f.metaVersion.value != nil) {
+		return fmt.Errorf("--records-file and --meta-version require --descriptor-set")
+	}
+	if f.relational() && (f.metaFile != "" || f.descriptorSet != "") {
+		flag := "--meta-file"
+		if f.descriptorSet != "" {
+			flag = "--descriptor-set"
+		}
+		return fmt.Errorf("conflicting metadata sources: %s cannot be combined with --database/--schema (the catalog is the metadata source for relational stores)", flag)
+	}
+	if f.relational() && f.keyspaceTuple != "" {
+		return fmt.Errorf("conflicting keyspaces: --keyspace-tuple cannot be combined with --database/--schema")
+	}
+	return nil
+}
+
+// resolve validates the flags and loads the config context. A missing
+// context is tolerated when the invocation is self-contained — a
+// relational address or an explicit file metadata source — so `fdb rl record scan
+// --database /FRL/x --schema y` works with zero config (cluster from the
+// default cluster-file discovery).
+func (f *storeAddressFlags) resolve() (*storeTarget, error) {
+	if err := f.validate(); err != nil {
+		return nil, err
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
+	}
+	cfgCtx, err := config.ResolveContext(cfg, f.contextName)
+	if err != nil {
+		var missingContext *config.ContextNotFoundError
+		if f.clusterFile == "" && errors.As(err, &missingContext) {
+			return nil, err
+		}
+		selfContained := f.metaFile != "" || f.descriptorSet != "" || f.relational() || f.clusterFile != ""
+		if !selfContained {
+			if errors.Is(err, config.ErrNoContext) {
+				path, _ := config.Path()
+				return nil, fmt.Errorf("%w (config: %s)", err, path)
+			}
+			return nil, err
+		}
+		cfgCtx = &configv1.Context{Name: "(cli-flag)"}
+	}
+	if err := validateContextAddressing(cfgCtx); err != nil {
+		return nil, err
+	}
+	target := &storeTarget{
+		cfgCtx:   cfgCtx,
+		metaFile: f.metaFile,
+		// The database path and the schema are SQL identifiers, as DDL reads
+		// them: unquoted names fold to upper case, a path whole (CREATE
+		// DATABASE /FRL/db creates /FRL/DB), so `--database /FRL/db --schema main` finds
+		// what `create schema /FRL/db/main` created (/FRL/DB, MAIN).
+		database: functions.NormalizeIdentifier(f.database),
+		// The schema is an SQL identifier: unquoted names fold to upper
+		// case (the same rule CREATE SCHEMA applies), so `--schema main`
+		// finds the schema `create schema /FRL/db/main` created (MAIN).
+		schema:          functions.NormalizeIdentifier(f.schema),
+		clusterFileFlag: f.clusterFile,
+	}
+	if f.descriptorSet != "" {
+		target.descriptorSet = &meta.DescriptorSetSource{
+			Path:        f.descriptorSet,
+			RecordsFile: f.recordsFile,
+			Version:     f.metaVersion.value,
+		}
+	}
+	if f.keyspaceTuple != "" {
+		t, err := tupleFromJSON(f.keyspaceTuple)
+		if err != nil {
+			return nil, err
+		}
+		target.keyspaceTuple = t
+	}
+	// Adopt the context's addressing when no flag overrides it: a
+	// context may carry database/schema (relational) or keyspace_tuple
+	// (typed path) instead of keyspace_path. --meta-file overrides only
+	// the METADATA source, never the keyspace — a keyspace_tuple context
+	// keeps its tuple. A relational context + --meta-file is the same
+	// two-metadata-sources conflict validate() rejects at flag level
+	// (the catalog IS the metadata source for relational stores).
+	if !target.relational() && target.keyspaceTuple == nil {
+		if cfgCtx.GetDatabase() != "" {
+			if target.metaFile != "" || target.descriptorSet != nil {
+				flag := "--meta-file"
+				if target.descriptorSet != nil {
+					flag = "--descriptor-set"
+				}
+				return nil, fmt.Errorf("conflicting metadata sources: %s cannot be combined with relational context %q (the catalog is the metadata source for relational stores)", flag, cfgCtx.GetName())
+			}
+			// Folded like the --database/--schema flags, so a context and the
+			// flags name the same store for the same text.
+			target.database = functions.NormalizeIdentifier(cfgCtx.GetDatabase())
+			target.schema = functions.NormalizeIdentifier(cfgCtx.GetSchema())
+		} else if cfgCtx.GetKeyspaceTuple() != nil {
+			t, err := tupleFromListValue(cfgCtx.GetKeyspaceTuple())
+			if err != nil {
+				return nil, fmt.Errorf("context %q keyspace_tuple: %w", cfgCtx.GetName(), err)
+			}
+			target.keyspaceTuple = t
+		}
+	}
+	return target, nil
+}
+
+// validateContextAddressing enforces that a context declares exactly one
+// addressing mode: keyspace_path, keyspace_tuple, or database+schema.
+func validateContextAddressing(cfgCtx *configv1.Context) error {
+	if (cfgCtx.GetDatabase() == "") != (cfgCtx.GetSchema() == "") {
+		return fmt.Errorf("context %q sets only one of database/schema — they come as a pair", cfgCtx.GetName())
+	}
+	modes := 0
+	if cfgCtx.GetKeyspacePath() != "" {
+		modes++
+	}
+	if cfgCtx.GetKeyspaceTuple() != nil {
+		modes++
+	}
+	if cfgCtx.GetDatabase() != "" {
+		modes++
+	}
+	if modes > 1 {
+		return fmt.Errorf("context %q is ambiguous — set exactly one of keyspace_path, keyspace_tuple, or database+schema", cfgCtx.GetName())
+	}
+	return nil
+}
+
+// storeTarget is a fully-resolved store address: the config context
+// (cluster file + record-layer keyspace/metadata defaults) plus any
+// flag overrides. withStore turns it into an open FDBRecordStore.
+type storeTarget struct {
+	cfgCtx          *configv1.Context
+	metaFile        string
+	descriptorSet   *meta.DescriptorSetSource
+	database        string
+	schema          string
+	clusterFileFlag string
+	keyspaceTuple   tuple.Tuple // typed keyspace (flag or context); nil → keyspace_path
+	// bypassFullStoreLock, when non-nil, is passed to the store open as
+	// SetBypassFullStoreLockReason — armed by `store lock`/`store unlock`
+	// with the header's stored reason so a FULL_STORE-locked store's lock
+	// can still be managed (Java's recovery path: open with the matching
+	// bypass reason, then set/clear the state).
+	bypassFullStoreLock *string
+}
+
+func (t *storeTarget) relational() bool { return t.database != "" }
+
+// clusterFile is the effective cluster file: --cluster-file wins over
+// the context's, empty means the client's default discovery.
+func (t *storeTarget) clusterFile() string {
+	if t.clusterFileFlag != "" {
+		return t.clusterFileFlag
+	}
+	return t.cfgCtx.GetClusterFile()
+}
+
+// describe renders the target for error messages and write-confirmation
+// prompts — the relational address, the keyspace tuple, or the context's
+// keyspace path, whichever addressing mode is actually active. The tuple
+// form re-parses through tupleFromJSON, so `store truncate`'s type-back
+// gate compares against the real deletion target, never a stale or empty
+// keyspace_path.
+func (t *storeTarget) describe() string {
+	if t.relational() {
+		return t.database + "/" + t.schema
+	}
+	if t.keyspaceTuple != nil {
+		return tupleToJSON(t.keyspaceTuple)
+	}
+	return t.cfgCtx.GetKeyspacePath()
+}
+
+// subspace resolves the store's FDB subspace per the addressing mode.
+func (t *storeTarget) subspace() (subspace.Subspace, error) {
+	if t.relational() {
+		db, err := openDatabase(t.clusterFile())
+		if err != nil {
+			return nil, err
+		}
+		return relationalStoreSubspace(context.Background(), recordlayer.NewFDBDatabase(db), t.database, t.schema)
+	}
+	if t.keyspaceTuple != nil {
+		return subspaceFromTuple(t.keyspaceTuple), nil
+	}
+	if t.cfgCtx.GetKeyspacePath() == "" {
+		return nil, fmt.Errorf("context %q has empty keyspace_path", t.cfgCtx.GetName())
+	}
+	return parseKeyspacePath(t.cfgCtx.GetKeyspacePath())
+}
+
+// resolveMetaSource is the single metadata-resolution order for a
+// target: relational addressing (catalogSource, schema-pinned template
+// version) → explicit file source → the context's metadata source. Shared by
+// withStore and the commands that manage their own transactions
+// (index build).
+func resolveMetaSource(target *storeTarget, rec *recordlayer.FDBDatabase) (meta.Source, error) {
+	switch {
+	case target.relational():
+		return &catalogSource{db: rec, database: target.database, schema: target.schema}, nil
+	case target.metaFile != "":
+		return &meta.FileSource{Path: target.metaFile}, nil
+	case target.descriptorSet != nil:
+		return target.descriptorSet, nil
+	default:
+		src, err := meta.FromContext(target.cfgCtx, rec, parseKeyspacePath)
+		if err != nil {
+			if errors.Is(err, meta.ErrMissingSource) {
+				return nil, fmt.Errorf("%w (context %q)", err, target.cfgCtx.GetName())
+			}
+			return nil, err
+		}
+		return src, nil
+	}
+}
+
+// loadTargetMetadata loads a RecordMetaData for metadata-only commands
+// (meta get, meta types, index describe). FDB is dialled ONLY when the
+// source lives there — an fdb_store context (Path B, RFC-174 Slice 5
+// completion: these commands used to reject it) or relational
+// addressing; file sources stay fully offline.
+func loadTargetMetadata(ctx context.Context, target *storeTarget) (*recordlayer.RecordMetaData, error) {
+	var rec *recordlayer.FDBDatabase
+	needsFDB := target.relational() ||
+		(target.metaFile == "" && target.descriptorSet == nil && target.cfgCtx.GetMetadata().GetMetaStoreKeyspace() != "")
+	if needsFDB {
+		db, err := openDatabase(target.clusterFile())
+		if err != nil {
+			return nil, err
+		}
+		rec = recordlayer.NewFDBDatabase(db)
+	}
+	src, err := resolveMetaSource(target, rec)
+	if err != nil {
+		return nil, err
+	}
+	return src.Load(ctx)
+}
+
+// lookupRecordType resolves name against md, returning the RecordType on
+// hit and a "not found — available: A, B, C" error on miss. Shared by
+// meta types describe / record scan / record count so typos always
+// produce the same user-facing message.
+func lookupRecordType(md *recordlayer.RecordMetaData, name string) (*recordlayer.RecordType, error) {
+	if rt := md.GetRecordType(name); rt != nil {
+		return rt, nil
+	}
+	return nil, fmt.Errorf("record type %q not found — available: %s",
+		name, strings.Join(sortedRecordTypeNames(md), ", "))
+}
+
+// validateRecordType is the error-only form of lookupRecordType — for
+// callers (record scan / count) that only need the presence check, not
+// the RecordType itself.
+func validateRecordType(md *recordlayer.RecordMetaData, name string) error {
+	_, err := lookupRecordType(md, name)
+	return err
+}
+
+// lookupIndex resolves an index name against md, returning the Index
+// on hit and a "not found — available: A, B, C" error on miss. Shared
+// by index describe / index scan so typos always produce the same
+// user-facing message.
+func lookupIndex(md *recordlayer.RecordMetaData, name string) (*recordlayer.Index, error) {
+	if idx := md.GetIndex(name); idx != nil {
+		return idx, nil
+	}
+	return nil, fmt.Errorf("index %q not found — available: %s",
+		name, strings.Join(sortedIndexNames(md), ", "))
+}
+
+// withStoreE is the ergonomic twin of withStore for commands whose store
+// closure doesn't need a return value. Most `record scan` / `index ls` /
+// `index scan` style commands stream output directly to the writer and
+// would otherwise thread a sentinel struct{} through their withStore
+// calls — that's the boilerplate this wrapper eliminates.
+func withStoreE(
+	ctx context.Context,
+	target *storeTarget,
+	fn func(store *recordlayer.FDBRecordStore) error,
+) error {
+	_, err := withStore(ctx, target,
+		func(s *recordlayer.FDBRecordStore) (struct{}, error) {
+			return struct{}{}, fn(s)
+		})
+	return err
+}
+
+// withStore wires the plumbing that every data command needs: open the FDB
+// connection from the context's cluster_file, resolve the store subspace
+// and metadata source per the target's addressing mode, open the record
+// store inside a transaction, and hand the ready-to-use store to the
+// caller. Returns the caller's result + error.
+//
+// Metadata resolution order: relational addressing (catalogSource at the
+// schema-pinned template version) → explicit file source → the context's
+// metadata source.
+func withStore[T any](
+	ctx context.Context,
+	target *storeTarget,
+	fn func(store *recordlayer.FDBRecordStore) (T, error),
+) (T, error) {
+	var zero T
+
+	ss, err := target.subspace()
+	if err != nil {
+		return zero, err
+	}
+
+	db, err := openDatabase(target.clusterFile())
+	if err != nil {
+		return zero, err
+	}
+	rec := recordlayer.NewFDBDatabase(db)
+
+	src, err := resolveMetaSource(target, rec)
+	if err != nil {
+		return zero, err
+	}
+	md, err := src.Load(ctx)
+	if err != nil {
+		return zero, err
+	}
+
+	result, err := rec.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		// SetSkipPossiblyRebuild: inspecting or editing records must not
+		// migrate metadata. Open() without it runs checkPossiblyRebuild —
+		// which WRITES (header version bump, index clears/rebuild marks)
+		// whenever the provided metadata is newer than the store header.
+		// A `record scan --meta-file newer.pb` must never mutate the
+		// store it inspects. Write commands (RFC-174 Slice 4) make this
+		// decision explicitly on their own open path.
+		b := recordlayer.NewStoreBuilder().
+			SetContext(rtx).
+			SetMetaDataProvider(md).
+			SetSubspace(ss).
+			SetSkipPossiblyRebuild(true)
+		if target.bypassFullStoreLock != nil {
+			b = b.SetBypassFullStoreLockReason(*target.bypassFullStoreLock)
+		}
+		store, err := b.Open()
+		if err != nil {
+			return nil, fmt.Errorf("open store at %s: %w", target.describe(), err)
+		}
+		return fn(store)
+	})
+	if err != nil {
+		return zero, err
+	}
+	v, _ := result.(T)
+	return v, nil
+}

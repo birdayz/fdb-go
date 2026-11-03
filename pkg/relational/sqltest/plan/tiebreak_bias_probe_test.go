@@ -143,7 +143,7 @@ func joinOrderArrangement(t *testing.T, ctx context.Context, i, pkRows, fkRows i
 	const q = "EXPLAIN SELECT pkside.v, fkside.id FROM pkside, fkside WHERE fkside.fk = pkside.id"
 	off = explainJoin(t, ctx, plain, q)
 
-	// Collect through the driver connection, the way `frl stats` does, and
+	// Collect through the driver connection, the way `fdb rl stats` does, and
 	// verify the counts BEFORE reading the plan — otherwise the second column
 	// could be reporting a decision made on statistics that are simply wrong.
 	statsDB := openDSN(t, base+"&planner_statistics=true")

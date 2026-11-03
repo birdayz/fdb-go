@@ -1,0 +1,50 @@
+load("@protobuf//bazel:proto_library.bzl", "proto_library")
+load(":descriptor_set.bzl", "descriptor_set")
+
+package(default_visibility = ["//cmd/fdb:__subpackages__"])
+
+proto_library(
+    name = "details_proto",
+    srcs = ["details.proto"],
+    strip_import_prefix = "/cmd/fdb/internal/meta/testdata",
+    deps = [
+        "//proto/apple:apple_proto",
+        "@protobuf//:descriptor_proto",
+    ],
+)
+
+proto_library(
+    name = "records_proto",
+    srcs = ["records.proto"],
+    strip_import_prefix = "/cmd/fdb/internal/meta/testdata",
+    deps = [
+        ":details_proto",
+        "//proto/apple:apple_proto",
+        "@protobuf//:descriptor_proto",
+    ],
+)
+
+proto_library(
+    name = "other_records_proto",
+    srcs = ["other_records.proto"],
+    strip_import_prefix = "/cmd/fdb/internal/meta/testdata",
+    deps = [
+        "//proto/apple:apple_proto",
+        "@protobuf//:descriptor_proto",
+    ],
+)
+
+descriptor_set(
+    name = "records_descriptor_set",
+    out = "records.binpb",
+    deps = [":records_proto"],
+)
+
+descriptor_set(
+    name = "multiple_descriptor_set",
+    out = "multiple.binpb",
+    deps = [
+        ":other_records_proto",
+        ":records_proto",
+    ],
+)

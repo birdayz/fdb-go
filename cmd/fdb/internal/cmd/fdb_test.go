@@ -1,0 +1,324 @@
+package cmd
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"google.golang.org/protobuf/types/known/structpb"
+
+	configv1 "fdb.dev/cmd/fdb/gen/fdb/config/v1"
+)
+
+func TestSetContext_AddsAndActivates(t *testing.T) {
+	t.Parallel()
+	cfg := &configv1.Config{}
+	setContext(cfg, "fdb-dev", "/home/u/.fdb/fdb-dev.cluster", "/dev")
+
+	if got := cfg.GetCurrentContext(); got != "fdb-dev" {
+		t.Fatalf("current_context = %q, want fdb-dev", got)
+	}
+	if len(cfg.GetContexts()) != 1 {
+		t.Fatalf("contexts = %d, want 1", len(cfg.GetContexts()))
+	}
+	c := cfg.GetContexts()[0]
+	if c.GetClusterFile() != "/home/u/.fdb/fdb-dev.cluster" || c.GetKeyspacePath() != "/dev" {
+		t.Fatalf("context = %+v", c)
+	}
+}
+
+func TestSetContext_UpdatesExistingNoDup(t *testing.T) {
+	t.Parallel()
+	cfg := &configv1.Config{
+		CurrentContext: "prod",
+		Contexts: []*configv1.Context{
+			{Name: "prod", ClusterFile: "/etc/fdb/prod.cluster", KeyspacePath: "/app"},
+			{Name: "fdb-dev", ClusterFile: "/old.cluster", KeyspacePath: "/old"},
+		},
+	}
+	setContext(cfg, "fdb-dev", "/new.cluster", "/dev")
+
+	if len(cfg.GetContexts()) != 2 {
+		t.Fatalf("contexts = %d, want 2 (no dup)", len(cfg.GetContexts()))
+	}
+	if got := cfg.GetCurrentContext(); got != "fdb-dev" {
+		t.Fatalf("current_context = %q, want fdb-dev", got)
+	}
+	for _, c := range cfg.GetContexts() {
+		if c.GetName() == "fdb-dev" {
+			if c.GetClusterFile() != "/new.cluster" || c.GetKeyspacePath() != "/dev" {
+				t.Fatalf("fdb-dev not updated: %+v", c)
+			}
+		}
+		if c.GetName() == "prod" && c.GetClusterFile() != "/etc/fdb/prod.cluster" {
+			t.Fatalf("prod context clobbered: %+v", c)
+		}
+	}
+}
+
+func TestSetContext_ReplacesIncompatibleAddressing(t *testing.T) {
+	t.Parallel()
+	for _, c := range []*configv1.Context{
+		{Name: "local", Database: "/FRL/old", Schema: "main"},
+		{Name: "local", KeyspaceTuple: &structpb.ListValue{Values: []*structpb.Value{structpb.NewStringValue("old")}}},
+	} {
+		md := &configv1.MetadataSource{Source: &configv1.MetadataSource_MetaFile{MetaFile: "schema.pb"}}
+		c.Metadata = md
+		cfg := &configv1.Config{Contexts: []*configv1.Context{c}}
+		setContext(cfg, "local", "/new.cluster", "/dev")
+		if c.GetKeyspacePath() != "/dev" || c.GetKeyspaceTuple() != nil || c.GetDatabase() != "" || c.GetSchema() != "" {
+			t.Fatalf("dev up left incompatible addressing: %v", c)
+		}
+		if c.GetMetadata() != md {
+			t.Fatal("dev up discarded reusable native metadata")
+		}
+	}
+}
+
+func TestDevCommandWiring(t *testing.T) {
+	t.Parallel()
+	root := NewRoot()
+	dev, _, err := root.Find([]string{"dev"})
+	if err != nil || dev.Name() != "dev" {
+		t.Fatalf("dev command not wired: %v", err)
+	}
+	for _, sub := range []string{"up", "down", "status"} {
+		if c, _, err := root.Find([]string{"dev", sub}); err != nil || c.Name() != sub {
+			t.Fatalf("dev %s not wired: %v", sub, err)
+		}
+	}
+}
+
+// Regression (FDB C++ dev review, RFC-174 C4): `configure new` is not
+// idempotent — after a half-acknowledged success, fdbcli reports
+// "Database already exists" with a nonzero exit on every retry. The
+// retry loop must treat that as success, not fail a healthy cluster.
+func TestConfigureNewOutcome(t *testing.T) {
+	t.Parallel()
+	someErr := fmt.Errorf("exit status 1")
+	cases := []struct {
+		name    string
+		output  string
+		err     error
+		wantNil bool
+	}{
+		{"clean success", "Database created", nil, true},
+		{"already exists is success", "ERROR: Database already exists! To recreate the database, use the configure command with the \"new\" option.", someErr, true},
+		{"real failure propagates", "ERROR: Unable to connect to cluster", someErr, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := configureNewOutcome(tc.output, tc.err)
+			if (got == nil) != tc.wantNil {
+				t.Errorf("configureNewOutcome(%q, %v) = %v; wantNil=%t", tc.output, tc.err, got, tc.wantNil)
+			}
+		})
+	}
+}
+
+// The published port must not expose unauthenticated FDB on host LAN interfaces.
+func TestFdbRunArgs_LoopbackPublishNotHostNetwork(t *testing.T) {
+	t.Parallel()
+	args := fdbRunArgs("fdb-dev", "img:tag", "dev.fdb.cli.instance=abc", 4689)
+	want := []string{
+		"run", "-d", "--name", "fdb-dev", "--label", "dev.fdb.cli.instance=abc", "--network", "bridge",
+		"--publish", "127.0.0.1:4689:4689",
+		"--env", "FDB_NETWORKING_MODE=host",
+		"--env", "FDB_PORT=4689",
+		"--env", "FDB_CLUSTER_FILE_CONTENTS=docker:docker@127.0.0.1:4689",
+		"--env", "FDB_KNOB_min_available_space_ratio=0",
+		"img:tag",
+	}
+	if !slices.Equal(args, want) {
+		t.Fatalf("fdbRunArgs =\n  %q\nwant\n  %q", args, want)
+	}
+	if got := fdbClusterString(4500); got != "docker:docker@127.0.0.1:4500" {
+		t.Fatalf("fdbClusterString(4500) = %q", got)
+	}
+}
+
+func TestFdbUpRejectsInvalidPort(t *testing.T) {
+	t.Parallel()
+	for _, port := range []int{-1, 0, 65536} {
+		t.Run(strconv.Itoa(port), func(t *testing.T) {
+			t.Parallel()
+			cmd := newDevUpCmd()
+			cmd.SetArgs([]string{"--port", strconv.Itoa(port)})
+			if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "port must be between") {
+				t.Fatalf("invalid port %d: %v", port, err)
+			}
+		})
+	}
+}
+
+func TestDevCommandsRespectCanceledContext(t *testing.T) {
+	t.Parallel()
+	for _, subcommand := range []string{"up", "down", "status"} {
+		t.Run(subcommand, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			root := NewRoot()
+			root.SetArgs([]string{"dev", subcommand})
+			if err := root.ExecuteContext(ctx); !errors.Is(err, context.Canceled) {
+				t.Fatalf("canceled dev %s: %v", subcommand, err)
+			}
+		})
+	}
+}
+
+func TestRunDockerRespectsCanceledContext(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if out, err := runDocker(ctx, "version"); !errors.Is(err, context.Canceled) || out != "" {
+		t.Fatalf("canceled Docker operation: output=%q, error=%v", out, err)
+	}
+}
+
+func TestFDBRetryCancellation(t *testing.T) {
+	t.Parallel()
+	for _, success := range []bool{false, true} {
+		t.Run(fmt.Sprintf("callback_success_%t", success), func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				done <- retry(ctx, 3, time.Hour, func() error {
+					cancel()
+					if success {
+						return nil
+					}
+					return errors.New("retryable failure")
+				})
+			}()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("canceled retry: %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("canceled retry did not stop its backoff")
+			}
+		})
+	}
+}
+
+func TestFDBRetryBudget(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	calls := 0
+	if err := retry(ctx, 3, 0, func() error {
+		calls++
+		return nil
+	}); !errors.Is(err, context.DeadlineExceeded) || calls != 0 {
+		t.Fatalf("expired retry budget: calls=%d, error=%v", calls, err)
+	}
+	wantErr := errors.New("retryable failure")
+	if err := retry(context.Background(), 3, 0, func() error {
+		calls++
+		return wantErr
+	}); !errors.Is(err, wantErr) || calls != 3 {
+		t.Fatalf("attempt budget: calls=%d, error=%v", calls, err)
+	}
+}
+
+func TestFdbUpRequiresLocalDockerEndpoint(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		endpoint string
+		local    bool
+	}{
+		{"unix:///var/run/docker.sock", true},
+		{"unix:///Users/dev/.docker/run/docker.sock", true},
+		{"npipe:////./pipe/docker_engine", true},
+		{"ssh://remote", false},
+		{"tcp://192.0.2.1:2376", false},
+		{"tcp://localhost:2375", false},
+		{"", false},
+	} {
+		t.Run(tc.endpoint, func(t *testing.T) {
+			t.Parallel()
+			if err := validateLocalDockerEndpoint(tc.endpoint); (err == nil) != tc.local {
+				t.Fatalf("validateLocalDockerEndpoint(%q) = %v; local=%t", tc.endpoint, err, tc.local)
+			}
+		})
+	}
+}
+
+func TestEnsureFdbImagePullsOnlyMissingImageWithoutDeadline(t *testing.T) {
+	t.Parallel()
+	for _, present := range []bool{true, false} {
+		var calls []string
+		inspect := func(_ context.Context, args ...string) (string, error) {
+			calls = append(calls, strings.Join(args, " "))
+			if present {
+				return "[]", nil
+			}
+			return "", errors.New("No such image")
+		}
+		pull := func(ctx context.Context, image string, _ io.Writer) error {
+			if _, ok := ctx.Deadline(); ok {
+				t.Error("image pull inherited a deadline")
+			}
+			calls = append(calls, "pull "+image)
+			return nil
+		}
+		if err := ensureFdbImage(context.Background(), "fdb:test", io.Discard, inspect, pull); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"image inspect fdb:test"}
+		if !present {
+			want = append(want, "pull fdb:test")
+		}
+		if !slices.Equal(calls, want) {
+			t.Fatalf("present=%v calls=%q, want %q", present, calls, want)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := ensureFdbImage(ctx, "fdb:test", io.Discard,
+		func(context.Context, ...string) (string, error) { return "", context.Canceled },
+		func(context.Context, string, io.Writer) error { t.Error("canceled lookup pulled"); return nil })
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled image lookup: %v", err)
+	}
+}
+
+func TestFdbStartupDiagnosticsOutlivesStartupDeadline(t *testing.T) {
+	t.Parallel()
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+	var calls []string
+	run := func(ctx context.Context, args ...string) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		calls = append(calls, args[0])
+		switch args[0] {
+		case "logs":
+			return "FDBD joined cluster.\n", nil
+		case "exec":
+			return `<Event Type="RkUpdate" TPSLimit="0" />` + "\n", nil
+		}
+		return "", fmt.Errorf("unexpected docker %q", args)
+	}
+	got := fdbStartupDiagnostics(expired, run, "fdb-dev")
+	if !slices.Equal(calls, []string{"logs", "exec"}) {
+		t.Fatalf("docker calls = %q, want logs then exec", calls)
+	}
+	for _, want := range []string{"FDBD joined cluster.", `TPSLimit="0"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("diagnostics missing %q:\n%s", want, got)
+		}
+	}
+}

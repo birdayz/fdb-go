@@ -31,17 +31,21 @@ ensure-buf:
 # Regenerate protobuf code + gomock mocks + ANTLR parser. All three are
 # committed to git (clean + regenerate, same pattern). CI re-runs
 # `just generate` and fails on any diff, so CI is the source of truth.
-generate: ensure-buf generate-mocks generate-parser generate-frl generate-unicode15
+generate: ensure-buf generate-mocks generate-parser generate-fdb generate-cli-example generate-unicode15
     rm -rf gen/
     .tools/buf generate
     bazelisk run //:gazelle
 
-# Regenerate protobuf code for the `frl` CLI (its own buf.yaml under cmd/frl/).
-# Output goes to cmd/frl/gen/, consumed by the CLI only — never by the library
+# Regenerate protobuf code for the `fdb` CLI (its own buf.yaml under cmd/fdb/).
+# Output goes to cmd/fdb/gen/, consumed by the CLI only — never by the library
 # packages.
-generate-frl: ensure-buf
-    rm -rf cmd/frl/gen/
-    cd cmd/frl && ../../.tools/buf generate
+generate-fdb: ensure-buf
+    rm -rf cmd/fdb/gen/
+    cd cmd/fdb && ../../.tools/buf generate
+
+# Sync the website's standalone annotated-proto example and source archive.
+generate-cli-example:
+    python3 scripts/sync-website-cli-example.py
 
 # Regenerate FEATURE_MATRIX.md from the yamsql conformance corpus. The
 # TestFeatureMatrixUpToDate guard fails the build if this is not run after
@@ -223,7 +227,7 @@ fmt:
     #!/usr/bin/env bash
     set -euo pipefail
     GOFUMPT=$(bazelisk run --run_under="echo" @cc_mvdan_gofumpt//:gofumpt 2>/dev/null)
-    find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './cmd/frl/gen/*' -not -path './pkg/relational/core/parser/gen/*' -not -path './.claude/*' -exec "$GOFUMPT" -w {} +
+    find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './cmd/fdb/gen/*' -not -path './pkg/relational/core/parser/gen/*' -not -path './.claude/*' -exec "$GOFUMPT" -w {} +
 
 # Check Go formatting (fails if any file needs formatting)
 # Uses Bazel-managed gofumpt — same version as nogo linter, no drift.
@@ -231,7 +235,7 @@ lint:
     #!/usr/bin/env bash
     set -euo pipefail
     GOFUMPT=$(bazelisk run --run_under="echo" @cc_mvdan_gofumpt//:gofumpt 2>/dev/null)
-    unformatted=$("$GOFUMPT" -l $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './cmd/frl/gen/*' -not -path './pkg/relational/core/parser/gen/*' -not -path './.claude/*'))
+    unformatted=$("$GOFUMPT" -l $(find . -name '*.go' -not -path './fdb-record-layer/*' -not -path './bazel-*' -not -path './gen/*' -not -path './cmd/fdb/gen/*' -not -path './pkg/relational/core/parser/gen/*' -not -path './.claude/*'))
     if [ -n "$unformatted" ]; then
         echo "Unformatted files:"
         echo "$unformatted"
@@ -650,7 +654,7 @@ test-fresh target *args:
 vanity-modules:
     bash scripts/gen-vanity-modules.sh
 
-# Convenience wrapper for the frl CLI (Phase A skeleton — see cmd/frl/).
-# Example: `just frl version` or `just frl config schema`.
-frl *args:
-    bazelisk run //cmd/frl -- {{args}}
+# Run the fdb CLI from source.
+# Example: `just fdb version` or `just fdb rl store info`.
+fdb *args:
+    bazelisk run //cmd/fdb -- {{args}}

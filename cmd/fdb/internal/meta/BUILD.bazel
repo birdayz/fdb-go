@@ -1,0 +1,43 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "meta",
+    srcs = [
+        "descriptor_set.go",
+        "meta.go",
+    ],
+    importpath = "fdb.dev/cmd/fdb/internal/meta",
+    visibility = ["//cmd/fdb:__subpackages__"],
+    deps = [
+        "//cmd/fdb/gen/fdb/config/v1:config",
+        "//gen",
+        "//pkg/fdbgo/fdb/subspace",
+        "//pkg/recordlayer",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//types/descriptorpb",
+    ],
+)
+
+go_test(
+    name = "meta_test",
+    srcs = [
+        "descriptor_set_test.go",
+        "meta_test.go",
+    ],
+    data = [
+        "//cmd/fdb/internal/meta/testdata:multiple_descriptor_set",
+        "//cmd/fdb/internal/meta/testdata:records_descriptor_set",
+    ],
+    embed = [":meta"],
+    deps = [
+        "//cmd/fdb/gen/fdb/config/v1:config",
+        "//gen",
+        "//gen/demopb",
+        "//pkg/recordlayer",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/descriptorpb",
+        "@org_golang_google_protobuf//types/dynamicpb",
+    ],
+)

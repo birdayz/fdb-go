@@ -1,0 +1,24 @@
+syntax = "proto2";
+
+package contacts;
+
+import "record_metadata_options.proto";
+
+option (com.apple.foundationdb.record.schema).split_long_records = true;
+option (com.apple.foundationdb.record.schema).store_record_versions = true;
+
+message Contact {
+  optional int64 id = 1 [(com.apple.foundationdb.record.field).primary_key = true];
+  optional string name = 2;
+  optional string email = 3 [(com.apple.foundationdb.record.field).index = {
+    type: "value"
+    unique: true
+  }];
+  optional string city = 4 [(com.apple.foundationdb.record.field).index.type = "value"];
+  optional int64 score = 5 [(com.apple.foundationdb.record.field).index.type = "rank"];
+  repeated string tags = 6 [(com.apple.foundationdb.record.field).index.type = "value"];
+}
+
+message RecordTypeUnion {
+  optional Contact contact = 1;
+}

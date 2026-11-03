@@ -23,8 +23,8 @@ it updates release decisions and evidence, not a fresh audit of every row.
 - Release (release-ws prepares, the owner tags), per `RELEASE.md`: the cut PR (step 1), then green
   CI including the full lane and the dry run on the cut commit (steps 2–3), then
   explicit maintainer tagging authorization. No local full lane or premature tag.
-  Only after v0.2.0 is proxy `@latest` may `cmd/frl/v0.1.1` retract the nested module. The order matters: root
-  v0.1.0 does not contain `cmd/frl`.
+  The renamed CLI installs from `fdb.dev/cmd/fdb`; publish and verify the root-module
+  release and its `fdb` archives before advertising the new install path.
 
 ## 1. Owner decisions
 
@@ -66,11 +66,11 @@ The owner delegated release decisions; API reduction remains a v0.3.0 launch wor
 
 | Sev | Item | Status | Workstream |
 |---|---|---|---|
-| B | Every quickstart fails (domain registration, `NOT NULL`, DSN case, unconfigured docker FDB, swallowed errors, typed-store snippet) | done [#808]: [#788] fixed the listed failures; [#808] chains the steps so a failed `frl fdb up` stops the demo | hn-health-ws2 |
+| B | Every quickstart fails (domain registration, `NOT NULL`, DSN case, unconfigured docker FDB, swallowed errors, typed-store snippet) | done [#808]: [#788] fixed the listed failures; [#808] chains the steps so a failed `fdb dev up` stops the demo | hn-health-ws2 |
 | B | "2–4× faster" claims are false (pre-RFC-104 GRV cache; one-way netem labelled as RTT) | done [#788]: claims removed, website check guards them | perf-lead2 |
-| B | `go get` gives v0.1.0, 682 commits behind and storage-incompatible; `go install …/cmd/frl@latest` resolves to the stale nested module | in progress: [#825] landed the notes, checklist and `cmd/frl` vanity stub (live); a rehearsal dry run on master e047fc58c passed (run 38152910574); retraction commit 948f2d3b6 is ready. Next: reviewed readiness PR, correctness fixes, exact-cut CI/full-lane and dry-run gates, explicit tagging approval, then v0.2.0 proxy latest before `cmd/frl/v0.1.1`; no tag is done | release-ws |
-| M | `frl fdb up` hangs silently on a nearly full host disk (FDB throttles to 0 TPS) | done [#814] | hn-health-ws2 |
-| H | macOS: `frl fdb up` used `--network host` | done [#788]: loopback-published bridge network | hn-health-ws2 |
+| B | `go get` gives v0.1.0, 682 commits behind and storage-incompatible; the renamed `fdb.dev/cmd/fdb` package needs a root-module release | in progress: [#825] landed the notes and checklist; a rehearsal dry run on master e047fc58c passed (run 38152910574). The CLI now uses `cmd/fdb` without a nested-module fallback. Next: reviewed readiness PR, correctness fixes, exact-cut CI/full-lane and `fdb-release.yml` dry-run gates, explicit tagging approval, then verify v0.2.0 through the proxy and installer; no tag is done | release-ws |
+| M | `fdb dev up` hangs silently on a nearly full host disk (FDB throttles to 0 TPS) | done [#814] | hn-health-ws2 |
+| H | macOS: `fdb dev up` used `--network host` | done [#788]: loopback-published bridge network | hn-health-ws2 |
 | H | Positioning: what it is, and the "unofficial / not Apple" disclaimer | done [#788]: README, website, NOTICE | release-ws |
 | M | Library logs INFO to stderr on every open | done [#788]: routine SQL warm-up logs at Debug | hn-sql-ws3 |
 

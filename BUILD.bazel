@@ -4,7 +4,17 @@ load("@rules_go//go:def.bzl", "nogo")
 exports_files([
     "buf.yaml",
     "justfile",
+    "website/static/install.sh",
 ])
+
+filegroup(
+    name = "cli_example_licenses",
+    srcs = [
+        "LICENSE",
+        "NOTICE",
+    ],
+    visibility = ["//cmd/fdb:__subpackages__"],
+)
 
 # The workflow definitions, staged as data for //infra:infra_test's
 # TestPushFanOutVersusTheRunnerPool — the instrument that reports one push's

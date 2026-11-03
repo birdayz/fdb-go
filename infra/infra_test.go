@@ -452,7 +452,7 @@ func TestWorkflowGoMatchesGoMod(t *testing.T) {
 	if want == "" {
 		t.Fatal("missing build toolchain")
 	}
-	for _, path := range []string{"../.github/workflows/ci.yml", "../.github/workflows/frl-release.yml"} {
+	for _, path := range []string{"../.github/workflows/ci.yml", "../.github/workflows/fdb-release.yml"} {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
@@ -603,9 +603,9 @@ python3() {
 	}
 }
 
-func TestFRLReleaseLegalNotices(t *testing.T) {
+func TestFDBReleaseLegalNotices(t *testing.T) {
 	t.Parallel()
-	data, err := os.ReadFile("../.github/workflows/frl-release.yml")
+	data, err := os.ReadFile("../.github/workflows/fdb-release.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -638,7 +638,7 @@ func TestFRLReleaseLegalNotices(t *testing.T) {
 		t.Fatalf("review legal-notice coverage for release targets %v", targets)
 	}
 	// Exercise the shipped packaging shell with fixture binaries, not a compiler.
-	compile := `  go build -trimpath -ldflags='-s -w' -o "$out/frl" .`
+	compile := `  go build -trimpath -ldflags='-s -w' -o "$out/fdb" .`
 	if strings.Count(loop[0], compile) != 1 {
 		t.Fatal("expected one cross-compile command in the packaging loop")
 	}
@@ -647,7 +647,7 @@ func TestFRLReleaseLegalNotices(t *testing.T) {
 		t.Run(damage, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
-			cli := filepath.Join(root, "cmd", "frl")
+			cli := filepath.Join(root, "cmd", "fdb")
 			dist := filepath.Join(cli, "dist")
 			notices := []string{"LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.txt"}
 			for _, name := range notices {
@@ -660,7 +660,7 @@ func TestFRLReleaseLegalNotices(t *testing.T) {
 				if err := os.MkdirAll(dir, 0o700); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(filepath.Join(dir, "frl"), []byte("#!/bin/sh\necho v0.0.0\n"), 0o700); err != nil {
+				if err := os.WriteFile(filepath.Join(dir, "fdb"), []byte("#!/bin/sh\necho v0.0.0\n"), 0o700); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -674,7 +674,7 @@ func TestFRLReleaseLegalNotices(t *testing.T) {
 				t.Fatalf("package release: %v\n%s", err, out)
 			}
 			for _, target := range targets {
-				archive := "frl_v0.0.0_" + strings.ReplaceAll(target, "/", "_") + ".tar.gz"
+				archive := "fdb_v0.0.0_" + strings.ReplaceAll(target, "/", "_") + ".tar.gz"
 				for _, name := range notices {
 					out, err := run(dist, "tar -xOzf "+archive+" "+name)
 					if err != nil || string(out) != "fixture "+name+"\n" {
@@ -684,9 +684,9 @@ func TestFRLReleaseLegalNotices(t *testing.T) {
 			}
 			if damage != "none" {
 				path := filepath.Join(dist, "darwin_arm64", "THIRD_PARTY_NOTICES.txt")
-				files := "frl LICENSE NOTICE THIRD_PARTY_NOTICES.txt"
+				files := "fdb LICENSE NOTICE THIRD_PARTY_NOTICES.txt"
 				if damage == "missing" {
-					files = "frl LICENSE NOTICE"
+					files = "fdb LICENSE NOTICE"
 				} else {
 					content := []byte{}
 					if damage == "altered" {
@@ -696,11 +696,11 @@ func TestFRLReleaseLegalNotices(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if out, err := run(dist, "tar -C darwin_arm64 -czf frl_v0.0.0_darwin_arm64.tar.gz "+files); err != nil {
+				if out, err := run(dist, "tar -C darwin_arm64 -czf fdb_v0.0.0_darwin_arm64.tar.gz "+files); err != nil {
 					t.Fatalf("damage fixture: %v\n%s", err, out)
 				}
 			}
-			if out, err := run(dist, "sha256sum frl_*.tar.gz > checksums.txt"); err != nil {
+			if out, err := run(dist, "sha256sum fdb_*.tar.gz > checksums.txt"); err != nil {
 				t.Fatalf("checksum fixtures: %v\n%s", err, out)
 			}
 			out, err := run(dist, smoke)

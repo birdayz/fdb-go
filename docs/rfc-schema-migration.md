@@ -1,8 +1,8 @@
 # RFC: Schema Migration for the Relational Layer
 
 **Status:** Partially implemented — the tenant-fleet fan-out primitive has
-landed (`pkg/relational/core/fleet`, `frl index build --all-schemas`,
-`frl meta catalog repair --all-schemas`). The `ALTER SCHEMA TEMPLATE` DDL
+landed (`pkg/relational/core/fleet`, `fdb rl index build --all-schemas`,
+`fdb rl meta catalog repair --all-schemas`). The `ALTER SCHEMA TEMPLATE` DDL
 surface (Phases 1–3 below) has not.
 **Author:** Johannes Bruederl
 **Date:** 2026-05-20
@@ -330,8 +330,8 @@ without any `ALTER` grammar, because the operations it fans out
   `PendingIndexes` / `BuildIndexes` / `BuildAll` (index-build mode).
   Per-schema transactions, per-tenant failure isolation, progress callback,
   `TEMPLATE_VERSION` resume skip, bounded concurrency, catalog guard.
-- CLI: `frl index build --all-schemas [name]` and
-  `frl meta catalog repair --all-schemas`.
+- CLI: `fdb rl index build --all-schemas [name]` and
+  `fdb rl meta catalog repair --all-schemas`.
 - Tests: `pkg/relational/sqldriver/fleet_fanout_fdb_test.go` (real FDB,
   multi-schema fixture) and `pkg/relational/core/fleet/*_test.go`.
 

@@ -103,7 +103,7 @@ const (
 	// The statement option ISOLATION LEVEL SNAPSHOT sets it for one statement.
 	OptIsolationLevelSnapshot OptionName = "ISOLATION_LEVEL_SNAPSHOT"
 	// OptPlannerStatistics lets the cost model use per-record-type row counts
-	// gathered by the offline collector (RFC-236, `frl stats collect`). Boolean,
+	// gathered by the offline collector (RFC-236, `fdb rl stats collect`). Boolean,
 	// default FALSE, and Go-only — Java has no planner statistics at all, so
 	// this is a read-side extension rather than a parity feature.
 	//

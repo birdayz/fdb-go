@@ -172,7 +172,7 @@ func TestToUserIdentifierIsNotIdempotent(t *testing.T) {
 // renamed spelling addresses nothing, because re-encoding does not recover the
 // stored name.
 //
-// cmd/frl's userName relies on exactly this test: it decodes only when
+// cmd/fdb's userName relies on exactly this test: it decodes only when
 // encode(decode(s)) == s. If these shapes ever start round-tripping, that guard
 // becomes dead weight rather than load-bearing, and this test says so.
 func TestEscapeIsNotABijection(t *testing.T) {
@@ -188,7 +188,7 @@ func TestEscapeIsNotABijection(t *testing.T) {
 		back, err := ToProtoBufCompliantName(user)
 		if err == nil && back == s {
 			t.Errorf("%q now round-trips (%q -> %q); the round-trip guard in "+
-				"cmd/frl's userName is no longer load-bearing and should be re-examined",
+				"cmd/fdb's userName is no longer load-bearing and should be re-examined",
 				s, user, back)
 		}
 	}
@@ -201,7 +201,7 @@ func TestEscapeIsNotABijection(t *testing.T) {
 	// MY__1TABLE is itself a legal STORED name, so if both are declared then
 	// GetRecordType's direct-key step answers with the other type. That is why
 	// the round-trip guard is paired with an ambiguity gate rather than trusted
-	// alone -- see cmd/frl's userNamesFor and
+	// alone -- see cmd/fdb's userNamesFor and
 	// TestGetRecordTypeMisResolvesAnAmbiguousPair. What this loop pins is only
 	// that decoding these names LOSES NOTHING; whether offering one is safe
 	// depends on the declared set, which this package cannot see.
@@ -222,7 +222,7 @@ func TestEscapeIsNotABijection(t *testing.T) {
 // the whole output — measured: the two-element call returned the stored
 // spelling while the one-element call decoded.
 //
-// That mattered concretely: cmd/frl's status renderer feeds PerType's keys and
+// That mattered concretely: cmd/fdb's status renderer feeds PerType's keys and
 // MissingTypes, and ExtraTypes is a SUBSET of PerType's keys, so re-adding it
 // would have forced stored names for every status carrying an orphan type.
 func TestSafeDecoderOverToleratesRepeats(t *testing.T) {

@@ -777,7 +777,7 @@ func ambiguousTestMetaData(t *testing.T) *recordlayer.RecordMetaData {
 
 // AN AMBIGUITY REFUSAL MUST CARRY NO PER-TYPE MAP, BECAUSE RENDERERS RELY ON IT.
 //
-// `frl stats show` and `frl stats collect` build their per-type maps keyed by
+// `fdb rl stats show` and `fdb rl stats collect` build their per-type maps keyed by
 // the DECODED name without an ambiguity gate of their own — they hold a status,
 // not a metadata, so they cannot check. That is only safe because this gate
 // refuses first and hands them nothing to key: under a collision two stored
@@ -786,7 +786,7 @@ func ambiguousTestMetaData(t *testing.T) *recordlayer.RecordMetaData {
 //
 // The dependency is non-local, so it is pinned here rather than assumed. If
 // this ever starts returning a populated map alongside the refusal, those
-// renderers need their own gate — see cmd/frl/internal/cmd/stats.go's
+// renderers need their own gate — see cmd/fdb/internal/cmd/stats.go's
 // renderStatsStatus and renderCollectReport.
 func TestAmbiguityRefusalCarriesNoPerTypeMap(t *testing.T) {
 	t.Parallel()

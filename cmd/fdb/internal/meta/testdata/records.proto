@@ -1,0 +1,29 @@
+syntax = "proto2";
+
+package fdb.cli.meta.testdata;
+
+import "details.proto";
+import "record_metadata_options.proto";
+
+option (com.apple.foundationdb.record.schema).split_long_records = true;
+option (com.apple.foundationdb.record.schema).store_record_versions = true;
+
+message Customer {
+  option (com.apple.foundationdb.record.record).usage = RECORD;
+  option (com.apple.foundationdb.record.record).since_version = 0;
+  option (com.apple.foundationdb.record.record).record_type_key = { long_value: 42 };
+
+  optional int64 id = 1 [(com.apple.foundationdb.record.field).primary_key = true];
+  optional string email = 2 [(com.apple.foundationdb.record.field).index = {
+    type: "value"
+    unique: true
+  }];
+  optional int64 score = 3 [(com.apple.foundationdb.record.field).index.type = "rank"];
+  repeated string tags = 4 [(com.apple.foundationdb.record.field).index.type = "value"];
+  optional Contact.Address address = 5;
+}
+
+message AnnotatedUnion {
+  option (com.apple.foundationdb.record.record).usage = UNION;
+  optional Customer _Customer = 1;
+}
