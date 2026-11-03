@@ -659,22 +659,90 @@ func snapshotStoreBytes(t *testing.T, clusterFile string, ss subspace.Subspace) 
 	}
 	begin, end := ss.FDBRangeKeys()
 	result, err := db.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
-		var b strings.Builder
 		iter := rtx.Snapshot().GetRange(fdb.KeyRange{Begin: begin, End: end},
 			fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).Iterator()
-		for iter.Advance() {
-			kv, err := iter.Get()
-			if err != nil {
-				return nil, err
-			}
-			fmt.Fprintf(&b, "%x=%x\n", kv.Key, kv.Value)
-		}
-		return b.String(), nil
+		return snapshotRangeBytes(iter)
 	})
 	if err != nil {
 		t.Fatalf("snapshot store range: %v", err)
 	}
 	return result.(string)
+}
+
+func snapshotRangeBytes(iter interface {
+	Advance() bool
+	Get() (fdb.KeyValue, error)
+},
+) (string, error) {
+	var b strings.Builder
+	for iter.Advance() {
+		kv, err := iter.Get()
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&b, "%x=%x\n", kv.Key, kv.Value)
+	}
+	// Advance also returns false on a failed batch; only Get exposes that error.
+	if _, err := iter.Get(); err != nil {
+		return "", err
+	}
+	return b.String(), nil
+}
+
+type snapshotTestIterator struct {
+	rows []fdb.KeyValue
+	pos  int
+	err  error
+	done bool
+}
+
+func (i *snapshotTestIterator) Advance() bool {
+	if i.pos == len(i.rows) {
+		i.done = true
+		return false
+	}
+	i.pos++
+	return true
+}
+
+func (i *snapshotTestIterator) Get() (fdb.KeyValue, error) {
+	if i.done && i.err != nil {
+		// The error becomes visible only after the failed Advance, not on
+		// the last successful row.
+		return fdb.KeyValue{}, i.err
+	}
+	if i.pos == 0 {
+		return fdb.KeyValue{}, nil
+	}
+	return i.rows[i.pos-1], nil
+}
+
+func TestSnapshotRangeBytesRejectsIncompleteScans(t *testing.T) {
+	t.Parallel()
+	readErr := errors.New("range batch failed")
+	rows := []fdb.KeyValue{{Key: fdb.Key{1}, Value: []byte{2}}, {Key: fdb.Key{3}, Value: []byte{4}}}
+	for _, tc := range []struct {
+		name string
+		rows []fdb.KeyValue
+		err  error
+		want string
+	}{
+		{"empty", nil, nil, ""},
+		{"complete", rows, nil, "5c783031=02\n5c783033=04\n"},
+		{"failed-first-batch", nil, readErr, ""},
+		{"failed-later-batch", rows, readErr, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			iter := &snapshotTestIterator{rows: tc.rows, err: tc.err}
+			got, err := snapshotRangeBytes(iter)
+			if !errors.Is(err, tc.err) || got != tc.want {
+				t.Fatalf("snapshot = %q, %v; want %q, %v", got, err, tc.want, tc.err)
+			}
+			if !iter.done || iter.pos != len(tc.rows) {
+				t.Fatalf("scan did not reach its terminal batch: %+v", iter)
+			}
+		})
+	}
 }
 
 // Regression (RFC-174 Slice 0 bug 5): read-only commands must NEVER
