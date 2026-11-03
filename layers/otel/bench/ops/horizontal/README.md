@@ -144,6 +144,19 @@ python3 layers/otel/bench/ops/horizontal/driver.py run \
   --plan /private/approved.json --output /private/new-campaign --execute-approved
 ```
 
+Sealed assets (otel-demo, fdbserver, fdbcli) cross the controller uplink once.
+Before any cloud effect, each is compressed with `zstd -10 -T0` on the controller
+(about 154 MB to 45 MB), decompressed again and checked against its seal; the
+`.zst` SHA-256 is journaled in `asset-transfer.json`. The `.zst` files are
+uploaded to the first prepared node, then fetched by every other node from that
+node's private address (a transient `otel-asset-serve-*` unit serving only the
+verified `.zst` files, stopped once all nodes have their copies). Each node
+checks the `.zst` SHA-256, decompresses with zstd (installed by cloud-init),
+and gives the file its final name only once it matches the sealed SHA-256; the
+controller checks the node's receipt against both hashes. Any mismatch fails
+closed into cleanup. Each copy's timeout is 30 s plus its size over a rate floor
+(256 KiB/s upload, 4 MiB/s private fan-out, 16 MiB/s decompression).
+
 All API/SSH/SCP active timeouts are clamped to **first+6000** (100 minutes), never
 reset by stages. Guard cleanup begins at **first+6600** (110 minutes), leaving ten
 minutes before the hard **first+7200** limit. Immediate finally cleanup runs on

@@ -47,6 +47,18 @@ GIB = 1024 ** 3
 TEARDOWN_PASSES = 40          # re-discovery passes; with backoff about 10 minutes
 TEARDOWN_MAX_BACKOFF = 15     # seconds between passes, growing by 2 s per pass
 TEARDOWN_DELETE_TIMEOUT = 30  # seconds for one hcloud delete, which waits for its action
+# Sealed assets are zstd-compressed once on the controller, cross its uplink once
+# to the first prepared node (the seed), and go from there as .zst to every other
+# node over the campaign's private network; each node decompresses and verifies.
+# Each copy's timeout is its size over a rate floor plus a fixed allowance for
+# connection setup and verification.
+SEALED_ASSETS = (('binary', 'otel-demo'), ('fdbserver', 'fdbserver'), ('fdbcli', 'fdbcli'))
+ZSTD_LEVEL = ('-10', '-T0')           # fdbserver 94 MB -> 27 MB in under a second; -19 gains ~10% for 15 s
+UPLOAD_RATE_FLOOR = 256 * 1024        # bytes/s controller -> seed; a third of a 0.75 MB/s uplink
+FANOUT_RATE_FLOOR = 4 * 1024 ** 2     # bytes/s seed -> node over the private network
+INSTALL_RATE_FLOOR = 16 * 1024 ** 2   # bytes/s on-node decompression and hashing
+TRANSFER_FIXED_SECONDS = 30
+ASSET_PORT = 47100                    # seed's private-IP-only asset server during preparation
 
 
 class ProvisionError(RuntimeError):
@@ -669,6 +681,156 @@ def _require_result(value, what):
     return stdout
 
 
+def _transfer_timeout(nbytes, rate):
+    return TRANSFER_FIXED_SECONDS + math.ceil(nbytes / rate)
+
+
+def _pack_assets(plan, state, runner, clock=time.time):
+    """Compress each sealed asset once with zstd and prove the round trip.
+
+    Local only, before any cloud effect. The source and the decompressed .zst
+    must both equal the sealed SHA-256; the .zst's own SHA-256 is journaled and
+    is what every node checks before decompressing.
+    """
+    directory = state / 'assets'
+    directory.mkdir(mode=0o700)
+    packed = {}
+    for key, name in SEALED_ASSETS:
+        path, check = directory / (name + '.zst'), directory / (name + '.check')
+        try:
+            _checked(runner, ['zstd', *ZSTD_LEVEL, '-q', '--no-progress', '-o', path, '--', plan[key]],
+                     timeout=_remaining(plan, 120, clock))
+            _checked(runner, ['zstd', '-d', '-q', '--no-progress', '-o', check, '--', path],
+                     timeout=_remaining(plan, 120, clock))
+        except OSError as exc:
+            raise ProvisionError(f'zstd is required on the controller: {exc}') from exc
+        size = check.stat().st_size
+        if _sha(plan[key]) != plan[key + '_sha256'] or _sha(check) != plan[key + '_sha256']:
+            raise ProvisionError(f'{key} does not reproduce its sealed SHA-256 through compression')
+        check.unlink()
+        path.chmod(0o600)
+        packed[key] = dict(name=name, path=str(path), sha256=plan[key + '_sha256'], bytes=size,
+                           transfer_sha256=_sha(path), transfer_bytes=path.stat().st_size,
+                           encoding='zstd ' + ' '.join(ZSTD_LEVEL))
+    _json(state / 'asset-transfer.json',
+          dict(assets=packed, upload_rate_floor=UPLOAD_RATE_FLOOR, fanout_rate_floor=FANOUT_RATE_FLOOR,
+               install_rate_floor=INSTALL_RATE_FLOOR, fixed_seconds=TRANSFER_FIXED_SECONDS, port=ASSET_PORT))
+    return packed
+
+
+# Installs one sealed asset on a node from its .zst: an uploaded one ("install")
+# or one fetched from the seed's private asset server ("fetch"). The .zst must
+# match its journaled SHA-256 before it is decompressed, and the decompressed
+# file gets its final name only after it matches the sealed SHA-256; any
+# mismatch removes both and exits nonzero. The seed keeps its verified .zst files
+# to serve them. The controller checks the printed receipt against both hashes.
+_ASSET_HELPER = r'''import hashlib, json, os, shutil, subprocess, sys, time, urllib.request
+r = json.loads(sys.argv[1])
+src, dest = r['src'], r['dest']
+tmp = dest + '.partial'
+def digest(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for b in iter(lambda: f.read(1 << 20), b''): h.update(b)
+    return h.hexdigest()
+def remove(path):
+    try: os.unlink(path)
+    except FileNotFoundError: pass
+def fail(message):
+    for path in (tmp, src + '.partial', src): remove(path)
+    sys.exit(message)
+if shutil.which('zstd') is None: fail('zstd is not installed on this node')
+remove(tmp)
+if r['op'] == 'fetch':
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    deadline = time.monotonic() + r['seconds']
+    while True:
+        try:
+            with opener.open(r['url'], timeout=max(1, deadline - time.monotonic())) as body, \
+                    open(src + '.partial', 'wb') as out:
+                for b in iter(lambda: body.read(1 << 20), b''): out.write(b)
+                out.flush(); os.fsync(out.fileno())
+            break
+        except OSError as exc:
+            remove(src + '.partial')
+            if time.monotonic() + 1 >= deadline: fail('fetch of %s failed: %s' % (r['url'], exc))
+            time.sleep(1)
+    os.replace(src + '.partial', src)
+elif r['op'] != 'install':
+    fail('unknown asset operation')
+packed = digest(src)
+if packed != r['src_sha256']: fail('transfer SHA-256 mismatch for %s: %s' % (src, packed))
+done = subprocess.run(['zstd', '-d', '-q', '--no-progress', '-o', tmp, '--', src], capture_output=True, text=True)
+if done.returncode: fail('zstd -d of %s failed (%d): %s' % (src, done.returncode, done.stderr.strip()))
+got = digest(tmp)
+if got != r['sha256']: fail('sealed SHA-256 mismatch for %s: %s' % (dest, got))
+os.chmod(tmp, 0o755)
+os.replace(tmp, dest)
+if not r.get('keep_src'): remove(src)
+print(json.dumps(dict(dest=dest, sha256=got, bytes=os.path.getsize(dest), src_sha256=packed)))
+'''
+
+
+def _asset_serve_unit(plan):
+    return 'otel-asset-serve-' + plan['campaign'] + '.service'
+
+
+def _journaled_step(state, name, node, what, timeout, clock, call):
+    """Run one transfer step, journal its raw result, and fail closed."""
+    started, timed_out = clock(), False
+    try:
+        rc, stdout, stderr = call()
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        rc, stdout, stderr = None, exc.stdout or '', exc.stderr or ''
+    stdout = stdout.decode('utf-8', errors='replace') if isinstance(stdout, bytes) else stdout
+    stderr = stderr.decode('utf-8', errors='replace') if isinstance(stderr, bytes) else stderr
+    _json(state / name, dict(node_id=node['id'], step=what, returncode=rc, timed_out=timed_out,
+                             stdout=stdout, stderr=stderr, timeout_seconds=timeout,
+                             epoch=started, finished_epoch=clock()))
+    if timed_out:
+        raise ProvisionError(f'{what} timed out after {timeout:.0f} s')
+    if rc:
+        raise ProvisionError(f'{what} failed ({rc}): {stderr.strip()}')
+    return stdout
+
+
+def _install_assets(plan, out, state, role, node, packed, seed, runner, clock):
+    """Install every sealed asset on node: uploaded if node is the seed, else fetched from it."""
+    remote = REMOTE_BASE + '/' + plan['campaign']
+    for key, name in SEALED_ASSETS:
+        asset = packed[key]
+        dest = remote + '/bin/' + name
+        incoming = remote + '/incoming/' + name + '.zst'
+        if seed is None:
+            timeout = _remaining(plan, _transfer_timeout(asset['transfer_bytes'], UPLOAD_RATE_FLOOR), clock, active=True)
+            _journaled_step(state, f'{role}-asset-{name}-upload.json', node, 'upload sealed ' + key, timeout, clock,
+                            lambda: copy_to_node(plan, out, node, asset['path'], incoming,
+                                                 runner=runner, timeout=timeout))
+            request = dict(op='install', src=incoming, src_sha256=asset['transfer_sha256'],
+                           dest=dest, sha256=asset['sha256'], keep_src=True)
+            limit = _transfer_timeout(asset['bytes'], INSTALL_RATE_FLOOR)
+        else:
+            limit = (_transfer_timeout(asset['transfer_bytes'], FANOUT_RATE_FLOOR)
+                     + math.ceil(asset['bytes'] / INSTALL_RATE_FLOOR))
+            request = dict(op='fetch', url=f'http://{seed["private_ip"]}:{ASSET_PORT}/{name}.zst',
+                           src=incoming, src_sha256=asset['transfer_sha256'], dest=dest, sha256=asset['sha256'],
+                           seconds=max(1, _transfer_timeout(asset['transfer_bytes'], FANOUT_RATE_FLOOR) - 5))
+        timeout = _remaining(plan, limit, clock, active=True)
+        what = ('install' if seed is None else 'fetch') + ' sealed ' + key
+        stdout = _journaled_step(state, f'{role}-asset-{name}-{request["op"]}.json', node, what, timeout, clock,
+                                 lambda: run_on_node(plan, out, node, ['python3', '-c', _ASSET_HELPER, json.dumps(request)],
+                                                     runner=runner, timeout=timeout))
+        lines = stdout.strip().splitlines()
+        try:
+            receipt = json.loads(lines[-1]) if lines else None
+        except ValueError:
+            receipt = None
+        if (type(receipt) is not dict or receipt.get('dest') != dest or receipt.get('sha256') != asset['sha256']
+                or receipt.get('bytes') != asset['bytes'] or receipt.get('src_sha256') != asset['transfer_sha256']):
+            raise ProvisionError(f'{what} on {role} did not verify against the sealed SHA-256')
+
+
 def _ipv6_absent(value):
     if value is None:
         return True
@@ -836,6 +998,7 @@ def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.s
     roles = _roles(plan)
     state = _state(out)
     state.mkdir(mode=0o700, parents=True, exist_ok=False)
+    packed = _pack_assets(plan, state, runner, clock)
     baseline_dir = state / 'baseline'
     _inventory.snapshot(SimpleNamespace(hcloud=plan['hcloud'], output_dir=str(baseline_dir)),
                         runner=lambda argv: _inventory_run(plan, runner, argv, clock))
@@ -894,7 +1057,7 @@ def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.s
                 raise ProvisionError('unexpected shared cloud-init key-generation field')
             text = text.replace('ssh_genkeytypes: []\n', 'ssh_genkeytypes: [ed25519]\n')
             text = text.replace('package_upgrade: false',
-                                'package_upgrade: false\npackages: [python3, chrony, jq]')
+                                'package_upgrade: false\npackages: [python3, chrony, jq, zstd]')
             _mc.write_private(path, text, exclusive=False)
         labels = ['--label', 'campaign=' + plan['campaign'], '--label',
                   'deadline=' + str(plan['deadline_epoch'])]
@@ -960,6 +1123,7 @@ def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.s
         for kind in ('fdb', 'client'):
             _mc.write_private(state / ('horizontal-' + kind + '.slice'),
                               _slice(kind, io_accounting=plan['schema'] in ('otel_native_diagnostic_v1', 'otel_native_session_v1', 'otel_native_scaling_v1')))
+        seed = None
         for role, node in resources['nodes'].items():
             until = min(clock() + 600, _active_deadline(plan))
             attempt = 0
@@ -993,11 +1157,21 @@ def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.s
                 if clock() >= until:
                     raise ProvisionError('cloud-init did not finish within preparation budget')
                 sleep(2)
-            _require_result(run_on_node(plan, out, node, ['install', '-d', '-m', '0755', remote + '/bin'],
+            _require_result(run_on_node(plan, out, node, ['install', '-d', '-m', '0755', remote + '/bin',
+                                                          remote + '/incoming'],
                                         runner=runner), 'create native binary directory')
-            for asset, dest in [('binary', 'otel-demo'), ('fdbserver', 'fdbserver'), ('fdbcli', 'fdbcli')]:
-                _require_result(copy_to_node(plan, out, node, plan[asset], remote + '/bin/' + dest,
-                                             runner=runner), 'copy sealed ' + asset)
+            _install_assets(plan, out, state, role, node, packed, seed, runner, clock)
+            if seed is None and len(resources['nodes']) > 1:
+                # Serve the verified assets to the other nodes on the private network only,
+                # for at most the active window; stopped once every node has its copies.
+                serve = int(max(1, _active_deadline(plan) - clock()))
+                _require_result(run_on_node(plan, out, node, [
+                    'systemd-run', '--unit=' + _asset_serve_unit(plan), '--collect', '--quiet',
+                    '--property=RuntimeMaxSec=' + str(serve), 'python3', '-m', 'http.server',
+                    '--bind', node['private_ip'], '--directory', remote + '/incoming', str(ASSET_PORT)],
+                    runner=runner, timeout=20), 'start private asset server')
+            if seed is None:
+                seed = node
             output = _require_result(run_on_node(plan, out, node,
                                      ['sh', '-c', _host_prepare_script(plan)], runner=runner), 'native host prepare')
             lines = output.strip().splitlines()
@@ -1017,6 +1191,9 @@ def prepare(plan, out, *, runner=None, popen=None, clock=time.time, sleep=time.s
             _require_result(run_on_node(plan, out, node, ['systemctl', 'start', slice_name],
                                         runner=runner), 'activate resource slice before quiet admission')
             node['slice'] = slice_name
+        if len(resources['nodes']) > 1:
+            _require_result(run_on_node(plan, out, seed, ['systemctl', 'stop', _asset_serve_unit(plan)],
+                                        runner=runner, timeout=20), 'stop private asset server')
         resources['prepared'] = True
         _save_resources(state, resources)
         return resources

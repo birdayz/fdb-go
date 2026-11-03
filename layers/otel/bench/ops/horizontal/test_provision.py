@@ -12,6 +12,7 @@ import tempfile
 import time
 import unittest
 from unittest import mock
+import zlib
 
 _SPEC = importlib.util.spec_from_file_location('horizontal_provision', Path(__file__).with_name('provision.py'))
 p = importlib.util.module_from_spec(_SPEC)
@@ -29,6 +30,20 @@ CPUQuota=400%
 MemoryMax=16G
 MemorySwapMax=0
 '''.encode()
+
+
+ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
+
+
+def fake_zstd(data):
+    """Stand-in for a zstd frame: reversible, smaller for repetitive input."""
+    return ZSTD_MAGIC + zlib.compress(data, 6)
+
+
+def fake_unzstd(data):
+    if not data.startswith(ZSTD_MAGIC):
+        raise ValueError('not a zstd frame')
+    return zlib.decompress(data[len(ZSTD_MAGIC):])
 
 
 class FakeCloud:
@@ -64,6 +79,17 @@ class FakeCloud:
         self.attach_action_mutator = None
         self.attach_server_mutator = None
         self.attach_call_hook = None
+        # Node filesystems (host -> path -> bytes) and the seed's private asset server.
+        self.files, self.serving = {}, {}
+        self.uploads, self.asset_requests, self.serve_calls = [], [], []
+        self.upload_timeouts = set()   # asset names whose controller upload times out
+        self.upload_mutator = None     # (path, bytes) -> bytes, corrupts an upload in flight
+        self.fetch_mutator = None      # (host, name, bytes) -> bytes, corrupts a private fetch
+        self.receipt_mutator = None    # (host, receipt) -> receipt, a helper that misreports
+        self.zstd_calls = []           # controller zstd invocations
+        self.zstd_mutator = None       # (output path, bytes) -> bytes, a controller zstd gone wrong
+        self.lacks_zstd = None         # host -> bool, a node image without zstd
+        self.node_unzstd_mutator = None  # (host, src, bytes) -> bytes, a node decompression gone wrong
 
     def ident(self):
         self.next_id += 1
@@ -151,11 +177,55 @@ class FakeCloud:
             self.attach_action_mutator(action, phase)
         return 0, json.dumps(dict(action=action)), ''
 
+    def _asset_helper(self, host, request, timeout):
+        self.asset_requests.append(dict(host=host, request=request, timeout=timeout))
+        files = self.files.setdefault(host, {})
+        if self.lacks_zstd and self.lacks_zstd(host):
+            return 1, '', 'zstd is not installed on this node'
+        if request['op'] == 'fetch':
+            url = re.fullmatch(r'http://([0-9.]+):(\d+)/([A-Za-z0-9_.-]+)', request['url'])
+            served = self.serving.get((url[1], int(url[2])))
+            if served is None or served[1]+'/'+url[3] not in self.files.get(served[0], {}):
+                return 1, '', 'fetch failed: connection refused'
+            data = self.files[served[0]][served[1]+'/'+url[3]]
+            if self.fetch_mutator:
+                data = self.fetch_mutator(host, url[3], data)
+            files[request['src']] = data
+        elif request['op'] != 'install':
+            raise AssertionError('unknown asset operation')
+        packed = files.get(request['src'])
+        if packed is None or hashlib.sha256(packed).hexdigest() != request['src_sha256']:
+            files.pop(request['src'], None)
+            return 1, '', 'transfer SHA-256 mismatch'
+        data = fake_unzstd(packed)
+        if self.node_unzstd_mutator:
+            data = self.node_unzstd_mutator(host, request['src'], data)
+        if hashlib.sha256(data).hexdigest() != request['sha256']:
+            files.pop(request['src'], None)
+            return 1, '', 'sealed SHA-256 mismatch'
+        files[request['dest']] = data
+        if not request.get('keep_src'):
+            files.pop(request['src'])
+        receipt = dict(dest=request['dest'], sha256=hashlib.sha256(data).hexdigest(), bytes=len(data),
+                       src_sha256=hashlib.sha256(packed).hexdigest())
+        if self.receipt_mutator:
+            receipt = self.receipt_mutator(host, receipt)
+        return 0, json.dumps(receipt)+'\n', ''
+
     def __call__(self, argv, timeout=120):
         self.calls.append((list(argv), timeout))
         if timeout <= 0:
             raise AssertionError('nonpositive command timeout')
         exe = Path(argv[0]).name
+        if exe == 'zstd':
+            self.zstd_calls.append(list(argv))
+            output, source = Path(argv[argv.index('-o')+1]), Path(argv[argv.index('--')+1])
+            data = source.read_bytes()
+            data = fake_unzstd(data) if '-d' in argv else fake_zstd(data)
+            if self.zstd_mutator:
+                data = self.zstd_mutator(output, data)
+            output.write_bytes(data)
+            return 0, '', ''
         if exe == 'ssh-keygen':
             self.events.append('keygen')
             path = Path(argv[argv.index('-f')+1])
@@ -163,6 +233,18 @@ class FakeCloud:
             path.with_name(path.name+'.pub').write_text('ssh-ed25519 QUJD fake\n')
             return 0, '', ''
         if exe == 'ssh':
+            host = next(a for a in argv if a.startswith('root@'))[5:]
+            remote = shlex.split(argv[-1])
+            if remote[:3] == ['python3', '-c', p._ASSET_HELPER]:
+                return self._asset_helper(host, json.loads(remote[3]), timeout)
+            if remote[:1] == ['systemd-run']:
+                self.serve_calls.append(dict(host=host, argv=remote, timeout=timeout))
+                self.serving[(remote[remote.index('--bind')+1], int(remote[-1]))] = (
+                    host, remote[remote.index('--directory')+1])
+                return 0, '', ''
+            if remote[:2] == ['systemctl', 'stop'] and remote[2] == p._asset_serve_unit(self.plan):
+                self.serving = {k: v for k, v in self.serving.items() if v[0] != host}
+                return 0, '', ''
             if shlex.split(argv[-1]) == ['cloud-init', 'status', '--wait']:
                 self.readiness_calls.append(list(argv))
                 result = self.readiness_results.pop(0) if self.readiness_results else (0, 'status: done\n', '')
@@ -177,6 +259,17 @@ class FakeCloud:
                 return 0, 'FoundationDB 7.3.77\n'+json.dumps(result)+'\n', ''
             return 0, '', ''
         if exe == 'scp':
+            host, path = argv[-1][5:].split(':', 1)
+            self.uploads.append(dict(host=host, path=path, local=argv[-2], timeout=timeout))
+            if any(path.endswith('/'+name+'.zst') for name in self.upload_timeouts):
+                raise p.subprocess.TimeoutExpired(argv, timeout, output='', stderr='upload stalled')
+            try:
+                data = Path(argv[-2]).read_bytes()
+            except OSError:
+                data = b''
+            if self.upload_mutator:
+                data = self.upload_mutator(path, data)
+            self.files.setdefault(host, {})[path] = data
             return 0, '', ''
         if argv[0] != self.plan['hcloud']:
             raise AssertionError('unexpected executable: ' + repr(argv))
@@ -845,13 +938,17 @@ class ProvisionTest(unittest.TestCase):
         for kind in ('fdb', 'client'):
             text = (state/('horizontal-'+kind+'.slice')).read_text()
             self.assertEqual(text.encode(), legacy_slice_bytes(kind).replace(b'AllowedCPUs', b'IOAccounting=yes\nAllowedCPUs'))
-        client_copies = [argv for argv, _ in self.cloud.calls if argv[0] == 'scp' and argv[-1].startswith('root@'+client['host']+':')]
-        for asset, destination in (('binary', 'otel-demo'), ('fdbserver', 'fdbserver'), ('fdbcli', 'fdbcli')):
-            matching = [argv for argv in client_copies if argv[-1].endswith('/bin/'+destination)]
+        # client3's sealed assets come from node1 over the private network, verified on arrival.
+        self.assertFalse([u for u in self.cloud.uploads if u['host'] == client['host'] and '/bin/' in u['path']])
+        fetches = [r['request'] for r in self.cloud.asset_requests if r['host'] == client['host']]
+        bin_dir = p.REMOTE_BASE+'/'+self.plan['campaign']+'/bin/'
+        for asset, destination in p.SEALED_ASSETS:
+            matching = [r for r in fetches if r['dest'] == bin_dir+destination]
             self.assertEqual(len(matching), 1)
-            self.assertEqual(matching[0][-2], self.plan[asset])
-            self.assertIn('StrictHostKeyChecking=yes', matching[0])
-            self.assertIn('HostKeyAlias='+client['name'], matching[0])
+            self.assertEqual(matching[0]['op'], 'fetch')
+            self.assertEqual(matching[0]['url'], f'http://{nodes["node1"]["private_ip"]}:{p.ASSET_PORT}/{destination}.zst')
+            self.assertEqual(matching[0]['sha256'], self.plan[asset+'_sha256'])
+            self.assertEqual(self.cloud.files[client['host']][bin_dir+destination], Path(self.plan[asset]).read_bytes())
         prior_runner = self.cloud
         for stage in (1, 2, 3):
             prior_stops = list(prior_runner.stop_commands) if stage > 1 else []
@@ -1554,7 +1651,8 @@ class ProvisionTest(unittest.TestCase):
         self.assertEqual(set(active['units']), {'node1'})
         self.assertEqual(len(active['units']['node1']), 6)
         stops = [argv for argv, _ in self.cloud.calls if Path(argv[0]).name == 'ssh'
-                 and shlex.split(argv[-1])[:2] == ['systemctl', 'stop']]
+                 and shlex.split(argv[-1])[:2] == ['systemctl', 'stop']
+                 and shlex.split(argv[-1])[2:] != [p._asset_serve_unit(self.plan)]]
         self.assertEqual(len(stops), 1)
         self.assertIn('root@'+nodes['node1']['host'], stops[0])
         self.assertEqual(len(shlex.split(stops[0][-1])[2:]), 6)
@@ -2068,7 +2166,7 @@ class ProvisionTest(unittest.TestCase):
             expected = original.replace('package_update: false', 'package_update: true')
             expected = expected.replace('ssh_genkeytypes: []\n', 'ssh_genkeytypes: [ed25519]\n')
             expected = expected.replace('package_upgrade: false',
-                                        'package_upgrade: false\npackages: [python3, chrony, jq]')
+                                        'package_upgrade: false\npackages: [python3, chrony, jq, zstd]')
             self.assertEqual(emitted, expected)
             self.assertEqual(emitted.count('ssh_genkeytypes: [ed25519]\n'), 1)
             self.assertIn('ssh_keys:\n  ed25519_private: |\n' + '\n'.join('    ' + line for line in private), emitted)
@@ -2511,7 +2609,8 @@ class ProvisionTest(unittest.TestCase):
                 self.assertLessEqual(sum(x['memory_limit_bytes'] for x in per_host), 16*p.GIB)
             self.assertTrue(Path(layout['cluster_file']).is_file())
         stops = [shlex.split(argv[-1]) for argv, _ in self.cloud.calls if Path(argv[0]).name == 'ssh'
-                 and shlex.split(argv[-1])[:2] == ['systemctl', 'stop']]
+                 and shlex.split(argv[-1])[:2] == ['systemctl', 'stop']
+                 and shlex.split(argv[-1])[2:] != [p._asset_serve_unit(self.plan)]]
         self.assertTrue(stops)
         self.assertTrue(all(unit.startswith('oh-'+self.plan['prefix']+'-') for stop in stops for unit in stop[2:]))
         self.assertIn('MemoryMax=16G', p._slice('fdb'))
@@ -2544,6 +2643,222 @@ class ProvisionTest(unittest.TestCase):
             p._remaining(self.plan, 120, lambda: deadline, active=False)
         with self.assertRaisesRegex(p.ProvisionError, 'cleanup'):
             p._check_window(self.plan, self.root, lambda: self.plan['first_epoch']+6000)
+
+    def seal_large_assets(self):
+        # Compressible multi-block assets, so compression and the size-derived timeouts matter.
+        for index, key in enumerate(('binary', 'fdbserver', 'fdbcli')):
+            path = Path(self.plan[key])
+            path.write_bytes((key.encode()*1000 + bytes(range(256))*4) * (300+index*100))
+            self.plan[key+'_sha256'] = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def test_sealed_assets_upload_once_compressed_then_fan_out_privately_and_verify_everywhere(self):
+        self.seal_large_assets()
+        resources = self.prepare()
+        nodes, state = resources['nodes'], p._state(self.out)
+        seed = nodes['node1']
+        remote = p.REMOTE_BASE+'/'+self.plan['campaign']
+        transfer = p._load(state/'asset-transfer.json')
+        uploads = [u for u in self.cloud.uploads if '/incoming/' in u['path'] or '/bin/' in u['path']]
+        # Exactly one controller upload per asset, to the seed only, compressed and verified.
+        self.assertEqual(sorted(u['path'] for u in uploads),
+                         sorted(remote+'/incoming/'+name+'.zst' for _, name in p.SEALED_ASSETS))
+        self.assertEqual({u['host'] for u in uploads}, {seed['host']})
+        for key, name in p.SEALED_ASSETS:
+            asset = transfer['assets'][key]
+            upload = next(u for u in uploads if u['path'].endswith('/'+name+'.zst'))
+            packed = Path(upload['local']).read_bytes()
+            self.assertEqual(fake_unzstd(packed), Path(self.plan[key]).read_bytes())
+            self.assertLess(len(packed), asset['bytes'])
+            self.assertEqual((asset['transfer_sha256'], asset['transfer_bytes']), (hashlib.sha256(packed).hexdigest(), len(packed)))
+            self.assertEqual(asset['encoding'], 'zstd -10 -T0')
+            self.assertEqual(upload['timeout'], p._transfer_timeout(len(packed), p.UPLOAD_RATE_FLOOR))
+            # Compressed once on the controller at -10 -T0, round trip decompressed and checked.
+            packs = [a for a in self.cloud.zstd_calls if a[-1] == self.plan[key]]
+            self.assertEqual(len(packs), 1)
+            self.assertEqual(packs[0][1:3], ['-10', '-T0'])
+            self.assertEqual(len([a for a in self.cloud.zstd_calls if '-d' in a and a[-1] == upload['local']]), 1)
+            self.assertFalse(Path(upload['local']).with_suffix('.check').exists())
+        # One private server on the seed, bound to its private address, stopped after the fan-out.
+        self.assertEqual(len(self.cloud.serve_calls), 1)
+        serve = self.cloud.serve_calls[0]['argv']
+        self.assertEqual(self.cloud.serve_calls[0]['host'], seed['host'])
+        self.assertEqual(serve[serve.index('--bind')+1], seed['private_ip'])
+        self.assertEqual(serve[serve.index('--directory')+1], remote+'/incoming')
+        self.assertEqual(self.cloud.serving, {})
+        stops = [shlex.split(a[-1]) for a, _ in self.cloud.calls if Path(a[0]).name == 'ssh'
+                 and shlex.split(a[-1]) == ['systemctl', 'stop', p._asset_serve_unit(self.plan)]]
+        self.assertEqual(len(stops), 1)
+        # Every node holds exactly the sealed bytes; non-seeds fetched them node to node.
+        for role, node in nodes.items():
+            requests = [r for r in self.cloud.asset_requests if r['host'] == node['host']]
+            self.assertEqual(len(requests), len(p.SEALED_ASSETS))
+            for key, name in p.SEALED_ASSETS:
+                self.assertEqual(self.cloud.files[node['host']][remote+'/bin/'+name], Path(self.plan[key]).read_bytes())
+                asset = transfer['assets'][key]
+                op = 'install' if role == 'node1' else 'fetch'
+                request = next(r for r in requests if r['request']['dest'] == remote+'/bin/'+name)
+                self.assertEqual(request['request']['op'], op)
+                self.assertEqual(request['request']['sha256'], self.plan[key+'_sha256'])
+                self.assertEqual(request['request']['src'], remote+'/incoming/'+name+'.zst')
+                self.assertEqual(request['request']['src_sha256'], asset['transfer_sha256'])
+                if op == 'install':
+                    self.assertEqual(request['timeout'], p._transfer_timeout(asset['bytes'], p.INSTALL_RATE_FLOOR))
+                else:
+                    self.assertEqual(request['timeout'], p._transfer_timeout(asset['transfer_bytes'], p.FANOUT_RATE_FLOOR)
+                                     + -(-asset['bytes'] // p.INSTALL_RATE_FLOOR))
+                    self.assertEqual(request['request']['url'], f'http://{seed["private_ip"]}:{p.ASSET_PORT}/{name}.zst')
+                receipt = p._load(state/f'{role}-asset-{name}-{op}.json')
+                self.assertEqual((receipt['returncode'], receipt['timed_out']), (0, False))
+                self.assertEqual(json.loads(receipt['stdout'])['src_sha256'], asset['transfer_sha256'])
+            # The seed keeps its verified .zst files to serve them; the others keep none.
+            incoming = sorted(path for path in self.cloud.files[node['host']] if '/incoming/' in path)
+            self.assertEqual(incoming, sorted(remote+'/incoming/'+name+'.zst' for _, name in p.SEALED_ASSETS)
+                             if role == 'node1' else [])
+        self.assertTrue(p._load(state/'node1-asset-fdbserver-upload.json')['returncode'] == 0)
+        # The host prepare script still re-checks every sealed hash on every node.
+        script = p._host_prepare_script(self.plan)
+        for key, name in p.SEALED_ASSETS:
+            self.assertIn(f"echo '{self.plan[key+'_sha256']}  {remote}/bin/{name}' | sha256sum -c -", script)
+
+    def test_two_role_campaign_fans_out_once_and_a_lone_node_starts_no_asset_server(self):
+        self.diagnostic_plan()
+        resources = self.prepare()
+        self.assertEqual(set(resources['nodes']), {'node1', 'client1'})
+        self.assertEqual(len(self.cloud.serve_calls), 1)
+        self.assertEqual({r['request']['op'] for r in self.cloud.asset_requests
+                          if r['host'] == resources['nodes']['client1']['host']}, {'fetch'})
+        lone = FakeCloud(self.plan, self.root / 'lone')
+        with mock.patch.object(p, '_roles', return_value=('node1',)):
+            single = p.prepare(self.plan, self.root / 'lone', runner=lone, popen=lone.popen, sleep=lambda _: None)
+        self.assertEqual(set(single['nodes']), {'node1'})
+        self.assertFalse(lone.serve_calls)
+        self.assertEqual(len([u for u in lone.uploads if u['path'].endswith('.zst')]), len(p.SEALED_ASSETS))
+        self.assertFalse([a for a, _ in lone.calls if Path(a[0]).name == 'ssh'
+                          and shlex.split(a[-1])[:2] == ['systemctl', 'stop']])
+
+    def test_upload_and_fanout_timeouts_scale_with_size_and_clamp_to_the_active_window(self):
+        self.seal_large_assets()
+        with mock.patch.object(p, 'UPLOAD_RATE_FLOOR', 64), mock.patch.object(p, 'FANOUT_RATE_FLOOR', 4096):
+            self.prepare()
+        transfer = p._load(p._state(self.out)/'asset-transfer.json')
+        self.assertEqual((transfer['upload_rate_floor'], transfer['fanout_rate_floor']), (64, 4096))
+        for key, name in p.SEALED_ASSETS:
+            asset = transfer['assets'][key]
+            upload = next(u for u in self.cloud.uploads if u['path'].endswith('/'+name+'.zst'))
+            self.assertEqual(upload['timeout'], 30 + -(-asset['transfer_bytes'] // 64))
+            fetch = next(r for r in self.cloud.asset_requests if r['request']['op'] == 'fetch'
+                         and r['request']['dest'].endswith('/bin/'+name))
+            download = 30 + -(-asset['transfer_bytes'] // 4096)
+            self.assertEqual(fetch['timeout'], download + -(-asset['bytes'] // p.INSTALL_RATE_FLOOR))
+            self.assertEqual(fetch['request']['seconds'], download - 5)
+
+    def test_transfer_timeouts_clamp_to_the_remaining_active_window(self):
+        now = int(time.time())
+        self.plan.update(first_epoch=now-5940, deadline_epoch=now-5940+7200)
+        self.seal_large_assets()
+        with mock.patch.object(p, 'UPLOAD_RATE_FLOOR', 1):
+            self.prepare()
+        for upload in (u for u in self.cloud.uploads if u['path'].endswith('.zst')):
+            self.assertLessEqual(upload['timeout'], 60)
+        transfer = p._load(p._state(self.out)/'asset-transfer.json')
+        self.assertGreater(p._transfer_timeout(transfer['assets']['fdbserver']['transfer_bytes'], 1), 60)
+
+    def test_upload_timeout_is_journaled_fails_closed_and_tears_down(self):
+        self.cloud.upload_timeouts = {'fdbserver'}
+        with self.assertRaisesRegex(p.ProvisionError, 'upload sealed fdbserver timed out'):
+            self.prepare()
+        state = p._state(self.out)
+        receipt = p._load(state/'node1-asset-fdbserver-upload.json')
+        self.assertTrue(receipt['timed_out'])
+        self.assertIsNone(receipt['returncode'])
+        self.assertFalse([r for r in self.cloud.asset_requests if r['request']['op'] == 'fetch'])
+        self.assertFalse(self.cloud.serve_calls)
+        self.assertEqual(self.cloud.items, self.cloud.baseline)
+        self.assertEqual(sum(kind == 'server' for kind, _ in self.cloud.deleted), 5)
+
+    def test_corrupted_upload_fails_closed_before_install_or_fanout(self):
+        self.cloud.upload_mutator = lambda path, data: data[:-1]+bytes([data[-1] ^ 1]) if path.endswith('/fdbserver.zst') else data
+        with self.assertRaisesRegex(p.ProvisionError, 'install sealed fdbserver failed .*transfer SHA-256 mismatch'):
+            self.prepare()
+        seed_files = next(iter(self.cloud.files.values()))
+        self.assertFalse([path for path in seed_files if path.endswith('/bin/fdbserver')])
+        self.assertFalse([r for r in self.cloud.asset_requests if r['request']['op'] == 'fetch'])
+        self.assertEqual(self.cloud.items, self.cloud.baseline)
+
+    def test_corrupted_private_fetch_fails_closed_on_that_node_and_tears_down(self):
+        node3_host = []
+
+        def corrupt(host, name, data):
+            if name == 'fdbcli.zst' and len({r['host'] for r in self.cloud.asset_requests}) == 3:
+                node3_host.append(host)
+                return b'tampered' + data
+            return data
+        self.cloud.fetch_mutator = corrupt
+        with self.assertRaisesRegex(p.ProvisionError, 'fetch sealed fdbcli failed .*transfer SHA-256 mismatch'):
+            self.prepare()
+        self.assertTrue(node3_host)
+        remote = p.REMOTE_BASE+'/'+self.plan['campaign']
+        self.assertNotIn(remote+'/bin/fdbcli', self.cloud.files[node3_host[0]])
+        self.assertNotIn(remote+'/incoming/fdbcli.zst', self.cloud.files[node3_host[0]])
+        receipt = p._load(p._state(self.out)/'node3-asset-fdbcli-fetch.json')
+        self.assertEqual(receipt['returncode'], 1)
+        self.assertEqual(self.cloud.items, self.cloud.baseline)
+        self.assertEqual(sum(kind == 'server' for kind, _ in self.cloud.deleted), 5)
+
+    def test_helper_receipt_that_disagrees_with_the_seal_fails_closed(self):
+        self.cloud.receipt_mutator = lambda host, receipt: dict(receipt, sha256='0'*64) if receipt['dest'].endswith('/otel-demo') else receipt
+        with self.assertRaisesRegex(p.ProvisionError, 'install sealed binary on node1 did not verify'):
+            self.prepare()
+        self.assertEqual(self.cloud.items, self.cloud.baseline)
+
+    def test_packing_refuses_an_asset_that_no_longer_matches_its_seal(self):
+        state = self.root / 'pack-state'
+        state.mkdir()
+        Path(self.plan['fdbcli']).write_text('changed after sealing\n')
+        with self.assertRaisesRegex(p.ProvisionError, 'fdbcli does not reproduce its sealed SHA-256'):
+            p._pack_assets(self.plan, state, self.cloud)
+        self.assertFalse((state/'asset-transfer.json').exists())
+
+    def test_controller_zstd_round_trip_mismatch_refuses_before_any_cloud_effect(self):
+        self.cloud.zstd_mutator = lambda path, data: data + b'!' if path.name == 'fdbserver.check' else data
+        with self.assertRaisesRegex(p.ProvisionError, 'fdbserver does not reproduce its sealed SHA-256'):
+            self.prepare()
+        self.assertEqual({Path(a[0]).name for a, _ in self.cloud.calls}, {'zstd'})
+        self.assertNotIn('guard-start', self.cloud.events)
+        self.assertFalse(self.cloud.create_counts)
+
+    def test_missing_controller_zstd_refuses_before_any_cloud_effect(self):
+        def runner(argv, timeout=120):
+            if Path(argv[0]).name == 'zstd':
+                raise FileNotFoundError(2, 'No such file or directory', 'zstd')
+            return self.cloud(argv, timeout=timeout)
+        with self.assertRaisesRegex(p.ProvisionError, 'zstd is required on the controller'):
+            p.prepare(self.plan, self.out, runner=runner, popen=self.cloud.popen, sleep=lambda _: None)
+        self.assertFalse(self.cloud.calls)
+        self.assertNotIn('guard-start', self.cloud.events)
+
+    def test_node_without_zstd_fails_closed_and_tears_down(self):
+        seen = []
+        self.cloud.lacks_zstd = lambda host: seen.append(host) or host != seen[0]
+        with self.assertRaisesRegex(p.ProvisionError, 'fetch sealed binary failed .*zstd is not installed'):
+            self.prepare()
+        self.assertEqual(self.cloud.items, self.cloud.baseline)
+        self.assertEqual(sum(kind == 'server' for kind, _ in self.cloud.deleted), 5)
+
+    def test_node_decompression_that_misses_the_seal_fails_closed(self):
+        remote = p.REMOTE_BASE+'/'+self.plan['campaign']
+        hosts = []
+
+        def corrupt(host, src, data):
+            hosts.append(host)
+            return data + b'x' if len(set(hosts)) == 2 and src.endswith('/fdbserver.zst') else data
+        self.cloud.node_unzstd_mutator = corrupt
+        with self.assertRaisesRegex(p.ProvisionError, 'fetch sealed fdbserver failed .*sealed SHA-256 mismatch'):
+            self.prepare()
+        node2 = list(dict.fromkeys(hosts))[1]
+        self.assertNotIn(remote+'/bin/fdbserver', self.cloud.files[node2])
+        self.assertNotIn(remote+'/incoming/fdbserver.zst', self.cloud.files[node2])
+        self.assertEqual(self.cloud.items, self.cloud.baseline)
 
     def test_existing_prefix_is_never_adopted_or_touched(self):
         self.cloud.items['server'][0]['name'] = self.plan['prefix']+'-node1'
