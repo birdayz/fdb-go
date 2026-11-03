@@ -36,6 +36,10 @@ import (
 // readKinds are the storage reads the record layer issues.
 var readKinds = []string{"get", "getkey", "getrange"}
 
+// ServerKnobs.cpp defaults to five seconds; process recovery must fit inside
+// this fixture's MVCC window as well as the unchanged 30-second client timeout.
+const crReadLifeVersions = "60000000"
+
 // crFixture is the seeded keyspace and the cluster file both clients open.
 type crFixture struct {
 	clusterFile string
@@ -136,6 +140,7 @@ func startCRCluster(t *testing.T, ctx context.Context, f *crFixture, opts ...tes
 	t.Helper()
 	startup, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
+	opts = append(opts, foundationdbtc.WithKnob("max_read_transaction_life_versions", crReadLifeVersions))
 	if f.double {
 		opts = append(opts, foundationdbtc.WithoutInit())
 	}
@@ -203,8 +208,9 @@ func bootstrapCRDouble(t *testing.T, ctx context.Context, container *foundationd
 			"mkdir -p %s && fdbserver --listen-address 0.0.0.0:%d --public-address %s "+
 				"--cluster-file /var/fdb/fdb.cluster --datadir %s --logdir /var/fdb/logs "+
 				"--class %s --locality-zoneid=connrefused-%d --locality-machineid=connrefused-%d "+
-				"--knob_disable_posix_kernel_aio=1 >/var/fdb/logs/connrefused%d.out 2>&1 &",
-			dir, port, net.JoinHostPort(host, strconv.Itoa(port)), dir, class, port, port, i+1)
+				"--knob_disable_posix_kernel_aio=1 --knob_max_read_transaction_life_versions=%s "+
+				">/var/fdb/logs/connrefused%d.out 2>&1 &",
+			dir, port, net.JoinHostPort(host, strconv.Itoa(port)), dir, class, port, port, crReadLifeVersions, i+1)
 		if _, err := containerExec(ctx, container, cmd); err != nil {
 			t.Fatalf("start dedicated %s process on port %d: %v", class, port, err)
 		}
@@ -396,9 +402,11 @@ type crWorkerConfig struct {
 }
 
 type crReadResult struct {
-	Got, Error string
-	Code       int
-	FDBError   bool
+	Got, Error                     string
+	Code                           int
+	FDBError                       bool
+	ReadVersion                    int64
+	ReadyAt, IssuedAt, CompletedAt time.Time
 }
 
 // Native network configuration is process-wide, so each operation gets a fresh
@@ -415,9 +423,12 @@ func TestLibFDBC_ConnectRefusedWorker(t *testing.T) {
 	f := crFixture{clusterFile: cfg.ClusterFile, prefix: []byte(cfg.Prefix), n: cfg.N, valueSize: cfg.ValueSize}
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
+	var result crReadResult
 	issue := func() {
-		crWriteFile(t, filepath.Join(cfg.Dir, "ready"), nil)
+		result.ReadyAt = time.Now()
+		crWriteFile(t, filepath.Join(cfg.Dir, "ready"), []byte(result.ReadyAt.Format(time.RFC3339Nano)))
 		crWaitFile(t, ctx, filepath.Join(cfg.Dir, "issue"))
+		result.IssuedAt = time.Now()
 		crWriteFile(t, filepath.Join(cfg.Dir, "issued"), nil)
 	}
 	var got string
@@ -444,9 +455,11 @@ func TestLibFDBC_ConnectRefusedWorker(t *testing.T) {
 		if err := tr.Options().SetTimeout(30000); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tr.GetReadVersion().Get(); err != nil {
+		version, err := tr.GetReadVersion().Get()
+		if err != nil {
 			t.Fatal(err)
 		}
+		result.ReadVersion = version
 		issue()
 		got, readErr = goRead(tr, f, cfg.Kind, cfg.Key)
 	case "libfdb_c":
@@ -470,15 +483,18 @@ func TestLibFDBC_ConnectRefusedWorker(t *testing.T) {
 		if err := tr.Options().SetTimeout(30000); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tr.GetReadVersion().Get(); err != nil {
+		version, err := tr.GetReadVersion().Get()
+		if err != nil {
 			t.Fatal(err)
 		}
+		result.ReadVersion = version
 		issue()
 		got, readErr = cRead(tr, f, cfg.Kind, cfg.Key)
 	default:
 		t.Fatalf("unknown client %q", cfg.Client)
 	}
-	result := crReadResult{Got: got}
+	result.Got = got
+	result.CompletedAt = time.Now()
 	if readErr != nil {
 		result.Error = readErr.Error()
 		result.Code, result.FDBError = fdbCode(readErr)
@@ -548,7 +564,8 @@ func startCRWorker(t *testing.T, ctx context.Context, f crFixture, client, kind 
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if _, err := os.Stat(filepath.Join(w.cfg.Dir, "ready")); err == nil {
+		if data, err := os.ReadFile(filepath.Join(w.cfg.Dir, "ready")); err == nil {
+			t.Logf("%s %s: GRV ready at %s", client, kind, data)
 			return w
 		} else if !errors.Is(err, os.ErrNotExist) {
 			t.Fatal(err)
@@ -685,6 +702,7 @@ func (w *crWorker) requirePending(t *testing.T) {
 
 func (w *crWorker) issueAndAwaitRefusal(t *testing.T, ctx context.Context, peers []string) string {
 	t.Helper()
+	t.Logf("%s %s: issue at %s", w.cfg.Client, w.cfg.Kind, time.Now().Format(time.RFC3339Nano))
 	crWriteFile(t, filepath.Join(w.cfg.Dir, "issue"), nil)
 	gate, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
@@ -713,7 +731,7 @@ func (w *crWorker) issueAndAwaitRefusal(t *testing.T, ctx context.Context, peers
 			}
 			if peer != "" {
 				w.requirePending(t)
-				t.Logf("%s %s: raw read encountered refusing storage peer %s", w.cfg.Client, w.cfg.Kind, peer)
+				t.Logf("%s %s: raw read encountered refusing storage peer %s at %s", w.cfg.Client, w.cfg.Kind, peer, time.Now().Format(time.RFC3339Nano))
 				return peer
 			}
 		}
@@ -743,6 +761,9 @@ func (w *crWorker) requireResult(t *testing.T, ctx context.Context, want string)
 	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatal(err)
 	}
+	t.Logf("%s %s: read version=%d ready=%s issued=%s completed=%s GRV age=%s", w.cfg.Client, w.cfg.Kind,
+		result.ReadVersion, result.ReadyAt.Format(time.RFC3339Nano), result.IssuedAt.Format(time.RFC3339Nano),
+		result.CompletedAt.Format(time.RFC3339Nano), result.CompletedAt.Sub(result.ReadyAt))
 	if result.Error != "" || result.Got != want {
 		t.Fatalf("%s %s: same raw read returned %.80q, error=%q FDB=%t code=%d; want %.80q without an application retry",
 			w.cfg.Client, w.cfg.Kind, result.Got, result.Error, result.FDBError, result.Code, want)
@@ -761,6 +782,15 @@ func TestLibFDBC_ConnectRefusedReplicaUsesAnotherReplica(t *testing.T) {
 		for _, kind := range readKinds {
 			k, team := pickStorageTeam(t, ctx, f, 2)
 			worker := startCRWorker(t, ctx, f, client, kind, k)
+			if client == "libfdb_c" && kind == "get" {
+				// Exercise recovery of the original GRV beyond the default five-second
+				// MVCC window, without refreshing the version or retrying the read.
+				select {
+				case <-time.After(6 * time.Second):
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+			}
 			restart := make(map[string]string, len(team))
 			for _, peer := range team {
 				restart[peer] = killStorage(t, ctx, f, peer)
@@ -768,6 +798,7 @@ func TestLibFDBC_ConnectRefusedReplicaUsesAnotherReplica(t *testing.T) {
 			victim := worker.issueAndAwaitRefusal(t, ctx, team)
 			for _, peer := range team {
 				if peer != victim {
+					t.Logf("%s %s: restart alternate %s at %s", client, kind, peer, time.Now().Format(time.RFC3339Nano))
 					if _, err := containerExec(ctx, f.container, restart[peer]); err != nil {
 						t.Fatalf("restart alternate %s: %v", peer, err)
 					}
@@ -860,6 +891,7 @@ func TestLibFDBC_ConnectRefusedOnlyReplicaWaitsForIt(t *testing.T) {
 			restart := killStorage(t, ctx, f, team[0])
 			victim := worker.issueAndAwaitRefusal(t, ctx, team)
 			requireCRRefused(t, victim)
+			t.Logf("%s %s: restart sole replica %s at %s", client, kind, victim, time.Now().Format(time.RFC3339Nano))
 			if _, err := containerExec(ctx, f.container, restart); err != nil {
 				t.Fatalf("restart sole replica %s: %v", victim, err)
 			}
