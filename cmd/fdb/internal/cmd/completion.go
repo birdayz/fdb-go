@@ -72,6 +72,7 @@ func contextNamesForCompletion() []string {
 func loadMetaForCompletion(cmd *cobra.Command) *recordlayer.RecordMetaData {
 	var addr storeAddressFlags
 	addr.contextName, _ = cmd.Flags().GetString("context")
+	addr.clusterFile, _ = cmd.Flags().GetString("cluster-file")
 	addr.metaFile, _ = cmd.Flags().GetString("meta-file")
 	addr.descriptorSet, _ = cmd.Flags().GetString("descriptor-set")
 	addr.recordsFile, _ = cmd.Flags().GetString("records-file")

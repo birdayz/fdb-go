@@ -82,8 +82,9 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 		md.Records = protodesc.ToFileDescriptorProto(m.fileDescriptor)
 	}
 
-	// 2. Dependencies (transitive)
+	// Java emits all transitive dependencies from a filename-keyed TreeMap.
 	deps := collectDependencies(m.fileDescriptor)
+	sort.Slice(deps, func(i, j int) bool { return deps[i].Path() < deps[j].Path() })
 	for _, dep := range deps {
 		if source := m.dependencySourceProtos[dep.Path()]; source != nil {
 			md.Dependencies = append(md.Dependencies, proto.Clone(source).(*descriptorpb.FileDescriptorProto))

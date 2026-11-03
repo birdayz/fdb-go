@@ -188,6 +188,44 @@ func TestDescriptorSetCLICompletions(t *testing.T) {
 	}
 }
 
+func TestDescriptorSetCLICompletionMissingContextOverride(t *testing.T) {
+	clusterFile, assertNoFDB := completionFDBTrap(t)
+	path := descriptorFixturePath(t)
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("current_context: deleted\ncontexts: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FDB_CONFIG", configPath)
+	for _, selection := range []struct {
+		name string
+		args []string
+	}{
+		{name: "current"},
+		{name: "explicit", args: []string{"--context", "missing"}},
+	} {
+		for _, completion := range []struct {
+			name    string
+			command []string
+			suffix  []string
+			want    []string
+		}{
+			{"type-flag", []string{"rl", "record", "scan"}, []string{"--type", ""}, []string{"Customer"}},
+			{"record-type", []string{"rl", "meta", "types", "describe"}, []string{""}, []string{"Customer"}},
+			{"index-name", []string{"rl", "index", "describe"}, []string{""}, []string{"Customer$email", "Customer$score", "Customer$tags"}},
+		} {
+			t.Run(selection.name+"/"+completion.name, func(t *testing.T) {
+				args := append([]string{}, completion.command...)
+				args = append(args, selection.args...)
+				args = append(args, "--descriptor-set", path)
+				assertDescriptorCompletion(t, append(append([]string{}, args...), completion.suffix...), nil)
+				args = append(args, "--cluster-file", clusterFile)
+				assertDescriptorCompletion(t, append(args, completion.suffix...), completion.want)
+				assertNoFDB()
+			})
+		}
+	}
+}
+
 func TestDescriptorSetCLICompletionAddressing(t *testing.T) {
 	clusterFile, assertNoFDB := completionFDBTrap(t)
 	path := descriptorFixturePath(t)

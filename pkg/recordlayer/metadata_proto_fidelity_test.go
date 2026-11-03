@@ -10,12 +10,101 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
 
 	"fdb.dev/gen"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
+
+// Java's RecordMetaData.toProto emits a TreeMap's values, not import traversal
+// order. Keep the expected repeated field explicit, including the transitive file.
+func TestMetaDataDependenciesUseJavaFilenameOrder(t *testing.T) {
+	t.Parallel()
+
+	builder := NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
+	builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+	builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	built, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := built.ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(want.Dependencies) != 0 {
+		t.Fatalf("fixture has unexpected dependencies: %v", want.Dependencies)
+	}
+
+	dependency := func(name string) *descriptorpb.FileDescriptorProto {
+		return &descriptorpb.FileDescriptorProto{
+			Name: proto.String(name), Package: proto.String("dependency_order"),
+			Syntax:  proto.String("proto2"),
+			Options: &descriptorpb.FileOptions{JavaPackage: proto.String("example.dependencies")},
+		}
+	}
+	a := dependency("a.proto")
+	middle := dependency("m.proto")
+	middle.MessageType = []*descriptorpb.DescriptorProto{{
+		Name: proto.String("Leaf"),
+		Field: []*descriptorpb.FieldDescriptorProto{{
+			Name: proto.String("child"), Number: proto.Int32(1),
+			Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+			Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+			TypeName: proto.String("Leaf"), // Preserve relative names and absent json_name.
+		}},
+	}}
+	middle.ProtoReflect().SetUnknown(protowire.AppendVarint(protowire.AppendTag(nil, 50000, protowire.VarintType), 7))
+	z := dependency("z.proto")
+	z.Dependency = []string{"m.proto"}
+	want.Records.Dependency = append(want.Records.Dependency, "z.proto", "a.proto")
+	want.Dependencies = []*descriptorpb.FileDescriptorProto{a, middle, z}
+
+	// This expected wire message uses Java's global filename order and the
+	// original descriptor protos, rather than Go's reconstructed descriptors.
+	wantBytes, err := proto.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, inputOrder := range []struct {
+		name  string
+		files []*descriptorpb.FileDescriptorProto
+	}{
+		{"java_order", []*descriptorpb.FileDescriptorProto{a, middle, z}},
+		{"traversal_order", []*descriptorpb.FileDescriptorProto{z, middle, a}},
+	} {
+		t.Run(inputOrder.name, func(t *testing.T) {
+			input := proto.Clone(want).(*gen.MetaData)
+			input.Dependencies = inputOrder.files
+			md, err := RecordMetaDataFromProto(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := md.ToProto()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Dependencies) != 3 {
+				t.Fatalf("dependency count: got %d, want 3", len(got.Dependencies))
+			}
+			for i, source := range want.Dependencies {
+				if !proto.Equal(got.Dependencies[i], source) {
+					t.Errorf("dependency %d: got %v, want original %v", i, got.Dependencies[i], source)
+				}
+			}
+			gotBytes, err := proto.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(gotBytes, wantBytes) {
+				t.Errorf("serialized metadata differs from Java filename-ordered source protos:\ngot  %x\nwant %x", gotBytes, wantBytes)
+			}
+		})
+	}
+}
 
 // The STRUCT-LEVEL round trip: proto → RecordMetaData → proto, asserted field by
 // field against the proto we started from.
