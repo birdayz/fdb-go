@@ -24,12 +24,16 @@ type CollectorBenchCPU struct {
 	GCIdleNs      int64 `json:"gc_mark_idle_ns"`
 	GCPauseNs     int64 `json:"gc_pause_ns"`
 	// CoresUsed is TotalNs per wall nanosecond; Utilization is CoresUsed
-	// over GOMAXPROCS.
+	// over the cores the process can run on at once, min(GOMAXPROCS, NumCPU)
+	// (whichever is known when the other is zero).
 	CoresUsed   float64 `json:"cores_used"`
 	Utilization float64 `json:"utilization"`
 	// MsPerSpan is TotalNs in milliseconds per exported span.
 	MsPerSpan float64 `json:"ms_per_span"`
-	// GCFraction is GCNs over TotalNs.
+	// GCFraction is GCNs over TotalNs. GCNs is the runtime's per-P estimate
+	// (time GC work held a P, not CPU it was granted), so with GOMAXPROCS >
+	// NumCPU, where Ps share CPUs, it overstates GC CPU, and GCFraction with
+	// it; a CPU profile gives the actual share.
 	GCFraction float64 `json:"gc_fraction"`
 	GOMAXPROCS int     `json:"gomaxprocs"`
 	NumCPU     int     `json:"num_cpu"`
@@ -107,8 +111,8 @@ func (c *CollectorBenchCPU) derive(wallNs, spans int64) {
 	if wallNs > 0 {
 		c.CoresUsed = float64(c.TotalNs) / float64(wallNs)
 	}
-	if c.GOMAXPROCS > 0 {
-		c.Utilization = c.CoresUsed / float64(c.GOMAXPROCS)
+	if procs := benchCPUProcs(c.GOMAXPROCS, c.NumCPU); procs > 0 {
+		c.Utilization = c.CoresUsed / float64(procs)
 	}
 	if spans > 0 {
 		c.MsPerSpan = float64(c.TotalNs) / 1e6 / float64(spans)
@@ -116,6 +120,17 @@ func (c *CollectorBenchCPU) derive(wallNs, spans int64) {
 	if c.TotalNs > 0 {
 		c.GCFraction = float64(c.GCNs) / float64(c.TotalNs)
 	}
+}
+
+// benchCPUProcs is min(gomaxprocs, numCPU) over the positive ones, or zero.
+func benchCPUProcs(gomaxprocs, numCPU int) int {
+	switch {
+	case gomaxprocs <= 0:
+		return max(numCPU, 0)
+	case numCPU <= 0:
+		return gomaxprocs
+	}
+	return min(gomaxprocs, numCPU)
 }
 
 // benchCPUWindow samples the CPU now and returns its delta since prev.

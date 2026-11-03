@@ -435,6 +435,20 @@ func TestBenchCPU(t *testing.T) {
 	if z := benchCPUDelta(cur, cur, 0, 0, 4, 8); z != (CollectorBenchCPU{GOMAXPROCS: 4, NumCPU: 8}) {
 		t.Fatalf("empty interval %+v", z)
 	}
+	// Utilization is over min(GOMAXPROCS, NumCPU): 16 Ps on 4 CPUs is 4 cores.
+	if u := benchCPUDelta(prev, cur, 2000*ms, 1500, 16, 4).Utilization; u != 0.375 {
+		t.Fatalf("GOMAXPROCS above NumCPU: utilization %v", u)
+	}
+	for _, tc := range []struct{ gomaxprocs, numCPU, want int }{
+		{4, 8, 4}, {16, 4, 4}, {6, 6, 6}, {0, 4, 4}, {4, 0, 4}, {0, 0, 0}, {-1, -1, 0},
+	} {
+		if got := benchCPUProcs(tc.gomaxprocs, tc.numCPU); got != tc.want {
+			t.Fatalf("benchCPUProcs(%d, %d) = %d, want %d", tc.gomaxprocs, tc.numCPU, got, tc.want)
+		}
+	}
+	if u := benchCPUDelta(prev, cur, 2000*ms, 1500, 0, 0).Utilization; u != 0 {
+		t.Fatalf("unknown processors: utilization %v", u)
+	}
 
 	// Rates sum the windows' counters and derive over their wall and spans.
 	s := int64(time.Second)
