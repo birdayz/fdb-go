@@ -50,6 +50,11 @@ type Config struct {
 	Order              string `json:"order"`
 	// Messages is the GenAI message storage layout: "", "deltas" or "fulltext".
 	Messages string `json:"messages,omitempty"`
+	// KeyLayout is how an FDB run's keys are prefixed: "" (the run's tuple
+	// prefix) or "directory_v1" (directory-layer prefixes, keyspace.go). The
+	// FDB backend sets it when it opens the run: an existing run keeps the
+	// layout its manifest records, a fresh one gets directory_v1.
+	KeyLayout string `json:"key_layout,omitempty"`
 }
 
 func DefaultConfig() Config {
@@ -89,6 +94,9 @@ func (c Config) Validate() error {
 		}
 	default:
 		return fail("config", "message layout", "message layout must be empty, deltas or fulltext")
+	}
+	if c.KeyLayout != keyLayoutTuple && (c.KeyLayout != keyLayoutDirectory || c.Backend != "fdb") {
+		return fail("config", "key layout", "key layout must be empty, or directory_v1 for the FDB backend")
 	}
 	if c.BulkIndexConflicts && (c.Backend != "fdb" || c.SaveMode != "batch") {
 		return fail("config", "bulk index conflicts", "bulk index conflicts require the FDB batch save mode")
@@ -412,6 +420,8 @@ type Manifest struct {
 	PostingValueFormat string `json:"posting_value_format,omitempty"`
 	// Messages is Config.Messages; absent for runs without message storage.
 	Messages string `json:"messages,omitempty"`
+	// KeyLayout is Config.KeyLayout; absent for runs with tuple prefixes.
+	KeyLayout string `json:"key_layout,omitempty"`
 }
 
 func manifest(c Config, state string) Manifest {
@@ -421,6 +431,7 @@ func manifest(c Config, state string) Manifest {
 		m.PostingValueFormat = "tuple"
 	}
 	m.Messages = c.Messages
+	m.KeyLayout = c.KeyLayout
 	// CH table settings are layout identity, not source identity. Omit this
 	// field for FDB so existing V2 manifests retain their exact wire format.
 	if c.Backend == "ch-map" || c.Backend == "ch-attrs" {
@@ -451,6 +462,9 @@ func checkManifest(c Config, m Manifest, ready bool) error {
 			return failf("ownership", "manifest", "run has no %s message record layout: it stores no messages or predates message records (msg_blob_v1 layout); refusing access, use a fresh run", c.Messages)
 		}
 		return failf("ownership", "manifest", "run uses message layout %q, not %q; refusing access", m.Messages, c.Messages)
+	}
+	if m.KeyLayout != c.KeyLayout {
+		return failf("ownership", "manifest", "run uses key layout %q, not %q; refusing access", m.KeyLayout, c.KeyLayout)
 	}
 	if ready && m.State != "ready" {
 		return failf("ownership", "manifest", "run is not ready (state %q); explicit owned drop only", m.State)

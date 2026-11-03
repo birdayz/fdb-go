@@ -350,10 +350,26 @@ FDB=(--backend fdb --cluster-file /absolute/path/to/owned/fdb.cluster)
 For CH, use `--backend ch-map` or `--backend ch-attrs --ch-url http://127.0.0.1:PORT`
 instead of `FDB`. Create a new `RUN`; compare both attribute-table orders in fresh
 databases. Select `--order time` for the corresponding FDB experiment too.
-CH database names are `otel_<run>`; FDB roots are tuples
-`("otel_otelbench_v2",run)`. Drop requires `--confirm-drop` **and** matching owner
+CH database names are `otel_<run>`. An FDB run's owner manifest is at
+`("otel_otelbench_v2",run,"owner")`. Drop requires `--confirm-drop` **and** matching owner
 metadata, and removes only that owned database/root. A failed partial load stays
 `loading`; choose a fresh run or explicitly drop it, never resume/replay blindly.
+
+**FDB key layout.** The manifest records the run's key layout, part of its
+stored identity. A run created now uses `"key_layout": "directory_v1"`: its data
+lives under a Record Layer `KeySpace` path whose application
+(`otel_otelbench_v2`) and run directories are the Record Layer's
+`DirectoryLayerDirectory`, resolved through the FDB directory layer
+(`ExtendedDirectoryLayer.global`) to small integers, with integer constants for the store, the log
+subspaces, the message writer counter and the query key, and integer subspace
+keys for the span indexes (`typed_scoped_eq_v2` 1, `span_id_v2` 2,
+`span_time_v2` 3). A key starts with about 6 bytes instead of about 40. A run
+whose manifest has no `key_layout` keeps its tuple prefix
+`("otel_otelbench_v2",run)` and index names and works unchanged; a manifest
+naming an unknown layout is refused. Drop clears the run's tuple prefix and its
+key space path; the directory layer keeps the interned names, as the Java Record
+Layer does. Measured on 12-turn GenAI conversations: 18% fewer mutation bytes
+and 15% fewer stored bytes per span, with the same mutation count.
 
 FDB ingestion uses `--save-mode pipelined` by default: immutable protobuf messages
 are prepared outside the retry closure, then `SaveRecordsPipelined(..., None)`
@@ -558,6 +574,19 @@ read.
   transaction reads it serializably, so concurrent writers of one message
   conflict and the loser reuses the stored ID. A present message costs no
   write at all. The digest prefix is 128 bits per tenant.
+* **Group commit.** Export calls queue their small messages in the backend;
+  up to 16 loops, each holding one writer for one transaction at a time, take
+  as many queued messages as a transaction holds (128, and 1 MB of raw
+  bytes) and store them together. A message transaction costs a fixed latency
+  `a` (read version, digest reads, the first read of each TEXT bunch, commit:
+  a chain of round trips) plus per-message CPU `c`, so `W` writers store
+  `W * n / (a + c * n)` messages per second. With every writer busy, waiting
+  messages make the next transactions larger instead of each waiting for a
+  writer. Bench, 4 writers and 4 ms round trips (a = 105 ms, c = 4.1 ms):
+  226 spans/s at 32 messages per transaction (22.9 per transaction), 367 at
+  128 (84.4), 390 with group commit (101.5). Writers stay one per TEXT shard:
+  64 writers over 16 shards retried 32% of their transactions on shared
+  boundary bunches, and 64 shards cost phrase queries 20 ms more.
 * **Text index.** `fulltext` adds a standard TEXT index `message_text_v1` on
   each part's text, grouped by `(tenant, role, shard)`, with positions. A
   backend holds at most 16 writers, each in its own shard (`writer mod 16`),

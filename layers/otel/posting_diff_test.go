@@ -269,8 +269,10 @@ func testOtelPostingDiffFormat(t *testing.T, ctx context.Context, cluster, order
 			c.Count = wantRows
 			b := openOtelFixture(t, ctx, cluster, c, false)
 			c = b.cfg
-			if len(c.Run) != 29 || len(b.root.Bytes()) != len(tuple.Tuple{"otel_otelbench_v2", strings.Repeat("r", 29)}.Pack()) {
-				t.Fatalf("size fixture namespace shape changed: run bytes=%d root bytes=%d", len(c.Run), len(b.root.Bytes()))
+			// A fresh run's data is under directory-layer prefixes; the
+			// owner manifest keeps the run's tuple prefix.
+			if len(c.Run) != 29 || c.KeyLayout != keyLayoutDirectory || len(b.keys.legacy.Bytes()) != len(tuple.Tuple{"otel_otelbench_v2", strings.Repeat("r", 29)}.Pack()) || len(b.keys.data.Bytes()) > 8 {
+				t.Fatalf("size fixture namespace shape changed: run bytes=%d legacy bytes=%d data bytes=%d", len(c.Run), len(b.keys.legacy.Bytes()), len(b.keys.data.Bytes()))
 			}
 			prepareConfig := c
 			prepareConfig.Count = 64
@@ -281,19 +283,19 @@ func testOtelPostingDiffFormat(t *testing.T, ctx context.Context, cluster, order
 			otelTransaction(t, ctx, b, func(_ *recordlayer.FDBRecordStore, rc *recordlayer.FDBRecordContext) error {
 				wire, err := json.Marshal(manifest(c, "loading"))
 				if err == nil {
-					rc.Transaction().Set(b.root.Sub("owner").FDBKey(), wire)
+					rc.Transaction().Set(b.keys.owner(), wire)
 				}
 				return err
 			})
 			freshCapture, err := capturePostingDiff(t, b, func() error { return b.saveIngestBatch(ctx, batch, nil) })
 			freshSize := assertPostingDiffMutations(t, freshCapture, 0, 8*wantRows, true)
 			if err != nil || freshSize > 500000 {
-				t.Fatalf("fresh batch=%d effective=%d rootbytes=%d size=%d: %v", requested, wantRows, len(b.root.Bytes()), freshSize, err)
+				t.Fatalf("fresh batch=%d effective=%d rootbytes=%d size=%d: %v", requested, wantRows, len(b.keys.data.Bytes()), freshSize, err)
 			}
 			otelTransaction(t, ctx, b, func(_ *recordlayer.FDBRecordStore, rc *recordlayer.FDBRecordContext) error {
 				wire, err := json.Marshal(manifest(c, "ready"))
 				if err == nil {
-					rc.Transaction().Set(b.root.Sub("owner").FDBKey(), wire)
+					rc.Transaction().Set(b.keys.owner(), wire)
 				}
 				return err
 			})
@@ -303,11 +305,11 @@ func testOtelPostingDiffFormat(t *testing.T, ctx context.Context, cluster, order
 				assertOtelSource(t, ctx, b, sources[i])
 			}
 			assertOtelCommittedPostings(t, ctx, b, sources)
-			before := otelSnapshot(t, ctx, b, b.root)
+			before := otelRunSnapshot(t, ctx, b)
 			replayCapture, err := capturePostingDiff(t, b, func() error { return b.saveIngestBatch(ctx, batch, nil) })
 			replaySize := assertPostingDiffMutations(t, replayCapture, 0, 0, true)
-			if err != nil || replaySize > 500000 || !reflect.DeepEqual(before, otelSnapshot(t, ctx, b, b.root)) {
-				t.Fatalf("identical replay batch=%d effective=%d rootbytes=%d size=%d: %v", requested, wantRows, len(b.root.Bytes()), replaySize, err)
+			if err != nil || replaySize > 500000 || !reflect.DeepEqual(before, otelRunSnapshot(t, ctx, b)) {
+				t.Fatalf("identical replay batch=%d effective=%d rootbytes=%d size=%d: %v", requested, wantRows, len(b.keys.data.Bytes()), replaySize, err)
 			}
 			if replaySize >= freshSize {
 				t.Fatalf("zero custom mutations must reduce actual transaction size: fresh=%d replay=%d", freshSize, replaySize)
@@ -337,14 +339,14 @@ func testOtelPostingDiffFormat(t *testing.T, ctx context.Context, cluster, order
 				if !errors.As(changedErr, &budget) {
 					t.Fatalf("changed old images failed outside explicit ingestion guard: size=%d %T %v", changedSize, changedErr, changedErr)
 				}
-				if !reflect.DeepEqual(before, otelSnapshot(t, ctx, b, b.root)) {
+				if !reflect.DeepEqual(before, otelRunSnapshot(t, ctx, b)) {
 					t.Fatal("rejected changed-image batch altered source/custom/native keys")
 				}
 				for _, source := range sources {
 					assertOtelSource(t, ctx, b, source)
 				}
 				assertOtelCommittedPostings(t, ctx, b, sources)
-				t.Logf("changed-image batch rejected by intact guard: requested=%d effective=%d rootbytes=%d approximatebytes=%d error=%v", requested, wantRows, len(b.root.Bytes()), changedSize, changedErr)
+				t.Logf("changed-image batch rejected by intact guard: requested=%d effective=%d rootbytes=%d approximatebytes=%d error=%v", requested, wantRows, len(b.keys.data.Bytes()), changedSize, changedErr)
 			} else {
 				if changedSize > 500000 {
 					t.Fatalf("changed-image batch admitted above unchanged byte guard: %d", changedSize)
@@ -367,9 +369,9 @@ func testOtelPostingDiffFormat(t *testing.T, ctx context.Context, cluster, order
 						t.Fatalf("changed-image %s census: %+v %v", name, sz, err)
 					}
 				}
-				t.Logf("changed-image batch admitted: requested=%d effective=%d rootbytes=%d approximatebytes=%d", requested, wantRows, len(b.root.Bytes()), changedSize)
+				t.Logf("changed-image batch admitted: requested=%d effective=%d rootbytes=%d approximatebytes=%d", requested, wantRows, len(b.keys.data.Bytes()), changedSize)
 			}
-			t.Logf("actual batch mutation bytes: requested=%d effective=%d rootbytes=%d fresh=%d identicalreplay=%d", requested, wantRows, len(b.root.Bytes()), freshSize, replaySize)
+			t.Logf("actual batch mutation bytes: requested=%d effective=%d rootbytes=%d fresh=%d identicalreplay=%d", requested, wantRows, len(b.keys.data.Bytes()), freshSize, replaySize)
 		})
 	}
 	t.Run("admission_and_write_only", func(t *testing.T) { testOtelPostingDiffAdmissionAndWriteOnly(t, ctx, cluster, order, valueFormat) })
@@ -384,7 +386,7 @@ func testOtelPostingDiffAdmissionAndWriteOnly(t *testing.T, ctx context.Context,
 	s.Attributes = append(s.Attributes, Attribute{"span", collision(QueryKey), "string", collision(QueryValue)})
 	saveOtelSpan(t, ctx, b, s)
 	assertOtelCommittedPostings(t, ctx, b, []Span{s})
-	before := otelSnapshot(t, ctx, b, b.root)
+	before := otelRunSnapshot(t, ctx, b)
 	for _, invalidSide := range []string{"old", "new"} {
 		capture, err := capturePostingDiff(t, b, func() error {
 			_, err := b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
@@ -418,7 +420,7 @@ func testOtelPostingDiffAdmissionAndWriteOnly(t *testing.T, ctx context.Context,
 			t.Fatalf("invalid %s image should reject before custom mutation: %T %v", invalidSide, err, err)
 		}
 		assertPostingDiffMutations(t, capture, 0, 0, false)
-		if !reflect.DeepEqual(before, otelSnapshot(t, ctx, b, b.root)) {
+		if !reflect.DeepEqual(before, otelRunSnapshot(t, ctx, b)) {
 			t.Fatalf("invalid %s image mutated persisted data", invalidSide)
 		}
 	}
@@ -459,7 +461,7 @@ func testOtelPostingDiffAdmissionAndWriteOnly(t *testing.T, ctx context.Context,
 	assertPostingDiffMutations(t, capture, 9, 9, false)
 	assertOtelSource(t, ctx, b, s)
 	assertOtelCommittedPostings(t, ctx, b, []Span{s})
-	if !reflect.DeepEqual(before, otelSnapshot(t, ctx, b, b.root)) {
+	if !reflect.DeepEqual(before, otelRunSnapshot(t, ctx, b)) {
 		t.Fatal("WRITE_ONLY same-image repair did not restore exact custom/native/source data")
 	}
 	corrected := s

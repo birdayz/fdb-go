@@ -226,7 +226,7 @@ func (b *FDBBackend) initializeLiveRun(ctx context.Context) error {
 		if err := configureStoreContext(rc); err != nil {
 			return nil, err
 		}
-		key := b.root.Sub("owner").FDBKey()
+		key := b.keys.owner()
 		wire, err := rc.Transaction().Get(key).Get()
 		if err != nil {
 			return nil, err

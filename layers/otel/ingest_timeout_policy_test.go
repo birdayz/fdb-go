@@ -336,7 +336,7 @@ func assertSourceTimeoutPreparedAndJoined(t *testing.T, state *sourceTimeoutPoli
 func assertSourceTimeoutRawPopulation(t *testing.T, ctx context.Context, b *FDBBackend, owner string, rows int) {
 	t.Helper()
 	_, err := b.raw.ReadTransactCtx(ctx, func(tx fdb.ReadTransaction) (any, error) {
-		wire, err := tx.Get(b.root.Sub("owner").FDBKey()).Get()
+		wire, err := tx.Get(b.keys.owner()).Get()
 		if err != nil {
 			return nil, err
 		}

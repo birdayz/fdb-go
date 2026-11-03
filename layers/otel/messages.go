@@ -527,6 +527,7 @@ type messageElement struct {
 	raw      []byte
 	id       messageID
 	trace    string // of the first span referencing it
+	written  bool   // stored by this call, not found present
 }
 
 // messageUse is one (message, attribute) reference of a span: the message's
@@ -863,7 +864,7 @@ func (b *FDBBackend) takeWriter(ctx context.Context) (*messageWriter, error) {
 	}
 	b.writers.shards[shard] = true
 	b.writers.mu.Unlock()
-	key := b.root.Sub("message_writers").FDBKey()
+	key := b.keys.messageWriters
 	var id int64
 	_, err := runTxnSlot(ctx, b.db, "message writer", func(rc *recordlayer.FDBRecordContext) (any, error) {
 		if err := configureRecordTimeout(rc); err != nil {
@@ -1040,26 +1041,20 @@ func readHashes(store *recordlayer.FDBRecordStore, hashSpace []byte, tenant int,
 }
 
 // writeMessages saves every absent element's records and sets every
-// element's ID. Small messages share transactions of at most
-// messageTxnMessages; a multi-part message commits its parts 1.. before part
-// 0, so a stored part 0 means a complete message.
+// element's ID. Small messages go through the backend's group commit
+// (messageQueue); a multi-part message commits its parts 1.. before part 0,
+// so a stored part 0 means a complete message.
 func (b *FDBBackend) writeMessages(ctx context.Context, tenant int, plans []*messagePlan, fulltext bool) (MessageStoreStats, error) {
 	const op = "message persist"
-	var mu sync.Mutex
-	var stats MessageStoreStats
 	// Messages first referenced by one trace usually share rare tokens (its
-	// conversation's identifiers), so one writer stores them in order rather
-	// than several writers inserting into the same young token bunches.
-	type job struct {
-		groups [][]*messagePlan // transactions, run in order
-		large  *messagePlan
-	}
-	var jobs []job
+	// conversation's identifiers), so they are queued together and one
+	// transaction stores them in order.
+	var large []*messagePlan
 	var byTrace [][]*messagePlan
 	index := map[string]int{}
 	for _, p := range plans {
 		if len(p.records) > 1 {
-			jobs = append(jobs, job{large: p})
+			large = append(large, p)
 			continue
 		}
 		i, ok := index[p.element.trace]
@@ -1070,56 +1065,199 @@ func (b *FDBBackend) writeMessages(ctx context.Context, tenant int, plans []*mes
 		}
 		byTrace[i] = append(byTrace[i], p)
 	}
-	var cur job
-	var curN int
-	var curRaw int64
-	flush := func() {
-		if len(cur.groups) > 0 {
-			jobs = append(jobs, cur)
-		}
-		cur, curN, curRaw = job{}, 0, 0
-	}
+	var small []*messagePlan
 	for _, unit := range byTrace {
-		if curN > 0 && curN+len(unit) > messageTxnMessages {
-			flush()
-		}
-		for _, p := range unit {
-			if curN > 0 && (curN == messageTxnMessages || curRaw+p.raw > messagePartRawBytes) {
-				cur.groups = append(cur.groups, nil)
-				curN, curRaw = 0, 0
-			}
-			if len(cur.groups) == 0 {
-				cur.groups = append(cur.groups, nil)
-			}
-			g := &cur.groups[len(cur.groups)-1]
-			*g = append(*g, p)
-			curN++
-			curRaw += p.raw
-		}
+		small = append(small, unit...)
 	}
-	flush()
-	err := runMessageJobs(ctx, op, len(jobs), func(ctx context.Context, i int) error {
+	var stats MessageStoreStats
+	var smallErr error
+	var wg sync.WaitGroup
+	if len(small) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stats, smallErr = b.queue.store(ctx, b, tenant, small, fulltext)
+		}()
+	}
+	var mu sync.Mutex
+	largeStats := MessageStoreStats{}
+	err := runMessageJobs(ctx, op, len(large), func(ctx context.Context, i int) error {
 		w, err := b.acquireWriter(ctx)
 		if err != nil {
 			return err
 		}
 		defer b.releaseWriter(w)
-		j := jobs[i]
-		if j.large != nil {
-			return b.writeWithFallback(ctx, tenant, w, []*messagePlan{j.large}, fulltext, &stats, &mu, func() error {
-				return b.writeLargeMessage(ctx, tenant, w, j.large, &stats, &mu)
-			})
-		}
-		for _, g := range j.groups {
-			if err := b.writeWithFallback(ctx, tenant, w, g, fulltext, &stats, &mu, func() error {
-				return b.writeSmallMessages(ctx, tenant, w, g, &stats, &mu)
-			}); err != nil {
-				return err
-			}
-		}
-		return nil
+		p := large[i]
+		return b.writeWithFallback(ctx, tenant, w, []*messagePlan{p}, fulltext, &largeStats, &mu, func() error {
+			return b.writeLargeMessage(ctx, tenant, w, p, &largeStats, &mu)
+		})
 	})
+	wg.Wait()
+	stats.Add(largeStats)
+	if err == nil {
+		err = smallErr
+	}
 	return stats, err
+}
+
+// messageQueue is a backend's group commit of small messages. Export calls
+// queue them; up to messageWriterLimit loops, each holding a writer, take as
+// many queued messages as one transaction holds (messageTxnMessages and
+// messagePartRawBytes) and store them in one transaction. A message
+// transaction's time is mostly per-transaction latency (read version, digest
+// reads, the first read of each TEXT bunch, commit) plus per-message CPU, so
+// with every writer busy the waiting messages make the next transactions
+// larger instead of waiting for a writer each.
+type messageQueue struct {
+	mu      sync.Mutex
+	pending []queuedMessage
+	loops   int
+}
+
+type queuedMessage struct {
+	plan *messagePlan
+	sub  *messageSubmission
+}
+
+// messageSubmission is one call's queued messages.
+type messageSubmission struct {
+	left  int // queued messages not yet stored or dropped
+	err   error
+	stats MessageStoreStats
+	done  chan struct{}
+}
+
+// store queues plans and waits until a transaction has stored each, or the
+// first one failed, or ctx ends. The loops run on ctx's values without its
+// cancellation, since a transaction may hold other calls' messages.
+func (q *messageQueue) store(ctx context.Context, b *FDBBackend, tenant int, plans []*messagePlan, fulltext bool) (MessageStoreStats, error) {
+	sub := &messageSubmission{left: len(plans), done: make(chan struct{})}
+	q.mu.Lock()
+	for _, p := range plans {
+		q.pending = append(q.pending, queuedMessage{p, sub})
+	}
+	start := min(messageWriterLimit-q.loops, (len(q.pending)+messageTxnMessages-1)/messageTxnMessages)
+	q.loops += max(start, 0)
+	q.mu.Unlock()
+	loopCtx := context.WithoutCancel(ctx)
+	for range start {
+		go q.loop(loopCtx, b, tenant, fulltext)
+	}
+	select {
+	case <-sub.done:
+		q.mu.Lock()
+		defer q.mu.Unlock()
+		return sub.stats, sub.err
+	case <-ctx.Done():
+		err := wrap("canceled", "message persist", ctx.Err())
+		q.mu.Lock()
+		defer q.mu.Unlock()
+		if sub.err == nil && sub.left > 0 {
+			// The loops drop its messages still queued.
+			sub.err = err
+			close(sub.done)
+		}
+		return MessageStoreStats{}, err
+	}
+}
+
+// take removes the next transaction's messages, skipping those of failed
+// submissions; with none queued the loop ends.
+func (q *messageQueue) take() []queuedMessage {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	var out []queuedMessage
+	var raw int64
+	n := 0
+	for ; n < len(q.pending) && len(out) < messageTxnMessages; n++ {
+		m := q.pending[n]
+		if m.sub.err != nil {
+			q.settleLocked(m.sub)
+			continue
+		}
+		if len(out) > 0 && raw+m.plan.raw > messagePartRawBytes {
+			break
+		}
+		out = append(out, m)
+		raw += m.plan.raw
+	}
+	q.pending = q.pending[n:]
+	if len(out) == 0 {
+		q.loops--
+	}
+	return out
+}
+
+// settleLocked counts one of sub's messages as done; callers hold q.mu.
+func (q *messageQueue) settleLocked(sub *messageSubmission) {
+	if sub.left--; sub.left == 0 && sub.err == nil {
+		close(sub.done)
+	}
+}
+
+// finish records one transaction's outcome. Each message's own counters go
+// to its submission; the transaction's (transactions, retries, TEXT index
+// work, time) to the submission of its first message.
+func (q *messageQueue) finish(batch []queuedMessage, stats MessageStoreStats, err error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	txn := stats
+	txn.Written, txn.Present, txn.Parts, txn.Postings, txn.UnindexedTokens = 0, 0, 0, 0, 0
+	for i, m := range batch {
+		s := &m.sub.stats
+		if i == 0 {
+			s.Add(txn)
+		}
+		if err != nil {
+			if m.sub.err == nil {
+				m.sub.err = err
+				close(m.sub.done)
+			}
+			m.sub.left--
+			continue
+		}
+		if m.plan.element.written {
+			s.Written++
+			s.Parts++
+			s.Postings += m.plan.postings
+			s.UnindexedTokens += m.plan.unindexed
+		} else {
+			s.Present++
+		}
+		q.settleLocked(m.sub)
+	}
+}
+
+// loop stores queued messages, one transaction at a time, until none are
+// queued. It holds a writer for one transaction at a time, so a large
+// message's job waiting for a writer gets the next free one; the messages
+// queued meanwhile join the loop's next transaction.
+func (q *messageQueue) loop(ctx context.Context, b *FDBBackend, tenant int, fulltext bool) {
+	for {
+		w, err := b.acquireWriter(ctx)
+		batch := q.take()
+		if len(batch) == 0 {
+			if err == nil {
+				b.releaseWriter(w)
+			}
+			return
+		}
+		if err != nil {
+			q.finish(batch, MessageStoreStats{}, err)
+			continue
+		}
+		plans := make([]*messagePlan, len(batch))
+		for i, m := range batch {
+			plans[i] = m.plan
+		}
+		var mu sync.Mutex
+		var stats MessageStoreStats
+		err = b.writeWithFallback(ctx, tenant, w, plans, fulltext, &stats, &mu, func() error {
+			return b.writeSmallMessages(ctx, tenant, w, plans, &stats, &mu)
+		})
+		b.releaseWriter(w)
+		q.finish(batch, stats, err)
+	}
 }
 
 // writeWithFallback runs write and, while it fails with a transaction over
@@ -1161,6 +1299,7 @@ func (b *FDBBackend) writeSmallMessages(ctx context.Context, tenant int, w *mess
 		var absent []*messagePlan
 		var records []proto.Message
 		for k, p := range plans {
+			p.element.written = false
 			if found[k].valid() {
 				p.element.id = found[k]
 				s.Present++
@@ -1183,6 +1322,7 @@ func (b *FDBBackend) writeSmallMessages(ctx context.Context, tenant int, w *mess
 			if _, err := store.SaveRecord(p.records[0]); err != nil {
 				return s, err
 			}
+			p.element.written = true
 			s.Written++
 			s.Parts++
 			s.Postings += p.postings
@@ -1260,7 +1400,7 @@ func (b *FDBBackend) writeLargeMessage(ctx context.Context, tenant int, w *messa
 		if _, err := store.SaveRecord(p.records[0]); err != nil {
 			return MessageStoreStats{}, err
 		}
-		p.element.id = id
+		p.element.id, p.element.written = id, true
 		return MessageStoreStats{Written: 1, Parts: 1, Postings: p.postings, UnindexedTokens: p.unindexed}, nil
 	})
 }

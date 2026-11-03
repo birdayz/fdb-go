@@ -34,6 +34,10 @@ const (
 	envelopeRefsIndexKey  = int64(22)
 	messageHashIndexKey   = int64(23)
 	messageLargeIndexKey  = int64(24)
+	// Subspace keys of the span indexes in directory_v1 runs.
+	eqIndexKey   = int64(1)
+	spanIndexKey = int64(2)
+	timeIndexKey = int64(3)
 	// messageTraceTypeKey leads every MessageTrace primary key.
 	messageTraceTypeKey = "mt"
 )
@@ -129,9 +133,18 @@ func metadata(c Config) (*recordlayer.RecordMetaData, *recordlayer.Index, error)
 	}
 	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(fd).SetSplitLongRecords(true)
 	b.GetRecordType("Envelope").SetPrimaryKey(recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.Field("trace_id"), recordlayer.Field("span_id")))
+	spanIdx := recordlayer.NewIndex(spanIndexName, recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.Field("span_id"), recordlayer.Field("start_ns")))
+	timeIdx := recordlayer.NewIndex(timeIndexName, recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.Field("start_ns"), recordlayer.Field("trace_id")))
+	if c.KeyLayout == keyLayoutDirectory {
+		// Integer subspace keys, as the message indexes have; tuple-layout
+		// runs keep their index names.
+		idx.SetSubspaceKey(eqIndexKey)
+		spanIdx.SetSubspaceKey(spanIndexKey)
+		timeIdx.SetSubspaceKey(timeIndexKey)
+	}
 	b.AddIndex("Envelope", idx)
-	b.AddIndex("Envelope", recordlayer.NewIndex(spanIndexName, recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.Field("span_id"), recordlayer.Field("start_ns"))))
-	b.AddIndex("Envelope", recordlayer.NewIndex(timeIndexName, recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.Field("start_ns"), recordlayer.Field("trace_id"))))
+	b.AddIndex("Envelope", spanIdx)
+	b.AddIndex("Envelope", timeIdx)
 	if c.Messages != messagesNone {
 		b.GetRecordType("Message").SetPrimaryKey(recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.Field("writer"), recordlayer.Field("seq"), recordlayer.Field("part")))
 		// The string record type key keeps markers apart from the other

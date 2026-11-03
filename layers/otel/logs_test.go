@@ -26,7 +26,9 @@ import (
 // ---------------------------------------------------------------------------
 
 func lgBackend() *FDBBackend {
-	return &FDBBackend{cfg: Config{Run: "lg_run_0001", Tenant: 3, HashBytes: 8, K: 100}, root: subspace.Sub("lg_root")}
+	root := subspace.Sub("lg_root")
+	keys := runKeys{legacy: root, data: root, logs: root.Sub(logRecordSubspace), logTrace: root.Sub(logTraceSubspace), logEq: root.Sub(logEqSubspace)}
+	return &FDBBackend{cfg: Config{Run: "lg_run_0001", Tenant: 3, HashBytes: 8, K: 100}, keys: keys}
 }
 
 func lgRandom(t *testing.T, n int) []byte {
@@ -64,7 +66,7 @@ func lgIDs(logs []LogRecord) []string {
 
 // lgRows is the KV layout saveLogBatch writes for one prepared log.
 func lgRows(b *FDBBackend, p preparedLog) (subspace.Subspace, []fdb.KeyValue) {
-	space := logRecordSpace(b.root, b.cfg.Tenant, p.eventID)
+	space := logRecordSpace(b.keys, b.cfg.Tenant, p.eventID)
 	rows := []fdb.KeyValue{{Key: space.Pack(tuple.Tuple{int64(0)}), Value: p.header}}
 	for i, c := range p.chunks {
 		rows = append(rows, fdb.KeyValue{Key: space.Pack(tuple.Tuple{int64(i + 1)}), Value: c})
@@ -262,8 +264,8 @@ func TestLogIndexKeys(t *testing.T) {
 	if !reflect.DeepEqual(attrs, want) || unindexed != 1 {
 		t.Fatalf("indexed attributes:\n got %+v (unindexed %d)\nwant %+v", attrs, unindexed, want)
 	}
-	traceKey, postings, _ := logIndexKeys(b.root, b.cfg.Tenant, b.cfg.HashBytes, l)
-	if !bytes.Equal(traceKey, logTraceSpace(b.root, 3).Pack(tuple.Tuple{l.TraceID, l.SpanID, int64(50), "ev"})) {
+	traceKey, postings, _ := logIndexKeys(b.keys, b.cfg.Tenant, b.cfg.HashBytes, l)
+	if !bytes.Equal(traceKey, logTraceSpace(b.keys, 3).Pack(tuple.Tuple{l.TraceID, l.SpanID, int64(50), "ev"})) {
 		t.Fatal("LOG_TRACE key layout")
 	}
 	if len(postings) != len(want) {
@@ -271,7 +273,7 @@ func TestLogIndexKeys(t *testing.T) {
 	}
 	for ordinal, p := range postings {
 		a := want[ordinal]
-		if !bytes.Equal(p.Key, logTermPrefix(b.root, 3, a, 8).Pack(tuple.Tuple{int64(-50), "ev", int64(ordinal)})) {
+		if !bytes.Equal(p.Key, logTermPrefix(b.keys, 3, a, 8).Pack(tuple.Tuple{int64(-50), "ev", int64(ordinal)})) {
 			t.Fatalf("posting %d key layout", ordinal)
 		}
 		got, eff, tr, sp, err := decodeLogCovering(p.Value)
@@ -286,7 +288,7 @@ func TestLogIndexKeys(t *testing.T) {
 		t.Fatal("overwritten duplicate key value must not verify")
 	}
 	l.TraceID, l.SpanID = "", ""
-	if traceKey, _, _ := logIndexKeys(b.root, 3, 8, l); traceKey != nil {
+	if traceKey, _, _ := logIndexKeys(b.keys, 3, 8, l); traceKey != nil {
 		t.Fatal("uncorrelated log must not get a LOG_TRACE entry")
 	}
 	for name, v := range map[string][]byte{
@@ -395,7 +397,8 @@ func TestLogsRealFDB(t *testing.T) {
 
 func lgCensus(t *testing.T, ctx context.Context, e *Exporter, name string) int64 {
 	t.Helper()
-	sz, err := e.backend.size(ctx, e.backend.root.Sub(name, int64(e.Config().Tenant)))
+	space := map[string]subspace.Subspace{logRecordSubspace: e.backend.keys.logs, logTraceSubspace: e.backend.keys.logTrace, logEqSubspace: e.backend.keys.logEq}[name]
+	sz, err := e.backend.size(ctx, space.Sub(int64(e.Config().Tenant)))
 	if err != nil {
 		t.Fatal(err)
 	}

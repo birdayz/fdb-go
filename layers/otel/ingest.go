@@ -191,7 +191,7 @@ func (b *FDBBackend) saveIngestBatchRun(ctx context.Context, batch preparedBatch
 		}
 		// Issue the authoritative owner read before normal store-open reads,
 		// but do not wait for it before starting their independent read wave.
-		owner := rc.Transaction().Get(b.root.Sub("owner").FDBKey())
+		owner := rc.Transaction().Get(b.keys.owner())
 		// Charge all prefetch work, including overlap with metadata reads,
 		// to the unchanged save+guard elapsed bound.
 		saveBudgetStarted := clock()
@@ -277,7 +277,7 @@ func (b *FDBBackend) Ingest(ctx context.Context) (stats Statistics, retErr error
 		if err := configureRecordTimeout(rc); err != nil {
 			return nil, err
 		}
-		key := b.root.Sub("owner").FDBKey()
+		key := b.keys.owner()
 		v, err := rc.Transaction().Get(key).Get()
 		if err != nil {
 			return nil, err
@@ -391,7 +391,7 @@ produce:
 			return nil, err
 		}
 		wire, _ := json.Marshal(manifest(b.cfg, "ready"))
-		rc.Transaction().Set(b.root.Sub("owner").FDBKey(), wire)
+		rc.Transaction().Set(b.keys.owner(), wire)
 		return nil, nil
 	})
 	return stats, err

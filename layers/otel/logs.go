@@ -125,16 +125,16 @@ type logBatch struct {
 	cost int
 }
 
-func logRecordSpace(root subspace.Subspace, tenant int, eventID string) subspace.Subspace {
-	return root.Sub(logRecordSubspace, int64(tenant), eventID)
+func logRecordSpace(keys runKeys, tenant int, eventID string) subspace.Subspace {
+	return keys.logs.Sub(int64(tenant), eventID)
 }
 
-func logTraceSpace(root subspace.Subspace, tenant int) subspace.Subspace {
-	return root.Sub(logTraceSubspace, int64(tenant))
+func logTraceSpace(keys runKeys, tenant int) subspace.Subspace {
+	return keys.logTrace.Sub(int64(tenant))
 }
 
-func logTermPrefix(root subspace.Subspace, tenant int, a Attribute, width int) subspace.Subspace {
-	return root.Sub(logEqSubspace, int64(tenant), a.Scope, digest(a.Key, width), a.Type, digest(a.Value, width))
+func logTermPrefix(keys runKeys, tenant int, a Attribute, width int) subspace.Subspace {
+	return keys.logEq.Sub(int64(tenant), a.Scope, digest(a.Key, width), a.Type, digest(a.Value, width))
 }
 
 // newEventID is a random RFC 4122 version 4 UUID in lowercase hex.
@@ -292,7 +292,7 @@ func decodeLogCovering(value []byte) (Attribute, int64, string, string, error) {
 
 // logIndexKeys derives every index entry of one stored log; replacing a log
 // recomputes its old entries from the stored record to retract them exactly.
-func logIndexKeys(root subspace.Subspace, tenant, width int, l LogRecord) (fdb.Key, []posting, int64) {
+func logIndexKeys(root runKeys, tenant, width int, l LogRecord) (fdb.Key, []posting, int64) {
 	var traceKey fdb.Key
 	if l.TraceID != "" {
 		traceKey = logTraceSpace(root, tenant).Pack(tuple.Tuple{l.TraceID, l.SpanID, l.EffectiveTime, l.EventID})
@@ -449,7 +449,7 @@ func (b *FDBBackend) prepareLog(l LogRecord, receiver int64) (preparedLog, error
 	if err != nil {
 		return preparedLog{}, err
 	}
-	traceKey, postings, unindexed := logIndexKeys(b.root, b.cfg.Tenant, b.cfg.HashBytes, l)
+	traceKey, postings, unindexed := logIndexKeys(b.keys, b.cfg.Tenant, b.cfg.HashBytes, l)
 	p := preparedLog{eventID: l.EventID, correlated: traceKey != nil, header: header, chunks: chunks, traceKey: traceKey, postings: postings, logical: int64(len(raw)), unindexed: unindexed}
 	p.stored = int64(len(header))
 	for _, c := range chunks {
@@ -495,14 +495,14 @@ func (b *FDBBackend) saveLogBatch(ctx context.Context, batch logBatch) (int64, e
 		tx := rc.Transaction()
 		prior := make([]fdb.RangeResult, len(batch.logs))
 		for i, l := range batch.logs {
-			r, err := fdb.PrefixRange(logRecordSpace(b.root, b.cfg.Tenant, l.eventID).Bytes())
+			r, err := fdb.PrefixRange(logRecordSpace(b.keys, b.cfg.Tenant, l.eventID).Bytes())
 			if err != nil {
 				return nil, err
 			}
 			prior[i] = tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll})
 		}
 		for i, l := range batch.logs {
-			space := logRecordSpace(b.root, b.cfg.Tenant, l.eventID)
+			space := logRecordSpace(b.keys, b.cfg.Tenant, l.eventID)
 			rows, err := prior[i].GetSliceWithError()
 			if err != nil {
 				return nil, err
@@ -512,7 +512,7 @@ func (b *FDBBackend) saveLogBatch(ctx context.Context, batch logBatch) (int64, e
 				if err != nil {
 					return nil, err
 				}
-				oldTrace, oldPostings, _ := logIndexKeys(b.root, b.cfg.Tenant, b.cfg.HashBytes, old)
+				oldTrace, oldPostings, _ := logIndexKeys(b.keys, b.cfg.Tenant, b.cfg.HashBytes, old)
 				if oldTrace != nil {
 					tx.Clear(oldTrace)
 				}
@@ -706,7 +706,7 @@ func LogRecordsFromResourceLogs(in []*logspb.ResourceLogs) []LogRecord {
 func (b *FDBBackend) loadLogs(tx fdb.ReadTransaction, ids []string, budget *queryBudget) ([]LogRecord, error) {
 	results := make([]fdb.RangeResult, len(ids))
 	for i, id := range ids {
-		r, err := fdb.PrefixRange(logRecordSpace(b.root, b.cfg.Tenant, id).Bytes())
+		r, err := fdb.PrefixRange(logRecordSpace(b.keys, b.cfg.Tenant, id).Bytes())
 		if err != nil {
 			return nil, err
 		}
@@ -723,7 +723,7 @@ func (b *FDBBackend) loadLogs(tx fdb.ReadTransaction, ids []string, budget *quer
 				return nil, err
 			}
 		}
-		if out[i], err = decodeLogRows(logRecordSpace(b.root, b.cfg.Tenant, id), id, rows); err != nil {
+		if out[i], err = decodeLogRows(logRecordSpace(b.keys, b.cfg.Tenant, id), id, rows); err != nil {
 			return nil, err
 		}
 	}
@@ -767,7 +767,7 @@ func (e *Exporter) QueryLogsByTrace(ctx context.Context, traceID, spanID string)
 	out := []LogRecord{}
 	err := b.readLogs(e.txnContext(ctx), op, func(tx fdb.ReadTransaction, budget *queryBudget) error {
 		out = []LogRecord{}
-		space := logTraceSpace(b.root, b.cfg.Tenant)
+		space := logTraceSpace(b.keys, b.cfg.Tenant)
 		prefix := tuple.Tuple{traceID}
 		if spanID != "" {
 			prefix = append(prefix, spanID)
@@ -829,7 +829,7 @@ func (e *Exporter) QueryLogsByTrace(ctx context.Context, traceID, spanID string)
 }
 
 // scanLogTerm visits verified log postings newest first until visit stops it.
-func scanLogTerm(tx fdb.ReadTransaction, root subspace.Subspace, tenant, width int, a Attribute, w timeWindow, budget *queryBudget, visit func(LogMatch) (bool, error)) error {
+func scanLogTerm(tx fdb.ReadTransaction, root runKeys, tenant, width int, a Attribute, w timeWindow, budget *queryBudget, visit func(LogMatch) (bool, error)) error {
 	term := logTermPrefix(root, tenant, a, width)
 	b, e := term.FDBRangeKeys()
 	begin, end := b.FDBKey(), e.FDBKey()
@@ -908,7 +908,7 @@ func (e *Exporter) QueryLogsByAttribute(ctx context.Context, a Attribute, limit 
 		out = []LogRecord{}
 		var matches []LogMatch
 		seen := map[string]bool{}
-		err := scanLogTerm(tx, b.root, b.cfg.Tenant, b.cfg.HashBytes, a, timeWindow{}, budget, func(m LogMatch) (bool, error) {
+		err := scanLogTerm(tx, b.keys, b.cfg.Tenant, b.cfg.HashBytes, a, timeWindow{}, budget, func(m LogMatch) (bool, error) {
 			if !seen[m.EventID] {
 				seen[m.EventID] = true
 				matches = append(matches, m)

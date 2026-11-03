@@ -68,7 +68,7 @@ func ingestPrefetchCommit(t *testing.T, b *FDBBackend, run func() error) wiretyp
 			t.Fatal(err)
 		}
 		for _, mutation := range request.Transaction.Mutations {
-			if bytes.HasPrefix(mutation.Param1, b.root.Bytes()) {
+			if bytes.HasPrefix(mutation.Param1, b.keys.data.Bytes()) {
 				found = append(found, request.Transaction)
 				break
 			}
@@ -87,7 +87,7 @@ func initializeIngestPrefetchRoot(t *testing.T, ctx context.Context, b *FDBBacke
 		if err != nil {
 			return nil, err
 		}
-		rc.Transaction().Set(b.root.Sub("owner").FDBKey(), wire)
+		rc.Transaction().Set(b.keys.owner(), wire)
 		_, err = b.open(rc)
 		return nil, err
 	})
@@ -99,11 +99,9 @@ func initializeIngestPrefetchRoot(t *testing.T, ctx context.Context, b *FDBBacke
 func restoreIngestPrefetchRoot(t *testing.T, ctx context.Context, b *FDBBackend, rows map[string]string) {
 	t.Helper()
 	_, err := b.raw.TransactCtx(ctx, func(tx fdb.WritableTransaction) (any, error) {
-		r, err := fdb.PrefixRange(b.root.Bytes())
-		if err != nil {
-			return nil, err
+		for _, r := range otelOwnedRanges(t, b) {
+			tx.ClearRange(r)
 		}
-		tx.ClearRange(r)
 		for key, value := range rows {
 			tx.Set(fdb.Key(key), []byte(value))
 		}

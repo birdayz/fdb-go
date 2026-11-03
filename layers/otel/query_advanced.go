@@ -374,7 +374,7 @@ func checkSortKey(t tuple.Tuple, order string) error {
 }
 
 func (b *FDBBackend) continuationKey() fdb.Key {
-	return b.root.Sub("query_v1", "continuation_hmac_v1").FDBKey()
+	return b.keys.queryKey
 }
 
 func (b *FDBBackend) readContinuationSecret(rc *recordlayer.FDBRecordContext) ([]byte, error) {
@@ -853,7 +853,7 @@ func (b *FDBBackend) QueryTraceExistential(ctx context.Context, q TraceExistenti
 		for i, a := range q.LogClauses {
 			found := map[string]*traceWitnesses{}
 			seen := map[string]bool{}
-			err := scanLogTerm(tx, b.root, b.cfg.Tenant, b.cfg.HashBytes, a, w, budget, func(m LogMatch) (bool, error) {
+			err := scanLogTerm(tx, b.keys, b.cfg.Tenant, b.cfg.HashBytes, a, w, budget, func(m LogMatch) (bool, error) {
 				if m.Trace == "" || seen[m.EventID] {
 					return false, nil
 				}

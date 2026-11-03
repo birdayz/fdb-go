@@ -207,7 +207,7 @@ func newIngestReadWaveTransactor(b *FDBBackend, parent context.Context) *ingestR
 	begin, end := b.store.Sub(recordlayer.IndexStateSpaceKey).FDBRangeKeys()
 	return &ingestReadWaveTransactor{
 		Database: b.raw, parent: parent, count: min(b.cfg.Batch, b.cfg.Count),
-		owner: b.root.Sub("owner").FDBKey(), header: b.store.Pack(tuple.Tuple{recordlayer.StoreInfoKey}),
+		owner: b.keys.owner(), header: b.store.Pack(tuple.Tuple{recordlayer.StoreInfoKey}),
 		records: b.store.Sub(recordlayer.RecordKey).Bytes(), stateBegin: begin.FDBKey(), stateEnd: end.FDBKey(),
 	}
 }
@@ -373,7 +373,7 @@ func testOtelIngestReadWave(t *testing.T, ctx context.Context, cluster, order st
 					}
 				}
 				if _, err := b.raw.TransactCtx(ctx, func(tx fdb.WritableTransaction) (any, error) {
-					tx.Set(b.root.Sub("owner").FDBKey(), wire)
+					tx.Set(b.keys.owner(), wire)
 					return nil, nil
 				}); err != nil {
 					t.Fatal(err)

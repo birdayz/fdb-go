@@ -125,12 +125,15 @@ func otelTimeoutDropRoot(t *testing.T, ctx context.Context, b *FDBBackend) map[s
 	t.Helper()
 	var rows []fdb.KeyValue
 	_, err := b.raw.ReadTransactCtx(ctx, func(tx fdb.ReadTransaction) (any, error) {
-		root, err := fdb.PrefixRange(b.root.Bytes())
-		if err != nil {
-			return nil, err
+		rows = nil
+		for _, r := range otelOwnedRanges(t, b) {
+			part, err := tx.GetRange(r, fdb.RangeOptions{Limit: 513}).GetSliceWithError()
+			if err != nil {
+				return nil, err
+			}
+			rows = append(rows, part...)
 		}
-		rows, err = tx.GetRange(root, fdb.RangeOptions{Limit: 513}).GetSliceWithError()
-		return nil, err
+		return nil, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -161,14 +164,14 @@ func testOtelTimeoutDropSafety(t *testing.T, ctx context.Context, cluster, order
 			siblingConfig.Count = 3
 			sibling := openOtelFixture(t, ctx, cluster, siblingConfig, true)
 			_, err := sibling.raw.TransactCtx(ctx, func(tx fdb.WritableTransaction) (any, error) {
-				tx.Set(sibling.root.FDBKey(), []byte("independent-timeout-sibling-boundary"))
+				tx.Set(sibling.keys.legacy.FDBKey(), []byte("independent-timeout-sibling-boundary"))
 				return nil, nil
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
 			siblingBefore := otelTimeoutDropRoot(t, ctx, sibling)
-			if siblingBefore[string(sibling.root.FDBKey())] != "independent-timeout-sibling-boundary" || len(siblingBefore) <= 1 {
+			if siblingBefore[string(sibling.keys.legacy.FDBKey())] != "independent-timeout-sibling-boundary" || len(siblingBefore) <= 1 {
 				t.Fatal("sibling sentinel lacks a populated independent namespace")
 			}
 			// Open the independent public drop handle before holding a source
@@ -186,7 +189,7 @@ func testOtelTimeoutDropSafety(t *testing.T, ctx context.Context, cluster, order
 			var enteredOnce sync.Once
 			var waitCalls atomic.Int64
 			var waitDelay atomic.Int64
-			wrapped := &otelTimeoutDropTransactor{Database: b.raw, parent: runCtx, root: b.root.FDBKey(), pending: pending, releaseCommit: commitRelease, prepared: make(chan struct{}), actorDone: make(chan struct{})}
+			wrapped := &otelTimeoutDropTransactor{Database: b.raw, parent: runCtx, root: b.keys.legacy.FDBKey(), pending: pending, releaseCommit: commitRelease, prepared: make(chan struct{}), actorDone: make(chan struct{})}
 			original := b.db
 			b.db = recordlayer.NewFDBDatabaseWithTransactor(wrapped, b.raw)
 			b.ingestWait = func(waitCtx context.Context, delay time.Duration) error {
@@ -256,7 +259,7 @@ func testOtelTimeoutDropSafety(t *testing.T, ctx context.Context, cluster, order
 				if err != nil || commit.owner != manifest(c, "loading") || commit.recordKeys != 1 || commit.postingKeys != 4 {
 					t.Fatalf("maybe-committed positive population: %+v %v", commit, err)
 				}
-				if before := otelTimeoutDropRoot(t, ctx, b); before[string(b.root.FDBKey())] != "owned-timeout-root-boundary" {
+				if before := otelTimeoutDropRoot(t, ctx, b); before[string(b.keys.legacy.FDBKey())] != "owned-timeout-root-boundary" {
 					t.Fatal("owned bare boundary was not committed")
 				}
 			} else {

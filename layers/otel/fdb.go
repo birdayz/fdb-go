@@ -40,7 +40,8 @@ type FDBBackend struct {
 	cfg           Config
 	raw           fdb.Database
 	db            *recordlayer.FDBDatabase
-	root, store   subspace.Subspace
+	keys          runKeys
+	store         subspace.Subspace
 	md            *recordlayer.RecordMetaData
 	idx           *recordlayer.Index
 	serializer    *recordlayer.TransformedRecordSerializer
@@ -51,6 +52,7 @@ type FDBBackend struct {
 	ingestClock   func() time.Time
 	writers       messageWriters
 	inflight      sync.Map // messageDigest -> *inflightMessage
+	queue         messageQueue
 	markers       markerCache
 }
 
@@ -83,6 +85,27 @@ func OpenFDBContext(ctx context.Context, c Config, cluster string) (*FDBBackend,
 	if err != nil {
 		return nil, err
 	}
+	db := recordlayer.NewFDBDatabase(raw)
+	// An existing run keeps the key layout its manifest records; a fresh run
+	// uses directory-layer prefixes.
+	layout, found, err := storedKeyLayout(ctx, db, subspace.Sub(keyApplication, c.Run))
+	if err != nil {
+		raw.Close()
+		return nil, err
+	}
+	switch {
+	case !found:
+		layout = keyLayoutDirectory
+	case layout != keyLayoutTuple && layout != keyLayoutDirectory:
+		raw.Close()
+		return nil, failf("ownership", "manifest", "run uses unknown key layout %q; refusing access", layout)
+	}
+	c.KeyLayout = layout
+	keys, err := openRunKeys(ctx, db, c.Run, layout)
+	if err != nil {
+		raw.Close()
+		return nil, err
+	}
 	md, idx, err := metadata(c)
 	if err != nil {
 		raw.Close()
@@ -93,8 +116,7 @@ func OpenFDBContext(ctx context.Context, c Config, cluster string) (*FDBBackend,
 		raw.Close()
 		return nil, err
 	}
-	root := subspace.Sub("otel_otelbench_v2", c.Run)
-	return &FDBBackend{cfg: c, raw: raw, db: recordlayer.NewFDBDatabase(raw), root: root, store: root.Sub("store"), md: md, idx: idx, serializer: serializer}, nil
+	return &FDBBackend{cfg: c, raw: raw, db: db, keys: keys, store: keys.store, md: md, idx: idx, serializer: serializer}, nil
 }
 func (b *FDBBackend) Close()                     { b.raw.Close() }
 func (b *FDBBackend) LastQueryWork() QueryResult { return b.lastWork }
@@ -152,7 +174,7 @@ func (b *FDBBackend) readManifest(rc *recordlayer.FDBRecordContext, ready bool) 
 	if err := configureRecordTimeout(rc); err != nil {
 		return err
 	}
-	wire, err := rc.Transaction().Get(b.root.Sub("owner").FDBKey()).Get()
+	wire, err := rc.Transaction().Get(b.keys.owner()).Get()
 	if err != nil {
 		return err
 	}
@@ -266,11 +288,15 @@ func (b *FDBBackend) Drop(ctx context.Context) error {
 		if err := b.readManifest(rc, false); err != nil {
 			return nil, err
 		}
-		r, err := fdb.PrefixRange(b.root.Bytes())
-		if err != nil {
-			return nil, err
+		// The owner manifest is always under the legacy prefix; a
+		// directory_v1 run's data is under its key space path.
+		for _, ss := range []subspace.Subspace{b.keys.legacy, b.keys.data} {
+			r, err := fdb.PrefixRange(ss.Bytes())
+			if err != nil {
+				return nil, err
+			}
+			rc.Transaction().ClearRange(r)
 		}
-		rc.Transaction().ClearRange(r)
 		return nil, nil
 	})
 	return err
@@ -383,7 +409,7 @@ func (b *FDBBackend) Audit(ctx context.Context) (Statistics, error) {
 		return stats, failf("audit", "source census", "source rows %d want %d", stats.Rows, b.cfg.Count)
 	}
 	stats.Attributes = stats.Rows * int64(b.cfg.Attributes)
-	structures := map[string]subspace.Subspace{"owned_total": b.root, "records": b.store.Sub(recordlayer.RecordKey), "eq_primary": b.store.Sub(recordlayer.IndexKey, b.idx.SubspaceTupleKey()), "eq_secondary": b.store.Sub(recordlayer.IndexSecondarySpaceKey, b.idx.SubspaceTupleKey())}
+	structures := map[string]subspace.Subspace{"owned_total": b.keys.data, "records": b.store.Sub(recordlayer.RecordKey), "eq_primary": b.store.Sub(recordlayer.IndexKey, b.idx.SubspaceTupleKey()), "eq_secondary": b.store.Sub(recordlayer.IndexSecondarySpaceKey, b.idx.SubspaceTupleKey())}
 	for _, name := range []string{spanIndexName, timeIndexName} {
 		idx := b.md.GetIndex(name)
 		if idx == nil {
@@ -397,6 +423,19 @@ func (b *FDBBackend) Audit(ctx context.Context) (Statistics, error) {
 			return stats, err
 		}
 		stats.Structures[name] = sz
+	}
+	if b.keys.layout != keyLayoutTuple {
+		// The owner manifest stays under the run's tuple prefix.
+		sz, err := b.size(ctx, b.keys.legacy)
+		if err != nil {
+			return stats, err
+		}
+		total := stats.Structures["owned_total"]
+		total.Keys += sz.Keys
+		total.KeyBytes += sz.KeyBytes
+		total.ValueBytes += sz.ValueBytes
+		total.PhysicalBytes += sz.PhysicalBytes
+		stats.Structures["owned_total"] = total
 	}
 	for _, name := range []string{spanIndexName, timeIndexName} {
 		if stats.Structures[name].Keys != stats.Rows {

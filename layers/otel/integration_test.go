@@ -86,6 +86,35 @@ func assertOtelSource(t *testing.T, ctx context.Context, b *FDBBackend, want Spa
 }
 
 // Fixture snapshots are bounded independently of the implementation's census.
+// otelOwnedRanges are the key ranges of a run: its tuple prefix (the owner
+// manifest, and a tuple-layout run's data) and its data prefix.
+func otelOwnedRanges(t *testing.T, b *FDBBackend) []fdb.KeyRange {
+	t.Helper()
+	var out []fdb.KeyRange
+	for _, ss := range []subspace.Subspace{b.keys.legacy, b.keys.data} {
+		r, err := fdb.PrefixRange(ss.Bytes())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out) == 0 || string(out[0].Begin.FDBKey()) != string(r.Begin.FDBKey()) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// otelRunSnapshot is otelSnapshot of every range of the run.
+func otelRunSnapshot(t *testing.T, ctx context.Context, b *FDBBackend) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, ss := range []subspace.Subspace{b.keys.legacy, b.keys.data} {
+		for k, v := range otelSnapshot(t, ctx, b, ss) {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 func otelSnapshot(t *testing.T, ctx context.Context, b *FDBBackend, ss subspace.Subspace) map[string]string {
 	t.Helper()
 	var rows []fdb.KeyValue
@@ -151,11 +180,10 @@ func openOtelFixture(t *testing.T, ctx context.Context, cluster string, c Config
 		}
 		// This namespace was freshly allocated here, not discovered externally.
 		_, err := b.db.Run(cleanup, func(rc *recordlayer.FDBRecordContext) (any, error) {
-			r, err := fdb.PrefixRange(b.root.Bytes())
-			if err == nil {
+			for _, r := range otelOwnedRanges(t, b) {
 				rc.Transaction().ClearRange(r)
 			}
-			return nil, err
+			return nil, nil
 		})
 		if err != nil {
 			t.Error(err)
@@ -516,7 +544,7 @@ func testOtelConcurrentIngestFailure(t *testing.T, ctx context.Context, cluster 
 	b.db.SetAttemptObserver(nil)
 	var sources map[int]Span
 	otelTransaction(t, ctx, b, func(store *recordlayer.FDBRecordStore, rc *recordlayer.FDBRecordContext) error {
-		wire, err := rc.Transaction().Get(b.root.Sub("owner").FDBKey()).Get()
+		wire, err := rc.Transaction().Get(b.keys.owner()).Get()
 		if err != nil {
 			return err
 		}
@@ -601,7 +629,7 @@ type otelIngestCommit struct {
 func readOtelIngestCommit(ctx context.Context, b *FDBBackend, call recordlayer.AttemptCall) (otelIngestCommit, error) {
 	commit := otelIngestCommit{call: call}
 	_, err := b.raw.ReadTransactCtx(ctx, func(tx fdb.ReadTransaction) (any, error) {
-		owner, err := tx.Get(b.root.Sub("owner").FDBKey()).Get()
+		owner, err := tx.Get(b.keys.owner()).Get()
 		if err != nil {
 			return nil, err
 		}
@@ -627,12 +655,15 @@ func otelRawRootSnapshot(t *testing.T, ctx context.Context, b *FDBBackend) map[s
 	t.Helper()
 	var rows []fdb.KeyValue
 	_, err := b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
-		root, err := fdb.PrefixRange(b.root.Bytes())
-		if err != nil {
-			return nil, err
+		rows = nil
+		for _, r := range otelOwnedRanges(t, b) {
+			part, err := rc.Transaction().GetRange(r, fdb.RangeOptions{Limit: 257}).GetSliceWithError()
+			if err != nil {
+				return nil, err
+			}
+			rows = append(rows, part...)
 		}
-		rows, err = rc.Transaction().GetRange(root, fdb.RangeOptions{Limit: 257}).GetSliceWithError()
-		return nil, err
+		return nil, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -655,11 +686,11 @@ func testOtelIngestPublicationAndDrop(t *testing.T, ctx context.Context, cluster
 	siblingConfig.Count = 3
 	sibling := openOtelFixture(t, ctx, cluster, siblingConfig, true)
 	otelTransaction(t, ctx, sibling, func(_ *recordlayer.FDBRecordStore, rc *recordlayer.FDBRecordContext) error {
-		rc.Transaction().Set(sibling.root.FDBKey(), []byte("independent-sibling-boundary"))
+		rc.Transaction().Set(sibling.keys.legacy.FDBKey(), []byte("independent-sibling-boundary"))
 		return nil
 	})
 	siblingBefore := otelRawRootSnapshot(t, ctx, sibling)
-	if len(siblingBefore) == 0 || siblingBefore[string(sibling.root.FDBKey())] != "independent-sibling-boundary" {
+	if len(siblingBefore) == 0 || siblingBefore[string(sibling.keys.legacy.FDBKey())] != "independent-sibling-boundary" {
 		t.Fatal("independently ingested sibling has no committed raw population")
 	}
 
@@ -712,7 +743,7 @@ func testOtelIngestPublicationAndDrop(t *testing.T, ctx context.Context, cluster
 	}
 
 	otelTransaction(t, ctx, b, func(store *recordlayer.FDBRecordStore, rc *recordlayer.FDBRecordContext) error {
-		wire, err := rc.Transaction().Get(b.root.Sub("owner").FDBKey()).Get()
+		wire, err := rc.Transaction().Get(b.keys.owner()).Get()
 		if err != nil {
 			return err
 		}
@@ -750,7 +781,7 @@ func testOtelIngestPublicationAndDrop(t *testing.T, ctx context.Context, cluster
 				return fmt.Errorf("uncommitted source %d became visible", i)
 			}
 		}
-		rc.Transaction().Set(b.root.FDBKey(), []byte("owned-root-boundary"))
+		rc.Transaction().Set(b.keys.legacy.FDBKey(), []byte("owned-root-boundary"))
 		return nil
 	})
 	committed := make([]Span, wantRows)
@@ -759,7 +790,7 @@ func testOtelIngestPublicationAndDrop(t *testing.T, ctx context.Context, cluster
 	}
 	assertOtelCommittedPostings(t, ctx, b, committed)
 	before := otelRawRootSnapshot(t, ctx, b)
-	if len(before) == 0 || before[string(b.root.FDBKey())] != "owned-root-boundary" {
+	if len(before) == 0 || before[string(b.keys.legacy.FDBKey())] != "owned-root-boundary" {
 		t.Fatal("drop target has no committed raw root boundary/data")
 	}
 	if interrupt {
@@ -1031,12 +1062,12 @@ func testOtelAudit(t *testing.T, ctx context.Context, b *FDBBackend) {
 
 func testOtelOwnership(t *testing.T, ctx context.Context, b *FDBBackend, cluster string) {
 	external := openOtelFixture(t, ctx, cluster, b.cfg, false)
-	sentinel := external.root.Sub("external_sentinel").FDBKey()
+	sentinel := external.keys.data.Sub("external_sentinel").FDBKey()
 	otelTransaction(t, ctx, external, func(_ *recordlayer.FDBRecordStore, rc *recordlayer.FDBRecordContext) error {
 		rc.Transaction().Set(sentinel, []byte("must survive unauthorized operations"))
 		return nil
 	})
-	outside := otelSnapshot(t, ctx, external, external.root)
+	outside := otelRunSnapshot(t, ctx, external)
 	writeManifest := func(m Manifest) {
 		t.Helper()
 		wire, err := json.Marshal(m)
@@ -1044,7 +1075,7 @@ func testOtelOwnership(t *testing.T, ctx context.Context, b *FDBBackend, cluster
 			t.Fatal(err)
 		}
 		otelTransaction(t, ctx, b, func(_ *recordlayer.FDBRecordStore, rc *recordlayer.FDBRecordContext) error {
-			rc.Transaction().Set(b.root.Sub("owner").FDBKey(), wire)
+			rc.Transaction().Set(b.keys.owner(), wire)
 			return nil
 		})
 	}
@@ -1084,11 +1115,11 @@ func testOtelOwnership(t *testing.T, ctx context.Context, b *FDBBackend, cluster
 			bad := original
 			mutation.change(&bad)
 			writeManifest(bad)
-			before := otelSnapshot(t, ctx, b, b.root)
+			before := otelRunSnapshot(t, ctx, b)
 			for _, op := range operations {
 				t.Run(op.name, func(t *testing.T) { requireOtelKind(t, op.run(b), "ownership") })
 			}
-			if !reflect.DeepEqual(before, otelSnapshot(t, ctx, b, b.root)) || !reflect.DeepEqual(outside, otelSnapshot(t, ctx, external, external.root)) {
+			if !reflect.DeepEqual(before, otelRunSnapshot(t, ctx, b)) || !reflect.DeepEqual(outside, otelRunSnapshot(t, ctx, external)) {
 				t.Fatal("unauthorized operation mutated owned data or external sentinel")
 			}
 			writeManifest(original)
@@ -1104,7 +1135,7 @@ func testOtelOwnership(t *testing.T, ctx context.Context, b *FDBBackend, cluster
 	for _, op := range operations {
 		t.Run("unowned_"+op.name, func(t *testing.T) { requireOtelKind(t, op.run(external), "ownership") })
 	}
-	if !reflect.DeepEqual(outside, otelSnapshot(t, ctx, external, external.root)) {
+	if !reflect.DeepEqual(outside, otelRunSnapshot(t, ctx, external)) {
 		t.Fatal("unowned run or external sentinel changed")
 	}
 }

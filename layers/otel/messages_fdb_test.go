@@ -184,6 +184,7 @@ func TestMessageRecordsRealFDB(t *testing.T) {
 	t.Run("chunked_references", func(t *testing.T) { t.Parallel(); testMessageChunkedRefs(t, cluster) })
 	t.Run("large_message", func(t *testing.T) { t.Parallel(); testMessageLarge(t, cluster) })
 	t.Run("concurrent_same_message", func(t *testing.T) { t.Parallel(); testMessageConcurrentSave(t, cluster) })
+	t.Run("group_commit", func(t *testing.T) { t.Parallel(); testMessageGroupCommit(t, cluster) })
 	t.Run("layout_rejection", func(t *testing.T) { t.Parallel(); testMessageLayoutRejection(t, cluster) })
 }
 
@@ -752,6 +753,98 @@ func testMessageLarge(t *testing.T, cluster string) {
 
 // testMessageConcurrentSave stores one new message from several exporters
 // of one run at once: it is stored once and every span reconstructs.
+// testMessageGroupCommit holds every writer while calls queue their messages:
+// once writers free up, one transaction stores the messages of several
+// calls, each call gets its own counts, and a call cancelled while queued
+// stores nothing and leaves the others unaffected.
+func testMessageGroupCommit(t *testing.T, cluster string) {
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+	e := openFTSExporter(t, ctx, cluster, nil)
+	b := e.backend
+	held := make([]*messageWriter, messageWriterLimit)
+	for i := range held {
+		w, err := b.acquireWriter(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held[i] = w
+	}
+	const calls, n = 4, 3
+	var wg sync.WaitGroup
+	stats := make([]ExportStats, calls+1)
+	errs := make([]error, calls+1)
+	cancelled, cancelCall := context.WithCancel(ctx)
+	cancelledDone := make(chan struct{})
+	for i := range calls + 1 {
+		// n spans of one trace, each with its own message.
+		var spans []*tracepb.ResourceSpans
+		for k := range n {
+			spans = append(spans, deltaSpan(100+k, deltaKV("gen_ai.input.messages", deltaMessages("array", []deltaMsg{{"user", fmt.Sprintf("call %d span %d platypus", i, k)}}))))
+		}
+		for _, rs := range spans {
+			rs.ScopeSpans[0].Spans[0].TraceId = bytes.Repeat([]byte{byte(0x90 + i)}, 16)
+		}
+		callCtx := ctx
+		if i == calls {
+			callCtx = cancelled
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if i == calls {
+				defer close(cancelledDone)
+			}
+			stats[i], errs[i] = e.ExportResourceSpans(callCtx, spans)
+		}()
+	}
+	// Every call's messages are queued, none stored.
+	waitFor := func(cond func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(time.Minute); !cond(); time.Sleep(5 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatal("messages were not queued")
+			}
+		}
+	}
+	queued := func() int {
+		b.queue.mu.Lock()
+		defer b.queue.mu.Unlock()
+		return len(b.queue.pending)
+	}
+	waitFor(func() bool { return queued() == (calls+1)*n })
+	cancelCall()
+	<-cancelledDone
+	for _, w := range held {
+		b.releaseWriter(w)
+	}
+	wg.Wait()
+	requireOtelKind(t, errs[calls], "canceled")
+	if err := errors.Join(errs[:calls]...); err != nil {
+		t.Fatal(err)
+	}
+	var total MessageStoreStats
+	for i, s := range stats[:calls] {
+		if s.Messages.Written != n || s.Messages.Present != 0 {
+			t.Fatalf("call %d message stats %+v", i, s.Messages)
+		}
+		total.Add(s.Messages)
+	}
+	// One presence read per call, and one transaction for all their messages.
+	if total.Transactions != calls+1 {
+		t.Fatalf("%d transactions for %d calls, want %d", total.Transactions, calls, calls+1)
+	}
+	for i := range calls {
+		hits, _ := ftsDrain(t, ctx, e, MessageFullTextQuery{Query: fmt.Sprintf("call %d", i), Mode: MessageMatchPhrase})
+		if len(hits) != n {
+			t.Fatalf("call %d: %d hits, want %d", i, len(hits), n)
+		}
+	}
+	if hits, _ := ftsDrain(t, ctx, e, MessageFullTextQuery{Query: fmt.Sprintf("call %d", calls), Mode: MessageMatchPhrase}); len(hits) != 0 {
+		t.Fatalf("the cancelled call's messages were stored: %+v", hits)
+	}
+}
+
 func testMessageConcurrentSave(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -821,7 +914,7 @@ func testMessageLayoutRejection(t *testing.T, cluster string) {
 	}
 	// An owner manifest as the old code wrote it, without a messages field.
 	var m map[string]any
-	key := plain.backend.root.Sub("owner").FDBKey()
+	key := plain.backend.keys.owner()
 	if _, err := plain.backend.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
 		v, err := rc.Transaction().Get(key).Get()
 		if err != nil {

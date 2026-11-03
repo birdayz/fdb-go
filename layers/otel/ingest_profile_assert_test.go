@@ -95,7 +95,7 @@ func assertOtelProfileMoments(t *testing.T, stats Statistics, want map[string]in
 func seedOtelProfileClientMetrics(t *testing.T, ctx context.Context, b *FDBBackend) {
 	t.Helper()
 	_, err := b.raw.ReadTransactCtx(ctx, func(tx fdb.ReadTransaction) (any, error) {
-		return tx.Get(b.root.Sub("profile_probe").FDBKey()).Get()
+		return tx.Get(b.keys.data.Sub("profile_probe").FDBKey()).Get()
 	})
 	if err != nil {
 		t.Fatal(err)

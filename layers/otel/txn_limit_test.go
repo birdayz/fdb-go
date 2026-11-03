@@ -113,7 +113,7 @@ func TestTxnLimitRealFDB(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 		t.Cleanup(cancel)
 		b := openOtelFixture(t, ctx, cluster, DefaultConfig(), false)
-		return ctx, b.db, b.root.Sub("txn_limit")
+		return ctx, b.db, b.keys.data.Sub("txn_limit")
 	}
 	t.Run("limit_bounds_concurrency", func(t *testing.T) { t.Parallel(); testTxnLimitBound(t, fixture) })
 	t.Run("no_limiter_no_limit", func(t *testing.T) { t.Parallel(); testTxnLimitAbsent(t, fixture) })

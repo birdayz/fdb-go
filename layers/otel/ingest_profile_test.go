@@ -257,7 +257,7 @@ func testOtelIngestProfiling(t *testing.T, ctx context.Context, cluster, order s
 			// Seed one prior read outside the measured interval: before must
 			// retain real nonzero lifetime counters/quantiles, not a zero delta.
 			_, err := b.raw.ReadTransactCtx(ctx, func(tx fdb.ReadTransaction) (any, error) {
-				_, err := tx.Get(b.root.Sub("profile_probe").FDBKey()).Get()
+				_, err := tx.Get(b.keys.data.Sub("profile_probe").FDBKey()).Get()
 				return nil, err
 			})
 			if err != nil {
