@@ -18,6 +18,7 @@ import (
 type RecordBatchPrefetch struct {
 	context *FDBRecordContext
 	pending []fdb.RangeResult
+	text    *textBunchPrefetch
 	once    sync.Once
 	err     error
 }
@@ -30,6 +31,11 @@ type RecordBatchPrefetch struct {
 // Only modern record ranges are warmed: the header is not yet known, so legacy
 // bare-key records and separate versions remain the normal save's responsibility.
 // Declared version columns are not prefetched, avoiding local-version claims.
+//
+// The same wave warms the BunchedMap bunches the records' TEXT index entries
+// will be put into (store_batch_text_prefetch.go), for every TEXT index of
+// their types: index states are not yet known, and the old images not yet
+// read, so an update's removals are the save's own reads.
 func (b *StoreBuilder) PrefetchRecordBatch(records []proto.Message) *RecordBatchPrefetch {
 	p := &RecordBatchPrefetch{}
 	if len(records) == 0 {
@@ -46,6 +52,8 @@ func (b *StoreBuilder) PrefetchRecordBatch(records []proto.Message) *RecordBatch
 	recordsSubspace := b.subspace.Sub(RecordKey)
 	prefixes := make([][]byte, 0, len(records))
 	seen := make(map[string]struct{}, len(records))
+	var text textBunchReads
+	targets := map[string]*textIndexTarget{}
 	for i, record := range records {
 		if record == nil {
 			p.err = &RecordCoreArgumentError{Message: fmt.Sprintf("record %d is nil", i)}
@@ -87,6 +95,23 @@ func (b *StoreBuilder) PrefetchRecordBatch(records []proto.Message) *RecordBatch
 			p.err = &IncompleteVersionstampError{Context: fmt.Sprintf("record %d primary key", i)}
 			return p
 		}
+		stored := &FDBStoredRecord[proto.Message]{PrimaryKey: key, RecordType: rt, Record: record}
+		for _, indexes := range [][]*Index{b.metaData.GetIndexesForRecordType(rt.Name), b.metaData.GetUniversalIndexes()} {
+			for _, index := range indexes {
+				if canonicalIndexType(index.Type) != IndexTypeText {
+					continue
+				}
+				t, ok := targets[index.Name]
+				if !ok {
+					t, _ = newTextIndexTarget(index, b.subspace.Sub(IndexKey, index.SubspaceTupleKey()),
+						b.subspace.Sub(IndexSecondarySpaceKey, index.SubspaceTupleKey()))
+					targets[index.Name] = t // nil: no tokenizer, nothing to warm
+				}
+				if t != nil {
+					text.add(t, t.entryKeys(stored))
+				}
+			}
+		}
 		prefix := recordsSubspace.Pack(key)
 		if _, duplicate := seen[string(prefix)]; duplicate {
 			continue
@@ -100,6 +125,9 @@ func (b *StoreBuilder) PrefetchRecordBatch(records []proto.Message) *RecordBatch
 	for _, prefix := range prefixes {
 		begin, end := recordRangeBounds(prefix)
 		p.pending = append(p.pending, tx.GetRange(fdb.KeyRange{Begin: fdb.Key(begin), End: fdb.Key(end)}, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}))
+	}
+	if len(text.maps) > 0 {
+		p.text = text.issue(tx)
 	}
 	return p
 }
@@ -136,6 +164,10 @@ func (p *RecordBatchPrefetch) Wait() error {
 			if p.err = p.checkActive(); p.err != nil {
 				return
 			}
+		}
+		if p.text != nil {
+			p.text.wait()
+			p.err = p.checkActive()
 		}
 	})
 	return p.err

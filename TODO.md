@@ -3467,6 +3467,16 @@ on the ccx43 bench box with `measure.py --storage 6 --duration 180s`:
   542 -> 280 µs per 128 puts. Open: the pure-Go client still starts one
   goroutine per read it cannot answer locally (`startPendingRange`, client
   scope); `DeserializeEntries` (scans, Get) still unpacks every key.
+- [ ] **TEXT maintenance round trips across a batch's records.** Done:
+  `SaveRecordBatch(WithOptions)` and `PrefetchRecordBatch` read the batch's
+  TEXT bunches (one snapshot read per token map) and updated records'
+  tokenizer versions together into the transaction's read-your-writes cache
+  before the records are applied (`store_batch_text_prefetch.go`); the commit
+  is the sequential saves' commit, pinned by "Batch TEXT bunch prefetch". 128
+  records of 57 tokens: 205 storage-read round trips (sequential SaveRecord)
+  -> 3. Open: `PrefetchRecordBatch` cannot warm an update's removals (old
+  images are not yet read); a map whose batch keys lie far apart past
+  2*keys+2 rows costs a second prefetch round trip.
 - [ ] **Record Layer KeySpace over the directory layer** (for layers/otel's
   directory_v1 layout). Done: `keyspace.Path.ToSubspace` is Java's
   `new Subspace(toTuple())` (it packed the tuple as one nested element), and

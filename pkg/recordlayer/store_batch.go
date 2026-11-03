@@ -41,6 +41,10 @@ type BatchSaveOptions struct {
 	// sliding-window, or pending-queue range is widened, and a failed batch adds
 	// none.
 	CoalesceIndexWriteConflicts bool
+
+	// skipTextPrefetch turns off the TEXT bunch prefetch (tests compare
+	// against it).
+	skipTextPrefetch bool
 }
 
 // SaveRecordBatch saves multiple records with pipelined existence checks.
@@ -52,6 +56,17 @@ type BatchSaveOptions struct {
 //
 // Semantically equivalent to calling SaveRecord N times. All records are
 // saved in the current transaction.
+//
+// TEXT indexes: before the first record is applied, the batch reads, all
+// together, the BunchedMap bunches its records' TEXT index updates will read
+// (the new entries' and an update's removed ones, one snapshot read per token
+// map, plus the tokenizer version of each updated record), into the
+// transaction's read-your-writes cache. The records are then applied one
+// after another as SaveRecord applies them, and their bunch reads, served
+// from that cache merged with the earlier records' writes, return what they
+// return without it. The commit is the commit of N SaveRecord calls, its
+// mutations and read and write conflict ranges included; the bunch reads cost
+// one round trip instead of one per record (store_batch_text_prefetch.go).
 func (store *FDBRecordStore) SaveRecordBatch(
 	records []proto.Message,
 ) ([]*FDBStoredRecord[proto.Message], error) {
@@ -289,6 +304,22 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 		}
 		p.oldExists, p.oldSize = oldRecordExists, oldsizeInfo
 		p.oldType, p.oldRecord, p.oldWire = oldRT, oldMsg, oldWire
+	}
+
+	// The bunch reads of the batch's TEXT index updates, issued together and
+	// drained into the transaction's cache before the first record is applied
+	// (store_batch_text_prefetch.go).
+	if !options.skipTextPrefetch {
+		news := make([]*FDBStoredRecord[proto.Message], len(pending))
+		olds := make([]*FDBStoredRecord[proto.Message], len(pending))
+		for i := range pending {
+			p := &pending[i]
+			news[i] = &FDBStoredRecord[proto.Message]{PrimaryKey: p.primaryKey, RecordType: p.recordType, Record: p.record, Store: store}
+			if p.previous < 0 && p.oldExists {
+				olds[i] = &FDBStoredRecord[proto.Message]{PrimaryKey: p.primaryKey, RecordType: p.oldType, Record: p.oldRecord, wire: p.oldWire, Store: store}
+			}
+		}
+		store.prefetchBatchTextBunches(news, olds)
 	}
 
 	// No record mutation precedes the whole batch's collation preflight.
