@@ -126,6 +126,10 @@ func (f *storeAddressFlags) resolve() (*storeTarget, error) {
 	}
 	cfgCtx, err := config.ResolveContext(cfg, f.contextName)
 	if err != nil {
+		var missingContext *config.ContextNotFoundError
+		if f.clusterFile == "" && errors.As(err, &missingContext) {
+			return nil, err
+		}
 		selfContained := f.metaFile != "" || f.descriptorSet != "" || f.relational() || f.clusterFile != ""
 		if !selfContained {
 			if errors.Is(err, config.ErrNoContext) {

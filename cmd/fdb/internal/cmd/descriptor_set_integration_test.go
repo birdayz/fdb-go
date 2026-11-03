@@ -3,11 +3,13 @@ package cmd
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"fdb.dev/cmd/fdb/internal/config"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -97,5 +99,81 @@ func TestIntegration_DescriptorSetInputMaintainsAnnotatedIndexes(t *testing.T) {
 	}
 	if after := snapshotStoreBytes(t, f.clusterFilePath, ss); after != before {
 		t.Fatal("refused create changed foreign keys")
+	}
+}
+
+func TestIntegration_DescriptorWritesRejectMissingSelectedContext(t *testing.T) {
+	f := requireFixture(t)
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	t.Setenv("FDB_CONFIG", configPath)
+	t.Setenv("FDB_CLUSTER_FILE", f.clusterFilePath)
+	path := descriptorFixturePath(t)
+	prefix := t.TempDir()
+	existing := subspace.Sub("descriptor-context", prefix, "existing")
+	empty := subspace.Sub("descriptor-context", prefix, "empty")
+	db, err := fdb.OpenDatabase(f.clusterFilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
+			tr.ClearRange(subspace.Sub("descriptor-context", prefix))
+			return nil, nil
+		}); err != nil {
+			t.Errorf("clear descriptor context fixture: %v", err)
+		}
+	})
+	target := func(suffix string) []string {
+		return []string{"--keyspace-tuple", tupleToJSON(tuple.Tuple{"descriptor-context", prefix, suffix}), "--descriptor-set", path}
+	}
+	invoke := func(suffix string, args ...string) (string, error) {
+		t.Helper()
+		return runCmd(t, append(args, target(suffix)...)...)
+	}
+	if out, err := invoke("existing", "rl", "store", "create", "--yes"); err != nil {
+		t.Fatalf("config-free default discovery create: %v\n%s", err, out)
+	}
+	if out, err := invoke("existing", "rl", "record", "put", "--type", "Customer", `{"id":42,"email":"original@example.com"}`, "--yes"); err != nil {
+		t.Fatalf("seed fallback store: %v\n%s", err, out)
+	}
+	before := snapshotStoreBytes(t, f.clusterFilePath, existing)
+	if before == "" || snapshotStoreBytes(t, f.clusterFilePath, empty) != "" {
+		t.Fatal("expected one populated fallback store and one empty create prefix")
+	}
+	if err := os.WriteFile(configPath, []byte("current_context: deleted\ncontexts: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, selection := range []string{"implicit", "explicit"} {
+		for _, tc := range []struct {
+			suffix string
+			args   []string
+		}{
+			{"empty", []string{"rl", "store", "create", "--yes"}},
+			{"existing", []string{"rl", "record", "put", "--type", "Customer", `{"id":42,"email":"replaced@example.com"}`, "--yes"}},
+			{"existing", []string{"rl", "record", "delete", "42", "--yes"}},
+			{"existing", []string{"rl", "store", "truncate", "--yes"}},
+		} {
+			t.Run(selection+"/"+strings.Join(tc.args[:3], " "), func(t *testing.T) {
+				args := append([]string{}, tc.args...)
+				if selection == "explicit" {
+					args = append(args, "--context", "deleted")
+				}
+				out, err := invoke(tc.suffix, args...)
+				var missing *config.ContextNotFoundError
+				if !errors.Is(err, config.ErrNoContext) || !errors.As(err, &missing) || missing.Name != "deleted" || out != "" {
+					t.Errorf("native write reached fallback: output=%q error=%v", out, err)
+				}
+				if after := snapshotStoreBytes(t, f.clusterFilePath, existing); after != before {
+					t.Error("refused native write changed fallback records, indexes, or header")
+				}
+				if after := snapshotStoreBytes(t, f.clusterFilePath, empty); after != "" {
+					t.Error("refused native create populated the fallback prefix")
+				}
+			})
+		}
+	}
+	out, err := invoke("existing", "rl", "record", "get", "42", "--cluster-file", f.clusterFilePath)
+	if err != nil || !strings.Contains(out, "original@example.com") {
+		t.Fatalf("explicit cluster override control: %v\n%s", err, out)
 	}
 }
