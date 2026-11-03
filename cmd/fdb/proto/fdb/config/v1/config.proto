@@ -1,0 +1,99 @@
+// Configuration schema for the `fdb` CLI.
+//
+// Loaded via `github.com/birdayz/protobuf-ecosystem/protoconfig.Load` —
+// YAML on disk (path overridable via $FDB_CONFIG; no per-field env
+// overlay is wired). A single `Config` message drives kubectl-style
+// context switching; each `Context` bundles cluster connection +
+// metadata source.
+syntax = "proto3";
+
+package fdb.config.v1;
+
+import "google/protobuf/struct.proto";
+
+// Top-level config, typically at ~/.fdb/config.yaml.
+message Config {
+  // Name of the context to use when no `--context` flag is supplied.
+  string current_context = 1;
+
+  // All known contexts. A context is a named bundle of
+  // connection + metadata-source settings.
+  repeated Context contexts = 2;
+}
+
+// One named environment (e.g. "prod", "staging", "local"). A context
+// selects an FDB cluster and optionally a Record Layer store or relational
+// database/schema. Commands only require the settings for their target.
+message Context {
+  // Identifier used by `--context` and `Config.current_context`.
+  string name = 1;
+
+  // Path to an FDB cluster file. Empty → use FDB's default lookup
+  // (present FDB_CLUSTER_FILE, local fdb.cluster, then the platform default).
+  string cluster_file = 2;
+
+  // KeySpace path of the record store to operate on (e.g. "/myapp/prod/orders").
+  // Parsed by the record layer's keyspace path resolver at command time.
+  string keyspace_path = 3;
+
+  // How to load this store's RecordMetaData. Required for any command
+  // that needs to decode records or know about indexes (record/index
+  // commands). Store-level commands that only touch the DataStoreInfo
+  // header (e.g. `store info`) can skip metadata loading.
+  MetadataSource metadata = 4;
+
+  // Relational addressing (RFC-174 §3.1) — set BOTH or NEITHER. When
+  // set, the context addresses the relational store for this
+  // (database URI, schema): keyspace comes from the relational layout
+  // and metadata from the catalog's schema-pinned template version.
+  // Mutually exclusive with keyspace_path / keyspace_tuple / metadata.
+  string database = 5;
+  string schema = 6;
+
+  // Typed keyspace tuple — alternative to keyspace_path for stores
+  // whose tuple path contains non-string elements. YAML list of
+  // strings, integers, and tagged objects:
+  //
+  //   keyspace_tuple: ["myapp", 42, {"uuid": "0195c7…"}, {"bytes_hex": "deadbeef"}]
+  //
+  // Mutually exclusive with keyspace_path and database/schema.
+  google.protobuf.ListValue keyspace_tuple = 7;
+}
+
+// MetadataSource is a tagged union over the supported ways of
+// loading a `RecordMetaData`. See cmd/fdb/docs/operator-guide.md for
+// the app-side wiring (Go + Java) for each path.
+message MetadataSource {
+  oneof source {
+    // Path to a file containing a serialized
+    // `com.apple.foundationdb.record.RecordMetaDataProto.MetaData`
+    // message. Use an existing complete metadata artifact; schemas declared
+    // through protobuf options can use descriptor_set without an app helper.
+    string meta_file = 1;
+
+    // KeySpace path of an FDBMetaDataStore. fdb reads metadata from FDB
+    // exactly the way the app does — `FDBMetaDataStore.LoadRecordMetaData()`.
+    // Use when the app has already adopted FDBMetaDataStore for its own
+    // cross-instance schema coordination.
+    string meta_store_keyspace = 2;
+
+    // Build metadata from a compiled protobuf descriptor set and the standard
+    // Record Layer custom options, without running application code.
+    DescriptorSetSource descriptor_set = 3;
+  }
+}
+
+// DescriptorSetSource reads a google.protobuf.FileDescriptorSet, including its
+// imports. Produce it with buf build --as-file-descriptor-set or protoc
+// --descriptor_set_out with --include_imports.
+message DescriptorSetSource {
+  string path = 1;
+
+  // Import path of the records .proto. Optional when the descriptor set
+  // contains exactly one file declaring a Record Layer union.
+  string records_file = 2;
+
+  // Explicit metadata version. When absent, use the builder's version derived
+  // from the declarations; never infer a version from the target store.
+  optional int32 metadata_version = 3;
+}

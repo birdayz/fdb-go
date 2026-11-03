@@ -12,8 +12,10 @@ semantics, and required dependency versions.
 
 This changelog starts **2026-06-20**; earlier history is in `git log`. The first tagged release is
 **v0.1.0** (2026-08-26). v0.1.0 shipped the `frl` CLI from a parallel nested-module tag,
-`cmd/frl/v0.1.0`; from v0.2.0 `frl` is a package of the root module and ships under the
-project's own `vX.Y.Z` tag, which `go install fdb.dev/cmd/frl@vX.Y.Z` resolves (`RELEASE.md`).
+`cmd/frl/v0.1.0`. The unreleased candidate replaces it with `fdb`, the root
+module's `cmd/fdb` package. A root release containing that package supports
+`go install fdb.dev/cmd/fdb@vX.Y.Z`; the current workflow builds from source
+until such a tag is published (`RELEASE.md`).
 
 ## [Unreleased]
 
@@ -93,8 +95,11 @@ Each is described in full under Compatibility or Changed below.
   to `pkg/relational/core/resultset`, and the executor returns `executor.ExecutionError` kinds
   (or `values` errors) where it returned SQLSTATE `api.Error`s; SQL sees the same SQLSTATE and `api.Error` message,
   without the executor's wrapping context in the error string (RFC-274).
-- **frl:** `frl` is a package of the root module; retiring the nested module requires
-  the post-publication retraction procedure in `RELEASE.md`.
+- **CLI:** `frl` is replaced by `fdb`, with Record Layer commands under `fdb rl`.
+  Config/history move to `~/.fdb`, with `FDB_CONFIG` replacing `FRL_CONFIG`.
+  There are no legacy command aliases, config fallbacks, or archive fallbacks.
+  Release archives are `fdb_<version>_<os>_<arch>.tar.gz`; `FDB_CLI_VERSION`
+  selects the CLI release, leaving `FDB_VERSION` for FoundationDB server tooling.
 - **`pkg/fdbgo/wire/types`:** generated decoders return errors,
   `NetworkAddressList.SecondaryAddress` is a `NetworkAddress` and
   `CommitTransactionRef.Read_conflict_ranges_disabled` a `SpanContext` (RFC-276).
@@ -288,7 +293,7 @@ Each is described in full under Compatibility or Changed below.
 - **Breaking (storage/metadata):** a VECTOR index is refused at build as Java's `VectorIndexValidator` refuses it: without a dimension count ("need to specify the number of dimensions"; Go's 128 default is gone), or with a grouping root, a unique option, a version column, a root that is not a `KeyWithValueExpression` ("vector index type must use top key with value expression") or a fan-out. Recreate such an index with `KeyWithValue(root, splitPoint)` and an explicit `hnswNumDimensions`.
 - A `collate_jre`/`collate_icu` key expression no longer counts as a fan-out, as in Java (`CollateFunctionKeyExpression.createsDuplicates` delegates to its argument): a collated primary key, `CARDINALITY` argument, online-build source index and vector partition column are accepted, and a collated VALUE index's scans count as distinct records; `Split(collate(x))` is refused.
 - **Breaking (storage/metadata):** a VECTOR index's `hnswMetric`/`vectorMetric` must name one of Java's `Metric` constants (`EUCLIDEAN_METRIC`, `EUCLIDEAN_SQUARE_METRIC`, `COSINE_METRIC`, `DOT_PRODUCT_METRIC`); the lower-case `cosine`, `inner_product` and `euclidean` are refused when the meta-data is built (`MetaDataError` "incorrect index options"), as in Java. With `vectorindex` linked, a plain VECTOR index is now also refused at build for an option under both its name and alias, an unknown engine ("unknown vector index engine"), an unparsable number, Java's `Config` bounds and GuardiANN parse failures. Recreate an index that used them.
-- **Breaking:** a relational database path is `/DOMAIN/DATABASE`, as in Java, and its domain must be registered once per process before use: `sqldriver.RegisterDomainIfNotExists("FRL")` (Java's `RelationalKeyspaceProvider.instance().registerDomainIfNotExists`). The driver registers none; `frl` registers `FRL`, as Java's server and CLI do. A path outside the registered domains (including a one-segment `/name`) is INVALID_PATH (08F01) on CREATE DATABASE, on a schema's store and when connecting to a schema; a malformed path is 08F01 `invalid database path '…'` (was 22023). `/__SYS` needs no domain.
+- **Breaking:** a relational database path is `/DOMAIN/DATABASE`, as in Java, and its domain must be registered once per process before use: `sqldriver.RegisterDomainIfNotExists("FRL")` (Java's `RelationalKeyspaceProvider.instance().registerDomainIfNotExists`). The driver registers none; `fdb` registers `FRL`, as Java's server and CLI do. A path outside the registered domains (including a one-segment `/name`) is INVALID_PATH (08F01) on CREATE DATABASE, on a schema's store and when connecting to a schema; a malformed path is 08F01 `invalid database path '…'` (was 22023). `/__SYS` needs no domain.
 - An array result column's `DatabaseTypeName` is `ARRAY`, as Java's `getColumnTypeName` (it was the element's type name), and its scan type is not a scalar. `api.WithResultSetMetaDataObserver` gives a query's result-set metadata, whose `ColumnDataType` carries a struct column's declared type name and fields and an array column's element type.
 - A SQL query block is one Select, as in Java 4.14.2.0: predicates reach a derived table's or CTE's access paths, a computed column without an alias is named by its position (`_0`), and EXPLAIN shows `Map(…, {…})` where it showed `Project(…)`.
 - A SQL function call binds its arguments as Java does (a one-row values source pushed into the body), so its body's predicates reach index scans and joins of calls plan in Java's order.
@@ -322,10 +327,11 @@ Each is described in full under Compatibility or Changed below.
 - An IN list item that fails to evaluate (`a IN (1 / 0, 3)`) raises when the query runs (22012), even over an empty table, as Java's does; it was 0AF00 `Cascades translation failed`.
 - An unknown column is 42703 `Attempting to query non existing column X`, Java's text, with the reference as written (`T.X`, `Q.ID` for an unknown qualifier) in every clause and in UPDATE's SET; a qualified star over no source and a JOIN USING column missing from either side are `Unknown reference X`.
 - A query block reports its faults in Java's clause order: a join's ON first, then the WHERE, then the select list (an unknown function in the select list included).
-- `frl` is a package of the root module and releases under the project's `vX.Y.Z` tag. The nested
-  module `fdb.dev/cmd/frl` is scheduled for retraction (`cmd/frl/v0.1.1`) only after the root
-  v0.2.0 release is available as proxy `@latest` (`RELEASE.md`); no retraction is asserted yet. A module that requires `fdb.dev/cmd/frl` drops it with
-  `go get fdb.dev/cmd/frl@none` before upgrading `fdb.dev`, or the build reports an ambiguous import.
+- The CLI is the root module's `cmd/fdb` package and releases under the project's
+  `vX.Y.Z` tag. Build the current source until a release containing it is published.
+  Old nested-module tags are historical releases, not a fallback for `fdb`; no
+  retraction is asserted here. Replace old tool dependencies and command invocations
+  explicitly; see `docs/upgrade.md` and the website's CLI guide.
 - SQL `LIKE` follows Java 4.14.2.0: wildcards cross newlines, `LIKE NULL` is allowed, and invalid escapes raise 22019/2200B/22025 per row.
 - SQL comments follow Java 4.14.2.0: block comments nest, an unterminated one is 42601, and `#` is no longer a comment.
 - `OPTIONS (...)` is statement-level only and adds `PLAN RIGHT DEEP` and `ISOLATION LEVEL SNAPSHOT`; `PLAN` and `DEEP` are reserved words.
@@ -414,7 +420,7 @@ Each is described in full under Compatibility or Changed below.
 - Scalar literals and prepared values reuse immutable SQL plans through per-execution constant pools and checked type, equality and specialization constraints.
 - **Breaking:** a typed record store works over any metadata's union and reads and writes only its record type's union field, as Java's `TypedRecordSerializer`: loading, deleting or overwriting a record of another type fails with `RecordDeserializationError` ("Specified union field was not set"), and so does `ScanRecords` at the first such record (it skipped them); saving one fails with `RecordSerializationError`. A Go type the metadata does not decode the record type as is refused on load ("Builder does not match union type"; a save of it, typed or not, fails first with `MetaDataError` "descriptor did not match record type"), and one of another message at construction ("fieldDescriptor and getter do not match"). `NewTypedRecordStore` takes `baseStore` and `recordType` (its demo-union wrap/unwrap functions are gone) and returns an error.
 - A struct value buffered in a continuation resumes with the store metadata's descriptor, as Java's does; a compiled Go message that only shares its full name no longer decodes it. **Breaking:** `recordlayer.FindRegisteredMessageType(name)` is replaced by `GeneratedMessageType(descriptor)`, which answers only the compiled type whose descriptor that is. A buffered struct value whose type is in neither the metadata nor the plan now fails the resume instead of decoding through the global registry.
-- **Breaking:** the demo schema (`record_layer_demo.proto`: `Order`, `Customer`, `Flower`, `TypedRecord`, `UnionDescriptor`, the `Color` enum) moved from `fdb.dev/gen` to `fdb.dev/gen/demopb`, so the driver and `frl` no longer register `com.apple.foundationdb.record` demo messages.
+- **Breaking:** the demo schema (`record_layer_demo.proto`: `Order`, `Customer`, `Flower`, `TypedRecord`, `UnionDescriptor`, the `Color` enum) moved from `fdb.dev/gen` to `fdb.dev/gen/demopb`, so the driver and `fdb` no longer register `com.apple.foundationdb.record` demo messages.
 - `RecordMetaDataFromProto` takes options (`MetaDataProtoOption`): `WithLocalFileDescriptor`, Java's `RecordMetaDataBuilder.setLocalFileDescriptor`, makes meta-data loaded from its stored proto use the compiled (local) descriptors and the local union's record type keys once they validate as an evolution of the stored ones (checked by `WithEvolutionValidator`'s validator, Java's `setEvolutionValidator`, else the default), so compiled records can be saved; such meta-data refuses `ToProto`. `RecordMetaData.GetRecordTypeForDescriptor` is Java's `getRecordTypeForDescriptor`.
 - **Breaking:** every save (untyped, pipelined, batch and dry run) resolves the record type by the record's descriptor, as Java's does: a compiled message saved into meta-data loaded without `WithLocalFileDescriptor`, or a same-named message of another shape, fails with `MetaDataError` "descriptor did not match record type" (it was matched by name).
 - `fdb` `GetRange` sends its first batch at the call, as Apple's Go binding does: the rows reflect the transaction's writes as of that call, and commit waits for every issued range read (also one never consumed) and keeps its read conflict, as libfdb_c does. `GetSliceWithError` over more than batch 1's bytes (about 4 KB in the default mode) now takes two sequential round trips, batch 1 and then the rest, as libfdb_c does. `client.Transaction.StartGetRange` starts such a read and returns at once; `Database.Metrics()` (on `fdb.Database` too) reports `TransactionGetRangeRequests`. A watch whose read fails no longer leaves a read conflict.

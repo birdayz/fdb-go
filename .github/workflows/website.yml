@@ -15,6 +15,10 @@ on:
       - "**/go.mod"
       - "scripts/gen-vanity-modules.sh"
       - "scripts/sync-website-benchmarks.py"
+      - "scripts/sync-website-cli-example.py"
+      - "proto/apple/**"
+      - "LICENSE"
+      - "NOTICE"
   # The site carries master's test report (fdb.dev/reports/latest.html, the README badge),
   # so each finished master CI run redeploys it.
   workflow_run:
@@ -62,6 +66,10 @@ jobs:
           } > website/content/changelog.md
       - name: Sync benchmark campaign pages (single source of truth)
         run: python3 scripts/sync-website-benchmarks.py
+      - name: Verify runnable CLI example bundle
+        run: |
+          python3 scripts/sync-website-cli-example.py
+          git diff --exit-code -- website/static/examples/record-layer
       - name: Derive vanity-import module roots (single source of truth)
         # Via `bash`, not as an executable — core.fileMode=false in this repo means a
         # chmod +x silently never reaches the index. See the same note in ci.yml.

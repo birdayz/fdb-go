@@ -357,7 +357,7 @@ func (c *RecordLayerStoreCatalog) SaveSchema(txn api.Transaction, s api.Schema, 
 // MetaDataEvolutionValidator between the bound metadata and the new one: the
 // record type key is the LEADING element of every stored record key, so a
 // key-changing evolution makes the store read old type A's rows as new type
-// B's, silent data corruption, not an error. This is the validator the frl
+// B's, silent data corruption, not an error. This is the validator the fdb
 // CLI's `meta evolve-check` runs (the MetaDataEvolutionValidator.java:418
 // port), with the options set here; `--allow-no-version-change` reproduces
 // them. Index rebuilds are allowed, as CreateTemplate's carry allows them:

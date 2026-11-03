@@ -13,21 +13,21 @@ go get fdb.dev@master
 ```
 
 Or run the examples from a clone, against a disposable cluster in Docker.
-Install the `frl` CLI:
+Build the `fdb` CLI from the checkout:
 
 ```sh
-curl -fsSL https://fdb.dev/install.sh | sh
-```
-
-Then:
-
-```sh
-export FDB_CLUSTER_FILE=$(frl fdb up)
+go build -o .tmpbuild/fdb ./cmd/fdb
+export PATH="$PWD/.tmpbuild:$PATH"
+export FDB_CLUSTER_FILE=$(fdb dev up)
 go run ./example/sql
 go run ./example
 ```
 
-`frl fdb down` removes the cluster.
+`fdb dev down` removes the cluster. Tagged installation with
+`go install fdb.dev/cmd/fdb@<tag>` requires a release containing `cmd/fdb`; the
+[installer](https://fdb.dev/install.sh) also requires matching `fdb_` release
+archives. Use the checkout build until that release is available. See the
+[CLI guide](https://fdb.dev/docs/cli/) for configuration and commands.
 
 Pre-1.0; expect API changes. [Status and known gaps](STATUS.md). Independent project,
 not affiliated with Apple or the FoundationDB project.

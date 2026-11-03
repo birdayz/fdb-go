@@ -49,7 +49,7 @@ jobs:
           cache: false
 
       - name: Verify third-party notices are current
-        # Match release inputs: go.mod's toolchain, the four pure-Go frl targets,
+        # Match release inputs: go.mod's toolchain, the four pure-Go fdb targets,
         # and no ambient GOFLAGS/GOEXPERIMENT (enforced by the generator).
         run: |
           set -euo pipefail
@@ -296,8 +296,8 @@ jobs:
           bazelisk test --config=ci //cmd/fdb-diff-oracle:fdb-diff-oracle_test
           '--test_arg=-test.run=TestDiff|^Fuzz' --test_arg=-test.v --test_output=errors
 
-  frl-go-install:
-    name: go install lane (cmd/frl)
+  fdb-go-install:
+    name: go install lane (cmd/fdb)
     runs-on: hetzner-fdb-vm
     timeout-minutes: 30
     steps:
@@ -360,21 +360,21 @@ jobs:
         run: go build ./...
 
       # The lane for the one build configuration no other job here exercises:
-      # what `go install fdb.dev/cmd/frl@<version>` compiles. Bazel builds frl
+      # what `go install fdb.dev/cmd/fdb@<version>` compiles. Bazel builds fdb
       # from its own dependency resolution, so this is the only module-mode, cgo-free build of the CLI
       # against the root go.mod and go.sum. `go install pkg@version` also refuses
       # a module whose go.mod carries a replace or exclude directive, so one here
       # breaks installation for every user the moment it merges.
-      - name: Build cmd/frl the way `go install` builds it
+      - name: Build cmd/fdb the way `go install` builds it
         env:
           CGO_ENABLED: "0"
         run: |
           set -euo pipefail
           if grep -nE '^[[:space:]]*(replace|exclude)([[:space:]]|\()' go.mod; then
-            echo "::error::go.mod has a replace or exclude directive; go install fdb.dev/cmd/frl@<version> refuses such a module"
+            echo "::error::go.mod has a replace or exclude directive; go install fdb.dev/cmd/fdb@<version> refuses such a module"
             exit 1
           fi
-          go build -trimpath ./cmd/frl/...
+          go build -trimpath ./cmd/fdb/...
 
   govulncheck:
     name: Vulnerability scan

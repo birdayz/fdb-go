@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Print the GitHub release body for a tag: docs/release-notes/<tag>.md when present, then
-# the install and verify instructions. frl-release.yml publishes exactly this output.
+# the install and verify instructions. fdb-release.yml publishes exactly this output.
 # --check fails when a minor release (vX.Y.0) has no notes file; the dry run uses it.
 set -euo pipefail
 
@@ -30,7 +30,7 @@ fi
 cat <<EOF
 Changes and compatibility notes: [CHANGELOG.md](https://github.com/${repo}/blob/${tag}/CHANGELOG.md).
 
-Static, dependency-free binaries of the \`frl\` CLI (pure Go, no cgo; the
+Static, dependency-free binaries of the \`fdb\` CLI (pure Go, no cgo; the
 linux binaries run on glibc, musl, and \`FROM scratch\`).
 
 **Install**
@@ -39,10 +39,10 @@ linux binaries run on glibc, musl, and \`FROM scratch\`).
 
 or with the Go toolchain (builds the identical version):
 
-    go install fdb.dev/cmd/frl@${tag}
+    go install fdb.dev/cmd/fdb@${tag}
 
 **Verify**: every asset is sha256-listed in \`checksums.txt\` and carries
 build provenance:
 
-    gh attestation verify frl_${tag}_linux_amd64.tar.gz -R ${repo}
+    gh attestation verify fdb_${tag}_linux_amd64.tar.gz -R ${repo}
 EOF

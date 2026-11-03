@@ -63,7 +63,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 Other third-party material
 --------------------------
 THIRD_PARTY_NOTICES.txt contains license and notice texts collected from the
-Go toolchain and dependency modules used by the distributed pure-Go frl CLI.
+Go toolchain and dependency modules used by the distributed pure-Go fdb CLI.
 Dependency versions are pinned in go.mod and go.sum. Other build configurations
 and applications may include different dependencies with their own notices.
 

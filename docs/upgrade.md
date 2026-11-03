@@ -5,6 +5,30 @@
 pre-1.0 project does not promise an automatic upgrade or downgrade between every
 pair of Go revisions. The current readiness statement is [STATUS.md](../STATUS.md).
 
+## CLI name, commands, and configuration
+
+The development candidate replaces `frl` with the root module's `cmd/fdb`
+package. Build the checkout with `go build -o .tmpbuild/fdb ./cmd/fdb` until a
+release containing this package is published; then install its exact root tag
+with `go install fdb.dev/cmd/fdb@<tag>`. Old nested-module releases do not contain
+the new CLI. Remove an old `fdb.dev/cmd/frl` tool dependency if one was added to
+an application's `go.mod`.
+
+Update scripts explicitly: Record Layer operations are now `fdb rl record`,
+`fdb rl index`, `fdb rl store`, `fdb rl meta`, `fdb rl stats`, `fdb rl keyspace`,
+and `fdb rl status`. Local cluster management is `fdb dev up|down|status`;
+SQL and transaction utilities are `fdb sql` and `fdb tx`.
+
+Configuration and SQL history use `~/.fdb`, not `~/.frl`. `FDB_CONFIG` replaces
+`FRL_CONFIG`; the new CLI does not read the old config automatically. Copy any
+needed contexts deliberately and inspect them with `fdb config view` before
+writing data. There are no legacy command aliases. The installer accepts only
+`fdb_<version>_<os>_<arch>.tar.gz` release archives; `FDB_CLI_VERSION` selects the
+CLI version, while `FDB_VERSION` remains a server-tooling variable.
+
+The [website CLI guide](https://fdb.dev/docs/cli/) covers configuration and
+runnable protobuf and SQL workflows.
+
 ## From v0.1.0 SQL storage
 
 The v0.2.0 candidate uses Java's relational keyspace: the catalog store is

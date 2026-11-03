@@ -1503,7 +1503,7 @@ var (
 //
 // It is an OFFLINE maintenance operation that happens to be reachable through a
 // connection: it scans every record in the store, so it belongs in a
-// `frl stats collect` run or a scheduled job, never on a query path. The
+// `fdb rl stats collect` run or a scheduled job, never on a query path. The
 // connection is simply the thing that already knows the database path, the
 // schema, the catalog and the keyspace.
 //
