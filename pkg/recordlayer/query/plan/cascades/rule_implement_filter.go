@@ -104,6 +104,24 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 		if len(members) == 0 {
 			continue
 		}
+		for _, member := range members {
+			innerPlan, ok := member.(plans.RecordQueryPlan)
+			if !ok {
+				continue
+			}
+			alternatives, residuals := textAccessAlternatives(call.Context, innerPlan, f.GetPredicates(), f.GetInner().GetAlias())
+			for i, access := range alternatives {
+				if len(residuals[i]) > 0 {
+					filtered, err := plans.NewRecordQueryPredicatesFilterPlanWithAlias(access, residuals[i], f.GetInner().GetAlias())
+					if err != nil {
+						call.Fail(err)
+						return
+					}
+					access = filtered
+				}
+				call.Yield(access)
+			}
+		}
 		if allTautologies {
 			for _, member := range members {
 				call.Yield(member)

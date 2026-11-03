@@ -3225,6 +3225,42 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 		// non-filtering; a closure is opaque and cannot be proved tautological,
 		// so it fails closed.
 		sparse := idx.HasFilteringPredicate()
+		if idx.Type == recordlayer.IndexTypeText {
+			if !sparse {
+				def := &metadataIndexDef{idx: idx, md: c.md}
+				grouping := 0
+				if g, ok := idx.RootExpression.(*recordlayer.GroupingKeyExpression); ok {
+					grouping = g.GetGroupingCount()
+				}
+				textInPrimaryKey := false
+				for _, position := range idx.PrimaryKeyComponentPositions() {
+					if position == grouping {
+						textInPrimaryKey = true
+					}
+				}
+				if textInPrimaryKey {
+					continue
+				}
+				tokenizer := idx.Options[recordlayer.IndexOptionTextTokenizerName]
+				if tokenizer == "" {
+					tokenizer = recordlayer.DefaultTextTokenizerName
+				}
+				registeredTokenizer, tokenizerErr := recordlayer.GetTextTokenizer(tokenizer)
+				if tokenizerErr != nil {
+					continue
+				}
+				version := recordlayer.GlobalMinVersion
+				if configured, present := idx.Options[recordlayer.IndexOptionTextTokenizerVersion]; present {
+					parsed, versionErr := recordlayer.JavaParseInt(configured)
+					if versionErr != nil {
+						continue
+					}
+					version = int(parsed)
+				}
+				candidates = append(candidates, &cascades.TextIndexMatchCandidate{Name: idx.Name, Columns: def.IndexColumnNames(), RecordTypes: def.IndexRecordTypes(), GroupingCount: grouping, TokenizerName: tokenizer, TokenizerVersion: version, TokenizerMaxVersion: registeredTokenizer.MaxVersion(), RequireLatestTokenizer: true, OmitPositions: idx.GetBooleanOption(recordlayer.IndexOptionTextOmitPositions, false), CreatesDuplicates: idx.CreatesDuplicates(), RowType: def.IndexRowType(), KeyTypes: def.IndexKeyComponentTypes()})
+			}
+			continue
+		}
 		if !sparse {
 			// A SPARSE aggregate/vector index must not become a candidate that
 			// ignores its predicate: the maintained aggregates cover only the

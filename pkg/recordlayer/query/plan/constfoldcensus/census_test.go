@@ -67,6 +67,7 @@ var assignmentTable = []assigned{
 	{"pkg/recordlayer/query/plan/cascades/rule_implement_in_union.go", "ImplementInUnionRule.OnMatch", "Evaluate(nil)", 1, "IN (4.1): the IN-union's plan-time sources"},
 	{"pkg/recordlayer/query/plan/cascades/rule_in_to_explode.go", "explodableIn", "Evaluate(nil)", 1, "IN (4.1(b)): the explode's comparand"},
 	{"pkg/relational/core/query/expr/expr.go", "Resolver.ResolveStartsWith", "values.EvaluateConstant", 1, "LIKE/STARTS_WITH (section 1): a STARTS_WITH prefix must be constant"},
+	{"pkg/relational/core/query/expr/text_search.go", "Resolver.walkTextFunction", "values.EvaluateConstant", 2, "Go SQL text extension: distance and tokenizer are literal comparison metadata, never folded runtime operands"},
 
 	{"pkg/relational/core/query/expr/expr.go", "widenConstAgainstDoubleColumn", "values.EvaluateConstant", 1, "coercion: an INT, LONG or FLOAT constant against a DOUBLE column"},
 	{"pkg/relational/core/query/expr/expr.go", "narrowFloatConstAgainstInt", "values.EvaluateConstant", 1, "coercion: a FLOAT or DOUBLE constant against an INT or LONG column"},

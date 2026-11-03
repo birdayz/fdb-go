@@ -1304,9 +1304,9 @@ func promoteVariadicArguments(args []values.Value, common values.Type) []values.
 
 // walkUserDefinedScalarFunction handles `name '(' args ')'` calls whose
 // name is a bare ID (the grammar's UserDefinedScalarFunctionCall). The
-// only such call wired today is the CARDINALITY built-in: it parses here
-// rather than as a ScalarFunctionCall because CARDINALITY has no grammar
-// token (it is not in the `scalarFunctionName` keyword set). This is the
+// bare-name built-ins, including CARDINALITY and TEXT_CONTAINS_*, parse here
+// rather than as ScalarFunctionCall because they are not in the grammar's
+// `scalarFunctionName` keyword set. This is the
 // single by-name built-in dispatch gate — a
 // recognised name builds its dedicated Value; everything else declines so
 // the caller falls back. A quoted name (`"cardinality"`) is a deliberate
@@ -1334,6 +1334,9 @@ func (r *Resolver) walkUserDefinedScalarFunction(udf *antlrgen.UserDefinedScalar
 		return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("user-defined scalar function %q", nameCtx.GetText())}
 	}
 	name := unicode15.ToUpperString(nameNode.ID().GetText())
+	if typ, ok := textFunctionType(name); ok {
+		return r.walkTextFunction(name, typ, udf.NamedOrUnnamedFunctionArgs())
+	}
 	switch name {
 	case "CARDINALITY":
 		return r.walkCardinality(udf.NamedOrUnnamedFunctionArgs())

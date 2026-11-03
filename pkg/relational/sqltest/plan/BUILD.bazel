@@ -17,6 +17,9 @@ go_test(
         "custom_index_candidacy_fdb_test.go",
         "derived_limit_rfc128_test.go",
         "explain_unplannable_fdb_test.go",
+        "fulltext_fdb_test.go",
+        "fulltext_primary_key_fdb_test.go",
+        "fulltext_tokenizer_fdb_test.go",
         "guardiann_fdb_test.go",
         "guardiann_preference_fdb_test.go",
         "index_definition_production_fdb_test.go",
@@ -58,6 +61,7 @@ go_test(
     ],
     deps = [
         "//gen",
+        "//gen/demopb",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",

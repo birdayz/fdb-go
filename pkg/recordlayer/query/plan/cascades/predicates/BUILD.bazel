@@ -27,11 +27,13 @@ go_library(
         "structural_equal.go",
         "structural_hash.go",
         "structural_predicate.go",
+        "text_comparison.go",
         "to_residual_predicate.go",
     ],
     importpath = "fdb.dev/pkg/recordlayer/query/plan/cascades/predicates",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/recordlayer",
         "//pkg/recordlayer/query/plan/cascades/internal/fnv64",
         "//pkg/recordlayer/query/plan/cascades/values",
         "@org_golang_google_protobuf//proto",
@@ -77,9 +79,13 @@ go_test(
         "structural_equal_test.go",
         "tautology_test.go",
         "test_helpers_test.go",
+        "text_comparison_test.go",
         "to_residual_predicate_test.go",
         "translate_leaf_predicates_test.go",
     ],
     embed = [":predicates"],
-    deps = ["//pkg/recordlayer/query/plan/cascades/values"],
+    deps = [
+        "//pkg/recordlayer",
+        "//pkg/recordlayer/query/plan/cascades/values",
+    ],
 )

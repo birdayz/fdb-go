@@ -159,6 +159,8 @@ func executePlanUnwrapped(
 		return executeScan(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryIndexPlan:
 		return executeIndexScan(ctx, p, store, evalCtx, continuation, props)
+	case *plans.RecordQueryTextIndexPlan:
+		return executeTextIndexScan(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryVectorIndexPlan:
 		return executeVectorIndexScan(ctx, p, store, evalCtx, continuation, props)
 	case *plans.RecordQueryTypeFilterPlan:

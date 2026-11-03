@@ -1,6 +1,7 @@
 package plans
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -495,7 +496,7 @@ func TestTextIndexPlan_Construction(t *testing.T) {
 	if len(p.GetChildren()) != 0 {
 		t.Fatal("text index plan should be a leaf")
 	}
-	if p.GetTextScan() != scan {
+	if !reflect.DeepEqual(p.GetTextScan(), scan) {
 		t.Fatal("text scan mismatch")
 	}
 }

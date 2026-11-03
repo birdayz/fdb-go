@@ -394,6 +394,9 @@ func (c Comparison) Eval(left any) (TriBool, error) {
 // EvalAgainst — separating eval from dispatch is what lets a
 // non-constant RHS (`a = b + 1`) work row-by-row.
 func (c Comparison) EvalAgainst(left, right any) (TriBool, error) {
+	if c.Type.IsText() {
+		return c.evalText(left, right)
+	}
 	// IS NULL / IS NOT NULL are SQL 2VL: they resolve definitively
 	// even when the LHS is NULL, and ignore Operand entirely.
 	switch c.Type {

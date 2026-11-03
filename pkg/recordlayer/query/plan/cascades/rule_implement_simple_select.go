@@ -79,6 +79,30 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	for _, partition := range partitions {
+		for _, innerPlan := range partition.GetPlans() {
+			alternatives, residuals := textAccessAlternatives(call.Context, innerPlan, queryPredicates, innerQuantifier.GetAlias())
+			for i, access := range alternatives {
+				q := expressions.NamedPhysicalQuantifier(innerQuantifier.GetAlias(), call.MemoizeFinalExpression(access))
+				if len(residuals[i]) > 0 {
+					filtered, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(q, residuals[i], innerQuantifier.GetAlias())
+					if err != nil {
+						call.Fail(err)
+						return
+					}
+					access = filtered
+					q = expressions.NamedPhysicalQuantifier(innerQuantifier.GetAlias(), call.MemoizeFinalExpression(access))
+				}
+				if !isSimpleResult {
+					mapped, err := plans.NewRecordQueryMapPlanFromQuantifier(q, resultValue)
+					if err != nil {
+						call.Fail(err)
+						return
+					}
+					access = mapped
+				}
+				call.YieldFinalExpression(access)
+			}
+		}
 		innerExprs := partition.GetExpressions()
 		if len(innerExprs) == 0 {
 			continue

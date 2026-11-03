@@ -3563,3 +3563,41 @@ these claims; the implementation notes below are not controlled comparisons.
   combination again (exporter default on). Re-measure message-transaction
   conflicts and throughput with paired provenance; the scope regression does
   not establish a performance result.
+
+## TEXT primary-key overlap boundary
+
+- [ ] Optional Go extension: establish a wire-compatible retrieval and migration
+  policy for TEXT indexes
+  whose tokenized field is also a trimmed primary-key component. Normal metadata
+  position derivation can place that PK component at the token column, which no
+  longer contains the original string; do not fetch a record using the token as
+  its primary key or silently change existing maintenance keys. Query planning
+  currently declines this access path, executable text plans return a typed
+  error, and Go FULLTEXT DDL rejects the shape. Regression guards are
+  `TestIntegrationTextRejectsPrimaryKeyTrimmedIntoToken` and
+  `TestFullTextDDLDeclinesTokenizedPrimaryKey`. Ordinary record filtering remains
+  available. This is not a deferred Java-supported retrieval feature: the live
+  Java 4.14.2.0 `probeTextPrimaryKeyOverlap` regression in
+  `conformance/text_index_conformance.java` pins stored PK `(\"red blue\",1)`
+  versus extracted `(\"red\",1)`, and confirms both direct fetch and Java
+  `TISCAN` fail with `RecordCoreStorageException`. Compatibility of a different
+  persisted representation is not proven.
+
+## TEXT SQL access paths
+
+- [ ] Text access with an unbound grouping column (`PARTITION BY (tenant, shard)`
+  queried with `tenant = ?` only). Correct execution needs the distinct values
+  of the unbound column under the bound prefix: a skip scan over the TEXT index
+  (one limit-1 range read past each `(tenant, shard)` prefix), then one
+  `TextScan` per group, as the IN-list path already does. It costs a read per
+  group and a read-conflict range over the whole prefix, so the planner would
+  need a group-count estimate to prefer it over record filtering. Today such a
+  query falls back to record filtering; an IN list over the column is planned
+  as a text access.
+- [ ] `TextScan` with a suffix range seeks the range start in the bunched map
+  (`BunchedMap.scanMulti`), whose keys are each bunch's first posting, and so
+  misses postings of a bunch that begins before the range. Java has the same
+  behaviour; its planner never builds a suffix range. The SQL executor filters
+  whole-group postings instead (`executeTextIndexScan`). A Java conformance
+  probe pinning the miss, and a seek to the bunch before the range start,
+  remain to be done.

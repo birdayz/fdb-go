@@ -294,6 +294,36 @@ var _ = Describe("TEXT Index Conformance", func() {
 		}
 	})
 
+	It("pins Java tokenized-primary-key overlap without assuming reconstruction", func() {
+		var result struct {
+			Positions            []int  `json:"positions"`
+			SavedText            string `json:"savedText"`
+			SavedID              int64  `json:"savedId"`
+			ExtractedText        string `json:"extractedText"`
+			ExtractedID          int64  `json:"extractedId"`
+			EntryCount           int    `json:"entryCount"`
+			OriginalRecordExists bool   `json:"originalRecordExists"`
+			FetchError           string `json:"fetchError"`
+			FetchClass           string `json:"fetchClass"`
+			QueryPlan            string `json:"queryPlan"`
+			QueryError           string `json:"queryError"`
+			QueryClass           string `json:"queryClass"`
+		}
+		Expect(store.java.InvokeAs(ctx, "probeTextPrimaryKeyOverlap", store.buildJavaParams(), &result)).To(Succeed())
+		Expect(result.Positions).To(Equal([]int{0, -1}))
+		Expect(result.SavedText).To(Equal("red blue"))
+		Expect(result.SavedID).To(Equal(int64(1)))
+		Expect(result.EntryCount).To(Equal(1))
+		Expect(result.ExtractedText).To(Equal("red"))
+		Expect(result.ExtractedID).To(Equal(int64(1)))
+		Expect(result.OriginalRecordExists).To(BeTrue())
+		Expect(result.FetchClass).To(Equal("RecordCoreStorageException"))
+		Expect(result.FetchError).To(ContainSubstring("record not found from index entry"))
+		Expect(result.QueryPlan).To(ContainSubstring("TISCAN"))
+		Expect(result.QueryClass).To(Equal("RecordCoreStorageException"))
+		Expect(result.QueryError).To(ContainSubstring("record not found from index entry"))
+	})
+
 	Describe("Go writes, both scan TEXT index", func() {
 		It("should produce identical text entries visible to both Go and Java", func() {
 			// Save a customer with "hello world" — tokenizes to "hello" and "world"

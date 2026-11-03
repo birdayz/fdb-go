@@ -21,6 +21,106 @@ FDB 8.0 compatibility is **not established by this repository's 7.3 target**.
 This is a support boundary, not a statement about whether upstream has released
 8.0. Updating the API version number alone cannot add another wire protocol.
 
+## Full-text queries
+
+The Go query executor accepts typed `plans.TextScan` predicates for ALL, ANY,
+PHRASE, ALL_WITHIN (inclusive positional distance), PREFIX, ALL_PREFIXES and
+ANY_PREFIX, and runs them through `recordlayer.TextScan`, the port of Java's
+`TextScan`, once per bound physical group. String comparands use the index
+tokenizer's QUERY mode and declared version; pre-tokenized `[]string`
+comparands bypass normalization. Stop-word slots are retained for phrases.
+ALL/ANY do not require repeated occurrences of repeated query terms; phrases
+do. Scans combine postings by the complete suffix after the token, as Java's
+`TextScan` does, then fetch ordinary stored records. SQL-equal signed-zero
+groups are scanned as separate physical groups and keep their identity.
+Original text cannot be reconstructed from tokens: text scans are not covering
+scans of the original string. Existing filters, sorting, limits, distinct and
+transaction retry infrastructure apply above this access path.
+
+Positional matching follows Java 4.14.2.0's permissive omitted-position behavior:
+a known-present term with no retained positions occupies a wildcard phrase slot
+and is ignored for distance checks. If no positions remain, the positional test
+passes. This is **not proof of exact phrase/proximity occurrence**. Like Java's
+text planner, Go declines positional and prefix-set text access paths when index
+metadata omits positions; ALL, ANY and singleton PREFIX remain eligible.
+Grouping columns must all be bound, by an equality or an IN list, and carry
+authoritative physical key types in the typed scan; an IN list runs the text
+scan once per element under an IN join. Suffix bounds (which the SQL planner
+does not build) are applied to the group's posting keys rather than seeked, so
+a bound cannot skip matches inside a bunch whose first key precedes it. Prefix
+scans cannot also have suffix bounds. A grouping column without a binding
+leaves the query to ordinary record filtering, not an incomplete text scan.
+Prefix overlaps are deduplicated by primary key by the planner; direct raw
+text-index plans may intentionally return duplicate entries. ALL_PREFIXES is
+Java's probable intersection with `Text.containsAllPrefixes`' default sizing;
+SQL's predicate is strict, so the plan re-checks each record with the
+predicate, as Java's planner does. Each group's continuation is `TextScan`'s,
+wrapped in the scan-range set's envelope; whole query continuations are not
+exchanged with Java. Existing low-level token-scan formats and persisted text
+index maintenance are unchanged.
+
+### SQL full-text syntax (Go extension)
+
+Java Relational 4.14.2.0 reserves the lexer token `FULLTEXT`, but its parser and
+built-in SQL function catalog do not expose full-text queries or full-text index
+DDL. The following is explicitly a **Go SQL extension**, not Java SQL parity:
+
+```sql
+CREATE TABLE docs (id BIGINT, tenant BIGINT, body STRING, PRIMARY KEY(id))
+CREATE FULLTEXT INDEX body_text ON docs(body) PARTITION BY (tenant)
+
+SELECT id FROM docs
+WHERE tenant = ? AND TEXT_CONTAINS_ALL(body, ?)
+ORDER BY id DESC LIMIT 20
+```
+
+`PARTITION BY` is optional. DDL requires exactly one scalar STRING text column;
+partition columns must be scalar. The tokenized column must not also be part of
+the primary key: normal primary-key trimming would replace the recoverable key
+component with a token, so these indexes cannot safely fetch records. Go declines
+such existing metadata as a text access path (ordinary record filtering remains
+available), and raw executable text plans return a typed error. Existing stored
+entries are not rewritten. The live Java 4.14.2.0 conformance probe
+`probeTextPrimaryKeyOverlap` pins this boundary: PK positions `[0,-1]` turn
+stored `("red blue",1)` into extracted `("red",1)`, and both index fetch and a
+Java `TISCAN` query fail with `RecordCoreStorageException` despite the original
+record existing. Java does not reconstruct this layout; this is not a deferred
+Java-supported retrieval feature. See `conformance/text_index_conformance.java`
+and its matching Go conformance assertion. DDL creates an ordinary wire-format
+TEXT index
+with default tokenizer/version options, not a separate SQL storage format.
+`TEXT_CONTAINS_ALL`, `TEXT_CONTAINS_ANY`, `TEXT_CONTAINS_PHRASE`,
+`TEXT_CONTAINS_PREFIX`, `TEXT_CONTAINS_ALL_PREFIXES` and
+`TEXT_CONTAINS_ANY_PREFIX` take `(field, query [, literal_tokenizer_name])`.
+`TEXT_CONTAINS_ALL_WITHIN` takes
+`(field, query, nonnegative_literal_distance [, literal_tokenizer_name])`.
+The field and query must be STRING (query parameters are allowed). SQL resolves
+an omitted tokenizer name explicitly to `default`; an explicit name uses that
+registered tokenizer's maximum supported version on both indexed and residual
+paths. An index with a different tokenizer or an older version is not eligible
+for that SQL predicate. The lower-level Record Layer comparison retains Java's
+context-dependent contract: an eligible text scan uses its index tokenizer and
+configured version; ordinary record evaluation uses the primary tokenizer (or
+fallback tokenizer, or default) at its maximum version. Without a primary
+tokenizer name, any eligible index tokenizer can be selected, as in Java.
+Applications requiring index-independent semantics should name the tokenizer
+and use a current-version index, or use the SQL extension's resolved contract.
+SQL string comparands, including prefixes, are tokenized; the Record Layer's
+pre-tokenized list API is the way to request raw case-sensitive token spelling. NULL fields
+or query values yield UNKNOWN; empty/all-stop-word queries select no records,
+except that a prefix query that is not exactly one token (`''`) fails when
+evaluated against a record, as Java's `TextComparison.eval` does, while a text
+index scan returns no records for it.
+Bound distance/tokenizer parameters are specialized at planning and pinned in
+plan-cache constraints; changing them cannot reuse a differently specialized
+predicate. A distance or tokenizer name that is not compile-time constant is
+rejected explicitly rather than evaluated under a different predicate.
+
+SQL sorting is a normal operator **above** the text access path; this is not a
+claim that Java's classic Record Layer planner, which rejects text-index planning
+when a sort is requested, has the same eligibility rule. The existing Unicode
+and Java word-boundary compatibility boundary below still applies unchanged.
+
 ## What sharing data means
 
 The Record Layer targets Java's tuple keys, record serialization, split records,
