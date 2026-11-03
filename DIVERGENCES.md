@@ -3263,15 +3263,18 @@ for each invocation (`relocateRetries`, `timeoutRetries` in `pkg/fdbgo/client/re
   then `LOAD_BALANCE_START_BACKOFF` doubling to `LOAD_BALANCE_MAX_BACKOFF`
   (`LoadBalance.actor.h:301-308`, `:344-377`, `:682-686`, `:721-725`). Go paces it
   with `lbRetry` (`read_send.go`) in every storage read loop, so a read whose only
-  replica refuses connections waits for it as libfdb_c does. get and watch try
-  every replica in a pass and count each request as one attempt, as C++ does
-  (`sendGetValuePaced`, `sendWatchPaced`), except that a get's hedged pair counts
-  twice (C++ counts a concurrent pair once) and is slept after rather than its
-  second request delayed. getKey, range, native range and mapped range
-  count one attempt per hedged send (at most two replicas), so their backoff can
-  start after up to twice as many requests as C++'s. Go still re-locates on each such
-  retry: it has no sustained-failure `all_alternatives_failed` (C++ raises it once
-  the FailureMonitor has marked every alternative failed, after
+  replica refuses connections waits for it as libfdb_c does. Get, GetKey, plain,
+  native and mapped range reads advance through sender-local alternatives before
+  returning an exhausted pass for relocation (`readAlternatives`); Watch likewise
+  tries every replica in its pass (`sendWatchPaced`). Each observed maybe-delivered
+  failure counts as one attempt, including a failed primary whose secondary
+  succeeds; sequential alternatives are paced before the next request. Canceled
+  hedge laggards are not failures. Concurrent hedges can count two observed
+  failures where C++ counts the concurrent pair once (`LoadBalance.actor.h:682`),
+  so backoff can grow sooner for that case. Go still re-locates after each
+  exhausted maybe-delivered pass: it has no sustained-failure
+  `all_alternatives_failed` (C++ raises it once the FailureMonitor has marked every
+  alternative failed, after
   `FAILURE_DETECTION_DELAY`, `FlowTransport.actor.cpp:920-930`) to re-locate later.
   Pinned by `client/connect_failure_unit_test.go` and
   `libfdbc/connrefused_conformance_test.go`.

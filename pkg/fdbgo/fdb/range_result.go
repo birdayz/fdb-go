@@ -361,16 +361,8 @@ func (ri *goRangeIterator) Advance() bool {
 		return false
 	}
 
-	// Fetch the next batch as a serializable read (unless the whole RangeResult is a
-	// snapshot — readBounds honors rr.snapshot). EVERY batch adds its own
-	// read-conflict, clamped to the extent it returned (RFC-121); since each batch reads a
-	// distinct contiguous sub-range ([ri.begin, ri.end) advances below), the union of the
-	// per-batch conflicts covers exactly the consumed range — matching the C client, where
-	// each fdb_transaction_get_range call adds a conflict for the batch it returned. Reading
-	// later batches under snapshot (no conflict) — as this did before — is UNSAFE now that
-	// RFC-121 clamps the first batch's conflict to its returned prefix: the rows in later
-	// batches would carry no read-conflict, so a concurrent write to one of them could let
-	// this transaction commit with stale data (lost serializability).
+	// Every non-snapshot batch adds its own conflict: exact-key reads protect the consumed
+	// extent (RFC-121); selector reads also protect their anchors and resolution dependencies.
 	// libfdb_c derives a per-fetch BYTE target from the streaming mode and iteration
 	// (fdb_c.cpp:1011-1029) and passes the caller's ROW limit through unchanged. The division
 	// into batches then comes from the byte dimension: the target goes on the request, the

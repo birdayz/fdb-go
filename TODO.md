@@ -591,6 +591,16 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   ported selector walk, and there is no selector-range wire-golden scenario. Route them
   through the walk where C++ does, and add the golden.
 
+- [ ] **Deferred — SimFDB selector-cache overfetch precision.** The simulator keeps
+  conservative logical knowledge from successful point/GetKey reads and consumed range
+  batches; it does not reproduce every extra offset/lookahead row cached by the native
+  RYW storage replies. A later crossed-selector read warmed only by those extra rows can
+  therefore still over-conflict. Before claiming complete cache-history parity, model
+  `knownKeyRange` / `knownKeyRangeBack` from the effective storage request and reply
+  (`ReadYourWrites.actor.cpp:487-508,816-839`, Go `client/ryw_walk.go`), with differential
+  warmup/continuation regressions. The point/exact-range warm-cache cases are covered by
+  `TestSelectorRange_KnownReadReduction`; this is not an authorization for a new campaign.
+
 ## 1. WS-E — scalar/SQL semantics and statement execution — ACTIVE
 
 - [x] Invalid UTF-8 rejection on SQL, nested bindings and record writes; copied

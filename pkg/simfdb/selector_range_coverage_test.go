@@ -345,10 +345,15 @@ func TestSelectorRange_LocalWriteReduction(t *testing.T) {
 			clearM(tx)
 			tx.Add(k("m"), []byte{1})
 		}, "m", 2, "m\x00", 1},
+		// RYWIterator::is_kv counts a matched CompareAndClear slot even when kv() is null.
 		{"known-absent-operation", func(tx *simTxn) {
 			setM(tx)
 			tx.CompareAndClear(k("m"), []byte("v"))
-		}, "m", 2, "m\x00", 2},
+		}, "m", 2, "m\x00", 1},
+		{"cached-dependent-absent-operation", func(tx *simTxn) {
+			tx.Snapshot().Get(k("m")).MustGet()
+			tx.CompareAndClear(k("m"), []byte("v"))
+		}, "m", 2, "m\x00", 1},
 		{"unreadable-key", func(tx *simTxn) {
 			tx.SetVersionstampedValue(k("m"), versionstampOperand())
 			setM(tx)

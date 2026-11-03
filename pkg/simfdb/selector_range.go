@@ -61,11 +61,16 @@ func selectorsInverted(begin, end fdb.KeySelector) bool {
 type selectorWriteSegment struct {
 	begin, end []byte
 	known, kv  bool
+	unreadable bool
 }
 
-// selectorWriteSegments distinguishes locally known keys/clears from storage-dependent gaps.
+// selectorWriteSegments combines local writes with successful reads' known snapshot spans.
 func (tx *simTxn) selectorWriteSegments(view []fdb.KeyValue) []selectorWriteSegment {
-	if len(tx.buffer) == 0 {
+	return tx.selectorSegments(view, false)
+}
+
+func (tx *simTxn) selectorSegments(view []fdb.KeyValue, allKnown bool) []selectorWriteSegment {
+	if !allKnown && len(tx.buffer) == 0 && len(tx.knownReads) == 0 {
 		return nil
 	}
 	wm := tx.buildWriteMap()
@@ -73,6 +78,16 @@ func (tx *simTxn) selectorWriteSegments(view []fdb.KeyValue) []selectorWriteSegm
 	add := func(key []byte) {
 		if len(key) > 0 && bytes.Compare(key, endKeyMarker) < 0 {
 			bounds = append(bounds, key)
+		}
+	}
+	for _, known := range tx.knownReads {
+		add(known.begin)
+		add(known.end)
+	}
+	for _, row := range view {
+		if allKnown || tx.readKnown(row.Key) {
+			add(row.Key)
+			add(keyAfter(row.Key))
 		}
 	}
 	for key := range wm.ops {
@@ -102,13 +117,14 @@ func (tx *simTxn) selectorWriteSegments(view []fdb.KeyValue) []selectorWriteSegm
 		if bytes.Equal(lo, hi) {
 			continue
 		}
-		segment := selectorWriteSegment{begin: lo, end: hi}
-		if !tx.isUnreadable(lo) {
+		segment := selectorWriteSegment{begin: lo, end: hi, unreadable: tx.isUnreadable(lo)}
+		if !segment.unreadable {
 			if op, ok := wm.ops[string(lo)]; ok {
-				segment.known = !op.dependent
-				segment.kv = segment.known && present[string(lo)]
+				segment.known = allKnown || !op.dependent || tx.readKnown(lo)
+				segment.kv = segment.known // operation slots include matched CompareAndClear
 			} else {
-				segment.known = wm.isCleared(lo)
+				segment.known = allKnown || wm.isCleared(lo) || tx.readKnown(lo)
+				segment.kv = segment.known && present[string(lo)]
 			}
 		}
 		segments = append(segments, segment)
@@ -117,16 +133,22 @@ func (tx *simTxn) selectorWriteSegments(view []fdb.KeyValue) []selectorWriteSegm
 }
 
 // reduceSelectorFromWrites is resolveKeySelectorFromCache's known-segment walk (RYW:422-483),
-// stopping at storage-dependent or unreadable data rather than resolving against all rows.
+// using writes and prior read knowledge, and stopping at unknown or unreadable data.
 func reduceSelectorFromWrites(sel fdb.KeySelector, segments []selectorWriteSegment) fdb.KeySelector {
+	reduced, _ := reduceSelectorKnown(sel, segments)
+	return reduced
+}
+
+func reduceSelectorKnown(sel fdb.KeySelector, segments []selectorWriteSegment) (fdb.KeySelector, int) {
+	actualOffset := sel.Offset
 	if len(segments) == 0 {
-		return sel
+		return sel, actualOffset
 	}
 	key := []byte(sel.Key.FDBKey())
 	i := sort.Search(len(segments), func(i int) bool { return bytes.Compare(segments[i].end, key) > 0 })
 	if i == len(segments) {
 		if sel.Offset > 0 {
-			return sel
+			return sel, actualOffset
 		}
 		i--
 	}
@@ -151,12 +173,15 @@ func reduceSelectorFromWrites(sel fdb.KeySelector, segments []selectorWriteSegme
 		i--
 		key = segments[i].end
 	}
+	if actualOffset != 1 {
+		actualOffset = sel.Offset
+	}
 	if segments[i].known {
 		if sel.Offset < 1 {
-			return fdb.FirstGreaterOrEqual(fdb.Key{})
+			return fdb.FirstGreaterOrEqual(fdb.Key{}), actualOffset
 		}
 		if sel.Offset > 1 {
-			return fdb.FirstGreaterOrEqual(endKeyMarker)
+			return fdb.FirstGreaterOrEqual(endKeyMarker), actualOffset
 		}
 	}
 	for segments[i].known && !segments[i].kv && bytes.Compare(segments[i].end, endKeyMarker) < 0 {
@@ -164,7 +189,7 @@ func reduceSelectorFromWrites(sel fdb.KeySelector, segments []selectorWriteSegme
 		key = segments[i].begin
 	}
 	sel.Key = fdb.Key(key)
-	return sel
+	return sel, actualOffset
 }
 
 // selectorFetch is one getRange over selectors: one batch, its rows and more, and its read
@@ -179,6 +204,8 @@ func (tx *simTxn) selectorFetch(begin, end fdb.KeySelector, limit, byteTarget in
 		return nil, false, nil
 	}
 	view := tx.buildView()
+	segments := tx.selectorWriteSegments(view)
+	reducedBegin, reducedEnd := reduceSelectorFromWrites(begin, segments), reduceSelectorFromWrites(end, segments)
 	if tx.rywDisabled && reverse && end.Offset > 1 {
 		// readThrough (RYW:191-199): getKey(end) under the read's snapshot flag, clamped to
 		// getMaxReadKey, then the range up to firstGreaterOrEqual of it.
@@ -201,6 +228,9 @@ func (tx *simTxn) selectorFetch(begin, end fdb.KeySelector, limit, byteTarget in
 			return nil, false, err
 		}
 	}
+	if err := tx.selectorUnreadableError(view, begin, end, segments, kvs, more, reverse); err != nil {
+		return nil, false, err
+	}
 	if snapshot { // a snapshot read adds no conflict (RYW:387, NAPI:5841-5844)
 		return kvs, more, nil
 	}
@@ -220,10 +250,8 @@ func (tx *simTxn) selectorFetch(begin, end fdb.KeySelector, limit, byteTarget in
 	// only when the read did not stop on a limit (RYW:799-811, 1111-1120).
 	readToBegin := bIdx < 0 || eIdx < 0
 	readThroughEnd := bIdx > len(view) || eIdx > len(view)
-	// The prologue tests selectors after local reduction (RYW:611-626, 914-930).
+	// The prologue reduces against knowledge preceding this fetch (RYW:611-626, 914-930).
 	// A still-nontrivial crossed bound's getKey sets readThroughEnd at maxKey.
-	segments := tx.selectorWriteSegments(view)
-	reducedBegin, reducedEnd := reduceSelectorFromWrites(begin, segments), reduceSelectorFromWrites(end, segments)
 	if bytes.Compare(reducedBegin.Key.FDBKey(), reducedEnd.Key.FDBKey()) > 0 {
 		if reverse && !isTrivialSelector(reducedBegin) && bIdx >= len(view) ||
 			!reverse && !isTrivialSelector(reducedEnd) && eIdx >= len(view) {

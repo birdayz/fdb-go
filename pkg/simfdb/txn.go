@@ -69,6 +69,7 @@ type simTxn struct {
 	buffer         []mutation // RYW write buffer, in issue order
 	readConflicts  []keyRange
 	writeConflicts []keyRange
+	knownReads     []keyRange // successful logical reads at this transaction's read version
 
 	// SetNextWriteNoWriteConflictRange arms this for exactly the next write (FDB semantics).
 	nextWriteNoConflict bool
@@ -388,7 +389,7 @@ func (tx *simTxn) lastUnreadableRangeIn(begin, end []byte) []byte {
 // key itself carries a pending versionstamped op, or because it sits inside an SVK candidate
 // stamp range whose winner could land exactly there.
 func (tx *simTxn) isUnreadable(key []byte) bool {
-	if tx.bypassUnreadable || !tx.hasUnreadable() {
+	if tx.rywDisabled || tx.bypassUnreadable || !tx.hasUnreadable() {
 		return false
 	}
 	if _, ok := tx.unreadable[string(key)]; ok {
@@ -410,7 +411,7 @@ func (tx *simTxn) isUnreadable(key []byte) bool {
 //
 // Both populations participate: the pending-op entry keys AND the SVK candidate stamp ranges.
 func (tx *simTxn) unreadableScanCap(begin, end []byte, reverse bool) []byte {
-	if tx.bypassUnreadable || !tx.hasUnreadable() {
+	if tx.rywDisabled || tx.bypassUnreadable || !tx.hasUnreadable() {
 		return nil
 	}
 	// The SVK candidate ranges cap the scan too, and they cap it EARLIER than any entry key: a
@@ -484,7 +485,9 @@ func (tx *simTxn) get(key fdb.KeyConvertible, snapshot bool) fdb.FutureByteSlice
 	if !snapshot {
 		tx.addFilteredReadConflictKey(k)
 	}
-	return newReadyByteSlice(tx.resolveKey(k), nil)
+	value := tx.resolveKey(k)
+	tx.rememberRead(k, keyAfter(k))
+	return newReadyByteSlice(value, nil)
 }
 
 // buildView returns the RYW-merged, sorted, live keyspace at the read version. Used to resolve
@@ -672,6 +675,11 @@ func (tx *simTxn) fetchRange(begin, end []byte, limit int, byteTarget int, rever
 	if tx.cancelled.Load() {
 		return nil, false, nil, nil, fdb.Error{Code: 1025}
 	}
+	defer func() {
+		if err == nil {
+			tx.rememberRangeRead(cBegin, cEnd, kvs, more, reverse)
+		}
+	}()
 	cBegin, cEnd = begin, end
 	// Truncate at the first (forward) / last (reverse) key carrying a pending versionstamped op.
 	// unreadableScanCap already honours BYPASS_UNREADABLE and returns nil when nothing
@@ -827,6 +835,8 @@ func (tx *simTxn) getKey(sel fdb.Selectable, snapshot bool) fdb.FutureKey {
 	if !snapshot {
 		tx.addGetKeyConflictRange(ks, []byte(result))
 	}
+	knownBegin, knownEnd := selectorReadSpan(view, removeOrEqual(ks))
+	tx.rememberRead(knownBegin, knownEnd)
 	return newReadyKey(result, nil)
 }
 
@@ -1326,6 +1336,7 @@ func (tx *simTxn) postCommitReset() {
 	tx.rvSet = false
 	tx.rvInstant = time.Time{}
 	tx.buffer = nil
+	tx.knownReads = nil
 	tx.unreadable = nil // the stamps are resolved; the keys are readable again
 	tx.unreadableRanges = nil
 	tx.readConflicts = nil
@@ -1349,6 +1360,7 @@ func (tx *simTxn) resetState() {
 	tx.rvSet = false
 	tx.rvInstant = time.Time{}
 	tx.buffer = nil
+	tx.knownReads = nil
 	tx.unreadable = nil
 	tx.unreadableRanges = nil
 	tx.readConflicts = nil
@@ -1412,6 +1424,9 @@ func (tx *simTxn) OnError(e fdb.Error) fdb.FutureNil {
 }
 
 func (tx *simTxn) SetReadVersion(version int64) {
+	if !tx.rvSet || tx.readVersion != version {
+		tx.knownReads = nil
+	}
 	tx.readVersion = version
 	tx.rvSet = true
 	// A caller-supplied version's MVCC window opened on the cluster at an

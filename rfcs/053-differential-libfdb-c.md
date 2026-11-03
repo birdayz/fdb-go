@@ -207,8 +207,9 @@ Tracked here as C2 surfaces them (the corpus discipline: find → fix → pin).
    (2103) on the network thread (NativeAPI.actor.cpp:5963-5966,5985-5988).
    `onMainThreadVoid` catches that throw in the transaction's deferred-error slot
    (ThreadHelper.actor.h:50-58), so the C binding does not abort. The Go client
-   now likewise records the error at the write call, buffers no illegal mutation,
-   and reports the error on subsequent reads and commit. Limits are
+   now likewise records the error at the write call and reports it on subsequent
+   reads and commit. Mutation bytes can remain buffered locally, but the deferred
+   error prevents them from being sent to the cluster. Limits are
    `KEY_SIZE_LIMIT`=10000, `SYSTEM_KEY_SIZE_LIMIT`=30000, `VALUE_SIZE_LIMIT`=
    100000; oversized data never reaches the shared cluster.
    `clear` instead **clamps** an oversized range key to
