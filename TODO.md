@@ -3419,14 +3419,31 @@ on the ccx43 bench box with `measure.py --storage 6 --duration 180s`:
   `BenchmarkRYWBunchedMapPuts` (writes=20000): 40.6 -> 36.9 µs/put, 38.3 ->
   26.5 MB, 268k -> 206k allocs per transaction; a cached selector read 3.2 ->
   2.1 µs, 34 -> 13 allocs; a cached Get 0.83 -> 0.30 µs, 8 -> 3 allocs.
-  Open: re-measure otelbench. Most remaining allocations are path copies of
-  the persistent sequences after each pinned read (write map, nodes, cleared
-  list, cache); C++ PTree updates a node in its spare version slot instead
-  (fat nodes, VersionedMap.h). Write conflicts are still kept twice, per
-  operation for Commit and in the WriteMap nodes; building the commit vector
-  from the nodes, as C++ does (RYW:1997-2071), needs the RYW update inside the
-  commit snapshot's lock and a size counter for GetApproximateSize, and keeps
-  the per-operation list for RYW-disabled and versionstamped transactions.
+  Third round (profile at cd1ee1615): conflicts live where C++ keeps them
+  (`conflict_map.go`). With RYW, write conflicts are only the WriteMap nodes'
+  flags, updated under `conflictMu` with the op-log, and read conflicts a
+  coalescing map in the conflict arena (an already covered range costs two
+  searches); Commit freezes both with the mutations and builds mutations and
+  write conflicts in one pass over the frozen write map
+  (writeRangeToNativeTransaction), a write-only transaction's from the node
+  log without building the nodes. updateConflictMap walks the write map with
+  two cursors instead of sorting copied boundaries. Persistent-sequence nodes
+  take C++ PTree's spare version slot and come from per-sequence chunks; walk
+  skips are finger searches from the cursor; AppendIfFits extends the value's
+  owned spare capacity. Deliberate changes, toward C++: a versionstamped
+  transaction ships the write map's coalesced write conflicts (keeping the
+  conflicts of the writes Go keeps in an SVK span, RFC-098); disabling RYW
+  after a conflict-only write fails with 2000, and read conflicts recorded
+  before disabling are not shipped. `BenchmarkRYWConflictCalls` 8.4 -> 6.8 ms,
+  8.6 -> 5.5 MB, 37k -> 14k allocs; `BenchmarkRYWBunchedMapPuts`
+  (writes=20000) 26.5 -> 18.8 MB, 206k -> 64k allocs, 5% less CPU but 7% more
+  wall time (lock waits).
+  Open: re-measure otelbench. Searches over versioned nodes cost more per
+  level, and with 128 pipelined reads the per-transaction locks are the
+  bound; the position-indexed sequences still copy about half an insert's
+  path (C++ PTree keeps no subtree sizes); every pipelined read that is not
+  answered locally still runs on its own goroutine (`startPendingRange`);
+  the op-log copies each Set's key and value besides the write map.
 - [ ] **TEXT index maintenance CPU in message transactions** (otelbench
   profile at 7cf0eda3c: ~60% of client CPU). Record Layer side done: a
   BunchedMap put or remove keeps each stored key's packed bytes, as Java's
@@ -3441,9 +3458,15 @@ on the ccx43 bench box with `measure.py --storage 6 --duration 180s`:
   Fixed on the way: the APPEND_IF_FITS path did not instrument its write, a
   remove passed the wrong old value to its instrumentation, and a stored key
   with a non-canonical encoding was rewritten canonically (Java keeps it).
-  Open: re-profile otelbench; each put still starts a goroutine for its
-  snapshot read (`startSnapshotRead`); `DeserializeEntries` (scans, Get)
-  still unpacks every key.
+  Pipelined reads (re-profile of cd1ee1615: one goroutine per read, 4.95% CPU
+  in stack growth): a put's or remove's snapshot read is now the RangeResult
+  future GetRange returns, completed in order on the maintainer's goroutine,
+  as Java's forEachAsync completes BunchedMap's futures; it reads with
+  WANT_ALL as Java does (it read with ITERATOR, whose 4 KB first batch split
+  reads of large bunches). `BenchmarkTextBunchedMapPipelinedPuts/deep`
+  542 -> 280 µs per 128 puts. Open: the pure-Go client still starts one
+  goroutine per read it cannot answer locally (`startPendingRange`, client
+  scope); `DeserializeEntries` (scans, Get) still unpacks every key.
 - [ ] **Phrase queries cost twice the earlier layout** (bench p50 15 ms against
   6-8 ms): the TEXT phrase scan of 16 writer shards per role dominates
   (`fts_phrase_first_turn`, `fts_multi_turn_history`).

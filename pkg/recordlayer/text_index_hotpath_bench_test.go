@@ -21,24 +21,56 @@ import (
 type benchBunchTx struct {
 	fdb.WritableTransaction
 	kvs []fdb.KeyValue
+	// byMap, when set, answers a read by the map its key is in: the first
+	// prefixLen bytes of the begin selector's key.
+	byMap     map[string][]fdb.KeyValue
+	prefixLen int
+	// walkDepth is the depth of the stack a read uses, as the client's RYW
+	// walk does; 0 uses none.
+	walkDepth int
 }
 
 type benchBunchSnapshot struct {
 	fdb.ReadTransaction
-	kvs []fdb.KeyValue
+	tx *benchBunchTx
 }
 
-type benchBunchRange struct{ kvs []fdb.KeyValue }
-
-func (tx *benchBunchTx) Snapshot() fdb.ReadTransaction { return benchBunchSnapshot{kvs: tx.kvs} }
-
-func (s benchBunchSnapshot) GetRange(fdb.Range, fdb.RangeOptions) fdb.RangeResult {
-	return benchBunchRange{kvs: s.kvs}
+type benchBunchRange struct {
+	kvs       []fdb.KeyValue
+	walkDepth int
 }
 
-func (r benchBunchRange) GetSliceWithError() ([]fdb.KeyValue, error) { return r.kvs, nil }
-func (r benchBunchRange) GetSliceOrPanic() []fdb.KeyValue            { return r.kvs }
-func (r benchBunchRange) Iterator() fdb.RangeIterator                { panic("not used") }
+func (tx *benchBunchTx) Snapshot() fdb.ReadTransaction { return benchBunchSnapshot{tx: tx} }
+
+func (s benchBunchSnapshot) GetRange(r fdb.Range, _ fdb.RangeOptions) fdb.RangeResult {
+	kvs := s.tx.kvs
+	if s.tx.byMap != nil {
+		begin, _ := r.FDBRangeKeySelectors()
+		kvs = s.tx.byMap[string(begin.FDBKeySelector().Key.FDBKey()[:s.tx.prefixLen])]
+	}
+	return benchBunchRange{kvs: kvs, walkDepth: s.tx.walkDepth}
+}
+
+// benchWalk uses about 560 bytes of stack per level.
+//
+//go:noinline
+func benchWalk(n int) byte {
+	var frame [512]byte
+	frame[n%len(frame)] = byte(n)
+	if n == 0 {
+		return frame[0]
+	}
+	return benchWalk(n-1) + frame[n%len(frame)]
+}
+
+func (r benchBunchRange) GetSliceWithError() ([]fdb.KeyValue, error) {
+	if r.walkDepth > 0 {
+		benchWalk(r.walkDepth)
+	}
+	return r.kvs, nil
+}
+func (r benchBunchRange) GetSliceOrPanic() []fdb.KeyValue { return r.kvs }
+func (r benchBunchRange) Iterator() fdb.RangeIterator     { panic("not used") }
 
 func (*benchBunchTx) Set(fdb.KeyConvertible, []byte)               {}
 func (*benchBunchTx) Clear(fdb.KeyConvertible)                     {}
@@ -95,6 +127,53 @@ func BenchmarkTextBunchedMapPut(b *testing.B) {
 			for b.Loop() {
 				if _, _, err := m.Put(tx, ss, key, value); err != nil {
 					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkTextBunchedMapPipelinedPuts is one record's TEXT update in a
+// message transaction: a put into each of 128 token maps with the GenAI
+// exporter's pipeline of 128 (messageTextPipeline), started in token order and
+// finished oldest first, as textIndexMaintainer.updateOneKey runs them. "deep"
+// reads use a stack as deep as the client's RYW walk.
+func BenchmarkTextBunchedMapPipelinedPuts(b *testing.B) {
+	const tokens, pipeline = 128, 128
+	m := NewBunchedMap(textIndexBunchSize)
+	index := subspace.Sub("idx", "tenant", "user", int64(3))
+	maps := make([]subspace.Subspace, tokens)
+	byMap := make(map[string][]fdb.KeyValue, tokens)
+	for i := range maps {
+		maps[i] = index.Sub(fmt.Sprintf("tok%04d", i))
+		byMap[string(maps[i].Bytes())] = []fdb.KeyValue{benchBunch(maps[i], 1000, 10)}
+	}
+	key, value := benchMessageKey(1010), []int{1, 2, 9}
+	for _, depth := range []int{0, 48} {
+		name := "shallow"
+		if depth > 0 {
+			name = "deep"
+		}
+		b.Run(name, func(b *testing.B) {
+			tx := &benchBunchTx{byMap: byMap, prefixLen: len(maps[0].Bytes()), walkDepth: depth}
+			pending := make([]*pendingBunchedPut, 0, pipeline)
+			finishOldest := func() {
+				if _, _, err := pending[0].finish(); err != nil {
+					b.Fatal(err)
+				}
+				pending = pending[1:]
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				pending = pending[:0]
+				for _, ss := range maps {
+					if len(pending) == pipeline {
+						finishOldest()
+					}
+					pending = append(pending, m.startPut(tx, ss, key, value))
+				}
+				for len(pending) > 0 {
+					finishOldest()
 				}
 			}
 		})

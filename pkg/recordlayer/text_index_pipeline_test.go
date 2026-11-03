@@ -18,12 +18,14 @@ import (
 )
 
 // snapshotReadCounter tracks the snapshot range reads made through a
-// transaction: a read is in flight from GetRange until its GetSliceWithError
-// returns. The first `gate` reads wait until `gate` are in flight at once, so
-// a maintainer that read serially would time out instead of passing.
+// transaction: a read is in flight from GetRange, which issues it, until its
+// GetSliceWithError returns. The first `gate` reads to complete wait until
+// `gate` are issued, so a maintainer that completed each read before issuing
+// the next would time out instead of passing.
 type snapshotReadCounter struct {
 	mu                            sync.Mutex
 	issued, inFlight, maxInFlight int
+	completing                    int
 	gate                          int
 	opened                        chan struct{}
 	gateTimedOut                  bool
@@ -35,13 +37,21 @@ func newSnapshotReadCounter(gate int) *snapshotReadCounter {
 
 func (c *snapshotReadCounter) begin() {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.issued++
 	c.inFlight++
 	c.maxInFlight = max(c.maxInFlight, c.inFlight)
-	wait := c.issued <= c.gate
 	if c.issued == c.gate {
 		close(c.opened)
 	}
+}
+
+// awaitGate holds one of the first `gate` completions until `gate` reads are
+// issued.
+func (c *snapshotReadCounter) awaitGate() {
+	c.mu.Lock()
+	c.completing++
+	wait := c.completing <= c.gate && !c.gateTimedOut // one timeout fails the check
 	c.mu.Unlock()
 	if wait {
 		select {
@@ -85,6 +95,7 @@ type inFlightRangeResult struct {
 }
 
 func (r *inFlightRangeResult) GetSliceWithError() ([]fdb.KeyValue, error) {
+	r.c.awaitGate()
 	defer r.c.end()
 	return r.RangeResult.GetSliceWithError()
 }

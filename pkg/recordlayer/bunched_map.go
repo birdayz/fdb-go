@@ -172,32 +172,29 @@ type pendingBunchedPut struct {
 	subspaceKey []byte
 	keyBytes    []byte
 	value       []int
-	read        *pendingSnapshotRead
+	read        pendingSnapshotRead
 }
 
-// pendingSnapshotRead is a snapshot range read running on its own goroutine.
-// The pure-Go client resolves a range's key selectors with GetKey round trips
-// before it reads the range, and both block, so a read in flight is a
-// goroutine; transactions are safe for concurrent reads.
+// pendingSnapshotRead is a snapshot range read in flight, as a future.
+// GetRange issues the read's first batch in the call and returns at once, as
+// fdb_transaction_get_range and Apple's bindings do (the client resolves the
+// key selectors within that read); wait completes it on the caller's
+// goroutine. This is Java's model: put and entryForKey return the
+// CompletableFuture of tr.snapshot().getRange(...).asList()
+// (BunchedMap.java:203-207, 497-501), of which TextIndexMaintainer keeps up to
+// the pipeline size in flight (forEachAsync, TextIndexMaintainer.java:339). A
+// read in flight is not a goroutine of its own.
 type pendingSnapshotRead struct {
-	done chan struct{}
-	kvs  []fdb.KeyValue
-	err  error
+	result fdb.RangeResult
 }
 
-func startSnapshotRead(tx fdb.WritableTransaction, r fdb.SelectorRange) *pendingSnapshotRead {
-	p := &pendingSnapshotRead{done: make(chan struct{})}
-	snap := tx.Snapshot()
-	go func() {
-		defer close(p.done)
-		p.kvs, p.err = snap.GetRange(r, fdb.RangeOptions{}).GetSliceWithError()
-	}()
-	return p
+func startSnapshotRead(tx fdb.WritableTransaction, r fdb.SelectorRange) pendingSnapshotRead {
+	// Java reads with ROW_LIMIT_UNLIMITED and StreamingMode.WANT_ALL.
+	return pendingSnapshotRead{result: tx.Snapshot().GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll})}
 }
 
-func (p *pendingSnapshotRead) wait() ([]fdb.KeyValue, error) {
-	<-p.done
-	return p.kvs, p.err
+func (p pendingSnapshotRead) wait() ([]fdb.KeyValue, error) {
+	return p.result.GetSliceWithError()
 }
 
 // startPut issues Put's read.
@@ -452,7 +449,7 @@ type pendingEntryForKey struct {
 	m           *BunchedMap
 	subspaceKey []byte
 	keyBytes    []byte
-	read        *pendingSnapshotRead
+	read        pendingSnapshotRead
 }
 
 // startEntryForKey adds entryForKey's read conflict key and issues its read.

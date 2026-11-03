@@ -53,8 +53,30 @@ func (r *bunchedMapRecorder) Snapshot() fdb.ReadTransaction {
 func (s bunchedMapRecorderSnapshot) GetRange(rg fdb.Range, options fdb.RangeOptions) fdb.RangeResult {
 	b, e := rg.FDBRangeKeySelectors()
 	bs, es := b.FDBKeySelector(), e.FDBKeySelector()
-	s.r.add("snapshot_range %x %t %d %x %t %d", raw(bs.Key), bs.OrEqual, bs.Offset, raw(es.Key), es.OrEqual, es.Offset)
+	s.r.add("snapshot_range %x %t %d %x %t %d %d %t %s", raw(bs.Key), bs.OrEqual, bs.Offset, raw(es.Key), es.OrEqual, es.Offset,
+		options.Limit, options.Reverse, javaStreamingMode(options.Mode))
 	return s.ReadTransaction.GetRange(rg, options)
+}
+
+// javaStreamingMode is the name of Java's StreamingMode for a Go one.
+func javaStreamingMode(m fdb.StreamingMode) string {
+	switch m {
+	case fdb.StreamingModeWantAll:
+		return "WANT_ALL"
+	case fdb.StreamingModeIterator:
+		return "ITERATOR"
+	case fdb.StreamingModeExact:
+		return "EXACT"
+	case fdb.StreamingModeSmall:
+		return "SMALL"
+	case fdb.StreamingModeMedium:
+		return "MEDIUM"
+	case fdb.StreamingModeLarge:
+		return "LARGE"
+	case fdb.StreamingModeSerial:
+		return "SERIAL"
+	}
+	return fmt.Sprintf("mode(%d)", m)
 }
 
 func (r *bunchedMapRecorder) AddReadConflictKey(key fdb.KeyConvertible) error {

@@ -118,8 +118,12 @@ class BunchedMapSteps extends ConformanceBase {
                         ReadTransaction snapshot = tr.snapshot();
                         return Proxy.newProxyInstance(ReadTransaction.class.getClassLoader(), new Class<?>[] {ReadTransaction.class},
                             (sp, sm, sargs) -> {
-                                if (sm.getName().equals("getRange") && sargs != null && sargs.length >= 2 && sargs[0] instanceof KeySelector) {
-                                    trace.add("snapshot_range " + selector((KeySelector) sargs[0]) + " " + selector((KeySelector) sargs[1]));
+                                if (sm.getName().equals("getRange") && sargs != null && sargs.length == 5 && sargs[0] instanceof KeySelector) {
+                                    // begin, end, limit, reverse, streaming mode
+                                    trace.add("snapshot_range " + selector((KeySelector) sargs[0]) + " " + selector((KeySelector) sargs[1])
+                                        + " " + sargs[2] + " " + sargs[3] + " " + sargs[4]);
+                                } else if (sm.getName().equals("getRange")) {
+                                    trace.add("snapshot_range unexpected " + sm.toGenericString());
                                 }
                                 return call(snapshot, sm, sargs);
                             });
