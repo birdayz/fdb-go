@@ -2570,6 +2570,18 @@ tracked only.
   testcontainers, ginkgo, staticcheck, cobra); nogo without `unused`; nine reused RFC numbers
   and no RFC index.
 
+### HN release evidence
+
+- [ ] Exercise the opt-in `ci.yml` full dispatch on its candidate branch and then the
+  exact merged master release cut. Require the full job to execute, nonempty target
+  and artifact populations, unchanged input manifests, and matching tested SHA;
+  report executed versus cached tests. Ordinary CI and local `just test` are not
+  substitutes for this gate (`RELEASE.md`).
+- [ ] Complete the release-cut checklist, dry-run the release workflow on that SHA,
+  and verify clean revision installation and examples. The public installer and
+  tagged `go install` need a root release containing `cmd/fdb`; obtain explicit
+  authorization before tagging, then verify the actual published artifacts.
+
 ### Follow-ups from the fix PRs' reviews
 
 - [x] **Low:** probe two seed-corpus Go extensions against live Java 4.14.2.0 and record each in

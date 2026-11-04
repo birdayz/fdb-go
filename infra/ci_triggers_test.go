@@ -218,3 +218,169 @@ func TestCIForwardsCIToTests(t *testing.T) {
 		t.Fatal(".bazelrc does not pass CI to tests under --config=ci; SkipWithoutDocker would skip in CI")
 	}
 }
+
+const fullDispatchCondition = "${{ github.event_name == 'workflow_dispatch' && inputs.full }}"
+
+// Only this known dispatch-only predicate can reduce the push fan-out count.
+// Unknown expressions remain counted rather than guessed to be false on push.
+func dispatchOnlyJob(condition string) bool {
+	return strings.TrimSpace(condition) == fullDispatchCondition
+}
+
+type evidenceStep struct {
+	ID   string            `yaml:"id"`
+	Run  string            `yaml:"run"`
+	Uses string            `yaml:"uses"`
+	If   string            `yaml:"if"`
+	With map[string]string `yaml:"with"`
+	Env  map[string]string `yaml:"env"`
+}
+
+type evidenceWorkflow struct {
+	On          yaml.Node `yaml:"on"`
+	Concurrency struct {
+		Group string `yaml:"group"`
+	} `yaml:"concurrency"`
+	Jobs map[string]struct {
+		If          string            `yaml:"if"`
+		Needs       []string          `yaml:"needs"`
+		Permissions map[string]string `yaml:"permissions"`
+		Steps       []evidenceStep    `yaml:"steps"`
+	} `yaml:"jobs"`
+}
+
+func readEvidenceWorkflow(t *testing.T) evidenceWorkflow {
+	t.Helper()
+	data, err := os.ReadFile("../.github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wf evidenceWorkflow
+	if err := yaml.Unmarshal(data, &wf); err != nil {
+		t.Fatal(err)
+	}
+	return wf
+}
+
+func fullLaneStep(t *testing.T, id string) evidenceStep {
+	t.Helper()
+	for _, step := range readEvidenceWorkflow(t).Jobs["full"].Steps {
+		if step.ID == id {
+			return step
+		}
+	}
+	t.Fatalf("full job has no step %q", id)
+	return evidenceStep{}
+}
+
+func TestFullLaneIsOptInAndPinned(t *testing.T) {
+	t.Parallel()
+	wf := readEvidenceWorkflow(t)
+	spec, ok := triggerSpec(&wf.On, "workflow_dispatch")
+	if !ok || spec == nil {
+		t.Fatal("CI has no dispatch input specification")
+	}
+	var dispatch struct {
+		Inputs map[string]struct {
+			Type    string    `yaml:"type"`
+			Default yaml.Node `yaml:"default"`
+		} `yaml:"inputs"`
+	}
+	if err := spec.Decode(&dispatch); err != nil {
+		t.Fatal(err)
+	}
+	input, ok := dispatch.Inputs["full"]
+	if !ok || input.Type != "boolean" || input.Default.Tag != "!!bool" || input.Default.Value != "false" {
+		t.Fatalf("full input must be boolean and default false: %+v", input)
+	}
+	job, ok := wf.Jobs["full"]
+	if !ok || job.If != fullDispatchCondition {
+		t.Fatalf("full job must require explicit dispatch opt-in, got %q", job.If)
+	}
+	wantNeeds := []string{"ci", "conformance-java", "wire-oracle", "fdb-go-install", "govulncheck", "libfdbc-differential", "race"}
+	if !slices.Equal(job.Needs, wantNeeds) {
+		t.Fatalf("full job dependencies = %v, want %v", job.Needs, wantNeeds)
+	}
+	if len(job.Permissions) != 1 || job.Permissions["contents"] != "read" {
+		t.Fatalf("full job must have read-only permissions: %v", job.Permissions)
+	}
+	if !strings.Contains(wf.Concurrency.Group, "github.event_name == 'workflow_dispatch' && inputs.full && format('-full-{0}', github.run_id)") {
+		t.Fatal("a branch push could cancel a full dispatch in the shared workflow concurrency group")
+	}
+	checkout := false
+	for _, step := range job.Steps {
+		if strings.HasPrefix(step.Uses, "actions/checkout@") {
+			checkout = step.With["ref"] == "${{ github.sha }}" && step.With["persist-credentials"] == "false"
+		}
+		if strings.Contains(step.Run, "merge-current-master") {
+			t.Fatal("full dispatch must not replace its immutable SHA with a synthesized merge")
+		}
+		for key := range step.Env {
+			if key == "TMPDIR" || key == "FDB_LANE_LOCK" {
+				t.Fatalf("full dispatch must not create a different lane lock through %s", key)
+			}
+		}
+	}
+	if !checkout {
+		t.Fatal("full dispatch must check out github.sha without persisted credentials")
+	}
+	prepare := fullLaneStep(t, "prepare").Run
+	if !strings.Contains(prepare, `test "$(git rev-parse HEAD)" = "$GITHUB_SHA"`) || !strings.Contains(prepare, `mktemp -d "$RUNNER_TEMP/fdb-full-ci.XXXXXX"`) {
+		t.Fatal("full lane must verify its SHA and prepare evidence outside the worktree")
+	}
+	upload := false
+	for _, step := range job.Steps {
+		if strings.HasPrefix(step.Uses, "actions/upload-artifact@") && step.With["name"] == "full-lane-evidence" {
+			upload = strings.Contains(step.If, "always()") && step.With["if-no-files-found"] == "error" && step.With["path"] == "${{ steps.prepare.outputs.evidence }}"
+		}
+	}
+	if !upload {
+		t.Fatal("full lane evidence must survive failed tests and reject empty uploads")
+	}
+}
+
+func TestDispatchOnlyFanOutCondition(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		condition string
+		want      bool
+	}{
+		{fullDispatchCondition, true},
+		{"  " + fullDispatchCondition + "  ", true},
+		{"", false},
+		{"${{ inputs.full }}", false},
+		{"${{ github.event_name == 'push' }}", false},
+		{"${{ github.event_name == 'workflow_dispatch' || inputs.full }}", false},
+		{"unknown expression", false},
+	} {
+		if got := dispatchOnlyJob(tc.condition); got != tc.want {
+			t.Errorf("dispatchOnlyJob(%q) = %t, want %t", tc.condition, got, tc.want)
+		}
+	}
+}
+
+func TestCIReportsIdentifyTheirTestedInputsAndScope(t *testing.T) {
+	t.Parallel()
+	wf := readEvidenceWorkflow(t)
+	for jobID, lane := range map[string]string{"ci": "suite", "conformance-java": "conformance-java", "full": "full-default-budgets"} {
+		found := false
+		for _, step := range wf.Jobs[jobID].Steps {
+			if !strings.Contains(step.Run, "--lane "+lane+" ") {
+				continue
+			}
+			found = true
+			sha := `--sha "$(git rev-parse HEAD)"`
+			if jobID == "full" {
+				sha = `--sha "$GITHUB_SHA"`
+			}
+			for _, want := range []string{sha, `--run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"`, "--exclusions ", ".jsonl"} {
+				if !strings.Contains(step.Run, want) {
+					t.Errorf("%s report lacks %q", jobID, want)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("no attributed report for %s", jobID)
+		}
+	}
+}

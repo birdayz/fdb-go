@@ -21,6 +21,8 @@ func TestRunnerJobGuard(t *testing.T) {
 		allow                                  bool
 	}{
 		{"push", "birdayz/fdb-go", "push", `{}`, "", true},
+		{"dispatch", "birdayz/fdb-go", "workflow_dispatch", `{}`, "", true},
+		{"foreign_dispatch", "outsider/fdb-go", "workflow_dispatch", `{}`, "refusing job for repository", false},
 		{"issues", "birdayz/fdb-go", "issues", `{"issue":{"body":"@claude"}}`, "", true},
 		{"wrong_repository", "outsider/fdb-go", "push", `{}`, "refusing job for repository", false},
 		{"missing_repository", "", "push", `{}`, "refusing job for repository", false},

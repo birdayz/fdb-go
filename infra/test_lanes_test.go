@@ -412,3 +412,67 @@ func laneMetadata(t *testing.T, out []byte) string {
 	}
 	return string(meta)
 }
+
+func TestFullLaneWorkflowCommand(t *testing.T) {
+	t.Parallel()
+	step := fullLaneStep(t, "full")
+	for _, tc := range []struct {
+		name, exit string
+	}{
+		{"pass", "0"},
+		{"failure_keeps_evidence", "7"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newLaneHarness(t)
+			wrapper, err := os.ReadFile(h.script)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(h.repo, "tools", "lanes", "run-verified-lane.sh")
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, wrapper, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, args := range [][]string{{"add", "--", "tools/lanes/run-verified-lane.sh"}, {"-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "wrapper"}} {
+				cmd := exec.Command("git", args...)
+				cmd.Dir = h.repo
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("git %v: %v: %s", args, err, out)
+				}
+			}
+			evidence := t.TempDir()
+			cmd := exec.Command("bash", "-c", step.Run)
+			cmd.Dir = h.repo
+			cmd.Env = h.command(false, "EVIDENCE="+evidence, "GITHUB_WORKSPACE="+h.repo, "JUST_EXIT="+tc.exit).Env
+			out, runErr := cmd.CombinedOutput()
+			if tc.exit == "0" {
+				if runErr != nil {
+					t.Fatalf("workflow command: %v: %s", runErr, out)
+				}
+			} else {
+				var exitErr *exec.ExitError
+				if !errors.As(runErr, &exitErr) || exitErr.ExitCode() != 7 {
+					t.Fatalf("workflow exit = %v, want 7: %s", runErr, out)
+				}
+			}
+			args, err := os.ReadFile(filepath.Join(h.state, "just.args"))
+			want := "test-full\n--config=ci\n--define\ngotags=fdbdocker\n--build_event_json_file=" + evidence + "/bep.jsonl\n--profile=" + evidence + "/bazel-profile.json.gz\n"
+			if err != nil || string(args) != want {
+				t.Fatalf("full workflow just args = %q (%v), want %q", args, err, want)
+			}
+			for _, file := range []string{"driver.log", "verified-lane/head.before", "verified-lane/head.after", "verified-lane/inputs.before", "verified-lane/inputs.after", "verified-lane/metadata", "verified-lane/lane.rc", "verified-lane/shutdown.rc"} {
+				data, err := os.ReadFile(filepath.Join(evidence, file))
+				if err != nil || len(data) == 0 {
+					t.Errorf("missing or empty evidence %s: %v", file, err)
+				}
+			}
+			meta, err := os.ReadFile(filepath.Join(evidence, "verified-lane", "metadata"))
+			if err != nil || !strings.Contains(string(meta), "lane_exit="+tc.exit+" tee_exit=0 inputs_changed=0") {
+				t.Fatalf("full workflow metadata=%q (%v)", meta, err)
+			}
+		})
+	}
+}

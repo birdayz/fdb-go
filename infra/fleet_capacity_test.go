@@ -75,6 +75,7 @@ type workflowFile struct {
 	On   yaml.Node `yaml:"on"`
 	Jobs map[string]struct {
 		RunsOn   yaml.Node `yaml:"runs-on"`
+		If       string    `yaml:"if"`
 		Strategy struct {
 			Matrix yaml.Node `yaml:"matrix"`
 		} `yaml:"strategy"`
@@ -209,7 +210,7 @@ func TestPushFanOutVersusTheRunnerPool(t *testing.T) {
 		}
 		n := 0
 		for jobName, job := range wf.Jobs {
-			if !usesLabel(&job.RunsOn, runnerLabel) {
+			if !usesLabel(&job.RunsOn, runnerLabel) || dispatchOnlyJob(job.If) {
 				continue
 			}
 			entries, ok := matrixEntries(&job.Strategy.Matrix)
@@ -392,6 +393,7 @@ func TestSelfHostedJobsReapLeakedContainersFirst(t *testing.T) {
 		var wf struct {
 			Jobs map[string]struct {
 				RunsOn yaml.Node `yaml:"runs-on"`
+				If     string    `yaml:"if"`
 				Steps  []struct {
 					Uses string            `yaml:"uses"`
 					Run  string            `yaml:"run"`
@@ -424,6 +426,10 @@ func TestSelfHostedJobsReapLeakedContainersFirst(t *testing.T) {
 				strings.TrimSpace(job.Steps[i].Run) != "infra/reap-leaked-containers.sh" {
 				t.Errorf("%s: job %q runs self-hosted but its first step after checkout is not "+
 					"an unconditional `run: infra/reap-leaked-containers.sh`", filepath.Base(p), name)
+				continue
+			}
+			// A dispatch-only release lane tests its exact SHA, not a PR merge.
+			if dispatchOnlyJob(job.If) {
 				continue
 			}
 			// Next, the PR is re-merged onto current master, so jobs share a cached base.

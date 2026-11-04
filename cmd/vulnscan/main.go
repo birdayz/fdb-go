@@ -68,20 +68,15 @@ import (
 // diff, which is the point.
 const govulncheckVersion = "v1.9.0"
 
-// scanPatterns is the shipped surface. Test infrastructure is excluded:
-// pkg/testcontainers wraps the Docker SDK, which carries open upstream
-// advisories with no fixed release (GO-2026-4887, GO-2026-4883), and
-// pkg/relational/sqltest (the end-to-end SQL suite and its testkit library,
-// a non-test package only because the suite's packages share it) imports it.
-// Neither is shipped to users. See SECURITY.md. Everything else must be
-// vulnerability-free.
-var scanPatterns = []string{"./pkg/..."}
+// Scan library and released CLI entrypoints. Helper exclusions apply only to
+// entrypoints, never to dependencies reachable from a scanned package.
+var scanPatterns = []string{"./pkg/...", "./cmd/fdb/..."}
 
-var excludeSubstrings = []string{"/testcontainers", "/testutil/benchcluster", "/relational/sqltest/"}
+var excludePrefixes = []string{"fdb.dev/pkg/testcontainers", "fdb.dev/pkg/testutil/benchcluster", "fdb.dev/pkg/relational/sqltest"}
 
 func excluded(pkg string) bool {
-	for _, s := range excludeSubstrings {
-		if strings.Contains(pkg, s) {
+	for _, prefix := range excludePrefixes {
+		if pkg == prefix || strings.HasPrefix(pkg, prefix+"/") {
 			return true
 		}
 	}
@@ -241,15 +236,19 @@ func listPackages(patterns []string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	return filterPackages(string(out)), nil
+}
+
+func filterPackages(output string) []string {
 	var pkgs []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || excluded(line) {
 			continue
 		}
 		pkgs = append(pkgs, line)
 	}
-	return pkgs, nil
+	return pkgs
 }
 
 func logf(format string, args ...any) {
