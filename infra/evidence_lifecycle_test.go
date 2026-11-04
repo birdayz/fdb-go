@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -159,6 +160,8 @@ exit "$JUST_EXIT"
 	return h
 }
 
+// step executes a shell body directly for shell-fault controls. The lifecycle
+// runner below also enforces the declared stage order and scheduling conditions.
 func (h *fullWorkflowHarness) step(id string, extra ...string) (string, error) {
 	h.t.Helper()
 	return h.stepScript(id, fullLaneStep(h.t, id).Run, extra...)
@@ -232,32 +235,98 @@ func (h *fullWorkflowHarness) bazelCalls() string {
 	return string(data)
 }
 
+type evidenceStageResult struct {
+	scheduled     bool
+	output        string
+	err           error
+	bazelCalls    string
+	artifactPath  string
+	artifactFiles []string
+}
+
+func (h *fullWorkflowHarness) runDeclaredWorkflow() map[string]evidenceStageResult {
+	h.t.Helper()
+	stages, err := fullLaneStages(readEvidenceWorkflow(h.t).Jobs["full"].Steps)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	state := evidenceScheduleState{prepare: "skipped", full: "skipped", report: "skipped"}
+	results := map[string]evidenceStageResult{}
+	for _, stage := range stages {
+		state.evidence = h.outputs["evidence"] != ""
+		result := evidenceStageResult{scheduled: evidenceStageScheduled(stage, state)}
+		if !result.scheduled {
+			results[stage.name] = result
+			continue
+		}
+		if stage.name == "upload" {
+			// No network upload is simulated: inspect the local artifact handoff
+			// only after the declared upload condition actually schedules it.
+			result.artifactPath = strings.ReplaceAll(stage.With["path"], "${{ steps.prepare.outputs.evidence }}", h.outputs["evidence"])
+			entries, err := os.ReadDir(result.artifactPath)
+			if err != nil || len(entries) == 0 {
+				h.t.Fatalf("scheduled upload has no artifact population: %v (%d entries)", err, len(entries))
+			}
+			for _, entry := range entries {
+				result.artifactFiles = append(result.artifactFiles, entry.Name())
+			}
+		} else {
+			result.output, result.err = h.stepScript(stage.name, stage.Run)
+			outcome := "success"
+			if result.err != nil {
+				outcome = "failure"
+			}
+			switch stage.name {
+			case "prepare":
+				state.prepare = outcome
+			case "full":
+				state.full = outcome
+			case "report":
+				state.report = outcome
+			}
+			calls, err := os.ReadFile(filepath.Join(h.state, "bazel.calls"))
+			if err != nil && !os.IsNotExist(err) {
+				h.t.Fatal(err)
+			}
+			result.bazelCalls = string(calls)
+		}
+		results[stage.name] = result
+	}
+	return results
+}
+
 func TestFullLaneWorkflowLifecycle(t *testing.T) {
 	t.Parallel()
 	for _, exit := range []string{"0", "7"} {
 		t.Run("lane_exit_"+exit, func(t *testing.T) {
 			t.Parallel()
 			h := newFullWorkflowHarness(t, exit)
-			out, err := h.step("prepare")
-			requireStepExit(t, out, err, 0)
-			const preparedCalls = "build --config=ci //cmd/test-report\ninfo --config=ci bazel-bin\n"
-			if got := h.bazelCalls(); got != preparedCalls {
-				t.Fatalf("prepare Bazel calls=%q, want %q", got, preparedCalls)
+			results := h.runDeclaredWorkflow()
+			for _, name := range []string{"prepare", "full", "report", "upload"} {
+				if !results[name].scheduled {
+					t.Fatalf("%s was not scheduled after lane exit %s", name, exit)
+				}
 			}
-			out, err = h.step("full")
+			prepare, full, report, upload := results["prepare"], results["full"], results["report"], results["upload"]
+			requireStepExit(t, prepare.output, prepare.err, 0)
+			const preparedCalls = "build --config=ci //cmd/test-report\ninfo --config=ci bazel-bin\n"
+			if prepare.bazelCalls != preparedCalls {
+				t.Fatalf("prepare Bazel calls=%q, want %q", prepare.bazelCalls, preparedCalls)
+			}
 			want := 0
 			if exit == "7" {
 				want = 7
 			}
-			requireStepExit(t, out, err, want)
-			beforeReport := h.bazelCalls()
-			if want := preparedCalls + "shutdown\n"; beforeReport != want {
-				t.Fatalf("full-lane Bazel calls=%q, want %q", beforeReport, want)
+			requireStepExit(t, full.output, full.err, want)
+			if want := preparedCalls + "shutdown\n"; full.bazelCalls != want {
+				t.Fatalf("full-lane Bazel calls=%q, want %q", full.bazelCalls, want)
 			}
-			out, err = h.step("report")
-			requireStepExit(t, out, err, 0)
-			if got := h.bazelCalls(); got != beforeReport {
-				t.Fatalf("report rendering invoked Bazel after shutdown: before=%q after=%q", beforeReport, got)
+			requireStepExit(t, report.output, report.err, 0)
+			if report.bazelCalls != full.bazelCalls {
+				t.Fatalf("report rendering invoked Bazel after shutdown: before=%q after=%q", full.bazelCalls, report.bazelCalls)
+			}
+			if upload.artifactPath != h.outputs["evidence"] || !slices.Contains(upload.artifactFiles, "test-report.html") {
+				t.Fatalf("scheduled upload lost the rendered report handoff: path=%q files=%v", upload.artifactPath, upload.artifactFiles)
 			}
 			for _, file := range []string{"dispatch.txt", "bep.jsonl", "bazel-profile.json.gz", "test-report.html", "driver.log", "verified-lane/head.before", "verified-lane/head.after", "verified-lane/inputs.before", "verified-lane/inputs.after", "verified-lane/metadata", "verified-lane/lane.rc", "verified-lane/shutdown.rc"} {
 				if len(h.read(file)) == 0 {

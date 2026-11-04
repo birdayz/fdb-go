@@ -599,8 +599,10 @@ recorded.)* The required gates already run per-PR; only the heaviest is nightly 
   (RFC-107: too heavy for every PR) — the one gate the owner keeps nightly.
 
   *Current state:* every nightly workflow was deleted on 2026-10-09. The libfdb_c differential
-  is ci.yml's per-PR `libfdbc-differential` job; no CI workflow runs the stress target, active
-  fuzzing or coverage. Which nightlies return is open in TODO.md.
+  is ci.yml's per-PR `libfdbc-differential` job. Ordinary PR/push CI excludes stress; the
+  explicit full release dispatch includes it at default budgets. No scheduled workflow runs
+  stress, active fuzzing or coverage; active fuzzing and coverage are not CI jobs. Which
+  nightlies return is open in TODO.md.
 Caveat (Torvalds): detection, not repair — see the won't-fix note.
 
 ### [x] P1.7 — Reconcile contradictory docs · S — DONE (README + docs guard + generated FEATURE_MATRIX.md)
