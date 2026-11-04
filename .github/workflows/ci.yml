@@ -764,7 +764,12 @@ jobs:
           docker info >/dev/null
           bazelisk build --config=ci //cmd/test-report
           BAZEL_BIN=$(bazelisk info --config=ci bazel-bin 2>/dev/null)
-          echo "reporter=$BAZEL_BIN/cmd/test-report/test-report_/test-report" >> "$GITHUB_OUTPUT"
+          # Keep an independent executable across the full lane's Bazel invocation.
+          cp -L "$BAZEL_BIN/cmd/test-report/test-report_/test-report" "$out/test-report"
+          test -f "$out/test-report"
+          test ! -L "$out/test-report"
+          test -x "$out/test-report"
+          echo "reporter=$out/test-report" >> "$GITHUB_OUTPUT"
 
       - name: Full lane on unchanged dispatched inputs
         id: full

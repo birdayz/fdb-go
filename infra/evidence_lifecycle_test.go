@@ -104,6 +104,10 @@ esac
 `,
 		"just": `#!/bin/bash
 if [ "$1" = --dry-run ]; then echo fake-full-command; exit 0; fi
+reporter="$STATE/bin/cmd/test-report/test-report_/test-report"
+[ -x "$reporter" ] || exit 99
+rm "$reporter" || exit 99
+printf 'removed\n' > "$STATE/reporter.invalidated"
 printf '%s\n' "$@" > "$STATE/just.args"
 for arg in "$@"; do
  case "$arg" in
@@ -235,6 +239,36 @@ func (h *fullWorkflowHarness) bazelCalls() string {
 	return string(data)
 }
 
+func (h *fullWorkflowHarness) bazelReporter() string {
+	return filepath.Join(h.state, "bin/cmd/test-report/test-report_/test-report")
+}
+
+func (h *fullWorkflowHarness) requirePreparedReporter() {
+	h.t.Helper()
+	reporter := h.outputs["reporter"]
+	if reporter != filepath.Join(h.outputs["evidence"], "test-report") || !filepath.IsAbs(reporter) {
+		h.t.Fatalf("reporter must be retained in external evidence storage, got %q", reporter)
+	}
+	copied, err := os.Lstat(reporter)
+	if err != nil || !copied.Mode().IsRegular() || copied.Mode().Perm()&0o111 == 0 {
+		h.t.Fatalf("retained reporter is not a regular executable: %v (%v)", copied, err)
+	}
+	original, err := os.Stat(h.bazelReporter())
+	if err != nil || os.SameFile(copied, original) {
+		h.t.Fatalf("reporter must be an independent copy of the built executable: %v", err)
+	}
+}
+
+func (h *fullWorkflowHarness) requireReporterInvalidated() {
+	h.t.Helper()
+	if data, err := os.ReadFile(filepath.Join(h.state, "reporter.invalidated")); err != nil || string(data) != "removed\n" {
+		h.t.Fatalf("lane did not apply reporter-output invalidation: %q %v", data, err)
+	}
+	if _, err := os.Lstat(h.bazelReporter()); !os.IsNotExist(err) {
+		h.t.Fatalf("Bazel-owned reporter path survived the intervening lane: %v", err)
+	}
+}
+
 type evidenceStageResult struct {
 	scheduled     bool
 	output        string
@@ -279,6 +313,9 @@ func (h *fullWorkflowHarness) runDeclaredWorkflow() map[string]evidenceStageResu
 			switch stage.name {
 			case "prepare":
 				state.prepare = outcome
+				if result.err == nil {
+					h.requirePreparedReporter()
+				}
 			case "full":
 				state.full = outcome
 			case "report":
@@ -302,6 +339,7 @@ func TestFullLaneWorkflowLifecycle(t *testing.T) {
 			t.Parallel()
 			h := newFullWorkflowHarness(t, exit)
 			results := h.runDeclaredWorkflow()
+			h.requireReporterInvalidated()
 			for _, name := range []string{"prepare", "full", "report", "upload"} {
 				if !results[name].scheduled {
 					t.Fatalf("%s was not scheduled after lane exit %s", name, exit)
@@ -328,7 +366,7 @@ func TestFullLaneWorkflowLifecycle(t *testing.T) {
 			if upload.artifactPath != h.outputs["evidence"] || !slices.Contains(upload.artifactFiles, "test-report.html") {
 				t.Fatalf("scheduled upload lost the rendered report handoff: path=%q files=%v", upload.artifactPath, upload.artifactFiles)
 			}
-			for _, file := range []string{"dispatch.txt", "bep.jsonl", "bazel-profile.json.gz", "test-report.html", "driver.log", "verified-lane/head.before", "verified-lane/head.after", "verified-lane/inputs.before", "verified-lane/inputs.after", "verified-lane/metadata", "verified-lane/lane.rc", "verified-lane/shutdown.rc"} {
+			for _, file := range []string{"dispatch.txt", "test-report", "bep.jsonl", "bazel-profile.json.gz", "test-report.html", "driver.log", "verified-lane/head.before", "verified-lane/head.after", "verified-lane/inputs.before", "verified-lane/inputs.after", "verified-lane/metadata", "verified-lane/lane.rc", "verified-lane/shutdown.rc"} {
 				if len(h.read(file)) == 0 {
 					t.Errorf("empty artifact %s", file)
 				}
@@ -375,6 +413,75 @@ func TestFullLaneWorkflowLifecycle(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFullLaneReporterCopyControls(t *testing.T) {
+	t.Parallel()
+	for _, fault := range []string{"failed", "missing", "symlink", "non_executable"} {
+		t.Run("copy_"+fault, func(t *testing.T) {
+			t.Parallel()
+			h := newFullWorkflowHarness(t, "0")
+			realCP, err := exec.LookPath("cp")
+			if err != nil {
+				t.Fatal(err)
+			}
+			evidenceFile(t, filepath.Join(h.bin, "cp"), []byte(`#!/bin/bash
+set -euo pipefail
+[ "$#" -eq 3 ] && [ "$1" = -L ]
+printf 'applied\n' > "$STATE/reporter-copy-fault"
+case "$COPY_FAULT" in
+ failed) exit 76 ;;
+ missing) exit 0 ;;
+ symlink) ln -s "$2" "$3" ;;
+ non_executable) "$REAL_CP" "$@"; chmod a-x "$3" ;;
+esac
+`), 0o700)
+			h.env = append(h.env, "COPY_FAULT="+fault, "REAL_CP="+realCP)
+			results := h.runDeclaredWorkflow()
+			want := 1
+			if fault == "failed" {
+				want = 76
+			}
+			prepare := results["prepare"]
+			requireStepExit(t, prepare.output, prepare.err, want)
+			if data, err := os.ReadFile(filepath.Join(h.state, "reporter-copy-fault")); err != nil || string(data) != "applied\n" {
+				t.Fatalf("reporter copy fault did not apply: %q %v", data, err)
+			}
+			if _, ok := h.outputs["reporter"]; ok {
+				t.Fatal("failed reporter retention still exported a reporter output")
+			}
+			if results["full"].scheduled || results["report"].scheduled || !results["upload"].scheduled {
+				t.Fatal("failed preparation must skip the lane/report but retain diagnostic upload scheduling")
+			}
+			if _, err := os.Stat(filepath.Join(h.state, "just.args")); !os.IsNotExist(err) {
+				t.Fatal("failed reporter retention reached the full lane")
+			}
+			if got := h.bazelCalls(); got != "build --config=ci //cmd/test-report\ninfo --config=ci bazel-bin\n" {
+				t.Fatalf("failed reporter retention invoked unexpected Bazel commands: %q", got)
+			}
+		})
+	}
+	t.Run("original_bazel_path", func(t *testing.T) {
+		t.Parallel()
+		h := newFullWorkflowHarness(t, "0")
+		out, err := h.step("prepare")
+		requireStepExit(t, out, err, 0)
+		h.requirePreparedReporter()
+		// Reproduce retaining the Bazel-owned path instead of the independent copy.
+		h.outputs["reporter"] = h.bazelReporter()
+		out, err = h.step("full")
+		requireStepExit(t, out, err, 0)
+		h.requireReporterInvalidated()
+		before := h.bazelCalls()
+		out, err = h.step("report")
+		requireStepExit(t, out, err, 127)
+		if !strings.Contains(out, h.bazelReporter()) || h.bazelCalls() != before {
+			t.Fatalf("original-path control did not fail without late Bazel calls: %s", out)
+		}
+		if _, err := os.Stat(filepath.Join(h.outputs["evidence"], "test-report.html")); !os.IsNotExist(err) {
+			t.Fatal("invalidated original reporter path still produced a final report")
+		}
+	})
 }
 
 func TestFullLaneReporterBuildOrderControls(t *testing.T) {
