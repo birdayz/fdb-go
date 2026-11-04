@@ -557,8 +557,8 @@ type Transaction struct {
 
 	// Per-watch cancellation (watchMu-guarded). Each in-flight Watch() gets its OWN cancellable
 	// context keyed by a monotonic id (newWatchCtx), so an individual watch future's Cancel() scopes
-	// to that ONE watch, while Cancel()/reset() (cancelWatches) cancel ALL of the txn's watches — C++
-	// resetRyow() sends transaction_cancelled to every pending watch. The context is captured
+	// to that ONE watch, while Cancel()/reset() cancel only watches not yet handed off by commit
+	// (NativeAPI.actor.cpp:6418-6435). The context is captured
 	// SYNCHRONOUSLY in WatchSetup (the async WatchPoll only USES it, threaded through), so a concurrent
 	// Cancel/reset cancels the exact context the poll holds (no lost-cancellation leak). Entries are
 	// removed on watch completion (WatchPoll's deferred scoped cancel) and by the future's Cancel, so
@@ -2162,7 +2162,7 @@ func (tx *Transaction) Cancel() {
 // C++ ReadYourWritesTransaction::reset(). The last committed version is preserved.
 // Updates creationTime so the timeout budget restarts (matches C++ reset() behavior).
 //
-// In-flight Watch() calls ARE cancelled by Reset() (via reset()→cancelWatches(), below), but they
+// Uncommitted Watch() calls are cancelled by Reset(); committed watches survive. Cancelled watches
 // surface as context.Canceled rather than the FDBError transaction_cancelled (1025) C++ raises via
 // resetPromise.sendError — a known divergence (TODO "watch-path divergences" D5).
 func (tx *Transaction) Reset() {
@@ -2286,17 +2286,14 @@ func (tx *Transaction) stateSetSpanParent(b []byte) error {
 	return nil
 }
 
-// cancelWatches cancels ALL of the transaction's in-flight watches (Cancel()/reset()) — C++
-// resetRyow() sends transaction_cancelled through resetPromise to every pending watch.
+// cancelWatches cancels pending watches, not those already handed off by a successful commit.
 func (tx *Transaction) cancelWatches() {
-	// RFC-170 (#8): abandon this incarnation's watch activation FIRST (rotate + close with abandoned=true),
-	// so a watch parked in AwaitWatchCommit drains and never registers, AND the rotation stops a later
-	// incarnation's commit from arming this reset-away watch. Only the reset/Cancel/abort paths call
-	// cancelWatches (never commit-success, which fires with committedVersion), so abandoning here is safe.
-	tx.fireWatchActivation(0, true)
 	tx.watchMu.Lock()
 	cancels := tx.watchCancels
 	tx.watchCancels = nil
+	// Rotate and abandon under the registration lock so a successor's watches
+	// cannot join the cancellation set belonging to this activation.
+	tx.resolveWatchActivationLocked(0, true)
 	tx.watchMu.Unlock()
 	for _, c := range cancels {
 		c()
@@ -2333,6 +2330,17 @@ func (tx *Transaction) stateWatchActivation() *watchActivation {
 // is abandoned+closed and no longer current, so the next commit closes a DIFFERENT one. No-op (and no
 // allocation) when no watch touched this incarnation.
 func (tx *Transaction) fireWatchActivation(version int64, abandoned bool) {
+	tx.watchMu.Lock()
+	defer tx.watchMu.Unlock()
+	if !abandoned {
+		// Native setupWatches clears the transaction's watch list after handoff.
+		// The future still owns its scoped cancel, independently of this registry.
+		tx.watchCancels = nil
+	}
+	tx.resolveWatchActivationLocked(version, abandoned)
+}
+
+func (tx *Transaction) resolveWatchActivationLocked(version int64, abandoned bool) {
 	if tx.watchAct.Load() == nil {
 		return
 	}
@@ -2385,16 +2393,16 @@ func (tx *Transaction) ReleaseWatch() {
 // context plus a SCOPED cancel that cancels+deregisters only THIS watch (idempotent). The future's
 // Cancel(), a failed WatchSetup, and WatchPoll's completion all call the scoped cancel — so one watch
 // can be freed without touching sibling watches, the map self-cleans, and
-// Cancel()/reset() (cancelWatches) still cancel every live watch. Captured synchronously in
+// Cancel()/reset() (cancelWatches) still cancel every uncommitted watch. Captured synchronously in
 // WatchSetup (the async WatchPoll only USES the context) — preserves the race-free bind.
 func (tx *Transaction) newWatchCtx(parent context.Context) (context.Context, context.CancelFunc) {
+	tx.watchMu.Lock()
 	parent = context.WithValue(parent, watchParametersKey{}, watchParameters{
 		tenantID:   tx.tenantId,
 		readTags:   encodeTagSet(tx.readTags),
 		activation: tx.stateWatchActivation(),
 	})
 	ctx, cancel := context.WithCancel(parent)
-	tx.watchMu.Lock()
 	if tx.watchCancels == nil {
 		tx.watchCancels = make(map[uint64]context.CancelFunc)
 	}
@@ -2404,12 +2412,10 @@ func (tx *Transaction) newWatchCtx(parent context.Context) (context.Context, con
 	tx.watchMu.Unlock()
 	scoped := func() {
 		tx.watchMu.Lock()
-		c, ok := tx.watchCancels[id]
 		delete(tx.watchCancels, id)
 		tx.watchMu.Unlock()
-		if ok {
-			c()
-		}
+		// Commit handoff removes the registry entry, not the future's ownership.
+		cancel()
 	}
 	return ctx, scoped
 }

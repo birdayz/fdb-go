@@ -80,14 +80,9 @@ func MustGetAPIVersion() int {
 	return v
 }
 
-// txDefaults holds database-level transaction option defaults.
-// Applied to every new transaction created by Transact/ReadTransact.
-// Matches C++ FDB_DB_OPTION_TRANSACTION_* options.
+// txDefaults holds facade-owned non-persistent transaction defaults. Persistent
+// defaults are owned by client.Database so OnError preserves transaction overrides.
 type txDefaults struct {
-	timeout        int64 // milliseconds, 0 = disabled
-	retryLimit     int64 // -1 = unlimited, 0 = no retries
-	hasRetryLimit  bool  // distinguishes "not set" from "set to 0"
-	maxRetryDelay  int64 // milliseconds, 0 = use default
 	sizeLimit      int64 // bytes, 0 = disabled
 	readSystemKeys bool  // allow reading \xff system keys
 	// snapshotRywDisableNet is the NET (disables - enables) of the DB-level snapshot-RYW option.
@@ -131,7 +126,7 @@ type internalDB struct {
 	// Go has no equivalent: any goroutine may set a DB option while another starts a
 	// transaction. Publishing a whole snapshot (rather than per-field atomics) is what
 	// reproduces that bulk-copy property — a transaction must not pick up the new
-	// timeout alongside the old retry limit. Readers take one Load; they never hold a
+	// size limit alongside the old snapshot-RYW setting. Readers take one Load; they never hold a
 	// lock across the callouts into the client that apply the options.
 	//
 	// Note this is a property of the single-version path only. C++'s multi-version
@@ -469,21 +464,13 @@ func (db Database) ReadTransactCtx(ctx context.Context, f func(ReadTransaction) 
 	return result, nil
 }
 
-// applyTxDefaults applies database-level transaction option defaults.
-// Matches C++ FDB_DB_OPTION_TRANSACTION_* behavior.
+// applyTxDefaults reapplies the facade's non-persistent transaction defaults.
+// Persistent defaults belong to client.Database: construction and Reset copy them,
+// while OnError preserves per-transaction overrides (ReadYourWrites.actor.cpp:2680-2754).
 func (db Database) applyTxDefaults(t *transaction) {
 	// One Load: every option below comes from the SAME snapshot, so a concurrent
 	// Options().SetXxx cannot split this transaction across two default sets.
 	d := db.d.defaults()
-	if d.timeout > 0 {
-		t.inner.SetTimeout(d.timeout)
-	}
-	if d.hasRetryLimit {
-		t.inner.SetRetryLimit(d.retryLimit)
-	}
-	if d.maxRetryDelay > 0 {
-		t.inner.SetMaxRetryDelay(d.maxRetryDelay)
-	}
 	if d.sizeLimit > 0 {
 		t.inner.SetSizeLimit(d.sizeLimit)
 	}

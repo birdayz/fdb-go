@@ -51,15 +51,12 @@ func TestDatabaseDefaults_ConcurrentSetAndApply(t *testing.T) {
 	wg.Add(2)
 
 	// Writer: the NewFDBDatabaseWithBackend side of the reported race, plus the
-	// other honored DB defaults so every field of the set is exercised, not just
-	// the one the CI report happened to name.
+	// other facade-owned non-persistent defaults. Persistent defaults are owned by
+	// client.Database and covered by TestTransactionDefaults_ConcurrentSetAndApply.
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
 			_ = opts.SetReadSystemKeys()
-			_ = opts.SetTransactionTimeout(int64(i%7) + 1)
-			_ = opts.SetTransactionRetryLimit(int64(i % 5))
-			_ = opts.SetTransactionMaxRetryDelay(int64(i%3) + 1)
 			_ = opts.SetTransactionSizeLimit(int64(i%11) + 1)
 			_ = opts.SetTransactionBypassUnreadable()
 			_ = opts.SetTransactionCausalReadRisky()

@@ -1596,7 +1596,7 @@ func (tx *Transaction) watchPoll(watchCtx context.Context, watchCancel context.C
 	// newWatchCtx): this runs in the async watch future, so a lazy fetch would race
 	// Cancel()/reset()'s cancelWatches on watchCtx/watchCancel AND, if cancelWatches won, leak a
 	// never-cancelled poll. Binding at setup makes Reset()/Cancel() cancel the very context this
-	// loop holds — matching C++ resetRyow() → resetPromise.sendError(transaction_cancelled). span
+	// loop holds until commit hands it off; later Reset/Cancel leave committed watches alone. span
 	// is likewise captured synchronously by WatchSetup (a lazy read here would stamp a later
 	// incarnation's regenerated span on this watch, RFC-115 §4).
 
@@ -1621,9 +1621,8 @@ func (tx *Transaction) watchPoll(watchCtx context.Context, watchCancel context.C
 	// raw tx span (C++ hands getKeyLocation parameters->spanContext, not the watch child).
 	watchSpan := childSpanContext(span)
 
-	// A watch is a long-lived poll: it loops until the value changes (sendWatch returns nil), the
-	// watch context is cancelled (Reset/Cancel/timeout), or a non-retryable error surfaces. Mirrors
-	// C++ watchValue's `loop { ... } catch` (NativeAPI.actor.cpp:3993-4012). Only wrong_shard /
+	// A watch polls until its value changes, its future/parent cancels (also precommit Reset/Cancel),
+	// or a non-retryable error surfaces. Mirrors C++ watchValue's `loop { ... } catch` (NativeAPI.actor.cpp:3993-4012). Only wrong_shard /
 	// all_alternatives is bounded (a relocate storm); the SS poll-signals below are unbounded — the
 	// watch keeps polling, as C++ does.
 	wrongShardRetries := 0

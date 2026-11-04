@@ -549,6 +549,7 @@ go_test(
 # gazelle:exclude read_tags_plumbing_fdb_test.go
 # gazelle:exclude storage_plumbing_fdb_test.go
 # gazelle:exclude range_selector_requests_fdb_test.go
+# gazelle:exclude watch_lifecycle_fdb_test.go
 go_test(
     name = "storage_plumbing_fdb_test",
     srcs = [
@@ -558,6 +559,7 @@ go_test(
         "ryw_walk_helper_test.go",
         "storage_plumbing_fdb_test.go",
         "testmain_test.go",
+        "watch_lifecycle_fdb_test.go",
         "wire_recorder_test.go",
     ],
     embed = [":client"],
@@ -567,6 +569,13 @@ go_test(
         "//pkg/fdbgo/wire/types",
         "//pkg/testcontainers/foundationdb",
     ],
+)
+
+# gazelle:exclude watch_lifecycle_unit_test.go
+go_test(
+    name = "watch_lifecycle_unit_test",
+    srcs = ["watch_lifecycle_unit_test.go"],
+    embed = [":client"],
 )
 
 # gazelle:exclude mappedrange_conflict_prefix_unit_test.go

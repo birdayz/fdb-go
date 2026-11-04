@@ -64,6 +64,7 @@ go_test(
         "ownership_internal_test.go",
         "panic_test.go",
         "parity_test.go",
+        "persistent_defaults_fdb_test.go",
         "range_byte_division_conflict_test.go",
         "range_byte_division_test.go",
         "range_issue_bench_test.go",
@@ -84,6 +85,7 @@ go_test(
         "transact_ctx_fdb_test.go",
         "unbounded_default_pin_test.go",
         "versionstamp_lifetime_test.go",
+        "watch_lifecycle_fdb_test.go",
     ],
     embed = [":fdb"],
     embedsrcs = [

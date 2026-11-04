@@ -459,21 +459,21 @@ func (o DatabaseOptions) SetReadSystemKeys() error {
 
 func (o DatabaseOptions) SetTransactionTimeout(ms int64) error {
 	if o.db != nil {
-		o.db.mutateDefaults(func(d *txDefaults) { d.timeout = ms })
+		o.db.inner.SetTransactionTimeout(ms)
 	}
 	return nil
 }
 
 func (o DatabaseOptions) SetTransactionRetryLimit(retries int64) error {
 	if o.db != nil {
-		o.db.mutateDefaults(func(d *txDefaults) { d.retryLimit, d.hasRetryLimit = retries, true })
+		o.db.inner.SetTransactionRetryLimit(retries)
 	}
 	return nil
 }
 
 func (o DatabaseOptions) SetTransactionMaxRetryDelay(ms int64) error {
 	if o.db != nil {
-		o.db.mutateDefaults(func(d *txDefaults) { d.maxRetryDelay = ms })
+		o.db.inner.SetTransactionMaxRetryDelay(ms)
 	}
 	return nil
 }
