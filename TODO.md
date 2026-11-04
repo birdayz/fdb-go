@@ -2096,11 +2096,12 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   both CI runners, and nobody could say what they still caught. The libfdb_c cross-client
   differential moved into ci.yml as its own per-PR job. Each one is in git history
   (`git show 8d3f8c4ad:.github/workflows/<file>`). Bring one back only with a stated catch rate.
-  What no longer runs anywhere:
+  Coverage removed at that point (not a current CI inventory):
   - the `-race` runs of `//pkg/relational/conformance/...` and of the client, record-layer and
     chaos container suites;
   - active fuzzing;
-  - the 10K/100K/1M stress suite;
+  - the 10K/100K/1M stress suite (now included at default budgets in the explicit
+    full release dispatch; still excluded from ordinary PR/push CI, with no schedule);
   - coverage reporting;
   - the self-checking oracles and the nightly rowdiff and factory batches.
 
@@ -2580,6 +2581,18 @@ tracked only.
 - [ ] **Owner decision:** test and tool dependencies in the library `go.mod` (docker,
   testcontainers, ginkgo, staticcheck, cobra); nogo without `unused`; nine reused RFC numbers
   and no RFC index.
+
+### HN release evidence
+
+- [ ] Exercise the opt-in `ci.yml` full dispatch on its candidate branch and then the
+  exact merged master release cut. Require the full job to execute, nonempty target
+  and artifact populations, unchanged input manifests, and matching tested SHA;
+  report executed versus cached tests. Ordinary CI and local `just test` are not
+  substitutes for this gate (`RELEASE.md`).
+- [ ] Complete the release-cut checklist, dry-run the release workflow on that SHA,
+  and verify clean revision installation and examples. The public installer and
+  tagged `go install` need a root release containing `cmd/fdb`; obtain explicit
+  authorization before tagging, then verify the actual published artifacts.
 
 ### Follow-ups from the fix PRs' reviews
 

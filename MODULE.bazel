@@ -13,6 +13,18 @@ bazel_dep(name = "rules_shell", version = "0.8.0")
 
 go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 go_deps.from_file(go_mod = "//:go.mod")
+
+# Test-only scanner and its missing transitive module; not root Go dependencies.
+go_deps.module(
+    path = "golang.org/x/telemetry",
+    sum = "h1:P6NGsugec4oASJ+yKMNgTndeo0h2CbixZLvQIe9h5R4=",
+    version = "v0.0.0-20261010193011-f71dc92da45e",
+)
+go_deps.module(
+    path = "golang.org/x/vuln",
+    sum = "h1:12VaqnI9kJfqwRoPptxoqsUhQtdfrSbdksT7X/KY/sc=",
+    version = "v1.9.0",
+)
 go_deps.module_override(
     patch_strip = 1,
     patches = [
@@ -63,8 +75,10 @@ use_repo(
     "land_charm_lipgloss_v2",
     "org_golang_google_protobuf",
     "org_golang_x_sys",
+    "org_golang_x_telemetry",
     "org_golang_x_text",
     "org_golang_x_tools",
+    "org_golang_x_vuln",
     "org_uber_go_mock",
 )
 

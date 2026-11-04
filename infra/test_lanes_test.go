@@ -214,7 +214,10 @@ if flock -n "$FDB_LANE_LOCK" true; then echo free > "$STATE/shutdown-probe"; els
 printf '%s\n' "$*" > "$STATE/bazelisk.args"
 `,
 	} {
-		if err := os.WriteFile(filepath.Join(h.bin, name), []byte(body), 0o700); err != nil {
+		syscall.ForkLock.Lock()
+		err := os.WriteFile(filepath.Join(h.bin, name), []byte(body), 0o700)
+		syscall.ForkLock.Unlock()
+		if err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -40,16 +40,18 @@ Older minors are best-effort until `v1`. Security fixes land on the latest suppo
 
 ## Dependencies
 
-`govulncheck` runs in CI (the **Vulnerability scan** job) over the shipped
-packages. Dependencies are pinned in `go.mod` / `MODULE.bazel`; report any
-known-vulnerable dependency you spot.
+`govulncheck` runs in CI (the **Vulnerability scan** job) with library
+(`./pkg/...`) and released CLI (`./cmd/fdb/...`) entrypoints. Dependencies are
+pinned in `go.mod` / `MODULE.bazel`; report any known-vulnerable dependency you spot.
 
-The CI scan excludes `pkg/testcontainers` and `pkg/relational/sqltest`, whose
-shared `testkit` imports the container helpers. These helpers wrap Docker's
-client SDK for tests and developer/stress tools (including `factory-run`,
-`factory-migrate`, `fdb-binding-stress`, and `sql-diff-stress`); neither the
-production library nor the released `fdb` CLI imports them. The exclusion is
-not a clean bill of health for the dependency graph or developer workloads.
+The scan excludes `pkg/testcontainers`, `pkg/testutil/benchcluster` and
+`pkg/relational/sqltest` as entrypoints. These helpers wrap Docker's client SDK
+for tests and developer/stress tools (including `factory-run`, `factory-migrate`,
+`fdb-binding-stress`, and `sql-diff-stress`). An excluded entrypoint is not a
+suppressed dependency: if a scanned library or CLI package imports one, its
+reachable calls are still scanned. The scan does not cover every developer tool,
+test-only call path or build-tag configuration, and is not a clean bill of health
+for the dependency graph or developer workloads.
 
 The legacy `github.com/docker/docker` module has open advisories concerning
 Docker **daemon** archive/mount handling and plugin privilege validation, not

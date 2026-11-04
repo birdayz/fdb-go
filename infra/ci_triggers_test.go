@@ -1,6 +1,8 @@
 package infra
 
 import (
+	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -216,5 +218,348 @@ func TestCIForwardsCIToTests(t *testing.T) {
 	}
 	if !bazelrcForwardsCI(string(data)) {
 		t.Fatal(".bazelrc does not pass CI to tests under --config=ci; SkipWithoutDocker would skip in CI")
+	}
+}
+
+const (
+	fullDispatchCondition = "${{ github.event_name == 'workflow_dispatch' && inputs.full }}"
+	fullReportCondition   = "${{ !cancelled() && steps.full.outcome != 'skipped' && steps.prepare.outcome == 'success' }}"
+	fullUploadCondition   = "${{ always() && steps.prepare.outputs.evidence != '' }}"
+)
+
+// Only this known dispatch-only predicate can reduce the push fan-out count.
+// Unknown expressions remain counted rather than guessed to be false on push.
+func dispatchOnlyJob(condition string) bool {
+	return strings.TrimSpace(condition) == fullDispatchCondition
+}
+
+type evidenceStep struct {
+	ID   string            `yaml:"id"`
+	Run  string            `yaml:"run"`
+	Uses string            `yaml:"uses"`
+	If   string            `yaml:"if"`
+	With map[string]string `yaml:"with"`
+	Env  map[string]string `yaml:"env"`
+}
+
+type evidenceWorkflow struct {
+	On          yaml.Node `yaml:"on"`
+	Concurrency struct {
+		Group string `yaml:"group"`
+	} `yaml:"concurrency"`
+	Jobs map[string]struct {
+		If          string            `yaml:"if"`
+		Needs       []string          `yaml:"needs"`
+		Permissions map[string]string `yaml:"permissions"`
+		Steps       []evidenceStep    `yaml:"steps"`
+	} `yaml:"jobs"`
+}
+
+func readEvidenceWorkflow(t *testing.T) evidenceWorkflow {
+	t.Helper()
+	data, err := os.ReadFile("../.github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wf evidenceWorkflow
+	if err := yaml.Unmarshal(data, &wf); err != nil {
+		t.Fatal(err)
+	}
+	return wf
+}
+
+func fullLaneStep(t *testing.T, id string) evidenceStep {
+	t.Helper()
+	for _, step := range readEvidenceWorkflow(t).Jobs["full"].Steps {
+		if step.ID == id {
+			return step
+		}
+	}
+	t.Fatalf("full job has no step %q", id)
+	return evidenceStep{}
+}
+
+type evidenceStage struct {
+	name string
+	evidenceStep
+}
+
+// The bounded scheduler supports only these declared conditions, not arbitrary
+// Actions expressions. Changes must update the state table and negative controls.
+func fullLaneStages(steps []evidenceStep) ([]evidenceStage, error) {
+	var stages []evidenceStage
+	for _, step := range steps {
+		name := step.ID
+		if strings.HasPrefix(step.Uses, "actions/upload-artifact@") && step.With["name"] == "full-lane-evidence" {
+			name = "upload"
+		} else if name != "prepare" && name != "full" && name != "report" {
+			continue
+		}
+		stages = append(stages, evidenceStage{name: name, evidenceStep: step})
+	}
+	wantOrder := []string{"prepare", "full", "report", "upload"}
+	if len(stages) != len(wantOrder) {
+		return nil, fmt.Errorf("full lane has %d evidence stages, want exactly %v", len(stages), wantOrder)
+	}
+	wantConditions := []string{"", "", fullReportCondition, fullUploadCondition}
+	for i, stage := range stages {
+		if stage.name != wantOrder[i] {
+			return nil, fmt.Errorf("evidence stage %d = %q, want %q in order %v", i, stage.name, wantOrder[i], wantOrder)
+		}
+		if stage.If != wantConditions[i] {
+			return nil, fmt.Errorf("%s condition = %q, want %q", stage.name, stage.If, wantConditions[i])
+		}
+	}
+	upload := stages[3]
+	if upload.With["path"] != "${{ steps.prepare.outputs.evidence }}" || upload.With["if-no-files-found"] != "error" {
+		return nil, fmt.Errorf("upload must hand off prepare's evidence directory and reject missing files: %v", upload.With)
+	}
+	return stages, nil
+}
+
+type evidenceScheduleState struct {
+	prepare, full, report string
+	evidence, cancelled   bool
+}
+
+func evidenceStageScheduled(stage evidenceStage, state evidenceScheduleState) bool {
+	switch stage.If {
+	case fullReportCondition:
+		return !state.cancelled && state.full != "skipped" && state.prepare == "success"
+	case fullUploadCondition:
+		return state.evidence // always(), including a failed report or cancellation
+	case "":
+		switch stage.name {
+		case "prepare":
+			return !state.cancelled
+		case "full":
+			return !state.cancelled && state.prepare == "success"
+		}
+	}
+	return false // Unsupported conditions are rejected by fullLaneStages.
+}
+
+func TestFullLaneSchedulingStates(t *testing.T) {
+	t.Parallel()
+	stages, err := fullLaneStages(readEvidenceWorkflow(t).Jobs["full"].Steps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		state evidenceScheduleState
+		want  [4]bool // prepare, full, report, upload
+	}{
+		{"before_prepare", evidenceScheduleState{full: "skipped"}, [4]bool{true, false, false, false}},
+		{"successful", evidenceScheduleState{"success", "success", "success", true, false}, [4]bool{true, true, true, true}},
+		{"failed_full", evidenceScheduleState{"success", "failure", "skipped", true, false}, [4]bool{true, true, true, true}},
+		{"failed_report", evidenceScheduleState{"success", "success", "failure", true, false}, [4]bool{true, true, true, true}},
+		{"failed_full_and_report", evidenceScheduleState{"success", "failure", "failure", true, false}, [4]bool{true, true, true, true}},
+		{"skipped_full", evidenceScheduleState{"success", "skipped", "skipped", true, false}, [4]bool{true, true, false, true}},
+		{"failed_prepare", evidenceScheduleState{"failure", "skipped", "skipped", false, false}, [4]bool{true, false, false, false}},
+		{"failed_prepare_with_evidence", evidenceScheduleState{"failure", "skipped", "skipped", true, false}, [4]bool{true, false, false, true}},
+		{"skipped_prepare", evidenceScheduleState{"skipped", "skipped", "skipped", false, false}, [4]bool{true, false, false, false}},
+		{"cancelled_full", evidenceScheduleState{"success", "cancelled", "skipped", true, true}, [4]bool{false, false, false, true}},
+		{"cancelled_after_failure", evidenceScheduleState{"success", "failure", "skipped", true, true}, [4]bool{false, false, false, true}},
+		{"cancelled_without_evidence", evidenceScheduleState{"skipped", "skipped", "skipped", false, true}, [4]bool{false, false, false, false}},
+		{"no_evidence", evidenceScheduleState{"success", "success", "success", false, false}, [4]bool{true, true, true, false}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for i, stage := range stages {
+				if got := evidenceStageScheduled(stage, tc.state); got != tc.want[i] {
+					t.Errorf("%s scheduled = %t, want %t for %+v", stage.name, got, tc.want[i], tc.state)
+				}
+			}
+		})
+	}
+}
+
+func TestFullLaneSchedulingRejectsRegressions(t *testing.T) {
+	t.Parallel()
+	steps := readEvidenceWorkflow(t).Jobs["full"].Steps
+	stages, err := fullLaneStages(steps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	positions := map[string]int{}
+	for _, stage := range stages {
+		for i, step := range steps {
+			if step.ID == stage.ID && step.Uses == stage.Uses {
+				positions[stage.name] = i
+			}
+		}
+	}
+	for _, tc := range []struct {
+		name, stage, condition string
+	}{
+		{"removed_report_if", "report", ""},
+		{"success_only_report", "report", "${{ success() }}"},
+		{"success_only_upload", "upload", "${{ success() }}"},
+		{"always_and_success_upload", "upload", "${{ always() && success() }}"},
+		{"success_gated_upload_with_evidence", "upload", "${{ always() && success() && steps.prepare.outputs.evidence != '' }}"},
+		{"removed_upload_if", "upload", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			changed := slices.Clone(steps)
+			i := positions[tc.stage]
+			if changed[i].If == tc.condition {
+				t.Fatal("negative control did not change the declared condition")
+			}
+			changed[i].If = tc.condition
+			if _, err := fullLaneStages(changed); err == nil {
+				t.Fatalf("accepted %s condition %q", tc.stage, tc.condition)
+			}
+		})
+	}
+	t.Run("missing_stages", func(t *testing.T) {
+		t.Parallel()
+		for _, stage := range stages {
+			i := positions[stage.name]
+			changed := slices.Delete(slices.Clone(steps), i, i+1)
+			if _, err := fullLaneStages(changed); err == nil {
+				t.Errorf("accepted missing %s stage", stage.name)
+			}
+		}
+	})
+	t.Run("duplicate_report", func(t *testing.T) {
+		t.Parallel()
+		changed := append(slices.Clone(steps), steps[positions["report"]])
+		if _, err := fullLaneStages(changed); err == nil {
+			t.Fatal("accepted duplicate report stage")
+		}
+	})
+	for _, tc := range []struct{ key, value string }{{"path", "wrong-evidence"}, {"if-no-files-found", "ignore"}} {
+		t.Run("upload_"+tc.key, func(t *testing.T) {
+			t.Parallel()
+			changed := slices.Clone(steps)
+			i := positions["upload"]
+			changed[i].With = maps.Clone(changed[i].With)
+			changed[i].With[tc.key] = tc.value
+			if _, err := fullLaneStages(changed); err == nil {
+				t.Fatalf("accepted upload %s=%q", tc.key, tc.value)
+			}
+		})
+	}
+	for _, pair := range [][2]string{{"prepare", "full"}, {"full", "report"}, {"report", "upload"}} {
+		t.Run("reordered_"+pair[0]+"_"+pair[1], func(t *testing.T) {
+			t.Parallel()
+			changed := slices.Clone(steps)
+			i, j := positions[pair[0]], positions[pair[1]]
+			if i >= j {
+				t.Fatal("negative control requires distinct stages in the declared order")
+			}
+			changed[i], changed[j] = changed[j], changed[i]
+			if _, err := fullLaneStages(changed); err == nil {
+				t.Fatalf("accepted reordered %s/%s stages", pair[0], pair[1])
+			}
+		})
+	}
+}
+
+func TestFullLaneIsOptInAndPinned(t *testing.T) {
+	t.Parallel()
+	wf := readEvidenceWorkflow(t)
+	spec, ok := triggerSpec(&wf.On, "workflow_dispatch")
+	if !ok || spec == nil {
+		t.Fatal("CI has no dispatch input specification")
+	}
+	var dispatch struct {
+		Inputs map[string]struct {
+			Type    string    `yaml:"type"`
+			Default yaml.Node `yaml:"default"`
+		} `yaml:"inputs"`
+	}
+	if err := spec.Decode(&dispatch); err != nil {
+		t.Fatal(err)
+	}
+	input, ok := dispatch.Inputs["full"]
+	if !ok || input.Type != "boolean" || input.Default.Tag != "!!bool" || input.Default.Value != "false" {
+		t.Fatalf("full input must be boolean and default false: %+v", input)
+	}
+	job, ok := wf.Jobs["full"]
+	if !ok || job.If != fullDispatchCondition {
+		t.Fatalf("full job must require explicit dispatch opt-in, got %q", job.If)
+	}
+	wantNeeds := []string{"ci", "conformance-java", "wire-oracle", "fdb-go-install", "govulncheck", "libfdbc-differential", "race"}
+	if !slices.Equal(job.Needs, wantNeeds) {
+		t.Fatalf("full job dependencies = %v, want %v", job.Needs, wantNeeds)
+	}
+	if len(job.Permissions) != 1 || job.Permissions["contents"] != "read" {
+		t.Fatalf("full job must have read-only permissions: %v", job.Permissions)
+	}
+	if !strings.Contains(wf.Concurrency.Group, "github.event_name == 'workflow_dispatch' && inputs.full && format('-full-{0}', github.run_id)") {
+		t.Fatal("a branch push could cancel a full dispatch in the shared workflow concurrency group")
+	}
+	checkout := false
+	for _, step := range job.Steps {
+		if strings.HasPrefix(step.Uses, "actions/checkout@") {
+			checkout = step.With["ref"] == "${{ github.sha }}" && step.With["persist-credentials"] == "false"
+		}
+		if strings.Contains(step.Run, "merge-current-master") {
+			t.Fatal("full dispatch must not replace its immutable SHA with a synthesized merge")
+		}
+		for key := range step.Env {
+			if key == "TMPDIR" || key == "FDB_LANE_LOCK" {
+				t.Fatalf("full dispatch must not create a different lane lock through %s", key)
+			}
+		}
+	}
+	if !checkout {
+		t.Fatal("full dispatch must check out github.sha without persisted credentials")
+	}
+	prepare := fullLaneStep(t, "prepare").Run
+	if !strings.Contains(prepare, `test "$(git rev-parse HEAD)" = "$GITHUB_SHA"`) || !strings.Contains(prepare, `mktemp -d "$RUNNER_TEMP/fdb-full-ci.XXXXXX"`) {
+		t.Fatal("full lane must verify its SHA and prepare evidence outside the worktree")
+	}
+	if _, err := fullLaneStages(job.Steps); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDispatchOnlyFanOutCondition(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		condition string
+		want      bool
+	}{
+		{fullDispatchCondition, true},
+		{"  " + fullDispatchCondition + "  ", true},
+		{"", false},
+		{"${{ inputs.full }}", false},
+		{"${{ github.event_name == 'push' }}", false},
+		{"${{ github.event_name == 'workflow_dispatch' || inputs.full }}", false},
+		{"unknown expression", false},
+	} {
+		if got := dispatchOnlyJob(tc.condition); got != tc.want {
+			t.Errorf("dispatchOnlyJob(%q) = %t, want %t", tc.condition, got, tc.want)
+		}
+	}
+}
+
+func TestCIReportsIdentifyTheirTestedInputsAndScope(t *testing.T) {
+	t.Parallel()
+	wf := readEvidenceWorkflow(t)
+	for jobID, lane := range map[string]string{"ci": "suite", "conformance-java": "conformance-java", "full": "full-default-budgets"} {
+		found := false
+		for _, step := range wf.Jobs[jobID].Steps {
+			if !strings.Contains(step.Run, "--lane "+lane+" ") {
+				continue
+			}
+			found = true
+			sha := `--sha "$(git rev-parse HEAD)"`
+			if jobID == "full" {
+				sha = `--sha "$GITHUB_SHA"`
+			}
+			for _, want := range []string{sha, `--run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"`, "--exclusions ", ".jsonl"} {
+				if !strings.Contains(step.Run, want) {
+					t.Errorf("%s report lacks %q", jobID, want)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("no attributed report for %s", jobID)
+		}
 	}
 }

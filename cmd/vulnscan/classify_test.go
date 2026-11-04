@@ -335,8 +335,10 @@ func TestExcludedTestInfraPackages(t *testing.T) {
 	t.Parallel()
 
 	for _, pkg := range []string{
+		"fdb.dev/pkg/testcontainers",
 		"fdb.dev/pkg/testcontainers/foundationdb",
 		"fdb.dev/pkg/testutil/benchcluster",
+		"fdb.dev/pkg/relational/sqltest",
 		"fdb.dev/pkg/relational/sqltest/testkit",
 	} {
 		if !excluded(pkg) {
@@ -347,9 +349,30 @@ func TestExcludedTestInfraPackages(t *testing.T) {
 		"fdb.dev/pkg/fdbgo/fdb",
 		"fdb.dev/pkg/recordlayer",
 		"fdb.dev/pkg/relational/sqldriver",
+		"fdb.dev/cmd/fdb",
+		"fdb.dev/cmd/fdb/internal/cmd",
+		"fdb.dev/pkg/testcontainers_extra",
+		"fdb.dev/pkg/relational/sqltest_extra",
+		"other.dev/pkg/testcontainers",
 	} {
 		if excluded(pkg) {
 			t.Errorf("excluded(%q) = true, want false", pkg)
+		}
+	}
+}
+
+func TestScanIncludesLibraryAndReleasedCLIEntrypoints(t *testing.T) {
+	t.Parallel()
+	if got := strings.Join(scanPatterns, ","); got != "./pkg/...,./cmd/fdb/..." {
+		t.Fatalf("default scan patterns = %q: library and released CLI must both be scanned", got)
+	}
+	output := "\n fdb.dev/pkg/recordlayer \nfdb.dev/pkg/testcontainers/foundationdb\nfdb.dev/pkg/testutil/benchcluster\nfdb.dev/pkg/relational/sqltest/testkit\nfdb.dev/cmd/fdb\nfdb.dev/cmd/fdb/internal/cmd\n"
+	if got := strings.Join(filterPackages(output), ","); got != "fdb.dev/pkg/recordlayer,fdb.dev/cmd/fdb,fdb.dev/cmd/fdb/internal/cmd" {
+		t.Fatalf("scanned entrypoints = %q", got)
+	}
+	for _, output := range []string{"", " \n\t", "fdb.dev/pkg/testcontainers\nfdb.dev/pkg/relational/sqltest"} {
+		if pkgs := filterPackages(output); len(pkgs) != 0 {
+			t.Errorf("empty/excluded population %q produced %v", output, pkgs)
 		}
 	}
 }

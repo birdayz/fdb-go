@@ -1,6 +1,7 @@
 package infra
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -75,6 +76,7 @@ type workflowFile struct {
 	On   yaml.Node `yaml:"on"`
 	Jobs map[string]struct {
 		RunsOn   yaml.Node `yaml:"runs-on"`
+		If       string    `yaml:"if"`
 		Strategy struct {
 			Matrix yaml.Node `yaml:"matrix"`
 		} `yaml:"strategy"`
@@ -157,6 +159,132 @@ func usesLabel(n *yaml.Node, label string) bool {
 	return false
 }
 
+// countPushWorkflowJobs is the counting operation used by the fleet diagnostic.
+// Unknown job predicates remain counted; only the known dispatch-only one is excluded.
+func countPushWorkflowJobs(data []byte) (int, error) {
+	var wf workflowFile
+	if err := yaml.Unmarshal(data, &wf); err != nil {
+		return 0, fmt.Errorf("parse workflow: %w", err)
+	}
+	if !hasPushTrigger(&wf.On) {
+		return 0, nil
+	}
+	n := 0
+	for jobName, job := range wf.Jobs {
+		if !usesLabel(&job.RunsOn, runnerLabel) || dispatchOnlyJob(job.If) {
+			continue
+		}
+		entries, ok := matrixEntries(&job.Strategy.Matrix)
+		if !ok {
+			return 0, fmt.Errorf("job %q runs on %s with a matrix this gate cannot size "+
+				"statically (an expression, or include/exclude).\n"+
+				"  It is FAILED rather than counted as one slot, deliberately: guessing low "+
+				"here under-states the fan-out, and the gate would keep passing while the "+
+				"fleet is oversubscribed — silently, in the one direction that matters.\n"+
+				"  Extend matrixEntries to expand this shape, or pin the job's entry count "+
+				"here explicitly. Do not relax the check.", jobName, runnerLabel)
+		}
+		n += entries
+	}
+	return n, nil
+}
+
+func TestCountPushWorkflowJobs(t *testing.T) {
+	t.Parallel()
+	const pushJobs = "on: push\njobs:\n"
+	for _, tc := range []struct {
+		name, workflow string
+		want           int
+	}{
+		{"ordinary_scalar_and_list", pushJobs + `
+  scalar:
+    runs-on: hetzner-fdb-vm
+  list:
+    runs-on: [self-hosted, hetzner-fdb-vm]
+`, 2},
+		{"recognized_dispatch_only", pushJobs + `
+  full:
+    runs-on: hetzner-fdb-vm
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.full }}
+`, 0},
+		{"dispatch_only_unsizeable_matrix_is_irrelevant", pushJobs + `
+  full:
+    runs-on: hetzner-fdb-vm
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.full }}
+    strategy:
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+`, 0},
+		{"unknown_conditions_stay_counted", pushJobs + `
+  unknown:
+    runs-on: hetzner-fdb-vm
+    if: ${{ inputs.full }}
+  near_match:
+    runs-on: hetzner-fdb-vm
+    if: ${{ github.event_name == 'workflow_dispatch' || inputs.full }}
+`, 2},
+		{"literal_matrix_multiplies", pushJobs + `
+  matrix:
+    runs-on: hetzner-fdb-vm
+    strategy:
+      matrix:
+        backend: [purego, libfdbc]
+        scale: [10K, 100K, 1M]
+`, 6},
+		{"mixed_population", pushJobs + `
+  ordinary:
+    runs-on: hetzner-fdb-vm
+  full:
+    runs-on: hetzner-fdb-vm
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.full }}
+  unknown:
+    runs-on: [self-hosted, hetzner-fdb-vm]
+    if: ${{ inputs.full }}
+  matrix:
+    runs-on: hetzner-fdb-vm
+    strategy:
+      matrix:
+        backend: [purego, libfdbc]
+        scale: [10K, 1M]
+  hosted:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+`, 6},
+		{"no_push", "on: workflow_dispatch\njobs:\n  release:\n    runs-on: hetzner-fdb-vm\n", 0},
+		{"no_jobs", "on: push\njobs: {}\n", 0},
+		{"empty_matrix_has_no_population", pushJobs + "  empty:\n    runs-on: hetzner-fdb-vm\n    strategy:\n      matrix:\n        scale: []\n", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := countPushWorkflowJobs([]byte(tc.workflow))
+			if err != nil || got != tc.want {
+				t.Fatalf("countPushWorkflowJobs = (%d, %v), want (%d, nil)", got, err, tc.want)
+			}
+		})
+	}
+	t.Run("malformed_yaml", func(t *testing.T) {
+		t.Parallel()
+		if _, err := countPushWorkflowJobs([]byte("on: push\njobs: [")); err == nil {
+			t.Fatal("counter accepted malformed YAML")
+		}
+	})
+	for _, matrix := range []string{
+		"${{ fromJSON(needs.plan.outputs.matrix) }}",
+		"{scale: '${{ fromJSON(env.SCALES) }}'}",
+		"{scale: [10K, 1M], include: [{scale: 100K}]}",
+		"{scale: [10K, 1M], exclude: [{scale: 10K}]}",
+	} {
+		t.Run("unsizeable_"+matrix, func(t *testing.T) {
+			t.Parallel()
+			data := pushJobs + "  unsizeable:\n    runs-on: hetzner-fdb-vm\n    strategy:\n      matrix: " + matrix + "\n"
+			if got, err := countPushWorkflowJobs([]byte(data)); err == nil || got != 0 ||
+				!strings.Contains(err.Error(), `job "unsizeable" runs on hetzner-fdb-vm with a matrix this gate cannot size`) {
+				t.Fatalf("unsizeable matrix = (%d, %v), want a job-specific sizing error", got, err)
+			}
+		})
+	}
+}
+
 // provisionedSlots reads var.runner_count's default out of main.tf and adds the
 // dedicated box.
 //
@@ -200,30 +328,9 @@ func TestPushFanOutVersusTheRunnerPool(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", p, err)
 		}
-		var wf workflowFile
-		if err := yaml.Unmarshal(b, &wf); err != nil {
-			t.Fatalf("parse %s: %v", p, err)
-		}
-		if !hasPushTrigger(&wf.On) {
-			continue
-		}
-		n := 0
-		for jobName, job := range wf.Jobs {
-			if !usesLabel(&job.RunsOn, runnerLabel) {
-				continue
-			}
-			entries, ok := matrixEntries(&job.Strategy.Matrix)
-			if !ok {
-				t.Fatalf("%s: job %q runs on %s with a matrix this gate cannot size "+
-					"statically (an expression, or include/exclude).\n"+
-					"  It is FAILED rather than counted as one slot, deliberately: guessing low "+
-					"here under-states the fan-out, and the gate would keep passing while the "+
-					"fleet is oversubscribed — silently, in the one direction that matters.\n"+
-					"  Extend matrixEntries to expand this shape, or pin the job's entry count "+
-					"here explicitly. Do not relax the check.",
-					filepath.Base(p), jobName, runnerLabel)
-			}
-			n += entries
+		n, err := countPushWorkflowJobs(b)
+		if err != nil {
+			t.Fatalf("%s: %v", filepath.Base(p), err)
 		}
 		if n > 0 {
 			perWorkflow[filepath.Base(p)] = n
@@ -392,6 +499,7 @@ func TestSelfHostedJobsReapLeakedContainersFirst(t *testing.T) {
 		var wf struct {
 			Jobs map[string]struct {
 				RunsOn yaml.Node `yaml:"runs-on"`
+				If     string    `yaml:"if"`
 				Steps  []struct {
 					Uses string            `yaml:"uses"`
 					Run  string            `yaml:"run"`
@@ -424,6 +532,10 @@ func TestSelfHostedJobsReapLeakedContainersFirst(t *testing.T) {
 				strings.TrimSpace(job.Steps[i].Run) != "infra/reap-leaked-containers.sh" {
 				t.Errorf("%s: job %q runs self-hosted but its first step after checkout is not "+
 					"an unconditional `run: infra/reap-leaked-containers.sh`", filepath.Base(p), name)
+				continue
+			}
+			// A dispatch-only release lane tests its exact SHA, not a PR merge.
+			if dispatchOnlyJob(job.If) {
 				continue
 			}
 			// Next, the PR is re-merged onto current master, so jobs share a cached base.

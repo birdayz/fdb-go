@@ -58,7 +58,17 @@ the maintainer chooses to cut `vX.Y.Z`:
    and HNSW layout), the Compatibility block is explicit and Java conformance,
    cross-client differential and the full lane pass **in CI on that commit**.
    Local validation is `just test` only; do not run `just test-full` locally.
-   The fast CI job skips stress/manual targets, so it is not the full-lane gate.
+   The ordinary CI suite skips stress/manual targets, so it is not the full-lane gate.
+   Opt in with `gh workflow run ci.yml --ref <candidate-branch> -f full=true`:
+   rehearse the dispatch path on the candidate branch, then repeat with `--ref master`
+   after the cut merges. Check `gh run view <id> --json headSha,jobs` against the exact
+   cut SHA and require the **Full release lane (default budgets)** job to succeed,
+   not be skipped. A branch push does not replace a completed full dispatch.
+   Download `full-lane-evidence`; retain its report, BEP, tested-input manifests and
+   exit metadata, separating executed tests from cached results. This lane includes
+   manual targets but excludes `realcluster` targets and does not establish every
+   extended seed, race or active-fuzz mode. It runs only on explicit dispatch;
+   ordinary PR/push CI does not run the full lane.
 3. **Dry run** on that commit: `gh workflow run fdb-release.yml --ref master -f version=vX.Y.Z`
    and wait for success; check that the run's commit (`gh run view <id> --json headSha`) is the cut
    commit. It builds, smoke-tests and previews the notes; a dispatch never publishes.
