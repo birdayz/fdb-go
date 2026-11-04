@@ -152,3 +152,100 @@ func TestRetryDefaults_ValidationCaptureIsLocalAndNonconsuming(t *testing.T) {
 		}
 	}
 }
+
+func TestRetryDefaults_DistinguishesNativePoisonFromTimeoutFailure(t *testing.T) {
+	t.Parallel()
+	for _, timeout := range []int64{10000, int64(math.MaxInt32) + 1} {
+		db := Database{d: &internalDB{}}
+		if err := db.Options().SetTransactionTimeout(timeout); err != nil {
+			t.Fatal(err)
+		}
+		tr, inner := newBareOptionsTx()
+		defer inner.Cancel()
+		inner.SetSizeLimit(1)
+		var defaults retryTxDefaults
+		if err := defaults.apply(db, tr.t); err != nil || defaults.err != nil || defaults.pendingTimeout != timeout {
+			t.Fatalf("unrelated native poison became persistent: err=%v captured=%v pending=%d", err, defaults.err, defaults.pendingTimeout)
+		}
+		// A database update cannot replace the snapshot whose timeout was skipped.
+		if err := db.Options().SetTransactionTimeout(20000); err != nil {
+			t.Fatal(err)
+		}
+		if err := inner.OnError(context.Background(), &wire.FDBError{Code: 1020}); err != nil {
+			t.Fatal(err)
+		}
+		err := defaults.apply(db, tr.t)
+		if timeout <= math.MaxInt32 {
+			if err != nil || defaults.err != nil || defaults.pendingTimeout != 0 {
+				t.Fatalf("repaired native poison prevented timeout application: err=%v captured=%v pending=%d", err, defaults.err, defaults.pendingTimeout)
+			}
+			if _, err := inner.GetApproximateSize(); err != nil {
+				t.Fatalf("valid recovered timeout poisoned the transaction: %v", err)
+			}
+		} else {
+			var public Error
+			if !errors.As(err, &public) || public.Code != 2006 || defaults.pendingTimeout != 0 {
+				t.Fatalf("captured invalid timeout was replaced: err=%v pending=%d", err, defaults.pendingTimeout)
+			}
+		}
+	}
+}
+
+func TestPendingTimeout_OnlySuccessfulOverridesReplaceInheritedValue(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		blocked bool
+		timeout int64
+		replace bool
+	}{
+		{"positive", false, 60000, true},
+		{"disable", false, 0, true},
+		{"invalid_negative", false, -1, false},
+		{"invalid_large", false, int64(math.MaxInt32) + 1, false},
+		{"poisoned_positive", true, 60000, false},
+		{"poisoned_disable", true, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			db := Database{d: &internalDB{}}
+			if err := db.Options().SetTransactionTimeout(10000); err != nil {
+				t.Fatal(err)
+			}
+			tr, inner := newBareOptionsTx()
+			defer inner.Cancel()
+			inner.SetSizeLimit(1)
+			var defaults retryTxDefaults
+			tr.t.defaults = &defaults
+			if err := defaults.apply(db, tr.t); err != nil || defaults.pendingTimeout != 10000 {
+				t.Fatalf("pending setup: err=%v pending=%d", err, defaults.pendingTimeout)
+			}
+			if !tc.blocked {
+				if err := inner.OnError(context.Background(), &wire.FDBError{Code: 1020}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := tr.Options().SetTimeout(tc.timeout); err != nil {
+				t.Fatal(err)
+			}
+			want := int64(10000)
+			if tc.replace {
+				want = 0
+			}
+			if defaults.pendingTimeout != want || defaults.err != nil {
+				t.Fatalf("override capture: pending=%d err=%v, want pending=%d and no inherited failure", defaults.pendingTimeout, defaults.err, want)
+			}
+			_, err := inner.GetApproximateSize()
+			if tc.replace {
+				if err != nil {
+					t.Fatalf("successful override is poisoned: %v", err)
+				}
+			} else {
+				var fe *wire.FDBError
+				if !errors.As(err, &fe) || fe.Code != 2006 {
+					t.Fatalf("skipped/invalid override lost native poison: %v", err)
+				}
+			}
+		})
+	}
+}

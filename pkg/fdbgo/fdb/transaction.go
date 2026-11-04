@@ -351,9 +351,9 @@ func (tr Transaction) Reset() {
 	// tenant identity while clearing user options and restoring DB defaults.
 	tr.t.inner.Reset()
 	tr.t.versionstamps = true
-	err := tr.t.db.applyTxDefaults(tr.t, true)
+	err, pending := tr.t.db.applyTxDefaults(tr.t, true)
 	if tr.t.defaults != nil {
-		tr.t.defaults.err = err
+		tr.t.defaults.err, tr.t.defaults.pendingTimeout = err, pending
 	}
 }
 

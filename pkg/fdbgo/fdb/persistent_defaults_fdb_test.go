@@ -15,7 +15,11 @@ import (
 // OnError re-enters the callback (ReadYourWrites.actor.cpp:2680-2754).
 func persistentDefaultsRoute(t *testing.T, owner, route string) (fdb.Database, func(context.Context, func(fdb.ReadTransaction) (any, error)) (any, error)) {
 	t.Helper()
-	db := openTestDB(t)
+	return persistentDefaultsRouteForDatabase(t, openTestDB(t), owner, route)
+}
+
+func persistentDefaultsRouteForDatabase(t *testing.T, db fdb.Database, owner, route string) (fdb.Database, func(context.Context, func(fdb.ReadTransaction) (any, error)) (any, error)) {
+	t.Helper()
 	var transactor fdb.Transactor = db
 	create := db.CreateTransaction
 	if owner == "tenant" {
@@ -73,27 +77,45 @@ func persistentDefaultsRoute(t *testing.T, owner, route string) (fdb.Database, f
 	return db, run
 }
 
-// Read the computed next backoff after OnError completes, not the configured cap or elapsed time.
-// Reflection avoids adding a public inspection hook for the facade's private native handle.
-func effectiveRetryBackoff(t *testing.T, tx fdb.ReadTransaction) time.Duration {
+// Read-only reflection avoids adding public inspection hooks for the facade's private native handle.
+func nativeTransactionValue(t *testing.T, tx fdb.ReadTransaction) reflect.Value {
 	t.Helper()
 	v := reflect.ValueOf(tx)
 	for _, field := range []string{"t", "inner"} {
 		if !v.IsValid() || v.Kind() != reflect.Struct {
-			t.Fatalf("effective backoff: %T has no struct containing %q", tx, field)
+			t.Fatalf("native inspection: %T has no struct containing %q", tx, field)
 		}
 		v = v.FieldByName(field)
 		if !v.IsValid() || v.Kind() != reflect.Pointer || v.IsNil() {
-			t.Fatalf("effective backoff: %T field %q is not a non-nil pointer", tx, field)
+			t.Fatalf("native inspection: %T field %q is not a non-nil pointer", tx, field)
 		}
 		v = v.Elem()
 	}
 	if !v.IsValid() || v.Kind() != reflect.Struct {
-		t.Fatalf("effective backoff: %T native handle is not a struct", tx)
+		t.Fatalf("native inspection: %T native handle is not a struct", tx)
 	}
-	v = v.FieldByName("backoff")
+	return v
+}
+
+// Inspect the computed next backoff after OnError, not the configured cap or elapsed time.
+func effectiveRetryBackoff(t *testing.T, tx fdb.ReadTransaction) time.Duration {
+	t.Helper()
+	v := nativeTransactionValue(t, tx).FieldByName("backoff")
 	if !v.IsValid() || v.Kind() != reflect.Int64 {
 		t.Fatalf("effective backoff: %T native backoff is not an int64 duration", tx)
+	}
+	return time.Duration(v.Int())
+}
+
+func effectiveTransactionTimeout(t *testing.T, tx fdb.ReadTransaction) time.Duration {
+	t.Helper()
+	v := nativeTransactionValue(t, tx).FieldByName("timeoutNs")
+	if !v.IsValid() || v.Kind() != reflect.Struct {
+		t.Fatalf("effective timeout: %T native timeoutNs is not an atomic struct", tx)
+	}
+	v = v.FieldByName("v")
+	if !v.IsValid() || v.Kind() != reflect.Int64 {
+		t.Fatalf("effective timeout: %T atomic timeout value is not an int64 duration", tx)
 	}
 	return time.Duration(v.Int())
 }

@@ -477,36 +477,57 @@ func (db Database) ReadTransactCtx(ctx context.Context, f func(ReadTransaction) 
 	return result, nil
 }
 
-// retryTxDefaults retains failed inherited options across callbacks, as C++ reapplies its list.
-// Explicit Reset refreshes err; unrelated database updates do not change an existing transaction.
+// retryTxDefaults retains failed or skipped inherited timeouts, as C++ reapplies its option list.
+// Explicit Reset refreshes both states; database updates alone do not change the captured value.
 type retryTxDefaults struct {
-	applied bool
-	err     error
+	applied        bool
+	err            error
+	pendingTimeout int64
 }
 
 func (d *retryTxDefaults) apply(db Database, t *transaction) error {
 	if d.err != nil {
 		return convertError(d.err)
 	}
-	d.err = db.applyTxDefaults(t, !d.applied)
-	d.applied = true
-	// Initial option failures remain deferred; reject reentry if OnError cleared them.
+	if !d.applied {
+		d.err, d.pendingTimeout = db.applyTxDefaults(t, true)
+		d.applied = true
+		// Initial option failures remain deferred; reject reentry if OnError cleared them.
+		return nil
+	}
+	if d.pendingTimeout > 0 {
+		d.err, d.pendingTimeout = applyTimeoutDefault(t, d.pendingTimeout)
+		if d.err != nil {
+			return convertError(d.err)
+		}
+	}
+	db.applyTxDefaults(t, false)
 	return nil
 }
 
-// applyTxDefaults captures only txDefaults fields; persistent options apply at construction/Reset.
-// Its error retains failed persistent application, not unrelated deferred errors cleared by OnError.
-func (db Database) applyTxDefaults(t *transaction, persistent bool) error {
+// applyTxDefaults captures only facade fields; its results distinguish failed and skipped timeouts.
+// Retry callbacks retain installed overrides and reattempt only the skipped timeout value.
+func (db Database) applyTxDefaults(t *transaction, persistent bool) (error, int64) {
 	return db.d.defaults().apply(t, persistent)
 }
 
-func (d txDefaults) apply(t *transaction, persistent bool) error {
+// applyTimeoutDefault distinguishes a failed timeout from an option skipped on an already-poisoned handle.
+// Both verdict queries read only local counters; pending values retain their original snapshot.
+func applyTimeoutDefault(t *transaction, timeout int64) (error, int64) {
+	if _, err := t.inner.GetApproximateSize(); err != nil {
+		return nil, timeout
+	}
+	t.inner.SetTimeout(timeout)
+	_, err := t.inner.GetApproximateSize()
+	return err, 0
+}
+
+func (d txDefaults) apply(t *transaction, persistent bool) (error, int64) {
 	var persistentErr error
+	var pendingTimeout int64
 	if persistent {
 		if d.timeout > 0 {
-			t.inner.SetTimeout(d.timeout)
-			// This synchronous deferred-error query only reads local counters; it performs no I/O.
-			_, persistentErr = t.inner.GetApproximateSize()
+			persistentErr, pendingTimeout = applyTimeoutDefault(t, d.timeout)
 		}
 		if d.hasRetryLimit {
 			t.inner.SetRetryLimit(d.retryLimit)
@@ -530,7 +551,7 @@ func (d txDefaults) apply(t *transaction, persistent bool) error {
 	if d.causalReadRisky {
 		t.inner.SetCausalReadRisky(true)
 	}
-	return persistentErr
+	return persistentErr, pendingTimeout
 }
 
 // Options returns a DatabaseOptions handle for setting database-level defaults.

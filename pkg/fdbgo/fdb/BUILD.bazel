@@ -87,6 +87,7 @@ go_test(
         "unbounded_default_pin_test.go",
         "versionstamp_lifetime_test.go",
         "watch_lifecycle_fdb_test.go",
+        "wrapped_defaults_retry_fdb_test.go",
     ],
     embed = [":fdb"],
     embedsrcs = [
