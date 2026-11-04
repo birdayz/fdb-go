@@ -82,43 +82,31 @@ func TestIntegrationTextSignedZeroGroups(t *testing.T) {
 					var actual []int64
 					exhausted := false
 					for page := 0; page < 30 && !exhausted; page++ {
-						_, e = testDB.Run(context.Background(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
+						result, e := readTextTestPage(context.Background(), continuation, testDB.Run, func(rtx *recordlayer.FDBRecordContext, input []byte) (recordlayer.RecordCursor[QueryResult], error) {
 							store, e := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(metadata).SetSubspace(space).Open()
 							if e != nil {
 								return nil, e
 							}
 							props := recordlayer.DefaultExecuteProperties()
 							props.ReturnedRowLimit = pageSize
-							cursor, e := ExecutePlan(context.Background(), plan, store, EmptyEvaluationContext(), continuation, props)
-							if e != nil {
-								return nil, e
-							}
-							defer cursor.Close()
-							for {
-								result, e := cursor.OnNext(context.Background())
-								if e != nil {
-									return nil, e
-								}
-								if !result.HasNext() {
-									exhausted = result.GetNoNextReason().IsSourceExhausted()
-									continuation, e = result.GetContinuation().ToBytes()
-									return nil, e
-								}
-								row := result.GetValue()
-								r := row.Record.Record.(*demopb.TypedRecord)
-								// Verify original record identity, including the physically distinct zero sign.
-								if !bytes.Equal(row.PrimaryKey.Pack(), tuple.Tuple{r.GetId()}.Pack()) {
-									t.Fatalf("wrong fetched primary key: %v", row.PrimaryKey)
-								}
-								wantNegative := r.GetId() == 2 || r.GetId() == 4 || r.GetId() == 5 || r.GetId() == 8 || r.GetId() == 9
-								if math.Signbit(r.GetValDouble()) != wantNegative {
-									t.Fatalf("wrong fetched group for id %d", r.GetId())
-								}
-								actual = append(actual, r.GetId())
-							}
+							return ExecutePlan(context.Background(), plan, store, EmptyEvaluationContext(), input, props)
 						})
 						if e != nil {
 							t.Fatal(e)
+						}
+						continuation = result.continuation
+						exhausted = result.reason.IsSourceExhausted()
+						for _, row := range result.rows {
+							r := row.Record.Record.(*demopb.TypedRecord)
+							// Verify original record identity, including the physically distinct zero sign.
+							if !bytes.Equal(row.PrimaryKey.Pack(), tuple.Tuple{r.GetId()}.Pack()) {
+								t.Fatalf("wrong fetched primary key: %v", row.PrimaryKey)
+							}
+							wantNegative := r.GetId() == 2 || r.GetId() == 4 || r.GetId() == 5 || r.GetId() == 8 || r.GetId() == 9
+							if math.Signbit(r.GetValDouble()) != wantNegative {
+								t.Fatalf("wrong fetched group for id %d", r.GetId())
+							}
+							actual = append(actual, r.GetId())
 						}
 					}
 					if !exhausted {

@@ -306,6 +306,7 @@ go_test(
         "system_rows_test.go",
         "table_path_reference_test.go",
         "template_routine_getters_test.go",
+        "text_index_ddl_test.go",
         "text_search_test.go",
         "tx_cancelled_context_test.go",
         "tx_catalog_binding_test.go",
@@ -589,6 +590,7 @@ go_test(
         "explicit_tx_commit_handoff_test.go",
         "text_index_ddl.go",
         "text_search_test.go",
+        "text_index_ddl_test.go",
     ],
     tags = ["resources:cpu:4"],
     deps = [

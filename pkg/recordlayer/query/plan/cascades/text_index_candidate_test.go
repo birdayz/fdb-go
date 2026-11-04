@@ -152,6 +152,7 @@ func TestTextCandidateEligibility(t *testing.T) {
 		{name: "explicit default", typ: predicates.ComparisonTextContainsAll, tokenizer: "default", want: true},
 		{name: "tokenizer mismatch", typ: predicates.ComparisonTextContainsAll, tokenizer: "other"},
 		{name: "named tokenizer older version", typ: predicates.ComparisonTextContainsAll, tokenizer: "default", maxVersion: 1},
+		{name: "named tokenizer latest version with historical postings", typ: predicates.ComparisonTextContainsAll, tokenizer: "default", version: 1, maxVersion: 1},
 		{name: "any tokenizer older version", typ: predicates.ComparisonTextContainsAll, maxVersion: 1, want: true},
 		{name: "strict all prefixes", typ: predicates.ComparisonTextContainsAllPrefixes, strictPrefix: true, want: true},
 		{name: "all prefixes", typ: predicates.ComparisonTextContainsAllPrefixes, want: true},

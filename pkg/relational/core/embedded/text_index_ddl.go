@@ -3,6 +3,7 @@ package embedded
 import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
@@ -59,7 +60,8 @@ func parseTextIndexDefinition(def *antlrgen.TextIndexDefinitionContext, b *metad
 			return nil, api.NewErrorf(api.ErrCodeUndefinedColumn,
 				"fulltext index %q: unknown column %q", indexName, name)
 		}
-		if field.IsList() || field.IsMap() || field.Kind() == protoreflect.MessageKind || field.Kind() == protoreflect.GroupKind || (text && field.Kind() != protoreflect.StringKind) {
+		unsupportedMessage := field.Kind() == protoreflect.MessageKind && (text || field.Message() == nil || string(field.Message().FullName()) != functions.UUIDProtoMessageName)
+		if field.IsList() || field.IsMap() || unsupportedMessage || field.Kind() == protoreflect.GroupKind || (text && field.Kind() != protoreflect.StringKind) {
 			return nil, api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 				"fulltext index %q: column %q must be scalar%s", indexName, name, textIndexColumnRequirement(text))
 		}
@@ -87,6 +89,35 @@ func parseTextIndexDefinition(def *antlrgen.TextIndexDefinitionContext, b *metad
 	b.AddGeneratedIndex(string(rt.Descriptor.Name()), indexName,
 		recordlayer.GroupBy(text, groups...), recordlayer.IndexTypeText, false, nil, nil)
 	return nil
+}
+
+// SQL text access supports only direct scalar coordinates; unsupported key
+// expressions retain ordinary record filtering rather than losing identity.
+func textIndexScalarColumns(key *gen.KeyExpression) ([]string, bool) {
+	if key == nil {
+		return nil, false
+	}
+	switch {
+	case key.Field != nil:
+		if key.Field.GetFieldName() == "" || key.Field.GetFanType() != gen.Field_SCALAR {
+			return nil, false
+		}
+		return []string{recordlayer.ToUserIdentifier(key.Field.GetFieldName())}, true
+	case key.Then != nil:
+		var columns []string
+		for _, child := range key.Then.GetChild() {
+			part, ok := textIndexScalarColumns(child)
+			if !ok {
+				return nil, false
+			}
+			columns = append(columns, part...)
+		}
+		return columns, len(columns) > 0
+	case key.Grouping != nil:
+		return textIndexScalarColumns(key.Grouping.GetWholeKey())
+	default:
+		return nil, false
+	}
 }
 
 func textIndexColumnRequirement(text bool) string {

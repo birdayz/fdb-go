@@ -76,7 +76,11 @@ ORDER BY id DESC LIMIT 20
 ```
 
 `PARTITION BY` is optional. DDL requires exactly one scalar STRING text column;
-partition columns must be scalar. The tokenized column must not also be part of
+partition columns must be scalar (including UUID, but not structs or arrays).
+SQL text access requires direct scalar metadata key coordinates: nested,
+computed and fan-out expressions retain ordinary record filtering. A quoted
+flat dotted column remains one column, not a nested field path.
+The tokenized column must not also be part of
 the primary key: normal primary-key trimming would replace the recoverable key
 component with a token, so these indexes cannot safely fetch records. Go declines
 such existing metadata as a text access path (ordinary record filtering remains
@@ -97,19 +101,25 @@ with default tokenizer/version options, not a separate SQL storage format.
 `(field, query, positive_constant_distance [, constant_tokenizer_name])`.
 A constant is a literal or a bound parameter. The functions are boolean
 expressions, usable in a WHERE clause or a projection. Unquoted
-`TEXT_CONTAINS_*` calls resolve to built-ins before same-named schema functions;
-quote the function name to call such a schema function instead.
+`TEXT_CONTAINS_*` calls preserve schema-macro precedence. With
+`CASE_SENSITIVE_IDENTIFIERS`, a same-casefold macro family reserves the name:
+exact spelling selects the schema macro and a case mismatch is undefined, not a
+builtin fallback. Without a colliding macro family, bare builtin names remain
+case-insensitive. Quoted calls resolve schema functions only.
 The field and query must be STRING (query parameters are allowed). SQL resolves
 an omitted tokenizer name explicitly to `default`; an explicit name uses that
 registered tokenizer's maximum supported version on both indexed and residual
-paths. An index with a different tokenizer or an older version is not eligible
-for that SQL predicate. The lower-level Record Layer comparison retains Java's
+paths. SQL text access requires the same tokenizer at version **0**, including
+a maximum supported version of 0. A newer configured version—even the latest
+supported one—is not evidence that historical postings were rewritten; such an
+index retains ordinary record filtering. The lower-level Record Layer comparison retains Java's
 context-dependent contract: an eligible text scan uses its index tokenizer and
 configured version; ordinary record evaluation uses the primary tokenizer (or
 fallback tokenizer, or default) at its maximum version. Without a primary
 tokenizer name, any eligible index tokenizer can be selected, as in Java.
-Applications requiring index-independent semantics should name the tokenizer
-and use a current-version index, or use the SQL extension's resolved contract.
+Applications requiring index-independent semantics should use the SQL
+extension's resolved contract; naming a lower-level tokenizer does not certify
+the versions of historical index postings.
 SQL string comparands, including prefixes, are tokenized; the Record Layer's
 pre-tokenized list API is the way to request raw case-sensitive token spelling. NULL fields
 or query values yield UNKNOWN; empty/all-stop-word queries select no records,

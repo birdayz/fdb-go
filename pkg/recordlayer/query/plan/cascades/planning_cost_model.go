@@ -1010,7 +1010,7 @@ func collectSargedAliases(e expressions.RelationalExpression) map[values.Correla
 //     fold over the legs, so only comparisons carried by ALL legs survive, and
 //     the intersection node contributes none of its own. Dispatched off the
 //     IntersectionExpression marker, as Java dispatches off the visit override.
-//   - visitRecordQueryTextIndexPlan contributes its grouping and suffix
+//   - visitRecordQueryTextIndexPlan contributes its grouping and text
 //     comparisons through textScanComparisons.
 //
 // The visitor's remaining behaviours are deliberately NOT reproduced, and the

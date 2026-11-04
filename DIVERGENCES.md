@@ -16,12 +16,19 @@ not every one has been re-measured on 4.14.2.0.
 Go exposes `CREATE FULLTEXT INDEX ... ON table(text_column) [PARTITION BY (...)]`
 and the seven `TEXT_CONTAINS_*` SQL functions as a Go extension. Java Relational
 4.14.2.0 has only the reserved `FULLTEXT` lexer token, not these parser productions
-or built-ins (checked against the exact `4.14.2.0` source tag). Unquoted
-`TEXT_CONTAINS_*` names resolve to Go's built-ins before same-named schema
-functions; quoted names still resolve to schema functions. SQL resolves its
-tokenizer name explicitly (default: `default`) at the tokenizer's maximum
-version, and declines older-version indexes so adding an index cannot change
-the SQL predicate's meaning. Lower-level Record Layer comparisons retain
+or built-ins (checked against the exact `4.14.2.0` source tag). Existing schema
+macros retain precedence over `TEXT_CONTAINS_*` built-ins. With
+`CASE_SENSITIVE_IDENTIFIERS`, a same-casefold macro family reserves the name
+and exact spelling resolves the macro; a mismatched case is not a builtin
+escape. Without such a macro family, bare builtin names remain case-insensitive;
+quoted calls resolve only schema functions. SQL resolves its tokenizer name
+explicitly (default: `default`) at the tokenizer's maximum version. SQL text
+access requires matching name and version **0**: a current option above zero
+cannot prove all historical postings were rewritten. Such indexes retain record
+filtering, even when their option equals the tokenizer's maximum. SQL access also
+requires direct scalar key coordinates; nested, computed and fan-out keys retain
+record filtering rather than borrowing flattened column names. A quoted flat
+dotted column is one coordinate, not a nested path. Lower-level Record Layer comparisons retain
 Java's index-bound versus fallback tokenizer/version resolution. SQL sorting and
 residual filtering reuse the ordinary query operators above a text access path;
 Java's classic Record Layer text planner itself declines requested sorts.

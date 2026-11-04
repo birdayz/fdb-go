@@ -30,8 +30,7 @@ func TestIntegrationTextSharedLimitsAndCancellation(t *testing.T) {
 			var continuation []byte
 			stops := 0
 			for page := 0; page < 100; page++ {
-				exhausted := false
-				_, err := testDB.Run(context.Background(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				result, err := readTextTestPage(context.Background(), continuation, testDB.Run, func(rtx *recordlayer.FDBRecordContext, input []byte) (recordlayer.RecordCursor[QueryResult], error) {
 					s, e := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).SetSubspace(store.Subspace()).Open()
 					if e != nil {
 						return nil, e
@@ -45,31 +44,19 @@ func TestIntegrationTextSharedLimitsAndCancellation(t *testing.T) {
 					case "time":
 						props.TimeLimit = time.Nanosecond
 					}
-					c, e := ExecutePlan(context.Background(), textTestPlan(t, predicates.ComparisonTextContainsAny, "red blue", false, false), s, EmptyEvaluationContext(), continuation, props)
-					if e != nil {
-						return nil, e
-					}
-					defer c.Close()
-					for {
-						r, e := c.OnNext(context.Background())
-						if e != nil {
-							return nil, e
-						}
-						if !r.HasNext() {
-							exhausted = r.GetNoNextReason().IsSourceExhausted()
-							if !exhausted {
-								stops++
-							}
-							continuation, e = r.GetContinuation().ToBytes()
-							return nil, e
-						}
-						got = append(got, r.GetValue().Record.Record.(*demopb.Order).GetOrderId())
-					}
+					return ExecutePlan(context.Background(), textTestPlan(t, predicates.ComparisonTextContainsAny, "red blue", false, false), s, EmptyEvaluationContext(), input, props)
 				})
 				if err != nil {
 					t.Fatal(err)
 				}
-				if exhausted {
+				continuation = result.continuation
+				for _, row := range result.rows {
+					got = append(got, row.Record.Record.(*demopb.Order).GetOrderId())
+				}
+				if !result.reason.IsSourceExhausted() {
+					stops++
+				}
+				if result.reason.IsSourceExhausted() {
 					break
 				}
 				if page == 99 {

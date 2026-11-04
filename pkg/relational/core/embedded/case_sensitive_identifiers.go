@@ -23,7 +23,7 @@ import (
 // Java normalizes; keywords, literals and built-in function names are not
 // uids and are untouched. A statement that does not parse is returned as it
 // is, for the ordinary path to report.
-func caseSensitiveIdentifiers(sql string) string {
+func caseSensitiveIdentifiers(sql string, schemaFunction ...func(string) bool) string {
 	root, err := parser.Parse(sql)
 	if err != nil || root == nil {
 		return sql
@@ -38,14 +38,16 @@ func caseSensitiveIdentifiers(sql string) string {
 			}
 			return
 		}
-		// A user-defined scalar call name is normalized like a uid
-		// (ExpressionVisitor.visitUserDefinedScalarFunctionCall), but a
-		// built-in reached through that rule resolves case-insensitively
-		// before any user function (SqlFunctionCatalogImpl's lower-cased
-		// synonyms), so its name is left as written.
+		// Shared built-ins keep case-insensitive spelling. A schema routine
+		// sharing a Go extension's name retains normal identifier semantics.
 		if f, ok := n.(*antlrgen.UserDefinedScalarFunctionNameContext); ok {
-			if id := f.ID(); id != nil && !expr.IsBareNameBuiltin(id.GetText()) && !unicode15.EqualFold(id.GetText(), "JAVA_CALL") {
-				spans = append(spans, span{id.GetSymbol().GetStart(), id.GetSymbol().GetStop()})
+			if id := f.ID(); id != nil {
+				name := id.GetText()
+				sharedBuiltin := unicode15.EqualFold(name, "CARDINALITY") || unicode15.EqualFold(name, "JAVA_CALL")
+				macro := !sharedBuiltin && expr.IsBareNameBuiltin(name) && len(schemaFunction) > 0 && schemaFunction[0](name)
+				if !sharedBuiltin && (!expr.IsBareNameBuiltin(name) || macro) {
+					spans = append(spans, span{id.GetSymbol().GetStart(), id.GetSymbol().GetStop()})
+				}
 			}
 			return
 		}

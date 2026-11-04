@@ -2,7 +2,6 @@ package cascades
 
 import (
 	"slices"
-	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -82,9 +81,9 @@ func textAccessAlternatives(ctx PlanContext, inner plans.RecordQueryPlan, preds 
 				continue
 			}
 			requestedTokenizer := cp.Comparison.TextTokenizerName
-			// A named tokenizer evaluates at its latest version, so only an
-			// index at that version returns the same records.
-			if requestedTokenizer != "" && (requestedTokenizer != c.TokenizerName || c.TokenizerVersion != c.TokenizerMaxVersion) {
+			// Metadata upgrades retain older postings. Only initial version 0
+			// proves a named latest-version scan has no earlier posting version.
+			if requestedTokenizer != "" && (requestedTokenizer != c.TokenizerName || c.TokenizerVersion != c.TokenizerMaxVersion || c.TokenizerVersion != 0) {
 				continue
 			}
 			typ := cp.Comparison.Type
@@ -155,15 +154,11 @@ func textFieldMatchesColumn(field values.FieldValue, column string, alias values
 	if !ok || root.Correlation() != alias {
 		return false
 	}
-	requests := make([]values.FieldRequest, 0)
-	for _, name := range strings.Split(column, ".") {
-		r, err := values.FieldByName(name)
-		if err != nil {
-			return false
-		}
-		requests = append(requests, r)
+	request, err := values.FieldByName(column)
+	if err != nil {
+		return false
 	}
-	expected, err := values.ResolveFieldAccess(field.ChildValue(), requests)
+	expected, err := values.ResolveFieldAccess(field.ChildValue(), []values.FieldRequest{request})
 	if err != nil {
 		return false
 	}

@@ -19,11 +19,20 @@ import (
 
 // Version 0 indexes the first word and version 1 the last, in both modes, so
 // a planner that ignores the version returns different records.
-type sqlTextVersionTokenizer struct{ name string }
+type sqlTextVersionTokenizer struct {
+	name      string
+	singleton bool
+}
 
 func (t *sqlTextVersionTokenizer) Name() string  { return t.name }
 func (*sqlTextVersionTokenizer) MinVersion() int { return 0 }
-func (*sqlTextVersionTokenizer) MaxVersion() int { return 1 }
+func (t *sqlTextVersionTokenizer) MaxVersion() int {
+	if t.singleton {
+		return 0
+	}
+	return 1
+}
+
 func (t *sqlTextVersionTokenizer) TokenizeToList(text string, version int, mode recordlayer.TokenizerMode) ([]string, error) {
 	if err := recordlayer.ValidateTokenizerVersion(t, version); err != nil {
 		return nil, err
@@ -75,6 +84,8 @@ func (f *sqlTextTokenizerFactory) GetTokenizer() recordlayer.TextTokenizer { ret
 
 var fulltextSQLVersionFactory = &sqlTextTokenizerFactory{tokenizer: &sqlTextVersionTokenizer{name: "sql_fulltext_version_regression"}}
 
+var fulltextSQLBoundFactory = &sqlTextTokenizerFactory{tokenizer: &sqlTextVersionTokenizer{name: "sql_fulltext_bound_regression", singleton: true}}
+
 func TestFDBFullTextExplicitTokenizerAndVersions(t *testing.T) {
 	t.Parallel()
 	if testkit.ClusterFile() == "" {
@@ -121,8 +132,8 @@ func TestFDBFullTextExplicitTokenizerAndVersions(t *testing.T) {
 			index bool
 		}{
 			{"SELECT id FROM docs WHERE TEXT_CONTAINS_ALL(body,'red')", 1, false},
-			{"SELECT id FROM docs WHERE TEXT_CONTAINS_ALL(body,'red','" + name + "')", 0, version == "1"},
-			{"SELECT id FROM docs WHERE TEXT_CONTAINS_ALL(body,'blue','" + name + "')", 1, version == "1"},
+			{"SELECT id FROM docs WHERE TEXT_CONTAINS_ALL(body,'red','" + name + "')", 0, false},
+			{"SELECT id FROM docs WHERE TEXT_CONTAINS_ALL(body,'blue','" + name + "')", 1, false},
 		} {
 			plan, err := embedded.PlanRecordQueryWithMetadata(tc.query, md, nil)
 			if err != nil {

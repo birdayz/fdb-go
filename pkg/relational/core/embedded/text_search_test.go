@@ -188,23 +188,45 @@ func TestFullTextJoinAndProjectionPlans(t *testing.T) {
 
 func TestFullTextCaseSensitiveAndMacroResolution(t *testing.T) {
 	t.Parallel()
-	const ddl = "CREATE TABLE docs(id BIGINT, body STRING, PRIMARY KEY(id)) CREATE FULLTEXT INDEX body_text ON docs(body) CREATE FUNCTION TEXT_CONTAINS_ALL(IN body STRING, IN term STRING) RETURNS BOOLEAN RETURN FALSE"
-	template, err := BuildSchemaTemplateFromDDL(ddl)
+	const base = "CREATE TABLE docs(id BIGINT, body STRING, PRIMARY KEY(id)) CREATE FULLTEXT INDEX body_text ON docs(body)"
+	for _, name := range []string{"TEXT_CONTAINS_ALL", "TEXT_CONTAINS_ANY", "TEXT_CONTAINS_PHRASE", "TEXT_CONTAINS_ALL_WITHIN", "TEXT_CONTAINS_PREFIX", "TEXT_CONTAINS_ALL_PREFIXES", "TEXT_CONTAINS_ANY_PREFIX"} {
+		mixed := "Text_" + strings.TrimPrefix(name, "TEXT_")
+		template, err := BuildSchemaTemplateFromDDL(base + " CREATE FUNCTION " + name + "(IN body STRING) RETURNS BOOLEAN RETURN FALSE CREATE FUNCTION \"" + mixed + "\"(IN body STRING) RETURNS BOOLEAN RETURN FALSE")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, sensitive := range []bool{false, true} {
+			for _, spelling := range []string{name, strings.ToLower(name), mixed, `"` + name + `"`, `"` + mixed + `"`, `"` + strings.ToLower(name) + `"`} {
+				query := "SELECT ID FROM DOCS WHERE " + spelling + "(BODY)"
+				if sensitive {
+					query = caseSensitiveIdentifiers(query, func(string) bool { return true })
+				}
+				plan, err := PlanRecordQueryWithMetadata(query, template.Underlying(), nil)
+				wantError := spelling == `"`+strings.ToLower(name)+`"` || sensitive && spelling == strings.ToLower(name)
+				if wantError {
+					if err == nil {
+						t.Fatalf("sensitive=%v %s unexpectedly resolved: %s", sensitive, query, plan.Explain())
+					}
+					continue
+				}
+				if err != nil || strings.Contains(plan.Explain(), "TextIndexScan") {
+					t.Fatalf("sensitive=%v %s: plan=%v err=%v", sensitive, query, plan, err)
+				}
+			}
+		}
+	}
+	template, err := BuildSchemaTemplateFromDDL(base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, query := range []string{
-		"SELECT ID FROM DOCS WHERE text_contains_all(BODY,'red')",
-		caseSensitiveIdentifiers("SELECT ID FROM DOCS WHERE text_contains_all(BODY,'red')"),
-	} {
+	for _, query := range []string{"SELECT ID FROM DOCS WHERE text_contains_all(BODY,'red')", caseSensitiveIdentifiers("SELECT ID FROM DOCS WHERE text_contains_all(BODY,'red')")} {
 		plan, err := PlanRecordQueryWithMetadata(query, template.Underlying(), nil)
 		if err != nil || !strings.Contains(plan.Explain(), "TextIndexScan(BODY_TEXT") {
-			t.Fatalf("%s: plan=%v err=%v", query, plan, err)
+			t.Fatalf("no-macro control %s: plan=%v err=%v", query, plan, err)
 		}
 	}
-	plan, err := PlanRecordQueryWithMetadata(`SELECT id FROM docs WHERE "TEXT_CONTAINS_ALL"(body,'red')`, template.Underlying(), nil)
-	if err != nil || strings.Contains(plan.Explain(), "TextIndexScan") {
-		t.Fatalf("quoted macro: plan=%v err=%v", plan, err)
+	if _, err := PlanRecordQueryWithMetadata(`SELECT ID FROM DOCS WHERE "TEXT_CONTAINS_ALL"(BODY,'red')`, template.Underlying(), nil); err == nil {
+		t.Fatal("quoted undefined function became a builtin")
 	}
 }
 

@@ -89,36 +89,23 @@ func TestIntegrationTextQueryPredicatesAndPagination(t *testing.T) {
 						var got []int64
 						var continuation []byte
 						for page := 0; page < 100; page++ {
-							var exhausted bool
-							_, err := testDB.Run(context.Background(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
+							result, err := readTextTestPage(context.Background(), continuation, testDB.Run, func(rtx *recordlayer.FDBRecordContext, input []byte) (recordlayer.RecordCursor[QueryResult], error) {
 								s, e := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).SetSubspace(testSubspace(t)).Open()
 								if e != nil {
 									return nil, e
 								}
 								props := recordlayer.DefaultExecuteProperties()
 								props.ReturnedRowLimit = pageSize
-								c, e := ExecutePlan(context.Background(), plan, s, EmptyEvaluationContext(), continuation, props)
-								if e != nil {
-									return nil, e
-								}
-								defer c.Close()
-								for {
-									r, e := c.OnNext(context.Background())
-									if e != nil {
-										return nil, e
-									}
-									if !r.HasNext() {
-										exhausted = r.GetNoNextReason().IsSourceExhausted()
-										continuation, e = r.GetContinuation().ToBytes()
-										return nil, e
-									}
-									got = append(got, r.GetValue().Record.Record.(*demopb.Order).GetOrderId())
-								}
+								return ExecutePlan(context.Background(), plan, s, EmptyEvaluationContext(), input, props)
 							})
 							if err != nil {
 								t.Fatalf("%v query=%v reverse=%v page=%d: %v", tc.typ, tc.query, reverse, pageSize, err)
 							}
-							if exhausted {
+							continuation = result.continuation
+							for _, row := range result.rows {
+								got = append(got, row.Record.Record.(*demopb.Order).GetOrderId())
+							}
+							if result.reason.IsSourceExhausted() {
 								break
 							}
 							if page == 99 {

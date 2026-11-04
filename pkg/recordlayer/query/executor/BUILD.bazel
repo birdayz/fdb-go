@@ -181,6 +181,7 @@ go_test(
         "text_float_union_integration_test.go",
         "text_index_integration_test.go",
         "text_limits_integration_test.go",
+        "text_page_test.go",
         "text_shared_budget_integration_test.go",
         "text_suffix_identity_integration_test.go",
         "text_zero_group_integration_test.go",
@@ -353,6 +354,7 @@ go_test(
         "text_shared_budget_integration_test.go",
         "text_suffix_identity_integration_test.go",
         "text_zero_group_integration_test.go",
+        "text_page_test.go",
     ],
     tags = ["resources:memory:400"],
     deps = [

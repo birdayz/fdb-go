@@ -63,37 +63,24 @@ func TestIntegrationTextAnyPhysicalFloatingSuffixOrder(t *testing.T) {
 			var actual [][]byte
 			var continuation []byte
 			for page := 0; page < 20; page++ {
-				exhausted := false
-				_, err := testDB.Run(context.Background(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				result, err := readTextTestPage(context.Background(), continuation, testDB.Run, func(rtx *recordlayer.FDBRecordContext, input []byte) (recordlayer.RecordCursor[QueryResult], error) {
 					store, e := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(metadata).SetSubspace(testSubspace(t)).Open()
 					if e != nil {
 						return nil, e
 					}
 					properties := recordlayer.DefaultExecuteProperties()
 					properties.ReturnedRowLimit = pageSize
-					cursor, e := ExecutePlan(context.Background(), plan, store, EmptyEvaluationContext(), continuation, properties)
-					if e != nil {
-						return nil, e
-					}
-					defer cursor.Close()
-					for {
-						result, e := cursor.OnNext(context.Background())
-						if e != nil {
-							return nil, e
-						}
-						if !result.HasNext() {
-							exhausted = result.GetNoNextReason().IsSourceExhausted()
-							continuation, e = result.GetContinuation().ToBytes()
-							return nil, e
-						}
-						record := result.GetValue().Record.Record.(*demopb.TypedRecord)
-						actual = append(actual, tuple.Tuple{record.GetValDouble(), record.GetId()}.Pack())
-					}
+					return ExecutePlan(context.Background(), plan, store, EmptyEvaluationContext(), input, properties)
 				})
 				if err != nil {
 					t.Fatal(err)
 				}
-				if exhausted {
+				continuation = result.continuation
+				for _, row := range result.rows {
+					record := row.Record.Record.(*demopb.TypedRecord)
+					actual = append(actual, tuple.Tuple{record.GetValDouble(), record.GetId()}.Pack())
+				}
+				if result.reason.IsSourceExhausted() {
 					break
 				}
 				if page == 19 {

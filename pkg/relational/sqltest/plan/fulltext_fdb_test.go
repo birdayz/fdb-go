@@ -234,10 +234,10 @@ func TestFDBFullTextPartitionInList(t *testing.T) {
 	}
 }
 
-func TestFDBFullTextQuantifiersAndMacroResolution(t *testing.T) {
+func TestFDBFullTextQuantifiers(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	db := testkit.SetupPlanShapeDB(t, "fulltext_quantifiers", "CREATE TABLE tenants(id BIGINT, PRIMARY KEY(id)) CREATE TABLE docs(id BIGINT, tenant BIGINT, body STRING, PRIMARY KEY(id)) CREATE FULLTEXT INDEX body_text ON docs(body) CREATE TABLE plain_docs(id BIGINT, tenant BIGINT, body STRING, PRIMARY KEY(id)) CREATE FUNCTION TEXT_CONTAINS_ALL(IN body STRING, IN term STRING) RETURNS BOOLEAN RETURN FALSE")
+	db := testkit.SetupPlanShapeDB(t, "fulltext_quantifiers", "CREATE TABLE tenants(id BIGINT, PRIMARY KEY(id)) CREATE TABLE docs(id BIGINT, tenant BIGINT, body STRING, PRIMARY KEY(id)) CREATE FULLTEXT INDEX body_text ON docs(body) CREATE TABLE plain_docs(id BIGINT, tenant BIGINT, body STRING, PRIMARY KEY(id))")
 	if _, err := db.ExecContext(ctx, "INSERT INTO tenants VALUES (1),(2),(3)"); err != nil {
 		t.Fatal(err)
 	}
@@ -263,19 +263,6 @@ func TestFDBFullTextQuantifiersAndMacroResolution(t *testing.T) {
 			if got := testkit.GetInts(t, ctx, db, query); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("%s: got %v want %v", query, got, tc.want)
 			}
-		}
-	}
-	for _, tc := range []struct {
-		name string
-		want []int64
-		text bool
-	}{{"TEXT_CONTAINS_ALL", []int64{1}, true}, {`"TEXT_CONTAINS_ALL"`, nil, false}} {
-		query := "SELECT id FROM docs WHERE " + tc.name + "(body,'red') ORDER BY id"
-		if plan := testkit.ExplainVia(t, ctx, db, query); strings.Contains(plan, "TextIndexScan(BODY_TEXT") != tc.text {
-			t.Fatalf("%s: %s", query, plan)
-		}
-		if got := testkit.GetInts(t, ctx, db, query); !reflect.DeepEqual(got, tc.want) {
-			t.Fatalf("%s: got %v want %v", query, got, tc.want)
 		}
 	}
 }

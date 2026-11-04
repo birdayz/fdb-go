@@ -724,7 +724,7 @@ func textQueryCommonPrimaryKey(md *RecordMetaData, recordTypes []string) (KeyExp
 
 // TextIndexLayout is what a query planner needs to know about a TEXT index.
 type TextIndexLayout struct {
-	// Tokenizer and TokenizerVersion wrote the index's postings.
+	// Current maintenance options; older postings can retain earlier versions.
 	Tokenizer        TextTokenizer
 	TokenizerVersion int
 	// TextPosition is the text column's position: the grouping column count.
