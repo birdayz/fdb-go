@@ -5,9 +5,12 @@
 pre-1.0 project does not promise an automatic upgrade or downgrade between every
 pair of Go revisions. The current readiness statement is [STATUS.md](../STATUS.md).
 
+**v0.2.0 publication is pending.** This guide describes its release scope, not the
+completion of the release gates in [RELEASE.md](../RELEASE.md).
+
 ## CLI name, commands, and configuration
 
-The development candidate replaces `frl` with the root module's `cmd/fdb`
+v0.2.0 replaces `frl` with the root module's `cmd/fdb`
 package. Build the checkout with `go build -o .tmpbuild/fdb ./cmd/fdb` until a
 release containing this package is published; then install its exact root tag
 with `go install fdb.dev/cmd/fdb@<tag>`. Old nested-module releases do not contain
@@ -31,7 +34,7 @@ runnable protobuf and SQL workflows.
 
 ## From v0.1.0 SQL storage
 
-The v0.2.0 candidate uses Java's relational keyspace: the catalog store is
+v0.2.0 uses Java's relational keyspace: the catalog store is
 `(NULL, NULL, 0)` and schema stores are `(domain, database, schema)`, with directory
 and interning layers resolving those names. Earlier Go SQL builds used a different
 layout. **The old layout is not automatically migrated.** See the breaking-storage

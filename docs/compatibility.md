@@ -1,6 +1,7 @@
 # Compatibility boundaries
 
-This page describes the v0.2.0 candidate and development tree, not a published tag. It is not a promise that all Java
+This page describes the v0.2.0 release scope. **Publication is pending**; no published
+tag or completed release gate is asserted here. It is not a promise that all Java
 features work, that all historical Go releases share one storage format, or that
 an arbitrary Java query plan can resume in Go. See [status](../STATUS.md) and
 [upgrade guidance](upgrade.md).
@@ -42,7 +43,7 @@ higher-level storage layout; it does not remove the exceptions below.
 | **Version-dependent record keys** | Native `VersionKey()` primary-key columns are refused at metadata construction/load, as in Java. Maintained-count expressions and primary-key functions such as ordering wrappers see the chosen record version; incomplete values reaching ordinary key encoders are refused with `IncompleteVersionstampError`. VERSION indexes rooted at a function over a version are refused during metadata/DDL validation because functions declare zero version columns; equivalent VALUE indexes and KeyWithValue version-in-VALUE declarations remain legal metadata, with incomplete values refused at write time. Counts are checked only when maintained; dry runs prepare primary keys but do not maintain counts. Unsupported metadata and earlier null-version counters are not migrated automatically: migrate or recreate affected pre-release stores before mixed-engine use. See [RFC-275](../rfcs/275-recordlayer-review-lows.md). |
 | **Transaction size thresholds** | Go-only `ContextConfig` thresholds are opt-in: `TransactionSizeWarnBytes` logs at WARN and counts once per transaction without failing the operation; `TransactionSizeErrorBytes` returns `TransactionSizeExceededError`. Java has no matching user-set thresholds. Stored bytes are unchanged. See [RFC-275 threshold boundaries](../DIVERGENCES.md#transaction-size-thresholds-go-only-extension-rfc-275). |
 | **Key-space paths** | Go paths retain only stored tuple values, not Java's resolved logical names; `PathFromTuple` does not reverse-resolve names. Go refuses equal-content byte constants and equal-valued integer constants that Java can accept as distinct siblings, and resolver directories cannot be constant. See [RFC-275 key-space boundaries](../DIVERGENCES.md#key-space-paths-hold-the-stored-value-rfc-275). |
-| **Earlier Go SQL storage** | The v0.2.0 candidate changes the relational catalog/database/schema keyspace from v0.1.0's. There is no automatic migration from the old Go layout. A common FDB cluster does not make these layouts interchangeable. |
+| **Earlier Go SQL storage** | v0.2.0 changes the relational catalog/database/schema keyspace from v0.1.0's. There is no automatic migration from the old Go layout. A common FDB cluster does not make these layouts interchangeable. |
 
 ### TLS verification
 
@@ -206,7 +207,7 @@ The concrete boundaries above can be checked in:
 - `pkg/recordlayer/text_tokenizer.go` and `collate_function_key_expression.go`;
 - `pkg/relational/core/embedded/cascades_generator.go` and the “SQL statement
   continuations are engine-private” section of [DIVERGENCES.md](../DIVERGENCES.md);
-- [CHANGELOG.md](../CHANGELOG.md), especially the unreleased storage changes.
+- [CHANGELOG.md](../CHANGELOG.md), especially the v0.2.0 storage changes.
 
 For SQL, [FEATURE_MATRIX.md](../FEATURE_MATRIX.md) inventories scenarios, not a
 standards certification or proof for every combination of features.
