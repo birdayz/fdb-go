@@ -1,6 +1,6 @@
 # FoundationDB Testcontainer
 
-Testcontainer module for FoundationDB. Spins up a single-node FDB instance for testing, with Docker port mapping for host clients and bridge-IP connectivity for containers on the same network. No socat proxy is needed.
+Testcontainer module for FoundationDB. Spins up a single-node FDB instance for testing, with a published coordinator port for host clients and a bridge-IP cluster file for containers on the same network. Clients must also be able to reach the server-advertised bridge addresses. No socat proxy is provided.
 
 ## Installation
 
@@ -61,8 +61,13 @@ func TestSomething(t *testing.T) {
 5. Runs `fdbcli configure new single memory tenant_mode=optional_experimental`
 6. Returns ready-to-use container
 
-External clients (host, Bazel sandbox, CI, Docker Desktop) use `ClusterFile` or `ClusterFilePath`
-to connect through the published Docker-host port. They do not need direct access to bridge IPs.
+External clients use `ClusterFile` or `ClusterFilePath` to bootstrap through the published
+Docker-host port. The fixture rewrites only the cluster file's coordinator address; it does not
+change the server's advertised GRV, commit, or storage addresses. Clients must also route to those
+bridge-IP endpoints to execute transactions (`foundationdb.go`, `run`). A reachable published port
+alone is insufficient: the default fixture does not support Docker Desktop or remote-daemon
+setups whose bridge addresses are unreachable from the test process.
+
 Internal clients (containers on the same Docker network) use `InternalClusterFile` to connect via
 `containerIP:4500` (or the configured FDB port).
 
@@ -93,8 +98,8 @@ foundationdbtc.WithFDBPort(4500)
 // Attach to an existing Docker network (for multi-container setups).
 foundationdbtc.WithNetwork(nw, "fdb-node-1")
 
-// Opt into a bridge-IP cluster file for the test process (requires direct bridge routing).
-// Not needed for normal host, sandbox, or Docker Desktop clients.
+// Use the bridge-IP coordinator address instead of the published Docker-host port.
+// This changes bootstrap only; both modes require routing to advertised bridge endpoints.
 foundationdbtc.WithDirectIP()
 
 // Startup timeout (default: 60s).
@@ -170,6 +175,6 @@ err = container.Unpause(ctx)
 
 ## Requirements
 
-- Docker, with its published ports reachable from the test process (Docker Desktop is supported)
-- Direct bridge-IP routing from the test process only if opting into `WithDirectIP`
+- Docker, with the coordinator address in the selected cluster file reachable from the test process
+- Routing from the test process to all server-advertised bridge-IP endpoints, with or without `WithDirectIP`; Docker Desktop and remote daemons without that routing are not supported by the default fixture
 - No FDB client libraries needed on host (pure Go client or connects via cluster file)

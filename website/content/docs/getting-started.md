@@ -14,9 +14,10 @@ operations (`fdb rl`). The renamed CLI has not had a tagged release yet; build
 from a current checkout:
 
 ```sh
-git clone https://github.com/birdayz/fdb-go.git && cd fdb-go
-go build -o .tmpbuild/fdb ./cmd/fdb
-export PATH="$PWD/.tmpbuild:$PATH"
+git clone https://github.com/birdayz/fdb-go.git &&
+cd fdb-go &&
+go build -o .tmpbuild/fdb ./cmd/fdb &&
+export PATH="$PWD/.tmpbuild:$PATH" &&
 fdb version
 ```
 
@@ -36,9 +37,9 @@ To use the CLI without writing a Go application, follow the complete
 ## Run the Go examples
 
 ```sh
-FDB_CLUSTER_FILE="$(fdb dev up)"
-export FDB_CLUSTER_FILE
-go run ./example/sql
+FDB_CLUSTER_FILE="$(fdb dev up)" &&
+export FDB_CLUSTER_FILE &&
+go run ./example/sql &&
 go run ./example
 ```
 

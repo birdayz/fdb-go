@@ -20,8 +20,8 @@ schemas with `fdb sql`.
 From the repository root, using the Go version in `go.mod`:
 
 ```sh
-go build -o .tmpbuild/fdb ./cmd/fdb
-export PATH="$PWD/.tmpbuild:$PATH"
+go build -o .tmpbuild/fdb ./cmd/fdb &&
+export PATH="$PWD/.tmpbuild:$PATH" &&
 fdb version
 ```
 
@@ -36,7 +36,7 @@ The Bazel entry point is `just fdb <args>` (`bazelisk run //cmd/fdb -- <args>`).
 With Docker running:
 
 ```sh
-fdb dev up
+fdb dev up &&
 fdb tx read-version
 ```
 

@@ -395,8 +395,11 @@ resumed by a new request starts a fresh deadline (`EmbeddedConnection.statementT
 `transactionConfigurer` applies it through the FDB transaction's `SetTimeout` for both auto-commit
 attempts and explicit `BeginTx` transactions (`pkg/relational/core/embedded/connection.go`):
 `-1` inherits the database default, `0` disables the timeout, and a positive value sets a cap.
-FDB error 1031 maps to `ErrCodeTransactionTimeout` / `53F00`. A new attempt or page starts a new
-transaction budget, so retain the statement timeout for a bound spanning all pages. See also
+FDB error 1031 maps to `ErrCodeTransactionTimeout` / `53F00`. The budget restarts only when a fresh
+backend transaction is created, such as a runner retry or an auto-commit SELECT page. Explicit
+transactions share one budget across statements and pages; atomic auto-commit DML also reuses one
+transaction across its pages (`cascades_generator.go`, `paginatingRows.tx`). Retain the statement
+timeout for a bound spanning fresh page transactions. See also
 [`operations.md` §2](operations.md#2-transactions-retries-timeouts-cancellation).
 
 ### Concurrency: one `*sql.DB` per tenant

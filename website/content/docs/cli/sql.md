@@ -16,13 +16,12 @@ same shell, from a source checkout.
 ## 1. Build the CLI and start FoundationDB
 
 ```sh
-git clone https://github.com/birdayz/fdb-go.git
-cd fdb-go
-go build -o .tmpbuild/fdb ./cmd/fdb
-export PATH="$PWD/.tmpbuild:$PATH"
-fdb version
-
-fdb dev up --name fdb-sql-demo --context fdb-sql-demo --port 4511
+git clone https://github.com/birdayz/fdb-go.git &&
+cd fdb-go &&
+go build -o .tmpbuild/fdb ./cmd/fdb &&
+export PATH="$PWD/.tmpbuild:$PATH" &&
+fdb version &&
+fdb dev up --name fdb-sql-demo --context fdb-sql-demo --port 4511 &&
 fdb tx read-version
 ```
 

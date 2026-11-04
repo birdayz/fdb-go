@@ -22,10 +22,12 @@ with the Go version in
 [`go.mod`](https://github.com/birdayz/fdb-go/blob/master/go.mod):
 
 ```sh
-git clone https://github.com/birdayz/fdb-go.git
-cd fdb-go
-go build -o .tmpbuild/fdb ./cmd/fdb
-export PATH="$PWD/.tmpbuild:$PATH"
+git clone https://github.com/birdayz/fdb-go.git &&
+cd fdb-go &&
+go build -o .tmpbuild/fdb ./cmd/fdb &&
+export PATH="$PWD/.tmpbuild:$PATH" &&
+fdb version &&
+fdb --help
 ```
 
 The release installer (`curl -fsSL https://fdb.dev/install.sh | sh`) and
@@ -34,20 +36,13 @@ The release installer (`curl -fsSL https://fdb.dev/install.sh | sh`) and
 Those release artifacts are not available yet. Existing older releases and
 `@latest` cannot supply this renamed CLI; use the checkout build above.
 
-Check the installation:
-
-```sh
-fdb version
-fdb --help
-```
-
 ## Start a local cluster
 
 With Docker running:
 
 ```sh
-fdb dev up
-fdb tx read-version
+fdb dev up &&
+fdb tx read-version &&
 fdb dev status
 ```
 
