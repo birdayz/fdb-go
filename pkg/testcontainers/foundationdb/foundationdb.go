@@ -7,9 +7,8 @@
 //   - Internal (cross-container): via Docker bridge IP (containerIP:4500).
 //     Used by sidecar containers on the same Docker network.
 //
-// Both modes also require routing to the server-advertised bridge-IP GRV,
-// commit, and storage endpoints. Publishing the coordinator port alone does not
-// support Docker Desktop or remote-daemon setups without that routing.
+// Both modes require routing to advertised bridge-IP transaction endpoints;
+// publishing the coordinator alone is insufficient on Docker Desktop or remote daemons.
 //
 // The container is auto-initialized by default (configured for single-node
 // operation with tenant support). Use [WithoutInit] to skip.
@@ -64,9 +63,8 @@ func fdbVersion() string {
 
 // Container represents a running FoundationDB container.
 //
-// External clients bootstrap via the Docker-host mapped port; internal clients
-// use containerIP:4500 on the same Docker network. Both need routing to the
-// server-advertised bridge-IP transaction endpoints.
+// External clients bootstrap via the mapped port; internal clients use containerIP:4500.
+// Both need routing to the server-advertised bridge-IP transaction endpoints.
 type Container struct {
 	testcontainers.Container
 	network     *testcontainers.DockerNetwork // user-provided network, nil if default bridge
@@ -79,10 +77,8 @@ type Container struct {
 
 // Run creates, starts, and (by default) initializes a FoundationDB container.
 //
-// The container exposes FDB port 4500 via Docker port mapping for external
-// coordinator bootstrap. Transactions also require routing to the advertised
-// bridge-IP endpoints. For cross-container communication, use [InternalClusterFile]
-// with a shared network via [WithNetwork].
+// The mapped coordinator port also needs advertised bridge-IP routing for transactions.
+// Cross-container clients use [InternalClusterFile] with a shared [WithNetwork].
 //
 // By default, the database is auto-initialized for single-node operation with
 // tenant_mode=optional_experimental. Use [WithoutInit] to skip initialization.
@@ -340,9 +336,8 @@ func runOnce(ctx context.Context, img string, opts ...testcontainers.ContainerCu
 	return c, nil
 }
 
-// ClusterFile returns the cluster file content for external coordinator bootstrap.
-// It uses the Docker-host mapped port by default, or the bridge IP with [WithDirectIP].
-// Both modes still require routing to the advertised bridge-IP transaction endpoints.
+// ClusterFile returns the mapped-port bootstrap address, or bridge IP with [WithDirectIP].
+// Both modes require routing to the advertised bridge-IP transaction endpoints.
 func (c *Container) ClusterFile(_ context.Context) (string, error) {
 	return c.clusterFile, nil
 }

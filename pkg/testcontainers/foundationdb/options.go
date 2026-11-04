@@ -160,9 +160,8 @@ func WithoutInit() Option {
 // instead of localhost:mappedPort. This avoids Docker DNAT which causes FDB
 // canonicalRemotePort assertion spam under high connection churn.
 //
-// This changes coordinator bootstrap only. Both modes require the test process
-// to route to the server-advertised bridge-IP transaction endpoints; a published
-// coordinator port does not remove that requirement.
+// This changes coordinator bootstrap only: both modes require routing to advertised
+// bridge-IP transaction endpoints, even when the coordinator port is published.
 func WithDirectIP() Option {
 	return Option{applyFn: func(o *options) error {
 		o.directIP = true

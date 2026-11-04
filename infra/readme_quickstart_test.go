@@ -81,6 +81,9 @@ fdb sql --cluster-file <cluster> --database /FRL/myapp`},
 			}
 			commands := strings.Split(doc.commands, "\n")
 			cases := []shellCase{{name: "success", count: len(commands)}}
+			if doc.name == "reference_cluster" {
+				cases = append(cases, shellCase{name: "unquoted_cluster_path", count: len(commands), exit: 45})
+			}
 			for i, command := range commands {
 				name, exit := "", 0
 				switch {
@@ -120,6 +123,12 @@ if [ "$command" = "$FAIL_COMMAND" ]; then
 fi
 case "$command" in
     'fdb dev up'|'fdb dev up '*) printf '%s\n' "$CLUSTER_PATH" ;;
+    'fdb sql '*)
+        if [ "$#" -ne 5 ] || [ "$3" != "$CLUSTER_PATH" ]; then
+            printf '%s\n' 'cluster-file path must be one complete argument' >&2
+            exit 45
+        fi
+        ;;
 esac
 `)
 					}
@@ -127,7 +136,15 @@ esac
 					clusterPath := filepath.Join(dir, "cluster path", "fdb.cluster")
 					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 					defer cancel()
-					cmd := exec.CommandContext(ctx, "sh", "-c", snippet)
+					source := snippet
+					if tc.name == "unquoted_cluster_path" {
+						const quoted = `"$cluster_file"`
+						if strings.Count(source, quoted) != 1 {
+							t.Fatal("negative control requires one quoted cluster-file argument")
+						}
+						source = strings.Replace(source, quoted, "$cluster_file", 1)
+					}
+					cmd := exec.CommandContext(ctx, "sh", "-c", source)
 					cmd.Dir = dir
 					// An inherited exported variable would hide a missing export in the snippet.
 					for _, entry := range os.Environ() {
