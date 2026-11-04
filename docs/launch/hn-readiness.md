@@ -10,13 +10,14 @@ it updates release decisions and evidence, not a fresh audit of every row.
 - **Severity:** **B** = launch blocker: launch waits for it. **H** = high: fix before launch, or list
   it as a known gap in `STATUS.md`. **M** = medium: may ship, stays tracked.
 - **Status:** `done` (with the PR, "settings" for a repository setting, or "owner"), `PR [#N] open`,
-  `in progress` (work landed or under way; row not closed), `not started`.
+  `in progress` (work landed or under way; row not closed), `not started`, `deferred (owner)`.
 - **Workstream** is the agent workstream doing the work. D rows are decided by the project owner.
 
 ## Blocking launch
 
-- Public API reduction D5 remains for v0.3.0, the HN launch release (§1).
-  v0.2.0 preparation does not declare launch readiness.
+- Public API reduction D5 is **deferred beyond HN by the owner**, not a launch blocker (§1).
+  It remains open in [TODO.md](../../TODO.md#docs-api-and-hygiene). Neither this deferral nor
+  v0.2.0 preparation declares launch readiness.
 - Every open H row fixed, or listed as a known gap in `STATUS.md` (release-ws). Five are open: 5 s
   per-RPC read timeouts, 38 KB per read-only
   transaction, real-cluster fault testing, planning cost, unbounded default limits.
@@ -28,7 +29,8 @@ it updates release decisions and evidence, not a fresh audit of every row.
 
 ## 1. Owner decisions
 
-The owner delegated release decisions; API reduction remains a v0.3.0 launch workstream.
+The owner delegated release decisions and explicitly deferred public API reduction beyond HN.
+No API refactor or replacement release milestone is authorized by that deferral.
 
 | # | Decision | Status | Notes |
 |---|---|---|---|
@@ -36,7 +38,7 @@ The owner delegated release decisions; API reduction remains a v0.3.0 launch wor
 | D2 | Git history: keep, strip binaries, or squash | done (owner) | Keep history. README notes the approximately 440 MiB full clone observed during preparation and offers a blobless clone. Forks, caches and module proxies retain old objects. |
 | D3 | Agent material in the public tree | done (owner) | Keep `CLAUDE.md`, `AGENTS.md` and `.claude/`; CLAUDE uses plain general rules. Remove tracked `shifts/`, `TODO_OLD.md`, `TODO_client.md`, `road-to-prod.md`, `PRODUCTION_READINESS.md`, `PORT.md` and `STRESS_RELATIONAL.md`; history retains them. [#791] removed reviewer names from test names. |
 | D4 | AI-assisted disclosure | done (owner) | README states AI agents work under human direction and links Java conformance, libfdb_c differentials, the binding tester and deterministic simulation. Test infrastructure is not a universal-parity claim. |
-| D5 | Shrink the public API (about 88% of 11.5k exported identifiers should be internal) | in progress | Planner, simfdb, dst, conformance and test seams are importable. The gomock mocks moved to `pkg/relational/api/apimock` ([#810]) and the demo protos to `gen/demopb` ([#842]); both are still importable. Neither move made those packages internal. Owner assigned API reduction to v0.3.0, the HN launch release, not v0.2.0. |
+| D5 | Shrink the public API (about 88% of 11.5k exported identifiers should be internal) | deferred (owner) | Planner, simfdb, dst, conformance and test seams are importable. The gomock mocks moved to `pkg/relational/api/apimock` ([#810]) and the demo protos to `gen/demopb` ([#842]); both are still importable. Neither move made those packages internal. The latest owner decision supersedes the v0.3.0/HN assignment: API reduction is deferred beyond HN, remains open in TODO.md, and needs separate authorization before work resumes. |
 | D6 | CI fleet capacity and deployment security review | done (owner, scoped verification) | Root verified two online runners on 2026-10-11: master's root-owned 0755 job guard and hook setting on both; actual master run 38160820959 executes it before steps in all seven jobs. Default token is read-only and cannot approve PRs; the Claude mention workflow then used hosted runners and a trusted-association allowlist; it was removed in [#987]. This checks the deployment/trust boundary, not blanket security. |
 
 ## 2. Findings, by workstream
@@ -103,7 +105,7 @@ The owner delegated release decisions; API reduction remains a v0.3.0 launch wor
 | H | 18.6k-line `plandiff/corpus.go` compiled as non-test code | done [#831] | hn-health-ws2 |
 | M | gomock mocks compiled into every sqldriver binary | done [#810] | hn-health-ws2 |
 | M | Demo protos in the global registry | done [#842] | hn-health-ws2 |
-| M | 121-module graph; 59 MB hello-world | not started (with D5) | hn-health-ws2 |
+| M | 121-module graph; 59 MB hello-world | deferred with D5 beyond HN (owner) | hn-health-ws2 |
 
 ### Operations
 

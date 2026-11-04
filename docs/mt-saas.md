@@ -32,7 +32,7 @@ enforced by the engine:
 
 ## 1. Tenancy model
 
-### One database path per tenant, one subspace per database
+### One database path per tenant, one subspace per schema
 
 A tenant is a SQL database path. The DSN is the ordinary one from
 [`operations.md` §1](operations.md#1-connecting-to-a-cluster):
@@ -41,41 +41,36 @@ A tenant is a SQL database path. The DSN is the ordinary one from
 fdbsql:///t/<tenant-id>?cluster_file=/etc/foundationdb/fdb.cluster&schema=MAIN
 ```
 
-`/t/<tenant-id>` is **a convention this guide recommends, not a driver feature.** `ParseDSN`
-accepts any non-empty path and attaches no meaning to any segment
-(`pkg/relational/sqldriver/dsn.go:120`). An empty path or a bare `/` is rejected at
-`sql.Open` time (`pkg/relational/sqldriver/dsn.go:136`), which matters because several fail-closed
-guards below key on "the session has a usable database path".
+`/t/<tenant-id>` is **a convention, not a driver feature**: `t` is the domain and the second
+segment names the database. Register the domain once per process with
+`sqldriver.RegisterDomainIfNotExists("t")` before using it. `ParseDSN` rejects an empty path or a
+bare `/`; store resolution also requires a valid database path under a registered domain
+(`pkg/relational/sqldriver/dsn.go`, `pkg/relational/core/keyspace/domains.go`, `ToDatabasePath`).
+Use the exact path and schema case stored by DDL (unquoted DDL names fold to upper case).
 
 `schema=` has **no default**. Omit it and the session schema stays empty and metadata loading is a
 silent no-op (`Connector.Connect` in `pkg/relational/sqldriver/driver.go`,
 `EmbeddedConnection.ensureMetaData`). Always pass it. `MAIN` is only a convention.
 
-The physical layout is one subspace per (database, schema) pair, and the prefix is the *plain tuple
-encoding of the two strings*:
+The physical layout is one subspace per (database, schema) pair. A user-schema prefix is a tuple
+of **three integer IDs**, matching Java's `RelationalKeyspaceProvider`:
 
-```go
-// pkg/relational/core/keyspace/keyspace.go:50-58
-func (k *RelationalKeyspace) SchemaSubspace(dbPath, schemaName string) (subspace.Subspace, error) {
-	...
-	return k.root.Sub(tuple.Tuple{dbPath, schemaName}), nil
-}
+```text
+(domainID, databaseID, schemaID)
 ```
 
-The root is the empty subspace (`pkg/relational/sqldriver/driver.go:231`), so a tenant's key prefix
-is literally `tuple.Pack(dbPath, schemaName)`.
+`SchemaSubspace` resolves the domain through the global directory layer, then interns the database
+and schema names in the domain's `ScopedInterningLayer` at `(domainID, "IL")`
+(`pkg/relational/core/keyspace/keyspace.go`, `SchemaSubspace`). The SQL driver's root is the empty
+subspace, so those three IDs are the store prefix; a tenant's schema stores share the
+`(domainID, databaseID)` prefix. The system catalog instead uses `(nil, nil, 0)`, and the resolver
+mappings also live outside the schema stores.
 
-**Keep tenant IDs short.** There is no directory layer and no integer interning — the decision is
-explicit at `pkg/relational/core/keyspace/keyspace.go:9-13` ("uses plain tuple keys instead of
-`DirectoryLayerDirectory`"). The tenant ID string is therefore embedded **verbatim in every single
-key** of that tenant's records, index entries and record versions, forever, and the path is not
-renameable. A 40-character tenant ID costs 40 bytes on every key in the tenant's data set.
-
-Nothing in the layer bounds that. `ParseDBPath` validates structure only — leading `/`, no empty
-segments (`pkg/relational/core/keyspace/keyspace.go:63-76`) — and the only length enforcement is
-FDB's 10 000-byte key limit (`keySizeLimit`, `pkg/fdbgo/client/sizelimits.go:13`). The Set
-returns nothing; the next read or the commit fails with key_too_large (2102), an error that does
-not name the path. Cap the length in your provisioning code.
+The tenant ID is **not repeated verbatim in every record or index key**. Names still occupy
+resolver/catalog keys, so bound their length in provisioning, but do not estimate per-record key
+cost from the tenant ID's string length. This is not the old literal
+`tuple.Pack(dbPath, schemaName)` layout; old Go SQL data is not automatically migrated (see the
+[upgrade guide](upgrade.md#from-v010-sql-storage)).
 
 ### Why native FDB tenants are not used
 
@@ -394,11 +389,14 @@ distinguished from a caller's own context deadline by a cause tag
 Note the semantics honestly: it is **per request, not per connection lifetime**. A continuation
 resumed by a new request starts a fresh deadline (`EmbeddedConnection.statementTimeout`).
 
-**Do not use `TRANSACTION_TIMEOUT`.** `api.OptTransactionTimeout`
-(`pkg/relational/api/options.go:56`) is dead code — that declaration is its only occurrence in the
-tree; nothing reads it. (It is unrelated to `ErrCodeTransactionTimeout` / `53F00`,
-`pkg/relational/api/errcode.go:133`, which is live and is the mapping of FDB error 1031.) For
-transaction-level bounds use the record-layer handle's `SetTransactionTimeout`, documented in
+**`TRANSACTION_TIMEOUT` is live and bounds each transaction, not the whole statement.** Set
+`transaction_timeout=<milliseconds>` in the DSN, or use
+`SetOption(api.OptTransactionTimeout, int64(ms))` on the embedded connection.
+`transactionConfigurer` applies it through the FDB transaction's `SetTimeout` for both auto-commit
+attempts and explicit `BeginTx` transactions (`pkg/relational/core/embedded/connection.go`):
+`-1` inherits the database default, `0` disables the timeout, and a positive value sets a cap.
+FDB error 1031 maps to `ErrCodeTransactionTimeout` / `53F00`. A new attempt or page starts a new
+transaction budget, so retain the statement timeout for a bound spanning all pages. See also
 [`operations.md` §2](operations.md#2-transactions-retries-timeouts-cancellation).
 
 ### Concurrency: one `*sql.DB` per tenant
@@ -739,8 +737,10 @@ So a restore is a **whole-cluster** operation. Restoring one tenant to a point i
 the cluster means restoring every other tenant to that point in time too.
 
 **Per-tenant restore is not built. It is buildable, and it is a real build — do not scope it as a
-script.** The raw primitives are all exported: a tenant's data is one contiguous subspace,
-`subspace.FDBRangeKeys()` gives its bounds (used exactly that way at
+script.** The raw primitives are all exported: a tenant's schema stores share a contiguous
+`(domainID, databaseID)` prefix, but the catalog and resolver mappings live outside it (§1).
+A copier must account for those mappings too. `subspace.FDBRangeKeys()` gives a subspace's bounds
+(used exactly that way at
 `cmd/fdb/internal/cmd/store_dump.go:129`), `fdb rl keyspace resolve` prints the prefix
 (`cmd/fdb/internal/cmd/keyspace.go:26`), and `GetRange`/`Set`/`ClearRange` are ordinary client calls
 (`pkg/fdbgo/fdb/transaction.go:100`, `:209`, `:236`). Nothing in the layer copies a range, though —
@@ -921,20 +921,20 @@ index is wrong, the remedy is a full rebuild.
 
 ### Format version: Go's default is not Java's
 
-`SetFormatVersion` now exists on both builders (`pkg/recordlayer/store_builder.go:1219`,
-`pkg/recordlayer/online_indexer.go:339`) and on the store (`pkg/recordlayer/store_api.go:84`). It is
-a **ceiling, never a downgrade**, and it exists for exactly the rolling-upgrade case: pin every
-instance to the OLD version so no upgraded instance starts writing a layout the not-yet-upgraded
-ones cannot read (`store_builder.go:1209-1218`). An explicit `0` is an error, not "give me the
-default" (rationale `:1204-1205`, enforced in `validateBuilder` at `:1337-1339`).
+`StoreBuilder.SetFormatVersion` and `OnlineIndexerBuilder.SetFormatVersion` pin the supported
+open/upgrade target (`pkg/recordlayer/store_builder.go`, `pkg/recordlayer/online_indexer.go`). They
+**never downgrade** an already-higher supported store header. For a rolling upgrade, pin every
+instance and indexer to the OLD version before opening stores, so no upgraded instance starts
+writing a layout the not-yet-upgraded ones cannot read. An explicit `0` or a value outside the
+supported range **1–15** is an error, not "give me the default" (`validateBuilder`).
 
 The defaults differ, and in a mixed Go/Java fleet that matters: **an unpinned Go store opens at
-format version 14** (`store_builder.go:1196` → `formatVersionCurrent`,
-`pkg/recordlayer/store.go:51-52`), **while Java's default for a new store is 7**
-(`FormatVersion.java:215-216`, `CACHEABLE_STATE(7)` at `:133`; Java's *maximum supported* is also
-14). A Go binary opening a tenant store upgrades that store's header in place unless you call
-`SetFormatVersion` explicitly — and `fdb rl index build` exposes no flag for it, so the CLI always runs
-at its binary's newest. This divergence is booked in `DIVERGENCES.md`; treat it as a deployment
+format version 14** (`pkg/recordlayer/store.go`, `formatVersionDefault`), **while Java's default
+for a new store is 7** (`FormatVersion.getDefaultFormatVersion()`, `CACHEABLE_STATE`). Both support
+through **15**. An unpinned Go open can upgrade an older tenant store to 14 when its transaction
+commits; a store already at 15 stays there. Use the builders' `SetFormatVersion` explicitly to
+control upgrades — `fdb rl index build` exposes no flag for it and uses the default target, not the
+maximum supported version. This divergence is booked in `DIVERGENCES.md`; treat it as a deployment
 decision, not an implementation detail.
 
 ---

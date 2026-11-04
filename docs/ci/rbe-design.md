@@ -2,8 +2,8 @@
 
 **Verified state.** Bazel 9.0.1, with 151 test targets: 66 depend on `//pkg/testcontainers/foundationdb`, 39 are tagged `test-full` and 7 `conformance_java`. CI has 7 jobs. The bazel-remote cache is set in each box's `/etc/bazel.bazelrc` (RFC-257), not in `.bazelrc`. The C++ oracle is three `genrule(local = True)` in `cmd/{fdb-schema-extract,fdb-diff-oracle}/BUILD.bazel`; there is no `fdb_cpp_build.bzl`. `local` turns off remote **and** disk caching [B], so the oracle only survives in a warm output_base. libfdbc is not in Bazel; it runs as a `go test -tags libfdbc` job. RFC-108 requires an RFC before any cache outside the fleet.
 
-**The hard part.** fdbserver advertises `containerIP:4500`, and the fixture README says "bridge IP connectivity required". So the test must share a kernel and network with the Docker daemon. Two options fail:
-- A remote `DOCKER_HOST` does not work without routing to the bridge.
+**The hard part.** This design evaluated direct bridge-IP connectivity. The fixture now defaults to a published Docker-host port for external clients; bridge-IP routing is required only with `WithDirectIP` or for internal container-to-container connections. Under the direct-IP assumption, two options fail:
+- A remote `DOCKER_HOST` does not work without routing to the bridge when using `WithDirectIP`.
 - An FDB sidecar breaks `Pause/Unpause`, multi-process clusters, `fdbcli configure`, knobs and chaos, and it makes cached results depend on shared state.
 
 Two options work: Docker inside the action's VM, or actions running bare on a Docker host. `no-remote-exec` also works, but it keeps most test time on the 4-vCPU client. It is a migration crutch only.

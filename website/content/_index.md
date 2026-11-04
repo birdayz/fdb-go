@@ -78,7 +78,7 @@ if err != nil {
 }
 fmt.Println(string(value.([]byte)))
 {{< /highlight >}}
-      <p class="code-footnote"><a href="https://github.com/birdayz/fdb-go#fdb-client">Client connection setup →</a></p>
+      <p class="code-footnote"><a href="https://github.com/birdayz/fdb-go#native-go-client">Client connection setup →</a></p>
     </div>
     <div class="launch-code">
       <div class="code-caption"><span>SQL query</span><span>fdb.dev/pkg/relational/sqldriver</span></div>

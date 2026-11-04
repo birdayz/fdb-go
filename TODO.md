@@ -2566,6 +2566,9 @@ tracked only.
 - [ ] **Deferred:** the public API surface: about 16K exported declarations outside
   `internal/`, including test hooks such as `values.SetCensusHooks`. Deferred by the owner on
   2026-10-25: another session's client optimizations may change the surface; do not start it.
+  The latest owner decision explicitly defers API reduction **beyond HN**: it is not a launch
+  blocker or a completed item, and it supersedes the v0.3.0/HN assignment in the launch plan.
+  Resume only with separate owner authorization; no API refactor is part of HN-readiness fixes.
 - [ ] **Owner decision:** test and tool dependencies in the library `go.mod` (docker,
   testcontainers, ginkgo, staticcheck, cobra); nogo without `unused`; nine reused RFC numbers
   and no RFC index.

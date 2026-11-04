@@ -35,6 +35,7 @@ exports_files([".bazelrc"])
 # Root files staged as test data. MODULE.bazel is the version source of truth.
 exports_files([
     "MODULE.bazel",
+    "README.md",
     "go.mod",
     # Generated SQL feature inventory; staged for the TestFeatureMatrixUpToDate
     # drift guard in //pkg/relational/conformance/yamsql:yamsql_test.

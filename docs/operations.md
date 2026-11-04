@@ -96,23 +96,30 @@ _, err := rdb.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) { ..
 // read-only: rdb.RunRead(ctx, func(rtx fdb.ReadTransaction) (any, error) { ... })
 ```
 
-(`Run`/`RunRead` dispatch to the lower-level `fdb.Database` methods `Transact`/`ReadTransact` and the
-ctx-bounded `TransactCtx`/`ReadTransactCtx`, which live on the `fdb.Database` handle, not on `rdb`.)
+`Run`/`RunRead` own the record-layer retry loop, using a fresh backend transaction for each attempt
+with the backend's own retries disabled. The lower-level `Transact`/`ReadTransact` and
+`TransactCtx`/`ReadTransactCtx` methods live on the `fdb.Database` handle, not on `rdb`, and have a
+separate retry policy.
 
 - **The `ctx` deadline bounds the retry loop and backoff.** A cancelled/expired ctx aborts retries
   promptly — this is the cancellation mechanism.
-- **The default retry limit is unlimited**, matching `libfdb_c` (`RETRY_LIMIT = -1`). The `ctx`
-  deadline is the bound; set one for any unattended work.
+- **The record-layer default is 10 counted attempts**, including the initial attempt, matching
+  Java's transaction runner. Configure it with `rdb.SetMaxAttempts(n)` (`n >= 1`), or use
+  `RunWithMaxAttempts` for one call. Internal SPFresh split-window retries do not consume that
+  count; set a `ctx` deadline for unattended work.
+- The native client's **`Transact`/`ReadTransact` default is unlimited retries**, matching
+  `libfdb_c` (`RETRY_LIMIT = -1`). That is not the record-layer runner's default.
 - The commit RPC itself runs detached from late ctx cancellation, so a cancel mid-commit can't tear
   a write in half (ambiguous-write safety, RFC-090).
 
-Tune transaction defaults on the underlying `fdb.Database` handle (`db.Options()`), applied to every
-transaction it runs:
+Tune transaction defaults on the underlying `fdb.Database` handle (`db.Options()`), applied to each
+transaction it creates. For record-layer work, the timeout is per attempt; the runner overrides the
+native retry limit to `0` and uses `SetMaxAttempts` for its own budget:
 
 | Option | Effect |
 |---|---|
 | `SetTransactionTimeout(ms)` | hard per-tx wall-clock cap (`0` = disabled, the libfdb_c default) |
-| `SetTransactionRetryLimit(n)` | cap retries (`-1` unlimited, `0` no retries) |
+| `SetTransactionRetryLimit(n)` | cap native-client retries (`-1` unlimited, `0` no retries); not the record-layer attempt budget |
 | `SetTransactionMaxRetryDelay(ms)` | cap exponential backoff |
 | `SetTransactionSizeLimit(bytes)` | fail a tx that exceeds the byte budget |
 
@@ -201,9 +208,15 @@ writes maintain a new index *during* backfill instead, opt into `WriteOnlyIfTooL
 
 ## 6. Schema-evolution safety
 
-The store header records a **format version** (current `14`); it is upgraded automatically on open
-and rejects a future version it doesn't understand (`UnsupportedFormatVersionError`). There is no
-manual format-version setter — it tracks the code.
+The store header records a **format version**. Go's default open target is **14**, and this binary
+supports versions **1–15**; unsupported headers are rejected with `UnsupportedFormatVersionError`.
+An unpinned open upgrades an older store to the default target when its transaction commits.
+
+Use `StoreBuilder.SetFormatVersion(version)` to pin a supported open/upgrade target during a rolling
+upgrade, and pin `OnlineIndexerBuilder.SetFormatVersion(version)` too if it opens the same stores.
+The pin prevents an automatic upgrade past that target; it never downgrades a store already at a
+higher supported version. Explicit `0` and out-of-range pins are errors. Check the
+[upgrade guide](upgrade.md#sharing-a-java-store--changing-store-format) before sharing or rolling back binaries.
 
 Governed by the wire-compat hard line:
 
