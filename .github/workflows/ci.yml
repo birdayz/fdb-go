@@ -780,17 +780,34 @@ jobs:
             --profile="$EVIDENCE/bazel-profile.json.gz" 2>&1 | tee "$EVIDENCE/driver.log"
           status=("${PIPESTATUS[@]}")
           set -e
+          collection_error() {
+            printf '::error::%s\n' "$1" >> "$EVIDENCE/collection.log"
+            tail -n 1 "$EVIDENCE/collection.log" >&2
+          }
           verified=$(head -n 1 "$EVIDENCE/driver.log")
           if [[ -d "$verified" && "$verified" = "${TMPDIR:-/tmp}"/fdb-full-evidence.* ]]; then
-            cp -a "$verified" "$EVIDENCE/verified-lane"
+            if ! cp -a "$verified" "$EVIDENCE/verified-lane"; then
+              collection_error 'could not copy verified-lane evidence'
+              exit 1
+            fi
           else
-            echo '::error::verified lane did not produce its evidence directory'
+            collection_error 'verified lane did not produce its evidence directory'
             exit 1
           fi
           if (( status[0] != 0 )); then exit "${status[0]}"; fi
-          exit "${status[1]}"
+          if (( status[1] != 0 )); then
+            collection_error 'outer tee failed while retaining the lane log'
+            exit "${status[1]}"
+          fi
+          for result in bep.jsonl bazel-profile.json.gz; do
+            if [[ ! -s "$EVIDENCE/$result" ]]; then
+              collection_error "missing or empty full-lane result: $result"
+              exit 1
+            fi
+          done
 
       - name: Generate full-lane report
+        id: report
         if: ${{ !cancelled() && steps.full.outcome != 'skipped' && steps.prepare.outcome == 'success' }}
         env:
           EVIDENCE: ${{ steps.prepare.outputs.evidence }}

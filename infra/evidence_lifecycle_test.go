@@ -1,0 +1,417 @@
+package infra
+
+import (
+	"bytes"
+	"compress/gzip"
+	"encoding/json"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"testing"
+)
+
+type fullWorkflowHarness struct {
+	*laneHarness
+	env     []string
+	outputs map[string]string
+	sha     string
+}
+
+func evidenceFile(t *testing.T, path string, data []byte, mode os.FileMode) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Parallel tests can fork while another fixture is writing an executable.
+	syscall.ForkLock.Lock()
+	err := os.WriteFile(path, data, mode)
+	syscall.ForkLock.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func newFullWorkflowHarness(t *testing.T, laneExit string) *fullWorkflowHarness {
+	t.Helper()
+	h := &fullWorkflowHarness{laneHarness: newLaneHarness(t), outputs: map[string]string{}}
+	wrapper, err := os.ReadFile(h.script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidenceFile(t, filepath.Join(h.repo, "tools/lanes/run-verified-lane.sh"), wrapper, 0o600)
+	evidenceFile(t, filepath.Join(h.repo, "tracked-input"), []byte("before\n"), 0o600)
+	for _, args := range [][]string{{"add", "."}, {"-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "fixture"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = h.repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = h.repo
+	head, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.sha = strings.TrimSpace(string(head))
+	reporter := os.Getenv("EVIDENCE_TEST_REPORTER")
+	if reporter == "" {
+		t.Fatal("real reporter is not declared as test data")
+	}
+	if !filepath.IsAbs(reporter) {
+		root, workspace := os.Getenv("TEST_SRCDIR"), os.Getenv("TEST_WORKSPACE")
+		if root == "" || workspace == "" {
+			t.Fatal("real reporter requires the Bazel runfiles environment")
+		}
+		reporter = filepath.Join(root, workspace, reporter)
+	}
+	reporterPath := filepath.Join(h.state, "bin/cmd/test-report/test-report_/test-report")
+	if err := os.MkdirAll(filepath.Dir(reporterPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(reporter, reporterPath); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"docker": "#!/bin/bash\n[ \"$*\" = info ] || exit 90\necho docker-info > \"$STATE/docker.called\"\n",
+		"bazelisk": `#!/bin/bash
+printf '%s\n' "$*" >> "$STATE/bazel.calls"
+case "$1" in
+ build) [ "$*" = 'build --config=ci //cmd/test-report' ] || exit 91 ;;
+ info) [ "$*" = 'info --config=ci bazel-bin' ] || exit 92; echo "$STATE/bin" ;;
+ shutdown) : ;;
+ *) exit 93 ;;
+esac
+`,
+		"just": `#!/bin/bash
+if [ "$1" = --dry-run ]; then echo fake-full-command; exit 0; fi
+printf '%s\n' "$@" > "$STATE/just.args"
+for arg in "$@"; do
+ case "$arg" in
+  --build_event_json_file=*) bep=${arg#*=} ;;
+  --profile=*) profile=${arg#*=} ;;
+ esac
+done
+case "${RESULT_MODE:-normal}" in
+ missing) : ;;
+ empty) : > "$bep" ;;
+ malformed) echo '{}' > "$bep" ;;
+ *) cp "$STATE/result.bep" "$bep" ;;
+esac
+case "${RESULT_MODE:-normal}" in
+ missing-profile) : ;;
+ empty-profile) : > "$profile" ;;
+ *) cp "$STATE/profile.gz" "$profile" ;;
+esac
+case "${MUTATION:-none}" in
+ tracked) echo after > tracked-input ;;
+ untracked) echo new > untracked-input ;;
+ head) git -c user.name=t -c user.email=t@t commit --allow-empty -qm changed-head ;;
+esac
+exit "$JUST_EXIT"
+`,
+	} {
+		evidenceFile(t, filepath.Join(h.bin, name), []byte(body), 0o700)
+	}
+	junit := `<testsuites><testsuite><testcase name="FixtureProof"/></testsuite></testsuites>`
+	status := "PASSED"
+	if laneExit != "0" {
+		junit = `<testsuites><testsuite><testcase name="FixtureProof"><failure message="fixture failure"/></testcase></testsuite></testsuites>`
+		status = "FAILED"
+	}
+	evidenceFile(t, filepath.Join(h.state, "test.xml"), []byte(junit), 0o600)
+	bep, err := json.Marshal(map[string]any{
+		"id":         map[string]any{"testResult": map[string]any{"label": "//fixture:proof", "run": 1, "shard": 1, "attempt": 1}},
+		"testResult": map[string]any{"status": status, "executionInfo": map[string]bool{"cachedRemotely": true}, "testActionOutput": []map[string]string{{"name": "test.xml", "uri": "file://" + filepath.Join(h.state, "test.xml")}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidenceFile(t, filepath.Join(h.state, "result.bep"), bep, 0o600)
+	var profile bytes.Buffer
+	gz := gzip.NewWriter(&profile)
+	if _, err := gz.Write([]byte(`{"traceEvents":[],"fixture":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	evidenceFile(t, filepath.Join(h.state, "profile.gz"), profile.Bytes(), 0o600)
+	h.env = h.command(false, "GITHUB_WORKSPACE="+h.repo, "GITHUB_SHA="+h.sha, "RUNNER_TEMP="+t.TempDir(), "GITHUB_OUTPUT="+filepath.Join(h.state, "outputs"), "GITHUB_SERVER_URL=https://github.com", "GITHUB_REPOSITORY=birdayz/fdb-go", "GITHUB_RUN_ID=12345", "JUST_EXIT="+laneExit).Env
+	return h
+}
+
+func (h *fullWorkflowHarness) step(id string, extra ...string) (string, error) {
+	h.t.Helper()
+	step := fullLaneStep(h.t, id)
+	env := append([]string{}, h.env...)
+	for key, value := range step.Env {
+		const prefix = "${{ steps.prepare.outputs."
+		if !strings.HasPrefix(value, prefix) || !strings.HasSuffix(value, " }}") {
+			h.t.Fatalf("unsupported workflow binding %s=%q", key, value)
+		}
+		name := strings.TrimSuffix(strings.TrimPrefix(value, prefix), " }}")
+		resolved, ok := h.outputs[name]
+		if !ok {
+			h.t.Fatalf("prepare did not produce %s", name)
+		}
+		env = append(env, key+"="+resolved)
+	}
+	env = append(env, extra...)
+	// GitHub's default Linux run shell invokes bash with errexit enabled.
+	cmd := exec.Command("bash", "-e", "-c", step.Run)
+	cmd.Dir = h.repo
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if id == "prepare" {
+		data, readErr := os.ReadFile(filepath.Join(h.state, "outputs"))
+		if readErr != nil && !os.IsNotExist(readErr) {
+			h.t.Fatal(readErr)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			if k, v, ok := strings.Cut(line, "="); ok {
+				h.outputs[k] = v
+			}
+		}
+	}
+	return string(out), err
+}
+
+func requireStepExit(t *testing.T, out string, err error, want int) {
+	t.Helper()
+	if want == 0 {
+		if err != nil {
+			t.Fatalf("step: %v\n%s", err, out)
+		}
+		return
+	}
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != want {
+		t.Fatalf("step exit=%v, want %d\n%s", err, want, out)
+	}
+}
+
+func (h *fullWorkflowHarness) read(name string) string {
+	h.t.Helper()
+	data, err := os.ReadFile(filepath.Join(h.outputs["evidence"], name))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return string(data)
+}
+
+func TestFullLaneWorkflowLifecycle(t *testing.T) {
+	t.Parallel()
+	for _, exit := range []string{"0", "7"} {
+		t.Run("lane_exit_"+exit, func(t *testing.T) {
+			t.Parallel()
+			h := newFullWorkflowHarness(t, exit)
+			out, err := h.step("prepare")
+			requireStepExit(t, out, err, 0)
+			out, err = h.step("full")
+			want := 0
+			if exit == "7" {
+				want = 7
+			}
+			requireStepExit(t, out, err, want)
+			out, err = h.step("report")
+			requireStepExit(t, out, err, 0)
+			for _, file := range []string{"dispatch.txt", "bep.jsonl", "bazel-profile.json.gz", "test-report.html", "driver.log", "verified-lane/head.before", "verified-lane/head.after", "verified-lane/inputs.before", "verified-lane/inputs.after", "verified-lane/metadata", "verified-lane/lane.rc", "verified-lane/shutdown.rc"} {
+				if len(h.read(file)) == 0 {
+					t.Errorf("empty artifact %s", file)
+				}
+			}
+			for _, pair := range [][2]string{{"result.bep", "bep.jsonl"}, {"profile.gz", "bazel-profile.json.gz"}} {
+				source, err := os.ReadFile(filepath.Join(h.state, pair[0]))
+				if err != nil || !bytes.Equal(source, []byte(h.read(pair[1]))) {
+					t.Fatalf("artifact %s differs from the controlled lane output: %v", pair[1], err)
+				}
+			}
+			verdict := `stat-pass"><span class="val">1</span>`
+			if exit == "7" {
+				verdict = `stat-fail"><span class="val">1</span>`
+			}
+			if !strings.Contains(h.read("test-report.html"), verdict) {
+				t.Fatal("report lost the controlled test verdict")
+			}
+			for _, name := range []string{"verified-lane/head.before", "verified-lane/head.after"} {
+				if strings.TrimSpace(h.read(name)) != h.sha {
+					t.Errorf("wrong SHA in %s", name)
+				}
+			}
+			if h.read("verified-lane/inputs.before") != h.read("verified-lane/inputs.after") {
+				t.Fatal("fixture changed inputs")
+			}
+			if !strings.Contains(h.read("verified-lane/metadata"), "lane_exit="+exit+" tee_exit=0 inputs_changed=0") {
+				t.Fatal("incorrect lane metadata")
+			}
+			if !strings.Contains(h.read("dispatch.txt"), "sha="+h.sha+"\nrun=https://github.com/birdayz/fdb-go/actions/runs/12345\nlane=full-default-budgets") {
+				t.Fatal("incorrect dispatch provenance")
+			}
+			for _, text := range []string{h.sha, "https://github.com/birdayz/fdb-go/actions/runs/12345", "full-default-budgets", "realcluster targets", "FixtureProof", "Final run/shard results: 0 executed, 1 cached."} {
+				if !strings.Contains(h.read("test-report.html"), text) {
+					t.Errorf("report lacks %q", text)
+				}
+			}
+			got, err := os.ReadFile(filepath.Join(h.state, "just.args"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantArgs := "test-full\n--config=ci\n--define\ngotags=fdbdocker\n--build_event_json_file=" + h.outputs["evidence"] + "/bep.jsonl\n--profile=" + h.outputs["evidence"] + "/bazel-profile.json.gz\n"
+			if string(got) != wantArgs {
+				t.Fatalf("just args=%q want %q", got, wantArgs)
+			}
+		})
+	}
+}
+
+func TestFullLaneRejectsInvalidInputsAndResults(t *testing.T) {
+	t.Parallel()
+	t.Run("wrong_dispatch_SHA", func(t *testing.T) {
+		t.Parallel()
+		h := newFullWorkflowHarness(t, "0")
+		out, err := h.step("prepare", "GITHUB_SHA="+strings.Repeat("0", 40))
+		requireStepExit(t, out, err, 1)
+		if len(h.outputs) != 0 {
+			t.Fatalf("wrong SHA created evidence outputs: %v", h.outputs)
+		}
+		if _, err := os.Stat(filepath.Join(h.state, "bazel.calls")); !os.IsNotExist(err) {
+			t.Fatal("wrong SHA reached reporter preparation")
+		}
+	})
+	for _, mutation := range []string{"dirty", "tracked", "untracked", "head"} {
+		t.Run(mutation, func(t *testing.T) {
+			t.Parallel()
+			h := newFullWorkflowHarness(t, "0")
+			out, err := h.step("prepare")
+			requireStepExit(t, out, err, 0)
+			if mutation == "dirty" {
+				evidenceFile(t, filepath.Join(h.repo, "initially-dirty"), []byte("dirty"), 0o600)
+			}
+			out, err = h.step("full", "MUTATION="+mutation)
+			want := 4
+			if mutation == "dirty" {
+				want = 3
+			}
+			requireStepExit(t, out, err, want)
+			if mutation == "dirty" {
+				if !strings.Contains(h.read("verified-lane/status.before"), "initially-dirty") {
+					t.Fatal("dirty diagnostic missing")
+				}
+			} else {
+				if !strings.Contains(h.read("verified-lane/metadata"), "inputs_changed=1") {
+					t.Fatal("input-change veto missing")
+				}
+				if mutation == "head" {
+					if h.read("verified-lane/head.before") == h.read("verified-lane/head.after") {
+						t.Fatal("HEAD mutation never applied")
+					}
+				} else {
+					if !strings.Contains(h.read("verified-lane/input.diff"), mutation+"-input") {
+						t.Fatal("input mutation never applied")
+					}
+				}
+			}
+		})
+	}
+	for _, mode := range []string{"missing", "empty", "malformed", "missing-profile", "empty-profile"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			h := newFullWorkflowHarness(t, "0")
+			out, err := h.step("prepare")
+			requireStepExit(t, out, err, 0)
+			out, err = h.step("full", "RESULT_MODE="+mode)
+			want := 1
+			if mode == "malformed" {
+				want = 0
+			}
+			requireStepExit(t, out, err, want)
+			out, err = h.step("report")
+			if mode == "missing-profile" || mode == "empty-profile" {
+				requireStepExit(t, out, err, 0)
+				if !strings.Contains(h.read("collection.log"), "missing or empty full-lane result: bazel-profile.json.gz") {
+					t.Fatal("missing profile diagnostic")
+				}
+			} else {
+				requireStepExit(t, out, err, 1)
+				if _, err := os.Stat(filepath.Join(h.outputs["evidence"], "test-report.html")); !os.IsNotExist(err) {
+					t.Fatal("invalid results produced a final report")
+				}
+			}
+		})
+	}
+}
+
+func TestFullLaneEvidenceCollectionFailures(t *testing.T) {
+	t.Parallel()
+	for _, fault := range []string{"missing-directory", "wrong-prefix", "copy", "outer-tee", "inner-tee"} {
+		t.Run(fault, func(t *testing.T) {
+			t.Parallel()
+			h := newFullWorkflowHarness(t, "0")
+			out, err := h.step("prepare")
+			requireStepExit(t, out, err, 0)
+			extra := []string{}
+			want := 1
+			switch fault {
+			case "missing-directory", "wrong-prefix":
+				path := t.TempDir()
+				if fault == "missing-directory" {
+					for _, e := range h.env {
+						if strings.HasPrefix(e, "TMPDIR=") {
+							path = filepath.Join(strings.TrimPrefix(e, "TMPDIR="), "fdb-full-evidence.missing")
+						}
+					}
+				}
+				evidenceFile(t, filepath.Join(h.repo, "tools/lanes/run-verified-lane.sh"), []byte("#!/bin/bash\nprintf '%s\\n' \"$INJECTED_PATH\"\necho applied > \"$STATE/fault-applied\"\n"), 0o600)
+				extra = append(extra, "INJECTED_PATH="+path)
+			case "copy":
+				real, err := exec.LookPath("cp")
+				if err != nil {
+					t.Fatal(err)
+				}
+				evidenceFile(t, filepath.Join(h.bin, "cp"), []byte("#!/bin/bash\nif [[ \"$*\" = *verified-lane* ]]; then echo applied > \"$STATE/fault-applied\"; exit 75; fi\nexec \"$REAL_CP\" \"$@\"\n"), 0o700)
+				extra = append(extra, "REAL_CP="+real)
+			case "outer-tee", "inner-tee":
+				real, err := exec.LookPath("tee")
+				if err != nil {
+					t.Fatal(err)
+				}
+				match := "/driver.log"
+				want = 73
+				if fault == "inner-tee" {
+					match = "/lane.log"
+					want = 74
+				}
+				evidenceFile(t, filepath.Join(h.bin, "tee"), []byte("#!/bin/bash\n\"$REAL_TEE\" \"$@\"\nrc=$?\nfor arg in \"$@\"; do if [[ \"$arg\" = *\"$TEE_MATCH\" ]]; then echo applied > \"$STATE/fault-applied\"; exit \"$TEE_EXIT\"; fi; done\nexit \"$rc\"\n"), 0o700)
+				extra = append(extra, "REAL_TEE="+real, "TEE_MATCH="+match, "TEE_EXIT="+itoa(want))
+			}
+			out, err = h.step("full", extra...)
+			requireStepExit(t, out, err, want)
+			if data, err := os.ReadFile(filepath.Join(h.state, "fault-applied")); err != nil || string(data) != "applied\n" {
+				t.Fatalf("fault did not apply: %q %v", data, err)
+			}
+			if h.read("driver.log") == "" {
+				t.Fatal("lost driver diagnostics")
+			}
+			if fault == "inner-tee" {
+				if !strings.Contains(h.read("verified-lane/metadata"), "lane_exit=0 tee_exit=74") {
+					t.Fatal("lost inner tee verdict")
+				}
+			} else {
+				message := "verified lane did not produce its evidence directory"
+				if fault == "copy" {
+					message = "could not copy verified-lane evidence"
+				}
+				if fault == "outer-tee" {
+					message = "outer tee failed"
+				}
+				if !strings.Contains(h.read("collection.log"), message) {
+					t.Fatal("collection diagnostic missing")
+				}
+			}
+		})
+	}
+}

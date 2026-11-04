@@ -58,8 +58,11 @@ and clean instead of spinning up million-row FDB workloads. Bazel sets the tag
 globally via `.bazelrc` (`--@rules_go//go/config:tags=...,stress`), but the
 `stress_test` target is also `manual`, so `bazel test //...` never picks it up;
 only an explicit invocation (the commands below, or `just test-full`) runs it.
-No CI workflow runs it. Run it through Bazel: a Go-toolchain build with `-tags stress`
-also compiles `stress_10m_test.go`, whose binary refuses to run without a real cluster.
+Ordinary PR/push CI excludes it. The opt-in full release dispatch
+(`gh workflow run ci.yml --ref <branch> -f full=true`) runs it through
+`just test-full`; no scheduled workflow runs it. Run it through Bazel: a
+Go-toolchain build with `-tags stress` also compiles `stress_10m_test.go`, whose
+binary refuses to run without a real cluster.
 
 `stress_10m_test.go` is compiled only into its own target, `stress_10m_test`
 (tagged `realcluster`). That keeps the **advertised scale list equal to the

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ type testBEPResult struct {
 	label                 string
 	run, shard, attempt   int
 	status, xmlURI, cases string
+	local, remote         bool
 }
 
 func writeBEP(t *testing.T, results ...testBEPResult) string {
@@ -24,6 +26,8 @@ func writeBEP(t *testing.T, results ...testBEPResult) string {
 				"label": r.label, "run": r.run, "shard": r.shard, "attempt": r.attempt,
 			}},
 			"testResult": map[string]any{
+				"cachedLocally":             r.local,
+				"executionInfo":             map[string]bool{"cachedRemotely": r.remote},
 				"status":                    r.status,
 				"testAttemptDurationMillis": "10",
 				"testActionOutput":          []map[string]string{{"name": "test.xml", "uri": r.xmlURI}},
@@ -134,6 +138,81 @@ func TestParseBEPValidatesOnlyTheFinalAttempt(t *testing.T) {
 		}
 		if len(targets) != 1 || len(targets[0].Tests) != 1 || targets[0].Tests[0].Name != "R1" {
 			t.Fatalf("%s: got %+v, want the final attempt's case R1", name, targets)
+		}
+	}
+}
+
+func TestReportCommandProcess(t *testing.T) {
+	if os.Getenv("TEST_REPORT_COMMAND") != "1" {
+		return
+	}
+	for i, arg := range os.Args {
+		if arg == "--" {
+			os.Args = append([]string{"test-report"}, os.Args[i+1:]...)
+			main()
+			os.Exit(0)
+		}
+	}
+	os.Exit(99)
+}
+
+func TestReportHelpCommand(t *testing.T) {
+	t.Parallel()
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, option := range []string{"-h", "--help"} {
+		cmd := exec.Command(bin, "-test.run=^TestReportCommandProcess$", "--", option)
+		cmd.Env = append(os.Environ(), "TEST_REPORT_COMMAND=1")
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("%s: %v: %s", option, err, &stderr)
+		}
+		if stdout.Len() != 0 || !strings.Contains(stderr.String(), "Usage of test-report:") || strings.Contains(stderr.String(), "\ntest-report:") || strings.Contains(stderr.String(), "help requested") {
+			t.Fatalf("%s stdout=%q stderr=%q", option, &stdout, &stderr)
+		}
+	}
+}
+
+func TestReportCachePopulation(t *testing.T) {
+	t.Parallel()
+	bep := writeBEP(t,
+		testBEPResult{label: "//pkg:local", run: 1, shard: 1, attempt: 1, status: "PASSED", xmlURI: writeJUnit(t, "L"), local: true},
+		testBEPResult{label: "//pkg:remote", run: 1, shard: 1, attempt: 1, status: "PASSED", xmlURI: writeJUnit(t, "R"), remote: true},
+		testBEPResult{label: "//pkg:fresh", run: 1, shard: 1, attempt: 1, status: "PASSED", xmlURI: writeJUnit(t, "F")},
+		testBEPResult{label: "//pkg:mixed", run: 1, shard: 1, attempt: 1, status: "FAILED", xmlURI: "bytestream://ignored", remote: true},
+		testBEPResult{label: "//pkg:mixed", run: 1, shard: 1, attempt: 2, status: "PASSED", xmlURI: writeJUnit(t, "M1")},
+		testBEPResult{label: "//pkg:mixed", run: 1, shard: 2, attempt: 1, status: "PASSED", xmlURI: writeJUnit(t, "M2", "M3"), remote: true},
+	)
+	targets, err := parseBEP(bep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]struct {
+		cached, executed, cases int
+		label                   string
+	}{
+		"//pkg:local": {1, 0, 1, "cached"}, "//pkg:remote": {1, 0, 1, "cached"},
+		"//pkg:fresh": {0, 1, 1, "executed"}, "//pkg:mixed": {1, 1, 3, "mixed"},
+	}
+	if len(targets) != 4 {
+		t.Fatalf("target population=%d, want 4", len(targets))
+	}
+	for _, target := range targets {
+		w, ok := want[target.Target]
+		if !ok || target.CachedResults != w.cached || target.ExecutedResults != w.executed || target.Total() != w.cases || target.CachedLabel() != w.label {
+			t.Errorf("target=%+v, want %+v", target, w)
+		}
+	}
+	var html bytes.Buffer
+	if err := runReport([]string{bep}, &html); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"Final run/shard results: 2 executed, 3 cached.", "cached: 0 executed, 1 cached run/shard results", "mixed: 1 executed, 1 cached run/shard results", "executed: 1 executed, 0 cached run/shard results", `stat-total"><span class="val">6</span>`} {
+		if !strings.Contains(html.String(), text) {
+			t.Errorf("rendering missing %q", text)
 		}
 	}
 }

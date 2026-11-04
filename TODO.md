@@ -2094,11 +2094,12 @@ fast and full lanes plus Java/FDB acceptance pass. Then move to WS-F.
   both CI runners, and nobody could say what they still caught. The libfdb_c cross-client
   differential moved into ci.yml as its own per-PR job. Each one is in git history
   (`git show 8d3f8c4ad:.github/workflows/<file>`). Bring one back only with a stated catch rate.
-  What no longer runs anywhere:
+  Coverage removed at that point (not a current CI inventory):
   - the `-race` runs of `//pkg/relational/conformance/...` and of the client, record-layer and
     chaos container suites;
   - active fuzzing;
-  - the 10K/100K/1M stress suite;
+  - the 10K/100K/1M stress suite (now included at default budgets in the explicit
+    full release dispatch; still excluded from ordinary PR/push CI, with no schedule);
   - coverage reporting;
   - the self-checking oracles and the nightly rowdiff and factory batches.
 

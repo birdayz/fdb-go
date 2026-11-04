@@ -1,4 +1,10 @@
 load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+load(":test_sdk.bzl", "test_go_sdk")
+
+test_go_sdk(
+    name = "test_go",
+    testonly = True,
+)
 
 go_library(
     name = "vulnscan_lib",
@@ -21,7 +27,18 @@ go_test(
     name = "vulnscan_test",
     srcs = [
         "classify_test.go",
+        "command_test.go",
         "mirror_test.go",
     ],
+    data = [
+        ":test_go",
+        ":vulnscan",
+        "@org_golang_x_vuln//cmd/govulncheck",
+    ],
     embed = [":vulnscan_lib"],
+    env = {
+        "VULNSCAN_TEST_GO": "$(rootpath :test_go)",
+        "VULNSCAN_TEST_SCANNER": "$(rootpath @org_golang_x_vuln//cmd/govulncheck)",
+        "VULNSCAN_TEST_WRAPPER": "$(rootpath :vulnscan)",
+    },
 )

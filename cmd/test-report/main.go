@@ -23,6 +23,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"flag"
 	"fmt"
 	"html/template"
@@ -198,6 +199,9 @@ type bepTestResult struct {
 	Status           string          `json:"status"` // PASSED, FAILED, TIMEOUT, FLAKY, etc.
 	DurationMillis   string          `json:"testAttemptDurationMillis"`
 	CachedLocally    bool            `json:"cachedLocally"`
+	ExecutionInfo    struct {
+		CachedRemotely bool `json:"cachedRemotely"`
+	} `json:"executionInfo"`
 }
 
 type bepOutputFile struct {
@@ -261,16 +265,21 @@ type TestResult struct {
 }
 
 type TargetResult struct {
-	Target    string // Bazel label, e.g. "//pkg/foo:foo_test"
-	Tests     []TestResult
-	SuiteTime time.Duration
-	Cached    bool      // true if Bazel served this target from cache
-	Tree      *TreeNode // non-nil for Ginkgo targets with hierarchical specs
+	Target          string // Bazel label, e.g. "//pkg/foo:foo_test"
+	Tests           []TestResult
+	SuiteTime       time.Duration
+	Cached          bool // true if every final run/shard result came from cache
+	CachedResults   int
+	ExecutedResults int
+	Tree            *TreeNode // non-nil for Ginkgo targets with hierarchical specs
 }
 
 func (t *TargetResult) CachedLabel() string {
 	if t.Cached {
 		return "cached"
+	}
+	if t.CachedResults > 0 {
+		return "mixed"
 	}
 	return "executed"
 }
@@ -421,7 +430,7 @@ func parseBEP(path string) ([]*TargetResult, error) {
 			info := &targetInfo{
 				label:   id.Label,
 				status:  ev.TestResult.Status,
-				cached:  ev.TestResult.CachedLocally,
+				cached:  ev.TestResult.CachedLocally || ev.TestResult.ExecutionInfo.CachedRemotely,
 				attempt: id.Attempt,
 			}
 			if ms, _ := strconv.ParseInt(ev.TestResult.DurationMillis, 10, 64); ms > 0 {
@@ -474,6 +483,11 @@ func parseBEP(path string) ([]*TargetResult, error) {
 		}
 		tr.SuiteTime += time.Duration(info.durationMs) * time.Millisecond
 		tr.Cached = tr.Cached && info.cached
+		if info.cached {
+			tr.CachedResults++
+		} else {
+			tr.ExecutedResults++
+		}
 
 		// Check for Ginkgo's tree-structured JSON report alongside the standard test.xml.
 		// Ginkgo suites write to $TEST_UNDECLARED_OUTPUTS_DIR/ginkgo-report.json which
@@ -754,11 +768,13 @@ func parseLCOV(path string) (*CoverageReport, error) {
 // ---- HTML template ----
 
 type summaryData struct {
-	Total   int
-	Passed  int
-	Failed  int
-	Skipped int
-	Time    string
+	Total           int
+	Passed          int
+	Failed          int
+	Skipped         int
+	Time            string
+	CachedResults   int
+	ExecutedResults int
 }
 
 type reportProvenance struct {
@@ -1071,6 +1087,7 @@ footer {
   <div>Unattributed report: commit, CI run and lane were not supplied.</div>
 {{- end}}
   <div>Counts cover this report only. Cached results are not fresh test executions.</div>
+  <div>Final run/shard results: {{.Summary.ExecutedResults}} executed, {{.Summary.CachedResults}} cached. These are not case counts.</div>
 </section>
 
 <div class="summary-bar">
@@ -1127,7 +1144,7 @@ footer {
   <summary>
     <span class="target-label">{{.Target}}</span>
     <span class="badge {{.BadgeClass}}">{{.BadgeText}}</span>
-    {{if .Cached}}<span class="badge badge-cached">cached</span>{{end}}
+    <span class="badge badge-cached">{{.CachedLabel}}: {{.ExecutedResults}} executed, {{.CachedResults}} cached run/shard results</span>
     <span class="chevron">&#9654;</span>
   </summary>
   {{- if .Tree}}
@@ -1246,12 +1263,14 @@ func runReport(args []string, output io.Writer) error {
 	})
 
 	// Build summary.
-	var sumPassed, sumFailed, sumSkipped int
+	var sumPassed, sumFailed, sumSkipped, cachedResults, executedResults int
 	var totalTime time.Duration
 	for _, t := range targets {
 		sumPassed += t.Passed()
 		sumFailed += t.Failed()
 		sumSkipped += t.Skipped()
+		cachedResults += t.CachedResults
+		executedResults += t.ExecutedResults
 		if t.SuiteTime > 0 {
 			totalTime += t.SuiteTime
 		} else {
@@ -1281,11 +1300,13 @@ func runReport(args []string, output io.Writer) error {
 		GeneratedAt: time.Now().Format("2006-01-02 15:04:05"),
 		Provenance:  provenance,
 		Summary: summaryData{
-			Total:   sumPassed + sumFailed + sumSkipped,
-			Passed:  sumPassed,
-			Failed:  sumFailed,
-			Skipped: sumSkipped,
-			Time:    formatDuration(displayTime),
+			Total:           sumPassed + sumFailed + sumSkipped,
+			Passed:          sumPassed,
+			Failed:          sumFailed,
+			Skipped:         sumSkipped,
+			Time:            formatDuration(displayTime),
+			CachedResults:   cachedResults,
+			ExecutedResults: executedResults,
 		},
 		Coverage: coverageReport,
 		Targets:  targets,
@@ -1306,7 +1327,7 @@ func runReport(args []string, output io.Writer) error {
 }
 
 func main() {
-	if err := run(); err != nil {
+	if err := run(); err != nil && !errors.Is(err, flag.ErrHelp) {
 		fmt.Fprintf(os.Stderr, "test-report: %v\n", err)
 		os.Exit(1)
 	}
