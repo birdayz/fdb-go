@@ -12,9 +12,10 @@ import (
 
 // transaction wraps client.Transaction with the API modeled on Apple's binding.
 type transaction struct {
-	inner *client.Transaction
-	db    Database
-	ctx   context.Context
+	inner    *client.Transaction
+	db       Database
+	ctx      context.Context
+	defaults *retryTxDefaults
 
 	// ReadTransact has no commit producer. Other wrappers bind versionstamp
 	// futures directly to their client incarnation, including managed retries.
@@ -350,7 +351,10 @@ func (tr Transaction) Reset() {
 	// tenant identity while clearing user options and restoring DB defaults.
 	tr.t.inner.Reset()
 	tr.t.versionstamps = true
-	tr.t.db.applyTxDefaults(tr.t, true)
+	err := tr.t.db.applyTxDefaults(tr.t, true)
+	if tr.t.defaults != nil {
+		tr.t.defaults.err = err
+	}
 }
 
 // AddReadConflictRange adds a read conflict range. As in libfdb_c it returns only inverted_range;

@@ -51,6 +51,7 @@ go_test(
         "fdb_test.go",
         "future_cancel_test.go",
         "future_pending_internal_test.go",
+        "invalid_defaults_retry_fdb_test.go",
         "key_test.go",
         "mapped_range_skip_test.go",
         "mapped_range_test.go",

@@ -2377,6 +2377,12 @@ tracked only.
 
 ### Go FDB client
 
+- [ ] **Default-snapshot boundary:** the facade's immutable `txDefaults` snapshot does
+  not include the native-owned conflict-reporting default. Concurrent construction or
+  Reset can observe different generations across those two layers; no atomic snapshot
+  across them is promised. Consolidation needs a separate design and gated construction/
+  Reset regression alongside a persistent default; it is not part of the retry-override fix.
+
 - [x] **High ✔ `handleConnError` closes the pooled connection, not the failed one**
   (`pkg/fdbgo/client/topology.go:239`). Its 35 non-test call sites pass only an address (4
   direct in `commitpath.go` and `pending_get.go`, 20 through `handleReadConnError`, 11 through

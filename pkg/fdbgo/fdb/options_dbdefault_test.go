@@ -1,6 +1,13 @@
 package fdb
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"math"
+	"testing"
+
+	"fdb.dev/pkg/fdbgo/wire"
+)
 
 // RFC-133: the database-level SetSnapshotRywDisable and SetTransactionBypassUnreadable
 // options change READ semantics on every new transaction in libfdb_c (snapshot-read-after-own-write;
@@ -99,5 +106,49 @@ func TestDatabaseDefault_CausalReadRisky_Propagates(t *testing.T) {
 	Database{d: idb}.applyTxDefaults(tr.t, true)
 	if !inner.CausalReadRisky() {
 		t.Error("DB-level SetTransactionCausalReadRisky must set the GRV causal-read-risky flag on the new tx")
+	}
+}
+
+func TestRetryDefaults_ValidationCaptureIsLocalAndNonconsuming(t *testing.T) {
+	t.Parallel()
+	for _, timeout := range []int64{0, 10000, int64(math.MaxInt32) + 1} {
+		db := Database{d: &internalDB{}}
+		if err := db.Options().SetTransactionTimeout(timeout); err != nil {
+			t.Fatal(err)
+		}
+		tr, inner := newBareOptionsTx()
+		defer inner.Cancel()
+		// A nil native database makes any unintended GRV/RPC fail; nonempty buffers
+		// also detect a verdict query that mutates rather than reads local accounting.
+		inner.Set([]byte("key"), []byte("value"))
+		before, err := inner.GetApproximateSize()
+		if err != nil || before == 0 {
+			t.Fatalf("nonempty accounting control: size=%d err=%v", before, err)
+		}
+		var defaults retryTxDefaults
+		if err := defaults.apply(db, tr.t); err != nil {
+			t.Fatalf("initial application must keep validation deferred: %v", err)
+		}
+		after, err := inner.GetApproximateSize()
+		if timeout <= math.MaxInt32 {
+			if err != nil || after != before || defaults.err != nil {
+				t.Fatalf("local capture changed accounting: before=%d after=%d err=%v captured=%v", before, after, err, defaults.err)
+			}
+			continue
+		}
+		var fe *wire.FDBError
+		if !errors.As(err, &fe) || fe.Code != 2006 {
+			t.Fatalf("validation query consumed the native error: %v", err)
+		}
+		if err := inner.OnError(context.Background(), &wire.FDBError{Code: 1020}); err != nil {
+			t.Fatalf("native retry behavior changed: %v", err)
+		}
+		if _, err := inner.GetApproximateSize(); err != nil {
+			t.Fatalf("native OnError must still clear deferred errors: %v", err)
+		}
+		var public Error
+		if err := defaults.apply(db, tr.t); !errors.As(err, &public) || public.Code != 2006 {
+			t.Fatalf("reentry lost captured persistent validation failure: %v", err)
+		}
 	}
 }

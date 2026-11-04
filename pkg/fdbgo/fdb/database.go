@@ -80,8 +80,8 @@ func MustGetAPIVersion() int {
 	return v
 }
 
-// txDefaults holds the facade's database defaults in one immutable snapshot.
-// OnError replays only non-persistent fields, preserving transaction overrides.
+// txDefaults snapshots only the facade-owned fields below, not native conflict-reporting defaults.
+// OnError replays non-persistent fields without overwriting successfully applied persistent options.
 type txDefaults struct {
 	timeout        int64 // milliseconds, 0 = disabled
 	retryLimit     int64 // -1 = unlimited, 0 = no retries
@@ -107,7 +107,8 @@ type internalDB struct {
 	inner *client.Database
 	ctx   context.Context
 
-	// txDefaults is an IMMUTABLE snapshot published atomically.
+	// txDefaults is an immutable snapshot of facade-owned fields, published atomically.
+	// Native-owned conflict reporting is separate and can observe another default generation.
 	//
 	// This is NOT thread confinement: in C++ (7.3.77) both fdb_database_set_option
 	// and fdb_database_create_transaction run on the CALLER's thread. The C shim
@@ -148,8 +149,8 @@ type internalDB struct {
 	txDefaultsMu sync.Mutex
 }
 
-// defaults returns the current immutable snapshot of the database-level
-// transaction defaults. Safe to call from any goroutine.
+// defaults returns the current immutable snapshot of facade-owned transaction defaults.
+// Native-owned conflict reporting is not part of this snapshot.
 func (d *internalDB) defaults() txDefaults {
 	if p := d.txDefaults.Load(); p != nil {
 		return *p
@@ -416,7 +417,7 @@ func (db Database) Transact(f func(WritableTransaction) (any, error)) (any, erro
 // Cancel does, as in libfdb_c (RFC-280).
 func (db Database) TransactCtx(ctx context.Context, f func(WritableTransaction) (any, error)) (any, error) {
 	var body bodyRun
-	initial := true
+	var defaults retryTxDefaults
 	result, err := db.d.inner.Transact(ctx, func(tx *client.Transaction) (any, error) {
 		return body.run(func() (any, error) {
 			t := &transaction{
@@ -424,9 +425,11 @@ func (db Database) TransactCtx(ctx context.Context, f func(WritableTransaction) 
 				db:            db,
 				ctx:           ctx,
 				versionstamps: true,
+				defaults:      &defaults,
 			}
-			db.applyTxDefaults(t, initial)
-			initial = false
+			if err := defaults.apply(db, t); err != nil {
+				return nil, err
+			}
 			return f(Transaction{t: t})
 		})
 	})
@@ -453,16 +456,18 @@ func (db Database) ReadTransactCtx(ctx context.Context, f func(ReadTransaction) 
 	// the closure doesn't store it — it only stores the Transaction value
 	// which embeds a pointer to t).
 	var body bodyRun
-	initial := true
+	var defaults retryTxDefaults
 	result, err := db.d.inner.ReadTransact(ctx, func(tx *client.Transaction) (any, error) {
 		return body.run(func() (any, error) {
 			t := transaction{
-				inner: tx,
-				db:    db,
-				ctx:   ctx,
+				inner:    tx,
+				db:       db,
+				ctx:      ctx,
+				defaults: &defaults,
 			}
-			db.applyTxDefaults(&t, initial)
-			initial = false
+			if err := defaults.apply(db, &t); err != nil {
+				return nil, err
+			}
 			return f(Transaction{t: &t})
 		})
 	})
@@ -472,16 +477,36 @@ func (db Database) ReadTransactCtx(ctx context.Context, f func(ReadTransaction) 
 	return result, nil
 }
 
-// applyTxDefaults copies one snapshot; persistent fields apply only at construction/Reset.
-// Retry callbacks preserve overrides, matching ReadYourWrites.actor.cpp:2680-2754.
-func (db Database) applyTxDefaults(t *transaction, persistent bool) {
-	db.d.defaults().apply(t, persistent)
+// retryTxDefaults retains failed inherited options across callbacks, as C++ reapplies its list.
+// Explicit Reset refreshes err; unrelated database updates do not change an existing transaction.
+type retryTxDefaults struct {
+	applied bool
+	err     error
 }
 
-func (d txDefaults) apply(t *transaction, persistent bool) {
+func (d *retryTxDefaults) apply(db Database, t *transaction) error {
+	if d.err != nil {
+		return convertError(d.err)
+	}
+	d.err = db.applyTxDefaults(t, !d.applied)
+	d.applied = true
+	// Initial option failures remain deferred; reject reentry if OnError cleared them.
+	return nil
+}
+
+// applyTxDefaults captures only txDefaults fields; persistent options apply at construction/Reset.
+// Its error retains failed persistent application, not unrelated deferred errors cleared by OnError.
+func (db Database) applyTxDefaults(t *transaction, persistent bool) error {
+	return db.d.defaults().apply(t, persistent)
+}
+
+func (d txDefaults) apply(t *transaction, persistent bool) error {
+	var persistentErr error
 	if persistent {
 		if d.timeout > 0 {
 			t.inner.SetTimeout(d.timeout)
+			// This synchronous deferred-error query only reads local counters; it performs no I/O.
+			_, persistentErr = t.inner.GetApproximateSize()
 		}
 		if d.hasRetryLimit {
 			t.inner.SetRetryLimit(d.retryLimit)
@@ -505,6 +530,7 @@ func (d txDefaults) apply(t *transaction, persistent bool) {
 	if d.causalReadRisky {
 		t.inner.SetCausalReadRisky(true)
 	}
+	return persistentErr
 }
 
 // Options returns a DatabaseOptions handle for setting database-level defaults.
