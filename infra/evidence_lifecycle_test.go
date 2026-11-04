@@ -68,21 +68,36 @@ func newFullWorkflowHarness(t *testing.T, laneExit string) *fullWorkflowHarness 
 		}
 		reporter = filepath.Join(root, workspace, reporter)
 	}
-	reporterPath := filepath.Join(h.state, "bin/cmd/test-report/test-report_/test-report")
-	if err := os.MkdirAll(filepath.Dir(reporterPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(reporter, reporterPath); err != nil {
-		t.Fatal(err)
-	}
 	for name, body := range map[string]string{
 		"docker": "#!/bin/bash\n[ \"$*\" = info ] || exit 90\necho docker-info > \"$STATE/docker.called\"\n",
 		"bazelisk": `#!/bin/bash
 printf '%s\n' "$*" >> "$STATE/bazel.calls"
+if [ -e "$STATE/bazel.stopped" ]; then
+ echo 'fixture: Bazel invoked after shutdown' >&2
+ exit 94
+fi
+reporter="$STATE/bin/cmd/test-report/test-report_/test-report"
 case "$1" in
- build) [ "$*" = 'build --config=ci //cmd/test-report' ] || exit 91 ;;
- info) [ "$*" = 'info --config=ci bazel-bin' ] || exit 92; echo "$STATE/bin" ;;
- shutdown) : ;;
+ build)
+  [ "$*" = 'build --config=ci //cmd/test-report' ] || exit 91
+  [ ! -e "$STATE/reporter.built" ] || exit 96
+  mkdir -p "$(dirname "$reporter")" || exit 97
+  ln -s "$REAL_REPORTER" "$reporter" || exit 97
+  : > "$STATE/reporter.built"
+  ;;
+ info)
+  [ "$*" = 'info --config=ci bazel-bin' ] || exit 92
+  if [ ! -e "$STATE/reporter.built" ] || [ ! -x "$reporter" ]; then
+   echo 'fixture: reporter must be built before info' >&2
+   exit 95
+  fi
+  : > "$STATE/reporter.located"
+  echo "$STATE/bin"
+  ;;
+ shutdown)
+  [ -e "$STATE/reporter.located" ] || exit 98
+  : > "$STATE/bazel.stopped"
+  ;;
  *) exit 93 ;;
 esac
 `,
@@ -140,11 +155,16 @@ exit "$JUST_EXIT"
 		t.Fatal(err)
 	}
 	evidenceFile(t, filepath.Join(h.state, "profile.gz"), profile.Bytes(), 0o600)
-	h.env = h.command(false, "GITHUB_WORKSPACE="+h.repo, "GITHUB_SHA="+h.sha, "RUNNER_TEMP="+t.TempDir(), "GITHUB_OUTPUT="+filepath.Join(h.state, "outputs"), "GITHUB_SERVER_URL=https://github.com", "GITHUB_REPOSITORY=birdayz/fdb-go", "GITHUB_RUN_ID=12345", "JUST_EXIT="+laneExit).Env
+	h.env = h.command(false, "GITHUB_WORKSPACE="+h.repo, "GITHUB_SHA="+h.sha, "RUNNER_TEMP="+t.TempDir(), "GITHUB_OUTPUT="+filepath.Join(h.state, "outputs"), "GITHUB_SERVER_URL=https://github.com", "GITHUB_REPOSITORY=birdayz/fdb-go", "GITHUB_RUN_ID=12345", "JUST_EXIT="+laneExit, "REAL_REPORTER="+reporter).Env
 	return h
 }
 
 func (h *fullWorkflowHarness) step(id string, extra ...string) (string, error) {
+	h.t.Helper()
+	return h.stepScript(id, fullLaneStep(h.t, id).Run, extra...)
+}
+
+func (h *fullWorkflowHarness) stepScript(id, script string, extra ...string) (string, error) {
 	h.t.Helper()
 	step := fullLaneStep(h.t, id)
 	env := append([]string{}, h.env...)
@@ -162,7 +182,7 @@ func (h *fullWorkflowHarness) step(id string, extra ...string) (string, error) {
 	}
 	env = append(env, extra...)
 	// GitHub's default Linux run shell invokes bash with errexit enabled.
-	cmd := exec.Command("bash", "-e", "-c", step.Run)
+	cmd := exec.Command("bash", "-e", "-c", script)
 	cmd.Dir = h.repo
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
@@ -203,6 +223,15 @@ func (h *fullWorkflowHarness) read(name string) string {
 	return string(data)
 }
 
+func (h *fullWorkflowHarness) bazelCalls() string {
+	h.t.Helper()
+	data, err := os.ReadFile(filepath.Join(h.state, "bazel.calls"))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return string(data)
+}
+
 func TestFullLaneWorkflowLifecycle(t *testing.T) {
 	t.Parallel()
 	for _, exit := range []string{"0", "7"} {
@@ -211,14 +240,25 @@ func TestFullLaneWorkflowLifecycle(t *testing.T) {
 			h := newFullWorkflowHarness(t, exit)
 			out, err := h.step("prepare")
 			requireStepExit(t, out, err, 0)
+			const preparedCalls = "build --config=ci //cmd/test-report\ninfo --config=ci bazel-bin\n"
+			if got := h.bazelCalls(); got != preparedCalls {
+				t.Fatalf("prepare Bazel calls=%q, want %q", got, preparedCalls)
+			}
 			out, err = h.step("full")
 			want := 0
 			if exit == "7" {
 				want = 7
 			}
 			requireStepExit(t, out, err, want)
+			beforeReport := h.bazelCalls()
+			if want := preparedCalls + "shutdown\n"; beforeReport != want {
+				t.Fatalf("full-lane Bazel calls=%q, want %q", beforeReport, want)
+			}
 			out, err = h.step("report")
 			requireStepExit(t, out, err, 0)
+			if got := h.bazelCalls(); got != beforeReport {
+				t.Fatalf("report rendering invoked Bazel after shutdown: before=%q after=%q", beforeReport, got)
+			}
 			for _, file := range []string{"dispatch.txt", "bep.jsonl", "bazel-profile.json.gz", "test-report.html", "driver.log", "verified-lane/head.before", "verified-lane/head.after", "verified-lane/inputs.before", "verified-lane/inputs.after", "verified-lane/metadata", "verified-lane/lane.rc", "verified-lane/shutdown.rc"} {
 				if len(h.read(file)) == 0 {
 					t.Errorf("empty artifact %s", file)
@@ -263,6 +303,57 @@ func TestFullLaneWorkflowLifecycle(t *testing.T) {
 			wantArgs := "test-full\n--config=ci\n--define\ngotags=fdbdocker\n--build_event_json_file=" + h.outputs["evidence"] + "/bep.jsonl\n--profile=" + h.outputs["evidence"] + "/bazel-profile.json.gz\n"
 			if string(got) != wantArgs {
 				t.Fatalf("just args=%q want %q", got, wantArgs)
+			}
+		})
+	}
+}
+
+func TestFullLaneReporterBuildOrderControls(t *testing.T) {
+	t.Parallel()
+	t.Run("missing_prebuild", func(t *testing.T) {
+		t.Parallel()
+		h := newFullWorkflowHarness(t, "0")
+		if _, err := os.Stat(filepath.Join(h.state, "bin/cmd/test-report/test-report_/test-report")); !os.IsNotExist(err) {
+			t.Fatal("reporter output already exists before the fixture build")
+		}
+		script := fullLaneStep(t, "prepare").Run
+		const build = "bazelisk build --config=ci //cmd/test-report\n"
+		if strings.Count(script, build) != 1 {
+			t.Fatal("missing-prebuild control cannot remove exactly one build")
+		}
+		script = strings.Replace(script, build, "", 1)
+		out, err := h.stepScript("prepare", script)
+		requireStepExit(t, out, err, 95)
+		if got := h.bazelCalls(); got != "info --config=ci bazel-bin\n" {
+			t.Fatalf("missing-prebuild control did not reach info without build: %q", got)
+		}
+		if _, ok := h.outputs["reporter"]; ok {
+			t.Fatal("missing build still exported a reporter output")
+		}
+		if _, err := os.Stat(filepath.Join(h.state, "reporter.built")); !os.IsNotExist(err) {
+			t.Fatal("missing-prebuild control unexpectedly built the reporter")
+		}
+	})
+	for _, late := range []string{"build --config=ci //cmd/test-report", "info --config=ci bazel-bin"} {
+		t.Run("late_"+strings.Fields(late)[0], func(t *testing.T) {
+			t.Parallel()
+			h := newFullWorkflowHarness(t, "0")
+			out, err := h.step("prepare")
+			requireStepExit(t, out, err, 0)
+			out, err = h.step("full")
+			requireStepExit(t, out, err, 0)
+			before := h.bazelCalls()
+			if want := "build --config=ci //cmd/test-report\ninfo --config=ci bazel-bin\nshutdown\n"; before != want {
+				t.Fatalf("late-call control did not reach a completed shutdown: %q", before)
+			}
+			script := "bazelisk " + late + "\n" + fullLaneStep(t, "report").Run
+			out, err = h.stepScript("report", script)
+			requireStepExit(t, out, err, 94)
+			if !strings.Contains(out, "fixture: Bazel invoked after shutdown") || h.bazelCalls() != before+late+"\n" {
+				t.Fatalf("late-call control did not apply or was not rejected: calls=%q output=%q", h.bazelCalls(), out)
+			}
+			if _, err := os.Stat(filepath.Join(h.outputs["evidence"], "test-report.html")); !os.IsNotExist(err) {
+				t.Fatal("post-shutdown Bazel call did not stop report generation")
 			}
 		})
 	}
