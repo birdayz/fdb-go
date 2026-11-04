@@ -417,7 +417,7 @@ func TestFullLaneWorkflowLifecycle(t *testing.T) {
 
 func TestFullLaneReporterCopyControls(t *testing.T) {
 	t.Parallel()
-	for _, fault := range []string{"failed", "missing", "symlink", "non_executable"} {
+	for _, fault := range []string{"failed", "missing", "symlink", "non_executable", "directory"} {
 		t.Run("copy_"+fault, func(t *testing.T) {
 			t.Parallel()
 			h := newFullWorkflowHarness(t, "0")
@@ -434,6 +434,7 @@ case "$COPY_FAULT" in
  missing) exit 0 ;;
  symlink) ln -s "$2" "$3" ;;
  non_executable) "$REAL_CP" "$@"; chmod a-x "$3" ;;
+ directory) mkdir -m 700 "$3" ;;
 esac
 `), 0o700)
 			h.env = append(h.env, "COPY_FAULT="+fault, "REAL_CP="+realCP)
@@ -443,6 +444,13 @@ esac
 				want = 76
 			}
 			prepare := results["prepare"]
+			if fault == "directory" {
+				reporter := filepath.Join(h.outputs["evidence"], "test-report")
+				shape := exec.Command("bash", "-c", `test -d "$1" && test -x "$1" && test ! -L "$1" && test ! -f "$1"`, "directory-shape", reporter)
+				if out, err := shape.CombinedOutput(); err != nil {
+					t.Fatalf("copy fault did not create a searchable non-symlink directory: %v\n%s", err, out)
+				}
+			}
 			requireStepExit(t, prepare.output, prepare.err, want)
 			if data, err := os.ReadFile(filepath.Join(h.state, "reporter-copy-fault")); err != nil || string(data) != "applied\n" {
 				t.Fatalf("reporter copy fault did not apply: %q %v", data, err)
