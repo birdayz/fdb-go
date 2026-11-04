@@ -291,9 +291,11 @@ if userMillis := optInt64(opts, api.OptExecutionTimeLimit, 0); userMillis > 0 {
 }
 ```
 
-The cap exists so FDB's 5-second hard wall is never reached (`txPageTimeLimit`). It
-is not a tenancy control: a statement that pages will spend 4 seconds *per page*, unbounded in
-total, unless you also set a statement timeout.
+The per-page cap leaves headroom below FDB's 5-second transaction limit (`txPageTimeLimit`),
+not a statement-wide deadline. Auto-commit SELECT pagination creates fresh backend transactions,
+so page and transaction budgets alone do not bound its total duration; use a statement timeout
+or caller-context deadline. Explicit transactions and atomic auto-commit DML instead retain a
+transaction-wide deadline across pages when a transaction timeout is configured.
 
 What happens on breach differs per limit, and two of them do **not** produce an error:
 
@@ -381,15 +383,17 @@ connection.
 
 `SetStatementTimeout` (`EmbeddedConnection.SetStatementTimeout`) takes a `time.Duration`,
 defaults to **off** and lasts one borrow, and bounds one whole `Execute` including all its
-pages. Set it on every tenant connection: it is the only bound that spans pages, and without it the
-4-second per-page cap composes into an unbounded statement. Breach surfaces as `54F01`,
+pages. Set it on every tenant connection for a consistent request-wide bound, including
+auto-commit SELECT pagination that creates fresh backend transactions. The 4-second per-page cap
+alone does not bound that statement's total duration; explicit transactions and atomic DML can
+also be bounded across pages by their shared transaction deadline. Breach surfaces as `54F01`,
 distinguished from a caller's own context deadline by a cause tag
 (`errStatementTimeout`, `translateExecErrorCtx`).
 
 Note the semantics honestly: it is **per request, not per connection lifetime**. A continuation
 resumed by a new request starts a fresh deadline (`EmbeddedConnection.statementTimeout`).
 
-**`TRANSACTION_TIMEOUT` is live and bounds each transaction, not the whole statement.** Set
+**`TRANSACTION_TIMEOUT` is live and bounds each backend transaction, not a general statement deadline.** Set
 `transaction_timeout=<milliseconds>` in the DSN, or use
 `SetOption(api.OptTransactionTimeout, int64(ms))` on the embedded connection.
 `transactionConfigurer` applies it through the FDB transaction's `SetTimeout` for both auto-commit
