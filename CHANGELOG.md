@@ -438,6 +438,14 @@ Each is described in full under Compatibility or Changed below.
   - The pure-Go client rejects a malformed reply instead of decoding it as a shorter valid one: a vector count, element, table or field outside the buffer, or row bytes that do not fill their blob, fails the read.
   - Vector offsets that alias one element no longer allocate without bound (a 24 KB reply allocated 292 MB): each decode is limited to `len/4` elements, which no reply an FDB server writes reaches.
 ### Fixed
+- Pure-Go client: database and tenant retry helpers preserve per-transaction timeout,
+  retry-limit and maximum-retry-delay overrides across `OnError`, instead of replaying
+  persistent database defaults on every callback.
+- Pure-Go client: watches handed off by a successful commit survive later transaction
+  `Reset`, `OnError` and `Cancel`. Uncommitted watches still cancel, and committed watches
+  remain independently cancellable through their futures or caller contexts.
+- Record layer: `FDBDatabaseRunner.RunWithRetry` applies transaction-size warning and
+  error thresholds through the same context setup as `OpenContext`, including retries.
 - Record layer (RFC-275):
   - An online build no longer conflicts on writes to records of a type its target indexes do not
     cover. Java filters by record type before it adds the read conflict.

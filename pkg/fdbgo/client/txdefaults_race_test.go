@@ -13,9 +13,8 @@ import (
 // may set a default from one goroutine while another creates a transaction. libfdb_c
 // is immune by construction — fdb_database_set_option and transaction creation are
 // both marshalled onto the single network thread — so the Go client has to serialize
-// them explicitly. The same defect in the fdb facade produced a real -race abort in
-// CI via applyTxDefaults; this layer has no production caller today, which is exactly
-// why it needs the invariant pinned rather than left to be discovered later.
+// them explicitly. This covers native construction/reset; the facade's separate
+// default snapshot has its own concurrent-set-and-apply regression.
 //
 // Only fails under -race.
 func TestTransactionDefaults_ConcurrentSetAndApply(t *testing.T) {

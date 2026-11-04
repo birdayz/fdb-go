@@ -304,11 +304,13 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
     `read_tags_unit_test`, `TestReadTagSamplingRequestKinds` (storage_plumbing_fdb_test)
     and `TestReadTagSamplingOneDrawPerRequest` (client_test). The goldens leave these
     fields out of the read requests.
-  - [ ] `Reset` or `OnError` after a commit cancels that commit's watches: Go's
-    `cancelWatches` cancels every registered watch context, while C++ `setupWatches`
-    empties `watches` once the commit hands them off (`NativeAPI.actor.cpp:6435`), so
-    `Transaction::reset`'s `cancelWatches` (`:6173`) no longer reaches them. Observed:
-    WatchSetup, commit, WatchPoll, then `Reset` ends the poll with context canceled.
+  - [x] Committed watches survive subsequent transaction teardown. Successful commit
+    detaches their cancellation registrations, matching C++ `setupWatches`
+    (`NativeAPI.actor.cpp:6435`); pending successor watches still cancel. Real-FDB
+    `TestCommittedWatchPollSurvivesTransactionReuse` observes the watch request before
+    Reset/OnError and verifies completion without leaked slots. Facade lifecycle tests
+    cover write/read-only commits and Reset/retry/terminal OnError/Cancel; native tests
+    also pin scoped and parent cancellation after handoff.
   - [ ] The sample rate can be overridden through the cluster's global configuration
     (`transactionTagSampleRate`); Go has no global configuration (libfdb_c refreshes it at
     startup with `GlobalConfigRefreshRequest`).
@@ -2374,6 +2376,12 @@ tracked only.
   non-string columns. Fixed in #1003 (RFC-275).
 
 ### Go FDB client
+
+- [ ] **Default-snapshot boundary:** the facade's immutable `txDefaults` snapshot does
+  not include the native-owned conflict-reporting default. Concurrent construction or
+  Reset can observe different generations across those two layers; no atomic snapshot
+  across them is promised. Consolidation needs a separate design and gated construction/
+  Reset regression alongside a persistent default; it is not part of the retry-override fix.
 
 - [x] **High ✔ `handleConnError` closes the pooled connection, not the failed one**
   (`pkg/fdbgo/client/topology.go:239`). Its 35 non-test call sites pass only an address (4

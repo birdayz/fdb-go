@@ -407,6 +407,7 @@ go_test(
         "recordlayer_suite_test.go",
         "retry_predicate_test.go",
         "reverse_scan_test.go",
+        "runner_size_fdb_test.go",
         "runner_tags_fdb_test.go",
         "runner_test.go",
         "save_descriptor_identity_test.go",

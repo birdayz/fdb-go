@@ -108,6 +108,18 @@ type goTransactionOptions struct {
 }
 
 func (o goTransactionOptions) SetTimeout(milliseconds int64) error {
+	if d := o.tx.defaults; d != nil && d.pendingTimeout > 0 {
+		// A skipped or invalid override cannot replace the pending inherited timeout.
+		// A successful override (including zero) owns the option across later retries.
+		if _, err := o.tx.inner.GetApproximateSize(); err != nil {
+			return nil
+		}
+		o.tx.inner.SetTimeout(milliseconds)
+		if _, err := o.tx.inner.GetApproximateSize(); err == nil {
+			d.pendingTimeout = 0
+		}
+		return nil
+	}
 	o.tx.inner.SetTimeout(milliseconds)
 	return nil
 }
