@@ -26,9 +26,9 @@ var _ = Describe("Declared legacy pending-version deletion boundary", func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				defer cancel()
 				builder := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
-				builder.GetRecordType("Order").SetPrimaryKey(recordlayer.Concat(recordlayer.Field("order_id"), recordlayer.Field("price")))
-				builder.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
-				builder.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+				builder.GetRecordType("Order").SetRecordTypeKey(int64(42)).SetPrimaryKey(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("order_id"), recordlayer.Field("price")))
+				builder.GetRecordType("Customer").SetRecordTypeKey(int64(43)).SetPrimaryKey(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("customer_id")))
+				builder.GetRecordType("TypedRecord").SetRecordTypeKey(int64(44)).SetPrimaryKey(recordlayer.Concat(recordlayer.RecordTypeKey(), recordlayer.Field("id")))
 				builder.SetStoreRecordVersions(false).SetSplitLongRecords(true)
 				md, err := builder.Build()
 				Expect(err).NotTo(HaveOccurred())
@@ -43,14 +43,20 @@ var _ = Describe("Declared legacy pending-version deletion boundary", func() {
 				Expect(err).NotTo(HaveOccurred())
 				root := subspace.Sub("legacy_pending_boundary", uuid.NewString())
 				var java struct {
-					RecordRows int      `json:"recordRows"`
-					Versions   []string `json:"versions"`
+					RecordRows          int      `json:"recordRows"`
+					Versions            []string `json:"versions"`
+					VersionKeys         []string `json:"versionKeys"`
+					FormatVersion       int      `json:"formatVersion"`
+					StoreRecordVersions bool     `json:"storeRecordVersions"`
 				}
 				Expect(NewJavaInvoker().InvokeAs(ctx, "legacyExplicitVersionDelete", map[string]any{
 					"clusterFile": cluster, "subspace": BytesToIntArray(root.Sub("java").Bytes()), "metaData": BytesToIntArray(metadataBytes),
 					"record": BytesToIntArray(recordBytes), "deleteKind": kind, "seed": seed,
 				}, &java)).To(Succeed())
 				Expect(java.RecordRows).To(BeZero())
+				Expect(java.FormatVersion).To(Equal(5))
+				Expect(java.StoreRecordVersions).To(BeFalse())
+				Expect(java.VersionKeys).To(Equal([]string{hex.EncodeToString(root.Sub("java").Sub(recordlayer.RecordVersionKey).Pack(tuple.Tuple{int64(42), int64(1), int64(7)}))}))
 				Expect(java.Versions).To(HaveLen(1), "Java retains the pending explicit legacy version despite deleting the record")
 				javaVersion, err := hex.DecodeString(java.Versions[0])
 				Expect(err).NotTo(HaveOccurred())
@@ -91,9 +97,9 @@ var _ = Describe("Declared legacy pending-version deletion boundary", func() {
 						return nil, err
 					}
 					if kind == "where" {
-						return nil, store.DeleteRecordsWhere(tuple.Tuple{int64(1)})
+						return nil, store.DeleteRecordsWhere(tuple.Tuple{int64(42), int64(1)})
 					}
-					found, err := store.DeleteRecord(tuple.Tuple{int64(1), int64(7)})
+					found, err := store.DeleteRecord(tuple.Tuple{int64(42), int64(1), int64(7)})
 					Expect(found).To(BeTrue())
 					return nil, err
 				})
@@ -110,6 +116,7 @@ var _ = Describe("Declared legacy pending-version deletion boundary", func() {
 					}
 					if seed {
 						Expect(versions).To(HaveLen(1))
+						Expect(versions[0].Key).To(Equal(goRoot.Sub(recordlayer.RecordVersionKey).Pack(tuple.Tuple{int64(42), int64(1), int64(7)})))
 						Expect(versions[0].Value).To(Equal(old))
 					} else {
 						Expect(versions).To(BeEmpty())

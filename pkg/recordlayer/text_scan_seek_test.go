@@ -137,6 +137,48 @@ var _ = Describe("TEXT leapfrog seek", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("keeps the logical lower predecessor when a reverse seek reopens the range", func() {
+		parent := specSubspace().Sub("bounded_idx")
+		writeMap(parent)
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			tx := rtx.Transaction()
+			begin := parent.Pack(tuple.Tuple{"tok", int64(10)})
+			end := parent.Pack(tuple.Tuple{"tok", int64(100)})
+			predecessor, err := tx.GetRange(fdb.SelectorRange{Begin: fdb.LastLessOrEqual(fdb.Key(begin)), End: fdb.FirstGreaterOrEqual(fdb.Key(begin))}, fdb.RangeOptions{}).GetSliceWithError()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(predecessor).To(HaveLen(1))
+			Expect(predecessor[0].Key).To(Equal(parent.Pack(tuple.Tuple{"tok", int64(0)})))
+			for _, target := range []int64{12, 15, 57, 60} {
+				it := NewBunchedMapMultiIterator(tx, parent, NewTextSubspaceSplitter(parent, 1), begin, end, nil, 0, true, TextIndexBunchedSerializerInstance())
+				Expect(it.HasNext()).To(BeTrue())
+				Expect(it.Next().Key).To(Equal(tuple.Tuple{int64(99)}))
+				it.seekTo(tuple.Tuple{target})
+				Expect(it.HasNext()).To(BeTrue(), "target=%d", target)
+				Expect(it.Next().Key).To(Equal(tuple.Tuple{target}))
+				cont := it.GetContinuation()
+				var rest []int64
+				for it.HasNext() {
+					rest = append(rest, it.Next().Key[0].(int64))
+				}
+				Expect(it.Err()).NotTo(HaveOccurred())
+				var want []int64
+				for k := target - 3; k >= 12; k -= 3 {
+					want = append(want, k)
+				}
+				Expect(rest).To(Equal(want))
+				resumed := NewBunchedMapMultiIterator(tx, parent, NewTextSubspaceSplitter(parent, 1), begin, end, cont, 0, true, TextIndexBunchedSerializerInstance())
+				var replay []int64
+				for resumed.HasNext() {
+					replay = append(replay, resumed.Next().Key[0].(int64))
+				}
+				Expect(resumed.Err()).NotTo(HaveOccurred())
+				Expect(replay).To(Equal(want))
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	// A continuation whose key is a bunch's first entry resumes in the bunch
 	// before it (lastLessThan); that bunch has nothing past the key, and the
 	// key's own bunch must still skip it (BunchedMapIterator.java:126-138).

@@ -30,6 +30,7 @@ import com.apple.foundationdb.subspace.Subspace;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import com.google.protobuf.Message;
+import com.google.protobuf.ByteString;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -227,7 +228,8 @@ class TextQuerySteps extends ConformanceBase {
             Object value;
             switch (shape) {
                 case "long": value = 7L + n; break;
-                case "bytes": value = label.getBytes(java.nio.charset.StandardCharsets.UTF_8); break;
+                case "bytes": value = ByteString.copyFromUtf8(label); break;
+                case "raw_bytes": value = label.getBytes(java.nio.charset.StandardCharsets.UTF_8); break;
                 case "nested": value = Collections.singletonList(label); break;
                 case "float_nan": value = Float.intBitsToFloat(0x7fc00001 + n); break;
                 case "double_nan": value = Double.longBitsToDouble(0x7ff8000000000001L + n); break;

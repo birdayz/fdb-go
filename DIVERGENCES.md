@@ -4804,10 +4804,43 @@ retries, so no build picks one range forever.
 
 `recordlayer.TextScan` ports `TextScan.scan` (TextScan.java:160-262) and its
 merge cursors; `PlanTextQuery` ports `RecordQueryPlanner.planText`
-(RecordQueryPlanner.java:1702-1734). Entries, records and continuations are
-Java's, so a continuation from either engine resumes in the other. Pinned by
+(RecordQueryPlanner.java:1702-1734). On the shared, unbounded token-scan surface,
+entries, records and continuations are Java's, so a continuation from either
+engine resumes in the other (subject to the unordered identity exceptions below).
+Logical suffix bounds have the separate read-side boundary below. Pinned by
 `conformance/text_query_conformance_test.go` (target `//conformance:conformance_test`,
 tag `conformance_java`) and `pkg/recordlayer/text_scan_seek_test.go`.
+
+### TEXT logical suffix bounds (intentional read-side extension)
+
+Go applies suffix bounds to decoded logical `(suffix, primary key)` entries.
+A bunch's first entry is its physical key: an inclusive lower bound inside a
+bunch must include that predecessor bunch, then discard decoded entries below
+the lower bound and at or above the exclusive upper bound. This applies to
+forward/reverse scans, reopened intersection seeks and resumed pages. The stored
+bunches, entry encodings and continuation framing are unchanged.
+
+Java 4.14.2.0 `TextIndexMaintainer.scan` passes the packed range directly to
+`BunchedMap.scanMulti` (TextIndexMaintainer.java:538-548;
+BunchedMap.java:1017-1041). A fresh scan starts at the physical lower bound,
+without its predecessor. `BunchedMapIterator` decodes every entry of selected
+bunches without a logical-range filter. Java can therefore omit valid lower-bound
+rows and return decoded rows at or beyond the upper bound, in both directions;
+`TextScan`'s intersection/union/phrase operations do not repair those bounds.
+Go deliberately does not copy these physical-signpost results or drop valid rows.
+
+`conformance/text_query_conformance_test.go` keeps all 18 original bounded
+comparison/direction/limit/skip variants, with an independent seed-predicate
+logical oracle and a source-modeled native physical-owner oracle. A controlled
+persisted Go-serialized fixture pins literal bunches `{0,10,11}`, `{15,19,20,21}`,
+`{30}` for both tokens. For `[10,20)`, Go returns IDs `10,11,15,19`; native Java
+returns `15,19,20,21`, not a normalized subset. Forward/reverse, skip/limits and
+same-engine continuation replays are covered separately. The bounded engines'
+continuations have the same wire format but are **not a cross-engine result/page
+contract**: Java retains its physical lower fence and lacks logical upper filtering,
+whereas Go includes the predecessor and filters decoded entries. Do not exchange
+bounded TEXT continuations expecting identical remaining rows. Unbounded ordered
+cases retain exact native entries, order, stop reasons and cross-engine resumes.
 
 ### TEXT intersections seek (intentional, result-preserving cost divergence)
 
@@ -4858,6 +4891,11 @@ duplicate. This can return two distinct NaN keys where Java returns one, even
 within an unpaged scan and before Bloom lookup. Float and Double remain different
 tuple types. These are seen-set identity exceptions, not changes to the Bloom
 funnel or floating tuple bytes; cross-engine regressions pin the contrast.
+The structural-key continuation oracle uses Java `ByteString` (supported by
+`ProbableIntersectionCursorState`'s byte funnel and structural list equality),
+not freshly allocated `byte[]`. It exchanges actual continuations in both
+directions for Go unsigned integers, raw bytes, `fdb.Key`, key-convertible byte
+aliases and nested tuples; fresh native byte-array identity is asserted separately.
 
 The Bloom filter is Guava 33's (`optimalNumOfHashFunctions(p)`); a Java
 deployment on a Guava whose sizing differs writes a continuation Go still reads

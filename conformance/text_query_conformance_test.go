@@ -219,14 +219,90 @@ func textQueryCorpusName(i int) string {
 	return name
 }
 
-var _ = Describe("TEXT query execution conformance", Ordered, func() {
+// textSuffixOracle is independent of the scanner and tokenizer: these are the
+// literal corpus predicates and token positions used by the ASCII seed above.
+// A nil owner map asks for logical bounds; a map asks for Java's physical
+// signpost bounds, including every decoded entry of the selected bunches.
+func textSuffixOracle(s TextQuerySpec, owners map[string]map[int64]int64) []string {
+	tokens := strings.Fields(*s.Text)
+	type row struct {
+		price, id int64
+		token     string
+		position  int
+	}
+	var rows []row
+	for i := int64(0); i < textQueryCorpusSize; i++ {
+		price := i % 50
+		positions := map[string]int{"common": 0}
+		next := 1
+		if i%2 == 0 {
+			positions["frequent"] = next
+			next++
+		}
+		if i == 17 || i == 600 || i == 1197 {
+			positions["rare"] = next
+			next++
+		}
+		if i%7 == 0 {
+			positions["alpha"], positions["beta"] = next, next+1
+		}
+		if i%7 <= 2 {
+			next += 3
+		}
+		if i%5 == 1 {
+			positions["prelude"] = next
+		}
+		var selected []row
+		for _, token := range tokens {
+			position, present := positions[token]
+			if !present {
+				continue
+			}
+			bound := price
+			if owners != nil {
+				var ok bool
+				bound, ok = owners[token][i]
+				Expect(ok).To(BeTrue(), "missing physical owner token=%s id=%d", token, i)
+			}
+			if bound >= *s.SuffixLow && bound < *s.SuffixHigh {
+				selected = append(selected, row{price, i, token, position})
+			}
+		}
+		match := len(selected) == len(tokens)
+		if s.Type == "TEXT_CONTAINS_PHRASE" {
+			match = match && i%7 == 0
+		}
+		if s.Type == "TEXT_CONTAINS_ANY" {
+			match = len(selected) > 0
+		}
+		if match {
+			rows = append(rows, selected[0])
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		less := rows[i].price < rows[j].price || rows[i].price == rows[j].price && rows[i].id < rows[j].id
+		if s.Reverse {
+			return rows[i].price > rows[j].price || rows[i].price == rows[j].price && rows[i].id > rows[j].id
+		}
+		return less
+	})
+	var out []string
+	for _, r := range rows {
+		out = append(out, entryItem(&recordlayer.IndexEntry{Key: tuple.Tuple{r.token, r.price, r.id}, Value: tuple.Tuple{tuple.Tuple{int64(r.position)}}}))
+	}
+	return out
+}
+
+var _ = Describe("TEXT query execution conformance", Ordered, ContinueOnFailure, func() {
 	var (
-		ctx    = context.Background()
-		env    *TenantEnvironment
-		md     *recordlayer.RecordMetaData
-		ks     subspace.Subspace
-		java   *JavaInvoker
-		params func() map[string]any
+		ctx            = context.Background()
+		env            *TenantEnvironment
+		md             *recordlayer.RecordMetaData
+		ks             subspace.Subspace
+		java           *JavaInvoker
+		params         func() map[string]any
+		owners         map[string]map[int64]int64
+		boundedFixture subspace.Subspace
 	)
 
 	BeforeAll(func() {
@@ -260,6 +336,77 @@ var _ = Describe("TEXT query execution conformance", Ordered, func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 		}
+		owners = make(map[string]map[int64]int64)
+		_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			if err != nil {
+				return nil, err
+			}
+			index := store.IndexSubspace(md.GetIndex("suffix_text"))
+			bunches, err := rtx.Transaction().GetRange(index, fdb.RangeOptions{}).GetSliceWithError()
+			if err != nil {
+				return nil, err
+			}
+			Expect(bunches).NotTo(BeEmpty())
+			for _, kv := range bunches {
+				key, err := index.Unpack(kv.Key)
+				if err != nil {
+					return nil, err
+				}
+				token := key[0].(string)
+				entries, err := recordlayer.TextIndexBunchedSerializerInstance().DeserializeEntries(key[1:], kv.Value)
+				if err != nil {
+					return nil, err
+				}
+				Expect(entries).NotTo(BeEmpty())
+				Expect(entries[0].Key).To(Equal(key[1:]), "physical signpost owns its first decoded entry")
+				if owners[token] == nil {
+					owners[token] = make(map[int64]int64)
+				}
+				for _, e := range entries {
+					id := e.Key[1].(int64)
+					Expect(e.Key[0]).To(Equal(id % 50))
+					_, duplicate := owners[token][id]
+					Expect(duplicate).To(BeFalse())
+					owners[token][id] = key[1].(int64)
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(owners["common"]).To(HaveLen(textQueryCorpusSize))
+		Expect(owners["common"][10]).To(BeNumerically("<", 10), "logical lower boundary belongs to a predecessor bunch")
+		boundedFixture = ks.Sub("literal_suffix_bounds")
+		_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(boundedFixture).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			for _, id := range []int64{0, 10, 11, 15, 19, 20, 21, 30} {
+				if _, err := store.SaveRecord(&demopb.Customer{CustomerId: proto.Int64(id), Price: proto.Int32(int32(id)), Name: proto.String("common frequent")}); err != nil {
+					return nil, err
+				}
+			}
+			// Fix valid bunch boundaries explicitly, independently of insertion
+			// heuristics. Both engines read these same Go-serialized bytes.
+			index := store.IndexSubspace(md.GetIndex("suffix_text"))
+			rtx.Transaction().ClearRange(index)
+			for position, token := range []string{"common", "frequent"} {
+				for _, ids := range [][]int64{{0, 10, 11}, {15, 19, 20, 21}, {30}} {
+					var entries []recordlayer.BunchedEntry[tuple.Tuple, []int]
+					for _, id := range ids {
+						entries = append(entries, recordlayer.BunchedEntry[tuple.Tuple, []int]{Key: tuple.Tuple{id, id}, Value: []int{position}})
+					}
+					value, err := recordlayer.TextIndexBunchedSerializerInstance().SerializeEntries(entries)
+					if err != nil {
+						return nil, err
+					}
+					rtx.Transaction().Set(index.Pack(tuple.Tuple{token, ids[0], ids[0]}), value)
+				}
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterAll(func() {
@@ -398,8 +545,8 @@ var _ = Describe("TEXT query execution conformance", Ordered, func() {
 
 	g1 := strPtr("g1")
 	low, high := int64(10), int64(20)
-	// Deterministic specs: the merge (if any) is ordered, so Java and Go must
-	// return the same entries in the same order with the same continuations.
+	// Unbounded deterministic specs retain exact native pages and continuations.
+	// Suffix bounds have a separately asserted logical/physical read boundary.
 	ordered := []TextQuerySpec{
 		{Index: "name_text", Type: "TEXT_CONTAINS_ALL", Text: strPtr("rare common frequent")},
 		{Index: "name_text", Type: "TEXT_CONTAINS_ALL", Text: strPtr("frequent common")},
@@ -450,30 +597,179 @@ var _ = Describe("TEXT query execution conformance", Ordered, func() {
 		return out
 	}
 
-	It("returns Java's entries, order and continuations for every ordered text comparison", func() {
-		nonEmpty := 0
-		for _, base := range ordered {
-			for _, s := range variants(base) {
+	// Every original base/direction/limit/skip is a separate spec: one failure
+	// must not hide any later native comparison.
+	for _, base := range ordered {
+		for _, s := range variants(base) {
+			It("checks ordered text pages "+s.String(), func() {
+				goRun := func(s TextQuerySpec) textPage { p, _ := goScan(s, nil); return p }
 				javaPages := allPages(s, javaScan)
-				goPages := allPages(s, func(s TextQuerySpec) textPage { p, _ := goScan(s, nil); return p })
-				Expect(goPages).To(Equal(javaPages), s.String())
-				if len(items(javaPages)) > 0 {
-					nonEmpty++
-				}
-				// Each engine resumes the other's continuations to the same page.
-				for i, jp := range javaPages[:len(javaPages)-1] {
-					if i == 3 {
-						break
+				goPages := allPages(s, goRun)
+				if s.SuffixLow == nil {
+					Expect(goPages).To(Equal(javaPages), s.String())
+					emptyQuery := s.Text != nil && (strings.Contains(*s.Text, "absent") || *s.Text == "zzz")
+					if s.Skip == 0 && !emptyQuery && s.Type != "TEXT_CONTAINS_ALL_WITHIN" {
+						Expect(items(javaPages)).NotTo(BeEmpty(), s.String())
 					}
-					next := s
-					next.Continuation = jp.Continuation
-					p, _ := goScan(next, nil)
-					Expect(p).To(Equal(javaScan(next)), next.String())
+					// Preserve the supported cross-engine continuation checks.
+					for i, jp := range javaPages[:len(javaPages)-1] {
+						if i == 3 {
+							break
+						}
+						next := s
+						next.Continuation = jp.Continuation
+						Expect(goRun(next)).To(Equal(javaScan(next)), next.String())
+					}
+					return
 				}
-			}
+				for _, engine := range []struct {
+					name     string
+					pages    []textPage
+					expected []string
+					run      func(TextQuerySpec) textPage
+				}{
+					{"Go logical", goPages, textSuffixOracle(s, nil), goRun},
+					{"Java physical", javaPages, textSuffixOracle(s, owners), javaScan},
+				} {
+					remaining := engine.expected
+					Expect(remaining).NotTo(BeEmpty(), engine.name)
+					for i, page := range engine.pages {
+						skip := min(s.Skip, len(remaining))
+						remaining = remaining[skip:]
+						n := len(remaining)
+						if s.Limit > 0 {
+							n = min(n, s.Limit)
+						}
+						var want []string
+						want = append(want, remaining[:n]...)
+						Expect(page.Items).To(Equal(want), "%s page=%d spec=%s", engine.name, i, s.String())
+						remaining = remaining[n:]
+						if s.Limit > 0 && n == s.Limit {
+							Expect(page.Reason).To(Equal("RETURN_LIMIT_REACHED"))
+							Expect(page.Continuation).NotTo(BeNil())
+						} else {
+							Expect(page.Reason).To(Equal("SOURCE_EXHAUSTED"))
+							Expect(page.Continuation).To(BeNil())
+						}
+						if i+1 < len(engine.pages) {
+							next := s
+							next.Continuation = page.Continuation
+							Expect(engine.run(next)).To(Equal(engine.pages[i+1]), "%s same-engine replay", engine.name)
+						}
+					}
+					Expect(remaining).To(BeEmpty(), engine.name)
+				}
+			})
 		}
-		Expect(nonEmpty).To(BeNumerically(">", len(ordered)*4), "most specs must match records")
-	})
+	}
+
+	literalBase := TextQuerySpec{Index: "suffix_text", Type: "TEXT_CONTAINS_ALL", Text: strPtr("common frequent"), SuffixLow: &low, SuffixHigh: &high}
+	literalVariants := variants(literalBase)
+	for _, reverse := range []bool{false, true} {
+		for _, skip := range []int{0, 1} {
+			s := literalBase
+			s.Reverse, s.Limit, s.Skip = reverse, 1, skip
+			literalVariants = append(literalVariants, s)
+		}
+	}
+	for _, s := range literalVariants {
+		It("pins literal predecessor omission and decoded upper leakage "+s.String(), func() {
+			_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(boundedFixture).Open()
+				if err != nil {
+					return nil, err
+				}
+				index := store.IndexSubspace(md.GetIndex("suffix_text"))
+				bunches, err := rtx.Transaction().GetRange(index, fdb.RangeOptions{}).GetSliceWithError()
+				if err != nil {
+					return nil, err
+				}
+				Expect(bunches).To(HaveLen(6))
+				for i, kv := range bunches {
+					token := []string{"common", "frequent"}[i/3]
+					ids := [][]int64{{0, 10, 11}, {15, 19, 20, 21}, {30}}[i%3]
+					Expect(kv.Key).To(Equal(index.Pack(tuple.Tuple{token, ids[0], ids[0]})))
+					decoded, err := recordlayer.TextIndexBunchedSerializerInstance().DeserializeEntries(tuple.Tuple{ids[0], ids[0]}, kv.Value)
+					if err != nil {
+						return nil, err
+					}
+					var want []recordlayer.BunchedEntry[tuple.Tuple, []int]
+					for _, id := range ids {
+						want = append(want, recordlayer.BunchedEntry[tuple.Tuple, []int]{Key: tuple.Tuple{id, id}, Value: []int{i / 3}})
+					}
+					Expect(decoded).To(Equal(want))
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			goRun := func(spec TextQuerySpec) textPage {
+				result, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+					store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(boundedFixture).Open()
+					if err != nil {
+						return nil, err
+					}
+					suffix := recordlayer.TupleRangeBetween(tuple.Tuple{int64(10)}, tuple.Tuple{int64(20)})
+					scan := recordlayer.NewTextScan(md.GetIndex("suffix_text"), nil, goTextComparison(spec), &suffix)
+					cursor, err := scan.Scan(store, continuationBytes(spec), recordlayer.NewScanProperties(goExecuteProperties(spec)).WithReverse(spec.Reverse))
+					if err != nil {
+						return nil, err
+					}
+					return drainGoPage(ctx, cursor, entryItem)
+				})
+				Expect(err).NotTo(HaveOccurred())
+				return result.(textPage)
+			}
+			javaRun := func(spec TextQuerySpec) textPage {
+				p := params()
+				p["subspace"], p["specJson"] = BytesToIntArray(boundedFixture.Bytes()), spec.String()
+				var raw map[string]any
+				Expect(java.InvokeAs(ctx, "textQueryScan", p, &raw)).To(Succeed())
+				return javaPage(raw)
+			}
+			for _, engine := range []struct {
+				name string
+				ids  []int64
+				run  func(TextQuerySpec) textPage
+			}{
+				{"Go logical", []int64{10, 11, 15, 19}, goRun},
+				{"Java physical", []int64{15, 19, 20, 21}, javaRun},
+			} {
+				ids := append([]int64{}, engine.ids...)
+				if s.Reverse {
+					for i, j := 0, len(ids)-1; i < j; i, j = i+1, j-1 {
+						ids[i], ids[j] = ids[j], ids[i]
+					}
+				}
+				pages := allPages(s, engine.run)
+				for i, page := range pages {
+					ids = ids[min(s.Skip, len(ids)):]
+					n := len(ids)
+					if s.Limit > 0 {
+						n = min(n, s.Limit)
+					}
+					var want []string
+					for _, id := range ids[:n] {
+						want = append(want, entryItem(&recordlayer.IndexEntry{Key: tuple.Tuple{"common", id, id}, Value: tuple.Tuple{tuple.Tuple{int64(0)}}}))
+					}
+					Expect(page.Items).To(Equal(want), "%s page=%d", engine.name, i)
+					ids = ids[n:]
+					if s.Limit > 0 && n == s.Limit {
+						Expect(page.Reason).To(Equal("RETURN_LIMIT_REACHED"))
+						Expect(page.Continuation).NotTo(BeNil())
+					} else {
+						Expect(page.Reason).To(Equal("SOURCE_EXHAUSTED"))
+						Expect(page.Continuation).To(BeNil())
+					}
+					if i+1 < len(pages) {
+						next := s
+						next.Continuation = page.Continuation
+						Expect(engine.run(next)).To(Equal(pages[i+1]), engine.name)
+					}
+				}
+				Expect(ids).To(BeEmpty())
+			}
+		})
+	}
 
 	// keySet is the distinct primary keys of entry items (key hex, minus the
 	// token), which is what a probable intersection compares.

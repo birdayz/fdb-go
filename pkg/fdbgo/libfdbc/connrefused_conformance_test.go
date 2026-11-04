@@ -161,7 +161,6 @@ func startCRCluster(t *testing.T, ctx context.Context, f *crFixture, opts ...tes
 	if f.double {
 		replicas = 2
 	}
-	f.plan = bootstrapCRCluster(t, startup, container, replicas)
 	content, err := container.ClusterFile(startup)
 	if err != nil {
 		t.Fatal(err)
@@ -177,6 +176,7 @@ func startCRCluster(t *testing.T, ctx context.Context, f *crFixture, opts ...tes
 		t.Fatal(err)
 	}
 	t.Cleanup(backend.Close)
+	f.plan = bootstrapCRCluster(t, startup, container, f.clusterFile, replicas)
 	db, err := gofdb.OpenDatabase(f.clusterFile)
 	if err != nil {
 		t.Fatal(err)
@@ -265,7 +265,8 @@ type crClusterStatus struct {
 	} `json:"cluster"`
 }
 
-// Status proves CC registration, not recoveredDiskFiles; native recruitment checks that flag.
+// Postconfiguration status checks public class/locality/roles, not the hidden
+// recoveredDiskFiles flag that native recruitment checks.
 func crCheckWorkers(raw []byte, plan crBootstrapPlan, recruited bool) (bool, error) {
 	var status crClusterStatus
 	if err := json.Unmarshal(raw, &status); err != nil {
@@ -368,9 +369,78 @@ func crAwaitWorkers(ctx context.Context, plan crBootstrapPlan, recruited bool, s
 	}
 }
 
-func crConfigureRegistered(ctx context.Context, plan crBootstrapPlan, status func(context.Context) (string, string, error), configure func(context.Context) error) error {
-	if err := crAwaitWorkers(ctx, plan, false, status); err != nil {
-		return err
+const crWorkerInterfacesPrefix = "\xff\xff/worker_interfaces/"
+
+// API 730 dispatches this exact special-key module to getClientWorkers, not
+// status or a system-key read (ReadYourWrites.actor.cpp:1606-1629,1715-1720).
+func crNativeWorkerInterfaces(ctx context.Context, db cgofdb.Database) ([]cgofdb.KeyValue, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	tr, err := db.CreateTransaction()
+	if err != nil {
+		return nil, err
+	}
+	defer tr.Cancel()
+	stop := context.AfterFunc(ctx, tr.Cancel)
+	defer stop()
+	if err := tr.Options().SetTimeout(crMetadataTimeout(ctx)); err != nil {
+		return nil, err
+	}
+	return tr.GetRange(cgofdb.KeyRange{Begin: cgofdb.Key(crWorkerInterfacesPrefix), End: cgofdb.Key("\xff\xff/worker_interfaces0")}, cgofdb.RangeOptions{}).GetSliceWithError()
+}
+
+// The CC map snapshot proves registered addresses only, not class, locality or
+// recoveredDiskFiles. Those public postconfiguration fields are checked later.
+func crCheckWorkerInterfaces(plan crBootstrapPlan, workers []cgofdb.KeyValue) (bool, error) {
+	if plan.primary == "" || (plan.replicas != 1 && plan.replicas != 2) || len(plan.processes) != 3+plan.replicas {
+		return false, fmt.Errorf("invalid refusal registration plan")
+	}
+	expected := map[string]bool{plan.primary: true}
+	for _, p := range plan.processes {
+		if p.address == "" || expected[p.address] {
+			return false, fmt.Errorf("empty or duplicate planned worker address %q", p.address)
+		}
+		expected[p.address] = true
+	}
+	seen := make(map[string]bool)
+	for _, worker := range workers {
+		key := string(worker.Key)
+		if !strings.HasPrefix(key, crWorkerInterfacesPrefix) || len(worker.Value) == 0 {
+			return false, fmt.Errorf("invalid native worker interface key %q or empty interface", key)
+		}
+		address := strings.TrimPrefix(key, crWorkerInterfacesPrefix)
+		if !expected[address] || seen[address] {
+			return false, fmt.Errorf("unplanned or duplicate registered worker %q", address)
+		}
+		seen[address] = true
+	}
+	return len(seen) == len(expected), nil
+}
+
+func crConfigureRegistered(ctx context.Context, plan crBootstrapPlan, workers func(context.Context) ([]cgofdb.KeyValue, error), status func(context.Context) (string, string, error), configure func(context.Context) error) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("await native registered worker interfaces: %w", err)
+		}
+		interfaces, err := workers(ctx)
+		if err != nil {
+			return fmt.Errorf("read native registered worker interfaces: %w", err)
+		}
+		ready, err := crCheckWorkerInterfaces(plan, interfaces)
+		if err != nil {
+			return err
+		}
+		if ready {
+			break
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(2 * time.Second):
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("configure registered refusal workers: %w", err)
 	}
 	if err := configure(ctx); err != nil {
 		return err
@@ -379,7 +449,7 @@ func crConfigureRegistered(ctx context.Context, plan crBootstrapPlan, status fun
 }
 
 // LogClass can fall back to StorageWorstFit; reject unexpected roles after recruitment.
-func bootstrapCRCluster(t *testing.T, ctx context.Context, container *foundationdbtc.Container, replicas int) crBootstrapPlan {
+func bootstrapCRCluster(t *testing.T, ctx context.Context, container *foundationdbtc.Container, clusterFile string, replicas int) crBootstrapPlan {
 	t.Helper()
 	host, _, err := net.SplitHostPort(container.InternalAddress())
 	if err != nil {
@@ -412,7 +482,16 @@ func bootstrapCRCluster(t *testing.T, ctx context.Context, container *foundation
 		ticker.Stop()
 		cancel()
 	}
-	if err := crConfigureRegistered(ctx, plan, func(ctx context.Context) (string, string, error) {
+	// All intended class/locality processes are constructed and listening before
+	// INITIALIZE. The native CC census then fences address registration, not
+	// hidden disk recovery; full status is queried only AFTER configuration.
+	native, err := cgofdb.OpenDatabase(clusterFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := crConfigureRegistered(ctx, plan, func(ctx context.Context) ([]cgofdb.KeyValue, error) {
+		return crNativeWorkerInterfaces(ctx, native)
+	}, func(ctx context.Context) (string, string, error) {
 		return crStorageStatus(ctx, container)
 	}, container.InitializeDatabase); err != nil {
 		t.Fatalf("initialize refusal cluster with registered dedicated processes: %v", err)
@@ -1085,72 +1164,142 @@ func TestConnectRefusedBootstrapPlan(t *testing.T) {
 	}
 }
 
+func crTestWorkerInterfaces(plan crBootstrapPlan) []cgofdb.KeyValue {
+	workers := []cgofdb.KeyValue{{Key: cgofdb.Key(crWorkerInterfacesPrefix + plan.primary), Value: []byte("opaque primary interface")}}
+	for _, p := range plan.processes {
+		workers = append(workers, cgofdb.KeyValue{Key: cgofdb.Key(crWorkerInterfacesPrefix + p.address), Value: []byte("opaque worker interface")})
+	}
+	return workers
+}
+
+func TestConnectRefusedWorkerInterfaces(t *testing.T) {
+	t.Parallel()
+	for _, replicas := range []int{1, 2} {
+		for _, tc := range []struct {
+			name             string
+			change           func(*crBootstrapPlan, *[]cgofdb.KeyValue)
+			ready, wantError bool
+		}{
+			{name: "complete", ready: true},
+			{name: "empty", change: func(_ *crBootstrapPlan, w *[]cgofdb.KeyValue) { *w = nil }},
+			{name: "missing_primary", change: func(_ *crBootstrapPlan, w *[]cgofdb.KeyValue) { *w = (*w)[1:] }},
+			{name: "missing_log", change: func(_ *crBootstrapPlan, w *[]cgofdb.KeyValue) { *w = append((*w)[:1], (*w)[2:]...) }},
+			{name: "missing_storage", change: func(_ *crBootstrapPlan, w *[]cgofdb.KeyValue) { *w = (*w)[:len(*w)-1] }},
+			{name: "duplicate", wantError: true, change: func(_ *crBootstrapPlan, w *[]cgofdb.KeyValue) { *w = append(*w, (*w)[0]) }},
+			{name: "unexpected", wantError: true, change: func(_ *crBootstrapPlan, w *[]cgofdb.KeyValue) {
+				(*w)[0].Key = cgofdb.Key(crWorkerInterfacesPrefix + "127.0.0.1:9999")
+			}},
+			{name: "wrong_prefix", wantError: true, change: func(_ *crBootstrapPlan, w *[]cgofdb.KeyValue) {
+				(*w)[0].Key = cgofdb.Key("worker_interfaces/127.0.0.1:4500")
+			}},
+			{name: "empty_address", wantError: true, change: func(_ *crBootstrapPlan, w *[]cgofdb.KeyValue) { (*w)[0].Key = cgofdb.Key(crWorkerInterfacesPrefix) }},
+			{name: "empty_interface", wantError: true, change: func(_ *crBootstrapPlan, w *[]cgofdb.KeyValue) { (*w)[0].Value = nil }},
+			{name: "empty_primary", wantError: true, change: func(p *crBootstrapPlan, _ *[]cgofdb.KeyValue) { p.primary = "" }},
+			{name: "invalid_replicas", wantError: true, change: func(p *crBootstrapPlan, _ *[]cgofdb.KeyValue) { p.replicas = 3 }},
+			{name: "wrong_process_count", wantError: true, change: func(p *crBootstrapPlan, _ *[]cgofdb.KeyValue) { p.processes = p.processes[1:] }},
+			{name: "empty_planned_address", wantError: true, change: func(p *crBootstrapPlan, _ *[]cgofdb.KeyValue) { p.processes[0].address = "" }},
+			{name: "duplicate_planned_address", wantError: true, change: func(p *crBootstrapPlan, _ *[]cgofdb.KeyValue) { p.processes[0].address = p.primary }},
+		} {
+			t.Run(fmt.Sprintf("%d/%s", replicas, tc.name), func(t *testing.T) {
+				plan, err := crPlan("127.0.0.1", 4500, replicas)
+				if err != nil {
+					t.Fatal(err)
+				}
+				workers := crTestWorkerInterfaces(plan)
+				if tc.change != nil {
+					tc.change(&plan, &workers)
+				}
+				ready, err := crCheckWorkerInterfaces(plan, workers)
+				if ready != tc.ready || (err != nil) != tc.wantError {
+					t.Fatalf("ready=%v err=%v, want ready=%v error=%v", ready, err, tc.ready, tc.wantError)
+				}
+			})
+		}
+	}
+}
+
 func TestConnectRefusedBootstrapOrder(t *testing.T) {
 	t.Parallel()
 	plan, err := crPlan("127.0.0.1", 4500, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	configured := false
-	var order []string
-	err = crConfigureRegistered(ctx, plan, func(context.Context) (string, string, error) {
-		if configured {
-			order = append(order, "recruited")
-		} else {
-			order = append(order, "registered")
-		}
-		return crStatusJSON(t, crBootstrapStatus(plan, configured)), "", nil
-	}, func(context.Context) error {
-		order = append(order, "configure")
-		configured = true
-		return nil
-	})
-	if err != nil || strings.Join(order, ",") != "registered,configure,recruited" {
-		t.Fatalf("bootstrap order %v, error %v", order, err)
-	}
-	missingCtx, missingCancel := context.WithCancel(ctx)
-	defer missingCancel()
-	configured = false
-	missing := crBootstrapStatus(plan, false)
-	delete(missing.Cluster.Processes, "worker-4")
-	err = crConfigureRegistered(missingCtx, plan, func(context.Context) (string, string, error) {
-		missingCancel()
-		return crStatusJSON(t, missing), "registration incomplete", nil
-	}, func(context.Context) error { configured = true; return nil })
-	if err == nil || configured || !strings.Contains(err.Error(), "registration incomplete") {
-		t.Fatalf("configured without registered storage: configured=%v err=%v", configured, err)
-	}
-	failure := errors.New("configure failed")
-	err = crConfigureRegistered(ctx, plan, func(context.Context) (string, string, error) {
-		return crStatusJSON(t, crBootstrapStatus(plan, false)), "", nil
-	}, func(context.Context) error { return failure })
-	if !errors.Is(err, failure) {
-		t.Fatalf("configuration error lost: %v", err)
-	}
-	configured = false
-	statusFailure := errors.New("status failed")
-	err = crConfigureRegistered(ctx, plan, func(context.Context) (string, string, error) {
-		return "partial stdout", "status diagnostic", statusFailure
-	}, func(context.Context) error { configured = true; return nil })
-	if !errors.Is(err, statusFailure) || configured || !strings.Contains(err.Error(), "status diagnostic") || !strings.Contains(err.Error(), "partial stdout") {
-		t.Fatalf("status error did not block configuration with diagnostics: configured=%v err=%v", configured, err)
-	}
-	for _, recruited := range []bool{false, true} {
-		phaseCtx, phaseCancel := context.WithCancel(ctx)
-		configured = false
-		err = crConfigureRegistered(phaseCtx, plan, func(context.Context) (string, string, error) {
-			if !recruited || configured {
-				phaseCancel()
-				return "{", "malformed status", nil
+	failure := errors.New("phase failed")
+	for _, phase := range []string{"complete", "empty", "missing", "native_error", "invalid_interface", "invalid_key", "unexpected_worker", "duplicate_worker", "canceled_census", "configure_error", "missing_post", "malformed_post", "status_error", "expired"} {
+		t.Run(phase, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if phase == "expired" {
+				cancel()
 			}
-			return crStatusJSON(t, crBootstrapStatus(plan, false)), "", nil
-		}, func(context.Context) error { configured = true; return nil })
-		phaseCancel()
-		if err == nil || configured != recruited || !strings.Contains(err.Error(), "decode refusal workers") || !strings.Contains(err.Error(), "malformed status") {
-			t.Fatalf("malformed status phase recruited=%v: configured=%v err=%v", recruited, configured, err)
-		}
+			var order []string
+			err := crConfigureRegistered(ctx, plan, func(context.Context) ([]cgofdb.KeyValue, error) {
+				order = append(order, "registered")
+				workers := crTestWorkerInterfaces(plan)
+				switch phase {
+				case "empty":
+					cancel()
+					return nil, nil
+				case "missing":
+					cancel()
+					return workers[:len(workers)-1], nil
+				case "native_error":
+					return nil, failure
+				case "invalid_interface":
+					workers[0].Value = nil
+				case "invalid_key":
+					workers[0].Key = cgofdb.Key("wrong module")
+				case "unexpected_worker":
+					workers[0].Key = cgofdb.Key(crWorkerInterfacesPrefix + "127.0.0.1:9999")
+				case "duplicate_worker":
+					workers = append(workers, workers[0])
+				case "canceled_census":
+					cancel()
+				}
+				return workers, nil
+			}, func(context.Context) (string, string, error) {
+				order = append(order, "recruited")
+				switch phase {
+				case "missing_post":
+					cancel()
+					status := crBootstrapStatus(plan, true)
+					delete(status.Cluster.Processes, "worker-4")
+					return crStatusJSON(t, status), "postconfiguration incomplete", nil
+				case "malformed_post":
+					return "{", "malformed status", nil
+				case "status_error":
+					return "partial stdout", "status diagnostic", failure
+				}
+				return crStatusJSON(t, crBootstrapStatus(plan, true)), "", nil
+			}, func(context.Context) error {
+				order = append(order, "configure")
+				if phase == "configure_error" {
+					return failure
+				}
+				return nil
+			})
+			wantOrder := "registered"
+			switch phase {
+			case "expired":
+				wantOrder = ""
+			case "configure_error":
+				wantOrder = "registered,configure"
+			case "complete", "missing_post", "malformed_post", "status_error":
+				wantOrder = "registered,configure,recruited"
+			}
+			if strings.Join(order, ",") != wantOrder || (err == nil) != (phase == "complete") {
+				t.Fatalf("order=%v err=%v, want order=%s success=%v", order, err, wantOrder, phase == "complete")
+			}
+			if strings.HasSuffix(phase, "_error") && !errors.Is(err, failure) {
+				t.Fatalf("lost phase error: %v", err)
+			}
+			if phase == "status_error" && (!strings.Contains(err.Error(), "partial stdout") || !strings.Contains(err.Error(), "status diagnostic")) {
+				t.Fatalf("lost diagnostics: %v", err)
+			}
+			if phase == "malformed_post" && !strings.Contains(err.Error(), "decode refusal workers") {
+				t.Fatalf("lost decode error: %v", err)
+			}
+		})
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"math"
 	"strconv"
 	"time"
@@ -67,15 +68,17 @@ func typedProbableCursor(shape, alias string, lists [][]string, cont []byte) rec
 }
 
 var _ = Describe("Typed probable intersection compatibility boundaries", func() {
-	It("exchanges actual Java continuations for unsigned and raw-key aliases without flattening nested tuples", func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		lists := [][]string{{"0", "1", "2", "3"}, {"0", "1", "2", "3"}}
-		wire, err := json.Marshal(lists)
-		Expect(err).NotTo(HaveOccurred())
-		java := NewJavaInvoker()
-		for _, spec := range [][2]string{{"long", "uint"}, {"long", "uint64"}, {"bytes", "raw"}, {"bytes", "key"}, {"bytes", "convertible"}, {"nested", "tuple"}} {
-			for _, direction := range []string{"java_to_go", "go_to_java"} {
+	// Java ByteString supplies structural byte equality to seenSet as well as
+	// the byte funnel. Fresh Java byte[] identity is a separate contrast below.
+	for _, spec := range [][2]string{{"long", "uint"}, {"long", "uint64"}, {"bytes", "raw"}, {"bytes", "key"}, {"bytes", "convertible"}, {"nested", "tuple"}} {
+		for _, direction := range []string{"java_to_go", "go_to_java"} {
+			It(fmt.Sprintf("exchanges actual Java structural-key continuations shape=%s alias=%s direction=%s", spec[0], spec[1], direction), func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+				lists := [][]string{{"0", "1", "2", "3"}, {"0", "1", "2", "3"}}
+				wire, err := json.Marshal(lists)
+				Expect(err).NotTo(HaveOccurred())
+				java := NewJavaInvoker()
 				var cont *string
 				var population []string
 				for page := 0; page < 10; page++ {
@@ -100,9 +103,29 @@ var _ = Describe("Typed probable intersection compatibility boundaries", func() 
 						break
 					}
 				}
+				Expect(cont).To(BeNil(), "exchange must reach exhaustion")
 				Expect(population).To(Equal([]string{"0", "1", "2", "3"}), "%v %s nonvacuous exchange", spec, direction)
-			}
+			})
 		}
+	}
+
+	It("contrasts actual Java fresh byte-array identity with Go packed byte-key equality", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		lists := [][]string{{"0", "1", "2", "3"}, {"0", "1", "2", "3"}}
+		wire, err := json.Marshal(lists)
+		Expect(err).NotTo(HaveOccurred())
+		var raw map[string]any
+		Expect(NewJavaInvoker().InvokeAs(ctx, "probableIntersectionTypedKeys", map[string]any{"shape": "raw_bytes", "listsJson": string(wire), "limit": 0, "continuation": nil}, &raw)).To(Succeed())
+		jp := javaPage(raw)
+		gp, err := drainGoPage(ctx, typedProbableCursor("bytes", "raw", lists, nil), func(s string) string { return s })
+		Expect(err).NotTo(HaveOccurred())
+		Expect(jp.Items).To(BeEmpty())
+		Expect(gp.Items).To(Equal([]string{"0", "1", "2", "3"}))
+		Expect(jp.Continuation).To(BeNil())
+		Expect(gp.Continuation).To(BeNil())
+		Expect(jp.Reason).To(Equal("SOURCE_EXHAUSTED"))
+		Expect(gp.Reason).To(Equal("SOURCE_EXHAUSTED"))
 	})
 
 	It("pins Java boxed NaN suppression versus Go distinct packed stored-key identity", func() {

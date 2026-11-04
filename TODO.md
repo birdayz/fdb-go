@@ -27,6 +27,20 @@ git show 13d5a3d1e:rfcs/257-java-upgrade-audit/ws-e-design.md
 Verify remaining audit claims against current Go and Java before changing code.
 Never mark a whole workstream complete because one of its subitems passed.
 
+## Pending acceptance: ingest-20k conformance gate corrections
+
+- [ ] Run the supported full stacked-tree acceptance lane and fresh native review
+  after the coherent gate-fix commit. The source corrections cover pre-init native
+  CC address registration followed by strict postconfiguration class/locality/role
+  and storage-team checks; valid record-type-prefixed legacy delete metadata;
+  structural Java byte-key continuation oracles with separate array/NaN contrasts;
+  and logical bounded TEXT results versus native physical bunch results, including
+  reverse-seek predecessor preservation. A standard `just test` pass does not
+  execute the heavyweight connrefused or live-Java conformance targets and does
+  not close this acceptance item. Do not infer the twelve network refusal
+  client/read instances, watch recovery, or live-Java population from inline
+  controls or source audits.
+
 ## 0. `pkg/fdbgo` CPU under concurrency — TOP PRIORITY
 
 Set as the top priority by the owner on 2026-10-15, ahead of the active workstream.

@@ -545,8 +545,12 @@ func (it *BunchedMapMultiIterator) seekTo(target tuple.Tuple) {
 		// The bunch after the target's one holds the entry that precedes the
 		// target in a reverse scan, so the read includes it: end past the first
 		// key greater than the endpoint.
+		begin := fdb.FirstGreaterOrEqual(fdb.Key(it.beginBytes))
+		if it.logicalBounds {
+			begin = fdb.LastLessOrEqual(fdb.Key(it.beginBytes))
+		}
 		rangeResult = it.tx.GetRange(fdb.SelectorRange{
-			Begin: fdb.FirstGreaterOrEqual(fdb.Key(it.beginBytes)),
+			Begin: begin,
 			End:   fdb.KeySelector{Key: fdb.Key(endpoint), OrEqual: true, Offset: 2},
 		}, fdb.RangeOptions{Reverse: true})
 	} else {

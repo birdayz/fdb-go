@@ -53,7 +53,7 @@ class VersionSaveSteps extends ConformanceBase {
             store.saveRecord(message, FDBRecordStoreBase.RecordExistenceCheck.NONE, FDBRecordVersion.incomplete(1),
                     FDBRecordStoreBase.VersionstampSaveBehavior.IF_PRESENT);
             if ("point".equals(deleteKind)) {
-                if (!store.deleteRecord(Tuple.from(1L, 7L))) { throw new IllegalStateException("saved record absent"); }
+                if (!store.deleteRecord(Tuple.from(md.getRecordType("Order").getRecordTypeKey(), 1L, 7L))) { throw new IllegalStateException("saved record absent"); }
             } else if ("where".equals(deleteKind)) {
                 store.deleteRecordsWhere("Order", com.apple.foundationdb.record.query.expressions.Query.field("order_id").equalsValue(1L));
             } else { throw new IllegalArgumentException(deleteKind); }
@@ -63,9 +63,16 @@ class VersionSaveSteps extends ConformanceBase {
             Map<String, Object> result = new HashMap<>();
             result.put("recordRows", context.ensureActive().getRange(ss.subspace(Tuple.from(1L)).range()).asList().join().size());
             List<String> versions = new ArrayList<>();
+            List<String> versionKeys = new ArrayList<>();
             for (KeyValue kv : context.ensureActive().getRange(ss.subspace(Tuple.from(8L)).range()).asList().join()) {
+                versionKeys.add(HexFormat.of().formatHex(kv.getKey()));
                 versions.add(HexFormat.of().formatHex(kv.getValue()));
             }
+            FDBRecordStore store = FDBRecordStore.newBuilder().setMetaDataProvider(md).setContext(context)
+                    .setSubspace(ss).setFormatVersion(5).setUserVersionChecker(ALWAYS_READABLE_CHECKER).open();
+            result.put("formatVersion", store.getFormatVersion());
+            result.put("storeRecordVersions", md.isStoreRecordVersions());
+            result.put("versionKeys", versionKeys);
             result.put("versions", versions);
             return result;
         });
