@@ -3,6 +3,8 @@ package fdb_test
 import (
 	"context"
 	"errors"
+	"math"
+	"reflect"
 	"testing"
 	"time"
 
@@ -71,6 +73,31 @@ func persistentDefaultsRoute(t *testing.T, owner, route string) (fdb.Database, f
 	return db, run
 }
 
+// Read the computed next backoff after OnError completes, not the configured cap or elapsed time.
+// Reflection avoids adding a public inspection hook for the facade's private native handle.
+func effectiveRetryBackoff(t *testing.T, tx fdb.ReadTransaction) time.Duration {
+	t.Helper()
+	v := reflect.ValueOf(tx)
+	for _, field := range []string{"t", "inner"} {
+		if !v.IsValid() || v.Kind() != reflect.Struct {
+			t.Fatalf("effective backoff: %T has no struct containing %q", tx, field)
+		}
+		v = v.FieldByName(field)
+		if !v.IsValid() || v.Kind() != reflect.Pointer || v.IsNil() {
+			t.Fatalf("effective backoff: %T field %q is not a non-nil pointer", tx, field)
+		}
+		v = v.Elem()
+	}
+	if !v.IsValid() || v.Kind() != reflect.Struct {
+		t.Fatalf("effective backoff: %T native handle is not a struct", tx)
+	}
+	v = v.FieldByName("backoff")
+	if !v.IsValid() || v.Kind() != reflect.Int64 {
+		t.Fatalf("effective backoff: %T native backoff is not an int64 duration", tx)
+	}
+	return time.Duration(v.Int())
+}
+
 func TestFDB_PersistentDatabaseDefaultsRespectOverrides(t *testing.T) {
 	t.Parallel()
 	for _, owner := range []string{"database", "tenant"} {
@@ -116,6 +143,47 @@ func TestFDB_PersistentDatabaseDefaultsRespectOverrides(t *testing.T) {
 					})
 				}
 
+				for _, override := range []bool{false, true} {
+					name := "max_delay_inherited"
+					if override {
+						name = "max_delay_override_once"
+					}
+					t.Run(name, func(t *testing.T) {
+						if err := db.Options().SetTransactionMaxRetryDelay(7); err != nil {
+							t.Fatal(err)
+						}
+						if err := db.Options().SetTransactionRetryLimit(3); err != nil {
+							t.Fatal(err)
+						}
+						want := 7 * time.Millisecond
+						if override {
+							want = 3 * time.Millisecond
+						}
+						calls := 0
+						_, err := run(ctx, func(tx fdb.ReadTransaction) (any, error) {
+							calls++
+							if calls == 1 && override {
+								if err := tx.Options().SetMaxRetryDelay(3); err != nil {
+									return nil, err
+								}
+							}
+							if calls > 1 {
+								if got := effectiveRetryBackoff(t, tx); got != want {
+									t.Errorf("callback %d: effective next backoff=%v, want %v", calls, got, want)
+									return nil, errors.New("maximum retry delay changed across callback reentry")
+								}
+							}
+							if calls < 4 {
+								return nil, fdb.Error{Code: 1020}
+							}
+							return nil, nil
+						})
+						if err != nil || calls != 4 {
+							t.Fatalf("calls=%d error=%v, want four callbacks under the effective delay cap", calls, err)
+						}
+					})
+				}
+
 				t.Run("longer_timeout_once", func(t *testing.T) {
 					if err := db.Options().SetTransactionTimeout(1000); err != nil {
 						t.Fatal(err)
@@ -146,6 +214,38 @@ func TestFDB_PersistentDatabaseDefaultsRespectOverrides(t *testing.T) {
 						t.Fatalf("calls=%d error=%v; longer timeout must survive OnError", calls, err)
 					}
 				})
+			})
+		}
+	}
+}
+
+func TestFDB_InvalidDatabaseTimeoutSurvivesReset(t *testing.T) {
+	t.Parallel()
+	for _, owner := range []string{"database", "tenant"} {
+		for _, reset := range []bool{false, true} {
+			name := owner + "/construction"
+			if reset {
+				name = owner + "/Reset"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				db, run := persistentDefaultsRoute(t, owner, "CreateTransaction")
+				if err := db.Options().SetTransactionTimeout(int64(math.MaxInt32) + 1); err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				_, err := run(ctx, func(tx fdb.ReadTransaction) (any, error) {
+					tr := tx.(fdb.Transaction)
+					if reset {
+						tr.Reset()
+					}
+					tr.Set(fdb.Key(t.Name()), []byte("must not commit"))
+					return nil, nil
+				})
+				if !isFDBCode(err, 2006) {
+					t.Fatalf("oversized inherited timeout: %v, want invalid_option_value (2006)", err)
+				}
 			})
 		}
 	}

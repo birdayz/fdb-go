@@ -13,8 +13,8 @@ import (
 // may set a default from one goroutine while another creates a transaction. libfdb_c
 // is immune by construction — fdb_database_set_option and transaction creation are
 // both marshalled onto the single network thread — so the Go client has to serialize
-// them explicitly. The fdb facade also forwards its persistent database defaults
-// here, so this covers concurrent facade option changes and native construction/reset.
+// them explicitly. This covers native construction/reset; the facade's separate
+// default snapshot has its own concurrent-set-and-apply regression.
 //
 // Only fails under -race.
 func TestTransactionDefaults_ConcurrentSetAndApply(t *testing.T) {

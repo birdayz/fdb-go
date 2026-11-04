@@ -15,7 +15,7 @@ func TestDatabaseDefault_SnapshotRYWDisable_Propagates(t *testing.T) {
 		t.Fatalf("SetSnapshotRywDisable: %v", err)
 	}
 	tr, inner := newBareOptionsTx()
-	Database{d: idb}.applyTxDefaults(tr.t)
+	Database{d: idb}.applyTxDefaults(tr.t, true)
 	if inner.SnapshotRYWDisableCount() <= 0 {
 		t.Errorf("DB-level SetSnapshotRywDisable must disable snapshot RYW on the new tx, got count %d", inner.SnapshotRYWDisableCount())
 	}
@@ -32,7 +32,7 @@ func TestDatabaseDefault_SnapshotRYW_IsCounter(t *testing.T) {
 	_ = opts.SetSnapshotRywEnable()  // net -1
 	_ = opts.SetSnapshotRywDisable() // net  0
 	tr, inner := newBareOptionsTx()
-	Database{d: idb}.applyTxDefaults(tr.t)
+	Database{d: idb}.applyTxDefaults(tr.t, true)
 	if inner.SnapshotRYWDisableCount() > 0 {
 		t.Errorf("enable+disable must net to enabled (count 0), not last-wins disabled — got count %d", inner.SnapshotRYWDisableCount())
 	}
@@ -43,7 +43,7 @@ func TestDatabaseDefault_SnapshotRYW_IsCounter(t *testing.T) {
 	_ = o2.SetSnapshotRywDisable()
 	_ = o2.SetSnapshotRywEnable()
 	tr2, inner2 := newBareOptionsTx()
-	Database{d: idb2}.applyTxDefaults(tr2.t)
+	Database{d: idb2}.applyTxDefaults(tr2.t, true)
 	if inner2.SnapshotRYWDisableCount() != 1 {
 		t.Errorf("disable+disable+enable must net to 1 disable, got count %d", inner2.SnapshotRYWDisableCount())
 	}
@@ -60,25 +60,23 @@ func TestDatabaseDefault_BypassUnreadable_Propagates(t *testing.T) {
 	}
 
 	tr, inner := newBareOptionsTx()
-	Database{d: idb}.applyTxDefaults(tr.t)
+	Database{d: idb}.applyTxDefaults(tr.t, true)
 	if !inner.BypassUnreadable() {
 		t.Error("DB-level SetTransactionBypassUnreadable must set bypass_unreadable on the new tx")
 	}
 }
 
-// TestDatabaseDefault_SnapshotRYW_RetryIdempotent: applyTxDefaults re-runs on EVERY
-// retry attempt against the same inner tx (client.Transact re-invokes the closure) and reset()
-// preserves snapshotRYWDisableCount, so the counter must be SET (idempotent), not incremented — or
-// it drifts (-1,-2,… per attempt) and changes snapshot-read semantics on retries.
+// Replaying the DB's snapshot-RYW default must assign its net counter, not accumulate it.
+// This also remains idempotent when the transaction already has that counter.
 func TestDatabaseDefault_SnapshotRYW_RetryIdempotent(t *testing.T) {
 	t.Parallel()
 	idb := &internalDB{}
 	_ = (DatabaseOptions{db: idb}).SetSnapshotRywDisable() // net 1
 	tr, inner := newBareOptionsTx()
 	db := Database{d: idb}
-	db.applyTxDefaults(tr.t) // attempt 1
-	db.applyTxDefaults(tr.t) // attempt 2 (retry)
-	db.applyTxDefaults(tr.t) // attempt 3 (retry)
+	db.applyTxDefaults(tr.t, true)  // attempt 1
+	db.applyTxDefaults(tr.t, false) // attempt 2 (retry)
+	db.applyTxDefaults(tr.t, false) // attempt 3 (retry)
 	if got := inner.SnapshotRYWDisableCount(); got != 1 {
 		t.Errorf("snapshot-RYW DB default must not drift across retries (SET, not ++): want 1, got %d", got)
 	}
@@ -98,7 +96,7 @@ func TestDatabaseDefault_CausalReadRisky_Propagates(t *testing.T) {
 	}
 
 	tr, inner := newBareOptionsTx()
-	Database{d: idb}.applyTxDefaults(tr.t)
+	Database{d: idb}.applyTxDefaults(tr.t, true)
 	if !inner.CausalReadRisky() {
 		t.Error("DB-level SetTransactionCausalReadRisky must set the GRV causal-read-risky flag on the new tx")
 	}

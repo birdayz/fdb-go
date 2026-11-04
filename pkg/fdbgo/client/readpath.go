@@ -1494,8 +1494,8 @@ func (tx *Transaction) WatchSetup(ctx context.Context, key []byte) ([]byte, int6
 
 	// Mint THIS watch's own cancellable context HERE — right after the acquire and BEFORE the blocking
 	// GRV / value read below. Those reads RUN on watchCtx (below), so a Cancel()/reset() during
-	// setup cancels THIS context and the setup-error path releases the slot at once; a Cancel during the
-	// async poll is observed by WatchPoll, which drains and releases. watchCancel is the SCOPED cancel
+	// setup cancels THIS context and releases the slot; teardown also cancels an uncommitted poll.
+	// Commit hands the poll to its future/parent, independent of later teardown. watchCancel is the SCOPED cancel
 	// (cancels+deregisters only this watch): the setup-error paths below call it, WatchPoll defers it on
 	// completion, and the fdb facade wires the Watch future's Cancel() to it — so one watch is freed
 	// without touching siblings. The async WatchPoll USES this context, never a lazy fetch

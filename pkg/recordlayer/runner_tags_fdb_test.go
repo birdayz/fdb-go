@@ -1,9 +1,7 @@
 package recordlayer
 
-// The runner must put its config's tags on every transaction it opens. The
-// helper's unit test covers the loop; this covers the WIRING — deleting the
-// applyTags call from runOnce leaves the helper test green, so only a real
-// transaction can tell.
+// The runner must put its config's tags on every transaction it opens.
+// This checks the shared OpenContext wiring, not just the applyTags helper.
 
 import (
 	"context"

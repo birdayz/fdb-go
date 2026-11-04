@@ -782,7 +782,7 @@ func TestOnError_CallerCancelOutranksTxnTimeout(t *testing.T) {
 }
 
 // TestOnError_TerminalAbortCancelsWatches pins that a non-retryable (terminal-abort) OnError cancels
-// in-flight watch contexts, so their polls drain and release the outstanding-watch slots. Without it,
+// uncommitted watch contexts, so their polls drain and release the outstanding-watch slots. Without it,
 // a watch registered in a Transact whose txn then fails non-retryably keeps polling and holds its
 // slot until the key changes, starving future watches under a low MAX_WATCHES. The retry path
 // already cancels via reset(); this covers the abort path. Revert-proof: drop the defer and the ctx
@@ -796,13 +796,13 @@ func TestOnError_TerminalAbortCancelsWatches(t *testing.T) {
 	}
 	_ = tx.OnError(context.Background(), &wire.FDBError{Code: 2004}) // key_outside_legal_range — non-retryable
 	if watchCtx.Err() == nil {
-		t.Fatal("a terminal (non-retryable) OnError must cancel in-flight watch contexts to free their slots")
+		t.Fatal("a terminal (non-retryable) OnError must cancel uncommitted watch contexts to free their slots")
 	}
 }
 
 // TestNewWatchCtx_PerWatchScoped pins the RFC-168 per-watch-context restructure:
 // newWatchCtx mints a DISTINCT context per watch (not one shared per txn), each cancellable
-// independently via its scoped cancel WITHOUT touching siblings, while cancelWatches cancels ALL.
+// independently via its scoped cancel WITHOUT touching siblings; teardown cancels all UNCOMMITTED watches.
 func TestNewWatchCtx_PerWatchScoped(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()
@@ -819,10 +819,10 @@ func TestNewWatchCtx_PerWatchScoped(t *testing.T) {
 	if b.Err() != nil {
 		t.Errorf("cancelling one watch must NOT cancel a sibling, got %v", b.Err())
 	}
-	// cancelWatches (Cancel/reset) cancels the remaining live watch (B).
+	// cancelWatches (Cancel/reset) cancels the remaining uncommitted watch (B).
 	tx.cancelWatches()
 	if b.Err() == nil {
-		t.Error("cancelWatches must cancel all remaining watches")
+		t.Error("cancelWatches must cancel all remaining uncommitted watches")
 	}
 	cancelB() // idempotent no-op (already cancelled+deregistered)
 }

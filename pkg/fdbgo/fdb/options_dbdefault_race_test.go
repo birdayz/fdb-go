@@ -1,8 +1,13 @@
 package fdb
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"testing"
+
+	"fdb.dev/pkg/fdbgo/client"
+	"fdb.dev/pkg/fdbgo/wire"
 )
 
 // TestDatabaseDefaults_ConcurrentSetAndApply pins the concurrency contract the
@@ -51,12 +56,15 @@ func TestDatabaseDefaults_ConcurrentSetAndApply(t *testing.T) {
 	wg.Add(2)
 
 	// Writer: the NewFDBDatabaseWithBackend side of the reported race, plus the
-	// other facade-owned non-persistent defaults. Persistent defaults are owned by
-	// client.Database and covered by TestTransactionDefaults_ConcurrentSetAndApply.
+	// other facade defaults, including persistent and non-persistent fields from
+	// the same immutable snapshot.
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
 			_ = opts.SetReadSystemKeys()
+			_ = opts.SetTransactionTimeout(int64(i%7) + 1)
+			_ = opts.SetTransactionRetryLimit(int64(i % 5))
+			_ = opts.SetTransactionMaxRetryDelay(int64(i%3) + 1)
 			_ = opts.SetTransactionSizeLimit(int64(i%11) + 1)
 			_ = opts.SetTransactionBypassUnreadable()
 			_ = opts.SetTransactionCausalReadRisky()
@@ -70,9 +78,64 @@ func TestDatabaseDefaults_ConcurrentSetAndApply(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
 			tr, _ := newBareOptionsTx()
-			db.applyTxDefaults(tr.t)
+			db.applyTxDefaults(tr.t, true)
 		}
 	}()
 
 	wg.Wait()
+}
+
+func TestDatabaseDefaults_CapturedSnapshotKeepsBothGroups(t *testing.T) {
+	t.Parallel()
+	db := Database{d: &internalDB{}}
+	opts := db.Options()
+	if err := opts.SetTransactionRetryLimit(0); err != nil {
+		t.Fatal(err)
+	}
+	captured := make(chan struct{})
+	apply := make(chan struct{})
+	applied := make(chan *client.Transaction, 1)
+	go func() {
+		snapshot := db.d.defaults()
+		close(captured)
+		<-apply
+		tr, inner := newBareOptionsTx()
+		snapshot.apply(tr.t, true)
+		applied <- inner
+	}()
+	<-captured
+	// Publish (retry=2, bypass=false), then (retry=2, bypass=true) while
+	// the captured (retry=0, bypass=false) generation is parked before apply.
+	if err := opts.SetTransactionRetryLimit(2); err != nil {
+		t.Error(err)
+	}
+	if err := opts.SetTransactionBypassUnreadable(); err != nil {
+		t.Error(err)
+	}
+	close(apply)
+	old := <-applied
+	defer old.Cancel()
+	if old.BypassUnreadable() {
+		t.Fatal("captured generation picked up a later non-persistent default")
+	}
+	var fe *wire.FDBError
+	if err := old.OnError(context.Background(), &wire.FDBError{Code: 1020}); !errors.As(err, &fe) || fe.Code != 1020 {
+		t.Fatalf("captured generation lost its no-retry default: %v", err)
+	}
+
+	tr, fresh := newBareOptionsTx()
+	defer fresh.Cancel()
+	db.applyTxDefaults(tr.t, true)
+	if !fresh.BypassUnreadable() {
+		t.Fatal("fresh generation lost the new non-persistent default")
+	}
+	for retry := 0; retry <= 2; retry++ {
+		err := fresh.OnError(context.Background(), &wire.FDBError{Code: 1020})
+		if retry < 2 && err != nil {
+			t.Fatalf("fresh retry %d: %v", retry, err)
+		}
+		if retry == 2 && (!errors.As(err, &fe) || fe.Code != 1020) {
+			t.Fatalf("fresh generation lost its retry limit: %v", err)
+		}
+	}
 }

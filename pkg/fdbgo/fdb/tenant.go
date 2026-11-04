@@ -28,6 +28,7 @@ func (t Tenant) Transact(f func(WritableTransaction) (any, error)) (any, error) 
 // cancels an in-flight commit.
 func (t Tenant) TransactCtx(ctx context.Context, f func(WritableTransaction) (any, error)) (any, error) {
 	var body bodyRun
+	initial := true
 	result, err := t.db.d.inner.Transact(ctx, func(tx *client.Transaction) (any, error) {
 		return body.run(func() (any, error) {
 			tx.SetTenantId(t.tenantId)
@@ -37,7 +38,8 @@ func (t Tenant) TransactCtx(ctx context.Context, f func(WritableTransaction) (an
 				ctx:           ctx,
 				versionstamps: true,
 			}
-			t.db.applyTxDefaults(txn) // inherit DB-level option defaults — parity with Database.TransactCtx
+			t.db.applyTxDefaults(txn, initial)
+			initial = false
 			return f(Transaction{t: txn})
 		})
 	})
@@ -56,6 +58,7 @@ func (t Tenant) ReadTransact(f func(ReadTransaction) (any, error)) (any, error) 
 // ReadTransactCtx is ReadTransact bounded by ctx (RFC-090 / fdb.CtxReadTransactor).
 func (t Tenant) ReadTransactCtx(ctx context.Context, f func(ReadTransaction) (any, error)) (any, error) {
 	var body bodyRun
+	initial := true
 	result, err := t.db.d.inner.ReadTransact(ctx, func(tx *client.Transaction) (any, error) {
 		return body.run(func() (any, error) {
 			tx.SetTenantId(t.tenantId)
@@ -64,7 +67,8 @@ func (t Tenant) ReadTransactCtx(ctx context.Context, f func(ReadTransaction) (an
 				db:    t.db,
 				ctx:   ctx,
 			}
-			t.db.applyTxDefaults(txn) // inherit DB-level option defaults — parity with Database.ReadTransactCtx
+			t.db.applyTxDefaults(txn, initial)
+			initial = false
 			return f(Transaction{t: txn})
 		})
 	})
@@ -87,6 +91,6 @@ func (t Tenant) CreateTransaction() (Transaction, error) {
 		ctx:           t.db.d.ctx,
 		versionstamps: true,
 	}
-	t.db.applyTxDefaults(txn) // parity with Database.CreateTransaction + the Transact* paths
+	t.db.applyTxDefaults(txn, true)
 	return Transaction{t: txn}, nil
 }

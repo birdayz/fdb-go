@@ -2564,12 +2564,8 @@ func (tx *Transaction) OnError(ctx context.Context, err error) (rerr error) {
 		}
 		return nil
 	}
-	// A TERMINAL OnError — any non-nil return, i.e. the txn is aborting, not retrying — must release
-	// any in-flight watch slots. A watch registered in Transact whose txn then fails non-retryably
-	// would otherwise keep long-polling and HOLD its outstanding-watch slot until the key changes, so
-	// under a low MAX_WATCHES one failed transaction starves every future watch. The RETRY
-	// path (return nil) already cancels in-flight watches via reset()→cancelWatches; this defer covers
-	// the ABORT paths. cancelWatches is idempotent (no-op when no watch context is bound).
+	// Terminal OnError cancels uncommitted watches so their slots do not leak; retry does so in reset.
+	// Committed watches have already left this registry and retain independent future/parent ownership.
 	defer func() {
 		if rerr != nil {
 			tx.failCapturedIncarnation(op.inc, &wire.FDBError{Code: ErrTransactionCancelled})

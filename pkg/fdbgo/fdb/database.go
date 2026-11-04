@@ -80,9 +80,13 @@ func MustGetAPIVersion() int {
 	return v
 }
 
-// txDefaults holds facade-owned non-persistent transaction defaults. Persistent
-// defaults are owned by client.Database so OnError preserves transaction overrides.
+// txDefaults holds the facade's database defaults in one immutable snapshot.
+// OnError replays only non-persistent fields, preserving transaction overrides.
 type txDefaults struct {
+	timeout        int64 // milliseconds, 0 = disabled
+	retryLimit     int64 // -1 = unlimited, 0 = no retries
+	hasRetryLimit  bool
+	maxRetryDelay  int64 // milliseconds, 0 = use default
 	sizeLimit      int64 // bytes, 0 = disabled
 	readSystemKeys bool  // allow reading \xff system keys
 	// snapshotRywDisableNet is the NET (disables - enables) of the DB-level snapshot-RYW option.
@@ -126,8 +130,8 @@ type internalDB struct {
 	// Go has no equivalent: any goroutine may set a DB option while another starts a
 	// transaction. Publishing a whole snapshot (rather than per-field atomics) is what
 	// reproduces that bulk-copy property — a transaction must not pick up the new
-	// size limit alongside the old snapshot-RYW setting. Readers take one Load; they never hold a
-	// lock across the callouts into the client that apply the options.
+	// timeout alongside the old size limit. Readers take one Load; they never hold
+	// a lock across the callouts into the client that apply the options.
 	//
 	// Note this is a property of the single-version path only. C++'s multi-version
 	// client is itself racy here: MultiVersionDatabase::createTransaction copies
@@ -377,7 +381,7 @@ func (db Database) CreateTransaction() (Transaction, error) {
 	// every transaction at construction (ReadYourWrites.actor.cpp); skipping this
 	// left a manual CreateTransaction/OnError loop unbounded even when the caller
 	// had set SetTransactionTimeout/SetTransactionRetryLimit on the database.
-	db.applyTxDefaults(t)
+	db.applyTxDefaults(t, true)
 	return Transaction{t: t}, nil
 }
 
@@ -412,6 +416,7 @@ func (db Database) Transact(f func(WritableTransaction) (any, error)) (any, erro
 // Cancel does, as in libfdb_c (RFC-280).
 func (db Database) TransactCtx(ctx context.Context, f func(WritableTransaction) (any, error)) (any, error) {
 	var body bodyRun
+	initial := true
 	result, err := db.d.inner.Transact(ctx, func(tx *client.Transaction) (any, error) {
 		return body.run(func() (any, error) {
 			t := &transaction{
@@ -420,7 +425,8 @@ func (db Database) TransactCtx(ctx context.Context, f func(WritableTransaction) 
 				ctx:           ctx,
 				versionstamps: true,
 			}
-			db.applyTxDefaults(t)
+			db.applyTxDefaults(t, initial)
+			initial = false
 			return f(Transaction{t: t})
 		})
 	})
@@ -447,6 +453,7 @@ func (db Database) ReadTransactCtx(ctx context.Context, f func(ReadTransaction) 
 	// the closure doesn't store it — it only stores the Transaction value
 	// which embeds a pointer to t).
 	var body bodyRun
+	initial := true
 	result, err := db.d.inner.ReadTransact(ctx, func(tx *client.Transaction) (any, error) {
 		return body.run(func() (any, error) {
 			t := transaction{
@@ -454,7 +461,8 @@ func (db Database) ReadTransactCtx(ctx context.Context, f func(ReadTransaction) 
 				db:    db,
 				ctx:   ctx,
 			}
-			db.applyTxDefaults(&t)
+			db.applyTxDefaults(&t, initial)
+			initial = false
 			return f(Transaction{t: &t})
 		})
 	})
@@ -464,24 +472,32 @@ func (db Database) ReadTransactCtx(ctx context.Context, f func(ReadTransaction) 
 	return result, nil
 }
 
-// applyTxDefaults reapplies the facade's non-persistent transaction defaults.
-// Persistent defaults belong to client.Database: construction and Reset copy them,
-// while OnError preserves per-transaction overrides (ReadYourWrites.actor.cpp:2680-2754).
-func (db Database) applyTxDefaults(t *transaction) {
-	// One Load: every option below comes from the SAME snapshot, so a concurrent
-	// Options().SetXxx cannot split this transaction across two default sets.
-	d := db.d.defaults()
+// applyTxDefaults copies one snapshot; persistent fields apply only at construction/Reset.
+// Retry callbacks preserve overrides, matching ReadYourWrites.actor.cpp:2680-2754.
+func (db Database) applyTxDefaults(t *transaction, persistent bool) {
+	db.d.defaults().apply(t, persistent)
+}
+
+func (d txDefaults) apply(t *transaction, persistent bool) {
+	if persistent {
+		if d.timeout > 0 {
+			t.inner.SetTimeout(d.timeout)
+		}
+		if d.hasRetryLimit {
+			t.inner.SetRetryLimit(d.retryLimit)
+		}
+		if d.maxRetryDelay > 0 {
+			t.inner.SetMaxRetryDelay(d.maxRetryDelay)
+		}
+	}
 	if d.sizeLimit > 0 {
 		t.inner.SetSizeLimit(d.sizeLimit)
 	}
 	if d.readSystemKeys {
 		t.inner.SetReadSystemKeys()
 	}
-	// SET (not ++/--) the per-tx counter to the DB net. applyTxDefaults re-runs on every retry
-	// attempt against the SAME inner tx (client.Transact re-invokes the closure), and reset()
-	// preserves snapshotRYWDisableCount — so an incrementing replay would DRIFT (-1, -2, … per
-	// attempt). Setting is idempotent and re-seeds to the DB default each attempt, matching
-	// libfdb_c's reset() (ReadYourWrites.actor.cpp:2082 seeds snapshotRywEnabled = db default).
+	// Assign the DB's net counter, not another enable/disable increment on each retry.
+	// C++ likewise seeds snapshotRywEnabled from the DB (ReadYourWrites.actor.cpp:2082).
 	t.inner.SetSnapshotRYWDisableCount(d.snapshotRywDisableNet)
 	if d.bypassUnreadable {
 		t.inner.SetBypassUnreadable(true)
