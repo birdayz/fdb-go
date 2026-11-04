@@ -63,7 +63,9 @@ text scan returns no records for it, as in Java. Both implementations retain Jav
 permissive positional treatment of known-present tokens with omitted position
 lists; such a raw positional scan is not an exact occurrence proof. Planner
 eligibility declines those positional/prefix-set access paths for indexes with
-positions omitted. Original text is fetched, not reconstructed as a covering
+positions omitted. SQL PHRASE and ALL_WITHIN also keep an original-text residual
+when positions are enabled: current metadata cannot certify historical postings
+written with omission enabled. Original text is fetched, not reconstructed as a covering
 string from tokens. Existing
 persisted TEXT layout, tokenizer versions and the Unicode segmentation
 limitations are unchanged. Text access paths whose tokenized column is also a

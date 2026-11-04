@@ -53,6 +53,35 @@ func TestIntegrationTextQueryPredicatesAndPagination(t *testing.T) {
 				insertOrders(t, store, &demopb.Order{OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(1), Flower: &demopb.Flower{Type: proto.String(document)}})
 			}
 			insertOrders(t, store, &demopb.Order{OrderId: proto.Int64(20), Price: proto.Int32(2), Flower: &demopb.Flower{Type: proto.String("red blue")}})
+			for _, reverse := range []bool{false, true} {
+				plan := textTestPlan(t, predicates.ComparisonTextContainsAny, "red green", grouped, reverse)
+				page, err := readTextTestPage(context.Background(), nil, testDB.Run, func(rtx *recordlayer.FDBRecordContext, input []byte) (recordlayer.RecordCursor[QueryResult], error) {
+					s, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).SetSubspace(testSubspace(t)).Open()
+					if err != nil {
+						return nil, err
+					}
+					props := recordlayer.DefaultExecuteProperties()
+					props.Skip, props.ReturnedRowLimit = 1, 2
+					return ExecutePlan(context.Background(), plan, s, EmptyEvaluationContext(), input, props)
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var got []int64
+				for _, row := range page.rows {
+					got = append(got, row.Record.Record.(*demopb.Order).GetOrderId())
+				}
+				want := []int64{2, 3}
+				if reverse {
+					want = []int64{5, 3}
+					if !grouped {
+						want = []int64{7, 5}
+					}
+				}
+				if !slices.Equal(got, want) {
+					t.Fatalf("skip once after multi-term merge reverse=%v: got %v want %v", reverse, got, want)
+				}
+			}
 			cases := []struct {
 				typ   predicates.ComparisonType
 				query any

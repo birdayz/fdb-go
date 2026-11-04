@@ -2,6 +2,7 @@ package sqltest
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -13,6 +14,8 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/executor"
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/ddl"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/sqltest/testkit"
 )
@@ -85,6 +88,71 @@ func (f *sqlTextTokenizerFactory) GetTokenizer() recordlayer.TextTokenizer { ret
 var fulltextSQLVersionFactory = &sqlTextTokenizerFactory{tokenizer: &sqlTextVersionTokenizer{name: "sql_fulltext_version_regression"}}
 
 var fulltextSQLBoundFactory = &sqlTextTokenizerFactory{tokenizer: &sqlTextVersionTokenizer{name: "sql_fulltext_bound_regression", singleton: true}}
+
+func TestFDBFullTextMatchingCustomTokenizer(t *testing.T) {
+	t.Parallel()
+	if testkit.ClusterFile() == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	factory := fulltextSQLBoundFactory
+	if err := recordlayer.GlobalTextTokenizerRegistry().Register(factory); err != nil {
+		t.Fatal(err)
+	}
+	name := strings.ToUpper(t.Name())
+	template, err := embedded.BuildSchemaTemplateFromDDLNamed("CREATE TABLE docs(id BIGINT, body STRING, PRIMARY KEY(id)) CREATE FULLTEXT INDEX body_text ON docs(body) CREATE TABLE plain_docs(id BIGINT, body STRING, PRIMARY KEY(id))", name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template.Underlying().GetIndex("BODY_TEXT").SetOption(recordlayer.IndexOptionTextTokenizerName, factory.Name()).SetOption(recordlayer.IndexOptionTextTokenizerVersion, "0")
+	h := testkit.NewEvolHarness(t)
+	path := "/FRL/" + name
+	h.MustRun(t, "create custom tokenizer schema", func(txn api.Transaction) error {
+		if err := h.Cat.Initialize(txn); err != nil {
+			return err
+		}
+		if err := ddl.NewCreateDatabaseConstantAction(path, h.Cat).Execute(txn); err != nil {
+			return err
+		}
+		if err := ddl.NewSaveSchemaTemplateConstantAction(template, h.Cat.SchemaTemplateCatalog()).Execute(txn); err != nil {
+			return err
+		}
+		return ddl.NewCreateSchemaConstantAction(path, "S", name, h.Cat, h.Ks).Execute(txn)
+	})
+	db := testkit.EvolReopen(t, path, "S")
+	ctx := context.Background()
+	for _, table := range []string{"docs", "plain_docs"} {
+		if _, err := db.ExecContext(ctx, "INSERT INTO "+table+" VALUES (1,'red blue'),(2,'blue red'),(3,'red')"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conn := testkit.PinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
+	for _, table := range []string{"docs", "plain_docs"} {
+		for _, tokenizer := range []string{factory.Name(), "default", factory.Name(), "default"} {
+			want := []int64{2}
+			if tokenizer == "default" {
+				want = []int64{1, 2}
+			}
+			for _, bound := range []bool{false, true} {
+				query := "SELECT id FROM " + table + " WHERE TEXT_CONTAINS_ALL(body,'blue red','" + tokenizer + "') ORDER BY id"
+				var args []any
+				if bound {
+					query = "SELECT id FROM " + table + " WHERE TEXT_CONTAINS_ALL(body,?,?) ORDER BY id"
+					args = []any{"blue red", tokenizer}
+				}
+				var plan string
+				if err := conn.QueryRowContext(ctx, "EXPLAIN "+query, args...).Scan(&plan); err != nil {
+					t.Fatal(err)
+				}
+				if indexed := table == "docs" && tokenizer == factory.Name(); strings.Contains(plan, "TextIndexScan(BODY_TEXT") != indexed {
+					t.Fatalf("table=%s tokenizer=%s bound=%v: %s", table, tokenizer, bound, plan)
+				}
+				if got := testkit.QueryIDs(t, conn, query, args...); !reflect.DeepEqual(got, want) {
+					t.Fatalf("table=%s tokenizer=%s bound=%v: got %v want %v", table, tokenizer, bound, got, want)
+				}
+			}
+		}
+	}
+}
 
 func TestFDBFullTextExplicitTokenizerAndVersions(t *testing.T) {
 	t.Parallel()

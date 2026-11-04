@@ -94,7 +94,9 @@ func textAccessAlternatives(ctx PlanContext, inner plans.RecordQueryPlan, preds 
 			// A strict probable intersection keeps its predicate as a filter
 			// (RecordQueryPlanner.java:1721-1728).
 			strictPrefixes := typ == predicates.ComparisonTextContainsAllPrefixes && cp.Comparison.TextStrictPrefix
-			consumed := map[int]bool{textIndex: !strictPrefixes}
+			// Current options cannot certify positions in historical postings.
+			positional := typ == predicates.ComparisonTextContainsPhrase || typ == predicates.ComparisonTextContainsAllWithin
+			consumed := map[int]bool{textIndex: !strictPrefixes && !positional}
 			for i, col := range c.Columns[:c.GroupingCount] {
 				for j, p := range preds {
 					eq, ok := p.(*predicates.ComparisonPredicate)

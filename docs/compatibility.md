@@ -43,6 +43,8 @@ and is ignored for distance checks. If no positions remain, the positional test
 passes. This is **not proof of exact phrase/proximity occurrence**. Like Java's
 text planner, Go declines positional and prefix-set text access paths when index
 metadata omits positions; ALL, ANY and singleton PREFIX remain eligible.
+SQL PHRASE and ALL_WITHIN always retain an original-text residual: clearing
+`textOmitPositions` does not rebuild historical postings or prove their positions complete.
 Grouping columns must all be bound, by an equality, an IN list or a join
 column, and carry authoritative physical key types in the typed scan; an IN
 list runs the text scan once per element under an IN join. A NaN equality on

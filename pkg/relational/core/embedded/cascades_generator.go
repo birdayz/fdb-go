@@ -3246,7 +3246,7 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 					continue
 				}
 				def := &metadataIndexDef{idx: idx, md: c.md}
-				candidates = append(candidates, &cascades.TextIndexMatchCandidate{Name: idx.Name, Columns: columns, RecordTypes: def.IndexRecordTypes(), GroupingCount: layout.TextPosition, TokenizerName: layout.Tokenizer.Name(), TokenizerVersion: layout.TokenizerVersion, TokenizerMaxVersion: layout.Tokenizer.MaxVersion(), OmitPositions: idx.GetBooleanOption(recordlayer.IndexOptionTextOmitPositions, false), CreatesDuplicates: idx.CreatesDuplicates(), RowType: def.IndexRowType(), KeyTypes: def.IndexKeyComponentTypes()})
+				candidates = append(candidates, &cascades.TextIndexMatchCandidate{Name: idx.Name, Columns: columns, RecordTypes: def.IndexRecordTypes(), GroupingCount: layout.TextPosition, TokenizerName: layout.Tokenizer.Name(), TokenizerVersion: layout.TokenizerVersion, TokenizerMaxVersion: layout.Tokenizer.MaxVersion(), OmitPositions: idx.GetBooleanOption(recordlayer.IndexOptionTextOmitPositions, false), CreatesDuplicates: idx.RootExpressionCreatesDuplicates(), RowType: def.IndexRowType(), KeyTypes: def.IndexKeyComponentTypes()})
 			}
 			continue
 		}

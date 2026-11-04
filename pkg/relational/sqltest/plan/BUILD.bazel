@@ -19,6 +19,7 @@ go_test(
         "explain_unplannable_fdb_test.go",
         "fulltext_boundaries_fdb_test.go",
         "fulltext_fdb_test.go",
+        "fulltext_history_fdb_test.go",
         "fulltext_metadata_fdb_test.go",
         "fulltext_primary_key_fdb_test.go",
         "fulltext_resolution_fdb_test.go",

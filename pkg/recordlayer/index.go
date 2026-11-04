@@ -169,6 +169,11 @@ func (i *Index) CreatesDuplicates() bool {
 	}
 }
 
+// RootExpressionCreatesDuplicates reports fan-out independently of the index's scan type.
+func (i *Index) RootExpressionCreatesDuplicates() bool {
+	return i.RootExpression != nil && createsDuplicatesRec(i.RootExpression, true)
+}
+
 // Index represents a secondary index definition.
 // Matches Java's com.apple.foundationdb.record.metadata.Index.
 type Index struct {

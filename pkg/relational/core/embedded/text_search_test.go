@@ -43,8 +43,8 @@ func TestFullTextLiteralMetadataPinsCachedPlans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(bound.Explain(), "TextIndexScan") {
-		t.Fatalf("bound metadata plan=%s", bound.Explain())
+	if shape := bound.Explain(); !strings.Contains(shape, "TextIndexScan") || !strings.Contains(shape, "PredicatesFilter") {
+		t.Fatalf("bound positional metadata must retain an exact residual: %s", shape)
 	}
 }
 

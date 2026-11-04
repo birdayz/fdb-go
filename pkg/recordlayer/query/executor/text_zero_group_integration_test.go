@@ -53,6 +53,35 @@ func TestIntegrationTextSignedZeroGroups(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, reverse := range []bool{false, true} {
+		plan, err := plans.NewRecordQueryTextIndexPlan("text_zero", plans.TextScan{Predicate: &predicates.Comparison{Type: predicates.ComparisonTextContainsAny, Operand: values.LiteralValue("red blue")}, Grouping: []values.Value{values.LiteralValue(float64(0))}, KeyTypes: []values.Type{values.NullableDouble, values.NullableString, values.NullableInt}}, integrationTypedRecordType(), reverse)
+		if err != nil {
+			t.Fatal(err)
+		}
+		page, err := readTextTestPage(context.Background(), nil, testDB.Run, func(rtx *recordlayer.FDBRecordContext, input []byte) (recordlayer.RecordCursor[QueryResult], error) {
+			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(metadata).SetSubspace(space).Open()
+			if err != nil {
+				return nil, err
+			}
+			props := recordlayer.DefaultExecuteProperties()
+			props.Skip, props.ReturnedRowLimit = 2, 2
+			return ExecutePlan(context.Background(), plan, store, EmptyEvaluationContext(), input, props)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []int64
+		for _, row := range page.rows {
+			got = append(got, row.Record.Record.(*demopb.TypedRecord).GetId())
+		}
+		want := []int64{9, 1}
+		if reverse {
+			want = []int64{8, 2}
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("skip once after signed-zero group merge reverse=%v: got %v want %v", reverse, got, want)
+		}
+	}
 	for _, tc := range []struct {
 		name   string
 		typ    predicates.ComparisonType

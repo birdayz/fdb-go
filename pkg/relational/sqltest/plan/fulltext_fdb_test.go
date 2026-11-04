@@ -62,6 +62,9 @@ func TestFDBFullTextSQL(t *testing.T) {
 		if !strings.Contains(explain, "TextIndexScan(BODY_TEXT") {
 			t.Fatalf("%s: %s", query, explain)
 		}
+		if strings.Contains(tc.predicate, "ALL_PREFIXES") && !strings.Contains(explain, "PredicatesFilter") {
+			t.Fatalf("strict partitioned prefix lost its residual: %s", explain)
+		}
 		if got := testkit.GetInts(t, ctx, db, query); !reflect.DeepEqual(got, tc.want) {
 			t.Fatalf("%s: got %v want %v", query, got, tc.want)
 		}
@@ -75,6 +78,18 @@ func TestFDBFullTextSQL(t *testing.T) {
 			if actual := testkit.GetInts(t, ctx, db, fallback); !reflect.DeepEqual(actual, tc.want) {
 				t.Fatalf("%s got %v want %v", fallback, actual, tc.want)
 			}
+		}
+	}
+	for _, tc := range []struct {
+		order string
+		want  []int64
+	}{{"ASC", []int64{2, 3}}, {"DESC", []int64{5, 3}}} {
+		query := "SELECT id FROM docs WHERE tenant=1 AND TEXT_CONTAINS_ANY(body,'red green') ORDER BY id " + tc.order + " LIMIT 2 OFFSET 1"
+		if plan := testkit.ExplainVia(t, ctx, db, query); !strings.Contains(plan, "TextIndexScan(BODY_TEXT") {
+			t.Fatalf("LIMIT/OFFSET lost text access: %s", plan)
+		}
+		if got := testkit.GetInts(t, ctx, db, query); !reflect.DeepEqual(got, tc.want) {
+			t.Fatalf("%s: got %v want %v", query, got, tc.want)
 		}
 	}
 	// '' is no token: TextScan reads nothing (TextScan.java:181-183) and

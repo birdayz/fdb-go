@@ -1000,9 +1000,9 @@ var _ = Describe("TEXT query execution conformance", Ordered, ContinueOnFailure,
 			if err != nil {
 				return nil, err
 			}
+			positional := s.Type == "TEXT_CONTAINS_PHRASE" || s.Type == "TEXT_CONTAINS_ALL_WITHIN"
 			Expect(plan.Explain()).To(ContainSubstring("TextIndexScan("+s.Index), s.String())
-			if s.Strict {
-				// The probable intersection's false positives meet the residual.
+			if s.Strict || positional {
 				Expect(plan.Explain()).To(MatchRegexp(`PredicatesFilter\(.*TextIndexScan`), s.String())
 			}
 			cursor, err := executor.ExecutePlan(ctx, plan, store, executor.EmptyEvaluationContext(), continuationBytes(s), goExecuteProperties(s))

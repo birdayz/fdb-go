@@ -2,6 +2,7 @@ package sqltest
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -16,20 +17,24 @@ func TestFDBFullTextSchemaMacrosKeepPrecedence(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	const base = "CREATE TABLE docs(id BIGINT, body STRING, PRIMARY KEY(id)) CREATE FULLTEXT INDEX body_text ON docs(body)"
-	functions := []struct{ name, args string }{
-		{"TEXT_CONTAINS_ALL", "BODY,'red'"},
-		{"TEXT_CONTAINS_ANY", "BODY,'red'"},
-		{"TEXT_CONTAINS_PHRASE", "BODY,'red'"},
-		{"TEXT_CONTAINS_ALL_WITHIN", "BODY,'red',1"},
-		{"TEXT_CONTAINS_PREFIX", "BODY,'re'"},
-		{"TEXT_CONTAINS_ALL_PREFIXES", "BODY,'re'"},
-		{"TEXT_CONTAINS_ANY_PREFIX", "BODY,'re'"},
+	functions := []struct {
+		name, args string
+		indexed    bool
+	}{
+		{"TEXT_CONTAINS_ALL", "BODY,'red'", true},
+		{"TEXT_CONTAINS_ANY", "BODY,'red'", true},
+		{"TEXT_CONTAINS_PHRASE", "BODY,'red'", false},
+		{"TEXT_CONTAINS_ALL_WITHIN", "BODY,'red',1", false},
+		{"TEXT_CONTAINS_PREFIX", "BODY,'re'", true},
+		{"TEXT_CONTAINS_ALL_PREFIXES", "BODY,'re'", false},
+		{"TEXT_CONTAINS_ANY_PREFIX", "BODY,'re'", true},
 	}
 	ddl := base
 	for _, f := range functions {
 		mixed := "Text_" + strings.TrimPrefix(f.name, "TEXT_")
 		ddl += " CREATE FUNCTION " + f.name + "(IN body STRING) RETURNS BOOLEAN RETURN FALSE CREATE FUNCTION \"" + mixed + "\"(IN body STRING) RETURNS BOOLEAN RETURN FALSE"
 	}
+	successes, lookupErrors := 0, 0
 	for _, macros := range []bool{false, true} {
 		schema := base
 		if macros {
@@ -60,6 +65,7 @@ func TestFDBFullTextSchemaMacrosKeepPrecedence(t *testing.T) {
 					quoted := strings.HasPrefix(spelling, `"`)
 					wantError := !macros && quoted || macros && (spelling == `"`+strings.ToLower(f.name)+`"` || sensitive && spelling == strings.ToLower(f.name))
 					if wantError {
+						lookupErrors++
 						rows, err := conn.QueryContext(ctx, query)
 						if rows != nil {
 							rows.Close()
@@ -69,12 +75,16 @@ func TestFDBFullTextSchemaMacrosKeepPrecedence(t *testing.T) {
 						}
 						continue
 					}
+					successes++
 					var plan string
 					if err := conn.QueryRowContext(ctx, "EXPLAIN "+query).Scan(&plan); err != nil {
 						t.Fatalf("macros=%v sensitive=%v %s: %v", macros, sensitive, query, err)
 					}
-					if strings.Contains(plan, "TextIndexScan(BODY_TEXT") != !macros {
+					if strings.Contains(plan, "TextIndexScan(BODY_TEXT") != (!macros && f.indexed) {
 						t.Fatalf("macros=%v sensitive=%v %s: %s", macros, sensitive, query, plan)
+					}
+					if !macros && !f.indexed && (!strings.Contains(plan, "Scan(DOCS") || !strings.Contains(plan, "PredicatesFilter")) {
+						t.Fatalf("expected exact residual fallback for %s: %s", query, plan)
 					}
 					var want []int64
 					if !macros {
@@ -86,6 +96,37 @@ func TestFDBFullTextSchemaMacrosKeepPrecedence(t *testing.T) {
 				}
 			}
 			if err := conn.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if successes != 105 || lookupErrors != 63 {
+		t.Fatalf("resolution matrix population: successes=%d lookup errors=%d", successes, lookupErrors)
+	}
+}
+
+func TestFDBFullTextCaseSensitiveTemplateDeclarations(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	setup := testkit.OpenDB(t, "/__SYS")
+	conn := testkit.PinEmbeddedConn(t, setup, func(ec *embedded.EmbeddedConnection) {
+		if err := ec.SetOption(api.OptCaseSensitiveIdentifiers, true); err != nil {
+			t.Fatal(err)
+		}
+	})
+	for i, family := range []string{"TEXT_CONTAINS_ALL", "TEXT_CONTAINS_ANY", "TEXT_CONTAINS_PHRASE", "TEXT_CONTAINS_ALL_WITHIN", "TEXT_CONTAINS_PREFIX", "TEXT_CONTAINS_ALL_PREFIXES", "TEXT_CONTAINS_ANY_PREFIX"} {
+		for j, name := range []string{strings.ToLower(family), "Text_" + strings.TrimPrefix(family, "TEXT_")} {
+			template := fmt.Sprintf("TEXT_SCOPE_%s_%d_%d", t.Name(), i, j)
+			query := "CREATE SCHEMA TEMPLATE " + template + " CREATE TABLE DOCS(ID BIGINT, BODY STRING, PRIMARY KEY(ID)) " +
+				"CREATE VIEW V AS SELECT ID," + name + "(BODY) AS VAL FROM DOCS " +
+				"CREATE INDEX X AS SELECT " + name + "(BODY) AS VAL FROM DOCS ORDER BY VAL " +
+				"CREATE FUNCTION \"" + name + "\"(IN s STRING) RETURNS STRING RETURN s " +
+				"CREATE FUNCTION f(IN s STRING) RETURNS STRING RETURN " + name + "(s) " +
+				"CREATE FUNCTION tf() AS SELECT ID FROM DOCS WHERE " + name + "(BODY) = 'red'"
+			if _, err := conn.ExecContext(ctx, query); err != nil {
+				t.Fatalf("%s: %v", query, err)
+			}
+			if _, err := conn.ExecContext(ctx, "DROP SCHEMA TEMPLATE "+template); err != nil {
 				t.Fatal(err)
 			}
 		}

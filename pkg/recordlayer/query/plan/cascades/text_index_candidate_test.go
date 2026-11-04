@@ -133,6 +133,7 @@ func TestTextCandidateEligibility(t *testing.T) {
 		name                string
 		typ                 predicates.ComparisonType
 		omit, group, bind   bool
+		duplicates          bool
 		tokenizer           string
 		version, maxVersion int
 		strictPrefix        bool
@@ -140,6 +141,9 @@ func TestTextCandidateEligibility(t *testing.T) {
 	}{
 		{name: "all", typ: predicates.ComparisonTextContainsAll, want: true},
 		{name: "phrase", typ: predicates.ComparisonTextContainsPhrase, want: true},
+		{name: "within", typ: predicates.ComparisonTextContainsAllWithin, want: true},
+		{name: "fanout", typ: predicates.ComparisonTextContainsAll, duplicates: true, want: true},
+		{name: "prefix", typ: predicates.ComparisonTextContainsPrefix, want: true},
 		{name: "omit all", typ: predicates.ComparisonTextContainsAll, omit: true, want: true},
 		{name: "omit any", typ: predicates.ComparisonTextContainsAny, omit: true, want: true},
 		{name: "omit prefix", typ: predicates.ComparisonTextContainsPrefix, omit: true, want: true},
@@ -158,7 +162,7 @@ func TestTextCandidateEligibility(t *testing.T) {
 		{name: "all prefixes", typ: predicates.ComparisonTextContainsAllPrefixes, want: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := &TextIndexMatchCandidate{Name: "text", Columns: []string{"BODY"}, RecordTypes: []string{"T"}, TokenizerName: "default", OmitPositions: tc.omit, RowType: row, TokenizerVersion: tc.version, TokenizerMaxVersion: tc.maxVersion}
+			c := &TextIndexMatchCandidate{Name: "text", Columns: []string{"BODY"}, RecordTypes: []string{"T"}, TokenizerName: "default", OmitPositions: tc.omit, RowType: row, TokenizerVersion: tc.version, TokenizerMaxVersion: tc.maxVersion, CreatesDuplicates: tc.duplicates}
 			if tc.group {
 				c.Columns = []string{"TENANT", "BODY"}
 				c.GroupingCount = 1
@@ -173,14 +177,18 @@ func TestTextCandidateEligibility(t *testing.T) {
 				t.Fatalf("alternatives=%d want eligible=%v", len(alternatives), tc.want)
 			}
 			if tc.want {
-				// Only a strict probable intersection keeps its text predicate.
+				wantResidual := tc.strictPrefix || tc.typ == predicates.ComparisonTextContainsPhrase || tc.typ == predicates.ComparisonTextContainsAllWithin
 				kept := len(residuals[0]) == 1
 				if kept {
 					cp, ok := residuals[0][0].(*predicates.ComparisonPredicate)
-					kept = ok && cp.Comparison.Type == predicates.ComparisonTextContainsAllPrefixes
+					kept = ok && cp.Comparison.Type == tc.typ
 				}
-				if kept != tc.strictPrefix || !tc.strictPrefix && len(residuals[0]) != 0 {
+				if kept != wantResidual || !wantResidual && len(residuals[0]) != 0 {
 					t.Fatalf("residual predicates=%v", residuals[0])
+				}
+				_, distinct := alternatives[0].(*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan)
+				if distinct != (tc.duplicates || tc.typ.IsTextPrefix()) {
+					t.Fatalf("wrong duplicate handling: %s", alternatives[0].Explain())
 				}
 				if !computeStoredRecord(alternatives[0]) {
 					t.Fatal("text access does not publish stored records")

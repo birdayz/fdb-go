@@ -308,6 +308,7 @@ go_test(
         "template_routine_getters_test.go",
         "text_index_ddl_test.go",
         "text_search_test.go",
+        "text_template_scope_test.go",
         "tx_cancelled_context_test.go",
         "tx_catalog_binding_test.go",
         "tx_exec_error_fdb_tail_test.go",
@@ -591,6 +592,7 @@ go_test(
         "text_index_ddl.go",
         "text_search_test.go",
         "text_index_ddl_test.go",
+        "text_template_scope_test.go",
     ],
     tags = ["resources:cpu:4"],
     deps = [
