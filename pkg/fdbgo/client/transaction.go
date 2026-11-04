@@ -570,9 +570,9 @@ type Transaction struct {
 	// watchAct is the per-incarnation commit-completion signal for pending watches (RFC-170 / #8). A watch
 	// captures the CURRENT activation at setup; the async facade blocks on it (AwaitWatchCommit) and
 	// registers the watch at the COMMITTED version instead of the read version — so a self-write-then-watch
-	// stays pending until the NEXT external change rather than firing on the txn's own write. Commit /
-	// read-only fast path / reset / Cancel all ROTATE it (fireWatchActivation Swaps a fresh one) so a
-	// reset-away watch can never be armed by a LATER incarnation's commit (the readGen-keying the RFC
+	// stays pending until the NEXT external change rather than firing on the txn's own write. Commit
+	// handoff (fireWatchActivation) and teardown (resolveWatchActivationLocked under watchMu) rotate it,
+	// so a reset-away watch cannot be armed by a LATER incarnation's commit (the readGen-keying the RFC
 	// requires). Lazily created on first Watch/commit via WatchActivation (nil until then — the common
 	// watch-free txn pays nothing).
 	watchAct atomic.Pointer[watchActivation]
@@ -2323,12 +2323,8 @@ func (tx *Transaction) stateWatchActivation() *watchActivation {
 	return tx.watchAct.Load()
 }
 
-// fireWatchActivation resolves this incarnation's pending watches and ROTATES to a fresh activation for the
-// next incarnation. Commit success passes (committedVersion, false); the read-only fast path (0, false)
-// (→ readVersion fallback); reset/Cancel/abort (0, true) (→ drain). Rotating on every resolution is what
-// stops a reset-away watch from being armed by a LATER incarnation's commit: after reset the old activation
-// is abandoned+closed and no longer current, so the next commit closes a DIFFERENT one. No-op (and no
-// allocation) when no watch touched this incarnation.
+// fireWatchActivation publishes commit handoff and rotates activation for the next incarnation.
+// Teardown instead abandons it through resolveWatchActivationLocked while holding watchMu.
 func (tx *Transaction) fireWatchActivation(version int64, abandoned bool) {
 	tx.watchMu.Lock()
 	defer tx.watchMu.Unlock()

@@ -73,19 +73,35 @@ func TestDatabaseDefault_BypassUnreadable_Propagates(t *testing.T) {
 	}
 }
 
-// Replaying the DB's snapshot-RYW default must assign its net counter, not accumulate it.
-// This also remains idempotent when the transaction already has that counter.
+// Undo the inherited count, retry through native OnError, then require replay to restore it.
+// Applying again without another reset must remain idempotent.
 func TestDatabaseDefault_SnapshotRYW_RetryIdempotent(t *testing.T) {
 	t.Parallel()
 	idb := &internalDB{}
 	_ = (DatabaseOptions{db: idb}).SetSnapshotRywDisable() // net 1
 	tr, inner := newBareOptionsTx()
 	db := Database{d: idb}
-	db.applyTxDefaults(tr.t, true)  // attempt 1
-	db.applyTxDefaults(tr.t, false) // attempt 2 (retry)
-	db.applyTxDefaults(tr.t, false) // attempt 3 (retry)
+	defer inner.Cancel()
+	db.applyTxDefaults(tr.t, true)
 	if got := inner.SnapshotRYWDisableCount(); got != 1 {
-		t.Errorf("snapshot-RYW DB default must not drift across retries (SET, not ++): want 1, got %d", got)
+		t.Fatalf("initial snapshot-RYW default=%d, want 1", got)
+	}
+	for attempt := 2; attempt <= 3; attempt++ {
+		inner.SetSnapshotRYWEnable()
+		if err := inner.OnError(context.Background(), &wire.FDBError{Code: 1020}); err != nil {
+			t.Fatalf("native OnError before attempt %d: %v", attempt, err)
+		}
+		if got := inner.SnapshotRYWDisableCount(); got != 0 {
+			t.Fatalf("pre-replay control at attempt %d=%d, want 0", attempt, got)
+		}
+		db.applyTxDefaults(tr.t, false)
+		if got := inner.SnapshotRYWDisableCount(); got != 1 {
+			t.Fatalf("replayed snapshot-RYW default at attempt %d=%d, want 1", attempt, got)
+		}
+		db.applyTxDefaults(tr.t, false)
+		if got := inner.SnapshotRYWDisableCount(); got != 1 {
+			t.Fatalf("idempotent snapshot-RYW replay at attempt %d=%d, want 1", attempt, got)
+		}
 	}
 }
 

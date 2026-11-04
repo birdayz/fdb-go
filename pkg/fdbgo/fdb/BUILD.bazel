@@ -57,6 +57,7 @@ go_test(
         "mapped_range_test.go",
         "mapped_range_truncated_test.go",
         "modebytes_test.go",
+        "nonpersistent_defaults_retry_fdb_test.go",
         "options_dbdefault_race_test.go",
         "options_dbdefault_test.go",
         "options_internal_test.go",
