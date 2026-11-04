@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "javahashmap",
+    srcs = ["order.go"],
+    importpath = "fdb.dev/internal/javahashmap",
+    visibility = ["//:__subpackages__"],
+)
+
+go_test(
+    name = "javahashmap_test",
+    srcs = ["order_test.go"],
+    embed = [":javahashmap"],
+)

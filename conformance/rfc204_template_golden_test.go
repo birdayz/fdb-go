@@ -41,6 +41,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"testing"
 
 	"github.com/bazelbuild/rules_go/go/runfiles"
 	"github.com/google/uuid"
@@ -51,6 +53,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"fdb.dev/gen"
+	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/catalog"
@@ -149,6 +152,14 @@ var rfc204Goldens = []rfc204Golden{
 		wantMetaDataVersion: 3,
 	},
 	{
+		// The OTel store template: typed attribute struct arrays, fan-out
+		// VALUE indexes over them, nested struct arrays, BYTES keys and a
+		// UNIQUE index, as layers/otel/otelsql defines it.
+		name:                "otel_v1",
+		body:                otelsql.TemplateBody,
+		wantMetaDataVersion: 14,
+	},
+	{
 		name: "struct_nullable_field_variants",
 		body: `CREATE TYPE AS STRUCT S1 (a BIGINT) ` +
 			`CREATE TYPE AS STRUCT S3 (x S1, y S1 NULL, arr S1 ARRAY) ` +
@@ -172,10 +183,42 @@ func isWrapperShape(m *descriptorpb.DescriptorProto) bool {
 		f.GetLabel() == descriptorpb.FieldDescriptorProto_LABEL_REPEATED
 }
 
+// wrapperElementKey is a wrapper's element type: its values field's message
+// type name, else its scalar type.
+func wrapperElementKey(m *descriptorpb.DescriptorProto) string {
+	f := m.GetField()[0]
+	if f.GetTypeName() != "" {
+		return f.GetTypeName()
+	}
+	return f.GetType().String()
+}
+
 // normalizeWrapperNames canonicalizes every wrapper-SHAPED message name
 // (and the field type_name references to it) in encounter order. Mutates
 // fdp.
+//
+// A table's wrappers are emitted together, sorted by name
+// (TypeRepository.getMessageTypes is a TreeSet), and Java's names are random,
+// so their relative order is random too. Each contiguous run of wrappers is
+// first put in the order of its element types; a table has one wrapper per
+// element type.
 func normalizeWrapperNames(fdp *descriptorpb.FileDescriptorProto) {
+	messages := fdp.GetMessageType()
+	for start := 0; start < len(messages); {
+		if !isWrapperShape(messages[start]) {
+			start++
+			continue
+		}
+		end := start
+		for end < len(messages) && isWrapperShape(messages[end]) {
+			end++
+		}
+		run := messages[start:end]
+		sort.SliceStable(run, func(i, j int) bool {
+			return wrapperElementKey(run[i]) < wrapperElementKey(run[j])
+		})
+		start = end
+	}
 	rename := map[string]string{}
 	for _, m := range fdp.GetMessageType() {
 		if isWrapperShape(m) {
@@ -193,6 +236,43 @@ func normalizeWrapperNames(fdp *descriptorpb.FileDescriptorProto) {
 				f.TypeName = proto.String(to)
 			}
 		}
+	}
+}
+
+func TestNormalizeWrapperNames(t *testing.T) {
+	t.Parallel()
+	fixture := func(strName, intName string, reverse bool) *descriptorpb.FileDescriptorProto {
+		wrapper := func(name string, typ descriptorpb.FieldDescriptorProto_Type) *descriptorpb.DescriptorProto {
+			return &descriptorpb.DescriptorProto{Name: proto.String(name), Field: []*descriptorpb.FieldDescriptorProto{{
+				Name: proto.String("values"), Number: proto.Int32(1),
+				Label: descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum(), Type: typ.Enum(),
+			}}}
+		}
+		row := &descriptorpb.DescriptorProto{Name: proto.String("ROW"), Field: []*descriptorpb.FieldDescriptorProto{
+			{Name: proto.String("strings"), Number: proto.Int32(1), TypeName: proto.String(strName)},
+			{Name: proto.String("ints"), Number: proto.Int32(2), TypeName: proto.String(intName)},
+		}}
+		wrappers := []*descriptorpb.DescriptorProto{wrapper(strName, descriptorpb.FieldDescriptorProto_TYPE_STRING), wrapper(intName, descriptorpb.FieldDescriptorProto_TYPE_INT64)}
+		if reverse {
+			wrappers[0], wrappers[1] = wrappers[1], wrappers[0]
+		}
+		return &descriptorpb.FileDescriptorProto{MessageType: append([]*descriptorpb.DescriptorProto{row}, wrappers...)}
+	}
+	left, right := fixture("randomA", "randomB", false), fixture("randomD", "randomC", true)
+	normalizeWrapperNames(left)
+	normalizeWrapperNames(right)
+	if !proto.Equal(left, right) {
+		t.Fatal("equivalent wrapper names/order did not normalize identically")
+	}
+	if left.GetMessageType()[0].GetName() != "ROW" || left.GetMessageType()[1].GetField()[0].GetType() != descriptorpb.FieldDescriptorProto_TYPE_INT64 ||
+		left.GetMessageType()[0].GetField()[0].GetTypeName() != "__wrapper_1__" || left.GetMessageType()[0].GetField()[1].GetTypeName() != "__wrapper_0__" {
+		t.Fatal("normalization changed message placement, element type or references")
+	}
+	changed := fixture("x", "y", true)
+	changed.MessageType[1].Field[0].Type = descriptorpb.FieldDescriptorProto_TYPE_DOUBLE.Enum()
+	normalizeWrapperNames(changed)
+	if proto.Equal(left, changed) {
+		t.Fatal("normalization concealed an element-type difference")
 	}
 }
 
@@ -334,6 +414,9 @@ var _ = Describe("RFC-204 schema-template byte-goldens (Java catalog == committe
 			// name), and read back as stored bytes.
 			goTmpl, buildErr := embedded.BuildSchemaTemplateFromDDLNamed(g.body, templateName)
 			Expect(buildErr).NotTo(HaveOccurred(), "Go DDL front end for %s", g.name)
+			if g.name == "otel_v1" {
+				Expect(goTmpl.Version()).To(Equal(otelsql.TemplateVersion))
+			}
 			goCat, err := catalog.NewRecordLayerStoreCatalog(
 				subspace.Sub("rfc204golden", g.name, uuid.NewString()))
 			Expect(err).NotTo(HaveOccurred())

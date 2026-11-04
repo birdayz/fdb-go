@@ -3583,6 +3583,38 @@ these claims; the implementation notes below are not controlled comparisons.
   `TISCAN` fail with `RecordCoreStorageException`. Compatibility of a different
   persisted representation is not proven.
 
+## OTel SQL ingest migration
+
+- [ ] Move the OTel writer onto each tenant's relational schema subspace using
+  `layers/otel/otelsql.OTEL_V1`; register the template once and create one store
+  containing spans, logs, messages and message_traces. Existing ingest is not
+  migrated by the schema/SQL tests. Benchmark runs get dedicated catalog
+  databases/stores; production tenants share one signal store, which run-level
+  Drop must never clear. Define migration of existing data and preserve the
+  current API while switching its storage.
+- [ ] Populate typed attribute arrays, promoted fields, event/link projections
+  and message references. Preserve the exact current duplicate-attribute
+  contract and original ordinals where references require them. Pin unknown
+  fields, presence, duplicate/order preservation and all AnyValue types end to
+  end. Keep lossless message manifests/reference reconstruction: full GenAI
+  history in every span's otlp would restore quadratic storage amplification.
+  Compare against a truly complete raw projection with measured bytes/mutations.
+  Implement indexed key/value admission and long-string digest lookup
+  with collision verification before enabling this schema in production ingest.
+- [ ] Store logs as records instead of raw KV, migrate message markers, choose
+  a Java-interoperable serializer and verify exporter writes through SQL reads.
+  Add metrics tables in the same tenant store, then span/log/message/metric join
+  regressions; the v1 template has no metrics table yet.
+- [ ] Decide TEXT grouping/indexing for SQL message search, and reimplement the
+  typed query API over the standard indexes without losing scan budgets,
+  signed keyset tokens, snapshot-page semantics or distinct-trace top-K early
+  termination. Measure ingest cost on matched baseline/new workloads; no
+  extrapolated CPU or index-size estimate is validation.
+- [ ] Probe two-level fan-out event/link attributes and element-level index
+  filtering before promising indexed same-event/same-link searches. Current
+  OTel probes cover one attribute array; unnest joins remain scan/explode paths
+  in both engines (Java issue #3896).
+
 ## TEXT SQL access paths
 
 - [ ] Recover and diagnose the historical RFC-258 fail-on-scan-limit failure

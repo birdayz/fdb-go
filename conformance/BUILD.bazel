@@ -622,6 +622,7 @@ go_test(
         "nlj_orientation_java_probe_test.go",
         "or_union_dedup_java_probe_test.go",
         "or_union_merge_java_probe_test.go",
+        "otel_sql_shapes_java_probe_test.go",
         "outer_join_canonical_java_probe_test.go",
         "paren_flatten_java_probe_test.go",
         "paren_star_java_probe_test.go",
@@ -905,6 +906,7 @@ go_test(
     deps = [
         "//gen",
         "//gen/demopb",
+        "//layers/otel/otelsql",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",

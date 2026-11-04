@@ -34,6 +34,7 @@ var Packages = []string{
 	"pkg/relational/sqltest/metamorphic/rewrites",
 	"pkg/relational/sqltest/metamorphic/rowdiff",
 	"pkg/relational/sqltest/metamorphic/shapeequiv",
+	"pkg/relational/sqltest/otel",
 	"pkg/relational/sqltest/plan",
 	"pkg/relational/sqltest/plan/caphit",
 	"pkg/relational/sqltest/plan/options",

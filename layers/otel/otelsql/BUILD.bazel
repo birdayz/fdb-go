@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "otelsql",
+    srcs = ["template.go"],
+    importpath = "fdb.dev/layers/otel/otelsql",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/relational/api",
+        "//pkg/relational/core/keyspace",
+    ],
+)
+
+go_test(
+    name = "otelsql_test",
+    srcs = ["template_test.go"],
+    embed = [":otelsql"],
+    deps = [
+        "//pkg/relational/api",
+        "//pkg/relational/core/keyspace",
+    ],
+)

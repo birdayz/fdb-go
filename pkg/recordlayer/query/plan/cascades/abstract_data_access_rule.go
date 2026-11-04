@@ -549,6 +549,9 @@ func stampIndexMetadata(cand MatchCandidate, idxPlan *plans.RecordQueryIndexPlan
 		if keyPaths, valuePaths := valueCandidate.columnPaths(); keyPaths != nil || valuePaths != nil {
 			stamped = stamped.WithColumnPaths(keyPaths, valuePaths)
 		}
+		if valueCandidate.CreatesDuplicates() {
+			stamped = stamped.WithKeyColumnDuplicates(valueCandidate.duplicateProducingColumns())
+		}
 		if valueCols := valueCandidate.GetValueColumnNames(); len(valueCols) > 0 {
 			// The KeyWithValue VALUE part rides onto the plan so the covering
 			// rules can extend the covered surface and the executor knows to

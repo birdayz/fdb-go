@@ -28,6 +28,7 @@ filegroup(
         "//pkg/relational/sqltest/metamorphic/rewrites:corpus",
         "//pkg/relational/sqltest/metamorphic/rowdiff:corpus",
         "//pkg/relational/sqltest/metamorphic/shapeequiv:corpus",
+        "//pkg/relational/sqltest/otel:corpus",
         "//pkg/relational/sqltest/plan:corpus",
         "//pkg/relational/sqltest/plan/caphit:corpus",
         "//pkg/relational/sqltest/plan/options:corpus",

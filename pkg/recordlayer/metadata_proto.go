@@ -17,6 +17,7 @@ import (
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/javahashmap"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/internal/protovalue"
 	"fdb.dev/pkg/recordlayer/protoscope"
@@ -116,10 +117,11 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 		md.Indexes = append(md.Indexes, idxProto)
 	}
 
-	// 5. Record types, in DECLARATION order (the union field number):
-	// Java's serializer emits them in visit order, so the stored bytes
-	// carry union order, not name order — byte-golden-pinned. Name is the
-	// deterministic tiebreak for equal indexes (hand-built metadata).
+	// 5. Record types, in Java's HashMap order: toProto iterates the built
+	// recordTypes map (RecordMetaDataBuilder.build:1473,
+	// Maps.newHashMapWithExpectedSize), filled from the builder's HashMap,
+	// which received the types in union field order (declaration order;
+	// name is the tiebreak for equal indexes of hand-built metadata).
 	rtNames := make([]string, 0, len(m.recordTypes))
 	for name := range m.recordTypes {
 		rtNames = append(rtNames, name)
@@ -131,6 +133,7 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 		}
 		return rtNames[i] < rtNames[j]
 	})
+	rtNames = javahashmap.Order(javahashmap.Order(nil, rtNames), nil)
 
 	for _, name := range rtNames {
 		rt := m.recordTypes[name]

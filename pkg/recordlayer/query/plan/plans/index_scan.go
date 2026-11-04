@@ -135,6 +135,11 @@ type RecordQueryIndexPlan struct {
 	// (WithDistinctRecordsSignal), mirroring Java's empty-candidate default.
 	createsDuplicates    bool
 	distinctRecordsKnown bool
+	// keyColumnDuplicates is parallel to columnNames: whether the key column
+	// lies below a FAN_OUT (Java's normalizedKeyExpression.createsDuplicates()).
+	// It lets a fan-out scan claim the order Java's
+	// computeOrderingFromScanComparisons derives; nil leaves it claiming none.
+	keyColumnDuplicates []bool
 	// commonPrimaryKeyValues is the index's common primary key translated to
 	// STRUCTURE-encoding Values (RFC-189 B3 / Java PrimaryKeyProperty.visitIndexPlan
 	// via ScalarTranslationVisitor): record-type-key prefixes and nesting are
@@ -403,6 +408,14 @@ func (p *RecordQueryIndexPlan) WithDistinctRecordsSignal(createsDuplicates bool)
 	cp := *p
 	cp.createsDuplicates = createsDuplicates
 	cp.distinctRecordsKnown = true
+	return &cp
+}
+
+// WithKeyColumnDuplicates returns a copy carrying, per key column, whether the
+// column lies below a FAN_OUT. Like the names, a function of the index.
+func (p *RecordQueryIndexPlan) WithKeyColumnDuplicates(duplicates []bool) *RecordQueryIndexPlan {
+	cp := *p
+	cp.keyColumnDuplicates = slices.Clone(duplicates)
 	return &cp
 }
 

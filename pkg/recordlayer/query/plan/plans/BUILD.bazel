@@ -103,6 +103,7 @@ go_test(
         "exact_result_value_test.go",
         "explode_test.go",
         "f21_comparand_identity_test.go",
+        "fanout_identity_test.go",
         "filter_relink_test.go",
         "flat_map_mixed_lineage_test.go",
         "in_join_test.go",
@@ -289,6 +290,7 @@ go_test(
         "plan_finalize_test.go",
         "quantifier_view.go",
         "index_fetch_method_test.go",
+        "fanout_identity_test.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",

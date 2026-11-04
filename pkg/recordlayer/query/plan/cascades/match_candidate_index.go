@@ -1070,6 +1070,10 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 	// coordinate is the LAST index column, the count is full even though the
 	// claim stops there.
 	suffixCarried := true
+	// Key positions the loop passed in order: emitted parts plus skipped
+	// equality-bound fan-out positions. The PK suffix continues only a key
+	// passed whole.
+	passed := 0
 	// The per-coordinate "could this hold a signed zero" question, answered by
 	// the physical key type first and the layout second — the plan side's
 	// splitKeyOrder asks the same function, which is what keeps the two
@@ -1091,10 +1095,13 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 		// Java does not expose a duplicate-producing normalized key as an
 		// ordering Value. An equality bound fixes the exploded element and
 		// lets ordering continue at the next position; an unbound/range-bound
-		// fan-out position terminates the usable ordering prefix.
+		// fan-out position terminates the usable ordering prefix. Unlike Java,
+		// widened signed-zero equality cannot carry a suffix ordering either.
 		if duplicateProducingColumns[idx] {
 			if cr != nil &&
-				cr.GetRangeType() == predicates.ComparisonRangeEquality {
+				cr.GetRangeType() == predicates.ComparisonRangeEquality &&
+				plans.EqualityPinsSinglePhysicalKeyOnColumn(cr, columnCouldBeFloat(idx)) {
+				passed++
 				continue
 			}
 			break
@@ -1186,6 +1193,7 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 		sortOrder := c.columnMatchedSortOrder(idx, isReverse)
 
 		parts = append(parts, NewMatchedOrderingPart(paramID, colValue, cr, sortOrder))
+		passed++
 
 		// Emitted, but nothing may claim order THROUGH it. Recording the
 		// refusal AFTER the append rather than breaking before it is the whole
@@ -1216,12 +1224,11 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 	// direction, exactly like Java's satisfiesRequestedOrdering over
 	// full-key ordering parts.
 	//
-	// Gates: (1) Go conservatively synthesizes no suffix for a fan-out
-	// candidate. Java can skip an equality-bound duplicate-producing position
-	// and continue through later full-key aliases, including the PK; Go keeps
-	// PK aliases outside sortParameterIDs and cannot prove that continuation
-	// positionally here. This is a conservative Go limitation, not exact Java
-	// parity. (2) The suffix only continues a FULLY emitted index key —
+	// Gates: (1) A fan-out candidate continues into the suffix as Java does:
+	// an equality-bound duplicate-producing position is passed without a part
+	// (ValueIndexLikeMatchCandidate.computeMatchedOrderingParts `continue`),
+	// and any other duplicate-producing position stops the loop above. (2) The
+	// suffix only continues a FULLY passed index key —
 	// if the loop above stopped early the positions would not be
 	// contiguous and the suffix would claim an order the entries don't
 	// have. TrimmedPKSuffix drops PK columns already named in the index key,
@@ -1240,7 +1247,7 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 	// emitted coordinate must carry order through itself; a full part count is
 	// not sufficient, since a coordinate that claims only its OWN order can sit
 	// at the end of the key.
-	if !c.CreatesDuplicates() && len(parts) == len(c.columnNames) && suffixCarried {
+	if passed == len(c.columnNames) && suffixCarried {
 		for _, col := range plans.TrimmedPKSuffix(c.trimmableKeyColumnNames(), c.pkColumnNames) {
 			// The suffix terminates on the same rule as the key columns: a
 			// FLOAT/DOUBLE PK column cannot extend the claim.
@@ -1492,7 +1499,13 @@ func (c *ValueIndexScanMatchCandidate) orderingColumns() ([]plans.IndexOrderingC
 	described := c.indexColumns()
 	columns := make([]plans.IndexOrderingColumn, len(described.keyColumns))
 	for i, column := range described.keyColumns {
-		if described.keyDuplicates[i] || (len(column.path) == 0 && column.function == "") {
+		if described.keyDuplicates[i] {
+			// A column below the FAN_OUT orders nothing: the plan skips it
+			// when equality-bound and ends its order at it otherwise
+			// (computeOrderingFromScanComparisons), so it needs no Value.
+			continue
+		}
+		if len(column.path) == 0 && column.function == "" {
 			return nil, false
 		}
 		switch column.function {

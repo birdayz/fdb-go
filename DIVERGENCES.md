@@ -309,7 +309,7 @@ No functional difference — absorbs candidate-side-only expressions (MatchableS
 
 **Remaining NLJ cases:** Joins where no predicate matches any PK or index first column (brute-force NLJ is the only option). Self-joins now work via FlatMap (aliases disambiguate). **NLJ is guarded against ExplodeExpression quantifiers** — IN-list decomposition uses Explode, and NLJ can't handle scalar Explode outer datums with map inner datums. The guard forces IN-list patterns to InJoinRule or filter+scan fallback.
 
-**Composite PK limitation:** FlatMap only matches the FIRST PK column. Joins on non-first PK columns fall back to NLJ.
+**Composite keys:** a correlated probe binds every equality-joined key column, as Java's does. `l.trace_id = s.trace_id AND l.span_id = s.span_id` plans `IndexScan(LOGS_TRACE, [=, =, *])` (Java `ISCAN(LOGS_TRACE [EQUALS q0.TRACE_ID, EQUALS q0.SPAN_ID])`) and a two-column primary key `Scan(SPANS, [=, =])` (Java `SCAN([IS SPANS, EQUALS q0.TRACE_ID, EQUALS q0.SPAN_ID])`); pinned by `OtelSQLShapesJavaProbe` and `TestFDB_OtelTraceJoins`.
 
 **JoinMergeResultValue vs RecordConstructorValue:** Go uses `JoinMergeResultValue` (spreads both correlation bindings into a flat map at eval time). Java uses `RecordConstructorValue` with per-column `FieldValue` children. Functionally equivalent — both produce a map with qualified keys from both sides. The difference is WHEN columns are enumerated: Java at plan time (has schema metadata in the relational layer), Go at eval time (translator doesn't carry schema metadata). To close: pass `RecordMetaData` to the translator so it can produce field-level RecordConstructorValue.
 
@@ -959,6 +959,12 @@ Two-tier simplification matching Java's value rule sets:
 
 **Upstream.** Reporting the target's inconsistency is an owner decision and is not filed from here.
 
+### Fan-out index scans: Java's order past bound elements, and a record-identity proof
+
+**Java.** `ValueIndexLikeMatchCandidate.computeMatchedOrderingParts` and `computeOrderingFromScanComparisons` (`ValueIndexLikeMatchCandidate.java:63-118`, `:119-198`) skip an equality-bound column below a FAN_OUT, stop at any other one, and otherwise order by the later key columns and the primary key. `EXISTS (SELECT 1 FROM s.attrs a WHERE a.scope = ? AND a.k = ? AND a.sv = ?) ORDER BY s.start_ns DESC` over an index `(a.scope, a.k, a.sv, s.start_ns, s.trace_id, s.span_id)` is one `COVERING(... REVERSE)` scan with no sort.
+
+**Go.** The same: `RecordQueryIndexPlan` carries which key columns lie below the FAN_OUT (`WithKeyColumnDuplicates`), and its ordering (`orderingKeyColumns`) and the candidate's matched ordering follow Java, subject to Go's existing physical-equality guard: a widened signed-zero element equality does not order the time/PK suffix (`TestFDB_OtelTemplateV1` and `TestComputeMatchedOrderingParts_SuffixPastBoundFanOut`). Go additionally claims record identity for a fan-out scan whose every element column is pinned by an equality (`fanOutPinned`): all of a record's entries in that range have one key and are one FDB entry. That proof lets the keyset `OR` form merge its legs (`MergeSortUnion`) as Java's `∪ ... COMPARE BY` does; Java merges without a proof. Pinned by `TestPlanFanOutExistsOrdersPastBoundElements`, `TestComputeMatchedOrderingParts_SuffixPastBoundFanOut`, `TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray`, `TestFDB_OtelFanOutExists`, `TestFDB_OtelKeysetPages` and `OtelSQLShapesJavaProbe`.
+
 ### Plan choice: an IN ordered by a key no probe provides is probed and sorted (RFC-257 WS-F F-7c)
 
 **Divergence.** `SELECT * FROM T1 WHERE col1 IN (10, 20) ORDER BY id` over an index `I1 (col1)`: Java plans `SCAN([IS T1]) | FILTER _.COL1 IN ...`, Go `InMemorySort([ID ASC], Fetch(InJoin(IndexScan(I1, [=] COVERING))))`; likewise with 25 values and over `T5` (`w8_in_union_explain`, `w8_in25_order_by_id_explain`, `w8_tie_in_order_by_id_explain`, declared `DIFF-PATH in-memory-sort`). Rows are identical.
@@ -1161,6 +1167,8 @@ Confirmed via cross-engine probes. Go's correct behavior is pinned in Go-only po
 | `WHERE pk_col = nonpk_col` | SQL-correct | `Missing binding` planner error |
 | PK-intersection whose legs fix DIFFERENT primary-key components (`PRIMARY KEY (pk1, pk2)`, indexes `(b, pk1)` and `(pk2)`, `WHERE b = 1 AND pk2 = 3`) | Intersects on `(pk1, pk2)`, the order both legs deliver; correct rows (RFC-245 declined the merge, RFC-247 widened the key) | Intersects on `COMPARE BY (_.PK1)` and returns every `pk2 = 3` record regardless of `b` (`COUNT(*)` 4 for a 1-row answer) — see below |
 | IN-union over a projection that drops the primary key (`SELECT s, b … WHERE a IN (1, 2) ORDER BY s, b`, index `(a, s, b)`) | Merges only on a key that identifies rows; otherwise sorts. Correct rows | Merges `COMPARE BY (_.S, _.B)` and drops records that tie on `(s, b)` across IN branches — see below |
+| EXISTS over a repeated field answered by a fan-out index, an element column unbound (`EXISTS (SELECT 1 FROM s.attrs a WHERE a.scope = 'span' AND a.k = 'tag')`, a span with two `tag` elements) | One row per span: the existential-to-ForEach match adds a required primary-key `Unique` (RFC-190 190.4c-8) | One row per matching element: `COVERING(SPANS_ATTR_STR [EQUALS, EQUALS])` with no distinct returns `[t1 s1]` twice (`OtelSQLShapesJavaProbe`) |
+| `SELECT DISTINCT s1.trace_id` from a trace-correlated spans self-join with one fully bound attribute EXISTS per side (model `gpt`, tag `y`) | One trace row, `[t1]` | Two `[t1]` rows; Java's plan omits distinct (`OtelSQLShapesJavaProbe`) |
 | EXISTS in a disjunction of a join condition (`ON (c.a_id = a.id AND EXISTS (…)) OR c.id > 100`) | Reapplies the existential predicate; correct rows | Drops it when the select carrying it is matched to an index: extra rows in the ON form, none in the WHERE form — see below |
 
 4.12.11 fixed three former entries, now removed from this table — they run as plain cross-engine

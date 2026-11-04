@@ -288,13 +288,12 @@ func TestComputeMatchedOrderingParts_PKSuffix(t *testing.T) {
 	}
 }
 
-// TestComputeMatchedOrderingParts_NoSuffixForFanOut pins Go's conservative
-// PK-suffix limitation: an equality-fixed fan-out position contributes no
-// ordering part, and Go synthesizes no PK suffix for any fan-out candidate.
-// Java can skip that equality-bound duplicate-producing position and continue
-// through its full-key PK alias; Go keeps PK aliases outside sortParameterIDs
-// and cannot prove the same positional continuation here.
-func TestComputeMatchedOrderingParts_NoSuffixForFanOut(t *testing.T) {
+// TestComputeMatchedOrderingParts_SuffixPastBoundFanOut pins Java's
+// ValueIndexLikeMatchCandidate.computeMatchedOrderingParts: an equality-bound
+// duplicate-producing position contributes no part and the loop continues into
+// the full key's primary-key suffix; the scan plan claims the same order
+// (computeOrderingFromScanComparisons). An unbound fan-out position ends both.
+func TestComputeMatchedOrderingParts_SuffixPastBoundFanOut(t *testing.T) {
 	t.Parallel()
 
 	alias := values.UniqueCorrelationIdentifier()
@@ -311,9 +310,32 @@ func TestComputeMatchedOrderingParts_NoSuffixForFanOut(t *testing.T) {
 		map[values.CorrelationIdentifier]*predicates.ComparisonRange{alias: equalityRange(t, "x")},
 		nil, nil, nil, nil, nil, nil, nil)
 
+	displayName := func(v values.Value) string {
+		if f, ok := values.AsFieldValue(v); ok {
+			return f.DisplayName()
+		}
+		return ""
+	}
 	parts := cand.ComputeMatchedOrderingParts(mi, []values.CorrelationIdentifier{alias}, false)
-	if len(parts) != 0 {
-		t.Fatalf("fan-out index must expose neither TAGS nor a PK suffix: got %d parts", len(parts))
+	if len(parts) != 1 || displayName(parts[0].GetValue()) != "ID" {
+		t.Fatalf("fan-out index must expose the PK suffix past its bound element and not TAGS: got %v", parts)
+	}
+	unbound := cand.ComputeMatchedOrderingParts(
+		NewRegularMatchInfo(nil, nil, nil, nil, nil, nil, nil, nil),
+		[]values.CorrelationIdentifier{alias}, false)
+	if len(unbound) != 0 {
+		t.Fatalf("an unbound fan-out position must end the ordering: got %v", unbound)
+	}
+	floatCandidate := newKnownDistinctValueIndexCandidate(
+		"IDX_TAGS", []string{"T"}, []string{"TAGS"},
+		[]values.CorrelationIdentifier{alias}, tagsIDRowType(), false, []string{"ID"})
+	floatCandidate.WithRootKeyExpression(candidateTestKeyField("TAGS", gen.Field_FAN_OUT)).
+		WithKeyComponentTypes([]values.Type{values.NullableDouble})
+	zeroMatch := NewRegularMatchInfo(
+		map[values.CorrelationIdentifier]*predicates.ComparisonRange{alias: equalityRange(t, float64(0))},
+		nil, nil, nil, nil, nil, nil, nil)
+	if got := floatCandidate.ComputeMatchedOrderingParts(zeroMatch, []values.CorrelationIdentifier{alias}, false); len(got) != 0 {
+		t.Fatalf("signed-zero fan-out equality cannot carry the PK suffix: %v", got)
 	}
 	fetch, ok := cand.ToScanPlan(
 		EmptyPlanContext(),
@@ -331,8 +353,13 @@ func TestComputeMatchedOrderingParts_NoSuffixForFanOut(t *testing.T) {
 	if pk := indexPlan.GetPKColumnNames(); len(pk) != 1 || pk[0] != "ID" {
 		t.Fatalf("fan-out plan lost coordinate-safe PK coverage names: %v", pk)
 	}
-	if ordering := indexPlan.HintOrdering(); ordering.IsKnown {
-		t.Fatalf("fan-out plan advertised ordering despite retained coverage PK: %#v", ordering)
+	if ordering := indexPlan.HintOrdering(); !ordering.IsKnown || len(ordering.Keys) != 1 ||
+		displayName(ordering.Keys[0]) != "ID" {
+		t.Fatalf("fan-out plan bound on its element must claim the PK order: %#v", ordering)
+	}
+	unboundFetch := cand.ToScanPlan(EmptyPlanContext(), nil, false).(*plans.RecordQueryFetchFromPartialRecordPlan)
+	if ordering := unboundFetch.GetInner().(*plans.RecordQueryIndexPlan).HintOrdering(); ordering.IsKnown {
+		t.Fatalf("fan-out plan with an unbound element advertised ordering: %#v", ordering)
 	}
 }
 
