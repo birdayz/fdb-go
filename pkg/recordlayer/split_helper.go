@@ -181,7 +181,7 @@ func saveSplit(
 	// Clear the previous record unless the new value overwrites its only key:
 	// Java skips the clear for a known, unsplit, unversioned previous record when
 	// long records are not split (SplitHelper.java:152).
-	if !hasVersionInKey && (splitLongRecords || oldsizeInfo == nil || oldsizeInfo.VersionedInline) {
+	if !hasVersionInKey && (splitLongRecords || oldsizeInfo == nil || oldsizeInfo.VersionedInline || oldsizeInfo.IsSplit) {
 		if err := clearPreviousRecord(recordContext, tx, recordSubspace, primaryKey, clearBySize, oldsizeInfo); err != nil {
 			return err
 		}
@@ -336,6 +336,7 @@ type pendingRecordRangeInput struct {
 	version    *FDBRecordVersion
 	localSize  sizeInfo
 	localErr   error
+	backendErr bool // provenance only; the public error and its chain are unchanged
 }
 
 // RangeResult has no readiness operation. The worker owns raw reassembly and
@@ -343,11 +344,12 @@ type pendingRecordRangeInput struct {
 // Successful raw completion charges bytes before publication. Deserialization
 // and timers remain on the caller.
 type pendingRecordRange struct {
-	done    chan struct{}
-	value   []byte
-	version *FDBRecordVersion
-	sizes   sizeInfo
-	err     error
+	done       chan struct{}
+	value      []byte
+	version    *FDBRecordVersion
+	sizes      sizeInfo
+	err        error
+	backendErr bool
 }
 
 func (p *pendingRecordLoad) startReadiness() {
@@ -392,11 +394,13 @@ func finishRawRecordCharge(r *pendingRecordRange, state *ScanLimiterState) {
 
 func readRecordRange(r *pendingRecordRange, input pendingRecordRangeInput, state *ScanLimiterState) {
 	r.value, r.version, r.err = input.readRange(&r.sizes)
+	r.backendErr = input.backendErr
 	finishRawRecordCharge(r, state)
 }
 
 func readBareRecord(r *pendingRecordRange, future fdb.FutureByteSlice, keySize int, state *ScanLimiterState) {
 	r.value, r.err = future.Get()
+	r.backendErr = r.err != nil
 	if r.err != nil {
 		r.err = fmt.Errorf("failed to get legacy unsplit record: %w", r.err)
 	} else if r.value != nil {
@@ -462,10 +466,12 @@ func (p *pendingRecordLoad) finish(sizes *sizeInfo) ([]byte, *FDBRecordVersion, 
 	if p.asyncRange != nil {
 		<-p.asyncRange.done
 		*sizes = p.asyncRange.sizes
+		p.backendErr = p.asyncRange.backendErr
 		return p.asyncRange.value, p.asyncRange.version, p.asyncRange.err
 	}
 	if p.value != nil {
 		value, err := p.value.Get()
+		p.backendErr = err != nil
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to get legacy unsplit record: %w", err)
 		}
@@ -489,6 +495,7 @@ func (p *pendingRecordRangeInput) readRange(sizes *sizeInfo) ([]byte, *FDBRecord
 	for iter.Advance() {
 		kv, err := iter.Get()
 		if err != nil {
+			p.backendErr = true
 			return nil, nil, fmt.Errorf("failed to read record range: %w", err)
 		}
 		subkey, err := tuplefast.SubspaceUnpack(kv.Key, len(p.prefix))
@@ -537,6 +544,7 @@ func (p *pendingRecordRangeInput) readRange(sizes *sizeInfo) ([]byte, *FDBRecord
 		sizes.ValueSize += len(kv.Value)
 	}
 	if _, err := iter.Get(); err != nil {
+		p.backendErr = true
 		return nil, nil, fmt.Errorf("failed to read record range: %w", err)
 	}
 	if result == nil && version != nil {

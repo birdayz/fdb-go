@@ -436,6 +436,9 @@ func (d *FDBDatabase) precommit(recordCtx *FDBRecordContext, result any, commitS
 	if err := recordCtx.runCommitChecks(); err != nil {
 		return nil, err
 	}
+	if err := recordCtx.sealRecordWrites(); err != nil {
+		return nil, err
+	}
 	// Flush queued version mutations before the transactor commits.
 	recordCtx.flushVersionMutations()
 	return result, nil
@@ -671,6 +674,9 @@ type FDBRecordContext struct {
 	// closeTransaction(false) on both arms of commitAsync); a later commit is
 	// refused as Java's ensureActive refuses it.
 	deactivated atomic.Bool
+
+	recordPhysical     recordPhysicalState
+	recordPhysicalHook func(stage string, key []byte)
 
 	// database is the FDBDatabase that opened this context (Java's
 	// FDBRecordContext.getDatabase); nil for a context over an external
@@ -1417,6 +1423,10 @@ func (rc *FDBRecordContext) CommitWithVersionstamp() ([]byte, error) {
 		return nil, err
 	}
 
+	if err := rc.sealRecordWrites(); err != nil {
+		rc.Timer().RecordSince(EventCommit, commitStart)
+		return nil, err
+	}
 	rc.flushVersionMutations()
 
 	// Only request versionstamp future if we actually queued versionstamp mutations.

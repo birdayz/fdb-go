@@ -79,6 +79,11 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 	records []proto.Message,
 	options BatchSaveOptions,
 ) ([]*FDBStoredRecord[proto.Message], error) {
+	finishWrite, err := store.context.beginRecordWrite()
+	if err != nil {
+		return nil, err
+	}
+	defer finishWrite()
 	if len(records) == 0 {
 		return nil, nil
 	}
@@ -206,7 +211,7 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 		// A repeated key replaces the earlier batch entry, so it reads nothing.
 		var load pendingStoreRecordLoad
 		if previous < 0 {
-			load = store.startRecordLoad(tx, primaryKey)
+			load = store.startAuthoritativeRecordLoad(tx, primaryKey)
 		}
 
 		pending[i] = pendingRecord{
@@ -269,7 +274,7 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 			continue
 		}
 		var oldsizeInfo sizeInfo
-		oldValue, oldVersion, err := p.load.raw.finish(&oldsizeInfo)
+		oldValue, oldVersion, err := p.load.finishAuthoritative(&oldsizeInfo)
 		if err != nil {
 			return nil, fmt.Errorf("record %d: existing record load: %w", i, err)
 		}
@@ -291,6 +296,8 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 			if err != nil {
 				return nil, fmt.Errorf("record %d: load old record version: %w", i, err)
 			}
+		} else if err := p.load.finishRetiredVersionErrors(); err != nil {
+			return nil, fmt.Errorf("record %d: load old record version: %w", i, err)
 		}
 		if !lockChecked {
 			if err := store.validateRecordUpdateAllowedLocked(); err != nil {
@@ -329,6 +336,7 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 		oldRT, oldMsg, oldWire := p.oldType, p.oldRecord, p.oldWire
 		oldVersion := p.oldVersion
 		if p.previous >= 0 {
+			p.load = pending[p.previous].load
 			old := results[p.previous]
 			oldRT, oldMsg, oldWire, oldVersion = old.RecordType, old.Record, old.wire, old.Version
 			oldsizeInfo = sizeInfo{
@@ -347,32 +355,39 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 			return nil, fmt.Errorf("record %d: %w", i, err)
 		}
 
-		// Save — fast path for unsplit new records (most common in batch ingest)
-		var newsizeInfo sizeInfo
-		if !oldRecordExists && len(storedBytes) <= splitRecordSize {
-			// Direct Set using pre-computed key — avoids appendToTuple + Pack in saveWithSplit
-			tx.SetBytes(p.unsplitKey, storedBytes)
-			newsizeInfo.KeyCount = 1
-			newsizeInfo.KeySize = len(p.unsplitKey)
-			newsizeInfo.ValueSize = len(storedBytes)
-		} else {
-			var oldsizeInfoPtr *sizeInfo
-			if oldRecordExists {
-				oldsizeInfoPtr = &oldsizeInfo
-			}
-			if err := saveWithSplit(store.context, tx, recordsSubspace, p.primaryKey, storedBytes,
-				splitEnabled, false, oldsizeInfoPtr, &newsizeInfo); err != nil {
-				return nil, fmt.Errorf("record %d: save: %w", i, err)
-			}
+		physicalPresent, finishPhysical, err := p.load.beginPhysicalMutation(oldRecordExists, &oldsizeInfo)
+		if err != nil {
+			return nil, fmt.Errorf("record %d: %w", i, err)
 		}
-
-		// Save version if versioning is enabled. One SET_VERSIONSTAMPED_VALUE
-		// mutation per record — no round trip, just added to the write set.
+		var newsizeInfo sizeInfo
 		savedVersion := p.version
-		if savedVersion != nil {
-			if err := store.saveRecordVersion(p.primaryKey, savedVersion, &newsizeInfo); err != nil {
-				return nil, fmt.Errorf("record %d: save version: %w", i, err)
+		err = func() error {
+			defer finishPhysical()
+			// A prefetched absence may have changed during a serializer callback.
+			if !physicalPresent && len(storedBytes) <= splitRecordSize {
+				tx.SetBytes(p.unsplitKey, storedBytes)
+				newsizeInfo.KeyCount = 1
+				newsizeInfo.KeySize = len(p.unsplitKey)
+				newsizeInfo.ValueSize = len(storedBytes)
+			} else {
+				var oldsizeInfoPtr *sizeInfo
+				if physicalPresent {
+					oldsizeInfoPtr = &oldsizeInfo
+				}
+				if err := saveWithSplit(store.context, tx, p.load.physical.records, p.primaryKey, storedBytes,
+					splitEnabled, false, oldsizeInfoPtr, &newsizeInfo); err != nil {
+					return fmt.Errorf("record %d: save: %w", i, err)
+				}
 			}
+			if savedVersion != nil {
+				if err := store.saveRecordVersionAtKey(p.load.physical.versionKey, savedVersion, &newsizeInfo); err != nil {
+					return fmt.Errorf("record %d: save version: %w", i, err)
+				}
+			}
+			return nil
+		}()
+		if err != nil {
+			return nil, err
 		}
 
 		// Record count

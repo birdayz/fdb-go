@@ -278,6 +278,10 @@ func (r *FDBDatabaseRunner) runOnce(ctx context.Context, fn func(rtx *FDBRecordC
 		return nil, err
 	}
 
+	if err := recordCtx.sealRecordWrites(); err != nil {
+		tx.Cancel()
+		return nil, err
+	}
 	recordCtx.flushVersionMutations()
 
 	if err := tx.Commit().Get(); err != nil {
