@@ -1,7 +1,6 @@
-// Package collector adapts the FDB OTel exporter to the OpenTelemetry Collector
-// exporter model: a typed component ("fdb_otel"), a factory, Collector YAML
-// configuration, and a bounded sending queue that batches spans from concurrent
-// upstream sources before flushing them through *otel.Exporter.
+// Package collector implements a custom in-process Collector exporter model,
+// not an upstream OpenTelemetry Collector component. Its bounded queue batches
+// protobuf spans into *otel.Exporter using a Collector-compatible YAML subset.
 //
 // The package mirrors the Collector component contracts (factory, default
 // config, Start/Shutdown, ConsumeTraces, exporterhelper sending_queue and
@@ -12,7 +11,6 @@ package collector
 import (
 	"context"
 	"errors"
-	"fmt"
 	"math"
 	"os"
 	"reflect"
@@ -41,9 +39,9 @@ const (
 var (
 	// ErrQueueFull rejects a request when the sending queue lacks capacity and
 	// block_on_overflow is off. The request was not admitted; it is retryable.
-	ErrQueueFull = errors.New("fdb_otel: sending queue is full")
+	ErrQueueFull = &QueueFullError{}
 	// ErrNotRunning rejects work before Start or after Shutdown.
-	ErrNotRunning = errors.New("fdb_otel: exporter is not running")
+	ErrNotRunning = &NotRunningError{}
 )
 
 // Sink is the export surface the queue flushes into; *otel.Exporter implements it.
@@ -60,7 +58,7 @@ func (e *permanentError) Error() string { return e.err.Error() }
 func (e *permanentError) Unwrap() error { return e.err }
 
 func permanent(format string, args ...any) error {
-	return &permanentError{fmt.Errorf("fdb_otel: "+format, args...)}
+	return &permanentError{componentErrorf("fdb_otel: "+format, args...)}
 }
 
 // IsPermanent reports whether retrying err cannot succeed: invalid input,
@@ -167,38 +165,38 @@ func (c *Config) Validate() error {
 		errs = append(errs, err)
 	}
 	if c.Timeout <= 0 {
-		errs = append(errs, errors.New("timeout must be positive"))
+		errs = append(errs, componentErrorf("timeout must be positive"))
 	}
 	if q := c.SendingQueue; q.Enabled {
 		if q.NumConsumers < 1 || q.NumConsumers > maxConsumers {
-			errs = append(errs, fmt.Errorf("sending_queue.num_consumers must be 1..%d", maxConsumers))
+			errs = append(errs, componentErrorf("sending_queue.num_consumers must be 1..%d", maxConsumers))
 		}
 		if q.QueueSize < 1 || q.QueueSize > maxQueueSize {
-			errs = append(errs, fmt.Errorf("sending_queue.queue_size must be 1..%d spans", maxQueueSize))
+			errs = append(errs, componentErrorf("sending_queue.queue_size must be 1..%d spans", maxQueueSize))
 		}
 		if q.Batch.FlushTimeout <= 0 {
-			errs = append(errs, errors.New("sending_queue.batch.flush_timeout must be positive"))
+			errs = append(errs, componentErrorf("sending_queue.batch.flush_timeout must be positive"))
 		}
 		if q.Batch.MinSize < 1 || q.Batch.MinSize > q.QueueSize {
-			errs = append(errs, errors.New("sending_queue.batch.min_size must be 1..queue_size"))
+			errs = append(errs, componentErrorf("sending_queue.batch.min_size must be 1..queue_size"))
 		}
 		if q.Batch.MaxSize < q.Batch.MinSize {
-			errs = append(errs, errors.New("sending_queue.batch.max_size must be at least min_size"))
+			errs = append(errs, componentErrorf("sending_queue.batch.max_size must be at least min_size"))
 		}
 	}
 	if r := c.RetryOnFailure; r.Enabled {
 		if r.InitialInterval <= 0 {
-			errs = append(errs, errors.New("retry_on_failure.initial_interval must be positive"))
+			errs = append(errs, componentErrorf("retry_on_failure.initial_interval must be positive"))
 		}
 		if r.MaxInterval < r.InitialInterval {
-			errs = append(errs, errors.New("retry_on_failure.max_interval must be at least initial_interval"))
+			errs = append(errs, componentErrorf("retry_on_failure.max_interval must be at least initial_interval"))
 		}
 		if r.MaxElapsedTime < 0 {
-			errs = append(errs, errors.New("retry_on_failure.max_elapsed_time must not be negative"))
+			errs = append(errs, componentErrorf("retry_on_failure.max_elapsed_time must not be negative"))
 		}
 	}
 	if err := errors.Join(errs...); err != nil {
-		return fmt.Errorf("%s config: %w", ComponentType, err)
+		return componentErrorf("%s config: %w", ComponentType, err)
 	}
 	return nil
 }
@@ -226,7 +224,7 @@ func checkKeys(node *yaml.Node, path string, types ...reflect.Type) error {
 		key := node.Content[i].Value
 		t, ok := fields[key]
 		if !ok {
-			return fmt.Errorf("%s: unknown key %q", path, key)
+			return componentErrorf("%s: unknown key %q", path, key)
 		}
 		if err := checkValue(node.Content[i+1], path+"."+key, t); err != nil {
 			return err
@@ -271,10 +269,10 @@ var componentTypeRE = regexp.MustCompile(`^[a-zA-Z][0-9a-zA-Z_]{0,62}$`)
 func ParseComponentID(s string) (ComponentID, error) {
 	typ, name, named := strings.Cut(s, "/")
 	if !componentTypeRE.MatchString(typ) {
-		return ComponentID{}, fmt.Errorf("invalid component id %q: type must match %s", s, componentTypeRE)
+		return ComponentID{}, componentErrorf("invalid component id %q: type must match %s", s, componentTypeRE)
 	}
 	if named && (name == "" || len(name) > 1024 || strings.ContainsFunc(name, func(r rune) bool { return r <= ' ' || r == 0x7f })) {
-		return ComponentID{}, fmt.Errorf("invalid component id %q: name must be 1..1024 non-space characters", s)
+		return ComponentID{}, componentErrorf("invalid component id %q: name must be 1..1024 non-space characters", s)
 	}
 	return ComponentID{Type: typ, Name: name}, nil
 }
@@ -295,7 +293,7 @@ type Pipeline struct {
 	Exporters  []ComponentID
 }
 
-// CollectorConfig is a parsed OpenTelemetry Collector configuration. Every
+// CollectorConfig is the supported subset of Collector-model YAML configuration. Every
 // component keeps its raw YAML; fdb_otel exporters are also decoded.
 type CollectorConfig struct {
 	Receivers  map[ComponentID]*yaml.Node
@@ -334,7 +332,7 @@ type rawCollector struct {
 func LoadPipelineConfig(path string) (*CollectorConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("collector config: %w", err)
+		return nil, componentErrorf("collector config: %w", err)
 	}
 	return ParseConfig(data)
 }
@@ -351,11 +349,11 @@ func parseConfig(data []byte, lookup func(string) (string, bool)) (*CollectorCon
 		return nil, err
 	}
 	if err := checkKeys(root, "config", reflect.TypeOf(rawCollector{})); err != nil {
-		return nil, fmt.Errorf("collector config: %w", err)
+		return nil, componentErrorf("collector config: %w", err)
 	}
 	var raw rawCollector
 	if err := root.Decode(&raw); err != nil {
-		return nil, fmt.Errorf("collector config: %w", err)
+		return nil, componentErrorf("collector config: %w", err)
 	}
 	out := &CollectorConfig{FDBExporters: map[ComponentID]*Config{}, Pipelines: map[ComponentID]*Pipeline{}}
 	for _, section := range []struct {
@@ -367,7 +365,7 @@ func parseConfig(data []byte, lookup func(string) (string, bool)) (*CollectorCon
 		for key, node := range section.in {
 			id, err := ParseComponentID(key)
 			if err != nil {
-				return nil, fmt.Errorf("collector config: %s: %w", section.name, err)
+				return nil, componentErrorf("collector config: %s: %w", section.name, err)
 			}
 			(*section.out)[id] = &node
 		}
@@ -382,7 +380,7 @@ func parseConfig(data []byte, lookup func(string) (string, bool)) (*CollectorCon
 			err = cfg.Validate()
 		}
 		if err != nil {
-			errs = append(errs, fmt.Errorf("exporters: %s: %w", id, err))
+			errs = append(errs, componentErrorf("exporters: %s: %w", id, err))
 			continue
 		}
 		out.FDBExporters[id] = cfg
@@ -391,19 +389,19 @@ func parseConfig(data []byte, lookup func(string) (string, bool)) (*CollectorCon
 		errs = append(errs, err)
 	}
 	if len(raw.Service.Pipelines) == 0 {
-		errs = append(errs, errors.New("service.pipelines must define at least one pipeline"))
+		errs = append(errs, componentErrorf("service.pipelines must define at least one pipeline"))
 	}
 	for key, rp := range raw.Service.Pipelines {
 		id, err := ParseComponentID(key)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("service.pipelines: %w", err))
+			errs = append(errs, componentErrorf("service.pipelines: %w", err))
 			continue
 		}
 		path := "service.pipelines." + key
 		switch id.Type {
 		case "traces", "metrics", "logs", "profiles":
 		default:
-			errs = append(errs, fmt.Errorf("%s: unknown signal %q", path, id.Type))
+			errs = append(errs, componentErrorf("%s: unknown signal %q", path, id.Type))
 			continue
 		}
 		p := &Pipeline{}
@@ -413,22 +411,22 @@ func parseConfig(data []byte, lookup func(string) (string, bool)) (*CollectorCon
 		p.Exporters, e3 = resolveRefs(path+".exporters", rp.Exporters, out.Exporters, out.Connectors)
 		errs = append(errs, e1, e2, e3)
 		if len(rp.Receivers) == 0 {
-			errs = append(errs, fmt.Errorf("%s: must have at least one receiver", path))
+			errs = append(errs, componentErrorf("%s: must have at least one receiver", path))
 		}
 		if len(rp.Exporters) == 0 {
-			errs = append(errs, fmt.Errorf("%s: must have at least one exporter", path))
+			errs = append(errs, componentErrorf("%s: must have at least one exporter", path))
 		}
 		if id.Type != "traces" {
 			for _, exp := range p.Exporters {
 				if exp.Type == ComponentType {
-					errs = append(errs, fmt.Errorf("%s: exporter %s supports only the traces signal", path, exp))
+					errs = append(errs, componentErrorf("%s: exporter %s supports only the traces signal", path, exp))
 				}
 			}
 		}
 		out.Pipelines[id] = p
 	}
 	if err := errors.Join(errs...); err != nil {
-		return nil, fmt.Errorf("collector config: %w", err)
+		return nil, componentErrorf("collector config: %w", err)
 	}
 	return out, nil
 }
@@ -456,7 +454,7 @@ func decodeExporterNode(node *yaml.Node) (*Config, error) {
 		return cfg, nil
 	}
 	if node.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("%s: exporter config must be a mapping", ComponentType)
+		return nil, componentErrorf("%s: exporter config must be a mapping", ComponentType)
 	}
 	if err := node.Decode(cfg); err != nil {
 		return nil, err
@@ -467,14 +465,14 @@ func decodeExporterNode(node *yaml.Node) (*Config, error) {
 func parseDocument(data []byte, lookup func(string) (string, bool)) (*yaml.Node, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("collector config: %w", err)
+		return nil, componentErrorf("collector config: %w", err)
 	}
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 {
-		return nil, errors.New("collector config: empty document")
+		return nil, componentErrorf("collector config: empty document")
 	}
 	root := doc.Content[0]
 	if err := expandNode(root, lookup, map[*yaml.Node]bool{}); err != nil {
-		return nil, fmt.Errorf("collector config: %w", err)
+		return nil, componentErrorf("collector config: %w", err)
 	}
 	return root, nil
 }
@@ -529,12 +527,12 @@ func expandString(s string, lookup func(string) (string, bool)) (string, error) 
 		case strings.HasPrefix(s[i:], "${"):
 			end := strings.IndexByte(s[i:], '}')
 			if end < 0 {
-				return "", fmt.Errorf("unterminated reference in %q", s)
+				return "", componentErrorf("unterminated reference in %q", s)
 			}
 			ref := strings.TrimPrefix(s[i+2:i+end], "env:")
 			name, def, hasDefault := strings.Cut(ref, ":-")
 			if !envNameRE.MatchString(name) {
-				return "", fmt.Errorf("invalid environment reference %q", s[i:i+end+1])
+				return "", componentErrorf("invalid environment reference %q", s[i:i+end+1])
 			}
 			v, ok := lookup(name)
 			if !ok && hasDefault {
@@ -557,11 +555,11 @@ func resolveRefs(path string, refs []string, sets ...map[ComponentID]*yaml.Node)
 	for _, ref := range refs {
 		id, err := ParseComponentID(ref)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", path, err))
+			errs = append(errs, componentErrorf("%s: %w", path, err))
 			continue
 		}
 		if seen[id] {
-			errs = append(errs, fmt.Errorf("%s: %s referenced more than once", path, id))
+			errs = append(errs, componentErrorf("%s: %s referenced more than once", path, id))
 			continue
 		}
 		seen[id] = true
@@ -572,7 +570,7 @@ func resolveRefs(path string, refs []string, sets ...map[ComponentID]*yaml.Node)
 			}
 		}
 		if !found {
-			errs = append(errs, fmt.Errorf("%s: %s is not configured", path, id))
+			errs = append(errs, componentErrorf("%s: %s is not configured", path, id))
 			continue
 		}
 		out = append(out, id)
@@ -621,13 +619,13 @@ func (Factory) CreateDefaultConfig() *Config {
 // CreateTraces validates cfg and returns an exporter that opens FDB on Start.
 func (Factory) CreateTraces(set Settings, cfg *Config) (*TracesExporter, error) {
 	if cfg == nil {
-		return nil, fmt.Errorf("%s: nil config", ComponentType)
+		return nil, componentErrorf("%s: nil config", ComponentType)
 	}
 	if set.ID.Type == "" {
 		set.ID.Type = ComponentType
 	}
 	if set.ID.Type != ComponentType {
-		return nil, fmt.Errorf("%s: component id %s has the wrong type", ComponentType, set.ID)
+		return nil, componentErrorf("%s: component id %s has the wrong type", ComponentType, set.ID)
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -748,7 +746,7 @@ func (x *TracesExporter) Start(ctx context.Context) error {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	if x.state != stateCreated {
-		return fmt.Errorf("%s: %s already started", ComponentType, x.id)
+		return componentErrorf("%s: %s already started", ComponentType, x.id)
 	}
 	sink, err := x.open(ctx, x.cfg.Exporter)
 	if err != nil {
@@ -825,8 +823,9 @@ func (x *TracesExporter) exportSync(ctx context.Context, spans []*tracepb.Resour
 	x.mu.Lock()
 	if x.state != stateStarted {
 		x.stats.RejectedSpans += int64(n)
+		err := &NotRunningError{Operation: "export", State: x.state}
 		x.mu.Unlock()
-		return ErrNotRunning
+		return err
 	}
 	x.active.Add(1)
 	x.stats.AcceptedRequests++
@@ -854,24 +853,27 @@ func (x *TracesExporter) enqueue(ctx context.Context, spans []*tracepb.ResourceS
 	for {
 		if x.state != stateStarted {
 			x.stats.RejectedSpans += int64(n)
+			err := &NotRunningError{Operation: "enqueue", State: x.state}
 			x.mu.Unlock()
-			return ErrNotRunning
+			return err
 		}
 		if x.outstanding+n <= q.QueueSize {
 			break
 		}
 		if !q.BlockOnOverflow {
 			x.stats.RejectedSpans += int64(n)
+			err := &QueueFullError{Capacity: q.QueueSize, Queued: x.outstanding, Requested: n}
 			x.mu.Unlock()
-			return ErrQueueFull
+			return err
 		}
 		wait := x.changed
+		queued := x.outstanding
 		x.mu.Unlock()
 		select {
 		case <-wait:
 		case <-ctx.Done():
 			x.reject(n)
-			return fmt.Errorf("%w: %w", ErrQueueFull, ctx.Err())
+			return &QueueFullError{Capacity: q.QueueSize, Queued: queued, Requested: n, Cause: ctx.Err()}
 		}
 		x.mu.Lock()
 	}
@@ -901,8 +903,9 @@ func (x *TracesExporter) signal() {
 func (x *TracesExporter) Flush(ctx context.Context) error {
 	x.mu.Lock()
 	if x.state == stateCreated {
+		err := &NotRunningError{Operation: "flush", State: x.state}
 		x.mu.Unlock()
-		return ErrNotRunning
+		return err
 	}
 	target := x.nextSeq
 	x.flushWanted = true
@@ -919,7 +922,7 @@ func (x *TracesExporter) Flush(ctx context.Context) error {
 	}
 	errs := x.failures
 	if x.dropped > 0 {
-		errs = append(errs, fmt.Errorf("fdb_otel: %d further export failures omitted", x.dropped))
+		errs = append(errs, componentErrorf("fdb_otel: %d further export failures omitted", x.dropped))
 	}
 	x.failures, x.dropped = nil, 0
 	x.mu.Unlock()
@@ -961,7 +964,7 @@ func (x *TracesExporter) Shutdown(ctx context.Context) error {
 			if cancel != nil {
 				cancel()
 			}
-			return fmt.Errorf("%s shutdown: %w", ComponentType, ctx.Err())
+			return componentErrorf("%s shutdown: %w", ComponentType, ctx.Err())
 		}
 	}
 	x.mu.Lock()
@@ -1025,7 +1028,7 @@ func (x *TracesExporter) dispatch(b batch) {
 		x.mu.Lock()
 		x.stats.Flushes--
 		x.mu.Unlock()
-		x.complete(b.parts, otel.ExportStats{}, fmt.Errorf("%s: export abandoned: %w", ComponentType, x.workCtx.Err()))
+		x.complete(b.parts, otel.ExportStats{}, componentErrorf("%s: export abandoned: %w", ComponentType, x.workCtx.Err()))
 	}
 }
 
@@ -1122,7 +1125,7 @@ func (x *TracesExporter) consumeLoop() {
 			if cerr := x.workCtx.Err(); cerr != nil {
 				// Abandoned before its own attempt: the merged failure may
 				// belong to another part, so it is reported, not wrapped.
-				x.complete([]request{p}, otel.ExportStats{}, fmt.Errorf("%s: export abandoned after its merged batch failed (%v): %w", ComponentType, err, cerr))
+				x.complete([]request{p}, otel.ExportStats{}, componentErrorf("%s: export abandoned after its merged batch failed (%v): %w", ComponentType, err, cerr))
 				continue
 			}
 			st, perr := x.exportWithRetry(x.workCtx, p.spans)
@@ -1152,7 +1155,7 @@ func (x *TracesExporter) exportWithRetry(ctx context.Context, spans []*tracepb.R
 			return st, err
 		}
 		if r.MaxElapsedTime > 0 && time.Since(started)+interval > r.MaxElapsedTime {
-			return st, fmt.Errorf("%s: retries exhausted after %s: %w", ComponentType, time.Since(started).Round(time.Millisecond), err)
+			return st, componentErrorf("%s: retries exhausted after %s: %w", ComponentType, time.Since(started).Round(time.Millisecond), err)
 		}
 		x.mu.Lock()
 		x.stats.Retries++
@@ -1209,7 +1212,7 @@ func (x *TracesExporter) complete(parts []request, st otel.ExportStats, err erro
 	x.record(st, spans, err)
 	if err != nil {
 		if len(x.failures) < maxFailures {
-			x.failures = append(x.failures, fmt.Errorf("%d spans: %w", spans, err))
+			x.failures = append(x.failures, componentErrorf("%d spans: %w", spans, err))
 		} else {
 			x.dropped++
 		}

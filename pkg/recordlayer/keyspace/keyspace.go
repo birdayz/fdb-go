@@ -531,7 +531,26 @@ func (p *Path) ToTuple() tuple.Tuple {
 // KeySpacePath.toSubspace, new Subspace(toTuple()). A path's subspace holds
 // every subspace below it.
 func (p *Path) ToSubspace() subspace.Subspace {
-	return subspace.Sub(p.ToTuple()...)
+	return pathSubspace{Subspace: subspace.Sub(p.ToTuple()...), legacy: p.LegacyNestedSubspace()}
+}
+
+// LegacyNestedSubspace explicitly addresses prefixes emitted by the earlier Go
+// ToSubspace implementation. It is not Java's path encoding and does not migrate data.
+func (p *Path) LegacyNestedSubspace() subspace.Subspace {
+	return subspace.Sub(p.ToTuple())
+}
+
+// pathSubspace retains the old address through Sub so store openers can refuse
+// an accidental cutover before creating a new, apparently empty store.
+type pathSubspace struct {
+	subspace.Subspace
+	legacy subspace.Subspace
+}
+
+func (s pathSubspace) LegacyKeySpaceSubspace() subspace.Subspace { return s.legacy }
+
+func (s pathSubspace) Sub(elements ...tuple.TupleElement) subspace.Subspace {
+	return pathSubspace{Subspace: s.Subspace.Sub(elements...), legacy: s.legacy.Sub(elements...)}
 }
 
 // DirectoryName returns the name of the current directory.

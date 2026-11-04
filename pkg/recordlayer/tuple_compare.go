@@ -17,8 +17,50 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
-// CompareTuples orders two tuples as Java's Tuple.compareTo does: -1, 0 or 1.
-func CompareTuples(a, b tuple.Tuple) int { return compareTuples(a, b) }
+// TupleComparisonError identifies an unsupported public comparator argument.
+type TupleComparisonError struct {
+	Side        string
+	ElementPath string
+	ElementType string
+}
+
+func (e *TupleComparisonError) Error() string {
+	return fmt.Sprintf("tuple comparison %s%s: unsupported element type %s", e.Side, e.ElementPath, e.ElementType)
+}
+
+// CompareTuples orders valid tuples as Java's Tuple.compareTo does: -1, 0 or 1.
+// Unsupported elements return contextual errors rather than panicking.
+func CompareTuples(a, b tuple.Tuple) (int, error) {
+	for _, input := range []struct {
+		side  string
+		value tuple.Tuple
+	}{{"left", a}, {"right", b}} {
+		if err := validateComparisonTuple(input.value, input.side, ""); err != nil {
+			return 0, err
+		}
+	}
+	return compareTuples(a, b), nil
+}
+
+func validateComparisonTuple(t tuple.Tuple, side, path string) error {
+	for i, item := range t {
+		at := fmt.Sprintf("%s[%d]", path, i)
+		switch v := item.(type) {
+		case tuple.Tuple:
+			if err := validateComparisonTuple(v, side, at); err != nil {
+				return err
+			}
+		case *big.Int:
+			if v == nil {
+				return &TupleComparisonError{Side: side, ElementPath: at, ElementType: "nil *big.Int"}
+			}
+		case nil, []byte, string, int, int64, uint, uint64, big.Int, float32, float64, bool, tuple.UUID, tuple.Versionstamp, fdb.KeyConvertible:
+		default:
+			return &TupleComparisonError{Side: side, ElementPath: at, ElementType: fmt.Sprintf("%T", item)}
+		}
+	}
+	return nil
+}
 
 // compareTuples orders two tuples as Java's Tuple.compareTo does for tuples
 // without cached packed bytes: element by element with TupleUtil.compareItems,

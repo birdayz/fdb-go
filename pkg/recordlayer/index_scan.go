@@ -751,7 +751,7 @@ func (store *FDBRecordStore) ScanIndexRecords(
 	}
 	indexCursor := store.ScanIndex(index, scanRange, continuation, scanProperties)
 	loader := &indexRecordLoader{store: store, scanState: scanProperties.ExecuteProperties.ScanState}
-	return MapPipelined(indexCursor, loader.load, DefaultPipelineSize)
+	return MapPipelined(indexCursor, loader.load, store.GetPipelineSize(PipelineOperationIndexToRecord))
 }
 
 // indexRecordLoader loads the record of each index entry, applying its

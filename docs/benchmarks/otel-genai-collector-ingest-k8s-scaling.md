@@ -1,4 +1,4 @@
-# GenAI/OTel collector ingest: 1x/2x/3x scaling on Kubernetes + Cilium
+# GenAI/OTel custom Collector-model ingest: 1x/2x/3x scaling on Kubernetes + Cilium
 
 This report covers the benchmark campaigns behind PR #1023 (branch
 `perf/otel-ingest-20k`). That PR is stacked on #1022, which holds the pure-Go
@@ -8,9 +8,13 @@ These are performance experiments, not correctness or merge-readiness evidence;
 conformance/correctness review remains active for #1022 and #1025. A profiling
 session on a separate small box ("box 3") explains where the remaining CPU goes.
 
-Each campaign measures a sustained OpenTelemetry Collector pipeline. A
-synthetic multi-turn GenAI corpus goes through the Collector sending queue and
-the `fdb_otel` exporter into the Record Layer. The exporter stores:
+Each campaign measures a sustained **custom in-process Collector-model queue**,
+not an upstream OpenTelemetry Collector pipeline. A synthetic multi-turn GenAI
+corpus goes through the repository's local batching/retry implementation and the
+`fdb_otel` exporter into the Record Layer. No upstream Collector component,
+exporterhelper integration, receiver transport, or Collector overhead is measured.
+Actual upstream Collector integration remains required for the larger product goal,
+not established by these historical rates. The exporter stores:
 
 - spans
 - correlated logs
@@ -20,10 +24,11 @@ Two query workers run the eight-class query suite while ingest runs, and the
 same suite runs again after ingest. Each campaign measures the same tree at 1x,
 2x and 3x scale.
 
-The tool's own boundary: *"synthetic deterministic multi-turn GenAI
-conversations and correlated logs through the fdb_otel Collector sending queue
-into one FDB run; one producer"*. Each stage runs one such producer per client
-host. [Section 6](#6-limitations) lists what the runs do not show.
+The historical receipts called the local path a “Collector sending queue”; that
+label overstated the implementation boundary. The accurate boundary is synthetic
+deterministic multi-turn GenAI conversations and correlated logs through the custom
+`fdb_otel` Collector-model queue into one FDB run, one producer. Each stage runs
+one such producer per client host. [Section 6](#6-limitations) lists what the runs do not show.
 
 ## 1. Summary
 
@@ -150,7 +155,7 @@ otelbench --backend fdb --mode collector-bench --run cbench_s<N>_p<i> \
 
 The process contains the whole pipeline:
 
-- **Load:** 8 load-generator goroutines feed the Collector sending queue
+- **Load:** 8 load-generator goroutines feed the custom Collector-model queue
   (10,000 spans).
 - **Export:** 16 consumers call the exporter. Each export batch holds 64 spans,
   and at most 32 write transactions are in flight, each with a 10 s timeout.
@@ -708,7 +713,7 @@ Run history, for completeness:
 
 Code:
 
-- Collector benchmark, rate windows and CPU accounting:
+- Custom Collector-model benchmark, rate windows and CPU accounting:
   [`layers/otel/collector/bench.go`](../../layers/otel/collector/bench.go),
   [`layers/otel/collector/bench_cpu.go`](../../layers/otel/collector/bench_cpu.go)
 - Message storage, TEXT index and persist statistics:

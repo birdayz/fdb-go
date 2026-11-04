@@ -17,12 +17,8 @@ package otel
 // to the writer's last bunch instead of rewriting a bunch at a random digest
 // position, and concurrent writers never share the bunch they modify.
 //
-// The fulltext layout adds a TEXT index over each part's text, grouped by
-// tenant, role and writer shard, and lists on every span the messages it
-// references (Envelope.messages: attribute, positions, and whether the message
-// is the attribute's newest element), indexed by (tenant, writer, seq, newest,
-// attribute, (ordinals), start_ns). The list depends only on the span, so a
-// span's references are written blind with the span and replaced with it.
+// fulltext_v2 indexes message text by tenant, role and writer shard. MessageTrace
+// markers select traces; envelope_refs_v1 reads each trace's packed ref_chunks.
 //
 // Message records are immutable, shared by every span of the tenant that
 // references them, and never collected.
@@ -113,7 +109,7 @@ const (
 	messageTokenizerName = "otel_message_v1"
 )
 
-// Attribute codes stored in Envelope.messages.
+// Attribute codes packed in Envelope.ref_chunks.
 var messageAttributeKeys = [...]string{1: "gen_ai.input.messages", 2: "gen_ai.output.messages", 3: "gen_ai.system_instructions", 4: "gen_ai.tool.definitions"}
 
 func messageAttributeCode(key string) int64 {
@@ -195,10 +191,8 @@ type MessageDeltaStats struct {
 	SavedBytes       int64 `json:"saved_bytes"`
 }
 
-// MessageStoreStats counts one export call's message persistence. Text index
-// counters come from the Record Layer's BunchedMap instrumentation of bunch
-// values written with Set, in committed attempts only; postings appended with
-// AppendIfFits are Postings minus TextIndexWrites at most.
+// MessageStoreStats counts committed message persistence, including TEXT Set
+// replacements and AppendIfFits operands; write counts do not count postings.
 type MessageStoreStats struct {
 	Written         int64 `json:"written"`
 	Present         int64 `json:"present"`
@@ -211,7 +205,8 @@ type MessageStoreStats struct {
 	TraceMarkers int64 `json:"trace_markers"`
 	Transactions int64 `json:"transactions"`
 	Retries      int64 `json:"retries"`
-	// Bunch values set, their key and value bytes, and bunch bytes read.
+	// Set/AppendIfFits operations, their keys and replacement/append operand
+	// bytes, and bunch bytes read. Appends are already included in write counts.
 	TextIndexWrites     int64 `json:"text_index_writes"`
 	TextIndexKeyBytes   int64 `json:"text_index_key_bytes"`
 	TextIndexValueBytes int64 `json:"text_index_value_bytes"`
@@ -478,7 +473,7 @@ func splitMessageValue(v *commonpb.AnyValue) (*messageManifest, [][]byte, error)
 }
 
 // forEachMessageAttribute visits every content attribute of each span and its
-// events, with the span it belongs to.
+// events, with the span it belongs to. A nil attribute marks every span's start.
 func forEachMessageAttribute(rs *tracepb.ResourceSpans, fn func(*tracepb.Span, *commonpb.KeyValue) error) error {
 	visit := func(sp *tracepb.Span, kvs []*commonpb.KeyValue) error {
 		for _, kv := range kvs {
@@ -494,6 +489,9 @@ func forEachMessageAttribute(rs *tracepb.ResourceSpans, fn func(*tracepb.Span, *
 		for _, sp := range ss.GetSpans() {
 			if sp == nil {
 				continue
+			}
+			if err := fn(sp, nil); err != nil {
+				return err
 			}
 			if err := visit(sp, sp.GetAttributes()); err != nil {
 				return err
@@ -526,8 +524,9 @@ type messageElement struct {
 	encoding string
 	raw      []byte
 	id       messageID
-	trace    string // of the first span referencing it
-	written  bool   // stored by this call, not found present
+	trace    string            // of the first span referencing it
+	written  bool              // stored by this call, not found present
+	outcome  MessageStoreStats // committed per-message work, including fallback parts
 }
 
 // messageUse is one (message, attribute) reference of a span: the message's
@@ -591,9 +590,10 @@ func decomposeMessages(ctx context.Context, spans []*tracepb.ResourceSpans, tena
 			uses, seen = nil, map[int64]bool{}
 		}
 		err := forEachMessageAttribute(clone, func(sp *tracepb.Span, kv *commonpb.KeyValue) error {
-			if sp != current {
+			if kv == nil {
 				flush()
 				current = sp
+				return nil
 			}
 			m, raws, err := splitMessageValue(kv.Value)
 			if err != nil {
@@ -870,6 +870,12 @@ func (b *FDBBackend) takeWriter(ctx context.Context) (*messageWriter, error) {
 		if err := configureRecordTimeout(rc); err != nil {
 			return nil, err
 		}
+		if err := b.probeMessageTxn("writer-before-write", nil); err != nil {
+			return nil, err
+		}
+		if err := b.readManifest(rc, true); err != nil {
+			return nil, err
+		}
 		v, err := rc.Transaction().Get(key).Get()
 		if err != nil {
 			return nil, err
@@ -982,6 +988,13 @@ func (b *FDBBackend) readMessagePresence(ctx context.Context, tenant int, elemen
 // and a writer held, and returns its counters.
 type messageTxn func(store *recordlayer.FDBRecordStore, hashSpace []byte) (MessageStoreStats, error)
 
+func (b *FDBBackend) probeMessageTxn(stage string, store *recordlayer.FDBRecordStore) error {
+	if b.messageTxnHook != nil {
+		return b.messageTxnHook(stage, store)
+	}
+	return nil
+}
+
 // runMessageTxn runs body in one transaction, counting retries and the
 // committed attempt's BunchedMap work.
 func (b *FDBBackend) runMessageTxn(ctx context.Context, stats *MessageStoreStats, mu *sync.Mutex, body messageTxn) error {
@@ -993,6 +1006,12 @@ func (b *FDBBackend) runMessageTxn(ctx context.Context, stats *MessageStoreStats
 		attempts++
 		timer := recordlayer.NewStoreTimer()
 		rc.SetTimer(timer)
+		if err := b.probeMessageTxn("message-before-write", nil); err != nil {
+			return nil, err
+		}
+		if err := b.readManifest(rc, true); err != nil {
+			return nil, err
+		}
 		store, err := b.open(rc)
 		if err != nil {
 			return nil, err
@@ -1001,7 +1020,7 @@ func (b *FDBBackend) runMessageTxn(ctx context.Context, stats *MessageStoreStats
 			return nil, err
 		}
 		messageTimerStats(timer, &got)
-		return nil, nil
+		return nil, b.probeMessageTxn("message-before-commit", store)
 	})
 	mu.Lock()
 	defer mu.Unlock()
@@ -1208,6 +1227,9 @@ func (q *messageQueue) finish(batch []queuedMessage, stats MessageStoreStats, er
 		if i == 0 {
 			s.Add(txn)
 		}
+		s.Parts += m.plan.element.outcome.Parts
+		s.Postings += m.plan.element.outcome.Postings
+		s.UnindexedTokens += m.plan.element.outcome.UnindexedTokens
 		if err != nil {
 			if m.sub.err == nil {
 				m.sub.err = err
@@ -1218,9 +1240,6 @@ func (q *messageQueue) finish(batch []queuedMessage, stats MessageStoreStats, er
 		}
 		if m.plan.element.written {
 			s.Written++
-			s.Parts++
-			s.Postings += m.plan.postings
-			s.UnindexedTokens += m.plan.unindexed
 		} else {
 			s.Present++
 		}
@@ -1287,6 +1306,17 @@ func isTransactionTooLarge(err error) bool {
 // the absent ones in w.
 func (b *FDBBackend) writeSmallMessages(ctx context.Context, tenant int, w *messageWriter, plans []*messagePlan, stats *MessageStoreStats, mu *sync.Mutex) error {
 	const op = "message persist"
+	// Failed in-flight claims can put the same digest in multiple submissions.
+	original := plans
+	unique := make([]*messagePlan, 0, len(plans))
+	byDigest := make(map[messageDigest]*messagePlan, len(plans))
+	for _, p := range plans {
+		if byDigest[p.element.digest] == nil {
+			byDigest[p.element.digest] = p
+			unique = append(unique, p)
+		}
+	}
+	plans = unique
 	base := w.next
 	used := int64(len(plans))
 	err := b.runMessageTxn(ctx, stats, mu, func(store *recordlayer.FDBRecordStore, hashSpace []byte) (MessageStoreStats, error) {
@@ -1333,6 +1363,20 @@ func (b *FDBBackend) writeSmallMessages(ctx context.Context, tenant int, w *mess
 		used = int64(len(plans)) // a failed attempt may have committed any of them
 	}
 	w.next = base + used
+	if err == nil {
+		for _, p := range plans {
+			if p.element.written {
+				p.element.outcome = MessageStoreStats{Parts: 1, Postings: p.postings, UnindexedTokens: p.unindexed}
+			}
+		}
+		for _, p := range original {
+			canonical := byDigest[p.element.digest]
+			if canonical != p {
+				p.element.id = canonical.element.id
+				p.element.written = false
+			}
+		}
+	}
 	return err
 }
 
@@ -1341,6 +1385,17 @@ func (b *FDBBackend) writeSmallMessages(ctx context.Context, tenant int, w *mess
 // transaction first checks the digest, so it stops once the message is stored.
 func (b *FDBBackend) writeLargeMessage(ctx context.Context, tenant int, w *messageWriter, p *messagePlan, stats *MessageStoreStats, mu *sync.Mutex) error {
 	const op = "message persist"
+	var committed MessageStoreStats
+	var committedMu sync.Mutex
+	defer func() {
+		p.element.outcome.Parts += committed.Parts
+		p.element.outcome.Postings += committed.Postings
+		p.element.outcome.UnindexedTokens += committed.UnindexedTokens
+		mu.Lock()
+		stats.Add(committed)
+		mu.Unlock()
+	}()
+	p.element.written = false
 	w.next++
 	id := messageID{w.id, w.next}
 	for _, r := range p.records {
@@ -1357,7 +1412,7 @@ func (b *FDBBackend) writeLargeMessage(ctx context.Context, tenant int, w *messa
 	}
 	for next := 1; next < len(p.records) && !present; {
 		lo := next
-		err := b.runMessageTxn(ctx, stats, mu, func(store *recordlayer.FDBRecordStore, hashSpace []byte) (MessageStoreStats, error) {
+		err := b.runMessageTxn(ctx, &committed, &committedMu, func(store *recordlayer.FDBRecordStore, hashSpace []byte) (MessageStoreStats, error) {
 			next = lo
 			var err error
 			if present, err = check(store, hashSpace); err != nil || present {
@@ -1390,7 +1445,7 @@ func (b *FDBBackend) writeLargeMessage(ctx context.Context, tenant int, w *messa
 	if present {
 		return nil
 	}
-	return b.runMessageTxn(ctx, stats, mu, func(store *recordlayer.FDBRecordStore, hashSpace []byte) (MessageStoreStats, error) {
+	return b.runMessageTxn(ctx, &committed, &committedMu, func(store *recordlayer.FDBRecordStore, hashSpace []byte) (MessageStoreStats, error) {
 		present, err := check(store, hashSpace)
 		if err != nil || present {
 			return MessageStoreStats{Present: 1}, err
@@ -1680,6 +1735,12 @@ func (e *Exporter) persistTraceMarkers(ctx context.Context, d *messageDecomposit
 		var n int64
 		_, err := runTxnSlot(ctx, b.db, op, func(rc *recordlayer.FDBRecordContext) (any, error) {
 			n = 0
+			if err := b.probeMessageTxn("marker-before-write", nil); err != nil {
+				return nil, err
+			}
+			if err := b.readManifest(rc, true); err != nil {
+				return nil, err
+			}
 			store, err := b.open(rc)
 			if err != nil {
 				return nil, err
@@ -1761,6 +1822,9 @@ func (e *Exporter) persistMessages(ctx context.Context, d *messageDecomposition)
 		}
 		claim := &inflightMessage{done: make(chan struct{})}
 		if other, loaded := b.inflight.LoadOrStore(el.digest, claim); loaded {
+			if err := b.probeMessageTxn("message-await", nil); err != nil {
+				return stats, err
+			}
 			awaited = append(awaited, el)
 			waits = append(waits, other.(*inflightMessage))
 			continue
@@ -1870,6 +1934,9 @@ func planReconstruct(ctx context.Context, spans []*tracepb.ResourceSpans) (*reco
 		}
 		clone := proto.Clone(rs).(*tracepb.ResourceSpans)
 		err := forEachMessageAttribute(clone, func(_ *tracepb.Span, kv *commonpb.KeyValue) error {
+			if kv == nil {
+				return nil
+			}
 			m, err := parseMessageManifest(kv.Value)
 			if err != nil {
 				return err

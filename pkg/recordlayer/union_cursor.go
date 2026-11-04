@@ -274,7 +274,7 @@ func stopUnion[T any](children []*mergeChildState[T]) (RecordCursorResult[T], er
 	reason := strongestNoNextReason(children)
 	if reason == SourceExhausted && !cont.IsEnd() {
 		// Every child is exhausted only when every continuation is END.
-		return RecordCursorResult[T]{}, fmt.Errorf("union exhausted with a non-end continuation")
+		return RecordCursorResult[T]{}, &RecordCoreError{Message: "union exhausted with a non-end continuation"}
 	}
 	return NewResultNoNext[T](reason, cont), nil
 }

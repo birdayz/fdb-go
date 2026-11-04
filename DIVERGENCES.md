@@ -1700,10 +1700,10 @@ intersection non-max `consume()` advance). What remains is classified below.
   resumability. The deterministic child order remains a legal realization of
   Java's explicitly unspecified order. (The former eager concat's loud
   declines are gone; the dead concat cursor was deleted.)
-- **ProbableIntersectionCursor / bloom-filter weak reads**: entirely
-  unimplemented (no plan type reaches it); Java's own docs flag the
-  Guava-serialized bloom bytes as a cross-compat hazard. Missing capability,
-  not a divergence in shared code.
+- **ProbableIntersectionCursor / Bloom weak reads**: implemented for multi-token
+  `TEXT_CONTAINS_ALL_PREFIXES`, including Guava 33 continuation bytes. See
+  [TEXT queries](#text-queries) for ordering, false-positive and Guava-version
+  boundaries; pinned by `conformance/text_query_conformance_test.go`.
 - **FutureCursor / fromFuture**: absent; single-future shapes are expressed
   via FromList/flatMap composition instead.
 - **NoNextReason ordinals differ** (semantics and all predicates match); the
@@ -4710,6 +4710,21 @@ It differs in three places:
   from a `Long` 1 and accepts both. Floats compare as Java's `Double.equals` does.
 - **No constant resolver directories.** A resolver directory is always open, so
   Java's `isCompatible` check, which applies only between constants, never applies.
+
+### Earlier Go nested KeySpace prefixes
+
+Earlier Go `Path.ToSubspace()` packed the whole path as one tuple element:
+`(("app", "store"))`. It now emits Java's flat `("app", "store")` prefix.
+This changes persisted addresses, not record bytes, and has no automatic migration.
+`Path.LegacyNestedSubspace()` provides explicit access to the old address.
+Subspaces returned by `ToSubspace()` retain the old address through `.Sub(...)`;
+Record Layer `Create`, `Open` and `CreateOrOpen` serializably probe it and return
+`LegacyKeySpacePrefixError` if data remains, instead of silently opening a new store.
+After export/import and verification, `SetAllowLegacyKeySpaceCutover(true)` explicitly
+acknowledges choosing the flat destination while old data remains. It copies nothing.
+Converting these subspaces to raw bytes discards the guard; application code doing
+raw FDB reads/writes must enforce its own write freeze and prefix choice. See
+[the upgrade procedure](docs/upgrade.md#earlier-go-keyspace-path-prefixes).
 
 ## Native FDB client read hedging
 

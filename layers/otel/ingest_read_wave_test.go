@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -18,6 +19,7 @@ type ingestReadWaveAttempt struct {
 	timeout, retries                            int64
 	wantTimeout                                 int64 // 0 means the benchmark's 1500 with retry limit 10; else an exporter timeout without one
 	reads, owners, headers, states, resolutions int
+	cutovers                                    int
 	recordWrites, headerWrites                  int
 	prefetches, resolved, normalRanges          int
 	expectedPrefetches                          int
@@ -108,7 +110,10 @@ func (tx ingestReadWaveTransaction) Get(key fdb.KeyConvertible) fdb.FutureByteSl
 func (tx ingestReadWaveTransaction) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResult {
 	tx.state.read()
 	if exact, ok := r.(fdb.ExactRange); ok {
-		begin, _ := exact.FDBRangeKeys()
+		begin, end := exact.FDBRangeKeys()
+		if bytes.Equal(begin.FDBKey(), tx.driver.legacyBegin) && bytes.Equal(end.FDBKey(), tx.driver.legacyEnd) {
+			tx.state.cutovers++
+		}
 		if bytes.HasPrefix(begin.FDBKey(), tx.driver.records) {
 			if tx.state.resolved != tx.state.expectedPrefetches {
 				tx.state.problems = append(tx.state.problems, "normal save before all prefetch resolutions")
@@ -195,6 +200,7 @@ type ingestReadWaveTransactor struct {
 	parent                               context.Context
 	owner, header, records               []byte
 	stateBegin, stateEnd                 []byte
+	legacyBegin, legacyEnd               []byte
 	ownerError, openError, prefetchError error
 	afterPrefetch                        func(*ingestReadWaveAttempt)
 	beforeAttempt                        func(int) error
@@ -205,10 +211,16 @@ type ingestReadWaveTransactor struct {
 
 func newIngestReadWaveTransactor(b *FDBBackend, parent context.Context) *ingestReadWaveTransactor {
 	begin, end := b.store.Sub(recordlayer.IndexStateSpaceKey).FDBRangeKeys()
+	var legacyBegin, legacyEnd []byte
+	if guarded, ok := b.store.(interface{ LegacyKeySpaceSubspace() subspace.Subspace }); ok {
+		legacy, _ := fdb.PrefixRange(guarded.LegacyKeySpaceSubspace().Bytes())
+		legacyBegin, legacyEnd = legacy.Begin.FDBKey(), legacy.End.FDBKey()
+	}
 	return &ingestReadWaveTransactor{
 		Database: b.raw, parent: parent, count: min(b.cfg.Batch, b.cfg.Count),
 		owner: b.keys.owner(), header: b.store.Pack(tuple.Tuple{recordlayer.StoreInfoKey}),
 		records: b.store.Sub(recordlayer.RecordKey).Bytes(), stateBegin: begin.FDBKey(), stateEnd: end.FDBKey(),
+		legacyBegin: legacyBegin, legacyEnd: legacyEnd,
 	}
 }
 
@@ -322,7 +334,7 @@ func testOtelIngestReadWave(t *testing.T, ctx context.Context, cluster, order st
 			}
 			assertIngestReadWave(t, wrapped.attempts, want)
 			for _, state := range wrapped.attempts {
-				if state.recordWrites != 2 || state.reads != 7 || state.prefetches != 2 || state.resolved != 2 || state.normalRanges != 2 {
+				if state.recordWrites != 2 || state.reads != 8 || state.cutovers != 1 || state.prefetches != 2 || state.resolved != 2 || state.normalRanges != 2 {
 					t.Fatalf("attempt changed authoritative prefetch/normal-save population: %+v", state)
 				}
 				if state.storageBeforeSave-state.storageStart < 3 || state.storageEnd != state.storageBeforeSave {

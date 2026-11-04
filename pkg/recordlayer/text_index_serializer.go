@@ -60,41 +60,6 @@ func varIntSize(val int) int {
 	return (bits.Len(uint(val)) + 6) / 7
 }
 
-// serializeVarInt writes val as a base-128 variable-length integer.
-// MSB of each byte is 1 if more bytes follow, 0 for the last byte.
-// Matches Java's serializeVarInt().
-func serializeVarInt(buf *bytes.Buffer, val int) {
-	if val == 0 {
-		buf.WriteByte(0x00)
-		return
-	}
-	numBytes := varIntSize(val)
-	for i := numBytes - 1; i >= 0; i-- {
-		b := byte((val >> (7 * i)) & 0x7f)
-		if i != 0 {
-			b |= 0x80
-		}
-		buf.WriteByte(b)
-	}
-}
-
-// deserializeVarInt reads a base-128 varint from the buffer.
-// Returns the decoded value and any error.
-func deserializeVarInt(buf *bytes.Reader) (int, error) {
-	val := 0
-	for {
-		b, err := buf.ReadByte()
-		if err != nil {
-			return 0, fmt.Errorf("unexpected end of varint data: %w", err)
-		}
-		val = (val << 7) | int(b&0x7f)
-		if b&0x80 == 0 {
-			break
-		}
-	}
-	return val, nil
-}
-
 // positionListSize returns the serialized size of a delta-compressed position list
 // (not including the list size prefix). Validates monotonic non-negative.
 func positionListSize(list []int) (int, error) {
@@ -110,44 +75,7 @@ func positionListSize(list []int) (int, error) {
 	return sum, nil
 }
 
-// serializePositionList writes the list size (varint) followed by delta-compressed entries.
-func serializePositionList(buf *bytes.Buffer, list []int, serializedSize int) {
-	serializeVarInt(buf, serializedSize)
-	last := 0
-	for _, val := range list {
-		serializeVarInt(buf, val-last)
-		last = val
-	}
-}
-
-// deserializePositionList reads a delta-compressed position list from the buffer.
-func deserializePositionList(buf *bytes.Reader) ([]int, error) {
-	serializedSize, err := deserializeVarInt(buf)
-	if err != nil {
-		return nil, fmt.Errorf("reading list size: %w", err)
-	}
-	if serializedSize == 0 {
-		return []int{}, nil // empty list (non-nil, matching Java's Collections.emptyList())
-	}
-	if serializedSize < 0 || serializedSize > buf.Len() {
-		return nil, fmt.Errorf("position list size %d exceeds remaining data %d", serializedSize, buf.Len())
-	}
-	// serializedSize is an upper bound on the number of entries (exact if all varints are 1 byte).
-	result := make([]int, 0, serializedSize)
-	startPos := buf.Len()
-	last := 0
-	for startPos-buf.Len() < serializedSize {
-		delta, err := deserializeVarInt(buf)
-		if err != nil {
-			return nil, fmt.Errorf("reading position delta: %w", err)
-		}
-		last += delta
-		result = append(result, last)
-	}
-	return result, nil
-}
-
-// appendVarInt is serializeVarInt appending to dst.
+// appendVarInt appends Java's most-significant-group-first base-128 varint.
 func appendVarInt(dst []byte, val int) []byte {
 	if val == 0 {
 		return append(dst, 0x00)
@@ -162,7 +90,7 @@ func appendVarInt(dst []byte, val int) []byte {
 	return dst
 }
 
-// appendPositionList is serializePositionList appending to dst.
+// appendPositionList appends the byte size followed by delta-compressed positions.
 func appendPositionList(dst []byte, list []int, serializedSize int) []byte {
 	dst = appendVarInt(dst, serializedSize)
 	last := 0
@@ -175,8 +103,8 @@ func appendPositionList(dst []byte, list []int, serializedSize int) []byte {
 
 var errVarIntEOF = fmt.Errorf("unexpected end of varint data: EOF")
 
-// readVarInt is deserializeVarInt over data[pos:]: the value, the offset after
-// it, and whether its encoding is the one serializeVarInt writes.
+// readVarInt reads a varint from data[pos:]: the value, the offset after
+// it, and whether its encoding is the one appendVarInt writes.
 func readVarInt(data []byte, pos int) (val, next int, canonical bool, err error) {
 	start := pos
 	for pos < len(data) {
@@ -190,11 +118,10 @@ func readVarInt(data []byte, pos int) (val, next int, canonical bool, err error)
 	return 0, pos, false, errVarIntEOF
 }
 
-// walkPositionList reads the position list at data[pos:] as
-// deserializePositionList does, appending its positions to out when out is
-// not nil, and returns the offset after it and its number of positions.
-// canonical reports whether serializePositionList writes the list's
-// positions to exactly these bytes.
+// walkPositionList reads the position list at data[pos:], appending its
+// positions to out when out is not nil, and returns the offset after it and
+// its number of positions. canonical reports whether appendPositionList
+// writes the list's positions to exactly these bytes.
 func walkPositionList(data []byte, pos int, out *[]int) (next, count int, canonical bool, err error) {
 	serializedSize, pos, canonical, err := readVarInt(data, pos)
 	if err != nil {

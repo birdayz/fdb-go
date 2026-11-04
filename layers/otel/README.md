@@ -26,7 +26,9 @@ unchanged.
   `IndexMaintainerFactory` synchronously maintains custom secondary postings in
   `Update(old,new)`. WRITE_ONLY explicitly invokes the custom full-maintenance
   implementation, not an embedded standard-index method. Prefix deletion is refused; whole-store deletion clears
-  the owned secondary structure. No SQL planner/core changes.
+  the owned secondary structure. Core seams validate registered factory options
+  and support external WRITE_ONLY maintenance; the SQL planner now fails closed
+  for opaque index layouts. The typed OTel APIs are not SQL catalog tables.
 * Typed/scoped exact string/int equality, newest **K DISTINCT traces** ordered by
   latest matching span timestamp descending, then trace ID descending. Full
   tenant-qualified trace lookup returns span identities/timestamps in ascending
@@ -552,6 +554,23 @@ context is `canceled`. FDB `1xxx` codes, including `transaction_timed_out`
 are `operation`. The Collector's `IsPermanent` retries `transient`, `budget`
 and `canceled` errors and drops `config`, `admission`, `ownership`,
 `corruption` and `operation` errors.
+
+## Collector-model measurement boundary
+
+`layers/otel/collector` is a custom in-process model of Collector batching,
+queueing, retry and configuration behavior. It is **not** an upstream
+OpenTelemetry Collector component and does not use upstream `exporterhelper`.
+Historical “Collector” rates measure this model and the FDB exporter only, not
+receiver transport, upstream queue semantics or Collector overhead. Actual
+upstream Collector integration remains required for the larger Collector-to-SQL
+product goal; the optimized experimental ingest layer does not complete it.
+
+New span records keep canonicalization fidelity in the optional application
+`Envelope.fidelity` field. Its presence (even empty) selects this framing, so all
+producer OTLP unknown fields, including tag 536870911, remain producer-owned.
+Legacy records without that field still decode their historical internal OTLP
+fidelity tag. This does not rewrite existing records or restore raw GenAI history:
+message-enabled records' fidelity retains message manifests, not repeated content.
 
 ## GenAI message storage
 

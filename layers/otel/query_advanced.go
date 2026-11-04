@@ -999,7 +999,7 @@ func (b *FDBBackend) TraverseTraceGraph(ctx context.Context, traceID string) (Tr
 				return nil, fail("corruption", op, "record outside the requested trace")
 			}
 			msg := record.Record.ProtoReflect()
-			rs, err := restoreOTLP(msg.Get(msg.Descriptor().Fields().ByName("otlp")).Bytes())
+			rs, err := restoreEnvelopeOTLP(msg)
 			if err != nil {
 				return nil, err
 			}

@@ -56,6 +56,10 @@ func newGuavaBloomFilter(expectedInsertions int64, fpp float64) (*guavaBloomFilt
 	squaredLogTwo := logTwo * logTwo
 	numBits := int64(float64(-expectedInsertions) * math.Log(fpp) / squaredLogTwo)
 	numHashFunctions := int(math.Max(1, float64(javaRound(-math.Log(fpp)/logTwo))))
+	// Guava stores this count as an unsigned byte in continuations.
+	if numHashFunctions > 255 {
+		return nil, &RecordCoreArgumentError{Message: fmt.Sprintf("numHashFunctions (%d) must be <= 255 (expectedInsertions=%d, fpp=%v)", numHashFunctions, expectedInsertions, fpp)}
+	}
 	if numBits <= 0 {
 		return nil, &RecordCoreArgumentError{Message: fmt.Sprintf("Could not create BloomFilter of %d bits", numBits)}
 	}
@@ -79,7 +83,7 @@ func javaRound(x float64) int64 {
 // big-endian words.
 func readGuavaBloomFilter(b []byte) (*guavaBloomFilter, error) {
 	fail := func(msg string) error {
-		return &RecordCoreError{Message: "unable to deserialize bloom filter", Cause: fmt.Errorf("%s", msg)}
+		return &RecordCoreError{Message: "unable to deserialize bloom filter", Cause: &RecordCoreArgumentError{Message: msg}}
 	}
 	if len(b) < 6 {
 		return nil, fail("truncated header")
@@ -89,6 +93,9 @@ func readGuavaBloomFilter(b []byte) (*guavaBloomFilter, error) {
 	dataLength := int32(binary.BigEndian.Uint32(b[2:6]))
 	if strategy != bloomStrategyMitz32 && strategy != bloomStrategyMitz64 {
 		return nil, fail(fmt.Sprintf("unknown strategy ordinal %d", strategy))
+	}
+	if numHashFunctions == 0 {
+		return nil, fail(fmt.Sprintf("numHashFunctions (%d) must be > 0 (strategy=%d, dataLength=%d)", numHashFunctions, strategy, dataLength))
 	}
 	if dataLength <= 0 {
 		return nil, fail(fmt.Sprintf("invalid data length %d", dataLength))
@@ -225,7 +232,7 @@ func packTupleElement(o any) ([]byte, error) {
 		return nil, err
 	}
 	if incomplete, err := t.HasIncompleteVersionstamp(); err != nil || incomplete {
-		return nil, fmt.Errorf("bloom filter key: incomplete versionstamp %v", o)
+		return nil, &RecordCoreError{Message: fmt.Sprintf("bloom filter key: incomplete versionstamp %v", o), Cause: err}
 	}
 	return t.Pack(), nil
 }
@@ -241,7 +248,7 @@ func checkPackable(t tuple.Tuple) error {
 		case nil, int, int64, uint, uint64, *big.Int, big.Int, []byte, fdb.KeyConvertible,
 			string, float32, float64, bool, tuple.UUID, tuple.Versionstamp:
 		default:
-			return fmt.Errorf("bloom filter key: unencodable tuple element %v (type %T)", e, e)
+			return &RecordCoreArgumentError{Message: fmt.Sprintf("bloom filter key: unencodable tuple element %v (type %T)", e, e)}
 		}
 	}
 	return nil

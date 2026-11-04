@@ -3298,12 +3298,7 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 // PermutedMinMax BY_VALUE). TEXT, MULTIDIMENSIONAL, TIME_WINDOW_LEADERBOARD and
 // registered custom types store entries a value scan would misread.
 func valueScanCandidateIndexType(indexType string) bool {
-	switch indexType {
-	case recordlayer.IndexTypeValue, recordlayer.IndexTypeVersion, recordlayer.IndexTypeRank,
-		recordlayer.IndexTypePermutedMin, recordlayer.IndexTypePermutedMax:
-		return true
-	}
-	return false
+	return recordlayer.IsValueScanCandidateIndexType(indexType)
 }
 
 // runFromResolutionPostPasses is the SINGLE ordered sequence of mandatory

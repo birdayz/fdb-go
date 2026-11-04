@@ -571,7 +571,7 @@ func reverseCacheEntry(rctx *FDBRecordContext) (int64, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	out, err := db.Run(ctx, func(child *FDBRecordContext) (any, error) { return create(child) })
+	out, err := rctx.runChild(ctx, func(child *FDBRecordContext) (any, error) { return create(child) })
 	if err != nil {
 		return 0, err
 	}

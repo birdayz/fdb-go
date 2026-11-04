@@ -59,6 +59,7 @@ class FollowupPlanTests(unittest.TestCase):
         self.assertEqual(p.scaling_stage_pairs(value), [[2, 2], [1, 1]])
         self.assertEqual(p.scaling_authorized_rows(value), 1425000)
         self.assertEqual(value["prior_rows_upper"] + p.scaling_authorized_rows(value), 9850000)
+        self.assertLess(value["prior_rows_upper"] + p.scaling_authorized_rows(value), 10000000)
         self.assertEqual(value, before)
         self.assertIs(value["foreground_only"], True)
         self.assertNotIn("managed_watch", value)
@@ -73,6 +74,30 @@ class FollowupPlanTests(unittest.TestCase):
         self.assertEqual(s.AUTHORIZED_ROWS, 2850000)
         self.assertEqual(value, before)
         self.assertNotIn("log_memory_gib", value)
+        for prior, total in ((0, 2850000), (7000000, 9850000), (7150000, 10000000)):
+            candidate = dict(value, prior_rows_upper=prior)
+            with self.subTest(prior=prior):
+                self.assertIs(s.validate_plan(candidate, check_assets=False), candidate)
+                self.assertEqual(p.scaling_authorized_rows(candidate), 2850000)
+                self.assertEqual(prior + p.scaling_authorized_rows(candidate), total)
+
+    def test_log_memory_cannot_restart_or_expand_to_the_three_stage_study(self):
+        for prior in (0, 7150000, 8425000, 9375000):
+            value = plan()
+            value.update(stages=[[1, 1], [2, 2], [3, 3]], prior_rows_upper=prior)
+            before = copy.deepcopy(value)
+            for name, validate in (("stages", p.scaling_stage_pairs), ("rows", p.scaling_authorized_rows),
+                                   ("plan", lambda candidate: s.validate_plan(candidate, check_assets=False))):
+                with self.subTest(prior=prior, validator=name), self.assertRaises(ValueError):
+                    validate(value)
+            self.assertEqual(value, before)
+
+    def test_row_ceiling_has_no_log_memory_exception_even_if_stage_admission_is_bypassed(self):
+        value = plan()
+        value.update(stages=[[1, 1], [2, 2], [3, 3]], prior_rows_upper=9375000)
+        with mock.patch.object(p, "scaling_stage_pairs", return_value=value["stages"]), \
+             self.assertRaisesRegex(ValueError, "scaling cumulative row ceiling"):
+            p.scaling_authorized_rows(value)
 
     def test_log_memory_flag_is_only_exact_integer_two_and_never_a_generic_memory_sweep(self):
         for bad in (None, True, False, 0, 1, 3, 2.0, "2", [], {}):

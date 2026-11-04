@@ -6,6 +6,7 @@ go_library(
         "bench.go",
         "bench_cpu.go",
         "collector.go",
+        "errors.go",
     ],
     importpath = "fdb.dev/layers/otel/collector",
     visibility = ["//visibility:public"],
@@ -23,8 +24,10 @@ go_test(
     name = "collector_test",
     timeout = "long",
     srcs = [
+        "bench_clock_test.go",
         "bench_test.go",
         "collector_test.go",
+        "errors_test.go",
     ],
     embed = [":collector"],
     deps = [

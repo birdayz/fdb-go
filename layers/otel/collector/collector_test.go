@@ -43,6 +43,15 @@ func mapLookup(env map[string]string) func(string) (string, bool) {
 	}
 }
 
+func unsetEnv(t *testing.T, name string) {
+	t.Helper()
+	// Setenv registers restoration of the inherited value (or absence).
+	t.Setenv(name, "")
+	if err := os.Unsetenv(name); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func requireErrContains(t *testing.T, err error, want string) {
 	t.Helper()
 	if err == nil {
@@ -577,9 +586,7 @@ func TestLoadPipelineConfigFromProcessEnvironment(t *testing.T) {
 		t.Setenv(k, v)
 	}
 	for _, unset := range []string{"FDB_TENANT", "FDB_BLOCK", "FDB_FLUSH", "OTLP_GRPC_ENDPOINT"} {
-		if _, ok := os.LookupEnv(unset); ok {
-			t.Skipf("%s is set in the test environment", unset)
-		}
+		unsetEnv(t, unset)
 	}
 	path := filepath.Join(t.TempDir(), "otelcol.yaml")
 	if err := os.WriteFile(path, []byte(fullCollectorYAML), 0o600); err != nil {
@@ -618,9 +625,7 @@ func TestLoadPipelineConfigFromProcessEnvironment(t *testing.T) {
 func TestParseExporterConfig(t *testing.T) {
 	t.Setenv("FDB_UNIT_CLUSTER", "/var/fdb/unit.cluster")
 	t.Setenv("FDB_UNIT_QUEUE", "777")
-	if _, ok := os.LookupEnv("FDB_UNIT_UNSET_TIMEOUT"); ok {
-		t.Skip("FDB_UNIT_UNSET_TIMEOUT is set in the test environment")
-	}
+	unsetEnv(t, "FDB_UNIT_UNSET_TIMEOUT")
 
 	cfg, err := ParseExporterConfig([]byte("cluster_file: /x.cluster\nrun: unit_run_01\n"))
 	if err != nil {
@@ -1220,6 +1225,9 @@ func TestQueueMinSizeAndFlushTimeout(t *testing.T) {
 		if calls := sink.snapshot(); !slices.Equal(calls[1].names, rangeNames("m", 4, 10)) {
 			t.Fatalf("min_size batch = %v", calls[1].names)
 		}
+		if err := flush(t, x); err != nil {
+			t.Fatal(err)
+		}
 		if st := x.Stats(); st.Flushes != 2 || st.QueuedSpans != 0 {
 			t.Fatalf("stats = %+v", st)
 		}
@@ -1244,6 +1252,9 @@ func TestQueueMinSizeAndFlushTimeout(t *testing.T) {
 			if !slices.Equal(c.names, rangeNames("f", round*4, 4)) {
 				t.Fatalf("round %d names = %v", round, c.names)
 			}
+		}
+		if err := flush(t, x); err != nil {
+			t.Fatal(err)
 		}
 		if st := x.Stats(); st.Flushes != 2 || st.ExportedSpans != 8 {
 			t.Fatalf("stats = %+v", st)

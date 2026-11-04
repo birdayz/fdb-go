@@ -60,6 +60,10 @@ var logAttributeScopes = []string{"resource", "scope", LogScopeRecord, LogScopeI
 // LogRecord is one OTLP log/event with its resource and scope provenance.
 // EffectiveTime and TimeSource are assigned at ingestion: event time, else
 // observed time, else receiver time; Timestamp keeps the original value.
+// For records converted from OTLP or read from storage, the retained OTLP
+// envelope is authoritative; these exported fields are detached projections.
+// EventID remains editable receiver metadata. Construct a new LogRecord to
+// export edits to the projections instead of re-exporting the original.
 type LogRecord struct {
 	EventID                string               `json:"event_id"`
 	Timestamp              int64                `json:"time_unix_nano"`
@@ -81,6 +85,18 @@ type LogRecord struct {
 	Attributes             []*commonpb.KeyValue `json:"attributes,omitempty"`
 	EffectiveTime          int64                `json:"effective_time_unix_nano"`
 	TimeSource             string               `json:"time_source"`
+	original               *logspb.ResourceLogs
+}
+
+// OTLP returns a detached single-log envelope, preserving all protobuf fields
+// for converted or stored records. For a constructed LogRecord it builds the
+// equivalent envelope and validates the hex encoding of its identities.
+func (l LogRecord) OTLP() (*logspb.ResourceLogs, error) {
+	rl, err := toResourceLogs(l)
+	if err != nil {
+		return nil, err
+	}
+	return proto.Clone(rl).(*logspb.ResourceLogs), nil
 }
 
 // LogMatch is one verified log witness from a log equality posting.
@@ -160,6 +176,9 @@ func nonNilKeyValues(kvs []*commonpb.KeyValue) []*commonpb.KeyValue {
 
 // toResourceLogs is the stored single-record OTLP form of l.
 func toResourceLogs(l LogRecord) (*logspb.ResourceLogs, error) {
+	if l.original != nil {
+		return l.original, nil
+	}
 	rec := &logspb.LogRecord{
 		TimeUnixNano:           uint64(l.Timestamp),
 		ObservedTimeUnixNano:   uint64(l.ObservedTimestamp),
@@ -195,47 +214,61 @@ func toResourceLogs(l LogRecord) (*logspb.ResourceLogs, error) {
 
 // fromResourceLogs restores a stored record; it rejects any other shape.
 func fromResourceLogs(eventID string, effective int64, source string, rl *logspb.ResourceLogs) (LogRecord, error) {
-	if len(rl.GetScopeLogs()) != 1 || len(rl.ScopeLogs[0].GetLogRecords()) != 1 {
+	if len(rl.GetScopeLogs()) != 1 || len(rl.ScopeLogs[0].GetLogRecords()) != 1 || rl.ScopeLogs[0].LogRecords[0] == nil {
 		return LogRecord{}, fail("corruption", "log decode", "expected one stored log record")
 	}
-	sl := rl.ScopeLogs[0]
-	rec := sl.LogRecords[0]
-	if rec.TimeUnixNano > math.MaxInt64 || rec.ObservedTimeUnixNano > math.MaxInt64 {
+	l := projectLog(rl)
+	if l.Timestamp < 0 || l.ObservedTimestamp < 0 {
 		return LogRecord{}, fail("corruption", "log decode", "stored timestamp exceeds int64")
 	}
-	l := LogRecord{
-		EventID:                eventID,
-		Timestamp:              int64(rec.TimeUnixNano),
-		ObservedTimestamp:      int64(rec.ObservedTimeUnixNano),
+	l.EventID, l.EffectiveTime, l.TimeSource = eventID, effective, source
+	if l.TraceID != "" && !validIdentity(l.TraceID, 16) {
+		return LogRecord{}, fail("corruption", "log decode", "invalid stored trace identity")
+	}
+	if l.SpanID != "" && (l.TraceID == "" || !validIdentity(l.SpanID, 8)) {
+		return LogRecord{}, fail("corruption", "log decode", "invalid stored span identity")
+	}
+	return l, nil
+}
+
+// projectLog keeps mutable query projections separate from the retained source.
+// rl is an owned, single-log envelope and is never mutated after this call.
+func projectLog(rl *logspb.ResourceLogs) LogRecord {
+	projection := proto.Clone(rl).(*logspb.ResourceLogs)
+	sl := projection.ScopeLogs[0]
+	rec := sl.LogRecords[0]
+	id := func(b []byte) string {
+		if len(b) == 0 || zeroID(b) {
+			return ""
+		}
+		return hex.EncodeToString(b)
+	}
+	clampTime := func(t uint64) int64 {
+		if t > math.MaxInt64 {
+			return -1 // rejected at admission rather than silently clamped
+		}
+		return int64(t)
+	}
+	return LogRecord{
+		original:               rl,
+		Timestamp:              clampTime(rec.TimeUnixNano),
+		ObservedTimestamp:      clampTime(rec.ObservedTimeUnixNano),
+		TraceID:                id(rec.TraceId),
+		SpanID:                 id(rec.SpanId),
 		Flags:                  rec.Flags,
 		SeverityText:           rec.SeverityText,
 		SeverityNumber:         int32(rec.SeverityNumber),
 		EventName:              rec.EventName,
 		Body:                   rec.Body,
 		DroppedAttributesCount: rec.DroppedAttributesCount,
-		ResourceSchemaURL:      rl.SchemaUrl,
-		ResourceAttributes:     rl.GetResource().GetAttributes(),
+		ResourceSchemaURL:      projection.SchemaUrl,
+		ResourceAttributes:     projection.GetResource().GetAttributes(),
 		ScopeName:              sl.GetScope().GetName(),
 		ScopeVersion:           sl.GetScope().GetVersion(),
 		ScopeSchemaURL:         sl.SchemaUrl,
 		ScopeAttributes:        sl.GetScope().GetAttributes(),
 		Attributes:             rec.Attributes,
-		EffectiveTime:          effective,
-		TimeSource:             source,
 	}
-	if len(rec.TraceId) > 0 {
-		l.TraceID = hex.EncodeToString(rec.TraceId)
-		if !validIdentity(l.TraceID, 16) {
-			return LogRecord{}, fail("corruption", "log decode", "invalid stored trace identity")
-		}
-	}
-	if len(rec.SpanId) > 0 {
-		l.SpanID = hex.EncodeToString(rec.SpanId)
-		if l.TraceID == "" || !validIdentity(l.SpanID, 8) {
-			return LogRecord{}, fail("corruption", "log decode", "invalid stored span identity")
-		}
-	}
-	return l, nil
 }
 
 // logIndexed is the canonical indexed attribute list of one log, in posting
@@ -413,6 +446,11 @@ func decodeLogRows(space subspace.Subspace, eventID string, rows []fdb.KeyValue)
 // prepareLog validates and encodes one log; receiver supplies the fallback time.
 func (b *FDBBackend) prepareLog(l LogRecord, receiver int64) (preparedLog, error) {
 	const op = "log admission"
+	if l.original != nil {
+		eventID := l.EventID
+		l = projectLog(l.original)
+		l.EventID = eventID
+	}
 	if l.Timestamp < 0 || l.ObservedTimestamp < 0 {
 		return preparedLog{}, fail("admission", op, "timestamps must not be negative")
 	}
@@ -655,47 +693,24 @@ func (e *Exporter) ConsumeLogs(ctx context.Context, logs []*logspb.ResourceLogs)
 	return err
 }
 
-// LogRecordsFromResourceLogs flattens OTLP logs; empty or all-zero trace and
-// span IDs mean uncorrelated. OTLP carries no stable event ID, so none is set.
+// LogRecordsFromResourceLogs retains an owned single-log OTLP envelope for
+// each record and exposes detached projections. Empty or all-zero trace and
+// span IDs mean uncorrelated in indexes, without changing the source bytes.
+// OTLP carries no stable event ID, so none is set.
 func LogRecordsFromResourceLogs(in []*logspb.ResourceLogs) []LogRecord {
 	var out []LogRecord
-	id := func(b []byte) string {
-		if len(b) == 0 || zeroID(b) {
-			return ""
-		}
-		return hex.EncodeToString(b)
-	}
-	clampTime := func(t uint64) int64 {
-		if t > math.MaxInt64 {
-			return -1 // rejected at admission rather than silently clamped
-		}
-		return int64(t)
-	}
 	for _, rl := range in {
 		for _, sl := range rl.GetScopeLogs() {
 			for _, r := range sl.GetLogRecords() {
 				if r == nil {
 					continue
 				}
-				out = append(out, LogRecord{
-					Timestamp:              clampTime(r.TimeUnixNano),
-					ObservedTimestamp:      clampTime(r.ObservedTimeUnixNano),
-					TraceID:                id(r.TraceId),
-					SpanID:                 id(r.SpanId),
-					Flags:                  r.Flags,
-					SeverityText:           r.SeverityText,
-					SeverityNumber:         int32(r.SeverityNumber),
-					EventName:              r.EventName,
-					Body:                   r.Body,
-					DroppedAttributesCount: r.DroppedAttributesCount,
-					ResourceSchemaURL:      rl.SchemaUrl,
-					ResourceAttributes:     rl.GetResource().GetAttributes(),
-					ScopeName:              sl.GetScope().GetName(),
-					ScopeVersion:           sl.GetScope().GetVersion(),
-					ScopeSchemaURL:         sl.SchemaUrl,
-					ScopeAttributes:        sl.GetScope().GetAttributes(),
-					Attributes:             r.Attributes,
-				})
+				// Copy only this record's ancestors, not sibling scopes or logs.
+				scope := &logspb.ScopeLogs{Scope: sl.Scope, SchemaUrl: sl.SchemaUrl, LogRecords: []*logspb.LogRecord{r}}
+				scope.ProtoReflect().SetUnknown(sl.ProtoReflect().GetUnknown())
+				envelope := &logspb.ResourceLogs{Resource: rl.Resource, SchemaUrl: rl.SchemaUrl, ScopeLogs: []*logspb.ScopeLogs{scope}}
+				envelope.ProtoReflect().SetUnknown(rl.ProtoReflect().GetUnknown())
+				out = append(out, projectLog(proto.Clone(envelope).(*logspb.ResourceLogs)))
 			}
 		}
 	}

@@ -1507,7 +1507,7 @@ type indexFetchCursor struct {
 // charged the loaded bytes as Java's fetchIndexRecords charges its ExecuteState.
 func newIndexFetchCursor(inner recordlayer.RecordCursor[*recordlayer.IndexEntry], store *recordlayer.FDBRecordStore, scanState *recordlayer.ScanLimiterState) *indexFetchCursor {
 	c := &indexFetchCursor{inner: inner, store: store, scanState: scanState}
-	c.pipeline = recordlayer.MapPipelined(inner, c.load, recordlayer.DefaultPipelineSize)
+	c.pipeline = recordlayer.MapPipelined(inner, c.load, store.GetPipelineSize(recordlayer.PipelineOperationIndexToRecord))
 	return c
 }
 
@@ -2107,7 +2107,7 @@ type fetchFullRecordCursor struct {
 
 func newFetchFullRecordCursor(inner recordlayer.RecordCursor[QueryResult], store *recordlayer.FDBRecordStore, scanState *recordlayer.ScanLimiterState) *fetchFullRecordCursor {
 	c := &fetchFullRecordCursor{store: store, scanState: scanState}
-	c.pipeline = recordlayer.MapPipelined(inner, c.load, recordlayer.DefaultPipelineSize)
+	c.pipeline = recordlayer.MapPipelined(inner, c.load, store.GetPipelineSize(recordlayer.PipelineOperationIndexToRecord))
 	return c
 }
 

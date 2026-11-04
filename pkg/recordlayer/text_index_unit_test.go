@@ -17,22 +17,6 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// packVarInt / unpackVarInt drive a single varint through the LIVE stream codec
-// (serializeVarInt / deserializeVarInt, the ones the bunched-map serializer uses
-// at every call site). They live here rather than beside the codec because
-// nothing in production encodes one varint in isolation; a helper of this shape
-// in a production file reads as part of the codec's surface when it is only ever
-// a test's convenience.
-func packVarInt(val int) []byte {
-	buf := &bytes.Buffer{}
-	serializeVarInt(buf, val)
-	return buf.Bytes()
-}
-
-func unpackVarInt(data []byte) (int, error) {
-	return deserializeVarInt(bytes.NewReader(data))
-}
-
 // ---------------------------------------------------------------------------
 // VarInt encoding roundtrip
 // ---------------------------------------------------------------------------
@@ -58,10 +42,13 @@ func TestVarIntRoundtrip(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			encoded := packVarInt(tc.val)
-			decoded, err := unpackVarInt(encoded)
+			encoded := appendVarInt(nil, tc.val)
+			decoded, next, canonical, err := readVarInt(encoded, 0)
 			if err != nil {
-				t.Fatalf("unpackVarInt(%x): %v", encoded, err)
+				t.Fatalf("readVarInt(%x): %v", encoded, err)
+			}
+			if next != len(encoded) || !canonical {
+				t.Fatalf("readVarInt(%x): next=%d, canonical=%v", encoded, next, canonical)
 			}
 			if decoded != tc.val {
 				t.Fatalf("roundtrip: got %d, want %d", decoded, tc.val)
@@ -101,7 +88,7 @@ func TestVarIntSize(t *testing.T) {
 				t.Fatalf("varIntSize(%d): got %d, want %d", tc.val, gotSize, tc.wantSize)
 			}
 			// Cross-check: actual encoded length must match.
-			encoded := packVarInt(tc.val)
+			encoded := appendVarInt(nil, tc.val)
 			if len(encoded) != tc.wantSize {
 				t.Fatalf("actual encoded len(%d) = %d, varIntSize = %d", tc.val, len(encoded), tc.wantSize)
 			}
@@ -136,12 +123,18 @@ func TestPositionListRoundtrip(t *testing.T) {
 			if err != nil {
 				t.Fatalf("positionListSize: %v", err)
 			}
-			var buf bytes.Buffer
-			serializePositionList(&buf, tc.list, size)
-			reader := bytes.NewReader(buf.Bytes())
-			got, err := deserializePositionList(reader)
+			encoded := appendPositionList(nil, tc.list, size)
+			got := []int{}
+			next, count, canonical, err := walkPositionList(encoded, 0, &got)
 			if err != nil {
-				t.Fatalf("deserializePositionList: %v", err)
+				t.Fatalf("walkPositionList: %v", err)
+			}
+			if next != len(encoded) || count != len(tc.list) || !canonical {
+				t.Fatalf("walkPositionList: next=%d, count=%d, canonical=%v", next, count, canonical)
+			}
+			skipNext, skipCount, skipCanonical, err := walkPositionList(encoded, 0, nil)
+			if err != nil || skipNext != next || skipCount != count || skipCanonical != canonical {
+				t.Fatalf("walkPositionList without output: next=%d, count=%d, canonical=%v, err=%v", skipNext, skipCount, skipCanonical, err)
 			}
 			// Normalize nil vs empty.
 			if len(tc.list) == 0 {
@@ -247,25 +240,27 @@ func TestSerializeEntryRoundtrip(t *testing.T) {
 			}
 			// SerializeEntry format: varInt(keyLen) + keyBytes + positionList
 			// Verify we can parse it back.
-			reader := bytes.NewReader(data)
-			keyLen, err := deserializeVarInt(reader)
+			keyLen, pos, canonical, err := readVarInt(data, 0)
 			if err != nil {
 				t.Fatalf("reading key length: %v", err)
 			}
-			keyBytes := make([]byte, keyLen)
-			if _, err := reader.Read(keyBytes); err != nil {
-				t.Fatalf("reading key bytes: %v", err)
+			if !canonical || keyLen < 0 || keyLen > len(data)-pos {
+				t.Fatalf("invalid key length %d at %d (canonical=%v)", keyLen, pos, canonical)
 			}
-			parsedKey, err := tuple.Unpack(keyBytes)
+			parsedKey, err := tuple.Unpack(data[pos : pos+keyLen])
 			if err != nil {
 				t.Fatalf("unpacking key: %v", err)
 			}
 			if !reflect.DeepEqual(parsedKey, tc.key) {
 				t.Fatalf("key mismatch: got %v, want %v", parsedKey, tc.key)
 			}
-			positions, err := deserializePositionList(reader)
+			positions := []int{}
+			next, count, canonical, err := walkPositionList(data, pos+keyLen, &positions)
 			if err != nil {
 				t.Fatalf("reading positions: %v", err)
+			}
+			if next != len(data) || count != len(tc.positions) || !canonical {
+				t.Fatalf("reading positions: next=%d, count=%d, canonical=%v", next, count, canonical)
 			}
 			if len(tc.positions) == 0 {
 				if len(positions) != 0 {
@@ -1117,9 +1112,13 @@ func TestVarIntEncodingBytes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("%d", tc.val), func(t *testing.T) {
 			t.Parallel()
-			got := packVarInt(tc.val)
+			got := appendVarInt(nil, tc.val)
 			if !bytes.Equal(got, tc.want) {
-				t.Fatalf("packVarInt(%d): got %x, want %x", tc.val, got, tc.want)
+				t.Fatalf("appendVarInt(%d): got %x, want %x", tc.val, got, tc.want)
+			}
+			decoded, next, canonical, err := readVarInt(tc.want, 0)
+			if err != nil || decoded != tc.val || next != len(tc.want) || !canonical {
+				t.Fatalf("readVarInt(%x): value=%d, next=%d, canonical=%v, err=%v", tc.want, decoded, next, canonical, err)
 			}
 		})
 	}

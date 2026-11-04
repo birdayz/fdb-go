@@ -163,7 +163,7 @@ func (c *probableIntersectionCursor[T]) OnNext(ctx context.Context) (RecordCurso
 	}
 	reason := strongestNoNextReason(states)
 	if reason == SourceExhausted && !cont.IsEnd() {
-		return RecordCursorResult[T]{}, fmt.Errorf("probable intersection exhausted with a non-end continuation")
+		return RecordCursorResult[T]{}, &RecordCoreError{Message: "probable intersection exhausted with a non-end continuation"}
 	}
 	res := NewResultNoNext[T](reason, cont)
 	c.lastNoNext = &res

@@ -37,23 +37,24 @@ type Backend interface {
 }
 
 type FDBBackend struct {
-	cfg           Config
-	raw           fdb.Database
-	db            *recordlayer.FDBDatabase
-	keys          runKeys
-	store         subspace.Subspace
-	md            *recordlayer.RecordMetaData
-	idx           *recordlayer.Index
-	serializer    *recordlayer.TransformedRecordSerializer
-	lastWork      QueryResult
-	auditPageHook func(context.Context, *recordlayer.FDBRecordContext, int) error
-	ingestProbe   func(ingestEvent)
-	ingestWait    func(context.Context, time.Duration) error
-	ingestClock   func() time.Time
-	writers       messageWriters
-	inflight      sync.Map // messageDigest -> *inflightMessage
-	queue         messageQueue
-	markers       markerCache
+	cfg            Config
+	raw            fdb.Database
+	db             *recordlayer.FDBDatabase
+	keys           runKeys
+	store          subspace.Subspace
+	md             *recordlayer.RecordMetaData
+	idx            *recordlayer.Index
+	serializer     *recordlayer.TransformedRecordSerializer
+	lastWork       QueryResult
+	auditPageHook  func(context.Context, *recordlayer.FDBRecordContext, int) error
+	ingestProbe    func(ingestEvent)
+	ingestWait     func(context.Context, time.Duration) error
+	ingestClock    func() time.Time
+	messageTxnHook func(string, *recordlayer.FDBRecordStore) error
+	writers        messageWriters
+	inflight       sync.Map // messageDigest -> *inflightMessage
+	queue          messageQueue
+	markers        markerCache
 }
 
 func OpenFDB(c Config, cluster string) (*FDBBackend, error) {
@@ -61,6 +62,10 @@ func OpenFDB(c Config, cluster string) (*FDBBackend, error) {
 }
 
 func OpenFDBContext(ctx context.Context, c Config, cluster string) (*FDBBackend, error) {
+	return openFDBContext(ctx, c, cluster, recordlayer.NewFDBDatabase)
+}
+
+func openFDBContext(ctx context.Context, c Config, cluster string, newDatabase func(fdb.Database) *recordlayer.FDBDatabase) (*FDBBackend, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, wrap("canceled", "open FDB", err)
 	}
@@ -85,7 +90,7 @@ func OpenFDBContext(ctx context.Context, c Config, cluster string) (*FDBBackend,
 	if err != nil {
 		return nil, err
 	}
-	db := recordlayer.NewFDBDatabase(raw)
+	db := newDatabase(raw)
 	// An existing run keeps the key layout its manifest records; a fresh run
 	// uses directory-layer prefixes.
 	layout, found, err := storedKeyLayout(ctx, db, subspace.Sub(keyApplication, c.Run))
@@ -128,14 +133,19 @@ func (b *FDBBackend) LastQueryWork() QueryResult { return b.lastWork }
 // timeout runs from transaction creation (fdbclient/ReadYourWrites.actor.cpp:
 // 1510, 1576-1578, 2570-2576 at 7.3.77).
 func configureRecordTimeout(rc *recordlayer.FDBRecordContext) error {
-	options := rc.Transaction().Options()
-	if err := options.SetTimeout(txnTimeout(rc.Context()).Milliseconds()); err != nil {
-		return err
+	return rc.Configure(recordTransactionConfigurer(rc.Context()))
+}
+
+func recordTransactionConfigurer(ctx context.Context) recordlayer.TransactionConfigurer {
+	return func(options fdb.TransactionOptions) error {
+		if err := options.SetTimeout(txnTimeout(ctx).Milliseconds()); err != nil {
+			return err
+		}
+		if isExporterTxn(ctx) {
+			return options.SetRetryLimit(noRetryLimit)
+		}
+		return nil
 	}
-	if isExporterTxn(rc.Context()) {
-		return options.SetRetryLimit(noRetryLimit)
-	}
-	return nil
 }
 
 // configureStoreContext is configureRecordTimeout plus the benchmark's retry

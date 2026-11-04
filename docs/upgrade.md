@@ -56,6 +56,30 @@ layout. Do not “migrate” by editing only a header or reusing the old subspac
 The changelog also excludes stores written only by earlier pre-release Go builds;
 check the exact originating revision, not just whether it predates a tag.
 
+## Earlier Go KeySpace path prefixes
+
+Earlier `Path.ToSubspace()` encoded a path `(a, b)` as the nested tuple `((a, b))`;
+now it uses Java's flat `(a, b)` prefix. Record and index bytes are unchanged but
+live at a different address. There is **no automatic copy or prefix rewrite**.
+
+1. Back up and freeze old-layout writers. Retain the old binary for rollback.
+2. Use `path.LegacyNestedSubspace()` (and the same `.Sub(...)` suffixes, if any)
+   to explicitly open/export the populated old store with its matching metadata.
+3. Create/import a separately verified flat destination. Record Layer opens on
+   `path.ToSubspace()` serializably probe the old prefix and refuse with
+   `LegacyKeySpacePrefixError` while it contains data. Only after choosing the
+   destination deliberately, use `SetAllowLegacyKeySpaceCutover(true)` to permit
+   that import/open; this flag acknowledges the address choice, not data migration.
+4. Compare records, indexes and query results, switch all readers/writers together,
+   and retain the old prefix read-only through the rollback window before deleting it.
+
+An empty legacy probe conflicts with a concurrent old-prefix write if the new
+transaction also commits writes. It is not a permanent cross-transaction lock:
+old writers must remain frozen after cutover. Calling `subspace.FromBytes` or
+otherwise discarding the guarded path subspace also discards automatic probing;
+raw FDB consumers must select/check the old/new prefix explicitly. Fresh stores
+continue using Java-flat keys; do not silently revert the default to the old form.
+
 ## Sharing a Java store / changing store format
 
 Go's default target is **format 14**, while Java 4.14.2.0 defaults to **7**.

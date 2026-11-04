@@ -317,7 +317,7 @@ func (store *FDBRecordStore) scanIndexRecordsByType(index *Index, scanType Index
 	}
 	entries := store.ScanIndexByType(index, scanType, scanRange, continuation, props)
 	loader := &indexRecordLoader{store: store, scanState: props.ExecuteProperties.ScanState, orphan: orphan}
-	cursor := MapPipelined(entries, loader.load, DefaultPipelineSize)
+	cursor := MapPipelined(entries, loader.load, store.GetPipelineSize(PipelineOperationIndexToRecord))
 	if orphan == IndexOrphanSkip {
 		cursor = FilterCursor(cursor, func(record *FDBIndexedRecord) bool { return record != nil })
 	}

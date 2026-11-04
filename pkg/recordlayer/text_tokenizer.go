@@ -298,33 +298,6 @@ func hasMark(s string) bool {
 	return false
 }
 
-// wordSegments splits text into word segments using UAX #29 Unicode Text Segmentation.
-// Java's BreakIterator.getWordInstance(Locale.ROOT) differs for unspaced scripts
-// and some connectors (pinned in conformance/text_index_conformance_test.go).
-//
-// Uses github.com/rivo/uniseg which implements the full UAX #29 word boundary algorithm,
-// including proper handling of:
-//   - MidLetter/MidNumLet (apostrophe, period between letters/digits)
-//   - ExtendNumLet (underscore joining words)
-//   - Extend (combining marks don't break words)
-//   - CJK ideographs (each is its own word segment)
-func wordSegments(text string) []string {
-	if len(text) == 0 {
-		return nil
-	}
-	var segments []string
-	remaining := text
-	state := -1
-	for len(remaining) > 0 {
-		var word string
-		word, remaining, state = uniseg.FirstWordInString(remaining, state)
-		if word != "" {
-			segments = append(segments, word)
-		}
-	}
-	return segments
-}
-
 // TextTokenizerFactory creates instances of a TextTokenizer.
 // Matches Java's TextTokenizerFactory.
 type TextTokenizerFactory interface {

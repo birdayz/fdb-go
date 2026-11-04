@@ -25,11 +25,38 @@ import (
 type textPrefetchRun struct {
 	commit batchConflictCommit
 	// reads is the number of storage reads sent (GetKeyValues and GetValue);
-	// roundTrips the number of them sent while no other was outstanding, the
-	// read round trips the transaction waited for one after another; answered
-	// the replies matched to them by reply token.
+	// roundTrips counts sends while no reply is outstanding: a wire-overlap
+	// diagnostic, not the number of dependency waves. answered counts the
+	// replies matched to those reads by reply token.
 	reads, roundTrips, answered int
 	elapsed                     time.Duration
+	prefetchGate                *snapshotReadCounter
+}
+
+// Gate only the TEXT prefetch's first-wave ranges, not normal maintenance or
+// store-open reads. Fast server replies cannot release a wait before all sends.
+type gatedTextPrefetchTransaction struct {
+	fdb.WritableTransaction
+	indexPrefix []byte
+	counter     *snapshotReadCounter
+}
+
+func (t *gatedTextPrefetchTransaction) Snapshot() fdb.ReadTransaction {
+	return &gatedTextPrefetchSnapshot{ReadTransaction: t.WritableTransaction.Snapshot(), indexPrefix: t.indexPrefix, counter: t.counter}
+}
+
+type gatedTextPrefetchSnapshot struct {
+	fdb.ReadTransaction
+	indexPrefix []byte
+	counter     *snapshotReadCounter
+}
+
+func (s *gatedTextPrefetchSnapshot) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResult {
+	begin, _ := r.FDBRangeKeySelectors()
+	if options.Limit > 0 && bytes.HasPrefix(begin.FDBKeySelector().Key.FDBKey(), s.indexPrefix) {
+		return (&inFlightSnapshot{ReadTransaction: s.ReadTransaction, c: s.counter}).GetRange(r, options)
+	}
+	return s.ReadTransaction.GetRange(r, options)
 }
 
 func captureTextPrefetchRun(root subspace.Subspace, run func() error) textPrefetchRun {
@@ -37,6 +64,7 @@ func captureTextPrefetchRun(root subspace.Subspace, run func() error) textPrefet
 	defer batchConflictCaptureMu.Unlock()
 	var log bytes.Buffer
 	stop := transport.CaptureWireLog(&log)
+	defer stop()
 	start := time.Now()
 	err := run()
 	elapsed := time.Since(start)
@@ -184,9 +212,14 @@ var _ = Describe("Batch TEXT bunch prefetch", func() {
 			return sequential.save(s, b, records)
 		}},
 	}
-	runMode := func(md *RecordMetaData, root subspace.Subspace, m mode, records []proto.Message) textPrefetchRun {
-		return captureTextPrefetchRun(root, func() error {
+	runMode := func(md *RecordMetaData, root subspace.Subspace, m mode, records []proto.Message, gateSize ...int) textPrefetchRun {
+		var counter *snapshotReadCounter
+		captured := captureTextPrefetchRun(root, func() error {
 			_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+				if len(gateSize) > 0 && gateSize[0] > 0 {
+					counter = newSnapshotReadCounter(gateSize[0])
+					rc.tx = &gatedTextPrefetchTransaction{WritableTransaction: rc.tx, indexPrefix: root.Sub(IndexKey).Bytes(), counter: counter}
+				}
 				b := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root)
 				s, err := b.CreateOrOpen()
 				if err != nil {
@@ -196,6 +229,8 @@ var _ = Describe("Batch TEXT bunch prefetch", func() {
 			})
 			return err
 		})
+		captured.prefetchGate = counter
+		return captured
 	}
 
 	It("commits what saving the records one after another commits", func() {
@@ -237,7 +272,7 @@ var _ = Describe("Batch TEXT bunch prefetch", func() {
 			restore(root, initial)
 			got := runMode(md, root, m, batch)
 			rows := dump(root)
-			fmt.Fprintf(GinkgoWriter, "%s: storage reads=%d read round trips=%d mutations=%d\n", m.name, got.reads, got.roundTrips, len(got.commit.transaction.Mutations))
+			fmt.Fprintf(GinkgoWriter, "%s: storage reads=%d wire idle sends=%d mutations=%d\n", m.name, got.reads, got.roundTrips, len(got.commit.transaction.Mutations))
 			Expect(got.answered).To(Equal(got.reads), "every storage read's reply is matched")
 			if i == 0 {
 				want, wantRows = got, rows
@@ -252,10 +287,9 @@ var _ = Describe("Batch TEXT bunch prefetch", func() {
 
 	// The GenAI exporter's message transaction: 128 new records of 57 tokens,
 	// 20 of them in every record, into an index already holding 256 records.
-	// Storage read round trips are counted on the wire; with the prefetch they
-	// are the store open, the record loads and the prefetch, whatever the
-	// batch size.
-	It("reads a batch's TEXT bunches in one round trip", func() {
+	// Gate the first-wave responses to prove send-before-wait independently of
+	// server speed; uncontrolled wire overlap remains diagnostic only.
+	It("issues every token-map prefetch before completing the first wait", func() {
 		b := baseBuilder()
 		b.AddIndex("Customer", NewTextIndex("prefetch_text", Field("name")))
 		md, err := b.Build()
@@ -286,16 +320,37 @@ var _ = Describe("Batch TEXT bunch prefetch", func() {
 			Expect(err).NotTo(HaveOccurred())
 		}
 		initial := dump(root)
+		tokens := map[string]struct{}{}
+		for _, record := range batch {
+			for _, token := range strings.Fields(record.(*demopb.Customer).GetName()) {
+				tokens[token] = struct{}{}
+			}
+		}
+		Expect(len(tokens)).To(BeNumerically(">", DefaultPipelineSize))
 		var want textPrefetchRun
 		for i, m := range append([]mode{sequential}, modes...) {
 			var runs []textPrefetchRun
 			for range 3 {
 				restore(root, initial)
-				runs = append(runs, runMode(md, root, m, batch))
+				gateSize := 0
+				if m.name != sequential.name && m.name != "batch without prefetch" {
+					gateSize = len(tokens)
+				}
+				run := runMode(md, root, m, batch, gateSize)
+				Expect(run.answered).To(Equal(run.reads), m.name)
+				if gateSize > 0 {
+					Expect(run.prefetchGate).NotTo(BeNil(), m.name)
+					Expect(run.prefetchGate.issued).To(Equal(gateSize), m.name)
+					Expect(run.prefetchGate.completing).To(Equal(gateSize), m.name)
+					Expect(run.prefetchGate.maxInFlight).To(Equal(gateSize), m.name)
+					Expect(run.prefetchGate.inFlight).To(BeZero(), m.name)
+					Expect(run.prefetchGate.gateTimedOut).To(BeFalse(), m.name)
+				}
+				runs = append(runs, run)
 			}
 			slices.SortFunc(runs, func(a, b textPrefetchRun) int { return int(a.elapsed - b.elapsed) })
 			got := runs[1]
-			fmt.Printf("text batch prefetch: mode=%q records=%d tokens_per_record=57 storage_reads=%d read_round_trips=%d median_wall=%s\n",
+			fmt.Printf("text batch prefetch: mode=%q records=%d tokens_per_record=57 storage_reads=%d wire_idle_sends=%d median_wall=%s\n",
 				m.name, len(batch), got.reads, got.roundTrips, got.elapsed)
 			if i == 0 {
 				want = got
@@ -304,12 +359,7 @@ var _ = Describe("Batch TEXT bunch prefetch", func() {
 			Expect(got.commit.transaction.Mutations).To(Equal(want.commit.transaction.Mutations), m.name)
 			Expect(got.commit.transaction.ReadConflictRanges).To(Equal(want.commit.transaction.ReadConflictRanges), m.name)
 			Expect(got.commit.transaction.WriteConflictRanges).To(Equal(want.commit.transaction.WriteConflictRanges), m.name)
-			// The store open, the record loads and the prefetch; against a
-			// local server a burst of reads can be answered before it is all
-			// sent and count twice.
-			if m.name != "batch without prefetch" {
-				Expect(got.roundTrips*8).To(BeNumerically("<", want.roundTrips), m.name)
-			}
+			fmt.Fprintf(GinkgoWriter, "wire-overlap counts (diagnostic): mode=%q sequential=%d observed=%d\n", m.name, want.roundTrips, got.roundTrips)
 		}
 	})
 })

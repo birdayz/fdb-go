@@ -393,6 +393,7 @@ func TestLogsRealFDB(t *testing.T) {
 	t.Run("admission_atomic_and_isolation", func(t *testing.T) { testLogsAdmissionIsolation(t, cluster) })
 	t.Run("budget", func(t *testing.T) { testLogsBudget(t, cluster) })
 	t.Run("batching_and_otlp", func(t *testing.T) { testLogsBatching(t, cluster) })
+	t.Run("otlp_fidelity", func(t *testing.T) { testLogsFidelityRealFDB(t, cluster) })
 }
 
 func lgCensus(t *testing.T, ctx context.Context, e *Exporter, name string) int64 {

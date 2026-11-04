@@ -522,8 +522,13 @@ class ProvisionTest(unittest.TestCase):
         roles = ('node1', 'node2', 'node3', 'client1', 'client2', 'client3')
         self.assertEqual(p._roles(self.plan), roles)
         self.assertEqual(p._names(self.plan)['server'], {self.plan['prefix']+'-'+role for role in roles})
-        for prior in (0, 7000000, 7150000):
-            p.validate_plan(dict(self.plan, prior_rows_upper=prior), self.out)
+        import policy
+        for prior, total in ((0, 2850000), (7000000, 9850000), (7150000, 10000000)):
+            candidate = dict(self.plan, prior_rows_upper=prior)
+            p.validate_plan(candidate, self.out)
+            self.assertEqual(p._validate_scaling(candidate), [[1, 1], [2, 2], [3, 3]])
+            self.assertEqual(policy.scaling_authorized_rows(candidate), 2850000)
+            self.assertEqual(prior + policy.scaling_authorized_rows(candidate), total)
         good = copy.deepcopy(self.plan)
         for key in ('count', 'measured_count', 'measured_seconds', 'batch', 'workers', 'gomaxprocs',
                     'storage_process_count', 'storage_max_outstanding'):
@@ -818,6 +823,7 @@ class ProvisionTest(unittest.TestCase):
         self.assertEqual(policy.scaling_stage_pairs(self.plan), [[2, 2], [1, 1]])
         self.assertEqual(policy.scaling_authorized_rows(self.plan), 1425000)
         self.assertEqual(self.plan['prior_rows_upper']+policy.scaling_authorized_rows(self.plan), 9850000)
+        self.assertLess(self.plan['prior_rows_upper']+policy.scaling_authorized_rows(self.plan), 10000000)
         good = copy.deepcopy(self.plan)
         for value in (None, True, False, 0, 1, 3, 2.0, '2', [], {}):
             with self.subTest(log_memory_gib=value), self.assertRaises(p.ProvisionError):
@@ -826,7 +832,7 @@ class ProvisionTest(unittest.TestCase):
                        [[2, 2], [1, True]], [[2.0, 2], [1, 1]], [(2, 2), [1, 1]], ((2, 2), (1, 1))):
             with self.subTest(stages=stages), self.assertRaises(p.ProvisionError):
                 p.validate_plan(dict(good, stages=stages), self.out)
-        for prior in (None, True, -1, 0, 7000000, 8424999, 8425001, 8575001, 10000000, 8425000.0, '8425000'):
+        for prior in (None, True, -1, 0, 7000000, 8424999, 8425001, 8575001, 9375000, 10000000, 8425000.0, '8425000'):
             with self.subTest(prior=prior), self.assertRaises(p.ProvisionError):
                 p.validate_plan(dict(good, prior_rows_upper=prior), self.out)
         for foreground in (None, False, 1, 1.0, 'true'):
@@ -846,6 +852,28 @@ class ProvisionTest(unittest.TestCase):
         for hosts, armid in ((3, 'scaling-3'), (2, 'scaling-1'), (1, 'scaling-2')):
             with self.subTest(hosts=hosts, armid=armid), self.assertRaises(p.ProvisionError):
                 p.render_cluster(good, nodes, hosts, armid)
+        self.assertFalse(self.cloud.calls)
+        self.assertFalse(self.out.exists())
+
+    def test_scaling_log_memory_cannot_restart_or_expand_to_the_three_stage_study(self):
+        self.scaling_log_plan()
+        original = copy.deepcopy(self.plan)
+        for prior in (0, 7150000, 8425000, 9375000):
+            candidate = dict(self.plan, stages=[[1, 1], [2, 2], [3, 3]], prior_rows_upper=prior)
+            with self.subTest(prior=prior), self.assertRaises(p.ProvisionError):
+                p.validate_plan(candidate, self.out)
+        self.assertEqual(self.plan, original)
+        self.assertFalse(self.cloud.calls)
+        self.assertFalse(self.out.exists())
+
+    def test_scaling_row_ceiling_has_no_log_memory_exception_even_if_policy_admission_is_bypassed(self):
+        self.scaling_log_plan()
+        import policy
+        candidate = dict(self.plan, stages=[[1, 1], [2, 2], [3, 3]], prior_rows_upper=9375000)
+        with mock.patch.object(policy, 'scaling_stage_pairs', return_value=candidate['stages']), \
+             mock.patch.object(policy, 'scaling_authorized_rows', return_value=2850000), \
+             self.assertRaisesRegex(p.ProvisionError, 'scaling cumulative row authorization exceeds ceiling'):
+            p.validate_plan(candidate, self.out)
         self.assertFalse(self.cloud.calls)
         self.assertFalse(self.out.exists())
 

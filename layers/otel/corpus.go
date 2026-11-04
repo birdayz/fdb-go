@@ -48,7 +48,7 @@ type Config struct {
 	MaxBytes           int64  `json:"max_bytes"`
 	HashBytes          int    `json:"hash_bytes"`
 	Order              string `json:"order"`
-	// Messages is the GenAI message storage layout: "", "deltas" or "fulltext".
+	// Messages is the GenAI message storage layout: "", "deltas" or "fulltext_v2".
 	Messages string `json:"messages,omitempty"`
 	// KeyLayout is how an FDB run's keys are prefixed: "" (the run's tuple
 	// prefix) or "directory_v1" (directory-layer prefixes, keyspace.go). The
@@ -93,7 +93,7 @@ func (c Config) Validate() error {
 			return fail("config", "message layout", "message records require the FDB backend")
 		}
 	default:
-		return fail("config", "message layout", "message layout must be empty, deltas or fulltext")
+		return fail("config", "message layout", "message layout must be empty, deltas or fulltext_v2")
 	}
 	if c.KeyLayout != keyLayoutTuple && (c.KeyLayout != keyLayoutDirectory || c.Backend != "fdb") {
 		return fail("config", "key layout", "key layout must be empty, or directory_v1 for the FDB backend")

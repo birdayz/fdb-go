@@ -3,10 +3,8 @@ package otel
 // Message full-text queries over the Message TEXT index and the span back
 // references of messages.go.
 //
-// A query first finds the matching messages in the TEXT index, then the
-// (span, attribute) references of each in envelope_message_v1, which holds
-// every reference of every span; first-turn hits are the references in which
-// the message is the attribute's newest element.
+// A query follows Message TEXT hits through MessageTrace markers to each trace's
+// envelope_refs_v1 chunks; newest-element references identify first-turn hits.
 
 import (
 	"bytes"
@@ -65,7 +63,7 @@ type MessageSpanHit struct {
 }
 
 // MessageFullTextPage is one snapshot page in the run's order (span sort key,
-// then attribute key, then message hash). A full page carries a continuation.
+// then attribute key, then writer/sequence message ID). A full page carries a continuation.
 type MessageFullTextPage struct {
 	Hits         []MessageSpanHit `json:"hits"`
 	Continuation []byte           `json:"continuation,omitempty"`

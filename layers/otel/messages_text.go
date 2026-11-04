@@ -240,11 +240,7 @@ func (c cappedTokens) Next() string {
 	return ""
 }
 
-func init() {
-	if err := recordlayer.GlobalTextTokenizerRegistry().Register(messageTokenizer{}); err != nil {
-		panic(err)
-	}
-}
+var messageTokenizerRegistrationError = recordlayer.GlobalTextTokenizerRegistry().Register(messageTokenizer{})
 
 // messageSegment is one indexed slice of a message's text: whole tokens
 // offset..offset+n-1 of the message. Postings is its number of distinct
@@ -277,7 +273,7 @@ func segmentMessageText(text string, distinct int) ([]messageSegment, int, error
 			set[t] = true
 		}
 	}
-	if len(set) <= distinct && len(text) <= messageSegmentBytes {
+	if len(whole) == 0 || len(set) <= distinct && len(text) <= messageSegmentBytes {
 		return []messageSegment{{text: text, postings: len(set)}}, unindexed, nil
 	}
 	// Byte spans of the tokens: the word segments of the whole text that yield

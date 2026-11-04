@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -120,7 +121,7 @@ func continuationBytes(s TextQuerySpec) []byte {
 }
 
 // drainGoPage reads a cursor to its no-next result.
-func drainGoPage[T any](ctx context.Context, c recordlayer.RecordCursor[T], item func(T) string) (textPage, error) {
+func drainGoPage[T any](ctx context.Context, c recordlayer.RecordCursor[T], item func(T) string, afterItem ...func(int) error) (textPage, error) {
 	defer c.Close()
 	var p textPage
 	for {
@@ -140,6 +141,11 @@ func drainGoPage[T any](ctx context.Context, c recordlayer.RecordCursor[T], item
 			return p, nil
 		}
 		p.Items = append(p.Items, item(r.GetValue()))
+		for _, hook := range afterItem {
+			if err := hook(len(p.Items)); err != nil {
+				return p, err
+			}
+		}
 	}
 }
 
@@ -262,11 +268,15 @@ var _ = Describe("TEXT query execution conformance", Ordered, func() {
 		}
 	})
 
-	goScan := func(s TextQuerySpec, timer *recordlayer.StoreTimer) (textPage, *recordlayer.ScanLimiterState) {
-		var page textPage
-		exec := goExecuteProperties(s)
+	goScanWithFault := func(s TextQuerySpec, timer *recordlayer.StoreTimer, afterItem ...func(int) error) (textPage, *recordlayer.ScanLimiterState) {
+		type attemptResult struct {
+			page  textPage
+			state *recordlayer.ScanLimiterState
+		}
 		runner := recordlayer.NewFDBDatabaseRunner(env.RecordDB).SetContextConfig(&recordlayer.RecordContextConfig{Timer: timer})
-		_, err := runner.RunWithRetry(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		result, err := runner.RunWithRetry(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+			timer.Reset()
+			exec := goExecuteProperties(s)
 			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 			if err != nil {
 				return nil, err
@@ -285,11 +295,19 @@ var _ = Describe("TEXT query execution conformance", Ordered, func() {
 			if err != nil {
 				return nil, err
 			}
-			page, err = drainGoPage(ctx, cursor, entryItem)
-			return nil, err
+			page, err := drainGoPage(ctx, cursor, entryItem, afterItem...)
+			if err != nil {
+				return nil, err
+			}
+			return attemptResult{page: page, state: exec.ScanState}, nil
 		})
 		Expect(err).NotTo(HaveOccurred(), s.String())
-		return page, exec.ScanState
+		final := result.(attemptResult)
+		return final.page, final.state
+	}
+
+	goScan := func(s TextQuerySpec, timer *recordlayer.StoreTimer) (textPage, *recordlayer.ScanLimiterState) {
+		return goScanWithFault(s, timer)
 	}
 
 	javaScan := func(s TextQuerySpec) textPage {
@@ -301,8 +319,7 @@ var _ = Describe("TEXT query execution conformance", Ordered, func() {
 	}
 
 	goPlan := func(s TextQuerySpec) textPage {
-		var page textPage
-		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		result, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 			if err != nil {
 				return nil, err
@@ -319,13 +336,16 @@ var _ = Describe("TEXT query execution conformance", Ordered, func() {
 			if err != nil {
 				return nil, err
 			}
-			page, err = drainGoPage(ctx, cursor, func(r *recordlayer.FDBIndexedRecord) string {
+			page, err := drainGoPage(ctx, cursor, func(r *recordlayer.FDBIndexedRecord) string {
 				return fmt.Sprint(r.Record.PrimaryKey[0].(int64))
 			})
-			return nil, err
+			if err != nil {
+				return nil, err
+			}
+			return page, nil
 		})
 		Expect(err).NotTo(HaveOccurred(), s.String())
-		return page
+		return result.(textPage)
 	}
 
 	javaPlan := func(s TextQuerySpec) (textPage, string) {
@@ -560,6 +580,36 @@ var _ = Describe("TEXT query execution conformance", Ordered, func() {
 		}
 		_, plan := javaPlan(TextQuerySpec{Index: "name_text", Type: "TEXT_CONTAINS_PREFIX", Text: strPtr("pre")})
 		Expect(plan).To(ContainSubstring("name_text"))
+	})
+
+	It("discards partial scan pages, budgets and counters before a retry", func() {
+		s := TextQuerySpec{Index: "name_text", Type: "TEXT_CONTAINS_ALL", Text: strPtr("common"), ScannedRecordsLimit: 100}
+		baselineTimer := recordlayer.NewStoreTimer()
+		baseline, baselineState := goScan(s, baselineTimer)
+		Expect(baseline.Items).NotTo(BeEmpty())
+		Expect(baseline.Reason).To(Equal("SCAN_LIMIT_REACHED"))
+
+		timer := recordlayer.NewStoreTimer()
+		faults, partialItems := 0, 0
+		var partialBytes, partialKVs int64
+		page, state := goScanWithFault(s, timer, func(items int) error {
+			if faults == 0 {
+				faults++
+				partialItems = items
+				partialBytes = timer.GetCount(recordlayer.CountTextScanBytes)
+				partialKVs = timer.GetCount(recordlayer.CountTextScanKeyValues)
+				return fdb.Error{Code: 1020}
+			}
+			return nil
+		})
+		Expect(faults).To(Equal(1))
+		Expect(partialItems).To(Equal(1))
+		Expect(partialBytes).To(BeNumerically(">", 0))
+		Expect(partialKVs).To(BeNumerically(">", 0))
+		Expect(page).To(Equal(baseline))
+		Expect(state.BytesScanned()).To(Equal(baselineState.BytesScanned()))
+		Expect(timer.GetCount(recordlayer.CountTextScanBytes)).To(Equal(baselineTimer.GetCount(recordlayer.CountTextScanBytes)))
+		Expect(timer.GetCount(recordlayer.CountTextScanKeyValues)).To(Equal(baselineTimer.GetCount(recordlayer.CountTextScanKeyValues)))
 	})
 
 	It("reads about the rare token's postings when it is intersected with common tokens", func() {

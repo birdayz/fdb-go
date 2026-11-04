@@ -1,8 +1,8 @@
 package collector
 
-// bench.go drives the full fdb_otel production path end to end: synthetic
-// multi-turn GenAI conversations flow from concurrent producers through the
-// Collector sending queue into *otel.Exporter (message delta dedup and message
+// bench.go drives a custom in-process Collector-model queue, not the upstream
+// OpenTelemetry Collector. Synthetic GenAI conversations flow into *otel.Exporter
+// (message delta dedup and message
 // full-text indexing) together with their correlated OTLP logs, while query
 // workers run verified queries against committed data. Ingest is either a
 // fixed corpus or a sustained, duration-bounded load reported as a time
@@ -109,6 +109,7 @@ type CollectorBenchConfig struct {
 	EnableMessageFullText bool          `json:"enable_message_full_text"`
 	QueryIterations       int           `json:"query_iterations"`
 	Revision              string        `json:"revision"`
+	runtime               *benchRuntime
 }
 
 // DefaultCollectorBenchConfig returns the defaults; cluster_file and run
@@ -186,31 +187,31 @@ func (c CollectorBenchConfig) Validate() error {
 	c = c.WithDefaults()
 	var errs []error
 	if c.Conversations < 1 || c.Conversations > maxBenchConversations {
-		errs = append(errs, fmt.Errorf("conversations must be 1..%d", maxBenchConversations))
+		errs = append(errs, componentErrorf("conversations must be 1..%d", maxBenchConversations))
 	}
 	if c.TurnsPerConversation < 1 || c.TurnsPerConversation > maxBenchTurns {
-		errs = append(errs, fmt.Errorf("turns_per_conversation must be 1..%d", maxBenchTurns))
+		errs = append(errs, componentErrorf("turns_per_conversation must be 1..%d", maxBenchTurns))
 	}
 	if c.Duration < 0 || c.Duration > maxBenchDuration {
-		errs = append(errs, fmt.Errorf("duration must be 0..%s", maxBenchDuration))
+		errs = append(errs, componentErrorf("duration must be 0..%s", maxBenchDuration))
 	}
 	if c.ReportInterval < minBenchReportInterval || c.ReportInterval > maxBenchDuration {
-		errs = append(errs, fmt.Errorf("report_interval must be %s..%s", minBenchReportInterval, maxBenchDuration))
+		errs = append(errs, componentErrorf("report_interval must be %s..%s", minBenchReportInterval, maxBenchDuration))
 	}
 	if c.Warmup < 0 || c.Duration > 0 && c.Warmup >= c.Duration {
-		errs = append(errs, errors.New("warmup must be non-negative and shorter than duration"))
+		errs = append(errs, componentErrorf("warmup must be non-negative and shorter than duration"))
 	}
 	if c.Producers < 1 || c.Producers > maxBenchProducers {
-		errs = append(errs, fmt.Errorf("producers must be 1..%d", maxBenchProducers))
+		errs = append(errs, componentErrorf("producers must be 1..%d", maxBenchProducers))
 	}
 	if c.QueryWorkers < 1 || c.QueryWorkers > maxBenchQueryWorkers {
-		errs = append(errs, fmt.Errorf("query_workers must be 1..%d", maxBenchQueryWorkers))
+		errs = append(errs, componentErrorf("query_workers must be 1..%d", maxBenchQueryWorkers))
 	}
 	if c.QueryIterations < 1 || c.QueryIterations > maxBenchIterations {
-		errs = append(errs, fmt.Errorf("query_iterations must be 1..%d", maxBenchIterations))
+		errs = append(errs, componentErrorf("query_iterations must be 1..%d", maxBenchIterations))
 	}
 	if c.QueueSize < c.TurnsPerConversation {
-		errs = append(errs, errors.New("queue_size must hold one conversation request (turns_per_conversation spans)"))
+		errs = append(errs, componentErrorf("queue_size must hold one conversation request (turns_per_conversation spans)"))
 	}
 	if len(errs) == 0 {
 		cc := c.collectorConfig()
@@ -219,7 +220,7 @@ func (c CollectorBenchConfig) Validate() error {
 		}
 	}
 	if err := errors.Join(errs...); err != nil {
-		return fmt.Errorf("collector bench config: %w", err)
+		return componentErrorf("collector bench config: %w", err)
 	}
 	return nil
 }
@@ -234,7 +235,7 @@ func benchQueryBudget(turns, k int) (int, int64) {
 	// conversation is in the history of turns j..n.
 	refs := benchBlockSize * n * (n + 1) / 2
 	// The existential class reads a block's span, log and message postings,
-	// meta plus blob rows of every message and every reference; the K-limited
+	// Message records, trace markers and packed reference chunks; the K-limited
 	// classes add page-bounded verification and predicate probes (64 a batch).
 	rows := benchBlockSize*(4*n+1) + refs + 4*int64(k+64)
 	// This also covers one trace stored without decomposition, whose n spans
@@ -949,13 +950,13 @@ func RunBenchmark(ctx context.Context, cfg CollectorBenchConfig) (CollectorBench
 			Producers: cfg.Producers, NumConsumers: cfg.NumConsumers, QueryWorkers: cfg.QueryWorkers, BlockSize: benchBlockSize,
 		},
 		UnderLoad: CollectorBenchUnderLoad{Workers: cfg.QueryWorkers, Queries: map[string]CollectorBenchQuery{}},
-		Boundary: "synthetic deterministic multi-turn GenAI conversations and correlated logs through the fdb_otel Collector sending queue into one FDB run; " +
+		Boundary: "synthetic deterministic multi-turn GenAI conversations and correlated logs through the custom fdb_otel Collector-model queue (not upstream OpenTelemetry Collector) into one FDB run; " +
 			"one producer host, closed-loop producers and query workers, not SLO/HA evidence; query answers verified against the generated model",
 	}
 	err := runBenchmark(ctx, cfg, &r)
 	r.WallNs = time.Since(started).Nanoseconds()
 	if err == nil && r.Failures > 0 {
-		err = fmt.Errorf("collector bench: %d verification failures", r.Failures)
+		err = componentErrorf("collector bench: %d verification failures", r.Failures)
 	}
 	if err != nil {
 		r.Error = err.Error()
@@ -988,6 +989,28 @@ type benchRun struct {
 	memory   CollectorBenchMemory
 }
 
+// benchRuntime permits deterministic admission and sampling fixtures without
+// changing the public workload configuration or historical receipt schema.
+type benchRuntime struct {
+	now             func() time.Time
+	beforeAdmission func(context.Context, *benchRun, int) error
+}
+
+func (r *benchRun) now() time.Time {
+	if r.cfg.runtime != nil && r.cfg.runtime.now != nil {
+		return r.cfg.runtime.now()
+	}
+	return time.Now()
+}
+
+func (r *benchRun) nextConversation(limit int, deadline time.Time) (int, bool) {
+	if !deadline.IsZero() && !r.now().Before(deadline) {
+		return 0, false
+	}
+	c := int(r.claimed.Add(1) - 1)
+	return c, c < limit
+}
+
 func runBenchmark(ctx context.Context, cfg CollectorBenchConfig, rep *CollectorBenchReport) (err error) {
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -1015,7 +1038,7 @@ func runBenchmark(ctx context.Context, cfg CollectorBenchConfig, rep *CollectorB
 		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 		defer cancel()
 		if serr := x.Shutdown(sctx); serr != nil && err == nil {
-			err = fmt.Errorf("collector bench shutdown: %w", serr)
+			err = componentErrorf("collector bench shutdown: %w", serr)
 		}
 	}()
 	r.x = x
@@ -1036,10 +1059,10 @@ func runBenchmark(ctx context.Context, cfg CollectorBenchConfig, rep *CollectorB
 	}
 	n := cfg.TurnsPerConversation
 	if s := rep.Ingest.Collector; s.ExportedSpans != int64(r.total*n) || s.FailedSpans != 0 {
-		return fmt.Errorf("collector bench ingest: exported %d of %d spans, %d failed", s.ExportedSpans, r.total*n, s.FailedSpans)
+		return componentErrorf("collector bench ingest: exported %d of %d spans, %d failed", s.ExportedSpans, r.total*n, s.FailedSpans)
 	}
 	if w := rep.Watermark; w.Watermark != int64(r.total)-1 || w.Tracked != 0 || w.Anomalies != 0 {
-		return fmt.Errorf("collector bench ingest: commit watermark %d with %d tracked and %d anomalies, want %d", w.Watermark, w.Tracked, w.Anomalies, r.total-1)
+		return componentErrorf("collector bench ingest: commit watermark %d with %d tracked and %d anomalies, want %d", w.Watermark, w.Tracked, w.Anomalies, r.total-1)
 	}
 
 	// Phase 2: bit-for-bit reconstruction of sampled spans.
@@ -1077,7 +1100,7 @@ func (r *benchRun) ingest(ctx context.Context, rep *CollectorBenchReport) error 
 	ictx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	r.prevCPU = readBenchCPU()
-	r.start = time.Now()
+	r.start = r.now()
 	limit := cfg.Conversations
 	var deadline time.Time
 	if cfg.Duration > 0 {
@@ -1118,16 +1141,25 @@ func (r *benchRun) ingest(ctx context.Context, rep *CollectorBenchReport) error 
 	var produceErrs []error
 	for range cfg.Producers {
 		producers.Go(func() {
-			for ictx.Err() == nil && (deadline.IsZero() || time.Now().Before(deadline)) {
-				c := int(r.claimed.Add(1) - 1)
-				if c >= limit {
+			for ictx.Err() == nil {
+				c, ok := r.nextConversation(limit, deadline)
+				if !ok {
 					return
+				}
+				if cfg.runtime != nil && cfg.runtime.beforeAdmission != nil {
+					if err := cfg.runtime.beforeAdmission(ictx, r, c); err != nil {
+						errMu.Lock()
+						produceErrs = append(produceErrs, err)
+						errMu.Unlock()
+						cancel(err)
+						return
+					}
 				}
 				req := r.gen.request(c)
 				r.raw.Add(int64(proto.Size(req)))
 				if err := r.x.ConsumeTraces(ictx, []*tracepb.ResourceSpans{req}); err != nil {
 					errMu.Lock()
-					produceErrs = append(produceErrs, fmt.Errorf("conversation %d: %w", c, err))
+					produceErrs = append(produceErrs, componentErrorf("conversation %d: %w", c, err))
 					errMu.Unlock()
 					cancel(err)
 					return
@@ -1143,7 +1175,7 @@ func (r *benchRun) ingest(ctx context.Context, rep *CollectorBenchReport) error 
 	producers.Wait()
 	close(queryStop)
 	queryWG.Wait()
-	rep.UnderLoad.WallNs = time.Since(r.start).Nanoseconds()
+	rep.UnderLoad.WallNs = r.now().Sub(r.start).Nanoseconds()
 	r.total = min(int(r.claimed.Load()), limit)
 	r.cut(true)
 	r.seriesMu.Lock()
@@ -1153,7 +1185,7 @@ func (r *benchRun) ingest(ctx context.Context, rep *CollectorBenchReport) error 
 	flushErr := r.x.Flush(ictx)
 	close(r.logs.in)
 	logErr := <-logDone
-	rep.Ingest.IngestWallNs = time.Since(r.start).Nanoseconds()
+	rep.Ingest.IngestWallNs = r.now().Sub(r.start).Nanoseconds()
 	close(sampleStop)
 	<-sampleDone
 	r.cut(true)
@@ -1161,13 +1193,13 @@ func (r *benchRun) ingest(ctx context.Context, rep *CollectorBenchReport) error 
 	// One failure cancels the others, so report all of them.
 	var errs []error
 	if len(produceErrs) > 0 {
-		errs = append(errs, fmt.Errorf("collector bench ingest: %d rejected requests: %w", len(produceErrs), errors.Join(produceErrs[:min(len(produceErrs), 4)]...)))
+		errs = append(errs, componentErrorf("collector bench ingest: %d rejected requests: %w", len(produceErrs), errors.Join(produceErrs[:min(len(produceErrs), 4)]...)))
 	}
 	if logErr != nil {
 		errs = append(errs, logErr)
 	}
 	if flushErr != nil {
-		errs = append(errs, fmt.Errorf("collector bench flush: %w", flushErr))
+		errs = append(errs, componentErrorf("collector bench flush: %w", flushErr))
 	}
 	return errors.Join(append(errs, ctx.Err())...)
 }
@@ -1224,7 +1256,7 @@ func (r *benchRun) counters() (benchCounters, Stats, []int64) {
 func (r *benchRun) cut(final bool) {
 	r.seriesMu.Lock()
 	defer r.seriesMu.Unlock()
-	now := time.Since(r.start)
+	now := r.now().Sub(r.start)
 	if now <= r.prevEnd || !final && now-r.prevEnd < time.Millisecond {
 		return
 	}
@@ -1349,14 +1381,14 @@ func (w *benchLogWriter) flush(ctx context.Context, batch []int) error {
 			return nil
 		}
 		if attempt == benchLogAttempts || ctx.Err() != nil {
-			return fmt.Errorf("collector bench logs: %w", err)
+			return componentErrorf("collector bench logs: %w", err)
 		}
 		t := time.NewTimer(backoff)
 		select {
 		case <-t.C:
 		case <-ctx.Done():
 			t.Stop()
-			return fmt.Errorf("collector bench logs: %w", errors.Join(err, ctx.Err()))
+			return componentErrorf("collector bench logs: %w", errors.Join(err, ctx.Err()))
 		}
 		backoff *= 2
 	}
@@ -1534,13 +1566,13 @@ func benchQueries(cfg CollectorBenchConfig, gen *benchGen, exp *otel.Exporter) [
 	}
 	checkHits := func(hits []otel.MessageSpanHit, want int, ok func(otel.MessageSpanHit) error) (int, error) {
 		if len(hits) != want {
-			return len(hits), fmt.Errorf("%d hits, want %d", len(hits), want)
+			return len(hits), componentErrorf("%d hits, want %d", len(hits), want)
 		}
 		seen := map[string]bool{}
 		for _, h := range hits {
 			key := h.Trace + "/" + h.Span + "/" + h.AttributeKey + "/" + h.MessageID
 			if seen[key] {
-				return len(hits), fmt.Errorf("duplicate hit %s", key)
+				return len(hits), componentErrorf("duplicate hit %s", key)
 			}
 			seen[key] = true
 			if err := ok(h); err != nil {
@@ -1563,7 +1595,7 @@ func benchQueries(cfg CollectorBenchConfig, gen *benchGen, exp *otel.Exporter) [
 				// User message j of each conversation is in the input of turns j..n.
 				return checkHits(page.Hits, min(t.size*n*(n+1)/2, k), func(h otel.MessageSpanHit) error {
 					if h.Role != "user" || h.AttributeKey != benchInputKey || !inBlock(h.Trace, t.block) {
-						return fmt.Errorf("unexpected hit %+v", h)
+						return componentErrorf("unexpected hit %+v", h)
 					}
 					return nil
 				})
@@ -1577,7 +1609,7 @@ func benchQueries(cfg CollectorBenchConfig, gen *benchGen, exp *otel.Exporter) [
 				trace, span := gen.traceHex(c), gen.spanHex(c, turn)
 				return checkHits(page.Hits, 1, func(h otel.MessageSpanHit) error {
 					if h.Trace != trace || h.Span != span || h.AttributeKey != benchInputKey || h.Role != "user" {
-						return fmt.Errorf("hit %+v, want conversation %d turn %d", h, c, turn)
+						return componentErrorf("hit %+v, want conversation %d turn %d", h, c, turn)
 					}
 					return nil
 				})
@@ -1591,7 +1623,7 @@ func benchQueries(cfg CollectorBenchConfig, gen *benchGen, exp *otel.Exporter) [
 				trace := gen.traceHex(c)
 				return checkHits(page.Hits, min(n, k), func(h otel.MessageSpanHit) error {
 					if h.Trace != trace || h.AttributeKey != benchInputKey || !slices.Equal(h.TurnOrdinals, []int{0}) {
-						return fmt.Errorf("hit %+v outside conversation %d's first message", h, c)
+						return componentErrorf("hit %+v outside conversation %d's first message", h, c)
 					}
 					return nil
 				})
@@ -1603,7 +1635,7 @@ func benchQueries(cfg CollectorBenchConfig, gen *benchGen, exp *otel.Exporter) [
 				}
 				return checkHits(page.Hits, min(t.size*n, k), func(h otel.MessageSpanHit) error {
 					if h.Role != "user" || h.AttributeKey != benchInputKey || !inBlock(h.Trace, t.block) {
-						return fmt.Errorf("unexpected hit %+v", h)
+						return componentErrorf("unexpected hit %+v", h)
 					}
 					return nil
 				})
@@ -1620,7 +1652,7 @@ func benchQueries(cfg CollectorBenchConfig, gen *benchGen, exp *otel.Exporter) [
 				return 0, err
 			}
 			if len(page.Spans) != min(n, k) {
-				return len(page.Spans), fmt.Errorf("%d spans, want %d", len(page.Spans), min(n, k))
+				return len(page.Spans), componentErrorf("%d spans, want %d", len(page.Spans), min(n, k))
 			}
 			trace := gen.traceHex(c)
 			ids := map[string]bool{}
@@ -1630,7 +1662,7 @@ func benchQueries(cfg CollectorBenchConfig, gen *benchGen, exp *otel.Exporter) [
 			seen := map[string]bool{}
 			for _, s := range page.Spans {
 				if s.Trace != trace || seen[s.ID] || !ids[s.ID] {
-					return len(page.Spans), fmt.Errorf("unexpected span %+v for conversation %d", s, c)
+					return len(page.Spans), componentErrorf("unexpected span %+v for conversation %d", s, c)
 				}
 				seen[s.ID] = true
 			}
@@ -1650,20 +1682,20 @@ func benchQueries(cfg CollectorBenchConfig, gen *benchGen, exp *otel.Exporter) [
 			}
 			want := min(t.size, k)
 			if len(res.Hits) != want {
-				return len(res.Hits), fmt.Errorf("%d traces, want %d", len(res.Hits), want)
+				return len(res.Hits), componentErrorf("%d traces, want %d", len(res.Hits), want)
 			}
 			seen := map[string]bool{}
 			for _, h := range res.Hits {
 				if !inBlock(h.Trace, t.block) || seen[h.Trace] {
-					return len(res.Hits), fmt.Errorf("unexpected trace %s for block %d", h.Trace, t.block)
+					return len(res.Hits), componentErrorf("unexpected trace %s for block %d", h.Trace, t.block)
 				}
 				seen[h.Trace] = true
 				if len(h.Witnesses) != 1 || len(h.Witnesses[0]) == 0 || len(h.LogWitnesses) != 1 || len(h.LogWitnesses[0]) == 0 || len(h.MessageWitnesses) != len(q.MessageClauses) {
-					return len(res.Hits), fmt.Errorf("trace %s lacks witnesses", h.Trace)
+					return len(res.Hits), componentErrorf("trace %s lacks witnesses", h.Trace)
 				}
 				for _, w := range h.MessageWitnesses {
 					if len(w) == 0 {
-						return len(res.Hits), fmt.Errorf("trace %s lacks message witnesses", h.Trace)
+						return len(res.Hits), componentErrorf("trace %s lacks message witnesses", h.Trace)
 					}
 				}
 			}
@@ -1676,7 +1708,7 @@ func benchQueries(cfg CollectorBenchConfig, gen *benchGen, exp *otel.Exporter) [
 				return 0, err
 			}
 			if len(g.Spans) != n || len(g.Roots) != 1 || g.Roots[0] != gen.spanHex(c, 1) || g.MaxDepth != n-1 || len(g.Orphans) != 0 || len(g.Cycles) != 0 {
-				return len(g.Spans), fmt.Errorf("conversation %d graph: %d spans, roots %v, max depth %d, orphans %v, cycles %v", c, len(g.Spans), g.Roots, g.MaxDepth, g.Orphans, g.Cycles)
+				return len(g.Spans), componentErrorf("conversation %d graph: %d spans, roots %v, max depth %d, orphans %v, cycles %v", c, len(g.Spans), g.Roots, g.MaxDepth, g.Orphans, g.Cycles)
 			}
 			return len(g.Spans), nil
 		}},
@@ -1687,7 +1719,7 @@ func benchQueries(cfg CollectorBenchConfig, gen *benchGen, exp *otel.Exporter) [
 				return 0, err
 			}
 			if len(logs) != 1 || logs[0].EventID != gen.logEventID(c) || logs[0].SpanID != gen.spanHex(c, 1) {
-				return len(logs), fmt.Errorf("conversation %d: %d correlated logs, want its one log", c, len(logs))
+				return len(logs), componentErrorf("conversation %d: %d correlated logs, want its one log", c, len(logs))
 			}
 			return len(logs), nil
 		}},

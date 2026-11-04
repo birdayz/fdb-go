@@ -166,7 +166,8 @@ type FDBRecordStore struct {
 	serializer *TransformedRecordSerializer
 	// goOnlyCollation is StoreBuilder.SetGoOnlyCollation: the store may hold
 	// Go collation keys (GoOnlyCollationError).
-	goOnlyCollation bool
+	goOnlyCollation            bool
+	allowLegacyKeySpaceCutover bool
 	// pipelineSizer is StoreBuilder.SetPipelineSizer; nil is DefaultPipelineSizer.
 	pipelineSizer      PipelineSizer
 	context            *FDBRecordContext
@@ -280,16 +281,17 @@ func (store *FDBRecordStore) CopyBuilder(newContext *FDBRecordContext) *StoreBui
 func (store *FDBRecordStore) builderFrom(ctx *FDBRecordContext) *StoreBuilder {
 	formatVersion := store.effectiveFormatVersion()
 	return &StoreBuilder{
-		context:            ctx,
-		metaData:           store.metaData,
-		subspace:           store.subspace,
-		indexRebuildPolicy: store.indexRebuildPolicy,
-		storeStateCache:    store.storeStateCache,
-		maintenanceFilter:  store.maintenanceFilter,
-		serializer:         store.serializer,
-		goOnlyCollation:    store.goOnlyCollation,
-		pipelineSizer:      store.pipelineSizer,
-		formatVersion:      &formatVersion,
+		context:                    ctx,
+		metaData:                   store.metaData,
+		subspace:                   store.subspace,
+		indexRebuildPolicy:         store.indexRebuildPolicy,
+		storeStateCache:            store.storeStateCache,
+		maintenanceFilter:          store.maintenanceFilter,
+		serializer:                 store.serializer,
+		goOnlyCollation:            store.goOnlyCollation,
+		allowLegacyKeySpaceCutover: store.allowLegacyKeySpaceCutover,
+		pipelineSizer:              store.pipelineSizer,
+		formatVersion:              &formatVersion,
 	}
 }
 

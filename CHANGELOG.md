@@ -67,6 +67,12 @@ Each is described in full under Compatibility or Changed below.
     incomplete value in their ordinary tuple encoders returns `IncompleteVersionstampError`.
     Dry runs share primary-key preparation but do not maintain counts. Count-key checks run
     only when a count is maintained.
+- **`keyspace` persisted prefixes:** `Path.ToSubspace()` now packs Java-flat path
+  elements instead of one nested tuple. Earlier Go stores require explicit
+  `LegacyNestedSubspace()` access and verified export/import; there is no automatic
+  migration. Guarded Record Layer opens refuse populated old prefixes unless an
+  explicit `SetAllowLegacyKeySpaceCutover(true)` acknowledges the new destination.
+  Raw byte conversion loses the guard. See `docs/upgrade.md`.
 - **`keyspace` (RFC-275):**
   - `AddSubdirectory` and `AddSubdirectories` return an `*ArgumentError` under Java's sibling
     rules, instead of panicking on a duplicate name.

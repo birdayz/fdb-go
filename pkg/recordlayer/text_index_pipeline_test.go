@@ -100,6 +100,35 @@ func (r *inFlightRangeResult) GetSliceWithError() ([]fdb.KeyValue, error) {
 	return r.RangeResult.GetSliceWithError()
 }
 
+// readPipelineTextIndex publishes only the final attempt's multi-subspace dump.
+// afterRead can inject a retry after a subspace has contributed rows.
+func readPipelineTextIndex(ctx context.Context, db *FDBDatabase, ks subspace.Subspace, indexes []*Index, afterRead func(int) error) ([]string, error) {
+	result, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		var attempt []string
+		for _, idx := range indexes {
+			for _, ss := range []subspace.Subspace{ks.Sub(IndexKey, idx.SubspaceTupleKey()), ks.Sub(IndexSecondarySpaceKey, idx.SubspaceTupleKey())} {
+				kvs, err := rtx.Transaction().GetRange(ss, fdb.RangeOptions{}).GetSliceWithError()
+				if err != nil {
+					return nil, err
+				}
+				for _, kv := range kvs {
+					attempt = append(attempt, hex.EncodeToString(kv.Key[len(ks.Bytes()):])+"="+hex.EncodeToString(kv.Value))
+				}
+				if afterRead != nil {
+					if err := afterRead(len(attempt)); err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
+		return attempt, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.([]string), nil
+}
+
 // The TEXT maintainer reads each token's BunchedMap with up to the store's
 // TEXT_INDEX_UPDATE pipeline size of reads in flight, and writes the same
 // index whatever that size is.
@@ -213,26 +242,40 @@ var _ = Describe("TEXT index pipelined update", func() {
 		}
 	})
 
+	It("discards a partial multi-index dump before retrying", func() {
+		md, indexes := textMetaData()
+		ks := specSubspace()
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			_, err := openStore(rtx, md, ks, 4).SaveRecord(&demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("alpha beta gamma")})
+			return nil, err
+		})
+		Expect(err).NotTo(HaveOccurred())
+		baseline, err := readPipelineTextIndex(ctx, sharedDB, ks, indexes, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(baseline).NotTo(BeEmpty())
+		faults, partialRows, reads := 0, 0, 0
+		got, err := readPipelineTextIndex(ctx, sharedDB, ks, indexes, func(rows int) error {
+			reads++
+			if faults == 0 {
+				faults++
+				partialRows = rows
+				return fdb.Error{Code: 1020}
+			}
+			return nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(faults).To(Equal(1))
+		Expect(partialRows).To(BeNumerically(">", 0))
+		Expect(reads).To(BeNumerically(">=", 1+2*len(indexes)))
+		Expect(got).To(Equal(baseline))
+	})
+
 	It("writes the same index entries at every pipeline size", func() {
 		md, indexes := textMetaData()
 		// rawIndex is every key-value of the TEXT indexes' primary and secondary
 		// subspaces, relative to the store.
 		rawIndex := func(ks subspace.Subspace) []string {
-			var out []string
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				for _, idx := range indexes {
-					for _, ss := range []subspace.Subspace{ks.Sub(IndexKey, idx.SubspaceTupleKey()), ks.Sub(IndexSecondarySpaceKey, idx.SubspaceTupleKey())} {
-						kvs, err := rtx.Transaction().GetRange(ss, fdb.RangeOptions{}).GetSliceWithError()
-						if err != nil {
-							return nil, err
-						}
-						for _, kv := range kvs {
-							out = append(out, hex.EncodeToString(kv.Key[len(ks.Bytes()):])+"="+hex.EncodeToString(kv.Value))
-						}
-					}
-				}
-				return nil, nil
-			})
+			out, err := readPipelineTextIndex(ctx, sharedDB, ks, indexes, nil)
 			Expect(err).NotTo(HaveOccurred())
 			return out
 		}

@@ -34,7 +34,8 @@ Each campaign's reports live in a folder named after the campaign.
   on the way (TLog memory monitor, cold-range hotspot, topology) and the run's
   limits (one run, not sustained, no HA).
 - [GenAI/OTel collector ingest 1x/2x/3x on Kubernetes + Cilium](otel-genai-collector-ingest-k8s-scaling.md):
-  the same six-host setup running a sustained 10-minute Collector pipeline
+  the same six-host setup running a sustained 10-minute custom in-process
+  Collector-model queue/exporter experiment, not an upstream Collector pipeline
   (spans, correlated logs, deduplicated messages with a TEXT index, queries
   under load; 600 s including 60 s warmup). Nine measured runs
   (`k8s-fts6`..`k8s-fts13`, `k8s-fts14c`) for PR #1023 took 1x from

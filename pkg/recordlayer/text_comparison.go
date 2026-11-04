@@ -366,7 +366,9 @@ func compareTextContainsAllWithin(text []string, comparand []string, maxDistance
 				return boolPtr(true)
 			}
 		}
-		if len(window) == maxDistance {
+		// Java's Queue.poll() does nothing on the initially empty zero-distance
+		// window; after the first offer its size never equals zero again.
+		if len(window) == maxDistance && len(window) > 0 {
 			last := window[0]
 			window = window[1:]
 			if n, ok := seen[last]; ok {

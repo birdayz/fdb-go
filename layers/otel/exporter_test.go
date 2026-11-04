@@ -982,7 +982,7 @@ func TestExporterPrepareExport(t *testing.T) {
 			t.Fatalf("item %d indexed\n got %+v\nwant %+v", i, s.Attributes, w.indexed)
 		}
 		r := it.message.ProtoReflect()
-		restored, err := restoreOTLP(r.Get(r.Descriptor().Fields().ByName("otlp")).Bytes())
+		restored, err := restoreEnvelopeOTLP(r)
 		if err != nil {
 			t.Fatal(err)
 		}

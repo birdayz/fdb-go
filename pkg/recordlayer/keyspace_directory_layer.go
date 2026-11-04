@@ -120,8 +120,9 @@ func (ExtendedDirectoryLayerGlobal) readReverse(rctx *FDBRecordContext, value in
 // keyspace.LocatableResolver a keyspace.ResolverDirectory resolves through.
 // Each call runs as Java's database-level calls do, in a context of its own.
 type KeySpaceResolver struct {
-	db    *FDBDatabase
-	scope LocatableResolver
+	db        *FDBDatabase
+	scope     LocatableResolver
+	configure TransactionConfigurer
 }
 
 var _ keyspace.LocatableResolver = (*KeySpaceResolver)(nil)
@@ -132,6 +133,14 @@ func NewKeySpaceResolver(db *FDBDatabase, scope LocatableResolver) *KeySpaceReso
 	return &KeySpaceResolver{db: db, scope: scope}
 }
 
+// WithTransactionConfigurer returns a resolver whose parent and child transactions
+// use configure, including retries. The original resolver is unchanged.
+func (r *KeySpaceResolver) WithTransactionConfigurer(configure TransactionConfigurer) *KeySpaceResolver {
+	copy := *r
+	copy.configure = configure
+	return &copy
+}
+
 // openContext is FDBDatabase.openContext: a context over a fresh transaction,
 // cancelled by close.
 func (r *KeySpaceResolver) openContext(ctx context.Context) (*FDBRecordContext, func(), error) {
@@ -139,7 +148,12 @@ func (r *KeySpaceResolver) openContext(ctx context.Context) (*FDBRecordContext, 
 	if err != nil {
 		return nil, nil, err
 	}
-	return r.db.NewRecordContextIn(ctx, tx), tx.Cancel, nil
+	rctx := r.db.NewRecordContextIn(ctx, tx)
+	if err := rctx.Configure(r.configure); err != nil {
+		tx.Cancel()
+		return nil, nil, err
+	}
+	return rctx, tx.Cancel, nil
 }
 
 // Resolve is LocatableResolver.resolve(timer, name): resolveWithMetadata in a

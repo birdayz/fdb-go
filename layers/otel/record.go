@@ -49,9 +49,12 @@ var (
 )
 
 // recordFile returns the record descriptors of a run: the base layout has only
-// Envelope; the message layouts add Message records and the Envelope messages
-// field, so the base layout's descriptor is unchanged for existing runs.
+// Envelope; the message layouts add Message records and packed references.
+// Optional envelope fidelity is separate from the producer's OTLP namespace.
 func recordFile(messages string) (protoreflect.FileDescriptor, error) {
+	if messages != messagesNone && messageTokenizerRegistrationError != nil {
+		return nil, wrap("config", "message tokenizer registration", messageTokenizerRegistrationError)
+	}
 	descriptorOnce.Do(func() {
 		field := func(name string, n int32, t descriptorpb.FieldDescriptorProto_Type) *descriptorpb.FieldDescriptorProto {
 			return &descriptorpb.FieldDescriptorProto{Name: proto.String(name), Number: proto.Int32(n), Type: t.Enum(), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()}
@@ -75,7 +78,7 @@ func recordFile(messages string) (protoreflect.FileDescriptor, error) {
 			bytes = descriptorpb.FieldDescriptorProto_TYPE_BYTES
 		)
 		envelope := func(withMessages bool) *descriptorpb.DescriptorProto {
-			d := &descriptorpb.DescriptorProto{Name: proto.String("Envelope"), Field: []*descriptorpb.FieldDescriptorProto{field("tenant", 1, i64), field("trace_id", 2, str), field("span_id", 3, str), field("start_ns", 4, i64), field("otlp", 5, bytes), field("ordinal", 6, i64)}}
+			d := &descriptorpb.DescriptorProto{Name: proto.String("Envelope"), Field: []*descriptorpb.FieldDescriptorProto{field("tenant", 1, i64), field("trace_id", 2, str), field("span_id", 3, str), field("start_ns", 4, i64), field("otlp", 5, bytes), field("ordinal", 6, i64), field("fidelity", 9, bytes)}}
 			if withMessages {
 				// The messages this span references, packed (messages.go).
 				d.Field = append(d.Field, message("ref_chunks", ".otelbench.RefChunk", 8, true))

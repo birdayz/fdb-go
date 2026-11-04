@@ -576,7 +576,7 @@ func (store *FDBRecordStore) FetchIndexRecords(entries RecordCursor[*IndexEntry]
 		scanState = NewScanLimiterState()
 	}
 	loader := &indexRecordLoader{store: store, scanState: scanState, orphan: orphan}
-	cursor := MapPipelined(entries, loader.load, DefaultPipelineSize)
+	cursor := MapPipelined(entries, loader.load, store.GetPipelineSize(PipelineOperationIndexToRecord))
 	if orphan == IndexOrphanSkip {
 		cursor = FilterCursor(cursor, func(record *FDBIndexedRecord) bool { return record != nil })
 	}
@@ -666,6 +666,9 @@ type TextQueryPlan struct {
 // its grouping columns, wrapped as planRemoveDuplicates
 // (RecordQueryPlanner.java:1106-1117) wraps it.
 func PlanTextQuery(md *RecordMetaData, index *Index, q TextQuery) (*TextQueryPlan, error) {
+	if md == nil || index == nil {
+		return nil, &TextQueryPlanError{Reason: "metadata and index are required"}
+	}
 	if canonicalIndexType(index.Type) != IndexTypeText {
 		return nil, &TextQueryPlanError{IndexName: index.Name, Reason: fmt.Sprintf("index type %s is not a text index", index.Type)}
 	}
@@ -697,6 +700,21 @@ func PlanTextQuery(md *RecordMetaData, index *Index, q TextQuery) (*TextQueryPla
 	queried := map[string]bool{}
 	for _, name := range q.RecordTypes {
 		queried[name] = true
+	}
+	covered := map[string]bool{}
+	for _, rt := range md.RecordTypesForIndex(index) {
+		covered[rt.Name] = true
+	}
+	requested := append([]string(nil), q.RecordTypes...)
+	if len(requested) == 0 {
+		for name := range md.RecordTypes() {
+			requested = append(requested, name)
+		}
+	}
+	for _, name := range requested {
+		if !covered[name] {
+			return nil, &TextQueryPlanError{IndexName: index.Name, Reason: fmt.Sprintf("index does not cover requested record type %q", name)}
+		}
 	}
 	for _, rt := range md.RecordTypesForIndex(index) {
 		if len(q.RecordTypes) > 0 && !queried[rt.Name] {

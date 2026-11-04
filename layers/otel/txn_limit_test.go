@@ -400,8 +400,8 @@ func testBenchTxnRetryLimit(t *testing.T, fixture txnFixture) {
 	}
 }
 
-// The transaction timeout ends an Exporter transaction whose retryable error
-// never clears, as a transient 1031 from one Record Layer attempt.
+// The transaction timeout ends a blocked Exporter attempt as a transient 1031.
+// Retry depth is covered separately by testExporterTxnAbsorbs.
 func testExporterTxnTimeoutBound(t *testing.T, fixture txnFixture) {
 	ctx, db, _ := fixture(t)
 	runs := attemptRecorder(db)
@@ -413,6 +413,15 @@ func testExporterTxnTimeoutBound(t *testing.T, fixture txnFixture) {
 			return nil, err
 		}
 		calls++
+		// Keep the first execution in flight until its configured timeout has
+		// elapsed, then let OnError observe expiry rather than retrying it.
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 		return nil, fdb.Error{Code: 1009}
 	})
 	elapsed := time.Since(started)
@@ -423,12 +432,12 @@ func testExporterTxnTimeoutBound(t *testing.T, fixture txnFixture) {
 	if elapsed < timeout || elapsed > timeout+5*time.Second {
 		t.Fatalf("ended after %v, want the %v transaction timeout", elapsed, timeout)
 	}
-	if got := runs(); calls <= benchTxnRetryLimit+1 || len(got) != 1 {
-		t.Fatalf("calls=%d attempts=%v; want more than %d calls in one attempt", calls, got, benchTxnRetryLimit+1)
+	if got := runs(); calls != 1 || len(got) != 1 {
+		t.Fatalf("calls=%d attempts=%v; want one blocked execution in one attempt", calls, got)
 	}
 }
 
-// The caller's deadline ends an Exporter transaction before a longer
+// The caller's deadline ends a blocked Exporter attempt before a longer
 // transaction timeout, as a canceled error.
 func testExporterTxnDeadlineBound(t *testing.T, fixture txnFixture) {
 	ctx, db, _ := fixture(t)
@@ -443,6 +452,9 @@ func testExporterTxnDeadlineBound(t *testing.T, fixture txnFixture) {
 			return nil, err
 		}
 		calls++
+		// Do not race retry throughput against the deadline: release the
+		// first execution only once the caller has expired.
+		<-short.Done()
 		return nil, fdb.Error{Code: 1009}
 	})
 	elapsed := time.Since(started)
@@ -453,8 +465,8 @@ func testExporterTxnDeadlineBound(t *testing.T, fixture txnFixture) {
 	if elapsed > deadline+5*time.Second {
 		t.Fatalf("ended after %v, want the %v deadline", elapsed, deadline)
 	}
-	if got := runs(); calls <= benchTxnRetryLimit+1 || len(got) != 1 {
-		t.Fatalf("calls=%d attempts=%v; want more than %d calls in one attempt", calls, got, benchTxnRetryLimit+1)
+	if got := runs(); calls != 1 || len(got) != 1 {
+		t.Fatalf("calls=%d attempts=%v; want one blocked execution in one attempt", calls, got)
 	}
 }
 

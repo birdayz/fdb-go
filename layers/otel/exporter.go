@@ -47,8 +47,8 @@ const (
 	maxIndexedKeyBytes   = 1024
 	maxIndexedValueBytes = 64000
 
-	// fidelityField is an unknown ResourceSpans field holding the original
-	// resource/scope/span attribute lists when the indexed copy was canonicalized.
+	// fidelityField identifies legacy records' internal ResourceSpans metadata.
+	// New records keep it in Envelope.fidelity instead.
 	fidelityField protowire.Number = 536870911
 )
 
@@ -63,7 +63,7 @@ type ExporterConfig struct {
 	RecordCompression  string `json:"record_compression" yaml:"record_compression"`
 	BulkIndexConflicts bool   `json:"bulk_index_conflicts" yaml:"bulk_index_conflicts"`
 	// EnableMessageDeltas stores each GenAI message once per tenant as Message
-	// records and replaces the span attribute with a manifest of digests.
+	// records and replaces the span attribute with a manifest of writer/sequence IDs.
 	EnableMessageDeltas bool `json:"enable_message_deltas" yaml:"enable_message_deltas"`
 	// EnableMessageFullText decomposes GenAI messages (as EnableMessageDeltas
 	// does) and indexes their text and span back references for search.
@@ -205,10 +205,15 @@ type Exporter struct {
 }
 
 func NewExporter(ctx context.Context, cfg ExporterConfig) (*Exporter, error) {
+	return newExporter(ctx, cfg, OpenFDBContext)
+}
+
+func newExporter(ctx context.Context, cfg ExporterConfig, open func(context.Context, Config, string) (*FDBBackend, error)) (*Exporter, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	b, err := OpenFDBContext(ctx, cfg.backendConfig(), cfg.ClusterFile)
+	ctx = withExporterTxns(ctx, cfg.TransactionTimeout)
+	b, err := open(ctx, cfg.backendConfig(), cfg.ClusterFile)
 	if err != nil {
 		return nil, err
 	}
@@ -431,7 +436,7 @@ func partitionExport(items []exportSpan, size int) []preparedBatch {
 
 type exportSpan struct {
 	key        string
-	references int // Envelope.messages entries
+	references int // references packed in Envelope.ref_chunks
 	message    proto.Message
 	logical    int64
 	cost       int
@@ -636,28 +641,23 @@ func (e *Exporter) prepareExport(ctx context.Context, in []*tracepb.ResourceSpan
 					span.Attributes = spanSet.indexed
 				}
 				single := &tracepb.ResourceSpans{Resource: resource, SchemaUrl: rs.SchemaUrl, ScopeSpans: []*tracepb.ScopeSpans{{Scope: scope, SchemaUrl: ss.SchemaUrl, Spans: []*tracepb.Span{span}}}}
-				// Preserve wrapper unknown fields; a foreign fidelity field would be ambiguous.
-				rsUnknown, _, _, err := splitFidelity(rs.ProtoReflect().GetUnknown())
-				if err != nil {
-					return nil, stats, err
-				}
-				single.ProtoReflect().SetUnknown(rsUnknown)
+				// Producer unknown fields never share the internal fidelity namespace.
+				single.ProtoReflect().SetUnknown(rs.ProtoReflect().GetUnknown())
 				single.ScopeSpans[0].ProtoReflect().SetUnknown(ss.ProtoReflect().GetUnknown())
 				changed := [3]bool{resourceSet.changed, scopeSet.changed, spanSet.changed}
+				var payload []byte
 				if changed != [3]bool{} {
-					payload, err := fidelityPayload(changed, rs.GetResource().GetAttributes(), ss.GetScope().GetAttributes(), sp.Attributes)
+					var err error
+					payload, err = fidelityPayload(changed, rs.GetResource().GetAttributes(), ss.GetScope().GetAttributes(), sp.Attributes)
 					if err != nil {
 						return nil, stats, err
 					}
-					unknown := append([]byte(nil), rsUnknown...)
-					unknown = protowire.AppendTag(unknown, fidelityField, protowire.BytesType)
-					single.ProtoReflect().SetUnknown(protowire.AppendBytes(unknown, payload))
 				}
 				var refs []messageUse
 				if uses != nil {
 					refs = uses[spanKey(sp)]
 				}
-				item, err := e.envelope(single, refs, resourceSet.indexed, scopeSet.indexed, spanSet.indexed)
+				item, err := e.envelope(single, payload, refs, resourceSet.indexed, scopeSet.indexed, spanSet.indexed)
 				if err != nil {
 					return nil, stats, err
 				}
@@ -731,7 +731,7 @@ func validSpanIdentity(b []byte, size int) bool {
 	return false
 }
 
-func (e *Exporter) envelope(single *tracepb.ResourceSpans, refs []messageUse, lists ...[]*commonpb.KeyValue) (exportSpan, error) {
+func (e *Exporter) envelope(single *tracepb.ResourceSpans, fidelity []byte, refs []messageUse, lists ...[]*commonpb.KeyValue) (exportSpan, error) {
 	sp := single.ScopeSpans[0].Spans[0]
 	if !validSpanIdentity(sp.TraceId, 16) || !validSpanIdentity(sp.SpanId, 8) {
 		return exportSpan{}, fail("admission", "OTLP identity", "expected nonzero 16-byte trace and 8-byte span identifiers")
@@ -743,7 +743,7 @@ func (e *Exporter) envelope(single *tracepb.ResourceSpans, refs []messageUse, li
 	if err != nil {
 		return exportSpan{}, wrap("admission", "OTLP encode", err)
 	}
-	cost := 2048 + len(wire)
+	cost := 2048 + len(wire) + len(fidelity)
 	for _, list := range lists {
 		for _, kv := range list {
 			_, value := CanonicalValue(kv.Value)
@@ -775,14 +775,25 @@ func (e *Exporter) envelope(single *tracepb.ResourceSpans, refs []messageUse, li
 	m.Set(f.ByName("span_id"), protoreflect.ValueOfString(span))
 	m.Set(f.ByName("start_ns"), protoreflect.ValueOfInt64(int64(sp.StartTimeUnixNano)))
 	m.Set(f.ByName("otlp"), protoreflect.ValueOfBytes(wire))
+	// Presence, including an empty payload, distinguishes new from legacy framing.
+	m.Set(f.ByName("fidelity"), protoreflect.ValueOfBytes(fidelity))
 	if len(refs) > 0 {
 		setEnvelopeRefs(m, refs)
 	}
-	return exportSpan{key: trace + span, references: len(refs), message: m, logical: int64(len(wire)), cost: cost}, nil
+	return exportSpan{key: trace + span, references: len(refs), message: m, logical: int64(len(wire) + len(fidelity)), cost: cost}, nil
+}
+
+func restoreEnvelopeOTLP(r protoreflect.Message) (*tracepb.ResourceSpans, error) {
+	f := r.Descriptor().Fields()
+	wire := r.Get(f.ByName("otlp")).Bytes()
+	if fidelity := f.ByName("fidelity"); fidelity != nil && r.Has(fidelity) {
+		return restoreOTLP(wire, r.Get(fidelity).Bytes())
+	}
+	return restoreOTLP(wire)
 }
 
 // restoreOTLP returns the stored span with its original attribute lists.
-func restoreOTLP(wire []byte) (*tracepb.ResourceSpans, error) {
+func restoreOTLP(wire []byte, fidelity ...[]byte) (*tracepb.ResourceSpans, error) {
 	rs := &tracepb.ResourceSpans{}
 	if err := proto.Unmarshal(wire, rs); err != nil {
 		return nil, wrap("corruption", "OTLP decode", err)
@@ -790,13 +801,23 @@ func restoreOTLP(wire []byte) (*tracepb.ResourceSpans, error) {
 	if len(rs.ScopeSpans) != 1 || len(rs.ScopeSpans[0].Spans) != 1 {
 		return nil, fail("corruption", "OTLP decode", "expected one stored span")
 	}
-	rest, payload, found, err := splitFidelity(rs.ProtoReflect().GetUnknown())
-	if err != nil {
-		return nil, err
-	}
-	rs.ProtoReflect().SetUnknown(rest)
-	if !found {
-		return rs, nil
+	var payload []byte
+	if len(fidelity) > 0 {
+		payload = fidelity[0]
+		if len(payload) == 0 {
+			return rs, nil
+		}
+	} else {
+		// Only records predating Envelope.fidelity use the legacy unknown tag.
+		rest, legacy, found, err := splitFidelity(rs.ProtoReflect().GetUnknown())
+		if err != nil {
+			return nil, err
+		}
+		rs.ProtoReflect().SetUnknown(rest)
+		if !found {
+			return rs, nil
+		}
+		payload = legacy
 	}
 	var arr commonpb.ArrayValue
 	if err := proto.Unmarshal(payload, &arr); err != nil {
@@ -896,7 +917,7 @@ func (e *Exporter) LoadSpanOTLP(ctx context.Context, traceID, spanID string) (*t
 			return nil, err
 		}
 		r := record.Record.ProtoReflect()
-		out, err = restoreOTLP(r.Get(r.Descriptor().Fields().ByName("otlp")).Bytes())
+		out, err = restoreEnvelopeOTLP(r)
 		if err != nil || b.cfg.Messages == messagesNone {
 			return nil, err
 		}
@@ -908,7 +929,10 @@ func (e *Exporter) LoadSpanOTLP(ctx context.Context, traceID, spanID string) (*t
 		return nil, nil
 	}
 	_, err := b.db.Run(ctx, load)
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // ResourceSpansFromReadOnly converts SDK spans to OTLP, grouping by resource

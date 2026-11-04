@@ -2802,21 +2802,17 @@ need their own minimal regression before a core behavior change; extension reque
 are not Java parity defects. No Go client correctness bug has been established by
 the trace experiment.
 
-- [ ] **Record Layer metadata validation — dispatch gap.**
-  `IndexMaintainerFactory.ValidateIndexOptions` promises metadata-build validation,
-  but `index_validator.go:477–505` dispatches the factory hook only for VECTOR paths;
-  `validateIndexType` accepts other custom types without it. Evolution validation
-  already dispatches factories. Add an external factory whose option validator
-  rejects, prove ordinary metadata construction invokes it, and fix general dispatch
-  without breaking intentionally loadable metadata for unlinked plugins. Constructors
-  must remain defensive. Inspect Java 4.14.2.0 before changing shared behavior.
-- [ ] **Planner safety — fail closed for opaque custom index formats.**
-  `pkg/relational/core/embedded/cascades_generator.go`'s `buildMatchCandidates` excludes
-  selected built-ins but puts remaining types into VALUE-style candidates. A custom
-  maintainer can own a non-VALUE physical layout. Add explicit capability/candidacy
-  classification, an opaque-plugin negative plan/execution regression, and a positive
-  opted-in VALUE-compatible plugin control. Keep the OTel typed API outside SQL until
-  that contract exists; do not parse arbitrary custom bytes as ordinary index entries.
+- [x] **Record Layer metadata validation — general factory dispatch.**
+  Metadata construction now invokes registered factories' option validators, not
+  only VECTOR's, while keeping metadata loadable for unlinked plugins. External
+  rejecting-factory and defensive-constructor coverage is in
+  `pkg/recordlayer/custom_maintainer_seam_test.go`; evolution dispatch is preserved.
+- [x] **Planner safety — fail closed for opaque custom index formats.**
+  SQL candidacy uses the explicit built-in VALUE-compatible allowlist in
+  `IsValueScanCandidateIndexType`; custom/exotic layouts are not decoded as VALUE.
+  The production-tied exhaustive census, embedded plan tests and real-FDB SQL
+  opaque-index/VALUE-control execution regression pin that boundary. This does
+  not expose the OTel typed API through SQL or add plugin opt-in candidacy.
 - [ ] **Record Layer external WRITE_ONLY dispatch — embedding hazard.**
   `StandardIndexMaintainer.UpdateWhileWriteOnly` calls its own `Update`; Go embedding
   does not dynamically dispatch to an external maintainer's override. An external
@@ -2851,12 +2847,11 @@ the trace experiment.
   carrying state, isolation, common budgets, continuations, metrics and decorator-safe
   capability lookup. Exercise READABLE/WRITE_ONLY/DISABLED and unsupported scan kinds;
   do not require every new index package to duplicate these guarantees.
-- [ ] **Record Layer external online-build helpers — extension request.**
-  `atomic_index_helpers.go:updateWhileWriteOnlyNonIdempotent` and its range/source-index
-  coordination are private. Expose a supported callback/helper contract for external
-  nonidempotent maintainers, including by-records/by-index builds and online
-  insert/update/delete races. This is an API limitation, not evidence the existing
-  built-in nonidempotent indexes are incorrect.
+- [ ] **Record Layer external online-build concurrency coverage — extension request.**
+  `UpdateWhileWriteOnlyNonIdempotent` now exposes the callback helper and its
+  range/source-index coordination; `custom_maintainer_seam_test.go` covers external
+  dispatch. Broader by-records/by-index online insert/update/delete race coverage
+  remains separate extension work, not evidence the built-in indexes are incorrect.
 - [ ] **Record Layer scan-budget semantics — document soft limits and support strict callers.**
   `index_cursor_limits.go:tryScanLimits` checks previously consumed bytes and allows an
   initial record; source exhaustion can therefore follow a final record exceeding

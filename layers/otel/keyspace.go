@@ -59,8 +59,12 @@ func (k runKeys) owner() fdb.Key { return k.legacy.Sub("owner").FDBKey() }
 // runKeySpace is the directory_v1 KeySpace: application / run / one integer
 // constant per kind of data. The application and run directories are Java's
 // DirectoryLayerDirectory: names resolved through the directory layer of db.
-func runKeySpace(db *recordlayer.FDBDatabase) (*keyspace.KeySpace, error) {
-	run := recordlayer.DirectoryLayerDirectory("run", db)
+func runKeySpace(db *recordlayer.FDBDatabase, configure ...recordlayer.TransactionConfigurer) (*keyspace.KeySpace, error) {
+	resolver := recordlayer.NewKeySpaceResolver(db, recordlayer.ExtendedDirectoryLayerGlobal{})
+	if len(configure) > 0 {
+		resolver = resolver.WithTransactionConfigurer(configure[0])
+	}
+	run := keyspace.ResolverDirectory("run", resolver)
 	for _, d := range []struct {
 		name  string
 		value int64
@@ -69,7 +73,7 @@ func runKeySpace(db *recordlayer.FDBDatabase) (*keyspace.KeySpace, error) {
 			return nil, err
 		}
 	}
-	app := recordlayer.DirectoryLayerDirectory("application", db)
+	app := keyspace.ResolverDirectory("application", resolver)
 	if err := app.AddSubdirectory(run); err != nil {
 		return nil, err
 	}
@@ -115,7 +119,7 @@ func openRunKeys(ctx context.Context, db *recordlayer.FDBDatabase, run, layout s
 		k.queryKey = legacy.Sub("query_v1", "continuation_hmac_v1").FDBKey()
 		return k, nil
 	}
-	ks, err := runKeySpace(db)
+	ks, err := runKeySpace(db, recordTransactionConfigurer(ctx))
 	if err != nil {
 		return k, err
 	}

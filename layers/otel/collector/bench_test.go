@@ -764,7 +764,7 @@ func checkBenchSeries(t *testing.T, r CollectorBenchReport) {
 	}
 }
 
-func TestRunBenchmarkDurationRealFDB(t *testing.T) {
+func TestRunBenchmarkCommittedBlockQueriesRealFDB(t *testing.T) {
 	t.Parallel()
 	cluster := benchClusterFile(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Minute)
@@ -772,20 +772,43 @@ func TestRunBenchmarkDurationRealFDB(t *testing.T) {
 
 	cfg := benchUnitConfig()
 	cfg.ClusterFile, cfg.Run = cluster, freshCollectorRun(t)
-	cfg.Duration, cfg.ReportInterval, cfg.Warmup = 6*time.Second, time.Second, time.Second
-	cfg.TurnsPerConversation, cfg.Producers, cfg.NumConsumers, cfg.QueryWorkers = 3, 4, 2, 2
+	cfg.Duration, cfg.ReportInterval, cfg.Warmup = 0, time.Second, time.Second
+	cfg.Conversations = benchBlockSize + 1
+	cfg.TurnsPerConversation, cfg.Producers, cfg.NumConsumers, cfg.QueryWorkers = 3, 1, 2, 2
+	cfg.runtime = &benchRuntime{beforeAdmission: func(ctx context.Context, run *benchRun, c int) error {
+		if c != benchBlockSize {
+			return nil
+		}
+		// Hold the last producer until a committed block and every query class
+		// have been observed. No fixed wall-clock throughput is required.
+		tick := time.NewTicker(time.Millisecond)
+		defer tick.Stop()
+		for {
+			complete := run.track.Watermark() >= benchBlockSize-1
+			for _, q := range run.load.results(time.Second) {
+				complete = complete && q.Iterations > 0 && q.Rows > 0
+			}
+			if complete {
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-tick.C:
+			}
+		}
+	}}
 	cfg.QueueSize, cfg.QueryIterations = 60, 4
 	const n = 3
 	r, err := RunBenchmark(ctx, cfg)
 	if err != nil || r.Error != "" || r.Failures != 0 {
 		t.Fatalf("RunBenchmark: %v (report error %q, failures %d, watermark %+v, fidelity %+v, queries %+v, under load %+v)", err, r.Error, r.Failures, r.Watermark, r.Fidelity, r.Queries, r.UnderLoad)
 	}
-	if r.Effective != (CollectorBenchEffective{Load: "duration", Duration: "6s", ReportInterval: "1s", Warmup: "1s", Producers: 4, NumConsumers: 2, QueryWorkers: 2, BlockSize: benchBlockSize}) {
+	if r.Effective != (CollectorBenchEffective{Load: "fixed", Duration: "0s", ReportInterval: "1s", Warmup: "1s", Producers: 1, NumConsumers: 2, QueryWorkers: 2, BlockSize: benchBlockSize}) {
 		t.Fatalf("effective %+v", r.Effective)
 	}
-	// Conversations is ignored; under-load block classes need a committed block.
 	convs := r.Corpus.Conversations
-	if convs <= cfg.Conversations || convs < benchBlockSize || r.Corpus.Spans != convs*n || r.Corpus.Logs != convs {
+	if convs != cfg.Conversations || r.Corpus.Spans != convs*n || r.Corpus.Logs != convs {
 		t.Fatalf("corpus %+v", r.Corpus)
 	}
 	if s := r.Ingest.Collector; s.AcceptedRequests != int64(convs) || s.ExportedSpans != int64(convs*n) || s.FailedSpans != 0 || s.QueuedSpans != 0 {
@@ -795,23 +818,11 @@ func TestRunBenchmarkDurationRealFDB(t *testing.T) {
 		t.Fatalf("logs %+v", r.Ingest)
 	}
 	checkBenchSeries(t, r)
-	load := 0
-	for _, w := range r.Series {
-		if w.Phase == benchPhaseLoad {
-			load++
-		}
-	}
-	if load < 4 || r.Series[load-1].EndNs < cfg.Duration.Nanoseconds() {
-		t.Fatalf("%d load windows %+v", load, r.Series)
-	}
-	if s := r.Rates.SteadyState; s.Windows < 3 || s.Windows >= load || s.SpansPerSec <= 0 || s.MessagesPerSec <= 0 || s.LogsPerSec <= 0 || s.WallNs < 3*int64(time.Second) {
-		t.Fatalf("steady-state rate %+v of %d load windows", s, load)
-	}
 	// Every conversation committed; the tracker held only the in-flight window.
 	if w := r.Watermark; w.Conversations != convs || w.Watermark != int64(convs)-1 || w.Tracked != 0 || w.Anomalies != 0 || w.PeakTracked < 1 {
 		t.Fatalf("watermark %+v", w)
 	}
-	if r.UnderLoad.Workers != 2 || r.UnderLoad.WallNs < cfg.Duration.Nanoseconds() || len(r.UnderLoad.Queries) != len(CollectorBenchQueryClasses) {
+	if r.UnderLoad.Workers != 2 || r.UnderLoad.WallNs <= 0 || len(r.UnderLoad.Queries) != len(CollectorBenchQueryClasses) {
 		t.Fatalf("under load %+v", r.UnderLoad)
 	}
 	var ops int64

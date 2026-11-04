@@ -14,6 +14,7 @@ go_test(
         "covering_index_test.go",
         "covering_index_value_fidelity_fdb_test.go",
         "covering_plan_assertions_test.go",
+        "custom_index_candidacy_fdb_test.go",
         "derived_limit_rfc128_test.go",
         "explain_unplannable_fdb_test.go",
         "guardiann_fdb_test.go",

@@ -19,6 +19,36 @@ import (
 	"fdb.dev/pkg/recordlayer"
 )
 
+// readRawTextIndex returns only the final transaction attempt's index rows.
+// afterRead can force a retry after a completed subspace has produced rows.
+func readRawTextIndex(ctx context.Context, db *recordlayer.FDBDatabase, s *TextIndexConformanceStore, afterRead func(int) error) ([]string, error) {
+	result, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		var attempt []string
+		for _, ss := range []subspace.Subspace{
+			s.Keyspace.Sub(recordlayer.IndexKey, s.TextIndex.SubspaceTupleKey()),
+			s.Keyspace.Sub(recordlayer.IndexSecondarySpaceKey, s.TextIndex.SubspaceTupleKey()),
+		} {
+			kvs, err := rtx.Transaction().GetRange(ss, fdb.RangeOptions{}).GetSliceWithError()
+			if err != nil {
+				return nil, err
+			}
+			for _, kv := range kvs {
+				attempt = append(attempt, hex.EncodeToString(kv.Key[len(s.Keyspace.Bytes()):])+"="+hex.EncodeToString(kv.Value))
+			}
+			if afterRead != nil {
+				if err := afterRead(len(attempt)); err != nil {
+					return nil, err
+				}
+			}
+		}
+		return attempt, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.([]string), nil
+}
+
 // Go's TEXT maintainer reads the token maps of one record concurrently
 // (TEXT_INDEX_UPDATE pipeline, as Java's TextIndexMaintainer). The index it
 // writes must be Java's byte for byte, bunch layout included.
@@ -61,22 +91,7 @@ var _ = Describe("TEXT index pipelined update conformance", func() {
 	// rawTextIndex is every key-value of the index's primary and secondary
 	// (tokenizer version) subspaces, keys relative to the store.
 	rawTextIndex := func(s *TextIndexConformanceStore) []string {
-		var out []string
-		_, err := env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
-			for _, ss := range []subspace.Subspace{
-				s.Keyspace.Sub(recordlayer.IndexKey, s.TextIndex.SubspaceTupleKey()),
-				s.Keyspace.Sub(recordlayer.IndexSecondarySpaceKey, s.TextIndex.SubspaceTupleKey()),
-			} {
-				kvs, err := rtx.Transaction().GetRange(ss, fdb.RangeOptions{}).GetSliceWithError()
-				if err != nil {
-					return nil, err
-				}
-				for _, kv := range kvs {
-					out = append(out, hex.EncodeToString(kv.Key[len(s.Keyspace.Bytes()):])+"="+hex.EncodeToString(kv.Value))
-				}
-			}
-			return nil, nil
-		})
+		out, err := readRawTextIndex(ctx, env.RecordDB, s, nil)
 		Expect(err).NotTo(HaveOccurred())
 		return out
 	}
@@ -92,6 +107,27 @@ var _ = Describe("TEXT index pipelined update conformance", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(CompareTextIndexEntries(goEntries, javaEntries)).To(Succeed(), step)
 	}
+
+	It("discards a partial raw index dump when a subspace read is retried", func() {
+		Expect(goStore.SaveCustomerGo(ctx, &demopb.Customer{CustomerId: proto.Int64(1), Name: proto.String("alpha beta gamma")})).To(Succeed())
+		baseline := rawTextIndex(goStore)
+		Expect(baseline).NotTo(BeEmpty())
+		faults, partialRows, reads := 0, 0, 0
+		got, err := readRawTextIndex(ctx, env.RecordDB, goStore, func(rows int) error {
+			reads++
+			if faults == 0 {
+				faults++
+				partialRows = rows
+				return fdb.Error{Code: 1020}
+			}
+			return nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(faults).To(Equal(1))
+		Expect(partialRows).To(BeNumerically(">", 0))
+		Expect(reads).To(BeNumerically(">=", 3))
+		Expect(got).To(Equal(baseline))
+	})
 
 	It("writes Java's index for records with many distinct tokens, through inserts, a token-set change and a delete", func() {
 		const records = 45

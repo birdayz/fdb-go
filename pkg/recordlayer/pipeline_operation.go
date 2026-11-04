@@ -55,7 +55,7 @@ func DefaultPipelineSizer(op PipelineOperation) int {
 // GetPipelineSizer is FDBRecordStore.getPipelineSizer (FDBRecordStore.java:
 // 2359-2361): the builder's sizer, DefaultPipelineSizer when none was set.
 func (store *FDBRecordStore) GetPipelineSizer() PipelineSizer {
-	if store.pipelineSizer == nil {
+	if store == nil || store.pipelineSizer == nil {
 		return DefaultPipelineSizer
 	}
 	return store.pipelineSizer
