@@ -291,7 +291,8 @@ type CollectorBenchCorpus struct {
 // CollectorBenchIngest reports phase 1, from the first produced conversation
 // until every span and log is flushed. Export sums the ExportStats of every
 // successful sink call; its MessageDeltas.UniqueMessages counts per-batch
-// uniques, while MessageFTS.IndexedBlobs counts blobs first indexed in FDB.
+// uniques, while Messages.Written/Present count committed new/already-present
+// message headers (not raw input elements or abandoned multipart tails).
 // Logs are exported in batches during ingest; LogWallNs sums those calls.
 type CollectorBenchIngest struct {
 	IngestWallNs      int64               `json:"ingest_wall_ns"`
@@ -1094,6 +1095,14 @@ func runBenchmark(ctx context.Context, cfg CollectorBenchConfig, rep *CollectorB
 	return ctx.Err()
 }
 
+type benchmarkIngestStartKey struct{}
+
+// WithBenchmarkIngestStart attaches an instrumentation callback invoked once,
+// after exporter setup at the actual ingest clock origin, before producers run.
+func WithBenchmarkIngestStart(ctx context.Context, start func()) context.Context {
+	return context.WithValue(ctx, benchmarkIngestStartKey{}, start)
+}
+
 // ingest runs phase 1 and returns its first error.
 func (r *benchRun) ingest(ctx context.Context, rep *CollectorBenchReport) error {
 	cfg := r.cfg
@@ -1101,6 +1110,9 @@ func (r *benchRun) ingest(ctx context.Context, rep *CollectorBenchReport) error 
 	defer cancel(nil)
 	r.prevCPU = readBenchCPU()
 	r.start = r.now()
+	if start, ok := ctx.Value(benchmarkIngestStartKey{}).(func()); ok {
+		start()
+	}
 	limit := cfg.Conversations
 	var deadline time.Time
 	if cfg.Duration > 0 {

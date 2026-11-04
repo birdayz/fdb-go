@@ -496,8 +496,13 @@ The shared16MiB forensic/1GiB receipt bounds and SESSION_FATAL OOM handling are
 unchanged. The original09:49:26–11:49:26Z absolute lease,10:56:06Z setup cutoff
 and11:04:26Z measured-entry cutoff are not reset or extended. Efficiency uses
 the new same-profile1x baseline regardless of run order; no historical1GiB
-baseline,3x result or sustained20k claim is permitted. Runtime results for this
-follow-up remain UNVERIFIED until the owner runs it.
+baseline,3x result or sustained20k claim is permitted. This follow-up was attempted:
+its fresh200k gate passed, but the750k measured wave failed strict client health;
+no fresh1x baseline started before the original setup reserve expired. The result
+is INCONCLUSIVE, not accepted throughput or a general memory-safety proof. See
+[the observed outcome](../../../../../docs/benchmarks/otel-ingest-25k-k8s-cilium-scaling.md)
+and retained `/var/tmp/fdb-perf-scaling.v4O6xf/log2g/native-analysis.json` evidence.
+This history grants no renewed campaign authorization or20k readiness claim.
 
 ### Optional managed cleanup mode
 

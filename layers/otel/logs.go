@@ -41,9 +41,10 @@ const (
 	maxLogRawBytes    = 8 << 20
 	maxLogStoredBytes = 4 << 20
 	maxLogEventID     = 256
-	// logBatchBudget is the soft per-transaction write estimate; one larger
-	// log still commits alone, well under FDB's 10MB transaction limit.
-	logBatchBudget = 2 << 20
+	// Larger singletons must also pass expanded-write admission, reserving
+	// space below FDB's 10MB limit for native conflicts and replacement clears.
+	logBatchBudget      = 2 << 20
+	maxLogTxnWriteBytes = 8_000_000
 
 	// LogScopeRecord scopes log-record attributes; LogScopeIntrinsic holds
 	// indexed top-level fields (event_name) under a reserved scope.
@@ -494,9 +495,13 @@ func (b *FDBBackend) prepareLog(l LogRecord, receiver int64) (preparedLog, error
 		p.stored += int64(len(c))
 	}
 	// Writes plus the clear of a replaced log's equally sized old entries.
-	p.cost = 1024 + int(p.stored) + len(traceKey)
+	p.cost = 1024 + 2*int(p.stored) + 2*len(traceKey)
 	for _, ps := range postings {
 		p.cost += 2 * (len(ps.Key) + len(ps.Value))
+	}
+	p.cost += (len(chunks) + 1) * 2 * (len(b.keys.logs.Bytes()) + len(l.EventID) + 64)
+	if p.cost > maxLogTxnWriteBytes {
+		return preparedLog{}, failf("admission", op, "expanded transaction writes of %d bytes exceed %d", p.cost, maxLogTxnWriteBytes)
 	}
 	return p, nil
 }

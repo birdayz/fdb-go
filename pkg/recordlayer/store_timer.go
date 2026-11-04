@@ -153,7 +153,8 @@ var (
 
 	// Go-only TEXT scan read costs, so a caller can budget a text query: the
 	// raw BunchedMap key-values a text scan read, their key+value bytes, and
-	// the times a leapfrog intersection reopened a token scan further ahead.
+	// leapfrog seek requests (including in-memory bunch repositioning, not
+	// only physical range reopenings). Use KV/byte counts for read costs.
 	CountTextScanKeyValues = Event{"text_scan_key_values", "Text Scan Key-Values Read", KindCount}
 	CountTextScanBytes     = Event{"text_scan_bytes", "Text Scan Bytes Read", KindSize}
 	CountTextScanSeeks     = Event{"text_scan_seeks", "Text Scan Seeks", KindCount}

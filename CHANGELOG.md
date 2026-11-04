@@ -116,6 +116,14 @@ Each is described in full under Compatibility or Changed below.
   `CommitTransactionRef.Read_conflict_ranges_disabled` a `SpanContext` (RFC-276).
 
 ### Compatibility
+- **Go-only Brotli records:** opt-in `SetGoOnlyBrotliCompression` writes compression
+  version 2, rejected by Java and default Go readers. Default version-1 zlib bytes
+  are unchanged. Before rollback or mixed-engine use, rewrite opted-in data using
+  compatible serialization; see [the compression boundary](DIVERGENCES.md#brotli-record-compression-go-only-extension).
+- **KeySpace flat-prefix cutover:** paths now use Java-flat addresses, not earlier
+  Go nested prefixes. No automatic migration occurs; retain the legacy accessor
+  until deliberate export/import/cutover. See [upgrade instructions](docs/upgrade.md#earlier-go-keyspace-path-prefixes)
+  and [the boundary](DIVERGENCES.md#key-space-paths-hold-the-stored-value-rfc-275).
 - **Version-dependent record keys (RFC-275):** native `VersionKey()` primary-key columns are
   unsupported, as in Java; formerly accepted Go-only metadata is now refused. Complete supplied
   versions participate in maintained-count keys and reach primary-key functions such as

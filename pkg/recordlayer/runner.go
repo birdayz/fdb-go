@@ -272,12 +272,7 @@ func (r *FDBDatabaseRunner) runOnce(ctx context.Context, fn func(rtx *FDBRecordC
 		return nil, err
 	}
 
-	// Run pre-commit checks
-	if err := recordCtx.runCommitChecks(); err != nil {
-		tx.Cancel()
-		return nil, err
-	}
-
+	// Drain commit checks through writer quiescence before sealing.
 	if err := recordCtx.sealRecordWrites(); err != nil {
 		tx.Cancel()
 		return nil, err

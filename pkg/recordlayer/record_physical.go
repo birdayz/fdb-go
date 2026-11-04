@@ -46,6 +46,9 @@ type recordPhysicalRecord struct {
 
 func (rc *FDBRecordContext) recordWriteContext() context.Context {
 	if rc.ctx != nil {
+		if rc.directCommitOwned.Load() {
+			return context.WithoutCancel(rc.ctx)
+		}
 		return rc.ctx
 	}
 	return context.Background()
@@ -87,19 +90,33 @@ func (rc *FDBRecordContext) beginRecordWrite() (func(), error) {
 // The zero observation and seal are atomic; there is no Add/Wait race.
 func (rc *FDBRecordContext) sealRecordWrites() error {
 	s := &rc.recordPhysical
+	checked := 0
 	for {
+		if err := rc.runPendingCommitChecks(&checked); err != nil {
+			return err
+		}
 		if err := rc.recordWriteContext().Err(); err != nil {
 			return err
 		}
+		// Registration precedes admission in this lock order; suppliers may
+		// admit writes. No check or user hook runs with either mutex held.
+		rc.commitMu.Lock()
 		s.mu.Lock()
+		if checked != len(rc.commitChecks) {
+			s.mu.Unlock()
+			rc.commitMu.Unlock()
+			continue
+		}
 		if s.active == 0 {
 			s.sealed = true
 			s.mu.Unlock()
+			rc.commitMu.Unlock()
 			rc.physicalHook("sealed", nil)
 			return nil
 		}
 		idle := s.idle
 		s.mu.Unlock()
+		rc.commitMu.Unlock()
 		select {
 		case <-idle:
 		case <-rc.recordWriteContext().Done():

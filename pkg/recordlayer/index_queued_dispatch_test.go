@@ -631,6 +631,71 @@ var _ = Describe("Queued store dispatch", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	}
+	for _, route := range []string{"Run", "runner", "direct"} {
+		It("drains overflow checks registered by a joined commit-check writer through "+route, func() {
+			md, index := makeMetadata()
+			root := specSubspace()
+			seed(md, index, root)
+			timer := NewStoreTimer()
+			checks := 0
+			body := func(rc *FDBRecordContext) (any, error) {
+				rc.SetTimer(timer)
+				rc.SetPendingWriteQueueOptions(PendingWriteQueueOptions{MaximumSize: 1, DisableIndexOnOverflow: true})
+				store := open(rc, md, root)
+				rc.AddCommitCheck(func() error {
+					checks++
+					joined := make(chan error, 1)
+					go func() {
+						_, err := store.SaveRecord(order(1, 7))
+						if err == nil {
+							_, err = store.SaveRecord(order(2, 7))
+						}
+						joined <- err
+					}()
+					if err := <-joined; err != nil {
+						return err
+					}
+					if store.GetIndexState(index.Name) != IndexStateWriteOnlyWithQueue {
+						return fmt.Errorf("overflow disabled before deferred check")
+					}
+					return nil
+				})
+				return nil, nil
+			}
+			var err error
+			switch route {
+			case "Run":
+				_, err = sharedDB.Run(ctx, body)
+			case "runner":
+				_, err = NewFDBDatabaseRunner(sharedDB).RunWithRetry(ctx, body)
+			case "direct":
+				rc, openErr := NewFDBDatabaseRunner(sharedDB).OpenContext(ctx)
+				Expect(openErr).NotTo(HaveOccurred())
+				defer rc.Cancel()
+				_, err = body(rc)
+				if err == nil {
+					err = rc.Commit()
+				}
+			}
+			Expect(err).NotTo(HaveOccurred())
+			Expect(checks).To(Equal(1))
+			Expect(timer.GetCount(CountPendingWritesQueueOverflowDisabledIndex)).To(Equal(int64(1)))
+			_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+				store := open(rc, md, root)
+				Expect(store.GetIndexState(index.Name)).To(Equal(IndexStateDisabled))
+				empty, err := store.indexingPendingWriteQueue(index, 100).IsQueueEmpty(rc)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(empty).To(BeTrue())
+				for _, id := range []int64{1, 2} {
+					record, err := store.LoadRecord(tuple.Tuple{int64(7), id})
+					Expect(err).NotTo(HaveOccurred())
+					Expect(record).NotTo(BeNil())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	}
 	// Java registers the overflow check under DISABLE_INDEX_COMMIT_HOOK + the
 	// index name alone (IndexingPendingWriteQueue.java:213), so of two stores
 	// in one transaction whose same-named indexes both overflow only the first

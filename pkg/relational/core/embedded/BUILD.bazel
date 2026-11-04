@@ -186,6 +186,7 @@ go_test(
         "execution_error_sqlstate_test.go",
         "exists_in_on_plan_test.go",
         "explain_no_silent_degrade_test.go",
+        "explicit_tx_commit_handoff_test.go",
         "explicit_tx_context_test.go",
         "explicit_tx_sql_test.go",
         "float_order_by_sort_retention_test.go",
@@ -583,6 +584,7 @@ go_test(
         "explicit_tx_sql_test.go",
         "abort_panic_test.go",
         "stated_error_render_test.go",
+        "explicit_tx_commit_handoff_test.go",
     ],
     tags = ["resources:cpu:4"],
     deps = [

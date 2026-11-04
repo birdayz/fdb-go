@@ -193,6 +193,14 @@ func bloomKeyFunnel(key tuple.Tuple) ([]byte, error) {
 			sink = append(sink, 0x00)
 		case []byte:
 			sink = append(sink, v...)
+		case tuple.Tuple:
+			packed, err := packTupleElement(v)
+			if err != nil {
+				return nil, err
+			}
+			sink = append(sink, packed...)
+		case fdb.KeyConvertible:
+			sink = append(sink, v.FDBKey()...)
 		case string:
 			sink = append(sink, v...)
 		case float32:
@@ -208,6 +216,12 @@ func bloomKeyFunnel(key tuple.Tuple) ([]byte, error) {
 				sink = append(sink, 1)
 			} else {
 				sink = append(sink, 0)
+			}
+		case uint:
+			if uint64(v) <= math.MaxInt64 {
+				sink = binary.LittleEndian.AppendUint64(sink, uint64(v))
+			} else {
+				sink = append(sink, tuple.Tuple{new(big.Int).SetUint64(uint64(v))}.Pack()...)
 			}
 		case uint64:
 			if v <= math.MaxInt64 {

@@ -260,6 +260,31 @@ type messageSegment struct {
 func segmentMessageText(text string, distinct int) ([]messageSegment, int, error) {
 	const op = "message text segments"
 	tok := messageTokenizer{}
+	if len(text) > messageSegmentBytes {
+		// Raw message bytes are retained separately. Bound non-posting words
+		// without dropping their token position or joining their neighbours.
+		var bounded strings.Builder
+		state := -1
+		for rest := text; len(rest) > 0; {
+			var word string
+			word, rest, state = uniseg.FirstWordInString(rest, state)
+			ts, err := tok.TokenizeToList(word, recordlayer.GlobalMinVersion, recordlayer.TokenizerModeIndex)
+			if err != nil {
+				return nil, 0, typedError("config", op, "tokenizer", err)
+			}
+			switch {
+			case len(ts) == 0:
+				bounded.WriteByte(' ')
+			case len(ts) == 1 && ts[0] == "" && len(word) > maxIndexedTokenBytes+1:
+				bounded.WriteByte(' ')
+				bounded.WriteString(strings.Repeat("x", maxIndexedTokenBytes+1))
+				bounded.WriteByte(' ')
+			default:
+				bounded.WriteString(word)
+			}
+		}
+		text = bounded.String()
+	}
 	whole, err := tok.TokenizeToList(text, recordlayer.GlobalMinVersion, recordlayer.TokenizerModeIndex)
 	if err != nil {
 		return nil, 0, typedError("config", op, "tokenizer", err)
@@ -273,7 +298,10 @@ func segmentMessageText(text string, distinct int) ([]messageSegment, int, error
 			set[t] = true
 		}
 	}
-	if len(whole) == 0 || len(set) <= distinct && len(text) <= messageSegmentBytes {
+	if len(whole) == 0 {
+		return []messageSegment{{}}, 0, nil
+	}
+	if len(set) <= distinct && len(text) <= messageSegmentBytes {
 		return []messageSegment{{text: text, postings: len(set)}}, unindexed, nil
 	}
 	// Byte spans of the tokens: the word segments of the whole text that yield

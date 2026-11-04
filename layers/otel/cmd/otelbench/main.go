@@ -15,7 +15,9 @@ import (
 )
 
 // runCollectorBenchmark is the collector-bench entry point; tests replace it.
-var runCollectorBenchmark = collector.RunBenchmark
+var runCollectorBenchmark = func(ctx context.Context, cfg collector.CollectorBenchConfig, ingestStart func()) (collector.CollectorBenchReport, error) {
+	return collector.RunBenchmark(collector.WithBenchmarkIngestStart(ctx, ingestStart), cfg)
+}
 
 type backendOpener func(context.Context, otel.Config, string, string) (otel.Backend, error)
 
@@ -154,7 +156,9 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 		writer = file
 	}
 	if prof != nil {
-		prof.begin()
+		if !collectorBench {
+			prof.begin()
+		}
 		// The run's report is written either way; a profiling failure only
 		// changes the exit status.
 		defer func() {
@@ -169,7 +173,11 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	if collectorBench {
-		return writeCollectorBench(ctx, bench, writer, file, stderr)
+		ingestStart := func() {}
+		if prof != nil {
+			ingestStart = prof.begin
+		}
+		return writeCollectorBench(ctx, bench, writer, file, stderr, ingestStart)
 	}
 	e := otel.NewEvidence(c, backend, mode, suite, revision)
 	started := time.Now()
@@ -261,8 +269,8 @@ func collectorBenchTimeout(flags *flag.FlagSet, timeout, duration time.Duration)
 	return timeout, nil
 }
 
-func writeCollectorBench(ctx context.Context, bench collector.CollectorBenchConfig, writer io.Writer, file *os.File, stderr io.Writer) int {
-	report, err := runCollectorBenchmark(ctx, bench)
+func writeCollectorBench(ctx context.Context, bench collector.CollectorBenchConfig, writer io.Writer, file *os.File, stderr io.Writer, ingestStart func()) int {
+	report, err := runCollectorBenchmark(ctx, bench, ingestStart)
 	if err != nil && report.Error == "" {
 		report.Error = err.Error()
 	}

@@ -474,11 +474,13 @@ func testExporterTxnDeadlineBound(t *testing.T, fixture txnFixture) {
 // every execution) with code after the body succeeded, as a commit would.
 type retryInjector struct {
 	fdb.Database
-	code, k int
+	code, k         int
+	waitForDeadline bool
 
 	mu           sync.Mutex
 	transactions int
 	minimum      int // fewest executions of a transaction that succeeded
+	bodies       int // successful live transaction bodies, including injected failures
 }
 
 func (r *retryInjector) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
@@ -490,7 +492,15 @@ func (r *retryInjector) TransactCtx(ctx context.Context, fn func(fdb.WritableTra
 	result, err := r.Database.TransactCtx(ctx, func(tx fdb.WritableTransaction) (any, error) {
 		executions++
 		result, err := fn(tx)
+		if err == nil {
+			r.mu.Lock()
+			r.bodies++
+			r.mu.Unlock()
+		}
 		if err == nil && (r.k < 0 || executions <= r.k) {
+			if r.waitForDeadline {
+				<-ctx.Done()
+			}
 			return nil, fdb.Error{Code: r.code}
 		}
 		return result, err
@@ -575,18 +585,39 @@ func testExporterCallsFail(t *testing.T, cluster string) {
 		}
 	})
 	t.Run("context_deadline", func(t *testing.T) {
-		e := exporter(time.Minute)
-		short, stop := context.WithTimeout(ctx, 500*time.Millisecond)
-		defer stop()
-		started := time.Now()
-		for name, err := range calls(e, short) {
-			requireOtelKind(t, err, "canceled")
-			if !errors.Is(err, context.DeadlineExceeded) {
-				t.Fatalf("%s: %v lacks context.DeadlineExceeded", name, err)
-			}
-		}
-		if elapsed := time.Since(started); elapsed > 10*time.Second {
-			t.Fatalf("deadline-bounded calls took %v under a 1m transaction timeout", elapsed)
+		for _, name := range []string{"spans", "logs"} {
+			t.Run(name, func(t *testing.T) {
+				e := openTestExporter(t, ctx, cluster, func(c *ExporterConfig) { c.TransactionTimeout = time.Minute })
+				inject := &retryInjector{Database: e.backend.raw, code: 1009, k: -1, waitForDeadline: true}
+				e.backend.db = recordlayer.NewFDBDatabaseWithTransactor(inject, e.backend.raw)
+				short, stop := context.WithTimeout(ctx, 2*time.Second)
+				defer stop()
+				started := time.Now()
+				var err error
+				if name == "spans" {
+					_, err = e.ExportResourceSpans(short, input)
+				} else {
+					_, err = e.ExportLogs(short, txnTestLogs())
+				}
+				requireOtelKind(t, err, "canceled")
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("%s: %v lacks context.DeadlineExceeded", name, err)
+				}
+				if elapsed := time.Since(started); elapsed > 10*time.Second {
+					t.Fatalf("deadline-bounded call took %v under a 1m transaction timeout", elapsed)
+				}
+				inject.mu.Lock()
+				bodies := inject.bodies
+				inject.mu.Unlock()
+				if bodies == 0 {
+					t.Fatal("deadline was not exercised inside a successful live transaction body")
+				}
+				// The canceled operation must release its slot for a new live call.
+				e.backend.db = recordlayer.NewFDBDatabaseWithTransactor(e.backend.raw, e.backend.raw)
+				if stats, err := e.ExportLogs(ctx, txnTestLogs()); err != nil || stats.Logs != 2 {
+					t.Fatalf("slot recovery: %+v / %v", stats, err)
+				}
+			})
 		}
 	})
 }

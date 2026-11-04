@@ -12,8 +12,6 @@ import json
 from pathlib import Path
 import subprocess
 
-import tiktoken
-
 
 def git(root, *args):
     return subprocess.check_output(["git", "-C", str(root), *args])
@@ -22,8 +20,15 @@ def git(root, *args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--revision", default="4af32c3bc68698fbe26438a2f84f82ba5ec8d23f")
+    parser.add_argument("--source-root", type=Path, default=Path(__file__).resolve().parents[2])
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--tokens", type=int, default=500_000)
     args = parser.parse_args()
-    root = Path(__file__).resolve().parents[2]
+    if args.tokens <= 0:
+        parser.error("--tokens must be positive")
+    import tiktoken
+
+    root = args.source_root
     revision = git(root, "rev-parse", args.revision).decode().strip()
     paths = git(root, "ls-tree", "-r", "--name-only", revision).decode().splitlines()
     code = [p for p in paths if Path(p).parent.as_posix() == "pkg/recordlayer"
@@ -55,10 +60,10 @@ def main():
         offset += len(block)
     encoding = tiktoken.get_encoding("cl100k_base")
     tokens = encoding.encode(b"".join(blocks).decode("utf-8"), disallowed_special=())
-    if len(tokens) < 500_000:
+    if len(tokens) < args.tokens:
         raise ValueError(f"insufficient distinct source: {len(tokens)} tokens")
-    context = encoding.decode_bytes(tokens[:500_000]).decode("utf-8", errors="strict")
-    if encoding.encode(context, disallowed_special=()) != tokens[:500_000]:
+    context = encoding.decode_bytes(tokens[:args.tokens]).decode("utf-8", errors="strict")
+    if encoding.encode(context, disallowed_special=()) != tokens[:args.tokens]:
         raise ValueError("truncated token boundary did not round trip")
     context_bytes = context.encode()
     selected = []
@@ -87,7 +92,7 @@ def main():
         "tokenizer_version": importlib.metadata.version("tiktoken"),
         "encoding": encoding.name,
         "mergeable_ranks_sha256": ranks.hexdigest(),
-        "context_tokens": 500_000,
+        "context_tokens": args.tokens,
         "context_bytes": len(context_bytes),
         "context_sha256": hashlib.sha256(context_bytes).hexdigest(),
         "messages_json_tokens": len(encoding.encode(raw.decode(), disallowed_special=())),
@@ -95,7 +100,7 @@ def main():
         "messages_json_sha256": hashlib.sha256(raw).hexdigest(),
         "sources": selected,
     }
-    dest = root / "pkg/recordlayer/testdata/large_context"
+    dest = args.output_dir or root / "pkg/recordlayer/testdata/large_context"
     dest.mkdir(parents=True, exist_ok=True)
     (dest / "messages_500k.json.gz").write_bytes(gzip.compress(raw, compresslevel=9, mtime=0))
     (dest / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

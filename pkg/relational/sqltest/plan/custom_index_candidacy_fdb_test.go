@@ -270,7 +270,13 @@ func TestFDB_CustomIndexCandidacyFallsBackWithoutReadingOpaquePostings(t *testin
 				t.Fatalf("%s/%s EXPLAIN: %v", fixture.schema, tc.name, err)
 			}
 			if fixture.indexType == sqlOpaqueCandidacyType && tc.name != "value_control" {
-				if strings.Contains(explain, "T_TAGS") || strings.Contains(explain, "T_B") || !strings.Contains(explain, tc.fallback) {
+				fallback := strings.Contains(explain, tc.fallback)
+				if tc.name == "equality" {
+					// T_A stays a populated readable VALUE positive control. Its
+					// full scan is valid only with B's equality left as a residual.
+					fallback = (fallback || strings.Contains(explain, "IndexScan(T_A, [*])")) && strings.Contains(explain, "PredicatesFilter")
+				}
+				if strings.Contains(explain, "T_TAGS") || strings.Contains(explain, "T_B") || !fallback {
 					t.Fatalf("%s/%s: want %s fallback without opaque indexes: %s", fixture.schema, tc.name, tc.fallback, explain)
 				}
 			} else if !strings.Contains(explain, tc.index) || !strings.Contains(explain, "IndexScan") {

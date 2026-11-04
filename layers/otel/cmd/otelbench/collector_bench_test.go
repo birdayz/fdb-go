@@ -28,13 +28,14 @@ func stubCollectorBench(t *testing.T, err error) *[]collector.CollectorBenchConf
 	var calls []collector.CollectorBenchConfig
 	benchDeadlines = nil
 	prev := runCollectorBenchmark
-	runCollectorBenchmark = func(ctx context.Context, cfg collector.CollectorBenchConfig) (collector.CollectorBenchReport, error) {
+	runCollectorBenchmark = func(ctx context.Context, cfg collector.CollectorBenchConfig, ingestStart func()) (collector.CollectorBenchReport, error) {
 		deadline, ok := ctx.Deadline()
 		if !ok {
 			t.Error("collector bench ran without the command deadline")
 		}
 		benchDeadlines = append(benchDeadlines, time.Until(deadline))
 		calls = append(calls, cfg)
+		ingestStart()
 		r := collector.CollectorBenchReport{Tool: collector.CollectorBenchTool, Mode: "collector-bench", Config: cfg.WithDefaults()}
 		return r, err
 	}

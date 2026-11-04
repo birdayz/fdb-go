@@ -116,9 +116,10 @@ type BunchedMapMultiIterator struct {
 	iterErr   error // sticky error from Advance/Get
 
 	// tx and the range bounds let seekTo reopen the range read at a later key.
-	tx         fdb.ReadTransaction
-	beginBytes []byte
-	endBytes   []byte
+	tx            fdb.ReadTransaction
+	logicalBounds bool
+	beginBytes    []byte
+	endBytes      []byte
 
 	// seekTarget, while non-nil, makes advance skip the entries of
 	// seekSubspaceKey that sort before it in scan order (see seekTo).
@@ -199,24 +200,39 @@ func NewBunchedMapMultiIteratorWithCallback(
 		entryIndex:            -1,
 	}
 
+	// A TEXT suffix bounds logical entries, not the physical bunch signpost.
+	// Include the predecessor bunch and filter its decoded entries below.
+	if text, ok := splitter.(*TextSubspaceSplitter); ok {
+		if low, err := text.SubspaceOf(beginBytes); err == nil {
+			it.logicalBounds = len(beginBytes) > len(low.Bytes())+1
+		}
+	}
+	// A resumed range needs the same predecessor-inclusive lower bound.
+	beginSelector := fdb.FirstGreaterOrEqual(fdb.Key(beginBytes))
+	if it.logicalBounds {
+		beginSelector = fdb.LastLessOrEqual(fdb.Key(beginBytes))
+	}
 	// Build the FDB range read based on continuation.
 	var rangeResult fdb.RangeResult
-	if continuation == nil {
+	if continuation == nil && it.logicalBounds {
+		rangeResult = tx.GetRange(fdb.SelectorRange{Begin: fdb.LastLessOrEqual(fdb.Key(beginBytes)), End: fdb.FirstGreaterOrEqual(fdb.Key(endBytes))},
+			fdb.RangeOptions{Reverse: reverse})
+	} else if continuation == nil {
 		rangeResult = tx.GetRange(fdb.KeyRange{Begin: fdb.Key(beginBytes), End: fdb.Key(endBytes)},
 			fdb.RangeOptions{Reverse: reverse})
 	} else {
 		continuationEndpoint := append(append([]byte{}, it.parentKey...), continuation...)
 		if reverse {
 			if bytes.Compare(continuationEndpoint, endBytes) < 0 {
-				rangeResult = tx.GetRange(fdb.KeyRange{Begin: fdb.Key(beginBytes), End: fdb.Key(continuationEndpoint)},
+				rangeResult = tx.GetRange(fdb.SelectorRange{Begin: beginSelector, End: fdb.FirstGreaterOrEqual(fdb.Key(continuationEndpoint))},
 					fdb.RangeOptions{Reverse: true})
 			} else {
-				rangeResult = tx.GetRange(fdb.KeyRange{Begin: fdb.Key(beginBytes), End: fdb.Key(endBytes)},
+				rangeResult = tx.GetRange(fdb.SelectorRange{Begin: beginSelector, End: fdb.FirstGreaterOrEqual(fdb.Key(endBytes))},
 					fdb.RangeOptions{Reverse: true})
 			}
 		} else {
 			if bytes.Compare(continuationEndpoint, beginBytes) < 0 {
-				rangeResult = tx.GetRange(fdb.KeyRange{Begin: fdb.Key(beginBytes), End: fdb.Key(endBytes)},
+				rangeResult = tx.GetRange(fdb.SelectorRange{Begin: beginSelector, End: fdb.FirstGreaterOrEqual(fdb.Key(endBytes))},
 					fdb.RangeOptions{Reverse: false})
 			} else {
 				// lastLessThan(continuationEndpoint) to firstGreaterOrEqual(endBytes)
@@ -301,6 +317,9 @@ func (it *BunchedMapMultiIterator) advance() {
 			if idx >= 0 && idx < len(it.currentEntries) {
 				it.entryIndex = idx
 				e := it.currentEntries[idx]
+				if !it.withinLogicalBounds(it.currentSubspaceKey, e.Key) {
+					continue
+				}
 				it.nextEntry = &BunchedMapScanEntry{
 					Subspace:    it.currentSubspace,
 					SubspaceTag: it.currentSubspaceTag,
@@ -442,6 +461,9 @@ func (it *BunchedMapMultiIterator) advance() {
 		it.currentEntries = entries
 		it.entryIndex = startIdx
 		e := entries[startIdx]
+		if !it.withinLogicalBounds(it.currentSubspaceKey, e.Key) {
+			continue
+		}
 		it.nextEntry = &BunchedMapScanEntry{
 			Subspace:    it.currentSubspace,
 			SubspaceTag: it.currentSubspaceTag,
@@ -450,6 +472,14 @@ func (it *BunchedMapMultiIterator) advance() {
 		}
 		return
 	}
+}
+
+func (it *BunchedMapMultiIterator) withinLogicalBounds(prefix []byte, key tuple.Tuple) bool {
+	if !it.logicalBounds {
+		return true
+	}
+	packed := append(append([]byte(nil), prefix...), key.Pack()...)
+	return bytes.Compare(packed, it.beginBytes) >= 0 && bytes.Compare(packed, it.endBytes) < 0
 }
 
 // GetContinuation returns a continuation token for resuming the scan.

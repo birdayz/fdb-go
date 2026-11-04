@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"fdb.dev/layers/otel/collector"
 )
 
 // The profiling tests start the process-wide CPU profiler and execution
@@ -103,6 +106,31 @@ func TestExecuteProfileFlagsRejectedBeforeRun(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
 			t.Fatalf("%s created by a rejected run: %v", name, err)
 		}
+	}
+}
+
+func TestCollectorProfileDoesNotConsumeWindowDuringSetup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "heap.pprof")
+	previous := runCollectorBenchmark
+	t.Cleanup(func() { runCollectorBenchmark = previous })
+	runCollectorBenchmark = func(ctx context.Context, cfg collector.CollectorBenchConfig, ingestStart func()) (collector.CollectorBenchReport, error) {
+		// Simulate setup spanning longer than the requested profile window.
+		// No profiling timer may exist until this explicit ingest boundary.
+		time.Sleep(30 * time.Millisecond)
+		if st, err := os.Stat(path + ".start"); err != nil || st.Size() != 0 {
+			t.Fatalf("setup consumed profile window: %v / %v", st, err)
+		}
+		ingestStart()
+		if st, err := os.Stat(path + ".start"); err != nil || st.Size() == 0 {
+			t.Fatalf("ingest did not synchronously open profile: %v / %v", st, err)
+		}
+		return collector.CollectorBenchReport{Tool: collector.CollectorBenchTool, Config: cfg}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	args := collectorBenchArgs("--profile-start=0s", "--profile-duration=10ms", "--memprofile="+path)
+	if code := execute(args, &stdout, &stderr, nil); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, &stderr)
 	}
 }
 

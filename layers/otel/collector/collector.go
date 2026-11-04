@@ -664,6 +664,7 @@ type Stats struct {
 
 const (
 	stateCreated = iota
+	stateStarting
 	stateStarted
 	stateStopping
 	stateStopped
@@ -720,6 +721,7 @@ type TracesExporter struct {
 	workers    sync.WaitGroup
 	active     sync.WaitGroup // synchronous exports in flight
 	done       chan struct{}
+	startDone  chan struct{}
 }
 
 func (x *TracesExporter) ID() ComponentID            { return x.id }
@@ -744,16 +746,31 @@ func (x *TracesExporter) Stats() Stats {
 // Start opens the sink and starts the batcher and consumers.
 func (x *TracesExporter) Start(ctx context.Context) error {
 	x.mu.Lock()
-	defer x.mu.Unlock()
 	if x.state != stateCreated {
+		x.mu.Unlock()
 		return componentErrorf("%s: %s already started", ComponentType, x.id)
 	}
-	sink, err := x.open(ctx, x.cfg.Exporter)
+	x.state = stateStarting
+	x.startDone = make(chan struct{})
+	x.workCtx, x.cancelWork = context.WithCancel(context.Background())
+	x.mu.Unlock()
+	openCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(x.workCtx, cancel)
+	sink, err := x.open(openCtx, x.cfg.Exporter)
+	stop()
+	cancel()
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	defer close(x.startDone)
+	x.sink = sink
+	if x.state != stateStarting {
+		return errors.Join(err, &NotRunningError{Operation: "start", State: x.state})
+	}
 	if err != nil {
+		x.state = stateCreated
+		x.cancelWork()
 		return err
 	}
-	x.sink = sink
-	x.workCtx, x.cancelWork = context.WithCancel(context.Background())
 	x.state = stateStarted
 	if q := x.cfg.SendingQueue; q.Enabled {
 		x.batches = make(chan batch)
@@ -828,6 +845,11 @@ func (x *TracesExporter) exportSync(ctx context.Context, spans []*tracepb.Resour
 		return err
 	}
 	x.active.Add(1)
+	seq := x.nextSeq
+	x.nextSeq++
+	x.outstanding += n
+	x.remaining[seq] = n
+	x.order = append(x.order, seq)
 	x.stats.AcceptedRequests++
 	x.stats.AcceptedSpans += int64(n)
 	x.mu.Unlock()
@@ -837,9 +859,7 @@ func (x *TracesExporter) exportSync(ctx context.Context, spans []*tracepb.Resour
 	stop := context.AfterFunc(x.workCtx, cancel)
 	defer stop()
 	st, err := x.exportWithRetry(ctx, spans)
-	x.mu.Lock()
-	defer x.mu.Unlock()
-	x.record(st, n, err)
+	x.complete([]request{{seq: seq, count: n}}, st, err)
 	return err
 }
 
@@ -902,7 +922,7 @@ func (x *TracesExporter) signal() {
 // failures recorded since the previous Flush.
 func (x *TracesExporter) Flush(ctx context.Context) error {
 	x.mu.Lock()
-	if x.state == stateCreated {
+	if x.state == stateCreated || x.state == stateStarting {
 		err := &NotRunningError{Operation: "flush", State: x.state}
 		x.mu.Unlock()
 		return err
@@ -939,12 +959,16 @@ func (x *TracesExporter) Shutdown(ctx context.Context) error {
 	case stateCreated:
 		x.state = stateStopped
 		close(x.done)
-	case stateStarted:
+	case stateStarting, stateStarted:
 		x.state = stateStopping
 		go func() {
+			<-x.startDone
 			x.workers.Wait()
 			x.active.Wait()
-			err := x.sink.Shutdown(context.Background())
+			var err error
+			if x.sink != nil {
+				err = x.sink.Shutdown(context.Background())
+			}
 			x.mu.Lock()
 			x.shutdownErr = err
 			x.state = stateStopped

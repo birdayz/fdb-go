@@ -8,6 +8,16 @@ four code files with one document, excludes generated Go and review/audit/RFC
 notes, and truncates at exactly 500,000 `cl100k_base` tokens. Each source occurs
 once; the final file may be partial. No repeated padding is added.
 
+The fast lane also runs a network-free isolated Git/CLI regression using host
+`python3` and `git` with an explicitly injected byte tokenizer. It checks literal
+source order/exclusions, partial-source ranges, budgets, output hashes and
+repeatable gzip/manifest emission, plus insufficient-source and non-roundtrip
+failures. This tests the actual generator algorithm, not actual `cl100k_base`
+regeneration or a fully hermetic toolchain. The pinned default regeneration path
+and committed real-tokenizer artifact checks remain unchanged. CLI options
+`--source-root`, `--output-dir` and `--tokens` support isolated inputs; their
+defaults preserve the committed fixture's generation contract.
+
 The user message's context text is exactly **500,000 tokens / 1,984,939 UTF-8
 bytes**. The complete compact messages JSON is **2,091,980 bytes / 566,941 tokens**
 (JSON escaping changes tokenization). The manifest records tokenizer/rank-table

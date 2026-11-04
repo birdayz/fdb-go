@@ -433,9 +433,6 @@ func (d *FDBDatabase) precommit(recordCtx *FDBRecordContext, result any, commitS
 	// nothing ever calls Commit, which is why the whole autocommit SQL path
 	// reported zero commits while committing on every statement.
 	*commitStart = time.Now()
-	if err := recordCtx.runCommitChecks(); err != nil {
-		return nil, err
-	}
 	if err := recordCtx.sealRecordWrites(); err != nil {
 		return nil, err
 	}
@@ -675,6 +672,9 @@ type FDBRecordContext struct {
 	// refused as Java's ensureActive refuses it.
 	deactivated atomic.Bool
 
+	// A successful direct commit detaches physical coordination from the
+	// caller's cancellation owner, without changing immutable Context().
+	directCommitOwned  atomic.Bool
 	recordPhysical     recordPhysicalState
 	recordPhysicalHook func(stage string, key []byte)
 
@@ -1241,6 +1241,27 @@ func (rc *FDBRecordContext) runCommitChecks() error {
 	return nil
 }
 
+// runPendingCommitChecks drains registrations exactly once for one commit,
+// including checks registered by checks or joined record writers.
+func (rc *FDBRecordContext) runPendingCommitChecks(checked *int) error {
+	for {
+		rc.commitMu.Lock()
+		if *checked == len(rc.commitChecks) {
+			rc.commitMu.Unlock()
+			return nil
+		}
+		entry := rc.commitChecks[*checked]
+		*checked++
+		active := entry.active
+		rc.commitMu.Unlock()
+		if active {
+			if err := entry.check(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 // runPostCommits runs all registered post-commit callbacks.
 // Called after commit when all goroutines should be done; holds commitMu
 // for race-detector cleanliness.
@@ -1416,14 +1437,11 @@ func (rc *FDBRecordContext) CommitWithVersionstamp() ([]byte, error) {
 	if rc.routeOwned || !rc.deactivated.CompareAndSwap(false, true) {
 		return nil, errTransactionNotActive()
 	}
+	rc.directCommitOwned.Store(true)
 	// Include pre-commit checks in the commit span, but not post-commit hooks.
 	commitStart := time.Now()
-	if err := rc.runCommitChecks(); err != nil {
-		rc.Timer().RecordSince(EventCommit, commitStart)
-		return nil, err
-	}
-
 	if err := rc.sealRecordWrites(); err != nil {
+		rc.tx.Cancel()
 		rc.Timer().RecordSince(EventCommit, commitStart)
 		return nil, err
 	}
@@ -1438,6 +1456,7 @@ func (rc *FDBRecordContext) CommitWithVersionstamp() ([]byte, error) {
 	}
 
 	if err := rc.tx.Commit().Get(); err != nil {
+		rc.tx.Cancel()
 		rc.Timer().RecordSince(EventCommit, commitStart)
 		return nil, err
 	}

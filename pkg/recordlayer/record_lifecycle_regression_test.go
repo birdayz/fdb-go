@@ -904,7 +904,7 @@ type lifecycleCommitProbe struct {
 	held, release, writerDone, checksDone, sealed                  chan struct{}
 	releaseOnce                                                    sync.Once
 	holdOnce, sealedOnce                                           atomic.Bool
-	admissions, pipelineAdmissions                                 atomic.Int64
+	admissions, pipelineAdmissions, lateChecks                     atomic.Int64
 	writerErr, checksErr, progressErr, latePublicErr, lateBeginErr error
 	written                                                        int
 }
@@ -944,6 +944,13 @@ func lifecycleCommitActivity(ctx context.Context, f lifecycleFixture, route, api
 				case <-p.release:
 				case <-ctx.Done():
 				}
+				// This registration occurs after the initial checks completed,
+				// while the joined public writer is still admitted.
+				rc.AddCommitCheck(func() error {
+					p.lateChecks.Add(1)
+					_, err := b.SaveRecord(lifecycleOrder(103, 5))
+					return err
+				})
 			}
 			if stage == "sealed" && p.sealedOnce.CompareAndSwap(false, true) {
 				_, p.latePublicErr = b.SaveRecord(lifecycleOrder(999, 9))
@@ -1075,6 +1082,7 @@ func lifecycleCommitActivity(ctx context.Context, f lifecycleFixture, route, api
 	Expect(p.checksErr).NotTo(HaveOccurred())
 	Expect(p.progressErr).NotTo(HaveOccurred())
 	Expect(p.written).To(Equal(n))
+	Expect(p.lateChecks.Load()).To(Equal(int64(1)), "late registration must drain exactly once before seal")
 	var inactivePublic, inactiveBegin *RecordContextNotActiveError
 	Expect(errors.As(p.latePublicErr, &inactivePublic)).To(BeTrue())
 	Expect(errors.As(p.lateBeginErr, &inactiveBegin)).To(BeTrue())
@@ -1087,10 +1095,10 @@ func lifecycleCommitActivity(ctx context.Context, f lifecycleFixture, route, api
 		if err != nil {
 			return nil, err
 		}
-		if len(rows) != 2*(n+3) {
-			return nil, fmt.Errorf("durable suffixes=%d want %d", len(rows), 2*(n+3))
+		if len(rows) != 2*(n+4) {
+			return nil, fmt.Errorf("durable suffixes=%d want %d", len(rows), 2*(n+4))
 		}
-		for i := 0; i < n+3; i++ {
+		for i := 0; i < n+4; i++ {
 			id, quantity := int64(i), int32(i+1)
 			if i >= n {
 				id, quantity = int64(100+i-n), 5
@@ -1106,7 +1114,7 @@ func lifecycleCommitActivity(ctx context.Context, f lifecycleFixture, route, api
 				return nil, fmt.Errorf("incomplete durable record id=%d record=%v", id, got)
 			}
 		}
-		fmt.Fprintf(GinkgoWriter, "WRITE_QUIESCENCE_DURABLE route=%s api=%s records=%d suffixes=%d allVersionsComplete=true latePublicType=%T lateBeginType=%T\n", route, api, n+3, len(rows), p.latePublicErr, p.lateBeginErr)
+		fmt.Fprintf(GinkgoWriter, "WRITE_QUIESCENCE_DURABLE route=%s api=%s records=%d suffixes=%d allVersionsComplete=true latePublicType=%T lateBeginType=%T\n", route, api, n+4, len(rows), p.latePublicErr, p.lateBeginErr)
 		return nil, nil
 	})
 	Expect(err).NotTo(HaveOccurred())

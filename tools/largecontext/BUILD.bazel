@@ -1,0 +1,10 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+sh_test(
+    name = "generator_test",
+    srcs = ["generator_test.sh"],
+    data = [
+        "fixture.py",
+        "generator_test.py",
+    ],
+)

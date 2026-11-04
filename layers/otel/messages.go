@@ -1230,6 +1230,8 @@ func (q *messageQueue) finish(batch []queuedMessage, stats MessageStoreStats, er
 		s.Parts += m.plan.element.outcome.Parts
 		s.Postings += m.plan.element.outcome.Postings
 		s.UnindexedTokens += m.plan.element.outcome.UnindexedTokens
+		s.Written += m.plan.element.outcome.Written
+		s.Present += m.plan.element.outcome.Present
 		if err != nil {
 			if m.sub.err == nil {
 				m.sub.err = err
@@ -1237,11 +1239,6 @@ func (q *messageQueue) finish(batch []queuedMessage, stats MessageStoreStats, er
 			}
 			m.sub.left--
 			continue
-		}
-		if m.plan.element.written {
-			s.Written++
-		} else {
-			s.Present++
 		}
 		q.settleLocked(m.sub)
 	}
@@ -1366,7 +1363,9 @@ func (b *FDBBackend) writeSmallMessages(ctx context.Context, tenant int, w *mess
 	if err == nil {
 		for _, p := range plans {
 			if p.element.written {
-				p.element.outcome = MessageStoreStats{Parts: 1, Postings: p.postings, UnindexedTokens: p.unindexed}
+				p.element.outcome = MessageStoreStats{Written: 1, Parts: 1, Postings: p.postings, UnindexedTokens: p.unindexed}
+			} else {
+				p.element.outcome.Present = 1
 			}
 		}
 		for _, p := range original {
@@ -1374,6 +1373,7 @@ func (b *FDBBackend) writeSmallMessages(ctx context.Context, tenant int, w *mess
 			if canonical != p {
 				p.element.id = canonical.element.id
 				p.element.written = false
+				p.element.outcome.Present = 1
 			}
 		}
 	}
@@ -1385,12 +1385,20 @@ func (b *FDBBackend) writeSmallMessages(ctx context.Context, tenant int, w *mess
 // transaction first checks the digest, so it stops once the message is stored.
 func (b *FDBBackend) writeLargeMessage(ctx context.Context, tenant int, w *messageWriter, p *messagePlan, stats *MessageStoreStats, mu *sync.Mutex) error {
 	const op = "message persist"
+	if p.element.outcome.Written != 0 || p.element.outcome.Present != 0 {
+		return nil // an earlier fallback pass already committed this outcome
+	}
 	var committed MessageStoreStats
 	var committedMu sync.Mutex
 	defer func() {
 		p.element.outcome.Parts += committed.Parts
 		p.element.outcome.Postings += committed.Postings
 		p.element.outcome.UnindexedTokens += committed.UnindexedTokens
+		if committed.Written > 0 {
+			p.element.outcome.Written = 1
+		} else if committed.Present > 0 {
+			p.element.outcome.Present = 1
+		}
 		mu.Lock()
 		stats.Add(committed)
 		mu.Unlock()

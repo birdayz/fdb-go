@@ -215,6 +215,34 @@ class TextQuerySteps extends ConformanceBase {
         });
     }
 
+    @ConformanceStep("probableIntersectionTypedKeys")
+    public Map<String, Object> probableIntersectionTypedKeys(String shape, String listsJson, int limit, String continuation) {
+        List<List<String>> lists = new Gson().fromJson(listsJson, new TypeToken<List<List<String>>>(){}.getType());
+        List<Function<byte[], RecordCursor<String>>> children = new ArrayList<>();
+        for (List<String> list : lists) {
+            children.add(cont -> RecordCursor.fromList(list, cont));
+        }
+        Function<String, List<Object>> key = label -> {
+            int n = Integer.parseInt(label);
+            Object value;
+            switch (shape) {
+                case "long": value = 7L + n; break;
+                case "bytes": value = label.getBytes(java.nio.charset.StandardCharsets.UTF_8); break;
+                case "nested": value = Collections.singletonList(label); break;
+                case "float_nan": value = Float.intBitsToFloat(0x7fc00001 + n); break;
+                case "double_nan": value = Double.longBitsToDouble(0x7ff8000000000001L + n); break;
+                case "nested_float_nan": value = Collections.singletonList(Float.intBitsToFloat(0x7fc00001 + n)); break;
+                case "nested_double_nan": value = Collections.singletonList(Double.longBitsToDouble(0x7ff8000000000001L + n)); break;
+                default: throw new IllegalArgumentException(shape);
+            }
+            return Collections.singletonList(value);
+        };
+        byte[] cont = continuation == null ? null : HEX.parseHex(continuation);
+        try (RecordCursor<String> cursor = ProbableIntersectionCursor.create(key, children, cont, null).limitRowsTo(limit)) {
+            return drainPage(cursor, s -> s);
+        }
+    }
+
     /**
      * A merge cursor over in-memory list children, whose next results are always complete, so
      * the unordered merges run in their deterministic order.

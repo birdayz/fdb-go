@@ -28,6 +28,49 @@ class VersionSaveSteps extends ConformanceBase {
         RecordMetaDataOptionsProto.registerAllExtensions(EXTENSION_REGISTRY);
     }
 
+    @ConformanceStep("legacyExplicitVersionDelete")
+    public Map<String, Object> legacyExplicitVersionDelete(String clusterFile, byte[] subspace, byte[] metaData,
+                                                           byte[] record, String deleteKind, boolean seed)
+            throws InvalidProtocolBufferException {
+        final RecordMetaData md = RecordMetaData.build(RecordMetaDataProto.MetaData.parseFrom(metaData, EXTENSION_REGISTRY));
+        final DynamicMessage message = DynamicMessage.parseFrom(md.getRecordType("Order").getDescriptor(), record);
+        final Subspace ss = new Subspace(subspace);
+        final byte[] oldVersion = new byte[12];
+        oldVersion[0] = 1;
+        oldVersion[11] = 9;
+        if (seed) {
+            runInContext(clusterFile, null, context -> {
+                FDBRecordStore store = FDBRecordStore.newBuilder().setMetaDataProvider(md).setContext(context)
+                        .setSubspace(ss).setFormatVersion(5).setUserVersionChecker(ALWAYS_READABLE_CHECKER).createOrOpen();
+                store.saveRecord(message, FDBRecordStoreBase.RecordExistenceCheck.NONE, FDBRecordVersion.complete(oldVersion),
+                        FDBRecordStoreBase.VersionstampSaveBehavior.IF_PRESENT);
+                return null;
+            });
+        }
+        runInContext(clusterFile, null, context -> {
+            FDBRecordStore store = FDBRecordStore.newBuilder().setMetaDataProvider(md).setContext(context)
+                    .setSubspace(ss).setFormatVersion(5).setUserVersionChecker(ALWAYS_READABLE_CHECKER).createOrOpen();
+            store.saveRecord(message, FDBRecordStoreBase.RecordExistenceCheck.NONE, FDBRecordVersion.incomplete(1),
+                    FDBRecordStoreBase.VersionstampSaveBehavior.IF_PRESENT);
+            if ("point".equals(deleteKind)) {
+                if (!store.deleteRecord(Tuple.from(1L, 7L))) { throw new IllegalStateException("saved record absent"); }
+            } else if ("where".equals(deleteKind)) {
+                store.deleteRecordsWhere("Order", com.apple.foundationdb.record.query.expressions.Query.field("order_id").equalsValue(1L));
+            } else { throw new IllegalArgumentException(deleteKind); }
+            return null;
+        });
+        return runInContext(clusterFile, null, context -> {
+            Map<String, Object> result = new HashMap<>();
+            result.put("recordRows", context.ensureActive().getRange(ss.subspace(Tuple.from(1L)).range()).asList().join().size());
+            List<String> versions = new ArrayList<>();
+            for (KeyValue kv : context.ensureActive().getRange(ss.subspace(Tuple.from(8L)).range()).asList().join()) {
+                versions.add(HexFormat.of().formatHex(kv.getValue()));
+            }
+            result.put("versions", versions);
+            return result;
+        });
+    }
+
     /** Saves each record, one transaction each, with its version (empty: none) and behavior; dumps spaces 1, 2, 4 and 8. */
     @ConformanceStep("saveWithVersionsJava")
     public Map<String, Object> saveWithVersionsJava(String clusterFile, byte[] subspace, byte[] metaData, String recordTypeName,

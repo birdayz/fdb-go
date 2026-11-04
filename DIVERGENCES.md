@@ -4843,14 +4843,21 @@ rows as child reads complete (MergeCursor.whenAny, MergeCursor.java:115-136), so
 their order over FDB varies run to run. Go pulls children in index order, which
 is Java's order when every child's next result is already complete; the
 in-memory conformance pins this order and the continuation bytes, including the
-Bloom filters. Over a store both engines return the same set of rows; a resumed
-non-strict `TEXT_CONTAINS_ALL_PREFIXES` may add different Bloom false positives
+Bloom filters. Apart from the comparison-key identity exceptions below,
+over a store both engines return the same set of rows; a resumed non-strict `TEXT_CONTAINS_ALL_PREFIXES` may add different Bloom false positives
 in each, as Java may between its own runs.
 
 `ProbableIntersectionCursorState` remembers seen keys in a `HashSet<List<Object>>`,
 where a `byte[]` element compares by identity, so Java never matches two equal
 byte-array primary keys from different children within one pass. Go compares
-keys by their tuple encoding and matches them.
+keys by their tuple encoding and matches them. Conversely, Java's boxed
+`Float.equals`/`Double.equals` canonicalizes NaNs in these lists (including
+nested lists). Distinct NaN payloads are distinct stored tuple keys; Go retains
+that packed identity instead of falsely suppressing the later key as a definite
+duplicate. This can return two distinct NaN keys where Java returns one, even
+within an unpaged scan and before Bloom lookup. Float and Double remain different
+tuple types. These are seen-set identity exceptions, not changes to the Bloom
+funnel or floating tuple bytes; cross-engine regressions pin the contrast.
 
 The Bloom filter is Guava 33's (`optimalNumOfHashFunctions(p)`); a Java
 deployment on a Guava whose sizing differs writes a continuation Go still reads
@@ -4858,3 +4865,27 @@ deployment on a Guava whose sizing differs writes a continuation Go still reads
 
 The merge cursors do not record Java's `QUERY_INTERSECTION*`, `QUERY_UNION*` and
 `QUERY_TEXT_FILTER*` timer counts.
+
+### Legacy pending record-version deletion
+
+For old-version-format stores whose metadata disables record versions, Go still
+removes current pending version mutations and local-cache entries when deleting
+a body, including ordinary partial-prefix `DeleteRecordsWhere`. Java 4.14.2.0
+ignores the legacy version in its delete load and leaves an explicitly saved
+incomplete version pending, so that save/delete sequence can commit a version key
+without its body. Go deliberately prevents this resurrection. Previously committed
+legacy version bytes remain ignored and preserved when metadata disables versions;
+this is not a migration or a cleanup of historical bytes. Mixed engines may thus
+produce different legacy version keys for the same explicit-version save/delete
+sequence. Lifecycle and contrasting Java/Go conformance tests pin the boundary.
+
+### Opt-in batch index conflict widening
+
+`BatchSaveOptions.CoalesceIndexWriteConflicts` adds full primary/secondary
+maintained-index write-conflict ranges without removing ordinary entry conflicts.
+It trades fewer/wider conflict encodings for additional conflicts and retries:
+a writing reader of an untouched part of that index can receive1020 where
+individual Java saves would not conflict. Defaults do not widen ranges. Persisted
+record/index bytes are unchanged. `store_batch_conflicts_test.go` pins both the
+untouched-index-reader contrast and unaffected indexes/subspaces; this option
+is not a promise of lower live transaction size or higher throughput.
