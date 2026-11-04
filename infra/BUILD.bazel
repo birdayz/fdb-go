@@ -18,6 +18,7 @@ go_test(
         "fleet_capacity_test.go",
         "infra_test.go",
         "install_test.go",
+        "readme_quickstart_test.go",
         "render_test.go",
         "runner_job_guard_test.go",
         "template_model_test.go",
@@ -26,6 +27,14 @@ go_test(
     data = [
         "README.md",
         "//:.bazelrc",
+        "//:README.md",
+        "//:website/content/docs/cli/_index.md",
+        "//:website/content/docs/cli/metadata.md",
+        "//:website/content/docs/cli/protobuf.md",
+        "//:website/content/docs/cli/reference.md",
+        "//:website/content/docs/cli/sql.md",
+        "//:website/content/docs/getting-started.md",
+        "//cmd/fdb:README.md",
         "//tools/lanes:run-verified-lane.sh",
         # The push fan-out gate reads the workflow definitions and main.tf
         # together: it counts self-hosted jobs one push starts and compares them

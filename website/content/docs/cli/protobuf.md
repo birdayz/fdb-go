@@ -21,10 +21,10 @@ an isolated CLI config, and a disposable database.
 ## 1. Build the current CLI
 
 ```sh
-git clone https://github.com/birdayz/fdb-go.git
-cd fdb-go
-go build -o .tmpbuild/fdb ./cmd/fdb
-export PATH="$PWD/.tmpbuild:$PATH"
+git clone https://github.com/birdayz/fdb-go.git &&
+cd fdb-go &&
+go build -o .tmpbuild/fdb ./cmd/fdb &&
+export PATH="$PWD/.tmpbuild:$PATH" &&
 fdb version
 ```
 
@@ -130,10 +130,9 @@ as `--port 4510` to the startup command. If you started the default throwaway
 cluster from the overview and no longer need it, `fdb dev down` removes it.
 
 ```sh
-cluster_file="$(fdb dev up --name fdb-rl-example --context contacts)"
-fdb tx read-version
-
-cat > "$FDB_CONFIG" <<EOF
+cluster_file="$(fdb dev up --name fdb-rl-example --context contacts)" &&
+fdb tx read-version &&
+cat > "$FDB_CONFIG" <<EOF &&
 current_context: contacts
 contexts:
   - name: contacts
