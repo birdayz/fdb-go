@@ -1,6 +1,7 @@
 package plans
 
 import (
+	"fmt"
 	"math"
 	"testing"
 
@@ -1100,5 +1101,41 @@ func TestNestedLoopJoinUniqueKeyConjuncts_PhysicalTypeAlignmentFailsClosed(t *te
 	)
 	if n, ok := NestedLoopJoinUniqueKeyConjuncts(duplicate); ok || n != 0 {
 		t.Fatalf("duplicate-key identity proof = (%d,%v), want (0,false)", n, ok)
+	}
+}
+
+func TestNestedLoopJoinPlan_UniqueFanOutDoesNotBindRootKey(t *testing.T) {
+	t.Parallel()
+	for _, fanOut := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fanout=%t", fanOut), func(t *testing.T) {
+			outer := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+				return NewRecordQueryScanPlan([]string{"Outer"}, outerLayout, false)
+			})
+			index := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+				return NewRecordQueryIndexPlan("uq_idx", nil, []string{"Inner"}, innerLayout, false)
+			}).WithIndexMetadata([]string{"ID"}, []string{"OTHER"}, true).
+				WithKeyComponentTypes(testPhysicalLongTypes(1)).WithDistinctRecordsSignal(fanOut).
+				WithKeyColumnDuplicates([]bool{fanOut})
+			if !index.IsUnique() || !index.orderingKeyNamesKnown || !index.orderingKeyNamesSafe || index.HasNestedKeyColumn() {
+				t.Fatal("fixture must reach the duplicate-producing guard after the unique/name checks")
+			}
+			pred := equalityJoinPredicate(fieldOfAliasIn(t, innerLayout, "ID", "i"), fieldOfAliasIn(t, outerLayout, "FK", "o"))
+			join := mustChecked(t, func() (*RecordQueryNestedLoopJoinPlan, error) {
+				return NewRecordQueryNestedLoopJoinPlan(outer, index, []predicates.QueryPredicate{pred}, JoinInner,
+					values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"), exactEmptyRecordValue())
+			})
+			n, bound := NestedLoopJoinUniqueKeyConjuncts(join)
+			wantConjuncts, wantCardinality := 1, float64(10)
+			if fanOut {
+				wantConjuncts, wantCardinality = 0, 5000
+			}
+			if n != wantConjuncts || bound != !fanOut {
+				t.Fatalf("unique conjuncts = (%d,%t), want (%d,%t)", n, bound, wantConjuncts, !fanOut)
+			}
+			cost := join.HintCost([]properties.Cost{{Cardinality: 10, CPU: 1}, {Cardinality: 1000, CPU: 5}}, nil)
+			if cost.Cardinality != wantCardinality {
+				t.Fatalf("cardinality = %g, want %g", cost.Cardinality, wantCardinality)
+			}
+		})
 	}
 }

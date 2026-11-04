@@ -576,9 +576,9 @@ func stampIndexMetadata(cand MatchCandidate, idxPlan *plans.RecordQueryIndexPlan
 	}
 	// RFC-189 B3: the STRUCTURAL common PK for PrimaryKeyProperty — stamped
 	// REGARDLESS of fan-out (index entries always carry the PK). PK coverage
-	// names likewise remain available for fan-out indexes; ordering synthesis
-	// is suppressed independently by the duplicate-producing signal. nil
-	// (candidate/def supplied none) leaves the property abstaining.
+	// names likewise remain available for fan-out indexes. Ordering continues
+	// only past physically equality-pinned elements; nil (candidate/def supplied
+	// none) leaves the primary-key property abstaining.
 	if pk := candidateCommonPrimaryKey(cand); pk != nil {
 		stamped = stamped.WithCommonPrimaryKey(pk)
 	}
@@ -609,8 +609,8 @@ func candidateDistinctSignal(cand MatchCandidate) *bool {
 }
 
 // candidatePKColumns returns the coordinate-safe visible PK list used by both
-// covering reconstruction and ordering. Fan-out retains coverage; the plan's
-// duplicate-producing signal independently suppresses suffix ordering.
+// covering reconstruction and ordering. Fan-out retains coverage; suffix
+// ordering additionally requires physically equality-pinned element columns.
 func candidatePKColumns(cand MatchCandidate) []string {
 	if c, ok := cand.(interface{ GetPKColumnNames() []string }); ok {
 		return c.GetPKColumnNames()

@@ -558,3 +558,65 @@ func typeFilterOver(t *testing.T, inner plans.RecordQueryPlan) plans.RecordQuery
 	value, err := plans.NewRecordQueryTypeFilterPlan([]string{"AB"}, inner)
 	return mustConstruct(t, value, err)
 }
+
+func TestFanOutElementNameDoesNotTrimRootPrimaryKey(t *testing.T) {
+	t.Parallel()
+	element := values.NewRecordType("Attr", false, []values.Field{{Name: "ID", FieldType: values.NullableLong, Ordinal: 0}})
+	row := values.NewRecordType("T", false, []values.Field{
+		{Name: "ID", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "B", FieldType: values.NullableLong, Ordinal: 1},
+		{Name: "ATTRS", FieldType: values.NewArrayType(true, element), Ordinal: 2},
+	})
+	alias := values.UniqueCorrelationIdentifier()
+	attrs := "ATTRS"
+	candidate := newKnownDistinctValueIndexCandidate("ATTR_ID", []string{"T"}, []string{"ID"},
+		[]values.CorrelationIdentifier{alias}, row, false, []string{"ID", "B"}).
+		WithRootKeyExpression(&gen.KeyExpression{Nesting: &gen.Nesting{
+			Parent: &gen.Field{FieldName: &attrs, FanType: gen.Field_FAN_OUT.Enum()},
+			Child:  candidateTestKeyField("ID", gen.Field_SCALAR),
+		}})
+	bindings := map[values.CorrelationIdentifier]*predicates.ComparisonRange{alias: equalityRange(t, int64(7))}
+	match := NewRegularMatchInfo(bindings, nil, nil, nil, nil, nil, nil, nil)
+	parts := candidate.ComputeMatchedOrderingParts(match, []values.CorrelationIdentifier{alias}, false)
+	if len(parts) != 2 {
+		t.Fatalf("matched suffix = %v, want root ID,B", parts)
+	}
+	for i, name := range []string{"ID", "B"} {
+		field, ok := values.AsFieldValue(parts[i].GetValue())
+		if !ok || field.DisplayName() != name {
+			t.Fatalf("matched suffix[%d] = %v, want root %s", i, parts[i].GetValue(), name)
+		}
+	}
+	partial := NewPartialMatch(nil, candidate, nil, nil, nil,
+		NewRegularMatchInfo(bindings, nil, nil, parts, nil, nil, nil, nil))
+	for _, tc := range []struct {
+		columns   []string
+		satisfied bool
+	}{
+		{[]string{"ID", "B"}, true}, {[]string{"B"}, false},
+	} {
+		requested := properties.NewRequestedOrdering(requestedParts(t, row,
+			map[string]properties.RequestedSortOrder{"ID": properties.RequestedSortOrderAscending, "B": properties.RequestedSortOrderAscending}, tc.columns),
+			properties.DistinctnessPreserveDistinctness, false)
+		if got := SatisfiesRequestedOrdering(partial, requested) != nil; got != tc.satisfied {
+			t.Fatalf("satisfies %v = %t, want %t", tc.columns, got, tc.satisfied)
+		}
+	}
+	fetch, ok := candidate.ToScanPlan(EmptyPlanContext(), bindings, false).(*plans.RecordQueryFetchFromPartialRecordPlan)
+	if !ok {
+		t.Fatal("expected fetch over the fan-out index")
+	}
+	index, ok := fetch.GetInner().(*plans.RecordQueryIndexPlan)
+	if !ok {
+		t.Fatal("expected index scan under fetch")
+	}
+	keys := index.HintOrdering().Keys
+	if len(keys) != 2 {
+		t.Fatalf("physical suffix = %v, want root ID,B", keys)
+	}
+	for i, key := range keys {
+		if !orderingValuesEqualIn(key, parts[i].GetValue()) {
+			t.Fatalf("physical and matched suffix disagree at %d", i)
+		}
+	}
+}

@@ -349,10 +349,15 @@ func (c *ValueIndexScanMatchCandidate) columnPaths() (keyPaths, valuePaths [][]s
 
 // trimmableKeyColumnNames are the key columns a primary-key column of the same
 // name is trimmed against: top-level fields only, as Java's trimPrimaryKey
-// compares key expressions, and CARDINALITY(x) or S.X is not field X.
+// compares key expressions: CARDINALITY(x), S.X and fan-out elements are not
+// the root field X.
 func (c *ValueIndexScanMatchCandidate) trimmableKeyColumnNames() []string {
 	names := make([]string, 0, len(c.columnNames))
+	duplicates := c.duplicateProducingColumns()
 	for i, name := range c.columnNames {
+		if duplicates[i] {
+			continue
+		}
 		if i < len(c.columnFunctions) && c.columnFunctions[i] == FunctionKindCardinality {
 			continue
 		}

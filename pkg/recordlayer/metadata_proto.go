@@ -117,11 +117,10 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 		md.Indexes = append(md.Indexes, idxProto)
 	}
 
-	// 5. Record types, in Java's HashMap order: toProto iterates the built
-	// recordTypes map (RecordMetaDataBuilder.build:1473,
-	// Maps.newHashMapWithExpectedSize), filled from the builder's HashMap,
-	// which received the types in union field order (declaration order;
-	// name is the tiebreak for equal indexes of hand-built metadata).
+	// 5. Java inserts each distinct type at its first union-field declaration,
+	// then builds an expected-size map from that map's iteration order
+	// (RecordMetaDataBuilder.fillUnionFields:865, build:1473-1483). Field
+	// numbers determine record-type keys, not this insertion order.
 	rtNames := make([]string, 0, len(m.recordTypes))
 	for name := range m.recordTypes {
 		rtNames = append(rtNames, name)
@@ -133,7 +132,29 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 		}
 		return rtNames[i] < rtNames[j]
 	})
-	rtNames = javahashmap.Order(javahashmap.Order(nil, rtNames), nil)
+	// Hand-built types absent from the union follow in index/name order.
+	insertionOrder := make([]string, 0, len(rtNames))
+	seen := make(map[string]bool, len(rtNames))
+	if m.unionDescriptor != nil {
+		fields := m.unionDescriptor.Fields()
+		for i := 0; i < fields.Len(); i++ {
+			message := fields.Get(i).Message()
+			if message == nil {
+				continue
+			}
+			name := string(message.Name())
+			if m.recordTypes[name] != nil && !seen[name] {
+				insertionOrder = append(insertionOrder, name)
+				seen[name] = true
+			}
+		}
+	}
+	for _, name := range rtNames {
+		if !seen[name] {
+			insertionOrder = append(insertionOrder, name)
+		}
+	}
+	rtNames = javahashmap.ExpectedSizeOrder(javahashmap.Order(nil, insertionOrder))
 
 	for _, name := range rtNames {
 		rt := m.recordTypes[name]

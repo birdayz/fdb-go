@@ -3,6 +3,7 @@
 package conformance_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1130,6 +1131,127 @@ var _ = Describe("Java refuses the same records descriptors", func() {
 			var me *recordlayer.MetaDataError
 			Expect(errors.As(goErr, &me)).To(BeTrue(), "Go refuses %s: %v", shape.name, goErr)
 			Expect(me.Message).To(Equal(shape.want))
+		})
+	}
+})
+
+// Both engines build independently from one descriptor. No metadata fields or
+// repeated-field orders are normalized before comparing the complete payloads.
+var _ = Describe("Record-type HashMap order is persisted as Java builds it", func() {
+	colliders := make([]string, 16)
+	for i := range colliders {
+		for bit := 3; bit >= 0; bit-- {
+			if i&(1<<bit) == 0 {
+				colliders[i] += "Aa"
+			} else {
+				colliders[i] += "BB"
+			}
+		}
+	}
+	for _, tc := range []struct {
+		name              string
+		names, knownOrder []string
+		first             string
+		nonmonotonic      bool
+	}{
+		{"three", []string{"A", "E", "B"}, []string{"A", "E", "B"}, "A", false},
+		{"six", []string{"H", "A", "B", "C", "D", "E"}, []string{"H", "A", "B", "C", "D", "E"}, "H", false},
+		{"twelve", []string{"P", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"}, []string{"P", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"}, "P", false},
+		{"collision_growth", append(append([]string{}, colliders[:9]...), "P"), append(append([]string{}, colliders[:9]...), "P"), colliders[0], false},
+		{"treeification", colliders, nil, "AaAaBBBB", false},
+		{"declaration_order", []string{"Aa", "BB"}, []string{"Aa", "BB"}, "Aa", true},
+	} {
+		It("matches complete engine metadata bytes for "+tc.name, func() {
+			fdp := &descriptorpb.FileDescriptorProto{
+				Name: proto.String("hashmap_" + tc.name + ".proto"), Package: proto.String("hashmap_metadata"),
+				Syntax: proto.String("proto2"), Dependency: []string{"record_metadata_options.proto"},
+			}
+			unionOptions := &descriptorpb.MessageOptions{}
+			proto.SetExtension(unionOptions, gen.E_Record, &gen.RecordTypeOptions{Usage: gen.RecordTypeOptions_UNION.Enum()})
+			union := &descriptorpb.DescriptorProto{Name: proto.String("RecordTypeUnion"), Options: unionOptions}
+			for i, name := range tc.names {
+				fieldOptions := &descriptorpb.FieldOptions{}
+				proto.SetExtension(fieldOptions, gen.E_Field, &gen.FieldOptions{PrimaryKey: proto.Bool(true)})
+				fdp.MessageType = append(fdp.MessageType, &descriptorpb.DescriptorProto{
+					Name: proto.String(name), Field: []*descriptorpb.FieldDescriptorProto{{
+						Name: proto.String("id"), Number: proto.Int32(1),
+						Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+						Type:  descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum(), Options: fieldOptions,
+					}},
+				})
+				fieldName, fieldNumber := "_"+name, int32(i+1)
+				if tc.nonmonotonic {
+					fieldNumber = []int32{4, 2}[i]
+					if i == 0 {
+						fieldName = "_oldAa"
+					}
+				}
+				union.Field = append(union.Field, &descriptorpb.FieldDescriptorProto{
+					Name: proto.String(fieldName), Number: proto.Int32(fieldNumber),
+					Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+					Type:  descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".hashmap_metadata." + name),
+				})
+			}
+			if tc.nonmonotonic {
+				// Aa first appears at field 4; its later canonical alias at 3
+				// changes its key/preferred union field, not its insertion order.
+				union.Field = append(union.Field, &descriptorpb.FieldDescriptorProto{
+					Name: proto.String("_Aa"), Number: proto.Int32(3),
+					Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+					Type:  descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".hashmap_metadata.Aa"),
+				})
+			}
+			fdp.MessageType = append(fdp.MessageType, union)
+			descriptorBytes, err := proto.MarshalOptions{Deterministic: true}.Marshal(fdp)
+			Expect(err).NotTo(HaveOccurred())
+			var java struct {
+				Valid    bool   `json:"valid"`
+				Error    string `json:"error"`
+				Class    string `json:"class"`
+				MetaData []int  `json:"metaData"`
+			}
+			Expect(NewJavaInvoker().InvokeAs(context.Background(), "buildInCodeMetaData", map[string]any{
+				"fileDescriptorProto": bytesToInts(descriptorBytes),
+			}, &java)).To(Succeed())
+			Expect(java.Valid).To(BeTrue(), "%s: %s", java.Class, java.Error)
+			Expect(java.MetaData).NotTo(BeEmpty())
+			javaBytes := make([]byte, len(java.MetaData))
+			for i, value := range java.MetaData {
+				Expect(value).To(BeNumerically(">=", -128))
+				Expect(value).To(BeNumerically("<=", 127))
+				javaBytes[i] = byte(value)
+			}
+			javaMD := &gen.MetaData{}
+			Expect(proto.Unmarshal(javaBytes, javaMD)).To(Succeed())
+			fd, err := protodesc.NewFile(fdp, protoregistry.GlobalFiles)
+			Expect(err).NotTo(HaveOccurred())
+			md, err := recordlayer.NewRecordMetaDataBuilder().SetRecords(fd).SetRecordsSourceProto(fdp).Build()
+			Expect(err).NotTo(HaveOccurred())
+			if tc.nonmonotonic {
+				Expect(md.GetRecordType("Aa").RecordTypeIndex).To(Equal(3))
+				Expect(md.GetRecordType("BB").RecordTypeIndex).To(Equal(2))
+			}
+			goMD, err := md.ToProto()
+			Expect(err).NotTo(HaveOccurred())
+			goBytes, err := proto.MarshalOptions{Deterministic: true}.Marshal(goMD)
+			Expect(err).NotTo(HaveOccurred())
+			names := func(metadata *gen.MetaData) []string {
+				out := make([]string, len(metadata.GetRecordTypes()))
+				for i, recordType := range metadata.GetRecordTypes() {
+					out[i] = recordType.GetName()
+				}
+				return out
+			}
+			javaNames, goNames := names(javaMD), names(goMD)
+			fmt.Fprintf(GinkgoWriter, "HASHMAP_METADATA %s Java=%v Go=%v bytes(Java=%d Go=%d)\n", tc.name, javaNames, goNames, len(javaBytes), len(goBytes))
+			Expect(javaNames).To(HaveLen(len(tc.names)))
+			Expect(javaNames).To(ConsistOf(tc.names))
+			Expect(javaNames[0]).To(Equal(tc.first))
+			if tc.knownOrder != nil {
+				Expect(javaNames).To(Equal(tc.knownOrder))
+			}
+			Expect(goNames).To(Equal(javaNames), "unnormalized record_types order")
+			Expect(bytes.Equal(goBytes, javaBytes)).To(BeTrue(), "complete unnormalized MetaData differs:\nGo: %s\nJava: %s", goMD, javaMD)
 		})
 	}
 })

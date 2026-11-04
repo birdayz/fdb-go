@@ -94,9 +94,9 @@ type RecordQueryIndexPlan struct {
 	// derived over the FULL key (index root + trimPrimaryKey'd PK), which is
 	// what lets an equality-prefixed scan (status = ?) satisfy ORDER BY pk.
 	// Retained for coordinate-safe covering reconstruction even on fan-out
-	// indexes. Fan-out ordering is suppressed independently by the stamped
-	// createsDuplicates signal, because positions after an exploded key part
-	// are not one globally sorted logical stream.
+	// indexes. Fan-out ordering continues past an element coordinate only when
+	// its comparison pins one physical key; unbound or widened elements stop
+	// the suffix ordering claim.
 	pkColumnNames []string
 	// unique reports whether the index is declared UNIQUE. A full equality
 	// bind then has a bounded physical-key multiplicity only when component
@@ -149,8 +149,8 @@ type RecordQueryIndexPlan struct {
 	// conflating Field("ID") with Concat(RecordTypeKey(), Field("ID")). nil = the
 	// property abstains (no dedup); populated REGARDLESS of fan-out (index entries
 	// always carry the PK). pkColumnNames is also retained for coordinate-safe
-	// coverage on fan-out scans; the duplicate signal independently suppresses
-	// its use as an ordering suffix.
+	// coverage on fan-out scans; use as an ordering suffix additionally requires
+	// physically equality-pinned element coordinates.
 	commonPrimaryKeyValues []values.Value
 	// resultValue is the stable per-instance QuantifiedObjectValue standing for
 	// the rows this leaf emits — minted once at construction, returned by

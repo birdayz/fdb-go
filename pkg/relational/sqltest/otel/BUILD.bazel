@@ -4,6 +4,7 @@ go_test(
     name = "otel_test",
     size = "large",
     srcs = [
+        "fanout_suffix_fdb_test.go",
         "main_test.go",
         "otel_shapes_fdb_test.go",
         "template_v1_fdb_test.go",

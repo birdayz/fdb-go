@@ -247,10 +247,8 @@ func wsjOtherIndexFields(g, j *gen.Index) []string {
 	return out
 }
 
-// wsjCanonical returns a copy of md with the two differences WS-J declares as
-// not ported (DIVERGENCES.md "Go does not reproduce Java's record_types order
-// or anonymous type names") removed, and nothing else:
-//   - record_types sorted by name (Java's order is HashMap iteration order);
+// wsjCanonical returns a copy of md with random aliases and anonymous type
+// names normalized (DIVERGENCES.md "Anonymous type names are engine-private"):
 //   - anonymous "__type__<id>" descriptor messages renamed IN PLACE by the path
 //     that reaches them from a named message ("__anon__<owner>.<field>"), since
 //     Java draws a random UUID per build (ProtoUtils.java:96-98);
@@ -262,7 +260,7 @@ func wsjOtherIndexFields(g, j *gen.Index) []string {
 //     position relative to NAMED types does not move — every anonymous name
 //     shares the "__type__" prefix — so no named message is reordered.
 //
-// Descriptor message ORDER, union field NUMBERS, record-type keys, field
+// Named descriptor message ORDER, union field NUMBERS, record-type keys, field
 // numbers, index protos and versions are untouched: those are the semantic
 // content the comparison is for, and message order is what Java's
 // FileDescriptorSerializer emits (table-visit order, a TreeSet per table), which
@@ -302,9 +300,6 @@ func wsjCanonicalAliases(md *gen.MetaData) *gen.MetaData {
 
 func wsjCanonical(md *gen.MetaData) *gen.MetaData {
 	c := wsjCanonicalAliases(md)
-	sort.SliceStable(c.RecordTypes, func(a, b int) bool {
-		return c.RecordTypes[a].GetName() < c.RecordTypes[b].GetName()
-	})
 	fdp := c.GetRecords()
 	if fdp == nil {
 		return c
@@ -1125,6 +1120,15 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 			}
 			goMD, protoErr := goTmpl.Underlying().ToProto()
 			Expect(protoErr).NotTo(HaveOccurred())
+			recordTypeNames := func(md *gen.MetaData) []string {
+				names := make([]string, len(md.GetRecordTypes()))
+				for i, recordType := range md.GetRecordTypes() {
+					names[i] = recordType.GetName()
+				}
+				return names
+			}
+			Expect(recordTypeNames(goMD)).To(Equal(recordTypeNames(javaMD)),
+				"%s: unnormalized record_types order", id)
 
 			javaIdx := map[string]*gen.Index{}
 			for _, i := range javaMD.GetIndexes() {

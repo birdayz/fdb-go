@@ -363,6 +363,11 @@ and schema paths use the ordinary relational keyspace. The Java 4.14.2 golden
 in `conformance/rfc204_template_golden_test.go` compares stored metadata, not
 only the DDL parser's acceptance. Real-FDB SQL tests under `sqltest/otel` pin
 attribute access, ordering, correlated composite-key joins and keyset pages.
+The omitted-PK fan-out SQL regression also pins Go's existing safe single-type
+implicit-suffix extension past Java's record-type ordering horizon; it does not
+claim that Java chooses that same plan. Record-type metadata byte comparisons
+retain the unnormalized repeated-field order, including collision-heavy names
+and Guava expected-size construction (see DIVERGENCES.md).
 
 Attributes use separate repeated typed structs and standard fan-out VALUE
 indexes, not the existing OTel custom posting index. Only fully bound element

@@ -22,14 +22,14 @@ package conformance_test
 // normalization: explicitly-set defaults (nullInterpretation NOT_UNIQUE,
 // explicit_key 0) ARE the stored bytes and stay under test.
 //
-// The ONE token canonicalized before comparison is the NullableArrayWrapper
-// message name: Java names it ProtoUtils.uniqueTypeName() = "__type__" +
-// UUID.randomUUID() — RANDOM per serialization (two identical templates get
-// different names; every reader is structural,
-// NullableArrayUtils.isWrappedArrayDescriptor). Both sides' wrapper names
-// are rewritten in encounter order; everything else — placement, order,
-// labels, numbers, type_name references, union shape, options, record
-// types, primary keys, flags — is compared exactly.
+// NullableArrayWrapper names and references are canonicalized: Java draws a
+// random UUID per serialization (ProtoUtils.uniqueTypeName), while readers
+// identify wrappers structurally (NullableArrayUtils.isWrappedArrayDescriptor).
+// Order within each contiguous wrapper-message run is also canonicalized by
+// element type, since Java sorts that run by its random names. Named-message
+// placement/order and wrapper-run boundaries remain exact, as do field labels,
+// numbers, referenced element types, union shape, options, record types,
+// primary keys and flags.
 //
 // Re-blessing (only with a Java-verified behaviour change): run with
 // --test_env=RFC204_GOLDEN_OUT=<abs path to conformance/testdata/rfc204>
@@ -277,7 +277,8 @@ func TestNormalizeWrapperNames(t *testing.T) {
 }
 
 // normalizeStoredTemplate parses raw stored MetaData bytes, canonicalizes
-// wrapper names, and re-marshals deterministically — the byte form all
+// wrapper names/references and order within contiguous wrapper runs, and
+// re-marshals deterministically — the byte form all
 // three sides (Java catalog, committed golden, Go catalog) compare in.
 func normalizeStoredTemplate(raw []byte) ([]byte, *gen.MetaData, error) {
 	md := &gen.MetaData{}

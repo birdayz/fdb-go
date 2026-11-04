@@ -965,6 +965,14 @@ Two-tier simplification matching Java's value rule sets:
 
 **Go.** The same: `RecordQueryIndexPlan` carries which key columns lie below the FAN_OUT (`WithKeyColumnDuplicates`), and its ordering (`orderingKeyColumns`) and the candidate's matched ordering follow Java, subject to Go's existing physical-equality guard: a widened signed-zero element equality does not order the time/PK suffix (`TestFDB_OtelTemplateV1` and `TestComputeMatchedOrderingParts_SuffixPastBoundFanOut`). Go additionally claims record identity for a fan-out scan whose every element column is pinned by an equality (`fanOutPinned`): all of a record's entries in that range have one key and are one FDB entry. That proof lets the keyset `OR` form merge its legs (`MergeSortUnion`) as Java's `∪ ... COMPARE BY` does; Java merges without a proof. Pinned by `TestPlanFanOutExistsOrdersPastBoundElements`, `TestComputeMatchedOrderingParts_SuffixPastBoundFanOut`, `TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray`, `TestFDB_OtelFanOutExists`, `TestFDB_OtelKeysetPages` and `OtelSQLShapesJavaProbe`.
 
+An index omitting the PK columns exercises the implicit suffix through SQL in
+`TestFDB_OtelImplicitFanOutPKSuffix` (tied times, keyset pages and unbound-element negative control).
+That no-sort plan retains the existing single-type Go extension past Java's record-type horizon
+explained above; it is not an assertion that Java selects the same omitted-PK plan. A fan-out
+`ATTRS[*].ID` is never trimmed against root PK `ID`: candidate and physical ordering retain the
+root `(ID,B)` suffix, and B alone is not ordered (`TestFanOutElementNameDoesNotTrimRootPrimaryKey`
+and `TestFDB_OtelFanOutElementNameDoesNotTrimRootPK`).
+
 ### Plan choice: an IN ordered by a key no probe provides is probed and sorted (RFC-257 WS-F F-7c)
 
 **Divergence.** `SELECT * FROM T1 WHERE col1 IN (10, 20) ORDER BY id` over an index `I1 (col1)`: Java plans `SCAN([IS T1]) | FILTER _.COL1 IN ...`, Go `InMemorySort([ID ASC], Fetch(InJoin(IndexScan(I1, [=] COVERING))))`; likewise with 25 values and over `T5` (`w8_in_union_explain`, `w8_in25_order_by_id_explain`, `w8_tie_in_order_by_id_explain`, declared `DIFF-PATH in-memory-sort`). Rows are identical.
@@ -4595,17 +4603,31 @@ planned before keeps its plan: `TestFDB_FilteredDerivedTableInsideAJoin` and
 (`pkg/relational/sqldriver/derived_star_join_beside_source_fdb_test.go:126`, `:22`) pin the GROUP
 BY arms' EXPLAIN.
 
-### Go does not reproduce Java's record_types order or anonymous type names (RFC-257 WS-J)
+### Anonymous type names are engine-private (RFC-257 WS-J)
 
-Java lists a schema template's `record_types` in `HashMap` iteration order. It names an anonymous
-type (a struct column's unnamed type) `__type__<uuid>`, with a random UUID drawn per build
-(`ProtoUtils.java:96-98`). It then emits a table's types from a `TreeSet` keyed by those names
-(`TypeRepository.java:269-271`), so two anonymous types swap places between two builds of one
-template. Go sorts `record_types` by name and names an anonymous type by the path that reaches it.
-None of this is identity: union field numbers, record-type keys, field numbers and every named
-message's position agree. A loader of either engine reads the other's template. The conformance
-comparison (`wsjCanonical`, `conformance/ws_j_index_fidelity_conformance_test.go`) removes exactly
-these three differences and nothing else.
+Java names an anonymous type (a struct column's unnamed type) `__type__<uuid>`, with a random UUID
+per build (`ProtoUtils.java:96-98`). It emits a table's types from a `TreeSet` keyed by those names
+(`TypeRepository.java:269-271`), so anonymous types can swap places within a contiguous run between
+builds. Go uses the path that reaches the type. Union field numbers, record-type keys, field numbers
+and every named message's position agree; both engines load the other's template. `wsjCanonical`
+normalizes random aliases and anonymous names/order within consecutive anonymous runs, not
+`record_types` order.
+
+Record-type serialization follows Java 4.14.2.0's two map stages: default HashMap insertion at each
+type's first occurrence in the stored union's declaration order (`fillUnionFields:859-875`), then
+Guava `newHashMapWithExpectedSize` and individual insertion in builder-map order
+(`RecordMetaDataBuilder.java:1473-1483`, `RecordMetaData.java:673-684`). Minimum union field numbers
+still determine record-type keys, not map insertion order; a later alias does not reinsert the type.
+Hand-built types absent from the union use a deterministic index/name fallback before map insertion.
+The insertion-only string-key implementation includes collision-triggered growth, tree-bin iteration
+and resize splits, using UTF-16 hashing/comparison. Six complete, unnormalized Go `ToProto`/Java
+`buildInCodeMetaData` cases cover 3/6/12-type sizing, collision growth, treeification and nonmonotonic
+union numbers with a repeated alias; WS-J also compares the unnormalized record-type sequence.
+
+The separate `javahashmap.Order(first, then)` API retains existing bulk-first caller sizing. It is
+not a claim that every JDK patch implements `putAll` identically: managed JDK 21.0.12 uses ceil
+sizing while this legacy contract uses float-plus-one. The record-type encoder uses the distinct
+Guava expected-size adapter, not that bulk-first operation.
 
 ### Arithmetic overflow is 22003 in Go; the target's escapes unmapped (RFC-257 WS-J/WS-E)
 

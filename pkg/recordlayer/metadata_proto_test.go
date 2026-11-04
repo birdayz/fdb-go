@@ -16,6 +16,64 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
+func TestToProtoRecordTypesWithoutUnionUsesDeterministicFallback(t *testing.T) {
+	t.Parallel()
+	optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
+	fdp := &descriptorpb.FileDescriptorProto{
+		Name: proto.String("fallback.proto"), Package: proto.String("fallback"), Syntax: proto.String("proto2"),
+	}
+	union := &descriptorpb.DescriptorProto{Name: proto.String("RecordTypeUnion")}
+	for i, name := range []string{"Aa", "BB"} {
+		fdp.MessageType = append(fdp.MessageType, &descriptorpb.DescriptorProto{
+			Name: proto.String(name), Field: []*descriptorpb.FieldDescriptorProto{{
+				Name: proto.String("id"), Number: proto.Int32(1), Label: optional, Type: descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum(),
+			}},
+		})
+		union.Field = append(union.Field, &descriptorpb.FieldDescriptorProto{
+			Name: proto.String("_" + name), Number: proto.Int32(int32(2 - i)), Label: optional,
+			Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".fallback." + name),
+		})
+	}
+	fdp.MessageType = append(fdp.MessageType, union)
+	fd, err := protodesc.NewFile(fdp, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder := NewRecordMetaDataBuilder().SetRecords(fd)
+	builder.GetRecordType("Aa").SetPrimaryKey(Field("id"))
+	builder.GetRecordType("BB").SetPrimaryKey(Field("id"))
+	md, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Hand-built metadata may lack the union descriptor used for ordering.
+	md.unionDescriptor = nil
+	for _, tc := range []struct {
+		tied bool
+		want []string
+	}{
+		{false, []string{"BB", "Aa"}}, {true, []string{"Aa", "BB"}},
+	} {
+		if tc.tied {
+			md.GetRecordType("Aa").RecordTypeIndex = 1
+			md.GetRecordType("Aa").explicitRecordTypeKey = int64(2)
+		}
+		for range 2 {
+			stored, err := md.ToProto()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var names []string
+			for _, recordType := range stored.GetRecordTypes() {
+				names = append(names, recordType.GetName())
+			}
+			if !slices.Equal(names, tc.want) {
+				t.Fatalf("fallback order = %v, want %v", names, tc.want)
+			}
+		}
+	}
+}
+
 func TestIndexToProtoRoundtrip(t *testing.T) {
 	t.Parallel()
 
