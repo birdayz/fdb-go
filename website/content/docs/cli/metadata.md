@@ -25,7 +25,7 @@ For a local development database, `fdb dev up` initializes FoundationDB and
 writes an active context automatically:
 
 ```sh
-fdb dev up
+fdb dev up &&
 fdb tx read-version
 ```
 

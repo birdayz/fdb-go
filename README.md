@@ -16,10 +16,11 @@ Or run the examples from a clone, against a disposable cluster in Docker.
 Build the `fdb` CLI from the checkout:
 
 ```sh
-go build -o .tmpbuild/fdb ./cmd/fdb
-export PATH="$PWD/.tmpbuild:$PATH"
-export FDB_CLUSTER_FILE=$(fdb dev up)
-go run ./example/sql
+go build -o .tmpbuild/fdb ./cmd/fdb &&
+export PATH="$PWD/.tmpbuild:$PATH" &&
+FDB_CLUSTER_FILE=$(fdb dev up) &&
+export FDB_CLUSTER_FILE &&
+go run ./example/sql &&
 go run ./example
 ```
 

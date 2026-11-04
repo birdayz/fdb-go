@@ -28,6 +28,7 @@ func (t Tenant) Transact(f func(WritableTransaction) (any, error)) (any, error) 
 // cancels an in-flight commit.
 func (t Tenant) TransactCtx(ctx context.Context, f func(WritableTransaction) (any, error)) (any, error) {
 	var body bodyRun
+	var defaults retryTxDefaults
 	result, err := t.db.d.inner.Transact(ctx, func(tx *client.Transaction) (any, error) {
 		return body.run(func() (any, error) {
 			tx.SetTenantId(t.tenantId)
@@ -36,8 +37,11 @@ func (t Tenant) TransactCtx(ctx context.Context, f func(WritableTransaction) (an
 				db:            t.db,
 				ctx:           ctx,
 				versionstamps: true,
+				defaults:      &defaults,
 			}
-			t.db.applyTxDefaults(txn) // inherit DB-level option defaults — parity with Database.TransactCtx
+			if err := defaults.apply(t.db, txn); err != nil {
+				return nil, err
+			}
 			return f(Transaction{t: txn})
 		})
 	})
@@ -56,15 +60,19 @@ func (t Tenant) ReadTransact(f func(ReadTransaction) (any, error)) (any, error) 
 // ReadTransactCtx is ReadTransact bounded by ctx (RFC-090 / fdb.CtxReadTransactor).
 func (t Tenant) ReadTransactCtx(ctx context.Context, f func(ReadTransaction) (any, error)) (any, error) {
 	var body bodyRun
+	var defaults retryTxDefaults
 	result, err := t.db.d.inner.ReadTransact(ctx, func(tx *client.Transaction) (any, error) {
 		return body.run(func() (any, error) {
 			tx.SetTenantId(t.tenantId)
 			txn := &transaction{
-				inner: tx,
-				db:    t.db,
-				ctx:   ctx,
+				inner:    tx,
+				db:       t.db,
+				ctx:      ctx,
+				defaults: &defaults,
 			}
-			t.db.applyTxDefaults(txn) // inherit DB-level option defaults — parity with Database.ReadTransactCtx
+			if err := defaults.apply(t.db, txn); err != nil {
+				return nil, err
+			}
 			return f(Transaction{t: txn})
 		})
 	})
@@ -87,6 +95,6 @@ func (t Tenant) CreateTransaction() (Transaction, error) {
 		ctx:           t.db.d.ctx,
 		versionstamps: true,
 	}
-	t.db.applyTxDefaults(txn) // parity with Database.CreateTransaction + the Transact* paths
+	t.db.applyTxDefaults(txn, true)
 	return Transaction{t: txn}, nil
 }

@@ -12,9 +12,10 @@ import (
 
 // transaction wraps client.Transaction with the API modeled on Apple's binding.
 type transaction struct {
-	inner *client.Transaction
-	db    Database
-	ctx   context.Context
+	inner    *client.Transaction
+	db       Database
+	ctx      context.Context
+	defaults *retryTxDefaults
 
 	// ReadTransact has no commit producer. Other wrappers bind versionstamp
 	// futures directly to their client incarnation, including managed retries.
@@ -33,8 +34,8 @@ type transaction struct {
 // Option setters (the Set* configuration methods, e.g. SetPriority,
 // SetWriteConflictsDisabled, SetTag, SetReadVersion) and Reset() are NOT
 // concurrent-safe with operations or each other — configure the transaction
-// BEFORE issuing concurrent operations, and drain all pending futures before
-// calling Reset (in-flight goroutines hold references to the internal handle).
+// BEFORE issuing concurrent operations, and drain transaction-owned futures before
+// Reset. Committed watches are independent: only their future or parent cancels them.
 // This mirrors the FDB C API, where fdb_transaction_set_option is not meant to
 // race the transaction's data calls.
 //
@@ -343,16 +344,17 @@ func (tr Transaction) SetReadVersion(version int64) {
 
 // Reset resets the transaction to its initial state.
 // NOT safe to call concurrently with other Transaction methods.
-// Callers must drain all pending futures before calling Reset —
-// in-flight goroutines from Get/GetRange/Commit access tr.t.inner
-// and will race with Reset. This matches Apple binding semantics
-// where Reset must not be called while the transaction is in use.
+// Drain transaction-owned futures (Get/GetRange/Commit) first; their work uses the handle.
+// Committed watch futures need not drain: they survive Reset and retain future/parent cancellation.
 func (tr Transaction) Reset() {
 	// Reset in place: NativeAPI cloneAndReset preserves committedVersion and
 	// tenant identity while clearing user options and restoring DB defaults.
 	tr.t.inner.Reset()
 	tr.t.versionstamps = true
-	tr.t.db.applyTxDefaults(tr.t)
+	err, pending := tr.t.db.applyTxDefaults(tr.t, true)
+	if tr.t.defaults != nil {
+		tr.t.defaults.err, tr.t.defaults.pendingTimeout = err, pending
+	}
 }
 
 // AddReadConflictRange adds a read conflict range. As in libfdb_c it returns only inverted_range;

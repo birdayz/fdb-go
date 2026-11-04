@@ -160,8 +160,8 @@ func WithoutInit() Option {
 // instead of localhost:mappedPort. This avoids Docker DNAT which causes FDB
 // canonicalRemotePort assertion spam under high connection churn.
 //
-// Direct IP requires the test process to route to Docker bridge IPs. This works
-// on Linux hosts but NOT from Bazel's linux-sandbox.
+// This changes coordinator bootstrap only: both modes require routing to advertised
+// bridge-IP transaction endpoints, even when the coordinator port is published.
 func WithDirectIP() Option {
 	return Option{applyFn: func(o *options) error {
 		o.directIP = true

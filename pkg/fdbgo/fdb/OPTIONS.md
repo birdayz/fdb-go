@@ -93,6 +93,12 @@ C++ references are into the FoundationDB 7.3.77 source: `T::setOption` =
 
 ## Database options (`DatabaseOptions`)
 
+The fields of the facade's `txDefaults` are captured together. Native-owned
+`SetTransactionReportConflictingKeys` is outside that snapshot: concurrent default
+updates during construction or Reset can combine its generation with another
+facade-default generation. This existing cross-owner limitation is not a claim of
+whole-database snapshot coherence.
+
 | Option (method) | Pure-Go | libfdb_c (C++) | Unsafe if ignored? | Notes |
 |---|---|---|---|---|
 | `SetTransactionTimeout` | **honored** (tx default) | DB:2156 default → per-tx timeout | n/a | applied to each tx |

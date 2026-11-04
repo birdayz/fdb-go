@@ -578,7 +578,8 @@ file beside the effective config file, and writes and activates a context.
 Progress goes to stderr, leaving stdout usable as a cluster-file argument:
 
 ```sh
-fdb sql --cluster-file "$(fdb dev up)" --database /FRL/myapp
+cluster_file="$(fdb dev up)" &&
+fdb sql --cluster-file "$cluster_file" --database /FRL/myapp
 ```
 
 `dev status` reports the container's minimal cluster status. `dev down` removes

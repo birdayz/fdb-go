@@ -4,6 +4,12 @@ load("@rules_go//go:def.bzl", "nogo")
 exports_files([
     "buf.yaml",
     "justfile",
+    "website/content/docs/cli/_index.md",
+    "website/content/docs/cli/metadata.md",
+    "website/content/docs/cli/protobuf.md",
+    "website/content/docs/cli/reference.md",
+    "website/content/docs/cli/sql.md",
+    "website/content/docs/getting-started.md",
     "website/static/install.sh",
 ])
 
@@ -35,6 +41,7 @@ exports_files([".bazelrc"])
 # Root files staged as test data. MODULE.bazel is the version source of truth.
 exports_files([
     "MODULE.bazel",
+    "README.md",
     "go.mod",
     # Generated SQL feature inventory; staged for the TestFeatureMatrixUpToDate
     # drift guard in //pkg/relational/conformance/yamsql:yamsql_test.
