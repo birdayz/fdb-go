@@ -15,7 +15,7 @@ Tags are `v0.MINOR.PATCH`. Two axes, deliberately decoupled:
 - **Persisted data compatibility is release-specific.** The current Java target is
   **Record Layer 4.14.2.0**, with the exceptions in [docs/compatibility.md](docs/compatibility.md).
   Do not infer cross-release SQL storage or cross-engine continuation compatibility
-  from that target. The v0.2.0 candidate changes v0.1.0's Go SQL keyspace without an
+  from that target. v0.2.0 changes v0.1.0's Go SQL keyspace without an
   automatic migration. Persisted-format changes must be explicit in the changelog's
   **Compatibility** block and validated by the relevant conformance, differential
   and stress suites before release.
@@ -27,10 +27,10 @@ in `MODULE.bazel` / `go.mod`.
 
 - The **latest tagged minor** is supported; security and correctness fixes land there.
 - Older minors are best-effort only until `v1`.
-- The first tag is **v0.1.0** (2026-08-26). **v0.2.0 is a release candidate,
-  not a published tag.** Documentation at HEAD describes HEAD. A support policy
-  is not evidence of a backport or a published tag. Pin a revision and read its
-  changelog and upgrade guidance.
+- The first tag is **v0.1.0** (2026-08-26). **v0.2.0 is pending publication.**
+  Its documented scope is not evidence of a published tag or completed release gates.
+  Documentation at HEAD describes HEAD. A support policy is not evidence of a
+  backport or a published tag. Pin a revision and read its changelog and upgrade guidance.
 - Security fixes follow `SECURITY.md` (private report → fix on the latest minor / `master` → disclose).
 
 ## Cutting a release (checklist)

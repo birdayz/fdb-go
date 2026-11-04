@@ -12,12 +12,17 @@ semantics, and required dependency versions.
 
 This changelog starts **2026-06-20**; earlier history is in `git log`. The first tagged release is
 **v0.1.0** (2026-08-26). v0.1.0 shipped the `frl` CLI from a parallel nested-module tag,
-`cmd/frl/v0.1.0`. The unreleased candidate replaces it with `fdb`, the root
+`cmd/frl/v0.1.0`. v0.2.0 replaces it with `fdb`, the root
 module's `cmd/fdb` package. A root release containing that package supports
 `go install fdb.dev/cmd/fdb@vX.Y.Z`; the current workflow builds from source
 until such a tag is published (`RELEASE.md`).
 
 ## [Unreleased]
+
+## [v0.2.0] - 2026-11-04
+
+**Pending publication.** This entry defines the release scope; it does not assert a
+published tag or completion of the gates in `RELEASE.md`.
 
 ### Breaking changes
 Each is described in full under Compatibility or Changed below.

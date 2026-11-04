@@ -1,8 +1,8 @@
 # Project status
 
 **Pre-1.0; not declared production-ready.** This readiness statement covers
-the v0.2.0 release candidate. No v0.2.0 tag or deployment certification is
-asserted here. Pin a revision and evaluate it against your workload.
+v0.2.0. **Publication is pending**; no tag, completed release gate, or deployment
+certification is asserted here. Pin a revision and evaluate it against your workload.
 
 The project contains three independently useful layers:
 
@@ -21,7 +21,7 @@ compatibility with every feature or every server release. See
 
 ## Known gaps in v0.2.0
 
-These five launch gaps remain open in the release candidate. Further work is
+These five launch gaps remain open for v0.2.0. Further work is
 planned for v0.3.0; each has a mitigation where one exists.
 
 - **Per-RPC 5 s read timeouts, which libfdb_c does not have.** A read reply
