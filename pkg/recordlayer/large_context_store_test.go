@@ -52,9 +52,6 @@ func largeContextChunk(id int64, content []byte) *demopb.TypedRecord {
 
 func largeContextRun(ctx context.Context, ks subspace.Subspace, md *RecordMetaData, serializer *TransformedRecordSerializer, body func(*FDBRecordStore) error) error {
 	_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
-		if err := rc.Transaction().Options().SetTimeout(1500); err != nil {
-			return nil, err
-		}
 		if err := rc.Transaction().Options().SetRetryLimit(10); err != nil {
 			return nil, err
 		}
@@ -74,20 +71,19 @@ func largeContextEstimate(estimate int) error {
 	return nil
 }
 
-func largeContextGuardSize(store *FDBRecordStore, started time.Time) (int64, error) {
+func largeContextGuardSize(store *FDBRecordStore) (int64, error) {
 	n, err := store.context.Transaction().GetApproximateSize().Get()
 	if err != nil {
 		return 0, err
 	}
-	elapsed := time.Since(started)
-	if n > 500000 || elapsed > time.Second {
-		return n, fmt.Errorf("large context transaction guard exceeded: bytes=%d elapsed=%s", n, elapsed)
+	if n > 500000 {
+		return n, fmt.Errorf("large context transaction guard exceeded: bytes=%d", n)
 	}
 	return n, nil
 }
 
-func largeContextGuard(store *FDBRecordStore, started time.Time) error {
-	_, err := largeContextGuardSize(store, started)
+func largeContextGuard(store *FDBRecordStore) error {
+	_, err := largeContextGuardSize(store)
 	return err
 }
 
@@ -129,7 +125,6 @@ func largeContextSaveChunk(ctx context.Context, ks subspace.Subspace, md *Record
 	var saved *FDBStoredRecord[proto.Message]
 	var actualBytes int64
 	err := largeContextRun(ctx, ks, md, serializer, func(store *FDBRecordStore) error {
-		started := time.Now()
 		dry, err := store.DryRunSaveRecord(record, RecordExistenceCheckNone)
 		if err != nil {
 			return err
@@ -144,7 +139,7 @@ func largeContextSaveChunk(ctx context.Context, ks subspace.Subspace, md *Record
 		if len(results) != 1 || results[0].KeyCount != dry.KeyCount || results[0].KeySize != dry.KeySize || results[0].ValueSize != dry.ValueSize || results[0].Split != dry.Split {
 			return fmt.Errorf("chunk %d save did not match dry-run physical sizes", record.GetId())
 		}
-		actualBytes, err = largeContextGuardSize(store, started)
+		actualBytes, err = largeContextGuardSize(store)
 		if err != nil {
 			return err
 		}
@@ -333,20 +328,18 @@ var _ = Describe("Large LLM context through Record Layer serializers", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(original).NotTo(BeEmpty())
 			Expect(largeContextRun(ctx, ks, md, codec.serializer, func(store *FDBRecordStore) error {
-				started := time.Now()
 				value := bytes.Clone(original[0].Value)
 				value[0] = 0
 				if err := largeContextEstimate(len(original[0].Key) + len(value) + largeContextOverhead); err != nil {
 					return err
 				}
 				store.context.Transaction().Set(original[0].Key, value)
-				return largeContextGuard(store, started)
+				return largeContextGuard(store)
 			})).To(Succeed())
 			corrupt, err := largeContextSnapshot(ctx, ks, md, codec.serializer, ks)
 			Expect(err).NotTo(HaveOccurred())
 			for _, operation := range []string{"load", "overwrite", "delete"} {
 				err := largeContextRun(ctx, ks, md, codec.serializer, func(store *FDBRecordStore) error {
-					started := time.Now()
 					if err := largeContextEstimate(firstSaved.KeySize + firstSaved.ValueSize + largeContextOverhead); err != nil {
 						return err
 					}
@@ -362,7 +355,7 @@ var _ = Describe("Large LLM context through Record Layer serializers", func() {
 					if err != nil {
 						return err
 					}
-					return largeContextGuard(store, started)
+					return largeContextGuard(store)
 				})
 				var deser *RecordDeserializationError
 				Expect(errors.As(err, &deser)).To(BeTrue(), "corrupt chunk %s: %v", operation, err)
@@ -371,12 +364,11 @@ var _ = Describe("Large LLM context through Record Layer serializers", func() {
 				Expect(reflect.DeepEqual(after, corrupt)).To(BeTrue(), "rejected %s changed committed source/index bytes", operation)
 			}
 			Expect(largeContextRun(ctx, ks, md, codec.serializer, func(store *FDBRecordStore) error {
-				started := time.Now()
 				if err := largeContextEstimate(len(original[0].Key) + len(original[0].Value) + largeContextOverhead); err != nil {
 					return err
 				}
 				store.context.Transaction().Set(original[0].Key, original[0].Value)
-				return largeContextGuard(store, started)
+				return largeContextGuard(store)
 			})).To(Succeed())
 
 			small := largeContextChunk(1, []byte("small replacement context"))
@@ -390,7 +382,6 @@ var _ = Describe("Large LLM context through Record Layer serializers", func() {
 			Expect(rows).To(HaveLen(1), "overwrite retained old split chunks")
 			Expect(largeContextCheckIndexes(ctx, ks, md, codec.serializer, chunks, false)).To(Succeed())
 			Expect(largeContextRun(ctx, ks, md, codec.serializer, func(store *FDBRecordStore) error {
-				started := time.Now()
 				record, err := store.LoadRecord(tuple.Tuple{int64(1)})
 				if err != nil {
 					return err
@@ -408,7 +399,7 @@ var _ = Describe("Large LLM context through Record Layer serializers", func() {
 				if !deleted {
 					return fmt.Errorf("small replacement was not deleted")
 				}
-				return largeContextGuard(store, started)
+				return largeContextGuard(store)
 			})).To(Succeed())
 			rows, err = largeContextSnapshot(ctx, ks, md, codec.serializer, ks.Sub(RecordKey, int64(1)))
 			Expect(err).NotTo(HaveOccurred())

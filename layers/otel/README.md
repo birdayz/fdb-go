@@ -56,11 +56,13 @@ unchanged.
   maintaining a bounded K-hit heap per unique predicate: no map of all matching
   traces is retained. Known trace/span needles use constant-size source witnesses.
 
-Excluded: production OTLP admission/partial success, logs, content and privacy
-services, retention/receipts/revision lifecycle, replay protocols, concurrent
-writes during measurement, production continuations, numeric range search,
-TraceQL, graph/session joins, online-backfill race certification, query ACLs,
-HMAC epochs, normalized resources, compressed blocks, and service SLOs. The
+The original immutable-span experiment excluded logs, message content and graph
+joins; those exclusions describe its historical measurements, **not** the current
+APIs below. Still excluded from the production claim: general OTLP partial-success
+admission, privacy services, retention/receipts/revision lifecycle, replay
+protocols, concurrent writes during measurement, general production continuations,
+numeric range search, TraceQL/session joins, online-backfill race certification,
+query ACLs, HMAC epochs, normalized resources and service SLOs. The
 maintainer's update/delete behavior is tested, but CH incremental MVs are
 **append-only unique-corpus comparisons**, not a correction/delete equivalent.
 There is no claim that the prototype implements all RFC-283 requirements.
@@ -79,6 +81,48 @@ V2 changes source identities, payloads and maintained structures. Use fresh runs
 V1 receipts/binaries (including the initial ingest-profile commits) remain
 historical evidence, not compatible V2 measurements. No storage compatibility
 or direct before/after performance claim is made across this fixture change.
+
+## Current logs and joined-query APIs
+
+These are typed OTel APIs over this experiment's run/tenant layout, not SQL catalog
+tables or proof of an upstream Collector receiver pipeline.
+
+- `ExportLogs` stores complete single-log OTLP envelopes; `ConsumeLogs` adapts OTLP
+  resource logs. Missing EventIDs receive receiver-generated UUIDs outside retries;
+  replay with the same explicit EventID replaces the prior log atomically and
+  retracts old postings/chunks. A resent request without IDs can create duplicates.
+- `logs_v1` holds header/optional chunk rows by tenant/EventID; `log_trace_v1`
+  correlates trace/span/effective-time/EventID; `log_eq_v1` holds scoped exact
+  attribute postings with verified covering values. Body bytes are not TEXT indexed.
+  Effective time uses event time, else observed time, else receiver time, preserving
+  the original timestamp and `TimeSource` (`event`, `observed`, `receiver`).
+- `QueryLogsByTrace(traceID, optionalSpanID)` returns correlated logs ascending by
+  effective time/EventID. `QueryLogsByAttribute(attribute, limit)` returns newest
+  first, including uncorrelated logs; zero limit uses configured K. Attribute
+  scopes are `resource`, `scope`, `log` and intrinsic `event_name`.
+  Queries enforce configured candidate/logical-read-byte and context budgets;
+  exhaustion returns a typed budget error, not a silently truncated complete set.
+- Log admission caps raw/stored bytes, key/value expansion and native transaction
+  mutation/conflict costs at 8,000,000 bytes, including old replacement clears.
+  All initial/preflight admission happens before any batch writes; admitted batches
+  commit independently. Concurrent replacement changes are rechecked in each batch;
+  a prior image growing beyond the live budget returns `OperationError`, not the
+  no-partial-write preflight `AdmissionError`. Such a runtime failure does not
+  roll back earlier committed batches.
+- `QuerySameSpan` requires every predicate on one span; predicate zero drives the
+  posting scan (put the selective predicate first). It supports a time window,
+  limit and authenticated run-bound snapshot-page continuation, not a global
+  stable snapshot across calls.
+- `QueryTraceExistential` allows different span/log/message witnesses in the same
+  trace and returns the verified witnesses per clause, with time/limit/budget bounds.
+  `TraverseTraceGraph` reads one bounded trace and reports observed parent/child
+  adjacency, roots, missing parents/orphans, cycles/depth and OTLP links. Cross-trace
+  link targets stay unresolved; missing ancestry is not invented.
+
+**Deferred:** actual upstream Collector ingestion into the **same relational
+catalog/tenant SQL tables** has not been migrated. Exporter adapters, typed joins,
+SQL/index safety prerequisites and upper-stack planner work are not that migration.
+The pending item is tracked in `TODO.md`; this source work does not execute it.
 
 ## Record Layer bulk saves and compression
 

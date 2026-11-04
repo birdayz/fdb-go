@@ -142,14 +142,16 @@ var _ = Describe("TEXT leapfrog seek", func() {
 		writeMap(parent)
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			tx := rtx.Transaction()
-			begin := parent.Pack(tuple.Tuple{"tok", int64(10)})
-			end := parent.Pack(tuple.Tuple{"tok", int64(100)})
+			scanRange := TupleRangeBetween(tuple.Tuple{"tok", int64(10)}, tuple.Tuple{"tok", int64(100)})
+			bounds := scanRange.ToFDBRange(parent)
+			begin, end := bounds.Begin.FDBKey(), bounds.End.FDBKey()
+			splitter := newTextSubspaceSplitterForRange(parent, 1, scanRange)
 			predecessor, err := tx.GetRange(fdb.SelectorRange{Begin: fdb.LastLessOrEqual(fdb.Key(begin)), End: fdb.FirstGreaterOrEqual(fdb.Key(begin))}, fdb.RangeOptions{}).GetSliceWithError()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(predecessor).To(HaveLen(1))
 			Expect(predecessor[0].Key).To(Equal(parent.Pack(tuple.Tuple{"tok", int64(0)})))
 			for _, target := range []int64{12, 15, 57, 60} {
-				it := NewBunchedMapMultiIterator(tx, parent, NewTextSubspaceSplitter(parent, 1), begin, end, nil, 0, true, TextIndexBunchedSerializerInstance())
+				it := NewBunchedMapMultiIterator(tx, parent, splitter, begin, end, nil, 0, true, TextIndexBunchedSerializerInstance())
 				Expect(it.HasNext()).To(BeTrue())
 				Expect(it.Next().Key).To(Equal(tuple.Tuple{int64(99)}))
 				it.seekTo(tuple.Tuple{target})
@@ -166,7 +168,7 @@ var _ = Describe("TEXT leapfrog seek", func() {
 					want = append(want, k)
 				}
 				Expect(rest).To(Equal(want))
-				resumed := NewBunchedMapMultiIterator(tx, parent, NewTextSubspaceSplitter(parent, 1), begin, end, cont, 0, true, TextIndexBunchedSerializerInstance())
+				resumed := NewBunchedMapMultiIterator(tx, parent, splitter, begin, end, cont, 0, true, TextIndexBunchedSerializerInstance())
 				var replay []int64
 				for resumed.HasNext() {
 					replay = append(replay, resumed.Next().Key[0].(int64))

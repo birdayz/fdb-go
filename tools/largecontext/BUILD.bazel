@@ -5,6 +5,8 @@ sh_test(
     srcs = ["generator_test.sh"],
     data = [
         "fixture.py",
+        "frozen_sources.json",
+        "frozen_sources.tar.gz",
         "generator_test.py",
     ],
 )

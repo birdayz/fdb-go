@@ -134,6 +134,7 @@ type preparedLog struct {
 	logical    int64
 	stored     int64
 	cost       int
+	writeCost  int // new mutations and native conflicts, excluding a prior image
 	unindexed  int64
 }
 
@@ -494,16 +495,82 @@ func (b *FDBBackend) prepareLog(l LogRecord, receiver int64) (preparedLog, error
 	for _, c := range chunks {
 		p.stored += int64(len(c))
 	}
-	// Writes plus the clear of a replaced log's equally sized old entries.
-	p.cost = 1024 + 2*int(p.stored) + 2*len(traceKey)
-	for _, ps := range postings {
-		p.cost += 2 * (len(ps.Key) + len(ps.Value))
+	space := logRecordSpace(b.keys, b.cfg.Tenant, l.EventID)
+	begin, end := space.FDBRangeKeys()
+	// Native 7.3 counts mutation storage AND read/write conflict ranges.
+	// Reserve fixed transaction/manifest overhead in addition to every row.
+	p.cost = 1024 + len(begin.FDBKey()) + len(end.FDBKey()) + 24
+	p.cost += logSetWriteCost(space.Pack(tuple.Tuple{int64(0)}), header)
+	for i, chunk := range chunks {
+		p.cost += logSetWriteCost(space.Pack(tuple.Tuple{int64(i + 1)}), chunk)
 	}
-	p.cost += (len(chunks) + 1) * 2 * (len(b.keys.logs.Bytes()) + len(l.EventID) + 64)
+	if traceKey != nil {
+		p.cost += logSetWriteCost(traceKey, nil)
+	}
+	for _, ps := range postings {
+		p.cost += logSetWriteCost(ps.Key, ps.Value)
+	}
+	p.writeCost = p.cost
 	if p.cost > maxLogTxnWriteBytes {
 		return preparedLog{}, failf("admission", op, "expanded transaction writes of %d bytes exceed %d", p.cost, maxLogTxnWriteBytes)
 	}
 	return p, nil
+}
+
+// Counting a Blob per mutation is conservative: NativeAPI's getSize includes
+// MutationList headers/blobs and both conflict vectors (not just key/value bytes).
+func logSetWriteCost(key, value []byte) int { return 3*len(key) + len(value) + 69 }
+func logClearWriteCost(key []byte) int      { return 4*len(key) + 70 }
+
+func (b *FDBBackend) logReplacementWriteCost(space subspace.Subspace, old LogRecord) int {
+	trace, postings, _ := logIndexKeys(b.keys, b.cfg.Tenant, b.cfg.HashBytes, old)
+	begin, end := space.FDBRangeKeys()
+	// ClearRange mutation and its write conflict; old chunk values are not
+	// retransmitted. The serializable read range was charged with the new image.
+	cost := 2*(len(begin.FDBKey())+len(end.FDBKey())) + 68
+	if trace != nil {
+		cost += logClearWriteCost(trace)
+	}
+	for _, p := range postings {
+		cost += logClearWriteCost(p.Key)
+	}
+	return cost
+}
+
+// Preflight every replacement before the first batch writes, so a too-large
+// old image cannot turn a mixed request into partially admitted logs.
+func (b *FDBBackend) admitLogReplacements(ctx context.Context, items []preparedLog) error {
+	costs := make([]int, len(items))
+	_, err := runTxnSlot(ctx, b.db, "log replacement admission", func(rc *recordlayer.FDBRecordContext) (any, error) {
+		if err := b.readManifest(rc, true); err != nil {
+			return nil, err
+		}
+		for i, item := range items {
+			costs[i] = item.writeCost
+			space := logRecordSpace(b.keys, b.cfg.Tenant, item.eventID)
+			rows, err := rc.Transaction().GetRange(space, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}).GetSliceWithError()
+			if err != nil {
+				return nil, err
+			}
+			if len(rows) != 0 {
+				old, err := decodeLogRows(space, item.eventID, rows)
+				if err != nil {
+					return nil, err
+				}
+				costs[i] += b.logReplacementWriteCost(space, old)
+			}
+			if costs[i] > maxLogTxnWriteBytes {
+				return nil, failf("admission", "log replacement admission", "native transaction cost %d exceeds %d", costs[i], maxLogTxnWriteBytes)
+			}
+		}
+		return nil, nil
+	})
+	if err == nil {
+		for i := range items {
+			items[i].cost = costs[i]
+		}
+	}
+	return err
 }
 
 func partitionLogs(items []preparedLog, size int) []logBatch {
@@ -544,8 +611,11 @@ func (b *FDBBackend) saveLogBatch(ctx context.Context, batch logBatch) (int64, e
 			}
 			prior[i] = tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll})
 		}
+		oldLogs := make([]*LogRecord, len(batch.logs))
+		cost := 0
 		for i, l := range batch.logs {
 			space := logRecordSpace(b.keys, b.cfg.Tenant, l.eventID)
+			cost += l.writeCost
 			rows, err := prior[i].GetSliceWithError()
 			if err != nil {
 				return nil, err
@@ -555,7 +625,20 @@ func (b *FDBBackend) saveLogBatch(ctx context.Context, batch logBatch) (int64, e
 				if err != nil {
 					return nil, err
 				}
-				oldTrace, oldPostings, _ := logIndexKeys(b.keys, b.cfg.Tenant, b.cfg.HashBytes, old)
+				oldLogs[i] = &old
+				cost += b.logReplacementWriteCost(space, old)
+			}
+		}
+		// Recheck the live prior images: another writer may have replaced them
+		// after preflight. This is an operational state change, not whole-call
+		// admission: an independent batch may already have committed.
+		if cost > maxLogTxnWriteBytes {
+			return nil, failf("operation", "log batch", "prior image changed after admission: native transaction cost %d exceeds %d", cost, maxLogTxnWriteBytes)
+		}
+		for i, l := range batch.logs {
+			space := logRecordSpace(b.keys, b.cfg.Tenant, l.eventID)
+			if old := oldLogs[i]; old != nil {
+				oldTrace, oldPostings, _ := logIndexKeys(b.keys, b.cfg.Tenant, b.cfg.HashBytes, *old)
 				if oldTrace != nil {
 					tx.Clear(oldTrace)
 				}
@@ -586,7 +669,9 @@ func (b *FDBBackend) saveLogBatch(ctx context.Context, batch logBatch) (int64, e
 }
 
 // ExportLogs validates every log before writing, so an inadmissible log fails
-// the call without partial writes; batches then commit independently. Logs
+// the call without partial writes; batches then commit independently. A later
+// prior-image change exceeding the live budget is an OperationError, not an
+// AdmissionError, and does not undo already committed batches. Logs
 // without an EventID get a receiver UUID here, outside any retry loop, so a
 // retried transaction never duplicates them; a resent request can.
 func (e *Exporter) ExportLogs(ctx context.Context, logs []LogRecord) (LogExportStats, error) {
@@ -629,6 +714,11 @@ func (e *Exporter) ExportLogs(ctx context.Context, logs []LogRecord) (LogExportS
 	}
 	for _, it := range items {
 		stats.UnindexedAttributes += it.unindexed
+	}
+	if len(items) != 0 {
+		if err := b.admitLogReplacements(ctx, items); err != nil {
+			return stats, err
+		}
 	}
 	batches := partitionLogs(items, e.cfg.BatchSize)
 	if len(batches) == 0 {

@@ -19,6 +19,59 @@ until such a tag is published (`RELEASE.md`).
 
 ## [Unreleased]
 
+**Post-v0.2.0 development.** These changes are outside the frozen v0.2.0 scope
+below; neither publication nor readiness is asserted.
+
+### Added
+- TEXT query APIs (`NewTextScan` / `TextScan`, `PlanTextQuery`, TEXT comparisons),
+  ordered union/intersection and probable/unordered merge cursors, and store-timer
+  `CountTextScanKeyValues`, `CountTextScanBytes` and `CountTextScanSeeks` counters.
+- `PipelineOperation`, `PipelineSizer`, `StoreBuilder.SetPipelineSizer` and
+  `GetPipelineSize`; INSERT saves honor their configured window (Java default one).
+- `SaveRecordBatch`, `SaveRecordBatchWithOptions`, `BatchSaveOptions` and
+  store/builder `PrefetchRecordBatch`, including batch TEXT-bunch prefetch.
+- Directory-backed KeySpace resolution (`DirectoryLayerDirectory`,
+  `KeySpaceResolver`, `ExtendedDirectoryLayerGlobal`), exported `CompareTuples`,
+  and the custom-maintainer `UpdateWhileWriteOnlyNonIdempotent` helper.
+- Opt-in Go-only Brotli records via `SetGoOnlyBrotliCompression` (compression
+  version 2); default version-1 zlib bytes are unchanged.
+
+### Changed / fixed
+- SQL VALUE-scan candidacy fails closed for TEXT, MULTIDIMENSIONAL,
+  TIME_WINDOW_LEADERBOARD and custom index layouts, including EXPLAIN plans;
+  factory `ValidateIndexOptions` runs for all registered types, not just VECTOR.
+- BunchedMap mutations preserve stored noncanonical key bytes; scan continuation
+  resumes no longer repeat a bunch's first entry. Logical TEXT suffix bounds and intersection seeks include predecessor bunches,
+  handle foreign-token reverse predecessors as exhaustion, and retain original
+  tuple endpoint semantics (including upper-only and exclusive bounds).
+- Message writers never reuse IDs after committed-but-unknown 1021/1039 retries;
+  multipart size fallback counts abandoned committed tails without publishing
+  their heads. Oversized raw words with short normalized tokens remain bounded
+  in indexed segments while raw reconstruction stays lossless.
+- Log admission counts native mutations, read/write conflicts and actual prior
+  image clears before writing; live batch images are rechecked before mutation.
+- Commit checks use the production live drain, including checks registered by
+  checks; explicit failed commits release their transaction handles.
+
+### Breaking changes / compatibility
+- **KeySpace persisted prefixes:** `Path.ToSubspace()` packs Java-flat path
+  elements instead of a nested tuple. Existing Go nested prefixes require explicit
+  `LegacyNestedSubspace()` export/import and guarded cutover; no automatic migration.
+- **Brotli:** Java 4.14.2.0 and default Go readers reject version 2. Rewrite opted-in
+  records with a compatible serializer before mixed-engine use or rollback.
+- **TEXT:** logical suffix bounds deliberately differ from Java's physical bunch
+  bounds. Packed ordered-merge comparison differs from Java object comparison for
+  UUIDs, UTF-16 strings, NaNs and mixed integer widths; probable merges also differ
+  in byte-array/NaN identity. These typed/bounded continuations are not a shared
+  remaining-row contract; keep them in one engine. See `docs/compatibility.md`.
+- **Legacy versions:** Go removes pending versions with deleted records; Java can
+  retain pending orphan bytes with versions disabled or committed V0 bytes after
+  an incomplete save/point delete with versions enabled (format 5).
+- **Batch conflicts:** opt-in `CoalesceIndexWriteConflicts` widens conflicts over
+  maintained indexes; untouched-entry readers may retry unlike ordinary Java saves.
+- No dependency-pin change: Java Record Layer/Relational **4.14.2.0** and
+  FoundationDB **7.3.77** remain the references. These entries do not widen v0.2.0.
+
 ## [v0.2.0] - 2026-11-04
 
 **Pending publication.** This entry defines the release scope; it does not assert a
@@ -67,12 +120,6 @@ Each is described in full under Compatibility or Changed below.
     incomplete value in their ordinary tuple encoders returns `IncompleteVersionstampError`.
     Dry runs share primary-key preparation but do not maintain counts. Count-key checks run
     only when a count is maintained.
-- **`keyspace` persisted prefixes:** `Path.ToSubspace()` now packs Java-flat path
-  elements instead of one nested tuple. Earlier Go stores require explicit
-  `LegacyNestedSubspace()` access and verified export/import; there is no automatic
-  migration. Guarded Record Layer opens refuse populated old prefixes unless an
-  explicit `SetAllowLegacyKeySpaceCutover(true)` acknowledges the new destination.
-  Raw byte conversion loses the guard. See `docs/upgrade.md`.
 - **`keyspace` (RFC-275):**
   - `AddSubdirectory` and `AddSubdirectories` return an `*ArgumentError` under Java's sibling
     rules, instead of panicking on a duplicate name.
@@ -116,14 +163,6 @@ Each is described in full under Compatibility or Changed below.
   `CommitTransactionRef.Read_conflict_ranges_disabled` a `SpanContext` (RFC-276).
 
 ### Compatibility
-- **Go-only Brotli records:** opt-in `SetGoOnlyBrotliCompression` writes compression
-  version 2, rejected by Java and default Go readers. Default version-1 zlib bytes
-  are unchanged. Before rollback or mixed-engine use, rewrite opted-in data using
-  compatible serialization; see [the compression boundary](DIVERGENCES.md#brotli-record-compression-go-only-extension).
-- **KeySpace flat-prefix cutover:** paths now use Java-flat addresses, not earlier
-  Go nested prefixes. No automatic migration occurs; retain the legacy accessor
-  until deliberate export/import/cutover. See [upgrade instructions](docs/upgrade.md#earlier-go-keyspace-path-prefixes)
-  and [the boundary](DIVERGENCES.md#key-space-paths-hold-the-stored-value-rfc-275).
 - **Version-dependent record keys (RFC-275):** native `VersionKey()` primary-key columns are
   unsupported, as in Java; formerly accepted Go-only metadata is now refused. Complete supplied
   versions participate in maintained-count keys and reach primary-key functions such as

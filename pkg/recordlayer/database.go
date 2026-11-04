@@ -423,7 +423,7 @@ func (d *FDBDatabase) runContexts(ctx context.Context, policy attemptPolicy, rou
 func (d *FDBDatabase) precommit(recordCtx *FDBRecordContext, result any, commitStart *time.Time) (any, error) {
 	// EventCommit spans the pre-commit checks plus the commit itself, which is
 	// the interval Java measures: startTimeNanos is taken at the first line of
-	// commitAsync, before runCommitChecks, and the event is recorded when the
+	// commitAsync, before commit checks, and the event is recorded when the
 	// commit future completes (FDBRecordContext.java:478, :513-533; the
 	// FDBStoreTimer javadoc at :81-86 says so explicitly). Post-commit hooks
 	// are outside the span in Java and are outside it here.
@@ -1183,8 +1183,8 @@ func (rc *FDBRecordContext) getCommitCheck(name string) CommitCheckFunc {
 	return nil
 }
 
-// removeCommitCheck cancels a named check that has not started, including one
-// in the current run's snapshot. It does not stop an already executing check.
+// removeCommitCheck cancels a named check that has not started in the live
+// commit drain. It does not stop an already executing check.
 // Store deletion uses this before clearing data to prevent deferred retirement
 // from recreating deleted index-state keys.
 func (rc *FDBRecordContext) removeCommitCheck(name string) {
@@ -1216,29 +1216,6 @@ func (rc *FDBRecordContext) AddPostCommit(hook PostCommitFunc) {
 	rc.commitMu.Lock()
 	defer rc.commitMu.Unlock()
 	rc.postCommits = append(rc.postCommits, hook)
-}
-
-// runCommitChecks runs all registered pre-commit checks.
-// Returns the first error encountered, or nil if all pass.
-// Called at commit time when all goroutines should be done. Registration state
-// is locked, but checks run without the lock so they can cancel pending checks.
-func (rc *FDBRecordContext) runCommitChecks() error {
-	rc.commitMu.Lock()
-	checks := make([]*commitCheckRegistration, len(rc.commitChecks))
-	copy(checks, rc.commitChecks)
-	rc.commitMu.Unlock()
-	for _, entry := range checks {
-		rc.commitMu.Lock()
-		active := entry.active
-		rc.commitMu.Unlock()
-		if !active {
-			continue
-		}
-		if err := entry.check(); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // runPendingCommitChecks drains registrations exactly once for one commit,

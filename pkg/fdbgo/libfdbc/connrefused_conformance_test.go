@@ -45,6 +45,7 @@ const crReadLifeVersions = "60000000"
 // crFixture is the seeded keyspace and the cluster file both clients open.
 type crFixture struct {
 	clusterFile string
+	native      cgofdb.Database // owned uncached handle; never close a borrowed cache entry
 	container   *foundationdbtc.Container
 	prefix      []byte
 	n           int
@@ -176,7 +177,12 @@ func startCRCluster(t *testing.T, ctx context.Context, f *crFixture, opts ...tes
 		t.Fatal(err)
 	}
 	t.Cleanup(backend.Close)
-	f.plan = bootstrapCRCluster(t, startup, container, f.clusterFile, replicas)
+	f.native, err = cgofdb.OpenWithConnectionString(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(f.native.Close)
+	f.plan = bootstrapCRCluster(t, startup, container, f.native, replicas)
 	db, err := gofdb.OpenDatabase(f.clusterFile)
 	if err != nil {
 		t.Fatal(err)
@@ -449,7 +455,7 @@ func crConfigureRegistered(ctx context.Context, plan crBootstrapPlan, workers fu
 }
 
 // LogClass can fall back to StorageWorstFit; reject unexpected roles after recruitment.
-func bootstrapCRCluster(t *testing.T, ctx context.Context, container *foundationdbtc.Container, clusterFile string, replicas int) crBootstrapPlan {
+func bootstrapCRCluster(t *testing.T, ctx context.Context, container *foundationdbtc.Container, native cgofdb.Database, replicas int) crBootstrapPlan {
 	t.Helper()
 	host, _, err := net.SplitHostPort(container.InternalAddress())
 	if err != nil {
@@ -485,10 +491,6 @@ func bootstrapCRCluster(t *testing.T, ctx context.Context, container *foundation
 	// All intended class/locality processes are constructed and listening before
 	// INITIALIZE. The native CC census then fences address registration, not
 	// hidden disk recovery; full status is queried only AFTER configuration.
-	native, err := cgofdb.OpenDatabase(clusterFile)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := crConfigureRegistered(ctx, plan, func(ctx context.Context) ([]cgofdb.KeyValue, error) {
 		return crNativeWorkerInterfaces(ctx, native)
 	}, func(ctx context.Context) (string, string, error) {
@@ -598,10 +600,7 @@ func pickStorageTeam(t *testing.T, ctx context.Context, f crFixture, replicas in
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	native, err := cgofdb.OpenDatabase(f.clusterFile)
-	if err != nil {
-		t.Fatal(err)
-	}
+	native := f.native
 	var lastTeam error
 	for {
 		status, diagnostic, err := crStorageStatus(ctx, f.container)
@@ -1633,10 +1632,7 @@ func TestLibFDBC_ConnectRefusedReplicaUsesAnotherReplica(t *testing.T) {
 	// This watch check asserts availability, not which replica the watch selected.
 	k, team := pickStorageTeam(t, ctx, f, 2)
 	killStorage(t, ctx, f, team[0])
-	cdb, err := cgofdb.OpenDatabase(f.clusterFile)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cdb := f.native
 	setter, err := gofdb.OpenDatabase(f.clusterFile)
 	if err != nil {
 		t.Fatal(err)
@@ -1673,16 +1669,19 @@ func TestLibFDBC_ConnectRefusedReplicaUsesAnotherReplica(t *testing.T) {
 			}
 			fired = w.Get
 		}
+		t.Logf("watch client=%s phase=commit-complete at=%s key=%x", client, time.Now().UTC().Format(time.RFC3339Nano), f.key(k))
 		if _, err := setter.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 			tr.Set(gofdb.Key(f.key(k)), []byte("changed by "+client))
 			return nil, nil
 		}); err != nil {
 			t.Fatalf("change the watched key: %v", err)
 		}
+		t.Logf("watch client=%s phase=change-committed at=%s key=%x", client, time.Now().UTC().Format(time.RFC3339Nano), f.key(k))
 		if err := fired(); err != nil {
 			code, _ := fdbCode(err)
-			t.Errorf("%s: watch with a refusing replica: %v (code %d)", client, err, code)
+			t.Fatalf("%s: watch with a refusing replica: %v (code %d)", client, err, code)
 		}
+		t.Logf("watch client=%s phase=fire-complete at=%s key=%x", client, time.Now().UTC().Format(time.RFC3339Nano), f.key(k))
 	}
 }
 

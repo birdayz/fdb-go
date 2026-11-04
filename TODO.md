@@ -41,6 +41,37 @@ Never mark a whole workstream complete because one of its subitems passed.
   client/read instances, watch recovery, or live-Java population from inline
   controls or source audits.
 
+### Pending source-repair acceptance (post-v0.2.0, PR #1023)
+
+- [ ] Audit and validate the coherent repairs for the 19 confirmed native findings
+  F1/F2/F4/F5/F7/F9/F10/F11/F12/F13/F14/F15/F19/F21/F22/F23/F24/F25/F26,
+  plus disjoint literal-TEXT fixture isolation and independently logged pure-Go /
+  libfdb_c watch commit/change/fire completion. Source changes and unexecuted
+  regression assertions are not a passing lane or a native re-rating. Preserve
+  the prior a62 fast/full/Java failure evidence; the native NAK population remains
+  19 confirmed, 7 duplicate and 55 unverified. The prior full lane failed before
+  166 TEXT comparisons on fixture keyspace pollution; it did not establish those
+  comparisons' logical parity. Run no acceptance gates until the owner releases
+  the audited source tree. New regressions cover ambiguous commits, initially
+  multipart size fallback after committed tails, short-normalized huge words,
+  small-integer log posting/native-clear budgets, live commit-check registration,
+  direct commit-conflict handle cleanup, configurable INSERT depth, typed TEXT
+  comparisons/bounds and versions-enabled format-5 orphan V0 contrast.
+- [ ] **Collector → same catalog/tenant SQL migration remains incomplete.** Wire
+  the actual upstream Collector ingestion path into the same relational catalog,
+  tenant and SQL table identity, then prove native Go/Java catalog visibility,
+  fidelity, tenant isolation, SQL query behavior and budget/continuation contracts.
+  Existing ExportLogs/ConsumeLogs adapters, typed OTel joined queries, custom-index
+  candidacy/maintenance seams and upper-stack planner foundations are prerequisites,
+  not this migration. No upper source changes or migration execution is included
+  in the lower readiness-repair workstream; hand off this still-open requirement
+  after owner-controlled restacking.
+- [ ] Historical benchmark plan objects are not all durably published/fresh-clone
+  inspectable. Preserve their measured identities/numbers and disclose the limit;
+  do not fabricate reachability or relabel newer trees as measured. The separate
+  500k-token fixture can regenerate from committed frozen inputs without the old
+  Git object; this does not reconstruct or rerun a historical benchmark campaign.
+
 ## 0. `pkg/fdbgo` CPU under concurrency — TOP PRIORITY
 
 Set as the top priority by the owner on 2026-10-15, ahead of the active workstream.

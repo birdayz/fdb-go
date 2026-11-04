@@ -261,8 +261,8 @@ func segmentMessageText(text string, distinct int) ([]messageSegment, int, error
 	const op = "message text segments"
 	tok := messageTokenizer{}
 	if len(text) > messageSegmentBytes {
-		// Raw message bytes are retained separately. Bound non-posting words
-		// without dropping their token position or joining their neighbours.
+		// Raw message bytes are retained separately. Bound every overlong
+		// word, including words whose normalization produces a short token.
 		var bounded strings.Builder
 		state := -1
 		for rest := text; len(rest) > 0; {
@@ -275,9 +275,13 @@ func segmentMessageText(text string, distinct int) ([]messageSegment, int, error
 			switch {
 			case len(ts) == 0:
 				bounded.WriteByte(' ')
-			case len(ts) == 1 && ts[0] == "" && len(word) > maxIndexedTokenBytes+1:
+			case len(ts) == 1 && len(word) > maxIndexedTokenBytes+1:
 				bounded.WriteByte(' ')
-				bounded.WriteString(strings.Repeat("x", maxIndexedTokenBytes+1))
+				if ts[0] == "" {
+					bounded.WriteString(strings.Repeat("x", maxIndexedTokenBytes+1))
+				} else {
+					bounded.WriteString(ts[0])
+				}
 				bounded.WriteByte(' ')
 			default:
 				bounded.WriteString(word)
@@ -346,6 +350,9 @@ func segmentMessageText(text string, distinct int) ([]messageSegment, int, error
 			return nil, 0, fail("admission", op, "tokens too long to segment with the phrase overlap")
 		}
 		seg := text[spans[s].start:spans[e-1].end]
+		if len(seg) > messageSegmentBytes {
+			return nil, 0, fail("admission", op, "indexed segment exceeds byte limit")
+		}
 		got, err := tok.TokenizeToList(seg, recordlayer.GlobalMinVersion, recordlayer.TokenizerModeIndex)
 		if err != nil {
 			return nil, 0, typedError("config", op, "tokenizer", err)

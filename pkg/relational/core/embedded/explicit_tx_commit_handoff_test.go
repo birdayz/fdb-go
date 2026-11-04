@@ -5,6 +5,8 @@ import (
 	"database/sql/driver"
 	"errors"
 	"testing"
+
+	"fdb.dev/pkg/fdbgo/fdb"
 )
 
 func TestExplicitTxLateBeginCancellationAfterCommitHandoff(t *testing.T) {
@@ -37,6 +39,36 @@ func TestExplicitTxLateBeginCancellationAfterCommitHandoff(t *testing.T) {
 	}
 	if err := tx.Commit(); err == nil {
 		t.Fatal("committed twice")
+	}
+}
+
+func TestExplicitTxCommitConflictClosesHandle(t *testing.T) {
+	t.Parallel()
+	g := newGatedSim(t, 1703)
+	c := g.connect(t, "S")
+	other := g.connect(t, "S")
+	mustExec(t, other, "INSERT INTO t (id, v) VALUES (1703, 1)")
+	tx, err := c.BeginTx(context.Background(), driver.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, c, 1703); n != 1 {
+		t.Fatalf("transaction did not read initial row: %d", n)
+	}
+	mustExec(t, c, "INSERT INTO t (id, v) VALUES (1704, 2)")
+	mustExec(t, other, "UPDATE t SET v = 3 WHERE id = 1703")
+	posts := 0
+	c.activeTx.rctx.AddPostCommit(func() { posts++ })
+	err = tx.Commit()
+	var conflict fdb.Error
+	if !errors.As(err, &conflict) || conflict.Code != 1020 {
+		t.Fatalf("commit=%v, want real not_committed (1020)", err)
+	}
+	if posts != 0 || c.activeTx != nil || g.gate.OpenTransactions() != 0 {
+		t.Fatalf("posts=%d active=%v handles=%d", posts, c.activeTx, g.gate.OpenTransactions())
+	}
+	if n := countRows(t, other, 1704); n != 0 {
+		t.Fatalf("conflicted transaction committed %d rows", n)
 	}
 }
 

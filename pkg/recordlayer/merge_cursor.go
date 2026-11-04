@@ -29,7 +29,9 @@ type ComparisonKeyFunc[T any] func(T) (tuple.Tuple, error)
 // compareKeys compares two comparison keys using FDB's order-preserving tuple
 // encoding. Returns negative if a < b, positive if a > b, 0 if equal.
 // Returns error if values are not tuple-encodable.
-// Matches Java's KeyComparisons.KEY_COMPARATOR.
+// Unlike Java's KeyComparisons.KEY_COMPARATOR, this preserves packed tuple
+// order for UUIDs, strings, NaN payloads and mixed-width integers. Java's
+// per-object Comparable order can differ from its token scans' tuple order.
 func compareKeys(a, b tuple.Tuple) (c int, err error) {
 	defer func() {
 		if r := recover(); r != nil {

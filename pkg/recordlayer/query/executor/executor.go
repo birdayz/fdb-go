@@ -3976,7 +3976,7 @@ func executeInsert(
 	// settled before the first write).
 	results := make([]QueryResult, 0, len(built))
 	if !props.DryRun {
-		// Java pipelines INSERT's saves; the rows' existence reads overlap.
+		// INSERT's store pipeline sizer selects the save/read window (Java default: one).
 		saved, serr := store.SaveRecordsPipelined(built, recordlayer.RecordExistenceCheckErrorIfExists)
 		if serr != nil {
 			return nil, fmt.Errorf("executor: inserting record: %w", serr)

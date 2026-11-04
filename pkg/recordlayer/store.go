@@ -709,10 +709,9 @@ func (store *FDBRecordStore) SaveRecordWithVersion(
 }
 
 // SaveRecordsPipelined saves records in order as SaveRecordWithOptions would
-// one at a time, but sends the existing-record reads of each window of
-// DefaultPipelineSize records together: Java's INSERT pipelines its saves
-// (RecordQueryAbstractDataModificationPlan mapPipelined, at
-// FDBRecordStore.DEFAULT_PIPELINE_SIZE). The first failing record stops the save
+// one at a time, but sends the existing-record reads of each INSERT pipeline
+// window together. The store's PipelineSizer selects the depth (Java defaults
+// INSERT to one). The first failing record stops the save
 // and is the one reported; the reads already sent for the rest of its window
 // stay in the transaction, as Java's do.
 func (store *FDBRecordStore) SaveRecordsPipelined(
@@ -726,8 +725,9 @@ func (store *FDBRecordStore) SaveRecordsPipelined(
 	defer finishWrite()
 	saved := make([]*FDBStoredRecord[proto.Message], 0, len(records))
 	tx := store.context.Transaction()
-	for start := 0; start < len(records); start += DefaultPipelineSize {
-		window := records[start:min(start+DefaultPipelineSize, len(records))]
+	depth := max(1, store.GetPipelineSize(PipelineOperationInsert))
+	for start := 0; start < len(records); start += depth {
+		window := records[start:min(start+depth, len(records))]
 		loads := store.startExistingRecordLoads(tx, window)
 		for i, record := range window {
 			stored, err := store.saveRecordInternal(record, existenceCheck, nil, VersionstampSaveBehaviorDefault, false, &loads[i], nil, nil)

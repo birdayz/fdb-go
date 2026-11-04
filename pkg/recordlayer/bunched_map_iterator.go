@@ -31,7 +31,8 @@ type SubspaceSplitter interface {
 // Matches Java's TextSubspaceSplitter.
 type TextSubspaceSplitter struct {
 	indexSubspace   subspace.Subspace
-	groupingColumns int // textPosition + 1 (grouping columns + token column)
+	groupingColumns int  // textPosition + 1 (grouping columns + token column)
+	logicalBounds   bool // the TupleRange restricts entries within one token map
 }
 
 // NewTextSubspaceSplitter creates a splitter for TEXT index scans.
@@ -40,6 +41,27 @@ func NewTextSubspaceSplitter(indexSubspace subspace.Subspace, groupingColumns in
 		indexSubspace:   indexSubspace,
 		groupingColumns: groupingColumns,
 	}
+}
+
+// newTextSubspaceSplitterForRange derives logical suffix bounds from tuple
+// endpoints, before an exclusive bound's strinc can make its bytes undecodable.
+func newTextSubspaceSplitterForRange(indexSubspace subspace.Subspace, groupingColumns int, scanRange TupleRange) *TextSubspaceSplitter {
+	s := NewTextSubspaceSplitter(indexSubspace, groupingColumns)
+	if len(scanRange.Low) < groupingColumns || len(scanRange.High) < groupingColumns {
+		return s
+	}
+	prefix := scanRange.Low[:groupingColumns]
+	if !bytes.Equal(prefix.Pack(), scanRange.High[:groupingColumns].Pack()) {
+		return s // the range covers more than one token map
+	}
+	full := TupleRangeAllOf(prefix).ToFDBRange(indexSubspace)
+	bounded := scanRange.ToFDBRange(indexSubspace)
+	if bytes.Compare(bounded.Begin.FDBKey(), full.Begin.FDBKey()) < 0 || bytes.Compare(bounded.End.FDBKey(), full.End.FDBKey()) > 0 {
+		return s // a token prefix spans maps; a suffix prefix stays within one
+	}
+	s.logicalBounds = bytes.Compare(bounded.Begin.FDBKey(), full.Begin.FDBKey()) > 0 ||
+		bytes.Compare(bounded.End.FDBKey(), full.End.FDBKey()) < 0
+	return s
 }
 
 // SubspaceOf extracts the subspace for a given FDB key by taking the first
@@ -203,9 +225,7 @@ func NewBunchedMapMultiIteratorWithCallback(
 	// A TEXT suffix bounds logical entries, not the physical bunch signpost.
 	// Include the predecessor bunch and filter its decoded entries below.
 	if text, ok := splitter.(*TextSubspaceSplitter); ok {
-		if low, err := text.SubspaceOf(beginBytes); err == nil {
-			it.logicalBounds = len(beginBytes) > len(low.Bytes())+1
-		}
+		it.logicalBounds = text.logicalBounds
 	}
 	// A resumed range needs the same predecessor-inclusive lower bound.
 	beginSelector := fdb.FirstGreaterOrEqual(fdb.Key(beginBytes))
@@ -359,6 +379,12 @@ func (it *BunchedMapMultiIterator) advance() {
 			return
 		}
 		nextSubspaceKey := nextSubspace.Bytes()
+		if it.seekTarget != nil && it.logicalBounds && it.reverse && bytes.Compare(nextSubspaceKey, it.seekSubspaceKey) < 0 {
+			// A predecessor-inclusive lower selector may resolve in the prior
+			// token map when this map has no bunch at or below the bound.
+			it.done = true
+			return
+		}
 		nextSubspaceSuffix := make([]byte, len(nextSubspaceKey)-len(it.parentKey))
 		copy(nextSubspaceSuffix, nextSubspaceKey[len(it.parentKey):])
 
@@ -504,8 +530,8 @@ func (it *BunchedMapMultiIterator) GetContinuation() []byte {
 //
 // Precondition: the scanned range lies within one map, an entry has been
 // returned (with no entry buffered by HasNext) and target sorts strictly after
-// it in scan order. Every entry a seek reads or passes over is then in the
-// current map, so GetContinuation keeps Java's form. Entries of the current
+// it in scan order. A logical lower-bound predecessor may belong to the prior
+// map; reaching it in reverse exhausts this map. Entries of the current
 // bunch are searched in memory; otherwise the range read is reopened at the
 // bunch that can contain target: a bunch is keyed by its first entry, so the
 // target's bunch is the last one whose key is below the target key.
@@ -536,9 +562,8 @@ func (it *BunchedMapMultiIterator) seekTo(target tuple.Tuple) {
 		}
 	}
 
-	// The target lies beyond the in-memory bunch. Its bunch is in the current
-	// map and no earlier than the current bunch, so both selectors resolve
-	// inside the scanned range.
+	// The target lies beyond the in-memory bunch. The logical lower selector
+	// may resolve in the prior map; advance treats that reverse boundary as end.
 	endpoint := append(append([]byte{}, it.currentSubspaceKey...), it.serializer.SerializeKey(target)...)
 	var rangeResult fdb.RangeResult
 	if it.reverse {
@@ -572,8 +597,8 @@ func (it *BunchedMapMultiIterator) seekTo(target tuple.Tuple) {
 // Entries passed over become the iterator's last key.
 func (it *BunchedMapMultiIterator) seekWithin(subspaceKey []byte, entries []BunchedEntry[tuple.Tuple, []int]) (int, bool, error) {
 	if !bytes.Equal(subspaceKey, it.seekSubspaceKey) {
-		// The reopened read starts in the target's map and ends with the scanned
-		// range, which lies within it (seekTo's precondition).
+		// advance handles the logical reverse predecessor boundary. Any other
+		// foreign map violates seekTo's single-map precondition.
 		return 0, false, &BunchedMapException{Message: "seek read a bunch outside the map it seeks in"}
 	}
 	if it.reverse {

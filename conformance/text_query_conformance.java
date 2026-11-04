@@ -14,6 +14,7 @@ import com.apple.foundationdb.record.metadata.Key;
 import com.apple.foundationdb.record.provider.foundationdb.FDBQueriedRecord;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordStore;
 import com.apple.foundationdb.record.provider.foundationdb.cursors.IntersectionCursor;
+import com.apple.foundationdb.record.provider.foundationdb.cursors.KeyComparisons;
 import com.apple.foundationdb.record.provider.foundationdb.cursors.ProbableIntersectionCursor;
 import com.apple.foundationdb.record.provider.foundationdb.cursors.UnionCursor;
 import com.apple.foundationdb.record.provider.foundationdb.cursors.UnorderedUnionCursor;
@@ -27,18 +28,22 @@ import com.apple.foundationdb.record.query.plan.ScanComparisons;
 import com.apple.foundationdb.record.query.plan.TextScan;
 import com.apple.foundationdb.record.query.plan.plans.RecordQueryPlan;
 import com.apple.foundationdb.subspace.Subspace;
+import com.apple.foundationdb.tuple.Tuple;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import com.google.protobuf.Message;
 import com.google.protobuf.ByteString;
 
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.Function;
 
 /**
@@ -85,6 +90,9 @@ class TextQuerySteps extends ConformanceBase {
         String grouping;
         Long suffixLow;
         Long suffixHigh;
+        String suffixLowTuple;
+        String suffixHighTuple;
+        boolean suffixLowExclusive;
         boolean reverse;
         int limit;
         int skip;
@@ -156,10 +164,17 @@ class TextQuerySteps extends ConformanceBase {
             ScanComparisons grouping = spec.grouping == null ? null
                     : new ScanComparisons(List.of(new Comparisons.SimpleComparison(Comparisons.Type.EQUALS, spec.grouping)), Set.of());
             ScanComparisons suffix = null;
-            if (spec.suffixLow != null) {
-                suffix = new ScanComparisons(List.of(), Set.of(
-                        new Comparisons.SimpleComparison(Comparisons.Type.GREATER_THAN_OR_EQUALS, spec.suffixLow),
-                        new Comparisons.SimpleComparison(Comparisons.Type.LESS_THAN, spec.suffixHigh)));
+            if (spec.suffixLow != null || spec.suffixHigh != null || spec.suffixLowTuple != null || spec.suffixHighTuple != null) {
+                Set<Comparisons.Comparison> bounds = new HashSet<>();
+                if (spec.suffixLow != null || spec.suffixLowTuple != null) {
+                    Object low = spec.suffixLowTuple == null ? spec.suffixLow : Tuple.fromBytes(HEX.parseHex(spec.suffixLowTuple)).get(0);
+                    bounds.add(new Comparisons.SimpleComparison(spec.suffixLowExclusive ? Comparisons.Type.GREATER_THAN : Comparisons.Type.GREATER_THAN_OR_EQUALS, low));
+                }
+                if (spec.suffixHigh != null || spec.suffixHighTuple != null) {
+                    Object high = spec.suffixHighTuple == null ? spec.suffixHigh : Tuple.fromBytes(HEX.parseHex(spec.suffixHighTuple)).get(0);
+                    bounds.add(new Comparisons.SimpleComparison(Comparisons.Type.LESS_THAN, high));
+                }
+                suffix = new ScanComparisons(List.of(), bounds);
             }
             TextScan scan = new TextScan(index, grouping, comparison(spec), suffix);
             try (RecordCursor<IndexEntry> cursor = scan.scan(store, EvaluationContext.EMPTY, continuation(spec),
@@ -167,6 +182,37 @@ class TextQuerySteps extends ConformanceBase {
                 return drainPage(cursor, TextQuerySteps::entryItem);
             }
         });
+    }
+
+    /** Exact target comparator outputs; no sign normalization or replacement comparator. */
+    @ConformanceStep("textMergeComparatorContrast")
+    public Map<String, Object> textMergeComparatorContrast(String shape) {
+        Object left;
+        Object right;
+        switch (shape) {
+            case "uuid":
+                left = UUID.fromString("10000000-0000-0000-0000-000000000000");
+                right = UUID.fromString("90000000-0000-0000-0000-000000000000");
+                break;
+            case "string": left = "\uD800\uDC00"; right = "\uE000"; break;
+            case "float_nan": left = Float.intBitsToFloat(0x7fc00001); right = Float.intBitsToFloat(0x7fc00002); break;
+            case "double_nan": left = Double.longBitsToDouble(0x7ff8000000000001L); right = Double.longBitsToDouble(0x7ff8000000000002L); break;
+            case "nested_nan":
+                left = Collections.singletonList(Double.longBitsToDouble(0x7ff8000000000001L));
+                right = Collections.singletonList(Double.longBitsToDouble(0x7ff8000000000002L));
+                break;
+            case "mixed_integers": left = 1L; right = BigInteger.ONE.shiftLeft(80); break;
+            default: throw new IllegalArgumentException(shape);
+        }
+        Map<String, Object> result = new HashMap<>();
+        result.put("left", HEX.formatHex(Tuple.from(left).pack()));
+        result.put("right", HEX.formatHex(Tuple.from(right).pack()));
+        try {
+            result.put("comparison", KeyComparisons.KEY_COMPARATOR.compare(Collections.singletonList(left), Collections.singletonList(right)));
+        } catch (ClassCastException ex) {
+            result.put("error", ex.getClass().getName());
+        }
+        return result;
     }
 
     static QueryComponent textFilter(Spec spec) {

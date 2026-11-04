@@ -28,6 +28,8 @@ class VersionSaveSteps extends ConformanceBase {
         RecordMetaDataOptionsProto.registerAllExtensions(EXTENSION_REGISTRY);
     }
 
+    // Metadata-enabled point deletion removes a pending mutation but preserves a
+    // previously committed legacy version; disabled metadata retains the pending one.
     @ConformanceStep("legacyExplicitVersionDelete")
     public Map<String, Object> legacyExplicitVersionDelete(String clusterFile, byte[] subspace, byte[] metaData,
                                                            byte[] record, String deleteKind, boolean seed)

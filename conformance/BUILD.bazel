@@ -864,6 +864,7 @@ go_test(
         "testdata_test.go",
         "text_index_conformance_test.go",
         "text_index_pipeline_conformance_test.go",
+        "text_query_boundary_conformance_test.go",
         "text_query_conformance_test.go",
         "time_window_leaderboard_conformance_test.go",
         "transformed_serializer_conformance_test.go",

@@ -3,12 +3,14 @@
 package conformance_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
+	"testing"
 
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
@@ -34,6 +36,9 @@ type TextQuerySpec struct {
 	Grouping            *string  `json:"grouping,omitempty"`
 	SuffixLow           *int64   `json:"suffixLow,omitempty"`
 	SuffixHigh          *int64   `json:"suffixHigh,omitempty"`
+	SuffixLowTuple      *string  `json:"suffixLowTuple,omitempty"`
+	SuffixHighTuple     *string  `json:"suffixHighTuple,omitempty"`
+	SuffixLowExclusive  bool     `json:"suffixLowExclusive,omitempty"`
 	Reverse             bool     `json:"reverse"`
 	Limit               int      `json:"limit"`
 	Skip                int      `json:"skip"`
@@ -109,6 +114,42 @@ func goExecuteProperties(s TextQuerySpec) recordlayer.ExecuteProperties {
 		props = props.WithScannedRecordsLimit(s.ScannedRecordsLimit)
 	}
 	return props
+}
+
+func textQuerySuffixRange(s TextQuerySpec) *recordlayer.TupleRange {
+	if s.SuffixLow == nil && s.SuffixHigh == nil && s.SuffixLowTuple == nil && s.SuffixHighTuple == nil {
+		return nil
+	}
+	r := recordlayer.TupleRange{LowEndpoint: recordlayer.EndpointTypeTreeStart, HighEndpoint: recordlayer.EndpointTypeTreeEnd}
+	decode := func(encoded string) tuple.Tuple {
+		b, err := hex.DecodeString(encoded)
+		Expect(err).NotTo(HaveOccurred())
+		key, err := tuple.Unpack(b)
+		Expect(err).NotTo(HaveOccurred())
+		return key
+	}
+	if s.SuffixLow != nil {
+		r.Low = tuple.Tuple{*s.SuffixLow}
+	}
+	if s.SuffixLowTuple != nil {
+		r.Low = decode(*s.SuffixLowTuple)
+	}
+	if r.Low != nil {
+		r.LowEndpoint = recordlayer.EndpointTypeRangeInclusive
+		if s.SuffixLowExclusive {
+			r.LowEndpoint = recordlayer.EndpointTypeRangeExclusive
+		}
+	}
+	if s.SuffixHigh != nil {
+		r.High = tuple.Tuple{*s.SuffixHigh}
+	}
+	if s.SuffixHighTuple != nil {
+		r.High = decode(*s.SuffixHighTuple)
+	}
+	if r.High != nil {
+		r.HighEndpoint = recordlayer.EndpointTypeRangeExclusive
+	}
+	return &r
 }
 
 func continuationBytes(s TextQuerySpec) []byte {
@@ -187,6 +228,26 @@ func textQueryMetaData() (*recordlayer.RecordMetaData, error) {
 // textQueryCorpusSize customers make every common token span many bunches
 // (BunchedMap bunches hold 20 entries).
 const textQueryCorpusSize = 1200
+
+func textQueryFixtureSubspaces() (subspace.Subspace, subspace.Subspace) {
+	return subspace.Sub("text_query_corpus"), subspace.Sub("text_query_literal_bounds")
+}
+
+func TestTextQueryFixtureRangesAreDisjoint(t *testing.T) {
+	t.Parallel()
+	corpus, literal := textQueryFixtureSubspaces()
+	if len(corpus.Bytes()) == 0 || len(literal.Bytes()) == 0 {
+		t.Fatal("an empty fixture root contains every sibling store")
+	}
+	a0, a1 := corpus.FDBRangeKeys()
+	b0, b1 := literal.FDBRangeKeys()
+	if bytes.Compare(a0.FDBKey(), b1.FDBKey()) < 0 && bytes.Compare(b0.FDBKey(), a1.FDBKey()) < 0 {
+		t.Fatalf("fixture FDB ranges overlap: [%x,%x) and [%x,%x)", a0.FDBKey(), a1.FDBKey(), b0.FDBKey(), b1.FDBKey())
+	}
+	if corpus.Contains(literal) || literal.Contains(corpus) {
+		t.Fatal("one fixture contains the other's store prefix")
+	}
+}
 
 // textQueryCorpusName is customer i's name. "common" is in every record,
 // "frequent" in every other, "rare" in three; the alpha/beta/gamma phrases and
@@ -311,7 +372,7 @@ var _ = Describe("TEXT query execution conformance", Ordered, ContinueOnFailure,
 		Expect(err).NotTo(HaveOccurred())
 		md, err = textQueryMetaData()
 		Expect(err).NotTo(HaveOccurred())
-		ks = subspace.Sub(tuple.Tuple{})
+		ks, boundedFixture = textQueryFixtureSubspaces()
 		java = NewJavaInvoker()
 		params = func() map[string]any {
 			return map[string]any{"clusterFile": env.ClusterFile, "subspace": BytesToIntArray(ks.Bytes()), "tenantName": env.TenantName}
@@ -376,7 +437,6 @@ var _ = Describe("TEXT query execution conformance", Ordered, ContinueOnFailure,
 		Expect(err).NotTo(HaveOccurred())
 		Expect(owners["common"]).To(HaveLen(textQueryCorpusSize))
 		Expect(owners["common"][10]).To(BeNumerically("<", 10), "logical lower boundary belongs to a predecessor bunch")
-		boundedFixture = ks.Sub("literal_suffix_bounds")
 		_, err = env.RecordDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 			store, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(md).SetSubspace(boundedFixture).CreateOrOpen()
 			if err != nil {
@@ -432,11 +492,7 @@ var _ = Describe("TEXT query execution conformance", Ordered, ContinueOnFailure,
 			if s.Grouping != nil {
 				grouping = tuple.Tuple{*s.Grouping}
 			}
-			var suffix *recordlayer.TupleRange
-			if s.SuffixLow != nil {
-				r := recordlayer.TupleRangeBetween(tuple.Tuple{*s.SuffixLow}, tuple.Tuple{*s.SuffixHigh})
-				suffix = &r
-			}
+			suffix := textQuerySuffixRange(s)
 			scan := recordlayer.NewTextScan(md.GetIndex(s.Index), grouping, goTextComparison(s), suffix)
 			cursor, err := scan.Scan(store, continuationBytes(s), recordlayer.NewScanProperties(exec).WithReverse(s.Reverse))
 			if err != nil {

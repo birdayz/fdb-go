@@ -4,7 +4,12 @@ Campaign `otel-cilium4-1793415401` (run name `k8s-cilium4`), 2026-10-31,
 Hetzner Cloud `hel1`. Application binary built from source revision
 `4af32c3bc` ("Add guarded bulk saves and explicit Record Layer Brotli
 compression"), binary SHA-256 `3ed9c25a…501fe`, `fdbserver`/`fdbcli` FoundationDB
-7.3.77.
+7.3.77. This is a historical measured-tree identity, not the current branch.
+That old commit is not durably published/reachable in a fresh clone; its full
+benchmark source is not reconstructed by this report. The separate 500k-token
+compression fixture now regenerates from committed frozen source inputs without
+that object (see [generator provenance](../../tools/largecontext/README.md)); this
+preserves the original fixture bytes and does not relabel or rerun the campaign.
 
 This is a **single, preregistered weak-scaling run**. Each stage has its own
 FoundationDB cluster with `single` redundancy. Every producer writes to its own

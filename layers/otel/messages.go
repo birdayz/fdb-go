@@ -1315,7 +1315,9 @@ func (b *FDBBackend) writeSmallMessages(ctx context.Context, tenant int, w *mess
 	}
 	plans = unique
 	base := w.next
-	used := int64(len(plans))
+	// A committed-but-unknown attempt may use every ID even when the retry
+	// finds only dedup hits. Reserve the whole range before any attempt.
+	w.next = base + int64(len(plans))
 	err := b.runMessageTxn(ctx, stats, mu, func(store *recordlayer.FDBRecordStore, hashSpace []byte) (MessageStoreStats, error) {
 		var s MessageStoreStats
 		found, err := readHashes(store, hashSpace, tenant, plans)
@@ -1353,13 +1355,8 @@ func (b *FDBBackend) writeSmallMessages(ctx context.Context, tenant int, w *mess
 			s.Postings += p.postings
 			s.UnindexedTokens += p.unindexed
 		}
-		used = seq - base
 		return s, nil
 	})
-	if err != nil {
-		used = int64(len(plans)) // a failed attempt may have committed any of them
-	}
-	w.next = base + used
 	if err == nil {
 		for _, p := range plans {
 			if p.element.written {

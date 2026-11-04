@@ -3591,9 +3591,10 @@ pending work before clearing:
 - the subspace's pending-write commit checks;
 - the retirement metadata in the session.
 
-Cancelling marks the registration inactive (`removeCommitCheck`, `database.go:1142-1161`).
-`runCommitChecks` skips an inactive entry even when it is already in the snapshot it is
-iterating (`database.go:1177-1193`).
+Cancelling marks the registration inactive (`removeCommitCheck`, `database.go`).
+The production `sealRecordWrites` / `runPendingCommitChecks` live drain skips inactive
+registrations and includes checks registered by earlier checks or joined writers before
+sealing. It does not use a snapshot of the callback list.
 
 This corrects the boundary; it is not exact parity for Java's defective sequence. It does
 not change record or index wire encodings.
@@ -4804,9 +4805,9 @@ retries, so no build picks one range forever.
 
 `recordlayer.TextScan` ports `TextScan.scan` (TextScan.java:160-262) and its
 merge cursors; `PlanTextQuery` ports `RecordQueryPlanner.planText`
-(RecordQueryPlanner.java:1702-1734). On the shared, unbounded token-scan surface,
-entries, records and continuations are Java's, so a continuation from either
-engine resumes in the other (subject to the unordered identity exceptions below).
+(RecordQueryPlanner.java:1702-1734). On the shared, unbounded token-scan surface
+with equivalent comparison-key ordering, entries, records and continuations are
+Java's, subject to the ordered-comparator and unordered-identity exceptions below.
 Logical suffix bounds have the separate read-side boundary below. Pinned by
 `conformance/text_query_conformance_test.go` (target `//conformance:conformance_test`,
 tag `conformance_java`) and `pkg/recordlayer/text_scan_seek_test.go`.
@@ -4840,7 +4841,27 @@ continuations have the same wire format but are **not a cross-engine result/page
 contract**: Java retains its physical lower fence and lacks logical upper filtering,
 whereas Go includes the predecessor and filters decoded entries. Do not exchange
 bounded TEXT continuations expecting identical remaining rows. Unbounded ordered
-cases retain exact native entries, order, stop reasons and cross-engine resumes.
+cases with equivalent key comparison retain exact native entries, order, stop
+reasons and cross-engine resumes.
+
+### TEXT ordered-merge comparison keys
+
+Go deliberately compares packed tuple keys in ordered intersection/union merges,
+matching physical FDB order. Java 4.14.2.0 `KeyComparisons.compareKeys` instead
+compares objects: UUID halves are signed, strings use UTF-16 code units, boxed
+NaNs compare canonically, and mixed `Long`/`BigInteger` comparisons can throw.
+These differences can change an unpaged ALL result or ANY ordering/duplicates,
+not merely a continuation. For UUID keys, the literal conformance fixture pins
+Java ALL as empty and ANY as `10,90,20,90`, versus Go ALL `90` and ANY `10,20,90`.
+Native answers are not sorted or normalized into Go answers. Raw typed comparator
+contrasts and actual Java UUID scans live in
+`conformance/text_query_boundary_conformance_test.go`; expectations must be
+established by that lane, not inferred from source inspection.
+
+Tuple encodings and stored bytes remain unchanged. Do not exchange ordered TEXT
+merge continuations over these typed keys expecting equal remaining rows. The
+unbounded parity statements here apply only where object and packed ordering
+agree, independently of the bounded-range and probable-merge identity boundaries.
 
 ### TEXT intersections seek (intentional, result-preserving cost divergence)
 
@@ -4916,6 +4937,16 @@ legacy version bytes remain ignored and preserved when metadata disables version
 this is not a migration or a cleanup of historical bytes. Mixed engines may thus
 produce different legacy version keys for the same explicit-version save/delete
 sequence. Lifecycle and contrasting Java/Go conformance tests pin the boundary.
+
+A separate **versions-enabled, format-5 point-delete** sequence first commits
+complete V0, then saves an incomplete version and deletes the body in one context.
+Java's `oldHasIncompleteVersion` branch removes only the pending mutation, leaving
+the exact old V0 key/value orphaned (`FDBRecordStore.java:1776-1783`). Go clears
+both the pending mutation and committed version key. This is intentional cleanup,
+not byte parity: `legacy_pending_version_divergence_test.go` contrasts the exact
+key and twelve old bytes `{1,0,0,0,0,0,0,0,0,0,0,9}` and retains all four
+versions-disabled point/where × seed cases. No automatic historical cleanup or
+metadata-disabled committed-byte deletion is implied.
 
 ### Opt-in batch index conflict widening
 

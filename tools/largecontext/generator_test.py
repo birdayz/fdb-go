@@ -7,6 +7,7 @@ import io
 import json
 from pathlib import Path
 import runpy
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -60,18 +61,52 @@ class GeneratorTest(unittest.TestCase):
     def git(self, *args):
         return subprocess.check_output(["git", "-C", str(self.root), *args])
 
-    def invoke(self, budget, dest, encoding=None):
+    def invoke(self, budget, dest, encoding=None, *, default=False, script=SCRIPT):
         encoding = encoding or ByteEncoding()
         module = types.ModuleType("tiktoken")
         module.get_encoding = lambda name: encoding if name == "cl100k_base" else None
-        argv = [str(SCRIPT), "--revision", self.revision, "--source-root", str(self.root),
+        argv = [str(script), "--source-root", str(self.root),
                 "--output-dir", str(dest), "--tokens", str(budget)]
+        if not default:
+            argv.extend(["--revision", self.revision])
         # This runs the actual __main__/argparse/selection/truncation/emission path.
         with mock.patch.dict(sys.modules, {"tiktoken": module}), \
                 mock.patch.object(sys, "argv", argv), \
                 mock.patch.object(importlib.metadata, "version", return_value="injected-test-only"), \
                 contextlib.redirect_stdout(io.StringIO()):
-            runpy.run_path(str(SCRIPT), run_name="__main__")
+            runpy.run_path(str(script), run_name="__main__")
+
+    def test_default_from_committed_inputs_without_historical_git_object(self):
+        # Model a fresh clone containing only the committed generator inputs;
+        # its isolated Git history has no historical measurement commit.
+        dest = self.root / "tools/largecontext"
+        dest.mkdir(parents=True)
+        for name in ["fixture.py", "frozen_sources.json", "frozen_sources.tar.gz"]:
+            shutil.copyfile(SCRIPT.with_name(name), dest / name)
+        with self.assertRaises(subprocess.CalledProcessError):
+            subprocess.check_output(["git", "-C", str(self.root), "cat-file", "-e",
+                                     "4af32c3bc68698fbe26438a2f84f82ba5ec8d23f^{commit}"], stderr=subprocess.DEVNULL)
+        output = Path(self.tmp.name) / "default-output"
+        self.invoke(100, output, default=True, script=dest / "fixture.py")
+        manifest = json.loads((output / "manifest.json").read_text())
+        self.assertEqual(manifest["source_revision"], "4af32c3bc68698fbe26438a2f84f82ba5ec8d23f")
+        self.assertEqual(manifest["sources"][0]["path"], "pkg/recordlayer/execute_state.go")
+        self.assertEqual(manifest["sources"][0]["sha256"], "41da728c8215e4479f4fb5b54442ce3cf8d7be1bdff2007c3792df51998b5db9")
+        self.assertEqual(manifest["context_tokens"], 100)
+        first = (output / "messages_500k.json.gz").read_bytes()
+        self.invoke(100, output, default=True, script=dest / "fixture.py")
+        self.assertEqual((output / "messages_500k.json.gz").read_bytes(), first)
+        # Both integrity guards run on the real default CLI path.
+        metadata = json.loads((dest / "frozen_sources.json").read_text())
+        original = (dest / "frozen_sources.json").read_bytes()
+        metadata["sources"][0]["sha256"] = "0" * 64
+        (dest / "frozen_sources.json").write_text(json.dumps(metadata))
+        with self.assertRaisesRegex(ValueError, "frozen source digest mismatch"):
+            self.invoke(100, output, default=True, script=dest / "fixture.py")
+        (dest / "frozen_sources.json").write_bytes(original)
+        (dest / "frozen_sources.tar.gz").write_bytes(b"corrupted archive")
+        with self.assertRaisesRegex(ValueError, "frozen source archive digest mismatch"):
+            self.invoke(100, output, default=True, script=dest / "fixture.py")
 
     def test_cli_selection_partial_ranges_and_deterministic_output(self):
         blocks = [f'\n<source path="{p}">\n'.encode() + self.data[p] + b"\n</source>\n" for p in ORDER]

@@ -1,11 +1,12 @@
 # GenAI/OTel custom Collector-model ingest: 1x/2x/3x scaling on Kubernetes + Cilium
 
 This report covers the benchmark campaigns behind PR #1023 (branch
-`perf/otel-ingest-20k`). That PR is stacked on #1022, which holds the pure-Go
-client changes. There are nine measured cloud campaigns, `k8s-fts6` through
+`perf/otel-ingest-20k`). PR #1022's client changes merged into master as
+`cac2de7a355d3d41a1ff137883f583f4fc0bf82a`; #1023 is now based on master,
+not on an active #1022 branch. There are nine measured cloud campaigns, `k8s-fts6` through
 `k8s-fts13` and `k8s-fts14c`, run 2026-11-01 to 2026-11-03 in Hetzner `hel1`.
 These are performance experiments, not correctness or merge-readiness evidence;
-conformance/correctness review remains active for #1022 and #1025. A profiling
+the lower/upper stack still requires its own conformance/correctness acceptance. A profiling
 session on a separate small box ("box 3") explains where the remaining CPU goes.
 
 Each campaign measures a sustained **custom in-process Collector-model queue**,
@@ -57,7 +58,7 @@ mutation bytes per span fell about 5.2x (34.0 to 6.6 KB at 1x).
 
 ### Progression
 
-| Run | Plan revision | Same change on the branch | What changed since the previous run | 1x | 2x | 3x | 3x efficiency | Mutation KB/span (1x) | Messages per txn |
+| Run | Historical plan revision | Historical pre-restack change label | What changed since the previous run | 1x | 2x | 3x | 3x efficiency | Mutation KB/span (1x) | Messages per txn |
 |---|---|---|---|---:|---:|---:|---:|---:|---:|
 | `k8s-fts6` | `e2bc4d95c` | `7a030eb06` | old custom blob/posting/back-reference layout | 665.6 | 1,339.2 | – | – | 34.0 | – |
 | `k8s-fts7` | `e48b98793` | `6e18ab5c0` | messages as Record Layer records with a TEXT index | 849.6 | 1,579.6 | 2,393.0 | 93.9% | 10.3 | 22.9 |
@@ -72,10 +73,14 @@ mutation bytes per span fell about 5.2x (34.0 to 6.6 KB at 1x).
 Notes on the columns:
 
 - **Rates** are steady-state spans/s summed over the stage's producers.
-- **Plan revision** is each plan's `source_revision`. The branch has been
-  rebased since the earlier runs, so the next column gives the commit with the
-  same subject on `perf/otel-ingest-20k`, not proof of byte-identical trees.
-  Section 3 describes the intervening changes.
+- **Plan revision** preserves each measured plan's historical `source_revision`.
+  The next column preserves old pre-restack labels, **not current branch hashes**
+  or proof of byte-identical trees. These historical objects are not all durably
+  published/reachable from a fresh clone, so the report alone does not let a new
+  reader inspect or reconstruct every measured source tree. No new refs or fresh
+  measurements have been created to disguise that provenance limitation.
+  Section 3 uses the historical labels; the subject mapping below locates the
+  corresponding changes in current history, not the measured trees.
 - **`k8s-fts6` at 3x is incomplete.** One of `client2`'s under-load
   `fts_multi_turn_history` queries failed, so the runner aborted the stage
   before collecting `client3`'s report.
@@ -95,6 +100,24 @@ Change between consecutive runs, 1x / 2x / 3x:
 | `fts12` vs `fts11` | +1.0% / +2.9% / +2.9% |
 | `fts13` vs `fts12` | +25.0% / +20.5% / +19.8% |
 | `fts14c` vs `fts13` | +8.1% / +8.6% / +8.1% |
+
+### Change subjects after restacking (not measured-tree identities)
+
+Locate these subjects with `git log --all --fixed-strings --grep='<subject>'`;
+a restacked copy is not proof of equal source bytes. Client-only subjects from
+the old #1022 history were folded into its published merge commit above.
+
+| Historical label | Change subject in the lower history |
+|---|---|
+| `7a030eb06` | `fix(otel): exempt exporter span commits from the 1s elapsed guard` |
+| `6e18ab5c0` | `perf(otel): store GenAI messages as Record Layer records with a TEXT index` |
+| `9edee5846` | `perf(recordlayer): coalesce batch write conflicts only over written indexes` |
+| `c4e387a39` | `perf(recordlayer): BunchedMap puts on packed bytes, as Java does` |
+| `4677c3ffa` | `perf(recordlayer): pipelined TEXT reads use the client's futures` |
+| `0d3597919` | `perf(otel): one reference row per span; larger message transactions` |
+| `7054d07cc` | `perf(otel): directory-layer key prefixes and group-committed messages` |
+| `61658c916` | `perf(otel): save message records with one SaveRecordBatch` |
+| `326c23e66` | historical measured tree; no current-byte identity claimed |
 
 ### Benchmark checks (not conformance certification)
 
@@ -227,7 +250,7 @@ storage stayed workload-limited. Throughput moved with client CPU only. A
 profile at `7cf0eda3c` put TEXT index maintenance at about 60% of client CPU
 (see the `TODO.md` entry "TEXT index maintenance CPU in message transactions").
 
-| Interval | Commits (branch hash, plan-tree hash) | Effect at 1x |
+| Interval | Historical labels (pre-restack change, plan-tree hash) | Effect at 1x |
 |---|---|---|
 | `fts7` to `fts8` | `9edee5846`/`7cf0eda3c` coalesce batch write conflicts only over written indexes; `1f4913b8a`/`bc250da14` persistent RYW structures | +26.0% |
 | `fts8` to `fts9` | `c4e387a39`/`cd1ee1615` BunchedMap puts on packed bytes, as Java does; `5d0f43515`/`b9324f74c` RYW reads outside the lock; `36e8763ff`/`2e5c0dcc5` tokenize each message once | +45.2% |
@@ -329,9 +352,9 @@ message transactions; none failed.
 
 To split the remaining CPU, the `fts13` tree (`0776ed68e`) was profiled against
 `daa69f001`. `daa69f001` is `0776ed68e` plus the pre-review "perf(fdbgo): C++
-RYW iteration, conflict maps and QueueModel locking" change. PR #1022 carries
-its revised implementation in `01e83d34b` and follow-up fixes; those are not
-byte-identical to this measured tree.
+RYW iteration, conflict maps and QueueModel locking" change. The historical
+#1022 revision `01e83d34b` and its follow-ups were later merged in `cac2de7a3`;
+neither that old label nor the merged tree is byte-identical to this measured tree.
 
 The receipts are local and uncommitted, like the cloud ones, under
 `/var/tmp/box3-receipts/2026-11-03/` (indexed by its `README.md`; see
@@ -528,7 +551,8 @@ latency: more ingest throughput did not uniformly improve query latency.
 The repository contains the following Java/libfdb_c conformance and differential
 tests for the changed surfaces. Their presence is not evidence that every
 measured binary passed them, nor that review is complete. Correctness review of
-#1022 and #1025 remains active; these performance runs do not resolve it:
+the lower/upper stack remains a separate acceptance requirement; these historical
+performance runs do not resolve it:
 
 - **Record Layer (Java), PR #1023:**
   - TEXT query execution, continuations, merges and index contents:
@@ -542,7 +566,7 @@ measured binary passed them, nor that review is complete. Correctness review of
     [`keyspace_conformance_test.go`](../../conformance/keyspace_conformance_test.go)
   - Batch TEXT prefetch commit identical to sequential saves (differential):
     [`store_batch_text_prefetch_test.go`](../../pkg/recordlayer/store_batch_text_prefetch_test.go)
-- **Pure-Go client (libfdb_c), PR #1022:**
+- **Pure-Go client (libfdb_c), merged PR #1022 and lower follow-ups:**
   - Selector range reads:
     [`selector_range_conformance_test.go`](../../pkg/fdbgo/client/selector_range_conformance_test.go)
   - `report_conflicting_keys`:

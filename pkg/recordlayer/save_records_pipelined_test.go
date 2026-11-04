@@ -74,6 +74,47 @@ var _ = Describe("SaveRecordsPipelined", func() {
 		}
 	})
 
+	It("uses the INSERT pipeline sizer for actual save windows", func() {
+		for _, configuredDepth := range []int{0, 1, 3, 7} {
+			depth := max(1, configuredDepth)
+			md, ss := metaData(true), specSubspace().Sub(configuredDepth)
+			inStore(md, ss, func(s *FDBRecordStore) {
+				var log []string
+				original := s.context.tx
+				s.context.tx = pipelineRecordingTx{WritableTransaction: original, log: &log}
+				defer func() { s.context.tx = original }()
+				calls := 0
+				if configuredDepth != 0 {
+					s.pipelineSizer = func(op PipelineOperation) int {
+						Expect(op).To(Equal(PipelineOperationInsert))
+						calls++
+						return depth
+					}
+				}
+				var records []proto.Message
+				for i := range int64(9) {
+					records = append(records, order(i, int32(i)))
+				}
+				saved, err := s.SaveRecordsPipelined(records, RecordExistenceCheckNone)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(saved).To(HaveLen(9))
+				wantCalls := 1
+				if configuredDepth == 0 {
+					wantCalls = 0
+				}
+				Expect(calls).To(Equal(wantCalls))
+				// Before the first range is consumed, precisely one INSERT
+				// window has been sent; a constant ten would send all nine.
+				Expect(len(log)).To(BeNumerically(">", depth))
+				for _, event := range log[:depth] {
+					Expect(event).To(Equal("send"))
+				}
+				Expect(log[depth]).To(Equal("wait"))
+			})
+		}
+		Expect(DefaultPipelineSizer(PipelineOperationInsert)).To(Equal(1))
+	})
+
 	It("sends a window's reads before waiting on any", func() {
 		md, ss := metaData(true), specSubspace()
 		inStore(md, ss, func(s *FDBRecordStore) {
@@ -105,6 +146,12 @@ var _ = Describe("SaveRecordsPipelined", func() {
 	It("reads a key repeated within a window after the earlier save", func() {
 		md, ss := metaData(true), specSubspace()
 		inStore(md, ss, func(s *FDBRecordStore) {
+			s.pipelineSizer = func(op PipelineOperation) int {
+				if op == PipelineOperationInsert {
+					return 3
+				}
+				return DefaultPipelineSizer(op)
+			}
 			// A read started before the first save would see no record: the
 			// second save would then keep the first's index entry.
 			_, err := s.SaveRecordsPipelined([]proto.Message{order(1, 10), order(2, 15), order(1, 20)}, RecordExistenceCheckNone)
@@ -159,6 +206,16 @@ var _ = Describe("SaveRecordsPipelined", func() {
 		})
 	})
 })
+
+type pipelineRecordingTx struct {
+	fdb.WritableTransaction
+	log *[]string
+}
+
+func (tx pipelineRecordingTx) GetRange(r fdb.Range, options fdb.RangeOptions) fdb.RangeResult {
+	*tx.log = append(*tx.log, "send")
+	return recordingRange{RangeResult: tx.WritableTransaction.GetRange(r, options), log: tx.log}
+}
 
 // recordingReadTx logs each read it sends and each wait on one.
 type recordingReadTx struct {

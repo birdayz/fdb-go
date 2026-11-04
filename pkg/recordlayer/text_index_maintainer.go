@@ -464,7 +464,7 @@ func (m *textIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, sc
 // requested.
 func (m *textIndexMaintainer) scanText(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) (RecordCursor[*IndexEntry], *textCursor) {
 	textPosition := textFieldPosition(m.index.RootExpression)
-	splitter := NewTextSubspaceSplitter(m.indexSubspace, textPosition+1)
+	splitter := newTextSubspaceSplitterForRange(m.indexSubspace, textPosition+1, scanRange)
 
 	byteRange := scanRange.ToFDBRange(m.indexSubspace)
 

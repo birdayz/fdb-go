@@ -11,6 +11,8 @@ import importlib.metadata
 import json
 from pathlib import Path
 import subprocess
+import tarfile
+import io
 
 
 def git(root, *args):
@@ -19,7 +21,7 @@ def git(root, *args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--revision", default="4af32c3bc68698fbe26438a2f84f82ba5ec8d23f")
+    parser.add_argument("--revision", help="read another Git revision instead of the committed frozen inputs")
     parser.add_argument("--source-root", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--tokens", type=int, default=500_000)
@@ -29,8 +31,31 @@ def main():
     import tiktoken
 
     root = args.source_root
-    revision = git(root, "rev-parse", args.revision).decode().strip()
-    paths = git(root, "ls-tree", "-r", "--name-only", revision).decode().splitlines()
+    frozen = None
+    if args.revision is None:
+        # The historical measurement commit is not published history. These
+        # committed original source bytes make default regeneration independent
+        # of local Git objects, without changing the measured fixture identity.
+        source_dir = Path(__file__).resolve().parent
+        metadata = json.loads((source_dir / "frozen_sources.json").read_text())
+        archive = (source_dir / "frozen_sources.tar.gz").read_bytes()
+        if hashlib.sha256(archive).hexdigest() != metadata["archive_sha256"]:
+            raise ValueError("frozen source archive digest mismatch")
+        frozen = {}
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as sources:
+            for source in metadata["sources"]:
+                stream = sources.extractfile(source["path"])
+                if stream is None:
+                    raise ValueError("frozen source missing: " + source["path"])
+                data = stream.read()
+                if len(data) != source["source_bytes"] or hashlib.sha256(data).hexdigest() != source["sha256"]:
+                    raise ValueError("frozen source digest mismatch: " + source["path"])
+                frozen[source["path"]] = data
+        revision = metadata["source_revision"]
+        paths = list(frozen)
+    else:
+        revision = git(root, "rev-parse", args.revision).decode().strip()
+        paths = git(root, "ls-tree", "-r", "--name-only", revision).decode().splitlines()
     code = [p for p in paths if Path(p).parent.as_posix() == "pkg/recordlayer"
             and p.endswith(".go") and not p.endswith("_test.go")]
     docs = [p for p in paths if Path(p).parent.as_posix() == "docs"
@@ -47,7 +72,7 @@ def main():
         del docs[:1]
     blocks, sources, offset = [], [], 0
     for path in ordered:
-        data = git(root, "show", f"{revision}:{path}")
+        data = frozen[path] if frozen is not None else git(root, "show", f"{revision}:{path}")
         if b"Code generated" in data[:500]:
             continue
         text = data.decode("utf-8")
