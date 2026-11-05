@@ -152,6 +152,9 @@ func TestFDB_OtelTemplateV1(t *testing.T) {
 			}
 		}
 	})
+	t.Run("binary keyset pages", func(t *testing.T) {
+		testOtelTemplateBinaryKeysetPages(t, db, ctx)
+	})
 	t.Run("multipart message uniqueness", func(t *testing.T) {
 		// Only part zero carries the whole-message digest. Chunks have NULL
 		// digests, and UNIQUE deliberately permits multiple NULLs.
@@ -172,6 +175,108 @@ func TestFDB_OtelTemplateV1(t *testing.T) {
 	t.Run("typed arrays and original OTLP", func(t *testing.T) {
 		testOtelTemplateValues(t, db, ctx)
 	})
+}
+
+func testOtelTemplateBinaryKeysetPages(t *testing.T, db *sql.DB, ctx context.Context) {
+	t.Helper()
+	binaryID := func(width int, first, last byte) []byte {
+		id := make([]byte, width)
+		id[0], id[width-1] = first, last
+		return id
+	}
+	// This explicit order crosses time, trace and span boundaries, including NUL/high bytes.
+	want := []struct {
+		trace, span []byte
+		start       int64
+	}{
+		{binaryID(16, 0x80, 0), binaryID(8, 0, 1), 300},
+		{binaryID(16, 1, 0), binaryID(8, 0, 0xff), 200},
+		{binaryID(16, 1, 0), binaryID(8, 0, 0), 200},
+		{binaryID(16, 0, 0xff), binaryID(8, 0xff, 0), 200},
+		{binaryID(16, 0, 0), binaryID(8, 0, 1), 200},
+		{binaryID(16, 0xff, 0xff), binaryID(8, 0xff, 0xff), 100},
+	}
+	const attr = "('span','binary-page','yes')"
+	for _, i := range []int{5, 2, 0, 4, 1, 3} {
+		row := want[i]
+		testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO spans (trace_id, span_id, start_ns, str_attrs) VALUES (X'%x',X'%x',%d,[%s,%s])",
+			row.trace, row.span, row.start, attr, attr))
+	}
+	testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO spans (trace_id, span_id, start_ns, str_attrs) VALUES (X'%x',X'%x',400,[('span','binary-page','no')])",
+		binaryID(16, 0xff, 0), binaryID(8, 0xff, 0)))
+	const query = "SELECT s.trace_id, s.span_id, s.start_ns FROM spans AS s WHERE EXISTS (SELECT 1 FROM s.str_attrs AS a WHERE a.scope = 'span' AND a.attr_key = 'binary-page' AND a.str_value = 'yes')"
+	const order = " ORDER BY s.start_ns DESC, s.trace_id DESC, s.span_id DESC"
+	explain := testkit.Explainer(t, db, ctx)
+	for _, form := range []string{"AND", "OR"} {
+		for _, pageSize := range []int{1, 2, 3} {
+			t.Run(fmt.Sprintf("%s/%d", form, pageSize), func(t *testing.T) {
+				cursor := ""
+				next := 0
+				terminated := false
+				seen := make(map[string]bool)
+				for range len(want) + 2 {
+					q := query + cursor + order + fmt.Sprintf(" LIMIT %d", pageSize)
+					plan := explain(q)
+					if !strings.Contains(plan, "IndexScan(SPANS_STR_ATTR, [=, =, =,") || !strings.Contains(plan, "REVERSE") || strings.Contains(plan, "InMemorySort") {
+						t.Fatalf("binary page must use the ordered fan-out index: %s", plan)
+					}
+					if form == "OR" && cursor != "" {
+						if !strings.Contains(plan, "MergeSortUnion(") || !strings.Contains(plan, "IndexScan(SPANS_STR_ATTR, [=, =, =, =, =, <>]") {
+							t.Fatalf("expanded binary page must merge all bound key arms: %s", plan)
+						}
+					} else if strings.Contains(plan, "Union") {
+						t.Fatalf("conjunctive/first binary page should use one range scan: %s", plan)
+					}
+					rows, err := db.QueryContext(ctx, q)
+					if err != nil {
+						t.Fatal(err)
+					}
+					n := 0
+					var trace, span []byte
+					var start int64
+					for rows.Next() {
+						if err := rows.Scan(&trace, &span, &start); err != nil {
+							rows.Close()
+							t.Fatal(err)
+						}
+						if next >= len(want) || !bytes.Equal(trace, want[next].trace) || !bytes.Equal(span, want[next].span) || start != want[next].start {
+							rows.Close()
+							t.Fatalf("page row %d = (%x,%x,%d), want explicit binary sequence", next, trace, span, start)
+						}
+						key := fmt.Sprintf("%x/%x", trace, span)
+						if seen[key] {
+							rows.Close()
+							t.Fatalf("duplicate identity across pages: %s", key)
+						}
+						seen[key] = true
+						trace, span = bytes.Clone(trace), bytes.Clone(span)
+						next++
+						n++
+					}
+					if err := rows.Err(); err != nil {
+						rows.Close()
+						t.Fatal(err)
+					}
+					rows.Close()
+					if n > pageSize {
+						t.Fatalf("page returned %d rows, limit %d", n, pageSize)
+					}
+					if n == 0 {
+						terminated = true
+						break
+					}
+					if form == "AND" {
+						cursor = fmt.Sprintf(" AND s.start_ns <= %d AND (s.start_ns < %d OR s.trace_id < X'%x' OR (s.trace_id = X'%x' AND s.span_id < X'%x'))", start, start, trace, trace, span)
+					} else {
+						cursor = fmt.Sprintf(" AND (s.start_ns < %d OR (s.start_ns = %d AND (s.trace_id < X'%x' OR (s.trace_id = X'%x' AND s.span_id < X'%x'))))", start, start, trace, trace, span)
+					}
+				}
+				if !terminated || next != len(want) {
+					t.Fatalf("binary page walk terminated=%t rows=%d, want %d", terminated, next, len(want))
+				}
+			})
+		}
+	}
 }
 
 func testOtelTemplateValues(t *testing.T, db *sql.DB, ctx context.Context) {

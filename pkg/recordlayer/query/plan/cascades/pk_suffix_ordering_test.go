@@ -574,6 +574,113 @@ func typeFilterOver(t *testing.T, inner plans.RecordQueryPlan) plans.RecordQuery
 	return mustConstruct(t, value, err)
 }
 
+func TestFanOutOrderingUsesStructuralElementTypes(t *testing.T) {
+	t.Parallel()
+	for _, nested := range []bool{false, true} {
+		name := "A"
+		element := values.NewRecordType("Attr", false, []values.Field{{Name: "ID", FieldType: values.NullableDouble, Ordinal: 0}})
+		arrayType := values.Type(values.NewArrayType(true, values.NullableDouble))
+		root := candidateTestKeyField("A", gen.Field_FAN_OUT)
+		if nested {
+			name = "ID"
+			arrayType = values.NewArrayType(true, element)
+			parent := "A"
+			root = &gen.KeyExpression{Nesting: &gen.Nesting{
+				Parent: &gen.Field{FieldName: &parent, FanType: gen.Field_FAN_OUT.Enum()},
+				Child:  candidateTestKeyField("ID", gen.Field_SCALAR),
+			}}
+		}
+		row := values.NewRecordType("T", false, []values.Field{
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+			{Name: "B", FieldType: values.NullableDouble, Ordinal: 1},
+			{Name: "A", FieldType: arrayType, Ordinal: 2},
+		})
+		root = &gen.KeyExpression{Then: &gen.Then{Child: []*gen.KeyExpression{root, candidateTestKeyField("B", gen.Field_SCALAR)}}}
+		for _, tc := range []struct {
+			name    string
+			typ     values.Type
+			before  bool
+			resolve bool
+		}{
+			{"inferred", nil, false, false},
+			{"explicit float before root", values.NullableFloat, true, false},
+			{"explicit float after root", values.NullableFloat, false, false},
+			{"explicit float after inference", values.NullableFloat, false, true},
+			{"unknown before root", values.UnknownType, true, false},
+			{"unknown after root", values.UnknownType, false, false},
+			{"unknown after inference", values.UnknownType, false, true},
+		} {
+			t.Run(map[bool]string{false: "scalar array/", true: "nested array/"}[nested]+tc.name, func(t *testing.T) {
+				aliases := []values.CorrelationIdentifier{values.UniqueCorrelationIdentifier(), values.UniqueCorrelationIdentifier()}
+				duplicates := true
+				candidate := NewValueIndexScanMatchCandidateWithFunctions("AB", []string{"T"}, []string{name, "B"}, nil,
+					aliases, row, false, []string{"ID"}, &duplicates).
+					WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong})
+				if tc.typ != nil && tc.before {
+					candidate.WithKeyComponentTypes([]values.Type{tc.typ, values.NullableDouble})
+				}
+				candidate.WithRootKeyExpression(root)
+				if tc.resolve {
+					if inferred := candidate.GetKeyComponentTypes()[0]; inferred.Code() != values.TypeCodeDouble {
+						t.Fatalf("structural fallback = %v, want DOUBLE before override", inferred)
+					}
+				}
+				if tc.typ != nil && !tc.before {
+					candidate.WithKeyComponentTypes([]values.Type{tc.typ, values.NullableDouble})
+				}
+				wantType := values.Type(values.NullableDouble)
+				if tc.typ != nil {
+					wantType = tc.typ
+				}
+				if got := candidate.GetKeyComponentTypes(); len(got) != 2 || got[0].Code() != wantType.Code() {
+					t.Fatalf("element types = %v, want %v, DOUBLE", got, wantType)
+				}
+				for _, bound := range []struct {
+					element, scalar float64
+					parts           int
+				}{{0, 0, 0}, {1, 0, 1}, {1, 1, 2}} {
+					bindings := map[values.CorrelationIdentifier]*predicates.ComparisonRange{
+						aliases[0]: equalityRange(t, bound.element), aliases[1]: equalityRange(t, bound.scalar),
+					}
+					match := NewRegularMatchInfo(bindings, nil, nil, nil, nil, nil, nil, nil)
+					wantParts := bound.parts
+					if wantType.Code() == values.TypeCodeUnknown {
+						wantParts = 0
+					}
+					for _, reverse := range []bool{false, true} {
+						parts := candidate.ComputeMatchedOrderingParts(match, aliases, reverse)
+						if len(parts) != wantParts {
+							t.Fatalf("bounds=%v reverse=%t: candidate parts = %v, want %d", bound, reverse, parts, wantParts)
+						}
+						prefix := candidate.ComputeBoundParameterPrefixMap(bindings)
+						fetch := candidate.ToScanPlan(EmptyPlanContext(), prefix, reverse).(*plans.RecordQueryFetchFromPartialRecordPlan)
+						index := fetch.GetInner().(*plans.RecordQueryIndexPlan)
+						if got := index.GetKeyComponentTypes()[0].Code(); got != wantType.Code() {
+							t.Fatalf("plan element type = %v, want %v", got, wantType.Code())
+						}
+						rich := index.HintRichOrdering()
+						if len(rich.GetKeys()) != wantParts {
+							t.Fatalf("bounds=%v reverse=%t: rich keys = %v, want %d", bound, reverse, rich.GetKeys(), wantParts)
+						}
+						for i, part := range parts {
+							if !orderingValuesEqualIn(rich.GetKeys()[i], part.GetValue()) {
+								t.Fatalf("candidate and rich ordering disagree at %d", i)
+							}
+						}
+						wantPlain := 0
+						if wantParts == 2 {
+							wantPlain = 1
+						}
+						if plain := index.HintOrdering(); len(plain.Keys) != wantPlain || plain.IsKnown != (wantPlain > 0) {
+							t.Fatalf("bounds=%v reverse=%t: plain ordering = %#v, want %d keys", bound, reverse, plain, wantPlain)
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestFanOutElementNameDoesNotTrimRootPrimaryKey(t *testing.T) {
 	t.Parallel()
 	element := values.NewRecordType("Attr", false, []values.Field{{Name: "ID", FieldType: values.NullableLong, Ordinal: 0}})

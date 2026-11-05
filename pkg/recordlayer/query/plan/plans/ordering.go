@@ -334,7 +334,7 @@ func ownOrderPrefixLen(comps []*predicates.ComparisonRange, n int) int {
 // instead; see its comment for why a burden-of-proof direction cannot be
 // inverted.
 func IndexColumnCouldBeFloat(
-	keyTypes []values.Type, layout values.Type, columnNames []string,
+	keyTypes []values.Type, layout values.Type, columnNames []string, duplicateColumns []bool,
 ) func(int) bool {
 	return func(i int) bool {
 		if i < 0 || i >= len(columnNames) {
@@ -352,6 +352,10 @@ func IndexColumnCouldBeFloat(
 		if i < len(keyTypes) && keyTypes[i] != nil &&
 			keyTypes[i].Code() != values.TypeCodeUnknown {
 			return values.TypeTerminatesOrderingClaim(keyTypes[i])
+		}
+		// An exploded element is not the root field with the same name.
+		if i < len(duplicateColumns) && duplicateColumns[i] {
+			return true
 		}
 		// No physical type for this coordinate: fall back to resolving the
 		// column name against the flowed layout, which fails CLOSED when it
@@ -759,7 +763,7 @@ func splitKeyOrder(
 	comps []*predicates.ComparisonRange,
 	keyColumns, suffix []string,
 	keyTypes []values.Type, layout values.Type,
-	nestedPath func(int) []string,
+	nestedPath func(int) []string, duplicateColumns []bool,
 ) keyOrderSplit {
 	split := keyOrderSplit{fixedLen: ownOrderPrefixLen(comps, len(keyColumns))}
 	// A nested leaf's name is not a top-level column of the layout, so it is
@@ -773,7 +777,7 @@ func splitKeyOrder(
 			}
 		}
 	}
-	couldBeFloat := IndexColumnCouldBeFloat(keyTypes, layout, floatNames)
+	couldBeFloat := IndexColumnCouldBeFloat(keyTypes, layout, floatNames, duplicateColumns)
 	split.pins = make([]bool, split.fixedLen)
 	for i := range split.pins {
 		split.pins[i] = EqualityPinsSinglePhysicalKeyOnColumn(comps[i], couldBeFloat(i))
@@ -858,7 +862,7 @@ func (p *RecordQueryIndexPlan) HintOrdering() properties.Ordering {
 	}
 	rev := p.IsReverse()
 	split := splitKeyOrder(p.GetScanComparisons(), columnNames, suffix, p.GetKeyComponentTypes(), p.GetFlowedType(),
-		p.NestedKeyColumnPath)
+		p.NestedKeyColumnPath, p.keyColumnDuplicates)
 	sorted := split.tail
 	if len(sorted) == 0 {
 		return properties.Ordering{}
@@ -1475,7 +1479,7 @@ func (p *RecordQueryAggregateIndexPlan) aggregateOrderSplit(cols []string, ordin
 		// The permuted coordinates are named by the result row's slots.
 		layout, nestedPath = p.GetResultType(), nil
 	}
-	return splitKeyOrder(p.groupingScanComparisons(), cols, nil, types, layout, nestedPath)
+	return splitKeyOrder(p.groupingScanComparisons(), cols, nil, types, layout, nestedPath, nil)
 }
 
 // aggregateOrderingColumns maps physical key coordinates to logical output
@@ -1838,7 +1842,7 @@ func (p *RecordQueryIndexPlan) hintRichOrdering() *properties.RichOrdering {
 	// accordingly; EqualityBoundCoordinateClaimsOwnOrder explains why tie-class
 	// vacuity does not apply.
 	split := splitKeyOrder(comps, columnNames, suffix,
-		p.GetKeyComponentTypes(), p.GetFlowedType(), p.NestedKeyColumnPath)
+		p.GetKeyComponentTypes(), p.GetFlowedType(), p.NestedKeyColumnPath, p.keyColumnDuplicates)
 	tail := split.tail
 	// The coordinates below are the whole storage key exactly when the tail was
 	// neither dropped wholesale (a signed-zero equality that restarts the order
@@ -2072,9 +2076,12 @@ func (p *RecordQueryIndexPlan) orderingKeyColumns() (columns, suffix []string, s
 	if len(p.keyColumnDuplicates) != len(columns) {
 		return nil, nil, nil, false
 	}
+	comps := p.GetScanComparisons()
+	prefix := ownOrderPrefixLen(comps, len(columns))
+	couldBeFloat := IndexColumnCouldBeFloat(p.GetKeyComponentTypes(), p.GetFlowedType(), columns, p.keyColumnDuplicates)
 	limit := len(columns)
-	for i := ownOrderPrefixLen(p.GetScanComparisons(), len(columns)); i < len(columns); i++ {
-		if p.keyColumnDuplicates[i] {
+	for i, duplicate := range p.keyColumnDuplicates {
+		if duplicate && (i >= prefix || !EqualityPinsSinglePhysicalKeyOnColumn(comps[i], couldBeFloat(i))) {
 			limit = i
 			break
 		}
@@ -2093,19 +2100,13 @@ func (p *RecordQueryIndexPlan) fanOutPinned() bool {
 		return false
 	}
 	comps := p.GetScanComparisons()
-	// An element column's leaf name is not a column of the record layout.
-	names := slices.Clone(columns)
-	for i, duplicate := range p.keyColumnDuplicates {
-		if duplicate {
-			names[i] = ""
-		}
-	}
-	couldBeFloat := IndexColumnCouldBeFloat(p.GetKeyComponentTypes(), p.GetFlowedType(), names)
+	prefix := ownOrderPrefixLen(comps, len(columns))
+	couldBeFloat := IndexColumnCouldBeFloat(p.GetKeyComponentTypes(), p.GetFlowedType(), columns, p.keyColumnDuplicates)
 	for i, duplicate := range p.keyColumnDuplicates {
 		if !duplicate {
 			continue
 		}
-		if i >= len(comps) || !EqualityPinsSinglePhysicalKeyOnColumn(comps[i], couldBeFloat(i)) {
+		if i >= prefix || !EqualityPinsSinglePhysicalKeyOnColumn(comps[i], couldBeFloat(i)) {
 			return false
 		}
 	}

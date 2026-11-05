@@ -3,6 +3,7 @@ package sqltest
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -104,6 +105,93 @@ CREATE INDEX spans_attr AS SELECT a.scope, a.k, a.iv, s.start_ns
 	}
 	if got := otelRows(t, db, ctx, query); got != "[100] [200] [300]" {
 		t.Fatalf("range-bound element time order = %s", got)
+	}
+}
+
+func TestFDB_OtelFanOutSignedZeroEqualityRequiresSort(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := testkit.SetupPlanShapeDB(t, "fanout_signed_zero", `
+CREATE TYPE AS STRUCT attr (z DOUBLE, payload STRING)
+CREATE TABLE items (id BIGINT, b DOUBLE, attrs attr ARRAY, PRIMARY KEY (id))
+CREATE INDEX attr_z_b AS SELECT a.z, r.b FROM items AS r, (SELECT z FROM r.attrs) AS a ORDER BY a.z, r.b`)
+	testkit.MustExecCtx(t, db, ctx, `INSERT INTO items VALUES
+(1,0.0,[(-0.0,'x')]), (2,-0.0,[(0.0,'x')]), (3,0.0,[(1.0,'x')]), (4,1.0,[(0.0,'x')])`)
+	for _, id := range []int64{1, 2} {
+		var element, scalar float64
+		if err := db.QueryRowContext(ctx, "SELECT a.z, r.b FROM items AS r, r.attrs AS a WHERE r.id = ?", id).Scan(&element, &scalar); err != nil {
+			t.Fatal(err)
+		}
+		if element != 0 || scalar != 0 || math.Signbit(element) != (id == 1) || math.Signbit(scalar) != (id == 2) {
+			t.Fatalf("row %d lost signed-zero counterexample: element=%x scalar=%x", id, math.Float64bits(element), math.Float64bits(scalar))
+		}
+	}
+	const query = "SELECT r.id, r.b FROM items AS r WHERE r.b = 0.0 AND EXISTS (SELECT 1 FROM r.attrs AS a WHERE a.z = 0.0) ORDER BY r.b "
+	for _, tc := range []struct {
+		direction string
+		ids       []int64
+	}{{"ASC", []int64{2, 1}}, {"DESC", []int64{1, 2}}} {
+		for _, limit := range []string{"", " LIMIT 1"} {
+			q := query + tc.direction + limit
+			plan := testkit.Explainer(t, db, ctx)(q)
+			if !strings.Contains(plan, "IndexScan(ATTR_Z_B, [=, =]") || !strings.Contains(plan, "InMemorySort") {
+				t.Fatalf("two widened equalities require a sort above the fan-out scan: %s", plan)
+			}
+			rows, err := db.QueryContext(ctx, q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n := 0
+			for rows.Next() {
+				var id int64
+				var scalar float64
+				if err := rows.Scan(&id, &scalar); err != nil {
+					rows.Close()
+					t.Fatal(err)
+				}
+				if n >= len(tc.ids) || id != tc.ids[n] || scalar != 0 || math.Signbit(scalar) != (id == 2) {
+					rows.Close()
+					t.Fatalf("%s row %d = (%d,%x), want IDs %v with stored signs", q, n, id, math.Float64bits(scalar), tc.ids)
+				}
+				n++
+			}
+			if err := rows.Err(); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			rows.Close()
+			wantCount := len(tc.ids)
+			if limit != "" {
+				wantCount = 1
+			}
+			if n != wantCount {
+				t.Fatalf("%s returned %d rows, want %d", q, n, wantCount)
+			}
+		}
+	}
+}
+
+func TestFDB_OtelResidualFanOutEqualityPreservesRows(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := testkit.SetupPlanShapeDB(t, "residual_fanout", `
+CREATE TYPE AS STRUCT attr (k BIGINT, payload STRING)
+CREATE TABLE items (a BIGINT, id BIGINT, b BIGINT, attrs attr ARRAY, PRIMARY KEY (id))
+CREATE INDEX fan AS SELECT r.a, x.k FROM items AS r, (SELECT k FROM r.attrs) AS x ORDER BY r.a, x.k
+CREATE INDEX bb ON items (b,a)`)
+	testkit.MustExecCtx(t, db, ctx, `INSERT INTO items VALUES
+(1,1,1,[(2,'x'),(7,'x')]), (1,2,1,[(1,'x'),(7,'x')]),
+(1,3,2,[(7,'x')]), (1,4,1,[(2,'x')])`)
+	for _, prefix := range []string{"r.a >= 0 AND ", ""} {
+		query := "SELECT r.a, r.id FROM items AS r WHERE " + prefix +
+			"r.b = 1 AND EXISTS (SELECT 1 FROM r.attrs AS x WHERE x.k = 7) ORDER BY r.a, r.id"
+		plan := testkit.Explainer(t, db, ctx)(query)
+		if !strings.Contains(plan, "IndexScan(BB, [=") || strings.Contains(plan, "Intersection") {
+			t.Fatalf("residual element equality must not admit the unordered intersection: %s", plan)
+		}
+		if got := otelRows(t, db, ctx, query); got != "[1 1] [1 2]" {
+			t.Fatalf("residual fan-out equality rows = %s", got)
+		}
 	}
 }
 

@@ -43,7 +43,8 @@ type ValueIndexScanMatchCandidate struct {
 	unique          bool
 	// keyComponentTypes is aligned with columnNames and comes from the
 	// descriptor plus expanded key expression, not from query comparands.
-	keyComponentTypes []values.Type
+	keyComponentTypes         []values.Type
+	keyComponentTypesExplicit bool
 	// primaryKeyComponentTypes is aligned with pkColumnNames and controls
 	// whether the appended index-entry PK suffix is a sound ordering source.
 	primaryKeyComponentTypes []values.Type
@@ -150,11 +151,15 @@ func (c *ValueIndexScanMatchCandidate) WithRecordTypeRowTypes(rowTypes []values.
 // freshly constructed candidate.
 func (c *ValueIndexScanMatchCandidate) WithKeyComponentTypes(types []values.Type) *ValueIndexScanMatchCandidate {
 	c.keyComponentTypes = normalizePhysicalKeyTypes(types, len(c.columnNames))
+	c.keyComponentTypesExplicit = true
 	return c
 }
 
 // GetKeyComponentTypes returns physical types aligned with index columns.
 func (c *ValueIndexScanMatchCandidate) GetKeyComponentTypes() []values.Type {
+	if !c.keyComponentTypesExplicit && c.rootKeyExpression != nil {
+		c.indexColumns()
+	}
 	return append([]values.Type(nil), c.keyComponentTypes...)
 }
 
@@ -572,9 +577,15 @@ func (c *ValueIndexScanMatchCandidate) WithCommonPrimaryKey(pk []values.Value) *
 func (c *ValueIndexScanMatchCandidate) WithRootKeyExpression(root *gen.KeyExpression) *ValueIndexScanMatchCandidate {
 	if root == nil {
 		c.rootKeyExpression = nil
+		if !c.keyComponentTypesExplicit {
+			c.keyComponentTypes = physicalTypesFromFlatRow(c.flowedType, c.columnNames, c.columnFunctions)
+		}
 		return c
 	}
 	c.rootKeyExpression = proto.Clone(root).(*gen.KeyExpression)
+	if !c.keyComponentTypesExplicit {
+		c.keyComponentTypes = normalizePhysicalKeyTypes(nil, len(c.columnNames))
+	}
 	return c
 }
 
@@ -978,6 +989,14 @@ func (c *ValueIndexScanMatchCandidate) indexColumns() *valueIndexExpansion {
 				return
 			}
 			c.expansion = expansion
+			// Structural values resolve nested/exploded elements, unlike flat names.
+			if !c.keyComponentTypesExplicit && c.rootKeyExpression != nil {
+				for i, key := range expansion.keyValues {
+					if key != nil {
+						c.keyComponentTypes[i] = key.Type()
+					}
+				}
+			}
 		}
 		c.columns = described
 	})
@@ -1065,6 +1084,7 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 	}
 	regularInfo := matchInfo.GetRegularMatchInfo()
 	bindings := regularInfo.GetParameterBindingMap()
+	prefix := c.ComputeBoundParameterPrefixMap(bindings)
 	duplicateProducingColumns := c.duplicateProducingColumns()
 
 	var parts []*MatchedOrderingPart
@@ -1074,7 +1094,7 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 	// The suffix requires every key position passed, including pinned fan-out.
 	passed := 0
 	// Share physical float classification with the plan-side splitKeyOrder.
-	columnCouldBeFloat := plans.IndexColumnCouldBeFloat(c.keyComponentTypes, c.orderingKeyLayout(), c.floatQuestionColumnNames())
+	columnCouldBeFloat := plans.IndexColumnCouldBeFloat(c.keyComponentTypes, c.orderingKeyLayout(), c.floatQuestionColumnNames(), duplicateProducingColumns)
 	for _, paramID := range sortParameterIDs {
 		idx := -1
 		for i, alias := range c.sargableAliases {
@@ -1091,9 +1111,7 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 		// Java skips equality-pinned exploded elements; ranges stop ordering.
 		// Widened signed-zero equality cannot carry a suffix either.
 		if duplicateProducingColumns[idx] {
-			if cr != nil &&
-				cr.GetRangeType() == predicates.ComparisonRangeEquality &&
-				plans.EqualityPinsSinglePhysicalKeyOnColumn(cr, columnCouldBeFloat(idx)) {
+			if plans.EqualityPinsSinglePhysicalKeyOnColumn(prefix[paramID], columnCouldBeFloat(idx)) {
 				passed++
 				continue
 			}

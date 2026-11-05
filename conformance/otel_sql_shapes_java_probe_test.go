@@ -4,10 +4,12 @@ package conformance_test
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"strings"
 
+	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/relational/conformance/plandiff"
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
@@ -208,6 +210,90 @@ var _ = Describe("OtelSQLShapesJavaProbe", func() {
 			}
 			for _, unwanted := range a.goLacks {
 				Expect(goPlan).NotTo(ContainSubstring(unwanted), "%s: Go plan", a.sql)
+			}
+		}
+	})
+
+	It("orders binary identity keyset pages on the public catalog in both engines", func() {
+		ctx := context.Background()
+		env, err := SetupTenantEnvironment(ctx, sharedContainer, fmt.Sprintf("otelbytes_%s", uuid.New().String()))
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = env.Cleanup(ctx) }()
+		srv, err := NewIsolatedJavaInvoker()
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = srv.Close() }()
+		javaRunner := plandiff.NewJavaRunnerHTTP(javaBaseURL(srv), env.ClusterFile).(plandiff.SetupRunner)
+		clusterFilePath := writeClusterFileToTemp(env.ClusterFile)
+		defer os.Remove(clusterFilePath)
+		goRunner := plandiff.NewGoSQLSetupRunner(clusterFilePath)
+		binaryID := func(width int, first, last byte) []byte {
+			id := make([]byte, width)
+			id[0], id[width-1] = first, last
+			return id
+		}
+		want := []struct {
+			trace, span []byte
+			start       int64
+		}{
+			{binaryID(16, 0x80, 0), binaryID(8, 0, 1), 300},
+			{binaryID(16, 1, 0), binaryID(8, 0, 0xff), 200},
+			{binaryID(16, 1, 0), binaryID(8, 0, 0), 200},
+			{binaryID(16, 0, 0xff), binaryID(8, 0xff, 0), 200},
+			{binaryID(16, 0, 0), binaryID(8, 0, 1), 200},
+			{binaryID(16, 0xff, 0xff), binaryID(8, 0xff, 0xff), 100},
+		}
+		var setup []string
+		for _, i := range []int{5, 2, 0, 4, 1, 3} {
+			row := want[i]
+			setup = append(setup, fmt.Sprintf("INSERT INTO spans (trace_id, span_id, start_ns, str_attrs) VALUES (X'%x',X'%x',%d,[('span','binary-page','yes'),('span','binary-page','yes')])", row.trace, row.span, row.start))
+		}
+		setup = append(setup, fmt.Sprintf("INSERT INTO spans (trace_id, span_id, start_ns, str_attrs) VALUES (X'%x',X'%x',400,[('span','binary-page','no')])", binaryID(16, 0xff, 0), binaryID(8, 0xff, 0)))
+		const query = "SELECT s.trace_id, s.span_id, s.start_ns FROM spans AS s WHERE EXISTS (SELECT 1 FROM s.str_attrs AS a WHERE a.scope = 'span' AND a.attr_key = 'binary-page' AND a.str_value = 'yes')"
+		const order = " ORDER BY s.start_ns DESC, s.trace_id DESC, s.span_id DESC"
+		for _, form := range []string{"AND", "OR"} {
+			for cursor := -1; cursor < len(want); cursor++ {
+				where := ""
+				if cursor >= 0 {
+					row := want[cursor]
+					if form == "AND" {
+						where = fmt.Sprintf(" AND s.start_ns <= %d AND (s.start_ns < %d OR s.trace_id < X'%x' OR (s.trace_id = X'%x' AND s.span_id < X'%x'))", row.start, row.start, row.trace, row.trace, row.span)
+					} else {
+						where = fmt.Sprintf(" AND (s.start_ns < %d OR (s.start_ns = %d AND (s.trace_id < X'%x' OR (s.trace_id = X'%x' AND s.span_id < X'%x'))))", row.start, row.start, row.trace, row.trace, row.span)
+					}
+				}
+				q := query + where + order
+				for _, runner := range []struct {
+					name   string
+					runner plandiff.SetupRunner
+				}{{"Java", javaRunner}, {"Go", goRunner}} {
+					planResult := runner.runner.RunWithSetup(ctx, otelsql.TemplateBody, setup, "EXPLAIN "+q)
+					Expect(planResult.Err).NotTo(HaveOccurred(), "%s %s cursor %d", runner.name, form, cursor)
+					Expect(planResult.Rows.Rows).To(HaveLen(1))
+					plan := fmt.Sprint(planResult.Rows.Rows[0][0])
+					fmt.Fprintf(GinkgoWriter, "%s %s cursor %d: %s\n", runner.name, form, cursor, plan)
+					Expect(plan).To(ContainSubstring("SPANS_STR_ATTR"))
+					Expect(plan).To(ContainSubstring("REVERSE"))
+					Expect(plan).NotTo(ContainSubstring("InMemorySort"))
+					if form == "OR" && cursor >= 0 {
+						if runner.name == "Go" {
+							Expect(plan).To(ContainSubstring("MergeSortUnion("))
+							Expect(plan).To(ContainSubstring("IndexScan(SPANS_STR_ATTR, [=, =, =, =, =, <>]"))
+						} else {
+							Expect(plan).To(ContainSubstring("∪"))
+							Expect(plan).To(ContainSubstring("COMPARE BY (_.START_NS, _.TRACE_ID, _.SPAN_ID)"))
+						}
+					} else {
+						Expect(plan).NotTo(ContainSubstring("MergeSortUnion("))
+						Expect(plan).NotTo(ContainSubstring("∪"))
+					}
+					result := runner.runner.RunWithSetup(ctx, otelsql.TemplateBody, setup, q)
+					Expect(result.Err).NotTo(HaveOccurred(), "%s %s cursor %d", runner.name, form, cursor)
+					Expect(result.Rows.Rows).To(HaveLen(len(want) - cursor - 1))
+					for i, row := range result.Rows.Rows {
+						expected := want[cursor+1+i]
+						Expect(row).To(Equal([]any{base64.StdEncoding.EncodeToString(expected.trace), base64.StdEncoding.EncodeToString(expected.span), float64(expected.start)}), "%s %s cursor %d row %d", runner.name, form, cursor, i)
+					}
+				}
 			}
 		}
 	})

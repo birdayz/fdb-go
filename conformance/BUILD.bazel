@@ -651,6 +651,7 @@ go_test(
     deps = [
         "//gen",
         "//gen/demopb",
+        "//layers/otel/otelsql",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
