@@ -117,10 +117,8 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 		md.Indexes = append(md.Indexes, idxProto)
 	}
 
-	// 5. Java inserts each distinct type at its first union-field declaration,
-	// then builds an expected-size map from that map's iteration order
-	// (RecordMetaDataBuilder.fillUnionFields:865, build:1473-1483). Field
-	// numbers determine record-type keys, not this insertion order.
+	// 5. Java inserts types in union declaration order, then rebuilds from that
+	// iteration in an expected-size map (fillUnionFields/build), not field-number order.
 	rtNames := make([]string, 0, len(m.recordTypes))
 	for name := range m.recordTypes {
 		rtNames = append(rtNames, name)

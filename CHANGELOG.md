@@ -23,6 +23,8 @@ until such a tag is published (`RELEASE.md`).
 below; neither publication nor readiness is asserted.
 
 ### Added
+- `layers/otel/otelsql` OTEL_V1 template API (`TemplateDDL`, `CreateTemplate`,
+  `CreateTenant`) for Java-readable tenant spans, logs and message tables.
 - TEXT query APIs (`NewTextScan` / `TextScan`, `PlanTextQuery`, TEXT comparisons),
   ordered union/intersection and probable/unordered merge cursors, and store-timer
   `CountTextScanKeyValues`, `CountTextScanBytes` and `CountTextScanSeeks` counters.
@@ -45,6 +47,9 @@ below; neither publication nor readiness is asserted.
   including discovery preceding an empty result, against the remaining query budget.
 - Drained message and Collector queues clear consumed slots and release exhausted
   backing slices while exporters remain alive.
+- Fan-out VALUE index scans expose time/primary-key suffix ordering and record
+  identity only past physically equality-pinned elements; keyset OR predicates
+  can use `MergeSortUnion` without an in-memory sort.
 - SQL VALUE-scan candidacy fails closed for TEXT, MULTIDIMENSIONAL,
   TIME_WINDOW_LEADERBOARD and custom index layouts, including EXPLAIN plans;
   factory `ValidateIndexOptions` runs for all registered types, not just VECTOR.
@@ -67,6 +72,9 @@ below; neither publication nor readiness is asserted.
   batch committed. Full-text queries can now return a budget error for raw role
   discovery reads previously undercounted. Persisted layouts, SQL behavior and
   FDB client option semantics are unchanged by these fixes.
+- **Schema-template metadata:** Go-written `MetaData.record_types` now follows
+  Java's two-stage HashMap iteration order instead of union-declaration order.
+  Already-stored templates retain their old order; this does not rewrite them.
 - **KeySpace persisted prefixes:** `Path.ToSubspace()` packs Java-flat path
   elements instead of a nested tuple. Existing Go nested prefixes require explicit
   `LegacyNestedSubspace()` export/import and guarded cutover; no automatic migration.

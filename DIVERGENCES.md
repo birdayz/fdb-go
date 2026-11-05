@@ -4620,9 +4620,10 @@ Guava `newHashMapWithExpectedSize` and individual insertion in builder-map order
 still determine record-type keys, not map insertion order; a later alias does not reinsert the type.
 Hand-built types absent from the union use a deterministic index/name fallback before map insertion.
 The insertion-only string-key implementation includes collision-triggered growth, tree-bin iteration
-and resize splits, using UTF-16 hashing/comparison. Six complete, unnormalized Go `ToProto`/Java
-`buildInCodeMetaData` cases cover 3/6/12-type sizing, collision growth, treeification and nonmonotonic
-union numbers with a repeated alias; WS-J also compares the unnormalized record-type sequence.
+and resize splits, using UTF-16 hashing/comparison. Ten complete, unnormalized Go `ToProto`/Java
+`buildInCodeMetaData` cases cover 3/6/12-type sizing, collision growth, treeification, 49-type resize
+splits (both halves rebuilt and either/both untreeified), and nonmonotonic union numbers with a
+repeated alias; WS-J also compares the unnormalized record-type sequence.
 
 The separate `javahashmap.Order(first, then)` API retains existing bulk-first caller sizing. It is
 not a claim that every JDK patch implements `putAll` identically: managed JDK 21.0.12 uses ceil

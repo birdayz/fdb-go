@@ -1148,6 +1148,17 @@ var _ = Describe("Record-type HashMap order is persisted as Java builds it", fun
 			}
 		}
 	}
+	// At capacity 64 these clusters share bucket 32; the 49th put splits it.
+	splitNames := func(extra ...string) []string {
+		names := append([]string{"AA", "CC", "EE", "GG", "II", "KK", "MM", "OO", "QQ", "SS", "UU", "WW"}, extra...)
+		for _, letter := range "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvw" {
+			if len(names) == 49 {
+				break
+			}
+			names = append(names, string(letter))
+		}
+		return names
+	}
 	for _, tc := range []struct {
 		name              string
 		names, knownOrder []string
@@ -1159,6 +1170,10 @@ var _ = Describe("Record-type HashMap order is persisted as Java builds it", fun
 		{"twelve", []string{"P", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"}, []string{"P", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"}, "P", false},
 		{"collision_growth", append(append([]string{}, colliders[:9]...), "P"), append(append([]string{}, colliders[:9]...), "P"), colliders[0], false},
 		{"treeification", colliders, nil, "AaAaBBBB", false},
+		{"split_both_untreeify", splitNames(), nil, "", false},
+		{"split_low_untreeifies", splitNames("cc"), nil, "", false},
+		{"split_high_untreeifies", splitNames("YY"), nil, "", false},
+		{"split_both_rebuild", splitNames("YY", "cc"), nil, "", false},
 		{"declaration_order", []string{"Aa", "BB"}, []string{"Aa", "BB"}, "Aa", true},
 	} {
 		It("matches complete engine metadata bytes for "+tc.name, func() {
@@ -1246,7 +1261,9 @@ var _ = Describe("Record-type HashMap order is persisted as Java builds it", fun
 			fmt.Fprintf(GinkgoWriter, "HASHMAP_METADATA %s Java=%v Go=%v bytes(Java=%d Go=%d)\n", tc.name, javaNames, goNames, len(javaBytes), len(goBytes))
 			Expect(javaNames).To(HaveLen(len(tc.names)))
 			Expect(javaNames).To(ConsistOf(tc.names))
-			Expect(javaNames[0]).To(Equal(tc.first))
+			if tc.first != "" {
+				Expect(javaNames[0]).To(Equal(tc.first))
+			}
 			if tc.knownOrder != nil {
 				Expect(javaNames).To(Equal(tc.knownOrder))
 			}

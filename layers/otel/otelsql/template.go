@@ -1,18 +1,11 @@
-// Package otelsql is the SQL schema of an OTel store: one fdb-relational
-// schema template whose tables hold one tenant's spans, logs, GenAI messages
-// and message trace markers, so SQL joins them within one record store.
-//
-// The template is plain Java fdb-relational 4.14.2 DDL: Java parses it and
-// stores the same template bytes (conformance/rfc204_template_golden_test.go).
-// Attributes are typed repeated structs, one array per OTLP value type, so a
-// fan-out VALUE index holds one entry per attribute and an equality never
-// coerces between types. Index keys end with the base record's time and
-// primary key, which is what lets Java order a page by them.
+// Package otelsql defines the Java-readable OTel SQL schema template.
+// See docs/compatibility.md "OTel SQL schema foundation" for writer contracts.
 package otelsql
 
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -24,39 +17,16 @@ import (
 // is created with it.
 const TemplateName = "OTEL_V1"
 
-// TemplateVersion is the initial catalog version assigned by CREATE SCHEMA
-// TEMPLATE. Evolution must use the catalog's version/evolution validator, not
-// overwrite this version with different DDL.
+// TemplateVersion is the initial catalog version; evolution must use the
+// catalog's version/evolution validator rather than overwrite its DDL.
 const TemplateVersion = 1
 
-// MaxIndexedStringBytes caps a string attribute value stored in an indexed
-// str_value column: an index key over FDB's 10 KB limit fails the write
-// (Java StandardIndexMaintainer.checkKeyValueSizes). A longer value is stored
-// in long_str_attrs and found by its digest.
+// MaxIndexedStringBytes keeps indexed strings within FDB's key limit;
+// longer values belong in long_str_attrs and are looked up by digest.
 const MaxIndexedStringBytes = 1024
 
-// TemplateBody is the template's DDL after CREATE SCHEMA TEMPLATE <name>.
-//
-// Types: one struct per attribute value type. scope is 'resource', 'scope'
-// or the owning record's own scope ('span', 'log'); event and link attributes
-// live on their event and link.
-//
-// Tables:
-//   - spans: one row per span, primary key (trace_id, span_id).
-//   - logs: one row per log record, primary key event_id; trace_id and
-//     span_id are NULL for an uncorrelated log.
-//   - messages: one part of a stored GenAI message, primary key
-//     (writer, seq, part); spans name them in message_refs. content_hash is
-//     the whole-message digest on part zero ONLY; other parts leave it NULL.
-//     NULL hashes do not conflict in the unique index. This is a writer
-//     contract, not a DDL constraint.
-//   - message_traces: a message occurs in a trace.
-//
-// TEXT is intentionally absent: Java relational has no TEXT DDL/query access.
-// A Go FULLTEXT overlay needs its own metadata version and migration policy.
-// Typed columns are incomplete projections, not an ingest encoder. Fidelity
-// requires the envelope plus lossless message manifests/reference reconstruction;
-// storing full GenAI history in every span would restore quadratic storage.
+// TemplateBody follows CREATE SCHEMA TEMPLATE <name>; storage and fidelity
+// contracts are in docs/compatibility.md "OTel SQL schema foundation".
 const TemplateBody = `CREATE TYPE AS STRUCT str_attr (scope STRING, attr_key STRING, str_value STRING)
 CREATE TYPE AS STRUCT long_str_attr (scope STRING, attr_key STRING, digest BYTES, str_value STRING)
 CREATE TYPE AS STRUCT int_attr (scope STRING, attr_key STRING, int_value BIGINT)
@@ -133,18 +103,18 @@ func CreateTemplate(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-// CreateTenant creates a tenant's database and its schema over the template;
-// the schema's record store holds every table of that tenant. Paths must be
-// /DOMAIN/DATABASE and schema a single identifier, using ASCII letters, digits
-// and underscores (not starting with a digit). Like unquoted relational DDL,
-// names fold to uppercase. The domain must already be registered.
+// CreateTenant creates the schema, resuming if the database already exists.
+// Paths use /DOMAIN/DATABASE and one ASCII schema identifier; names fold uppercase.
 func CreateTenant(ctx context.Context, db *sql.DB, databasePath, schema string) error {
 	databasePath, schemaPath, err := tenantPaths(databasePath, schema)
 	if err != nil {
 		return err
 	}
 	if _, err := db.ExecContext(ctx, `CREATE DATABASE "`+databasePath+`"`); err != nil {
-		return fmt.Errorf("otelsql: create database %s: %w", databasePath, err)
+		var apiErr *api.Error
+		if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeDatabaseAlreadyExists {
+			return fmt.Errorf("otelsql: create database %s: %w", databasePath, err)
+		}
 	}
 	if _, err := db.ExecContext(ctx, `CREATE SCHEMA "`+schemaPath+`" WITH TEMPLATE `+TemplateName); err != nil {
 		return fmt.Errorf("otelsql: create schema %s: %w", schemaPath, err)

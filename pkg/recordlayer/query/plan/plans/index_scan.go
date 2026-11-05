@@ -85,18 +85,8 @@ type RecordQueryIndexPlan struct {
 	// drives the ordering the scan provides: the non-equality-bound suffix
 	// of these columns is sorted.
 	columnNames []string
-	// pkColumnNames is the record type's primary-key column list, used to
-	// extend the ordering past the index key: a value index's entries are
-	// (index key, primary key), so the scan's output order covers the
-	// trimmed PK suffix too. Mirrors Java's
-	// ValueIndexExpansionVisitor.fullKey(index, primaryKey) — the ordering in
-	// ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons is
-	// derived over the FULL key (index root + trimPrimaryKey'd PK), which is
-	// what lets an equality-prefixed scan (status = ?) satisfy ORDER BY pk.
-	// Retained for coordinate-safe covering reconstruction even on fan-out
-	// indexes. Fan-out ordering continues past an element coordinate only when
-	// its comparison pins one physical key; unbound or widened elements stop
-	// the suffix ordering claim.
+	// pkColumnNames retains coordinate-safe PK coverage even for fan-out keys;
+	// suffix ordering continues only past physically equality-pinned elements.
 	pkColumnNames []string
 	// unique reports whether the index is declared UNIQUE. A full equality
 	// bind then has a bounded physical-key multiplicity only when component
@@ -135,10 +125,8 @@ type RecordQueryIndexPlan struct {
 	// (WithDistinctRecordsSignal), mirroring Java's empty-candidate default.
 	createsDuplicates    bool
 	distinctRecordsKnown bool
-	// keyColumnDuplicates is parallel to columnNames: whether the key column
-	// lies below a FAN_OUT (Java's normalizedKeyExpression.createsDuplicates()).
-	// It lets a fan-out scan claim the order Java's
-	// computeOrderingFromScanComparisons derives; nil leaves it claiming none.
+	// keyColumnDuplicates marks FAN_OUT coordinates parallel to columnNames;
+	// nil classification prevents an ordering claim.
 	keyColumnDuplicates []bool
 	// commonPrimaryKeyValues is the index's common primary key translated to
 	// STRUCTURE-encoding Values (RFC-189 B3 / Java PrimaryKeyProperty.visitIndexPlan

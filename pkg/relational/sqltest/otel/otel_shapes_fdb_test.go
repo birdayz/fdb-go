@@ -12,9 +12,8 @@ import (
 	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
-// The OTel span/log SQL shapes, end to end on real FDB. Java 4.14.2's plans and
-// rows for the same schema and queries are pinned by
-// conformance/otel_sql_shapes_java_probe_test.go; each case cites the Java plan.
+// Real-FDB OTel shapes mirror the plans/rows pinned by the Java 4.14.2
+// conformance/otel_sql_shapes_java_probe_test.go; cases cite Java's plan.
 const otelShapesTemplate = "CREATE SCHEMA TEMPLATE otel_shapes_tmpl " +
 	"CREATE TYPE AS STRUCT attr (scope STRING, k STRING, sv STRING, iv BIGINT) " +
 	"CREATE TABLE spans (trace_id STRING, span_id STRING, start_ns BIGINT, name STRING, attrs attr ARRAY, PRIMARY KEY (trace_id, span_id)) " +
@@ -203,9 +202,8 @@ func TestFDB_OtelTraceJoins(t *testing.T) {
 	})
 }
 
-// Keyset pages over (start_ns, trace_id, span_id) DESC. Java 4.14.2 rejects
-// LIMIT (it pages with maxRows and continuations), so LIMIT is Go-only here;
-// the predicate shapes and plans are Java's.
+// These DESC keyset predicates/plans mirror Java, but LIMIT is Go-only:
+// Java 4.14.2 uses maxRows/continuations rather than parsing LIMIT.
 func TestFDB_OtelKeysetPages(t *testing.T) {
 	t.Parallel()
 	const order = " ORDER BY s.start_ns DESC, s.trace_id DESC, s.span_id DESC"

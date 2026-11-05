@@ -31,11 +31,8 @@ var otelShapesSetup = []string{
 	"INSERT INTO logs VALUES ('e1', 't1', 's1', 110, 'one'), ('e2', 't1', 's1', 120, 'two'), ('e3', 't3', 's4', 410, 'three'), ('e4', 't2', NULL, 310, 'four')",
 }
 
-// The OTel span/log SQL shapes in both engines: fan-out EXISTS over a
-// repeated attribute struct, its time order, trace_id join probes, cardinality
-// and keyset pages. pkg/relational/sqltest/otel pins Go end to end; this pins
-// Java 4.14.2's plans and rows for the same schema, including two Java wrong
-// answers Go does not reproduce (DIVERGENCES.md "fan-out EXISTS cardinality").
+// These Java 4.14.2 shapes include the fan-out EXISTS cases documented under
+// DIVERGENCES.md "Java Upstream Bugs (Go is correct, Java is wrong)".
 var _ = Describe("OtelSQLShapesJavaProbe", func() {
 	It("plans and answers the OTel SQL shapes in both engines", func() {
 		ctx := context.Background()

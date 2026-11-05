@@ -15,11 +15,8 @@ CREATE INDEX spans_attr_str AS SELECT a.scope, a.k, a.sv, s.start_ns, s.trace_id
   FROM spans AS s, (SELECT scope, k, sv FROM s.attrs) AS a
   ORDER BY a.scope, a.k, a.sv, s.start_ns, s.trace_id, s.span_id`
 
-// Java orders a fan-out index scan past its equality-bound element columns
-// (ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons skips an
-// equality-bound duplicate-producing column and stops at an unbound one), so
-// an EXISTS over the elements with ORDER BY the base column plans a REVERSE
-// scan with no sort.
+// Java skips equality-pinned fan-out elements, allowing base-column order
+// without a sort; unbound and range-bound elements stop that order.
 func TestPlanFanOutExistsOrdersPastBoundElements(t *testing.T) {
 	t.Parallel()
 	const exists = `EXISTS (SELECT 1 FROM s.attrs AS a WHERE a.scope = 'span' AND a.k = 'model' AND a.sv = 'gpt')`
@@ -31,9 +28,8 @@ func TestPlanFanOutExistsOrdersPastBoundElements(t *testing.T) {
 		{"time asc", `SELECT s.trace_id, s.span_id, s.start_ns FROM spans AS s WHERE ` + exists + ` ORDER BY s.start_ns`, false},
 		{"time range desc", `SELECT s.trace_id, s.span_id, s.start_ns FROM spans AS s WHERE ` + exists + ` AND s.start_ns >= 150 AND s.start_ns < 450 ORDER BY s.start_ns DESC`, false},
 		{"time then primary key", `SELECT s.trace_id, s.span_id, s.start_ns FROM spans AS s WHERE ` + exists + ` ORDER BY s.start_ns DESC, s.trace_id DESC, s.span_id DESC`, false},
-		// Keyset pages under the EXISTS: Java plans the expanded OR form as an
-		// ordered union of three scans (COMPARE BY) and the AND form as one range
-		// scan under a filter.
+		// Java uses COMPARE BY unions for expanded OR pages and a filtered
+		// range scan for the equivalent AND form.
 		{"keyset or", `SELECT s.trace_id, s.span_id, s.start_ns FROM spans AS s WHERE ` + exists + ` AND (s.start_ns < 200 OR (s.start_ns = 200 AND (s.trace_id < 't1' OR (s.trace_id = 't1' AND s.span_id < 's2')))) ORDER BY s.start_ns DESC, s.trace_id DESC, s.span_id DESC`, false},
 		{"keyset and", `SELECT s.trace_id, s.span_id, s.start_ns FROM spans AS s WHERE ` + exists + ` AND s.start_ns <= 200 AND (s.start_ns < 200 OR s.trace_id < 't1' OR (s.trace_id = 't1' AND s.span_id < 's2')) ORDER BY s.start_ns DESC, s.trace_id DESC, s.span_id DESC`, false},
 		// An unbound element column ends the order (Java breaks there).

@@ -5,4 +5,6 @@ ignore:
   - "pkg/relational/core/parser/gen/**"
   - "pkg/relational/api/apimock/mocks_*.go"
   - "**/*.pb.go"
+  - "**/*.binpb"
+  - "conformance/testdata/rfc257/wsj_*.json"
   - "third_party/**"

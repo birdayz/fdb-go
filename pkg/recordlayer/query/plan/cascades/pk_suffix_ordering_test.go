@@ -288,11 +288,8 @@ func TestComputeMatchedOrderingParts_PKSuffix(t *testing.T) {
 	}
 }
 
-// TestComputeMatchedOrderingParts_SuffixPastBoundFanOut pins Java's
-// ValueIndexLikeMatchCandidate.computeMatchedOrderingParts: an equality-bound
-// duplicate-producing position contributes no part and the loop continues into
-// the full key's primary-key suffix; the scan plan claims the same order
-// (computeOrderingFromScanComparisons). An unbound fan-out position ends both.
+// Equality pins one fan-out element, exposing the PK suffix in both candidate
+// and plan ordering; an unbound or range-bound element must end that order.
 func TestComputeMatchedOrderingParts_SuffixPastBoundFanOut(t *testing.T) {
 	t.Parallel()
 
@@ -326,6 +323,24 @@ func TestComputeMatchedOrderingParts_SuffixPastBoundFanOut(t *testing.T) {
 	if len(unbound) != 0 {
 		t.Fatalf("an unbound fan-out position must end the ordering: got %v", unbound)
 	}
+	rangeComparison := predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, "a")
+	rangeResult := predicates.EmptyComparisonRange().Merge(&rangeComparison)
+	if !rangeResult.Complete() || rangeResult.Range.GetRangeType() != predicates.ComparisonRangeInequality {
+		t.Fatal("failed to construct the fan-out element range")
+	}
+	rangeBindings := map[values.CorrelationIdentifier]*predicates.ComparisonRange{alias: rangeResult.Range}
+	rangeMatch := NewRegularMatchInfo(rangeBindings, nil, nil, nil, nil, nil, nil, nil)
+	t.Run("range-bound candidate", func(t *testing.T) {
+		if got := cand.ComputeMatchedOrderingParts(rangeMatch, []values.CorrelationIdentifier{alias}, false); len(got) != 0 {
+			t.Fatalf("range-bound fan-out element must end candidate ordering: %v", got)
+		}
+	})
+	t.Run("range-bound plan", func(t *testing.T) {
+		rangeFetch := cand.ToScanPlan(EmptyPlanContext(), rangeBindings, false).(*plans.RecordQueryFetchFromPartialRecordPlan)
+		if ordering := rangeFetch.GetInner().(*plans.RecordQueryIndexPlan).HintOrdering(); ordering.IsKnown {
+			t.Fatalf("range-bound fan-out element must not advertise plan ordering: %#v", ordering)
+		}
+	})
 	floatCandidate := newKnownDistinctValueIndexCandidate(
 		"IDX_TAGS", []string{"T"}, []string{"TAGS"},
 		[]values.CorrelationIdentifier{alias}, tagsIDRowType(), false, []string{"ID"})

@@ -14,9 +14,8 @@ import (
 	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
-// This is companion SQL cost/plan coverage, not proof that SQL reaches the
-// leaf's createsDuplicates guard: the EXISTS distinct wrapper stops that proof
-// earlier. The paired plans-package test directly pins the leaf guard itself.
+// EXISTS stops the SQL cost proof before the leaf's createsDuplicates guard;
+// the paired plans-package test pins that guard directly.
 func TestFDB_UniqueFanOutJoinCostCompanion(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

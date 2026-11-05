@@ -117,18 +117,8 @@ func TestEnumDDL_StoredAsJavaStoresIt(t *testing.T) {
 	}
 }
 
-// TestDDL_OneShapeIsOneTypePerTable pins which name each field references when
-// a table reaches two enums with the same values, or two structs with the same
-// fields: Java's TypeRepository.Builder keys a table's types by Type.equals,
-// which is blind to the type's name (Type.Enum compares values, Type.Record its
-// fields by name, index and type), so the first name the table reaches (in
-// FIELD order, Type.Record.defineProtoType's walk of the columns as declared)
-// is the one every field of that shape references. Pinned against
-// the JVM by the WS-J oracle shapes enums_identical_values and
-// structs_identical_fields (whole-template bytes equal) and
-// enums_identical_values_two_tables (record_types order is compared directly;
-// only random anonymous type names/order and aliases are normalized, as
-// DIVERGENCES.md "Anonymous type names are engine-private" describes).
+// Java interns equal enum/struct shapes per table under their first field's
+// type name; WS-J pins the same shapes and unnormalized record_types order.
 func TestDDL_OneShapeIsOneTypePerTable(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {

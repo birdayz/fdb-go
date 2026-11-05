@@ -13,10 +13,8 @@ const (
 	untreeifyLimit  = 6
 )
 
-// Order models an empty map receiving putAll(first), then individual puts of
-// then. Its legacy bulk sizing uses float32(size)/0.75 + 1; it is deliberately
-// distinct from Guava expected-size construction (and newer JDK putAll sizing).
-// first represents source-map iteration and is expected to contain distinct keys.
+// Order models putAll(first), then individual puts; first has distinct keys.
+// Legacy float32 bulk sizing differs from Guava/newer-JDK sizing.
 func Order(first, then []string) []string {
 	m := stringMap{}
 	if len(first) != 0 {
@@ -31,9 +29,8 @@ func Order(first, then []string) []string {
 	return m.order()
 }
 
-// ExpectedSizeOrder models Guava Maps.newHashMapWithExpectedSize(len(keys))
-// followed by individual puts. Duplicate keys replace values without moving;
-// the constructor expectation still includes every supplied key.
+// ExpectedSizeOrder models Guava's expected-size constructor then puts;
+// duplicate keys replace values without moving or shrinking the expectation.
 func ExpectedSizeOrder(keys []string) []string {
 	m := stringMap{threshold: tableSizeFor(expectedCapacity(len(keys)))}
 	for _, key := range keys {
@@ -68,10 +65,8 @@ type entry struct {
 	red, tree           bool
 }
 
-// The chain, not the tree traversal, defines iteration. Tree links only decide
-// insertion parents and which root must be moved to the front of that chain.
-// This insertion-only implementation is independently authored from the
-// observable HashMap rules; it contains no OpenJDK source translation.
+// Iteration follows the chain; tree links decide insertion parents/root-front.
+// This independently authored model contains no OpenJDK source translation.
 type stringMap struct {
 	table     []*entry
 	size      int

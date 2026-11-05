@@ -2062,12 +2062,8 @@ func (p *RecordQueryIndexPlan) injectiveKeyColumnNames() []string {
 	return names
 }
 
-// orderingKeyColumns returns the key columns and primary-key suffix the scan's
-// ordering is derived over. A duplicate-producing (fan-out) index orders only
-// what Java's ValueIndexLikeMatchCandidate.computeOrderingFromScanComparisons
-// orders: an equality-bound column below a FAN_OUT fixes nothing (skip marks
-// it) and the sorted run, primary key included, stops at the first unbound one.
-// ok is false for a fan-out index whose columns carry no classification.
+// orderingKeyColumns skips physically pinned fan-out elements, stopping at
+// unbound/range elements; unknown fan-out classification fails closed.
 func (p *RecordQueryIndexPlan) orderingKeyColumns() (columns, suffix []string, skip []bool, ok bool) {
 	columns = p.GetColumnNames()
 	if !p.distinctRecordsKnown || !p.createsDuplicates {
@@ -2089,10 +2085,8 @@ func (p *RecordQueryIndexPlan) orderingKeyColumns() (columns, suffix []string, s
 	return columns[:limit], suffix, p.keyColumnDuplicates, true
 }
 
-// fanOutPinned reports whether a fan-out scan emits each record at most once:
-// every key column below the FAN_OUT is pinned to one physical key by an
-// equality, so all of a record's entries in range share one key and are one
-// FDB entry. Entries of two different element values cannot both match.
+// fanOutPinned requires one physical key per fan-out coordinate, so entries
+// for two different element values cannot both match a record.
 func (p *RecordQueryIndexPlan) fanOutPinned() bool {
 	columns := p.GetColumnNames()
 	if !p.distinctRecordsKnown || !p.createsDuplicates || len(p.keyColumnDuplicates) != len(columns) {

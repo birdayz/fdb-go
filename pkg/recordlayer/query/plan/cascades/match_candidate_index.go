@@ -1068,21 +1068,12 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 	duplicateProducingColumns := c.duplicateProducingColumns()
 
 	var parts []*MatchedOrderingPart
-	// Whether every coordinate emitted below also carries order THROUGH itself.
-	// One that does not (a signed-zero-widened float equality) is still emitted
-	// — it claims its own order — but it disqualifies the PK suffix, and the
-	// "did the loop consume the whole key" count cannot see that: when such a
-	// coordinate is the LAST index column, the count is full even though the
-	// claim stops there.
+	// Signed-zero-widened equality can claim its own order but not carry a
+	// suffix, even when it fills the last index coordinate.
 	suffixCarried := true
-	// Key positions the loop passed in order: emitted parts plus skipped
-	// equality-bound fan-out positions. The PK suffix continues only a key
-	// passed whole.
+	// The suffix requires every key position passed, including pinned fan-out.
 	passed := 0
-	// The per-coordinate "could this hold a signed zero" question, answered by
-	// the physical key type first and the layout second — the plan side's
-	// splitKeyOrder asks the same function, which is what keeps the two
-	// derivations classifying every coordinate alike.
+	// Share physical float classification with the plan-side splitKeyOrder.
 	columnCouldBeFloat := plans.IndexColumnCouldBeFloat(c.keyComponentTypes, c.orderingKeyLayout(), c.floatQuestionColumnNames())
 	for _, paramID := range sortParameterIDs {
 		idx := -1
@@ -1097,11 +1088,8 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 		}
 
 		cr := bindings[paramID]
-		// Java does not expose a duplicate-producing normalized key as an
-		// ordering Value. An equality bound fixes the exploded element and
-		// lets ordering continue at the next position; an unbound/range-bound
-		// fan-out position terminates the usable ordering prefix. Unlike Java,
-		// widened signed-zero equality cannot carry a suffix ordering either.
+		// Java skips equality-pinned exploded elements; ranges stop ordering.
+		// Widened signed-zero equality cannot carry a suffix either.
 		if duplicateProducingColumns[idx] {
 			if cr != nil &&
 				cr.GetRangeType() == predicates.ComparisonRangeEquality &&
@@ -1215,43 +1203,8 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 		}
 	}
 
-	// Continue the matched ordering into the trimmed primary-key suffix.
-	// Index entries are (index key, primary key), so after the index key
-	// columns the entry order continues through the PK remainder. Java
-	// gets this for free: its expansion (ValueIndexExpansionVisitor)
-	// registers PK placeholders, so sortParameterIds spans the FULL key
-	// (getFullKeyExpression) and the loop above emits PK parts natively.
-	// Go's candidate keeps the PK out of the sargable surface (see
-	// GetPKColumnNames), so the PK parts are synthesized here instead:
-	// unbound (empty comparison range), directional by isReverse — which
-	// is what lets SatisfiesRequestedOrdering resolve an ORDER BY on the
-	// PK against an equality-prefixed index scan and pick the scan
-	// direction, exactly like Java's satisfiesRequestedOrdering over
-	// full-key ordering parts.
-	//
-	// Gates: (1) A fan-out candidate continues into the suffix as Java does:
-	// an equality-bound duplicate-producing position is passed without a part
-	// (ValueIndexLikeMatchCandidate.computeMatchedOrderingParts `continue`),
-	// and any other duplicate-producing position stops the loop above. (2) The
-	// suffix only continues a FULLY passed index key —
-	// if the loop above stopped early the positions would not be
-	// contiguous and the suffix would claim an order the entries don't
-	// have. TrimmedPKSuffix drops PK columns already named in the index key,
-	// which is a claim about ORDERING and not about the stored entry: for a
-	// single-type index Index.TrimPrimaryKey drops those same columns from the
-	// bytes, but a universal index is never assigned
-	// primaryKeyComponentPositions, so its entries repeat the column. The suffix
-	// is right either way, because a column already fixed by an earlier position
-	// contributes nothing to sort order — ordering by (indexKey…, a, b) equals
-	// ordering by (indexKey…, b).
-	//
-	// A genuinely MULTI-TYPE index does not reach this reasoning at all:
-	// orderingKeyLayout fails closed when rowLayouts returns more than one, so
-	// no ordering parts are emitted for it. The untrimmed case that reaches here
-	// is a universal index over a single record type. (3) The last
-	// emitted coordinate must carry order through itself; a full part count is
-	// not sufficient, since a coordinate that claims only its OWN order can sit
-	// at the end of the key.
+	// Go synthesizes Java's full-key PK placeholders only after the whole key
+	// carries suffix order; trimming affects order, not universal-index storage.
 	if passed == len(c.columnNames) && suffixCarried {
 		for _, col := range plans.TrimmedPKSuffix(c.trimmableKeyColumnNames(), c.pkColumnNames) {
 			// The suffix terminates on the same rule as the key columns: a
@@ -1505,9 +1458,8 @@ func (c *ValueIndexScanMatchCandidate) orderingColumns() ([]plans.IndexOrderingC
 	columns := make([]plans.IndexOrderingColumn, len(described.keyColumns))
 	for i, column := range described.keyColumns {
 		if described.keyDuplicates[i] {
-			// A column below the FAN_OUT orders nothing: the plan skips it
-			// when equality-bound and ends its order at it otherwise
-			// (computeOrderingFromScanComparisons), so it needs no Value.
+			// FAN_OUT contributes no Value: a pinned element is skipped,
+			// and an unpinned element ends the plan's ordering.
 			continue
 		}
 		if len(column.path) == 0 && column.function == "" {

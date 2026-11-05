@@ -9,10 +9,8 @@ import (
 	"fdb.dev/pkg/relational/sqltest/testkit"
 )
 
-// The index deliberately omits both primary-key columns: the SQL metadata and
-// candidate wiring must discover the suffix. This pins Go's existing single-type
-// read-side extension past Java's record-type ordering horizon (DIVERGENCES.md),
-// not a claim that Java selects the same implicit-PK plan.
+// Omitting both PK columns forces suffix discovery through SQL metadata.
+// This is Go's single-type read-side extension, not a Java plan-parity claim.
 func TestFDB_OtelImplicitFanOutPKSuffix(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -84,6 +82,28 @@ CREATE INDEX spans_attr AS SELECT a.scope, a.k, a.sv, s.start_ns
 	}
 	if got := otelRows(t, db, ctx, unbound); got != want {
 		t.Fatalf("unbound-element rows = %s, want one row per span in %s", got, want)
+	}
+}
+
+func TestFDB_OtelFanOutElementRangeRequiresSort(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db := testkit.SetupPlanShapeDB(t, "fanout_element_range", `
+CREATE TYPE AS STRUCT attr (scope STRING, k STRING, iv BIGINT)
+CREATE TABLE spans (id BIGINT, start_ns BIGINT, attrs attr ARRAY, PRIMARY KEY (id))
+CREATE INDEX spans_attr AS SELECT a.scope, a.k, a.iv, s.start_ns
+  FROM spans AS s, (SELECT scope, k, iv FROM s.attrs) AS a
+  ORDER BY a.scope, a.k, a.iv, s.start_ns`)
+	testkit.MustExecCtx(t, db, ctx, `INSERT INTO spans VALUES
+(1,300,[('span','tokens',101)]), (2,100,[('span','tokens',200),('span','tokens',250)]),
+(3,200,[('span','tokens',150)]), (4,50,[('span','tokens',99)])`)
+	const query = "SELECT s.start_ns FROM spans AS s WHERE EXISTS (SELECT 1 FROM s.attrs AS a " +
+		"WHERE a.scope = 'span' AND a.k = 'tokens' AND a.iv > 100) ORDER BY s.start_ns"
+	if plan := testkit.Explainer(t, db, ctx)(query); !strings.Contains(plan, "IndexScan(SPANS_ATTR, [=, =, <>") || !strings.Contains(plan, "InMemorySort") {
+		t.Fatalf("range-bound element cannot order the time suffix: %s", plan)
+	}
+	if got := otelRows(t, db, ctx, query); got != "[100] [200] [300]" {
+		t.Fatalf("range-bound element time order = %s", got)
 	}
 }
 

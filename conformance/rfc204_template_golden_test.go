@@ -7,33 +7,8 @@ package conformance_test
 //
 //	live Java catalog bytes == committed golden bytes == Go catalog bytes
 //
-// For every representative template (each §1.2 construct: structs,
-// struct-of-struct sharing, forward references, arrays flat and wrapped,
-// nested primary keys, name escaping, UUID/VECTOR struct fields, deep
-// nesting, nullability variants — and explicitly the NULLABLE
-// ARRAY-OF-STRUCT column, the NullableArrayWrapper emission shape), Java
-// (fdb-relational 4.12.11.0 over JDBC) persists the template into the shared
-// catalog and the raw META_DATA blob is read back; Go builds the IDENTICAL
-// DDL through its own front end, persists it through its own template
-// catalog, and ITS raw stored blob is read back. Both are compared — as
-// BYTES — against each other and against the committed golden under
-// testdata/rfc204/, so the pin survives (and diffs meaningfully) without a
-// live JVM in the loop. Deliberately no clearProto2Defaults-style
-// normalization: explicitly-set defaults (nullInterpretation NOT_UNIQUE,
-// explicit_key 0) ARE the stored bytes and stay under test.
-//
-// NullableArrayWrapper names and references are canonicalized: Java draws a
-// random UUID per serialization (ProtoUtils.uniqueTypeName), while readers
-// identify wrappers structurally (NullableArrayUtils.isWrappedArrayDescriptor).
-// Order within each contiguous wrapper-message run is also canonicalized by
-// element type, since Java sorts that run by its random names. Named-message
-// placement/order and wrapper-run boundaries remain exact, as do field labels,
-// numbers, referenced element types, union shape, options, record types,
-// primary keys and flags.
-//
-// Re-blessing (only with a Java-verified behaviour change): run with
-// --test_env=RFC204_GOLDEN_OUT=<abs path to conformance/testdata/rfc204>
-// --sandbox_writable_path=<same path>, then commit the diff.
+// Java fdb-relational 4.14.2.0 and Go independently persist each template;
+// compare their raw bytes, canonicalizing only random wrapper names/runs.
 
 import (
 	"bytes"
@@ -152,9 +127,7 @@ var rfc204Goldens = []rfc204Golden{
 		wantMetaDataVersion: 3,
 	},
 	{
-		// The OTel store template: typed attribute struct arrays, fan-out
-		// VALUE indexes over them, nested struct arrays, BYTES keys and a
-		// UNIQUE index, as layers/otel/otelsql defines it.
+		// The public OTel template includes typed fan-out, BYTES and UNIQUE keys.
 		name:                "otel_v1",
 		body:                otelsql.TemplateBody,
 		wantMetaDataVersion: 14,
@@ -193,15 +166,8 @@ func wrapperElementKey(m *descriptorpb.DescriptorProto) string {
 	return f.GetType().String()
 }
 
-// normalizeWrapperNames canonicalizes every wrapper-SHAPED message name
-// (and the field type_name references to it) in encounter order. Mutates
-// fdp.
-//
-// A table's wrappers are emitted together, sorted by name
-// (TypeRepository.getMessageTypes is a TreeSet), and Java's names are random,
-// so their relative order is random too. Each contiguous run of wrappers is
-// first put in the order of its element types; a table has one wrapper per
-// element type.
+// normalizeWrapperNames mutates fdp to canonicalize random wrapper names and
+// each contiguous wrapper run's element-type order (Java sorts random names).
 func normalizeWrapperNames(fdp *descriptorpb.FileDescriptorProto) {
 	messages := fdp.GetMessageType()
 	for start := 0; start < len(messages); {

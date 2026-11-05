@@ -17,15 +17,17 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// The OTel schema template v1, registered in the catalog and opened as one
-// tenant's schema: spans, logs, messages and message markers are tables of one
-// record store, joined there. Java stores the same template bytes
-// (conformance/rfc204_template_golden_test.go "otel_v1").
+// One tenant record store joins all OTel tables; the rfc204 otel_v1 golden
+// independently pins Java's bytes for the same template.
 func TestFDB_OtelTemplateV1(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	const path = "/FRL/otel_tenant_v1"
 	setup := testkit.OpenDB(t, path)
+	var apiErr *api.Error
+	if err := otelsql.CreateTenant(ctx, setup, path, "S"); !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnknownSchemaTemplate {
+		t.Fatalf("tenant before template = %v, want unknown schema template", err)
+	}
 	if err := otelsql.CreateTemplate(ctx, setup); err != nil {
 		t.Fatal(err)
 	}
@@ -70,6 +72,19 @@ func TestFDB_OtelTemplateV1(t *testing.T) {
 				"WHERE a.scope = 'span' AND a.attr_key = 'gen_ai.usage.input_tokens' AND a.int_value > 100)",
 			rows:    "[tool 200]",
 			planHas: []string{"IndexScan(SPANS_INT_ATTR, [=, =, <>"},
+		},
+		{
+			name:    "span by span id",
+			sql:     "SELECT name, start_ns FROM spans WHERE span_id = X'0b'",
+			rows:    "[tool 200]",
+			planHas: []string{"IndexScan(SPANS_SPAN_ID, [="},
+		},
+		{
+			name:      "logs by time",
+			sql:       "SELECT event_id FROM logs ORDER BY effective_ns DESC",
+			rows:      "[e3] [e2] [e1]",
+			planHas:   []string{"IndexScan(LOGS_TIME", "REVERSE"},
+			planLacks: []string{"InMemorySort"},
 		},
 		{
 			name: "spans of a trace with their logs",
@@ -120,6 +135,23 @@ func TestFDB_OtelTemplateV1(t *testing.T) {
 			t.Errorf("%s: rows %s, want %s", c.name, got, c.rows)
 		}
 	}
+	t.Run("remaining typed indexes", func(t *testing.T) {
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO spans (trace_id, span_id, start_ns, long_str_attrs) VALUES "+
+			"(X'05', X'01', 600, [('span','long',X'0102','long value')]), (X'05', X'02', 500, [('span','long',X'0304','other value')])")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO logs (event_id, effective_ns, int_attrs) VALUES "+
+			"('i1', 600, [('log','count',7)]), ('i2', 500, [('log','count',8)])")
+		for _, tc := range []struct{ query, index, rows string }{
+			{"SELECT s.start_ns FROM spans AS s WHERE EXISTS (SELECT 1 FROM s.long_str_attrs AS a WHERE a.scope = 'span' AND a.attr_key = 'long' AND a.digest = X'0102')", "SPANS_LONG_STR_ATTR", "[600]"},
+			{"SELECT l.event_id FROM logs AS l WHERE EXISTS (SELECT 1 FROM l.int_attrs AS a WHERE a.scope = 'log' AND a.attr_key = 'count' AND a.int_value = 7)", "LOGS_INT_ATTR", "[i1]"},
+		} {
+			if plan := explain(tc.query); !strings.Contains(plan, "IndexScan("+tc.index+", [=, =, =,") {
+				t.Errorf("%s equality lookup: %s", tc.index, plan)
+			}
+			if got := otelRows(t, db, ctx, tc.query); got != tc.rows {
+				t.Errorf("%s rows = %s, want %s", tc.index, got, tc.rows)
+			}
+		}
+	})
 	t.Run("multipart message uniqueness", func(t *testing.T) {
 		// Only part zero carries the whole-message digest. Chunks have NULL
 		// digests, and UNIQUE deliberately permits multiple NULLs.
