@@ -9,6 +9,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
 	"fdb.dev/pkg/relational/sqltest/testkit"
 )
@@ -33,20 +34,40 @@ CREATE UNIQUE INDEX fan_key AS SELECT a.root_key FROM fan_rows AS f,
 	testkit.MustExecCtx(t, db, ctx, "INSERT INTO fan_rows VALUES "+
 		"(10,5,[(10,'x'),(11,'x')]),(11,5,[(12,'x')]),(20,6,[(13,'x')])")
 	const scalar = "SELECT o.id, s.id FROM outer_rows AS o LEFT JOIN scalar_rows AS s ON s.root_key = o.k ORDER BY o.id, s.id"
-	const fanOut = "SELECT o.id, f.id FROM outer_rows AS o LEFT JOIN (SELECT f.id, f.root_key FROM fan_rows AS f WHERE EXISTS (SELECT 1 FROM f.attrs AS a WHERE a.root_key >= 0)) AS f ON f.root_key = o.k ORDER BY o.id, f.id"
-	explain := testkit.Explainer(t, db, ctx)
-	scalarPlan, fanPlan := explain(scalar), explain(fanOut)
+	// Bound the fan-out access without making it a root-key probe: record 10
+	// matches two keys in [10,13], and records 10 and 11 share root_key 5.
+	const fanOut = "SELECT o.id, f.id FROM outer_rows AS o LEFT JOIN (SELECT f.id, f.root_key FROM fan_rows AS f WHERE EXISTS (SELECT 1 FROM f.attrs AS a WHERE a.root_key >= 10 AND a.root_key <= 13)) AS f ON f.root_key = o.k ORDER BY o.id, f.id"
+	base := testkit.PinEmbeddedConn(t, db, func(*embedded.EmbeddedConnection) {})
+	scalarPlan := testkit.ExplainConn(t, ctx, base, scalar)
+	fanPlan := testkit.ExplainConn(t, ctx, base, fanOut)
 	if !strings.Contains(scalarPlan, "FlatMap(") || !strings.Contains(scalarPlan, "IndexScan(SCALAR_KEY, [=]") {
 		t.Fatalf("scalar UNIQUE key should supply a correlated probe: %s", scalarPlan)
 	}
-	if !strings.Contains(fanPlan, "NestedLoopJoin(") || !strings.Contains(fanPlan, "IndexScan(FAN_KEY") || !strings.Contains(fanPlan, "UnorderedPrimaryKeyDistinct") {
-		t.Fatalf("fan-out uniqueness is not root_key uniqueness; expected materialized join over distinct fan-out access: %s", fanPlan)
+	if !strings.Contains(fanPlan, "FlatMap(") || !strings.Contains(fanPlan, "DefaultOnEmpty(") || strings.Contains(fanPlan, "NestedLoopJoin(LEFT OUTER") {
+		t.Fatalf("default rewriting should correlate the outer join and preserve null extension: %s", fanPlan)
 	}
-	for _, tc := range []struct{ query, want string }{
-		{scalar, "[1 10] [2 20] [3 <nil>]"},
-		{fanOut, "[1 10] [1 11] [2 20] [3 <nil>]"},
+	// Keep only the outer-join rewrite off; index matching, existential
+	// rewriting and the cost model still select the materialized inner leg.
+	opts := api.NewOptionsBuilder().Set(api.OptDisabledPlannerRules, []string{"RewriteOuterJoinRule"}).Build()
+	materialized := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		ec.SetOptions(opts)
+	})
+	materializedPlan := testkit.ExplainConn(t, ctx, materialized, fanOut)
+	if materializedPlan == fanPlan {
+		t.Fatalf("disabling RewriteOuterJoinRule left the plan unchanged: %s", fanPlan)
+	}
+	if !strings.Contains(materializedPlan, "NestedLoopJoin(LEFT OUTER") || !strings.Contains(materializedPlan, "IndexScan(FAN_KEY") || !strings.Contains(materializedPlan, "UnorderedPrimaryKeyDistinct") {
+		t.Fatalf("fan-out uniqueness is not root_key uniqueness; expected materialized LEFT join over distinct fan-out access: %s", materializedPlan)
+	}
+	for _, tc := range []struct {
+		conn        *sql.Conn
+		query, want string
+	}{
+		{base, scalar, "[1 10] [2 20] [3 <nil>]"},
+		{base, fanOut, "[1 10] [1 11] [2 20] [3 <nil>]"},
+		{materialized, fanOut, "[1 10] [1 11] [2 20] [3 <nil>]"},
 	} {
-		rows, err := db.QueryContext(ctx, tc.query)
+		rows, err := tc.conn.QueryContext(ctx, tc.query)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -74,7 +95,7 @@ CREATE UNIQUE INDEX fan_key AS SELECT a.root_key FROM fan_rows AS f,
 
 	// Inspect the SQL-produced operator, rather than constructing another join.
 	// Its cost must retain the non-point-probe cardinality for its inner leg.
-	physical, err := embedded.PlanPhysicalForTest(fanOut, ddl, nil)
+	physical, err := embedded.PlanPhysicalForTestWithOptions(fanOut, ddl, nil, opts)
 	if err != nil {
 		t.Fatal(err)
 	}

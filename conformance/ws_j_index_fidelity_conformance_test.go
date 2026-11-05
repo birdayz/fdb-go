@@ -13,10 +13,12 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/antlr4-go/antlr/v4"
 	"github.com/bazelbuild/rules_go/go/runfiles"
@@ -511,7 +513,20 @@ func wsjStructureDetail(g, j *gen.MetaData) string {
 // in-predicate, user-defined-macro-function-tests and valid-identifiers), each
 // replaced by a same-length placeholder numbered in order of first appearance.
 func wsjJavaDigest(md *gen.MetaData, templateName string) string {
-	b, err := proto.MarshalOptions{Deterministic: true}.Marshal(wsjCanonical(md))
+	sum := sha256.Sum256(wsjDigestProjection(md, templateName, false))
+	return fmt.Sprintf("%x", sum[:6])
+}
+
+// The historical projection differs ONLY in record_types order. It is a
+// separate clone for migration evidence, never the shared metadata comparator.
+func wsjDigestProjection(md *gen.MetaData, templateName string, historical bool) []byte {
+	c := wsjCanonical(md)
+	if historical {
+		sort.SliceStable(c.RecordTypes, func(i, j int) bool {
+			return c.RecordTypes[i].GetName() < c.RecordTypes[j].GetName()
+		})
+	}
+	b, err := proto.MarshalOptions{Deterministic: true}.Marshal(c)
 	Expect(err).NotTo(HaveOccurred())
 	b = bytes.ReplaceAll(b, []byte(templateName), bytes.Repeat([]byte("T"), len(templateName)))
 	seen := map[string]string{}
@@ -523,9 +538,240 @@ func wsjJavaDigest(md *gen.MetaData, templateName string) string {
 		seen[string(a)] = r
 		return []byte(r)
 	})
-	sum := sha256.Sum256(b)
-	return fmt.Sprintf("%x", sum[:6])
+	return b
 }
+
+// Raw is the actual catalog payload (Java) or unnormalized ToProto marshal
+// (Go). JSON encodes []byte as base64, retaining unknown fields and wire order.
+// Both projections are derived independently from that SAME raw payload.
+type wsjMetadataWitness struct {
+	Raw              []byte   `json:"raw_base64"`
+	RawSHA256        string   `json:"raw_sha256"`
+	Projection       []byte   `json:"projection_base64"`
+	ProjectionSHA256 string   `json:"projection_sha256"`
+	Digest           string   `json:"digest"`
+	LegacyProjection []byte   `json:"legacy_projection_base64"`
+	LegacySHA256     string   `json:"legacy_projection_sha256"`
+	LegacyDigest     string   `json:"legacy_digest"`
+	RecordTypes      []string `json:"record_types"`
+}
+
+func wsjCaptureMetadata(raw []byte, templateName string) wsjMetadataWitness {
+	md := &gen.MetaData{}
+	Expect(proto.Unmarshal(raw, md)).To(Succeed())
+	w := wsjMetadataWitness{Raw: append([]byte(nil), raw...)}
+	rawSum := sha256.Sum256(raw)
+	w.RawSHA256 = fmt.Sprintf("%x", rawSum)
+	w.Projection = wsjDigestProjection(md, templateName, false)
+	w.LegacyProjection = wsjDigestProjection(md, templateName, true)
+	newSum, oldSum := sha256.Sum256(w.Projection), sha256.Sum256(w.LegacyProjection)
+	w.ProjectionSHA256, w.LegacySHA256 = fmt.Sprintf("%x", newSum), fmt.Sprintf("%x", oldSum)
+	w.Digest, w.LegacyDigest = fmt.Sprintf("%x", newSum[:6]), fmt.Sprintf("%x", oldSum[:6])
+	for _, rt := range md.GetRecordTypes() {
+		w.RecordTypes = append(w.RecordTypes, rt.GetName())
+	}
+	return w
+}
+
+type wsjBuildWitness struct {
+	Build          int                 `json:"build"`
+	Outcome        string              `json:"outcome"`
+	Error          string              `json:"error,omitempty"`
+	SQLState       string              `json:"sql_state,omitempty"`
+	ErrorClass     string              `json:"error_class,omitempty"`
+	ErrorFullClass string              `json:"error_full_class,omitempty"`
+	ErrorMessage   string              `json:"error_message,omitempty"`
+	Created        bool                `json:"created,omitempty"`
+	Dropped        bool                `json:"dropped,omitempty"`
+	Metadata       *wsjMetadataWitness `json:"metadata,omitempty"`
+}
+
+type wsjRunWitness struct {
+	Kind              string            `json:"kind"`
+	ID                string            `json:"id"`
+	Sequence          int               `json:"sequence"`
+	TemplateName      string            `json:"template_name"`
+	Body              string            `json:"body"`
+	BodySHA256        string            `json:"body_sha256"`
+	JavaBuilds        []wsjBuildWitness `json:"java_builds"`
+	GoBuilds          []wsjBuildWitness `json:"go_builds"`
+	Class             string            `json:"class"`
+	JavaOutcome       string            `json:"java_outcome"`
+	LegacyJavaOutcome string            `json:"legacy_java_outcome"`
+	GoOutcome         string            `json:"go_outcome"`
+	PinnedJava        string            `json:"pinned_java"`
+	PinnedGoClass     string            `json:"pinned_go_class"`
+	LegacyMatchesPin  bool              `json:"legacy_matches_pin"`
+	Complete          bool              `json:"complete"`
+}
+
+// A synthetic wire-contract control, not a measured Java catalog fixture.
+func wsjDigestControlMetadata() *gen.MetaData {
+	field := func(name string, number int32) *descriptorpb.FieldDescriptorProto {
+		return &descriptorpb.FieldDescriptorProto{
+			Name: proto.String(name), Number: proto.Int32(number),
+			Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum(),
+		}
+	}
+	key := func(name string) *gen.KeyExpression {
+		return &gen.KeyExpression{Field: &gen.Field{FieldName: proto.String(name), FanType: gen.Field_SCALAR.Enum()}}
+	}
+	md := &gen.MetaData{
+		Records: &descriptorpb.FileDescriptorProto{Name: proto.String("fixed.proto"), MessageType: []*descriptorpb.DescriptorProto{
+			{Name: proto.String("T2"), Field: []*descriptorpb.FieldDescriptorProto{field("id", 1)}},
+			{Name: proto.String("T1"), Field: []*descriptorpb.FieldDescriptorProto{field("id", 1)}},
+			{Name: proto.String("RecordTypeUnion"), Field: []*descriptorpb.FieldDescriptorProto{
+				{Name: proto.String("_T2"), Number: proto.Int32(1), Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".T2")},
+				{Name: proto.String("_T1"), Number: proto.Int32(2), Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".T1")},
+			}},
+		}},
+		RecordTypes: []*gen.RecordType{
+			{Name: proto.String("T2"), PrimaryKey: key("id"), ExplicitKey: &gen.Value{LongValue: proto.Int64(0)}, SinceVersion: proto.Int32(1)},
+			{Name: proto.String("T1"), PrimaryKey: key("id"), ExplicitKey: &gen.Value{LongValue: proto.Int64(1)}, SinceVersion: proto.Int32(1)},
+		},
+		Indexes: []*gen.Index{{
+			Name: proto.String("IX"), Type: proto.String("value"), RecordType: []string{"T2"},
+			RootExpression: key("id"), SubspaceKey: []byte{1, 2}, AddedVersion: proto.Int32(1), LastModifiedVersion: proto.Int32(2),
+			Options:   []*gen.Index_Option{{Key: proto.String("unique"), Value: proto.String("true")}, {Key: proto.String("allowedForQuery"), Value: proto.String("true")}},
+			Predicate: &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{Value: gen.ConstantPredicate_TRUE.Enum()}},
+		}},
+		Version: proto.Int32(3),
+	}
+	md.ProtoReflect().SetUnknown([]byte{0xf8, 0x07, 0x01}) // field 127, varint 1
+	md.RecordTypes[0].ProtoReflect().SetUnknown([]byte{0xf8, 0x07, 0x02})
+	md.Indexes[0].ProtoReflect().SetUnknown([]byte{0xf8, 0x07, 0x03})
+	return md
+}
+
+var _ = Describe("WS-J metadata digest projection controls", func() {
+	It("detects raw record-type permutation while reproducing only the historical sorted projection", func() {
+		md := wsjDigestControlMetadata()
+		original := proto.Clone(md).(*gen.MetaData)
+		permuted := proto.Clone(md).(*gen.MetaData)
+		permuted.RecordTypes[0], permuted.RecordTypes[1] = permuted.RecordTypes[1], permuted.RecordTypes[0]
+		Expect(proto.Equal(md, permuted)).To(BeFalse(), "the permutation must actually apply")
+		Expect(proto.Equal(wsjCanonical(md), wsjCanonical(permuted))).To(BeFalse())
+		Expect(wsjJavaDigest(md, "unused")).NotTo(Equal(wsjJavaDigest(permuted, "unused")))
+		Expect(wsjDigestProjection(md, "unused", false)).NotTo(Equal(wsjDigestProjection(permuted, "unused", false)))
+		Expect(wsjDigestProjection(md, "unused", true)).To(Equal(wsjDigestProjection(permuted, "unused", true)))
+		projected := &gen.MetaData{}
+		Expect(proto.Unmarshal(wsjDigestProjection(md, "unused", true), projected)).To(Succeed())
+		Expect(projected.RecordTypes[0].GetName()).To(Equal("T1"))
+		Expect(projected.RecordTypes[1].GetName()).To(Equal("T2"))
+		expected := proto.Clone(original).(*gen.MetaData)
+		expected.RecordTypes[0], expected.RecordTypes[1] = expected.RecordTypes[1], expected.RecordTypes[0]
+		Expect(proto.Equal(projected, expected)).To(BeTrue(), "legacy changes no payload except the repeated record_types order")
+		Expect(proto.Equal(md, original)).To(BeTrue(), "neither projection mutates its source")
+		raw, err := proto.MarshalOptions{Deterministic: true}.Marshal(md)
+		Expect(err).NotTo(HaveOccurred())
+		w := wsjCaptureMetadata(raw, "unused")
+		Expect(w.Raw).To(Equal(raw))
+		Expect(w.RecordTypes).To(Equal([]string{"T2", "T1"}))
+		Expect(w.Digest).To(Equal(wsjJavaDigest(md, "unused")))
+		Expect(w.Projection).NotTo(Equal(w.LegacyProjection))
+		// The capture is a copy, not a borrowed buffer that a later build can change.
+		raw[0] ^= 1
+		Expect(w.Raw).NotTo(Equal(raw))
+	})
+
+	It("retains keys, union and named descriptor order, index payloads, versions and unknown bytes in both contracts", func() {
+		md := wsjDigestControlMetadata()
+		mutations := []struct {
+			name  string
+			apply func(*gen.MetaData)
+		}{
+			{"T2 explicit key", func(m *gen.MetaData) { m.RecordTypes[0].ExplicitKey.LongValue = proto.Int64(7) }},
+			{"T1 explicit key", func(m *gen.MetaData) { m.RecordTypes[1].ExplicitKey.LongValue = proto.Int64(7) }},
+			{"primary key", func(m *gen.MetaData) { m.RecordTypes[0].PrimaryKey.Field.FieldName = proto.String("other") }},
+			{"record type version", func(m *gen.MetaData) { m.RecordTypes[1].SinceVersion = proto.Int32(4) }},
+			{"union number", func(m *gen.MetaData) { m.Records.MessageType[2].Field[0].Number = proto.Int32(9) }},
+			{"union order", func(m *gen.MetaData) { f := m.Records.MessageType[2].Field; f[0], f[1] = f[1], f[0] }},
+			{"named descriptor order", func(m *gen.MetaData) { f := m.Records.MessageType; f[0], f[1] = f[1], f[0] }},
+			{"field number", func(m *gen.MetaData) { m.Records.MessageType[0].Field[0].Number = proto.Int32(8) }},
+			{"semantic name", func(m *gen.MetaData) { m.Records.MessageType[0].Name = proto.String("RENAMED") }},
+			{"index root", func(m *gen.MetaData) { m.Indexes[0].RootExpression.Field.FieldName = proto.String("other") }},
+			{"index option value", func(m *gen.MetaData) { m.Indexes[0].Options[0].Value = proto.String("false") }},
+			{"index option order", func(m *gen.MetaData) { o := m.Indexes[0].Options; o[0], o[1] = o[1], o[0] }},
+			{"index predicate", func(m *gen.MetaData) {
+				m.Indexes[0].Predicate.ConstantPredicate.Value = gen.ConstantPredicate_FALSE.Enum()
+			}},
+			{"index subspace", func(m *gen.MetaData) { m.Indexes[0].SubspaceKey[0] = 8 }},
+			{"index version", func(m *gen.MetaData) { m.Indexes[0].LastModifiedVersion = proto.Int32(5) }},
+			{"metadata version", func(m *gen.MetaData) { m.Version = proto.Int32(8) }},
+			{"metadata unknown", func(m *gen.MetaData) { m.ProtoReflect().SetUnknown([]byte{0xf8, 0x07, 0x04}) }},
+			{"record type unknown", func(m *gen.MetaData) { m.RecordTypes[0].ProtoReflect().SetUnknown(nil) }},
+			{"index unknown", func(m *gen.MetaData) { m.Indexes[0].ProtoReflect().SetUnknown(nil) }},
+		}
+		Expect(mutations).To(HaveLen(19))
+		for _, mutation := range mutations {
+			changed := proto.Clone(md).(*gen.MetaData)
+			mutation.apply(changed)
+			Expect(proto.Equal(changed, md)).To(BeFalse(), "%s must actually change the input", mutation.name)
+			for _, historical := range []bool{false, true} {
+				before := wsjDigestProjection(md, "unused", historical)
+				after := wsjDigestProjection(changed, "unused", historical)
+				Expect(after).NotTo(Equal(before), "%s historical=%t", mutation.name, historical)
+				Expect(sha256.Sum256(after)).NotTo(Equal(sha256.Sum256(before)), "%s historical=%t", mutation.name, historical)
+				decoded := &gen.MetaData{}
+				Expect(proto.Unmarshal(after, decoded)).To(Succeed())
+				expected := proto.Clone(changed).(*gen.MetaData)
+				if historical {
+					expected.RecordTypes[0], expected.RecordTypes[1] = expected.RecordTypes[1], expected.RecordTypes[0]
+				}
+				Expect(proto.Equal(decoded, expected)).To(BeTrue(), "%s loses no other field historical=%t", mutation.name, historical)
+			}
+		}
+	})
+
+	It("normalizes only declared template, anonymous-type and macro-alias randomness without erasing alias identity", func() {
+		build := func(template, anonA, anonB, alias string, reverse bool) *gen.MetaData {
+			md := wsjDigestControlMetadata()
+			md.Records.Name = proto.String(template + ".proto")
+			owner := md.Records.MessageType[0]
+			owner.Field = append(owner.Field,
+				&descriptorpb.FieldDescriptorProto{Name: proto.String("detail"), Number: proto.Int32(2), Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String("." + anonA)},
+				&descriptorpb.FieldDescriptorProto{Name: proto.String("other"), Number: proto.Int32(3), Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String("." + anonB)})
+			anonymous := []*descriptorpb.DescriptorProto{{Name: proto.String(anonA)}, {Name: proto.String(anonB)}}
+			if reverse {
+				anonymous[0], anonymous[1] = anonymous[1], anonymous[0]
+			}
+			md.Records.MessageType = append(anonymous, md.Records.MessageType...)
+			value := func() *gen.PValue {
+				return &gen.PValue{SpecificValue: &gen.PValue_QuantifiedObjectValue{QuantifiedObjectValue: &gen.PQuantifiedObjectValue{Alias: proto.String(alias)}}}
+			}
+			md.UserDefinedFunctions = []*gen.PUserDefinedFunction{{SpecificFunction: &gen.PUserDefinedFunction_UserDefinedMacroFunction{
+				UserDefinedMacroFunction: &gen.PUserDefinedMacroFunction{FunctionName: proto.String("F"), Arguments: []*gen.PValue{value()}, Body: value()},
+			}}}
+			// Exercise the serialized cUUID alias projection independently of the
+			// typed macro-parameter renaming above, including repeated identity.
+			md.Views = []*gen.PView{{Name: proto.String("V"), Definition: proto.String("SELECT " + alias + ".id FROM T2 AS " + alias)}}
+			return md
+		}
+		const nameA, nameB = "WSJ001_12345678", "WSJ001_87654321"
+		first := build(nameA, "__type__aaa", "__type__bbb", "c12345678_1234_1234_1234_123456789abc", false)
+		second := build(nameB, "__type__yyy", "__type__zzz", "c87654321_4321_4321_4321_cba987654321", true)
+		original := proto.Clone(first)
+		Expect(proto.Equal(first, second)).To(BeFalse())
+		for _, historical := range []bool{false, true} {
+			Expect(wsjDigestProjection(first, nameA, historical)).To(Equal(wsjDigestProjection(second, nameB, historical)))
+		}
+		Expect(wsjJavaDigest(first, nameA)).To(Equal(wsjJavaDigest(second, nameB)))
+		Expect(proto.Equal(first, original)).To(BeTrue())
+		badAlias := proto.Clone(first).(*gen.MetaData)
+		badAlias.UserDefinedFunctions[0].GetUserDefinedMacroFunction().Body.GetQuantifiedObjectValue().Alias = proto.String("different-parameter")
+		badViewAlias := proto.Clone(first).(*gen.MetaData)
+		badViewAlias.Views[0].Definition = proto.String(strings.Replace(first.Views[0].GetDefinition(),
+			"c12345678_1234_1234_1234_123456789abc.id", "c00000000_0000_0000_0000_000000000000.id", 1))
+		semanticName := proto.Clone(first).(*gen.MetaData)
+		semanticName.UserDefinedFunctions[0].GetUserDefinedMacroFunction().FunctionName = proto.String("G")
+		for _, changed := range []*gen.MetaData{badAlias, badViewAlias, semanticName} {
+			Expect(proto.Equal(first, changed)).To(BeFalse())
+			for _, historical := range []bool{false, true} {
+				Expect(wsjDigestProjection(changed, nameA, historical)).NotTo(Equal(wsjDigestProjection(first, nameA, historical)))
+			}
+		}
+	})
+})
 
 func wsjTrim(s string) string {
 	s = strings.Join(strings.Fields(s), " ")
@@ -747,11 +993,12 @@ var wsjUnsplittable = map[string]bool{
 
 // wsjRun is one template body driven through both engines.
 type wsjRun struct {
-	id      string
-	class   string
-	javaPin string
-	goPin   string // Go's outcome: "OK <digest of its canonical MetaData>" or "ERROR <code> <digest of its message>"
-	lines   []string
+	id            string
+	class         string
+	javaPin       string
+	javaLegacyPin string
+	goPin         string // Go's outcome: "OK <digest of its canonical MetaData>" or "ERROR <code> <digest of its message>"
+	lines         []string
 }
 
 // wsjShortDigest is a short content digest of a (scrubbed) text, for pinning
@@ -1019,13 +1266,77 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 		Expect(corpus.Census.VariantDuplicates).To(Equal(0), "a versioned template entered the corpus: its variants repeat index statements")
 		Expect(corpus.Census.HarvestedStatements).To(Equal(corpus.Census.InTemplateBodies))
 		javaPins := loadWSJJavaPins()
+		classPins := loadWSJPinFile("wsj_go_classes.json")
+		Expect(corpus.Source.Commit).To(Equal("fdacd162a9c8acfadc49082b89185c823ab8ae4a"))
+		outputDir := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
+		if outputDir == "" {
+			_, reporter := GinkgoConfiguration()
+			for _, report := range []string{reporter.JSONReport, reporter.GoJSONReport, reporter.JUnitReport, reporter.TeamcityReport} {
+				if report != "" {
+					outputDir = filepath.Dir(report)
+					break
+				}
+			}
+			if outputDir == "" {
+				outputDir = os.Getenv("TEST_TMPDIR")
+			}
+		}
+		if outputDir != "" {
+			Expect(os.MkdirAll(outputDir, 0o755)).To(Succeed())
+		}
+		// CreateTemp never overwrites a repository input, including outside Bazel.
+		witnessFile, err := os.CreateTemp(outputDir, "wsj-metadata-witness-*.jsonl")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { Expect(witnessFile.Close()).To(Succeed()) })
+		fmt.Fprintf(GinkgoWriter, "WSJ-WITNESS %s\n", witnessFile.Name())
+		writeWitness := func(v any) {
+			Expect(json.NewEncoder(witnessFile).Encode(v)).To(Succeed())
+			Expect(witnessFile.Sync()).To(Succeed())
+		}
+		inputs := map[string]any{}
+		runfilesDir, err := runfiles.New()
+		Expect(err).NotTo(HaveOccurred())
+		for _, name := range []string{"java_index_templates.json", "wsj_java_pins.json", "wsj_go_classes.json"} {
+			path, pathErr := runfilesDir.Rlocation("_main/conformance/testdata/rfc257/" + name)
+			Expect(pathErr).NotTo(HaveOccurred())
+			raw, readErr := os.ReadFile(path)
+			Expect(readErr).NotTo(HaveOccurred())
+			sum := sha256.Sum256(raw)
+			inputs[name] = map[string]any{"raw_base64": raw, "sha256": fmt.Sprintf("%x", sum)}
+		}
+		writeWitness(map[string]any{
+			"kind": "header", "format": "wsj-metadata-witness-v1", "started_utc": time.Now().UTC(),
+			"reference_source": corpus.Source, "test_target": os.Getenv("TEST_TARGET"),
+			"parallel_process": GinkgoParallelProcess(), "cluster_file": clusterFile, "inputs": inputs,
+			"java_operation":         "createSchemaTemplatePersistentJava/read catalog META_DATA/dropSchemaTemplatePersistentJava",
+			"go_operation":           "BuildSchemaTemplateFromDDLNamed/Underlying.ToProto/deterministic marshal",
+			"normalizations":         []string{"macro parameter aliases numbered per macro", "anonymous descriptors renamed by owner.field; only consecutive anonymous runs sorted", "exact template name replaced by same-length T bytes", "cUUID aliases replaced by same-length numbered bytes"},
+			"legacy_only_difference": "stable sort of the cloned record_types by name",
+			"error_normalizations":   []string{"exact template name replaced by <T>", "qUUID aliases replaced by <alias>", "Go outcome hashes the full scrubbed message before display trimming"},
+		})
 
 		seq := 0
-		goBuiltTwice := 0
+		goBuiltTwice, javaBuiltTwice, completeWitnesses := 0, 0, 0
 		run := func(id, body string) wsjRun {
 			seq++
 			r := wsjRun{id: id}
 			templateName := fmt.Sprintf("WSJ%03d_%s", seq, uuid.New().String()[:8])
+			bodySum := sha256.Sum256([]byte(body))
+			w := wsjRunWitness{
+				Kind: "run", ID: id, Sequence: seq, TemplateName: templateName,
+				Body: body, BodySHA256: fmt.Sprintf("%x", bodySum), PinnedJava: javaPins[id], PinnedGoClass: classPins[id],
+			}
+			// A failing per-run assertion still leaves its unmodified payloads on disk.
+			defer func() {
+				w.Class, w.JavaOutcome, w.GoOutcome = r.class, r.javaPin, r.goPin
+				w.LegacyJavaOutcome = r.javaLegacyPin
+				w.LegacyMatchesPin = r.javaLegacyPin != "" && r.javaLegacyPin == javaPins[id]
+				w.Complete = r.class != "" && r.javaPin != "" && r.goPin != "" && len(w.JavaBuilds) == 2 && len(w.GoBuilds) > 0
+				if w.Complete {
+					completeWitnesses++
+				}
+				writeWitness(w)
+			}()
 			// Both engines echo the template name into some messages, and the
 			// target echoes a per-plan quantifier alias ("q" + a UUID with
 			// underscores) into some rejections; both are per-run random, so they
@@ -1033,26 +1344,74 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 			scrub := func(msg string) string {
 				return wsjQuantifierAliasRE.ReplaceAllString(strings.ReplaceAll(msg, templateName, "<T>"), "<alias>")
 			}
-			var created struct {
-				Created bool `json:"created"`
+			buildJava := func(build int) (*gen.MetaData, error) {
+				b := wsjBuildWitness{Build: build}
+				defer func() { w.JavaBuilds = append(w.JavaBuilds, b) }()
+				var created struct {
+					Created bool `json:"created"`
+				}
+				buildErr := java.InvokeAs(ctx, "createSchemaTemplatePersistentJava", map[string]any{
+					"clusterFile": clusterFile, "templateName": templateName, "schemaTemplateBody": body,
+				}, &created)
+				b.Created = created.Created
+				if buildErr != nil {
+					b.Error = buildErr.Error()
+					var je *JavaError
+					if errors.As(buildErr, &je) {
+						b.SQLState, b.ErrorClass = je.SQLState, je.ExceptionClass
+						b.ErrorFullClass, b.ErrorMessage = je.ExceptionFullClass, je.Message
+						b.Outcome = fmt.Sprintf("ERROR %s %s", je.SQLState, je.ExceptionClass)
+					} else {
+						b.Outcome = "ERROR " + wsjTrim(scrub(buildErr.Error()))
+					}
+					return nil, buildErr
+				}
+				Expect(created.Created).To(BeTrue())
+				raw := loadStoredJavaTemplateBytes(ctx, db, templateName)
+				payload := wsjCaptureMetadata(raw, templateName)
+				b.Metadata = &payload
+				md := &gen.MetaData{}
+				Expect(proto.Unmarshal(raw, md)).To(Succeed())
+				b.Outcome = fmt.Sprintf("OK %d %s", len(md.GetIndexes()), payload.Digest)
+				var dropped struct {
+					Dropped bool `json:"dropped"`
+				}
+				dropErr := java.InvokeAs(ctx, "dropSchemaTemplatePersistentJava", map[string]any{
+					"clusterFile": clusterFile, "templateName": templateName,
+				}, &dropped)
+				b.Dropped = dropped.Dropped
+				Expect(dropErr).NotTo(HaveOccurred())
+				Expect(dropped.Dropped).To(BeTrue())
+				return md, nil
 			}
-			jerr := java.InvokeAs(ctx, "createSchemaTemplatePersistentJava", map[string]any{
-				"clusterFile":        clusterFile,
-				"templateName":       templateName,
-				"schemaTemplateBody": body,
-			}, &created)
+			javaMD, jerr := buildJava(1)
+			_, secondJavaErr := buildJava(2)
+			Expect(w.JavaBuilds[1].Outcome).To(Equal(w.JavaBuilds[0].Outcome), "two independent Java builds of %s", id)
+			Expect(secondJavaErr == nil).To(Equal(jerr == nil))
+			if jerr == nil {
+				Expect(w.JavaBuilds[1].Metadata.Projection).To(Equal(w.JavaBuilds[0].Metadata.Projection),
+					"two Java catalog payloads of %s differ beyond declared random-name normalization", id)
+				javaBuiltTwice++
+				r.javaLegacyPin = fmt.Sprintf("OK %d %s", len(javaMD.GetIndexes()), w.JavaBuilds[0].Metadata.LegacyDigest)
+			} else {
+				r.javaLegacyPin = w.JavaBuilds[0].Outcome
+			}
 
 			goTmpl, goErr := embedded.BuildSchemaTemplateFromDDLNamed(body, templateName)
 			goSide := "OK"
 			if goErr != nil {
+				b := wsjBuildWitness{Build: 1, Error: goErr.Error(), ErrorClass: fmt.Sprintf("%T", goErr), ErrorMessage: goErr.Error()}
 				var ae *api.Error
 				if errors.As(goErr, &ae) {
 					goSide = fmt.Sprintf("ERROR %s %q", string(ae.Code), wsjTrim(scrub(ae.Message)))
 					r.goPin = fmt.Sprintf("ERROR %s %s", string(ae.Code), wsjShortDigest(scrub(ae.Message)))
+					b.SQLState, b.ErrorMessage = string(ae.Code), ae.Message
 				} else {
 					goSide = fmt.Sprintf("ERROR %q", wsjTrim(scrub(goErr.Error())))
 					r.goPin = "ERROR " + wsjShortDigest(scrub(goErr.Error()))
 				}
+				b.Outcome = r.goPin
+				w.GoBuilds = append(w.GoBuilds, b)
 			} else {
 				// Go's own outcome is pinned beside its class: the digest of the WHOLE
 				// canonical MetaData Go stores, so a change inside a run whose class
@@ -1063,10 +1422,18 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 				// parameter aliases aside (random in both engines).
 				first, firstErr := goTmpl.Underlying().ToProto()
 				Expect(firstErr).NotTo(HaveOccurred())
+				captureGo := func(build int, md *gen.MetaData) {
+					raw, marshalErr := proto.MarshalOptions{Deterministic: true}.Marshal(md)
+					Expect(marshalErr).NotTo(HaveOccurred())
+					payload := wsjCaptureMetadata(raw, templateName)
+					w.GoBuilds = append(w.GoBuilds, wsjBuildWitness{Build: build, Outcome: "OK " + payload.Digest, Metadata: &payload})
+				}
+				captureGo(1, first)
 				again, againErr := embedded.BuildSchemaTemplateFromDDLNamed(body, templateName)
 				Expect(againErr).NotTo(HaveOccurred(), "a second Go build of %s", id)
 				second, secondErr := again.Underlying().ToProto()
 				Expect(secondErr).NotTo(HaveOccurred())
+				captureGo(2, second)
 				first, second = wsjCanonicalAliases(first), wsjCanonicalAliases(second)
 				fb, fbErr := proto.MarshalOptions{Deterministic: true}.Marshal(first)
 				Expect(fbErr).NotTo(HaveOccurred())
@@ -1074,6 +1441,7 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 				Expect(sbErr).NotTo(HaveOccurred())
 				Expect(bytes.Equal(fb, sb)).To(BeTrue(), "two Go builds of %s stored different bytes", id)
 				r.goPin = "OK " + wsjJavaDigest(first, templateName)
+				Expect(r.goPin).To(Equal(w.GoBuilds[0].Outcome), "Go's pin must come from its captured raw payload, not Java equality")
 				goBuiltTwice++
 			}
 
@@ -1093,16 +1461,6 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 				}
 				return r
 			}
-			Expect(created.Created).To(BeTrue())
-
-			javaMD := loadStoredJavaTemplateMetaData(ctx, db, templateName)
-			var dropped struct {
-				Dropped bool `json:"dropped"`
-			}
-			_ = java.InvokeAs(ctx, "dropSchemaTemplatePersistentJava", map[string]any{
-				"clusterFile":  clusterFile,
-				"templateName": templateName,
-			}, &dropped)
 			r.javaPin = fmt.Sprintf("OK %d %s", len(javaMD.GetIndexes()), wsjJavaDigest(javaMD, templateName))
 			// Java's stored roots for every hand-written shape it accepts,
 			// whatever Go does: the port's unit tests pin these verbatim.
@@ -1199,12 +1557,14 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 		}
 
 		javaOutcome := map[string]string{}
+		javaLegacyOutcome := map[string]string{}
 		goClass := map[string]string{}
 		tally := map[string]int{}
 		var lines []string
 		outcomes := 0
 		record := func(r wsjRun) {
 			javaOutcome[r.id] = r.javaPin
+			javaLegacyOutcome[r.id] = r.javaLegacyPin
 			Expect(r.goPin).NotTo(BeEmpty(), "run %s has no Go outcome", r.id)
 			goClass[r.id] = r.class + " " + r.goPin
 			tally[r.class]++
@@ -1243,6 +1603,45 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 		for _, id := range sortedStringKeys(javaOutcome) {
 			fmt.Fprintf(GinkgoWriter, "WSJ-JAVA %q: %q,\n", id, javaOutcome[id])
 		}
+		// Emit BOTH actual engines and their ratchet inputs before the unchanged
+		// Java pin gate can abort this spec. Capturing is not accepting new pins.
+		fmt.Fprintf(GinkgoWriter, "WSJ-GO-BUILT-TWICE %d\n", goBuiltTwice)
+		fmt.Fprintf(GinkgoWriter, "WSJ-JAVA-BUILT-TWICE %d\n", javaBuiltTwice)
+		for _, id := range sortedStringKeys(goClass) {
+			fmt.Fprintf(GinkgoWriter, "WSJ-CLASS %q: %q,\n", id, goClass[id])
+		}
+		var moved, javaMoved, legacyMoved []string
+		javaAccepted, javaRejected := 0, 0
+		for _, id := range sortedStringKeys(goClass) {
+			if goClass[id] != classPins[id] {
+				moved = append(moved, fmt.Sprintf("%s: %s -> %s", id, classPins[id], goClass[id]))
+			}
+			if javaOutcome[id] != javaPins[id] {
+				javaMoved = append(javaMoved, id)
+			}
+			if javaLegacyOutcome[id] != javaPins[id] {
+				legacyMoved = append(legacyMoved, id)
+			}
+			if strings.HasPrefix(javaOutcome[id], "OK ") {
+				javaAccepted++
+			} else {
+				javaRejected++
+			}
+		}
+		writeWitness(map[string]any{
+			"kind": "summary", "finished_utc": time.Now().UTC(), "runs": outcomes, "complete_witnesses": completeWitnesses,
+			"java_accepted": javaAccepted, "java_rejected": javaRejected,
+			"java_built_twice": javaBuiltTwice, "go_built_twice": goBuiltTwice,
+			"java_outcomes": javaOutcome, "java_legacy_outcomes": javaLegacyOutcome, "go_classes_and_outcomes": goClass,
+			"java_moved_ids": javaMoved, "legacy_moved_ids": legacyMoved, "go_moved": moved,
+			"class_tally": tally, "unsplittable": sortedBoolKeys(unsplittable),
+		})
+		Expect(completeWitnesses).To(Equal(outcomes), "every outcome must have a durable raw witness")
+		Expect(outcomes).To(Equal(523), "the complete migration witness population")
+		Expect(javaAccepted).To(Equal(478))
+		Expect(javaRejected).To(Equal(45))
+		Expect(javaBuiltTwice).To(Equal(javaAccepted), "every accepted Java body was independently rebuilt")
+		Expect(javaLegacyOutcome).To(Equal(javaPins), "the historical projection on the SAME payload must reproduce every old Java pin")
 		Expect(sortedBoolKeys(unsplittable)).To(Equal(sortedBoolKeys(wsjUnsplittable)),
 			"the templates Go's grammar cannot split moved: a newly parseable template needs pins for its derived runs")
 		// Every run is pinned, and every pin is run: a pin without a run is a
@@ -1258,20 +1657,9 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 		// here even where no unit golden covers it, a change inside a class that
 		// does not move reddens too, and a run that becomes equal is a reviewed pin
 		// update. Every Go-accepted body was built twice and stored equal bytes.
-		fmt.Fprintf(GinkgoWriter, "WSJ-GO-BUILT-TWICE %d\n", goBuiltTwice)
 		Expect(goBuiltTwice).To(BeNumerically(">", 300), "the double-build determinism check ran over the accepted runs")
-		for _, id := range sortedStringKeys(goClass) {
-			fmt.Fprintf(GinkgoWriter, "WSJ-CLASS %q: %q,\n", id, goClass[id])
-		}
-		classPins := loadWSJPinFile("wsj_go_classes.json")
 		Expect(sortedStringKeys(goClass)).To(Equal(sortedStringKeys(classPins)),
 			"the set of runs must equal the set of pinned classes")
-		var moved []string
-		for _, id := range sortedStringKeys(goClass) {
-			if goClass[id] != classPins[id] {
-				moved = append(moved, fmt.Sprintf("%s: %s -> %s", id, classPins[id], goClass[id]))
-			}
-		}
 		Expect(moved).To(BeEmpty(), "run classes or Go outcomes moved from their pins")
 		wsjLines := 0
 		for _, l := range lines {
