@@ -349,7 +349,7 @@ func testOtelIngestReadWave(t *testing.T, ctx context.Context, cluster, order st
 				t.Fatalf("internal replay changed: %+v", d)
 			}
 			if code == 1031 && (d.SourceRuns != 2 || d.SourceReplays != 0 || d.SourceTimeouts != 1 || d.SourceFreshRetries != 1) {
-				t.Fatalf("fresh1031 recovery changed: %+v", d)
+				t.Fatalf("fresh 1031 recovery changed: %+v", d)
 			}
 			b.db = original
 			assertOtelCommittedPostings(t, ctx, b, []Span{Generate(b.cfg, 0), Generate(b.cfg, 1)})

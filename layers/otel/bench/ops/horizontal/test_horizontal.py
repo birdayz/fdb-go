@@ -44,9 +44,8 @@ def evidence(mode="ingest", count=100000):
     return value
 
 
-# Literal FoundationDB 7.3.77 storage-role excerpts, status/125.json SHA-256
-# 9217e508d014db1266a8f16659842d1f6eeb3ace6e62001cfe950df709c5166a.
-# Deliberately no shards field: these receipts did not report one.
+# Literal FDB 7.3.77 storage roles; status/125.json SHA-256:
+# 9217e508d014db1266a8f16659842d1f6eeb3ace6e62001cfe950df709c5166a (no shards field).
 FDB_7377_STORAGE_ROLE_EXCERPTS = {
     "node1": {"role": "storage", "id": "39b89ae0e65db0ec",
               "input_bytes": {"counter": 508945128, "hz": 101654000, "roughness": 244084000},

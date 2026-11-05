@@ -502,9 +502,8 @@ else:
 while True:
     time.sleep(0.05)
 """)
-        # Arithmetic/expiry is tested above with a controlled clock. Here leave
-        # startup ample room, then signal only timeout after both handlers exist:
-        # timeout itself must forward TERM and escalate to KILL for descendants.
+        # Allow startup time so both handlers exist before testing TERM forwarding
+        # and KILL escalation; controlled-clock tests above cover arithmetic and expiry.
         proc = subprocess.Popen(["/bin/bash", str(HERE / "deadline.sh"), str(int(time.time()) + 180),
                                  sys.executable, str(worker), str(record), str(ready)], env=self.env,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)

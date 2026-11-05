@@ -16,9 +16,8 @@ import (
 	"fdb.dev/pkg/recordlayer/keyspace"
 )
 
-// A KeySpacePath's tuple and subspace are Java's bytes, directory-layer nodes
-// included, and the global directory layer maps a name to the same long
-// whichever engine created the mapping (KeySpaceSteps, keyspace_conformance.java).
+// KeySpaceSteps checks Java-compatible path bytes and global directory mappings
+// regardless of which engine created them.
 var _ = Describe("KeySpace path and directory layer conformance", func() {
 	ctx := context.Background()
 

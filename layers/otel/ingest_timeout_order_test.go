@@ -213,7 +213,7 @@ func testOtelIngestTimeoutOrdering(t *testing.T, ctx context.Context, cluster, o
 				}
 				transactions[state.transaction] = true
 				if reads < 1 || first == "" || firstArmed != 1500 || len(timeouts) == 0 || timeouts[0] != 1500 {
-					t.Fatalf("%s first read %s was not armed1500: reads=%d armed=%d options=%v", role, first, reads, firstArmed, timeouts)
+					t.Fatalf("%s first read %s was not armed 1500: reads=%d armed=%d options=%v", role, first, reads, firstArmed, timeouts)
 				}
 				if role == "initialization" || role == "source" && !state.readTimeout {
 					foundLegacyLimit := false

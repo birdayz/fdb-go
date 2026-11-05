@@ -209,13 +209,8 @@ func (c *textCursor) limitContinuation() RecordCursorContinuation {
 	return &StartContinuation{}
 }
 
-// seekTo repositions the cursor so that its next entry is the first one whose
-// key within the token's map (the entry key after the grouping columns and the
-// token) is at or past target in scan order, and returns the continuation the
-// cursor holds afterwards: that of the last entry passed over, exactly what
-// streaming to the target would have left (BunchedMapMultiIterator.seekTo).
-// Entries passed over are not returned, so they are not charged to the
-// scanned-records limit; the key-values the seek reads are charged as bytes.
+// seekTo returns the last-skipped-entry continuation while repositioning within the token map.
+// Skipped entries do not consume record limits; physically read key-values consume byte limits.
 //
 // Precondition: the cursor's last result had a value whose map key sorts
 // before target in scan order.
@@ -230,9 +225,7 @@ func (c *textCursor) seekTo(ctx context.Context, target tuple.Tuple) (RecordCurs
 			return nil, err
 		}
 		if c.underlying.GetContinuation() == nil {
-			// Nothing at or past the target: the scan is exhausted, which the next
-			// OnNext must report before any limit check could replace it with a
-			// position-less limit stop.
+			// Report exhaustion before checking limits so no position-less limit stop hides the end.
 			result := NewResultNoNext[*IndexEntry](SourceExhausted, &EndContinuation{})
 			c.lastResult = &result
 		}

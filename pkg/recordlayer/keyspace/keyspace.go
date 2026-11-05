@@ -527,9 +527,8 @@ func (p *Path) ToTuple() tuple.Tuple {
 	return t
 }
 
-// ToSubspace is the subspace whose prefix is the packed path tuple: Java's
-// KeySpacePath.toSubspace, new Subspace(toTuple()). A path's subspace holds
-// every subspace below it.
+// ToSubspace packs the path tuple as Java KeySpacePath.toSubspace does;
+// the resulting prefix contains every descendant subspace.
 func (p *Path) ToSubspace() subspace.Subspace {
 	return pathSubspace{Subspace: subspace.Sub(p.ToTuple()...), legacy: p.LegacyNestedSubspace()}
 }

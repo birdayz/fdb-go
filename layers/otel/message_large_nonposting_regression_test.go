@@ -80,7 +80,7 @@ func TestLargeNonpostingMessagesRetainRawAndPositions(t *testing.T) {
 					budget := queryBudget{maxCandidates: e.cfg.MaxCandidates, maxBytes: e.cfg.MaxBytes}
 					ids, err := textScanIDs(ctx, store, recordlayer.NewTextScan(e.backend.md.GetIndex(messageTextIndexName), group, cmp, nil), 0, &budget)
 					if err == nil && len(ids) != wantPhrase {
-						t.Errorf("ALL_WITHIN distance1=%v want %d", ids, wantPhrase)
+						t.Errorf("ALL_WITHIN distance 1=%v want %d", ids, wantPhrase)
 					}
 					return err
 				}); err != nil {

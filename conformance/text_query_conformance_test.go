@@ -249,10 +249,8 @@ func TestTextQueryFixtureRangesAreDisjoint(t *testing.T) {
 	}
 }
 
-// textQueryCorpusName is customer i's name. "common" is in every record,
-// "frequent" in every other, "rare" in three; the alpha/beta/gamma phrases and
-// the pre- words recur with periods 7 and 5, so phrase matches and prefix
-// tokens fall on bunch boundaries as well as inside bunches.
+// textQueryCorpusName varies token and phrase periods to place matches
+// both at bunch boundaries and inside bunches.
 func textQueryCorpusName(i int) string {
 	name := "common"
 	if i%2 == 0 {
@@ -280,10 +278,8 @@ func textQueryCorpusName(i int) string {
 	return name
 }
 
-// textSuffixOracle is independent of the scanner and tokenizer: these are the
-// literal corpus predicates and token positions used by the ASCII seed above.
-// A nil owner map asks for logical bounds; a map asks for Java's physical
-// signpost bounds, including every decoded entry of the selected bunches.
+// textSuffixOracle uses literal corpus predicates, independently of scanning/tokenization.
+// A nil owner map selects logical bounds; otherwise Java's physical signpost bounds apply.
 func textSuffixOracle(s TextQuerySpec, owners map[string]map[int64]int64) []string {
 	tokens := strings.Fields(*s.Text)
 	type row struct {
@@ -973,10 +969,7 @@ var _ = Describe("TEXT query execution conformance", Ordered, ContinueOnFailure,
 		kvs := timer.GetCount(recordlayer.CountTextScanKeyValues)
 		Expect(timer.GetCount(recordlayer.CountTextScanBytes)).To(Equal(state.BytesScanned()))
 		Expect(timer.GetCount(recordlayer.CountTextScanSeeks)).To(BeNumerically(">", 0))
-		// The rare, common and frequent maps hold the same records as in
-		// pkg/recordlayer/text_scan_seek_test.go's 1200-record corpus, so the
-		// seeking intersection reads the same 10 bunches derived there (Java's
-		// streaming one reads 77).
+		// This matches text_scan_seek_test.go's 1200-record corpus to verify seek read costs.
 		Expect(kvs).To(Equal(int64(10)))
 	})
 

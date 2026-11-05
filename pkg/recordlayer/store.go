@@ -708,12 +708,8 @@ func (store *FDBRecordStore) SaveRecordWithVersion(
 	return store.saveRecordInternal(record, existenceCheck, version, behavior, false, nil, nil, nil)
 }
 
-// SaveRecordsPipelined saves records in order as SaveRecordWithOptions would
-// one at a time, but sends the existing-record reads of each INSERT pipeline
-// window together. The store's PipelineSizer selects the depth (Java defaults
-// INSERT to one). The first failing record stops the save
-// and is the one reported; the reads already sent for the rest of its window
-// stay in the transaction, as Java's do.
+// SaveRecordsPipelined saves in order with windowed old-record reads; INSERT defaults to depth one.
+// The first failure stops saves, but already-issued window reads remain in the transaction, as in Java.
 func (store *FDBRecordStore) SaveRecordsPipelined(
 	records []proto.Message,
 	existenceCheck RecordExistenceCheck,
@@ -847,9 +843,8 @@ func (store *FDBRecordStore) saveTargetFor(record proto.Message, version *FDBRec
 	}, nil
 }
 
-// saveRecordInternal reuses a preloaded target or prepares one with the requested version behavior.
-// overrideLock bypasses the update lock; typed supplies a typed store's serializer.
-// written, when not nil, collects the indexes whose own data the save updated.
+// saveRecordInternal reuses/prepares a target; overrideLock bypasses the update lock and typed supplies serialization.
+// written optionally collects indexes whose own data was updated.
 func (store *FDBRecordStore) saveRecordInternal(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,
@@ -1293,11 +1288,8 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 // updateSecondaryIndexes updates all relevant indexes for a record change.
 // oldRecord is nil for inserts, newRecord is nil for deletes.
 //
-// When old and new records have the same type (or one is nil), indexes are
-// updated straightforwardly. When types differ (cross-type overwrite), indexes
-// are partitioned into three sets: old-only (delete entries), new-only (insert
-// entries), and common (update entries). Matches Java's FDBRecordStore.updateSecondaryIndexes().
-// written, when not nil, collects each index whose own data was updated.
+// Cross-type overwrites partition indexes into old-only deletes, new-only inserts and common updates.
+// written optionally collects indexes whose own data changed (Java FDBRecordStore.updateSecondaryIndexes).
 func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBStoredRecord[proto.Message], written indexWriteSet) error {
 	if err := store.ensureStoreStateLoadedErr(); err != nil {
 		return fmt.Errorf("load store state: %w", err)
@@ -1446,11 +1438,8 @@ func partitionIndexes(oldIndexes, newIndexes []*Index) (common, oldOnly, newOnly
 	return
 }
 
-// updateOneIndex routes to UpdateWhileWriteOnly or Update based on index state.
-// Matches Java's FDBRecordStore.updateIndexes() per-index dispatch.
-// updateOneIndex updates a single index. Caller must hold stateMu (read or write).
-// written, when not nil, collects the index when its maintainer ran: a queued
-// or disabled index's own data is not written.
+// updateOneIndex dispatches maintenance by state; caller must hold stateMu.
+// written records maintainers that ran, excluding queued or disabled indexes.
 func (store *FDBRecordStore) updateOneIndex(index *Index, oldRecord, newRecord *FDBStoredRecord[proto.Message], written indexWriteSet) error {
 	maintainer, err := store.getIndexMaintainer(index)
 	if err != nil {

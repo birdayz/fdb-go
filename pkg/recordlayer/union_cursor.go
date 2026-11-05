@@ -18,10 +18,8 @@ import (
 // Java's Function<byte[], RecordCursor<T>> handed to the merge cursors.
 type CursorFunction[T any] func(continuation []byte) RecordCursor[T]
 
-// mergeStateCursor is MergeCursorState.from / KeyedMergeCursorState.from
-// (MergeCursorState.java:122-130, KeyedMergeCursorState.java:69-78): an END
-// child is an empty cursor that keeps END as its continuation; any other child
-// is built from its continuation's bytes.
+// mergeStateCursor preserves END with an empty child; other children resume from their bytes
+// (Java MergeCursorState.from / KeyedMergeCursorState.from).
 func mergeStateCursor[T any](fn CursorFunction[T], cont RecordCursorContinuation) (RecordCursor[T], RecordCursorContinuation, error) {
 	if cont.IsEnd() {
 		return Empty[T](), &EndContinuation{}, nil
@@ -33,9 +31,8 @@ func mergeStateCursor[T any](fn CursorFunction[T], cont RecordCursorContinuation
 	return fn(b), cont, nil
 }
 
-// strongestNoNextReason is MergeCursor.getStrongestNoNextReason
-// (MergeCursor.java:174-194): an out-of-band reason wins, and the merge is
-// exhausted only when every stopped child is.
+// strongestNoNextReason prefers out-of-band stops; union exhausts only when all stopped children do
+// (MergeCursor.java:174-194).
 func strongestNoNextReason[T any](children []*mergeChildState[T]) NoNextReason {
 	found := false
 	reason := SourceExhausted
@@ -52,24 +49,37 @@ func strongestNoNextReason[T any](children []*mergeChildState[T]) NoNextReason {
 	return reason
 }
 
-// buildUnionContinuation is UnionCursorContinuation.toBytes
-// (UnionCursorContinuation.java:60-111, MergeCursorContinuation.java:118-126):
-// END when every child is at END, otherwise each child's continuation with
-// END children marked exhausted and START children left empty.
+// buildUnionContinuation snapshots the children's consumed positions.
 func buildUnionContinuation[T any](children []*mergeChildState[T]) (RecordCursorContinuation, error) {
+	states := make([]RecordCursorContinuation, len(children))
+	for i, child := range children {
+		states[i] = child.continuation
+	}
+	data, err := EncodeUnionContinuation(states)
+	if err != nil {
+		return nil, err
+	}
+	if data == nil {
+		return &EndContinuation{}, nil
+	}
+	return NewBytesContinuation(data), nil
+}
+
+// EncodeUnionContinuation shares Java's START/MID/END framing across union cursors.
+// All children at END encode as nil (UnionCursorContinuation.toBytes).
+func EncodeUnionContinuation(children []RecordCursorContinuation) ([]byte, error) {
 	allEnd := true
 	for _, child := range children {
-		if !child.continuation.IsEnd() {
+		if !child.IsEnd() {
 			allEnd = false
 			break
 		}
 	}
 	if allEnd {
-		return &EndContinuation{}, nil
+		return nil, nil
 	}
 	cont := &gen.UnionContinuation{}
-	for i, child := range children {
-		cc := child.continuation
+	for i, cc := range children {
 		var b []byte
 		if !cc.IsEnd() {
 			var err error
@@ -106,13 +116,12 @@ func buildUnionContinuation[T any](children []*mergeChildState[T]) (RecordCursor
 	if err != nil {
 		return nil, fmt.Errorf("union continuation marshal: %w", err)
 	}
-	return NewBytesContinuation(data), nil
+	return data, nil
 }
 
-// decodeUnionContinuation is UnionCursorContinuation.from(byte[], int)
-// (UnionCursorContinuation.java:120-168): nil means every child starts, and
-// a child count other than n is refused.
-func decodeUnionContinuation(data []byte, n int) ([]RecordCursorContinuation, error) {
+// DecodeUnionContinuation decodes shared Java child framing; nil starts every child.
+// Non-nil data must contain exactly n child slots (UnionCursorContinuation.from).
+func DecodeUnionContinuation(data []byte, n int) ([]RecordCursorContinuation, error) {
 	out := make([]RecordCursorContinuation, n)
 	if data == nil {
 		for i := range out {
@@ -149,11 +158,9 @@ func decodeUnionContinuation(data []byte, n int) ([]RecordCursorContinuation, er
 	return out, nil
 }
 
-// newUnionChildren builds the merge states of a union from its continuation
-// (UnionCursor.createCursorStates, UnionCursor.java:161-173;
-// UnorderedUnionCursor.createCursorStates, UnorderedUnionCursor.java:107-118).
+// newUnionChildren restores Java UnionCursor/UnorderedUnionCursor merge states via the shared codec.
 func newUnionChildren[T any](fns []CursorFunction[T], compKeyFunc ComparisonKeyFunc[T], continuation []byte) ([]*mergeChildState[T], error) {
-	conts, err := decodeUnionContinuation(continuation, len(fns))
+	conts, err := DecodeUnionContinuation(continuation, len(fns))
 	if err != nil {
 		return nil, err
 	}
@@ -263,9 +270,7 @@ func (c *unionCursor[T]) stop() (RecordCursorResult[T], error) {
 	return res, nil
 }
 
-// stopUnion is the no-next result of a union: the strongest child reason
-// (UnionCursorBase.mergeNoNextReasons, UnionCursorBase.java:82-85) with the
-// union continuation.
+// stopUnion pairs the strongest stopped-child reason with the union continuation.
 func stopUnion[T any](children []*mergeChildState[T]) (RecordCursorResult[T], error) {
 	cont, err := buildUnionContinuation(children)
 	if err != nil {
@@ -299,12 +304,8 @@ func (c *unionCursor[T]) Close() error {
 
 func (c *unionCursor[T]) IsClosed() bool { return c.closed }
 
-// unorderedUnionCursor is Java's UnorderedUnionCursor: every child's results,
-// in the order they become available. Go pulls children serially, so a child
-// is pulled only once every child before it has no value ready: this is the
-// order Java produces when every child's next result is already complete
-// (UnorderedUnionCursor.computeNextResultStates, UnorderedUnionCursor.java:
-// 68-105, with MergeCursor.whenAny, MergeCursor.java:115-136).
+// unorderedUnionCursor pulls children serially in index order, matching Java’s availability order
+// when all child results are already complete (UnorderedUnionCursor.java:68-105).
 type unorderedUnionCursor[T any] struct {
 	children   []*mergeChildState[T]
 	closed     bool

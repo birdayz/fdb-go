@@ -63,9 +63,8 @@ func TestCompareTuplesMatchesPackedOrder(t *testing.T) {
 	}
 }
 
-// Integers compare by value whatever their Go type, as Java's BigInteger
-// fallback does; incomplete versionstamps, which Pack refuses, follow every
-// complete one and order by user version (Versionstamp.compareTo).
+// Integers compare by value across Go types; incomplete versionstamps follow complete ones
+// and order by user version, matching Java.
 func TestCompareTuplesBeyondPack(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {

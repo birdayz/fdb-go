@@ -17,13 +17,8 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
-// guavaBloomFilter is the Guava BloomFilter<List<Object>> that Java's
-// ProbableIntersectionCursorState keeps per child and serializes into
-// ProbableIntersectionContinuation.CursorState.bloom_filter, so a continuation
-// minted by either engine resumes in the other. Hashing, sizing and the
-// serialized form follow Guava 33 (BloomFilter.create, writeTo, readFrom and
-// BloomFilterStrategies.MURMUR128_MITZ_64), with keys fed through
-// ProbableIntersectionCursorState.KeyFunnel.VERSION_0.
+// guavaBloomFilter preserves cross-engine probable-intersection continuations using Guava 33
+// MURMUR128_MITZ_64 framing and ProbableIntersectionCursorState.KeyFunnel.VERSION_0.
 type guavaBloomFilter struct {
 	data             []uint64
 	numHashFunctions int
@@ -78,9 +73,8 @@ func javaRound(x float64) int64 {
 	return int64(math.Floor(x + 0.5))
 }
 
-// readGuavaBloomFilter is BloomFilter.readFrom: strategy ordinal byte,
-// unsigned hash-function count byte, big-endian int word count, then the
-// big-endian words.
+// readGuavaBloomFilter reads strategy/count bytes, then a big-endian word count and words
+// (Guava BloomFilter.readFrom).
 func readGuavaBloomFilter(b []byte) (*guavaBloomFilter, error) {
 	fail := func(msg string) error {
 		return &RecordCoreError{Message: "unable to deserialize bloom filter", Cause: &RecordCoreArgumentError{Message: msg}}
@@ -180,11 +174,8 @@ func (f *guavaBloomFilter) mightContain(key tuple.Tuple) (bool, error) {
 	return all, err
 }
 
-// bloomKeyFunnel is ProbableIntersectionCursorState.KeyFunnel.VERSION_0
-// (ProbableIntersectionCursorState.java:123-157) feeding a Guava hasher, whose
-// primitives are little-endian. Integers decoded from a tuple are Java Longs;
-// a value Java holds as some other class (BigInteger, UUID, Versionstamp, a
-// nested tuple) is fed as Tuple.from(o).pack().
+// bloomKeyFunnel matches Java KeyFunnel.VERSION_0: little-endian primitives, tuple integers as Longs.
+// Other classes (BigInteger, UUID, Versionstamp, nested tuples) use Tuple.from(o).pack().
 func bloomKeyFunnel(key tuple.Tuple) ([]byte, error) {
 	var sink []byte
 	for _, o := range key {
@@ -268,9 +259,7 @@ func checkPackable(t tuple.Tuple) error {
 	return nil
 }
 
-// murmur3x64128 is Guava's Hashing.murmur3_128() (seed 0) over data; h1 and h2
-// are the hash code's first and second little-endian longs
-// (BloomFilterStrategies.lowerEight / upperEight).
+// murmur3x64128 matches Guava murmur3_128 seed 0; h1/h2 are the first/second little-endian longs.
 func murmur3x64128(data []byte) (uint64, uint64) {
 	const (
 		c1 = 0x87c37b91114253d5

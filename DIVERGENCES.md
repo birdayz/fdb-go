@@ -4198,7 +4198,8 @@ what Go writes, and in both a Java reader reads what Go writes:
   stored-record read site. A store with no serializer reads a record that Java's relational layer
   or a compressing Java application wrote, where Java's default serializer would fail it. An
   encrypted record still needs the key: a store whose serializer has no key manager fails it with
-  Java's "this serializer cannot decrypt" (`pkg/recordlayer/transformed_record_serializer.go:683`).
+  Java's "this serializer cannot decrypt" (`TransformedRecordSerializer.decrypt` in
+  `pkg/recordlayer/transformed_record_serializer.go`).
 - **The ciphers are the AES transformations Java's serializer can run.** Java initializes every
   cipher with a 16-byte `IvParameterSpec` (`TransformedRecordSerializerJCE.java:67-72`,
   `:98-106`), so only an AES mode that takes that IV works. Go implements those modes from NIST
@@ -4254,7 +4255,8 @@ what Go writes, and in both a Java reader reads what Go writes:
   string can name otherwise.
 - **Compressed bytes are Go's deflate, not the JDK's zlib.** Both write a zlib stream (Java's
   `Deflater.finish()` then `FULL_FLUSH`, `TransformedRecordSerializer.java:133-134`; Go's
-  `compress/zlib`, `transformed_record_serializer.go:444-480`). Each engine inflates the other's,
+  `compress/zlib`, `TransformedRecordSerializer.compress` in
+  `pkg/recordlayer/transformed_record_serializer.go`). Each engine inflates the other's,
   and the prefix and length header are Java's. But `compress/zlib` (over `compress/flate`) is a
   different encoder from the zlib the JDK links, so the compressed bytes differ from Java's for the
   same record and level. Each engine keeps the compression only when its own output is shorter
@@ -4267,7 +4269,8 @@ what Go writes, and in both a Java reader reads what Go writes:
   (`TransformedRecordSerializer.java:184-185`), whose key number is 0. So a sampled write under any
   other key fails ("encryption validation error: decryption failed", or a mismatch if the padding
   happens to hold). Go validates under the record's own key and accepts that write
-  (`transformed_record_serializer.go:306-326`). The stored bytes are the ones Java would have
+  (`TransformedRecordSerializer.transformRead` in
+  `pkg/recordlayer/transformed_record_serializer.go`). The stored bytes are the ones Java would have
   written, and Java reads them. `TestTransformedSerializer_WriteValidation`
   (`pkg/recordlayer/transformed_record_serializer_test.go:691`) pins Go's answer and, mutated to
   Java's key number 0, reddens with Java's error. Both validations are otherwise Java's: a
@@ -4746,6 +4749,28 @@ selection/retry gaps. Single-replica wire goldens and data-plane differentials
 remain useful but cannot measure speculative duplicate requests; the budget
 regressions use two storage-server aliases and held replies against real FDB.
 
+## Split-disabled replacement clears known old split tails
+
+For an unsplit replacement with a retained suffix (`splitLongRecords=false`,
+`omitUnsplitSuffix=false`) and no incomplete versionstamp in the primary key,
+Go clears the previous chunks when the supplied previous size information says
+`IsSplit=true`, even if `VersionedInline=false`. It then writes the new body at
+suffix 0. This intentionally avoids leaving old split chunks alongside the new
+unsplit body after splitting is disabled.
+
+Java 4.14.2.0's `SplitHelper.saveWithSplit` clears only when the key has no
+incomplete versionstamp and `splitLongRecords || previousSizeInfo == null ||
+previousSizeInfo.isVersionedInline()`. For the known, split, non-inline-versioned
+previous image above, Java skips the clear and writes suffix 0 alongside the old
+suffixes 1..n. Its `loadWithSplit` still range-loads suffix-bearing records when
+splitting is disabled, so those leftover chunks can affect subsequent reads.
+This is a persisted-key cleanup divergence, not byte parity for that transition.
+The shared suffix-0/1..n format is unchanged; ordinary split-enabled saves,
+unknown previous sizes, inline-versioned previous images and legacy bare-key
+unsplit overwrites are not the distinguishing case. There is no automatic
+historical sweep of abandoned chunks. `split_helper_test.go`'s "clears known
+unversioned split tails when splitting is disabled" regression pins Go's cleanup.
+
 ## Mutual indexing has no anyJumper (RFC-279)
 
 Java's mutual builder records an FDB error that ends a claimed range, after the
@@ -4765,6 +4790,11 @@ retries and then lessen-work, as every other build does. Peers inside one fragme
 progress by the runner's retries in both engines. Java jumps only after a range
 fails every runner attempt. No stored byte differs; the built ranges are the same
 kind of primary-key ranges.
+
+Java's `infiniteLoopProtection`, which fails a build after the same range is picked
+1000 times in a row, is not ported either. A Go claim is built until nothing in it
+is missing, and a chunk that keeps failing ends the build after the lessen-work
+retries, so no build picks one range forever.
 
 ## Brotli record compression (Go-only extension)
 
@@ -4795,11 +4825,6 @@ encoding or allocating decoded output. Decoding is bounded and rejects
 truncated streams, wrong lengths, trailing input and checksum mismatches.
 Released codec states can retain plaintext in their windows, as the existing
 zlib free lists do; reuse is bounded and does not provide memory zeroization.
-
-Java's `infiniteLoopProtection`, which fails a build after the same range is picked
-1000 times in a row, is not ported either. A Go claim is built until nothing in it
-is missing, and a chunk that keeps failing ends the build after the lessen-work
-retries, so no build picks one range forever.
 
 ## TEXT queries
 
@@ -4953,7 +4978,7 @@ metadata-disabled committed-byte deletion is implied.
 `BatchSaveOptions.CoalesceIndexWriteConflicts` adds full primary/secondary
 maintained-index write-conflict ranges without removing ordinary entry conflicts.
 It trades fewer/wider conflict encodings for additional conflicts and retries:
-a writing reader of an untouched part of that index can receive1020 where
+a writing reader of an untouched part of that index can receive 1020 where
 individual Java saves would not conflict. Defaults do not widen ranges. Persisted
 record/index bytes are unchanged. `store_batch_conflicts_test.go` pins both the
 untouched-index-reader contrast and unaffected indexes/subspaces; this option

@@ -68,6 +68,6 @@ func TestExporterBootstrapCarriesPolicyIntoFreshResolvers(t *testing.T) {
 	inject.mu.Lock()
 	defer inject.mu.Unlock()
 	if inject.transactions < 4 || inject.minimum != 13 {
-		t.Fatalf("bootstrap transactions=%d,minimum executions=%d; owner, fresh resolver children and live initialization must each absorb12 retryable failures", inject.transactions, inject.minimum)
+		t.Fatalf("bootstrap transactions=%d, minimum executions=%d; owner, fresh resolver children and live initialization must each absorb 12 retryable failures", inject.transactions, inject.minimum)
 	}
 }

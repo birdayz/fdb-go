@@ -24,10 +24,8 @@ func normalizeMessageRole(s string) string { return strings.ToLower(strings.Trim
 // messageStructuralKey names map fields whose values are metadata, not text.
 func messageStructuralKey(k string) bool { return k == "role" || k == "type" }
 
-// extractMessageText returns a message's normalized top-level role and its
-// searchable text: every string value except those under "role" and "type"
-// keys, in document order, joined by newlines. Both element encodings of the
-// same message yield the same result.
+// extractMessageText normalizes the top-level role and joins searchable strings in document order.
+// It excludes role/type values and yields the same result for either element encoding.
 func extractMessageText(encoding string, raw []byte) (role string, text string, err error) {
 	const op = "message text"
 	switch encoding {
@@ -180,9 +178,7 @@ func (w *jsonTextWalker) value(tok json.Token, depth int, emit, top bool) (strin
 	return role, found, nil
 }
 
-// messageTokenizer is the Record Layer default tokenizer except that a token
-// longer than maxIndexedTokenBytes becomes "", which the TEXT index skips
-// while keeping its position, as the default tokenizers treat stop words.
+// messageTokenizer skips overlong tokens as empty stop words, preserving their positions.
 type messageTokenizer struct{}
 
 func (messageTokenizer) Name() string                            { return messageTokenizerName }
@@ -242,21 +238,16 @@ func (c cappedTokens) Next() string {
 
 var messageTokenizerRegistrationError = recordlayer.GlobalTextTokenizerRegistry().Register(messageTokenizer{})
 
-// messageSegment is one indexed slice of a message's text: whole tokens
-// offset..offset+n-1 of the message. Postings is its number of distinct
-// indexed tokens, the TEXT index entries it adds.
+// messageSegment holds bounded searchable-projection text, not necessarily original bytes.
+// Offset counts original token positions (including skipped tokens); postings counts distinct indexed tokens.
 type messageSegment struct {
 	text     string
 	offset   int
 	postings int
 }
 
-// segmentMessageText cuts text into segments of at most the given number of
-// distinct tokens and messageSegmentBytes bytes, consecutive segments sharing
-// messageSegmentOverlap tokens. A segment begins at a token's first byte and
-// ends at a token's last byte, and must tokenize to exactly its tokens of the
-// whole text; text that cannot be cut so is refused rather than mis-indexed.
-// It also returns the number of tokens too long to index.
+// segmentMessageText bounds searchable projections by distinct tokens and bytes, preserving token positions.
+// Segments share messageSegmentOverlap tokens; raw bytes stay separate, and overlong-token count is returned.
 func segmentMessageText(text string, distinct int) ([]messageSegment, int, error) {
 	const op = "message text segments"
 	tok := messageTokenizer{}

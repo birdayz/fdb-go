@@ -578,9 +578,8 @@ func TestParseConfigFullCollectorYAML(t *testing.T) {
 	}
 }
 
-// TestLoadPipelineConfigFromProcessEnvironment reads a Collector YAML file and
-// resolves references against the real process environment (not parallel:
-// it uses t.Setenv).
+// TestLoadPipelineConfigFromProcessEnvironment uses real environment expansion;
+// it is not parallel because it uses t.Setenv.
 func TestLoadPipelineConfigFromProcessEnvironment(t *testing.T) {
 	for k, v := range fullCollectorEnv {
 		t.Setenv(k, v)
@@ -2061,9 +2060,8 @@ func TestTracesExporterLifecycle(t *testing.T) {
 		}
 	})
 
-	// The cancellation lands during the attempt, not during a backoff wait:
-	// the attempt fails only once its context is done, with an error that
-	// does not wrap the cancellation.
+	// Fail only after attempt cancellation, without wrapping the cancellation error,
+	// to distinguish cancellation during an attempt from cancellation during backoff.
 	t.Run("shutdown_deadline_cancels_attempt", func(t *testing.T) {
 		t.Parallel()
 		started := make(chan struct{})
@@ -2100,9 +2098,8 @@ func TestTracesExporterLifecycle(t *testing.T) {
 		}
 	})
 
-	// A merged batch whose attempt fails permanently while the worker is
-	// cancelled is not re-exported part by part: every part is abandoned with
-	// the cancellation, and the merged failure is not attributed to it.
+	// Cancellation abandons every part of a permanently failed merged batch;
+	// it must not replay parts or attribute the merged failure to each one.
 	t.Run("shutdown_deadline_abandons_merged_parts", func(t *testing.T) {
 		t.Parallel()
 		poison := &otel.OtelError{Kind: "admission", Op: "export", Message: "poisoned span"}
@@ -2259,9 +2256,8 @@ func doubleKV(k string, v float64) *commonpb.KeyValue {
 	return &commonpb.KeyValue{Key: k, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: v}}}
 }
 
-// agentRequest is one upstream export: a trace of six spans from one service
-// across two instrumentation scopes, with non-canonical attribute types
-// (bool, double, duplicate keys) and wrapper unknown fields.
+// agentRequest spans two instrumentation scopes with non-canonical attribute types,
+// duplicate keys and wrapper unknown fields to check fidelity.
 func agentRequest(agent, req int) []*tracepb.ResourceSpans {
 	rs := &tracepb.ResourceSpans{
 		Resource: &resourcepb.Resource{Attributes: []*commonpb.KeyValue{
@@ -2501,11 +2497,8 @@ func verifyCollectorStore(t *testing.T, ctx context.Context, name string, exp *o
 	}
 }
 
-// TestCollectorTracesExporterRealFDB runs the Collector exporter end to end:
-// Collector YAML (with ${env:...} references) -> factory -> Start -> eight
-// concurrent upstream agents fanned out to two fdb_otel exporters (one queued,
-// one synchronous) -> Flush -> query verification through *otel.Exporter ->
-// Shutdown. Not parallel: it uses t.Setenv.
+// TestCollectorTracesExporterRealFDB exercises YAML/env config, queued/synchronous exporters,
+// eight upstream agents, flush, queries and shutdown; t.Setenv prevents parallel execution.
 func TestCollectorTracesExporterRealFDB(t *testing.T) {
 	for _, unset := range []string{"FDB_OTEL_COLLECTOR_TEST_UNSET_TENANT", "FDB_OTEL_COLLECTOR_TEST_UNSET_QUEUE"} {
 		if _, ok := os.LookupEnv(unset); ok {

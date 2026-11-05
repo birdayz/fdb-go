@@ -13,26 +13,11 @@ import (
 // TEXT bunch prefetch for batch saves, a Go batch-path extension (Java has no
 // batch save).
 //
-// Saved one after another, each record's TEXT index update reads the
-// BunchedMap bunches of its tokens (BunchedMap.put and remove,
-// lastLessOrEqual(key) .. firstGreaterThan(key)+1 at snapshot isolation) only
-// once the previous record is applied, so a batch costs a round trip per
-// record. The batch path instead first issues, together, snapshot range reads
-// that cover every one of those bunch reads, one per token map (index,
-// grouping, token) over the batch's keys in it, and waits for them; then it
-// applies the records in order through the unchanged maintenance code.
+// Batch TEXT prefetch overlaps snapshot reads of token-map bunches before sequential maintenance,
+// avoiding a per-record read round trip without changing write order.
 //
-// The prefetch only fills the transaction's read-your-writes snapshot cache.
-// Snapshot reads add no read conflict ranges and no mutations, and a read
-// answered from that cache at the transaction's read version returns what the
-// storage server would, merged with the transaction's own writes, exactly as
-// a read sent to the server is. So every maintenance read returns what it
-// returns when the records are saved one after another, including the writes
-// of earlier records of the batch to the same bunch, and the maintenance makes
-// the same conflict ranges and mutations; only its reads no longer leave the
-// client. Anything the prefetch did not cover (a key past a truncated read,
-// an error, a tokenization the maintenance does differently) is read by the
-// maintenance as before.
+// Prefetch only warms the RYW snapshot cache: maintenance still merges earlier writes and establishes conflicts.
+// Truncation, errors or differing tokenization fall back to normal maintenance reads.
 
 // textBunchReads collects the reads a batch's TEXT index maintenance makes.
 type textBunchReads struct {
@@ -60,16 +45,16 @@ type textIndexTarget struct {
 	version       int
 }
 
-func newTextIndexTarget(index *Index, indexSubspace, secSubspace subspace.Subspace) (*textIndexTarget, bool) {
+func newTextIndexTarget(index *Index, indexSubspace, secSubspace subspace.Subspace) *textIndexTarget {
 	tokenizer, err := getTextTokenizer(index)
 	if err != nil {
-		return nil, false
+		return nil
 	}
 	version, err := getTextTokenizerVersion(index)
 	if err != nil {
-		return nil, false
+		return nil
 	}
-	return &textIndexTarget{index: index, indexSubspace: indexSubspace, secSubspace: secSubspace, tokenizer: tokenizer, version: version}, true
+	return &textIndexTarget{index: index, indexSubspace: indexSubspace, secSubspace: secSubspace, tokenizer: tokenizer, version: version}
 }
 
 // entryKeys are record's index entry keys, as updateOneKey builds them; nil
@@ -107,9 +92,8 @@ func (r *textBunchReads) addVersionKey(t *textIndexTarget, primaryKey tuple.Tupl
 	}
 }
 
-// add records the map keys the index's maintenance puts or removes for the
-// entry keys, computed as updateOneKey computes them. It is best effort: what
-// it cannot evaluate, the maintenance reads itself.
+// add best-effort records map keys using updateOneKey’s evaluation;
+// maintenance reads anything it cannot evaluate.
 func (r *textBunchReads) add(t *textIndexTarget, entryKeys []tuple.Tuple) {
 	if r.byMap == nil {
 		r.byMap = map[string]int{}
@@ -159,13 +143,8 @@ type textBunchPrefetch struct {
 	versions []fdb.FutureByteSlice
 }
 
-// issue sends the first wave: per token map, one snapshot read from
-// lastLessOrEqual(first key) to firstGreaterThan(last key)+1, which holds
-// every bunch read of the map's keys (each reads the last signpost at or
-// before its key and the two keys after it) as long as the read is not cut
-// by its row limit; and the tokenizer version keys. The limit bounds a map
-// whose keys lie far apart: 2*keys+2 rows hold the reads of keys that share
-// bunches.
+// issue bounds each token map by predecessor/successor signposts plus tokenizer-version reads.
+// The 2*keys+2 row cap limits distant-key overfetch; wait fills truncated coverage.
 func (r *textBunchReads) issue(tx fdb.ReadTransaction) *textBunchPrefetch {
 	p := &textBunchPrefetch{tx: tx}
 	for i := range r.maps {
@@ -186,9 +165,8 @@ func (r *textBunchReads) issue(tx fdb.ReadTransaction) *textBunchPrefetch {
 	return p
 }
 
-// wait drains the first wave, then reads, together, the bunches of the keys a
-// truncated read did not reach, as BunchedMap.put reads them, and drains
-// those. Errors are dropped: the maintenance's own reads report them.
+// wait drains initial reads, then missing bunches in a second wave;
+// maintenance’s own reads report any dropped prefetch errors.
 func (p *textBunchPrefetch) wait() {
 	var second []fdb.RangeResult
 	for _, read := range p.reads {
@@ -229,11 +207,8 @@ func sortSearchKeys(rows []fdb.KeyValue, key []byte) int {
 	return i
 }
 
-// prefetchBatchTextBunches is the prefetch for a batch save: the maintained
-// TEXT indexes of each record's new and old type, the new records' keys, and
-// the old images' keys and tokenizer versions. olds[i] is nil for an insert
-// or for a record whose old image is an earlier record of the batch (its
-// tokens are that record's).
+// prefetchBatchTextBunches warms maintained new/old TEXT keys and old tokenizer versions.
+// olds[i]=nil means an insert or an old image supplied by an earlier record in this batch.
 func (store *FDBRecordStore) prefetchBatchTextBunches(news, olds []*FDBStoredRecord[proto.Message]) {
 	var reads textBunchReads
 	targets := map[string]*textIndexTarget{}
@@ -274,9 +249,7 @@ func (store *FDBRecordStore) prefetchBatchTextBunches(news, olds []*FDBStoredRec
 		for _, t := range newTargets {
 			newKeys := t.entryKeys(record)
 			if olds[i] != nil && slices.Contains(oldTargets, t) {
-				// An update: the version is read, and only the entries that
-				// differ are removed and put (updateStandard's
-				// RemoveCommonEntries).
+				// Updates read the tokenizer version and only remove/put differing entries (RemoveCommonEntries).
 				reads.addVersionKey(t, olds[i].PrimaryKey)
 				oldKeys := t.entryKeys(olds[i])
 				common := map[string]struct{}{}

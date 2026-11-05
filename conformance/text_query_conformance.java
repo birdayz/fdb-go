@@ -47,10 +47,8 @@ import java.util.UUID;
 import java.util.function.Function;
 
 /**
- * Java's execution of TEXT queries, for comparison with the Go port: TextScan.scan over three
- * TEXT indexes on Customer.name (plain, grouped by email, with price after the text), the old
- * RecordQueryPlanner's text index plans, and the merge cursors TextScan combines token scans with.
- * Keys, values and continuations are returned as hex so they compare byte for byte.
+ * Returns Java TEXT scan, planner and merge-cursor results as hex for Go comparison.
+ * Covers plain, email-grouped and price-suffixed Customer.name indexes.
  */
 class TextQuerySteps extends ConformanceBase {
     static final HexFormat HEX = HexFormat.of();
@@ -292,8 +290,7 @@ class TextQuerySteps extends ConformanceBase {
     }
 
     /**
-     * A merge cursor over in-memory list children, whose next results are always complete, so
-     * the unordered merges run in their deterministic order.
+     * Complete in-memory children make unordered merge execution deterministic.
      */
     @ConformanceStep("mergeCursorOverLists")
     public Map<String, Object> mergeCursorOverLists(String kind, String listsJson, int limit, String continuation) {

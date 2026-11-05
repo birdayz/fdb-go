@@ -170,9 +170,7 @@ func (t *DefaultTextTokenizer) TokenizeToList(text string, version int, mode Tok
 	return defaultTokenizeToList(t, text, version, mode)
 }
 
-// breakIteratorWrapper turns word segments into tokens as Java's
-// DefaultTextTokenizer.BreakIteratorWrapper does. Like Java's BreakIterator,
-// it finds the next word boundary only when the next token is asked for.
+// breakIteratorWrapper finds word boundaries lazily, matching Java DefaultTextTokenizer.
 type breakIteratorWrapper struct {
 	remaining string // the text after the last segment taken
 	state     int    // uniseg's word-boundary state across segments

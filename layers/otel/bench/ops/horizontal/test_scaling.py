@@ -50,8 +50,8 @@ class ScalingPlanTests(unittest.TestCase):
         self.assertIs(s.validate_plan(value, check_assets=False), value)
         self.assertEqual(value, before)
         self.assertEqual(s.SCHEMA, "otel_native_scaling_v1")
-        self.assertEqual(s.STAGES, [[1, 1], [2, 2], [3, 3]])
-        self.assertEqual(s.AUTHORIZED_ROWS, 2850000)
+        self.assertEqual(p.scaling_stage_pairs(value), [[1, 1], [2, 2], [3, 3]])
+        self.assertEqual(p.scaling_authorized_rows(value), 2850000)
         self.assertEqual(sum((100000+375000)*producers for _, producers in value["stages"]), 2850000)
         self.assertEqual(value["deadline_epoch"]-value["first_epoch"], 7200)
 

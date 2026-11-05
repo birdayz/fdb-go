@@ -18,14 +18,8 @@ import (
 
 // ---- ExtendedDirectoryLayer (global) ----
 
-// ExtendedDirectoryLayerGlobal is ExtendedDirectoryLayer.global, the scope a
-// KeySpace DirectoryLayerDirectory resolves through by default
-// (DirectoryLayerDirectory.java: ExtendedDirectoryLayer.global(
-// context.getDatabase())). It keeps its mappings where the FDB directory layer
-// keeps its root's subdirectories, as GlobalDirectoryLayer
-// (ScopedDirectoryLayer.global) does, so each reads the other's mappings, but
-// allocates with the Record Layer's HighContentionAllocator (forRoot) and
-// writes nothing else of the directory layer's.
+// ExtendedDirectoryLayerGlobal shares root mappings with ScopedDirectoryLayer.global,
+// but allocates via Record Layer HighContentionAllocator and writes no other directory metadata.
 type ExtendedDirectoryLayerGlobal struct{}
 
 // edlRootNode is the directory layer's root node at the default node
@@ -115,10 +109,8 @@ func (ExtendedDirectoryLayerGlobal) readReverse(rctx *FDBRecordContext, value in
 
 // ---- LocatableResolver bound to a database, for KeySpace directories ----
 
-// KeySpaceResolver is a LocatableResolver scope bound to its database, as a
-// Java LocatableResolver holds its FDBDatabase; it is the
-// keyspace.LocatableResolver a keyspace.ResolverDirectory resolves through.
-// Each call runs as Java's database-level calls do, in a context of its own.
+// KeySpaceResolver binds a keyspace.LocatableResolver scope to its database;
+// each call uses its own context, matching Java’s database-level calls.
 type KeySpaceResolver struct {
 	db        *FDBDatabase
 	scope     LocatableResolver
@@ -156,9 +148,8 @@ func (r *KeySpaceResolver) openContext(ctx context.Context) (*FDBRecordContext, 
 	return rctx, tx.Cancel, nil
 }
 
-// Resolve is LocatableResolver.resolve(timer, name): resolveWithMetadata in a
-// context of its own (LocatableResolver.java:256-338), creating the mapping
-// in a transaction that commits on its own if the name has none.
+// Resolve creates absent mappings in an independently committed context
+// (LocatableResolver.resolveWithMetadata, LocatableResolver.java:256-338).
 func (r *KeySpaceResolver) Resolve(ctx context.Context, name string) (int64, error) {
 	rctx, closeContext, err := r.openContext(ctx)
 	if err != nil {
@@ -172,12 +163,8 @@ func (r *KeySpaceResolver) Resolve(ctx context.Context, name string) (int64, err
 	return res.Value, nil
 }
 
-// ReverseLookup is LocatableResolver.reverseLookup(timer, value)
-// (LocatableResolver.java:416-470): the database's in-memory reverse cache,
-// else the scope's reverse mapping read in a transaction that first borrows
-// the context's read version and, finding nothing there, retries once at a
-// newer one; a value found is cached. ok is false where Java throws
-// NoSuchElementException.
+// ReverseLookup uses the reverse cache or borrows a read version, retrying misses once at a newer one.
+// It caches results; ok=false corresponds to Java NoSuchElementException (LocatableResolver.java:416-470).
 func (r *KeySpaceResolver) ReverseLookup(ctx context.Context, value int64) (string, bool, error) {
 	key := reverseCacheKey(r.scope, value)
 	c := r.db.resolvers()
@@ -255,12 +242,8 @@ func reverseLookupFromDatabase(parent *FDBRecordContext, r LocatableResolver, va
 	return found.name, nil
 }
 
-// DirectoryLayerDirectory is Java's DirectoryLayerDirectory(name): a key
-// space directory whose values are names that resolve, through
-// ExtendedDirectoryLayer.global of db, to the longs its keys hold. Java takes
-// the database from the context a path is resolved in
-// (context.getDatabase()); a Go key space resolves a value when the path is
-// built, so the database is given here.
+// DirectoryLayerDirectory resolves names to longs through ExtendedDirectoryLayer.global.
+// Go resolves paths when built, so db is explicit rather than taken from Java’s context.
 func DirectoryLayerDirectory(name string, db *FDBDatabase) *keyspace.Directory {
 	return keyspace.ResolverDirectory(name, NewKeySpaceResolver(db, ExtendedDirectoryLayerGlobal{}))
 }

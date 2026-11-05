@@ -488,9 +488,8 @@ func bootstrapCRCluster(t *testing.T, ctx context.Context, container *foundation
 		ticker.Stop()
 		cancel()
 	}
-	// All intended class/locality processes are constructed and listening before
-	// INITIALIZE. The native CC census then fences address registration, not
-	// hidden disk recovery; full status is queried only AFTER configuration.
+	// Start all class/locality listeners before INITIALIZE so the native CC census fences
+	// address registration, not disk recovery; query full status only after configuration.
 	if err := crConfigureRegistered(ctx, plan, func(ctx context.Context) ([]cgofdb.KeyValue, error) {
 		return crNativeWorkerInterfaces(ctx, native)
 	}, func(ctx context.Context) (string, string, error) {

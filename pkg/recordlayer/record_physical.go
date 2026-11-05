@@ -86,9 +86,9 @@ func (rc *FDBRecordContext) beginRecordWrite() (func(), error) {
 	}, nil
 }
 
-// Admission stays open while callbacks of admitted operations can still write.
-// The zero observation and seal are atomic; there is no Add/Wait race.
-func (rc *FDBRecordContext) sealRecordWrites() error {
+// Drain pre-commit checks while writes remain admissible, then atomically seal
+// once every admitted operation and newly registered check has completed.
+func (rc *FDBRecordContext) drainCommitChecksAndSealWrites() error {
 	s := &rc.recordPhysical
 	checked := 0
 	for {

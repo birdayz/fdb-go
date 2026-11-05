@@ -496,12 +496,8 @@ func (g GlobalDirectoryLayer) readReverse(rctx *FDBRecordContext, value int64) (
 	return name, ok, nil
 }
 
-// putReverseIfNotExists is FDBReverseDirectoryCache.putIfNotExists for a
-// global scope (FDBReverseDirectoryCache.java:349-400): a value the database's
-// in-memory reverse cache holds for the scope must name the same string, else
-// the value was likely allocated by this uncommitted transaction over another
-// one's and the transaction is retried; otherwise a stored entry must name the
-// same string, and an absent one is written.
+// putReverseIfNotExists retries conflicting in-memory mappings, checks stored names,
+// and creates absent reverse entries (FDBReverseDirectoryCache.java:349-400).
 func putReverseIfNotExists(rctx *FDBRecordContext, scope LocatableResolver, name string, value int64) error {
 	if db := rctx.GetDatabase(); db != nil {
 		c := db.resolvers()

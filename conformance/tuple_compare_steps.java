@@ -12,9 +12,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Java's Tuple.compareTo over tuples built from their elements, so with no
- * packed bytes cached: TupleUtil.compareItems element by element
- * (IterableComparator). Go's compareTuples must order every pair the same.
+ * Compares uncached Java tuples element-by-element via TupleUtil.compareItems
+ * (IterableComparator), checking Go's compareTuples ordering.
  */
 class TupleCompareSteps {
     /** An element: {t: type, v: value}; a tuple is {t: "tuple", v: [elements]}. */

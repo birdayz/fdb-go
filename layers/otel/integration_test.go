@@ -85,9 +85,8 @@ func assertOtelSource(t *testing.T, ctx context.Context, b *FDBBackend, want Spa
 	})
 }
 
-// Fixture snapshots are bounded independently of the implementation's census.
-// otelOwnedRanges are the key ranges of a run: its tuple prefix (the owner
-// manifest, and a tuple-layout run's data) and its data prefix.
+// otelOwnedRanges bounds snapshots independently of the census: the run tuple prefix
+// (owner manifest and legacy data) plus its data prefix.
 func otelOwnedRanges(t *testing.T, b *FDBBackend) []fdb.KeyRange {
 	t.Helper()
 	var out []fdb.KeyRange

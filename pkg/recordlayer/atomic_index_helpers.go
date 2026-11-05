@@ -81,11 +81,8 @@ func evaluateGroupingKeys(store IndexStoreContext, index *Index, record *FDBStor
 	return result, nil
 }
 
-// UpdateWhileWriteOnlyNonIdempotent is updateWhileWriteOnlyNonIdempotent for an
-// IndexMaintainer implemented outside this package: its UpdateWhileWriteOnly
-// passes its own update, so the online build's range set and BY_INDEX source
-// decide which records reach it. store is the maintainer's
-// StandardIndexMaintainer.Store(); with none, update always runs.
+// UpdateWhileWriteOnlyNonIdempotent lets external maintainers use their own update with build coordination.
+// Pass StandardIndexMaintainer.Store(); nil bypasses coordination and always runs update.
 func UpdateWhileWriteOnlyNonIdempotent(
 	oldRecord, newRecord *FDBStoredRecord[proto.Message],
 	index *Index,

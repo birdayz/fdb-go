@@ -66,7 +66,7 @@ var _ = Describe("INDEX_TO_RECORD pipeline sizing", func() {
 						return nil, &RecordCoreError{Message: "unexpected fetch pipeline"}
 					}
 					if pipeline.size != depth {
-						return nil, fmt.Errorf("%s depth%d,want%d", api, pipeline.size, depth)
+						return nil, fmt.Errorf("%s depth %d, want %d", api, pipeline.size, depth)
 					}
 					issued, gets := 0, 0
 					issue := pipeline.issue
@@ -75,7 +75,7 @@ var _ = Describe("INDEX_TO_RECORD pipeline sizing", func() {
 						pending := issue(entry)
 						return NewPendingRead(func() (*FDBIndexedRecord, error) {
 							if gets == 0 && issued != depth {
-								return nil, fmt.Errorf("%s issued%d before first wait,want%d", api, issued, depth)
+								return nil, fmt.Errorf("%s issued %d before first wait, want %d", api, issued, depth)
 							}
 							gets++
 							return pending.Get()
@@ -87,7 +87,7 @@ var _ = Describe("INDEX_TO_RECORD pipeline sizing", func() {
 							return nil, err
 						}
 						if !r.HasNext() || compareTuples(r.GetValue().Record.PrimaryKey, tuple.Tuple{int64(want)}) != 0 {
-							return nil, fmt.Errorf("%s lost row%d", api, want)
+							return nil, fmt.Errorf("%s lost row %d", api, want)
 						}
 					}
 					end, err := cur.OnNext(ctx)

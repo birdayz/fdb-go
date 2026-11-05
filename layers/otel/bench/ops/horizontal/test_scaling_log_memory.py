@@ -70,8 +70,6 @@ class FollowupPlanTests(unittest.TestCase):
         self.assertIs(s.validate_plan(value, check_assets=False), value)
         self.assertEqual(p.scaling_stage_pairs(value), [[1, 1], [2, 2], [3, 3]])
         self.assertEqual(p.scaling_authorized_rows(value), 2850000)
-        self.assertEqual(s.STAGES, [[1, 1], [2, 2], [3, 3]])
-        self.assertEqual(s.AUTHORIZED_ROWS, 2850000)
         self.assertEqual(value, before)
         self.assertNotIn("log_memory_gib", value)
         for prior, total in ((0, 2850000), (7000000, 9850000), (7150000, 10000000)):

@@ -77,10 +77,8 @@ type ExporterConfig struct {
 	// MaxInFlightTransactions bounds this Exporter's concurrent write
 	// transactions across all export calls (1..1024).
 	MaxInFlightTransactions int `json:"max_inflight_transactions" yaml:"max_inflight_transactions"`
-	// TransactionTimeout bounds each Exporter transaction, read or write,
-	// including its GRV wait, commit and every OnError retry; there is no retry
-	// limit. The caller's context also bounds it, except for a dispatched
-	// commit. A Go duration string ("10s"), 1s..5m, default 10s.
+	// TransactionTimeout covers GRV, commit and all retries: a Go duration, 1s..5m, default 10s.
+	// Caller cancellation also bounds work except a dispatched commit; there is no retry limit.
 	TransactionTimeout time.Duration `json:"transaction_timeout" yaml:"transaction_timeout"`
 }
 
@@ -493,9 +491,8 @@ func canonicalAttributes(kvs []*commonpb.KeyValue) canonicalSet {
 	return out
 }
 
-// withoutMessageAttributes leaves decomposed GenAI message attributes out of
-// the equality index: their stored values are manifests, which no query
-// names; QueryMessageFullText searches their text instead.
+// withoutMessageAttributes excludes GenAI manifests from equality indexes;
+// QueryMessageFullText searches their decomposed text instead.
 func withoutMessageAttributes(set canonicalSet) canonicalSet {
 	out := canonicalSet{changed: set.changed, unindexed: set.unindexed}
 	for _, kv := range set.indexed {

@@ -2,9 +2,11 @@
 
 This is a new, explicit-approval campaign. It does not change `ingest20k` or
 relax that campaign's 100k storage-option authorization. Importing these modules
-has no cloud effects. The normal repository `just test` lane runs two fake-only
-Bazel targets: policy/runtime and provisioning. Their launchers reject zero tests,
-skips, failed tests and syntax failures.
+has no cloud effects. The normal repository `just test` lane includes separately
+cached fake-only Bazel targets for policy/runtime, provisioning, diagnostic,
+session, forensics, scaling, scaling forensics, scaling log-memory and supervisor
+modules (see `BUILD.bazel`). Their launchers reject zero tests, skips, failed tests
+and syntax failures.
 
 ## Population and limits
 

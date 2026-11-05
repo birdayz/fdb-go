@@ -129,10 +129,10 @@ func TestQueuedMessageSizeFallbackCountersAndExhaustion(t *testing.T) {
 			stats, err := e.ExportResourceSpans(ctx, []*tracepb.ResourceSpans{input})
 			if exhaust {
 				if code, ok := fdbErrorCode(err); !ok || code != 2101 {
-					t.Fatalf("expected terminal2101: %v", err)
+					t.Fatalf("expected terminal 2101: %v", err)
 				}
 				if calls.Load() != 4 {
-					t.Fatalf("fallback attempts %d, want initial plus256/64/16", calls.Load())
+					t.Fatalf("fallback attempts %d, want initial plus 256/64/16", calls.Load())
 				}
 				_, loadErr := e.LoadSpanOTLP(ctx, ftsTrace(1), ftsSpan(1))
 				var missing *SpanNotFoundError
@@ -156,7 +156,7 @@ func TestQueuedMessageSizeFallbackCountersAndExhaustion(t *testing.T) {
 				t.Fatal(err)
 			}
 			if len(plan.records) <= 1 || stats.Messages.Parts != int64(len(plan.records)) || stats.Messages.Postings != plan.postings {
-				t.Fatalf("actual fallback %+v; want parts%d/postings%d", stats.Messages, len(plan.records), plan.postings)
+				t.Fatalf("actual fallback %+v; want parts %d/postings %d", stats.Messages, len(plan.records), plan.postings)
 			}
 			sp := input.ScopeSpans[0].Spans[0]
 			got, err := e.LoadSpanOTLP(ctx, hex.EncodeToString(sp.TraceId), hex.EncodeToString(sp.SpanId))
@@ -165,7 +165,7 @@ func TestQueuedMessageSizeFallbackCountersAndExhaustion(t *testing.T) {
 			}
 			requireProtoEqual(t, "fallback reconstruction", got, input)
 			if n := ftsCount(t, ctx, e, MessageFullTextQuery{Query: "term0000 term0599", Mode: MessageMatchAll}); n != 1 {
-				t.Fatalf("cross-part search got%d", n)
+				t.Fatalf("cross-part search got %d", n)
 			}
 			again, err := e.ExportResourceSpans(ctx, []*tracepb.ResourceSpans{input})
 			if err != nil || again.Messages.Written != 0 || again.Messages.Present != 1 {
@@ -184,7 +184,11 @@ func TestPersistedMessageCorruptionFailsClosed(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 			defer cancel()
 			e := openFTSExporter(t, ctx, cluster, nil)
-			input := deltaSpan(1, deltaKV("gen_ai.input.messages", deltaArray(deltaStr(strings.Repeat(" ", messagePartRawBytes+100)))))
+			rawBytes := messagePartRawBytes + 100
+			if damage == "parts" {
+				rawBytes = 100 // A complete head isolates the parts<1 guard from raw-length validation.
+			}
+			input := deltaSpan(1, deltaKV("gen_ai.input.messages", deltaArray(deltaStr(strings.Repeat(" ", rawBytes)))))
 			if _, err := e.ExportResourceSpans(ctx, []*tracepb.ResourceSpans{input}); err != nil {
 				t.Fatal(err)
 			}
@@ -226,6 +230,9 @@ func TestPersistedMessageCorruptionFailsClosed(t *testing.T) {
 				case "encoding":
 					m.Set(f.ByName("encoding"), protoreflect.ValueOfString("wrong"))
 				case "parts":
+					if got := m.Get(f.ByName("parts")).Int(); got != 1 {
+						return fmt.Errorf("single-head fixture has %d parts, want 1", got)
+					}
 					m.Set(f.ByName("parts"), protoreflect.ValueOfInt64(0))
 				case "length":
 					m.Set(f.ByName("raw_bytes"), protoreflect.ValueOfInt64(messagePartRawBytes+101))
@@ -329,9 +336,9 @@ func TestCanceledMessageOwnerTwoWaitersShareOneDigest(t *testing.T) {
 		present += r.stats.Messages.Present
 	}
 	if written != 1 || present != 1 {
-		t.Fatalf("same digest wrote%d/present%d", written, present)
+		t.Fatalf("same digest wrote %d/present %d", written, present)
 	}
 	if n := ftsCount(t, ctx, e, MessageFullTextQuery{Query: "zebra", Mode: MessageMatchAll}); n != 2 {
-		t.Fatalf("waiters searchable spans%d", n)
+		t.Fatalf("waiters searchable spans %d", n)
 	}
 }

@@ -49,9 +49,7 @@ func readRawTextIndex(ctx context.Context, db *recordlayer.FDBDatabase, s *TextI
 	return result.([]string), nil
 }
 
-// Go's TEXT maintainer reads the token maps of one record concurrently
-// (TEXT_INDEX_UPDATE pipeline, as Java's TextIndexMaintainer). The index it
-// writes must be Java's byte for byte, bunch layout included.
+// Concurrent TEXT_INDEX_UPDATE reads must preserve Java's index bytes and bunch layout.
 var _ = Describe("TEXT index pipelined update conformance", func() {
 	var (
 		ctx                context.Context
@@ -160,10 +158,8 @@ var _ = Describe("TEXT index pipelined update conformance", func() {
 		expectSameIndex("cross-engine update")
 	})
 
-	// Java's TextIndexMaintainer.update writes the record's tokenizer version
-	// on every insert, whether or not the record has text, rewrites it on an
-	// update only when it differs from the index's, and clears it on delete
-	// (TextIndexMaintainer.java:438-484). Both engines leave the same keys.
+	// Both engines must write tokenizer versions on insert, update differing versions,
+	// and clear them on delete (TextIndexMaintainer.java:438-484).
 	It("writes and clears each record's tokenizer version key as Java does", func() {
 		versionKeys := func(s *TextIndexConformanceStore) int {
 			var n int

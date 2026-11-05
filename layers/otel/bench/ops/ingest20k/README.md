@@ -46,8 +46,9 @@ do not force internal recruitment/replica knobs or weaken inode proofs.
 Redwood, FDB checksums/fsync and default queues remain unchanged. Workload is
 seed283, one tenant, eight attributes, match-every100, batch save mode, time order,
 K100, hash-bytes32, two-million candidates and 256 MiB query byte budget. The first
-run is **batch32/workers2**. Sealed configuration may admit batch32 or64 and workers2,
-4,8 or16 (integers only); this is not permission to escalate. Every later pair needs
+run is **batch 32 / workers 2**. Sealed configuration may admit batches 32 or 64 and
+workers 2, 4 or 8 (integers only); ordinary ingest does not support `workers=16`. This is not
+permission to escalate. Every later pair needs
 root's explicit approval after stable lower arms, a new fresh run and all renewed
 gates. Count is a strict integer allowlist: 100000 (legacy default) or 1000000
 (explicit approval only); booleans, floats, strings and other populations are rejected.
@@ -334,8 +335,10 @@ step in this profile.
 ## Validation ownership
 
 Root owns builds, `just test`, Gazelle, commit and formal harness review. The normal
-Bazel fast lane declares an offline shell test with explicit discovered>0/executed
-count/no-skips gates, plus C pure-predicate and injected-syscall targets. Tests use
+Bazel fast lane declares separately cached offline shell targets for policy,
+runtime, lifecycle and shell modules, with explicit discovered>0/executed
+count/no-skips gates, plus C pure-predicate and injected-syscall targets (see
+`BUILD.bazel`). Tests use
 fixtures/mocks, never a live database/probe. No direct package tests or helper
 execution is a substitute for the whole fast lane. A syntax check is not a pass,
 formal ACK, live GET/bootstrap success or run permission.

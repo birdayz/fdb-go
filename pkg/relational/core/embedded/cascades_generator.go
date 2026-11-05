@@ -3238,6 +3238,7 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 			// (ValueIndexExpansionVisitor.java:138-162).
 			if aggCand := tryAggregateIndexCandidate(idx, c.md); aggCand != nil {
 				candidates = append(candidates, aggCand)
+				// Unlike Java, this aggregate-first path omits PermutedMinMax BY_VALUE.
 				continue
 			}
 			if vecCand := tryVectorIndexCandidate(idx, c.md); vecCand != nil {
@@ -3255,25 +3256,8 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 				continue
 			}
 		}
-		// Atomic-mutation / aggregate-only index types (COUNT/SUM totals,
-		// MAX_EVER/MIN_EVER running extrema, BITMAP_VALUE bitsets) must not become
-		// VALUE-index scan candidates: their entries are aggregated/running values,
-		// not per-record values, so a plain ordered scan (e.g. StreamingAgg over the
-		// index) reads stale data. In Java these types have no value-scan candidate
-		// (AtomicMutationIndexMaintainerFactory / BitmapValueIndexMaintainerFactory
-		// never call expandValueIndexMatchCandidate). The subset with a legitimate
-		// aggregate use was already claimed by tryAggregateIndexCandidate above.
-		// Dropping the remaining atomic types here leaves a plain MAX/MIN over only such
-		// an index to fall back to a base-record StreamingAgg, which computes the
-		// correct current extremum.
-		if idx.IsAtomicMutationIndex() {
-			continue
-		}
-		// Only types whose entries are per-record key tuples opt in to the
-		// value-scan candidate; Java's factory default builds no candidate
-		// (IndexMaintainerFactory.createMatchCandidates), so a custom or exotic
-		// type fails closed rather than having its layout misread as VALUE entries.
-		if !valueScanCandidateIndexType(idx.Type) {
+		// Java-compatible VALUE-layout eligibility; custom and atomic types fail closed.
+		if !recordlayer.IsValueScanCandidateIndexType(idx.Type) {
 			continue
 		}
 		if sparse && idx.Type != recordlayer.IndexTypeValue && idx.Type != recordlayer.IndexTypeVersion {
@@ -3290,15 +3274,6 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 	}
 
 	return candidates
-}
-
-// valueScanCandidateIndexType reports whether an index of this type gets a
-// VALUE-scan match candidate: the types whose Java factories call
-// expandValueIndexMatchCandidate (Value, Version, Rank BY_VALUE and
-// PermutedMinMax BY_VALUE). TEXT, MULTIDIMENSIONAL, TIME_WINDOW_LEADERBOARD and
-// registered custom types store entries a value scan would misread.
-func valueScanCandidateIndexType(indexType string) bool {
-	return recordlayer.IsValueScanCandidateIndexType(indexType)
 }
 
 // runFromResolutionPostPasses is the SINGLE ordered sequence of mandatory

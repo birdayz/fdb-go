@@ -15,13 +15,8 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
-// TextScan is Java's com.apple.foundationdb.record.query.plan.TextScan: the
-// scans of a TEXT index that satisfy one text comparison, and how they are
-// combined. GroupingKey is the evaluated equality prefix over the index's
-// grouping columns (Java's groupingComparisons.toTupleRange(...).getHigh(),
-// TextScan.java:165; nil for none) and Suffix the evaluated range over the
-// index columns after the text field (Java's suffixComparisons.toTupleRange,
-// TextScan.java:166; nil for none).
+// TextScan combines TEXT token scans for a comparison, matching Java TextScan.
+// GroupingKey is an equality prefix; Suffix bounds columns after the text field (nil means absent).
 type TextScan struct {
 	Index       *Index
 	GroupingKey tuple.Tuple
@@ -48,16 +43,14 @@ func (s *TextScan) String() string {
 	return fmt.Sprintf("TextScan(%s %s, %s, %s)", s.Index.Name, grouping, s.Comparison, suffix)
 }
 
-// CreatesDuplicates is TextScan.createsDuplicates (TextScan.java:467-472): a
-// prefix comparison can return a record once per matching token, and a
-// fanned-out index expression once per value.
+// CreatesDuplicates detects repeated records from matching prefix tokens
+// or fanned-out values (TextScan.java:467-472).
 func (s *TextScan) CreatesDuplicates() bool {
 	return !s.Comparison.Type().IsEquality() || createsDuplicatesRec(s.Index.RootExpression, true)
 }
 
-// tokenList is TextScan.getTokenList (TextScan.java:111-128): a token-list
-// comparand is used as given, a string one is tokenized in QUERY mode with the
-// index's tokenizer at the index's tokenizer version.
+// tokenList uses supplied tokens or QUERY-mode tokenization at the index’s tokenizer version
+// (TextScan.java:111-128).
 func (s *TextScan) tokenList(removeStopWords bool) ([]string, error) {
 	var tokens []string
 	switch comparand := s.Comparison.Comparand().(type) {
@@ -90,10 +83,8 @@ func (s *TextScan) tokenList(removeStopWords bool) ([]string, error) {
 	return tokens, nil
 }
 
-// suffixComparisonKey is TextScan.suffixComparisonKeyFunction
-// (TextScan.java:142-148): entries of different token scans are the same
-// record when they agree on every column after the grouping columns and the
-// token.
+// suffixComparisonKey identifies a record by all columns after the group and token
+// (TextScan.java:142-148).
 func suffixComparisonKey(firstEntries int) ComparisonKeyFunc[*IndexEntry] {
 	return func(e *IndexEntry) (tuple.Tuple, error) {
 		if firstEntries > len(e.Key) {
@@ -103,18 +94,11 @@ func suffixComparisonKey(firstEntries int) ComparisonKeyFunc[*IndexEntry] {
 	}
 }
 
-// Scan is TextScan.scan(store, context, continuation, scanProperties)
-// (TextScan.java:160-169): a cursor over the index entries that satisfy the
-// comparison. A comparison over several tokens resumes from the continuation
-// of the merge cursor that combines the token scans, with the same encoding
-// as Java's.
+// Scan returns matching index entries; multi-token scans resume from the combining
+// merge cursor’s Java-compatible continuation (TextScan.java:160-169).
 //
-// The intersections of TEXT_CONTAINS_ALL, TEXT_CONTAINS_PHRASE and
-// TEXT_CONTAINS_ALL_WITHIN seek: a token scan behind the candidate key is
-// reopened at it instead of read up to it, which returns the same entries in
-// the same order with the same continuations and reads fewer key-values (see
-// DIVERGENCES.md, "TEXT intersection seeks"). Read costs are reported through
-// the scan's ScanLimiterState and the store timer's text-scan counters.
+// ALL, PHRASE and ALL_WITHIN intersections seek within loaded bunches or reopen only when needed.
+// See DIVERGENCES.md, "TEXT intersections seek"; scan limiters and timers report read costs.
 func (s *TextScan) Scan(store *FDBRecordStore, continuation []byte, props ScanProperties) (RecordCursor[*IndexEntry], error) {
 	if props.ExecuteProperties.ScanState == nil {
 		// Every token scan charges one budget, as Java's children share ExecuteState.
@@ -245,12 +229,8 @@ type textIntersectionChildren struct {
 	resume  []IntersectionChildResume
 }
 
-// intersectionChildren builds the children of IntersectionCursor.create and
-// IntersectionMultiCursor.create, one token scan per token (TextScan.java:
-// 200-203, 254-255), each from its part of the continuation as
-// IntersectionCursorBase.createCursorStates and KeyedMergeCursorState.from do
-// (IntersectionCursorBase.java:202-215; an END child is empty). A child whose
-// comparison key is its whole key within the token's map can seek.
+// intersectionChildren restores one token scan per Java intersection child continuation (END is empty).
+// A child can seek when its comparison key is its entire key within the token map.
 func (s *TextScan) intersectionChildren(store *FDBRecordStore, tokens []string, prefix tuple.Tuple, suffix *TupleRange, props ScanProperties, prefixEntries int, continuation []byte) (*textIntersectionChildren, error) {
 	if len(tokens) < 2 {
 		return nil, &RecordCoreArgumentError{Message: fmt.Sprintf("not enough child cursors provided to IntersectionCursor: %d", len(tokens))}
@@ -282,9 +262,8 @@ func (s *TextScan) intersectionChildren(store *FDBRecordStore, tokens []string, 
 	return &textIntersectionChildren{cursors: cursors, seekers: seekers, resume: resume}, nil
 }
 
-// tokenScan is the cursor function of TextScan.scanToken (TextScan.java:
-// 442-457): the entries of one token, optionally within the suffix range,
-// under the grouping prefix.
+// tokenScan reads one token under the grouping prefix and optional suffix bounds
+// (TextScan.java:442-457).
 type tokenScan struct {
 	store     *FDBRecordStore
 	index     *Index
@@ -314,9 +293,8 @@ func (t tokenScan) open(continuation []byte) (RecordCursor[*IndexEntry], *textCu
 	return t.store.scanTextIndex(t.index, t.scanRange, continuation, t.props)
 }
 
-// scanTokenPrefix is TextScan.scanTokenPrefix (TextScan.java:426-440): the
-// entries of every token starting with the prefix. A suffix range would be a
-// second inequality and is refused.
+// scanTokenPrefix scans matching tokens; suffix bounds are refused as a second inequality
+// (TextScan.java:426-440).
 func (s *TextScan) scanTokenPrefix(store *FDBRecordStore, token string, prefix tuple.Tuple, suffix *TupleRange, props ScanProperties) (CursorFunction[*IndexEntry], error) {
 	if suffix != nil {
 		return nil, &RecordCoreError{Message: "text prefix comparison included inequality scan comparison", IndexName: s.Index.Name}
@@ -380,9 +358,8 @@ func (h *positionHeap) Pop() any {
 	return x
 }
 
-// entriesContainAllWithin is TextScan.entriesContainAllWithin
-// (TextScan.java:274-322): some window of maxDistance positions holds a
-// position of every token. Tokens without position lists are treated as close.
+// entriesContainAllWithin requires every token in one maxDistance window;
+// tokens without position lists count as close (TextScan.java:274-322).
 func entriesContainAllWithin(entries []*IndexEntry, maxDistance int) (bool, error) {
 	if len(entries) == 0 {
 		return false, nil
@@ -425,9 +402,8 @@ func entriesContainAllWithin(entries []*IndexEntry, maxDistance int) (bool, erro
 	}
 }
 
-// positionListsAndDeltas is TextScan.getPositionListsAndDeltas
-// (TextScan.java:324-359): the expected gap before each token's position,
-// widened by one for every stop word and every token without positions.
+// positionListsAndDeltas widens expected token gaps for stop words and missing positions
+// (TextScan.java:324-359).
 func positionListsAndDeltas(entries []*IndexEntry, tokensWithStopWords []string) ([][]int64, []int64, error) {
 	lists, err := positionLists(entries)
 	if err != nil {
@@ -538,16 +514,14 @@ func NewTextIndexPlan(indexName string, textScan *TextScan, reverse bool) *TextI
 	return &TextIndexPlan{IndexName: indexName, TextScan: textScan, Reverse: reverse}
 }
 
-// ExecuteEntries is RecordQueryTextIndexPlan.executeEntries
-// (RecordQueryTextIndexPlan.java:90-94): the text scan with the execute
-// properties as scan properties in the plan's direction.
+// ExecuteEntries applies plan direction and execute properties to the text scan
+// (RecordQueryTextIndexPlan.java:90-94).
 func (p *TextIndexPlan) ExecuteEntries(store *FDBRecordStore, continuation []byte, props ExecuteProperties) (RecordCursor[*IndexEntry], error) {
 	return p.TextScan.Scan(store, continuation, NewScanProperties(props).WithReverse(p.Reverse))
 }
 
-// Execute is RecordQueryPlanWithIndex.executePlan (RecordQueryPlanWithIndex.java:
-// 83-100) with FetchIndexRecords.PRIMARY_KEY (RecordQueryFetchFromPartialRecordPlan
-// .java:306-315): each entry's record, an orphan entry being an error.
+// Execute fetches entries by primary key and rejects orphans, matching Java’s
+// RecordQueryPlanWithIndex.executePlan with FetchIndexRecords.PRIMARY_KEY.
 func (p *TextIndexPlan) Execute(store *FDBRecordStore, continuation []byte, props ExecuteProperties) (RecordCursor[*FDBIndexedRecord], error) {
 	if props.ScanState == nil {
 		props.ScanState = NewScanLimiterState()
@@ -568,9 +542,7 @@ func (p *TextIndexPlan) String() string {
 	return fmt.Sprintf("TextIndexScan(%s, %s%s)", p.IndexName, p.TextScan.Comparison, dir)
 }
 
-// FetchIndexRecords is FDBRecordStoreBase.fetchIndexRecords(entries,
-// orphanBehavior, executeState): the record of each entry, loaded by primary
-// key and charged to scanState.
+// FetchIndexRecords loads each entry’s record by primary key and charges scanState.
 func (store *FDBRecordStore) FetchIndexRecords(entries RecordCursor[*IndexEntry], orphan IndexOrphanBehavior, scanState *ScanLimiterState) RecordCursor[*FDBIndexedRecord] {
 	if scanState == nil {
 		scanState = NewScanLimiterState()
@@ -583,10 +555,8 @@ func (store *FDBRecordStore) FetchIndexRecords(entries RecordCursor[*IndexEntry]
 	return cursor
 }
 
-// scanTextIndex is FDBRecordStore.scanIndex(index, BY_TEXT_TOKEN, range,
-// continuation, props) returning the TEXT maintainer's cursor too, for a
-// leapfrog intersection to seek. The text cursor is nil when the scan cannot
-// start (the returned cursor then fails).
+// scanTextIndex also returns the TEXT cursor for leapfrog seeks; it is nil
+// when the scan cannot start and the returned cursor will fail.
 func (store *FDBRecordStore) scanTextIndex(index *Index, scanRange TupleRange, continuation []byte, props ScanProperties) (RecordCursor[*IndexEntry], *textCursor) {
 	tm, err := store.textIndexMaintainer(index)
 	if err != nil {
@@ -620,10 +590,8 @@ func (store *FDBRecordStore) textIndexMaintainer(index *Index) (*textIndexMainta
 	return tm, nil
 }
 
-// TextQuery is the part of a RecordQuery the old RecordQueryPlanner turns into
-// a text index plan (RecordQueryPlanner.planText, RecordQueryPlanner.java:
-// 1702-1734): the queried record types, an equality value for each grouping
-// column of the index, and the comparison on the index's text field.
+// TextQuery supplies record types, equality values for grouping columns and a text comparison
+// to the old planner’s text-index path (RecordQueryPlanner.java:1702-1734).
 type TextQuery struct {
 	RecordTypes []string
 	GroupingKey tuple.Tuple
@@ -645,11 +613,8 @@ func (e *TextQueryPlanError) Error() string {
 	return fmt.Sprintf("text index %q cannot satisfy the query: %s", e.IndexName, e.Reason)
 }
 
-// TextQueryPlan is the plan RecordQueryPlanner builds around a
-// RecordQueryTextIndexPlan: a type filter when the index covers types the
-// query does not, a filter re-checking a strict TEXT_CONTAINS_ALL_PREFIXES on
-// each record, and primary-key deduplication when the scan can return a
-// record twice.
+// TextQueryPlan wraps a text scan with type filtering, strict ALL_PREFIXES rechecks
+// and primary-key deduplication where required.
 type TextQueryPlan struct {
 	TextPlan *TextIndexPlan
 	// TypeFilter, when non-empty, is RecordQueryTypeFilterPlan's record types.
@@ -660,11 +625,8 @@ type TextQueryPlan struct {
 	RemovesDuplicates bool
 }
 
-// PlanTextQuery builds the plan Java's RecordQueryPlanner.planText
-// (RecordQueryPlanner.java:1702-1734) builds for a query whose filter is the
-// given text comparison on index's text field, ANDed with equality on each of
-// its grouping columns, wrapped as planRemoveDuplicates
-// (RecordQueryPlanner.java:1106-1117) wraps it.
+// PlanTextQuery matches Java planText: grouping equalities AND the text comparison,
+// wrapped with duplicate removal when needed (RecordQueryPlanner.java:1702-1734, 1106-1117).
 func PlanTextQuery(md *RecordMetaData, index *Index, q TextQuery) (*TextQueryPlan, error) {
 	if md == nil || index == nil {
 		return nil, &TextQueryPlanError{Reason: "metadata and index are required"}
@@ -738,10 +700,8 @@ func PlanTextQuery(md *RecordMetaData, index *Index, q TextQuery) (*TextQueryPla
 	return plan, nil
 }
 
-// textQueryCommonPrimaryKey is the commonPrimaryKey of
-// RecordQueryPlanner.getPlanContext (RecordQueryPlanner.java:1064-1092): the
-// primary key the queried record types share (every type when none is named),
-// or nil.
+// textQueryCommonPrimaryKey returns the shared primary key of queried types (all types if unnamed),
+// or nil (RecordQueryPlanner.java:1064-1092).
 func textQueryCommonPrimaryKey(md *RecordMetaData, recordTypes []string) (KeyExpression, error) {
 	if len(recordTypes) == 0 {
 		return md.CommonPrimaryKey(), nil
@@ -784,12 +744,8 @@ func textContainsPositionsIfNecessary(c *TextComparison, index *Index) bool {
 	return !getTextOmitPositions(index)
 }
 
-// Execute runs the plan: RecordQueryUnorderedPrimaryKeyDistinctPlan,
-// RecordQueryFilterPlan and RecordQueryTypeFilterPlan each run their child
-// without skip and limit and apply them to what they return
-// (RecordQueryUnorderedPrimaryKeyDistinctPlan.java:96-105,
-// RecordQueryFilterPlanBase.java:88-106, RecordQueryTypeFilterPlan.java:
-// 110-130).
+// Execute applies distinct/filter/type-filter wrappers without child skip/limit,
+// then applies skip/limit to their output, as Java’s corresponding plans do.
 func (p *TextQueryPlan) Execute(store *FDBRecordStore, continuation []byte, props ExecuteProperties) (RecordCursor[*FDBIndexedRecord], error) {
 	wrapped := len(p.TypeFilter) > 0 || p.StrictFilter || p.RemovesDuplicates
 	inner := props
@@ -833,9 +789,8 @@ func (p *TextQueryPlan) Execute(store *FDBRecordStore, continuation []byte, prop
 	return cursor, nil
 }
 
-// recordSatisfiesText evaluates the text comparison on the record's indexed
-// text field, as the strict filter's FieldWithComparison (or OneOfThem, for a
-// fanned-out field) does: true when some value of the field satisfies it.
+// recordSatisfiesText rechecks the indexed field; for a fanned-out field,
+// any value satisfying the comparison is enough.
 func recordSatisfiesText(index *Index, c *TextComparison, r *FDBIndexedRecord) (bool, error) {
 	values, err := index.RootExpression.Evaluate(r.Record, r.Record.Record)
 	if err != nil {

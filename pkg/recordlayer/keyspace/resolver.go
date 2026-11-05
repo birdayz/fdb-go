@@ -14,12 +14,8 @@ import (
 // LocatableResolver maps string names to compact int64 values and back.
 // Used by DirectoryLayerDirectory for string→long key compression.
 //
-// Java's LocatableResolver, bound to its database: its resolve(timer, name)
-// and reverseLookup(timer, value). The FDB-backed scopes (the directory
-// layer's ExtendedDirectoryLayer.global and ScopedDirectoryLayer.global, and
-// ScopedInterningLayer) implement it as recordlayer.KeySpaceResolver, and
-// recordlayer.DirectoryLayerDirectory is Java's DirectoryLayerDirectory over
-// it.
+// LocatableResolver exposes database-bound name/long mappings for ResolverDirectory.
+// FDB-backed directory and interning scopes use recordlayer.KeySpaceResolver.
 type LocatableResolver interface {
 	// Resolve maps a name to a compact int64. Creates the mapping if absent.
 	Resolve(ctx context.Context, name string) (int64, error)

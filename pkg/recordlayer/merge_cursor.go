@@ -26,12 +26,8 @@ import (
 // cursor's error.
 type ComparisonKeyFunc[T any] func(T) (tuple.Tuple, error)
 
-// compareKeys compares two comparison keys using FDB's order-preserving tuple
-// encoding. Returns negative if a < b, positive if a > b, 0 if equal.
-// Returns error if values are not tuple-encodable.
-// Unlike Java's KeyComparisons.KEY_COMPARATOR, this preserves packed tuple
-// order for UUIDs, strings, NaN payloads and mixed-width integers. Java's
-// per-object Comparable order can differ from its token scans' tuple order.
+// compareKeys returns packed-tuple ordering or an encoding error, unlike Java’s per-object comparator.
+// This preserves token-scan ordering for UUIDs, strings, NaNs and mixed-width integers.
 func compareKeys(a, b tuple.Tuple) (c int, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -75,25 +71,16 @@ type mergeChildState[T any] struct {
 	// what keeps a read-ahead error from being bundled with (and discarding)
 	// a match that was already decided.
 	needsAdvance bool
-	// seek, when set, discards this child's values up to a comparison key by
-	// repositioning the child instead of pulling every value before it (see
-	// childSeeker). Nil for a child that can only stream.
+	// seek skips to a comparison key without streaming preceding values; nil means streaming only.
 	seek childSeeker
 }
 
-// childSeeker repositions a merge child so that its next value is the first
-// one whose comparison key is at or past target in scan order, and returns the
-// child's continuation after the values it passed over: the continuation Java's
-// IntersectionCursorBase leaves on a child after consuming each of those values
-// in turn. Called only while the child holds a value whose key sorts before
-// target.
+// childSeeker advances a behind child to target, returning the last-skipped-entry continuation
+// that Java streaming intersection would retain.
 type childSeeker func(ctx context.Context, target tuple.Tuple) (RecordCursorContinuation, error)
 
-// discardTo discards this child's held value, and every later one before
-// target, as non-matching. Java (IntersectionCursorBase.java:131) consumes
-// one value per round; a seeking child skips the whole run in one step and
-// ends with the same cached continuation, so later matches and continuations
-// are unchanged and only the values read differ.
+// discardTo skips nonmatches up to target while preserving Java’s consumed continuation;
+// seeking changes physical reads, not later matches or continuation state.
 func (s *mergeChildState[T]) discardTo(ctx context.Context, target tuple.Tuple) error {
 	if s.seek == nil {
 		s.consume()
@@ -143,14 +130,6 @@ func (s *mergeChildState[T]) consume() {
 	s.continuation = s.result.GetContinuation()
 	s.needsAdvance = true
 }
-
-// NOTE: there is deliberately NO merge-union cursor in this file. The
-// wire-format UnionContinuation encoder lives in the executor's
-// mergeSortCursor (pkg/recordlayer/query/executor/executor_new_plans.go) — the
-// single union pipeline. A previous unionCursor here snapshotted
-// peeked-but-unconsumed children's POST-peek continuations, so a resume
-// skipped their held rows; it was dead code (zero production callers) and was
-// removed rather than fixed.
 
 // --- IntersectionCursor ---
 

@@ -490,9 +490,7 @@ func testOtelIngestPrefetch(t *testing.T, ctx context.Context, cluster, order st
 			}
 		})
 	}
-	// Exporter commits are bounded by their transaction timeout, not the
-	// benchmark's 1s elapsed guard, and have no retry limit; the size guard
-	// still applies to both.
+	// Exporter timeout replaces the benchmark elapsed/retry bounds; both retain the size guard.
 	t.Run("exporter_elapsed_exempt", func(t *testing.T) {
 		c := testConfig()
 		c.Count, c.Tenants, c.Batch, c.Workers, c.Diagnostics, c.SaveMode, c.Order = 1, 1, 1, 1, true, "batch", order
@@ -527,9 +525,8 @@ func testOtelIngestPrefetch(t *testing.T, ctx context.Context, cluster, order st
 		b.db = original
 		assertOtelSource(t, ctx, b, Generate(b.cfg, 0))
 	})
-	// An exporter batch is one Run: FDB's OnError loop absorbs a retryable
-	// code in the same transaction, and a 1031 fails the batch as a transient
-	// error without the benchmark's fresh Runs.
+	// An exporter batch retries within one Run; 1031 returns a transient error
+	// without the benchmark’s fresh-Run retries.
 	for _, code := range []int{1020, 1031} {
 		t.Run(fmt.Sprintf("exporter_inject_%d", code), func(t *testing.T) {
 			c := testConfig()

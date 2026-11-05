@@ -118,10 +118,8 @@ func (m *permutedMinMaxIndexMaintainer) getGroupingCount() int {
 	return m.index.RootExpression.ColumnSize()
 }
 
-// shouldUpdateExtremum returns true if newValue should replace oldValue.
-// For MAX: newValue > oldValue. For MIN: newValue < oldValue.
-// Java's Type.shouldUpdateExtremum compares with Tuple's natural order, as
-// compareTuples does.
+// shouldUpdateExtremum replaces MAX with a greater value or MIN with a lesser one,
+// using Java Type.shouldUpdateExtremum’s tuple order.
 func (m *permutedMinMaxIndexMaintainer) shouldUpdateExtremum(oldValue, newValue tuple.Tuple) bool {
 	cmp := compareTuples(oldValue, newValue)
 	if m.isMax {

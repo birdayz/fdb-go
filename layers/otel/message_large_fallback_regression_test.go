@@ -166,7 +166,7 @@ func TestInitiallyMultipartSizeFallbackAfterCommittedTail(t *testing.T) {
 					retained[part] = true
 				}
 				if int64(len(retained)) != committedParts {
-					t.Fatalf("abandoned tail retention: id=%v rows=%v want parts1..%d", abandoned, retained, committedParts)
+					t.Fatalf("abandoned tail retention: id=%v rows=%v want parts 1..%d", abandoned, retained, committedParts)
 				}
 				for part := int64(1); part <= committedParts; part++ {
 					if !retained[part] {

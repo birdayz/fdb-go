@@ -205,9 +205,8 @@ func deltaSpan(i int, attrs ...*commonpb.KeyValue) *tracepb.ResourceSpans {
 	}
 }
 
-// deltaConversation is an N-turn agent session: turn k's input repeats all
-// prior user/assistant turns plus the new user turn; its output is one reply.
-// Each turn is its own trace, as in deltaSpan.
+// deltaConversation repeats turn history plus a new user turn and one reply;
+// each turn is its own trace, as in deltaSpan.
 func deltaConversation(turns int, form string) []*tracepb.ResourceSpans {
 	var history []deltaMsg
 	out := make([]*tracepb.ResourceSpans, 0, turns)
@@ -742,9 +741,8 @@ func largeText(n int) string {
 	return b.String()
 }
 
-// TestMessageSegments checks the bounds of every segment, that each
-// tokenizes to its tokens of the whole text, and that every window of
-// maxMessageQueryTerms consecutive tokens lies inside one segment.
+// TestMessageSegments checks segment bounds, token identity and containment
+// of every maxMessageQueryTerms-token window.
 func TestMessageSegments(t *testing.T) {
 	t.Parallel()
 	small := deltaText("user", 1, 800)

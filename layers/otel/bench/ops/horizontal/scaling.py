@@ -15,8 +15,6 @@ import session as s
 import supervisor
 
 SCHEMA = "otel_native_scaling_v1"
-STAGES = [[1, 1], [2, 2], [3, 3]]
-AUTHORIZED_ROWS = 2850000
 ROLES = {"node1", "node2", "node3", "client1", "client2", "client3"}
 RECEIPT_BUDGET = 1024 ** 3
 BOUNDARY = ("independent namespaces in one single-replica FDB cluster per stage; "

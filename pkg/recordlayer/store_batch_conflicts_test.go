@@ -665,11 +665,8 @@ var _ = Describe("Batch index write-conflict coalescing scope", func() {
 			probe.added = nil
 			_, err := s.SaveRecordBatchWithOptions([]proto.Message{order(7, 71)}, options)
 			Expect(err).NotTo(HaveOccurred())
-			// Before the coalesced ranges, the overwrite adds its normal write
-			// conflict over the whole old record, as Java's clearPreviousSplitRecord
-			// does (SplitHelper.java:357-359, split_helper.go clearRecordKeys). Java
-			// skips that clear for an unsplit bare-key record with size info
-			// (SplitHelper.java:152), so the legacy layout adds none.
+			// Overwrite clears add normal old-record conflicts before coalescing (Java SplitHelper.java:357-359).
+			// Bare-key unsplit records with size info skip that clear, so legacy layout adds none.
 			var want []fdb.KeyRange
 			if !legacy {
 				begin, end := overwriteRoot.Sub(RecordKey, int64(7)).FDBRangeKeys()

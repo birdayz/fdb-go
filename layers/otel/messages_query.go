@@ -30,13 +30,8 @@ const (
 	MessageMatchPhrase = "phrase"
 )
 
-// MessageFullTextQuery finds (span, attribute, message) references whose
-// message text matches Query. Mode "all" (default) needs every term, "any"
-// one term, and "phrase" every term at consecutive positions. Role and
-// AttributeKey filter the message and the referencing attribute; Predicates
-// must hold on the same span. FirstTurnOnly keeps the references in which the
-// message is the attribute's newest element, i.e. the turn that introduced it;
-// it depends only on the span, not on the order spans were exported in.
+// MessageFullTextQuery matches message references: all (default), any, or consecutive-position phrase.
+// Role/attribute/span predicates filter references; FirstTurnOnly selects the introducing span, independent of arrival.
 type MessageFullTextQuery struct {
 	Query         string      `json:"query"`
 	Mode          string      `json:"mode,omitempty"`
@@ -49,9 +44,7 @@ type MessageFullTextQuery struct {
 	Continuation  []byte      `json:"continuation,omitempty"`
 }
 
-// MessageSpanHit is one reference. MessageID names the stored message
-// ("writer.seq"); TurnOrdinals are its 0-based positions in the attribute's
-// manifest.
+// MessageSpanHit identifies a message ("writer.seq") reference with 0-based manifest TurnOrdinals.
 type MessageSpanHit struct {
 	Trace        string `json:"trace_id"`
 	Span         string `json:"span_id"`
@@ -78,9 +71,7 @@ type messagePhraseTerm struct {
 	offset int
 }
 
-// tokenizeQueryTerms returns a query's tokens with their positions. A token
-// longer than maxIndexedTokenBytes is a ConfigError: it is never indexed, so
-// no answer for it would be exhaustive.
+// tokenizeQueryTerms rejects overlong, unindexed query tokens because no answer could be exhaustive.
 func tokenizeQueryTerms(text string) ([]messagePhraseTerm, error) {
 	const op = "message query"
 	if len(text) > maxMessageQueryBytes {
@@ -191,9 +182,8 @@ func newMessageQueryPlan(op string, q MessageFullTextQuery, k int) (*messageQuer
 	return p, nil
 }
 
-// checkMessageAttributeQuery refuses an equality predicate on a decomposed
-// GenAI message attribute: its stored value is a manifest, which is not
-// indexed, so an empty answer would not be exhaustive.
+// checkMessageAttributeQuery rejects equality on unindexed GenAI manifests
+// rather than returning a misleading empty answer.
 func checkMessageAttributeQuery(op string, a Attribute, decomposed bool) error {
 	if decomposed && a.Scope == "span" && IsMessageDeltaAttribute(a.Key) {
 		return failf("config", op, "%s holds decomposed GenAI messages; search it with QueryMessageFullText", a.Key)
@@ -297,11 +287,8 @@ func textScanIDs(ctx context.Context, store *recordlayer.FDBRecordStore, scan *r
 	}
 }
 
-// matchMessages returns the messages of the plan's role (every role when
-// empty) whose text matches, ordered by ID. A part matches alone, which is
-// exact for phrases (segments overlap by the longest phrase) and for "any";
-// an "all" match spread over the parts of a multi-part message is found by
-// checking each multi-part message for every term.
+// matchMessages returns role-matching messages ordered by ID; overlap makes per-part phrase/any scans exact.
+// For all-term matches spanning parts, it probes each multipart message for every term.
 func (b *FDBBackend) matchMessages(ctx context.Context, store *recordlayer.FDBRecordStore, plan *messageQueryPlan, budget *queryBudget) ([]*messageCandidate, error) {
 	idx := b.md.GetIndex(messageTextIndexName)
 	tenant := b.cfg.Tenant
@@ -348,9 +335,8 @@ func (b *FDBBackend) matchMessages(ctx context.Context, store *recordlayer.FDBRe
 	return out, nil
 }
 
-// shardTextScans runs one TextScan per writer shard of (tenant, role)
-// concurrently and returns the union of their matches. Each scan may use the
-// whole remaining budget; their sum is checked against it afterwards.
+// shardTextScans unions concurrent shard scans; each may use the remaining budget,
+// but their aggregate cost must also fit.
 func shardTextScans(ctx context.Context, store *recordlayer.FDBRecordStore, idx *recordlayer.Index, tenant int64, role string, typ recordlayer.TextComparisonType, tokens []string, budget *queryBudget) ([]messageID, error) {
 	found := make([][]messageID, messageTextShards)
 	subs := make([]queryBudget, messageTextShards)
@@ -385,9 +371,7 @@ func shardTextScans(ctx context.Context, store *recordlayer.FDBRecordStore, idx 
 	return ids, nil
 }
 
-// spreadAllMatches returns the multi-part messages of a role holding
-// every term in some part, one single-token scan bounded to the message per
-// term.
+// spreadAllMatches checks multipart messages with one message-bounded scan per term.
 func (b *FDBBackend) spreadAllMatches(ctx context.Context, store *recordlayer.FDBRecordStore, idx *recordlayer.Index, tenant int64, role string, terms []string, budget *queryBudget) ([]messageID, error) {
 	const op = "message full-text query"
 	cur := store.ScanIndex(b.md.GetIndex(messageLargeIndexName), recordlayer.TupleRangeAllOf(tuple.Tuple{tenant}), nil, recordlayer.ForwardScan())
@@ -456,9 +440,8 @@ func messageRefKey(order, trace, span string, start int64, attribute int64, id m
 // messageRefReads bounds the range reads in flight at once.
 const messageRefReads = 256
 
-// pipelinedRanges reads every range with up to messageRefReads in flight,
-// at most limit() entries each, charging each entry to budget, and passes
-// range i's entries to visit.
+// pipelinedRanges reads up to messageRefReads ranges concurrently, charging each entry
+// to budget and passing at most limit() entries per range to visit.
 func pipelinedRanges(ctx context.Context, tx fdb.ReadTransaction, ranges []fdb.KeyRange, budget *queryBudget, visit func(i int, kv fdb.KeyValue) error) error {
 	const op = "message full-text query"
 	for lo := 0; lo < len(ranges); lo += messageRefReads {
@@ -490,11 +473,8 @@ func pipelinedRanges(ctx context.Context, tx fdb.ReadTransaction, ranges []fdb.K
 	return nil
 }
 
-// messageRefs returns every reference of the plan's matching messages inside
-// the window, unordered. A message's MessageTrace records name the traces it
-// occurs in; each such trace's envelope_refs_v1 range lists every span of
-// the trace with the references it holds. Both rounds of ranges are read
-// concurrently, and no span record is loaded.
+// messageRefs joins matching messages through MessageTrace markers to packed envelope_refs_v1 ranges.
+// Both rounds read concurrently without loading span records; windowed references are unordered.
 func (b *FDBBackend) messageRefs(ctx context.Context, store *recordlayer.FDBRecordStore, plan *messageQueryPlan, w timeWindow, budget *queryBudget) ([]messageRef, error) {
 	const op = "message full-text query"
 	cands, err := b.matchMessages(ctx, store, plan, budget)

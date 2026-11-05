@@ -28,14 +28,11 @@
 //		return store.SaveRecord(&shoppb.Order{OrderId: proto.Int64(1), Price: proto.Int32(25)})
 //	})
 //
-// Within one context, record writers coordinate physical body/chunk and deferred
-// record-version changes, including ordinary bulk clears across store handles.
-// User serializers, key expressions and index callbacks run outside that physical
-// exclusion; this does not serialize their logical index/count effects or make
-// concurrent public loads and scans atomic. Join concurrent work before returning
-// a Run callback or committing a context. Commit checks may perform joined writes;
-// commit seals admission atomically once admitted record operations are quiescent.
-// Raw transactions and direct version-queue operations bypass this coordination.
+// Within a context, writers coordinate physical bodies/chunks, deferred versions and bulk clears across handles.
+// Join work before Run returns or commit; commit checks may write before quiescence seals admission.
+//
+// Serializers, key/index callbacks, public reads, raw transactions and direct version queues are outside
+// that physical exclusion; it neither serializes logical index/count effects nor makes reads atomic.
 //
 // Run retries retryable errors in a fresh transaction, so keep external side
 // effects outside its callback. The runnable example is example/getting_started.go;

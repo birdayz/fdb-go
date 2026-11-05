@@ -30,9 +30,8 @@ const (
 	sameSpanProbeBatch = 64
 )
 
-// SameSpanQuery asks for spans carrying every predicate on the same
-// (trace_id, span_id). Predicates[0] drives the scan; callers should put the
-// most selective predicate first. Result order is the run's posting order.
+// SameSpanQuery intersects predicates on one (trace_id, span_id), in posting order.
+// Predicates[0] drives the scan; put the most selective predicate first.
 type SameSpanQuery struct {
 	Predicates   []Attribute `json:"predicates"`
 	TimeWindow   *TimeRange  `json:"time_window,omitempty"`
@@ -51,10 +50,8 @@ type SpanQueryPage struct {
 	Bytes        int64       `json:"logical_read_bytes"`
 }
 
-// TraceExistentialQuery is RFC-283 section 6.1's trace existential: each
-// clause is satisfied by some (possibly different) witness in the same trace.
-// LogClauses match trace-correlated logs through their LOG_TRACE correlation.
-// MessageClauses match GenAI message text; they take no Limit or Continuation.
+// TraceExistentialQuery allows different span/log/message witnesses within one trace (RFC-283 §6.1).
+// Logs use LOG_TRACE correlation; message clauses take neither Limit nor Continuation.
 type TraceExistentialQuery struct {
 	Clauses        []Attribute            `json:"clauses"`
 	LogClauses     []Attribute            `json:"log_clauses,omitempty"`
@@ -63,10 +60,8 @@ type TraceExistentialQuery struct {
 	Limit          int                    `json:"limit,omitempty"`
 }
 
-// TraceExistentialHit retains every verified witness per clause: Witnesses[i]
-// satisfies Clauses[i], LogWitnesses[j] satisfies LogClauses[j] and
-// MessageWitnesses[k] satisfies MessageClauses[k], newest first.
-// Latest is the newest witness timestamp across all clauses.
+// TraceExistentialHit keeps newest-first witnesses per matching span/log/message clause.
+// Latest is the newest timestamp across all witnesses.
 type TraceExistentialHit struct {
 	Trace            string             `json:"trace_id"`
 	Latest           int64              `json:"latest"`
@@ -527,9 +522,8 @@ func (b *FDBBackend) newBudget(op string) *queryBudget {
 	return &queryBudget{op: op, maxCandidates: b.cfg.MaxCandidates, maxBytes: b.cfg.MaxBytes}
 }
 
-// QuerySameSpan returns one snapshot_page of spans that satisfy every
-// predicate on the same span, in posting order, resuming after a signed
-// continuation at a new read version.
+// QuerySameSpan returns a posting-ordered snapshot_page; signed continuations
+// resume at a new read version.
 func (b *FDBBackend) QuerySameSpan(ctx context.Context, q SameSpanQuery) (SpanQueryPage, error) {
 	const op = "same-span query"
 	b.lastWork = QueryResult{}

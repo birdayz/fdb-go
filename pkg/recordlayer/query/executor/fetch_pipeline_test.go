@@ -124,7 +124,7 @@ func TestIntegrationIndexAndPartialFetchesPipeline(t *testing.T) {
 					}
 					defer cursor.Close()
 					if sizeCalls != 1 {
-						return nil, fmt.Errorf("INDEX_TO_RECORD sizing calls=%d, want1", sizeCalls)
+						return nil, fmt.Errorf("INDEX_TO_RECORD sizing calls=%d, want 1", sizeCalls)
 					}
 					for want := int64(1); want <= count; want++ {
 						row, err := cursor.OnNext(context.Background())

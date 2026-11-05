@@ -50,10 +50,8 @@ type Config struct {
 	Order              string `json:"order"`
 	// Messages is the GenAI message storage layout: "", "deltas" or "fulltext_v2".
 	Messages string `json:"messages,omitempty"`
-	// KeyLayout is how an FDB run's keys are prefixed: "" (the run's tuple
-	// prefix) or "directory_v1" (directory-layer prefixes, keyspace.go). The
-	// FDB backend sets it when it opens the run: an existing run keeps the
-	// layout its manifest records, a fresh one gets directory_v1.
+	// KeyLayout is the run prefix: legacy tuple ("") or directory_v1 (keyspace.go).
+	// FDB preserves an existing manifest’s layout and uses directory_v1 for fresh runs.
 	KeyLayout string `json:"key_layout,omitempty"`
 }
 
@@ -243,8 +241,7 @@ func ExpectedContext(ctx context.Context, c Config, scope, key, typ, value strin
 	return results[a], err
 }
 
-// oracleTopK independently implements the declared result order; backend sort
-// bugs must not become their own expected answer.
+// oracleHeap independently implements result ordering so backend sort bugs cannot define expected answers.
 type oracleHeap []Hit
 
 func (h oracleHeap) Len() int { return len(h) }
@@ -259,28 +256,6 @@ func (h *oracleHeap) Pop() any {
 	v := old[len(old)-1]
 	*h = old[:len(old)-1]
 	return v
-}
-
-func oracleTopK(m map[string]int64, k int) []Hit {
-	out, _ := oracleTopKContext(context.Background(), m, k)
-	return out
-}
-
-func oracleTopKContext(ctx context.Context, m map[string]int64, k int) ([]Hit, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, wrap("canceled", "oracle topK", err)
-	}
-	if k < 1 {
-		return nil, fail("config", "oracle topK", "positive K required")
-	}
-	h := oracleHeap{}
-	for id, ns := range m {
-		if err := ctx.Err(); err != nil {
-			return nil, wrap("canceled", "oracle topK", err)
-		}
-		retainOracleHit(&h, Hit{Trace: id, Latest: ns}, k)
-	}
-	return finishOracleHeap(ctx, &h)
 }
 
 func oracleTraceSort(out []SpanHit) {

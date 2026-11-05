@@ -13,9 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// Random puts and removes against a model map: every operation returns the
-// model's old value, and after every transaction each map scans to the model
-// in key order, passes VerifyIntegrity, and answers Get and ContainsKey.
+// Random put/remove results must match the model, including scans, integrity, Get and ContainsKey.
 var _ = Describe("BunchedMap model", func() {
 	ctx := context.Background()
 

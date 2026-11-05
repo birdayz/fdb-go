@@ -18,9 +18,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Custom index types registered the way an external package registers its
-// own: through RegisterIndexMaintainerFactory from init, using only exported
-// API in the factory and maintainer.
+// Register custom indexes from init using only exported factory/maintainer APIs,
+// as an external package would.
 const (
 	seamValidatedIndexType = "custom_seam_validated_v1"
 	seamCounterIndexType   = "custom_seam_nonidempotent_counter_v1"
@@ -72,9 +71,8 @@ func (seamValidatedFactory) NewIndexMaintainer(state IndexMaintainerState) (Inde
 	return NewStandardIndexMaintainer(state), nil
 }
 
-// seamCounterFactory maintains a non-idempotent index: every record image it
-// is handed adds one to an "added" or "removed" counter, so applying a record
-// the online build will also apply counts it twice.
+// seamCounterFactory counts every added/removed image, exposing duplicate
+// application by maintenance and the online build.
 type seamCounterFactory struct{}
 
 func (seamCounterFactory) IndexTypes() []string { return []string{seamCounterIndexType} }
@@ -109,9 +107,8 @@ func (m *seamCounterMaintainer) Update(oldRecord, newRecord *FDBStoredRecord[pro
 	return nil
 }
 
-// UpdateWhileWriteOnly passes this maintainer's own Update: the embedded
-// StandardIndexMaintainer.UpdateWhileWriteOnly would call the base Update, as
-// Go embedding is not virtual dispatch.
+// Pass the maintainer’s own Update: embedding is not virtual dispatch,
+// so StandardIndexMaintainer.UpdateWhileWriteOnly would call the base implementation.
 func (m *seamCounterMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
 	return UpdateWhileWriteOnlyNonIdempotent(oldRecord, newRecord, m.Index(), m.Store(), m.Update)
 }
@@ -240,9 +237,8 @@ var _ = Describe("custom index maintainer seams", func() {
 	})
 })
 
-// seamBuildStore is the build coordination UpdateWhileWriteOnlyNonIdempotent
-// asks of a store; any other IndexStoreContext method panics on the nil
-// embedded interface.
+// seamBuildStore supports only build coordination; other IndexStoreContext calls
+// panic through its nil embedded interface.
 type seamBuildStore struct {
 	IndexStoreContext
 	source    *Index

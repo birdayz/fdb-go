@@ -5,9 +5,8 @@
 
 package recordlayer
 
-// PipelineOperation names a kind of asynchronous pipeline a record store runs,
-// so a PipelineSizer can choose its depth. Matches Java's
-// com.apple.foundationdb.record.PipelineOperation (PipelineOperation.java:31-77).
+// PipelineOperation selects an asynchronous pipeline’s depth via PipelineSizer
+// (Java PipelineOperation.java:31-77).
 type PipelineOperation struct {
 	name string
 }
@@ -37,14 +36,11 @@ var (
 	PipelineOperationInsert              = NewPipelineOperation("INSERT")
 )
 
-// PipelineSizer computes how many elements an operation's pipeline keeps in
-// flight. Matches Java's FDBRecordStoreBase.PipelineSizer
-// (FDBRecordStoreBase.java:1736-1738).
+// PipelineSizer computes in-flight depth (Java FDBRecordStoreBase.PipelineSizer).
 type PipelineSizer func(op PipelineOperation) int
 
-// DefaultPipelineSizer is FDBRecordStore.DEFAULT_PIPELINE_SIZER
-// (FDBRecordStore.java:183-191): DML statements run one record at a time,
-// everything else DefaultPipelineSize deep.
+// DefaultPipelineSizer runs DML one record at a time and other operations
+// DefaultPipelineSize deep (FDBRecordStore.java:183-191).
 func DefaultPipelineSizer(op PipelineOperation) int {
 	if op == PipelineOperationUpdate || op == PipelineOperationInsert || op == PipelineOperationDelete {
 		return 1

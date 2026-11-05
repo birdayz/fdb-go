@@ -381,13 +381,8 @@ func (m *textIndexMaintainer) updateOneKey(record *FDBStoredRecord[proto.Message
 		m.tx.AddWriteConflictRange(indexRange)
 	}
 
-	// Put (or remove) the record in each token's BunchedMap, with up to the
-	// store's TEXT_INDEX_UPDATE pipeline size of their reads in flight: Java's
-	// RecordCursor.fromIterator(positionMap).forEachAsync(..., pipelineSize)
-	// (TextIndexMaintainer.java:337-353). Each token is a different map, so an
-	// operation's read never depends on another's writes. The reads run
-	// concurrently; each operation's writes and conflict ranges are applied on
-	// this goroutine in issue order, and the first failure is returned.
+	// Overlap independent token-map reads up to TEXT_INDEX_UPDATE depth; apply writes/conflicts
+	// on this goroutine in issue order and return the first failure (TextIndexMaintainer.java:337-353).
 	pipelineSize := m.pipelineSize
 	if pipelineSize < 1 {
 		pipelineSize = 1
@@ -459,18 +454,15 @@ func (m *textIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, sc
 	return cursor
 }
 
-// scanText is Scan that also returns the underlying textCursor, which a
-// leapfrog intersection seeks. The two are the same cursor when no skip is
-// requested.
+// scanText also returns the TEXT cursor for leapfrog seeks; without skip, both cursors are identical.
 func (m *textIndexMaintainer) scanText(scanRange TupleRange, continuation []byte, scanProperties ScanProperties) (RecordCursor[*IndexEntry], *textCursor) {
 	textPosition := textFieldPosition(m.index.RootExpression)
 	splitter := newTextSubspaceSplitterForRange(m.indexSubspace, textPosition+1, scanRange)
 
 	byteRange := scanRange.ToFDBRange(m.indexSubspace)
 
-	// Java (TextIndexMaintainer.java:531-532) hands the cursor and the
-	// iterator the properties with the skip folded into the row limit, and
-	// applies the skip on top (TextIndexMaintainer.java:549-552).
+	// Fold skip into the iterator row limit, then apply skip on top, matching Java
+	// (TextIndexMaintainer.java:531-532, 549-552).
 	skip := scanProperties.ExecuteProperties.Skip
 	withAdjustedLimit := scanProperties.WithExecuteProperties(scanProperties.ExecuteProperties.ClearSkipAndAdjustLimit())
 	adjustedLimit := withAdjustedLimit.ExecuteProperties.ReturnedRowLimit

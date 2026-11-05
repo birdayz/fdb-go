@@ -5,8 +5,6 @@ import (
 	"errors"
 	"strconv"
 	"time"
-
-	"fdb.dev/pkg/fdbgo/fdb"
 )
 
 const maxSourceRuns = 8
@@ -38,12 +36,8 @@ func isSourceTimeout(err error) bool {
 	if errors.As(err, &domain) {
 		return domain.Kind == "operation" && isSourceTimeout(domain.Cause)
 	}
-	var value fdb.Error
-	if errors.As(err, &value) {
-		return value.Code == 1031
-	}
-	var pointer *fdb.Error
-	return errors.As(err, &pointer) && pointer != nil && pointer.Code == 1031
+	code, ok := fdbErrorCode(err)
+	return ok && code == 1031
 }
 
 func (d *ingestRecorder) timeout() {
@@ -64,10 +58,8 @@ func (d *ingestRecorder) freshRetry() {
 	d.mu.Unlock()
 }
 
-// A 1031 can be maybe-committed and is terminal to FDB OnError. Fresh source
-// Runs must reread old images; replaying captured mutations would be unsafe.
-// An Exporter batch is one Run: its timeout and the caller's context bound it,
-// and a 1031 fails the export call with the classified error.
+// Fresh source Runs reread old images after maybe-committed 1031 errors.
+// Exporter batches instead return the timeout to their caller.
 func (b *FDBBackend) saveIngestBatch(ctx context.Context, batch preparedBatch, d *ingestRecorder) error {
 	if isExporterTxn(ctx) {
 		return b.saveIngestBatchRun(ctx, batch, d)

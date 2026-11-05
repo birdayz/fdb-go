@@ -25,9 +25,8 @@ var (
 	brotliState         = newBrotliFreeLists(brotliWriterFreeListSize, brotliReaderFreeListSize)
 )
 
-// Reuse is bounded independently of the number of concurrent stores. Each
-// acquired state belongs to one call. Like the zlib lists, released states can
-// retain plaintext in their codec windows until reused or garbage-collected.
+// Each call owns one codec state; bounded free lists can retain plaintext windows
+// until reuse or collection, as the zlib lists do.
 type brotliFreeLists struct {
 	writers [maxBrotliCompressionLevel + 1]chan *brotli.Writer
 	readers chan *brotli.Reader

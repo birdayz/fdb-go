@@ -144,7 +144,7 @@ var _ = Describe("Commit hooks", func() {
 			Expect(rtx.getCommitCheck("retirement")).NotTo(BeNil())
 			Expect(rtx.getCommitCheck("absent")).To(BeNil())
 			rtx.AddCommitCheck(func() error { checked.Add(10); return nil })
-			Expect(rtx.sealRecordWrites()).To(Succeed())
+			Expect(rtx.drainCommitChecksAndSealWrites()).To(Succeed())
 			Expect(checked.Load()).To(Equal(int32(11)))
 		})
 
@@ -161,7 +161,7 @@ var _ = Describe("Commit hooks", func() {
 					return func() error { order = append(order, name); return nil }
 				})
 			}
-			Expect(rtx.sealRecordWrites()).To(Succeed())
+			Expect(rtx.drainCommitChecksAndSealWrites()).To(Succeed())
 			Expect(order).To(Equal([]string{"delete", "retained"}))
 			Expect(rtx.getCommitCheck("deleted")).To(BeNil())
 		})
@@ -179,7 +179,7 @@ var _ = Describe("Commit hooks", func() {
 			rtx.removeCommitCheck("absent")
 			register("other", "other")
 			register("store", "new")
-			Expect(rtx.sealRecordWrites()).To(Succeed())
+			Expect(rtx.drainCommitChecksAndSealWrites()).To(Succeed())
 			Expect(order).To(Equal([]string{"other", "new"}))
 		})
 
@@ -214,7 +214,7 @@ var _ = Describe("Commit hooks", func() {
 				return func() error { order = append(order, "failure"); return checkErr }
 			})
 			rtx.AddCommitCheck(func() error { order = append(order, "later"); return nil })
-			Expect(rtx.sealRecordWrites()).To(MatchError(checkErr))
+			Expect(rtx.drainCommitChecksAndSealWrites()).To(MatchError(checkErr))
 			Expect(order).To(Equal([]string{"failure"}))
 		})
 	})

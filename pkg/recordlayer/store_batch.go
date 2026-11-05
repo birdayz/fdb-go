@@ -21,25 +21,11 @@ var unsplitSuffix = tuple.Tuple{unsplitRecord}
 
 // BatchSaveOptions controls transaction-local batch execution, not stored layout.
 type BatchSaveOptions struct {
-	// CoalesceIndexWriteConflicts adds, once the whole batch has saved, a write
-	// conflict over the primary and the secondary subspace of each index whose
-	// maintainer this batch ran: an index that applies to a saved record's type
-	// or to the type of a record it overwrote (a multi-type index on either,
-	// and every universal index such as COUNT or VERSION), and that is not
-	// disabled or write-only with a pending-write queue. Indexes of other
-	// record types get no added range, so readers of only those indexes see no
-	// conflict from the batch, as without the option.
+	// CoalesceIndexWriteConflicts adds primary/secondary write-conflict prefixes for indexes actually maintained.
+	// This includes old/new record types and universal indexes, but excludes disabled or queued write-only indexes.
 	//
-	// The ranges are added on top of the batch's normal conflicts and suppress
-	// none of them: each write keeps the conflict it has without the option (a
-	// versionstamped VERSION entry gets its own from the commit proxy). Every
-	// conflict of the batch therefore remains, and a client that coalesces overlapping
-	// ranges can ship fewer, wider ones; the live approximate transaction size
-	// need not decrease. Readers that also write and read anywhere in a covered
-	// index (not only the keys the batch changed) may see additional conflicts.
-	// No record, header, record-count, index-state, uniqueness-violation,
-	// sliding-window, or pending-queue range is widened, and a failed batch adds
-	// none.
+	// Normal conflicts remain; only index prefixes widen, so covered readers may see extra conflicts.
+	// Failed batches add none; other subspaces stay unchanged, and live approximate size need not decrease.
 	CoalesceIndexWriteConflicts bool
 
 	// skipTextPrefetch turns off the TEXT bunch prefetch (tests compare
@@ -57,16 +43,8 @@ type BatchSaveOptions struct {
 // Semantically equivalent to calling SaveRecord N times. All records are
 // saved in the current transaction.
 //
-// TEXT indexes: before the first record is applied, the batch reads, all
-// together, the BunchedMap bunches its records' TEXT index updates will read
-// (the new entries' and an update's removed ones, one snapshot read per token
-// map, plus the tokenizer version of each updated record), into the
-// transaction's read-your-writes cache. The records are then applied one
-// after another as SaveRecord applies them, and their bunch reads, served
-// from that cache merged with the earlier records' writes, return what they
-// return without it. The commit is the commit of N SaveRecord calls, its
-// mutations and read and write conflict ranges included; the bunch reads cost
-// one round trip instead of one per record (store_batch_text_prefetch.go).
+// TEXT prefetch fills the RYW cache with token bunches and updated-record tokenizer versions before writes.
+// Sequential saves merge cached reads with earlier writes, preserving ordinary SaveRecord mutations and conflicts.
 func (store *FDBRecordStore) SaveRecordBatch(
 	records []proto.Message,
 ) ([]*FDBStoredRecord[proto.Message], error) {
@@ -313,8 +291,7 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 		p.oldType, p.oldRecord, p.oldWire = oldRT, oldMsg, oldWire
 	}
 
-	// The bunch reads of the batch's TEXT index updates, issued together and
-	// drained into the transaction's cache before the first record is applied
+	// Prefetch TEXT bunch reads into the transaction cache before applying any record
 	// (store_batch_text_prefetch.go).
 	if !options.skipTextPrefetch {
 		news := make([]*FDBStoredRecord[proto.Message], len(pending))
@@ -468,10 +445,8 @@ func (options BatchSaveOptions) indexWriteSet() indexWriteSet {
 	return indexWriteSet{}
 }
 
-// addBatchIndexWriteConflicts adds the coalesced conflicts of
-// CoalesceIndexWriteConflicts over the indexes the batch updated, in name order.
-// Every write keeps its own normal conflict range; these prefixes only add to
-// those conflicts, never replace one.
+// addBatchIndexWriteConflicts adds maintained index prefixes in name order;
+// these never replace normal per-write conflicts.
 func (store *FDBRecordStore) addBatchIndexWriteConflicts(written indexWriteSet) error {
 	var ranges []fdb.KeyRange
 	for _, name := range slices.Sorted(maps.Keys(written)) {

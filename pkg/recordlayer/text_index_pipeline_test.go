@@ -17,11 +17,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// snapshotReadCounter tracks the snapshot range reads made through a
-// transaction: a read is in flight from GetRange, which issues it, until its
-// GetSliceWithError returns. The first `gate` reads to complete wait until
-// `gate` are issued, so a maintainer that completed each read before issuing
-// the next would time out instead of passing.
+// snapshotReadCounter gates the first completions until `gate` reads are issued,
+// so serial issue/wait would time out rather than pass.
 type snapshotReadCounter struct {
 	mu                            sync.Mutex
 	issued, inFlight, maxInFlight int
@@ -129,9 +126,7 @@ func readPipelineTextIndex(ctx context.Context, db *FDBDatabase, ks subspace.Sub
 	return result.([]string), nil
 }
 
-// The TEXT maintainer reads each token's BunchedMap with up to the store's
-// TEXT_INDEX_UPDATE pipeline size of reads in flight, and writes the same
-// index whatever that size is.
+// TEXT_INDEX_UPDATE depth must bound in-flight reads without changing stored index bytes.
 var _ = Describe("TEXT index pipelined update", func() {
 	ctx := context.Background()
 

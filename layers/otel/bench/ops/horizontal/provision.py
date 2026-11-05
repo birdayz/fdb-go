@@ -47,11 +47,8 @@ GIB = 1024 ** 3
 TEARDOWN_PASSES = 40          # re-discovery passes; with backoff about 10 minutes
 TEARDOWN_MAX_BACKOFF = 15     # seconds between passes, growing by 2 s per pass
 TEARDOWN_DELETE_TIMEOUT = 30  # seconds for one hcloud delete, which waits for its action
-# Sealed assets are zstd-compressed once on the controller, cross its uplink once
-# to the first prepared node (the seed), and go from there as .zst to every other
-# node over the campaign's private network; each node decompresses and verifies.
-# Each copy's timeout is its size over a rate floor plus a fixed allowance for
-# connection setup and verification.
+# Compress sealed assets once, upload to the seed, then distribute over the private network.
+# Copy deadlines use a size-based rate floor plus setup and verification allowance.
 SEALED_ASSETS = (('binary', 'otel-demo'), ('fdbserver', 'fdbserver'), ('fdbcli', 'fdbcli'))
 ZSTD_LEVEL = ('-10', '-T0')           # fdbserver 94 MB -> 27 MB in under a second; -19 gains ~10% for 15 s
 UPLOAD_RATE_FLOOR = 256 * 1024        # bytes/s controller -> seed; a third of a 0.75 MB/s uplink
@@ -717,12 +714,8 @@ def _pack_assets(plan, state, runner, clock=time.time):
     return packed
 
 
-# Installs one sealed asset on a node from its .zst: an uploaded one ("install")
-# or one fetched from the seed's private asset server ("fetch"). The .zst must
-# match its journaled SHA-256 before it is decompressed, and the decompressed
-# file gets its final name only after it matches the sealed SHA-256; any
-# mismatch removes both and exits nonzero. The seed keeps its verified .zst files
-# to serve them. The controller checks the printed receipt against both hashes.
+# Install/fetch verifies compressed and sealed SHA-256 hashes before publishing the asset.
+# Mismatches remove both files; the seed retains verified .zst files for redistribution.
 _ASSET_HELPER = r'''import hashlib, json, os, shutil, subprocess, sys, time, urllib.request
 r = json.loads(sys.argv[1])
 src, dest = r['src'], r['dest']
@@ -1241,11 +1234,8 @@ def teardown(plan, out, resources=None, *, runner=None, clock=time.time, sleep=t
                 raise
     receipt = dict(passed=False, actions=[], refused=[], errors=[], deadline_epoch=plan['deadline_epoch'])
     with _lock(state):
-        # Re-discover on each pass: a timed-out create may have reached the API.
-        # Server deletion is asynchronous; until it completes, the firewall,
-        # network and placement group refuse deletion as resource_in_use.
-        # Keep passing with backoff (about 10 minutes in total) instead of
-        # giving up after a few seconds; the deadline reserve still bounds it.
+        # Re-discover timed-out creates and retry asynchronous deletions until dependencies clear.
+        # Backoff stays within the deadline reserve.
         for attempt in range(TEARDOWN_PASSES):
             remaining = 0
             for kind in DELETE_KINDS:

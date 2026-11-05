@@ -118,10 +118,8 @@ func readVarInt(data []byte, pos int) (val, next int, canonical bool, err error)
 	return 0, pos, false, errVarIntEOF
 }
 
-// walkPositionList reads the position list at data[pos:], appending its
-// positions to out when out is not nil, and returns the offset after it and
-// its number of positions. canonical reports whether appendPositionList
-// writes the list's positions to exactly these bytes.
+// walkPositionList optionally appends decoded positions and returns end offset, count and canonicality.
+// Canonical bytes are exactly what appendPositionList would write.
 func walkPositionList(data []byte, pos int, out *[]int) (next, count int, canonical bool, err error) {
 	serializedSize, pos, canonical, err := readVarInt(data, pos)
 	if err != nil {
@@ -151,9 +149,8 @@ func walkPositionList(data []byte, pos int, out *[]int) (next, count int, canoni
 	return pos, count, canonical && pos-start == serializedSize, nil
 }
 
-// countBunch counts the entries of a serialized bunch and, with values, their
-// positions, following deserializeBunch's framing. It stops at the first
-// malformed byte; deserializeBunch reports it.
+// countBunch counts entries/positions using deserializeBunch framing, stopping
+// at the first malformed byte for deserializeBunch to report.
 func countBunch(data []byte, values bool) (entries, positions int) {
 	pos := len(textIndexBunchedSerializerPrefix)
 	for first := true; pos < len(data); first = false {
@@ -184,17 +181,11 @@ func countBunch(data []byte, values bool) (entries, positions int) {
 
 // bunchItem is one entry of a bunch as BunchedMap's put and remove handle it.
 //
-// key is the entry's packed tuple. Java decodes each key with
-// Tuple.fromBytes, which keeps the bytes it decoded (Tuple.java fromBytes:
-// t.packed = packed); Tuple.compareTo then compares those bytes, and
-// serializeEntries writes them back unchanged, since Tuple.pack returns them.
-// The tuple's elements are never needed, so they are validated, not decoded.
+// key retains validated packed bytes, matching Java Tuple.fromBytes/pack preservation
+// and cached-byte Tuple.compareTo ordering without decoding unused elements.
 //
-// list is the entry's stored position list bytes, size varint included. Java
-// decodes every list and serializeEntries encodes it again, which gives back
-// the stored bytes when they are canonical, so a canonical list is kept as
-// stored; otherwise list is nil and positions holds the list, as for a new
-// entry.
+// list retains canonical stored position bytes including the size varint.
+// Noncanonical/new entries use positions instead, matching Java decode/re-encode behavior.
 type bunchItem struct {
 	key       []byte
 	list      []byte
@@ -233,9 +224,8 @@ func itemPositions(item *bunchItem) ([]int, error) {
 	return positions, nil
 }
 
-// bunchItemsSize is the size serializeEntries gives items. It fails where
-// serializeEntries does: on no items or a position list that is not
-// monotonically increasing non-negative integers.
+// bunchItemsSize matches serializeEntries validation: nonempty items and
+// monotonically increasing nonnegative positions.
 func bunchItemsSize(items []bunchItem) (int, error) {
 	if len(items) == 0 {
 		return 0, fmt.Errorf("text index serializer: cannot serialize empty entry list")
@@ -290,10 +280,8 @@ func serializeBunchItem(item *bunchItem) ([]byte, error) {
 	return appendItemList(out, item), nil
 }
 
-// decodeBunchItems is deserializeEntries keeping each key's packed bytes and
-// each canonical list's bytes, slices of firstKey and data, appended to items.
-// It fails where deserializeEntries does: firstKey is the signpost key Java
-// decodes with deserializeKey, and each later key is unpacked by Java.
+// decodeBunchItems appends borrowed packed keys and canonical lists from firstKey/data.
+// It validates signpost and entry keys where Java deserializeKey/deserializeEntries would decode them.
 func decodeBunchItems(firstKey, data []byte, items []bunchItem) ([]bunchItem, error) {
 	if err := tuplefast.Validate(firstKey); err != nil {
 		return items, &BunchedSerializationError{Message: fmt.Sprintf("unable to deserialize key: %v", err), Data: firstKey}

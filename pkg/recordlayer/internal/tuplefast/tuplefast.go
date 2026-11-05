@@ -317,9 +317,8 @@ func SubspaceUnpack(key []byte, prefixLen int) (tuple.Tuple, error) {
 	return Unpack(key[prefixLen:])
 }
 
-// Validate reports whether Unpack(b) would fail, without decoding: it walks
-// the elements as fastDecodeTuple does and returns an error exactly where
-// Unpack would. It allocates only for the error.
+// Validate matches Unpack errors by walking elements without decoding;
+// only an error allocates.
 func Validate(b []byte) error {
 	_, err := validateTuple(b, false)
 	return err

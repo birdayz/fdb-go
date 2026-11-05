@@ -193,7 +193,7 @@ func TestLogSmallIntegerPostingNativeCostRejectsWholeCall(t *testing.T) {
 		native += 3*len(p.Key) + len(p.Value) + 69
 	}
 	if old >= maxLogTxnWriteBytes || native <= 10_000_000 {
-		t.Fatalf("fixture must pass COMPLETE old8M admission but exceed native10M: old=%d postingNative=%d", old, native)
+		t.Fatalf("fixture must pass COMPLETE old 8M admission but exceed native 10M: old=%d postingNative=%d", old, native)
 	}
 	t.Logf("native-cost fixture: attributes=%d old=%d postingNative=%d", len(attrs), old, native)
 	stats, err := e.ExportLogs(ctx, []LogRecord{{EventID: "valid-neighbor", Timestamp: 1}, large})
@@ -244,7 +244,7 @@ func TestLogReplacementAdmissionCountsActualPriorPostings(t *testing.T) {
 	}
 	for name, want := range before {
 		if n := int64(lgCensus(t, ctx, e, name)); n != want {
-			t.Fatalf("rejected replacement changed %s: %d want%d", name, n, want)
+			t.Fatalf("rejected replacement changed %s: %d want %d", name, n, want)
 		}
 	}
 	// A small replacement still counts every OLD posting clear, not merely
@@ -390,10 +390,10 @@ func TestLogPriorChangeAfterAdmissionIsOperationalWithCommittedNeighbor(t *testi
 func TestLogNativeMutationCostAccounting(t *testing.T) {
 	t.Parallel()
 	if got := logSetWriteCost([]byte("abc"), []byte("value")); got != 83 {
-		t.Fatalf("Set cost=%d want83", got)
+		t.Fatalf("Set cost=%d want 83", got)
 	}
 	if got := logClearWriteCost([]byte("abc")); got != 82 {
-		t.Fatalf("Clear+conflict cost=%d want82", got)
+		t.Fatalf("Clear+conflict cost=%d want 82", got)
 	}
 }
 

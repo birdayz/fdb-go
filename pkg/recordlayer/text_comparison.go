@@ -54,19 +54,15 @@ func (t TextComparisonType) IsEquality() bool {
 	return false
 }
 
-// TextComparison is Java's Comparisons.TextComparison together with its
-// TextWithMaxDistanceComparison and TextContainsAllPrefixesComparison
-// subclasses (Comparisons.java:2529-2900). The comparand is either a string,
-// tokenized with the index's tokenizer when scanned, or a list of tokens used
-// as given.
+// TextComparison includes Java’s max-distance and all-prefixes variants (Comparisons.java:2529-2900).
+// String comparands use the index tokenizer; token lists are used as given.
 type TextComparison struct {
 	typ       TextComparisonType
 	tokenList []string
 	tokenStr  *string
 
-	// tokenizerName is the tokenizer the comparison requires ("" = any);
-	// fallbackTokenizerName tokenizes it when evaluated against a record and
-	// no tokenizer is required.
+	// tokenizerName requires a tokenizer (empty means any); fallbackTokenizerName
+	// is used for record evaluation when no tokenizer is required.
 	tokenizerName         string
 	fallbackTokenizerName string
 
@@ -79,18 +75,13 @@ type TextComparison struct {
 	falsePositivePercentage float64
 }
 
-// NewTextComparison is Comparisons.TextComparison(type, String tokens,
-// tokenizerName, fallbackTokenizerName). TEXT_CONTAINS_ALL_WITHIN and
-// TEXT_CONTAINS_ALL_PREFIXES have their own constructors. An empty
-// fallbackTokenizerName is the default tokenizer, as in Java's Text
-// (Text.java:71).
+// NewTextComparison constructs a string comparison; empty fallback selects the default tokenizer.
+// ALL_WITHIN and ALL_PREFIXES require their specialized constructors.
 func NewTextComparison(typ TextComparisonType, tokens string, tokenizerName, fallbackTokenizerName string) *TextComparison {
 	return &TextComparison{typ: typ, tokenStr: &tokens, tokenizerName: tokenizerName, fallbackTokenizerName: fallbackOrDefault(fallbackTokenizerName)}
 }
 
-// NewTextComparisonTokens is Comparisons.TextComparison(type, List<String>
-// tokens, tokenizerName, fallbackTokenizerName): the tokens are used as given,
-// "" standing for a stop word.
+// NewTextComparisonTokens uses supplied tokens verbatim; empty tokens stand for stop words.
 func NewTextComparisonTokens(typ TextComparisonType, tokens []string, tokenizerName, fallbackTokenizerName string) *TextComparison {
 	return &TextComparison{typ: typ, tokenList: append([]string{}, tokens...), tokenizerName: tokenizerName, fallbackTokenizerName: fallbackOrDefault(fallbackTokenizerName)}
 }
@@ -111,11 +102,8 @@ func NewTextWithMaxDistanceComparisonTokens(tokens []string, maxDistance int, to
 	return c
 }
 
-// NewTextContainsAllPrefixesComparison is
-// Comparisons.TextContainsAllPrefixesComparison (Comparisons.java:2826-2862).
-// Text.containsAllPrefixes uses strict=true with
-// ProbableIntersectionDefaultExpectedResults and
-// ProbableIntersectionDefaultFalsePositivePercentage.
+// NewTextContainsAllPrefixesComparison matches Java’s variant (Comparisons.java:2826-2862).
+// Text.containsAllPrefixes uses strict=true and the default probable-intersection settings.
 func NewTextContainsAllPrefixesComparison(tokenPrefixes string, strict bool, expectedRecords int64, falsePositivePercentage float64, tokenizerName, fallbackTokenizerName string) *TextComparison {
 	c := NewTextComparison(TextContainsAllPrefixes, tokenPrefixes, tokenizerName, fallbackTokenizerName)
 	c.strict, c.expectedRecords, c.falsePositivePercentage = strict, expectedRecords, falsePositivePercentage
@@ -219,9 +207,8 @@ func (c *TextComparison) comparandTokens(tokenizer TextTokenizer) ([]string, err
 	return tokens, nil
 }
 
-// Eval is TextComparison.eval (Comparisons.java:2602-2619): nil means
-// unknown (a null value, or a comparand of only stop words). The value is
-// tokenized in INDEX mode at the tokenizer's maximum version.
+// Eval returns nil for null/all-stop-word inputs; otherwise it tokenizes in INDEX mode
+// at the tokenizer’s maximum version (Comparisons.java:2602-2619).
 func (c *TextComparison) Eval(value any) (*bool, error) {
 	if value == nil {
 		return nil, nil
@@ -456,9 +443,8 @@ func compareTextContainsAnyPrefix(text []string, comparand []string) *bool {
 	return boolPtr(false)
 }
 
-// compareTextContainsPhrase is Comparisons.compareTextContainsPhrase
-// (Comparisons.java:553-614): leading and trailing stop words are dropped and
-// an inner stop word matches any token.
+// compareTextContainsPhrase drops edge stop words; inner stop words match any token
+// (Comparisons.java:553-614).
 func compareTextContainsPhrase(text []string, comparand []string) *bool {
 	first := 0
 	for first < len(comparand) && comparand[first] == "" {

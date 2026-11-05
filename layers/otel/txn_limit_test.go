@@ -332,9 +332,8 @@ func testTxnBenchErrors(t *testing.T, fixture txnFixture) {
 	}
 }
 
-// An Exporter transaction has no retry limit: FDB's OnError loop absorbs a
-// retryable code injected more often than the benchmark's limit of 10, in one
-// Record Layer attempt and one write slot, and only the last execution commits.
+// Exporter retries beyond the benchmark limit within one attempt and write slot;
+// only the final execution commits.
 func testExporterTxnAbsorbs(t *testing.T, fixture txnFixture) {
 	ctx, db, root := fixture(t)
 	runs := attemptRecorder(db)
@@ -523,9 +522,7 @@ func txnTestLogs() []LogRecord {
 	}
 }
 
-// Every Exporter transaction, write and read, absorbs 12 injected
-// future_version errors, more than the benchmark's retry limit, and the calls
-// succeed with complete results.
+// Exporter reads and writes must absorb 12 future_version retries and return complete results.
 func testExporterCallsAbsorb(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
 	defer cancel()

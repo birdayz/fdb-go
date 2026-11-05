@@ -433,7 +433,7 @@ func (d *FDBDatabase) precommit(recordCtx *FDBRecordContext, result any, commitS
 	// nothing ever calls Commit, which is why the whole autocommit SQL path
 	// reported zero commits while committing on every statement.
 	*commitStart = time.Now()
-	if err := recordCtx.sealRecordWrites(); err != nil {
+	if err := recordCtx.drainCommitChecksAndSealWrites(); err != nil {
 		return nil, err
 	}
 	// Flush queued version mutations before the transactor commits.
@@ -1417,7 +1417,7 @@ func (rc *FDBRecordContext) CommitWithVersionstamp() ([]byte, error) {
 	rc.directCommitOwned.Store(true)
 	// Include pre-commit checks in the commit span, but not post-commit hooks.
 	commitStart := time.Now()
-	if err := rc.sealRecordWrites(); err != nil {
+	if err := rc.drainCommitChecksAndSealWrites(); err != nil {
 		rc.tx.Cancel()
 		rc.Timer().RecordSince(EventCommit, commitStart)
 		return nil, err

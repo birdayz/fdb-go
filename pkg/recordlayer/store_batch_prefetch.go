@@ -9,12 +9,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// RecordBatchPrefetch warms only the issuing transaction's read-your-writes
-// cache. It contains no authoritative old images and cannot be passed to a save.
-// Call Wait before saving the batch in that same transaction; every normal save
-// must still load and validate its old record and establish its read conflicts.
-// A handle must not be reused after its context's transaction is reset or ended.
-// Wait is idempotent and returns the first wait's result.
+// RecordBatchPrefetch warms only its transaction’s RYW cache; it contains no authoritative old images.
+// Wait before saving in that transaction; normal old-image validation/conflicts remain required.
+//
+// Do not reuse after transaction reset/end. Wait is idempotent and retains its first result.
 type RecordBatchPrefetch struct {
 	context *FDBRecordContext
 	pending []fdb.RangeResult
@@ -23,19 +21,14 @@ type RecordBatchPrefetch struct {
 	err     error
 }
 
-// PrefetchRecordBatch starts snapshot reads before the store is opened, allowing
-// them to overlap store-state reads. Preparation and read errors are deferred to
-// Wait so callers can validate independent authorization reads first. It neither
-// opens the store nor changes records, local versions, or transaction options.
+// PrefetchRecordBatch overlaps snapshot reads with store opening; errors are deferred to Wait for prior authorization.
+// It does not open the store or change records, local versions or transaction options.
 //
-// Only modern record ranges are warmed: the header is not yet known, so legacy
-// bare-key records and separate versions remain the normal save's responsibility.
-// Declared version columns are not prefetched, avoiding local-version claims.
+// Only modern record ranges are warmed; legacy records/versions stay the save’s responsibility.
+// Declared version columns are excluded to avoid local-version claims.
 //
-// The same wave warms the BunchedMap bunches the records' TEXT index entries
-// will be put into (store_batch_text_prefetch.go), for every TEXT index of
-// their types: index states are not yet known, and the old images not yet
-// read, so an update's removals are the save's own reads.
+// The wave also warms new-entry TEXT bunches regardless of unknown index state.
+// Old images are not read yet, so update removals remain the save’s own reads.
 func (b *StoreBuilder) PrefetchRecordBatch(records []proto.Message) *RecordBatchPrefetch {
 	p := &RecordBatchPrefetch{}
 	if len(records) == 0 {
@@ -103,7 +96,7 @@ func (b *StoreBuilder) PrefetchRecordBatch(records []proto.Message) *RecordBatch
 				}
 				t, ok := targets[index.Name]
 				if !ok {
-					t, _ = newTextIndexTarget(index, b.subspace.Sub(IndexKey, index.SubspaceTupleKey()),
+					t = newTextIndexTarget(index, b.subspace.Sub(IndexKey, index.SubspaceTupleKey()),
 						b.subspace.Sub(IndexSecondarySpaceKey, index.SubspaceTupleKey()))
 					targets[index.Name] = t // nil: no tokenizer, nothing to warm
 				}

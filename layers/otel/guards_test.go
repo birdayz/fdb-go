@@ -20,6 +20,29 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
+// oracleTopK is the test-only map adapter for independent ordering checks.
+func oracleTopK(m map[string]int64, k int) []Hit {
+	out, _ := oracleTopKContext(context.Background(), m, k)
+	return out
+}
+
+func oracleTopKContext(ctx context.Context, m map[string]int64, k int) ([]Hit, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, wrap("canceled", "oracle topK", err)
+	}
+	if k < 1 {
+		return nil, fail("config", "oracle topK", "positive K required")
+	}
+	h := oracleHeap{}
+	for id, ns := range m {
+		if err := ctx.Err(); err != nil {
+			return nil, wrap("canceled", "oracle topK", err)
+		}
+		retainOracleHit(&h, Hit{Trace: id, Latest: ns}, k)
+	}
+	return finishOracleHeap(ctx, &h)
+}
+
 func TestEveryConfigBound(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -409,8 +432,10 @@ func TestOracleLiteralTraceOrder(t *testing.T) {
 	if _, err := oracleTopKContext(ctx, map[string]int64{"a": 1}, 1); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
-	if _, err := oracleTopKContext(t.Context(), nil, 0); err == nil {
-		t.Fatal("invalid oracle K accepted")
+	bad := testConfig()
+	bad.K = 0
+	if _, err := ExpectedContext(t.Context(), bad, "span", QueryKey, "string", QueryValue); err == nil {
+		t.Fatal("invalid streaming oracle K accepted")
 	}
 	m := map[string]int64{}
 	for _, id := range []string{"a", "b", "c", "d"} {

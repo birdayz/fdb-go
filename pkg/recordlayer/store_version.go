@@ -68,7 +68,7 @@ func (store *FDBRecordStore) recordVersionForSave(version *FDBRecordVersion, beh
 	return version, nil
 }
 
-// saveRecordVersion stores the version for a record.
+// saveRecordVersionAtKey stores a record's inline or legacy-subspace version.
 //
 // In the modern layout (format version >= SAVE_VERSION_WITH_RECORD and the unsplit
 // suffix is not omitted) the version is stored inline adjacent to the record at
@@ -82,10 +82,6 @@ func (store *FDBRecordStore) recordVersionForSave(version *FDBRecordVersion, beh
 // offset of 0 (incomplete). This matches Java's saveVersionWithOldFormat(); the legacy
 // version is in a different subspace, so it is NOT counted in the record's sizeInfo and
 // sizeInfo.VersionedInline stays false.
-func (store *FDBRecordStore) saveRecordVersion(primaryKey tuple.Tuple, version *FDBRecordVersion, si *sizeInfo) error {
-	return store.saveRecordVersionAtKey(store.versionKey(primaryKey), version, si)
-}
-
 func (store *FDBRecordStore) saveRecordVersionAtKey(versionKey fdb.Key, version *FDBRecordVersion, si *sizeInfo) error {
 	if store.useOldVersionFormat() {
 		return store.saveVersionWithOldFormat(versionKey, version)
@@ -198,10 +194,15 @@ func (store *FDBRecordStore) LoadRecordVersion(primaryKey tuple.Tuple, snapshot 
 	return store.loadRecordVersionAsync(primaryKey, snapshot).Get()
 }
 
+// Legacy stores ignore versions when metadata disables automatic versioning.
+func (store *FDBRecordStore) canLoadRecordVersion(oldFormat bool) bool {
+	return !oldFormat || store.metaData.IsStoreRecordVersions()
+}
+
 // loadRecordVersionAsync sends the version read now; the result waits for it.
 func (store *FDBRecordStore) loadRecordVersionAsync(primaryKey tuple.Tuple, snapshot bool) PendingRead[*FDBRecordVersion] {
 	oldFormat := store.useOldVersionFormat()
-	if oldFormat && !store.metaData.IsStoreRecordVersions() {
+	if !store.canLoadRecordVersion(oldFormat) {
 		return NewPendingRead(func() (*FDBRecordVersion, error) { return nil, nil }, nil)
 	}
 	return store.loadRecordVersionAtKeyAsync(store.versionKey(primaryKey), snapshot, oldFormat)
@@ -210,7 +211,7 @@ func (store *FDBRecordStore) loadRecordVersionAsync(primaryKey tuple.Tuple, snap
 func (store *FDBRecordStore) loadRecordVersionAtKeyAsync(versionKey fdb.Key, snapshot, oldFormat bool) PendingRead[*FDBRecordVersion] {
 	// Java ignores legacy version bytes when metadata disables versions, even if an
 	// explicit-version save wrote them (loadRecordVersionAsync).
-	if oldFormat && !store.metaData.IsStoreRecordVersions() {
+	if !store.canLoadRecordVersion(oldFormat) {
 		return NewPendingRead(func() (*FDBRecordVersion, error) { return nil, nil }, nil)
 	}
 

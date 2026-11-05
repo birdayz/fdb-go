@@ -249,10 +249,8 @@ func (b *FDBBackend) saveIngestBatchRun(ctx context.Context, batch preparedBatch
 		}
 		elapsed := clock().Sub(saveBudgetStarted)
 		d.size(n)
-		// The 1s elapsed bound is the ingest benchmark's methodology. Exporter
-		// commits are bounded by their transaction timeout and FDB's 5s read window
-		// instead: on saturated storage, reads alone exceed 1s (measured 1.4s
-		// for a 152KB batch at 2x), which is backpressure, not oversized work.
+		// The 1s bound is benchmark methodology; exporter transactions instead use
+		// their timeout and FDB's 5s read window to tolerate storage backpressure.
 		if n > 500000 || (elapsed > time.Second && !isExporterTxn(ctx)) {
 			return nil, failf("budget", "ingest transaction", "transaction guard exceeded: bytes=%d elapsed=%s", n, elapsed)
 		}

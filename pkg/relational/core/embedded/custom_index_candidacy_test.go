@@ -15,9 +15,8 @@ import (
 // index's): its entries are hashed postings, not (key, pk) tuples.
 const customCandidacyIndexType = "otel_typed_scoped_eq_v1"
 
-// customCandidacyMetaData is a table with a fan-out index T_TAGS, a scalar
-// index T_B and a VALUE index T_A. T_TAGS and T_B get indexType; with
-// recordlayer.IndexTypeValue it is the control twin.
+// customCandidacyMetaData gives fan-out T_TAGS and scalar T_B the chosen type;
+// T_A stays VALUE, and IndexTypeValue supplies the control twin.
 func customCandidacyMetaData(t *testing.T, indexType string) *recordlayer.RecordMetaData {
 	t.Helper()
 	b := metadata.NewSchemaTemplateBuilder().SetName("custom_candidacy")
@@ -61,10 +60,8 @@ func planUsedIndexes(t *testing.T, query string, md *recordlayer.RecordMetaData)
 	return names, plan.Explain()
 }
 
-// A custom index type must not become a VALUE-scan candidate: a VALUE scan
-// would decode its postings as (key, pk) tuples and return wrong rows. With
-// the type custom, each query still plans, over the primary scan or the VALUE
-// index T_A.
+// Custom postings must not be decoded as VALUE tuples; queries must instead use
+// the primary scan or genuine VALUE index T_A.
 func TestCustomIndexTypeIsNotAValueScanCandidate(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -129,7 +126,7 @@ func TestCustomIndexTypeBuildsNoMatchCandidate(t *testing.T) {
 	}
 }
 
-// Only the types whose Java factories expand a value-index candidate opt in.
+// Type eligibility alone does not guarantee the planner adds a VALUE candidate.
 func TestValueScanCandidateIndexTypes(t *testing.T) {
 	t.Parallel()
 	for indexType, want := range map[string]bool{
@@ -148,8 +145,8 @@ func TestValueScanCandidateIndexTypes(t *testing.T) {
 		customCandidacyIndexType:                   false,
 		"":                                         false,
 	} {
-		if got := valueScanCandidateIndexType(indexType); got != want {
-			t.Errorf("valueScanCandidateIndexType(%q) = %v, want %v", indexType, got, want)
+		if got := recordlayer.IsValueScanCandidateIndexType(indexType); got != want {
+			t.Errorf("IsValueScanCandidateIndexType(%q) = %v, want %v", indexType, got, want)
 		}
 	}
 }

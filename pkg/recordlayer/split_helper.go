@@ -54,14 +54,8 @@ func dryRunSaveWithSplitSizeInfo(recordSubspace subspace.Subspace, primaryKey tu
 	return s
 }
 
-// saveWithSplit saves a serialized record, splitting it across multiple KV pairs
-// if it exceeds splitRecordSize and splitLongRecords is enabled.
-// Incomplete primary keys require a context so chunk mutations can be buffered
-// until commit and canceled by context clears. A nil context supports complete
-// keys only. The store layer still manages inline record versions separately.
-// The previous record is cleared based on oldsizeInfo, as the record store does
-// (clearBasedOnPreviousSizeInfo=true, FDBRecordStore.java:665).
-// Matches Java's SplitHelper.saveWithSplit() (data portion only).
+// saveWithSplit writes Java's split framing; incomplete keys require a context.
+// Split-disabled replacements additionally clear known old tails (DIVERGENCES.md).
 func saveWithSplit(
 	recordContext *FDBRecordContext,
 	tx fdb.WritableTransaction,
@@ -178,9 +172,8 @@ func saveSplit(
 		return nil
 	}
 
-	// Clear the previous record unless the new value overwrites its only key:
-	// Java skips the clear for a known, unsplit, unversioned previous record when
-	// long records are not split (SplitHelper.java:152).
+	// Unlike Java, also clear known split tails when splitting is disabled.
+	// Otherwise suffix 0 would coexist with stale chunks (DIVERGENCES.md).
 	if !hasVersionInKey && (splitLongRecords || oldsizeInfo == nil || oldsizeInfo.VersionedInline || oldsizeInfo.IsSplit) {
 		if err := clearPreviousRecord(recordContext, tx, recordSubspace, primaryKey, clearBySize, oldsizeInfo); err != nil {
 			return err

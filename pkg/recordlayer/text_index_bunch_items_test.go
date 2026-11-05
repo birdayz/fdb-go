@@ -36,9 +36,7 @@ func randomBunch(rng *rand.Rand) []bunchedEntry {
 	return entries
 }
 
-// Put and remove keep a bunch's stored bytes: decoding it into items and
-// encoding them back is the identity on what serializeEntries writes, and
-// the items hold its keys' packed bytes and its lists.
+// Decoded bunch items must re-encode stored keys and canonical position lists identically.
 func TestBunchItemsRoundTrip(t *testing.T) {
 	t.Parallel()
 	s := TextIndexBunchedSerializerInstance()
@@ -87,9 +85,7 @@ func TestBunchItemsRoundTrip(t *testing.T) {
 	}
 }
 
-// A list stored with non-minimal varints is written back as Java's
-// deserializeList and serializeList give it, canonical; a key is written back
-// as stored, as Java's Tuple.fromBytes keeps its bytes.
+// Java canonicalizes non-minimal list varints but preserves packed key bytes; Go must do likewise.
 func TestBunchItemsCanonicalizeListsKeepKeys(t *testing.T) {
 	t.Parallel()
 	// (1): [1]; key (w, 7) with a 2-byte int: size 0x80 0x03, deltas 2, 0x80 0x02.

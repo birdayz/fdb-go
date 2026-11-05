@@ -6,12 +6,8 @@ import (
 	"syscall"
 )
 
-// CollectorBenchCPU is this process's CPU over an interval: getrusage
-// (RUSAGE_SELF, every thread; FDB servers are other processes) user and
-// system time, and the runtime/metrics GC CPU estimates. The GC figures are
-// the runtime's own estimates, updated as GC work completes, and cover only
-// part of the rusage total. The interval's CPU includes whatever else runs
-// in the process (producers, the collector, under-load query workers).
+// CollectorBenchCPU covers all process threads and work, excluding FDB server processes.
+// Rusage supplies user/system CPU; runtime/metrics GC estimates cover only part of that total.
 type CollectorBenchCPU struct {
 	UserNs int64 `json:"user_ns"`
 	SysNs  int64 `json:"sys_ns"`
@@ -23,17 +19,14 @@ type CollectorBenchCPU struct {
 	GCDedicatedNs int64 `json:"gc_mark_dedicated_ns"`
 	GCIdleNs      int64 `json:"gc_mark_idle_ns"`
 	GCPauseNs     int64 `json:"gc_pause_ns"`
-	// CoresUsed is TotalNs per wall nanosecond; Utilization is CoresUsed
-	// over the cores the process can run on at once, min(GOMAXPROCS, NumCPU)
-	// (whichever is known when the other is zero).
+	// CoresUsed is TotalNs/wall ns; Utilization divides by min(GOMAXPROCS, NumCPU),
+	// using the known value if the other is zero.
 	CoresUsed   float64 `json:"cores_used"`
 	Utilization float64 `json:"utilization"`
 	// MsPerSpan is TotalNs in milliseconds per exported span.
 	MsPerSpan float64 `json:"ms_per_span"`
-	// GCFraction is GCNs over TotalNs. GCNs is the runtime's per-P estimate
-	// (time GC work held a P, not CPU it was granted), so with GOMAXPROCS >
-	// NumCPU, where Ps share CPUs, it overstates GC CPU, and GCFraction with
-	// it; a CPU profile gives the actual share.
+	// GCFraction is GCNs/TotalNs; runtime per-P estimates can overstate CPU when Ps share CPUs.
+	// Use a CPU profile for actual GC share.
 	GCFraction float64 `json:"gc_fraction"`
 	GOMAXPROCS int     `json:"gomaxprocs"`
 	NumCPU     int     `json:"num_cpu"`

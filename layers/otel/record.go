@@ -48,9 +48,8 @@ var (
 	descriptorError error
 )
 
-// recordFile returns the record descriptors of a run: the base layout has only
-// Envelope; the message layouts add Message records and packed references.
-// Optional envelope fidelity is separate from the producer's OTLP namespace.
+// recordFile describes Envelope plus message records/references when enabled;
+// optional envelope fidelity is separate from the producer’s OTLP namespace.
 func recordFile(messages string) (protoreflect.FileDescriptor, error) {
 	if messages != messagesNone && messageTokenizerRegistrationError != nil {
 		return nil, wrap("config", "message tokenizer registration", messageTokenizerRegistrationError)
@@ -166,9 +165,8 @@ func metadata(c Config) (*recordlayer.RecordMetaData, *recordlayer.Index, error)
 		text.SetOption(recordlayer.IndexOptionTextTokenizerName, messageTokenizerName)
 		text.SetSubspaceKey(messageTextIndexKey)
 		b.AddIndex("Message", text)
-		// (tenant, trace_id, start_ns, chunk, span_id) -> packed references:
-		// one entry per span (per 16KB of references), so a trace's spans and
-		// what they reference are one range.
+		// (tenant, trace_id, start_ns, chunk, span_id) -> packed refs, chunked at 16KB,
+		// so all spans and references of a trace occupy one range.
 		refs := recordlayer.NewIndex(envelopeRefsIndexName, recordlayer.KeyWithValue(recordlayer.Concat(recordlayer.Field("tenant"), recordlayer.Field("trace_id"), recordlayer.Field("start_ns"), recordlayer.NestFanOut("ref_chunks", recordlayer.Concat(recordlayer.Field("chunk"), recordlayer.Field("refs")))), 4))
 		refs.SetSubspaceKey(envelopeRefsIndexKey)
 		b.AddIndex("Envelope", refs)

@@ -58,13 +58,8 @@ const (
 
 var logAttributeScopes = []string{"resource", "scope", LogScopeRecord, LogScopeIntrinsic}
 
-// LogRecord is one OTLP log/event with its resource and scope provenance.
-// EffectiveTime and TimeSource are assigned at ingestion: event time, else
-// observed time, else receiver time; Timestamp keeps the original value.
-// For records converted from OTLP or read from storage, the retained OTLP
-// envelope is authoritative; these exported fields are detached projections.
-// EventID remains editable receiver metadata. Construct a new LogRecord to
-// export edits to the projections instead of re-exporting the original.
+// LogRecord retains authoritative OTLP bytes with detached projections; construct a new record to edit them.
+// EventID is editable receiver metadata; ingestion chooses event, observed, then receiver time.
 type LogRecord struct {
 	EventID                string               `json:"event_id"`
 	Timestamp              int64                `json:"time_unix_nano"`
@@ -89,9 +84,8 @@ type LogRecord struct {
 	original               *logspb.ResourceLogs
 }
 
-// OTLP returns a detached single-log envelope, preserving all protobuf fields
-// for converted or stored records. For a constructed LogRecord it builds the
-// equivalent envelope and validates the hex encoding of its identities.
+// OTLP returns a detached envelope preserving all stored/converted protobuf fields.
+// For constructed records it builds an envelope and validates hex identities.
 func (l LogRecord) OTLP() (*logspb.ResourceLogs, error) {
 	rl, err := toResourceLogs(l)
 	if err != nil {
@@ -634,9 +628,8 @@ func (b *FDBBackend) saveLogBatch(ctx context.Context, batch logBatch) (int64, e
 				cost += b.logReplacementWriteCost(space, old)
 			}
 		}
-		// Recheck the live prior images: another writer may have replaced them
-		// after preflight. This is an operational state change, not whole-call
-		// admission: an independent batch may already have committed.
+		// Recheck prior images changed since preflight; this operational failure
+		// can occur after independent batches have committed.
 		if cost > maxLogTxnWriteBytes {
 			return nil, failf("operation", "log batch", "prior image changed after admission: native transaction cost %d exceeds %d", cost, maxLogTxnWriteBytes)
 		}
@@ -673,12 +666,8 @@ func (b *FDBBackend) saveLogBatch(ctx context.Context, batch logBatch) (int64, e
 	return replaced, err
 }
 
-// ExportLogs validates every log before writing, so an inadmissible log fails
-// the call without partial writes; batches then commit independently. A later
-// prior-image change exceeding the live budget is an OperationError, not an
-// AdmissionError, and does not undo already committed batches. Logs
-// without an EventID get a receiver UUID here, outside any retry loop, so a
-// retried transaction never duplicates them; a resent request can.
+// ExportLogs rejects inadmissible input before writes; later live-budget OperationErrors do not undo batches.
+// Missing EventIDs get UUIDs outside retries, preventing transaction-retry duplicates but not request replays.
 func (e *Exporter) ExportLogs(ctx context.Context, logs []LogRecord) (LogExportStats, error) {
 	const op = "log export"
 	stats := LogExportStats{EventIDs: make([]string, len(logs))}
@@ -793,10 +782,8 @@ func (e *Exporter) ConsumeLogs(ctx context.Context, logs []*logspb.ResourceLogs)
 	return err
 }
 
-// LogRecordsFromResourceLogs retains an owned single-log OTLP envelope for
-// each record and exposes detached projections. Empty or all-zero trace and
-// span IDs mean uncorrelated in indexes, without changing the source bytes.
-// OTLP carries no stable event ID, so none is set.
+// LogRecordsFromResourceLogs owns each log envelope and exposes detached projections without an EventID.
+// Empty/all-zero trace or span IDs remain in source bytes but are uncorrelated in indexes.
 func LogRecordsFromResourceLogs(in []*logspb.ResourceLogs) []LogRecord {
 	var out []LogRecord
 	for _, rl := range in {

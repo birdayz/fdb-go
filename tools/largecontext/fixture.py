@@ -33,9 +33,7 @@ def main():
     root = args.source_root
     frozen = None
     if args.revision is None:
-        # The historical measurement commit is not published history. These
-        # committed original source bytes make default regeneration independent
-        # of local Git objects, without changing the measured fixture identity.
+        # Committed original source bytes preserve fixture identity without relying on unpublished Git objects.
         source_dir = Path(__file__).resolve().parent
         metadata = json.loads((source_dir / "frozen_sources.json").read_text())
         archive = (source_dir / "frozen_sources.tar.gz").read_bytes()

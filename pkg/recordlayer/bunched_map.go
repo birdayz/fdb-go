@@ -161,11 +161,8 @@ func (m *BunchedMap) Put(tx fdb.WritableTransaction, ss subspace.Subspace, key t
 	return m.startPut(tx, ss, key, value).finish()
 }
 
-// pendingBunchedPut is a Put whose snapshot read is in flight. That read is
-// the put's only I/O, so puts into different maps can have theirs in flight
-// together, as the futures BunchedMap.put returns do in Java (BunchedMap.java:
-// 477-550); finish applies the put's writes and conflict ranges on the
-// caller's goroutine.
+// pendingBunchedPut overlaps independent maps’ snapshot reads; finish applies writes
+// and conflict ranges on the caller’s goroutine (BunchedMap.java:477-550).
 type pendingBunchedPut struct {
 	m           *BunchedMap
 	tx          fdb.WritableTransaction
@@ -175,15 +172,8 @@ type pendingBunchedPut struct {
 	read        pendingSnapshotRead
 }
 
-// pendingSnapshotRead is a snapshot range read in flight, as a future.
-// GetRange issues the read's first batch in the call and returns at once, as
-// fdb_transaction_get_range and Apple's bindings do (the client resolves the
-// key selectors within that read); wait completes it on the caller's
-// goroutine. This is Java's model: put and entryForKey return the
-// CompletableFuture of tr.snapshot().getRange(...).asList()
-// (BunchedMap.java:203-207, 497-501), of which TextIndexMaintainer keeps up to
-// the pipeline size in flight (forEachAsync, TextIndexMaintainer.java:339). A
-// read in flight is not a goroutine of its own.
+// pendingSnapshotRead issues GetRange immediately and completes on the caller’s goroutine.
+// Like Java’s CompletableFuture pipeline, an in-flight read needs no goroutine of its own.
 type pendingSnapshotRead struct {
 	result fdb.RangeResult
 }
@@ -256,17 +246,15 @@ func (p *pendingBunchedPut) finish() ([]int, bool, error) {
 	return oldValue, hadOld, nil
 }
 
-// bunchItemPool holds the item lists put and remove decode bunches into.
-// Items only point into a put's read results and keys, never into anything a
-// transaction keeps, so a list is reused once its operation is done.
+// bunchItemPool reuses decoded lists after each operation; items reference only
+// its read results and keys, never transaction-retained data.
 var bunchItemPool = sync.Pool{New: func() any {
 	items := make([]bunchItem, 0, textIndexBunchSize+1)
 	return &items
 }}
 
-// decodeBunch decodes the bunch at kv (a key of the map at subspaceKey) into a
-// pooled item list; release returns the list. It fails where Java's
-// deserializeKey or deserializeEntries do.
+// decodeBunch returns pooled items and a release function; validation matches
+// Java deserializeKey/deserializeEntries.
 func decodeBunch(subspaceKey []byte, kv *fdb.KeyValue, what string) (items []bunchItem, release func(), err error) {
 	pooled := bunchItemPool.Get().(*[]bunchItem)
 	items, err = decodeBunchItems(kv.Key[len(subspaceKey):], kv.Value, (*pooled)[:0])
@@ -282,12 +270,8 @@ func decodeBunch(subspaceKey []byte, kv *fdb.KeyValue, what string) (items []bun
 	return items, release, nil
 }
 
-// searchBunch is the index of the first item whose key is not less than key.
-// Java scans for it linearly (insertEntry: while compare(key, entry) > 0);
-// the entries of a bunch are in key order (invariant 1 of the Grand Theory
-// of Conflict Ranges, checked by verifyIntegrity), so a binary search finds
-// the same index. Keys compare by their packed bytes, as Java's
-// Tuple.compareTo does for tuples that carry them.
+// searchBunch binary-searches sorted entries for the first packed key >= key,
+// equivalent to Java’s linear insertEntry search.
 func searchBunch(items []bunchItem, key []byte) int {
 	return sort.Search(len(items), func(i int) bool { return bytes.Compare(key, items[i].key) <= 0 })
 }
@@ -299,9 +283,8 @@ func (m *BunchedMap) Remove(tx fdb.WritableTransaction, ss subspace.Subspace, ke
 	return m.startRemove(tx, ss, key).finish()
 }
 
-// pendingBunchedRemove is a Remove whose entryForKey read is issued, the
-// remove's only I/O (BunchedMap.remove, BunchedMap.java:617-640); finish
-// completes its writes and conflict ranges.
+// pendingBunchedRemove overlaps entryForKey I/O; finish applies writes and conflict ranges
+// (BunchedMap.java:617-640).
 type pendingBunchedRemove struct {
 	m           *BunchedMap
 	tx          fdb.WritableTransaction
@@ -557,9 +540,7 @@ func (m *BunchedMap) writeEntryList(tx fdb.WritableTransaction, subspaceKey, key
 	oldKv *fdb.KeyValue, newKey []byte, entryList []bunchItem,
 	kvAfter *fdb.KeyValue, isFirst, isLast bool,
 ) error {
-	// Java serializes the list before choosing a branch; only the size decides
-	// the branch, and the append branch writes no full list, so the list is
-	// encoded only where it is written.
+	// Only size selects the branch; serialize a full list only when writing it, not for append.
 	serializedSize, err := bunchItemsSize(entryList)
 	if err != nil {
 		return err

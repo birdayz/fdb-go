@@ -18,11 +18,8 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 
 /**
- * Java's KeySpacePath.toTuple / toSubspace over a key space with
- * DirectoryLayerDirectory nodes (resolved through ExtendedDirectoryLayer.global,
- * the default scope) and plain nodes, and the global directory layer's resolve
- * and reverseLookup. Go's keyspace and recordlayer.DirectoryLayerDirectory must
- * give the same bytes and the same mappings.
+ * Compares Java and Go KeySpacePath tuple/subspace bytes and global directory mappings,
+ * including DirectoryLayerDirectory nodes resolved through ExtendedDirectoryLayer.global.
  */
 class KeySpaceSteps extends ConformanceBase {
     private static final Gson GSON = new GsonBuilder().setObjectToNumberStrategy(ToNumberPolicy.LONG_OR_DOUBLE).create();
@@ -49,9 +46,8 @@ class KeySpaceSteps extends ConformanceBase {
     }
 
     /**
-     * pathsJson is a list of paths, each a list of [directory, value] steps (a
-     * null value for a constant or NULL directory). Returns per path its packed
-     * toTuple and its toSubspace key, in hex.
+     * pathsJson contains paths of [directory, value] steps; null selects a constant/NULL node.
+     * Returns each packed tuple and subspace key as hex.
      */
     @ConformanceStep("keySpacePaths")
     public List<Map<String, String>> keySpacePaths(String clusterFile, String pathsJson) {

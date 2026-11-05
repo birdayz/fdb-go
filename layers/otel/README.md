@@ -134,8 +134,14 @@ record-count handling and synchronous old/new index maintenance. Transaction
 ownership, 1500-ms timeout, one-second save-plus-guard limit, 300-KB conservative
 batch estimate and 500-KB actual transaction guard are unchanged.
 
-`--record-compression` selects `none` (the default), `zlib-1`, `brotli-0`,
-`brotli-1`, `brotli-3` or `brotli-4` for fresh FDB runs. It configures the Record Layer's
+`--record-compression` selects `none`, `zlib-1`, `brotli-0`,
+`brotli-1`, `brotli-3` or `brotli-4` for fresh FDB runs. Ordinary offline `ingest`
+defaults to `none`. The SDK/model `DefaultExporterConfig` and `collector-bench`
+instead default to `brotli-4`, producing Go-only version-2 compressed records.
+For Java-readable record compression in a fresh store, exporter users must set
+`RecordCompression` to `none` or `zlib-1`; `collector-bench` users must explicitly pass
+`--record-compression=none` or `--record-compression=zlib-1`.
+It configures the Record Layer's
 `TransformedRecordSerializer` through `StoreBuilder.SetSerializer`, before normal
 split-record storage. OTLP messages, envelopes, primary keys, eight complete
 covering postings and both native indexes are unchanged. This setting compresses
@@ -419,8 +425,7 @@ whose manifest has no `key_layout` keeps its tuple prefix
 `("otel_otelbench_v2",run)` and index names and works unchanged; a manifest
 naming an unknown layout is refused. Drop clears the run's tuple prefix and its
 key space path; the directory layer keeps the interned names, as the Java Record
-Layer does. Measured on 12-turn GenAI conversations: 18% fewer mutation bytes
-and 15% fewer stored bytes per span, with the same mutation count.
+Layer does.
 
 FDB ingestion uses `--save-mode pipelined` by default: immutable protobuf messages
 are prepared outside the retry closure, then `SaveRecordsPipelined(..., None)`
@@ -572,11 +577,9 @@ Profiling costs CPU while enabled (the CPU profiler samples at 100 Hz; the
 block and mutex profilers at the rates above); compare throughput only between
 runs profiled alike.
 
-Garbage collection is about a fifth of a GenAI collector-bench run's CPU (the
-TEXT index maintenance allocates about 2.5 MB per span). Like any Go
-Collector, the exporter's process takes `GOGC` and `GOMEMLIMIT` from its
-environment; on a 4-vCPU box, `GOGC=200` cut client CPU per span from about
-10 to 8 ms in one run.
+The exporter's process takes `GOGC` and `GOMEMLIMIT` from its environment.
+Evaluate these settings with profiles of the intended workload; this guide does
+not establish a CPU or allocation reduction for a particular setting.
 
 ## Exporter transaction policy
 
@@ -651,40 +654,38 @@ read.
   a chain of round trips) plus per-message CPU `c`, so `W` writers store
   `W * n / (a + c * n)` messages per second. With every writer busy, waiting
   messages make the next transactions larger instead of each waiting for a
-  writer. Bench, 4 writers and 4 ms round trips (a = 105 ms, c = 4.1 ms):
-  226 spans/s at 32 messages per transaction (22.9 per transaction), 367 at
-  128 (84.4), 390 with group commit (101.5). Writers stay one per TEXT shard:
-  64 writers over 16 shards retried 32% of their transactions on shared
-  boundary bunches, and 64 shards cost phrase queries 20 ms more.
-* **Text index.** `fulltext` adds a standard TEXT index `message_text_v1` on
+  writer. Within one backend, writers stay one per TEXT shard. Independent
+  backends can share shards and conflict; the model is not a throughput guarantee.
+* **Text index.** `fulltext_v2` adds a standard TEXT index `message_text_v1` on
   each part's text, grouped by `(tenant, role, shard)`, with positions. A
   backend holds at most 16 writers, each in its own shard (`writer mod 16`),
-  so concurrent writers never modify one BunchedMap; a query scans the 16
+  so writers of that backend never modify the same BunchedMap concurrently.
+  Independent backends can share a shard and conflict. A query scans the 16
   shards of a role concurrently and unions them. Without shards every writer
-  appends to the same token maps and rewrites the bunch at its boundary with
-  the next writer (bench: 3777 retries in 8352 message transactions, 9.5x the
-  bunch writes, 515 instead of 719 spans/s). Its tokenizer,
+  would append to the same token maps and could rewrite the same boundary bunch.
+  Its tokenizer,
   `otel_message_v1`, is the default tokenizer except that a token longer than
   1024 bytes is not indexed (its position is kept): a token is part of an
   index key, which FDB caps at 10 KB. Such tokens are counted in
   `messages.unindexed_tokens`, and a query naming one is refused. The text is
-  stored next to the raw element; record compression removes the duplicate
-  (measured: +1.9 B per bench message with zlib-1, +5.1 B with brotli-4). A
+  stored next to the raw element; record compression can reduce that duplication. A
   function key expression over the raw bytes is not an option: a TEXT index
   requires a string field at the text position (Java
   `TextIndexMaintainerFactory.java:117-127`; a function validates as its
   arguments, `FunctionKeyExpression.java:218-220`).
-* **Large messages.** A message is admitted up to 16 MB. Its raw bytes are cut
-  into parts of at most 1 MB (each split by the Record Layer into 100 KB
+* **Large messages.** A message is admitted up to 16 MiB. Its raw bytes are cut
+  into parts of at most 1 MiB (each split by the Record Layer into 100 KB
   values) and its text into segments of at most 1024 distinct tokens and
-  64 KB; consecutive segments share 15 tokens, so every phrase of up to the 16
-  query terms lies in one segment. Each part's TEXT postings are written by one
-  transaction; a part whose transaction exceeds FDB's 10 MB limit is cut again
-  with a quarter of the distinct tokens, down to 16. Parts 1.. commit before
-  part 0, so a stored part 0 means a complete message. An "all" query also
+  64 KiB; consecutive segments share 15 tokens, so every phrase of up to the 16
+  query terms lies in one segment. These raw/text planning ceilings apply even
+  when the whole message could fit in a transaction. Multiple tail parts may
+  share a transaction; it stops adding parts once its approximate size reaches
+  2 MiB. An FDB transaction-too-large error replans with a quarter of the
+  distinct tokens, down to 16. All tail parts commit before the final part-0 publication, so a
+  stored part 0 means a complete message. An "all" query also
   checks every multi-part message (`message_large_v1`) for terms in different
   segments; that check costs one bounded scan per multi-part message and term.
-* **Back references.** `fulltext` lists on each span every message it
+* **Back references.** `fulltext_v2` lists on each span every message it
   references, packed (`Envelope.ref_chunks`: writer, seq, attribute code, the
   message's positions in the span's first value of that attribute, and
   whether it is that value's newest element). The list depends only on the
@@ -703,9 +704,7 @@ read.
   references in which the message is the newest element, which is the turn
   that introduced it whatever order the spans arrive in. Turn k of a
   conversation references its whole history: that costs one mutation per
-  span and O(k) value bytes, plus one marker per new message of the trace
-  (bench, 12 turns: 2.2 markers and 0.6 KB of mutations per span, against
-  15.7 mutations and 1.8 KB for one index entry per reference).
+  span and O(k) value bytes, plus one marker per new message of the trace.
 * **Queries.** `QueryMessageFullText` and `TraceExistentialQuery.MessageClauses`
   match message text with the Record Layer's `TextScan` (ALL, ANY and PHRASE,
   leapfrog intersections). Hits name the message by `message_id`
@@ -717,10 +716,8 @@ read.
   TEXT index serializably. `bulk_index_conflicts` widens a span batch's write
   conflicts over the indexes of the record types it saves (Envelope), not over
   the Message indexes, so span batches and message transactions do not
-  conflict. When it covered every index of the store, each span batch commit
-  aborted the message transactions beside it (measured with FDB's
-  `report_conflicting_keys`: 5241 message conflicts in 120 s, each reporting
-  all of its read ranges; now 0 in 180 s).
+  conflict through those widened ranges. Widening over every index of the
+  store would instead overlap the message transactions' read ranges.
 
 ## Repeated local campaign
 

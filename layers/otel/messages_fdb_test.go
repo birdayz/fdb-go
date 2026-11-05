@@ -534,10 +534,8 @@ func testMessageConversation(t *testing.T, cluster, form, order string) {
 	requireTyped[*ConfigError](t, "message attribute query", err)
 }
 
-// testMessageTracePerTurn exports each turn in its own trace, then a
-// conversation in one trace with its turns in reverse order, each in its own
-// call: a first turn depends only on the span, not on the trace or the order
-// spans arrive in.
+// testMessageTracePerTurn checks first-turn identity across separate traces
+// and reverse-arrival spans within one trace.
 func testMessageTracePerTurn(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -840,11 +838,7 @@ func testMessageExistential(t *testing.T, cluster string) {
 	}
 }
 
-// testMessageRareTerm pins the leapfrog intersection: pairing a term in
-// every message with a rare one reads far fewer entries than the common
-// term's postings, and answers exactly.
-// testMessageChunkedRefs exports spans whose references exceed one
-// envelope_refs_v1 value; every reference stays findable, in every chunk.
+// testMessageChunkedRefs checks every reference across multi-value envelope_refs_v1 chunks.
 func testMessageChunkedRefs(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
 	defer cancel()
@@ -1024,12 +1018,8 @@ func testMessageLarge(t *testing.T, cluster string) {
 	}
 }
 
-// testMessageConcurrentSave stores one new message from several exporters
-// of one run at once: it is stored once and every span reconstructs.
-// testMessageGroupCommit holds every writer while calls queue their messages:
-// once writers free up, one transaction stores the messages of several
-// calls, each call gets its own counts, and a call cancelled while queued
-// stores nothing and leaves the others unaffected.
+// testMessageGroupCommit checks shared transactions, per-call counts and queued cancellation
+// while all backend writers are occupied.
 func testMessageGroupCommit(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()

@@ -395,9 +395,7 @@ class Runtime:
             pass
 
     def stop(self):
-        # Emergency stop must work even when the receipt filesystem is full or
-        # a resource/health guard failed. Only immutable ID + ownership authorize
-        # stopping; OOM/resource failures must not veto our own shutdown.
+        # Immutable ID and ownership authorize emergency stop even if receipts or guards fail.
         if any(self.out.glob("shutdown.failed-*.json")) and getattr(self, "shutdown_ok", True):
             self.shutdown_ok = False
             self.shutdown_failures = [*getattr(self, "shutdown_failures", []), "persisted shutdown failure"]
@@ -798,9 +796,7 @@ def run(args):
         finally:
             try:
                 write(out / "stop.request.json", {"epoch": int(time.time())})
-                # Let the monitor finish its current bounded sample and stop the
-                # server itself; racing our stop against docker exec would turn
-                # normal shutdown into an artificial monitor-command failure.
+                # Let the monitor stop the server after its bounded sample to avoid racing docker exec.
                 if watcher is not None:
                     monitor_exit = watcher.wait(timeout=90)
                     write(out / "monitor.exit.json", {"exit": monitor_exit})

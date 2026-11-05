@@ -23,9 +23,7 @@ import (
 	"fdb.dev/pkg/recordlayer"
 )
 
-// bunchedMapRecorder records a BunchedMap operation's conflict ranges, writes
-// and snapshot range reads in the format of BunchedMapSteps.recording
-// (bunched_map_conformance.java).
+// bunchedMapRecorder matches BunchedMapSteps.recording in bunched_map_conformance.java.
 type bunchedMapRecorder struct {
 	fdb.WritableTransaction
 	mu    sync.Mutex
@@ -129,9 +127,7 @@ type bunchedMapOpResult struct {
 	Old    []int            `json:"old"`
 }
 
-// A put of TEXT index maintenance issues exactly Java's conflict ranges: the
-// signpost read (snapshot), the read conflict range over the entries a bunch
-// rewrite depends on, write conflict keys and gap ranges, and nothing else.
+// TEXT puts must issue exactly Java's snapshot reads and read/write conflict ranges.
 var _ = Describe("BunchedMap operation conformance", func() {
 	ctx := context.Background()
 
@@ -147,11 +143,8 @@ var _ = Describe("BunchedMap operation conformance", func() {
 		root := subspace.Sub("map")
 		mapSubspace := func(name string) subspace.Subspace { return root.Sub(name) }
 
-		// Map d starts as a bunch written by neither engine: entry 1's list
-		// size and entry 2's delta are varints with a leading zero group,
-		// entry 3's key packs the int 7 with a leading zero byte (so it sorts
-		// last by its bytes). Java keeps a key's packed bytes
-		// (Tuple.fromBytes) and decodes and re-encodes every list.
+		// Map d contains noncanonical varints and a packed integer that sorts last.
+		// Java preserves packed key bytes but decodes and re-encodes position lists.
 		rawD := []byte{0x20, 0x01, 0x01}
 		rawD = append(rawD, 0x05, 0x02, 'w', 0x00, 0x15, 0x09, 0x80, 0x01, 0x03)
 		rawD = append(rawD, 0x05, 0x02, 'w', 0x00, 0x15, 0x0b, 0x02, 0x80, 0x05)
@@ -222,10 +215,7 @@ var _ = Describe("BunchedMap operation conformance", func() {
 			"opsJson":     string(opsJSON),
 		}, &javaResults)).To(Succeed())
 		Expect(javaResults).To(HaveLen(len(ops)))
-		// The operations reach every write path of put and remove: an
-		// append, a rewrite, a gap claimed before and after a bunch, a split
-		// (two bunches written by one put), a moved signpost, and a put that
-		// only reads.
+		// Exercise append, rewrite, gap claims, split, moved signpost and read-only put paths.
 		kinds := map[string]int{}
 		for i, r := range javaResults {
 			GinkgoWriter.Printf("op %d %+v:\n", i, ops[i])

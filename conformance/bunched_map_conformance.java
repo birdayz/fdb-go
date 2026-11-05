@@ -27,11 +27,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
 
 /**
- * Java's BunchedMap put and remove, each in its own transaction, with every
- * conflict range, write and snapshot read they issue recorded in order, and
- * the counts TextIndexMaintainer's InstrumentedBunchedMap keeps
- * (TextIndexMaintainer.java:556-610). Go runs the same operations and must
- * record the same.
+ * Records Java BunchedMap operations, conflict ranges, writes, snapshot reads and
+ * TextIndexMaintainer counters for byte-for-byte comparison with Go.
  */
 class BunchedMapSteps extends ConformanceBase {
     private static final Gson GSON = new GsonBuilder().setObjectToNumberStrategy(ToNumberPolicy.LONG_OR_DOUBLE).create();
@@ -161,9 +158,8 @@ class BunchedMapSteps extends ConformanceBase {
     }
 
     /**
-     * Runs ops ([{op: put|remove, map, key: [string, long], value: [int...]}])
-     * on a BunchedMap of the given bunch size, the maps at subspace + (map).
-     * Returns per op its trace, counts and result (the old value, or null).
+     * Runs put/remove ops on maps at subspace + (map) with the given bunch size.
+     * Returns each operation’s trace, counters and old value (or null).
      */
     @ConformanceStep("bunchedMapTrace")
     public List<Map<String, Object>> bunchedMapTrace(String clusterFile, byte[] subspace, String tenantName, int bunchSize, String opsJson) {

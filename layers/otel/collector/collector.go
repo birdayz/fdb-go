@@ -1,11 +1,8 @@
-// Package collector implements a custom in-process Collector exporter model,
-// not an upstream OpenTelemetry Collector component. Its bounded queue batches
-// protobuf spans into *otel.Exporter using a Collector-compatible YAML subset.
+// Package collector batches protobuf spans into *otel.Exporter with bounded queues
+// and a Collector-compatible YAML subset; it is not an upstream Collector component.
 //
-// The package mirrors the Collector component contracts (factory, default
-// config, Start/Shutdown, ConsumeTraces, exporterhelper sending_queue and
-// retry_on_failure settings) on OTLP protobuf ResourceSpans, so it carries no
-// dependency on the Collector module graph.
+// The package models Collector lifecycle, sending_queue and retry_on_failure contracts
+// on OTLP ResourceSpans without depending on the Collector module graph.
 package collector
 
 import (
@@ -61,12 +58,8 @@ func permanent(format string, args ...any) error {
 	return &permanentError{componentErrorf("fdb_otel: "+format, args...)}
 }
 
-// IsPermanent reports whether retrying err cannot succeed: invalid input,
-// configuration, ownership or corruption failures, a shut-down exporter, or an
-// "operation" failure such as an illegal FDB operation. Transient FDB failures
-// (kind "transient", including transaction timeouts), budget failures and
-// "canceled" per-attempt deadlines are retryable because ExportResourceSpans
-// is an idempotent replace of each span identity.
+// IsPermanent identifies nonretryable input/config/ownership/corruption/operation and shutdown errors.
+// Transient, budget and per-attempt cancellation errors may retry idempotent span replacements.
 func IsPermanent(err error) bool {
 	if err == nil {
 		return false
@@ -110,9 +103,8 @@ type RetryConfig struct {
 	MaxElapsedTime  time.Duration `yaml:"max_elapsed_time"`
 }
 
-// Config is the fdb_otel exporter configuration. The otel.ExporterConfig keys
-// (cluster_file, run, tenant, ...) sit at the top level of the exporter body,
-// next to timeout, sending_queue and retry_on_failure.
+// Config puts otel.ExporterConfig keys at the top level of the fdb_otel body,
+// alongside timeout, sending_queue and retry_on_failure.
 type Config struct {
 	Exporter       otel.ExporterConfig `yaml:"-"`
 	Timeout        time.Duration       `yaml:"timeout"`
@@ -689,11 +681,8 @@ func (b batch) resourceSpans() []*tracepb.ResourceSpans {
 	return out
 }
 
-// TracesExporter is the fdb_otel traces exporter component. With the sending
-// queue enabled, ConsumeTraces admits spans into a bounded queue (measured in
-// spans) shared by all upstream sources; one batcher merges requests into
-// batches of min_size..max_size spans (or whatever is queued after
-// flush_timeout) and num_consumers workers export them with retry.
+// TracesExporter shares a span-bounded queue across sources, batching by min/max size or flush timeout.
+// With sending_queue enabled, num_consumers workers export batches with retry.
 type TracesExporter struct {
 	id   ComponentID
 	cfg  Config
@@ -784,10 +773,8 @@ func (x *TracesExporter) Start(ctx context.Context) error {
 	return nil
 }
 
-// ConsumeTraces admits spans for export. Spans with invalid identities fail
-// the whole request synchronously, so one source cannot poison a merged batch.
-// With the queue enabled the call returns once admitted; export failures are
-// reported by Flush and Stats. The exporter owns spans after the call.
+// ConsumeTraces rejects invalid identities synchronously and takes ownership of admitted spans.
+// Queued calls return on admission; Flush and Stats report export failures.
 func (x *TracesExporter) ConsumeTraces(ctx context.Context, spans []*tracepb.ResourceSpans) error {
 	n, err := admitSpans(spans)
 	if err != nil {
@@ -918,9 +905,8 @@ func (x *TracesExporter) signal() {
 	}
 }
 
-// Flush forces the queued partial batch out and waits until every request
-// admitted before the call has been exported or failed. It returns the export
-// failures recorded since the previous Flush.
+// Flush sends the partial batch and waits for all prior admissions to settle,
+// returning export failures recorded since the previous Flush.
 func (x *TracesExporter) Flush(ctx context.Context) error {
 	x.mu.Lock()
 	if x.state == stateCreated || x.state == stateStarting {
@@ -950,9 +936,8 @@ func (x *TracesExporter) Flush(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// Shutdown stops admission, drains the queue, and closes the sink. If ctx
-// expires first, in-flight exports are canceled, remaining spans fail, and the
-// sink still closes in the background.
+// Shutdown stops admission, drains and closes; on ctx expiry it cancels exports
+// and fails remaining spans, but still closes the sink in the background.
 func (x *TracesExporter) Shutdown(ctx context.Context) error {
 	x.mu.Lock()
 	cancel := x.cancelWork
@@ -1152,9 +1137,8 @@ func (x *TracesExporter) consumeLoop() {
 			x.complete(b.parts, st, err)
 			continue
 		}
-		// Only initial validation/admission guarantees zero writes. Messages or
-		// span batches may already be committed: replay each source idempotently
-		// so only the offending request fails.
+		// Messages or span batches may already be committed after admission.
+		// Replay sources idempotently to isolate the offending request.
 		for _, p := range b.parts {
 			if cerr := x.workCtx.Err(); cerr != nil {
 				// Abandoned before its own attempt: the merged failure may
@@ -1205,9 +1189,8 @@ func (x *TracesExporter) exportWithRetry(ctx context.Context, spans []*tracepb.R
 	}
 }
 
-// abandonedExport is the failure of an export whose worker context ended
-// after an attempt failed with err: it reports both, whether the cancellation
-// landed during the attempt or during the backoff wait.
+// abandonedExport retains both the failed attempt and worker cancellation,
+// whether cancellation arrived during the attempt or backoff.
 func abandonedExport(ctx context.Context, err error) error {
 	if errors.Is(err, ctx.Err()) {
 		return err

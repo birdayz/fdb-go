@@ -13,9 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// The leapfrog seek of BunchedMapMultiIterator and the text intersections
-// built on it must return exactly what streaming returns, with the same
-// continuations, while reading fewer key-values.
+// Leapfrog seeks must preserve streaming results and continuations while reading fewer key-values.
 var _ = Describe("TEXT leapfrog seek", func() {
 	ctx := context.Background()
 
@@ -75,9 +73,7 @@ var _ = Describe("TEXT leapfrog seek", func() {
 			for _, reverse := range []bool{false, true} {
 				ref := stream(tx, parent, reverse)
 				Expect(ref).To(HaveLen(mapEntries))
-				// Start after each of several entries and seek to targets that hit a
-				// key, fall between keys, hit a bunch's first key, sit inside the
-				// current bunch, sit inside a later bunch, and lie past the end.
+				// Cover exact/gap targets, first keys, current/later bunches and targets beyond the end.
 				for _, start := range []int{0, 5, 19, 20, 41, 98} {
 					for _, delta := range []int64{1, 2, 3, 4, 7, 30, 59, 60, 61, 121, 200, 1000} {
 						from := ref[start].key
@@ -181,9 +177,8 @@ var _ = Describe("TEXT leapfrog seek", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	// A continuation whose key is a bunch's first entry resumes in the bunch
-	// before it (lastLessThan); that bunch has nothing past the key, and the
-	// key's own bunch must still skip it (BunchedMapIterator.java:126-138).
+	// A first-key continuation starts in the preceding bunch, so filtering must also
+	// skip that key in its own bunch (BunchedMapIterator.java:126-138).
 	It("resumes from every continuation without repeating an entry", func() {
 		parent := specSubspace().Sub("idx")
 		writeMap(parent)
@@ -415,21 +410,11 @@ var _ = Describe("TEXT leapfrog seek", func() {
 		// Bunches hold 20 entries: common's bunch b is records 20b..20b+19,
 		// frequent's is 40b..40b+38, rare's one bunch is {17, 600, 1197}.
 		//
-		// Streaming (Java's IntersectionCursorBase) pulls one entry of every
-		// non-maximal child per round. After the match at 600 the maximum is
-		// rare's 1197; each round moves common by 1 and frequent by 2, so
-		// frequent passes 1197 (reaching 1198, the new maximum) after 299
-		// rounds, with common at 899. That round discards rare and common;
-		// rare is then exhausted and common has pulled 900. Reads: rare's
-		// bunch (1) + common's bunches 0..45 (46) + frequent's bunches 0..29
-		// (30) = 77.
+		// Streaming advances frequent to 1198 while common reaches 899, then rare exhausts after common pulls 900.
+		// Read 1 rare + 46 common + 30 frequent bunches = 77.
 		Expect(streamKVs).To(Equal(int64(1 + 46 + 30)))
-		// Seeking reads each token's first bunch (3). Common and frequent seek
-		// in memory to 17 and 18; then both reopen at 600 (2 bunches each:
-		// 600 is a bunch's first entry, so the bunch before it is read too, 4);
-		// at 1197 common reopens into bunch 59 and frequent into bunch 29 (1
-		// each, 2); rare's seek to 1198 rereads its bunch and ends (1).
-		// 3 + 4 + 2 + 1 = 10, against 77.
+		// Seeking reads 3 initial bunches, 4 around 600, 2 at 1197 and 1 for rare’s exhaustion: 10 total.
+		// In-memory seeks to 17/18 add no physical reads.
 		Expect(seekKVs).To(Equal(int64(10)))
 		Expect(seekBytes).To(BeNumerically("<", streamBytes/4))
 	})

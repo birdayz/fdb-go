@@ -10,11 +10,8 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
-// The TEXT index update hot path of a message transaction, without I/O: one
-// BunchedMap put given the snapshot read's result (the token map's signposts
-// around the key), the bunch (de)serialization and key comparisons inside it,
-// and the tokenizer. Map keys are the Message grouped primary key of the
-// GenAI exporter, (writer, seq, part), so most puts append to the last bunch.
+// Benchmarks isolate TEXT update CPU without I/O, using exporter (writer, seq, part) keys
+// so most BunchedMap puts append rather than insert randomly.
 
 // benchBunchTx answers a put's snapshot range read with canned key-values and
 // drops its writes and conflict ranges.
@@ -133,11 +130,8 @@ func BenchmarkTextBunchedMapPut(b *testing.B) {
 	}
 }
 
-// BenchmarkTextBunchedMapPipelinedPuts is one record's TEXT update in a
-// message transaction: a put into each of 128 token maps with the GenAI
-// exporter's pipeline of 128 (messageTextPipeline), started in token order and
-// finished oldest first, as textIndexMaintainer.updateOneKey runs them. "deep"
-// reads use a stack as deep as the client's RYW walk.
+// BenchmarkTextBunchedMapPipelinedPuts overlaps 128 token-map reads in issue order,
+// finishing oldest first; deep reads mimic the client RYW stack.
 func BenchmarkTextBunchedMapPipelinedPuts(b *testing.B) {
 	const tokens, pipeline = 128, 128
 	m := NewBunchedMap(textIndexBunchSize)

@@ -86,7 +86,7 @@ func TestPrefixMergeChildStopsResumeWithoutLoss(t *testing.T) {
 					slices.Sort(got)
 				}
 				if !reflect.DeepEqual(got, want) {
-					t.Fatalf("resumed results%v, want%v", got, want)
+					t.Fatalf("resumed results %v, want %v", got, want)
 				}
 			})
 		}

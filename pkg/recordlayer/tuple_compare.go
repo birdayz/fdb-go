@@ -62,13 +62,8 @@ func validateComparisonTuple(t tuple.Tuple, side, path string) error {
 	return nil
 }
 
-// compareTuples orders two tuples as Java's Tuple.compareTo does for tuples
-// without cached packed bytes: element by element with TupleUtil.compareItems,
-// a shorter tuple first when it is a prefix of the longer
-// (IterableComparator.compare). Nothing is encoded. The order is the order of
-// the tuples' packed bytes, except that this also orders tuples Pack refuses
-// (incomplete versionstamps, out-of-range integers), as Java does.
-// Returns -1, 0 or 1.
+// compareTuples returns -1/0/1 using Java’s uncached element-wise tuple order without packing.
+// It also orders values Pack rejects, including incomplete versionstamps and oversized integers.
 func compareTuples(a, b tuple.Tuple) int {
 	for i := 0; i < len(a) && i < len(b); i++ {
 		if c := compareTupleItems(a[i], b[i]); c != 0 {
@@ -78,9 +73,8 @@ func compareTuples(a, b tuple.Tuple) int {
 	return cmp.Compare(len(a), len(b))
 }
 
-// tupleItemCode is TupleUtil.getCodeFor: the type code that orders items of
-// different types. Every integer type shares the code of zero, and both
-// booleans that of false.
+// tupleItemCode matches Java TupleUtil.getCodeFor; integers share zero’s type code
+// and booleans share false’s.
 func tupleItemCode(item tuple.TupleElement) int {
 	switch item.(type) {
 	case nil:
@@ -159,9 +153,8 @@ func tupleItemBytes(item tuple.TupleElement) []byte {
 	return item.(fdb.KeyConvertible).FDBKey()
 }
 
-// tupleFloatBits and tupleDoubleBits are TupleUtil.encodeFloatBits and
-// encodeDoubleBits (TupleUtil.java:179-187), compared unsigned so that NaNs
-// order as their encodings do.
+// tupleFloatBits/tupleDoubleBits compare Java TupleUtil encoded bits unsigned
+// so NaNs follow encoded ordering (TupleUtil.java:179-187).
 func tupleFloatBits(f float32) uint32 {
 	bits := math.Float32bits(f)
 	if bits&(1<<31) != 0 {
@@ -226,10 +219,8 @@ func tupleBigInt(item tuple.TupleElement) *big.Int {
 	}
 }
 
-// compareVersionstamps is Versionstamp.compareTo (Versionstamp.java:306-318):
-// complete ones by their bytes, an incomplete one after every complete one,
-// incomplete ones by user version. Go marks an incomplete versionstamp by its
-// all-0xFF transaction version (tuple.IncompleteVersionstamp).
+// compareVersionstamps orders complete versions by bytes, then incomplete ones by user version.
+// Go marks incomplete versions with an all-0xFF transaction version (Versionstamp.java:306-318).
 func compareVersionstamps(a, b tuple.Versionstamp) int {
 	incompleteA, incompleteB := versionstampIncomplete(a), versionstampIncomplete(b)
 	switch {

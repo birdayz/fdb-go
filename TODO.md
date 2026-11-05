@@ -3431,22 +3431,39 @@ regressions so they can be proposed upstream after the PoC.
   prefix-stable, but this is a changed benchmark boundary requiring a fresh
   same-protocol baseline. No application/storage change is implemented or implied.
 
+### OTel log payload storage migration
+
+- [ ] **Migrate log payloads to standard Record Layer records without silently
+  changing existing `logs_v1` bytes.** `layers/otel/logs.go` currently owns a
+  separate eight-field tuple header `(version, codec, raw_len, stored_len,
+  chunks, effective, source, inline)`, raw/Brotli codec policy, 90,000-byte
+  inline/chunk rows and reassembly/corruption validation. Spans and messages
+  already use Record Layer serialization and splitting; the log format is not
+  wire-identical to those facilities, and no necessary independent-format
+  constraint has been established. Define a log envelope Record Layer type and
+  reuse `TransformedRecordSerializer` (including opt-in bounded Brotli) and
+  `SplitHelper`, while retaining log-specific time/equality/trace indexes,
+  ownership, admission budgets, fidelity and replacement semantics in OTel.
+  Before cutover, define an explicit versioned ownership/layout boundary and
+  migration or recreation procedure for existing `logs_v1` stores; do not
+  reinterpret their bytes as Record Layer records. Add end-to-end coverage for
+  raw/Brotli and inline/split payloads, bounded corrupt-input rejection,
+  old-format read/migration or explicit refusal, replacement/deletion cleanup,
+  index consistency and failed/partial migration. This entry defers the storage
+  refactor; the current persisted format and readers remain unchanged.
+
 ### OTel GenAI messages on Record Layer TEXT indexes (2026-11-02)
 
 `layers/otel/messages*.go` stores GenAI messages as `Message` records with a
-standard TEXT index (README "GenAI message storage"). Open findings, measured
-on the ccx43 bench box with `measure.py --storage 6 --duration 180s`:
+standard TEXT index (README "GenAI message storage"). Open work follows.
+Historical standalone performance numbers have been removed here because the
+paired source trees, compiler and sample populations were not identified with
+these claims; the implementation notes below are not controlled comparisons.
 
-- [ ] **The client, not the cluster, bounds message ingest** (719 spans/s,
-  `limited_by: workload`, 0 message retries). A 60 s CPU profile of otelbench
-  in the steady phase uses 13 of 16 cores: 44% in the pure-Go client's RYW
-  cache (`rywCache.walkCandidatesLocked`/`walkBoundsLocked`/
-  `cacheCandidatesLocked`, mostly `bytes.Compare`), reached from the BunchedMap
-  reads of TEXT index maintenance in message transactions; 12% GC. 95% of the
-  mutex wait is the per-transaction `rywCache.withLock`, taken by the 128
-  pipelined TEXT index updates of one transaction. Needed (pkg/fdbgo/client):
-  cheaper RYW resolution of selector reads in a transaction with thousands of
-  writes, and less lock hold time.
+- [ ] **Re-measure client cost in message ingest.** Investigate RYW selector
+  resolution and per-transaction lock hold time during BunchedMap reads for
+  TEXT index maintenance. Capture both measured trees, compiler, workload and
+  repeat populations before attributing a throughput bound or improvement.
   Client side done (unmeasured on the bench box): a Set after any pinned read
   cloned the whole write map (O(writes) per Set), and every walk step re-derived
   its segment with ~10 binary searches. The write map, its cleared/unreadable
@@ -3454,9 +3471,9 @@ on the ccx43 bench box with `measure.py --storage 6 --duration 180s`:
   sequences (`ryw_pseq.go`, O(1) snapshot, O(log n) path copy), the walk
   iterator is RYWIterator's two-cursor composition (O(1) amortized steps), and
   conflict filtering on a pinned version runs outside the lock.
-  `BenchmarkRYWConcurrentReads` (//pkg/fdbgo/client:range_selector_unit_test,
-  20k writes, 2048 reads from 128 goroutines): 950 ms -> 91 ms per transaction,
-  2.84 GB -> 46 MB.
+  `BenchmarkRYWConcurrentReads` (//pkg/fdbgo/client:range_selector_unit_test)
+  exercises concurrent reads over a populated write map; re-measure it with
+  paired provenance before making a performance comparison.
   Second round (profile at 7cf0eda3c): the walk runs outside `rywCache.mu` on
   the pinned write-map version and a persistent snapshot of the cache; the lock
   covers only pinning, snapshotting and accepting a storage reply. Walks and
@@ -3467,9 +3484,8 @@ on the ccx43 bench box with `measure.py --storage 6 --duration 180s`:
   arena copy of `key\x00` between mutation and conflict range, the conflict
   arena grows in chunks without copying, and Commit coalesces the write
   conflicts once (the self-conflict check and range reuse that vector).
-  `BenchmarkRYWBunchedMapPuts` (writes=20000): 40.6 -> 36.9 µs/put, 38.3 ->
-  26.5 MB, 268k -> 206k allocs per transaction; a cached selector read 3.2 ->
-  2.1 µs, 34 -> 13 allocs; a cached Get 0.83 -> 0.30 µs, 8 -> 3 allocs.
+  Re-measure BunchedMap-shaped puts, cached selector reads and cached Gets
+  together with their allocation populations.
   Third round (profile at cd1ee1615): conflicts live where C++ keeps them
   (`conflict_map.go`). With RYW, write conflicts are only the WriteMap nodes'
   flags, updated under `conflictMu` with the op-log, and read conflicts a
@@ -3485,49 +3501,42 @@ on the ccx43 bench box with `measure.py --storage 6 --duration 180s`:
   transaction ships the write map's coalesced write conflicts (keeping the
   conflicts of the writes Go keeps in an SVK span, RFC-098); disabling RYW
   after a conflict-only write fails with 2000, and read conflicts recorded
-  before disabling are not shipped. `BenchmarkRYWConflictCalls` 8.4 -> 6.8 ms,
-  8.6 -> 5.5 MB, 37k -> 14k allocs; `BenchmarkRYWBunchedMapPuts`
-  (writes=20000) 26.5 -> 18.8 MB, 206k -> 64k allocs, 5% less CPU but 7% more
-  wall time (lock waits).
-  Open: re-measure otelbench. Searches over versioned nodes cost more per
-  level, and with 128 pipelined reads the per-transaction locks are the
-  bound; the position-indexed sequences still copy about half an insert's
-  path (C++ PTree keeps no subtree sizes); every pipelined read that is not
-  answered locally still runs on its own goroutine (`startPendingRange`);
+  before disabling are not shipped. Re-measure `BenchmarkRYWConflictCalls`
+  and `BenchmarkRYWBunchedMapPuts`, distinguishing CPU, allocation and wall-time
+  effects rather than inferring one from another.
+  Open: re-measure otelbench, profiling versioned-node searches, transaction
+  locks and position-indexed sequence copying (C++ PTree keeps no subtree
+  sizes). Every pipelined read that is not answered locally still runs on its
+  own goroutine (`startPendingRange`);
   the op-log copied each Set's key and value besides the write map (fixed
   by the fourth round, "RYW CPU in TEXT-maintenance-shaped transactions" in
   section 0).
-- [ ] **TEXT index maintenance CPU in message transactions** (otelbench
-  profile at 7cf0eda3c: ~60% of client CPU). Record Layer side done: a
-  BunchedMap put or remove keeps each stored key's packed bytes, as Java's
+- [ ] **TEXT index maintenance CPU in message transactions.** Record Layer
+  side done: a BunchedMap put or remove keeps each stored key's packed bytes, as Java's
   `Tuple.fromBytes` does, validating instead of unpacking them, compares by
   those bytes (`Tuple.compareTo`) with a binary search over the sorted bunch,
   and writes canonical position lists back as stored; tuples elsewhere compare
   element-wise (`compareTuples`, `TupleUtil.compareItems`); the default
-  tokenizer streams word segments. `BenchmarkTextBunchedMapPut/append`
-  11.1 µs, 7.3 KB, 126 allocs -> 2.7 µs, 1.0 KB, 25 allocs. Per-put conflict
-  ranges equal Java's and are pinned by "BunchedMap operation conformance";
+  tokenizer streams word segments. Re-measure `BenchmarkTextBunchedMapPut/append`
+  with paired provenance. Per-put conflict ranges equal Java's and are pinned by "BunchedMap operation conformance";
   the conflict-range share of the profile is client cost (pkg/fdbgo/client).
   Fixed on the way: the APPEND_IF_FITS path did not instrument its write, a
   remove passed the wrong old value to its instrumentation, and a stored key
   with a non-canonical encoding was rewritten canonically (Java keeps it).
-  Pipelined reads (re-profile of cd1ee1615: one goroutine per read, 4.95% CPU
-  in stack growth): a put's or remove's snapshot read is now the RangeResult
+  Pipelined reads: a put's or remove's snapshot read is now the RangeResult
   future GetRange returns, completed in order on the maintainer's goroutine,
   as Java's forEachAsync completes BunchedMap's futures; it reads with
   WANT_ALL as Java does (it read with ITERATOR, whose 4 KB first batch split
-  reads of large bunches). `BenchmarkTextBunchedMapPipelinedPuts/deep`
-  542 -> 280 µs per 128 puts. Open: the pure-Go client still starts one
-  goroutine per read it cannot answer locally (`startPendingRange`, client
+  reads of large bunches). Re-measure `BenchmarkTextBunchedMapPipelinedPuts/deep`.
+  Open: the pure-Go client still starts one goroutine per read it cannot answer locally (`startPendingRange`, client
   scope); `DeserializeEntries` (scans, Get) still unpacks every key.
 - [ ] **TEXT maintenance round trips across a batch's records.** Done:
   `SaveRecordBatch(WithOptions)` and `PrefetchRecordBatch` read the batch's
   TEXT bunches (one snapshot read per token map) and updated records'
   tokenizer versions together into the transaction's read-your-writes cache
   before the records are applied (`store_batch_text_prefetch.go`); the commit
-  is the sequential saves' commit, pinned by "Batch TEXT bunch prefetch". 128
-  records of 57 tokens: 205 storage-read round trips (sequential SaveRecord)
-  -> 3. Open: `PrefetchRecordBatch` cannot warm an update's removals (old
+  is the sequential saves' commit, pinned by "Batch TEXT bunch prefetch".
+  Open: `PrefetchRecordBatch` cannot warm an update's removals (old
   images are not yet read); a map whose batch keys lie far apart past
   2*keys+2 rows costs a second prefetch round trip.
 - [ ] **Record Layer KeySpace over the directory layer** (for layers/otel's
@@ -3542,15 +3551,15 @@ on the ccx43 bench box with `measure.py --storage 6 --duration 180s`:
   it up), and `runChild` (resolveWithMetadata's child transaction) takes a
   fresh read version where Java's runAsyncBorrowingReadVersion borrows the
   parent's.
-- [ ] **Phrase queries cost twice the earlier layout** (bench p50 15 ms against
-  6-8 ms): the TEXT phrase scan of 16 writer shards per role dominates
-  (`fts_phrase_first_turn`, `fts_multi_turn_history`).
+- [ ] **Measure phrase-query fanout cost.** Profile the TEXT phrase scan of
+  16 writer shards per role (`fts_phrase_first_turn`, `fts_multi_turn_history`)
+  before attributing its cost or comparing layouts.
 - [ ] **`bulk_index_conflicts` widens over every index of the store.** Record
   Layer side done: `BatchSaveOptions.CoalesceIndexWriteConflicts` now covers
   only the indexes whose maintainer the batch ran (the saved and overwritten
   records' types, multi-type and universal indexes, not disabled or queued),
   pinned by "Batch index write-conflict coalescing scope" in
   `pkg/recordlayer/store_batch_conflicts_test.go`. layers/otel accepts the
-  combination again (exporter default on): with it, 0 message-transaction
-  conflicts and 728 spans/s in 180 s (`report_conflicting_keys`), against 719
-  with it off.
+  combination again (exporter default on). Re-measure message-transaction
+  conflicts and throughput with paired provenance; the scope regression does
+  not establish a performance result.

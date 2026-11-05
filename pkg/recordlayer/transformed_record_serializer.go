@@ -180,10 +180,8 @@ func (b *TransformedRecordSerializerBuilder) SetCompressionLevel(level int) *Tra
 	return b
 }
 
-// SetGoOnlyBrotliCompression enables compression version 2, which Java cannot
-// read, at a level from 0 through 4. It also permits reading that format. A later
-// SetCompressWhenSerializing(false) disables compressed writes, not this read
-// permission. SetCompressionLevel continues to select only Java's zlib level.
+// SetGoOnlyBrotliCompression opts into Java-incompatible version 2 reads/writes at levels 0..4.
+// Disabling compression preserves read permission; SetCompressionLevel still selects only zlib level.
 func (b *TransformedRecordSerializerBuilder) SetGoOnlyBrotliCompression(level int) *TransformedRecordSerializerBuilder {
 	b.s.goOnlyBrotliCompression = true
 	b.s.brotliCompressionLevel = level

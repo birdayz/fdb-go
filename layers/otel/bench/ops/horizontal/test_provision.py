@@ -2563,9 +2563,7 @@ class ProvisionTest(unittest.TestCase):
         self.assertTrue(again['passed'])
 
     def test_teardown_outlasts_slow_asynchronous_server_deletion(self):
-        # Hetzner deletes servers asynchronously; until that completes, the
-        # campaign firewall refuses deletion as resource_in_use. Observed in a
-        # real campaign for longer than the old four-pass budget allowed.
+        # Asynchronous server deletion keeps the firewall resource_in_use until completion.
         resources = self.prepare()
         refusals, backoffs = [6], []
 

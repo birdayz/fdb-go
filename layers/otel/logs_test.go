@@ -156,6 +156,13 @@ func TestLogValueDecodingRejectsCorruption(t *testing.T) {
 		return []fdb.KeyValue{{Key: smallRows[0].Key, Value: h.Pack()}}
 	}
 	clone := func(rs []fdb.KeyValue) []fdb.KeyValue { return append([]fdb.KeyValue(nil), rs...) }
+	chunkedHeader, err := tuple.Unpack(rows[0].Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunkedHeader[4] = int64(len(rows)) // Declare four chunks while preserving all three payload rows.
+	wrongChunkCount := clone(rows)
+	wrongChunkCount[0].Value = chunkedHeader.Pack()
 	for name, c := range map[string]struct {
 		space subspace.Subspace
 		rows  []fdb.KeyValue
@@ -172,7 +179,7 @@ func TestLogValueDecodingRejectsCorruption(t *testing.T) {
 		"bad codec":        {smallSpace, header(func(h tuple.Tuple) { h[1] = int64(7) })},
 		"raw length":       {smallSpace, header(func(h tuple.Tuple) { h[2] = h[2].(int64) + 1 })},
 		"stored length":    {smallSpace, header(func(h tuple.Tuple) { h[3] = h[3].(int64) - 1 })},
-		"chunk count":      {smallSpace, header(func(h tuple.Tuple) { h[4] = int64(1) })},
+		"chunk count":      {space, wrongChunkCount},
 		"negative time":    {smallSpace, header(func(h tuple.Tuple) { h[5] = int64(-1) })},
 		"time source":      {smallSpace, header(func(h tuple.Tuple) { h[6] = "guess" })},
 		"field type":       {smallSpace, header(func(h tuple.Tuple) { h[6] = int64(1) })},

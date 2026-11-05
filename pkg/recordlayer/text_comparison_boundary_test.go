@@ -7,9 +7,8 @@ import (
 
 func TestTextWithMaxDistanceComparisonZeroDistanceEval(t *testing.T) {
 	t.Parallel()
-	// Comparisons.java:433-478 polls an empty queue once at distance zero,
-	// then retains every token: all distinct comparand terms must occur,
-	// but need not be adjacent or in comparand order.
+	// At distance zero Java retains every token after polling an empty queue;
+	// all distinct terms must occur, without adjacency or ordering (Comparisons.java:433-478).
 	cases := []struct {
 		name   string
 		tokens []string

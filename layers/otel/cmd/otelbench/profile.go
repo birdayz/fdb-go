@@ -12,9 +12,8 @@ import (
 	"time"
 )
 
-// profileFlags are otelbench's Go profiling options. Every profile covers one
-// window of the run, [start, start+duration), measured from the start of the
-// run; a zero duration lasts until the run ends.
+// profileFlags select a run-relative [start, start+duration) profiling window;
+// zero duration lasts until the run ends.
 type profileFlags struct {
 	cpu, mem, block, mutex, trace string
 	start, duration               time.Duration
@@ -130,9 +129,8 @@ func (p *profiler) open() {
 	}
 }
 
-// close ends the window, writing the profiles that are taken at its end, and
-// returns the first profiling error; a window that never opened is an error.
-// Closing again returns the same result.
+// close writes end-of-window profiles and retains the first error across calls;
+// a window that never opened is an error.
 func (p *profiler) close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()

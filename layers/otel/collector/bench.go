@@ -1,14 +1,7 @@
 package collector
 
-// bench.go drives a custom in-process Collector-model queue, not the upstream
-// OpenTelemetry Collector. Synthetic GenAI conversations flow into *otel.Exporter
-// (message delta dedup and message
-// full-text indexing) together with their correlated OTLP logs, while query
-// workers run verified queries against committed data. Ingest is either a
-// fixed corpus or a sustained, duration-bounded load reported as a time
-// series; a bit-for-bit LoadSpanOTLP reconstruction audit and a verified query
-// latency suite follow. Conversations are regenerated from (seed, run, c) on
-// demand, so no request outlives its export.
+// bench.go drives a custom in-process Collector-model queue, not the upstream Collector.
+// Synthetic spans/logs feed *otel.Exporter alongside queries, then reconstruction and query audits.
 
 import (
 	"context"
@@ -79,10 +72,8 @@ const (
 // CollectorBenchQueryClasses lists every query class in execution order.
 var CollectorBenchQueryClasses = []string{QueryFTSSingleToken, QueryFTSPhraseFirstTurn, QueryFTSMultiTurnHistory, QueryFTSSameSpanPreds, QuerySameSpanConjunction, QueryTraceExistential3, QueryTraceGraph, QueryLogsByTrace}
 
-// CollectorBenchConfig configures RunBenchmark. Zero numeric, duration and
-// string fields take DefaultCollectorBenchConfig values (Duration defaults to
-// 0, the fixed corpus); booleans are used as given. With Duration > 0,
-// producers ingest until the deadline and Conversations is ignored.
+// CollectorBenchConfig configures RunBenchmark; zero non-booleans use defaults (Duration 0: fixed corpus).
+// With Duration > 0, producers run until the deadline and ignore Conversations.
 type CollectorBenchConfig struct {
 	ClusterFile           string        `json:"cluster_file"`
 	Run                   string        `json:"run"`
@@ -225,18 +216,15 @@ func (c CollectorBenchConfig) Validate() error {
 	return nil
 }
 
-// benchQueryBudget returns the per-query candidate and logical-byte budgets.
-// They cover one block of benchBlockSize conversations, doubled for headroom,
-// and do not depend on the corpus size: a query that scans the corpus fails
-// on its budget instead of silently slowing down as a sustained run grows.
+// benchQueryBudget allows two blocks of candidates/logical bytes, independent of corpus size,
+// so an accidental corpus scan fails rather than degrading as a sustained run grows.
 func benchQueryBudget(turns, k int) (int, int64) {
 	n := int64(turns)
 	// References to one block's user (or assistant) messages: message j of a
 	// conversation is in the history of turns j..n.
 	refs := benchBlockSize * n * (n + 1) / 2
-	// The existential class reads a block's span, log and message postings,
-	// Message records, trace markers and packed reference chunks; the K-limited
-	// classes add page-bounded verification and predicate probes (64 a batch).
+	// Existential queries read postings, messages, markers and reference chunks;
+	// K-limited queries add bounded verification and batched predicate probes.
 	rows := benchBlockSize*(4*n+1) + refs + 4*int64(k+64)
 	// This also covers one trace stored without decomposition, whose n spans
 	// carry n(n+4) message elements.
@@ -274,10 +262,8 @@ type CollectorBenchEffective struct {
 	BlockSize      int    `json:"block_size"`
 }
 
-// CollectorBenchCorpus describes the ingested workload. TotalMessageElements
-// counts every message element across all spans' content attributes;
-// UniqueMessageElements counts distinct elements (2 per turn plus the shared
-// system instructions and two tool definitions).
+// CollectorBenchCorpus counts all message elements and distinct elements
+// (two per turn plus shared system instructions and two tool definitions).
 type CollectorBenchCorpus struct {
 	Conversations         int   `json:"conversations"`
 	TurnsPerConversation  int   `json:"turns_per_conversation"`
@@ -288,12 +274,8 @@ type CollectorBenchCorpus struct {
 	UniqueMessageElements int64 `json:"unique_message_elements"`
 }
 
-// CollectorBenchIngest reports phase 1, from the first produced conversation
-// until every span and log is flushed. Export sums the ExportStats of every
-// successful sink call; its MessageDeltas.UniqueMessages counts per-batch
-// uniques, while Messages.Written/Present count committed new/already-present
-// message headers (not raw input elements or abandoned multipart tails).
-// Logs are exported in batches during ingest; LogWallNs sums those calls.
+// CollectorBenchIngest covers production through final flush; Export sums successful calls.
+// UniqueMessages counts per-batch uniques; Written/Present count committed headers, not abandoned tails.
 type CollectorBenchIngest struct {
 	IngestWallNs      int64               `json:"ingest_wall_ns"`
 	SpansPerSec       float64             `json:"spans_per_sec"`
@@ -308,12 +290,8 @@ type CollectorBenchIngest struct {
 	Logs              otel.LogExportStats `json:"logs"`
 }
 
-// CollectorBenchWindow is one report interval of ingest, offsets relative to
-// the ingest start. Phase "load" windows cover the producers, which stop at
-// the deadline once their last request is admitted; "drain" windows cover
-// the final span and log flush. Counters are deltas over the window;
-// ExportLatency covers export calls completed in it; QueuedSpans, Watermark and
-// the memory figures are sampled at its end.
+// CollectorBenchWindow reports ingest-relative load/drain intervals with delta counters.
+// ExportLatency covers completed calls; queue, watermark and memory are end-of-window samples.
 type CollectorBenchWindow struct {
 	Phase         string         `json:"phase"`
 	StartNs       int64          `json:"start_ns"`
@@ -356,11 +334,8 @@ type CollectorBenchRates struct {
 	SteadyState CollectorBenchRate `json:"steady_state"`
 }
 
-// CollectorBenchWatermark reports the commit watermark: the highest W such
-// that every conversation <= W has all its spans exported and its log
-// written (-1 for none). Tracked is the number of conversations above W the
-// tracker still holds; PeakTracked its maximum. Anomalies count exports of
-// unknown, already committed or over-full conversations.
+// CollectorBenchWatermark is the highest fully exported conversation W (-1 for none).
+// Tracked/PeakTracked count pending conversations above W; Anomalies count invalid/repeated exports.
 type CollectorBenchWatermark struct {
 	Conversations int   `json:"conversations"`
 	Watermark     int64 `json:"watermark"`
@@ -546,9 +521,8 @@ type benchCommit struct {
 	log   bool
 }
 
-// benchTracker maintains the commit watermark. It holds two bytes for each
-// conversation above the watermark only, so its memory follows the in-flight
-// window rather than the corpus.
+// benchTracker stores two bytes per conversation above the commit watermark,
+// so memory follows the in-flight window rather than corpus size.
 type benchTracker struct {
 	turns   int
 	claimed *atomic.Int64 // conversations handed to producers
@@ -732,9 +706,8 @@ func benchMessage(role, text string) *commonpb.AnyValue {
 
 func benchClone(v *commonpb.AnyValue) *commonpb.AnyValue { return proto.Clone(v).(*commonpb.AnyValue) }
 
-// benchBlock is the block of benchBlockSize consecutive conversations that
-// shares c's incident tokens, so a block query's answer is fixed once the
-// block is committed, whatever the corpus size.
+// benchBlock groups benchBlockSize conversations sharing incident tokens,
+// so a committed block has a fixed query answer regardless of corpus size.
 func benchBlock(c int) int { return c / benchBlockSize }
 
 // benchBlockMembers is the number of conversations of block b in a corpus of total.

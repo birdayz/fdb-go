@@ -29,11 +29,11 @@ func TestBenchmarkDurationAdmissionUsesControlledClock(t *testing.T) {
 	r := &benchRun{cfg: CollectorBenchConfig{runtime: &benchRuntime{now: func() time.Time { return now }}}}
 	deadline := start.Add(6 * time.Second)
 	if c, ok := r.nextConversation(maxBenchConversations, deadline); !ok || c != 0 {
-		t.Fatalf("first admission%d/%v", c, ok)
+		t.Fatalf("first admission %d/%v", c, ok)
 	}
 	now = deadline.Add(-time.Nanosecond)
 	if c, ok := r.nextConversation(maxBenchConversations, deadline); !ok || c != 1 {
-		t.Fatalf("pre-deadline admission%d/%v", c, ok)
+		t.Fatalf("pre-deadline admission %d/%v", c, ok)
 	}
 	now = deadline
 	if _, ok := r.nextConversation(maxBenchConversations, deadline); ok || r.claimed.Load() != 2 {
@@ -41,7 +41,7 @@ func TestBenchmarkDurationAdmissionUsesControlledClock(t *testing.T) {
 	}
 	now = deadline.Add(time.Hour)
 	if c, ok := r.nextConversation(3, time.Time{}); !ok || c != 2 {
-		t.Fatalf("fixed-work admission depended on clock%d/%v", c, ok)
+		t.Fatalf("fixed-work admission depended on clock %d/%v", c, ok)
 	}
 	if _, ok := r.nextConversation(3, time.Time{}); ok {
 		t.Fatal("fixed-work limit ignored")
@@ -71,15 +71,15 @@ func TestBenchmarkWindowsUseControlledClockAndCounters(t *testing.T) {
 		r.cut(true)
 	}
 	if len(r.windows) != 3 {
-		t.Fatalf("samples%d,want3", len(r.windows))
+		t.Fatalf("samples %d, want 3", len(r.windows))
 	}
 	for i, w := range r.windows {
 		if w.StartNs != int64(i)*int64(time.Second) || w.EndNs != int64(i+1)*int64(time.Second) || w.ExportedSpans != 10 || w.Messages != 20 || w.Logs != 1 {
-			t.Fatalf("window%d:%+v", i, w)
+			t.Fatalf("window %d: %+v", i, w)
 		}
 	}
 	rates := benchRates(r.windows, time.Second)
 	if rates.WholeRun.Windows != 3 || rates.WholeRun.Spans != 30 || rates.WholeRun.WallNs != int64(3*time.Second) || rates.SteadyState.Windows != 1 || rates.SteadyState.Spans != 10 || rates.SteadyState.WallNs != int64(time.Second) {
-		t.Fatalf("clock-derived rates%+v", rates)
+		t.Fatalf("clock-derived rates %+v", rates)
 	}
 }

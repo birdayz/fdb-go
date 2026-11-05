@@ -22,9 +22,8 @@ const (
 	ProbableIntersectionDefaultFalsePositivePercentage float64 = 0.01
 )
 
-// probableChild is ProbableIntersectionCursorState: a keyed merge state that
-// remembers, in a Bloom filter carried by the continuation and in a set kept
-// for this run only, the comparison keys it has consumed.
+// probableChild remembers consumed comparison keys in a persisted Bloom filter
+// and a run-local exact set, as Java ProbableIntersectionCursorState does.
 type probableChild[T any] struct {
 	*mergeChildState[T]
 	bloom          *guavaBloomFilter
@@ -60,23 +59,16 @@ func (s *probableChild[T]) isDefiniteDuplicate() bool {
 	return ok
 }
 
-// probableIntersectionCursor is Java's ProbableIntersectionCursor: the values
-// that are probably in every child, in the order children produce them. Go
-// pulls children serially, in index order, which is the order Java produces
-// when every child's next result is already complete
-// (ProbableIntersectionCursor.computeNextResultStates,
-// ProbableIntersectionCursor.java:121-169).
+// probableIntersectionCursor emits likely intersections by serial child-index order,
+// matching Java when every child’s next result is already complete.
 type probableIntersectionCursor[T any] struct {
 	children   []*probableChild[T]
 	closed     bool
 	lastNoNext *RecordCursorResult[T]
 }
 
-// ProbableIntersection is ProbableIntersectionCursor.create(comparisonKeyFunction,
-// cursorFunctions, expectedResults, falsePositivePercentage, continuation,
-// timer) (ProbableIntersectionCursor.java:253-262, createCursorStates at
-// :191-204, ProbableIntersectionCursorState.from at
-// ProbableIntersectionCursorState.java:160-180).
+// ProbableIntersection creates Java-compatible probable intersections and resumes
+// from per-child Bloom-filter continuation state.
 func ProbableIntersection[T any](compKeyFunc ComparisonKeyFunc[T], fns []CursorFunction[T], expectedResults int64, falsePositivePercentage float64, continuation []byte) (RecordCursor[T], error) {
 	states, err := decodeProbableIntersectionContinuation(continuation, len(fns))
 	if err != nil {
@@ -186,10 +178,7 @@ func (c *probableIntersectionCursor[T]) checkIfInRest(state *probableChild[T]) (
 	return true, nil
 }
 
-// continuation is ProbableIntersectionCursorContinuation.from(cursor).toBytes
-// (ProbableIntersectionCursorContinuation.java:86-92,
-// BloomFilterCursorContinuation.toProto at BloomFilterCursorContinuation.java:
-// 49-66): END only when every child is at END.
+// continuation uses Java BloomFilterCursorContinuation framing; END requires every child at END.
 func (c *probableIntersectionCursor[T]) continuation() (RecordCursorContinuation, error) {
 	allEnd := true
 	for _, child := range c.children {
@@ -248,10 +237,8 @@ type probableChildState struct {
 	bloom []byte
 }
 
-// decodeProbableIntersectionContinuation is
-// ProbableIntersectionCursorContinuation.from(byte[], int)
-// (ProbableIntersectionCursorContinuation.java:95-131). A parsed state without
-// a Bloom filter reads as an empty one, which Guava's readFrom refuses.
+// decodeProbableIntersectionContinuation follows Java’s decoder; a missing Bloom filter
+// becomes empty bytes, which Guava readFrom rejects.
 func decodeProbableIntersectionContinuation(data []byte, n int) ([]probableChildState, error) {
 	out := make([]probableChildState, n)
 	if data == nil {

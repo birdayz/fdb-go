@@ -2,14 +2,8 @@ package otel
 
 // Key layouts of an FDB run.
 //
-// A run's owner manifest is always at ("otel_otelbench_v2", run, "owner") and
-// records the run's key layout. In the tuple layout (runs created before
-// directory_v1) every key of the run starts with ("otel_otelbench_v2", run),
-// about 30 bytes. In directory_v1 the run's data lives under a Record Layer
-// KeySpace path whose application and run directories are Java's
-// DirectoryLayerDirectory, resolved through the FDB directory layer
-// (ExtendedDirectoryLayer.global) to small integers, and the run's
-// subdirectories are integer constants: a key starts with about six bytes.
+// The owner at ("otel_otelbench_v2", run, "owner") records the legacy tuple or directory_v1 layout.
+// Directory layout resolves application/run names through ExtendedDirectoryLayer.global, then integer kinds.
 
 import (
 	"context"
@@ -56,9 +50,8 @@ type runKeys struct {
 
 func (k runKeys) owner() fdb.Key { return k.legacy.Sub("owner").FDBKey() }
 
-// runKeySpace is the directory_v1 KeySpace: application / run / one integer
-// constant per kind of data. The application and run directories are Java's
-// DirectoryLayerDirectory: names resolved through the directory layer of db.
+// runKeySpace is directory_v1: directory-layer application/run names followed
+// by one integer constant per data kind.
 func runKeySpace(db *recordlayer.FDBDatabase, configure ...recordlayer.TransactionConfigurer) (*keyspace.KeySpace, error) {
 	resolver := recordlayer.NewKeySpaceResolver(db, recordlayer.ExtendedDirectoryLayerGlobal{})
 	if len(configure) > 0 {

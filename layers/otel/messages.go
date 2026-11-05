@@ -2,20 +2,11 @@ package otel
 
 // GenAI message storage on standard Record Layer records.
 //
-// Turn k of an agent conversation repeats turns 1..k-1 in
-// gen_ai.input.messages. Each message element is stored once per tenant as a
-// Message record and the span attribute is replaced by a manifest of message
-// IDs, so per-span storage is O(turn) instead of O(history bytes). A unique
-// value index on (tenant, SHA-256 digest) deduplicates content. Record
-// splitting and the store's record compression handle message bytes; only a
-// message too large for one transaction is cut into parts (planMessage).
+// Tenant-wide digest dedup replaces repeated GenAI message elements with manifests.
+// Raw-byte/text-token ceilings plan parts; tails may share transactions, with the head published last.
 //
-// A message ID is (writer, seq): each message transaction holds one writer
-// exclusively and numbers its new messages in increasing seq. The Message
-// primary key is (tenant, writer, seq, part), so every TEXT index posting a
-// writer adds lands after that writer's earlier ones: the BunchedMap appends
-// to the writer's last bunch instead of rewriting a bunch at a random digest
-// position, and concurrent writers never share the bunch they modify.
+// Monotonic (writer, seq) IDs make TEXT postings append; one backend isolates its writers by shard.
+// Independent backends may share shards and conflict.
 //
 // fulltext_v2 indexes message text by tenant, role and writer shard. MessageTrace
 // markers select traces; envelope_refs_v1 reads each trace's packed ref_chunks.
@@ -63,18 +54,11 @@ const (
 	messageManifestMagic   = "OTMD"
 	messageManifestVersion = 2
 
-	// A message whose raw bytes or indexed text exceed one part is stored as
-	// several Message records written in separate transactions, part 0 last.
-	// A part holds at most messagePartRawBytes of raw element bytes (split by
-	// the Record Layer into 100KB values) and one text segment.
+	// Parts independently bound raw bytes and indexed text; Record Layer splits raw values.
+	// Tail parts can share transactions; part 0 commits last to publish the complete message.
 	messagePartRawBytes = 1 << 20
-	// A text segment has at most messageSegmentTokens distinct tokens and
-	// messageSegmentBytes bytes, so its largest position list stays below the
-	// 100KB value limit. Each distinct token is one BunchedMap put; it rewrites
-	// at most two bunch values of at most 10KB each (bunched_map.go), about
-	// 150 bytes measured. A part whose transaction exceeds the 10MB limit
-	// anyway is cut again with a quarter of the distinct tokens per segment,
-	// down to messageSegmentMinTokens, whose worst case is about 400KB.
+	// Token/byte caps keep position lists below the value limit; transaction-size errors
+	// replan with one quarter as many distinct tokens, down to messageSegmentMinTokens.
 	messageSegmentTokens    = 1024
 	messageSegmentMinTokens = 16
 	messageSegmentBytes     = 64 << 10
@@ -92,12 +76,8 @@ const (
 	maxMessageTextDepth  = 10000 // proto.Unmarshal's default recursion limit
 	maxMessageRoleBytes  = 1024
 
-	// messageTxnMessages bounds the small messages saved per transaction. A
-	// transaction commits one mutation per TEXT bunch it appended to however
-	// often, so larger transactions write fewer mutations: bench, 12-turn
-	// conversations, 26.0, 16.0 and 10.9 TEXT mutations per span at 32, 64 and
-	// 128 messages, at 0.4 and 1.3 s per transaction for 32 and 128. Each
-	// writer has its own TEXT shard, so the size does not add conflicts.
+	// messageTxnMessages bounds group commits, amortizing repeated TEXT bunch mutations.
+	// Shards isolate writers within this backend, not across backends.
 	messageTxnMessages = 128
 	messageWorkers     = 8                 // concurrent transactions per message persist call
 	messageWriterLimit = messageTextShards // message writers per backend
@@ -153,10 +133,8 @@ func messageHash(tenant int, encoding string, element []byte) messageDigest {
 	return out
 }
 
-// messagePipelineSizer reads up to messageTextPipeline token maps of one
-// message's TEXT index update at once (Java's TEXT_INDEX_UPDATE pipeline,
-// default 10): a message transaction's latency is its rounds of BunchedMap
-// reads, and a message has about 60 distinct tokens.
+// messagePipelineSizer overlaps token-map reads for TEXT_INDEX_UPDATE only;
+// other operations retain Java’s default pipeline sizing.
 func messagePipelineSizer(op recordlayer.PipelineOperation) int {
 	if op == recordlayer.PipelineOperationTextIndexUpdate {
 		return messageTextPipeline
@@ -529,9 +507,8 @@ type messageElement struct {
 	outcome  MessageStoreStats // committed per-message work, including fallback parts
 }
 
-// messageUse is one (message, attribute) reference of a span: the message's
-// positions in the span's first value of the attribute, and whether it is that
-// value's last element (the turn that introduced it).
+// messageUse records positions in the first attribute value and whether the reference
+// is that value’s newest element (the turn that introduced it).
 type messageUse struct {
 	element   *messageElement
 	attribute int64
@@ -564,10 +541,8 @@ func spanKey(sp *tracepb.Span) string {
 // admitted with placeholder manifests stays admissible with the real ones.
 var messagePlaceholderID = messageID{math.MaxInt64, math.MaxInt64}
 
-// decomposeMessages returns clones of spans in which every GenAI content
-// attribute is replaced by a placeholder manifest, with the call's unique
-// elements; encodeManifests installs the real manifests once the elements
-// have IDs. The input is never modified.
+// decomposeMessages clones spans with placeholder GenAI manifests and collects unique elements.
+// encodeManifests installs IDs later; the input remains unchanged.
 func decomposeMessages(ctx context.Context, spans []*tracepb.ResourceSpans, tenant int) (*messageDecomposition, error) {
 	const op = "message decompose"
 	d := &messageDecomposition{spans: make([]*tracepb.ResourceSpans, len(spans)), uses: map[string][]messageUse{}}
@@ -709,9 +684,8 @@ func messageDescriptor() (protoreflect.MessageDescriptor, error) {
 	return fd.Messages().ByName("Message"), nil
 }
 
-// planMessage builds an element's records. Every part carries the role; part
-// i holds raw chunk i and text segment i; part 0 also holds the digest,
-// encoding, raw length, part count and the number of tokens too long to index.
+// planMessage pairs raw chunk i with text segment i and repeats the role per part.
+// Part 0 also carries digest, encoding, raw length, part count and unindexed-token count.
 func planMessage(tenant int, el *messageElement, fulltext bool, distinct int) (*messagePlan, error) {
 	const op = "message records"
 	d, err := messageDescriptor()
@@ -789,12 +763,8 @@ func setMessageID(m proto.Message, id messageID) {
 	r.Set(f.ByName("shard"), protoreflect.ValueOfInt64(messageShard(id.writer)))
 }
 
-// messageShard is the TEXT index group of a writer's messages. A backend has
-// at most messageTextShards writers, each in its own shard (takeWriter), so
-// its writers never share a token's BunchedMap, and each appends behind the
-// lower, finished writers of its shard. Writers of several backends may share
-// a shard; they then insert into one BunchedMap, which is correct and can
-// conflict.
+// messageShard isolates TEXT maps among one backend’s writers, preserving append order.
+// Writers from different backends may share a shard and conflict safely.
 func messageShard(writer int64) int64 { return writer % messageTextShards }
 
 func messageKey(tenant int, id messageID, part int) tuple.Tuple {
@@ -820,10 +790,8 @@ type messageWriter struct {
 	next int64 // the last seq handed out
 }
 
-// messageWriters bounds a backend's writers to messageWriterLimit: every
-// writer's region of a token's postings ends at the next writer's first
-// posting, so a writer that is not the last rewrites that boundary bunch, and
-// fewer writers each reach past it sooner.
+// messageWriters limits boundary-bunch rewrites: fewer writers reach past
+// the next writer’s first posting sooner.
 type messageWriters struct {
 	once   sync.Once
 	slots  chan struct{}
@@ -832,9 +800,8 @@ type messageWriters struct {
 	shards [messageTextShards]bool // shards of this backend's writers
 }
 
-// acquireWriter waits for a writer slot, then takes an idle writer or
-// registers a new one: writer IDs come from a counter in the run's subspace,
-// so no two handles share one.
+// acquireWriter waits for a slot and reuses or registers a writer;
+// the run-wide counter keeps IDs unique across handles.
 func (b *FDBBackend) acquireWriter(ctx context.Context) (*messageWriter, error) {
 	b.writers.once.Do(func() { b.writers.slots = make(chan struct{}, messageWriterLimit) })
 	select {
@@ -1059,15 +1026,11 @@ func readHashes(store *recordlayer.FDBRecordStore, hashSpace []byte, tenant int,
 	return out, nil
 }
 
-// writeMessages saves every absent element's records and sets every
-// element's ID. Small messages go through the backend's group commit
-// (messageQueue); a multi-part message commits its parts 1.. before part 0,
-// so a stored part 0 means a complete message.
+// writeMessages sets IDs after storing absent elements via group commit or multipart tails-first writes.
+// A committed part 0 therefore denotes a complete message.
 func (b *FDBBackend) writeMessages(ctx context.Context, tenant int, plans []*messagePlan, fulltext bool) (MessageStoreStats, error) {
 	const op = "message persist"
-	// Messages first referenced by one trace usually share rare tokens (its
-	// conversation's identifiers), so they are queued together and one
-	// transaction stores them in order.
+	// Queue a trace’s messages together to share rare-token bunch reads within one transaction.
 	var large []*messagePlan
 	var byTrace [][]*messagePlan
 	index := map[string]int{}
@@ -1119,14 +1082,8 @@ func (b *FDBBackend) writeMessages(ctx context.Context, tenant int, plans []*mes
 	return stats, err
 }
 
-// messageQueue is a backend's group commit of small messages. Export calls
-// queue them; up to messageWriterLimit loops, each holding a writer, take as
-// many queued messages as one transaction holds (messageTxnMessages and
-// messagePartRawBytes) and store them in one transaction. A message
-// transaction's time is mostly per-transaction latency (read version, digest
-// reads, the first read of each TEXT bunch, commit) plus per-message CPU, so
-// with every writer busy the waiting messages make the next transactions
-// larger instead of waiting for a writer each.
+// messageQueue groups small messages into size/count-bounded transactions on backend writers,
+// amortizing read-version, digest, TEXT bunch and commit costs across waiting calls.
 type messageQueue struct {
 	mu      sync.Mutex
 	pending []queuedMessage
@@ -1146,9 +1103,8 @@ type messageSubmission struct {
 	done  chan struct{}
 }
 
-// store queues plans and waits until a transaction has stored each, or the
-// first one failed, or ctx ends. The loops run on ctx's values without its
-// cancellation, since a transaction may hold other calls' messages.
+// store waits for queued plans to settle or ctx to end; shared transactions use ctx values
+// without cancellation because they may contain other callers’ messages.
 func (q *messageQueue) store(ctx context.Context, b *FDBBackend, tenant int, plans []*messagePlan, fulltext bool) (MessageStoreStats, error) {
 	sub := &messageSubmission{left: len(plans), done: make(chan struct{})}
 	q.mu.Lock()
@@ -1219,9 +1175,8 @@ func (q *messageQueue) settleLocked(sub *messageSubmission) {
 	}
 }
 
-// finish records one transaction's outcome. Each message's own counters go
-// to its submission; the transaction's (transactions, retries, TEXT index
-// work, time) to the submission of its first message.
+// finish charges per-message counters to their submissions; the first message’s
+// submission receives shared transaction, retry, TEXT-work and time counters.
 func (q *messageQueue) finish(batch []queuedMessage, stats MessageStoreStats, err error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -1249,10 +1204,8 @@ func (q *messageQueue) finish(batch []queuedMessage, stats MessageStoreStats, er
 	}
 }
 
-// loop stores queued messages, one transaction at a time, until none are
-// queued. It holds a writer for one transaction at a time, so a large
-// message's job waiting for a writer gets the next free one; the messages
-// queued meanwhile join the loop's next transaction.
+// loop releases its writer after each transaction so waiting large-message jobs can acquire it;
+// messages queued meanwhile join the next transaction.
 func (q *messageQueue) loop(ctx context.Context, b *FDBBackend, tenant int, fulltext bool) {
 	for {
 		w, err := b.acquireWriter(ctx)
@@ -1382,9 +1335,8 @@ func (b *FDBBackend) writeSmallMessages(ctx context.Context, tenant int, w *mess
 	return err
 }
 
-// writeLargeMessage writes parts 1.. in transactions that share parts while
-// the approximate size stays below messagePartTxnBytes, then part 0. Each
-// transaction first checks the digest, so it stops once the message is stored.
+// writeLargeMessage groups tails below messagePartTxnBytes, then publishes part 0.
+// Each transaction checks the digest; size errors trigger finer replanning.
 func (b *FDBBackend) writeLargeMessage(ctx context.Context, tenant int, w *messageWriter, p *messagePlan, stats *MessageStoreStats, mu *sync.Mutex) error {
 	const op = "message persist"
 	if p.element.outcome.Written != 0 || p.element.outcome.Present != 0 {
@@ -1468,9 +1420,8 @@ func (b *FDBBackend) writeLargeMessage(ctx context.Context, tenant int, w *messa
 	})
 }
 
-// runMessageJobs runs job(ctx, i) for i in [0, n) on at most messageWorkers
-// goroutines. Jobs must be independent. The first failure cancels the jobs in
-// flight and not yet started and is the returned error.
+// runMessageJobs runs independent jobs on at most messageWorkers goroutines;
+// the first failure cancels remaining work and is returned.
 func runMessageJobs(ctx context.Context, op string, n int, job func(context.Context, int) error) error {
 	switch n {
 	case 0:
@@ -1559,9 +1510,8 @@ func parallelMessageWork(n int, fn func(int) error) error {
 // most 100KB); a span with more references has several entries.
 const messageRefChunkBytes = 16 << 10
 
-// spanRef is one reference of a span: a message, the attribute, the message's
-// positions in the span's first value of the attribute, and whether it is
-// that value's newest element.
+// spanRef records a message’s positions in the span’s first attribute value
+// and whether it is that value’s newest element.
 type spanRef struct {
 	id        messageID
 	attribute int64
@@ -1573,10 +1523,8 @@ type spanRef struct {
 // (writer, seq, attribute, newest, (ordinals)).
 const spanRefFields = 5
 
-// packSpanRefs packs a span's references into chunks of at most
-// messageRefChunkBytes, each the tuple of their fields in order, with the
-// elements' IDs (the placeholder before they have one, which encodes at least
-// as long as any real ID).
+// packSpanRefs packs ordered fields into messageRefChunkBytes-bounded tuples.
+// Placeholder IDs encode at least as long as real IDs, keeping preflight sizing conservative.
 func packSpanRefs(uses []messageUse) [][]byte {
 	var chunks [][]byte
 	var cur []byte
@@ -1704,11 +1652,8 @@ func (c *markerCache) add(ks []traceMarker) {
 // messageMarkerTxn bounds the markers checked and saved per transaction.
 const messageMarkerTxn = 512
 
-// persistTraceMarkers saves a MessageTrace record for every (message, trace)
-// pair the call's spans reference that is not stored yet, before any span
-// commits: a query finds a message's traces through them. Presence is read
-// at snapshot isolation; two calls saving one marker conflict on the save's
-// own existence read, and the retry finds it present.
+// persistTraceMarkers saves absent (message, trace) markers before any span commits.
+// Snapshot presence checks are safe: concurrent saves conflict on their own existence reads.
 func (e *Exporter) persistTraceMarkers(ctx context.Context, d *messageDecomposition) (int64, error) {
 	const op = "message trace markers"
 	b := e.backend
@@ -1804,11 +1749,8 @@ type inflightMessage struct {
 	id   messageID // valid once done, if the store succeeded
 }
 
-// persistMessages stores the call's elements, giving each an ID, before any
-// span commits. An element another call of this backend is storing is
-// awaited, not stored again: concurrent stores of one message conflict on the
-// dedup index and retry their whole transactions. The dedup index read still
-// decides between writers of different backends.
+// persistMessages assigns IDs before spans commit and awaits same-backend in-flight elements.
+// Cross-backend writers still resolve duplicates through the unique digest index.
 func (e *Exporter) persistMessages(ctx context.Context, d *messageDecomposition) (stats MessageStoreStats, err error) {
 	b := e.backend
 	if len(d.elements) == 0 {
@@ -1844,9 +1786,8 @@ func (e *Exporter) persistMessages(ctx context.Context, d *messageDecomposition)
 	}
 	written, err := e.storeMessages(ctx, owned)
 	stats.Add(written)
-	// Release the claims before waiting for others' (no call waits holding one).
-	// After a failure an element's ID may name an uncommitted attempt, so the
-	// waiters store theirs themselves.
+	// Release claims before waiting to avoid cycles; after failure, waiters must store again
+	// because the assigned ID may belong to an uncommitted attempt.
 	for i, el := range owned {
 		if err == nil {
 			claims[i].id = el.id
@@ -1905,9 +1846,8 @@ type storedSite struct {
 	manifest *messageManifest
 }
 
-// reconstructMessages restores decomposed spans in the caller's transaction:
-// it reads every referenced part 0 in one pipelined wave, then the remaining
-// raw parts of multi-part messages in a second.
+// reconstructMessages restores spans in two read waves: referenced heads first,
+// then remaining raw parts of multipart messages, within the caller’s transaction.
 func reconstructMessages(ctx context.Context, store *recordlayer.FDBRecordStore, tenant int, spans []*tracepb.ResourceSpans) ([]*tracepb.ResourceSpans, error) {
 	p, err := planReconstruct(ctx, spans)
 	if err != nil {

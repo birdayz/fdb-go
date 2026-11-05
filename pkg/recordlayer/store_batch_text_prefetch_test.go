@@ -22,10 +22,8 @@ import (
 // textPrefetchRun describes the successful attempt's commit and owned storage reads.
 type textPrefetchRun struct {
 	commit batchConflictCommit
-	// reads is the number of storage reads sent (GetKeyValues and GetValue);
-	// roundTrips counts sends while no reply is outstanding: a wire-overlap
-	// diagnostic, not the number of dependency waves. answered counts the
-	// replies matched to those reads by reply token.
+	// reads counts GetKeyValues/GetValue sends; roundTrips counts sends with no outstanding reply, not dependency waves.
+	// answered matches replies by token; overlap is diagnostic only.
 	reads, roundTrips, answered int
 	elapsed                     time.Duration
 	prefetchGate                *snapshotReadCounter
@@ -332,10 +330,8 @@ var _ = Describe("Batch TEXT bunch prefetch", func() {
 		}
 	})
 
-	// The GenAI exporter's message transaction: 128 new records of 57 tokens,
-	// 20 of them in every record, into an index already holding 256 records.
-	// Gate the first-wave responses to prove send-before-wait independently of
-	// server speed; uncontrolled wire overlap remains diagnostic only.
+	// Use exporter-shaped records with gated first-wave replies to prove send-before-wait
+	// independently of server speed; uncontrolled wire overlap is only diagnostic.
 	It("issues every token-map prefetch before completing the first wait", func() {
 		b := baseBuilder()
 		b.AddIndex("Customer", NewTextIndex("prefetch_text", Field("name")))

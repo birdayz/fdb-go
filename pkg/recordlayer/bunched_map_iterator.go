@@ -399,12 +399,8 @@ func (it *BunchedMapMultiIterator) advance() {
 					return
 				}
 				it.continuationSatisfied = true
-				// The entries of this map up to the continuation key are skipped
-				// below, bunch after bunch, until one is past it: Java hands the
-				// key to the map's BunchedMapIterator (BunchedMapMultiIterator.java:
-				// 136-139), whose filter stays on across bunches
-				// (BunchedMapIterator.java:126-138). The key's own bunch can sort
-				// after the bunch this read starts at.
+				// Keep filtering across bunches until past the continuation key, as Java does;
+				// the key’s own bunch may sort after this read’s start.
 				it.continuationKey = continuationKey
 				it.continuationKeySubspace = nextSubspaceKey
 			} else if bytes.Compare(nextSubspaceSuffix, it.continuation)*(boolToInt(!it.reverse)-boolToInt(it.reverse)) > 0 {
@@ -522,22 +518,13 @@ func (it *BunchedMapMultiIterator) GetContinuation() []byte {
 	return append(append([]byte{}, it.currentSubspaceSuffix...), it.serializer.SerializeKey(it.lastKey)...)
 }
 
-// seekTo repositions the iterator so that the next entry it returns is the
-// first entry of the current map at or after target in scan order (at or
-// below it for a reverse scan), as if every entry before it had been returned.
-// GetContinuation afterwards is the one Java's streaming iteration holds
-// after returning the last skipped entry, so a resume is unchanged.
+// seekTo advances within the current map to target in scan order, preserving
+// the continuation of Java streaming iteration after its last skipped entry.
 //
-// Precondition: the scanned range lies within one map, an entry has been
-// returned (with no entry buffered by HasNext) and target sorts strictly after
-// it in scan order. A logical lower-bound predecessor may belong to the prior
-// map; reaching it in reverse exhausts this map. Entries of the current
-// bunch are searched in memory; otherwise the range read is reopened at the
-// bunch that can contain target: a bunch is keyed by its first entry, so the
-// target's bunch is the last one whose key is below the target key.
+// Precondition: one map, an unbuffered returned entry, and a later target in scan order.
+// Search the loaded bunch first; otherwise reopen at the target’s predecessor signpost.
 //
-// Not part of Java's BunchedMapMultiIterator: it is the seek the leapfrog text
-// intersection uses (see DIVERGENCES.md, "TEXT intersection seeks").
+// This leapfrog extension is described in DIVERGENCES.md, "TEXT intersections seek".
 func (it *BunchedMapMultiIterator) seekTo(target tuple.Tuple) {
 	if it.done || it.nextEntry != nil || it.lastKey == nil || it.currentSubspaceKey == nil {
 		return
@@ -567,9 +554,7 @@ func (it *BunchedMapMultiIterator) seekTo(target tuple.Tuple) {
 	endpoint := append(append([]byte{}, it.currentSubspaceKey...), it.serializer.SerializeKey(target)...)
 	var rangeResult fdb.RangeResult
 	if it.reverse {
-		// The bunch after the target's one holds the entry that precedes the
-		// target in a reverse scan, so the read includes it: end past the first
-		// key greater than the endpoint.
+		// Include the target’s successor bunch to retain its predecessor in reverse scan order.
 		begin := fdb.FirstGreaterOrEqual(fdb.Key(it.beginBytes))
 		if it.logicalBounds {
 			begin = fdb.LastLessOrEqual(fdb.Key(it.beginBytes))
@@ -591,10 +576,8 @@ func (it *BunchedMapMultiIterator) seekTo(target tuple.Tuple) {
 	it.seekSubspaceKey = it.currentSubspaceKey
 }
 
-// seekWithin applies a pending seek to a freshly read bunch of the map
-// subspaceKey. It returns the index of the first entry at or past the target
-// in scan order, or skip=true when the whole bunch sorts before the target.
-// Entries passed over become the iterator's last key.
+// seekWithin returns the first entry at/past the pending target, or skip for an earlier bunch.
+// Skipped entries update the continuation’s last key.
 func (it *BunchedMapMultiIterator) seekWithin(subspaceKey []byte, entries []BunchedEntry[tuple.Tuple, []int]) (int, bool, error) {
 	if !bytes.Equal(subspaceKey, it.seekSubspaceKey) {
 		// advance handles the logical reverse predecessor boundary. Any other

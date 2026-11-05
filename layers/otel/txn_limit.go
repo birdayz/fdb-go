@@ -22,16 +22,8 @@ const (
 	benchTxnRetryLimit = 10
 )
 
-// Exporter transactions have no retry limit; ExporterConfig.TransactionTimeout
-// and the caller's context bound them. A timeout runs from transaction creation
-// and spans every OnError retry, so it includes GRV waits, which under
-// ratekeeper throttling last seconds (measured: GRV 0.5-1.7s at a full storage
-// write queue). 10s covers about 5s of GRV queueing plus FDB's 5s MVCC window.
-// It must be set: a dispatched commit outlives the caller's context
-// (rfcs/280-client-retry-and-close-bounds.md §4), so the timeout is its only
-// bound. Below 1s ordinary GRV backpressure would fail transactions; above 5m,
-// the Collector's default retry_on_failure.max_elapsed_time, one transaction
-// would outlast a whole retry budget.
+// Exporter timeouts span GRV waits, commit and all retries, including dispatched commits
+// that outlive cancellation; keep them within the Collector retry budget.
 const (
 	defaultExporterTxnTimeout = 10 * time.Second
 	minExporterTxnTimeout     = time.Second
@@ -72,11 +64,8 @@ func withTxnLimiter(ctx context.Context, slots chan struct{}) context.Context {
 	return context.WithValue(ctx, txnLimiterKey{}, slots)
 }
 
-// runTxnSlot is db.Run holding one of ctx's write slots, if ctx carries a
-// limiter. The slot is taken before Run so waiting for it does not count
-// against the transaction timeout, and is released when Run returns. An
-// Exporter transaction's error is classified by exporterTxnError; other
-// callers receive Run's error unchanged.
+// runTxnSlot acquires a write slot before Run so queueing does not consume its timeout.
+// It classifies exporter errors and otherwise preserves Run's error.
 func runTxnSlot(ctx context.Context, db *recordlayer.FDBDatabase, op string, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
 	if slots, _ := ctx.Value(txnLimiterKey{}).(chan struct{}); slots != nil {
 		if err := ctx.Err(); err != nil {
@@ -96,18 +85,8 @@ func runTxnSlot(ctx context.Context, db *recordlayer.FDBDatabase, op string, fn 
 	return out, err
 }
 
-// exporterTxnError classifies an Exporter transaction's final error for a
-// caller deciding whether to retry the call. FDB's OnError loop has already
-// retried every retryable code within the transaction timeout, so what is left
-// is permanent for this transaction but not necessarily for a new call:
-//   - an error with a domain kind keeps it (admission, ownership, corruption,
-//     budget, canceled, ...);
-//   - an ended caller context is "canceled";
-//   - FDB's 1xxx "normal failure" codes (flow/include/flow/error_definitions.h:
-//     31-32 at 7.3.77), which include transaction_timed_out (1031) and every
-//     code OnError retries, are "transient", as is a Record Layer retriable error;
-//   - any other error, including FDB's 15xx platform, 2xxx illegal-operation
-//     and 4xxx internal codes (:156, :187-188, :391), is "operation".
+// exporterTxnError preserves domain kinds and caller cancellation after in-transaction retries.
+// FDB normal failures (1000..1499) and Record Layer retriable errors are transient; others are operations.
 func exporterTxnError(ctx context.Context, op string, err error) error {
 	if err == nil {
 		return nil
