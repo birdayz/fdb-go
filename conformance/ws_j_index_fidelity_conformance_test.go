@@ -116,6 +116,9 @@ func loadWSJJavaPins() map[string]string {
 	return loadWSJPinFile("wsj_java_pins.json")
 }
 
+// The historical projection is bound to the immutable pre-migration fixture.
+const wsjLegacyJavaPinsSHA256 = "3aa4bf8f2f7dcc7e238c458f04552f4f338a52c988a9a3aa05de2ce2630ca859"
+
 // loadWSJPinFile reads one id -> string pin file from testdata/rfc257, staged as
 // runfiles data.
 func loadWSJPinFile(name string) map[string]string {
@@ -125,11 +128,298 @@ func loadWSJPinFile(name string) map[string]string {
 	Expect(err).NotTo(HaveOccurred())
 	raw, err := os.ReadFile(p)
 	Expect(err).NotTo(HaveOccurred(), "%s must be staged as runfiles data", name)
+	if name == "wsj_java_legacy_pins.json" {
+		Expect(wsjValidateHistoricalJavaPins(raw)).To(Succeed(),
+			"the historical Java fixture must retain its exact pre-migration bytes")
+	}
 	pins := map[string]string{}
 	Expect(json.Unmarshal(raw, &pins)).To(Succeed())
 	Expect(pins).NotTo(BeEmpty(), "%s holds no pins", name)
+	if name == "wsj_java_legacy_pins.json" {
+		Expect(pins).To(HaveLen(523), "the complete historical Java baseline")
+	}
 	return pins
 }
+
+func wsjValidateHistoricalJavaPins(raw []byte) error {
+	if fmt.Sprintf("%x", sha256.Sum256(raw)) != wsjLegacyJavaPinsSHA256 {
+		return fmt.Errorf("historical Java fixture differs from its immutable pre-migration bytes")
+	}
+	return nil
+}
+
+func wsjValidateJavaPinDomains(currentPins, historicalPins, currentOutcomes, historicalOutcomes map[string]string) error {
+	if len(currentPins) != 523 || len(historicalPins) != 523 || len(currentOutcomes) != 523 || len(historicalOutcomes) != 523 {
+		return fmt.Errorf("Java pin/outcome population must be 523 in all four domains")
+	}
+	for id, currentPin := range currentPins {
+		historicalPin, ok := historicalPins[id]
+		if !ok {
+			return fmt.Errorf("historical Java pin missing for %s", id)
+		}
+		currentOutcome, ok := currentOutcomes[id]
+		if !ok {
+			return fmt.Errorf("current Java outcome missing for %s", id)
+		}
+		if currentOutcome != currentPin {
+			return fmt.Errorf("current Java outcome mismatch for %s", id)
+		}
+		historicalOutcome, ok := historicalOutcomes[id]
+		if !ok {
+			return fmt.Errorf("historical Java outcome missing for %s", id)
+		}
+		if historicalOutcome != historicalPin {
+			return fmt.Errorf("historical Java outcome mismatch for %s", id)
+		}
+	}
+	return nil
+}
+
+var _ = Describe("WS-J Java pin validation boundaries", func() {
+	It("rejects changed historical fixture bytes at the actual loader boundary", func() {
+		r, err := runfiles.New()
+		Expect(err).NotTo(HaveOccurred())
+		read := func(name string) []byte {
+			p, pathErr := r.Rlocation("_main/conformance/testdata/rfc257/" + name)
+			Expect(pathErr).NotTo(HaveOccurred())
+			raw, readErr := os.ReadFile(p)
+			Expect(readErr).NotTo(HaveOccurred(), "%s must be declared runfiles data", name)
+			return raw
+		}
+		raw := read("wsj_java_legacy_pins.json")
+		currentRaw := read("wsj_java_pins.json")
+		Expect(wsjValidateHistoricalJavaPins(raw)).To(Succeed())
+		decode := func(data []byte) map[string]string {
+			pins := map[string]string{}
+			Expect(json.Unmarshal(data, &pins)).To(Succeed())
+			return pins
+		}
+		pins := decode(raw)
+		Expect(pins).To(HaveLen(523))
+		ids := sortedStringKeys(pins)
+		Expect(ids).To(HaveLen(523))
+		accepted, rejected := []string{}, []string{}
+		for _, id := range ids {
+			Expect(id).NotTo(BeEmpty())
+			if strings.HasPrefix(pins[id], "OK ") {
+				accepted = append(accepted, id)
+			} else {
+				Expect(pins[id]).To(HavePrefix("ERROR "))
+				rejected = append(rejected, id)
+			}
+		}
+		Expect(accepted).To(HaveLen(478))
+		Expect(rejected).To(HaveLen(45))
+		lineFor := func(id, value string) []byte {
+			return []byte(" " + strconv.Quote(id) + ": " + strconv.Quote(value) + ",\n")
+		}
+		acceptedID, rejectedID := accepted[0], rejected[0]
+		acceptedValue, rejectedValue := pins[acceptedID], pins[rejectedID]
+		acceptedLine, rejectedLine := lineFor(acceptedID, acceptedValue), lineFor(rejectedID, rejectedValue)
+		Expect(bytes.Count(raw, acceptedLine)).To(Equal(1))
+		Expect(bytes.Count(raw, rejectedLine)).To(Equal(1))
+		Expect("0123456789abcdef").To(ContainSubstring(acceptedValue[len(acceptedValue)-1:]))
+		changedAccepted := acceptedValue[:len(acceptedValue)-1] + "0"
+		if changedAccepted == acceptedValue {
+			changedAccepted = acceptedValue[:len(acceptedValue)-1] + "1"
+		}
+		Expect(changedAccepted).NotTo(Equal(acceptedValue))
+		Expect(changedAccepted).To(HaveLen(len(acceptedValue)))
+		Expect(strings.Fields(changedAccepted)[:2]).To(Equal(strings.Fields(acceptedValue)[:2]))
+		acceptedMutation := bytes.Replace(raw, acceptedLine, lineFor(acceptedID, changedAccepted), 1)
+		acceptedPins := decode(acceptedMutation)
+		Expect(acceptedPins).To(HaveLen(523))
+		Expect(acceptedPins).To(HaveKeyWithValue(acceptedID, changedAccepted))
+		acceptedPins[acceptedID] = acceptedValue
+		Expect(acceptedPins).To(Equal(pins))
+
+		changedRejected := rejectedValue[:len(rejectedValue)-1] + "A"
+		if changedRejected == rejectedValue {
+			changedRejected = rejectedValue[:len(rejectedValue)-1] + "B"
+		}
+		Expect(changedRejected).NotTo(Equal(rejectedValue))
+		Expect(changedRejected).To(HavePrefix("ERROR "))
+		Expect(changedRejected).To(HaveLen(len(rejectedValue)))
+		rejectedMutation := bytes.Replace(raw, rejectedLine, lineFor(rejectedID, changedRejected), 1)
+		rejectedPins := decode(rejectedMutation)
+		Expect(rejectedPins).To(HaveLen(523))
+		Expect(rejectedPins).To(HaveKeyWithValue(rejectedID, changedRejected))
+		rejectedPins[rejectedID] = rejectedValue
+		Expect(rejectedPins).To(Equal(pins))
+
+		removed := bytes.Replace(raw, acceptedLine, nil, 1)
+		removedPins := decode(removed)
+		Expect(removedPins).To(HaveLen(522))
+		Expect(removedPins).NotTo(HaveKey(acceptedID))
+		duplicated := bytes.Replace(raw, acceptedLine, bytes.Repeat(acceptedLine, 2), 1)
+		Expect(bytes.Count(duplicated, acceptedLine)).To(Equal(2))
+		Expect(decode(duplicated)).To(Equal(pins), "duplicate JSON keys must not bypass the raw-byte guard")
+		truncated := raw[:len(raw)/2]
+		Expect(truncated).NotTo(BeEmpty())
+		Expect(json.Valid(truncated)).To(BeFalse())
+		indented := bytes.Replace(raw, []byte("\n "), []byte("\n  "), 1)
+		Expect(decode(indented)).To(Equal(pins))
+		lines := bytes.Split(raw, []byte("\n"))
+		Expect(lines[1]).NotTo(Equal(lines[2]))
+		Expect(bytes.HasPrefix(lines[1], []byte(" "))).To(BeTrue())
+		Expect(bytes.HasPrefix(lines[2], []byte(" "))).To(BeTrue())
+		lines[1], lines[2] = lines[2], lines[1]
+		reordered := bytes.Join(lines, []byte("\n"))
+		Expect(decode(reordered)).To(Equal(pins))
+		Expect(bytes.HasSuffix(raw, []byte("\n"))).To(BeTrue())
+		withoutNewline := raw[:len(raw)-1]
+		Expect(decode(withoutNewline)).To(Equal(pins))
+		Expect(decode(currentRaw)).To(HaveLen(523))
+		Expect(decode(currentRaw)).NotTo(Equal(pins))
+
+		cases := []struct {
+			name string
+			raw  []byte
+		}{
+			{"empty", nil},
+			{"current-file-substitution", currentRaw},
+			{"accepted-digest-nibble", acceptedMutation},
+			{"rejected-error-value", rejectedMutation},
+			{"removed-id", removed},
+			{"duplicate-id", duplicated},
+			{"truncated-json", truncated},
+			{"indentation-only", indented},
+			{"entry-order-only", reordered},
+			{"final-newline-only", withoutNewline},
+		}
+		Expect(cases).To(HaveLen(10))
+		seen := map[string]bool{}
+		for _, c := range cases {
+			By(c.name)
+			Expect(c.name).NotTo(BeEmpty())
+			Expect(seen).NotTo(HaveKey(c.name))
+			seen[c.name] = true
+			Expect(c.raw).NotTo(Equal(raw), "the negative raw mutation must actually apply")
+			Expect(wsjValidateHistoricalJavaPins(c.raw)).To(MatchError(ContainSubstring("immutable pre-migration bytes")))
+		}
+		Expect(seen).To(HaveLen(10))
+		Expect(wsjValidateHistoricalJavaPins(raw)).To(Succeed(), "negative controls must not mutate the positive input")
+	})
+
+	It("keeps current and historical outcomes in their own complete pin domains", func() {
+		current := loadWSJJavaPins()
+		historical := loadWSJPinFile("wsj_java_legacy_pins.json")
+		Expect(current).To(HaveLen(523))
+		Expect(historical).To(HaveLen(523))
+		Expect(sortedStringKeys(current)).To(Equal(sortedStringKeys(historical)))
+		changed, unchanged := []string{}, []string{}
+		for _, id := range sortedStringKeys(current) {
+			Expect(id).NotTo(BeEmpty())
+			if current[id] == historical[id] {
+				unchanged = append(unchanged, id)
+				continue
+			}
+			Expect(current[id]).To(HavePrefix("OK "))
+			Expect(historical[id]).To(HavePrefix("OK "))
+			currentFields, historicalFields := strings.Fields(current[id]), strings.Fields(historical[id])
+			Expect(currentFields).To(HaveLen(3))
+			Expect(historicalFields).To(HaveLen(3))
+			Expect(currentFields[:2]).To(Equal(historicalFields[:2]))
+			changed = append(changed, id)
+		}
+		Expect(changed).To(HaveLen(209))
+		Expect(unchanged).To(HaveLen(314))
+		Expect(wsjValidateJavaPinDomains(current, historical, current, historical)).To(Succeed())
+		clone := func(pins map[string]string) map[string]string {
+			copy := make(map[string]string, len(pins))
+			for id, value := range pins {
+				copy[id] = value
+			}
+			return copy
+		}
+		id := changed[0]
+		probe := "__wsj_absent_pin_domain_probe__"
+		Expect(current).NotTo(HaveKey(probe))
+		Expect(historical).NotTo(HaveKey(probe))
+		baseline := [4]map[string]string{current, historical, current, historical}
+		fresh := func() [4]map[string]string {
+			return [4]map[string]string{clone(current), clone(historical), clone(current), clone(historical)}
+		}
+		type domainCase struct {
+			name    string
+			domains [4]map[string]string
+			want    string
+		}
+		cases := []domainCase{}
+		names := []string{"current-pins", "historical-pins", "current-outcomes", "historical-outcomes"}
+		missing := []string{"historical Java pin missing", "historical Java pin missing", "current Java outcome missing", "historical Java outcome missing"}
+		for i, name := range names {
+			empty := fresh()
+			empty[i] = map[string]string{}
+			Expect(empty[i]).To(BeEmpty())
+			Expect(empty[i]).NotTo(Equal(baseline[i]))
+			cases = append(cases, domainCase{"empty-" + name, empty, "population must be 523"})
+			replaced := fresh()
+			value, present := replaced[i][id]
+			Expect(present).To(BeTrue())
+			delete(replaced[i], id)
+			replaced[i][probe] = value
+			Expect(replaced[i]).To(HaveLen(523))
+			Expect(replaced[i]).NotTo(HaveKey(id))
+			Expect(replaced[i]).To(HaveKeyWithValue(probe, value))
+			Expect(replaced[i]).NotTo(Equal(baseline[i]))
+			for j := range baseline {
+				if j != i {
+					Expect(empty[j]).To(Equal(baseline[j]))
+					Expect(replaced[j]).To(Equal(baseline[j]))
+				}
+			}
+			cases = append(cases, domainCase{"replace-key-" + name, replaced, missing[i]})
+		}
+		currentPerturbed := fresh()
+		currentPerturbed[2][id] = historical[id]
+		Expect(currentPerturbed[2]).To(HaveLen(523))
+		Expect(currentPerturbed[2]).NotTo(Equal(current))
+		Expect(currentPerturbed[2]).To(HaveKeyWithValue(id, historical[id]))
+		for _, i := range []int{0, 1, 3} {
+			Expect(currentPerturbed[i]).To(Equal(baseline[i]))
+		}
+		cases = append(cases, domainCase{"perturbed-current-outcome", currentPerturbed, "current Java outcome mismatch"})
+		historicalPerturbed := fresh()
+		historicalPerturbed[3][id] = current[id]
+		Expect(historicalPerturbed[3]).To(HaveLen(523))
+		Expect(historicalPerturbed[3]).NotTo(Equal(historical))
+		Expect(historicalPerturbed[3]).To(HaveKeyWithValue(id, current[id]))
+		for _, i := range []int{0, 1, 2} {
+			Expect(historicalPerturbed[i]).To(Equal(baseline[i]))
+		}
+		cases = append(cases, domainCase{"perturbed-historical-outcome", historicalPerturbed, "historical Java outcome mismatch"})
+		swappedOutcomes := fresh()
+		swappedOutcomes[2], swappedOutcomes[3] = swappedOutcomes[3], swappedOutcomes[2]
+		Expect(swappedOutcomes[0]).To(Equal(current))
+		Expect(swappedOutcomes[1]).To(Equal(historical))
+		Expect(swappedOutcomes[2]).To(Equal(historical))
+		Expect(swappedOutcomes[2]).NotTo(Equal(current))
+		Expect(swappedOutcomes[3]).To(Equal(current))
+		Expect(swappedOutcomes[3]).NotTo(Equal(historical))
+		cases = append(cases, domainCase{"swapped-outcome-domains", swappedOutcomes, "current Java outcome mismatch"})
+		swappedPins := fresh()
+		swappedPins[0], swappedPins[1] = swappedPins[1], swappedPins[0]
+		Expect(swappedPins[0]).To(Equal(historical))
+		Expect(swappedPins[0]).NotTo(Equal(current))
+		Expect(swappedPins[1]).To(Equal(current))
+		Expect(swappedPins[1]).NotTo(Equal(historical))
+		Expect(swappedPins[2]).To(Equal(current))
+		Expect(swappedPins[3]).To(Equal(historical))
+		cases = append(cases, domainCase{"swapped-pin-domains", swappedPins, "current Java outcome mismatch"})
+		Expect(cases).To(HaveLen(12))
+		seen := map[string]bool{}
+		for _, c := range cases {
+			By(c.name)
+			Expect(c.name).NotTo(BeEmpty())
+			Expect(seen).NotTo(HaveKey(c.name))
+			seen[c.name] = true
+			Expect(wsjValidateJavaPinDomains(c.domains[0], c.domains[1], c.domains[2], c.domains[3])).To(MatchError(ContainSubstring(c.want)))
+		}
+		Expect(seen).To(HaveLen(12))
+		Expect(wsjValidateJavaPinDomains(current, historical, current, historical)).To(Succeed(), "negative controls must not mutate the positive domains")
+	})
+})
 
 func loadWSJCorpus() wsjCorpus {
 	r, err := runfiles.New()
@@ -587,22 +877,24 @@ type wsjBuildWitness struct {
 }
 
 type wsjRunWitness struct {
-	Kind              string            `json:"kind"`
-	ID                string            `json:"id"`
-	Sequence          int               `json:"sequence"`
-	TemplateName      string            `json:"template_name"`
-	Body              string            `json:"body"`
-	BodySHA256        string            `json:"body_sha256"`
-	JavaBuilds        []wsjBuildWitness `json:"java_builds"`
-	GoBuilds          []wsjBuildWitness `json:"go_builds"`
-	Class             string            `json:"class"`
-	JavaOutcome       string            `json:"java_outcome"`
-	LegacyJavaOutcome string            `json:"legacy_java_outcome"`
-	GoOutcome         string            `json:"go_outcome"`
-	PinnedJava        string            `json:"pinned_java"`
-	PinnedGoClass     string            `json:"pinned_go_class"`
-	LegacyMatchesPin  bool              `json:"legacy_matches_pin"`
-	Complete          bool              `json:"complete"`
+	Kind                       string            `json:"kind"`
+	ID                         string            `json:"id"`
+	Sequence                   int               `json:"sequence"`
+	TemplateName               string            `json:"template_name"`
+	Body                       string            `json:"body"`
+	BodySHA256                 string            `json:"body_sha256"`
+	JavaBuilds                 []wsjBuildWitness `json:"java_builds"`
+	GoBuilds                   []wsjBuildWitness `json:"go_builds"`
+	Class                      string            `json:"class"`
+	JavaOutcome                string            `json:"java_outcome"`
+	LegacyJavaOutcome          string            `json:"legacy_java_outcome"`
+	GoOutcome                  string            `json:"go_outcome"`
+	PinnedCurrentJava          string            `json:"pinned_current_java"`
+	PinnedHistoricalJava       string            `json:"pinned_historical_java"`
+	PinnedGoClass              string            `json:"pinned_go_class"`
+	CurrentMatchesPin          bool              `json:"current_matches_pin"`
+	LegacyMatchesHistoricalPin bool              `json:"legacy_matches_historical_pin"`
+	Complete                   bool              `json:"complete"`
 }
 
 // A synthetic wire-contract control, not a measured Java catalog fixture.
@@ -1266,6 +1558,9 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 		Expect(corpus.Census.VariantDuplicates).To(Equal(0), "a versioned template entered the corpus: its variants repeat index statements")
 		Expect(corpus.Census.HarvestedStatements).To(Equal(corpus.Census.InTemplateBodies))
 		javaPins := loadWSJJavaPins()
+		legacyJavaPins := loadWSJPinFile("wsj_java_legacy_pins.json")
+		Expect(sortedStringKeys(legacyJavaPins)).To(Equal(sortedStringKeys(javaPins)),
+			"historical and current Java pins must cover the same complete run set")
 		classPins := loadWSJPinFile("wsj_go_classes.json")
 		Expect(corpus.Source.Commit).To(Equal("fdacd162a9c8acfadc49082b89185c823ab8ae4a"))
 		outputDir := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
@@ -1296,16 +1591,26 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 		inputs := map[string]any{}
 		runfilesDir, err := runfiles.New()
 		Expect(err).NotTo(HaveOccurred())
-		for _, name := range []string{"java_index_templates.json", "wsj_java_pins.json", "wsj_go_classes.json"} {
+		for _, name := range []string{"java_index_templates.json", "wsj_java_pins.json", "wsj_java_legacy_pins.json", "wsj_go_classes.json"} {
 			path, pathErr := runfilesDir.Rlocation("_main/conformance/testdata/rfc257/" + name)
 			Expect(pathErr).NotTo(HaveOccurred())
 			raw, readErr := os.ReadFile(path)
 			Expect(readErr).NotTo(HaveOccurred())
 			sum := sha256.Sum256(raw)
+			if name == "wsj_java_legacy_pins.json" {
+				Expect(wsjValidateHistoricalJavaPins(raw)).To(Succeed(),
+					"the captured historical input must equal the immutable baseline")
+			}
 			inputs[name] = map[string]any{"raw_base64": raw, "sha256": fmt.Sprintf("%x", sum)}
 		}
 		writeWitness(map[string]any{
-			"kind": "header", "format": "wsj-metadata-witness-v1", "started_utc": time.Now().UTC(),
+			"kind": "header", "format": "wsj-metadata-witness-v2", "started_utc": time.Now().UTC(),
+			"pin_bindings": map[string]any{
+				"current_java":           "wsj_java_pins.json",
+				"historical_java":        "wsj_java_legacy_pins.json",
+				"historical_java_sha256": wsjLegacyJavaPinsSHA256,
+				"current_go":             "wsj_go_classes.json",
+			},
 			"reference_source": corpus.Source, "test_target": os.Getenv("TEST_TARGET"),
 			"parallel_process": GinkgoParallelProcess(), "cluster_file": clusterFile, "inputs": inputs,
 			"java_operation":         "createSchemaTemplatePersistentJava/read catalog META_DATA/dropSchemaTemplatePersistentJava",
@@ -1324,13 +1629,15 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 			bodySum := sha256.Sum256([]byte(body))
 			w := wsjRunWitness{
 				Kind: "run", ID: id, Sequence: seq, TemplateName: templateName,
-				Body: body, BodySHA256: fmt.Sprintf("%x", bodySum), PinnedJava: javaPins[id], PinnedGoClass: classPins[id],
+				Body: body, BodySHA256: fmt.Sprintf("%x", bodySum), PinnedCurrentJava: javaPins[id],
+				PinnedHistoricalJava: legacyJavaPins[id], PinnedGoClass: classPins[id],
 			}
 			// A failing per-run assertion still leaves its unmodified payloads on disk.
 			defer func() {
 				w.Class, w.JavaOutcome, w.GoOutcome = r.class, r.javaPin, r.goPin
 				w.LegacyJavaOutcome = r.javaLegacyPin
-				w.LegacyMatchesPin = r.javaLegacyPin != "" && r.javaLegacyPin == javaPins[id]
+				w.CurrentMatchesPin = r.javaPin != "" && r.javaPin == javaPins[id]
+				w.LegacyMatchesHistoricalPin = r.javaLegacyPin != "" && r.javaLegacyPin == legacyJavaPins[id]
 				w.Complete = r.class != "" && r.javaPin != "" && r.goPin != "" && len(w.JavaBuilds) == 2 && len(w.GoBuilds) > 0
 				if w.Complete {
 					completeWitnesses++
@@ -1610,7 +1917,7 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 		for _, id := range sortedStringKeys(goClass) {
 			fmt.Fprintf(GinkgoWriter, "WSJ-CLASS %q: %q,\n", id, goClass[id])
 		}
-		var moved, javaMoved, legacyMoved []string
+		var moved, javaMoved, historicalMoved []string
 		javaAccepted, javaRejected := 0, 0
 		for _, id := range sortedStringKeys(goClass) {
 			if goClass[id] != classPins[id] {
@@ -1619,8 +1926,8 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 			if javaOutcome[id] != javaPins[id] {
 				javaMoved = append(javaMoved, id)
 			}
-			if javaLegacyOutcome[id] != javaPins[id] {
-				legacyMoved = append(legacyMoved, id)
+			if javaLegacyOutcome[id] != legacyJavaPins[id] {
+				historicalMoved = append(historicalMoved, id)
 			}
 			if strings.HasPrefix(javaOutcome[id], "OK ") {
 				javaAccepted++
@@ -1633,7 +1940,7 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 			"java_accepted": javaAccepted, "java_rejected": javaRejected,
 			"java_built_twice": javaBuiltTwice, "go_built_twice": goBuiltTwice,
 			"java_outcomes": javaOutcome, "java_legacy_outcomes": javaLegacyOutcome, "go_classes_and_outcomes": goClass,
-			"java_moved_ids": javaMoved, "legacy_moved_ids": legacyMoved, "go_moved": moved,
+			"current_java_moved_ids": javaMoved, "historical_java_moved_ids": historicalMoved, "current_go_moved": moved,
 			"class_tally": tally, "unsplittable": sortedBoolKeys(unsplittable),
 		})
 		Expect(completeWitnesses).To(Equal(outcomes), "every outcome must have a durable raw witness")
@@ -1641,7 +1948,12 @@ var _ = Describe("WS-J index-definition fidelity oracle", func() {
 		Expect(javaAccepted).To(Equal(478))
 		Expect(javaRejected).To(Equal(45))
 		Expect(javaBuiltTwice).To(Equal(javaAccepted), "every accepted Java body was independently rebuilt")
-		Expect(javaLegacyOutcome).To(Equal(javaPins), "the historical projection on the SAME payload must reproduce every old Java pin")
+		Expect(wsjValidateJavaPinDomains(javaPins, legacyJavaPins, javaOutcome, javaLegacyOutcome)).To(Succeed())
+		Expect(sortedStringKeys(javaLegacyOutcome)).To(Equal(sortedStringKeys(legacyJavaPins)),
+			"every historical pin must have a SAME-payload legacy outcome")
+		Expect(javaLegacyOutcome).To(Equal(legacyJavaPins), "the historical projection on the SAME payload must reproduce every immutable historical Java pin")
+		Expect(historicalMoved).To(BeEmpty(), "historical Java outcomes moved from their immutable pins")
+		Expect(javaMoved).To(BeEmpty(), "current Java outcomes moved from their current pins")
 		Expect(sortedBoolKeys(unsplittable)).To(Equal(sortedBoolKeys(wsjUnsplittable)),
 			"the templates Go's grammar cannot split moved: a newly parseable template needs pins for its derived runs")
 		// Every run is pinned, and every pin is run: a pin without a run is a

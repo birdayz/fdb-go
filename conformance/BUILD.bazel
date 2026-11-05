@@ -210,6 +210,7 @@ go_test(
         # measured target outcome of every run derived from it.
         "testdata/rfc257/java_index_templates.json",
         "testdata/rfc257/wsj_go_classes.json",
+        "testdata/rfc257/wsj_java_legacy_pins.json",
         "testdata/rfc257/wsj_java_pins.json",
     ],
     tags = [
