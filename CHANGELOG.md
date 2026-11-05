@@ -37,6 +37,14 @@ below; neither publication nor readiness is asserted.
   version 2); default version-1 zlib bytes are unchanged.
 
 ### Changed / fixed
+- OTel trace and log exports preflight each actual encoded covering value against
+  FDB's 100,000-byte limit, including tuple NUL and JSON NUL/HTML expansion.
+  Oversized indexed projections reject the whole call with `AdmissionError`
+  before writes; raw OTLP is never truncated.
+- Message full-text role discovery charges the raw TEXT bunch key/value bytes,
+  including discovery preceding an empty result, against the remaining query budget.
+- Drained message and Collector queues clear consumed slots and release exhausted
+  backing slices while exporters remain alive.
 - SQL VALUE-scan candidacy fails closed for TEXT, MULTIDIMENSIONAL,
   TIME_WINDOW_LEADERBOARD and custom index layouts, including EXPLAIN plans;
   factory `ValidateIndexOptions` runs for all registered types, not just VECTOR.
@@ -54,6 +62,11 @@ below; neither publication nor readiness is asserted.
   checks; explicit failed commits release their transaction handles.
 
 ### Breaking changes / compatibility
+- **OTel admission and budgets:** inputs whose escaped covering values exceed
+  100,000 bytes now fail whole-call admission rather than failing after an earlier
+  batch committed. Full-text queries can now return a budget error for raw role
+  discovery reads previously undercounted. Persisted layouts, SQL behavior and
+  FDB client option semantics are unchanged by these fixes.
 - **KeySpace persisted prefixes:** `Path.ToSubspace()` packs Java-flat path
   elements instead of a nested tuple. Existing Go nested prefixes require explicit
   `LegacyNestedSubspace()` export/import and guarded cutover; no automatic migration.

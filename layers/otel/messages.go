@@ -1191,6 +1191,7 @@ func (q *messageQueue) take() []queuedMessage {
 	for ; n < len(q.pending) && len(out) < messageTxnMessages; n++ {
 		m := q.pending[n]
 		if m.sub.err != nil {
+			q.pending[n] = queuedMessage{}
 			q.settleLocked(m.sub)
 			continue
 		}
@@ -1198,9 +1199,13 @@ func (q *messageQueue) take() []queuedMessage {
 			break
 		}
 		out = append(out, m)
+		q.pending[n] = queuedMessage{}
 		raw += m.plan.raw
 	}
 	q.pending = q.pending[n:]
+	if len(q.pending) == 0 {
+		q.pending = nil
+	}
 	if len(out) == 0 {
 		q.loops--
 	}

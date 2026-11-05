@@ -2,6 +2,7 @@ package otel
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -10,13 +11,92 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/proto"
 )
+
+// escapedBoundary builds an exact encoded boundary, not a guessed raw cap.
+func escapedBoundary(t *testing.T, target int, char string, encode func(string) []byte) string {
+	t.Helper()
+	base := len(encode(""))
+	step := len(encode(char)) - base
+	n := (target - base) / step
+	value := strings.Repeat(char, n) + strings.Repeat("x", target-base-n*step)
+	if len(value) > maxIndexedValueBytes || len(encode(value)) != target {
+		t.Fatalf("boundary fixture: raw=%d encoded=%d want%d", len(value), len(encode(value)), target)
+	}
+	return value
+}
+
+func TestEncodedTraceCoveringAdmissionBeforeAnyWrites(t *testing.T) {
+	t.Parallel()
+	cluster := startExporterCluster(t)
+	for _, format := range []string{"tuple", "json"} {
+		chars := []string{"\x00"}
+		if format == "json" {
+			chars = append(chars, "<") // encoding/json HTML escaping also expands sixfold.
+		}
+		for _, char := range chars {
+			for _, scope := range []string{"resource", "scope", "span"} {
+				for _, size := range []int{99999, 100000, 100001} {
+					t.Run(fmt.Sprintf("%s/%x/%s/%d", format, char, scope, size), func(t *testing.T) {
+						ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+						defer cancel()
+						e := openTestExporter(t, ctx, cluster, func(c *ExporterConfig) {
+							c.PostingValueFormat, c.BatchSize, c.Workers = format, 1, 1
+						})
+						bad := deltaSpan(2)
+						start := int64(bad.ScopeSpans[0].Spans[0].StartTimeUnixNano)
+						value := escapedBoundary(t, size, char, func(s string) []byte {
+							v, err := encodeCoveringValue(coveringValue{Attribute{scope, "expanded", "string", s}, start}, format)
+							if err != nil {
+								t.Fatal(err)
+							}
+							return v
+						})
+						attrs := []*commonpb.KeyValue{exKV("expanded", exStr(value))}
+						switch scope {
+						case "resource":
+							bad.Resource.Attributes = attrs
+						case "scope":
+							bad.ScopeSpans[0].Scope.Attributes = attrs
+						case "span":
+							bad.ScopeSpans[0].Spans[0].Attributes = attrs
+						}
+						good := deltaSpan(1)
+						before := otelRawRootSnapshot(t, ctx, e.backend)
+						stats, err := e.ExportResourceSpans(ctx, []*tracepb.ResourceSpans{good, bad})
+						if size > 100000 {
+							requireTyped[*AdmissionError](t, "encoded trace covering", err)
+							if stats.Spans != 0 || stats.Batches != 0 || !reflect.DeepEqual(before, otelRawRootSnapshot(t, ctx, e.backend)) {
+								t.Fatalf("initial rejection wrote mixed call: %+v", stats)
+							}
+							if stats, err := e.ExportResourceSpans(ctx, []*tracepb.ResourceSpans{good}); err != nil || stats.Spans != 1 {
+								t.Fatalf("positive neighbor: %+v / %v", stats, err)
+							}
+						} else {
+							if err != nil || stats.Spans != 2 || stats.Batches != 2 {
+								t.Fatalf("admitted boundary: %+v / %v", stats, err)
+							}
+							got, err := e.LoadSpanOTLP(ctx, ftsTrace(2), ftsSpan(2))
+							if err != nil {
+								t.Fatal(err)
+							}
+							requireProtoEqual(t, "complete boundary OTLP", got, bad)
+						}
+					})
+				}
+			}
+		}
+	}
+}
 
 func TestPostingValueFormatOptions(t *testing.T) {
 	t.Parallel()

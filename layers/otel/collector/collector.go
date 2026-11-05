@@ -699,19 +699,20 @@ type TracesExporter struct {
 	cfg  Config
 	open func(context.Context, otel.ExporterConfig) (Sink, error)
 
-	mu          sync.Mutex
-	state       int
-	sink        Sink
-	pending     []request
-	flushWanted bool
-	outstanding int
-	nextSeq     uint64
-	order       []uint64 // admitted, incomplete request sequences, ascending
-	remaining   map[uint64]int
-	failures    []error
-	dropped     int
-	stats       Stats
-	shutdownErr error
+	mu            sync.Mutex
+	state         int
+	sink          Sink
+	pending       []request
+	flushWanted   bool
+	batchCutProbe func([]request, []request) // optional queue ownership probe; set before Start
+	outstanding   int
+	nextSeq       uint64
+	order         []uint64 // admitted, incomplete request sequences, ascending
+	remaining     map[uint64]int
+	failures      []error
+	dropped       int
+	stats         Stats
+	shutdownErr   error
 
 	wake       chan struct{} // batcher wakeup, capacity 1
 	changed    chan struct{} // closed and replaced on every completion
@@ -1019,7 +1020,11 @@ func (x *TracesExporter) batchLoop() {
 		dispatched := false
 		for count > 0 && (count >= q.Batch.MinSize || force) {
 			var b batch
+			before := cur
 			b, cur, count = cutBatch(cur, count, q.Batch.MaxSize)
+			if x.batchCutProbe != nil {
+				x.batchCutProbe(before, cur)
+			}
 			x.dispatch(b)
 			dispatched = true
 		}
@@ -1066,6 +1071,7 @@ func cutBatch(cur []request, count, max int) (batch, []request, int) {
 		if r.count <= take {
 			b.parts = append(b.parts, r)
 			take -= r.count
+			cur[0] = request{}
 			cur = cur[1:]
 			continue
 		}
@@ -1073,6 +1079,9 @@ func cutBatch(cur []request, count, max int) (batch, []request, int) {
 		b.parts = append(b.parts, request{seq: r.seq, spans: head, count: take})
 		cur[0] = request{seq: r.seq, spans: tail, count: r.count - take}
 		take = 0
+	}
+	if len(cur) == 0 {
+		cur = nil
 	}
 	return b, cur, count - b.count
 }
@@ -1143,8 +1152,9 @@ func (x *TracesExporter) consumeLoop() {
 			x.complete(b.parts, st, err)
 			continue
 		}
-		// A permanent failure fails the whole merged call before any write;
-		// re-export each source's part so only the offending request fails.
+		// Only initial validation/admission guarantees zero writes. Messages or
+		// span batches may already be committed: replay each source idempotently
+		// so only the offending request fails.
 		for _, p := range b.parts {
 			if cerr := x.workCtx.Err(); cerr != nil {
 				// Abandoned before its own attempt: the merged failure may

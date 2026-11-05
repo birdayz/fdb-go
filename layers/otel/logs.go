@@ -490,6 +490,11 @@ func (b *FDBBackend) prepareLog(l LogRecord, receiver int64) (preparedLog, error
 		return preparedLog{}, err
 	}
 	traceKey, postings, unindexed := logIndexKeys(b.keys, b.cfg.Tenant, b.cfg.HashBytes, l)
+	for _, ps := range postings {
+		if err := checkCoveringValue(ps.Value); err != nil {
+			return preparedLog{}, err
+		}
+	}
 	p := preparedLog{eventID: l.EventID, correlated: traceKey != nil, header: header, chunks: chunks, traceKey: traceKey, postings: postings, logical: int64(len(raw)), unindexed: unindexed}
 	p.stored = int64(len(header))
 	for _, c := range chunks {

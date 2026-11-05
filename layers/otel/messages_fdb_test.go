@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -165,6 +167,208 @@ func ftsIndexEntries(t *testing.T, ctx context.Context, e *Exporter, index strin
 		t.Fatal(err)
 	}
 	return n
+}
+
+func TestLiveMessageQueueReleasesBackingOnPartialFailureAndCancel(t *testing.T) {
+	t.Parallel()
+	cluster := startExporterCluster(t)
+	for _, outcome := range []string{"success", "failure", "cancel"} {
+		t.Run(outcome, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+			defer cancel()
+			e := openTestExporter(t, ctx, cluster, func(c *ExporterConfig) { c.EnableMessageDeltas = true })
+			backing := make([]queuedMessage, 2)
+			e.backend.queue.pending = backing[:0]
+			callCtx, stop := context.WithCancel(ctx)
+			defer stop()
+			sentinel := errors.New("queue drain terminal failure")
+			partial := false
+			e.backend.messageTxnHook = func(stage string, _ *recordlayer.FDBRecordStore) error {
+				if stage != "message-before-commit" {
+					return nil
+				}
+				q := &e.backend.queue
+				q.mu.Lock()
+				if len(q.pending) == 1 {
+					partial = true
+					if backing[0].plan != nil || backing[0].sub != nil || backing[1].plan == nil || backing[1].sub == nil {
+						t.Error("live partial take retained consumed slot or lost tail")
+					}
+				}
+				q.mu.Unlock()
+				if outcome == "cancel" {
+					stop()
+					return context.Canceled
+				}
+				if outcome == "failure" {
+					return sentinel
+				}
+				return nil
+			}
+			input := deltaSpan(1, deltaKV("gen_ai.input.messages", deltaArray(deltaStr(strings.Repeat("a", 900000)), deltaStr(strings.Repeat("b", 900000)))))
+			st, err := e.ExportResourceSpans(callCtx, []*tracepb.ResourceSpans{input})
+			if outcome == "success" && (err != nil || st.Messages.Written != 2) {
+				t.Fatalf("live queue success: %+v / %v", st.Messages, err)
+			}
+			if outcome == "failure" && !errors.Is(err, sentinel) {
+				t.Fatalf("live queue failure: %v", err)
+			}
+			if outcome == "cancel" && !errors.Is(err, context.Canceled) {
+				t.Fatalf("live queue cancellation: %v", err)
+			}
+			// Join the actual queue loops by their protected ownership count.
+			// No elapsed-time or heap-size inference is used as the release oracle.
+			for {
+				q := &e.backend.queue
+				q.mu.Lock()
+				drained := q.loops == 0
+				if drained {
+					if q.pending != nil || !partial {
+						t.Error("live partial queue did not drain to nil")
+					}
+					for i, slot := range backing {
+						if slot.plan != nil || slot.sub != nil {
+							t.Errorf("live drained backing slot%d retained plan/submission", i)
+						}
+					}
+				}
+				q.mu.Unlock()
+				if drained {
+					break
+				}
+				if ctx.Err() != nil {
+					t.Fatal(ctx.Err())
+				}
+				runtime.Gosched()
+			}
+			e.backend.messageTxnHook = nil
+			if _, err := e.ExportResourceSpans(ctx, []*tracepb.ResourceSpans{deltaSpan(2, deltaKV("gen_ai.input.messages", deltaArray(deltaStr("live neighbor"))))}); err != nil {
+				t.Fatalf("exporter must remain alive after drain: %v", err)
+			}
+		})
+	}
+}
+
+type markerReadProbe struct {
+	fdb.Database
+	prefix         []byte
+	mu             sync.Mutex
+	reads, present int
+}
+
+type (
+	markerProbeTransaction struct {
+		fdb.WritableTransaction
+		probe *markerReadProbe
+	}
+	markerProbeSnapshot struct {
+		fdb.ReadTransaction
+		probe *markerReadProbe
+	}
+	markerProbeRange struct {
+		fdb.RangeResult
+		probe *markerReadProbe
+	}
+)
+
+func (tx markerProbeTransaction) Snapshot() fdb.ReadTransaction {
+	return markerProbeSnapshot{tx.WritableTransaction.Snapshot(), tx.probe}
+}
+
+func (tx markerProbeSnapshot) GetRange(r fdb.Range, opts fdb.RangeOptions) fdb.RangeResult {
+	result := tx.ReadTransaction.GetRange(r, opts)
+	begin, _ := r.FDBRangeKeySelectors()
+	if bytes.HasPrefix(begin.FDBKeySelector().Key.FDBKey(), tx.probe.prefix) {
+		return markerProbeRange{result, tx.probe}
+	}
+	return result
+}
+
+func (r markerProbeRange) GetSliceWithError() ([]fdb.KeyValue, error) {
+	rows, err := r.RangeResult.GetSliceWithError()
+	r.probe.mu.Lock()
+	r.probe.reads++
+	if err == nil && len(rows) > 0 {
+		r.probe.present++
+	}
+	r.probe.mu.Unlock()
+	return rows, err
+}
+
+func (p *markerReadProbe) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	return p.TransactCtx(context.Background(), fn)
+}
+
+func (p *markerReadProbe) TransactCtx(ctx context.Context, fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	return p.Database.TransactCtx(ctx, func(tx fdb.WritableTransaction) (any, error) { return fn(markerProbeTransaction{tx, p}) })
+}
+
+func TestEvictedPersistedMarkerPublicReplayReadsAndReuses(t *testing.T) {
+	t.Parallel()
+	cluster := startExporterCluster(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	e := openFTSExporter(t, ctx, cluster, nil)
+	input := []*tracepb.ResourceSpans{deltaSpan(1, deltaKV("gen_ai.input.messages", deltaArray(deltaStr("quokka"))))}
+	if st, err := e.ExportResourceSpans(ctx, input); err != nil || st.Messages.Written != 1 || st.Messages.TraceMarkers != 1 {
+		t.Fatalf("initial persisted marker: %+v / %v", st.Messages, err)
+	}
+	cache := &e.backend.markers
+	if len(cache.ring) != 1 {
+		t.Fatalf("initial cache=%d", len(cache.ring))
+	}
+	originalMarker := cache.ring[0]
+	prefix := e.backend.store.Sub(recordlayer.RecordKey).Pack(tuple.Tuple{messageTraceTypeKey, int64(e.cfg.Tenant)})
+	markerRows := func() map[string]string {
+		t.Helper()
+		var found map[string]string
+		_, err := e.backend.raw.TransactCtx(ctx, func(tx fdb.WritableTransaction) (any, error) {
+			found = map[string]string{}
+			r, err := fdb.PrefixRange(prefix)
+			if err != nil {
+				return nil, err
+			}
+			rows, err := tx.GetRange(r, fdb.RangeOptions{}).GetSliceWithError()
+			for _, row := range rows {
+				found[string(row.Key)] = string(row.Value)
+			}
+			return nil, err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
+	before := markerRows()
+	if len(before) != 1 {
+		t.Fatalf("real persisted marker rows=%d", len(before))
+	}
+	for i := range markerCacheSize {
+		cache.add([]traceMarker{cacheFixtureMarker(i)})
+	}
+	if cache.has(originalMarker) || len(cache.set) != markerCacheSize {
+		t.Fatalf("real marker not evicted / map not bounded: %d", len(cache.set))
+	}
+	probe := &markerReadProbe{Database: e.backend.raw, prefix: prefix}
+	originalDB := e.backend.db
+	e.backend.db = recordlayer.NewFDBDatabaseWithTransactor(probe, e.backend.raw)
+	defer func() { e.backend.db = originalDB }()
+	st, err := e.ExportResourceSpans(ctx, input)
+	if err != nil || st.Messages.Written != 0 || st.Messages.Present != 1 || st.Messages.TraceMarkers != 0 {
+		t.Fatalf("public evicted-marker replay: %+v / %v", st.Messages, err)
+	}
+	probe.mu.Lock()
+	reads, present := probe.reads, probe.present
+	probe.mu.Unlock()
+	if reads == 0 || reads != present || !cache.has(originalMarker) || len(cache.set) != markerCacheSize {
+		t.Fatalf("replay did not read/reuse persisted marker: reads=%d present=%d cached=%v size=%d", reads, present, cache.has(originalMarker), len(cache.set))
+	}
+	if after := markerRows(); !reflect.DeepEqual(before, after) {
+		t.Fatalf("replay duplicated/changed persisted marker: before=%v after=%v", before, after)
+	}
+	if n := ftsCount(t, ctx, e, MessageFullTextQuery{Query: "quokka"}); n != 1 {
+		t.Fatalf("replay duplicated query result: %d", n)
+	}
 }
 
 func TestMessageRecordsRealFDB(t *testing.T) {
@@ -451,6 +655,75 @@ func testMessageReplacement(t *testing.T, cluster string) {
 	}
 	if got, _ := ftsDrain(t, ctx, e, MessageFullTextQuery{Query: "mango", FirstTurnOnly: true}); len(got) != 1 || got[0].Span != ftsSpan(61) {
 		t.Fatalf("first turn after a span dropped it: %+v", got)
+	}
+}
+
+func TestMessageRoleDiscoveryChargesRawBunchForAbsentToken(t *testing.T) {
+	t.Parallel()
+	cluster := startExporterCluster(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	e := openFTSExporter(t, ctx, cluster, func(c *ExporterConfig) { c.Tenant, c.MaxBytes = 0, 128 })
+	values := make([]*commonpb.AnyValue, 20)
+	for i := range values {
+		values[i] = deltaKvlist(deltaKV("role", deltaStr("user")), deltaKV("content", deltaStr("quokka")), deltaKV("metadata", &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: int64(i)}}))
+	}
+	input := deltaSpan(1, deltaKV("gen_ai.input.messages", deltaArray(values...)))
+	if st, err := e.ExportResourceSpans(ctx, []*tracepb.ResourceSpans{input}); err != nil || st.Messages.Written != 20 || st.Messages.Postings != 20 {
+		t.Fatalf("fixture: %+v / %v", st.Messages, err)
+	}
+	var rawBytes int64
+	if err := deltaRun(t, ctx, e.backend.db, func(rc *recordlayer.FDBRecordContext) error {
+		store, err := e.backend.open(rc)
+		if err != nil {
+			return err
+		}
+		idx := e.backend.md.GetIndex(messageTextIndexName)
+		rows, err := rc.Transaction().GetRange(store.IndexSubspace(idx), fdb.RangeOptions{}).GetSliceWithError()
+		if err != nil {
+			return err
+		}
+		if len(rows) != 1 || len(rows[0].Value) <= 128 {
+			return fmt.Errorf("need one multi-entry raw bunch >128: %+v", rows)
+		}
+		rawBytes = int64(len(rows[0].Key) + len(rows[0].Value))
+		props := recordlayer.ForwardScan()
+		props.ExecuteProperties.ReturnedRowLimit = 1
+		cur := store.ScanIndexByType(idx, recordlayer.IndexScanByTextToken, recordlayer.TupleRangeAllOf(tuple.Tuple{int64(0)}), nil, props)
+		defer cur.Close()
+		r, err := cur.OnNext(ctx)
+		if err != nil {
+			return err
+		}
+		if !r.HasNext() {
+			return errors.New("missing logical positive control")
+		}
+		entry := r.GetValue()
+		if logical := len(entry.Key.Pack()) + len(entry.Value.Pack()); logical != 24 {
+			return fmt.Errorf("first logical entry=%d want24, raw=%d", logical, rawBytes)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := e.QueryMessageFullText(ctx, MessageFullTextQuery{Query: "zzzzzzzzzz"})
+	requireTyped[*QueryBudgetError](t, "absent-token role discovery", err)
+	if page.Bytes != rawBytes || page.Candidates != 1 || page.Continuation != nil || len(page.Hits) != 0 || e.backend.LastQueryWork().Bytes != rawBytes {
+		t.Fatalf("raw failure accounting: %+v want%d", page, rawBytes)
+	}
+	cfg := e.Config()
+	cfg.MaxBytes = 4 << 20
+	other, err := NewExporter(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Shutdown(ctx)
+	page, err = other.QueryMessageFullText(ctx, MessageFullTextQuery{Query: "zzzzzzzzzz"})
+	if err != nil || len(page.Hits) != 0 || page.Continuation != nil || page.Bytes != rawBytes || page.Candidates != 1 || other.backend.LastQueryWork().Bytes != rawBytes {
+		t.Fatalf("empty-result raw positive accounting: %+v / %v want%d", page, err, rawBytes)
+	}
+	if n := ftsCount(t, ctx, other, MessageFullTextQuery{Query: "quokka", Role: "user"}); n != 20 {
+		t.Fatalf("searchable neighbor: %d", n)
 	}
 }
 

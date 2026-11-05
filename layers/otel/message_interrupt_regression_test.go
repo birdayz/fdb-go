@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
@@ -29,14 +30,19 @@ func TestInterruptedMultipartDoesNotPublishHeadOrSpan(t *testing.T) {
 			attempt, stop := context.WithCancel(ctx)
 			defer stop()
 			sentinel := errors.New("later multipart transaction refused")
-			var commits atomic.Int64
+			var extraRetry atomic.Bool
 			var tailProven atomic.Bool
 			var tailID messageID
 			e.backend.messageTxnHook = func(stage string, _ *recordlayer.FDBRecordStore) error {
-				if stage != "message-before-commit" || commits.Add(1) != 2 {
+				if stage != "message-before-commit" {
 					return nil
 				}
+				if !extraRetry.Swap(true) {
+					return fdb.Error{Code: 1020}
+				}
 				if err := deltaRun(t, ctx, e.backend.db, func(rc *recordlayer.FDBRecordContext) error {
+					tailProven.Store(false)
+					tailID = messageID{}
 					store, err := e.backend.open(rc)
 					if err != nil {
 						return err
@@ -59,7 +65,7 @@ func TestInterruptedMultipartDoesNotPublishHeadOrSpan(t *testing.T) {
 					return err
 				}
 				if !tailProven.Load() {
-					return errors.New("no independently committed tail observed")
+					return nil // still attempting the first tail transaction
 				}
 				if failure == "cancel" {
 					stop()
@@ -74,7 +80,7 @@ func TestInterruptedMultipartDoesNotPublishHeadOrSpan(t *testing.T) {
 			if failure == "cancel" && !errors.Is(err, context.Canceled) {
 				t.Fatalf("cancel cause: %v", err)
 			}
-			if !tailProven.Load() || stats.Messages.Written != 0 || stats.Messages.Parts == 0 {
+			if !extraRetry.Load() || !tailProven.Load() || stats.Messages.Written != 0 || stats.Messages.Parts == 0 {
 				t.Fatalf("committed-tail evidence/counters: %v / %+v", tailProven.Load(), stats.Messages)
 			}
 			e.backend.messageTxnHook = nil

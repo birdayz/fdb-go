@@ -27,11 +27,39 @@ import (
 // CaptureWireLog is process-global; both layout fixtures share this lock.
 var ingestPrefetchCaptureMu sync.Mutex
 
-func ingestPrefetchCommit(t *testing.T, b *FDBBackend, run func() error) wiretypes.CommitTransactionRef {
+type ingestPrefetchWireLog struct {
+	mu     sync.Mutex
+	data   bytes.Buffer
+	starts []int
+}
+
+func (l *ingestPrefetchWireLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.data.Write(p)
+}
+
+func (l *ingestPrefetchWireLog) begin() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.starts = append(l.starts, l.data.Len())
+}
+
+func ingestPrefetchCommit(t *testing.T, b *FDBBackend, run func() error, injectedReadKey ...fdb.Key) wiretypes.CommitTransactionRef {
 	t.Helper()
 	ingestPrefetchCaptureMu.Lock()
 	defer ingestPrefetchCaptureMu.Unlock()
-	var log bytes.Buffer
+	var log ingestPrefetchWireLog
+	previousProbe := b.ingestProbe
+	b.ingestProbe = func(event ingestEvent) {
+		if event.kind == "attempt" {
+			log.begin()
+		}
+		if previousProbe != nil {
+			previousProbe(event)
+		}
+	}
+	defer func() { b.ingestProbe = previousProbe }()
 	stop := transport.CaptureWireLog(&log)
 	defer stop()
 	err := run()
@@ -39,9 +67,24 @@ func ingestPrefetchCommit(t *testing.T, b *FDBBackend, run func() error) wiretyp
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := bytes.NewReader(log.Bytes())
-	var found []wiretypes.CommitTransactionRef
+	if len(log.starts) == 0 {
+		t.Fatal("wire capture has no source-attempt markers")
+	}
+	input := bytes.NewReader(log.data.Bytes())
+	type capturedCommit struct {
+		request wiretypes.CommitTransactionRequest
+		attempt int
+	}
+	var requests []capturedCommit
+	replies := map[[16]byte][]byte{}
 	for {
+		offset := log.data.Len() - input.Len()
+		attempt := 0
+		for i, start := range log.starts {
+			if start <= offset {
+				attempt = i + 1
+			}
+		}
 		var header [29]byte
 		if _, err := io.ReadFull(input, header[:]); err == io.EOF {
 			break
@@ -56,6 +99,12 @@ func ingestPrefetchCommit(t *testing.T, b *FDBBackend, run func() error) wiretyp
 		if _, err := io.ReadFull(input, body); err != nil {
 			t.Fatal(err)
 		}
+		if header[0] == 'R' {
+			var token [16]byte
+			copy(token[:], header[9:25])
+			replies[token] = body
+			continue
+		}
 		if header[0] != 'S' {
 			continue
 		}
@@ -69,15 +118,113 @@ func ingestPrefetchCommit(t *testing.T, b *FDBBackend, run func() error) wiretyp
 		}
 		for _, mutation := range request.Transaction.Mutations {
 			if bytes.HasPrefix(mutation.Param1, b.keys.data.Bytes()) {
-				found = append(found, request.Transaction)
+				requests = append(requests, capturedCommit{request: request, attempt: attempt})
 				break
 			}
 		}
+	}
+	var found []wiretypes.CommitTransactionRef
+	injectedRejections := 0
+	for _, captured := range requests {
+		request := captured.request
+		body, ok := replies[request.Reply.Token]
+		if !ok {
+			if captured.attempt == len(log.starts) {
+				t.Fatal("successful source commit has no matching reply")
+			}
+			continue
+		}
+		injectedAttempt := false
+		if len(injectedReadKey) == 1 {
+			for _, conflict := range request.Transaction.ReadConflictRanges {
+				if bytes.Equal(conflict.Begin, injectedReadKey[0]) {
+					injectedAttempt = true
+				}
+			}
+		}
+		var reader wire.Reader
+		code := 0
+		if err := wire.ReadErrorOrInto(body, &reader); err != nil {
+			var rejected *wire.FDBError
+			if !errors.As(err, &rejected) {
+				if captured.attempt == len(log.starts) {
+					t.Fatalf("malformed successful commit reply: %v", err)
+				}
+				continue
+			}
+			code = rejected.Code
+		} else {
+			var reply wiretypes.CommitID
+			if err := reply.UnmarshalFromReader(&reader); err != nil {
+				if captured.attempt == len(log.starts) {
+					t.Fatal(err)
+				}
+				continue
+			}
+			if reply.Version == -1 {
+				code = 1020
+			} else if reply.Version <= 0 {
+				t.Fatalf("invalid successful commit version: %d", reply.Version)
+			}
+		}
+		if injectedAttempt {
+			if code != 1020 {
+				t.Fatalf("injected completed attempt reply=%d want1020", code)
+			}
+			injectedRejections++
+		}
+		if code == 0 && captured.attempt == len(log.starts) {
+			found = append(found, request.Transaction)
+		}
+	}
+	if len(injectedReadKey) == 1 && injectedRejections != 1 {
+		t.Fatalf("injected attempt correlated rejections=%d want1", injectedRejections)
 	}
 	if len(found) != 1 || len(found[0].Mutations) == 0 || len(found[0].ReadConflictRanges) == 0 {
 		t.Fatalf("need exactly one populated successful source commit, got %d", len(found))
 	}
 	return found[0]
+}
+
+// prefetchRetryTransactor injects only after a completed callback, so an
+// unrelated early storage retry cannot consume the intended fault.
+type prefetchRetryTransactor struct {
+	fdb.Database
+	inner           fdb.CtxTransactor
+	raw             fdb.Database
+	codes, injected []int
+	outcomes        []error
+	conflictKey     fdb.Key
+	conflicted      bool
+}
+
+func (p *prefetchRetryTransactor) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	return p.TransactCtx(context.Background(), fn)
+}
+
+func (p *prefetchRetryTransactor) TransactCtx(ctx context.Context, fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	return p.inner.TransactCtx(ctx, func(tx fdb.WritableTransaction) (any, error) {
+		result, err := fn(tx)
+		if err == nil && len(p.codes) > 0 {
+			code := p.codes[0]
+			p.codes = p.codes[1:]
+			p.injected = append(p.injected, code)
+			err = fdb.Error{Code: code}
+		}
+		if err == nil && p.conflictKey != nil && !p.conflicted {
+			if _, err = tx.Get(p.conflictKey).Get(); err == nil {
+				_, err = p.raw.TransactCtx(ctx, func(other fdb.WritableTransaction) (any, error) {
+					other.Set(p.conflictKey, []byte("commit conflict after completed observations"))
+					return nil, nil
+				})
+				if err == nil {
+					p.conflicted = true
+				}
+			}
+		}
+		p.outcomes = append(p.outcomes, err)
+		return result, err
+	})
 }
 
 func initializeIngestPrefetchRoot(t *testing.T, ctx context.Context, b *FDBBackend) {
@@ -114,6 +261,7 @@ func restoreIngestPrefetchRoot(t *testing.T, ctx context.Context, b *FDBBackend,
 
 func controlIngestPrefetchSave(ctx context.Context, b *FDBBackend, batch preparedBatch) error {
 	_, err := b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+		b.observeIngestRun("attempt", batch, nil)
 		if err := b.readManifest(rc, false); err != nil {
 			return nil, err
 		}
@@ -243,7 +391,27 @@ func testOtelIngestPrefetch(t *testing.T, ctx context.Context, cluster, order st
 			control := ingestPrefetchCommit(t, b, func() error { return controlIngestPrefetchSave(ctx, b, batch) })
 			controlRows := otelRawRootSnapshot(t, ctx, b)
 			restoreIngestPrefetchRoot(t, ctx, b, before)
-			prefetch := ingestPrefetchCommit(t, b, func() error { return b.saveIngestBatch(ctx, batch, newIngestRecorder(true)) })
+			originalDB := b.db
+			var injectedReadKey []fdb.Key
+			var retry *prefetchRetryTransactor
+			if scenario == "absent" {
+				key := append(fdb.Key("\x02otel-prefetch-retry/"), b.keys.data.Bytes()...)
+				retry = &prefetchRetryTransactor{Database: b.raw, inner: b.raw, raw: b.raw, conflictKey: key}
+				b.db = recordlayer.NewFDBDatabaseWithTransactor(retry, b.raw)
+				defer func() {
+					b.db = originalDB
+					_, err := b.raw.TransactCtx(ctx, func(tx fdb.WritableTransaction) (any, error) { tx.Clear(key); return nil, nil })
+					if err != nil {
+						t.Error(err)
+					}
+				}()
+				injectedReadKey = []fdb.Key{key}
+			}
+			prefetch := ingestPrefetchCommit(t, b, func() error { return b.saveIngestBatch(ctx, batch, newIngestRecorder(true)) }, injectedReadKey...)
+			if retry != nil && (!retry.conflicted || len(retry.outcomes) < 2 || retry.outcomes[len(retry.outcomes)-1] != nil) {
+				t.Fatalf("completed source attempt did not replay: %+v", retry)
+			}
+			b.db = originalDB
 			if !reflect.DeepEqual(control.ReadConflictRanges, prefetch.ReadConflictRanges) || !reflect.DeepEqual(control.WriteConflictRanges, prefetch.WriteConflictRanges) || !reflect.DeepEqual(control.Mutations, prefetch.Mutations) {
 				t.Fatalf("prefetch changed shipped canonical conflicts/mutations: control=%+v prefetch=%+v", control, prefetch)
 			}
@@ -265,6 +433,9 @@ func testOtelIngestPrefetch(t *testing.T, ctx context.Context, cluster, order st
 			initializeIngestPrefetchRoot(t, ctx, b)
 			before := otelRawRootSnapshot(t, ctx, b)
 			wrapped := newIngestReadWaveTransactor(b, ctx)
+			d := newIngestRecorder(true)
+			var guardAtAttemptStart int64
+			wrapped.beforeAttempt = func(int) error { guardAtAttemptStart = d.out.PhaseLatencies["guard"].Count; return nil }
 			cause := errors.New("prefetch storage read failed")
 			wrapped.prefetchError = cause
 			ownerCause := errors.New("authoritative owner failed before prefetch")
@@ -273,8 +444,10 @@ func testOtelIngestPrefetch(t *testing.T, ctx context.Context, cluster, order st
 			}
 			if scenario == "budget" {
 				wrapped.prefetchError = nil
-				now := time.Now()
+				base := time.Now()
+				now := base
 				b.ingestClock = func() time.Time { return now }
+				wrapped.beforeAttempt = func(int) error { now = base; guardAtAttemptStart = d.out.PhaseLatencies["guard"].Count; return nil }
 				wrapped.afterPrefetch = func(*ingestReadWaveAttempt) { now = now.Add(2 * time.Second) }
 			}
 			original := b.db
@@ -286,20 +459,26 @@ func testOtelIngestPrefetch(t *testing.T, ctx context.Context, cluster, order st
 			}
 			sourceCtx, cancel := context.WithCancel(ctx)
 			defer cancel()
-			d := newIngestRecorder(true)
 			err = b.saveIngestBatch(sourceCtx, batch, d)
 			if err == nil {
 				t.Fatal("prefetch failure/budget accepted")
 			}
-			assertIngestReadWave(t, wrapped.attempts, 1)
-			state := wrapped.attempts[0]
+			if len(wrapped.attempts) == 0 {
+				t.Fatal("prefetch fixture never entered a transaction callback")
+			}
+			for i, attempt := range wrapped.attempts {
+				if len(attempt.problems) != 0 || attempt.owners != 1 || attempt.headers != 1 || attempt.states != 1 || attempt.resolutions != 1 || attempt.timeout != 1500 || attempt.retries != 10 {
+					t.Fatalf("attempt%d lost exact read-wave/options: %+v", i, attempt)
+				}
+			}
+			state := wrapped.attempts[len(wrapped.attempts)-1]
 			if scenario == "prefetch_error" && (!errors.Is(err, cause) || state.recordWrites != 0 || state.resolved != 1) {
 				t.Fatalf("prefetch failure reached normal saves/lost error: state=%+v err=%v", state, err)
 			}
 			if scenario == "owner_precedence" && (!errors.Is(err, ownerCause) || state.recordWrites != 0 || state.resolved != 0) {
 				t.Fatalf("prefetch masked owner error: state=%+v err=%v", state, err)
 			}
-			if scenario == "budget" && (!strings.Contains(err.Error(), "transaction guard exceeded") || state.recordWrites != 1 || d.out.PhaseLatencies["guard"].Count != 1) {
+			if scenario == "budget" && (!strings.Contains(err.Error(), "transaction guard exceeded") || state.recordWrites != 1 || d.out.PhaseLatencies["guard"].Count-guardAtAttemptStart != 1) {
 				t.Fatalf("prefetch elapsed escaped save+guard budget: state=%+v profile=%+v err=%v", state, d.out, err)
 			}
 			if d.out.PhaseLatencies["commit"].Count != 0 {
@@ -321,11 +500,14 @@ func testOtelIngestPrefetch(t *testing.T, ctx context.Context, cluster, order st
 		initializeIngestPrefetchRoot(t, ctx, b)
 		wrapped := newIngestReadWaveTransactor(b, ctx)
 		wrapped.wantTimeout = defaultExporterTxnTimeout.Milliseconds()
-		now := time.Now()
+		base := time.Now()
+		now := base
 		b.ingestClock = func() time.Time { return now }
+		wrapped.beforeAttempt = func(int) error { now = base; return nil }
 		wrapped.afterPrefetch = func(*ingestReadWaveAttempt) { now = now.Add(2 * time.Second) }
+		retry := &prefetchRetryTransactor{Database: b.raw, inner: wrapped, raw: b.raw, codes: []int{1020}}
 		original := b.db
-		b.db = recordlayer.NewFDBDatabaseWithTransactor(wrapped, b.raw)
+		b.db = recordlayer.NewFDBDatabaseWithTransactor(retry, b.raw)
 		defer func() { b.db, b.ingestClock = original, nil }()
 		batch, err := prepareIngestBatch(ctx, b.cfg, 0)
 		if err != nil {
@@ -334,8 +516,13 @@ func testOtelIngestPrefetch(t *testing.T, ctx context.Context, cluster, order st
 		if err := b.saveIngestBatch(withExporterTxns(ctx, defaultExporterTxnTimeout), batch, newIngestRecorder(true)); err != nil {
 			t.Fatalf("exporter commit hit the benchmark elapsed guard: %v", err)
 		}
-		if len(wrapped.attempts) != 1 || wrapped.attempts[0].timeout != defaultExporterTxnTimeout.Milliseconds() || wrapped.attempts[0].retries != noRetryLimit {
-			t.Fatalf("exporter commit attempts %+v, want 1 with the %v timeout and no retry limit", wrapped.attempts, defaultExporterTxnTimeout)
+		if !reflect.DeepEqual(retry.injected, []int{1020}) || len(retry.codes) != 0 || len(retry.outcomes) < 2 || retry.outcomes[len(retry.outcomes)-1] != nil || len(wrapped.attempts) != len(retry.outcomes) {
+			t.Fatalf("elapsed fixture failed to replay completed callback: %+v", retry)
+		}
+		for i, state := range wrapped.attempts {
+			if len(state.problems) != 0 || state.timeout != defaultExporterTxnTimeout.Milliseconds() || state.retries != noRetryLimit {
+				t.Fatalf("exporter attempt%d: %+v", i, state)
+			}
 		}
 		b.db = original
 		assertOtelSource(t, ctx, b, Generate(b.cfg, 0))
@@ -351,9 +538,9 @@ func testOtelIngestPrefetch(t *testing.T, ctx context.Context, cluster, order st
 			initializeIngestPrefetchRoot(t, ctx, b)
 			wrapped := newIngestReadWaveTransactor(b, ctx)
 			wrapped.wantTimeout = defaultExporterTxnTimeout.Milliseconds()
-			wrapped.injectCode = code
+			retry := &prefetchRetryTransactor{Database: b.raw, inner: wrapped, raw: b.raw, codes: []int{1020, code}}
 			original := b.db
-			b.db = recordlayer.NewFDBDatabaseWithTransactor(wrapped, b.raw)
+			b.db = recordlayer.NewFDBDatabaseWithTransactor(retry, b.raw)
 			defer func() { b.db = original }()
 			var runs []error
 			b.db.SetAttemptObserver(func(_ recordlayer.AttemptCall, err error) { runs = append(runs, err) })
@@ -365,22 +552,26 @@ func testOtelIngestPrefetch(t *testing.T, ctx context.Context, cluster, order st
 			if len(runs) != 1 {
 				t.Fatalf("exporter batch made %d Record Layer attempts, want 1: %v", len(runs), runs)
 			}
+			if !reflect.DeepEqual(retry.injected, []int{1020, code}) || len(retry.codes) != 0 || len(wrapped.attempts) != len(retry.outcomes) {
+				t.Fatalf("intended extra/primary injections not observed exactly: %+v", retry)
+			}
 			for i, state := range wrapped.attempts {
-				if len(state.problems) != 0 || state.retries != noRetryLimit {
+				if len(state.problems) != 0 || state.timeout != defaultExporterTxnTimeout.Milliseconds() || state.retries != noRetryLimit {
 					t.Fatalf("attempt %d: %+v", i, state)
 				}
 			}
 			b.db = original
 			if code == 1020 {
-				if err != nil || len(wrapped.attempts) != 2 {
-					t.Fatalf("injected 1020: err=%v attempts=%d, want success on the second OnError attempt", err, len(wrapped.attempts))
+				if err != nil || len(retry.outcomes) < 3 || retry.outcomes[len(retry.outcomes)-1] != nil {
+					t.Fatalf("two intended 1020 injections must be followed by a successful callback: err=%v outcomes=%v", err, retry.outcomes)
 				}
 				assertOtelSource(t, ctx, b, Generate(b.cfg, 0))
 				return
 			}
 			requireOtelKind(t, err, "transient")
-			if got, ok := fdbErrorCode(err); !ok || got != 1031 || len(wrapped.attempts) != 1 {
-				t.Fatalf("injected 1031: err=%v attempts=%d, want one attempt failing with 1031", err, len(wrapped.attempts))
+			lastCode, lastOK := fdbErrorCode(retry.outcomes[len(retry.outcomes)-1])
+			if got, ok := fdbErrorCode(err); !ok || got != 1031 || !lastOK || lastCode != 1031 {
+				t.Fatalf("injected 1031 after extra retry: err=%v outcomes=%v", err, retry.outcomes)
 			}
 		})
 	}

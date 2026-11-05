@@ -9,6 +9,7 @@ import (
 	"io"
 	"slices"
 	"sync"
+	"time"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -79,23 +80,80 @@ func (tx *batchConflictProbeTransaction) AddWriteConflictRange(r fdb.ExactRange)
 // The transport capture is process-global. Record-layer specs using it serialize here.
 var batchConflictCaptureMu sync.Mutex
 
-type batchConflictCommit struct {
-	transaction wiretypes.CommitTransactionRef
-	bytes       int
+// Install a conflict after the fixture body; deferred commit checks still run
+// before rejection, so both discarded and successful attempts exercise them.
+type fixtureCommitRetry struct {
+	key                          fdb.Key
+	injectedContext, lastContext *FDBRecordContext
 }
 
-func captureBatchConflictCommit(root subspace.Subspace, run func() error) batchConflictCommit {
-	batchConflictCaptureMu.Lock()
-	defer batchConflictCaptureMu.Unlock()
-	var log bytes.Buffer
-	stop := transport.CaptureWireLog(&log)
-	defer stop()
-	err := run()
-	stop()
-	Expect(err).NotTo(HaveOccurred())
-	input := bytes.NewReader(log.Bytes())
-	var found []batchConflictCommit
+func newFixtureCommitRetry(root subspace.Subspace) *fixtureCommitRetry {
+	return &fixtureCommitRetry{key: subspace.Sub("record-fixture-retry", root.Bytes()).Pack(nil)}
+}
+
+func (r *fixtureCommitRetry) begin(rc *FDBRecordContext) { r.lastContext = rc }
+
+func (r *fixtureCommitRetry) conflict(rc *FDBRecordContext) error {
+	if r.injectedContext != nil {
+		return nil
+	}
+	if _, err := rc.Transaction().Get(r.key).Get(); err != nil {
+		return err
+	}
+	_, err := sharedDB.db.TransactCtx(rc.Context(), func(tx fdb.WritableTransaction) (any, error) {
+		tx.Set(r.key, []byte("force the observed attempt to conflict"))
+		return nil, nil
+	})
+	if err == nil {
+		r.injectedContext = rc
+	}
+	return err
+}
+
+func (r *fixtureCommitRetry) assertReplayed() {
+	GinkgoHelper()
+	Expect(r.injectedContext).NotTo(BeNil())
+	Expect(r.lastContext).NotTo(BeIdenticalTo(r.injectedContext), "a fresh attempt must follow the injected commit conflict")
+}
+
+type (
+	fixtureWireAttempt struct {
+		context *FDBRecordContext
+		offset  int
+		started time.Time
+	}
+	fixtureWireLog struct {
+		mu       sync.Mutex
+		data     bytes.Buffer
+		attempts []fixtureWireAttempt
+	}
+)
+
+func (l *fixtureWireLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.data.Write(p)
+}
+
+func (l *fixtureWireLog) begin(rc *FDBRecordContext) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.attempts = append(l.attempts, fixtureWireAttempt{context: rc, offset: l.data.Len(), started: time.Now()})
+}
+
+type fixtureWireFrame struct {
+	direction byte
+	token     [16]byte
+	body      []byte
+	attempt   *FDBRecordContext
+}
+
+func (l *fixtureWireLog) frames() []fixtureWireFrame {
+	// CaptureWireLog.stop has joined the writer before this is called.
+	input := bytes.NewReader(l.data.Bytes())
+	var frames []fixtureWireFrame
 	for {
+		offset := l.data.Len() - input.Len()
 		var header [29]byte
 		if _, err := io.ReadFull(input, header[:]); err == io.EOF {
 			break
@@ -104,30 +162,113 @@ func captureBatchConflictCommit(root subspace.Subspace, run func() error) batchC
 		}
 		n := binary.LittleEndian.Uint32(header[25:29])
 		Expect(uint64(n)).To(BeNumerically("<=", uint64(input.Len())))
-		body := make([]byte, int(n))
-		_, err := io.ReadFull(input, body)
+		frame := fixtureWireFrame{direction: header[0], body: make([]byte, int(n))}
+		copy(frame.token[:], header[9:25])
+		_, err := io.ReadFull(input, frame.body)
 		Expect(err).NotTo(HaveOccurred())
-		if header[0] != 'S' {
+		for _, attempt := range l.attempts {
+			if attempt.offset <= offset {
+				frame.attempt = attempt.context
+			}
+		}
+		frames = append(frames, frame)
+	}
+	return frames
+}
+
+func (l *fixtureWireLog) finalAttempt() *FDBRecordContext {
+	if len(l.attempts) == 0 {
+		return nil
+	} // Existing direct-context captures cannot retry.
+	return l.attempts[len(l.attempts)-1].context
+}
+
+type batchConflictCommit struct {
+	transaction wiretypes.CommitTransactionRef
+	bytes       int
+	rejected    map[*FDBRecordContext][]int
+}
+
+func successfulFixtureCommit(root subspace.Subspace, frames []fixtureWireFrame, final *FDBRecordContext) batchConflictCommit {
+	replies := map[[16]byte][]byte{}
+	for _, frame := range frames {
+		if frame.direction == 'R' {
+			replies[frame.token] = frame.body
+		}
+	}
+	var found []batchConflictCommit
+	rejected := map[*FDBRecordContext][]int{}
+	for _, frame := range frames {
+		if frame.direction != 'S' {
 			continue
 		}
-		r, err := wire.NewReader(body)
+		r, err := wire.NewReader(frame.body)
 		if err != nil || r.FileIdentifier() != wiretypes.CommitTransactionRequestFileID {
 			continue
 		}
 		var request wiretypes.CommitTransactionRequest
 		Expect(request.UnmarshalFromReader(r)).To(Succeed())
+		owned := false
 		for _, mutation := range request.Transaction.Mutations {
-			if bytes.HasPrefix(mutation.Param1, root.Bytes()) {
-				found = append(found, batchConflictCommit{transaction: request.Transaction, bytes: len(body)})
-				break
-			}
+			owned = owned || bytes.HasPrefix(mutation.Param1, root.Bytes())
 		}
+		if !owned {
+			continue
+		}
+		body, answered := replies[request.Reply.Token]
+		if !answered {
+			if frame.attempt == final {
+				Expect(answered).To(BeTrue(), "successful commit must have its matching reply")
+			}
+			continue // An earlier unknown-result attempt need not have received a reply.
+		}
+		var replyReader wire.Reader
+		if err := wire.ReadErrorOrInto(body, &replyReader); err != nil {
+			var native *wire.FDBError
+			if !errors.As(err, &native) {
+				if frame.attempt == final {
+					Expect(err).NotTo(HaveOccurred(), "successful commit reply must decode")
+				}
+				continue
+			}
+			rejected[frame.attempt] = append(rejected[frame.attempt], native.Code)
+			continue
+		}
+		var reply wiretypes.CommitID
+		if err := reply.UnmarshalFromReader(&replyReader); err != nil {
+			if frame.attempt == final {
+				Expect(err).NotTo(HaveOccurred(), "successful CommitID must decode")
+			}
+			continue
+		}
+		if reply.Version == -1 {
+			rejected[frame.attempt] = append(rejected[frame.attempt], 1020)
+			continue
+		}
+		if frame.attempt != final {
+			continue
+		} // Only the attempt accepted by Run supplies the oracle.
+		Expect(reply.Version).To(BeNumerically(">", 0))
+		found = append(found, batchConflictCommit{transaction: request.Transaction, bytes: len(frame.body)})
 	}
-	Expect(found).To(HaveLen(1), "need one populated source commit, not an empty capture")
-	Expect(found[0].transaction.Mutations).NotTo(BeEmpty())
-	Expect(found[0].transaction.ReadConflictRanges).NotTo(BeEmpty())
-	Expect(found[0].transaction.WriteConflictRanges).NotTo(BeEmpty())
-	return found[0]
+	Expect(found).To(HaveLen(1), "one successful populated source commit with a correlated success reply")
+	out := found[0]
+	out.rejected = rejected
+	Expect(out.transaction.Mutations).NotTo(BeEmpty())
+	Expect(out.transaction.ReadConflictRanges).NotTo(BeEmpty())
+	Expect(out.transaction.WriteConflictRanges).NotTo(BeEmpty())
+	return out
+}
+
+func captureBatchConflictCommit(root subspace.Subspace, run func() error, log *fixtureWireLog) batchConflictCommit {
+	batchConflictCaptureMu.Lock()
+	defer batchConflictCaptureMu.Unlock()
+	stop := transport.CaptureWireLog(log)
+	defer stop()
+	err := run()
+	stop()
+	Expect(err).NotTo(HaveOccurred())
+	return successfulFixtureCommit(root, log.frames(), log.finalAttempt())
 }
 
 var _ = Describe("Batch index write-conflict coalescing", func() {
@@ -211,8 +352,13 @@ var _ = Describe("Batch index write-conflict coalescing", func() {
 			input = append(input, record(1, 40))
 			run := func(mode int) (batchConflictCommit, int64) {
 				var size int64
+				log := &fixtureWireLog{}
+				retry := newFixtureCommitRetry(root.Sub("capture", mode))
 				captured := captureBatchConflictCommit(root, func() error {
 					_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+						log.begin(rc)
+						retry.begin(rc)
+						size = 0
 						s := open(rc, md, root, layout.format)
 						var err error
 						if mode == 0 {
@@ -228,10 +374,17 @@ var _ = Describe("Batch index write-conflict coalescing", func() {
 							return nil, err
 						}
 						size, err = rc.Transaction().GetApproximateSize().Get()
+						if err == nil && mode == 2 {
+							err = retry.conflict(rc)
+						}
 						return nil, err
 					})
 					return err
-				})
+				}, log)
+				if mode == 2 {
+					retry.assertReplayed()
+					Expect(captured.rejected[retry.injectedContext]).To(Equal([]int{1020}), "the injected attempt must have a sent commit and its matching rejection")
+				}
 				return captured, size
 			}
 			control, controlSize := run(0)

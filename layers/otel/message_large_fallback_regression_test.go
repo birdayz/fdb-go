@@ -45,20 +45,19 @@ func TestInitiallyMultipartSizeFallbackAfterCommittedTail(t *testing.T) {
 			if err != nil || len(initial.records) < 3 {
 				t.Fatalf("initial large plan=%v err=%v", initial, err)
 			}
-			var calls atomic.Int64
+			var extraRetry, selectedFailure atomic.Bool
 			var abandoned messageID
 			var committedParts int64
 			e.backend.messageTxnHook = func(stage string, store *recordlayer.FDBRecordStore) error {
 				if stage != "message-before-commit" {
 					return nil
 				}
-				n := calls.Add(1)
-				if n < 2 {
-					return nil
+				if !extraRetry.Swap(true) {
+					return fdb.Error{Code: 1020}
 				}
-				if n == 2 {
-					// The attempted second transaction must still be a PART
-					// transaction: its own view contains no message head.
+				if !selectedFailure.Load() {
+					// Select by durable progress, never the callback ordinal.
+					// The failing transaction must still contain only PARTs.
 					pending, err := recordlayer.AsList(ctx, store.ScanRecords(nil, recordlayer.ForwardScan()))
 					if err != nil {
 						return err
@@ -67,7 +66,7 @@ func TestInitiallyMultipartSizeFallbackAfterCommittedTail(t *testing.T) {
 						m := r.Record.ProtoReflect()
 						f := m.Descriptor().Fields()
 						if f.ByName("part") != nil && m.Get(f.ByName("part")).Int() == 0 {
-							return errors.New("second transaction was HEAD, not PART")
+							return errors.New("selected transaction was HEAD, not PART")
 						}
 					}
 					if err := deltaRun(t, ctx, e.backend.db, func(rc *recordlayer.FDBRecordContext) error {
@@ -80,6 +79,7 @@ func TestInitiallyMultipartSizeFallbackAfterCommittedTail(t *testing.T) {
 							return err
 						}
 						committedParts = 0
+						abandoned = messageID{}
 						for _, r := range rows {
 							m := r.Record.ProtoReflect()
 							f := m.Descriptor().Fields()
@@ -97,17 +97,19 @@ func TestInitiallyMultipartSizeFallbackAfterCommittedTail(t *testing.T) {
 						return err
 					}
 					if committedParts == 0 {
-						return errors.New("no independent committed-tail control")
+						return nil // the first tail has not committed yet
 					}
+					selectedFailure.Store(true)
+					return fdb.Error{Code: 2101}
 				}
-				if n == 2 || exhaust {
+				if exhaust {
 					return fdb.Error{Code: 2101}
 				}
 				return nil
 			}
 			stats, err := e.ExportResourceSpans(ctx, []*tracepb.ResourceSpans{input})
-			if committedParts == 0 || !abandoned.valid() {
-				t.Fatalf("missing committed tail evidence: calls=%d err=%v", calls.Load(), err)
+			if !extraRetry.Load() || !selectedFailure.Load() || committedParts == 0 || !abandoned.valid() {
+				t.Fatalf("missing retry/committed tail evidence: retry=%v selected=%v err=%v", extraRetry.Load(), selectedFailure.Load(), err)
 			}
 			if exhaust {
 				if code, ok := fdbErrorCode(err); !ok || code != 2101 {

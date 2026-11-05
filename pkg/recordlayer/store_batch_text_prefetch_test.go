@@ -3,9 +3,7 @@ package recordlayer
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"fmt"
-	"io"
 	"slices"
 	"strings"
 	"time"
@@ -21,7 +19,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// textPrefetchRun is one captured transaction: its commit and its storage reads.
+// textPrefetchRun describes the successful attempt's commit and owned storage reads.
 type textPrefetchRun struct {
 	commit batchConflictCommit
 	// reads is the number of storage reads sent (GetKeyValues and GetValue);
@@ -59,41 +57,38 @@ func (s *gatedTextPrefetchSnapshot) GetRange(r fdb.Range, options fdb.RangeOptio
 	return s.ReadTransaction.GetRange(r, options)
 }
 
-func captureTextPrefetchRun(root subspace.Subspace, run func() error) textPrefetchRun {
+func captureTextPrefetchRun(root subspace.Subspace, run func() error, logs ...*fixtureWireLog) textPrefetchRun {
 	batchConflictCaptureMu.Lock()
 	defer batchConflictCaptureMu.Unlock()
-	var log bytes.Buffer
-	stop := transport.CaptureWireLog(&log)
+	log := &fixtureWireLog{}
+	if len(logs) != 0 {
+		log = logs[0]
+	}
+	stop := transport.CaptureWireLog(log)
 	defer stop()
 	start := time.Now()
 	err := run()
-	elapsed := time.Since(start)
 	stop()
 	Expect(err).NotTo(HaveOccurred())
-	out := textPrefetchRun{elapsed: elapsed}
-	input := bytes.NewReader(log.Bytes())
-	var commits []batchConflictCommit
+	if len(log.attempts) != 0 {
+		start = log.attempts[len(log.attempts)-1].started
+	}
+	out := textPrefetchRun{elapsed: time.Since(start)}
+	frames, final := log.frames(), log.finalAttempt()
+	out.commit = successfulFixtureCommit(root, frames, final)
 	outstanding := map[[16]byte]bool{}
-	for {
-		var header [29]byte
-		if _, err := io.ReadFull(input, header[:]); err == io.EOF {
-			break
-		} else {
-			Expect(err).NotTo(HaveOccurred())
-		}
-		body := make([]byte, int(binary.LittleEndian.Uint32(header[25:29])))
-		_, err := io.ReadFull(input, body)
-		Expect(err).NotTo(HaveOccurred())
-		if header[0] == 'R' {
-			var token [16]byte
-			copy(token[:], header[9:25])
-			if outstanding[token] {
-				delete(outstanding, token)
+	for _, frame := range frames {
+		if frame.direction == 'R' {
+			if outstanding[frame.token] {
+				delete(outstanding, frame.token)
 				out.answered++
 			}
 			continue
 		}
-		r, err := wire.NewReader(body)
+		if frame.direction != 'S' || frame.attempt != final {
+			continue
+		}
+		r, err := wire.NewReader(frame.body)
 		if err != nil {
 			continue
 		}
@@ -108,25 +103,24 @@ func captureTextPrefetchRun(root subspace.Subspace, run func() error) textPrefet
 		case wiretypes.GetKeyValuesRequestFileID:
 			var request wiretypes.GetKeyValuesRequest
 			Expect(request.UnmarshalFromReader(r)).To(Succeed())
-			read(request.Reply)
+			if bytes.HasPrefix(request.Begin.Key, root.Bytes()) {
+				read(request.Reply)
+			}
 		case wiretypes.GetValueRequestFileID:
 			var request wiretypes.GetValueRequest
 			Expect(request.UnmarshalFromReader(r)).To(Succeed())
-			read(request.Reply)
-		case wiretypes.CommitTransactionRequestFileID:
-			var request wiretypes.CommitTransactionRequest
-			Expect(request.UnmarshalFromReader(r)).To(Succeed())
-			for _, mutation := range request.Transaction.Mutations {
-				if bytes.HasPrefix(mutation.Param1, root.Bytes()) {
-					commits = append(commits, batchConflictCommit{transaction: request.Transaction, bytes: len(body)})
-					break
-				}
+			if bytes.HasPrefix(request.Key, root.Bytes()) {
+				read(request.Reply)
 			}
 		}
 	}
-	Expect(commits).To(HaveLen(1))
-	out.commit = commits[0]
+	Expect(outstanding).To(BeEmpty(), "all successful-attempt storage requests must have their own replies")
 	return out
+}
+
+type textPrefetchCaptureOptions struct {
+	gateSize   int
+	extraRetry bool
 }
 
 // Batch saves prefetch their TEXT bunches into the transaction's cache; the
@@ -212,12 +206,23 @@ var _ = Describe("Batch TEXT bunch prefetch", func() {
 			return sequential.save(s, b, records)
 		}},
 	}
-	runMode := func(md *RecordMetaData, root subspace.Subspace, m mode, records []proto.Message, gateSize ...int) textPrefetchRun {
+	runMode := func(md *RecordMetaData, root subspace.Subspace, m mode, records []proto.Message, options ...textPrefetchCaptureOptions) textPrefetchRun {
+		opt := textPrefetchCaptureOptions{}
+		if len(options) != 0 {
+			opt = options[0]
+		}
 		var counter *snapshotReadCounter
+		counters := map[*FDBRecordContext]*snapshotReadCounter{}
+		log := &fixtureWireLog{}
+		retry := newFixtureCommitRetry(root)
 		captured := captureTextPrefetchRun(root, func() error {
 			_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
-				if len(gateSize) > 0 && gateSize[0] > 0 {
-					counter = newSnapshotReadCounter(gateSize[0])
+				log.begin(rc)
+				retry.begin(rc)
+				counter = nil
+				if opt.gateSize > 0 {
+					counter = newSnapshotReadCounter(opt.gateSize)
+					counters[rc] = counter
 					rc.tx = &gatedTextPrefetchTransaction{WritableTransaction: rc.tx, indexPrefix: root.Sub(IndexKey).Bytes(), counter: counter}
 				}
 				b := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root)
@@ -225,13 +230,55 @@ var _ = Describe("Batch TEXT bunch prefetch", func() {
 				if err != nil {
 					return nil, err
 				}
-				return nil, m.save(s, b, records)
+				if err := m.save(s, b, records); err != nil {
+					return nil, err
+				}
+				if opt.extraRetry {
+					return nil, retry.conflict(rc)
+				}
+				return nil, nil
 			})
 			return err
-		})
+		}, log)
+		if opt.extraRetry {
+			retry.assertReplayed()
+			Expect(captured.commit.rejected[retry.injectedContext]).To(Equal([]int{1020}))
+			if opt.gateSize > 0 {
+				for _, rc := range []*FDBRecordContext{retry.injectedContext, retry.lastContext} {
+					gate := counters[rc]
+					Expect(gate).NotTo(BeNil())
+					Expect(gate.issued).To(Equal(opt.gateSize))
+					Expect(gate.completing).To(Equal(opt.gateSize))
+					Expect(gate.maxInFlight).To(Equal(opt.gateSize))
+					Expect(gate.inFlight).To(BeZero())
+					Expect(gate.gateTimedOut).To(BeFalse())
+				}
+			}
+		}
 		captured.prefetchGate = counter
 		return captured
 	}
+
+	It("keeps the successful-attempt TEXT wire and first-wave observations after a rejected commit", func() {
+		b := baseBuilder()
+		b.AddIndex("Customer", NewTextIndex("prefetch_text", Field("name")))
+		md, err := b.Build()
+		Expect(err).NotTo(HaveOccurred())
+		root := specSubspace()
+		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) { open(rc, md, root); return nil, nil })
+		Expect(err).NotTo(HaveOccurred())
+		initial := dump(root)
+		records := []proto.Message{customer(1, "quokka common", ""), customer(2, "quokka tool", "")}
+		control := runMode(md, root, sequential, records)
+		want := dump(root)
+		restore(root, initial)
+		got := runMode(md, root, modes[1], records, textPrefetchCaptureOptions{gateSize: 3, extraRetry: true})
+		Expect(got.answered).To(Equal(got.reads))
+		Expect(got.commit.transaction.Mutations).To(Equal(control.commit.transaction.Mutations))
+		Expect(got.commit.transaction.ReadConflictRanges).To(Equal(control.commit.transaction.ReadConflictRanges))
+		Expect(got.commit.transaction.WriteConflictRanges).To(Equal(control.commit.transaction.WriteConflictRanges))
+		Expect(dump(root)).To(Equal(want))
+	})
 
 	It("commits what saving the records one after another commits", func() {
 		md, root := metadata(), specSubspace()
@@ -336,7 +383,7 @@ var _ = Describe("Batch TEXT bunch prefetch", func() {
 				if m.name != sequential.name && m.name != "batch without prefetch" {
 					gateSize = len(tokens)
 				}
-				run := runMode(md, root, m, batch, gateSize)
+				run := runMode(md, root, m, batch, textPrefetchCaptureOptions{gateSize: gateSize})
 				Expect(run.answered).To(Equal(run.reads), m.name)
 				if gateSize > 0 {
 					Expect(run.prefetchGate).NotTo(BeNil(), m.name)

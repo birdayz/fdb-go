@@ -44,27 +44,64 @@ func TestMessageSiblingFallbackRetainsCommittedHeaderOutcomes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var calls atomic.Int64
+			var extraRetry, initialFailure, selectedQ atomic.Bool
 			var committedP atomic.Bool
 			sentinel := errors.New("Q terminal failure after P committed")
-			e.backend.messageTxnHook = func(stage string, _ *recordlayer.FDBRecordStore) error {
+			e.backend.messageTxnHook = func(stage string, store *recordlayer.FDBRecordStore) error {
 				if stage != "message-before-commit" {
 					return nil
 				}
-				n := calls.Add(1)
-				if n == 1 {
-					return fdb.Error{Code: 2101}
-				}
-				if n != 4 {
-					return nil
+				if !extraRetry.Swap(true) {
+					return fdb.Error{Code: 1020}
 				}
 				found, err := e.backend.readMessagePresence(ctx, e.cfg.Tenant, d.elements)
 				if err != nil {
 					return err
 				}
-				if !found[d.elements[0].digest].valid() || found[d.elements[1].digest].valid() {
-					return errors.New("P committed/Q absent control failed")
+				rows, err := recordlayer.AsList(ctx, store.ScanRecords(nil, recordlayer.ForwardScan()))
+				if err != nil {
+					return err
 				}
+				if !initialFailure.Load() {
+					heads := map[messageDigest]bool{}
+					for _, row := range rows {
+						m := row.Record.ProtoReflect()
+						f := m.Descriptor().Fields()
+						if f.ByName("part") == nil || m.Get(f.ByName("part")).Int() != 0 {
+							continue
+						}
+						var digest messageDigest
+						copy(digest[:], m.Get(f.ByName("hash")).Bytes())
+						heads[digest] = true
+					}
+					if !heads[d.elements[0].digest] || !heads[d.elements[1].digest] || found[d.elements[0].digest].valid() || found[d.elements[1].digest].valid() {
+						return errors.New("initial combined P/Q heads control failed")
+					}
+					initialFailure.Store(true)
+					return fdb.Error{Code: 2101}
+				}
+				if selectedQ.Load() || !found[d.elements[0].digest].valid() {
+					return nil
+				}
+				if found[d.elements[1].digest].valid() {
+					return errors.New("Q became visible before selected failure")
+				}
+				pendingQ := false
+				for _, row := range rows {
+					m := row.Record.ProtoReflect()
+					f := m.Descriptor().Fields()
+					if f.ByName("part") == nil {
+						continue
+					}
+					id := messageID{m.Get(f.ByName("writer")).Int(), m.Get(f.ByName("seq")).Int()}
+					if id != found[d.elements[0].digest] {
+						pendingQ = true
+					}
+				}
+				if !pendingQ {
+					return nil
+				}
+				selectedQ.Store(true)
 				committedP.Store(true)
 				if terminal {
 					return sentinel
@@ -72,8 +109,8 @@ func TestMessageSiblingFallbackRetainsCommittedHeaderOutcomes(t *testing.T) {
 				return fdb.Error{Code: 2101}
 			}
 			stats, err := e.ExportResourceSpans(ctx, []*tracepb.ResourceSpans{input})
-			if !committedP.Load() {
-				t.Fatalf("did not reach committed-P/Q-failure boundary: calls=%d err=%v", calls.Load(), err)
+			if !extraRetry.Load() || !initialFailure.Load() || !selectedQ.Load() || !committedP.Load() {
+				t.Fatalf("did not reach retry/combined/P-committed/Q-failure boundaries: retry=%v combined=%v selectedQ=%v err=%v", extraRetry.Load(), initialFailure.Load(), selectedQ.Load(), err)
 			}
 			wantWritten, wantParts, wantPostings := int64(1), int64(len(p.records)), p.postings
 			if terminal {

@@ -1,6 +1,7 @@
 package otel
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,65 @@ import (
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	"google.golang.org/protobuf/proto"
 )
+
+func TestEncodedLogCoveringAdmissionBeforeAnyWrites(t *testing.T) {
+	t.Parallel()
+	cluster := startExporterCluster(t)
+	for _, scope := range []string{"resource", "scope", LogScopeRecord, LogScopeIntrinsic} {
+		for _, size := range []int{99999, 100000, 100001} {
+			t.Run(fmt.Sprintf("%s/%d", scope, size), func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+				defer cancel()
+				e := openTestExporter(t, ctx, cluster, func(c *ExporterConfig) { c.BatchSize, c.Workers = 1, 1 })
+				key := "expanded"
+				if scope == LogScopeIntrinsic {
+					key = "event_name"
+				}
+				value := escapedBoundary(t, size, "\x00", func(s string) []byte {
+					return encodeLogCovering(Attribute{scope, key, "string", s}, 7, ftsTrace(2), ftsSpan(2))
+				})
+				bad := LogRecord{EventID: "boundary", Timestamp: 7, TraceID: ftsTrace(2), SpanID: ftsSpan(2)}
+				attrs := []*commonpb.KeyValue{exKV(key, exStr(value))}
+				switch scope {
+				case "resource":
+					bad.ResourceAttributes = attrs
+				case "scope":
+					bad.ScopeAttributes = attrs
+				case LogScopeRecord:
+					bad.Attributes = attrs
+				case LogScopeIntrinsic:
+					bad.EventName = value
+				}
+				good := LogRecord{EventID: "good", Timestamp: 1, TraceID: ftsTrace(1)}
+				stats, err := e.ExportLogs(ctx, []LogRecord{good, bad})
+				if size > 100000 {
+					requireTyped[*AdmissionError](t, "encoded log covering", err)
+					if stats.Logs != 0 || stats.Batches != 0 {
+						t.Fatalf("initial rejection partially wrote: %+v", stats)
+					}
+					for _, name := range []string{logRecordSubspace, logTraceSubspace, logEqSubspace} {
+						if n := lgCensus(t, ctx, e, name); n != 0 {
+							t.Fatalf("rejection wrote %d %s rows", n, name)
+						}
+					}
+					if st, err := e.ExportLogs(ctx, []LogRecord{good}); err != nil || st.Logs != 1 {
+						t.Fatalf("positive neighbor: %+v / %v", st, err)
+					}
+				} else {
+					if err != nil || stats.Logs != 2 || stats.Batches != 2 {
+						t.Fatalf("admitted boundary: %+v / %v", stats, err)
+					}
+					got, err := e.QueryLogsByTrace(ctx, bad.TraceID, bad.SpanID)
+					if err != nil || len(got) != 1 {
+						t.Fatalf("boundary read: %+v / %v", got, err)
+					}
+					bad.EffectiveTime, bad.TimeSource = 7, LogTimeEvent
+					lgRequireLog(t, "complete boundary log", got[0], bad)
+				}
+			})
+		}
+	}
+}
 
 func TestLogPersistedPostingDisagreement(t *testing.T) {
 	t.Parallel()
@@ -208,12 +268,59 @@ func TestLogReplacementAdmissionCountsActualPriorPostings(t *testing.T) {
 	}
 }
 
+// logNeighborBarrier observes a real successful neighbor commit, then grows the
+// prior before the following transaction enters its callback. Retries do not
+// advance the barrier until the underlying TransactCtx actually succeeds.
+type logNeighborBarrier struct {
+	fdb.Database
+	neighbor           fdb.Key
+	committed, crossed bool
+	grow               func() error
+}
+
+type logNeighborTransaction struct {
+	fdb.WritableTransaction
+	neighbor fdb.Key
+	wrote    *bool
+}
+
+func (tx logNeighborTransaction) Set(key fdb.KeyConvertible, value []byte) {
+	if bytes.Equal(key.FDBKey(), tx.neighbor) {
+		*tx.wrote = true
+	}
+	tx.WritableTransaction.Set(key, value)
+}
+
+func (tx logNeighborTransaction) SetBytes(key, value []byte) { tx.Set(fdb.Key(key), value) }
+
+func (b *logNeighborBarrier) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	return b.TransactCtx(context.Background(), fn)
+}
+
+func (b *logNeighborBarrier) TransactCtx(ctx context.Context, fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	if b.committed && !b.crossed {
+		if err := b.grow(); err != nil {
+			return nil, err
+		}
+		b.crossed = true
+	}
+	wrote := false
+	result, err := b.Database.TransactCtx(ctx, func(tx fdb.WritableTransaction) (any, error) {
+		wrote = false
+		return fn(logNeighborTransaction{tx, b.neighbor, &wrote})
+	})
+	if err == nil && wrote {
+		b.committed = true
+	}
+	return result, err
+}
+
 func TestLogPriorChangeAfterAdmissionIsOperationalWithCommittedNeighbor(t *testing.T) {
 	t.Parallel()
 	cluster := startExporterCluster(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
-	e := openTestExporter(t, ctx, cluster, nil)
+	e := openTestExporter(t, ctx, cluster, func(c *ExporterConfig) { c.BatchSize, c.Workers = 1, 1 })
 	initial := LogRecord{EventID: "changing-prior", Timestamp: 1, TraceID: ftsTrace(1), Body: exStr("initial")}
 	if _, err := e.ExportLogs(ctx, []LogRecord{initial}); err != nil {
 		t.Fatal(err)
@@ -230,19 +337,11 @@ func TestLogPriorChangeAfterAdmissionIsOperationalWithCommittedNeighbor(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	items := []preparedLog{neighbor, next}
-	if err := e.backend.admitLogReplacements(ctx, items); err != nil {
-		t.Fatalf("whole-call preflight must succeed against small prior: %v", err)
+	if next.writeCost >= maxLogTxnWriteBytes {
+		t.Fatalf("new image must fit without prior growth: %d", next.writeCost)
 	}
-	batches := partitionLogs(items, e.cfg.BatchSize)
-	if len(batches) != 2 {
-		t.Fatalf("fixture needs independent neighbor/large batches, got%d", len(batches))
-	}
-	if _, err := e.backend.saveLogBatch(ctx, batches[0]); err != nil {
-		t.Fatal(err)
-	}
-	// Deterministic interleaving: another exporter grows the prior image
-	// after whole-call admission and after the independent neighbor commit.
+	// A second handle performs the independent write at the observed commit
+	// boundary inside ONE mixed public export, never through saveLogBatch.
 	other, err := NewExporter(ctx, e.Config())
 	if err != nil {
 		t.Fatal(err)
@@ -250,10 +349,29 @@ func TestLogPriorChangeAfterAdmissionIsOperationalWithCommittedNeighbor(t *testi
 	defer other.Shutdown(ctx)
 	grown := incoming
 	grown.Timestamp, grown.Body = 7, exStr("concurrent prior")
-	if _, err := other.ExportLogs(ctx, []LogRecord{grown}); err != nil {
-		t.Fatalf("concurrent prior must fit alone: %v", err)
+	barrier := &logNeighborBarrier{Database: e.backend.raw, neighbor: logRecordSpace(e.backend.keys, e.cfg.Tenant, neighbor.eventID).Pack(tuple.Tuple{int64(0)})}
+	barrier.grow = func() error {
+		got, err := other.QueryLogsByTrace(ctx, ftsTrace(2), "")
+		if err != nil {
+			return err
+		}
+		if len(got) != 1 || got[0].EventID != neighbor.eventID {
+			return fmt.Errorf("barrier lacks independently committed neighbor: %+v", got)
+		}
+		_, err = other.ExportLogs(ctx, []LogRecord{grown})
+		return err
 	}
-	_, err = e.backend.saveLogBatch(ctx, batches[1])
+	original := e.backend.db
+	e.backend.db = recordlayer.NewFDBDatabaseWithTransactor(barrier, e.backend.raw)
+	defer func() { e.backend.db = original }()
+	stats, err := e.ExportLogs(ctx, []LogRecord{{EventID: neighbor.eventID, Timestamp: 2, TraceID: ftsTrace(2)}, incoming})
+	if !barrier.committed || !barrier.crossed {
+		t.Fatalf("public export missed neighbor/growth barrier: %+v / %v", barrier, err)
+	}
+	if stats.ReceivedLogs != 2 || stats.Logs != 1 || stats.Batches != 1 || stats.Replaced != 0 || stats.Correlated != 1 || stats.LogicalBytes != neighbor.logical || stats.StoredBytes != neighbor.stored || stats.DuplicateLogs != 0 || stats.GeneratedIDs != 0 || stats.UnindexedAttributes != 0 || len(stats.EventIDs) != 2 || stats.EventIDs[0] != neighbor.eventID || stats.EventIDs[1] != incoming.EventID {
+		t.Fatalf("public late failure lost exact partial outcome: %+v", stats)
+	}
+	e.backend.db = original
 	requireTyped[*OperationError](t, "live prior changed after admission", err)
 	var admission *AdmissionError
 	if errors.As(err, &admission) {

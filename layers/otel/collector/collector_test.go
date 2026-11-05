@@ -969,6 +969,102 @@ func TestIsPermanent(t *testing.T) {
 // cutBatch / splitSpans
 // ---------------------------------------------------------------------------
 
+func TestLiveCollectorDrainReleasesRawQueueSlots(t *testing.T) {
+	t.Parallel()
+	for _, outcome := range []string{"success", "failure", "cancel"} {
+		t.Run(outcome, func(t *testing.T) {
+			cfg := unitConfig(func(c *Config) {
+				c.SendingQueue.Batch = BatchConfig{FlushTimeout: time.Hour, MinSize: 1, MaxSize: 2}
+				c.RetryOnFailure.Enabled = false
+			})
+			var x *TracesExporter
+			sink := &fakeSink{export: func(ctx context.Context, _ int, names []string) (otel.ExportStats, error) {
+				if strings.HasPrefix(names[0], "neighbor") {
+					return okStats(len(names)), nil
+				}
+				if outcome == "failure" {
+					return otel.ExportStats{}, permanent("queue terminal failure")
+				}
+				if outcome == "cancel" {
+					x.cancelWork()
+					return otel.ExportStats{}, ctx.Err()
+				}
+				return okStats(len(names)), nil
+			}}
+			x = newUnitExporter(t, cfg, sink)
+			type cutObservation struct{ partial, exhausted bool }
+			cuts := make(chan cutObservation, 8)
+			input := testRequest("queued", 0, 3)
+			original := input[0]
+			x.batchCutProbe = func(before, after []request) {
+				consumed := len(before) - len(after)
+				for i := range consumed {
+					if before[i].spans != nil || before[i].count != 0 || before[i].seq != 0 {
+						t.Errorf("live cut retains raw request in consumed slot%d", i)
+					}
+				}
+				partial := len(after) > 0
+				if partial && (after[0].count != 1 || len(after[0].spans) != 1 || after[0].spans[0] == original || !slices.Equal(spanNames(after[0].spans), []string{"queued0002"})) {
+					t.Error("partial cut retained original raw wrapper or lost ordered tail")
+				}
+				if !partial && after != nil {
+					t.Error("exhausted live batcher retains backing slice")
+				}
+				cuts <- cutObservation{partial: partial, exhausted: after == nil}
+			}
+			if err := x.Start(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				_ = x.Shutdown(ctx)
+			})
+			if err := x.ConsumeTraces(t.Context(), input); err != nil {
+				t.Fatal(err)
+			}
+			err := flush(t, x)
+			if (outcome == "success") != (err == nil) {
+				t.Fatalf("drain outcome=%s: %v", outcome, err)
+			}
+			observeCtx, cancelObserve := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancelObserve()
+			for i := range 2 {
+				select {
+				case cut := <-cuts:
+					if cut.partial != (i == 0) || cut.exhausted != (i == 1) {
+						t.Fatalf("cut%d: %+v", i, cut)
+					}
+				case <-observeCtx.Done():
+					t.Fatal(observeCtx.Err())
+				}
+			}
+			st := x.Stats()
+			wantStored, wantFailed := int64(3), int64(0)
+			if outcome != "success" {
+				wantStored, wantFailed = 0, 3
+			}
+			if st.AcceptedRequests != 1 || st.AcceptedSpans != 3 || st.QueuedSpans != 0 || st.StoredSpans != wantStored || st.FailedSpans != wantFailed {
+				t.Fatalf("drain lost exact source accounting: %+v", st)
+			}
+			x.mu.Lock()
+			alive := x.state == stateStarted
+			x.mu.Unlock()
+			if !alive {
+				t.Fatal("release was observed only after exporter shutdown")
+			}
+			if outcome != "cancel" {
+				if err := x.ConsumeTraces(t.Context(), testRequest("neighbor", 4, 1)); err != nil {
+					t.Fatal(err)
+				}
+				if err := flush(t, x); err != nil {
+					t.Fatalf("live neighbor after drain: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestCutBatchSplitsAtSpanBoundaries(t *testing.T) {
 	t.Parallel()
 	// Request 1 spans two resources and three scopes.

@@ -130,6 +130,17 @@ func encodeCoveringValue(value coveringValue, format string) ([]byte, error) {
 	}
 }
 
+// checkCoveringValue uses the encoded bytes: tuple NUL escapes and JSON escapes
+// can exceed FDB's value limit even when the decoded projection fits its cap.
+func checkCoveringValue(value []byte) error {
+	// FoundationDB 7.3.77 CLIENT_KNOBS->VALUE_SIZE_LIMIT.
+	const maxValueSize = 100000
+	if len(value) > maxValueSize {
+		return failf("admission", "covering projection", "encoded value of %d bytes exceeds %d", len(value), maxValueSize)
+	}
+	return nil
+}
+
 func decodeCoveringValue(value []byte, format string) (coveringValue, error) {
 	var out coveringValue
 	switch format {
@@ -190,6 +201,9 @@ func postingsWithFormat(ss subspace.Subspace, width int, order, format string, r
 		}
 		v, err := encodeCoveringValue(coveringValue{a, s.Start}, format)
 		if err != nil {
+			return nil, err
+		}
+		if err := checkCoveringValue(v); err != nil {
 			return nil, err
 		}
 		out = append(out, posting{fdb.Key(termPrefix(ss, s.Tenant, a, width).Pack(append(postingSuffix(s, order), int64(ordinal)))), v})

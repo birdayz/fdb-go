@@ -43,7 +43,8 @@ const (
 	// prepareIngestBatch; the 500KB actual-size guard runs inside the save.
 	exportSpanBudget = 300000
 
-	// Posting caps enforced by postingsWithFormat; larger values stay unindexed.
+	// Decoded projection caps; larger values stay unindexed. Encoded covering
+	// values must additionally fit FDB's value limit before any export writes.
 	maxIndexedKeyBytes   = 1024
 	maxIndexedValueBytes = 64000
 
@@ -779,6 +780,19 @@ func (e *Exporter) envelope(single *tracepb.ResourceSpans, fidelity []byte, refs
 	m.Set(f.ByName("fidelity"), protoreflect.ValueOfBytes(fidelity))
 	if len(refs) > 0 {
 		setEnvelopeRefs(m, refs)
+	}
+	projected, err := decodeRecord(m)
+	if err != nil {
+		return exportSpan{}, err
+	}
+	for _, a := range projected.Attributes {
+		value, err := encodeCoveringValue(coveringValue{a, projected.Start}, e.cfg.PostingValueFormat)
+		if err != nil {
+			return exportSpan{}, err
+		}
+		if err := checkCoveringValue(value); err != nil {
+			return exportSpan{}, err
+		}
 	}
 	return exportSpan{key: trace + span, references: len(refs), message: m, logical: int64(len(wire) + len(fidelity)), cost: cost}, nil
 }

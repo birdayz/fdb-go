@@ -102,8 +102,9 @@ tables or proof of an upstream Collector receiver pipeline.
   scopes are `resource`, `scope`, `log` and intrinsic `event_name`.
   Queries enforce configured candidate/logical-read-byte and context budgets;
   exhaustion returns a typed budget error, not a silently truncated complete set.
-- Log admission caps raw/stored bytes, key/value expansion and native transaction
-  mutation/conflict costs at 8,000,000 bytes, including old replacement clears.
+- Log admission caps raw/stored bytes, each actual encoded covering value at
+  100,000 bytes, and native transaction mutation/conflict costs at 8,000,000 bytes,
+  including old replacement clears.
   All initial/preflight admission happens before any batch writes; admitted batches
   commit independently. Concurrent replacement changes are rechecked in each batch;
   a prior image growing beyond the live budget returns `OperationError`, not the
@@ -149,7 +150,11 @@ standard FDB tuple `(scope,key,type,value,start_ns)` instead of JSON. This remov
 repeated JSON field names without shortening the original values or changing any
 posting key. It is an immutable fresh-run index option; query decoding uses the
 maintainer's metadata, not a caller-provided format guess. The default remains
-legacy JSON.
+legacy JSON. Public trace and log exports reject the entire call with
+`AdmissionError` before any writes if an indexed projection's actual encoded
+covering value exceeds FDB's 100,000-byte limit. This is separate from the decoded
+64,000-byte projection cap: tuple NUL escaping and JSON NUL/HTML escaping expand
+values. Neither raw OTLP nor admitted projections are truncated.
 
 `--bulk-index-conflicts` selects `SaveRecordBatchWithOptions` with conservative
 index write-conflict coalescing. Normal implicit write conflicts and all normal
@@ -419,8 +424,9 @@ and 15% fewer stored bytes per span, with the same mutation count.
 
 FDB ingestion uses `--save-mode pipelined` by default: immutable protobuf messages
 are prepared outside the retry closure, then `SaveRecordsPipelined(..., None)`
-pipelines existing-record reads while retaining ordered saves and old/new index
-maintenance. `--save-mode serial` preserves the one-save-at-a-time baseline with
+retains ordered saves and old/new index maintenance. The API honors the store's
+`INSERT` pipeline sizer, but this backend leaves its default depth at 1, so this
+mode does not overlap existing-record reads. `--save-mode serial` preserves the one-save-at-a-time baseline with
 the same prepared messages; `--save-mode batch` uses `SaveRecordBatch` to issue
 all existing-record reads before collecting them, retaining old/new index
 maintenance. No mode assumes that an identity is absent or skips old-record

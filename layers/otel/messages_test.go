@@ -22,6 +22,86 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 )
 
+func TestMessageQueueClearsConsumedAndSkippedSlots(t *testing.T) {
+	t.Parallel()
+	failed := &messageSubmission{left: 1, err: errors.New("failed"), done: make(chan struct{})}
+	live := &messageSubmission{left: 2, done: make(chan struct{})}
+	first, tail := &messagePlan{raw: messagePartRawBytes}, &messagePlan{raw: 1}
+	backing := []queuedMessage{{plan: &messagePlan{}, sub: failed}, {plan: first, sub: live}, {plan: tail, sub: live}}
+	q := messageQueue{pending: backing, loops: 1}
+	got := q.take()
+	if len(got) != 1 || got[0].plan != first || len(q.pending) != 1 || q.pending[0].plan != tail || failed.left != 0 {
+		t.Fatalf("partial/failure drain: %+v / %+v", got, &q)
+	}
+	for i := range 2 {
+		if backing[i].plan != nil || backing[i].sub != nil {
+			t.Fatalf("consumed slot%d retains plan/submission", i)
+		}
+	}
+	if backing[2].plan != tail {
+		t.Fatal("partial drain discarded live tail")
+	}
+	got = q.take()
+	if len(got) != 1 || got[0].plan != tail || q.pending != nil || backing[2].plan != nil || backing[2].sub != nil {
+		t.Fatal("exhausted queue retains tail backing")
+	}
+	if got := q.take(); len(got) != 0 || q.loops != 0 {
+		t.Fatalf("loop ownership: %+v / %d", got, q.loops)
+	}
+}
+
+func cacheFixtureMarker(i int) traceMarker {
+	return traceMarker{id: messageID{writer: 1, seq: int64(i + 1)}, trace: "memory-only-cache-fixture"}
+}
+
+func TestMarkerCacheCapacityEvictionAndRepeatedWrap(t *testing.T) {
+	t.Parallel()
+	var cache markerCache
+	if cache.has(cacheFixtureMarker(0)) {
+		t.Fatal("empty cache hit")
+	}
+	inserted := 0
+	check := func() {
+		t.Helper()
+		want := min(inserted, markerCacheSize)
+		if len(cache.set) != want || len(cache.ring) != want || cap(cache.ring) != markerCacheSize {
+			t.Fatalf("unbounded cache: set=%d ring=%d/%d want%d", len(cache.set), len(cache.ring), cap(cache.ring), want)
+		}
+		start := max(inserted-markerCacheSize, 0)
+		for i := start; i < inserted; i++ {
+			key := cacheFixtureMarker(i)
+			if !cache.has(key) || cache.ring[i%markerCacheSize] != key {
+				t.Fatalf("retained marker/ring mismatch at %d", i)
+			}
+		}
+		for key := range cache.set {
+			i := int(key.id.seq) - 1
+			if i < start || i >= inserted || key != cacheFixtureMarker(i) {
+				t.Fatalf("unexpected retained marker: %+v", key)
+			}
+		}
+		if start > 0 && cache.has(cacheFixtureMarker(start-1)) {
+			t.Fatalf("oldest evicted marker retained: %d", start-1)
+		}
+		if cache.next != start%markerCacheSize {
+			t.Fatalf("eviction cursor=%d want%d", cache.next, start%markerCacheSize)
+		}
+	}
+	for _, target := range []int{1, markerCacheSize - 1, markerCacheSize, markerCacheSize + 1, 2*markerCacheSize + 17, 3*markerCacheSize + 31} {
+		for inserted < target {
+			cache.add([]traceMarker{cacheFixtureMarker(inserted)})
+			inserted++
+		}
+		check()
+		beforeNext, beforeLen := cache.next, len(cache.set)
+		cache.add([]traceMarker{cacheFixtureMarker(inserted - 1), cacheFixtureMarker(inserted - 1), cacheFixtureMarker(max(inserted-markerCacheSize, 0))})
+		if cache.next != beforeNext || len(cache.set) != beforeLen {
+			t.Fatal("duplicates consumed eviction slots")
+		}
+		check()
+	}
+}
+
 const deltaTurns = 25
 
 func deltaStr(s string) *commonpb.AnyValue {

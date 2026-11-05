@@ -12,6 +12,8 @@ import (
 )
 
 type resolverRetryRead struct {
+	context        *FDBRecordContext
+	injected       bool
 	readVersion    int64
 	name           string
 	found          bool
@@ -24,24 +26,26 @@ type resolverRetryRead struct {
 // records the read versions and outcomes of the borrowed and fresh attempts.
 type observingRetryResolver struct {
 	LocatableResolver
-	reads          []resolverRetryRead
-	configureCalls *int
+	reads                []resolverRetryRead
+	configureCalls       *int
+	parentVersion        int64
+	extraRetry, injected bool
 }
 
 func (r *observingRetryResolver) readReverse(rc *FDBRecordContext, value int64) (string, bool, error) {
+	read := resolverRetryRead{context: rc, configured: rc.configure != nil, configureCalls: *r.configureCalls}
+	var name string
+	var found bool
 	rv, err := rc.Transaction().GetReadVersion().Get()
-	if err != nil {
-		return "", false, err
+	if err == nil {
+		name, found, err = r.LocatableResolver.readReverse(rc, value)
 	}
-	name, found, err := r.LocatableResolver.readReverse(rc, value)
-	r.reads = append(r.reads, resolverRetryRead{
-		readVersion:    rv,
-		name:           name,
-		found:          found,
-		err:            err,
-		configured:     rc.configure != nil,
-		configureCalls: *r.configureCalls,
-	})
+	if err == nil && found && rv > r.parentVersion && r.extraRetry && !r.injected {
+		r.injected, read.injected = true, true
+		err = fdb.Error{Code: 1007}
+	}
+	read.readVersion, read.name, read.found, read.err = rv, name, found, err
+	r.reads = append(r.reads, read)
 	return name, found, err
 }
 
@@ -84,64 +88,100 @@ var _ = Describe("KeySpace resolver retry regressions", func() {
 		Expect(back).To(Equal(name), "the failed allocation must not replace the cached name")
 	})
 
-	It("retries a borrowed stale reverse miss at a fresh version and inherits configuration on both attempts", func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		scope := NewScopedInterningLayer(specSubspace().Sub("stale-reverse"))
-		tx, err := sharedDB.CreateWritableTransaction()
-		Expect(err).NotTo(HaveOccurred())
-		defer tx.Cancel()
-		parent := sharedDB.NewRecordContextIn(ctx, tx)
-		configureCalls := 0
-		Expect(parent.Configure(func(options fdb.TransactionOptions) error {
-			configureCalls++
-			return options.SetTimeout(30000)
-		})).To(Succeed())
-		Expect(configureCalls).To(Equal(1))
-		parentVersion, err := tx.GetReadVersion().Get()
-		Expect(err).NotTo(HaveOccurred())
+	for _, extraRetry := range []bool{false, true} {
+		It(fmt.Sprintf("retries a borrowed stale reverse miss and inherits each attempt's configuration extraRetry=%t", extraRetry), func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			scope := NewScopedInterningLayer(specSubspace().Sub("stale-reverse"))
+			tx, err := sharedDB.CreateWritableTransaction()
+			Expect(err).NotTo(HaveOccurred())
+			defer tx.Cancel()
+			parent := sharedDB.NewRecordContextIn(ctx, tx)
+			configureCalls := 0
+			Expect(parent.Configure(func(options fdb.TransactionOptions) error {
+				configureCalls++
+				return options.SetTimeout(30000)
+			})).To(Succeed())
+			Expect(configureCalls).To(Equal(1))
+			parentVersion, err := tx.GetReadVersion().Get()
+			Expect(err).NotTo(HaveOccurred())
 
-		// Resolve commits independently after the parent has pinned its snapshot.
-		const name = "committed-after-parent-snapshot"
-		value, err := NewKeySpaceResolver(sharedDB, scope).Resolve(ctx, name)
-		Expect(err).NotTo(HaveOccurred())
-		staleName, staleFound, err := scope.readReverse(parent, value)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(staleFound).To(BeFalse(), "the pinned parent must actually predate the reverse mapping")
-		Expect(staleName).To(BeEmpty())
-		cache := sharedDB.resolvers()
-		cache.mu.RLock()
-		_, cached := cache.reverse[reverseCacheKey(scope, value)]
-		cache.mu.RUnlock()
-		Expect(cached).To(BeFalse(), "a warmed reverse cache would bypass the stale-read shape")
+			// Resolve commits independently after the parent has pinned its snapshot.
+			const name = "committed-after-parent-snapshot"
+			value, err := NewKeySpaceResolver(sharedDB, scope).Resolve(ctx, name)
+			Expect(err).NotTo(HaveOccurred())
+			staleName, staleFound, err := scope.readReverse(parent, value)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(staleFound).To(BeFalse(), "the pinned parent must actually predate the reverse mapping")
+			Expect(staleName).To(BeEmpty())
+			cache := sharedDB.resolvers()
+			cache.mu.RLock()
+			_, cached := cache.reverse[reverseCacheKey(scope, value)]
+			cache.mu.RUnlock()
+			Expect(cached).To(BeFalse(), "a warmed reverse cache would bypass the stale-read shape")
 
-		observed := &observingRetryResolver{LocatableResolver: scope, configureCalls: &configureCalls}
-		back, err := reverseLookupFromDatabase(parent, observed, value)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(back).To(Equal(name))
-		Expect(observed.reads).To(HaveLen(2), "one borrowed miss followed by one fresh successful read")
-		Expect(observed.reads[0].readVersion).To(Equal(parentVersion))
-		Expect(observed.reads[0].found).To(BeFalse())
-		Expect(observed.reads[0].name).To(BeEmpty())
-		Expect(observed.reads[0].err).NotTo(HaveOccurred())
-		Expect(observed.reads[1].readVersion).To(BeNumerically(">", parentVersion))
-		Expect(observed.reads[1].found).To(BeTrue())
-		Expect(observed.reads[1].name).To(Equal(name))
-		Expect(observed.reads[1].err).NotTo(HaveOccurred())
-		Expect(observed.reads[0].configured).To(BeTrue())
-		Expect(observed.reads[1].configured).To(BeTrue())
-		Expect(observed.reads[0].configureCalls).To(Equal(2))
-		Expect(observed.reads[1].configureCalls).To(Equal(3))
-		Expect(configureCalls).To(Equal(3))
+			observed := &observingRetryResolver{LocatableResolver: scope, configureCalls: &configureCalls, parentVersion: parentVersion, extraRetry: extraRetry}
+			back, err := reverseLookupFromDatabase(parent, observed, value)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(back).To(Equal(name))
+			Expect(observed.reads).NotTo(BeEmpty())
+			borrowed, injected := 0, 0
+			for i, read := range observed.reads {
+				Expect(read.configured).To(BeTrue())
+				Expect(read.configureCalls).To(Equal(i+2), "the parent configured once, then each entered child attempt configures exactly once")
+				if i != 0 {
+					Expect(read.context).NotTo(BeIdenticalTo(observed.reads[i-1].context))
+				}
+				if read.injected {
+					injected++
+					Expect(borrowed).To(Equal(1), "the extra retry follows the intended borrowed-version miss")
+					var native fdb.Error
+					Expect(errors.As(read.err, &native)).To(BeTrue())
+					Expect(native.Code).To(Equal(1007))
+					Expect(read.readVersion).To(BeNumerically(">", parentVersion))
+					Expect(read.found).To(BeTrue())
+					Expect(read.name).To(Equal(name))
+					continue
+				}
+				if read.err != nil {
+					Expect(isRetriableAnyCause(read.err)).To(BeTrue(), "independent failed attempt: %v", read.err)
+					continue
+				}
+				if read.readVersion == parentVersion {
+					borrowed++
+					Expect(read.found).To(BeFalse())
+					Expect(read.name).To(BeEmpty())
+				} else {
+					Expect(borrowed).To(Equal(1))
+					Expect(read.readVersion).To(BeNumerically(">", parentVersion))
+					Expect(read.found).To(BeTrue())
+					Expect(read.name).To(Equal(name))
+				}
+			}
+			Expect(borrowed).To(Equal(1), "exactly the intended borrowed miss, not an always-fresh implementation")
+			wantInjected := 0
+			if extraRetry {
+				wantInjected = 1
+			}
+			Expect(injected).To(Equal(wantInjected))
+			last := observed.reads[len(observed.reads)-1]
+			Expect(last.injected).To(BeFalse())
+			Expect(last.err).NotTo(HaveOccurred())
+			Expect(last.readVersion).To(BeNumerically(">", parentVersion))
+			Expect(last.found).To(BeTrue())
+			Expect(last.name).To(Equal(name))
+			Expect(configureCalls).To(Equal(1 + len(observed.reads)))
+			fmt.Fprintf(GinkgoWriter, "RESOLVER_ATTEMPTS extraRetry=%t borrowedMisses=%d injectedFreshErrors=%d enteredReads=%d configurations=%d\n", extraRetry, borrowed, injected, len(observed.reads), configureCalls)
 
-		cache.mu.RLock()
-		cachedName, cached := cache.reverse[reverseCacheKey(scope, value)]
-		cache.mu.RUnlock()
-		Expect(cached).To(BeTrue())
-		Expect(cachedName).To(Equal(name))
-		// Returning a fresh child's mapping must not advance the parent's snapshot.
-		afterVersion, err := tx.GetReadVersion().Get()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(afterVersion).To(Equal(parentVersion))
-	})
+			cache.mu.RLock()
+			cachedName, cached := cache.reverse[reverseCacheKey(scope, value)]
+			cache.mu.RUnlock()
+			Expect(cached).To(BeTrue())
+			Expect(cachedName).To(Equal(name))
+			// Returning a fresh child's mapping must not advance the parent's snapshot.
+			afterVersion, err := tx.GetReadVersion().Get()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(afterVersion).To(Equal(parentVersion))
+		})
+	}
 })

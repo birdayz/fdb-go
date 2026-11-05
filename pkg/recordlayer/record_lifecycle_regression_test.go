@@ -827,7 +827,11 @@ func lifecycleLegacyError(ctx context.Context, f lifecycleFixture, corrupt bool)
 	sentinel := errors.New("displaced original legacy version backend sentinel")
 	var outerErr, nestedErr error
 	var gets, earlyGets, readCalls int64
+	retry := newFixtureCommitRetry(f.root)
 	_, runErr := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+		retry.begin(rc)
+		outerErr, nestedErr = nil, nil
+		gets, earlyGets, readCalls = 0, 0, 0
 		aFixture := f
 		manager := &lifecycleKeyManager{SerializationKeyManager: base}
 		aFixture.serializer = lifecycleCodec(manager)
@@ -883,9 +887,13 @@ func lifecycleLegacyError(ctx context.Context, f lifecycleFixture, corrupt bool)
 		} else if !errors.Is(outerErr, sentinel) || gets != 1 {
 			return nil, fmt.Errorf("original backend failure was displaced: outer=%v gets=%d", outerErr, gets)
 		}
-		return nil, nil
+		if readCalls != 1 || earlyGets != 0 {
+			return nil, fmt.Errorf("attempt-local legacy observations: reads=%d earlyGets=%d", readCalls, earlyGets)
+		}
+		return nil, retry.conflict(rc)
 	})
 	Expect(runErr).NotTo(HaveOccurred())
+	retry.assertReplayed()
 	Expect(nestedErr).NotTo(HaveOccurred())
 	Expect(earlyGets).To(BeZero())
 	Expect(readCalls).To(Equal(int64(1)))
@@ -1160,7 +1168,10 @@ var _ = Describe("Callback-free physical record groups", func() {
 		sentinel := errors.New("record lifecycle backend iterator sentinel")
 		var saveErr, nestedErr error
 		var nestedCalls int
+		retry := newFixtureCommitRetry(f.root)
 		_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			retry.begin(rc)
+			saveErr, nestedErr, nestedCalls = nil, nil, 0
 			a, err := f.open(rc, false)
 			if err != nil {
 				return nil, err
@@ -1181,9 +1192,13 @@ var _ = Describe("Callback-free physical record groups", func() {
 			if !errors.Is(saveErr, sentinel) {
 				return nil, fmt.Errorf("backend error was replaced after generation change: %v", saveErr)
 			}
-			return nil, nil
+			if nestedCalls != 1 {
+				return nil, fmt.Errorf("attempt-local nested calls=%d", nestedCalls)
+			}
+			return nil, retry.conflict(rc)
 		})
 		Expect(err).NotTo(HaveOccurred())
+		retry.assertReplayed()
 		Expect(nestedErr).NotTo(HaveOccurred())
 		Expect(nestedCalls).To(Equal(1))
 		Expect(errors.Is(saveErr, sentinel)).To(BeTrue())
@@ -1199,7 +1214,10 @@ var _ = Describe("Callback-free physical record groups", func() {
 			var calls, innerKeys int
 			var innerErr error
 			want := lifecycleOrder(0, 3)
+			retry := newFixtureCommitRetry(f.root)
 			_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+				retry.begin(rc)
+				calls, innerKeys, innerErr = 0, 0, nil
 				plain, err := f.open(rc, false)
 				if err != nil {
 					return nil, err
@@ -1229,9 +1247,16 @@ var _ = Describe("Callback-free physical record groups", func() {
 				}
 				_, err = outer.SaveRecord(want)
 				fmt.Fprintf(GinkgoWriter, "PHYSICAL_REFRESH serializationCalls=%d innerKeys=%d innerErr=%v outerErr=%v\n", calls, innerKeys, innerErr, err)
-				return nil, err
+				if err != nil {
+					return nil, err
+				}
+				if calls != 1 {
+					return nil, fmt.Errorf("attempt-local serialization calls=%d", calls)
+				}
+				return nil, retry.conflict(rc)
 			})
 			Expect(err).NotTo(HaveOccurred())
+			retry.assertReplayed()
 			Expect(innerErr).NotTo(HaveOccurred())
 			Expect(calls).To(Equal(1))
 			Expect(innerKeys).To(BeNumerically(">=", 4))
@@ -1251,7 +1276,10 @@ var _ = Describe("Callback-free physical record groups", func() {
 				var hookCalls int
 				var nestedErr error
 				var nestedVersion *FDBRecordVersion
+				retry := newFixtureCommitRetry(f.root)
 				_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+					retry.begin(rc)
+					hookCalls, nestedErr, nestedVersion = 0, nil, nil
 					writerFixture := f
 					// Keep descriptors, numbering and version identical; only this handle's automatic-version policy differs.
 					if automatic {
@@ -1291,9 +1319,16 @@ var _ = Describe("Callback-free physical record groups", func() {
 					if err == nil && (!found || state.cached || state.queued) {
 						return nil, errors.New("mixed metadata delete retained current deferred version")
 					}
-					return nil, err
+					if err != nil {
+						return nil, err
+					}
+					if hookCalls != 1 {
+						return nil, fmt.Errorf("attempt-local read hook calls=%d", hookCalls)
+					}
+					return nil, retry.conflict(rc)
 				})
 				Expect(err).NotTo(HaveOccurred())
+				retry.assertReplayed()
 				Expect(nestedErr).NotTo(HaveOccurred())
 				Expect(hookCalls).To(Equal(1))
 				Expect(nestedVersion).NotTo(BeNil())

@@ -43,6 +43,17 @@ Never mark a whole workstream complete because one of its subitems passed.
 
 ### Pending source-repair acceptance (post-v0.2.0, PR #1023)
 
+- [ ] Validate and obtain native acceptance for the eight confirmed findings on
+  d56fa699: encoded covering-value admission; raw TEXT role-discovery accounting;
+  depth-one pipeline and partial-write replay documentation; public late-log-cost
+  propagation; live queue reference release; full-capacity marker eviction/replay;
+  and attempt-local retry fixtures. Source regressions remain unexecuted until
+  owner release of the coherent tree. The prepared eviction-removal mutation
+  likewise has no execution/compilation/failure proof yet. The fresh native result
+  remains NAK (8 confirmed, 2 duplicates, 58 unverified), with incomplete review
+  coverage and failed summary posting; source repairs cannot close those blockers
+  or authorize a review/post retry. Preserve all earlier strict regression oracles.
+
 - [ ] Audit and validate the coherent repairs for the 19 confirmed native findings
   F1/F2/F4/F5/F7/F9/F10/F11/F12/F13/F14/F15/F19/F21/F22/F23/F24/F25/F26,
   plus disjoint literal-TEXT fixture isolation and independently logged pure-Go /

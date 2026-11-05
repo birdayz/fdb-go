@@ -215,19 +215,28 @@ func messageRoles(ctx context.Context, store *recordlayer.FDBRecordStore, idx *r
 	for {
 		props := recordlayer.ForwardScan()
 		props.ExecuteProperties.ReturnedRowLimit = 1
+		props.ExecuteProperties.ScannedRecordsLimit = max(budget.maxCandidates-budget.candidates, 0) + 1
+		props.ExecuteProperties.ScannedBytesLimit = max(budget.maxBytes-budget.bytes, 0) + 1
+		state := recordlayer.NewScanLimiterState()
+		props.ExecuteProperties.ScanState = state
 		cur := store.ScanIndexByType(idx, recordlayer.IndexScanByTextToken, low, nil, props)
 		r, err := cur.OnNext(ctx)
 		cur.Close()
 		if err != nil {
 			return nil, err
 		}
+		budget.candidates += state.RecordsScanned()
+		budget.bytes += state.BytesScanned()
+		if budget.candidates > budget.maxCandidates || budget.bytes > budget.maxBytes {
+			return nil, failf("budget", "message roles", "candidates=%d logical_bytes=%d", budget.candidates, budget.bytes)
+		}
 		if !r.HasNext() {
+			if reason := r.GetNoNextReason(); reason != recordlayer.SourceExhausted && reason != recordlayer.ReturnLimitReached {
+				return nil, failf("budget", "message roles", "text scan stopped: %v", reason)
+			}
 			return out, nil
 		}
 		e := r.GetValue()
-		if err := budget.charge(fdb.KeyValue{Key: e.Key.Pack(), Value: e.Value.Pack()}); err != nil {
-			return nil, err
-		}
 		if len(e.Key) < 2 {
 			return nil, fail("corruption", "message roles", "malformed message text index entry")
 		}
