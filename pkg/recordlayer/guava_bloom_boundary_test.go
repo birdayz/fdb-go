@@ -145,6 +145,64 @@ func TestProbableIntersectionHashCountBoundaryPaging(t *testing.T) {
 	}
 }
 
+type bloomFactoryCursor struct {
+	RecordCursor[int64]
+	closes int
+}
+
+func (c *bloomFactoryCursor) Close() error {
+	c.closes++
+	return c.RecordCursor.Close()
+}
+
+func TestProbableIntersectionValidatesAllFiltersBeforeOpeningChildren(t *testing.T) {
+	t.Parallel()
+	valid := []byte{bloomStrategyMitz64, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}
+	invalid := bytes.Clone(valid)
+	invalid[1] = 0
+	children := []*bloomFactoryCursor{{RecordCursor: Empty[int64]()}, {RecordCursor: Empty[int64]()}}
+	opened := [2]int{}
+	fns := make([]CursorFunction[int64], 2)
+	for i := range fns {
+		fns[i] = func([]byte) RecordCursor[int64] {
+			opened[i]++
+			return children[i]
+		}
+	}
+	key := func(v int64) (tuple.Tuple, error) { return tuple.Tuple{v}, nil }
+	encode := func(second []byte) []byte {
+		t.Helper()
+		data, err := (&gen.ProbableIntersectionContinuation{
+			ChildState: []*gen.ProbableIntersectionContinuation_CursorState{
+				{BloomFilter: valid}, {BloomFilter: second},
+			},
+		}).MarshalVT()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	cur, err := ProbableIntersection(key, fns, 500, 0.01, encode(invalid))
+	var core *RecordCoreError
+	var argument *RecordCoreArgumentError
+	if cur != nil || !errors.As(err, &core) || !errors.As(err, &argument) {
+		t.Fatalf("invalid second filter: cursor=%v, error=%v", cur, err)
+	}
+	if opened != [2]int{} || children[0].closes != 0 || children[1].closes != 0 {
+		t.Fatalf("invalid filter opened factory resources: opened=%v, closes=%d/%d", opened, children[0].closes, children[1].closes)
+	}
+	cur, err = ProbableIntersection(key, fns, 500, 0.01, encode(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cur.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if opened != [2]int{1, 1} || children[0].closes != 1 || children[1].closes != 1 {
+		t.Fatalf("valid filters lost ownership: opened=%v, closes=%d/%d", opened, children[0].closes, children[1].closes)
+	}
+}
+
 func TestProbableIntersectionRejectsInvalidHashCounts(t *testing.T) {
 	t.Parallel()
 	opened := false

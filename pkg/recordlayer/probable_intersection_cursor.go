@@ -74,9 +74,9 @@ func ProbableIntersection[T any](compKeyFunc ComparisonKeyFunc[T], fns []CursorF
 	if err != nil {
 		return nil, err
 	}
-	children := make([]*probableChild[T], len(fns))
-	for i, fn := range fns {
-		st := states[i]
+	// Validate every filter before opening any factory-owned child resources.
+	blooms := make([]*guavaBloomFilter, len(states))
+	for i, st := range states {
 		var bloom *guavaBloomFilter
 		if st.bloom == nil {
 			bloom, err = newGuavaBloomFilter(expectedResults, falsePositivePercentage)
@@ -86,13 +86,18 @@ func ProbableIntersection[T any](compKeyFunc ComparisonKeyFunc[T], fns []CursorF
 		if err != nil {
 			return nil, err
 		}
+		blooms[i] = bloom
+	}
+	children := make([]*probableChild[T], len(fns))
+	for i, fn := range fns {
+		st := states[i]
 		cursor, cont, err := mergeStateCursor(fn, st.child)
 		if err != nil {
 			return nil, err
 		}
 		children[i] = &probableChild[T]{
 			mergeChildState: &mergeChildState[T]{cursor: cursor, compKeyFunc: compKeyFunc, continuation: cont, needsAdvance: true},
-			bloom:           bloom,
+			bloom:           blooms[i],
 			seen:            map[string]struct{}{},
 			firstIteration:  !st.child.IsEnd() && st.bloom == nil,
 		}

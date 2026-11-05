@@ -374,21 +374,34 @@ func shardTextScans(ctx context.Context, store *recordlayer.FDBRecordStore, idx 
 // spreadAllMatches checks multipart messages with one message-bounded scan per term.
 func (b *FDBBackend) spreadAllMatches(ctx context.Context, store *recordlayer.FDBRecordStore, idx *recordlayer.Index, tenant int64, role string, terms []string, budget *queryBudget) ([]messageID, error) {
 	const op = "message full-text query"
-	cur := store.ScanIndex(b.md.GetIndex(messageLargeIndexName), recordlayer.TupleRangeAllOf(tuple.Tuple{tenant}), nil, recordlayer.ForwardScan())
+	props := recordlayer.ForwardScan()
+	props.ExecuteProperties.ScannedRecordsLimit = max(budget.maxCandidates-budget.candidates, 0) + 1
+	props.ExecuteProperties.ScannedBytesLimit = max(budget.maxBytes-budget.bytes, 0) + 1
+	state := recordlayer.NewScanLimiterState()
+	props.ExecuteProperties.ScanState = state
+	cur := store.ScanIndex(b.md.GetIndex(messageLargeIndexName), recordlayer.TupleRangeAllOf(tuple.Tuple{tenant}), nil, props)
 	defer cur.Close()
 	var out []messageID
+	var scanned int
+	var scannedBytes int64
 	for {
 		r, err := cur.OnNext(ctx)
+		budget.candidates += state.RecordsScanned() - scanned
+		budget.bytes += state.BytesScanned() - scannedBytes
+		scanned, scannedBytes = state.RecordsScanned(), state.BytesScanned()
 		if err != nil {
 			return nil, err
 		}
+		if budget.candidates > budget.maxCandidates || budget.bytes > budget.maxBytes {
+			return nil, failf("budget", op, "candidates=%d logical_bytes=%d", budget.candidates, budget.bytes)
+		}
 		if !r.HasNext() {
+			if reason := r.GetNoNextReason(); reason != recordlayer.SourceExhausted {
+				return nil, failf("budget", op, "large scan stopped: %v; candidates=%d logical_bytes=%d", reason, budget.candidates, budget.bytes)
+			}
 			return out, nil
 		}
 		e := r.GetValue()
-		if err := budget.charge(fdb.KeyValue{Key: e.Key.Pack()}); err != nil {
-			return nil, err
-		}
 		pk := e.PrimaryKey()
 		var id messageID
 		ok := len(pk) == 4

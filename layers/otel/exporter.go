@@ -269,8 +269,8 @@ func (e *Exporter) begin(op string) error {
 	return nil
 }
 
-// Shutdown rejects new work, waits for active calls, then closes the database.
-// On context expiry the close still completes once active calls return.
+// Shutdown rejects new work and joins active calls and shared message workers before database close.
+// On context expiry, draining and closing continue in the background.
 func (e *Exporter) Shutdown(ctx context.Context) error {
 	e.mu.Lock()
 	if !e.closed {

@@ -17,6 +17,93 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
+func TestMultipartEmptyAllQueryChargesRawLargeIndexBytes(t *testing.T) {
+	t.Parallel()
+	cluster := startExporterCluster(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	e := openFTSExporter(t, ctx, cluster, nil)
+	const messages = 3
+	input := make([]*tracepb.ResourceSpans, messages)
+	for i := range input {
+		// Unindexed words force multiple searchable segments without any TEXT postings.
+		text := strings.Repeat(strings.Repeat("x", maxIndexedTokenBytes+1)+" ", 80+i)
+		input[i] = deltaSpan(i+1, deltaKV("gen_ai.input.messages", deltaArray(deltaStr(text))))
+	}
+	stats, err := e.ExportResourceSpans(ctx, input)
+	if err != nil || stats.Messages.Written != messages || stats.Messages.Parts <= messages || stats.Messages.Postings != 0 || stats.Messages.UnindexedTokens == 0 {
+		t.Fatalf("multipart fixture: %+v / %v", stats.Messages, err)
+	}
+	var rawBytes, omittedPrefixes int64
+	if err := deltaRun(t, ctx, e.backend.db, func(rc *recordlayer.FDBRecordContext) error {
+		rawBytes, omittedPrefixes = 0, 0
+		store, err := e.backend.open(rc)
+		if err != nil {
+			return err
+		}
+		space := store.IndexSubspace(e.backend.md.GetIndex(messageLargeIndexName))
+		rows, err := rc.Transaction().GetRange(space, fdb.RangeOptions{}).GetSliceWithError()
+		if err != nil {
+			return err
+		}
+		if len(rows) != messages || len(space.Bytes()) == 0 {
+			return fmt.Errorf("need %d prefixed LARGE entries, got %d", messages, len(rows))
+		}
+		for _, row := range rows {
+			rawBytes += int64(len(row.Key) + len(row.Value))
+			omittedPrefixes += int64(len(space.Bytes()))
+		}
+		text, err := rc.Transaction().GetRange(store.IndexSubspace(e.backend.md.GetIndex(messageTextIndexName)), fdb.RangeOptions{}).GetSliceWithError()
+		if err != nil {
+			return err
+		}
+		if len(text) != 0 {
+			return fmt.Errorf("unindexed fixture has %d TEXT rows", len(text))
+		}
+		// Each message-bounded absent-term probe consumes the same foreign predecessor.
+		textPrefix := store.IndexSubspace(e.backend.md.GetIndex(messageTextIndexName)).Bytes()
+		predecessor, err := rc.Transaction().GetRange(fdb.SelectorRange{
+			Begin: fdb.LastLessOrEqual(fdb.Key(textPrefix)), End: fdb.FirstGreaterOrEqual(fdb.Key(textPrefix)),
+		}, fdb.RangeOptions{}).GetSliceWithError()
+		if err != nil {
+			return err
+		}
+		if len(predecessor) != 1 {
+			return fmt.Errorf("need one foreign TEXT predecessor, got %d", len(predecessor))
+		}
+		rawBytes += messages * int64(len(predecessor[0].Key)+len(predecessor[0].Value))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("raw multipart empty-query work: %d bytes, including %d LARGE-prefix bytes", rawBytes, omittedPrefixes)
+	query := MessageFullTextQuery{Query: "quokka zebra", Mode: MessageMatchAll, Role: "missing-role"}
+	baseline, err := e.QueryMessageFullText(ctx, query)
+	if err != nil || baseline.Bytes != rawBytes || baseline.Candidates != messages+1 || len(baseline.Hits) != 0 || baseline.Continuation != nil {
+		t.Fatalf("empty result raw work: %+v / %v, want %d bytes including %d prefix bytes", baseline, err, rawBytes, omittedPrefixes)
+	}
+	for _, limit := range []int64{rawBytes, rawBytes - 1} {
+		cfg := e.Config()
+		cfg.MaxBytes = limit
+		bounded, err := NewExporter(ctx, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = bounded.Shutdown(context.Background()) })
+		page, err := bounded.QueryMessageFullText(ctx, query)
+		if limit == rawBytes {
+			if err != nil || page.Candidates != baseline.Candidates {
+				t.Fatalf("exact boundary: %+v / %v", page, err)
+			}
+		} else {
+			requireTyped[*QueryBudgetError](t, "below raw byte boundary", err)
+		}
+		if page.Bytes != rawBytes || bounded.backend.LastQueryWork().Bytes != rawBytes || len(page.Hits) != 0 || page.Continuation != nil {
+			t.Fatalf("limit %d: consumed work %+v, want %d raw bytes", limit, page, rawBytes)
+		}
+	}
+}
+
 func TestMessageTokenFreeByteBoundary(t *testing.T) {
 	t.Parallel()
 	cluster := startExporterCluster(t)
@@ -249,6 +336,123 @@ func TestPersistedMessageCorruptionFailsClosed(t *testing.T) {
 			if got != nil {
 				t.Fatal("corrupt load returned a partial span")
 			}
+		})
+	}
+}
+
+func TestShutdownJoinsCanceledMessageWorker(t *testing.T) {
+	t.Parallel()
+	cluster := startExporterCluster(t)
+	for _, mode := range []string{"success", "canceled", "deadline"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+			defer cancel()
+			e := openFTSExporter(t, ctx, cluster, nil)
+			entered, release, wrote := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var enterOnce, releaseOnce, wroteOnce sync.Once
+			releaseWorker := func() { releaseOnce.Do(func() { close(release) }) }
+			t.Cleanup(releaseWorker)
+			e.backend.messageTxnHook = func(stage string, _ *recordlayer.FDBRecordStore) error {
+				if stage == "message-before-write" {
+					enterOnce.Do(func() { close(entered); <-release })
+				}
+				if stage == "message-before-commit" {
+					wroteOnce.Do(func() { close(wrote) })
+				}
+				return nil
+			}
+			callCtx, stop := context.WithCancel(ctx)
+			defer stop()
+			exported := make(chan error, 1)
+			go func() {
+				_, err := e.ExportResourceSpans(callCtx, []*tracepb.ResourceSpans{deltaSpan(1, deltaKV("gen_ai.input.messages", deltaArray(deltaStr("queued zebra"))))})
+				exported <- err
+			}()
+			select {
+			case <-entered:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			stop()
+			select {
+			case err := <-exported:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("canceled export: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			shutdownCtx, stopShutdown := context.WithCancel(ctx)
+			if mode == "deadline" {
+				stopShutdown()
+				shutdownCtx, stopShutdown = context.WithDeadline(ctx, time.Now().Add(-time.Second))
+			}
+			defer stopShutdown()
+			shutdown := make(chan error, 1)
+			go func() { shutdown <- e.Shutdown(shutdownCtx) }()
+			awaitMessageCondition(t, ctx, func() bool {
+				e.backend.queue.mu.Lock()
+				closed := e.backend.queue.closed
+				e.backend.queue.mu.Unlock()
+				select {
+				case <-e.done:
+					t.Fatal("shutdown completed before releasing the message worker")
+				default:
+				}
+				return closed
+			})
+			if mode == "canceled" {
+				stopShutdown()
+			}
+			if mode != "success" {
+				select {
+				case err := <-shutdown:
+					want := context.Canceled
+					if mode == "deadline" {
+						want = context.DeadlineExceeded
+					}
+					if !errors.Is(err, want) {
+						t.Fatalf("shutdown %s: %v", mode, err)
+					}
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+			}
+			if err := deltaRun(t, ctx, e.backend.db, func(rc *recordlayer.FDBRecordContext) error {
+				return e.backend.readManifest(rc, true)
+			}); err != nil {
+				t.Fatalf("database closed while message worker was blocked: %v", err)
+			}
+			select {
+			case <-e.done:
+				t.Fatal("database close completed with the message worker blocked")
+			default:
+			}
+			releaseWorker()
+			if err := e.Shutdown(ctx); err != nil {
+				t.Fatalf("shutdown after worker release: %v", err)
+			}
+			if mode == "success" {
+				if err := <-shutdown; err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case <-wrote:
+			default:
+				t.Fatal("worker did not finish its database write before close")
+			}
+			e.backend.queue.mu.Lock()
+			drained := e.backend.queue.loops == 0 && e.backend.queue.pending == nil
+			e.backend.queue.mu.Unlock()
+			if !drained || len(e.backend.writers.slots) != 0 {
+				t.Fatal("successful shutdown retained message workers or writers")
+			}
+			if err := e.Shutdown(ctx); err != nil {
+				t.Fatalf("idempotent shutdown: %v", err)
+			}
+			e.backend.Close()
 		})
 	}
 }

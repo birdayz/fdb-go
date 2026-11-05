@@ -1088,6 +1088,8 @@ type messageQueue struct {
 	mu      sync.Mutex
 	pending []queuedMessage
 	loops   int
+	closed  bool
+	workers sync.WaitGroup
 }
 
 type queuedMessage struct {
@@ -1108,11 +1110,16 @@ type messageSubmission struct {
 func (q *messageQueue) store(ctx context.Context, b *FDBBackend, tenant int, plans []*messagePlan, fulltext bool) (MessageStoreStats, error) {
 	sub := &messageSubmission{left: len(plans), done: make(chan struct{})}
 	q.mu.Lock()
+	if q.closed {
+		q.mu.Unlock()
+		return MessageStoreStats{}, fail("operation", "message persist", "message queue is closed")
+	}
 	for _, p := range plans {
 		q.pending = append(q.pending, queuedMessage{p, sub})
 	}
 	start := min(messageWriterLimit-q.loops, (len(q.pending)+messageTxnMessages-1)/messageTxnMessages)
 	q.loops += max(start, 0)
+	q.workers.Add(max(start, 0))
 	q.mu.Unlock()
 	loopCtx := context.WithoutCancel(ctx)
 	for range start {
@@ -1134,6 +1141,14 @@ func (q *messageQueue) store(ctx context.Context, b *FDBBackend, tenant int, pla
 		}
 		return MessageStoreStats{}, err
 	}
+}
+
+// close rejects new submissions and joins workers without canceling shared transactions.
+func (q *messageQueue) close() {
+	q.mu.Lock()
+	q.closed = true
+	q.mu.Unlock()
+	q.workers.Wait()
 }
 
 // take removes the next transaction's messages, skipping those of failed
@@ -1207,6 +1222,7 @@ func (q *messageQueue) finish(batch []queuedMessage, stats MessageStoreStats, er
 // loop releases its writer after each transaction so waiting large-message jobs can acquire it;
 // messages queued meanwhile join the next transaction.
 func (q *messageQueue) loop(ctx context.Context, b *FDBBackend, tenant int, fulltext bool) {
+	defer q.workers.Done()
 	for {
 		w, err := b.acquireWriter(ctx)
 		batch := q.take()

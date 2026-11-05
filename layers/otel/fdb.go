@@ -54,6 +54,7 @@ type FDBBackend struct {
 	writers        messageWriters
 	inflight       sync.Map // messageDigest -> *inflightMessage
 	queue          messageQueue
+	closeOnce      sync.Once
 	markers        markerCache
 }
 
@@ -123,7 +124,15 @@ func openFDBContext(ctx context.Context, c Config, cluster string, newDatabase f
 	}
 	return &FDBBackend{cfg: c, raw: raw, db: db, keys: keys, store: keys.store, md: md, idx: idx, serializer: serializer}, nil
 }
-func (b *FDBBackend) Close()                     { b.raw.Close() }
+
+// Close joins detached message workers before releasing their database.
+func (b *FDBBackend) Close() {
+	b.closeOnce.Do(func() {
+		b.queue.close()
+		b.raw.Close()
+	})
+}
+
 func (b *FDBBackend) LastQueryWork() QueryResult { return b.lastWork }
 
 // configureRecordTimeout bounds the whole transaction including OnError retries.
