@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"math/big"
 	"reflect"
 	"strings"
 	"testing"
@@ -200,6 +201,92 @@ func TestProbableIntersectionValidatesAllFiltersBeforeOpeningChildren(t *testing
 	}
 	if opened != [2]int{1, 1} || children[0].closes != 1 || children[1].closes != 1 {
 		t.Fatalf("valid filters lost ownership: opened=%v, closes=%d/%d", opened, children[0].closes, children[1].closes)
+	}
+}
+
+func TestProbableIntersectionComparisonKeyEncoding(t *testing.T) {
+	t.Parallel()
+	oversized := new(big.Int).Lsh(big.NewInt(1), 2040)
+	largest := new(big.Int).Sub(oversized, big.NewInt(1))
+	for _, tc := range []struct {
+		name string
+		key  tuple.Tuple
+		want string
+	}{
+		{"unsupported", tuple.Tuple{struct{}{}}, "unencodable tuple element"},
+		{"nested-unsupported", tuple.Tuple{tuple.Tuple{struct{}{}}}, "unencodable tuple element"},
+		{"incomplete-versionstamp", tuple.Tuple{tuple.IncompleteVersionstamp(0)}, "incomplete versionstamp"},
+		{"nested-incomplete-versionstamp", tuple.Tuple{tuple.Tuple{tuple.IncompleteVersionstamp(0)}}, "incomplete versionstamp"},
+		{"nil-bigint", tuple.Tuple{(*big.Int)(nil)}, "nil *big.Int"},
+		{"nested-nil-bigint", tuple.Tuple{tuple.Tuple{(*big.Int)(nil)}}, "nil *big.Int"},
+		{"oversized-bigint-pointer", tuple.Tuple{oversized}, "2041 bits, exceeds 2040 bits"},
+		{"oversized-bigint-value", tuple.Tuple{*oversized}, "2041 bits, exceeds 2040 bits"},
+		{"oversized-negative-bigint", tuple.Tuple{new(big.Int).Neg(oversized)}, "2041 bits, exceeds 2040 bits"},
+		{"nested-oversized-bigint", tuple.Tuple{tuple.Tuple{oversized}}, "2041 bits, exceeds 2040 bits"},
+		{"valid-empty", tuple.Tuple{}, ""},
+		{"valid-scalars", tuple.Tuple{nil, int64(7), "key", []byte{0, 1}, true}, ""},
+		{"valid-nested", tuple.Tuple{tuple.Tuple{int64(7), "key"}}, ""},
+		{"valid-versionstamp", tuple.Tuple{tuple.Versionstamp{}}, ""},
+		{"valid-bigint-pointer", tuple.Tuple{largest}, ""},
+		{"valid-bigint-value", tuple.Tuple{*largest}, ""},
+		{"valid-negative-bigint", tuple.Tuple{new(big.Int).Neg(largest)}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			children := make([]*bloomFactoryCursor, 2)
+			fns := make([]CursorFunction[int64], len(children))
+			for i := range fns {
+				fns[i] = func(cont []byte) RecordCursor[int64] {
+					children[i] = &bloomFactoryCursor{RecordCursor: FromListWithContinuation([]int64{int64(i + 1), int64(i + 1)}, cont)}
+					return children[i]
+				}
+			}
+			keyCalls := 0
+			cur, err := ProbableIntersection(func(int64) (tuple.Tuple, error) {
+				keyCalls++
+				return tc.key, nil
+			}, fns, 500, 0.01, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cur.Close() })
+			for call := range 2 {
+				result, err := cur.OnNext(t.Context())
+				if tc.want != "" {
+					var argument *RecordCoreArgumentError
+					if result.HasNext() || !errors.As(err, &argument) || argument.Cause == nil ||
+						!strings.Contains(err.Error(), "probable intersection child 0 comparison key") || !strings.Contains(err.Error(), tc.want) {
+						t.Fatalf("OnNext %d: result=%+v, want typed comparison-key error with %q, got %v", call, result, tc.want, err)
+					}
+					if keyCalls != 1 {
+						t.Fatalf("invalid key advanced a child after failure: %d extractions", keyCalls)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				} else if call == 0 {
+					if !result.HasNext() || result.GetValue() != 2 {
+						t.Fatalf("valid intersection result=%+v, want second child's value", result)
+					}
+				} else if result.HasNext() || result.GetNoNextReason() != SourceExhausted || !result.GetContinuation().IsEnd() {
+					t.Fatalf("valid duplicate keys did not exhaust: %+v", result)
+				}
+			}
+			for i, child := range children {
+				if child == nil || child.closes != 0 || child.IsClosed() {
+					t.Fatalf("OnNext changed ownership of child %d: %+v", i, child)
+				}
+			}
+			for range 2 {
+				if err := cur.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i, child := range children {
+				if child.closes != 1 || !child.IsClosed() {
+					t.Fatalf("child %d not closed exactly once: %+v", i, child)
+				}
+			}
+		})
 	}
 }
 

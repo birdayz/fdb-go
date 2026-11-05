@@ -232,12 +232,16 @@ func bloomKeyFunnel(key tuple.Tuple) ([]byte, error) {
 }
 
 func packTupleElement(o any) ([]byte, error) {
-	t := tuple.Tuple{o}
+	return packBloomTuple(tuple.Tuple{o})
+}
+
+// packBloomTuple validates exact-set keys and tuple-valued Bloom funnel elements before encoding.
+func packBloomTuple(t tuple.Tuple) ([]byte, error) {
 	if err := checkPackable(t); err != nil {
 		return nil, err
 	}
 	if incomplete, err := t.HasIncompleteVersionstamp(); err != nil || incomplete {
-		return nil, &RecordCoreError{Message: fmt.Sprintf("bloom filter key: incomplete versionstamp %v", o), Cause: err}
+		return nil, &RecordCoreError{Message: fmt.Sprintf("bloom filter key: incomplete versionstamp %v", t), Cause: err}
 	}
 	return t.Pack(), nil
 }
@@ -250,7 +254,18 @@ func checkPackable(t tuple.Tuple) error {
 			if err := checkPackable(v); err != nil {
 				return err
 			}
-		case nil, int, int64, uint, uint64, *big.Int, big.Int, []byte, fdb.KeyConvertible,
+		case *big.Int:
+			if v == nil {
+				return &RecordCoreArgumentError{Message: "bloom filter key: nil *big.Int"}
+			}
+			if v.BitLen() > 2040 {
+				return &RecordCoreArgumentError{Message: fmt.Sprintf("bloom filter key: integer magnitude is %d bits, exceeds 2040 bits", v.BitLen())}
+			}
+		case big.Int:
+			if v.BitLen() > 2040 {
+				return &RecordCoreArgumentError{Message: fmt.Sprintf("bloom filter key: integer magnitude is %d bits, exceeds 2040 bits", v.BitLen())}
+			}
+		case nil, int, int64, uint, uint64, []byte, fdb.KeyConvertible,
 			string, float32, float64, bool, tuple.UUID, tuple.Versionstamp:
 		default:
 			return &RecordCoreArgumentError{Message: fmt.Sprintf("bloom filter key: unencodable tuple element %v (type %T)", e, e)}

@@ -28,6 +28,7 @@ type probableChild[T any] struct {
 	*mergeChildState[T]
 	bloom          *guavaBloomFilter
 	seen           map[string]struct{}
+	packedKey      string
 	firstIteration bool
 }
 
@@ -37,7 +38,7 @@ func (s *probableChild[T]) consumeKey() error {
 	if err := s.bloom.put(s.comparisonKey); err != nil {
 		return err
 	}
-	s.seen[string(s.comparisonKey.Pack())] = struct{}{}
+	s.seen[s.packedKey] = struct{}{}
 	s.consume()
 	return nil
 }
@@ -55,7 +56,7 @@ func (s *probableChild[T]) mightContain(key tuple.Tuple, packed string) (bool, e
 }
 
 func (s *probableChild[T]) isDefiniteDuplicate() bool {
-	_, ok := s.seen[string(s.comparisonKey.Pack())]
+	_, ok := s.seen[s.packedKey]
 	return ok
 }
 
@@ -114,7 +115,7 @@ func (c *probableIntersectionCursor[T]) OnNext(ctx context.Context) (RecordCurso
 			return RecordCursorResult[T]{}, err
 		}
 		allDone := true
-		for _, child := range c.children {
+		for i, child := range c.children {
 			if child.needsAdvance {
 				if err := child.advance(ctx); err != nil {
 					return RecordCursorResult[T]{}, err
@@ -123,6 +124,13 @@ func (c *probableIntersectionCursor[T]) OnNext(ctx context.Context) (RecordCurso
 			if !child.hasResult {
 				continue
 			}
+			packed, err := packBloomTuple(child.comparisonKey)
+			if err != nil {
+				return RecordCursorResult[T]{}, &RecordCoreArgumentError{
+					Message: fmt.Sprintf("probable intersection child %d comparison key", i), Cause: err,
+				}
+			}
+			child.packedKey = string(packed)
 			allDone = false
 			if !child.isDefiniteDuplicate() {
 				inRest, err := c.checkIfInRest(child)
@@ -170,12 +178,11 @@ func (c *probableIntersectionCursor[T]) OnNext(ctx context.Context) (RecordCurso
 // checkIfInRest is ProbableIntersectionCursor.checkIfInRest
 // (ProbableIntersectionCursor.java:104-117).
 func (c *probableIntersectionCursor[T]) checkIfInRest(state *probableChild[T]) (bool, error) {
-	packed := string(state.comparisonKey.Pack())
 	for _, other := range c.children {
 		if other == state {
 			continue
 		}
-		ok, err := other.mightContain(state.comparisonKey, packed)
+		ok, err := other.mightContain(state.comparisonKey, state.packedKey)
 		if err != nil || !ok {
 			return false, err
 		}

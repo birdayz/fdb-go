@@ -3,6 +3,7 @@
 import base64
 import builtins
 import copy
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -13,6 +14,7 @@ from unittest import mock
 import diagnostic as n
 import driver as d
 import policy as p
+from test_horizontal import evidence
 
 
 def plan():
@@ -686,6 +688,105 @@ class DiagnosticTest(unittest.TestCase):
         campaign.install_helpers = mock.Mock(); campaign.quiet = mock.Mock(); campaign.stable = mock.Mock()
         campaign.host_samples = mock.Mock(return_value={'node1': dict(fdb_pids={'200': '5000'}), 'client1': dict(fdb_pids={})})
         return campaign, provider
+
+    def test_forensic_reservation_is_not_reused_after_lost_or_invalid_response(self):
+        for response in ('captured', 'lost-response', 'malformed', 'invalid-count'):
+            with self.subTest(response=response), tempfile.TemporaryDirectory() as tmp:
+                campaign, provider = self.diagnostic_controller(tmp)
+                native = sampler_grant()
+                campaign.remote_root = native['root']
+                campaign.remote_harness = native['root']+'/harness'
+                cluster = Path(tmp)/'fdb.cluster'; cluster.write_text('fake:cluster@10.93.0.11:4500\n')
+                layout = dict(root=native['arm_root'], remote_cluster_file=native['arm_root']+'/fdb.cluster',
+                              cluster_file=str(cluster), processes=[dict(spec, node='node1',
+                              process_class='storage' if spec['port'] == 4510 else 'stateless') for spec in native['processes']])
+                provider.setup_cluster.return_value = layout
+                campaign.stable.return_value = dict(storage={'node1': dict(storage_id='a'*16, input_bytes=1)})
+                copied, starts, reads = {}, [], []
+
+                def copy_plan(node, local, remote):
+                    copied[remote] = (d.read(local), Path(local))
+
+                def identity(node):
+                    return dict(node_id=node['id'])
+
+                def wait_file(node, path, cap=60, job=None):
+                    grant, local = copied[str(Path(path).with_name('plan.json'))]
+                    ready = dict(node_id=node['id'], token=grant['token'], grant_sha256=p.sha(local))
+                    if '/diagnostics/' in path:
+                        digest = hashlib.sha256((json.dumps(identity(node), sort_keys=True)+'\n').encode()).hexdigest()
+                        ready.update(baseline_frames=2, identity_sha256=digest)
+                    else:
+                        ready['run'] = grant['run']
+                        if path.endswith('producer-started.json'):
+                            ready.update(started=True, pid=900, starttime_ticks=9000)
+                    return ready
+
+                def read_remote(node, path):
+                    if path.endswith('identity.json'):
+                        return identity(node)
+                    grant, _ = copied[str(Path(path).with_name('plan.json'))]
+                    count, mode = grant['count'], Path(path).stem
+                    value = evidence(mode, count); value['config']['run'] = grant['run']
+                    if mode == 'audit':
+                        value['stats']['structures'] = {key: dict(keys=number) for key, number in
+                            dict(records=count, eq_secondary=count*8, span_id_v2=count, span_time_v2=count,
+                                 owned_total=count*11+2, eq_primary=0).items()}
+                    return value
+
+                def spawn(node, args, directory, name):
+                    if '_sample' in args and node['id'] == 101:
+                        grant, _ = copied[args[args.index('--path')+1]]
+                        starts.append((grant['forensic_budget'], campaign.trace_remaining))
+                    process = mock.Mock(returncode=0)
+                    process.poll.return_value = process.wait.return_value = 0
+                    return process, mock.Mock(), mock.Mock()
+
+                def command(node, args, cap=30):
+                    if args[0] == 'sha256sum':
+                        return p.sha(cluster)+'  '+args[1]+'\n'
+                    if args[0] == 'mkdir' or any(mode in args for mode in ('_phase', '_release', '_stop')):
+                        return ''
+                    if '_frames' in args:
+                        return json.dumps(dict(frames=[], cursor=int(args[args.index('--cursor')+1])))
+                    if '_traces' in args:
+                        quota = int(args[args.index('--budget')+1])
+                        consumed = quota if not reads and response != 'captured' else quota//2
+                        reads.append((quota, consumed))
+                        if len(reads) == 1:
+                            if response == 'lost-response':
+                                raise ValueError('owned-node command failed after forensic reads')
+                            if response == 'malformed':
+                                return '{'
+                            if response == 'invalid-count':
+                                return json.dumps(dict(bytes_read=quota+1))
+                        return json.dumps(dict(bytes_read=consumed, coverage='CAPTURED', forensic_only=False, errors=[]))
+                    raise AssertionError(args)
+
+                campaign.copy = mock.Mock(side_effect=copy_plan)
+                campaign.spawn = mock.Mock(side_effect=spawn)
+                campaign.wait_file = mock.Mock(side_effect=wait_file)
+                campaign.read_remote = mock.Mock(side_effect=read_remote)
+                campaign.command = mock.Mock(side_effect=command)
+                campaign.collect = mock.Mock()
+                initial = campaign.trace_remaining
+                with mock.patch.object(n, 'validate_plan'), mock.patch.object(p, 'verify_source', return_value=dict(files=1)), \
+                     mock.patch.object(d, 'remaining', return_value=30), \
+                     mock.patch.object(n, 'profile', side_effect=lambda *args: dict(verdict='CAPTURED', reasons=[], accepted_throughput=False)):
+                    campaign.run()
+                result = d.read(campaign.out/'diagnostic-result.json')
+                remaining = initial-initial//2 if response == 'captured' else 0
+                self.assertEqual(starts, [(initial, 0), (remaining, 0)])
+                self.assertEqual(reads, [(initial, initial//2 if response == 'captured' else initial), (remaining, remaining//2)])
+                self.assertEqual(campaign.trace_remaining, remaining-remaining//2)
+                self.assertLessEqual(sum(consumed for _, consumed in reads), initial)
+                for phase in ('prerequisite', 'probe'):
+                    self.assertTrue(all(result[phase][key] is True for key in ('healthy', 'ingest_valid', 'census_pass', 'oracle_pass')))
+                self.assertEqual(result['prerequisite']['profile']['verdict'], 'CAPTURED' if response == 'captured' else 'INCONCLUSIVE')
+                if response != 'captured':
+                    self.assertTrue(result['prerequisite']['collection_errors'])
+                    self.assertFalse((campaign.out/'prerequisite'/'native-traces.json').exists())
+                self.assertEqual(provider.teardown.call_count, 1)
 
     def test_controller_valid_100k_gate_precedes_single_1m_probe_and_never_accepts_ack_rate(self):
         with tempfile.TemporaryDirectory() as tmp:

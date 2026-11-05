@@ -58,8 +58,8 @@ func permanent(format string, args ...any) error {
 	return &permanentError{componentErrorf("fdb_otel: "+format, args...)}
 }
 
-// IsPermanent identifies nonretryable input/config/ownership/corruption/operation and shutdown errors.
-// Transient, budget and per-attempt cancellation errors may retry idempotent span replacements.
+// IsPermanent identifies nonretryable input/config/ownership/corruption and otel.Exporter operation errors.
+// Collector NotRunningError, transient, budget and per-attempt cancellation errors are not classified as permanent.
 func IsPermanent(err error) bool {
 	if err == nil {
 		return false

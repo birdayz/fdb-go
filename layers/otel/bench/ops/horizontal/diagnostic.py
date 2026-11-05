@@ -1224,6 +1224,8 @@ class Diagnostic(d.Campaign):
                 kind = "fdb" if role == "node1" else "client"
                 args = ["systemd-run", "--scope", "--quiet", "--collect", "--unit=otel-native-sampler-" + run + "-" + role,
                         "--slice=horizontal-" + kind + ".slice", *self.diag(node, "_sample", sample_work + "/plan.json")]
+                # Startup seals already read evidence; unknown consumption keeps the full reservation.
+                self.trace_remaining -= sample_grant["forensic_budget"]
                 samplers[role] = self.spawn(node, args, directory, role + "-sampler")
                 grants[role], frames[role], cursors[role] = sample_grant, [], 0
             for role, sample_grant in grants.items():
@@ -1322,11 +1324,12 @@ class Diagnostic(d.Campaign):
                 try:
                     node = self.nodes["node1"]
                     p.require("node1" in identity_hashes, "no pre-release positive native identity receipt")
+                    quota = grants["node1"]["forensic_budget"]
                     traces = d.loads(self.command(node, self.diag(node, "_traces", grants["node1"]["work"] + "/plan.json",
-                                                                 "--budget", str(self.trace_remaining), "--identity-sha256", identity_hashes["node1"])))
-                    p.require(type(traces.get("bytes_read")) is int and 0 <= traces["bytes_read"] <= self.trace_remaining,
+                                                                 "--budget", str(quota), "--identity-sha256", identity_hashes["node1"])))
+                    p.require(type(traces) is dict and type(traces.get("bytes_read")) is int and 0 <= traces["bytes_read"] <= quota,
                               "aggregate native trace response budget")
-                    self.trace_remaining -= traces["bytes_read"]
+                    self.trace_remaining += quota - traces["bytes_read"]
                     d.write(directory / "native-traces.json", traces)
                     if traces.get("errors") or traces.get("forensic_only") is True or traces.get("coverage") != "CAPTURED":
                         result.setdefault("collection_errors", []).append("native forensic evidence is not live-verified: " + str(traces.get("errors", [])))
