@@ -42,6 +42,8 @@ func TestExecutePlanRejectsFilteredIndexesAtEveryIndexLeaf(t *testing.T) {
 	).SetPredicate(filtered))
 	builder.AddIndex("Order", recordlayer.NewCountIndex(
 		"filtered_count", recordlayer.GroupAll(recordlayer.Field("price"))).SetPredicate(filtered))
+	builder.AddIndex("Order", recordlayer.NewTextIndex(
+		"filtered_text", recordlayer.Nest("flower", recordlayer.Field("type"))).SetPredicate(filtered))
 	md, err := builder.Build()
 	if err != nil {
 		t.Fatalf("build metadata: %v", err)
@@ -91,6 +93,14 @@ func TestExecutePlanRejectsFilteredIndexesAtEveryIndexLeaf(t *testing.T) {
 			indexPlan, "Order", aggregateType, "COUNT",
 		)).WithGroupColumns([]string{"price"}, "COUNT")
 
+		// The unbound operand must not be evaluated before filtered-TEXT rejection.
+		textPlan := mustExecutorConstruct(plans.NewRecordQueryTextIndexPlan(
+			"filtered_text", plans.TextScan{
+				Predicate: &predicates.Comparison{Type: predicates.ComparisonTextContainsAll, Operand: values.NewParameterValue(1)},
+				KeyTypes:  []values.Type{values.NullableString},
+			}, orderType, false,
+		))
+
 		for _, test := range []struct {
 			name string
 			plan plans.RecordQueryPlan
@@ -99,6 +109,7 @@ func TestExecutePlanRejectsFilteredIndexesAtEveryIndexLeaf(t *testing.T) {
 			{name: "value", plan: valuePlan, want: "filtered_value"},
 			{name: "vector", plan: vectorPlan, want: "filtered_vector"},
 			{name: "aggregate", plan: aggregatePlan, want: "filtered_count"},
+			{name: "text", plan: textPlan, want: "filtered_text"},
 		} {
 			t.Run(test.name, func(t *testing.T) {
 				cursor, execErr := ExecutePlan(

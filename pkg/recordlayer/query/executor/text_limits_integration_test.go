@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"math"
 	"reflect"
 	"sort"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen/demopb"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -176,6 +178,96 @@ func TestIntegrationTextOmittedPositionsAndRebuild(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTextScanGroupBinding(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		low, high tuple.Tuple
+		grouping  int
+		valid     bool
+	}{
+		{"short low", nil, tuple.Tuple{int64(1)}, 1, false},
+		{"short high", tuple.Tuple{int64(1)}, nil, 1, false},
+		{"different groups", tuple.Tuple{int64(1)}, tuple.Tuple{int64(2)}, 1, false},
+		{"different zero signs", tuple.Tuple{math.Copysign(0, -1)}, tuple.Tuple{float64(0)}, 1, false},
+		{"same negative zero", tuple.Tuple{math.Copysign(0, -1)}, tuple.Tuple{math.Copysign(0, -1)}, 1, true},
+		{"same group different suffix", tuple.Tuple{int64(1), int64(10)}, tuple.Tuple{int64(1), int64(20)}, 1, true},
+		{"ungrouped", nil, nil, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rng := recordlayer.TupleRangeBetween(tc.low, tc.high)
+			group, err := textScanGroup("text_idx", rng, tc.grouping)
+			if !tc.valid {
+				var invalid *TextScanGroupBindingError
+				if !errors.As(err, &invalid) || invalid.IndexName != "text_idx" || invalid.GroupingColumns != tc.grouping || !reflect.DeepEqual(invalid.Range, rng) || group != nil {
+					t.Fatalf("group=%v error=%#v", group, err)
+				}
+				return
+			}
+			if err != nil || !reflect.DeepEqual(group.Pack(), tc.low[:tc.grouping].Pack()) {
+				t.Fatalf("group=%v error=%v", group, err)
+			}
+			if tc.grouping > 0 {
+				group[0] = "changed"
+				if reflect.DeepEqual(group, rng.Low[:tc.grouping]) {
+					t.Fatal("group aliases the bound range")
+				}
+			}
+		})
+	}
+}
+
+func TestIntegrationTextPlanIndexAdmission(t *testing.T) {
+	t.Parallel()
+	expression := recordlayer.Nest("flower", recordlayer.Field("type"))
+	store := setupStore(t, recordlayer.NewTextIndex("text_idx", expression), recordlayer.NewIndex("value_idx", expression))
+	insertOrders(t, store, &demopb.Order{OrderId: proto.Int64(1), Flower: &demopb.Flower{Type: proto.String("red")}})
+	for _, name := range []string{"missing_idx", "value_idx", "text_idx"} {
+		t.Run(name, func(t *testing.T) {
+			_, err := testDB.Run(context.Background(), func(rtx *recordlayer.FDBRecordContext) (any, error) {
+				s, err := recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(store.GetMetaData()).SetSubspace(store.Subspace()).Open()
+				if err != nil {
+					return nil, err
+				}
+				plan, err := plans.NewRecordQueryTextIndexPlan(name, plans.TextScan{
+					Predicate: &predicates.Comparison{Type: predicates.ComparisonTextContainsAll, Operand: values.LiteralValue("red")},
+					KeyTypes:  []values.Type{values.NullableString},
+				}, integrationOrderType(), false)
+				if err != nil {
+					return nil, err
+				}
+				cursor, err := ExecutePlan(context.Background(), plan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
+				if name != "text_idx" {
+					if cursor != nil {
+						cursor.Close()
+						t.Fatal("invalid TEXT index returned a cursor")
+					}
+					var invalid *predicates.TextComparisonError
+					if !errors.As(err, &invalid) || invalid.Message != "text index plan requires a TEXT index" {
+						t.Fatalf("index=%s error=%T(%v)", name, err, err)
+					}
+					return nil, nil
+				}
+				if err != nil {
+					return nil, err
+				}
+				defer cursor.Close()
+				rows, err := CollectAll(context.Background(), cursor)
+				if err != nil {
+					return nil, err
+				}
+				if len(rows) != 1 || rows[0].Record.Record.(*demopb.Order).GetOrderId() != 1 {
+					t.Fatalf("valid TEXT control rows=%v", rows)
+				}
+				return nil, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

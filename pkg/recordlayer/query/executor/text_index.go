@@ -19,6 +19,24 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+// TextScanGroupBindingError reports a range that does not identify one physical TEXT group.
+type TextScanGroupBindingError struct {
+	IndexName       string
+	Range           recordlayer.TupleRange
+	GroupingColumns int
+}
+
+func (e *TextScanGroupBindingError) Error() string {
+	return fmt.Sprintf("executor: text scan range %v does not bind one %d-column group of %q", e.Range, e.GroupingColumns, e.IndexName)
+}
+
+func textScanGroup(indexName string, rng recordlayer.TupleRange, grouping int) (tuple.Tuple, error) {
+	if len(rng.Low) < grouping || len(rng.High) < grouping || !bytes.Equal(rng.Low[:grouping].Pack(), rng.High[:grouping].Pack()) {
+		return nil, &TextScanGroupBindingError{IndexName: indexName, Range: rng, GroupingColumns: grouping}
+	}
+	return append(tuple.Tuple(nil), rng.Low[:grouping]...), nil
+}
+
 // executeTextIndexScan runs recordlayer.TextScan once per physical group the
 // grouping bindings name (SQL's -0.0 = 0.0 names two), then fetches records.
 func executeTextIndexScan(ctx context.Context, p *plans.RecordQueryTextIndexPlan, store *recordlayer.FDBRecordStore, eval *EvaluationContext, continuation []byte, props recordlayer.ExecuteProperties) (recordlayer.RecordCursor[QueryResult], error) {
@@ -102,19 +120,16 @@ func executeTextIndexScan(ctx context.Context, p *plans.RecordQueryTextIndexPlan
 	}
 	childProps := recordlayer.NewScanProperties(props.ClearSkipAndLimit()).WithReverse(p.IsReverse())
 	entries, err := newScanRangeSetCursor(spec, continuation, childProps, func(rng recordlayer.TupleRange, cont []byte, sp recordlayer.ScanProperties) (recordlayer.RecordCursor[*recordlayer.IndexEntry], error) {
-		if len(rng.Low) < grouping || len(rng.High) < grouping || !bytes.Equal(rng.Low[:grouping].Pack(), rng.High[:grouping].Pack()) {
-			return nil, fmt.Errorf("executor: text scan range %v does not bind one group of %q", rng, idx.Name)
-		}
-		var groupKey tuple.Tuple
-		if grouping > 0 {
-			groupKey = append(tuple.Tuple(nil), rng.Low[:grouping]...)
+		groupKey, e := textScanGroup(idx.Name, rng, grouping)
+		if e != nil {
+			return nil, e
 		}
 		cursor, e := recordlayer.NewTextScan(idx, groupKey, comparison, nil).Scan(store, cont, sp)
 		if e != nil || len(scan.Suffix) == 0 {
 			return cursor, e
 		}
-		// TextScan's suffix seek misses a bunch that starts before the range
-		// (DIVERGENCES.md); scan the group and filter. No planner builds one.
+		// Caller-built suffix plans retain whole-group scanning and logical filtering.
+		// Lower-level TextScan also supports logical bounds; SQL planning emits none.
 		bounds := rng.ToFDBRange(subspace.FromBytes(nil))
 		begin, end := bounds.Begin.FDBKey(), bounds.End.FDBKey()
 		return recordlayer.FilterCursor(cursor, func(entry *recordlayer.IndexEntry) bool {

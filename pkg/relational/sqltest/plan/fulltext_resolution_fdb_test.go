@@ -2,6 +2,7 @@ package sqltest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -57,21 +58,22 @@ func TestFDBFullTextSchemaMacrosKeepPrecedence(t *testing.T) {
 			for _, f := range functions {
 				mixed := "Text_" + strings.TrimPrefix(f.name, "TEXT_")
 				for _, spelling := range []string{f.name, strings.ToLower(f.name), mixed, `"` + f.name + `"`, `"` + mixed + `"`, `"` + strings.ToLower(f.name) + `"`} {
+					quoted := strings.HasPrefix(spelling, `"`)
+					wantError := !macros && quoted || macros && (spelling == `"`+strings.ToLower(f.name)+`"` || sensitive && spelling == strings.ToLower(f.name))
 					args := f.args
-					if macros {
+					if macros && !wantError {
 						args = "BODY"
 					}
 					query := "SELECT ID FROM DOCS WHERE " + spelling + "(" + args + ") ORDER BY ID"
-					quoted := strings.HasPrefix(spelling, `"`)
-					wantError := !macros && quoted || macros && (spelling == `"`+strings.ToLower(f.name)+`"` || sensitive && spelling == strings.ToLower(f.name))
 					if wantError {
 						lookupErrors++
 						rows, err := conn.QueryContext(ctx, query)
 						if rows != nil {
 							rows.Close()
 						}
-						if err == nil {
-							t.Fatalf("macros=%v sensitive=%v undefined function resolved: %s", macros, sensitive, query)
+						var lookup *api.Error
+						if !errors.As(err, &lookup) || lookup.Code != api.ErrCodeUnsupportedQuery {
+							t.Fatalf("macros=%v sensitive=%v unresolved function %s: %T(%v)", macros, sensitive, query, err, err)
 						}
 						continue
 					}
@@ -129,6 +131,79 @@ func TestFDBFullTextCaseSensitiveTemplateDeclarations(t *testing.T) {
 			if _, err := conn.ExecContext(ctx, "DROP SCHEMA TEMPLATE "+template); err != nil {
 				t.Fatal(err)
 			}
+		}
+	}
+}
+
+func TestFDBFullTextTemplateTableFunctionsAndOuterScope(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	families := []string{"TEXT_CONTAINS_ALL", "TEXT_CONTAINS_ANY", "TEXT_CONTAINS_PHRASE", "TEXT_CONTAINS_ALL_WITHIN", "TEXT_CONTAINS_PREFIX", "TEXT_CONTAINS_ALL_PREFIXES", "TEXT_CONTAINS_ANY_PREFIX"}
+	outerDDL := "CREATE TABLE DOCS(ID BIGINT, BODY STRING, PRIMARY KEY(ID))"
+	for _, family := range families {
+		outerDDL += " CREATE FUNCTION " + family + "(IN body STRING) RETURNS BOOLEAN RETURN FALSE"
+	}
+	db := testkit.SetupPlanShapeDB(t, "fulltext_outer_scope", outerDDL)
+	var databasePath string
+	conn := testkit.PinEmbeddedConn(t, db, func(ec *embedded.EmbeddedConnection) {
+		databasePath = ec.GetDBPath()
+		if err := ec.SetOption(api.OptCaseSensitiveIdentifiers, true); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if _, err := conn.ExecContext(ctx, "INSERT INTO DOCS VALUES (1,'red blue'),(2,'blue')"); err != nil {
+		t.Fatal(err)
+	}
+	for i, family := range families {
+		name := strings.ToLower(family)
+		args := "BODY,'red'"
+		if family == "TEXT_CONTAINS_ALL_WITHIN" {
+			args += ",1"
+		}
+		if got := testkit.QueryIDs(t, conn, "SELECT ID FROM DOCS WHERE "+family+"(BODY)"); len(got) != 0 {
+			t.Fatalf("outer macro did not resolve: %s: %v", family, got)
+		}
+		rows, err := conn.QueryContext(ctx, "SELECT ID FROM DOCS WHERE "+name+"("+args+")")
+		if rows != nil {
+			rows.Close()
+		}
+		var lookup *api.Error
+		if !errors.As(err, &lookup) || lookup.Code != api.ErrCodeUnsupportedQuery {
+			t.Fatalf("outer case-mismatched macro did not reserve name %s: %v", name, err)
+		}
+		template := fmt.Sprintf("TEXT_OUTER_%s_%d", t.Name(), i)
+		schema := fmt.Sprintf("TEXT_INNER_%d", i)
+		call := name + "(" + args + ")"
+		ddl := "CREATE SCHEMA TEMPLATE " + template + " CREATE TABLE DOCS(ID BIGINT, BODY STRING, PRIMARY KEY(ID)) " +
+			"CREATE FUNCTION before_call() AS SELECT ID FROM DOCS WHERE " + call + " " +
+			"CREATE FUNCTION " + name + "() AS SELECT ID FROM DOCS " +
+			"CREATE VIEW V AS SELECT ID FROM DOCS WHERE " + call + " " +
+			"CREATE FUNCTION later_call() AS SELECT ID FROM DOCS WHERE " + call
+		if _, err := conn.ExecContext(ctx, ddl); err != nil {
+			t.Fatalf("template must ignore outer macros and table-function names: %s: %v", ddl, err)
+		}
+		if _, err := conn.ExecContext(ctx, `CREATE SCHEMA "`+databasePath+"/"+schema+`" WITH TEMPLATE "`+template+`"`); err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.Raw(func(raw any) error { return raw.(*embedded.EmbeddedConnection).SetSchema(schema) }); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.ExecContext(ctx, "INSERT INTO DOCS VALUES (1,'red blue'),(2,'blue')"); err != nil {
+			t.Fatal(err)
+		}
+		for _, query := range []string{"SELECT ID FROM V ORDER BY ID", "SELECT ID FROM before_call() ORDER BY ID", "SELECT ID FROM later_call() ORDER BY ID"} {
+			if got := testkit.QueryIDs(t, conn, query); !reflect.DeepEqual(got, []int64{1}) {
+				t.Fatalf("%s: %s: got %v want [1]", family, query, got)
+			}
+		}
+		if err := conn.Raw(func(raw any) error { return raw.(*embedded.EmbeddedConnection).SetSchema("S") }); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.ExecContext(ctx, `DROP SCHEMA "`+databasePath+"/"+schema+`"`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.ExecContext(ctx, `DROP SCHEMA TEMPLATE "`+template+`"`); err != nil {
+			t.Fatal(err)
 		}
 	}
 }

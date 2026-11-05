@@ -35,17 +35,19 @@ Java's classic Record Layer text planner itself declines requested sorts.
 
 A SQL text plan executes through `recordlayer.TextScan`, the port of Java's
 `TextScan`: its posting scans, intersections, unions, probable intersection and
-position filters, and its continuations, are Java's. Two things are Go's. SQL
-equality on a grouping column can name several physical groups (a DOUBLE
-column's `-0.0` and `0.0`), so the grouping bindings feed a scan-range set
-with one `TextScan` per physical group, and the query continuation is that
+position filters use the shared Record Layer algorithms and continuation encodings,
+subject to the bounded-range, comparison-key and unordered-identity boundaries in
+“TEXT queries” below. SQL equality on a grouping column can name several physical
+groups (a DOUBLE column's `-0.0` and `0.0`), so the grouping bindings feed a scan-range
+set with one `TextScan` per physical group, and the query continuation is that
 set's envelope around the group's `TextScan` continuation. A typed suffix range
 (never built by the SQL planner, as Java's `TextScanPlanner` never builds one)
-is applied by filtering the group's postings rather than handed to `TextScan`:
-Go's `TextScan` seeks a suffix range's start in the bunched map, whose keys
-are each bunch's first posting, and so misses postings of a bunch that begins
-before the range. Java's builds the same range (`TextScan.java:443-450`), so
-it is expected to behave alike; no Java probe pins it yet (TODO.md). A NaN
+is applied by filtering whole-group postings in this executor. Lower-level Go
+`TextScan` also supports logical suffix bounds: it includes the predecessor bunch
+and filters decoded entries, unlike Java's physical-bunch bounds. The native
+fixture in `conformance/text_query_conformance_test.go` pins their different rows
+and same-engine resumes; see “TEXT logical suffix bounds” below. Matching bounded
+continuation framing does not promise cross-engine remaining rows or pages. A NaN
 equality on a FLOAT or DOUBLE partition column fails the text scan, as vector
 and aggregate partitions do, where record filtering would match the NaN group.
 SQL's `TEXT_CONTAINS_ALL_PREFIXES` is strict, so

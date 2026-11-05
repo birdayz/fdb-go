@@ -53,8 +53,10 @@ func caseSensitiveIdentifiers(sql string, schemaFunction ...func(string) bool) s
 			for _, clause := range template.AllTemplateClause() {
 				if function := clause.SqlInvokedFunction(); function != nil {
 					walk(function)
-					name := function.FunctionSpecification().GetSchemaQualifiedRoutineName()
-					declared = append(declared, functions.NormalizeIdentifier(name.GetText()))
+					if _, macro := function.RoutineBody().(*antlrgen.UserDefinedMacroFunctionStatementBodyContext); macro {
+						name := function.FunctionSpecification().GetSchemaQualifiedRoutineName()
+						declared = append(declared, functions.NormalizeIdentifier(name.GetText()))
+					}
 				}
 			}
 			for i := 0; i < template.GetChildCount(); i++ {

@@ -7,7 +7,12 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
+	"fdb.dev/pkg/relational/api"
 )
 
 func TestFullTextLiteralMetadataPinsCachedPlans(t *testing.T) {
@@ -92,6 +97,50 @@ func TestFullTextDDLAndPlan(t *testing.T) {
 				t.Fatalf("unbound grouping: %s", unbound.Explain())
 			}
 		}
+	}
+}
+
+func TestFullTextFilteredIndexFallsBackToRecordFilter(t *testing.T) {
+	t.Parallel()
+	template, err := BuildSchemaTemplateFromDDL("CREATE TABLE DOCS(ID BIGINT, BODY STRING, PRIMARY KEY(ID)) CREATE FULLTEXT INDEX BODY_TEXT ON DOCS(BODY)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := template.Underlying()
+	const query = "SELECT ID FROM DOCS WHERE TEXT_CONTAINS_ALL(BODY,'red')"
+	dense, err := PlanRecordQueryWithMetadata(query, md, nil)
+	if err != nil || !strings.Contains(dense.Explain(), "TextIndexScan(BODY_TEXT") {
+		t.Fatalf("dense positive control: plan=%v error=%v", dense, err)
+	}
+	index := md.GetIndex("BODY_TEXT")
+	index.SetPredicate(func(proto.Message) bool { return true })
+	if !index.HasFilteringPredicate() {
+		t.Fatal("TEXT fixture has no filtering predicate")
+	}
+	filtered, err := PlanRecordQueryWithMetadata(query, md, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shape := filtered.Explain()
+	if strings.Contains(shape, "TextIndexScan") || !strings.Contains(shape, "Scan(DOCS") || !strings.Contains(shape, "PredicatesFilter") {
+		t.Fatalf("filtered TEXT index did not retain exact record filtering: %s", shape)
+	}
+	textPredicates := 0
+	plans.Walk(filtered, func(plan plans.RecordQueryPlan) bool {
+		if filter, ok := plan.(*plans.RecordQueryPredicatesFilterPlan); ok {
+			for _, predicate := range filter.GetPredicates() {
+				predicates.WalkPredicate(predicate, func(predicate predicates.QueryPredicate) bool {
+					if comparison, ok := predicate.(*predicates.ComparisonPredicate); ok && comparison.Comparison.Type == predicates.ComparisonTextContainsAll {
+						textPredicates++
+					}
+					return true
+				})
+			}
+		}
+		return true
+	})
+	if textPredicates != 1 {
+		t.Fatalf("record-filter TEXT predicate count=%d want=1: %s", textPredicates, shape)
 	}
 }
 
@@ -197,15 +246,23 @@ func TestFullTextCaseSensitiveAndMacroResolution(t *testing.T) {
 		}
 		for _, sensitive := range []bool{false, true} {
 			for _, spelling := range []string{name, strings.ToLower(name), mixed, `"` + name + `"`, `"` + mixed + `"`, `"` + strings.ToLower(name) + `"`} {
-				query := "SELECT ID FROM DOCS WHERE " + spelling + "(BODY)"
+				wantError := spelling == `"`+strings.ToLower(name)+`"` || sensitive && spelling == strings.ToLower(name)
+				args := "BODY"
+				if wantError {
+					args += ",'red'"
+					if name == "TEXT_CONTAINS_ALL_WITHIN" {
+						args += ",1"
+					}
+				}
+				query := "SELECT ID FROM DOCS WHERE " + spelling + "(" + args + ")"
 				if sensitive {
 					query = caseSensitiveIdentifiers(query, func(string) bool { return true })
 				}
 				plan, err := PlanRecordQueryWithMetadata(query, template.Underlying(), nil)
-				wantError := spelling == `"`+strings.ToLower(name)+`"` || sensitive && spelling == strings.ToLower(name)
 				if wantError {
-					if err == nil {
-						t.Fatalf("sensitive=%v %s unexpectedly resolved: %s", sensitive, query, plan.Explain())
+					var lookup *api.Error
+					if !errors.As(err, &lookup) || lookup.Code != api.ErrCodeUnsupportedQuery {
+						t.Fatalf("sensitive=%v unresolved function %s: %T(%v)", sensitive, query, err, err)
 					}
 					continue
 				}
@@ -225,8 +282,10 @@ func TestFullTextCaseSensitiveAndMacroResolution(t *testing.T) {
 			t.Fatalf("no-macro control %s: plan=%v err=%v", query, plan, err)
 		}
 	}
-	if _, err := PlanRecordQueryWithMetadata(`SELECT ID FROM DOCS WHERE "TEXT_CONTAINS_ALL"(BODY,'red')`, template.Underlying(), nil); err == nil {
-		t.Fatal("quoted undefined function became a builtin")
+	_, err = PlanRecordQueryWithMetadata(`SELECT ID FROM DOCS WHERE "TEXT_CONTAINS_ALL"(BODY,'red')`, template.Underlying(), nil)
+	var lookup *api.Error
+	if !errors.As(err, &lookup) || lookup.Code != api.ErrCodeUnsupportedQuery {
+		t.Fatalf("quoted undefined function error=%T(%v)", err, err)
 	}
 }
 

@@ -1,8 +1,13 @@
 package embedded
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/core/query/expr"
 )
 
 func TestFullTextCaseSensitiveTemplateScope(t *testing.T) {
@@ -23,23 +28,114 @@ func TestFullTextCaseSensitiveTemplateScope(t *testing.T) {
 						t.Fatalf("%s: %v", ddl, err)
 					}
 				}
-				for _, call := range []string{`"missing_` + name + `"(s)`, name + "(s,s)"} {
-					ddl := base + definition + "CREATE FUNCTION f(IN s STRING) RETURNS STRING RETURN " + call
-					if _, err := BuildSchemaTemplateFromDDL(caseSensitiveIdentifiers(ddl)); err == nil {
-						t.Fatalf("invalid lookup/arity resolved: %s", ddl)
+				args := "s,'red'"
+				bodyArgs := "BODY,'red'"
+				if family == "TEXT_CONTAINS_ALL_WITHIN" {
+					args += ",1"
+					bodyArgs += ",1"
+				}
+				for _, callName := range []string{`"missing_` + name + `"`, name} {
+					ddl := base + definition + "CREATE FUNCTION f(IN s STRING) RETURNS BOOLEAN RETURN " + callName + "(" + args + ")"
+					_, err := BuildSchemaTemplateFromDDL(caseSensitiveIdentifiers(ddl))
+					if callName == name {
+						var lookup *api.Error
+						if !errors.As(err, &lookup) || lookup.Code != api.ErrCodeUndefinedFunction {
+							t.Fatalf("macro arity must fail lookup, not builtin dispatch: %s: %v", ddl, err)
+						}
+					} else {
+						var lookup *expr.UnsupportedExpressionShapeError
+						if !errors.As(err, &lookup) || lookup.Shape != fmt.Sprintf("user-defined scalar function %q", callName) {
+							t.Fatalf("undefined quoted lookup: %s: %v", ddl, err)
+						}
 					}
 				}
 				if name != family {
-					ddl := base + definition + "CREATE FUNCTION f(IN s STRING) RETURNS STRING RETURN " + family + "(s)"
-					if _, err := BuildSchemaTemplateFromDDL(caseSensitiveIdentifiers(ddl)); err == nil {
-						t.Fatalf("case-mismatched lookup resolved: %s", ddl)
+					ddl := base + definition + "CREATE FUNCTION f(IN s STRING) RETURNS BOOLEAN RETURN " + family + "(" + args + ")"
+					_, err := BuildSchemaTemplateFromDDL(caseSensitiveIdentifiers(ddl))
+					var lookup *expr.UnsupportedExpressionShapeError
+					if !errors.As(err, &lookup) || lookup.Shape != fmt.Sprintf("user-defined scalar function %q", `"`+family+`"`) {
+						t.Fatalf("case-mismatched lookup: %s: %v", ddl, err)
 					}
 				}
-				forward := base + "CREATE FUNCTION f(IN s STRING) RETURNS STRING RETURN " + name + "(s) " + definition
-				if _, err := BuildSchemaTemplateFromDDL(caseSensitiveIdentifiers(forward)); err == nil {
-					t.Fatalf("forward reference resolved: %s", forward)
+				forward := base + "CREATE FUNCTION before_call() AS SELECT ID FROM DOCS WHERE " + name + "(" + bodyArgs + ") " + definition +
+					"CREATE FUNCTION after_call() AS SELECT ID FROM DOCS WHERE " + name + "(BODY) = 'red'"
+				rewritten := caseSensitiveIdentifiers(forward)
+				if !strings.Contains(rewritten, "WHERE "+name+"("+strings.Replace(bodyArgs, "BODY", `"BODY"`, 1)+")") ||
+					!strings.Contains(rewritten, `WHERE "`+name+`"("BODY") = 'red'`) {
+					t.Fatalf("declaration-position scope: %s", rewritten)
+				}
+				if _, err := BuildSchemaTemplateFromDDL(rewritten); err != nil {
+					t.Fatalf("builtin before declaration and macro after it: %s: %v", rewritten, err)
 				}
 			})
+		}
+	}
+}
+
+func TestFullTextTemplateTableFunctionsDoNotShadowBuiltins(t *testing.T) {
+	t.Parallel()
+	for _, family := range []string{"TEXT_CONTAINS_ALL", "TEXT_CONTAINS_ANY", "TEXT_CONTAINS_PHRASE", "TEXT_CONTAINS_ALL_WITHIN", "TEXT_CONTAINS_PREFIX", "TEXT_CONTAINS_ALL_PREFIXES", "TEXT_CONTAINS_ANY_PREFIX"} {
+		for _, name := range []string{strings.ToLower(family), "Text_" + strings.TrimPrefix(family, "TEXT_"), family} {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				args := "BODY,'red'"
+				if family == "TEXT_CONTAINS_ALL_WITHIN" {
+					args += ",1"
+				}
+				call := name + "(" + args + ")"
+				base := "CREATE SCHEMA TEMPLATE T CREATE TABLE DOCS(ID BIGINT, BODY STRING, PRIMARY KEY(ID)) " +
+					"CREATE FUNCTION " + name + "() AS SELECT ID FROM DOCS "
+				ddl := base + "CREATE VIEW V AS SELECT ID FROM DOCS WHERE " + call + " " +
+					"CREATE FUNCTION later_call() AS SELECT ID FROM DOCS WHERE " + call
+				rewritten := caseSensitiveIdentifiers(ddl)
+				wantCall := name + "(" + strings.Replace(args, "BODY", `"BODY"`, 1) + ")"
+				if strings.Count(rewritten, wantCall) != 2 {
+					t.Fatalf("table function reserved a scalar name: %s", rewritten)
+				}
+				template, err := BuildSchemaTemplateFromDDL(rewritten)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := PlanRecordQueryWithMetadata("SELECT ID FROM V", template.Underlying(), nil); err != nil {
+					t.Fatalf("view builtin did not plan: %v", err)
+				}
+				index := caseSensitiveIdentifiers(base + "CREATE INDEX X AS SELECT ID FROM DOCS WHERE " + call + " ORDER BY ID")
+				if !strings.Contains(index, wantCall) {
+					t.Fatalf("index clause scalar name was reserved: %s", index)
+				}
+			})
+		}
+	}
+}
+
+func TestFullTextTemplateIgnoresOuterMacroScope(t *testing.T) {
+	t.Parallel()
+	for _, family := range []string{"TEXT_CONTAINS_ALL", "TEXT_CONTAINS_ANY", "TEXT_CONTAINS_PHRASE", "TEXT_CONTAINS_ALL_WITHIN", "TEXT_CONTAINS_PREFIX", "TEXT_CONTAINS_ALL_PREFIXES", "TEXT_CONTAINS_ANY_PREFIX"} {
+		for _, local := range []bool{false, true} {
+			args := "BODY,'red'"
+			if family == "TEXT_CONTAINS_ALL_WITHIN" {
+				args += ",1"
+			}
+			ddl := "CREATE SCHEMA TEMPLATE T CREATE TABLE DOCS(ID BIGINT, BODY STRING, PRIMARY KEY(ID)) "
+			wantName := family
+			if local {
+				ddl += "CREATE FUNCTION " + family + "(IN body STRING) RETURNS BOOLEAN RETURN FALSE "
+				args = "BODY"
+				wantName = `"` + family + `"`
+			}
+			ddl += "CREATE VIEW V AS SELECT ID FROM DOCS WHERE " + family + "(" + args + ")"
+			calls := 0
+			rewritten := caseSensitiveIdentifiers(ddl, func(string) bool { calls++; return true })
+			if calls != 0 || !strings.Contains(rewritten, "WHERE "+wantName+"("+strings.Replace(args, "BODY", `"BODY"`, 1)+")") {
+				t.Fatalf("local=%v outer calls=%d: %s", local, calls, rewritten)
+			}
+			template, err := BuildSchemaTemplateFromDDL(rewritten)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := PlanRecordQueryWithMetadata("SELECT ID FROM V", template.Underlying(), nil); err != nil {
+				t.Fatalf("local=%v view did not plan: %v", local, err)
+			}
 		}
 	}
 }

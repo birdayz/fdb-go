@@ -3604,11 +3604,11 @@ these claims; the implementation notes below are not controlled comparisons.
   need a group-count estimate to prefer it over record filtering. Today such a
   query falls back to record filtering; an IN list over the column is planned
   as a text access.
-- [ ] `TextScan` with a suffix range seeks the range start in the bunched map
-  (`BunchedMap.scanMulti`), whose keys are each bunch's first posting, and so
-  misses postings of a bunch that begins before the range. Java builds the same
-  range and is expected to behave alike, unverified; its planner never builds
-  a suffix range. The SQL executor filters
-  whole-group postings instead (`executeTextIndexScan`). A Java conformance
-  probe pinning the miss, and a seek to the bunch before the range start,
-  remain to be done.
+- [x] `TextScan` logical suffix bounds include the predecessor bunch and filter
+  decoded entries at both endpoints (`bunched_map_iterator.go`). The native
+  fixture in `conformance/text_query_conformance_test.go` pins Go's logical rows
+  versus Java 4.14.2.0's physical-bunch rows, including same-engine page resumes.
+  Bounded continuations are not a cross-engine remaining-row/page contract; see
+  DIVERGENCES.md, “TEXT logical suffix bounds”. The SQL executor retains its
+  whole-group filtering path for caller-built typed suffix plans; SQL planning
+  does not currently produce suffix bounds.

@@ -167,8 +167,12 @@ func TestFDBFullTextSQL(t *testing.T) {
 	if _, err := db.ExecContext(ctx, "DELETE FROM docs WHERE id=3"); err != nil {
 		t.Fatal(err)
 	}
+	const maintenanceQuery = "SELECT COUNT(*) FROM docs WHERE tenant=1 AND TEXT_CONTAINS_ALL(body,'blue')"
+	if plan := explainFullText(t, ctx, db, maintenanceQuery); !strings.Contains(plan, "TextIndexScan(BODY_TEXT") {
+		t.Fatalf("maintenance read did not use TEXT postings: %s", plan)
+	}
 	var count int64
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM docs WHERE tenant=1 AND TEXT_CONTAINS_ALL(body,'blue')").Scan(&count); err != nil {
+	if err := db.QueryRowContext(ctx, maintenanceQuery).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {
