@@ -412,6 +412,17 @@ SQL syntax (Java uses maxRows/continuations). Snapshot and budget semantics
 remain those of the relational connection, not the existing OTel signed-token
 query API. In particular, separate autocommit pages do not share a snapshot.
 
+Java 4.14.2.0 has an execution bug when the public-template OR keyset's ordered
+union must compare BYTES identities across legs with equal timestamps:
+`OtelSQLShapesJavaProbe` pins cursor 1's `ByteString$LiteralByteString` to
+`Comparable` ClassCastException (SQLSTATE `XXXXX`). Java's value-key extractor
+leaves ByteString unnormalized for `KeyComparisons`; this is a source-derived
+cause, not a captured Java stack. The equivalent AND form and OR cursor 0 are
+working controls, and every other Java cursor remains a success assertion.
+Go retains exact byte ordering and all AND/OR pages at sizes 1, 2 and 3;
+no stored-format change or Go query restriction follows from the Java bug.
+See DIVERGENCES.md for the precise fixture and comparison path.
+
 ## Sources and verification
 
 The concrete boundaries above can be checked in:

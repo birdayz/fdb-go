@@ -973,6 +973,39 @@ explained above; it is not an assertion that Java selects the same omitted-PK pl
 root `(ID,B)` suffix, and B alone is not ordered (`TestFanOutElementNameDoesNotTrimRootPrimaryKey`
 and `TestFDB_OtelFanOutElementNameDoesNotTrimRootPK`).
 
+### BYTES ordered-union execution in Java 4.14.2.0
+
+**Java.** Planning a fan-out keyset union does not guarantee it can execute a
+BYTES tie-breaker. On the public `OTEL_V1` template, `OtelSQLShapesJavaProbe`'s
+OR cursor 1 is `(start_ns=200, trace_id=X'01000000000000000000000000000000',
+span_id=X'00000000000000ff')`. Java selects three reverse covering
+`SPANS_STR_ATTR` scans with `COMPARE BY (_.START_NS, _.TRACE_ID, _.SPAN_ID)`.
+The trace-lower and span-lower legs both contain time-200 rows, so merging must
+compare BYTES trace IDs. Execution fails with `java.lang.ClassCastException`,
+SQLSTATE `XXXXX`: `ByteString$LiteralByteString` cannot be cast to `Comparable`.
+The same fixture's AND cursors all succeed; OR cursor 0 succeeds with only one
+nonempty leg. This is not a blanket restriction on BYTES ordering or OR queries.
+
+**Source-derived cause.** In Java 4.14.2.0,
+`RecordQuerySetPlan.ComparisonKeyFunction.OnValues.apply` (`:409–417`) retains
+raw `FieldValue.eval` results; `FieldValue.java:206–208` leaves BYTES as
+`ByteString`. `UnionCursor.java:114` calls `KeyComparisons.KEY_COMPARATOR`,
+whose field comparator handles `byte[]` but casts ByteString to `Comparable`
+(`KeyComparisons.java:35–49`). The `OnKeyExpression` path instead calls
+`toTupleAppropriateList`, normalizing ByteString to byte[]. These are source
+sites, not captured Java stack frames; the probe received the structured root
+exception. Java's residual predicate comparator handles ByteString correctly.
+
+**Go and regression boundary.** Go keeps unsigned byte ordering and changes no
+stored format. The probe requires exact rows for every Go AND/OR cursor before
+running Java, and pins the exact Java exception class, full class, SQLSTATE and
+message only for the cursor above. Every other Java cursor must return the
+explicit expected suffix, including the later OR cursors; no other error is
+accepted. `TestFDB_OtelTemplateV1` additionally walks both Go forms at page sizes
+1, 2 and 3 through exhaustion, checking exact identities, ties, NUL/high bytes
+and no duplicates. Java's pinned-version execution defect is tracked in TODO;
+no upstream issue has been filed from this work.
+
 ### Plan choice: an IN ordered by a key no probe provides is probed and sorted (RFC-257 WS-F F-7c)
 
 **Divergence.** `SELECT * FROM T1 WHERE col1 IN (10, 20) ORDER BY id` over an index `I1 (col1)`: Java plans `SCAN([IS T1]) | FILTER _.COL1 IN ...`, Go `InMemorySort([ID ASC], Fetch(InJoin(IndexScan(I1, [=] COVERING))))`; likewise with 25 values and over `T5` (`w8_in_union_explain`, `w8_in25_order_by_id_explain`, `w8_tie_in_order_by_id_explain`, declared `DIFF-PATH in-memory-sort`). Rows are identical.

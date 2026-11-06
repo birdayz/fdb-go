@@ -5,6 +5,7 @@ package conformance_test
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -214,7 +215,7 @@ var _ = Describe("OtelSQLShapesJavaProbe", func() {
 		}
 	})
 
-	It("orders binary identity keyset pages on the public catalog in both engines", func() {
+	It("orders public-catalog binary keysets in Go and pins Java's tied-union failure", func() {
 		ctx := context.Background()
 		env, err := SetupTenantEnvironment(ctx, sharedContainer, fmt.Sprintf("otelbytes_%s", uuid.New().String()))
 		Expect(err).NotTo(HaveOccurred())
@@ -250,22 +251,22 @@ var _ = Describe("OtelSQLShapesJavaProbe", func() {
 		setup = append(setup, fmt.Sprintf("INSERT INTO spans (trace_id, span_id, start_ns, str_attrs) VALUES (X'%x',X'%x',400,[('span','binary-page','no')])", binaryID(16, 0xff, 0), binaryID(8, 0xff, 0)))
 		const query = "SELECT s.trace_id, s.span_id, s.start_ns FROM spans AS s WHERE EXISTS (SELECT 1 FROM s.str_attrs AS a WHERE a.scope = 'span' AND a.attr_key = 'binary-page' AND a.str_value = 'yes')"
 		const order = " ORDER BY s.start_ns DESC, s.trace_id DESC, s.span_id DESC"
-		for _, form := range []string{"AND", "OR"} {
-			for cursor := -1; cursor < len(want); cursor++ {
-				where := ""
-				if cursor >= 0 {
-					row := want[cursor]
-					if form == "AND" {
-						where = fmt.Sprintf(" AND s.start_ns <= %d AND (s.start_ns < %d OR s.trace_id < X'%x' OR (s.trace_id = X'%x' AND s.span_id < X'%x'))", row.start, row.start, row.trace, row.trace, row.span)
-					} else {
-						where = fmt.Sprintf(" AND (s.start_ns < %d OR (s.start_ns = %d AND (s.trace_id < X'%x' OR (s.trace_id = X'%x' AND s.span_id < X'%x'))))", row.start, row.start, row.trace, row.trace, row.span)
+		for _, runner := range []struct {
+			name   string
+			runner plandiff.SetupRunner
+		}{{"Go", goRunner}, {"Java", javaRunner}} {
+			for _, form := range []string{"AND", "OR"} {
+				for cursor := -1; cursor < len(want); cursor++ {
+					where := ""
+					if cursor >= 0 {
+						row := want[cursor]
+						if form == "AND" {
+							where = fmt.Sprintf(" AND s.start_ns <= %d AND (s.start_ns < %d OR s.trace_id < X'%x' OR (s.trace_id = X'%x' AND s.span_id < X'%x'))", row.start, row.start, row.trace, row.trace, row.span)
+						} else {
+							where = fmt.Sprintf(" AND (s.start_ns < %d OR (s.start_ns = %d AND (s.trace_id < X'%x' OR (s.trace_id = X'%x' AND s.span_id < X'%x'))))", row.start, row.start, row.trace, row.trace, row.span)
+						}
 					}
-				}
-				q := query + where + order
-				for _, runner := range []struct {
-					name   string
-					runner plandiff.SetupRunner
-				}{{"Java", javaRunner}, {"Go", goRunner}} {
+					q := query + where + order
 					planResult := runner.runner.RunWithSetup(ctx, otelsql.TemplateBody, setup, "EXPLAIN "+q)
 					Expect(planResult.Err).NotTo(HaveOccurred(), "%s %s cursor %d", runner.name, form, cursor)
 					Expect(planResult.Rows.Rows).To(HaveLen(1))
@@ -287,6 +288,18 @@ var _ = Describe("OtelSQLShapesJavaProbe", func() {
 						Expect(plan).NotTo(ContainSubstring("∪"))
 					}
 					result := runner.runner.RunWithSetup(ctx, otelsql.TemplateBody, setup, q)
+					if runner.name == "Java" && form == "OR" && cursor == 1 {
+						// Java 4.14.2.0 compares tied union keys as Comparable without normalizing ByteString.
+						// Only this cursor has two nonempty time-200 legs; all other shapes must return rows.
+						Expect(result.Err).To(HaveOccurred())
+						var javaErr *plandiff.JavaError
+						Expect(errors.As(result.Err, &javaErr)).To(BeTrue())
+						Expect(javaErr.ExceptionClass).To(Equal("ClassCastException"))
+						Expect(javaErr.ExceptionFullClass).To(Equal("java.lang.ClassCastException"))
+						Expect(javaErr.SQLState).To(Equal("XXXXX"))
+						Expect(javaErr.Message).To(Equal("class com.google.protobuf.ByteString$LiteralByteString cannot be cast to class java.lang.Comparable (com.google.protobuf.ByteString$LiteralByteString is in unnamed module of loader 'app'; java.lang.Comparable is in module java.base of loader 'bootstrap')"))
+						continue
+					}
 					Expect(result.Err).NotTo(HaveOccurred(), "%s %s cursor %d", runner.name, form, cursor)
 					Expect(result.Rows.Rows).To(HaveLen(len(want) - cursor - 1))
 					for i, row := range result.Rows.Rows {

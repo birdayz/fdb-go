@@ -3614,6 +3614,13 @@ these claims; the implementation notes below are not controlled comparisons.
   filtering before promising indexed same-event/same-link searches. Current
   OTel probes cover one attribute array; unnest joins remain scan/explode paths
   in both engines (Java issue #3896).
+- [ ] Track Java 4.14.2.0's BYTES ordered-union comparator defect and decide
+  upstream reporting (no issue filed here). `OtelSQLShapesJavaProbe` OR cursor 1
+  on `OTEL_V1` has two time-200 legs: `ComparisonKeyFunction.OnValues` retains
+  ByteString and `KeyComparisons.java:49` casts it to Comparable, producing
+  ClassCastException / SQLSTATE XXXXX. On a pinned-version update, re-evaluate
+  this exact case and replace its strict error pin with exact suffix rows only
+  when fixed; preserve every Go page/cursor and Java's working controls.
 
 ## TEXT SQL access paths
 
