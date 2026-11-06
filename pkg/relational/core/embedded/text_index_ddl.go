@@ -102,6 +102,11 @@ func textIndexScalarColumns(key *gen.KeyExpression) ([]string, bool) {
 		if key.Field.GetFieldName() == "" || key.Field.GetFanType() != gen.Field_SCALAR {
 			return nil, false
 		}
+		// NOT_NULL substitutes protobuf defaults for absent fields, but SQL reads NULL.
+		// Matching only the name would consume predicates with different truth values.
+		if key.Field.GetNullInterpretation() == gen.Field_NOT_NULL {
+			return nil, false
+		}
 		return []string{recordlayer.ToUserIdentifier(key.Field.GetFieldName())}, true
 	case key.Then != nil:
 		var columns []string

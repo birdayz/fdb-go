@@ -27,9 +27,13 @@ access requires matching name and version **0**: a current option above zero
 cannot prove all historical postings were rewritten. Such indexes retain record
 filtering, even when their option equals the tokenizer's maximum. SQL access also
 requires direct scalar key coordinates; nested, computed and fan-out keys retain
-record filtering rather than borrowing flattened column names. A quoted flat
-dotted column is one coordinate, not a nested path. Lower-level Record Layer comparisons retain
-Java's index-bound versus fallback tokenizer/version resolution. SQL sorting and
+record filtering rather than borrowing flattened column names. Metadata-created
+`NOT_NULL` text or grouping coordinates also retain record filtering: Java's
+`FieldKeyExpression.evaluateMessage` substitutes protobuf defaults for absent
+fields, while SQL reads those fields as NULL. Ordinary `NULL` and `NULL_UNIQUE`
+coordinates remain eligible; neither stored postings nor FULLTEXT DDL change.
+A quoted flat dotted column is one coordinate, not a nested path. Lower-level
+Record Layer comparisons retain Java's index-bound versus fallback tokenizer/version resolution. SQL sorting and
 residual filtering reuse the ordinary query operators above a text access path;
 Java's classic Record Layer text planner itself declines requested sorts.
 

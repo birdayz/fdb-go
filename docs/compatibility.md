@@ -80,7 +80,12 @@ ORDER BY id DESC LIMIT 20
 `PARTITION BY` is optional. DDL requires exactly one scalar STRING text column;
 partition columns must be scalar (including UUID, but not structs or arrays).
 SQL text access requires direct scalar metadata key coordinates: nested,
-computed and fan-out expressions retain ordinary record filtering. A quoted
+computed and fan-out expressions retain ordinary record filtering. Metadata
+coordinates with `NOT_NULL` null interpretation also retain record filtering,
+because their protobuf-default substitution for absent fields is not SQL NULL
+semantics. This includes grouping fields and text fields with nonempty declared
+defaults. Ordinary `NULL` and `NULL_UNIQUE` coordinates remain eligible, including
+FULLTEXT DDL's ordinary fields; existing index maintenance is unchanged. A quoted
 flat dotted column remains one column, not a nested field path.
 The tokenized column must not also be part of
 the primary key: normal primary-key trimming would replace the recoverable key
