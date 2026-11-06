@@ -51,11 +51,8 @@ func executeTextIndexScan(ctx context.Context, p *plans.RecordQueryTextIndexPlan
 	if idx == nil || idx.Type != recordlayer.IndexTypeText {
 		return nil, &predicates.TextComparisonError{Message: "text index plan requires a TEXT index"}
 	}
-	if !store.IsIndexReadable(idx.Name) {
-		return nil, &recordlayer.IndexNotReadableError{IndexName: idx.Name, CurrentState: store.GetIndexState(idx.Name)}
-	}
-	if idx.HasFilteringPredicate() {
-		return nil, &FilteredIndexPlanError{IndexName: idx.Name}
+	if err := requireReadableQueryIndex(store, idx); err != nil {
+		return nil, err
 	}
 	layout, err := recordlayer.DescribeTextIndex(idx)
 	if err != nil {

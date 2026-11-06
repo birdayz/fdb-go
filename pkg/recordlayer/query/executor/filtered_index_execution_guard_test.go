@@ -138,15 +138,19 @@ func TestExecutePlanRejectsFilteredIndexesAtEveryIndexLeaf(t *testing.T) {
 
 func TestExecutePlanTransactionalIndexState(t *testing.T) {
 	t.Parallel()
-	for _, route := range []string{"value", "aggregate", "vector"} {
+	for _, route := range []string{"value", "aggregate", "vector", "text"} {
 		for _, conflictCheck := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/conflict=%t", route, conflictCheck), func(t *testing.T) {
 				t.Parallel()
 				ctx := context.Background()
 				seed := setupStore(t,
 					recordlayer.NewCountIndex("state_count", recordlayer.GroupAll(recordlayer.Field("price"))),
-					recordlayer.NewVectorIndex("state_vector", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2))
-				insertOrders(t, seed, withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(20)}, "price", "quantity"))
+					recordlayer.NewVectorIndex("state_vector", recordlayer.KeyWithValue(recordlayer.Field("vector_data"), 0), 2),
+					recordlayer.NewTextIndex("state_text", recordlayer.Nest("flower", recordlayer.Field("type"))))
+				insertOrders(t, seed, withVector(&demopb.Order{OrderId: proto.Int64(1), Price: proto.Int32(10), Quantity: proto.Int32(20), Flower: &demopb.Flower{Type: proto.String("red blue")}}, "price", "quantity"))
+				if route == "text" {
+					insertOrders(t, seed, &demopb.Order{OrderId: proto.Int64(2), Flower: &demopb.Flower{Type: proto.String("green")}})
+				}
 				orderType := PositionalTypeForRecordLayout((&demopb.Order{}).ProtoReflect().Descriptor(), false)
 				name := "order_price_idx"
 				var plan plans.RecordQueryPlan
@@ -168,6 +172,12 @@ func TestExecutePlanTransactionalIndexState(t *testing.T) {
 						&values.ConstantValue{Value: []float64{10, 20}, Typ: values.NewArrayType(false, values.NotNullDouble)},
 						&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}, predicates.ComparisonDistanceRankLessThanOrEq,
 						nil, nil, []string{"Order"}, orderType))
+				case "text":
+					name = "state_text"
+					plan = mustExecutorConstruct(plans.NewRecordQueryTextIndexPlan(name, plans.TextScan{
+						Predicate: &predicates.Comparison{Type: predicates.ComparisonTextContainsAll, Operand: values.LiteralValue("red")},
+						KeyTypes:  []values.Type{values.NullableString},
+					}, orderType, false))
 				}
 				open := func(rtx *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
 					return recordlayer.NewStoreBuilder().SetContext(rtx).SetMetaDataProvider(seed.GetMetaData()).SetSubspace(testSubspace(t)).Open()
@@ -209,12 +219,15 @@ func TestExecutePlanTransactionalIndexState(t *testing.T) {
 					if err != nil || len(rows) != 1 {
 						t.Fatalf("positive route control: rows=%v err=%v", rows, err)
 					}
+					if route == "text" && (len(rows[0].PrimaryKey) != 1 || rows[0].PrimaryKey[0] != int64(1)) {
+						t.Fatalf("TEXT positive control: primary key=%v, want [1]", rows[0].PrimaryKey)
+					}
 					other, err := open(rtx)
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := other.ClearAndMarkIndexWriteOnly(name); err != nil {
-						t.Fatal(err)
+					if changed, err := other.ClearAndMarkIndexWriteOnly(name); err != nil || !changed {
+						t.Fatalf("transition to WRITE_ONLY: changed=%v err=%v", changed, err)
 					}
 					wantState = recordlayer.IndexStateWriteOnly
 				}
