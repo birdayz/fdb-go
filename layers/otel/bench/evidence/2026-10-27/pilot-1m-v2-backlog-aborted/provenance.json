@@ -1,0 +1,172 @@
+{
+  "schema": "otel283_backlog_abort_archive_v1",
+  "created_utc": "2026-10-27T17:38:04.519Z",
+  "run": "rw1m0285",
+  "outcome": "FAILED: independent frozen monitor backlog gate stopped arm; final loader1031 reported after shutdown",
+  "measured_revision": "c7d00bf938edc6cb9a84df4c63b3bbd3ac22dc94",
+  "measured_source_clean": true,
+  "measured_binary_sha256": "e3d5f167aba6c671d31cd278dc16414dcdb784bb36a5f3a516d893f0668f762c",
+  "before_after": {
+    "source_identical": true,
+    "binary_identical": true,
+    "config_identical": true
+  },
+  "frozen_policy_checks": [
+    {
+      "file": "foundationdb.conf",
+      "expected": "6b2b4e0e85fba430d99ea8710778c6776a95326246ae6e45109192327e242b1f",
+      "archived": "6b2b4e0e85fba430d99ea8710778c6776a95326246ae6e45109192327e242b1f"
+    },
+    {
+      "file": "fdb.cluster.seed",
+      "expected": "88eea690f206eac6e9d532cadc882fe4945da0c4aa0f6d6eb55e5ee1615eed3e",
+      "archived": "88eea690f206eac6e9d532cadc882fe4945da0c4aa0f6d6eb55e5ee1615eed3e"
+    },
+    {
+      "file": "resume.sh",
+      "expected": "c31665ed6a47a62c9d6297fe0809ddecc8a5363938e0d7b4805303631ef10129",
+      "archived": "c31665ed6a47a62c9d6297fe0809ddecc8a5363938e0d7b4805303631ef10129"
+    },
+    {
+      "file": "resume-entrypoint.sh",
+      "expected": "ba92031f087e97a8932b8fc11adfbb5cff343f1333fc660dbf291fa8810cc52b",
+      "archived": "ba92031f087e97a8932b8fc11adfbb5cff343f1333fc660dbf291fa8810cc52b"
+    },
+    {
+      "file": "monitor.sh",
+      "expected": "7c4b40694df4c708a31ededfa51d9d5f31b3249e2fc3b1fb194bcb48dd68370c",
+      "archived": "7c4b40694df4c708a31ededfa51d9d5f31b3249e2fc3b1fb194bcb48dd68370c"
+    },
+    {
+      "file": "status-check.jq",
+      "expected": "35de9a2f1c08ecde7a964a52d38dbd878571c78f6f3a8046dc9ecb4158e74df3",
+      "archived": "35de9a2f1c08ecde7a964a52d38dbd878571c78f6f3a8046dc9ecb4158e74df3"
+    },
+    {
+      "file": "readiness.sh",
+      "expected": "bc42d74128c2167bfd2c8e695fe9d1f0cec66eedf6d0dba6e64a5467e4fe9a76",
+      "archived": "bc42d74128c2167bfd2c8e695fe9d1f0cec66eedf6d0dba6e64a5467e4fe9a76"
+    },
+    {
+      "file": "bulk-phase.jq",
+      "expected": "07f953a0b38799fa59c3ac4af28bf622d1a9547b9e7f598db7fb260e7376718d",
+      "archived": "07f953a0b38799fa59c3ac4af28bf622d1a9547b9e7f598db7fb260e7376718d"
+    },
+    {
+      "file": "declare-bulk.sh",
+      "expected": "82e691fec1dcf2eb3206fbd0e560b1c5e368903f9d53dad09f7111525939f3b6",
+      "archived": "82e691fec1dcf2eb3206fbd0e560b1c5e368903f9d53dad09f7111525939f3b6"
+    },
+    {
+      "file": "drain.sh",
+      "expected": "1e9c269b123f86ec15735985a0697bc27710f753c16fa663e08f01839726a140",
+      "archived": "1e9c269b123f86ec15735985a0697bc27710f753c16fa663e08f01839726a140"
+    },
+    {
+      "file": "verify-drain.sh",
+      "expected": "106d24aa023104d455badd1effd211065f3fae0dda6171ca6d1570c3c6116b78",
+      "archived": "106d24aa023104d455badd1effd211065f3fae0dda6171ca6d1570c3c6116b78"
+    }
+  ],
+  "requested_rows": 1000000,
+  "acknowledged_rows": 284544,
+  "ingest_wall_ns": 167995804204,
+  "diagnostic_counters": {
+    "source_runs": 8951,
+    "source_attempts": 8972,
+    "source_replays": 21,
+    "source_timeouts": 56,
+    "source_fresh_retries": 55,
+    "committed_batches": 8892
+  },
+  "monitor": {
+    "records": 23,
+    "status_samples": 17,
+    "raw_status_samples": 17,
+    "final_six": [
+      {
+        "monitor_record_timestamp": "2026-10-27T17:29:53Z",
+        "queue_bytes": 1001646148,
+        "durability_lag_seconds": 64.8526,
+        "backlog_streak": 1
+      },
+      {
+        "monitor_record_timestamp": "2026-10-27T17:30:03Z",
+        "queue_bytes": 1015271756,
+        "durability_lag_seconds": 69.3396,
+        "backlog_streak": 2
+      },
+      {
+        "monitor_record_timestamp": "2026-10-27T17:30:12Z",
+        "queue_bytes": 1031722041,
+        "durability_lag_seconds": 74.4954,
+        "backlog_streak": 3
+      },
+      {
+        "monitor_record_timestamp": "2026-10-27T17:30:22Z",
+        "queue_bytes": 1011368720,
+        "durability_lag_seconds": 78.086,
+        "backlog_streak": 4
+      },
+      {
+        "monitor_record_timestamp": "2026-10-27T17:30:33Z",
+        "queue_bytes": 982366463,
+        "durability_lag_seconds": 82.821,
+        "backlog_streak": 5
+      },
+      {
+        "monitor_record_timestamp": "2026-10-27T17:30:43Z",
+        "queue_bytes": 1005195732,
+        "durability_lag_seconds": 91.2467,
+        "backlog_streak": 6
+      }
+    ],
+    "latest_raw_controller_epoch": 1793122248,
+    "latest_raw_controller_time": "2026-10-27T17:30:48.000Z",
+    "abort_record": {
+      "type": "abort",
+      "timestamp": "2026-10-27T17:30:48Z",
+      "reason": "Queue and lag exceeded frozen gates for six consecutive samples"
+    },
+    "stopped_marker": "2026-10-27T17:30:53Z",
+    "bulk_status_samples": 16,
+    "warning_exception_samples": 9
+  },
+  "load_outcome": {
+    "run": "rw1m0285",
+    "instance": "48079ee45727da5eb9a08ff531df8a447243dad6481f7c5e35c5bbdb3f92ec16",
+    "source_revision": "c7d00bf938edc6cb9a84df4c63b3bbd3ac22dc94",
+    "started": "2026-10-27T17:28:13Z",
+    "ended": "2026-10-27T17:31:01Z",
+    "exit_code": 1,
+    "ingest_receipt": "/tmp/fdb-hotelbench.VxNArC/pilot1m-v2-timeout-recovery/ingest.json",
+    "ingest_receipt_sha256": "7043e29cd7bc9cebf5536f2142e32ee976eed5c22445cc166eae257ab57ef6fa",
+    "note": "Finalized load outcome only; population requires independent source audit. Sole batch-probe warning may be admitted only during the declared bounded bulk phase."
+  },
+  "completed_population": false,
+  "strict_final_drain": false,
+  "independent_source_audit": false,
+  "ready_population": false,
+  "query_campaign": false,
+  "post_stop_fdb_status_missing": true,
+  "post_stop_physical_measurement_missing": true,
+  "missing_is_not_zero": true,
+  "validation": {
+    "tests": 249,
+    "passed": 249,
+    "failed": 0,
+    "commands": 483,
+    "expected_success": 48,
+    "expected_rejection": 201,
+    "pure_file_only": true
+  },
+  "raw_regular_files": 1551,
+  "raw_symlinks": 2,
+  "exclusions": [
+    "Docker inspect/environment dumps and process state files",
+    "Previously archived failed arms not duplicated; only15 raw policy inputs required by249validation are included"
+  ],
+  "portability": "Original /tmp paths and2 adversarial absolute symlink targets are local provenance; do not execute extracted commands or follow links blindly. Reproduction requires fresh owned paths and original source/binary/config/instance/run/approval guards.",
+  "pilot_volume": "Data retained; no DB/service/volume action during archiving",
+  "no_performance_or_competitive_claim": true
+}

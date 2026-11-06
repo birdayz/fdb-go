@@ -423,7 +423,7 @@ func (d *FDBDatabase) runContexts(ctx context.Context, policy attemptPolicy, rou
 func (d *FDBDatabase) precommit(recordCtx *FDBRecordContext, result any, commitStart *time.Time) (any, error) {
 	// EventCommit spans the pre-commit checks plus the commit itself, which is
 	// the interval Java measures: startTimeNanos is taken at the first line of
-	// commitAsync, before runCommitChecks, and the event is recorded when the
+	// commitAsync, before commit checks, and the event is recorded when the
 	// commit future completes (FDBRecordContext.java:478, :513-533; the
 	// FDBStoreTimer javadoc at :81-86 says so explicitly). Post-commit hooks
 	// are outside the span in Java and are outside it here.
@@ -433,7 +433,7 @@ func (d *FDBDatabase) precommit(recordCtx *FDBRecordContext, result any, commitS
 	// nothing ever calls Commit, which is why the whole autocommit SQL path
 	// reported zero commits while committing on every statement.
 	*commitStart = time.Now()
-	if err := recordCtx.runCommitChecks(); err != nil {
+	if err := recordCtx.drainCommitChecksAndSealWrites(); err != nil {
 		return nil, err
 	}
 	// Flush queued version mutations before the transactor commits.
@@ -671,6 +671,12 @@ type FDBRecordContext struct {
 	// closeTransaction(false) on both arms of commitAsync); a later commit is
 	// refused as Java's ensureActive refuses it.
 	deactivated atomic.Bool
+
+	// A successful direct commit detaches physical coordination from the
+	// caller's cancellation owner, without changing immutable Context().
+	directCommitOwned  atomic.Bool
+	recordPhysical     recordPhysicalState
+	recordPhysicalHook func(stage string, key []byte)
 
 	// database is the FDBDatabase that opened this context (Java's
 	// FDBRecordContext.getDatabase); nil for a context over an external
@@ -1177,8 +1183,8 @@ func (rc *FDBRecordContext) getCommitCheck(name string) CommitCheckFunc {
 	return nil
 }
 
-// removeCommitCheck cancels a named check that has not started, including one
-// in the current run's snapshot. It does not stop an already executing check.
+// removeCommitCheck cancels a named check that has not started in the live
+// commit drain. It does not stop an already executing check.
 // Store deletion uses this before clearing data to prevent deferred retirement
 // from recreating deleted index-state keys.
 func (rc *FDBRecordContext) removeCommitCheck(name string) {
@@ -1212,27 +1218,25 @@ func (rc *FDBRecordContext) AddPostCommit(hook PostCommitFunc) {
 	rc.postCommits = append(rc.postCommits, hook)
 }
 
-// runCommitChecks runs all registered pre-commit checks.
-// Returns the first error encountered, or nil if all pass.
-// Called at commit time when all goroutines should be done. Registration state
-// is locked, but checks run without the lock so they can cancel pending checks.
-func (rc *FDBRecordContext) runCommitChecks() error {
-	rc.commitMu.Lock()
-	checks := make([]*commitCheckRegistration, len(rc.commitChecks))
-	copy(checks, rc.commitChecks)
-	rc.commitMu.Unlock()
-	for _, entry := range checks {
+// runPendingCommitChecks drains registrations exactly once for one commit,
+// including checks registered by checks or joined record writers.
+func (rc *FDBRecordContext) runPendingCommitChecks(checked *int) error {
+	for {
 		rc.commitMu.Lock()
+		if *checked == len(rc.commitChecks) {
+			rc.commitMu.Unlock()
+			return nil
+		}
+		entry := rc.commitChecks[*checked]
+		*checked++
 		active := entry.active
 		rc.commitMu.Unlock()
-		if !active {
-			continue
-		}
-		if err := entry.check(); err != nil {
-			return err
+		if active {
+			if err := entry.check(); err != nil {
+				return err
+			}
 		}
 	}
-	return nil
 }
 
 // runPostCommits runs all registered post-commit callbacks.
@@ -1410,13 +1414,14 @@ func (rc *FDBRecordContext) CommitWithVersionstamp() ([]byte, error) {
 	if rc.routeOwned || !rc.deactivated.CompareAndSwap(false, true) {
 		return nil, errTransactionNotActive()
 	}
+	rc.directCommitOwned.Store(true)
 	// Include pre-commit checks in the commit span, but not post-commit hooks.
 	commitStart := time.Now()
-	if err := rc.runCommitChecks(); err != nil {
+	if err := rc.drainCommitChecksAndSealWrites(); err != nil {
+		rc.tx.Cancel()
 		rc.Timer().RecordSince(EventCommit, commitStart)
 		return nil, err
 	}
-
 	rc.flushVersionMutations()
 
 	// Only request versionstamp future if we actually queued versionstamp mutations.
@@ -1428,6 +1433,7 @@ func (rc *FDBRecordContext) CommitWithVersionstamp() ([]byte, error) {
 	}
 
 	if err := rc.tx.Commit().Get(); err != nil {
+		rc.tx.Cancel()
 		rc.Timer().RecordSince(EventCommit, commitStart)
 		return nil, err
 	}

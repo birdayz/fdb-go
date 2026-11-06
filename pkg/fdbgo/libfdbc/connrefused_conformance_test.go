@@ -45,11 +45,13 @@ const crReadLifeVersions = "60000000"
 // crFixture is the seeded keyspace and the cluster file both clients open.
 type crFixture struct {
 	clusterFile string
+	native      cgofdb.Database // owned uncached handle; never close a borrowed cache entry
 	container   *foundationdbtc.Container
 	prefix      []byte
 	n           int
 	valueSize   int
 	double      bool
+	plan        crBootstrapPlan
 }
 
 func (f crFixture) key(i int) []byte {
@@ -142,10 +144,8 @@ func startCRCluster(t *testing.T, ctx context.Context, f *crFixture, opts ...tes
 	t.Helper()
 	startup, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
+	opts = append(opts, crClusterOptions()...)
 	opts = append(opts, foundationdbtc.WithKnob("max_read_transaction_life_versions", crReadLifeVersions))
-	if f.double {
-		opts = append(opts, foundationdbtc.WithoutInit())
-	}
 	container, err := foundationdbtc.Run(startup, "", append([]testcontainers.ContainerCustomizer{foundationdbtc.WithDirectIP()}, opts...)...)
 	if err != nil {
 		if foundationdbtc.SkipWithoutDocker(err) {
@@ -158,8 +158,9 @@ func startCRCluster(t *testing.T, ctx context.Context, f *crFixture, opts ...tes
 		defer cancel()
 		foundationdbtc.TerminateT(t, stop, container)
 	})
+	replicas := 1
 	if f.double {
-		bootstrapCRDouble(t, startup, container)
+		replicas = 2
 	}
 	content, err := container.ClusterFile(startup)
 	if err != nil {
@@ -176,6 +177,12 @@ func startCRCluster(t *testing.T, ctx context.Context, f *crFixture, opts ...tes
 		t.Fatal(err)
 	}
 	t.Cleanup(backend.Close)
+	f.native, err = cgofdb.OpenWithConnectionString(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(f.native.Close)
+	f.plan = bootstrapCRCluster(t, startup, container, f.native, replicas)
 	db, err := gofdb.OpenDatabase(f.clusterFile)
 	if err != nil {
 		t.Fatal(err)
@@ -193,34 +200,279 @@ func startCRCluster(t *testing.T, ctx context.Context, f *crFixture, opts ...tes
 	}
 }
 
-// Dedicated logs must exist before initial recruitment: storage-class processes
-// otherwise take log roles and cannot safely form the two-process fault team.
-func bootstrapCRDouble(t *testing.T, ctx context.Context, container *foundationdbtc.Container) {
+// Stateless is StorageNeverAssign even in critical recruitment (Locality.cpp).
+const crPrimaryClass = "stateless"
+
+func crClusterOptions() []testcontainers.ContainerCustomizer {
+	return []testcontainers.ContainerCustomizer{
+		foundationdbtc.WithoutInit(),
+		testcontainers.WithEnv(map[string]string{"FDB_PROCESS_CLASS": crPrimaryClass}),
+	}
+}
+
+type crProcess struct {
+	address, class, locality, directory, command string
+}
+
+type crBootstrapPlan struct {
+	primary   string
+	replicas  int
+	processes []crProcess
+}
+
+func crPlan(host string, basePort, replicas int) (crBootstrapPlan, error) {
+	if replicas != 1 && replicas != 2 {
+		return crBootstrapPlan{}, fmt.Errorf("unsupported refusal replica count %d", replicas)
+	}
+	plan := crBootstrapPlan{primary: net.JoinHostPort(host, strconv.Itoa(basePort)), replicas: replicas}
+	for i := 0; i < 3+replicas; i++ {
+		class := "log"
+		if i >= 3 {
+			class = "storage"
+		}
+		port := basePort + i + 1
+		p := crProcess{
+			address: net.JoinHostPort(host, strconv.Itoa(port)), class: class,
+			locality: fmt.Sprintf("connrefused-%d", port), directory: fmt.Sprintf("/var/fdb/data/connrefused%d", i+1),
+		}
+		p.command = fmt.Sprintf(
+			"mkdir -p %s && fdbserver --listen-address 0.0.0.0:%d --public-address %s "+
+				"--cluster-file /var/fdb/fdb.cluster --datadir %s --logdir /var/fdb/logs "+
+				"--class %s --locality-zoneid=%s --locality-machineid=%s "+
+				"--knob_disable_posix_kernel_aio=1 --knob_max_read_transaction_life_versions=%s "+
+				">/var/fdb/logs/connrefused%d.out 2>&1 &",
+			p.directory, port, p.address, p.directory, p.class, p.locality, p.locality, crReadLifeVersions, i+1)
+		plan.processes = append(plan.processes, p)
+	}
+	return plan, nil
+}
+
+type crRole struct {
+	Role string `json:"role"`
+}
+
+type crWorkerStatus struct {
+	Address  string `json:"address"`
+	Class    string `json:"class_type"`
+	Locality struct {
+		Process string `json:"processid"`
+		Zone    string `json:"zoneid"`
+		Machine string `json:"machineid"`
+	} `json:"locality"`
+	Roles []crRole `json:"roles"`
+}
+
+type crClusterStatus struct {
+	Cluster struct {
+		Processes     map[string]crWorkerStatus `json:"processes"`
+		Configuration struct {
+			Redundancy string `json:"redundancy_mode"`
+		} `json:"configuration"`
+	} `json:"cluster"`
+}
+
+// Postconfiguration status checks public class/locality/roles, not the hidden
+// recoveredDiskFiles flag that native recruitment checks.
+func crCheckWorkers(raw []byte, plan crBootstrapPlan, recruited bool) (bool, error) {
+	var status crClusterStatus
+	if err := json.Unmarshal(raw, &status); err != nil {
+		return false, fmt.Errorf("decode refusal workers: %w", err)
+	}
+	if len(status.Cluster.Processes) == 0 {
+		return false, nil
+	}
+	expected := map[string]crProcess{plan.primary: {address: plan.primary, class: crPrimaryClass}}
+	for _, p := range plan.processes {
+		expected[p.address] = p
+	}
+	addresses, identities := make(map[string]bool), make(map[string]bool)
+	zones, machines := make(map[string]bool), make(map[string]bool)
+	ready := true
+	for id, worker := range status.Cluster.Processes {
+		if id == "" || worker.Address == "" || worker.Class == "" || worker.Locality.Process == "" || worker.Locality.Zone == "" || worker.Locality.Machine == "" {
+			ready = false
+			continue
+		}
+		if addresses[worker.Address] || identities[worker.Locality.Process] {
+			return false, fmt.Errorf("duplicate refusal worker address or process identity: %q", worker.Address)
+		}
+		addresses[worker.Address], identities[worker.Locality.Process] = true, true
+		if zones[worker.Locality.Zone] || machines[worker.Locality.Machine] {
+			return false, fmt.Errorf("duplicate refusal worker zone or machine locality: %q", worker.Address)
+		}
+		zones[worker.Locality.Zone], machines[worker.Locality.Machine] = true, true
+		p, ok := expected[worker.Address]
+		if !ok {
+			return false, fmt.Errorf("unplanned refusal worker %q", worker.Address)
+		}
+		if worker.Class != p.class || p.locality != "" && (worker.Locality.Zone != p.locality || worker.Locality.Machine != p.locality) {
+			return false, fmt.Errorf("worker %s class/locality does not match bootstrap plan", worker.Address)
+		}
+		if !recruited {
+			continue
+		}
+		if p.class == crPrimaryClass {
+			for _, role := range worker.Roles {
+				if role.Role == "storage" {
+					return false, fmt.Errorf("stateless primary %s acquired storage", worker.Address)
+				}
+			}
+			continue
+		}
+		if len(worker.Roles) == 0 {
+			ready = false
+		}
+		for _, role := range worker.Roles {
+			if role.Role != p.class {
+				return false, fmt.Errorf("planned %s worker %s has unexpected role %q", p.class, worker.Address, role.Role)
+			}
+		}
+	}
+	for address := range expected {
+		if !addresses[address] {
+			ready = false
+		}
+	}
+	mode := status.Cluster.Configuration.Redundancy
+	if !recruited && mode != "" {
+		return false, fmt.Errorf("refusal cluster configured before worker registration check")
+	}
+	if recruited {
+		want := "single"
+		if plan.replicas == 2 {
+			want = "double"
+		}
+		if mode != "" && mode != want {
+			return false, fmt.Errorf("refusal redundancy %q, want %q", mode, want)
+		}
+		ready = ready && mode == want
+	}
+	return ready, nil
+}
+
+func crAwaitWorkers(ctx context.Context, plan crBootstrapPlan, recruited bool, status func(context.Context) (string, string, error)) error {
+	var stdout, stderr string
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("await refusal workers: %w\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+		}
+		var err error
+		stdout, stderr, err = status(ctx)
+		if err != nil {
+			return fmt.Errorf("read refusal worker status: %w\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+		}
+		ready, err := crCheckWorkers([]byte(stdout), plan, recruited)
+		if err != nil {
+			return fmt.Errorf("%w\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+		}
+		if ready {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+const crWorkerInterfacesPrefix = "\xff\xff/worker_interfaces/"
+
+// API 730 dispatches this exact special-key module to getClientWorkers, not
+// status or a system-key read (ReadYourWrites.actor.cpp:1606-1629,1715-1720).
+func crNativeWorkerInterfaces(ctx context.Context, db cgofdb.Database) ([]cgofdb.KeyValue, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	tr, err := db.CreateTransaction()
+	if err != nil {
+		return nil, err
+	}
+	defer tr.Cancel()
+	stop := context.AfterFunc(ctx, tr.Cancel)
+	defer stop()
+	if err := tr.Options().SetTimeout(crMetadataTimeout(ctx)); err != nil {
+		return nil, err
+	}
+	return tr.GetRange(cgofdb.KeyRange{Begin: cgofdb.Key(crWorkerInterfacesPrefix), End: cgofdb.Key("\xff\xff/worker_interfaces0")}, cgofdb.RangeOptions{}).GetSliceWithError()
+}
+
+// The CC map snapshot proves registered addresses only, not class, locality or
+// recoveredDiskFiles. Those public postconfiguration fields are checked later.
+func crCheckWorkerInterfaces(plan crBootstrapPlan, workers []cgofdb.KeyValue) (bool, error) {
+	if plan.primary == "" || (plan.replicas != 1 && plan.replicas != 2) || len(plan.processes) != 3+plan.replicas {
+		return false, fmt.Errorf("invalid refusal registration plan")
+	}
+	expected := map[string]bool{plan.primary: true}
+	for _, p := range plan.processes {
+		if p.address == "" || expected[p.address] {
+			return false, fmt.Errorf("empty or duplicate planned worker address %q", p.address)
+		}
+		expected[p.address] = true
+	}
+	seen := make(map[string]bool)
+	for _, worker := range workers {
+		key := string(worker.Key)
+		if !strings.HasPrefix(key, crWorkerInterfacesPrefix) || len(worker.Value) == 0 {
+			return false, fmt.Errorf("invalid native worker interface key %q or empty interface", key)
+		}
+		address := strings.TrimPrefix(key, crWorkerInterfacesPrefix)
+		if !expected[address] || seen[address] {
+			return false, fmt.Errorf("unplanned or duplicate registered worker %q", address)
+		}
+		seen[address] = true
+	}
+	return len(seen) == len(expected), nil
+}
+
+func crConfigureRegistered(ctx context.Context, plan crBootstrapPlan, workers func(context.Context) ([]cgofdb.KeyValue, error), status func(context.Context) (string, string, error), configure func(context.Context) error) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("await native registered worker interfaces: %w", err)
+		}
+		interfaces, err := workers(ctx)
+		if err != nil {
+			return fmt.Errorf("read native registered worker interfaces: %w", err)
+		}
+		ready, err := crCheckWorkerInterfaces(plan, interfaces)
+		if err != nil {
+			return err
+		}
+		if ready {
+			break
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(2 * time.Second):
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("configure registered refusal workers: %w", err)
+	}
+	if err := configure(ctx); err != nil {
+		return err
+	}
+	return crAwaitWorkers(ctx, plan, true, status)
+}
+
+// LogClass can fall back to StorageWorstFit; reject unexpected roles after recruitment.
+func bootstrapCRCluster(t *testing.T, ctx context.Context, container *foundationdbtc.Container, native cgofdb.Database, replicas int) crBootstrapPlan {
 	t.Helper()
 	host, _, err := net.SplitHostPort(container.InternalAddress())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, class := range []string{"log", "log", "log", "storage", "storage"} {
-		port := container.FDBPort() + i + 1
-		dir := fmt.Sprintf("/var/fdb/data/connrefused%d", i+1)
-		// Double requires distinct zones (ManagementAPI.actor.cpp:309-313).
-		// Defaults share one host-local ID, forcing every team to include the primary.
-		cmd := fmt.Sprintf(
-			"mkdir -p %s && fdbserver --listen-address 0.0.0.0:%d --public-address %s "+
-				"--cluster-file /var/fdb/fdb.cluster --datadir %s --logdir /var/fdb/logs "+
-				"--class %s --locality-zoneid=connrefused-%d --locality-machineid=connrefused-%d "+
-				"--knob_disable_posix_kernel_aio=1 --knob_max_read_transaction_life_versions=%s "+
-				">/var/fdb/logs/connrefused%d.out 2>&1 &",
-			dir, port, net.JoinHostPort(host, strconv.Itoa(port)), dir, class, port, port, crReadLifeVersions, i+1)
-		if _, err := containerExec(ctx, container, cmd); err != nil {
-			t.Fatalf("start dedicated %s process on port %d: %v", class, port, err)
+	plan, err := crPlan(host, container.FDBPort(), replicas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range plan.processes {
+		if _, err := containerExec(ctx, container, p.command); err != nil {
+			t.Fatalf("start dedicated %s process at %s: %v", p.class, p.address, err)
 		}
 		ready, cancel := context.WithTimeout(ctx, 15*time.Second)
 		ticker := time.NewTicker(20 * time.Millisecond)
-		addr := net.JoinHostPort(host, strconv.Itoa(port))
 		for {
-			conn, err := (&net.Dialer{Timeout: time.Second}).DialContext(ready, "tcp", addr)
+			conn, err := (&net.Dialer{Timeout: time.Second}).DialContext(ready, "tcp", p.address)
 			if err == nil {
 				conn.Close()
 				break
@@ -229,21 +481,28 @@ func bootstrapCRDouble(t *testing.T, ctx context.Context, container *foundationd
 			case <-ready.Done():
 				ticker.Stop()
 				cancel()
-				t.Fatalf("dedicated %s process did not listen on %s before configure-new: %v", class, addr, err)
+				t.Fatalf("dedicated %s process did not listen on %s before configure-new: %v", p.class, p.address, err)
 			case <-ticker.C:
 			}
 		}
 		ticker.Stop()
 		cancel()
 	}
-	if err := container.InitializeDatabase(ctx); err != nil {
-		t.Fatalf("initialize double cluster with dedicated log and storage processes: %v", err)
+	// Start all class/locality listeners before INITIALIZE so the native CC census fences
+	// address registration, not disk recovery; query full status only after configuration.
+	if err := crConfigureRegistered(ctx, plan, func(ctx context.Context) ([]cgofdb.KeyValue, error) {
+		return crNativeWorkerInterfaces(ctx, native)
+	}, func(ctx context.Context) (string, string, error) {
+		return crStorageStatus(ctx, container)
+	}, container.InitializeDatabase); err != nil {
+		t.Fatalf("initialize refusal cluster with registered dedicated processes: %v", err)
 	}
+	return plan
 }
 
 // storageAddresses returns the addresses of key's replicas, through a fresh
 // pure-Go handle so no cached location is consulted.
-func storageAddresses(t *testing.T, f crFixture, key []byte) []string {
+func storageAddresses(t *testing.T, ctx context.Context, f crFixture, key []byte) []string {
 	t.Helper()
 	db, err := gofdb.OpenDatabase(f.clusterFile)
 	if err != nil {
@@ -254,6 +513,10 @@ func storageAddresses(t *testing.T, f crFixture, key []byte) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer tr.Cancel()
+	if err := tr.Options().SetTimeout(crMetadataTimeout(ctx)); err != nil {
+		t.Fatal(err)
+	}
 	addrs, err := tr.LocalityGetAddressesForKey(gofdb.Key(key)).Get()
 	if err != nil {
 		t.Fatalf("addresses for %q: %v", key, err)
@@ -261,12 +524,83 @@ func storageAddresses(t *testing.T, f crFixture, key []byte) []string {
 	return addrs
 }
 
-// pickStorageTeam requires the whole team to be non-primary storage processes;
-// killing it must not stop the coordinator, GRV proxy or location proxy.
+func crMetadataTimeout(ctx context.Context) int64 {
+	millis := int64(10000)
+	if deadline, ok := ctx.Deadline(); ok {
+		millis = min(millis, max(int64(1), time.Until(deadline).Milliseconds()))
+	}
+	return millis
+}
+
+func crNativeAddresses(t *testing.T, ctx context.Context, db cgofdb.Database, key []byte) []string {
+	t.Helper()
+	tr, err := db.CreateTransaction()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Cancel()
+	if err := tr.Options().SetTimeout(crMetadataTimeout(ctx)); err != nil {
+		t.Fatal(err)
+	}
+	addrs, err := tr.LocalityGetAddressesForKey(cgofdb.Key(key)).Get()
+	if err != nil {
+		t.Fatalf("native addresses for %q: %v", key, err)
+	}
+	return addrs
+}
+
+func crSameAddresses(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := make(map[string]int)
+	for _, address := range a {
+		counts[address]++
+	}
+	for _, address := range b {
+		counts[address]--
+	}
+	for _, count := range counts {
+		if count != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func crCheckTeam(plan crBootstrapPlan, safe map[string]bool, addresses, native []string) error {
+	if !crSameAddresses(addresses, native) {
+		return fmt.Errorf("Go/native storage addresses disagree: Go=%v native=%v", addresses, native)
+	}
+	if len(addresses) != plan.replicas {
+		return fmt.Errorf("team %v has %d replicas, want %d", addresses, len(addresses), plan.replicas)
+	}
+	planned := make(map[string]bool)
+	for _, p := range plan.processes {
+		if p.class == "storage" {
+			planned[p.address] = true
+		}
+	}
+	seen := make(map[string]bool)
+	for _, address := range addresses {
+		if address == plan.primary || !planned[address] || !safe[address] || seen[address] {
+			return fmt.Errorf("team %v is not distinct planned non-primary storage-only processes", addresses)
+		}
+		seen[address] = true
+	}
+	return nil
+}
+
+// Only the actual planned storage-only team may be killed, never a log/primary fallback.
 func pickStorageTeam(t *testing.T, ctx context.Context, f crFixture, replicas int) (int, []string) {
 	t.Helper()
-	primary := ":" + strconv.Itoa(f.container.FDBPort())
-	deadline := time.Now().Add(2 * time.Minute)
+	if replicas != f.plan.replicas {
+		t.Fatalf("requested %d replicas, bootstrap planned %d", replicas, f.plan.replicas)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	native := f.native
+	var lastTeam error
 	for {
 		status, diagnostic, err := crStorageStatus(ctx, f.container)
 		if err != nil {
@@ -275,29 +609,35 @@ func pickStorageTeam(t *testing.T, ctx context.Context, f crFixture, replicas in
 		if diagnostic != "" {
 			t.Logf("storage role status stderr:\n%s", diagnostic)
 		}
+		ready, err := crCheckWorkers([]byte(status), f.plan, true)
+		if err != nil {
+			t.Fatalf("%v\nstdout:\n%s\nstderr:\n%s", err, status, diagnostic)
+		}
 		safe, err := crStorageOnlyAddresses([]byte(status))
 		if err != nil {
 			t.Fatalf("%v\nstdout:\n%s\nstderr:\n%s", err, status, diagnostic)
 		}
-		for i := range f.n {
-			addrs := storageAddresses(t, f, f.key(i))
-			if len(addrs) != replicas {
-				continue
-			}
-			storageOnly := true
-			for _, a := range addrs {
-				if strings.HasSuffix(a, primary) || !safe[a] {
-					storageOnly = false
+		if ready {
+			for i := range f.n {
+				addrs := storageAddresses(t, ctx, f, f.key(i))
+				caddrs := crNativeAddresses(t, ctx, native, f.key(i))
+				if !crSameAddresses(addrs, caddrs) {
+					t.Fatalf("seed %q: Go/native storage addresses disagree: Go=%v native=%v\nstatus:\n%s", f.key(i), addrs, caddrs, status)
+				}
+				lastTeam = crCheckTeam(f.plan, safe, addrs, caddrs)
+				if lastTeam == nil {
+					t.Logf("seed %q: planned storage-only team Go=%v native=%v", f.key(i), addrs, caddrs)
+					return i, addrs
 				}
 			}
-			if storageOnly {
-				return i, addrs
-			}
 		}
-		if time.Now().After(deadline) || ctx.Err() != nil {
-			t.Fatalf("no seeded key has a team of exactly %d non-primary storage processes; status:\n%s", replicas, status)
+		if ctx.Err() != nil {
+			t.Fatalf("no seeded key has a planned team of exactly %d non-primary storage processes: %v; last team: %v; status:\n%s", replicas, ctx.Err(), lastTeam, status)
 		}
-		time.Sleep(2 * time.Second)
+		select {
+		case <-ctx.Done():
+		case <-time.After(2 * time.Second):
+		}
 	}
 }
 
@@ -735,6 +1075,404 @@ func TestConnectRefusedStorageStatusStreams(t *testing.T) {
 	}
 }
 
+func crBootstrapStatus(plan crBootstrapPlan, recruited bool) crClusterStatus {
+	var status crClusterStatus
+	status.Cluster.Processes = make(map[string]crWorkerStatus)
+	processes := append([]crProcess{{address: plan.primary, class: crPrimaryClass, locality: "primary-locality"}}, plan.processes...)
+	for i, p := range processes {
+		id := fmt.Sprintf("worker-%d", i)
+		worker := crWorkerStatus{Address: p.address, Class: p.class}
+		worker.Locality.Process, worker.Locality.Zone, worker.Locality.Machine = id, p.locality, p.locality
+		if i == 0 {
+			worker.Roles = []crRole{{Role: "coordinator"}}
+		} else if recruited {
+			worker.Roles = []crRole{{Role: p.class}}
+		}
+		status.Cluster.Processes[id] = worker
+	}
+	if recruited {
+		status.Cluster.Configuration.Redundancy = "single"
+		if plan.replicas == 2 {
+			status.Cluster.Configuration.Redundancy = "double"
+		}
+	}
+	return status
+}
+
+func crStatusJSON(t *testing.T, status crClusterStatus) string {
+	t.Helper()
+	raw, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func crEditWorker(status *crClusterStatus, id string, change func(*crWorkerStatus)) {
+	worker := status.Cluster.Processes[id]
+	change(&worker)
+	status.Cluster.Processes[id] = worker
+}
+
+func TestConnectRefusedBootstrapPlan(t *testing.T) {
+	t.Parallel()
+	var request testcontainers.GenericContainerRequest
+	for _, option := range crClusterOptions() {
+		if err := option.Customize(&request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if request.Env["FDB_PROCESS_CLASS"] != "stateless" {
+		t.Fatalf("primary environment: %v", request.Env)
+	}
+	for _, replicas := range []int{1, 2} {
+		plan, err := crPlan("127.0.0.1", 4500, replicas)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.primary != "127.0.0.1:4500" || plan.replicas != replicas || len(plan.processes) != 3+replicas {
+			t.Fatalf("unexpected bootstrap plan: %+v", plan)
+		}
+		seenAddresses, seenDirectories, seenLocalities := make(map[string]bool), make(map[string]bool), make(map[string]bool)
+		for i, p := range plan.processes {
+			wantClass := "log"
+			if i >= 3 {
+				wantClass = "storage"
+			}
+			if p.class != wantClass || p.address != net.JoinHostPort("127.0.0.1", strconv.Itoa(4501+i)) || seenAddresses[p.address] || seenDirectories[p.directory] || seenLocalities[p.locality] {
+				t.Fatalf("non-dedicated bootstrap process: %+v", p)
+			}
+			seenAddresses[p.address], seenDirectories[p.directory], seenLocalities[p.locality] = true, true, true
+			for _, argument := range []string{
+				"--cluster-file /var/fdb/fdb.cluster", "--class " + wantClass,
+				"--public-address " + p.address, "--datadir " + p.directory,
+				"--locality-zoneid=" + p.locality, "--locality-machineid=" + p.locality,
+				"--knob_disable_posix_kernel_aio=1", "--knob_max_read_transaction_life_versions=" + crReadLifeVersions,
+			} {
+				if !strings.Contains(p.command, argument) {
+					t.Fatalf("bootstrap command lacks %q: %s", argument, p.command)
+				}
+			}
+		}
+	}
+	for _, replicas := range []int{0, 3} {
+		if _, err := crPlan("127.0.0.1", 4500, replicas); err == nil {
+			t.Fatalf("accepted unsupported replica count %d", replicas)
+		}
+	}
+}
+
+func crTestWorkerInterfaces(plan crBootstrapPlan) []cgofdb.KeyValue {
+	workers := []cgofdb.KeyValue{{Key: cgofdb.Key(crWorkerInterfacesPrefix + plan.primary), Value: []byte("opaque primary interface")}}
+	for _, p := range plan.processes {
+		workers = append(workers, cgofdb.KeyValue{Key: cgofdb.Key(crWorkerInterfacesPrefix + p.address), Value: []byte("opaque worker interface")})
+	}
+	return workers
+}
+
+func TestConnectRefusedWorkerInterfaces(t *testing.T) {
+	t.Parallel()
+	for _, replicas := range []int{1, 2} {
+		for _, tc := range []struct {
+			name             string
+			change           func(*crBootstrapPlan, *[]cgofdb.KeyValue)
+			ready, wantError bool
+		}{
+			{name: "complete", ready: true},
+			{name: "empty", change: func(_ *crBootstrapPlan, w *[]cgofdb.KeyValue) { *w = nil }},
+			{name: "missing_primary", change: func(_ *crBootstrapPlan, w *[]cgofdb.KeyValue) { *w = (*w)[1:] }},
+			{name: "missing_log", change: func(_ *crBootstrapPlan, w *[]cgofdb.KeyValue) { *w = append((*w)[:1], (*w)[2:]...) }},
+			{name: "missing_storage", change: func(_ *crBootstrapPlan, w *[]cgofdb.KeyValue) { *w = (*w)[:len(*w)-1] }},
+			{name: "duplicate", wantError: true, change: func(_ *crBootstrapPlan, w *[]cgofdb.KeyValue) { *w = append(*w, (*w)[0]) }},
+			{name: "unexpected", wantError: true, change: func(_ *crBootstrapPlan, w *[]cgofdb.KeyValue) {
+				(*w)[0].Key = cgofdb.Key(crWorkerInterfacesPrefix + "127.0.0.1:9999")
+			}},
+			{name: "wrong_prefix", wantError: true, change: func(_ *crBootstrapPlan, w *[]cgofdb.KeyValue) {
+				(*w)[0].Key = cgofdb.Key("worker_interfaces/127.0.0.1:4500")
+			}},
+			{name: "empty_address", wantError: true, change: func(_ *crBootstrapPlan, w *[]cgofdb.KeyValue) { (*w)[0].Key = cgofdb.Key(crWorkerInterfacesPrefix) }},
+			{name: "empty_interface", wantError: true, change: func(_ *crBootstrapPlan, w *[]cgofdb.KeyValue) { (*w)[0].Value = nil }},
+			{name: "empty_primary", wantError: true, change: func(p *crBootstrapPlan, _ *[]cgofdb.KeyValue) { p.primary = "" }},
+			{name: "invalid_replicas", wantError: true, change: func(p *crBootstrapPlan, _ *[]cgofdb.KeyValue) { p.replicas = 3 }},
+			{name: "wrong_process_count", wantError: true, change: func(p *crBootstrapPlan, _ *[]cgofdb.KeyValue) { p.processes = p.processes[1:] }},
+			{name: "empty_planned_address", wantError: true, change: func(p *crBootstrapPlan, _ *[]cgofdb.KeyValue) { p.processes[0].address = "" }},
+			{name: "duplicate_planned_address", wantError: true, change: func(p *crBootstrapPlan, _ *[]cgofdb.KeyValue) { p.processes[0].address = p.primary }},
+		} {
+			t.Run(fmt.Sprintf("%d/%s", replicas, tc.name), func(t *testing.T) {
+				plan, err := crPlan("127.0.0.1", 4500, replicas)
+				if err != nil {
+					t.Fatal(err)
+				}
+				workers := crTestWorkerInterfaces(plan)
+				if tc.change != nil {
+					tc.change(&plan, &workers)
+				}
+				ready, err := crCheckWorkerInterfaces(plan, workers)
+				if ready != tc.ready || (err != nil) != tc.wantError {
+					t.Fatalf("ready=%v err=%v, want ready=%v error=%v", ready, err, tc.ready, tc.wantError)
+				}
+			})
+		}
+	}
+}
+
+func TestConnectRefusedBootstrapOrder(t *testing.T) {
+	t.Parallel()
+	plan, err := crPlan("127.0.0.1", 4500, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("phase failed")
+	for _, phase := range []string{"complete", "empty", "missing", "native_error", "invalid_interface", "invalid_key", "unexpected_worker", "duplicate_worker", "canceled_census", "configure_error", "missing_post", "malformed_post", "status_error", "expired"} {
+		t.Run(phase, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if phase == "expired" {
+				cancel()
+			}
+			var order []string
+			err := crConfigureRegistered(ctx, plan, func(context.Context) ([]cgofdb.KeyValue, error) {
+				order = append(order, "registered")
+				workers := crTestWorkerInterfaces(plan)
+				switch phase {
+				case "empty":
+					cancel()
+					return nil, nil
+				case "missing":
+					cancel()
+					return workers[:len(workers)-1], nil
+				case "native_error":
+					return nil, failure
+				case "invalid_interface":
+					workers[0].Value = nil
+				case "invalid_key":
+					workers[0].Key = cgofdb.Key("wrong module")
+				case "unexpected_worker":
+					workers[0].Key = cgofdb.Key(crWorkerInterfacesPrefix + "127.0.0.1:9999")
+				case "duplicate_worker":
+					workers = append(workers, workers[0])
+				case "canceled_census":
+					cancel()
+				}
+				return workers, nil
+			}, func(context.Context) (string, string, error) {
+				order = append(order, "recruited")
+				switch phase {
+				case "missing_post":
+					cancel()
+					status := crBootstrapStatus(plan, true)
+					delete(status.Cluster.Processes, "worker-4")
+					return crStatusJSON(t, status), "postconfiguration incomplete", nil
+				case "malformed_post":
+					return "{", "malformed status", nil
+				case "status_error":
+					return "partial stdout", "status diagnostic", failure
+				}
+				return crStatusJSON(t, crBootstrapStatus(plan, true)), "", nil
+			}, func(context.Context) error {
+				order = append(order, "configure")
+				if phase == "configure_error" {
+					return failure
+				}
+				return nil
+			})
+			wantOrder := "registered"
+			switch phase {
+			case "expired":
+				wantOrder = ""
+			case "configure_error":
+				wantOrder = "registered,configure"
+			case "complete", "missing_post", "malformed_post", "status_error":
+				wantOrder = "registered,configure,recruited"
+			}
+			if strings.Join(order, ",") != wantOrder || (err == nil) != (phase == "complete") {
+				t.Fatalf("order=%v err=%v, want order=%s success=%v", order, err, wantOrder, phase == "complete")
+			}
+			if strings.HasSuffix(phase, "_error") && !errors.Is(err, failure) {
+				t.Fatalf("lost phase error: %v", err)
+			}
+			if phase == "status_error" && (!strings.Contains(err.Error(), "partial stdout") || !strings.Contains(err.Error(), "status diagnostic")) {
+				t.Fatalf("lost diagnostics: %v", err)
+			}
+			if phase == "malformed_post" && !strings.Contains(err.Error(), "decode refusal workers") {
+				t.Fatalf("lost decode error: %v", err)
+			}
+		})
+	}
+}
+
+func TestConnectRefusedRegisteredWorkers(t *testing.T) {
+	t.Parallel()
+	plan, err := crPlan("127.0.0.1", 4500, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name             string
+		recruited        bool
+		change           func(*crClusterStatus)
+		raw              string
+		ready, wantError bool
+	}{
+		{name: "registered_empty_roles", ready: true},
+		{name: "recruited", recruited: true, ready: true},
+		{name: "malformed", raw: `{`, wantError: true},
+		{name: "truncated", raw: `{"cluster":{"processes":`, wantError: true},
+		{name: "trailing_json", raw: `{} {}`, wantError: true},
+		{name: "no_population", raw: `{}`},
+		{name: "missing_worker", change: func(s *crClusterStatus) { delete(s.Cluster.Processes, "worker-4") }},
+		{name: "missing_address", change: func(s *crClusterStatus) { crEditWorker(s, "worker-4", func(w *crWorkerStatus) { w.Address = "" }) }},
+		{name: "missing_identity", change: func(s *crClusterStatus) {
+			crEditWorker(s, "worker-4", func(w *crWorkerStatus) { w.Locality.Process = "" })
+		}},
+		{name: "missing_class", change: func(s *crClusterStatus) { crEditWorker(s, "worker-4", func(w *crWorkerStatus) { w.Class = "" }) }},
+		{name: "missing_locality", change: func(s *crClusterStatus) {
+			crEditWorker(s, "worker-4", func(w *crWorkerStatus) { w.Locality.Zone = "" })
+		}},
+		{name: "missing_machine", change: func(s *crClusterStatus) {
+			crEditWorker(s, "worker-4", func(w *crWorkerStatus) { w.Locality.Machine = "" })
+		}},
+		{name: "missing_map_identity", change: func(s *crClusterStatus) {
+			s.Cluster.Processes[""] = s.Cluster.Processes["worker-4"]
+			delete(s.Cluster.Processes, "worker-4")
+		}},
+		{name: "missing_primary", change: func(s *crClusterStatus) { delete(s.Cluster.Processes, "worker-0") }},
+		{name: "missing_log", change: func(s *crClusterStatus) { delete(s.Cluster.Processes, "worker-1") }},
+		{name: "wrong_json_type", raw: `{"cluster":{"processes":[]}}`, wantError: true},
+		{name: "duplicate_address", change: func(s *crClusterStatus) {
+			crEditWorker(s, "worker-4", func(w *crWorkerStatus) { w.Address = plan.processes[4].address })
+		}, wantError: true},
+		{name: "duplicate_identity", change: func(s *crClusterStatus) {
+			crEditWorker(s, "worker-4", func(w *crWorkerStatus) { w.Locality.Process = "worker-5" })
+		}, wantError: true},
+		{name: "duplicate_zone", change: func(s *crClusterStatus) {
+			crEditWorker(s, "worker-0", func(w *crWorkerStatus) { w.Locality.Zone = plan.processes[0].locality })
+		}, wantError: true},
+		{name: "duplicate_machine", change: func(s *crClusterStatus) {
+			crEditWorker(s, "worker-0", func(w *crWorkerStatus) { w.Locality.Machine = plan.processes[0].locality })
+		}, wantError: true},
+		{name: "wrong_primary_class", change: func(s *crClusterStatus) { crEditWorker(s, "worker-0", func(w *crWorkerStatus) { w.Class = "unset" }) }, wantError: true},
+		{name: "wrong_log_class", change: func(s *crClusterStatus) { crEditWorker(s, "worker-1", func(w *crWorkerStatus) { w.Class = "storage" }) }, wantError: true},
+		{name: "wrong_storage_class", change: func(s *crClusterStatus) { crEditWorker(s, "worker-4", func(w *crWorkerStatus) { w.Class = "log" }) }, wantError: true},
+		{name: "wrong_zone", change: func(s *crClusterStatus) {
+			crEditWorker(s, "worker-4", func(w *crWorkerStatus) { w.Locality.Zone = "other" })
+		}, wantError: true},
+		{name: "wrong_machine", change: func(s *crClusterStatus) {
+			crEditWorker(s, "worker-4", func(w *crWorkerStatus) { w.Locality.Machine = "other" })
+		}, wantError: true},
+		{name: "unplanned_worker", change: func(s *crClusterStatus) {
+			crEditWorker(s, "worker-4", func(w *crWorkerStatus) { w.Address = "127.0.0.1:4599" })
+		}, wantError: true},
+		{name: "configured_before_registration", change: func(s *crClusterStatus) { s.Cluster.Configuration.Redundancy = "double" }, wantError: true},
+		{name: "missing_storage_role", recruited: true, change: func(s *crClusterStatus) { crEditWorker(s, "worker-4", func(w *crWorkerStatus) { w.Roles = nil }) }},
+		{name: "missing_log_role", recruited: true, change: func(s *crClusterStatus) { crEditWorker(s, "worker-1", func(w *crWorkerStatus) { w.Roles = nil }) }},
+		{name: "unknown_role", recruited: true, change: func(s *crClusterStatus) {
+			crEditWorker(s, "worker-4", func(w *crWorkerStatus) { w.Roles = []crRole{{}} })
+		}, wantError: true},
+		{name: "storage_mixed_roles", recruited: true, change: func(s *crClusterStatus) {
+			crEditWorker(s, "worker-4", func(w *crWorkerStatus) { w.Roles = append(w.Roles, crRole{Role: "grv_proxy"}) })
+		}, wantError: true},
+		{name: "log_storage_fallback", recruited: true, change: func(s *crClusterStatus) {
+			crEditWorker(s, "worker-1", func(w *crWorkerStatus) { w.Roles = append(w.Roles, crRole{Role: "storage"}) })
+		}, wantError: true},
+		{name: "primary_storage", recruited: true, change: func(s *crClusterStatus) {
+			crEditWorker(s, "worker-0", func(w *crWorkerStatus) { w.Roles = append(w.Roles, crRole{Role: "storage"}) })
+		}, wantError: true},
+		{name: "wrong_redundancy", recruited: true, change: func(s *crClusterStatus) { s.Cluster.Configuration.Redundancy = "single" }, wantError: true},
+		{name: "configuration_pending", recruited: true, change: func(s *crClusterStatus) { s.Cluster.Configuration.Redundancy = "" }},
+		{name: "recovery_flag_is_not_registration", raw: `{"cluster":{"recoveredDiskFiles":true}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status := crBootstrapStatus(plan, tc.recruited)
+			if tc.change != nil {
+				tc.change(&status)
+			}
+			raw := tc.raw
+			if raw == "" {
+				raw = crStatusJSON(t, status)
+			}
+			ready, err := crCheckWorkers([]byte(raw), plan, tc.recruited)
+			if ready != tc.ready || (err != nil) != tc.wantError {
+				t.Fatalf("ready=%v err=%v, want ready=%v error=%v; status=%s", ready, err, tc.ready, tc.wantError, raw)
+			}
+		})
+	}
+}
+
+func TestConnectRefusedMetadataTimeout(t *testing.T) {
+	t.Parallel()
+	if got := crMetadataTimeout(context.Background()); got != 10000 {
+		t.Fatalf("unbounded context timeout=%d, want 10000", got)
+	}
+	for _, tc := range []struct {
+		name      string
+		remaining time.Duration
+		min, max  int64
+	}{
+		{name: "capped", remaining: time.Minute, min: 10000, max: 10000},
+		{name: "remaining_budget", remaining: 5 * time.Second, min: 1, max: 5000},
+		{name: "expired", remaining: -time.Second, min: 1, max: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(tc.remaining))
+			defer cancel()
+			if got := crMetadataTimeout(ctx); got < tc.min || got > tc.max {
+				t.Fatalf("metadata timeout=%d, want [%d,%d]", got, tc.min, tc.max)
+			}
+		})
+	}
+}
+
+func TestConnectRefusedPlannedTeam(t *testing.T) {
+	t.Parallel()
+	plan, err := crPlan("127.0.0.1", 4500, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := plan.processes[3].address, plan.processes[4].address
+	for _, tc := range []struct {
+		name              string
+		addresses, native []string
+		safe              map[string]bool
+		valid             bool
+	}{
+		{name: "planned", addresses: []string{a, b}, native: []string{b, a}, safe: map[string]bool{a: true, b: true}, valid: true},
+		{name: "empty"},
+		{name: "wrong_count", addresses: []string{a}, native: []string{a}, safe: map[string]bool{a: true}},
+		{name: "native_missing", addresses: []string{a, b}, native: []string{a}, safe: map[string]bool{a: true, b: true}},
+		{name: "primary", addresses: []string{plan.primary, b}, native: []string{plan.primary, b}, safe: map[string]bool{plan.primary: true, b: true}},
+		{name: "mixed_role", addresses: []string{a, b}, native: []string{a, b}, safe: map[string]bool{a: true}},
+		{name: "unplanned_storage", addresses: []string{a, "127.0.0.1:4599"}, native: []string{a, "127.0.0.1:4599"}, safe: map[string]bool{a: true, "127.0.0.1:4599": true}},
+		{name: "duplicates", addresses: []string{a, a}, native: []string{a, a}, safe: map[string]bool{a: true}},
+		{name: "native_disagreement", addresses: []string{a, b}, native: []string{a, "127.0.0.1:4599"}, safe: map[string]bool{a: true, b: true}},
+		{name: "native_duplicates", addresses: []string{a, b}, native: []string{a, a}, safe: map[string]bool{a: true, b: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := crCheckTeam(plan, tc.safe, tc.addresses, tc.native)
+			if (err == nil) != tc.valid {
+				t.Fatalf("team error=%v, want valid=%v", err, tc.valid)
+			}
+		})
+	}
+	// The CI status had two empty storage-only processes but all data on its unsafe primary.
+	ci := `{"cluster":{"processes":{"p":{"address":"172.16.0.7:4500","class_type":"unset","roles":[{"role":"storage","stored_bytes":1215968},{"role":"grv_proxy"}]},"a":{"address":"172.16.0.7:4501","class_type":"storage","roles":[{"role":"storage","stored_bytes":0}]},"b":{"address":"172.16.0.7:4502","class_type":"storage","roles":[{"role":"storage","stored_bytes":0}]}}}}`
+	safe, err := crStorageOnlyAddresses([]byte(ci))
+	if err != nil {
+		t.Fatal(err)
+	}
+	single, err := crPlan("172.16.0.7", 4500, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(safe) != 2 || crCheckTeam(single, safe, []string{single.primary}, []string{single.primary}) == nil {
+		t.Fatalf("accepted CI's unsafe primary despite empty registered storage processes: %v", safe)
+	}
+	sole := single.processes[3].address
+	if err := crCheckTeam(single, map[string]bool{sole: true}, []string{sole}, []string{sole}); err != nil {
+		t.Fatalf("rejected planned sole storage: %v", err)
+	}
+}
+
 func TestConnectRefusedStorageTopology(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -893,10 +1631,7 @@ func TestLibFDBC_ConnectRefusedReplicaUsesAnotherReplica(t *testing.T) {
 	// This watch check asserts availability, not which replica the watch selected.
 	k, team := pickStorageTeam(t, ctx, f, 2)
 	killStorage(t, ctx, f, team[0])
-	cdb, err := cgofdb.OpenDatabase(f.clusterFile)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cdb := f.native
 	setter, err := gofdb.OpenDatabase(f.clusterFile)
 	if err != nil {
 		t.Fatal(err)
@@ -933,16 +1668,19 @@ func TestLibFDBC_ConnectRefusedReplicaUsesAnotherReplica(t *testing.T) {
 			}
 			fired = w.Get
 		}
+		t.Logf("watch client=%s phase=commit-complete at=%s key=%x", client, time.Now().UTC().Format(time.RFC3339Nano), f.key(k))
 		if _, err := setter.Transact(func(tr gofdb.WritableTransaction) (any, error) {
 			tr.Set(gofdb.Key(f.key(k)), []byte("changed by "+client))
 			return nil, nil
 		}); err != nil {
 			t.Fatalf("change the watched key: %v", err)
 		}
+		t.Logf("watch client=%s phase=change-committed at=%s key=%x", client, time.Now().UTC().Format(time.RFC3339Nano), f.key(k))
 		if err := fired(); err != nil {
 			code, _ := fdbCode(err)
-			t.Errorf("%s: watch with a refusing replica: %v (code %d)", client, err, code)
+			t.Fatalf("%s: watch with a refusing replica: %v (code %d)", client, err, code)
 		}
+		t.Logf("watch client=%s phase=fire-complete at=%s key=%x", client, time.Now().UTC().Format(time.RFC3339Nano), f.key(k))
 	}
 }
 
@@ -952,11 +1690,10 @@ func TestLibFDBC_ConnectRefusedOnlyReplicaWaitsForIt(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
-	// Small shards spread the seeded keys over every storage process
-	// (range_shard_pair_differential_test.go uses the same knobs).
+	// Dedicated storage is recruited before seeding, without relying on shard migration.
 	f := crFixture{prefix: []byte(t.Name() + "/"), n: 100, valueSize: 10000}
 	startCRCluster(t, ctx, &f,
-		foundationdbtc.WithProcessCount(3), foundationdbtc.WithRedundancyMode("single"),
+		foundationdbtc.WithRedundancyMode("single"),
 		foundationdbtc.WithStorageEngine("ssd"),
 		foundationdbtc.WithKnob("min_shard_bytes", "10000"),
 		foundationdbtc.WithKnob("max_shard_bytes", "50000"),

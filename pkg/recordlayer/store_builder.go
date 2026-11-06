@@ -1124,20 +1124,22 @@ func AlwaysRebuildPolicy(_ *Index, _ int64, _ bool) IndexState {
 // StoreBuilder builds an FDBRecordStore with configuration options.
 // This follows the builder pattern from Java exactly.
 type StoreBuilder struct {
-	context                   *FDBRecordContext
-	metaData                  *RecordMetaData
-	subspace                  subspace.Subspace
-	indexRebuildPolicy        IndexRebuildPolicy
-	bypassFullStoreLockReason *string                      // nil = no bypass; Java's @Nullable String
-	storeStateCache           FDBRecordStoreStateCache     // per-store override; nil = use db cache
-	database                  *FDBDatabase                 // for inheriting cache
-	skipPossiblyRebuild       bool                         // skip checkPossiblyRebuild on open
-	cachedSSKeys              *storeSubspaceKeys           // cached from getCachedSubspaceKeys; avoids sync.Map lookup per Open
-	assumeAllIndexesReadable  bool                         // pre-populate empty indexStates so ensureStoreStateLoaded is a no-op
-	formatVersion             *int32                       // nil = not pinned; see SetFormatVersion
-	maintenanceFilter         IndexMaintenanceFilter       // nil = IndexMaintenanceFilterNormal
-	serializer                *TransformedRecordSerializer // nil = write the bare union message
-	goOnlyCollation           bool                         // see SetGoOnlyCollation
+	context                    *FDBRecordContext
+	metaData                   *RecordMetaData
+	subspace                   subspace.Subspace
+	indexRebuildPolicy         IndexRebuildPolicy
+	bypassFullStoreLockReason  *string                      // nil = no bypass; Java's @Nullable String
+	storeStateCache            FDBRecordStoreStateCache     // per-store override; nil = use db cache
+	database                   *FDBDatabase                 // for inheriting cache
+	skipPossiblyRebuild        bool                         // skip checkPossiblyRebuild on open
+	cachedSSKeys               *storeSubspaceKeys           // cached from getCachedSubspaceKeys; avoids sync.Map lookup per Open
+	assumeAllIndexesReadable   bool                         // pre-populate empty indexStates so ensureStoreStateLoaded is a no-op
+	formatVersion              *int32                       // nil = not pinned; see SetFormatVersion
+	maintenanceFilter          IndexMaintenanceFilter       // nil = IndexMaintenanceFilterNormal
+	serializer                 *TransformedRecordSerializer // nil = write the bare union message
+	goOnlyCollation            bool                         // see SetGoOnlyCollation
+	allowLegacyKeySpaceCutover bool
+	pipelineSizer              PipelineSizer // nil = DefaultPipelineSizer; see SetPipelineSizer
 }
 
 // NewStoreBuilder creates a new store builder
@@ -1168,6 +1170,13 @@ func (b *StoreBuilder) SetMetaDataProvider(metaData *RecordMetaData) *StoreBuild
 	return b
 }
 
+// SetAllowLegacyKeySpaceCutover acknowledges that this store intentionally uses
+// Java-flat path keys while data remains at the old Go nested path. No data is copied.
+func (b *StoreBuilder) SetAllowLegacyKeySpaceCutover(allow bool) *StoreBuilder {
+	b.allowLegacyKeySpaceCutover = allow
+	return b
+}
+
 // SetSubspace sets the subspace for this store
 func (b *StoreBuilder) SetSubspace(subspace subspace.Subspace) *StoreBuilder {
 	b.subspace = subspace
@@ -1185,16 +1194,18 @@ func (b *StoreBuilder) SetSubspace(subspace subspace.Subspace) *StoreBuilder {
 // were set on.
 func (b *StoreBuilder) copyBuilder() *StoreBuilder {
 	c := &StoreBuilder{
-		context:                   b.context,
-		metaData:                  b.metaData,
-		subspace:                  b.subspace,
-		indexRebuildPolicy:        b.indexRebuildPolicy,
-		bypassFullStoreLockReason: b.bypassFullStoreLockReason,
-		storeStateCache:           b.storeStateCache,
-		database:                  b.database,
-		maintenanceFilter:         b.maintenanceFilter,
-		serializer:                b.serializer,
-		goOnlyCollation:           b.goOnlyCollation,
+		context:                    b.context,
+		metaData:                   b.metaData,
+		subspace:                   b.subspace,
+		indexRebuildPolicy:         b.indexRebuildPolicy,
+		bypassFullStoreLockReason:  b.bypassFullStoreLockReason,
+		storeStateCache:            b.storeStateCache,
+		database:                   b.database,
+		maintenanceFilter:          b.maintenanceFilter,
+		serializer:                 b.serializer,
+		goOnlyCollation:            b.goOnlyCollation,
+		allowLegacyKeySpaceCutover: b.allowLegacyKeySpaceCutover,
+		pipelineSizer:              b.pipelineSizer,
 	}
 	if b.formatVersion != nil {
 		v := *b.formatVersion
@@ -1345,15 +1356,49 @@ func (b *StoreBuilder) newStore() *FDBRecordStore {
 		indexRebuildPolicy: policy,
 		storeStateCache:    b.resolveCache(),
 
-		targetFormatVersion: b.effectiveFormatVersion(),
-		maintenanceFilter:   b.maintenanceFilter,
-		serializer:          b.serializer,
-		goOnlyCollation:     b.goOnlyCollation,
+		targetFormatVersion:        b.effectiveFormatVersion(),
+		maintenanceFilter:          b.maintenanceFilter,
+		serializer:                 b.serializer,
+		goOnlyCollation:            b.goOnlyCollation,
+		allowLegacyKeySpaceCutover: b.allowLegacyKeySpaceCutover,
+		pipelineSizer:              b.pipelineSizer,
 	}
 	if b.assumeAllIndexesReadable {
 		store.indexStates = make(map[string]IndexState)
 	}
 	return store
+}
+
+// LegacyKeySpacePrefixError refuses a silent switch from an earlier Go path.
+type LegacyKeySpacePrefixError struct {
+	LegacyPrefix []byte
+	FlatPrefix   []byte
+}
+
+func (e *LegacyKeySpacePrefixError) Error() string {
+	return fmt.Sprintf("legacy nested KeySpace prefix %x still contains data; explicit legacy access or cutover to %x required", e.LegacyPrefix, e.FlatPrefix)
+}
+
+func (b *StoreBuilder) checkLegacyKeySpacePrefix() error {
+	guarded, ok := b.subspace.(interface{ LegacyKeySpaceSubspace() subspace.Subspace })
+	if !ok {
+		return nil
+	}
+	legacy := guarded.LegacyKeySpaceSubspace()
+	r, err := fdb.PrefixRange(legacy.Bytes())
+	if err != nil {
+		return &RecordCoreError{Message: "invalid legacy KeySpace range", Cause: err}
+	}
+	// A serializable range read also orders an empty-prefix cutover against
+	// a concurrent writer still using the old layout.
+	rows, err := b.context.Transaction().GetRange(r, fdb.RangeOptions{Limit: 1}).GetSliceWithError()
+	if err != nil {
+		return err
+	}
+	if len(rows) > 0 && !b.allowLegacyKeySpaceCutover {
+		return &LegacyKeySpacePrefixError{LegacyPrefix: legacy.Bytes(), FlatPrefix: b.subspace.Bytes()}
+	}
+	return nil
 }
 
 // validateBuilder checks that all required fields are set
@@ -1405,6 +1450,9 @@ func (b *StoreBuilder) Create() (*FDBRecordStore, error) {
 	if err := b.validateBuilder(); err != nil {
 		return nil, err
 	}
+	if err := b.checkLegacyKeySpacePrefix(); err != nil {
+		return nil, err
+	}
 
 	store := b.newStore()
 
@@ -1445,6 +1493,9 @@ func (b *StoreBuilder) Open() (*FDBRecordStore, error) {
 func (b *StoreBuilder) openWithPreflight(preflight func(*FDBRecordStore) error) (*FDBRecordStore, error) {
 	startTime := time.Now()
 	if err := b.validateBuilder(); err != nil {
+		return nil, err
+	}
+	if err := b.checkLegacyKeySpacePrefix(); err != nil {
 		return nil, err
 	}
 
@@ -1491,6 +1542,9 @@ func (b *StoreBuilder) openWithPreflight(preflight func(*FDBRecordStore) error) 
 func (b *StoreBuilder) CreateOrOpen() (*FDBRecordStore, error) {
 	startTime := time.Now()
 	if err := b.validateBuilder(); err != nil {
+		return nil, err
+	}
+	if err := b.checkLegacyKeySpacePrefix(); err != nil {
 		return nil, err
 	}
 

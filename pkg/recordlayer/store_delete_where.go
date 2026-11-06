@@ -30,6 +30,11 @@ import (
 //
 // Matches Java's FDBRecordStore.deleteRecordsWhereAsync().
 func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
+	finishWrite, err := store.context.beginRecordWrite()
+	if err != nil {
+		return err
+	}
+	defer finishWrite()
 	if len(prefix) == 0 {
 		return fmt.Errorf("deleteRecordsWhere: prefix must be non-empty")
 	}
@@ -228,26 +233,37 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 
 	// Records, legacy versions and counts clear Java's subspace(prefix).range(),
 	// which excludes a prefix that extends this one ("a\x00b").
-	recordRange := store.subspace.Sub(RecordKey).Sub(prefix...)
-	versionRange := store.subspace.Sub(RecordVersionKey).Sub(prefix...)
-	tx.ClearRange(recordRange)
-
-	// Clear legacy record versions in the separate RecordVersionKey(8) subspace.
-	// Only the legacy layout stores versions there; in the modern layout versions
-	// are inline (pk+-1) within the RecordKey subspace cleared above. Matches Java's
-	// deleteRecordsWhereAsync: `useOldVersionFormat() && isStoreRecordVersions()`.
-	if store.useOldVersionFormat() && store.metaData.IsStoreRecordVersions() {
-		tx.ClearRange(versionRange)
+	recordBegin, recordEnd := store.subspace.Sub(RecordKey).Sub(prefix...).FDBRangeKeys()
+	versionBegin, versionEnd := store.subspace.Sub(RecordVersionKey).Sub(prefix...).FDBRangeKeys()
+	recordRange := fdb.KeyRange{Begin: recordBegin, End: recordEnd}
+	versionRange := fdb.KeyRange{Begin: versionBegin, End: versionEnd}
+	finishPhysical, err := store.beginPhysicalBulk()
+	if err != nil {
+		return err
 	}
+	func() {
+		defer finishPhysical()
+		tx.ClearRange(recordRange)
 
-	// Remove pending version mutations and local version cache entries for
-	// the cleared ranges. Without this, orphaned SET_VERSIONSTAMPED_VALUE
-	// mutations for deleted records' version keys would still be flushed
-	// at commit. Matches Java's context.clear → removeVersionMutationRange().
-	store.removeVersionDataInRange(recordRange)
-	if store.useOldVersionFormat() && store.metaData.IsStoreRecordVersions() {
-		store.removeVersionDataInRange(versionRange)
-	}
+		// Clear legacy record versions in the separate RecordVersionKey(8) subspace.
+		// Only the legacy layout stores versions there; in the modern layout versions
+		// are inline (pk+-1) within the RecordKey subspace cleared above. Matches Java's
+		// deleteRecordsWhereAsync: `useOldVersionFormat() && isStoreRecordVersions()`.
+		if store.useOldVersionFormat() && store.metaData.IsStoreRecordVersions() {
+			tx.ClearRange(versionRange)
+		}
+
+		// Remove pending version mutations and local version cache entries for
+		// the cleared ranges. Without this, orphaned SET_VERSIONSTAMPED_VALUE
+		// mutations for deleted records' version keys would still be flushed
+		// at commit. Matches Java's context.clear → removeVersionMutationRange().
+		store.removeVersionDataInRange(recordRange)
+		if store.useOldVersionFormat() {
+			// Pending explicit versions must not resurrect a deleted body, even
+			// when metadata intentionally ignores committed legacy version bytes.
+			store.removeVersionDataInRange(versionRange)
+		}
+	}()
 
 	// Clear record counts.
 	countKeyExpr := store.metaData.GetRecordCountKey()

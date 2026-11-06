@@ -1251,6 +1251,34 @@ var _ = Describe("SplitHelper", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
+		It("clears known unversioned split tails when splitting is disabled", func() {
+			rs := recordSub()
+			pk := tuple.Tuple{int64(602)}
+			_, err := sharedDB.db.Transact(func(tx fdb.WritableTransaction) (any, error) {
+				old := &sizeInfo{}
+				Expect(saveWithSplit(nil, tx, rs, pk, makeTestBytes(3*splitRecordSize), true, false, nil, old)).To(Succeed())
+				Expect(old.IsSplit).To(BeTrue())
+				Expect(old.VersionedInline).To(BeFalse())
+				Expect(old.KeyCount).To(Equal(3))
+
+				// Java skips clearing for this known, unversioned split image.
+				current := &sizeInfo{}
+				Expect(saveWithSplit(nil, tx, rs, pk, []byte("replacement"), false, false, old, current)).To(Succeed())
+				Expect(current.IsSplit).To(BeFalse())
+				Expect(current.KeyCount).To(Equal(1))
+				for part := int64(1); part <= 3; part++ {
+					value, err := tx.Get(fdb.Key(rs.Pack(appendToTuple(pk, part)))).Get()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(value).To(BeNil())
+				}
+				value, err := tx.Get(fdb.Key(rs.Pack(appendToTuple(pk, unsplitRecord)))).Get()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(value).To(Equal([]byte("replacement")))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
 		It("clears old unsplit when overwriting with a split record", func() {
 			rs := recordSub()
 			pk := tuple.Tuple{int64(601)}

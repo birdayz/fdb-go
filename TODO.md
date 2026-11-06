@@ -27,6 +27,62 @@ git show 13d5a3d1e:rfcs/257-java-upgrade-audit/ws-e-design.md
 Verify remaining audit claims against current Go and Java before changing code.
 Never mark a whole workstream complete because one of its subitems passed.
 
+## Pending acceptance: ingest-20k conformance gate corrections
+
+- [ ] Run the supported full stacked-tree acceptance lane and fresh native review
+  after the coherent gate-fix commit. The source corrections cover pre-init native
+  CC address registration followed by strict postconfiguration class/locality/role
+  and storage-team checks; valid record-type-prefixed legacy delete metadata;
+  structural Java byte-key continuation oracles with separate array/NaN contrasts;
+  and logical bounded TEXT results versus native physical bunch results, including
+  reverse-seek predecessor preservation. A standard `just test` pass does not
+  execute the heavyweight connrefused or live-Java conformance targets and does
+  not close this acceptance item. Do not infer the twelve network refusal
+  client/read instances, watch recovery, or live-Java population from inline
+  controls or source audits.
+
+### Pending source-repair acceptance (post-v0.2.0, PR #1023)
+
+- [ ] Validate and obtain native acceptance for the eight confirmed findings on
+  d56fa699: encoded covering-value admission; raw TEXT role-discovery accounting;
+  depth-one pipeline and partial-write replay documentation; public late-log-cost
+  propagation; live queue reference release; full-capacity marker eviction/replay;
+  and attempt-local retry fixtures. Source regressions remain unexecuted until
+  owner release of the coherent tree. The prepared eviction-removal mutation
+  likewise has no execution/compilation/failure proof yet. The fresh native result
+  remains NAK (8 confirmed, 2 duplicates, 58 unverified), with incomplete review
+  coverage and failed summary posting; source repairs cannot close those blockers
+  or authorize a review/post retry. Preserve all earlier strict regression oracles.
+
+- [ ] Audit and validate the coherent repairs for the 19 confirmed native findings
+  F1/F2/F4/F5/F7/F9/F10/F11/F12/F13/F14/F15/F19/F21/F22/F23/F24/F25/F26,
+  plus disjoint literal-TEXT fixture isolation and independently logged pure-Go /
+  libfdb_c watch commit/change/fire completion. Source changes and unexecuted
+  regression assertions are not a passing lane or a native re-rating. Preserve
+  the prior a62 fast/full/Java failure evidence; the native NAK population remains
+  19 confirmed, 7 duplicate and 55 unverified. The prior full lane failed before
+  166 TEXT comparisons on fixture keyspace pollution; it did not establish those
+  comparisons' logical parity. Run no acceptance gates until the owner releases
+  the audited source tree. New regressions cover ambiguous commits, initially
+  multipart size fallback after committed tails, short-normalized huge words,
+  small-integer log posting/native-clear budgets, live commit-check registration,
+  direct commit-conflict handle cleanup, configurable INSERT depth, typed TEXT
+  comparisons/bounds and versions-enabled format-5 orphan V0 contrast.
+- [ ] **Collector → same catalog/tenant SQL migration remains incomplete.** Wire
+  the actual upstream Collector ingestion path into the same relational catalog,
+  tenant and SQL table identity, then prove native Go/Java catalog visibility,
+  fidelity, tenant isolation, SQL query behavior and budget/continuation contracts.
+  Existing ExportLogs/ConsumeLogs adapters, typed OTel joined queries, custom-index
+  candidacy/maintenance seams and upper-stack planner foundations are prerequisites,
+  not this migration. No upper source changes or migration execution is included
+  in the lower readiness-repair workstream; hand off this still-open requirement
+  after owner-controlled restacking.
+- [ ] Historical benchmark plan objects are not all durably published/fresh-clone
+  inspectable. Preserve their measured identities/numbers and disclose the limit;
+  do not fabricate reachability or relabel newer trees as measured. The separate
+  500k-token fixture can regenerate from committed frozen inputs without the old
+  Git object; this does not reconstruct or rerun a historical benchmark campaign.
+
 ## 0. `pkg/fdbgo` CPU under concurrency — TOP PRIORITY
 
 Set as the top priority by the owner on 2026-10-15, ahead of the active workstream.
@@ -603,6 +659,17 @@ servers' trace-log metrics (`GrvProxyMetrics`, `ProxyMetrics`, `StorageMetrics`,
   (`ReadYourWrites.actor.cpp:487-508,816-839`, Go `client/ryw_walk.go`), with differential
   warmup/continuation regressions. The point/exact-range warm-cache cases are covered by
   `TestSelectorRange_KnownReadReduction`; this is not an authorization for a new campaign.
+
+- [ ] **Special key space beyond `conflicting_keys/`.** The pure-Go client serves
+  `\xff\xff/transaction/conflicting_keys/` (`client/specialkeys.go`, conformance
+  `//pkg/fdbgo/libfdbc:conflicting_keys_conformance_test`); every other read impl fails
+  with `unsupported_operation` (DIVERGENCES.md, "Special key space reads"). Next, after
+  the RYW rewrite lands: `read_conflict_range/` and `write_conflict_range/`
+  (`ReadYourWrites.actor.cpp:2121-2215`, waiting on pending reads first, `SpecialKeySpace.actor.cpp:690-699`),
+  which would let the Go differentials read Go's conflict ranges the way the libfdb_c arms
+  do. Then `status/json`, `connection_string`, `cluster_file_path` and `cluster_id`
+  (`NativeAPI.actor.cpp:1763-1834`), and special-key writes with
+  `SPECIAL_KEY_SPACE_ENABLE_WRITES` (2114-2116). Each with a libfdb_c conformance case.
 
 ## 1. WS-E — scalar/SQL semantics and statement execution — ACTIVE
 
@@ -2375,6 +2442,12 @@ tracked only.
 - [x] **Low:** rank and text edges: `GetNth` returns a key where Java returns null; a
   non-int64 rank bound becomes an unbounded scan (`extractRankValue`); TEXT silently skips
   non-string columns. Fixed in #1003 (RFC-275).
+- [ ] **Low:** the generic merge cursors (`Union`, `UnorderedUnion`, `ProbableIntersection`,
+  `pkg/recordlayer/union_cursor.go`, `probable_intersection_cursor.go`) and the executor's
+  QueryResult-typed `mergeSortCursor`/`unorderedUnionCursor`
+  (`query/executor/executor_new_plans.go`) are two ports of the same Java cursors; the executor
+  should use the generic ones. Neither records Java's `QUERY_INTERSECTION*`/`QUERY_UNION*`
+  timer counts, and `TextScan` does not record `QUERY_TEXT_FILTER*`.
 
 ### Go FDB client
 
@@ -2775,3 +2848,718 @@ establish vulnerable-code reachability in the published Go library.
   same-line-query subtest. Account for quoted semicolons, comments, and schema
   template/function bodies rather than introducing another text splitter. The
   website SQL reference documents the separate-line workaround.
+
+## OTel storage findings (RFC-283, 2026-10-27)
+
+These findings come from `layers/otel/` and the repository investigation in
+`layers/otel/research_notes/Transactional OTel trace storage/repository.md`, inspected
+against `a7349ff657e1448a4f6937535129cfdb5afafcda`. Source-confirmed gaps below still
+need their own minimal regression before a core behavior change; extension requests
+are not Java parity defects. No Go client correctness bug has been established by
+the trace experiment.
+
+- [x] **Record Layer metadata validation — general factory dispatch.**
+  Metadata construction now invokes registered factories' option validators, not
+  only VECTOR's, while keeping metadata loadable for unlinked plugins. External
+  rejecting-factory and defensive-constructor coverage is in
+  `pkg/recordlayer/custom_maintainer_seam_test.go`; evolution dispatch is preserved.
+- [x] **Planner safety — fail closed for opaque custom index formats.**
+  SQL candidacy uses the explicit built-in VALUE-compatible allowlist in
+  `IsValueScanCandidateIndexType`; custom/exotic layouts are not decoded as VALUE.
+  The production-tied exhaustive census, embedded plan tests and real-FDB SQL
+  opaque-index/VALUE-control execution regression pin that boundary. This does
+  not expose the OTel typed API through SQL or add plugin opt-in candidacy.
+- [ ] **Record Layer external WRITE_ONLY dispatch — embedding hazard.**
+  `StandardIndexMaintainer.UpdateWhileWriteOnly` calls its own `Update`; Go embedding
+  does not dynamically dispatch to an external maintainer's override. An external
+  plugin must currently override both. Add a callback/capability-based safe default
+  or explicit refusal and an external-package regression proving the intended update
+  executes during WRITE_ONLY builds. Preserve idempotent/by-records/by-index behavior;
+  the OTel experiment's explicit override is a workaround, not a core fix.
+- [ ] **Record Layer index clearing — secondary ownership contract.**
+  `FDBRecordStore.DeleteIndexEntries` in `store.go:1153` clears only the primary index
+  subspace, despite its all-entries description; custom maintainers can store their
+  actual entries in `IndexSecondarySubspace`. `DeleteAllRecords` does clear both.
+  Reproduce public index clearing/rebuild with an external secondary-backed maintainer,
+  then define a maintainer-owned complete-clear hook and safe prefix-delete preflight.
+  Cover rebuild, drop and interrupted cleanup; do not assume the primary-only helper
+  clears every structure or change Java-shared formats without checking the reference.
+- [ ] **Record Layer index-state accessor — dropped state/conflict errors.**
+  `index_state.go:GetIndexState` calls `ensureStoreStateLoaded` without an error
+  result, and `getIndexStateLocked` discards the error from `indexStateView.read`.
+  The latter can return READABLE together with a failed state-key conflict read.
+  The V2 real-FDB transactor regression reproduces the adapter returning attribute
+  query data with nil error when using this getter; full `just test` RED compiled
+  and failed both layouts. The adapter now uses supported `ReadIndexState`; full
+  `just test` GREEN passed 179 targets (2 executed / 177 cached). Regression receipt:
+  `layers/otel/bench/evidence/2026-10-27/state-error-regression.txt`.
+  `ReadIndexState` propagates initialization/liveness/conflict errors. Audit remaining transactional
+  callers and define a safe migration/deprecation contract for the non-error getter,
+  with cancellation, state-load and conflict-registration regressions. Do not infer
+  every core scan is affected: public scan paths already use error-aware checks.
+- [ ] **Record Layer typed custom scans — reusable guarded dispatch.**
+  `ScanIndex` enforces readability/instrumentation, while direct `GetIndexMaintainer`
+  capability calls leave those checks to callers. Provide a central typed scan path
+  carrying state, isolation, common budgets, continuations, metrics and decorator-safe
+  capability lookup. Exercise READABLE/WRITE_ONLY/DISABLED and unsupported scan kinds;
+  do not require every new index package to duplicate these guarantees.
+- [ ] **Record Layer external online-build concurrency coverage — extension request.**
+  `UpdateWhileWriteOnlyNonIdempotent` now exposes the callback helper and its
+  range/source-index coordination; `custom_maintainer_seam_test.go` covers external
+  dispatch. Broader by-records/by-index online insert/update/delete race coverage
+  remains separate extension work, not evidence the built-in indexes are incorrect.
+- [ ] **Record Layer scan-budget semantics — document soft limits and support strict callers.**
+  `index_cursor_limits.go:tryScanLimits` checks previously consumed bytes and allows an
+  initial record; source exhaustion can therefore follow a final record exceeding
+  `ScannedBytesLimit`. The OTel adapter needed an explicit accumulated-byte check.
+  Document this continuation/soft-limit contract and consider a reusable strict-budget
+  helper with sole-record, final-record-crossing and exact-budget controls. Preserve
+  the Java-compatible cursor behavior unless reference-backed evidence warrants a
+  change; soft limits themselves are not a newly proved Record Layer correctness bug.
+- [ ] **Go client / Record Layer performance investigation — not a client bug report.**
+  The first unpipelined synthetic load failed the one-second application transaction
+  guard at batch offset 36,160 after 79.358 s, reporting 253,402 affected bytes (below
+  its byte cap). No complete source audit or sustainable-throughput measurement exists
+  for that failed load. Receipt:
+  `layers/otel/bench/evidence/2026-10-27/serial-100k-ingest-failed.json.gz`.
+  A subsequent completed 100,000-span load at `12c293130` using
+  `SaveRecordsPipelined`, batch 32 and eight indexed attributes took 194.455 s
+  (approximately 514 spans/s); the ClickHouse dedicated-attribute arm took 4.442 s.
+  Both source audits passed. Raw ingest/audit receipts are archived under
+  `layers/otel/bench/evidence/2026-10-27/pipeline-100k/`. This is a local end-to-end
+  observation, not isolated client cost or sustainable ingest capacity; the earlier
+  failed serial load used a different batch size and is not a controlled baseline.
+  Compare serial, `SaveRecordsPipelined` and `SaveRecordBatch` on identical source
+  data and batch/transaction budgets, then profile client/RL request waves,
+  GRV/commit latency, retries, decoding and affected bytes. Both batch APIs preserve
+  old-record/index maintenance; do not assume keys absent or weaken transaction
+  checks to manufacture throughput. Record any independently reproduced client
+  defect separately with a regression; do not label serial-loader overhead, an
+  application deadline, or an unmeasured pipeline hypothesis a client bug.
+  Follow-up at `290d0d7b7`: a single ordered 50k sweep completed and audited
+  serial/one-worker at 444 spans/s, pipelined/one-worker at 595, and batch mode
+  at 538 / 1,122 / 1,854 spans/s with one / two / four workers. All five completed
+  arms passed 1,000 timed oracle checks in total. Eight workers failed with
+  `transaction_timed_out (1031)` during store opening after 10,624 acknowledged
+  rows; its loading run correctly rejected audit. Do not report that partial
+  load as throughput or treat increasing workers as a proven capacity fix.
+  Retain the full failed arm and order/growing-database caveats in
+  `layers/otel/bench/evidence/2026-10-27/ingest-ab-50k/README.md`.
+  A separate frozen 100k baseline used 30.319 client CPU-seconds over 199.863 s
+  wall time, while storage queues grew; client CPU saturation is not established.
+  Profiling receipts: `layers/otel/bench/evidence/2026-10-27/profile-100k/`.
+  Profile commit/manifest/store reads and storage persistence/backpressure before
+  attributing delay to client correctness. Validate steady-state behavior at 1M
+  and above rather than extrapolating the short four-worker burst to 100M.
+  The subsequent requested 1M load failed after 412.312 s with 222,400 acknowledged
+  spans and error 1031 during an existing-record read. No ready publication or
+  complete source census was achieved. Post-failure FDB RSS was 4,249,853,952 bytes
+  near its 4-GiB container cap (server ceiling 8 GiB), with a 995,906,485-byte storage
+  persistence queue and 216.787 s worst storage durability lag. The manifest phase
+  includes implicit GRV/start waiting and dominates the overlapping worker totals;
+  do not conclude that the manifest KV, Go client, or Record Layer is defective.
+  Full failure receipts: `layers/otel/bench/evidence/2026-10-27/pilot-1m-failed/`.
+  Validate a properly budgeted role-separated server profile and persistence behavior
+  before retrying a larger population; do not hide this failure or count it as 1M.
+  A separately labeled V2/four-process/16-GiB/Redwood pilot was externally stopped
+  after 143,264 acknowledged spans because the monitor treated a sole batch-priority
+  probe timeout as fatal aggregate unhealthiness. Data remained healthy/available,
+  roles/recovery intact; storage queue was about 1.026 GB and durability lag 23.9 s.
+  This is real backpressure and a monitor-terminated incomplete gate, not a proven
+  DB crash or successful capacity result. Preserve the stop and use any narrowly
+  source-backed bulk-warning policy only as a new arm; readiness/final drain and
+  all structural/resource/backlog gates remain strict. Receipts:
+  `layers/otel/bench/evidence/2026-10-27/pilot-1m-v2-monitor-aborted/`.
+  A new, separately declared bounded-bulk policy arm then failed with transaction
+  timeout 1031 after 114,720 acknowledged spans in 47.583 s; the monitor did not
+  terminate this load. Three subsequent strict drained samples passed, but the
+  ready/source-audit guard correctly rejected the still-loading namespace. This
+  is neither a completed 1M gate nor proof of a client defect. Bounded application
+  recovery now permits at most eight fresh source Runs on 1031 with cancellable
+  backoff and immutable payloads; all old/new maintenance and guards remain intact.
+  Initialization/source/ready reads now arm the 1500-ms timeout first; neither
+  initialization nor publication adopts or retries an ambiguous ownership state.
+  Real-FDB tests cover both ambiguous commit orders, already-committed replay,
+  Drop conflicts, cancellation, exhaustion, accounting and earliest timeout setup.
+  Fast lane: 179 targets pass (3 executed / 176 cached), not full-suite or completed
+  large-load proof. Terminal application errors are not retried. Failed receipts:
+  `layers/otel/bench/evidence/2026-10-27/pilot-1m-v2-bulk-timeout/`.
+  The subsequent frozen `c7d00bf` four-worker arm recovered transient timeouts but
+  was monitor-stopped after 284,544 acknowledged spans / 167.996 s: queue exceeded
+  512 MiB and durability lag exceeded 60 s for six samples (final 1.005 GB / 91.25 s).
+  The final loader 1031 followed that shutdown. No strict drain, source audit or
+  ready/query gate completed. Preserve this failed arm and diagnose durable-write
+  stalls / fetch amplification rather than weakening the backlog gates. Receipts:
+  `layers/otel/bench/evidence/2026-10-27/pilot-1m-v2-backlog-aborted/`.
+- [ ] **Go client / Record Layer query tails — unlocalized performance finding.**
+  In the same immutable 100,000-span campaign at `12c293130`, three rotated rounds
+  each measured 1,000 selective queries (200 per class) and 1,000 trace lookups per
+  backend. FDB rare-query p99 was 42.448 / 1.800 / 1.774 ms; the ClickHouse
+  dedicated-attribute arm was 9.233 / 9.787 / 7.847 ms. FDB trace-lookup p99 was
+  29.136 ms in the first round, then 0.745 / 0.875 ms. All 12,000 timed queries
+  passed the independent oracle, but median wins do not establish a clean p99 win.
+  Preserve the first-round spike, not just the later fast samples; all rounds are
+  archived under `layers/otel/bench/evidence/2026-10-27/pipeline-100k/`.
+  Reproduce with explicit warmup/cache policy and synchronized client/RL timers,
+  FDB background-work metrics, host load and cgroup CPU/I/O/throttling counters.
+  Localize the delay before claiming a Go client defect or production tail SLO.
+
+### OTel prototype regression gaps from final review
+
+The pinned review of `12c293130597477035e32b372b3c4101dbd9c2fb` returned NAK
+for these three confirmed test-coverage gaps, not runtime correctness defects.
+They concern the experimental adapter/campaign, not established Go client bugs.
+The regressions below now pass: `just test` passed 179 targets (3 executed,
+176 cached), including all six new real-FDB ready/interrupted-ingest Drop cases
+with no skips and the 13-case campaign suite. Source inputs were frozen around
+the run. This is fast-lane validation, not full-suite or 100M-scale evidence.
+
+- [x] **Campaign shared-lock exclusion — contention regression (review F1).**
+  `layers/otel/bench/local_campaign_test.sh` uses an uncontested private lock, so
+  removing the runner's `flock` would not fail the tests. Add a bounded independent
+  holder/contender handshake proving the real campaign cannot reach its fake
+  executable while the configured lane lock is held, proceeds after release,
+  completes normally, and releases the lock itself.
+- [x] **Record Layer adapter partial-ingest publication — failure regression (review F2).**
+  `layers/otel/integration_test.go` does not fail public `FDBBackend.Ingest` after
+  a committed batch. Deterministically interrupt a real-FDB load after at least one
+  committed source batch; assert the persisted partial population, a `loading`
+  manifest, rejection from Query/Trace/Audit and a second Ingest, and successful
+  explicit owned cleanup. Manually installing a loading manifest is not a substitute
+  for exercising the public ingest failure boundary in `layers/otel/fdb.go`.
+- [x] **Record Layer adapter owned Drop — deletion/isolation regression (review F3).**
+  Successful `FDBBackend.Drop` is currently checked only for a nil cleanup error.
+  Add ready- and loading-run tests that inspect the raw owned root and prove it is
+  empty after Drop, while an independently populated sibling root remains unchanged.
+  A no-op successful Drop must fail these assertions; `DeleteAllRecords` coverage
+  does not establish the backend Drop contract.
+
+### Final 10M stored-record proof requested by owner
+
+The owner reduced the target to **10,000,000 stored spans**. Complete the 10M
+comparison and stop; no 100M load or further scale-up is in scope. Core Record
+Layer fixes are allowed for this proof; keep them in separable commits with
+regressions so they can be proposed upstream after the PoC.
+
+- [ ] Reach a measured 20,000 durably acknowledged spans/s with all eight custom
+  postings and both native indexes maintained synchronously. The completed 1M
+  arm achieved about 1,101/s at batch 32 / two workers. Its cumulative worker
+  timing averages about 58 ms per source batch, including about 32.6 ms in
+  successful commit; this is not a pure disk-latency measurement. Add explicit
+  client GRV/read/commit distributions without extra RPCs, profile before making
+  core changes, and check fresh plus already-committed replay transaction sizes
+  before increasing batches. Retain the 300KB estimate, 500KB actual-size,
+  save/time/retry guards and warning/backlog stops. More workers alone already
+  failed the earlier backlog gate. No 20k/s measurement or runtime change yet.
+  The owner authorized a reviewed read-only inode-flags probe and a guarded
+  fresh-volume 100k profiling run to replace the pinned image's missing `lsattr`
+  check. Implementation, test, formal-review and actual-inode gates remain;
+  no filesystem flag changes, retained-data changes or guard relaxation are
+  authorized. Keep the 4-CPU/16-GiB resource envelope and 10M final ceiling.
+  The first operations commit `428478f2` passed 182 fast targets (2 executed,
+  180 cached), 29 Python methods, 121 C predicate checks and 9,532 injected C
+  checks, but formal review returned NAK with 13 blockers. Close sticky shutdown
+  failure accounting, continuous lease identity/default-path compatibility,
+  preconfigure warning rejection, complete evidence inventory and the shell,
+  deadline, observation-adapter, monitor and foreground-lifecycle regression
+  gaps; correct scope documentation and remove dead warning-waiver plumbing.
+  No runtime is admitted until fixes pass validation and formal re-review.
+  Initial formal review of `e4107200` returned NAK for missing overlapping-worker
+  profiling assertions (F1) and retry/failure receipt assertions (F3, duplicate
+  F2). Both were fixed with deterministic regressions in `12b1c7da`; formal
+  re-review ACKed that commit. Its fast lane passed 179 targets (2 executed,
+  177 cached), with 1,323 OTel XML cases and zero failures/errors/skips. This is
+  instrumentation and guard validation, not a 20k/s result or full-suite proof.
+- [ ] Profile and accelerate real Record Layer ingestion before the final 10M load.
+  Compare serial/pipelined/batch APIs on matched data and transaction budgets,
+  then bounded independent transaction workers. Retain old/new index maintenance,
+  ownership checks, byte/time guards and complete-ready publication. Use measured
+  profiles to justify core changes rather than assuming the adapter is the cause.
+- [x] Add equivalent needle-query access paths on FDB and ClickHouse for
+  tenant-scoped trace ID, standalone span ID, indexed GenAI/custom attributes and
+  half-open time ranges. Pin returned fields, duplicate handling, ordering, limits,
+  scoped/type lookalikes and misses; trace-plus-span primary-key lookup is not a
+  substitute for standalone span-ID search. Account for every maintained index.
+  Implemented fixture/tool V2 with intrinsic Record Layer VALUE indexes, CH span/time
+  projections, exact GenAI response-ID predicates, and state/budget/boundary regressions.
+  Fast lane passed 179 targets (3 executed / 176 cached); real FDB and CH tests had
+  no skips. This implements access paths, not a 100M stored-population measurement.
+- [x] Make the independent query oracle bounded-memory at 100M, with small-corpus
+  equivalence tests. Keep preparation outside timed queries and retain every timed
+  answer check; do not replace source truth with a backend-derived expected result.
+  V2 pairs the guaranteed adjacent source spans per trace, retains K-heap state per
+  unique predicate, and prepares known trace/span needles without a source scan.
+  Brute-force equivalence, odd/tied populations, cancellation and bounded-retention
+  tests pass; a 100M configuration test is not evidence of 100M records stored.
+- [x] Add a native-TCP ClickHouse query arm with the official pinned Go driver,
+  matched SQL/settings/result shapes/ownership checks and persistent connections.
+  Keep the HTTP arm and disclose transport differences. Implemented in `edfd8dbe8`
+  with driver v2.43.0 and real 26.10.2.103 parity across all four layouts, including
+  server-budget rejection and typed-nil error rows. Fast lane: 179 passing targets,
+  2 executed / 177 cached; commit hook: 1 executed / 178 cached. Not full-suite proof.
+- [x] **Native decoded-byte cap regression (formal review F1).** Re-review of
+  `290d0d7b..edfd8dbe` confirmed the four prior V2 blockers fixed, but the native
+  32-MiB owner/result caps lack public boundary regressions. Exercise Query, Trace,
+  Span and Time at and just above the decoded-byte limit, including a valid padded
+  manifest and cumulative multirow results. Require typed budget errors, row closure,
+  no data operation after owner rejection, and correct current-query provenance;
+  row-count failures and server `max_bytes_to_read` failures are not substitutes.
+  Public exact-32-MiB and +1-byte regressions now pass across all four operations,
+  including valid padded owners, cumulative results, closure and query provenance.
+- [x] Reconcile native/HTTP sample query IDs with actual ClickHouse query-log work
+  outside the timed path. All 76,800 data-query IDs across 18 tuning and three
+  confirmation receipts reconcile, with no missing/duplicate/error terminals;
+  observed settings are four threads, 8-GiB query cap and cache disabled. Native
+  read-work fields remain explicitly unavailable and unmodified. Separate owner
+  requests are not covered by these data-request-only metrics; a zero integer-
+  millisecond server duration is resolution-limited, not zero elapsed time.
+- [ ] Harden generic CH HTTP exception classification or explicitly reject
+  unsupported response framing. HTTP 200 plus EOF is not universally a server
+  operation ACK: a profile enabling `framing_output_format` can frame a late
+  INSERT exception in a successful HTTP stream. The measured pinned profile uses
+  `None` and forces progress headers off; its completed source audits provide
+  independent data evidence. Keep the diagnostic definition at HTTP-response ACK
+  scope, not an unsupported general server-operation guarantee.
+- [ ] Extend CH tuning before claiming a broad production advantage. The first
+  1M guarded-query comparison is complete against the best-tested passing
+  8192/512/64 profiles, not a globally optimal CH configuration.
+  Earlier benchmark tables used default 8192-row MergeTree granularity. The
+  selected-projection regression's separate 64-row fixture was not benchmark
+  tuning. Fresh 1M 8192/512/64 layouts pass source audits. All 28,800 tuning
+  answers pass; a fixed geometric mean of twelve native medians selects 8192.
+  Its 48,000-answer native confirmation also passes, with four selected-class
+  median ratios about 9–14x above FDB's guarded path. All sixteen classes and
+  tails remain intact; source/oracle populations are matched, not deadlines,
+  engine-only costs, durability or acknowledgment batching. Broader SQL/layout/
+  projection tuning and the final 10M/concurrent-load gates remain open. An explicit fresh-table granularity option (1..8192,
+  default 8192) now pins CH manifests and records actual DDL/settings/marks; FDB
+  manifest bytes and source identity are unchanged. Real 512/64 Map/attribute
+  profiles pass both transports and the source oracle. Their implementation fast
+  lane passed 179 targets, 3 executed / 176 cached, not full-suite proof. Retain
+  ingest/storage/maintenance costs alongside the completed three-profile query
+  measurements, and preserve any further tuning as separately named campaigns.
+  The earlier ALTER attempt was rejected as READONLY_SETTING; do not claim it took
+  effect or call the current profile an optimal tuned baseline. The extreme
+  granularity-1 arm hit its initial 10-minute load deadline. A distinct 30-minute
+  load acknowledged 1M, but both its first and later quiescent full audits hit
+  the unchanged 2-second EXPLAIN deadline; separate five- and ten-minute drain
+  windows also failed their three-zero-sample gates. Retain all failures, shared
+  background-maintenance confounds and any explicit eligible-profile exclusions.
+- [x] Preserve CH source-INSERT HTTP-response progress on every error return,
+  without guessing an ambiguous physical tail or inferring ready publication.
+  Public regressions cover 48 source/ready/admission cases plus 26 initialization
+  cases, including rollback, retained loading ownership and non-adoption.
+  Fast lane passes 179 targets (2 executed / 177 cached), 1,279 OTel XML cases,
+  zero failures/errors/skips; CLI build passes. Not full-suite verification.
+- [x] Complete the first stored 1M V2 gate. Frozen `c7d00bf`, two batch workers,
+  1M spans / 908.535 s, strict final drain, full 1M-record/8M-posting/native-index
+  census and 1,600 oracle-checked answers passed. Three additional warm rounds
+  verified all 48,000 answers (1,000/class/round); tail samples remain intact.
+  This FDB-only gate is not the final 10M comparison, HA or a production SLO. Receipts:
+  `layers/otel/bench/evidence/2026-10-27/pilot-1m-v2-workers2-complete/` and
+  `layers/otel/bench/evidence/2026-10-27/query-1m-fdb-warm/`.
+- [ ] Gate capacity using measured physical volume/filesystem growth at 1M and 10M,
+  peak maintenance/log space, and a fixed free-space stop reserve. Logical KV
+  extrapolations and retained-volume deltas do not establish physical 10M fit or
+  safe coexistence with ClickHouse. Run variants sequentially; owned cleanup
+  requires approval, and protected data must not be deleted to force a pass.
+  Respect FDB's own operating-space reserve too: exact 7.3 source defaults
+  `MIN_AVAILABLE_SPACE=100 MB`, `MIN_AVAILABLE_SPACE_RATIO=0.05`; Ratekeeper uses
+  the greater value and reports free-minus-reserve as `least_operating_space`.
+  A host-only 64-GiB floor would not suffice on this roughly 1.9-TB filesystem;
+  preserve the database's reserve rather than lowering it to force a fit.
+  The completed 1M arm added 2.810 GB to the whole retained volume and owns
+  3.435 GB logical KV, but old failed roots, fetch/merge history, logs and
+  preallocation prevent treating that delta as isolated per-run physical bytes.
+  No 10M physical/maintenance gate has run. Diagnose the observed sync stalls
+  and conditional Btrfs direct-I/O fallback before a larger/faster profile;
+  do not infer a client bug or change filesystem flags on existing data.
+  A fresh-empty-volume NOCOW prototype is prepared but unapproved. Its 297 pure
+  policy cases and 27 C predicates pass; distinct listen ports, formal review,
+  real empty-Btrfs/minimum-capability validation, bootstrap and actual storage/
+  log inode gates remain open. No existing-volume flag change is authorized;
+  filesystem checksum/compression changes are not durability-equivalent evidence.
+- [ ] Load and verify the final 10M population and ClickHouse comparison, then
+  retain repeated needle-query latency/work receipts and bounded ingest-plus-
+  concurrent-query measurements. Report achieved throughput, p50/p95/p99/p99.9
+  populations, failures, CPU/RAM, physical storage and write amplification. Keep
+  cold/warm policy and durability boundaries explicit; the current local single-
+  node runs are not HA/SLO proof. Stop at 10M; the former 100M load is out of scope.
+- [ ] Complete the native horizontal campaign in
+  `layers/otel/bench/ops/horizontal/` under a newly approved runtime window/budget;
+  there is still **no accepted 1M-pair result or sustained 20k/scaling proof**.
+  Keep the two 2026-10-29 windows distinct:
+  - The earlier window ended with all eleven created servers deleted by
+    00:32:06Z, zero ingest, and exact baseline equality for all ten resource kinds
+    / seventeen pre-existing IDs. Provider SDK shape differences and invalid
+    empty `ssh_genkeytypes` blocked bootstrap; no health warning was waived.
+  - The fresh 09:29:51Z window actually validated all five hosts' pinned SSH,
+    cloud-init 26.1 user-data/vendor/network schemas and clean status, native
+    ext4/fsync/checksum preparation, quiet admission and one-host FDB startup.
+    Real two-producer independent-store 100k ingest then failed unchanged strict
+    health on `batch_priority_transaction_start_probe_timeout`; storage queue was
+    1,413,262,266 bytes and durability lag 33.702 s. One producer process exited
+    zero and the other was aborted, but the completed producer's `ingest.json`
+    was not retained, so do not claim a verified row count or paired result.
+    Failure collection now includes mode JSON under the existing size/symlink
+    guards. Larger two-/three-storage-host layouts remain unmeasured. A later
+    preregistered larger-first attempt hit the compound create CLI's 20-second
+    outer wait, before SSH or load; the provider action itself succeeded in seven
+    seconds (10:29:36–10:29:43Z), not an action timeout or three-host capacity
+    result. All fifteen
+    servers created across this fresh window were removed, and exact baseline
+    equality passed again for all ten resource kinds / seventeen IDs.
+  The horizontal emitter's nonempty `[ed25519]` preserves supplied host keys and
+  known_hosts; shared renderers/old profiles remain unchanged. Async network
+  attachment now records/polls the exact scoped network action and verifies the
+  owned server binding. The subsequent compound resource-create CLI operation
+  now has a bounded 120-second budget (HTTP requests remain capped at 30 seconds),
+  one invocation/no ambiguous resubmission, private raw attempt diagnostics and
+  unchanged active/hard deadlines; validate this correction in a future approved
+  campaign, not another launch in either closed window. Preregister prerequisite
+  order (`[1,2,3]` or `[3,2,1]`) before data; a failed gate remains fatal and all
+  three complete 100k pairs are required before the measured phase. Keep every
+  existing resource, health, disk, transaction and row-count guard, independent
+  teardown acknowledgement before creation, and absolute cleanup deadlines.
+  Retain failed/partial evidence and separate logical active-topology cost from
+  rounded held-server/IPv4 charges. Single R1 is non-HA; role/counter observations
+  alone cannot prove complete run-specific placement or that extra storage helped.
+- [ ] Establish sustained horizontal 20k ingestion and identify the native
+  CPU-versus-I/O limit; this work is **not completed**. In the fresh 2026-10-29
+  selected two-/three-storage-host study, both independent-store 100k pairs
+  passed strict health, full censuses and 1,600 oracle checks per producer:
+  three hosts acknowledged 200,000 rows at 7,217.2046666 common-wall rows/s;
+  two hosts acknowledged 200,000 rows at 6,318.8476102 rows/s. These are accepted
+  bounded 100k gates, not sustained 20k or 1M results. The subsequent three-host
+  1M-per-producer wave failed the unchanged strict batch-priority transaction
+  probe warning; the two-host 1M wave was not reached. The frozen failure status
+  reports node1 role input-minus-durable backlog 1,137,613,528 bytes and role
+  durability lag 39.0596 s; cluster QoS worst-queue/worst-lag fields are a separate
+  sampled family and must not be substituted for those per-role values.
+  All five owned servers were removed, exact original seventeen-ID / ten-kind
+  inventory equality passed, and source hashes stayed unchanged during the run.
+  Captured process CPU, device busy, memory, queue/lag and host pressure history
+  does not by itself identify CPU saturation, a single event-loop limit or a disk
+  bottleneck. Keep the CPU-versus-I/O cause unresolved until bounded measurements
+  discriminate it; queue growth alone is not causal proof. Future explicitly
+  preregistered two-host-first measurement still needs both fresh selected 100k
+  gates before measurement and must retain the failed three-host study, not waive
+  it. Native input/durable counter parsing and explicit server-only cost labels
+  apply to new captures; do not rewrite frozen rates, windows, populations or
+  verdicts. Any further paid run needs approval, independent teardown readiness,
+  original health/resource/transaction guards and a new fixed lifetime budget.
+  The subsequent fresh two-host-first rerun was blocked before SSH or load:
+  creation of the third owned server returned `dedicated core limit exceeded`
+  (`resource_limit_exceeded`). Only two owned servers were created; both were
+  deleted, and exact twenty-eight-ID / ten-kind baseline equality passed,
+  preserving the original seventeen IDs plus eleven external-campaign resources.
+  Source/profile checks stayed unchanged. This provider-quota rejection gives no
+  two-host large-wave outcome and no new throughput or 20k claim. No further
+  launch is authorized in that window; do not retry the quota, adopt external
+  machines, or mutate/delete other work to manufacture capacity or equality.
+- [x] Capture the separate 2026-10-29 one-FDB-host/one-producer native diagnostic;
+  this completes attribution data collection, **not** the throughput/scaling task.
+  The first attempt released no producer: missing cgroup `io.stat` stopped both
+  samplers. Diagnostic-only I/O accounting fixed that prerequisite without
+  changing legacy slices or weakening the missing-file failure guard. The retry's
+  100k gate passed strict health, all 1,100,002 census keys and 1,600 oracle cases.
+  Its 1M probe then failed strict client health; partial completed rows remain
+  unknown and there is **no accepted large-wave/ACK-rate result**. Both stage
+  profiles were CAPTURED: prerequisite node/client load populations 17/17 frames;
+  probe 43/42 frames over 42.010/41.000 seconds, with the producer PID in 39 frames.
+  No cgroup CPU throttling was observed. Native full-interval storage main CPU
+  was about 0.84 core; Redwood I/O slots reached 64 with growing waiters. Biased
+  Net2 stacks and host-device busy/await do not establish a CPU or disk cause;
+  mixed 30-second KAIO windows are not pure-load latency evidence.
+  The protected twenty-eight-ID global cleanup gate **remains failed** because
+  the external campaign's owner independently removed all eleven of its IDs.
+  Fresh ten-kind verification separately proved the original seventeen IDs
+  exactly present and every owned ID absent; missing external IDs were enumerated.
+  Supervisors were stopped only after that proof and PID/cmdline binding. No
+  receipt was rewritten to PASS, no external resource was recreated or adopted,
+  and original source/profile hashes stayed unchanged throughout runtime.
+  The storage-process-only `max_outstanding=128` follow-up also passed its fresh
+  100k gate and captured the failed 1M probe (45 FDB load frames /43.997 seconds).
+  Actual cmdline and native IOActive=128 verified the intervention; waiters still
+  grew and unchanged strict client health failed. The earlier 64 failure stays
+  failed; these sequential profiles establish neither causal CPU/I/O limits nor
+  accepted large-wave throughput. Both retries' global28 gates stayed failed on
+  independently removed external IDs; separate original17/owned-absence proofs
+  and manual 8,624-file/three-asset source verification were preserved. Post-run
+  source verification now runs in a nested finally even if cleanup fails/raises;
+  this evidence fix does not waive the failed inventory gate.
+- [ ] Runtime-verify the prepared diagnostic two-storage-process candidate in a
+  **new explicitly approved window**. Two colocated SS use 2GiB/1GiB cache each,
+  preserving aggregate4GiB/2GiB, CPU4/memory16GiB and unchanged controls/guards.
+  Only (storage processes, max_outstanding) profiles (1,64), (1,128), (2,64) are
+  permitted; retain every SS ID/counter and all three bounded native trace tails.
+  Both SS must be observed active or the capture is not-exercised/INCONCLUSIVE.
+  The candidate is offline-tested, **runtime UNVERIFIED**. The 16:10:38Z window
+  explicitly forgoes this launch: admission reserves/deadlines were not reset or
+  relaxed to squeeze in another paid attempt.
+  The renewed approval now has an offline-tested bounded two-host Session
+  candidate: provision once, preregister capacity16g (two SS4GiB/2GiB cache each)
+  then baseline (two SS2GiB/1GiB each), both MAX_OUTSTANDING64. Memory/cache is
+  the only case variable; the independent storage queue/health limits stay fixed.
+  Every case has a fresh arm/datadir and its own full100k gate/1M120s probe;
+  exact owned-unit/scope quiescence and quiet admission separate cases without
+  deleting VMs. Only canonical receipt-bound batch-probe/storage-queue failures
+  with freshly passing fatal guards may end an arm rather than the Session.
+  Unknown/host/source/resource/identity/deadline faults still force cleanup.
+  Shared source/ownership lease, host history,16MiB traces/1GiB receipts and
+  original2h clocks never reset. Every Session requires sealed inputs, an
+  independent watchdog and explicit launch approval; its two cases add at most
+  2.2M rows (4.8M prior upper gives7M cumulative, not100M).
+  The first bounded Session did reuse the same two VMs across both cases; both
+  100k gates passed all1,100,002 census keys and1600 oracle checks. Capacity16g's
+  probe remained ARM_FAILURE on strict health; baseline's probe lost storage4510
+  PID12998 and correctly ended SESSION_FATAL. Cause remains **UNKNOWN**: cgroup
+  OOM counters were zero and the old collector required that dead PID to remain
+  readable, so final native traces were not retained. All owned resources were
+  deleted with exact17-ID/ten-kind inventory equality and unchanged source seals.
+  The forensic-only correction now seals live-open filenames/inodes/prefixes and
+  unit invocation identity before release, retains bounded owned postmortem
+  tails/unit exit/journal facts as INCONCLUSIVE, records actual SC_PAGESIZE, and
+  never restores health or reuse permission. It remains runtime-unverified;
+  archived failures/cause UNKNOWN are not rewritten. The original setup cutoff
+  closed before forensic readiness, so the draft single balanced repro was
+  forgone without creating resources or resetting/extending that lease.
+- [ ] Execute the separately authorized bounded independent-namespace weak-scaling
+  candidate only after its OPS inputs, new immutable2h lease and independent
+  watchdog are sealed. `otel_native_scaling_v1` prepares six ccx43 HEL1 role hosts
+  once and reuses them for ordered active (storage hosts,producers)1/1,2/2,3/3
+  stages with fresh clusters and independent namespaces. Each producer must pass
+  its own100k exact census/1600-oracle gate before375k measured rows; authorized
+  2.85M plus prior7M remains9.85M, with no failed-row reclamation. The scaling-only
+  profile is3SS/host each3GiB/cache1GiB/MAX64, node1 controls5x1GiB, fixed4CPU/
+  16GiB/swap0 and GOMAX4. It is not proven memory-safe or pure worker isolation.
+  The primary metric is common release through strict stable durable drain;
+  last-complete-ACK rate is separate. All3 eligible measured stages and a passing1x
+  baseline are required for drained efficiency>=0.90 near-linearity. Missing/idle/
+  reset SS counters stay INCONCLUSIVE. No shared-corpus/statistical/sustained120s
+  20k claim follows from this bounded one-sample weak-scaling experiment. Canonical
+  strict queue failures alone may end a stage after fresh fatal guards; unknown
+  native/host/source/identity/deadline faults remain SESSION_FATAL. Exact owned
+  quiescence plus fresh quiet admission separates stages, all6 VMs remain billed,
+  and final cleanup/source checks always run. Shared16MiB evidence reserves all6
+  waves fairly (startup seals included, unused carryforward);1GiB receipts and
+  old standalone/horizontal/diagnostic/session defaults remain unchanged. The
+  candidate remains **runtime UNVERIFIED**; no new lease/resources are implied by
+  offline implementation or tests, and earlier failures remain UNKNOWN/failed.
+  The first six-host attempt was interrupted during preparation before any stage
+  or producer-release receipt existed; the controller and independent watchdog
+  processes were no longer present and their former task owner was unavailable.
+  Positive local evidence now establishes a common-mode runtime service restart:
+  `bruh-web.service` stopped07:09:51.371–07:09:52.304Z and started07:09:52.320Z,
+  3.297s after client3 readiness. Its `KillMode=control-group` covered both runtime
+  jobs; the watchdog was not genuinely independent. Restart initiator/reason and
+  individual child signals remain UNKNOWN, not a native throughput failure.
+  Evidence is `runtime-restart-evidence.json` in the campaign root. The older
+  storage4510/PID12998 cause remains UNKNOWN. Cleanup supervision was restored
+  under the original unchanged lease solely to delete the six owned hosts and
+  auxiliaries, with fresh exact17-ID/ten-kind inventory equality and unchanged
+  source seals. No scaling measurements completed, and the owner declined a
+  restart. Evidence: `/var/tmp/fdb-native-scaling.NjSZRv/`.
+- [ ] Obtain explicit operator authorization for a harmless local managed-watch
+  isolation probe before any future scaling launch. The scaling-only corrective
+  candidate adds offline private helper-bundle/USER-service preparation and live
+  pre-mutation admission, not automatic installation/start or runtime detachment.
+  The watch must be outside `bruh-web.service` at the USER-manager root slice;
+  separate PGIDs in the same runtime cgroup do not pass. Exact live PID/start/
+  boot/argv, manager/unit/dependency identity, kernel-argv bundle seal, fresh
+  registered-controller ACK, source/assets and original deadline are checked.
+  Its own ExecCondition may set only its generated unit's remaining RuntimeMax;
+  manual restart never renews lifetime. Controller loss/runtime invocation change
+  or unknown supervision triggers existing exact owned cleanup without an EXIT
+  marker. Active admission failure cannot block deletion; source/runtime faults
+  still permit the sealed cleanup bundle. Tests use fake manager/procfs/clocks/
+  providers only. Actual OS survival remains **UNVERIFIED**, no unit activation or
+  new lease/resources is implied, and legacy native argv/application/rows remain
+  unchanged. Preserve old native PID12998 cause UNKNOWN separately from the now
+  confirmed runtime-restart failure domain.
+- [ ] Run the user's explicitly approved plain foreground scaling perf test with
+  `foreground_only:true` and no `managed_watch`; no external service/bundle or
+  managed admission/registration is required. The mode is explicit and typed,
+  reports `execution_mode:bounded_foreground`, and retains bounded prepare,
+  internal auxiliary guard, all existing source/health/ownership/disk/transaction
+  checks, immutable2h lease, final cleanup and six-host reuse across1/2/3 tiers.
+  There is no independent runtime-survival claim. The prior interrupted attempt
+  positively reached no ingest: no prepared completion, stage, active arm or
+  producer grant/release existed. Its unused2.85M allocation plus prior loaded
+  upper7M remains9.85M; this is not unknown failed-row reclamation. No agent cloud
+  actions or further infrastructure features are authorized by this code change.
+  The completed foreground run passed pairs1 (ACK6278.13374 rows/s, durable-drained
+  3755.93940 rows/s, drain40.11s) and both pairs2 gates, then failed pairs2 measured:
+  native transaction/log4504/PID15874 RSS-monitor `OutOfMemory`, exit20 under1GiB.
+  This is not a storage/kernel OOM; older storage4510/PID12998 remains UNKNOWN.
+  All six hosts/auxiliaries were deleted, fresh exact17-ID/ten-kind inventory
+  equality passed, and source seals stayed unchanged. Pairs3 was never issued.
+- [ ] Run only the separately approved bounded log-memory follow-up if the original
+  lease/cutoffs still fit after committed hook readiness. Optional scaling-only
+  `log_memory_gib:2` requires integer2, foreground true/no managed watch, exact
+  stages2/2 then1/1 and prior issued upper8425000. Only node1 transaction/log4504
+  changes1GiB→2GiB; cache64MiB, all other argv/knobs and16GiB/4CPU/swap0 slice stay
+  unchanged (node1 configured total15GiB). Six fresh hosts are prepared once and
+  reused;2x runs first, followed by a fresh same2GiB-log1x baseline. Per producer
+  100k gate+375k measured/120s yields1.425M/four waves, total9.85M. Failed pairs2
+  rows remain charged in full; only positively unissued pairs3 rows are reused.
+  Shared16MiB evidence/1GiB receipts and SESSION_FATAL OOM behavior remain intact.
+  Original09:49:26–11:49:26Z lease,10:56:06Z setup and11:04:26Z measured-entry
+  cutoffs are unchanged. No3x, stale1GiB baseline or sustained20k claim follows.
+  The foreground follow-up passed the fresh200k gate, then its750k measured wave
+  failed the exact batch-probe/storage-queue health guard. LogPID5493 stayed live
+  across139 gate/measured frames and reached1,452,507,136B RSS;14/55 load frames
+  exceeded the old1GiB cap without a native exit. This verifies the targeted
+  memory correction over the observed window, not general memory safety or20k.
+  Fresh1x never started a cluster/workload because the original setup reserve
+  expired; comparison stays INCONCLUSIVE. All six hosts/auxiliaries were deleted,
+  fresh exact17-ID/ten-kind equality passed, and source seals stayed unchanged.
+  Evidence: `/var/tmp/fdb-perf-scaling.v4O6xf/log2g/native-analysis.json`.
+- [ ] Test exact measured-range conditioning before adding more ingest workers or
+  hosts. The sealed app uses physical prefix `("otel_otelbench_v2", Run, "store")`;
+  gate Runs9310/9311 and measured Runs9313/9314 are disjoint. Early observed native
+  input concentrated85.1153% on one of six SS, with a1.499GB raw MVCC queue; these
+  counters include setup/DD activity, so cold-prefix causality is a hypothesis,
+  not proven shard-placement evidence. Count is part of corpus/owner identity;
+  simply reusing a100k Run with375k Count would violate existing guards. A future
+  FDB-only append experiment must transactionally authenticate ready100k, claim
+  loading475k with unchanged layout/corpus parameters, write only ordinals
+  [100000,475000), preserve all ordinary owner/old-image/conflict/transaction
+  checks, and publish ready475k only after375k acknowledged additions. Partial
+  failure must remain fail-closed, not implicit resume. Final census/query truth
+  must cover all475k; measured rates must count only375k additions. Generation is
+  prefix-stable, but this is a changed benchmark boundary requiring a fresh
+  same-protocol baseline. No application/storage change is implemented or implied.
+
+### OTel log payload storage migration
+
+- [ ] **Migrate log payloads to standard Record Layer records without silently
+  changing existing `logs_v1` bytes.** `layers/otel/logs.go` currently owns a
+  separate eight-field tuple header `(version, codec, raw_len, stored_len,
+  chunks, effective, source, inline)`, raw/Brotli codec policy, 90,000-byte
+  inline/chunk rows and reassembly/corruption validation. Spans and messages
+  already use Record Layer serialization and splitting; the log format is not
+  wire-identical to those facilities, and no necessary independent-format
+  constraint has been established. Define a log envelope Record Layer type and
+  reuse `TransformedRecordSerializer` (including opt-in bounded Brotli) and
+  `SplitHelper`, while retaining log-specific time/equality/trace indexes,
+  ownership, admission budgets, fidelity and replacement semantics in OTel.
+  Before cutover, define an explicit versioned ownership/layout boundary and
+  migration or recreation procedure for existing `logs_v1` stores; do not
+  reinterpret their bytes as Record Layer records. Add end-to-end coverage for
+  raw/Brotli and inline/split payloads, bounded corrupt-input rejection,
+  old-format read/migration or explicit refusal, replacement/deletion cleanup,
+  index consistency and failed/partial migration. This entry defers the storage
+  refactor; the current persisted format and readers remain unchanged.
+
+### OTel GenAI messages on Record Layer TEXT indexes (2026-11-02)
+
+`layers/otel/messages*.go` stores GenAI messages as `Message` records with a
+standard TEXT index (README "GenAI message storage"). Open work follows.
+Historical standalone performance numbers have been removed here because the
+paired source trees, compiler and sample populations were not identified with
+these claims; the implementation notes below are not controlled comparisons.
+
+- [ ] **Re-measure client cost in message ingest.** Investigate RYW selector
+  resolution and per-transaction lock hold time during BunchedMap reads for
+  TEXT index maintenance. Capture both measured trees, compiler, workload and
+  repeat populations before attributing a throughput bound or improvement.
+  Client side done (unmeasured on the bench box): a Set after any pinned read
+  cloned the whole write map (O(writes) per Set), and every walk step re-derived
+  its segment with ~10 binary searches. The write map, its cleared/unreadable
+  lists, the WriteMap nodes and the snapshot cache now sit on persistent
+  sequences (`ryw_pseq.go`, O(1) snapshot, O(log n) path copy), the walk
+  iterator is RYWIterator's two-cursor composition (O(1) amortized steps), and
+  conflict filtering on a pinned version runs outside the lock.
+  `BenchmarkRYWConcurrentReads` (//pkg/fdbgo/client:range_selector_unit_test)
+  exercises concurrent reads over a populated write map; re-measure it with
+  paired provenance before making a performance comparison.
+  Second round (profile at 7cf0eda3c): the walk runs outside `rywCache.mu` on
+  the pinned write-map version and a persistent snapshot of the cache; the lock
+  covers only pinning, snapshotting and accepting a storage reply. Walks and
+  their iterators are pooled, boundaries are lazy (no `keyAfter` copies), the
+  facade's selector copies are kept (`StartGetRangeOwnedSelectors`), a
+  cancellable caller context is merged with the transaction's only when
+  something waits (a cached RYW read derives none), point writes share one
+  arena copy of `key\x00` between mutation and conflict range, the conflict
+  arena grows in chunks without copying, and Commit coalesces the write
+  conflicts once (the self-conflict check and range reuse that vector).
+  Re-measure BunchedMap-shaped puts, cached selector reads and cached Gets
+  together with their allocation populations.
+  Third round (profile at cd1ee1615): conflicts live where C++ keeps them
+  (`conflict_map.go`). With RYW, write conflicts are only the WriteMap nodes'
+  flags, updated under `conflictMu` with the op-log, and read conflicts a
+  coalescing map in the conflict arena (an already covered range costs two
+  searches); Commit freezes both with the mutations and builds mutations and
+  write conflicts in one pass over the frozen write map
+  (writeRangeToNativeTransaction), a write-only transaction's from the node
+  log without building the nodes. updateConflictMap walks the write map with
+  two cursors instead of sorting copied boundaries. Persistent-sequence nodes
+  take C++ PTree's spare version slot and come from per-sequence chunks; walk
+  skips are finger searches from the cursor; AppendIfFits extends the value's
+  owned spare capacity. Deliberate changes, toward C++: a versionstamped
+  transaction ships the write map's coalesced write conflicts (keeping the
+  conflicts of the writes Go keeps in an SVK span, RFC-098); disabling RYW
+  after a conflict-only write fails with 2000, and read conflicts recorded
+  before disabling are not shipped. Re-measure `BenchmarkRYWConflictCalls`
+  and `BenchmarkRYWBunchedMapPuts`, distinguishing CPU, allocation and wall-time
+  effects rather than inferring one from another.
+  Open: re-measure otelbench, profiling versioned-node searches, transaction
+  locks and position-indexed sequence copying (C++ PTree keeps no subtree
+  sizes). Every pipelined read that is not answered locally still runs on its
+  own goroutine (`startPendingRange`);
+  the op-log copied each Set's key and value besides the write map (fixed
+  by the fourth round, "RYW CPU in TEXT-maintenance-shaped transactions" in
+  section 0).
+- [ ] **TEXT index maintenance CPU in message transactions.** Record Layer
+  side done: a BunchedMap put or remove keeps each stored key's packed bytes, as Java's
+  `Tuple.fromBytes` does, validating instead of unpacking them, compares by
+  those bytes (`Tuple.compareTo`) with a binary search over the sorted bunch,
+  and writes canonical position lists back as stored; tuples elsewhere compare
+  element-wise (`compareTuples`, `TupleUtil.compareItems`); the default
+  tokenizer streams word segments. Re-measure `BenchmarkTextBunchedMapPut/append`
+  with paired provenance. Per-put conflict ranges equal Java's and are pinned by "BunchedMap operation conformance";
+  the conflict-range share of the profile is client cost (pkg/fdbgo/client).
+  Fixed on the way: the APPEND_IF_FITS path did not instrument its write, a
+  remove passed the wrong old value to its instrumentation, and a stored key
+  with a non-canonical encoding was rewritten canonically (Java keeps it).
+  Pipelined reads: a put's or remove's snapshot read is now the RangeResult
+  future GetRange returns, completed in order on the maintainer's goroutine,
+  as Java's forEachAsync completes BunchedMap's futures; it reads with
+  WANT_ALL as Java does (it read with ITERATOR, whose 4 KB first batch split
+  reads of large bunches). Re-measure `BenchmarkTextBunchedMapPipelinedPuts/deep`.
+  Open: the pure-Go client still starts one goroutine per read it cannot answer locally (`startPendingRange`, client
+  scope); `DeserializeEntries` (scans, Get) still unpacks every key.
+- [ ] **TEXT maintenance round trips across a batch's records.** Done:
+  `SaveRecordBatch(WithOptions)` and `PrefetchRecordBatch` read the batch's
+  TEXT bunches (one snapshot read per token map) and updated records'
+  tokenizer versions together into the transaction's read-your-writes cache
+  before the records are applied (`store_batch_text_prefetch.go`); the commit
+  is the sequential saves' commit, pinned by "Batch TEXT bunch prefetch".
+  Open: `PrefetchRecordBatch` cannot warm an update's removals (old
+  images are not yet read); a map whose batch keys lie far apart past
+  2*keys+2 rows costs a second prefetch round trip.
+- [ ] **Record Layer KeySpace over the directory layer** (for layers/otel's
+  directory_v1 layout). Done: `keyspace.Path.ToSubspace` is Java's
+  `new Subspace(toTuple())` (it packed the tuple as one nested element), and
+  `recordlayer.DirectoryLayerDirectory` / `KeySpaceResolver` port Java's
+  DirectoryLayerDirectory over its default scope `ExtendedDirectoryLayer.global`
+  (`ExtendedDirectoryLayerGlobal`), pinned by "KeySpace path and directory
+  layer conformance". Open, against Java's KeySpace: `KeySpace.PathFromTuple`
+  does not reverse-resolve a DirectoryLayerDirectory's longs (Java's
+  `pathFromKey`), a DirectoryLayerDirectory refuses a long value (Java looks
+  it up), and `runChild` (resolveWithMetadata's child transaction) takes a
+  fresh read version where Java's runAsyncBorrowingReadVersion borrows the
+  parent's.
+- [ ] **Measure phrase-query fanout cost.** Profile the TEXT phrase scan of
+  16 writer shards per role (`fts_phrase_first_turn`, `fts_multi_turn_history`)
+  before attributing its cost or comparing layouts.
+- [ ] **`bulk_index_conflicts` widens over every index of the store.** Record
+  Layer side done: `BatchSaveOptions.CoalesceIndexWriteConflicts` now covers
+  only the indexes whose maintainer the batch ran (the saved and overwritten
+  records' types, multi-type and universal indexes, not disabled or queued),
+  pinned by "Batch index write-conflict coalescing scope" in
+  `pkg/recordlayer/store_batch_conflicts_test.go`. layers/otel accepts the
+  combination again (exporter default on). Re-measure message-transaction
+  conflicts and throughput with paired provenance; the scope regression does
+  not establish a performance result.

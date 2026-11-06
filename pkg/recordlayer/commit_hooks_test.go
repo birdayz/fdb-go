@@ -144,11 +144,11 @@ var _ = Describe("Commit hooks", func() {
 			Expect(rtx.getCommitCheck("retirement")).NotTo(BeNil())
 			Expect(rtx.getCommitCheck("absent")).To(BeNil())
 			rtx.AddCommitCheck(func() error { checked.Add(10); return nil })
-			Expect(rtx.runCommitChecks()).To(Succeed())
+			Expect(rtx.drainCommitChecksAndSealWrites()).To(Succeed())
 			Expect(checked.Load()).To(Equal(int32(11)))
 		})
 
-		It("cancels a snapshotted check from an earlier check without canceling another name", func() {
+		It("cancels a pending check from an earlier check without canceling another name", func() {
 			rtx := NewFDBRecordContext(nil, nil)
 			var order []string
 			rtx.AddCommitCheck(func() error {
@@ -161,7 +161,7 @@ var _ = Describe("Commit hooks", func() {
 					return func() error { order = append(order, name); return nil }
 				})
 			}
-			Expect(rtx.runCommitChecks()).To(Succeed())
+			Expect(rtx.drainCommitChecksAndSealWrites()).To(Succeed())
 			Expect(order).To(Equal([]string{"delete", "retained"}))
 			Expect(rtx.getCommitCheck("deleted")).To(BeNil())
 		})
@@ -179,8 +179,31 @@ var _ = Describe("Commit hooks", func() {
 			rtx.removeCommitCheck("absent")
 			register("other", "other")
 			register("store", "new")
-			Expect(rtx.runCommitChecks()).To(Succeed())
+			Expect(rtx.drainCommitChecksAndSealWrites()).To(Succeed())
 			Expect(order).To(Equal([]string{"other", "new"}))
+		})
+
+		It("drains checks registered by checks and re-registered canceled names before commit", func() {
+			var order []string
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				order = nil
+				rtx.AddCommitCheck(func() error {
+					order = append(order, "first")
+					rtx.removeCommitCheck("replaced")
+					rtx.GetOrCreateCommitCheck("replaced", func(string) CommitCheckFunc {
+						return func() error { order = append(order, "new"); return nil }
+					})
+					rtx.AddCommitCheck(func() error { order = append(order, "anonymous"); return nil })
+					return nil
+				})
+				rtx.GetOrCreateCommitCheck("replaced", func(string) CommitCheckFunc {
+					return func() error { order = append(order, "old"); return nil }
+				})
+				rtx.AddPostCommit(func() { order = append(order, "post") })
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(order).To(Equal([]string{"first", "new", "anonymous", "post"}))
 		})
 
 		It("propagates named check errors and stops before subsequent checks", func() {
@@ -191,7 +214,7 @@ var _ = Describe("Commit hooks", func() {
 				return func() error { order = append(order, "failure"); return checkErr }
 			})
 			rtx.AddCommitCheck(func() error { order = append(order, "later"); return nil })
-			Expect(rtx.runCommitChecks()).To(MatchError(checkErr))
+			Expect(rtx.drainCommitChecksAndSealWrites()).To(MatchError(checkErr))
 			Expect(order).To(Equal([]string{"failure"}))
 		})
 	})
@@ -347,18 +370,20 @@ func FuzzNamedCommitCheckLifecycle(f *testing.F) {
 		live := make(map[byte]int)
 		var actual []int
 		factories, wantFactories := 0, 0
+		checked, modeled := 0, 0
 		verify := func() {
 			t.Helper()
 			actual = nil
-			if err := rtx.runCommitChecks(); err != nil {
+			if err := rtx.runPendingCommitChecks(&checked); err != nil {
 				t.Fatal(err)
 			}
 			var expected []int
-			for _, entry := range registrations {
+			for _, entry := range registrations[modeled:] {
 				if entry.anonymous || live[entry.key] == entry.id {
 					expected = append(expected, entry.id)
 				}
 			}
+			modeled = len(registrations)
 			if !slices.Equal(actual, expected) || factories != wantFactories {
 				t.Fatalf("operations=%v: invoked=%v want=%v factories=%d want=%d", operations, actual, expected, factories, wantFactories)
 			}

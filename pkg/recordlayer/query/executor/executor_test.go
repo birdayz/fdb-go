@@ -5531,6 +5531,27 @@ func newUnorderedUnionForTest(children ...recordlayer.RecordCursor[QueryResult])
 	}
 }
 
+func TestUnionContinuationEmptyInputAdapter(t *testing.T) {
+	t.Parallel()
+	states, err := decodeUnionContinuation([]byte{}, 3)
+	if err != nil || len(states) != 3 {
+		t.Fatalf("executor empty input must start three children: %v", err)
+	}
+	for i, state := range states {
+		if state.exhausted || state.continuation != nil {
+			t.Fatalf("child %d is not START: %+v", i, state)
+		}
+	}
+	if _, err := decodeUnionContinuation([]byte{0xff}, 3); err == nil {
+		t.Fatal("accepted malformed union continuation")
+	} else {
+		var parse *recordlayer.ContinuationParseError
+		if !errors.As(err, &parse) {
+			t.Fatalf("lost executor parse-error policy: %T %v", err, err)
+		}
+	}
+}
+
 func TestUnorderedUnionCursor_MultipleChildren(t *testing.T) {
 	t.Parallel()
 

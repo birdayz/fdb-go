@@ -31,16 +31,20 @@ type textCursor struct {
 	// scanState is the (possibly shared) scanned-records/scanned-bytes/time
 	// counter set — see ScanLimiterState's doc comment. Never nil.
 	scanState *ScanLimiterState
+
+	// timer is the store context's timer (nil when uninstrumented).
+	timer *StoreTimer
 }
 
 // newTextCursorWithByteTracking creates a textCursor and a KVCallback that
 // accumulates raw FDB bytes into the cursor's scanState.
 // The callback must be passed to NewBunchedMapMultiIteratorWithCallback.
-func newTextCursorWithByteTracking(index *Index, scanProps ScanProperties) (*textCursor, KVCallback) {
+func newTextCursorWithByteTracking(index *Index, scanProps ScanProperties, timer *StoreTimer) (*textCursor, KVCallback) {
 	c := &textCursor{
 		index:     index,
 		scanProps: scanProps,
 		scanState: resolveScanLimiterState(scanProps.ExecuteProperties),
+		timer:     timer,
 	}
 	// Called synchronously from within textCursor.OnNext's own call into the
 	// underlying iterator — never from a separate goroutine (see
@@ -49,6 +53,8 @@ func newTextCursorWithByteTracking(index *Index, scanProps ScanProperties) (*tex
 	// package_invariant_test.go).
 	callback := func(keyLen, valueLen int) {
 		c.scanState.AddBytesScanned(int64(keyLen + valueLen))
+		c.timer.Increment(CountTextScanKeyValues)
+		c.timer.IncrementBy(CountTextScanBytes, int64(keyLen+valueLen))
 	}
 	return c, callback
 }
@@ -148,6 +154,8 @@ func (c *textCursor) OnNext(ctx context.Context) (RecordCursorResult[*IndexEntry
 	}
 
 	entry := c.underlying.Next()
+	c.timer.Increment(CountLoadScanEntry)
+	c.timer.Increment(CountLoadTextEntry)
 
 	// Build the index entry key: subspaceTag (grouping key) + entry key (document ID)
 	var k tuple.Tuple
@@ -199,6 +207,30 @@ func (c *textCursor) limitContinuation() RecordCursorContinuation {
 		return &BytesContinuation{bytes: contBytes}
 	}
 	return &StartContinuation{}
+}
+
+// seekTo returns the last-skipped-entry continuation while repositioning within the token map.
+// Skipped entries do not consume record limits; physically read key-values consume byte limits.
+//
+// Precondition: the cursor's last result had a value whose map key sorts
+// before target in scan order.
+func (c *textCursor) seekTo(ctx context.Context, target tuple.Tuple) (RecordCursorContinuation, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	c.timer.Increment(CountTextScanSeeks)
+	c.underlying.seekTo(target)
+	if !c.underlying.HasNext() {
+		if err := c.underlying.Err(); err != nil {
+			return nil, err
+		}
+		if c.underlying.GetContinuation() == nil {
+			// Report exhaustion before checking limits so no position-less limit stop hides the end.
+			result := NewResultNoNext[*IndexEntry](SourceExhausted, &EndContinuation{})
+			c.lastResult = &result
+		}
+	}
+	return c.makeContinuation(), nil
 }
 
 // Close releases resources.

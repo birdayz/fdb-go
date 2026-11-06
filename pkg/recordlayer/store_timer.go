@@ -145,6 +145,17 @@ var (
 	CountDeleteIndexKeyBytes   = Event{"delete_index_key_bytes", "Delete Index Key Bytes", KindSize}
 	CountDeleteIndexValueBytes = Event{"delete_index_value_bytes", "Delete Index Value Bytes", KindSize}
 
+	// Go currently increments LOAD_SCAN_ENTRY only for TEXT, unlike Java's generic
+	// KV scan counter. Both counters below count entries produced by TextCursor.
+	CountLoadScanEntry = Event{"load_scan_entry", "number of TEXT scan entries loaded (Go TEXT-only instrumentation)", KindCount}
+	CountLoadTextEntry = Event{"load_text_entry", "number of text entries loaded", KindCount}
+
+	// Go-only TEXT costs count physical BunchedMap KVs/bytes and logical seek requests.
+	// Seeks include in-memory repositioning; use KV/byte counts for physical read cost.
+	CountTextScanKeyValues = Event{"text_scan_key_values", "Text Scan Key-Values Read", KindCount}
+	CountTextScanBytes     = Event{"text_scan_bytes", "Text Scan Bytes Read", KindSize}
+	CountTextScanSeeks     = Event{"text_scan_seeks", "Text Scan Seeks", KindCount}
+
 	// CountTransactionSizeWarning is Go-only: a transaction crossed
 	// ContextConfig.TransactionSizeWarnBytes (Java has no such threshold).
 	CountTransactionSizeWarning = Event{"transaction_size_warning", "Transaction Size Warning", KindCount}

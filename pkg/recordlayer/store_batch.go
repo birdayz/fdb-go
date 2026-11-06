@@ -7,6 +7,8 @@ package recordlayer
 import (
 	"encoding/binary"
 	"fmt"
+	"maps"
+	"slices"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -17,6 +19,20 @@ import (
 // Used by PackConcatWithPrefix to avoid appendToTuple allocation.
 var unsplitSuffix = tuple.Tuple{unsplitRecord}
 
+// BatchSaveOptions controls transaction-local batch execution, not stored layout.
+type BatchSaveOptions struct {
+	// CoalesceIndexWriteConflicts adds primary/secondary write-conflict prefixes for indexes actually maintained.
+	// This includes old/new record types and universal indexes, but excludes disabled or queued write-only indexes.
+	//
+	// Normal conflicts remain; only index prefixes widen, so covered readers may see extra conflicts.
+	// Failed batches add none; other subspaces stay unchanged, and live approximate size need not decrease.
+	CoalesceIndexWriteConflicts bool
+
+	// skipTextPrefetch turns off the TEXT bunch prefetch (tests compare
+	// against it).
+	skipTextPrefetch bool
+}
+
 // SaveRecordBatch saves multiple records with pipelined existence checks.
 //
 // Instead of N sequential blocking FDB reads (one per record in SaveRecord),
@@ -26,9 +42,26 @@ var unsplitSuffix = tuple.Tuple{unsplitRecord}
 //
 // Semantically equivalent to calling SaveRecord N times. All records are
 // saved in the current transaction.
+//
+// TEXT prefetch fills the RYW cache with token bunches and updated-record tokenizer versions before writes.
+// Sequential saves merge cached reads with earlier writes, preserving ordinary SaveRecord mutations and conflicts.
 func (store *FDBRecordStore) SaveRecordBatch(
 	records []proto.Message,
 ) ([]*FDBStoredRecord[proto.Message], error) {
+	return store.SaveRecordBatchWithOptions(records, BatchSaveOptions{})
+}
+
+// SaveRecordBatchWithOptions saves as SaveRecordBatch does, then applies the
+// requested conflict widening only after every normal save has succeeded.
+func (store *FDBRecordStore) SaveRecordBatchWithOptions(
+	records []proto.Message,
+	options BatchSaveOptions,
+) ([]*FDBStoredRecord[proto.Message], error) {
+	finishWrite, err := store.context.beginRecordWrite()
+	if err != nil {
+		return nil, err
+	}
+	defer finishWrite()
 	if len(records) == 0 {
 		return nil, nil
 	}
@@ -61,12 +94,16 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			return nil, err
 		}
 		results := make([]*FDBStoredRecord[proto.Message], len(records))
+		written := options.indexWriteSet()
 		for i, rec := range records {
-			saved, err := store.SaveRecord(rec)
+			saved, err := store.saveRecordInternal(rec, RecordExistenceCheckNone, nil, VersionstampSaveBehaviorDefault, false, nil, nil, written)
 			if err != nil {
 				return nil, fmt.Errorf("record %d: %w", i, err)
 			}
 			results[i] = saved
+		}
+		if err := store.addBatchIndexWriteConflicts(written); err != nil {
+			return nil, err
 		}
 		return results, nil
 	}
@@ -152,7 +189,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		// A repeated key replaces the earlier batch entry, so it reads nothing.
 		var load pendingStoreRecordLoad
 		if previous < 0 {
-			load = store.startRecordLoad(tx, primaryKey)
+			load = store.startAuthoritativeRecordLoad(tx, primaryKey)
 		}
 
 		pending[i] = pendingRecord{
@@ -201,6 +238,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 	store.indexStateView.maintenance.RLock()
 	defer store.indexStateView.maintenance.RUnlock()
 	lockChecked := false
+	written := options.indexWriteSet()
 
 	for i := range pending {
 		p := &pending[i]
@@ -214,7 +252,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			continue
 		}
 		var oldsizeInfo sizeInfo
-		oldValue, oldVersion, err := p.load.raw.finish(&oldsizeInfo)
+		oldValue, oldVersion, err := p.load.finishAuthoritative(&oldsizeInfo)
 		if err != nil {
 			return nil, fmt.Errorf("record %d: existing record load: %w", i, err)
 		}
@@ -236,6 +274,8 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			if err != nil {
 				return nil, fmt.Errorf("record %d: load old record version: %w", i, err)
 			}
+		} else if err := p.load.finishRetiredVersionErrors(); err != nil {
+			return nil, fmt.Errorf("record %d: load old record version: %w", i, err)
 		}
 		if !lockChecked {
 			if err := store.validateRecordUpdateAllowedLocked(); err != nil {
@@ -251,6 +291,21 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		p.oldType, p.oldRecord, p.oldWire = oldRT, oldMsg, oldWire
 	}
 
+	// Prefetch TEXT bunch reads into the transaction cache before applying any record
+	// (store_batch_text_prefetch.go).
+	if !options.skipTextPrefetch {
+		news := make([]*FDBStoredRecord[proto.Message], len(pending))
+		olds := make([]*FDBStoredRecord[proto.Message], len(pending))
+		for i := range pending {
+			p := &pending[i]
+			news[i] = &FDBStoredRecord[proto.Message]{PrimaryKey: p.primaryKey, RecordType: p.recordType, Record: p.record, Store: store}
+			if p.previous < 0 && p.oldExists {
+				olds[i] = &FDBStoredRecord[proto.Message]{PrimaryKey: p.primaryKey, RecordType: p.oldType, Record: p.oldRecord, wire: p.oldWire, Store: store}
+			}
+		}
+		store.prefetchBatchTextBunches(news, olds)
+	}
+
 	// No record mutation precedes the whole batch's collation preflight.
 	for i := range pending {
 		p := &pending[i]
@@ -258,6 +313,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		oldRT, oldMsg, oldWire := p.oldType, p.oldRecord, p.oldWire
 		oldVersion := p.oldVersion
 		if p.previous >= 0 {
+			p.load = pending[p.previous].load
 			old := results[p.previous]
 			oldRT, oldMsg, oldWire, oldVersion = old.RecordType, old.Record, old.wire, old.Version
 			oldsizeInfo = sizeInfo{
@@ -276,32 +332,39 @@ func (store *FDBRecordStore) SaveRecordBatch(
 			return nil, fmt.Errorf("record %d: %w", i, err)
 		}
 
-		// Save — fast path for unsplit new records (most common in batch ingest)
-		var newsizeInfo sizeInfo
-		if !oldRecordExists && len(storedBytes) <= splitRecordSize {
-			// Direct Set using pre-computed key — avoids appendToTuple + Pack in saveWithSplit
-			tx.SetBytes(p.unsplitKey, storedBytes)
-			newsizeInfo.KeyCount = 1
-			newsizeInfo.KeySize = len(p.unsplitKey)
-			newsizeInfo.ValueSize = len(storedBytes)
-		} else {
-			var oldsizeInfoPtr *sizeInfo
-			if oldRecordExists {
-				oldsizeInfoPtr = &oldsizeInfo
-			}
-			if err := saveWithSplit(store.context, tx, recordsSubspace, p.primaryKey, storedBytes,
-				splitEnabled, false, oldsizeInfoPtr, &newsizeInfo); err != nil {
-				return nil, fmt.Errorf("record %d: save: %w", i, err)
-			}
+		physicalPresent, finishPhysical, err := p.load.beginPhysicalMutation(oldRecordExists, &oldsizeInfo)
+		if err != nil {
+			return nil, fmt.Errorf("record %d: %w", i, err)
 		}
-
-		// Save version if versioning is enabled. One SET_VERSIONSTAMPED_VALUE
-		// mutation per record — no round trip, just added to the write set.
+		var newsizeInfo sizeInfo
 		savedVersion := p.version
-		if savedVersion != nil {
-			if err := store.saveRecordVersion(p.primaryKey, savedVersion, &newsizeInfo); err != nil {
-				return nil, fmt.Errorf("record %d: save version: %w", i, err)
+		err = func() error {
+			defer finishPhysical()
+			// A prefetched absence may have changed during a serializer callback.
+			if !physicalPresent && len(storedBytes) <= splitRecordSize {
+				tx.SetBytes(p.unsplitKey, storedBytes)
+				newsizeInfo.KeyCount = 1
+				newsizeInfo.KeySize = len(p.unsplitKey)
+				newsizeInfo.ValueSize = len(storedBytes)
+			} else {
+				var oldsizeInfoPtr *sizeInfo
+				if physicalPresent {
+					oldsizeInfoPtr = &oldsizeInfo
+				}
+				if err := saveWithSplit(store.context, tx, p.load.physical.records, p.primaryKey, storedBytes,
+					splitEnabled, false, oldsizeInfoPtr, &newsizeInfo); err != nil {
+					return fmt.Errorf("record %d: save: %w", i, err)
+				}
 			}
+			if savedVersion != nil {
+				if err := store.saveRecordVersionAtKey(p.load.physical.versionKey, savedVersion, &newsizeInfo); err != nil {
+					return fmt.Errorf("record %d: save version: %w", i, err)
+				}
+			}
+			return nil
+		}()
+		if err != nil {
+			return nil, err
 		}
 
 		// Record count
@@ -343,7 +406,7 @@ func (store *FDBRecordStore) SaveRecordBatch(
 				Version:    oldVersion,
 			}
 		}
-		if err := store.updateSecondaryIndexesLocked(oldRecord, stored); err != nil {
+		if err := store.updateSecondaryIndexesLocked(oldRecord, stored, written); err != nil {
 			return nil, fmt.Errorf("record %d: index update: %w", i, err)
 		}
 
@@ -357,7 +420,52 @@ func (store *FDBRecordStore) SaveRecordBatch(
 		tx.AddBytes(countFDBKey, buf[:])
 	}
 
+	if err := store.addBatchIndexWriteConflicts(written); err != nil {
+		return nil, err
+	}
 	return results, nil
+}
+
+// indexWriteSet collects, by name, the indexes whose maintainer a save ran
+// (readable or write-only without a queue). A nil set collects nothing.
+type indexWriteSet map[string]*Index
+
+func (s indexWriteSet) add(index *Index) {
+	if s != nil {
+		s[index.Name] = index
+	}
+}
+
+// indexWriteSet returns the set a batch with these options collects into: nil
+// unless index write conflicts are coalesced.
+func (options BatchSaveOptions) indexWriteSet() indexWriteSet {
+	if !options.CoalesceIndexWriteConflicts {
+		return nil
+	}
+	return indexWriteSet{}
+}
+
+// addBatchIndexWriteConflicts adds maintained index prefixes in name order;
+// these never replace normal per-write conflicts.
+func (store *FDBRecordStore) addBatchIndexWriteConflicts(written indexWriteSet) error {
+	var ranges []fdb.KeyRange
+	for _, name := range slices.Sorted(maps.Keys(written)) {
+		index := written[name]
+		for _, prefix := range [][]byte{store.indexSubspace(index).Bytes(), store.indexSecondarySubspace(index).Bytes()} {
+			// PrefixRange also covers an aggregate entry at the subspace key itself.
+			r, err := fdb.PrefixRange(prefix)
+			if err != nil {
+				return fmt.Errorf("batch index %q write-conflict range: %w", name, err)
+			}
+			ranges = append(ranges, r)
+		}
+	}
+	for _, r := range ranges {
+		if err := store.context.Transaction().AddWriteConflictRange(r); err != nil {
+			return fmt.Errorf("batch index write conflict: %w", err)
+		}
+	}
+	return nil
 }
 
 // The sequential legacy fallback must refuse a later collated record before

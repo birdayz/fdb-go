@@ -1,0 +1,45 @@
+{
+  "accessDate": "2026-10-27",
+  "genaiCommit": "e19717d65f890955777b044bca2a3cd71ae8b498",
+  "genaiCommitTimestamp": "2026-10-27T01:38:58Z",
+  "verification": [
+    {
+      "path": "docs/gen-ai/README.md",
+      "mainSnapshotMatchesPinned": true
+    },
+    {
+      "path": "docs/gen-ai/client-inference.md",
+      "mainSnapshotMatchesPinned": true
+    },
+    {
+      "path": "docs/gen-ai/gen-ai-spans.md",
+      "mainSnapshotMatchesPinned": true
+    },
+    {
+      "path": "docs/gen-ai/gen-ai-agent-spans.md",
+      "mainSnapshotMatchesPinned": true
+    },
+    {
+      "path": "docs/gen-ai/gen-ai-token-metrics.md",
+      "mainSnapshotMatchesPinned": true
+    },
+    {
+      "path": "docs/gen-ai/gen-ai-events.md",
+      "mainSnapshotMatchesPinned": true
+    },
+    {
+      "path": "docs/registry/attributes/gen-ai.md",
+      "mainSnapshotMatchesPinned": true
+    }
+  ],
+  "registryCensus": {
+    "topLevelGeneratedAttributeRows": 81,
+    "costPriceCurrencyKeys": [],
+    "positiveControlKeys": [
+      "gen_ai.conversation.id",
+      "gen_ai.tool.call.id",
+      "gen_ai.usage.input_tokens"
+    ]
+  },
+  "rawCachePolicy": "Raw source downloads were removed after extraction; sources.json records fetch provenance; report contains relevant facts and exact field names with primary-source citations."
+}

@@ -19,6 +19,72 @@ until such a tag is published (`RELEASE.md`).
 
 ## [Unreleased]
 
+**Post-v0.2.0 development.** These changes are outside the frozen v0.2.0 scope
+below; neither publication nor readiness is asserted.
+
+### Added
+- TEXT query APIs (`NewTextScan` / `TextScan`, `PlanTextQuery`, TEXT comparisons),
+  ordered union/intersection and probable/unordered merge cursors, and store-timer
+  `CountTextScanKeyValues`, `CountTextScanBytes` and `CountTextScanSeeks` counters.
+- `PipelineOperation`, `PipelineSizer`, `StoreBuilder.SetPipelineSizer` and
+  `GetPipelineSize`; INSERT saves honor their configured window (Java default one).
+- `SaveRecordBatch`, `SaveRecordBatchWithOptions`, `BatchSaveOptions` and
+  store/builder `PrefetchRecordBatch`, including batch TEXT-bunch prefetch.
+- Directory-backed KeySpace resolution (`DirectoryLayerDirectory`,
+  `KeySpaceResolver`, `ExtendedDirectoryLayerGlobal`), exported `CompareTuples`,
+  and the custom-maintainer `UpdateWhileWriteOnlyNonIdempotent` helper.
+- Opt-in Go-only Brotli records via `SetGoOnlyBrotliCompression` (compression
+  version 2); default version-1 zlib bytes are unchanged.
+
+### Changed / fixed
+- OTel trace and log exports preflight each actual encoded covering value against
+  FDB's 100,000-byte limit, including tuple NUL and JSON NUL/HTML expansion.
+  Oversized indexed projections reject the whole call with `AdmissionError`
+  before writes; raw OTLP is never truncated.
+- Message full-text role discovery charges the raw TEXT bunch key/value bytes,
+  including discovery preceding an empty result, against the remaining query budget.
+- Drained message and Collector queues clear consumed slots and release exhausted
+  backing slices while exporters remain alive.
+- SQL VALUE-scan candidacy fails closed for TEXT, MULTIDIMENSIONAL,
+  TIME_WINDOW_LEADERBOARD and custom index layouts, including EXPLAIN plans;
+  factory `ValidateIndexOptions` runs for all registered types, not just VECTOR.
+- BunchedMap mutations preserve stored noncanonical key bytes; scan continuation
+  resumes no longer repeat a bunch's first entry. Logical TEXT suffix bounds and intersection seeks include predecessor bunches,
+  handle foreign-token reverse predecessors as exhaustion, and retain original
+  tuple endpoint semantics (including upper-only and exclusive bounds).
+- Message writers never reuse IDs after committed-but-unknown 1021/1039 retries;
+  multipart size fallback counts abandoned committed tails without publishing
+  their heads. Oversized raw words with short normalized tokens remain bounded
+  in indexed segments while raw reconstruction stays lossless.
+- Log admission counts native mutations, read/write conflicts and actual prior
+  image clears before writing; live batch images are rechecked before mutation.
+- Commit checks use the production live drain, including checks registered by
+  checks; explicit failed commits release their transaction handles.
+
+### Breaking changes / compatibility
+- **OTel admission and budgets:** inputs whose escaped covering values exceed
+  100,000 bytes now fail whole-call admission rather than failing after an earlier
+  batch committed. Full-text queries can now return a budget error for raw role
+  discovery reads previously undercounted. Persisted layouts, SQL behavior and
+  FDB client option semantics are unchanged by these fixes.
+- **KeySpace persisted prefixes:** `Path.ToSubspace()` packs Java-flat path
+  elements instead of a nested tuple. Existing Go nested prefixes require explicit
+  `LegacyNestedSubspace()` export/import and guarded cutover; no automatic migration.
+- **Brotli:** Java 4.14.2.0 and default Go readers reject version 2. Rewrite opted-in
+  records with a compatible serializer before mixed-engine use or rollback.
+- **TEXT:** logical suffix bounds deliberately differ from Java's physical bunch
+  bounds. Packed ordered-merge comparison differs from Java object comparison for
+  UUIDs, UTF-16 strings, NaNs and mixed integer widths; probable merges also differ
+  in byte-array/NaN identity. These typed/bounded continuations are not a shared
+  remaining-row contract; keep them in one engine. See `docs/compatibility.md`.
+- **Legacy versions:** Go removes pending versions with deleted records; Java can
+  retain pending orphan bytes with versions disabled or committed V0 bytes after
+  an incomplete save/point delete with versions enabled (format 5).
+- **Batch conflicts:** opt-in `CoalesceIndexWriteConflicts` widens conflicts over
+  maintained indexes; untouched-entry readers may retry unlike ordinary Java saves.
+- No dependency-pin change: Java Record Layer/Relational **4.14.2.0** and
+  FoundationDB **7.3.77** remain the references. These entries do not widen v0.2.0.
+
 ## [v0.2.0] - 2026-11-04
 
 **Pending publication.** This entry defines the release scope; it does not assert a

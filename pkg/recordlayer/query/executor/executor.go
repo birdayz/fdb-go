@@ -1507,7 +1507,7 @@ type indexFetchCursor struct {
 // charged the loaded bytes as Java's fetchIndexRecords charges its ExecuteState.
 func newIndexFetchCursor(inner recordlayer.RecordCursor[*recordlayer.IndexEntry], store *recordlayer.FDBRecordStore, scanState *recordlayer.ScanLimiterState) *indexFetchCursor {
 	c := &indexFetchCursor{inner: inner, store: store, scanState: scanState}
-	c.pipeline = recordlayer.MapPipelined(inner, c.load, recordlayer.DefaultPipelineSize)
+	c.pipeline = recordlayer.MapPipelined(inner, c.load, store.GetPipelineSize(recordlayer.PipelineOperationIndexToRecord))
 	return c
 }
 
@@ -2107,7 +2107,7 @@ type fetchFullRecordCursor struct {
 
 func newFetchFullRecordCursor(inner recordlayer.RecordCursor[QueryResult], store *recordlayer.FDBRecordStore, scanState *recordlayer.ScanLimiterState) *fetchFullRecordCursor {
 	c := &fetchFullRecordCursor{store: store, scanState: scanState}
-	c.pipeline = recordlayer.MapPipelined(inner, c.load, recordlayer.DefaultPipelineSize)
+	c.pipeline = recordlayer.MapPipelined(inner, c.load, store.GetPipelineSize(recordlayer.PipelineOperationIndexToRecord))
 	return c
 }
 
@@ -3976,7 +3976,7 @@ func executeInsert(
 	// settled before the first write).
 	results := make([]QueryResult, 0, len(built))
 	if !props.DryRun {
-		// Java pipelines INSERT's saves; the rows' existence reads overlap.
+		// INSERT's store pipeline sizer selects the save/read window (Java default: one).
 		saved, serr := store.SaveRecordsPipelined(built, recordlayer.RecordExistenceCheckErrorIfExists)
 		if serr != nil {
 			return nil, fmt.Errorf("executor: inserting record: %w", serr)

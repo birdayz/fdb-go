@@ -320,7 +320,7 @@ var _ = Describe("Store version access", func() {
 					return nil, err
 				}
 				si := &sizeInfo{}
-				err = store.saveRecordVersion(tuple.Tuple{int64(99)}, completeVer, si)
+				err = store.saveRecordVersionAtKey(store.versionKey(tuple.Tuple{int64(99)}), completeVer, si)
 				if err != nil {
 					return nil, err
 				}
@@ -367,7 +367,7 @@ var _ = Describe("Store version access", func() {
 					return nil, err
 				}
 				// nil sizeInfo should not panic
-				return nil, store.saveRecordVersion(tuple.Tuple{int64(1)}, v, nil)
+				return nil, store.saveRecordVersionAtKey(store.versionKey(tuple.Tuple{int64(1)}), v, nil)
 			})
 			Expect(err).NotTo(HaveOccurred())
 		})

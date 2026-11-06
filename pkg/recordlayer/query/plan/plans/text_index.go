@@ -15,8 +15,8 @@ import (
 // TextScan encapsulates the information necessary to scan a text-based
 // index. Mirrors Java's `com.apple.foundationdb.record.query.plan.TextScan`.
 //
-// This is a STRUCTURE-ONLY port — no execution logic. The fields carry
-// enough information for plan equality, hashing, and explain rendering.
+// This descriptor supports equality, hashing and explain only; Go planners do not produce it.
+// recordlayer.TextScan is the executable Java TextScan port.
 type TextScan struct {
 	// IndexName is the name of the text index being scanned.
 	IndexName string
@@ -36,8 +36,8 @@ type TextScan struct {
 // might be split into multiple sub-scans that are intersected or
 // unioned. Mirrors Java's RecordQueryTextIndexPlan.
 //
-// This is a STRUCTURE-ONLY port — no execution logic. It implements
-// RecordQueryPlan as a leaf plan (no children).
+// This leaf descriptor is not produced by either cascades planner; executable behavior
+// lives in recordlayer.TextIndexPlan, built by PlanTextQuery like Java’s old planner.
 type RecordQueryTextIndexPlan struct {
 	PlanExprBase
 	indexName string

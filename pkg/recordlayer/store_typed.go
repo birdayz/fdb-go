@@ -175,7 +175,7 @@ func (ts *TypedFDBRecordStore[T]) SaveRecordWithVersion(
 	version *FDBRecordVersion,
 	behavior VersionstampSaveBehavior,
 ) (*FDBStoredRecord[T], error) {
-	storedRecord, err := ts.baseStore.saveRecordInternal(record, existenceCheck, version, behavior, false, nil, &ts.typedRecordSerializer)
+	storedRecord, err := ts.baseStore.saveRecordInternal(record, existenceCheck, version, behavior, false, nil, &ts.typedRecordSerializer, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -1,0 +1,87 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+_HORIZONTAL_TEST_DATA = [
+    "diagnostic.py",
+    "driver.py",
+    "policy.py",
+    "provision.py",
+    "session.py",
+    "scaling.py",
+    "supervisor.py",
+    "test_session.py",
+    "test_diagnostic.py",
+    "test_forensics.py",
+    "test_scaling.py",
+    "test_scaling_forensics.py",
+    "test_scaling_log_memory.py",
+    "test_supervisor.py",
+    "test_horizontal.py",
+    "test_provision.py",
+    "//tools/benchcampaign/multinode:inventory.py",
+    "//tools/benchcampaign/multinode:mn_common.py",
+    "//tools/benchcampaign/multinode:render_cloud_init.py",
+    "//tools/benchcampaign/multinode:teardown_guard.py",
+]
+
+sh_test(
+    name = "horizontal_policy_runtime_test",
+    srcs = ["test.sh"],
+    args = ["test_horizontal"],
+    data = _HORIZONTAL_TEST_DATA,
+)
+
+sh_test(
+    name = "horizontal_provision_test",
+    srcs = ["test.sh"],
+    args = ["test_provision"],
+    data = _HORIZONTAL_TEST_DATA,
+)
+
+sh_test(
+    name = "native_diagnostic_test",
+    srcs = ["test.sh"],
+    args = ["test_diagnostic"],
+    data = _HORIZONTAL_TEST_DATA,
+)
+
+sh_test(
+    name = "native_session_test",
+    srcs = ["test.sh"],
+    args = ["test_session"],
+    data = _HORIZONTAL_TEST_DATA,
+)
+
+sh_test(
+    name = "native_forensics_test",
+    srcs = ["test.sh"],
+    args = ["test_forensics"],
+    data = _HORIZONTAL_TEST_DATA,
+)
+
+sh_test(
+    name = "native_scaling_test",
+    srcs = ["test.sh"],
+    args = ["test_scaling"],
+    data = _HORIZONTAL_TEST_DATA,
+)
+
+sh_test(
+    name = "native_scaling_forensics_test",
+    srcs = ["test.sh"],
+    args = ["test_scaling_forensics"],
+    data = _HORIZONTAL_TEST_DATA,
+)
+
+sh_test(
+    name = "native_scaling_log_memory_test",
+    srcs = ["test.sh"],
+    args = ["test_scaling_log_memory"],
+    data = _HORIZONTAL_TEST_DATA,
+)
+
+sh_test(
+    name = "native_supervisor_test",
+    srcs = ["test.sh"],
+    args = ["test_supervisor"],
+    data = _HORIZONTAL_TEST_DATA,
+)

@@ -294,7 +294,7 @@ func (store *FDBRecordStore) OverrideLockSaveRecord(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,
 ) (*FDBStoredRecord[proto.Message], error) {
-	return store.saveRecordInternal(record, existenceCheck, nil, VersionstampSaveBehaviorDefault, true, nil, nil)
+	return store.saveRecordInternal(record, existenceCheck, nil, VersionstampSaveBehaviorDefault, true, nil, nil, nil)
 }
 
 // OverrideLockSaveRecordWithVersion is OverrideLockSaveRecord with SaveRecordWithVersion's
@@ -305,7 +305,7 @@ func (store *FDBRecordStore) OverrideLockSaveRecordWithVersion(
 	version *FDBRecordVersion,
 	behavior VersionstampSaveBehavior,
 ) (*FDBStoredRecord[proto.Message], error) {
-	return store.saveRecordInternal(record, existenceCheck, version, behavior, true, nil, nil)
+	return store.saveRecordInternal(record, existenceCheck, version, behavior, true, nil, nil, nil)
 }
 
 // GetRecordMetaData returns the metadata associated with this store.

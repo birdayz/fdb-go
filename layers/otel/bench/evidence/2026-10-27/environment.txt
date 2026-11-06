@@ -1,0 +1,18 @@
+2026-10-27T11:31:15Z
+Linux 7.2.6-arch2-1
+Architecture:                            x86_64
+CPU(s):                                  24
+Model name:                              AMD Ryzen 9 3900X 12-Core Processor
+Thread(s) per core:                      2
+Core(s) per socket:                      12
+Socket(s):                               1
+               total        used        free      shared  buff/cache   available
+Mem:            62Gi        22Gi       4.2Gi       7.6Gi        43Gi        39Gi
+Swap:          4.0Gi       4.0Gi        48Ki
+Filesystem     Type   1K-blocks       Used Available Use% Mounted on
+/dev/nvme0n1p2 btrfs 1952463872 1438591816 465040696  76% /
+/dev/nvme0n1p2 btrfs 1952463872 1438591816 465040696  76% /home
+/hotel283-fdb-vxnar image=sha256:559b178a137bbe09272ad6e3752531aa04e2ddacab8ccfa4ffa86467db033bea cpus=4000000000 memory=4294967296 memory_swap=4294967296
+/hotel283-ch-vxnar image=sha256:b2bfa4d8399ee9973868cc5c1754cb506a6f4b86fbddc41010cc090beb55c85e cpus=4000000000 memory=4294967296 memory_swap=4294967296
+["foundationdb/foundationdb@sha256:559b178a137bbe09272ad6e3752531aa04e2ddacab8ccfa4ffa86467db033bea"]
+["clickhouse/clickhouse-server@sha256:b2bfa4d8399ee9973868cc5c1754cb506a6f4b86fbddc41010cc090beb55c85e"]

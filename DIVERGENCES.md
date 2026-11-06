@@ -1700,10 +1700,10 @@ intersection non-max `consume()` advance). What remains is classified below.
   resumability. The deterministic child order remains a legal realization of
   Java's explicitly unspecified order. (The former eager concat's loud
   declines are gone; the dead concat cursor was deleted.)
-- **ProbableIntersectionCursor / bloom-filter weak reads**: entirely
-  unimplemented (no plan type reaches it); Java's own docs flag the
-  Guava-serialized bloom bytes as a cross-compat hazard. Missing capability,
-  not a divergence in shared code.
+- **ProbableIntersectionCursor / Bloom weak reads**: implemented for multi-token
+  `TEXT_CONTAINS_ALL_PREFIXES`, including Guava 33 continuation bytes. See
+  [TEXT queries](#text-queries) for ordering, false-positive and Guava-version
+  boundaries; pinned by `conformance/text_query_conformance_test.go`.
 - **FutureCursor / fromFuture**: absent; single-future shapes are expressed
   via FromList/flatMap composition instead.
 - **NoNextReason ordinals differ** (semantics and all predicates match); the
@@ -3591,9 +3591,10 @@ pending work before clearing:
 - the subspace's pending-write commit checks;
 - the retirement metadata in the session.
 
-Cancelling marks the registration inactive (`removeCommitCheck`, `database.go:1142-1161`).
-`runCommitChecks` skips an inactive entry even when it is already in the snapshot it is
-iterating (`database.go:1177-1193`).
+Cancelling marks the registration inactive (`removeCommitCheck`, `database.go`).
+The production `sealRecordWrites` / `runPendingCommitChecks` live drain skips inactive
+registrations and includes checks registered by earlier checks or joined writers before
+sealing. It does not use a snapshot of the callback list.
 
 This corrects the boundary; it is not exact parity for Java's defective sequence. It does
 not change record or index wire encodings.
@@ -4197,7 +4198,8 @@ what Go writes, and in both a Java reader reads what Go writes:
   stored-record read site. A store with no serializer reads a record that Java's relational layer
   or a compressing Java application wrote, where Java's default serializer would fail it. An
   encrypted record still needs the key: a store whose serializer has no key manager fails it with
-  Java's "this serializer cannot decrypt" (`pkg/recordlayer/transformed_record_serializer.go:683`).
+  Java's "this serializer cannot decrypt" (`TransformedRecordSerializer.decrypt` in
+  `pkg/recordlayer/transformed_record_serializer.go`).
 - **The ciphers are the AES transformations Java's serializer can run.** Java initializes every
   cipher with a 16-byte `IvParameterSpec` (`TransformedRecordSerializerJCE.java:67-72`,
   `:98-106`), so only an AES mode that takes that IV works. Go implements those modes from NIST
@@ -4253,7 +4255,8 @@ what Go writes, and in both a Java reader reads what Go writes:
   string can name otherwise.
 - **Compressed bytes are Go's deflate, not the JDK's zlib.** Both write a zlib stream (Java's
   `Deflater.finish()` then `FULL_FLUSH`, `TransformedRecordSerializer.java:133-134`; Go's
-  `compress/zlib`, `transformed_record_serializer.go:444-480`). Each engine inflates the other's,
+  `compress/zlib`, `TransformedRecordSerializer.compress` in
+  `pkg/recordlayer/transformed_record_serializer.go`). Each engine inflates the other's,
   and the prefix and length header are Java's. But `compress/zlib` (over `compress/flate`) is a
   different encoder from the zlib the JDK links, so the compressed bytes differ from Java's for the
   same record and level. Each engine keeps the compression only when its own output is shorter
@@ -4266,7 +4269,8 @@ what Go writes, and in both a Java reader reads what Go writes:
   (`TransformedRecordSerializer.java:184-185`), whose key number is 0. So a sampled write under any
   other key fails ("encryption validation error: decryption failed", or a mismatch if the padding
   happens to hold). Go validates under the record's own key and accepts that write
-  (`transformed_record_serializer.go:306-326`). The stored bytes are the ones Java would have
+  (`TransformedRecordSerializer.transformRead` in
+  `pkg/recordlayer/transformed_record_serializer.go`). The stored bytes are the ones Java would have
   written, and Java reads them. `TestTransformedSerializer_WriteValidation`
   (`pkg/recordlayer/transformed_record_serializer_test.go:691`) pins Go's answer and, mutated to
   Java's key number 0, reddens with Java's error. Both validations are otherwise Java's: a
@@ -4711,6 +4715,21 @@ It differs in three places:
 - **No constant resolver directories.** A resolver directory is always open, so
   Java's `isCompatible` check, which applies only between constants, never applies.
 
+### Earlier Go nested KeySpace prefixes
+
+Earlier Go `Path.ToSubspace()` packed the whole path as one tuple element:
+`(("app", "store"))`. It now emits Java's flat `("app", "store")` prefix.
+This changes persisted addresses, not record bytes, and has no automatic migration.
+`Path.LegacyNestedSubspace()` provides explicit access to the old address.
+Subspaces returned by `ToSubspace()` retain the old address through `.Sub(...)`;
+Record Layer `Create`, `Open` and `CreateOrOpen` serializably probe it and return
+`LegacyKeySpacePrefixError` if data remains, instead of silently opening a new store.
+After export/import and verification, `SetAllowLegacyKeySpaceCutover(true)` explicitly
+acknowledges choosing the flat destination while old data remains. It copies nothing.
+Converting these subspaces to raw bytes discards the guard; application code doing
+raw FDB reads/writes must enforce its own write freeze and prefix choice. See
+[the upgrade procedure](docs/upgrade.md#earlier-go-keyspace-path-prefixes).
+
 ## Native FDB client read hedging
 
 RFC-281 (#1017) aligns the second-request budget and adaptive delay with
@@ -4729,6 +4748,28 @@ choosing another alternative). The budget tests do not claim to close these
 selection/retry gaps. Single-replica wire goldens and data-plane differentials
 remain useful but cannot measure speculative duplicate requests; the budget
 regressions use two storage-server aliases and held replies against real FDB.
+
+## Split-disabled replacement clears known old split tails
+
+For an unsplit replacement with a retained suffix (`splitLongRecords=false`,
+`omitUnsplitSuffix=false`) and no incomplete versionstamp in the primary key,
+Go clears the previous chunks when the supplied previous size information says
+`IsSplit=true`, even if `VersionedInline=false`. It then writes the new body at
+suffix 0. This intentionally avoids leaving old split chunks alongside the new
+unsplit body after splitting is disabled.
+
+Java 4.14.2.0's `SplitHelper.saveWithSplit` clears only when the key has no
+incomplete versionstamp and `splitLongRecords || previousSizeInfo == null ||
+previousSizeInfo.isVersionedInline()`. For the known, split, non-inline-versioned
+previous image above, Java skips the clear and writes suffix 0 alongside the old
+suffixes 1..n. Its `loadWithSplit` still range-loads suffix-bearing records when
+splitting is disabled, so those leftover chunks can affect subsequent reads.
+This is a persisted-key cleanup divergence, not byte parity for that transition.
+The shared suffix-0/1..n format is unchanged; ordinary split-enabled saves,
+unknown previous sizes, inline-versioned previous images and legacy bare-key
+unsplit overwrites are not the distinguishing case. There is no automatic
+historical sweep of abandoned chunks. `split_helper_test.go`'s "clears known
+unversioned split tails when splitting is disabled" regression pins Go's cleanup.
 
 ## Mutual indexing has no anyJumper (RFC-279)
 
@@ -4754,3 +4795,191 @@ Java's `infiniteLoopProtection`, which fails a build after the same range is pic
 1000 times in a row, is not ported either. A Go claim is built until nothing in it
 is missing, and a chunk that keeps failing ends the build after the lessen-work
 retries, so no build picks one range forever.
+
+## Brotli record compression (Go-only extension)
+
+Java 4.14.2.0's `TransformedRecordSerializer` accepts compression version 1
+only: a version byte, a big-endian uncompressed length and a zlib stream.
+Go preserves that default format and its compression, encryption and validation
+behavior. Brotli never replaces the contents of a version-1 frame.
+
+`TransformedRecordSerializerBuilder.SetGoOnlyBrotliCompression(level)` explicitly
+opts a serializer into writing and reading version 2 at levels 0 through 4.
+The version-2 body contains a version byte, a big-endian uint32 uncompressed
+length, a big-endian CRC32C checksum of the uncompressed union, and a Brotli
+stream. Compression is retained only when the complete body is smaller than
+the original union. The outer transformation prefix, compress-then-encrypt
+order, split-record storage, primary keys and index maintenance are unchanged.
+The original protobuf union, including unknown fields, is recovered on load.
+This option does not compress index keys or custom index values.
+
+Java and non-opted Go serializers reject version 2 with an unknown-compression-
+version error. Brotli-enabled serializers also read bare, clear-prefixed and
+version-1 records. A subsequent `SetCompressWhenSerializing(false)` disables
+compressed writes without revoking version-2 read permission, allowing a Go
+application to rewrite records through the normal save path. There is no
+Java-side migration or automatic store-wide rewrite.
+
+Version-2 uncompressed records are capped at 10,000,000 bytes, checked before
+encoding or allocating decoded output. Decoding is bounded and rejects
+truncated streams, wrong lengths, trailing input and checksum mismatches.
+Released codec states can retain plaintext in their windows, as the existing
+zlib free lists do; reuse is bounded and does not provide memory zeroization.
+
+## TEXT queries
+
+`recordlayer.TextScan` ports `TextScan.scan` (TextScan.java:160-262) and its
+merge cursors; `PlanTextQuery` ports `RecordQueryPlanner.planText`
+(RecordQueryPlanner.java:1702-1734). On the shared, unbounded token-scan surface
+with equivalent comparison-key ordering, entries, records and continuations are
+Java's, subject to the ordered-comparator and unordered-identity exceptions below.
+Logical suffix bounds have the separate read-side boundary below. Pinned by
+`conformance/text_query_conformance_test.go` (target `//conformance:conformance_test`,
+tag `conformance_java`) and `pkg/recordlayer/text_scan_seek_test.go`.
+
+### TEXT logical suffix bounds (intentional read-side extension)
+
+Go applies suffix bounds to decoded logical `(suffix, primary key)` entries.
+A bunch's first entry is its physical key: an inclusive lower bound inside a
+bunch must include that predecessor bunch, then discard decoded entries below
+the lower bound and at or above the exclusive upper bound. This applies to
+forward/reverse scans, reopened intersection seeks and resumed pages. The stored
+bunches, entry encodings and continuation framing are unchanged.
+
+Java 4.14.2.0 `TextIndexMaintainer.scan` passes the packed range directly to
+`BunchedMap.scanMulti` (TextIndexMaintainer.java:538-548;
+BunchedMap.java:1017-1041). A fresh scan starts at the physical lower bound,
+without its predecessor. `BunchedMapIterator` decodes every entry of selected
+bunches without a logical-range filter. Java can therefore omit valid lower-bound
+rows and return decoded rows at or beyond the upper bound, in both directions;
+`TextScan`'s intersection/union/phrase operations do not repair those bounds.
+Go deliberately does not copy these physical-signpost results or drop valid rows.
+
+`conformance/text_query_conformance_test.go` keeps all 18 original bounded
+comparison/direction/limit/skip variants, with an independent seed-predicate
+logical oracle and a source-modeled native physical-owner oracle. A controlled
+persisted Go-serialized fixture pins literal bunches `{0,10,11}`, `{15,19,20,21}`,
+`{30}` for both tokens. For `[10,20)`, Go returns IDs `10,11,15,19`; native Java
+returns `15,19,20,21`, not a normalized subset. Forward/reverse, skip/limits and
+same-engine continuation replays are covered separately. The bounded engines'
+continuations have the same wire format but are **not a cross-engine result/page
+contract**: Java retains its physical lower fence and lacks logical upper filtering,
+whereas Go includes the predecessor and filters decoded entries. Do not exchange
+bounded TEXT continuations expecting identical remaining rows. Unbounded ordered
+cases with equivalent key comparison retain exact native entries, order, stop
+reasons and cross-engine resumes.
+
+### TEXT ordered-merge comparison keys
+
+Go deliberately compares packed tuple keys in ordered intersection/union merges,
+matching physical FDB order. Java 4.14.2.0 `KeyComparisons.compareKeys` instead
+compares objects: UUID halves are signed, strings use UTF-16 code units, boxed
+NaNs compare canonically, and mixed `Long`/`BigInteger` comparisons can throw.
+These differences can change an unpaged ALL result or ANY ordering/duplicates,
+not merely a continuation. For UUID keys, the literal conformance fixture pins
+Java ALL as empty and ANY as `10,90,20,90`, versus Go ALL `90` and ANY `10,20,90`.
+Native answers are not sorted or normalized into Go answers. Raw typed comparator
+contrasts and actual Java UUID scans live in
+`conformance/text_query_boundary_conformance_test.go`; expectations must be
+established by that lane, not inferred from source inspection.
+
+Tuple encodings and stored bytes remain unchanged. Do not exchange ordered TEXT
+merge continuations over these typed keys expecting equal remaining rows. The
+unbounded parity statements here apply only where object and packed ordering
+agree, independently of the bounded-range and probable-merge identity boundaries.
+
+### TEXT intersections seek (intentional, result-preserving cost divergence)
+
+Java intersects the token scans of `TEXT_CONTAINS_ALL`, `TEXT_CONTAINS_PHRASE`
+and `TEXT_CONTAINS_ALL_WITHIN` by streaming each one in primary-key order
+(`IntersectionCursorBase.computeNextResultStates`, IntersectionCursorBase.java:
+111-145), one entry of each non-maximal child per round, so one rare token
+intersected with common ones reads the common tokens' postings one by one
+between its candidates. Go discards a token scan's entries below the candidate key by
+seeking: within the bunch in memory, otherwise by reopening the range read at the
+bunch that holds the candidate (a bunch is keyed by its first entry, so that is
+the last bunch keyed below the candidate). The seeking child's cached
+continuation is that of the last entry passed over, the one Java holds after
+consuming the same entries one by one, so the matches, their order and every
+continuation are Java's. Only the key-values read differ: Go reads at most two
+bunches per token per candidate. On the 1200-record corpus of
+`text_scan_seek_test.go` (rare ∩ common ∩ frequent) that is 10 key-values
+against Java's 77; the test derives both counts.
+
+Out-of-band limits are charged per entry read, so under a scanned-records, byte
+or time limit a Go page can hold more rows than Java's page for the same
+budget; the continuation at each stop still resumes at the next row both engines
+return. The read costs are exposed as `CountTextScanKeyValues`,
+`CountTextScanBytes` and `CountTextScanSeeks` on the store timer, Java's
+`LOAD_SCAN_ENTRY`/`LOAD_TEXT_ENTRY` per entry, and the bytes as the scan's
+`ScanLimiterState.BytesScanned`.
+
+### Unordered TEXT merges are serial
+
+Java's `UnorderedUnionCursor` (`TEXT_CONTAINS_ANY_PREFIX`) and
+`ProbableIntersectionCursor` (multi-token `TEXT_CONTAINS_ALL_PREFIXES`) return
+rows as child reads complete (MergeCursor.whenAny, MergeCursor.java:115-136), so
+their order over FDB varies run to run. Go pulls children in index order, which
+is Java's order when every child's next result is already complete; the
+in-memory conformance pins this order and the continuation bytes, including the
+Bloom filters. Apart from the comparison-key identity exceptions below,
+over a store both engines return the same set of rows; a resumed non-strict `TEXT_CONTAINS_ALL_PREFIXES` may add different Bloom false positives
+in each, as Java may between its own runs.
+
+`ProbableIntersectionCursorState` remembers seen keys in a `HashSet<List<Object>>`,
+where a `byte[]` element compares by identity, so Java never matches two equal
+byte-array primary keys from different children within one pass. Go compares
+keys by their tuple encoding and matches them. Conversely, Java's boxed
+`Float.equals`/`Double.equals` canonicalizes NaNs in these lists (including
+nested lists). Distinct NaN payloads are distinct stored tuple keys; Go retains
+that packed identity instead of falsely suppressing the later key as a definite
+duplicate. This can return two distinct NaN keys where Java returns one, even
+within an unpaged scan and before Bloom lookup. Float and Double remain different
+tuple types. These are seen-set identity exceptions, not changes to the Bloom
+funnel or floating tuple bytes; cross-engine regressions pin the contrast.
+The structural-key continuation oracle uses Java `ByteString` (supported by
+`ProbableIntersectionCursorState`'s byte funnel and structural list equality),
+not freshly allocated `byte[]`. It exchanges actual continuations in both
+directions for Go unsigned integers, raw bytes, `fdb.Key`, key-convertible byte
+aliases and nested tuples; fresh native byte-array identity is asserted separately.
+
+The Bloom filter is Guava 33's (`optimalNumOfHashFunctions(p)`); a Java
+deployment on a Guava whose sizing differs writes a continuation Go still reads
+(the serialized form carries the hash count) but sizes fresh filters differently.
+
+The merge cursors do not record Java's `QUERY_INTERSECTION*`, `QUERY_UNION*` and
+`QUERY_TEXT_FILTER*` timer counts.
+
+### Legacy pending record-version deletion
+
+For old-version-format stores whose metadata disables record versions, Go still
+removes current pending version mutations and local-cache entries when deleting
+a body, including ordinary partial-prefix `DeleteRecordsWhere`. Java 4.14.2.0
+ignores the legacy version in its delete load and leaves an explicitly saved
+incomplete version pending, so that save/delete sequence can commit a version key
+without its body. Go deliberately prevents this resurrection. Previously committed
+legacy version bytes remain ignored and preserved when metadata disables versions;
+this is not a migration or a cleanup of historical bytes. Mixed engines may thus
+produce different legacy version keys for the same explicit-version save/delete
+sequence. Lifecycle and contrasting Java/Go conformance tests pin the boundary.
+
+A separate **versions-enabled, format-5 point-delete** sequence first commits
+complete V0, then saves an incomplete version and deletes the body in one context.
+Java's `oldHasIncompleteVersion` branch removes only the pending mutation, leaving
+the exact old V0 key/value orphaned (`FDBRecordStore.java:1776-1783`). Go clears
+both the pending mutation and committed version key. This is intentional cleanup,
+not byte parity: `legacy_pending_version_divergence_test.go` contrasts the exact
+key and twelve old bytes `{1,0,0,0,0,0,0,0,0,0,0,9}` and retains all four
+versions-disabled point/where × seed cases. No automatic historical cleanup or
+metadata-disabled committed-byte deletion is implied.
+
+### Opt-in batch index conflict widening
+
+`BatchSaveOptions.CoalesceIndexWriteConflicts` adds full primary/secondary
+maintained-index write-conflict ranges without removing ordinary entry conflicts.
+It trades fewer/wider conflict encodings for additional conflicts and retries:
+a writing reader of an untouched part of that index can receive 1020 where
+individual Java saves would not conflict. Defaults do not widen ranges. Persisted
+record/index bytes are unchanged. `store_batch_conflicts_test.go` pins both the
+untouched-index-reader contrast and unaffected indexes/subspaces; this option
+is not a promise of lower live transaction size or higher throughput.

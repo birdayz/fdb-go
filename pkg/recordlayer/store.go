@@ -166,7 +166,10 @@ type FDBRecordStore struct {
 	serializer *TransformedRecordSerializer
 	// goOnlyCollation is StoreBuilder.SetGoOnlyCollation: the store may hold
 	// Go collation keys (GoOnlyCollationError).
-	goOnlyCollation    bool
+	goOnlyCollation            bool
+	allowLegacyKeySpaceCutover bool
+	// pipelineSizer is StoreBuilder.SetPipelineSizer; nil is DefaultPipelineSizer.
+	pipelineSizer      PipelineSizer
 	context            *FDBRecordContext
 	metaData           *RecordMetaData
 	subspace           subspace.Subspace
@@ -278,15 +281,17 @@ func (store *FDBRecordStore) CopyBuilder(newContext *FDBRecordContext) *StoreBui
 func (store *FDBRecordStore) builderFrom(ctx *FDBRecordContext) *StoreBuilder {
 	formatVersion := store.effectiveFormatVersion()
 	return &StoreBuilder{
-		context:            ctx,
-		metaData:           store.metaData,
-		subspace:           store.subspace,
-		indexRebuildPolicy: store.indexRebuildPolicy,
-		storeStateCache:    store.storeStateCache,
-		maintenanceFilter:  store.maintenanceFilter,
-		serializer:         store.serializer,
-		goOnlyCollation:    store.goOnlyCollation,
-		formatVersion:      &formatVersion,
+		context:                    ctx,
+		metaData:                   store.metaData,
+		subspace:                   store.subspace,
+		indexRebuildPolicy:         store.indexRebuildPolicy,
+		storeStateCache:            store.storeStateCache,
+		maintenanceFilter:          store.maintenanceFilter,
+		serializer:                 store.serializer,
+		goOnlyCollation:            store.goOnlyCollation,
+		allowLegacyKeySpaceCutover: store.allowLegacyKeySpaceCutover,
+		pipelineSizer:              store.pipelineSizer,
+		formatVersion:              &formatVersion,
 	}
 }
 
@@ -382,8 +387,12 @@ func (store *FDBRecordStore) LoadRecordAsync(primaryKey tuple.Tuple, scanState *
 // Modern versions always come from the record range, even if new saves no
 // longer store versions. Java loadTypedRecord only issues a separate old-format read.
 type pendingStoreRecordLoad struct {
-	raw        pendingRecordLoad
-	oldVersion PendingRead[*FDBRecordVersion]
+	raw             pendingRecordLoad
+	oldVersion      PendingRead[*FDBRecordVersion]
+	physical        *recordPhysicalRecord
+	stamp           recordPhysicalStamp
+	physicalErr     error
+	retiredVersions []*recordVersionRead
 }
 
 func (store *FDBRecordStore) startRecordLoad(tx fdb.ReadTransaction, primaryKey tuple.Tuple) pendingStoreRecordLoad {
@@ -411,14 +420,27 @@ func (t *recordLoadTimer) finish() {
 
 // The legacy version future is observed only after successful deserialization,
 // preserving Java deserializeRecord's error precedence. An inline version wins.
+func (load *pendingStoreRecordLoad) finishRetiredVersionErrors() error {
+	for _, read := range load.retiredVersions {
+		if err := read.backendFailure(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (load *pendingStoreRecordLoad) finishVersion(inline *FDBRecordVersion) (*FDBRecordVersion, error) {
+	if err := load.finishRetiredVersionErrors(); err != nil {
+		return nil, err
+	}
 	if inline == nil && load.oldVersion != nil {
 		return load.oldVersion.Get()
 	}
 	return inline, nil
 }
 
-// recordLoad is one issued LoadRecordAsync; layout and local version are fixed at issue.
+// recordLoad captures layout/local version at issue; later range pages may
+// observe later own-writes. Public async loads do not own a physical read lease.
 type recordLoad struct {
 	store      *FDBRecordStore
 	primaryKey tuple.Tuple
@@ -534,21 +556,28 @@ func (store *FDBRecordStore) DeleteRecord(primaryKey tuple.Tuple) (bool, error) 
 // deleteRecord is Java's deleteTypedRecord: typed, when not nil, is the typed
 // store's serializer, through which the existing record is read.
 func (store *FDBRecordStore) deleteRecord(primaryKey tuple.Tuple, typed *typedRecordSerializer) (bool, error) {
+	finishWrite, err := store.context.beginRecordWrite()
+	if err != nil {
+		return false, err
+	}
+	defer finishWrite()
 	startTime := time.Now()
 	defer store.context.Timer().RecordSince(EventDeleteRecord, startTime)
-	recordsSubspace := store.recordsSubspace
 	splitEnabled := store.metaData.IsSplitLongRecords()
 
 	// Load existing record to get size info and record data (for counting)
 	var oldsizeInfo sizeInfo
 	loadTimer := recordLoadTimer{timer: store.context.Timer(), start: time.Now()}
 	defer loadTimer.finish()
-	load := store.startRecordLoad(store.context.Transaction(), primaryKey)
-	value, oldRecordVersion, err := load.raw.finish(&oldsizeInfo)
+	load := store.startAuthoritativeRecordLoad(store.context.Transaction(), primaryKey)
+	value, oldRecordVersion, err := load.finishAuthoritative(&oldsizeInfo)
 	if err != nil {
 		return false, fmt.Errorf("failed to load record for deletion %v: %w", primaryKey, err)
 	}
 	if value == nil {
+		if err := load.finishRetiredVersionErrors(); err != nil {
+			return false, fmt.Errorf("load old record version for deletion: %w", err)
+		}
 		return false, nil // Record not found
 	}
 
@@ -584,34 +613,22 @@ func (store *FDBRecordStore) deleteRecord(primaryKey tuple.Tuple, typed *typedRe
 		return false, err
 	}
 
-	// Delete all KV pairs for this record
-	if _, err := deleteSplit(store.context.Transaction(), recordsSubspace, primaryKey, splitEnabled, store.omitUnsplitRecordSuffix(), &oldsizeInfo); err != nil {
+	physicalPresent, finishPhysical, err := load.beginPhysicalMutation(true, &oldsizeInfo)
+	if err != nil {
 		return false, err
 	}
-
-	// Clean up the record version. Matches Java's deleteTypedRecord.
-	if store.metaData.IsStoreRecordVersions() || (oldRecordVersion != nil && !oldRecordVersion.IsComplete()) {
-		versionKey := store.versionKey(primaryKey)
-		if store.useOldVersionFormat() {
-			// Legacy layout: the version lives in the separate subspace and was NOT
-			// touched by deleteSplit. Clear the committed value AND drop any pending
-			// same-transaction mutation / local cache entry. We must do both: if the
-			// record was updated earlier in THIS transaction its committed (pre-tx)
-			// version is still present in FDB while a pending incomplete SET sits in the
-			// mutation queue — clearing only one of them would orphan the other. (This
-			// is slightly more defensive than Java's deleteTypedRecord, whose
-			// incomplete-version branch drops the mutation but leaves the prior committed
-			// value behind; clearing is harmless for a pure insert and avoids a stale
-			// version surviving for a deleted record.)
-			store.context.Transaction().Clear(versionKey)
-			store.context.RemoveVersionMutation(versionKey)
-			store.context.RemoveLocalVersion(versionKey)
-		} else {
-			// Modern layout: deleteSplit cleared the inline FDB key; just dequeue any
-			// pending incomplete version mutation + local version cache entry.
-			store.context.RemoveLocalVersion(versionKey)
-			store.context.RemoveVersionMutation(versionKey)
+	err = func() error {
+		defer finishPhysical()
+		if physicalPresent {
+			if _, err := deleteSplit(store.context.Transaction(), load.physical.records, primaryKey, splitEnabled, store.omitUnsplitRecordSuffix(), &oldsizeInfo); err != nil {
+				return err
+			}
 		}
+		load.physical.clearVersion()
+		return nil
+	}()
+	if err != nil {
+		return false, err
 	}
 
 	oldStoredRecord := &FDBStoredRecord[proto.Message]{
@@ -631,7 +648,7 @@ func (store *FDBRecordStore) deleteRecord(primaryKey tuple.Tuple, typed *typedRe
 
 	// Update secondary indexes
 	if store.metaData.HasIndexes() && oldMsg != nil {
-		if err := store.updateSecondaryIndexes(oldStoredRecord, nil); err != nil {
+		if err := store.updateSecondaryIndexes(oldStoredRecord, nil, nil); err != nil {
 			return false, err
 		}
 	}
@@ -677,7 +694,7 @@ func (store *FDBRecordStore) SaveRecordWithOptions(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,
 ) (*FDBStoredRecord[proto.Message], error) {
-	return store.saveRecordInternal(record, existenceCheck, nil, VersionstampSaveBehaviorDefault, false, nil, nil)
+	return store.saveRecordInternal(record, existenceCheck, nil, VersionstampSaveBehaviorDefault, false, nil, nil, nil)
 }
 
 // SaveRecordWithVersion saves a record with the version behavior chooses from version (nil,
@@ -688,27 +705,28 @@ func (store *FDBRecordStore) SaveRecordWithVersion(
 	version *FDBRecordVersion,
 	behavior VersionstampSaveBehavior,
 ) (*FDBStoredRecord[proto.Message], error) {
-	return store.saveRecordInternal(record, existenceCheck, version, behavior, false, nil, nil)
+	return store.saveRecordInternal(record, existenceCheck, version, behavior, false, nil, nil, nil)
 }
 
-// SaveRecordsPipelined saves records in order as SaveRecordWithOptions would
-// one at a time, but sends the existing-record reads of each window of
-// DefaultPipelineSize records together: Java's INSERT pipelines its saves
-// (RecordQueryAbstractDataModificationPlan mapPipelined, at
-// FDBRecordStore.DEFAULT_PIPELINE_SIZE). The first failing record stops the save
-// and is the one reported; the reads already sent for the rest of its window
-// stay in the transaction, as Java's do.
+// SaveRecordsPipelined saves in order with windowed old-record reads; INSERT defaults to depth one.
+// The first failure stops saves, but already-issued window reads remain in the transaction, as in Java.
 func (store *FDBRecordStore) SaveRecordsPipelined(
 	records []proto.Message,
 	existenceCheck RecordExistenceCheck,
 ) ([]*FDBStoredRecord[proto.Message], error) {
+	finishWrite, err := store.context.beginRecordWrite()
+	if err != nil {
+		return nil, err
+	}
+	defer finishWrite()
 	saved := make([]*FDBStoredRecord[proto.Message], 0, len(records))
 	tx := store.context.Transaction()
-	for start := 0; start < len(records); start += DefaultPipelineSize {
-		window := records[start:min(start+DefaultPipelineSize, len(records))]
+	depth := max(1, store.GetPipelineSize(PipelineOperationInsert))
+	for start := 0; start < len(records); start += depth {
+		window := records[start:min(start+depth, len(records))]
 		loads := store.startExistingRecordLoads(tx, window)
 		for i, record := range window {
-			stored, err := store.saveRecordInternal(record, existenceCheck, nil, VersionstampSaveBehaviorDefault, false, &loads[i], nil)
+			stored, err := store.saveRecordInternal(record, existenceCheck, nil, VersionstampSaveBehaviorDefault, false, &loads[i], nil, nil)
 			if err != nil {
 				return nil, err
 			}
@@ -753,7 +771,7 @@ func (store *FDBRecordStore) startExistingRecordLoads(tx fdb.ReadTransaction, wi
 			continue
 		}
 		keys = append(keys, key)
-		load.pending = store.startRecordLoad(tx, load.target.primaryKey)
+		load.pending = store.startAuthoritativeRecordLoad(tx, load.target.primaryKey)
 		load.sent = true
 	}
 	return loads
@@ -825,8 +843,8 @@ func (store *FDBRecordStore) saveTargetFor(record proto.Message, version *FDBRec
 	}, nil
 }
 
-// saveRecordInternal reuses a preloaded target or prepares one with the requested version behavior.
-// overrideLock bypasses the update lock; typed supplies a typed store's serializer.
+// saveRecordInternal reuses/prepares a target; overrideLock bypasses the update lock and typed supplies serialization.
+// written optionally collects indexes whose own data was updated.
 func (store *FDBRecordStore) saveRecordInternal(
 	record proto.Message,
 	existenceCheck RecordExistenceCheck,
@@ -835,7 +853,13 @@ func (store *FDBRecordStore) saveRecordInternal(
 	overrideLock bool,
 	load *existingRecordLoad,
 	typed *typedRecordSerializer,
+	written indexWriteSet,
 ) (*FDBStoredRecord[proto.Message], error) {
+	finishWrite, writeErr := store.context.beginRecordWrite()
+	if writeErr != nil {
+		return nil, writeErr
+	}
+	defer finishWrite()
 	startTime := time.Now()
 	var target saveTarget
 	var err error
@@ -852,7 +876,6 @@ func (store *FDBRecordStore) saveRecordInternal(
 	savedVersion := target.version
 	defer store.context.Timer().RecordSince(EventSaveRecord, startTime)
 
-	recordsSubspace := store.recordsSubspace
 	splitEnabled := store.metaData.IsSplitLongRecords()
 
 	// Always load the existing record (matching Java's saveRecordAsync behavior).
@@ -865,9 +888,9 @@ func (store *FDBRecordStore) saveRecordInternal(
 	if load != nil && load.sent {
 		pending = load.pending
 	} else {
-		pending = store.startRecordLoad(store.context.Transaction(), primaryKey)
+		pending = store.startAuthoritativeRecordLoad(store.context.Transaction(), primaryKey)
 	}
-	oldValue, oldRecordVersion, err := pending.raw.finish(&oldsizeInfo)
+	oldValue, oldRecordVersion, err := pending.finishAuthoritative(&oldsizeInfo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load existing record: %w", err)
 	}
@@ -901,6 +924,8 @@ func (store *FDBRecordStore) saveRecordInternal(
 		if err != nil {
 			return nil, fmt.Errorf("load old record version for save: %w", err)
 		}
+	} else if err := pending.finishRetiredVersionErrors(); err != nil {
+		return nil, fmt.Errorf("load old record version for save: %w", err)
 	}
 
 	loadTimer.finish()
@@ -964,32 +989,28 @@ func (store *FDBRecordStore) saveRecordInternal(
 		return nil, err
 	}
 
-	// Save using split helper (handles both split and unsplit data)
-	var oldsizeInfoPtr *sizeInfo
-	if oldRecordExists {
-		oldsizeInfoPtr = &oldsizeInfo
+	physicalPresent, finishPhysical, err := pending.beginPhysicalMutation(oldRecordExists, &oldsizeInfo)
+	if err != nil {
+		return nil, err
 	}
-
 	var newsizeInfo sizeInfo
-	if err := saveWithSplit(store.context,
-		store.context.Transaction(),
-		recordsSubspace,
-		primaryKey,
-		stored,
-		splitEnabled,
-		store.omitUnsplitRecordSuffix(),
-		oldsizeInfoPtr,
-		&newsizeInfo,
-	); err != nil {
-		return nil, fmt.Errorf("failed to save record: %w", err)
-	}
-
-	// Save the version, if any (handled separately from split helper because Go
-	// FDB bindings need context-level AddVersionMutation for versionstamps).
-	if savedVersion != nil {
-		if err := store.saveRecordVersion(primaryKey, savedVersion, &newsizeInfo); err != nil {
-			return nil, err
+	err = func() error {
+		defer finishPhysical()
+		var oldsizeInfoPtr *sizeInfo
+		if physicalPresent {
+			oldsizeInfoPtr = &oldsizeInfo
 		}
+		if err := saveWithSplit(store.context, store.context.Transaction(), pending.physical.records, primaryKey, stored,
+			splitEnabled, store.omitUnsplitRecordSuffix(), oldsizeInfoPtr, &newsizeInfo); err != nil {
+			return fmt.Errorf("failed to save record: %w", err)
+		}
+		if savedVersion != nil {
+			return store.saveRecordVersionAtKey(pending.physical.versionKey, savedVersion, &newsizeInfo)
+		}
+		return nil
+	}()
+	if err != nil {
+		return nil, err
 	}
 
 	newStoredRecord := &FDBStoredRecord[proto.Message]{
@@ -1027,7 +1048,7 @@ func (store *FDBRecordStore) saveRecordInternal(
 				Store:      store,
 			}
 		}
-		if err := store.updateSecondaryIndexes(oldStoredRecord, newStoredRecord); err != nil {
+		if err := store.updateSecondaryIndexes(oldStoredRecord, newStoredRecord, written); err != nil {
 			return nil, err
 		}
 	}
@@ -1177,10 +1198,22 @@ func (store *FDBRecordStore) DeleteIndexEntriesInRange(index *Index, prefix tupl
 // Matches Java's FDBRecordStore.deleteAllRecords() which clears everything
 // from records through index state begin, then from index state end through store end.
 func (store *FDBRecordStore) DeleteAllRecords() error {
+	finishWrite, err := store.context.beginRecordWrite()
+	if err != nil {
+		return err
+	}
+	defer finishWrite()
 	if err := store.validateRecordUpdateAllowed(); err != nil {
 		return err
 	}
 
+	resetCount := store.metaData.GetRecordCountKey() != nil && !store.isRecordCountDisabled()
+	flatSubspace := subspace.FromBytes(store.subspace.Bytes())
+	finishPhysical, err := store.beginPhysicalBulk()
+	if err != nil {
+		return err
+	}
+	defer finishPhysical()
 	tx := store.context.Transaction()
 
 	// Clear all subspaces except StoreInfoKey (0) and IndexStateSpaceKey (5).
@@ -1208,7 +1241,7 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 		IndexBuildSpaceKey,           // 9 - index build state
 		IndexSlidingWindowSpaceKey,   // 10 - sliding-window bookkeeping
 	} {
-		sub := store.subspace.Sub(key)
+		sub := flatSubspace.Sub(key)
 		pr, err := fdb.PrefixRange(sub.Bytes())
 		if err != nil {
 			return fmt.Errorf("delete all records prefix range for key %d: %w", key, err)
@@ -1229,7 +1262,7 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 		RecordVersionKey,       // explicit record version subspace
 		IndexBuildSpaceKey,     // pending index queue entries
 	} {
-		sub := store.subspace.Sub(key)
+		sub := flatSubspace.Sub(key)
 		pr, err := fdb.PrefixRange(sub.Bytes())
 		if err != nil {
 			return fmt.Errorf("DeleteAllRecords: PrefixRange for subspace %d: %w", key, err)
@@ -1243,9 +1276,8 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 	// Add mutations within the same transaction, so we also explicitly Set
 	// the count key to 0 to ensure reads in the same tx see the reset.
 	// Skip when count state is DISABLED (no count data should exist).
-	countKey := store.metaData.GetRecordCountKey()
-	if countKey != nil && !store.isRecordCountDisabled() {
-		countSubspace := store.subspace.Sub(RecordCountKey)
+	if resetCount {
+		countSubspace := flatSubspace.Sub(RecordCountKey)
 		fdbKey := countSubspace.Pack(tuple.Tuple{})
 		tx.Set(fdbKey, encodeRecordCount(0))
 	}
@@ -1256,11 +1288,9 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 // updateSecondaryIndexes updates all relevant indexes for a record change.
 // oldRecord is nil for inserts, newRecord is nil for deletes.
 //
-// When old and new records have the same type (or one is nil), indexes are
-// updated straightforwardly. When types differ (cross-type overwrite), indexes
-// are partitioned into three sets: old-only (delete entries), new-only (insert
-// entries), and common (update entries). Matches Java's FDBRecordStore.updateSecondaryIndexes().
-func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+// Cross-type overwrites partition indexes into old-only deletes, new-only inserts and common updates.
+// written optionally collects indexes whose own data changed (Java FDBRecordStore.updateSecondaryIndexes).
+func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBStoredRecord[proto.Message], written indexWriteSet) error {
 	if err := store.ensureStoreStateLoadedErr(); err != nil {
 		return fmt.Errorf("load store state: %w", err)
 	}
@@ -1268,12 +1298,12 @@ func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBSto
 	defer store.stateMu.RUnlock()
 	store.indexStateView.maintenance.RLock()
 	defer store.indexStateView.maintenance.RUnlock()
-	return store.updateSecondaryIndexesLocked(oldRecord, newRecord)
+	return store.updateSecondaryIndexesLocked(oldRecord, newRecord, written)
 }
 
 // updateSecondaryIndexesLocked is the lock-free variant for use when the caller
 // already holds stateMu.RLock and the shared maintenance read lock (e.g. SaveRecordBatch).
-func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *FDBStoredRecord[proto.Message], written indexWriteSet) error {
 	if oldRecord == nil && newRecord == nil {
 		return nil
 	}
@@ -1302,7 +1332,7 @@ func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *
 			if !maintain {
 				continue
 			}
-			if err := store.updateOneIndex(index, oldRecord, newRecord); err != nil {
+			if err := store.updateOneIndex(index, oldRecord, newRecord, written); err != nil {
 				return err
 			}
 		}
@@ -1314,7 +1344,7 @@ func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *
 			if !maintain {
 				continue
 			}
-			if err := store.updateOneIndex(index, oldRecord, newRecord); err != nil {
+			if err := store.updateOneIndex(index, oldRecord, newRecord, written); err != nil {
 				return err
 			}
 		}
@@ -1336,19 +1366,19 @@ func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *
 
 	// Delete entries from indexes that only the old type had.
 	for _, index := range oldOnly {
-		if err := store.updateOneIndex(index, oldRecord, nil); err != nil {
+		if err := store.updateOneIndex(index, oldRecord, nil, written); err != nil {
 			return err
 		}
 	}
 	// Insert entries into indexes that only the new type has.
 	for _, index := range newOnly {
-		if err := store.updateOneIndex(index, nil, newRecord); err != nil {
+		if err := store.updateOneIndex(index, nil, newRecord, written); err != nil {
 			return err
 		}
 	}
 	// Update entries in indexes shared by both types.
 	for _, index := range commonIndexes {
-		if err := store.updateOneIndex(index, oldRecord, newRecord); err != nil {
+		if err := store.updateOneIndex(index, oldRecord, newRecord, written); err != nil {
 			return err
 		}
 	}
@@ -1408,10 +1438,9 @@ func partitionIndexes(oldIndexes, newIndexes []*Index) (common, oldOnly, newOnly
 	return
 }
 
-// updateOneIndex routes to UpdateWhileWriteOnly or Update based on index state.
-// Matches Java's FDBRecordStore.updateIndexes() per-index dispatch.
-// updateOneIndex updates a single index. Caller must hold stateMu (read or write).
-func (store *FDBRecordStore) updateOneIndex(index *Index, oldRecord, newRecord *FDBStoredRecord[proto.Message]) error {
+// updateOneIndex dispatches maintenance by state; caller must hold stateMu.
+// written records maintainers that ran, excluding queued or disabled indexes.
+func (store *FDBRecordStore) updateOneIndex(index *Index, oldRecord, newRecord *FDBStoredRecord[proto.Message], written indexWriteSet) error {
 	maintainer, err := store.getIndexMaintainer(index)
 	if err != nil {
 		return err
@@ -1437,12 +1466,14 @@ func (store *FDBRecordStore) updateOneIndex(index *Index, oldRecord, newRecord *
 		return nil
 	}
 	if state.IsWriteOnlyNoQueue() {
+		written.add(index)
 		if err := maintainer.UpdateWhileWriteOnly(oldRecord, newRecord); err != nil {
 			return err
 		}
 		store.context.addToSessionSet(WriteOnlyIndexesUpdated, index.Name)
 		return nil
 	}
+	written.add(index)
 	if err := maintainer.Update(oldRecord, newRecord); err != nil {
 		return err
 	}
@@ -1570,7 +1601,8 @@ func (store *FDBRecordStore) createIndexMaintainer(index *Index) (IndexMaintaine
 		return newBitmapValueIndexMaintainer(index, idxSubspace, tx, store)
 	case IndexTypeText:
 		secSubspace := store.indexSecondarySubspace(index)
-		return newTextIndexMaintainerWithTimer(index, idxSubspace, secSubspace, tx, store, store.context.Timer())
+		return newTextIndexMaintainerWithTimer(index, idxSubspace, secSubspace, tx, store, store.context.Timer(),
+			store.GetPipelineSize(PipelineOperationTextIndexUpdate))
 	case IndexTypeTimeWindowLeaderboard:
 		secSubspace := store.indexSecondarySubspace(index)
 		return newTimeWindowLeaderboardIndexMaintainer(index, idxSubspace, secSubspace, tx, store)
