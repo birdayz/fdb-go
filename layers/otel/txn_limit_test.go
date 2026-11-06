@@ -412,14 +412,11 @@ func testExporterTxnTimeoutBound(t *testing.T, fixture txnFixture) {
 			return nil, err
 		}
 		calls++
-		// Keep the first execution in flight until its configured timeout has
-		// elapsed, then let OnError observe expiry rather than retrying it.
-		timer := time.NewTimer(timeout)
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		// No commit can complete this future; wait for the transaction's timeout
+		// delivery, not an independent timer racing that delivery.
+		_, timeoutErr := rc.Transaction().GetVersionstamp().Get()
+		if code, ok := fdbErrorCode(timeoutErr); !ok || code != 1031 {
+			t.Fatalf("blocked versionstamp error %v, want 1031", timeoutErr)
 		}
 		return nil, fdb.Error{Code: 1009}
 	})
@@ -431,8 +428,12 @@ func testExporterTxnTimeoutBound(t *testing.T, fixture txnFixture) {
 	if elapsed < timeout || elapsed > timeout+5*time.Second {
 		t.Fatalf("ended after %v, want the %v transaction timeout", elapsed, timeout)
 	}
-	if got := runs(); calls != 1 || len(got) != 1 {
+	got := runs()
+	if calls != 1 || len(got) != 1 {
 		t.Fatalf("calls=%d attempts=%v; want one blocked execution in one attempt", calls, got)
+	}
+	if code, ok := fdbErrorCode(got[0]); !ok || code != 1031 {
+		t.Fatalf("attempt error %v, want 1031", got[0])
 	}
 }
 
