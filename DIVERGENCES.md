@@ -309,7 +309,7 @@ No functional difference — absorbs candidate-side-only expressions (MatchableS
 
 **Remaining NLJ cases:** Joins where no predicate matches any PK or index first column (brute-force NLJ is the only option). Self-joins now work via FlatMap (aliases disambiguate). **NLJ is guarded against ExplodeExpression quantifiers** — IN-list decomposition uses Explode, and NLJ can't handle scalar Explode outer datums with map inner datums. The guard forces IN-list patterns to InJoinRule or filter+scan fallback.
 
-**Composite PK limitation:** FlatMap only matches the FIRST PK column. Joins on non-first PK columns fall back to NLJ.
+**Composite keys:** a correlated probe binds every equality-joined key column, as Java's does. `l.trace_id = s.trace_id AND l.span_id = s.span_id` plans `IndexScan(LOGS_TRACE, [=, =, *])` (Java `ISCAN(LOGS_TRACE [EQUALS q0.TRACE_ID, EQUALS q0.SPAN_ID])`) and a two-column primary key `Scan(SPANS, [=, =])` (Java `SCAN([IS SPANS, EQUALS q0.TRACE_ID, EQUALS q0.SPAN_ID])`); pinned by `OtelSQLShapesJavaProbe` and `TestFDB_OtelTraceJoins`.
 
 **JoinMergeResultValue vs RecordConstructorValue:** Go uses `JoinMergeResultValue` (spreads both correlation bindings into a flat map at eval time). Java uses `RecordConstructorValue` with per-column `FieldValue` children. Functionally equivalent — both produce a map with qualified keys from both sides. The difference is WHEN columns are enumerated: Java at plan time (has schema metadata in the relational layer), Go at eval time (translator doesn't carry schema metadata). To close: pass `RecordMetaData` to the translator so it can produce field-level RecordConstructorValue.
 
@@ -959,6 +959,53 @@ Two-tier simplification matching Java's value rule sets:
 
 **Upstream.** Reporting the target's inconsistency is an owner decision and is not filed from here.
 
+### Fan-out index scans: Java's order past bound elements, and a record-identity proof
+
+**Java.** `ValueIndexLikeMatchCandidate.computeMatchedOrderingParts` and `computeOrderingFromScanComparisons` (`ValueIndexLikeMatchCandidate.java:63-118`, `:119-198`) skip an equality-bound column below a FAN_OUT, stop at any other one, and otherwise order by the later key columns and the primary key. `EXISTS (SELECT 1 FROM s.attrs a WHERE a.scope = ? AND a.k = ? AND a.sv = ?) ORDER BY s.start_ns DESC` over an index `(a.scope, a.k, a.sv, s.start_ns, s.trace_id, s.span_id)` is one `COVERING(... REVERSE)` scan with no sort.
+
+**Go.** The same: `RecordQueryIndexPlan` carries which key columns lie below the FAN_OUT (`WithKeyColumnDuplicates`), and its ordering (`orderingKeyColumns`) and the candidate's matched ordering follow Java, subject to Go's existing physical-equality guard: a widened signed-zero element equality does not order the time/PK suffix (`TestFDB_OtelTemplateV1` and `TestComputeMatchedOrderingParts_SuffixPastBoundFanOut`). Go additionally claims record identity for a fan-out scan whose every element column is pinned by an equality (`fanOutPinned`): all of a record's entries in that range have one key and are one FDB entry. That proof lets the keyset `OR` form merge its legs (`MergeSortUnion`) as Java's `∪ ... COMPARE BY` does; Java merges without a proof. Pinned by `TestPlanFanOutExistsOrdersPastBoundElements`, `TestComputeMatchedOrderingParts_SuffixPastBoundFanOut`, `TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray`, `TestFDB_OtelFanOutExists`, `TestFDB_OtelKeysetPages` and `OtelSQLShapesJavaProbe`.
+
+An index omitting the PK columns exercises the implicit suffix through SQL in
+`TestFDB_OtelImplicitFanOutPKSuffix` (tied times, keyset pages and unbound-element negative control).
+That no-sort plan retains the existing single-type Go extension past Java's record-type horizon
+explained above; it is not an assertion that Java selects the same omitted-PK plan. A fan-out
+`ATTRS[*].ID` is never trimmed against root PK `ID`: candidate and physical ordering retain the
+root `(ID,B)` suffix, and B alone is not ordered (`TestFanOutElementNameDoesNotTrimRootPrimaryKey`
+and `TestFDB_OtelFanOutElementNameDoesNotTrimRootPK`).
+
+### BYTES ordered-union execution in Java 4.14.2.0
+
+**Java.** Planning a fan-out keyset union does not guarantee it can execute a
+BYTES tie-breaker. On the public `OTEL_V1` template, `OtelSQLShapesJavaProbe`'s
+OR cursor 1 is `(start_ns=200, trace_id=X'01000000000000000000000000000000',
+span_id=X'00000000000000ff')`. Java selects three reverse covering
+`SPANS_STR_ATTR` scans with `COMPARE BY (_.START_NS, _.TRACE_ID, _.SPAN_ID)`.
+The trace-lower and span-lower legs both contain time-200 rows, so merging must
+compare BYTES trace IDs. Execution fails with `java.lang.ClassCastException`,
+SQLSTATE `XXXXX`: `ByteString$LiteralByteString` cannot be cast to `Comparable`.
+The same fixture's AND cursors all succeed; OR cursor 0 succeeds with only one
+nonempty leg. This is not a blanket restriction on BYTES ordering or OR queries.
+
+**Source-derived cause.** In Java 4.14.2.0,
+`RecordQuerySetPlan.ComparisonKeyFunction.OnValues.apply` (`:409–417`) retains
+raw `FieldValue.eval` results; `FieldValue.java:206–208` leaves BYTES as
+`ByteString`. `UnionCursor.java:114` calls `KeyComparisons.KEY_COMPARATOR`,
+whose field comparator handles `byte[]` but casts ByteString to `Comparable`
+(`KeyComparisons.java:35–49`). The `OnKeyExpression` path instead calls
+`toTupleAppropriateList`, normalizing ByteString to byte[]. These are source
+sites, not captured Java stack frames; the probe received the structured root
+exception. Java's residual predicate comparator handles ByteString correctly.
+
+**Go and regression boundary.** Go keeps unsigned byte ordering and changes no
+stored format. The probe requires exact rows for every Go AND/OR cursor before
+running Java, and pins the exact Java exception class, full class, SQLSTATE and
+message only for the cursor above. Every other Java cursor must return the
+explicit expected suffix, including the later OR cursors; no other error is
+accepted. `TestFDB_OtelTemplateV1` additionally walks both Go forms at page sizes
+1, 2 and 3 through exhaustion, checking exact identities, ties, NUL/high bytes
+and no duplicates. Java's pinned-version execution defect is tracked in TODO;
+no upstream issue has been filed from this work.
+
 ### Plan choice: an IN ordered by a key no probe provides is probed and sorted (RFC-257 WS-F F-7c)
 
 **Divergence.** `SELECT * FROM T1 WHERE col1 IN (10, 20) ORDER BY id` over an index `I1 (col1)`: Java plans `SCAN([IS T1]) | FILTER _.COL1 IN ...`, Go `InMemorySort([ID ASC], Fetch(InJoin(IndexScan(I1, [=] COVERING))))`; likewise with 25 values and over `T5` (`w8_in_union_explain`, `w8_in25_order_by_id_explain`, `w8_tie_in_order_by_id_explain`, declared `DIFF-PATH in-memory-sort`). Rows are identical.
@@ -1161,6 +1208,8 @@ Confirmed via cross-engine probes. Go's correct behavior is pinned in Go-only po
 | `WHERE pk_col = nonpk_col` | SQL-correct | `Missing binding` planner error |
 | PK-intersection whose legs fix DIFFERENT primary-key components (`PRIMARY KEY (pk1, pk2)`, indexes `(b, pk1)` and `(pk2)`, `WHERE b = 1 AND pk2 = 3`) | Intersects on `(pk1, pk2)`, the order both legs deliver; correct rows (RFC-245 declined the merge, RFC-247 widened the key) | Intersects on `COMPARE BY (_.PK1)` and returns every `pk2 = 3` record regardless of `b` (`COUNT(*)` 4 for a 1-row answer) — see below |
 | IN-union over a projection that drops the primary key (`SELECT s, b … WHERE a IN (1, 2) ORDER BY s, b`, index `(a, s, b)`) | Merges only on a key that identifies rows; otherwise sorts. Correct rows | Merges `COMPARE BY (_.S, _.B)` and drops records that tie on `(s, b)` across IN branches — see below |
+| EXISTS over a repeated field answered by a fan-out index, an element column unbound (`EXISTS (SELECT 1 FROM s.attrs a WHERE a.scope = 'span' AND a.k = 'tag')`, a span with two `tag` elements) | One row per span: the existential-to-ForEach match adds a required primary-key `Unique` (RFC-190 190.4c-8) | One row per matching element: `COVERING(SPANS_ATTR_STR [EQUALS, EQUALS])` with no distinct returns `[t1 s1]` twice (`OtelSQLShapesJavaProbe`) |
+| `SELECT DISTINCT s1.trace_id` from a trace-correlated spans self-join with one fully bound attribute EXISTS per side (model `gpt`, tag `y`) | One trace row, `[t1]` | Two `[t1]` rows; Java's plan omits distinct (`OtelSQLShapesJavaProbe`) |
 | EXISTS in a disjunction of a join condition (`ON (c.a_id = a.id AND EXISTS (…)) OR c.id > 100`) | Reapplies the existential predicate; correct rows | Drops it when the select carrying it is matched to an index: extra rows in the ON form, none in the WHERE form — see below |
 
 4.12.11 fixed three former entries, now removed from this table — they run as plain cross-engine
@@ -4587,17 +4636,32 @@ planned before keeps its plan: `TestFDB_FilteredDerivedTableInsideAJoin` and
 (`pkg/relational/sqldriver/derived_star_join_beside_source_fdb_test.go:126`, `:22`) pin the GROUP
 BY arms' EXPLAIN.
 
-### Go does not reproduce Java's record_types order or anonymous type names (RFC-257 WS-J)
+### Anonymous type names are engine-private (RFC-257 WS-J)
 
-Java lists a schema template's `record_types` in `HashMap` iteration order. It names an anonymous
-type (a struct column's unnamed type) `__type__<uuid>`, with a random UUID drawn per build
-(`ProtoUtils.java:96-98`). It then emits a table's types from a `TreeSet` keyed by those names
-(`TypeRepository.java:269-271`), so two anonymous types swap places between two builds of one
-template. Go sorts `record_types` by name and names an anonymous type by the path that reaches it.
-None of this is identity: union field numbers, record-type keys, field numbers and every named
-message's position agree. A loader of either engine reads the other's template. The conformance
-comparison (`wsjCanonical`, `conformance/ws_j_index_fidelity_conformance_test.go`) removes exactly
-these three differences and nothing else.
+Java names an anonymous type (a struct column's unnamed type) `__type__<uuid>`, with a random UUID
+per build (`ProtoUtils.java:96-98`). It emits a table's types from a `TreeSet` keyed by those names
+(`TypeRepository.java:269-271`), so anonymous types can swap places within a contiguous run between
+builds. Go uses the path that reaches the type. Union field numbers, record-type keys, field numbers
+and every named message's position agree; both engines load the other's template. `wsjCanonical`
+normalizes random aliases and anonymous names/order within consecutive anonymous runs, not
+`record_types` order.
+
+Record-type serialization follows Java 4.14.2.0's two map stages: default HashMap insertion at each
+type's first occurrence in the stored union's declaration order (`fillUnionFields:859-875`), then
+Guava `newHashMapWithExpectedSize` and individual insertion in builder-map order
+(`RecordMetaDataBuilder.java:1473-1483`, `RecordMetaData.java:673-684`). Minimum union field numbers
+still determine record-type keys, not map insertion order; a later alias does not reinsert the type.
+Hand-built types absent from the union use a deterministic index/name fallback before map insertion.
+The insertion-only string-key implementation includes collision-triggered growth, tree-bin iteration
+and resize splits, using UTF-16 hashing/comparison. Ten complete, unnormalized Go `ToProto`/Java
+`buildInCodeMetaData` cases cover 3/6/12-type sizing, collision growth, treeification, 49-type resize
+splits (both halves rebuilt and either/both untreeified), and nonmonotonic union numbers with a
+repeated alias; WS-J also compares the unnormalized record-type sequence.
+
+The separate `javahashmap.Order(first, then)` API retains existing bulk-first caller sizing. It is
+not a claim that every JDK patch implements `putAll` identically: managed JDK 21.0.12 uses ceil
+sizing while this legacy contract uses float-plus-one. The record-type encoder uses the distinct
+Guava expected-size adapter, not that bulk-first operation.
 
 ### Arithmetic overflow is 22003 in Go; the target's escapes unmapped (RFC-257 WS-J/WS-E)
 

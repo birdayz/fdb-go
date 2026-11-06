@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "otel_test",
+    size = "large",
+    srcs = [
+        "fanout_suffix_fdb_test.go",
+        "main_test.go",
+        "otel_shapes_fdb_test.go",
+        "template_v1_fdb_test.go",
+    ],
+    tags = ["resources:memory:700"],
+    deps = [
+        "//layers/otel/otelsql",
+        "//pkg/relational/api",
+        "//pkg/relational/sqltest/testkit",
+        "@io_opentelemetry_go_proto_otlp//common/v1:common",
+        "@io_opentelemetry_go_proto_otlp//trace/v1:trace",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+# This package's test sources, for the whole-corpus census and the
+# transaction-budget census (//pkg/relational/sqltest:corpus).
+filegroup(
+    name = "corpus",
+    srcs = glob(
+        ["*_test.go"],
+        exclude = ["main_test.go"],
+    ),
+    visibility = ["//pkg/relational:__subpackages__"],
+)

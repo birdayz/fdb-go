@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"slices"
 	"testing"
 
 	"fdb.dev/gen"
@@ -287,6 +288,7 @@ func TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray(t *testin
 			candidateTestKeyField("SCORE", gen.Field_SCALAR),
 		}},
 	}).WithKeyComponentTypes([]values.Type{values.NullableString, values.NullableLong}).
+		WithPrimaryKeyComponentTypes([]values.Type{values.NullableLong}).
 		WithPrimaryKeyEntryOrdinals([]int{2})
 	if !fanOutCandidate.CreatesDuplicates() {
 		t.Fatal("structured FAN_OUT must override a stale false duplicate signal")
@@ -401,18 +403,40 @@ func TestValueIndexScanMatchCandidate_FanOutElementIsNotCoveredAsArray(t *testin
 			pkColumns,
 		)
 	}
-	if ordering := indexPlan.HintOrdering(); ordering.IsKnown ||
-		len(ordering.Keys) != 0 {
-		t.Fatalf(
-			"candidate fan-out signal did not suppress physical ordering: %#v",
-			ordering,
-		)
+	// Java's computeOrderingFromScanComparisons: the equality-bound TAGS
+	// element fixes no Value, and the scan stays ordered by SCORE then ID.
+	keyNames := func(keys []values.Value) []string {
+		names := make([]string, 0, len(keys))
+		for _, key := range keys {
+			field, ok := values.AsFieldValue(key)
+			if !ok {
+				names = append(names, "?")
+				continue
+			}
+			names = append(names, field.DisplayName())
+		}
+		return names
 	}
-	if rich := indexPlan.HintRichOrdering(); len(rich.GetKeys()) != 0 {
-		t.Fatalf(
-			"candidate fan-out signal did not suppress rich ordering: %#v",
-			rich.GetKeys(),
-		)
+	if ordering := indexPlan.HintOrdering(); !ordering.IsKnown ||
+		!slices.Equal(keyNames(ordering.Keys), []string{"SCORE", "ID"}) {
+		t.Fatalf("fan-out scan bound on its element must order by SCORE, ID: %#v", ordering)
+	}
+	if rich := indexPlan.HintRichOrdering(); !slices.Equal(keyNames(rich.GetKeys()), []string{"SCORE", "ID"}) {
+		t.Fatalf("fan-out scan rich ordering = %v, want SCORE, ID", keyNames(rich.GetKeys()))
+	} else if !rich.RecordIdentityWithin(rich.GetKeys()) {
+		// Every entry of one record in this range has the same key: one entry.
+		t.Fatal("fan-out scan pinned on its element must claim record identity")
+	}
+	unboundFetch, ok := fanOutCandidate.ToScanPlan(EmptyPlanContext(), nil, false).(*plans.RecordQueryFetchFromPartialRecordPlan)
+	if !ok {
+		t.Fatal("unbound fan-out scan is not a fetch")
+	}
+	unboundPlan := unboundFetch.GetInner().(*plans.RecordQueryIndexPlan)
+	if ordering := unboundPlan.HintOrdering(); ordering.IsKnown || len(ordering.Keys) != 0 {
+		t.Fatalf("unbound fan-out element must suppress physical ordering: %#v", ordering)
+	}
+	if rich := unboundPlan.HintRichOrdering(); len(rich.GetKeys()) != 0 || rich.RecordIdentityWithin(rich.GetKeys()) {
+		t.Fatalf("unbound fan-out element must suppress rich ordering and identity: %v", keyNames(rich.GetKeys()))
 	}
 
 	// A non-fan-out scalar index with the same translation machinery retains

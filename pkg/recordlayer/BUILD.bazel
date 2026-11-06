@@ -155,6 +155,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//gen",
+        "//internal/javahashmap",
         "//internal/unicode15",
         "//internal/unicode15/text/collate",
         "//internal/unicode15/text/language",

@@ -17,6 +17,7 @@ import (
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
 
 	"fdb.dev/gen"
+	"fdb.dev/internal/javahashmap"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer/internal/protovalue"
 	"fdb.dev/pkg/recordlayer/protoscope"
@@ -116,10 +117,8 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 		md.Indexes = append(md.Indexes, idxProto)
 	}
 
-	// 5. Record types, in DECLARATION order (the union field number):
-	// Java's serializer emits them in visit order, so the stored bytes
-	// carry union order, not name order — byte-golden-pinned. Name is the
-	// deterministic tiebreak for equal indexes (hand-built metadata).
+	// 5. Java inserts types in union declaration order, then rebuilds from that
+	// iteration in an expected-size map (fillUnionFields/build), not field-number order.
 	rtNames := make([]string, 0, len(m.recordTypes))
 	for name := range m.recordTypes {
 		rtNames = append(rtNames, name)
@@ -131,6 +130,29 @@ func (m *RecordMetaData) ToProto() (*gen.MetaData, error) {
 		}
 		return rtNames[i] < rtNames[j]
 	})
+	// Hand-built types absent from the union follow in index/name order.
+	insertionOrder := make([]string, 0, len(rtNames))
+	seen := make(map[string]bool, len(rtNames))
+	if m.unionDescriptor != nil {
+		fields := m.unionDescriptor.Fields()
+		for i := 0; i < fields.Len(); i++ {
+			message := fields.Get(i).Message()
+			if message == nil {
+				continue
+			}
+			name := string(message.Name())
+			if m.recordTypes[name] != nil && !seen[name] {
+				insertionOrder = append(insertionOrder, name)
+				seen[name] = true
+			}
+		}
+	}
+	for _, name := range rtNames {
+		if !seen[name] {
+			insertionOrder = append(insertionOrder, name)
+		}
+	}
+	rtNames = javahashmap.ExpectedSizeOrder(javahashmap.Order(nil, insertionOrder))
 
 	for _, name := range rtNames {
 		rt := m.recordTypes[name]

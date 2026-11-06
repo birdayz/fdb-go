@@ -190,6 +190,7 @@ go_test(
         "explicit_tx_commit_handoff_test.go",
         "explicit_tx_context_test.go",
         "explicit_tx_sql_test.go",
+        "fanout_exists_ordering_test.go",
         "float_order_by_sort_retention_test.go",
         "float_ordering_claim_plan_test.go",
         "fold_tie_pins_test.go",
@@ -593,6 +594,7 @@ go_test(
         "text_search_test.go",
         "text_index_ddl_test.go",
         "text_template_scope_test.go",
+        "fanout_exists_ordering_test.go",
     ],
     tags = ["resources:cpu:4"],
     deps = [

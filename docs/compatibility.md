@@ -354,6 +354,75 @@ with the intended implementation. Changing a flag or relabeling metadata cannot
 convert persisted sort keys. Do not use a shared Java/Go writer rollout to perform
 that migration.
 
+## OTel SQL schema foundation
+
+`layers/otel/otelsql` defines the Java-readable `OTEL_V1` schema template:
+spans, logs, messages and message-to-trace markers are tables of **one record
+store per tenant**. Registration uses relational catalog DDL; tenant database
+and schema paths use the ordinary relational keyspace. The Java 4.14.2 golden
+in `conformance/rfc204_template_golden_test.go` compares stored metadata, not
+only the DDL parser's acceptance. Real-FDB SQL tests under `sqltest/otel` pin
+attribute access, ordering, correlated composite-key joins and keyset pages.
+The omitted-PK fan-out SQL regression also pins Go's existing safe single-type
+implicit-suffix extension past Java's record-type ordering horizon; it does not
+claim that Java chooses that same plan. Record-type metadata byte comparisons
+retain the unnormalized repeated-field order, including collision-heavy names
+and Guava expected-size construction (see DIVERGENCES.md).
+
+Attributes use separate repeated typed structs and standard fan-out VALUE
+indexes, not the existing OTel custom posting index. Only fully bound element
+keys preserve ordering by the following time/identity columns. Unnest joins
+still explode records rather than use the fan-out index, as in Java. Go repairs
+EXISTS cardinality where Java can return duplicate records; see DIVERGENCES.md.
+The template includes neither TEXT indexes nor metrics tables yet. TEXT is an
+intentional separate Go FULLTEXT overlay: adding it requires a new metadata
+version, index build/readability and migration policy, not changing the v1
+catalog bytes in place. Metrics can be added as more tables in the same store;
+no cross-store join is needed. The initial catalog version is 1 (record-metadata
+version 14, including 13 indexes); subsequent changes must go through the
+catalog evolution validator and explicit schema rebinding, e.g. fleet.SaveTemplate
+and fleet.Migrate.
+
+This is not an ingest-format migration. The existing exporter still writes its
+original store/keyspace and raw-KV logs. Tests hand-insert SQL rows and check
+opaque OTLP BYTES round-trips; they do not establish exporter/extraction fidelity.
+A future writer must open the tenant's relational schema store and populate the
+typed columns, preserving unknown fields, presence, order, duplicates and typed
+values through the envelope plus lossless message manifests/reconstruction. It
+must not copy complete pre-decomposition GenAI history into every span's `otlp`:
+that restores quadratic storage amplification. The projections are query aids,
+not a lossless replacement for OTLP. Event/link projections currently omit
+bytes/long-string arrays and resource/scope dropped counts; the envelope must
+preserve them, and SQL projection coverage is incomplete.
+The 1,024-byte indexed-string cap is a writer admission contract, not a DDL
+constraint; long strings belong in the digest-indexed array, with exact values
+verified after digest lookup. The messages_hash unique index deduplicates whole
+messages: only part zero carries content_hash, and all other chunks leave it
+NULL (multiple NULLs are allowed). SQL DML does not enforce the part-zero
+contract; writers must. Writers must also bound attribute keys and other
+indexed fields against FDB's key limit. No projection/admission implementation
+or ingestion-cost measurement is supplied here. Benchmark runs will use dedicated
+catalog databases/stores; a production tenant's shared signal store must never
+be cleared by the existing run-level Drop operation. Java-readable stores must use
+an interoperable serializer, not Go-only Brotli.
+
+SQL keyset pages use an expanded scalar predicate over `(time, trace, span)`;
+row-value comparison is unsupported in both engines. Go's LIMIT is not Java
+SQL syntax (Java uses maxRows/continuations). Snapshot and budget semantics
+remain those of the relational connection, not the existing OTel signed-token
+query API. In particular, separate autocommit pages do not share a snapshot.
+
+Java 4.14.2.0 has an execution bug when the public-template OR keyset's ordered
+union must compare BYTES identities across legs with equal timestamps:
+`OtelSQLShapesJavaProbe` pins cursor 1's `ByteString$LiteralByteString` to
+`Comparable` ClassCastException (SQLSTATE `XXXXX`). Java's value-key extractor
+leaves ByteString unnormalized for `KeyComparisons`; this is a source-derived
+cause, not a captured Java stack. The equivalent AND form and OR cursor 0 are
+working controls, and every other Java cursor remains a success assertion.
+Go retains exact byte ordering and all AND/OR pages at sizes 1, 2 and 3;
+no stored-format change or Go query restriction follows from the Java bug.
+See DIVERGENCES.md for the precise fixture and comparison path.
+
 ## Sources and verification
 
 The concrete boundaries above can be checked in:
