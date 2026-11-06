@@ -207,6 +207,13 @@ func forEachNodeLocalValue(plan RecordQueryPlan, emit func(values.Value)) {
 		if idx := p.GetIndexPlan(); idx != nil {
 			forEachNodeLocalValue(idx, emit)
 		}
+	case *RecordQueryTextIndexPlan:
+		scan := p.GetTextScan()
+		forEachValue(scan.Grouping, emit)
+		forEachScanComparisonValue(scan.Suffix, emit)
+		if scan.Predicate != nil {
+			emit(scan.Predicate.Operand)
+		}
 	case *RecordQueryVectorIndexPlan:
 		forEachValue(p.GetCommonPrimaryKeyValues(), emit)
 		forEachScanComparisonValue(p.GetPrefixComparisons(), emit)

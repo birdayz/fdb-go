@@ -997,7 +997,7 @@ func collectSargedAliases(e expressions.RelationalExpression) map[values.Correla
 
 // collectSargedComparisons walks the physical plan tree and collects the
 // Comparisons bounding its scans. It is Go's only port of
-// ComparisonsProperty.ComparisonsVisitor, and it reproduces two of that
+// ComparisonsProperty.ComparisonsVisitor, and it reproduces three of that
 // visitor's behaviours:
 //
 //   - evaluateAtExpression unions the child results with the node's OWN
@@ -1010,6 +1010,8 @@ func collectSargedAliases(e expressions.RelationalExpression) map[values.Correla
 //     fold over the legs, so only comparisons carried by ALL legs survive, and
 //     the intersection node contributes none of its own. Dispatched off the
 //     IntersectionExpression marker, as Java dispatches off the visit override.
+//   - visitRecordQueryTextIndexPlan contributes its grouping and text
+//     comparisons through textScanComparisons.
 //
 // The visitor's remaining behaviours are deliberately NOT reproduced, and the
 // list is open rather than closed — it is what the Java class holds today:
@@ -1017,11 +1019,8 @@ func collectSargedAliases(e expressions.RelationalExpression) map[values.Correla
 //   - Unwrapping RecordQueryCoveringIndexPlan has no Go analogue at all:
 //     covering is a flag on the index plan, not a wrapper around it.
 //   - visitRecordQueryScoreForRankPlan REPLACES the child result with the
-//     ranks' comparisons, and visitRecordQueryTextIndexPlan contributes the
-//     text scan's grouping and text comparisons. Go's score-for-rank plan is a
-//     pass-through union here and its text-index plan contributes nothing. Both
-//     are unreachable rather than agreed: neither plan is constructed outside
-//     tests, so no query can reach either arm.
+//     ranks' comparisons. Go's score-for-rank plan is a pass-through union
+//     here; it is unreachable rather than agreed, as no query constructs it.
 //   - evaluateAtRef unions ALL members of a Reference; this descends
 //     firstPhysicalChild only. That narrowing is the cost model's convention
 //     for walking a concrete candidate (see concretePlanCounts) and predates
@@ -1061,6 +1060,25 @@ func collectSargedComparisons(e expressions.RelationalExpression) []*predicates.
 		for _, c := range comparisonsFromRanges(p.GetScanComparisons()) {
 			out = addComparisonToSet(out, c)
 		}
+	}
+	if p, ok := e.(*plans.RecordQueryTextIndexPlan); ok {
+		for _, c := range textScanComparisons(p.GetTextScan()) {
+			out = addComparisonToSet(out, c)
+		}
+	}
+	return out
+}
+
+// textScanComparisons is ComparisonsVisitor.visitRecordQueryTextIndexPlan
+// (ComparisonsProperty.java:154-164): the grouping comparisons and the text
+// comparison, not the suffix.
+func textScanComparisons(scan plans.TextScan) []*predicates.Comparison {
+	var out []*predicates.Comparison
+	for _, g := range scan.Grouping {
+		out = append(out, &predicates.Comparison{Type: predicates.ComparisonEquals, Operand: g})
+	}
+	if scan.Predicate != nil {
+		out = append(out, scan.Predicate)
 	}
 	return out
 }

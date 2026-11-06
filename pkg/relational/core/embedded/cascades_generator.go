@@ -115,7 +115,21 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 		return nil, err
 	}
 	if cs, _ := g.c.Options().Get(api.OptCaseSensitiveIdentifiers).(bool); cs {
-		sql = caseSensitiveIdentifiers(sql)
+		sql = caseSensitiveIdentifiers(sql, func(name string) bool {
+			if g.c.ensureMetaData(ctx) != nil {
+				return false
+			}
+			md := g.c.cachedMetaData()
+			if md == nil {
+				return false
+			}
+			for _, function := range md.UserDefinedFunctions() {
+				if macro := function.GetUserDefinedMacroFunction(); macro != nil && unicode15.EqualFold(macro.GetFunctionName(), name) {
+					return true
+				}
+			}
+			return false
+		})
 	}
 	root, err := parser.Parse(sql)
 	if err != nil {
@@ -3225,6 +3239,17 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 		// non-filtering; a closure is opaque and cannot be proved tautological,
 		// so it fails closed.
 		sparse := idx.HasFilteringPredicate()
+		if idx.Type == recordlayer.IndexTypeText {
+			if layout, err := recordlayer.DescribeTextIndex(idx); !sparse && err == nil && !layout.TokenizedPrimaryKey {
+				columns, direct := textIndexScalarColumns(idx.RootExpression.ToKeyExpression())
+				if !direct {
+					continue
+				}
+				def := &metadataIndexDef{idx: idx, md: c.md}
+				candidates = append(candidates, &cascades.TextIndexMatchCandidate{Name: idx.Name, Columns: columns, RecordTypes: def.IndexRecordTypes(), GroupingCount: layout.TextPosition, TokenizerName: layout.Tokenizer.Name(), TokenizerVersion: layout.TokenizerVersion, TokenizerMaxVersion: layout.Tokenizer.MaxVersion(), OmitPositions: idx.GetBooleanOption(recordlayer.IndexOptionTextOmitPositions, false), CreatesDuplicates: idx.RootExpressionCreatesDuplicates(), RowType: def.IndexRowType(), KeyTypes: def.IndexKeyComponentTypes()})
+			}
+			continue
+		}
 		if !sparse {
 			// A SPARSE aggregate/vector index must not become a candidate that
 			// ignores its predicate: the maintained aggregates cover only the
@@ -5314,6 +5339,9 @@ func isAllowedFunction(name string) bool {
 		"BITMAP_BUCKET_OFFSET", "BITMAP_BIT_POSITION",
 		// Vector distances are DistanceValues (expr.distanceOperatorForFunc).
 		"EUCLIDEAN_DISTANCE", "EUCLIDEAN_SQUARE_DISTANCE", "COSINE_DISTANCE", "DOT_PRODUCT_DISTANCE",
+		// Text predicates are text ComparisonPredicates (expr.walkTextFunction).
+		"TEXT_CONTAINS_ALL", "TEXT_CONTAINS_ALL_WITHIN", "TEXT_CONTAINS_ANY", "TEXT_CONTAINS_PHRASE",
+		"TEXT_CONTAINS_PREFIX", "TEXT_CONTAINS_ALL_PREFIXES", "TEXT_CONTAINS_ANY_PREFIX",
 		`"` + expr.SQLFunctionArgument + `"`:
 		return true
 	}

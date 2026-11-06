@@ -13,6 +13,9 @@ import com.apple.foundationdb.record.provider.common.text.DefaultTextTokenizer;
 import com.apple.foundationdb.record.provider.common.text.TextTokenizer;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordContext;
 import com.apple.foundationdb.record.provider.foundationdb.FDBRecordStore;
+import com.apple.foundationdb.record.provider.foundationdb.IndexOrphanBehavior;
+import com.apple.foundationdb.record.query.RecordQuery;
+import com.apple.foundationdb.record.query.expressions.Query;
 import com.apple.foundationdb.record.RecordLayerDemo;
 import com.apple.foundationdb.record.RecordLayerDemo.Customer;
 import com.apple.foundationdb.subspace.Subspace;
@@ -130,6 +133,62 @@ class TextIndexSteps extends ConformanceBase {
             result.add(map);
         }
         return result;
+    }
+
+    /** Pin the upstream tokenized-primary-key overlap behavior before changing wire keys. */
+    @ConformanceStep("probeTextPrimaryKeyOverlap")
+    public Map<String, Object> probeTextPrimaryKeyOverlap(String clusterFile, byte[] subspace, String tenantName) {
+        return runInContext(clusterFile, tenantName, context -> {
+            RecordMetaDataBuilder builder = RecordMetaData.newBuilder().setRecords(RecordLayerDemo.getDescriptor());
+            builder.getRecordType("Order").setPrimaryKey(Key.Expressions.field("order_id"));
+            builder.getRecordType("Customer").setPrimaryKey(Key.Expressions.concat(
+                    Key.Expressions.field("name"), Key.Expressions.field("customer_id")));
+            builder.getRecordType("TypedRecord").setPrimaryKey(Key.Expressions.field("id"));
+            builder.addIndex("Customer", new Index("overlapping_text", Key.Expressions.field("name"), IndexTypes.TEXT));
+            RecordMetaData metadata = builder.build();
+            FDBRecordStore store = FDBRecordStore.newBuilder().setMetaDataProvider(metadata)
+                    .setContext(context).setSubspace(new Subspace(subspace))
+                    .setUserVersionChecker(ALWAYS_READABLE_CHECKER).createOrOpen();
+            var saved = store.saveRecord(Customer.newBuilder().setCustomerId(1L).setName("red blue").build());
+            Index index = metadata.getIndex("overlapping_text");
+            List<IndexEntry> entries = store.scanIndex(index, IndexScanType.BY_TEXT_TOKEN,
+                    TupleRange.allOf(Tuple.from("red")), null, ScanProperties.FORWARD_SCAN).asList().join();
+            Map<String, Object> result = new HashMap<>();
+            result.put("positions", index.getPrimaryKeyComponentPositions());
+            result.put("savedText", saved.getPrimaryKey().getString(0));
+            result.put("savedId", saved.getPrimaryKey().getLong(1));
+            result.put("entryCount", entries.size());
+            if (entries.size() != 1) {
+                return result;
+            }
+            IndexEntry entry = entries.get(0);
+            result.put("extractedText", entry.getPrimaryKey().getString(0));
+            result.put("extractedId", entry.getPrimaryKey().getLong(1));
+            result.put("originalRecordExists", store.loadRecord(saved.getPrimaryKey()) != null);
+            try {
+                store.loadIndexEntryRecord(entry, IndexOrphanBehavior.ERROR).join();
+                result.put("fetchError", "");
+            } catch (RuntimeException error) {
+                Throwable cause = error;
+                while (cause.getCause() != null) { cause = cause.getCause(); }
+                result.put("fetchError", cause.getMessage());
+                result.put("fetchClass", cause.getClass().getSimpleName());
+            }
+            var query = RecordQuery.newBuilder().setRecordType("Customer")
+                    .setFilter(Query.field("name").text().contains("red")).build();
+            var plan = store.planQuery(query);
+            result.put("queryPlan", plan.toString());
+            try {
+                result.put("queryRows", store.executeQuery(plan).asList().join().size());
+                result.put("queryError", "");
+            } catch (RuntimeException error) {
+                Throwable cause = error;
+                while (cause.getCause() != null) { cause = cause.getCause(); }
+                result.put("queryError", cause.getMessage());
+                result.put("queryClass", cause.getClass().getSimpleName());
+            }
+            return result;
+        });
     }
 
     /** Java's default TEXT tokenizer, one token list per input text. */

@@ -228,7 +228,7 @@ var uncostedPlanTypes = map[reflect.Type]string{
 	reflect.TypeOf(RecordQueryLoadByKeysPlan{}):   "legacy record-layer plan, not constructed by Cascades",
 	reflect.TypeOf(RecordQueryScoreForRankPlan{}): "legacy record-layer plan, not constructed by Cascades",
 	reflect.TypeOf(RecordQuerySelectorPlan{}):     "a plan-selection harness, never costed or extracted",
-	reflect.TypeOf(RecordQueryTextIndexPlan{}):    "legacy record-layer plan, not constructed by Cascades",
+	reflect.TypeOf(RecordQueryTextIndexPlan{}):    "specialized text posting scan, not a CostedPlan",
 }
 
 // planTypes is the roster of concrete plan types the census runs over. It is
@@ -275,9 +275,22 @@ func derivePlanTypes() []reflect.Type {
 }
 
 // specimens maps plan type NAME to its proof obligation. A plan type whose
-// census is empty (RecordQueryLoadByKeysPlan, RecordQueryTextIndexPlan) needs
+// census is empty (RecordQueryLoadByKeysPlan) needs
 // no entry.
 var specimens = map[string]specimen{
+	"RecordQueryTextIndexPlan": {
+		build: func(t *testing.T) (RecordQueryPlan, map[string]*values.RecordConstructorValue) {
+			group, suffix, comparand := sentinel(), sentinel(), sentinel()
+			p := mustFinalizeConstruct(NewRecordQueryTextIndexPlan("TEXT", TextScan{
+				Grouping:  []values.Value{group},
+				Suffix:    []*predicates.ComparisonRange{sentinelRange(t, suffix)},
+				Predicate: &predicates.Comparison{Type: predicates.ComparisonTextContainsAll, Operand: comparand},
+			}, finalizeRowType("T"), false))
+			return p, map[string]*values.RecordConstructorValue{
+				"textScan[grouping]": group, "textScan[suffix]": suffix, "textScan[predicate]": comparand,
+			}
+		},
+	},
 	"RecordQueryAggregateIndexPlan": {
 		build: func(t *testing.T) (RecordQueryPlan, map[string]*values.RecordConstructorValue) {
 			// The embedded index plan is NOT a child (GetChildren returns nil
@@ -1007,6 +1020,7 @@ func TestFinalizePlanCensusSeesTheCarriers(t *testing.T) {
 	t.Parallel()
 
 	mustCarry := map[string]reflect.Type{
+		"TextScan":                          reflect.TypeOf(TextScan{}),
 		"values.Value (iface)":              valueIface,
 		"[]values.Value":                    reflect.TypeOf([]values.Value(nil)),
 		"predicates.QueryPredicate (iface)": predicateIface,
@@ -1036,7 +1050,6 @@ func TestFinalizePlanCensusSeesTheCarriers(t *testing.T) {
 		"bool":        reflect.TypeOf(true),
 		"[]any":       reflect.TypeOf([]any(nil)),
 		"values.Type": reflect.TypeOf((*values.Type)(nil)).Elem(),
-		"TextScan":    reflect.TypeOf(TextScan{}),
 	}
 	for label, typ := range mustNotCarry {
 		if carriesStampable(typ, map[reflect.Type]bool{}) {

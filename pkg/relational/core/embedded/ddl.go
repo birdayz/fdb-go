@@ -530,6 +530,8 @@ func parseIndexDefinition(idxDef antlrgen.IIndexDefinitionContext, b *metadata.B
 		return parseAsSelectIndexDefinition(def, b)
 	case *antlrgen.VectorIndexDefinitionContext:
 		return parseVectorIndexDefinition(def, b)
+	case *antlrgen.TextIndexDefinitionContext:
+		return parseTextIndexDefinition(def, b)
 	default:
 		return api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"unsupported index definition type %T", idxDef)

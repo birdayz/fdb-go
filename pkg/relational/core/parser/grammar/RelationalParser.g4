@@ -172,6 +172,8 @@ indexDefinition
     : (UNIQUE)? INDEX indexName=uid AS queryTerm indexAttributes?                                                                  #indexAsSelectDefinition
     | (UNIQUE)? INDEX indexName=uid ON source=fullId indexColumnList includeClause? indexOptions?                                  #indexOnSourceDefinition
     | VECTOR INDEX indexName=uid USING engine=vectorEngine ON source=fullId indexColumnList includeClause? indexPartitionClause? vectorIndexOptions?   #vectorIndexDefinition
+    // Go extension: Java's RelationalParser.g4 has no FULLTEXT INDEX.
+    | FULLTEXT INDEX indexName=uid ON source=fullId indexColumnList indexPartitionClause?                                            #textIndexDefinition
     ;
 
 // SPFRESH is a Go-only engine.

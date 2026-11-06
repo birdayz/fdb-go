@@ -18,13 +18,14 @@
 // `just generate-parser` is itself part of `just generate`.
 //
 // The grammar files in grammar/ are copied near-verbatim from Java source at
-// fdb-record-layer/fdb-relational-core/src/main/antlr/. There is one
-// documented deviation: the Java-side ERROR_RECOGNITION lexer rule contained
+// fdb-record-layer/fdb-relational-core/src/main/antlr/. The Java-side
+// ERROR_RECOGNITION lexer rule contained
 // an inline Java action block which ANTLR's Go target copies literally and
 // cannot compile. The action is removed in our copy with a NOTE comment
 // explaining the change; default error listeners still surface unknown
 // characters as "token recognition errors", so behaviour is preserved.
 //
-// When re-syncing grammar from Java source: copy the files over, then delete
-// the action block from the ERROR_RECOGNITION rule again.
+// Go-only parser extensions add FULLTEXT INDEX, the SPFRESH engine, and
+// scalar subquery expression atoms. When re-syncing, reapply these extensions
+// (marked Go extension / Go-only) and remove ERROR_RECOGNITION's action again.
 package parser

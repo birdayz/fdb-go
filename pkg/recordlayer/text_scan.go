@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
@@ -719,6 +720,33 @@ func textQueryCommonPrimaryKey(md *RecordMetaData, recordTypes []string) (KeyExp
 		}
 	}
 	return common, nil
+}
+
+// TextIndexLayout is what a query planner needs to know about a TEXT index.
+type TextIndexLayout struct {
+	// Current maintenance options; older postings can retain earlier versions.
+	Tokenizer        TextTokenizer
+	TokenizerVersion int
+	// TextPosition is the text column's position: the grouping column count.
+	TextPosition int
+	// TokenizedPrimaryKey: a primary-key component is trimmed into the text
+	// column, so an entry's token cannot fetch its record.
+	TokenizedPrimaryKey bool
+}
+
+// DescribeTextIndex reads a TEXT index's layout from its options and key.
+func DescribeTextIndex(index *Index) (TextIndexLayout, error) {
+	tokenizer, err := getTextTokenizer(index)
+	if err != nil {
+		return TextIndexLayout{}, err
+	}
+	version, err := getTextTokenizerVersion(index)
+	if err != nil {
+		return TextIndexLayout{}, err
+	}
+	layout := TextIndexLayout{Tokenizer: tokenizer, TokenizerVersion: version, TextPosition: textFieldPosition(index.RootExpression)}
+	layout.TokenizedPrimaryKey = slices.Contains(index.PrimaryKeyComponentPositions(), layout.TextPosition)
+	return layout, nil
 }
 
 // textMatchesTokenizer is TextScanPlanner.matchesTokenizer

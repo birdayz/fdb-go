@@ -9,35 +9,37 @@ import (
 	"fmt"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // TextScan encapsulates the information necessary to scan a text-based
 // index. Mirrors Java's `com.apple.foundationdb.record.query.plan.TextScan`.
 //
-// This descriptor supports equality, hashing and explain only; Go planners do not produce it.
-// recordlayer.TextScan is the executable Java TextScan port.
+// The typed fields are what the executor runs (through recordlayer.TextScan);
+// the string fields are descriptive and only TextComparison is explained.
 type TextScan struct {
+	Predicate *predicates.Comparison
+	KeyTypes  []values.Type
+	Grouping  []values.Value
+	Suffix    []*predicates.ComparisonRange
 	// IndexName is the name of the text index being scanned.
 	IndexName string
-	// GroupingComparisons is a human-readable description of the
-	// grouping-key prefix comparisons (may be empty).
+	// GroupingComparisons and SuffixComparisons describe the bounds; the
+	// Cascades planner leaves them empty.
 	GroupingComparisons string
-	// TextComparison is a human-readable description of the text
-	// comparison (e.g. "TEXT_CONTAINS_ALL 'hello world'").
-	TextComparison string
-	// SuffixComparisons is a human-readable description of the suffix
-	// comparisons (may be empty).
+	// TextComparison names the comparison; the planner sets its type symbol.
+	TextComparison    string
 	SuffixComparisons string
 }
 
 // RecordQueryTextIndexPlan executes a text index scan. Text indexes
 // work differently from regular indexes — the comparison on a query
 // might be split into multiple sub-scans that are intersected or
-// unioned. Mirrors Java's RecordQueryTextIndexPlan.
+// unioned. Mirrors Java's RecordQueryTextIndexPlan; the old planner's port is
+// recordlayer.TextIndexPlan, built by recordlayer.PlanTextQuery.
 //
-// This leaf descriptor is not produced by either cascades planner; executable behavior
-// lives in recordlayer.TextIndexPlan, built by PlanTextQuery like Java’s old planner.
+// It implements RecordQueryPlan as a leaf plan (no children).
 type RecordQueryTextIndexPlan struct {
 	PlanExprBase
 	indexName string
@@ -54,7 +56,7 @@ func NewRecordQueryTextIndexPlan(indexName string, textScan TextScan, flowedType
 	return &RecordQueryTextIndexPlan{
 		PlanExprBase: base,
 		indexName:    indexName,
-		textScan:     textScan,
+		textScan:     copyTextScan(textScan),
 		reverse:      reverse,
 	}, nil
 }
@@ -63,7 +65,25 @@ func NewRecordQueryTextIndexPlan(indexName string, textScan TextScan, flowedType
 func (p *RecordQueryTextIndexPlan) GetIndexName() string { return p.indexName }
 
 // GetTextScan returns the text scan descriptor.
-func (p *RecordQueryTextIndexPlan) GetTextScan() TextScan { return p.textScan }
+func (p *RecordQueryTextIndexPlan) GetTextScan() TextScan { return copyTextScan(p.textScan) }
+
+// WithTextScan returns a copy scanning with the given descriptor.
+func (p *RecordQueryTextIndexPlan) WithTextScan(scan TextScan) *RecordQueryTextIndexPlan {
+	cp := *p
+	cp.textScan = copyTextScan(scan)
+	return &cp
+}
+
+func copyTextScan(scan TextScan) TextScan {
+	scan.KeyTypes = append([]values.Type(nil), scan.KeyTypes...)
+	scan.Grouping = append([]values.Value(nil), scan.Grouping...)
+	scan.Suffix = append([]*predicates.ComparisonRange(nil), scan.Suffix...)
+	if scan.Predicate != nil {
+		comparison := *scan.Predicate
+		scan.Predicate = &comparison
+	}
+	return scan
+}
 
 // IsReverse reports the scan direction.
 func (p *RecordQueryTextIndexPlan) IsReverse() bool { return p.reverse }
@@ -73,12 +93,14 @@ func (p *RecordQueryTextIndexPlan) GetResultType() values.Type { return p.GetRes
 // GetChildren returns nil — text index scans are leaves.
 func (p *RecordQueryTextIndexPlan) GetChildren() []RecordQueryPlan { return nil }
 
-// structuralKey folds the text-scan identity: reverse flag, index name, and the
-// TextScan descriptor decomposed into its four string fields (the comparable
-// struct's `==` compared all four; folding each keeps that exact equality).
-// Drives both Equals and Hash.
+// structuralKey includes typed bounds, physical key types and comparison
+// metadata as well as the legacy explain fields. Equality and hashing share it.
 func (p *RecordQueryTextIndexPlan) structuralKey() *structuralKey {
-	return newStructuralKey().
+	k := newStructuralKey().Types(p.textScan.KeyTypes).Values(p.textScan.Grouping).ScanComps(p.textScan.Suffix)
+	if p.textScan.Predicate != nil {
+		k.Preds([]predicates.QueryPredicate{&predicates.ComparisonPredicate{Comparison: *p.textScan.Predicate}})
+	}
+	return k.
 		Bool(p.reverse).
 		Str(p.indexName).
 		Str(p.textScan.IndexName).
@@ -130,6 +152,22 @@ func (p *RecordQueryTextIndexPlan) WithQuantifiers(qs []expressions.Quantifier) 
 		return nil, err
 	}
 	return p, nil
+}
+
+// GetCorrelatedToWithoutChildren reports the bindings' correlations, such as
+// an IN join's element bound to a grouping column.
+func (p *RecordQueryTextIndexPlan) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	out := scanComparisonCorrelations(p.textScan.Suffix)
+	operands := append([]values.Value(nil), p.textScan.Grouping...)
+	if p.textScan.Predicate != nil {
+		operands = append(operands, p.textScan.Predicate.Operand)
+	}
+	for _, v := range operands {
+		for a := range values.GetCorrelatedToOfValue(v) {
+			out[a] = struct{}{}
+		}
+	}
+	return out
 }
 
 // GetRecordQueryPlan returns the plan itself.

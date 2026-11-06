@@ -11,6 +11,79 @@ live 4.14.2.0 in `just test-full` and PR CI's `conformance-java` job with a stal
 and the suite is green). Entries below that cite 4.12.11 record the previous pin;
 not every one has been re-measured on 4.14.2.0.
 
+## Full-text SQL and query execution
+
+Go exposes `CREATE FULLTEXT INDEX ... ON table(text_column) [PARTITION BY (...)]`
+and the seven `TEXT_CONTAINS_*` SQL functions as a Go extension. Java Relational
+4.14.2.0 has only the reserved `FULLTEXT` lexer token, not these parser productions
+or built-ins (checked against the exact `4.14.2.0` source tag). Existing schema
+macros retain precedence over `TEXT_CONTAINS_*` built-ins. With
+`CASE_SENSITIVE_IDENTIFIERS`, a same-casefold macro family reserves the name
+and exact spelling resolves the macro; a mismatched case is not a builtin
+escape. Without such a macro family, bare builtin names remain case-insensitive;
+quoted calls resolve only schema functions. SQL resolves its tokenizer name
+explicitly (default: `default`) at the tokenizer's maximum version. SQL text
+access requires matching name and version **0**: a current option above zero
+cannot prove all historical postings were rewritten. Such indexes retain record
+filtering, even when their option equals the tokenizer's maximum. SQL access also
+requires direct scalar key coordinates; nested, computed and fan-out keys retain
+record filtering rather than borrowing flattened column names. Metadata-created
+`NOT_NULL` text or grouping coordinates also retain record filtering: Java's
+`FieldKeyExpression.evaluateMessage` substitutes protobuf defaults for absent
+fields, while SQL reads those fields as NULL. Ordinary `NULL` and `NULL_UNIQUE`
+coordinates remain eligible; neither stored postings nor FULLTEXT DDL change.
+A quoted flat dotted column is one coordinate, not a nested path. Lower-level
+Record Layer comparisons retain Java's index-bound versus fallback tokenizer/version resolution. SQL sorting and
+residual filtering reuse the ordinary query operators above a text access path;
+Java's classic Record Layer text planner itself declines requested sorts.
+
+A SQL text plan executes through `recordlayer.TextScan`, the port of Java's
+`TextScan`: its posting scans, intersections, unions, probable intersection and
+position filters use the shared Record Layer algorithms and continuation encodings,
+subject to the bounded-range, comparison-key and unordered-identity boundaries in
+“TEXT queries” below. SQL equality on a grouping column can name several physical
+groups (a DOUBLE column's `-0.0` and `0.0`), so the grouping bindings feed a scan-range
+set with one `TextScan` per physical group, and the query continuation is that
+set's envelope around the group's `TextScan` continuation. A typed suffix range
+(never built by the SQL planner, as Java's `TextScanPlanner` never builds one)
+is applied by filtering whole-group postings in this executor. Lower-level Go
+`TextScan` also supports logical suffix bounds: it includes the predecessor bunch
+and filters decoded entries, unlike Java's physical-bunch bounds. The native
+fixture in `conformance/text_query_conformance_test.go` pins their different rows
+and same-engine resumes; see “TEXT logical suffix bounds” below. Matching bounded
+continuation framing does not promise cross-engine remaining rows or pages. A NaN
+equality on a FLOAT or DOUBLE partition column fails the text scan, as vector
+and aggregate partitions do, where record filtering would match the NaN group.
+SQL's `TEXT_CONTAINS_ALL_PREFIXES` is strict, so
+like Java's `RecordQueryPlanner` (`RecordQueryPlanner.java:1721-1728`) the
+plan keeps the predicate as a filter over the probable intersection, which
+can return false positives. Probabilistic tuning is not exposed (Java's
+`Text.containsAllPrefixes` defaults). A grouping column bound by an IN list or
+a join column runs the text scan once per outer row, as Java plans an IN list
+over a text index. SQL requires `TEXT_CONTAINS_ALL_WITHIN`'s distance to be
+positive: at distance 0 Java's `TextComparison.eval` never evicts its window
+(any distance matches) while its scan matches nothing, and Go's evaluation
+does the same. Residual evaluation is Java's `TextComparison.eval`: a
+prefix comparand that is not exactly one token (`''`) fails there, while the
+text scan returns no records for it, as in Java. Both implementations retain Java's
+permissive positional treatment of known-present tokens with omitted position
+lists; such a raw positional scan is not an exact occurrence proof. Planner
+eligibility declines those positional/prefix-set access paths for indexes with
+positions omitted. SQL PHRASE and ALL_WITHIN also keep an original-text residual
+when positions are enabled: current metadata cannot certify historical postings
+written with omission enabled. Original text is fetched, not reconstructed as a covering
+string from tokens. Existing
+persisted TEXT layout, tokenizer versions and the Unicode segmentation
+limitations are unchanged. Text access paths whose tokenized column is also a
+trimmed primary-key component are declined because the original key cannot be
+recovered from a token; raw text plans error and FULLTEXT DDL rejects that shape.
+Existing maintenance keys are not rewritten. The live Java 4.14.2.0
+`probeTextPrimaryKeyOverlap` conformance regression confirms that Java also
+extracts the token instead of the original PK text and that both direct fetch
+and its `TISCAN` plan fail with `RecordCoreStorageException`; Java does not
+provide a supported reconstruction being deferred here. Optional compatibility
+and migration work is tracked in TODO.md. See [full-text boundaries](docs/compatibility.md#full-text-queries).
+
 ## Record-load strategy
 
 Go implements Java 4.14.2.0's default `SplitHelper.loadWithSplit` range read,

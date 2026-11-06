@@ -310,6 +310,7 @@ go_test(
         "index_state_peek_test.go",
         "index_state_test.go",
         "index_test.go",
+        "index_text_duplicates_test.go",
         "index_type_alias_test.go",
         "index_validation_test.go",
         "indexing_heartbeat_admin_test.go",

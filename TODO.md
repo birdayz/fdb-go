@@ -3563,3 +3563,52 @@ these claims; the implementation notes below are not controlled comparisons.
   combination again (exporter default on). Re-measure message-transaction
   conflicts and throughput with paired provenance; the scope regression does
   not establish a performance result.
+
+## TEXT primary-key overlap boundary
+
+- [ ] Optional Go extension: establish a wire-compatible retrieval and migration
+  policy for TEXT indexes
+  whose tokenized field is also a trimmed primary-key component. Normal metadata
+  position derivation can place that PK component at the token column, which no
+  longer contains the original string; do not fetch a record using the token as
+  its primary key or silently change existing maintenance keys. Query planning
+  currently declines this access path, executable text plans return a typed
+  error, and Go FULLTEXT DDL rejects the shape. Regression guards are
+  `TestIntegrationTextRejectsPrimaryKeyTrimmedIntoToken` and
+  `TestFullTextDDLDeclinesTokenizedPrimaryKey`. Ordinary record filtering remains
+  available. This is not a deferred Java-supported retrieval feature: the live
+  Java 4.14.2.0 `probeTextPrimaryKeyOverlap` regression in
+  `conformance/text_index_conformance.java` pins stored PK `(\"red blue\",1)`
+  versus extracted `(\"red\",1)`, and confirms both direct fetch and Java
+  `TISCAN` fail with `RecordCoreStorageException`. Compatibility of a different
+  persisted representation is not proven.
+
+## TEXT SQL access paths
+
+- [ ] Recover and diagnose the historical RFC-258 fail-on-scan-limit failure
+  cited during PR #1025 validation. The named conformance case is
+  `matches writes outside the range and fail-on-scan-limit` in
+  `conformance/index_remote_fetch_conformance_test.go`; the failing assertion,
+  fetch method, original output and cause have not been recovered. PR CI runs
+  41599086248 and 41607664254 do not contain that failure; the retained local
+  log was overwritten by a passing run. Recover the original full-lane log/BEP
+  or session evidence, then add a deterministic regression or fix. A rerun pass
+  does not establish that this failure was unrelated or fixed.
+
+- [ ] Text access with an unbound grouping column (`PARTITION BY (tenant, shard)`
+  queried with `tenant = ?` only). Correct execution needs the distinct values
+  of the unbound column under the bound prefix: a skip scan over the TEXT index
+  (one limit-1 range read past each `(tenant, shard)` prefix), then one
+  `TextScan` per group, as the IN-list path already does. It costs a read per
+  group and a read-conflict range over the whole prefix, so the planner would
+  need a group-count estimate to prefer it over record filtering. Today such a
+  query falls back to record filtering; an IN list over the column is planned
+  as a text access.
+- [x] `TextScan` logical suffix bounds include the predecessor bunch and filter
+  decoded entries at both endpoints (`bunched_map_iterator.go`). The native
+  fixture in `conformance/text_query_conformance_test.go` pins Go's logical rows
+  versus Java 4.14.2.0's physical-bunch rows, including same-engine page resumes.
+  Bounded continuations are not a cross-engine remaining-row/page contract; see
+  DIVERGENCES.md, “TEXT logical suffix bounds”. The SQL executor retains its
+  whole-group filtering path for caller-built typed suffix plans; SQL planning
+  does not currently produce suffix bounds.

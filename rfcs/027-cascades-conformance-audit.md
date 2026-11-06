@@ -192,7 +192,7 @@ rungs; RFC-190 removed the non-transitive sort gates. See the live table in `DIV
 | `PredicateWithValueAndRanges` | `PredicateWithValueAndRanges` | Aligned |
 | `RangeConstraints` | `RangeConstraints` | Aligned |
 
-**Comparison operators:** 24/24 aligned. 13 core + 7 TEXT_CONTAINS_* + 3 DISTANCE_RANK_* + SORT. Text/rank/vector eval stubs return UNKNOWN (full evaluation requires index infrastructure).
+**Comparison operators:** 24/24 aligned. 13 core + 7 TEXT_CONTAINS_* + 3 DISTANCE_RANK_* + SORT. TEXT comparisons use Record Layer-backed exact residual evaluation, including record-filter plans without a TEXT index. Rank/vector eval stubs return UNKNOWN (full evaluation requires index infrastructure).
 
 **Matching infrastructure:**
 | Component | Status |

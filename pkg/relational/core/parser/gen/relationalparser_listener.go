@@ -106,6 +106,9 @@ type RelationalParserListener interface {
 	// EnterVectorIndexDefinition is called when entering the vectorIndexDefinition production.
 	EnterVectorIndexDefinition(c *VectorIndexDefinitionContext)
 
+	// EnterTextIndexDefinition is called when entering the textIndexDefinition production.
+	EnterTextIndexDefinition(c *TextIndexDefinitionContext)
+
 	// EnterVectorEngine is called when entering the vectorEngine production.
 	EnterVectorEngine(c *VectorEngineContext)
 
@@ -954,6 +957,9 @@ type RelationalParserListener interface {
 
 	// ExitVectorIndexDefinition is called when exiting the vectorIndexDefinition production.
 	ExitVectorIndexDefinition(c *VectorIndexDefinitionContext)
+
+	// ExitTextIndexDefinition is called when exiting the textIndexDefinition production.
+	ExitTextIndexDefinition(c *TextIndexDefinitionContext)
 
 	// ExitVectorEngine is called when exiting the vectorEngine production.
 	ExitVectorEngine(c *VectorEngineContext)
