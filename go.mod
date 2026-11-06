@@ -7,7 +7,7 @@ require (
 	charm.land/fang/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.1
 	github.com/ClickHouse/clickhouse-go/v2 v2.43.0
-	github.com/andybalholm/brotli v1.2.0
+	github.com/andybalholm/brotli v1.2.7
 	github.com/antlr4-go/antlr/v4 v4.13.1
 	github.com/apple/foundationdb/bindings/go v0.0.0-20250702211439-37fcf1c8ce08
 	github.com/bazelbuild/rules_go v0.64.2
