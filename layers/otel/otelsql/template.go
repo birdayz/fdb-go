@@ -29,6 +29,12 @@ const MaxIndexedStringBytes = 1024
 // TemplateBody follows CREATE SCHEMA TEMPLATE <name>; storage and fidelity
 // contracts are in docs/compatibility.md "OTel SQL schema foundation". It is
 // what Java builds too: TemplateDDL adds the Go-only TemplateOverlay.
+//
+// The DDL front end orders unindexed tables first and the others by their last
+// index clause, and a table's record type key, which its record keys begin
+// and its index keys end with, is its position. Every table is indexed so spans
+// keep key 0, one byte (TestTemplateRecordTypeKeys); store_meta_name exists
+// for that.
 const TemplateBody = `CREATE TYPE AS STRUCT str_attr (scope STRING, attr_key STRING, str_value STRING)
 CREATE TYPE AS STRUCT long_str_attr (scope STRING, attr_key STRING, digest BYTES, str_value STRING)
 CREATE TYPE AS STRUCT int_attr (scope STRING, attr_key STRING, int_value BIGINT)
@@ -101,6 +107,7 @@ CREATE INDEX logs_event AS SELECT event_name, effective_ns, event_id, trace_id, 
 CREATE TABLE message_traces (writer BIGINT, seq BIGINT, trace_id BYTES, PRIMARY KEY (writer, seq, trace_id))
 CREATE INDEX message_traces_trace AS SELECT trace_id, writer, seq FROM message_traces ORDER BY trace_id, writer, seq
 CREATE TABLE store_meta (name STRING, int_value BIGINT, bytes_value BYTES, str_value STRING, PRIMARY KEY (name))
+CREATE INDEX store_meta_name AS SELECT name FROM store_meta ORDER BY name
 CREATE TABLE messages (writer BIGINT, seq BIGINT, part BIGINT, content_hash BYTES, role STRING, content STRING,
   token_offset BIGINT, raw BYTES, encoding STRING, raw_bytes BIGINT, parts BIGINT, unindexed_tokens BIGINT,
   large BIGINT ARRAY, shard BIGINT, PRIMARY KEY (writer, seq, part))

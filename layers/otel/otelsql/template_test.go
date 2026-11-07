@@ -15,6 +15,30 @@ import (
 	"google.golang.org/protobuf/reflect/protodesc"
 )
 
+// Record type keys are table positions and lead every record key (and end
+// every index key), so a table added or left unindexed must not move spans
+// off key 0, the one-byte encoding every span key pays.
+func TestTemplateRecordTypeKeys(t *testing.T) {
+	t.Parallel()
+	md := templateMetaData(t)
+	want := map[string]int64{"SPANS": 0, "LOGS": 1, "MESSAGE_TRACES": 2, "STORE_META": 3, "MESSAGES": 4}
+	if len(md.RecordTypes()) != len(want) {
+		t.Fatalf("%d tables, want %d", len(md.RecordTypes()), len(want))
+	}
+	for name, key := range want {
+		rt := md.GetRecordType(name)
+		if rt == nil {
+			t.Fatalf("no table %s", name)
+		}
+		if got, ok := rt.GetRecordTypeKey().(int64); !ok || got != key {
+			t.Errorf("%s record type key %v, want %d", name, rt.GetRecordTypeKey(), key)
+		}
+		if len(rt.GetIndexes()) == 0 {
+			t.Errorf("%s has no index: the DDL front end would order it first", name)
+		}
+	}
+}
+
 // TemplateDDL is TemplateBody (which Java builds, the rfc204 golden) plus the
 // overlay's one TEXT index, appended last: the same records descriptor and
 // the same indexes and versions otherwise, so the golden covers the store
@@ -41,7 +65,7 @@ func TestTemplateOverlay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(bp.GetIndexes()) != 19 || len(fp.GetIndexes()) != 20 || bp.GetVersion() != 20 || fp.GetVersion() != 21 {
+	if len(bp.GetIndexes()) != 20 || len(fp.GetIndexes()) != 21 || bp.GetVersion() != 21 || fp.GetVersion() != 22 {
 		t.Fatalf("indexes %d/%d, versions %d/%d", len(bp.GetIndexes()), len(fp.GetIndexes()), bp.GetVersion(), fp.GetVersion())
 	}
 	byName := map[string]*gen.Index{}
@@ -58,7 +82,7 @@ func TestTemplateOverlay(t *testing.T) {
 	// No tokenizer option: the default tokenizer at version 0, which Java has.
 	_, named := opts[recordlayer.IndexOptionTextTokenizerName]
 	_, versioned := opts[recordlayer.IndexOptionTextTokenizerVersion]
-	if text.GetAddedVersion() != 21 || text.GetType() != recordlayer.IndexTypeText || named || versioned || strings.Contains(TemplateDDL(), MessageTokenizerName) {
+	if text.GetAddedVersion() != 22 || text.GetType() != recordlayer.IndexTypeText || named || versioned || strings.Contains(TemplateDDL(), MessageTokenizerName) {
 		t.Fatalf("overlay index %v, options %v", text, opts)
 	}
 	if f.GetRecordType("MESSAGES") == nil || len(f.GetRecordType("MESSAGES").GetIndexes()) != 3 {
