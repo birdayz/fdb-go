@@ -1,6 +1,6 @@
 # Replace the custom OTel store with OTEL_V1 relational tenant stores
 
-**Status:** Accepted implementation plan (2026-11-07), with every §7 owner decision (D1–D11) taken as recommended. Phases 0–2 are implemented and measured (G2A and the R1/R4 message measurements in the benchmark doc). Phase 3A (cutover) is implemented: `otel.Exporter` is the relational store, `ExporterConfig` is trimmed per D2 and equality is typed per D1; the G3 receipts are in the benchmark doc. Phase 3B (deletion) is not started; `FDBBackend` survives only behind `otelbench --backend fdb`.
+**Status:** Accepted implementation plan (2026-11-07), with every §7 owner decision (D1–D11) taken as recommended. Phases 0–2 are implemented and measured (G2A and the R1/R4 message measurements in the benchmark doc). Phase 3A (cutover) is implemented: `otel.Exporter` is the relational store, `ExporterConfig` is trimmed per D2 and equality is typed per D1. G3 (benchmark doc, "Gate G3"): every collector-bench query class is within 1.10× at p50 except `fts_single_token` (1.53×), message persist wall is 1.39× while ingest is 0.90× wall and 0.89× CPU, and `TestRunBenchmarkRealFDB` passes. Phase 3B (deletion) is not started; `FDBBackend` survives only behind `otelbench --backend fdb`.
 
 **Base:** branch `otel/relational-store` (draft PR #1035). Line citations are against that tree.
 
