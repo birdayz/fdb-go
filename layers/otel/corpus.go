@@ -263,23 +263,6 @@ func oracleTraceSort(out []SpanHit) {
 	}
 }
 
-func sortedHits(m map[string]int64, k int) []Hit {
-	out := make([]Hit, 0, len(m))
-	for tr, t := range m {
-		out = append(out, Hit{tr, t})
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Latest != out[j].Latest {
-			return out[i].Latest > out[j].Latest
-		}
-		return out[i].Trace > out[j].Trace
-	})
-	if len(out) > k {
-		out = out[:k]
-	}
-	return out
-}
-
 func ExpectedTrace(c Config, trace string) []SpanHit {
 	out, _ := ExpectedTraceContext(context.Background(), c, trace)
 	return out
@@ -355,10 +338,6 @@ func (s *ordinalSet) add(i, n int) error {
 	s.bits[i/64] |= mask
 	s.count++
 	return nil
-}
-
-func fixtureOrdinal(c Config, s Span) (int, bool) {
-	return s.Ordinal, s.Ordinal >= 0 && s.Ordinal < c.Count
 }
 
 func corpusIdentity(c Config) string {
