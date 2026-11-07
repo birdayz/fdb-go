@@ -1,6 +1,7 @@
 package otel
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"reflect"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	"google.golang.org/protobuf/proto"
@@ -327,6 +329,52 @@ func TestRelLogRowDecodeRejectsDisagreement(t *testing.T) {
 		damage(&p)
 		_, err := decodeLogRow("test", p.row)
 		requireTyped[*CorruptionError](t, name, err)
+	}
+}
+
+// Every arm of logEntryAt: the identity columns of an attribute entry
+// (scope, key, value, effective_ns, event_id, trace_id, span_id, pk...).
+func TestRelLogEntryAt(t *testing.T) {
+	t.Parallel()
+	s := lrUnitStore(t)
+	idx := s.index[relLogStr].idx
+	tr, sp := qaBytes(t, qaID(1, 16)), qaBytes(t, qaID(2, 8))
+	entry := func(cols ...tuple.TupleElement) *recordlayer.IndexEntry {
+		key := append(tuple.Tuple{"log", "k", "v"}, cols...)
+		return recordlayer.NewIndexEntry(idx, key, nil, tuple.Tuple{int64(3), "ev"})
+	}
+	for name, c := range map[string]struct {
+		e    *recordlayer.IndexEntry
+		want relLogEntry
+	}{
+		"correlated":   {entry(int64(5), "ev", tr, sp), relLogEntry{eventID: "ev", effective: 5, trace: tr, span: sp}},
+		"trace only":   {entry(int64(5), "ev", tr, nil), relLogEntry{eventID: "ev", effective: 5, trace: tr}},
+		"uncorrelated": {entry(int64(5), "ev", nil, nil), relLogEntry{eventID: "ev", effective: 5}},
+	} {
+		got, err := logEntryAt("test", c.e, 3, [4]int{0, 1, 2, 3})
+		c.want.pk = tuple.Tuple{int64(3), "ev"}
+		if err != nil || !reflect.DeepEqual(got, c.want) {
+			t.Fatalf("%s: %+v %v", name, got, err)
+		}
+	}
+	for name, e := range map[string]*recordlayer.IndexEntry{
+		"short":          entry(int64(5), "ev", tr),
+		"time type":      entry("5", "ev", tr, sp),
+		"id type":        entry(int64(5), int64(1), tr, sp),
+		"short trace":    entry(int64(5), "ev", tr[:15], sp),
+		"zero trace":     entry(int64(5), "ev", make([]byte, 16), sp),
+		"trace type":     entry(int64(5), "ev", "trace", sp),
+		"short span":     entry(int64(5), "ev", tr, sp[:7]),
+		"zero span":      entry(int64(5), "ev", tr, make([]byte, 8)),
+		"span w/o trace": entry(int64(5), "ev", nil, sp),
+	} {
+		_, err := logEntryAt("test", e, 3, [4]int{0, 1, 2, 3})
+		requireTyped[*CorruptionError](t, name, err)
+	}
+	// LOGS_TRACE's order: (trace_id, span_id, effective_ns, event_id).
+	got, err := logEntryAt("test", recordlayer.NewIndexEntry(s.index[relLogTrace].idx, tuple.Tuple{tr, nil, int64(9), "x"}, nil, nil), 0, [4]int{2, 3, 0, 1})
+	if err != nil || got.eventID != "x" || got.effective != 9 || !bytes.Equal(got.trace, tr) || got.span != nil {
+		t.Fatalf("trace order: %+v %v", got, err)
 	}
 }
 
