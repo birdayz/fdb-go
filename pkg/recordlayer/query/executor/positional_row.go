@@ -118,13 +118,19 @@ func (r *PositionalRow) AttachOrdinalLayout(layout values.OrdinalLayout, carrier
 	if err != nil {
 		return nil, err
 	}
+	return r.attachCheckedLayout(layout, widenTo), nil
+}
+
+// attachCheckedLayout is AttachOrdinalLayout past checkLayoutAttachable,
+// whose verdict widenTo is: the nullable carrier type the row takes, or nil.
+func (r *PositionalRow) attachCheckedLayout(layout values.OrdinalLayout, widenTo *values.RecordType) *PositionalRow {
 	if widenTo != nil {
 		// The row takes the carrier's nullable type (checkLayoutAttachable).
 		copyRow := *r
 		copyRow.Slots = append([]any(nil), r.Slots...)
 		copyRow.Type = widenTo
 		copyRow.Layout = layout
-		return r.finishAttach(&copyRow, layout), nil
+		return r.finishAttach(&copyRow, layout)
 	}
 	// The identity fast path returns the row WITHOUT going through finishAttach,
 	// and that is presence-EQUIVALENT rather than presence-skipping: finishAttach
@@ -141,12 +147,12 @@ func (r *PositionalRow) AttachOrdinalLayout(layout values.OrdinalLayout, carrier
 	// the reflexivity argument but never sets LayoutPresence, so it survives that
 	// mutation and is not the guard; cite these two.
 	if r.Layout == layout {
-		return r, nil
+		return r
 	}
 	copyRow := *r
 	copyRow.Slots = append([]any(nil), r.Slots...)
 	copyRow.Layout = layout
-	return r.finishAttach(&copyRow, layout), nil
+	return r.finishAttach(&copyRow, layout)
 }
 
 // finishAttach applies the layout to target and settles presence. r is the row

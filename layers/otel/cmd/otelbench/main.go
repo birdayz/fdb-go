@@ -12,6 +12,7 @@ import (
 
 	"fdb.dev/layers/otel"
 	"fdb.dev/layers/otel/collector"
+	"fdb.dev/layers/otel/sqlbackend"
 )
 
 // runCollectorBenchmark is the collector-bench entry point; tests replace it.
@@ -21,9 +22,15 @@ var runCollectorBenchmark = func(ctx context.Context, cfg collector.CollectorBen
 
 type backendOpener func(context.Context, otel.Config, string, string) (otel.Backend, error)
 
+// sqlOptions are the --sql-* flags, read by openBackend for the sql backend.
+var sqlOptions = sqlbackend.Options{Ingest: sqlbackend.IngestDirect, Query: sqlbackend.QuerySQL, PageRows: sqlbackend.DefaultPageRows}
+
 func openBackend(ctx context.Context, c otel.Config, cluster, chURL string) (otel.Backend, error) {
 	if c.Backend == "fdb" {
 		return otel.OpenFDBContext(ctx, c, cluster)
+	}
+	if c.Backend == "sql" {
+		return sqlbackend.Open(ctx, c, cluster, sqlOptions)
 	}
 	return otel.OpenCHContext(ctx, c, chURL, c.Backend == "ch-attrs")
 }
@@ -41,7 +48,10 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 	var backend, mode, cluster, chURL, output, suite, revision string
 	var confirm bool
 	var timeout time.Duration
-	flags.StringVar(&backend, "backend", "", "required: fdb, ch-map, or ch-attrs")
+	flags.StringVar(&backend, "backend", "", "required: fdb, sql, ch-map, or ch-attrs")
+	flags.StringVar(&sqlOptions.Ingest, "sql-ingest", sqlOptions.Ingest, "sql backend ingest: direct (Record Layer saves into the OTEL_V1 schema stores) or insert (SQL INSERT)")
+	flags.StringVar(&sqlOptions.Query, "sql-query", sqlOptions.Query, "sql backend queries: sql (through the SQL driver) or direct (Record Layer scans of the same OTEL_V1 indexes)")
+	flags.IntVar(&sqlOptions.PageRows, "sql-page-rows", sqlOptions.PageRows, "sql backend: scanned rows per SQL page (EXECUTION_SCANNED_ROWS_LIMIT); negative is unbounded")
 	flags.StringVar(&mode, "mode", "", "required: ingest, query, audit, drop, or collector-bench (fdb only)")
 	flags.StringVar(&c.Run, "run", "", "required fresh owned namespace [a-z0-9_]{8,48}; no destructive default")
 	flags.Uint64Var(&c.Seed, "seed", c.Seed, "deterministic corpus seed")
@@ -98,7 +108,7 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 		return 2
 	}
 	collectorBench := mode == "collector-bench" && backend == "fdb"
-	if flags.NArg() != 0 || timeout <= 0 || (mode != "ingest" && mode != "query" && mode != "audit" && mode != "drop" && !collectorBench) || backend != "fdb" && backend != "ch-map" && backend != "ch-attrs" {
+	if flags.NArg() != 0 || timeout <= 0 || (mode != "ingest" && mode != "query" && mode != "audit" && mode != "drop" && !collectorBench) || backend != "fdb" && backend != "sql" && backend != "ch-map" && backend != "ch-attrs" {
 		fmt.Fprintln(stderr, "explicit valid backend/mode required; see -help")
 		return 2
 	}
