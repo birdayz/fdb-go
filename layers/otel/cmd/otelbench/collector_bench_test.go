@@ -106,6 +106,21 @@ func TestExecuteCollectorBenchFlags(t *testing.T) {
 	}
 }
 
+func TestExecuteCollectorBenchQueryOnly(t *testing.T) {
+	calls := stubCollectorBench(t, nil)
+	args := collectorBenchArgs("--query-only", "--query-classes=fts_single_token,trace_graph_traversal", "-iterations=500", "-output="+filepath.Join(t.TempDir(), "bench.json"))
+	var stdout, stderr bytes.Buffer
+	if code := execute(args, &stdout, &stderr, nil); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, &stderr)
+	}
+	want := collector.DefaultCollectorBenchConfig()
+	want.ClusterFile, want.Run, want.Revision = "/nonexistent/fdb.cluster", "cli_bench_run", "test-revision"
+	want.QueryOnly, want.QueryClasses, want.QueryIterations = true, "fts_single_token,trace_graph_traversal", 500
+	if len(*calls) != 1 || (*calls)[0] != want {
+		t.Fatalf("runner calls %+v, want %+v", *calls, want)
+	}
+}
+
 func TestExecuteCollectorBenchExplicitTimeout(t *testing.T) {
 	calls := stubCollectorBench(t, nil)
 	var stdout, stderr bytes.Buffer
@@ -164,6 +179,8 @@ func TestExecuteCollectorBenchRejections(t *testing.T) {
 		collectorBenchArgs("--consumers=-1"),
 		collectorBenchArgs("--consumers=65"),
 		collectorBenchArgs("--enable-message-fts=bad"),
+		collectorBenchArgs("--query-only", "--duration=10m"),
+		collectorBenchArgs("--query-classes=fts_bogus"),
 		collectorBenchArgs("positional"),
 	} {
 		path := filepath.Join(t.TempDir(), "bench.json")
