@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"sync"
 
+	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/recordlayer"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -51,8 +52,8 @@ var (
 // recordFile describes Envelope plus message records/references when enabled;
 // optional envelope fidelity is separate from the producer’s OTLP namespace.
 func recordFile(messages string) (protoreflect.FileDescriptor, error) {
-	if messages != messagesNone && messageTokenizerRegistrationError != nil {
-		return nil, wrap("config", "message tokenizer registration", messageTokenizerRegistrationError)
+	if err := otelsql.MessageTokenizerRegistrationError(); messages != messagesNone && err != nil {
+		return nil, wrap("config", "message tokenizer registration", err)
 	}
 	descriptorOnce.Do(func() {
 		field := func(name string, n int32, t descriptorpb.FieldDescriptorProto_Type) *descriptorpb.FieldDescriptorProto {

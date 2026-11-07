@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -463,7 +464,7 @@ func TestMessageSegments(t *testing.T) {
 	if err != nil || len(segs) != 1 || segs[0].text != small || segs[0].offset != 0 || unindexed != 0 {
 		t.Fatalf("small text: %d segments, %v", len(segs), err)
 	}
-	tok := messageTokenizer{}
+	tok := otelsql.MessageTokenizer{}
 	// A segment's postings are the TEXT index entries it adds.
 	if m, err := tok.TokenizeToMap(small, 0, recordlayer.TokenizerModeIndex); err != nil || segs[0].postings != len(m) {
 		t.Fatalf("small text: %d postings, want %d (%v)", segs[0].postings, len(m), err)
