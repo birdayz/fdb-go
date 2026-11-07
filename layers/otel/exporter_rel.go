@@ -40,8 +40,8 @@ type relMessageHooks interface {
 	close()
 }
 
-// relLogStore is the logs of a tenant store (stream 2B, logs_rel.go).
-type relLogStore interface {
+// relLogs is the logs of a tenant store (*relLogStore, logs_rel.go).
+type relLogs interface {
 	ExportLogs(ctx context.Context, logs []LogRecord) (LogExportStats, error)
 	QueryLogsByTrace(ctx context.Context, traceID, spanID string) ([]LogRecord, error)
 	QueryLogsByAttribute(ctx context.Context, a Attribute, limit int) ([]LogRecord, error)
@@ -52,8 +52,8 @@ type relParts struct {
 	// messages builds the message hooks when cfg enables messages; without
 	// it such a config is refused.
 	messages func(s *tenantStore, cfg ExporterConfig) (relMessageHooks, error)
-	// logs builds the log store; without it log calls are refused.
-	logs func(s *tenantStore, cfg ExporterConfig) (relLogStore, error)
+	// logs builds the log store; nil is newRelLogStore.
+	logs func(s *tenantStore, cfg ExporterConfig) (relLogs, error)
 	// newDatabase wraps the FDB handle; nil is recordlayer.NewFDBDatabase.
 	newDatabase func(fdb.Database) *recordlayer.FDBDatabase
 }
@@ -68,7 +68,7 @@ type relExporter struct {
 	reader   *SpanReader
 	writer   *SpanWriter
 	messages relMessageHooks // nil when messages are off
-	logs     relLogStore     // nil until stream 2B supplies it
+	logs     relLogs
 	// txnSlots holds one token per in-flight write transaction.
 	txnSlots chan struct{}
 
@@ -134,7 +134,10 @@ func newRelExporter(ctx context.Context, cfg ExporterConfig, parts relParts) (*r
 			return abort(err)
 		}
 	}
-	if parts.logs != nil {
+	if parts.logs == nil {
+		parts.logs = func(s *tenantStore, cfg ExporterConfig) (relLogs, error) { return newRelLogStore(s, cfg) }
+	}
+	{
 		if e.logs, err = parts.logs(store, cfg); err != nil {
 			if e.messages != nil {
 				e.messages.close()
@@ -303,7 +306,7 @@ func (e *relExporter) TraverseTraceGraph(ctx context.Context, traceID string) (T
 }
 
 // logStore is the log store, or a config error until stream 2B supplies one.
-func (e *relExporter) logStore(op string) (relLogStore, error) {
+func (e *relExporter) logStore(op string) (relLogs, error) {
 	if e.logs == nil {
 		return nil, fail("config", op, "logs are not yet supported on the relational store")
 	}
