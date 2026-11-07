@@ -191,7 +191,7 @@ func (tr Transaction) GetRangeSplitPoints(r ExactRange, chunkSize int64) FutureK
 
 // Snapshot returns a Snapshot view of this transaction.
 func (tr Transaction) Snapshot() ReadTransaction {
-	return Snapshot{s: &snapshot{tx: tr.t}}
+	return Snapshot{tx: tr.t}
 }
 
 // Set sets a key-value pair in the database.
@@ -299,6 +299,10 @@ func (tr Transaction) AppendIfFits(key KeyConvertible, param []byte) {
 	tr.t.inner.Atomic(client.MutAppendIfFits, key.FDBKey(), param)
 }
 
+func (tr Transaction) AppendIfFitsBytes(key, param []byte) {
+	tr.t.inner.Atomic(client.MutAppendIfFits, key, param)
+}
+
 func (tr Transaction) CompareAndClear(key KeyConvertible, param []byte) {
 	tr.t.inner.Atomic(client.MutCompareAndClear, key.FDBKey(), param)
 }
@@ -364,10 +368,19 @@ func (tr Transaction) AddReadConflictRange(er ExactRange) error {
 	return convertError(tr.t.inner.AddReadConflictRange(begin.FDBKey(), end.FDBKey()))
 }
 
+func (tr Transaction) AddReadConflictRangeBytes(begin, end []byte) error {
+	return convertError(tr.t.inner.AddReadConflictRange(begin, end))
+}
+
 // AddReadConflictKey adds a read conflict on a single key. It returns nil; an illegal key
 // defers key_outside_legal_range as AddReadConflictRange does.
 func (tr Transaction) AddReadConflictKey(key KeyConvertible) error {
 	tr.t.inner.AddReadConflictKey(key.FDBKey())
+	return nil
+}
+
+func (tr Transaction) AddReadConflictKeyBytes(key []byte) error {
+	tr.t.inner.AddReadConflictKey(key)
 	return nil
 }
 
@@ -379,9 +392,18 @@ func (tr Transaction) AddWriteConflictRange(er ExactRange) error {
 	return convertError(tr.t.inner.AddWriteConflictRange(begin.FDBKey(), end.FDBKey()))
 }
 
+func (tr Transaction) AddWriteConflictRangeBytes(begin, end []byte) error {
+	return convertError(tr.t.inner.AddWriteConflictRange(begin, end))
+}
+
 // AddWriteConflictKey adds a write conflict on a single key.
 func (tr Transaction) AddWriteConflictKey(key KeyConvertible) error {
 	tr.t.inner.AddWriteConflictKey(key.FDBKey())
+	return nil
+}
+
+func (tr Transaction) AddWriteConflictKeyBytes(key []byte) error {
+	tr.t.inner.AddWriteConflictKey(key)
 	return nil
 }
 

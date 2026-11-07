@@ -120,13 +120,18 @@ type WritableTransaction interface {
 	AddBytes(key, param []byte)
 	MaxBytes(key, param []byte)
 	MinBytes(key, param []byte)
+	AppendIfFitsBytes(key, param []byte)
 	CompareAndClearBytes(key, param []byte)
 
 	// Conflict ranges
 	AddReadConflictRange(er ExactRange) error
+	AddReadConflictRangeBytes(begin, end []byte) error
 	AddReadConflictKey(key KeyConvertible) error
+	AddReadConflictKeyBytes(key []byte) error
 	AddWriteConflictRange(er ExactRange) error
+	AddWriteConflictRangeBytes(begin, end []byte) error
 	AddWriteConflictKey(key KeyConvertible) error
+	AddWriteConflictKeyBytes(key []byte) error
 
 	// Transaction lifecycle
 	Commit() FutureNil

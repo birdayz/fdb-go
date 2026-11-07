@@ -1227,7 +1227,23 @@ func (tx *simTxn) ClearBytes(key []byte)              { tx.Clear(fdb.Key(key)) }
 func (tx *simTxn) AddBytes(key, param []byte)         { tx.Add(fdb.Key(key), param) }
 func (tx *simTxn) MaxBytes(key, param []byte)         { tx.Max(fdb.Key(key), param) }
 func (tx *simTxn) MinBytes(key, param []byte)         { tx.Min(fdb.Key(key), param) }
+func (tx *simTxn) AppendIfFitsBytes(key, p []byte)    { tx.AppendIfFits(fdb.Key(key), p) }
 func (tx *simTxn) CompareAndClearBytes(key, p []byte) { tx.CompareAndClear(fdb.Key(key), p) }
+func (tx *simTxn) AddReadConflictRangeBytes(b, e []byte) error {
+	return tx.AddReadConflictRange(fdb.KeyRange{Begin: fdb.Key(b), End: fdb.Key(e)})
+}
+
+func (tx *simTxn) AddReadConflictKeyBytes(key []byte) error {
+	return tx.AddReadConflictKey(fdb.Key(key))
+}
+
+func (tx *simTxn) AddWriteConflictRangeBytes(b, e []byte) error {
+	return tx.AddWriteConflictRange(fdb.KeyRange{Begin: fdb.Key(b), End: fdb.Key(e)})
+}
+
+func (tx *simTxn) AddWriteConflictKeyBytes(key []byte) error {
+	return tx.AddWriteConflictKey(fdb.Key(key))
+}
 
 // ---- conflict ranges ------------------------------------------------------------------
 

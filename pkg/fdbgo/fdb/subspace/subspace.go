@@ -115,7 +115,10 @@ func (s subspace) String() string {
 }
 
 func (s subspace) Sub(el ...tuple.TupleElement) Subspace {
-	return subspace{concat(s.Bytes(), tuple.Tuple(el).Pack()...)}
+	if len(el) == 1 {
+		return subspace{tuple.Pack1WithPrefix(s.rawPrefix, el[0])}
+	}
+	return subspace{tuple.Tuple(el).PackWithPrefix(s.rawPrefix)}
 }
 
 func (s subspace) Bytes() []byte {

@@ -412,6 +412,7 @@ type Transaction struct {
 	// are the write map's node flags (conflict_map.go); rywConflictSize is what
 	// GetApproximateSize charges for them, as it would for the lists.
 	readMap          pseq[rywRange]
+	readMapFinger    pfinger[rywRange]
 	rywConflictSize  int64
 	conflictBuf      []byte       // backing store for conflict keys and mutation operands
 	conflictBufOwner *conflictBuf // pool handle, avoids alloc on Put
@@ -582,6 +583,9 @@ type Transaction struct {
 	// mutations that haven't been committed yet.
 	ryw rywCache
 
+	// rangeReadPanics is used when db is nil (unit tests and benchmarks).
+	rangeReadPanics panicBackstop
+
 	// conflictingKeys is TransactionState::conflictingKeys: replaced by each in-band
 	// conflict reply (NativeAPI.actor.cpp:6700-6717), kept across reset and OnError
 	// (cloneAndReset, :3531), read by \xff\xff/transaction/conflicting_keys/.
@@ -617,8 +621,8 @@ func (tx *Transaction) deadlineTime() time.Time { return time.Unix(0, tx.deadlin
 // Snapshot returns a snapshot view of this transaction.
 // Snapshot reads do not add read conflict ranges, so they don't cause
 // conflicts with concurrent writers. Same read version, same connection.
-func (tx *Transaction) Snapshot() *Snapshot {
-	return &Snapshot{tx: tx}
+func (tx *Transaction) Snapshot() Snapshot {
+	return Snapshot{tx: tx}
 }
 
 // Snapshot wraps a Transaction for conflict-free reads.
@@ -631,12 +635,12 @@ type Snapshot struct {
 // Get reads a key without adding a read conflict range.
 // Snapshot reads retain the storage cache; pending writes are included unless
 // snapshot RYW is net-disabled (snapshotRYWDisableCount > 0).
-func (s *Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
+func (s Snapshot) Get(ctx context.Context, key []byte) ([]byte, error) {
 	return s.tx.issueGet(ctx, key, true, false).wait()
 }
 
 // StartGet is the snapshot form of Transaction.StartGet.
-func (s *Snapshot) StartGet(ctx context.Context, key []byte) *PendingValue {
+func (s Snapshot) StartGet(ctx context.Context, key []byte) *PendingValue {
 	return s.tx.startGet(ctx, key, true)
 }
 
@@ -645,37 +649,37 @@ func (s *Snapshot) StartGet(ctx context.Context, key []byte) *PendingValue {
 // pending writes (matching Snapshot.Get/GetRange and libfdb_c, where snapshot RYW is
 // enabled unless net-disabled via SetSnapshotRYWDisable). When net-disabled
 // (snapshotRYWDisableCount > 0) the write map is bypassed (snapshot cache only).
-func (s *Snapshot) GetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
+func (s Snapshot) GetKey(ctx context.Context, selectorKey []byte, orEqual bool, offset int32) ([]byte, error) {
 	return s.tx.issueKey(ctx, KeySelector{Key: selectorKey, OrEqual: orEqual, Offset: offset}, true).run()
 }
 
 // GetRange reads a range without adding a read conflict range.
 // Snapshot reads retain the storage cache; pending writes are included unless
 // snapshot RYW is net-disabled (snapshotRYWDisableCount > 0).
-func (s *Snapshot) GetRange(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
+func (s Snapshot) GetRange(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
 	return s.getRangeDir(ctx, begin, end, limit, ByteLimitUnlimited, false)
 }
 
 // GetRangeWithByteTarget is GetRange carrying a per-fetch BYTE target, the dimension libfdb_c
 // derives from the streaming mode (fdb_c.cpp:1002/1006). ByteLimitUnlimited means "no target",
 // which is what the plain GetRange passes and what EXACT resolves to.
-func (s *Snapshot) GetRangeWithByteTarget(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
+func (s Snapshot) GetRangeWithByteTarget(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
 	return s.getRangeDir(ctx, begin, end, limit, byteTarget, reverse)
 }
 
-func (s *Snapshot) getRangeDir(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
+func (s Snapshot) getRangeDir(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
 	return s.tx.issueRange(ctx, begin, end, limit, byteTarget, reverse, true).run(true)
 }
 
 // GetRangeReverse reads a range in reverse without adding a read conflict range.
 // Snapshot reads retain the storage cache; pending writes are included unless
 // snapshot RYW is net-disabled (snapshotRYWDisableCount > 0).
-func (s *Snapshot) GetRangeReverse(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
+func (s Snapshot) GetRangeReverse(ctx context.Context, begin, end []byte, limit int) ([]KeyValue, bool, error) {
 	return s.getRangeDir(ctx, begin, end, limit, ByteLimitUnlimited, true)
 }
 
 // GetReadVersion returns the read version for this transaction via its snapshot view.
-func (s *Snapshot) GetReadVersion(ctx context.Context) (int64, error) {
+func (s Snapshot) GetReadVersion(ctx context.Context) (int64, error) {
 	return s.tx.GetReadVersion(ctx)
 }
 
@@ -3626,7 +3630,7 @@ func (tx *Transaction) postCommitResetFields() {
 	tx.readConflicts = tx.readConflicts[:0]
 	tx.writeConflicts = tx.writeConflicts[:0]
 	tx.singleKeyClearCount = 0 // cleared with mutations (GetApproximateSize accounting)
-	tx.readMap, tx.rywConflictSize = pseq[rywRange]{}, 0
+	tx.readMap, tx.readMapFinger, tx.rywConflictSize = pseq[rywRange]{}, pfinger[rywRange]{}, 0
 	tx.dropConflictBufLocked()
 	// The write map holds the RYW write conflicts: reset with the lists, under the same lock.
 	tx.ryw.reset()
@@ -3698,7 +3702,7 @@ func (tx *Transaction) resetFields(userReset bool) {
 	} else {
 		tx.conflictBuf = tx.conflictBuf[:0] // reuse buffer for retry
 	}
-	tx.readMap, tx.rywConflictSize = pseq[rywRange]{}, 0
+	tx.readMap, tx.readMapFinger, tx.rywConflictSize = pseq[rywRange]{}, pfinger[rywRange]{}, 0
 	// The write map holds the RYW write conflicts: reset with the lists, under the same lock.
 	tx.ryw.reset()
 	tx.conflictMu.Unlock()

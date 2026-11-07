@@ -23,6 +23,7 @@ type rywIter struct {
 	// base, until kv resolves them into opValue.
 	opBase    []byte
 	opAtomics []rywMutation
+	valBuf    *[]byte // optional walk scratch buffer for resolved AppendIfFits values
 	// opPending marks a write classified KV without its entry (typeMap over a
 	// known cache segment); segType looks the entry up.
 	opPending bool
@@ -258,9 +259,10 @@ func (it *rywIter) entryOf(key []byte) (rywEntry, bool) {
 	if !w.isSorted {
 		return w.entryOf(key)
 	}
-	it.ents.seekFirstFrom(&w.sorted, func(x *rywWrite) bool { return x.key >= string(key) })
+	ks := bytesString(key)
+	it.ents.seekFirstFrom(&w.sorted, func(x *rywWrite) bool { return x.key >= ks })
 	if it.ents.valid() {
-		if x := it.ents.item(); x.key == string(key) {
+		if x := it.ents.item(); x.key == ks {
 			return x.e, true
 		}
 	}
@@ -293,10 +295,38 @@ func (it *rywIter) kv() (KeyValue, bool) {
 		return KeyValue{Key: key, Value: segmentValueAt(it.cached, it.w, key)}, true
 	}
 	if it.opAtomics != nil {
-		it.opValue, _, _ = resolveAtomics(it.opBase, it.opAtomics) // once, as RYWIterator::kv (RYWIterator.cpp:73-87)
+		if it.valBuf != nil && len(it.opAtomics) == 1 && it.opAtomics[0].typ == MutAppendIfFits {
+			it.opValue = appendIfFitsInto(it.valBuf, it.opBase, it.opAtomics[0].param)
+		} else {
+			it.opValue, _, _ = resolveAtomics(it.opBase, it.opAtomics) // once, as RYWIterator::kv (RYWIterator.cpp:73-87)
+		}
 		it.opBase, it.opAtomics = nil, nil
 	}
 	return KeyValue{Key: key, Value: it.opValue}, true // classifyOp's value
+}
+
+func appendIfFitsInto(buf *[]byte, base, param []byte) []byte {
+	e := existing(base)
+	n := len(e) + len(param)
+	if n == 0 {
+		return []byte{}
+	}
+	if len(e) == 0 {
+		return param
+	}
+	if len(param) == 0 || n > valueSizeLimit {
+		return e
+	}
+	b := *buf
+	if cap(b)-len(b) < n {
+		b = make([]byte, 0, max(512, 2*cap(b), n))
+	}
+	off := len(b)
+	s := b[off : off+n : off+n]
+	copy(s, e)
+	copy(s[len(e):], param)
+	*buf = b[:off+n]
+	return s
 }
 
 // skipContiguous is RYWIterator::skipContiguous (RYWIterator.cpp:128-133, SnapshotCache.h:276-282);

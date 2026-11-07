@@ -69,13 +69,20 @@ func (r benchBunchRange) GetSliceWithError() ([]fdb.KeyValue, error) {
 func (r benchBunchRange) GetSliceOrPanic() []fdb.KeyValue { return r.kvs }
 func (r benchBunchRange) Iterator() fdb.RangeIterator     { panic("not used") }
 
-func (*benchBunchTx) Set(fdb.KeyConvertible, []byte)               {}
-func (*benchBunchTx) Clear(fdb.KeyConvertible)                     {}
-func (*benchBunchTx) AppendIfFits(fdb.KeyConvertible, []byte)      {}
-func (*benchBunchTx) AddReadConflictKey(fdb.KeyConvertible) error  { return nil }
-func (*benchBunchTx) AddWriteConflictKey(fdb.KeyConvertible) error { return nil }
-func (*benchBunchTx) AddReadConflictRange(fdb.ExactRange) error    { return nil }
-func (*benchBunchTx) AddWriteConflictRange(fdb.ExactRange) error   { return nil }
+func (*benchBunchTx) Set(fdb.KeyConvertible, []byte)                  {}
+func (*benchBunchTx) SetBytes([]byte, []byte)                         {}
+func (*benchBunchTx) Clear(fdb.KeyConvertible)                        {}
+func (*benchBunchTx) ClearBytes([]byte)                               {}
+func (*benchBunchTx) AppendIfFits(fdb.KeyConvertible, []byte)         {}
+func (*benchBunchTx) AppendIfFitsBytes([]byte, []byte)                {}
+func (*benchBunchTx) AddReadConflictKey(fdb.KeyConvertible) error     { return nil }
+func (*benchBunchTx) AddReadConflictKeyBytes([]byte) error            { return nil }
+func (*benchBunchTx) AddWriteConflictKey(fdb.KeyConvertible) error    { return nil }
+func (*benchBunchTx) AddWriteConflictKeyBytes([]byte) error           { return nil }
+func (*benchBunchTx) AddReadConflictRange(fdb.ExactRange) error       { return nil }
+func (*benchBunchTx) AddReadConflictRangeBytes([]byte, []byte) error  { return nil }
+func (*benchBunchTx) AddWriteConflictRange(fdb.ExactRange) error      { return nil }
+func (*benchBunchTx) AddWriteConflictRangeBytes([]byte, []byte) error { return nil }
 
 func benchMessageKey(seq int64) tuple.Tuple {
 	return tuple.Tuple{"writer-0042", seq, int64(0)}
@@ -150,7 +157,7 @@ func BenchmarkTextBunchedMapPipelinedPuts(b *testing.B) {
 		}
 		b.Run(name, func(b *testing.B) {
 			tx := &benchBunchTx{byMap: byMap, prefixLen: len(maps[0].Bytes()), walkDepth: depth}
-			pending := make([]*pendingBunchedPut, 0, pipeline)
+			pending := make([]pendingBunchedPut, 0, pipeline)
 			finishOldest := func() {
 				if _, _, err := pending[0].finish(); err != nil {
 					b.Fatal(err)

@@ -196,6 +196,13 @@ type FDBRecordStore struct {
 	indexStateView      *transactionIndexStateView
 	versionChanged      bool     // true if checkPossiblyRebuild detected a version change
 	maintainerCache     sync.Map // string → IndexMaintainer, cached per-transaction
+	batchTokenCache     map[batchTokenCacheKey]map[string][]int
+}
+
+type batchTokenCacheKey struct {
+	tokenizer string
+	version   int
+	text      string
 }
 
 // ensureStoreStateLoaded lazily loads store state (header + index states) from
