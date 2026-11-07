@@ -1,10 +1,12 @@
 // Package sqlbackend is otelbench's relational backend: the fixture corpus in
-// OTEL_V1 tenant schema stores, queried through the SQL driver.
+// OTEL_V1 tenant schema stores.
 //
 // Ingest writes the stores' records directly through the Record Layer
-// ("direct", the same SaveRecordBatch path as the FDB backend) or through SQL
-// INSERT ("insert"). Every query is SQL; results are checked against the
-// same independent oracle as the other backends.
+// ("direct"; compiled rows in batch save mode go through otel.SpanWriter, the
+// Exporter's span writer) or through SQL INSERT ("insert"). Queries run as SQL
+// through the driver (QuerySQL) or through otel.SpanReader, the Exporter's
+// reader (QueryDirect); results are checked against the same independent
+// oracle as the other backends.
 package sqlbackend
 
 import (
@@ -42,9 +44,9 @@ const (
 const (
 	// QuerySQL runs every query as SQL through the driver.
 	QuerySQL = "sql"
-	// QueryDirect runs the fixture's queries as Record Layer scans of the
-	// same OTEL_V1 indexes SQL plans: one transaction per query, as the FDB
-	// backend's. SQL remains the path for everything else (joins, ad hoc).
+	// QueryDirect runs the fixture's queries through otel.SpanReader: Record
+	// Layer scans of the same OTEL_V1 indexes SQL plans, one transaction per
+	// query. SQL remains the path for everything else (joins, ad hoc).
 	QueryDirect = "direct"
 )
 
@@ -195,6 +197,7 @@ func Open(ctx context.Context, c otel.Config, cluster string, opts Options) (*Ba
 		qdsn += "&execution_scanned_rows_limit=" + strconv.Itoa(opts.PageRows)
 	}
 	if b.query, err = sql.Open("fdbsql", qdsn); err != nil {
+		b.unregister()
 		raw.Close()
 		return nil, err
 	}
@@ -202,6 +205,7 @@ func Open(ctx context.Context, c otel.Config, cluster string, opts Options) (*Ba
 	if opts.PinnedConn {
 		if b.pinned, err = b.query.Conn(ctx); err != nil {
 			b.query.Close()
+			b.unregister()
 			raw.Close()
 			return nil, err
 		}
