@@ -353,7 +353,9 @@ var closedDone = func() chan struct{} { ch := make(chan struct{}); close(ch); re
 // transaction without a database.
 func (tx *Transaction) rangeReadBackstop() *panicBackstop {
 	if tx.db == nil {
-		tx.rangeReadPanics.name = "rangeRead"
+		// Once: a transaction's pending reads run concurrently, and each asks
+		// for the backstop.
+		tx.rangeReadPanicsInit.Do(func() { tx.rangeReadPanics.name = "rangeRead" })
 		return &tx.rangeReadPanics
 	}
 	return &tx.db.rangeReadPanics

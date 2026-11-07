@@ -583,8 +583,10 @@ type Transaction struct {
 	// mutations that haven't been committed yet.
 	ryw rywCache
 
-	// rangeReadPanics is used when db is nil (unit tests and benchmarks).
-	rangeReadPanics panicBackstop
+	// rangeReadPanics is used when db is nil (unit tests and benchmarks);
+	// rangeReadPanicsInit names it once, as concurrent reads share it.
+	rangeReadPanics     panicBackstop
+	rangeReadPanicsInit sync.Once
 
 	// conflictingKeys is TransactionState::conflictingKeys: replaced by each in-band
 	// conflict reply (NativeAPI.actor.cpp:6700-6717), kept across reset and OnError
