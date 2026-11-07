@@ -47,9 +47,6 @@ var built struct {
 // to the compiled types.
 func builtTemplate() (*metadata.RecordLayerSchemaTemplate, *recordlayer.RecordMetaData, error) {
 	built.once.Do(func() {
-		if built.err = MessageTokenizerRegistrationError(); built.err != nil {
-			return
-		}
 		if built.tmpl, built.err = embedded.BuildSchemaTemplateFromDDL(TemplateDDL()); built.err != nil {
 			return
 		}

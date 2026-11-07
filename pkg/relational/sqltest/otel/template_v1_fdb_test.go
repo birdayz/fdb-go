@@ -219,8 +219,8 @@ func TestFDB_OtelTemplateV1(t *testing.T) {
 	})
 }
 
-// SQL plans MESSAGES_TEXT for TEXT_CONTAINS_*(content, ?, 'otel_message_v1')
-// with the role bound and every shard listed; an unbound shard or another
+// SQL plans MESSAGES_TEXT (the default tokenizer) for TEXT_CONTAINS_*(content,
+// ?) with the role bound and every shard listed; an unbound shard or another
 // tokenizer keeps record filtering, with the same rows.
 func testOtelTemplateFullText(t *testing.T, db *sql.DB, ctx context.Context) {
 	t.Helper()
@@ -243,11 +243,16 @@ func testOtelTemplateFullText(t *testing.T, db *sql.DB, ctx context.Context) {
 			tokenizer, filter string
 			indexed           bool
 		}{
-			{otelsql.MessageTokenizerName, all, true},
-			{otelsql.MessageTokenizerName, " AND role = ?", false},
-			{"default", all, false},
+			{"", all, true},
+			{"default", all, true},
+			{"", " AND role = ?", false},
+			{otelsql.MessageTokenizerName, all, false},
 		} {
-			query := "SELECT writer FROM messages WHERE " + tc.fn + "(content, ?, '" + form.tokenizer + "')" + form.filter + " ORDER BY writer"
+			tokenizer := ""
+			if form.tokenizer != "" {
+				tokenizer = ", '" + form.tokenizer + "'"
+			}
+			query := "SELECT writer FROM messages WHERE " + tc.fn + "(content, ?" + tokenizer + ")" + form.filter + " ORDER BY writer"
 			var plan string
 			if err := db.QueryRowContext(ctx, "EXPLAIN "+query, tc.terms, "user").Scan(&plan); err != nil {
 				t.Fatal(err)
@@ -335,6 +340,41 @@ func testOtelTemplateDirect(t *testing.T, db *sql.DB, ctx context.Context, path 
 	}
 	if large := scan("MESSAGES_LARGE", tuple.Tuple{int64(1)}); len(large) != 1 || large[0][1] != int64(30) || large[0][2] != int64(1) {
 		t.Fatalf("MESSAGES_LARGE %v", large)
+	}
+
+	// A Go-written message's overlong token keeps its position unindexed: no
+	// phrase spans it, and the placeholder query finds it.
+	long := strings.Repeat("x", otelsql.MaxIndexedTokenBytes+1)
+	msg, err := otelsql.BuildMessageCompiled(otelsql.MessagePart{Writer: 40, Seq: 1, Text: &otelsql.MessageText{Role: "user", Content: "alpha " + long + " beta gamma"}, Encoding: "json", Parts: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rl.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+		store, err := ts.Builder(rc).Open()
+		if err != nil {
+			return nil, err
+		}
+		return store.SaveRecord(msg)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	shards := make([]string, otelsql.MessageTextShards)
+	for i := range shards {
+		shards[i] = fmt.Sprint(i)
+	}
+	for _, tc := range []struct{ fn, terms, rows string }{
+		{"TEXT_CONTAINS_PHRASE", "alpha beta", ""},
+		{"TEXT_CONTAINS_PHRASE", "beta gamma", "[40]"},
+		{"TEXT_CONTAINS_ALL", otelsql.OverlongTokenPlaceholder, "[40]"},
+		{"TEXT_CONTAINS_ALL", long, ""},
+	} {
+		q := fmt.Sprintf("SELECT writer FROM messages WHERE %s(content, '%s') AND role = 'user' AND shard IN (%s)", tc.fn, tc.terms, strings.Join(shards, ", "))
+		if plan := testkit.Explainer(t, db, ctx)(q); !strings.Contains(plan, "TextIndexScan(MESSAGES_TEXT") {
+			t.Fatalf("%s: %s", q, plan)
+		}
+		if got := otelRows(t, db, ctx, q); got != tc.rows {
+			t.Errorf("%s(%.20s): rows %s, want %s", tc.fn, tc.terms, got, tc.rows)
+		}
 	}
 
 	ts2, err := otelsql.EnsureTenant(ctx, rl, path, "S2", nil)
