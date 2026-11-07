@@ -55,8 +55,10 @@ func TestTemplateOverlay(t *testing.T) {
 	}
 	text := byName["MESSAGES_TEXT"]
 	opts := f.GetIndex("MESSAGES_TEXT").Options
-	if text.GetAddedVersion() != 21 || text.GetType() != recordlayer.IndexTypeText ||
-		opts[recordlayer.IndexOptionTextTokenizerName] != MessageTokenizerName || opts[recordlayer.IndexOptionTextTokenizerVersion] != "0" {
+	// No tokenizer option: the default tokenizer at version 0, which Java has.
+	_, named := opts[recordlayer.IndexOptionTextTokenizerName]
+	_, versioned := opts[recordlayer.IndexOptionTextTokenizerVersion]
+	if text.GetAddedVersion() != 21 || text.GetType() != recordlayer.IndexTypeText || named || versioned || strings.Contains(TemplateDDL(), MessageTokenizerName) {
 		t.Fatalf("overlay index %v, options %v", text, opts)
 	}
 	if f.GetRecordType("MESSAGES") == nil || len(f.GetRecordType("MESSAGES").GetIndexes()) != 3 {
