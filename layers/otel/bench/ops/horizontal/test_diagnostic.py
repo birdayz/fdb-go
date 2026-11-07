@@ -14,7 +14,7 @@ from unittest import mock
 import diagnostic as n
 import driver as d
 import policy as p
-from test_horizontal import evidence
+from test_horizontal import CENSUS, evidence
 
 
 def plan():
@@ -24,8 +24,7 @@ def plan():
                  source_revision="a"*40, first_epoch=1000, deadline_epoch=8200,
                  controller_cidr="192.0.2.1/32", hcloud="/private/hcloud", controller_public_key="/private/key.pub",
                  controller_private_key="/private/key", source_root="/private/source",
-                 storage_options=dict(record_compression="brotli-4", posting_value_format="tuple",
-                                      bulk_index_conflicts=True, hash_bytes=8))
+                 storage_options=dict(record_compression="zlib-1", bulk_index_conflicts=True))
     for key in p.ASSETS:
         value[key] = "/private/"+key
         value["input_manifest_sha256" if key == "source_manifest" else key+"_sha256"] = "b"*64
@@ -729,9 +728,7 @@ class DiagnosticTest(unittest.TestCase):
                     count, mode = grant['count'], Path(path).stem
                     value = evidence(mode, count); value['config']['run'] = grant['run']
                     if mode == 'audit':
-                        value['stats']['structures'] = {key: dict(keys=number) for key, number in
-                            dict(records=count, eq_secondary=count*8, span_id_v2=count, span_time_v2=count,
-                                 owned_total=count*11+2, eq_primary=0).items()}
+                        value['stats']['structures'] = {key: dict(keys=number) for key, number in CENSUS[count].items()}
                     return value
 
                 def spawn(node, args, directory, name):

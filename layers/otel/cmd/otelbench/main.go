@@ -26,9 +26,6 @@ type backendOpener func(context.Context, otel.Config, string, string) (otel.Back
 var sqlOptions = sqlbackend.Options{Ingest: sqlbackend.IngestDirect, Query: sqlbackend.QuerySQL, PageRows: sqlbackend.DefaultPageRows}
 
 func openBackend(ctx context.Context, c otel.Config, cluster, chURL string) (otel.Backend, error) {
-	if c.Backend == "fdb" {
-		return otel.OpenFDBContext(ctx, c, cluster)
-	}
 	if c.Backend == "sql" {
 		return sqlbackend.Open(ctx, c, cluster, sqlOptions)
 	}
@@ -48,36 +45,33 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 	var backend, mode, cluster, chURL, output, suite, revision string
 	var confirm bool
 	var timeout time.Duration
-	flags.StringVar(&backend, "backend", "", "required: fdb, sql, ch-map, or ch-attrs")
+	flags.StringVar(&backend, "backend", "", "required: sql, ch-map, or ch-attrs")
 	flags.StringVar(&sqlOptions.Ingest, "sql-ingest", sqlOptions.Ingest, "sql backend ingest: direct (Record Layer saves into the OTEL_V1 schema stores) or insert (SQL INSERT)")
 	flags.StringVar(&sqlOptions.Query, "sql-query", sqlOptions.Query, "sql backend queries: sql (through the SQL driver) or direct (Record Layer scans of the same OTEL_V1 indexes)")
 	flags.StringVar(&sqlOptions.Rows, "sql-rows", sqlbackend.RowsCompiled, "sql backend direct ingest rows: compiled (otelv1pb types) or dynamic (dynamic messages of the catalog descriptor)")
 	flags.BoolVar(&sqlOptions.PinnedConn, "sql-pinned-conn", sqlOptions.PinnedConn, "sql backend: run SQL queries on one pinned connection, keeping its session schema cache (no per-statement catalog read)")
 	flags.IntVar(&sqlOptions.PageRows, "sql-page-rows", sqlOptions.PageRows, "sql backend: scanned rows per SQL page (EXECUTION_SCANNED_ROWS_LIMIT); negative is unbounded")
-	flags.StringVar(&mode, "mode", "", "required: ingest, query, audit, drop, or collector-bench (drives otel.Exporter; takes no --backend but fdb)")
+	flags.StringVar(&mode, "mode", "", "required: ingest, query, audit, drop, or collector-bench (drives otel.Exporter; takes no --backend)")
 	flags.StringVar(&c.Run, "run", "", "required fresh owned namespace [a-z0-9_]{8,48}; no destructive default")
 	flags.Uint64Var(&c.Seed, "seed", c.Seed, "deterministic corpus seed")
 	flags.IntVar(&c.Count, "count", c.Count, "unique synthetic span population")
 	flags.IntVar(&c.Tenants, "tenants", c.Tenants, "tenant population")
 	flags.IntVar(&c.Attributes, "attrs", c.Attributes, "scoped typed attributes per span, 4..128")
 	flags.IntVar(&c.MatchEvery, "match-every", c.MatchEvery, "matching traces every N traces within each tenant; two spans per trace")
-	flags.IntVar(&c.Batch, "batch", c.Batch, "FDB maximum spans per transaction, 1..64; byte guards also apply")
-	flags.StringVar(&c.SaveMode, "save-mode", c.SaveMode, "FDB save mode: serial, pipelined, or batch")
-	flags.StringVar(&c.RecordCompression, "record-compression", c.RecordCompression, "Record Layer primary storage: none, zlib-1, zlib-default, brotli-0, brotli-1, brotli-3, or brotli-4; Brotli is Go-only (fdb backend), zlib is Java- and SQL-readable")
-	flags.StringVar(&c.PostingValueFormat, "posting-value-format", c.PostingValueFormat, "FDB covering values: json or tuple; immutable fresh-run layout")
-	flags.BoolVar(&c.BulkIndexConflicts, "bulk-index-conflicts", c.BulkIndexConflicts, "FDB batch saves conservatively coalesce index write-conflict ranges; read conflicts unchanged")
-	flags.IntVar(&c.Workers, "workers", c.Workers, "FDB ingest workers, 1..8")
-	flags.BoolVar(&c.Diagnostics, "diagnostics", c.Diagnostics, "include ingest diagnostics in evidence")
+	flags.IntVar(&c.Batch, "batch", c.Batch, "sql maximum spans per transaction, 1..64; byte guards also apply")
+	flags.StringVar(&c.SaveMode, "save-mode", c.SaveMode, "sql direct save mode: serial, pipelined, or batch (batch is the Exporter's SpanWriter)")
+	flags.StringVar(&c.RecordCompression, "record-compression", c.RecordCompression, "sql Record Layer primary storage: none, zlib-1, or zlib-default; Java- and SQL-readable")
+	flags.BoolVar(&c.BulkIndexConflicts, "bulk-index-conflicts", c.BulkIndexConflicts, "sql batch saves conservatively coalesce index write-conflict ranges; read conflicts unchanged")
+	flags.IntVar(&c.Workers, "workers", c.Workers, "sql ingest workers, 1..8")
 	flags.IntVar(&c.CHBatch, "ch-batch", c.CHBatch, "CH offline bulk insert row cap; separately reported, not matched live ack batching")
 	flags.IntVar(&c.CHBatchBytes, "ch-batch-bytes", c.CHBatchBytes, "CH offline bulk insert byte cap, at most 64MiB")
 	flags.IntVar(&c.CHIndexGranularity, "ch-index-granularity", c.CHIndexGranularity, "fresh-table MergeTree index granularity, 1..8192")
 	flags.IntVar(&c.Tenant, "tenant", c.Tenant, "query tenant ordinal")
 	flags.IntVar(&c.K, "k", c.K, "newest K DISTINCT traces, time DESC then trace ID DESC")
 	flags.IntVar(&c.Iterations, "iterations", c.Iterations, "query sample count; raw samples retained")
-	flags.IntVar(&c.MaxCandidates, "max-candidates", c.MaxCandidates, "FDB consumed candidates / CH max_rows_to_read; failures are not partial answers")
-	flags.Int64Var(&c.MaxBytes, "max-bytes", c.MaxBytes, "FDB consumed KV logical-byte / CH max_bytes_to_read budget")
-	flags.IntVar(&c.HashBytes, "hash-bytes", c.HashBytes, "FDB digest bytes (1 for collision testing, 32 normally)")
-	flags.StringVar(&c.Order, "order", c.Order, "trace (complete candidate topK) or time (ordered distinct frontier); one layout per run")
+	flags.IntVar(&c.MaxCandidates, "max-candidates", c.MaxCandidates, "sql consumed candidates / CH max_rows_to_read; failures are not partial answers")
+	flags.Int64Var(&c.MaxBytes, "max-bytes", c.MaxBytes, "sql consumed KV logical-byte / CH max_bytes_to_read budget")
+	flags.StringVar(&c.Order, "order", c.Order, "ClickHouse: trace (complete candidate topK) or time (ordered distinct frontier); one layout per run")
 	flags.StringVar(&suite, "suite", "selective", "selective (varying predicates), mixed (also common resource term), rare (one hot predicate), trace, span (standalone span ID), time (intrinsic half-open range), genai (typed/scoped attributes), all (trace, span, genai, time)")
 	flags.StringVar(&cluster, "cluster-file", "", "explicit owned FDB cluster file; CLI never launches containers")
 	flags.StringVar(&chURL, "ch-url", "", "explicit owned ClickHouse HTTP endpoint")
@@ -104,9 +98,8 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 		}
 		return 2
 	}
-	// collector-bench drives otel.Exporter, so no backend applies; --backend
-	// fdb is accepted for the command lines of earlier receipts.
-	collectorBench := mode == "collector-bench" && (backend == "" || backend == "fdb")
+	// collector-bench drives otel.Exporter, so no backend applies.
+	collectorBench := mode == "collector-bench" && backend == ""
 	if !collectorBench {
 		c.Backend = backend
 		if err := c.Validate(); err != nil {
@@ -114,7 +107,7 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 			return 2
 		}
 	}
-	if flags.NArg() != 0 || timeout <= 0 || (mode != "ingest" && mode != "query" && mode != "audit" && mode != "drop" && !collectorBench) || !collectorBench && backend != "fdb" && backend != "sql" && backend != "ch-map" && backend != "ch-attrs" {
+	if flags.NArg() != 0 || timeout <= 0 || (mode != "ingest" && mode != "query" && mode != "audit" && mode != "drop" && !collectorBench) || !collectorBench && backend != "sql" && backend != "ch-map" && backend != "ch-attrs" {
 		fmt.Fprintln(stderr, "explicit valid backend/mode required; see -help")
 		return 2
 	}
@@ -243,7 +236,7 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 
 // collectorBenchConfig applies the shared flags that were set explicitly;
 // unset ones keep the collector-bench defaults, which differ from ingest's.
-// The custom store's layout flags have no Exporter setting (D2).
+// ClickHouse's order has no Exporter setting (D2).
 func collectorBenchConfig(flags *flag.FlagSet, bench collector.CollectorBenchConfig, c otel.Config, cluster, revision string) (collector.CollectorBenchConfig, error) {
 	bench.ClusterFile, bench.Run, bench.Revision = cluster, c.Run, revision
 	var err error
@@ -255,10 +248,8 @@ func collectorBenchConfig(flags *flag.FlagSet, bench collector.CollectorBenchCon
 			bench.Tenant = c.Tenant
 		case "record-compression":
 			bench.RecordCompression = c.RecordCompression
-		case "posting-value-format", "hash-bytes", "order":
-			if err == nil {
-				err = fmt.Errorf("--%s applies to --backend fdb only; the Exporter has one time order and no posting values", f.Name)
-			}
+		case "order":
+			err = fmt.Errorf("--order applies to the ClickHouse backends only; the Exporter has one time order")
 		case "iterations":
 			bench.QueryIterations = c.Iterations
 		case "batch":
