@@ -17,7 +17,6 @@ import (
 	"testing"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
-	"google.golang.org/protobuf/proto"
 )
 
 func TestCHIndexGranularityConfigBounds(t *testing.T) {
@@ -38,90 +37,6 @@ func TestCHIndexGranularityConfigBounds(t *testing.T) {
 		c.CHIndexGranularity = value
 		if err := c.Validate(); err != nil {
 			t.Fatalf("valid granularity %d: %v", value, err)
-		}
-	}
-}
-
-func TestCHGranularityDoesNotChangeFDBOrSourceBytes(t *testing.T) {
-	t.Parallel()
-	baseline := testConfig()
-	baseline.Run, baseline.Backend, baseline.Count = "granularity_fdb_fixture", "fdb", 7
-	baseline.CHIndexGranularity = 8192
-	baseIdentity := corpusIdentity(baseline)
-	baseManifest := manifest(baseline, "ready")
-	baseJSON := make([][]byte, baseline.Count)
-	baseRecords := make([][]byte, baseline.Count)
-	for i := 0; i < baseline.Count; i++ {
-		span := Generate(baseline, i)
-		var err error
-		baseJSON[i], err = json.Marshal(span)
-		if err != nil {
-			t.Fatal(err)
-		}
-		record, err := toRecord(span)
-		if err != nil {
-			t.Fatal(err)
-		}
-		baseRecords[i], err = (proto.MarshalOptions{Deterministic: true}).Marshal(record)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, value := range []int{1, 64, 512, 8192} {
-		c := baseline
-		c.CHIndexGranularity = value
-		if err := c.Validate(); err != nil {
-			t.Fatal(err)
-		}
-		if corpusIdentity(c) != baseIdentity || !reflect.DeepEqual(manifest(c, "ready"), baseManifest) {
-			t.Fatalf("CH granularity %d changed FDB ownership/corpus", value)
-		}
-		if err := checkManifest(c, baseManifest, true); err != nil {
-			t.Fatalf("CH-only setting invalidated FDB ownership: %v", err)
-		}
-		m := manifest(c, "ready")
-		if m.CHIndexGranularity != 0 {
-			t.Fatalf("FDB manifest acquired CH layout field: %+v", m)
-		}
-		// Source identity is checked above; replace only the fingerprint with
-		// a literal to pin the legacy FDB manifest's exact JSON field layout.
-		m.Corpus = "legacy_corpus"
-		wire, err := json.Marshal(m)
-		if err != nil {
-			t.Fatal(err)
-		}
-		const legacy = `{"tool":"otelbench-v2","run":"granularity_fdb_fixture","corpus":"legacy_corpus","state":"ready","order":"trace","hash_bytes":32,"backend":"fdb"}`
-		if string(wire) != legacy {
-			t.Fatalf("legacy FDB manifest JSON changed: got %s want %s", wire, legacy)
-		}
-		foreign := baseManifest
-		foreign.CHIndexGranularity = 64
-		if err := checkManifest(c, foreign, true); err != nil {
-			t.Fatalf("FDB checker interpreted irrelevant CH field: %v", err)
-		}
-		for i := 0; i < c.Count; i++ {
-			span := Generate(c, i)
-			wire, err := json.Marshal(span)
-			if err != nil {
-				t.Fatal(err)
-			}
-			record, err := toRecord(span)
-			if err != nil {
-				t.Fatal(err)
-			}
-			encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(record)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(wire, baseJSON[i]) || !bytes.Equal(encoded, baseRecords[i]) {
-				t.Fatalf("granularity %d changed source/FDB wire bytes at ordinal %d", value, i)
-			}
-		}
-		for _, backend := range []string{"ch-map", "ch-attrs"} {
-			c.Backend = backend
-			if corpusIdentity(c) != baseIdentity {
-				t.Fatalf("CH layout %s/%d changed source fingerprint", backend, value)
-			}
 		}
 	}
 }

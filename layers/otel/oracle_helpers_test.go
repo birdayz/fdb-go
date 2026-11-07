@@ -62,12 +62,6 @@ func bruteSpanOracle(c Config, id string) []SpanMatch {
 	return out
 }
 
-// oracleTopK is the test-only map adapter for independent ordering checks.
-func oracleTopK(m map[string]int64, k int) []Hit {
-	out, _ := oracleTopKContext(context.Background(), m, k)
-	return out
-}
-
 func oracleTopKContext(ctx context.Context, m map[string]int64, k int) ([]Hit, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, wrap("canceled", "oracle topK", err)

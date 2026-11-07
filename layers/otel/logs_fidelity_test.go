@@ -89,55 +89,6 @@ func requireLogFidelity(t *testing.T, got LogRecord, want *logspb.ResourceLogs) 
 	}
 }
 
-func TestLogOTLPFidelityEncoding(t *testing.T) {
-	t.Parallel()
-	in := logFidelityFixture(t)
-	for _, rl := range in {
-		want := proto.Clone(rl).(*logspb.ResourceLogs)
-		logs := LogRecordsFromResourceLogs([]*logspb.ResourceLogs{rl})
-		if len(logs) != 1 {
-			t.Fatalf("converted %d logs, want one", len(logs))
-		}
-		l := logs[0]
-		l.EventID = "owned-envelope"
-		// Neither caller mutations nor mutable projections may rewrite the source.
-		rl.SchemaUrl = "mutated input"
-		rl.ProtoReflect().SetUnknown(nil)
-		rl.ScopeLogs[0].LogRecords[0].Body = exStr("mutated input")
-		l.Body.Value = &commonpb.AnyValue_StringValue{StringValue: "mutated projection"}
-		l.Attributes[0].Value.Value = &commonpb.AnyValue_StringValue{StringValue: "mutated projection"}
-		l.Timestamp, l.TraceID, l.EventName = -1, "invalid projection", "mutated projection"
-		detached, err := l.OTLP()
-		if err != nil {
-			t.Fatal(err)
-		}
-		detached.ScopeLogs[0].LogRecords[0].Attributes = nil
-		detached.ProtoReflect().SetUnknown(nil)
-		requireLogFidelity(t, l, want)
-
-		b := lgBackend()
-		p, err := b.prepareLog(l, 777)
-		if err != nil {
-			t.Fatal(err)
-		}
-		space, rows := lgRows(b, p)
-		got, err := decodeLogRows(space, p.eventID, rows)
-		if err != nil {
-			t.Fatal(err)
-		}
-		requireLogFidelity(t, got, want)
-		if got.EventID != l.EventID || got.EventName != want.ScopeLogs[0].LogRecords[0].EventName || p.unindexed != 1 {
-			t.Fatalf("source projections not used: %+v, unindexed=%d", got, p.unindexed)
-		}
-		if !logHasAttribute(got, Attribute{LogScopeRecord, "duplicate", "string", "last"}) || logHasAttribute(got, Attribute{LogScopeRecord, "duplicate", "string", "first"}) {
-			t.Fatal("index must use last duplicate without altering stored attributes")
-		}
-		if got.Timestamp == 0 && (got.TraceID != "" || got.SpanID != "" || p.correlated || got.EffectiveTime != 777 || got.TimeSource != LogTimeReceiver) {
-			t.Fatalf("zero IDs and receiver time must remain independent projections: %+v", got)
-		}
-	}
-}
-
 func TestLogOTLPConstructedAccessorIsDetached(t *testing.T) {
 	t.Parallel()
 	l := LogRecord{Body: exStr("body"), Attributes: []*commonpb.KeyValue{exKV("key", exStr("value"))}}

@@ -661,3 +661,38 @@ func testRelIntrinsicUnreadable(t *testing.T, ctx context.Context, cluster strin
 		}
 	}
 }
+
+// stateReadFailureTransactor fails every transaction's read conflict on key,
+// an index state key (ReadIndexState adds it), with cause, counting failures.
+type (
+	stateReadFailureTransactor struct {
+		fdb.Database
+		key      fdb.Key
+		cause    error
+		failures *atomic.Int64
+	}
+	stateReadFailureTransaction struct {
+		fdb.WritableTransaction
+		key      fdb.Key
+		cause    error
+		failures *atomic.Int64
+	}
+)
+
+func (tx stateReadFailureTransaction) AddReadConflictKey(key fdb.KeyConvertible) error {
+	if string(key.FDBKey()) == string(tx.key) {
+		tx.failures.Add(1)
+		return tx.cause
+	}
+	return tx.WritableTransaction.AddReadConflictKey(key)
+}
+
+func (d stateReadFailureTransactor) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	return d.TransactCtx(context.Background(), fn)
+}
+
+func (d stateReadFailureTransactor) TransactCtx(ctx context.Context, fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	return d.Database.TransactCtx(ctx, func(tx fdb.WritableTransaction) (any, error) {
+		return fn(stateReadFailureTransaction{tx, d.key, d.cause, d.failures})
+	})
+}

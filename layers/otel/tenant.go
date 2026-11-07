@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"fdb.dev/layers/otel/otelsql"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"google.golang.org/protobuf/proto"
@@ -33,8 +34,8 @@ type tenantStore struct {
 	// databasePath and schema name the store; continuation tokens are bound
 	// to them.
 	databasePath, schema string
-	// fullText sets the message pipeline sizer on every open, as FDBBackend
-	// does for the fulltext layout.
+	// fullText sets the message pipeline sizer on every open, for the
+	// fulltext layout.
 	fullText bool
 }
 
@@ -230,4 +231,34 @@ func loadRecords(store *recordlayer.FDBRecordStore, op string, pks []tuple.Tuple
 		}
 	}
 	return nil
+}
+
+// configureRecordTimeout bounds the whole transaction including OnError retries.
+// Exporter transactions lift Run’s zero retry limit; both options persist across retries.
+func configureRecordTimeout(rc *recordlayer.FDBRecordContext) error {
+	return rc.Configure(recordTransactionConfigurer(rc.Context()))
+}
+
+func recordTransactionConfigurer(ctx context.Context) recordlayer.TransactionConfigurer {
+	return func(options fdb.TransactionOptions) error {
+		if err := options.SetTimeout(txnTimeout(ctx).Milliseconds()); err != nil {
+			return err
+		}
+		if isExporterTxn(ctx) {
+			return options.SetRetryLimit(noRetryLimit)
+		}
+		return nil
+	}
+}
+
+// configureStoreContext is configureRecordTimeout plus the benchmark's retry
+// limit for benchmark transactions.
+func configureStoreContext(rc *recordlayer.FDBRecordContext) error {
+	if err := configureRecordTimeout(rc); err != nil {
+		return err
+	}
+	if isExporterTxn(rc.Context()) {
+		return nil
+	}
+	return rc.Transaction().Options().SetRetryLimit(benchTxnRetryLimit)
 }

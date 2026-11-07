@@ -18,9 +18,6 @@ import (
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
-	"google.golang.org/protobuf/encoding/protowire"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
 	"gopkg.in/yaml.v3"
 )
 
@@ -39,10 +36,6 @@ const (
 	// values must additionally fit FDB's value limit before any export writes.
 	maxIndexedKeyBytes   = 1024
 	maxIndexedValueBytes = 64000
-
-	// fidelityField identifies legacy records' internal ResourceSpans metadata.
-	// New records keep it in Envelope.fidelity instead.
-	fidelityField protowire.Number = 536870911
 )
 
 // ExporterConfig is shared by the SDK exporter and the Collector exporter.
@@ -196,7 +189,7 @@ func (c ExporterConfig) Validate() error {
 // run, tenant, K, budgets and message layout. The store has one time order
 // (D2); the remaining fields only satisfy Config.Validate.
 func (c ExporterConfig) backendConfig() Config {
-	return Config{Run: c.Run, Backend: "fdb", Seed: exporterSeed, Count: exporterCount, Tenants: exporterTenants, Attributes: 4, MatchEvery: 1, Batch: c.BatchSize, SaveMode: "batch", RecordCompression: c.RecordCompression, PostingValueFormat: "tuple", BulkIndexConflicts: c.BulkIndexConflicts, Workers: 1, CHBatch: 8192, CHBatchBytes: 8 << 20, CHIndexGranularity: 8192, CHQueryTransport: "http", Tenant: c.Tenant, K: c.K, Iterations: 1, MaxCandidates: c.MaxCandidates, MaxBytes: c.MaxBytes, HashBytes: 8, Order: "time", Messages: c.messageLayout()}
+	return Config{Run: c.Run, Backend: "sql", Seed: exporterSeed, Count: exporterCount, Tenants: exporterTenants, Attributes: 4, MatchEvery: 1, Batch: c.BatchSize, SaveMode: "batch", RecordCompression: c.RecordCompression, BulkIndexConflicts: c.BulkIndexConflicts, Workers: 1, CHBatch: 8192, CHBatchBytes: 8 << 20, CHIndexGranularity: 8192, CHQueryTransport: "http", Tenant: c.Tenant, K: c.K, Iterations: 1, MaxCandidates: c.MaxCandidates, MaxBytes: c.MaxBytes, Order: "time", Messages: c.messageLayout()}
 }
 
 // messageLayout is the stored message layout the flags select.
@@ -231,54 +224,6 @@ type SpanNotFoundError struct {
 	Span  string
 }
 
-// canonicalSet is one scope's indexed attribute list: unique keys (last value
-// wins, first position kept), string/int values, and posting caps enforced.
-type canonicalSet struct {
-	indexed   []*commonpb.KeyValue
-	changed   bool
-	unindexed int64
-}
-
-func canonicalAttributes(kvs []*commonpb.KeyValue) canonicalSet {
-	var out canonicalSet
-	var order []string
-	latest := make(map[string]*commonpb.KeyValue, len(kvs))
-	for _, kv := range kvs {
-		if kv == nil {
-			out.changed = true
-			continue
-		}
-		if _, seen := latest[kv.Key]; seen {
-			out.changed = true
-		} else {
-			order = append(order, kv.Key)
-		}
-		_, value := legacyCanonicalValue(kv.GetValue())
-		if len(kv.Key) > maxIndexedKeyBytes || len(value) > maxIndexedValueBytes {
-			out.changed = true
-			latest[kv.Key] = nil
-			continue
-		}
-		indexed := kv
-		switch kv.GetValue().GetValue().(type) {
-		case *commonpb.AnyValue_StringValue, *commonpb.AnyValue_IntValue:
-		default:
-			// Every non-int canonical value is a string.
-			out.changed = true
-			indexed = &commonpb.KeyValue{Key: kv.Key, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: value}}}
-		}
-		latest[kv.Key] = indexed
-	}
-	for _, key := range order {
-		if kv := latest[key]; kv != nil {
-			out.indexed = append(out.indexed, kv)
-		} else {
-			out.unindexed++
-		}
-	}
-	return out
-}
-
 // CanonicalValue is the typed (D1) (type, value) of an OTLP attribute value
 // as an Attribute names it: string, int, bool and double (formatDouble's
 // text) are the queryable types; bytes (base64) and arrays, kvlists and
@@ -304,34 +249,6 @@ func CanonicalValue(v *commonpb.AnyValue) (string, string) {
 // CanonicalAttribute builds the query Attribute matching an exported attribute.
 func CanonicalAttribute(scope, key string, v *commonpb.AnyValue) Attribute {
 	typ, value := CanonicalValue(v)
-	return Attribute{Scope: scope, Key: key, Type: typ, Value: value}
-}
-
-// legacyCanonicalValue is the custom store's canonical value (FDBBackend and
-// its logs, until phase 3B): ints stay "int"; bool, double, bytes, arrays
-// and kvlists become "string".
-func legacyCanonicalValue(v *commonpb.AnyValue) (string, string) {
-	switch x := v.GetValue().(type) {
-	case *commonpb.AnyValue_StringValue:
-		return "string", x.StringValue
-	case *commonpb.AnyValue_IntValue:
-		return "int", strconv.FormatInt(x.IntValue, 10)
-	case *commonpb.AnyValue_BoolValue:
-		return "string", strconv.FormatBool(x.BoolValue)
-	case *commonpb.AnyValue_DoubleValue:
-		return "string", formatDouble(x.DoubleValue)
-	case *commonpb.AnyValue_BytesValue:
-		return "string", base64.StdEncoding.EncodeToString(x.BytesValue)
-	case *commonpb.AnyValue_ArrayValue, *commonpb.AnyValue_KvlistValue:
-		return "string", string(appendCanonicalJSON(nil, v))
-	default:
-		return "string", ""
-	}
-}
-
-// legacyCanonicalAttribute is CanonicalAttribute of the custom store.
-func legacyCanonicalAttribute(scope, key string, v *commonpb.AnyValue) Attribute {
-	typ, value := legacyCanonicalValue(v)
 	return Attribute{Scope: scope, Key: key, Type: typ, Value: value}
 }
 
@@ -395,89 +312,6 @@ func appendCanonicalJSON(dst []byte, v *commonpb.AnyValue) []byte {
 	default:
 		return append(dst, "null"...)
 	}
-}
-
-// splitFidelity separates the fidelity field from other unknown fields.
-func splitFidelity(unknown []byte) (rest, payload []byte, found bool, err error) {
-	for len(unknown) > 0 {
-		num, typ, n := protowire.ConsumeTag(unknown)
-		if n < 0 {
-			return nil, nil, false, wrap("corruption", "OTLP unknown fields", protowire.ParseError(n))
-		}
-		m := protowire.ConsumeFieldValue(num, typ, unknown[n:])
-		if m < 0 {
-			return nil, nil, false, wrap("corruption", "OTLP unknown fields", protowire.ParseError(m))
-		}
-		if num == fidelityField && typ == protowire.BytesType {
-			payload, _ = protowire.ConsumeBytes(unknown[n:])
-			found = true
-		} else {
-			rest = append(rest, unknown[:n+m]...)
-		}
-		unknown = unknown[n+m:]
-	}
-	return rest, payload, found, nil
-}
-
-func restoreEnvelopeOTLP(r protoreflect.Message) (*tracepb.ResourceSpans, error) {
-	f := r.Descriptor().Fields()
-	wire := r.Get(f.ByName("otlp")).Bytes()
-	if fidelity := f.ByName("fidelity"); fidelity != nil && r.Has(fidelity) {
-		return restoreOTLP(wire, r.Get(fidelity).Bytes())
-	}
-	return restoreOTLP(wire)
-}
-
-// restoreOTLP returns the stored span with its original attribute lists.
-func restoreOTLP(wire []byte, fidelity ...[]byte) (*tracepb.ResourceSpans, error) {
-	rs := &tracepb.ResourceSpans{}
-	if err := proto.Unmarshal(wire, rs); err != nil {
-		return nil, wrap("corruption", "OTLP decode", err)
-	}
-	if len(rs.ScopeSpans) != 1 || len(rs.ScopeSpans[0].Spans) != 1 {
-		return nil, fail("corruption", "OTLP decode", "expected one stored span")
-	}
-	var payload []byte
-	if len(fidelity) > 0 {
-		payload = fidelity[0]
-		if len(payload) == 0 {
-			return rs, nil
-		}
-	} else {
-		// Only records predating Envelope.fidelity use the legacy unknown tag.
-		rest, legacy, found, err := splitFidelity(rs.ProtoReflect().GetUnknown())
-		if err != nil {
-			return nil, err
-		}
-		rs.ProtoReflect().SetUnknown(rest)
-		if !found {
-			return rs, nil
-		}
-		payload = legacy
-	}
-	var arr commonpb.ArrayValue
-	if err := proto.Unmarshal(payload, &arr); err != nil {
-		return nil, wrap("corruption", "OTLP attribute fidelity", err)
-	}
-	if len(arr.Values) != 3 {
-		return nil, fail("corruption", "OTLP attribute fidelity", "expected resource, scope and span lists")
-	}
-	if kv := arr.Values[0].GetKvlistValue(); kv != nil {
-		if rs.Resource == nil {
-			rs.Resource = &resourcepb.Resource{}
-		}
-		rs.Resource.Attributes = kv.Values
-	}
-	if kv := arr.Values[1].GetKvlistValue(); kv != nil {
-		if rs.ScopeSpans[0].Scope == nil {
-			rs.ScopeSpans[0].Scope = &commonpb.InstrumentationScope{}
-		}
-		rs.ScopeSpans[0].Scope.Attributes = kv.Values
-	}
-	if kv := arr.Values[2].GetKvlistValue(); kv != nil {
-		rs.ScopeSpans[0].Spans[0].Attributes = kv.Values
-	}
-	return rs, nil
 }
 
 // ResourceSpansFromReadOnly converts SDK spans to OTLP, grouping by resource
@@ -673,3 +507,10 @@ func otlpValue(v attribute.Value) *commonpb.AnyValue {
 		return &commonpb.AnyValue{}
 	}
 }
+
+// Message storage layouts, part of a run's stored layout identity.
+const (
+	messagesNone     = ""
+	messagesDeltas   = "deltas"      // Message records; spans carry manifests
+	messagesFullText = "fulltext_v2" // plus the message TEXT index and span back references
+)

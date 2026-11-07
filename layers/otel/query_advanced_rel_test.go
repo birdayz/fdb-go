@@ -21,6 +21,24 @@ func qrTestStore() *tenantStore {
 	return &tenantStore{databasePath: path, schema: schema}
 }
 
+// signV1Continuation is a time-order same_span token of the removed custom
+// store (v1: run and tenant bound, domain otel/continuation/v1), which v2
+// parsing refuses.
+func signV1Continuation(secret []byte, run string, tenant int, digest, last []byte) []byte {
+	payload := tuple.Tuple{int64(1), continuationKind, run, int64(tenant), "time", digest, last}.Pack()
+	return append(payload, continuationMACIn("otel/continuation/v1\x00", secret, payload)...)
+}
+
+// v1TimeKey is the removed custom store's time-order sort key (its
+// postingSuffix): negated start, the complemented hex trace, the hex span.
+func v1TimeKey(trace, span string, start int64) []byte {
+	rev := []byte(trace)
+	for i := range rev {
+		rev[i] = ^rev[i]
+	}
+	return tuple.Tuple{-start, rev, span}.Pack()
+}
+
 func qrSortKey(start int64, trace, span int) spanSortKey {
 	id := func(s string) []byte {
 		b, err := hex.DecodeString(s)
@@ -116,7 +134,7 @@ func TestRelContinuationRejections(t *testing.T) {
 	trace, span := qaBytes(t, qaID(1, 16)), qaBytes(t, qaID(2, 8))
 	for name, key := range map[string][]byte{
 		"not a tuple":      {0xff, 0x01},
-		"v1 time key":      postingSuffix(Span{Trace: qaID(1, 16), ID: qaID(2, 8), Start: 42}, "time").Pack(),
+		"v1 time key":      v1TimeKey(qaID(1, 16), qaID(2, 8), 42),
 		"hex identities":   tuple.Tuple{int64(5), qaID(1, 16), qaID(2, 8)}.Pack(),
 		"negative start":   tuple.Tuple{int64(-5), trace, span}.Pack(),
 		"short trace":      tuple.Tuple{int64(5), trace[:15], span}.Pack(),
@@ -140,7 +158,7 @@ func TestRelContinuationRejections(t *testing.T) {
 		"one byte":       {1},
 		"oversized":      bytes.Repeat([]byte{1}, maxContinuationBytes+1),
 		"garbage":        bytes.Repeat([]byte{0xfe}, 64),
-		"v1 token":       signContinuation(secret, "qa_run_0001", 3, "time", digest, last),
+		"v1 token":       signV1Continuation(secret, "qa_run_0001", 3, digest, last),
 		"bad version":    badVersion,
 		"other kind":     sign(messageContinuationKind, s.databasePath, s.schema, digest, last),
 		"few fields":     short,
@@ -150,7 +168,7 @@ func TestRelContinuationRejections(t *testing.T) {
 		requireTyped[*ConfigError](t, name, err)
 	}
 	// A v2 token never verifies under the v1 domain, nor a v1 token under v2.
-	if c, err := parseContinuation(signContinuation(secret, "qa_run_0001", 3, "time", digest, last)); err != nil || checkContinuationMAC(relContinuationDomain, "store", secret, c.payload, c.mac) == nil {
+	if _, payload, mac, err := splitContinuation(signV1Continuation(secret, "qa_run_0001", 3, digest, last)); err != nil || checkContinuationMAC(relContinuationDomain, "store", secret, payload, mac) == nil {
 		t.Fatalf("a v1 MAC verified in the v2 domain: %v", err)
 	}
 }
