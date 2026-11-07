@@ -87,6 +87,10 @@ func TestFDB_SQLBackend(t *testing.T) {
 		{"direct ingest, direct queries", Options{Query: QueryDirect}, func(c otel.Config) otel.Config { return c }},
 		{"direct ingest, unbounded SQL pages", Options{PageRows: -1}, func(c otel.Config) otel.Config { return c }},
 		{"pipelined saves", Options{}, func(c otel.Config) otel.Config { c.SaveMode = "pipelined"; return c }},
+		{"dynamic rows", Options{Rows: RowsDynamic}, func(c otel.Config) otel.Config { return c }},
+		{"zlib default records", Options{}, func(c otel.Config) otel.Config { c.RecordCompression = "zlib-default"; return c }},
+		{"zlib 1 records, direct queries", Options{Query: QueryDirect}, func(c otel.Config) otel.Config { c.RecordCompression = "zlib-1"; return c }},
+		{"pinned connection", Options{PinnedConn: true}, func(c otel.Config) otel.Config { return c }},
 		{"SQL INSERT ingest", Options{Ingest: IngestInsert}, func(c otel.Config) otel.Config { c.Count = 60; return c }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -117,6 +121,11 @@ func TestFDB_SQLBackend(t *testing.T) {
 			// Every query class of the "all" suite against the independent oracle.
 			var e otel.Evidence
 			if err := otel.MeasureQueries(ctx, b, cfg, "all", &e); err != nil {
+				for i, s := range e.Samples {
+					if s.Error != "" && i < 40 {
+						t.Logf("sample %d %s: %s", i, s.Class, s.Error)
+					}
+				}
 				t.Fatal(err)
 			}
 			if e.Failures != 0 || len(e.Samples) == 0 {
@@ -134,7 +143,7 @@ func TestFDB_SQLBackend(t *testing.T) {
 		t.Parallel()
 		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 		defer cancel()
-		for _, opts := range []Options{{Ingest: "bulk"}, {Query: "fast"}} {
+		for _, opts := range []Options{{Ingest: "bulk"}, {Query: "fast"}, {Rows: "generic"}} {
 			if b, err := Open(ctx, testConfig("sqlb_invalid"), cluster, opts); err == nil {
 				b.Close()
 				t.Errorf("Open(%+v) succeeded", opts)
@@ -143,6 +152,19 @@ func TestFDB_SQLBackend(t *testing.T) {
 		if b, err := Open(ctx, testConfig("sqlb_invalid"), "", Options{}); err == nil {
 			b.Close()
 			t.Error("Open without a cluster file succeeded")
+		}
+		// SQL INSERT writes the engine's zlib-default records, nothing else.
+		c := testConfig("sqlb_invalid")
+		c.RecordCompression = "zlib-1"
+		if b, err := Open(ctx, c, cluster, Options{Ingest: IngestInsert}); err == nil {
+			b.Close()
+			t.Error("SQL INSERT with zlib-1 records accepted")
+		}
+		// Brotli is Go-only: SQL could not read it.
+		c.RecordCompression = "brotli-1"
+		if b, err := Open(ctx, c, cluster, Options{}); err == nil {
+			b.Close()
+			t.Error("Brotli records accepted for the sql backend")
 		}
 	})
 }

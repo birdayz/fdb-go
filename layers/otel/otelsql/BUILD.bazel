@@ -4,12 +4,14 @@ go_library(
     name = "otelsql",
     srcs = [
         "rows.go",
+        "rows_compiled.go",
         "store.go",
         "template.go",
     ],
     importpath = "fdb.dev/layers/otel/otelsql",
     visibility = ["//visibility:public"],
     deps = [
+        "//layers/otel/otelsql/otelv1pb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
         "//pkg/relational/api",
@@ -27,10 +29,23 @@ go_library(
 
 go_test(
     name = "otelsql_test",
-    srcs = ["template_test.go"],
+    srcs = [
+        "rows_compiled_test.go",
+        "template_test.go",
+    ],
     embed = [":otelsql"],
     deps = [
+        "//layers/otel/otelsql/otelv1pb",
+        "//pkg/recordlayer",
         "//pkg/relational/api",
+        "//pkg/relational/core/embedded",
         "//pkg/relational/core/keyspace",
+        "@io_opentelemetry_go_proto_otlp//common/v1:common",
+        "@io_opentelemetry_go_proto_otlp//resource/v1:resource",
+        "@io_opentelemetry_go_proto_otlp//trace/v1:trace",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//types/descriptorpb",
+        "@org_golang_google_protobuf//types/dynamicpb",
     ],
 )
