@@ -294,6 +294,9 @@ func testOtelTemplateDirect(t *testing.T, db *sql.DB, ctx context.Context, path 
 	if err != nil {
 		t.Fatalf("EnsureTenant over the SQL-created template: %v", err)
 	}
+	if ts.DatabasePath != strings.ToUpper(path) || ts.Schema != "S" {
+		t.Fatalf("EnsureTenant names its store %q/%q", ts.DatabasePath, ts.Schema)
+	}
 	testkit.MustExecCtx(t, db, ctx, "INSERT INTO messages (writer, seq, part, parts, large, shard) VALUES (30, 1, 0, 2, [1], 14), (30, 1, 1, NULL, NULL, 14), (31, 1, 0, 1, NULL, 15)")
 	scan := func(index string, prefix tuple.Tuple) []tuple.Tuple {
 		t.Helper()
