@@ -603,9 +603,8 @@ func tupleKey(s SpanMatch) []byte {
 	return postingSuffix(Span{Trace: s.Trace, ID: s.ID, Start: s.Start}, "time").Pack()
 }
 
-// Port of testTraceExistential for span clauses, unchanged. Log clauses
-// (stream 2B) are refused until the LOGS reader lands; 2B restores the
-// span+log and log-only assertions of testTraceExistential here.
+// Port of testTraceExistential, unchanged: span clauses, and log clauses over
+// logs exported through relLogStore into the same tenant store.
 func testRelTraceExistential(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -660,7 +659,35 @@ func testRelTraceExistential(t *testing.T, h *qrHarness) {
 		t.Fatalf("empty window: %+v %v", got, err)
 	}
 
+	// Correlated logs join through their trace; uncorrelated ones never fabricate a trace.
+	evalKV := exKV("gen_ai.evaluation.name", exStr("relevance"))
+	if _, err := qrLogStore(t, r).ExportLogs(lrCtx(ctx), []LogRecord{
+		{Timestamp: 150, TraceID: T1, SpanID: s(12), EventName: "gen_ai.evaluation.result", Attributes: []*commonpb.KeyValue{evalKV}},
+		{EventID: "t3-eval", Timestamp: 450, TraceID: T3, Attributes: []*commonpb.KeyValue{evalKV}},
+		{EventID: "orphan-eval", Timestamp: 999, Attributes: []*commonpb.KeyValue{evalKV}},
+		{EventID: "t4-other", Timestamp: 700, TraceID: T4, Attributes: []*commonpb.KeyValue{exKV("gen_ai.evaluation.name", exStr("toxicity"))}},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	eval := Attribute{LogScopeRecord, "gen_ai.evaluation.name", "string", "relevance"}
+	got, err := r.QueryTraceExistential(ctx, TraceExistentialQuery{Clauses: []Attribute{model}, LogClauses: []Attribute{eval}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Hits) != 2 || got.Hits[0].Trace != T3 || got.Hits[1].Trace != T1 || got.Hits[0].Latest != 450 || got.Hits[1].Latest != 150 {
+		t.Fatalf("span+log existential: %+v", got.Hits)
+	}
+	if lw := got.Hits[0].LogWitnesses; len(lw) != 1 || len(lw[0]) != 1 || lw[0][0] != (LogMatch{"t3-eval", T3, "", 450}) {
+		t.Fatalf("T3 log witnesses: %+v", lw)
+	}
+	if lw := got.Hits[1].LogWitnesses; len(lw) != 1 || len(lw[0]) != 1 || lw[0][0].Trace != T1 || lw[0][0].Span != s(12) || lw[0][0].Time != 150 {
+		t.Fatalf("T1 log witnesses: %+v", lw)
+	}
+	logOnly, err := r.QueryTraceExistential(ctx, TraceExistentialQuery{LogClauses: []Attribute{{LogScopeIntrinsic, "event_name", "string", "gen_ai.evaluation.result"}}})
+	if err != nil || len(logOnly.Hits) != 1 || logOnly.Hits[0].Trace != T1 || len(logOnly.Hits[0].Witnesses) != 0 {
+		t.Fatalf("log-only existential: %+v %v", logOnly, err)
+	}
+
 	for name, q := range map[string]TraceExistentialQuery{
 		"no clauses":      {},
 		"bad scope":       {Clauses: []Attribute{{LogScopeRecord, "k", "string", "v"}}},
@@ -668,16 +695,14 @@ func testRelTraceExistential(t *testing.T, h *qrHarness) {
 		"negative limit":  {Clauses: []Attribute{model}, Limit: -1},
 		"inverted window": {Clauses: []Attribute{model}, TimeWindow: &TimeRange{Start: 2, End: 1}},
 		"bytes clause":    {Clauses: []Attribute{{"span", "k", "bytes", "AQI="}}},
-		// Not yet supported on the relational store (streams 2B, 2C).
-		"log clause":     {Clauses: []Attribute{model}, LogClauses: []Attribute{eval}},
-		"log only":       {LogClauses: []Attribute{{LogScopeIntrinsic, "event_name", "string", "gen_ai.evaluation.result"}}},
+		// Not yet supported on the relational store (stream 2C).
 		"message clause": {MessageClauses: []MessageFullTextQuery{{Query: "hello"}}},
 	} {
 		_, err := r.QueryTraceExistential(ctx, q)
 		requireTyped[*ConfigError](t, name, err)
 	}
 	fullText := h.reader(t, ctx, r.cfg.Run, 11, func(c *Config) { c.Messages = messagesFullText })
-	_, err := fullText.QueryTraceExistential(ctx, TraceExistentialQuery{Clauses: []Attribute{model}, MessageClauses: []MessageFullTextQuery{{Query: "hello"}}})
+	_, err = fullText.QueryTraceExistential(ctx, TraceExistentialQuery{Clauses: []Attribute{model}, MessageClauses: []MessageFullTextQuery{{Query: "hello"}}})
 	requireTyped[*ConfigError](t, "message clause on a fulltext store", err)
 	_, err = fullText.QueryTraceExistential(ctx, TraceExistentialQuery{MessageClauses: []MessageFullTextQuery{{Query: "hello", Limit: 1}}})
 	requireTyped[*ConfigError](t, "message clause with a limit", err)
