@@ -24,7 +24,6 @@ go_library(
         "messages.go",
         "messages_codec.go",
         "messages_query.go",
-        "messages_text.go",
         "oracle.go",
         "query_advanced.go",
         "query_plan.go",
@@ -137,6 +136,7 @@ go_test(
     ],
     embed = [":otel"],
     deps = [
+        "//layers/otel/otelsql",
         "//pkg/fdbgo/client",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
