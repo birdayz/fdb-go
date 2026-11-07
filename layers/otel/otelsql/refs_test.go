@@ -147,3 +147,99 @@ func TestPackRefChunksRefusals(t *testing.T) {
 		}
 	}
 }
+
+// readAllRefs reads b with a RefChunkReader into UnpackRefChunk's shape.
+func readAllRefs(b []byte) ([]MessageRef, error) {
+	var r RefChunkReader
+	var out []MessageRef
+	for r.Reset(b); r.Next(); {
+		ref := r.Ref()
+		if ref.Ordinals != nil {
+			return nil, errors.New("Ref carries ordinals")
+		}
+		ref.Ordinals = r.AppendOrdinals(nil)
+		out = append(out, ref)
+	}
+	if r.Err() != nil {
+		return nil, r.Err()
+	}
+	return out, nil
+}
+
+// checkRefChunkReader requires RefChunkReader to agree with UnpackRefChunk on b.
+func checkRefChunkReader(t *testing.T, b []byte) {
+	t.Helper()
+	want, werr := UnpackRefChunk(b)
+	got, gerr := readAllRefs(b)
+	if (werr == nil) != (gerr == nil) || werr != nil && werr.Error() != gerr.Error() {
+		t.Fatalf("%x: reader error %v, UnpackRefChunk error %v", b, gerr, werr)
+	}
+	if werr == nil && !reflect.DeepEqual(got, want) {
+		t.Fatalf("%x: reader %+v, UnpackRefChunk %+v", b, got, want)
+	}
+}
+
+// refChunkReaderSeeds are PackRefChunks output, encodings it never writes
+// that UnpackRefChunk accepts or refuses, and malformed values.
+func refChunkReaderSeeds(t testing.TB) [][]byte {
+	refs := []MessageRef{
+		{Writer: 1, Seq: 1, Attribute: 1, Ordinals: []int{0}},
+		{Writer: 1 << 56, Seq: 255, Attribute: 4, Newest: true, Ordinals: []int{0, 256, 1 << 40}},
+		{Writer: math.MaxInt64, Seq: 65536, Attribute: 2, Ordinals: []int{7}},
+	}
+	chunks, err := PackRefChunks(refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ord := func(o ...tuple.TupleElement) tuple.Tuple { return tuple.Tuple(o) }
+	seeds := append(chunks,
+		nil,
+		[]byte{0x05, 0x00},
+		tuple.Tuple{int64(1), int64(2), int64(3), int64(1), ord(int64(0))}.Pack(),
+		// A zero or a small int in more bytes than needed.
+		[]byte{0x15, 0x01, 0x16, 0x00, 0x02, 0x15, 0x03, 0x15, 0x00, 0x05, 0x14, 0x00},
+		[]byte{0x15, 0x01, 0x15, 0x02, 0x15, 0x03, 0x14, 0x05, 0x15, 0x00, 0x00},
+		// An 8-byte int past int64, and a big int.
+		[]byte{0x1c, 0x80, 0, 0, 0, 0, 0, 0, 1, 0x15, 0x02, 0x15, 0x03, 0x14, 0x05, 0x14, 0x00},
+		[]byte{0x1d, 0x01, 0x05, 0x15, 0x02, 0x15, 0x03, 0x14, 0x05, 0x14, 0x00},
+		// A null ordinal, a truncated int and a missing terminator.
+		[]byte{0x15, 0x01, 0x15, 0x02, 0x15, 0x03, 0x14, 0x05, 0x00, 0xff, 0x00},
+		[]byte{0x15, 0x01, 0x16, 0x02},
+		[]byte{0x15, 0x01, 0x15, 0x02, 0x15, 0x03, 0x14, 0x05, 0x14},
+		tuple.Tuple{int64(1), int64(2), int64(3), int64(1), ord(int64(0)), int64(1)}.Pack(),
+		tuple.Tuple{int64(1), int64(2), int64(3), int64(1), ord(int64(0), "x")}.Pack(),
+		tuple.Tuple{int64(1), int64(2), int64(3), int64(-1), ord(int64(0))}.Pack(),
+		tuple.Tuple{int64(1), int64(2), int64(5), int64(0), ord(int64(0))}.Pack(),
+		tuple.Tuple{int64(1), int64(2), int64(3), int64(0), ord(ord(int64(0)))}.Pack(),
+	)
+	return seeds
+}
+
+// RefChunkReader yields UnpackRefChunk's references, and its errors, for
+// packed values, for every single-byte change of them and for encodings
+// PackRefChunks never writes.
+func TestRefChunkReaderMatchesUnpack(t *testing.T) {
+	t.Parallel()
+	for _, b := range refChunkReaderSeeds(t) {
+		checkRefChunkReader(t, b)
+		for i := range b {
+			for _, c := range []byte{0x00, 0x01, 0x05, 0x14, 0x15, 0x1c, 0x1d, 0xff, b[i] + 1, b[i] - 1} {
+				m := append([]byte(nil), b...)
+				m[i] = c
+				checkRefChunkReader(t, m)
+			}
+			checkRefChunkReader(t, b[:i])
+		}
+	}
+	var r RefChunkReader
+	if r.Reset([]byte{0x05, 0x00}); r.Next() || r.Err() == nil {
+		t.Fatal("reader accepted a malformed value")
+	}
+}
+
+func FuzzRefChunkReader(f *testing.F) {
+	for _, b := range refChunkReaderSeeds(f) {
+		f.Add(b)
+	}
+	f.Fuzz(checkRefChunkReader)
+}

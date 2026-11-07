@@ -9,6 +9,8 @@ import (
 
 	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/layers/otel/otelsql/otelv1pb"
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/embedded"
@@ -317,4 +319,63 @@ func relKey(md *recordlayer.RecordMetaData, op, name string, cols ...tuple.Tuple
 		return append(tuple.Tuple{rt.GetRecordTypeKey()}, cols...), nil
 	}
 	return tuple.Tuple(cols), nil
+}
+
+// unpackKey yields space.Unpack's elements and errors for the keys of the
+// marker and reference indexes, for every single-byte change of them, and for
+// ints tuple.Unpack does not decode as int64.
+func TestUnpackKeyMatchesTupleUnpack(t *testing.T) {
+	t.Parallel()
+	space := subspace.FromBytes([]byte{0x15, 0x07, 0x02, 'T', 0x00})
+	keys := [][]byte{
+		space.Pack(tuple.Tuple{[]byte{0, 1, 2, 0, 0xff}, int64(1) << 40, []byte{9, 0, 9, 9, 9, 9, 9, 9}, int64(0), []byte{0x15, 0x01, 0x05, 0x00}, []byte{1}, int64(-3)}),
+		space.Pack(tuple.Tuple{int64(3), int64(1), int64(1 << 55), []byte("0123456789abcdef"), int64(-1)}),
+		space.Pack(tuple.Tuple{int64(-1 << 50), []byte{}, int64(255), int64(-255), int64(1<<63 - 1), int64(-1 << 63)}),
+		space.Pack(tuple.Tuple{"text", 1.5, nil, tuple.Tuple{int64(1)}, true}),
+		space.Pack(tuple.Tuple{uint64(1 << 63), int64(5)}),
+		append(space.Bytes(), 0x15, 0x00, 0x16, 0x00, 0x00, 0x13, 0xff, 0x01, 0x41),
+		{0x15, 0x08, 0x01, 0x00},
+	}
+	check := func(key []byte) {
+		want, werr := space.Unpack(fdb.Key(key))
+		got, gerr := unpackKey(space, key, make([]keyElem, 0, 4))
+		if (werr == nil) != (gerr == nil) {
+			t.Fatalf("%x: unpackKey error %v, Unpack error %v", key, gerr, werr)
+		}
+		if werr != nil {
+			return
+		}
+		if len(got) != len(want) {
+			t.Fatalf("%x: %d elements, want %d", key, len(got), len(want))
+		}
+		for i, el := range want {
+			v, isInt := got[i].int()
+			b, isBytes := got[i].bytes()
+			switch w := el.(type) {
+			case int64:
+				if !isInt || v != w {
+					t.Fatalf("%x element %d: %+v, want int64 %d", key, i, got[i], w)
+				}
+			case []byte:
+				if !isBytes || !bytes.Equal(b, w) {
+					t.Fatalf("%x element %d: %+v, want bytes %x", key, i, got[i], w)
+				}
+			default:
+				if isInt || isBytes || fmt.Sprint(got[i].other) != fmt.Sprint(w) {
+					t.Fatalf("%x element %d: %+v, want %T %v", key, i, got[i], w, w)
+				}
+			}
+		}
+	}
+	for _, key := range keys {
+		check(key)
+		for i := range key {
+			for _, c := range []byte{0x00, 0x01, 0x02, 0x0c, 0x0d, 0x13, 0x14, 0x15, 0x1b, 0x1c, 0x1d, 0xff, key[i] + 1, key[i] - 1} {
+				m := append([]byte(nil), key...)
+				m[i] = c
+				check(m)
+			}
+			check(key[:i])
+		}
+	}
 }
