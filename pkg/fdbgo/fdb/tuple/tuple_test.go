@@ -217,8 +217,9 @@ func decodeIntBinaryRead(b []byte) (any, int, error) {
 
 // decodeInt decodes every integer type code and length exactly as the
 // binary.Read version did, including truncated input, zero bytes, the
-// sign bit and non-minimal encodings, and allocates at most the boxing.
+// sign bit and non-minimal encodings.
 func TestDecodeIntMatchesBinaryRead(t *testing.T) {
+	t.Parallel()
 	rng := rand.New(rand.NewPCG(283, 7))
 	patterns := [][]byte{{}, {0}, {0xff}, {0x80}, {0x7f}, {0, 0, 0, 0, 0, 0, 0, 0}, {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, {0x80, 0, 0, 0, 0, 0, 0, 1}, {1, 2, 3, 4, 5, 6, 7, 8}}
 	for range 2000 {
@@ -238,6 +239,11 @@ func TestDecodeIntMatchesBinaryRead(t *testing.T) {
 			}
 		}
 	}
+}
+
+// decodeInt allocates at most the boxing. Not parallel: testing.AllocsPerRun
+// panics while a parallel test runs.
+func TestDecodeIntAllocations(t *testing.T) {
 	b := Tuple{int64(1) << 40}.Pack()
 	allocs := testing.AllocsPerRun(100, func() { _, _, _ = decodeInt(b) })
 	before := testing.AllocsPerRun(100, func() { _, _, _ = decodeIntBinaryRead(b) })

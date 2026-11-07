@@ -485,6 +485,20 @@ required property. Java also lacks Go's per-leg record-identity check
 `isPrimaryKeyCompatibleWithOrdering`. Plans agree with Java on the primary-key
 disjunctions in `conformance/or_union_merge_java_probe_test.go`.
 
+### `RecordType.Equals` has no identity short-circuit
+
+Java's `Type.Record.equals` returns true for the same object before it compares
+fields (Type.java:2400-2402). Go's `RecordType.Equals`
+(`pkg/recordlayer/query/plan/cascades/values/type.go`) always compares field by
+field. For acyclic record types, the only kind Go builds, the answers agree and
+only the cost differs. Go omits the check on purpose: a record type that reached
+itself would then fail at its first comparison, even with itself, which is why
+`TypeProtoRepository` needs no cycle guard. Pinned by
+`TestProtoType_RecordEqualsHasNoIdentityShortCircuit`. The executor's edge
+binder compares a cursor's row type with a distinct flowed type object, so an
+identity check would not help it; it memoises equal pairs instead
+(`pkg/recordlayer/query/executor/record_type_equal_memo.go`).
+
 ## Planning-Layer: Java-aligned core with documented Go extensions
 
 ### Cost Model: PlanningCostModelLess

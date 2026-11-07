@@ -64,17 +64,8 @@ func (s *statementPrograms) put(tree antlr.ParseTree, runtime bool, p *bindingPr
 	s.m[bindingProgramKey{tree, runtime}] = p
 }
 
-// parse is parser.Parse through the connection's cache.
-func (c *EmbeddedConnection) parse(sql string) (antlrgen.IRootContext, error) {
-	st, err := c.parseStatement(sql)
-	if err != nil {
-		return nil, err
-	}
-	return st.root, nil
-}
-
-// parseStatement is parse returning the cache entry; a statement too long to
-// cache gets an entry of its own.
+// parseStatement is parser.Parse through the connection's cache, returning
+// the cache entry; a statement too long to cache gets an entry of its own.
 func (c *EmbeddedConnection) parseStatement(sql string) (*parsedStatement, error) {
 	if st, ok := c.parses.trees[sql]; ok {
 		return st, nil

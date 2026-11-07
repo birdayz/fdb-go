@@ -64,8 +64,8 @@ func TestParseCacheRepeatedStatementBindsEachCallsValues(t *testing.T) {
 	if !ok {
 		t.Fatalf("a repeated statement was not cached")
 	}
-	again, err := c.parse(byID)
-	if err != nil || again != first.root {
+	again, err := c.parseStatement(byID)
+	if err != nil || again != first {
 		t.Fatalf("a cached statement was parsed again (%v)", err)
 	}
 	// The statement's binding walk was compiled once and is reused: the
@@ -123,7 +123,7 @@ func TestParseCacheIsBounded(t *testing.T) {
 	var c EmbeddedConnection
 	text := func(i int) string { return fmt.Sprintf("SELECT %d FROM t", i) }
 	for i := range parseCacheEntries + 1 {
-		if _, err := c.parse(text(i)); err != nil {
+		if _, err := c.parseStatement(text(i)); err != nil {
 			t.Fatalf("parse %d: %v", i, err)
 		}
 	}
@@ -138,7 +138,7 @@ func TestParseCacheIsBounded(t *testing.T) {
 	}
 
 	long := "SELECT 1 FROM t WHERE " + strings.Repeat("1 = 1 AND ", parseCacheMaxText/10) + "1 = 1"
-	if _, err := c.parse(long); err != nil {
+	if _, err := c.parseStatement(long); err != nil {
 		t.Fatalf("parse long: %v", err)
 	}
 	if _, ok := c.parses.trees[long]; ok {
