@@ -3657,17 +3657,12 @@ these claims; the implementation notes below are not controlled comparisons.
   keys it) and `LogProjection` counts it; the old log store indexed event names
   up to 64,000 bytes by digest. Phase 2B decides whether `QueryLogsByAttribute`
   on such names needs a digest column or refuses them.
-- [ ] Data race in `pkg/fdbgo/client` RYW range reads with AppendIfFits writes,
-  reproduced by the old and the new message stores under `-race`
-  (`bazelisk test //layers/otel:otel_test --@rules_go//go/config:race
-  --test_filter='^TestMessageRecordsRealFDB$' --nocache_test_results`):
-  `cloneReadKVsInto` (ryw_snapshot_cache.go) in `PendingRange.Get` reads bytes
-  that `appendIfFitsInto` (ryw_walk_iter.go) of another walk writes. Suspected
-  cause: resolved AppendIfFits values live in the pooled walk's `keyBuf`
-  (`it.valBuf = &w.keyBuf`), the non-clone read path keeps rows pointing into it,
-  and the walk returns to `walkPool` before `Get` clones them; TEXT bunch reads
-  after a group commit's appends could see another read's bytes. Needs an owner,
-  a deterministic regression and a fix.
+- [x] Data race in `pkg/fdbgo/client` RYW range reads with AppendIfFits writes
+  (found under `-race` by the old and the new message stores): resolved
+  AppendIfFits values lived in the pooled walk's `keyBuf`, which the next walk
+  reused while a pending read that ran in its goroutine still held its rows
+  uncopied. Fixed in PR #1034 (`valBuf`, dropped on release); regression
+  `TestPendingRangeKeepsAppendedValuesAcrossWalks` (range_selector_unit_test).
 - [ ] Stream 2C follow-ups (`messages_rel.go`, `messages_query_rel.go`):
   - `relMessageStore` reads `STORE_META("message_writer")` through
     `localStoreMeta`; switch to store_meta.go's `loadStoreMeta` (stream 2A).
