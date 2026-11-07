@@ -764,11 +764,11 @@ func decodeInt(b []byte) (any, int, error) {
 		return nil, 0, fmt.Errorf("insufficient bytes to decode %d-byte integer", n)
 	}
 
-	bp := make([]byte, 8)
+	// The big-endian n bytes right-aligned in eight, as binary.Read of an
+	// int64 decodes them, without its buffer and reader allocations.
+	var bp [8]byte
 	copy(bp[8-n:], b[1:n+1])
-
-	var ret int64
-	binary.Read(bytes.NewBuffer(bp), binary.BigEndian, &ret)
+	ret := int64(binary.BigEndian.Uint64(bp[:]))
 
 	if neg {
 		return ret - int64(sizeLimits[n]), n + 1, nil
