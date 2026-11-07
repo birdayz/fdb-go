@@ -138,6 +138,7 @@ go_test(
         "messages_helpers_test.go",
         "messages_rel_cost_test.go",
         "messages_rel_fdb_test.go",
+        "messages_rel_regression_fdb_test.go",
         "messages_rel_test.go",
         "messages_test.go",
         "oracle_helpers_test.go",
