@@ -3709,15 +3709,33 @@ these claims; the implementation notes below are not controlled comparisons.
   Delivered: the custom store, its tests and the `fdb` otelbench flags are
   deleted (RFC status line); `removedExporterKey` stays as the migration message.
 - [ ] G3 findings (benchmark doc, "Gate G3"):
-  - `fts_single_token` p50 is 1.53x the custom store's on a cluster that holds
-    earlier runs (bimodal per run in both stores; 0.72x on the fresh
-    cluster's first runs). p99 is 0.82x. Find what selects the slow mode
-    (TEXT bunch layout, cache misses on the 39% larger MESSAGES_TEXT keys, or
-    the marker/ref-chunk reads) before calling the class passed.
-  - Message persist wall is 1.39x, with the same summed message transaction
-    time and count and 0 retries: calls wait longer for group commits because
-    spans finish sooner. Decide whether G2C's persist criterion should be the
-    message transaction time instead.
+  - [x] `fts_single_token` p50 was 1.53x the custom store's. Cause: it is the
+    first post-ingest class and ran inside the storage server's 6-10 s drain
+    of the ingest's non-durable mutations with 818 range requests per query;
+    a 100-iteration p50 is slow when over half the iterations fall inside
+    the drain (benchmark doc, "fts_single_token: the G3 gap explained and
+    fixed"). `696f4ba43` (in-place reference decoding) and `f7b2d43bd`
+    (coalesced marker reads) bring it to 79 requests, 0.30x the custom store
+    quiesced and 0.24-0.46x by G3's method.
+  - [x] Message persist wall is 1.39x with the same summed message transaction
+    time and count and 0 retries. Owner decision: G2C's persist criterion is
+    the summed message transaction time (0.93x).
+  - [ ] Without a role, `fts_phrase_first_turn` and `fts_multi_turn_history`
+    issue about 290 range requests for about 130 rows: role discovery, then
+    the TextScan of each (role, shard) opens a cursor per token even when a
+    rarer token has no postings there. Quiesced they are 0.83-0.86x the custom
+    store, but under G3's method they now absorb the drain (p50 1.01-1.25x,
+    115-145 ms p99 stalls). Probe the rarest token per group first, or skip
+    groups that lack a token, before re-gating those classes.
+  - [ ] collector-bench's post-ingest phase starts while the storage server
+    still drains 400-500 MB of the ingest (6-10 s), so its first classes
+    absorb the drain. The Go client cannot read `\xff\xff/status/json` to
+    wait for it. Gate steady-state query comparisons on `--query-only` after
+    the queues drain, or make the bench wait for durability.
+  - [ ] `tuple.decodeInt` (pkg/fdbgo/fdb/tuple) decodes every int through
+    `binary.Read(bytes.NewBuffer(...))`, three allocations per int; it was
+    15% of the old message query's allocations. A stack-array decode would
+    help every `tuple.Unpack` caller (keep the fuzz corpus green).
   - `otel.NewExporter` uses the fixed template name OTEL_V1, so it cannot open
     on a shared cluster whose catalog holds OTEL_V1 from another revision
     (otelcmp after G2A); `sqlbackend` avoids that with `RevisionTemplateName`.
