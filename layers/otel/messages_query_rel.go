@@ -410,36 +410,44 @@ func (r *SpanReader) messageRefs(ctx context.Context, store *recordlayer.FDBReco
 		}
 		ranges = append(ranges, kr)
 	}
+	// A span's entries are adjacent (its primary key is (trace_id,
+	// span_id)), so a reference split across its chunks is found among
+	// the current span's references.
 	type refID struct {
-		trace, span string
-		attr        int64
-		id          messageID
+		attr int64
+		id   messageID
 	}
 	var out []relMessageRef
 	at := map[refID]int{}
+	curTrace, curSpan := -1, []byte(nil)
 	badRef := fail("corruption", op, "malformed span reference index entry")
+	// Most references name other messages: the reader skips them without
+	// decoding their ordinals.
+	var refs otelsql.RefChunkReader
+	var elems [16]keyElem
 	err = relPipelinedRanges(ctx, tx, ranges, work, func(i int, kv fdb.KeyValue) error {
 		// (trace_id, start_ns, span_id, chunk, refs) and the primary key.
-		k, err := space.Unpack(kv.Key)
+		k, err := unpackKey(space, kv.Key, elems[:0])
 		if err != nil || len(k) < 5 {
 			return badRef
 		}
-		trace, tok := k[0].([]byte)
-		start, sok := k[1].(int64)
-		span, pok := k[2].([]byte)
-		packed, rok := k[4].([]byte)
+		trace, tok := k[0].bytes()
+		start, sok := k[1].int()
+		span, pok := k[2].bytes()
+		packed, rok := k[4].bytes()
 		if !tok || !sok || !pok || !rok || !bytes.Equal(trace, traces[i]) || len(span) != 8 || zeroID(span) {
 			return badRef
 		}
 		if !w.contains(start) {
 			return nil
 		}
-		refs, err := otelsql.UnpackRefChunk(packed)
-		if err != nil {
-			return typedError("corruption", op, "span reference chunk", err)
+		if i != curTrace || !bytes.Equal(span, curSpan) {
+			curTrace, curSpan = i, span
+			clear(at)
 		}
 		set := byTrace[string(trace)]
-		for _, ref := range refs {
+		for refs.Reset(packed); refs.Next(); {
+			ref := refs.Ref()
 			id := messageID{ref.Writer, ref.Seq}
 			c := set[id]
 			if c == nil || (plan.base.attribute > 0 && ref.Attribute != plan.base.attribute) || (plan.base.firstTurn && !ref.Newest) {
@@ -447,17 +455,129 @@ func (r *SpanReader) messageRefs(ctx context.Context, store *recordlayer.FDBReco
 			}
 			// A reference whose ordinals outgrow a chunk continues in the
 			// next one (otelsql.PackRefChunks): one hit, all its ordinals.
-			rid := refID{string(trace), string(span), ref.Attribute, id}
+			rid := refID{ref.Attribute, id}
 			if j, ok := at[rid]; ok {
-				out[j].ordinals = append(out[j].ordinals, ref.Ordinals...)
+				out[j].ordinals = refs.AppendOrdinals(out[j].ordinals)
 				continue
 			}
 			at[rid] = len(out)
-			out = append(out, relMessageRef{cand: c, key: relMessageRefKey{start, trace, span, messageAttributeKeys[ref.Attribute], id}, ordinals: ref.Ordinals})
+			out = append(out, relMessageRef{cand: c, key: relMessageRefKey{start, trace, span, messageAttributeKeys[ref.Attribute], id}, ordinals: refs.AppendOrdinals(nil)})
+		}
+		if err := refs.Err(); err != nil {
+			return typedError("corruption", op, "span reference chunk", err)
 		}
 		return nil
 	})
 	return out, err
+}
+
+// keyElem is one element of a key unpackKey decoded: an int64, a byte
+// string, or another tuple element.
+type keyElem struct {
+	kind  byte // 'i' int64, 'b' bytes, 'o' other
+	int64 int64
+	buf   []byte
+	other tuple.TupleElement
+}
+
+func (e keyElem) int() (int64, bool)    { return e.int64, e.kind == 'i' }
+func (e keyElem) bytes() ([]byte, bool) { return e.buf, e.kind == 'b' }
+
+// unpackKey is space.Unpack(key) appended to dst. It reads the byte strings
+// and ints of this store's keys in place, copying a byte string only to
+// unescape its zero bytes; a key holding any other element, or an int that
+// tuple.Unpack does not decode as an int64, is decoded by space.Unpack, so
+// both yield the same elements and errors.
+func unpackKey(space subspace.Subspace, key []byte, dst []keyElem) ([]keyElem, error) {
+	if out, ok := readKeyTuple(space.Bytes(), key, dst); ok {
+		return out, nil
+	}
+	t, err := space.Unpack(fdb.Key(key))
+	if err != nil {
+		return nil, err
+	}
+	out := dst[:0]
+	for _, el := range t {
+		switch v := el.(type) {
+		case int64:
+			out = append(out, keyElem{kind: 'i', int64: v})
+		case []byte:
+			out = append(out, keyElem{kind: 'b', buf: v})
+		default:
+			out = append(out, keyElem{kind: 'o', other: v})
+		}
+	}
+	return out, nil
+}
+
+// readKeyTuple decodes key below prefix if every element is a byte string or
+// an int of at most 7 bytes, or of 8 that tuple.Unpack reads as an int64.
+func readKeyTuple(prefix, key []byte, dst []keyElem) ([]keyElem, bool) {
+	if !bytes.HasPrefix(key, prefix) {
+		return nil, false
+	}
+	b, out := key[len(prefix):], dst[:0]
+	for pos := 0; pos < len(b); {
+		c := b[pos]
+		switch {
+		case c == 0x01:
+			v, next, ok := readKeyBytes(b, pos+1)
+			if !ok {
+				return nil, false
+			}
+			out, pos = append(out, keyElem{kind: 'b', buf: v}), next
+		case c >= 0x0d && c <= 0x1b:
+			// Ints of up to 7 bytes; tuple.Unpack decodes 8-byte ones as
+			// uint64 or big ints at the edges, so those take its path.
+			n := int(c) - 0x14
+			neg := n < 0
+			if neg {
+				n = -n
+			}
+			if pos+n >= len(b) && n > 0 {
+				return nil, false
+			}
+			var v int64
+			for _, d := range b[pos+1 : pos+1+n] {
+				v = v<<8 | int64(d)
+			}
+			switch {
+			case neg:
+				v -= 1<<(8*n) - 1
+			case n > 0 && v == 0:
+				// tuple.Unpack decodes this zero as uint64.
+				return nil, false
+			}
+			out, pos = append(out, keyElem{kind: 'i', int64: v}), pos+1+n
+		default:
+			return nil, false
+		}
+	}
+	return out, true
+}
+
+// readKeyBytes reads the byte string whose content starts at b[pos]: a
+// subslice of b, or a copy when it escapes zero bytes as 0x00 0xff.
+func readKeyBytes(b []byte, pos int) ([]byte, int, bool) {
+	var out []byte
+	for i := pos; ; {
+		j := bytes.IndexByte(b[i:], 0x00)
+		if j < 0 {
+			return nil, 0, false
+		}
+		j += i
+		if j+1 < len(b) && b[j+1] == 0xff {
+			if out == nil {
+				out = make([]byte, 0, len(b)-pos)
+			}
+			out, i = append(out, b[i:j+1]...), j+2
+			continue
+		}
+		if out == nil {
+			return b[pos:j:j], j + 1, true
+		}
+		return append(out, b[i:j]...), j + 1, true
+	}
 }
 
 // relPipelinedRanges reads up to messageRefReads ranges concurrently,
