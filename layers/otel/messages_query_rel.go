@@ -357,40 +357,16 @@ func (r *SpanReader) messageRefs(ctx context.Context, store *recordlayer.FDBReco
 	tx := store.Context().ReadTransaction(false)
 
 	// Round 1: the traces of each matching message.
-	records := store.RecordsSubspace()
-	ranges := make([]fdb.KeyRange, len(cands))
-	var prefixLen int
-	for i, c := range cands {
-		pk, err := tableKey(store, op, messageTracesRecordType, c.id.writer, c.id.seq)
-		if err != nil {
-			return nil, err
-		}
-		prefixLen = len(pk)
-		if ranges[i], err = fdb.PrefixRange(records.Pack(pk)); err != nil {
-			return nil, err
-		}
-	}
 	byTrace := map[string]map[messageID]*relMessageCandidate{}
 	var traces [][]byte
-	badMarker := fail("corruption", op, "malformed message trace record key")
-	if err := relPipelinedRanges(ctx, tx, ranges, work, func(i int, kv fdb.KeyValue) error {
-		// The primary key (writer, seq, trace_id) and the record's split suffix.
-		t, err := records.Unpack(kv.Key)
-		if err != nil || len(t) <= prefixLen {
-			return badMarker
-		}
-		trace, ok := t[prefixLen].([]byte)
-		if !ok || len(trace) != 16 || zeroID(trace) {
-			return badMarker
-		}
+	if err := readMessageMarkers(ctx, store, tx, cands, work, func(c *relMessageCandidate, trace []byte) {
 		set := byTrace[string(trace)]
 		if set == nil {
 			set = map[messageID]*relMessageCandidate{}
 			byTrace[string(trace)] = set
 			traces = append(traces, trace)
 		}
-		set[cands[i].id] = cands[i]
-		return nil
+		set[c.id] = c
 	}); err != nil {
 		return nil, err
 	}
@@ -402,7 +378,7 @@ func (r *SpanReader) messageRefs(ctx context.Context, store *recordlayer.FDBReco
 	}
 	space := store.IndexSubspace(idx)
 	sort.Slice(traces, func(i, j int) bool { return bytes.Compare(traces[i], traces[j]) < 0 })
-	ranges = ranges[:0]
+	ranges := make([]fdb.KeyRange, 0, len(traces))
 	for _, trace := range traces {
 		kr, err := fdb.PrefixRange(space.Pack(tuple.Tuple{trace}))
 		if err != nil {
@@ -425,7 +401,7 @@ func (r *SpanReader) messageRefs(ctx context.Context, store *recordlayer.FDBReco
 	// decoding their ordinals.
 	var refs otelsql.RefChunkReader
 	var elems [16]keyElem
-	err = relPipelinedRanges(ctx, tx, ranges, work, func(i int, kv fdb.KeyValue) error {
+	_, err = relPipelinedRanges(ctx, tx, ranges, nil, work, func(i int, kv fdb.KeyValue) error {
 		// (trace_id, start_ns, span_id, chunk, refs) and the primary key.
 		k, err := unpackKey(space, kv.Key, elems[:0])
 		if err != nil || len(k) < 5 {
@@ -469,6 +445,130 @@ func (r *SpanReader) messageRefs(ctx context.Context, store *recordlayer.FDBReco
 		return nil
 	})
 	return out, err
+}
+
+// A marker range read spans the matching messages of one writer whose seqs
+// lie within markerGap of each other, reading the markers of the messages
+// between them too: a few more rows cost less than a request per message.
+// The read stops after markerSpanRows rows per message it spans, so other
+// messages' dense markers cost at most that before the matching messages
+// it did not reach are read one by one.
+const (
+	markerGap      = 32
+	markerSpanRows = 4
+)
+
+// readMessageMarkers calls visit with every MESSAGE_TRACES marker of cands,
+// which are sorted by ID: the candidate and the marker's trace.
+func readMessageMarkers(ctx context.Context, store *recordlayer.FDBRecordStore, tx fdb.ReadTransaction, cands []*relMessageCandidate, work *queryWork, visit func(*relMessageCandidate, []byte)) error {
+	const op = "message full-text query"
+	records := store.RecordsSubspace()
+	byID := make(map[messageID]*relMessageCandidate, len(cands))
+	for _, c := range cands {
+		byID[c.id] = c
+	}
+	// A run is cands[lo:hi]: one writer, consecutive seqs at most
+	// markerGap apart.
+	type run struct{ lo, hi int }
+	var runs []run
+	for i, c := range cands {
+		if n := len(runs); n > 0 {
+			prev := cands[i-1].id
+			if prev.writer == c.id.writer && c.id.seq-prev.seq <= markerGap+1 {
+				runs[n-1].hi = i + 1
+				continue
+			}
+		}
+		runs = append(runs, run{i, i + 1})
+	}
+	var prefixLen int
+	pkRange := func(first, last messageID) (fdb.KeyRange, error) {
+		lo, err := tableKey(store, op, messageTracesRecordType, first.writer, first.seq)
+		if err != nil {
+			return fdb.KeyRange{}, err
+		}
+		hi, err := tableKey(store, op, messageTracesRecordType, last.writer, last.seq)
+		if err != nil {
+			return fdb.KeyRange{}, err
+		}
+		prefixLen = len(lo)
+		begin, err := fdb.PrefixRange(records.Pack(lo))
+		if err != nil {
+			return fdb.KeyRange{}, err
+		}
+		end, err := fdb.PrefixRange(records.Pack(hi))
+		if err != nil {
+			return fdb.KeyRange{}, err
+		}
+		return fdb.KeyRange{Begin: begin.Begin, End: end.End}, nil
+	}
+	ranges := make([]fdb.KeyRange, len(runs))
+	limits := make([]int, len(runs))
+	for i, rn := range runs {
+		first, last := cands[rn.lo].id, cands[rn.hi-1].id
+		var err error
+		if ranges[i], err = pkRange(first, last); err != nil {
+			return err
+		}
+		if rn.hi-rn.lo > 1 {
+			limits[i] = int(last.seq-first.seq+1) * markerSpanRows
+		}
+	}
+	badMarker := fail("corruption", op, "malformed message trace record key")
+	// The furthest marker each run's read reached.
+	reached := make([]messageID, len(runs))
+	var elems [16]keyElem
+	read := func(i int, kv fdb.KeyValue, only *relMessageCandidate) error {
+		// The primary key (writer, seq, trace_id) and the record's split suffix.
+		t, err := unpackKey(records, kv.Key, elems[:0])
+		if err != nil || len(t) <= prefixLen {
+			return badMarker
+		}
+		writer, wok := t[prefixLen-2].int()
+		seq, sok := t[prefixLen-1].int()
+		trace, tok := t[prefixLen].bytes()
+		if !wok || !sok || !tok || len(trace) != 16 || zeroID(trace) {
+			return badMarker
+		}
+		id := messageID{writer, seq}
+		if only == nil {
+			reached[i] = id
+		}
+		if c := byID[id]; c != nil && (only == nil || c == only) {
+			visit(c, trace)
+		}
+		return nil
+	}
+	counts, err := relPipelinedRanges(ctx, tx, ranges, limits, work, func(i int, kv fdb.KeyValue) error { return read(i, kv, nil) })
+	if err != nil {
+		return err
+	}
+	// A read that stopped at its row cap left the matching messages from
+	// the one it reached on: read those one by one, the reached one again.
+	var rest []*relMessageCandidate
+	for i, rn := range runs {
+		if limits[i] == 0 || counts[i] < limits[i] {
+			continue
+		}
+		for _, c := range cands[rn.lo:rn.hi] {
+			if !c.id.less(reached[i]) {
+				rest = append(rest, c)
+			}
+		}
+	}
+	if len(rest) == 0 {
+		return nil
+	}
+	ranges = ranges[:0]
+	for _, c := range rest {
+		kr, err := pkRange(c.id, c.id)
+		if err != nil {
+			return err
+		}
+		ranges = append(ranges, kr)
+	}
+	_, err = relPipelinedRanges(ctx, tx, ranges, nil, work, func(i int, kv fdb.KeyValue) error { return read(i, kv, rest[i]) })
+	return err
 }
 
 // keyElem is one element of a key unpackKey decoded: an int64, a byte
@@ -581,36 +681,43 @@ func readKeyBytes(b []byte, pos int) ([]byte, int, bool) {
 }
 
 // relPipelinedRanges reads up to messageRefReads ranges concurrently,
-// charging every row read and passing it to visit.
-func relPipelinedRanges(ctx context.Context, tx fdb.ReadTransaction, ranges []fdb.KeyRange, work *queryWork, visit func(i int, kv fdb.KeyValue) error) error {
+// charging every row read and passing it to visit, and returns each range's
+// row count. A positive limits[i] caps range i's rows below the budget's.
+func relPipelinedRanges(ctx context.Context, tx fdb.ReadTransaction, ranges []fdb.KeyRange, limits []int, work *queryWork, visit func(i int, kv fdb.KeyValue) error) ([]int, error) {
 	const op = "message full-text query"
+	counts := make([]int, len(ranges))
 	for lo := 0; lo < len(ranges); lo += messageRefReads {
 		if err := canceled(ctx, op); err != nil {
-			return err
+			return nil, err
 		}
 		hi := min(lo+messageRefReads, len(ranges))
 		// No range returns more rows than the budget has left.
-		limit := max(work.maxCandidates-work.candidates, 0) + 1
+		budget := max(work.maxCandidates-work.candidates, 0) + 1
 		pending := make([]fdb.RangeResult, hi-lo)
 		for i := lo; i < hi; i++ {
+			limit := budget
+			if limits != nil && limits[i] > 0 {
+				limit = min(limit, limits[i])
+			}
 			pending[i-lo] = tx.GetRange(ranges[i], fdb.RangeOptions{Limit: limit, Mode: fdb.StreamingModeWantAll})
 		}
 		for i := lo; i < hi; i++ {
 			rows, err := pending[i-lo].GetSliceWithError()
 			if err != nil {
-				return err
+				return nil, err
 			}
+			counts[i] = len(rows)
 			for _, kv := range rows {
 				if err := work.charge(op, int64(len(kv.Key)+len(kv.Value))); err != nil {
-					return err
+					return nil, err
 				}
 				if err := visit(i, kv); err != nil {
-					return err
+					return nil, err
 				}
 			}
 		}
 	}
-	return nil
+	return counts, nil
 }
 
 // matchMessages returns the messages matching plan, by ID, with the role

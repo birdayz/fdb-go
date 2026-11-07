@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -266,6 +267,7 @@ func TestRelMessagesRealFDB(t *testing.T) {
 		"deltas_layout":               testRelMessageDeltas,
 		"deltas_conversation":         testRelMessageDeltaConversation,
 		"message_free_last_duplicate": testRelMessageFreeLastDuplicate,
+		"marker_runs":                 testRelMessageMarkerRuns,
 		"unknown_commit":              testRelMessageUnknownCommit,
 		"size_fallback":               testRelMessageSizeFallback,
 		"corruption":                  testRelMessageCorruption,
@@ -1065,6 +1067,70 @@ func testRelMessageDeltas(t *testing.T, h *qrHarness) {
 			t.Fatal(err)
 		}
 		requireProtoEqual(t, fmt.Sprintf("span %d", k), got, want)
+	}
+}
+
+// Matching messages of one writer within markerGap seqs share one marker
+// read. A read that reaches its row cap in another message's markers falls
+// back to one read per matching message it did not finish, so every marker
+// of a match is visited once the reads end, and the cap bounds the rows.
+func testRelMessageMarkerRuns(t *testing.T, h *qrHarness) {
+	for _, dense := range []bool{false, true} {
+		t.Run(map[bool]string{false: "sparse", true: "dense"}[dense], func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+			defer cancel()
+			e := h.msgEnv(t, ctx, messagesFullText, nil)
+			trace := func(k int) []byte { return bytes.Repeat([]byte{byte(k)}, 16) }
+			// 1.11 and 1.13 match nothing; 1.60 is past markerGap.
+			other := 2
+			if dense {
+				other = 30
+			}
+			markers := map[messageID][]int{{1, 10}: {1}, {1, 12}: {2}, {1, 60}: {3, 4}, {2, 10}: {5}, {1, 13}: {6}}
+			for k := range other {
+				markers[messageID{1, 11}] = append(markers[messageID{1, 11}], 100+k)
+			}
+			e.run(t, ctx, func(store *recordlayer.FDBRecordStore) error {
+				var rows []proto.Message
+				for id, ts := range markers {
+					for _, k := range ts {
+						rows = append(rows, otelsql.BuildMessageTraceCompiled(id.writer, id.seq, trace(k)))
+					}
+				}
+				_, err := store.SaveRecordBatch(rows)
+				return err
+			})
+			var cands []*relMessageCandidate
+			for _, id := range []messageID{{1, 10}, {1, 12}, {1, 60}, {2, 10}} {
+				cands = append(cands, &relMessageCandidate{id: id, role: "user"})
+			}
+			var got map[messageID][]int
+			var work *queryWork
+			e.run(t, ctx, func(store *recordlayer.FDBRecordStore) error {
+				got, work = map[messageID][]int{}, newQueryWork(e.r.cfg)
+				return readMessageMarkers(ctx, store, store.Context().ReadTransaction(false), cands, work, func(c *relMessageCandidate, tr []byte) {
+					if !slices.Contains(got[c.id], int(tr[0])) {
+						got[c.id] = append(got[c.id], int(tr[0]))
+					}
+				})
+			})
+			for id := range got {
+				slices.Sort(got[id])
+			}
+			want := map[messageID][]int{{1, 10}: {1}, {1, 12}: {2}, {1, 60}: {3, 4}, {2, 10}: {5}}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("markers %v, want %v", got, want)
+			}
+			// One read of 1.10..1.12: 1 + other + 1 rows, or its cap of
+			// 3*markerSpanRows and then 1.12 alone; 1.60 and 2.10 alone.
+			wantRows := 1 + other + 1 + 2 + 1
+			if dense {
+				wantRows = 3*markerSpanRows + 1 + 2 + 1
+			}
+			if work.candidates != wantRows {
+				t.Fatalf("read %d marker rows, want %d", work.candidates, wantRows)
+			}
+		})
 	}
 }
 
