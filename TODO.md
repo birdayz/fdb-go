@@ -3665,6 +3665,19 @@ these claims; the implementation notes below are not controlled comparisons.
   `--hash-bytes` and Brotli values. The collector's `removedExporterKey`
   recognizes otel's removed-key `ConfigError` by its " was removed" text; 3B
   can drop it with the removed keys once no YAML names them.
+- [ ] G3 findings (benchmark doc, "Gate G3"):
+  - `fts_single_token` p50 is 1.53x the custom store's on a cluster that holds
+    earlier runs (bimodal per run in both stores; 0.72x on the fresh
+    cluster's first runs). p99 is 0.82x. Find what selects the slow mode
+    (TEXT bunch layout, cache misses on the 39% larger MESSAGES_TEXT keys, or
+    the marker/ref-chunk reads) before calling the class passed.
+  - Message persist wall is 1.39x, with the same summed message transaction
+    time and count and 0 retries: calls wait longer for group commits because
+    spans finish sooner. Decide whether G2C's persist criterion should be the
+    message transaction time instead.
+  - `otel.NewExporter` uses the fixed template name OTEL_V1, so it cannot open
+    on a shared cluster whose catalog holds OTEL_V1 from another revision
+    (otelcmp after G2A); `sqlbackend` avoids that with `RevisionTemplateName`.
 
 ### OTel relational prototype findings (2026-11-07)
 
