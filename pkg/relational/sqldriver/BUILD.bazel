@@ -102,6 +102,7 @@ go_test(
         "//pkg/relational/core/fleet",
         "//pkg/relational/core/keyspace",
         "//pkg/relational/core/metadata",
+        "//pkg/relational/internal/connknob",
         "//pkg/relational/internal/simgate",
         "//pkg/relational/sqltest/testkit",
         "//pkg/simfdb",
