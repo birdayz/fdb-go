@@ -81,6 +81,7 @@ go_test(
         "//pkg/relational/core/fleet",
         "//pkg/relational/core/keyspace",
         "//pkg/relational/core/metadata",
+        "//pkg/relational/internal/connknob",
         "//pkg/relational/sqltest/testkit",
         "@org_golang_google_protobuf//encoding/prototext",
         "@org_golang_google_protobuf//proto",
