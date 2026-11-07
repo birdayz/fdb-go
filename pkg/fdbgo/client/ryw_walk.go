@@ -38,7 +38,7 @@ type rywWalkState struct {
 	begin, end KeySelector
 	limits     rangeLimits
 	result     []KeyValue // the walk's own slice; rows alias the cache, the write map and valBuf
-	keyBuf     []byte     // scratch for materialized selector boundaries during resolve
+	keyBuf     []byte     // the walk's materialized selectors, valid until release hands it on
 	// valBuf holds the rows' resolved AppendIfFits values. Rows outlive the walk
 	// until Get copies them, so unlike keyBuf it is dropped on release.
 	valBuf                             []byte
@@ -79,10 +79,8 @@ type rywRangeResult struct {
 	more, readToBegin, readThroughEnd bool
 }
 
-// newRangeWalkLocked starts nothing; start runs it to its first wait. Its selectors
-// are begin and end after removeOrEqual (RYW:1752-1756), built in the walk's scratch.
-// view must stay immutable while the walk runs: the live version only while c.mu
-// is held, a pinned one until it is unpinned.
+// newRangeWalkLocked builds a walk over begin and end after removeOrEqual (RYW:1752-1756);
+// view stays immutable while it runs: live only under c.mu, pinned until unpinned.
 func (c *rywCache) newRangeWalkLocked(view *rywWrites, begin, end KeySelector, limits rangeLimits, reverse bool, maxKey []byte) *rywWalk {
 	c.checkViewLocked(view)
 	w := c.rangeWalk(view, c.serverCache.snapshot(), c.gen, KeySelector{}, KeySelector{}, limits, reverse, maxKey)

@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -342,6 +343,95 @@ func TestRYWLocalStartReleasesItsPin(t *testing.T) {
 		t.Fatalf("key read = %q, %v; want b, as issued", k, err)
 	}
 	tr.quiesced(t)
+}
+
+// A local read keeps its rows in write-map storage until Get, unpinned: the in-place
+// writes to the row's own key between Start and Get must leave its bytes as issued.
+func TestRYWLocalStartRowSurvivesInPlaceWrites(t *testing.T) {
+	t.Parallel()
+	key := []byte("b")
+	// Each issue state makes b's row alias bytes a later write may extend in place.
+	issues := map[string]struct {
+		issue func(tx *Transaction)
+		want  []byte
+	}{
+		"value with spare capacity": {func(tx *Transaction) {
+			tx.Set(key, []byte("v0"))
+			tx.Atomic(MutAppendIfFits, key, []byte("x"))
+		}, []byte("v0x")},
+		"append stack over a known absence": {func(tx *Transaction) {
+			tx.Atomic(MutAppendIfFits, key, []byte("p1"))
+			tx.Atomic(MutAppendIfFits, key, []byte("p2"))
+		}, []byte("p1p2")},
+		"add stack over a known absence": {func(tx *Transaction) {
+			tx.Atomic(MutAddValue, key, pinNum(1))
+			tx.Atomic(MutAddValue, key, pinNum(2))
+		}, pinNum(3)},
+	}
+	later := map[string]func(tx *Transaction){
+		"set":    func(tx *Transaction) { tx.Set(key, []byte("late")) },
+		"append": func(tx *Transaction) { tx.Atomic(MutAppendIfFits, key, []byte("y")) },
+		"fold": func(tx *Transaction) {
+			tx.Atomic(MutAppendIfFits, key, []byte("y"))
+			tx.Atomic(MutAddValue, key, pinNum(4))
+		},
+		"set, append, fold": func(tx *Transaction) {
+			tx.Set(key, []byte("late"))
+			tx.Atomic(MutAppendIfFits, key, []byte("y"))
+			tx.Atomic(MutAppendIfFits, key, []byte("z"))
+		},
+	}
+	ctx := context.Background()
+	begin, end := firstGreaterOrEqual([]byte("a")), firstGreaterOrEqual([]byte("d"))
+	inPlace := map[string]bool{}
+	for issueName, is := range issues {
+		for laterName, write := range later {
+			name := issueName + "/" + laterName
+			m := newMemStorage("a", "c") // b is absent from storage
+			tx := &Transaction{}
+			tx.nativeRange = m.native
+			if _, _, err := tx.Snapshot().GetRangeSelectors(ctx, begin, end, 0, 0, false); err != nil {
+				t.Fatal(err) // the cache now knows [a, d)
+			}
+			is.issue(tx)
+			tr := trackPins(&tx.ryw)
+			p := tx.StartGetRangeSelectors(ctx, begin, end, 0, 0, false)
+			if p.done != closedDone || len(p.kvs) != 3 || !bytes.Equal(p.kvs[1].Value, is.want) {
+				t.Fatalf("%s: the read was not answered at issue with b=%x: %v", name, is.want, p.kvs)
+			}
+			held := p.kvs[1].Value
+			write(tx)
+			tx.ryw.mu.Lock()
+			entry, _ := tx.ryw.liveLocked().entry(string(key))
+			tx.ryw.mu.Unlock()
+			for _, v := range append([][]byte{entry.value}, paramsOf(entry.atomics)...) {
+				if cap(v) > 0 && cap(held) > 0 && &v[:1][0] == &held[:1][0] {
+					inPlace[issueName] = true // the write extended the row's own bytes
+				}
+			}
+			kvs, _, err := p.Get()
+			if err != nil || keysOf(kvs) != "a,b,c" || !bytes.Equal(kvs[1].Value, is.want) {
+				t.Fatalf("%s: Get = %s b=%x, %v; want b=%x as issued", name, keysOf(kvs), kvs[1].Value, err, is.want)
+			}
+			if tr.cloneCount() != 0 {
+				t.Fatalf("%s: %d clones, want 0 (the read holds no pin)", name, tr.cloneCount())
+			}
+			tr.quiesced(t)
+		}
+	}
+	for _, issueName := range []string{"value with spare capacity", "append stack over a known absence"} {
+		if !inPlace[issueName] {
+			t.Errorf("%s: no later write extended the bytes the row holds", issueName)
+		}
+	}
+}
+
+func paramsOf(stack []rywMutation) [][]byte {
+	var out [][]byte
+	for _, m := range stack {
+		out = append(out, m.param)
+	}
+	return out
 }
 
 // S4.2: a writer folding a same-type atomic over a pinned stack leaves the pinned

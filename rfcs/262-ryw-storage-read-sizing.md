@@ -914,7 +914,7 @@ issue and run like `issueRange`:
 
 ```go
 func (tx *Transaction) StartGetKey(ctx context.Context, sel KeySelector) *PendingKey
-func (s *Snapshot) StartGetKey(ctx context.Context, sel KeySelector) *PendingKey
+func (s Snapshot) StartGetKey(ctx context.Context, sel KeySelector) *PendingKey
 ```
 
 Issue does the entry checks (2004 on `key > maxReadKey`, not tracked, as today), picks the

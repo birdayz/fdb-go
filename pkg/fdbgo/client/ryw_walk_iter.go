@@ -23,7 +23,7 @@ type rywIter struct {
 	// base, until kv resolves them into opValue.
 	opBase    []byte
 	opAtomics []rywMutation
-	valBuf    *[]byte // optional walk scratch buffer for resolved AppendIfFits values
+	valBuf    *[]byte // the walk's buffer for resolved AppendIfFits row values, never reused
 	// opPending marks a write classified KV without its entry (typeMap over a
 	// known cache segment); segType looks the entry up.
 	opPending bool

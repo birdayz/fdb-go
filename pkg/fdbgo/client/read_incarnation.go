@@ -598,10 +598,8 @@ func (tx *Transaction) trackReadOperation(ctx context.Context, err error) error 
 	return tx.trackReadError(err)
 }
 
-// admitSelectorRead admits a selector range read. Without a turnover under way
-// it admits the read into r.op, opContextWithLease's operation and
-// enterReadStateInto's issued lease under one lock, so a read answered at issue
-// allocates no operation.
+// admitSelectorRead admits the read into r.op under one lock when no turnover is
+// under way, so a read answered at issue allocates no operation.
 func (tx *Transaction) admitSelectorRead(r *selectorRangeRead, parent context.Context) (counted bool, err error) {
 	if existing := tx.readOperation(parent); existing != nil {
 		if existing.lease.isActive() {
@@ -621,8 +619,6 @@ func (tx *Transaction) admitSelectorRead(r *selectorRangeRead, parent context.Co
 	}
 	if tx.readReady == nil {
 		cause := inc.cause
-		inc.users++
-		inc.issuedReads++
 		r.op = readOperation{
 			Context:       parent,
 			readAdmission: readAdmission{tx: tx, inc: inc, parent: parent, entryErr: tx.deferredErr.Load()},
@@ -630,8 +626,7 @@ func (tx *Transaction) admitSelectorRead(r *selectorRangeRead, parent context.Co
 			deferred:      parentDone != nil,
 		}
 		lease := &r.op.leaseStorage
-		lease.tx, lease.inc, lease.issued = tx, inc, true
-		lease.active.Store(true)
+		tx.activateLeaseLocked(inc, true, lease)
 		r.op.lease = lease
 		r.ctx = &r.op
 		if r.op.deferred {

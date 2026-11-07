@@ -37,6 +37,10 @@ below; neither publication nor readiness is asserted.
   and the custom-maintainer `UpdateWhileWriteOnlyNonIdempotent` helper.
 - Opt-in Go-only Brotli records via `SetGoOnlyBrotliCompression` (compression
   version 2); default version-1 zlib bytes are unchanged.
+- `tuple.AppendString`, which appends a string element's tuple encoding to a buffer,
+  and byte-slice `fdb.Transaction` methods `AppendIfFitsBytes`,
+  `AddReadConflictRangeBytes`, `AddReadConflictKeyBytes`,
+  `AddWriteConflictRangeBytes` and `AddWriteConflictKeyBytes`.
 
 ### Changed / fixed
 - OTel trace and log exports preflight each actual encoded covering value against
@@ -90,6 +94,10 @@ below; neither publication nor readiness is asserted.
   an incomplete save/point delete with versions enabled (format 5).
 - **Batch conflicts:** opt-in `CoalesceIndexWriteConflicts` widens conflicts over
   maintained indexes; untouched-entry readers may retry unlike ordinary Java saves.
+- **Go API:** `client.Transaction.Snapshot()` returns a `client.Snapshot` value, whose
+  methods have value receivers, instead of `*client.Snapshot`. `fdb.WritableTransaction`
+  gains the five byte-slice methods above; implementations that do not embed one must
+  add them.
 - No dependency-pin change: Java Record Layer/Relational **4.14.2.0** and
   FoundationDB **7.3.77** remain the references. These entries do not widen v0.2.0.
 

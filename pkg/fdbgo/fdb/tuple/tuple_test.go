@@ -97,7 +97,6 @@ func TestPack1WithPrefix(t *testing.T) {
 	}
 }
 
-// TestPack1ConcatWithPrefix verifies single element + suffix tuple.
 // AppendString is Pack of the string element, NUL bytes escaped, appended in place.
 func TestAppendString(t *testing.T) {
 	t.Parallel()
@@ -115,6 +114,7 @@ func TestAppendString(t *testing.T) {
 	g.Expect(AppendString(nil, "a\x00b\x00")).To(Equal([]byte{0x02, 'a', 0x00, 0xff, 'b', 0x00, 0xff, 0x00}))
 }
 
+// TestPack1ConcatWithPrefix verifies single element + suffix tuple.
 func TestPack1ConcatWithPrefix(t *testing.T) {
 	t.Parallel()
 	g := NewGomegaWithT(t)

@@ -226,7 +226,8 @@ func (r *selectorRangeRead) read(clone bool, dst []KeyValue) ([]KeyValue, bool, 
 	if r.disabled {
 		return r.readThrough()
 	}
-	// Its rows are the cache's and the write map's, not the walk's.
+	// Rows alias the cache, the write map and the walk's valBuf, which release drops
+	// rather than reuses, so the walk can be released before the rows are returned.
 	defer func() { r.walk.release(); r.walk = nil }()
 	tx, ctx := r.tx, r.ctx
 	if !r.local {
