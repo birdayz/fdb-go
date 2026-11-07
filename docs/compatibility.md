@@ -381,20 +381,26 @@ and span), logs whose attribute and `LOGS_EVENT` indexes cover `trace_id` and
 messages with `MESSAGES_HASH` and the scalar-array unnest `MESSAGES_LARGE`,
 message-to-trace markers and a `store_meta` table. The Go template,
 `TemplateDDL()`, appends the Go-only overlay `CREATE FULLTEXT INDEX messages_text
-ON messages(content) PARTITION BY (role, shard) OPTIONS (TOKENIZER =
-'otel_message_v1', TOKENIZER_VERSION = 0)` as the last index clause on the last
-indexed table, so both have the same records descriptor (union fields, record
-type keys) and the same other indexes (`otelsql` `TestTemplateOverlay`).
-Importing `otelsql` registers the tokenizer. SQL plans the text index for
-`TEXT_CONTAINS_*(content, ?, 'otel_message_v1') AND role = ? AND shard IN (0..15)`;
-an unbound shard keeps record filtering (`sqltest/otel`). The OTel layer is
-pre-release, so OTEL_V1 was rewritten in place at catalog version 1:
-record-metadata version 20 for `TemplateBody` (19 indexes) and 21 for
-`TemplateDDL`. Java 4.14.2.0 reads Go-written rows (compiled builders, zlib-1
-records) of a `TemplateBody` store in full, but refuses every statement on a
-`TemplateDDL` store with `42000 MetaDataException unrecognized text tokenizer`:
-it has no `otel_message_v1` (`OtelTemplateOverlayJavaProbe`; TODO.md "OTel SQL
-ingest migration"). Metrics can be added as more tables in the same store; no
+ON messages(content) PARTITION BY (role, shard)` (the default tokenizer, version
+0) as the last index clause on the last indexed table, so both have the same
+records descriptor (union fields, record type keys) and the same other indexes
+(`otelsql` `TestTemplateOverlay`). `messages.content` is index-only derived
+text: `BuildMessageCompiled` stores `IndexableText`, which replaces each token
+over 1,024 bytes with the indexed placeholder token `oteloverlongtoken`, so
+positions are kept (no phrase spans an overlong token) and a query for the
+placeholder matches every overlong token; the raw element bytes stay the
+message. SQL plans the text index for `TEXT_CONTAINS_*(content, ?) AND role = ?
+AND shard IN (0..15)` (or the tokenizer named `'default'`); an unbound shard
+keeps record filtering (`sqltest/otel`). The OTel layer is pre-release, so
+OTEL_V1 was rewritten in place at catalog version 1: record-metadata version 20
+for `TemplateBody` (19 indexes) and 21 for `TemplateDDL`. Java 4.14.2.0 reads
+every table of a `TemplateDDL` store Go wrote (compiled builders, zlib-1
+records); its SQL has no `TEXT_CONTAINS_*` (`0AF00 Unsupported operator`), and
+Java writers of `messages` would have to bound overlong tokens as
+`IndexableText` does (`OtelTemplateOverlayJavaProbe`). A TEXT index naming a
+tokenizer Java lacks, such as the old exporter's `otel_message_v1`, would make
+the whole schema unreadable to Java (DIVERGENCES.md). Metrics can be added as
+more tables in the same store; no
 cross-store join is needed. Once stores must be kept, changes go through the
 catalog evolution validator and explicit schema rebinding, e.g.
 fleet.SaveTemplate and fleet.Migrate.
