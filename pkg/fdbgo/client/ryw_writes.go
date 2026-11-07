@@ -169,10 +169,9 @@ func (c *rywCache) mutableWritesLocked() *rywWrites {
 	return c.w
 }
 
-// clone snapshots the version in O(1): the copy shares every node and takes over
-// writing them (pseq.handoff), and w keeps reading its version. Key, value and
-// parameter bytes and atomic stacks are shared; they are never written after
-// insertion (appendIfFitsOwned writes only past a slice's length).
+// clone snapshots w in O(1), sharing nodes (pseq.handoff), bytes, extended only past their length,
+// and atomic stacks, written in place only by the lineage whose ver is their entry's atomicsVer:
+// the clone gets a fresh ver (mutableWritesLocked), and w, still read, is not written after clone.
 func (w *rywWrites) clone() *rywWrites {
 	w.ensureSorted()
 	return &rywWrites{
