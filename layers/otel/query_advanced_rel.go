@@ -747,8 +747,8 @@ func (r *SpanReader) logClauses(op string, clauses []Attribute) ([]witnessScanne
 	return out, nil
 }
 
-// messageClauses plans the existential message clauses. The MESSAGES reader
-// is stream 2C; until it lands the relational store refuses them.
+// messageClauses plans the existential message clauses: each is a message
+// full-text query (messages_query_rel.go) without limit or continuation.
 func (r *SpanReader) messageClauses(op string, clauses []MessageFullTextQuery) ([]witnessScanner[MessageSpanHit], error) {
 	if len(clauses) == 0 {
 		return nil, nil
@@ -756,12 +756,18 @@ func (r *SpanReader) messageClauses(op string, clauses []MessageFullTextQuery) (
 	if r.cfg.Messages != messagesFullText {
 		return nil, fail("config", op, "message clauses need the fulltext message layout")
 	}
-	for _, mq := range clauses {
+	out := make([]witnessScanner[MessageSpanHit], len(clauses))
+	for i, mq := range clauses {
 		if mq.Limit != 0 || len(mq.Continuation) > 0 {
 			return nil, fail("config", op, "message clauses take no limit or continuation")
 		}
+		plan, err := newRelMessageQueryPlan(op, mq, 0)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = messageClause{r: r, plan: plan}
 	}
-	return nil, fail("config", op, "message clauses are not yet supported on the relational store")
+	return out, nil
 }
 
 // QueryTraceExistential returns the newest traces satisfying every clause,
