@@ -542,7 +542,7 @@ func testRelContinuationSecurity(t *testing.T, h *qrHarness) {
 	for name, token := range map[string][]byte{
 		"garbage":  bytes.Repeat([]byte{0xab}, 80),
 		"short":    {1, 2, 3},
-		"v1 token": signContinuation(bytes.Repeat([]byte{7}, continuationKeyBytes), run, 11, "time", digest, tupleKey(want[1])),
+		"v1 token": signV1Continuation(bytes.Repeat([]byte{7}, continuationKeyBytes), run, 11, digest, tupleKey(want[1])),
 	} {
 		_, err = resume(r, q, token)
 		requireTyped[*ConfigError](t, name, err)
@@ -601,7 +601,7 @@ func testRelContinuationSecurity(t *testing.T, h *qrHarness) {
 }
 
 func tupleKey(s SpanMatch) []byte {
-	return postingSuffix(Span{Trace: s.Trace, ID: s.ID, Start: s.Start}, "time").Pack()
+	return v1TimeKey(s.Trace, s.ID, s.Start)
 }
 
 // Port of testTraceExistential, unchanged: span clauses, and log clauses over

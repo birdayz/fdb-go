@@ -573,6 +573,10 @@ func testRelOTLPFidelity(t *testing.T, cluster string) {
 	reTrace(t, ctx, e, tr, SpanHit{idA, start}, SpanHit{idB, start + 100})
 }
 
+// v1FidelityField is the removed custom store's internal ResourceSpans fidelity
+// tag, which a producer may use too.
+const v1FidelityField protowire.Number = 536870911
+
 // Port of TestExporterPreservesProducerFidelityTag: producer unknown fields,
 // v1's internal fidelity tag 536870911 included, survive in the otlp column.
 func testRelProducerFidelityTag(t *testing.T, cluster string) {
@@ -587,7 +591,7 @@ func testRelProducerFidelityTag(t *testing.T, cluster string) {
 			}
 			var unknown []byte
 			for _, payload := range [][]byte{[]byte("producer-owned"), {0xff}, nil} {
-				unknown = protowire.AppendTag(unknown, fidelityField, protowire.BytesType)
+				unknown = protowire.AppendTag(unknown, v1FidelityField, protowire.BytesType)
 				unknown = protowire.AppendBytes(unknown, payload)
 			}
 			rs.ProtoReflect().SetUnknown(unknown)

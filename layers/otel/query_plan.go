@@ -1,7 +1,8 @@
 package otel
 
-// Storage-free query planning: validation, digests, time windows, budgets,
-// continuation token signing and parsing, and trace graph construction.
+// Storage-free query planning: validation, digests, time windows,
+// continuation token framing and MACs, message query plans and trace graph
+// construction.
 
 import (
 	"crypto/hmac"
@@ -10,7 +11,6 @@ import (
 	"sort"
 	"strconv"
 
-	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
@@ -19,32 +19,12 @@ import (
 const (
 	maxQueryPredicates   = 16
 	maxContinuationBytes = 4096
-	continuationVersion  = int64(1)
 	continuationKind     = "same_span"
-	continuationDomain   = "otel/continuation/v1\x00"
 	continuationKeyBytes = 32
 	// sameSpanProbeBatch bounds how many verified driver candidates share one
 	// pipelined round of point probes for the remaining predicates.
 	sameSpanProbeBatch = 64
 )
-
-// queryBudget charges every key read, including rejected candidates and probes.
-type queryBudget struct {
-	op            string
-	candidates    int
-	bytes         int64
-	maxCandidates int
-	maxBytes      int64
-}
-
-func (q *queryBudget) charge(kv fdb.KeyValue) error {
-	q.candidates++
-	q.bytes += int64(len(kv.Key) + len(kv.Value))
-	if q.candidates > q.maxCandidates || q.bytes > q.maxBytes {
-		return failf("budget", q.op, "candidates=%d logical_bytes=%d", q.candidates, q.bytes)
-	}
-	return nil
-}
 
 // timeWindow is a validated [lo, hi) over stored event times, which are 0..MaxInt64.
 type timeWindow struct {
@@ -130,53 +110,6 @@ func queryDigest(kind string, preds []Attribute, w timeWindow) []byte {
 	return h[:]
 }
 
-type sameSpanPlan struct {
-	preds  []Attribute
-	window timeWindow
-	limit  int
-	digest []byte
-}
-
-func newSameSpanPlan(q SameSpanQuery, k int) (sameSpanPlan, error) {
-	const op = "same-span query"
-	preds := uniqueAttributes(q.Predicates)
-	if len(preds) == 0 || len(q.Predicates) > maxQueryPredicates {
-		return sameSpanPlan{}, failf("config", op, "expected 1..%d predicates", maxQueryPredicates)
-	}
-	for _, a := range preds {
-		if err := validateQueryAttribute(op, a, "resource", "scope", "span"); err != nil {
-			return sameSpanPlan{}, err
-		}
-	}
-	if q.Limit < 0 {
-		return sameSpanPlan{}, fail("config", op, "limit must not be negative")
-	}
-	w, err := newTimeWindow(q.TimeWindow)
-	if err != nil {
-		return sameSpanPlan{}, err
-	}
-	limit := q.Limit
-	if limit == 0 {
-		limit = k
-	}
-	return sameSpanPlan{preds: preds, window: w, limit: limit, digest: queryDigest(continuationKind, preds, w)}, nil
-}
-
-// continuation is a parsed, not yet authenticated, token.
-type continuation struct {
-	run     string
-	tenant  int64
-	order   string
-	digest  []byte
-	last    []byte
-	payload []byte
-	mac     []byte
-}
-
-func continuationMAC(secret, payload []byte) []byte {
-	return continuationMACIn(continuationDomain, secret, payload)
-}
-
 // continuationMACIn is HMAC-SHA256 under secret of domain‖payload; the
 // domain separates token versions.
 func continuationMACIn(domain string, secret, payload []byte) []byte {
@@ -184,49 +117,6 @@ func continuationMACIn(domain string, secret, payload []byte) []byte {
 	m.Write([]byte(domain))
 	m.Write(payload)
 	return m.Sum(nil)
-}
-
-func signContinuation(secret []byte, run string, tenant int, order string, digest, last []byte) []byte {
-	return signContinuationKind(secret, continuationKind, run, tenant, order, digest, last)
-}
-
-// signContinuationKind signs a token of one query family; kind is authenticated.
-func signContinuationKind(secret []byte, kind, run string, tenant int, order string, digest, last []byte) []byte {
-	payload := tuple.Tuple{continuationVersion, kind, run, int64(tenant), order, digest, last}.Pack()
-	return append(payload, continuationMAC(secret, payload)...)
-}
-
-func parseContinuation(token []byte) (*continuation, error) {
-	return parseContinuationKind(token, continuationKind)
-}
-
-func parseContinuationKind(token []byte, want string) (*continuation, error) {
-	const op = "continuation"
-	fields, payload, mac, err := splitContinuation(token)
-	if err != nil {
-		return nil, err
-	}
-	if len(fields) != 7 {
-		return nil, fail("config", op, "malformed continuation token fields")
-	}
-	version, vok := fields[0].(int64)
-	kind, kok := fields[1].(string)
-	c := &continuation{payload: payload, mac: mac}
-	var rok, tok, ook, dok, lok bool
-	c.run, rok = fields[2].(string)
-	c.tenant, tok = fields[3].(int64)
-	c.order, ook = fields[4].(string)
-	c.digest, dok = fields[5].([]byte)
-	c.last, lok = fields[6].([]byte)
-	if !vok || !kok || !rok || !tok || !ook || !dok || !lok || version != continuationVersion || kind != want {
-		return nil, fail("config", op, "unsupported continuation token")
-	}
-	return c, nil
-}
-
-// checkMAC authenticates the token under the run's signing key.
-func (c *continuation) checkMAC(secret []byte) error {
-	return checkContinuationMAC(continuationDomain, "run", secret, c.payload, c.mac)
 }
 
 // splitContinuation splits a token into its payload's tuple fields and its

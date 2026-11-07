@@ -451,92 +451,6 @@ func TestCanonicalAttributeScopes(t *testing.T) {
 	}
 }
 
-// canonicalAttributes and legacyCanonicalAttribute are the custom store's
-// (FDBBackend's log path, until phase 3B), not the Exporter's.
-func TestCanonicalAttributesIndexedList(t *testing.T) {
-	longKey := strings.Repeat("k", maxIndexedKeyBytes+1)
-	edgeKey := strings.Repeat("e", maxIndexedKeyBytes)
-	huge := strings.Repeat("v", maxIndexedValueBytes+1)
-	edge := strings.Repeat("w", maxIndexedValueBytes)
-
-	t.Run("string and int lists pass through unchanged", func(t *testing.T) {
-		in := []*commonpb.KeyValue{exKV("a", exStr("x")), exKV("b", exInt(1)), exKV(edgeKey, exStr(edge))}
-		got := canonicalAttributes(in)
-		if got.changed || got.unindexed != 0 || len(got.indexed) != len(in) {
-			t.Fatalf("unexpected canonicalization: %+v", got)
-		}
-		for i := range in {
-			if got.indexed[i] != in[i] {
-				t.Fatalf("indexed[%d] was copied instead of reused", i)
-			}
-		}
-	})
-
-	t.Run("empty", func(t *testing.T) {
-		for _, in := range [][]*commonpb.KeyValue{nil, {}} {
-			if got := canonicalAttributes(in); got.changed || got.unindexed != 0 || len(got.indexed) != 0 {
-				t.Fatalf("empty list: %+v", got)
-			}
-		}
-	})
-
-	t.Run("duplicates, conversions, nil and caps", func(t *testing.T) {
-		in := []*commonpb.KeyValue{
-			exKV("a", exInt(1)),
-			nil,
-			exKV("b", exStr("x")),
-			exKV("a", exStr("2")),
-			exKV("c", exBool(true)),
-			exKV(longKey, exStr("v")),
-			exKV("big", exStr(huge)),
-			exKV("shrinks", exStr(huge)),
-			exKV("grows", exStr("small")),
-			exKV("d", exArray(exDouble(1.5))),
-			exKV("a", exInt(3)),
-			exKV("shrinks", exStr("ok")),
-			exKV("grows", exStr(huge)),
-		}
-		got := canonicalAttributes(in)
-		if !got.changed {
-			t.Fatal("expected changed")
-		}
-		// First position kept, last value wins, oversized latest values unindexed.
-		want := []Attribute{
-			{"span", "a", "int", "3"},
-			{"span", "b", "string", "x"},
-			{"span", "c", "string", "true"},
-			{"span", "shrinks", "string", "ok"},
-			{"span", "d", "string", "[1.5]"},
-		}
-		var gotAttrs []Attribute
-		for _, kv := range got.indexed {
-			gotAttrs = append(gotAttrs, legacyCanonicalAttribute("span", kv.Key, kv.Value))
-			switch kv.Value.GetValue().(type) {
-			case *commonpb.AnyValue_StringValue, *commonpb.AnyValue_IntValue:
-			default:
-				t.Fatalf("indexed %q kept non-canonical type %T", kv.Key, kv.Value.GetValue())
-			}
-		}
-		if !reflect.DeepEqual(gotAttrs, want) {
-			t.Fatalf("indexed\n got %+v\nwant %+v", gotAttrs, want)
-		}
-		if got.unindexed != 3 { // longKey, big, grows
-			t.Fatalf("unindexed = %d, want 3", got.unindexed)
-		}
-		// The input list is never mutated.
-		if in[4].Value.GetBoolValue() != true || in[0].Value.GetIntValue() != 1 {
-			t.Fatal("input mutated")
-		}
-	})
-
-	t.Run("duplicate alone marks changed", func(t *testing.T) {
-		got := canonicalAttributes([]*commonpb.KeyValue{exKV("a", exStr("1")), exKV("a", exStr("2"))})
-		if !got.changed || len(got.indexed) != 1 || got.indexed[0].Value.GetStringValue() != "2" {
-			t.Fatalf("duplicate: %+v", got)
-		}
-	})
-}
-
 // ---------------------------------------------------------------------------
 // ResourceSpansFromReadOnly
 // ---------------------------------------------------------------------------
@@ -688,11 +602,6 @@ func TestResourceSpansFromReadOnlySpanFields(t *testing.T) {
 		if w, ok := canonical[kv.Key]; !ok || w != [2]string{typ, value} {
 			t.Errorf("%s canonicalizes to (%q, %q), want %q", kv.Key, typ, value, w)
 		}
-	}
-	// Duplicate keys survive conversion; the indexed copy keeps the last value.
-	set := canonicalAttributes(got[0].ScopeSpans[0].Spans[0].Attributes)
-	if v := exFind(set.indexed, "dup"); v.GetIntValue() != 2 {
-		t.Fatalf("duplicate canonical value = %v, want int 2", v)
 	}
 }
 

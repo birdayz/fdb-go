@@ -20,7 +20,6 @@ import (
 	"sync/atomic"
 
 	"fdb.dev/layers/otel/otelsql"
-	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"github.com/rivo/uniseg"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -75,21 +74,14 @@ const (
 	messageTextShards = 16
 	// messageTextPipeline is the TEXT_INDEX_UPDATE pipeline size.
 	messageTextPipeline = 128
-
-	messageTokenizerName = otelsql.MessageTokenizerName
 )
 
-// Attribute codes packed in Envelope.ref_chunks.
-var messageAttributeKeys = [...]string{1: "gen_ai.input.messages", 2: "gen_ai.output.messages", 3: "gen_ai.system_instructions", 4: "gen_ai.tool.definitions"}
+// messageAttributeKeys are otelsql.MessageAttributeKeys: the GenAI content
+// attributes by the code a span's message reference carries.
+var messageAttributeKeys = otelsql.MessageAttributeKeys
 
-func messageAttributeCode(key string) int64 {
-	for i, k := range messageAttributeKeys {
-		if i > 0 && k == key {
-			return int64(i)
-		}
-	}
-	return -1
-}
+// messageAttributeCode is key's code in messageAttributeKeys, or 0.
+func messageAttributeCode(key string) int64 { return otelsql.MessageAttributeCode(key) }
 
 // IsMessageDeltaAttribute reports whether key is a GenAI content attribute
 // whose value the message layouts replace with a manifest.
@@ -985,10 +977,6 @@ func splitMessageParts(el *messageElement, fulltext bool, distinct int) (message
 	return mp, nil
 }
 
-// messageShard isolates TEXT maps among one backend’s writers, preserving append order.
-// Writers from different backends may share a shard and conflict safely.
-func messageShard(writer int64) int64 { return writer % messageTextShards }
-
 // ---------------------------------------------------------------------------
 // Writers
 // ---------------------------------------------------------------------------
@@ -1204,84 +1192,6 @@ func parallelMessageWork(n int, fn func(int) error) error {
 // ---------------------------------------------------------------------------
 // Span back references
 // ---------------------------------------------------------------------------
-
-// messageRefChunkBytes bounds one envelope_refs_v1 value (FDB values are at
-// most 100KB); a span with more references has several entries.
-const messageRefChunkBytes = 16 << 10
-
-// spanRef records a message’s positions in the span’s first attribute value
-// and whether it is that value’s newest element.
-type spanRef struct {
-	id        messageID
-	attribute int64
-	newest    bool
-	ordinals  []int
-}
-
-// spanRefFields is the number of tuple elements of one packed reference:
-// (writer, seq, attribute, newest, (ordinals)).
-const spanRefFields = 5
-
-// packSpanRefs packs ordered fields into messageRefChunkBytes-bounded tuples.
-// Placeholder IDs encode at least as long as real IDs, keeping preflight sizing conservative.
-func packSpanRefs(uses []messageUse) [][]byte {
-	var chunks [][]byte
-	var cur []byte
-	for _, u := range uses {
-		id := u.element.id
-		if !id.valid() {
-			id = messagePlaceholderID
-		}
-		ords := make(tuple.Tuple, len(u.ordinals))
-		for i, o := range u.ordinals {
-			ords[i] = int64(o)
-		}
-		newest := int64(0)
-		if u.newest {
-			newest = 1
-		}
-		ref := tuple.Tuple{id.writer, id.seq, u.attribute, newest, ords}.Pack()
-		if len(cur) > 0 && len(cur)+len(ref) > messageRefChunkBytes {
-			chunks = append(chunks, cur)
-			cur = nil
-		}
-		cur = append(cur, ref...)
-	}
-	if len(cur) > 0 {
-		chunks = append(chunks, cur)
-	}
-	return chunks
-}
-
-// unpackSpanRefs decodes one chunk of packSpanRefs.
-func unpackSpanRefs(b []byte) ([]spanRef, error) {
-	bad := fail("corruption", "message references", "malformed span reference chunk")
-	t, err := tuple.Unpack(b)
-	if err != nil || len(t)%spanRefFields != 0 {
-		return nil, bad
-	}
-	out := make([]spanRef, 0, len(t)/spanRefFields)
-	for i := 0; i < len(t); i += spanRefFields {
-		w, wok := t[i].(int64)
-		s, sok := t[i+1].(int64)
-		a, aok := t[i+2].(int64)
-		n, nok := t[i+3].(int64)
-		ords, ook := t[i+4].(tuple.Tuple)
-		r := spanRef{id: messageID{w, s}, attribute: a, newest: n == 1, ordinals: make([]int, len(ords))}
-		if !wok || !sok || !aok || !nok || !ook || !r.id.valid() || a < 1 || a >= int64(len(messageAttributeKeys)) || (n != 0 && n != 1) || len(ords) == 0 {
-			return nil, bad
-		}
-		for j, o := range ords {
-			v, ok := o.(int64)
-			if !ok || v < 0 {
-				return nil, bad
-			}
-			r.ordinals[j] = int(v)
-		}
-		out = append(out, r)
-	}
-	return out, nil
-}
 
 // traceMarker is a MessageTrace record: message id occurs in trace.
 type traceMarker struct {

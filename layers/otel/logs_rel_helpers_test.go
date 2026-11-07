@@ -143,9 +143,30 @@ func lrCensusAll(t *testing.T, ctx context.Context, s *relLogStore) map[string]i
 	return out
 }
 
-// lrSize is the logical KV size of ss, read in pages.
+// lrSize is the logical KV size of ss, read in pages of 256 rows.
 func lrSize(ctx context.Context, db *recordlayer.FDBDatabase, ss subspace.Subspace) (Size, error) {
-	return (&FDBBackend{db: db}).size(ctx, ss)
+	var total Size
+	begin, end := ss.FDBRangeKeys()
+	lo, high := begin.FDBKey(), end.FDBKey()
+	var prev []byte
+	for {
+		var rows []fdb.KeyValue
+		if _, err := db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+			var err error
+			rows, err = rc.ReadTransaction(true).GetRange(fdb.KeyRange{Begin: lo, End: high}, fdb.RangeOptions{Limit: 256}).GetSliceWithError()
+			return nil, err
+		}); err != nil {
+			return total, err
+		}
+		for _, kv := range rows {
+			total.AddKV(prev, kv.Key, kv.Value)
+			prev = kv.Key
+		}
+		if len(rows) < 256 {
+			return total, nil
+		}
+		lo = append(append(fdb.Key(nil), rows[len(rows)-1].Key...), 0)
+	}
 }
 
 // lrRow loads s's stored row of eventID, nil when absent.

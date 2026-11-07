@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
-	"sort"
 	"testing"
 
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -46,74 +45,9 @@ func requireTyped[T error](t *testing.T, label string, err error) {
 	}
 }
 
-func qaBackend(order string) *FDBBackend {
-	return &FDBBackend{cfg: Config{Run: "qa_run_0001", Tenant: 3, Order: order, K: 100}}
-}
-
-// qaCanonical is the indexed attribute set of one stored single-span ResourceSpans.
-func qaCanonical(rs *tracepb.ResourceSpans) map[Attribute]bool {
-	out := map[Attribute]bool{}
-	add := func(scope string, kvs []*commonpb.KeyValue) {
-		for _, kv := range canonicalAttributes(kvs).indexed {
-			out[CanonicalAttribute(scope, kv.Key, kv.Value)] = true
-		}
-	}
-	add("resource", rs.GetResource().GetAttributes())
-	add("scope", rs.ScopeSpans[0].GetScope().GetAttributes())
-	add("span", rs.ScopeSpans[0].Spans[0].Attributes)
-	return out
-}
-
 type qaFixtureSpan struct {
 	match SpanMatch
 	attrs map[Attribute]bool
-}
-
-func qaFixture(rss []*tracepb.ResourceSpans) []qaFixtureSpan {
-	var out []qaFixtureSpan
-	for _, rs := range rss {
-		for _, ss := range rs.ScopeSpans {
-			for _, sp := range ss.Spans {
-				single := &tracepb.ResourceSpans{Resource: rs.Resource, ScopeSpans: []*tracepb.ScopeSpans{{Scope: ss.Scope, Spans: []*tracepb.Span{sp}}}}
-				out = append(out, qaFixtureSpan{SpanMatch{hex.EncodeToString(sp.TraceId), hex.EncodeToString(sp.SpanId), int64(sp.StartTimeUnixNano)}, qaCanonical(single)})
-			}
-		}
-	}
-	return out
-}
-
-func qaSortSpans(order string, xs []SpanMatch) {
-	sort.Slice(xs, func(i, j int) bool {
-		a, b := xs[i], xs[j]
-		if order == "time" {
-			if a.Start != b.Start {
-				return a.Start > b.Start
-			}
-			if a.Trace != b.Trace {
-				return a.Trace > b.Trace // reverseTrace ascending
-			}
-			return a.ID < b.ID
-		}
-		if a.Trace != b.Trace {
-			return a.Trace < b.Trace
-		}
-		return a.ID < b.ID
-	})
-}
-
-func qaSameSpanOracle(spans []qaFixtureSpan, preds []Attribute, w *TimeRange, order string) []SpanMatch {
-	out := []SpanMatch{}
-	for _, s := range spans {
-		ok := w == nil || (s.match.Start >= w.Start && s.match.Start < w.End)
-		for _, p := range preds {
-			ok = ok && s.attrs[p]
-		}
-		if ok {
-			out = append(out, s.match)
-		}
-	}
-	qaSortSpans(order, out)
-	return out
 }
 
 func qaGraphSpan(t *testing.T, trace string, id, parent string, start int64, links ...*tracepb.Span_Link) graphSpan {
