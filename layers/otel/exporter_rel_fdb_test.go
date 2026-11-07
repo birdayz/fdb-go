@@ -53,6 +53,7 @@ func TestRelExporterRealFDB(t *testing.T) {
 		"typed_scoped_controls":     testRelTypedScopedControls,
 		"selective_v2":              testRelSelectiveV2,
 		"public_query_replay":       testRelPublicQueryReplay,
+		"intrinsic_v2":              testRelIntrinsicV2,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

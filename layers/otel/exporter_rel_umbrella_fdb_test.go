@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -370,6 +371,293 @@ func testRelPublicQueryReplay(t *testing.T, cluster string) {
 					requireProtoEqual(t, "final source "+s.Trace, rs, relFixtureSpan(t, s))
 				}
 			})
+		}
+	}
+}
+
+// Port of testOtelIntrinsicV2 (intrinsic_test.go:104). The corpus tenants
+// are two schema stores of one run (§0.1), so the built-in census is per
+// store and the other tenant's lookup reads the other store. §1.3: work is
+// returned per call, so the v1 LastQueryWork checks read the returned work.
+func testRelIntrinsicV2(t *testing.T, cluster string) {
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	c := testConfig()
+	c.Count, c.Tenants, c.Attributes, c.K = 8, 2, 8, 1
+	e := openRelExporter(t, ctx, cluster, func(x *ExporterConfig) { x.K = c.K })
+	otherConfig := e.Config()
+	otherConfig.Tenant++
+	other := startRelExporter(t, ctx, otherConfig, relParts{})
+	otherHalf := c
+	otherHalf.Tenant = 1
+	if n := len(relExportCorpus(t, ctx, e, c)) + len(relExportCorpus(t, ctx, other, otherHalf)); n != 8 {
+		t.Fatalf("V2 corpus exported %d spans, want 8", n)
+	}
+	for _, x := range []*relExporter{e, other} {
+		for _, name := range []string{spansSpanIDIndex, spansTimeIndex} {
+			if rows, _ := relIndexCensus(t, ctx, x, name, recordlayer.TupleRangeAll); rows != 4 {
+				t.Fatalf("V2 built-in index census %s of tenant %d: %d entries, want 4", name, x.Config().Tenant, rows)
+			}
+		}
+	}
+	first := Generate(c, 0)
+	response := Attribute{"span", "gen_ai.response.id", "string", "chatcmpl-fixture-v2-" + first.ID}
+	reHits(t, ctx, e, response, Hit{first.Trace, first.Start})
+	for _, a := range []Attribute{
+		{"resource", response.Key, "string", response.Value},
+		{"scope", response.Key, "string", response.Value},
+		{"span", response.Key, "int", "42"},
+		{"span", response.Key, "string", "missing_response_id"},
+	} {
+		got, err := e.Query(ctx, a)
+		if err != nil || len(got.Hits) != 0 {
+			t.Fatalf("GenAI scope/type/missing control %+v: %+v %v", a, got, err)
+		}
+	}
+	t.Run("attribute_state_read_error", func(t *testing.T) {
+		testRelAttributeStateReadError(t, ctx, e, response, []Hit{{first.Trace, first.Start}})
+	})
+	for _, x := range []*relExporter{e, other} {
+		if err := x.store.run(ctx, "test", func(store *recordlayer.FDBRecordStore) error { return store.DeleteAllRecords() }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	trace := func(n int) string { return fmt.Sprintf("%032x", n) }
+	id := func(n int) string { return fmt.Sprintf("%016x", n) }
+	common := id(1)
+	sources := []Span{
+		{Tenant: 0, Trace: trace(1), ID: common, Start: 100},
+		{Tenant: 0, Trace: trace(2), ID: common, Start: 100},
+		{Tenant: 0, Trace: trace(3), ID: common, Start: 90},
+		{Tenant: 0, Trace: trace(1), ID: id(2), Start: 300},
+		{Tenant: 0, Trace: trace(2), ID: id(3), Start: 199},
+		{Tenant: 0, Trace: trace(4), ID: id(4), Start: 200},
+		{Tenant: 0, Trace: trace(5), ID: id(5), Start: 99},
+		{Tenant: 0, Trace: trace(6), ID: id(6), Start: 150},
+		{Tenant: 0, Trace: trace(6), ID: id(7), Start: 150},
+		{Tenant: 0, Trace: trace(8), ID: id(8), Start: 150},
+		{Tenant: 1, Trace: trace(7), ID: common, Start: 120},
+	}
+	byTenant := [2][]*tracepb.ResourceSpans{}
+	for i := range sources {
+		sources[i].Ordinal = i
+		byTenant[sources[i].Tenant] = append(byTenant[sources[i].Tenant], relFixtureSpan(t, sources[i]))
+	}
+	for i, x := range []*relExporter{e, other} {
+		if stats, err := x.ExportResourceSpans(ctx, byTenant[i]); err != nil || stats.Spans != int64(len(byTenant[i])) {
+			t.Fatalf("explicit sources of tenant %d: %+v %v", i, stats, err)
+		}
+		for _, name := range []string{spansSpanIDIndex, spansTimeIndex} {
+			if rows, _ := relIndexCensus(t, ctx, x, name, recordlayer.TupleRangeAll); rows != len(byTenant[i]) {
+				t.Fatalf("explicit source built-in census %s of tenant %d: %d entries, want %d", name, i, rows, len(byTenant[i]))
+			}
+		}
+	}
+	reader := func(mutate func(*Config)) *SpanReader {
+		r := *e.reader
+		mutate(&r.cfg)
+		return &r
+	}
+	wantSpan := []SpanMatch{{trace(3), common, 90}, {trace(1), common, 100}, {trace(2), common, 100}}
+	reSpan(t, ctx, e, common, wantSpan...)
+	_, spanBytes := relIndexCensus(t, ctx, e, spansSpanIDIndex, recordlayer.TupleRangeAllOf(tuple.Tuple{qaBytes(t, common)}))
+	if matches, work, err := e.reader.Span(ctx, common); err != nil || !reflect.DeepEqual(matches, wantSpan) || work.Candidates != 3 || work.Bytes != spanBytes || spanBytes <= 0 {
+		t.Fatalf("standalone Span must return all matches despite K=1, with their work: %+v %+v want 3/%d: %v", matches, work, spanBytes, err)
+	}
+	if matches, work, err := e.reader.Span(ctx, id(999)); err != nil || len(matches) != 0 || work.Candidates != 0 || work.Bytes != 0 {
+		t.Fatalf("standalone span miss: %+v %+v %v", matches, work, err)
+	}
+	reSpan(t, ctx, other, common, SpanMatch{trace(7), common, 120})
+	_, _, err := reader(func(x *Config) { x.MaxCandidates = 2 }).Span(ctx, common)
+	requireOtelBudget(t, err)
+	if matches, _, err := reader(func(x *Config) { x.MaxCandidates, x.MaxBytes = 3, spanBytes }).Span(ctx, common); err != nil || !reflect.DeepEqual(matches, wantSpan) {
+		t.Fatalf("exact span candidate/byte budget: %+v %v", matches, err)
+	}
+	_, work, err := reader(func(x *Config) { x.MaxCandidates, x.MaxBytes = 3, spanBytes-1 }).Span(ctx, common)
+	requireOtelBudget(t, err)
+	if work.Candidates != 3 || work.Bytes != spanBytes {
+		t.Fatalf("final span index entry crossing: %+v want 3/%d", work, spanBytes)
+	}
+
+	k := func(n int) func(*Config) { return func(x *Config) { x.K = n } }
+	interval := TimeRange{Start: 100, End: 200}
+	wantTime := []Hit{{trace(2), 199}, {trace(8), 150}, {trace(6), 150}, {trace(1), 100}}
+	timeRows, timeBytes := relIndexCensus(t, ctx, e, spansTimeIndex, recordlayer.TupleRangeBetween(tuple.Tuple{int64(100)}, tuple.Tuple{int64(200)}))
+	got, err := reader(k(10)).Time(ctx, interval)
+	if err != nil || !reflect.DeepEqual(got.Hits, wantTime) || got.Candidates != 6 || got.Bytes != timeBytes || timeRows != 6 || timeBytes <= 0 {
+		t.Fatalf("time half-open distinct witnesses: %+v want %+v 6/%d: %v", got, wantTime, timeBytes, err)
+	}
+	got, err = reader(k(3)).Time(ctx, interval)
+	if err != nil || !reflect.DeepEqual(got.Hits, wantTime[:3]) || got.Candidates != 3 || got.Bytes >= timeBytes {
+		t.Fatalf("time distinct frontier: %+v want %+v: %v", got, wantTime[:3], err)
+	}
+	if got, err := reader(k(1)).Time(ctx, TimeRange{Start: 100, End: 101}); err != nil || !reflect.DeepEqual(got.Hits, []Hit{{trace(2), 100}}) {
+		t.Fatalf("literal time tie boundary: %+v %v", got, err)
+	}
+	if got, err := reader(k(10)).Time(ctx, TimeRange{Start: 200, End: 201}); err != nil || !reflect.DeepEqual(got.Hits, []Hit{{trace(4), 200}}) {
+		t.Fatalf("inclusive lower boundary: %+v %v", got, err)
+	}
+	for _, empty := range []TimeRange{{Start: 100, End: 100}, {Start: 400, End: 500}} {
+		got, err := reader(k(10)).Time(ctx, empty)
+		if err != nil || got.Hits == nil || len(got.Hits) != 0 || got.Candidates != 0 || got.Bytes != 0 {
+			t.Fatalf("empty/missing time interval %+v: %+v %v", empty, got, err)
+		}
+	}
+	got, err = reader(k(10)).Time(ctx, TimeRange{Start: 200, End: 100})
+	var invalid *ConfigError
+	if !errors.As(err, &invalid) || got.Candidates != 0 || got.Bytes != 0 {
+		t.Fatalf("reversed time range: %+v %T %v", got, err, err)
+	}
+	_, err = reader(func(x *Config) { x.K, x.MaxCandidates = 10, 5 }).Time(ctx, interval)
+	requireOtelBudget(t, err)
+	got, err = reader(func(x *Config) { x.K, x.MaxCandidates, x.MaxBytes = 10, 6, timeBytes }).Time(ctx, interval)
+	if err != nil || !reflect.DeepEqual(got.Hits, wantTime) || got.Candidates != 6 || got.Bytes != timeBytes {
+		t.Fatalf("exact time consumed budgets: %+v %v", got, err)
+	}
+	got, err = reader(func(x *Config) { x.K, x.MaxCandidates, x.MaxBytes = 10, 6, timeBytes-1 }).Time(ctx, interval)
+	requireOtelBudget(t, err)
+	if got.Candidates != 6 || got.Bytes != timeBytes {
+		t.Fatalf("final time index entry crossing: %+v want 6/%d", got, timeBytes)
+	}
+
+	for _, kind := range []string{"span", "time"} {
+		lookup := func(r *SpanReader) (QueryResult, error) {
+			if kind == "span" {
+				matches, work, err := r.Span(ctx, id(2))
+				if err == nil && !reflect.DeepEqual(matches, []SpanMatch{{trace(1), id(2), 300}}) {
+					return work, fmt.Errorf("singleton span result %+v", matches)
+				}
+				return work, err
+			}
+			got, err := r.Time(ctx, TimeRange{Start: 299, End: 301})
+			if err == nil && !reflect.DeepEqual(got.Hits, []Hit{{trace(1), 300}}) {
+				return got, fmt.Errorf("singleton time result %+v", got)
+			}
+			return got, err
+		}
+		work, err := lookup(e.reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if work.Candidates != 1 || work.Bytes <= 1 {
+			t.Fatalf("vacuous singleton %s work: %+v", kind, work)
+		}
+		for _, insufficient := range []int64{1, work.Bytes - 1} {
+			_, err := lookup(reader(func(x *Config) { x.MaxBytes = insufficient }))
+			requireOtelBudget(t, err)
+		}
+		if _, err := lookup(reader(func(x *Config) { x.MaxBytes = work.Bytes })); err != nil {
+			t.Fatalf("exact singleton %s bytes: %v", kind, err)
+		}
+	}
+	testRelIntrinsicStateReadError(t, ctx, e)
+	for _, name := range []string{spansSpanIDIndex, spansTimeIndex} {
+		for _, state := range []string{"write_only", "disabled"} {
+			t.Run(name+"_"+state, func(t *testing.T) { testRelIntrinsicUnreadable(t, ctx, cluster, c, name, state) })
+		}
+	}
+}
+
+// relFailStateReads makes e's transactions fail the conflict read of name's
+// index state with cause, counting the failures, until the returned restore.
+func relFailStateReads(e *relExporter, name string, cause error, failures *atomic.Int64) (restore func()) {
+	original := e.store.db
+	e.store.db = recordlayer.NewFDBDatabaseWithTransactor(stateReadFailureTransactor{e.raw, relIndexStateKey(e, name), cause, failures}, e.raw)
+	return func() { e.store.db = original }
+}
+
+// Port of testOtelAttributeStateReadError (intrinsic_test.go:390). §1.3: the
+// work is the result's, so the v1 LastQueryWork checks are the returned
+// results' and a failed read cannot leave earlier work behind.
+func testRelAttributeStateReadError(t *testing.T, ctx context.Context, e *relExporter, attribute Attribute, want []Hit) {
+	t.Helper()
+	prior, err := e.Query(ctx, attribute)
+	if err != nil || !reflect.DeepEqual(prior.Hits, want) || prior.Candidates != 1 || prior.Bytes <= 0 {
+		t.Fatalf("attribute state read error needs positive prior result/work: got=%+v want=%+v err=%v", prior, want, err)
+	}
+	cause := errors.New("attribute index state conflict read failed")
+	var failures atomic.Int64
+	restore := relFailStateReads(e, spansStrAttrIndex, cause, &failures)
+	defer restore()
+	got, err := e.Query(ctx, attribute)
+	if !errors.Is(err, cause) || failures.Load() != 1 || len(got.Hits) != 0 || got.Candidates != 0 || got.Bytes != 0 {
+		t.Fatalf("attribute Query swallowed state read failure or consumed entries: failures=%d got=%+v err=%v", failures.Load(), got, err)
+	}
+	restore()
+	if restored, err := e.Query(ctx, attribute); err != nil || !reflect.DeepEqual(restored, prior) {
+		t.Fatalf("attribute restored state positive: got=%+v prior=%+v err=%v", restored, prior, err)
+	}
+}
+
+// Port of testOtelIntrinsicStateReadError (intrinsic_test.go:427). §1.3: an
+// empty range reads nothing, so the empty Time on which v1 showed the
+// failure no longer reads the index state. The failure is shown on the
+// singleton range, and the empty range is shown not to read the state.
+func testRelIntrinsicStateReadError(t *testing.T, ctx context.Context, e *relExporter) {
+	singleton, empty := TimeRange{Start: 299, End: 301}, TimeRange{Start: 100, End: 100}
+	prior, err := e.Time(ctx, singleton)
+	if err != nil || prior.Candidates != 1 || prior.Bytes <= 0 {
+		t.Fatalf("state read error needs successful prior work: %+v %v", prior, err)
+	}
+	cause := errors.New("intrinsic index state conflict read failed")
+	var failures atomic.Int64
+	restore := relFailStateReads(e, spansTimeIndex, cause, &failures)
+	defer restore()
+	got, err := e.Time(ctx, empty)
+	if err != nil || failures.Load() != 0 || len(got.Hits) != 0 || got.Candidates != 0 || got.Bytes != 0 {
+		t.Fatalf("empty Time read the index state: failures=%d got=%+v err=%v", failures.Load(), got, err)
+	}
+	got, err = e.Time(ctx, singleton)
+	if !errors.Is(err, cause) || failures.Load() != 1 || len(got.Hits) != 0 || got.Candidates != 0 || got.Bytes != 0 {
+		t.Fatalf("Time swallowed state read failure: failures=%d got=%+v err=%v", failures.Load(), got, err)
+	}
+	restore()
+	if got, err := e.Time(ctx, singleton); err != nil || !reflect.DeepEqual(got, prior) {
+		t.Fatalf("Time restored state positive: %+v prior %+v: %v", got, prior, err)
+	}
+	if got, err := e.Time(ctx, empty); err != nil || len(got.Hits) != 0 || got.Candidates != 0 || got.Bytes != 0 {
+		t.Fatalf("empty Time restored state positive: %+v %v", got, err)
+	}
+}
+
+// Port of testOtelIntrinsicUnreadable (intrinsic_test.go:312). §1.3: an empty
+// Time reads nothing, so on an unreadable SPANS_TIME it returns no hits where
+// v1 returned ownership.
+func testRelIntrinsicUnreadable(t *testing.T, ctx context.Context, cluster string, c Config, name, state string) {
+	c.Count = 4
+	e := openRelExporter(t, ctx, cluster, func(x *ExporterConfig) { x.K = c.K })
+	s := relExportCorpus(t, ctx, e, c)[0]
+	lookup := func() (QueryResult, error) {
+		if name == spansSpanIDIndex {
+			_, work, err := e.reader.Span(e.txnContext(ctx), s.ID)
+			return work, err
+		}
+		return e.Time(ctx, TimeRange{Start: s.Start, End: s.Start + 1})
+	}
+	if work, err := lookup(); err != nil || work.Candidates == 0 || work.Bytes == 0 {
+		t.Fatalf("unreadable-index positive control empty: %+v %v", work, err)
+	}
+	if err := e.store.run(ctx, "test", func(store *recordlayer.FDBRecordStore) error {
+		if state == "write_only" {
+			_, err := store.MarkIndexWriteOnly(name)
+			return err
+		}
+		_, err := store.MarkIndexDisabled(name)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var ownership *OwnershipError
+	work, err := lookup()
+	if !errors.As(err, &ownership) {
+		t.Fatalf("%s %s public lookup: %T %v", name, state, err, err)
+	}
+	if work.Candidates != 0 || work.Bytes != 0 {
+		t.Fatalf("unreadable-index lookup consumed work: %+v", work)
+	}
+	if name == spansTimeIndex {
+		if got, err := e.Time(ctx, TimeRange{Start: s.Start, End: s.Start}); err != nil || got.Hits == nil || len(got.Hits) != 0 || got.Candidates != 0 || got.Bytes != 0 {
+			t.Fatalf("empty Time on an unreadable index: %+v %v", got, err)
 		}
 	}
 }
