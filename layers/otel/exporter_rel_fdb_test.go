@@ -875,10 +875,10 @@ func testRelShutdown(t *testing.T, cluster string) {
 	} else {
 		requireOtelKind(t, err, "ownership")
 	}
-	// Messages without their implementation and Brotli records are refused before opening.
+	// Brotli records are refused before opening. (Messages need no supplied
+	// hooks: relParts.messages defaults to newRelMessageStore.)
 	for name, mutate := range map[string]func(*ExporterConfig){
-		"messages without hooks": func(c *ExporterConfig) { c.EnableMessageFullText = true },
-		"brotli":                 func(c *ExporterConfig) { c.RecordCompression = "brotli-4" },
+		"brotli": func(c *ExporterConfig) { c.RecordCompression = "brotli-4" },
 	} {
 		_, err := newRelExporter(ctx, relTestConfig(t, cluster, mutate), relParts{})
 		if err == nil {
