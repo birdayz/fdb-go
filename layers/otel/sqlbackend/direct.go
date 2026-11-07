@@ -24,7 +24,7 @@ func (b *Backend) directStore(ctx context.Context) (*otelsql.TenantStore, error)
 	if b.qstore != nil {
 		return b.qstore, nil
 	}
-	ts, err := otelsql.OpenTenantStore(ctx, b.db, b.dbPath, tenantSchema(b.cfg.Tenant), nil)
+	ts, err := otelsql.OpenTenantStore(ctx, b.db, b.dbPath, tenantSchema(b.cfg.Tenant), b.readSer)
 	if err != nil {
 		return nil, err
 	}
