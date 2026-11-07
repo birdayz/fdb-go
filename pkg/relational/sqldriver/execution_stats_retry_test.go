@@ -147,7 +147,7 @@ func TestExecutionStats_RetryIsCountedAndCharged(t *testing.T) {
 			base.Pages, wantPages, pageRetryRows, pageRetryScanLimit+1)
 	}
 
-	sawRetry := false
+	sawRetry, sawCharged := false, false
 	for n := int64(0); n < 8; n++ {
 		s := runOnce(t, uint64(9600+n), n)
 		if s.Retries == 0 {
@@ -160,16 +160,20 @@ func TestExecutionStats_RetryIsCountedAndCharged(t *testing.T) {
 			t.Errorf("fault at %d: Retries = %d, want exactly 1 (one page failed once)", n, s.Retries)
 		}
 		// The charged-scan half. The retried page re-scanned its records, so
-		// the statement consumed strictly more than the clean run did.
-		if s.RecordsScanned <= base.RecordsScanned {
-			t.Errorf("fault at %d: RecordsScanned = %d, want more than the clean run's %d — "+
-				"the retried attempt's reads were served by the cluster and must be charged",
-				n, s.RecordsScanned, base.RecordsScanned)
+		// the statement consumed more than the clean run did — unless the
+		// retried page was the last one, which only finds the end and scans
+		// nothing (the shared first-page transaction is not a Transact call,
+		// so the ordinals reach it). Never less, and the sweep must charge at
+		// least one re-scan.
+		if s.RecordsScanned < base.RecordsScanned || s.BytesScanned < base.BytesScanned {
+			t.Errorf("fault at %d: scanned %d records, %d bytes, want at least the clean run's %d, %d",
+				n, s.RecordsScanned, s.BytesScanned, base.RecordsScanned, base.BytesScanned)
 		}
-		if s.BytesScanned <= base.BytesScanned {
-			t.Errorf("fault at %d: BytesScanned = %d, want more than the clean run's %d",
-				n, s.BytesScanned, base.BytesScanned)
+		if (s.RecordsScanned > base.RecordsScanned) != (s.BytesScanned > base.BytesScanned) {
+			t.Errorf("fault at %d: records %d vs %d and bytes %d vs %d disagree on whether the retry re-scanned",
+				n, s.RecordsScanned, base.RecordsScanned, s.BytesScanned, base.BytesScanned)
 		}
+		sawCharged = sawCharged || s.RecordsScanned > base.RecordsScanned
 		// Rows RETURNED must be unaffected: a retry re-reads, it does not
 		// re-emit. This is the dimension that separates "scanned" from
 		// "returned" on the retry axis specifically.
@@ -181,5 +185,9 @@ func TestExecutionStats_RetryIsCountedAndCharged(t *testing.T) {
 	if !sawRetry {
 		t.Fatalf("no armed ordinal in 0..7 produced a page retry; the retry dimension was never exercised, " +
 			"so this test proved nothing")
+	}
+	if !sawCharged {
+		t.Fatalf("no retried page re-scanned records: the retried attempt's reads were served by the cluster " +
+			"and must be charged, and no ordinal in 0..7 exercised that")
 	}
 }
