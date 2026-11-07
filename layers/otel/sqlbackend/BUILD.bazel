@@ -13,12 +13,10 @@ go_library(
         "//layers/otel/otelsql",
         "//pkg/fdbgo/client",
         "//pkg/fdbgo/fdb",
-        "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer",
         "//pkg/relational/api",
         "//pkg/relational/sqldriver",
         "@org_golang_google_protobuf//proto",
-        "@org_golang_google_protobuf//reflect/protoreflect",
     ],
 )
 
