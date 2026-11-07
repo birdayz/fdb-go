@@ -2,6 +2,7 @@ package otel
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"reflect"
 	"strings"
@@ -152,6 +153,7 @@ transaction_timeout: 45s
 			if !strings.Contains(err.Error(), message) || !strings.Contains(err.Error(), "exporter YAML") {
 				t.Fatalf("error %v lacks %q", err, message)
 			}
+			requireRemovedKey(t, err, doc)
 		})
 	}
 	for _, doc := range []string{"batch_size: not-a-number\n", "tenant: [1, 2]\n", "bulk_index_conflicts: maybe\n", "max_bytes: {a: 1}\n", "max_inflight_transactions: many\n", "transaction_timeout: 10\n", "transaction_timeout: soon\n"} {
@@ -256,6 +258,7 @@ func TestExporterConfigJSON(t *testing.T) {
 			if !strings.Contains(err.Error(), message) || !strings.Contains(err.Error(), "exporter JSON") {
 				t.Fatalf("error %v lacks %q", err, message)
 			}
+			requireRemovedKey(t, err, doc)
 		})
 	}
 	for _, doc := range []string{`{"batch_size":"64"}`, `{"max_bytes":1.5}`, `{"tenant":[1]}`, `{"bulk_index_conflicts":"yes"}`, `{"max_inflight_transactions":"32"}`, `{"transaction_timeout":10000000000}`, `{"transaction_timeout":"soon"}`} {
@@ -706,3 +709,19 @@ func TestOTLPEnumMappings(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Real FDB integration
 // ---------------------------------------------------------------------------
+
+// requireRemovedKey checks that err carries a RemovedConfigKeyError exactly
+// when doc names one of the removed keys, and for that key.
+func requireRemovedKey(t *testing.T, err error, doc string) {
+	t.Helper()
+	var removed *RemovedConfigKeyError
+	key := ""
+	for k := range removedExporterKeys {
+		if strings.Contains(doc, k) {
+			key = k
+		}
+	}
+	if errors.As(err, &removed) != (key != "") || key != "" && removed.Key != key {
+		t.Fatalf("%v: removed key %+v, want %q", err, removed, key)
+	}
+}

@@ -159,8 +159,8 @@ func (c *Config) UnmarshalYAML(node *yaml.Node) error {
 // relational store removed, or nil when the flattened body names none.
 func removedExporterKey(node *yaml.Node) error {
 	var scratch otel.ExporterConfig
-	var cfg *otel.ConfigError
-	if err := exporterBody(node).Decode(&scratch); errors.As(err, &cfg) && strings.Contains(cfg.Message, " was removed") {
+	var removed *otel.RemovedConfigKeyError
+	if err := exporterBody(node).Decode(&scratch); errors.As(err, &removed) {
 		return err
 	}
 	return nil
