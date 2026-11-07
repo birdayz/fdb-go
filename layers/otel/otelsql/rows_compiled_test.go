@@ -11,6 +11,7 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/embedded"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/proto"
@@ -89,6 +90,7 @@ func fixtureAttributes() []*commonpb.KeyValue {
 		kvInt("i", -7), kvStr("dup", "first"),
 		{Key: "d", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: 2.5}}},
 		{Key: "nan", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: math.NaN()}}},
+		{Key: "nan_negative", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: math.Float64frombits(0xFFF8000000000000)}}},
 		{Key: "b", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: false}}},
 		{Key: "raw", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BytesValue{BytesValue: []byte{1, 2}}}},
 		{Key: "raw_empty", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BytesValue{}}},
@@ -282,5 +284,62 @@ func TestCompiledTypesBindToTemplateMetaData(t *testing.T) {
 				t.Fatalf("%s: %s record type for the compiled descriptor: %v, %v", name, table, rt, err)
 			}
 		}
+	}
+}
+
+// Every NaN payload a span's, event's, link's or log's double carries is
+// stored as CanonicalNaN; other doubles keep their bits.
+func TestProjectedDoubleNaN(t *testing.T) {
+	t.Parallel()
+	for _, bits := range []uint64{0x7FF8000000000000, 0xFFF8000000000000, 0x7FF8000000000001, 0x7FF0000000000001, 0xFFFFFFFFFFFFFFFF} {
+		v := math.Float64frombits(bits)
+		attrs := []*commonpb.KeyValue{
+			{Key: "x", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: v}}},
+			{Key: "zero", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: math.Copysign(0, -1)}}},
+		}
+		span, err := BuildCompiled(Span{Span: &tracepb.Span{
+			TraceId: []byte{1}, SpanId: []byte{2}, Attributes: attrs,
+			Events: []*tracepb.Span_Event{{Name: "e", Attributes: attrs}},
+			Links:  []*tracepb.Span_Link{{TraceId: []byte{3}, SpanId: []byte{4}, Attributes: attrs}},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		log, err := BuildLogCompiled(Log{Log: &logspb.LogRecord{Attributes: attrs}, EventID: "e"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		type double interface {
+			GetATTR_KEY() string
+			GetDOUBLE_VALUE() float64
+		}
+		var got []double
+		for _, d := range span.GetDOUBLE_ATTRS().GetValues() {
+			got = append(got, d)
+		}
+		for _, d := range span.GetEVENTS().GetValues()[0].GetDOUBLE_ATTRS().GetValues() {
+			got = append(got, d)
+		}
+		for _, d := range span.GetLINKS().GetValues()[0].GetDOUBLE_ATTRS().GetValues() {
+			got = append(got, d)
+		}
+		for _, d := range log.GetDOUBLE_ATTRS().GetValues() {
+			got = append(got, d)
+		}
+		if len(got) != 8 {
+			t.Fatalf("%#x: %d doubles projected, want 8", bits, len(got))
+		}
+		for _, d := range got {
+			want := math.Float64bits(CanonicalNaN)
+			if d.GetATTR_KEY() == "zero" {
+				want = math.Float64bits(math.Copysign(0, -1))
+			}
+			if b := math.Float64bits(d.GetDOUBLE_VALUE()); b != want {
+				t.Fatalf("%#x: %s stored as %#x, want %#x", bits, d.GetATTR_KEY(), b, want)
+			}
+		}
+	}
+	if b := math.Float64bits(CanonicalNaN); b != 0x7FF8000000000000 {
+		t.Fatalf("CanonicalNaN is %#x", b)
 	}
 }

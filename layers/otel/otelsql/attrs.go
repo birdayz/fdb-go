@@ -20,6 +20,18 @@ const (
 	MaxAttributeValueBytes = 64000
 )
 
+// CanonicalNaN is the NaN a DOUBLE_VALUE stores for every NaN payload, so an
+// equality on "NaN" matches them all; the row's OTLP keeps the original bits.
+var CanonicalNaN = math.Float64frombits(0x7FF8000000000000)
+
+// ProjectedDouble is v as a DOUBLE_VALUE stores it.
+func ProjectedDouble(v float64) float64 {
+	if math.IsNaN(v) {
+		return CanonicalNaN
+	}
+	return v
+}
+
 // MessageAttributeKeys are the GenAI content attributes, by the attribute code
 // a MessageRef carries; index 0 is unused.
 var MessageAttributeKeys = [...]string{1: "gen_ai.input.messages", 2: "gen_ai.output.messages", 3: "gen_ai.system_instructions", 4: "gen_ai.tool.definitions"}
@@ -173,7 +185,7 @@ func (a *attrLists) add(scope string, set attrSet) {
 		case *commonpb.AnyValue_IntValue:
 			a.ints = append(a.ints, &otelv1pb.INT_ATTR{SCOPE: proto.String(scope), ATTR_KEY: proto.String(key), INT_VALUE: proto.Int64(v.IntValue)})
 		case *commonpb.AnyValue_DoubleValue:
-			a.doubles = append(a.doubles, &otelv1pb.DOUBLE_ATTR{SCOPE: proto.String(scope), ATTR_KEY: proto.String(key), DOUBLE_VALUE: proto.Float64(v.DoubleValue)})
+			a.doubles = append(a.doubles, &otelv1pb.DOUBLE_ATTR{SCOPE: proto.String(scope), ATTR_KEY: proto.String(key), DOUBLE_VALUE: proto.Float64(ProjectedDouble(v.DoubleValue))})
 		case *commonpb.AnyValue_BoolValue:
 			a.bools = append(a.bools, &otelv1pb.BOOL_ATTR{SCOPE: proto.String(scope), ATTR_KEY: proto.String(key), BOOL_VALUE: proto.Bool(v.BoolValue)})
 		case *commonpb.AnyValue_BytesValue:

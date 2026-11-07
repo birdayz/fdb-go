@@ -54,6 +54,7 @@ func TestRelExporterRealFDB(t *testing.T) {
 		"selective_v2":              testRelSelectiveV2,
 		"public_query_replay":       testRelPublicQueryReplay,
 		"intrinsic_v2":              testRelIntrinsicV2,
+		"nan_payloads":              testRelNaNPayloads,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -1323,5 +1324,64 @@ func testRelTransactionGuard(t *testing.T, cluster string) {
 	e.writer.maxTxnBytes = maxSpanTxnBytes
 	if stats, err := e.ExportResourceSpans(ctx, []*tracepb.ResourceSpans{rs}); err != nil || stats.Spans != 1 {
 		t.Fatalf("under the guard: %+v %v", stats, err)
+	}
+}
+
+// A NaN double matches a "NaN" equality whatever its payload: Java's
+// Double.NaN, the amd64 default NaN, Go's math.NaN() and a signaling NaN,
+// through Query, QuerySameSpan, QueryTraceExistential's span and log
+// clauses and QueryLogsByAttribute; LoadSpanOTLP keeps each payload.
+func testRelNaNPayloads(t *testing.T, cluster string) {
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	e := openRelExporter(t, ctx, cluster, nil)
+	payloads := []uint64{0x7FF8000000000000, 0xFFF8000000000000, math.Float64bits(math.NaN()), 0x7FF0000000000001}
+	value := func(bits uint64) *commonpb.AnyValue {
+		return &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: math.Float64frombits(bits)}}
+	}
+	var spans []*tracepb.ResourceSpans
+	var logs []LogRecord
+	for i, bits := range payloads {
+		spans = append(spans, deltaSpan(i+1, deltaKV("score", value(bits)), deltaKV("ratio", exDouble(0.5))))
+		logs = append(logs, LogRecord{
+			EventID: fmt.Sprintf("nan-%d", i), Timestamp: ftsBase + int64(i), TraceID: ftsTrace(i + 1), SpanID: ftsSpan(i + 1),
+			Attributes: []*commonpb.KeyValue{deltaKV("score", value(bits))},
+		})
+	}
+	if _, err := e.ExportResourceSpans(ctx, spans); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ExportLogs(ctx, logs); err != nil {
+		t.Fatal(err)
+	}
+	n := len(payloads)
+	nan := Attribute{"span", "score", "double", "NaN"}
+	logNaN := Attribute{LogScopeRecord, "score", "double", "NaN"}
+	for _, bits := range payloads {
+		if got := CanonicalAttribute("span", "score", value(bits)); got != nan {
+			t.Fatalf("%#x: CanonicalAttribute %+v, want %+v", bits, got, nan)
+		}
+	}
+	if r, err := e.Query(ctx, nan); err != nil || len(r.Hits) != n {
+		t.Fatalf("Query: %d hits, %v", len(r.Hits), err)
+	}
+	if page, err := e.QuerySameSpan(ctx, SameSpanQuery{Predicates: []Attribute{nan, {"span", "ratio", "double", "0.5"}}}); err != nil || len(page.Spans) != n {
+		t.Fatalf("QuerySameSpan: %d spans, %v", len(page.Spans), err)
+	}
+	if r, err := e.QueryTraceExistential(ctx, TraceExistentialQuery{Clauses: []Attribute{nan}, LogClauses: []Attribute{logNaN}}); err != nil || len(r.Hits) != n {
+		t.Fatalf("QueryTraceExistential: %d hits, %v", len(r.Hits), err)
+	}
+	if got, err := e.QueryLogsByAttribute(ctx, logNaN, 0); err != nil || len(got) != n {
+		t.Fatalf("QueryLogsByAttribute: %d logs, %v", len(got), err)
+	}
+	for i, bits := range payloads {
+		got, err := e.LoadSpanOTLP(ctx, ftsTrace(i+1), ftsSpan(i+1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		attrs := got.ScopeSpans[0].Spans[0].Attributes
+		if b := math.Float64bits(attrs[0].GetValue().GetDoubleValue()); attrs[0].Key != "score" || b != bits {
+			t.Fatalf("span %d: OTLP keeps %#x, want %#x", i, b, bits)
+		}
 	}
 }
