@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"math"
 	"reflect"
+	"strings"
 	"testing"
 
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )
@@ -151,6 +155,131 @@ func TestRelContinuationRejections(t *testing.T) {
 	}
 }
 
+// D1: double and bool are typed predicates now, so the formerly rejected bool
+// type is valid; bytes and JSON stay unqueryable, and typed values must be
+// canonical.
+func TestRelSameSpanPlanValidation(t *testing.T) {
+	t.Parallel()
+	r := &SpanReader{cfg: Config{K: 100}}
+	ok := Attribute{"span", "k", "string", "v"}
+	many := make([]Attribute, maxQueryPredicates+1)
+	for i := range many {
+		many[i] = Attribute{"span", fmt.Sprint(i), "string", "v"}
+	}
+	for name, q := range map[string]SameSpanQuery{
+		"no predicates":       {},
+		"too many":            {Predicates: many},
+		"unknown scope":       {Predicates: []Attribute{{"event", "k", "string", "v"}}},
+		"bytes type":          {Predicates: []Attribute{{"span", "k", "bytes", "AQI="}}},
+		"json type":           {Predicates: []Attribute{{"span", "k", "json", "[1]"}}},
+		"noncanonical int":    {Predicates: []Attribute{{"span", "k", "int", "007"}}},
+		"int overflow":        {Predicates: []Attribute{{"span", "k", "int", "9223372036854775808"}}},
+		"noncanonical double": {Predicates: []Attribute{{"span", "k", "double", "0.50"}}},
+		"double word":         {Predicates: []Attribute{{"span", "k", "double", "half"}}},
+		"lowercase inf":       {Predicates: []Attribute{{"span", "k", "double", "inf"}}},
+		"noncanonical bool":   {Predicates: []Attribute{{"span", "k", "bool", "TRUE"}}},
+		"oversized key":       {Predicates: []Attribute{{"span", string(make([]byte, maxIndexedKeyBytes+1)), "string", "v"}}},
+		"oversized value":     {Predicates: []Attribute{{"span", "k", "string", string(make([]byte, maxIndexedValueBytes+1))}}},
+		"negative limit":      {Predicates: []Attribute{ok}, Limit: -1},
+		"inverted interval":   {Predicates: []Attribute{ok}, TimeWindow: &TimeRange{Start: 5, End: 4}},
+	} {
+		_, err := r.newSameSpanPlan("same-span query", q)
+		requireTyped[*ConfigError](t, name, err)
+	}
+	long := strings.Repeat("y", maxIndexedKeyBytes+1)
+	p, err := r.newSameSpanPlan("same-span query", SameSpanQuery{Predicates: []Attribute{
+		{"resource", "k", "int", "-12"},
+		{"span", "b", "bool", "true"},
+		{"span", "d", "double", "0.5"},
+		{"span", "n", "double", "NaN"},
+		{"span", "z", "double", "-0"},
+		{"scope", "l", "string", long},
+		ok, ok,
+	}})
+	if err != nil {
+		t.Fatalf("canonical typed predicates rejected: %v", err)
+	}
+	if len(p.attrs) != 7 || p.limit != 100 || p.attrs[0].q.index != spansIntAttrIndex || p.attrs[1].q.index != spansBoolAttrIndex ||
+		p.attrs[2].q.index != spansDoubleAttrIndex || p.attrs[5].q.index != spansLongStrIndex || p.attrs[5].q.long == nil || p.attrs[6].q.index != spansStrAttrIndex {
+		t.Fatalf("plan: %+v", p)
+	}
+	if v, ok := p.attrs[4].prefix[2].(float64); !ok || v != 0 || !math.Signbit(v) {
+		t.Fatalf("-0 predicate value %#v", p.attrs[4].prefix[2])
+	}
+	// With messages decomposed, equality on GenAI content attributes is refused.
+	r.cfg.Messages = messagesDeltas
+	_, err = r.newSameSpanPlan("same-span query", SameSpanQuery{Predicates: []Attribute{{"span", "gen_ai.input.messages", "string", "x"}}})
+	requireTyped[*ConfigError](t, "decomposed message attribute", err)
+}
+
+// The driver range holds exactly the entries in the window strictly below
+// the resumed sort key, in index-key order.
+func TestSpanAttrRangeBounds(t *testing.T) {
+	t.Parallel()
+	space := subspace.Sub("qr_index")
+	// Spare capacity: the range's bounds must not share the prefix's array.
+	prefix := append(make(tuple.Tuple, 0, 8), "span", "k", "v")
+	entry := func(k spanSortKey) []byte {
+		return space.Pack(append(append(tuple.Tuple{}, prefix...), k.start, k.trace, k.span, int64(7)))
+	}
+	keys := []spanSortKey{
+		qrSortKey(0, 1, 1), qrSortKey(9, 1, 1), qrSortKey(10, 1, 1), qrSortKey(10, 1, 2), qrSortKey(10, 2, 1),
+		qrSortKey(15, 3, 3), qrSortKey(19, 9, 9), qrSortKey(20, 1, 1), qrSortKey(math.MaxInt64, 5, 5),
+	}
+	outside := space.Pack(tuple.Tuple{"span", "k", "w", int64(10), keys[2].trace, keys[2].span})
+	for _, c := range []struct {
+		name   string
+		window *TimeRange
+		resume *spanSortKey
+		want   func(spanSortKey) bool
+	}{
+		{"all", nil, nil, func(spanSortKey) bool { return true }},
+		{"window", &TimeRange{10, 20}, nil, func(k spanSortKey) bool { return k.start >= 10 && k.start < 20 }},
+		{"negative start clamps", &TimeRange{-5, 10}, nil, func(k spanSortKey) bool { return k.start < 10 }},
+		{"resume", nil, &keys[3], func(k spanSortKey) bool { return k.less(keys[3]) }},
+		{"resume in window", &TimeRange{10, 20}, &keys[3], func(k spanSortKey) bool { return k.start >= 10 && k.less(keys[3]) }},
+		{"resume at window top", &TimeRange{10, 20}, &keys[6], func(k spanSortKey) bool { return k.start >= 10 && k.less(keys[6]) }},
+		{"resume above window", &TimeRange{10, 20}, &keys[7], func(k spanSortKey) bool { return k.start >= 10 && k.start < 20 }},
+	} {
+		w, err := newTimeWindow(c.window)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rng, ok := spanAttrRange(prefix, w, c.resume)
+		if !ok {
+			t.Fatalf("%s: empty range", c.name)
+		}
+		kr := rng.ToFDBRange(space)
+		in := func(b []byte) bool {
+			return bytes.Compare(b, kr.Begin.FDBKey()) >= 0 && bytes.Compare(b, kr.End.FDBKey()) < 0
+		}
+		for _, k := range keys {
+			if in(entry(k)) != c.want(k) {
+				t.Fatalf("%s: entry %d/%x/%x in range = %v", c.name, k.start, k.trace, k.span, !c.want(k))
+			}
+		}
+		if in(outside) {
+			t.Fatalf("%s: another value's entry is in range", c.name)
+		}
+	}
+	// A resumed key below the window leaves nothing.
+	w, _ := newTimeWindow(&TimeRange{10, 20})
+	if _, ok := spanAttrRange(prefix, w, &keys[1]); ok {
+		t.Fatal("a resume key below the window must end the scan")
+	}
+}
+
+// less is index-key order of the (start, trace, span) suffix.
+func (k spanSortKey) less(o spanSortKey) bool {
+	if k.start != o.start {
+		return k.start < o.start
+	}
+	if c := bytes.Compare(k.trace, o.trace); c != 0 {
+		return c < 0
+	}
+	return bytes.Compare(k.span, o.span) < 0
+}
+
 type qrFixedKeys struct{ winner []byte }
 
 func (k qrFixedKeys) load(*recordlayer.FDBRecordStore) ([]byte, error) { return k.winner, nil }
@@ -195,4 +324,61 @@ func TestEnsureContinuationKey(t *testing.T) {
 	}
 	_, err = r.ensureContinuationKey(t.Context())
 	requireTyped[*OperationError](t, "STORE_META stub publish", err)
+}
+
+type qrFakeWitnesses[W any] struct {
+	traces    []string
+	witnesses []W
+	err       error
+}
+
+func (f qrFakeWitnesses[W]) scanWitnesses(_ context.Context, _ *recordlayer.FDBRecordStore, _ timeWindow, _ *queryWork, visit func(string, W)) error {
+	for i, tr := range f.traces {
+		visit(tr, f.witnesses[i])
+	}
+	return f.err
+}
+
+// The join plumbing for every clause kind: witnesses of later kinds (logs, as
+// stream 2B will scan them) join on trace with span witnesses, prune traces
+// earlier clauses excluded, count toward Latest and are ordered newest first.
+func TestTraceJoinWitnessScanners(t *testing.T) {
+	t.Parallel()
+	T1, T2, T3 := qaID(1, 16), qaID(2, 16), qaID(3, 16)
+	sm := func(tr string, span int, start int64) SpanMatch { return SpanMatch{tr, qaID(span, 8), start} }
+	spans := []witnessScanner[SpanMatch]{qrFakeWitnesses[SpanMatch]{
+		traces:    []string{T1, T2, T1, T3},
+		witnesses: []SpanMatch{sm(T1, 1, 100), sm(T2, 2, 300), sm(T1, 3, 100), sm(T3, 4, 50)},
+	}}
+	logs := []witnessScanner[LogMatch]{qrFakeWitnesses[LogMatch]{
+		traces:    []string{T1, T2, T2, qaID(9, 16)},
+		witnesses: []LogMatch{{"e1", T1, "", 500}, {"e3", T2, "", 10}, {"e2", T2, "", 10}, {"e9", qaID(9, 16), "", 999}},
+	}}
+	j := &traceJoin{spans: 1, logs: 1}
+	if ok, err := joinClauses(t.Context(), nil, spans, timeWindow{}, nil, j, func(tw *relWitnesses) [][]SpanMatch { return tw.spans }); !ok || err != nil {
+		t.Fatalf("span clause: %v %v", ok, err)
+	}
+	if ok, err := joinClauses(t.Context(), nil, logs, timeWindow{}, nil, j, func(tw *relWitnesses) [][]LogMatch { return tw.logs }); !ok || err != nil {
+		t.Fatalf("log clause: %v %v", ok, err)
+	}
+	want := []TraceExistentialHit{
+		{T1, 500, [][]SpanMatch{{sm(T1, 1, 100), sm(T1, 3, 100)}}, [][]LogMatch{{{"e1", T1, "", 500}}}, nil},
+		{T2, 300, [][]SpanMatch{{sm(T2, 2, 300)}}, [][]LogMatch{{{"e2", T2, "", 10}, {"e3", T2, "", 10}}}, nil},
+	}
+	if got := j.hits(10); !reflect.DeepEqual(got, want) {
+		t.Fatalf("hits\n got %+v\nwant %+v", got, want)
+	}
+	if got := j.hits(1); len(got) != 1 || got[0].Trace != T1 {
+		t.Fatalf("limit 1: %+v", got)
+	}
+	// A clause no remaining trace satisfies ends the join; a scanner error fails it.
+	none := []witnessScanner[LogMatch]{qrFakeWitnesses[LogMatch]{traces: []string{T3}, witnesses: []LogMatch{{"e", T3, "", 1}}}}
+	if ok, err := joinClauses(t.Context(), nil, none, timeWindow{}, nil, j, func(tw *relWitnesses) [][]LogMatch { return tw.logs }); ok || err != nil {
+		t.Fatalf("disjoint clause: %v %v", ok, err)
+	}
+	boom := errors.New("boom")
+	failing := []witnessScanner[SpanMatch]{qrFakeWitnesses[SpanMatch]{err: boom}}
+	if _, err := joinClauses(t.Context(), nil, failing, timeWindow{}, nil, &traceJoin{spans: 1}, func(tw *relWitnesses) [][]SpanMatch { return tw.spans }); !errors.Is(err, boom) {
+		t.Fatalf("scanner error: %v", err)
+	}
 }
