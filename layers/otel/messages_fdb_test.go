@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -843,7 +844,7 @@ func testMessageLarge(t *testing.T, cluster string) {
 	if err != nil || len(segs) < 3 {
 		t.Fatalf("fixture: %d segments, %v", len(segs), err)
 	}
-	whole, err := messageTokenizer{}.TokenizeToList(text, 0, recordlayer.TokenizerModeIndex)
+	whole, err := otelsql.MessageTokenizer{}.TokenizeToList(text, 0, recordlayer.TokenizerModeIndex)
 	if err != nil {
 		t.Fatal(err)
 	}
