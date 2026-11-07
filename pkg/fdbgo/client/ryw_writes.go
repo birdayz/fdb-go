@@ -50,6 +50,9 @@ type rywWrites struct {
 	// nodes are the C++ WriteMap's nodes: the write-side segment boundaries (D1b).
 	nodes rywNodes
 
+	// ver identifies this mutable write-map lineage for in-place atomic stack folds.
+	ver uint64
+
 	// pins counts the reads holding this version.
 	pins int
 }
@@ -66,7 +69,8 @@ func newRYWWrites() *rywWrites { return &rywWrites{} }
 // allocation). Caller holds c.mu.
 func (c *rywCache) liveLocked() *rywWrites {
 	if c.w == nil {
-		c.base = rywWrites{}
+		c.nextVer++
+		c.base = rywWrites{ver: c.nextVer}
 		c.w = &c.base
 	}
 	return c.w
@@ -79,10 +83,11 @@ func (c *rywCache) resetWritesLocked() {
 	if c.w == nil {
 		return // liveLocked starts the cache's own version
 	}
+	c.nextVer++
 	if c.w.pins == 0 {
-		*c.w = rywWrites{}
+		*c.w = rywWrites{ver: c.nextVer}
 	} else {
-		c.w = newRYWWrites()
+		c.w = &rywWrites{ver: c.nextVer}
 	}
 	c.dropObsoleteBaseLocked()
 }
@@ -155,7 +160,10 @@ func (w *rywWrites) empty() bool {
 func (c *rywCache) mutableWritesLocked() *rywWrites {
 	w := c.liveLocked()
 	if w.pins > 0 {
-		c.w = w.clone()
+		c.nextVer++
+		nw := w.clone()
+		nw.ver = c.nextVer
+		c.w = nw
 		if c.onClone != nil {
 			c.onClone(w, c.w)
 		}
@@ -243,6 +251,25 @@ func (w *rywWrites) entry(k string) (rywEntry, bool) {
 
 // putEntry stores the entry for key k, inserting the key if it is new.
 func (w *rywWrites) putEntry(k string, e rywEntry) {
+	i, n, _, _ := w.lookupForWrite(k)
+	w.putEntryAt(i, n, k, e)
+}
+
+// lookupForWrite finds k for an upcoming write, returning its sorted index and node when sorted.
+func (w *rywWrites) lookupForWrite(k string) (int, *pnode[rywWrite], rywEntry, bool) {
+	if !w.isSorted {
+		e, ok := w.writes[k]
+		return 0, nil, e, ok
+	}
+	i, n := w.sorted.findNode(func(x *rywWrite) bool { return x.key >= k })
+	if n != nil && n.item.key == k {
+		return i, n, n.item.e, true
+	}
+	return i, nil, rywEntry{}, false
+}
+
+// putEntryAt stores e at the position found by lookupForWrite.
+func (w *rywWrites) putEntryAt(i int, n *pnode[rywWrite], k string, e rywEntry) {
 	if !w.isSorted {
 		if w.writes == nil {
 			w.writes = make(map[string]rywEntry)
@@ -250,8 +277,11 @@ func (w *rywWrites) putEntry(k string, e rywEntry) {
 		w.writes[k] = e
 		return
 	}
-	i, x := w.sorted.find(func(x *rywWrite) bool { return x.key >= k })
-	if x != nil && x.key == k {
+	if n != nil {
+		if w.sorted.ver != 0 && n.stamp == w.sorted.ver && !w.sorted.frozen {
+			n.item.e = e
+			return
+		}
 		w.sorted.mutAt(i).e = e
 		return
 	}
@@ -326,9 +356,14 @@ func (w *rywWrites) appendConflictSpans(dst []conflictSpan, begin, end []byte) [
 	}
 	// Fingers allocate nothing, on the live version or a pinned one (VersionedMap.h:188-200).
 	var wc pfinger[rywWrite]
-	wc.seekFirst(&w.sorted, func(x *rywWrite) bool { return x.key >= string(begin) })
+	if w.sorted.root != nil {
+		beginStr := bytesString(begin)
+		wc.seekFirst(&w.sorted, func(x *rywWrite) bool { return x.key >= beginStr })
+	}
 	var cc pfinger[rywRange]
-	cc.seekFirst(&w.cleared, func(r *rywRange) bool { return bytes.Compare(r.end, begin) > 0 })
+	if w.cleared.root != nil {
+		cc.seekFirst(&w.cleared, func(r *rywRange) bool { return bytes.Compare(r.end, begin) > 0 })
+	}
 	cur, last := rywBoundary{key: begin}, rywBoundary{key: end}
 	for cur.compare(last) < 0 {
 		if wc.valid() {

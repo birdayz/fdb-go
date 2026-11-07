@@ -86,6 +86,10 @@ func (tx *Transaction) issueKey(parent context.Context, sel KeySelector, snapsho
 							r.localConflicts = r.view.appendConflictSpans(nil, b, e)
 						}
 					}
+					if r.view != nil {
+						c.withLock(func() { c.unpinWritesLocked(r.view) })
+						r.view = nil
+					}
 				}
 			})
 			if panicked && r.view != nil {
@@ -271,7 +275,7 @@ func (tx *Transaction) StartGetKey(ctx context.Context, sel KeySelector) *Pendin
 }
 
 // StartGetKey is the snapshot form of Transaction.StartGetKey.
-func (s *Snapshot) StartGetKey(ctx context.Context, sel KeySelector) *PendingKey {
+func (s Snapshot) StartGetKey(ctx context.Context, sel KeySelector) *PendingKey {
 	return s.tx.startKey(ctx, sel, true)
 }
 

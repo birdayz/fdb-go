@@ -35,9 +35,15 @@ type rywWalkState struct {
 	reverse bool
 	getKey  bool // read(GetKeyReq) (A9)
 
-	begin, end                         KeySelector
-	limits                             rangeLimits
-	result                             []KeyValue // the walk's own slice (append from nil); rows alias the cache and write map
+	begin, end KeySelector
+	limits     rangeLimits
+	result     []KeyValue // the walk's own slice; rows alias the cache, the write map and valBuf
+	keyBuf     []byte     // scratch for materialized selector boundaries during resolve
+	// valBuf holds the resolved AppendIfFits values of the walk's rows. Rows
+	// outlive the walk (a pending read that ran in its goroutine keeps them
+	// uncopied until Get clones them), so unlike keyBuf it is dropped on
+	// release, never handed to a later walk.
+	valBuf                             []byte
 	more                               bool
 	additionalRows                     int64
 	itemsPast                          int32 // itemsPastEnd / itemsPastBegin
@@ -86,10 +92,12 @@ func (c *rywCache) newRangeWalkLocked(view *rywWrites, begin, end KeySelector, l
 // rangeWalk is a walk over view and the cache snapshot cache, issued at gen.
 func (c *rywCache) rangeWalk(view *rywWrites, cache pseq[cacheEntry], gen uint64, begin, end KeySelector, limits rangeLimits, reverse bool, maxKey []byte) *rywWalk {
 	w := walkPool.Get().(*rywWalk) // released walks hold zero state and scrubbed iterators
+	res, kbuf := w.result, w.keyBuf
 	w.rywWalkState = rywWalkState{
 		c: c, view: view, cache: cache, gen: gen, maxKey: maxKey, reverse: reverse,
 		begin: begin, end: end, limits: limits,
 		actualBeginOffset: begin.Offset, actualEndOffset: end.Offset, // RYW:607-608, 911-912
+		result: res, keyBuf: kbuf,
 	}
 	return w
 }
@@ -107,7 +115,10 @@ func (w *rywWalk) release() {
 	for i := range w.its {
 		w.its[i].scrub()
 	}
-	w.rywWalkState = rywWalkState{}
+	res := w.result
+	clear(res)
+	kbuf := w.keyBuf
+	w.rywWalkState = rywWalkState{result: res[:0], keyBuf: kbuf[:0]}
 	walkPool.Put(w)
 }
 
@@ -204,6 +215,7 @@ func (w *rywWalk) start() {
 func (w *rywWalk) resolveBoth() (it, itEnd *rywIter) {
 	it, itEnd = &w.its[0], &w.its[1]
 	initIter(it, w.view, &w.cache)
+	it.valBuf = &w.valBuf
 	if !w.reverse {
 		w.resolve(&w.begin, it, &w.actualBeginOffset)
 		itEnd.copyFrom(it)
@@ -227,6 +239,7 @@ func (w *rywWalk) copyIter(i int, it *rywIter) *rywIter {
 // snapshot and runs it to its first wait, as the nested actor runs synchronously
 // until then. If it finishes without waiting, the parent resumes at once.
 func (w *rywWalk) startSub(sel KeySelector, pc walkPC) {
+	sel.Key = bytes.Clone(sel.Key)
 	w.sub = w.c.getKeyWalk(w.view, w.cache, w.gen, sel, w.maxKey)
 	w.sub.onRequest = w.onRequest
 	w.sub.start()
@@ -434,7 +447,23 @@ func (w *rywWalk) resolve(sel *KeySelector, it *rywIter, actualOffset *int32) {
 		it.next()
 		keykey = it.b
 	}
-	sel.Key = keykey.materialize()
+	sel.Key = w.materialize(keykey)
+}
+
+func (w *rywWalk) materialize(b rywBoundary) []byte {
+	if !b.after {
+		return b.key
+	}
+	n := b.size()
+	if cap(w.keyBuf)-len(w.keyBuf) < n {
+		w.keyBuf = make([]byte, 0, max(256, 2*cap(w.keyBuf), n))
+	}
+	off := len(w.keyBuf)
+	s := w.keyBuf[off : off+n : off+n]
+	copy(s, b.key)
+	clear(s[len(b.key):])
+	w.keyBuf = w.keyBuf[:off+n]
+	return s
 }
 
 // clearLimit is A4's counted-clear cap (RYW:701, 1007).
@@ -583,6 +612,8 @@ func (w *rywWalk) readUnknown(it, itEnd *rywIter) bool {
 }
 
 func (w *rywWalk) await(req walkRequest) {
+	req.begin.Key = bytes.Clone(req.begin.Key)
+	req.end.Key = bytes.Clone(req.end.Key)
 	w.req, w.pc = req, pcAwaitStorage
 	if w.onRequest != nil {
 		w.onRequest(req)
@@ -613,7 +644,7 @@ func (w *rywWalk) kvForward(it *rywIter) {
 // reserve gives a first run of one row room for a second, as a selector
 // range's rows often come in separate runs.
 func (w *rywWalk) reserve(count int) {
-	if w.result == nil && count == 1 && !w.limits.isReached() {
+	if cap(w.result) == 0 && count == 1 && !w.limits.isReached() {
 		w.result = make([]KeyValue, 0, 2)
 	}
 }

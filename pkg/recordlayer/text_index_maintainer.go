@@ -9,6 +9,7 @@ package recordlayer
 
 import (
 	"fmt"
+	"strings"
 
 	"fdb.dev/pkg/recordlayer/internal/tuplefast"
 
@@ -29,14 +30,16 @@ var tokenizerVersionSubspaceTuple = tuple.Tuple{int64(0)}
 // textIndexMaintainer maintains a TEXT index using a BunchedMap for token→position list storage.
 // Matches Java's TextIndexMaintainer.
 type textIndexMaintainer struct {
-	index         *Index
-	indexSubspace subspace.Subspace
-	secSubspace   subspace.Subspace // secondary subspace for tokenizer version tracking
-	tx            fdb.WritableTransaction
-	store         IndexStoreContext
+	index           *Index
+	indexSubspace   subspace.Subspace
+	secSubspace     subspace.Subspace // secondary subspace for tokenizer version tracking
+	versionSubspace subspace.Subspace
+	tx              fdb.WritableTransaction
+	store           IndexStoreContext
 
 	tokenizer                   TextTokenizer
 	tokenizerVersion            int
+	packedTokenizerVersion      []byte
 	addAggressiveConflictRanges bool
 	omitPositionLists           bool
 	bunchedMap                  *BunchedMap
@@ -69,10 +72,12 @@ func newTextIndexMaintainerWithTimer(index *Index, indexSubspace subspace.Subspa
 		index:                       index,
 		indexSubspace:               indexSubspace,
 		secSubspace:                 secSubspace,
+		versionSubspace:             secSubspace.Sub(tokenizerVersionSubspaceTuple[0]),
 		tx:                          tx,
 		store:                       store,
 		tokenizer:                   tokenizer,
 		tokenizerVersion:            tokenizerVersion,
+		packedTokenizerVersion:      tuple.Tuple{int64(tokenizerVersion)}.Pack(),
 		addAggressiveConflictRanges: getTextAggressiveConflictRanges(index),
 		omitPositionLists:           getTextOmitPositions(index),
 		bunchedMap:                  bm,
@@ -125,9 +130,7 @@ func textFieldPosition(expr KeyExpression) int {
 
 // getRecordTokenizerKey returns the FDB key for storing a record's tokenizer version.
 func (m *textIndexMaintainer) getRecordTokenizerKey(primaryKey tuple.Tuple) fdb.Key {
-	// secSubspace / TOKENIZER_VERSION_SUBSPACE_TUPLE / primaryKey
-	versionSubspace := m.secSubspace.Sub(tokenizerVersionSubspaceTuple[0])
-	return versionSubspace.Sub(tupleToTupleElements(primaryKey)...).Bytes()
+	return m.versionSubspace.Pack(primaryKey)
 }
 
 // getRecordTokenizerVersion reads the stored tokenizer version for a record.
@@ -158,13 +161,13 @@ func (m *textIndexMaintainer) getRecordTokenizerVersion(primaryKey tuple.Tuple) 
 // writeRecordTokenizerVersion stores the current tokenizer version for a record.
 func (m *textIndexMaintainer) writeRecordTokenizerVersion(primaryKey tuple.Tuple) {
 	key := m.getRecordTokenizerKey(primaryKey)
-	m.tx.Set(key, tuple.Tuple{int64(m.tokenizerVersion)}.Pack())
+	m.tx.SetBytes(key, m.packedTokenizerVersion)
 }
 
 // clearRecordTokenizerVersion removes the stored tokenizer version for a record.
 func (m *textIndexMaintainer) clearRecordTokenizerVersion(primaryKey tuple.Tuple) {
 	key := m.getRecordTokenizerKey(primaryKey)
-	m.tx.Clear(key)
+	m.tx.ClearBytes(key)
 }
 
 // Update updates the TEXT index for a record change.
@@ -352,19 +355,30 @@ func (m *textIndexMaintainer) updateOneKey(record *FDBStoredRecord[proto.Message
 	// Split into grouping key, text, and grouped key.
 	var groupingKey tuple.Tuple
 	if textPosition > 0 {
-		groupingKey = make(tuple.Tuple, textPosition)
-		copy(groupingKey, indexEntryKey[:textPosition])
+		groupingKey = indexEntryKey[:textPosition]
 	}
-	groupedKey := make(tuple.Tuple, len(indexEntryKey)-textPosition-1)
-	copy(groupedKey, indexEntryKey[textPosition+1:])
+	groupedKey := indexEntryKey[textPosition+1:]
 
-	// Tokenize the text.
-	positionMap, err := m.tokenizer.TokenizeToMap(text, recordTokenizerVersion, TokenizerModeIndex)
-	if err != nil {
-		return fmt.Errorf("text index tokenize: %w", err)
+	// Tokenize the text (reusing the batch prefetch's tokenization when present).
+	var positionMap map[string][]int
+	if fs, ok := m.store.(*FDBRecordStore); ok && fs.batchTokenCache != nil {
+		positionMap = fs.batchTokenCache[batchTokenCacheKey{tokenizer: m.tokenizer.Name(), version: recordTokenizerVersion, text: text}]
+	}
+	if positionMap == nil {
+		positionMap, err = m.tokenizer.TokenizeToMap(text, recordTokenizerVersion, TokenizerModeIndex)
+		if err != nil {
+			return fmt.Errorf("text index tokenize: %w", err)
+		}
 	}
 	if len(positionMap) == 0 {
 		return nil
+	}
+
+	var groupingPrefix []byte
+	if groupingKey == nil {
+		groupingPrefix = m.indexSubspace.Bytes()
+	} else {
+		groupingPrefix = m.indexSubspace.Pack(groupingKey)
 	}
 
 	// Add aggressive conflict ranges if configured.
@@ -373,7 +387,7 @@ func (m *textIndexMaintainer) updateOneKey(record *FDBStoredRecord[proto.Message
 		if groupingKey == nil {
 			begin, end = m.indexSubspace.FDBRangeKeys()
 		} else {
-			sub := m.indexSubspace.Sub(tupleToTupleElements(groupingKey)...)
+			sub := subspace.FromBytes(groupingPrefix)
 			begin, end = sub.FDBRangeKeys()
 		}
 		indexRange := fdb.KeyRange{Begin: begin, End: end}
@@ -387,47 +401,91 @@ func (m *textIndexMaintainer) updateOneKey(record *FDBStoredRecord[proto.Message
 	if pipelineSize < 1 {
 		pipelineSize = 1
 	}
-	pending := make([]func() error, 0, min(pipelineSize, len(positionMap)))
-	completeOldest := func() error {
-		finish := pending[0]
-		pending = pending[1:]
-		return finish()
+	type pendingTokenOp struct {
+		token string
+		put   pendingBunchedPut
+		rem   *pendingBunchedRemove
 	}
-	for token, positions := range positionMap {
-		if len(pending) == pipelineSize {
-			if err := completeOldest(); err != nil {
-				return err
+	pending := make([]pendingTokenOp, 0, min(pipelineSize, len(positionMap)))
+	completeOldest := func() error {
+		op := &pending[0]
+		if op.rem != nil {
+			if _, _, err := op.rem.finish(); err != nil {
+				tok := op.token
+				pending = pending[1:]
+				return fmt.Errorf("text index remove token %q: %w", tok, err)
+			}
+			pending = pending[1:]
+			return nil
+		}
+		if _, _, err := op.put.finish(); err != nil {
+			tok := op.token
+			pending = pending[1:]
+			return fmt.Errorf("text index put token %q: %w", tok, err)
+		}
+		pending = pending[1:]
+		return nil
+	}
+
+	if remove {
+		remGroupedKey := make(tuple.Tuple, len(groupedKey))
+		copy(remGroupedKey, groupedKey)
+		var subspaceElements []tuple.TupleElement
+		if groupingKey == nil {
+			subspaceElements = make([]tuple.TupleElement, 1)
+		} else {
+			subspaceElements = make([]tuple.TupleElement, len(groupingKey)+1)
+			for i, v := range groupingKey {
+				subspaceElements[i] = v
 			}
 		}
-		var subspaceTuple tuple.Tuple
-		if groupingKey == nil {
-			subspaceTuple = tuple.Tuple{token}
-		} else {
-			subspaceTuple = make(tuple.Tuple, 0, len(groupingKey)+1)
-			subspaceTuple = append(subspaceTuple, groupingKey...)
-			subspaceTuple = append(subspaceTuple, token)
-		}
-		mapSubspace := m.indexSubspace.Sub(tupleToTupleElements(subspaceTuple)...)
-
-		if remove {
-			op := m.bunchedMap.startRemove(m.tx, mapSubspace, groupedKey)
-			pending = append(pending, func() error {
-				if _, _, err := op.finish(); err != nil {
-					return fmt.Errorf("text index remove token %q: %w", token, err)
+		for token := range positionMap {
+			if len(pending) == pipelineSize {
+				if err := completeOldest(); err != nil {
+					return err
 				}
-				return nil
+			}
+			subspaceElements[len(subspaceElements)-1] = token
+			mapSubspace := m.indexSubspace.Sub(subspaceElements...)
+			pending = append(pending, pendingTokenOp{
+				token: token,
+				rem:   m.bunchedMap.startRemove(m.tx, mapSubspace, remGroupedKey),
 			})
-		} else {
+		}
+	} else {
+		packedGroupedKey := groupedKey.Pack()
+		keyArena := make([]byte, 0, len(positionMap)*(len(groupingPrefix)+len(packedGroupedKey)+16))
+		for token, positions := range positionMap {
+			if len(pending) == pipelineSize {
+				if err := completeOldest(); err != nil {
+					return err
+				}
+			}
+			need := len(groupingPrefix) + len(token) + 2 + len(packedGroupedKey) + 1
+			if strings.IndexByte(token, 0x00) >= 0 {
+				need += strings.Count(token, "\x00")
+			}
+			if cap(keyArena)-len(keyArena) < need {
+				keyArena = make([]byte, 0, max(2*cap(keyArena), need))
+			}
+			start := len(keyArena)
+			keyArena = append(keyArena, groupingPrefix...)
+			keyArena = appendPackedToken(keyArena, token)
+			subEnd := len(keyArena)
+			subspaceKey := keyArena[start:subEnd:subEnd]
+			keyArena = append(keyArena, packedGroupedKey...)
+			keyEnd := len(keyArena)
+			keyBytes := keyArena[start:keyEnd:keyEnd]
+			keyArena = append(keyArena, 0x00)
+			keyBytesAfter := keyArena[start : keyEnd+1 : keyEnd+1]
+
 			value := positions
 			if m.omitPositionLists {
 				value = nil
 			}
-			op := m.bunchedMap.startPut(m.tx, mapSubspace, groupedKey, value)
-			pending = append(pending, func() error {
-				if _, _, err := op.finish(); err != nil {
-					return fmt.Errorf("text index put token %q: %w", token, err)
-				}
-				return nil
+			pending = append(pending, pendingTokenOp{
+				token: token,
+				put:   m.bunchedMap.startPutPrepacked(m.tx, subspaceKey, keyBytes, keyBytesAfter, value),
 			})
 		}
 	}
@@ -437,6 +495,20 @@ func (m *textIndexMaintainer) updateOneKey(record *FDBStoredRecord[proto.Message
 		}
 	}
 	return nil
+}
+
+func appendPackedToken(dst []byte, token string) []byte {
+	dst = append(dst, 0x02)
+	if i := strings.IndexByte(token, 0x00); i >= 0 {
+		for i >= 0 {
+			dst = append(dst, token[:i+1]...)
+			dst = append(dst, 0xFF)
+			token = token[i+1:]
+			i = strings.IndexByte(token, 0x00)
+		}
+	}
+	dst = append(dst, token...)
+	return append(dst, 0x00)
 }
 
 // UpdateWhileWriteOnly handles TEXT index updates during WRITE_ONLY state.

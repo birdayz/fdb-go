@@ -252,6 +252,26 @@ func (p *packer) encodeBytes(code byte, b []byte) {
 	p.putByte(0x00)
 }
 
+func (p *packer) putStringNil(s string, i int) {
+	for i >= 0 {
+		p.buf = append(p.buf, s[:i+1]...)
+		p.buf = append(p.buf, 0xFF)
+		s = s[i+1:]
+		i = strings.IndexByte(s, 0x00)
+	}
+	p.buf = append(p.buf, s...)
+}
+
+func (p *packer) encodeString(s string) {
+	p.putByte(stringCode)
+	if i := strings.IndexByte(s, 0x00); i >= 0 {
+		p.putStringNil(s, i)
+	} else {
+		p.buf = append(p.buf, s...)
+	}
+	p.putByte(0x00)
+}
+
 func (p *packer) encodeUint(i uint64) {
 	if i == 0 {
 		p.putByte(intZeroCode)
@@ -387,7 +407,7 @@ func (p *packer) encodeElement(e TupleElement) {
 	case fdb.KeyConvertible:
 		p.encodeBytes(bytesCode, []byte(e.FDBKey()))
 	case string:
-		p.encodeBytes(stringCode, []byte(e))
+		p.encodeString(e)
 	case float32:
 		p.encodeFloat(e)
 	case float64:
@@ -447,7 +467,7 @@ func (p *packer) encodeTuple(t Tuple, nested bool, versionstamps bool) {
 		case fdb.KeyConvertible:
 			p.encodeBytes(bytesCode, []byte(e.FDBKey()))
 		case string:
-			p.encodeBytes(stringCode, []byte(e))
+			p.encodeString(e)
 		case float32:
 			p.encodeFloat(e)
 		case float64:
@@ -490,9 +510,7 @@ func (p *packer) encodeTuple(t Tuple, nested bool, versionstamps bool) {
 // This method will panic if it contains an incomplete Versionstamp. Use
 // PackWithVersionstamp instead.
 func (t Tuple) Pack() []byte {
-	p := newPacker()
-	p.encodeTuple(t, false, false)
-	return p.buf
+	return t.PackWithPrefix(nil)
 }
 
 var packerPool = sync.Pool{
@@ -579,7 +597,7 @@ func PutPacker(pk *Packer) { pk.Reset(); packerPool.Put(pk.p) }
 
 func (pk *Packer) Reset()                       { pk.p.versionstampPos = -1; pk.p.buf = pk.p.buf[:0] }
 func (pk *Packer) EncodeInt(val int64)          { pk.p.encodeInt(val) }
-func (pk *Packer) EncodeString(val string)      { pk.p.encodeBytes(0x02, []byte(val)) }
+func (pk *Packer) EncodeString(val string)      { pk.p.encodeString(val) }
 func (pk *Packer) EncodeTuple(t Tuple)          { pk.p.encodeTuple(t, false, false) }
 func (pk *Packer) EncodeElement(e TupleElement) { pk.p.encodeElement(e) }
 

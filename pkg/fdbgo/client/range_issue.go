@@ -267,12 +267,15 @@ func (tx *Transaction) waitIssuedReads(ctx context.Context, inc *readIncarnation
 
 // PendingRange is a started range read, like the future fdb_transaction_get_range returns.
 type PendingRange struct {
-	r     issuedRangeRead
-	state atomic.Int32 // pendingReady → pendingClaimed by whichever of the goroutine or Get runs r
-	done  chan struct{}
-	kvs   []KeyValue // shared RYW/cache storage; Get copies
-	more  bool
-	err   error
+	r        issuedRangeRead
+	state    atomic.Int32 // pendingReady → pendingClaimed by whichever of the goroutine or Get runs r
+	taken    atomic.Bool
+	done     chan struct{}
+	kvs      []KeyValue // shared RYW/cache storage, or pre-cloned when kvsOwned
+	kv0      [2]KeyValue
+	kvsOwned bool
+	more     bool
+	err      error
 	// ranByCaller reports that Get ran the read itself (test observability).
 	ranByCaller bool
 }
@@ -291,6 +294,9 @@ func (p *PendingRange) Get() ([]KeyValue, bool, error) {
 		p.execute()
 	}
 	<-p.done
+	if p.kvsOwned && p.taken.CompareAndSwap(false, true) {
+		return p.kvs, p.more, p.err
+	}
 	return cloneReadKVs(p.kvs), p.more, p.err
 }
 
@@ -310,7 +316,7 @@ func (tx *Transaction) StartGetRange(ctx context.Context, begin, end []byte, lim
 }
 
 // StartGetRange is the snapshot form of Transaction.StartGetRange.
-func (s *Snapshot) StartGetRange(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool) *PendingRange {
+func (s Snapshot) StartGetRange(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool) *PendingRange {
 	return s.tx.startRange(ctx, begin, end, limit, byteTarget, reverse, true)
 }
 
@@ -347,7 +353,10 @@ var closedDone = func() chan struct{} { ch := make(chan struct{}); close(ch); re
 // transaction without a database.
 func (tx *Transaction) rangeReadBackstop() *panicBackstop {
 	if tx.db == nil {
-		return &panicBackstop{name: "rangeRead"}
+		// Once: a transaction's pending reads run concurrently, and each asks
+		// for the backstop.
+		tx.rangeReadPanicsInit.Do(func() { tx.rangeReadPanics.name = "rangeRead" })
+		return &tx.rangeReadPanics
 	}
 	return &tx.db.rangeReadPanics
 }

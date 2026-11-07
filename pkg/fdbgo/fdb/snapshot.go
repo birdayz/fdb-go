@@ -4,25 +4,21 @@ import (
 	"fdb.dev/pkg/fdbgo/client"
 )
 
-type snapshot struct {
-	tx *transaction
-}
-
 // Snapshot is a handle to a FoundationDB transaction snapshot.
 // Snapshot reads do not add read conflict ranges.
 type Snapshot struct {
-	s *snapshot
+	tx *transaction
 }
 
 func (sn Snapshot) Get(key KeyConvertible) FutureByteSlice {
-	inner, ctx := sn.s.tx.inner, sn.s.tx.ctx
+	inner, ctx := sn.tx.inner, sn.tx.ctx
 	// Issued in the call, like fdb_transaction_get (ThreadSafeTransaction.cpp:426-434):
 	// a later write is not visible to it.
 	return startedFutureByteSlice(inner.Snapshot().StartGet(ctx, key.FDBKey()))
 }
 
 func (sn Snapshot) GetKey(sel Selectable) FutureKey {
-	inner, ctx := sn.s.tx.inner, sn.s.tx.ctx
+	inner, ctx := sn.tx.inner, sn.tx.ctx
 	ks := sel.FDBKeySelector()
 	key := ks.Key.FDBKey() // StartGetKey takes its own copy
 	// OrEqual values match the wire convention. Pass directly. Issued in the call,
@@ -35,11 +31,11 @@ func (sn Snapshot) GetKey(sel Selectable) FutureKey {
 }
 
 func (sn Snapshot) GetRange(r Range, options RangeOptions) RangeResult {
-	return newSnapshotRangeResult(sn.s.tx, r, options)
+	return newSnapshotRangeResult(sn.tx, r, options)
 }
 
 func (sn Snapshot) GetReadVersion() FutureInt64 {
-	inner, ctx := sn.s.tx.inner, sn.s.tx.ctx
+	inner, ctx := sn.tx.inner, sn.tx.ctx
 	return newFutureInt64(func() (int64, error) {
 		v, err := inner.Snapshot().GetReadVersion(ctx)
 		return v, convertError(err)
@@ -47,7 +43,7 @@ func (sn Snapshot) GetReadVersion() FutureInt64 {
 }
 
 func (sn Snapshot) GetDatabase() Database {
-	return sn.s.tx.db
+	return sn.tx.db
 }
 
 func (sn Snapshot) Snapshot() ReadTransaction {
@@ -57,7 +53,7 @@ func (sn Snapshot) Snapshot() ReadTransaction {
 func (sn Snapshot) GetEstimatedRangeSizeBytes(r ExactRange) FutureInt64 {
 	begin, end := cloneRangeKeys(r)
 	return newFutureInt64(func() (int64, error) {
-		v, err := sn.s.tx.inner.GetEstimatedRangeSizeBytes(sn.s.tx.ctx, begin, end)
+		v, err := sn.tx.inner.GetEstimatedRangeSizeBytes(sn.tx.ctx, begin, end)
 		return v, convertError(err)
 	})
 }
@@ -65,7 +61,7 @@ func (sn Snapshot) GetEstimatedRangeSizeBytes(r ExactRange) FutureInt64 {
 func (sn Snapshot) GetRangeSplitPoints(r ExactRange, chunkSize int64) FutureKeyArray {
 	begin, end := cloneRangeKeys(r)
 	return newFutureKeyArray(func() ([]Key, error) {
-		points, err := sn.s.tx.inner.GetRangeSplitPoints(sn.s.tx.ctx, begin, end, chunkSize)
+		points, err := sn.tx.inner.GetRangeSplitPoints(sn.tx.ctx, begin, end, chunkSize)
 		if err != nil {
 			return nil, convertError(err)
 		}
@@ -78,11 +74,11 @@ func (sn Snapshot) GetRangeSplitPoints(r ExactRange, chunkSize int64) FutureKeyA
 }
 
 func (sn Snapshot) Options() TransactionOptions {
-	return goTransactionOptions{tx: sn.s.tx}
+	return goTransactionOptions{tx: sn.tx}
 }
 
 func (sn Snapshot) Cancel() {
-	sn.s.tx.inner.Cancel()
+	sn.tx.inner.Cancel()
 }
 
 func (sn Snapshot) ReadTransact(f func(ReadTransaction) (any, error)) (any, error) {

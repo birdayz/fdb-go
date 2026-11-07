@@ -294,6 +294,8 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 	// Prefetch TEXT bunch reads into the transaction cache before applying any record
 	// (store_batch_text_prefetch.go).
 	if !options.skipTextPrefetch {
+		store.batchTokenCache = make(map[batchTokenCacheKey]map[string][]int, len(pending))
+		defer func() { store.batchTokenCache = nil }()
 		news := make([]*FDBStoredRecord[proto.Message], len(pending))
 		olds := make([]*FDBStoredRecord[proto.Message], len(pending))
 		for i := range pending {
