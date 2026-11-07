@@ -293,6 +293,18 @@ func (s *BaseRelationalParserListener) EnterVectorIndexOptions(ctx *VectorIndexO
 // ExitVectorIndexOptions is called when production vectorIndexOptions is exited.
 func (s *BaseRelationalParserListener) ExitVectorIndexOptions(ctx *VectorIndexOptionsContext) {}
 
+// EnterTextIndexOptions is called when production textIndexOptions is entered.
+func (s *BaseRelationalParserListener) EnterTextIndexOptions(ctx *TextIndexOptionsContext) {}
+
+// ExitTextIndexOptions is called when production textIndexOptions is exited.
+func (s *BaseRelationalParserListener) ExitTextIndexOptions(ctx *TextIndexOptionsContext) {}
+
+// EnterTextIndexOption is called when production textIndexOption is entered.
+func (s *BaseRelationalParserListener) EnterTextIndexOption(ctx *TextIndexOptionContext) {}
+
+// ExitTextIndexOption is called when production textIndexOption is exited.
+func (s *BaseRelationalParserListener) ExitTextIndexOption(ctx *TextIndexOptionContext) {}
+
 // EnterVectorIndexOption is called when production vectorIndexOption is entered.
 func (s *BaseRelationalParserListener) EnterVectorIndexOption(ctx *VectorIndexOptionContext) {}
 
