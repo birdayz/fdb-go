@@ -264,6 +264,24 @@ func newStoreSubspaceKeys(ss subspace.Subspace) *storeSubspaceKeys {
 	}
 }
 
+// PrefetchStoreState issues the two reads an Open of the store at ss in rctx
+// starts with (loadRecordStoreState: a point read of the header and a snapshot
+// range read of the index states), so they overlap the caller's other reads.
+// The returned func waits for them; an Open after it is answered from the
+// transaction's read cache. The reads are the Open's own, at the same
+// isolation, so they add no conflict range the Open would not add. Their
+// errors are left to the Open, which reads again.
+func PrefetchStoreState(rctx *FDBRecordContext, ss subspace.Subspace) (wait func()) {
+	tx := rctx.Transaction()
+	ks := getCachedSubspaceKeys(ss)
+	info := tx.Get(ks.expectedInfoKey)
+	states := tx.Snapshot().GetRange(fdb.KeyRange{Begin: ks.indexStateBegin, End: ks.indexStateEnd}, fdb.RangeOptions{})
+	return func() {
+		_, _ = info.Get()
+		_, _ = states.GetSliceWithError()
+	}
+}
+
 // loadRecordStoreState reads store header + index states from FDB.
 // Issues both reads (store-info Get + index-state GetRange) in parallel using
 // FDB's future-based API, then resolves sequentially.

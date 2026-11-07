@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "genotelv1_lib",
+    srcs = ["main.go"],
+    importpath = "fdb.dev/layers/otel/otelsql/cmd/genotelv1",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//layers/otel/otelsql",
+        "//pkg/relational/core/embedded",
+        "@org_golang_google_protobuf//cmd/protoc-gen-go/internal_gengo",
+        "@org_golang_google_protobuf//compiler/protogen",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/descriptorpb",
+        "@org_golang_google_protobuf//types/pluginpb",
+    ],
+)
+
+go_binary(
+    name = "genotelv1",
+    embed = [":genotelv1_lib"],
+    visibility = ["//visibility:public"],
+)

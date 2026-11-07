@@ -3627,26 +3627,27 @@ these claims; the implementation notes below are not controlled comparisons.
 Measured with `otelbench --backend sql` (`layers/otel/sqlbackend`); numbers and
 boundary in `docs/benchmarks/otel-relational-local-20261107.md`.
 
-- [ ] Ingest CPU parity. Direct Record Layer saves into OTEL_V1 cost about 337
-  µs client CPU per span against 255 for the custom-index backend (1.32x), with
-  the same 11 KV writes per span and 34% fewer bytes. About 22% of it is
-  dynamicpb (Range, Get, slow-path Marshal) over the wide SPANS row. Candidate:
-  compiled Go types for the OTEL_V1 rows bound through
-  `recordlayer.WithLocalFileDescriptor`, with a test that pins the compiled
-  descriptor to the template's. Also: the batch prefetch and batch save both
-  walk the UTF-8 check, and `readIndexState` starts a goroutine-backed
-  `GetReadVersion` future per record and index.
-- [ ] SQL statement floor. After the template cache, a point query through
-  `database/sql` still costs about 1.5 ms p50 locally against 0.45 ms for the
-  same index scan through the Record Layer: an auto-commit statement loads the
-  schema in one transaction and runs its page in another, each with a GRV and
-  a store-header read, and re-parses the text before the plan cache. Measure a
-  single-transaction statement path before changing transaction structure.
+- [x] Ingest CPU parity. Compiled OTEL_V1 row types (`otelsql/otelv1pb`,
+  bound with `WithLocalFileDescriptor`) and single-pass fan-out key evaluation
+  bring direct OTEL_V1 ingest to 258 µs/span uncompressed and 283 with `zlib-1`.
+  The production `fdb` configuration costs 353. Regressions:
+  `TestBuildCompiledIsBuild`, `TestCompiledTypesMatchTemplateDescriptor`,
+  `TestCompositeKeyExpressionFanOutMatchesReferenceCrossProduct`.
+- [ ] Remaining ingest CPU, shared with every Record Layer writer:
+  - the Go client's write path (RYW cache, mutation log, conflict ranges, commit encoding) is about 38% of allocations;
+  - the batch prefetch and batch save both walk the UTF-8 check;
+  - `readIndexState` starts a goroutine-backed `GetReadVersion` future per record and index.
+- [ ] SQL statement floor. With one transaction per auto-commit SELECT and the
+  schema witness, a point query costs 0.63 ms p50 on a pinned connection and
+  1.04 ms pooled, against 0.43 ms for the same scan through the Record Layer.
+  - It makes the same FDB requests as the direct scan when pinned; the rest is client CPU: ANTLR parse before the plan cache, planning and the executor per row.
+  - A parse cache needs the bound parse tree to be immutable or cloned.
 - [ ] SELECT pages are bounded only by time unless
-  `execution_scanned_rows_limit` is set, so a top-K reader that stops early
-  still pays for every matching row of the first page (91 ms against 6.7 ms for
-  a broad attribute at 256 rows per page). Decide a default page row bound or a
-  lazily growing page.
+  `execution_scanned_rows_limit` is set, and a page is read whole before its
+  first row is returned. Java's result set iterates its cursor lazily instead.
+  The OTel backend works around it with `LIMIT` batches (K, 2K, ...) and a
+  `start_ns <=` keyset bound. A generic fix is lazy first-page streaming, or a
+  page bound that grows without penalizing small fully consumed results.
 - [ ] Trace-to-logs-to-metrics joins plan as unpipelined index nested loops
   (`FlatMap` + `IndexScan(LOGS_TRACE, [=, =])`), one sequential probe per outer
   span. Pipeline inner probes or plan a shared-prefix scan before relying on
