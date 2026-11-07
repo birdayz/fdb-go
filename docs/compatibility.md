@@ -392,8 +392,11 @@ placeholder matches every overlong token; the raw element bytes stay the
 message. SQL plans the text index for `TEXT_CONTAINS_*(content, ?) AND role = ?
 AND shard IN (0..15)` (or the tokenizer named `'default'`); an unbound shard
 keeps record filtering (`sqltest/otel`). The OTel layer is pre-release, so
-OTEL_V1 was rewritten in place at catalog version 1: record-metadata version 20
-for `TemplateBody` (19 indexes) and 21 for `TemplateDDL`. Java 4.14.2.0 reads
+OTEL_V1 was rewritten in place at catalog version 1: record-metadata version 21
+for `TemplateBody` (20 indexes) and 22 for `TemplateDDL`. Every table is indexed
+(`store_meta_name` only for this) because the DDL front end orders unindexed
+tables first, and a table's record type key is its position: spans keep key 0,
+one byte in every span record and index key. Java 4.14.2.0 reads
 every table of a `TemplateDDL` store Go wrote (compiled builders, zlib-1
 records); its SQL has no `TEXT_CONTAINS_*` (`0AF00 Unsupported operator`), and
 Java writers of `messages` would have to bound overlong tokens as
