@@ -12,6 +12,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//layers/otel",
+        "//layers/otel/otelsql",
         "@in_gopkg_yaml_v3//:yaml_v3",
         "@io_opentelemetry_go_proto_otlp//common/v1:common",
         "@io_opentelemetry_go_proto_otlp//resource/v1:resource",

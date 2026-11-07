@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"fdb.dev/layers/otel"
+	"fdb.dev/layers/otel/otelsql"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
@@ -44,10 +45,11 @@ const (
 	benchLogFlushInterval  = 200 * time.Millisecond
 	benchLogAttempts       = 5
 	benchQueryIdle         = 10 * time.Millisecond
-	// Budget bounds: one encoded message element, and one span reference,
-	// posting or metadata row.
-	benchMessageBytes = 1024
-	benchRowBytes     = 512
+	// Budget bounds: one index entry, posting, marker or probe row, and one
+	// packed span reference in a ref chunk's index key (two IDs at otelsql's
+	// bound, attribute, newest and an ordinal).
+	benchRowBytes    = 512
+	benchRefKeyBytes = 48
 
 	benchInputKey  = "gen_ai.input.messages"
 	benchOutputKey = "gen_ai.output.messages"
@@ -93,9 +95,6 @@ type CollectorBenchConfig struct {
 	ExporterBatchSize     int           `json:"exporter_batch_size"`
 	ExporterWorkers       int           `json:"exporter_workers"`
 	RecordCompression     string        `json:"record_compression"`
-	PostingValueFormat    string        `json:"posting_value_format"`
-	HashBytes             int           `json:"hash_bytes"`
-	Order                 string        `json:"order"`
 	EnableMessageDeltas   bool          `json:"enable_message_deltas"`
 	EnableMessageFullText bool          `json:"enable_message_full_text"`
 	QueryIterations       int           `json:"query_iterations"`
@@ -120,10 +119,7 @@ func DefaultCollectorBenchConfig() CollectorBenchConfig {
 		BatchMaxSize:          256,
 		ExporterBatchSize:     64,
 		ExporterWorkers:       8,
-		RecordCompression:     "brotli-4",
-		PostingValueFormat:    "tuple",
-		HashBytes:             8,
-		Order:                 "time",
+		RecordCompression:     "zlib-1",
 		EnableMessageDeltas:   true,
 		EnableMessageFullText: true,
 		QueryIterations:       100,
@@ -146,7 +142,6 @@ func (c CollectorBenchConfig) WithDefaults() CollectorBenchConfig {
 		{&c.BatchMaxSize, &d.BatchMaxSize},
 		{&c.ExporterBatchSize, &d.ExporterBatchSize},
 		{&c.ExporterWorkers, &d.ExporterWorkers},
-		{&c.HashBytes, &d.HashBytes},
 		{&c.QueryIterations, &d.QueryIterations},
 	} {
 		if *f.v == 0 {
@@ -161,7 +156,7 @@ func (c CollectorBenchConfig) WithDefaults() CollectorBenchConfig {
 		}
 	}
 	for _, f := range []struct{ v, d *string }{
-		{&c.RecordCompression, &d.RecordCompression}, {&c.PostingValueFormat, &d.PostingValueFormat}, {&c.Order, &d.Order}, {&c.Revision, &d.Revision},
+		{&c.RecordCompression, &d.RecordCompression}, {&c.Revision, &d.Revision},
 	} {
 		if *f.v == "" {
 			*f.v = *f.d
@@ -216,19 +211,26 @@ func (c CollectorBenchConfig) Validate() error {
 	return nil
 }
 
-// benchQueryBudget allows two blocks of candidates/logical bytes, independent of corpus size,
-// so an accidental corpus scan fails rather than degrading as a sustained run grows.
+// benchQueryBudget allows twice the reads of one block's query on the
+// OTEL_V1 store, independent of corpus size, so an accidental corpus scan
+// fails rather than degrading as a sustained run grows.
 func benchQueryBudget(turns, k int) (int, int64) {
 	n := int64(turns)
-	// References to one block's user (or assistant) messages: message j of a
-	// conversation is in the history of turns j..n.
-	refs := benchBlockSize * n * (n + 1) / 2
-	// Existential queries read postings, messages, markers and reference chunks;
-	// K-limited queries add bounded verification and batched predicate probes.
-	rows := benchBlockSize*(4*n+1) + refs + 4*int64(k+64)
-	// This also covers one trace stored without decomposition, whose n spans
-	// carry n(n+4) message elements.
-	bytes := refs*benchRowBytes + benchBlockSize*n*(2*benchMessageBytes+3*benchRowBytes)
+	spans := benchBlockSize * n
+	// SPANS_REF_CHUNKS entries per span: turn j's span references its 2j+3
+	// elements, packed to at most otelsql.MaxRefChunkKeyBytes per chunk.
+	chunks := 1 + (2*n+3)*benchRefKeyBytes/otelsql.MaxRefChunkKeyBytes
+	// The widest classes read, per span of a block: an FTS block query one
+	// TEXT posting, one MESSAGE_TRACES marker, its ref chunks and two
+	// same-span predicate probes; the 3-way existential one span-attribute
+	// entry, a posting, a marker and the chunks, plus one log per
+	// conversation. Role discovery, bunch boundaries and the K-limited
+	// classes' verification add the constant terms.
+	rows := spans*(4+chunks) + benchBlockSize + 4*int64(k+64) + 16
+	// Every row at benchRowBytes, plus the block's packed references (n(n+4)
+	// per conversation) at their key bound. It also covers one trace stored
+	// without decomposition, whose n spans carry n(n+4) message elements.
+	bytes := rows*benchRowBytes + benchBlockSize*n*(n+4)*benchRefKeyBytes
 	return int(2*rows + 1000), 2*bytes + 1<<20
 }
 
@@ -237,7 +239,7 @@ func (c CollectorBenchConfig) collectorConfig() *Config {
 	cc := defaultConfig()
 	e := &cc.Exporter
 	e.ClusterFile, e.Run, e.Tenant = c.ClusterFile, c.Run, c.Tenant
-	e.Order, e.HashBytes, e.PostingValueFormat, e.RecordCompression = c.Order, c.HashBytes, c.PostingValueFormat, c.RecordCompression
+	e.RecordCompression = c.RecordCompression
 	e.EnableMessageDeltas, e.EnableMessageFullText = c.EnableMessageDeltas, c.EnableMessageFullText
 	e.BatchSize, e.Workers = c.ExporterBatchSize, c.ExporterWorkers
 	e.MaxCandidates, e.MaxBytes = benchQueryBudget(c.TurnsPerConversation, e.K)

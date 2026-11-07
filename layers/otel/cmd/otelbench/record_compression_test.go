@@ -36,8 +36,19 @@ func TestExecuteRecordCompression(t *testing.T) {
 			t.Fatalf("bulk/covering choices omitted from actual config/receipt: %+v", e)
 		}
 	}
+	// The sql backend's batch saves are the Exporter's SpanWriter, whose
+	// default coalesces index write conflicts.
+	sql := &fakeBackend{t: t}
+	var out, errOut bytes.Buffer
+	if code := execute(append(cliArgs("ingest"), "--backend=sql", "--save-mode=batch", "--record-compression=zlib-1", "--bulk-index-conflicts"), &out, &errOut, sql.open); code != 0 {
+		t.Fatalf("sql bulk index conflicts exit %d: %s", code, &errOut)
+	}
+	if !sql.cfg.BulkIndexConflicts || sql.cfg.Backend != "sql" || !decodeEvidence(t, out.Bytes()).Config.BulkIndexConflicts {
+		t.Fatalf("sql bulk index conflicts omitted from actual config/receipt: %+v", sql.cfg)
+	}
 	for _, args := range [][]string{
 		{"--posting-value-format=unknown"},
+		{"--bulk-index-conflicts", "--save-mode=pipelined", "--backend=sql"},
 		{"--posting-value-format=tuple", "--backend=ch-map"},
 		{"--bulk-index-conflicts"},
 		{"--bulk-index-conflicts", "--save-mode=serial"},

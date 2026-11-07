@@ -49,12 +49,12 @@ type MessageSpanHit struct {
 	TurnOrdinals []int  `json:"turn_ordinals"`
 }
 
-// MessageFullTextPage is one snapshot page in the run's order (span sort key,
-// then attribute key, then writer/sequence message ID). A full page carries a continuation.
+// MessageFullTextPage is one snapshot page of hits in sort-key order (start,
+// trace and span descending, D3, then attribute key and writer/sequence
+// message ID). A full page carries a continuation.
 type MessageFullTextPage struct {
 	Hits         []MessageSpanHit `json:"hits"`
 	Continuation []byte           `json:"continuation,omitempty"`
-	Order        string           `json:"order"`
 	ReadVersion  int64            `json:"read_version"`
 	Candidates   int              `json:"candidates"`
 	Bytes        int64            `json:"logical_read_bytes"`
@@ -618,7 +618,7 @@ func parseMessageResume(order string, raw []byte) ([]byte, error) {
 func (b *FDBBackend) QueryMessageFullText(ctx context.Context, q MessageFullTextQuery) (MessageFullTextPage, error) {
 	const op = "message full-text query"
 	b.lastWork = QueryResult{}
-	page := MessageFullTextPage{Hits: []MessageSpanHit{}, Order: b.cfg.Order}
+	page := MessageFullTextPage{Hits: []MessageSpanHit{}}
 	if b.cfg.Messages != messagesFullText {
 		return page, fail("config", op, "message text is not indexed in this run's layout")
 	}
@@ -635,7 +635,7 @@ func (b *FDBBackend) QueryMessageFullText(ctx context.Context, q MessageFullText
 	var secret, lastKey []byte
 	budget := b.newBudget(op)
 	_, err = b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
-		page = MessageFullTextPage{Hits: []MessageSpanHit{}, Order: b.cfg.Order}
+		page = MessageFullTextPage{Hits: []MessageSpanHit{}}
 		budget = b.newBudget(op)
 		lastKey = nil
 		store, pm, err := b.openPostingsStore(rc, op)
@@ -674,20 +674,4 @@ func (b *FDBBackend) QueryMessageFullText(ctx context.Context, q MessageFullText
 	}
 	page.Continuation = signContinuationKind(secret, messageContinuationKind, b.cfg.Run, b.cfg.Tenant, b.cfg.Order, plan.digest, lastKey)
 	return page, nil
-}
-
-// QueryMessageFullText searches message text; the exporter must index it.
-func (e *Exporter) QueryMessageFullText(ctx context.Context, q MessageFullTextQuery) (MessageFullTextPage, error) {
-	const op = "message full-text query"
-	empty := MessageFullTextPage{Hits: []MessageSpanHit{}, Order: e.cfg.Order}
-	if !e.cfg.EnableMessageFullText {
-		return empty, fail("config", op, "enable_message_full_text is off; message text is not indexed")
-	}
-	if err := e.begin(op); err != nil {
-		return empty, err
-	}
-	defer e.active.Done()
-	e.queryMu.Lock()
-	defer e.queryMu.Unlock()
-	return e.backend.QueryMessageFullText(e.txnContext(ctx), q)
 }
