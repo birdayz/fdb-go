@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"sync"
 
+	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -199,7 +200,7 @@ func validateRelQueryAttribute(op string, a Attribute, scopes ...string) error {
 		}
 	case "double":
 		f, err := parseCanonicalDouble(a.Value)
-		if err != nil || formatDouble(f) != a.Value {
+		if err != nil || otelsql.FormatDouble(f) != a.Value {
 			return fail("config", op, "double attribute value must be canonical: shortest round-trip text, NaN, +Inf or -Inf")
 		}
 	case "bool":
