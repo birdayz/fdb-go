@@ -3732,10 +3732,12 @@ these claims; the implementation notes below are not controlled comparisons.
     absorb the drain. The Go client cannot read `\xff\xff/status/json` to
     wait for it. Gate steady-state query comparisons on `--query-only` after
     the queues drain, or make the bench wait for durability.
-  - [ ] `tuple.decodeInt` (pkg/fdbgo/fdb/tuple) decodes every int through
-    `binary.Read(bytes.NewBuffer(...))`, three allocations per int; it was
-    15% of the old message query's allocations. A stack-array decode would
-    help every `tuple.Unpack` caller (keep the fuzz corpus green).
+  - [x] `tuple.decodeInt` (pkg/fdbgo/fdb/tuple) decoded every int through
+    `binary.Read(bytes.NewBuffer(...))`: four allocations per int, 15% of the
+    old message query's allocations. It now decodes from a stack array (one
+    allocation: boxing the result); `TestDecodeIntMatchesBinaryRead` pins
+    equal results against the binary.Read version for every int type code.
+    decodeFloat and decodeDouble keep the binary.Read pattern.
   - `otel.NewExporter` uses the fixed template name OTEL_V1, so it cannot open
     on a shared cluster whose catalog holds OTEL_V1 from another revision
     (otelcmp after G2A); `sqlbackend` avoids that with `RevisionTemplateName`.
