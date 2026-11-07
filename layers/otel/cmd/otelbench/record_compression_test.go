@@ -10,7 +10,7 @@ import (
 
 func TestExecuteRecordCompression(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"none", "zlib-1", "brotli-0", "brotli-1", "brotli-3", "brotli-4"} {
+	for _, mode := range []string{"none", "zlib-1", "zlib-default"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			backend := &fakeBackend{t: t}
@@ -24,39 +24,28 @@ func TestExecuteRecordCompression(t *testing.T) {
 			}
 		})
 	}
-	for _, values := range []string{"json", "tuple"} {
-		backend := &fakeBackend{t: t}
-		var stdout, stderr bytes.Buffer
-		args := append(cliArgs("ingest"), "--save-mode=batch", "--record-compression=brotli-1", "--posting-value-format="+values, "--bulk-index-conflicts")
-		if code := execute(args, &stdout, &stderr, backend.open); code != 0 {
-			t.Fatalf("bulk/covering flags exit %d: %s", code, &stderr)
-		}
-		e := decodeEvidence(t, stdout.Bytes())
-		if !backend.cfg.BulkIndexConflicts || backend.cfg.PostingValueFormat != values || !e.Config.BulkIndexConflicts || e.Config.PostingValueFormat != values {
-			t.Fatalf("bulk/covering choices omitted from actual config/receipt: %+v", e)
-		}
-	}
 	// The sql backend's batch saves are the Exporter's SpanWriter, whose
 	// default coalesces index write conflicts.
 	sql := &fakeBackend{t: t}
 	var out, errOut bytes.Buffer
-	if code := execute(append(cliArgs("ingest"), "--backend=sql", "--save-mode=batch", "--record-compression=zlib-1", "--bulk-index-conflicts"), &out, &errOut, sql.open); code != 0 {
+	if code := execute(append(cliArgs("ingest"), "--save-mode=batch", "--record-compression=zlib-1", "--bulk-index-conflicts"), &out, &errOut, sql.open); code != 0 {
 		t.Fatalf("sql bulk index conflicts exit %d: %s", code, &errOut)
 	}
 	if !sql.cfg.BulkIndexConflicts || sql.cfg.Backend != "sql" || !decodeEvidence(t, out.Bytes()).Config.BulkIndexConflicts {
 		t.Fatalf("sql bulk index conflicts omitted from actual config/receipt: %+v", sql.cfg)
 	}
 	for _, args := range [][]string{
-		{"--posting-value-format=unknown"},
-		{"--bulk-index-conflicts", "--save-mode=pipelined", "--backend=sql"},
-		{"--posting-value-format=tuple", "--backend=ch-map"},
+		{"--bulk-index-conflicts", "--save-mode=pipelined"},
 		{"--bulk-index-conflicts"},
 		{"--bulk-index-conflicts", "--save-mode=serial"},
 		{"--bulk-index-conflicts", "--save-mode=batch", "--backend=ch-attrs"},
 		{"--record-compression=brotli"},
 		{"--record-compression=brotli-11"},
 		{"--record-compression=zlib-9"},
-		{"--record-compression=brotli-1", "--backend=ch-map"},
+		// D2 refused Brotli on OTEL_V1 stores; Phase 3B removed the fdb backend.
+		{"--record-compression=brotli-1"},
+		{"--record-compression=brotli-4"},
+		{"--record-compression=zlib-1", "--backend=ch-map"},
 		{"--record-compression=brotli-1", "--backend=ch-attrs"},
 	} {
 		var stdout, stderr bytes.Buffer

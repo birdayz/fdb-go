@@ -15,7 +15,7 @@ import driver as d
 import policy as p
 import scaling as s
 from test_diagnostic import plan as diagnostic_plan
-from test_horizontal import evidence
+from test_horizontal import CENSUS, evidence
 from test_session import canonical_failure
 
 
@@ -104,7 +104,7 @@ class ScalingPlanTests(unittest.TestCase):
                      ("server_type", "ccx33"), ("replication", "double"), ("source_revision", "b"*39),
                      ("first_epoch", True), ("deadline_epoch", 8201), ("controller_cidr", "192.0.2.0/24"),
                      ("hcloud", "hcloud"), ("binary_sha256", "changed"),
-                     ("storage_options", {"record_compression": "brotli-4"}))
+                     ("storage_options", {"record_compression": "zlib-1"}))
         for key, bad in mutations:
             value = plan(); value[key] = bad
             with self.subTest(key=key, bad=bad), self.assertRaises(ValueError):
@@ -222,10 +222,11 @@ def wave_result(hosts, count):
             "drained_rows_per_second": 1000*hosts}
 
 
-def ingest_diagnostics(count):
-    return {"committed_rows": count, "committed_batches": 1,
-            "phase_latencies": {phase: {"count": 1, "min_nanos": 1, "max_nanos": 1, "total_nanos": 1}
-                                for phase in ("open", "save", "commit", "run")}}
+def ingest_details(count):
+    # sqlbackend ingest details: string values, as otel.Statistics.Details carries them.
+    return {"ingest": "OTEL_V1 tenant schema stores; direct", "write_path": "otel.SpanWriter",
+            "committed_batches": str(-(-count // 64)), "save_mode": "batch", "workers": "8",
+            "record_compression": "zlib-1"}
 
 
 def stage_result(hosts):
@@ -1182,14 +1183,12 @@ class WaveHarness:
         if role == "client3" and mode == self.bad_verification:
             value["failures"] = 1
         if mode == "ingest":
-            value["stats"]["diagnostics"] = ingest_diagnostics(count)
-            value["stats"]["diagnostics"]["committed_rows"] = self.bad_committed.get(role, count)
+            value["stats"]["details"] = ingest_details(count)
+            value["stats"]["rows"] = self.bad_committed.get(role, count)
             if self.ingest_mutator is not None:
-                self.ingest_mutator(role, value["stats"]["diagnostics"])
+                self.ingest_mutator(role, value["stats"]["details"])
         elif mode == "audit":
-            value["stats"]["structures"] = {key: {"keys": number} for key, number in
-                {"records": count, "eq_secondary": count*8, "span_id_v2": count,
-                 "span_time_v2": count, "owned_total": count*11+2, "eq_primary": 0}.items()}
+            value["stats"]["structures"] = {key: {"keys": number} for key, number in CENSUS[count].items()}
         return value
 
     def command(self, node, args, cap=30):
@@ -1273,7 +1272,8 @@ class ScalingWaveTests(unittest.TestCase):
         for bad in (None, 0, True, 375000.0, 374999, 375001):
             with self.subTest(committed_rows=bad), tempfile.TemporaryDirectory() as tmp:
                 h = WaveHarness(tmp, 3); h.bad_committed["client3"] = bad
-                with h.running(), self.assertRaisesRegex(ValueError, "committed ACK"):
+                # sqlbackend's committed rows are its evidence rows, checked first by p.evidence.
+                with h.running(), self.assertRaisesRegex(ValueError, "complete source population"):
                     h.arm.wave(h.layout, 375000, "measured")
                 result = d.read(h.arm.out/"measured"/"result.json")
                 self.assertIs(result["ingest_valid"], False)
@@ -1282,18 +1282,18 @@ class ScalingWaveTests(unittest.TestCase):
                 self.assertNotIn(("drain",), h.events)
                 self.assertFalse(any(event[0] == "spawn" and event[2] == "verification" for event in h.events))
 
-    def test_missing_zero_or_boolean_phase_proof_is_rejected_before_metrics_or_verification(self):
-        changes = (lambda value: value.pop("phase_latencies"),
-                   lambda value: value["phase_latencies"].pop("commit"),
-                   lambda value: value["phase_latencies"]["save"].update(count=0),
-                   lambda value: value["phase_latencies"]["run"].update(count=True),
-                   lambda value: value["phase_latencies"]["open"].update(total_nanos=False))
+    def test_missing_zero_or_untyped_ingest_details_are_rejected_before_metrics_or_verification(self):
+        changes = (lambda value: value.pop("committed_batches"),
+                   lambda value: value.update(committed_batches="0"),
+                   lambda value: value.update(committed_batches=1),
+                   lambda value: value.update(write_path="sqlbackend"),
+                   lambda value: value.pop("write_path"))
         for index, change in enumerate(changes):
-            with self.subTest(phase_fault=index), tempfile.TemporaryDirectory() as tmp:
+            with self.subTest(details_fault=index), tempfile.TemporaryDirectory() as tmp:
                 h = WaveHarness(tmp, 3)
-                def mutate(role, diagnostics):
+                def mutate(role, details):
                     if role == "client3":
-                        change(diagnostics)
+                        change(details)
                 h.ingest_mutator = mutate
                 with h.running(), self.assertRaises(ValueError):
                     h.arm.wave(h.layout, 375000, "measured")
@@ -1367,52 +1367,43 @@ class ScalingWaveTests(unittest.TestCase):
 class ScalingIngestTests(unittest.TestCase):
     def valid(self):
         value = evidence("ingest", 375000)
-        value["stats"]["diagnostics"] = ingest_diagnostics(375000)
+        value["stats"]["details"] = ingest_details(375000)
         return value
 
-    def test_positive_committed_batches_and_all_four_nonzero_phase_populations_are_immutable(self):
+    def test_positive_committed_rows_batches_and_spanwriter_path_are_immutable(self):
         value = self.valid(); before = copy.deepcopy(value)
         self.assertIs(s.validate_ingest(value, 375000), True)
         self.assertEqual(value, before)
-        for phase in ("open", "save", "commit", "run"):
-            value["stats"]["diagnostics"]["phase_latencies"][phase] = {
-                "count": 2, "min_nanos": 1, "max_nanos": 3, "total_nanos": 4}
-        self.assertIs(s.validate_ingest(value, 375000), True)
+        for batches in ("1", "5860", "375000"):
+            value["stats"]["details"]["committed_batches"] = batches
+            self.assertIs(s.validate_ingest(value, 375000), True)
 
-    def test_missing_diagnostics_empty_batches_and_every_absent_zero_boolean_or_untyped_phase_fail(self):
-        for candidate in (None, {}, {"stats": None}, {"stats": {}}, {"stats": {"diagnostics": None}}):
+    def test_missing_details_rows_empty_batches_and_non_spanwriter_path_fail(self):
+        for candidate in (None, {}, {"stats": None}, {"stats": {}}, {"stats": {"details": None}},
+                          {"stats": {"rows": 375000, "diagnostics": ingest_details(375000)}}):
             with self.subTest(evidence=candidate), self.assertRaises(ValueError):
                 s.validate_ingest(candidate, 375000)
-        for bad in (None, 0, -1, True, False, 1.0, "1"):
-            value = self.valid(); value["stats"]["diagnostics"]["committed_batches"] = bad
-            with self.subTest(batches=bad), self.assertRaises(ValueError):
+        for bad in (None, 0, 374999, 375001, True, 375000.0, "375000"):
+            value = self.valid(); value["stats"]["rows"] = bad
+            with self.subTest(rows=bad), self.assertRaises(ValueError):
                 s.validate_ingest(value, 375000)
-        value = self.valid(); del value["stats"]["diagnostics"]["committed_batches"]
+        value = self.valid(); del value["stats"]["rows"]
         with self.assertRaises(ValueError):
             s.validate_ingest(value, 375000)
-        for phase in ("open", "save", "commit", "run"):
-            value = self.valid(); del value["stats"]["diagnostics"]["phase_latencies"][phase]
-            with self.subTest(missing_phase=phase), self.assertRaises(ValueError):
+        for bad in (None, 0, 1, -1, True, False, 1.0, "0", "-1", "01", "1.0", " 1", "", "\u00b9", "\u0661"):
+            value = self.valid(); value["stats"]["details"]["committed_batches"] = bad
+            with self.subTest(batches=bad), self.assertRaises(ValueError):
                 s.validate_ingest(value, 375000)
-            for field in ("count", "min_nanos", "max_nanos", "total_nanos"):
-                value = self.valid(); del value["stats"]["diagnostics"]["phase_latencies"][phase][field]
-                with self.subTest(phase=phase, missing_field=field), self.assertRaises(ValueError):
-                    s.validate_ingest(value, 375000)
-                for bad in (None, 0, -1, True, False, 1.0, "1", float("nan"), float("inf")):
-                    value = self.valid(); value["stats"]["diagnostics"]["phase_latencies"][phase][field] = bad
-                    with self.subTest(phase=phase, field=field, bad=bad), self.assertRaises(ValueError):
-                        s.validate_ingest(value, 375000)
-
-    def test_phase_extrema_and_total_must_describe_a_possible_nonempty_population(self):
-        invalid = ({"count": 1, "min_nanos": 2, "max_nanos": 1, "total_nanos": 2},
-                   {"count": 1, "min_nanos": 1, "max_nanos": 3, "total_nanos": 2},
-                   {"count": 2, "min_nanos": 2, "max_nanos": 3, "total_nanos": 3},
-                   {"count": 2, "min_nanos": 1, "max_nanos": 2, "total_nanos": 5})
-        for phase in ("open", "save", "commit", "run"):
-            for counters in invalid:
-                value = self.valid(); value["stats"]["diagnostics"]["phase_latencies"][phase] = counters
-                with self.subTest(phase=phase, counters=counters), self.assertRaises(ValueError):
-                    s.validate_ingest(value, 375000)
+        value = self.valid(); del value["stats"]["details"]["committed_batches"]
+        with self.assertRaises(ValueError):
+            s.validate_ingest(value, 375000)
+        for bad in (None, "sqlbackend", "", "otel.spanwriter"):
+            value = self.valid(); value["stats"]["details"]["write_path"] = bad
+            with self.subTest(write_path=bad), self.assertRaises(ValueError):
+                s.validate_ingest(value, 375000)
+        value = self.valid(); del value["stats"]["details"]["write_path"]
+        with self.assertRaises(ValueError):
+            s.validate_ingest(value, 375000)
 
 
 class ScalingCLITests(unittest.TestCase):
