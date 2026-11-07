@@ -749,13 +749,19 @@ func (j *traceJoin) hits(limit int) []TraceExistentialHit {
 	return out
 }
 
-// logClauses plans the existential log clauses. The LOGS reader is stream
-// 2B; until it lands the relational store refuses them.
+// logClauses plans the existential log clauses: typed equalities (D1) over
+// LOGS_<T>_ATTR, or LOGS_EVENT for intrinsic event_name, whose entries cover
+// trace_id and span_id (logs_rel.go).
 func (r *SpanReader) logClauses(op string, clauses []Attribute) ([]witnessScanner[LogMatch], error) {
-	if len(clauses) == 0 {
-		return nil, nil
+	out := make([]witnessScanner[LogMatch], len(clauses))
+	for i, a := range clauses {
+		c, err := newLogClause(op, a)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = c
 	}
-	return nil, fail("config", op, "log clauses are not yet supported on the relational store")
+	return out, nil
 }
 
 // messageClauses plans the existential message clauses. The MESSAGES reader
