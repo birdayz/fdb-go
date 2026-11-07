@@ -743,9 +743,12 @@ storage moved to OTEL_V1 rows ([migration RFC](rfcs/relational-exporter-migratio
   be stored). Concurrent writers of one marker
   conflict on the save's existence read, and the retry finds it. A marker
   outlives a span that stops referencing the message, which costs a query
-  only a range it filters out. A query reads each matching message's markers,
-  then each of their traces' reference entries, every range of a round in
-  flight together, and loads no span record. `FirstTurnOnly` keeps the
+  only a range it filters out. A query reads the matching messages' markers,
+  one range per run of a writer's matches at most 32 seqs apart (the
+  messages between them are read too, up to 4 rows per spanned message;
+  a read that reaches that cap leaves the rest of its run to one read per
+  message), then each of their traces' reference entries, every range of a
+  round in flight together, and loads no span record. `FirstTurnOnly` keeps the
   references in which the message is the newest element, which is the turn
   that introduced it whatever order the spans arrive in. Turn k of a
   conversation references its whole history: that costs one mutation per
