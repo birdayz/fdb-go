@@ -25,10 +25,9 @@ export PATH="$PWD/.tmpbuild:$PATH" &&
 fdb version
 ```
 
-The renamed CLI has not had a tagged release yet. The installer and tagged Go
-installation require a published root-module release containing `cmd/fdb`
-(and matching `fdb` archives for the installer); use the checkout build above
-until then. See the [installation guide](https://fdb.dev/docs/cli/#install).
+To install the latest release instead, run `curl -fsSL https://fdb.dev/install.sh | sh`
+(Linux and macOS) or `go install fdb.dev/cmd/fdb@latest`. See the
+[installation guide](https://fdb.dev/docs/cli/#install).
 The Bazel entry point is `just fdb <args>` (`bazelisk run //cmd/fdb -- <args>`).
 
 ## Start a local cluster

@@ -10,8 +10,8 @@ Docker. cgo and `libfdb_c` are not needed.
 ## Build the CLI from current source
 
 `fdb` is the project's CLI for local development clusters, SQL, and Record Layer
-operations (`fdb rl`). The renamed CLI has not had a tagged release yet; build
-from a current checkout:
+operations (`fdb rl`). The examples below run from a checkout, so build the CLI
+from it:
 
 ```sh
 git clone https://github.com/birdayz/fdb-go.git &&
@@ -21,10 +21,10 @@ export PATH="$PWD/.tmpbuild:$PATH" &&
 fdb version
 ```
 
-The installer and `go install fdb.dev/cmd/fdb@<tag>` become usable only after a
-root-module release containing `cmd/fdb` is published; the installer additionally
-requires that release's `fdb` binary archives. Existing older releases and
-`@latest` do not provide this renamed CLI.
+To install the latest released CLI without a checkout, run
+`curl -fsSL https://fdb.dev/install.sh | sh` (Linux and macOS) or
+`go install fdb.dev/cmd/fdb@latest`. A checkout build can include unreleased
+changes described in these docs.
 
 Configuration lives at `~/.fdb/config.yaml` (override with `FDB_CONFIG`);
 `fdb config path` prints the effective path. See the

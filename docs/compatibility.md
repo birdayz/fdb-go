@@ -2,7 +2,7 @@
 
 This page describes the v0.2.0 release scope plus explicitly marked **Unreleased
 (post-v0.2.0)** development boundaries. The v0.2.0 scope remains frozen in the
-changelog. **Publication is pending**; no published tag or completed gate is asserted. It is not a promise that all Java
+changelog; v0.2.0 was published on 2026-11-07. It is not a promise that all Java
 features work, that all historical Go releases share one storage format, or that
 an arbitrary Java query plan can resume in Go. See [status](../STATUS.md) and
 [upgrade guidance](upgrade.md).

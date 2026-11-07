@@ -27,10 +27,10 @@ in `MODULE.bazel` / `go.mod`.
 
 - The **latest tagged minor** is supported; security and correctness fixes land there.
 - Older minors are best-effort only until `v1`.
-- The first tag is **v0.1.0** (2026-08-26). **v0.2.0 is pending publication.**
-  Its documented scope is not evidence of a published tag or completed release gates.
-  Documentation at HEAD describes HEAD. A support policy is not evidence of a
-  backport or a published tag. Pin a revision and read its changelog and upgrade guidance.
+- The first tag is **v0.1.0** (2026-08-26). The latest tag is **v0.2.0** (2026-11-07,
+  commit `aef9515`). Documentation at HEAD describes HEAD, which can include unreleased
+  changes after the latest tag. A support policy is not evidence of a backport.
+  Pin a revision and read its changelog and upgrade guidance.
 - Security fixes follow `SECURITY.md` (private report → fix on the latest minor / `master` → disclose).
 
 ## Cutting a release (checklist)
