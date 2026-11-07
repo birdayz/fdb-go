@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -184,6 +185,16 @@ func TestFDB_EnsureTenant(t *testing.T) {
 		}
 		if !bytesEqual(again.Subspace.Bytes(), stores[0].Subspace.Bytes()) {
 			t.Fatal("reopen resolved another store")
+		}
+		// Every opener names the store as the catalog does.
+		opened, err := OpenTenantStoreCompiled(t.Context(), db, strings.ToLower(path), "t0", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, ts := range []*TenantStore{again, stores[1], opened} {
+			if ts.DatabasePath != path || ts.Schema != "T0" || !bytesEqual(ts.Subspace.Bytes(), again.Subspace.Bytes()) {
+				t.Fatalf("store named %q/%q", ts.DatabasePath, ts.Schema)
+			}
 		}
 		row, err := BuildCompiled(Span{Span: &tracepb.Span{TraceId: []byte{1}, SpanId: []byte{2}, StartTimeUnixNano: 3}, Refs: []MessageRef{{Writer: 1, Seq: 1, Attribute: 1, Ordinals: []int{0}}}})
 		if err != nil {
