@@ -1,0 +1,37 @@
+# fts_single_token runs on container otelfts (foundationdb/foundationdb:7.3.77, single ssd-redwood-1, port 4521, G3's env)
+# custom: otelbench at 7fb269417 + base-harness.patch, --backend fdb, sha256 371e00559ed6f9040671677db6e50b9bdc4a4c7614b156c2fffa6d6752d11c72
+# before: otelbench at b70072f38 (harness only), sha256 58073eab31f6a29d352d39f02353148cf37e7fb552cb3e367a6ebc59fa89f87a
+# fix:    otelbench at f7b2d43bd, sha256 3543936d78a7ef6ffd38f8f650c5d2fa7ea2861ac3f97b8b2069509d85bfe93a
+# qo-*: --query-only on a run ingested earlier (c1: fts_single_token x400; d2: every class x100), started after load < 15 and storage/log queues < 1 MB
+# post-c2*: a fresh run's collector-bench with --query-classes fts_single_token --query-samples -iterations 400 (queries straight after ingest); *.mon: per-second server samples (status json, container cgroup)
+# full-c3*, full-e1*: default collector-bench on a fresh run (e1 adds --query-samples)
+# qo-prof-*3: 400-iteration fts_single_token runs under --cpuprofile/--memprofile (profiles not archived)
+# receipts store samples as columns; load = 1-minute load average at start/end; time = user sys real (s)
+c1before1 arm=new run=ftsnew_a rc=0 load 9.78/10.68 time 29.146 3.262 10.682
+c1base1 arm=base run=ftsbase_a rc=0 load 9.98/8.95 time 29.467 4.449 11.971
+c1fix1 arm=new run=ftsnew_a rc=0 load 8.63/8.58 time 8.028 0.699 4.110
+c1before2 arm=new run=ftsnew_a rc=0 load 8.22/8.59 time 28.973 3.123 10.670
+c1base2 arm=base run=ftsbase_a rc=0 load 8.06/8.07 time 29.282 4.239 11.851
+c1fix2 arm=new run=ftsnew_a rc=0 load 7.29/7.29 time 7.848 0.643 3.598
+c2base1 post arm=base run=ftsbase_g1 rc=0 load 6.94/7.42 time 101.646 7.453 32.156
+c2before1 post arm=new run=ftsnew_gb1 rc=0 load 7.06/7.26 time 92.482 6.066 30.079
+c2fix1 post arm=new run=ftsnew_gf1 rc=0 load 6.92/7.72 time 73.559 3.729 25.120
+c2base2 post arm=base run=ftsbase_g2 rc=0 load 6.84/7.81 time 102.348 7.264 31.961
+c2before2 post arm=new run=ftsnew_gb2 rc=0 load 7.26/7.92 time 92.978 5.953 22.832
+c2fix2 post arm=new run=ftsnew_gf2 rc=0 load 9.85/8.91 time 73.033 3.866 17.095
+c3base1 full arm=base bin=./otelbench-base run=ftsbase_h1 rc=0 load 7.54/6.78 time 97.777 7.287 22.932
+c3before1 full arm=new bin=./otelbench-before run=ftsnew_hb1 rc=0 load 6.32/6.92 time 90.493 6.264 21.998
+c3fix1 full arm=new bin=./otelbench-fix3 run=ftsnew_hf1 rc=0 load 6.44/6.17 time 76.041 4.819 18.106
+c3base2 full arm=base bin=./otelbench-base run=ftsbase_h2 rc=0 load 5.45/6.72 time 100.701 7.469 22.597
+c3before2 full arm=new bin=./otelbench-before run=ftsnew_hb2 rc=0 load 6.26/5.94 time 90.032 6.402 22.094
+c3fix2 full arm=new bin=./otelbench-fix3 run=ftsnew_hf2 rc=0 load 5.54/6.09 time 74.616 4.689 17.403
+d2base1 arm=base run=ftsbase_h1 rc=0 load 13.25/12.30 time 28.269 4.460 11.340
+d2before1 arm=new run=ftsnew_hb1 rc=0 load 11.02/11.05 time 27.396 3.554 10.320
+d2fix1 arm=new run=ftsnew_hb1 rc=0 load 10.12/9.48 time 11.485 1.492 4.916
+d2base2 arm=base run=ftsbase_h2 rc=0 load 8.72/10.22 time 28.107 4.418 11.317
+d2before2 arm=new run=ftsnew_hb2 rc=0 load 9.26/8.61 time 27.409 3.482 10.303
+d2fix2 arm=new run=ftsnew_hb2 rc=0 load 8.67/9.25 time 11.425 1.557 4.989
+e1base1 full arm=base bin=./otelbench-base run=ftsbase_i1 rc=0 load 8.81/10.17 time 101.726 7.714 24.277
+e1fix1 full arm=new bin=./otelbench-fix3 run=ftsnew_if1 rc=0 load 9.67/9.79 time 77.616 4.866 18.825
+e1base2 full arm=base bin=./otelbench-base run=ftsbase_i2 rc=0 load 8.65/11.38 time 102.048 7.430 24.021
+e1fix2 full arm=new bin=./otelbench-fix3 run=ftsnew_if2 rc=0 load 10.61/10.44 time 76.724 4.939 18.572

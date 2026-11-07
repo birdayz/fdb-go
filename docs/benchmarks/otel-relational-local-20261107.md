@@ -451,11 +451,110 @@ fidelity lists. It is not a storage measurement.
 | fts_phrase_first_turn | 9.17 / 164.53 | 9.11 / 135.06 | 0.99 | — | — |
 
 - **Ingest:** with messages, the Exporter takes 0.90× the wall time, reaches 1.11× the spans/s and uses 0.89× the process CPU. With messages off, the figures are 0.76× wall and 0.72× CPU.
-- **Message persist s is 1.39×.** This is the summed per-call wait for message group commits. The message transactions themselves take the same time: their summed time is 63.6 s against 68.1 s, there are 302–304 of them against 304–308, and none retried. Spans finish sooner, so each call spends a larger share of its time waiting for its messages. MESSAGES_TEXT wrote 83.9 MB of keys against 60.2 MB (+39%, the R1 prefix and record-type-key cost). By the letter of the G2C criterion (persist ≤ 1.10×) this fails; end-to-end ingest passes.
-- **fts_single_token p50 is 1.53×**, and its p99 is 0.82×. Its p50 is bimodal in both stores: each run is either about 27–39 ms or about 44–65 ms. On the fresh cluster's first runs (`g3new_fts_1`–`4` against `g3base_fts_1`–`2`, not quiesced), the Exporter's median p50 was 0.72× the custom store's. Later, with more data on the cluster, the Exporter landed in the slow mode in every run and the custom store in 2 of 5. The cause is not established. Here this class fails the 1.10× threshold.
+- **Message persist s is 1.39×.** This is the summed per-call wait for message group commits. The message transactions themselves take the same time: their summed time is 63.6 s against 68.1 s, there are 302–304 of them against 304–308, and none retried. Spans finish sooner, so each call spends a larger share of its time waiting for its messages. MESSAGES_TEXT wrote 83.9 MB of keys against 60.2 MB (+39%, the R1 prefix and record-type-key cost). By the letter of the G2C criterion (persist ≤ 1.10×) this fails; end-to-end ingest passes. The owner accepted it: G2C's persist criterion becomes the summed message transaction time, here 0.93× (63.6 s against 68.1 s).
+- **fts_single_token p50 is 1.53×**, and its p99 is 0.82×. Its p50 is bimodal in both stores: each run is either about 27–39 ms or about 44–65 ms. On the fresh cluster's first runs (`g3new_fts_1`–`4` against `g3base_fts_1`–`2`, not quiesced), the Exporter's median p50 was 0.72× the custom store's. Later, with more data on the cluster, the Exporter landed in the slow mode in every run and the custom store in 2 of 5. Here this class fails the 1.10× threshold. The next subsection explains the cause and fixes the query.
 - **The p99s of 100 samples** include 100–200 ms stalls in both stores (`fts_phrase_first_turn`, `fts_multi_turn_history`), so single-run p99 differences are noise.
 - **Interference between runs:** some Exporter messages-off runs started right after the custom store's 372 MB messages-off ingest, without waiting for the queues (`g3new_off_3`–`6`). They show 40–110 ms p99s and 1.3–1.8× wall time; the quiesced runs do not. They are archived but left out of the tables.
 - **Cluster drift:** this container's custom-store runs ingest about 10% slower than the archived otelcmp baseline (median 10.86 s against 9.52 / 10.25 s).
+
+### fts_single_token: the G3 gap explained and fixed
+
+These runs are on a fresh container, `otelfts`, with G3's image, environment and
+configuration. Three binaries ran, alternating:
+
+- **custom:** `7fb269417` with `--backend fdb`, plus a harness patch.
+- **before:** `b70072f38`, the Exporter with the harness only.
+- **fix:** `f7b2d43bd`.
+
+The harness is `collector-bench --query-only`, `--query-classes` and `--query-samples`
+(`b70072f38`). It reruns one class on a stored corpus and reports each
+iteration's latency, its charged rows and bytes, and the FDB client's range
+requests. The custom binary carries the same harness as a patch
+(`otel-relational-local-20261107/fts-perf/base-harness.patch`). Every run
+started at a 1-minute load under 15. Quiesced runs also started after the
+storage and log queues had drained below 1 MB. Raw evidence is in
+`otel-relational-local-20261107/fts-perf/`: receipts with per-iteration
+samples, per-second server samples (`*.mon`) and `runs.txt`.
+
+**The query.** `incident_token_<block>` with role `user` matches the 750 user
+messages of one block's 50 conversations. Their 6,000 references are spread
+over 50 traces, and the class keeps the newest 100. Before the fix, one query
+did the following, in both stores:
+
+- **Requests:** 818 range reads. 750 of them read the matches' MESSAGE_TRACES markers, one per message.
+- **Decoding:** it decoded all of the 50 traces' references, about 14,000, with `tuple.Unpack`.
+- **Allocation:** 17.7 MB (the custom store: 17.9 MB).
+- **Client CPU:** 82 ms (the custom store: 86 ms), on about 3 cores for 27 ms.
+
+**Why the p50 was bimodal.** `fts_single_token` is the first post-ingest class.
+
+- When the ingest ends, the storage server still holds 400–500 MB of mutations that are not yet durable. Draining them takes 6–10 s, and every read waits behind that work (`post-c2*.mon`).
+- Per-iteration samples taken straight after each store's own ingest show the drain. The table below gives the medians of 25-iteration buckets in ms.
+- A 100-iteration p50 is slow exactly when more than half of the iterations run inside the drain.
+- The custom store's queries slow down more during the drain: 55–115 ms bucket medians in `c2base1`, against 42–76 ms in the before runs. So fewer of its 100 iterations fall inside the drain, and its p50 is slow less often. That is why the Exporter was in the slow mode in every G3 run and the custom store in 2 of 5.
+- The cluster's accumulated data is not the cause. Quiesced p50s on a fresh cluster and on one holding about 20 earlier runs are the same (26.3 against 26.2–26.3 ms), and the server read at most 41 B per query from disk.
+
+| post-ingest run | iterations 1–400, 25-iteration medians, ms |
+|---|---|
+| custom `c2base1` | 32 100 115 55 28 26 25 26 … 26 |
+| custom `c2base2` | 28 31 33 37 27 26 26 26 … 26 |
+| before `c2before1` | 39 64 54 64 76 68 53 24 … 24 |
+| before `c2before2` | 34 43 46 42 49 30 24 25 … 24 |
+| fix `c2fix1` | 13 11 10 11 10 10 11 12 … 9 |
+| fix `c2fix2` | 18 10 15 9 10 11 17 11 … 8 |
+
+**The fix** has two parts, both in `messages_query_rel.go`.
+
+- **Fewer allocations (`696f4ba43`).** `otelsql.RefChunkReader` walks a ref_chunks value without allocating and decodes ordinals only for kept references. `unpackKey` reads the marker and SPANS_REF_CHUNKS keys in place. Split references are joined per span. Both fall back to `tuple.Unpack` outside the canonical encoding, and tests and a fuzz target pin that they agree with it.
+- **Fewer requests (`f7b2d43bd`).** A writer's matches at most 32 seqs apart share one MESSAGE_TRACES range read, capped at 4 rows per spanned seq. A read that reaches its cap falls back to one read per match it did not finish.
+
+**Quiesced, `fts_single_token` only** (400 iterations per run, two runs per arm;
+CPU and allocation from a CPU and heap profile of a further 400-iteration run):
+
+| arm | p50 ms | p99 ms | range requests | rows | logical B | client CPU ms | allocated MB |
+|---|---|---|---:|---:|---:|---:|---:|
+| custom | 29.8 / 29.6 | 34.1 / 32.3 | 818 | 2,250 | 318,883 | 86 | 17.9 |
+| before | 26.3 / 26.2 | 28.6 / 29.5 | 818 | 2,250 | 296,419 | 82 | 17.7 |
+| fix | 9.4 / 8.9 | 23.9 / 10.3 | 79 | 3,010 | 346,656 | 21 | 6.4 |
+
+The fix reads 34% more rows and 17% more bytes: the coalesced reads cover
+the markers of the messages between matches. It issues a tenth of the
+requests and uses a quarter of the client CPU.
+
+**Quiesced, every class** (100 iterations each; the before and fix binaries
+query the same stored runs), p50 / p99 ms, runs a and b:
+
+| class | custom | before | fix | fix / custom p50 |
+|---|---|---|---|---:|
+| fts_single_token | 30.98 / 36.18, 30.70 / 35.47 | 27.24 / 32.67, 27.24 / 30.35 | 9.07 / 11.57, 9.17 / 12.63 | 0.30 |
+| fts_same_span_predicates | 30.46 / 36.04, 31.08 / 36.07 | 29.09 / 32.74, 29.26 / 33.87 | 11.86 / 13.95, 11.95 / 14.93 | 0.39 |
+| trace_existential_3way | 29.78 / 35.59, 29.58 / 33.36 | 26.66 / 30.36, 26.84 / 30.89 | 9.31 / 11.51, 9.62 / 12.03 | 0.32 |
+| fts_phrase_first_turn | 8.45 / 10.39, 8.25 / 9.46 | 7.21 / 9.53, 7.26 / 9.61 | 6.79 / 9.13, 7.10 / 9.26 | 0.83 |
+| fts_multi_turn_history | 8.31 / 11.00, 8.11 / 10.28 | 7.28 / 9.66, 7.42 / 9.85 | 7.10 / 9.28, 6.94 / 9.54 | 0.86 |
+| same_span_conjunction | 1.68 / 2.58, 1.76 / 3.04 | 1.17 / 2.30, 1.17 / 2.14 | 1.11 / 2.14, 1.16 / 1.75 | 0.66 |
+| trace_graph_traversal | 1.83 / 2.76, 1.83 / 2.90 | 1.26 / 2.36, 1.16 / 1.83 | 1.29 / 2.42, 1.18 / 2.44 | 0.67 |
+| correlated_logs_by_trace | 0.67 / 0.87, 0.65 / 1.01 | 0.66 / 1.06, 0.52 / 0.60 | 0.60 / 0.86, 0.57 / 0.80 | 0.89 |
+
+**G3's method** (default `collector-bench`, every class, queries straight after
+ingest; four runs per arm across two sets), p50 / p99 ms:
+
+| class | custom | fix |
+|---|---|---|
+| fts_single_token | 36.30 / 142.21, 28.27 / 136.80, 32.84 / 130.12, 37.12 / 136.39 | 8.86 / 51.22, 10.64 / 58.99, 15.10 / 77.15, 13.02 / 53.83 |
+| fts_phrase_first_turn | 7.38 / 86.37, 7.70 / 115.76, 8.64 / 123.48, 8.40 / 60.66 | 7.43 / 115.49, 7.90 / 116.87, 9.18 / 131.60, 9.02 / 133.41 |
+| fts_multi_turn_history | 7.21 / 12.81, 7.07 / 9.89, 8.03 / 10.78, 8.07 / 10.90 | 8.83 / 143.02, 8.80 / 127.82, 8.32 / 133.65, 8.73 / 122.18 |
+| fts_same_span_predicates | 27.32 / 31.04, 27.07 / 32.41, 29.01 / 32.89, 27.84 / 36.11 | 11.08 / 93.91, 10.70 / 13.82, 12.00 / 15.51, 11.53 / 16.35 |
+| trace_existential_3way | 24.80 / 31.11, 24.99 / 27.82, 26.95 / 31.52, 27.11 / 34.42 | 8.76 / 12.73, 8.29 / 11.92, 9.17 / 14.62, 8.95 / 13.77 |
+
+In the same set as the first two of each, the before binary gave a
+`fts_single_token` p50 of 43.75 and 40.30 ms: 1.2–1.4× the custom store, which
+reproduces G3's gap. The other classes are as in G3.
+
+- **fts_single_token** is now 0.24–0.46× the custom store at p50 and 0.36–0.59× at p99 under G3's method, and 0.30× quiesced.
+- **The drain moves.** It now falls on the next classes, `fts_phrase_first_turn` and `fts_multi_turn_history`: their p50 is 1.01–1.25× the custom store's, and single 115–145 ms stalls set their p99. Quiesced, both are 0.83–0.86× the custom store at p50 and below it at p99.
+- **Why those classes are exposed.** Without a role, each issues about 290 range requests: role discovery, then 16 shards for each role and token, for about 130 rows. That is the same exposure to the drain that `fts_single_token` had (see TODO.md).
+- **G3's method mixes two things.** Its post-ingest numbers combine query cost with the storage server's post-ingest durability backlog. Which classes absorb the backlog depends on how long the earlier classes take. Steady-state comparisons should run `--query-only` after the queues drain.
+- **Ingest is unchanged.** The fix's process CPU is lower (79–81 s against 96–97 s for before and 105–108 s for the custom store) only because its queries are cheaper.
 
 ## Reproduce
 
