@@ -5,6 +5,10 @@ relational layer (one OTEL_V1 schema per tenant, the layout that makes
 traces-to-logs-to-metrics SQL joins possible) without giving up the current
 custom-index backend's ingest and query performance.
 
+[Round 2](#round-2-hill-climb-of-the-relational-path) supersedes round 1's
+ingest, storage and query figures and compares against the production `fdb`
+configuration. Round 1 is kept below as the starting point.
+
 **Boundary.** One 24-core development host; one single-process FoundationDB
 7.3.77 container (`fdb dev up`, storage migrated to `ssd-redwood-1`); client
 and server share the host. Each figure is from one run, or two where noted.
@@ -131,19 +135,118 @@ Found by profiling the comparison; each is general, not OTel-specific.
 
 ## What this means for traces, logs and metrics in SQL
 
-- Data can live in OTEL_V1 today with direct Record Layer ingest: same KV count,
-  fewer bytes, 1.32x client CPU. The CPU gap is the dynamicpb row, not the
-  index design. Compiled row types are the next step.
+- Data can live in OTEL_V1 with direct Record Layer ingest: same KV count,
+  fewer bytes. Round 1 measured 1.32x client CPU against the bench-default
+  `fdb` configuration. After round 2 the relational store costs less than the
+  production `fdb` configuration: 283 vs 353 µs/span with `zlib-1`, and
+  42% fewer bytes.
 - Hot queries can keep their performance on the relational store. Record
   Layer scans of the standard OTEL_V1 indexes are faster than the custom
   posting index. SQL covers ad hoc queries and joins over the same rows.
-- Plain SQL still has a fixed per-statement floor of about 1 ms here: a catalog
-  transaction, then a page transaction, plus parsing.
+- Round 1's SQL floor of about 1 ms (a catalog transaction, then a page
+  transaction, plus parsing) is now one transaction per auto-commit SELECT
+  (round 2): 0.63 ms on a pinned connection and 1.04 ms pooled.
 - Joins (trace to logs today, metrics later) plan as index nested loops with one
   sequential probe per outer row (`FlatMap` + `IndexScan(LOGS_TRACE, [=, =])`,
   pinned in `pkg/relational/sqltest/otel`). Pipelined probes and the metrics
   tables (template v2: exemplar trace_id fan-out and (service, time) indexes)
   are listed in `TODO.md`, "OTel relational prototype findings".
+
+## Round 2: hill climb of the relational path
+
+Same host, cluster and fixture, 50k spans per ingest run. The earlier `fdb`
+figures used otelbench's defaults (`json` posting values, 32-byte hashes, no
+record compression). The production exporter uses `tuple`, 8-byte hashes,
+`brotli-4` and bulk index conflicts (`ExporterConfig` defaults), so that
+configuration is the baseline below.
+
+### Ingest and storage
+
+Client CPU per span is the mean of two runs. Storage is per span: logical KV
+bytes, and a prefix-compressed proxy for Redwood's key prefix compression
+(`prefix_bytes` in the audit: each key less its common prefix with the
+previous key, plus the value). Both backends write 11 KV pairs per span.
+
+| Configuration | µs/span | logical B | prefix B |
+|---|---:|---:|---:|
+| `fdb` production (tuple, hash 8, brotli-4) | 353 | 2,001 | 1,501 |
+| `fdb` bench default (json, hash 32, none) | 250 | 2,947 | 2,098 |
+| `sql`, compiled rows, no compression | 258 | 1,932 | 1,328 |
+| `sql`, compiled rows, `zlib-1` | 283 | 1,482 | 878 |
+| `sql`, compiled rows, `zlib-default` | 298 | 1,458 | 854 |
+| `sql`, dynamic rows, no compression | 307 | 1,932 | 1,328 |
+
+The relational store with `zlib-1` costs 20% less client CPU than the
+production `fdb` configuration and takes 42% fewer prefix-compressed bytes.
+
+**Compression knob.** `--record-compression` now applies to `--backend sql`.
+Only Java-readable deflate is allowed there: `zlib-1` and `zlib-default`
+(`Deflater.DEFAULT_COMPRESSION`, which SQL `INSERT` writes). SQL connections
+cannot read Brotli, a Go-only format version, so it is refused. Direct writes
+use the selected serializer. SQL reads every format through the relational
+default serializer, which reads uncompressed and zlib records. Compression
+applies to records only, never to index entries. `zlib-1` keeps about 95% of
+`zlib-default`'s record savings (534 vs 510 B per record) at less than half its
+CPU (deflate at the default level was 15% of ingest CPU).
+
+### Queries
+
+p50 in ms, tenant 0 of the 50k-span `zlib-1` run, suite `all`, 1,200
+iterations, 0 oracle failures in every column.
+
+| class | `fdb` production | `sql` pooled | `sql` pinned conn | `sql` direct |
+|---|---:|---:|---:|---:|
+| span | 0.68 | 1.04 | 0.63 | 0.43 |
+| span_absent | 0.67 | 0.96 | 0.61 | 0.42 |
+| trace | 0.77 | 1.37 | 0.96 | 0.53 |
+| time_narrow | 0.72 | 1.15 | 0.77 | 0.46 |
+| time_broad | 0.97 | 1.77 | 1.28 | 0.70 |
+| genai_type | 0.67 | 1.05 | 0.77 | 0.43 |
+| genai_response | 0.66 | 1.17 | 0.81 | 0.44 |
+| genai_model | 1.20 | 2.22 | 1.75 | 0.93 |
+| genai_provider | 1.26 | 2.35 | 1.76 | 0.92 |
+
+- **Pooled:** a pooled `*sql.DB` connection, as most applications use the driver. Its p50 went from 1.72 to 1.04 ms for a point lookup and from 3.86 to 2.22 ms for a broad attribute query, against round 1.
+- **Pinned:** one `sql.Conn` for the whole run (`--sql-pinned-conn`). It keeps its session schema cache because `database/sql` never resets it.
+- **Direct:** Record Layer scans of the same indexes in one transaction.
+
+FDB requests per point query, from the client counters
+(`OTELBENCH_SQL_RPCS=1`):
+
+| path | GRVs | range reads | point reads |
+|---|---:|---:|---:|
+| pinned | 1 | 2 | 1 |
+| direct | 1 | 2 | 1 |
+| pooled | 1 | 5 | 2 |
+
+Pinned SQL makes the same requests as the direct scan. The pooled path's
+extra three range reads and one point read are the schema witness check (see
+below), and they overlap the store's own reads. The remaining gap is client
+CPU: parse, plan, executor and driver row conversion.
+
+### Changes in round 2
+
+1. **One transaction per auto-commit SELECT** (`embedded/statement_read.go`).
+   - The catalog read, the planner's index-state store open and the first page now share one FDB transaction, and the page reuses the planner's store. Before, these were three transactions with three GRVs.
+   - The first page commits the shared transaction before its rows are published. Later pages run in their own transactions, as before.
+   - A retryable failure reruns the work in a fresh `DB.Run` transaction.
+   - A successful statement without a page, such as EXPLAIN, commits the shared transaction. A failed or panicking statement cancels it.
+   - Explicit transactions are unchanged.
+2. **Schema witness** (`catalog/schema_witness.go`).
+   - `ResetSession` drops a pooled connection's schema cache at every checkout. The connection now keeps the raw catalog bytes the schema was built from: the catalog store header and the schema and template rows.
+   - The next statement re-reads those keys in one parallel round trip and reuses the parsed schema only if every byte matches. This also catches changes by Java writers and restores.
+   - The statement's own store header and index-state reads are prefetched alongside the witness reads (`recordlayer.PrefetchStoreState`).
+3. **Top-K reads in growing batches** (`sqlbackend`).
+   - A statement's page is read whole before its first row is returned. The backend therefore issues `LIMIT K` first, then doubles the batch with an inclusive `start_ns <=` keyset bound.
+   - EXPLAIN shows this stays an index range: `IndexScan(SPANS_STR_ATTR, [=, =, =, <>, ...])`.
+4. **Compiled row types** (`layers/otel/otelsql/otelv1pb`).
+   - Go types are generated from the records descriptor the OTEL_V1 DDL compiles to (`cmd/genotelv1`). They are bound to the catalog's metadata with `WithLocalFileDescriptor` (`OpenTenantStoreCompiled`), which validates them as an evolution of the stored descriptor.
+   - `BuildCompiled` is byte-for-byte `SpanRows.Build` (test), so SQL and Java read the same records.
+   - This removed dynamicpb from ingest (about 21% of CPU).
+5. **Fan-out index key evaluation** (`recordlayer/key_expression.go`, `index_maintainer.go`).
+   - Each child is evaluated once, and fan-out children skip the scalar and flat attempts that failed with an allocated error. The cross product is built once.
+   - `evaluateIndex` no longer tries the flat path on fan-out roots, which first failed and then evaluated everything again.
+   - An equivalence test checks the result against a reference cross product.
 
 ## Reproduce
 
@@ -160,3 +263,15 @@ $B --backend sql --sql-query direct --mode query $F --suite all --iterations 600
 ```
 
 `OTELBENCH_SQL_EXPLAIN=1` prints each SQL query's plan once to stderr.
+`OTELBENCH_SQL_RPCS=1` prints FDB requests per query at exit.
+
+Further `--backend sql` flags:
+
+- `--record-compression none|zlib-1|zlib-default`
+- `--sql-rows compiled|dynamic`
+- `--sql-pinned-conn`
+- `--sql-page-rows N`
+
+Production `fdb` configuration: `--posting-value-format tuple --hash-bytes 8 --record-compression brotli-4 --bulk-index-conflicts`.
+Regenerate the compiled types after an OTEL_V1 change with
+`bazelisk run //layers/otel/otelsql/cmd/genotelv1 -- "$PWD/layers/otel/otelsql/otelv1pb"`.

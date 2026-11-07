@@ -22,7 +22,7 @@ func TestRecordCompressionConfigAndOwnership(t *testing.T) {
 	if original.RecordCompression != "" {
 		t.Fatal("plain layout acquired a compression identity")
 	}
-	for _, mode := range []string{"", "none", "zlib-1", "brotli-0", "brotli-1", "brotli-3", "brotli-4"} {
+	for _, mode := range []string{"", "none", "zlib-1", "zlib-default", "brotli-0", "brotli-1", "brotli-3", "brotli-4"} {
 		t.Run(mode, func(t *testing.T) {
 			d := c
 			d.RecordCompression = mode
@@ -48,7 +48,7 @@ func TestRecordCompressionConfigAndOwnership(t *testing.T) {
 			} else {
 				requireOtelKind(t, checkManifest(d, original, true), "ownership")
 				requireOtelKind(t, checkManifest(c, m, true), "ownership")
-				for _, other := range []string{"zlib-1", "brotli-0", "brotli-1", "brotli-3", "brotli-4"} {
+				for _, other := range []string{"zlib-1", "zlib-default", "brotli-0", "brotli-1", "brotli-3", "brotli-4"} {
 					if other != mode {
 						wrong := d
 						wrong.RecordCompression = other

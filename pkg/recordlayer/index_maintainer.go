@@ -565,8 +565,10 @@ func (m *StandardIndexMaintainer) evaluateIndex(record *FDBStoredRecord[proto.Me
 	kwv, isKeyWithValue := m.index.RootExpression.(*KeyWithValueExpression)
 
 	// Fast path: EvaluateFlat for simple non-KeyWithValue, non-fan-out indexes.
-	// Avoids the [][]any allocation from Evaluate.
-	if !isKeyWithValue {
+	// Avoids the [][]any allocation from Evaluate. A root that can fan out
+	// skips it: its flat evaluation would fail only after evaluating the
+	// fan-out, which Evaluate then repeats.
+	if !isKeyWithValue && !createsDuplicatesRec(m.index.RootExpression, true) {
 		if fe, ok := m.index.RootExpression.(FlatEvaluator); ok {
 			values, err := fe.EvaluateFlat(record, record.Record)
 			if err == nil {

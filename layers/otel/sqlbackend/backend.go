@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"fdb.dev/layers/otel"
 	"fdb.dev/layers/otel/otelsql"
@@ -47,6 +48,14 @@ const (
 	QueryDirect = "direct"
 )
 
+// Row representations of direct ingest.
+const (
+	// RowsCompiled saves the compiled OTEL_V1 types (otelv1pb).
+	RowsCompiled = "compiled"
+	// RowsDynamic saves dynamic messages of the catalog's descriptor.
+	RowsDynamic = "dynamic"
+)
+
 // DefaultPageRows is the default SQL page bound (EXECUTION_SCANNED_ROWS_LIMIT):
 // a SELECT page otherwise reads every matching row before the first is
 // returned, though the top-K queries stop after K distinct traces.
@@ -57,24 +66,56 @@ type Options struct {
 	Ingest   string // IngestDirect (default) or IngestInsert
 	Query    string // QuerySQL (default) or QueryDirect
 	PageRows int    // SQL scanned rows per page; 0 is DefaultPageRows, negative unbounded
+	// Rows is direct ingest's row representation: RowsCompiled (default) or
+	// RowsDynamic.
+	Rows string
+	// PinnedConn runs every SQL query on one *sql.Conn instead of the pool.
+	// database/sql resets a pooled connection's session (and with it the
+	// cached schema) at every checkout; a pinned one keeps it, so its
+	// statements skip the catalog read and see schema changes only when
+	// the session is reset.
+	PinnedConn bool
 }
+
+// queryer is *sql.DB or a pinned *sql.Conn.
+type queryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// backendKeys numbers the backends' driver keys within the process.
+var backendKeys atomic.Int64
 
 // domain is the relational domain of the runs' databases: /OTELBENCH/R_<RUN>.
 const domain = "OTELBENCH"
 
 // Backend implements otel.Backend and otel.IntrinsicBackend over OTEL_V1.
 type Backend struct {
-	cfg       otel.Config
-	cluster   string
+	cfg     otel.Config
+	cluster string
+	// driverKey is the cluster_file key under which the SQL driver runs over
+	// this backend's FDB client handle (sqldriver.RegisterBackend).
+	driverKey string
 	mode      string
 	opts      Options
 	raw       fdb.Database
 	db        *recordlayer.FDBDatabase
 	dbPath    string
 	query     *sql.DB // schema of cfg.Tenant
+	q         queryer // query, or its pinned connection
+	pinned    *sql.Conn
 	qstore    *otelsql.TenantStore
-	lastWork  otel.QueryResult
-	explained map[string]bool // with OTELBENCH_SQL_EXPLAIN, the query texts already explained
+	// writeSer is the direct saves' serializer (nil: uncompressed); readSer
+	// is the relational engine's, which reads uncompressed and zlib records.
+	writeSer, readSer *recordlayer.TransformedRecordSerializer
+	lastWork          otel.QueryResult
+	explained         map[string]bool // with OTELBENCH_SQL_EXPLAIN, the query texts already explained
+	// With OTELBENCH_SQL_RPCS, the client counters at the first query; Close
+	// reports the FDB requests per query since (a diagnostic).
+	rpcStart *client.ClientMetricsSnapshot
+	queries  int64
+
+	unregister func() // the driver's backend registration
 }
 
 // Open opens the run's relational database; Ingest creates it.
@@ -98,7 +139,27 @@ func Open(ctx context.Context, c otel.Config, cluster string, opts Options) (*Ba
 	if opts.PageRows == 0 {
 		opts.PageRows = DefaultPageRows
 	}
+	if opts.Rows == "" {
+		opts.Rows = RowsCompiled
+	}
+	if opts.Rows != RowsCompiled && opts.Rows != RowsDynamic {
+		return nil, fmt.Errorf("sqlbackend: rows must be %s or %s", RowsCompiled, RowsDynamic)
+	}
 	mode := opts.Ingest
+	// Direct saves write --record-compression (Java-readable zlib or none,
+	// both of which SQL reads); SQL INSERT always writes the engine's own
+	// zlib-default records.
+	writeSer, err := otel.RecordSerializer(c.RecordCompression)
+	if err != nil {
+		return nil, err
+	}
+	if mode == IngestInsert && c.RecordCompression != "" && c.RecordCompression != "none" && c.RecordCompression != "zlib-default" {
+		return nil, errors.New("sqlbackend: SQL INSERT writes zlib-default records; --record-compression must be none or zlib-default")
+	}
+	readSer, err := otel.RecordSerializer("zlib-default")
+	if err != nil {
+		return nil, err
+	}
 	if cluster == "" {
 		return nil, errors.New("sqlbackend: explicit owned FDB cluster file required")
 	}
@@ -116,8 +177,19 @@ func Open(ctx context.Context, c otel.Config, cluster string, opts Options) (*Ba
 	}
 	b := &Backend{
 		cfg: c, cluster: cluster, mode: mode, opts: opts, raw: raw, db: recordlayer.NewFDBDatabase(raw),
-		dbPath: "/" + domain + "/R_" + strings.ToUpper(c.Run),
+		dbPath:   "/" + domain + "/R_" + strings.ToUpper(c.Run),
+		writeSer: writeSer, readSer: readSer,
 	}
+	// The SQL driver runs over the same FDB client handle, configured as the
+	// driver configures the database it opens itself, so one set of client
+	// counters covers every request (OTELBENCH_SQL_RPCS). The driver keys
+	// its databases by the DSN's cluster_file, so each backend registers its
+	// own key: backends in one process must not share a handle one of them
+	// closes.
+	driverDB := recordlayer.NewFDBDatabase(raw)
+	driverDB.SetStoreStateCache(recordlayer.NewMetaDataVersionStampStoreStateCache())
+	b.driverKey = "otelbench-backend-" + strconv.FormatInt(backendKeys.Add(1), 10)
+	b.unregister = sqldriver.RegisterBackend(b.driverKey, driverDB)
 	qdsn := b.dsn(tenantSchema(c.Tenant))
 	if opts.PageRows > 0 {
 		qdsn += "&execution_scanned_rows_limit=" + strconv.Itoa(opts.PageRows)
@@ -126,13 +198,33 @@ func Open(ctx context.Context, c otel.Config, cluster string, opts Options) (*Ba
 		raw.Close()
 		return nil, err
 	}
+	b.q = b.query
+	if opts.PinnedConn {
+		if b.pinned, err = b.query.Conn(ctx); err != nil {
+			b.query.Close()
+			raw.Close()
+			return nil, err
+		}
+		b.q = b.pinned
+	}
 	return b, nil
 }
 
 func tenantSchema(tenant int) string { return "T" + strconv.Itoa(tenant) }
 
+// effectiveCompression is the record format ingest writes.
+func (b *Backend) effectiveCompression() string {
+	if b.mode == IngestInsert {
+		return "zlib-default"
+	}
+	if b.cfg.RecordCompression == "" {
+		return "none"
+	}
+	return b.cfg.RecordCompression
+}
+
 func (b *Backend) dsn(schema string) string {
-	d := fmt.Sprintf("fdbsql://%s?cluster_file=%s", b.dbPath, b.cluster)
+	d := fmt.Sprintf("fdbsql://%s?cluster_file=%s", b.dbPath, b.driverKey)
 	if schema != "" {
 		d += "&schema=" + schema
 	}
@@ -140,11 +232,36 @@ func (b *Backend) dsn(schema string) string {
 }
 
 func (b *Backend) Close() {
+	if b.rpcStart != nil {
+		m, n := b.raw.Metrics(), b.queries
+		if n == 0 {
+			n = 1
+		}
+		per := func(after, before int64) float64 { return float64(after-before) / float64(n) }
+		fmt.Fprintf(os.Stderr, "OTELBENCH_SQL_RPCS queries=%d per query: grv=%.2f get_range=%.2f get_value=%.2f commits=%.2f\n", b.queries,
+			per(m.TransactionReadVersionsCompleted, b.rpcStart.TransactionReadVersionsCompleted),
+			per(m.TransactionGetRangeRequests, b.rpcStart.TransactionGetRangeRequests),
+			per(m.ReadLatency.Count, b.rpcStart.ReadLatency.Count),
+			per(m.TransactionsCommitStarted, b.rpcStart.TransactionsCommitStarted))
+	}
+	if b.pinned != nil {
+		b.pinned.Close()
+	}
 	b.query.Close()
+	b.unregister()
 	b.raw.Close()
 }
 
 func (b *Backend) LastQueryWork() otel.QueryResult { return b.lastWork }
+
+// countQuery counts a query for the OTELBENCH_SQL_RPCS report.
+func (b *Backend) countQuery() {
+	if b.rpcStart == nil && os.Getenv("OTELBENCH_SQL_RPCS") != "" {
+		m := b.raw.Metrics()
+		b.rpcStart = &m
+	}
+	b.queries++
+}
 
 // explain writes the plan of each distinct query text to stderr once when
 // OTELBENCH_SQL_EXPLAIN is set; a diagnostic, outside the measured results.
@@ -157,7 +274,7 @@ func (b *Backend) explain(ctx context.Context, q string, args ...any) {
 	}
 	b.explained[q] = true
 	var plan string
-	if err := b.query.QueryRowContext(ctx, "EXPLAIN "+q, args...).Scan(&plan); err != nil {
+	if err := b.q.QueryRowContext(ctx, "EXPLAIN "+q, args...).Scan(&plan); err != nil {
 		fmt.Fprintf(os.Stderr, "EXPLAIN %s: %v\n", q, err)
 		return
 	}
@@ -207,9 +324,14 @@ func (b *Backend) Ingest(ctx context.Context) (otel.Statistics, error) {
 	stores := make([]*otelsql.TenantStore, b.cfg.Tenants)
 	rows := make([]*otelsql.SpanRows, b.cfg.Tenants)
 	inserts := make([]*sql.DB, b.cfg.Tenants)
+	compiled := b.mode == IngestDirect && b.opts.Rows != RowsDynamic
 	for t := range stores {
 		var err error
-		if stores[t], err = otelsql.OpenTenantStore(ctx, b.db, b.dbPath, tenantSchema(t), nil); err != nil {
+		open := otelsql.OpenTenantStore
+		if compiled {
+			open = otelsql.OpenTenantStoreCompiled
+		}
+		if stores[t], err = open(ctx, b.db, b.dbPath, tenantSchema(t), b.writeSer); err != nil {
 			return otel.Statistics{}, err
 		}
 		if rows[t], err = otelsql.NewSpanRows(stores[t].MetaData); err != nil {
@@ -288,7 +410,7 @@ produce:
 		bt.logical += int64(len(wire))
 		bt.estimate += cost
 		if b.mode == IngestDirect {
-			m, err := buildRow(rows[s.Tenant], s)
+			m, err := buildRow(rows[s.Tenant], compiled, s)
 			if err != nil {
 				produceErr = err
 				break
@@ -304,10 +426,11 @@ produce:
 	close(jobs)
 	wg.Wait()
 	stats := otel.Statistics{Rows: count, Attributes: count * int64(b.cfg.Attributes), LogicalPayloadBytes: logical, Details: map[string]string{
-		"ingest":            "OTEL_V1 tenant schema stores; " + b.mode,
-		"committed_batches": strconv.FormatInt(batches, 10),
-		"save_mode":         b.cfg.SaveMode,
-		"workers":           strconv.Itoa(b.cfg.Workers),
+		"ingest":             "OTEL_V1 tenant schema stores; " + b.mode,
+		"committed_batches":  strconv.FormatInt(batches, 10),
+		"save_mode":          b.cfg.SaveMode,
+		"workers":            strconv.Itoa(b.cfg.Workers),
+		"record_compression": b.effectiveCompression(),
 	}}
 	if produceErr != nil {
 		return stats, produceErr
@@ -321,13 +444,17 @@ produce:
 	return stats, ctx.Err()
 }
 
-func buildRow(r *otelsql.SpanRows, s otel.Span) (proto.Message, error) {
+func buildRow(r *otelsql.SpanRows, compiled bool, s otel.Span) (proto.Message, error) {
 	rs, wire, err := otel.FixtureOTLP(s)
 	if err != nil {
 		return nil, err
 	}
 	ss := rs.ScopeSpans[0]
-	return r.Build(otelsql.Span{Resource: rs.Resource, ResourceSchemaURL: rs.SchemaUrl, Scope: ss.Scope, ScopeSchemaURL: ss.SchemaUrl, Span: ss.Spans[0], OTLP: wire})
+	span := otelsql.Span{Resource: rs.Resource, ResourceSchemaURL: rs.SchemaUrl, Scope: ss.Scope, ScopeSchemaURL: ss.SchemaUrl, Span: ss.Spans[0], OTLP: wire}
+	if compiled {
+		return otelsql.BuildCompiled(span)
+	}
+	return r.Build(span)
 }
 
 func (b *Backend) saveBatch(ctx context.Context, ts *otelsql.TenantStore, bt *batch) error {
@@ -408,15 +535,18 @@ func arrayLiteral(elems []string) string {
 }
 
 const (
+	// attrQuery and timeQuery are top-K bases: topTraces appends the keyset
+	// bound, the newest-first order and the batch LIMIT.
 	attrQuery = "SELECT s.trace_id, s.start_ns FROM spans AS s WHERE EXISTS (SELECT 1 FROM s.%s AS a " +
-		"WHERE a.scope = ? AND a.attr_key = ? AND a.%s = ?) ORDER BY s.start_ns DESC"
+		"WHERE a.scope = ? AND a.attr_key = ? AND a.%s = ?)"
 	traceQuery = "SELECT span_id, start_ns FROM spans WHERE trace_id = ?"
 	spanQuery  = "SELECT trace_id, span_id, start_ns FROM spans WHERE span_id = ?"
-	timeQuery  = "SELECT trace_id, start_ns FROM spans WHERE start_ns >= ? AND start_ns < ? ORDER BY start_ns DESC"
+	timeQuery  = "SELECT s.trace_id, s.start_ns FROM spans AS s WHERE s.start_ns >= ? AND s.start_ns < ?"
 )
 
 // Query returns the newest K distinct traces with a span carrying a.
 func (b *Backend) Query(ctx context.Context, a otel.Attribute) (otel.QueryResult, error) {
+	b.countQuery()
 	var q, index string
 	var v any
 	switch a.Type {
@@ -443,6 +573,7 @@ func (b *Backend) Query(ctx context.Context, a otel.Attribute) (otel.QueryResult
 
 // Time returns the newest K distinct traces with a span starting in r.
 func (b *Backend) Time(ctx context.Context, r otel.TimeRange) (otel.QueryResult, error) {
+	b.countQuery()
 	if err := r.Validate(); err != nil {
 		return otel.QueryResult{}, err
 	}
@@ -456,37 +587,69 @@ func (b *Backend) Time(ctx context.Context, r otel.TimeRange) (otel.QueryResult,
 	return b.topTraces(ctx, timeQuery, r.Start, r.End)
 }
 
-// topTraces reads newest-first (start desc, trace desc) rows and keeps each
-// trace's first, until K distinct traces.
-func (b *Backend) topTraces(ctx context.Context, q string, args ...any) (otel.QueryResult, error) {
+// topTraces reads base's rows newest-first (start desc, then index order) and
+// keeps each trace's first, until K distinct traces. It reads in batches of
+// K, 2K, 4K, ... rows: a statement's page is read whole before its first row is
+// returned, and a top-K reader usually needs far fewer rows than an unbounded
+// page. A later batch resumes at the last start read, inclusive (rows sharing
+// it are read again; their traces are already seen), and a batch whose rows
+// all share that start doubles the next one, so every batch advances.
+func (b *Backend) topTraces(ctx context.Context, base string, args ...any) (otel.QueryResult, error) {
 	out := otel.QueryResult{Hits: []otel.Hit{}}
-	b.explain(ctx, q, args...)
-	rs, err := b.query.QueryContext(ctx, q, args...)
-	if err != nil {
-		return out, err
-	}
-	defer rs.Close()
 	seen := map[string]bool{}
-	for len(out.Hits) < b.cfg.K && rs.Next() {
-		var trace []byte
-		var start int64
-		if err := rs.Scan(&trace, &start); err != nil {
+	limit := b.cfg.K
+	var upper *int64
+	for {
+		q, qargs := base, args
+		if upper != nil {
+			q, qargs = base+" AND s.start_ns <= ?", append(append([]any(nil), args...), *upper)
+		}
+		q += " ORDER BY s.start_ns DESC LIMIT " + strconv.Itoa(limit)
+		if upper == nil {
+			b.explain(ctx, q, qargs...)
+		}
+		n, last, err := b.topBatch(ctx, q, qargs, seen, &out)
+		if err != nil || len(out.Hits) == b.cfg.K || n < limit {
+			b.lastWork = out
 			return out, err
 		}
+		if out.Candidates > b.cfg.MaxCandidates {
+			b.lastWork = out
+			return out, fmt.Errorf("sqlbackend: top-K read %d candidates, budget %d", out.Candidates, b.cfg.MaxCandidates)
+		}
+		upper = &last
+		limit *= 2
+	}
+}
+
+// topBatch reads one batch into out; n is its row count and last the start
+// of its last row.
+func (b *Backend) topBatch(ctx context.Context, q string, args []any, seen map[string]bool, out *otel.QueryResult) (n int, last int64, err error) {
+	rs, err := b.q.QueryContext(ctx, q, args...)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rs.Close()
+	for len(out.Hits) < b.cfg.K && rs.Next() {
+		var trace []byte
+		if err := rs.Scan(&trace, &last); err != nil {
+			return n, last, err
+		}
+		n++
 		out.Candidates++
 		out.Bytes += int64(len(trace) + 8)
 		t := hex.EncodeToString(trace)
 		if !seen[t] {
 			seen[t] = true
-			out.Hits = append(out.Hits, otel.Hit{Trace: t, Latest: start})
+			out.Hits = append(out.Hits, otel.Hit{Trace: t, Latest: last})
 		}
 	}
-	b.lastWork = out
-	return out, rs.Err()
+	return n, last, rs.Err()
 }
 
 // Trace returns a trace's spans by (start, span).
 func (b *Backend) Trace(ctx context.Context, trace string) ([]otel.SpanHit, error) {
+	b.countQuery()
 	id, err := hex.DecodeString(trace)
 	if err != nil {
 		return nil, err
@@ -495,7 +658,7 @@ func (b *Backend) Trace(ctx context.Context, trace string) ([]otel.SpanHit, erro
 		return b.directTrace(ctx, id)
 	}
 	b.explain(ctx, traceQuery, id)
-	rs, err := b.query.QueryContext(ctx, traceQuery, id)
+	rs, err := b.q.QueryContext(ctx, traceQuery, id)
 	if err != nil {
 		return nil, err
 	}
@@ -526,6 +689,7 @@ func sortSpanHits(out []otel.SpanHit) {
 
 // Span returns every span with the identity.
 func (b *Backend) Span(ctx context.Context, span string) ([]otel.SpanMatch, error) {
+	b.countQuery()
 	id, err := hex.DecodeString(span)
 	if err != nil {
 		return nil, err
@@ -534,7 +698,7 @@ func (b *Backend) Span(ctx context.Context, span string) ([]otel.SpanMatch, erro
 		return b.directSpan(ctx, id)
 	}
 	b.explain(ctx, spanQuery, id)
-	rs, err := b.query.QueryContext(ctx, spanQuery, id)
+	rs, err := b.q.QueryContext(ctx, spanQuery, id)
 	if err != nil {
 		return nil, err
 	}
@@ -590,6 +754,7 @@ func (b *Backend) Audit(ctx context.Context) (otel.Statistics, error) {
 func (b *Backend) sizeStore(ctx context.Context, ts *otelsql.TenantStore, out map[string]otel.Size) error {
 	begin, end := ts.Subspace.FDBRangeKeys()
 	lo, hi := begin.FDBKey(), end.FDBKey()
+	var prev []byte
 	const page = 2000
 	for {
 		var rows []fdb.KeyValue
@@ -618,11 +783,10 @@ func (b *Backend) sizeStore(ctx context.Context, ts *otelsql.TenantStore, out ma
 			}
 			for _, n := range []string{name, "owned_total"} {
 				s := out[n]
-				s.Keys++
-				s.KeyBytes += int64(len(kv.Key))
-				s.ValueBytes += int64(len(kv.Value))
+				s.AddKV(prev, kv.Key, kv.Value)
 				out[n] = s
 			}
+			prev = kv.Key
 		}
 		if len(rows) < page {
 			return nil
@@ -633,7 +797,7 @@ func (b *Backend) sizeStore(ctx context.Context, ts *otelsql.TenantStore, out ma
 
 // Drop removes the run's database.
 func (b *Backend) Drop(ctx context.Context) error {
-	cat, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s&schema=CATALOG", b.cluster))
+	cat, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///__SYS?cluster_file=%s&schema=CATALOG", b.driverKey))
 	if err != nil {
 		return err
 	}

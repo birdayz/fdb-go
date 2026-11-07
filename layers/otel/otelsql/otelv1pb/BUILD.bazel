@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "otelv1pb",
+    srcs = [
+        "otel_v1.pb.go",
+        "otel_v1_arrays.go",
+    ],
+    importpath = "fdb.dev/layers/otel/otelsql/otelv1pb",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//gen",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//runtime/protoimpl",
+    ],
+)
