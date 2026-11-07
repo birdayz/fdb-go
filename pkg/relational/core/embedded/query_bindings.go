@@ -96,6 +96,119 @@ func (c queryBindingConstraint) accepts(b queryBindings) bool {
 }
 
 func normalizeQueryBindings(tree antlr.ParseTree, md *recordlayer.RecordMetaData) (queryBindings, func(), error) {
+	return normalizeQueryBindingsWith(tree, md, nil)
+}
+
+// bindingStep is one step of a statement's binding walk: static cache text, or
+// a binding site, a parameter (bound per statement) or a runtime literal.
+type bindingStep struct {
+	text    string      // appended when token is nil
+	token   antlr.Token // the binding site's token
+	literal values.Value
+	runtime bool // a parameter's runtime flag; literals are runtime
+}
+
+// bindingProgram is the walk of normalizeQueryBindings over one tree, which
+// depends only on the tree and the top-level runtime flag: everything but the
+// bound parameter values. A cached parse tree compiles it once (parse_cache.go).
+type bindingProgram struct{ steps []bindingStep }
+
+type bindingProgramKey struct {
+	tree    antlr.ParseTree
+	runtime bool
+}
+
+// compileBindingProgram records the binding walk of tree. Consecutive text
+// joins with the single spaces the cache text puts between tokens.
+func compileBindingProgram(tree antlr.ParseTree, runtimeTop bool) (*bindingProgram, error) {
+	p := &bindingProgram{}
+	var pending []string
+	flush := func() {
+		if len(pending) > 0 {
+			p.steps = append(p.steps, bindingStep{text: strings.Join(pending, " ")})
+			pending = pending[:0]
+		}
+	}
+	site := func(s bindingStep) {
+		flush()
+		p.steps = append(p.steps, s)
+	}
+	var walk func(antlr.Tree, bool) error
+	walk = func(node antlr.Tree, runtime bool) error {
+		switch n := node.(type) {
+		case *antlrgen.LimitClauseContext, *antlrgen.InListContext:
+			// LIMIT is an integer in the physical operator; IN's literal
+			// expansion fixes its cardinality, deduplication and tuple bounds.
+			runtime = false
+		case *antlrgen.ScalarFunctionCallContext:
+			if n.ScalarFunctionName().GetStart().GetTokenType() == antlrgen.RelationalParserCOALESCE {
+				// COALESCE participates in error-pruning rewrites; preserve the
+				// literal-dependent choice and constrain its cached specialization.
+				runtime = false
+			}
+		case *antlrgen.OrderByExpressionContext:
+			if _, positional := selectListPosition(n.Expression()); positional {
+				runtime = false
+			}
+		case *antlrgen.GroupByItemContext:
+			if _, positional := selectListPosition(n.Expression()); positional {
+				runtime = false
+			}
+		case *antlrgen.PreparedStatementParameterContext:
+			site(bindingStep{token: n.GetStart(), runtime: runtime})
+		case antlrgen.IConstantContext:
+			if runtime {
+				value, err := expr.ResolveLiteral(n)
+				if err != nil {
+					if mapped := mapPredicateWalkError(err); mapped != nil {
+						return mapped
+					}
+					return err
+				}
+				if value.Type().Code() != values.TypeCodeNull {
+					site(bindingStep{token: n.GetStart(), literal: value, runtime: true})
+					pending = append(pending, "?")
+					return nil
+				}
+			}
+		}
+		if terminal, ok := node.(antlr.TerminalNode); ok {
+			token := terminal.GetSymbol()
+			if token != nil && token.GetTokenType() != antlr.TokenEOF {
+				spelling := token.GetText()
+				if foldsInCacheText(token.GetTokenType()) {
+					spelling = unicode15.ToUpperString(spelling)
+				}
+				pending = append(pending, spelling)
+			}
+			return nil
+		}
+		for i := 0; i < node.GetChildCount(); i++ {
+			if err := walk(node.GetChild(i), runtime); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := walk(tree, runtimeTop); err != nil {
+		return nil, err
+	}
+	flush()
+	return p, nil
+}
+
+// normalizeQueryBindings with the statement's compiled walks: programs, when
+// not nil, keeps tree's program (statementPrograms bounds it).
+func normalizeQueryBindingsWith(tree antlr.ParseTree, md *recordlayer.RecordMetaData, programs *statementPrograms) (queryBindings, func(), error) {
+	runtimeTop := !requiresLiteralIndexProof(md)
+	program := programs.get(tree, runtimeTop)
+	if program == nil {
+		var err error
+		if program, err = compileBindingProgram(tree, runtimeTop); err != nil {
+			return queryBindings{}, func() {}, err
+		}
+		programs.put(tree, runtimeTop, program)
+	}
 	result := queryBindings{constants: make(map[string]any), pins: literalPins{}}
 	var text, equivalence strings.Builder
 	byValue := make(map[string]int)
@@ -160,68 +273,17 @@ func normalizeQueryBindings(tree antlr.ParseTree, md *recordlayer.RecordMetaData
 		pins := result.pins
 		expr.BindSpecializableParameter(token, ref, v, func() { pins[position] = true })
 	}
-	var walk func(antlr.Tree, bool) error
-	walk = func(node antlr.Tree, runtime bool) error {
-		switch n := node.(type) {
-		case *antlrgen.LimitClauseContext, *antlrgen.InListContext:
-			// LIMIT is an integer in the physical operator; IN's literal
-			// expansion fixes its cardinality, deduplication and tuple bounds.
-			runtime = false
-		case *antlrgen.ScalarFunctionCallContext:
-			if n.ScalarFunctionName().GetStart().GetTokenType() == antlrgen.RelationalParserCOALESCE {
-				// COALESCE participates in error-pruning rewrites; preserve the
-				// literal-dependent choice and constrain its cached specialization.
-				runtime = false
-			}
-		case *antlrgen.OrderByExpressionContext:
-			if _, positional := selectListPosition(n.Expression()); positional {
-				runtime = false
-			}
-		case *antlrgen.GroupByItemContext:
-			if _, positional := selectListPosition(n.Expression()); positional {
-				runtime = false
-			}
-		case *antlrgen.PreparedStatementParameterContext:
-			if value, ok := expr.BoundParameter(n.GetStart()); ok {
-				bind(n.GetStart(), value, runtime)
-			}
-		case antlrgen.IConstantContext:
-			if runtime {
-				value, err := expr.ResolveLiteral(n)
-				if err != nil {
-					if mapped := mapPredicateWalkError(err); mapped != nil {
-						return mapped
-					}
-					return err
-				}
-				if value.Type().Code() != values.TypeCodeNull {
-					bind(n.GetStart(), value, true)
-					appendText("?")
-					return nil
-				}
+	for _, s := range program.steps {
+		switch {
+		case s.token == nil:
+			appendText(s.text)
+		case s.literal != nil:
+			bind(s.token, s.literal, true)
+		default:
+			if value, ok := expr.BoundParameter(s.token); ok {
+				bind(s.token, value, s.runtime)
 			}
 		}
-		if terminal, ok := node.(antlr.TerminalNode); ok {
-			token := terminal.GetSymbol()
-			if token != nil && token.GetTokenType() != antlr.TokenEOF {
-				spelling := token.GetText()
-				if foldsInCacheText(token.GetTokenType()) {
-					spelling = unicode15.ToUpperString(spelling)
-				}
-				appendText(spelling)
-			}
-			return nil
-		}
-		for i := 0; i < node.GetChildCount(); i++ {
-			if err := walk(node.GetChild(i), runtime); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	if err := walk(tree, !requiresLiteralIndexProof(md)); err != nil {
-		release()
-		return queryBindings{}, func() {}, err
 	}
 	result.text, result.equivalence = text.String(), equivalence.String()
 	return result, release, nil
