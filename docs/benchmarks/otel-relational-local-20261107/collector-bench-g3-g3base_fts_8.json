@@ -1,0 +1,588 @@
+{
+  "tool": "otelbench-collector-bench-v2",
+  "mode": "collector-bench",
+  "revision": "7fb269417",
+  "go": "go1.27.3",
+  "start_utc": "2026-11-07T16:19:52.23702029Z",
+  "config": {
+    "cluster_file": "/tmp/g3-p3a/otelg3p3a.cluster",
+    "run": "g3base_fts_8",
+    "tenant": 0,
+    "seed": 283,
+    "conversations": 1000,
+    "turns_per_conversation": 15,
+    "duration_ns": 0,
+    "report_interval_ns": 10000000000,
+    "warmup_ns": 60000000000,
+    "producers": 8,
+    "num_consumers": 4,
+    "query_workers": 2,
+    "queue_size": 10000,
+    "batch_min_size": 64,
+    "batch_max_size": 256,
+    "exporter_batch_size": 64,
+    "exporter_workers": 8,
+    "record_compression": "brotli-4",
+    "posting_value_format": "tuple",
+    "hash_bytes": 8,
+    "order": "time",
+    "enable_message_deltas": true,
+    "enable_message_full_text": true,
+    "query_iterations": 100,
+    "revision": "7fb269417"
+  },
+  "effective": {
+    "load": "fixed",
+    "duration": "0s",
+    "report_interval": "10s",
+    "warmup": "1m0s",
+    "producers": 8,
+    "num_consumers": 4,
+    "query_workers": 2,
+    "block_size": 50
+  },
+  "exporter_config": {
+    "cluster_file": "/tmp/g3-p3a/otelg3p3a.cluster",
+    "run": "g3base_fts_8",
+    "tenant": 0,
+    "order": "time",
+    "hash_bytes": 8,
+    "posting_value_format": "tuple",
+    "record_compression": "brotli-4",
+    "bulk_index_conflicts": true,
+    "enable_message_deltas": true,
+    "enable_message_full_text": true,
+    "batch_size": 64,
+    "workers": 8,
+    "max_candidates": 20412,
+    "max_bytes": 12568576,
+    "k": 100,
+    "max_inflight_transactions": 32,
+    "transaction_timeout": "10s"
+  },
+  "corpus": {
+    "conversations": 1000,
+    "turns_per_conversation": 15,
+    "spans": 15000,
+    "logs": 1000,
+    "raw_input_bytes": 187864913,
+    "total_message_elements": 285000,
+    "unique_message_elements": 30003
+  },
+  "ingest": {
+    "ingest_wall_ns": 11091715330,
+    "spans_per_sec": 1352.3607083053403,
+    "messages_per_sec": 25694.853457801466,
+    "raw_bytes_per_sec": 16937408.45402674,
+    "collector": {
+      "accepted_requests": 1000,
+      "accepted_spans": 15000,
+      "rejected_spans": 0,
+      "exported_spans": 15000,
+      "stored_spans": 15000,
+      "duplicate_spans": 0,
+      "failed_spans": 0,
+      "flushes": 63,
+      "exports": 63,
+      "retries": 0,
+      "queued_spans": 0
+    },
+    "export": {
+      "received_spans": 15000,
+      "duplicate_spans": 0,
+      "spans": 15000,
+      "batches": 531,
+      "logical_bytes": 13095438,
+      "normalized_spans": 15000,
+      "unindexed_attributes": 60000,
+      "message_deltas": {
+        "total_messages": 285000,
+        "unique_messages": 30895,
+        "reused_messages": 254105,
+        "raw_message_bytes": 181595164,
+        "stored_delta_bytes": 20937370,
+        "saved_bytes": 160657794
+      },
+      "messages": {
+        "written": 30003,
+        "present": 892,
+        "parts": 30003,
+        "postings": 1698165,
+        "unindexed_tokens": 0,
+        "references": 285000,
+        "trace_markers": 33000,
+        "transactions": 305,
+        "retries": 0,
+        "text_index_writes": 1698165,
+        "text_index_key_bytes": 60143607,
+        "text_index_value_bytes": 15278868,
+        "text_index_read_bytes": 531832540,
+        "wall_ns": 23008194909,
+        "txn_ns": 71231567607
+      }
+    },
+    "failed_export_calls": 0,
+    "log_wall_ns": 2717163783,
+    "log_calls": 18,
+    "failed_log_calls": 0,
+    "logs": {
+      "received_logs": 1000,
+      "duplicate_logs": 0,
+      "generated_ids": 0,
+      "logs": 1000,
+      "batches": 26,
+      "replaced": 0,
+      "correlated": 1000,
+      "logical_bytes": 242390,
+      "stored_bytes": 274717,
+      "unindexed_attributes": 0,
+      "event_ids": null
+    }
+  },
+  "series": [
+    {
+      "phase": "load",
+      "start_ns": 0,
+      "end_ns": 4272286905,
+      "exported_spans": 5013,
+      "messages": 95211,
+      "raw_input_bytes": 62663454,
+      "logs": 985,
+      "export_calls": 23,
+      "failed_calls": 0,
+      "retries": 0,
+      "queries": 92,
+      "export_latency": {
+        "population": 23,
+        "min_ns": 348094065,
+        "p50_ns": 681895491,
+        "p95_ns": 967363416,
+        "p99_ns": 1022030425,
+        "max_ns": 1022030425
+      },
+      "queued_spans": 9987,
+      "watermark": 332,
+      "spans_per_sec": 1173.3762529227893,
+      "sys_bytes": 803536328,
+      "heap_inuse_bytes": 649248768,
+      "cpu": {
+        "user_ns": 35477344000,
+        "sys_ns": 2549257000,
+        "total_ns": 38026601000,
+        "gc_ns": 9803793557,
+        "gc_mark_assist_ns": 443018547,
+        "gc_mark_dedicated_ns": 4525854813,
+        "gc_mark_idle_ns": 4570382881,
+        "gc_pause_ns": 264537315,
+        "cores_used": 8.900760142184318,
+        "utilization": 0.37086500592434657,
+        "ms_per_span": 7.585597646120088,
+        "gc_fraction": 0.25781409064144334,
+        "gomaxprocs": 24,
+        "num_cpu": 24
+      }
+    },
+    {
+      "phase": "drain",
+      "start_ns": 4272286905,
+      "end_ns": 10000243578,
+      "exported_spans": 8124,
+      "messages": 154356,
+      "raw_input_bytes": 101831331,
+      "logs": 15,
+      "export_calls": 32,
+      "failed_calls": 0,
+      "retries": 0,
+      "queries": 0,
+      "export_latency": {
+        "population": 32,
+        "min_ns": 553445362,
+        "p50_ns": 707635923,
+        "p95_ns": 881999416,
+        "p99_ns": 910080712,
+        "max_ns": 910080712
+      },
+      "queued_spans": 1863,
+      "watermark": 872,
+      "spans_per_sec": 1418.3068175592675,
+      "sys_bytes": 811924936,
+      "heap_inuse_bytes": 266371072,
+      "cpu": {
+        "user_ns": 40649529000,
+        "sys_ns": 2497636000,
+        "total_ns": 43147165000,
+        "gc_ns": 11811528732,
+        "gc_mark_assist_ns": 483534951,
+        "gc_mark_dedicated_ns": 5288057755,
+        "gc_mark_idle_ns": 5681234625,
+        "gc_pause_ns": 358701402,
+        "cores_used": 7.53273243203528,
+        "utilization": 0.3138638513348033,
+        "ms_per_span": 5.311073978335795,
+        "gc_fraction": 0.27374982184808666,
+        "gomaxprocs": 24,
+        "num_cpu": 24
+      }
+    },
+    {
+      "phase": "drain",
+      "start_ns": 10000243578,
+      "end_ns": 11091717004,
+      "exported_spans": 1863,
+      "messages": 35433,
+      "raw_input_bytes": 23379017,
+      "logs": 0,
+      "export_calls": 8,
+      "failed_calls": 0,
+      "retries": 0,
+      "queries": 0,
+      "export_latency": {
+        "population": 8,
+        "min_ns": 397471844,
+        "p50_ns": 681626764,
+        "p95_ns": 794186474,
+        "p99_ns": 794186474,
+        "max_ns": 794186474
+      },
+      "queued_spans": 0,
+      "watermark": 999,
+      "spans_per_sec": 1706.8670254551848,
+      "sys_bytes": 811924936,
+      "heap_inuse_bytes": 104087552,
+      "cpu": {
+        "user_ns": 5289526000,
+        "sys_ns": 441334000,
+        "total_ns": 5730860000,
+        "gc_ns": 1131961422,
+        "gc_mark_assist_ns": 45971689,
+        "gc_mark_dedicated_ns": 535072083,
+        "gc_mark_idle_ns": 465728862,
+        "gc_pause_ns": 85188788,
+        "cores_used": 5.250572174718251,
+        "utilization": 0.21877384061326047,
+        "ms_per_span": 3.0761460010735373,
+        "gc_fraction": 0.1975203411006376,
+        "gomaxprocs": 24,
+        "num_cpu": 24
+      }
+    }
+  ],
+  "rates": {
+    "whole_run": {
+      "windows": 3,
+      "wall_ns": 11091717004,
+      "spans": 15000,
+      "spans_per_sec": 1352.3605042024205,
+      "messages_per_sec": 25694.849579845988,
+      "raw_bytes_per_sec": 16938207.306609713,
+      "logs_per_sec": 90.15736694682803,
+      "cpu": {
+        "user_ns": 81416399000,
+        "sys_ns": 5488227000,
+        "total_ns": 86904626000,
+        "gc_ns": 22747283711,
+        "gc_mark_assist_ns": 972525187,
+        "gc_mark_dedicated_ns": 10348984651,
+        "gc_mark_idle_ns": 10717346368,
+        "gc_pause_ns": 708427505,
+        "cores_used": 7.835092255658852,
+        "utilization": 0.3264621773191188,
+        "ms_per_span": 5.793641733333334,
+        "gc_fraction": 0.26174997532352307,
+        "gomaxprocs": 24,
+        "num_cpu": 24
+      }
+    },
+    "steady_state": {
+      "windows": 0,
+      "wall_ns": 0,
+      "spans": 0,
+      "spans_per_sec": 0,
+      "messages_per_sec": 0,
+      "raw_bytes_per_sec": 0,
+      "logs_per_sec": 0,
+      "cpu": {
+        "user_ns": 0,
+        "sys_ns": 0,
+        "total_ns": 0,
+        "gc_ns": 0,
+        "gc_mark_assist_ns": 0,
+        "gc_mark_dedicated_ns": 0,
+        "gc_mark_idle_ns": 0,
+        "gc_pause_ns": 0,
+        "cores_used": 0,
+        "utilization": 0,
+        "ms_per_span": 0,
+        "gc_fraction": 0,
+        "gomaxprocs": 0,
+        "num_cpu": 0
+      }
+    }
+  },
+  "watermark": {
+    "conversations": 1000,
+    "watermark": 999,
+    "tracked": 0,
+    "peak_tracked": 670,
+    "anomalies": 0
+  },
+  "memory": {
+    "peak_sys_bytes": 811924936,
+    "peak_heap_inuse_bytes": 649248768
+  },
+  "under_load": {
+    "workers": 2,
+    "wall_ns": 4272269122,
+    "queries": {
+      "correlated_logs_by_trace": {
+        "iterations": 14,
+        "failures": 0,
+        "rows": 14,
+        "wall_ns": 4272269122,
+        "qps": 3.2769471211228627,
+        "histogram": {
+          "population": 14,
+          "min_ns": 660131,
+          "p50_ns": 1077722,
+          "p95_ns": 33072283,
+          "p99_ns": 33072283,
+          "max_ns": 33072283
+        }
+      },
+      "fts_multi_turn_history": {
+        "iterations": 14,
+        "failures": 0,
+        "rows": 210,
+        "wall_ns": 4272269122,
+        "qps": 3.2769471211228627,
+        "histogram": {
+          "population": 14,
+          "min_ns": 21167246,
+          "p50_ns": 65676068,
+          "p95_ns": 406654111,
+          "p99_ns": 406654111,
+          "max_ns": 406654111
+        }
+      },
+      "fts_phrase_first_turn": {
+        "iterations": 14,
+        "failures": 0,
+        "rows": 14,
+        "wall_ns": 4272269122,
+        "qps": 3.2769471211228627,
+        "histogram": {
+          "population": 14,
+          "min_ns": 7869441,
+          "p50_ns": 34360364,
+          "p95_ns": 208254286,
+          "p99_ns": 208254286,
+          "max_ns": 208254286
+        }
+      },
+      "fts_same_span_predicates": {
+        "iterations": 8,
+        "failures": 0,
+        "rows": 800,
+        "wall_ns": 4272269122,
+        "qps": 1.8725412120702072,
+        "histogram": {
+          "population": 8,
+          "min_ns": 28824154,
+          "p50_ns": 142936166,
+          "p95_ns": 220622119,
+          "p99_ns": 220622119,
+          "max_ns": 220622119
+        }
+      },
+      "fts_single_token": {
+        "iterations": 8,
+        "failures": 0,
+        "rows": 800,
+        "wall_ns": 4272269122,
+        "qps": 1.8725412120702072,
+        "histogram": {
+          "population": 8,
+          "min_ns": 39034060,
+          "p50_ns": 100012858,
+          "p95_ns": 307973628,
+          "p99_ns": 307973628,
+          "max_ns": 307973628
+        }
+      },
+      "same_span_conjunction": {
+        "iterations": 13,
+        "failures": 0,
+        "rows": 195,
+        "wall_ns": 4272269122,
+        "qps": 3.042879469614087,
+        "histogram": {
+          "population": 13,
+          "min_ns": 2524503,
+          "p50_ns": 13140618,
+          "p95_ns": 208553574,
+          "p99_ns": 208553574,
+          "max_ns": 208553574
+        }
+      },
+      "trace_existential_3way": {
+        "iterations": 7,
+        "failures": 0,
+        "rows": 350,
+        "wall_ns": 4272269122,
+        "qps": 1.6384735605614313,
+        "histogram": {
+          "population": 7,
+          "min_ns": 25126538,
+          "p50_ns": 151848102,
+          "p95_ns": 347228506,
+          "p99_ns": 347228506,
+          "max_ns": 347228506
+        }
+      },
+      "trace_graph_traversal": {
+        "iterations": 14,
+        "failures": 0,
+        "rows": 210,
+        "wall_ns": 4272269122,
+        "qps": 3.2769471211228627,
+        "histogram": {
+          "population": 14,
+          "min_ns": 2068058,
+          "p50_ns": 4300628,
+          "p95_ns": 206987576,
+          "p99_ns": 206987576,
+          "max_ns": 206987576
+        }
+      }
+    }
+  },
+  "fidelity": {
+    "checked_spans": 32,
+    "mismatches": 0
+  },
+  "queries": {
+    "correlated_logs_by_trace": {
+      "iterations": 100,
+      "failures": 0,
+      "rows": 100,
+      "wall_ns": 52928095,
+      "qps": 1889.3557381953763,
+      "histogram": {
+        "population": 100,
+        "min_ns": 408164,
+        "p50_ns": 502632,
+        "p95_ns": 724873,
+        "p99_ns": 877893,
+        "max_ns": 932747
+      }
+    },
+    "fts_multi_turn_history": {
+      "iterations": 100,
+      "failures": 0,
+      "rows": 1500,
+      "wall_ns": 877237037,
+      "qps": 113.99427495900404,
+      "histogram": {
+        "population": 100,
+        "min_ns": 7371107,
+        "p50_ns": 8442317,
+        "p95_ns": 11108778,
+        "p99_ns": 12448597,
+        "max_ns": 13678889
+      }
+    },
+    "fts_phrase_first_turn": {
+      "iterations": 100,
+      "failures": 0,
+      "rows": 100,
+      "wall_ns": 2021393055,
+      "qps": 49.47083386511388,
+      "histogram": {
+        "population": 100,
+        "min_ns": 7607645,
+        "p50_ns": 9174133,
+        "p95_ns": 124868644,
+        "p99_ns": 164531033,
+        "max_ns": 191862550
+      }
+    },
+    "fts_same_span_predicates": {
+      "iterations": 100,
+      "failures": 0,
+      "rows": 10000,
+      "wall_ns": 2953007045,
+      "qps": 33.86378646448505,
+      "histogram": {
+        "population": 100,
+        "min_ns": 25764216,
+        "p50_ns": 29176953,
+        "p95_ns": 32437089,
+        "p99_ns": 33664024,
+        "max_ns": 33930770
+      }
+    },
+    "fts_single_token": {
+      "iterations": 100,
+      "failures": 0,
+      "rows": 10000,
+      "wall_ns": 5696438091,
+      "qps": 17.55482959746257,
+      "histogram": {
+        "population": 100,
+        "min_ns": 25983412,
+        "p50_ns": 35502478,
+        "p95_ns": 129635585,
+        "p99_ns": 162897367,
+        "max_ns": 169846946
+      }
+    },
+    "same_span_conjunction": {
+      "iterations": 100,
+      "failures": 0,
+      "rows": 1500,
+      "wall_ns": 230635996,
+      "qps": 433.5836631503089,
+      "histogram": {
+        "population": 100,
+        "min_ns": 1357021,
+        "p50_ns": 1828374,
+        "p95_ns": 2616798,
+        "p99_ns": 6473366,
+        "max_ns": 40156877
+      }
+    },
+    "trace_existential_3way": {
+      "iterations": 100,
+      "failures": 0,
+      "rows": 5000,
+      "wall_ns": 2845668951,
+      "qps": 35.14112207776624,
+      "histogram": {
+        "population": 100,
+        "min_ns": 24815138,
+        "p50_ns": 27865779,
+        "p95_ns": 31501798,
+        "p99_ns": 34241479,
+        "max_ns": 34279271
+      }
+    },
+    "trace_graph_traversal": {
+      "iterations": 100,
+      "failures": 0,
+      "rows": 1500,
+      "wall_ns": 193219962,
+      "qps": 517.5448694064022,
+      "histogram": {
+        "population": 100,
+        "min_ns": 1442884,
+        "p50_ns": 1833814,
+        "p95_ns": 2467085,
+        "p99_ns": 3481827,
+        "max_ns": 5251460
+      }
+    }
+  },
+  "failures": 0,
+  "wall_ns": 26246223659,
+  "boundary": "synthetic deterministic multi-turn GenAI conversations and correlated logs through the custom fdb_otel Collector-model queue (not upstream OpenTelemetry Collector) into one FDB run; one producer host, closed-loop producers and query workers, not SLO/HA evidence; query answers verified against the generated model"
+}

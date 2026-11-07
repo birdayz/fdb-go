@@ -407,6 +407,56 @@ process's user+sys over the export calls; the ranges cover every run.
 - **MESSAGES_TEXT:** 21–23% more bytes than the old TEXT index, with the same bunch count (6,017 and 10,143 rows). The schema subspace prefix is 23 bytes against 10 (26% of the difference, and all of the 40% more written key bytes, 13 B per write); every entry's primary key carries the record type key (about 1.9 B per posting, the rest). The whole store is 1.04–1.06×. The owner accepted this at the cutover and kept D4.
 - **R4, message writes in the shared store:** `MessageStoreStats.Retries` was 0 in every run.
 
+### Gate G3: collector bench after the cutover
+
+`collector-bench` through the cutover's `otel.Exporter` (`f68acec52`; its defaults:
+`zlib-1`, bulk index conflicts) against the custom store at `7fb269417`
+(`--backend fdb`; its defaults: brotli-4, tuple postings, 8-byte hashes, time
+order), with the archived baseline's flags: `--conversations 1000`, with defaults
+(deltas + FTS) and with `--enable-message-deltas=false --enable-message-fts=false`.
+otelcmp's catalog holds an OTEL_V1 template from another revision, which the
+Exporter refuses (`TemplateMismatchError`). So every run here is on a fresh
+container, `otelg3p3a`, with otelcmp's image, environment and configuration
+(single, ssd-redwood-1). The arms alternated, and their order flipped each round.
+The 1-minute load was 5–15 at every start. Each run in the tables started after
+the storage and log queues had drained below 1 MB. Process CPU is user+sys of the
+whole command (corpus, ingest, audit, queries). Raw evidence is
+`otel-relational-local-20261107/collector-bench-g3-*.json`; the run log
+`g3-collector-bench-runs.txt` has the binaries' revisions and sha256, loads and CPU.
+
+The tables cover five runs per arm with deltas + FTS (median, with the range) and
+two with messages off (a / b). Every run had 0 failures (collector, export and
+query), 0 fidelity mismatches over 32 checked spans, and 0 message retries.
+
+| arm | ingest s | spans/s | process CPU s | message persist s | logical span MB |
+|---|---:|---:|---:|---:|---:|
+| custom store, deltas + FTS | 10.86 (10.39–11.45) | 1,381 (1,310–1,443) | 113.2 (111.1–115.8) | 21.8 (20.9–23.0) | 13.1 |
+| Exporter, deltas + FTS | 9.76 (9.61–10.09) | 1,538 (1,486–1,561) | 101.0 (99.8–102.1) | 30.2 (29.9–31.7) | 9.8 |
+| custom store, messages off | 4.91 / 4.98 | 3,054 / 3,013 | 40.8 / 41.9 | — | 372.4 |
+| Exporter, messages off | 3.59 / 3.95 | 4,179 / 3,799 | 29.5 / 30.2 | — | 190.2 |
+
+Logical span bytes are each store's own `logical_bytes` count. For the Exporter
+that is the span's OTLP; for the custom store it is the canonical OTLP plus its
+fidelity lists. It is not a storage measurement.
+
+| query class, p50 / p99 ms | custom, FTS (median) | Exporter, FTS (median) | p50 ratio | custom, off | Exporter, off |
+|---|---|---|---:|---|---|
+| same_span_conjunction | 1.91 / 2.74 | 1.22 / 1.90 | 0.64 | 1.78 / 2.59, 1.83 / 3.01 | 1.19 / 1.84, 1.20 / 1.72 |
+| trace_existential_3way | 29.11 / 37.57 | 26.90 / 33.11 | 0.92 | 4.61 / 6.57, 4.56 / 7.20 | 3.01 / 5.40, 3.11 / 5.53 |
+| trace_graph_traversal | 2.03 / 3.82 | 1.24 / 1.98 | 0.61 | 4.66 / 6.19, 5.47 / 130.52 | 3.86 / 6.06, 3.56 / 5.26 |
+| correlated_logs_by_trace | 0.60 / 1.08 | 0.56 / 0.96 | 0.93 | 0.56 / 0.96, 0.55 / 50.81 | 0.55 / 1.01, 0.52 / 0.91 |
+| fts_single_token | 38.73 / 164.41 | 59.32 / 135.36 | **1.53** | — | — |
+| fts_same_span_predicates | 30.17 / 36.52 | 29.29 / 34.96 | 0.97 | — | — |
+| fts_multi_turn_history | 8.51 / 12.45 | 8.39 / 12.97 | 0.99 | — | — |
+| fts_phrase_first_turn | 9.17 / 164.53 | 9.11 / 135.06 | 0.99 | — | — |
+
+- **Ingest:** with messages, the Exporter takes 0.90× the wall time, reaches 1.11× the spans/s and uses 0.89× the process CPU. With messages off, the figures are 0.76× wall and 0.72× CPU.
+- **Message persist s is 1.39×.** This is the summed per-call wait for message group commits. The message transactions themselves take the same time: their summed time is 63.6 s against 68.1 s, there are 302–304 of them against 304–308, and none retried. Spans finish sooner, so each call spends a larger share of its time waiting for its messages. MESSAGES_TEXT wrote 83.9 MB of keys against 60.2 MB (+39%, the R1 prefix and record-type-key cost). By the letter of the G2C criterion (persist ≤ 1.10×) this fails; end-to-end ingest passes.
+- **fts_single_token p50 is 1.53×**, and its p99 is 0.82×. Its p50 is bimodal in both stores: each run is either about 27–39 ms or about 44–65 ms. On the fresh cluster's first runs (`g3new_fts_1`–`4` against `g3base_fts_1`–`2`, not quiesced), the Exporter's median p50 was 0.72× the custom store's. Later, with more data on the cluster, the Exporter landed in the slow mode in every run and the custom store in 2 of 5. The cause is not established. Here this class fails the 1.10× threshold.
+- **The p99s of 100 samples** include 100–200 ms stalls in both stores (`fts_phrase_first_turn`, `fts_multi_turn_history`), so single-run p99 differences are noise.
+- **Interference between runs:** some Exporter messages-off runs started right after the custom store's 372 MB messages-off ingest, without waiting for the queues (`g3new_off_3`–`6`). They show 40–110 ms p99s and 1.3–1.8× wall time; the quiesced runs do not. They are archived but left out of the tables.
+- **Cluster drift:** this container's custom-store runs ingest about 10% slower than the archived otelcmp baseline (median 10.86 s against 9.52 / 10.25 s).
+
 ## Reproduce
 
 ```sh
