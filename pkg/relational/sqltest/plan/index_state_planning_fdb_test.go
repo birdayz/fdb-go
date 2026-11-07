@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/relational/sqltest/testkit"
 
@@ -80,13 +81,69 @@ func TestFDB_IndexStatePlanning_TransitionBetweenPagesFails40001(t *testing.T) {
 	testkit.AssertSerializationFailure(t, rows.Err())
 }
 
-// A statement planned BEFORE the transition and first executed after it must
-// also refuse: planning and the first page are separate transactions too.
-func TestFDB_IndexStatePlanning_TransitionBetweenPlanAndFirstPageFails40001(t *testing.T) {
+// An auto-commit statement plans and runs its first page in ONE transaction
+// (embedded/statement_read.go), as Java's auto-commit statement does: a
+// transition another transaction commits between planning and the first page
+// is after the statement's read version, so the plan and the page read one
+// snapshot and the statement answers at it. The next statement sees the
+// transition.
+func TestFDB_IndexStatePlanning_TransitionBetweenPlanAndFirstPageReadsOneSnapshot(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	f := testkit.NewIndexStatePlanningFixture(t)
 	logger := &transitionPlanLogger{fn: func() error { return f.MakeUniqueIndexPending(ctx) }}
+	conn := testkit.PinEmbeddedConn(t, f.DB, func(ec *embedded.EmbeddedConnection) {
+		ec.SetPlanLogger(logger)
+	})
+
+	emails := func(what string) []string {
+		t.Helper()
+		rows, err := conn.QueryContext(ctx, dependentOnUEmail)
+		if err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+		defer func() { _ = rows.Close() }()
+		var got []string
+		for rows.Next() {
+			var email string
+			if err := rows.Scan(&email); err != nil {
+				t.Fatalf("%s: scan: %v", what, err)
+			}
+			got = append(got, email)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("%s: rows: %v", what, err)
+		}
+		return got
+	}
+	snapshot := emails("statement with a transition between plan and first page")
+	if transitionErr := logger.err(); transitionErr != nil {
+		t.Fatalf("logger state transition: %v", transitionErr)
+	}
+	if len(snapshot) == 0 {
+		t.Fatal("the statement returned no rows")
+	}
+	after := emails("statement after the transition")
+	sort.Strings(snapshot)
+	sort.Strings(after)
+	if strings.Join(snapshot, ",") != strings.Join(after, ",") {
+		t.Fatalf("rows at the planning snapshot %v differ from rows after the transition %v", snapshot, after)
+	}
+}
+
+// When the first page cannot join the statement's transaction (it opens more
+// than embedded's statementReadMaxAge, 250ms, after the statement began), it
+// runs in a transaction of its own; a transition between planning and that
+// page must then refuse rather than run the stale plan.
+func TestFDB_IndexStatePlanning_TransitionBeforeASeparateFirstPageFails40001(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := testkit.NewIndexStatePlanningFixture(t)
+	logger := &transitionPlanLogger{fn: func() error {
+		err := f.MakeUniqueIndexPending(ctx)
+		time.Sleep(400 * time.Millisecond) // past statementReadMaxAge
+		return err
+	}}
 	conn := testkit.PinEmbeddedConn(t, f.DB, func(ec *embedded.EmbeddedConnection) {
 		ec.SetPlanLogger(logger)
 	})
