@@ -43,11 +43,9 @@ type SpanReader struct {
 }
 
 // NewSpanReader reads ts on db within cfg's K and budgets. Its continuation
-// tokens are bound to the Exporter's store path of cfg's run and tenant
-// (relTenantPaths).
+// tokens are bound to ts's database path and schema.
 func NewSpanReader(db *recordlayer.FDBDatabase, ts *otelsql.TenantStore, cfg Config) *SpanReader {
-	path, schema := relTenantPaths(cfg.Run, cfg.Tenant)
-	return &SpanReader{store: &tenantStore{db: db, ts: ts, databasePath: path, schema: schema}, cfg: cfg, keys: storeMetaContinuationKeys{}}
+	return &SpanReader{store: &tenantStore{db: db, ts: ts, databasePath: ts.DatabasePath, schema: ts.Schema}, cfg: cfg, keys: storeMetaContinuationKeys{}}
 }
 
 // attrQuery is the index scan an attribute equality reads, or none when no
