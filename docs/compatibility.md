@@ -374,14 +374,26 @@ indexes, not the existing OTel custom posting index. Only fully bound element
 keys preserve ordering by the following time/identity columns. Unnest joins
 still explode records rather than use the fan-out index, as in Java. Go repairs
 EXISTS cardinality where Java can return duplicate records; see DIVERGENCES.md.
-The template includes neither TEXT indexes nor metrics tables yet. TEXT is an
-intentional separate Go FULLTEXT overlay: adding it requires a new metadata
-version, index build/readability and migration policy, not changing the v1
-catalog bytes in place. Metrics can be added as more tables in the same store;
-no cross-store join is needed. The initial catalog version is 1 (record-metadata
-version 14, including 13 indexes); subsequent changes must go through the
-catalog evolution validator and explicit schema rebinding, e.g. fleet.SaveTemplate
-and fleet.Migrate.
+`TemplateBody` is what Java builds (the golden): spans with packed message
+reference chunks (`ref_chunks` and `SPANS_REF_CHUNKS`, keyed by trace, start
+and span), logs whose attribute and `LOGS_EVENT` indexes cover `trace_id` and
+`span_id`, typed string/long-string/int/double/bool attribute indexes on both,
+messages with `MESSAGES_HASH` and the scalar-array unnest `MESSAGES_LARGE`,
+message-to-trace markers and a `store_meta` table. The Go template,
+`TemplateDDL()`, appends the Go-only overlay `CREATE FULLTEXT INDEX messages_text
+ON messages(content) PARTITION BY (role, shard) OPTIONS (TOKENIZER =
+'otel_message_v1', TOKENIZER_VERSION = 0)` as the last index clause on the last
+indexed table, so both have the same records descriptor (union fields, record
+type keys) and the same other indexes (`otelsql` `TestTemplateOverlay`).
+Importing `otelsql` registers the tokenizer. SQL plans the text index for
+`TEXT_CONTAINS_*(content, ?, 'otel_message_v1') AND role = ? AND shard IN (0..15)`;
+an unbound shard keeps record filtering (`sqltest/otel`). The OTel layer is
+pre-release, so OTEL_V1 was rewritten in place at catalog version 1:
+record-metadata version 20 for `TemplateBody` (19 indexes) and 21 for
+`TemplateDDL`. Metrics can be added as more tables in the same store; no
+cross-store join is needed. Once stores must be kept, changes go through the
+catalog evolution validator and explicit schema rebinding, e.g.
+fleet.SaveTemplate and fleet.Migrate.
 
 This is not an ingest-format migration. The existing exporter still writes its
 original store/keyspace and raw-KV logs. Tests hand-insert SQL rows and check
@@ -400,8 +412,16 @@ verified after digest lookup. The messages_hash unique index deduplicates whole
 messages: only part zero carries content_hash, and all other chunks leave it
 NULL (multiple NULLs are allowed). SQL DML does not enforce the part-zero
 contract; writers must. Writers must also bound attribute keys and other
-indexed fields against FDB's key limit. No projection/admission implementation
-or ingestion-cost measurement is supplied here. Benchmark runs will use dedicated
+indexed fields against FDB's key limit. `otelsql`'s compiled builders
+(`BuildCompiled`, `BuildLogCompiled`, `BuildMessageCompiled`, ...) are that
+projection: per scope, unique keys at their first position with their last
+value; keys over 1,024 bytes and values over 64,000 bytes left out and counted
+(`SpanProjection`, `LogProjection`); strings, ints, doubles and bools typed and
+indexed; bytes, arrays, kvlists and unset values reported in `bytes_attrs` and
+`any_attrs` (deterministic canonical JSON) and not indexed; GenAI content keys
+excluded when messages are decomposed; event names over 1,024 bytes not
+projected; reference chunks bounded at 8,000 encoded key bytes, zero-byte
+escaping included. Admission and batching are the exporter's. Benchmark runs will use dedicated
 catalog databases/stores; a production tenant's shared signal store must never
 be cleared by the existing run-level Drop operation. Java-readable stores must use
 an interoperable serializer, not Go-only Brotli.
