@@ -178,13 +178,15 @@ type MessagePart struct {
 
 // MessageText is a part's text segment: the message's normalized role (the
 // MESSAGES_TEXT group with the shard) and the tokens skipped before it.
+// BuildMessageCompiled stores Content as IndexableText.
 type MessageText struct {
 	Role, Content string
 	TokenOffset   int64 // NULL when 0
 }
 
 // BuildMessageCompiled returns the MESSAGES record of p; a part other than
-// part 0 that sets a whole-message column is refused.
+// part 0 that sets a whole-message column is refused. The content column is
+// IndexableText(p.Text.Content).
 func BuildMessageCompiled(p MessagePart) (*otelv1pb.MESSAGES, error) {
 	if p.Writer <= 0 || p.Seq <= 0 || p.Part < 0 {
 		return nil, fmt.Errorf("otelsql: message %d.%d part %d: writer and seq must be positive, part not negative", p.Writer, p.Seq, p.Part)
@@ -197,7 +199,11 @@ func BuildMessageCompiled(p MessagePart) (*otelv1pb.MESSAGES, error) {
 		RAW:    p.Raw,
 	}
 	if t := p.Text; t != nil {
-		r.ROLE, r.CONTENT = proto.String(t.Role), proto.String(t.Content)
+		content, err := IndexableText(t.Content)
+		if err != nil {
+			return nil, err
+		}
+		r.ROLE, r.CONTENT = proto.String(t.Role), proto.String(content)
 		if t.TokenOffset != 0 {
 			r.TOKEN_OFFSET = proto.Int64(t.TokenOffset)
 		}
