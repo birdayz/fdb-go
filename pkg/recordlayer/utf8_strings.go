@@ -51,13 +51,14 @@ func (rt *RecordType) checkUTF8Strings(record proto.Message) error {
 	if record == nil || !rt.reachesString {
 		return nil
 	}
-	return rt.stringReach.check(record.ProtoReflect(), "")
+	return rt.stringReach.check(record.ProtoReflect())
 }
 
-func (r stringReach) check(m protoreflect.Message, prefix string) error {
+// check walks m; an error's Field is the path below m, which each enclosing
+// level prefixes as the error returns (no path is built for valid records).
+func (r stringReach) check(m protoreflect.Message) error {
 	var err error
 	m.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
-		path := prefix + string(fd.Name())
 		switch {
 		case fd.IsMap():
 			if fd.MapKey().Kind() != protoreflect.StringKind && !r.valueReaches(fd.MapValue()) {
@@ -65,10 +66,10 @@ func (r stringReach) check(m protoreflect.Message, prefix string) error {
 			}
 			v.Map().Range(func(k protoreflect.MapKey, mv protoreflect.Value) bool {
 				if fd.MapKey().Kind() == protoreflect.StringKind && !utf8.ValidString(k.String()) {
-					err = &InvalidUTF8StringError{Field: path}
+					err = &InvalidUTF8StringError{}
 					return false
 				}
-				err = r.checkValue(fd.MapValue(), mv, path)
+				err = r.checkValue(fd.MapValue(), mv)
 				return err == nil
 			})
 		case fd.IsList():
@@ -77,12 +78,22 @@ func (r stringReach) check(m protoreflect.Message, prefix string) error {
 			}
 			list := v.List()
 			for i := 0; i < list.Len() && err == nil; i++ {
-				err = r.checkValue(fd, list.Get(i), path)
+				err = r.checkValue(fd, list.Get(i))
 			}
 		default:
-			err = r.checkValue(fd, v, path)
+			err = r.checkValue(fd, v)
 		}
-		return err == nil
+		if err != nil {
+			if e, ok := err.(*InvalidUTF8StringError); ok {
+				if e.Field == "" {
+					e.Field = string(fd.Name())
+				} else {
+					e.Field = string(fd.Name()) + "." + e.Field
+				}
+			}
+			return false
+		}
+		return true
 	})
 	return err
 }
@@ -94,15 +105,16 @@ func (r stringReach) valueReaches(fd protoreflect.FieldDescriptor) bool {
 	return fd.Message() != nil && r.reaches(fd.Message())
 }
 
-func (r stringReach) checkValue(fd protoreflect.FieldDescriptor, v protoreflect.Value, path string) error {
+// checkValue checks one value of fd; an error's Field is the path below fd.
+func (r stringReach) checkValue(fd protoreflect.FieldDescriptor, v protoreflect.Value) error {
 	switch fd.Kind() {
 	case protoreflect.StringKind:
 		if !utf8.ValidString(v.String()) {
-			return &InvalidUTF8StringError{Field: path}
+			return &InvalidUTF8StringError{}
 		}
 	case protoreflect.MessageKind, protoreflect.GroupKind:
 		if r.reaches(fd.Message()) {
-			return r.check(v.Message(), path+".")
+			return r.check(v.Message())
 		}
 	}
 	return nil
