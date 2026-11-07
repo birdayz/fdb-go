@@ -4,6 +4,7 @@ package otelsql
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -117,15 +118,33 @@ const TemplateOverlay = `CREATE FULLTEXT INDEX messages_text ON messages(content
 
 // TemplateDDL is the statement that creates the template: TemplateBody and
 // TemplateOverlay.
-func TemplateDDL() string {
-	return "CREATE SCHEMA TEMPLATE " + TemplateName + " " + TemplateBody + "\n" + TemplateOverlay
+func TemplateDDL() string { return templateDDL(TemplateName) }
+
+func templateDDL(name string) string {
+	return "CREATE SCHEMA TEMPLATE " + name + " " + TemplateBody + "\n" + TemplateOverlay
+}
+
+// RevisionTemplateName is TemplateName suffixed with a digest of
+// TemplateDDL: the template under a name no other revision of OTEL_V1 uses,
+// for benchmark runs on a shared development cluster whose catalog holds
+// OTEL_V1 as another revision defined it. Its stores are OTEL_V1 stores:
+// the name is only the records descriptor's file name.
+func RevisionTemplateName() string {
+	sum := sha256.Sum256([]byte(TemplateDDL()))
+	return fmt.Sprintf("%s_%X", TemplateName, sum[:4])
 }
 
 // CreateTemplate stores the template in the catalog of the connection's
 // cluster.
 func CreateTemplate(ctx context.Context, db *sql.DB) error {
-	if _, err := db.ExecContext(ctx, TemplateDDL()); err != nil {
-		return fmt.Errorf("otelsql: create schema template %s: %w", TemplateName, err)
+	return CreateTemplateNamed(ctx, db, TemplateName)
+}
+
+// CreateTemplateNamed is CreateTemplate under another name, such as
+// RevisionTemplateName.
+func CreateTemplateNamed(ctx context.Context, db *sql.DB, name string) error {
+	if _, err := db.ExecContext(ctx, templateDDL(name)); err != nil {
+		return fmt.Errorf("otelsql: create schema template %s: %w", name, err)
 	}
 	return nil
 }
@@ -133,6 +152,12 @@ func CreateTemplate(ctx context.Context, db *sql.DB) error {
 // CreateTenant creates the schema, resuming if the database already exists.
 // Paths use /DOMAIN/DATABASE and one ASCII schema identifier; names fold uppercase.
 func CreateTenant(ctx context.Context, db *sql.DB, databasePath, schema string) error {
+	return CreateTenantWithTemplate(ctx, db, databasePath, schema, TemplateName)
+}
+
+// CreateTenantWithTemplate is CreateTenant with the schema bound to template,
+// a name CreateTemplateNamed stored.
+func CreateTenantWithTemplate(ctx context.Context, db *sql.DB, databasePath, schema, template string) error {
 	databasePath, schemaPath, err := tenantPaths(databasePath, schema)
 	if err != nil {
 		return err
@@ -143,7 +168,7 @@ func CreateTenant(ctx context.Context, db *sql.DB, databasePath, schema string) 
 			return fmt.Errorf("otelsql: create database %s: %w", databasePath, err)
 		}
 	}
-	if _, err := db.ExecContext(ctx, `CREATE SCHEMA "`+schemaPath+`" WITH TEMPLATE `+TemplateName); err != nil {
+	if _, err := db.ExecContext(ctx, `CREATE SCHEMA "`+schemaPath+`" WITH TEMPLATE `+template); err != nil {
 		return fmt.Errorf("otelsql: create schema %s: %w", schemaPath, err)
 	}
 	return nil

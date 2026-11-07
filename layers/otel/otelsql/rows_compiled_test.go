@@ -252,20 +252,35 @@ func requireNoUnknown(t *testing.T, path string, m protoreflect.Message) {
 }
 
 // The compiled types bind to the template's metadata (WithLocalFileDescriptor)
-// and are then each table's record type descriptor.
+// and are then each table's record type descriptor, under TemplateName and
+// under RevisionTemplateName, which only renames the records file.
 func TestCompiledTypesBindToTemplateMetaData(t *testing.T) {
 	t.Parallel()
-	p, err := templateMetaData(t).ToProto()
-	if err != nil {
-		t.Fatal(err)
+	revision := RevisionTemplateName()
+	if revision == TemplateName || revision != RevisionTemplateName() || !strings.HasPrefix(revision, TemplateName+"_") || len(revision) != len(TemplateName)+9 {
+		t.Fatalf("revision template name %q", revision)
 	}
-	md, err := recordlayer.RecordMetaDataFromProto(p, recordlayer.WithLocalFileDescriptor(otelv1pb.File_OTEL_V1))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, m := range templateTables {
-		if rt, err := md.GetRecordTypeForDescriptor(m.ProtoReflect().Descriptor()); err != nil || rt.Name != name {
-			t.Fatalf("%s record type for the compiled descriptor: %v, %v", name, rt, err)
+	for _, name := range []string{TemplateName, revision} {
+		tmpl, err := embedded.BuildSchemaTemplateFromDDL(templateDDL(name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		records := protodesc.ToFileDescriptorProto(tmpl.Underlying().GetUnionDescriptor().ParentFile())
+		if records.GetName() != name {
+			t.Fatalf("records file %q under template %s", records.GetName(), name)
+		}
+		p, err := tmpl.Underlying().ToProto()
+		if err != nil {
+			t.Fatal(err)
+		}
+		md, err := recordlayer.RecordMetaDataFromProto(p, recordlayer.WithLocalFileDescriptor(otelv1pb.File_OTEL_V1))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		for table, m := range templateTables {
+			if rt, err := md.GetRecordTypeForDescriptor(m.ProtoReflect().Descriptor()); err != nil || rt.Name != table {
+				t.Fatalf("%s: %s record type for the compiled descriptor: %v, %v", name, table, rt, err)
+			}
 		}
 	}
 }
