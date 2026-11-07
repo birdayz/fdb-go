@@ -49,8 +49,8 @@ type relLogs interface {
 
 // relParts are what other streams supply to a relExporter, and test seams.
 type relParts struct {
-	// messages builds the message hooks when cfg enables messages; without
-	// it such a config is refused.
+	// messages builds the message hooks when cfg enables messages; nil is
+	// newRelMessageStore.
 	messages func(s *tenantStore, cfg ExporterConfig) (relMessageHooks, error)
 	// logs builds the log store; nil is newRelLogStore.
 	logs func(s *tenantStore, cfg ExporterConfig) (relLogs, error)
@@ -90,9 +90,6 @@ func newRelExporter(ctx context.Context, cfg ExporterConfig, parts relParts) (*r
 		// D2: SQL and Java read the store's records; neither reads Brotli.
 		return nil, failf("config", "exporter", "record_compression %s is not readable by SQL or Java; use none, zlib-1 or zlib-default", cfg.RecordCompression)
 	}
-	if cfg.messageLayout() != messagesNone && parts.messages == nil {
-		return nil, fail("config", "exporter", "GenAI messages are not yet supported on the relational store")
-	}
 	serializer, err := recordSerializer(cfg.RecordCompression)
 	if err != nil {
 		return nil, err
@@ -128,6 +125,11 @@ func newRelExporter(ctx context.Context, cfg ExporterConfig, parts relParts) (*r
 		writer:   &SpanWriter{store: store, opts: SpanWriterOptions{BatchSize: cfg.BatchSize, Workers: cfg.Workers, BulkIndexConflicts: cfg.BulkIndexConflicts}, maxTxnBytes: maxSpanTxnBytes},
 		txnSlots: make(chan struct{}, cfg.MaxInFlightTransactions),
 		done:     make(chan struct{}),
+	}
+	if parts.messages == nil {
+		parts.messages = func(s *tenantStore, cfg ExporterConfig) (relMessageHooks, error) {
+			return newRelMessageStore(s, cfg.EnableMessageFullText), nil
+		}
 	}
 	if cfg.messageLayout() != messagesNone {
 		if e.messages, err = parts.messages(store, cfg); err != nil {

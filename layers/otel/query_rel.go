@@ -104,6 +104,10 @@ func parseCanonicalDouble(s string) (float64, error) {
 
 // Query returns the newest K distinct traces with a span carrying a.
 func (r *SpanReader) Query(ctx context.Context, a Attribute) (QueryResult, error) {
+	// A decomposed GenAI attribute holds manifests: no equality reaches it.
+	if err := checkMessageAttributeQuery("query", a, r.cfg.Messages != messagesNone); err != nil {
+		return QueryResult{Hits: []Hit{}}, err
+	}
 	q, ok := spanAttrQuery(a)
 	if !ok || len(a.Key) > otelsql.MaxIndexedStringBytes {
 		return QueryResult{Hits: []Hit{}}, nil

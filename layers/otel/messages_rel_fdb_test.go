@@ -25,171 +25,99 @@ import (
 
 // Ports of the message tests (messages_fdb_test.go and the
 // message_*_regression_test.go files, rfcs/relational-exporter-migration.md
-// §2.3) to tenant stores. relMsgEnv stands in for the relational exporter
-// (stream 2A) and drives the message hooks as exporter_rel.go does:
-// decompose, persist, final manifests, then SPANS rows with ref chunks.
+// §2.3) to the relational exporter. relMsgEnv is one relExporter with its
+// message store (relParts.messages' default, newRelMessageStore): the tests
+// export and read through the exporter's public methods and reach the
+// message store's writers, queue and stage hook for the mechanism tests.
 
-// relMsgEnv is one tenant store's SpanReader and message store.
+// relMsgEnv is one relExporter of a tenant store and its message store.
 type relMsgEnv struct {
-	h     *qrHarness
-	r     *SpanReader
-	m     *relMessageStore // nil when messages are off
-	slots chan struct{}
-	// coalesce saves span batches with CoalesceIndexWriteConflicts (the
-	// exporter's bulk_index_conflicts); noRefs leaves ref_chunks out
-	// (measurement only).
-	coalesce, noRefs bool
+	h *qrHarness
+	x *relExporter
+	r *SpanReader      // x's reader
+	m *relMessageStore // nil when messages are off
 }
 
-// msgEnv opens a fresh run's tenant 11 with the message layout.
-func (h *qrHarness) msgEnv(t *testing.T, ctx context.Context, layout string, mutate func(*Config)) *relMsgEnv {
-	t.Helper()
-	run := freshRun(t)
-	h.create(t, ctx, run, 11)
-	return h.msgEnvOn(t, ctx, run, layout, mutate)
+// relLayout sets cfg's message flags for layout.
+func relLayout(c *ExporterConfig, layout string) {
+	c.EnableMessageDeltas = layout != messagesNone
+	c.EnableMessageFullText = layout == messagesFullText
 }
 
-// msgEnvOn opens another exporter's view of run's tenant 11: its own
-// writers, queue, claims and marker cache.
-func (h *qrHarness) msgEnvOn(t *testing.T, ctx context.Context, run, layout string, mutate func(*Config)) *relMsgEnv {
+// msgEnv opens an exporter on a fresh run's tenant 11 with the message layout.
+func (h *qrHarness) msgEnv(t *testing.T, ctx context.Context, layout string, mutate func(*ExporterConfig)) *relMsgEnv {
 	t.Helper()
-	r := h.reader(t, ctx, run, 11, func(c *Config) {
-		c.Messages = layout
+	return h.msgEnvOn(t, ctx, freshRun(t), layout, mutate)
+}
+
+// msgEnvOn opens another exporter of run's tenant 11: its own writers,
+// queue, claims and marker cache.
+func (h *qrHarness) msgEnvOn(t *testing.T, ctx context.Context, run, layout string, mutate func(*ExporterConfig)) *relMsgEnv {
+	t.Helper()
+	return h.msgEnvWith(t, ctx, run, layout, mutate, relParts{})
+}
+
+func (h *qrHarness) msgEnvWith(t *testing.T, ctx context.Context, run, layout string, mutate func(*ExporterConfig), parts relParts) *relMsgEnv {
+	t.Helper()
+	cfg := relTestConfig(t, h.cluster, func(c *ExporterConfig) {
+		c.Run = run
+		relLayout(c, layout)
 		if mutate != nil {
 			mutate(c)
 		}
 	})
-	e := &relMsgEnv{h: h, r: r, slots: make(chan struct{}, defaultMaxInFlightTransactions)}
-	if layout != messagesNone {
-		e.m = newRelMessageStore(r.store, layout == messagesFullText)
-		t.Cleanup(e.m.close)
+	x := startRelExporter(t, ctx, cfg, parts)
+	e := &relMsgEnv{h: h, x: x, r: x.reader}
+	if x.messages != nil {
+		m, ok := x.messages.(*relMessageStore)
+		if !ok && parts.messages == nil {
+			t.Fatalf("default message hooks are %T", x.messages)
+		}
+		e.m = m
 	}
 	return e
 }
 
-// txn is ctx under the exporter's transaction policy and write slots.
+// txn is ctx under the exporter's transaction policy and write slots, for
+// calls into the message store's internals.
 func (e *relMsgEnv) txn(ctx context.Context) context.Context {
-	return withTxnLimiter(withExporterTxns(ctx, defaultExporterTxnTimeout), e.slots)
+	return withTxnLimiter(e.x.txnContext(ctx), e.x.txnSlots)
 }
 
-// export stores rss as the relational exporter does: messages and markers
-// before the spans, the later duplicate of a span identity winning, every
-// span in one transaction.
 func (e *relMsgEnv) export(ctx context.Context, in []*tracepb.ResourceSpans) (ExportStats, error) {
-	ctx = e.txn(ctx)
-	var stats ExportStats
-	spans := in
-	var d *messageDecomposition
-	if e.m != nil {
-		var err error
-		if d, err = decomposeMessages(ctx, in, e.r.cfg.Tenant); err != nil {
-			return stats, err
-		}
-		spans = d.spans
-		stats.MessageDeltas = d.stats
-		if stats.Messages, err = e.m.persist(ctx, d); err != nil {
-			return stats, err
-		}
-		if err := d.encodeManifests(false); err != nil {
-			return stats, err
-		}
-		stats.MessageDeltas = d.stats
-	}
-	var recs []proto.Message
-	var refs []int
-	at := map[string]int{}
-	for _, rs := range spans {
-		for _, ss := range rs.GetScopeSpans() {
-			for _, sp := range ss.GetSpans() {
-				stats.ReceivedSpans++
-				wire, err := proto.MarshalOptions{Deterministic: true}.Marshal(exSingle(rs, ss, sp))
-				if err != nil {
-					return stats, err
-				}
-				rec, err := otelsql.BuildCompiled(otelsql.Span{Resource: rs.Resource, ResourceSchemaURL: rs.SchemaUrl, Scope: ss.Scope, ScopeSchemaURL: ss.SchemaUrl, Span: sp, OTLP: wire, ExcludeMessageAttributes: e.m != nil})
-				if err != nil {
-					return stats, err
-				}
-				var uses []messageUse
-				if e.m != nil && e.m.fullText && !e.noRefs {
-					uses = d.uses[spanKey(sp)]
-					chunks, err := e.m.refChunks(uses)
-					if err != nil {
-						return stats, err
-					}
-					for i, c := range chunks {
-						if rec.REF_CHUNKS == nil {
-							rec.REF_CHUNKS = &otelv1pb.SPANS_REF_CHUNKS{}
-						}
-						rec.REF_CHUNKS.Values = append(rec.REF_CHUNKS.Values, &otelv1pb.MESSAGE_REF_CHUNK{CHUNK: proto.Int64(int64(i)), REFS: c})
-					}
-				}
-				key := spanKey(sp)
-				if i, ok := at[key]; ok {
-					stats.DuplicateSpans++
-					recs[i], refs[i] = rec, len(uses)
-					continue
-				}
-				at[key] = len(recs)
-				recs, refs = append(recs, rec), append(refs, len(uses))
-			}
-		}
-	}
-	err := e.r.store.run(ctx, "export", func(store *recordlayer.FDBRecordStore) error {
-		_, err := store.SaveRecordBatchWithOptions(recs, recordlayer.BatchSaveOptions{CoalesceIndexWriteConflicts: e.coalesce})
-		return err
-	})
-	if err == nil {
-		stats.Spans, stats.Batches = int64(len(recs)), 1
-		for _, n := range refs {
-			stats.Messages.References += int64(n)
-		}
-	}
-	return stats, err
+	return e.x.ExportResourceSpans(ctx, in)
 }
 
-// load is LoadSpanOTLP: the stored single-span ResourceSpans with its
-// original message attributes.
 func (e *relMsgEnv) load(ctx context.Context, trace, span string) (*tracepb.ResourceSpans, error) {
-	rs, _, err := e.loadWork(ctx, trace, span)
-	return rs, err
+	return e.x.LoadSpanOTLP(ctx, trace, span)
 }
 
-// loadWork is load and the MESSAGES rows reconstruction read.
+// loadWork is LoadSpanOTLP's read and the MESSAGES rows its reconstruction
+// counts, which the public method does not report.
 func (e *relMsgEnv) loadWork(ctx context.Context, trace, span string) (*tracepb.ResourceSpans, QueryResult, error) {
 	const op = "load span"
-	var work QueryResult
 	tid, _ := hex.DecodeString(trace)
 	sid, _ := hex.DecodeString(span)
 	var out *tracepb.ResourceSpans
+	var work QueryResult
 	err := e.r.store.read(e.txn(ctx), op, func(store *recordlayer.FDBRecordStore) error {
-		out = nil
-		pk, err := relKey(store.GetRecordMetaData(), op, spansRecordType, tid, sid)
+		pk, err := tableKey(store, op, spansRecordType, tid, sid)
 		if err != nil {
 			return err
 		}
 		rec, err := store.LoadRecord(pk)
+		if err != nil || rec == nil {
+			return fmt.Errorf("span %s/%s: %v %w", trace, span, rec, err)
+		}
+		rs, err := rowOTLP(op, rec.Record.ProtoReflect(), tid, sid)
 		if err != nil {
 			return err
 		}
-		if rec == nil {
-			return &SpanNotFoundError{OtelError: &OtelError{Kind: "operation", Op: op, Message: "span not found"}, Trace: trace, Span: span}
-		}
-		row, err := compiledRecord[*otelv1pb.SPANS](op, rec)
-		if err != nil {
+		w := newQueryWork(e.r.cfg)
+		if err := e.m.reconstruct(ctx, store, rs, w); err != nil {
 			return err
 		}
-		rs := &tracepb.ResourceSpans{}
-		if err := proto.Unmarshal(row.GetOTLP(), rs); err != nil {
-			return err
-		}
-		if e.m != nil {
-			w := newQueryWork(e.r.cfg)
-			if err := e.m.reconstruct(ctx, store, rs, w); err != nil {
-				return err
-			}
-			w.result(&work)
-		}
+		w.result(&work)
 		out = rs
 		return nil
 	})
@@ -282,7 +210,7 @@ func relFtsDrain(t *testing.T, ctx context.Context, e *relMsgEnv, q MessageFullT
 		if pages > 1000 {
 			t.Fatal("pagination did not terminate")
 		}
-		page, err := e.r.QueryMessageFullText(e.txn(ctx), q)
+		page, err := e.x.QueryMessageFullText(ctx, q)
 		if err != nil {
 			t.Fatalf("page %d of %+v: %v", pages, q, err)
 		}
@@ -404,7 +332,7 @@ func testRelMessageConversation(t *testing.T, h *qrHarness, form string) {
 	if got := e.entries(t, ctx, spansRefChunksIndex, tuple.Tuple{qaBytes(t, trace)}); got != n {
 		t.Fatalf("%d span reference entries, want %d", got, n)
 	}
-	other := h.msgEnvOn(t, ctx, e.r.cfg.Run, messagesFullText, nil)
+	other := h.msgEnvOn(t, ctx, e.x.cfg.Run, messagesFullText, nil)
 	if third, err := other.export(ctx, input); err != nil || third.Messages.TraceMarkers != 0 || third.Messages.Written != 0 {
 		t.Fatalf("re-export through another exporter: %+v %v", third.Messages, err)
 	}
@@ -487,18 +415,19 @@ func testRelMessageConversation(t *testing.T, h *qrHarness, form string) {
 		}
 	}
 	// A token of one query does not resume another.
-	page, err := e.r.QueryMessageFullText(e.txn(ctx), MessageFullTextQuery{Query: "turn", Limit: 1})
+	page, err := e.x.QueryMessageFullText(ctx, MessageFullTextQuery{Query: "turn", Limit: 1})
 	if err != nil || page.Continuation == nil {
 		t.Fatalf("first page: %+v %v", page, err)
 	}
-	_, err = e.r.QueryMessageFullText(e.txn(ctx), MessageFullTextQuery{Query: "turn", Role: "user", Limit: 1, Continuation: page.Continuation})
+	_, err = e.x.QueryMessageFullText(ctx, MessageFullTextQuery{Query: "turn", Role: "user", Limit: 1, Continuation: page.Continuation})
 	requireTyped[*ConfigError](t, "token of another query", err)
-	_, err = e.r.QuerySameSpan(e.txn(ctx), SameSpanQuery{Predicates: []Attribute{{"span", "gen_ai.conversation.id", "string", "conv-283"}}, Continuation: page.Continuation})
+	_, err = e.x.QuerySameSpan(ctx, SameSpanQuery{Predicates: []Attribute{{"span", "gen_ai.conversation.id", "string", "conv-283"}}, Continuation: page.Continuation})
 	requireTyped[*ConfigError](t, "message token as same-span", err)
 	// A message attribute holds manifests and is not an equality predicate.
-	// (Exporter.Query's refusal is the exporter's, stream 2A.)
-	_, err = e.r.QuerySameSpan(e.txn(ctx), SameSpanQuery{Predicates: []Attribute{{"span", "gen_ai.input.messages", "string", "x"}}})
+	_, err = e.x.QuerySameSpan(ctx, SameSpanQuery{Predicates: []Attribute{{"span", "gen_ai.input.messages", "string", "x"}}})
 	requireTyped[*ConfigError](t, "message attribute predicate", err)
+	_, err = e.x.Query(ctx, Attribute{"span", "gen_ai.output.messages", "string", "x"})
+	requireTyped[*ConfigError](t, "message attribute query", err)
 }
 
 // Port of testMessageTracePerTurn (AGNOSTIC).
@@ -629,26 +558,26 @@ func testRelMessageReplacement(t *testing.T, h *qrHarness) {
 func testRelMessageBudget(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
-	for name, mutate := range map[string]func(*Config){
-		"candidates": func(c *Config) { c.MaxCandidates = 3 },
-		"bytes":      func(c *Config) { c.MaxBytes = 128 },
+	for name, mutate := range map[string]func(*ExporterConfig){
+		"candidates": func(c *ExporterConfig) { c.MaxCandidates = 3 },
+		"bytes":      func(c *ExporterConfig) { c.MaxBytes = 128 },
 	} {
 		e := h.msgEnv(t, ctx, messagesFullText, mutate)
 		if _, err := e.export(ctx, deltaConversation(5, "array")); err != nil {
 			t.Fatal(err)
 		}
-		page, err := e.r.QueryMessageFullText(e.txn(ctx), MessageFullTextQuery{Query: "turn"})
+		page, err := e.x.QueryMessageFullText(ctx, MessageFullTextQuery{Query: "turn"})
 		requireOtelBudget(t, err)
 		if page.Candidates == 0 || page.Continuation != nil {
 			t.Fatalf("%s: budget failure must report work and carry no continuation: %+v", name, page)
 		}
-		res, err := e.r.QueryTraceExistential(e.txn(ctx), TraceExistentialQuery{MessageClauses: []MessageFullTextQuery{{Query: "turn"}}})
+		res, err := e.x.QueryTraceExistential(ctx, TraceExistentialQuery{MessageClauses: []MessageFullTextQuery{{Query: "turn"}}})
 		requireOtelBudget(t, err)
 		if res.Candidates == 0 {
 			t.Fatalf("%s: existential budget failure reports no work: %+v", name, res)
 		}
 		for _, mode := range []string{MessageMatchAll, MessageMatchPhrase} {
-			page, err = e.r.QueryMessageFullText(e.txn(ctx), MessageFullTextQuery{Query: "user turn", Mode: mode, Role: "user"})
+			page, err = e.x.QueryMessageFullText(ctx, MessageFullTextQuery{Query: "user turn", Mode: mode, Role: "user"})
 			requireOtelBudget(t, err)
 			if page.Candidates == 0 || page.Continuation != nil {
 				t.Fatalf("%s %s: intersection budget failure: %+v", name, mode, page)
@@ -665,14 +594,16 @@ func testRelMessageBudget(t *testing.T, h *qrHarness) {
 	requireTyped[*ConfigError](t, "deltas layout full text", err)
 }
 
-// Port of testMessageExistential (AGNOSTIC). The span+log+message case
-// needs the LOGS reader (stream 2B, logClauses) and the log writer; it is
-// added with them.
+// Port of testMessageExistential (AGNOSTIC).
 func testRelMessageExistential(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
 	e := h.msgEnv(t, ctx, messagesFullText, nil)
 	if _, err := e.export(ctx, deltaConversation(6, "array")); err != nil {
+		t.Fatal(err)
+	}
+	eval := exKV("gen_ai.evaluation.name", exStr("relevance"))
+	if _, err := e.x.ExportLogs(ctx, []LogRecord{{EventID: "eval-5", Timestamp: ftsBase + 100, TraceID: ftsTrace(5), Attributes: []*commonpb.KeyValue{eval}}}); err != nil {
 		t.Fatal(err)
 	}
 	chat := Attribute{"span", "gen_ai.operation.name", "string", "chat"}
@@ -685,7 +616,7 @@ func testRelMessageExistential(t *testing.T, h *qrHarness) {
 		return out
 	}
 	query := func(q TraceExistentialQuery) (TraceExistentialResult, error) {
-		return e.r.QueryTraceExistential(e.txn(ctx), q)
+		return e.x.QueryTraceExistential(ctx, q)
 	}
 	got, err := query(TraceExistentialQuery{Clauses: []Attribute{chat}, MessageClauses: []MessageFullTextQuery{prompt}})
 	if err != nil {
@@ -700,6 +631,13 @@ func testRelMessageExistential(t *testing.T, h *qrHarness) {
 		if h.Trace != ftsTrace(k) || len(h.Witnesses) != 1 || len(mw) != 1 || len(mw[0]) != 1 || mw[0][0].Span != ftsSpan(k) || mw[0][0].AttributeKey != "gen_ai.input.messages" {
 			t.Fatalf("turn %d witnesses: %+v", k, h)
 		}
+	}
+	got, err = query(TraceExistentialQuery{Clauses: []Attribute{chat}, LogClauses: []Attribute{{LogScopeRecord, "gen_ai.evaluation.name", "string", "relevance"}}, MessageClauses: []MessageFullTextQuery{prompt}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Hits) != 1 || got.Hits[0].Trace != ftsTrace(5) || got.Hits[0].Latest != ftsBase+100 || len(got.Hits[0].LogWitnesses) != 1 || len(got.Hits[0].MessageWitnesses[0]) != 1 {
+		t.Fatalf("span+log+message existential: %+v", got.Hits)
 	}
 	got, err = query(TraceExistentialQuery{MessageClauses: []MessageFullTextQuery{
 		{Query: "user turn 2", Mode: MessageMatchPhrase},
@@ -845,7 +783,7 @@ func testRelMessageRareTerm(t *testing.T, h *qrHarness) {
 			t.Fatalf("%s: %d hits, want %d", c.name, len(hits), want)
 		}
 		if c.rare {
-			page, err := e.r.QueryMessageFullText(e.txn(ctx), q)
+			page, err := e.x.QueryMessageFullText(ctx, q)
 			if err != nil || len(page.Hits) != want {
 				t.Fatalf("%s: page %+v %v", c.name, page, err)
 			}
@@ -892,7 +830,8 @@ func testRelMessageLarge(t *testing.T, h *qrHarness) {
 	requireProtoEqual(t, "1MB messages", got, before)
 	// Every row read is counted: both heads and the second raw part of each
 	// (each element is over 1 MiB); the text's other parts hold only text.
-	if work.Candidates != 4 || work.Bytes < int64(len(blob)+len(text)) {
+	// Bytes are stored bytes, zlib-1 compressed: the random blob's at least.
+	if work.Candidates != 4 || work.Bytes < int64(len(blob)) {
 		t.Fatalf("reconstruction work %+v", work)
 	}
 	if n := e.entries(t, ctx, messagesLargeIndex, nil); n != 1 {
@@ -953,6 +892,12 @@ func testRelMessageConcurrentSave(t *testing.T, h *qrHarness) {
 	}
 	wg.Wait()
 	if err := errors.Join(errs...); err != nil {
+		t.Fatal(err)
+	}
+	// A read's cached version is only as new as its own client's last commit
+	// (RFC §3.2 "Read version"): first commits after the others did, so it
+	// reads their writes.
+	if _, err := first.export(ctx, []*tracepb.ResourceSpans{deltaSpan(99)}); err != nil {
 		t.Fatal(err)
 	}
 	hits, _ := relFtsDrain(t, ctx, first, MessageFullTextQuery{Query: "quokka"})
@@ -1097,7 +1042,7 @@ func testRelMessageDeltas(t *testing.T, h *qrHarness) {
 				t.Errorf("%s holds entries", name)
 			}
 		}
-		pk, err := relKey(store.GetRecordMetaData(), "test", messageTracesRecordType)
+		pk, err := tableKey(store, "test", messageTracesRecordType)
 		if err != nil {
 			return err
 		}
@@ -1293,13 +1238,12 @@ func testRelMessageCorruption(t *testing.T, h *qrHarness) {
 				t.Fatal("message not persisted")
 			}
 			e.run(t, ctx, func(store *recordlayer.FDBRecordStore) error {
-				md := store.GetRecordMetaData()
 				if damage == "head" || damage == "part" {
 					part := int64(0)
 					if damage == "part" {
 						part = 1
 					}
-					pk, err := relKey(md, "test", messagesRecordType, id.writer, id.seq, part)
+					pk, err := tableKey(store, "test", messagesRecordType, id.writer, id.seq, part)
 					if err != nil {
 						return err
 					}
@@ -1309,7 +1253,7 @@ func testRelMessageCorruption(t *testing.T, h *qrHarness) {
 					}
 					return err
 				}
-				pk, err := relKey(md, "test", messagesRecordType, id.writer, id.seq, int64(0))
+				pk, err := tableKey(store, "test", messagesRecordType, id.writer, id.seq, int64(0))
 				if err != nil {
 					return err
 				}
@@ -1452,7 +1396,7 @@ func testRelMessageInterruptedMultipart(t *testing.T, h *qrHarness) {
 			}
 			e.m.hook = nil
 			e.run(t, ctx, func(store *recordlayer.FDBRecordStore) error {
-				pk, err := relKey(store.GetRecordMetaData(), "test", messagesRecordType, tailID.writer, tailID.seq, int64(0))
+				pk, err := tableKey(store, "test", messagesRecordType, tailID.writer, tailID.seq, int64(0))
 				if err != nil {
 					return err
 				}
@@ -1621,8 +1565,8 @@ func testRelMessageRoleDiscoveryBudget(t *testing.T, h *qrHarness) {
 		return nil
 	})
 	for _, limit := range []int64{rawBytes, rawBytes - 1} {
-		r := h.reader(t, ctx, e.r.cfg.Run, 11, func(c *Config) { c.Messages, c.MaxBytes = messagesFullText, limit })
-		page, err := r.QueryMessageFullText(e.txn(ctx), MessageFullTextQuery{Query: "zzzzzzzzzz"})
+		bounded := h.msgEnvOn(t, ctx, e.x.cfg.Run, messagesFullText, func(c *ExporterConfig) { c.MaxBytes = limit })
+		page, err := bounded.x.QueryMessageFullText(ctx, MessageFullTextQuery{Query: "zzzzzzzzzz"})
 		if limit == rawBytes {
 			if err != nil {
 				t.Fatalf("exact byte budget: %v", err)
@@ -1678,7 +1622,7 @@ func testRelMessageCrossPartAll(t *testing.T, h *qrHarness) {
 	if len(hits) != 1 || hits[0].Span != ftsSpan(2) || pages == 0 {
 		t.Fatalf("bounded cross-part match: %+v pages=%d", hits, pages)
 	}
-	result, err := e.r.QueryTraceExistential(e.txn(ctx), TraceExistentialQuery{MessageClauses: []MessageFullTextQuery{{Query: q.Query, Mode: q.Mode}}})
+	result, err := e.x.QueryTraceExistential(ctx, TraceExistentialQuery{MessageClauses: []MessageFullTextQuery{{Query: q.Query, Mode: q.Mode}}})
 	if err != nil || len(result.Hits) != 1 || result.Hits[0].Trace != ftsTrace(2) {
 		t.Fatalf("trace clause: %+v / %v", result, err)
 	}
@@ -1700,13 +1644,11 @@ func testRelMessageSpanBatchConflicts(t *testing.T, h *qrHarness) {
 			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 			defer cancel()
 			e := h.msgEnv(t, ctx, messagesFullText, nil)
-			e.coalesce = true
 			warm := deltaConversation(3, "array")
 			if _, err := e.export(ctx, cloneDeltaSpans(warm)); err != nil {
 				t.Fatal(err)
 			}
-			other := h.msgEnvOn(t, ctx, e.r.cfg.Run, messagesFullText, nil)
-			other.coalesce = true
+			other := h.msgEnvOn(t, ctx, e.x.cfg.Run, messagesFullText, nil)
 			message := deltaKV("gen_ai.input.messages", deltaArray(deltaStr("zebra quokka")))
 			var once sync.Once
 			var inner ExportStats
