@@ -2692,6 +2692,17 @@ tracked only.
 
 ### Follow-ups from the fix PRs' reviews
 
+- [ ] **Low:** #1034's final review (ACK at `839cc5d3f`) left low/nit findings in
+  `pkg/fdbgo/client` and the batch TEXT prefetch: `rywEntry.nodeConflict`'s doc says only
+  atomics set it, but `setWith` now sets it and skips the no-op mutates with
+  `atomicWith`'s predicate (one helper with the WriteMap.cpp rationale); the walk's
+  `materializeInto` and `appendIfFitsInto` copy `boundaryArena.bytes` and `keepLocked`'s
+  slot logic (one arena helper); no test pins that `epilogue`'s trims clear the dropped
+  rows of a pooled walk (`w.result[:cap]` all zero after release); the
+  `store_batch_text_prefetch.go` header still says prefetch only warms the RYW cache,
+  though maintenance now reuses its tokenizations; `selectorRangeRead.finish`'s return
+  value is unused; `readThrough` does not use the new `trackError`.
+
 - [x] **Low:** probe two seed-corpus Go extensions against live Java 4.14.2.0 and record each in
   DIVERGENCES.md's Go-extension table or drop the note
   (`pkg/relational/conformance/plandiff/seedcorpus/corpus.go`, the NOTE comments before the
@@ -3736,7 +3747,8 @@ these claims; the implementation notes below are not controlled comparisons.
   recognizes otel's removed-key `ConfigError` by its " was removed" text; 3B
   can drop it with the removed keys once no YAML names them.
   Delivered: the custom store, its tests and the `fdb` otelbench flags are
-  deleted (RFC status line); `removedExporterKey` stays as the migration message.
+  deleted (RFC status line); `removedExporterKey` stays as the migration message
+  and now matches the typed `otel.RemovedConfigKeyError`, not the message text.
 - [ ] G3 findings (benchmark doc, "Gate G3"):
   - [x] `fts_single_token` p50 was 1.53x the custom store's. Cause: it is the
     first post-ingest class and ran inside the storage server's 6-10 s drain

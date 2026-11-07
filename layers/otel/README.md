@@ -137,7 +137,9 @@ Exporter transaction policy. The other direct saves use `SaveRecord` (`serial`),
 `SaveRecordsPipelined` (`pipelined`, the default) or `PrefetchRecordBatch` plus
 `SaveRecordBatch` (`batch` with dynamic rows), with ordinary old/new index
 maintenance. Each transaction holds at most `--batch` spans (default 32, max 64)
-of one tenant within a conservative 300-KB estimate; `--workers` (default 1,
+of one tenant within a conservative 300-KB estimate that counts each span's
+whole serialized row and its index entries, so an admitted batch fits the 500-KB
+guard; `--workers` (default 1,
 range 1..8) bounds concurrent batch transactions, and the first failure cancels
 the rest. A run's database must not exist at ingest.
 
@@ -493,7 +495,10 @@ The removed custom store's layout keys `order`, `hash_bytes` and
 relational store has one time order and no posting values. Attribute equality is typed (D1):
 `CanonicalAttribute` gives a string, int, double or bool attribute its own type;
 bytes (base64) and arrays, maps and unset values (`json`, canonical JSON) are
-reported but not queryable.
+reported but not queryable. A NaN double attribute is stored in the typed
+projection (span, event, link and log `DOUBLE_ATTRS`) as the canonical quiet NaN
+`0x7FF8000000000000` whatever its payload, so equality on `NaN` matches every
+NaN; the span's or log's OTLP keeps the original bits.
 
 ## Exporter transaction policy
 
