@@ -2327,8 +2327,10 @@ func (r *paginatingRows) fetchPage() error {
 	// Decision 1). With no explicit transaction (r.tx == nil) each page runs
 	// in its own auto-commit transaction via DB.Run, unchanged. A captured
 	// transaction that has since ended is a loud 25F01, never a silent fresh
-	// transaction (Decision 3).
-	_, txErr := c.runInCapturedTx(r.ctx, r.tx, r.options(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	// transaction (Decision 3). An auto-commit statement's first page runs in
+	// the transaction its planning read in when that is still usable
+	// (statement_read.go), and commits it before the page is published.
+	_, txErr := c.runPage(r.ctx, r.tx, r.options(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		if attempts > 0 {
 			// Java's ThrottledRetryingIterator decreases work on every failed
 			// attempt. SQL pages use time rather than its scanned-row quota:

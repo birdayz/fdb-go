@@ -68,12 +68,18 @@ func (c Config) Validate() error {
 	}
 	switch c.RecordCompression {
 	case "", "none":
-	case "zlib-1", "brotli-0", "brotli-1", "brotli-3", "brotli-4":
+	case "zlib-1", "zlib-default":
+		// Java-readable deflate: the sql backend's OTEL_V1 stores accept it.
+		if c.Backend != "fdb" && c.Backend != "sql" {
+			return fail("config", "record compression", "Record Layer compression requires the FDB or SQL backend")
+		}
+	case "brotli-0", "brotli-1", "brotli-3", "brotli-4":
+		// Go-only; SQL connections cannot read it.
 		if c.Backend != "fdb" {
-			return fail("config", "record compression", "Record Layer compression requires the FDB backend")
+			return fail("config", "record compression", "Brotli record compression requires the FDB backend")
 		}
 	default:
-		return fail("config", "record compression", "record compression must be none, zlib-1, brotli-0, brotli-1, brotli-3, or brotli-4")
+		return fail("config", "record compression", "record compression must be none, zlib-1, zlib-default, brotli-0, brotli-1, brotli-3, or brotli-4")
 	}
 	switch c.PostingValueFormat {
 	case "", "json":

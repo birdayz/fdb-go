@@ -18,7 +18,24 @@ type Size struct {
 	KeyBytes      int64 `json:"key_bytes"`
 	ValueBytes    int64 `json:"value_bytes"`
 	PhysicalBytes int64 `json:"physical_bytes,omitempty"`
+	// PrefixBytes is each key less its common prefix with the previous key in
+	// key order, plus the value: a proxy for an engine's key prefix
+	// compression (Redwood), not a measured on-disk size.
+	PrefixBytes int64 `json:"prefix_bytes,omitempty"`
 }
+
+// AddKV counts one key-value pair read in key order after prev.
+func (s *Size) AddKV(prev, key, value []byte) {
+	s.Keys++
+	s.KeyBytes += int64(len(key))
+	s.ValueBytes += int64(len(value))
+	n := 0
+	for n < len(prev) && n < len(key) && prev[n] == key[n] {
+		n++
+	}
+	s.PrefixBytes += int64(len(key)-n) + int64(len(value))
+}
+
 type Statistics struct {
 	Rows                int64              `json:"rows"`
 	Attributes          int64              `json:"attributes"`
@@ -322,6 +339,7 @@ func (b *FDBBackend) size(ctx context.Context, ss subspace.Subspace) (Size, erro
 	begin, end := ss.FDBRangeKeys()
 	lo := begin.FDBKey()
 	high := end.FDBKey()
+	var prev []byte
 	for {
 		var rows []fdb.KeyValue
 		_, err := b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
@@ -333,9 +351,8 @@ func (b *FDBBackend) size(ctx context.Context, ss subspace.Subspace) (Size, erro
 			return total, err
 		}
 		for _, kv := range rows {
-			total.Keys++
-			total.KeyBytes += int64(len(kv.Key))
-			total.ValueBytes += int64(len(kv.Value))
+			total.AddKV(prev, kv.Key, kv.Value)
+			prev = kv.Key
 		}
 		if len(rows) < 256 {
 			break
@@ -450,6 +467,7 @@ func (b *FDBBackend) Audit(ctx context.Context) (Statistics, error) {
 		total.KeyBytes += sz.KeyBytes
 		total.ValueBytes += sz.ValueBytes
 		total.PhysicalBytes += sz.PhysicalBytes
+		total.PrefixBytes += sz.PrefixBytes
 		stats.Structures["owned_total"] = total
 	}
 	for _, name := range []string{spanIndexName, timeIndexName} {
