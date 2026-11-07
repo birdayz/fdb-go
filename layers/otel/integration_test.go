@@ -2,8 +2,6 @@ package otel
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,15 +23,6 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
-
-func freshRun(t *testing.T) string {
-	t.Helper()
-	var nonce [12]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
-		t.Fatal(err)
-	}
-	return "test_" + hex.EncodeToString(nonce[:])
-}
 
 func otelTransaction(t *testing.T, ctx context.Context, b *FDBBackend, fn func(*recordlayer.FDBRecordStore, *recordlayer.FDBRecordContext) error) {
 	t.Helper()
@@ -142,22 +131,6 @@ func otelSnapshot(t *testing.T, ctx context.Context, b *FDBBackend, ss subspace.
 
 func otelSecondary(b *FDBBackend) subspace.Subspace {
 	return b.store.Sub(recordlayer.IndexSecondarySpaceKey, b.idx.SubspaceTupleKey())
-}
-
-func requireOtelKind(t *testing.T, err error, kind string) {
-	t.Helper()
-	var classified *OtelError
-	if !errors.As(err, &classified) || classified.Kind != kind {
-		t.Fatalf("want %s error, got %T: %v", kind, err, err)
-	}
-}
-
-func requireOtelBudget(t *testing.T, err error) {
-	t.Helper()
-	var budget *QueryBudgetError
-	if !errors.As(err, &budget) {
-		t.Fatalf("want QueryBudgetError, got %T: %v", err, err)
-	}
 }
 
 func openOtelFixture(t *testing.T, ctx context.Context, cluster string, c Config, ingest bool) *FDBBackend {
