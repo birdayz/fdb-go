@@ -1,7 +1,6 @@
 package otel
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"fdb.dev/layers/otel/otelsql"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/instrumentation"
@@ -233,7 +233,7 @@ type SpanNotFoundError struct {
 }
 
 // CanonicalValue is the typed (D1) (type, value) of an OTLP attribute value
-// as an Attribute names it: string, int, bool and double (formatDouble's
+// as an Attribute names it: string, int, bool and double (otelsql.FormatDouble's
 // text) are the queryable types; bytes (base64) and arrays, kvlists and
 // unset values (canonical JSON) are reported as "bytes" and "json", which no
 // equality query accepts.
@@ -246,11 +246,11 @@ func CanonicalValue(v *commonpb.AnyValue) (string, string) {
 	case *commonpb.AnyValue_BoolValue:
 		return "bool", strconv.FormatBool(x.BoolValue)
 	case *commonpb.AnyValue_DoubleValue:
-		return "double", formatDouble(x.DoubleValue)
+		return "double", otelsql.FormatDouble(x.DoubleValue)
 	case *commonpb.AnyValue_BytesValue:
 		return "bytes", base64.StdEncoding.EncodeToString(x.BytesValue)
 	default:
-		return "json", string(appendCanonicalJSON(nil, v))
+		return "json", string(otelsql.CanonicalJSON(v))
 	}
 }
 
@@ -258,68 +258,6 @@ func CanonicalValue(v *commonpb.AnyValue) (string, string) {
 func CanonicalAttribute(scope, key string, v *commonpb.AnyValue) Attribute {
 	typ, value := CanonicalValue(v)
 	return Attribute{Scope: scope, Key: key, Type: typ, Value: value}
-}
-
-func formatDouble(f float64) string {
-	switch {
-	case math.IsNaN(f):
-		return "NaN"
-	case math.IsInf(f, 1):
-		return "+Inf"
-	case math.IsInf(f, -1):
-		return "-Inf"
-	}
-	return strconv.FormatFloat(f, 'g', -1, 64)
-}
-
-func appendJSONString(dst []byte, s string) []byte {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(s) // strings always encode; invalid UTF-8 becomes U+FFFD.
-	return append(dst, bytes.TrimSuffix(buf.Bytes(), []byte("\n"))...)
-}
-
-// appendCanonicalJSON keeps array and kvlist order (including repeated keys)
-// so the representation is deterministic for equal OTLP values.
-func appendCanonicalJSON(dst []byte, v *commonpb.AnyValue) []byte {
-	switch x := v.GetValue().(type) {
-	case *commonpb.AnyValue_StringValue:
-		return appendJSONString(dst, x.StringValue)
-	case *commonpb.AnyValue_IntValue:
-		return strconv.AppendInt(dst, x.IntValue, 10)
-	case *commonpb.AnyValue_BoolValue:
-		return strconv.AppendBool(dst, x.BoolValue)
-	case *commonpb.AnyValue_DoubleValue:
-		if math.IsNaN(x.DoubleValue) || math.IsInf(x.DoubleValue, 0) {
-			return appendJSONString(dst, formatDouble(x.DoubleValue))
-		}
-		return strconv.AppendFloat(dst, x.DoubleValue, 'g', -1, 64)
-	case *commonpb.AnyValue_BytesValue:
-		return appendJSONString(dst, base64.StdEncoding.EncodeToString(x.BytesValue))
-	case *commonpb.AnyValue_ArrayValue:
-		dst = append(dst, '[')
-		for i, item := range x.ArrayValue.GetValues() {
-			if i > 0 {
-				dst = append(dst, ',')
-			}
-			dst = appendCanonicalJSON(dst, item)
-		}
-		return append(dst, ']')
-	case *commonpb.AnyValue_KvlistValue:
-		dst = append(dst, '{')
-		for i, kv := range x.KvlistValue.GetValues() {
-			if i > 0 {
-				dst = append(dst, ',')
-			}
-			dst = appendJSONString(dst, kv.GetKey())
-			dst = append(dst, ':')
-			dst = appendCanonicalJSON(dst, kv.GetValue())
-		}
-		return append(dst, '}')
-	default:
-		return append(dst, "null"...)
-	}
 }
 
 // ResourceSpansFromReadOnly converts SDK spans to OTLP, grouping by resource

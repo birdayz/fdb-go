@@ -220,7 +220,7 @@ func appendCanonicalJSON(dst []byte, v *commonpb.AnyValue) []byte {
 		return strconv.AppendBool(dst, x.BoolValue)
 	case *commonpb.AnyValue_DoubleValue:
 		if math.IsNaN(x.DoubleValue) || math.IsInf(x.DoubleValue, 0) {
-			return appendJSONString(dst, formatDouble(x.DoubleValue))
+			return appendJSONString(dst, FormatDouble(x.DoubleValue))
 		}
 		return strconv.AppendFloat(dst, x.DoubleValue, 'g', -1, 64)
 	case *commonpb.AnyValue_BytesValue:
@@ -250,7 +250,9 @@ func appendCanonicalJSON(dst []byte, v *commonpb.AnyValue) []byte {
 	}
 }
 
-func formatDouble(f float64) string {
+// FormatDouble is a double's canonical text: shortest round-trip, with NaN,
+// +Inf and -Inf by name. It is CanonicalValue's "double" value.
+func FormatDouble(f float64) string {
 	switch {
 	case math.IsNaN(f):
 		return "NaN"

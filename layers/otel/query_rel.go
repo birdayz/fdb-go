@@ -89,7 +89,7 @@ func spanAttrQuery(a Attribute) (attrQuery, bool) {
 	return attrQuery{}, false
 }
 
-// parseCanonicalDouble reads formatDouble's text; "NaN" is the stored
+// parseCanonicalDouble reads otelsql.FormatDouble's text; "NaN" is the stored
 // otelsql.CanonicalNaN, which every NaN payload projects to.
 func parseCanonicalDouble(s string) (float64, error) {
 	switch s {

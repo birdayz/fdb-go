@@ -200,7 +200,7 @@ func spanCost(r *otelv1pb.SPANS) int {
 		attr(a.GetATTR_KEY(), len(strconv.FormatInt(a.GetINT_VALUE(), 10)))
 	}
 	for _, a := range r.GetDOUBLE_ATTRS().GetValues() {
-		attr(a.GetATTR_KEY(), len(formatDouble(a.GetDOUBLE_VALUE())))
+		attr(a.GetATTR_KEY(), len(otelsql.FormatDouble(a.GetDOUBLE_VALUE())))
 	}
 	for _, a := range r.GetBOOL_ATTRS().GetValues() {
 		attr(a.GetATTR_KEY(), len(strconv.FormatBool(a.GetBOOL_VALUE())))

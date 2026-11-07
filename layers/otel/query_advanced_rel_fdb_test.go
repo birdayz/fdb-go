@@ -157,7 +157,7 @@ func qrTyped(scope string, kv *commonpb.KeyValue) (Attribute, bool) {
 	case *commonpb.AnyValue_IntValue:
 		a.Type, a.Value = "int", strconv.FormatInt(x.IntValue, 10)
 	case *commonpb.AnyValue_DoubleValue:
-		a.Type, a.Value = "double", formatDouble(x.DoubleValue)
+		a.Type, a.Value = "double", otelsql.FormatDouble(x.DoubleValue)
 	case *commonpb.AnyValue_BoolValue:
 		a.Type, a.Value = "bool", strconv.FormatBool(x.BoolValue)
 	default:

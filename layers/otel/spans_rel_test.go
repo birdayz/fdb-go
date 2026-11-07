@@ -71,7 +71,7 @@ func rowAttributes(r *otelv1pb.SPANS) []Attribute {
 		out = append(out, Attribute{a.GetSCOPE(), a.GetATTR_KEY(), "int", strconv.FormatInt(a.GetINT_VALUE(), 10)})
 	}
 	for _, a := range r.GetDOUBLE_ATTRS().GetValues() {
-		out = append(out, Attribute{a.GetSCOPE(), a.GetATTR_KEY(), "double", formatDouble(a.GetDOUBLE_VALUE())})
+		out = append(out, Attribute{a.GetSCOPE(), a.GetATTR_KEY(), "double", otelsql.FormatDouble(a.GetDOUBLE_VALUE())})
 	}
 	for _, a := range r.GetBOOL_ATTRS().GetValues() {
 		out = append(out, Attribute{a.GetSCOPE(), a.GetATTR_KEY(), "bool", strconv.FormatBool(a.GetBOOL_VALUE())})
