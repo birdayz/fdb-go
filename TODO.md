@@ -3608,14 +3608,17 @@ these claims; the implementation notes below are not controlled comparisons.
 
 ## OTel SQL ingest migration
 
-- [ ] Move the OTel writer onto each tenant's relational schema subspace using
+- [x] Move the OTel writer onto each tenant's relational schema subspace using
   `layers/otel/otelsql.OTEL_V1`; register the template once and create one store
   containing spans, logs, messages and message_traces. Existing ingest is not
   migrated by the schema/SQL tests. Benchmark runs get dedicated catalog
   databases/stores; production tenants share one signal store, which run-level
   Drop must never clear. Define migration of existing data and preserve the
   current API while switching its storage.
-- [ ] Populate typed attribute arrays, promoted fields, event/link projections
+  Delivered (3A): `otel.Exporter` writes every signal into `/OTEL/R_<RUN>`,
+  schema `T<tenant>`, via `EnsureTenant`; no data migration (owner,
+  pre-release); `TestRelExporterRealFDB`, `TestFDB_EnsureTenant`.
+- [x] Populate typed attribute arrays, promoted fields, event/link projections
   and message references. Preserve the exact current duplicate-attribute
   contract and original ordinals where references require them. Pin unknown
   fields, presence, duplicate/order preservation and all AnyValue types end to
@@ -3624,15 +3627,27 @@ these claims; the implementation notes below are not controlled comparisons.
   Compare against a truly complete raw projection with measured bytes/mutations.
   Implement indexed key/value admission and long-string digest lookup
   with collision verification before enabling this schema in production ingest.
-- [ ] Store logs as records instead of raw KV, migrate message markers, choose
+  Delivered: `otelsql` compiled builders, `ref_chunks`/`SPANS_REF_CHUNKS`,
+  long strings by digest verified on the record; `TestBuildCompiledIsBuild`,
+  `TestRelExporterRealFDB/otlp_fidelity`, `TestRelAdvancedQueriesRealFDB`;
+  bytes in the benchmark doc (G2A, G2C).
+- [x] Store logs as records instead of raw KV, migrate message markers, choose
   a Java-interoperable serializer and verify exporter writes through SQL reads.
-  Add metrics tables in the same tenant store, then span/log/message/metric join
-  regressions; the v1 template has no metrics table yet.
-- [ ] Decide TEXT grouping/indexing for SQL message search, and reimplement the
+  Delivered: LOGS and MESSAGE_TRACES rows, `zlib-1` default;
+  `TestRelLogsRealFDB`, SQL reads in `TestFDB_SQLBackend` and
+  `TestFDB_OtelTemplateV1`, Java reads in `OtelTemplateOverlayJavaProbe`.
+- [ ] Add metrics tables in the same tenant store, then span/log/message/metric
+  join regressions; the v1 template has no metrics table yet (RFC
+  relational-exporter-migration §4.3, D9).
+- [x] Decide TEXT grouping/indexing for SQL message search, and reimplement the
   typed query API over the standard indexes without losing scan budgets,
   signed keyset tokens, snapshot-page semantics or distinct-trace top-K early
   termination. Measure ingest cost on matched baseline/new workloads; no
   extrapolated CPU or index-size estimate is validation.
+  Delivered: FULLTEXT `MESSAGES_TEXT` partitioned by (role, shard);
+  `SpanReader` direct scans with budgets, v2 signed tokens and early top-K
+  (`TestRelAdvancedQueriesRealFDB`, `TestRelContinuationRejections`); ingest
+  measured at G2A and G3 (benchmark doc).
 - [ ] Probe two-level fan-out event/link attributes and element-level index
   filtering before promising indexed same-event/same-link searches. Current
   OTel probes cover one attribute array; unnest joins remain scan/explode paths
@@ -3653,17 +3668,19 @@ these claims; the implementation notes below are not controlled comparisons.
   Go-written TemplateDDL store in Java and pins the Go-only-tokenizer refusal.
   Stream 2C must tokenize terms and count segment postings with the default
   tokenizer over `IndexableText`, not `otel_message_v1`.
-- [ ] `BuildLogCompiled` leaves an `event_name` over 1,024 bytes NULL (LOGS_EVENT
+- [x] `BuildLogCompiled` leaves an `event_name` over 1,024 bytes NULL (LOGS_EVENT
   keys it) and `LogProjection` counts it; the old log store indexed event names
   up to 64,000 bytes by digest. Phase 2B decides whether `QueryLogsByAttribute`
   on such names needs a digest column or refuses them.
+  Decided: refused; a query naming one is `ConfigError`
+  (`TestRelLogsRealFDB/boundary_admission`, `existential_log_clauses`).
 - [x] Data race in `pkg/fdbgo/client` RYW range reads with AppendIfFits writes
   (found under `-race` by the old and the new message stores): resolved
   AppendIfFits values lived in the pooled walk's `keyBuf`, which the next walk
   reused while a pending read that ran in its goroutine still held its rows
   uncopied. Fixed in PR #1034 (`valBuf`, dropped on release); regression
   `TestPendingRangeKeepsAppendedValuesAcrossWalks` (range_selector_unit_test).
-- [ ] Stream 2C follow-ups (`messages_rel.go`, `messages_query_rel.go`):
+- [x] Stream 2C follow-ups (`messages_rel.go`, `messages_query_rel.go`):
   - 3B must keep what the new files use from messages.go and messages_query.go:
     `messageTimerStats`, `isTransactionTooLarge`, `messagePipelineSizer`, the
     `MessageFullTextQuery`/`MessageSpanHit`/`MessageFullTextPage` types and the
@@ -3678,7 +3695,8 @@ these claims; the implementation notes below are not controlled comparisons.
     (about 1.9 B per posting, the rest). The whole store is 1.04-1.06x.
     Accepted at the cutover (D4 kept); recorded in the benchmark doc and the
     RFC's D4 row.
-- [ ] Phase 3B deletion (rfcs/relational-exporter-migration.md §6). After 3A
+  - Done: 3B kept the listed helpers and types.
+- [x] Phase 3B deletion (rfcs/relational-exporter-migration.md §6). After 3A
   the old store's code is reachable only from `otelbench --backend fdb` and its
   own tests: `FDBBackend`, index.go, the old logs/messages/query storage
   methods' remaining helpers, `restoreEnvelopeOTLP`, `legacyCanonicalValue`/
@@ -3688,6 +3706,8 @@ these claims; the implementation notes below are not controlled comparisons.
   `--hash-bytes` and Brotli values. The collector's `removedExporterKey`
   recognizes otel's removed-key `ConfigError` by its " was removed" text; 3B
   can drop it with the removed keys once no YAML names them.
+  Delivered: the custom store, its tests and the `fdb` otelbench flags are
+  deleted (RFC status line); `removedExporterKey` stays as the migration message.
 - [ ] G3 findings (benchmark doc, "Gate G3"):
   - `fts_single_token` p50 is 1.53x the custom store's on a cluster that holds
     earlier runs (bimodal per run in both stores; 0.72x on the fresh
