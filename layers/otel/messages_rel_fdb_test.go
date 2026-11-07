@@ -25,9 +25,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Ports of the message tests (messages_fdb_test.go and the
-// message_*_regression_test.go files, rfcs/relational-exporter-migration.md
-// §2.3) to the relational exporter. relMsgEnv is one Exporter with its
+// The GenAI message tests of the Exporter (rfcs/relational-exporter-migration.md
+// §2.3). relMsgEnv is one Exporter with its
 // message store (relParts.messages' default, newRelMessageStore): the tests
 // export and read through the exporter's public methods and reach the
 // message store's writers, queue and stage hook for the mechanism tests.
@@ -284,8 +283,10 @@ func TestRelMessagesRealFDB(t *testing.T) {
 	}
 }
 
-// Port of testMessageConversation. The trace order arm is gone (D2); the
-// hash and reference index counts read MESSAGES_HASH and SPANS_REF_CHUNKS.
+// testRelMessageConversation exports a conversation in form: each message is
+// stored once (MESSAGES_HASH) and rebuilt byte for byte, each span has one
+// SPANS_REF_CHUNKS entry, re-exports write nothing, and the phrase, first-turn,
+// role and paged full-text queries answer exactly.
 func testRelMessageConversation(t *testing.T, h *qrHarness, form string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
 	defer cancel()
@@ -432,7 +433,9 @@ func testRelMessageConversation(t *testing.T, h *qrHarness, form string) {
 	requireTyped[*ConfigError](t, "message attribute query", err)
 }
 
-// Port of testMessageTracePerTurn (AGNOSTIC).
+// testRelMessageTracePerTurn: a conversation exported in one call with one
+// trace per turn, or turn by turn newest first into one trace, counts every
+// reference and answers the first-turn and phrase queries alike.
 func testRelMessageTracePerTurn(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -471,7 +474,10 @@ func testRelMessageTracePerTurn(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of testMessageReplacement (AGNOSTIC).
+// testRelMessageReplacement: phrase queries fold case and diacritics, event
+// messages are found, a re-exported span replaces its references (the last
+// duplicate wins), and a span that stops referencing a message loses its
+// reference while its trace's other spans keep theirs.
 func testRelMessageReplacement(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -554,9 +560,10 @@ func testRelMessageReplacement(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of testMessageBudget. The work is the page's (§1.3, was
-// LastQueryWork). Every store has MESSAGES_TEXT and SPANS_REF_CHUNKS now;
-// the deltas layout leaves them empty (testRelMessageDeltas).
+// testRelMessageBudget: candidate and byte budgets fail full-text pages and
+// existential message clauses with their work (§1.3) and no continuation;
+// full text is refused without messages or with the deltas layout, which
+// leaves MESSAGES_TEXT and SPANS_REF_CHUNKS empty (testRelMessageDeltas).
 func testRelMessageBudget(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -596,7 +603,10 @@ func testRelMessageBudget(t *testing.T, h *qrHarness) {
 	requireTyped[*ConfigError](t, "deltas layout full text", err)
 }
 
-// Port of testMessageExistential (AGNOSTIC).
+// testRelMessageExistential: message clauses join span and log clauses on
+// trace with their witnesses, honour first-turn, attribute, window and typed
+// predicate (D1) options, and refuse limits, continuations, unknown modes,
+// term-free queries and message attributes as equality predicates.
 func testRelMessageExistential(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -680,8 +690,10 @@ func testRelMessageExistential(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of testMessageChunkedRefs. A chunk is bounded by its index key
-// element (otelsql.MaxRefChunkKeyBytes, was a 16 KB value).
+// testRelMessageChunkedRefs: spans referencing 2,500 messages split their
+// references into several SPANS_REF_CHUNKS entries, each bounded by its
+// index key element (otelsql.MaxRefChunkKeyBytes), and every message is
+// found with its turn ordinal.
 func testRelMessageChunkedRefs(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
 	defer cancel()
@@ -718,8 +730,8 @@ func testRelMessageChunkedRefs(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of testMessageRareTerm (AGNOSTIC): rare-term intersections charge
-// far fewer candidates than the common postings.
+// testRelMessageRareTerm: rare-term intersections charge far fewer
+// candidates than the common postings.
 func testRelMessageRareTerm(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
 	defer cancel()
@@ -796,7 +808,7 @@ func testRelMessageRareTerm(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of testMessageLarge: 1MB messages, one of text cut into overlapping
+// testRelMessageLarge: 1MB messages, one of text cut into overlapping
 // segments, one of incompressible bytes cut into raw parts.
 func testRelMessageLarge(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
@@ -869,7 +881,7 @@ func testRelMessageLarge(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of testMessageConcurrentSave: exporters of one store dedup a message
+// testRelMessageConcurrentSave: exporters of one store dedup a message
 // through the serializable MESSAGES_HASH read.
 func testRelMessageConcurrentSave(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
@@ -933,7 +945,7 @@ func testRelMessageConcurrentSave(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of testMessageGroupCommit: shared transactions, per-call counts and a
+// testRelMessageGroupCommit: shared transactions, per-call counts and a
 // canceled caller's queued messages dropped, while every writer is held.
 func testRelMessageGroupCommit(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
@@ -1266,8 +1278,8 @@ func testRelMessageTextShards(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of TestExporterMessageDeltaIntegration: a deltas-only conversation of
-// one trace per turn counts every reference and stores each message once.
+// testRelMessageDeltaConversation: a deltas-only conversation of one trace
+// per turn counts every reference and stores each message once.
 func testRelMessageDeltaConversation(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
@@ -1294,9 +1306,9 @@ func testRelMessageDeltaConversation(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of TestMessageFreeLastDuplicateClearsReferences: a message-free last
-// duplicate of a span, in its wrapper or another, leaves no reference to the
-// first duplicate's message, in a span or an event attribute.
+// testRelMessageFreeLastDuplicate: a message-free last duplicate of a span,
+// in its wrapper or another, leaves no reference to the first duplicate's
+// message, in a span or an event attribute.
 func testRelMessageFreeLastDuplicate(t *testing.T, h *qrHarness) {
 	for _, crossWrapper := range []bool{false, true} {
 		for _, event := range []bool{false, true} {
@@ -1337,9 +1349,9 @@ func testRelMessageFreeLastDuplicate(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of TestMessageUnknownCommitDoesNotReuseSequence: a commit reported
-// ambiguous after it landed is retried, finds the message, and the writer's
-// next message takes a later seq.
+// testRelMessageUnknownCommit: a commit reported ambiguous after it landed is
+// retried, finds the message, and the writer's next message takes a later
+// seq.
 func testRelMessageUnknownCommit(t *testing.T, h *qrHarness) {
 	for _, code := range []int{1021, 1039} {
 		t.Run(fmt.Sprint(code), func(t *testing.T) {
@@ -1416,9 +1428,8 @@ func testRelMessageUnknownCommit(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of TestQueuedMessageSizeFallbackCountersAndExhaustion:
-// transaction_too_large replans at 256, 64 and 16 tokens, then fails with
-// no span published.
+// testRelMessageSizeFallback: transaction_too_large replans at 256, 64 and 16
+// tokens, then fails with no span published.
 func testRelMessageSizeFallback(t *testing.T, h *qrHarness) {
 	for _, exhaust := range []bool{false, true} {
 		t.Run(map[bool]string{false: "recovery", true: "exhaustion"}[exhaust], func(t *testing.T) {
@@ -1488,8 +1499,8 @@ func testRelMessageSizeFallback(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of TestPersistedMessageCorruptionFailsClosed: tampered MESSAGES rows
-// fail the load as corruption with no partial span.
+// testRelMessageCorruption: tampered MESSAGES rows fail the load as
+// corruption with no partial span.
 func testRelMessageCorruption(t *testing.T, h *qrHarness) {
 	for _, damage := range []string{"head", "part", "encoding", "parts", "length"} {
 		t.Run(damage, func(t *testing.T) {
@@ -1557,10 +1568,9 @@ func testRelMessageCorruption(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of TestMessageWritesCannotRepopulateDroppedRun: "dropped run" is a
-// dropped schema. A message transaction racing DROP SCHEMA conflicts on the
-// store header, its retry fails to open the store (ownership), and nothing
-// is written under the dropped store's subspace.
+// testRelMessageSchemaDropped: a message transaction racing DROP SCHEMA
+// conflicts on the store header, its retry fails to open the store
+// (ownership), and nothing is written under the dropped store's subspace.
 func testRelMessageSchemaDropped(t *testing.T, h *qrHarness) {
 	for _, stage := range []string{"writer-before-write", "message-before-write", "marker-before-write"} {
 		t.Run(stage, func(t *testing.T) {
@@ -1603,9 +1613,9 @@ func testRelMessageSchemaDropped(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of TestInterruptedMultipartDoesNotPublishHeadOrSpan: a large message
-// interrupted after a committed tail publishes no head, no hash and no span;
-// the next export stores it whole.
+// testRelMessageInterruptedMultipart: a large message interrupted after a
+// committed tail publishes no head, no hash and no span; the next export
+// stores it whole.
 func testRelMessageInterruptedMultipart(t *testing.T, h *qrHarness) {
 	for _, failure := range []string{"error", "cancel"} {
 		t.Run(failure, func(t *testing.T) {
@@ -1700,7 +1710,9 @@ func testRelMessageInterruptedMultipart(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of TestMessageTokenFreeByteBoundary (AGNOSTIC).
+// testRelMessageTokenFreeBoundary: a message of only spaces or punctuation
+// at messageSegmentBytes-1, messageSegmentBytes and messageSegmentBytes+1
+// bytes is stored with no posting and loads back unchanged.
 func testRelMessageTokenFreeBoundary(t *testing.T, h *qrHarness) {
 	for _, n := range []int{messageSegmentBytes - 1, messageSegmentBytes, messageSegmentBytes + 1} {
 		for _, char := range []string{" ", "!"} {
@@ -1727,8 +1739,8 @@ func testRelMessageTokenFreeBoundary(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of TestCanceledMessageOwnerTwoWaitersShareOneDigest: when the call
-// storing a message is canceled, the two calls awaiting it store it once.
+// testRelMessageCanceledOwner: when the call storing a message is canceled,
+// the two calls awaiting it store it once.
 func testRelMessageCanceledOwner(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
@@ -1806,10 +1818,9 @@ func testRelMessageCanceledOwner(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of TestMessageRoleDiscoveryChargesRawBunchForAbsentToken: role
-// discovery charges the raw bunch it reads, one candidate and its key and
-// value bytes, even for a query whose token is absent; the budget edge is
-// exact.
+// testRelMessageRoleDiscoveryBudget: role discovery charges the raw bunch it
+// reads, one candidate and its key and value bytes, even for a query whose
+// token is absent; the budget edge is exact.
 func testRelMessageRoleDiscoveryBudget(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
@@ -1854,9 +1865,9 @@ func testRelMessageRoleDiscoveryBudget(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of TestCrossPartAllReadsEarlierSameWriterSignpost's query half: an
-// "all" match whose terms lie in different parts of one message is found
-// through MESSAGES_LARGE, as a page and as an existential clause.
+// testRelMessageCrossPartAll: an "all" match whose terms lie in different
+// parts of one message is found through MESSAGES_LARGE, as a page and as an
+// existential clause.
 func testRelMessageCrossPartAll(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()

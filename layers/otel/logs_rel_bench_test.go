@@ -22,9 +22,10 @@ import (
 
 // BenchmarkRelLogsVsFDB measures log ingest client CPU and stored bytes per
 // log, and QueryLogsByTrace latency, of the relational log store, two runs on
-// fresh runs (RFC §6 G2B). Its FDBBackend arm left with the custom store's
-// Exporter at the cutover (phase 3A); the gate's receipts of both arms are in
-// docs/benchmarks/otel-relational-local-20261107.md. Run it explicitly:
+// fresh runs (RFC §6 G2B). Its arm of the custom store's Exporter left with it
+// at the cutover (phase 3A); gate G2B's receipts of both arms, measured before
+// that, are in docs/benchmarks/otel-relational-local-20261107.md ("Gate G2B")
+// and its g2b-bench-rellogs.txt. Run it explicitly:
 //
 //	bazelisk test //layers/otel:otel_test --test_arg=-test.run=^$ \
 //	  --test_arg=-test.bench=BenchmarkRelLogsVsFDB --test_arg=-test.benchtime=1x \

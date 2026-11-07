@@ -26,9 +26,8 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-// Ports of TestAdvancedQueriesRealFDB (query_advanced_test.go) to the
-// relational store: tenant stores created as the Exporter names them, spans
-// written as compiled SPANS rows, read through SpanReader.
+// The advanced query tests of SpanReader on FDB: tenant stores created as the
+// Exporter names them, spans written as compiled SPANS rows.
 
 // qrHarness is one FDB testcontainer with the OTEL_V1 template.
 type qrHarness struct {
@@ -272,9 +271,10 @@ func TestRelAdvancedQueriesRealFDB(t *testing.T) {
 	}
 }
 
-// Port of testSameSpanPagination. The layout matrix (qaLayouts) is gone: the
-// store has one layout (D2). Expectations: typed predicates (D1), index-order
-// ties (D3), and the page's own work instead of LastQueryWork (§1.3).
+// testRelSameSpanPagination: paged same-span queries concatenate to the
+// expected answer, a resume may reorder the driver, each page reports its own
+// work (§1.3), and a new span sorting after the cursor shows on the next
+// page. Predicates are typed (D1) and ties are in index order (D3).
 func testRelSameSpanPagination(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -449,7 +449,9 @@ func testRelSameSpanTyped(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of testSameSpanBudget, unchanged.
+// testRelSameSpanBudget: candidate and byte budgets fail a same-span page and
+// its existential twin with their work and no continuation, while a term with
+// no entries fits any budget.
 func testRelSameSpanBudget(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
@@ -478,11 +480,11 @@ func testRelSameSpanBudget(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of testContinuationSecurity. The v2 signing key is per tenant store
-// (§3.2: the STORE_META row), where v1's was per run: a token of another
-// tenant's store therefore fails its MAC (corruption) where v1 reported the
-// binding (config). TestRelContinuationRejections pins the store binding
-// under a shared key.
+// testRelContinuationSecurity: the v2 signing key is per tenant store (§3.2:
+// the STORE_META row), so a token of another tenant's store fails its MAC
+// (corruption); a tampered token or one of another query or window is
+// refused, and rejections leave the original continuation valid.
+// TestRelContinuationRejections pins the store binding under a shared key.
 func testRelContinuationSecurity(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -604,8 +606,8 @@ func tupleKey(s SpanMatch) []byte {
 	return v1TimeKey(s.Trace, s.ID, s.Start)
 }
 
-// Port of testTraceExistential, unchanged: span clauses, and log clauses over
-// logs exported through relLogStore into the same tenant store.
+// testRelTraceExistential: span clauses, and log clauses over logs exported
+// through relLogStore into the same tenant store, join on trace.
 func testRelTraceExistential(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -712,8 +714,8 @@ func testRelTraceExistential(t *testing.T, h *qrHarness) {
 	requireTyped[*ConfigError](t, "message clause with a limit", err)
 }
 
-// Port of testTraceGraphRealFDB: the work is the call's result (was
-// LastQueryWork, §1.3).
+// testRelTraceGraph: a trace's graph and links, with children written before
+// their parents in separate writes; the work is the call's result (§1.3).
 func testRelTraceGraph(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()

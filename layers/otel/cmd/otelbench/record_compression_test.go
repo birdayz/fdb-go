@@ -43,7 +43,7 @@ func TestExecuteRecordCompression(t *testing.T) {
 		{"--record-compression=brotli"},
 		{"--record-compression=brotli-11"},
 		{"--record-compression=zlib-9"},
-		// D2 refused Brotli on OTEL_V1 stores; Phase 3B removed the fdb backend.
+		// OTEL_V1 stores refuse Brotli (D2), and no backend takes it.
 		{"--record-compression=brotli-1"},
 		{"--record-compression=brotli-4"},
 		{"--record-compression=zlib-1", "--backend=ch-map"},

@@ -23,10 +23,9 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Ports of the logs tests (TestLogsRealFDB, logs_fidelity_test.go,
-// logs_admission_corruption_regression_test.go; RFC §2.4) to relLogStore on
-// OTEL_V1 tenant stores. One FDB testcontainer serves every subtest; each
-// opens a fresh store.
+// The log tests of relLogStore on OTEL_V1 tenant stores (RFC §2.4): export,
+// queries, replacement, fidelity, admission and corruption. One FDB
+// testcontainer serves every subtest; each opens a fresh store.
 
 // newLRHarness is newQRHarness that also returns the raw database, for
 // transactor injection.
@@ -86,9 +85,10 @@ func TestRelLogsRealFDB(t *testing.T) {
 	})
 }
 
-// Port of testLogsExportQuery. The h1_collisions arm is gone with
-// hash_bytes (D2). D1: the double score is typed; D11: LOGS_TRACE holds an
-// entry for every log, the uncorrelated ones under NULL.
+// testRelLogsExportQuery exports logs and queries them by trace, span and
+// attribute, with the observed- and receiver-time fallbacks. The double score
+// is typed (D1); LOGS_TRACE holds an entry for every log, the uncorrelated
+// ones under NULL (D11).
 func testRelLogsExportQuery(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -216,8 +216,9 @@ func testRelLogsExportQuery(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of testLogsReplace: the census counts LOGS index entries (v1 counted
-// posting and trace-membership keys).
+// testRelLogsReplace: a re-exported log replaces its row and retracts the old
+// version's LOGS index entries exactly, the later duplicate in a call wins,
+// and replaying an identical log is idempotent.
 func testRelLogsReplace(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
@@ -285,8 +286,9 @@ func testRelLogsReplace(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of testLogsLarge: Record Layer split records replace v1's chunk rows,
-// and StoredBytes is the serialized (zlib-1) record bytes (§2.4).
+// testRelLogsLarge: a large log is a Record Layer split record, StoredBytes
+// is the serialized (zlib-1) record bytes (§2.4), and shrinking a split log
+// clears its stale chunks.
 func testRelLogsLarge(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
@@ -327,8 +329,8 @@ func testRelLogsLarge(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of testLogsAdmissionIsolation. Its Shutdown assertions belong to the
-// relational exporter, which owns begin and Shutdown (stream 2A).
+// testRelLogsAdmissionIsolation: a refused or canceled call writes nothing,
+// and another tenant's store sees none of a tenant's logs.
 func testRelLogsAdmissionIsolation(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
@@ -366,8 +368,8 @@ func testRelLogsAdmissionIsolation(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of testLogsBudget, unchanged: a candidate is one index entry or one
-// record load.
+// testRelLogsBudget: a candidate is one index entry or one record load; a
+// budget failure returns an empty result, and an empty trace fits any budget.
 func testRelLogsBudget(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
@@ -401,8 +403,8 @@ func testRelLogsBudget(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of testLogsBatching; ConsumeLogs is the exporter's adapter onto
-// LogRecordsFromResourceLogs and ExportLogs.
+// testRelLogsBatching exports logs in batches and through ConsumeLogs, the
+// exporter's adapter onto LogRecordsFromResourceLogs and ExportLogs.
 func testRelLogsBatching(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -440,8 +442,8 @@ func testRelLogsBatching(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of testLogsFidelityRealFDB. D1: bool and int attributes match as
-// typed values (v1 matched the bool's canonical string "true").
+// testRelLogsFidelity: logs read back from persisted rows keep their OTLP,
+// and bool and int attributes match as typed values (D1).
 func testRelLogsFidelity(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
@@ -749,11 +751,10 @@ func testRelLogIndexKeyModel(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of TestEncodedLogCoveringAdmissionBeforeAnyWrites. v1's per-value
-// boundary was the 100,000-byte covering value; OTEL_V1 keys hold strings
-// up to 1,024 bytes (2,048 escaped, far below FDB's key limit), longer ones
-// by digest, and project values up to 64,000 bytes. So every size admits the
-// whole call, and the boundaries are where a value stops being queryable.
+// testRelLogBoundaryAdmission: OTEL_V1 keys hold strings up to 1,024 bytes
+// (2,048 escaped, far below FDB's key limit), longer ones by digest, and
+// project values up to 64,000 bytes. So every size admits the whole call,
+// and the boundaries are where a value stops being queryable.
 func testRelLogBoundaryAdmission(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -848,8 +849,8 @@ func lrTamper(t *testing.T, ctx context.Context, s *relLogStore, row *otelv1pb.L
 	}
 }
 
-// Port of TestLogPersistedPostingDisagreement: a valid, decodable LOGS row
-// that its intact index entries no longer describe is corruption.
+// testRelLogPersistedDisagreement: a valid, decodable LOGS row that its
+// intact index entries no longer describe is corruption.
 func testRelLogPersistedDisagreement(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
@@ -911,9 +912,9 @@ func lrManyInts(l LogRecord, n int) LogRecord {
 	return l
 }
 
-// Port of TestLogSmallIntegerPostingNativeCostRejectsWholeCall: a log far
-// under the raw cap whose index entries alone exceed one transaction. The
-// positive control is the store's own approximate size for saving it.
+// testRelLogNativeCostWholeCall: a log far under the raw cap whose index
+// entries alone exceed one transaction refuses the whole call. The positive
+// control is the store's own approximate size for saving it.
 func testRelLogNativeCostWholeCall(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
@@ -978,8 +979,8 @@ func testRelLogNativeCostWholeCall(t *testing.T, h *qrHarness) {
 // alone but not with the clears of its own prior image.
 const lrReplacementInts = 16000
 
-// Port of TestLogReplacementAdmissionCountsActualPriorPostings: the preflight
-// adds the stored image's clears, read from the store, to the new image's cost.
+// testRelLogReplacementPriorCost: the preflight adds the stored image's
+// clears, read from the store, to the new image's cost.
 func testRelLogReplacementPriorCost(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -1031,7 +1032,10 @@ func testRelLogReplacementPriorCost(t *testing.T, h *qrHarness) {
 // commit, then grows the prior image before the next transaction.
 type lrNeighborBarrier = logNeighborBarrier
 
-// Port of TestLogPriorChangeAfterAdmissionIsOperationalWithCommittedNeighbor.
+// testRelLogPriorChangeAfterAdmission: a prior image that grows after
+// admission, between two batches of one export, fails that batch as an
+// operation error, not an admission error; the committed neighbor batch
+// stays, the stats report it exactly, and the concurrent prior is untouched.
 func testRelLogPriorChangeAfterAdmission(t *testing.T, h *qrHarness, raw fdb.Database) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -1091,10 +1095,10 @@ func testRelLogPriorChangeAfterAdmission(t *testing.T, h *qrHarness, raw fdb.Dat
 	}
 }
 
-// Port of TestLogExpandedWriteAdmissionRejectsWholeCall: under the raw cap,
-// a row whose projected copies of the attributes push the serialized record
-// over the transaction budget. Incompressible bytes stay over it deflated;
-// the same shape in octal text deflates under it and is admitted.
+// testRelLogExpandedWrite: under the raw cap, a row whose projected copies of
+// the attributes push the serialized record over the transaction budget
+// refuses the whole call. Incompressible bytes stay over it deflated; the
+// same shape in octal text deflates under it and is admitted.
 func testRelLogExpandedWrite(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()

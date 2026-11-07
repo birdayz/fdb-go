@@ -19,7 +19,7 @@ import (
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
-// Ports of the message tests that need the exporter's lifecycle (§2.3):
+// The message tests that need the exporter's lifecycle (§2.3):
 // the group-commit queue's backing release, an evicted marker replay,
 // Shutdown joining a canceled call's message worker, and the raw budget
 // accounting of an empty cross-part query.
@@ -40,10 +40,9 @@ func TestRelMessageLifecycleRealFDB(t *testing.T) {
 	}
 }
 
-// Port of TestLiveMessageQueueReleasesBackingOnPartialFailureAndCancel: a
-// partial take keeps no consumed slot and loses no tail, and the drained
-// queue keeps no plan or submission, whether the call succeeds, fails or is
-// canceled; the exporter stays usable.
+// testRelQueueBackingRelease: a partial take keeps no consumed slot and loses
+// no tail, and the drained queue keeps no plan or submission, whether the
+// call succeeds, fails or is canceled; the exporter stays usable.
 func testRelQueueBackingRelease(t *testing.T, h *qrHarness) {
 	for _, outcome := range []string{"success", "failure", "cancel"} {
 		t.Run(outcome, func(t *testing.T) {
@@ -176,9 +175,9 @@ func (r relMarkerProbeRange) GetSliceWithError() ([]fdb.KeyValue, error) {
 	return rows, err
 }
 
-// Port of TestEvictedPersistedMarkerPublicReplayReadsAndReuses: a marker
-// evicted from the exporter's cache is read again, found and cached, not
-// written twice, and the query answer does not change.
+// testRelEvictedMarkerReplay: a marker evicted from the exporter's cache is
+// read again, found and cached, not written twice, and the query answer does
+// not change.
 func testRelEvictedMarkerReplay(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
@@ -247,10 +246,10 @@ func testRelEvictedMarkerReplay(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of TestShutdownJoinsCanceledMessageWorker: a canceled call's queued
-// message keeps its shared transaction; Shutdown closes the queue, waits for
-// the worker before closing the database, and returns the caller's
-// cancellation or deadline when it ends first.
+// testRelShutdownJoinsWorker: a canceled call's queued message keeps its
+// shared transaction; Shutdown closes the queue, waits for the worker before
+// closing the database, and returns the caller's cancellation or deadline
+// when it ends first.
 func testRelShutdownJoinsWorker(t *testing.T, h *qrHarness) {
 	for _, mode := range []string{"success", "canceled", "deadline"} {
 		t.Run(mode, func(t *testing.T) {
@@ -362,13 +361,13 @@ func testRelShutdownJoinsWorker(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of TestMultipartEmptyAllQueryChargesRawLargeIndexBytes: an "all"
-// query with no match reads every MESSAGES_LARGE entry and, per multipart
-// message, the TEXT bunch preceding its bounded first-term probe, and is
-// charged their raw key and value bytes with the budget edge exact. The
-// messages' text is all overlong words, now indexed as the otelsql
-// placeholder (one posting per text part, was none); the probe's preceding
-// bunch is the last of those, not a key before the TEXT index.
+// testRelMultipartEmptyAllRaw: an "all" query with no match reads every
+// MESSAGES_LARGE entry and, per multipart message, the TEXT bunch preceding
+// its bounded first-term probe, and is charged their raw key and value bytes
+// with the budget edge exact. The messages' text is all overlong words,
+// indexed as the otelsql placeholder (one posting per text part); the
+// probe's preceding bunch is the last of those, not a key before the TEXT
+// index.
 func testRelMultipartEmptyAllRaw(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()

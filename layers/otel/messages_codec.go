@@ -33,7 +33,7 @@ const (
 	messageEncodingJSON = "json"
 
 	maxMessageBytes    = 16 << 20 // RFC-283 §5.2 proposed decoded object admission
-	maxMessageManifest = 64_000   // the covering-projection cap in index.go
+	maxMessageManifest = 64_000   // encoded manifest bound, as otelsql.MaxAttributeValueBytes; admission refuses more
 
 	messageManifestMagic   = "OTMD"
 	messageManifestVersion = 2
@@ -61,10 +61,10 @@ const (
 	maxMessageRoleBytes  = 1024
 
 	// messageTxnMessages bounds group commits, amortizing repeated TEXT bunch mutations.
-	// Shards isolate writers within this backend, not across backends.
+	// Shards isolate one exporter's writers, not those of different exporters.
 	messageTxnMessages = 128
 	messageWorkers     = 8                 // concurrent transactions per message persist call
-	messageWriterLimit = messageTextShards // message writers per backend
+	messageWriterLimit = messageTextShards // message writers per exporter
 	// messageTextShards is the number of MESSAGES_TEXT shard groups per role.
 	messageTextShards = otelsql.MessageTextShards
 	// messageTextPipeline is the TEXT_INDEX_UPDATE pipeline size.
@@ -139,7 +139,7 @@ type MessageStoreStats struct {
 	Postings        int64 `json:"postings"`
 	UnindexedTokens int64 `json:"unindexed_tokens"`
 	// References counts the (message, attribute) references of committed
-	// spans; TraceMarkers the MessageTrace records saved.
+	// spans; TraceMarkers the MESSAGE_TRACES rows saved.
 	References   int64 `json:"references"`
 	TraceMarkers int64 `json:"trace_markers"`
 	Transactions int64 `json:"transactions"`
@@ -913,10 +913,10 @@ func segmentMessageText(text string, distinct int) ([]messageSegment, int, error
 }
 
 // ---------------------------------------------------------------------------
-// Message records
+// Message rows
 // ---------------------------------------------------------------------------
 
-// messagePlan is one element's Message records, part 0 (the header) first.
+// messagePlan is one element's MESSAGES rows, part 0 (the header) first.
 // Writer and seq are set when a transaction assigns the element its ID.
 type messagePlan struct {
 	element   *messageElement
@@ -983,11 +983,11 @@ type messageWriters struct {
 	slots  chan struct{}
 	mu     sync.Mutex
 	free   []*messageWriter
-	shards [messageTextShards]bool // shards of this backend's writers
+	shards [messageTextShards]bool // shards of this exporter's writers
 }
 
 // nextWriterID is the first ID above every allocated one (last) in this
-// backend's free shard.
+// exporter's free shard.
 func nextWriterID(last, shard int64) int64 {
 	return last + 1 + ((shard-(last+1))%messageTextShards+messageTextShards)%messageTextShards
 }
@@ -996,7 +996,7 @@ func nextWriterID(last, shard int64) int64 {
 // Persistence
 // ---------------------------------------------------------------------------
 
-// messageQueue groups small messages into size/count-bounded transactions on backend writers,
+// messageQueue groups small messages into size/count-bounded transactions on the exporter's writers,
 // amortizing read-version, digest, TEXT bunch and commit costs across waiting calls.
 type messageQueue struct {
 	mu      sync.Mutex
@@ -1181,13 +1181,13 @@ func parallelMessageWork(n int, fn func(int) error) error {
 // Span back references
 // ---------------------------------------------------------------------------
 
-// traceMarker is a MessageTrace record: message id occurs in trace.
+// traceMarker is a MESSAGE_TRACES row: message id occurs in trace.
 type traceMarker struct {
 	id    messageID
 	trace string
 }
 
-// markerCache remembers the markers this backend knows to be committed; a run
+// markerCache remembers the markers this exporter knows to be committed; a run
 // never deletes one. It holds at most markerCacheSize, forgetting the oldest.
 type markerCache struct {
 	mu   sync.Mutex
@@ -1230,7 +1230,7 @@ func (c *markerCache) add(ks []traceMarker) {
 // messageMarkerTxn bounds the markers checked and saved per transaction.
 const messageMarkerTxn = 512
 
-// inflightMessage is a message one export call of this backend is storing;
+// inflightMessage is a message one export call of this exporter is storing;
 // other calls that need it wait for its ID instead of storing it again.
 type inflightMessage struct {
 	done chan struct{}

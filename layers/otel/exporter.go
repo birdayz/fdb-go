@@ -457,6 +457,6 @@ func otlpValue(v attribute.Value) *commonpb.AnyValue {
 // Message storage layouts, part of a run's stored layout identity.
 const (
 	messagesNone     = ""
-	messagesDeltas   = "deltas"      // Message records; spans carry manifests
+	messagesDeltas   = "deltas"      // MESSAGES rows; spans carry manifests
 	messagesFullText = "fulltext_v2" // plus the message TEXT index and span back references
 )

@@ -15,11 +15,9 @@ import (
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
-// Ports of the umbrella subtests (integration_test.go) that §2.1 keeps as
-// Exporter tests. The umbrella ran each twice, for order trace and time; D2
-// removes the order key, and the relational reader always stops at the K-th
-// distinct trace (§1.3), so each runs once, as order time. D2 also removes
-// hash_bytes: the indexes hold attribute values, not digests.
+// Exporter tests on the fixture corpus (§2.1), answered against its oracle.
+// The relational reader always stops at the K-th distinct trace (§1.3), and
+// the indexes hold attribute values, not digests.
 
 // relFixtureSpan is s's single-span envelope, as every backend stores it.
 func relFixtureSpan(t *testing.T, s Span) *tracepb.ResourceSpans {
@@ -49,9 +47,9 @@ func relExportCorpus(t *testing.T, ctx context.Context, e *Exporter, c Config) [
 	return spans
 }
 
-// Port of testOtelScopedQueries (integration_test.go:1115) on the umbrella
-// corpus (Count 260, K 3). D1: equality is typed, so the int-typed spellings
-// are answered by SPANS_INT_ATTR and the string-typed ones never match them.
+// testRelTypedScopedControls queries the fixture corpus (Count 260, K 3) by
+// type and scope. Equality is typed (D1), so the int-typed spellings are
+// answered by SPANS_INT_ATTR and the string-typed ones never match them.
 func testRelTypedScopedControls(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -88,10 +86,9 @@ func testRelTypedScopedControls(t *testing.T, cluster string) {
 	}
 }
 
-// Port of testOtelSelectiveV2 (selectivity_test.go:148). Its trace-order
-// branch, which exhausted the two-candidate budget on a common term, has no
-// counterpart (D2): every common term returns the K=1 frontier after one
-// index entry.
+// testRelSelectiveV2: under a two-candidate budget, the selective fixture
+// query (the unique response ID) costs one candidate, and every common term
+// returns the K=1 frontier after one index entry.
 func testRelSelectiveV2(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
@@ -246,13 +243,11 @@ func (d relReplayTransactor) TransactCtx(ctx context.Context, fn func(fdb.Writab
 	})
 }
 
-// Port of testOtelPublicQueryReplay (query_replay_test.go:113): a read whose
-// successful first attempt is retried after both sources moved answers from
-// the second attempt alone. §1.3: work is per call, returned with the
-// result, and there is no LastQueryWork; so the v1 per-attempt work and
-// witness census has no counterpart. Each attempt's index-state read shows
-// its body scanned the index, and the returned work is the second attempt's
-// exact census (two entries), not a sum of both.
+// testRelPublicQueryReplay: a read whose successful first attempt is retried
+// after both sources moved answers from the second attempt alone. Work is per
+// call, returned with the result (§1.3). Each attempt's index-state read
+// shows its body scanned the index, and the returned work is the second
+// attempt's exact census (two entries), not a sum of both.
 func testRelPublicQueryReplay(t *testing.T, cluster string) {
 	for _, kind := range []string{"query", "span", "time"} {
 		for _, failGuard := range []bool{false, true} {
@@ -375,10 +370,10 @@ func testRelPublicQueryReplay(t *testing.T, cluster string) {
 	}
 }
 
-// Port of testOtelIntrinsicV2 (intrinsic_test.go:104). The corpus tenants
-// are two schema stores of one run (§0.1), so the built-in census is per
-// store and the other tenant's lookup reads the other store. §1.3: work is
-// returned per call, so the v1 LastQueryWork checks read the returned work.
+// testRelIntrinsicV2 pins the built-in SPANS_SPAN_ID and SPANS_TIME lookups
+// and their returned work (§1.3). The corpus tenants are two schema stores
+// of one run (§0.1), so the built-in census is per store and the other
+// tenant's lookup reads the other store.
 func testRelIntrinsicV2(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
@@ -566,9 +561,9 @@ func relFailStateReads(e *Exporter, name string, cause error, failures *atomic.I
 	return func() { e.store.db = original }
 }
 
-// Port of testOtelAttributeStateReadError (intrinsic_test.go:390). §1.3: the
-// work is the result's, so the v1 LastQueryWork checks are the returned
-// results' and a failed read cannot leave earlier work behind.
+// testRelAttributeStateReadError: a failed read of the attribute index's
+// state fails the Query with its cause and no work (§1.3: the work is the
+// result's), and the restored read answers as before.
 func testRelAttributeStateReadError(t *testing.T, ctx context.Context, e *Exporter, attribute Attribute, want []Hit) {
 	t.Helper()
 	prior, err := e.Query(ctx, attribute)
@@ -589,10 +584,9 @@ func testRelAttributeStateReadError(t *testing.T, ctx context.Context, e *Export
 	}
 }
 
-// Port of testOtelIntrinsicStateReadError (intrinsic_test.go:427). §1.3: an
-// empty range reads nothing, so the empty Time on which v1 showed the
-// failure no longer reads the index state. The failure is shown on the
-// singleton range, and the empty range is shown not to read the state.
+// testRelIntrinsicStateReadError: a failed read of SPANS_TIME's state fails
+// Time on a singleton range with its cause and no work; an empty range reads
+// nothing (§1.3), not even the state, and answers empty.
 func testRelIntrinsicStateReadError(t *testing.T, ctx context.Context, e *Exporter) {
 	singleton, empty := TimeRange{Start: 299, End: 301}, TimeRange{Start: 100, End: 100}
 	prior, err := e.Time(ctx, singleton)
@@ -620,9 +614,9 @@ func testRelIntrinsicStateReadError(t *testing.T, ctx context.Context, e *Export
 	}
 }
 
-// Port of testOtelIntrinsicUnreadable (intrinsic_test.go:312). §1.3: an empty
-// Time reads nothing, so on an unreadable SPANS_TIME it returns no hits where
-// v1 returned ownership.
+// testRelIntrinsicUnreadable: a lookup on a write-only or disabled built-in
+// index is an ownership error with no work; an empty Time reads nothing
+// (§1.3), so on an unreadable SPANS_TIME it returns no hits.
 func testRelIntrinsicUnreadable(t *testing.T, ctx context.Context, cluster string, c Config, name, state string) {
 	c.Count = 4
 	e := openRelExporter(t, ctx, cluster, func(x *ExporterConfig) { x.K = c.K })

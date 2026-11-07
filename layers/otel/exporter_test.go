@@ -144,7 +144,7 @@ transaction_timeout: 45s
 	})
 
 	// D2: the custom store's keys are refused, naming the removal, as are
-	// unknown keys (the collector's config refuses them too); v1 ignored both.
+	// unknown keys (the collector's config refuses them too).
 	for doc, message := range map[string]string{"order: time\n": "order was removed", "hash_bytes: 8\n": "hash_bytes was removed", "posting_value_format: tuple\n": "posting_value_format was removed", "run: live_run_0001\nnot_a_field: 7\n": `unknown key "not_a_field"`} {
 		t.Run("refuses "+strings.TrimSpace(doc), func(t *testing.T) {
 			var got ExporterConfig

@@ -14,8 +14,10 @@ import (
 // BenchmarkRelSpansVsFDB measures span export client CPU and stored bytes per
 // span through ExportResourceSpans, GenAI messages off, for the Exporter
 // (zlib-1), three runs on fresh runs (RFC §6 G2A). Its arm of the custom
-// store's Exporter left with it at the cutover (phase 3A); the gate's
-// receipts of both are in docs/benchmarks/otel-relational-local-20261107.md.
+// store's Exporter left with that store; gate G2A's receipts of both arms,
+// measured before that, are in
+// docs/benchmarks/otel-relational-local-20261107.md ("Gate G2A") and its
+// g2a-bench-relspans.txt.
 // The corpus is otelbench's fixture V2 (seed 283, 8 attributes, match every
 // 100) as single-span envelopes, exported in calls of 500 spans; CPU is the
 // process's user+sys over the export calls. Run it explicitly:

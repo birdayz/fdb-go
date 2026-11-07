@@ -30,9 +30,9 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Ports of TestExporterRealFDB (exporter_test.go) and its neighbours to the
-// relational exporter. One FDB testcontainer serves every subtest; each opens
-// a fresh run, whose tenant store EnsureTenant creates.
+// TestRelExporterRealFDB runs the Exporter's span export, query, load,
+// lifecycle and admission tests on FDB. One FDB testcontainer serves every
+// subtest; each opens a fresh run, whose tenant store EnsureTenant creates.
 func TestRelExporterRealFDB(t *testing.T) {
 	t.Parallel()
 	cluster := startExporterCluster(t)
@@ -64,9 +64,10 @@ func TestRelExporterRealFDB(t *testing.T) {
 	}
 }
 
-// Port of testExporterSDKSyncer. D1: bools and doubles are queried typed;
-// arrays, maps and bytes are not queryable, so their v1 canonical-string
-// queries find nothing. The layout matrix is gone (D2).
+// testRelSDKSyncer exports the OTel SDK's spans through the Exporter as a
+// syncer and queries every attribute kind: bools and doubles are queried
+// typed (D1); arrays, maps and bytes are not queryable, so their
+// canonical-string queries find nothing.
 func testRelSDKSyncer(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -297,7 +298,8 @@ func testRelSDKSyncer(t *testing.T, cluster string) {
 	requireOtelKind(t, err, "operation")
 }
 
-// Port of testExporterBatchSpanProcessor; D1: the bool and double are typed.
+// testRelBatchSpanProcessor exports through the SDK's BatchSpanProcessor in
+// several calls; the resource's bool and double are queried typed (D1).
 func testRelBatchSpanProcessor(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -369,11 +371,11 @@ func testRelBatchSpanProcessor(t *testing.T, cluster string) {
 	requireOtelKind(t, err, "operation")
 }
 
-// Port of testExporterOTLPFidelity. The row's otlp is the original span, so
-// LoadSpanOTLP returns duplicates and unindexed values without a fidelity
-// payload (§1.2). D1: bytes, kvlists and unset values are reported as
-// unindexed (UnindexedAttributes 5, v1 2) and their v1 canonical-string
-// queries find nothing; bools and doubles are queried typed.
+// testRelOTLPFidelity: the row's otlp is the original span, so LoadSpanOTLP
+// returns duplicates and unindexed values without a fidelity payload (§1.2).
+// Bytes, kvlists and unset values are reported as unindexed
+// (UnindexedAttributes 5) and their canonical-string queries find nothing;
+// bools and doubles are queried typed (D1).
 func testRelOTLPFidelity(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -579,8 +581,8 @@ func testRelOTLPFidelity(t *testing.T, cluster string) {
 // tag, which a producer may use too.
 const v1FidelityField protowire.Number = 536870911
 
-// Port of TestExporterPreservesProducerFidelityTag: producer unknown fields,
-// v1's internal fidelity tag 536870911 included, survive in the otlp column.
+// testRelProducerFidelityTag: producer unknown fields, the fidelity tag
+// 536870911 included, survive in the otlp column, normalized or not.
 func testRelProducerFidelityTag(t *testing.T, cluster string) {
 	for _, normalize := range []bool{false, true} {
 		t.Run(map[bool]string{false: "plain", true: "normalized"}[normalize], func(t *testing.T) {
@@ -612,8 +614,8 @@ func testRelProducerFidelityTag(t *testing.T, cluster string) {
 	}
 }
 
-// Port of testExporterBatching, unchanged: batches, within-call last-wins,
-// idempotent re-export, in-place replacement and canceled exports.
+// testRelBatching pins batches, within-call last-wins, idempotent re-export,
+// in-place replacement and canceled exports.
 func testRelBatching(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -774,9 +776,10 @@ func testRelBatching(t *testing.T, cluster string) {
 	reHits(t, ctx, e, resp("resp-late"))
 }
 
-// Port of testExporterShutdown. The layout identity is the STORE_META
-// layout row (D10, §3.4), so the refused reopen changes the message flags
-// (v1 changed hash_bytes, a knob D2 removes).
+// testRelShutdown: Shutdown is idempotent and every later call is refused;
+// committed data outlives the handle and stays invisible to another tenant;
+// a reopen whose message layout differs from the STORE_META layout row (D10,
+// §3.4), or that asks for Brotli records, is refused.
 func testRelShutdown(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -894,8 +897,9 @@ func testRelShutdown(t *testing.T, cluster string) {
 	}
 }
 
-// Port of testExporterConcurrent. D1: the ratio double is typed, so no span
-// is normalized (v1 normalized every one).
+// testRelConcurrent: concurrent exports and queries on one Exporter commit
+// every span and answer exactly; the ratio double is typed (D1), so no span
+// is normalized.
 func testRelConcurrent(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -1174,8 +1178,7 @@ func testRelMessages(t *testing.T, cluster string) {
 	}
 }
 
-// Ports of testOtelAdmission and the index-key half of
-// TestEncodedTraceCoveringAdmissionBeforeAnyWrites (§2.1): an attribute at the
+// testRelAdmissionCaps (§2.1): an attribute at the
 // 1,024-byte key and 64,000-byte value caps is indexed, one byte over is
 // stored but not indexed, and tuple escaping of zero bytes cannot push an
 // index key past FDB's limit, so nothing is refused for it.
@@ -1224,11 +1227,10 @@ func testRelAdmissionCaps(t *testing.T, cluster string) {
 	requireOtelKind(t, err, "config")
 }
 
-// Port of testOtelOrderAndBudgets (integration_test.go): the literal top-K
-// tie boundary, a work receipt and its N-1/N candidate and byte budget edges
-// for Query and Trace, N recomputed for the store's indexes. The K-th
-// distinct trace stops the scan after six of eight entries, as v1's time
-// order did.
+// testRelQueryBudgetEdges pins the literal top-K tie boundary, a work receipt
+// and its N-1/N candidate and byte budget edges for Query and Trace, N
+// computed for the store's indexes. The K-th distinct trace stops the scan
+// after six of eight entries.
 func testRelQueryBudgetEdges(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()

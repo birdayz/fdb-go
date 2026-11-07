@@ -573,7 +573,7 @@ func TestMessageUses(t *testing.T) {
 	}
 
 	// The span's ref_chunks pack them with the element IDs, or the
-	// placeholder (the custom store's Envelope packing left with it).
+	// placeholder.
 	ex.id = messageID{3, 7}
 	chunks, err := (&relMessageStore{}).refChunks(want)
 	if err != nil || len(chunks) != 1 {

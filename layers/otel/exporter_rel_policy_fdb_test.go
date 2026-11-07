@@ -273,10 +273,10 @@ func testRelCallsFail(t *testing.T, cluster string) {
 	}
 }
 
-// Port of TestExporterBootstrapCarriesPolicyIntoFreshResolvers: the store's
-// creation (EnsureTenant) and layout check run under the exporter policy, so
-// each absorbs 12 retryable failures in one attempt, and the first read
-// outlives the benchmark's 1.5s transaction timeout.
+// testRelBootstrapPolicy: the store's creation (EnsureTenant) and layout
+// check run under the exporter policy, so each absorbs 12 retryable failures
+// in one attempt, and the first read outlives the 1.5s default transaction
+// timeout (benchTxnTimeout).
 func testRelBootstrapPolicy(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -301,8 +301,8 @@ func testRelBootstrapPolicy(t *testing.T, cluster string) {
 	}
 }
 
-// Port of TestOpenFDBBootstrapCancellationAfterConnect: caller cancellation
-// ends an active bootstrap against a silent coordinator.
+// TestRelExporterBootstrapCancellationAfterConnect: caller cancellation ends
+// an active bootstrap against a silent coordinator.
 func TestRelExporterBootstrapCancellationAfterConnect(t *testing.T) {
 	t.Parallel()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

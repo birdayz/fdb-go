@@ -536,8 +536,8 @@ func (r *SpanReader) sameSpanPage(ctx context.Context, store *recordlayer.FDBRec
 
 // witnessScanner scans one existential clause: it visits every witness of
 // the clause inside w once, with the hex trace the witness belongs to. Span
-// clauses are scanned here; log (stream 2B) and message (2C) clauses plug in
-// as further scanners through logClauses and messageClauses.
+// clauses are spanClause; logClauses and messageClauses plan the log and
+// message clauses' scanners.
 type witnessScanner[W any] interface {
 	scanWitnesses(ctx context.Context, store *recordlayer.FDBRecordStore, w timeWindow, work *queryWork, visit func(trace string, witness W)) error
 }

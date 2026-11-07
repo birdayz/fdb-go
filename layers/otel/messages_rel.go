@@ -1,7 +1,7 @@
 package otel
 
 // GenAI message storage on a tenant store (rfcs/relational-exporter-migration.md
-// §1.5, §3.1): messages.go's design on OTEL_V1 rows. Unique elements are
+// §1.5, §3.1) in OTEL_V1 rows. Unique elements are
 // MESSAGES rows deduplicated by MESSAGES_HASH (content_hash in the v2 domain,
 // the store being the tenant); writers number them (writer, seq) from the
 // STORE_META("message_writer") counter, with shard = writer % 16, so
@@ -55,8 +55,7 @@ type relMessageStore struct {
 }
 
 // newRelMessageStore stores messages on s; fullText also indexes their text,
-// writes trace markers, and sets the message pipeline sizer on every open of
-// s, as FDBBackend does for the fulltext layout.
+// writes trace markers, and sets the message pipeline sizer on every open of s.
 func newRelMessageStore(s *tenantStore, fullText bool) *relMessageStore {
 	s.fullText = fullText
 	return &relMessageStore{store: s, fullText: fullText}
@@ -113,7 +112,7 @@ func messagePK(md *recordlayer.RecordMetaData, op string, pk tuple.Tuple) (messa
 	return id, part, nil
 }
 
-// planRelMessage is planMessage on MESSAGES rows: raw chunk i and text
+// planRelMessage plans an element's MESSAGES rows: raw chunk i and text
 // segment i form part i, every text part repeats the role, and part 0
 // carries the content hash and the whole message's columns. The rows carry
 // a placeholder ID until setRelMessageID assigns the stored one.

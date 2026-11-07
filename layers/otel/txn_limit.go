@@ -37,7 +37,7 @@ type txnTimeoutKey struct{}
 type txnLimiterKey struct{}
 
 // withExporterTxns marks ctx as carrying Exporter transactions: they run with
-// timeout and no retry limit, and the ingest guard does not bound their elapsed time.
+// timeout and no retry limit; nothing else bounds their elapsed time.
 func withExporterTxns(ctx context.Context, timeout time.Duration) context.Context {
 	return context.WithValue(ctx, txnTimeoutKey{}, timeout)
 }
