@@ -139,6 +139,168 @@ func escapedLen(b []byte) int {
 	return n
 }
 
+// RefChunkReader reads one ref_chunks value's references in order without
+// allocating per reference, for scans that keep few of them: Ref is a
+// reference's message, attribute and newest flag, and AppendOrdinals
+// decodes its ordinals only when asked. It yields exactly UnpackRefChunk's
+// references and fails exactly when UnpackRefChunk does: a value outside
+// PackRefChunks' encoding is decoded by UnpackRefChunk instead.
+type RefChunkReader struct {
+	b    []byte // a value in PackRefChunks' encoding, already validated
+	pos  int
+	cur  MessageRef // Ordinals unset in b's references
+	ords []byte     // cur's ordinals: the nested tuple's elements
+	slow []MessageRef
+	next int
+	err  error
+}
+
+// Reset starts reading the ref_chunks value b.
+func (r *RefChunkReader) Reset(b []byte) {
+	*r = RefChunkReader{}
+	if packedRefChunk(b) {
+		r.b = b
+		return
+	}
+	r.slow, r.err = UnpackRefChunk(b)
+}
+
+// Next advances to the next reference, reporting whether there is one.
+func (r *RefChunkReader) Next() bool {
+	if r.err != nil {
+		return false
+	}
+	if r.b == nil {
+		if r.next == len(r.slow) {
+			return false
+		}
+		r.cur, r.next = r.slow[r.next], r.next+1
+		return true
+	}
+	if r.pos == len(r.b) {
+		return false
+	}
+	r.cur, r.ords, r.pos = readPackedRef(r.b, r.pos)
+	return true
+}
+
+// Ref is the current reference without its ordinals.
+func (r *RefChunkReader) Ref() MessageRef {
+	ref := r.cur
+	ref.Ordinals = nil
+	return ref
+}
+
+// AppendOrdinals appends the current reference's ordinals to dst.
+func (r *RefChunkReader) AppendOrdinals(dst []int) []int {
+	if r.b == nil {
+		return append(dst, r.cur.Ordinals...)
+	}
+	for pos := 0; pos < len(r.ords); {
+		var v int64
+		v, pos = readPackedInt(r.ords, pos)
+		dst = append(dst, int(v))
+	}
+	return dst
+}
+
+// Err is UnpackRefChunk's error for a malformed value.
+func (r *RefChunkReader) Err() error { return r.err }
+
+// packedRefChunk reports whether b is a nonempty concatenation of valid
+// references exactly as packRef encodes them: four nonnegative ints
+// (writer, seq, attribute, newest) of at most 8 bytes that fit an int64, and
+// a nested tuple of at least one such int. UnpackRefChunk accepts every such
+// b with the values readPackedRef reads.
+func packedRefChunk(b []byte) bool {
+	pos := 0
+	for pos < len(b) {
+		var head [4]int64
+		for i := range head {
+			v, next, ok := checkPackedInt(b, pos)
+			if !ok {
+				return false
+			}
+			head[i], pos = v, next
+		}
+		if head[0] <= 0 || head[1] <= 0 || head[2] <= 0 || head[2] >= int64(len(MessageAttributeKeys)) || head[3] > 1 {
+			return false
+		}
+		if pos == len(b) || b[pos] != 0x05 {
+			return false
+		}
+		pos++
+		n := 0
+		for {
+			if pos == len(b) {
+				return false
+			}
+			if b[pos] == 0x00 {
+				// A zero byte followed by 0xff is a null element, not
+				// the nested tuple's end.
+				if pos+1 < len(b) && b[pos+1] == 0xff {
+					return false
+				}
+				pos++
+				break
+			}
+			_, next, ok := checkPackedInt(b, pos)
+			if !ok {
+				return false
+			}
+			pos = next
+			n++
+		}
+		if n == 0 {
+			return false
+		}
+	}
+	return len(b) > 0
+}
+
+// checkPackedInt reads the nonnegative int at b[pos] if it is one tuple
+// int of at most 8 bytes that fits an int64.
+func checkPackedInt(b []byte, pos int) (int64, int, bool) {
+	if pos == len(b) || b[pos] < 0x14 || b[pos] > 0x1c {
+		return 0, pos, false
+	}
+	n := int(b[pos] - 0x14)
+	if pos+n >= len(b) && n > 0 || n == 8 && b[pos+1] >= 0x80 {
+		return 0, pos, false
+	}
+	v, next := readPackedInt(b, pos)
+	// tuple.Unpack decodes a zero of one or more bytes as uint64.
+	if n > 0 && v == 0 {
+		return 0, pos, false
+	}
+	return v, next, true
+}
+
+// readPackedInt reads the int checkPackedInt accepted at b[pos].
+func readPackedInt(b []byte, pos int) (int64, int) {
+	n := int(b[pos] - 0x14)
+	var v int64
+	for _, c := range b[pos+1 : pos+1+n] {
+		v = v<<8 | int64(c)
+	}
+	return v, pos + 1 + n
+}
+
+// readPackedRef reads the reference packedRefChunk accepted at b[pos]: its
+// head, its encoded ordinals and the position after it.
+func readPackedRef(b []byte, pos int) (MessageRef, []byte, int) {
+	var head [4]int64
+	for i := range head {
+		head[i], pos = readPackedInt(b, pos)
+	}
+	start := pos + 1
+	end := start
+	for b[end] != 0x00 {
+		_, end = readPackedInt(b, end)
+	}
+	return MessageRef{Writer: head[0], Seq: head[1], Attribute: head[2], Newest: head[3] == 1}, b[start:end], end + 1
+}
+
 // UnpackRefChunk decodes one ref_chunks value of PackRefChunks.
 func UnpackRefChunk(b []byte) ([]MessageRef, error) {
 	t, err := tuple.Unpack(b)
