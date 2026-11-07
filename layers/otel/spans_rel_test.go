@@ -144,7 +144,7 @@ func TestRelPrepare(t *testing.T) {
 		if string(row.TRACE_ID) != string(sp.TraceId) || string(row.SPAN_ID) != string(sp.SpanId) || row.GetSTART_NS() != want.start {
 			t.Fatalf("item %d row identity %x/%x@%d", i, row.TRACE_ID, row.SPAN_ID, row.GetSTART_NS())
 		}
-		if it.key != string(sp.TraceId)+string(sp.SpanId) || it.normalized != want.normalized || it.logical != int64(len(row.OTLP)) || it.cost != spanCost(row, len(row.OTLP)) || it.cost <= 2048 {
+		if it.key != string(sp.TraceId)+string(sp.SpanId) || it.normalized != want.normalized || it.logical != int64(len(row.OTLP)) || it.cost != spanCost(row) || it.cost <= 2048 {
 			t.Fatalf("item %d metadata %+v", i, it)
 		}
 		if got := rowAttributes(row); !reflect.DeepEqual(got, want.indexed) {
@@ -197,19 +197,32 @@ func TestRelPrepare(t *testing.T) {
 	})
 }
 
-// The estimate is 2048 and the otlp bytes, 2·(key + value text + 256) per
-// projected attribute, and 2·(encoded index key + 256) per ref chunk.
+// The estimate is 2048 and the row's serialized bytes, plus key + value text
+// + 512 per projected attribute and encoded index key + 512 per ref chunk.
+// Every column counts: a long name or status message grows it.
 func TestSpanCost(t *testing.T) {
 	t.Parallel()
 	row := &otelv1pb.SPANS{
+		OTLP:       make([]byte, 100),
 		STR_ATTRS:  &otelv1pb.SPANS_STR_ATTRS{Values: []*otelv1pb.STR_ATTR{{ATTR_KEY: proto.String("k"), STR_VALUE: proto.String("vv")}}},
 		INT_ATTRS:  &otelv1pb.SPANS_INT_ATTRS{Values: []*otelv1pb.INT_ATTR{{ATTR_KEY: proto.String("n"), INT_VALUE: proto.Int64(-12)}}},
 		BOOL_ATTRS: &otelv1pb.SPANS_BOOL_ATTRS{Values: []*otelv1pb.BOOL_ATTR{{ATTR_KEY: proto.String("b"), BOOL_VALUE: proto.Bool(false)}}},
 		REF_CHUNKS: &otelv1pb.SPANS_REF_CHUNKS{Values: []*otelv1pb.MESSAGE_REF_CHUNK{{CHUNK: proto.Int64(0), REFS: []byte{0, 1, 0}}}},
 	}
-	want := 2048 + 100 + 2*(1+2+256) + 2*(1+3+256) + 2*(1+5+256) + 2*(len(tuple.Tuple{[]byte{0, 1, 0}}.Pack())+256)
-	if got := spanCost(row, 100); got != want {
+	want := 2048 + proto.Size(row) + (1 + 2 + 512) + (1 + 3 + 512) + (1 + 5 + 512) + (len(tuple.Tuple{[]byte{0, 1, 0}}.Pack()) + 512)
+	if got := spanCost(row); got != want {
 		t.Fatalf("cost %d, want %d", got, want)
+	}
+	for name, grow := range map[string]func(*otelv1pb.SPANS){
+		"name":           func(r *otelv1pb.SPANS) { r.NAME = proto.String(strings.Repeat("n", 1000)) },
+		"status message": func(r *otelv1pb.SPANS) { r.STATUS_MESSAGE = proto.String(strings.Repeat("s", 1000)) },
+		"trace state":    func(r *otelv1pb.SPANS) { r.TRACE_STATE = proto.String(strings.Repeat("t", 1000)) },
+	} {
+		grown := proto.Clone(row).(*otelv1pb.SPANS)
+		grow(grown)
+		if got := spanCost(grown); got < want+1000 {
+			t.Fatalf("a 1000-byte %s adds %d to the estimate", name, got-want)
+		}
 	}
 	if len(tuple.Tuple{[]byte{0, 1, 0}}.Pack()) != 7 {
 		t.Fatal("ref chunk bytes are not counted escaped")
@@ -244,7 +257,7 @@ func TestRelPrepareMessages(t *testing.T) {
 	if len(chunks) != 2 || chunks[0].GetCHUNK() != 0 || string(chunks[1].GetREFS()) != "c1" || chunks[1].GetCHUNK() != 1 {
 		t.Fatalf("ref chunks %+v", chunks)
 	}
-	if items[0].cost != spanCost(row, len(row.OTLP)) {
+	if items[0].cost != spanCost(row) {
 		t.Fatal("the estimate leaves out the ref chunks")
 	}
 	// Without references (deltas) no chunk is packed.

@@ -171,7 +171,7 @@ func prepareSpan(rs *tracepb.ResourceSpans, ss *tracepb.ScopeSpans, sp *tracepb.
 			row.REF_CHUNKS.Values = append(row.REF_CHUNKS.Values, &otelv1pb.MESSAGE_REF_CHUNK{CHUNK: proto.Int64(int64(i)), REFS: c})
 		}
 	}
-	cost := spanCost(row, len(wire))
+	cost := spanCost(row)
 	if cost > exportSpanBudget {
 		return relSpan{}, fail("admission", "export batch", "single span exceeds conservative 300KB transaction estimate")
 	}
@@ -182,12 +182,14 @@ func prepareSpan(rs *tracepb.ResourceSpans, ss *tracepb.ScopeSpans, sp *tracepb.
 	}, nil
 }
 
-// spanCost is a row's conservative transaction estimate: 2048 and the otlp
-// bytes, plus 2·(key + value text + 256) per projected attribute (its record
-// copy and index entry) and per ref chunk its encoded index key bytes.
-func spanCost(r *otelv1pb.SPANS, otlp int) int {
-	cost := 2048 + otlp
-	attr := func(key string, value int) { cost += 2 * (len(key) + value + 256) }
+// spanCost is a row's conservative transaction estimate: 2048, the row's
+// serialized bytes (its OTLP and every column that copies part of it), and
+// per projected attribute and ref chunk its index entry, its key and value
+// text plus 512. Bounding the whole row keeps an admitted span within the
+// actual-size guard however its bytes are spread over the columns.
+func spanCost(r *otelv1pb.SPANS) int {
+	cost := 2048 + proto.Size(r)
+	attr := func(key string, value int) { cost += len(key) + value + 512 }
 	for _, a := range r.GetSTR_ATTRS().GetValues() {
 		attr(a.GetATTR_KEY(), len(a.GetSTR_VALUE()))
 	}
@@ -210,7 +212,7 @@ func spanCost(r *otelv1pb.SPANS, otlp int) int {
 		attr(a.GetATTR_KEY(), len(a.GetJSON_VALUE()))
 	}
 	for _, c := range r.GetREF_CHUNKS().GetValues() {
-		cost += 2 * (len(tuple.Tuple{c.GetREFS()}.Pack()) + 256)
+		cost += len(tuple.Tuple{c.GetREFS()}.Pack()) + 512
 	}
 	return cost
 }
