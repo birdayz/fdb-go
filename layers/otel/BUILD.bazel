@@ -118,6 +118,7 @@ go_test(
         "logs_admission_corruption_regression_test.go",
         "logs_fidelity_test.go",
         "logs_helpers_test.go",
+        "logs_rel_bench_test.go",
         "logs_rel_fdb_test.go",
         "logs_rel_helpers_test.go",
         "logs_rel_test.go",
