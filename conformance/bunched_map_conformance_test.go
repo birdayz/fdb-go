@@ -114,6 +114,44 @@ func (r *bunchedMapRecorder) AppendIfFits(key fdb.KeyConvertible, param []byte) 
 	r.WritableTransaction.AppendIfFits(key, param)
 }
 
+// The byte-slice forms BunchedMap uses record as the forms they shorten:
+// they are the same operations without the key conversion.
+
+func (r *bunchedMapRecorder) AddReadConflictKeyBytes(key []byte) error {
+	r.add("read_conflict_key %x", key)
+	return r.WritableTransaction.AddReadConflictKeyBytes(key)
+}
+
+func (r *bunchedMapRecorder) AddReadConflictRangeBytes(begin, end []byte) error {
+	r.add("read_conflict_range %x %x", begin, end)
+	return r.WritableTransaction.AddReadConflictRangeBytes(begin, end)
+}
+
+func (r *bunchedMapRecorder) AddWriteConflictKeyBytes(key []byte) error {
+	r.add("write_conflict_key %x", key)
+	return r.WritableTransaction.AddWriteConflictKeyBytes(key)
+}
+
+func (r *bunchedMapRecorder) AddWriteConflictRangeBytes(begin, end []byte) error {
+	r.add("write_conflict_range %x %x", begin, end)
+	return r.WritableTransaction.AddWriteConflictRangeBytes(begin, end)
+}
+
+func (r *bunchedMapRecorder) SetBytes(key, value []byte) {
+	r.add("set %x %x", key, value)
+	r.WritableTransaction.SetBytes(key, value)
+}
+
+func (r *bunchedMapRecorder) ClearBytes(key []byte) {
+	r.add("clear %x", key)
+	r.WritableTransaction.ClearBytes(key)
+}
+
+func (r *bunchedMapRecorder) AppendIfFitsBytes(key, param []byte) {
+	r.add("mutate APPEND_IF_FITS %x %x", key, param)
+	r.WritableTransaction.AppendIfFitsBytes(key, param)
+}
+
 type bunchedMapOp struct {
 	Op    string `json:"op"`
 	Map   string `json:"map"`
