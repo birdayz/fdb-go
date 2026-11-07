@@ -11,7 +11,7 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 )
 
-func utf8CheckFile(t *testing.T) protoreflect.FileDescriptor {
+func utf8CheckFile(t testing.TB) protoreflect.FileDescriptor {
 	t.Helper()
 	optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
 	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()

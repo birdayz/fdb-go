@@ -1,0 +1,44 @@
+# G3 collector-bench runs on container otelg3p3a (foundationdb/foundationdb:7.3.77, single ssd-redwood-1, port 4520, otelcmp's env)
+# new: otelbench at f68acec5233c18ebf45acf5814f5721e43c4e5ce sha256 054dd7cb83e586530ac005f97f613fb5f3878fd040de74e443ab1a07fb04538e
+# base: otelbench at 7fb269417cceacbc8697cf4d3e1bd933aa95e091 sha256 c1669a454f4a0f38c2aee6f7918f24d4023931eceb00c7cd7a08b1af7be1c6cc, run with --backend fdb
+# every run: --mode collector-bench --conversations 1000 [--enable-message-deltas=false --enable-message-fts=false for *_off_*]
+# load = 1-minute load average; user_sys_real = bash time of the whole command (s); quiet=[load queue_bytes]: started after load < 15 and storage/log queues < 1 MB on two polls
+# the four rc=2 lines are base attempts without --backend fdb (flag error, no receipt); their names were reused
+g3base_fts_1 rev=7fb269417 rc=2 load_start=11.18 load_end=11.18
+g3new_fts_1 rev=f68acec52 rc=0 load_start=11.18 load_end=13.26
+g3base_off_1 rev=7fb269417 rc=2 load_start=13.26 load_end=13.26
+g3new_off_1 rev=f68acec52 rc=0 load_start=13.26 load_end=14.76
+g3base_fts_2 rev=7fb269417 rc=2 load_start=14.76 load_end=14.76
+g3new_fts_2 rev=f68acec52 rc=0 load_start=14.76 load_end=14.03
+g3base_off_2 rev=7fb269417 rc=2 load_start=14.03 load_end=14.03
+g3new_off_2 rev=f68acec52 rc=0 load_start=14.03 load_end=14.02
+g3base_fts_1 rev=7fb269417 rc=0 load_start=12.56 load_end=11.19
+g3new_fts_3 rev=f68acec52 rc=0 load_start=11.19 load_end=10.65
+g3base_off_1 rev=7fb269417 rc=0 load_start=10.65 load_end=11.88
+g3new_off_3 rev=f68acec52 rc=0 load_start=11.88 load_end=11.49
+g3base_fts_2 rev=7fb269417 rc=0 load_start=11.49 load_end=11.98
+g3new_fts_4 rev=f68acec52 rc=0 load_start=11.98 load_end=10.58
+g3base_off_2 rev=7fb269417 rc=0 load_start=10.58 load_end=11.01
+g3new_off_4 rev=f68acec52 rc=0 load_start=11.01 load_end=10.63
+g3base_fts_3 rev=7fb269417 rc=0 load_start=9.14 load_end=10.89 user_sys_real=105.248 8.042 26.910
+g3new_fts_5 rev=f68acec52 rc=0 load_start=10.89 load_end=9.43 user_sys_real=92.498 7.310 28.250
+g3base_off_3 rev=7fb269417 rc=0 load_start=9.43 load_end=9.47 user_sys_real=38.537 2.933 6.359
+g3new_off_5 rev=f68acec52 rc=0 load_start=9.47 load_end=9.49 user_sys_real=27.555 1.732 10.016
+g3base_fts_4 rev=7fb269417 rc=0 load_start=9.49 load_end=11.08 user_sys_real=102.669 9.305 42.601
+g3new_fts_6 rev=f68acec52 rc=0 load_start=11.08 load_end=11.84 user_sys_real=93.332 7.548 28.504
+g3base_off_4 rev=7fb269417 rc=0 load_start=11.84 load_end=13.93 user_sys_real=38.156 2.808 6.035
+g3new_off_6 rev=f68acec52 rc=0 load_start=13.93 load_end=14.35 user_sys_real=26.898 1.734 9.103
+g3base_fts_5 rev=7fb269417 rc=0 quiet=[10.81 20122] load_start=10.81 load_end=11.43 user_sys_real=103.400 8.908 28.803
+g3new_fts_7 rev=f68acec52 rc=0 quiet=[11.08 17828] load_start=11.08 load_end=11.79 user_sys_real=93.477 7.523 27.661
+g3base_off_5 rev=7fb269417 rc=0 quiet=[11.79 19621] load_start=11.79 load_end=12.88 user_sys_real=37.859 2.975 6.203
+g3new_off_7 rev=f68acec52 rc=0 quiet=[10.09 2132] load_start=10.09 load_end=9.84 user_sys_real=27.537 1.932 4.673
+g3new_fts_8 rev=f68acec52 rc=0 quiet=[9.74 197] load_start=9.74 load_end=9.46 user_sys_real=93.028 7.460 26.267
+g3base_fts_6 rev=7fb269417 rc=0 quiet=[9.34 2446] load_start=9.34 load_end=8.94 user_sys_real=104.247 8.983 26.425
+g3new_off_8 rev=f68acec52 rc=0 quiet=[8.78 2130] load_start=8.78 load_end=8.40 user_sys_real=28.258 1.913 5.020
+g3base_off_6 rev=7fb269417 rc=0 quiet=[8.08 21563] load_start=8.08 load_end=8.39 user_sys_real=38.775 3.154 7.624
+g3base_fts_7 rev=7fb269417 rc=0 quiet=[5.19 2070] load_start=5.19 load_end=7.18 user_sys_real=102.509 8.614 26.291
+g3new_fts_9 rev=f68acec52 rc=0 quiet=[6.85 3933] load_start=6.85 load_end=10.35 user_sys_real=94.498 7.531 25.393
+g3new_fts_10 rev=f68acec52 rc=0 quiet=[10.16 20535] load_start=10.23 load_end=10.94 user_sys_real=94.349 7.735 26.761
+g3base_fts_8 rev=7fb269417 rc=0 quiet=[10.55 2734] load_start=10.55 load_end=10.29 user_sys_real=106.860 8.972 26.278
+g3base_fts_9 rev=7fb269417 rc=0 quiet=[9.87 2575] load_start=9.87 load_end=15.19 user_sys_real=106.426 9.089 29.953
+g3new_fts_11 rev=f68acec52 rc=0 quiet=[13.65 2002] load_start=13.65 load_end=12.83 user_sys_real=92.421 7.356 26.652

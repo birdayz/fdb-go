@@ -68,12 +68,18 @@ func (c Config) Validate() error {
 	}
 	switch c.RecordCompression {
 	case "", "none":
-	case "zlib-1", "brotli-0", "brotli-1", "brotli-3", "brotli-4":
+	case "zlib-1", "zlib-default":
+		// Java-readable deflate: the sql backend's OTEL_V1 stores accept it.
+		if c.Backend != "fdb" && c.Backend != "sql" {
+			return fail("config", "record compression", "Record Layer compression requires the FDB or SQL backend")
+		}
+	case "brotli-0", "brotli-1", "brotli-3", "brotli-4":
+		// Go-only; SQL connections cannot read it.
 		if c.Backend != "fdb" {
-			return fail("config", "record compression", "Record Layer compression requires the FDB backend")
+			return fail("config", "record compression", "Brotli record compression requires the FDB backend")
 		}
 	default:
-		return fail("config", "record compression", "record compression must be none, zlib-1, brotli-0, brotli-1, brotli-3, or brotli-4")
+		return fail("config", "record compression", "record compression must be none, zlib-1, zlib-default, brotli-0, brotli-1, brotli-3, or brotli-4")
 	}
 	switch c.PostingValueFormat {
 	case "", "json":
@@ -96,8 +102,10 @@ func (c Config) Validate() error {
 	if c.KeyLayout != keyLayoutTuple && (c.KeyLayout != keyLayoutDirectory || c.Backend != "fdb") {
 		return fail("config", "key layout", "key layout must be empty, or directory_v1 for the FDB backend")
 	}
-	if c.BulkIndexConflicts && (c.Backend != "fdb" || c.SaveMode != "batch") {
-		return fail("config", "bulk index conflicts", "bulk index conflicts require the FDB batch save mode")
+	// The sql backend's batch saves are the Exporter's SpanWriter, whose
+	// default coalesces index write conflicts.
+	if c.BulkIndexConflicts && ((c.Backend != "fdb" && c.Backend != "sql") || c.SaveMode != "batch") {
+		return fail("config", "bulk index conflicts", "bulk index conflicts require the batch save mode of the fdb or sql backend")
 	}
 	if c.CHIndexGranularity < 1 || c.CHIndexGranularity > 8192 {
 		return fail("config", "CH index granularity", "index granularity must be 1..8192 for fresh tables")

@@ -13,29 +13,6 @@ import (
 	"fdb.dev/pkg/recordlayer"
 )
 
-type Size struct {
-	Keys          int64 `json:"keys"`
-	KeyBytes      int64 `json:"key_bytes"`
-	ValueBytes    int64 `json:"value_bytes"`
-	PhysicalBytes int64 `json:"physical_bytes,omitempty"`
-}
-type Statistics struct {
-	Rows                int64              `json:"rows"`
-	Attributes          int64              `json:"attributes"`
-	LogicalPayloadBytes int64              `json:"logical_payload_bytes"`
-	Structures          map[string]Size    `json:"structures"`
-	Details             map[string]string  `json:"details,omitempty"`
-	Diagnostics         *IngestDiagnostics `json:"diagnostics,omitempty"`
-}
-type Backend interface {
-	Ingest(context.Context) (Statistics, error)
-	Query(context.Context, Attribute) (QueryResult, error)
-	Trace(context.Context, string) ([]SpanHit, error)
-	Audit(context.Context) (Statistics, error)
-	Drop(context.Context) error
-	Close()
-}
-
 type FDBBackend struct {
 	cfg            Config
 	raw            fdb.Database
@@ -322,6 +299,7 @@ func (b *FDBBackend) size(ctx context.Context, ss subspace.Subspace) (Size, erro
 	begin, end := ss.FDBRangeKeys()
 	lo := begin.FDBKey()
 	high := end.FDBKey()
+	var prev []byte
 	for {
 		var rows []fdb.KeyValue
 		_, err := b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
@@ -333,9 +311,8 @@ func (b *FDBBackend) size(ctx context.Context, ss subspace.Subspace) (Size, erro
 			return total, err
 		}
 		for _, kv := range rows {
-			total.Keys++
-			total.KeyBytes += int64(len(kv.Key))
-			total.ValueBytes += int64(len(kv.Value))
+			total.AddKV(prev, kv.Key, kv.Value)
+			prev = kv.Key
 		}
 		if len(rows) < 256 {
 			break
@@ -450,6 +427,7 @@ func (b *FDBBackend) Audit(ctx context.Context) (Statistics, error) {
 		total.KeyBytes += sz.KeyBytes
 		total.ValueBytes += sz.ValueBytes
 		total.PhysicalBytes += sz.PhysicalBytes
+		total.PrefixBytes += sz.PrefixBytes
 		stats.Structures["owned_total"] = total
 	}
 	for _, name := range []string{spanIndexName, timeIndexName} {

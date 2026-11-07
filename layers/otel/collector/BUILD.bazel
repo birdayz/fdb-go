@@ -12,6 +12,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//layers/otel",
+        "//layers/otel/otelsql",
         "@in_gopkg_yaml_v3//:yaml_v3",
         "@io_opentelemetry_go_proto_otlp//common/v1:common",
         "@io_opentelemetry_go_proto_otlp//resource/v1:resource",
@@ -26,7 +27,9 @@ go_test(
     srcs = [
         "bench_clock_test.go",
         "bench_duration_regression_test.go",
+        "bench_helpers_test.go",
         "bench_test.go",
+        "collector_helpers_test.go",
         "collector_test.go",
         "errors_test.go",
         "lifecycle_regression_test.go",

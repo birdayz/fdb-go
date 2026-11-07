@@ -9,7 +9,6 @@ package otel
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"sort"
 	"sync"
 
@@ -17,11 +16,6 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
-)
-
-const (
-	maxMessageQueryBytes    = 4096
-	messageContinuationKind = "message_fts"
 )
 
 const (
@@ -55,140 +49,15 @@ type MessageSpanHit struct {
 	TurnOrdinals []int  `json:"turn_ordinals"`
 }
 
-// MessageFullTextPage is one snapshot page in the run's order (span sort key,
-// then attribute key, then writer/sequence message ID). A full page carries a continuation.
+// MessageFullTextPage is one snapshot page of hits in sort-key order (start,
+// trace and span descending, D3, then attribute key and writer/sequence
+// message ID). A full page carries a continuation.
 type MessageFullTextPage struct {
 	Hits         []MessageSpanHit `json:"hits"`
 	Continuation []byte           `json:"continuation,omitempty"`
-	Order        string           `json:"order"`
 	ReadVersion  int64            `json:"read_version"`
 	Candidates   int              `json:"candidates"`
 	Bytes        int64            `json:"logical_read_bytes"`
-}
-
-type messagePhraseTerm struct {
-	term   string
-	offset int
-}
-
-// tokenizeQueryTerms rejects overlong, unindexed query tokens because no answer could be exhaustive.
-func tokenizeQueryTerms(text string) ([]messagePhraseTerm, error) {
-	const op = "message query"
-	if len(text) > maxMessageQueryBytes {
-		return nil, failf("config", op, "query exceeds %d bytes", maxMessageQueryBytes)
-	}
-	list, err := recordlayer.DefaultTextTokenizerInstance().TokenizeToList(text, recordlayer.GlobalMinVersion, recordlayer.TokenizerModeQuery)
-	if err != nil {
-		return nil, typedError("config", op, "default tokenizer", err)
-	}
-	var out []messagePhraseTerm
-	for i, tok := range list {
-		if tok == "" {
-			continue
-		}
-		if len(tok) > maxIndexedTokenBytes {
-			return nil, failf("config", op, "query term exceeds the %d-byte indexed token cap", maxIndexedTokenBytes)
-		}
-		out = append(out, messagePhraseTerm{tok, i})
-	}
-	return out, nil
-}
-
-type messageQueryPlan struct {
-	mode      string
-	terms     []string // distinct, in query order
-	phrase    []messagePhraseTerm
-	attribute int64 // 0: any attribute
-	attrKey   string
-	role      string
-	preds     []Attribute
-	window    timeWindow
-	firstTurn bool
-	limit     int
-	digest    []byte
-}
-
-func newMessageQueryPlan(op string, q MessageFullTextQuery, k int) (*messageQueryPlan, error) {
-	mode := q.Mode
-	if mode == "" {
-		mode = MessageMatchAll
-	}
-	if mode != MessageMatchAll && mode != MessageMatchAny && mode != MessageMatchPhrase {
-		return nil, failf("config", op, "unsupported message match mode %q", q.Mode)
-	}
-	phrase, err := tokenizeQueryTerms(q.Query)
-	if err != nil {
-		return nil, err
-	}
-	if len(phrase) == 0 || len(phrase) > maxMessageQueryTerms {
-		return nil, failf("config", op, "expected 1..%d searchable query terms", maxMessageQueryTerms)
-	}
-	p := &messageQueryPlan{mode: mode, phrase: phrase, attrKey: q.AttributeKey, role: normalizeMessageRole(q.Role), firstTurn: q.FirstTurnOnly}
-	base := phrase[0].offset
-	seen := map[string]bool{}
-	for i := range p.phrase {
-		p.phrase[i].offset -= base
-		if t := p.phrase[i].term; !seen[t] {
-			seen[t] = true
-			p.terms = append(p.terms, t)
-		}
-	}
-	if q.AttributeKey != "" {
-		if p.attribute = messageAttributeCode(q.AttributeKey); p.attribute <= 0 {
-			return nil, failf("config", op, "attribute_key %q is not a GenAI message attribute", q.AttributeKey)
-		}
-	}
-	if len(q.Role) > maxMessageRoleBytes {
-		return nil, failf("config", op, "role exceeds %d bytes", maxMessageRoleBytes)
-	}
-	p.preds = uniqueAttributes(q.Predicates)
-	if len(q.Predicates) > maxQueryPredicates {
-		return nil, failf("config", op, "expected at most %d predicates", maxQueryPredicates)
-	}
-	for _, a := range p.preds {
-		if err := validateQueryAttribute(op, a, "resource", "scope", "span"); err != nil {
-			return nil, err
-		}
-		if err := checkMessageAttributeQuery(op, a, true); err != nil {
-			return nil, err
-		}
-	}
-	if q.Limit < 0 {
-		return nil, fail("config", op, "limit must not be negative")
-	}
-	if p.window, err = newTimeWindow(q.TimeWindow); err != nil {
-		return nil, err
-	}
-	p.limit = q.Limit
-	if p.limit == 0 {
-		p.limit = k
-	}
-	t := tuple.Tuple{messageContinuationKind, mode, int64(len(p.phrase))}
-	if mode == MessageMatchPhrase {
-		for _, pt := range p.phrase {
-			t = append(t, pt.term, int64(pt.offset))
-		}
-	} else {
-		sorted := append([]string(nil), p.terms...)
-		sort.Strings(sorted)
-		t = append(t, int64(len(sorted)))
-		for _, s := range sorted {
-			t = append(t, s)
-		}
-	}
-	t = append(t, p.attrKey, p.role, p.firstTurn, queryDigest(messageContinuationKind, p.preds, p.window))
-	h := sha256.Sum256(t.Pack())
-	p.digest = h[:]
-	return p, nil
-}
-
-// checkMessageAttributeQuery rejects equality on unindexed GenAI manifests
-// rather than returning a misleading empty answer.
-func checkMessageAttributeQuery(op string, a Attribute, decomposed bool) error {
-	if decomposed && a.Scope == "span" && IsMessageDeltaAttribute(a.Key) {
-		return failf("config", op, "%s holds decomposed GenAI messages; search it with QueryMessageFullText", a.Key)
-	}
-	return nil
 }
 
 // messageCandidate is one matching message.
@@ -718,18 +587,6 @@ func (b *FDBBackend) runMessageQuery(ctx context.Context, store *recordlayer.FDB
 	return nil
 }
 
-func intersectTimeWindows(a, b timeWindow) timeWindow {
-	if !a.set {
-		return b
-	}
-	if !b.set {
-		return a
-	}
-	w := timeWindow{set: true, lo: max(a.lo, b.lo), hi: min(a.hi, b.hi)}
-	w.empty = a.empty || b.empty || w.hi <= w.lo
-	return w
-}
-
 // parseMessageResume validates an authenticated continuation's sort key.
 func parseMessageResume(order string, raw []byte) ([]byte, error) {
 	bad := fail("corruption", "continuation", "malformed message continuation sort key")
@@ -761,7 +618,7 @@ func parseMessageResume(order string, raw []byte) ([]byte, error) {
 func (b *FDBBackend) QueryMessageFullText(ctx context.Context, q MessageFullTextQuery) (MessageFullTextPage, error) {
 	const op = "message full-text query"
 	b.lastWork = QueryResult{}
-	page := MessageFullTextPage{Hits: []MessageSpanHit{}, Order: b.cfg.Order}
+	page := MessageFullTextPage{Hits: []MessageSpanHit{}}
 	if b.cfg.Messages != messagesFullText {
 		return page, fail("config", op, "message text is not indexed in this run's layout")
 	}
@@ -778,7 +635,7 @@ func (b *FDBBackend) QueryMessageFullText(ctx context.Context, q MessageFullText
 	var secret, lastKey []byte
 	budget := b.newBudget(op)
 	_, err = b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
-		page = MessageFullTextPage{Hits: []MessageSpanHit{}, Order: b.cfg.Order}
+		page = MessageFullTextPage{Hits: []MessageSpanHit{}}
 		budget = b.newBudget(op)
 		lastKey = nil
 		store, pm, err := b.openPostingsStore(rc, op)
@@ -817,20 +674,4 @@ func (b *FDBBackend) QueryMessageFullText(ctx context.Context, q MessageFullText
 	}
 	page.Continuation = signContinuationKind(secret, messageContinuationKind, b.cfg.Run, b.cfg.Tenant, b.cfg.Order, plan.digest, lastKey)
 	return page, nil
-}
-
-// QueryMessageFullText searches message text; the exporter must index it.
-func (e *Exporter) QueryMessageFullText(ctx context.Context, q MessageFullTextQuery) (MessageFullTextPage, error) {
-	const op = "message full-text query"
-	empty := MessageFullTextPage{Hits: []MessageSpanHit{}, Order: e.cfg.Order}
-	if !e.cfg.EnableMessageFullText {
-		return empty, fail("config", op, "enable_message_full_text is off; message text is not indexed")
-	}
-	if err := e.begin(op); err != nil {
-		return empty, err
-	}
-	defer e.active.Done()
-	e.queryMu.Lock()
-	defer e.queryMu.Unlock()
-	return e.backend.QueryMessageFullText(e.txnContext(ctx), q)
 }

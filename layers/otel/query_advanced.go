@@ -3,31 +3,14 @@ package otel
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"sort"
-	"strconv"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
-	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
-)
-
-const (
-	maxQueryPredicates   = 16
-	maxContinuationBytes = 4096
-	continuationVersion  = int64(1)
-	continuationKind     = "same_span"
-	continuationDomain   = "otel/continuation/v1\x00"
-	continuationKeyBytes = 32
-	// sameSpanProbeBatch bounds how many verified driver candidates share one
-	// pipelined round of point probes for the remaining predicates.
-	sameSpanProbeBatch = 64
 )
 
 // SameSpanQuery intersects predicates on one (trace_id, span_id), in posting order.
@@ -44,7 +27,6 @@ type SameSpanQuery struct {
 type SpanQueryPage struct {
 	Spans        []SpanMatch `json:"spans"`
 	Continuation []byte      `json:"continuation,omitempty"`
-	Order        string      `json:"order"`
 	ReadVersion  int64       `json:"read_version"`
 	Candidates   int         `json:"candidates"`
 	Bytes        int64       `json:"logical_read_bytes"`
@@ -104,204 +86,10 @@ type TraceGraph struct {
 	Links          map[string][]SpanLink `json:"links"`
 }
 
-// queryBudget charges every key read, including rejected candidates and probes.
-type queryBudget struct {
-	op            string
-	candidates    int
-	bytes         int64
-	maxCandidates int
-	maxBytes      int64
-}
-
-func (q *queryBudget) charge(kv fdb.KeyValue) error {
-	q.candidates++
-	q.bytes += int64(len(kv.Key) + len(kv.Value))
-	if q.candidates > q.maxCandidates || q.bytes > q.maxBytes {
-		return failf("budget", q.op, "candidates=%d logical_bytes=%d", q.candidates, q.bytes)
-	}
-	return nil
-}
-
-// timeWindow is a validated [lo, hi) over stored event times, which are 0..MaxInt64.
-type timeWindow struct {
-	set, empty bool
-	lo, hi     int64
-}
-
-func newTimeWindow(r *TimeRange) (timeWindow, error) {
-	if r == nil {
-		return timeWindow{}, nil
-	}
-	if err := r.Validate(); err != nil {
-		return timeWindow{}, err
-	}
-	w := timeWindow{set: true, lo: max(r.Start, 0), hi: r.End}
-	w.empty = w.hi <= w.lo
-	return w, nil
-}
-
-func (w timeWindow) contains(t int64) bool { return !w.set || (t >= w.lo && t < w.hi) }
-
 // descendingRange is the key range of prefix P whose first element is -t for
 // t inside w; w must be set and nonempty, so 1-hi and 1-lo cannot overflow.
 func (w timeWindow) descendingRange(p subspace.Subspace) (fdb.Key, fdb.Key) {
 	return p.Pack(tuple.Tuple{1 - w.hi}), p.Pack(tuple.Tuple{1 - w.lo})
-}
-
-func validateQueryAttribute(op string, a Attribute, scopes ...string) error {
-	known := false
-	for _, s := range scopes {
-		known = known || a.Scope == s
-	}
-	if !known {
-		return failf("config", op, "unsupported attribute scope %q", a.Scope)
-	}
-	switch a.Type {
-	case "string":
-	case "int":
-		n, err := strconv.ParseInt(a.Value, 10, 64)
-		if err != nil || strconv.FormatInt(n, 10) != a.Value {
-			return fail("config", op, "int attribute value must be a canonical base-10 int64")
-		}
-	default:
-		return failf("config", op, "unsupported attribute type %q; indexed types are string and int", a.Type)
-	}
-	// Larger keys and values are never indexed; an empty answer would not be exhaustive.
-	if len(a.Key) > maxIndexedKeyBytes || len(a.Value) > maxIndexedValueBytes {
-		return fail("config", op, "attribute exceeds the indexed key/value cap")
-	}
-	return nil
-}
-
-func attributeLess(x, y Attribute) bool {
-	if x.Scope != y.Scope {
-		return x.Scope < y.Scope
-	}
-	if x.Key != y.Key {
-		return x.Key < y.Key
-	}
-	if x.Type != y.Type {
-		return x.Type < y.Type
-	}
-	return x.Value < y.Value
-}
-
-// uniqueAttributes drops repeated predicates, keeping first positions.
-func uniqueAttributes(in []Attribute) []Attribute {
-	out := make([]Attribute, 0, len(in))
-	seen := make(map[Attribute]bool, len(in))
-	for _, a := range in {
-		if !seen[a] {
-			seen[a] = true
-			out = append(out, a)
-		}
-	}
-	return out
-}
-
-// queryDigest binds the predicate set (not its driver order) and time window.
-func queryDigest(kind string, preds []Attribute, w timeWindow) []byte {
-	sorted := append([]Attribute(nil), preds...)
-	sort.Slice(sorted, func(i, j int) bool { return attributeLess(sorted[i], sorted[j]) })
-	t := tuple.Tuple{kind, int64(len(sorted))}
-	for _, a := range sorted {
-		t = append(t, a.Scope, a.Key, a.Type, a.Value)
-	}
-	t = append(t, w.set, w.lo, w.hi)
-	h := sha256.Sum256(t.Pack())
-	return h[:]
-}
-
-type sameSpanPlan struct {
-	preds  []Attribute
-	window timeWindow
-	limit  int
-	digest []byte
-}
-
-func newSameSpanPlan(q SameSpanQuery, k int) (sameSpanPlan, error) {
-	const op = "same-span query"
-	preds := uniqueAttributes(q.Predicates)
-	if len(preds) == 0 || len(q.Predicates) > maxQueryPredicates {
-		return sameSpanPlan{}, failf("config", op, "expected 1..%d predicates", maxQueryPredicates)
-	}
-	for _, a := range preds {
-		if err := validateQueryAttribute(op, a, "resource", "scope", "span"); err != nil {
-			return sameSpanPlan{}, err
-		}
-	}
-	if q.Limit < 0 {
-		return sameSpanPlan{}, fail("config", op, "limit must not be negative")
-	}
-	w, err := newTimeWindow(q.TimeWindow)
-	if err != nil {
-		return sameSpanPlan{}, err
-	}
-	limit := q.Limit
-	if limit == 0 {
-		limit = k
-	}
-	return sameSpanPlan{preds: preds, window: w, limit: limit, digest: queryDigest(continuationKind, preds, w)}, nil
-}
-
-// continuation is a parsed, not yet authenticated, token.
-type continuation struct {
-	run     string
-	tenant  int64
-	order   string
-	digest  []byte
-	last    []byte
-	payload []byte
-	mac     []byte
-}
-
-func continuationMAC(secret, payload []byte) []byte {
-	m := hmac.New(sha256.New, secret)
-	m.Write([]byte(continuationDomain))
-	m.Write(payload)
-	return m.Sum(nil)
-}
-
-func signContinuation(secret []byte, run string, tenant int, order string, digest, last []byte) []byte {
-	return signContinuationKind(secret, continuationKind, run, tenant, order, digest, last)
-}
-
-// signContinuationKind signs a token of one query family; kind is authenticated.
-func signContinuationKind(secret []byte, kind, run string, tenant int, order string, digest, last []byte) []byte {
-	payload := tuple.Tuple{continuationVersion, kind, run, int64(tenant), order, digest, last}.Pack()
-	return append(payload, continuationMAC(secret, payload)...)
-}
-
-func parseContinuation(token []byte) (*continuation, error) {
-	return parseContinuationKind(token, continuationKind)
-}
-
-func parseContinuationKind(token []byte, want string) (*continuation, error) {
-	const op = "continuation"
-	if len(token) <= sha256.Size || len(token) > maxContinuationBytes {
-		return nil, fail("config", op, "malformed continuation token length")
-	}
-	payload, mac := token[:len(token)-sha256.Size], token[len(token)-sha256.Size:]
-	fields, err := tuple.Unpack(payload)
-	if err != nil {
-		return nil, typedError("config", op, "malformed continuation token", err)
-	}
-	if len(fields) != 7 {
-		return nil, fail("config", op, "malformed continuation token fields")
-	}
-	version, vok := fields[0].(int64)
-	kind, kok := fields[1].(string)
-	c := &continuation{payload: payload, mac: mac}
-	var rok, tok, ook, dok, lok bool
-	c.run, rok = fields[2].(string)
-	c.tenant, tok = fields[3].(int64)
-	c.order, ook = fields[4].(string)
-	c.digest, dok = fields[5].([]byte)
-	c.last, lok = fields[6].([]byte)
-	if !vok || !kok || !rok || !tok || !ook || !dok || !lok || version != continuationVersion || kind != want {
-		return nil, fail("config", op, "unsupported continuation token")
-	}
-	return c, nil
 }
 
 // verify authenticates the token, then checks its bindings to this run and
@@ -324,11 +112,8 @@ func (c *continuation) verify(secret []byte, b *FDBBackend, digest []byte) (tupl
 // authenticate checks the MAC, then the token's run, tenant, order and query.
 func (c *continuation) authenticate(secret []byte, b *FDBBackend, digest []byte) error {
 	const op = "continuation"
-	if len(secret) == 0 {
-		return fail("corruption", op, "continuation signing key is absent for this run")
-	}
-	if !hmac.Equal(c.mac, continuationMAC(secret, c.payload)) {
-		return fail("corruption", op, "continuation token failed authentication")
+	if err := c.checkMAC(secret); err != nil {
+		return err
 	}
 	switch {
 	case c.run != b.cfg.Run:
@@ -527,7 +312,7 @@ func (b *FDBBackend) newBudget(op string) *queryBudget {
 func (b *FDBBackend) QuerySameSpan(ctx context.Context, q SameSpanQuery) (SpanQueryPage, error) {
 	const op = "same-span query"
 	b.lastWork = QueryResult{}
-	page := SpanQueryPage{Spans: []SpanMatch{}, Order: b.cfg.Order}
+	page := SpanQueryPage{Spans: []SpanMatch{}}
 	plan, err := newSameSpanPlan(q, b.cfg.K)
 	if err != nil {
 		return page, err
@@ -546,7 +331,7 @@ func (b *FDBBackend) QuerySameSpan(ctx context.Context, q SameSpanQuery) (SpanQu
 	var secret []byte
 	budget := b.newBudget(op)
 	_, err = b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
-		page = SpanQueryPage{Spans: []SpanMatch{}, Order: b.cfg.Order}
+		page = SpanQueryPage{Spans: []SpanMatch{}}
 		budget = b.newBudget(op)
 		pm, err := b.openPostings(rc, op)
 		if err != nil {
@@ -938,11 +723,6 @@ func (b *FDBBackend) QueryTraceExistential(ctx context.Context, q TraceExistenti
 	return out, err
 }
 
-type graphSpan struct {
-	match SpanMatch
-	span  *tracepb.Span
-}
-
 // TraverseTraceGraph loads every stored span of the trace in one bounded
 // transaction and builds its observed parent adjacency and links.
 func (b *FDBBackend) TraverseTraceGraph(ctx context.Context, traceID string) (TraceGraph, error) {
@@ -1004,147 +784,4 @@ func (b *FDBBackend) TraverseTraceGraph(ctx context.Context, traceID string) (Tr
 		return TraceGraph{}, err
 	}
 	return buildTraceGraph(traceID, spans), nil
-}
-
-func zeroID(b []byte) bool {
-	for _, c := range b {
-		if c != 0 {
-			return false
-		}
-	}
-	return true
-}
-
-// buildTraceGraph is iterative and linear in the number of spans, so
-// malformed parent chains (cycles, deep chains) cannot exhaust the stack.
-func buildTraceGraph(traceID string, in []graphSpan) TraceGraph {
-	g := TraceGraph{Trace: traceID, Spans: []SpanMatch{}, Roots: []string{}, Children: map[string][]string{}, Parent: map[string]string{}, MissingParents: []string{}, Orphans: []string{}, Cycles: []string{}, Depth: map[string]int{}, Links: map[string][]SpanLink{}}
-	byID := make(map[string]graphSpan, len(in))
-	for _, s := range in {
-		byID[s.match.ID] = s
-		g.Spans = append(g.Spans, s.match)
-	}
-	less := func(x, y string) bool {
-		a, b := byID[x].match, byID[y].match
-		if a.Start != b.Start {
-			return a.Start < b.Start
-		}
-		return a.ID < b.ID
-	}
-	sort.Slice(g.Spans, func(i, j int) bool { return less(g.Spans[i].ID, g.Spans[j].ID) })
-	missing := map[string]bool{}
-	for _, m := range g.Spans {
-		sp := byID[m.ID].span
-		if p := sp.GetParentSpanId(); len(p) > 0 && !zeroID(p) {
-			parent := hex.EncodeToString(p)
-			g.Parent[m.ID] = parent
-			if _, ok := byID[parent]; ok {
-				g.Children[parent] = append(g.Children[parent], m.ID)
-			} else {
-				missing[parent] = true
-				g.Orphans = append(g.Orphans, m.ID)
-			}
-		} else {
-			g.Roots = append(g.Roots, m.ID)
-		}
-		for _, l := range sp.GetLinks() {
-			link := SpanLink{TraceID: hex.EncodeToString(l.GetTraceId()), SpanID: hex.EncodeToString(l.GetSpanId()), TraceState: l.GetTraceState(), Flags: l.GetFlags(), Attributes: l.GetAttributes()}
-			_, stored := byID[link.SpanID]
-			link.Resolved = link.TraceID == traceID && stored
-			g.Links[m.ID] = append(g.Links[m.ID], link)
-		}
-	}
-	for p := range missing {
-		g.MissingParents = append(g.MissingParents, p)
-	}
-	sort.Strings(g.MissingParents)
-	for _, c := range g.Children {
-		sort.Slice(c, func(i, j int) bool { return less(c[i], c[j]) })
-	}
-	// Each span has at most one stored parent, so a colored walk up the chain
-	// finds every cycle once: a node met again on the current path closes one.
-	const (
-		unvisited = iota
-		onPath
-		done
-	)
-	state := make(map[string]int, len(in))
-	for _, m := range g.Spans {
-		var path []string
-		pos := map[string]int{}
-		cur := m.ID
-		for {
-			if _, ok := byID[cur]; !ok || state[cur] == done {
-				break
-			}
-			if state[cur] == onPath {
-				g.Cycles = append(g.Cycles, path[pos[cur]:]...)
-				break
-			}
-			state[cur] = onPath
-			pos[cur] = len(path)
-			path = append(path, cur)
-			parent, ok := g.Parent[cur]
-			if !ok {
-				break
-			}
-			cur = parent
-		}
-		for _, id := range path {
-			state[id] = done
-		}
-	}
-	sort.Strings(g.Cycles)
-	queue := append([]string(nil), g.Roots...)
-	for _, r := range g.Roots {
-		g.Depth[r] = 0
-	}
-	for len(queue) > 0 {
-		cur := queue[0]
-		queue = queue[1:]
-		for _, c := range g.Children[cur] {
-			if _, seen := g.Depth[c]; !seen {
-				g.Depth[c] = g.Depth[cur] + 1
-				g.MaxDepth = max(g.MaxDepth, g.Depth[c])
-				queue = append(queue, c)
-			}
-		}
-	}
-	return g
-}
-
-// QuerySameSpan returns one verified snapshot_page of same-span matches.
-func (e *Exporter) QuerySameSpan(ctx context.Context, q SameSpanQuery) (SpanQueryPage, error) {
-	if err := e.begin("same-span query"); err != nil {
-		return SpanQueryPage{Spans: []SpanMatch{}, Order: e.cfg.Order}, err
-	}
-	defer e.active.Done()
-	e.queryMu.Lock()
-	defer e.queryMu.Unlock()
-	return e.backend.QuerySameSpan(e.txnContext(ctx), q)
-}
-
-// QueryTraceExistential returns the newest traces satisfying every clause, with witnesses.
-func (e *Exporter) QueryTraceExistential(ctx context.Context, q TraceExistentialQuery) (TraceExistentialResult, error) {
-	if len(q.MessageClauses) > 0 && !e.cfg.EnableMessageFullText {
-		return TraceExistentialResult{Hits: []TraceExistentialHit{}}, fail("config", "trace existential", "message clauses need enable_message_full_text")
-	}
-	if err := e.begin("trace existential"); err != nil {
-		return TraceExistentialResult{Hits: []TraceExistentialHit{}}, err
-	}
-	defer e.active.Done()
-	e.queryMu.Lock()
-	defer e.queryMu.Unlock()
-	return e.backend.QueryTraceExistential(e.txnContext(ctx), q)
-}
-
-// TraverseTraceGraph returns the observed parent/child/link topology of one trace.
-func (e *Exporter) TraverseTraceGraph(ctx context.Context, traceID string) (TraceGraph, error) {
-	if err := e.begin("trace graph"); err != nil {
-		return TraceGraph{}, err
-	}
-	defer e.active.Done()
-	e.queryMu.Lock()
-	defer e.queryMu.Unlock()
-	return e.backend.TraverseTraceGraph(e.txnContext(ctx), traceID)
 }

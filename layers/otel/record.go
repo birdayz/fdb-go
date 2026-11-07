@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"sync"
 
+	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/recordlayer"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -51,8 +52,8 @@ var (
 // recordFile describes Envelope plus message records/references when enabled;
 // optional envelope fidelity is separate from the producer’s OTLP namespace.
 func recordFile(messages string) (protoreflect.FileDescriptor, error) {
-	if messages != messagesNone && messageTokenizerRegistrationError != nil {
-		return nil, wrap("config", "message tokenizer registration", messageTokenizerRegistrationError)
+	if err := otelsql.MessageTokenizerRegistrationError(); messages != messagesNone && err != nil {
+		return nil, wrap("config", "message tokenizer registration", err)
 	}
 	descriptorOnce.Do(func() {
 		field := func(name string, n int32, t descriptorpb.FieldDescriptorProto_Type) *descriptorpb.FieldDescriptorProto {
@@ -185,45 +186,7 @@ func toRecord(s Span) (proto.Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	tr, err := hex.DecodeString(s.Trace)
-	if err != nil {
-		return nil, wrap("admission", "trace identity", err)
-	}
-	id, err := hex.DecodeString(s.ID)
-	if err != nil {
-		return nil, wrap("admission", "span identity", err)
-	}
-	if len(tr) != 16 || len(id) != 8 {
-		return nil, fail("admission", "identity", "expected 16-byte trace and 8-byte span identifiers")
-	}
-	otlp := &tracepb.ResourceSpans{Resource: &resourcepb.Resource{}, SchemaUrl: "otelbench-resource-v2", ScopeSpans: []*tracepb.ScopeSpans{{Scope: &commonpb.InstrumentationScope{Name: "otelbench", Version: "2"}, SchemaUrl: "otelbench-scope-v2", Spans: []*tracepb.Span{{TraceId: tr, SpanId: id, Name: "immutable-fixture", StartTimeUnixNano: uint64(s.Start), EndTimeUnixNano: uint64(s.Start + 1000)}}}}}
-	for _, a := range s.Attributes {
-		v := &commonpb.AnyValue{}
-		switch a.Type {
-		case "string":
-			v.Value = &commonpb.AnyValue_StringValue{StringValue: a.Value}
-		case "int":
-			n, e := strconv.ParseInt(a.Value, 10, 64)
-			if e != nil {
-				return nil, wrap("admission", "integer attribute", e)
-			}
-			v.Value = &commonpb.AnyValue_IntValue{IntValue: n}
-		default:
-			return nil, failf("admission", "OTLP encode", "unsupported fixture type %q", a.Type)
-		}
-		kv := &commonpb.KeyValue{Key: a.Key, Value: v}
-		switch a.Scope {
-		case "span":
-			otlp.ScopeSpans[0].Spans[0].Attributes = append(otlp.ScopeSpans[0].Spans[0].Attributes, kv)
-		case "resource":
-			otlp.Resource.Attributes = append(otlp.Resource.Attributes, kv)
-		case "scope":
-			otlp.ScopeSpans[0].Scope.Attributes = append(otlp.ScopeSpans[0].Scope.Attributes, kv)
-		default:
-			return nil, failf("admission", "OTLP encode", "unsupported fixture scope %q", a.Scope)
-		}
-	}
-	wire, err := proto.MarshalOptions{Deterministic: true}.Marshal(otlp)
+	_, wire, err := FixtureOTLP(s)
 	if err != nil {
 		return nil, err
 	}
@@ -236,6 +199,54 @@ func toRecord(s Span) (proto.Message, error) {
 	m.Set(f.ByName("start_ns"), protoreflect.ValueOfInt64(s.Start))
 	m.Set(f.ByName("otlp"), protoreflect.ValueOfBytes(wire))
 	return m, nil
+}
+
+// FixtureOTLP is a fixture span's single-span ResourceSpans and its
+// deterministic wire bytes, the envelope every backend stores.
+func FixtureOTLP(s Span) (*tracepb.ResourceSpans, []byte, error) {
+	tr, err := hex.DecodeString(s.Trace)
+	if err != nil {
+		return nil, nil, wrap("admission", "trace identity", err)
+	}
+	id, err := hex.DecodeString(s.ID)
+	if err != nil {
+		return nil, nil, wrap("admission", "span identity", err)
+	}
+	if len(tr) != 16 || len(id) != 8 {
+		return nil, nil, fail("admission", "identity", "expected 16-byte trace and 8-byte span identifiers")
+	}
+	otlp := &tracepb.ResourceSpans{Resource: &resourcepb.Resource{}, SchemaUrl: "otelbench-resource-v2", ScopeSpans: []*tracepb.ScopeSpans{{Scope: &commonpb.InstrumentationScope{Name: "otelbench", Version: "2"}, SchemaUrl: "otelbench-scope-v2", Spans: []*tracepb.Span{{TraceId: tr, SpanId: id, Name: "immutable-fixture", StartTimeUnixNano: uint64(s.Start), EndTimeUnixNano: uint64(s.Start + 1000)}}}}}
+	for _, a := range s.Attributes {
+		v := &commonpb.AnyValue{}
+		switch a.Type {
+		case "string":
+			v.Value = &commonpb.AnyValue_StringValue{StringValue: a.Value}
+		case "int":
+			n, e := strconv.ParseInt(a.Value, 10, 64)
+			if e != nil {
+				return nil, nil, wrap("admission", "integer attribute", e)
+			}
+			v.Value = &commonpb.AnyValue_IntValue{IntValue: n}
+		default:
+			return nil, nil, failf("admission", "OTLP encode", "unsupported fixture type %q", a.Type)
+		}
+		kv := &commonpb.KeyValue{Key: a.Key, Value: v}
+		switch a.Scope {
+		case "span":
+			otlp.ScopeSpans[0].Spans[0].Attributes = append(otlp.ScopeSpans[0].Spans[0].Attributes, kv)
+		case "resource":
+			otlp.Resource.Attributes = append(otlp.Resource.Attributes, kv)
+		case "scope":
+			otlp.ScopeSpans[0].Scope.Attributes = append(otlp.ScopeSpans[0].Scope.Attributes, kv)
+		default:
+			return nil, nil, failf("admission", "OTLP encode", "unsupported fixture scope %q", a.Scope)
+		}
+	}
+	wire, err := proto.MarshalOptions{Deterministic: true}.Marshal(otlp)
+	if err != nil {
+		return nil, nil, err
+	}
+	return otlp, wire, nil
 }
 
 // decodeRecord is the backend extractor, deliberately separate from Expected.

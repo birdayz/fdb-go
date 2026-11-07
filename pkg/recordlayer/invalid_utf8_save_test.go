@@ -9,6 +9,10 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -85,6 +89,111 @@ var _ = Describe("A string that is not valid UTF-8", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(records(md, ss)).To(Equal(0))
+	})
+
+	// The batch checks every record before its first write and names the
+	// string's path below the record: at the top level, in a message of a
+	// repeated field, in a map's message value, and at every other arm
+	// TestCheckUTF8Strings_EveryArm drives. SaveRecord is the control.
+	It("is refused by SaveRecordBatch at its path in nested, repeated and map-held messages with nothing written", func() {
+		fdp := protodesc.ToFileDescriptorProto(utf8CheckFile(GinkgoTB()))
+		fdp.MessageType = append(fdp.MessageType, &descriptorpb.DescriptorProto{
+			Name: proto.String("RecordTypeUnion"),
+			Field: []*descriptorpb.FieldDescriptorProto{{
+				Name: proto.String("_Rec"), Number: proto.Int32(1),
+				Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+				Type:  descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".utf8check.Rec"),
+			}},
+		})
+		file, err := protodesc.NewFile(fdp, nil)
+		Expect(err).NotTo(HaveOccurred())
+		b := NewRecordMetaDataBuilder().SetRecords(file)
+		b.GetRecordType("Rec").SetPrimaryKey(Field("id"))
+		md, err := b.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		rec := md.GetRecordType("Rec").Descriptor
+		field := rec.Fields().ByName
+		inner := field("inner").Message()
+		innerT, innerDeep := inner.Fields().ByName("t"), inner.Fields().ByName("deep")
+		str := protoreflect.ValueOfString
+		innerWith := func(text string) protoreflect.Value {
+			m := dynamicpb.NewMessage(inner)
+			m.Set(innerT, str(text))
+			return protoreflect.ValueOfMessage(m)
+		}
+		// Each arm puts text in one place a string can sit, named by path.
+		arms := []struct {
+			path string
+			fill func(m protoreflect.Message, text string)
+		}{
+			{"s", func(m protoreflect.Message, text string) { m.Set(field("s"), str(text)) }},
+			{"rs", func(m protoreflect.Message, text string) {
+				l := m.Mutable(field("rs")).List()
+				l.Append(str("fine"))
+				l.Append(str(text))
+			}},
+			{"mk", func(m protoreflect.Message, text string) {
+				m.Mutable(field("mk")).Map().Set(str(text).MapKey(), protoreflect.ValueOfInt64(1))
+			}},
+			{"mv", func(m protoreflect.Message, text string) {
+				m.Mutable(field("mv")).Map().Set(protoreflect.ValueOfInt64(1).MapKey(), str(text))
+			}},
+			{"mm.t", func(m protoreflect.Message, text string) {
+				mm := m.Mutable(field("mm")).Map()
+				mm.Set(protoreflect.ValueOfInt64(1).MapKey(), innerWith("fine"))
+				mm.Set(protoreflect.ValueOfInt64(2).MapKey(), innerWith(text))
+			}},
+			{"inner.t", func(m protoreflect.Message, text string) {
+				m.Mutable(field("inner")).Message().Set(innerT, str(text))
+			}},
+			{"inner.deep.t", func(m protoreflect.Message, text string) {
+				m.Mutable(field("inner")).Message().Mutable(innerDeep).Message().Set(innerT, str(text))
+			}},
+			{"ri.t", func(m protoreflect.Message, text string) {
+				l := m.Mutable(field("ri")).List()
+				l.Append(innerWith("fine"))
+				l.Append(innerWith(text))
+			}},
+		}
+		// record holds valid text at every arm but bad, which holds invalid.
+		record := func(id int64, bad string) proto.Message {
+			m := dynamicpb.NewMessage(rec)
+			m.Set(field("id"), protoreflect.ValueOfInt64(id))
+			for _, arm := range arms {
+				text := "naïve 日本"
+				if arm.path == bad {
+					text = invalid
+				}
+				arm.fill(m, text)
+			}
+			return m
+		}
+
+		ss := specSubspace()
+		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			s := open(rc, md, ss)
+			for _, arm := range arms {
+				// Last in the batch: the valid records before it are not written either.
+				_, err := s.SaveRecordBatch([]proto.Message{record(1, ""), record(2, ""), record(3, arm.path)})
+				refused(err, arm.path)
+				_, err = s.SaveRecordBatch([]proto.Message{record(3, arm.path), record(4, "")})
+				refused(err, arm.path)
+				_, err = s.SaveRecord(record(3, arm.path))
+				refused(err, arm.path)
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(records(md, ss)).To(Equal(0))
+
+		// The control: the same records with valid text at every arm are written.
+		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			_, err := open(rc, md, ss).SaveRecordBatch([]proto.Message{record(1, ""), record(2, "")})
+			return nil, err
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(records(md, ss)).To(BeNumerically(">=", 2))
 	})
 
 	It("stays readable where stored before, and is repaired by setting the field or deleting the record", func() {

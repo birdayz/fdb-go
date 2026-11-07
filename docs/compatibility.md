@@ -374,34 +374,75 @@ indexes, not the existing OTel custom posting index. Only fully bound element
 keys preserve ordering by the following time/identity columns. Unnest joins
 still explode records rather than use the fan-out index, as in Java. Go repairs
 EXISTS cardinality where Java can return duplicate records; see DIVERGENCES.md.
-The template includes neither TEXT indexes nor metrics tables yet. TEXT is an
-intentional separate Go FULLTEXT overlay: adding it requires a new metadata
-version, index build/readability and migration policy, not changing the v1
-catalog bytes in place. Metrics can be added as more tables in the same store;
-no cross-store join is needed. The initial catalog version is 1 (record-metadata
-version 14, including 13 indexes); subsequent changes must go through the
-catalog evolution validator and explicit schema rebinding, e.g. fleet.SaveTemplate
-and fleet.Migrate.
+`TemplateBody` is what Java builds (the golden): spans with packed message
+reference chunks (`ref_chunks` and `SPANS_REF_CHUNKS`, keyed by trace, start
+and span), logs whose attribute and `LOGS_EVENT` indexes cover `trace_id` and
+`span_id`, typed string/long-string/int/double/bool attribute indexes on both,
+messages with `MESSAGES_HASH` and the scalar-array unnest `MESSAGES_LARGE`,
+message-to-trace markers and a `store_meta` table. The Go template,
+`TemplateDDL()`, appends the Go-only overlay `CREATE FULLTEXT INDEX messages_text
+ON messages(content) PARTITION BY (role, shard)` (the default tokenizer, version
+0) as the last index clause on the last indexed table, so both have the same
+records descriptor (union fields, record type keys) and the same other indexes
+(`otelsql` `TestTemplateOverlay`). `messages.content` is index-only derived
+text: `BuildMessageCompiled` stores `IndexableText`, which replaces each token
+over 1,024 bytes with the indexed placeholder token `oteloverlongtoken`, so
+positions are kept (no phrase spans an overlong token) and a query for the
+placeholder matches every overlong token; the raw element bytes stay the
+message. SQL plans the text index for `TEXT_CONTAINS_*(content, ?) AND role = ?
+AND shard IN (0..15)` (or the tokenizer named `'default'`); an unbound shard
+keeps record filtering (`sqltest/otel`). The OTel layer is pre-release, so
+OTEL_V1 was rewritten in place at catalog version 1: record-metadata version 21
+for `TemplateBody` (20 indexes) and 22 for `TemplateDDL`. Every table is indexed
+(`store_meta_name` only for this) because the DDL front end orders unindexed
+tables first, and a table's record type key is its position: spans keep key 0,
+one byte in every span record and index key. Java 4.14.2.0 reads
+every table of a `TemplateDDL` store Go wrote (compiled builders, zlib-1
+records); its SQL has no `TEXT_CONTAINS_*` (`0AF00 Unsupported operator`), and
+Java writers of `messages` would have to bound overlong tokens as
+`IndexableText` does (`OtelTemplateOverlayJavaProbe`). A TEXT index naming a
+tokenizer Java lacks, such as the old exporter's `otel_message_v1`, would make
+the whole schema unreadable to Java (DIVERGENCES.md). Metrics can be added as
+more tables in the same store; no
+cross-store join is needed. Once stores must be kept, changes go through the
+catalog evolution validator and explicit schema rebinding, e.g.
+fleet.SaveTemplate and fleet.Migrate.
 
-This is not an ingest-format migration. The existing exporter still writes its
-original store/keyspace and raw-KV logs. Tests hand-insert SQL rows and check
-opaque OTLP BYTES round-trips; they do not establish exporter/extraction fidelity.
-A future writer must open the tenant's relational schema store and populate the
-typed columns, preserving unknown fields, presence, order, duplicates and typed
-values through the envelope plus lossless message manifests/reconstruction. It
-must not copy complete pre-decomposition GenAI history into every span's `otlp`:
-that restores quadratic storage amplification. The projections are query aids,
-not a lossless replacement for OTLP. Event/link projections currently omit
-bytes/long-string arrays and resource/scope dropped counts; the envelope must
-preserve them, and SQL projection coverage is incomplete.
+**Writer contract.** `otel.Exporter` is the OTEL_V1 writer
+(`layers/otel/rfcs/relational-exporter-migration.md`, phase 3A). It ensures the
+`(run, tenant)` store (database `/OTEL/R_<RUN>`, schema `T<tenant>`, template,
+database and schema created when absent), checks the `store_meta` `layout` row
+against its message configuration, and writes compiled `otelv1pb` rows through
+the Record Layer, never SQL `INSERT`. Each span's `otlp` is
+its original single-span `ResourceSpans`, which preserves unknown fields,
+presence, order, duplicates and typed values; with messages decomposed, the
+GenAI content attributes hold manifests and the elements are `messages` rows that
+`LoadSpanOTLP` restores byte for byte. A writer must not copy complete
+pre-decomposition GenAI history into every span's `otlp`: that restores quadratic
+storage amplification. The projections are query aids, not a lossless
+replacement for OTLP. Event/link projections omit bytes/long-string arrays and
+resource/scope dropped counts; `otlp` preserves them, and SQL projection coverage
+is incomplete. Its records use `none`, `zlib-1` (the default) or `zlib-default`
+compression, all version 1, and it refuses Brotli. The custom store
+(`FDBBackend`, its posting index, raw-KV logs and JSON owner manifests) remains
+only behind `otelbench --backend fdb` as a measurement baseline until phase 3B
+deletes it; the Exporter neither reads nor writes it.
 The 1,024-byte indexed-string cap is a writer admission contract, not a DDL
 constraint; long strings belong in the digest-indexed array, with exact values
 verified after digest lookup. The messages_hash unique index deduplicates whole
 messages: only part zero carries content_hash, and all other chunks leave it
 NULL (multiple NULLs are allowed). SQL DML does not enforce the part-zero
 contract; writers must. Writers must also bound attribute keys and other
-indexed fields against FDB's key limit. No projection/admission implementation
-or ingestion-cost measurement is supplied here. Benchmark runs will use dedicated
+indexed fields against FDB's key limit. `otelsql`'s compiled builders
+(`BuildCompiled`, `BuildLogCompiled`, `BuildMessageCompiled`, ...) are that
+projection: per scope, unique keys at their first position with their last
+value; keys over 1,024 bytes and values over 64,000 bytes left out and counted
+(`SpanProjection`, `LogProjection`); strings, ints, doubles and bools typed and
+indexed; bytes, arrays, kvlists and unset values reported in `bytes_attrs` and
+`any_attrs` (deterministic canonical JSON) and not indexed; GenAI content keys
+excluded when messages are decomposed; event names over 1,024 bytes not
+projected; reference chunks bounded at 8,000 encoded key bytes, zero-byte
+escaping included. Admission and batching are the exporter's. Benchmark runs will use dedicated
 catalog databases/stores; a production tenant's shared signal store must never
 be cleared by the existing run-level Drop operation. Java-readable stores must use
 an interoperable serializer, not Go-only Brotli.

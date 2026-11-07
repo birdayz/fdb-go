@@ -68,6 +68,9 @@ type cascadesGenerator struct {
 	// INSERT keeps concrete bindings; SELECT and cached DML extract runtime
 	// constants and constrain only the assumptions used by their cached plan.
 	args []driver.NamedValue
+	// programs are the binding walks compiled over the statement's cached
+	// parse tree (parse_cache.go).
+	programs *statementPrograms
 }
 
 func newCascadesGenerator(c *EmbeddedConnection) *cascadesGenerator {
@@ -131,10 +134,12 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 			return false
 		})
 	}
-	root, err := parser.Parse(sql)
+	st, err := g.c.parseStatement(sql)
 	if err != nil {
 		return nil, err
 	}
+	root := st.root
+	g.programs = &st.programs
 	if err := checkDecimalConstants(root); err != nil {
 		return nil, err
 	}
@@ -144,9 +149,11 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 			return nil, err
 		}
 		if changed {
-			if root, err = parser.Parse(expanded); err != nil {
+			if st, err = g.c.parseStatement(expanded); err != nil {
 				return nil, err
 			}
+			root = st.root
+			g.programs = &st.programs
 		}
 	}
 	release, err := bindStatementParameters(root, g.args)
@@ -420,7 +427,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	if so.rightDeep {
 		popts.config.ShouldJoinRightDeep = true
 	}
-	bindings, releaseBindings, bindErr := normalizeQueryBindings(q, md)
+	bindings, releaseBindings, bindErr := normalizeQueryBindingsWith(q, md, g.programs)
 	if bindErr != nil {
 		return nil, bindErr
 	}
@@ -974,7 +981,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	bindings := queryBindings{text: planCacheText(dml)}
 	if dml.InsertStatement() == nil {
 		var releaseBindings func()
-		bindings, releaseBindings, err = normalizeQueryBindings(dml, md)
+		bindings, releaseBindings, err = normalizeQueryBindingsWith(dml, md, g.programs)
 		if err != nil {
 			return nil, err
 		}
@@ -2327,8 +2334,10 @@ func (r *paginatingRows) fetchPage() error {
 	// Decision 1). With no explicit transaction (r.tx == nil) each page runs
 	// in its own auto-commit transaction via DB.Run, unchanged. A captured
 	// transaction that has since ended is a loud 25F01, never a silent fresh
-	// transaction (Decision 3).
-	_, txErr := c.runInCapturedTx(r.ctx, r.tx, r.options(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	// transaction (Decision 3). An auto-commit statement's first page runs in
+	// the transaction its planning read in when that is still usable
+	// (statement_read.go), and commits it before the page is published.
+	_, txErr := c.runPage(r.ctx, r.tx, r.options(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		if attempts > 0 {
 			// Java's ThrottledRetryingIterator decreases work on every failed
 			// attempt. SQL pages use time rather than its scanned-row quota:

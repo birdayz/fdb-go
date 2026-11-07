@@ -17,7 +17,7 @@ import (
 // These tests swap the package-level runner, so they must not run in parallel.
 
 func collectorBenchArgs(extra ...string) []string {
-	return append([]string{"-backend=fdb", "-mode=collector-bench", "-run=cli_bench_run", "-cluster-file=/nonexistent/fdb.cluster", "-revision=test-revision"}, extra...)
+	return append([]string{"-mode=collector-bench", "-run=cli_bench_run", "-cluster-file=/nonexistent/fdb.cluster", "-revision=test-revision"}, extra...)
 }
 
 // benchDeadlines records the command deadline left when each stubbed run started.
@@ -78,7 +78,7 @@ func TestExecuteCollectorBenchFlags(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bench.json")
 	args := collectorBenchArgs("--conversations=7", "--turns=3", "--producers=2", "--enable-message-deltas=false", "--enable-message-fts=false",
 		"--duration=10m", "--report-interval=5s", "--warmup=30s", "--query-workers=3", "--consumers=16",
-		"-seed=9", "-tenant=1", "-iterations=4", "-batch=16", "-workers=2", "-order=trace", "-hash-bytes=4", "-record-compression=zlib-1", "-posting-value-format=json", "-output="+path)
+		"-seed=9", "-tenant=1", "-iterations=4", "-batch=16", "-workers=2", "-record-compression=zlib-default", "-output="+path)
 	var stdout, stderr bytes.Buffer
 	if code := execute(args, &stdout, &stderr, nil); code != 0 || stdout.Len() != 0 || stderr.Len() != 0 {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", code, &stdout, &stderr)
@@ -89,7 +89,7 @@ func TestExecuteCollectorBenchFlags(t *testing.T) {
 	want.Duration, want.ReportInterval, want.Warmup, want.QueryWorkers, want.NumConsumers = 10*time.Minute, 5*time.Second, 30*time.Second, 3, 16
 	want.EnableMessageDeltas, want.EnableMessageFullText = false, false
 	want.Seed, want.Tenant, want.QueryIterations, want.ExporterBatchSize, want.ExporterWorkers = 9, 1, 4, 16, 2
-	want.Order, want.HashBytes, want.RecordCompression, want.PostingValueFormat = "trace", 4, "zlib-1", "json"
+	want.RecordCompression = "zlib-default"
 	if len(*calls) != 1 || (*calls)[0] != want {
 		t.Fatalf("runner calls %+v, want %+v", *calls, want)
 	}
@@ -139,8 +139,13 @@ func TestExecuteCollectorBenchRejections(t *testing.T) {
 	calls := stubCollectorBench(t, nil)
 	for _, args := range [][]string{
 		{"-backend=ch-map", "-mode=collector-bench", "-run=cli_bench_run", "-cluster-file=/nonexistent/fdb.cluster"},
-		{"-backend=fdb", "-mode=collector-bench", "-run=cli_bench_run"},
-		{"-backend=fdb", "-mode=collector-bench", "-cluster-file=/nonexistent/fdb.cluster"},
+		{"-mode=collector-bench", "-run=cli_bench_run"},
+		{"-mode=collector-bench", "-cluster-file=/nonexistent/fdb.cluster"},
+		// D2: the custom store's layout flags and Brotli have no Exporter setting.
+		collectorBenchArgs("-order=trace"),
+		collectorBenchArgs("-hash-bytes=4"),
+		collectorBenchArgs("-posting-value-format=json"),
+		collectorBenchArgs("-record-compression=brotli-4"),
 		collectorBenchArgs("--conversations=-1"),
 		collectorBenchArgs("--turns=-1"),
 		collectorBenchArgs("--turns=201"),
@@ -174,5 +179,22 @@ func TestExecuteCollectorBenchRejections(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := execute(collectorBenchArgs("-backend=ch-attrs"), &stdout, &stderr, nil); code != 2 || !strings.Contains(stderr.String(), "explicit valid backend/mode required; see -help") {
 		t.Fatalf("non-fdb collector-bench: exit=%d stderr=%q", code, &stderr)
+	}
+	stderr.Reset()
+	if code := execute(collectorBenchArgs("-order=trace"), &stdout, &stderr, nil); code != 2 || !strings.Contains(stderr.String(), "--order applies to --backend fdb only") {
+		t.Fatalf("layout flag: exit=%d stderr=%q", code, &stderr)
+	}
+}
+
+// collector-bench drives otel.Exporter: no backend applies, and --backend
+// fdb, the earlier receipts' spelling, is still accepted.
+func TestExecuteCollectorBenchBackendFlag(t *testing.T) {
+	calls := stubCollectorBench(t, nil)
+	var stdout, stderr bytes.Buffer
+	if code := execute(collectorBenchArgs("-backend=fdb"), &stdout, &stderr, nil); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, &stderr)
+	}
+	if len(*calls) != 1 || (*calls)[0].RecordCompression != "zlib-1" {
+		t.Fatalf("runner calls %+v", *calls)
 	}
 }

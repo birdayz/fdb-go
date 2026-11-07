@@ -164,6 +164,16 @@ type Runner interface {
 	Run(ctx context.Context, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error)
 }
 
+// ResolvedSchemaSubspace is a schema's store subspace when the keyspace has
+// already resolved it, without I/O.
+func (k *RelationalKeyspace) ResolvedSchemaSubspace(dbPath, schemaName string) (subspace.Subspace, bool) {
+	ss, ok := k.resolved.Load(dbPath + "\x00" + schemaName)
+	if !ok {
+		return nil, false
+	}
+	return ss.(subspace.Subspace), true
+}
+
 // SchemaSubspaceIn is SchemaSubspace for a caller outside a transaction: a
 // resolved schema comes from the keyspace's cache, otherwise it is resolved
 // in a transaction of the database's.
