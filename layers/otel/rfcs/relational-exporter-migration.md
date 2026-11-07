@@ -321,7 +321,7 @@ Many message tests first classed LAYOUT pin mechanisms the design keeps: queue, 
 **Top-K.**
 
 - A reverse attribute or time scan yields (start desc, trace desc, span desc), and the first entry of each trace carries its `Latest`.
-- So the first K distinct traces in scan order equal `sortedHits` (Latest desc, trace desc). The early stop needs nothing beyond index order.
+- So the first K distinct traces in scan order equal the oracle's order (`ExpectedContext`'s oracleHeap: Latest desc, trace desc). The early stop needs nothing beyond index order.
 - `order=trace` and posting digests go. Long-string candidates count toward K only once verified.
 
 **Budgets.**

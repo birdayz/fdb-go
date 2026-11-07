@@ -125,7 +125,15 @@ below; neither publication nor readiness is asserted.
   unknown key fails too; earlier builds ignored unknown keys.
   `record_compression` takes `none`, `zlib-1` or `zlib-default` and refuses
   Brotli (SQL and Java read the records); the default is `zlib-1` instead of
-  `brotli-4`.
+  `brotli-4`. A removed key fails with the typed `RemovedConfigKeyError`.
+- **OTel NaN attributes:** a NaN double attribute is stored in the typed
+  projection (span, event, link and log `DOUBLE_ATTRS`) as the canonical quiet
+  NaN `0x7FF8000000000000` whatever its payload, so equality on `NaN` matches
+  every NaN; the span's or log's OTLP keeps the original bits.
+- **OTel span admission:** the 300 KB estimate counts the whole serialized
+  `SPANS` row (OTLP plus every copied column such as name, status message,
+  events and links) plus each index entry, so an admitted span always fits the
+  500 KB guard; a span over it fails the call before any write.
 - **Exporter read consistency:** reads take their read version from the
   client's GRV cache, at most 100 ms old. A read sees every write committed
   through the same Exporter before it began, but a commit by another Exporter
