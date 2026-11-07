@@ -24,7 +24,23 @@ below; neither publication nor readiness is asserted.
 
 ### Added
 - `layers/otel/otelsql` OTEL_V1 template API (`TemplateDDL`, `CreateTemplate`,
-  `CreateTenant`) for Java-readable tenant spans, logs and message tables.
+  `CreateTenant`) for Java-readable tenant spans, logs and message tables, and
+  for writers of those stores: `EnsureTenant` (creates or verifies the
+  template, database, schema and store through catalog actions; a stale
+  template or a foreign binding is a `*TemplateMismatchError`),
+  `CreateTemplateNamed`, `CreateTenantWithTemplate`, `RevisionTemplateName`,
+  `OpenTenantStore`/`OpenTenantStoreCompiled` and `TenantStore`, the compiled
+  row builders (`BuildCompiled`, `BuildLogCompiled`, `BuildMessageCompiled`,
+  `BuildMessageTraceCompiled`, `BuildStoreMetaCompiled`, with
+  `SpanProjection`/`LogProjection`), the reference chunks (`PackRefChunks`,
+  `UnpackRefChunk`, `RefChunkReader`), `IndexableText` and the generated
+  `otelv1pb` row types.
+- `otel.SpanReader`/`NewSpanReader`, `otel.SpanWriter`/`NewSpanWriter`
+  (`SpanWriterOptions`), `otel.RecordSerializer`, `otel.FixtureOTLP` and
+  `Exporter.ClientMetrics`, the pure-Go client's metrics snapshot.
+- SQL `CREATE FULLTEXT INDEX ... OPTIONS (TOKENIZER = '<name>',
+  TOKENIZER_VERSION = <n>)` (Go extension) sets the TEXT index's tokenizer
+  options (`docs/compatibility.md`, "SQL full-text syntax").
 - TEXT query APIs (`NewTextScan` / `TextScan`, `PlanTextQuery`, TEXT comparisons),
   ordered union/intersection and probable/unordered merge cursors, and store-timer
   `CountTextScanKeyValues`, `CountTextScanBytes` and `CountTextScanSeeks` counters.
@@ -43,10 +59,33 @@ below; neither publication nor readiness is asserted.
   `AddWriteConflictRangeBytes` and `AddWriteConflictKeyBytes`.
 
 ### Changed / fixed
-- OTel trace and log exports preflight each actual encoded covering value against
-  FDB's 100,000-byte limit, including tuple NUL and JSON NUL/HTML expansion.
-  Oversized indexed projections reject the whole call with `AdmissionError`
-  before writes; raw OTLP is never truncated.
+- `otel.Exporter` stores every signal of a `(run, tenant)` in one OTEL_V1
+  relational tenant store (database `/OTEL/R_<RUN>`, schema `T<tenant>`) and
+  serves every read from a direct scan of a standard OTEL_V1 index
+  (`layers/otel/rfcs/relational-exporter-migration.md`). The custom FDB store
+  is deleted: `FDBBackend`, its posting index and keyspace, raw-KV logs,
+  `Message` records, the ownership manifests, `otel.OpenFDB`/`OpenFDBContext`,
+  `IngestClientMetrics`/`IngestDiagnostics`/`IngestPhaseLatency`, and
+  `otelbench --backend fdb`, `--posting-value-format`, `--hash-bytes`,
+  `--diagnostics` and the Brotli values. Attribute equality is typed.
+  `NewExporter` opens the fixed template name OTEL_V1. Exporter reads use the
+  client's cached read version.
+- OTel span and log exports still admit the whole call before any write. An
+  attribute is indexed up to a 1,024-byte key and a 64,000-byte value (strings
+  over 1,024 bytes through the digest-indexed array), so tuple NUL escaping
+  cannot push an OTEL_V1 index key past FDB's limits; larger attributes stay in
+  the stored OTLP but are not indexed. Raw OTLP is never truncated.
+- An auto-commit SELECT reads the catalog, plans (the index-state store open)
+  and takes its first page in one FDB transaction, not three, and the page
+  reuses the planner's store. The first page commits it before its rows are
+  published; later pages, and a first page starting more than 250 ms after
+  the statement's first read, run in their own transactions. A retryable
+  failure reruns the work in a fresh transaction. Explicit transactions are
+  unchanged.
+- `CompositeKeyExpression` evaluation with a `FanOut` child under an absent
+  non-repeated parent (for example `Nest("p", Concat(Field("a"),
+  FanOut("tags")))` on a record without `p`) yields no tuple, as Java 4.14.2.0
+  does; earlier Go yielded one all-null tuple and wrote that index entry.
 - Message full-text role discovery charges the raw TEXT bunch key/value bytes,
   including discovery preceding an empty result, against the remaining query budget.
 - Drained message and Collector queues clear consumed slots and release exhausted
@@ -71,11 +110,47 @@ below; neither publication nor readiness is asserted.
   checks; explicit failed commits release their transaction handles.
 
 ### Breaking changes / compatibility
-- **OTel admission and budgets:** inputs whose escaped covering values exceed
-  100,000 bytes now fail whole-call admission rather than failing after an earlier
-  batch committed. Full-text queries can now return a budget error for raw role
-  discovery reads previously undercounted. Persisted layouts, SQL behavior and
-  FDB client option semantics are unchanged by these fixes.
+- **OTel store (persisted format):** the custom store's persisted layout
+  (posting indexes, `logs_v1` rows, `Message` records, manifests, the
+  `directory_v1` keyspace) is gone, with no migration and no reader: an OTel
+  store an earlier build wrote is not read. OTEL_V1 is rewritten in place at
+  catalog version 1 (record-metadata version 21 for `TemplateBody`, 22 for
+  `TemplateDDL`: new tables and indexes). A catalog holding OTEL_V1 from an
+  earlier revision makes `NewExporter` fail with `TemplateMismatchError`;
+  recreate such stores. Java 4.14.2.0 reads every table of a Go-written
+  `TemplateDDL` store.
+- **`ExporterConfig`:** the `Order`, `HashBytes` and `PostingValueFormat`
+  fields are removed. A JSON or YAML document naming `order`, `hash_bytes` or
+  `posting_value_format` fails with a "was removed" `ConfigError`, and any other
+  unknown key fails too; earlier builds ignored unknown keys.
+  `record_compression` takes `none`, `zlib-1` or `zlib-default` and refuses
+  Brotli (SQL and Java read the records); the default is `zlib-1` instead of
+  `brotli-4`.
+- **Exporter read consistency:** reads take their read version from the
+  client's GRV cache, at most 100 ms old. A read sees every write committed
+  through the same Exporter before it began, but a commit by another Exporter
+  handle or process (another Collector replica) can be invisible to it for up
+  to 100 ms. The deleted store read at a fresh version.
+- **OTel admission and budgets:** full-text queries can return a budget error
+  for raw role-discovery reads that earlier builds undercounted.
+- **SQL auto-commit SELECT:** the catalog read, planning and first page see one
+  read version unless a retryable failure ends the shared transaction; the
+  failed work then reruns in fresh transactions, as every step did before.
+  Java's auto-commit statement has the same structure.
+- **FULLTEXT `OPTIONS` (persisted):** the clause persists the TEXT index options
+  `textTokenizerName` and `textTokenizerVersion`, as Java's metadata API sets
+  them. A tokenizer registered only in Go makes the whole schema unreadable to
+  Java 4.14.2.0 (`42000 MetaDataException unrecognized text tokenizer`);
+  `'default'` opens. An unknown option is `0A000`, a duplicate or wrong-kind
+  value `42601`, an unregistered tokenizer or out-of-range version `42F59`.
+- **Fan-out composite index entries:** an index over a composite with a `FanOut`
+  child under an absent non-repeated parent no longer gets the all-null entry
+  earlier Go wrote, and Go never clears entries an earlier build wrote there.
+  Rebuild such indexes after upgrading (DIVERGENCES.md, "A fan-out composite
+  under an absent parent").
+- Apart from the entries above, persisted Record Layer and SQL bytes and FDB
+  client option semantics are unchanged; the Exporter uses the existing
+  GRV-cache option.
 - **Schema-template metadata:** Go-written `MetaData.record_types` now follows
   Java's two-stage HashMap iteration order instead of union-declaration order.
   Already-stored templates retain their old order; this does not rewrite them.
