@@ -20,18 +20,18 @@ import (
 
 // BenchmarkMessageWriteCostRealFDB is the R1/R4 measurement of
 // rfcs/relational-exporter-migration.md §7: client CPU and stored bytes of
-// GenAI span ingest with messages, the custom store (Exporter, FDBBackend)
-// against the relational exporter (relExporter, relMessageStore, SPANS rows
-// with ref_chunks) in one binary, one FDB container, sequential arms. Run
-// it alone:
+// GenAI span ingest with messages through the Exporter (relMessageStore,
+// SPANS rows with ref_chunks), one FDB container, sequential arms. Its arms
+// of the custom store's Exporter left with it at the cutover (phase 3A); the
+// same-binary comparison's receipts are in
+// docs/benchmarks/otel-relational-local-20261107.md. Run it alone:
 //
 //	bazelisk test //layers/otel:otel_test --test_arg=-test.run='^$' \
 //	  --test_arg=-test.bench=BenchmarkMessageWriteCostRealFDB \
 //	  --test_arg=-test.benchtime=1x --test_arg=-test.count=2 --test_output=streamed
 //
-// Arms: fdb_* the old Exporter, rel_* the relational exporter, both with
-// record_compression none so record bytes compare; *_fulltext with full text,
-// *_deltas messages without text, rel_fulltext_norefs full text without
+// Arms, with record_compression none: rel_fulltext with full text,
+// rel_deltas messages without text, rel_fulltext_norefs full text without
 // ref_chunks, isolating SPANS_REF_CHUNKS. CPU is the process's user+sys
 // over the export calls; FDB runs in its container, outside it.
 func BenchmarkMessageWriteCostRealFDB(b *testing.B) {
@@ -39,15 +39,10 @@ func BenchmarkMessageWriteCostRealFDB(b *testing.B) {
 	for _, w := range []struct{ convs, turns int }{{40, 25}, {5, 200}} {
 		calls := costWorkload(w.convs, w.turns)
 		spans := float64(w.convs * w.turns)
-		for _, arm := range []string{"fdb_fulltext", "rel_fulltext", "rel_fulltext_norefs", "fdb_deltas", "rel_deltas"} {
+		for _, arm := range []string{"rel_fulltext", "rel_fulltext_norefs", "rel_deltas"} {
 			b.Run(fmt.Sprintf("%dx%d/%s", w.convs, w.turns, arm), func(b *testing.B) {
 				for range b.N {
-					var r costResult
-					if arm[:3] == "fdb" {
-						r = costOld(b, cluster, arm == "fdb_fulltext", calls)
-					} else {
-						r = costRel(b, cluster, arm != "rel_deltas", arm == "rel_fulltext_norefs", calls)
-					}
+					r := costRel(b, cluster, arm != "rel_deltas", arm == "rel_fulltext_norefs", calls)
 					b.ReportMetric(float64(r.cpu.Microseconds())/spans, "cpu_us/span")
 					b.ReportMetric(float64(r.storeBytes)/spans, "store_B/span")
 					b.ReportMetric(float64(r.refBytes)/spans, "refs_B/span")
@@ -123,58 +118,12 @@ func costRun(b *testing.B) string {
 	return "cost_" + hex.EncodeToString(nonce[:])
 }
 
-// costOld exports calls through the old Exporter.
-func costOld(b *testing.B, cluster string, fullText bool, calls [][]*tracepb.ResourceSpans) costResult {
-	ctx := context.Background()
-	cfg := DefaultExporterConfig()
-	cfg.ClusterFile, cfg.Run, cfg.Tenant = cluster, costRun(b), 11
-	cfg.RecordCompression = "none"
-	cfg.EnableMessageDeltas, cfg.EnableMessageFullText = true, fullText
-	e, err := NewExporter(ctx, cfg)
-	if err != nil {
-		b.Fatal(err)
-	}
-	defer e.Shutdown(ctx)
-	var r costResult
-	inputs := make([][]*tracepb.ResourceSpans, len(calls))
-	for i, c := range calls {
-		inputs[i] = cloneDeltaSpans(c)
-	}
-	started, cpu := time.Now(), processCPU(b)
-	for _, in := range inputs {
-		st, err := e.ExportResourceSpans(ctx, in)
-		if err != nil {
-			b.Fatal(err)
-		}
-		r.messages.Add(st.Messages)
-	}
-	r.cpu, r.wall = processCPU(b)-cpu, time.Since(started)
-	be := e.backend
-	if _, err := be.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
-		store, err := be.open(rc)
-		if err != nil {
-			return nil, err
-		}
-		if fullText {
-			r.refBytes, r.refEntries, r.refMaxKey = costRange(b, ctx, be.db, store.IndexSubspace(be.md.GetIndex(envelopeRefsIndexName)).Bytes())
-			text := store.IndexSubspace(be.md.GetIndex(messageTextIndexName)).Bytes()
-			r.textBytes, r.textRows, _ = costRange(b, ctx, be.db, text)
-			r.textPrefix = len(text)
-		}
-		return nil, nil
-	}); err != nil {
-		b.Fatal(err)
-	}
-	r.storeBytes, _, _ = costRange(b, ctx, be.db, be.keys.data.Bytes())
-	return r
-}
-
 // noRefHooks is the message store without SPANS ref_chunks (measurement only).
 type noRefHooks struct{ *relMessageStore }
 
 func (noRefHooks) refChunks([]messageUse) ([][]byte, error) { return nil, nil }
 
-// costRel exports calls through a relExporter on a fresh tenant store.
+// costRel exports calls through an Exporter on a fresh tenant store.
 func costRel(b *testing.B, cluster string, fullText, noRefs bool, calls [][]*tracepb.ResourceSpans) costResult {
 	ctx := context.Background()
 	cfg := DefaultExporterConfig()
@@ -187,7 +136,7 @@ func costRel(b *testing.B, cluster string, fullText, noRefs bool, calls [][]*tra
 			return noRefHooks{newRelMessageStore(s, cfg.EnableMessageFullText)}, nil
 		}
 	}
-	e, err := newRelExporter(ctx, cfg, parts)
+	e, err := newExporter(ctx, cfg, parts)
 	if err != nil {
 		b.Fatal(err)
 	}

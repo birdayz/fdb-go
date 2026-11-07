@@ -363,9 +363,6 @@ exporters:
     cluster_file: ${env:FDB_CLUSTER_FILE}
     run: ${FDB_RUN}
     tenant: ${env:FDB_TENANT:-42}
-    order: trace
-    hash_bytes: 16
-    posting_value_format: json
     record_compression: zlib-1
     bulk_index_conflicts: false
     batch_size: 32
@@ -423,8 +420,8 @@ var fullCollectorEnv = map[string]string{
 func fullPrimaryConfig() Config {
 	return Config{
 		Exporter: otel.ExporterConfig{
-			ClusterFile: "/etc/foundationdb/fdb.cluster", Run: "prod_traces_01", Tenant: 42, Order: "trace", HashBytes: 16,
-			PostingValueFormat: "json", RecordCompression: "zlib-1", BulkIndexConflicts: false, BatchSize: 32, Workers: 6,
+			ClusterFile: "/etc/foundationdb/fdb.cluster", Run: "prod_traces_01", Tenant: 42,
+			RecordCompression: "zlib-1", BulkIndexConflicts: false, BatchSize: 32, Workers: 6,
 			MaxCandidates: 5000, MaxBytes: 1 << 20, K: 25, MaxInFlightTransactions: 32, TransactionTimeout: 20 * time.Second,
 		},
 		Timeout: 12 * time.Second,
@@ -801,14 +798,19 @@ func TestParseConfigRejections(t *testing.T) {
 		{"sequence exporter body", collectorDoc("  fdb_otel: [a, b]\n", okService), "exporter config must be a mapping"},
 		{"missing cluster_file", collectorDoc("  fdb_otel:\n    run: unit_run_01\n", okService), "explicit owned FDB cluster file required"},
 		{"batch_size", exporter("    batch_size: 65\n"), "batch_size must be 1..64"},
+		// D2: the custom store's keys are refused as removed.
+		{"removed order", exporter("    order: time\n"), "order was removed"},
+		{"removed hash_bytes", exporter("    hash_bytes: 8\n"), "hash_bytes was removed"},
+		{"removed posting_value_format", exporter("    posting_value_format: tuple\n"), "posting_value_format was removed"},
+		{"brotli records", exporter("    record_compression: brotli-4\n"), "record_compression must be none, zlib-1 or zlib-default"},
 		{"queue min above max", exporter("    sending_queue:\n      batch:\n        min_size: 100\n        max_size: 10\n"), "max_size must be at least min_size"},
 		{"num_consumers", exporter("    sending_queue:\n      num_consumers: 0\n"), "num_consumers must be 1..64"},
 		{"retry intervals", exporter("    retry_on_failure:\n      initial_interval: 10s\n      max_interval: 1s\n"), "max_interval must be at least initial_interval"},
 		{"integer duration", exporter("    timeout: 30\n"), "time.Duration"},
 		{"non-integer queue size", exporter("    sending_queue:\n      queue_size: lots\n"), "cannot unmarshal"},
 		{"quoted env keeps string type", exporter("    tenant: \"${env:FDB_TENANT}\"\n"), "cannot unmarshal !!str"},
-		{"unterminated env", exporter("    order: ${env:FDB_TENANT\n"), "unterminated reference"},
-		{"invalid env name", exporter("    order: ${env:FDB-TENANT}\n"), "invalid environment reference"},
+		{"unterminated env", exporter("    record_compression: ${env:FDB_TENANT\n"), "unterminated reference"},
+		{"invalid env name", exporter("    record_compression: ${env:FDB-TENANT}\n"), "invalid environment reference"},
 
 		// Documents.
 		{"empty document", "", "empty document"},
@@ -2202,7 +2204,7 @@ func TestCollectorTracesExporterRealFDB(t *testing.T) {
 		pcfg.SendingQueue.Batch != (BatchConfig{FlushTimeout: 25 * time.Millisecond, MinSize: 16, MaxSize: 37}) || !pcfg.SendingQueue.BlockOnOverflow {
 		t.Fatalf("primary config = %+v", *pcfg)
 	}
-	if scfg.Exporter.Run != run+"_b" || scfg.Exporter.Tenant != 0 || scfg.Exporter.Order != "trace" || scfg.SendingQueue.Enabled {
+	if scfg.Exporter.Run != run+"_b" || scfg.Exporter.Tenant != 0 || scfg.SendingQueue.Enabled {
 		t.Fatalf("secondary config = %+v", *scfg)
 	}
 

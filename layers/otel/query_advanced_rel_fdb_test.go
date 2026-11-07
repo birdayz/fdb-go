@@ -239,7 +239,7 @@ func qrPaginate(t *testing.T, ctx context.Context, r *SpanReader, q SameSpanQuer
 		if err != nil {
 			t.Fatalf("page %d of %+v: %v", pages, q.Predicates, err)
 		}
-		if page.Order != "time" || page.ReadVersion <= 0 || page.Spans == nil {
+		if page.ReadVersion <= 0 || page.Spans == nil {
 			t.Fatalf("page metadata: %+v", page)
 		}
 		if len(page.Spans) > limit || (len(page.Spans) == limit) != (page.Continuation != nil) {

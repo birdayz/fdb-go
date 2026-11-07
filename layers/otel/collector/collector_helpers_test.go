@@ -45,9 +45,7 @@ exporters:
     cluster_file: ${env:FDB_OTEL_COLLECTOR_CLUSTER_FILE}
     run: ${env:FDB_OTEL_COLLECTOR_RUN}
     tenant: ${env:FDB_OTEL_COLLECTOR_TEST_UNSET_TENANT:-7}
-    order: time
-    posting_value_format: tuple
-    record_compression: brotli-1
+    record_compression: zlib-default
     batch_size: 16
     workers: 4
     k: 100
@@ -70,7 +68,6 @@ exporters:
     cluster_file: ${env:FDB_OTEL_COLLECTOR_CLUSTER_FILE}
     run: ${env:FDB_OTEL_COLLECTOR_RUN}_b
     tenant: 0
-    order: trace
     batch_size: 8
     workers: 2
     sending_queue:

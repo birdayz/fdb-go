@@ -102,8 +102,10 @@ func (c Config) Validate() error {
 	if c.KeyLayout != keyLayoutTuple && (c.KeyLayout != keyLayoutDirectory || c.Backend != "fdb") {
 		return fail("config", "key layout", "key layout must be empty, or directory_v1 for the FDB backend")
 	}
-	if c.BulkIndexConflicts && (c.Backend != "fdb" || c.SaveMode != "batch") {
-		return fail("config", "bulk index conflicts", "bulk index conflicts require the FDB batch save mode")
+	// The sql backend's batch saves are the Exporter's SpanWriter, whose
+	// default coalesces index write conflicts.
+	if c.BulkIndexConflicts && ((c.Backend != "fdb" && c.Backend != "sql") || c.SaveMode != "batch") {
+		return fail("config", "bulk index conflicts", "bulk index conflicts require the batch save mode of the fdb or sql backend")
 	}
 	if c.CHIndexGranularity < 1 || c.CHIndexGranularity > 8192 {
 		return fail("config", "CH index granularity", "index granularity must be 1..8192 for fresh tables")

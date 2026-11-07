@@ -1,6 +1,6 @@
 # Replace the custom OTel store with OTEL_V1 relational tenant stores
 
-**Status:** Accepted implementation plan (2026-11-07), with every §7 owner decision (D1–D11) taken as recommended. Nothing here is implemented or measured yet.
+**Status:** Accepted implementation plan (2026-11-07), with every §7 owner decision (D1–D11) taken as recommended. Phases 0–2 are implemented and measured (G2A and the R1/R4 message measurements in the benchmark doc). Phase 3A (cutover) is implemented: `otel.Exporter` is the relational store, `ExporterConfig` is trimmed per D2 and equality is typed per D1; the G3 receipts are in the benchmark doc. Phase 3B (deletion) is not started; `FDBBackend` survives only behind `otelbench --backend fdb`.
 
 **Base:** branch `otel/relational-store` (draft PR #1035). Line citations are against that tree.
 
@@ -604,7 +604,7 @@ Then run `just gazelle` and confirm every remaining target has a nonempty popula
 | D1 | Attribute equality | **Typed**: string/int/double/bool are indexed; bytes/json are refused as not indexed | Keep canonical-string coercion. This adds `canon_attrs`/`long_canon_attrs` arrays and indexes and a 2-way merged scan on every string query. |
 | D2 | Config keys | Remove `order`, `hash_bytes`, `posting_value_format`; keep `bulk_index_conflicts`; `record_compression` none\|zlib-1\|zlib-default, default zlib-1; refuse Brotli | — |
 | D3 | Tie order | Index order: span/event IDs descending | Buffer each tie group to keep the ascending order |
-| D4 | Message references | Packed `ref_chunks` with a covering index | The R1 fallbacks. This also decides whether per-span references are SQL-visible. |
+| D4 | Message references | Packed `ref_chunks` with a covering index | The R1 fallbacks. This also decides whether per-span references are SQL-visible. Kept after R1: `SPANS_REF_CHUNKS` costs 2–3% more bytes than the old reference values, and MESSAGES_TEXT's 21–23% more bytes than the old TEXT index (the longer schema prefix and the record type key in every entry) were accepted at the cutover. |
 | D5 | Template | Rewrite `OTEL_V1` v1 in place with a Go overlay and a FULLTEXT `OPTIONS` grammar extension | Set the tokenizer option programmatically, losing SQL-DDL creation |
 | D6 | ClickHouse comparison backends | **Keep**; they need only the moved `Backend`/`Statistics`/`Size` and `Config`/`Manifest` | Delete them with their tests and README sections |
 | D7 | `otelbench --backend fdb`, `bench/ops/{ingest20k,horizontal}` | Keep `fdb` as the baseline until G3, then delete; port `bench/ops` to `--backend sql` or retire it | — |

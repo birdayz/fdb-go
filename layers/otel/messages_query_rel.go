@@ -116,7 +116,7 @@ func parseRelMessageRefKey(raw []byte) (relMessageRefKey, error) {
 // a signed message_fts continuation; the next page may be empty.
 func (r *SpanReader) QueryMessageFullText(ctx context.Context, q MessageFullTextQuery) (MessageFullTextPage, error) {
 	const op = "message full-text query"
-	empty := func() MessageFullTextPage { return MessageFullTextPage{Hits: []MessageSpanHit{}, Order: "time"} }
+	empty := func() MessageFullTextPage { return MessageFullTextPage{Hits: []MessageSpanHit{}} }
 	page := empty()
 	if r.cfg.Messages != messagesFullText {
 		return page, fail("config", op, "message text is not indexed in this store's layout")
@@ -732,9 +732,9 @@ func spreadAllMatches(ctx context.Context, store *recordlayer.FDBRecordStore, te
 }
 
 // QueryMessageFullText searches message text; the exporter must index it.
-func (e *relExporter) QueryMessageFullText(ctx context.Context, q MessageFullTextQuery) (MessageFullTextPage, error) {
+func (e *Exporter) QueryMessageFullText(ctx context.Context, q MessageFullTextQuery) (MessageFullTextPage, error) {
 	const op = "message full-text query"
-	empty := MessageFullTextPage{Hits: []MessageSpanHit{}, Order: "time"}
+	empty := MessageFullTextPage{Hits: []MessageSpanHit{}}
 	if !e.cfg.EnableMessageFullText {
 		return empty, fail("config", op, "enable_message_full_text is off; message text is not indexed")
 	}

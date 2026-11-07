@@ -361,7 +361,7 @@ func (r *SpanReader) newSameSpanPlan(op string, q SameSpanQuery) (relSameSpanPla
 // Predicates[0] drives the scan; put the most selective first.
 func (r *SpanReader) QuerySameSpan(ctx context.Context, q SameSpanQuery) (SpanQueryPage, error) {
 	const op = "same-span query"
-	empty := func() SpanQueryPage { return SpanQueryPage{Spans: []SpanMatch{}, Order: "time"} }
+	empty := func() SpanQueryPage { return SpanQueryPage{Spans: []SpanMatch{}} }
 	page := empty()
 	plan, err := r.newSameSpanPlan(op, q)
 	if err != nil {
