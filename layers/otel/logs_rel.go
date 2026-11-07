@@ -696,9 +696,11 @@ func (e relLogEntry) rowAgrees(r *otelv1pb.LOGS) bool {
 // logEntryAt reads (effective_ns, event_id, trace_id, span_id) at column col
 // and validates the identities.
 func logEntryAt(op string, e *recordlayer.IndexEntry, col int, order [4]int) (relLogEntry, error) {
-	bad := failf("corruption", op, "%s entry is not a log identity", e.Index.Name)
+	bad := func() (relLogEntry, error) {
+		return relLogEntry{}, failf("corruption", op, "%s entry is not a log identity", e.Index.Name)
+	}
 	if len(e.Key) < col+4 {
-		return relLogEntry{}, bad
+		return bad()
 	}
 	at := func(i int) any { return e.Key[col+order[i]] }
 	effective, eok := at(0).(int64)
@@ -708,7 +710,7 @@ func logEntryAt(op string, e *recordlayer.IndexEntry, col int, order [4]int) (re
 	tok = tok && len(trace) == 16 && !zeroID(trace) || at(2) == nil
 	sok = sok && len(span) == 8 && !zeroID(span) || at(3) == nil
 	if !eok || !iok || !tok || !sok || (trace == nil && span != nil) {
-		return relLogEntry{}, bad
+		return bad()
 	}
 	return relLogEntry{eventID: id, effective: effective, trace: trace, span: span, pk: e.PrimaryKey()}, nil
 }
@@ -838,7 +840,19 @@ func newRelLogAttr(op string, a Attribute) (relLogAttr, error) {
 	if !ok {
 		return relLogAttr{a: a, none: true}, nil
 	}
-	index := map[string]string{spansStrAttrIndex: logsStrAttrIndex, spansLongStrIndex: logsLongStrIndex, spansIntAttrIndex: logsIntAttrIndex, spansDoubleAttrIndex: logsDoubleAttrIndex, spansBoolAttrIndex: logsBoolAttrIndex}[q.index]
+	var index string
+	switch q.index {
+	case spansStrAttrIndex:
+		index = logsStrAttrIndex
+	case spansLongStrIndex:
+		index = logsLongStrIndex
+	case spansIntAttrIndex:
+		index = logsIntAttrIndex
+	case spansDoubleAttrIndex:
+		index = logsDoubleAttrIndex
+	case spansBoolAttrIndex:
+		index = logsBoolAttrIndex
+	}
 	return relLogAttr{a: a, index: index, prefix: tuple.Tuple{a.Scope, a.Key, q.value}, long: q.long}, nil
 }
 
