@@ -3,7 +3,6 @@ package otel
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 
 	"fdb.dev/layers/otel/otelsql"
@@ -17,12 +16,11 @@ import (
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
-// The relational Exporter (rfcs/relational-exporter-migration.md §1, §5): one
-// OTEL_V1 schema store per (run, tenant), created on first open, every write
-// and read a transaction on it under the exporter's policy. It is unexported
-// until the cutover renames it Exporter (§6 phase 3).
+// The Exporter (rfcs/relational-exporter-migration.md §1, §5): one OTEL_V1
+// schema store per (run, tenant), created on first open, every write and read
+// a transaction on it under the exporter's policy.
 
-var _ sdktrace.SpanExporter = (*relExporter)(nil)
+var _ sdktrace.SpanExporter = (*Exporter)(nil)
 
 // relMessageHooks are the GenAI message stores of a tenant store (stream 2C,
 // messages_rel.go). The exporter decomposes and re-encodes manifests itself
@@ -47,7 +45,7 @@ type relLogs interface {
 	QueryLogsByAttribute(ctx context.Context, a Attribute, limit int) ([]LogRecord, error)
 }
 
-// relParts are what other streams supply to a relExporter, and test seams.
+// relParts are what other streams supply to an Exporter, and test seams.
 type relParts struct {
 	// messages builds the message hooks when cfg enables messages; nil is
 	// newRelMessageStore.
@@ -58,10 +56,10 @@ type relParts struct {
 	newDatabase func(fdb.Database) *recordlayer.FDBDatabase
 }
 
-// relExporter stores OTLP spans as SPANS rows of its tenant store and serves
+// Exporter stores OTLP spans as SPANS rows of its tenant store and serves
 // every read from the store's standard indexes. Its methods are safe for
 // concurrent use; reads share no state, so none serializes another.
-type relExporter struct {
+type Exporter struct {
 	cfg      ExporterConfig
 	raw      fdb.Database
 	store    *tenantStore
@@ -78,17 +76,18 @@ type relExporter struct {
 	done   chan struct{}
 }
 
-// newRelExporter validates cfg, opens the database and ensures the tenant
-// store (template, database, schema, created when absent: D8) in exporter
-// policy transactions, then checks the store's layout.
-func newRelExporter(ctx context.Context, cfg ExporterConfig, parts relParts) (*relExporter, error) {
+// NewExporter validates cfg, opens the database and ensures the tenant store
+// of cfg's run and tenant (template, database, schema, created when absent:
+// D8) in exporter-policy transactions, then checks the store's layout.
+func NewExporter(ctx context.Context, cfg ExporterConfig) (*Exporter, error) {
+	return newExporter(ctx, cfg, relParts{})
+}
+
+// newExporter is NewExporter with the parts other code or tests supply.
+func newExporter(ctx context.Context, cfg ExporterConfig, parts relParts) (*Exporter, error) {
 	const op = "open exporter"
 	if err := cfg.Validate(); err != nil {
 		return nil, err
-	}
-	if strings.HasPrefix(cfg.RecordCompression, "brotli") {
-		// D2: SQL and Java read the store's records; neither reads Brotli.
-		return nil, failf("config", "exporter", "record_compression %s is not readable by SQL or Java; use none, zlib-1 or zlib-default", cfg.RecordCompression)
 	}
 	serializer, err := recordSerializer(cfg.RecordCompression)
 	if err != nil {
@@ -104,7 +103,7 @@ func newRelExporter(ctx context.Context, cfg ExporterConfig, parts relParts) (*r
 		newDatabase = recordlayer.NewFDBDatabase
 	}
 	db := newDatabase(raw)
-	abort := func(err error) (*relExporter, error) {
+	abort := func(err error) (*Exporter, error) {
 		raw.Close()
 		return nil, err
 	}
@@ -119,7 +118,7 @@ func newRelExporter(ctx context.Context, cfg ExporterConfig, parts relParts) (*r
 	if err := checkStoreLayout(ctx, store, relStoreLayout(cfg)); err != nil {
 		return abort(relOpenError(ctx, op, err))
 	}
-	e := &relExporter{
+	e := &Exporter{
 		cfg: cfg, raw: raw, store: store,
 		reader:   &SpanReader{store: store, cfg: cfg.backendConfig(), keys: storeMetaContinuationKeys{}},
 		writer:   &SpanWriter{store: store, opts: SpanWriterOptions{BatchSize: cfg.BatchSize, Workers: cfg.Workers, BulkIndexConflicts: cfg.BulkIndexConflicts}, maxTxnBytes: maxSpanTxnBytes},
@@ -188,14 +187,14 @@ func relOpenError(ctx context.Context, op string, err error) error {
 	return exporterTxnError(ctx, op, err)
 }
 
-func (e *relExporter) Config() ExporterConfig { return e.cfg }
+func (e *Exporter) Config() ExporterConfig { return e.cfg }
 
 // txnContext applies the exporter's transaction policy to work under ctx.
-func (e *relExporter) txnContext(ctx context.Context) context.Context {
+func (e *Exporter) txnContext(ctx context.Context) context.Context {
 	return withExporterTxns(ctx, e.cfg.TransactionTimeout)
 }
 
-func (e *relExporter) begin(op string) error {
+func (e *Exporter) begin(op string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closed {
@@ -208,7 +207,7 @@ func (e *relExporter) begin(op string) error {
 // Shutdown rejects new work, joins active calls and the message hooks, then
 // closes the database. It is idempotent; on context expiry it returns
 // canceled and the drain continues in the background.
-func (e *relExporter) Shutdown(ctx context.Context) error {
+func (e *Exporter) Shutdown(ctx context.Context) error {
 	e.mu.Lock()
 	if !e.closed {
 		e.closed = true
@@ -231,18 +230,18 @@ func (e *relExporter) Shutdown(ctx context.Context) error {
 }
 
 // ExportSpans implements sdktrace.SpanExporter.
-func (e *relExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+func (e *Exporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
 	_, err := e.ExportResourceSpans(ctx, ResourceSpansFromReadOnly(spans))
 	return err
 }
 
 // ConsumeTraces accepts OTLP ResourceSpans from a Collector or OTLP receiver.
-func (e *relExporter) ConsumeTraces(ctx context.Context, spans []*tracepb.ResourceSpans) error {
+func (e *Exporter) ConsumeTraces(ctx context.Context, spans []*tracepb.ResourceSpans) error {
 	_, err := e.ExportResourceSpans(ctx, spans)
 	return err
 }
 
-func (e *relExporter) Query(ctx context.Context, a Attribute) (QueryResult, error) {
+func (e *Exporter) Query(ctx context.Context, a Attribute) (QueryResult, error) {
 	if err := e.begin("query"); err != nil {
 		return QueryResult{Hits: []Hit{}}, err
 	}
@@ -250,7 +249,7 @@ func (e *relExporter) Query(ctx context.Context, a Attribute) (QueryResult, erro
 	return e.reader.Query(e.txnContext(ctx), a)
 }
 
-func (e *relExporter) Trace(ctx context.Context, traceID string) ([]SpanHit, error) {
+func (e *Exporter) Trace(ctx context.Context, traceID string) ([]SpanHit, error) {
 	if err := e.begin("trace"); err != nil {
 		return []SpanHit{}, err
 	}
@@ -259,7 +258,7 @@ func (e *relExporter) Trace(ctx context.Context, traceID string) ([]SpanHit, err
 	return out, err
 }
 
-func (e *relExporter) Span(ctx context.Context, spanID string) ([]SpanMatch, error) {
+func (e *Exporter) Span(ctx context.Context, spanID string) ([]SpanMatch, error) {
 	if err := e.begin("span"); err != nil {
 		return []SpanMatch{}, err
 	}
@@ -268,7 +267,7 @@ func (e *relExporter) Span(ctx context.Context, spanID string) ([]SpanMatch, err
 	return out, err
 }
 
-func (e *relExporter) Time(ctx context.Context, interval TimeRange) (QueryResult, error) {
+func (e *Exporter) Time(ctx context.Context, interval TimeRange) (QueryResult, error) {
 	if err := e.begin("time"); err != nil {
 		return QueryResult{Hits: []Hit{}}, err
 	}
@@ -277,16 +276,16 @@ func (e *relExporter) Time(ctx context.Context, interval TimeRange) (QueryResult
 }
 
 // QuerySameSpan returns one verified snapshot page of same-span matches.
-func (e *relExporter) QuerySameSpan(ctx context.Context, q SameSpanQuery) (SpanQueryPage, error) {
+func (e *Exporter) QuerySameSpan(ctx context.Context, q SameSpanQuery) (SpanQueryPage, error) {
 	if err := e.begin("same-span query"); err != nil {
-		return SpanQueryPage{Spans: []SpanMatch{}, Order: "time"}, err
+		return SpanQueryPage{Spans: []SpanMatch{}}, err
 	}
 	defer e.active.Done()
 	return e.reader.QuerySameSpan(e.txnContext(ctx), q)
 }
 
 // QueryTraceExistential returns the newest traces satisfying every clause, with witnesses.
-func (e *relExporter) QueryTraceExistential(ctx context.Context, q TraceExistentialQuery) (TraceExistentialResult, error) {
+func (e *Exporter) QueryTraceExistential(ctx context.Context, q TraceExistentialQuery) (TraceExistentialResult, error) {
 	if len(q.MessageClauses) > 0 && !e.cfg.EnableMessageFullText {
 		return TraceExistentialResult{Hits: []TraceExistentialHit{}}, fail("config", "trace existential", "message clauses need enable_message_full_text")
 	}
@@ -298,7 +297,7 @@ func (e *relExporter) QueryTraceExistential(ctx context.Context, q TraceExistent
 }
 
 // TraverseTraceGraph returns the observed parent/child/link topology of one trace.
-func (e *relExporter) TraverseTraceGraph(ctx context.Context, traceID string) (TraceGraph, error) {
+func (e *Exporter) TraverseTraceGraph(ctx context.Context, traceID string) (TraceGraph, error) {
 	if err := e.begin("trace graph"); err != nil {
 		return TraceGraph{}, err
 	}
@@ -308,7 +307,7 @@ func (e *relExporter) TraverseTraceGraph(ctx context.Context, traceID string) (T
 }
 
 // logStore is the log store, or a config error until stream 2B supplies one.
-func (e *relExporter) logStore(op string) (relLogs, error) {
+func (e *Exporter) logStore(op string) (relLogs, error) {
 	if e.logs == nil {
 		return nil, fail("config", op, "logs are not yet supported on the relational store")
 	}
@@ -316,7 +315,7 @@ func (e *relExporter) logStore(op string) (relLogs, error) {
 }
 
 // ExportLogs stores log records; its write transactions take write slots.
-func (e *relExporter) ExportLogs(ctx context.Context, logs []LogRecord) (LogExportStats, error) {
+func (e *Exporter) ExportLogs(ctx context.Context, logs []LogRecord) (LogExportStats, error) {
 	if err := e.begin("log export"); err != nil {
 		return LogExportStats{}, err
 	}
@@ -329,12 +328,12 @@ func (e *relExporter) ExportLogs(ctx context.Context, logs []LogRecord) (LogExpo
 }
 
 // ConsumeLogs accepts OTLP ResourceLogs from a Collector or OTLP receiver.
-func (e *relExporter) ConsumeLogs(ctx context.Context, logs []*logspb.ResourceLogs) error {
+func (e *Exporter) ConsumeLogs(ctx context.Context, logs []*logspb.ResourceLogs) error {
 	_, err := e.ExportLogs(ctx, LogRecordsFromResourceLogs(logs))
 	return err
 }
 
-func (e *relExporter) QueryLogsByTrace(ctx context.Context, traceID, spanID string) ([]LogRecord, error) {
+func (e *Exporter) QueryLogsByTrace(ctx context.Context, traceID, spanID string) ([]LogRecord, error) {
 	if err := e.begin("log trace query"); err != nil {
 		return []LogRecord{}, err
 	}
@@ -346,7 +345,7 @@ func (e *relExporter) QueryLogsByTrace(ctx context.Context, traceID, spanID stri
 	return s.QueryLogsByTrace(e.txnContext(ctx), traceID, spanID)
 }
 
-func (e *relExporter) QueryLogsByAttribute(ctx context.Context, a Attribute, limit int) ([]LogRecord, error) {
+func (e *Exporter) QueryLogsByAttribute(ctx context.Context, a Attribute, limit int) ([]LogRecord, error) {
 	if err := e.begin("log attribute query"); err != nil {
 		return []LogRecord{}, err
 	}

@@ -1,7 +1,6 @@
 package otel
 
 import (
-	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -163,53 +162,6 @@ func qaCorpus(seed uint64) []*tracepb.ResourceSpans {
 		out = append(out, rs)
 	}
 	return out
-}
-
-func qaExport(t *testing.T, ctx context.Context, e *Exporter, rss []*tracepb.ResourceSpans) {
-	t.Helper()
-	want := int64(0)
-	for _, rs := range rss {
-		for _, ss := range rs.ScopeSpans {
-			want += int64(len(ss.Spans))
-		}
-	}
-	stats, err := e.ExportResourceSpans(ctx, rss)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stats.Spans != want {
-		t.Fatalf("exported %d spans, want %d", stats.Spans, want)
-	}
-}
-
-// qaPaginate drains a same-span query and checks the page contract.
-func qaPaginate(t *testing.T, ctx context.Context, e *Exporter, q SameSpanQuery) ([]SpanMatch, int) {
-	t.Helper()
-	limit := q.Limit
-	if limit == 0 {
-		limit = e.Config().K
-	}
-	all := []SpanMatch{}
-	for pages := 1; ; pages++ {
-		if pages > 1000 {
-			t.Fatal("pagination did not terminate")
-		}
-		page, err := e.QuerySameSpan(ctx, q)
-		if err != nil {
-			t.Fatalf("page %d of %+v: %v", pages, q.Predicates, err)
-		}
-		if page.Order != e.Config().Order || page.ReadVersion <= 0 || page.Spans == nil {
-			t.Fatalf("page metadata: %+v", page)
-		}
-		if len(page.Spans) > limit || (len(page.Spans) == limit) != (page.Continuation != nil) {
-			t.Fatalf("page %d: %d spans, limit %d, continuation=%v", pages, len(page.Spans), limit, page.Continuation != nil)
-		}
-		all = append(all, page.Spans...)
-		if page.Continuation == nil {
-			return all, pages
-		}
-		q.Continuation = page.Continuation
-	}
 }
 
 type qaSpec struct {

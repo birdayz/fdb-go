@@ -319,11 +319,13 @@ func TestBenchQueryBudget(t *testing.T) {
 		candidates int
 		bytes      int64
 	}{
-		// refs = 50*n(n+1)/2; rows = 50(4n+1) + refs + 4(k+64);
-		// bytes = 512 refs + 50n(2*1024 + 3*512).
-		{5, 100, 2*(1050+750+656) + 1000, 2*(750*512+250*3584) + 1<<20},
-		{15, 100, 2*(3050+6000+656) + 1000, 2*(6000*512+750*3584) + 1<<20},
-		{1, 10, 2*(250+50+296) + 1000, 2*(50*512+50*3584) + 1<<20},
+		// spans = 50n; chunks = 1 + (2n+3)*48/8000; rows = spans(4+chunks) + 50 + 4(k+64) + 16;
+		// bytes = 512 rows + 50n(n+4)*48.
+		{5, 100, 2*(250*5+50+656+16) + 1000, 2*(1972*512+50*5*9*48) + 1<<20},
+		{15, 100, 2*(750*5+50+656+16) + 1000, 2*(4472*512+50*15*19*48) + 1<<20},
+		{1, 10, 2*(50*5+50+296+16) + 1000, 2*(612*512+50*1*5*48) + 1<<20},
+		// 403 references per span at the last turn take three chunks.
+		{200, 100, 2*(10000*7+50+656+16) + 1000, 2*(70722*512+50*200*204*48) + 1<<20},
 	} {
 		c, b := benchQueryBudget(tc.turns, tc.k)
 		if c != tc.candidates || b != tc.bytes {
@@ -335,7 +337,7 @@ func TestBenchQueryBudget(t *testing.T) {
 	large := small
 	large.Conversations, large.Duration, large.Warmup = maxBenchConversations, time.Hour, time.Minute
 	cs, cl := small.collectorConfig().Exporter, large.collectorConfig().Exporter
-	if cs.MaxCandidates != 5912 || cs.MaxBytes != 3_608_576 || cl.MaxCandidates != cs.MaxCandidates || cl.MaxBytes != cs.MaxBytes || cs.K != 100 {
+	if cs.MaxCandidates != 4944 || cs.MaxBytes != 3_283_904 || cl.MaxCandidates != cs.MaxCandidates || cl.MaxBytes != cs.MaxBytes || cs.K != 100 {
 		t.Fatalf("budgets %d/%d and %d/%d", cs.MaxCandidates, cs.MaxBytes, cl.MaxCandidates, cl.MaxBytes)
 	}
 	if err := large.Validate(); err != nil {
@@ -449,7 +451,7 @@ func TestCollectorBenchConfigValidate(t *testing.T) {
 	if q := cc.SendingQueue; !q.Enabled || !q.BlockOnOverflow || q.NumConsumers != 1 || q.QueueSize != 1000 || q.Batch.MinSize != 4 || q.Batch.MaxSize != 16 {
 		t.Fatalf("sending queue %+v", q)
 	}
-	if e := cc.Exporter; !e.EnableMessageDeltas || !e.EnableMessageFullText || e.BatchSize != 8 || e.Workers != 4 || e.Tenant != 3 || e.Order != "time" || e.HashBytes != 8 || e.RecordCompression != "brotli-4" || e.PostingValueFormat != "tuple" {
+	if e := cc.Exporter; !e.EnableMessageDeltas || !e.EnableMessageFullText || e.BatchSize != 8 || e.Workers != 4 || e.Tenant != 3 || e.RecordCompression != "zlib-1" {
 		t.Fatalf("exporter %+v", e)
 	}
 	for name, mutate := range map[string]func(*CollectorBenchConfig){
@@ -475,9 +477,8 @@ func TestCollectorBenchConfigValidate(t *testing.T) {
 		"consumers":       func(c *CollectorBenchConfig) { c.NumConsumers = maxConsumers + 1 },
 		"exporter batch":  func(c *CollectorBenchConfig) { c.ExporterBatchSize = 65 },
 		"workers":         func(c *CollectorBenchConfig) { c.ExporterWorkers = 17 },
-		"order":           func(c *CollectorBenchConfig) { c.Order = "random" },
-		"hash bytes":      func(c *CollectorBenchConfig) { c.HashBytes = 33 },
 		"compression":     func(c *CollectorBenchConfig) { c.RecordCompression = "lz4" },
+		"brotli":          func(c *CollectorBenchConfig) { c.RecordCompression = "brotli-4" },
 	} {
 		cfg := benchUnitConfig()
 		mutate(&cfg)

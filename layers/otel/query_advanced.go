@@ -27,7 +27,6 @@ type SameSpanQuery struct {
 type SpanQueryPage struct {
 	Spans        []SpanMatch `json:"spans"`
 	Continuation []byte      `json:"continuation,omitempty"`
-	Order        string      `json:"order"`
 	ReadVersion  int64       `json:"read_version"`
 	Candidates   int         `json:"candidates"`
 	Bytes        int64       `json:"logical_read_bytes"`
@@ -313,7 +312,7 @@ func (b *FDBBackend) newBudget(op string) *queryBudget {
 func (b *FDBBackend) QuerySameSpan(ctx context.Context, q SameSpanQuery) (SpanQueryPage, error) {
 	const op = "same-span query"
 	b.lastWork = QueryResult{}
-	page := SpanQueryPage{Spans: []SpanMatch{}, Order: b.cfg.Order}
+	page := SpanQueryPage{Spans: []SpanMatch{}}
 	plan, err := newSameSpanPlan(q, b.cfg.K)
 	if err != nil {
 		return page, err
@@ -332,7 +331,7 @@ func (b *FDBBackend) QuerySameSpan(ctx context.Context, q SameSpanQuery) (SpanQu
 	var secret []byte
 	budget := b.newBudget(op)
 	_, err = b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
-		page = SpanQueryPage{Spans: []SpanMatch{}, Order: b.cfg.Order}
+		page = SpanQueryPage{Spans: []SpanMatch{}}
 		budget = b.newBudget(op)
 		pm, err := b.openPostings(rc, op)
 		if err != nil {
@@ -785,40 +784,4 @@ func (b *FDBBackend) TraverseTraceGraph(ctx context.Context, traceID string) (Tr
 		return TraceGraph{}, err
 	}
 	return buildTraceGraph(traceID, spans), nil
-}
-
-// QuerySameSpan returns one verified snapshot_page of same-span matches.
-func (e *Exporter) QuerySameSpan(ctx context.Context, q SameSpanQuery) (SpanQueryPage, error) {
-	if err := e.begin("same-span query"); err != nil {
-		return SpanQueryPage{Spans: []SpanMatch{}, Order: e.cfg.Order}, err
-	}
-	defer e.active.Done()
-	e.queryMu.Lock()
-	defer e.queryMu.Unlock()
-	return e.backend.QuerySameSpan(e.txnContext(ctx), q)
-}
-
-// QueryTraceExistential returns the newest traces satisfying every clause, with witnesses.
-func (e *Exporter) QueryTraceExistential(ctx context.Context, q TraceExistentialQuery) (TraceExistentialResult, error) {
-	if len(q.MessageClauses) > 0 && !e.cfg.EnableMessageFullText {
-		return TraceExistentialResult{Hits: []TraceExistentialHit{}}, fail("config", "trace existential", "message clauses need enable_message_full_text")
-	}
-	if err := e.begin("trace existential"); err != nil {
-		return TraceExistentialResult{Hits: []TraceExistentialHit{}}, err
-	}
-	defer e.active.Done()
-	e.queryMu.Lock()
-	defer e.queryMu.Unlock()
-	return e.backend.QueryTraceExistential(e.txnContext(ctx), q)
-}
-
-// TraverseTraceGraph returns the observed parent/child/link topology of one trace.
-func (e *Exporter) TraverseTraceGraph(ctx context.Context, traceID string) (TraceGraph, error) {
-	if err := e.begin("trace graph"); err != nil {
-		return TraceGraph{}, err
-	}
-	defer e.active.Done()
-	e.queryMu.Lock()
-	defer e.queryMu.Unlock()
-	return e.backend.TraverseTraceGraph(e.txnContext(ctx), traceID)
 }

@@ -352,7 +352,7 @@ func (w *SpanWriter) save(ctx context.Context, b relBatch) error {
 // independently. With messages on, the GenAI content attributes are
 // decomposed: spans are admitted with placeholder manifests and references,
 // the messages persist, and the spans are prepared again with final ones.
-func (e *relExporter) ExportResourceSpans(ctx context.Context, spans []*tracepb.ResourceSpans) (ExportStats, error) {
+func (e *Exporter) ExportResourceSpans(ctx context.Context, spans []*tracepb.ResourceSpans) (ExportStats, error) {
 	if err := e.begin("export"); err != nil {
 		return ExportStats{}, err
 	}
@@ -395,7 +395,7 @@ func (e *relExporter) ExportResourceSpans(ctx context.Context, spans []*tracepb.
 // LoadSpanOTLP returns one stored span as the single-span ResourceSpans it
 // was exported in, original attribute lists and unknown fields included, its
 // GenAI message values restored.
-func (e *relExporter) LoadSpanOTLP(ctx context.Context, traceID, spanID string) (*tracepb.ResourceSpans, error) {
+func (e *Exporter) LoadSpanOTLP(ctx context.Context, traceID, spanID string) (*tracepb.ResourceSpans, error) {
 	const op = "load span"
 	if !validIdentity(traceID, 16) || !validIdentity(spanID, 8) {
 		return nil, fail("config", op, "expected lowercase hex 16-byte trace and 8-byte span identifiers")

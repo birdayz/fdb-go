@@ -54,7 +54,7 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 	flags.StringVar(&sqlOptions.Rows, "sql-rows", sqlbackend.RowsCompiled, "sql backend direct ingest rows: compiled (otelv1pb types) or dynamic (dynamic messages of the catalog descriptor)")
 	flags.BoolVar(&sqlOptions.PinnedConn, "sql-pinned-conn", sqlOptions.PinnedConn, "sql backend: run SQL queries on one pinned connection, keeping its session schema cache (no per-statement catalog read)")
 	flags.IntVar(&sqlOptions.PageRows, "sql-page-rows", sqlOptions.PageRows, "sql backend: scanned rows per SQL page (EXECUTION_SCANNED_ROWS_LIMIT); negative is unbounded")
-	flags.StringVar(&mode, "mode", "", "required: ingest, query, audit, drop, or collector-bench (fdb only)")
+	flags.StringVar(&mode, "mode", "", "required: ingest, query, audit, drop, or collector-bench (drives otel.Exporter; takes no --backend but fdb)")
 	flags.StringVar(&c.Run, "run", "", "required fresh owned namespace [a-z0-9_]{8,48}; no destructive default")
 	flags.Uint64Var(&c.Seed, "seed", c.Seed, "deterministic corpus seed")
 	flags.IntVar(&c.Count, "count", c.Count, "unique synthetic span population")
@@ -104,13 +104,17 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 		}
 		return 2
 	}
-	c.Backend = backend
-	if err := c.Validate(); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 2
+	// collector-bench drives otel.Exporter, so no backend applies; --backend
+	// fdb is accepted for the command lines of earlier receipts.
+	collectorBench := mode == "collector-bench" && (backend == "" || backend == "fdb")
+	if !collectorBench {
+		c.Backend = backend
+		if err := c.Validate(); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
 	}
-	collectorBench := mode == "collector-bench" && backend == "fdb"
-	if flags.NArg() != 0 || timeout <= 0 || (mode != "ingest" && mode != "query" && mode != "audit" && mode != "drop" && !collectorBench) || backend != "fdb" && backend != "sql" && backend != "ch-map" && backend != "ch-attrs" {
+	if flags.NArg() != 0 || timeout <= 0 || (mode != "ingest" && mode != "query" && mode != "audit" && mode != "drop" && !collectorBench) || !collectorBench && backend != "fdb" && backend != "sql" && backend != "ch-map" && backend != "ch-attrs" {
 		fmt.Fprintln(stderr, "explicit valid backend/mode required; see -help")
 		return 2
 	}
@@ -127,12 +131,15 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 		return 2
 	}
 	if collectorBench {
-		bench = collectorBenchConfig(flags, bench, c, cluster, revision)
+		var err error
+		if bench, err = collectorBenchConfig(flags, bench, c, cluster, revision); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
 		if err := bench.Validate(); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 2
 		}
-		var err error
 		if timeout, err = collectorBenchTimeout(flags, timeout, bench.Duration); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 2
@@ -236,8 +243,10 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 
 // collectorBenchConfig applies the shared flags that were set explicitly;
 // unset ones keep the collector-bench defaults, which differ from ingest's.
-func collectorBenchConfig(flags *flag.FlagSet, bench collector.CollectorBenchConfig, c otel.Config, cluster, revision string) collector.CollectorBenchConfig {
+// The custom store's layout flags have no Exporter setting (D2).
+func collectorBenchConfig(flags *flag.FlagSet, bench collector.CollectorBenchConfig, c otel.Config, cluster, revision string) (collector.CollectorBenchConfig, error) {
 	bench.ClusterFile, bench.Run, bench.Revision = cluster, c.Run, revision
+	var err error
 	flags.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "seed":
@@ -246,12 +255,10 @@ func collectorBenchConfig(flags *flag.FlagSet, bench collector.CollectorBenchCon
 			bench.Tenant = c.Tenant
 		case "record-compression":
 			bench.RecordCompression = c.RecordCompression
-		case "posting-value-format":
-			bench.PostingValueFormat = c.PostingValueFormat
-		case "hash-bytes":
-			bench.HashBytes = c.HashBytes
-		case "order":
-			bench.Order = c.Order
+		case "posting-value-format", "hash-bytes", "order":
+			if err == nil {
+				err = fmt.Errorf("--%s applies to --backend fdb only; the Exporter has one time order and no posting values", f.Name)
+			}
 		case "iterations":
 			bench.QueryIterations = c.Iterations
 		case "batch":
@@ -260,7 +267,7 @@ func collectorBenchConfig(flags *flag.FlagSet, bench collector.CollectorBenchCon
 			bench.ExporterWorkers = c.Workers
 		}
 	})
-	return bench
+	return bench, err
 }
 
 // collectorBenchDrain is the default allowance beyond --duration for the final

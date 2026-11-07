@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
-	"sort"
 	"strings"
 	"testing"
 
@@ -309,47 +308,6 @@ const ftsBase = int64(1700000000000000000)
 func ftsTrace(k int) string { return hex.EncodeToString(bytes.Repeat([]byte{byte(k + 1)}, 16)) }
 func ftsSpan(k int) string  { return hex.EncodeToString(bytes.Repeat([]byte{byte(k + 101)}, 8)) }
 
-func openFTSExporter(t *testing.T, ctx context.Context, cluster string, mutate func(*ExporterConfig)) *Exporter {
-	t.Helper()
-	return openTestExporter(t, ctx, cluster, func(c *ExporterConfig) {
-		c.EnableMessageFullText = true
-		if mutate != nil {
-			mutate(c)
-		}
-	})
-}
-
-// ftsDrain follows continuations to exhaustion, checking the page contract.
-func ftsDrain(t *testing.T, ctx context.Context, e *Exporter, q MessageFullTextQuery) ([]MessageSpanHit, int) {
-	t.Helper()
-	limit := q.Limit
-	if limit == 0 {
-		limit = e.Config().K
-	}
-	all := []MessageSpanHit{}
-	for pages := 1; ; pages++ {
-		if pages > 1000 {
-			t.Fatal("pagination did not terminate")
-		}
-		page, err := e.QueryMessageFullText(ctx, q)
-		if err != nil {
-			t.Fatalf("page %d of %+v: %v", pages, q, err)
-		}
-		if page.Order != e.Config().Order || page.ReadVersion <= 0 || page.Hits == nil {
-			t.Fatalf("page metadata: %+v", page)
-		}
-		if len(page.Hits) > limit || (len(page.Hits) == limit) != (page.Continuation != nil) {
-			t.Fatalf("page %d: %d hits, limit %d, continuation=%v", pages, len(page.Hits), limit, page.Continuation != nil)
-		}
-		all = append(all, page.Hits...)
-		if page.Continuation == nil {
-			ftsRequireSorted(t, e.Config().Order, all)
-			return all, pages
-		}
-		q.Continuation = page.Continuation
-	}
-}
-
 func ftsMessageID(t *testing.T, s string) messageID {
 	t.Helper()
 	var id messageID
@@ -359,35 +317,6 @@ func ftsMessageID(t *testing.T, s string) messageID {
 	return id
 }
 
-func ftsLess(t *testing.T, order string, a, b MessageSpanHit) bool {
-	if order == "time" {
-		if a.Start != b.Start {
-			return a.Start > b.Start
-		}
-		if a.Trace != b.Trace {
-			return a.Trace > b.Trace // reverseTrace ascending
-		}
-	} else if a.Trace != b.Trace {
-		return a.Trace < b.Trace
-	}
-	if a.Span != b.Span {
-		return a.Span < b.Span
-	}
-	if a.AttributeKey != b.AttributeKey {
-		return a.AttributeKey < b.AttributeKey
-	}
-	return ftsMessageID(t, a.MessageID).less(ftsMessageID(t, b.MessageID))
-}
-
-func ftsRequireSorted(t *testing.T, order string, hits []MessageSpanHit) {
-	t.Helper()
-	for i := 1; i < len(hits); i++ {
-		if !ftsLess(t, order, hits[i-1], hits[i]) {
-			t.Fatalf("%s hits %d and %d out of order or duplicated: %+v %+v", order, i-1, i, hits[i-1], hits[i])
-		}
-	}
-}
-
 // ftsTurns returns the deltaSpan turn of every hit, in hit order.
 func ftsTurns(hits []MessageSpanHit) []int {
 	out := make([]int, len(hits))
@@ -395,23 +324,6 @@ func ftsTurns(hits []MessageSpanHit) []int {
 		out[i] = int(h.Start - ftsBase)
 	}
 	return out
-}
-
-func ftsRange(lo, hi int, order string) []int {
-	var out []int
-	for k := lo; k <= hi; k++ {
-		out = append(out, k)
-	}
-	if order == "time" {
-		sort.Sort(sort.Reverse(sort.IntSlice(out)))
-	}
-	return out
-}
-
-func ftsCount(t *testing.T, ctx context.Context, e *Exporter, q MessageFullTextQuery) int {
-	t.Helper()
-	hits, _ := ftsDrain(t, ctx, e, q)
-	return len(hits)
 }
 
 func deltaRun(t *testing.T, ctx context.Context, db *recordlayer.FDBDatabase, fn func(*recordlayer.FDBRecordContext) error) error {
