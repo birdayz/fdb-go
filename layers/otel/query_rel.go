@@ -31,18 +31,23 @@ const (
 	spansRecordType      = "SPANS"
 )
 
-// SpanReader serves Query, Time, Span and Trace from a tenant store. The
-// Exporter reads through it, and so does otelbench's sql backend with
-// --sql-query direct, so benchmarks measure the production read path. Its
-// methods are safe for concurrent use.
+// SpanReader serves Query, Time, Span and Trace from a tenant store, and the
+// advanced queries of query_advanced_rel.go. The Exporter reads through it,
+// and so does otelbench's sql backend with --sql-query direct, so benchmarks
+// measure the production read path. Its methods are safe for concurrent use.
 type SpanReader struct {
 	store *tenantStore
 	cfg   Config
+	// keys holds the store's continuation signing key.
+	keys continuationKeys
 }
 
-// NewSpanReader reads ts on db within cfg's K and budgets.
+// NewSpanReader reads ts on db within cfg's K and budgets. Its continuation
+// tokens are bound to the Exporter's store path of cfg's run and tenant
+// (relTenantPaths).
 func NewSpanReader(db *recordlayer.FDBDatabase, ts *otelsql.TenantStore, cfg Config) *SpanReader {
-	return &SpanReader{store: &tenantStore{db: db, ts: ts}, cfg: cfg}
+	path, schema := relTenantPaths(cfg.Run, cfg.Tenant)
+	return &SpanReader{store: &tenantStore{db: db, ts: ts, databasePath: path, schema: schema}, cfg: cfg, keys: storeMetaContinuationKeys{}}
 }
 
 // attrQuery is the index scan an attribute equality reads, or none when no

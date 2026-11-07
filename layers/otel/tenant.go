@@ -30,6 +30,9 @@ func relTenantPaths(run string, tenant int) (databasePath, schema string) {
 type tenantStore struct {
 	db *recordlayer.FDBDatabase
 	ts *otelsql.TenantStore
+	// databasePath and schema name the store; continuation tokens are bound
+	// to them.
+	databasePath, schema string
 	// fullText sets the message pipeline sizer on every open, as FDBBackend
 	// does for the fulltext layout.
 	fullText bool
@@ -128,16 +131,9 @@ func (w *queryWork) result(r *QueryResult) {
 // exhausted. A missing or unreadable index is ownership: the store is not the
 // schema this code was built for, or an index build is incomplete.
 func scanIndex(ctx context.Context, store *recordlayer.FDBRecordStore, op, name string, rng recordlayer.TupleRange, reverse bool, work *queryWork, visit func(*recordlayer.IndexEntry) (bool, error)) error {
-	idx := store.GetRecordMetaData().GetIndex(name)
-	if idx == nil {
-		return failf("ownership", op, "index %s is not in the store's metadata", name)
-	}
-	state, err := store.ReadIndexState(name)
+	idx, err := readableIndex(store, op, name)
 	if err != nil {
 		return err
-	}
-	if !state.IsScannable() {
-		return failf("ownership", op, "index %s is not readable", name)
 	}
 	props := recordlayer.ForwardScan()
 	if reverse {
@@ -173,6 +169,23 @@ func scanIndex(ctx context.Context, store *recordlayer.FDBRecordStore, op, name 
 			return err
 		}
 	}
+}
+
+// readableIndex is the store's index name, which must be readable: a missing
+// or unreadable index is ownership.
+func readableIndex(store *recordlayer.FDBRecordStore, op, name string) (*recordlayer.Index, error) {
+	idx := store.GetRecordMetaData().GetIndex(name)
+	if idx == nil {
+		return nil, failf("ownership", op, "index %s is not in the store's metadata", name)
+	}
+	state, err := store.ReadIndexState(name)
+	if err != nil {
+		return nil, err
+	}
+	if !state.IsScannable() {
+		return nil, failf("ownership", op, "index %s is not readable", name)
+	}
+	return idx, nil
 }
 
 // loadRecordsBatch is how many record loads loadRecords keeps in flight.
