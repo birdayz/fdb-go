@@ -23,74 +23,6 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type STORE_META struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	NAME          *string                `protobuf:"bytes,1,opt,name=NAME" json:"NAME,omitempty"`
-	INT_VALUE     *int64                 `protobuf:"varint,2,opt,name=INT_VALUE,json=INTVALUE" json:"INT_VALUE,omitempty"`
-	BYTES_VALUE   []byte                 `protobuf:"bytes,3,opt,name=BYTES_VALUE,json=BYTESVALUE" json:"BYTES_VALUE,omitempty"`
-	STR_VALUE     *string                `protobuf:"bytes,4,opt,name=STR_VALUE,json=STRVALUE" json:"STR_VALUE,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *STORE_META) Reset() {
-	*x = STORE_META{}
-	mi := &file_OTEL_V1_msgTypes[0]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *STORE_META) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*STORE_META) ProtoMessage() {}
-
-func (x *STORE_META) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[0]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use STORE_META.ProtoReflect.Descriptor instead.
-func (*STORE_META) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{0}
-}
-
-func (x *STORE_META) GetNAME() string {
-	if x != nil && x.NAME != nil {
-		return *x.NAME
-	}
-	return ""
-}
-
-func (x *STORE_META) GetINT_VALUE() int64 {
-	if x != nil && x.INT_VALUE != nil {
-		return *x.INT_VALUE
-	}
-	return 0
-}
-
-func (x *STORE_META) GetBYTES_VALUE() []byte {
-	if x != nil {
-		return x.BYTES_VALUE
-	}
-	return nil
-}
-
-func (x *STORE_META) GetSTR_VALUE() string {
-	if x != nil && x.STR_VALUE != nil {
-		return *x.STR_VALUE
-	}
-	return ""
-}
-
 type ANY_ATTR struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SCOPE         *string                `protobuf:"bytes,1,opt,name=SCOPE" json:"SCOPE,omitempty"`
@@ -102,7 +34,7 @@ type ANY_ATTR struct {
 
 func (x *ANY_ATTR) Reset() {
 	*x = ANY_ATTR{}
-	mi := &file_OTEL_V1_msgTypes[1]
+	mi := &file_OTEL_V1_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -114,7 +46,7 @@ func (x *ANY_ATTR) String() string {
 func (*ANY_ATTR) ProtoMessage() {}
 
 func (x *ANY_ATTR) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[1]
+	mi := &file_OTEL_V1_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -127,7 +59,7 @@ func (x *ANY_ATTR) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ANY_ATTR.ProtoReflect.Descriptor instead.
 func (*ANY_ATTR) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{1}
+	return file_OTEL_V1_rawDescGZIP(), []int{0}
 }
 
 func (x *ANY_ATTR) GetSCOPE() string {
@@ -162,7 +94,7 @@ type BOOL_ATTR struct {
 
 func (x *BOOL_ATTR) Reset() {
 	*x = BOOL_ATTR{}
-	mi := &file_OTEL_V1_msgTypes[2]
+	mi := &file_OTEL_V1_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -174,7 +106,7 @@ func (x *BOOL_ATTR) String() string {
 func (*BOOL_ATTR) ProtoMessage() {}
 
 func (x *BOOL_ATTR) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[2]
+	mi := &file_OTEL_V1_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -187,7 +119,7 @@ func (x *BOOL_ATTR) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BOOL_ATTR.ProtoReflect.Descriptor instead.
 func (*BOOL_ATTR) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{2}
+	return file_OTEL_V1_rawDescGZIP(), []int{1}
 }
 
 func (x *BOOL_ATTR) GetSCOPE() string {
@@ -222,7 +154,7 @@ type BYTES_ATTR struct {
 
 func (x *BYTES_ATTR) Reset() {
 	*x = BYTES_ATTR{}
-	mi := &file_OTEL_V1_msgTypes[3]
+	mi := &file_OTEL_V1_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -234,7 +166,7 @@ func (x *BYTES_ATTR) String() string {
 func (*BYTES_ATTR) ProtoMessage() {}
 
 func (x *BYTES_ATTR) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[3]
+	mi := &file_OTEL_V1_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -247,7 +179,7 @@ func (x *BYTES_ATTR) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BYTES_ATTR.ProtoReflect.Descriptor instead.
 func (*BYTES_ATTR) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{3}
+	return file_OTEL_V1_rawDescGZIP(), []int{2}
 }
 
 func (x *BYTES_ATTR) GetSCOPE() string {
@@ -282,7 +214,7 @@ type DOUBLE_ATTR struct {
 
 func (x *DOUBLE_ATTR) Reset() {
 	*x = DOUBLE_ATTR{}
-	mi := &file_OTEL_V1_msgTypes[4]
+	mi := &file_OTEL_V1_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -294,7 +226,7 @@ func (x *DOUBLE_ATTR) String() string {
 func (*DOUBLE_ATTR) ProtoMessage() {}
 
 func (x *DOUBLE_ATTR) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[4]
+	mi := &file_OTEL_V1_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -307,7 +239,7 @@ func (x *DOUBLE_ATTR) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DOUBLE_ATTR.ProtoReflect.Descriptor instead.
 func (*DOUBLE_ATTR) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{4}
+	return file_OTEL_V1_rawDescGZIP(), []int{3}
 }
 
 func (x *DOUBLE_ATTR) GetSCOPE() string {
@@ -342,7 +274,7 @@ type INT_ATTR struct {
 
 func (x *INT_ATTR) Reset() {
 	*x = INT_ATTR{}
-	mi := &file_OTEL_V1_msgTypes[5]
+	mi := &file_OTEL_V1_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -354,7 +286,7 @@ func (x *INT_ATTR) String() string {
 func (*INT_ATTR) ProtoMessage() {}
 
 func (x *INT_ATTR) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[5]
+	mi := &file_OTEL_V1_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -367,7 +299,7 @@ func (x *INT_ATTR) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use INT_ATTR.ProtoReflect.Descriptor instead.
 func (*INT_ATTR) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{5}
+	return file_OTEL_V1_rawDescGZIP(), []int{4}
 }
 
 func (x *INT_ATTR) GetSCOPE() string {
@@ -403,7 +335,7 @@ type LONG_STR_ATTR struct {
 
 func (x *LONG_STR_ATTR) Reset() {
 	*x = LONG_STR_ATTR{}
-	mi := &file_OTEL_V1_msgTypes[6]
+	mi := &file_OTEL_V1_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -415,7 +347,7 @@ func (x *LONG_STR_ATTR) String() string {
 func (*LONG_STR_ATTR) ProtoMessage() {}
 
 func (x *LONG_STR_ATTR) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[6]
+	mi := &file_OTEL_V1_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -428,7 +360,7 @@ func (x *LONG_STR_ATTR) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LONG_STR_ATTR.ProtoReflect.Descriptor instead.
 func (*LONG_STR_ATTR) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{6}
+	return file_OTEL_V1_rawDescGZIP(), []int{5}
 }
 
 func (x *LONG_STR_ATTR) GetSCOPE() string {
@@ -469,7 +401,7 @@ type MESSAGE_REF_CHUNK struct {
 
 func (x *MESSAGE_REF_CHUNK) Reset() {
 	*x = MESSAGE_REF_CHUNK{}
-	mi := &file_OTEL_V1_msgTypes[7]
+	mi := &file_OTEL_V1_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -481,7 +413,7 @@ func (x *MESSAGE_REF_CHUNK) String() string {
 func (*MESSAGE_REF_CHUNK) ProtoMessage() {}
 
 func (x *MESSAGE_REF_CHUNK) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[7]
+	mi := &file_OTEL_V1_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -494,7 +426,7 @@ func (x *MESSAGE_REF_CHUNK) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MESSAGE_REF_CHUNK.ProtoReflect.Descriptor instead.
 func (*MESSAGE_REF_CHUNK) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{7}
+	return file_OTEL_V1_rawDescGZIP(), []int{6}
 }
 
 func (x *MESSAGE_REF_CHUNK) GetCHUNK() int64 {
@@ -549,7 +481,7 @@ type SPANS struct {
 
 func (x *SPANS) Reset() {
 	*x = SPANS{}
-	mi := &file_OTEL_V1_msgTypes[8]
+	mi := &file_OTEL_V1_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -561,7 +493,7 @@ func (x *SPANS) String() string {
 func (*SPANS) ProtoMessage() {}
 
 func (x *SPANS) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[8]
+	mi := &file_OTEL_V1_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -574,7 +506,7 @@ func (x *SPANS) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SPANS.ProtoReflect.Descriptor instead.
 func (*SPANS) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{8}
+	return file_OTEL_V1_rawDescGZIP(), []int{7}
 }
 
 func (x *SPANS) GetTRACE_ID() []byte {
@@ -804,7 +736,7 @@ type SPAN_EVENT struct {
 
 func (x *SPAN_EVENT) Reset() {
 	*x = SPAN_EVENT{}
-	mi := &file_OTEL_V1_msgTypes[9]
+	mi := &file_OTEL_V1_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -816,7 +748,7 @@ func (x *SPAN_EVENT) String() string {
 func (*SPAN_EVENT) ProtoMessage() {}
 
 func (x *SPAN_EVENT) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[9]
+	mi := &file_OTEL_V1_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -829,7 +761,7 @@ func (x *SPAN_EVENT) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SPAN_EVENT.ProtoReflect.Descriptor instead.
 func (*SPAN_EVENT) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{9}
+	return file_OTEL_V1_rawDescGZIP(), []int{8}
 }
 
 func (x *SPAN_EVENT) GetORDINAL() int64 {
@@ -914,7 +846,7 @@ type SPAN_LINK struct {
 
 func (x *SPAN_LINK) Reset() {
 	*x = SPAN_LINK{}
-	mi := &file_OTEL_V1_msgTypes[10]
+	mi := &file_OTEL_V1_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -926,7 +858,7 @@ func (x *SPAN_LINK) String() string {
 func (*SPAN_LINK) ProtoMessage() {}
 
 func (x *SPAN_LINK) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[10]
+	mi := &file_OTEL_V1_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -939,7 +871,7 @@ func (x *SPAN_LINK) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SPAN_LINK.ProtoReflect.Descriptor instead.
 func (*SPAN_LINK) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{10}
+	return file_OTEL_V1_rawDescGZIP(), []int{9}
 }
 
 func (x *SPAN_LINK) GetORDINAL() int64 {
@@ -1030,7 +962,7 @@ type STR_ATTR struct {
 
 func (x *STR_ATTR) Reset() {
 	*x = STR_ATTR{}
-	mi := &file_OTEL_V1_msgTypes[11]
+	mi := &file_OTEL_V1_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1042,7 +974,7 @@ func (x *STR_ATTR) String() string {
 func (*STR_ATTR) ProtoMessage() {}
 
 func (x *STR_ATTR) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[11]
+	mi := &file_OTEL_V1_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1055,7 +987,7 @@ func (x *STR_ATTR) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use STR_ATTR.ProtoReflect.Descriptor instead.
 func (*STR_ATTR) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{11}
+	return file_OTEL_V1_rawDescGZIP(), []int{10}
 }
 
 func (x *STR_ATTR) GetSCOPE() string {
@@ -1088,7 +1020,7 @@ type XType__1Ccd8D47_239A_5CfeA90CAc6D6A81Dd5A struct {
 
 func (x *XType__1Ccd8D47_239A_5CfeA90CAc6D6A81Dd5A) Reset() {
 	*x = XType__1Ccd8D47_239A_5CfeA90CAc6D6A81Dd5A{}
-	mi := &file_OTEL_V1_msgTypes[12]
+	mi := &file_OTEL_V1_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1100,7 +1032,7 @@ func (x *XType__1Ccd8D47_239A_5CfeA90CAc6D6A81Dd5A) String() string {
 func (*XType__1Ccd8D47_239A_5CfeA90CAc6D6A81Dd5A) ProtoMessage() {}
 
 func (x *XType__1Ccd8D47_239A_5CfeA90CAc6D6A81Dd5A) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[12]
+	mi := &file_OTEL_V1_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1113,7 +1045,7 @@ func (x *XType__1Ccd8D47_239A_5CfeA90CAc6D6A81Dd5A) ProtoReflect() protoreflect.
 
 // Deprecated: Use XType__1Ccd8D47_239A_5CfeA90CAc6D6A81Dd5A.ProtoReflect.Descriptor instead.
 func (*XType__1Ccd8D47_239A_5CfeA90CAc6D6A81Dd5A) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{12}
+	return file_OTEL_V1_rawDescGZIP(), []int{11}
 }
 
 func (x *XType__1Ccd8D47_239A_5CfeA90CAc6D6A81Dd5A) GetValues() []*STR_ATTR {
@@ -1132,7 +1064,7 @@ type XType__272Acc3BE88F_53A4A6B7_9De8022373E9 struct {
 
 func (x *XType__272Acc3BE88F_53A4A6B7_9De8022373E9) Reset() {
 	*x = XType__272Acc3BE88F_53A4A6B7_9De8022373E9{}
-	mi := &file_OTEL_V1_msgTypes[13]
+	mi := &file_OTEL_V1_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1144,7 +1076,7 @@ func (x *XType__272Acc3BE88F_53A4A6B7_9De8022373E9) String() string {
 func (*XType__272Acc3BE88F_53A4A6B7_9De8022373E9) ProtoMessage() {}
 
 func (x *XType__272Acc3BE88F_53A4A6B7_9De8022373E9) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[13]
+	mi := &file_OTEL_V1_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1157,7 +1089,7 @@ func (x *XType__272Acc3BE88F_53A4A6B7_9De8022373E9) ProtoReflect() protoreflect.
 
 // Deprecated: Use XType__272Acc3BE88F_53A4A6B7_9De8022373E9.ProtoReflect.Descriptor instead.
 func (*XType__272Acc3BE88F_53A4A6B7_9De8022373E9) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{13}
+	return file_OTEL_V1_rawDescGZIP(), []int{12}
 }
 
 func (x *XType__272Acc3BE88F_53A4A6B7_9De8022373E9) GetValues() []*SPAN_LINK {
@@ -1176,7 +1108,7 @@ type XType__29097851_19Aa_57Ea_924EE2A01Dfc8394 struct {
 
 func (x *XType__29097851_19Aa_57Ea_924EE2A01Dfc8394) Reset() {
 	*x = XType__29097851_19Aa_57Ea_924EE2A01Dfc8394{}
-	mi := &file_OTEL_V1_msgTypes[14]
+	mi := &file_OTEL_V1_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1188,7 +1120,7 @@ func (x *XType__29097851_19Aa_57Ea_924EE2A01Dfc8394) String() string {
 func (*XType__29097851_19Aa_57Ea_924EE2A01Dfc8394) ProtoMessage() {}
 
 func (x *XType__29097851_19Aa_57Ea_924EE2A01Dfc8394) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[14]
+	mi := &file_OTEL_V1_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1201,7 +1133,7 @@ func (x *XType__29097851_19Aa_57Ea_924EE2A01Dfc8394) ProtoReflect() protoreflect
 
 // Deprecated: Use XType__29097851_19Aa_57Ea_924EE2A01Dfc8394.ProtoReflect.Descriptor instead.
 func (*XType__29097851_19Aa_57Ea_924EE2A01Dfc8394) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{14}
+	return file_OTEL_V1_rawDescGZIP(), []int{13}
 }
 
 func (x *XType__29097851_19Aa_57Ea_924EE2A01Dfc8394) GetValues() []*LONG_STR_ATTR {
@@ -1220,7 +1152,7 @@ type XType__303D24C8_022B_5F00_9Fa4_2089615D70Cb struct {
 
 func (x *XType__303D24C8_022B_5F00_9Fa4_2089615D70Cb) Reset() {
 	*x = XType__303D24C8_022B_5F00_9Fa4_2089615D70Cb{}
-	mi := &file_OTEL_V1_msgTypes[15]
+	mi := &file_OTEL_V1_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1232,7 +1164,7 @@ func (x *XType__303D24C8_022B_5F00_9Fa4_2089615D70Cb) String() string {
 func (*XType__303D24C8_022B_5F00_9Fa4_2089615D70Cb) ProtoMessage() {}
 
 func (x *XType__303D24C8_022B_5F00_9Fa4_2089615D70Cb) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[15]
+	mi := &file_OTEL_V1_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1245,7 +1177,7 @@ func (x *XType__303D24C8_022B_5F00_9Fa4_2089615D70Cb) ProtoReflect() protoreflec
 
 // Deprecated: Use XType__303D24C8_022B_5F00_9Fa4_2089615D70Cb.ProtoReflect.Descriptor instead.
 func (*XType__303D24C8_022B_5F00_9Fa4_2089615D70Cb) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{15}
+	return file_OTEL_V1_rawDescGZIP(), []int{14}
 }
 
 func (x *XType__303D24C8_022B_5F00_9Fa4_2089615D70Cb) GetValues() []*INT_ATTR {
@@ -1264,7 +1196,7 @@ type XType__3F668645_6F97_5Eb2Aa4BA719F0186493 struct {
 
 func (x *XType__3F668645_6F97_5Eb2Aa4BA719F0186493) Reset() {
 	*x = XType__3F668645_6F97_5Eb2Aa4BA719F0186493{}
-	mi := &file_OTEL_V1_msgTypes[16]
+	mi := &file_OTEL_V1_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1276,7 +1208,7 @@ func (x *XType__3F668645_6F97_5Eb2Aa4BA719F0186493) String() string {
 func (*XType__3F668645_6F97_5Eb2Aa4BA719F0186493) ProtoMessage() {}
 
 func (x *XType__3F668645_6F97_5Eb2Aa4BA719F0186493) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[16]
+	mi := &file_OTEL_V1_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1289,7 +1221,7 @@ func (x *XType__3F668645_6F97_5Eb2Aa4BA719F0186493) ProtoReflect() protoreflect.
 
 // Deprecated: Use XType__3F668645_6F97_5Eb2Aa4BA719F0186493.ProtoReflect.Descriptor instead.
 func (*XType__3F668645_6F97_5Eb2Aa4BA719F0186493) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{16}
+	return file_OTEL_V1_rawDescGZIP(), []int{15}
 }
 
 func (x *XType__3F668645_6F97_5Eb2Aa4BA719F0186493) GetValues() []*MESSAGE_REF_CHUNK {
@@ -1308,7 +1240,7 @@ type XType__4670E95ED871_522EB318_0C8864Cd6689 struct {
 
 func (x *XType__4670E95ED871_522EB318_0C8864Cd6689) Reset() {
 	*x = XType__4670E95ED871_522EB318_0C8864Cd6689{}
-	mi := &file_OTEL_V1_msgTypes[17]
+	mi := &file_OTEL_V1_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1320,7 +1252,7 @@ func (x *XType__4670E95ED871_522EB318_0C8864Cd6689) String() string {
 func (*XType__4670E95ED871_522EB318_0C8864Cd6689) ProtoMessage() {}
 
 func (x *XType__4670E95ED871_522EB318_0C8864Cd6689) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[17]
+	mi := &file_OTEL_V1_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1333,7 +1265,7 @@ func (x *XType__4670E95ED871_522EB318_0C8864Cd6689) ProtoReflect() protoreflect.
 
 // Deprecated: Use XType__4670E95ED871_522EB318_0C8864Cd6689.ProtoReflect.Descriptor instead.
 func (*XType__4670E95ED871_522EB318_0C8864Cd6689) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{17}
+	return file_OTEL_V1_rawDescGZIP(), []int{16}
 }
 
 func (x *XType__4670E95ED871_522EB318_0C8864Cd6689) GetValues() []*ANY_ATTR {
@@ -1352,7 +1284,7 @@ type XType__6D688Bf6E230_5E80_81Bb_0E58F73Cb2E3 struct {
 
 func (x *XType__6D688Bf6E230_5E80_81Bb_0E58F73Cb2E3) Reset() {
 	*x = XType__6D688Bf6E230_5E80_81Bb_0E58F73Cb2E3{}
-	mi := &file_OTEL_V1_msgTypes[18]
+	mi := &file_OTEL_V1_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1364,7 +1296,7 @@ func (x *XType__6D688Bf6E230_5E80_81Bb_0E58F73Cb2E3) String() string {
 func (*XType__6D688Bf6E230_5E80_81Bb_0E58F73Cb2E3) ProtoMessage() {}
 
 func (x *XType__6D688Bf6E230_5E80_81Bb_0E58F73Cb2E3) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[18]
+	mi := &file_OTEL_V1_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1377,7 +1309,7 @@ func (x *XType__6D688Bf6E230_5E80_81Bb_0E58F73Cb2E3) ProtoReflect() protoreflect
 
 // Deprecated: Use XType__6D688Bf6E230_5E80_81Bb_0E58F73Cb2E3.ProtoReflect.Descriptor instead.
 func (*XType__6D688Bf6E230_5E80_81Bb_0E58F73Cb2E3) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{18}
+	return file_OTEL_V1_rawDescGZIP(), []int{17}
 }
 
 func (x *XType__6D688Bf6E230_5E80_81Bb_0E58F73Cb2E3) GetValues() []*SPAN_EVENT {
@@ -1396,7 +1328,7 @@ type XType__70700FbaA700_5Dd6_8E14Ea892Fc31A81 struct {
 
 func (x *XType__70700FbaA700_5Dd6_8E14Ea892Fc31A81) Reset() {
 	*x = XType__70700FbaA700_5Dd6_8E14Ea892Fc31A81{}
-	mi := &file_OTEL_V1_msgTypes[19]
+	mi := &file_OTEL_V1_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1408,7 +1340,7 @@ func (x *XType__70700FbaA700_5Dd6_8E14Ea892Fc31A81) String() string {
 func (*XType__70700FbaA700_5Dd6_8E14Ea892Fc31A81) ProtoMessage() {}
 
 func (x *XType__70700FbaA700_5Dd6_8E14Ea892Fc31A81) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[19]
+	mi := &file_OTEL_V1_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1421,7 +1353,7 @@ func (x *XType__70700FbaA700_5Dd6_8E14Ea892Fc31A81) ProtoReflect() protoreflect.
 
 // Deprecated: Use XType__70700FbaA700_5Dd6_8E14Ea892Fc31A81.ProtoReflect.Descriptor instead.
 func (*XType__70700FbaA700_5Dd6_8E14Ea892Fc31A81) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{19}
+	return file_OTEL_V1_rawDescGZIP(), []int{18}
 }
 
 func (x *XType__70700FbaA700_5Dd6_8E14Ea892Fc31A81) GetValues() []*BOOL_ATTR {
@@ -1440,7 +1372,7 @@ type XType_Aaa74E53_3638_5444Aa69_637De931E35F struct {
 
 func (x *XType_Aaa74E53_3638_5444Aa69_637De931E35F) Reset() {
 	*x = XType_Aaa74E53_3638_5444Aa69_637De931E35F{}
-	mi := &file_OTEL_V1_msgTypes[20]
+	mi := &file_OTEL_V1_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1452,7 +1384,7 @@ func (x *XType_Aaa74E53_3638_5444Aa69_637De931E35F) String() string {
 func (*XType_Aaa74E53_3638_5444Aa69_637De931E35F) ProtoMessage() {}
 
 func (x *XType_Aaa74E53_3638_5444Aa69_637De931E35F) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[20]
+	mi := &file_OTEL_V1_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1465,7 +1397,7 @@ func (x *XType_Aaa74E53_3638_5444Aa69_637De931E35F) ProtoReflect() protoreflect.
 
 // Deprecated: Use XType_Aaa74E53_3638_5444Aa69_637De931E35F.ProtoReflect.Descriptor instead.
 func (*XType_Aaa74E53_3638_5444Aa69_637De931E35F) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{20}
+	return file_OTEL_V1_rawDescGZIP(), []int{19}
 }
 
 func (x *XType_Aaa74E53_3638_5444Aa69_637De931E35F) GetValues() []*BYTES_ATTR {
@@ -1484,7 +1416,7 @@ type XType_Aad3F8AdAad2_56Fb_9A38_51F3977F9858 struct {
 
 func (x *XType_Aad3F8AdAad2_56Fb_9A38_51F3977F9858) Reset() {
 	*x = XType_Aad3F8AdAad2_56Fb_9A38_51F3977F9858{}
-	mi := &file_OTEL_V1_msgTypes[21]
+	mi := &file_OTEL_V1_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1496,7 +1428,7 @@ func (x *XType_Aad3F8AdAad2_56Fb_9A38_51F3977F9858) String() string {
 func (*XType_Aad3F8AdAad2_56Fb_9A38_51F3977F9858) ProtoMessage() {}
 
 func (x *XType_Aad3F8AdAad2_56Fb_9A38_51F3977F9858) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[21]
+	mi := &file_OTEL_V1_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1509,7 +1441,7 @@ func (x *XType_Aad3F8AdAad2_56Fb_9A38_51F3977F9858) ProtoReflect() protoreflect.
 
 // Deprecated: Use XType_Aad3F8AdAad2_56Fb_9A38_51F3977F9858.ProtoReflect.Descriptor instead.
 func (*XType_Aad3F8AdAad2_56Fb_9A38_51F3977F9858) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{21}
+	return file_OTEL_V1_rawDescGZIP(), []int{20}
 }
 
 func (x *XType_Aad3F8AdAad2_56Fb_9A38_51F3977F9858) GetValues() []*DOUBLE_ATTR {
@@ -1553,7 +1485,7 @@ type LOGS struct {
 
 func (x *LOGS) Reset() {
 	*x = LOGS{}
-	mi := &file_OTEL_V1_msgTypes[22]
+	mi := &file_OTEL_V1_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1565,7 +1497,7 @@ func (x *LOGS) String() string {
 func (*LOGS) ProtoMessage() {}
 
 func (x *LOGS) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[22]
+	mi := &file_OTEL_V1_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1578,7 +1510,7 @@ func (x *LOGS) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LOGS.ProtoReflect.Descriptor instead.
 func (*LOGS) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{22}
+	return file_OTEL_V1_rawDescGZIP(), []int{21}
 }
 
 func (x *LOGS) GetEVENT_ID() string {
@@ -1772,7 +1704,7 @@ type XType__1B804464_4E89_5A5DAffcDb79E0373Efc struct {
 
 func (x *XType__1B804464_4E89_5A5DAffcDb79E0373Efc) Reset() {
 	*x = XType__1B804464_4E89_5A5DAffcDb79E0373Efc{}
-	mi := &file_OTEL_V1_msgTypes[23]
+	mi := &file_OTEL_V1_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1784,7 +1716,7 @@ func (x *XType__1B804464_4E89_5A5DAffcDb79E0373Efc) String() string {
 func (*XType__1B804464_4E89_5A5DAffcDb79E0373Efc) ProtoMessage() {}
 
 func (x *XType__1B804464_4E89_5A5DAffcDb79E0373Efc) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[23]
+	mi := &file_OTEL_V1_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1797,7 +1729,7 @@ func (x *XType__1B804464_4E89_5A5DAffcDb79E0373Efc) ProtoReflect() protoreflect.
 
 // Deprecated: Use XType__1B804464_4E89_5A5DAffcDb79E0373Efc.ProtoReflect.Descriptor instead.
 func (*XType__1B804464_4E89_5A5DAffcDb79E0373Efc) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{23}
+	return file_OTEL_V1_rawDescGZIP(), []int{22}
 }
 
 func (x *XType__1B804464_4E89_5A5DAffcDb79E0373Efc) GetValues() []*ANY_ATTR {
@@ -1816,7 +1748,7 @@ type XType__357C8Cfa_2A56_5924Bb31_1Df6958E9F38 struct {
 
 func (x *XType__357C8Cfa_2A56_5924Bb31_1Df6958E9F38) Reset() {
 	*x = XType__357C8Cfa_2A56_5924Bb31_1Df6958E9F38{}
-	mi := &file_OTEL_V1_msgTypes[24]
+	mi := &file_OTEL_V1_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1828,7 +1760,7 @@ func (x *XType__357C8Cfa_2A56_5924Bb31_1Df6958E9F38) String() string {
 func (*XType__357C8Cfa_2A56_5924Bb31_1Df6958E9F38) ProtoMessage() {}
 
 func (x *XType__357C8Cfa_2A56_5924Bb31_1Df6958E9F38) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[24]
+	mi := &file_OTEL_V1_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1841,7 +1773,7 @@ func (x *XType__357C8Cfa_2A56_5924Bb31_1Df6958E9F38) ProtoReflect() protoreflect
 
 // Deprecated: Use XType__357C8Cfa_2A56_5924Bb31_1Df6958E9F38.ProtoReflect.Descriptor instead.
 func (*XType__357C8Cfa_2A56_5924Bb31_1Df6958E9F38) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{24}
+	return file_OTEL_V1_rawDescGZIP(), []int{23}
 }
 
 func (x *XType__357C8Cfa_2A56_5924Bb31_1Df6958E9F38) GetValues() []*BYTES_ATTR {
@@ -1860,7 +1792,7 @@ type XType__470452E0_50B7_521FA4C5_77B71C92A3C7 struct {
 
 func (x *XType__470452E0_50B7_521FA4C5_77B71C92A3C7) Reset() {
 	*x = XType__470452E0_50B7_521FA4C5_77B71C92A3C7{}
-	mi := &file_OTEL_V1_msgTypes[25]
+	mi := &file_OTEL_V1_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1872,7 +1804,7 @@ func (x *XType__470452E0_50B7_521FA4C5_77B71C92A3C7) String() string {
 func (*XType__470452E0_50B7_521FA4C5_77B71C92A3C7) ProtoMessage() {}
 
 func (x *XType__470452E0_50B7_521FA4C5_77B71C92A3C7) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[25]
+	mi := &file_OTEL_V1_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1885,7 +1817,7 @@ func (x *XType__470452E0_50B7_521FA4C5_77B71C92A3C7) ProtoReflect() protoreflect
 
 // Deprecated: Use XType__470452E0_50B7_521FA4C5_77B71C92A3C7.ProtoReflect.Descriptor instead.
 func (*XType__470452E0_50B7_521FA4C5_77B71C92A3C7) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{25}
+	return file_OTEL_V1_rawDescGZIP(), []int{24}
 }
 
 func (x *XType__470452E0_50B7_521FA4C5_77B71C92A3C7) GetValues() []*BOOL_ATTR {
@@ -1904,7 +1836,7 @@ type XType__6Af9Be56F839_5Cde_99A2F7471F436981 struct {
 
 func (x *XType__6Af9Be56F839_5Cde_99A2F7471F436981) Reset() {
 	*x = XType__6Af9Be56F839_5Cde_99A2F7471F436981{}
-	mi := &file_OTEL_V1_msgTypes[26]
+	mi := &file_OTEL_V1_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1916,7 +1848,7 @@ func (x *XType__6Af9Be56F839_5Cde_99A2F7471F436981) String() string {
 func (*XType__6Af9Be56F839_5Cde_99A2F7471F436981) ProtoMessage() {}
 
 func (x *XType__6Af9Be56F839_5Cde_99A2F7471F436981) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[26]
+	mi := &file_OTEL_V1_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1929,7 +1861,7 @@ func (x *XType__6Af9Be56F839_5Cde_99A2F7471F436981) ProtoReflect() protoreflect.
 
 // Deprecated: Use XType__6Af9Be56F839_5Cde_99A2F7471F436981.ProtoReflect.Descriptor instead.
 func (*XType__6Af9Be56F839_5Cde_99A2F7471F436981) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{26}
+	return file_OTEL_V1_rawDescGZIP(), []int{25}
 }
 
 func (x *XType__6Af9Be56F839_5Cde_99A2F7471F436981) GetValues() []*INT_ATTR {
@@ -1948,7 +1880,7 @@ type XType__82376A58_7040_5557_8Ab8_1A5Ac4C886Ae struct {
 
 func (x *XType__82376A58_7040_5557_8Ab8_1A5Ac4C886Ae) Reset() {
 	*x = XType__82376A58_7040_5557_8Ab8_1A5Ac4C886Ae{}
-	mi := &file_OTEL_V1_msgTypes[27]
+	mi := &file_OTEL_V1_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1960,7 +1892,7 @@ func (x *XType__82376A58_7040_5557_8Ab8_1A5Ac4C886Ae) String() string {
 func (*XType__82376A58_7040_5557_8Ab8_1A5Ac4C886Ae) ProtoMessage() {}
 
 func (x *XType__82376A58_7040_5557_8Ab8_1A5Ac4C886Ae) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[27]
+	mi := &file_OTEL_V1_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1973,7 +1905,7 @@ func (x *XType__82376A58_7040_5557_8Ab8_1A5Ac4C886Ae) ProtoReflect() protoreflec
 
 // Deprecated: Use XType__82376A58_7040_5557_8Ab8_1A5Ac4C886Ae.ProtoReflect.Descriptor instead.
 func (*XType__82376A58_7040_5557_8Ab8_1A5Ac4C886Ae) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{27}
+	return file_OTEL_V1_rawDescGZIP(), []int{26}
 }
 
 func (x *XType__82376A58_7040_5557_8Ab8_1A5Ac4C886Ae) GetValues() []*STR_ATTR {
@@ -1992,7 +1924,7 @@ type XType_C73Cf9B1_0Eb6_5Cf0A064_9C8915F2D466 struct {
 
 func (x *XType_C73Cf9B1_0Eb6_5Cf0A064_9C8915F2D466) Reset() {
 	*x = XType_C73Cf9B1_0Eb6_5Cf0A064_9C8915F2D466{}
-	mi := &file_OTEL_V1_msgTypes[28]
+	mi := &file_OTEL_V1_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2004,7 +1936,7 @@ func (x *XType_C73Cf9B1_0Eb6_5Cf0A064_9C8915F2D466) String() string {
 func (*XType_C73Cf9B1_0Eb6_5Cf0A064_9C8915F2D466) ProtoMessage() {}
 
 func (x *XType_C73Cf9B1_0Eb6_5Cf0A064_9C8915F2D466) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[28]
+	mi := &file_OTEL_V1_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2017,7 +1949,7 @@ func (x *XType_C73Cf9B1_0Eb6_5Cf0A064_9C8915F2D466) ProtoReflect() protoreflect.
 
 // Deprecated: Use XType_C73Cf9B1_0Eb6_5Cf0A064_9C8915F2D466.ProtoReflect.Descriptor instead.
 func (*XType_C73Cf9B1_0Eb6_5Cf0A064_9C8915F2D466) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{28}
+	return file_OTEL_V1_rawDescGZIP(), []int{27}
 }
 
 func (x *XType_C73Cf9B1_0Eb6_5Cf0A064_9C8915F2D466) GetValues() []*DOUBLE_ATTR {
@@ -2036,7 +1968,7 @@ type XType_Dedb138F_408C_5A92_97Ac_43031A62E47D struct {
 
 func (x *XType_Dedb138F_408C_5A92_97Ac_43031A62E47D) Reset() {
 	*x = XType_Dedb138F_408C_5A92_97Ac_43031A62E47D{}
-	mi := &file_OTEL_V1_msgTypes[29]
+	mi := &file_OTEL_V1_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2048,7 +1980,7 @@ func (x *XType_Dedb138F_408C_5A92_97Ac_43031A62E47D) String() string {
 func (*XType_Dedb138F_408C_5A92_97Ac_43031A62E47D) ProtoMessage() {}
 
 func (x *XType_Dedb138F_408C_5A92_97Ac_43031A62E47D) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[29]
+	mi := &file_OTEL_V1_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2061,7 +1993,7 @@ func (x *XType_Dedb138F_408C_5A92_97Ac_43031A62E47D) ProtoReflect() protoreflect
 
 // Deprecated: Use XType_Dedb138F_408C_5A92_97Ac_43031A62E47D.ProtoReflect.Descriptor instead.
 func (*XType_Dedb138F_408C_5A92_97Ac_43031A62E47D) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{29}
+	return file_OTEL_V1_rawDescGZIP(), []int{28}
 }
 
 func (x *XType_Dedb138F_408C_5A92_97Ac_43031A62E47D) GetValues() []*LONG_STR_ATTR {
@@ -2082,7 +2014,7 @@ type MESSAGE_TRACES struct {
 
 func (x *MESSAGE_TRACES) Reset() {
 	*x = MESSAGE_TRACES{}
-	mi := &file_OTEL_V1_msgTypes[30]
+	mi := &file_OTEL_V1_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2094,7 +2026,7 @@ func (x *MESSAGE_TRACES) String() string {
 func (*MESSAGE_TRACES) ProtoMessage() {}
 
 func (x *MESSAGE_TRACES) ProtoReflect() protoreflect.Message {
-	mi := &file_OTEL_V1_msgTypes[30]
+	mi := &file_OTEL_V1_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2107,7 +2039,7 @@ func (x *MESSAGE_TRACES) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MESSAGE_TRACES.ProtoReflect.Descriptor instead.
 func (*MESSAGE_TRACES) Descriptor() ([]byte, []int) {
-	return file_OTEL_V1_rawDescGZIP(), []int{30}
+	return file_OTEL_V1_rawDescGZIP(), []int{29}
 }
 
 func (x *MESSAGE_TRACES) GetWRITER() int64 {
@@ -2129,6 +2061,74 @@ func (x *MESSAGE_TRACES) GetTRACE_ID() []byte {
 		return x.TRACE_ID
 	}
 	return nil
+}
+
+type STORE_META struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NAME          *string                `protobuf:"bytes,1,opt,name=NAME" json:"NAME,omitempty"`
+	INT_VALUE     *int64                 `protobuf:"varint,2,opt,name=INT_VALUE,json=INTVALUE" json:"INT_VALUE,omitempty"`
+	BYTES_VALUE   []byte                 `protobuf:"bytes,3,opt,name=BYTES_VALUE,json=BYTESVALUE" json:"BYTES_VALUE,omitempty"`
+	STR_VALUE     *string                `protobuf:"bytes,4,opt,name=STR_VALUE,json=STRVALUE" json:"STR_VALUE,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *STORE_META) Reset() {
+	*x = STORE_META{}
+	mi := &file_OTEL_V1_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *STORE_META) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*STORE_META) ProtoMessage() {}
+
+func (x *STORE_META) ProtoReflect() protoreflect.Message {
+	mi := &file_OTEL_V1_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use STORE_META.ProtoReflect.Descriptor instead.
+func (*STORE_META) Descriptor() ([]byte, []int) {
+	return file_OTEL_V1_rawDescGZIP(), []int{30}
+}
+
+func (x *STORE_META) GetNAME() string {
+	if x != nil && x.NAME != nil {
+		return *x.NAME
+	}
+	return ""
+}
+
+func (x *STORE_META) GetINT_VALUE() int64 {
+	if x != nil && x.INT_VALUE != nil {
+		return *x.INT_VALUE
+	}
+	return 0
+}
+
+func (x *STORE_META) GetBYTES_VALUE() []byte {
+	if x != nil {
+		return x.BYTES_VALUE
+	}
+	return nil
+}
+
+func (x *STORE_META) GetSTR_VALUE() string {
+	if x != nil && x.STR_VALUE != nil {
+		return *x.STR_VALUE
+	}
+	return ""
 }
 
 type MESSAGES struct {
@@ -2325,10 +2325,10 @@ func (x *XType_F234268CC709_5B22_8Ab4_5405642Cddac) GetValues() []int64 {
 
 type RecordTypeUnion struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
-	STORE_META_0     *STORE_META            `protobuf:"bytes,1,opt,name=STORE_META_0,json=STOREMETA0" json:"STORE_META_0,omitempty"`
-	SPANS_0          *SPANS                 `protobuf:"bytes,2,opt,name=SPANS_0,json=SPANS0" json:"SPANS_0,omitempty"`
-	LOGS_0           *LOGS                  `protobuf:"bytes,3,opt,name=LOGS_0,json=LOGS0" json:"LOGS_0,omitempty"`
-	MESSAGE_TRACES_0 *MESSAGE_TRACES        `protobuf:"bytes,4,opt,name=MESSAGE_TRACES_0,json=MESSAGETRACES0" json:"MESSAGE_TRACES_0,omitempty"`
+	SPANS_0          *SPANS                 `protobuf:"bytes,1,opt,name=SPANS_0,json=SPANS0" json:"SPANS_0,omitempty"`
+	LOGS_0           *LOGS                  `protobuf:"bytes,2,opt,name=LOGS_0,json=LOGS0" json:"LOGS_0,omitempty"`
+	MESSAGE_TRACES_0 *MESSAGE_TRACES        `protobuf:"bytes,3,opt,name=MESSAGE_TRACES_0,json=MESSAGETRACES0" json:"MESSAGE_TRACES_0,omitempty"`
+	STORE_META_0     *STORE_META            `protobuf:"bytes,4,opt,name=STORE_META_0,json=STOREMETA0" json:"STORE_META_0,omitempty"`
 	MESSAGES_0       *MESSAGES              `protobuf:"bytes,5,opt,name=MESSAGES_0,json=MESSAGES0" json:"MESSAGES_0,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
@@ -2364,13 +2364,6 @@ func (*RecordTypeUnion) Descriptor() ([]byte, []int) {
 	return file_OTEL_V1_rawDescGZIP(), []int{33}
 }
 
-func (x *RecordTypeUnion) GetSTORE_META_0() *STORE_META {
-	if x != nil {
-		return x.STORE_META_0
-	}
-	return nil
-}
-
 func (x *RecordTypeUnion) GetSPANS_0() *SPANS {
 	if x != nil {
 		return x.SPANS_0
@@ -2392,6 +2385,13 @@ func (x *RecordTypeUnion) GetMESSAGE_TRACES_0() *MESSAGE_TRACES {
 	return nil
 }
 
+func (x *RecordTypeUnion) GetSTORE_META_0() *STORE_META {
+	if x != nil {
+		return x.STORE_META_0
+	}
+	return nil
+}
+
 func (x *RecordTypeUnion) GetMESSAGES_0() *MESSAGES {
 	if x != nil {
 		return x.MESSAGES_0
@@ -2403,13 +2403,7 @@ var File_OTEL_V1 protoreflect.FileDescriptor
 
 const file_OTEL_V1_rawDesc = "" +
 	"\n" +
-	"\aOTEL_V1\x1a\x12tuple_fields.proto\x1a\x1drecord_metadata_options.proto\"U\n" +
-	"\n" +
-	"STORE_META\x12\f\n" +
-	"\x04NAME\x18\x01 \x01(\t\x12\x11\n" +
-	"\tINT_VALUE\x18\x02 \x01(\x03\x12\x13\n" +
-	"\vBYTES_VALUE\x18\x03 \x01(\f\x12\x11\n" +
-	"\tSTR_VALUE\x18\x04 \x01(\t\"?\n" +
+	"\aOTEL_V1\x1a\x12tuple_fields.proto\x1a\x1drecord_metadata_options.proto\"?\n" +
 	"\bANY_ATTR\x12\r\n" +
 	"\x05SCOPE\x18\x01 \x01(\t\x12\x10\n" +
 	"\bATTR_KEY\x18\x02 \x01(\t\x12\x12\n" +
@@ -2577,7 +2571,13 @@ const file_OTEL_V1_rawDesc = "" +
 	"\x0eMESSAGE_TRACES\x12\x0e\n" +
 	"\x06WRITER\x18\x01 \x01(\x03\x12\v\n" +
 	"\x03SEQ\x18\x02 \x01(\x03\x12\x10\n" +
-	"\bTRACE_ID\x18\x03 \x01(\f\"\xa8\x02\n" +
+	"\bTRACE_ID\x18\x03 \x01(\f\"U\n" +
+	"\n" +
+	"STORE_META\x12\f\n" +
+	"\x04NAME\x18\x01 \x01(\t\x12\x11\n" +
+	"\tINT_VALUE\x18\x02 \x01(\x03\x12\x13\n" +
+	"\vBYTES_VALUE\x18\x03 \x01(\f\x12\x11\n" +
+	"\tSTR_VALUE\x18\x04 \x01(\t\"\xa8\x02\n" +
 	"\bMESSAGES\x12\x0e\n" +
 	"\x06WRITER\x18\x01 \x01(\x03\x12\v\n" +
 	"\x03SEQ\x18\x02 \x01(\x03\x12\f\n" +
@@ -2596,11 +2596,11 @@ const file_OTEL_V1_rawDesc = "" +
 	"\x05SHARD\x18\x0e \x01(\x03\">\n" +
 	",__type__f234268c_c709_5b22_8ab4_5405642cddac\x12\x0e\n" +
 	"\x06values\x18\x01 \x03(\x03\"\xbf\x01\n" +
-	"\x0fRecordTypeUnion\x12#\n" +
-	"\fSTORE_META_0\x18\x01 \x01(\v2\v.STORE_METAB\x00\x12\x19\n" +
-	"\aSPANS_0\x18\x02 \x01(\v2\x06.SPANSB\x00\x12\x17\n" +
-	"\x06LOGS_0\x18\x03 \x01(\v2\x05.LOGSB\x00\x12+\n" +
-	"\x10MESSAGE_TRACES_0\x18\x04 \x01(\v2\x0f.MESSAGE_TRACESB\x00\x12\x1f\n" +
+	"\x0fRecordTypeUnion\x12\x19\n" +
+	"\aSPANS_0\x18\x01 \x01(\v2\x06.SPANSB\x00\x12\x17\n" +
+	"\x06LOGS_0\x18\x02 \x01(\v2\x05.LOGSB\x00\x12+\n" +
+	"\x10MESSAGE_TRACES_0\x18\x03 \x01(\v2\x0f.MESSAGE_TRACESB\x00\x12#\n" +
+	"\fSTORE_META_0\x18\x04 \x01(\v2\v.STORE_METAB\x00\x12\x1f\n" +
 	"\n" +
 	"MESSAGES_0\x18\x05 \x01(\v2\t.MESSAGESB\x00:\x05\x8aM\x02\b\x02B/Z-fdb.dev/layers/otel/otelsql/otelv1pb;otelv1pb"
 
@@ -2619,37 +2619,37 @@ func file_OTEL_V1_rawDescGZIP() []byte {
 var (
 	file_OTEL_V1_msgTypes = make([]protoimpl.MessageInfo, 34)
 	file_OTEL_V1_goTypes  = []any{
-		(*STORE_META)(nil),        // 0: STORE_META
-		(*ANY_ATTR)(nil),          // 1: ANY_ATTR
-		(*BOOL_ATTR)(nil),         // 2: BOOL_ATTR
-		(*BYTES_ATTR)(nil),        // 3: BYTES_ATTR
-		(*DOUBLE_ATTR)(nil),       // 4: DOUBLE_ATTR
-		(*INT_ATTR)(nil),          // 5: INT_ATTR
-		(*LONG_STR_ATTR)(nil),     // 6: LONG_STR_ATTR
-		(*MESSAGE_REF_CHUNK)(nil), // 7: MESSAGE_REF_CHUNK
-		(*SPANS)(nil),             // 8: SPANS
-		(*SPAN_EVENT)(nil),        // 9: SPAN_EVENT
-		(*SPAN_LINK)(nil),         // 10: SPAN_LINK
-		(*STR_ATTR)(nil),          // 11: STR_ATTR
-		(*XType__1Ccd8D47_239A_5CfeA90CAc6D6A81Dd5A)(nil),   // 12: __type__1ccd8d47_239a_5cfe_a90c_ac6d6a81dd5a
-		(*XType__272Acc3BE88F_53A4A6B7_9De8022373E9)(nil),   // 13: __type__272acc3b_e88f_53a4_a6b7_9de8022373e9
-		(*XType__29097851_19Aa_57Ea_924EE2A01Dfc8394)(nil),  // 14: __type__29097851_19aa_57ea_924e_e2a01dfc8394
-		(*XType__303D24C8_022B_5F00_9Fa4_2089615D70Cb)(nil), // 15: __type__303d24c8_022b_5f00_9fa4_2089615d70cb
-		(*XType__3F668645_6F97_5Eb2Aa4BA719F0186493)(nil),   // 16: __type__3f668645_6f97_5eb2_aa4b_a719f0186493
-		(*XType__4670E95ED871_522EB318_0C8864Cd6689)(nil),   // 17: __type__4670e95e_d871_522e_b318_0c8864cd6689
-		(*XType__6D688Bf6E230_5E80_81Bb_0E58F73Cb2E3)(nil),  // 18: __type__6d688bf6_e230_5e80_81bb_0e58f73cb2e3
-		(*XType__70700FbaA700_5Dd6_8E14Ea892Fc31A81)(nil),   // 19: __type__70700fba_a700_5dd6_8e14_ea892fc31a81
-		(*XType_Aaa74E53_3638_5444Aa69_637De931E35F)(nil),   // 20: __type__aaa74e53_3638_5444_aa69_637de931e35f
-		(*XType_Aad3F8AdAad2_56Fb_9A38_51F3977F9858)(nil),   // 21: __type__aad3f8ad_aad2_56fb_9a38_51f3977f9858
-		(*LOGS)(nil), // 22: LOGS
-		(*XType__1B804464_4E89_5A5DAffcDb79E0373Efc)(nil),   // 23: __type__1b804464_4e89_5a5d_affc_db79e0373efc
-		(*XType__357C8Cfa_2A56_5924Bb31_1Df6958E9F38)(nil),  // 24: __type__357c8cfa_2a56_5924_bb31_1df6958e9f38
-		(*XType__470452E0_50B7_521FA4C5_77B71C92A3C7)(nil),  // 25: __type__470452e0_50b7_521f_a4c5_77b71c92a3c7
-		(*XType__6Af9Be56F839_5Cde_99A2F7471F436981)(nil),   // 26: __type__6af9be56_f839_5cde_99a2_f7471f436981
-		(*XType__82376A58_7040_5557_8Ab8_1A5Ac4C886Ae)(nil), // 27: __type__82376a58_7040_5557_8ab8_1a5ac4c886ae
-		(*XType_C73Cf9B1_0Eb6_5Cf0A064_9C8915F2D466)(nil),   // 28: __type__c73cf9b1_0eb6_5cf0_a064_9c8915f2d466
-		(*XType_Dedb138F_408C_5A92_97Ac_43031A62E47D)(nil),  // 29: __type__dedb138f_408c_5a92_97ac_43031a62e47d
-		(*MESSAGE_TRACES)(nil),                              // 30: MESSAGE_TRACES
+		(*ANY_ATTR)(nil),          // 0: ANY_ATTR
+		(*BOOL_ATTR)(nil),         // 1: BOOL_ATTR
+		(*BYTES_ATTR)(nil),        // 2: BYTES_ATTR
+		(*DOUBLE_ATTR)(nil),       // 3: DOUBLE_ATTR
+		(*INT_ATTR)(nil),          // 4: INT_ATTR
+		(*LONG_STR_ATTR)(nil),     // 5: LONG_STR_ATTR
+		(*MESSAGE_REF_CHUNK)(nil), // 6: MESSAGE_REF_CHUNK
+		(*SPANS)(nil),             // 7: SPANS
+		(*SPAN_EVENT)(nil),        // 8: SPAN_EVENT
+		(*SPAN_LINK)(nil),         // 9: SPAN_LINK
+		(*STR_ATTR)(nil),          // 10: STR_ATTR
+		(*XType__1Ccd8D47_239A_5CfeA90CAc6D6A81Dd5A)(nil),   // 11: __type__1ccd8d47_239a_5cfe_a90c_ac6d6a81dd5a
+		(*XType__272Acc3BE88F_53A4A6B7_9De8022373E9)(nil),   // 12: __type__272acc3b_e88f_53a4_a6b7_9de8022373e9
+		(*XType__29097851_19Aa_57Ea_924EE2A01Dfc8394)(nil),  // 13: __type__29097851_19aa_57ea_924e_e2a01dfc8394
+		(*XType__303D24C8_022B_5F00_9Fa4_2089615D70Cb)(nil), // 14: __type__303d24c8_022b_5f00_9fa4_2089615d70cb
+		(*XType__3F668645_6F97_5Eb2Aa4BA719F0186493)(nil),   // 15: __type__3f668645_6f97_5eb2_aa4b_a719f0186493
+		(*XType__4670E95ED871_522EB318_0C8864Cd6689)(nil),   // 16: __type__4670e95e_d871_522e_b318_0c8864cd6689
+		(*XType__6D688Bf6E230_5E80_81Bb_0E58F73Cb2E3)(nil),  // 17: __type__6d688bf6_e230_5e80_81bb_0e58f73cb2e3
+		(*XType__70700FbaA700_5Dd6_8E14Ea892Fc31A81)(nil),   // 18: __type__70700fba_a700_5dd6_8e14_ea892fc31a81
+		(*XType_Aaa74E53_3638_5444Aa69_637De931E35F)(nil),   // 19: __type__aaa74e53_3638_5444_aa69_637de931e35f
+		(*XType_Aad3F8AdAad2_56Fb_9A38_51F3977F9858)(nil),   // 20: __type__aad3f8ad_aad2_56fb_9a38_51f3977f9858
+		(*LOGS)(nil), // 21: LOGS
+		(*XType__1B804464_4E89_5A5DAffcDb79E0373Efc)(nil),   // 22: __type__1b804464_4e89_5a5d_affc_db79e0373efc
+		(*XType__357C8Cfa_2A56_5924Bb31_1Df6958E9F38)(nil),  // 23: __type__357c8cfa_2a56_5924_bb31_1df6958e9f38
+		(*XType__470452E0_50B7_521FA4C5_77B71C92A3C7)(nil),  // 24: __type__470452e0_50b7_521f_a4c5_77b71c92a3c7
+		(*XType__6Af9Be56F839_5Cde_99A2F7471F436981)(nil),   // 25: __type__6af9be56_f839_5cde_99a2_f7471f436981
+		(*XType__82376A58_7040_5557_8Ab8_1A5Ac4C886Ae)(nil), // 26: __type__82376a58_7040_5557_8ab8_1a5ac4c886ae
+		(*XType_C73Cf9B1_0Eb6_5Cf0A064_9C8915F2D466)(nil),   // 27: __type__c73cf9b1_0eb6_5cf0_a064_9c8915f2d466
+		(*XType_Dedb138F_408C_5A92_97Ac_43031A62E47D)(nil),  // 28: __type__dedb138f_408c_5a92_97ac_43031a62e47d
+		(*MESSAGE_TRACES)(nil),                              // 29: MESSAGE_TRACES
+		(*STORE_META)(nil),                                  // 30: STORE_META
 		(*MESSAGES)(nil),                                    // 31: MESSAGES
 		(*XType_F234268CC709_5B22_8Ab4_5405642Cddac)(nil),   // 32: __type__f234268c_c709_5b22_8ab4_5405642cddac
 		(*RecordTypeUnion)(nil),                             // 33: RecordTypeUnion
@@ -2657,55 +2657,55 @@ var (
 )
 
 var file_OTEL_V1_depIdxs = []int32{
-	12, // 0: SPANS.STR_ATTRS:type_name -> __type__1ccd8d47_239a_5cfe_a90c_ac6d6a81dd5a
-	14, // 1: SPANS.LONG_STR_ATTRS:type_name -> __type__29097851_19aa_57ea_924e_e2a01dfc8394
-	15, // 2: SPANS.INT_ATTRS:type_name -> __type__303d24c8_022b_5f00_9fa4_2089615d70cb
-	21, // 3: SPANS.DOUBLE_ATTRS:type_name -> __type__aad3f8ad_aad2_56fb_9a38_51f3977f9858
-	19, // 4: SPANS.BOOL_ATTRS:type_name -> __type__70700fba_a700_5dd6_8e14_ea892fc31a81
-	20, // 5: SPANS.BYTES_ATTRS:type_name -> __type__aaa74e53_3638_5444_aa69_637de931e35f
-	17, // 6: SPANS.ANY_ATTRS:type_name -> __type__4670e95e_d871_522e_b318_0c8864cd6689
-	18, // 7: SPANS.EVENTS:type_name -> __type__6d688bf6_e230_5e80_81bb_0e58f73cb2e3
-	13, // 8: SPANS.LINKS:type_name -> __type__272acc3b_e88f_53a4_a6b7_9de8022373e9
-	16, // 9: SPANS.REF_CHUNKS:type_name -> __type__3f668645_6f97_5eb2_aa4b_a719f0186493
-	12, // 10: SPAN_EVENT.STR_ATTRS:type_name -> __type__1ccd8d47_239a_5cfe_a90c_ac6d6a81dd5a
-	15, // 11: SPAN_EVENT.INT_ATTRS:type_name -> __type__303d24c8_022b_5f00_9fa4_2089615d70cb
-	21, // 12: SPAN_EVENT.DOUBLE_ATTRS:type_name -> __type__aad3f8ad_aad2_56fb_9a38_51f3977f9858
-	19, // 13: SPAN_EVENT.BOOL_ATTRS:type_name -> __type__70700fba_a700_5dd6_8e14_ea892fc31a81
-	17, // 14: SPAN_EVENT.ANY_ATTRS:type_name -> __type__4670e95e_d871_522e_b318_0c8864cd6689
-	12, // 15: SPAN_LINK.STR_ATTRS:type_name -> __type__1ccd8d47_239a_5cfe_a90c_ac6d6a81dd5a
-	15, // 16: SPAN_LINK.INT_ATTRS:type_name -> __type__303d24c8_022b_5f00_9fa4_2089615d70cb
-	21, // 17: SPAN_LINK.DOUBLE_ATTRS:type_name -> __type__aad3f8ad_aad2_56fb_9a38_51f3977f9858
-	19, // 18: SPAN_LINK.BOOL_ATTRS:type_name -> __type__70700fba_a700_5dd6_8e14_ea892fc31a81
-	17, // 19: SPAN_LINK.ANY_ATTRS:type_name -> __type__4670e95e_d871_522e_b318_0c8864cd6689
-	11, // 20: __type__1ccd8d47_239a_5cfe_a90c_ac6d6a81dd5a.values:type_name -> STR_ATTR
-	10, // 21: __type__272acc3b_e88f_53a4_a6b7_9de8022373e9.values:type_name -> SPAN_LINK
-	6,  // 22: __type__29097851_19aa_57ea_924e_e2a01dfc8394.values:type_name -> LONG_STR_ATTR
-	5,  // 23: __type__303d24c8_022b_5f00_9fa4_2089615d70cb.values:type_name -> INT_ATTR
-	7,  // 24: __type__3f668645_6f97_5eb2_aa4b_a719f0186493.values:type_name -> MESSAGE_REF_CHUNK
-	1,  // 25: __type__4670e95e_d871_522e_b318_0c8864cd6689.values:type_name -> ANY_ATTR
-	9,  // 26: __type__6d688bf6_e230_5e80_81bb_0e58f73cb2e3.values:type_name -> SPAN_EVENT
-	2,  // 27: __type__70700fba_a700_5dd6_8e14_ea892fc31a81.values:type_name -> BOOL_ATTR
-	3,  // 28: __type__aaa74e53_3638_5444_aa69_637de931e35f.values:type_name -> BYTES_ATTR
-	4,  // 29: __type__aad3f8ad_aad2_56fb_9a38_51f3977f9858.values:type_name -> DOUBLE_ATTR
-	27, // 30: LOGS.STR_ATTRS:type_name -> __type__82376a58_7040_5557_8ab8_1a5ac4c886ae
-	29, // 31: LOGS.LONG_STR_ATTRS:type_name -> __type__dedb138f_408c_5a92_97ac_43031a62e47d
-	26, // 32: LOGS.INT_ATTRS:type_name -> __type__6af9be56_f839_5cde_99a2_f7471f436981
-	28, // 33: LOGS.DOUBLE_ATTRS:type_name -> __type__c73cf9b1_0eb6_5cf0_a064_9c8915f2d466
-	25, // 34: LOGS.BOOL_ATTRS:type_name -> __type__470452e0_50b7_521f_a4c5_77b71c92a3c7
-	24, // 35: LOGS.BYTES_ATTRS:type_name -> __type__357c8cfa_2a56_5924_bb31_1df6958e9f38
-	23, // 36: LOGS.ANY_ATTRS:type_name -> __type__1b804464_4e89_5a5d_affc_db79e0373efc
-	1,  // 37: __type__1b804464_4e89_5a5d_affc_db79e0373efc.values:type_name -> ANY_ATTR
-	3,  // 38: __type__357c8cfa_2a56_5924_bb31_1df6958e9f38.values:type_name -> BYTES_ATTR
-	2,  // 39: __type__470452e0_50b7_521f_a4c5_77b71c92a3c7.values:type_name -> BOOL_ATTR
-	5,  // 40: __type__6af9be56_f839_5cde_99a2_f7471f436981.values:type_name -> INT_ATTR
-	11, // 41: __type__82376a58_7040_5557_8ab8_1a5ac4c886ae.values:type_name -> STR_ATTR
-	4,  // 42: __type__c73cf9b1_0eb6_5cf0_a064_9c8915f2d466.values:type_name -> DOUBLE_ATTR
-	6,  // 43: __type__dedb138f_408c_5a92_97ac_43031a62e47d.values:type_name -> LONG_STR_ATTR
+	11, // 0: SPANS.STR_ATTRS:type_name -> __type__1ccd8d47_239a_5cfe_a90c_ac6d6a81dd5a
+	13, // 1: SPANS.LONG_STR_ATTRS:type_name -> __type__29097851_19aa_57ea_924e_e2a01dfc8394
+	14, // 2: SPANS.INT_ATTRS:type_name -> __type__303d24c8_022b_5f00_9fa4_2089615d70cb
+	20, // 3: SPANS.DOUBLE_ATTRS:type_name -> __type__aad3f8ad_aad2_56fb_9a38_51f3977f9858
+	18, // 4: SPANS.BOOL_ATTRS:type_name -> __type__70700fba_a700_5dd6_8e14_ea892fc31a81
+	19, // 5: SPANS.BYTES_ATTRS:type_name -> __type__aaa74e53_3638_5444_aa69_637de931e35f
+	16, // 6: SPANS.ANY_ATTRS:type_name -> __type__4670e95e_d871_522e_b318_0c8864cd6689
+	17, // 7: SPANS.EVENTS:type_name -> __type__6d688bf6_e230_5e80_81bb_0e58f73cb2e3
+	12, // 8: SPANS.LINKS:type_name -> __type__272acc3b_e88f_53a4_a6b7_9de8022373e9
+	15, // 9: SPANS.REF_CHUNKS:type_name -> __type__3f668645_6f97_5eb2_aa4b_a719f0186493
+	11, // 10: SPAN_EVENT.STR_ATTRS:type_name -> __type__1ccd8d47_239a_5cfe_a90c_ac6d6a81dd5a
+	14, // 11: SPAN_EVENT.INT_ATTRS:type_name -> __type__303d24c8_022b_5f00_9fa4_2089615d70cb
+	20, // 12: SPAN_EVENT.DOUBLE_ATTRS:type_name -> __type__aad3f8ad_aad2_56fb_9a38_51f3977f9858
+	18, // 13: SPAN_EVENT.BOOL_ATTRS:type_name -> __type__70700fba_a700_5dd6_8e14_ea892fc31a81
+	16, // 14: SPAN_EVENT.ANY_ATTRS:type_name -> __type__4670e95e_d871_522e_b318_0c8864cd6689
+	11, // 15: SPAN_LINK.STR_ATTRS:type_name -> __type__1ccd8d47_239a_5cfe_a90c_ac6d6a81dd5a
+	14, // 16: SPAN_LINK.INT_ATTRS:type_name -> __type__303d24c8_022b_5f00_9fa4_2089615d70cb
+	20, // 17: SPAN_LINK.DOUBLE_ATTRS:type_name -> __type__aad3f8ad_aad2_56fb_9a38_51f3977f9858
+	18, // 18: SPAN_LINK.BOOL_ATTRS:type_name -> __type__70700fba_a700_5dd6_8e14_ea892fc31a81
+	16, // 19: SPAN_LINK.ANY_ATTRS:type_name -> __type__4670e95e_d871_522e_b318_0c8864cd6689
+	10, // 20: __type__1ccd8d47_239a_5cfe_a90c_ac6d6a81dd5a.values:type_name -> STR_ATTR
+	9,  // 21: __type__272acc3b_e88f_53a4_a6b7_9de8022373e9.values:type_name -> SPAN_LINK
+	5,  // 22: __type__29097851_19aa_57ea_924e_e2a01dfc8394.values:type_name -> LONG_STR_ATTR
+	4,  // 23: __type__303d24c8_022b_5f00_9fa4_2089615d70cb.values:type_name -> INT_ATTR
+	6,  // 24: __type__3f668645_6f97_5eb2_aa4b_a719f0186493.values:type_name -> MESSAGE_REF_CHUNK
+	0,  // 25: __type__4670e95e_d871_522e_b318_0c8864cd6689.values:type_name -> ANY_ATTR
+	8,  // 26: __type__6d688bf6_e230_5e80_81bb_0e58f73cb2e3.values:type_name -> SPAN_EVENT
+	1,  // 27: __type__70700fba_a700_5dd6_8e14_ea892fc31a81.values:type_name -> BOOL_ATTR
+	2,  // 28: __type__aaa74e53_3638_5444_aa69_637de931e35f.values:type_name -> BYTES_ATTR
+	3,  // 29: __type__aad3f8ad_aad2_56fb_9a38_51f3977f9858.values:type_name -> DOUBLE_ATTR
+	26, // 30: LOGS.STR_ATTRS:type_name -> __type__82376a58_7040_5557_8ab8_1a5ac4c886ae
+	28, // 31: LOGS.LONG_STR_ATTRS:type_name -> __type__dedb138f_408c_5a92_97ac_43031a62e47d
+	25, // 32: LOGS.INT_ATTRS:type_name -> __type__6af9be56_f839_5cde_99a2_f7471f436981
+	27, // 33: LOGS.DOUBLE_ATTRS:type_name -> __type__c73cf9b1_0eb6_5cf0_a064_9c8915f2d466
+	24, // 34: LOGS.BOOL_ATTRS:type_name -> __type__470452e0_50b7_521f_a4c5_77b71c92a3c7
+	23, // 35: LOGS.BYTES_ATTRS:type_name -> __type__357c8cfa_2a56_5924_bb31_1df6958e9f38
+	22, // 36: LOGS.ANY_ATTRS:type_name -> __type__1b804464_4e89_5a5d_affc_db79e0373efc
+	0,  // 37: __type__1b804464_4e89_5a5d_affc_db79e0373efc.values:type_name -> ANY_ATTR
+	2,  // 38: __type__357c8cfa_2a56_5924_bb31_1df6958e9f38.values:type_name -> BYTES_ATTR
+	1,  // 39: __type__470452e0_50b7_521f_a4c5_77b71c92a3c7.values:type_name -> BOOL_ATTR
+	4,  // 40: __type__6af9be56_f839_5cde_99a2_f7471f436981.values:type_name -> INT_ATTR
+	10, // 41: __type__82376a58_7040_5557_8ab8_1a5ac4c886ae.values:type_name -> STR_ATTR
+	3,  // 42: __type__c73cf9b1_0eb6_5cf0_a064_9c8915f2d466.values:type_name -> DOUBLE_ATTR
+	5,  // 43: __type__dedb138f_408c_5a92_97ac_43031a62e47d.values:type_name -> LONG_STR_ATTR
 	32, // 44: MESSAGES.LARGE:type_name -> __type__f234268c_c709_5b22_8ab4_5405642cddac
-	0,  // 45: RecordTypeUnion.STORE_META_0:type_name -> STORE_META
-	8,  // 46: RecordTypeUnion.SPANS_0:type_name -> SPANS
-	22, // 47: RecordTypeUnion.LOGS_0:type_name -> LOGS
-	30, // 48: RecordTypeUnion.MESSAGE_TRACES_0:type_name -> MESSAGE_TRACES
+	7,  // 45: RecordTypeUnion.SPANS_0:type_name -> SPANS
+	21, // 46: RecordTypeUnion.LOGS_0:type_name -> LOGS
+	29, // 47: RecordTypeUnion.MESSAGE_TRACES_0:type_name -> MESSAGE_TRACES
+	30, // 48: RecordTypeUnion.STORE_META_0:type_name -> STORE_META
 	31, // 49: RecordTypeUnion.MESSAGES_0:type_name -> MESSAGES
 	50, // [50:50] is the sub-list for method output_type
 	50, // [50:50] is the sub-list for method input_type
