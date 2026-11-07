@@ -63,8 +63,6 @@ type rywWrite struct {
 	e   rywEntry
 }
 
-func newRYWWrites() *rywWrites { return &rywWrites{} }
-
 // liveLocked is the live version, created on first use in the cache itself (no
 // allocation). Caller holds c.mu.
 func (c *rywCache) liveLocked() *rywWrites {
@@ -278,7 +276,7 @@ func (w *rywWrites) putEntryAt(i int, n *pnode[rywWrite], k string, e rywEntry) 
 		return
 	}
 	if n != nil {
-		if w.sorted.ver != 0 && n.stamp == w.sorted.ver && !w.sorted.frozen {
+		if w.sorted.canMutNodeInPlace(n) {
 			n.item.e = e
 			return
 		}

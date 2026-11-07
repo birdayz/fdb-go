@@ -8,14 +8,8 @@ import (
 	"testing"
 )
 
-// TestPendingRangeKeepsAppendedValuesAcrossWalks pins the lifetime of a
-// pending range read's rows. A read that needs storage executes in the
-// background without copying its rows, releases its walk to the pool, and
-// keeps the rows until Get clones them. A row's resolved AppendIfFits value
-// must therefore not live in storage a later walk reuses: when it lived in the
-// pooled walk's keyBuf, another read executing in between overwrote it before
-// the first Get (a data race under -race, and corrupt TEXT bunches in group
-// commits).
+// A pending read keeps its rows uncopied until Get, after its walk is back in the
+// pool: a resolved AppendIfFits value must outlive the walk's reused scratch.
 func TestPendingRangeKeepsAppendedValuesAcrossWalks(t *testing.T) {
 	// One P, so each read's goroutine takes the walk the previous one released
 	// (sync.Pool is per P). Not parallel: GOMAXPROCS is process-wide.

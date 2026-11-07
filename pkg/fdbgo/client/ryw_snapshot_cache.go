@@ -502,17 +502,8 @@ func cloneReadKVs(kvs []KeyValue) []KeyValue {
 	return cloneReadKVsInto(make([]KeyValue, len(kvs)), kvs)
 }
 
-// cloneReadKVsInPlace is cloneReadKVs into kvs itself, for a slice only its
-// caller holds (its rows' bytes may be shared).
-func cloneReadKVsInPlace(kvs []KeyValue) []KeyValue {
-	if len(kvs) == 0 {
-		return kvs
-	}
-	return cloneReadKVsInto(kvs, kvs)
-}
-
 // cloneReadKVsInto writes into out, len(kvs) long, the rows of kvs with their
-// bytes copied into one arena; out may be kvs itself.
+// bytes copied into one arena.
 func cloneReadKVsInto(out, kvs []KeyValue) []KeyValue {
 	size := 0
 	for _, kv := range kvs {

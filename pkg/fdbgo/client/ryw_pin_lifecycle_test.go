@@ -308,6 +308,42 @@ func TestRYWPinSharedThenCloned(t *testing.T) {
 	tr.quiesced(t)
 }
 
+// Reads answered at issue pin the version they read and release it in their Start
+// call: a write before Get changes the live version in place, and Get returns the read as issued.
+func TestRYWLocalStartReleasesItsPin(t *testing.T) {
+	t.Parallel()
+	tx := &Transaction{}
+	tx.nativeRange = func(context.Context, KeySelector, KeySelector, rangeLimits, bool) (nativeRangeResult, error) {
+		return nativeRangeResult{}, errors.New("a local read reached storage")
+	}
+	tr := trackPins(&tx.ryw)
+	ctx := context.Background()
+	if err := tx.ClearRange([]byte("a"), []byte("z")); err != nil {
+		t.Fatal(err)
+	}
+	tx.Set([]byte("b"), []byte("1"))
+	issued := liveOf(&tx.ryw)
+	rangeRead := tx.StartGetRangeSelectors(ctx, firstGreaterOrEqual([]byte("a")), firstGreaterOrEqual([]byte("z")), 0, 0, false)
+	keyRead := tx.StartGetKey(ctx, fgtSel("a"))
+	tr.mu.Lock()
+	pinned := tr.pins[issued]
+	tr.mu.Unlock()
+	if pinned != 2 || pinsOf(&tx.ryw, issued) != 0 {
+		t.Fatalf("the reads pinned the version %d times and hold %d pins, want 2 and 0", pinned, pinsOf(&tx.ryw, issued))
+	}
+	tx.Set([]byte("c"), []byte("2"))
+	if liveOf(&tx.ryw) != issued || tr.cloneCount() != 0 {
+		t.Fatalf("a write after the reads cloned the version (clones %d)", tr.cloneCount())
+	}
+	if kvs, _, err := rangeRead.Get(); err != nil || keysOf(kvs) != "b" {
+		t.Fatalf("range read = %s, %v; want b, as issued", keysOf(kvs), err)
+	}
+	if k, err := keyRead.Get(); err != nil || string(k) != "b" {
+		t.Fatalf("key read = %q, %v; want b, as issued", k, err)
+	}
+	tr.quiesced(t)
+}
+
 // S4.2: a writer folding a same-type atomic over a pinned stack leaves the pinned
 // version unchanged.
 func TestRYWPinnedAtomicStackUnchanged(t *testing.T) {

@@ -38,6 +38,19 @@ func deferredEntryCases(key, end []byte) []deferredEntryCase {
 			_, _, err := tx.GetMappedRange(ctx, key, end, nil, 10, false)
 			return err
 		}},
+		{"get-range-selectors", func(ctx context.Context, tx *Transaction) error {
+			_, _, err := tx.GetRangeSelectors(ctx, firstGreaterOrEqual(key), firstGreaterOrEqual(end), 10, 0, false)
+			return err
+		}},
+		{"start-get-range-selectors", func(ctx context.Context, tx *Transaction) error {
+			_, _, err := tx.StartGetRangeSelectors(ctx, firstGreaterOrEqual(key), firstGreaterOrEqual(end), 10, 0, false).Get()
+			return err
+		}},
+		{"start-get-range-selectors-local", func(ctx context.Context, tx *Transaction) error {
+			_ = tx.ClearRange(key, end) // admitted, the read would be answered at issue
+			_, _, err := tx.Snapshot().StartGetRangeSelectors(ctx, firstGreaterThan(key), firstGreaterOrEqual(end), 10, 0, false).Get()
+			return err
+		}},
 		{"mapped-special-key", func(ctx context.Context, tx *Transaction) error {
 			_, _, err := tx.GetMappedRange(ctx, []byte("\xff\xff/status/json"), []byte("\xff\xff/status/json\x00"), nil, 10, false)
 			return err
@@ -119,6 +132,67 @@ func TestDeferredErrorOutranksCancelAtReadEntry(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+// A selector range read is admitted as an exact one: after Cancel, with a
+// cancelled caller, and with both, it fails at entry with the exact read's error.
+func TestSelectorRangeEntryMatchesExactRange(t *testing.T) {
+	t.Parallel()
+	key, end := []byte(t.Name()), []byte(t.Name()+"\xff")
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	exact := func(ctx context.Context, tx *Transaction) error {
+		_, _, err := tx.GetRange(ctx, key, end, 10)
+		return err
+	}
+	reads := map[string]func(context.Context, *Transaction) error{
+		"get-range-selectors": func(ctx context.Context, tx *Transaction) error {
+			_, _, err := tx.GetRangeSelectors(ctx, firstGreaterOrEqual(key), firstGreaterOrEqual(end), 10, 0, false)
+			return err
+		},
+		"start-get-range-selectors": func(ctx context.Context, tx *Transaction) error {
+			_, _, err := tx.StartGetRangeSelectors(ctx, firstGreaterOrEqual(key), firstGreaterOrEqual(end), 10, 0, false).Get()
+			return err
+		},
+		"start-get-range-selectors-local": func(ctx context.Context, tx *Transaction) error {
+			_ = tx.ClearRange(key, end) // admitted, the read would be answered at issue
+			_, _, err := tx.Snapshot().StartGetRangeSelectors(ctx, firstGreaterThan(key), firstGreaterOrEqual(end), 10, 0, false).Get()
+			return err
+		},
+	}
+	for _, entry := range []struct {
+		name     string
+		cancelTx bool
+		ctx      context.Context
+		want     func(error) bool
+	}{
+		{"cancel", true, context.Background(), func(err error) bool { return fdbCodeOf(err) == ErrTransactionCancelled }},
+		{"cancelled-caller", false, cancelled, func(err error) bool { return errors.Is(err, context.Canceled) }},
+		{"both", true, cancelled, func(err error) bool { return fdbCodeOf(err) == ErrTransactionCancelled }},
+	} {
+		for name, read := range reads {
+			t.Run(entry.name+"/"+name, func(t *testing.T) {
+				t.Parallel()
+				setup := func() *Transaction {
+					tx := newTestTx()
+					if entry.cancelTx {
+						tx.Cancel()
+					}
+					return tx
+				}
+				control := setup()
+				defer control.Cancel()
+				if err := exact(entry.ctx, control); !entry.want(err) {
+					t.Fatalf("precondition: the exact read failed with %v", err)
+				}
+				tx := setup()
+				defer tx.Cancel()
+				if err := read(entry.ctx, tx); !entry.want(err) {
+					t.Fatalf("selector read entry: %v, want the exact read's error", err)
+				}
+			})
+		}
 	}
 }
 

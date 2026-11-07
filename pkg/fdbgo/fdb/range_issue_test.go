@@ -95,6 +95,55 @@ func TestGetRange_ConsumersShareFirstBatch(t *testing.T) {
 	}
 }
 
+// A selector range answered at issue from the write map gives every consumer of
+// batch 1 its own copy too: a consumer writing its rows changes no later one's.
+func TestGetRange_SelectorConsumersCopyFirstBatch(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	prefix := []byte(t.Name() + "/")
+	k := fdb.Key(append(bytes.Clone(prefix), 'a'))
+	_, err := db.Transact(func(tr fdb.WritableTransaction) (any, error) {
+		// The cleared range is known, so the read needs no storage.
+		tr.ClearRange(fdb.KeyRange{Begin: fdb.Key(prefix), End: fdb.Key(append(bytes.Clone(prefix), 0xff))})
+		tr.Set(k, []byte("v"))
+		before := db.Metrics().TransactionGetRangeRequests
+		rr := tr.GetRange(fdb.SelectorRange{
+			Begin: fdb.LastLessOrEqual(k), // offset 0: the client resolves it in the range read
+			End:   fdb.FirstGreaterOrEqual(fdb.Key(append(bytes.Clone(prefix), 0xff))),
+		}, fdb.RangeOptions{})
+		check := func(consumer string, kvs []fdb.KeyValue) error {
+			if len(kvs) != 1 || !bytes.Equal(kvs[0].Key, k) || string(kvs[0].Value) != "v" {
+				return fmt.Errorf("%s consumer = %q, want only %q=v", consumer, kvs, k)
+			}
+			kvs[0].Key[len(kvs[0].Key)-1], kvs[0].Value[0] = 'X', 'X'
+			return nil
+		}
+		for _, consumer := range []string{"first", "second"} {
+			kvs, err := rr.GetSliceWithError()
+			if err != nil {
+				return nil, err
+			}
+			if err := check(consumer, kvs); err != nil {
+				return nil, err
+			}
+		}
+		it := rr.Iterator()
+		if !it.Advance() {
+			return nil, errors.New("the iterator lost batch 1")
+		}
+		if err := check("iterator", []fdb.KeyValue{it.MustGet()}); err != nil {
+			return nil, err
+		}
+		if n := db.Metrics().TransactionGetRangeRequests - before; n != 0 {
+			return nil, fmt.Errorf("%d storage range requests, want 0 (answered at issue)", n)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 // The rows of batch 1 are the write map as of GetRange (ReadYourWrites.actor.cpp:382), and a
 // GetRange that is never consumed is still issued and still conflicts (:1767, :388).
 func TestGetRange_IssueTimeViewAndUnconsumedConflict(t *testing.T) {

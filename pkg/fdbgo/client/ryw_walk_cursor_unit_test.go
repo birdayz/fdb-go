@@ -166,7 +166,8 @@ func TestRemoveOrEqualPairMatchesRemoveOrEqual(t *testing.T) {
 	}
 	for _, b := range sels {
 		for _, e := range sels {
-			gb, ge := removeOrEqualPair(b, e)
+			var buf []byte
+			gb, ge := removeOrEqualPair(&buf, b, e)
 			wb, we := b.removeOrEqual(), e.removeOrEqual()
 			if !bytes.Equal(gb.Key, wb.Key) || gb.OrEqual || gb.Offset != wb.Offset || !bytes.Equal(ge.Key, we.Key) || ge.OrEqual || ge.Offset != we.Offset {
 				t.Fatalf("%v %v: got %v %v, want %v %v", b, e, gb, ge, wb, we)

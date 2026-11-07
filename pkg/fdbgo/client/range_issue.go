@@ -267,15 +267,15 @@ func (tx *Transaction) waitIssuedReads(ctx context.Context, inc *readIncarnation
 
 // PendingRange is a started range read, like the future fdb_transaction_get_range returns.
 type PendingRange struct {
-	r        issuedRangeRead
-	state    atomic.Int32 // pendingReady → pendingClaimed by whichever of the goroutine or Get runs r
-	taken    atomic.Bool
-	done     chan struct{}
-	kvs      []KeyValue // shared RYW/cache storage, or pre-cloned when kvsOwned
-	kv0      [2]KeyValue
-	kvsOwned bool
-	more     bool
-	err      error
+	r     issuedRangeRead
+	state atomic.Int32 // pendingReady → pendingClaimed by whichever of the goroutine or Get runs r
+	taken atomic.Bool  // the first Get has claimed kv1
+	done  chan struct{}
+	kvs   []KeyValue  // the rows in shared RYW/cache storage, never written
+	kv0   [2]KeyValue // a local read's row headers
+	kv1   [2]KeyValue // the first Get's copy, when it fits
+	more  bool
+	err   error
 	// ranByCaller reports that Get ran the read itself (test observability).
 	ranByCaller bool
 }
@@ -294,8 +294,8 @@ func (p *PendingRange) Get() ([]KeyValue, bool, error) {
 		p.execute()
 	}
 	<-p.done
-	if p.kvsOwned && p.taken.CompareAndSwap(false, true) {
-		return p.kvs, p.more, p.err
+	if n := len(p.kvs); n > 0 && n <= len(p.kv1) && p.taken.CompareAndSwap(false, true) {
+		return cloneReadKVsInto(p.kv1[:n:n], p.kvs), p.more, p.err
 	}
 	return cloneReadKVs(p.kvs), p.more, p.err
 }

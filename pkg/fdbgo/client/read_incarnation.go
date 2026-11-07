@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync/atomic"
 	"time"
 	"weak"
@@ -388,22 +387,17 @@ func (tx *Transaction) opContextFor(parent context.Context, issued bool) (contex
 	return ctx, release.cancelFunc(), owned != nil && issued
 }
 
-// opRelease ends an admitted operation: op or fn, when set, ends its derived context
-// and lease together; otherwise lease alone (nil when borrowed) is released.
-// A value, so an operation without a derived context allocates no closure.
+// opRelease ends an admitted operation: op, when set, is a deferred operation
+// whose merged context and lease end together; otherwise lease alone (nil when
+// borrowed) is released. A value, so releasing allocates no closure.
 type opRelease struct {
 	op    *readOperation
-	fn    context.CancelFunc
 	lease *executionLease
 }
 
 func (r opRelease) release() {
 	if r.op != nil {
 		r.op.endDeferred()
-		return
-	}
-	if r.fn != nil {
-		r.fn()
 		return
 	}
 	r.lease.release()
@@ -413,8 +407,6 @@ func (r opRelease) cancelFunc() context.CancelFunc {
 	switch {
 	case r.op != nil:
 		return r.op.endDeferred
-	case r.fn != nil:
-		return r.fn
 	case r.lease != nil:
 		return r.lease.release
 	default:
@@ -427,9 +419,6 @@ func (r opRelease) cancelFunc() context.CancelFunc {
 func (r opRelease) afterLease() context.CancelFunc {
 	if r.op != nil {
 		return r.op.endDeferred
-	}
-	if r.fn != nil {
-		return r.fn
 	}
 	return func() {}
 }
@@ -609,29 +598,10 @@ func (tx *Transaction) trackReadOperation(ctx context.Context, err error) error 
 	return tx.trackReadError(err)
 }
 
-func (tx *Transaction) trackReadOp(op *readOperation, err error) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		if op.parent != nil {
-			if parentErr := op.parent.Err(); parentErr != nil {
-				err = parentErr
-			} else if op.inc != nil {
-				if cause := tx.readIncarnationCause(op.inc); cause != nil {
-					err = cause
-				}
-			}
-		}
-	}
-	if op.inc != nil {
-		return tx.trackReadErrorGen(err, op.inc.gen)
-	}
-	return tx.trackReadError(err)
-}
-
-// admitSelectorRead admits a selector range read into r.op without heap-allocating
-// readOperation when the read completes locally.
+// admitSelectorRead admits a selector range read. Without a turnover under way
+// it admits the read into r.op, opContextWithLease's operation and
+// enterReadStateInto's issued lease under one lock, so a read answered at issue
+// allocates no operation.
 func (tx *Transaction) admitSelectorRead(r *selectorRangeRead, parent context.Context) (counted bool, err error) {
 	if existing := tx.readOperation(parent); existing != nil {
 		if existing.lease.isActive() {
@@ -659,52 +629,25 @@ func (tx *Transaction) admitSelectorRead(r *selectorRangeRead, parent context.Co
 			joined:        parentDone == nil,
 			deferred:      parentDone != nil,
 		}
-		r.op.leaseStorage.tx = tx
-		r.op.leaseStorage.inc = inc
-		r.op.leaseStorage.issued = true
-		r.op.leaseStorage.active.Store(true)
-		r.hasOwnOp = true
+		lease := &r.op.leaseStorage
+		lease.tx, lease.inc, lease.issued = tx, inc, true
+		lease.active.Store(true)
+		r.op.lease = lease
+		r.ctx = &r.op
+		if r.op.deferred {
+			r.release = opRelease{op: &r.op}
+		} else {
+			r.release = opRelease{lease: lease}
+		}
 		tx.readErrMu.Unlock()
 		if cause != nil {
 			inc.cancel(cause)
 		}
-		return true, tx.checkReadStateAdmitted(&r.op, cause, true)
+		return true, tx.checkReadState(r.ctx)
 	}
 	tx.readErrMu.Unlock()
 	ctx, rel, owned := tx.opContextWithLease(parent, true)
 	r.ctx = ctx
 	r.release = rel
 	return owned != nil, tx.checkReadState(ctx)
-}
-
-func (tx *Transaction) checkReadStateAdmitted(op *readOperation, admittedCause error, causeChecked bool) error {
-	if op.entryErr != nil {
-		return op.entryErr
-	}
-	if admittedCause != nil {
-		return admittedCause
-	}
-	if ctxErr := op.Err(); ctxErr != nil {
-		if op.inc != nil {
-			if cause := tx.readIncarnationCause(op.inc); cause != nil {
-				return cause
-			}
-		}
-		return ctxErr
-	}
-	if !causeChecked && op.inc != nil {
-		if cause := tx.readIncarnationCause(op.inc); cause != nil {
-			return cause
-		}
-	}
-	st := txState(tx.state.Load())
-	if st != txStateActive || !causeChecked {
-		if err := tx.checkCancelled(); err != nil {
-			return err
-		}
-		if st != txStateActive {
-			return fmt.Errorf("transaction not active")
-		}
-	}
-	return nil
 }

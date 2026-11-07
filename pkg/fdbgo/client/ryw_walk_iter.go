@@ -305,18 +305,17 @@ func (it *rywIter) kv() (KeyValue, bool) {
 	return KeyValue{Key: key, Value: it.opValue}, true // classifyOp's value
 }
 
+// appendIfFitsInto is doAppendIfFits building a concatenation in *buf; an operand
+// it keeps is returned uncopied (rows are never written).
 func appendIfFitsInto(buf *[]byte, base, param []byte) []byte {
 	e := existing(base)
+	if kept, concat := appendIfFitsKept(e, param); !concat {
+		if len(kept) == 0 {
+			return []byte{} // present and empty
+		}
+		return kept
+	}
 	n := len(e) + len(param)
-	if n == 0 {
-		return []byte{}
-	}
-	if len(e) == 0 {
-		return param
-	}
-	if len(param) == 0 || n > valueSizeLimit {
-		return e
-	}
 	b := *buf
 	if cap(b)-len(b) < n {
 		b = make([]byte, 0, max(512, 2*cap(b), n))

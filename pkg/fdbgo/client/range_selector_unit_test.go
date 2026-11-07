@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"weak"
 )
@@ -452,8 +453,85 @@ func TestSelectorRangeRowsAreTheCallers(t *testing.T) {
 	if got := render(m.kvs[4:6]); got != "d=vd f=vf" {
 		t.Fatalf("storage rows written through a result: %s", got)
 	}
+	// Get, write, Get on reads answered at issue: no Get sees an earlier one's writes.
+	starts := map[string]func() *PendingRange{
+		"snapshot": func() *PendingRange { return tx.Snapshot().StartGetRangeSelectors(ctx, begin, end, 0, 0, false) },
+		"serializable": func() *PendingRange {
+			return tx.StartGetRangeSelectors(ctx, begin, end, 0, 0, false)
+		},
+		"owned": func() *PendingRange { return tx.Snapshot().StartGetRangeOwnedSelectors(ctx, begin, end, 0, 0, false) },
+	}
+	for name, start := range starts {
+		p := start()
+		if p.done != closedDone {
+			t.Fatalf("%s: the read was not answered at issue", name)
+		}
+		for i := range 3 {
+			kvs, _, err := p.Get()
+			if err != nil || render(kvs) != want {
+				t.Fatalf("%s: Get %d after writing the earlier rows: %s (%v); want %s", name, i, render(kvs), err, want)
+			}
+			scribble(kvs)
+		}
+		var wg sync.WaitGroup
+		for range 4 {
+			wg.Add(1)
+			go func() { // each Get writes its own rows while the others copy theirs (-race)
+				defer wg.Done()
+				kvs, _, err := p.Get()
+				if err != nil || render(kvs) != want {
+					t.Errorf("%s: concurrent Get: %s (%v); want %s", name, render(kvs), err, want)
+				}
+				scribble(kvs)
+			}()
+		}
+		wg.Wait()
+	}
 	if len(m.requests) != 1 {
 		t.Fatalf("%d storage requests, want 1 (the rest from the cache)", len(m.requests))
+	}
+}
+
+// A read that outlives its call keeps the selector keys the Owned forms hand over
+// and copies the others, which the caller may reuse once Start returns.
+func TestOwnedSelectorsKeepHandedKeys(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, handed := range []bool{false, true} {
+		m := newMemStorage(selectorStorageKeys...)
+		tx := &Transaction{}
+		tx.nativeRange = m.native
+		gate := make(chan struct{})
+		tx.beforeRangeGoroutine = func() { <-gate }
+		b, e := []byte("b"), []byte("h")
+		var p *PendingRange
+		if handed {
+			p = tx.StartGetRangeOwnedSelectors(ctx, firstGreaterOrEqual(b), firstGreaterOrEqual(e), 0, 0, false)
+		} else {
+			p = tx.StartGetRangeSelectors(ctx, firstGreaterOrEqual(b), firstGreaterOrEqual(e), 0, 0, false)
+		}
+		r, ok := p.r.(*selectorRangeRead)
+		if !ok || r.walk == nil {
+			t.Fatalf("handed=%t: the read was answered at issue", handed)
+		}
+		callers := func(k []byte) bool { return len(k) > 0 && (&k[0] == &b[0] || &k[0] == &e[0]) }
+		if handed && (!callers(r.begin.Key) || !callers(r.end.Key)) {
+			t.Fatal("the Owned form copied the handed selector keys")
+		}
+		if !handed {
+			for _, k := range [][]byte{r.begin.Key, r.end.Key, r.walk.begin.Key, r.walk.end.Key} {
+				if callers(k) {
+					t.Fatalf("the read kept the caller's key %q", k)
+				}
+			}
+			copy(b, "z")
+			copy(e, "z")
+		}
+		close(gate)
+		kvs, _, err := p.Get()
+		if got := keysOf(kvs); err != nil || got != "b,d,f" {
+			t.Fatalf("handed=%t: rows %s, %v; want b,d,f", handed, got, err)
+		}
 	}
 }
 

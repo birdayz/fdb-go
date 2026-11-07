@@ -22,7 +22,7 @@ type keyRead struct {
 	walk     *rywWalk // the RYW and snapshot-cache routes
 	// view is the pinned version (D11): set when the walk reads the write map,
 	// which it does without c.mu; the conflict is filtered through it. Released
-	// once, in complete.
+	// once: at issue if the walk finishes there, else in complete.
 	view *rywWrites
 	// localConflicts is the filtered conflict of a read answered at issue, computed
 	// then through the version it read.

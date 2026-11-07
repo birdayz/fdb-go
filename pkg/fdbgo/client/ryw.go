@@ -35,8 +35,8 @@ type rywCache struct {
 	// (resetPromise, ReadYourWrites.actor.cpp:358-364).
 	gen uint64
 
-	// nextVer stamps mutable write-map lineages so coalesceOverAtomics can
-	// update an unshared atomic stack in place.
+	// nextVer stamps mutable write-map lineages so coalesceOverAtomics (inPlace)
+	// can update an unshared atomic stack in place.
 	nextVer uint64
 
 	// onPin and onClone are test seams (S4): every pin/unpin and every clone.
@@ -676,7 +676,7 @@ func (c *rywCache) atomicWith(op MutationType, key, param []byte, addConflict bo
 	// repeated same-type resolvable atomics fold to one op, so a 150k-`ADD 1` chain on an unread key ships
 	// one mutation, not 150k (the RFC-172 / #28 fix). Read-transparent; versionstamps/CompareAndClear push.
 	inPlace := w.ver != 0 && entry.atomicsVer == w.ver
-	entry.atomics = coalesceOverAtomicsWith(entry.atomics, newMut, inPlace)
+	entry.atomics = coalesceOverAtomics(entry.atomics, newMut, inPlace)
 	entry.atomicsVer = w.ver
 	w.putEntryAt(idx, node, k, entry)
 }
@@ -1093,8 +1093,8 @@ func (c *rywCache) replyEdgeKnown(begin, end []byte, kvs []KeyValue, reverse boo
 // later writes do not change (WriteMap.h:158-160). The copy is never c.w and never
 // pinned, so mergeBatchLocked may fold resolved atomics into it. It has no nodes; its
 // cursor keeps the legacy boundary sources until phase 3 deletes the loop (RFC-262 D2).
-// The span shares the live version's nodes, so it costs O(log n); atomic stacks are
-// shared too, as coalesceOverAtomics never writes one in place.
+// The span shares the live version's nodes and atomic stacks, so it costs O(log n).
+// Re-stamping the live version here keeps later folds from writing those stacks in place.
 func (c *rywCache) captureWriteSpanLocked(begin, end []byte) *rywWrites {
 	w := c.liveLocked()
 	w.ensureSorted()
@@ -1636,13 +1636,10 @@ func isNonAssociativeOp(op MutationType) bool {
 // versionstamped op is kept intact so the entry's unreadable/resolve semantics are byte-for-byte unchanged
 // (its 10-byte stamp is assigned at commit, so folding cannot combine operands anyway). The fold is
 // read-transparent: resolveAtomics over the folded chain yields the identical value.
-func coalesceOverAtomics(stack []rywMutation, newMut rywMutation) []rywMutation {
-	return coalesceOverAtomicsWith(stack, newMut, false)
-}
-
-func coalesceOverAtomicsWith(stack []rywMutation, newMut rywMutation, inPlace bool) []rywMutation {
-	// The stack may be shared with a write-map snapshot (rywWrites.clone): never
-	// write its backing array unless inPlace proves this version owns it exclusively.
+//
+// The stack may be shared with a write-map snapshot (rywWrites.clone) or a captured
+// span: its backing array is written only when inPlace proves this version owns it.
+func coalesceOverAtomics(stack []rywMutation, newMut rywMutation, inPlace bool) []rywMutation {
 	if !foldsOnto(stack, newMut) {
 		if inPlace {
 			return append(stack, newMut)
@@ -1977,14 +1974,8 @@ func doByteMin(base, param []byte) []byte {
 // doAppendIfFits — C++ doAppendIfFits. Concatenates if within 100KB limit.
 func doAppendIfFits(base, param []byte) []byte {
 	e := existing(base)
-	if len(e) == 0 {
-		return append([]byte(nil), param...)
-	}
-	if len(param) == 0 {
-		return append([]byte(nil), e...)
-	}
-	if len(e)+len(param) > valueSizeLimit { // CLIENT_KNOBS->VALUE_SIZE_LIMIT (pkg const)
-		return append([]byte(nil), e...)
+	if kept, concat := appendIfFitsKept(e, param); !concat {
+		return append([]byte(nil), kept...)
 	}
 	result := make([]byte, len(e)+len(param))
 	copy(result, e)
@@ -1992,16 +1983,29 @@ func doAppendIfFits(base, param []byte) []byte {
 	return result
 }
 
+// appendIfFitsKept is doAppendIfFits's choice (Atomic.h:114-137) for an existing value e:
+// the operand it returns unchanged, or concat when it concatenates e and param.
+func appendIfFitsKept(e, param []byte) (kept []byte, concat bool) {
+	if len(e) == 0 {
+		return param, false
+	}
+	if len(param) == 0 || len(e)+len(param) > valueSizeLimit { // CLIENT_KNOBS->VALUE_SIZE_LIMIT (pkg const)
+		return e, false
+	}
+	return nil, true
+}
+
 // appendIfFitsOwned is doAppendIfFits (Atomic.h:114-137) appending in place past len(v), into bytes only
 // the live lineage owns (owned; v is capped), so versions sharing v see it unchanged (WriteMap.h:158-160).
 func appendIfFitsOwned(v []byte, owned int32, param []byte) ([]byte, int32) {
-	n := len(v) + len(param)
-	switch {
-	case len(v) == 0:
-		return doAppendIfFits(v, param), 0
-	case len(param) == 0 || n > valueSizeLimit:
+	if kept, concat := appendIfFitsKept(v, param); !concat {
+		if len(v) == 0 {
+			return append([]byte(nil), kept...), 0
+		}
 		return v, owned
-	case int(owned) >= n:
+	}
+	n := len(v) + len(param)
+	if int(owned) >= n {
 		buf := unsafe.Slice(unsafe.SliceData(v), owned)
 		copy(buf[len(v):n], param)
 		return buf[:n:n], owned

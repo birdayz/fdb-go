@@ -68,7 +68,7 @@ func TestOperationReleaseEndsEveryLease(t *testing.T) {
 	}
 	outer, outerRelease, outerOwned := tx.opContextWithLease(context.Background(), false)
 	borrowed, borrowedRelease, borrowedOwned := tx.opContextWithLease(outer, false)
-	if borrowed != outer || borrowedOwned != nil || borrowedRelease.fn != nil || borrowedRelease.lease != nil {
+	if borrowed != outer || borrowedOwned != nil || borrowedRelease != (opRelease{}) {
 		t.Fatal("a borrower received release authority")
 	}
 	borrowedRelease.release()
