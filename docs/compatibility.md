@@ -390,7 +390,11 @@ Importing `otelsql` registers the tokenizer. SQL plans the text index for
 an unbound shard keeps record filtering (`sqltest/otel`). The OTel layer is
 pre-release, so OTEL_V1 was rewritten in place at catalog version 1:
 record-metadata version 20 for `TemplateBody` (19 indexes) and 21 for
-`TemplateDDL`. Metrics can be added as more tables in the same store; no
+`TemplateDDL`. Java 4.14.2.0 reads Go-written rows (compiled builders, zlib-1
+records) of a `TemplateBody` store in full, but refuses every statement on a
+`TemplateDDL` store with `42000 MetaDataException unrecognized text tokenizer`:
+it has no `otel_message_v1` (`OtelTemplateOverlayJavaProbe`; TODO.md "OTel SQL
+ingest migration"). Metrics can be added as more tables in the same store; no
 cross-store join is needed. Once stores must be kept, changes go through the
 catalog evolution validator and explicit schema rebinding, e.g.
 fleet.SaveTemplate and fleet.Migrate.
