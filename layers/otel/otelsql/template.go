@@ -107,13 +107,13 @@ CREATE UNIQUE INDEX messages_hash AS SELECT content_hash FROM messages ORDER BY 
 CREATE INDEX messages_large AS SELECT "L", m.writer, m.seq FROM messages AS m, m.large AS "L"
   ORDER BY "L", m.writer, m.seq`
 
-// TemplateOverlay is the Go-only part of the template: Java's DDL has no
-// FULLTEXT INDEX, and Java writers of messages would need otel_message_v1.
+// TemplateOverlay is the Go-only part of the template, as Java's DDL has no
+// FULLTEXT INDEX. Its TEXT index uses the default tokenizer, which Java's
+// store opener knows; writers bound overlong tokens with IndexableText.
 // TemplateBody's last index clause is on messages, so the overlay's leaves
 // the DDL's table order, and with it the records descriptor (union fields,
 // record type keys), TemplateBody's: the rfc204 golden covers it.
-const TemplateOverlay = `CREATE FULLTEXT INDEX messages_text ON messages(content) PARTITION BY (role, shard)
-  OPTIONS (TOKENIZER = '` + MessageTokenizerName + `', TOKENIZER_VERSION = 0)`
+const TemplateOverlay = `CREATE FULLTEXT INDEX messages_text ON messages(content) PARTITION BY (role, shard)`
 
 // TemplateDDL is the statement that creates the template: TemplateBody and
 // TemplateOverlay.

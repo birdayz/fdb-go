@@ -28,14 +28,13 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Java 4.14.2.0 over Go-written OTEL_V1 rows (compiled builders, zlib-1
-// records). A store of TemplateBody alone (the rfc204 golden's template) is
-// read in full. A store of TemplateDDL, whose Go-only overlay is
-// MESSAGES_TEXT with tokenizer otel_message_v1, is refused at every
-// statement: Java's catalog builds the schema's metadata, and its TEXT index
-// validator knows no otel_message_v1 tokenizer.
+// Java 4.14.2.0 reads every table of an OTEL_V1 store EnsureTenant created
+// from TemplateDDL, whose Go-only overlay is MESSAGES_TEXT with the default
+// tokenizer, from rows Go wrote with the compiled builders and Java-readable
+// zlib-1 records. Java SQL has no TEXT_CONTAINS_* functions, so its TEXT
+// predicate attempt is a refusal.
 var _ = Describe("OtelTemplateOverlayJavaProbe", func() {
-	It("reads a body-only store and refuses the overlay's tokenizer", func() {
+	It("selects every table of a Go-written overlay store in Java", func() {
 		ctx := context.Background()
 		java := NewJavaInvoker()
 		clusterFile, err := sharedContainer.ClusterFile(ctx)
@@ -45,51 +44,22 @@ var _ = Describe("OtelTemplateOverlayJavaProbe", func() {
 		cat, err := catalog.NewRecordLayerStoreCatalog(ks.CatalogSubspace())
 		Expect(err).NotTo(HaveOccurred())
 		ops := ddl.NewRecordLayerMetadataOperationsFactoryWithKeyspace(cat, ks)
-		catalogRun := func(fn func(api.Transaction) error) {
-			_, err := db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+		path := "/TEST/OTEL_OVERLAY_" + strings.ToUpper(strings.ReplaceAll(uuid.NewString(), "-", ""))
+		defer func() {
+			_, err := db.Run(context.Background(), func(rc *recordlayer.FDBRecordContext) (any, error) {
 				txn := catalog.NewFDBTransaction(rc)
-				if err := cat.Initialize(txn); err != nil {
+				if err := ops.DropDatabase(path, false, api.Options{}).Execute(txn); err != nil {
 					return nil, err
 				}
-				return nil, fn(txn)
+				return nil, ops.DropSchemaTemplate(otelsql.TemplateName, false, api.Options{}).Execute(txn)
 			})
 			Expect(err).NotTo(HaveOccurred())
-		}
-		suffix := strings.ToUpper(strings.ReplaceAll(uuid.NewString(), "-", ""))
-		overlayPath, bodyPath, bodyTemplate := "/TEST/OTEL_OVERLAY_"+suffix, "/TEST/OTEL_BODY_"+suffix, "OTEL_V1_BODY_"+suffix
-		// OTEL_V1 is dropped too: a catalog template Java cannot build must
-		// not outlive the probe.
-		defer catalogRun(func(txn api.Transaction) error {
-			for _, path := range []string{overlayPath, bodyPath} {
-				if err := ops.DropDatabase(path, false, api.Options{}).Execute(txn); err != nil {
-					return err
-				}
-			}
-			for _, name := range []string{otelsql.TemplateName, bodyTemplate} {
-				if err := ops.DropSchemaTemplate(name, false, api.Options{}).Execute(txn); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-
-		overlay, err := otelsql.EnsureTenant(ctx, db, overlayPath, "S", nil)
+		}()
+		ts, err := otelsql.EnsureTenant(ctx, db, path, "S", nil)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(overlay.MetaData.GetIndex("MESSAGES_TEXT")).NotTo(BeNil())
-		body, err := embedded.BuildSchemaTemplateFromDDL("CREATE SCHEMA TEMPLATE " + bodyTemplate + " " + otelsql.TemplateBody)
+		Expect(ts.MetaData.GetIndex("MESSAGES_TEXT")).NotTo(BeNil())
+		ts.Serializer, err = recordlayer.NewTransformedRecordSerializerBuilder().SetCompressWhenSerializing(true).SetCompressionLevel(1).Build()
 		Expect(err).NotTo(HaveOccurred())
-		catalogRun(func(txn api.Transaction) error {
-			if err := ops.SaveSchemaTemplate(body, api.Options{}).Execute(txn); err != nil {
-				return err
-			}
-			if err := ops.CreateDatabase(bodyPath, api.Options{}).Execute(txn); err != nil {
-				return err
-			}
-			return ops.CreateSchema(bodyPath, "S", bodyTemplate, api.Options{}).Execute(txn)
-		})
-		bodyStore, err := otelsql.OpenTenantStoreCompiled(ctx, db, bodyPath, "S", nil)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(bodyStore.MetaData.GetIndex("MESSAGES_TEXT")).To(BeNil())
 
 		str := func(k, v string) *commonpb.KeyValue {
 			return &commonpb.KeyValue{Key: k, Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: v}}}
@@ -120,27 +90,29 @@ var _ = Describe("OtelTemplateOverlayJavaProbe", func() {
 			Expect(err).NotTo(HaveOccurred())
 			records = append(records, row)
 		}
-		msg, err := otelsql.BuildMessageCompiled(otelsql.MessagePart{
-			Writer: 1, Seq: 1, Text: &otelsql.MessageText{Role: "user", Content: "hello world"},
-			Raw: []byte("hello world"), ContentHash: otelsql.MessageContentHash("json", []byte("hello world")), Encoding: "json", RawBytes: 11, Parts: 1,
-		})
-		Expect(err).NotTo(HaveOccurred())
-		records = append(records, msg, otelsql.BuildMessageTraceCompiled(1, 1, trace))
-		zlib1, err := recordlayer.NewTransformedRecordSerializerBuilder().SetCompressWhenSerializing(true).SetCompressionLevel(1).Build()
-		Expect(err).NotTo(HaveOccurred())
-		for _, ts := range []*otelsql.TenantStore{overlay, bodyStore} {
-			ts.Serializer = zlib1
-			_, err = db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
-				store, err := ts.Builder(rc).Open()
-				if err != nil {
-					return nil, err
-				}
-				return store.SaveRecordBatch(records)
+		long := strings.Repeat("x", otelsql.MaxIndexedTokenBytes+1)
+		for i, text := range []string{"hello world", "hello " + long} {
+			msg, err := otelsql.BuildMessageCompiled(otelsql.MessagePart{
+				Writer: 1, Seq: int64(i + 1), Text: &otelsql.MessageText{Role: "user", Content: text},
+				Raw: []byte(text), ContentHash: otelsql.MessageContentHash("json", []byte(text)), Encoding: "json", RawBytes: int64(len(text)), Parts: 1,
 			})
 			Expect(err).NotTo(HaveOccurred())
+			records = append(records, msg)
 		}
+		n := int64(1)
+		meta, err := otelsql.BuildStoreMetaCompiled(otelsql.StoreMeta{Name: otelsql.StoreMetaMessageWriter, Int: &n})
+		Expect(err).NotTo(HaveOccurred())
+		records = append(records, otelsql.BuildMessageTraceCompiled(1, 1, trace), meta)
+		_, err = db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+			store, err := ts.Builder(rc).Open()
+			if err != nil {
+				return nil, err
+			}
+			return store.SaveRecordBatch(records)
+		})
+		Expect(err).NotTo(HaveOccurred())
 
-		javaRead := func(path, q string) string {
+		javaRead := func(q string) string {
 			var out struct {
 				Rows [][]any `json:"rows"`
 			}
@@ -172,13 +144,83 @@ var _ = Describe("OtelTemplateOverlayJavaProbe", func() {
 				"SELECT l.event_id, l.trace_id FROM logs AS l WHERE EXISTS (SELECT 1 FROM l.str_attrs AS a WHERE a.scope = 'log' AND a.attr_key = 'incident.bucket' AND a.str_value = 'b0')",
 				fmt.Sprintf("[[e1 %s] [e2 <nil>]]", b64(trace)),
 			},
-			{"SELECT writer, seq, role, content FROM messages", "[[1 1 user hello world]]"},
+			{
+				"SELECT writer, seq, role, content, shard FROM messages",
+				"[[1 1 user hello world 1] [1 2 user hello  " + otelsql.OverlongTokenPlaceholder + "  1]]",
+			},
+			{"SELECT writer, seq FROM message_traces WHERE trace_id = " + hexTrace, "[[1 1]]"},
+			{"SELECT name, int_value FROM store_meta", "[[message_writer 1]]"},
+			{"SELECT writer FROM messages WHERE TEXT_CONTAINS_ALL(content, 'hello')", "ERROR 0AF00 RelationalException Unsupported operator TEXT_CONTAINS_ALL"},
 		} {
-			got := javaRead(bodyPath, c.sql)
-			refused := javaRead(overlayPath, c.sql)
-			fmt.Fprintf(GinkgoWriter, "%s\n  java body    -> %s\n  java overlay -> %s\n", c.sql, got, refused)
+			got := javaRead(c.sql)
+			fmt.Fprintf(GinkgoWriter, "%s\n  java -> %s\n", c.sql, got)
 			Expect(got).To(Equal(c.rows), c.sql)
-			Expect(refused).To(Equal("ERROR 42000 MetaDataException unrecognized text tokenizer"), c.sql)
+		}
+	})
+
+	// Why the overlay uses the default tokenizer: a TEXT index naming a
+	// tokenizer only Go registers (the old exporter's otel_message_v1) makes
+	// every statement on the schema fail in Java, which builds the schema's
+	// metadata and validates the index; naming Java's default works.
+	It("refuses a schema whose TEXT index names a Go-only tokenizer", func() {
+		ctx := context.Background()
+		java := NewJavaInvoker()
+		clusterFile, err := sharedContainer.ClusterFile(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		db := recordlayer.NewFDBDatabase(sharedDB)
+		ks := keyspace.New(subspace.Sub())
+		cat, err := catalog.NewRecordLayerStoreCatalog(ks.CatalogSubspace())
+		Expect(err).NotTo(HaveOccurred())
+		ops := ddl.NewRecordLayerMetadataOperationsFactoryWithKeyspace(cat, ks)
+		suffix := strings.ToUpper(strings.ReplaceAll(uuid.NewString(), "-", ""))
+		run := func(fn func(api.Transaction) error) error {
+			_, err := db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+				txn := catalog.NewFDBTransaction(rc)
+				if err := cat.Initialize(txn); err != nil {
+					return nil, err
+				}
+				return nil, fn(txn)
+			})
+			return err
+		}
+		for _, tc := range []struct{ tokenizer, want string }{
+			{otelsql.MessageTokenizerName, "ERROR 42000 MetaDataException unrecognized text tokenizer"},
+			{"default", "[]"},
+		} {
+			name := "OTEL_TOKENIZER_" + strings.ToUpper(tc.tokenizer) + "_" + suffix
+			path := "/TEST/" + name
+			tmpl, err := embedded.BuildSchemaTemplateFromDDL("CREATE SCHEMA TEMPLATE " + name +
+				" CREATE TABLE docs (id BIGINT, body STRING, PRIMARY KEY (id)) CREATE FULLTEXT INDEX body_text ON docs(body) OPTIONS (TOKENIZER = '" + tc.tokenizer + "')")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(run(func(txn api.Transaction) error {
+				if err := ops.SaveSchemaTemplate(tmpl, api.Options{}).Execute(txn); err != nil {
+					return err
+				}
+				if err := ops.CreateDatabase(path, api.Options{}).Execute(txn); err != nil {
+					return err
+				}
+				return ops.CreateSchema(path, "S", name, api.Options{}).Execute(txn)
+			})).To(Succeed())
+			var out struct {
+				Rows [][]any `json:"rows"`
+			}
+			got := ""
+			err = java.InvokeAs(ctx, "wsjQueryJava", map[string]any{"clusterFile": clusterFile, "dbPath": path, "schemaName": "S", "querySql": "SELECT id FROM docs"}, &out)
+			var je *JavaError
+			if errors.As(err, &je) {
+				got = "ERROR " + je.SQLState + " " + je.ExceptionClass + " " + je.Message
+			} else {
+				Expect(err).NotTo(HaveOccurred())
+				got = overlaySortedRows(out.Rows)
+			}
+			fmt.Fprintf(GinkgoWriter, "tokenizer %s: java -> %s\n", tc.tokenizer, got)
+			Expect(run(func(txn api.Transaction) error {
+				if err := ops.DropDatabase(path, false, api.Options{}).Execute(txn); err != nil {
+					return err
+				}
+				return ops.DropSchemaTemplate(name, false, api.Options{}).Execute(txn)
+			})).To(Succeed())
+			Expect(got).To(Equal(tc.want), tc.tokenizer)
 		}
 	})
 })

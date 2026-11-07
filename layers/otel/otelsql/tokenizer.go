@@ -2,13 +2,15 @@ package otelsql
 
 import "fdb.dev/pkg/recordlayer"
 
-// MessageTokenizerName names the tokenizer of the MESSAGES_TEXT index. Any
-// program that imports otelsql has it registered, so every opener of an
-// OTEL_V1 store (whose metadata names it) can maintain and plan the index.
+// MessageTokenizerName names the message TEXT tokenizer of package otel's
+// FDBBackend store, registered by any program that imports otelsql. OTEL_V1
+// stores do not use it: Java cannot open a store whose metadata names a
+// tokenizer it lacks, so MESSAGES_TEXT uses the default tokenizer over
+// IndexableText.
 const MessageTokenizerName = "otel_message_v1"
 
-// MaxIndexedTokenBytes is the longest token MESSAGES_TEXT indexes: a token is
-// part of an index key, which FDB caps at 10 KB.
+// MaxIndexedTokenBytes is the longest token a message TEXT index holds: a
+// token is part of an index key, which FDB caps at 10 KB.
 const MaxIndexedTokenBytes = 1024
 
 // MessageTokenizer is the default tokenizer, except that a token over
