@@ -17,9 +17,12 @@ import (
 // subspace the relational keyspace assigned. Records saved through it are the
 // rows SQL reads; nothing here goes through the SQL compiler.
 type TenantStore struct {
-	MetaData   *recordlayer.RecordMetaData
-	Subspace   subspace.Subspace
-	Serializer *recordlayer.TransformedRecordSerializer
+	// DatabasePath and Schema name the store as the catalog does: the
+	// /DOMAIN/DATABASE path and the schema identifier, upper case.
+	DatabasePath, Schema string
+	MetaData             *recordlayer.RecordMetaData
+	Subspace             subspace.Subspace
+	Serializer           *recordlayer.TransformedRecordSerializer
 }
 
 // OpenTenantStore resolves an existing tenant schema created by CreateTenant.
@@ -57,7 +60,7 @@ func OpenTenantStore(ctx context.Context, db *recordlayer.FDBDatabase, databaseP
 	if err != nil {
 		return nil, fmt.Errorf("otelsql: schema store %s/%s: %w", databasePath, schema, err)
 	}
-	return &TenantStore{MetaData: out.(*recordlayer.RecordMetaData), Subspace: ss, Serializer: serializer}, nil
+	return &TenantStore{DatabasePath: databasePath, Schema: schema, MetaData: out.(*recordlayer.RecordMetaData), Subspace: ss, Serializer: serializer}, nil
 }
 
 // OpenTenantStoreCompiled is OpenTenantStore with the schema's metadata bound
