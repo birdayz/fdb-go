@@ -13,46 +13,6 @@ import (
 	"fdb.dev/pkg/recordlayer"
 )
 
-type Size struct {
-	Keys          int64 `json:"keys"`
-	KeyBytes      int64 `json:"key_bytes"`
-	ValueBytes    int64 `json:"value_bytes"`
-	PhysicalBytes int64 `json:"physical_bytes,omitempty"`
-	// PrefixBytes is each key less its common prefix with the previous key in
-	// key order, plus the value: a proxy for an engine's key prefix
-	// compression (Redwood), not a measured on-disk size.
-	PrefixBytes int64 `json:"prefix_bytes,omitempty"`
-}
-
-// AddKV counts one key-value pair read in key order after prev.
-func (s *Size) AddKV(prev, key, value []byte) {
-	s.Keys++
-	s.KeyBytes += int64(len(key))
-	s.ValueBytes += int64(len(value))
-	n := 0
-	for n < len(prev) && n < len(key) && prev[n] == key[n] {
-		n++
-	}
-	s.PrefixBytes += int64(len(key)-n) + int64(len(value))
-}
-
-type Statistics struct {
-	Rows                int64              `json:"rows"`
-	Attributes          int64              `json:"attributes"`
-	LogicalPayloadBytes int64              `json:"logical_payload_bytes"`
-	Structures          map[string]Size    `json:"structures"`
-	Details             map[string]string  `json:"details,omitempty"`
-	Diagnostics         *IngestDiagnostics `json:"diagnostics,omitempty"`
-}
-type Backend interface {
-	Ingest(context.Context) (Statistics, error)
-	Query(context.Context, Attribute) (QueryResult, error)
-	Trace(context.Context, string) ([]SpanHit, error)
-	Audit(context.Context) (Statistics, error)
-	Drop(context.Context) error
-	Close()
-}
-
 type FDBBackend struct {
 	cfg            Config
 	raw            fdb.Database
