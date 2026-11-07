@@ -10,6 +10,9 @@ import (
 	"testing"
 
 	"fdb.dev/layers/otel/otelsql"
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/sqltest/testkit"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -41,17 +44,29 @@ func TestFDB_OtelTemplateV1(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 	explain := testkit.Explainer(t, db, ctx)
 
-	testkit.MustExecCtx(t, db, ctx, "INSERT INTO spans (trace_id, span_id, name, start_ns, service_name, str_attrs, int_attrs, message_refs) VALUES "+
-		"(X'01', X'0a', 'chat', 100, 'agent', [('span', 'gen_ai.request.model', 'gpt-4o'), ('resource', 'service.name', 'agent')], [('span', 'gen_ai.usage.input_tokens', 50)], [(1, 7, 1, true, [0])]), "+
+	refs := [][]otelsql.MessageRef{
+		{{Writer: 7, Seq: 1, Attribute: 1, Newest: true, Ordinals: []int{0}}},
+		{{Writer: 7, Seq: 1, Attribute: 1, Ordinals: []int{0}}, {Writer: 7, Seq: 2, Attribute: 2, Newest: true, Ordinals: []int{1}}},
+	}
+	chunks := make([][]byte, len(refs))
+	for i, r := range refs {
+		c, err := otelsql.PackRefChunks(r)
+		if err != nil || len(c) != 1 {
+			t.Fatalf("refs %d: %d chunks, %v", i, len(c), err)
+		}
+		chunks[i] = c[0]
+	}
+	testkit.MustExecCtx(t, db, ctx, fmt.Sprintf("INSERT INTO spans (trace_id, span_id, name, start_ns, service_name, str_attrs, int_attrs, ref_chunks) VALUES "+
+		"(X'01', X'0a', 'chat', 100, 'agent', [('span', 'gen_ai.request.model', 'gpt-4o'), ('resource', 'service.name', 'agent')], [('span', 'gen_ai.usage.input_tokens', 50)], [(0, X'%x')]), "+
 		"(X'01', X'0b', 'tool', 200, 'agent', [('span', 'gen_ai.tool.name', 'search')], [('span', 'gen_ai.usage.input_tokens', 500)], []), "+
-		"(X'02', X'0c', 'chat', 300, 'agent', [('span', 'gen_ai.request.model', 'gpt-4o')], [], [(1, 7, 2, true, [0, 1])]), "+
-		"(X'03', X'0d', 'chat', 400, 'other', [('span', 'gen_ai.request.model', 'claude')], [], [])")
-	testkit.MustExecCtx(t, db, ctx, "INSERT INTO logs (event_id, trace_id, span_id, effective_ns, severity_text, str_attrs) VALUES "+
-		"('e1', X'01', X'0a', 110, 'ERROR', [('log', 'incident.bucket', 'b0')]), "+
-		"('e2', X'02', X'0c', 310, 'INFO', [('log', 'incident.bucket', 'b1')]), "+
-		"('e3', NULL, NULL, 320, 'WARN', [('log', 'incident.bucket', 'b0')])")
-	testkit.MustExecCtx(t, db, ctx, "INSERT INTO messages (writer, seq, part, content_hash, role, content) VALUES "+
-		"(7, 1, 0, X'f1', 'user', 'hello'), (7, 2, 0, X'f2', 'assistant', 'world')")
+		"(X'02', X'0c', 'chat', 300, 'agent', [('span', 'gen_ai.request.model', 'gpt-4o')], [], [(0, X'%x')]), "+
+		"(X'03', X'0d', 'chat', 400, 'other', [('span', 'gen_ai.request.model', 'claude')], [], [])", chunks[0], chunks[1]))
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO logs (event_id, trace_id, span_id, effective_ns, severity_text, event_name, str_attrs) VALUES "+
+		"('e1', X'01', X'0a', 110, 'ERROR', 'gen_ai.choice', [('log', 'incident.bucket', 'b0')]), "+
+		"('e2', X'02', X'0c', 310, 'INFO', NULL, [('log', 'incident.bucket', 'b1')]), "+
+		"('e3', NULL, NULL, 320, 'WARN', 'gen_ai.choice', [('log', 'incident.bucket', 'b0')])")
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO messages (writer, seq, part, content_hash, role, content, shard) VALUES "+
+		"(7, 1, 0, X'f1', 'user', 'hello', 7), (7, 2, 0, X'f2', 'assistant', 'world', 7)")
 	testkit.MustExecCtx(t, db, ctx, "INSERT INTO message_traces VALUES (7, 1, X'01'), (7, 1, X'02'), (7, 2, X'02')")
 
 	for _, c := range []struct {
@@ -102,6 +117,28 @@ func TestFDB_OtelTemplateV1(t *testing.T) {
 			planLacks: []string{"InMemorySort"},
 		},
 		{
+			// The attribute index covers the witness's trace and span.
+			name: "log witnesses from the attribute index",
+			sql: "SELECT l.event_id, l.trace_id, l.span_id FROM logs AS l WHERE EXISTS (SELECT 1 FROM l.str_attrs AS a " +
+				"WHERE a.scope = 'log' AND a.attr_key = 'incident.bucket' AND a.str_value = 'b0') ORDER BY l.effective_ns DESC",
+			rows:      "[e3 <nil> <nil>] [e1 [1] [10]]",
+			planHas:   []string{"COVERING", "IndexScan(LOGS_STR_ATTR, [=, =, =,", "REVERSE"},
+			planLacks: []string{"InMemorySort"},
+		},
+		{
+			name:      "logs by event name, newest first",
+			sql:       "SELECT event_id, trace_id FROM logs WHERE event_name = 'gen_ai.choice' ORDER BY effective_ns DESC",
+			rows:      "[e3 <nil>] [e1 [1]]",
+			planHas:   []string{"COVERING", "IndexScan(LOGS_EVENT, [=,", "REVERSE"},
+			planLacks: []string{"InMemorySort"},
+		},
+		{
+			name:    "store meta",
+			sql:     "SELECT name FROM store_meta",
+			rows:    "",
+			planHas: []string{"Scan(STORE_META"},
+		},
+		{
 			name: "messages of a trace",
 			sql: "SELECT m.role, m.content FROM message_traces AS mt, messages AS m WHERE mt.trace_id = X'02' " +
 				"AND m.writer = mt.writer AND m.seq = mt.seq AND m.part = 0",
@@ -113,11 +150,6 @@ func TestFDB_OtelTemplateV1(t *testing.T) {
 			sql:     "SELECT writer, seq FROM messages WHERE content_hash = X'f2'",
 			rows:    "[7 2]",
 			planHas: []string{"IndexScan(MESSAGES_HASH, [=]"},
-		},
-		{
-			name: "span message references",
-			sql:  "SELECT r.writer, r.seq FROM spans AS s, s.message_refs AS r WHERE s.trace_id = X'02' AND s.span_id = X'0c'",
-			rows: "[7 2]",
 		},
 	} {
 		plan := explain(c.sql)
@@ -138,11 +170,15 @@ func TestFDB_OtelTemplateV1(t *testing.T) {
 	t.Run("remaining typed indexes", func(t *testing.T) {
 		testkit.MustExecCtx(t, db, ctx, "INSERT INTO spans (trace_id, span_id, start_ns, long_str_attrs) VALUES "+
 			"(X'05', X'01', 600, [('span','long',X'0102','long value')]), (X'05', X'02', 500, [('span','long',X'0304','other value')])")
-		testkit.MustExecCtx(t, db, ctx, "INSERT INTO logs (event_id, effective_ns, int_attrs) VALUES "+
-			"('i1', 600, [('log','count',7)]), ('i2', 500, [('log','count',8)])")
+		testkit.MustExecCtx(t, db, ctx, "INSERT INTO logs (event_id, effective_ns, int_attrs, long_str_attrs, double_attrs, bool_attrs) VALUES "+
+			"('i1', 600, [('log','count',7)], [('log','long',X'0102','long value')], [('log','ratio',0.5)], [('log','ok',true)]), "+
+			"('i2', 500, [('log','count',8)], [('log','long',X'0304','other value')], [('log','ratio',1.5)], [('log','ok',false)])")
 		for _, tc := range []struct{ query, index, rows string }{
 			{"SELECT s.start_ns FROM spans AS s WHERE EXISTS (SELECT 1 FROM s.long_str_attrs AS a WHERE a.scope = 'span' AND a.attr_key = 'long' AND a.digest = X'0102')", "SPANS_LONG_STR_ATTR", "[600]"},
 			{"SELECT l.event_id FROM logs AS l WHERE EXISTS (SELECT 1 FROM l.int_attrs AS a WHERE a.scope = 'log' AND a.attr_key = 'count' AND a.int_value = 7)", "LOGS_INT_ATTR", "[i1]"},
+			{"SELECT l.event_id FROM logs AS l WHERE EXISTS (SELECT 1 FROM l.long_str_attrs AS a WHERE a.scope = 'log' AND a.attr_key = 'long' AND a.digest = X'0304')", "LOGS_LONG_STR_ATTR", "[i2]"},
+			{"SELECT l.event_id FROM logs AS l WHERE EXISTS (SELECT 1 FROM l.double_attrs AS a WHERE a.scope = 'log' AND a.attr_key = 'ratio' AND a.double_value = 0.5)", "LOGS_DOUBLE_ATTR", "[i1]"},
+			{"SELECT l.event_id FROM logs AS l WHERE EXISTS (SELECT 1 FROM l.bool_attrs AS a WHERE a.scope = 'log' AND a.attr_key = 'ok' AND a.bool_value = false)", "LOGS_BOOL_ATTR", "[i2]"},
 		} {
 			if plan := explain(tc.query); !strings.Contains(plan, "IndexScan("+tc.index+", [=, =, =,") {
 				t.Errorf("%s equality lookup: %s", tc.index, plan)
@@ -154,6 +190,12 @@ func TestFDB_OtelTemplateV1(t *testing.T) {
 	})
 	t.Run("binary keyset pages", func(t *testing.T) {
 		testOtelTemplateBinaryKeysetPages(t, db, ctx)
+	})
+	t.Run("message full text", func(t *testing.T) {
+		testOtelTemplateFullText(t, db, ctx)
+	})
+	t.Run("direct readers", func(t *testing.T) {
+		testOtelTemplateDirect(t, db, ctx, path, chunks, refs)
 	})
 	t.Run("multipart message uniqueness", func(t *testing.T) {
 		// Only part zero carries the whole-message digest. Chunks have NULL
@@ -175,6 +217,139 @@ func TestFDB_OtelTemplateV1(t *testing.T) {
 	t.Run("typed arrays and original OTLP", func(t *testing.T) {
 		testOtelTemplateValues(t, db, ctx)
 	})
+}
+
+// SQL plans MESSAGES_TEXT for TEXT_CONTAINS_*(content, ?, 'otel_message_v1')
+// with the role bound and every shard listed; an unbound shard or another
+// tokenizer keeps record filtering, with the same rows.
+func testOtelTemplateFullText(t *testing.T, db *sql.DB, ctx context.Context) {
+	t.Helper()
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO messages (writer, seq, part, role, content, shard) VALUES "+
+		"(20, 1, 0, 'user', 'the quick brown fox', 4), (21, 1, 0, 'user', 'brown dogs and a quick fox', 5), "+
+		"(22, 1, 0, 'assistant', 'quick brown fox', 6), (23, 1, 0, 'user', 'Crème BRÛLÉE, quick', 7)")
+	shards := make([]string, otelsql.MessageTextShards)
+	for i := range shards {
+		shards[i] = fmt.Sprint(i)
+	}
+	all := " AND role = ? AND shard IN (" + strings.Join(shards, ", ") + ")"
+	for _, tc := range []struct {
+		fn, terms, rows string
+	}{
+		{"TEXT_CONTAINS_ALL", "quick fox", "[20] [21]"},
+		{"TEXT_CONTAINS_PHRASE", "quick brown fox", "[20]"},
+		{"TEXT_CONTAINS_ANY", "dogs creme", "[21] [23]"},
+	} {
+		for _, form := range []struct {
+			tokenizer, filter string
+			indexed           bool
+		}{
+			{otelsql.MessageTokenizerName, all, true},
+			{otelsql.MessageTokenizerName, " AND role = ?", false},
+			{"default", all, false},
+		} {
+			query := "SELECT writer FROM messages WHERE " + tc.fn + "(content, ?, '" + form.tokenizer + "')" + form.filter + " ORDER BY writer"
+			var plan string
+			if err := db.QueryRowContext(ctx, "EXPLAIN "+query, tc.terms, "user").Scan(&plan); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(plan, "TextIndexScan(MESSAGES_TEXT") != form.indexed {
+				t.Errorf("%s: indexed=%v plan %s", query, form.indexed, plan)
+			}
+			rows, err := db.QueryContext(ctx, query, tc.terms, "user")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for rows.Next() {
+				var w int64
+				if err := rows.Scan(&w); err != nil {
+					t.Fatal(err)
+				}
+				got = append(got, fmt.Sprintf("[%d]", w))
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			rows.Close()
+			if strings.Join(got, " ") != tc.rows {
+				t.Errorf("%s: rows %v, want %s", query, got, tc.rows)
+			}
+		}
+	}
+}
+
+// Direct Record Layer readers and writers of the SQL store: SPANS_REF_CHUNKS
+// holds one entry per chunk and MESSAGES_LARGE the large messages, and a
+// compiled STORE_META row reads back through SQL.
+func testOtelTemplateDirect(t *testing.T, db *sql.DB, ctx context.Context, path string, chunks [][]byte, refs [][]otelsql.MessageRef) {
+	t.Helper()
+	raw, err := fdb.OpenDatabase(testkit.ClusterFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	rl := recordlayer.NewFDBDatabase(raw)
+	ts, err := otelsql.OpenTenantStoreCompiled(ctx, rl, path, "S", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testkit.MustExecCtx(t, db, ctx, "INSERT INTO messages (writer, seq, part, parts, large, shard) VALUES (30, 1, 0, 2, [1], 14), (30, 1, 1, NULL, NULL, 14), (31, 1, 0, 1, NULL, 15)")
+	scan := func(index string, prefix tuple.Tuple) []tuple.Tuple {
+		t.Helper()
+		var out []tuple.Tuple
+		if _, err := rl.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+			out = nil
+			store, err := ts.Builder(rc).Open()
+			if err != nil {
+				return nil, err
+			}
+			cur := store.ScanIndex(ts.MetaData.GetIndex(index), recordlayer.TupleRangeAllOf(prefix), nil, recordlayer.ForwardScan())
+			defer cur.Close()
+			for {
+				r, err := cur.OnNext(ctx)
+				if err != nil || !r.HasNext() {
+					return nil, err
+				}
+				out = append(out, r.GetValue().Key)
+			}
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	entries := scan("SPANS_REF_CHUNKS", tuple.Tuple{[]byte{2}})
+	if len(entries) != 1 || len(entries[0]) < 5 || !bytes.Equal(entries[0][0].([]byte), []byte{2}) || entries[0][1] != int64(300) ||
+		!bytes.Equal(entries[0][2].([]byte), []byte{0x0c}) || entries[0][3] != int64(0) || !bytes.Equal(entries[0][4].([]byte), chunks[1]) {
+		t.Fatalf("SPANS_REF_CHUNKS of trace 02: %v", entries)
+	}
+	got, err := otelsql.UnpackRefChunk(entries[0][4].([]byte))
+	if err != nil || fmt.Sprint(got) != fmt.Sprint(refs[1]) {
+		t.Fatalf("unpacked refs %v (%v), want %v", got, err, refs[1])
+	}
+	if n := len(scan("SPANS_REF_CHUNKS", tuple.Tuple{[]byte{1}})); n != 1 {
+		t.Fatalf("trace 01 has %d ref chunk entries, want 1 (span 0b has none)", n)
+	}
+	if large := scan("MESSAGES_LARGE", tuple.Tuple{int64(1)}); len(large) != 1 || large[0][1] != int64(30) || large[0][2] != int64(1) {
+		t.Fatalf("MESSAGES_LARGE %v", large)
+	}
+
+	n := int64(3)
+	meta, err := otelsql.BuildStoreMetaCompiled(otelsql.StoreMeta{Name: otelsql.StoreMetaMessageWriter, Int: &n})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rl.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+		store, err := ts.Builder(rc).Open()
+		if err != nil {
+			return nil, err
+		}
+		return store.SaveRecord(meta)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := otelRows(t, db, ctx, "SELECT name, int_value FROM store_meta"); got != "[message_writer 3]" {
+		t.Fatalf("store_meta via SQL: %s", got)
+	}
 }
 
 func testOtelTemplateBinaryKeysetPages(t *testing.T, db *sql.DB, ctx context.Context) {
