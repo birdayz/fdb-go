@@ -30,8 +30,9 @@ func TestNextWriterID(t *testing.T) {
 	}
 }
 
-// TestSplitMessageParts pins the part layout planMessage records: raw chunks
-// of at most messagePartRawBytes, and role and text segments only with fulltext.
+// TestSplitMessageParts pins the part layout of an element's MESSAGES rows:
+// raw chunks of at most messagePartRawBytes, and role and text segments only
+// with fulltext.
 func TestSplitMessageParts(t *testing.T) {
 	t.Parallel()
 	raw := deltaRandom(2*messagePartRawBytes+7, 3)

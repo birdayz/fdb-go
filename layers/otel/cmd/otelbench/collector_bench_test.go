@@ -156,8 +156,8 @@ func TestExecuteCollectorBenchRejections(t *testing.T) {
 		{"-backend=ch-map", "-mode=collector-bench", "-run=cli_bench_run", "-cluster-file=/nonexistent/fdb.cluster"},
 		{"-mode=collector-bench", "-run=cli_bench_run"},
 		{"-mode=collector-bench", "-cluster-file=/nonexistent/fdb.cluster"},
-		// D2: the order and Brotli have no Exporter setting; Phase 3B removed
-		// the custom store's layout flags and --backend fdb.
+		// D2: the order and Brotli have no Exporter setting; the removed
+		// custom store's layout flags and --backend fdb are refused.
 		collectorBenchArgs("-order=trace"),
 		collectorBenchArgs("-hash-bytes=4"),
 		collectorBenchArgs("-posting-value-format=json"),

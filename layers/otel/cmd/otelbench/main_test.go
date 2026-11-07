@@ -403,7 +403,7 @@ func TestExecuteRejectsArgumentsBeforeOpeningOrCreatingOutput(t *testing.T) {
 		{"-workers=9"},
 		{"-workers=-1"},
 		{"-workers=bad"},
-		// Phase 3B removed the custom FDB store and its knobs.
+		// The removed custom FDB store's backend and knobs are refused.
 		{"-backend=fdb"},
 		{"-diagnostics"},
 		{"-posting-value-format=tuple"},

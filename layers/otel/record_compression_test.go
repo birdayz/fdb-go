@@ -3,8 +3,8 @@ package otel
 import "testing"
 
 // The record compression modes of the sql backend's OTEL_V1 stores: Java-
-// readable deflate only (D2). No backend's manifest records it since the
-// custom FDB store, whose runs did, was removed (phase 3B).
+// readable deflate only (D2). They leave the source corpus unchanged, and
+// the ClickHouse backends refuse them.
 func TestRecordCompressionConfigAndOwnership(t *testing.T) {
 	t.Parallel()
 	c := testConfig()

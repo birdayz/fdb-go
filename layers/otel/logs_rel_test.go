@@ -36,9 +36,10 @@ func TestPackedLen(t *testing.T) {
 	}
 }
 
-// Port of TestPrepareLogAdmission through the row builder. The raw cap is
-// the only size cap left per log (§3.1): the old 4 MiB stored cap is gone, so
-// "oversized" is now a raw image over 8 MiB.
+// TestRelLogPrepareAdmission: the row builder refuses invalid times,
+// identities and UTF-8 and oversized logs, normalizes identities and picks
+// the effective time. The raw cap is the only size cap per log (§3.1), so
+// "oversized" is a raw image over 8 MiB.
 func TestRelLogPrepareAdmission(t *testing.T) {
 	t.Parallel()
 	s := lrUnitStore(t)
@@ -83,14 +84,13 @@ func TestRelLogPrepareAdmission(t *testing.T) {
 			t.Fatalf("time fallback %+v: %+v %v", c.l, got, err)
 		}
 	}
-	// TestLogRecordsFromResourceLogs's last case: an overflowed OTLP time is
-	// refused, never clamped.
+	// An overflowed OTLP time is refused, never clamped.
 	conv := LogRecordsFromResourceLogs([]*logspb.ResourceLogs{{ScopeLogs: []*logspb.ScopeLogs{{LogRecords: []*logspb.LogRecord{{TimeUnixNano: math.MaxUint64}}}}}})
 	_, err = s.prepare(conv[0], 1)
 	requireTyped[*AdmissionError](t, "overflowed timestamp", err)
 }
 
-// Port of TestLogIndexKeys, projection rules only (§2.4): the LOGS row holds
+// TestRelLogProjection pins the projection rules (§2.4): the LOGS row holds
 // each scope's canonical set, typed (D1), with event_name intrinsic; the key
 // layout is the template's, pinned in TestRelLogsRealFDB/index_key_model.
 func TestRelLogProjection(t *testing.T) {
@@ -126,8 +126,7 @@ func TestRelLogProjection(t *testing.T) {
 	if a := r.GetANY_ATTRS().GetValues(); len(a) != 1 || a[0].GetJSON_VALUE() != `["a",1]` {
 		t.Fatalf("any attributes %v", a)
 	}
-	// D1: the array is reported, not indexed (v1 indexed its canonical string),
-	// so two keys are unindexed where v1 counted one.
+	// D1: the array is reported, not indexed, so two keys are unindexed.
 	if r.GetEVENT_NAME() != l.EventName || len(r.GetLONG_STR_ATTRS().GetValues()) != 0 || p.unindexed != 2 {
 		t.Fatalf("event name %q, long strings %v, unindexed %d", r.GetEVENT_NAME(), r.GetLONG_STR_ATTRS(), p.unindexed)
 	}
@@ -181,7 +180,8 @@ func TestRelLogProjection(t *testing.T) {
 	}
 }
 
-// Port of TestPartitionLogs.
+// TestPartitionRelLogs: a batch ends at the batch size or before the log that
+// would take it past logBatchBudget; an over-budget log is a batch alone.
 func TestPartitionRelLogs(t *testing.T) {
 	t.Parallel()
 	mk := func(costs ...int) []relPreparedLog {
@@ -254,7 +254,7 @@ func TestRelLogRowBytesArms(t *testing.T) {
 	}
 }
 
-// Port of TestLogOTLPFidelityEncoding through the LOGS row: the otlp column
+// TestRelLogOTLPFidelityEncoding: the LOGS row's otlp column
 // is the owned envelope, unaffected by caller or projection edits, and the
 // row's indexed sets keep the last duplicate without altering it.
 func TestRelLogOTLPFidelityEncoding(t *testing.T) {

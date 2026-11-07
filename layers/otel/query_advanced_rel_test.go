@@ -349,9 +349,9 @@ func (f qrFakeWitnesses[W]) scanWitnesses(_ context.Context, _ *recordlayer.FDBR
 	return f.err
 }
 
-// The join plumbing for every clause kind: witnesses of later kinds (logs, as
-// stream 2B will scan them) join on trace with span witnesses, prune traces
-// earlier clauses excluded, count toward Latest and are ordered newest first.
+// The join plumbing for every clause kind: witnesses of later kinds (here
+// logs) join on trace with span witnesses, prune traces earlier clauses
+// excluded, count toward Latest and are ordered newest first.
 func TestTraceJoinWitnessScanners(t *testing.T) {
 	t.Parallel()
 	T1, T2, T3 := qaID(1, 16), qaID(2, 16), qaID(3, 16)

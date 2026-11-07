@@ -156,7 +156,7 @@ func typedAttr(t *testing.T, scope, key string, v *commonpb.AnyValue) Attribute 
 
 // reMessages is an in-memory relMessageHooks: it numbers elements 1.1, 1.2,
 // ... in persist order, keeps their bytes for reconstruct and packs
-// references as stream 2C does, placeholders at the largest ID.
+// references as relMessageStore does, placeholders at the largest ID.
 type reMessages struct {
 	mu         sync.Mutex
 	calls      []string

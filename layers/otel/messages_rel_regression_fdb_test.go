@@ -18,8 +18,8 @@ import (
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
-// Ports of the size-fallback and overlong-token message regressions
-// (message_*_regression_test.go) to tenant stores, through relMsgEnv.
+// Message regressions of the size fallback and overlong tokens on tenant
+// stores, through relMsgEnv.
 
 func TestRelMessageRegressionsRealFDB(t *testing.T) {
 	t.Parallel()
@@ -69,10 +69,11 @@ func pendingMessages(ctx context.Context, store *recordlayer.FDBRecordStore) ([]
 	return out, err
 }
 
-// Port of TestLargeNonpostingMessagesRetainRawAndPositions. A 12 MiB word is
-// one overlong token: MESSAGES_TEXT holds otelsql.OverlongTokenPlaceholder in
-// its position, so the word's message now has the placeholder's posting
-// (otelsql text.go, was none) and a query for the placeholder finds it.
+// testRelLargeNonposting: large messages of whitespace or one long word keep
+// their raw bytes and positions. A 12 MiB word is one overlong token:
+// MESSAGES_TEXT holds otelsql.OverlongTokenPlaceholder in its position, so
+// the word's message has the placeholder's posting and a query for the
+// placeholder finds it.
 func testRelLargeNonposting(t *testing.T, h *qrHarness) {
 	for _, name := range []string{"whitespace", "word", "mixed-whitespace", "mixed-word"} {
 		t.Run(name, func(t *testing.T) {
@@ -142,7 +143,9 @@ func testRelLargeNonposting(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of TestMessageOverlongRawWordWithShortNormalizedToken (AGNOSTIC).
+// testRelOverlongNormalizedWord: a 12 MiB raw word whose normalized token is
+// short ("a" and combining marks) is indexed as that token, alone or between
+// other words, is not counted unindexed, and loads back unchanged.
 func testRelOverlongNormalizedWord(t *testing.T, h *qrHarness) {
 	for _, between := range []bool{false, true} {
 		t.Run(fmt.Sprintf("between=%t", between), func(t *testing.T) {
@@ -184,9 +187,9 @@ func testRelOverlongNormalizedWord(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of TestMessageSiblingFallbackRetainsCommittedHeaderOutcomes: after a
-// group commit of P and Q fails as too large, P's fallback commits and Q's
-// fails; P's committed outcome is kept, terminal or not.
+// testRelSiblingFallback: after a group commit of P and Q fails as too large,
+// P's fallback commits and Q's fails; P's committed outcome is kept,
+// terminal or not.
 func testRelSiblingFallback(t *testing.T, h *qrHarness) {
 	for _, terminal := range []bool{true, false} {
 		t.Run(fmt.Sprintf("terminal=%t", terminal), func(t *testing.T) {
@@ -299,10 +302,9 @@ func testRelSiblingFallback(t *testing.T, h *qrHarness) {
 	}
 }
 
-// Port of TestInitiallyMultipartSizeFallbackAfterCommittedTail: a large
-// message whose tail committed before transaction_too_large is replanned
-// under a fresh seq; the abandoned tails stay unpublished (no head, no
-// hash) and unsearchable.
+// testRelMultipartFallback: a large message whose tail committed before
+// transaction_too_large is replanned under a fresh seq; the abandoned tails
+// stay unpublished (no head, no hash) and unsearchable.
 func testRelMultipartFallback(t *testing.T, h *qrHarness) {
 	rng := rand.New(rand.NewPCG(7, 11))
 	raw := make([]byte, 7<<20)

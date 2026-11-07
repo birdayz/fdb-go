@@ -17,8 +17,8 @@ import (
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
-// relMessageStore is the exporter's message hook set (relMessageHooks,
-// declared in exporter_rel.go by stream 2A).
+// relMessageStore is the exporter's message hook set (relMessageHooks in
+// exporter_rel.go).
 var _ interface {
 	persist(context.Context, *messageDecomposition) (MessageStoreStats, error)
 	refChunks([]messageUse) ([][]byte, error)
@@ -26,8 +26,8 @@ var _ interface {
 	close()
 } = (*relMessageStore)(nil)
 
-// Port of TestPlanMessageParts to MESSAGES rows: part i holds raw chunk i and
-// text segment i, part 0 the content hash (v2 domain) and the whole message's
+// TestPlanRelMessageParts: MESSAGES row part i holds raw chunk i and text
+// segment i, part 0 the content hash (v2 domain) and the whole message's
 // columns, and the Large flag marks multipart text.
 func TestPlanRelMessageParts(t *testing.T) {
 	t.Parallel()
@@ -162,7 +162,7 @@ func TestRelRefChunksPlaceholderSizing(t *testing.T) {
 	}
 }
 
-// Port of TestMessageContinuation's sort-key half to v2 (§3.2): the key is
+// TestRelMessageRefKey pins the message hit sort key (§3.2): the key is
 // (start, trace, span, attribute key, writer, seq), ordered by index order
 // (D3) then attribute key and message ID.
 func TestRelMessageRefKey(t *testing.T) {

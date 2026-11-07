@@ -20,7 +20,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Port of TestPartitionExport: batches end at BatchSize spans or at the
+// TestRelPartition: batches end at BatchSize spans or at the
 // conservative transaction estimate, whichever comes first.
 func TestRelPartition(t *testing.T) {
 	t.Parallel()
@@ -85,9 +85,9 @@ func sortedAttributes(as ...Attribute) []Attribute {
 	return as
 }
 
-// Port of TestExporterPrepareExport on the row builder. D1: bools and
-// doubles are typed values, so they normalize nothing; the row's otlp is the
-// original single-span ResourceSpans (§1.2), not a canonicalized one.
+// TestRelPrepare pins the row builder: bools and doubles are typed values
+// (D1), so they normalize nothing; the row's otlp is the original
+// single-span ResourceSpans (§1.2), not a canonicalized one.
 func TestRelPrepare(t *testing.T) {
 	t.Parallel()
 	w := &SpanWriter{opts: SpanWriterOptions{BatchSize: 64}}
