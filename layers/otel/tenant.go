@@ -74,12 +74,21 @@ func (s *tenantStore) runMode(ctx context.Context, op string, cachedVersion bool
 // open opens the store in rc after setting the transaction's options, which
 // must precede its first read.
 func (s *tenantStore) open(rc *recordlayer.FDBRecordContext, op string) (*recordlayer.FDBRecordStore, error) {
+	return s.openWith(rc, op, nil)
+}
+
+// openWith is open that first passes the builder to prepare, which may issue
+// reads that overlap the open's (a record batch prefetch).
+func (s *tenantStore) openWith(rc *recordlayer.FDBRecordContext, op string, prepare func(*recordlayer.StoreBuilder)) (*recordlayer.FDBRecordStore, error) {
 	if err := configureStoreContext(rc); err != nil {
 		return nil, err
 	}
 	builder := s.ts.Builder(rc)
 	if s.fullText {
 		builder.SetPipelineSizer(messagePipelineSizer)
+	}
+	if prepare != nil {
+		prepare(builder)
 	}
 	store, err := builder.Open()
 	if err != nil {
