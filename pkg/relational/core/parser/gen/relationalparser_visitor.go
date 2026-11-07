@@ -136,6 +136,12 @@ type RelationalParserVisitor interface {
 	// Visit a parse tree produced by RelationalParser#vectorIndexOptions.
 	VisitVectorIndexOptions(ctx *VectorIndexOptionsContext) interface{}
 
+	// Visit a parse tree produced by RelationalParser#textIndexOptions.
+	VisitTextIndexOptions(ctx *TextIndexOptionsContext) interface{}
+
+	// Visit a parse tree produced by RelationalParser#textIndexOption.
+	VisitTextIndexOption(ctx *TextIndexOptionContext) interface{}
+
 	// Visit a parse tree produced by RelationalParser#vectorIndexOption.
 	VisitVectorIndexOption(ctx *VectorIndexOptionContext) interface{}
 

@@ -21,6 +21,7 @@ go_test(
         "fulltext_fdb_test.go",
         "fulltext_history_fdb_test.go",
         "fulltext_metadata_fdb_test.go",
+        "fulltext_options_ddl_fdb_test.go",
         "fulltext_primary_key_fdb_test.go",
         "fulltext_resolution_fdb_test.go",
         "fulltext_tokenizer_fdb_test.go",
