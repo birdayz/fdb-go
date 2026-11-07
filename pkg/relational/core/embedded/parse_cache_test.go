@@ -11,6 +11,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/core/parser"
 )
 
 // parseCacheQuery runs sql with args on c and returns its single BIGINT column.
@@ -63,8 +65,23 @@ func TestParseCacheRepeatedStatementBindsEachCallsValues(t *testing.T) {
 		t.Fatalf("a repeated statement was not cached")
 	}
 	again, err := c.parse(byID)
-	if err != nil || again != first {
+	if err != nil || again != first.root {
 		t.Fatalf("a cached statement was parsed again (%v)", err)
+	}
+	// The statement's binding walk was compiled once and is reused: the
+	// parameter values above all bound through the same program.
+	if len(first.programs.m) != 1 {
+		t.Fatalf("statement keeps %d binding programs, want 1", len(first.programs.m))
+	}
+	var program *bindingProgram
+	for _, p := range first.programs.m {
+		program = p
+	}
+	parseCacheQuery(t, c, byID, int64(3))
+	for _, p := range first.programs.m {
+		if p != program {
+			t.Fatal("a repeated statement compiled its binding walk again")
+		}
 	}
 
 	// Literals bind to the tree's constant tokens for one statement; the
@@ -126,5 +143,47 @@ func TestParseCacheIsBounded(t *testing.T) {
 	}
 	if _, ok := c.parses.trees[long]; ok {
 		t.Fatalf("a statement over %d bytes was cached", parseCacheMaxText)
+	}
+}
+
+// A compiled binding walk replays the walk it was compiled from: the cache
+// text, equivalence and literal bindings of a cached program equal those of a
+// fresh compile, for parameters, runtime literals, NULL and non-runtime sites.
+func TestBindingProgramReplaysTheWalk(t *testing.T) {
+	t.Parallel()
+	for _, sql := range []string{
+		"SELECT v FROM t WHERE id = ? AND v = 3 AND v <> 'x' ORDER BY 1 LIMIT 5",
+		"SELECT v FROM t WHERE id IN (1, 2, ?) OR v IS NULL OR v = NULL",
+		"SELECT COALESCE(v, 7), v + 1.5 FROM t WHERE id = ? GROUP BY v",
+	} {
+		root, err := parser.Parse(sql)
+		if err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+		release, err := bindStatementParameters(root, []driver.NamedValue{{Ordinal: 1, Value: int64(9)}})
+		if err != nil {
+			t.Fatalf("%s: bind: %v", sql, err)
+		}
+		var programs statementPrograms
+		fresh, releaseFresh, err := normalizeQueryBindingsWith(root, nil, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+		releaseFresh()
+		for run := range 2 {
+			got, releaseGot, err := normalizeQueryBindingsWith(root, nil, &programs)
+			if err != nil {
+				t.Fatalf("%s run %d: %v", sql, run, err)
+			}
+			releaseGot()
+			if got.text != fresh.text || got.equivalence != fresh.equivalence ||
+				fmt.Sprint(got.literals) != fmt.Sprint(fresh.literals) || fmt.Sprint(got.constants) != fmt.Sprint(fresh.constants) {
+				t.Fatalf("%s run %d:\n got %q %q %v\nwant %q %q %v", sql, run, got.text, got.equivalence, got.literals, fresh.text, fresh.equivalence, fresh.literals)
+			}
+		}
+		if len(programs.m) != 1 {
+			t.Fatalf("%s: %d programs kept", sql, len(programs.m))
+		}
+		release()
 	}
 }
