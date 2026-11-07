@@ -25,7 +25,6 @@ import (
 	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/fdbgo/client"
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/sqldriver"
@@ -104,7 +103,7 @@ type Backend struct {
 	query     *sql.DB // schema of cfg.Tenant
 	q         queryer // query, or its pinned connection
 	pinned    *sql.Conn
-	qstore    *otelsql.TenantStore
+	reader    *otel.SpanReader // the direct query path's
 	// writeSer is the direct saves' serializer (nil: uncompressed); readSer
 	// is the relational engine's, which reads uncompressed and zlib records.
 	writeSer, readSer *recordlayer.TransformedRecordSerializer
@@ -547,26 +546,26 @@ const (
 // Query returns the newest K distinct traces with a span carrying a.
 func (b *Backend) Query(ctx context.Context, a otel.Attribute) (otel.QueryResult, error) {
 	b.countQuery()
-	var q, index string
+	if b.opts.Query == QueryDirect {
+		return b.directQuery(ctx, a)
+	}
+	var q string
 	var v any
 	switch a.Type {
 	case "string":
 		if len(a.Value) > otelsql.MaxIndexedStringBytes {
 			return otel.QueryResult{}, errors.New("sqlbackend: long string attributes are not supported by the fixture")
 		}
-		q, index, v = fmt.Sprintf(attrQuery, "str_attrs", "str_value"), "SPANS_STR_ATTR", a.Value
+		q, v = fmt.Sprintf(attrQuery, "str_attrs", "str_value"), a.Value
 	case "int":
 		n, err := strconv.ParseInt(a.Value, 10, 64)
 		if err != nil {
 			// No stored integer equals a non-integer literal.
 			return otel.QueryResult{Hits: []otel.Hit{}}, nil
 		}
-		q, index, v = fmt.Sprintf(attrQuery, "int_attrs", "int_value"), "SPANS_INT_ATTR", n
+		q, v = fmt.Sprintf(attrQuery, "int_attrs", "int_value"), n
 	default:
 		return otel.QueryResult{Hits: []otel.Hit{}}, nil
-	}
-	if b.opts.Query == QueryDirect {
-		return b.directTop(ctx, index, recordlayer.TupleRangeAllOf(tuple.Tuple{a.Scope, a.Key, v}), 3, 4)
 	}
 	return b.topTraces(ctx, q, a.Scope, a.Key, v)
 }
@@ -578,11 +577,7 @@ func (b *Backend) Time(ctx context.Context, r otel.TimeRange) (otel.QueryResult,
 		return otel.QueryResult{}, err
 	}
 	if b.opts.Query == QueryDirect {
-		if r.Start == r.End {
-			b.lastWork = otel.QueryResult{}
-			return otel.QueryResult{Hits: []otel.Hit{}}, nil
-		}
-		return b.directTop(ctx, "SPANS_TIME", recordlayer.TupleRangeBetween(tuple.Tuple{r.Start}, tuple.Tuple{r.End}), 0, 1)
+		return b.directTime(ctx, r)
 	}
 	return b.topTraces(ctx, timeQuery, r.Start, r.End)
 }
@@ -650,12 +645,12 @@ func (b *Backend) topBatch(ctx context.Context, q string, args []any, seen map[s
 // Trace returns a trace's spans by (start, span).
 func (b *Backend) Trace(ctx context.Context, trace string) ([]otel.SpanHit, error) {
 	b.countQuery()
+	if b.opts.Query == QueryDirect {
+		return b.directTrace(ctx, trace)
+	}
 	id, err := hex.DecodeString(trace)
 	if err != nil {
 		return nil, err
-	}
-	if b.opts.Query == QueryDirect {
-		return b.directTrace(ctx, id)
 	}
 	b.explain(ctx, traceQuery, id)
 	rs, err := b.q.QueryContext(ctx, traceQuery, id)
@@ -690,12 +685,12 @@ func sortSpanHits(out []otel.SpanHit) {
 // Span returns every span with the identity.
 func (b *Backend) Span(ctx context.Context, span string) ([]otel.SpanMatch, error) {
 	b.countQuery()
+	if b.opts.Query == QueryDirect {
+		return b.directSpan(ctx, span)
+	}
 	id, err := hex.DecodeString(span)
 	if err != nil {
 		return nil, err
-	}
-	if b.opts.Query == QueryDirect {
-		return b.directSpan(ctx, id)
 	}
 	b.explain(ctx, spanQuery, id)
 	rs, err := b.q.QueryContext(ctx, spanQuery, id)
