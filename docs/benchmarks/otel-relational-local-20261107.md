@@ -273,6 +273,36 @@ direct column measures production code. Same run and suite as round 2,
 - **Remaining round trips:** a point query is now two: the store header and index
   states (overlapped), then the index scan.
 
+### Collector-bench baseline of the custom store (gates G2 and G3)
+
+The replacement's message, log and advanced-query gates compare against the custom
+store. These are its receipts at `27e0b1b60`+ (old implementation unchanged), with
+`collector-bench` defaults except `--conversations 1000` (15,000 spans, 285,000
+message references), two runs per arm, on the same Redwood cluster, 0 failures and
+0 fidelity mismatches. Raw evidence: `otel-relational-local-20261107/collector-bench-baseline-*.json`.
+
+| arm | ingest s | spans/s | process CPU s (user+sys) | message persist s |
+|---|---:|---:|---:|---:|
+| deltas + FTS (default) | 9.52 / 10.25 | 1,576 / 1,464 | 111.4 / 112.8 | 19.9 / 21.2 |
+| messages off | 4.55 / 5.08 | 3,299 / 2,952 | 41.1 / 40.1 | — |
+
+| query class, p50 / p99 ms | deltas + FTS | messages off |
+|---|---|---|
+| same_span_conjunction | 1.63 / 2.13, 1.62 / 2.91 | 1.68 / 2.53, 1.68 / 2.69 |
+| trace_existential_3way | 25.94 / 33.00, 26.81 / 31.11 | 3.97 / 5.99, 4.18 / 6.24 |
+| trace_graph_traversal | 1.74 / 3.71, 2.00 / 3.17 | 4.30 / 36.63, 4.62 / 7.58 |
+| correlated_logs_by_trace | 0.54 / 0.64, 0.57 / 0.95 | 0.53 / 1.15, 0.45 / 0.67 |
+| fts_single_token | 28.65 / 84.14, 30.15 / 94.43 | — |
+| fts_same_span_predicates | 27.80 / 34.65, 27.86 / 32.88 | — |
+| fts_multi_turn_history | 7.91 / 88.85, 9.35 / 83.71 | — |
+| fts_phrase_first_turn | 8.70 / 90.38, 8.56 / 77.09 | — |
+
+Process CPU covers the whole command (corpus, ingest, audit, queries). With messages
+on, the export's logical bytes are 13.1 MB against 372 MB with messages off
+(dedup stored 20.9 MB of deltas for 181.6 MB of message bytes), and the TEXT index
+wrote 60.2 MB of keys. The host ran other builds (load 10–11), so treat single
+differences under ~10% as noise.
+
 ## Reproduce
 
 ```sh
