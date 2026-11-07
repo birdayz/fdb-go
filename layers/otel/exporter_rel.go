@@ -22,9 +22,10 @@ import (
 
 var _ sdktrace.SpanExporter = (*Exporter)(nil)
 
-// relMessageHooks are the GenAI message stores of a tenant store (stream 2C,
-// messages_rel.go). The exporter decomposes and re-encodes manifests itself
-// (decomposeMessages, encodeManifests) and has no hooks when messages are off.
+// relMessageHooks are the GenAI message store of a tenant store
+// (*relMessageStore, messages_rel.go). The exporter decomposes and re-encodes
+// manifests itself (decomposeMessages, encodeManifests) and has no hooks when
+// messages are off.
 type relMessageHooks interface {
 	// persist stores d's unique elements and trace markers before the spans
 	// that reference them and sets every element's id, so
@@ -38,20 +39,11 @@ type relMessageHooks interface {
 	close()
 }
 
-// relLogs is the logs of a tenant store (*relLogStore, logs_rel.go).
-type relLogs interface {
-	ExportLogs(ctx context.Context, logs []LogRecord) (LogExportStats, error)
-	QueryLogsByTrace(ctx context.Context, traceID, spanID string) ([]LogRecord, error)
-	QueryLogsByAttribute(ctx context.Context, a Attribute, limit int) ([]LogRecord, error)
-}
-
-// relParts are what other streams supply to an Exporter, and test seams.
+// relParts are test seams of newExporter.
 type relParts struct {
 	// messages builds the message hooks when cfg enables messages; nil is
 	// newRelMessageStore.
 	messages func(s *tenantStore, cfg ExporterConfig) (relMessageHooks, error)
-	// logs builds the log store; nil is newRelLogStore.
-	logs func(s *tenantStore, cfg ExporterConfig) (relLogs, error)
 	// newDatabase wraps the FDB handle; nil is recordlayer.NewFDBDatabase.
 	newDatabase func(fdb.Database) *recordlayer.FDBDatabase
 }
@@ -66,7 +58,7 @@ type Exporter struct {
 	reader   *SpanReader
 	writer   *SpanWriter
 	messages relMessageHooks // nil when messages are off
-	logs     relLogs
+	logs     *relLogStore
 	// txnSlots holds one token per in-flight write transaction.
 	txnSlots chan struct{}
 
@@ -135,16 +127,11 @@ func newExporter(ctx context.Context, cfg ExporterConfig, parts relParts) (*Expo
 			return abort(err)
 		}
 	}
-	if parts.logs == nil {
-		parts.logs = func(s *tenantStore, cfg ExporterConfig) (relLogs, error) { return newRelLogStore(s, cfg) }
-	}
-	{
-		if e.logs, err = parts.logs(store, cfg); err != nil {
-			if e.messages != nil {
-				e.messages.close()
-			}
-			return abort(err)
+	if e.logs, err = newRelLogStore(store, cfg); err != nil {
+		if e.messages != nil {
+			e.messages.close()
 		}
+		return abort(err)
 	}
 	return e, nil
 }
@@ -310,25 +297,13 @@ func (e *Exporter) TraverseTraceGraph(ctx context.Context, traceID string) (Trac
 	return g, err
 }
 
-// logStore is the log store, or a config error until stream 2B supplies one.
-func (e *Exporter) logStore(op string) (relLogs, error) {
-	if e.logs == nil {
-		return nil, fail("config", op, "logs are not yet supported on the relational store")
-	}
-	return e.logs, nil
-}
-
 // ExportLogs stores log records; its write transactions take write slots.
 func (e *Exporter) ExportLogs(ctx context.Context, logs []LogRecord) (LogExportStats, error) {
 	if err := e.begin("log export"); err != nil {
 		return LogExportStats{}, err
 	}
 	defer e.active.Done()
-	s, err := e.logStore("log export")
-	if err != nil {
-		return LogExportStats{}, err
-	}
-	return s.ExportLogs(withTxnLimiter(e.txnContext(ctx), e.txnSlots), logs)
+	return e.logs.ExportLogs(withTxnLimiter(e.txnContext(ctx), e.txnSlots), logs)
 }
 
 // ConsumeLogs accepts OTLP ResourceLogs from a Collector or OTLP receiver.
@@ -342,11 +317,7 @@ func (e *Exporter) QueryLogsByTrace(ctx context.Context, traceID, spanID string)
 		return []LogRecord{}, err
 	}
 	defer e.active.Done()
-	s, err := e.logStore("log trace query")
-	if err != nil {
-		return []LogRecord{}, err
-	}
-	return s.QueryLogsByTrace(e.txnContext(ctx), traceID, spanID)
+	return e.logs.QueryLogsByTrace(e.txnContext(ctx), traceID, spanID)
 }
 
 func (e *Exporter) QueryLogsByAttribute(ctx context.Context, a Attribute, limit int) ([]LogRecord, error) {
@@ -354,9 +325,5 @@ func (e *Exporter) QueryLogsByAttribute(ctx context.Context, a Attribute, limit 
 		return []LogRecord{}, err
 	}
 	defer e.active.Done()
-	s, err := e.logStore("log attribute query")
-	if err != nil {
-		return []LogRecord{}, err
-	}
-	return s.QueryLogsByAttribute(e.txnContext(ctx), a, limit)
+	return e.logs.QueryLogsByAttribute(e.txnContext(ctx), a, limit)
 }
