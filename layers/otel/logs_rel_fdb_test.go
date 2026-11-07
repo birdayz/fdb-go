@@ -1145,7 +1145,9 @@ func testRelLogExpandedWrite(t *testing.T, h *qrHarness) {
 	if stats, err := s.ExportLogs(lrCtx(ctx), []LogRecord{{EventID: "valid-neighbor", Timestamp: 1}, octal}); err != nil || stats.Logs != 2 {
 		t.Fatalf("deflated admission: %+v / %v", stats, err)
 	}
-	if got, err := s.QueryLogsByTrace(ctx, ftsTrace(1), ""); err != nil || len(got) != 1 || !proto.Equal(got[0].Attributes[119], octal.Attributes[119]) {
+	// Under the exporter's 10s transaction timeout, as the exporter reads: the
+	// 1.5s default is short for decoding a 6 MB row under the race detector.
+	if got, err := s.QueryLogsByTrace(lrCtx(ctx), ftsTrace(1), ""); err != nil || len(got) != 1 || !proto.Equal(got[0].Attributes[119], octal.Attributes[119]) {
 		t.Fatalf("deflated log round trip: %d %v", len(got), err)
 	}
 }
