@@ -3650,11 +3650,21 @@ boundary in `docs/benchmarks/otel-relational-local-20261107.md`.
   - the Go client's write path (RYW cache, mutation log, conflict ranges, commit encoding) is about 38% of allocations;
   - the batch prefetch and batch save both walk the UTF-8 check;
   - `readIndexState` starts a goroutine-backed `GetReadVersion` future per record and index.
-- [ ] SQL statement floor. With one transaction per auto-commit SELECT and the
-  schema witness, a point query costs 0.63 ms p50 on a pinned connection and
-  1.04 ms pooled, against 0.43 ms for the same scan through the Record Layer.
-  - It makes the same FDB requests as the direct scan when pinned; the rest is client CPU: ANTLR parse before the plan cache, planning and the executor per row.
-  - A parse cache needs the bound parse tree to be immutable or cloned.
+- [ ] SQL statement floor. A point query costs 0.56–0.60 ms p50 on a pinned
+  connection and 0.77–0.84 ms pooled, against 0.29–0.32 ms for `SpanReader`
+  (which also reads at a cached read version).
+  - Done: per-connection parse cache, binding walk compiled once per cached tree, record-type equality memo in the edge binder.
+  - Left: planning (plan-cache lookup, index-state snapshot) and the executor per row; the pooled path's schema-witness reads.
+  - A read-version cache for SQL would save one round trip but changes autocommit SELECT freshness; only as an opt-in.
+- [ ] `SpanReader` point reads take two round trips (store header and index
+  states overlapped, then the scan). Issuing the scan's first range read with the
+  store open would make it one, but the cursor's first page must then come from
+  the RYW cache, which needs the prefetch to match its first request exactly
+  (limit, streaming mode, byte target). Worth ~0.1 ms per read.
+- [ ] zlib is about 15% of `zlib-1` ingest CPU (stdlib `compress/flate`, dynamic
+  Huffman per ~1.5 KB record). `klauspost/compress` (already an indirect
+  dependency) would likely halve it; it needs a direct dependency and a notices
+  refresh.
 - [ ] SELECT pages are bounded only by time unless
   `execution_scanned_rows_limit` is set, and a page is read whole before its
   first row is returned. Java's result set iterates its cursor lazily instead.
