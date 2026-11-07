@@ -34,10 +34,15 @@ Each campaign's reports live in a folder named after the campaign.
   on the way (TLog memory monitor, cold-range hotspot, topology) and the run's
   limits (one run, not sustained, no HA).
 - [OTel spans in relational OTEL_V1 stores, local](otel-relational-local-20261107.md):
-  one host, single-process FDB. Direct Record Layer ingest into per-tenant
-  OTEL_V1 schemas against the custom-index backend: 1.32x client CPU per span,
-  same 11 KV writes, 34% fewer bytes. Covers SQL and direct-scan query latency,
-  and the relational fixes the comparison found.
+  one host, single-process FDB. The receipts of the relational OTEL_V1 store
+  that replaced the custom-index store. Span ingest through the replacement's
+  writer costs 283 against 372 µs/span of client CPU (0.76x) with 42% fewer
+  prefix-compressed bytes (G2A), and log ingest 0.41x the CPU per log (G2B).
+  With messages, collector-bench ingest takes 0.87x the wall time and 0.72x
+  the process CPU, and every query class's p50 is at most 0.98x the custom
+  store's after the queues drain (G3, quiesced). Round 1's 1.32x CPU figure is
+  superseded. Also covers SQL and direct-scan query latency and the relational
+  fixes the comparison found.
 - [GenAI/OTel collector ingest 1x/2x/3x on Kubernetes + Cilium](otel-genai-collector-ingest-k8s-scaling.md):
   the same six-host setup running a sustained 10-minute custom in-process
   Collector-model queue/exporter experiment, not an upstream Collector pipeline

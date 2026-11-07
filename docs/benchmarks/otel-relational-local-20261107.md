@@ -7,7 +7,9 @@ custom-index backend's ingest and query performance.
 
 [Round 2](#round-2-hill-climb-of-the-relational-path) supersedes round 1's
 ingest, storage and query figures and compares against the production `fdb`
-configuration. Round 1 is kept below as the starting point.
+configuration. Round 1 is kept below as the starting point. The relational
+store has since replaced the custom one; gates G0 to G3 below are the
+replacement's receipts.
 
 **Boundary.** One 24-core development host; one single-process FoundationDB
 7.3.77 container (`fdb dev up`, storage migrated to `ssd-redwood-1`); client
@@ -16,6 +18,42 @@ Wall time on this server swung by 5x between identical runs for both backends
 (17 s to 103 s for the same 100k-span ingest), so ingest is compared on client
 CPU (user+sys of the bench process), which was stable to about 5%. This is
 local diagnostic evidence, not a multi-host or production measurement.
+
+**Measured trees.** The gates name their trees by these archive tags. The
+trees come from the stack before it was rebased onto the change's merge-base,
+so none of them is in the merged history; the tags keep them resolvable.
+
+| tag | commit | measured as |
+|---|---|---|
+| `archive/otel-relational/pre-0a` | `a1f333131` | the stack before phase 0A: the custom store's collector-bench baseline; G0's base is its parent, which lacks only this docs commit |
+| `archive/otel-relational/g0-template` | `a6095a7b3` | G0: phase 0A's OTEL_V1 rewrite |
+| `archive/otel-relational/g2a` | `bddc4fc31` | G2A: `BenchmarkRelSpansVsFDB`, and otelbench at its parent, which lacks only that benchmark |
+| `archive/otel-relational/g2b-logs` | `15af5fd66` | G2B: `BenchmarkRelLogsVsFDB` |
+| `archive/otel-relational/messages-cost` | `42446273a` | R1/R4: `BenchmarkMessageWriteCostRealFDB` |
+| `archive/otel-relational/custom-store` | `7fb269417` | the custom store (`--backend fdb`) in G3, the `fts_single_token` runs and the quiesced gate; the cutover's parent |
+| `archive/otel-relational/g3-cutover` | `f68acec52` | G3: the cutover's Exporter |
+| `archive/otel-relational/fts-before` | `b70072f38` | `fts_single_token`: the Exporter with the query-only harness |
+| `archive/otel-relational/fts-fix` | `f7b2d43bd` | `fts_single_token`: the fix |
+| `archive/otel-relational/quiesced` | `11ae9acbf` | the quiesced gate's Exporter |
+
+The receipts record these short hashes, or one of:
+
+- `7fb269417+harness`: custom-store plus `fts-perf/base-harness.patch`;
+- `dfbccb991+harness`: fts-before's parent with fts-before's harness change, built before that commit; `fts-perf/runs.txt` names this binary (sha256 `58073eab…`) fts-before;
+- `fix3`: the fts-fix binary (sha256 `3543936d…`, reproduced by a rebuild at fts-fix);
+- `unrecorded`: the G0 and G2A otelbench receipts, whose trees their sections name.
+
+**Baseline.** CLAUDE.md and the RFC's gates name the merge-base as the
+baseline. No custom-store arm here is the merge-base. Each is the custom store
+on the same stack as the relational arm it is compared with: G2A, G2B and
+R1/R4 ran both stores in one binary, and G3 and later use custom-store, the
+cutover's parent (pre-0a is the same stack before phase 0A). Both
+arms of a comparison therefore share one Record Layer, client and relational
+tree, and the ratios compare the two stores, not those libraries' changes
+since the merge-base. The merge-base's otelbench also lacks the `--query-only`
+harness that the quiesced gate uses. The custom store was not re-measured at
+the merge-base, and no tree of the merged change contains it. G0 compares the
+relational store before and after phase 0A.
 
 ## Setup
 
@@ -273,10 +311,33 @@ direct column measures production code. Same run and suite as round 2,
 - **Remaining round trips:** a point query is now two: the store header and index
   states (overlapped), then the index scan.
 
+### Gate G0: span ingest after the OTEL_V1 rewrite
+
+Phase 0A rewrote OTEL_V1 in place. G0 requires `otelbench --backend sql` ingest
+of 50k spans with `zlib-1` to stay within 1.05× round 2 (283 µs/span, 1,482
+B/span), so at most 297 µs/span and 1,556 B/span. Head is
+`archive/otel-relational/g0-template` (`a6095a7b3`); the same-session control
+is the tree before phase 0A, the parent of `archive/otel-relational/pre-0a`
+(`c191f9c17`). Five alternating runs per arm used the round 2 fixture and
+flags (direct ingest of compiled rows, 8 workers, batches of 32, batch saves)
+on the recreated `otelcmp` container, at a 1-minute load of 6.6–8.3 (recorded
+before eight of the ten runs). CPU is user+sys of the ingest command. Raw
+evidence: `otel-relational-local-20261107/g0/` (`runs.txt`, the receipts and
+`run.sh`).
+
+| arm | µs/span, 5 runs | median | mean | logical B | prefix B | keys |
+|---|---|---:|---:|---:|---:|---:|
+| head | 268, 257, 325, 268, 311 | 268 | 286 | 1,472 | 878 | 11 |
+| base | 256, 251, 268, 257, 262 | 257 | 259 | 1,472 | 878 | 11 |
+
+- **CPU:** the head's median (268) and mean (286) are within 297; two of its runs (325 and 311) are not, and they also took 2–4× the wall time of the others (17.6 s and 31.9 s). Head over base is 1.04× by median and 1.10× by mean.
+- **Bytes:** both arms store 1,472 logical and 878 prefix bytes per span, within the gate.
+- **Earlier sets** (in `runs.txt`, not gated): in the first, the head failed on `otelcmp`'s OTEL_V1 from another revision. The next two ran the head's parent, which put SPANS at record type key 1 (888 prefix B/span, fixed by g0-template), at a load of 29–103.
+
 ### Collector-bench baseline of the custom store (gates G2 and G3)
 
 The replacement's message, log and advanced-query gates compare against the custom
-store. These are its receipts at `27e0b1b60`+ (old implementation unchanged), with
+store. These are its receipts at `archive/otel-relational/pre-0a` (`a1f333131`), with
 `collector-bench` defaults except `--conversations 1000` (15,000 spans, 285,000
 message references), two runs per arm, on the same Redwood cluster, 0 failures and
 0 fidelity mismatches. Raw evidence: `otel-relational-local-20261107/collector-bench-baseline-*.json`.
@@ -308,9 +369,10 @@ differences under ~10% as noise.
 These runs measure the replacement's production code: `--backend sql` direct
 ingest of compiled rows with `--save-mode batch` writes through
 `otel.SpanWriter` (`write_path` in the ingest receipt), and `--sql-query direct`
-reads through `otel.SpanReader`. The binary was built at `afe1e7dac`, which
-has the final template. The cluster is the same host's Redwood `otelcmp`,
-recreated this afternoon, and every run below is fresh. Runs started only
+reads through `otel.SpanReader`. The binary was built at the parent of
+`archive/otel-relational/g2a` (`bddc4fc31`), which has the final template; the
+tag's commit adds only the benchmark below. The cluster is the same host's
+Redwood `otelcmp`, recreated this afternoon, and every run below is fresh. Runs started only
 when the 1-minute load was under 15; the load at the start and end of each run
 is shown. Other agents' builds ran throughout. Raw evidence is in
 `otel-relational-local-20261107/g2a-*`; the query receipts there have their
@@ -372,8 +434,8 @@ Every class's p50 is below `fdb` production, so the query half of G2A passes.
 The median per-class p99 was 3.2 ms for `fdb` and 1.2–1.6 ms for `sql`.
 
 **The Exporter itself.** `BenchmarkRelSpansVsFDB` (`layers/otel/spans_rel_bench_test.go`,
-at `bddc4fc31`) exports the same fixture through `ExportResourceSpans` of both
-exporters in one test binary, with messages off and `ExporterConfig`
+at `archive/otel-relational/g2a` (`bddc4fc31`)) exports the same fixture
+through `ExportResourceSpans` of both exporters in one test binary, with messages off and `ExporterConfig`
 defaults. The relational exporter uses `zlib-1`; the old Exporter uses brotli-4,
 tuple postings, 8-byte hashes and bulk conflicts. Each run exports 20,000
 single-span envelopes of one tenant, in calls of 500 spans. CPU is the test
@@ -390,18 +452,50 @@ The relational exporter costs 0.54× the old Exporter's client CPU per span. The
 old Exporter costs more per span than otelbench's `fdb` backend (469 against
 372). That gap was not profiled.
 
+### Gate G2B: logs through the replacement
+
+`BenchmarkRelLogsVsFDB` (`layers/otel/logs_rel_bench_test.go`) exports 20,000
+logs in calls of 500 through the custom store's `Exporter.ExportLogs` and the
+relational log store, in one test binary on its own FDB testcontainer, then
+reads 400 traces with `QueryLogsByTrace`. CPU is the test process's user+sys
+over the export calls. Two sets of two alternating runs per arm: set 2 at
+`archive/otel-relational/g2b-logs` (`15af5fd66`, clean tree), set 1 at its
+parent (`6918c3314`, the benchmark's commit), at a 1-minute load of 14–24.
+Raw evidence: `otel-relational-local-20261107/g2b-bench-rellogs.txt`, the
+benchmark's output lines as recovered from the stream's session log.
+
+| per log | custom store (4 runs) | relational (4 runs) | ratio |
+|---|---|---|---:|
+| client CPU µs | 854.0, 826.6, 811.0, 815.4 (mean 827) | 347.7, 321.8, 362.6, 316.9 (mean 337) | 0.41 |
+| logical KV bytes | 2,351.5 | 2,244.6 | 0.95 |
+| prefix bytes | 1,821.4 | 1,499.2 | 0.82 |
+| keys | 11.8 | 13.0 | |
+| `QueryLogsByTrace` p50 ms | 0.698, 0.577, 0.852, 0.597 | 0.686, 0.587, 0.862, 0.579 | 0.97–1.02 |
+
+- **CPU** per run pair is 0.39–0.45× and bytes and p50 are at most 1.02×, so every G2B criterion (each ≤ 1.10×) passes.
+- **p99** of 400 reads: 2.3–8.0 ms for the custom store and 1.5–5.5 ms for the relational store.
+- **Scope:** the RFC's G2B row names collector-bench's logs; this benchmark exports logs alone. The collector bench's `correlated_logs_by_trace` class is in G3 (0.93× post-ingest) and the quiesced gate (0.89× and 0.98×).
+
 ### Messages through the replacement (R1, R4)
 
 `BenchmarkMessageWriteCostRealFDB` (`layers/otel/messages_rel_cost_test.go`, at
-`897715044`, before the cutover removed its old-Exporter arms) exported GenAI
-conversations with deltas and full text through both exporters in one test
-binary, `record_compression none`, on its own FDB testcontainer. CPU is the
-process's user+sys over the export calls; the ranges cover every run.
+`archive/otel-relational/messages-cost` (`42446273a`), before the cutover removed
+its old-Exporter arms) exported GenAI conversations with deltas and full text
+through both exporters in one test binary, `record_compression none`, on its
+own FDB testcontainer, two runs per arm (`-test.count=2`), 1,000 spans per
+workload, at a 1-minute load of 11–19. CPU is the process's user+sys over the
+export calls. Raw evidence: `otel-relational-local-20261107/messages-cost-runs.txt`,
+the benchmark's output lines as recovered from the stream's session log.
 
-| workload (conversations × turns) | old Exporter CPU ms/span | relational Exporter CPU ms/span |
-|---|---|---|
-| 40 × 25 | 7.5–8.4 | 7.3–8.0 |
-| 5 × 200 | 9.0–11.4 | 9.8–11.5 |
+| workload (conversations × turns) | old Exporter CPU ms/span | relational Exporter CPU ms/span | ratio of means |
+|---|---|---|---:|
+| 40 × 25 | 7.58, 7.49 | 7.56, 7.70 | 1.01 |
+| 5 × 200 | 9.51, 9.00 | 9.82, 10.23 | 1.08 |
+
+Two earlier sets of two runs per arm, on earlier trees of the stream that are
+not archived (same file), gave 7.14–8.40 (old) and 7.29–7.99 (relational) at
+40 × 25, and 9.96–11.45 and 10.46–11.46 at 5 × 200. The byte ratios below
+are the same in all three sets.
 
 - **R1, references in index keys:** `SPANS_REF_CHUNKS` holds 2–3% more bytes than the old `envelope_refs_v1` values.
 - **MESSAGES_TEXT:** 21–23% more bytes than the old TEXT index, with the same bunch count (6,017 and 10,143 rows). The schema subspace prefix is 23 bytes against 10 (26% of the difference, and all of the 40% more written key bytes, 13 B per write); every entry's primary key carries the record type key (about 1.9 B per posting, the rest). The whole store is 1.04–1.06×. The owner accepted this at the cutover and kept D4.
@@ -413,13 +507,15 @@ process's user+sys over the export calls; the ranges cover every run.
 are gated quiesced: each ingested run is queried with `collector-bench
 --query-only` after the storage and log queues drain below 1 MB. The gated
 results are in "Quiesced query gate" below. This subsection is the first G3
-run at `f68acec52`, whose query numbers are **post-ingest**: measured while
+run at `archive/otel-relational/g3-cutover` (`f68acec52`), whose query
+numbers are **post-ingest**: measured while
 the storage server was still draining the ingest. They are kept as
 history, not as the gate.
 
-`collector-bench` through the cutover's `otel.Exporter` (`f68acec52`; its defaults:
-`zlib-1`, bulk index conflicts) against the custom store at `7fb269417`
-(`--backend fdb`; its defaults: brotli-4, tuple postings, 8-byte hashes, time
+`collector-bench` through the cutover's `otel.Exporter` (`archive/otel-relational/g3-cutover`
+(`f68acec52`); its defaults: `zlib-1`, bulk index conflicts) against the custom
+store at `archive/otel-relational/custom-store` (`7fb269417`, the cutover's parent;
+`--backend fdb`; its defaults: brotli-4, tuple postings, 8-byte hashes, time
 order), with the archived baseline's flags: `--conversations 1000`, with defaults
 (deltas + FTS) and with `--enable-message-deltas=false --enable-message-fts=false`.
 otelcmp's catalog holds an OTEL_V1 template from another revision, which the
@@ -468,17 +564,15 @@ fidelity lists. It is not a storage measurement.
 ### fts_single_token: the G3 gap explained and fixed
 
 These runs are on a fresh container, `otelfts`, with G3's image, environment and
-configuration. The commits named here are those of the measured branch;
-on `otel/relational-store` they are `de8d549f2` (harness), `e7a6a2c2c`
-(fewer allocations) and `870aacf2a` (fewer requests). Three binaries ran,
-alternating:
+configuration. Three binaries ran, alternating:
 
-- **custom:** `7fb269417` with `--backend fdb`, plus a harness patch.
-- **before:** `b70072f38`, the Exporter with the harness only.
-- **fix:** `f7b2d43bd`.
+- **custom:** `archive/otel-relational/custom-store` (`7fb269417`) with `--backend fdb`, plus a harness patch.
+- **before:** `archive/otel-relational/fts-before` (`b70072f38`), the Exporter with the harness only.
+- **fix:** `archive/otel-relational/fts-fix` (`f7b2d43bd`), the before tree plus the two commits below.
 
 The harness is `collector-bench --query-only`, `--query-classes` and `--query-samples`
-(`b70072f38`). It reruns one class on a stored corpus and reports each
+(commit "collector: query-only and sampled post-ingest bench queries"). It
+reruns one class on a stored corpus and reports each
 iteration's latency, its charged rows and bytes, and the FDB client's range
 requests. The custom binary carries the same harness as a patch
 (`otel-relational-local-20261107/fts-perf/base-harness.patch`). Every run
@@ -516,8 +610,8 @@ did the following, in both stores:
 
 **The fix** has two parts, both in `messages_query_rel.go`.
 
-- **Fewer allocations (`696f4ba43`).** `otelsql.RefChunkReader` walks a ref_chunks value without allocating and decodes ordinals only for kept references. `unpackKey` reads the marker and SPANS_REF_CHUNKS keys in place. Split references are joined per span. Both fall back to `tuple.Unpack` outside the canonical encoding, and tests and a fuzz target pin that they agree with it.
-- **Fewer requests (`f7b2d43bd`).** A writer's matches at most 32 seqs apart share one MESSAGE_TRACES range read, capped at 4 rows per spanned seq. A read that reaches its cap falls back to one read per match it did not finish.
+- **Fewer allocations** (commit "otel: message queries read reference chunks in place"). `otelsql.RefChunkReader` walks a ref_chunks value without allocating and decodes ordinals only for kept references. `unpackKey` reads the marker and SPANS_REF_CHUNKS keys in place. Split references are joined per span. Both fall back to `tuple.Unpack` outside the canonical encoding, and tests and a fuzz target pin that they agree with it.
+- **Fewer requests** (commit "otel: one marker read per run of a writer's matching messages"). A writer's matches at most 32 seqs apart share one MESSAGE_TRACES range read, capped at 4 rows per spanned seq. A read that reaches its cap falls back to one read per match it did not finish.
 
 **Quiesced, `fts_single_token` only** (400 iterations per run, two runs per arm;
 CPU and allocation from a CPU and heap profile of a further 400-iteration run):
@@ -563,21 +657,22 @@ reproduces G3's gap. The other classes are as in G3.
 
 - **fts_single_token** is now 0.24–0.46× the custom store at p50 and 0.36–0.59× at p99 under G3's method, and 0.30× quiesced.
 - **The drain moves.** It now falls on the next classes, `fts_phrase_first_turn` and `fts_multi_turn_history`: their p50 is 1.01–1.25× the custom store's, and single 115–145 ms stalls set their p99. Quiesced, both are 0.83–0.86× the custom store at p50 and below it at p99.
-- **Why those classes are exposed.** Without a role, each issues about 290 range requests: role discovery, then 16 shards for each role and token, for about 130 rows. That is the same exposure to the drain that `fts_single_token` had. `3dbf81a32` fixes it (next subsection).
+- **Why those classes are exposed.** Without a role, each issues about 290 range requests: role discovery, then 16 shards for each role and token, for about 130 rows. That is the same exposure to the drain that `fts_single_token` had. The phrase fix in the next subsection removes it.
 - **G3's method mixes two things.** Its post-ingest numbers combine query cost with the storage server's post-ingest durability backlog. Which classes absorb the backlog depends on how long the earlier classes take. Steady-state comparisons should run `--query-only` after the queues drain.
 - **Ingest is unchanged.** The fix's process CPU is lower (79–81 s against 96–97 s for before and 105–108 s for the custom store) only because its queries are cheaper.
 
 ### Quiesced query gate
 
 The G3 query gate under the owner's quiesced method, with the role-less
-phrase fix (`3dbf81a32`). An "all" or phrase query of several terms now
+phrase fix (commit "otel: phrase and all queries scan only shards holding
+their rarest term"). An "all" or phrase query of several terms now
 counts each term's postings in shard 0 of a role, probes the rarest term in
 the other shards and scans only the shards that hold it. The roles run
 concurrently, and MESSAGES_LARGE is scanned once.
 
 **Setup.**
 
-- **Binaries:** the Exporter at `11ae9acbf` (this branch on `ec07906be`), against the custom store at `7fb269417` plus `fts-perf/base-harness.patch`, with `--backend fdb` and its own defaults (brotli-4, tuple postings, 8-byte hashes).
+- **Binaries:** the Exporter at `archive/otel-relational/quiesced` (`11ae9acbf`: the fts fix, the phrase fix and the `tuple.decodeInt` change), against the custom store at `archive/otel-relational/custom-store` (`7fb269417`) plus `fts-perf/base-harness.patch`, with `--backend fdb` and its own defaults (brotli-4, tuple postings, 8-byte hashes).
 - **Container:** a fresh `otelg3q`, with G3's image, environment and configuration.
 - **Runs:** `--conversations 1000`, with defaults (deltas + FTS) and with messages off. Two fresh runs per arm and configuration; the arms alternated and their order flipped in the second round.
 - **Per run:**
@@ -647,6 +742,13 @@ the custom store.
 - **Process CPU** covers the queries too, which are now cheaper.
 
 ## Reproduce
+
+Phase 3B removed `otelbench --backend fdb`, its layout flags and the old
+arms of the benchmarks below. The `fdb` lines, and the production `fdb`
+configuration at the end, run only on the archived trees, for example
+`archive/otel-relational/custom-store`; the benchmarks' custom-store arms are
+at the tags their sections name. At the head, the benchmarks measure only the
+relational store.
 
 ```sh
 CF=$(bazelisk run //cmd/fdb -- dev up --name otelcmp --port 4510)
