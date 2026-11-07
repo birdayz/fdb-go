@@ -78,6 +78,10 @@ func TestFDB_SQLBackend(t *testing.T) {
 		t.Parallel()
 		testDirectWriterRows(t, cluster)
 	})
+	t.Run("span reader", func(t *testing.T) {
+		t.Parallel()
+		testSpanReader(t, cluster)
+	})
 	for _, c := range []struct {
 		name string
 		opts Options
