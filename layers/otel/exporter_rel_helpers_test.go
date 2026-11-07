@@ -5,10 +5,12 @@ import (
 	"math"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"fdb.dev/layers/otel/otelsql"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -16,7 +18,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Harness of the relExporter ports: the exporter_helpers_test.go helpers
+// Harness of the Exporter ports: the exporter_helpers_test.go helpers
 // over the read API both exporters share.
 
 // relTestConfig is a fresh run's tenant 11 on cluster. D2: the relational
@@ -33,9 +35,9 @@ func relTestConfig(t *testing.T, cluster string, mutate func(*ExporterConfig)) E
 }
 
 // startRelExporter opens cfg's exporter and shuts it down at cleanup.
-func startRelExporter(t *testing.T, ctx context.Context, cfg ExporterConfig, parts relParts) *relExporter {
+func startRelExporter(t *testing.T, ctx context.Context, cfg ExporterConfig, parts relParts) *Exporter {
 	t.Helper()
-	e, err := newRelExporter(ctx, cfg, parts)
+	e, err := newExporter(ctx, cfg, parts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +55,7 @@ func startRelExporter(t *testing.T, ctx context.Context, cfg ExporterConfig, par
 }
 
 // openRelExporter is openTestExporter for the relational exporter.
-func openRelExporter(t *testing.T, ctx context.Context, cluster string, mutate func(*ExporterConfig)) *relExporter {
+func openRelExporter(t *testing.T, ctx context.Context, cluster string, mutate func(*ExporterConfig)) *Exporter {
 	t.Helper()
 	return startRelExporter(t, ctx, relTestConfig(t, cluster, mutate), relParts{})
 }
@@ -230,4 +232,32 @@ func (m *reMessages) close() {
 // reMessageParts supplies hooks to the exporters it opens.
 func reMessageParts(hooks *reMessages) relParts {
 	return relParts{messages: func(*tenantStore, ExporterConfig) (relMessageHooks, error) { return hooks, nil }}
+}
+
+type delayedBootstrapTransactor struct {
+	*retryInjector
+	once    sync.Once
+	delayed atomic.Bool
+}
+
+func (d *delayedBootstrapTransactor) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	return d.TransactCtx(context.Background(), fn)
+}
+
+func (d *delayedBootstrapTransactor) TransactCtx(ctx context.Context, fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	return d.retryInjector.TransactCtx(ctx, func(tx fdb.WritableTransaction) (any, error) {
+		d.once.Do(func() {
+			timer := time.NewTimer(benchTxnTimeout + 100*time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+				d.delayed.Store(true)
+			case <-ctx.Done():
+			}
+		})
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return fn(tx)
+	})
 }

@@ -12,12 +12,12 @@ import (
 )
 
 // BenchmarkRelSpansVsFDB measures span export client CPU and stored bytes per
-// span through ExportResourceSpans, GenAI messages off, for the relational
-// exporter (zlib-1) against the old Exporter's defaults (tuple postings,
-// 8-byte hashes, brotli-4, bulk index conflicts) in the same binary and
-// cluster (RFC §6 G2A). The corpus is otelbench's fixture V2 (seed 283, 8
-// attributes, match every 100) as single-span envelopes, exported in calls
-// of 500 spans. Arms alternate, three runs each, on fresh runs; CPU is the
+// span through ExportResourceSpans, GenAI messages off, for the Exporter
+// (zlib-1), three runs on fresh runs (RFC §6 G2A). Its arm of the custom
+// store's Exporter left with it at the cutover (phase 3A); the gate's
+// receipts of both are in docs/benchmarks/otel-relational-local-20261107.md.
+// The corpus is otelbench's fixture V2 (seed 283, 8 attributes, match every
+// 100) as single-span envelopes, exported in calls of 500 spans; CPU is the
 // process's user+sys over the export calls. Run it explicitly:
 //
 //	bazelisk test //layers/otel:otel_test --test_arg=-test.run=^$ \
@@ -47,24 +47,10 @@ func BenchmarkRelSpansVsFDB(b *testing.B) {
 		size   func() (Size, error)
 		close  func()
 	}
-	oldArm := func(run string) arm {
-		cfg := DefaultExporterConfig()
-		cfg.ClusterFile, cfg.Run, cfg.Tenant = cluster, run, 11
-		e, err := NewExporter(ctx, cfg)
-		if err != nil {
-			b.Fatal(err)
-		}
-		return arm{
-			name:   "fdb",
-			export: e.ExportResourceSpans,
-			size:   func() (Size, error) { return e.backend.size(ctx, e.backend.store) },
-			close:  func() { _ = e.Shutdown(ctx) },
-		}
-	}
 	relArm := func(run string) arm {
 		cfg := lrConfig()
 		cfg.ClusterFile, cfg.Run, cfg.Tenant = cluster, run, 11
-		e, err := newRelExporter(ctx, cfg, relParts{})
+		e, err := newExporter(ctx, cfg, relParts{})
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -77,7 +63,7 @@ func BenchmarkRelSpansVsFDB(b *testing.B) {
 	}
 	for range b.N {
 		for runIdx := range 3 {
-			for _, mk := range []func(string) arm{oldArm, relArm} {
+			for _, mk := range []func(string) arm{relArm} {
 				a := mk(lrBenchRun(b))
 				input := make([]*tracepb.ResourceSpans, spans)
 				for i, rs := range corpus {

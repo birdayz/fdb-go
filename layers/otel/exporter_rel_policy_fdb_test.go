@@ -206,7 +206,7 @@ func TestRelExporterBootstrapCancellationAfterConnect(t *testing.T) {
 	go func() {
 		cfg := DefaultExporterConfig()
 		cfg.ClusterFile, cfg.Run, cfg.RecordCompression = path, "bootstrap_cancel", "zlib-1"
-		e, err := newRelExporter(ctx, cfg, relParts{})
+		e, err := newExporter(ctx, cfg, relParts{})
 		if e != nil {
 			_ = e.Shutdown(context.Background())
 		}
@@ -234,7 +234,7 @@ func TestRelExporterBootstrapCancellationAfterConnect(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("active FDB bootstrap ignored caller cancellation")
 	}
-	if _, err := newRelExporter(t.Context(), DefaultExporterConfig(), relParts{}); err == nil {
+	if _, err := newExporter(t.Context(), DefaultExporterConfig(), relParts{}); err == nil {
 		t.Fatal("an empty cluster file was accepted")
 	} else {
 		requireOtelKind(t, err, "config")

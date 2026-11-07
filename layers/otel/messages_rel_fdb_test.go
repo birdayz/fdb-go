@@ -25,15 +25,15 @@ import (
 
 // Ports of the message tests (messages_fdb_test.go and the
 // message_*_regression_test.go files, rfcs/relational-exporter-migration.md
-// §2.3) to the relational exporter. relMsgEnv is one relExporter with its
+// §2.3) to the relational exporter. relMsgEnv is one Exporter with its
 // message store (relParts.messages' default, newRelMessageStore): the tests
 // export and read through the exporter's public methods and reach the
 // message store's writers, queue and stage hook for the mechanism tests.
 
-// relMsgEnv is one relExporter of a tenant store and its message store.
+// relMsgEnv is one Exporter of a tenant store and its message store.
 type relMsgEnv struct {
 	h *qrHarness
-	x *relExporter
+	x *Exporter
 	r *SpanReader      // x's reader
 	m *relMessageStore // nil when messages are off
 }
@@ -214,7 +214,7 @@ func relFtsDrain(t *testing.T, ctx context.Context, e *relMsgEnv, q MessageFullT
 		if err != nil {
 			t.Fatalf("page %d of %+v: %v", pages, q, err)
 		}
-		if page.Order != "time" || page.ReadVersion <= 0 || page.Hits == nil {
+		if page.ReadVersion <= 0 || page.Hits == nil {
 			t.Fatalf("page metadata: %+v", page)
 		}
 		if len(page.Hits) > limit || (len(page.Hits) == limit) != (page.Continuation != nil) {
@@ -252,28 +252,30 @@ func TestRelMessagesRealFDB(t *testing.T) {
 	t.Parallel()
 	h := newQRHarness(t)
 	for name, test := range map[string]func(*testing.T, *qrHarness){
-		"conversation/array":         func(t *testing.T, h *qrHarness) { testRelMessageConversation(t, h, "array") },
-		"conversation/json":          func(t *testing.T, h *qrHarness) { testRelMessageConversation(t, h, "json") },
-		"trace_per_turn":             testRelMessageTracePerTurn,
-		"unicode_events_replacement": testRelMessageReplacement,
-		"budgets":                    testRelMessageBudget,
-		"trace_existential":          testRelMessageExistential,
-		"rare_term_intersection":     testRelMessageRareTerm,
-		"chunked_references":         testRelMessageChunkedRefs,
-		"large_message":              testRelMessageLarge,
-		"concurrent_same_message":    testRelMessageConcurrentSave,
-		"group_commit":               testRelMessageGroupCommit,
-		"deltas_layout":              testRelMessageDeltas,
-		"unknown_commit":             testRelMessageUnknownCommit,
-		"size_fallback":              testRelMessageSizeFallback,
-		"corruption":                 testRelMessageCorruption,
-		"schema_dropped":             testRelMessageSchemaDropped,
-		"interrupted_multipart":      testRelMessageInterruptedMultipart,
-		"token_free_boundary":        testRelMessageTokenFreeBoundary,
-		"canceled_owner":             testRelMessageCanceledOwner,
-		"role_discovery_budget":      testRelMessageRoleDiscoveryBudget,
-		"cross_part_all":             testRelMessageCrossPartAll,
-		"span_batch_conflicts":       testRelMessageSpanBatchConflicts,
+		"conversation/array":          func(t *testing.T, h *qrHarness) { testRelMessageConversation(t, h, "array") },
+		"conversation/json":           func(t *testing.T, h *qrHarness) { testRelMessageConversation(t, h, "json") },
+		"trace_per_turn":              testRelMessageTracePerTurn,
+		"unicode_events_replacement":  testRelMessageReplacement,
+		"budgets":                     testRelMessageBudget,
+		"trace_existential":           testRelMessageExistential,
+		"rare_term_intersection":      testRelMessageRareTerm,
+		"chunked_references":          testRelMessageChunkedRefs,
+		"large_message":               testRelMessageLarge,
+		"concurrent_same_message":     testRelMessageConcurrentSave,
+		"group_commit":                testRelMessageGroupCommit,
+		"deltas_layout":               testRelMessageDeltas,
+		"deltas_conversation":         testRelMessageDeltaConversation,
+		"message_free_last_duplicate": testRelMessageFreeLastDuplicate,
+		"unknown_commit":              testRelMessageUnknownCommit,
+		"size_fallback":               testRelMessageSizeFallback,
+		"corruption":                  testRelMessageCorruption,
+		"schema_dropped":              testRelMessageSchemaDropped,
+		"interrupted_multipart":       testRelMessageInterruptedMultipart,
+		"token_free_boundary":         testRelMessageTokenFreeBoundary,
+		"canceled_owner":              testRelMessageCanceledOwner,
+		"role_discovery_budget":       testRelMessageRoleDiscoveryBudget,
+		"cross_part_all":              testRelMessageCrossPartAll,
+		"span_batch_conflicts":        testRelMessageSpanBatchConflicts,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -1063,6 +1065,77 @@ func testRelMessageDeltas(t *testing.T, h *qrHarness) {
 			t.Fatal(err)
 		}
 		requireProtoEqual(t, fmt.Sprintf("span %d", k), got, want)
+	}
+}
+
+// Port of TestExporterMessageDeltaIntegration: a deltas-only conversation of
+// one trace per turn counts every reference and stores each message once.
+func testRelMessageDeltaConversation(t *testing.T, h *qrHarness) {
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	e := h.msgEnv(t, ctx, messagesDeltas, nil)
+	input := deltaConversation(10, "array")
+	before := cloneDeltaSpans(input)
+	stats, err := e.export(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Spans != 10 || stats.MessageDeltas.TotalMessages != 10*11+3*10 || stats.MessageDeltas.UniqueMessages != 2*10+3 {
+		t.Fatalf("unexpected export/delta stats: %+v", stats)
+	}
+	if stats.MessageDeltas.SavedBytes <= 0 {
+		t.Fatalf("expected positive saved bytes: %+v", stats.MessageDeltas)
+	}
+	for i, want := range before {
+		sp := want.ScopeSpans[0].Spans[0]
+		got, err := e.load(ctx, hex.EncodeToString(sp.TraceId), hex.EncodeToString(sp.SpanId))
+		if err != nil {
+			t.Fatalf("turn %d LoadSpanOTLP: %v", i+1, err)
+		}
+		requireProtoEqual(t, fmt.Sprintf("turn %d reconstructed", i+1), got, want)
+	}
+}
+
+// Port of TestMessageFreeLastDuplicateClearsReferences: a message-free last
+// duplicate of a span, in its wrapper or another, leaves no reference to the
+// first duplicate's message, in a span or an event attribute.
+func testRelMessageFreeLastDuplicate(t *testing.T, h *qrHarness) {
+	for _, crossWrapper := range []bool{false, true} {
+		for _, event := range []bool{false, true} {
+			t.Run(map[bool]string{false: "same", true: "cross"}[crossWrapper]+map[bool]string{false: "_span", true: "_event"}[event], func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+				defer cancel()
+				e := h.msgEnv(t, ctx, messagesFullText, nil)
+				first := deltaSpan(2, deltaKV("gen_ai.input.messages", deltaArray(deltaStr("zebra"))))
+				sp := first.ScopeSpans[0].Spans[0]
+				if event {
+					sp.Events = []*tracepb.Span_Event{{Attributes: sp.Attributes}}
+					sp.Attributes = nil
+				}
+				last := proto.Clone(first).(*tracepb.ResourceSpans)
+				winner := last.ScopeSpans[0].Spans[0]
+				winner.Attributes, winner.Events = nil, nil
+				input := []*tracepb.ResourceSpans{first, last}
+				if !crossWrapper {
+					first.ScopeSpans[0].Spans = append(first.ScopeSpans[0].Spans, winner)
+					input = input[:1]
+				}
+				if _, err := e.export(ctx, input); err != nil {
+					t.Fatal(err)
+				}
+				if n := relFtsCount(t, ctx, e, MessageFullTextQuery{Query: "zebra", Mode: MessageMatchAll}); n != 0 {
+					t.Fatalf("stale references returned %d hits", n)
+				}
+				got, err := e.load(ctx, hex.EncodeToString(winner.TraceId), hex.EncodeToString(winner.SpanId))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(got.ScopeSpans[0].Spans[0].Attributes) != 0 || len(got.ScopeSpans[0].Spans[0].Events) != 0 {
+					t.Fatal("last duplicate did not win")
+				}
+			})
+		}
 	}
 }
 

@@ -341,7 +341,7 @@ The arms alternated.
 - **CPU:** the gate is ≤ 353 µs/span, ideally ≤ 1.05 × 283 = 297. `sql` averaged 283 µs/span and its worst run was 288, so it passes both bounds.
 - **Bytes:** the gate is ≤ `fdb`. `sql` stores 26% fewer logical bytes and 42% fewer prefix bytes, so it passes.
 - **Baseline drift:** this session's `fdb` production mean (372) is 5% above round 2's 353; `sql` matches round 2's 283.
-- **Bulk index conflicts:** otelbench refuses `--bulk-index-conflicts` outside `--backend fdb`, so the `sql` arm runs SpanWriter without coalesced index conflicts. The Exporter's default (coalescing on) is measured by the benchmark below.
+- **Bulk index conflicts:** otelbench refuses `--bulk-index-conflicts` outside `--backend fdb`, so the `sql` arm runs SpanWriter without coalesced index conflicts. The Exporter's default (coalescing on) is measured by the benchmark below. Since phase 3A, otelbench also accepts it with `--backend sql --save-mode batch`.
 
 **Queries.** Tenant 0 of `fdb` run 1 and `sql` run 1, suite `all`, 1,200
 iterations (75 per class), two interleaved runs per arm, load 13.6–13.8. The
@@ -389,6 +389,23 @@ ran at load 11.3 at the start and 10.0 at the end.
 The relational exporter costs 0.54× the old Exporter's client CPU per span. The
 old Exporter costs more per span than otelbench's `fdb` backend (469 against
 372). That gap was not profiled.
+
+### Messages through the replacement (R1, R4)
+
+`BenchmarkMessageWriteCostRealFDB` (`layers/otel/messages_rel_cost_test.go`, at
+`897715044`, before the cutover removed its old-Exporter arms) exported GenAI
+conversations with deltas and full text through both exporters in one test
+binary, `record_compression none`, on its own FDB testcontainer. CPU is the
+process's user+sys over the export calls; the ranges cover every run.
+
+| workload (conversations × turns) | old Exporter CPU ms/span | relational Exporter CPU ms/span |
+|---|---|---|
+| 40 × 25 | 7.5–8.4 | 7.3–8.0 |
+| 5 × 200 | 9.0–11.4 | 9.8–11.5 |
+
+- **R1, references in index keys:** `SPANS_REF_CHUNKS` holds 2–3% more bytes than the old `envelope_refs_v1` values.
+- **MESSAGES_TEXT:** 21–23% more bytes than the old TEXT index, with the same bunch count (6,017 and 10,143 rows). The schema subspace prefix is 23 bytes against 10 (26% of the difference, and all of the 40% more written key bytes, 13 B per write); every entry's primary key carries the record type key (about 1.9 B per posting, the rest). The whole store is 1.04–1.06×. The owner accepted this at the cutover and kept D4.
+- **R4, message writes in the shared store:** `MessageStoreStats.Retries` was 0 in every run.
 
 ## Reproduce
 
