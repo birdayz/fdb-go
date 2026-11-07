@@ -320,7 +320,7 @@ func probeRelMessagePredicates(store *recordlayer.FDBRecordStore, attrs []relAtt
 			ok[i] = ok[i] && len(rows) > 0
 		}
 		if ok[i] && anyLong(attrs) {
-			pk, err := relKey(store.GetRecordMetaData(), op, spansRecordType, s.trace, s.span)
+			pk, err := tableKey(store, op, spansRecordType, s.trace, s.span)
 			if err != nil {
 				return nil, err
 			}
@@ -354,7 +354,6 @@ func (r *SpanReader) messageRefs(ctx context.Context, store *recordlayer.FDBReco
 	if err != nil || len(cands) == 0 {
 		return nil, err
 	}
-	md := store.GetRecordMetaData()
 	tx := store.Context().ReadTransaction(false)
 
 	// Round 1: the traces of each matching message.
@@ -362,7 +361,7 @@ func (r *SpanReader) messageRefs(ctx context.Context, store *recordlayer.FDBReco
 	ranges := make([]fdb.KeyRange, len(cands))
 	var prefixLen int
 	for i, c := range cands {
-		pk, err := relKey(md, op, messageTracesRecordType, c.id.writer, c.id.seq)
+		pk, err := tableKey(store, op, messageTracesRecordType, c.id.writer, c.id.seq)
 		if err != nil {
 			return nil, err
 		}
@@ -708,7 +707,7 @@ func spreadAllMatches(ctx context.Context, store *recordlayer.FDBRecordStore, te
 			return nil, err
 		}
 		// The TEXT entries after the token are the message's primary key.
-		prefix, err := relKey(md, op, messagesRecordType, id.writer, id.seq)
+		prefix, err := tableKey(store, op, messagesRecordType, id.writer, id.seq)
 		if err != nil {
 			return nil, err
 		}
@@ -730,4 +729,18 @@ func spreadAllMatches(ctx context.Context, store *recordlayer.FDBRecordStore, te
 			out = append(out, id)
 		}
 	}
+}
+
+// QueryMessageFullText searches message text; the exporter must index it.
+func (e *relExporter) QueryMessageFullText(ctx context.Context, q MessageFullTextQuery) (MessageFullTextPage, error) {
+	const op = "message full-text query"
+	empty := MessageFullTextPage{Hits: []MessageSpanHit{}, Order: "time"}
+	if !e.cfg.EnableMessageFullText {
+		return empty, fail("config", op, "enable_message_full_text is off; message text is not indexed")
+	}
+	if err := e.begin(op); err != nil {
+		return empty, err
+	}
+	defer e.active.Done()
+	return e.reader.QueryMessageFullText(e.txnContext(ctx), q)
 }

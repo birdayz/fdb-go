@@ -32,10 +32,11 @@ import (
 
 // qrHarness is one FDB testcontainer with the OTEL_V1 template.
 type qrHarness struct {
-	raw   fdb.Database
-	db    *recordlayer.FDBDatabase
-	setup *sql.DB
-	mu    sync.Mutex
+	cluster string
+	raw     fdb.Database
+	db      *recordlayer.FDBDatabase
+	setup   *sql.DB
+	mu      sync.Mutex
 	// keys is each store's continuation key, shared by its readers as the
 	// STORE_META row will be.
 	keys map[string]*memoryContinuationKeys
@@ -63,7 +64,7 @@ func newQRHarness(t *testing.T) *qrHarness {
 		t.Fatal(err)
 	}
 	t.Cleanup(raw.Close)
-	return &qrHarness{raw: raw, db: recordlayer.NewFDBDatabase(raw), setup: setup, keys: map[string]*memoryContinuationKeys{}}
+	return &qrHarness{cluster: cluster, raw: raw, db: recordlayer.NewFDBDatabase(raw), setup: setup, keys: map[string]*memoryContinuationKeys{}}
 }
 
 // create makes (run, tenant)'s schema store.
