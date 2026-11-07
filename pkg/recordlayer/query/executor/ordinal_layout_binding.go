@@ -128,7 +128,7 @@ func initEdgeObjectBinder(
 		var whole any
 		switch flowed.Code() {
 		case values.TypeCodeRecord:
-			if !row.Type.Equals(flowed) {
+			if flowedRecord, ok := flowed.(*values.RecordType); ok && !recordTypesEqual(row.Type, flowedRecord) || !ok && !row.Type.Equals(flowed) {
 				return nil, layoutBindingError(values.LayoutTypeMismatch, fmt.Sprintf("edge %d record type disagrees with runtime row", edgeIndex))
 			}
 			whole = wholeRow
