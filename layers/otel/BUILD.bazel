@@ -155,6 +155,7 @@ go_test(
         "query_replay_test.go",
         "record_compression_test.go",
         "selectivity_test.go",
+        "spans_rel_bench_test.go",
         "spans_rel_test.go",
         "store_meta_fdb_test.go",
         "tenant_test.go",
