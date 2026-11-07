@@ -330,6 +330,7 @@ go_test(
         "key_expression_cardinality_test.go",
         "key_expression_composite_fanout_test.go",
         "key_expression_concatenate_test.go",
+        "key_expression_fanout_absent_parent_test.go",
         "key_expression_fastpath_test.go",
         "key_expression_field_identity_test.go",
         "key_expression_null_standin_test.go",

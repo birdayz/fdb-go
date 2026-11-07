@@ -4880,6 +4880,27 @@ Converting these subspaces to raw bytes discards the guard; application code doi
 raw FDB reads/writes must enforce its own write freeze and prefix choice. See
 [the upgrade procedure](docs/upgrade.md#earlier-go-keyspace-path-prefixes).
 
+## A fan-out composite under an absent parent: earlier Go wrote an all-null entry
+
+Earlier Go builds evaluated every child of a composite (`Concat`) as a scalar
+first, and a `FanOut` field on a nil message evaluated as one null. So a
+composite holding a `FanOut` child under an absent singular parent, such as
+`Nest("p", Concat(Field("a"), FanOut("tags")))` on a record without `p`,
+yielded one all-null tuple and the index got the entry `(null, null, pk)`.
+Java 4.14.2.0 writes no entry. NestingKeyExpression.java:77-84 evaluates the
+child on the parent's null value. FieldKeyExpression.java:179-180 returns
+getNullResult() for a null message, which is an empty list for FanOut
+(:229-232). ThenKeyExpression.java:90-98 crosses the children, so the product
+is empty. Go now matches Java.
+
+There is no automatic migration. When Go updates or deletes such a record, it
+evaluates the old record to no entries, so the entry an earlier build wrote is
+never cleared, and Go and Java index scans can still return the record. After
+upgrading, rebuild every index whose expression nests such a composite under a
+singular message field. Pinned by
+`pkg/recordlayer/key_expression_fanout_absent_parent_test.go` (evaluation and
+index maintenance).
+
 ## Native FDB client read hedging
 
 RFC-281 (#1017) aligns the second-request budget and adaptive delay with
