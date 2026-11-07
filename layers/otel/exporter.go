@@ -2,19 +2,14 @@ package otel
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"strconv"
-	"sync"
-	"sync/atomic"
 	"time"
 
-	"fdb.dev/pkg/fdbgo/fdb/tuple"
-	"fdb.dev/pkg/recordlayer"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/instrumentation"
@@ -26,11 +21,8 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
-	"google.golang.org/protobuf/types/dynamicpb"
 	"gopkg.in/yaml.v3"
 )
-
-var _ sdktrace.SpanExporter = (*Exporter)(nil)
 
 const (
 	// Live runs use a fixed synthetic corpus identity so every handle and tenant
@@ -55,16 +47,15 @@ const (
 
 // ExporterConfig is shared by the SDK exporter and the Collector exporter.
 type ExporterConfig struct {
-	ClusterFile        string `json:"cluster_file" yaml:"cluster_file"`
-	Run                string `json:"run" yaml:"run"`
-	Tenant             int    `json:"tenant" yaml:"tenant"`
-	Order              string `json:"order" yaml:"order"`
-	HashBytes          int    `json:"hash_bytes" yaml:"hash_bytes"`
-	PostingValueFormat string `json:"posting_value_format" yaml:"posting_value_format"`
+	ClusterFile string `json:"cluster_file" yaml:"cluster_file"`
+	Run         string `json:"run" yaml:"run"`
+	Tenant      int    `json:"tenant" yaml:"tenant"`
+	// RecordCompression is none, zlib-1 or zlib-default: SQL and Java read
+	// the store's records, and neither reads Brotli (D2).
 	RecordCompression  string `json:"record_compression" yaml:"record_compression"`
 	BulkIndexConflicts bool   `json:"bulk_index_conflicts" yaml:"bulk_index_conflicts"`
-	// EnableMessageDeltas stores each GenAI message once per tenant as Message
-	// records and replaces the span attribute with a manifest of writer/sequence IDs.
+	// EnableMessageDeltas stores each GenAI message once per tenant as MESSAGES
+	// rows and replaces the span attribute with a manifest of writer/sequence IDs.
 	EnableMessageDeltas bool `json:"enable_message_deltas" yaml:"enable_message_deltas"`
 	// EnableMessageFullText decomposes GenAI messages (as EnableMessageDeltas
 	// does) and indexes their text and span back references for search.
@@ -83,7 +74,33 @@ type ExporterConfig struct {
 }
 
 func DefaultExporterConfig() ExporterConfig {
-	return ExporterConfig{Order: "time", HashBytes: 8, PostingValueFormat: "tuple", RecordCompression: "brotli-4", BulkIndexConflicts: true, BatchSize: 64, Workers: 8, MaxCandidates: 20000, MaxBytes: 4 << 20, K: 100, MaxInFlightTransactions: defaultMaxInFlightTransactions, TransactionTimeout: defaultExporterTxnTimeout}
+	return ExporterConfig{RecordCompression: "zlib-1", BulkIndexConflicts: true, BatchSize: 64, Workers: 8, MaxCandidates: 20000, MaxBytes: 4 << 20, K: 100, MaxInFlightTransactions: defaultMaxInFlightTransactions, TransactionTimeout: defaultExporterTxnTimeout}
+}
+
+// removedExporterKeys are the configuration keys of the custom store that
+// the relational store has no use for (D2); a document naming one is refused.
+var removedExporterKeys = map[string]bool{"order": true, "hash_bytes": true, "posting_value_format": true}
+
+// exporterConfigKeys are ExporterConfig's JSON and YAML keys.
+var exporterConfigKeys = func() map[string]bool {
+	out := map[string]bool{}
+	t := reflect.TypeOf(ExporterConfig{})
+	for i := 0; i < t.NumField(); i++ {
+		out[t.Field(i).Tag.Get("json")] = true
+	}
+	return out
+}()
+
+// checkExporterKey refuses a key ExporterConfig does not have, naming the
+// removed ones as such.
+func checkExporterKey(op, key string) error {
+	switch {
+	case removedExporterKeys[key]:
+		return failf("config", op, "%s was removed: the relational store has one time order and no posting values", key)
+	case !exporterConfigKeys[key]:
+		return failf("config", op, "unknown key %q", key)
+	}
+	return nil
 }
 
 // exporterConfigFields is ExporterConfig without its JSON methods.
@@ -100,28 +117,48 @@ func (c ExporterConfig) MarshalJSON() ([]byte, error) {
 	return json.Marshal(exporterConfigJSON{exporterConfigFields(c), c.TransactionTimeout.String()})
 }
 
-// UnmarshalJSON starts from DefaultExporterConfig so omitted fields keep defaults.
+// UnmarshalJSON starts from DefaultExporterConfig so omitted fields keep
+// defaults. Removed and unknown keys are refused.
 func (c *ExporterConfig) UnmarshalJSON(data []byte) error {
+	const op = "exporter JSON"
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return wrap("config", op, err)
+	}
+	for k := range keys {
+		if err := checkExporterKey(op, k); err != nil {
+			return err
+		}
+	}
 	d := DefaultExporterConfig()
 	p := exporterConfigJSON{exporterConfigFields(d), d.TransactionTimeout.String()}
 	if err := json.Unmarshal(data, &p); err != nil {
-		return wrap("config", "exporter JSON", err)
+		return wrap("config", op, err)
 	}
 	timeout, err := time.ParseDuration(p.TransactionTimeout)
 	if err != nil {
-		return wrap("config", "exporter JSON", fmt.Errorf("transaction_timeout: %w", err))
+		return wrap("config", op, fmt.Errorf("transaction_timeout: %w", err))
 	}
 	*c = ExporterConfig(p.exporterConfigFields)
 	c.TransactionTimeout = timeout
 	return nil
 }
 
-// UnmarshalYAML starts from DefaultExporterConfig so omitted fields keep defaults.
+// UnmarshalYAML starts from DefaultExporterConfig so omitted fields keep
+// defaults. Removed and unknown keys are refused.
 func (c *ExporterConfig) UnmarshalYAML(node *yaml.Node) error {
+	const op = "exporter YAML"
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if err := checkExporterKey(op, node.Content[i].Value); err != nil {
+				return err
+			}
+		}
+	}
 	type plain ExporterConfig
 	p := plain(DefaultExporterConfig())
 	if err := node.Decode(&p); err != nil {
-		return wrap("config", "exporter YAML", err)
+		return wrap("config", op, err)
 	}
 	*c = ExporterConfig(p)
 	return nil
@@ -130,6 +167,12 @@ func (c *ExporterConfig) UnmarshalYAML(node *yaml.Node) error {
 func (c ExporterConfig) Validate() error {
 	if c.ClusterFile == "" {
 		return fail("config", "exporter", "explicit owned FDB cluster file required")
+	}
+	switch c.RecordCompression {
+	case "none", "zlib-1", "zlib-default":
+	default:
+		// D2: SQL and Java read the store's records; neither reads Brotli.
+		return failf("config", "exporter", "record_compression must be none, zlib-1 or zlib-default, not %q: SQL and Java read the records", c.RecordCompression)
 	}
 	if c.BatchSize < 1 || c.BatchSize > 64 {
 		return fail("config", "exporter", "batch_size must be 1..64")
@@ -149,10 +192,11 @@ func (c ExporterConfig) Validate() error {
 	return c.backendConfig().Validate()
 }
 
-// backendConfig maps the live exporter onto the batch-save FDB backend. Workers
-// is the exporter's own pool; the backend value is unused by live saves.
+// backendConfig is the read configuration of the exporter's SpanReader:
+// run, tenant, K, budgets and message layout. The store has one time order
+// (D2); the remaining fields only satisfy Config.Validate.
 func (c ExporterConfig) backendConfig() Config {
-	return Config{Run: c.Run, Backend: "fdb", Seed: exporterSeed, Count: exporterCount, Tenants: exporterTenants, Attributes: 4, MatchEvery: 1, Batch: c.BatchSize, SaveMode: "batch", RecordCompression: c.RecordCompression, PostingValueFormat: c.PostingValueFormat, BulkIndexConflicts: c.BulkIndexConflicts, Workers: 1, CHBatch: 8192, CHBatchBytes: 8 << 20, CHIndexGranularity: 8192, CHQueryTransport: "http", Tenant: c.Tenant, K: c.K, Iterations: 1, MaxCandidates: c.MaxCandidates, MaxBytes: c.MaxBytes, HashBytes: c.HashBytes, Order: c.Order, Messages: c.messageLayout()}
+	return Config{Run: c.Run, Backend: "fdb", Seed: exporterSeed, Count: exporterCount, Tenants: exporterTenants, Attributes: 4, MatchEvery: 1, Batch: c.BatchSize, SaveMode: "batch", RecordCompression: c.RecordCompression, PostingValueFormat: "tuple", BulkIndexConflicts: c.BulkIndexConflicts, Workers: 1, CHBatch: 8192, CHBatchBytes: 8 << 20, CHIndexGranularity: 8192, CHQueryTransport: "http", Tenant: c.Tenant, K: c.K, Iterations: 1, MaxCandidates: c.MaxCandidates, MaxBytes: c.MaxBytes, HashBytes: 8, Order: "time", Messages: c.messageLayout()}
 }
 
 // messageLayout is the stored message layout the flags select.
@@ -187,262 +231,6 @@ type SpanNotFoundError struct {
 	Span  string
 }
 
-// Exporter stores OTLP spans as Record Layer Envelope records in a ready run,
-// so the FDBBackend query paths serve live data through the same handle.
-type Exporter struct {
-	cfg      ExporterConfig
-	backend  *FDBBackend
-	sequence atomic.Int64
-	queryMu  sync.Mutex // FDBBackend query work accounting is not concurrency-safe.
-	// txnSlots holds one token per in-flight export write transaction.
-	txnSlots chan struct{}
-
-	mu     sync.Mutex
-	closed bool
-	active sync.WaitGroup
-	done   chan struct{}
-}
-
-func NewExporter(ctx context.Context, cfg ExporterConfig) (*Exporter, error) {
-	return newExporter(ctx, cfg, OpenFDBContext)
-}
-
-func newExporter(ctx context.Context, cfg ExporterConfig, open func(context.Context, Config, string) (*FDBBackend, error)) (*Exporter, error) {
-	if err := cfg.Validate(); err != nil {
-		return nil, err
-	}
-	ctx = withExporterTxns(ctx, cfg.TransactionTimeout)
-	b, err := open(ctx, cfg.backendConfig(), cfg.ClusterFile)
-	if err != nil {
-		return nil, err
-	}
-	if err := b.initializeLiveRun(withExporterTxns(ctx, cfg.TransactionTimeout)); err != nil {
-		b.Close()
-		return nil, err
-	}
-	return &Exporter{cfg: cfg, backend: b, txnSlots: make(chan struct{}, cfg.MaxInFlightTransactions), done: make(chan struct{})}, nil
-}
-
-// initializeLiveRun publishes a ready manifest for a fresh run or verifies the
-// existing one. Concurrent openers conflict on the owner read and retry.
-func (b *FDBBackend) initializeLiveRun(ctx context.Context) error {
-	_, err := b.db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
-		if err := configureStoreContext(rc); err != nil {
-			return nil, err
-		}
-		key := b.keys.owner()
-		wire, err := rc.Transaction().Get(key).Get()
-		if err != nil {
-			return nil, err
-		}
-		if len(wire) != 0 {
-			if err := b.checkManifestBytes(wire, true); err != nil {
-				return nil, err
-			}
-		} else {
-			m, err := json.Marshal(manifest(b.cfg, "ready"))
-			if err != nil {
-				return nil, err
-			}
-			rc.Transaction().Set(key, m)
-		}
-		_, err = b.openConfigured(rc)
-		return nil, err
-	})
-	return err
-}
-
-func (e *Exporter) Config() ExporterConfig { return e.cfg }
-
-// txnContext applies the Exporter's transaction policy to work under ctx.
-func (e *Exporter) txnContext(ctx context.Context) context.Context {
-	return withExporterTxns(ctx, e.cfg.TransactionTimeout)
-}
-
-func (e *Exporter) begin(op string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.closed {
-		return fail("operation", op, "exporter is shut down")
-	}
-	e.active.Add(1)
-	return nil
-}
-
-// Shutdown rejects new work and joins active calls and shared message workers before database close.
-// On context expiry, draining and closing continue in the background.
-func (e *Exporter) Shutdown(ctx context.Context) error {
-	e.mu.Lock()
-	if !e.closed {
-		e.closed = true
-		go func() {
-			e.active.Wait()
-			e.backend.Close()
-			close(e.done)
-		}()
-	}
-	e.mu.Unlock()
-	select {
-	case <-e.done:
-		return nil
-	case <-ctx.Done():
-		return wrap("canceled", "exporter shutdown", ctx.Err())
-	}
-}
-
-// ExportSpans implements sdktrace.SpanExporter.
-func (e *Exporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
-	_, err := e.ExportResourceSpans(ctx, ResourceSpansFromReadOnly(spans))
-	return err
-}
-
-// ConsumeTraces accepts OTLP ResourceSpans from a Collector or OTLP receiver.
-func (e *Exporter) ConsumeTraces(ctx context.Context, spans []*tracepb.ResourceSpans) error {
-	_, err := e.ExportResourceSpans(ctx, spans)
-	return err
-}
-
-// ExportResourceSpans normalizes every span before writing, so an inadmissible
-// span fails the call without partial writes; batches then commit independently.
-func (e *Exporter) ExportResourceSpans(ctx context.Context, spans []*tracepb.ResourceSpans) (ExportStats, error) {
-	if err := e.begin("export"); err != nil {
-		return ExportStats{}, err
-	}
-	defer e.active.Done()
-	ctx = withTxnLimiter(e.txnContext(ctx), e.txnSlots)
-	var decomposed *messageDecomposition
-	var uses map[string][]messageUse // span references, fulltext only
-	layout := e.cfg.messageLayout()
-	if layout != messagesNone && len(spans) > 0 {
-		var err error
-		if decomposed, err = decomposeMessages(ctx, spans, e.cfg.Tenant); err != nil {
-			return ExportStats{}, err
-		}
-		spans = decomposed.spans
-		if layout == messagesFullText {
-			uses = decomposed.uses
-		}
-	}
-	// With placeholder manifests and references this admits every span
-	// before any write.
-	items, stats, err := e.prepareExport(ctx, spans, uses)
-	if err != nil || decomposed == nil {
-		if err == nil {
-			err = e.commitExport(ctx, partitionExport(items, e.cfg.BatchSize), &stats)
-		}
-		return stats, err
-	}
-	// Messages precede the spans that reference them.
-	stored, err := e.persistMessages(ctx, decomposed)
-	stats.Messages = stored
-	if err == nil {
-		err = decomposed.encodeManifests(false)
-	}
-	if err == nil && uses != nil {
-		// A message's traces precede the spans that reference it.
-		var markers int64
-		markers, err = e.persistTraceMarkers(ctx, decomposed)
-		stored.TraceMarkers += markers
-		stats.Messages = stored
-	}
-	if err != nil {
-		return stats, err
-	}
-	final, finalStats, err := e.prepareExport(ctx, decomposed.spans, uses)
-	if err != nil {
-		return stats, err
-	}
-	finalStats.MessageDeltas, finalStats.Messages = decomposed.stats, stored
-	return finalStats, e.commitExport(ctx, partitionExport(final, e.cfg.BatchSize), &finalStats)
-}
-
-func (e *Exporter) commitExport(ctx context.Context, batches []preparedBatch, stats *ExportStats) error {
-	if len(batches) == 0 {
-		return nil
-	}
-	workCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	jobs := make(chan preparedBatch)
-	var mu sync.Mutex
-	var firstErr error
-	committed := 0
-	var workers sync.WaitGroup
-	for range min(e.cfg.Workers, len(batches)) {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for batch := range jobs {
-				if workCtx.Err() != nil {
-					continue
-				}
-				// saveIngestBatch carries the ingest guards; one Run per batch.
-				err := e.backend.saveIngestBatch(workCtx, batch, nil)
-				mu.Lock()
-				if err != nil {
-					if firstErr == nil {
-						firstErr = err
-						cancel()
-					}
-				} else {
-					committed++
-					stats.Spans += int64(len(batch.messages))
-					stats.Batches++
-					stats.LogicalBytes += batch.logicalBytes
-					stats.Messages.References += batch.references
-				}
-				mu.Unlock()
-			}
-		}()
-	}
-feed:
-	for _, batch := range batches {
-		select {
-		case <-workCtx.Done():
-			break feed
-		case jobs <- batch:
-		}
-	}
-	close(jobs)
-	workers.Wait()
-	if firstErr != nil {
-		return firstErr
-	}
-	if committed != len(batches) {
-		return wrap("canceled", "export", ctx.Err())
-	}
-	return nil
-}
-
-func partitionExport(items []exportSpan, size int) []preparedBatch {
-	var out []preparedBatch
-	cur := preparedBatch{}
-	for i, it := range items {
-		if len(cur.messages) > 0 && (len(cur.messages) == size || cur.estimate+it.cost > exportSpanBudget) {
-			out = append(out, cur)
-			cur = preparedBatch{first: i, next: i}
-		}
-		cur.messages = append(cur.messages, it.message)
-		cur.logicalBytes += it.logical
-		cur.references += int64(it.references)
-		cur.estimate += it.cost
-		cur.next = i + 1
-	}
-	if len(cur.messages) > 0 {
-		out = append(out, cur)
-	}
-	return out
-}
-
-type exportSpan struct {
-	key        string
-	references int // references packed in Envelope.ref_chunks
-	message    proto.Message
-	logical    int64
-	cost       int
-	normalized bool
-	unindexed  int64
-}
-
 // canonicalSet is one scope's indexed attribute list: unique keys (last value
 // wins, first position kept), string/int values, and posting caps enforced.
 type canonicalSet struct {
@@ -465,7 +253,7 @@ func canonicalAttributes(kvs []*commonpb.KeyValue) canonicalSet {
 		} else {
 			order = append(order, kv.Key)
 		}
-		_, value := CanonicalValue(kv.GetValue())
+		_, value := legacyCanonicalValue(kv.GetValue())
 		if len(kv.Key) > maxIndexedKeyBytes || len(value) > maxIndexedValueBytes {
 			out.changed = true
 			latest[kv.Key] = nil
@@ -491,24 +279,38 @@ func canonicalAttributes(kvs []*commonpb.KeyValue) canonicalSet {
 	return out
 }
 
-// withoutMessageAttributes excludes GenAI manifests from equality indexes;
-// QueryMessageFullText searches their decomposed text instead.
-func withoutMessageAttributes(set canonicalSet) canonicalSet {
-	out := canonicalSet{changed: set.changed, unindexed: set.unindexed}
-	for _, kv := range set.indexed {
-		if IsMessageDeltaAttribute(kv.Key) {
-			out.changed = true
-			out.unindexed++
-			continue
-		}
-		out.indexed = append(out.indexed, kv)
+// CanonicalValue is the typed (D1) (type, value) of an OTLP attribute value
+// as an Attribute names it: string, int, bool and double (formatDouble's
+// text) are the queryable types; bytes (base64) and arrays, kvlists and
+// unset values (canonical JSON) are reported as "bytes" and "json", which no
+// equality query accepts.
+func CanonicalValue(v *commonpb.AnyValue) (string, string) {
+	switch x := v.GetValue().(type) {
+	case *commonpb.AnyValue_StringValue:
+		return "string", x.StringValue
+	case *commonpb.AnyValue_IntValue:
+		return "int", strconv.FormatInt(x.IntValue, 10)
+	case *commonpb.AnyValue_BoolValue:
+		return "bool", strconv.FormatBool(x.BoolValue)
+	case *commonpb.AnyValue_DoubleValue:
+		return "double", formatDouble(x.DoubleValue)
+	case *commonpb.AnyValue_BytesValue:
+		return "bytes", base64.StdEncoding.EncodeToString(x.BytesValue)
+	default:
+		return "json", string(appendCanonicalJSON(nil, v))
 	}
-	return out
 }
 
-// CanonicalValue is the indexed (type, value) of an OTLP attribute value:
-// ints stay "int"; bool, double, bytes, arrays and kvlists become "string".
-func CanonicalValue(v *commonpb.AnyValue) (string, string) {
+// CanonicalAttribute builds the query Attribute matching an exported attribute.
+func CanonicalAttribute(scope, key string, v *commonpb.AnyValue) Attribute {
+	typ, value := CanonicalValue(v)
+	return Attribute{Scope: scope, Key: key, Type: typ, Value: value}
+}
+
+// legacyCanonicalValue is the custom store's canonical value (FDBBackend and
+// its logs, until phase 3B): ints stay "int"; bool, double, bytes, arrays
+// and kvlists become "string".
+func legacyCanonicalValue(v *commonpb.AnyValue) (string, string) {
 	switch x := v.GetValue().(type) {
 	case *commonpb.AnyValue_StringValue:
 		return "string", x.StringValue
@@ -527,9 +329,9 @@ func CanonicalValue(v *commonpb.AnyValue) (string, string) {
 	}
 }
 
-// CanonicalAttribute builds the query Attribute matching an exported attribute.
-func CanonicalAttribute(scope, key string, v *commonpb.AnyValue) Attribute {
-	typ, value := CanonicalValue(v)
+// legacyCanonicalAttribute is CanonicalAttribute of the custom store.
+func legacyCanonicalAttribute(scope, key string, v *commonpb.AnyValue) Attribute {
+	typ, value := legacyCanonicalValue(v)
 	return Attribute{Scope: scope, Key: key, Type: typ, Value: value}
 }
 
@@ -595,106 +397,6 @@ func appendCanonicalJSON(dst []byte, v *commonpb.AnyValue) []byte {
 	}
 }
 
-// prepareExport splits every span into its own single-span ResourceSpans with
-// canonical indexed attributes; later duplicates of one identity replace earlier.
-func (e *Exporter) prepareExport(ctx context.Context, in []*tracepb.ResourceSpans, uses map[string][]messageUse) ([]exportSpan, ExportStats, error) {
-	var stats ExportStats
-	var out []exportSpan
-	position := map[string]int{}
-	for _, rs := range in {
-		if rs == nil {
-			continue
-		}
-		resourceSet := canonicalAttributes(rs.GetResource().GetAttributes())
-		resource := rs.Resource
-		if resourceSet.changed {
-			resource = proto.Clone(rs.Resource).(*resourcepb.Resource)
-			resource.Attributes = resourceSet.indexed
-		}
-		for _, ss := range rs.ScopeSpans {
-			if ss == nil {
-				continue
-			}
-			scopeSet := canonicalAttributes(ss.GetScope().GetAttributes())
-			scope := ss.Scope
-			if scopeSet.changed {
-				scope = proto.Clone(ss.Scope).(*commonpb.InstrumentationScope)
-				scope.Attributes = scopeSet.indexed
-			}
-			for _, sp := range ss.Spans {
-				if sp == nil {
-					continue
-				}
-				if err := ctx.Err(); err != nil {
-					return nil, stats, wrap("canceled", "export preparation", err)
-				}
-				stats.ReceivedSpans++
-				spanSet := canonicalAttributes(sp.Attributes)
-				if e.cfg.messageLayout() != messagesNone {
-					spanSet = withoutMessageAttributes(spanSet)
-				}
-				span := sp
-				if spanSet.changed {
-					span = proto.Clone(sp).(*tracepb.Span)
-					span.Attributes = spanSet.indexed
-				}
-				single := &tracepb.ResourceSpans{Resource: resource, SchemaUrl: rs.SchemaUrl, ScopeSpans: []*tracepb.ScopeSpans{{Scope: scope, SchemaUrl: ss.SchemaUrl, Spans: []*tracepb.Span{span}}}}
-				// Producer unknown fields never share the internal fidelity namespace.
-				single.ProtoReflect().SetUnknown(rs.ProtoReflect().GetUnknown())
-				single.ScopeSpans[0].ProtoReflect().SetUnknown(ss.ProtoReflect().GetUnknown())
-				changed := [3]bool{resourceSet.changed, scopeSet.changed, spanSet.changed}
-				var payload []byte
-				if changed != [3]bool{} {
-					var err error
-					payload, err = fidelityPayload(changed, rs.GetResource().GetAttributes(), ss.GetScope().GetAttributes(), sp.Attributes)
-					if err != nil {
-						return nil, stats, err
-					}
-				}
-				var refs []messageUse
-				if uses != nil {
-					refs = uses[spanKey(sp)]
-				}
-				item, err := e.envelope(single, payload, refs, resourceSet.indexed, scopeSet.indexed, spanSet.indexed)
-				if err != nil {
-					return nil, stats, err
-				}
-				item.normalized = changed != [3]bool{}
-				item.unindexed = resourceSet.unindexed + scopeSet.unindexed + spanSet.unindexed
-				if i, ok := position[item.key]; ok {
-					stats.DuplicateSpans++
-					out[i] = item
-				} else {
-					position[item.key] = len(out)
-					out = append(out, item)
-				}
-			}
-		}
-	}
-	for _, item := range out {
-		if item.normalized {
-			stats.NormalizedSpans++
-		}
-		stats.UnindexedAttributes += item.unindexed
-	}
-	return out, stats, nil
-}
-
-func fidelityPayload(changed [3]bool, lists ...[]*commonpb.KeyValue) ([]byte, error) {
-	arr := &commonpb.ArrayValue{Values: make([]*commonpb.AnyValue, len(lists))}
-	for i, attrs := range lists {
-		arr.Values[i] = &commonpb.AnyValue{}
-		if changed[i] {
-			arr.Values[i].Value = &commonpb.AnyValue_KvlistValue{KvlistValue: &commonpb.KeyValueList{Values: attrs}}
-		}
-	}
-	wire, err := proto.MarshalOptions{Deterministic: true}.Marshal(arr)
-	if err != nil {
-		return nil, wrap("admission", "OTLP attribute fidelity", err)
-	}
-	return wire, nil
-}
-
 // splitFidelity separates the fidelity field from other unknown fields.
 func splitFidelity(unknown []byte) (rest, payload []byte, found bool, err error) {
 	for len(unknown) > 0 {
@@ -715,83 +417,6 @@ func splitFidelity(unknown []byte) (rest, payload []byte, found bool, err error)
 		unknown = unknown[n+m:]
 	}
 	return rest, payload, found, nil
-}
-
-func validSpanIdentity(b []byte, size int) bool {
-	if len(b) != size {
-		return false
-	}
-	for _, c := range b {
-		if c != 0 {
-			return true
-		}
-	}
-	return false
-}
-
-func (e *Exporter) envelope(single *tracepb.ResourceSpans, fidelity []byte, refs []messageUse, lists ...[]*commonpb.KeyValue) (exportSpan, error) {
-	sp := single.ScopeSpans[0].Spans[0]
-	if !validSpanIdentity(sp.TraceId, 16) || !validSpanIdentity(sp.SpanId, 8) {
-		return exportSpan{}, fail("admission", "OTLP identity", "expected nonzero 16-byte trace and 8-byte span identifiers")
-	}
-	if sp.StartTimeUnixNano > math.MaxInt64 {
-		return exportSpan{}, fail("admission", "OTLP start time", "start_time_unix_nano exceeds int64")
-	}
-	wire, err := proto.MarshalOptions{Deterministic: true}.Marshal(single)
-	if err != nil {
-		return exportSpan{}, wrap("admission", "OTLP encode", err)
-	}
-	cost := 2048 + len(wire) + len(fidelity)
-	for _, list := range lists {
-		for _, kv := range list {
-			_, value := CanonicalValue(kv.Value)
-			cost += 2 * (len(kv.Key) + len(value) + 256)
-		}
-	}
-	// The packed references are stored in the record and again as the value
-	// of one envelope_refs_v1 entry per chunk.
-	for _, u := range refs {
-		cost += 2 * (32 + 10*len(u.ordinals))
-	}
-	if len(refs) > 0 {
-		cost += 512
-	}
-	if cost > exportSpanBudget {
-		return exportSpan{}, fail("admission", "export batch", "single span exceeds conservative 300KB transaction estimate")
-	}
-	fd, err := recordFile(e.cfg.messageLayout())
-	if err != nil {
-		return exportSpan{}, err
-	}
-	d := fd.Messages().ByName("Envelope")
-	trace, span := hex.EncodeToString(sp.TraceId), hex.EncodeToString(sp.SpanId)
-	m := dynamicpb.NewMessage(d)
-	f := d.Fields()
-	m.Set(f.ByName("ordinal"), protoreflect.ValueOfInt64(e.sequence.Add(1)))
-	m.Set(f.ByName("tenant"), protoreflect.ValueOfInt64(int64(e.cfg.Tenant)))
-	m.Set(f.ByName("trace_id"), protoreflect.ValueOfString(trace))
-	m.Set(f.ByName("span_id"), protoreflect.ValueOfString(span))
-	m.Set(f.ByName("start_ns"), protoreflect.ValueOfInt64(int64(sp.StartTimeUnixNano)))
-	m.Set(f.ByName("otlp"), protoreflect.ValueOfBytes(wire))
-	// Presence, including an empty payload, distinguishes new from legacy framing.
-	m.Set(f.ByName("fidelity"), protoreflect.ValueOfBytes(fidelity))
-	if len(refs) > 0 {
-		setEnvelopeRefs(m, refs)
-	}
-	projected, err := decodeRecord(m)
-	if err != nil {
-		return exportSpan{}, err
-	}
-	for _, a := range projected.Attributes {
-		value, err := encodeCoveringValue(coveringValue{a, projected.Start}, e.cfg.PostingValueFormat)
-		if err != nil {
-			return exportSpan{}, err
-		}
-		if err := checkCoveringValue(value); err != nil {
-			return exportSpan{}, err
-		}
-	}
-	return exportSpan{key: trace + span, references: len(refs), message: m, logical: int64(len(wire) + len(fidelity)), cost: cost}, nil
 }
 
 func restoreEnvelopeOTLP(r protoreflect.Message) (*tracepb.ResourceSpans, error) {
@@ -853,97 +478,6 @@ func restoreOTLP(wire []byte, fidelity ...[]byte) (*tracepb.ResourceSpans, error
 		rs.ScopeSpans[0].Spans[0].Attributes = kv.Values
 	}
 	return rs, nil
-}
-
-func (e *Exporter) Query(ctx context.Context, a Attribute) (QueryResult, error) {
-	if err := e.begin("query"); err != nil {
-		return QueryResult{Hits: []Hit{}}, err
-	}
-	defer e.active.Done()
-	e.queryMu.Lock()
-	defer e.queryMu.Unlock()
-	return e.backend.Query(e.txnContext(ctx), a)
-}
-
-func (e *Exporter) Trace(ctx context.Context, traceID string) ([]SpanHit, error) {
-	if err := e.begin("trace"); err != nil {
-		return []SpanHit{}, err
-	}
-	defer e.active.Done()
-	e.queryMu.Lock()
-	defer e.queryMu.Unlock()
-	return e.backend.Trace(e.txnContext(ctx), traceID)
-}
-
-func (e *Exporter) Span(ctx context.Context, spanID string) ([]SpanMatch, error) {
-	if err := e.begin("span"); err != nil {
-		return []SpanMatch{}, err
-	}
-	defer e.active.Done()
-	e.queryMu.Lock()
-	defer e.queryMu.Unlock()
-	return e.backend.Span(e.txnContext(ctx), spanID)
-}
-
-func (e *Exporter) Time(ctx context.Context, interval TimeRange) (QueryResult, error) {
-	if err := e.begin("time"); err != nil {
-		return QueryResult{Hits: []Hit{}}, err
-	}
-	defer e.active.Done()
-	e.queryMu.Lock()
-	defer e.queryMu.Unlock()
-	return e.backend.Time(e.txnContext(ctx), interval)
-}
-
-// LoadSpanOTLP returns one stored span as a single-span ResourceSpans with the
-// original (pre-canonicalization) resource, scope and span attributes.
-func (e *Exporter) LoadSpanOTLP(ctx context.Context, traceID, spanID string) (*tracepb.ResourceSpans, error) {
-	if !validIdentity(traceID, 16) || !validIdentity(spanID, 8) {
-		return nil, fail("config", "load span", "expected lowercase hex 16-byte trace and 8-byte span identifiers")
-	}
-	if err := e.begin("load span"); err != nil {
-		return nil, err
-	}
-	defer e.active.Done()
-	ctx = e.txnContext(ctx)
-	var out *tracepb.ResourceSpans
-	b := e.backend
-	load := func(rc *recordlayer.FDBRecordContext) (any, error) {
-		out = nil
-		if err := b.readManifest(rc, true); err != nil {
-			return nil, err
-		}
-		store, err := b.open(rc)
-		if err != nil {
-			return nil, err
-		}
-		record, err := store.LoadRecord(tuple.Tuple{int64(e.cfg.Tenant), traceID, spanID})
-		if err != nil {
-			return nil, err
-		}
-		if record == nil {
-			return nil, &SpanNotFoundError{OtelError: &OtelError{Kind: "operation", Op: "load span", Message: "span not found"}, Trace: traceID, Span: spanID}
-		}
-		if _, err := decodeRecord(record.Record); err != nil {
-			return nil, err
-		}
-		r := record.Record.ProtoReflect()
-		out, err = restoreEnvelopeOTLP(r)
-		if err != nil || b.cfg.Messages == messagesNone {
-			return nil, err
-		}
-		reconstructed, err := reconstructMessages(ctx, store, e.cfg.Tenant, []*tracepb.ResourceSpans{out})
-		if err != nil {
-			return nil, err
-		}
-		out = reconstructed[0]
-		return nil, nil
-	}
-	_, err := b.db.Run(ctx, load)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 // ResourceSpansFromReadOnly converts SDK spans to OTLP, grouping by resource

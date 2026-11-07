@@ -1,11 +1,13 @@
 package otel
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
 	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/layers/otel/otelsql/otelv1pb"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/embedded"
@@ -161,4 +163,51 @@ func lrRow(t *testing.T, ctx context.Context, s *relLogStore, eventID string) *r
 		t.Fatal(err)
 	}
 	return out
+}
+
+// logNeighborBarrier observes a real successful neighbor commit, then grows the
+// prior before the following transaction enters its callback. Retries do not
+// advance the barrier until the underlying TransactCtx actually succeeds.
+type logNeighborBarrier struct {
+	fdb.Database
+	neighbor           fdb.Key
+	committed, crossed bool
+	grow               func() error
+}
+
+type logNeighborTransaction struct {
+	fdb.WritableTransaction
+	neighbor fdb.Key
+	wrote    *bool
+}
+
+func (tx logNeighborTransaction) Set(key fdb.KeyConvertible, value []byte) {
+	if bytes.Equal(key.FDBKey(), tx.neighbor) {
+		*tx.wrote = true
+	}
+	tx.WritableTransaction.Set(key, value)
+}
+
+func (tx logNeighborTransaction) SetBytes(key, value []byte) { tx.Set(fdb.Key(key), value) }
+
+func (b *logNeighborBarrier) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	return b.TransactCtx(context.Background(), fn)
+}
+
+func (b *logNeighborBarrier) TransactCtx(ctx context.Context, fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	if b.committed && !b.crossed {
+		if err := b.grow(); err != nil {
+			return nil, err
+		}
+		b.crossed = true
+	}
+	wrote := false
+	result, err := b.Database.TransactCtx(ctx, func(tx fdb.WritableTransaction) (any, error) {
+		wrote = false
+		return fn(logNeighborTransaction{tx, b.neighbor, &wrote})
+	})
+	if err == nil && wrote {
+		b.committed = true
+	}
+	return result, err
 }

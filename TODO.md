@@ -3667,15 +3667,27 @@ these claims; the implementation notes below are not controlled comparisons.
   - 3B must keep what the new files use from messages.go and messages_query.go:
     `messageTimerStats`, `isTransactionTooLarge`, `messagePipelineSizer`, the
     `MessageFullTextQuery`/`MessageSpanHit`/`MessageFullTextPage` types and the
-    `MessageMatch*` modes; and from old test files `awaitMessageCondition`
-    (message_boundary_regression_test.go) and `cacheFixtureMarker`.
+    `MessageMatch*` modes; and from old test files `cacheFixtureMarker`
+    (messages_test.go). Phase 3A moved `awaitMessageCondition` to
+    messages_rel_lifecycle_fdb_test.go.
   - MESSAGES_TEXT holds 21-23% more bytes than the old TEXT index on the
     `BenchmarkMessageWriteCostRealFDB` workloads, with the same bunch count
     (6,017 and 10,143 rows): the schema subspace prefix is 23 bytes against
     10 (26% of the difference; also all of the +40% written key bytes, 13 B
     per write), and every entry's primary key carries the record type key
-    (about 1.9 B per posting, the rest). The whole store is 1.04-1.06x. Decide
-    at G2C whether TEXT's own bytes matter.
+    (about 1.9 B per posting, the rest). The whole store is 1.04-1.06x.
+    Accepted at the cutover (D4 kept); recorded in the benchmark doc and the
+    RFC's D4 row.
+- [ ] Phase 3B deletion (rfcs/relational-exporter-migration.md §6). After 3A
+  the old store's code is reachable only from `otelbench --backend fdb` and its
+  own tests: `FDBBackend`, index.go, the old logs/messages/query storage
+  methods' remaining helpers, `restoreEnvelopeOTLP`, `legacyCanonicalValue`/
+  `legacyCanonicalAttribute` (the old store's string-coerced postings), the
+  FDBBackend tests (`posting_value_test.go`, `record_compression_test.go`,
+  `posting_diff_test.go`, ...), and otelbench's `--posting-value-format`,
+  `--hash-bytes` and Brotli values. The collector's `removedExporterKey`
+  recognizes otel's removed-key `ConfigError` by its " was removed" text; 3B
+  can drop it with the removed keys once no YAML names them.
 
 ### OTel relational prototype findings (2026-11-07)
 

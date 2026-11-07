@@ -33,7 +33,7 @@ func relFixtureSpan(t *testing.T, s Span) *tracepb.ResourceSpans {
 
 // relExportCorpus exports the spans Generate assigns to c.Tenant through e,
 // whose tenant store holds that half alone, and returns them.
-func relExportCorpus(t *testing.T, ctx context.Context, e *relExporter, c Config) []Span {
+func relExportCorpus(t *testing.T, ctx context.Context, e *Exporter, c Config) []Span {
 	t.Helper()
 	var spans []Span
 	var rss []*tracepb.ResourceSpans
@@ -140,7 +140,7 @@ func testRelSelectiveV2(t *testing.T, cluster string) {
 // relIndexCensus reads the raw key-values of e's index name in bounds,
 // bypassing the reader, and returns their count and key plus value bytes:
 // what a scan of the whole of bounds charges.
-func relIndexCensus(t *testing.T, ctx context.Context, e *relExporter, name string, bounds recordlayer.TupleRange) (int, int64) {
+func relIndexCensus(t *testing.T, ctx context.Context, e *Exporter, name string, bounds recordlayer.TupleRange) (int, int64) {
 	t.Helper()
 	idx := e.store.ts.MetaData.GetIndex(name)
 	if idx == nil {
@@ -167,7 +167,7 @@ func relIndexCensus(t *testing.T, ctx context.Context, e *relExporter, name stri
 
 // relIndexStateKey is the key of name's state, whose serializable read
 // (ReadIndexState) every index scan of the reader adds.
-func relIndexStateKey(e *relExporter, name string) fdb.Key {
+func relIndexStateKey(e *Exporter, name string) fdb.Key {
 	return e.store.ts.Subspace.Sub(recordlayer.IndexStateSpaceKey).Pack(tuple.Tuple{name})
 }
 
@@ -393,7 +393,7 @@ func testRelIntrinsicV2(t *testing.T, cluster string) {
 	if n := len(relExportCorpus(t, ctx, e, c)) + len(relExportCorpus(t, ctx, other, otherHalf)); n != 8 {
 		t.Fatalf("V2 corpus exported %d spans, want 8", n)
 	}
-	for _, x := range []*relExporter{e, other} {
+	for _, x := range []*Exporter{e, other} {
 		for _, name := range []string{spansSpanIDIndex, spansTimeIndex} {
 			if rows, _ := relIndexCensus(t, ctx, x, name, recordlayer.TupleRangeAll); rows != 4 {
 				t.Fatalf("V2 built-in index census %s of tenant %d: %d entries, want 4", name, x.Config().Tenant, rows)
@@ -417,7 +417,7 @@ func testRelIntrinsicV2(t *testing.T, cluster string) {
 	t.Run("attribute_state_read_error", func(t *testing.T) {
 		testRelAttributeStateReadError(t, ctx, e, response, []Hit{{first.Trace, first.Start}})
 	})
-	for _, x := range []*relExporter{e, other} {
+	for _, x := range []*Exporter{e, other} {
 		if err := x.store.run(ctx, "test", func(store *recordlayer.FDBRecordStore) error { return store.DeleteAllRecords() }); err != nil {
 			t.Fatal(err)
 		}
@@ -443,7 +443,7 @@ func testRelIntrinsicV2(t *testing.T, cluster string) {
 		sources[i].Ordinal = i
 		byTenant[sources[i].Tenant] = append(byTenant[sources[i].Tenant], relFixtureSpan(t, sources[i]))
 	}
-	for i, x := range []*relExporter{e, other} {
+	for i, x := range []*Exporter{e, other} {
 		if stats, err := x.ExportResourceSpans(ctx, byTenant[i]); err != nil || stats.Spans != int64(len(byTenant[i])) {
 			t.Fatalf("explicit sources of tenant %d: %+v %v", i, stats, err)
 		}
@@ -560,7 +560,7 @@ func testRelIntrinsicV2(t *testing.T, cluster string) {
 
 // relFailStateReads makes e's transactions fail the conflict read of name's
 // index state with cause, counting the failures, until the returned restore.
-func relFailStateReads(e *relExporter, name string, cause error, failures *atomic.Int64) (restore func()) {
+func relFailStateReads(e *Exporter, name string, cause error, failures *atomic.Int64) (restore func()) {
 	original := e.store.db
 	e.store.db = recordlayer.NewFDBDatabaseWithTransactor(stateReadFailureTransactor{e.raw, relIndexStateKey(e, name), cause, failures}, e.raw)
 	return func() { e.store.db = original }
@@ -569,7 +569,7 @@ func relFailStateReads(e *relExporter, name string, cause error, failures *atomi
 // Port of testOtelAttributeStateReadError (intrinsic_test.go:390). §1.3: the
 // work is the result's, so the v1 LastQueryWork checks are the returned
 // results' and a failed read cannot leave earlier work behind.
-func testRelAttributeStateReadError(t *testing.T, ctx context.Context, e *relExporter, attribute Attribute, want []Hit) {
+func testRelAttributeStateReadError(t *testing.T, ctx context.Context, e *Exporter, attribute Attribute, want []Hit) {
 	t.Helper()
 	prior, err := e.Query(ctx, attribute)
 	if err != nil || !reflect.DeepEqual(prior.Hits, want) || prior.Candidates != 1 || prior.Bytes <= 0 {
@@ -593,7 +593,7 @@ func testRelAttributeStateReadError(t *testing.T, ctx context.Context, e *relExp
 // empty range reads nothing, so the empty Time on which v1 showed the
 // failure no longer reads the index state. The failure is shown on the
 // singleton range, and the empty range is shown not to read the state.
-func testRelIntrinsicStateReadError(t *testing.T, ctx context.Context, e *relExporter) {
+func testRelIntrinsicStateReadError(t *testing.T, ctx context.Context, e *Exporter) {
 	singleton, empty := TimeRange{Start: 299, End: 301}, TimeRange{Start: 100, End: 100}
 	prior, err := e.Time(ctx, singleton)
 	if err != nil || prior.Candidates != 1 || prior.Bytes <= 0 {

@@ -135,12 +135,11 @@ ownership, 1500-ms timeout, one-second save-plus-guard limit, 300-KB conservativ
 batch estimate and 500-KB actual transaction guard are unchanged.
 
 `--record-compression` selects `none`, `zlib-1`, `brotli-0`,
-`brotli-1`, `brotli-3` or `brotli-4` for fresh FDB runs. Ordinary offline `ingest`
-defaults to `none`. The SDK/model `DefaultExporterConfig` and `collector-bench`
-instead default to `brotli-4`, producing Go-only version-2 compressed records.
-For Java-readable record compression in a fresh store, exporter users must set
-`RecordCompression` to `none` or `zlib-1`; `collector-bench` users must explicitly pass
-`--record-compression=none` or `--record-compression=zlib-1`.
+`brotli-1`, `brotli-3` or `brotli-4` for fresh `--backend fdb` runs. Ordinary
+offline `ingest` defaults to `none`. The `Exporter`, and so `collector-bench`,
+accepts only `none`, `zlib-1` and `zlib-default` (Java-readable version-1
+records) and defaults to `zlib-1`; a Brotli value is a `ConfigError`, because SQL
+and Java read its tenant store (see "Exporter configuration").
 It configures the Record Layer's
 `TransformedRecordSerializer` through `StoreBuilder.SetSerializer`, before normal
 split-record storage. OTLP messages, envelopes, primary keys, eight complete
@@ -151,7 +150,8 @@ The compression choice is immutable run ownership, not part of source-corpus
 identity. Use the same choice for ingestion, reads, audits and explicit drops;
 a mismatch is refused before accessing the run.
 
-`--posting-value-format=tuple` stores each complete covering projection as a
+`--posting-value-format=tuple` (`--backend fdb` only: the `Exporter` has no
+posting values) stores each complete covering projection as a
 standard FDB tuple `(scope,key,type,value,start_ns)` instead of JSON. This removes
 repeated JSON field names without shortening the original values or changing any
 posting key. It is an immutable fresh-run index option; query decoding uses the
@@ -169,9 +169,11 @@ the record subspace. The client can coalesce contained ranges in eligible commit
 this reduces shipped conflict-vector overhead, not stored posting count or bytes.
 The live transaction-size estimate does not perform this coalescing and can grow
 slightly, so the unchanged 500-KB guard still applies. This execution option is not
-part of stored layout identity. The widened ranges cover only the indexes the
-batch maintains, so they never touch the message indexes (see "GenAI message
-storage", write conflicts).
+part of stored layout identity. It applies to `--backend fdb`, and to
+`--backend sql --save-mode batch`, whose span writer is the `Exporter`'s
+(`bulk_index_conflicts`, on by default). The widened ranges cover only the
+indexes the batch maintains, so they never touch the message indexes (see
+"GenAI message storage", write conflicts).
 
 Zlib uses the existing Java-compatible version-1 format. Brotli explicitly uses
 `SetGoOnlyBrotliCompression` and version 2: **Java and default Go serializers
@@ -566,7 +568,7 @@ The heap profile's allocation counts are cumulative for the process; the
 window's allocations are the difference from the start snapshot:
 
 ```sh
-otelbench --backend fdb --mode collector-bench ... --duration 120s --warmup 20s \
+otelbench --mode collector-bench ... --duration 120s --warmup 20s \
   --profile-duration 90s --cpuprofile cpu.pprof --memprofile heap.pprof \
   --blockprofile block.pprof --mutexprofile mutex.pprof
 go tool pprof -top otelbench cpu.pprof
@@ -580,6 +582,44 @@ runs profiled alike.
 The exporter's process takes `GOGC` and `GOMEMLIMIT` from its environment.
 Evaluate these settings with profiles of the intended workload; this guide does
 not establish a CPU or allocation reduction for a particular setting.
+
+## Exporter configuration
+
+`otel.Exporter` is the SDK `SpanExporter`, the Collector model's sink and the
+writer `collector-bench` drives. It stores every signal of a `(run, tenant)` in
+one OTEL_V1 schema store (database `/OTEL/R_<RUN>`, schema `T<tenant>`), creates
+the template, database and schema on first open, writes compiled rows through
+the Record Layer and serves every read from a direct scan of a standard OTEL_V1
+index ([migration RFC](rfcs/relational-exporter-migration.md) §0, §1). The
+store's `store_meta` `layout` row records the message layout (`messages=none`,
+`messages=deltas` or `messages=fulltext`); an exporter configured for another
+layout is refused with `OwnershipError` before any read.
+
+`ExporterConfig` is read from JSON or YAML; omitted keys keep
+`DefaultExporterConfig`, and every key it does not have is a `ConfigError`.
+
+| Key | Values | Default |
+| --- | --- | --- |
+| `cluster_file` | explicit owned FDB cluster file | required |
+| `run` | `^[a-z0-9_]{8,48}$` | required |
+| `tenant` | 0..49,999,999 | 0 |
+| `record_compression` | `none`, `zlib-1`, `zlib-default` | `zlib-1` |
+| `bulk_index_conflicts` | coalesce a span batch's index write conflicts | true |
+| `enable_message_deltas` | store GenAI messages once per tenant | false |
+| `enable_message_full_text` | also index their text (implies deltas) | false |
+| `batch_size` | spans per write transaction, 1..64 | 64 |
+| `workers` | concurrent batch transactions per call, 1..16 | 8 |
+| `max_candidates`, `max_bytes` | per-read budget | 20000, 4 MiB |
+| `k` | default query limit, 1..10000 | 100 |
+| `max_inflight_transactions` | write transactions in flight, 1..1024 | 32 |
+| `transaction_timeout` | Go duration, 1s..5m | `10s` |
+
+The custom store's layout keys `order` (the store has one time order),
+`hash_bytes` and `posting_value_format` (it has no posting values) were removed
+(D2); a document naming one is refused as removed. Attribute equality is typed
+(D1): `CanonicalAttribute` gives a string, int, double or bool attribute its own
+type; bytes (base64) and arrays, maps and unset values (`json`, canonical JSON)
+are reported but not queryable.
 
 ## Exporter transaction policy
 
@@ -618,35 +658,38 @@ receiver transport, upstream queue semantics or Collector overhead. Actual
 upstream Collector integration remains required for the larger Collector-to-SQL
 product goal; the optimized experimental ingest layer does not complete it.
 
-New span records keep canonicalization fidelity in the optional application
-`Envelope.fidelity` field. Its presence (even empty) selects this framing, so all
-producer OTLP unknown fields, including tag 536870911, remain producer-owned.
-Legacy records without that field still decode their historical internal OTLP
-fidelity tag. This does not rewrite existing records or restore raw GenAI history:
-message-enabled records' fidelity retains message manifests, not repeated content.
+The `Exporter` keeps each span's original single-span `ResourceSpans` in the
+spans row's `otlp` column, so all producer OTLP unknown fields, including tag
+536870911, attribute order and duplicates survive without a fidelity field.
+With messages decomposed, the GenAI content attributes there hold message
+manifests, not repeated content. The custom store behind `otelbench --backend
+fdb` still keeps canonicalization fidelity in `Envelope.fidelity`.
 
 ## GenAI message storage
 
 `enable_message_deltas` and `enable_message_full_text` store each element of
 `gen_ai.input.messages`, `gen_ai.output.messages`,
 `gen_ai.system_instructions` and `gen_ai.tool.definitions` (span and event
-attributes) once per tenant as a `Message` record, and replace the attribute
+attributes) once per tenant store as `messages` rows, and replace the attribute
 value with a manifest of message IDs. `LoadSpanOTLP` restores the original
-value byte for byte. The layout is stored run identity: the owner manifest
-records `"messages": "deltas"` or `"fulltext_v2"`, and a run written without it,
-including one written by the earlier `msg_blob_v1` blob layout or by the
-`"fulltext"` layout with one index entry per reference, is refused before any
-read.
+value byte for byte. The layout is the store's `store_meta` `layout` row
+(`messages=deltas` or `messages=fulltext`); an exporter configured for another
+layout is refused before any read. The design is the custom store's; only its
+storage moved to OTEL_V1 rows ([migration RFC](rfcs/relational-exporter-migration.md)
+§0 item 4, §1.5, §3.1). `otelbench --backend fdb` keeps the custom store's
+`Message` records, owner-manifest layouts (`deltas`, `fulltext_v2`) and
+`otel_message_v1` tokenizer as the baseline until phase 3B.
 
-* **Records and keys.** A message ID is `(writer, seq)`. A message transaction
-  holds one writer exclusively and numbers its new messages in order, so the
-  `Message` primary key `(tenant, writer, seq, part)` makes each writer's TEXT
-  postings follow its earlier ones. A unique value index `message_hash_v1` on
-  `(tenant, SHA-256 prefix of 16 bytes)` deduplicates content; a message
+* **Rows and keys.** A message ID is `(writer, seq)`, writers numbered from the
+  `store_meta` `message_writer` counter. A message transaction holds one writer
+  exclusively and numbers its new messages in order, so the `messages` primary
+  key `(writer, seq, part)` makes each writer's TEXT postings follow its earlier
+  ones. The unique index `MESSAGES_HASH` on part 0's `content_hash` (a 16-byte
+  SHA-256 prefix; other parts leave it NULL) deduplicates content; a message
   transaction reads it serializably, so concurrent writers of one message
   conflict and the loser reuses the stored ID. A present message costs no
-  write at all. The digest prefix is 128 bits per tenant.
-* **Group commit.** Export calls queue their small messages in the backend;
+  write at all. The digest prefix is 128 bits per tenant store.
+* **Group commit.** Export calls queue their small messages in the exporter;
   up to 16 loops, each holding one writer for one transaction at a time, take
   as many queued messages as a transaction holds (128, and 1 MB of raw
   bytes) and store them together. A message transaction costs a fixed latency
@@ -654,21 +697,22 @@ read.
   a chain of round trips) plus per-message CPU `c`, so `W` writers store
   `W * n / (a + c * n)` messages per second. With every writer busy, waiting
   messages make the next transactions larger instead of each waiting for a
-  writer. Within one backend, writers stay one per TEXT shard. Independent
-  backends can share shards and conflict; the model is not a throughput guarantee.
-* **Text index.** `fulltext_v2` adds a standard TEXT index `message_text_v1` on
-  each part's text, grouped by `(tenant, role, shard)`, with positions. A
-  backend holds at most 16 writers, each in its own shard (`writer mod 16`),
-  so writers of that backend never modify the same BunchedMap concurrently.
-  Independent backends can share a shard and conflict. A query scans the 16
-  shards of a role concurrently and unions them. Without shards every writer
-  would append to the same token maps and could rewrite the same boundary bunch.
-  Its tokenizer,
-  `otel_message_v1`, is the default tokenizer except that a token longer than
-  1024 bytes is not indexed (its position is kept): a token is part of an
-  index key, which FDB caps at 10 KB. Such tokens are counted in
-  `messages.unindexed_tokens`, and a query naming one is refused. The text is
-  stored next to the raw element; record compression can reduce that duplication. A
+  writer. Within one exporter, writers stay one per TEXT shard. Independent
+  exporters can share shards and conflict; the model is not a throughput guarantee.
+* **Text index.** `fulltext` adds the Go-only FULLTEXT index `MESSAGES_TEXT`
+  on each part's `content`, partitioned by `(role, shard)`, with positions. An
+  exporter holds at most 16 writers, each in its own shard (`writer mod 16`),
+  so writers of that exporter never modify the same BunchedMap concurrently.
+  Independent exporters of one store can share a shard and conflict. A query
+  scans the 16 shards of a role concurrently and unions them. Without shards
+  every writer would append to the same token maps and could rewrite the same
+  boundary bunch. The index uses the default tokenizer, which Java's store
+  opener knows. A token is part of an index key, which FDB caps at 10 KB, so
+  `content` holds the placeholder `oteloverlongtoken` for each token longer
+  than 1024 bytes and keeps its position. Such tokens are counted in
+  `messages.unindexed_tokens`, and a query naming one is refused. `content` is
+  index-only text stored next to the raw element; record compression can
+  reduce that duplication. A
   function key expression over the raw bytes is not an option: a TEXT index
   requires a string field at the text position (Java
   `TextIndexMaintainerFactory.java:117-127`; a function validates as its
@@ -683,19 +727,20 @@ read.
   2 MiB. An FDB transaction-too-large error replans with a quarter of the
   distinct tokens, down to 16. All tail parts commit before the final part-0 publication, so a
   stored part 0 means a complete message. An "all" query also
-  checks every multi-part message (`message_large_v1`) for terms in different
+  checks every multi-part message (`MESSAGES_LARGE`) for terms in different
   segments; that check costs one bounded scan per multi-part message and term.
-* **Back references.** `fulltext_v2` lists on each span every message it
-  references, packed (`Envelope.ref_chunks`: writer, seq, attribute code, the
+* **Back references.** `fulltext` lists on each spans row every message it
+  references, packed (`ref_chunks`: writer, seq, attribute code, the
   message's positions in the span's first value of that attribute, and
   whether it is that value's newest element). The list depends only on the
   span, so it is written blind with the span and replaced with it.
-  `envelope_refs_v1` keeps it as the value of one entry per span (per 16 KB of
-  references) under `(tenant, trace_id, start_ns)`, so a trace's spans and
-  their references are one range. A `MessageTrace` record per (message,
-  trace) names the traces a message occurs in; an export call saves the ones
-  it does not find (snapshot read, before its spans commit; a backend
-  remembers up to 2^18 it knows to be stored). Concurrent writers of one marker
+  `SPANS_REF_CHUNKS` keeps each chunk in an index key under
+  `(trace_id, start_ns, span_id)` (D4), at most 8,000 encoded key bytes per
+  chunk with zero-byte escaping, so a trace's spans and their references are
+  one range. A `message_traces` row per (message, trace) names the traces a
+  message occurs in; an export call saves the ones it does not find (snapshot
+  read, before its spans commit; an exporter remembers up to 2^18 it knows to
+  be stored). Concurrent writers of one marker
   conflict on the save's existence read, and the retry finds it. A marker
   outlives a span that stops referencing the message, which costs a query
   only a range it filters out. A query reads each matching message's markers,
@@ -712,12 +757,13 @@ read.
   positions of the earlier layout are not reported. Message attributes hold
   manifests and are not equality-indexed; equality predicates on them are
   refused.
-* **Write conflicts.** Message transactions read `message_hash_v1` and the
+* **Write conflicts.** Message transactions read `MESSAGES_HASH` and the
   TEXT index serializably. `bulk_index_conflicts` widens a span batch's write
-  conflicts over the indexes of the record types it saves (Envelope), not over
-  the Message indexes, so span batches and message transactions do not
-  conflict through those widened ranges. Widening over every index of the
-  store would instead overlap the message transactions' read ranges.
+  conflicts over the indexes of the record type it saves (`spans`), not over
+  the message indexes of the same store, so span batches and message
+  transactions do not conflict through those widened ranges (R4,
+  `TestRelMessagesRealFDB/span_batch_conflicts`). Widening over every index of
+  the store would instead overlap the message transactions' read ranges.
 
 ## Repeated local campaign
 

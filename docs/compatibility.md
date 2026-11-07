@@ -408,17 +408,25 @@ cross-store join is needed. Once stores must be kept, changes go through the
 catalog evolution validator and explicit schema rebinding, e.g.
 fleet.SaveTemplate and fleet.Migrate.
 
-This is not an ingest-format migration. The existing exporter still writes its
-original store/keyspace and raw-KV logs. Tests hand-insert SQL rows and check
-opaque OTLP BYTES round-trips; they do not establish exporter/extraction fidelity.
-A future writer must open the tenant's relational schema store and populate the
-typed columns, preserving unknown fields, presence, order, duplicates and typed
-values through the envelope plus lossless message manifests/reconstruction. It
-must not copy complete pre-decomposition GenAI history into every span's `otlp`:
-that restores quadratic storage amplification. The projections are query aids,
-not a lossless replacement for OTLP. Event/link projections currently omit
-bytes/long-string arrays and resource/scope dropped counts; the envelope must
-preserve them, and SQL projection coverage is incomplete.
+**Writer contract.** `otel.Exporter` is the OTEL_V1 writer
+(`layers/otel/rfcs/relational-exporter-migration.md`, phase 3A). It ensures the
+`(run, tenant)` store (database `/OTEL/R_<RUN>`, schema `T<tenant>`, template,
+database and schema created when absent), checks the `store_meta` `layout` row
+against its message configuration, and writes compiled `otelv1pb` rows through
+the Record Layer, never SQL `INSERT`. Each span's `otlp` is
+its original single-span `ResourceSpans`, which preserves unknown fields,
+presence, order, duplicates and typed values; with messages decomposed, the
+GenAI content attributes hold manifests and the elements are `messages` rows that
+`LoadSpanOTLP` restores byte for byte. A writer must not copy complete
+pre-decomposition GenAI history into every span's `otlp`: that restores quadratic
+storage amplification. The projections are query aids, not a lossless
+replacement for OTLP. Event/link projections omit bytes/long-string arrays and
+resource/scope dropped counts; `otlp` preserves them, and SQL projection coverage
+is incomplete. Its records use `none`, `zlib-1` (the default) or `zlib-default`
+compression, all version 1, and it refuses Brotli. The custom store
+(`FDBBackend`, its posting index, raw-KV logs and JSON owner manifests) remains
+only behind `otelbench --backend fdb` as a measurement baseline until phase 3B
+deletes it; the Exporter neither reads nor writes it.
 The 1,024-byte indexed-string cap is a writer admission contract, not a DDL
 constraint; long strings belong in the digest-indexed array, with exact values
 verified after digest lookup. The messages_hash unique index deduplicates whole

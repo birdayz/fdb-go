@@ -7,10 +7,7 @@ import (
 	"encoding/hex"
 	"io"
 	"math"
-	"sort"
 	"strings"
-	"sync"
-	"time"
 	"unicode/utf8"
 
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -279,7 +276,7 @@ func logIndexed(l LogRecord) ([]Attribute, int64) {
 		set := canonicalAttributes(list.kvs)
 		unindexed += set.unindexed
 		for _, kv := range set.indexed {
-			out = append(out, CanonicalAttribute(list.scope, kv.Key, kv.Value))
+			out = append(out, legacyCanonicalAttribute(list.scope, kv.Key, kv.Value))
 		}
 	}
 	if l.EventName != "" {
@@ -666,122 +663,6 @@ func (b *FDBBackend) saveLogBatch(ctx context.Context, batch logBatch) (int64, e
 	return replaced, err
 }
 
-// ExportLogs rejects inadmissible input before writes; later live-budget OperationErrors do not undo batches.
-// Missing EventIDs get UUIDs outside retries, preventing transaction-retry duplicates but not request replays.
-func (e *Exporter) ExportLogs(ctx context.Context, logs []LogRecord) (LogExportStats, error) {
-	const op = "log export"
-	stats := LogExportStats{EventIDs: make([]string, len(logs))}
-	if err := e.begin(op); err != nil {
-		return stats, err
-	}
-	defer e.active.Done()
-	ctx = withTxnLimiter(e.txnContext(ctx), e.txnSlots)
-	b := e.backend
-	receiver := time.Now().UnixNano()
-	var items []preparedLog
-	position := map[string]int{}
-	for i, l := range logs {
-		if err := ctx.Err(); err != nil {
-			return stats, wrap("canceled", op, err)
-		}
-		stats.ReceivedLogs++
-		if l.EventID == "" {
-			id, err := newEventID()
-			if err != nil {
-				return stats, err
-			}
-			l.EventID = id
-			stats.GeneratedIDs++
-		}
-		stats.EventIDs[i] = l.EventID
-		p, err := b.prepareLog(l, receiver)
-		if err != nil {
-			return stats, err
-		}
-		if at, ok := position[p.eventID]; ok {
-			stats.DuplicateLogs++
-			items[at] = p
-		} else {
-			position[p.eventID] = len(items)
-			items = append(items, p)
-		}
-	}
-	for _, it := range items {
-		stats.UnindexedAttributes += it.unindexed
-	}
-	if len(items) != 0 {
-		if err := b.admitLogReplacements(ctx, items); err != nil {
-			return stats, err
-		}
-	}
-	batches := partitionLogs(items, e.cfg.BatchSize)
-	if len(batches) == 0 {
-		return stats, nil
-	}
-	workCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	jobs := make(chan logBatch)
-	var mu sync.Mutex
-	var firstErr error
-	committed := 0
-	var workers sync.WaitGroup
-	for range min(e.cfg.Workers, len(batches)) {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for batch := range jobs {
-				if workCtx.Err() != nil {
-					continue
-				}
-				replaced, err := b.saveLogBatch(workCtx, batch)
-				mu.Lock()
-				if err != nil {
-					if firstErr == nil {
-						firstErr = err
-						cancel()
-					}
-				} else {
-					committed++
-					stats.Batches++
-					stats.Replaced += replaced
-					for _, l := range batch.logs {
-						stats.Logs++
-						stats.LogicalBytes += l.logical
-						stats.StoredBytes += l.stored
-						if l.correlated {
-							stats.Correlated++
-						}
-					}
-				}
-				mu.Unlock()
-			}
-		}()
-	}
-feed:
-	for _, batch := range batches {
-		select {
-		case <-workCtx.Done():
-			break feed
-		case jobs <- batch:
-		}
-	}
-	close(jobs)
-	workers.Wait()
-	if firstErr != nil {
-		return stats, firstErr
-	}
-	if committed != len(batches) {
-		return stats, wrap("canceled", op, ctx.Err())
-	}
-	return stats, nil
-}
-
-// ConsumeLogs accepts OTLP ResourceLogs from a Collector or OTLP receiver.
-func (e *Exporter) ConsumeLogs(ctx context.Context, logs []*logspb.ResourceLogs) error {
-	_, err := e.ExportLogs(ctx, LogRecordsFromResourceLogs(logs))
-	return err
-}
-
 // LogRecordsFromResourceLogs owns each log envelope and exposes detached projections without an EventID.
 // Empty/all-zero trace or span IDs remain in source bytes but are uncorrelated in indexes.
 func LogRecordsFromResourceLogs(in []*logspb.ResourceLogs) []LogRecord {
@@ -853,83 +734,6 @@ type logTraceEntry struct {
 	eventID   string
 }
 
-// QueryLogsByTrace returns logs correlated to traceID in (effective time,
-// event ID) order; a nonempty spanID restricts them to that span.
-func (e *Exporter) QueryLogsByTrace(ctx context.Context, traceID, spanID string) ([]LogRecord, error) {
-	const op = "log trace query"
-	traceID, spanID = strings.ToLower(traceID), strings.ToLower(spanID)
-	if !validIdentity(traceID, 16) || (spanID != "" && !validIdentity(spanID, 8)) {
-		return []LogRecord{}, fail("config", op, "expected hex nonzero 16-byte trace and optional 8-byte span identifiers")
-	}
-	if err := e.begin(op); err != nil {
-		return []LogRecord{}, err
-	}
-	defer e.active.Done()
-	b := e.backend
-	out := []LogRecord{}
-	err := b.readLogs(e.txnContext(ctx), op, func(tx fdb.ReadTransaction, budget *queryBudget) error {
-		out = []LogRecord{}
-		space := logTraceSpace(b.keys, b.cfg.Tenant)
-		prefix := tuple.Tuple{traceID}
-		if spanID != "" {
-			prefix = append(prefix, spanID)
-		}
-		r, err := fdb.PrefixRange(space.Pack(prefix))
-		if err != nil {
-			return err
-		}
-		var entries []logTraceEntry
-		it := tx.GetRange(r, fdb.RangeOptions{Mode: fdb.StreamingModeIterator}).Iterator()
-		for it.Advance() {
-			kv, err := it.Get()
-			if err != nil {
-				return err
-			}
-			if err := budget.charge(kv); err != nil {
-				return err
-			}
-			t, err := space.Unpack(kv.Key)
-			if err != nil || len(t) != 4 || len(kv.Value) != 0 {
-				return fail("corruption", op, "malformed log trace entry")
-			}
-			tr, tok := t[0].(string)
-			sp, sok := t[1].(string)
-			eff, eok := t[2].(int64)
-			id, iok := t[3].(string)
-			if !tok || !sok || !eok || !iok || tr != traceID || (spanID != "" && sp != spanID) {
-				return fail("corruption", op, "malformed log trace entry")
-			}
-			entries = append(entries, logTraceEntry{sp, eff, id})
-		}
-		if _, err := it.Get(); err != nil {
-			return err
-		}
-		sort.Slice(entries, func(i, j int) bool {
-			if entries[i].effective != entries[j].effective {
-				return entries[i].effective < entries[j].effective
-			}
-			return entries[i].eventID < entries[j].eventID
-		})
-		ids := make([]string, len(entries))
-		for i, en := range entries {
-			ids[i] = en.eventID
-		}
-		logs, err := b.loadLogs(tx, ids, budget)
-		if err != nil {
-			return err
-		}
-		for i, l := range logs {
-			en := entries[i]
-			if l.TraceID != traceID || l.SpanID != en.span || l.EffectiveTime != en.effective {
-				return fail("corruption", op, "log trace entry disagrees with its record")
-			}
-		}
-		out = logs
-		return nil
-	})
-	return out, err
-}
-
 // scanLogTerm visits verified log postings newest first until visit stops it.
 func scanLogTerm(tx fdb.ReadTransaction, root runKeys, tenant, width int, a Attribute, w timeWindow, budget *queryBudget, visit func(LogMatch) (bool, error)) error {
 	term := logTermPrefix(root, tenant, a, width)
@@ -985,57 +789,4 @@ func logHasAttribute(l LogRecord, a Attribute) bool {
 		}
 	}
 	return false
-}
-
-// QueryLogsByAttribute returns up to limit logs, newest first by (effective
-// time, event ID), whose canonical attribute equals a, correlated or not.
-func (e *Exporter) QueryLogsByAttribute(ctx context.Context, a Attribute, limit int) ([]LogRecord, error) {
-	const op = "log attribute query"
-	if err := validateQueryAttribute(op, a, logAttributeScopes...); err != nil {
-		return []LogRecord{}, err
-	}
-	if limit < 0 {
-		return []LogRecord{}, fail("config", op, "limit must not be negative")
-	}
-	if limit == 0 {
-		limit = e.cfg.K
-	}
-	if err := e.begin(op); err != nil {
-		return []LogRecord{}, err
-	}
-	defer e.active.Done()
-	b := e.backend
-	out := []LogRecord{}
-	err := b.readLogs(e.txnContext(ctx), op, func(tx fdb.ReadTransaction, budget *queryBudget) error {
-		out = []LogRecord{}
-		var matches []LogMatch
-		seen := map[string]bool{}
-		err := scanLogTerm(tx, b.keys, b.cfg.Tenant, b.cfg.HashBytes, a, timeWindow{}, budget, func(m LogMatch) (bool, error) {
-			if !seen[m.EventID] {
-				seen[m.EventID] = true
-				matches = append(matches, m)
-			}
-			return len(matches) == limit, nil
-		})
-		if err != nil {
-			return err
-		}
-		ids := make([]string, len(matches))
-		for i, m := range matches {
-			ids[i] = m.EventID
-		}
-		logs, err := b.loadLogs(tx, ids, budget)
-		if err != nil {
-			return err
-		}
-		for i, l := range logs {
-			m := matches[i]
-			if l.EffectiveTime != m.Time || l.TraceID != m.Trace || l.SpanID != m.Span || !logHasAttribute(l, a) {
-				return fail("corruption", op, "log posting disagrees with its record")
-			}
-		}
-		out = logs
-		return nil
-	})
-	return out, err
 }
