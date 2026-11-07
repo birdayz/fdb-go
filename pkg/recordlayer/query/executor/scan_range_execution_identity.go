@@ -7,6 +7,11 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
+	"weak"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -434,8 +439,54 @@ func indexScanRangeFingerprintSaltFields(
 	covering bool,
 	coveringColumns []string,
 ) (string, error) {
-	return indexScanRangeFingerprintSaltFieldsWithFlowedType(
+	if plan == nil {
+		return indexScanRangeFingerprintSaltFieldsWithFlowedType(
+			plan, scanType, covering, coveringColumns, plan.GetFlowedType())
+	}
+	key := indexSaltKey{plan: weak.Make(plan), scanType: scanType, covering: covering, columns: identityColumns(coveringColumns)}
+	if salt, ok := indexSaltMemo.Load(key); ok {
+		return salt.(string), nil
+	}
+	salt, err := indexScanRangeFingerprintSaltFieldsWithFlowedType(
 		plan, scanType, covering, coveringColumns, plan.GetFlowedType())
+	if err != nil {
+		return "", err
+	}
+	if _, loaded := indexSaltMemo.LoadOrStore(key, salt); !loaded {
+		runtime.AddCleanup(plan, func(k indexSaltKey) { indexSaltMemo.Delete(k) }, key)
+	}
+	return salt, nil
+}
+
+// indexSaltMemo memoises indexScanRangeFingerprintSaltFields per index plan
+// object. Plans are immutable (every With* method copies), so a plan's salt
+// for one scan type and covering column list never changes, while computing
+// it encodes the plan's whole flowed type: per execution of a cached plan over
+// a wide table that encoding dominated a point query. An entry's key holds
+// its plan weakly and is deleted when the plan is collected.
+var indexSaltMemo sync.Map // indexSaltKey → string
+
+type indexSaltKey struct {
+	plan     weak.Pointer[plans.RecordQueryIndexPlan]
+	scanType recordlayer.IndexScanType
+	covering bool
+	columns  string // identityColumns(coveringColumns)
+}
+
+// identityColumns is an unambiguous, length-prefixed rendering of columns.
+// nil and empty are distinct keys that hold the same salt.
+func identityColumns(columns []string) string {
+	if columns == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteByte('[')
+	for _, c := range columns {
+		b.WriteString(strconv.Itoa(len(c)))
+		b.WriteByte(':')
+		b.WriteString(c)
+	}
+	return b.String()
 }
 
 // legacyIndexScanRangeFingerprintSaltFields reproduces the execution salt

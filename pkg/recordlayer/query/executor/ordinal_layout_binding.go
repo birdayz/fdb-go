@@ -388,16 +388,27 @@ func attachProvidedOutputLayout(
 	if !ok {
 		return cursor, nil
 	}
+	// matched is a row type checkLayoutAttachable accepted for this layout
+	// without widening. Types are immutable and a cursor's rows share one
+	// type object, so later rows of that exact object skip the structural
+	// comparison, which dominated wide-row covering scans.
+	var matched *values.RecordType
 	return recordlayer.MapErrCursor(cursor, func(result QueryResult) (QueryResult, error) {
 		if result.Positional == nil {
 			return QueryResult{}, layoutBindingError(values.LayoutRuntimeShape, "record plan emitted no positional row")
 		}
-		row, attachErr := result.Positional.AttachOrdinalLayout(layout, carrierType)
-		if attachErr != nil {
-			return QueryResult{}, fmt.Errorf("executor: %T emitted row type %s outside provided layout carrier %T: %w",
-				plan, result.Positional.Type, layout.Carrier(), attachErr)
+		var widenTo *values.RecordType
+		if p := result.Positional; p.Type == nil || p.Type != matched {
+			var attachErr error
+			if widenTo, attachErr = p.checkLayoutAttachable(layout, carrierType); attachErr != nil {
+				return QueryResult{}, fmt.Errorf("executor: %T emitted row type %s outside provided layout carrier %T: %w",
+					plan, p.Type, layout.Carrier(), attachErr)
+			}
+			if widenTo == nil {
+				matched = p.Type
+			}
 		}
-		result.Positional = row
+		result.Positional = result.Positional.attachCheckedLayout(layout, widenTo)
 		return result, nil
 	}), nil
 }
