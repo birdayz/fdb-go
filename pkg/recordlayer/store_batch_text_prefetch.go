@@ -254,8 +254,7 @@ func sortSearchKeys(rows []fdb.KeyValue, key []byte) int {
 	return i
 }
 
-// prefetchBatchTextBunches warms maintained new/old TEXT keys and old tokenizer versions,
-// keeping the batch's tokenizations in tokens.
+// prefetchBatchTextBunches warms maintained new/old TEXT keys and old tokenizer versions, tokenizing into tokens;
 // olds[i]=nil means an insert or an old image supplied by an earlier record in this batch.
 func (store *FDBRecordStore) prefetchBatchTextBunches(news, olds []*FDBStoredRecord[proto.Message], tokens textTokenCache) {
 	var reads textBunchReads

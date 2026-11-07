@@ -536,10 +536,8 @@ func (m *BunchedMap) writeEntryListWithoutChecking(tx fdb.WritableTransaction, s
 	}
 }
 
-// writeEntryList serializes and writes an entry list, handling size overflow by splitting.
-// isFirst/isLast indicate position relative to the insertion point. keyBytesAfter, when
-// set, is keyBytes+\x00, which a prepacked put builds for its append (startPutPrepacked).
-// Matches Java's BunchedMap.writeEntryList().
+// writeEntryList is Java's BunchedMap.writeEntryList: it writes entryList, splitting it if
+// too large; isFirst/isLast place it at the insertion point, keyBytesAfter is keyBytes+\x00 or nil.
 func (m *BunchedMap) writeEntryList(tx fdb.WritableTransaction, subspaceKey, keyBytes, keyBytesAfter []byte,
 	oldKv *fdb.KeyValue, newKey []byte, entryList []bunchItem,
 	kvAfter *fdb.KeyValue, isFirst, isLast bool,
