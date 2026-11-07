@@ -53,8 +53,8 @@ func BenchmarkMessageWriteCostRealFDB(b *testing.B) {
 					b.ReportMetric(float64(r.refBytes)/spans, "refs_B/span")
 					b.ReportMetric(float64(r.textBytes)/spans, "text_B/span")
 					b.ReportMetric(float64(r.messages.Retries), "msg_retries")
-					b.Logf("%s %dx%d: cpu %v wall %v; bytes store %d refs %d (%d entries, max key %d) text %d (prefix %d); messages %+v",
-						arm, w.convs, w.turns, r.cpu, r.wall, r.storeBytes, r.refBytes, r.refEntries, r.refMaxKey, r.textBytes, r.textPrefix, r.messages)
+					b.Logf("%s %dx%d: cpu %v wall %v; bytes store %d refs %d (%d entries, max key %d) text %d (%d rows, prefix %d); messages %+v",
+						arm, w.convs, w.turns, r.cpu, r.wall, r.storeBytes, r.refBytes, r.refEntries, r.refMaxKey, r.textBytes, r.textRows, r.textPrefix, r.messages)
 				}
 			})
 		}
@@ -65,7 +65,7 @@ type costResult struct {
 	cpu, wall                       time.Duration
 	storeBytes, refBytes, textBytes int64
 	refEntries, refMaxKey           int
-	textPrefix                      int // bytes of the TEXT index subspace prefix
+	textPrefix, textRows            int // bytes of the TEXT index subspace prefix, its KV rows
 	messages                        MessageStoreStats
 }
 
@@ -158,7 +158,7 @@ func costOld(b *testing.B, cluster string, fullText bool, calls [][]*tracepb.Res
 		if fullText {
 			r.refBytes, r.refEntries, r.refMaxKey = costRange(b, ctx, be.db, store.IndexSubspace(be.md.GetIndex(envelopeRefsIndexName)).Bytes())
 			text := store.IndexSubspace(be.md.GetIndex(messageTextIndexName)).Bytes()
-			r.textBytes, _, _ = costRange(b, ctx, be.db, text)
+			r.textBytes, r.textRows, _ = costRange(b, ctx, be.db, text)
 			r.textPrefix = len(text)
 		}
 		return nil, nil
@@ -215,7 +215,7 @@ func costRel(b *testing.B, cluster string, fullText, noRefs bool, calls [][]*tra
 		md := store.GetRecordMetaData()
 		r.refBytes, r.refEntries, r.refMaxKey = costRange(b, ctx, db, store.IndexSubspace(md.GetIndex(spansRefChunksIndex)).Bytes())
 		text := store.IndexSubspace(md.GetIndex(messagesTextIndex)).Bytes()
-		r.textBytes, _, _ = costRange(b, ctx, db, text)
+		r.textBytes, r.textRows, _ = costRange(b, ctx, db, text)
 		r.textPrefix = len(text)
 		return nil, nil
 	}); err != nil {
