@@ -3621,16 +3621,15 @@ these claims; the implementation notes below are not controlled comparisons.
   ClassCastException / SQLSTATE XXXXX. On a pinned-version update, re-evaluate
   this exact case and replace its strict error pin with exact suffix rows only
   when fixed; preserve every Go page/cursor and Java's working controls.
-- [ ] Java 4.14.2.0 cannot open an OTEL_V1 store created from `TemplateDDL()`:
-  every statement fails `42000 MetaDataException unrecognized text tokenizer`,
-  because the overlay's MESSAGES_TEXT names `otel_message_v1`
-  (`conformance/otel_template_overlay_java_probe_test.go`, which also shows a
-  TemplateBody-only store of the same rows read in full). Java readers of
-  Exporter stores (RFC relational-exporter-migration R2, D5) need one of: a Java
-  `TextTokenizerFactory` named `otel_message_v1` (default tokenizer, overlong
-  tokens as "") on the Java classpath; MESSAGES_TEXT with the default tokenizer
-  and writers that bound overlong words before indexing; or the TEXT index kept
-  out of the catalog metadata. Owner decision; the probe pins today's refusal.
+- [x] Java readers of OTEL_V1 stores (RFC relational-exporter-migration R2).
+  A TEXT index naming `otel_message_v1` made every Java statement on the schema
+  fail `42000 MetaDataException unrecognized text tokenizer`, so MESSAGES_TEXT
+  uses the default tokenizer and `otelsql.BuildMessageCompiled` stores
+  `IndexableText` (overlong tokens as the placeholder `oteloverlongtoken`,
+  positions kept). `OtelTemplateOverlayJavaProbe` reads every table of a
+  Go-written TemplateDDL store in Java and pins the Go-only-tokenizer refusal.
+  Stream 2C must tokenize terms and count segment postings with the default
+  tokenizer over `IndexableText`, not `otel_message_v1`.
 - [ ] `BuildLogCompiled` leaves an `event_name` over 1,024 bytes NULL (LOGS_EVENT
   keys it) and `LogProjection` counts it; the old log store indexed event names
   up to 64,000 bytes by digest. Phase 2B decides whether `QueryLogsByAttribute`
