@@ -3634,6 +3634,34 @@ these claims; the implementation notes below are not controlled comparisons.
   keys it) and `LogProjection` counts it; the old log store indexed event names
   up to 64,000 bytes by digest. Phase 2B decides whether `QueryLogsByAttribute`
   on such names needs a digest column or refuses them.
+- [ ] Data race in `pkg/fdbgo/client` RYW range reads with AppendIfFits writes,
+  reproduced by the old and the new message stores under `-race`
+  (`bazelisk test //layers/otel:otel_test --@rules_go//go/config:race
+  --test_filter='^TestMessageRecordsRealFDB$' --nocache_test_results`):
+  `cloneReadKVsInto` (ryw_snapshot_cache.go) in `PendingRange.Get` reads bytes
+  that `appendIfFitsInto` (ryw_walk_iter.go) of another walk writes. Suspected
+  cause: resolved AppendIfFits values live in the pooled walk's `keyBuf`
+  (`it.valBuf = &w.keyBuf`), the non-clone read path keeps rows pointing into it,
+  and the walk returns to `walkPool` before `Get` clones them; TEXT bunch reads
+  after a group commit's appends could see another read's bytes. Needs an owner,
+  a deterministic regression and a fix.
+- [ ] Stream 2C follow-ups (`messages_rel.go`, `messages_query_rel.go`):
+  - `relMessageStore` reads `STORE_META("message_writer")` through
+    `localStoreMeta`; switch to store_meta.go's `loadStoreMeta` (stream 2A).
+  - The ports drive the hooks through `relMsgEnv` (messages_rel_fdb_test.go),
+    a stand-in for exporter_rel.go; retarget them to the relational exporter at
+    3A. Still to port there: the span+log+message existential case (needs 2B's
+    `logClauses` and log writer), `Exporter.Query`'s refusal of message
+    attributes, and the exporter-lifecycle tests (queue backing release,
+    evicted-marker replay, Shutdown joining a canceled message worker), plus
+    `TestMultipartEmptyAllQueryChargesRawLargeIndexBytes`.
+  - 3B must keep what the new files use from messages.go and messages_query.go:
+    `messageTimerStats`, `isTransactionTooLarge`, `messagePipelineSizer`, the
+    `MessageFullTextQuery`/`MessageSpanHit`/`MessageFullTextPage` types and the
+    `MessageMatch*` modes.
+  - MESSAGES_TEXT holds 21-23% more bytes than the old TEXT index on the
+    `BenchmarkMessageWriteCostRealFDB` workloads (the schema subspace prefix is
+    23 bytes against 10); decide at G2C whether that matters.
 
 ### OTel relational prototype findings (2026-11-07)
 
