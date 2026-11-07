@@ -68,6 +68,9 @@ type cascadesGenerator struct {
 	// INSERT keeps concrete bindings; SELECT and cached DML extract runtime
 	// constants and constrain only the assumptions used by their cached plan.
 	args []driver.NamedValue
+	// programs are the binding walks compiled over the statement's cached
+	// parse tree (parse_cache.go).
+	programs *statementPrograms
 }
 
 func newCascadesGenerator(c *EmbeddedConnection) *cascadesGenerator {
@@ -131,10 +134,12 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 			return false
 		})
 	}
-	root, err := g.c.parse(sql)
+	st, err := g.c.parseStatement(sql)
 	if err != nil {
 		return nil, err
 	}
+	root := st.root
+	g.programs = &st.programs
 	if err := checkDecimalConstants(root); err != nil {
 		return nil, err
 	}
@@ -144,9 +149,11 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 			return nil, err
 		}
 		if changed {
-			if root, err = g.c.parse(expanded); err != nil {
+			if st, err = g.c.parseStatement(expanded); err != nil {
 				return nil, err
 			}
+			root = st.root
+			g.programs = &st.programs
 		}
 	}
 	release, err := bindStatementParameters(root, g.args)
@@ -420,7 +427,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	if so.rightDeep {
 		popts.config.ShouldJoinRightDeep = true
 	}
-	bindings, releaseBindings, bindErr := normalizeQueryBindings(q, md)
+	bindings, releaseBindings, bindErr := normalizeQueryBindingsWith(q, md, g.programs)
 	if bindErr != nil {
 		return nil, bindErr
 	}
@@ -974,7 +981,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	bindings := queryBindings{text: planCacheText(dml)}
 	if dml.InsertStatement() == nil {
 		var releaseBindings func()
-		bindings, releaseBindings, err = normalizeQueryBindings(dml, md)
+		bindings, releaseBindings, err = normalizeQueryBindingsWith(dml, md, g.programs)
 		if err != nil {
 			return nil, err
 		}
