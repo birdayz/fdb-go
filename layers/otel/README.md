@@ -568,7 +568,12 @@ only its storage moved to OTEL_V1 rows
   exporter holds at most 16 writers, each in its own shard (`writer mod 16`),
   so writers of that exporter never modify the same BunchedMap concurrently.
   Independent exporters of one store can share a shard and conflict. A query
-  scans the 16 shards of a role concurrently and unions them. Without shards
+  scans the 16 shards of a role concurrently and unions them; the roles of a
+  query without a role run concurrently too. An "all" or phrase query of
+  several terms, which opens a read per term in every shard it scans, first
+  counts each term's postings in shard 0 (up to 16), probes the rarest term
+  in the other shards and scans only the shards that hold it, unless every
+  term is common in shard 0. Without shards
   every writer would append to the same token maps and could rewrite the same
   boundary bunch. The index uses the default tokenizer, which Java's store
   opener knows. A token is part of an index key, which FDB caps at 10 KB, so

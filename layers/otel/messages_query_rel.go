@@ -720,6 +720,22 @@ func relPipelinedRanges(ctx context.Context, tx fdb.ReadTransaction, ranges []fd
 	return counts, nil
 }
 
+// textComparison is plan's TextScan comparison: its type and tokens, a
+// phrase's with "" at the positions of its stop words.
+func (plan *messageQueryPlan) textComparison() (recordlayer.TextComparisonType, []string) {
+	switch plan.mode {
+	case MessageMatchAny:
+		return recordlayer.TextContainsAny, plan.terms
+	case MessageMatchPhrase:
+		tokens := make([]string, plan.phrase[len(plan.phrase)-1].offset+1)
+		for _, pt := range plan.phrase {
+			tokens[pt.offset] = pt.term
+		}
+		return recordlayer.TextContainsPhrase, tokens
+	}
+	return recordlayer.TextContainsAll, plan.terms
+}
+
 // matchMessages returns the messages matching plan, by ID, with the role
 // group each matched in: one TextScan per (role, shard), the shards of a
 // role concurrently, and for "all" across parts one message-bounded scan
@@ -737,32 +753,52 @@ func matchMessages(ctx context.Context, store *recordlayer.FDBRecordStore, plan 
 			return nil, err
 		}
 	}
-	typ, tokens := recordlayer.TextContainsAll, plan.terms
-	switch plan.mode {
-	case MessageMatchAny:
-		typ = recordlayer.TextContainsAny
-	case MessageMatchPhrase:
-		typ = recordlayer.TextContainsPhrase
-		tokens = make([]string, plan.phrase[len(plan.phrase)-1].offset+1)
-		for _, pt := range plan.phrase {
-			tokens[pt.offset] = pt.term
+	typ, tokens := plan.textComparison()
+	// An "all" query of several terms also checks the multipart messages
+	// for terms in different parts.
+	spread := plan.mode == MessageMatchAll && len(plan.terms) > 1
+	var large []messageID
+	if spread {
+		if large, err = largeMessages(ctx, store, work); err != nil {
+			return nil, err
 		}
 	}
-	seen := map[messageID]bool{}
-	var out []*relMessageCandidate
-	for _, role := range roles {
-		ids, err := shardTextMatches(ctx, store, idx, role, typ, tokens, work)
+	// The roles run concurrently; each may use the remaining budget, and
+	// their sum must fit it too.
+	found := make([][]messageID, len(roles))
+	subs := make([]queryWork, len(roles))
+	errs := make([]error, len(roles))
+	var wg sync.WaitGroup
+	for i, role := range roles {
+		subs[i] = queryWork{maxCandidates: work.maxCandidates - work.candidates, maxBytes: work.maxBytes - work.bytes}
+		wg.Go(func() {
+			sub := &subs[i]
+			ids, err := shardTextMatches(ctx, store, idx, role, typ, tokens, plan.terms, sub)
+			if err == nil && spread {
+				var more []messageID
+				more, err = spreadAllMatches(ctx, store, idx, role, plan.terms, large, sub)
+				ids = append(ids, more...)
+			}
+			found[i], errs[i] = ids, err
+		})
+	}
+	wg.Wait()
+	for _, s := range subs {
+		work.candidates += s.candidates
+		work.bytes += s.bytes
+	}
+	for _, err := range errs {
 		if err != nil {
 			return nil, err
 		}
-		if plan.mode == MessageMatchAll && len(plan.terms) > 1 {
-			spread, err := spreadAllMatches(ctx, store, idx, role, plan.terms, work)
-			if err != nil {
-				return nil, err
-			}
-			ids = append(ids, spread...)
-		}
-		for _, id := range ids {
+	}
+	if err := work.check(op); err != nil {
+		return nil, err
+	}
+	seen := map[messageID]bool{}
+	var out []*relMessageCandidate
+	for i, role := range roles {
+		for _, id := range found[i] {
 			if !seen[id] {
 				seen[id] = true
 				out = append(out, &relMessageCandidate{id: id, role: role})
@@ -859,22 +895,103 @@ func textScanMatches(ctx context.Context, store *recordlayer.FDBRecordStore, sca
 	}
 }
 
-// shardTextMatches unions the role's 16 shard scans, run concurrently; each
-// may use the remaining budget, and their sum must fit it too.
-func shardTextMatches(ctx context.Context, store *recordlayer.FDBRecordStore, idx *recordlayer.Index, role string, typ recordlayer.TextComparisonType, tokens []string, work *queryWork) ([]messageID, error) {
+// shardTextMatches unions the role's shard scans of the comparison typ over
+// tokens. An ALL or PHRASE comparison of several terms matches only in a
+// shard that holds every term, so it scans only the shards textShards keeps.
+func shardTextMatches(ctx context.Context, store *recordlayer.FDBRecordStore, idx *recordlayer.Index, role string, typ recordlayer.TextComparisonType, tokens, terms []string, work *queryWork) ([]messageID, error) {
+	shards := make([]int, messageTextShards)
+	for i := range shards {
+		shards[i] = i
+	}
+	if (typ == recordlayer.TextContainsAll || typ == recordlayer.TextContainsPhrase) && len(terms) > 1 {
+		var err error
+		if shards, err = textShards(ctx, store, idx, role, terms, work); err != nil {
+			return nil, err
+		}
+	}
+	scans := make([]*recordlayer.TextScan, len(shards))
+	for i, shard := range shards {
+		scans[i] = recordlayer.NewTextScan(idx, tuple.Tuple{role, int64(shard)}, recordlayer.NewTextComparisonTokens(typ, tokens, "", ""), nil)
+	}
+	found, err := textScans(ctx, store, scans, 0, work)
+	if err != nil {
+		return nil, err
+	}
+	var ids []messageID
+	for _, f := range found {
+		ids = append(ids, f...)
+	}
+	return ids, nil
+}
+
+// textSampleRows bounds the postings textShards counts per term in shard 0.
+const textSampleRows = 16
+
+// textShards returns the shards of role that hold every one of terms, or
+// may: a scan of several terms opens a range read per term in each shard,
+// so most of a role-less phrase query's reads were of shards lacking a
+// rare term. It counts each term's postings in shard 0, up to
+// textSampleRows, then probes the rarest of them in the other shards and
+// keeps shard 0 if it holds every term and each other shard that holds
+// the rarest. When every term is common in shard 0 a probe would rarely
+// exclude a shard, so it keeps them all.
+func textShards(ctx context.Context, store *recordlayer.FDBRecordStore, idx *recordlayer.Index, role string, terms []string, work *queryWork) ([]int, error) {
+	term := func(shard int, t string) *recordlayer.TextScan {
+		return recordlayer.NewTextScan(idx, tuple.Tuple{role, int64(shard)}, recordlayer.NewTextComparisonTokens(recordlayer.TextContainsAll, []string{t}, "", ""), nil)
+	}
+	sample := make([]*recordlayer.TextScan, len(terms))
+	for i, t := range terms {
+		sample[i] = term(0, t)
+	}
+	counts, err := textScans(ctx, store, sample, textSampleRows, work)
+	if err != nil {
+		return nil, err
+	}
+	rarest, holdsAll := 0, true
+	for i, c := range counts {
+		holdsAll = holdsAll && len(c) > 0
+		if len(c) < len(counts[rarest]) {
+			rarest = i
+		}
+	}
+	var shards []int
+	if holdsAll {
+		shards = append(shards, 0)
+	}
+	if len(counts[rarest]) == textSampleRows {
+		for shard := 1; shard < messageTextShards; shard++ {
+			shards = append(shards, shard)
+		}
+		return shards, nil
+	}
+	probe := make([]*recordlayer.TextScan, messageTextShards-1)
+	for i := range probe {
+		probe[i] = term(i+1, terms[rarest])
+	}
+	held, err := textScans(ctx, store, probe, 1, work)
+	if err != nil {
+		return nil, err
+	}
+	for i, h := range held {
+		if len(h) > 0 {
+			shards = append(shards, i+1)
+		}
+	}
+	return shards, nil
+}
+
+// textScans runs scans concurrently, each returning at most limit message
+// IDs (0: unbounded); each may use the remaining budget, and their sum must
+// fit it too.
+func textScans(ctx context.Context, store *recordlayer.FDBRecordStore, scans []*recordlayer.TextScan, limit int, work *queryWork) ([][]messageID, error) {
 	const op = "message full-text query"
-	found := make([][]messageID, messageTextShards)
-	subs := make([]queryWork, messageTextShards)
-	errs := make([]error, messageTextShards)
+	found := make([][]messageID, len(scans))
+	subs := make([]queryWork, len(scans))
+	errs := make([]error, len(scans))
 	var wg sync.WaitGroup
-	for shard := range messageTextShards {
-		subs[shard] = queryWork{maxCandidates: work.maxCandidates - work.candidates, maxBytes: work.maxBytes - work.bytes}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			scan := recordlayer.NewTextScan(idx, tuple.Tuple{role, int64(shard)}, recordlayer.NewTextComparisonTokens(typ, tokens, "", ""), nil)
-			found[shard], errs[shard] = textScanMatches(ctx, store, scan, 0, &subs[shard])
-		}()
+	for i, scan := range scans {
+		subs[i] = queryWork{maxCandidates: work.maxCandidates - work.candidates, maxBytes: work.maxBytes - work.bytes}
+		wg.Go(func() { found[i], errs[i] = textScanMatches(ctx, store, scan, limit, &subs[i]) })
 	}
 	wg.Wait()
 	for _, s := range subs {
@@ -889,17 +1006,12 @@ func shardTextMatches(ctx context.Context, store *recordlayer.FDBRecordStore, id
 	if err := work.check(op); err != nil {
 		return nil, err
 	}
-	var ids []messageID
-	for _, f := range found {
-		ids = append(ids, f...)
-	}
-	return ids, nil
+	return found, nil
 }
 
-// spreadAllMatches finds the multipart messages of role holding every term
-// in some part: one scan of MESSAGES_LARGE, then per message one scan per
-// term bounded to the message's entries.
-func spreadAllMatches(ctx context.Context, store *recordlayer.FDBRecordStore, text *recordlayer.Index, role string, terms []string, work *queryWork) ([]messageID, error) {
+// largeMessages lists the multipart messages of MESSAGES_LARGE, whose terms
+// may lie in different parts: one scan.
+func largeMessages(ctx context.Context, store *recordlayer.FDBRecordStore, work *queryWork) ([]messageID, error) {
 	const op = "message full-text query"
 	large, err := readableIndex(store, op, messagesLargeIndex)
 	if err != nil {
@@ -933,6 +1045,17 @@ func spreadAllMatches(ctx context.Context, store *recordlayer.FDBRecordStore, te
 		if err != nil {
 			return nil, err
 		}
+		out = append(out, id)
+	}
+}
+
+// spreadAllMatches finds the messages of large that hold every term in some
+// part of role's text: per message one scan per term bounded to the
+// message's entries.
+func spreadAllMatches(ctx context.Context, store *recordlayer.FDBRecordStore, text *recordlayer.Index, role string, terms []string, large []messageID, work *queryWork) ([]messageID, error) {
+	const op = "message full-text query"
+	var out []messageID
+	for _, id := range large {
 		// The TEXT entries after the token are the message's primary key.
 		prefix, err := tableKey(store, op, messagesRecordType, id.writer, id.seq)
 		if err != nil {
@@ -956,6 +1079,7 @@ func spreadAllMatches(ctx context.Context, store *recordlayer.FDBRecordStore, te
 			out = append(out, id)
 		}
 	}
+	return out, nil
 }
 
 // QueryMessageFullText searches message text; the exporter must index it.
