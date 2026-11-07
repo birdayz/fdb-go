@@ -189,6 +189,10 @@ func relOpenError(ctx context.Context, op string, err error) error {
 
 func (e *Exporter) Config() ExporterConfig { return e.cfg }
 
+// ClientMetrics is the FDB client counters of the exporter's database
+// handle, for diagnostics that diff two snapshots.
+func (e *Exporter) ClientMetrics() client.ClientMetricsSnapshot { return e.raw.Metrics() }
+
 // txnContext applies the exporter's transaction policy to work under ctx.
 func (e *Exporter) txnContext(ctx context.Context) context.Context {
 	return withExporterTxns(ctx, e.cfg.TransactionTimeout)
