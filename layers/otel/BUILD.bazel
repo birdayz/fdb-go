@@ -94,6 +94,7 @@ go_test(
         "exporter_rel_fdb_test.go",
         "exporter_rel_helpers_test.go",
         "exporter_rel_policy_fdb_test.go",
+        "exporter_rel_umbrella_fdb_test.go",
         "exporter_test.go",
         "guards_test.go",
         "ingest_assert_test.go",
