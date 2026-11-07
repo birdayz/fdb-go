@@ -35,10 +35,15 @@ type rywWalkState struct {
 	reverse bool
 	getKey  bool // read(GetKeyReq) (A9)
 
-	begin, end                         KeySelector
-	limits                             rangeLimits
-	result                             []KeyValue // the walk's own slice; rows alias the cache and write map
-	keyBuf                             []byte     // scratch for materialized selector boundaries during resolve
+	begin, end KeySelector
+	limits     rangeLimits
+	result     []KeyValue // the walk's own slice; rows alias the cache, the write map and valBuf
+	keyBuf     []byte     // scratch for materialized selector boundaries during resolve
+	// valBuf holds the resolved AppendIfFits values of the walk's rows. Rows
+	// outlive the walk (a pending read that ran in its goroutine keeps them
+	// uncopied until Get clones them), so unlike keyBuf it is dropped on
+	// release, never handed to a later walk.
+	valBuf                             []byte
 	more                               bool
 	additionalRows                     int64
 	itemsPast                          int32 // itemsPastEnd / itemsPastBegin
@@ -210,7 +215,7 @@ func (w *rywWalk) start() {
 func (w *rywWalk) resolveBoth() (it, itEnd *rywIter) {
 	it, itEnd = &w.its[0], &w.its[1]
 	initIter(it, w.view, &w.cache)
-	it.valBuf = &w.keyBuf
+	it.valBuf = &w.valBuf
 	if !w.reverse {
 		w.resolve(&w.begin, it, &w.actualBeginOffset)
 		itEnd.copyFrom(it)
