@@ -33,7 +33,6 @@ import (
 const (
 	messagesRecordType      = "MESSAGES"
 	messageTracesRecordType = "MESSAGE_TRACES"
-	storeMetaRecordType     = "STORE_META"
 	messagesHashIndex       = "MESSAGES_HASH"    // content_hash, unique
 	messagesTextIndex       = "MESSAGES_TEXT"    // FULLTEXT content, groups (role, shard)
 	messagesLargeIndex      = "MESSAGES_LARGE"   // ("L", writer, seq) of multipart text
@@ -46,7 +45,6 @@ const (
 type relMessageStore struct {
 	store    *tenantStore
 	fullText bool
-	meta     storeMetaReader
 	writers  messageWriters
 	queue    messageQueue
 	inflight sync.Map // messageDigest -> *inflightMessage
@@ -61,7 +59,7 @@ type relMessageStore struct {
 // s, as FDBBackend does for the fulltext layout.
 func newRelMessageStore(s *tenantStore, fullText bool) *relMessageStore {
 	s.fullText = fullText
-	return &relMessageStore{store: s, fullText: fullText, meta: localStoreMeta{}}
+	return &relMessageStore{store: s, fullText: fullText}
 }
 
 // close rejects new group commits and joins the queue's workers; it does
@@ -78,43 +76,6 @@ func (m *relMessageStore) probe(stage string, store *recordlayer.FDBRecordStore)
 // ---------------------------------------------------------------------------
 // Rows
 // ---------------------------------------------------------------------------
-
-// storeMetaReader reads a STORE_META row in the caller's transaction, nil
-// when absent.
-//
-// TODO(otel phase 2A): store_meta.go's loadStoreMeta replaces localStoreMeta
-// once it lands.
-type storeMetaReader interface {
-	load(store *recordlayer.FDBRecordStore, name string) (*otelv1pb.STORE_META, error)
-}
-
-type localStoreMeta struct{}
-
-func (localStoreMeta) load(store *recordlayer.FDBRecordStore, name string) (*otelv1pb.STORE_META, error) {
-	const op = "store meta"
-	pk, err := relKey(store.GetRecordMetaData(), op, storeMetaRecordType, name)
-	if err != nil {
-		return nil, err
-	}
-	rec, err := store.LoadRecord(pk)
-	if err != nil || rec == nil {
-		return nil, err
-	}
-	return compiledRecord[*otelv1pb.STORE_META](op, rec)
-}
-
-// relKey is the primary key of table name's row with key columns cols: a
-// relational table's leads with its record type key.
-func relKey(md *recordlayer.RecordMetaData, op, name string, cols ...tuple.TupleElement) (tuple.Tuple, error) {
-	rt := md.GetRecordType(name)
-	if rt == nil {
-		return nil, failf("ownership", op, "%s is not in the store's metadata", name)
-	}
-	if rt.PrimaryKeyHasRecordTypePrefix() {
-		return append(tuple.Tuple{rt.GetRecordTypeKey()}, cols...), nil
-	}
-	return tuple.Tuple(cols), nil
-}
 
 // compiledRecord is a loaded record as its compiled otelv1pb type, which a
 // store opened with the compiled metadata decodes it as.
@@ -266,24 +227,21 @@ func (m *relMessageStore) takeWriter(ctx context.Context) (*messageWriter, error
 		if err := m.probe("writer-before-write", store); err != nil {
 			return err
 		}
-		row, err := m.meta.load(store, otelsql.StoreMetaMessageWriter)
+		// A read-modify-write in this transaction: the serializable read
+		// conflicts with a concurrent allocator's, so IDs never repeat.
+		row, ok, err := loadStoreMeta(store, otelsql.StoreMetaMessageWriter)
 		if err != nil {
 			return err
 		}
 		last := int64(0)
-		if row != nil {
-			if row.INT_VALUE == nil || row.GetINT_VALUE() < 1 {
+		if ok {
+			if row.Int == nil || *row.Int < 1 {
 				return fail("corruption", op, "malformed message writer counter")
 			}
-			last = row.GetINT_VALUE()
+			last = *row.Int
 		}
 		id = nextWriterID(last, shard)
-		next, err := otelsql.BuildStoreMetaCompiled(otelsql.StoreMeta{Name: otelsql.StoreMetaMessageWriter, Int: &id})
-		if err != nil {
-			return wrap("operation", op, err)
-		}
-		_, err = store.SaveRecord(next)
-		return err
+		return saveStoreMeta(store, otelsql.StoreMeta{Name: otelsql.StoreMetaMessageWriter, Int: &id})
 	})
 	if err != nil {
 		m.writers.mu.Lock()
@@ -892,7 +850,6 @@ func (m *relMessageStore) persistTraceMarkers(ctx context.Context, d *messageDec
 			if err := m.probe("marker-before-write", store); err != nil {
 				return err
 			}
-			md := store.GetRecordMetaData()
 			records := store.RecordsSubspace()
 			snap := store.Context().Transaction().Snapshot()
 			reads := make([]fdb.RangeResult, len(group))
@@ -903,7 +860,7 @@ func (m *relMessageStore) persistTraceMarkers(ctx context.Context, d *messageDec
 					return wrap("operation", op, err)
 				}
 				traces[i] = trace
-				pk, err := relKey(md, op, messageTracesRecordType, k.id.writer, k.id.seq, trace)
+				pk, err := tableKey(store, op, messageTracesRecordType, k.id.writer, k.id.seq, trace)
 				if err != nil {
 					return err
 				}
@@ -994,9 +951,8 @@ func (m *relMessageStore) reconstruct(ctx context.Context, store *recordlayer.FD
 // loadRelMessages returns the raw element bytes of each message.
 func loadRelMessages(store *recordlayer.FDBRecordStore, refs []messageID, encodings map[messageID]string, work *queryWork) (map[messageID][]byte, error) {
 	const op = "message reconstruct"
-	md := store.GetRecordMetaData()
 	load := func(id messageID, part int64) (recordlayer.PendingRead[*recordlayer.FDBStoredRecord[proto.Message]], error) {
-		pk, err := relKey(md, op, messagesRecordType, id.writer, id.seq, part)
+		pk, err := tableKey(store, op, messagesRecordType, id.writer, id.seq, part)
 		if err != nil {
 			return nil, err
 		}

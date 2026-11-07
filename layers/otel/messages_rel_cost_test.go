@@ -12,10 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
-	"fdb.dev/pkg/relational/sqldriver"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
@@ -23,30 +21,21 @@ import (
 // BenchmarkMessageWriteCostRealFDB is the R1/R4 measurement of
 // rfcs/relational-exporter-migration.md §7: client CPU and stored bytes of
 // GenAI span ingest with messages, the custom store (Exporter, FDBBackend)
-// against tenant stores (relMessageStore, SPANS rows with ref_chunks) in
-// one binary, one FDB container, sequential arms. Run it alone:
+// against the relational exporter (relExporter, relMessageStore, SPANS rows
+// with ref_chunks) in one binary, one FDB container, sequential arms. Run
+// it alone:
 //
 //	bazelisk test //layers/otel:otel_test --test_arg=-test.run='^$' \
 //	  --test_arg=-test.bench=BenchmarkMessageWriteCostRealFDB \
 //	  --test_arg=-test.benchtime=1x --test_arg=-test.count=2 --test_output=streamed
 //
-// Arms: fdb_* the old Exporter (record_compression none, so record bytes
-// compare), rel_* the new store (no serializer); *_fulltext with full text,
+// Arms: fdb_* the old Exporter, rel_* the relational exporter, both with
+// record_compression none so record bytes compare; *_fulltext with full text,
 // *_deltas messages without text, rel_fulltext_norefs full text without
 // ref_chunks, isolating SPANS_REF_CHUNKS. CPU is the process's user+sys
 // over the export calls; FDB runs in its container, outside it.
 func BenchmarkMessageWriteCostRealFDB(b *testing.B) {
 	cluster := startCostCluster(b)
-	if err := fdb.APIVersion(730); err != nil {
-		b.Fatal(err)
-	}
-	raw, err := fdb.OpenDatabase(cluster)
-	if err != nil {
-		b.Fatal(err)
-	}
-	b.Cleanup(raw.Close)
-	db := recordlayer.NewFDBDatabase(raw)
-	sqldriver.RegisterDomainIfNotExists(relDomain)
 	for _, w := range []struct{ convs, turns int }{{40, 25}, {5, 200}} {
 		calls := costWorkload(w.convs, w.turns)
 		spans := float64(w.convs * w.turns)
@@ -57,7 +46,7 @@ func BenchmarkMessageWriteCostRealFDB(b *testing.B) {
 					if arm[:3] == "fdb" {
 						r = costOld(b, cluster, arm == "fdb_fulltext", calls)
 					} else {
-						r = costRel(b, db, arm != "rel_deltas", arm == "rel_fulltext_norefs", calls)
+						r = costRel(b, cluster, arm != "rel_deltas", arm == "rel_fulltext_norefs", calls)
 					}
 					b.ReportMetric(float64(r.cpu.Microseconds())/spans, "cpu_us/span")
 					b.ReportMetric(float64(r.storeBytes)/spans, "store_B/span")
@@ -180,23 +169,29 @@ func costOld(b *testing.B, cluster string, fullText bool, calls [][]*tracepb.Res
 	return r
 }
 
-// costRel exports calls into a fresh tenant store as relMsgEnv does.
-func costRel(b *testing.B, db *recordlayer.FDBDatabase, fullText, noRefs bool, calls [][]*tracepb.ResourceSpans) costResult {
+// noRefHooks is the message store without SPANS ref_chunks (measurement only).
+type noRefHooks struct{ *relMessageStore }
+
+func (noRefHooks) refChunks([]messageUse) ([][]byte, error) { return nil, nil }
+
+// costRel exports calls through a relExporter on a fresh tenant store.
+func costRel(b *testing.B, cluster string, fullText, noRefs bool, calls [][]*tracepb.ResourceSpans) costResult {
 	ctx := context.Background()
-	run := costRun(b)
-	path, schema := relTenantPaths(run, 11)
-	ts, err := otelsql.EnsureTenant(ctx, db, path, schema, nil)
+	cfg := DefaultExporterConfig()
+	cfg.ClusterFile, cfg.Run, cfg.Tenant = cluster, costRun(b), 11
+	cfg.RecordCompression = "none"
+	cfg.EnableMessageDeltas, cfg.EnableMessageFullText = true, fullText
+	var parts relParts
+	if noRefs {
+		parts.messages = func(s *tenantStore, cfg ExporterConfig) (relMessageHooks, error) {
+			return noRefHooks{newRelMessageStore(s, cfg.EnableMessageFullText)}, nil
+		}
+	}
+	e, err := newRelExporter(ctx, cfg, parts)
 	if err != nil {
 		b.Fatal(err)
 	}
-	layout := messagesDeltas
-	if fullText {
-		layout = messagesFullText
-	}
-	cfg := Config{Run: run, Tenant: 11, K: 100, MaxCandidates: 20000, MaxBytes: 4 << 20, Messages: layout}
-	s := &tenantStore{db: db, ts: ts, databasePath: ts.DatabasePath, schema: ts.Schema}
-	e := &relMsgEnv{r: &SpanReader{store: s, cfg: cfg}, m: newRelMessageStore(s, fullText), slots: make(chan struct{}, defaultMaxInFlightTransactions), coalesce: true, noRefs: noRefs}
-	defer e.m.close()
+	defer e.Shutdown(ctx)
 	var r costResult
 	inputs := make([][]*tracepb.ResourceSpans, len(calls))
 	for i, c := range calls {
@@ -204,15 +199,16 @@ func costRel(b *testing.B, db *recordlayer.FDBDatabase, fullText, noRefs bool, c
 	}
 	started, cpu := time.Now(), processCPU(b)
 	for _, in := range inputs {
-		st, err := e.export(ctx, in)
+		st, err := e.ExportResourceSpans(ctx, in)
 		if err != nil {
 			b.Fatal(err)
 		}
 		r.messages.Add(st.Messages)
 	}
 	r.cpu, r.wall = processCPU(b)-cpu, time.Since(started)
+	db := e.store.db
 	if _, err := db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
-		store, err := ts.Builder(rc).Open()
+		store, err := e.store.ts.Builder(rc).Open()
 		if err != nil {
 			return nil, err
 		}
@@ -225,7 +221,7 @@ func costRel(b *testing.B, db *recordlayer.FDBDatabase, fullText, noRefs bool, c
 	}); err != nil {
 		b.Fatal(err)
 	}
-	r.storeBytes, _, _ = costRange(b, ctx, db, ts.Subspace.Bytes())
+	r.storeBytes, _, _ = costRange(b, ctx, db, e.store.ts.Subspace.Bytes())
 	return r
 }
 
