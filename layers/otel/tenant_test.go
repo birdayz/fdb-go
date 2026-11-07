@@ -6,6 +6,7 @@ import (
 )
 
 func TestRelTenantPaths(t *testing.T) {
+	t.Parallel()
 	db, schema := relTenantPaths("run_abc_01", 42)
 	if db != "/OTEL/R_RUN_ABC_01" || schema != "T42" {
 		t.Fatalf("paths %q %q", db, schema)
@@ -15,6 +16,7 @@ func TestRelTenantPaths(t *testing.T) {
 // Every arm of the budget: under, at and over each bound, and the work a
 // result reports.
 func TestQueryWorkCharge(t *testing.T) {
+	t.Parallel()
 	budgetErr := func(err error) bool {
 		var b *QueryBudgetError
 		return errors.As(err, &b)
