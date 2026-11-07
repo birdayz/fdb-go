@@ -695,15 +695,18 @@ func testRelTraceExistential(t *testing.T, h *qrHarness) {
 		"negative limit":  {Clauses: []Attribute{model}, Limit: -1},
 		"inverted window": {Clauses: []Attribute{model}, TimeWindow: &TimeRange{Start: 2, End: 1}},
 		"bytes clause":    {Clauses: []Attribute{{"span", "k", "bytes", "AQI="}}},
-		// Not yet supported on the relational store (stream 2C).
-		"message clause": {MessageClauses: []MessageFullTextQuery{{Query: "hello"}}},
+		"message clause":  {MessageClauses: []MessageFullTextQuery{{Query: "hello"}}}, // r's layout indexes no message text
 	} {
 		_, err := r.QueryTraceExistential(ctx, q)
 		requireTyped[*ConfigError](t, name, err)
 	}
+	// Message clauses are joined on a fulltext store (messages_rel_fdb_test.go);
+	// this store holds no message, so none is witnessed.
 	fullText := h.reader(t, ctx, r.cfg.Run, 11, func(c *Config) { c.Messages = messagesFullText })
-	_, err = fullText.QueryTraceExistential(ctx, TraceExistentialQuery{Clauses: []Attribute{model}, MessageClauses: []MessageFullTextQuery{{Query: "hello"}}})
-	requireTyped[*ConfigError](t, "message clause on a fulltext store", err)
+	got, err = fullText.QueryTraceExistential(ctx, TraceExistentialQuery{Clauses: []Attribute{model}, MessageClauses: []MessageFullTextQuery{{Query: "hello"}}})
+	if err != nil || len(got.Hits) != 0 {
+		t.Fatalf("message clause on a fulltext store without messages: %+v %v", got, err)
+	}
 	_, err = fullText.QueryTraceExistential(ctx, TraceExistentialQuery{MessageClauses: []MessageFullTextQuery{{Query: "hello", Limit: 1}}})
 	requireTyped[*ConfigError](t, "message clause with a limit", err)
 }
