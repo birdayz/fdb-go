@@ -7,6 +7,7 @@ import (
 	"math"
 	"strconv"
 	"sync"
+	"time"
 
 	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/layers/otel/otelsql/otelv1pb"
@@ -44,6 +45,10 @@ type SpanWriterOptions struct {
 	Workers int
 	// BulkIndexConflicts coalesces the batch's index write conflicts.
 	BulkIndexConflicts bool
+	// TransactionTimeout, when set, runs Write under the exporter's
+	// transaction policy (this timeout, no retry limit, classified errors);
+	// zero keeps the caller context's.
+	TransactionTimeout time.Duration
 }
 
 // NewSpanWriter writes to ts on db.
@@ -56,6 +61,9 @@ func NewSpanWriter(db *recordlayer.FDBDatabase, ts *otelsql.TenantStore, opts Sp
 // committed batch stays committed when a later one fails; the stats count
 // only committed batches.
 func (w *SpanWriter) Write(ctx context.Context, spans []*tracepb.ResourceSpans) (ExportStats, error) {
+	if w.opts.TransactionTimeout > 0 {
+		ctx = withExporterTxns(ctx, w.opts.TransactionTimeout)
+	}
 	items, stats, err := w.prepare(ctx, spans, nil)
 	if err != nil {
 		return stats, err
