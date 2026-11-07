@@ -20,7 +20,6 @@ import (
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -353,14 +352,13 @@ func testDirectWriterRows(t *testing.T, cluster string) {
 			t.Errorf("%s: rows %s, want %s", c.name, got, c.rows)
 		}
 	}
-	// An array value is its AnyValue as protojson (whose spacing is unstable).
+	// An array value is its canonical JSON, equality-safe across writers.
 	var j string
 	if err := db.QueryRowContext(ctx, "SELECT x.json_value FROM spans AS s, s.any_attrs AS x WHERE s.trace_id = X'01' AND s.span_id = X'0a'").Scan(&j); err != nil {
 		t.Fatal(err)
 	}
-	var arr commonpb.AnyValue
-	if err := protojson.Unmarshal([]byte(j), &arr); err != nil || !proto.Equal(&arr, spans[0].Attributes[3].Value) {
-		t.Errorf("any_attrs json %s (%v), want %v", j, err, spans[0].Attributes[3].Value)
+	if j != "[1]" || j != string(otelsql.CanonicalJSON(spans[0].Attributes[3].Value)) {
+		t.Errorf("any_attrs json %s, want [1]", j)
 	}
 	// The envelope is stored as given: SQL returns the writer's bytes.
 	for i, sp := range spans {
