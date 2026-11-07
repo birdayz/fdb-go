@@ -202,7 +202,7 @@ func testRelSiblingFallback(t *testing.T, h *qrHarness) {
 				texts = append(texts, strings.Join(words, " "))
 			}
 			input := deltaSpan(1, deltaKV("gen_ai.input.messages", deltaArray(deltaStr(texts[0]), deltaStr(texts[1]))))
-			d, err := decomposeMessages(ctx, []*tracepb.ResourceSpans{input}, e.r.cfg.Tenant)
+			d, err := decomposeMessages(ctx, []*tracepb.ResourceSpans{input})
 			if err != nil || len(d.elements) != 2 {
 				t.Fatalf("fixture: %v / %v", d, err)
 			}
@@ -320,7 +320,7 @@ func testRelMultipartFallback(t *testing.T, h *qrHarness) {
 			defer cancel()
 			e := h.msgEnv(t, ctx, messagesFullText, nil)
 			input := deltaSpan(1, deltaKV("gen_ai.input.messages", deltaArray(deltaStr(text))))
-			d, err := decomposeMessages(ctx, []*tracepb.ResourceSpans{input}, e.r.cfg.Tenant)
+			d, err := decomposeMessages(ctx, []*tracepb.ResourceSpans{input})
 			if err != nil {
 				t.Fatal(err)
 			}

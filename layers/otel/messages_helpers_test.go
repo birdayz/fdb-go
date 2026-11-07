@@ -199,9 +199,9 @@ func deltaManifest(t *testing.T, rs *tracepb.ResourceSpans, key string) *message
 
 // decomposeInMemory decomposes spans and gives the elements IDs 1.1, 1.2, ...
 // in first-reference order, as a writer storing them would.
-func decomposeInMemory(t *testing.T, tenant int, spans []*tracepb.ResourceSpans) *messageDecomposition {
+func decomposeInMemory(t *testing.T, spans []*tracepb.ResourceSpans) *messageDecomposition {
 	t.Helper()
-	d, err := decomposeMessages(t.Context(), spans, tenant)
+	d, err := decomposeMessages(t.Context(), spans)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -312,14 +312,14 @@ func asBytes(v tuple.TupleElement) []byte {
 
 // readMessagePresence reads, in one snapshot transaction, which elements are
 // already stored. It is a hint: writes recheck presence.
-func (m *relMessageStore) readMessagePresence(ctx context.Context, elements []*messageElement, hashes map[messageDigest][]byte) (map[messageDigest]messageID, error) {
+func (m *relMessageStore) readMessagePresence(ctx context.Context, elements []*messageElement) (map[messageDigest]messageID, error) {
 	const op = "message presence"
 	var found map[messageDigest]messageID
 	err := m.store.read(ctx, op, func(store *recordlayer.FDBRecordStore) error {
 		found = map[messageDigest]messageID{}
 		hs := make([][]byte, len(elements))
 		for i, el := range elements {
-			hs[i] = hashes[el.digest]
+			hs[i] = el.digest[:]
 		}
 		get, err := hashRows(store, op, hs, true)
 		if err != nil {
@@ -375,17 +375,7 @@ func (m *relMessageStore) persist(ctx context.Context, d *messageDecomposition) 
 	}
 	started := time.Now()
 	defer func() { stats.WallNs = time.Since(started).Nanoseconds() }()
-	hashes := make([][]byte, len(d.elements))
-	_ = parallelMessageWork(len(d.elements), func(i int) error {
-		el := d.elements[i]
-		hashes[i] = otelsql.MessageContentHash(el.encoding, el.raw)
-		return nil
-	})
-	byDigest := make(map[messageDigest][]byte, len(d.elements))
-	for i, el := range d.elements {
-		byDigest[el.digest] = hashes[i]
-	}
-	found, err := m.readMessagePresence(ctx, d.elements, byDigest)
+	found, err := m.readMessagePresence(ctx, d.elements)
 	if err != nil {
 		return stats, err
 	}
@@ -410,7 +400,7 @@ func (m *relMessageStore) persist(ctx context.Context, d *messageDecomposition) 
 		owned = append(owned, el)
 		claims = append(claims, claim)
 	}
-	written, err := m.storeMessages(ctx, owned, byDigest)
+	written, err := m.storeMessages(ctx, owned)
 	stats.Add(written)
 	// Release claims before waiting, so no two calls wait on each other; a
 	// failed claim leaves no ID, as its ID may name an uncommitted attempt.
@@ -437,7 +427,7 @@ func (m *relMessageStore) persist(ctx context.Context, d *messageDecomposition) 
 			retry = append(retry, el) // the other call failed
 		}
 	}
-	written, err = m.storeMessages(ctx, retry, byDigest)
+	written, err = m.storeMessages(ctx, retry)
 	stats.Add(written)
 	if err != nil || !m.fullText {
 		return stats, err
@@ -449,14 +439,14 @@ func (m *relMessageStore) persist(ctx context.Context, d *messageDecomposition) 
 
 // storeMessages plans every element before the first write, so an admission
 // failure leaves nothing behind, then writes them.
-func (m *relMessageStore) storeMessages(ctx context.Context, elements []*messageElement, hashes map[messageDigest][]byte) (MessageStoreStats, error) {
+func (m *relMessageStore) storeMessages(ctx context.Context, elements []*messageElement) (MessageStoreStats, error) {
 	if len(elements) == 0 {
 		return MessageStoreStats{}, nil
 	}
 	plans := make([]*messagePlan, len(elements))
 	if err := parallelMessageWork(len(elements), func(i int) error {
 		var err error
-		plans[i], err = planRelMessage(elements[i], hashes[elements[i].digest], m.fullText, messageSegmentTokens)
+		plans[i], err = planRelMessage(elements[i], elements[i].digest[:], m.fullText, messageSegmentTokens)
 		return err
 	}); err != nil {
 		return MessageStoreStats{}, err

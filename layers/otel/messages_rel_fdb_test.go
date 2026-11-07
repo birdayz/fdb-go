@@ -161,15 +161,11 @@ func (e *relMsgEnv) presence(t *testing.T, ctx context.Context, rss []*tracepb.R
 
 // presenceErr is presence for goroutines other than the test's.
 func (e *relMsgEnv) presenceErr(ctx context.Context, rss []*tracepb.ResourceSpans) ([]messageID, error) {
-	d, err := decomposeMessages(ctx, rss, e.r.cfg.Tenant)
+	d, err := decomposeMessages(ctx, rss)
 	if err != nil {
 		return nil, err
 	}
-	hashes := map[messageDigest][]byte{}
-	for _, el := range d.elements {
-		hashes[el.digest] = otelsql.MessageContentHash(el.encoding, el.raw)
-	}
-	found, err := e.m.readMessagePresence(e.txn(ctx), d.elements, hashes)
+	found, err := e.m.readMessagePresence(e.txn(ctx), d.elements)
 	if err != nil {
 		return nil, err
 	}
@@ -1376,7 +1372,7 @@ func testRelMessageUnknownCommit(t *testing.T, h *qrHarness) {
 				return fdb.Error{Code: code}
 			}
 			for i, input := range inputs {
-				d, err := decomposeMessages(ctx, []*tracepb.ResourceSpans{input}, e.r.cfg.Tenant)
+				d, err := decomposeMessages(ctx, []*tracepb.ResourceSpans{input})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1464,7 +1460,7 @@ func testRelMessageSizeFallback(t *testing.T, h *qrHarness) {
 			if calls.Load() < 3 {
 				t.Fatal("multipart fallback was not committed")
 			}
-			d, err := decomposeMessages(ctx, []*tracepb.ResourceSpans{input}, e.r.cfg.Tenant)
+			d, err := decomposeMessages(ctx, []*tracepb.ResourceSpans{input})
 			if err != nil {
 				t.Fatal(err)
 			}

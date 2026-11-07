@@ -363,7 +363,7 @@ func (e *Exporter) ExportResourceSpans(ctx context.Context, spans []*tracepb.Res
 	if e.messages == nil || len(spans) == 0 {
 		return e.writer.Write(ctx, spans)
 	}
-	d, err := decomposeMessages(ctx, spans, e.cfg.Tenant)
+	d, err := decomposeMessages(ctx, spans)
 	if err != nil {
 		return ExportStats{}, err
 	}
