@@ -281,7 +281,9 @@ func (b *Backend) explain(ctx context.Context, q string, args ...any) {
 }
 
 // create makes the template (once per cluster), the run's database (which must
-// not exist) and one schema per tenant.
+// not exist) and one schema per tenant. The template is stored under its
+// revision's name: a shared benchmark cluster may hold OTEL_V1 as another
+// revision defined it.
 func (b *Backend) create(ctx context.Context) error {
 	setup, err := sql.Open("fdbsql", b.dsn(""))
 	if err != nil {
@@ -289,7 +291,8 @@ func (b *Backend) create(ctx context.Context) error {
 	}
 	defer setup.Close()
 	var apiErr *api.Error
-	if err := otelsql.CreateTemplate(ctx, setup); err != nil && (!errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeDuplicateSchemaTemplate) {
+	template := otelsql.RevisionTemplateName()
+	if err := otelsql.CreateTemplateNamed(ctx, setup, template); err != nil && (!errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeDuplicateSchemaTemplate) {
 		return err
 	}
 	if _, err := setup.ExecContext(ctx, `CREATE DATABASE "`+b.dbPath+`"`); err != nil {
@@ -299,7 +302,7 @@ func (b *Backend) create(ctx context.Context) error {
 		return err
 	}
 	for t := 0; t < b.cfg.Tenants; t++ {
-		if err := otelsql.CreateTenant(ctx, setup, b.dbPath, tenantSchema(t)); err != nil {
+		if err := otelsql.CreateTenantWithTemplate(ctx, setup, b.dbPath, tenantSchema(t), template); err != nil {
 			return err
 		}
 	}

@@ -71,6 +71,10 @@ func TestFDB_SQLBackend(t *testing.T) {
 	if err := otelsql.CreateTemplate(setup, tmpl); err != nil {
 		t.Fatal(err)
 	}
+	// Ingest binds its tenants to the revision-named template.
+	if err := otelsql.CreateTemplateNamed(setup, tmpl, otelsql.RevisionTemplateName()); err != nil {
+		t.Fatal(err)
+	}
 	tmpl.Close()
 
 	t.Run("direct writer rows are SQL rows", func(t *testing.T) {
