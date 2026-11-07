@@ -10,13 +10,16 @@ package sqltest
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	fdb "fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/internal/connknob"
 	"fdb.dev/pkg/relational/sqldriver"
 	"fdb.dev/pkg/relational/sqltest/testkit"
 )
@@ -42,7 +45,8 @@ func srBackend(t *testing.T, key string) fdb.Database {
 
 // srPooled is a *sql.DB of one pooled connection: every statement borrows
 // the same connection, and database/sql runs its ResetSession at each
-// checkout after the first.
+// checkout after the first. The connection's first pages join their
+// statements' shared transactions however long planning takes.
 func srPooled(t *testing.T, dsn string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("fdbsql", dsn)
@@ -52,6 +56,19 @@ func srPooled(t *testing.T, dsn string) *sql.DB {
 	t.Cleanup(func() { db.Close() })
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.Raw(func(driverConn any) error {
+		if dc, ok := driverConn.(driver.Conn); !ok || !connknob.SetStatementReadMaxAge(dc, time.Hour) {
+			return fmt.Errorf("connknob refused the driver connection %T", driverConn)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	return db
 }
 

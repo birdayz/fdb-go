@@ -32,6 +32,7 @@ import (
 	"fdb.dev/pkg/relational/core/ddl"
 	"fdb.dev/pkg/relational/core/keyspace"
 	"fdb.dev/pkg/relational/core/metadata"
+	"fdb.dev/pkg/relational/internal/connknob"
 	"fdb.dev/pkg/relational/internal/simgate"
 	"fdb.dev/pkg/simfdb"
 )
@@ -95,7 +96,8 @@ func (p *srProbe) reset() {
 }
 
 // open is a connection on schema S of /FRL/SIMDB, with the engine-wide plan
-// cache a driver installs.
+// cache a driver installs. Its first page joins the shared transaction
+// however long the statement took to plan.
 func (h *srHarness) open(t *testing.T) (*EmbeddedConnection, *srProbe) {
 	t.Helper()
 	fdbDB := recordlayer.NewFDBDatabaseWithBackend(h.be).SetEnv(h.env)
@@ -111,6 +113,7 @@ func (h *srHarness) open(t *testing.T) (*EmbeddedConnection, *srProbe) {
 	c := New(srDBPath, fdbDB, cat, ddl.NewRecordLayerMetadataOperationsFactoryWithKeyspace(cat, ks), ks)
 	c.SetPlanCache(NewRelationalPlanCache(c.Options()))
 	c.SetDefaultSchema(srSchema)
+	c.stmtReadMaxAge = time.Hour
 	return c, p
 }
 
@@ -742,7 +745,7 @@ func TestStatementRead_RunPage(t *testing.T) {
 	t.Run("an aged shared transaction is dropped", func(t *testing.T) {
 		t.Parallel()
 		h, c, p, shared := setup(t)
-		c.stmtRead.opened = time.Now().Add(-2 * statementReadMaxAge)
+		c.stmtRead.opened = time.Now().Add(-2 * c.stmtReadAgeBound())
 		value, marker := keys(t)
 		w := &srWork{body: writes(value, marker)}
 		if _, err := c.runPage(ctx, nil, c.Options(), w.fn); err != nil {
@@ -855,4 +858,32 @@ func TestStatementRead_RunPage(t *testing.T) {
 			t.Fatalf("an unarmed page created %d standalone transactions in %d attempts, want 0 and 1", n, p.attempts.Load())
 		}
 	})
+}
+
+// srOtherConn is a driver connection that is not an EmbeddedConnection.
+type srOtherConn struct{ driver.Conn }
+
+// TestStatementRead_AgeBound: a connection's first page joins the shared
+// transaction up to statementReadMaxAge, 250 ms, after the statement's first
+// read, unless connknob set another positive bound, which ResetSession keeps.
+func TestStatementRead_AgeBound(t *testing.T) {
+	t.Parallel()
+	h := newSRHarness(t, 263)
+	c := New(srDBPath, h.db, h.cat, ddl.NewRecordLayerMetadataOperationsFactoryWithKeyspace(h.cat, h.ks), h.ks)
+	if got := c.stmtReadAgeBound(); got != 250*time.Millisecond {
+		t.Fatalf("a new connection's bound is %v, want 250ms", got)
+	}
+	if !connknob.SetStatementReadMaxAge(c, time.Second) || c.stmtReadAgeBound() != time.Second {
+		t.Fatalf("connknob did not set the bound: %v", c.stmtReadAgeBound())
+	}
+	srResetSession(t, c)
+	if got := c.stmtReadAgeBound(); got != time.Second {
+		t.Fatalf("after ResetSession the bound is %v, want the 1s connknob set", got)
+	}
+	if connknob.SetStatementReadMaxAge(c, 0) || connknob.SetStatementReadMaxAge(srOtherConn{}, time.Second) {
+		t.Fatal("connknob accepted a zero bound or a connection that is not embedded")
+	}
+	if got := c.stmtReadAgeBound(); got != time.Second {
+		t.Fatalf("a refused connknob call changed the bound to %v", got)
+	}
 }

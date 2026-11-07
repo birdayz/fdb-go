@@ -78,6 +78,9 @@ type EmbeddedConnection struct {
 	// transaction, armed for the statement by stmtReadArmed (statement_read.go).
 	stmtRead      *statementRead
 	stmtReadArmed bool
+	// stmtReadMaxAge overrides statementReadMaxAge when positive; only tests
+	// set it (connknob). It outlives ResetSession.
+	stmtReadMaxAge time.Duration
 
 	// schemaWitnesses survive ResetSession, which drops the session schema
 	// cache: an auto-commit statement reuses a schema whose witness bytes the
@@ -394,8 +397,10 @@ type embeddedTx struct {
 
 // storeIn returns the record store for ss inside rctx, reusing this
 // transaction's open store when there is one (RFC-198 Decision 10). tx == nil
-// is auto-commit, where each page is its own transaction and the store must be
-// built fresh — unchanged.
+// is auto-commit: a store opened in the statement's shared transaction is kept
+// there, so the first page reuses the store planning opened
+// (statement_read.go); each later page runs its own transaction and opens
+// the store afresh.
 func (c *EmbeddedConnection) storeIn(rctx *recordlayer.FDBRecordContext, tx *embeddedTx, ss subspace.Subspace) (*recordlayer.FDBRecordStore, error) {
 	if tx != nil {
 		if store, ok := tx.stores[string(ss.Bytes())]; ok {

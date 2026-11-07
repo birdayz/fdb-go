@@ -2,11 +2,13 @@ package embedded
 
 import (
 	"context"
+	"database/sql/driver"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/internal/connknob"
 )
 
 // statementReadMaxAge bounds how long after its first read an auto-commit
@@ -15,6 +17,29 @@ import (
 // start, and both must fit FDB's five-second transaction lifetime with room
 // for the commit.
 const statementReadMaxAge = 250 * time.Millisecond
+
+// Tests set a connection's bound (connknob) far above any latency when they
+// need the shared first page, or tiny when they need a separate one, so
+// neither depends on how fast the machine plans.
+func init() {
+	connknob.SetStatementReadMaxAge = func(conn driver.Conn, maxAge time.Duration) bool {
+		c, ok := conn.(*EmbeddedConnection)
+		if !ok || maxAge <= 0 {
+			return false
+		}
+		c.stmtReadMaxAge = maxAge
+		return true
+	}
+}
+
+// stmtReadAgeBound is the connection's bound on the shared transaction's age
+// at the first page: statementReadMaxAge unless a test set another.
+func (c *EmbeddedConnection) stmtReadAgeBound() time.Duration {
+	if c.stmtReadMaxAge > 0 {
+		return c.stmtReadMaxAge
+	}
+	return statementReadMaxAge
+}
 
 // statementRead is the first transaction of an auto-commit QueryContext
 // statement. The catalog read (ensureMetaData), the planner's index-state
@@ -130,7 +155,7 @@ func (c *EmbeddedConnection) runFirstPage(opts *api.Options, fn func(*recordlaye
 		c.stmtRead = nil
 		return nil, nil, false
 	}
-	if time.Since(sr.opened) > statementReadMaxAge {
+	if time.Since(sr.opened) > c.stmtReadAgeBound() {
 		c.stmtRead = nil
 		sr.rctx.Cancel()
 		return nil, nil, false

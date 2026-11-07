@@ -50,6 +50,7 @@ go_test(
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/fleet",
         "//pkg/relational/core/rowstruct",
+        "//pkg/relational/internal/connknob",
         "//pkg/relational/sqldriver",
         "//pkg/relational/sqltest/testkit",
         "//pkg/simfdb",

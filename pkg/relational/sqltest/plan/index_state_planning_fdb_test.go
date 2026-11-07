@@ -13,7 +13,17 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
+	"fdb.dev/pkg/relational/internal/connknob"
 )
+
+// setStatementReadMaxAge sets how long after the statement's first read its
+// first page may still join the statement's shared transaction.
+func setStatementReadMaxAge(t *testing.T, ec *embedded.EmbeddedConnection, maxAge time.Duration) {
+	t.Helper()
+	if !connknob.SetStatementReadMaxAge(ec, maxAge) {
+		t.Fatal("connknob refused the embedded connection")
+	}
+}
 
 // dependentOnUEmail is answered from U_EMAIL, so the plan DEPENDS on that index.
 // Tests that transition U_EMAIL mid-statement must use it: under a scoped
@@ -86,7 +96,7 @@ func TestFDB_IndexStatePlanning_TransitionBetweenPagesFails40001(t *testing.T) {
 // transition another transaction commits between planning and the first page
 // is after the statement's read version, so the plan and the page read one
 // snapshot and the statement answers at it. The next statement sees the
-// transition.
+// transition. The age bound is raised so a slow plan still shares.
 func TestFDB_IndexStatePlanning_TransitionBetweenPlanAndFirstPageReadsOneSnapshot(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -94,6 +104,7 @@ func TestFDB_IndexStatePlanning_TransitionBetweenPlanAndFirstPageReadsOneSnapsho
 	logger := &transitionPlanLogger{fn: func() error { return f.MakeUniqueIndexPending(ctx) }}
 	conn := testkit.PinEmbeddedConn(t, f.DB, func(ec *embedded.EmbeddedConnection) {
 		ec.SetPlanLogger(logger)
+		setStatementReadMaxAge(t, ec, time.Hour)
 	})
 
 	emails := func(what string) []string {
@@ -131,21 +142,19 @@ func TestFDB_IndexStatePlanning_TransitionBetweenPlanAndFirstPageReadsOneSnapsho
 	}
 }
 
-// When the first page cannot join the statement's transaction (it opens more
-// than embedded's statementReadMaxAge, 250ms, after the statement began), it
-// runs in a transaction of its own; a transition between planning and that
-// page must then refuse rather than run the stale plan.
+// When the first page cannot join the statement's transaction (it opens later
+// after the statement's first read than the connection's age bound allows,
+// set here to a nanosecond), it runs in a transaction of its own; a
+// transition between planning and that page must then refuse rather than run
+// the stale plan.
 func TestFDB_IndexStatePlanning_TransitionBeforeASeparateFirstPageFails40001(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	f := testkit.NewIndexStatePlanningFixture(t)
-	logger := &transitionPlanLogger{fn: func() error {
-		err := f.MakeUniqueIndexPending(ctx)
-		time.Sleep(400 * time.Millisecond) // past statementReadMaxAge
-		return err
-	}}
+	logger := &transitionPlanLogger{fn: func() error { return f.MakeUniqueIndexPending(ctx) }}
 	conn := testkit.PinEmbeddedConn(t, f.DB, func(ec *embedded.EmbeddedConnection) {
 		ec.SetPlanLogger(logger)
+		setStatementReadMaxAge(t, ec, time.Nanosecond)
 	})
 
 	rows, err := conn.QueryContext(ctx, dependentOnUEmail)
