@@ -252,6 +252,84 @@ func TestRelLogRowBytesArms(t *testing.T) {
 	}
 }
 
+// Port of TestLogOTLPFidelityEncoding through the LOGS row: the otlp column
+// is the owned envelope, unaffected by caller or projection edits, and the
+// row's indexed sets keep the last duplicate without altering it.
+func TestRelLogOTLPFidelityEncoding(t *testing.T) {
+	t.Parallel()
+	s := lrUnitStore(t)
+	for _, rl := range logFidelityFixture(t) {
+		want := proto.Clone(rl).(*logspb.ResourceLogs)
+		logs := LogRecordsFromResourceLogs([]*logspb.ResourceLogs{rl})
+		if len(logs) != 1 {
+			t.Fatalf("converted %d logs, want one", len(logs))
+		}
+		l := logs[0]
+		l.EventID = "owned-envelope"
+		rl.SchemaUrl = "mutated input"
+		rl.ProtoReflect().SetUnknown(nil)
+		rl.ScopeLogs[0].LogRecords[0].Body = exStr("mutated input")
+		l.Body.Value = &commonpb.AnyValue_StringValue{StringValue: "mutated projection"}
+		l.Attributes[0].Value.Value = &commonpb.AnyValue_StringValue{StringValue: "mutated projection"}
+		l.Timestamp, l.TraceID, l.EventName = -1, "invalid projection", "mutated projection"
+		requireLogFidelity(t, l, want)
+
+		p := lrPrepared(t, s, l)
+		got, err := decodeLogRow("test", p.row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		requireLogFidelity(t, got, want)
+		// The oversize attribute is the one unindexed key; the bool is
+		// indexed as a bool (D1).
+		if got.EventID != l.EventID || got.EventName != want.ScopeLogs[0].LogRecords[0].EventName || p.unindexed != 1 {
+			t.Fatalf("source projections not used: %+v, unindexed=%d", got, p.unindexed)
+		}
+		last, err := newRelLogAttr("test", Attribute{LogScopeRecord, "duplicate", "string", "last"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		first, err := newRelLogAttr("test", Attribute{LogScopeRecord, "duplicate", "string", "first"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !last.holds(p.row) || first.holds(p.row) || len(got.Attributes) != 5 {
+			t.Fatal("index must use last duplicate without altering stored attributes")
+		}
+		if got.Timestamp == 0 && (got.TraceID != "" || got.SpanID != "" || p.correlated || p.row.TRACE_ID != nil || got.EffectiveTime != 777 || got.TimeSource != LogTimeReceiver) {
+			t.Fatalf("zero IDs and receiver time must remain independent projections: %+v", got)
+		}
+	}
+}
+
+// decodeLogRow refuses a row whose columns disagree with its envelope.
+func TestRelLogRowDecodeRejectsDisagreement(t *testing.T) {
+	t.Parallel()
+	s := lrUnitStore(t)
+	base := LogRecord{EventID: "r", Timestamp: 5, ObservedTimestamp: 6, TraceID: qaID(1, 16), SpanID: qaID(2, 8)}
+	for name, damage := range map[string]func(p *relPreparedLog){
+		"time source":    func(p *relPreparedLog) { p.row.TIME_SOURCE = proto.String("guess") },
+		"observed time":  func(p *relPreparedLog) { p.row.TIME_SOURCE = proto.String(LogTimeObserved) },
+		"effective time": func(p *relPreparedLog) { p.row.EFFECTIVE_NS = proto.Int64(6) },
+		"negative time":  func(p *relPreparedLog) { p.row.EFFECTIVE_NS = proto.Int64(-1) },
+		"trace column":   func(p *relPreparedLog) { p.row.TRACE_ID = qaBytes(t, qaID(3, 16)) },
+		"span column":    func(p *relPreparedLog) { p.row.SPAN_ID = nil },
+		"otlp garbage":   func(p *relPreparedLog) { p.row.OTLP = []byte{0xff} },
+		"two records": func(p *relPreparedLog) {
+			rl := &logspb.ResourceLogs{ScopeLogs: []*logspb.ScopeLogs{{LogRecords: []*logspb.LogRecord{{TimeUnixNano: 5}, {TimeUnixNano: 5}}}}}
+			p.row.OTLP, _ = proto.Marshal(rl)
+		},
+	} {
+		p := lrPrepared(t, s, base)
+		if _, err := decodeLogRow("test", p.row); err != nil {
+			t.Fatalf("%s: positive control: %v", name, err)
+		}
+		damage(&p)
+		_, err := decodeLogRow("test", p.row)
+		requireTyped[*CorruptionError](t, name, err)
+	}
+}
+
 func protowireLen(n int) int {
 	l := 1
 	for v := uint64(n); v >= 0x80; v >>= 7 { //nolint:gosec // a size
