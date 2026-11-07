@@ -20,14 +20,12 @@ var runCollectorBenchmark = func(ctx context.Context, cfg collector.CollectorBen
 	return collector.RunBenchmark(collector.WithBenchmarkIngestStart(ctx, ingestStart), cfg)
 }
 
-type backendOpener func(context.Context, otel.Config, string, string) (otel.Backend, error)
+// backendOpener opens c's backend; sql holds the --sql-* flags.
+type backendOpener func(ctx context.Context, c otel.Config, cluster, chURL string, sql sqlbackend.Options) (otel.Backend, error)
 
-// sqlOptions are the --sql-* flags, read by openBackend for the sql backend.
-var sqlOptions = sqlbackend.Options{Ingest: sqlbackend.IngestDirect, Query: sqlbackend.QuerySQL, PageRows: sqlbackend.DefaultPageRows}
-
-func openBackend(ctx context.Context, c otel.Config, cluster, chURL string) (otel.Backend, error) {
+func openBackend(ctx context.Context, c otel.Config, cluster, chURL string, sql sqlbackend.Options) (otel.Backend, error) {
 	if c.Backend == "sql" {
-		return sqlbackend.Open(ctx, c, cluster, sqlOptions)
+		return sqlbackend.Open(ctx, c, cluster, sql)
 	}
 	return otel.OpenCHContext(ctx, c, chURL, c.Backend == "ch-attrs")
 }
@@ -46,9 +44,10 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 	var confirm bool
 	var timeout time.Duration
 	flags.StringVar(&backend, "backend", "", "required: sql, ch-map, or ch-attrs")
+	sqlOptions := sqlbackend.Options{Ingest: sqlbackend.IngestDirect, Query: sqlbackend.QuerySQL, Rows: sqlbackend.RowsCompiled, PageRows: sqlbackend.DefaultPageRows}
 	flags.StringVar(&sqlOptions.Ingest, "sql-ingest", sqlOptions.Ingest, "sql backend ingest: direct (Record Layer saves into the OTEL_V1 schema stores) or insert (SQL INSERT)")
 	flags.StringVar(&sqlOptions.Query, "sql-query", sqlOptions.Query, "sql backend queries: sql (through the SQL driver) or direct (Record Layer scans of the same OTEL_V1 indexes)")
-	flags.StringVar(&sqlOptions.Rows, "sql-rows", sqlbackend.RowsCompiled, "sql backend direct ingest rows: compiled (otelv1pb types) or dynamic (dynamic messages of the catalog descriptor)")
+	flags.StringVar(&sqlOptions.Rows, "sql-rows", sqlOptions.Rows, "sql backend direct ingest rows: compiled (otelv1pb types) or dynamic (dynamic messages of the catalog descriptor)")
 	flags.BoolVar(&sqlOptions.PinnedConn, "sql-pinned-conn", sqlOptions.PinnedConn, "sql backend: run SQL queries on one pinned connection, keeping its session schema cache (no per-statement catalog read)")
 	flags.IntVar(&sqlOptions.PageRows, "sql-page-rows", sqlOptions.PageRows, "sql backend: scanned rows per SQL page (EXECUTION_SCANNED_ROWS_LIMIT); negative is unbounded")
 	flags.StringVar(&mode, "mode", "", "required: ingest, query, audit, drop, or collector-bench (drives otel.Exporter; takes no --backend)")
@@ -196,7 +195,7 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 	}
 	e := otel.NewEvidence(c, backend, mode, suite, revision)
 	started := time.Now()
-	b, err := open(ctx, c, cluster, chURL)
+	b, err := open(ctx, c, cluster, chURL, sqlOptions)
 	if err == nil {
 		defer b.Close()
 		switch mode {

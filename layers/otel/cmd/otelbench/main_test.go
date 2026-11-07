@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"fdb.dev/layers/otel"
+	"fdb.dev/layers/otel/sqlbackend"
 )
 
 type fakeBackend struct {
@@ -133,7 +134,7 @@ func (b *fakeBackend) Time(ctx context.Context, interval otel.TimeRange) (otel.Q
 
 func (b *fakeBackend) Drop(ctx context.Context) error { return b.call(ctx, "drop") }
 func (b *fakeBackend) Close()                         { b.calls = append(b.calls, "close") }
-func (b *fakeBackend) open(ctx context.Context, c otel.Config, _, _ string) (otel.Backend, error) {
+func (b *fakeBackend) open(ctx context.Context, c otel.Config, _, _ string, _ sqlbackend.Options) (otel.Backend, error) {
 	b.ctx, b.cfg = ctx, c
 	return b, nil
 }
@@ -305,11 +306,11 @@ func TestExecuteClickHouseQueryTransportSuites(t *testing.T) {
 						args = append(args, "-ch-native-addr="+addr)
 					}
 					var stdout, stderr bytes.Buffer
-					code := execute(args, &stdout, &stderr, func(ctx context.Context, c otel.Config, cluster, chURL string) (otel.Backend, error) {
+					code := execute(args, &stdout, &stderr, func(ctx context.Context, c otel.Config, cluster, chURL string, _ sqlbackend.Options) (otel.Backend, error) {
 						if c.Backend != backend || c.CHQueryTransport != transport || c.CHNativeAddr != addr || cluster != "" || chURL != endpoint {
 							t.Fatalf("opener received incorrect transport configuration: %+v", c)
 						}
-						return b.open(ctx, c, cluster, chURL)
+						return b.open(ctx, c, cluster, chURL, sqlbackend.Options{})
 					})
 					if code != 0 || stderr.Len() != 0 {
 						t.Fatalf("exit=%d stderr=%s stdout=%s", code, &stderr, &stdout)
@@ -346,9 +347,9 @@ func TestExecuteQuerySuiteAttributeBounds(t *testing.T) {
 				args := append(cliArgs("ingest"), "-suite="+suite, "-attrs="+attrs, "-output="+path)
 				var stdout, stderr bytes.Buffer
 				opened := false
-				code := execute(args, &stdout, &stderr, func(ctx context.Context, c otel.Config, cluster, chURL string) (otel.Backend, error) {
+				code := execute(args, &stdout, &stderr, func(ctx context.Context, c otel.Config, cluster, chURL string, _ sqlbackend.Options) (otel.Backend, error) {
 					opened = true
-					return b.open(ctx, c, cluster, chURL)
+					return b.open(ctx, c, cluster, chURL, sqlbackend.Options{})
 				})
 				if (suite == "genai" || suite == "all") && attrs != "8" {
 					if code != 2 || opened || stdout.Len() != 0 || stderr.Len() == 0 {
@@ -432,7 +433,7 @@ func TestExecuteRejectsArgumentsBeforeOpeningOrCreatingOutput(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "receipt.json")
 			base := append(cliArgs("ingest"), "-output="+path)
 			var stdout, stderr bytes.Buffer
-			code := execute(append(base, args...), &stdout, &stderr, func(context.Context, otel.Config, string, string) (otel.Backend, error) {
+			code := execute(append(base, args...), &stdout, &stderr, func(context.Context, otel.Config, string, string, sqlbackend.Options) (otel.Backend, error) {
 				t.Fatal("invalid arguments reached backend opener")
 				return nil, nil
 			})
@@ -472,7 +473,7 @@ func TestExecuteFlagForwarding(t *testing.T) {
 			want := otel.Config{Run: "flag_test_run", Backend: "ch-attrs", Seed: 42, Count: 24, Tenants: 3, Attributes: 12, MatchEvery: 2, Batch: 4, CHBatch: 5, CHBatchBytes: 4096, Tenant: 1, K: 2, Iterations: 3, MaxCandidates: 99, MaxBytes: 12345, Order: "time", SaveMode: saveMode, RecordCompression: "none", Workers: 2, CHQueryTransport: "native", CHNativeAddr: "127.0.0.1:9000", CHIndexGranularity: 512}
 			b := &fakeBackend{t: t}
 			var stdout, stderr bytes.Buffer
-			code := execute(args, &stdout, &stderr, func(ctx context.Context, c otel.Config, cluster, chURL string) (otel.Backend, error) {
+			code := execute(args, &stdout, &stderr, func(ctx context.Context, c otel.Config, cluster, chURL string, _ sqlbackend.Options) (otel.Backend, error) {
 				if c != want || cluster != "owned.cluster" || chURL != "http://owned.invalid:8123" {
 					t.Fatalf("opener got config=%+v cluster=%q url=%q", c, cluster, chURL)
 				}
@@ -480,7 +481,7 @@ func TestExecuteFlagForwarding(t *testing.T) {
 				if !ok || time.Until(deadline) <= 0 || time.Until(deadline) > 37*time.Second {
 					t.Fatalf("missing/wrong deadline: %v, %v", deadline, ok)
 				}
-				return b.open(ctx, c, cluster, chURL)
+				return b.open(ctx, c, cluster, chURL, sqlbackend.Options{})
 			})
 			if code != 0 {
 				t.Fatalf("exit=%d stderr=%s", code, &stderr)
@@ -514,11 +515,11 @@ func TestExecuteCHIndexGranularity(t *testing.T) {
 						args = append(args, tc.flag)
 					}
 					var stdout, stderr bytes.Buffer
-					code := execute(args, &stdout, &stderr, func(ctx context.Context, c otel.Config, cluster, chURL string) (otel.Backend, error) {
+					code := execute(args, &stdout, &stderr, func(ctx context.Context, c otel.Config, cluster, chURL string, _ sqlbackend.Options) (otel.Backend, error) {
 						if c.CHIndexGranularity != tc.want {
 							t.Fatalf("opener index granularity=%d, want %d", c.CHIndexGranularity, tc.want)
 						}
-						return b.open(ctx, c, cluster, chURL)
+						return b.open(ctx, c, cluster, chURL, sqlbackend.Options{})
 					})
 					if code != 0 || stderr.Len() != 0 {
 						t.Fatalf("exit=%d stderr=%s stdout=%s", code, &stderr, &stdout)
@@ -557,11 +558,11 @@ func TestExecuteFailureReceipts(t *testing.T) {
 			b := &fakeBackend{t: t, fail: tc.fail, failure: errors.New("injected backend failure")}
 			args := append(cliArgs(tc.mode), "-suite="+tc.suite, "-confirm-drop")
 			var stdout, stderr bytes.Buffer
-			code := execute(args, &stdout, &stderr, func(ctx context.Context, c otel.Config, cluster, chURL string) (otel.Backend, error) {
+			code := execute(args, &stdout, &stderr, func(ctx context.Context, c otel.Config, cluster, chURL string, _ sqlbackend.Options) (otel.Backend, error) {
 				if tc.fail == "open" {
 					return nil, b.failure
 				}
-				return b.open(ctx, c, cluster, chURL)
+				return b.open(ctx, c, cluster, chURL, sqlbackend.Options{})
 			})
 			if code != 1 || stderr.Len() != 0 {
 				t.Fatalf("exit=%d stderr=%q stdout=%q", code, &stderr, &stdout)
@@ -660,7 +661,7 @@ func TestExecuteOutputWriteFailureClosesBackend(t *testing.T) {
 func TestExecuteTimeoutIncludesBackendOpen(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
-	code := execute(append(cliArgs("ingest"), "-timeout=5ms"), &stdout, &stderr, func(ctx context.Context, _ otel.Config, _, _ string) (otel.Backend, error) {
+	code := execute(append(cliArgs("ingest"), "-timeout=5ms"), &stdout, &stderr, func(ctx context.Context, _ otel.Config, _, _ string, _ sqlbackend.Options) (otel.Backend, error) {
 		if _, ok := ctx.Deadline(); !ok {
 			t.Fatal("opener has no deadline")
 		}
@@ -685,7 +686,7 @@ func TestExecuteParentCancellationReachesBackendOpen(t *testing.T) {
 	parent, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var stdout, stderr bytes.Buffer
-	code := executeContext(parent, cliArgs("ingest"), &stdout, &stderr, func(ctx context.Context, _ otel.Config, _, _ string) (otel.Backend, error) {
+	code := executeContext(parent, cliArgs("ingest"), &stdout, &stderr, func(ctx context.Context, _ otel.Config, _, _ string, _ sqlbackend.Options) (otel.Backend, error) {
 		cancel()
 		select {
 		case <-ctx.Done():
@@ -700,5 +701,32 @@ func TestExecuteParentCancellationReachesBackendOpen(t *testing.T) {
 	}
 	if e := decodeEvidence(t, stdout.Bytes()); e.Error != context.Canceled.Error() {
 		t.Fatalf("cancellation receipt=%+v", e)
+	}
+}
+
+// The --sql-* flags reach the opener of each call; a later call without them
+// gets the defaults, not the earlier call's values.
+func TestExecuteSQLOptions(t *testing.T) {
+	t.Parallel()
+	opened := func(args ...string) sqlbackend.Options {
+		t.Helper()
+		var got *sqlbackend.Options
+		var stdout, stderr bytes.Buffer
+		execute(append(cliArgs("ingest"), args...), &stdout, &stderr, func(_ context.Context, _ otel.Config, _, _ string, sql sqlbackend.Options) (otel.Backend, error) {
+			got = &sql
+			return nil, errors.New("stop after open")
+		})
+		if got == nil {
+			t.Fatalf("%v: opener not called: %s", args, &stderr)
+		}
+		return *got
+	}
+	set := sqlbackend.Options{Ingest: sqlbackend.IngestInsert, Query: sqlbackend.QueryDirect, Rows: sqlbackend.RowsDynamic, PinnedConn: true, PageRows: 7}
+	if got := opened("--sql-ingest=insert", "--sql-query=direct", "--sql-rows=dynamic", "--sql-pinned-conn", "--sql-page-rows=7"); got != set {
+		t.Fatalf("flags gave %+v, want %+v", got, set)
+	}
+	defaults := sqlbackend.Options{Ingest: sqlbackend.IngestDirect, Query: sqlbackend.QuerySQL, Rows: sqlbackend.RowsCompiled, PageRows: sqlbackend.DefaultPageRows}
+	if got := opened(); got != defaults {
+		t.Fatalf("defaults %+v, want %+v", got, defaults)
 	}
 }

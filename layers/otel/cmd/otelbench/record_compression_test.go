@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"fdb.dev/layers/otel"
+	"fdb.dev/layers/otel/sqlbackend"
 )
 
 func TestExecuteRecordCompression(t *testing.T) {
@@ -50,7 +51,7 @@ func TestExecuteRecordCompression(t *testing.T) {
 	} {
 		var stdout, stderr bytes.Buffer
 		opened := false
-		code := execute(append(cliArgs("ingest"), args...), &stdout, &stderr, func(_ context.Context, _ otel.Config, _, _ string) (otel.Backend, error) {
+		code := execute(append(cliArgs("ingest"), args...), &stdout, &stderr, func(_ context.Context, _ otel.Config, _, _ string, _ sqlbackend.Options) (otel.Backend, error) {
 			opened = true
 			return nil, nil
 		})
