@@ -47,9 +47,8 @@ type textIndexTarget struct {
 	tokens          textTokenCache
 }
 
-// textTokenCache holds one batch save's tokenizations, which its TEXT prefetch
-// and maintenance share; it is the batch's own, never another save's. Nil
-// tokenizes every time.
+// textTokenCache is one batch save's tokenizations, shared by its TEXT prefetch and
+// maintenance and never by another save; nil tokenizes every time.
 type textTokenCache map[textTokenKey]map[string][]int
 
 type textTokenKey struct {

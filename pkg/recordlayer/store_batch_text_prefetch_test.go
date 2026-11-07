@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -20,6 +21,47 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )
+
+// countingTextTokenizer is the default tokenizer under its own name, counting
+// TokenizeToMap calls per text; onTokenize runs inside each call.
+type countingTextTokenizer struct {
+	*DefaultTextTokenizer
+	name       string
+	mu         sync.Mutex
+	calls      map[string]int
+	onTokenize func(text string)
+}
+
+func (t *countingTextTokenizer) Name() string                { return t.name }
+func (t *countingTextTokenizer) GetTokenizer() TextTokenizer { return t }
+
+func (t *countingTextTokenizer) TokenizeToMap(text string, version int, mode TokenizerMode) (map[string][]int, error) {
+	t.mu.Lock()
+	t.calls[text]++
+	hook := t.onTokenize
+	t.mu.Unlock()
+	if hook != nil {
+		hook(text)
+	}
+	return t.DefaultTextTokenizer.TokenizeToMap(text, version, mode)
+}
+
+// reset clears the counts and sets the hook.
+func (t *countingTextTokenizer) reset(onTokenize func(text string)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.calls, t.onTokenize = map[string]int{}, onTokenize
+}
+
+func (t *countingTextTokenizer) counts() map[string]int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make(map[string]int, len(t.calls))
+	for text, n := range t.calls {
+		out[text] = n
+	}
+	return out
+}
 
 // textPrefetchRun describes the successful attempt's commit and owned storage reads.
 type textPrefetchRun struct {
@@ -330,6 +372,84 @@ var _ = Describe("Batch TEXT bunch prefetch", func() {
 			Expect(got.commit.transaction.WriteConflictRanges).To(Equal(want.commit.transaction.WriteConflictRanges), m.name)
 			Expect(rows).To(Equal(wantRows), m.name)
 		}
+	})
+
+	// countingMetadata indexes Customer.name with a counting tokenizer registered as name.
+	countingMetadata := func(name string) (*RecordMetaData, *countingTextTokenizer) {
+		tok := &countingTextTokenizer{DefaultTextTokenizer: &DefaultTextTokenizer{}, name: name, calls: map[string]int{}}
+		Expect(GlobalTextTokenizerRegistry().Register(tok)).To(Succeed())
+		b := baseBuilder()
+		b.AddIndex("Customer", NewTextIndex("counted_text", Field("name")).SetOption(IndexOptionTextTokenizerName, name))
+		md, err := b.Build()
+		Expect(err).NotTo(HaveOccurred())
+		return md, tok
+	}
+
+	It("tokenizes each text of a batch once, maintenance reusing the prefetch's tokenization", func() {
+		md, tok := countingMetadata("batch_token_reuse_test_tokenizer")
+		for _, m := range []struct {
+			mode
+			want int // TokenizeToMap calls per text
+		}{
+			{modes[1], 1},   // batch: the prefetch tokenizes, maintenance reuses it
+			{modes[0], 1},   // batch without prefetch: maintenance alone
+			{modes[2], 2},   // PrefetchRecordBatch then SaveRecord: nothing shared
+			{sequential, 1}, // SaveRecord alone
+		} {
+			root := specSubspace().Sub(m.name)
+			var records []proto.Message
+			want := map[string]int{}
+			for id := range int64(6) {
+				text := fmt.Sprintf("%s record%d", words(int(id), 6), id)
+				records = append(records, customer(id, text, ""))
+				want[text] = m.want
+			}
+			_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+				b := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root)
+				s, err := b.CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				tok.reset(nil) // the counts are the committing attempt's
+				return nil, m.save(s, b, records)
+			})
+			Expect(err).NotTo(HaveOccurred(), m.name)
+			Expect(tok.counts()).To(Equal(want), m.name)
+		}
+	})
+
+	// Deterministic, without -race: saves run inside a batch's prefetch, after it
+	// tokenized t1, neither use nor replace the batch's tokenizations.
+	It("keeps a batch's tokenizations from a SaveRecord and a batch run during it", func() {
+		md, tok := countingMetadata("batch_token_isolation_test_tokenizer")
+		root := specSubspace()
+		t1, t2 := "alpha beta gamma", "delta epsilon zeta"
+		counts, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			s := open(rc, md, root)
+			var nested error
+			fired := false
+			tok.reset(func(text string) {
+				if text != t2 || fired {
+					return
+				}
+				fired = true
+				if _, nested = s.SaveRecord(customer(900, t1, "")); nested == nil {
+					_, nested = s.SaveRecordBatch([]proto.Message{customer(901, t1, "")})
+				}
+			})
+			defer tok.reset(nil)
+			if _, err := s.SaveRecordBatch([]proto.Message{customer(1, t1, ""), customer(2, t2, "")}); err != nil {
+				return nil, err
+			}
+			if !fired {
+				return nil, errors.New("the batch never tokenized t2")
+			}
+			return tok.counts(), nested
+		})
+		Expect(err).NotTo(HaveOccurred())
+		// t1: once each by the batch's prefetch, the SaveRecord and the inner batch's
+		// prefetch; t2: once, by the prefetch. Neither batch's maintenance tokenizes.
+		Expect(counts).To(Equal(map[string]int{t1: 3, t2: 1}))
 	})
 
 	// Run with -race: a batch's tokenizations are its own, so saves beside it on

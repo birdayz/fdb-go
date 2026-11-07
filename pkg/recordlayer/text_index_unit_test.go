@@ -1736,9 +1736,8 @@ func (f fixedTokenizer) TokenizeToMap(string, int, TokenizerMode) (map[string][]
 	return f.positions, nil
 }
 
-// A TEXT put that appends to a bunch (APPEND_IF_FITS, its conflict end prepacked)
-// and a key inside one make BunchedMap.Put's writes and conflict ranges, for
-// tokens whose tuple encoding escapes NUL bytes too.
+// A prepacked TEXT put, appending (APPEND_IF_FITS) or inside a bunch, makes BunchedMap.Put's
+// writes and conflict ranges, for tokens whose encoding escapes NUL bytes too.
 func TestTextPutMatchesBunchedMapPut(t *testing.T) {
 	t.Parallel()
 	index := NewTextIndex("text", Field("text"))
