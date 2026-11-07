@@ -321,12 +321,15 @@ func TestProtoType_RepeatedNestedShapeIsDefinedOnce(t *testing.T) {
 // descends structurally even when both sides are the SAME pointer.
 //
 // That is the fact which makes a cyclic record type fatal rather than merely
-// unsupported — and it is why this emitter has no cycle guard. Java is
-// identical (Record.equals is `Objects.requireNonNull(fields).equals(
-// otherType.fields)` → Field.equals → getFieldType().equals, with no visited
-// set), so a type that reaches itself blows the stack in BOTH engines the
-// moment anything compares it, long before a descriptor is asked for. A
-// Go-only guard here would be a divergence dressed as a fix.
+// unsupported — and it is why this emitter has no cycle guard. Java differs
+// only in its identity check: Record.equals returns true for the same object
+// (Type.java:2400-2402) and otherwise descends the same way
+// (`Objects.requireNonNull(fields).equals(otherType.fields)` → Field.equals →
+// getFieldType().equals, with no visited set). So comparing two distinct
+// cyclic types blows the stack in BOTH engines, long before a descriptor is asked for, and
+// Go's missing identity check also fails a type compared with itself
+// (DIVERGENCES.md). A Go-only guard here would be a divergence dressed as a
+// fix.
 //
 // If Equals ever gains a fast path, this test fails, and that is the signal to
 // re-examine whether cyclic types have become constructible — at which point
@@ -346,10 +349,10 @@ func TestProtoType_RecordEqualsHasNoIdentityShortCircuit(t *testing.T) {
 		t.Fatal("a record type is not equal to itself")
 	}
 	if counter.n == 0 {
-		t.Fatal("RecordType.Equals short-circuited on pointer identity. That is a behaviour " +
-			"change vs Java's Record.equals, which always descends — re-check whether cyclic " +
-			"types are now constructible, and whether TypeProtoRepository's cache lookup " +
-			"needs a cycle guard.")
+		t.Fatal("RecordType.Equals short-circuited on pointer identity. Go deliberately omits the " +
+			"identity check Java's Type.Record.equals makes (Type.java:2400-2402), so a cyclic type " +
+			"fails at its first comparison — re-check whether cyclic types are now constructible, " +
+			"and whether TypeProtoRepository's cache lookup needs a cycle guard.")
 	}
 }
 

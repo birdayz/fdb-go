@@ -13,32 +13,52 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 )
 
-// referenceCompositeEvaluate is the composite's tuples as the cross product
-// of every child's Evaluate, in child order with the earlier child most
-// significant: the semantics CompositeKeyExpression.Evaluate's single-pass
-// evaluation must keep.
-func referenceCompositeEvaluate(c *CompositeKeyExpression, record *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
-	result := [][]any{{}}
-	for _, expr := range c.expressions {
-		var childTuples [][]any
-		var err error
-		if inner, ok := expr.(*CompositeKeyExpression); ok {
-			childTuples, err = referenceCompositeEvaluate(inner, record, msg)
-		} else {
-			childTuples, err = expr.Evaluate(record, msg)
-		}
-		if err != nil {
-			return nil, err
-		}
-		var crossed [][]any
-		for _, existing := range result {
-			for _, child := range childTuples {
-				crossed = append(crossed, append(append([]any(nil), existing...), child...))
+// referenceEvaluate is expr's tuples by the semantics the single-pass
+// evaluations must keep: a composite's are the cross product of its
+// children's, in child order with the earlier child most significant; a
+// fan-out nesting over a repeated message field's are its child's over each
+// element in turn; both through this reference, so neither
+// CompositeKeyExpression.Evaluate nor NestingKeyExpression.evaluateRepeated
+// computes them. Any other expression's are its own Evaluate.
+func referenceEvaluate(expr KeyExpression, record *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
+	switch e := expr.(type) {
+	case *CompositeKeyExpression:
+		result := [][]any{{}}
+		for _, child := range e.expressions {
+			childTuples, err := referenceEvaluate(child, record, msg)
+			if err != nil {
+				return nil, err
 			}
+			var crossed [][]any
+			for _, existing := range result {
+				for _, tup := range childTuples {
+					crossed = append(crossed, append(append([]any(nil), existing...), tup...))
+				}
+			}
+			result = crossed
 		}
-		result = crossed
+		return result, nil
+	case *NestingKeyExpression:
+		if e.fanType != FanTypeFanOut || msg == nil {
+			break
+		}
+		m := msg.ProtoReflect()
+		fd := m.Descriptor().Fields().ByName(protoreflect.Name(e.parentField))
+		if fd == nil || !fd.IsList() || fd.Message() == nil {
+			break
+		}
+		var result [][]any
+		list := m.Get(fd).List()
+		for i := 0; i < list.Len(); i++ {
+			tuples, err := referenceEvaluate(e.child, record, list.Get(i).Message().Interface())
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, tuples...)
+		}
+		return result, nil
 	}
-	return result, nil
+	return expr.Evaluate(record, msg)
 }
 
 func compositeFanoutDescriptors(t *testing.T) (rec, elem protoreflect.MessageDescriptor) {
@@ -71,10 +91,11 @@ func compositeFanoutDescriptors(t *testing.T) (rec, elem protoreflect.MessageDes
 }
 
 // CompositeKeyExpression.Evaluate evaluates each child once and builds the
-// cross product of fan-out children directly. Its tuples, their order, and
-// an empty fan-out's empty result are the reference cross product's, for
+// cross product of fan-out children directly, and a fan-out nesting takes a
+// flat child's EvaluateFlat per element. Their tuples, their order, and an
+// empty fan-out's empty result are the reference's (referenceEvaluate), for
 // zero to three elements per repeated field, absent fields, two fan-outs,
-// a repeated scalar and nested composites.
+// a repeated scalar, nested composites and a fan-out nesting root.
 func TestCompositeKeyExpressionFanOutMatchesReferenceCrossProduct(t *testing.T) {
 	t.Parallel()
 	recD, elemD := compositeFanoutDescriptors(t)
@@ -123,13 +144,7 @@ func TestCompositeKeyExpressionFanOutMatchesReferenceCrossProduct(t *testing.T) 
 		record := asStored(m)
 		for name, expr := range exprs {
 			got, gotErr := expr.Evaluate(record, m)
-			var want [][]any
-			var wantErr error
-			if c, ok := expr.(*CompositeKeyExpression); ok {
-				want, wantErr = referenceCompositeEvaluate(c, record, m)
-			} else {
-				want, wantErr = expr.Evaluate(record, m) // a nesting root: its children are composites
-			}
+			want, wantErr := referenceEvaluate(expr, record, m)
 			if (gotErr != nil) != (wantErr != nil) {
 				t.Fatalf("%s, iteration %d: error %v, reference %v", name, iter, gotErr, wantErr)
 			}
