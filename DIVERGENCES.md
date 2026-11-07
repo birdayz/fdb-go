@@ -16,7 +16,13 @@ not every one has been re-measured on 4.14.2.0.
 Go exposes `CREATE FULLTEXT INDEX ... ON table(text_column) [PARTITION BY (...)]`
 and the seven `TEXT_CONTAINS_*` SQL functions as a Go extension. Java Relational
 4.14.2.0 has only the reserved `FULLTEXT` lexer token, not these parser productions
-or built-ins (checked against the exact `4.14.2.0` source tag). Existing schema
+or built-ins (checked against the exact `4.14.2.0` source tag). The Go DDL also
+takes `OPTIONS (TOKENIZER = '<name>', TOKENIZER_VERSION = <int>)` after the
+partition clause, setting the TEXT index options `textTokenizerName` and
+`textTokenizerVersion` that Java's metadata API sets programmatically. Names are
+case-insensitive; an unknown option is `0A000`, a duplicate or a value of the
+wrong kind `42601`, and an unregistered tokenizer or an out-of-range version
+fails the template (`pkg/relational/sqltest/plan/fulltext_options_ddl_fdb_test.go`). Existing schema
 macros retain precedence over `TEXT_CONTAINS_*` built-ins. With
 `CASE_SENSITIVE_IDENTIFIERS`, a same-casefold macro family reserves the name
 and exact spelling resolves the macro; a mismatched case is not a builtin
