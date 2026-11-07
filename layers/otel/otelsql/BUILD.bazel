@@ -7,6 +7,7 @@ go_library(
         "rows_compiled.go",
         "store.go",
         "template.go",
+        "tokenizer.go",
     ],
     importpath = "fdb.dev/layers/otel/otelsql",
     visibility = ["//visibility:public"],
@@ -32,6 +33,7 @@ go_test(
     srcs = [
         "rows_compiled_test.go",
         "template_test.go",
+        "tokenizer_test.go",
     ],
     embed = [":otelsql"],
     deps = [
