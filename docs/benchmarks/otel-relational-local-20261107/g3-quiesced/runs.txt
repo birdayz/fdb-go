@@ -1,0 +1,21 @@
+# Quiesced G3 query gate on container otelg3q (foundationdb/foundationdb:7.3.77, single ssd-redwood-1, port 4522, G3's env)
+# custom: otelbench at 7fb269417 + fts-perf/base-harness.patch, --backend fdb, sha256 371e00559ed6f9040671677db6e50b9bdc4a4c7614b156c2fffa6d6752d11c72
+# Exporter: otelbench at 11ae9acbf (otel/p3-fts-phrase on ec07906be), sha256 e9aa6f541dc7e2c8a7dcfcf7c0a1c35d4fb923ae8efee9422c708257ee67955a
+# Each run: full-*: default collector-bench on a fresh run (post-ingest queries, not gated); qo-*: --query-only on that run, every class x100, after the storage and log queues drained (gated).
+# *_off_*: --enable-message-deltas=false --enable-message-fts=false. quiet=[load queue_bytes] at the start; load = 1-minute load average start/end; time = user sys real (s).
+g3rbase_fts_1 full rc=0 quiet=[12.50 1996] load 12.50/11.92 time 100.432 7.240 22.763
+g3rbase_fts_1 query-only rc=0 quiet=[10.62 198] load 10.62/9.90 time 28.160 4.419 11.312
+g3rnew_fts_1 full rc=0 quiet=[8.84 2011] load 8.84/9.13 time 74.590 4.616 16.631
+g3rnew_fts_1 query-only rc=0 quiet=[8.98 2004] load 8.98/8.74 time 8.249 1.271 4.317
+g3rbase_off_1 full rc=0 quiet=[8.26 1743] load 8.26/8.48 time 37.721 2.507 5.777
+g3rbase_off_1 query-only rc=0 quiet=[7.17 1999] load 7.17/7.17 time 1.269 0.214 1.126
+g3rnew_off_1 full rc=0 quiet=[6.61 1996] load 6.61/6.88 time 27.499 1.564 4.374
+g3rnew_off_1 query-only rc=0 quiet=[6.05 2057] load 6.05/6.05 time 1.072 0.181 0.920
+g3rnew_fts_2 full rc=0 quiet=[5.66 2009] load 5.66/7.57 time 73.683 4.439 16.821
+g3rnew_fts_2 query-only rc=0 quiet=[6.77 2009] load 6.77/7.11 time 8.087 1.195 4.213
+g3rbase_fts_2 full rc=0 quiet=[6.63 231] load 6.63/8.02 time 102.155 7.871 26.761
+g3rbase_fts_2 query-only rc=0 quiet=[7.33 1996] load 7.33/6.74 time 27.824 4.516 11.291
+g3rnew_off_2 full rc=0 quiet=[6.16 1034] load 6.16/6.16 time 27.361 1.630 4.547
+g3rnew_off_2 query-only rc=0 quiet=[5.27 2003] load 5.27/5.27 time 1.054 0.184 0.934
+g3rbase_off_2 full rc=0 quiet=[4.92 196] load 4.92/5.33 time 38.257 2.621 5.706
+g3rbase_off_2 query-only rc=0 quiet=[4.85 196] load 4.85/4.85 time 1.292 0.228 1.144

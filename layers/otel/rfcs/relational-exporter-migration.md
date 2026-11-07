@@ -1,6 +1,6 @@
 # Replace the custom OTel store with OTEL_V1 relational tenant stores
 
-**Status:** Accepted implementation plan (2026-11-07), with every §7 owner decision (D1–D11) taken as recommended. Phases 0–2 are implemented and measured (G2A and the R1/R4 message measurements in the benchmark doc). Phase 3A (cutover) is implemented: `otel.Exporter` is the relational store, `ExporterConfig` is trimmed per D2 and equality is typed per D1. G3 (benchmark doc, "Gate G3"): every collector-bench query class is within 1.10× at p50 except `fts_single_token` (1.53×), message persist wall is 1.39× while ingest is 0.90× wall and 0.89× CPU (the owner accepted it; G2C's persist criterion became the summed message transaction time, 0.93×), and `TestRunBenchmarkRealFDB` passes. The `fts_single_token` gap was the storage server's post-ingest drain meeting 818 range requests per query. The fix reads reference chunks in place and coalesces marker reads, and gives 0.30× the custom store quiesced (benchmark doc, "fts_single_token: the G3 gap explained and fixed"). Under G3's method the drain moves to the role-less phrase classes, which are 0.83–0.86× quiesced (TODO.md). Phase 3B (deletion) is done: `FDBBackend`, its posting index, keyspace and ingest code, the old log and message storage, v1 continuation tokens, the envelope/fidelity code, Brotli records and their tests are deleted, and so are `otelbench --backend fdb`, `--posting-value-format`, `--hash-bytes`, `--diagnostics` and the Brotli values. The Exporter is the only store; the same-binary baseline is gone, so later comparisons use the archived merge-base receipts (§6 Gates).
+**Status:** Accepted implementation plan (2026-11-07), with every §7 owner decision (D1–D11) taken as recommended. Phases 0–2 are implemented and measured (G2A and the R1/R4 message measurements in the benchmark doc). Phase 3A (cutover) is implemented: `otel.Exporter` is the relational store, `ExporterConfig` is trimmed per D2 and equality is typed per D1. G3 (benchmark doc, "Gate G3"): every collector-bench query class is within 1.10× at p50 except `fts_single_token` (1.53×), message persist wall is 1.39× while ingest is 0.90× wall and 0.89× CPU (the owner accepted it; G2C's persist criterion became the summed message transaction time, 0.93×), and `TestRunBenchmarkRealFDB` passes. The `fts_single_token` gap was the storage server's post-ingest drain meeting 818 range requests per query. The fix reads reference chunks in place and coalesces marker reads, and gives 0.30× the custom store quiesced (benchmark doc, "fts_single_token: the G3 gap explained and fixed"). G3's query gate is quiesced (§6). With the role-less phrase classes probing their rarest term before scanning shards, every collector-bench class is at most 0.98× the custom store at p50 quiesced, with defaults and with messages off (benchmark doc, "Quiesced query gate"). Phase 3B (deletion) is done: `FDBBackend`, its posting index, keyspace and ingest code, the old log and message storage, v1 continuation tokens, the envelope/fidelity code, Brotli records and their tests are deleted, and so are `otelbench --backend fdb`, `--posting-value-format`, `--hash-bytes`, `--diagnostics` and the Brotli values. The Exporter is the only store; the same-binary baseline is gone, so later comparisons use the archived merge-base receipts (§6 Gates).
 
 **Base:** branch `otel/relational-store` (draft PR #1035). Line citations are against that tree.
 
@@ -570,6 +570,12 @@ Tests: unit tests driving every budget-helper arm, with vacuity checks. FDB test
 - otelbench `sql --sql-query direct` vs `fdb` production;
 - every class within the G2 thresholds;
 - `TestRunBenchmarkRealFDB` exact rows.
+
+The query classes are gated quiesced (owner decision, 2026-11-07, after the
+`fts_single_token` analysis). Each ingested run is queried with
+`collector-bench --query-only` once the storage and log queues have drained
+below 1 MB. The default post-ingest phase queries while the storage server
+still drains the ingest, so its numbers are reported but not gated.
 
 **3B. Delete**
 

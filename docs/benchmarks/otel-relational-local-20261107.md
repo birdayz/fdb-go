@@ -409,6 +409,14 @@ process's user+sys over the export calls; the ranges cover every run.
 
 ### Gate G3: collector bench after the cutover
 
+**Method (owner decision, after the analysis below).** G3's query classes
+are gated quiesced: each ingested run is queried with `collector-bench
+--query-only` after the storage and log queues drain below 1 MB. The gated
+results are in "Quiesced query gate" below. This subsection is the first G3
+run at `f68acec52`, whose query numbers are **post-ingest**: measured while
+the storage server was still draining the ingest. They are kept as
+history, not as the gate.
+
 `collector-bench` through the cutover's `otel.Exporter` (`f68acec52`; its defaults:
 `zlib-1`, bulk index conflicts) against the custom store at `7fb269417`
 (`--backend fdb`; its defaults: brotli-4, tuple postings, 8-byte hashes, time
@@ -439,7 +447,7 @@ Logical span bytes are each store's own `logical_bytes` count. For the Exporter
 that is the span's OTLP; for the custom store it is the canonical OTLP plus its
 fidelity lists. It is not a storage measurement.
 
-| query class, p50 / p99 ms | custom, FTS (median) | Exporter, FTS (median) | p50 ratio | custom, off | Exporter, off |
+| post-ingest query class, p50 / p99 ms | custom, FTS (median) | Exporter, FTS (median) | p50 ratio | custom, off | Exporter, off |
 |---|---|---|---:|---|---|
 | same_span_conjunction | 1.91 / 2.74 | 1.22 / 1.90 | 0.64 | 1.78 / 2.59, 1.83 / 3.01 | 1.19 / 1.84, 1.20 / 1.72 |
 | trace_existential_3way | 29.11 / 37.57 | 26.90 / 33.11 | 0.92 | 4.61 / 6.57, 4.56 / 7.20 | 3.01 / 5.40, 3.11 / 5.53 |
@@ -460,7 +468,10 @@ fidelity lists. It is not a storage measurement.
 ### fts_single_token: the G3 gap explained and fixed
 
 These runs are on a fresh container, `otelfts`, with G3's image, environment and
-configuration. Three binaries ran, alternating:
+configuration. The commits named here are those of the measured branch;
+on `otel/relational-store` they are `de8d549f2` (harness), `e7a6a2c2c`
+(fewer allocations) and `870aacf2a` (fewer requests). Three binaries ran,
+alternating:
 
 - **custom:** `7fb269417` with `--backend fdb`, plus a harness patch.
 - **before:** `b70072f38`, the Exporter with the harness only.
@@ -552,9 +563,88 @@ reproduces G3's gap. The other classes are as in G3.
 
 - **fts_single_token** is now 0.24–0.46× the custom store at p50 and 0.36–0.59× at p99 under G3's method, and 0.30× quiesced.
 - **The drain moves.** It now falls on the next classes, `fts_phrase_first_turn` and `fts_multi_turn_history`: their p50 is 1.01–1.25× the custom store's, and single 115–145 ms stalls set their p99. Quiesced, both are 0.83–0.86× the custom store at p50 and below it at p99.
-- **Why those classes are exposed.** Without a role, each issues about 290 range requests: role discovery, then 16 shards for each role and token, for about 130 rows. That is the same exposure to the drain that `fts_single_token` had (see TODO.md).
+- **Why those classes are exposed.** Without a role, each issues about 290 range requests: role discovery, then 16 shards for each role and token, for about 130 rows. That is the same exposure to the drain that `fts_single_token` had. `3dbf81a32` fixes it (next subsection).
 - **G3's method mixes two things.** Its post-ingest numbers combine query cost with the storage server's post-ingest durability backlog. Which classes absorb the backlog depends on how long the earlier classes take. Steady-state comparisons should run `--query-only` after the queues drain.
 - **Ingest is unchanged.** The fix's process CPU is lower (79–81 s against 96–97 s for before and 105–108 s for the custom store) only because its queries are cheaper.
+
+### Quiesced query gate
+
+The G3 query gate under the owner's quiesced method, with the role-less
+phrase fix (`3dbf81a32`). An "all" or phrase query of several terms now
+counts each term's postings in shard 0 of a role, probes the rarest term in
+the other shards and scans only the shards that hold it. The roles run
+concurrently, and MESSAGES_LARGE is scanned once.
+
+**Setup.**
+
+- **Binaries:** the Exporter at `11ae9acbf` (this branch on `ec07906be`), against the custom store at `7fb269417` plus `fts-perf/base-harness.patch`, with `--backend fdb` and its own defaults (brotli-4, tuple postings, 8-byte hashes).
+- **Container:** a fresh `otelg3q`, with G3's image, environment and configuration.
+- **Runs:** `--conversations 1000`, with defaults (deltas + FTS) and with messages off. Two fresh runs per arm and configuration; the arms alternated and their order flipped in the second round.
+- **Per run:**
+  - The default `collector-bench` ingests, and its post-ingest queries are reported but not gated.
+  - Once the storage and log queues are below 1 MB, `--query-only` runs every class 100 times on that run. Those are the gated numbers.
+- **Load and outcomes:** the 1-minute load was 4.9–12.5 at every start. Every run had 0 failures and 0 fidelity mismatches.
+- **Raw evidence:** `otel-relational-local-20261107/g3-quiesced/`, with per-iteration samples in the `qo-*` receipts.
+
+**Quiesced (gated)**, p50 / p99 ms, runs 1 and 2. The ratio compares the
+means of the two runs' p50s. "Requests" are the client range requests per
+query, custom against Exporter.
+
+| class | custom | Exporter | p50 ratio | requests |
+|---|---|---|---:|---|
+| fts_single_token | 31.15 / 35.18, 31.06 / 35.66 | 9.34 / 11.82, 8.83 / 10.55 | 0.29 | 818 / 79 |
+| fts_phrase_first_turn | 8.36 / 9.71, 8.12 / 9.60 | 4.16 / 5.91, 4.24 / 6.27 | 0.51 | 227–240 / 73–74 |
+| fts_multi_turn_history | 8.21 / 9.58, 7.98 / 11.42 | 3.95 / 6.22, 4.01 / 6.03 | 0.49 | 226–238 / 72 |
+| fts_same_span_predicates | 30.45 / 34.45, 30.43 / 35.17 | 11.45 / 15.00, 11.05 / 13.00 | 0.37 | 1,042–1,044 / 314 |
+| same_span_conjunction | 2.04 / 3.02, 1.83 / 2.95 | 1.13 / 2.21, 1.09 / 2.16 | 0.57 | 33 / 32 |
+| trace_existential_3way | 29.58 / 31.97, 29.90 / 34.37 | 9.42 / 12.96, 9.54 / 12.05 | 0.32 | 828 / 87 |
+| trace_graph_traversal | 1.81 / 3.01, 1.74 / 2.78 | 1.26 / 2.43, 1.29 / 2.16 | 0.72 | 5 / 4 |
+| correlated_logs_by_trace | 0.62 / 1.00, 0.64 / 1.01 | 0.53 / 0.65, 0.60 / 0.87 | 0.89 | 2 / 3 |
+| *messages off* | | | | |
+| same_span_conjunction | 1.51 / 2.69, 1.61 / 2.40 | 1.04 / 2.01, 0.93 / 1.97 | 0.63 | 33 / 32 |
+| trace_existential_3way | 4.02 / 5.29, 4.38 / 6.25 | 2.85 / 4.43, 2.70 / 4.35 | 0.66 | 12 / 10 |
+| trace_graph_traversal | 4.57 / 5.73, 4.41 / 5.44 | 3.39 / 4.84, 3.75 / 5.35 | 0.79 | 7 / 6 |
+| correlated_logs_by_trace | 0.57 / 0.82, 0.54 / 1.18 | 0.51 / 0.60, 0.57 / 0.87 | 0.98 | 2 / 3 |
+
+Every class is within the 1.10× threshold at p50 (at most 0.98×), and every
+p99 is below the custom store's.
+
+- **Phrase classes:** they read 11 KB instead of 25–29 KB per query, and 158–162 rows instead of 128–153, the extra rows being the shard-0 term counts.
+
+**Post-ingest (not gated)**, from the same runs' default phase, p50 / p99 ms:
+
+| class | custom | Exporter | p50 ratio |
+|---|---|---|---:|
+| fts_single_token | 29.35 / 112.30, 42.98 / 239.11 | 9.65 / 45.30, 9.25 / 45.19 | 0.26 |
+| fts_phrase_first_turn | 7.80 / 82.57, 6.96 / 11.96 | 4.03 / 5.38, 4.43 / 66.96 | 0.57 |
+| fts_multi_turn_history | 7.63 / 70.92, 7.08 / 9.45 | 4.28 / 82.21, 4.39 / 81.72 | 0.59 |
+| fts_same_span_predicates | 27.09 / 32.81, 27.47 / 33.01 | 11.32 / 81.92, 12.68 / 78.39 | 0.44 |
+| same_span_conjunction | 1.62 / 4.49, 1.64 / 2.94 | 1.18 / 32.95, 1.20 / 2.79 | 0.73 |
+| trace_existential_3way | 25.79 / 30.67, 26.60 / 31.41 | 9.05 / 77.15, 9.14 / 122.01 | 0.35 |
+| trace_graph_traversal | 1.66 / 2.18, 1.76 / 2.45 | 1.07 / 2.06, 1.12 / 1.50 | 0.64 |
+| correlated_logs_by_trace | 0.49 / 0.60, 0.54 / 0.79 | 0.46 / 0.68, 0.50 / 0.70 | 0.93 |
+| *messages off* | | | |
+| same_span_conjunction | 1.72 / 2.69, 1.66 / 2.47 | 1.14 / 2.34, 1.11 / 1.50 | 0.66 |
+| trace_existential_3way | 4.15 / 6.85, 3.78 / 5.59 | 2.82 / 7.31, 2.79 / 5.18 | 0.71 |
+| trace_graph_traversal | 4.49 / 6.19, 4.24 / 5.79 | 3.11 / 5.33, 3.53 / 6.00 | 0.76 |
+| correlated_logs_by_trace | 0.49 / 0.69, 0.52 / 1.02 | 0.47 / 0.69, 0.53 / 0.74 | 0.99 |
+
+Post-ingest p50s are all below the custom store's as well. Both stores' p99s
+still include drain stalls: 33–122 ms for the Exporter and 71–239 ms for
+the custom store.
+
+**Ingest, the same runs.** Process CPU is user+sys of the default command.
+
+| arm | ingest s | spans/s | process CPU s | persist s | message txn s |
+|---|---|---|---|---|---|
+| custom, deltas + FTS | 9.84 / 10.41 | 1,524 / 1,441 | 107.7 / 110.0 | 20.1 / 21.1 | 62.2 / 64.6 |
+| Exporter, deltas + FTS | 8.84 / 8.80 | 1,696 / 1,704 | 79.2 / 78.1 | 27.6 / 27.3 | 60.5 / 59.6 |
+| custom, messages off | 4.56 / 4.55 | 3,291 / 3,295 | 40.2 / 40.9 | — | — |
+| Exporter, messages off | 3.40 / 3.55 | 4,413 / 4,224 | 29.1 / 29.0 | — | — |
+
+- **With messages:** ingest wall is 0.87×, process CPU 0.72×, and the summed message transaction time (the G2C criterion) 0.95×.
+- **With messages off:** wall is 0.76× and CPU 0.72×.
+- **Process CPU** covers the queries too, which are now cheaper.
 
 ## Reproduce
 

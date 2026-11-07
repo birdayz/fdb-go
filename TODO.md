@@ -3720,18 +3720,19 @@ these claims; the implementation notes below are not controlled comparisons.
   - [x] Message persist wall is 1.39x with the same summed message transaction
     time and count and 0 retries. Owner decision: G2C's persist criterion is
     the summed message transaction time (0.93x).
-  - [ ] Without a role, `fts_phrase_first_turn` and `fts_multi_turn_history`
-    issue about 290 range requests for about 130 rows: role discovery, then
-    the TextScan of each (role, shard) opens a cursor per token even when a
-    rarer token has no postings there. Quiesced they are 0.83-0.86x the custom
-    store, but under G3's method they now absorb the drain (p50 1.01-1.25x,
-    115-145 ms p99 stalls). Probe the rarest token per group first, or skip
-    groups that lack a token, before re-gating those classes.
-  - [ ] collector-bench's post-ingest phase starts while the storage server
+  - [x] Without a role, `fts_phrase_first_turn` and `fts_multi_turn_history`
+    issued 226-293 range requests for about 130-150 rows: the TextScan of each
+    (role, shard) opens a read per term. An "all" or phrase query of several
+    terms now counts the terms in shard 0, probes the rarest in the other
+    shards and scans only the shards holding it (`3dbf81a32`): 72-74
+    requests, 0.49-0.51x the custom store quiesced.
+  - [x] collector-bench's post-ingest phase starts while the storage server
     still drains 400-500 MB of the ingest (6-10 s), so its first classes
-    absorb the drain. The Go client cannot read `\xff\xff/status/json` to
-    wait for it. Gate steady-state query comparisons on `--query-only` after
-    the queues drain, or make the bench wait for durability.
+    absorb the drain. Owner decision: the G3 query gate runs `--query-only`
+    after the queues drain (benchmark doc, "Quiesced query gate"); the
+    post-ingest numbers are reported, not gated. The bench still cannot wait
+    for durability itself (the Go client does not serve
+    `\xff\xff/status/json`).
   - [x] `tuple.decodeInt` (pkg/fdbgo/fdb/tuple) decoded every int through
     `binary.Read(bytes.NewBuffer(...))`: four allocations per int, 15% of the
     old message query's allocations. It now decodes from a stack array (one
