@@ -971,7 +971,8 @@ func messageRefs(uses []messageUse) []otelsql.MessageRef {
 // reconstruct restores, in place, the original attribute values of a loaded
 // single-span ResourceSpans from the MESSAGES rows its manifests name, in
 // two read waves (heads, then the remaining raw parts of multipart
-// messages), charging every row read to work.
+// messages), counting every row read in work. LoadSpanOTLP has no budget
+// (§1.3), so the count never fails the load: a span may hold 16 MiB elements.
 func (m *relMessageStore) reconstruct(ctx context.Context, store *recordlayer.FDBRecordStore, rs *tracepb.ResourceSpans, work *queryWork) error {
 	p, err := planReconstruct(ctx, []*tracepb.ResourceSpans{rs})
 	if err != nil || len(p.sites) == 0 {
@@ -1009,9 +1010,8 @@ func loadRelMessages(store *recordlayer.FDBRecordStore, refs []messageID, encodi
 		if r == nil {
 			return nil, failf("corruption", op, "missing %s of message %d/%d", what, id.writer, id.seq)
 		}
-		if err := work.charge(op, int64(r.KeySize+r.ValueSize)); err != nil {
-			return nil, err
-		}
+		work.candidates++
+		work.bytes += int64(r.KeySize + r.ValueSize)
 		return compiledRecord[*otelv1pb.MESSAGES](op, r)
 	}
 	heads := make([]recordlayer.PendingRead[*recordlayer.FDBStoredRecord[proto.Message]], len(refs))
