@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"fdb.dev/layers/otel/otelsql/otelv1pb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/core/catalog"
@@ -57,6 +58,30 @@ func OpenTenantStore(ctx context.Context, db *recordlayer.FDBDatabase, databaseP
 		return nil, fmt.Errorf("otelsql: schema store %s/%s: %w", databasePath, schema, err)
 	}
 	return &TenantStore{MetaData: out.(*recordlayer.RecordMetaData), Subspace: ss, Serializer: serializer}, nil
+}
+
+// OpenTenantStoreCompiled is OpenTenantStore with the schema's metadata bound
+// to the compiled OTEL_V1 types (otelv1pb), whose records BuildCompiled makes.
+// The binding is Java's setLocalFileDescriptor: otelv1pb must validate as an
+// evolution of the schema's stored records descriptor, so a schema pinned to a
+// template version otelv1pb was not generated from fails here, not at a save.
+// Readers of the store (SQL, Java) are unaffected: the records are the same
+// bytes.
+func OpenTenantStoreCompiled(ctx context.Context, db *recordlayer.FDBDatabase, databasePath, schema string, serializer *recordlayer.TransformedRecordSerializer) (*TenantStore, error) {
+	ts, err := OpenTenantStore(ctx, db, databasePath, schema, serializer)
+	if err != nil {
+		return nil, err
+	}
+	p, err := ts.MetaData.ToProto()
+	if err != nil {
+		return nil, fmt.Errorf("otelsql: schema %s/%s metadata: %w", databasePath, schema, err)
+	}
+	md, err := recordlayer.RecordMetaDataFromProto(p, recordlayer.WithLocalFileDescriptor(otelv1pb.File_OTEL_V1))
+	if err != nil {
+		return nil, fmt.Errorf("otelsql: bind schema %s/%s to the compiled OTEL_V1 types: %w", databasePath, schema, err)
+	}
+	ts.MetaData = md
+	return ts, nil
 }
 
 // Builder returns a store builder for rc; callers Open it once per transaction.

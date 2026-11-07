@@ -25,6 +25,7 @@ go_test(
         "sliding_window_view_fdb_test.go",
         "sql_function_columns_fdb_test.go",
         "sql_function_fdb_test.go",
+        "statement_read_fdb_test.go",
         "store_timer_metrics_fdb_test.go",
     ],
     tags = [
