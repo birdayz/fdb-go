@@ -151,7 +151,14 @@ func (e *relMsgEnv) export(ctx context.Context, in []*tracepb.ResourceSpans) (Ex
 // load is LoadSpanOTLP: the stored single-span ResourceSpans with its
 // original message attributes.
 func (e *relMsgEnv) load(ctx context.Context, trace, span string) (*tracepb.ResourceSpans, error) {
+	rs, _, err := e.loadWork(ctx, trace, span)
+	return rs, err
+}
+
+// loadWork is load and the MESSAGES rows reconstruction read.
+func (e *relMsgEnv) loadWork(ctx context.Context, trace, span string) (*tracepb.ResourceSpans, QueryResult, error) {
 	const op = "load span"
+	var work QueryResult
 	tid, _ := hex.DecodeString(trace)
 	sid, _ := hex.DecodeString(span)
 	var out *tracepb.ResourceSpans
@@ -177,14 +184,16 @@ func (e *relMsgEnv) load(ctx context.Context, trace, span string) (*tracepb.Reso
 			return err
 		}
 		if e.m != nil {
-			if err := e.m.reconstruct(ctx, store, rs, newQueryWork(e.r.cfg)); err != nil {
+			w := newQueryWork(e.r.cfg)
+			if err := e.m.reconstruct(ctx, store, rs, w); err != nil {
 				return err
 			}
+			w.result(&work)
 		}
 		out = rs
 		return nil
 	})
-	return out, err
+	return out, work, err
 }
 
 // run runs fn on the store in one transaction.
@@ -213,9 +222,18 @@ func (e *relMsgEnv) entries(t *testing.T, ctx context.Context, index string, pre
 // presence is the stored ID of each element of rss's messages, invalid when absent.
 func (e *relMsgEnv) presence(t *testing.T, ctx context.Context, rss []*tracepb.ResourceSpans) []messageID {
 	t.Helper()
-	d, err := decomposeMessages(ctx, rss, e.r.cfg.Tenant)
+	out, err := e.presenceErr(ctx, rss)
 	if err != nil {
 		t.Fatal(err)
+	}
+	return out
+}
+
+// presenceErr is presence for goroutines other than the test's.
+func (e *relMsgEnv) presenceErr(ctx context.Context, rss []*tracepb.ResourceSpans) ([]messageID, error) {
+	d, err := decomposeMessages(ctx, rss, e.r.cfg.Tenant)
+	if err != nil {
+		return nil, err
 	}
 	hashes := map[messageDigest][]byte{}
 	for _, el := range d.elements {
@@ -223,13 +241,13 @@ func (e *relMsgEnv) presence(t *testing.T, ctx context.Context, rss []*tracepb.R
 	}
 	found, err := e.m.readMessagePresence(e.txn(ctx), d.elements, hashes)
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	out := make([]messageID, len(d.elements))
 	for i, el := range d.elements {
 		out[i] = found[el.digest]
 	}
-	return out
+	return out, nil
 }
 
 // relFtsLess is the v2 hit order: index order on (start, trace, span),
@@ -867,11 +885,16 @@ func testRelMessageLarge(t *testing.T, h *qrHarness) {
 	if m := stats.Messages; m.Written != 2 || m.Parts < int64(len(segs))+2 || m.UnindexedTokens != 0 || m.Transactions < 4 {
 		t.Fatalf("large message stats %+v", m)
 	}
-	got, err := e.load(ctx, ftsTrace(70), ftsSpan(70))
+	got, work, err := e.loadWork(ctx, ftsTrace(70), ftsSpan(70))
 	if err != nil {
 		t.Fatal(err)
 	}
 	requireProtoEqual(t, "1MB messages", got, before)
+	// Every row read is counted: both heads and the second raw part of each
+	// (each element is over 1 MiB); the text's other parts hold only text.
+	if work.Candidates != 4 || work.Bytes < int64(len(blob)+len(text)) {
+		t.Fatalf("reconstruction work %+v", work)
+	}
 	if n := e.entries(t, ctx, messagesLargeIndex, nil); n != 1 {
 		t.Fatalf("%d large messages", n)
 	}

@@ -15,6 +15,7 @@ import (
 	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/sqldriver"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
@@ -45,6 +46,7 @@ func BenchmarkMessageWriteCostRealFDB(b *testing.B) {
 	}
 	b.Cleanup(raw.Close)
 	db := recordlayer.NewFDBDatabase(raw)
+	sqldriver.RegisterDomainIfNotExists(relDomain)
 	for _, w := range []struct{ convs, turns int }{{40, 25}, {5, 200}} {
 		calls := costWorkload(w.convs, w.turns)
 		spans := float64(w.convs * w.turns)
@@ -62,8 +64,8 @@ func BenchmarkMessageWriteCostRealFDB(b *testing.B) {
 					b.ReportMetric(float64(r.refBytes)/spans, "refs_B/span")
 					b.ReportMetric(float64(r.textBytes)/spans, "text_B/span")
 					b.ReportMetric(float64(r.messages.Retries), "msg_retries")
-					b.Logf("%s %dx%d: cpu %v wall %v; bytes store %d refs %d (%d entries, max key %d) text %d; messages %+v",
-						arm, w.convs, w.turns, r.cpu, r.wall, r.storeBytes, r.refBytes, r.refEntries, r.refMaxKey, r.textBytes, r.messages)
+					b.Logf("%s %dx%d: cpu %v wall %v; bytes store %d refs %d (%d entries, max key %d) text %d (prefix %d); messages %+v",
+						arm, w.convs, w.turns, r.cpu, r.wall, r.storeBytes, r.refBytes, r.refEntries, r.refMaxKey, r.textBytes, r.textPrefix, r.messages)
 				}
 			})
 		}
@@ -74,6 +76,7 @@ type costResult struct {
 	cpu, wall                       time.Duration
 	storeBytes, refBytes, textBytes int64
 	refEntries, refMaxKey           int
+	textPrefix                      int // bytes of the TEXT index subspace prefix
 	messages                        MessageStoreStats
 }
 
@@ -165,7 +168,9 @@ func costOld(b *testing.B, cluster string, fullText bool, calls [][]*tracepb.Res
 		}
 		if fullText {
 			r.refBytes, r.refEntries, r.refMaxKey = costRange(b, ctx, be.db, store.IndexSubspace(be.md.GetIndex(envelopeRefsIndexName)).Bytes())
-			r.textBytes, _, _ = costRange(b, ctx, be.db, store.IndexSubspace(be.md.GetIndex(messageTextIndexName)).Bytes())
+			text := store.IndexSubspace(be.md.GetIndex(messageTextIndexName)).Bytes()
+			r.textBytes, _, _ = costRange(b, ctx, be.db, text)
+			r.textPrefix = len(text)
 		}
 		return nil, nil
 	}); err != nil {
@@ -213,7 +218,9 @@ func costRel(b *testing.B, db *recordlayer.FDBDatabase, fullText, noRefs bool, c
 		}
 		md := store.GetRecordMetaData()
 		r.refBytes, r.refEntries, r.refMaxKey = costRange(b, ctx, db, store.IndexSubspace(md.GetIndex(spansRefChunksIndex)).Bytes())
-		r.textBytes, _, _ = costRange(b, ctx, db, store.IndexSubspace(md.GetIndex(messagesTextIndex)).Bytes())
+		text := store.IndexSubspace(md.GetIndex(messagesTextIndex)).Bytes()
+		r.textBytes, _, _ = costRange(b, ctx, db, text)
+		r.textPrefix = len(text)
 		return nil, nil
 	}); err != nil {
 		b.Fatal(err)
