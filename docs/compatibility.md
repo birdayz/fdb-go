@@ -77,7 +77,28 @@ WHERE tenant = ? AND TEXT_CONTAINS_ALL(body, ?)
 ORDER BY id DESC LIMIT 20
 ```
 
-`PARTITION BY` is optional. DDL requires exactly one scalar STRING text column;
+`PARTITION BY` is optional, and so is an `OPTIONS` clause after it that sets the
+TEXT index's tokenizer options (`textTokenizerName`, `textTokenizerVersion`),
+which Java's metadata API sets programmatically:
+
+```sql
+CREATE FULLTEXT INDEX body_text ON docs(body) PARTITION BY (tenant)
+  OPTIONS (TOKENIZER = 'default', TOKENIZER_VERSION = 0)
+```
+
+Option names are case-insensitive. An unknown option is `0A000`; a duplicate
+option or a value of the wrong kind (a quoted version, a numeric name, a
+version outside 32 bits) is `42601`; an unregistered tokenizer, an empty name
+or a version outside the tokenizer's range fails the template with `42F59`
+(`pkg/relational/sqltest/plan/fulltext_options_ddl_fdb_test.go`). The options
+are persisted in the index metadata. A tokenizer registered only in Go makes
+the whole schema unreadable to Java 4.14.2.0, not just the index: Java builds
+the schema's metadata for every statement, and its TEXT index validator
+refuses the unknown name (`42000 MetaDataException unrecognized text
+tokenizer`); naming `'default'` opens
+(`conformance/otel_template_overlay_java_probe_test.go`). Use a Go-only
+tokenizer only for stores Java never opens (DIVERGENCES.md).
+DDL requires exactly one scalar STRING text column;
 partition columns must be scalar (including UUID, but not structs or arrays).
 SQL text access requires direct scalar metadata key coordinates: nested,
 computed and fan-out expressions retain ordinary record filtering. Metadata
@@ -413,7 +434,13 @@ layer's only store (`layers/otel/rfcs/relational-exporter-migration.md`). It ens
 `(run, tenant)` store (database `/OTEL/R_<RUN>`, schema `T<tenant>`, template,
 database and schema created when absent), checks the `store_meta` `layout` row
 against its message configuration, and writes compiled `otelv1pb` rows through
-the Record Layer, never SQL `INSERT`. Each span's `otlp` is
+the Record Layer, never SQL `INSERT`. It opens the fixed template name
+OTEL_V1 and refuses a catalog whose OTEL_V1 is another revision of the
+template (ownership, wrapping `otelsql.TemplateMismatchError`). Its reads take
+the FDB client's cached read version: at most 100 ms old and refreshed by its
+own commits, so a read sees what the same Exporter committed before it, but
+another process's or Exporter handle's commits (including Java or SQL
+writers) can be invisible for up to 100 ms. Each span's `otlp` is
 its original single-span `ResourceSpans`, which preserves unknown fields,
 presence, order, duplicates and typed values; with messages decomposed, the
 GenAI content attributes hold manifests and the elements are `messages` rows that

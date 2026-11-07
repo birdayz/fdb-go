@@ -461,6 +461,14 @@ direct scan of a standard OTEL_V1 index
 `messages=deltas` or `messages=fulltext`); an exporter configured for another
 layout is refused with `OwnershipError` before any read.
 
+`NewExporter` opens the fixed template name OTEL_V1. A catalog holding OTEL_V1
+from another revision of the template, such as a shared benchmark cluster
+that an older build used, is refused: the open fails with an ownership error
+wrapping `otelsql.TemplateMismatchError`, and the Exporter cannot run there
+until that template and the stores bound to it are recreated.
+(`otelbench --backend sql` binds its tenants to a revision-named template,
+`otelsql.RevisionTemplateName`, for that reason.)
+
 `ExporterConfig` is read from JSON or YAML; omitted keys keep
 `DefaultExporterConfig`, and every key it does not have is a `ConfigError`.
 
@@ -503,6 +511,15 @@ does not end the wait for a dispatched commit
 of GRV queueing plus FDB's 5 s MVCC window. Exporter span batches have no
 elapsed-time guard; the 500 KB size guard applies. A batch that times out fails
 its export call.
+
+Read-only transactions (every query, `Trace`, `Span`, `Time`, the log and
+message queries and `LoadSpanOTLP`) take their read version from the FDB
+client's GRV cache instead of asking for a fresh one. That version is at most
+100 ms old, and this Exporter's own commits refresh it, so a read sees every
+write committed through the same Exporter before the read began. A commit by
+another process or another Exporter handle, such as another Collector replica
+writing the same tenant, can be invisible to a read for up to 100 ms. The
+deleted custom store read at a fresh version every time.
 
 The export calls report a failed transaction with an error kind for retry
 decisions. Domain errors keep their kind: `admission`, `config`, `ownership`
