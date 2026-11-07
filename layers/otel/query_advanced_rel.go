@@ -151,23 +151,6 @@ func (m *memoryContinuationKeys) publish(_ context.Context, _ *tenantStore, cand
 	return m.key, nil
 }
 
-// storeMetaContinuationKeys is the store's STORE_META("continuation_hmac") row.
-//
-// TODO(otel phase 2D): wire once the OTEL_V1 template has STORE_META. load is
-// a point read of the row in the page's transaction; publish runs s.run,
-// reads the row and saves candidate only when it is absent, returning the
-// stored key, so a concurrent winner wins. Until then no key can be
-// published: a full page fails to sign its continuation.
-type storeMetaContinuationKeys struct{}
-
-func (storeMetaContinuationKeys) load(*recordlayer.FDBRecordStore) ([]byte, error) {
-	return nil, nil
-}
-
-func (storeMetaContinuationKeys) publish(context.Context, *tenantStore, []byte) ([]byte, error) {
-	return nil, fail("operation", "continuation key", "the template has no STORE_META row for the continuation signing key yet")
-}
-
 // loadContinuationKey reads the store's published key, if any.
 func (r *SpanReader) loadContinuationKey(store *recordlayer.FDBRecordStore) ([]byte, error) {
 	key, err := r.keys.load(store)

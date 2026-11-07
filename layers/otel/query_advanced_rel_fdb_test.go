@@ -32,6 +32,7 @@ import (
 
 // qrHarness is one FDB testcontainer with the OTEL_V1 template.
 type qrHarness struct {
+	raw   fdb.Database
 	db    *recordlayer.FDBDatabase
 	setup *sql.DB
 	mu    sync.Mutex
@@ -62,7 +63,7 @@ func newQRHarness(t *testing.T) *qrHarness {
 		t.Fatal(err)
 	}
 	t.Cleanup(raw.Close)
-	return &qrHarness{db: recordlayer.NewFDBDatabase(raw), setup: setup, keys: map[string]*memoryContinuationKeys{}}
+	return &qrHarness{raw: raw, db: recordlayer.NewFDBDatabase(raw), setup: setup, keys: map[string]*memoryContinuationKeys{}}
 }
 
 // create makes (run, tenant)'s schema store.
@@ -552,15 +553,50 @@ func testRelContinuationSecurity(t *testing.T, h *qrHarness) {
 		t.Fatalf("original continuation after rejections: %+v %v", page.Spans, err)
 	}
 
-	// Until STORE_META lands, a reader that cannot publish a key fails a full
-	// page rather than returning it without a continuation.
-	stub := h.reader(t, ctx, run, 11, nil)
-	stub.keys = storeMetaContinuationKeys{}
-	_, err = stub.QuerySameSpan(ctx, q)
-	requireTyped[*OperationError](t, "STORE_META stub", err)
-	if p, err := stub.QuerySameSpan(ctx, SameSpanQuery{Predicates: []Attribute{model}}); err != nil || len(p.Spans) != len(want) || p.Continuation != nil {
-		t.Fatalf("a partial page needs no key: %d spans, %v", len(p.Spans), err)
+	// The STORE_META key: the first full page publishes it, and a reader of a
+	// separately opened handle on the store resumes the token. A partial page
+	// publishes nothing.
+	h.create(t, ctx, run, 13)
+	stored := [2]*SpanReader{h.reader(t, ctx, run, 13, nil), h.reader(t, ctx, run, 13, nil)}
+	qrExport(t, ctx, stored[0], rss, nil)
+	inStore := func(fn func(*recordlayer.FDBRecordStore) error) {
+		t.Helper()
+		if err := stored[0].store.read(ctx, "test", fn); err != nil {
+			t.Fatal(err)
+		}
 	}
+	keyRow := func() (otelsql.StoreMeta, bool) {
+		var row otelsql.StoreMeta
+		var ok bool
+		inStore(func(store *recordlayer.FDBRecordStore) error {
+			var err error
+			row, ok, err = loadStoreMeta(store, otelsql.StoreMetaContinuationHMAC)
+			return err
+		})
+		return row, ok
+	}
+	for _, s := range stored {
+		s.keys = storeMetaContinuationKeys{}
+	}
+	if p, err := stored[0].QuerySameSpan(ctx, SameSpanQuery{Predicates: []Attribute{model}}); err != nil || len(p.Spans) != len(want) || p.Continuation != nil {
+		t.Fatalf("a partial page: %d spans, %v", len(p.Spans), err)
+	}
+	if _, ok := keyRow(); ok {
+		t.Fatal("a partial page published a signing key")
+	}
+	first, err = stored[0].QuerySameSpan(ctx, q)
+	if err != nil || first.Continuation == nil {
+		t.Fatalf("first STORE_META page: %+v %v", first, err)
+	}
+	if row, ok := keyRow(); !ok || len(row.Bytes) != continuationKeyBytes || row.Int != nil || row.Str != nil {
+		t.Fatalf("published key row %+v (present %v)", row, ok)
+	}
+	page, err = resume(stored[1], q, first.Continuation)
+	if err != nil || !reflect.DeepEqual(page.Spans, want[2:4]) {
+		t.Fatalf("resume on another handle of the store: %+v %v", page.Spans, err)
+	}
+	_, err = resume(r, q, first.Continuation)
+	requireTyped[*CorruptionError](t, "another store's STORE_META key", err)
 }
 
 func tupleKey(s SpanMatch) []byte {

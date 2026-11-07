@@ -316,14 +316,6 @@ func TestEnsureContinuationKey(t *testing.T) {
 	if loaded, err := r.loadContinuationKey(nil); err != nil || !bytes.Equal(loaded, first) {
 		t.Fatalf("load = %x, %v", loaded, err)
 	}
-
-	// Until STORE_META lands no key can be published, and none is loaded.
-	r.keys = storeMetaContinuationKeys{}
-	if k, err := r.loadContinuationKey(nil); err != nil || k != nil {
-		t.Fatalf("STORE_META stub load = %x, %v", k, err)
-	}
-	_, err = r.ensureContinuationKey(t.Context())
-	requireTyped[*OperationError](t, "STORE_META stub publish", err)
 }
 
 type qrFakeWitnesses[W any] struct {
