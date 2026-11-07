@@ -19,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"github.com/rivo/uniseg"
@@ -61,7 +62,7 @@ const (
 
 	// Tokens longer than maxIndexedTokenBytes are not indexed (their position
 	// is kept): a token is part of an index key, which FDB caps at 10KB.
-	maxIndexedTokenBytes = 1024
+	maxIndexedTokenBytes = otelsql.MaxIndexedTokenBytes
 	maxMessageTextDepth  = 10000 // proto.Unmarshal's default recursion limit
 	maxMessageRoleBytes  = 1024
 
@@ -75,7 +76,7 @@ const (
 	// messageTextPipeline is the TEXT_INDEX_UPDATE pipeline size.
 	messageTextPipeline = 128
 
-	messageTokenizerName = "otel_message_v1"
+	messageTokenizerName = otelsql.MessageTokenizerName
 )
 
 // Attribute codes packed in Envelope.ref_chunks.
@@ -817,7 +818,7 @@ type messageSegment struct {
 // Segments share messageSegmentOverlap tokens; raw bytes stay separate, and overlong-token count is returned.
 func segmentMessageText(text string, distinct int) ([]messageSegment, int, error) {
 	const op = "message text segments"
-	tok := messageTokenizer{}
+	tok := otelsql.MessageTokenizer{}
 	if len(text) > messageSegmentBytes {
 		// Raw message bytes are retained separately. Bound every overlong
 		// word, including words whose normalization produces a short token.
