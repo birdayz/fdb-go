@@ -28,6 +28,7 @@ import (
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/sqldriver"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -310,9 +311,11 @@ func (b *Backend) create(ctx context.Context) error {
 }
 
 type batch struct {
-	tenant   int
-	spans    []otel.Span
-	records  []proto.Message
+	tenant  int
+	spans   []otel.Span
+	records []proto.Message
+	// rss are the spans' OTLP for the Exporter's write path (otel.SpanWriter).
+	rss      []*tracepb.ResourceSpans
 	logical  int64
 	estimate int
 }
@@ -326,7 +329,12 @@ func (b *Backend) Ingest(ctx context.Context) (otel.Statistics, error) {
 	stores := make([]*otelsql.TenantStore, b.cfg.Tenants)
 	rows := make([]*otelsql.SpanRows, b.cfg.Tenants)
 	inserts := make([]*sql.DB, b.cfg.Tenants)
+	writers := make([]*otel.SpanWriter, b.cfg.Tenants)
 	compiled := b.mode == IngestDirect && b.opts.Rows != RowsDynamic
+	// Compiled batch saves are the Exporter's write path, so otelbench
+	// measures production code: rows, admission, prefetch, bulk index
+	// conflicts, the size guard and the exporter's transaction policy.
+	production := compiled && b.cfg.SaveMode == "batch"
 	for t := range stores {
 		var err error
 		open := otelsql.OpenTenantStore
@@ -338,6 +346,12 @@ func (b *Backend) Ingest(ctx context.Context) (otel.Statistics, error) {
 		}
 		if rows[t], err = otelsql.NewSpanRows(stores[t].MetaData); err != nil {
 			return otel.Statistics{}, err
+		}
+		if production {
+			writers[t] = otel.NewSpanWriter(b.db, stores[t], otel.SpanWriterOptions{
+				BatchSize: b.cfg.Batch, Workers: 1, BulkIndexConflicts: b.cfg.BulkIndexConflicts,
+				TransactionTimeout: otel.DefaultExporterConfig().TransactionTimeout,
+			})
 		}
 		if b.mode == IngestInsert {
 			if inserts[t], err = sql.Open("fdbsql", b.dsn(tenantSchema(t))); err != nil {
@@ -359,9 +373,12 @@ func (b *Backend) Ingest(ctx context.Context) (otel.Statistics, error) {
 			defer wg.Done()
 			for bt := range jobs {
 				var err error
-				if b.mode == IngestInsert {
+				switch {
+				case b.mode == IngestInsert:
 					err = b.insertBatch(workCtx, inserts[bt.tenant], bt)
-				} else {
+				case production:
+					_, err = writers[bt.tenant].Write(workCtx, bt.rss)
+				default:
 					err = b.saveBatch(workCtx, stores[bt.tenant], bt)
 				}
 				mu.Lock()
@@ -411,7 +428,14 @@ produce:
 		bt.spans = append(bt.spans, s)
 		bt.logical += int64(len(wire))
 		bt.estimate += cost
-		if b.mode == IngestDirect {
+		if production {
+			rs, _, err := otel.FixtureOTLP(s)
+			if err != nil {
+				produceErr = err
+				break
+			}
+			bt.rss = append(bt.rss, rs)
+		} else if b.mode == IngestDirect {
 			m, err := buildRow(rows[s.Tenant], compiled, s)
 			if err != nil {
 				produceErr = err
@@ -429,6 +453,7 @@ produce:
 	wg.Wait()
 	stats := otel.Statistics{Rows: count, Attributes: count * int64(b.cfg.Attributes), LogicalPayloadBytes: logical, Details: map[string]string{
 		"ingest":             "OTEL_V1 tenant schema stores; " + b.mode,
+		"write_path":         map[bool]string{true: "otel.SpanWriter", false: "sqlbackend"}[production],
 		"committed_batches":  strconv.FormatInt(batches, 10),
 		"save_mode":          b.cfg.SaveMode,
 		"workers":            strconv.Itoa(b.cfg.Workers),
