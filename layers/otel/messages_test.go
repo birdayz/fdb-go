@@ -418,31 +418,10 @@ func TestMessageTextExtractionEncodingsAgree(t *testing.T) {
 	}
 }
 
-// TestMessageTokenizer pins the registered tokenizer to the default one,
-// except that a token over maxIndexedTokenBytes is "" and keeps its position.
-func TestMessageTokenizer(t *testing.T) {
+// Query terms are the default tokenizer's query tokens, bounded like
+// indexed tokens; otelsql's TestMessageTokenizer covers index tokens.
+func TestTokenizeQueryTerms(t *testing.T) {
 	t.Parallel()
-	tok, err := recordlayer.GetTextTokenizer(otelsql.MessageTokenizerName)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := "Crème BRÛLÉE, crème! Ångström " + strings.Repeat("a", maxIndexedTokenBytes+1) + " ok " + strings.Repeat("b", maxIndexedTokenBytes)
-	got, err := tok.TokenizeToMap(text, recordlayer.GlobalMinVersion, recordlayer.TokenizerModeIndex)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := map[string][]int{"creme": {0, 2}, "brulee": {1}, "angstrom": {3}, "ok": {5}, strings.Repeat("b", maxIndexedTokenBytes): {6}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("tokens %v", got)
-	}
-	def, err := recordlayer.DefaultTextTokenizerInstance().TokenizeToList(text, 0, recordlayer.TokenizerModeIndex)
-	if err != nil {
-		t.Fatal(err)
-	}
-	list, err := tok.TokenizeToList(text, 0, recordlayer.TokenizerModeIndex)
-	if err != nil || len(list) != len(def) || list[4] != "" || def[4] == "" {
-		t.Fatalf("list %d vs default %d: %v", len(list), len(def), err)
-	}
 	terms, err := tokenizeQueryTerms("Ünïcödé  FAÇADE! query_traces")
 	if err != nil || !reflect.DeepEqual(terms, []messagePhraseTerm{{"unicode", 0}, {"facade", 1}, {"query_traces", 2}}) {
 		t.Fatalf("query terms %v %v", terms, err)
