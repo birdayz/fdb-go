@@ -174,8 +174,14 @@ type continuation struct {
 }
 
 func continuationMAC(secret, payload []byte) []byte {
+	return continuationMACIn(continuationDomain, secret, payload)
+}
+
+// continuationMACIn is HMAC-SHA256 under secret of domain‖payload; the
+// domain separates token versions.
+func continuationMACIn(domain string, secret, payload []byte) []byte {
 	m := hmac.New(sha256.New, secret)
-	m.Write([]byte(continuationDomain))
+	m.Write([]byte(domain))
 	m.Write(payload)
 	return m.Sum(nil)
 }
@@ -196,13 +202,9 @@ func parseContinuation(token []byte) (*continuation, error) {
 
 func parseContinuationKind(token []byte, want string) (*continuation, error) {
 	const op = "continuation"
-	if len(token) <= sha256.Size || len(token) > maxContinuationBytes {
-		return nil, fail("config", op, "malformed continuation token length")
-	}
-	payload, mac := token[:len(token)-sha256.Size], token[len(token)-sha256.Size:]
-	fields, err := tuple.Unpack(payload)
+	fields, payload, mac, err := splitContinuation(token)
 	if err != nil {
-		return nil, typedError("config", op, "malformed continuation token", err)
+		return nil, err
 	}
 	if len(fields) != 7 {
 		return nil, fail("config", op, "malformed continuation token fields")
@@ -224,11 +226,32 @@ func parseContinuationKind(token []byte, want string) (*continuation, error) {
 
 // checkMAC authenticates the token under the run's signing key.
 func (c *continuation) checkMAC(secret []byte) error {
+	return checkContinuationMAC(continuationDomain, "run", secret, c.payload, c.mac)
+}
+
+// splitContinuation splits a token into its payload's tuple fields and its
+// MAC. A token of another length or a payload that is not a tuple is config.
+func splitContinuation(token []byte) (fields tuple.Tuple, payload, mac []byte, err error) {
+	const op = "continuation"
+	if len(token) <= sha256.Size || len(token) > maxContinuationBytes {
+		return nil, nil, nil, fail("config", op, "malformed continuation token length")
+	}
+	payload, mac = token[:len(token)-sha256.Size], token[len(token)-sha256.Size:]
+	if fields, err = tuple.Unpack(payload); err != nil {
+		return nil, nil, nil, typedError("config", op, "malformed continuation token", err)
+	}
+	return fields, payload, mac, nil
+}
+
+// checkContinuationMAC authenticates mac over payload under the signing key
+// of owner (the run, or the tenant store) in domain; an absent key or a
+// failed MAC is corruption.
+func checkContinuationMAC(domain, owner string, secret, payload, mac []byte) error {
 	const op = "continuation"
 	if len(secret) == 0 {
-		return fail("corruption", op, "continuation signing key is absent for this run")
+		return fail("corruption", op, "continuation signing key is absent for this "+owner)
 	}
-	if !hmac.Equal(c.mac, continuationMAC(secret, c.payload)) {
+	if !hmac.Equal(mac, continuationMACIn(domain, secret, payload)) {
 		return fail("corruption", op, "continuation token failed authentication")
 	}
 	return nil
