@@ -148,7 +148,7 @@ func EnsureTenant(ctx context.Context, db *recordlayer.FDBDatabase, databasePath
 	if err != nil {
 		return nil, err
 	}
-	return &TenantStore{MetaData: md, Subspace: out.(subspace.Subspace)}, nil
+	return &TenantStore{DatabasePath: databasePath, Schema: schema, MetaData: md, Subspace: out.(subspace.Subspace)}, nil
 }
 
 // ensureTemplate saves tmpl when no version of OTEL_V1 is stored, and
