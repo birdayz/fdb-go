@@ -100,7 +100,7 @@ def evidence(mode, run="prof20k0290", revision="1" * 40, batch=32, workers=2, co
                       "attributes": 8, "seed": 283, "match_every": 100, "batch": batch,
                       "save_mode": "batch", "record_compression": storage["record_compression"], "workers": workers,
                       "tenant": 0, "k": 100, "max_candidates": 2000000,
-                      "max_bytes": 268435456, "order": "time"}}
+                      "max_bytes": 268435456, "order": "trace"}}
     # Go's omitempty drops a false bulk_index_conflicts.
     if storage["bulk_index_conflicts"]:
         raw["config"]["bulk_index_conflicts"] = True
@@ -705,6 +705,13 @@ class PolicyTests(unittest.TestCase):
                 }.items():
                     self.reject("evidence", base, path, values)
                 for field, expected in base["evidence"]["config"].items():
+                    if field == "order":
+                        # The ClickHouse query layout; the sql backend ignores it.
+                        for value in ("trace", "time"):
+                            candidate = copy.deepcopy(base)
+                            set_path(candidate, "evidence.config.order", value)
+                            self.assertEqual(self.cli("evidence", candidate), {"mode": mode, "verified": True})
+                        continue
                     values = [None, "wrong", not expected] if type(expected) is bool else [None, "wrong", True]
                     if type(expected) is int:
                         values += [expected + 1, float(expected)]

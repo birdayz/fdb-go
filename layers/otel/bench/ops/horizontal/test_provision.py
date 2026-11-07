@@ -505,7 +505,7 @@ class ProvisionTest(unittest.TestCase):
         root = p.REMOTE_BASE+'/'+self.plan['campaign']; run = 'prof20k9000'
         unit = 'otel-native-'+run+'-'+mode+'.scope'
         args = [root+'/bin/otel-demo', '--backend', 'sql', '--sql-ingest', 'direct', '--sql-rows', 'compiled',
-                '--sql-query', 'direct', '--order', 'time', '--cluster-file', layout['remote_cluster_file'],
+                '--sql-query', 'direct', '--cluster-file', layout['remote_cluster_file'],
                 '--run', run, '--seed', '283', '--count', '1000000', '--tenants', '1', '--attrs', '8',
                 '--match-every', '100', '--batch', '32', '--save-mode', 'batch', '--workers', '4',
                 '--k', '100', '--max-candidates', '2000000', '--max-bytes', '268435456', '--revision', 'a'*40,

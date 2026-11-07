@@ -115,7 +115,7 @@ assert_invocation() {
     --max-candidates 1234 --max-bytes 567890 --timeout 60m)
   case "$arm" in
     sql_direct) expected+=(--backend sql --sql-ingest direct --sql-rows compiled --sql-query direct
-      --save-mode batch --record-compression zlib-1 --order time --cluster-file "$scratch/fdb.cluster") ;;
+      --save-mode batch --record-compression zlib-1 --cluster-file "$scratch/fdb.cluster") ;;
     ch_map) expected+=(--backend ch-map --order trace --ch-url http://127.0.0.1:1) ;;
     ch_attrs_trace) expected+=(--backend ch-attrs --order trace --ch-url http://127.0.0.1:1) ;;
     ch_attrs_time) expected+=(--backend ch-attrs --order time --ch-url http://127.0.0.1:1) ;;

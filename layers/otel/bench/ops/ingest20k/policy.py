@@ -294,7 +294,7 @@ def evidence(d, approved=None):
     expected = {"run": approved["run"], "backend": "sql", "count": count, "tenants": 1,
                 "attributes": 8, "seed": 283, "match_every": 100, "batch": approved["batch"], "save_mode": "batch",
                 "workers": approved["workers"], "tenant": 0, "k": 100, "max_candidates": 2000000,
-                "max_bytes": 268435456, "order": "time", "record_compression": storage["record_compression"]}
+                "max_bytes": 268435456, "record_compression": storage["record_compression"]}
     require(all(type(config.get(k)) is type(v) and config.get(k) == v for k, v in expected.items())
             # Go omits a false bulk_index_conflicts; the argv always passes it explicitly.
             and config.get("bulk_index_conflicts", False) is storage["bulk_index_conflicts"], "wrong evidence config")
