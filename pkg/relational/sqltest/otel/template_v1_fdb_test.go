@@ -194,7 +194,7 @@ func TestFDB_OtelTemplateV1(t *testing.T) {
 	t.Run("message full text", func(t *testing.T) {
 		testOtelTemplateFullText(t, db, ctx)
 	})
-	t.Run("direct readers", func(t *testing.T) {
+	t.Run("direct readers and EnsureTenant", func(t *testing.T) {
 		testOtelTemplateDirect(t, db, ctx, path, chunks, refs)
 	})
 	t.Run("multipart message uniqueness", func(t *testing.T) {
@@ -278,9 +278,10 @@ func testOtelTemplateFullText(t *testing.T, db *sql.DB, ctx context.Context) {
 	}
 }
 
-// Direct Record Layer readers and writers of the SQL store: SPANS_REF_CHUNKS
-// holds one entry per chunk and MESSAGES_LARGE the large messages, and a
-// compiled STORE_META row reads back through SQL.
+// Direct Record Layer readers and writers of SQL's stores: SPANS_REF_CHUNKS
+// holds one entry per chunk and MESSAGES_LARGE the large messages; EnsureTenant
+// accepts the template SQL created, and a compiled STORE_META row in a tenant
+// it creates reads back through SQL.
 func testOtelTemplateDirect(t *testing.T, db *sql.DB, ctx context.Context, path string, chunks [][]byte, refs [][]otelsql.MessageRef) {
 	t.Helper()
 	raw, err := fdb.OpenDatabase(testkit.ClusterFile())
@@ -289,9 +290,9 @@ func testOtelTemplateDirect(t *testing.T, db *sql.DB, ctx context.Context, path 
 	}
 	defer raw.Close()
 	rl := recordlayer.NewFDBDatabase(raw)
-	ts, err := otelsql.OpenTenantStoreCompiled(ctx, rl, path, "S", nil)
+	ts, err := otelsql.EnsureTenant(ctx, rl, path, "S", nil)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("EnsureTenant over the SQL-created template: %v", err)
 	}
 	testkit.MustExecCtx(t, db, ctx, "INSERT INTO messages (writer, seq, part, parts, large, shard) VALUES (30, 1, 0, 2, [1], 14), (30, 1, 1, NULL, NULL, 14), (31, 1, 0, 1, NULL, 15)")
 	scan := func(index string, prefix tuple.Tuple) []tuple.Tuple {
@@ -333,13 +334,17 @@ func testOtelTemplateDirect(t *testing.T, db *sql.DB, ctx context.Context, path 
 		t.Fatalf("MESSAGES_LARGE %v", large)
 	}
 
+	ts2, err := otelsql.EnsureTenant(ctx, rl, path, "S2", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	n := int64(3)
 	meta, err := otelsql.BuildStoreMetaCompiled(otelsql.StoreMeta{Name: otelsql.StoreMetaMessageWriter, Int: &n})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := rl.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
-		store, err := ts.Builder(rc).Open()
+		store, err := ts2.Builder(rc).Open()
 		if err != nil {
 			return nil, err
 		}
@@ -347,8 +352,16 @@ func testOtelTemplateDirect(t *testing.T, db *sql.DB, ctx context.Context, path 
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := otelRows(t, db, ctx, "SELECT name, int_value FROM store_meta"); got != "[message_writer 3]" {
+	s2, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=S2", strings.ToUpper(path), testkit.ClusterFile()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	if got := otelRows(t, s2, ctx, "SELECT name, int_value FROM store_meta"); got != "[message_writer 3]" {
 		t.Fatalf("store_meta via SQL: %s", got)
+	}
+	if got := otelRows(t, s2, ctx, "SELECT COUNT(*) FROM spans"); got != "[0]" {
+		t.Fatalf("new tenant spans: %s", got)
 	}
 }
 
