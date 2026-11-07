@@ -33,6 +33,11 @@ Each campaign's reports live in a folder named after the campaign.
   efficiency and 89.5% ACK efficiency. The report covers the root causes found
   on the way (TLog memory monitor, cold-range hotspot, topology) and the run's
   limits (one run, not sustained, no HA).
+- [OTel spans in relational OTEL_V1 stores, local](otel-relational-local-20261107.md):
+  one host, single-process FDB. Direct Record Layer ingest into per-tenant
+  OTEL_V1 schemas against the custom-index backend: 1.32x client CPU per span,
+  same 11 KV writes, 34% fewer bytes. Covers SQL and direct-scan query latency,
+  and the relational fixes the comparison found.
 - [GenAI/OTel collector ingest 1x/2x/3x on Kubernetes + Cilium](otel-genai-collector-ingest-k8s-scaling.md):
   the same six-host setup running a sustained 10-minute custom in-process
   Collector-model queue/exporter experiment, not an upstream Collector pipeline
