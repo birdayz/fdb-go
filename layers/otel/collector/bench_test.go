@@ -479,6 +479,8 @@ func TestCollectorBenchConfigValidate(t *testing.T) {
 		"workers":         func(c *CollectorBenchConfig) { c.ExporterWorkers = 17 },
 		"compression":     func(c *CollectorBenchConfig) { c.RecordCompression = "lz4" },
 		"brotli":          func(c *CollectorBenchConfig) { c.RecordCompression = "brotli-4" },
+		"query only run":  func(c *CollectorBenchConfig) { c.QueryOnly, c.Duration = true, 30*time.Second },
+		"query class":     func(c *CollectorBenchConfig) { c.QueryClasses = QueryFTSSingleToken + ",fts_bogus" },
 	} {
 		cfg := benchUnitConfig()
 		mutate(&cfg)
@@ -623,6 +625,33 @@ func TestRunBenchmarkRealFDB(t *testing.T) {
 	}
 	if again.Ingest.Collector.StoredSpans != convs*n || again.Ingest.Logs.Replaced != convs || again.Fidelity.Mismatches != 0 {
 		t.Fatalf("re-run ingest %+v fidelity %+v", again.Ingest, again.Fidelity)
+	}
+
+	// QueryOnly reruns only the named classes on the stored corpus, writes
+	// nothing, and reports each iteration's reads and client requests.
+	only := cfg
+	only.QueryOnly, only.QueryClasses, only.QueryIterations = true, QueryFTSSingleToken+","+QueryTraceGraph, 3
+	qo, err := RunBenchmark(ctx, only)
+	if err != nil || qo.Failures != 0 || len(qo.Queries) != 2 || qo.Ingest.Collector.AcceptedSpans != 0 || qo.Fidelity.CheckedSpans != 0 || len(qo.Series) != 0 {
+		t.Fatalf("query-only run: %v, %+v", err, qo)
+	}
+	for class, rows := range map[string]int64{QueryFTSSingleToken: 3 * convs * n * (n + 1) / 2, QueryTraceGraph: 3 * n} {
+		q := qo.Queries[class]
+		if q.Rows != rows || len(q.Samples) != 3 {
+			t.Fatalf("query-only %s: %+v, want %d rows in 3 samples", class, q, rows)
+		}
+		for i, s := range q.Samples {
+			if s.Iteration != i || s.Ns <= 0 || s.Error != "" || int64(s.Rows)*3 != rows || s.GRVs+s.GRVCacheHits < 1 || s.GetRanges < 1 {
+				t.Fatalf("query-only %s sample %d: %+v", class, i, s)
+			}
+			// Only the FTS classes report the reads they charged.
+			if fts := class == QueryFTSSingleToken; fts != (s.Candidates > 0 && s.Bytes > 0) {
+				t.Fatalf("query-only %s sample %d work: %+v", class, i, s)
+			}
+		}
+	}
+	if _, ok := qo.Queries[QueryFTSPhraseFirstTurn]; ok {
+		t.Fatalf("query-only ran an unnamed class: %v", qo.Queries)
 	}
 
 	// Without message decomposition the FTS classes are skipped and the

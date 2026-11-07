@@ -98,6 +98,9 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 	flags.IntVar(&bench.NumConsumers, "consumers", bench.NumConsumers, "collector-bench: sending_queue.num_consumers export workers")
 	flags.BoolVar(&bench.EnableMessageDeltas, "enable-message-deltas", bench.EnableMessageDeltas, "collector-bench: content-addressed GenAI message delta storage")
 	flags.BoolVar(&bench.EnableMessageFullText, "enable-message-fts", bench.EnableMessageFullText, "collector-bench: GenAI message full-text index and fts_* query classes")
+	flags.BoolVar(&bench.QueryOnly, "query-only", false, "collector-bench: skip ingest and audit; run the post-ingest queries on --run, which must hold the --conversations corpus, reporting every iteration")
+	flags.BoolVar(&bench.QuerySamples, "query-samples", false, "collector-bench: report every post-ingest query iteration (implied by --query-only)")
+	flags.StringVar(&bench.QueryClasses, "query-classes", "", "collector-bench: comma-separated query classes to run (default all)")
 	if err := flags.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return 0
@@ -147,7 +150,7 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 		// By default the profiles cover the steady phase.
 		explicit := false
 		flags.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "profile-start" })
-		if !explicit {
+		if !explicit && !bench.QueryOnly {
 			profiling.start = bench.Warmup
 		}
 	}
