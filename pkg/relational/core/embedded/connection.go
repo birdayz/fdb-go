@@ -86,6 +86,9 @@ type EmbeddedConnection struct {
 	// session cache.
 	schemaWitnesses map[string]witnessedSchema
 
+	// parses is the connection's parse cache (parse_cache.go).
+	parses parseCache
+
 	// planCache caches Cascades physical plans. A driver installs its
 	// engine-wide RelationalPlanCache (SetPlanCache), which every connection
 	// it opens shares; a connection built without one lazily makes its own
