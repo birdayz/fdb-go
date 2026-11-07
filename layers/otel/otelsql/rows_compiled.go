@@ -1,20 +1,17 @@
 package otelsql
 
 import (
-	"crypto/sha256"
 	"fmt"
 
 	"fdb.dev/layers/otel/otelsql/otelv1pb"
-	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
 // BuildCompiled is SpanRows.Build as the compiled otelv1pb.SPANS, for a store
-// opened with OpenTenantStoreCompiled: the same columns, the same presence
-// (a non-empty string or bytes column, every integer column, an array's
-// wrapper once it has an element) and the same arrays, without dynamic
-// messages.
+// opened with OpenTenantStoreCompiled or EnsureTenant: the same columns, the
+// same presence (a non-empty string or bytes column, every integer column, an
+// array's wrapper once it has an element) and the same arrays, without
+// dynamic messages.
 func BuildCompiled(s Span) (*otelv1pb.SPANS, error) {
 	sp := s.Span
 	if sp == nil {
@@ -45,29 +42,32 @@ func BuildCompiled(s Span) (*otelv1pb.SPANS, error) {
 		r.SCOPE_NAME = nonEmptyString(sc.Name)
 		r.SCOPE_VERSION = nonEmptyString(sc.Version)
 	}
-	attrs := compiledAttrs{
-		str: &r.STR_ATTRS, ints: &r.INT_ATTRS, doubles: &r.DOUBLE_ATTRS, bools: &r.BOOL_ATTRS, anys: &r.ANY_ATTRS,
-		longStr: &r.LONG_STR_ATTRS, bytes: &r.BYTES_ATTRS,
+	sets := spanSets(s)
+	r.SERVICE_NAME = nonEmptyString(serviceName(sets[0]))
+	attrs := attrLists{long: true}
+	attrs.add(ScopeResource, sets[0])
+	attrs.add(ScopeScope, sets[1])
+	attrs.add(ScopeSpan, sets[2])
+	if len(attrs.str) > 0 {
+		r.STR_ATTRS = &otelv1pb.SPANS_STR_ATTRS{Values: attrs.str}
 	}
-	if res := s.Resource; res != nil {
-		for _, kv := range res.Attributes {
-			if kv.GetKey() == "service.name" {
-				if v, ok := kv.GetValue().GetValue().(*commonpb.AnyValue_StringValue); ok && v.StringValue != "" {
-					r.SERVICE_NAME = proto.String(v.StringValue)
-				}
-			}
-		}
-		if err := attrs.add(ScopeResource, res.Attributes); err != nil {
-			return nil, err
-		}
+	if len(attrs.longStr) > 0 {
+		r.LONG_STR_ATTRS = &otelv1pb.SPANS_LONG_STR_ATTRS{Values: attrs.longStr}
 	}
-	if sc := s.Scope; sc != nil {
-		if err := attrs.add(ScopeScope, sc.Attributes); err != nil {
-			return nil, err
-		}
+	if len(attrs.ints) > 0 {
+		r.INT_ATTRS = &otelv1pb.SPANS_INT_ATTRS{Values: attrs.ints}
 	}
-	if err := attrs.add(ScopeSpan, sp.Attributes); err != nil {
-		return nil, err
+	if len(attrs.doubles) > 0 {
+		r.DOUBLE_ATTRS = &otelv1pb.SPANS_DOUBLE_ATTRS{Values: attrs.doubles}
+	}
+	if len(attrs.bools) > 0 {
+		r.BOOL_ATTRS = &otelv1pb.SPANS_BOOL_ATTRS{Values: attrs.bools}
+	}
+	if len(attrs.bytes) > 0 {
+		r.BYTES_ATTRS = &otelv1pb.SPANS_BYTES_ATTRS{Values: attrs.bytes}
+	}
+	if len(attrs.anys) > 0 {
+		r.ANY_ATTRS = &otelv1pb.SPANS_ANY_ATTRS{Values: attrs.anys}
 	}
 	for i, ev := range sp.Events {
 		e := &otelv1pb.SPAN_EVENT{
@@ -76,10 +76,9 @@ func BuildCompiled(s Span) (*otelv1pb.SPANS, error) {
 			TIME_NS:            proto.Int64(int64(ev.TimeUnixNano)), //nolint:gosec // as Build
 			DROPPED_ATTRIBUTES: proto.Int64(int64(ev.DroppedAttributesCount)),
 		}
-		ea := compiledAttrs{str: &e.STR_ATTRS, ints: &e.INT_ATTRS, doubles: &e.DOUBLE_ATTRS, bools: &e.BOOL_ATTRS, anys: &e.ANY_ATTRS}
-		if err := ea.add(ScopeEvent, ev.Attributes); err != nil {
-			return nil, err
-		}
+		ea := attrLists{}
+		ea.add(ScopeEvent, canonicalSet(ev.Attributes, s.ExcludeMessageAttributes))
+		e.STR_ATTRS, e.INT_ATTRS, e.DOUBLE_ATTRS, e.BOOL_ATTRS, e.ANY_ATTRS = ea.structArrays()
 		if r.EVENTS == nil {
 			r.EVENTS = &otelv1pb.SPANS_EVENTS{}
 		}
@@ -94,87 +93,78 @@ func BuildCompiled(s Span) (*otelv1pb.SPANS, error) {
 			FLAGS:              proto.Int64(int64(ln.Flags)),
 			DROPPED_ATTRIBUTES: proto.Int64(int64(ln.DroppedAttributesCount)),
 		}
-		la := compiledAttrs{str: &l.STR_ATTRS, ints: &l.INT_ATTRS, doubles: &l.DOUBLE_ATTRS, bools: &l.BOOL_ATTRS, anys: &l.ANY_ATTRS}
-		if err := la.add(ScopeLink, ln.Attributes); err != nil {
-			return nil, err
-		}
+		la := attrLists{}
+		la.add(ScopeLink, canonicalSet(ln.Attributes, false))
+		l.STR_ATTRS, l.INT_ATTRS, l.DOUBLE_ATTRS, l.BOOL_ATTRS, l.ANY_ATTRS = la.structArrays()
 		if r.LINKS == nil {
 			r.LINKS = &otelv1pb.SPANS_LINKS{}
 		}
 		r.LINKS.Values = append(r.LINKS.Values, l)
 	}
+	chunks, err := PackRefChunks(s.Refs)
+	if err != nil {
+		return nil, err
+	}
+	for i, c := range chunks {
+		if r.REF_CHUNKS == nil {
+			r.REF_CHUNKS = &otelv1pb.SPANS_REF_CHUNKS{}
+		}
+		r.REF_CHUNKS.Values = append(r.REF_CHUNKS.Values, &otelv1pb.MESSAGE_REF_CHUNK{CHUNK: proto.Int64(int64(i)), REFS: c})
+	}
 	return r, nil
 }
 
-// compiledAttrs are a table's or struct's typed attribute arrays; longStr and
-// bytes are nil for event and link structs, which project neither.
-type compiledAttrs struct {
-	str     **otelv1pb.SPANS_STR_ATTRS
-	ints    **otelv1pb.SPANS_INT_ATTRS
-	doubles **otelv1pb.SPANS_DOUBLE_ATTRS
-	bools   **otelv1pb.SPANS_BOOL_ATTRS
-	anys    **otelv1pb.SPANS_ANY_ATTRS
-	longStr **otelv1pb.SPANS_LONG_STR_ATTRS
-	bytes   **otelv1pb.SPANS_BYTES_ATTRS
+// SpanProjection is what s's SPANS row leaves out of the equality indexes.
+func SpanProjection(s Span) Projection {
+	sets := spanSets(s)
+	return projectionOf(sets[:]...)
 }
 
-// add is attrArrays.add.
-func (a compiledAttrs) add(scope string, kvs []*commonpb.KeyValue) error {
-	for _, kv := range kvs {
-		key := kv.GetKey()
-		if len(key) > MaxIndexedStringBytes {
-			continue
-		}
-		switch v := kv.GetValue().GetValue().(type) {
-		case *commonpb.AnyValue_StringValue:
-			if len(v.StringValue) <= MaxIndexedStringBytes {
-				if *a.str == nil {
-					*a.str = &otelv1pb.SPANS_STR_ATTRS{}
-				}
-				(*a.str).Values = append((*a.str).Values, &otelv1pb.STR_ATTR{SCOPE: proto.String(scope), ATTR_KEY: proto.String(key), STR_VALUE: proto.String(v.StringValue)})
-			} else if a.longStr != nil {
-				sum := sha256.Sum256([]byte(v.StringValue))
-				if *a.longStr == nil {
-					*a.longStr = &otelv1pb.SPANS_LONG_STR_ATTRS{}
-				}
-				(*a.longStr).Values = append((*a.longStr).Values, &otelv1pb.LONG_STR_ATTR{
-					SCOPE: proto.String(scope), ATTR_KEY: proto.String(key), DIGEST: sum[:LongStringDigestBytes], STR_VALUE: proto.String(v.StringValue),
-				})
-			}
-		case *commonpb.AnyValue_IntValue:
-			if *a.ints == nil {
-				*a.ints = &otelv1pb.SPANS_INT_ATTRS{}
-			}
-			(*a.ints).Values = append((*a.ints).Values, &otelv1pb.INT_ATTR{SCOPE: proto.String(scope), ATTR_KEY: proto.String(key), INT_VALUE: proto.Int64(v.IntValue)})
-		case *commonpb.AnyValue_DoubleValue:
-			if *a.doubles == nil {
-				*a.doubles = &otelv1pb.SPANS_DOUBLE_ATTRS{}
-			}
-			(*a.doubles).Values = append((*a.doubles).Values, &otelv1pb.DOUBLE_ATTR{SCOPE: proto.String(scope), ATTR_KEY: proto.String(key), DOUBLE_VALUE: proto.Float64(v.DoubleValue)})
-		case *commonpb.AnyValue_BoolValue:
-			if *a.bools == nil {
-				*a.bools = &otelv1pb.SPANS_BOOL_ATTRS{}
-			}
-			(*a.bools).Values = append((*a.bools).Values, &otelv1pb.BOOL_ATTR{SCOPE: proto.String(scope), ATTR_KEY: proto.String(key), BOOL_VALUE: proto.Bool(v.BoolValue)})
-		case *commonpb.AnyValue_BytesValue:
-			if a.bytes != nil {
-				if *a.bytes == nil {
-					*a.bytes = &otelv1pb.SPANS_BYTES_ATTRS{}
-				}
-				(*a.bytes).Values = append((*a.bytes).Values, &otelv1pb.BYTES_ATTR{SCOPE: proto.String(scope), ATTR_KEY: proto.String(key), BYTES_VALUE: presentBytes(v.BytesValue)})
-			}
-		case *commonpb.AnyValue_ArrayValue, *commonpb.AnyValue_KvlistValue:
-			j, err := protojson.Marshal(kv.GetValue())
-			if err != nil {
-				return fmt.Errorf("otelsql: attribute %q JSON: %w", key, err)
-			}
-			if *a.anys == nil {
-				*a.anys = &otelv1pb.SPANS_ANY_ATTRS{}
-			}
-			(*a.anys).Values = append((*a.anys).Values, &otelv1pb.ANY_ATTR{SCOPE: proto.String(scope), ATTR_KEY: proto.String(key), JSON_VALUE: proto.String(string(j))})
+// spanSets are the canonical resource, scope and span attribute sets of s.
+func spanSets(s Span) [3]attrSet {
+	return [3]attrSet{
+		canonicalSet(s.Resource.GetAttributes(), false),
+		canonicalSet(s.Scope.GetAttributes(), false),
+		canonicalSet(s.Span.GetAttributes(), s.ExcludeMessageAttributes),
+	}
+}
+
+// serviceName is the resource set's service.name string, or "".
+func serviceName(resource attrSet) string {
+	for _, kv := range resource.kvs {
+		if kv.Key == "service.name" {
+			return kv.GetValue().GetStringValue()
 		}
 	}
-	return nil
+	return ""
+}
+
+// structArrays are the arrays of an event or link struct, whose wrappers the
+// generator shares with SPANS's.
+func (a *attrLists) structArrays() (*otelv1pb.SPAN_EVENT_STR_ATTRS, *otelv1pb.SPAN_EVENT_INT_ATTRS, *otelv1pb.SPAN_EVENT_DOUBLE_ATTRS, *otelv1pb.SPAN_EVENT_BOOL_ATTRS, *otelv1pb.SPAN_EVENT_ANY_ATTRS) {
+	var (
+		str     *otelv1pb.SPAN_EVENT_STR_ATTRS
+		ints    *otelv1pb.SPAN_EVENT_INT_ATTRS
+		doubles *otelv1pb.SPAN_EVENT_DOUBLE_ATTRS
+		bools   *otelv1pb.SPAN_EVENT_BOOL_ATTRS
+		anys    *otelv1pb.SPAN_EVENT_ANY_ATTRS
+	)
+	if len(a.str) > 0 {
+		str = &otelv1pb.SPAN_EVENT_STR_ATTRS{Values: a.str}
+	}
+	if len(a.ints) > 0 {
+		ints = &otelv1pb.SPAN_EVENT_INT_ATTRS{Values: a.ints}
+	}
+	if len(a.doubles) > 0 {
+		doubles = &otelv1pb.SPAN_EVENT_DOUBLE_ATTRS{Values: a.doubles}
+	}
+	if len(a.bools) > 0 {
+		bools = &otelv1pb.SPAN_EVENT_BOOL_ATTRS{Values: a.bools}
+	}
+	if len(a.anys) > 0 {
+		anys = &otelv1pb.SPAN_EVENT_ANY_ATTRS{Values: a.anys}
+	}
+	return str, ints, doubles, bools, anys
 }
 
 func nonEmptyString(s string) *string {

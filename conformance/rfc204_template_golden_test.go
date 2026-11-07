@@ -127,10 +127,12 @@ var rfc204Goldens = []rfc204Golden{
 		wantMetaDataVersion: 3,
 	},
 	{
-		// The public OTel template includes typed fan-out, BYTES and UNIQUE keys.
+		// The public OTel template includes typed fan-out, BYTES and UNIQUE
+		// keys, a scalar-array unnest and base-column-led fan-out, without
+		// the Go-only TEXT overlay: template version 1 plus 19 indexes.
 		name:                "otel_v1",
 		body:                otelsql.TemplateBody,
-		wantMetaDataVersion: 14,
+		wantMetaDataVersion: 20,
 	},
 	{
 		name: "struct_nullable_field_variants",
