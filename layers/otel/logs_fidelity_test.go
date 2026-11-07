@@ -1,10 +1,8 @@
 package otel
 
 import (
-	"context"
 	"strings"
 	"testing"
-	"time"
 
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
@@ -173,80 +171,5 @@ func TestLogOTLPFidelitySingleRecordEnvelopes(t *testing.T) {
 		scope.LogRecords = []*logspb.LogRecord{scope.LogRecords[indexes[1]]}
 		want.ScopeLogs = []*logspb.ScopeLogs{scope}
 		requireLogFidelity(t, logs[i], want)
-	}
-}
-
-func testLogsFidelityRealFDB(t *testing.T, cluster string) {
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
-	defer cancel()
-	e := openTestExporter(t, ctx, cluster, nil)
-	in := logFidelityFixture(t)
-	// Exercise sibling extraction through the public receiver, too.
-	in[4].ScopeLogs[0].LogRecords = append(in[4].ScopeLogs[0].LogRecords, proto.Clone(in[4].ScopeLogs[0].LogRecords[0]).(*logspb.LogRecord))
-	in[4].ScopeLogs[0].LogRecords[1].Attributes[0].Value = exStr("sibling")
-	in[4].ScopeLogs[0].LogRecords[1].TimeUnixNano = 999
-	if err := e.ConsumeLogs(ctx, in); err != nil {
-		t.Fatal(err)
-	}
-	// A second handle proves the result comes from persisted rows, not ingest state.
-	reader := openTestExporter(t, ctx, cluster, func(c *ExporterConfig) { c.Run = e.Config().Run })
-	for _, rl := range in {
-		for _, rec := range rl.ScopeLogs[0].LogRecords {
-			name := rec.Attributes[0].Value.GetStringValue()
-			got, err := reader.QueryLogsByAttribute(ctx, Attribute{LogScopeRecord, "case", "string", name}, 10)
-			if err != nil || len(got) != 1 {
-				t.Fatalf("case %s: got %d logs, error %v", name, len(got), err)
-			}
-			want := proto.Clone(rl).(*logspb.ResourceLogs)
-			want.ScopeLogs[0].LogRecords = []*logspb.LogRecord{proto.Clone(rec).(*logspb.LogRecord)}
-			requireLogFidelity(t, got[0], want)
-			if got[0].EventID == "" {
-				t.Fatal("receiver did not assign event identity")
-			}
-		}
-	}
-	// Re-exporting a read record retains the original, not mutated projections.
-	loaded, err := reader.QueryLogsByAttribute(ctx, Attribute{LogScopeRecord, "case", "string", "populated"}, 10)
-	if err != nil || len(loaded) != 1 {
-		t.Fatalf("re-export fixture: got %d logs, error %v", len(loaded), err)
-	}
-	loaded[0].Body.Value = &commonpb.AnyValue_StringValue{StringValue: "projection edit"}
-	loaded[0].Attributes[0].Value = exStr("projection edit")
-	stats, err := e.ExportLogs(ctx, loaded)
-	if err != nil || stats.Replaced != 1 {
-		t.Fatalf("re-export retained envelope: %+v, error %v", stats, err)
-	}
-	loaded, err = reader.QueryLogsByAttribute(ctx, Attribute{LogScopeRecord, "case", "string", "populated"}, 10)
-	if err != nil || len(loaded) != 1 {
-		t.Fatalf("re-export lost source projection: got %d logs, error %v", len(loaded), err)
-	}
-	want := proto.Clone(in[4]).(*logspb.ResourceLogs)
-	want.ScopeLogs[0].LogRecords = want.ScopeLogs[0].LogRecords[:1]
-	requireLogFidelity(t, loaded[0], want)
-
-	byTrace, err := reader.QueryLogsByTrace(ctx, qaID(0xf200, 16), qaID(0xf201, 8))
-	if err != nil || len(byTrace) != 6 {
-		t.Fatalf("trace projection: got %d logs, error %v", len(byTrace), err)
-	}
-	for _, l := range byTrace {
-		name := l.Attributes[0].Value.GetStringValue()
-		if name == "zero_ids" {
-			t.Fatal("all-zero source identity incorrectly indexed")
-		}
-	}
-	for _, check := range []struct {
-		attribute Attribute
-		count     int
-	}{
-		{Attribute{LogScopeRecord, "duplicate", "string", "first"}, 0},
-		{Attribute{LogScopeRecord, "duplicate", "string", "last"}, 7},
-		{Attribute{LogScopeRecord, "bool", "string", "true"}, 7},
-		{Attribute{"resource", "resource-key", "string", "true"}, 2},
-		{Attribute{"scope", "scope-key", "int", "5"}, 2},
-	} {
-		got, err := reader.QueryLogsByAttribute(ctx, check.attribute, 10)
-		if err != nil || len(got) != check.count {
-			t.Fatalf("index projection %+v: got %d logs, want %d, error %v", check.attribute, len(got), check.count, err)
-		}
 	}
 }

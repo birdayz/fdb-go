@@ -450,3 +450,15 @@ func testRelMultipartEmptyAllRaw(t *testing.T, h *qrHarness) {
 		}
 	}
 }
+
+// awaitMessageCondition polls fn until it holds or ctx ends.
+func awaitMessageCondition(t *testing.T, ctx context.Context, fn func() bool) {
+	t.Helper()
+	for !fn() {
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(time.Millisecond):
+		}
+	}
+}

@@ -14,7 +14,6 @@ import (
 
 	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/fdbgo/fdb"
-	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/sqldriver"
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
@@ -22,9 +21,10 @@ import (
 )
 
 // BenchmarkRelLogsVsFDB measures log ingest client CPU and stored bytes per
-// log, and QueryLogsByTrace latency, for the relational log store against the
-// Exporter's FDBBackend logs in the same binary and cluster (RFC §6 G2B).
-// Arms alternate, two runs each, on fresh runs. Run it explicitly:
+// log, and QueryLogsByTrace latency, of the relational log store, two runs on
+// fresh runs (RFC §6 G2B). Its FDBBackend arm left with the custom store's
+// Exporter at the cutover (phase 3A); the gate's receipts of both arms are in
+// docs/benchmarks/otel-relational-local-20261107.md. Run it explicitly:
 //
 //	bazelisk test //layers/otel:otel_test --test_arg=-test.run=^$ \
 //	  --test_arg=-test.bench=BenchmarkRelLogsVsFDB --test_arg=-test.benchtime=1x \
@@ -67,31 +67,6 @@ func BenchmarkRelLogsVsFDB(b *testing.B) {
 		read   func(context.Context, string) ([]LogRecord, error)
 		size   func() (Size, error)
 		close  func()
-	}
-	oldArm := func(run string) arm {
-		cfg := DefaultExporterConfig()
-		cfg.ClusterFile, cfg.Run, cfg.Tenant = cluster, run, 11
-		e, err := NewExporter(ctx, cfg)
-		if err != nil {
-			b.Fatal(err)
-		}
-		return arm{
-			name:   "fdb",
-			export: e.ExportLogs,
-			read:   func(ctx context.Context, tr string) ([]LogRecord, error) { return e.QueryLogsByTrace(ctx, tr, "") },
-			size: func() (Size, error) {
-				var total Size
-				for _, ss := range []subspace.Subspace{e.backend.keys.logs, e.backend.keys.logTrace, e.backend.keys.logEq} {
-					sz, err := e.backend.size(ctx, ss.Sub(int64(cfg.Tenant)))
-					if err != nil {
-						return total, err
-					}
-					total = lrAddSize(total, sz)
-				}
-				return total, nil
-			},
-			close: func() { _ = e.Shutdown(ctx) },
-		}
 	}
 	relArm := func(run string) arm {
 		cfg := lrConfig()
@@ -137,7 +112,7 @@ func BenchmarkRelLogsVsFDB(b *testing.B) {
 	}
 	for range b.N {
 		for runIdx := range 2 {
-			for _, mk := range []func(string) arm{oldArm, relArm} {
+			for _, mk := range []func(string) arm{relArm} {
 				a := mk(lrBenchRun(b))
 				var before, after syscall.Rusage
 				if err := syscall.Getrusage(syscall.RUSAGE_SELF, &before); err != nil {

@@ -180,7 +180,7 @@ func testRelSDKSyncer(t *testing.T, cluster string) {
 		{"bool true", typed("span", "gen_ai.request.stream", exBool(true)), []Hit{hit(t1, 10*ms)}},
 		{"bool false", typed("span", "gen_ai.request.stream", exBool(false)), []Hit{hit(t2, time.Second)}},
 		// D1: a bool is no longer its canonical string.
-		{"bool as string", CanonicalAttribute("span", "gen_ai.request.stream", exBool(true)), nil},
+		{"bool as string", span("gen_ai.request.stream", "true"), nil},
 		{"float shared by both traces", typed("span", "gen_ai.request.temperature", exDouble(0.7)), both},
 		{"float NaN", typed("span", "custom.score", exDouble(math.NaN())), []Hit{hit(t1, 10*ms)}},
 		{"float +Inf", typed("span", "custom.ceiling", exDouble(math.Inf(1))), []Hit{hit(t1, 10*ms)}},
@@ -860,7 +860,7 @@ func testRelShutdown(t *testing.T, cluster string) {
 	// A layout change on an existing store is refused, either way.
 	mismatch := e.Config()
 	mismatch.EnableMessageDeltas = true
-	if x, err := newRelExporter(ctx, mismatch, reMessageParts(&reMessages{})); err == nil {
+	if x, err := newExporter(ctx, mismatch, reMessageParts(&reMessages{})); err == nil {
 		_ = x.Shutdown(context.Background())
 		t.Fatal("layout mismatch accepted")
 	} else {
@@ -869,7 +869,7 @@ func testRelShutdown(t *testing.T, cluster string) {
 	deltas := relTestConfig(t, cluster, func(c *ExporterConfig) { c.EnableMessageDeltas = true })
 	startRelExporter(t, ctx, deltas, reMessageParts(&reMessages{}))
 	deltas.EnableMessageDeltas = false
-	if x, err := newRelExporter(ctx, deltas, relParts{}); err == nil {
+	if x, err := newExporter(ctx, deltas, relParts{}); err == nil {
 		_ = x.Shutdown(context.Background())
 		t.Fatal("dropping messages from a deltas store accepted")
 	} else {
@@ -880,7 +880,7 @@ func testRelShutdown(t *testing.T, cluster string) {
 	for name, mutate := range map[string]func(*ExporterConfig){
 		"brotli": func(c *ExporterConfig) { c.RecordCompression = "brotli-4" },
 	} {
-		_, err := newRelExporter(ctx, relTestConfig(t, cluster, mutate), relParts{})
+		_, err := newExporter(ctx, relTestConfig(t, cluster, mutate), relParts{})
 		if err == nil {
 			t.Fatalf("%s accepted", name)
 		}
@@ -1007,7 +1007,7 @@ func testRelOwnership(t *testing.T, cluster string) {
 	requireOtelKind(t, err, "ownership")
 	_, err = e.LoadSpanOTLP(ctx, tr, id)
 	requireOtelKind(t, err, "ownership")
-	_, err = newRelExporter(ctx, e.Config(), relParts{})
+	_, err = newExporter(ctx, e.Config(), relParts{})
 	requireOtelKind(t, err, "ownership")
 }
 
@@ -1024,7 +1024,7 @@ func testRelHMACRace(t *testing.T, cluster string) {
 	rss := qaCorpus(9)
 	// Each handle commits the corpus (idempotently): a read's cached version
 	// is only as new as its own client's last commit (tenant.go read).
-	for _, e := range []*relExporter{a, b} {
+	for _, e := range []*Exporter{a, b} {
 		if _, err := e.ExportResourceSpans(ctx, rss); err != nil {
 			t.Fatal(err)
 		}
@@ -1056,7 +1056,7 @@ func testRelHMACRace(t *testing.T, cluster string) {
 		t.Fatalf("a's publish ran %d times; want a conflict and one retry", n)
 	}
 	for _, token := range [][]byte{pageA.Continuation, pageB.Continuation} {
-		for name, e := range map[string]*relExporter{"a": a, "b": b} {
+		for name, e := range map[string]*Exporter{"a": a, "b": b} {
 			page, err := e.QuerySameSpan(ctx, SameSpanQuery{Predicates: q.Predicates, Limit: 2, Continuation: token})
 			if err != nil || !reflect.DeepEqual(page.Spans, want[2:4]) {
 				t.Fatalf("resume on %s: %+v %v", name, page.Spans, err)
