@@ -426,6 +426,12 @@ func (r opRelease) afterLease() context.CancelFunc {
 // opContextWithLease returns release authority only to the admitting frame.
 // Borrowers retain identity and effective cancellation, but own no token.
 func (tx *Transaction) opContextWithLease(parent context.Context, issued bool) (context.Context, opRelease, *executionLease) {
+	return tx.opContextInto(parent, issued, nil)
+}
+
+// opContextInto is opContextWithLease admitting a fresh operation into into, when
+// set, instead of a new one: a pooled read answered at issue allocates none.
+func (tx *Transaction) opContextInto(parent context.Context, issued bool, into *readOperation) (context.Context, opRelease, *executionLease) {
 	if op := tx.readOperation(parent); op != nil {
 		if op.lease.isActive() {
 			return parent, opRelease{}, nil
@@ -451,7 +457,8 @@ func (tx *Transaction) opContextWithLease(parent context.Context, issued bool) (
 		if cause != nil {
 			inc.cancel(cause)
 		}
-		op := &readOperation{Context: parent, readAdmission: readAdmission{tx: tx, inc: inc, parent: parent}, joined: true}
+		op := freshOperation(into)
+		*op = readOperation{Context: parent, readAdmission: readAdmission{tx: tx, inc: inc, parent: parent}, joined: true}
 		op.lease = tx.enterReadStateInto(op, inc, true, issued, &op.leaseStorage)
 		if op.lease != nil {
 			op.entryErr = tx.deferredErr.Load()
@@ -462,7 +469,8 @@ func (tx *Transaction) opContextWithLease(parent context.Context, issued bool) (
 		inc.cancel(cause)
 	}
 	// The merged context is derived when first needed (see deferred).
-	op := &readOperation{Context: parent, readAdmission: readAdmission{tx: tx, inc: inc, parent: parent}, deferred: true}
+	op := freshOperation(into)
+	*op = readOperation{Context: parent, readAdmission: readAdmission{tx: tx, inc: inc, parent: parent}, deferred: true}
 	op.lease = tx.enterReadStateInto(op, inc, true, issued, &op.leaseStorage)
 	if op.lease != nil {
 		// The lease pins this incarnation's slot across reset. Preserve even a
@@ -470,6 +478,13 @@ func (tx *Transaction) opContextWithLease(parent context.Context, issued bool) (
 		op.entryErr = tx.deferredErr.Load()
 	}
 	return op, opRelease{op: op}, op.lease
+}
+
+func freshOperation(into *readOperation) *readOperation {
+	if into != nil {
+		return into
+	}
+	return new(readOperation)
 }
 
 func (tx *Transaction) readOperation(ctx context.Context) *readOperation {
@@ -596,53 +611,4 @@ func (tx *Transaction) trackReadOperation(ctx context.Context, err error) error 
 		return tx.trackReadErrorGen(err, op.inc.gen)
 	}
 	return tx.trackReadError(err)
-}
-
-// admitSelectorRead admits the read into r.op under one lock when no turnover is
-// under way, so a read answered at issue allocates no operation.
-func (tx *Transaction) admitSelectorRead(r *selectorRangeRead, parent context.Context) (counted bool, err error) {
-	if existing := tx.readOperation(parent); existing != nil {
-		if existing.lease.isActive() {
-			r.ctx = parent
-			return false, tx.checkReadState(parent)
-		}
-		ctx, rel, owned := tx.opContextWithLease(parent, true)
-		r.ctx = ctx
-		r.release = rel
-		return owned != nil, tx.checkReadState(ctx)
-	}
-	parentDone := parent.Done()
-	tx.readErrMu.Lock()
-	inc := tx.readIncarnationLocked()
-	if tx.timeoutNeedsArm && tx.readReady == nil {
-		tx.armTimeoutLocked()
-	}
-	if tx.readReady == nil {
-		cause := inc.cause
-		r.op = readOperation{
-			Context:       parent,
-			readAdmission: readAdmission{tx: tx, inc: inc, parent: parent, entryErr: tx.deferredErr.Load()},
-			joined:        parentDone == nil,
-			deferred:      parentDone != nil,
-		}
-		lease := &r.op.leaseStorage
-		tx.activateLeaseLocked(inc, true, lease)
-		r.op.lease = lease
-		r.ctx = &r.op
-		if r.op.deferred {
-			r.release = opRelease{op: &r.op}
-		} else {
-			r.release = opRelease{lease: lease}
-		}
-		tx.readErrMu.Unlock()
-		if cause != nil {
-			inc.cancel(cause)
-		}
-		return true, tx.checkReadState(r.ctx)
-	}
-	tx.readErrMu.Unlock()
-	ctx, rel, owned := tx.opContextWithLease(parent, true)
-	r.ctx = ctx
-	r.release = rel
-	return owned != nil, tx.checkReadState(ctx)
 }

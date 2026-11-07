@@ -173,10 +173,13 @@ func (s *pseq[T]) mutItem(n *pnode[T]) *pnode[T] {
 	return s.copyOf(n, l, r, int32(psize(n, s.rv)))
 }
 
-// canMutNodeInPlace reports whether n is owned by s's current unshared version,
-// so writing n.item in place is equivalent to s.set at n's index.
-func (s *pseq[T]) canMutNodeInPlace(n *pnode[T]) bool {
-	return s.ver != 0 && n.stamp == s.ver && !s.frozen
+// mutNode is mutAt(i) for n, the node at index i: n's own item when s's current
+// unshared version owns it, sparing the descent.
+func (s *pseq[T]) mutNode(i int, n *pnode[T]) *T {
+	if s.ver != 0 && n.stamp == s.ver && !s.frozen {
+		return &n.item
+	}
+	return s.mutAt(i)
 }
 
 // Len is the number of items.
@@ -252,17 +255,8 @@ func (s *pseq[T]) findNode(pred func(*T) bool) (int, *pnode[T]) {
 	return winBase + psize(found.leftAt(at), at), found
 }
 
-// before returns the last index whose item does not satisfy pred, and the
-// item: search(pred)-1, or -1 and nil when every item does.
-func (s *pseq[T]) before(pred func(*T) bool) (int, *T) {
-	i, n := s.beforeNode(pred)
-	if n == nil {
-		return -1, nil
-	}
-	return i, &n.item
-}
-
-// beforeNode is before returning the node itself, nil when none.
+// beforeNode returns the last index whose item does not satisfy pred, and its
+// node: search(pred)-1, or -1 and nil when every item does.
 func (s *pseq[T]) beforeNode(pred func(*T) bool) (int, *pnode[T]) {
 	at := s.rv
 	base, winBase := 0, 0
@@ -515,9 +509,6 @@ func (c *pcursor[T]) peekNext() *T { return pathPeekNext(c.path, c.at) }
 
 // item is the current item; the cursor must be valid. It must not be written.
 func (c *pcursor[T]) item() *T { return &c.path[len(c.path)-1].item }
-
-// node is the current node; the cursor must be valid.
-func (c *pcursor[T]) node() *pnode[T] { return c.path[len(c.path)-1] }
 
 func (c *pcursor[T]) next() { c.move(true) }
 

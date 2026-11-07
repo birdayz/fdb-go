@@ -276,11 +276,7 @@ func (w *rywWrites) putEntryAt(i int, n *pnode[rywWrite], k string, e rywEntry) 
 		return
 	}
 	if n != nil {
-		if w.sorted.canMutNodeInPlace(n) {
-			n.item.e = e
-			return
-		}
-		w.sorted.mutAt(i).e = e
+		w.sorted.mutNode(i, n).e = e
 		return
 	}
 	w.sorted.insert(i, rywWrite{key: k, e: e})

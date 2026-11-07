@@ -53,9 +53,9 @@ func checkPseq(t *testing.T, step string, s *pseq[int], want []int) {
 			(sf.valid() && *sf.item() != want[k]) {
 			t.Fatalf("%s: prev of a finger copy at %d moved to %d (original at %d)", step, k, cf.idx, sf.idx)
 		}
-		j, prev := s.before(func(v *int) bool { return indexOf(want, v) >= k })
-		if j != k-1 || (k > 0) != (prev != nil) || (prev != nil && *prev != want[k-1]) {
-			t.Fatalf("%s: before(index >= %d) = %d, %v", step, k, j, prev)
+		j, prev := s.beforeNode(func(v *int) bool { return indexOf(want, v) >= k })
+		if j != k-1 || (k > 0) != (prev != nil) || (prev != nil && prev.item != want[k-1]) {
+			t.Fatalf("%s: beforeNode(index >= %d) = %d, %v", step, k, j, prev)
 		}
 	}
 	for start := -1; start <= len(want); start++ {

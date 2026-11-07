@@ -283,11 +283,7 @@ func (n *rywNodes) iter() rywNodeIter { return rywNodeIter{s: &n.seq} }
 func (n *rywNodes) insert(node rywNode) {
 	i, pnode := n.seq.findNode(func(e *rywNode) bool { return bytes.Compare(e.key, node.key) >= 0 })
 	if pnode != nil && bytes.Equal(pnode.item.key, node.key) {
-		if n.seq.canMutNodeInPlace(pnode) {
-			pnode.item = node
-			return
-		}
-		n.seq.set(i, node)
+		*n.seq.mutNode(i, pnode) = node
 		return
 	}
 	n.seq.insert(i, node)
@@ -346,11 +342,7 @@ func (n *rywNodes) applyMutate(key []byte, addConflict, versionstamp bool) {
 	// the updated one. Both are an insert at key (VersionedMap.h:288-289): the
 	// node at key is replaced, or the new one goes right after the entry.
 	if at {
-		if n.seq.canMutNodeInPlace(pnode) {
-			pnode.item = node
-		} else {
-			n.seq.set(i, node)
-		}
+		*n.seq.mutNode(i, pnode) = node
 	} else {
 		n.seq.insert(i+1, node)
 	}
@@ -531,11 +523,7 @@ func (n *rywNodes) applyConflictRange(begin, end []byte) {
 	// :293-302, by position: from the last, so earlier positions stay valid.
 	for i := len(edits) - 1; i >= 0; i-- {
 		if e := edits[i]; e.replace {
-			if n.seq.canMutNodeInPlace(e.pnode) {
-				e.pnode.item = e.node
-			} else {
-				n.seq.set(e.at, e.node)
-			}
+			*n.seq.mutNode(e.at, e.pnode) = e.node
 		} else {
 			n.seq.insert(e.at, e.node)
 		}

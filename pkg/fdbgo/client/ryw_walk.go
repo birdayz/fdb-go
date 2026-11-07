@@ -116,7 +116,7 @@ func (w *rywWalk) release() {
 		w.its[i].scrub()
 	}
 	res := w.result
-	clear(res)
+	clear(res[:cap(res)]) // rows trimmed off the end keep no finished read's bytes alive
 	kbuf := w.keyBuf
 	w.rywWalkState = rywWalkState{result: res[:0], keyBuf: kbuf[:0]}
 	walkPool.Put(w)

@@ -150,11 +150,7 @@ func (tx *Transaction) insertReadConflictLocked(b, e rywBoundary) {
 	case 0:
 		s.insert(lo, merged)
 	case 1:
-		if s.canMutNodeInPlace(firstNode) {
-			firstNode.item = merged
-		} else {
-			s.set(lo, merged)
-		}
+		*s.mutNode(lo, firstNode) = merged
 	default:
 		s.delete(lo, hi)
 		s.insert(lo, merged)

@@ -271,7 +271,7 @@ type PendingRange struct {
 	state atomic.Int32 // pendingReady → pendingClaimed by whichever of the goroutine or Get runs r
 	taken atomic.Bool  // the first Get has claimed kv1
 	done  chan struct{}
-	kvs   []KeyValue  // the rows in shared RYW/cache storage, never written
+	kvs   []KeyValue  // the rows in shared RYW/cache storage, bytes never overwritten within their length
 	kv0   [2]KeyValue // a local read's row headers
 	kv1   [2]KeyValue // the first Get's copy, when it fits
 	more  bool

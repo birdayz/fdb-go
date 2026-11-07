@@ -36,9 +36,8 @@ type selectorRangeRead struct {
 	maxKey            []byte
 	disabled          bool     // RYW disabled: readThrough (RYW:187-215)
 	walk              *rywWalk // the RYW and snapshot-cache routes
-	// view is the pinned write-map version (RFC-262 D11): set when the walk reads
-	// the write map, which it does without c.mu. Released once: at issue if the
-	// walk finishes there, else in complete.
+	// view is the pinned write-map version the walk reads without c.mu (RFC-262 D11);
+	// released once: at issue if the walk finishes there, else in complete.
 	view              *rywWrites
 	localConflicts    []conflictSpan // a read answered at issue when > 4 spans
 	localConflictsBuf [4]conflictSpan
@@ -69,8 +68,10 @@ func (tx *Transaction) issueSelectorRangeInto(r *selectorRangeRead, parent conte
 		return
 	}
 	*r = selectorRangeRead{tx: tx, reverse: reverse, snapshot: snapshot}
-	counted, stateErr := tx.admitSelectorRead(r, parent)
-	if stateErr != nil { // used_during_commit, resetPromise (:1732-1737)
+	ctx, release, owned := tx.opContextInto(parent, true, &r.op)
+	r.ctx, r.release = ctx, release
+	counted := owned != nil
+	if stateErr := tx.checkReadState(ctx); stateErr != nil { // used_during_commit, resetPromise (:1732-1737)
 		r.finish(nil, false, r.trackError(stateErr))
 		return
 	}
@@ -495,7 +496,8 @@ func (tx *Transaction) startSelectorRange(ctx context.Context, begin, end KeySel
 	r := selectorReadPool.Get().(*selectorRangeRead)
 	tx.issueSelectorRangeInto(r, ctx, begin, end, limit, byteTarget, reverse, snapshot)
 	if r.finished || r.local {
-		// The rows stay in RYW storage, which is never written; each Get copies them.
+		// The rows stay in RYW storage, whose bytes inside a row's length are never overwritten
+		// (in-place writes only extend past it, TestRYWLocalStartRowSurvivesInPlaceWrites).
 		p := &PendingRange{done: closedDone}
 		p.state.Store(pendingClaimed)
 		p.kvs, p.more, p.err = r.runInto(false, p.kv0[:0])
