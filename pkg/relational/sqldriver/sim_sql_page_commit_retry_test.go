@@ -310,7 +310,12 @@ func seedPageRetryRows(t *testing.T, ctx context.Context, db *sql.DB) *sql.Conn 
 // The transaction ordinal is swept so the failure lands on each of the query's
 // pages in turn — a fixed ordinal would be a guess about how many transactions
 // the connection makes before the first page, and the invariant is supposed to
-// hold wherever the failure lands.
+// hold wherever the failure lands. The sweep covers exactly the transactions an
+// unarmed run of the same statement makes (pageRetryTransactions). An
+// auto-commit statement's catalog read, planning and first page share one
+// standalone transaction that is not a Transact call, so its commit is not in
+// the sweep; TestStatementRead_SharedCommitFailureRerunsThePage (embedded) pins
+// a failed shared commit.
 // Two query shapes, because a stale continuation costs differently in each. A
 // plain scan resumes from a key position; DISTINCT resumes a STATEFUL operator
 // whose continuation carries accumulated dedup state, which is where a position
@@ -330,7 +335,8 @@ func TestPageRetry_ContinuationAdvancesOnlyOnTransactionSuccess(t *testing.T) {
 	}
 
 	for _, shape := range shapes {
-		for n := int64(0); n < 8; n++ {
+		txns := pageRetryTransactions(t, ctx, 9099, shape.query)
+		for n := int64(0); n < txns; n++ {
 			t.Run(fmt.Sprintf("%s/fail_tx_%d", shape.name, n), func(t *testing.T) {
 				t.Parallel()
 				db, backend := openRetryOnceSchema(t, uint64(9100+n),
@@ -383,6 +389,31 @@ func TestPageRetry_ContinuationAdvancesOnlyOnTransactionSuccess(t *testing.T) {
 			})
 		}
 	}
+}
+
+// pageRetryTransactions is the number of Transact calls an unarmed run of query
+// makes on a fresh page-retry fixture: the ordinals a fault sweep over its
+// transactions covers. A paged statement makes at least two (its later pages).
+func pageRetryTransactions(t *testing.T, ctx context.Context, seed uint64, query string) int64 {
+	t.Helper()
+	db, backend := openRetryOnceSchema(t, seed, "CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
+	conn := seedPageRetryRows(t, ctx, db)
+	backend.arm(-1)
+	rows, err := conn.QueryContext(ctx, query)
+	if err != nil {
+		t.Fatalf("unarmed %q: %v", query, err)
+	}
+	for rows.Next() {
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("unarmed %q rows: %v", query, err)
+	}
+	rows.Close()
+	n := backend.seen.Load()
+	if n < 2 {
+		t.Fatalf("unarmed %q made %d transactions; a paged statement makes at least two", query, n)
+	}
+	return n
 }
 
 // TestPageRetry_NoFailureIsUnchanged is the control: the same paged query with
