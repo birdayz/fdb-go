@@ -303,6 +303,93 @@ on, the export's logical bytes are 13.1 MB against 372 MB with messages off
 wrote 60.2 MB of keys. The host ran other builds (load 10–11), so treat single
 differences under ~10% as noise.
 
+### Gate G2A: spans through the replacement's write and read paths
+
+These runs measure the replacement's production code: `--backend sql` direct
+ingest of compiled rows with `--save-mode batch` writes through
+`otel.SpanWriter` (`write_path` in the ingest receipt), and `--sql-query direct`
+reads through `otel.SpanReader`. The binary was built at `afe1e7dac`, which
+has the final template. The cluster is the same host's Redwood `otelcmp`,
+recreated this afternoon, and every run below is fresh. Runs started only
+when the 1-minute load was under 15; the load at the start and end of each run
+is shown. Other agents' builds ran throughout. Raw evidence is in
+`otel-relational-local-20261107/g2a-*`; the query receipts there have their
+per-sample arrays removed.
+
+**Ingest.** 50k spans, the round 2 fixture and flags. `fdb` production uses
+`--posting-value-format tuple --hash-bytes 8 --record-compression brotli-4 --bulk-index-conflicts`.
+`sql` uses `--record-compression zlib-1 --sql-ingest direct --sql-rows compiled`.
+The arms alternated.
+
+| run | µs/span | wall s | load start/end |
+|---|---:|---:|---|
+| `fdb` 1 | 374 | 7.4 | 14.0 / 13.7 |
+| `sql` 1 | 280 | 10.1 | 11.4 / 11.0 |
+| `fdb` 2 | 342 | 8.7 | 11.4 / 10.9 |
+| `sql` 2 | 277 | 10.2 | 10.3 / 11.0 |
+| `fdb` 3 | 390 | 20.0 | 13.7 / 19.2 |
+| `sql` 3 | 288 | 11.8 | 13.5 / 13.1 |
+| `fdb` 4 | 380 | 15.7 | 13.6 / 16.6 |
+| `sql` 4 | 286 | 7.8 | 13.4 / 12.7 |
+| **mean** | `fdb` 372, `sql` 283 (0.76×) | | |
+
+| per span, every run | logical B | prefix B | records B | keys |
+|---|---:|---:|---:|---:|
+| `fdb` production | 2,001 | 1,501 | 460 | 11 |
+| `sql` zlib-1 (SpanWriter) | 1,472 | 878 | 533 | 11 |
+
+- **CPU:** the gate is ≤ 353 µs/span, ideally ≤ 1.05 × 283 = 297. `sql` averaged 283 µs/span and its worst run was 288, so it passes both bounds.
+- **Bytes:** the gate is ≤ `fdb`. `sql` stores 26% fewer logical bytes and 42% fewer prefix bytes, so it passes.
+- **Baseline drift:** this session's `fdb` production mean (372) is 5% above round 2's 353; `sql` matches round 2's 283.
+- **Bulk index conflicts:** otelbench refuses `--bulk-index-conflicts` outside `--backend fdb`, so the `sql` arm runs SpanWriter without coalesced index conflicts. The Exporter's default (coalescing on) is measured by the benchmark below.
+
+**Queries.** Tenant 0 of `fdb` run 1 and `sql` run 1, suite `all`, 1,200
+iterations (75 per class), two interleaved runs per arm, load 13.6–13.8. The
+table shows p50 in ms for run a / run b. 0 oracle failures in every run,
+including two earlier `sql` runs at load 10.6–13.7 that gave the same p50s
+within 10%.
+
+| class | `fdb` production | `sql` direct (`SpanReader`) | ratio |
+|---|---:|---:|---:|
+| span | 0.79 / 0.78 | 0.38 / 0.36 | 0.47 |
+| span_absent | 0.84 / 0.80 | 0.38 / 0.35 | 0.44 |
+| trace | 0.97 / 0.97 | 0.51 / 0.45 | 0.50 |
+| trace_absent | 0.83 / 0.80 | 0.38 / 0.35 | 0.44 |
+| time_narrow | 0.90 / 0.85 | 0.39 / 0.35 | 0.43 |
+| time_broad | 1.21 / 1.13 | 0.68 / 0.61 | 0.55 |
+| time_absent | 0.82 / 0.76 | 0.39 / 0.33 | 0.46 |
+| time_empty | 0.68 / 0.65 | 0 (no read) | 0 |
+| genai_response | 0.87 / 0.80 | 0.39 / 0.35 | 0.44 |
+| genai_type | 0.82 / 0.83 | 0.35 / 0.33 | 0.42 |
+| genai_scope_resource | 0.84 / 0.79 | 0.37 / 0.35 | 0.44 |
+| genai_scope_scope | 0.83 / 0.79 | 0.36 / 0.35 | 0.44 |
+| genai_absent | 0.81 / 0.80 | 0.36 / 0.34 | 0.43 |
+| genai_operation | 1.42 / 1.42 | 0.93 / 0.82 | 0.61 |
+| genai_provider | 1.52 / 1.38 | 0.95 / 0.84 | 0.62 |
+| genai_model | 1.62 / 1.48 | 0.94 / 0.83 | 0.57 |
+
+Every class's p50 is below `fdb` production, so the query half of G2A passes.
+The median per-class p99 was 3.2 ms for `fdb` and 1.2–1.6 ms for `sql`.
+
+**The Exporter itself.** `BenchmarkRelSpansVsFDB` (`layers/otel/spans_rel_bench_test.go`,
+at `bddc4fc31`) exports the same fixture through `ExportResourceSpans` of both
+exporters in one test binary, with messages off and `ExporterConfig`
+defaults. The relational exporter uses `zlib-1`; the old Exporter uses brotli-4,
+tuple postings, 8-byte hashes and bulk conflicts. Each run exports 20,000
+single-span envelopes of one tenant, in calls of 500 spans. CPU is the test
+process's user+sys over the export calls, after a forced GC. The cluster is
+the benchmark's own FDB testcontainer, and the three alternating runs per arm
+ran at load 11.3 at the start and 10.0 at the end.
+
+| arm | µs/span (3 runs) | mean | wall s | KV B/span | prefix B/span |
+|---|---|---:|---|---:|---:|
+| old Exporter | 469.7, 467.2, 471.1 | 469 | 2.16–2.77 | 2,003 | 1,496 |
+| relational exporter | 247.1, 255.2, 254.7 | 252 | 1.71–2.34 | 1,483 | 872 |
+
+The relational exporter costs 0.54× the old Exporter's client CPU per span. The
+old Exporter costs more per span than otelbench's `fdb` backend (469 against
+372). That gap was not profiled.
+
 ## Reproduce
 
 ```sh
@@ -315,6 +402,14 @@ $B --backend sql --mode ingest $F --workers 8 --batch 32 --save-mode batch --run
 $B --backend sql --mode audit $F --run sql_r1 --output sql-audit.json
 $B --backend sql --mode query $F --suite all --iterations 600 --run sql_r1 --output sql-q.json
 $B --backend sql --sql-query direct --mode query $F --suite all --iterations 600 --run sql_r1 --output sqld-q.json
+```
+
+G2A's Exporter benchmark runs on its own FDB testcontainer:
+
+```sh
+bazelisk test //layers/otel:otel_test --test_arg=-test.run=^$ \
+  --test_arg=-test.bench=BenchmarkRelSpansVsFDB --test_arg=-test.benchtime=1x \
+  --test_output=streamed --nocache_test_results
 ```
 
 `OTELBENCH_SQL_EXPLAIN=1` prints each SQL query's plan once to stderr.

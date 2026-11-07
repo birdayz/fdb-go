@@ -1,0 +1,10 @@
+load_before=11.34
+BenchmarkRelSpansVsFDB
+spans_rel_bench_test.go:116: arm=fdb run=0 spans=20000 batches=480 cpu_us_per_span=469.7 wall_s=2.16 kv_bytes_per_span=2002.9 prefix_bytes_per_span=1496.2 keys_per_span=11.00
+spans_rel_bench_test.go:116: arm=rel run=0 spans=20000 batches=480 cpu_us_per_span=247.1 wall_s=1.71 kv_bytes_per_span=1482.8 prefix_bytes_per_span=872.2 keys_per_span=11.00
+spans_rel_bench_test.go:116: arm=fdb run=1 spans=20000 batches=480 cpu_us_per_span=467.2 wall_s=2.68 kv_bytes_per_span=2002.9 prefix_bytes_per_span=1496.2 keys_per_span=11.00
+spans_rel_bench_test.go:116: arm=rel run=1 spans=20000 batches=480 cpu_us_per_span=255.2 wall_s=2.34 kv_bytes_per_span=1482.8 prefix_bytes_per_span=872.2 keys_per_span=11.00
+spans_rel_bench_test.go:116: arm=fdb run=2 spans=20000 batches=480 cpu_us_per_span=471.1 wall_s=2.77 kv_bytes_per_span=2002.9 prefix_bytes_per_span=1496.2 keys_per_span=11.00
+spans_rel_bench_test.go:116: arm=rel run=2 spans=20000 batches=480 cpu_us_per_span=254.7 wall_s=2.16 kv_bytes_per_span=1482.8 prefix_bytes_per_span=872.2 keys_per_span=11.00
+BenchmarkRelSpansVsFDB-24    	       1	24088561487 ns/op	      2003 fdb-B/span	       471.1 fdb-cpu-us/span	      1483 rel-B/span	       254.7 rel-cpu-us/span
+exit=0 load_after=9.95
