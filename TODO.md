@@ -3664,22 +3664,18 @@ these claims; the implementation notes below are not controlled comparisons.
   uncopied. Fixed in PR #1034 (`valBuf`, dropped on release); regression
   `TestPendingRangeKeepsAppendedValuesAcrossWalks` (range_selector_unit_test).
 - [ ] Stream 2C follow-ups (`messages_rel.go`, `messages_query_rel.go`):
-  - `relMessageStore` reads `STORE_META("message_writer")` through
-    `localStoreMeta`; switch to store_meta.go's `loadStoreMeta` (stream 2A).
-  - The ports drive the hooks through `relMsgEnv` (messages_rel_fdb_test.go),
-    a stand-in for exporter_rel.go; retarget them to the relational exporter at
-    3A. Still to port there: the span+log+message existential case (needs 2B's
-    `logClauses` and log writer), `Exporter.Query`'s refusal of message
-    attributes, and the exporter-lifecycle tests (queue backing release,
-    evicted-marker replay, Shutdown joining a canceled message worker), plus
-    `TestMultipartEmptyAllQueryChargesRawLargeIndexBytes`.
   - 3B must keep what the new files use from messages.go and messages_query.go:
     `messageTimerStats`, `isTransactionTooLarge`, `messagePipelineSizer`, the
     `MessageFullTextQuery`/`MessageSpanHit`/`MessageFullTextPage` types and the
-    `MessageMatch*` modes.
+    `MessageMatch*` modes; and from old test files `awaitMessageCondition`
+    (message_boundary_regression_test.go) and `cacheFixtureMarker`.
   - MESSAGES_TEXT holds 21-23% more bytes than the old TEXT index on the
-    `BenchmarkMessageWriteCostRealFDB` workloads (the schema subspace prefix is
-    23 bytes against 10); decide at G2C whether that matters.
+    `BenchmarkMessageWriteCostRealFDB` workloads, with the same bunch count
+    (6,017 and 10,143 rows): the schema subspace prefix is 23 bytes against
+    10 (26% of the difference; also all of the +40% written key bytes, 13 B
+    per write), and every entry's primary key carries the record type key
+    (about 1.9 B per posting, the rest). The whole store is 1.04-1.06x. Decide
+    at G2C whether TEXT's own bytes matter.
 
 ### OTel relational prototype findings (2026-11-07)
 
