@@ -128,6 +128,7 @@ go_test(
         "posting_diff_test.go",
         "posting_value_test.go",
         "query_advanced_helpers_test.go",
+        "query_advanced_rel_fdb_test.go",
         "query_advanced_rel_test.go",
         "query_advanced_test.go",
         "query_plan_test.go",
@@ -139,6 +140,7 @@ go_test(
     ],
     embed = [":otel"],
     deps = [
+        "//layers/otel/otelsql",
         "//pkg/fdbgo/client",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
@@ -147,6 +149,7 @@ go_test(
         "//pkg/fdbgo/wire",
         "//pkg/fdbgo/wire/types",
         "//pkg/recordlayer",
+        "//pkg/relational/sqldriver",
         "//pkg/testcontainers/foundationdb",
         "@com_github_clickhouse_clickhouse_go_v2//:clickhouse-go",
         "@com_github_clickhouse_clickhouse_go_v2//lib/driver",
