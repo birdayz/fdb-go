@@ -1,11 +1,18 @@
-# otel: an executable immutable OTel-span experiment
 
-This is a **prototype**, not an OTLP receiver or a production tracing layer. It
-compares real Record Layer custom-index queries with two legitimate ClickHouse
-representations. It does not establish an end-to-end, HA, durability-matched,
-open-loop SLO, compression, or production win merely by running successfully.
-The design/research lives alongside the code under `rfcs/`, `reports/`, and
-`research_notes/`.
+# otel: OTel signals on OTEL_V1 relational tenant stores
+
+This is a **prototype**, not an OTLP receiver or a production tracing layer.
+`otel.Exporter` stores spans, logs and GenAI messages in one OTEL_V1 schema store
+per `(run, tenant)` and serves typed reads from standard Record Layer indexes
+([migration RFC](rfcs/relational-exporter-migration.md)). `otelbench` compares
+the same OTEL_V1 stores with two legitimate ClickHouse representations. It does
+not establish an end-to-end, HA, durability-matched, open-loop SLO, compression,
+or production win merely by running successfully. The design/research lives
+alongside the code under `rfcs/`, `reports/`, and `research_notes/`.
+
+The custom FDB store (`FDBBackend`, its custom posting index, raw-KV logs,
+`Message` records, JSON owner manifests and Brotli records) was deleted in
+phase 3B. Results measured on it are kept below only as labeled history.
 
 **Final PoC target: 10,000,000 stored spans.** The owner reduced the original
 100M target to 10M. Complete the 10M validation/comparison and stop; no 100M load
@@ -21,40 +28,34 @@ unchanged.
   Counter-based SHA-256 timestamps have second resolution and permit ties.
   Scoped string/int attributes include literal dotted keys, same-name other
   scopes, integer/string lookalikes, repeated matching spans, and absent values.
-* Real `FDBRecordStore.SaveRecord(proto.Message)` through a dynamic envelope
-  containing complete synthetic OTLP `ResourceSpans` wire bytes. The registered
-  `IndexMaintainerFactory` synchronously maintains custom secondary postings in
-  `Update(old,new)`. WRITE_ONLY explicitly invokes the custom full-maintenance
-  implementation, not an embedded standard-index method. Prefix deletion is refused; whole-store deletion clears
-  the owned secondary structure. Core seams validate registered factory options
-  and support external WRITE_ONLY maintenance; the SQL planner now fails closed
-  for opaque index layouts. The typed OTel APIs are not SQL catalog tables.
+* `otelbench --backend sql` stores each fixture span as an OTEL_V1 `spans` row in
+  its tenant's schema store (database `/OTELBENCH/R_<RUN>`, schema `T<tenant>`).
+  Attributes are typed repeated structs; standard fan-out VALUE indexes
+  (`SPANS_STR_ATTR`, `SPANS_LONG_STR_ATTR` by digest, `SPANS_INT_ATTR`,
+  `SPANS_DOUBLE_ATTR`, `SPANS_BOOL_ATTR`) key them by scope/key/value, then
+  start/trace/span, and are maintained synchronously on every save.
+  `SPANS_SPAN_ID` and `SPANS_TIME` serve the intrinsic queries; `otlp` keeps the
+  span's single-span `ResourceSpans`. `--sql-query sql` (default) runs the queries
+  as SQL through the driver; `--sql-query direct` runs them as Record Layer scans
+  of the same indexes through `SpanReader`, the Exporter's reader.
 * Typed/scoped exact string/int equality, newest **K DISTINCT traces** ordered by
   latest matching span timestamp descending, then trace ID descending. Full
   tenant-qualified trace lookup returns span identities/timestamps in ascending
   timestamp/span order. Both systems return the same narrow metadata result shape,
-  not full span/content output. FDB trace lookup still fetches primary records and
-  decodes their OTLP payloads. Standalone tenant-qualified span-ID lookup returns
+  not full span/content output. Standalone tenant-qualified span-ID lookup returns
   every matching `{trace_id,span_id,start_ns}` ordered by time/trace/span ascending,
   without a trace hint and without K truncation. Intrinsic span-time lookup uses
   `[start_ns,end_ns)` and returns newest K distinct traces by maximum timestamp
-  of a matching witness, not the trace's latest nonmatching span. Both intrinsic
-  queries use covering built-in Record Layer VALUE indexes; attribute postings
-  remain a real synchronous custom maintainer.
-* Covering postings retain the original scope/key/type/value and timestamp;
-  shortened SHA-256 digests are candidates only. Verification never needs a
-  primary fetch for supported values. An occurrence suffix prevents two colliding
-  attributes on the same span from overwriting one another. Values exceeding the
-  coverage cap reject; there is **no unimplemented fetch fallback**. SHA-256 here
-  is a synthetic benchmark encoding, not the RFC's tenant-keyed privacy design.
+  of a matching witness, not the trace's latest nonmatching span.
 * Independent expected results inspect generated source attributes, without the
-  OTLP extractor, hashes, physical keys or encoded CH Map keys; expected ordering
-  has a separate implementation. Each timed query checks identities and order.
-  Source audits check every record, ordinal uniqueness/completeness, and source
-  fields against the fixture. FDB counts attribute and both intrinsic index
-  keys/logical bytes. Expected answers combine the two source witnesses before
-  maintaining a bounded K-hit heap per unique predicate: no map of all matching
-  traces is retained. Known trace/span needles use constant-size source witnesses.
+  row builders, physical keys or encoded CH Map keys; expected ordering has a
+  separate implementation. Each timed query checks identities and order. CH
+  source audits check every record, ordinal uniqueness/completeness, and source
+  fields against the fixture; the sql audit counts every tenant store's rows
+  and reports each index's keys/logical bytes. Expected answers combine the two
+  source witnesses before maintaining a bounded K-hit heap per unique predicate:
+  no map of all matching traces is retained. Known trace/span needles use
+  constant-size source witnesses.
 
 The original immutable-span experiment excluded logs, message content and graph
 joins; those exclusions describe its historical measurements, **not** the current
@@ -62,9 +63,8 @@ APIs below. Still excluded from the production claim: general OTLP partial-succe
 admission, privacy services, retention/receipts/revision lifecycle, replay
 protocols, concurrent writes during measurement, general production continuations,
 numeric range search, TraceQL/session joins, online-backfill race certification,
-query ACLs, HMAC epochs, normalized resources and service SLOs. The
-maintainer's update/delete behavior is tested, but CH incremental MVs are
-**append-only unique-corpus comparisons**, not a correction/delete equivalent.
+query ACLs, HMAC epochs, normalized resources and service SLOs. CH incremental MVs
+are **append-only unique-corpus comparisons**, not a correction/delete equivalent.
 There is no claim that the prototype implements all RFC-283 requirements.
 
 At eight or more attributes, fixture slots 4..7 are span string attributes
@@ -77,117 +77,107 @@ pinned to [GenAI conventions e19717d](https://github.com/open-telemetry/semantic
 there is no invented standardized `gen_ai.request.id`. Smaller 4..7-attribute
 fixtures retain their original controls/fillers and cannot run `genai`/`all`.
 
-V2 changes source identities, payloads and maintained structures. Use fresh runs;
-V1 receipts/binaries (including the initial ingest-profile commits) remain
-historical evidence, not compatible V2 measurements. No storage compatibility
-or direct before/after performance claim is made across this fixture change.
+V2 changed source identities and payloads. V1 receipts/binaries remain
+historical evidence, not compatible V2 measurements.
 
-## Current logs and joined-query APIs
+## Logs and joined-query APIs
 
-These are typed OTel APIs over this experiment's run/tenant layout, not SQL catalog
-tables or proof of an upstream Collector receiver pipeline.
+These are typed `Exporter` APIs over the tenant store; SQL reads the same rows.
+They are not proof of an upstream Collector receiver pipeline.
 
-- `ExportLogs` stores complete single-log OTLP envelopes; `ConsumeLogs` adapts OTLP
-  resource logs. Missing EventIDs receive receiver-generated UUIDs outside retries;
-  replay with the same explicit EventID replaces the prior log atomically and
-  retracts old postings/chunks. A resent request without IDs can create duplicates.
-- `logs_v1` holds header/optional chunk rows by tenant/EventID; `log_trace_v1`
-  correlates trace/span/effective-time/EventID; `log_eq_v1` holds scoped exact
-  attribute postings with verified covering values. Body bytes are not TEXT indexed.
-  Effective time uses event time, else observed time, else receiver time, preserving
-  the original timestamp and `TimeSource` (`event`, `observed`, `receiver`).
+- `ExportLogs` stores each log as a `logs` row keyed by EventID whose `otlp` is
+  the complete single-log OTLP; `ConsumeLogs` adapts OTLP resource logs. Missing
+  EventIDs receive receiver-generated UUIDs outside retries; replay with the same
+  explicit EventID replaces the prior row atomically, and standard index
+  maintenance retracts its old entries. A resent request without IDs can create
+  duplicates.
+- `LOGS_TRACE` correlates trace/span/effective time/EventID, `LOGS_TIME` orders
+  by effective time, typed attribute indexes mirror the span ones, and
+  `LOGS_EVENT` keys event names. Bodies are not text indexed. Effective time
+  uses event time, else observed time, else receiver time, preserving the
+  original timestamp and `TimeSource` (`event`, `observed`, `receiver`).
 - `QueryLogsByTrace(traceID, optionalSpanID)` returns correlated logs ascending by
   effective time/EventID. `QueryLogsByAttribute(attribute, limit)` returns newest
-  first, including uncorrelated logs; zero limit uses configured K. Attribute
-  scopes are `resource`, `scope`, `log` and intrinsic `event_name`.
-  Queries enforce configured candidate/logical-read-byte and context budgets;
-  exhaustion returns a typed budget error, not a silently truncated complete set.
-- Log admission caps raw/stored bytes, each actual encoded covering value at
-  100,000 bytes, and native transaction mutation/conflict costs at 8,000,000 bytes,
-  including old replacement clears.
-  All initial/preflight admission happens before any batch writes; admitted batches
-  commit independently. Concurrent replacement changes are rechecked in each batch;
-  a prior image growing beyond the live budget returns `OperationError`, not the
-  no-partial-write preflight `AdmissionError`. Such a runtime failure does not
-  roll back earlier committed batches.
+  first (equal times: EventIDs descending), including uncorrelated logs; zero
+  limit uses configured K. Attribute scopes are `resource`, `scope`, `log` and
+  intrinsic `event_name`; equality is typed. An event name over 1,024 bytes is
+  not indexed, and a query naming one is a `ConfigError`. Queries enforce
+  configured candidate/logical-read-byte and context budgets; exhaustion returns
+  a typed budget error, not a silently truncated complete set.
+- Log admission caps encoded OTLP at 8 MiB, keys at FDB's 10,000 bytes and each
+  log's native write cost at 8,000,000 bytes, including the clears of its prior
+  image. All admission happens before any batch writes; admitted batches commit
+  independently. A prior image grown beyond the budget after admission returns
+  `OperationError`, not the no-partial-write `AdmissionError`; earlier committed
+  batches are not rolled back.
 - `QuerySameSpan` requires every predicate on one span; predicate zero drives the
-  posting scan (put the selective predicate first). It supports a time window,
-  limit and authenticated run-bound snapshot-page continuation, not a global
-  stable snapshot across calls.
+  index scan (put the selective predicate first). It supports a time window,
+  limit and authenticated, tenant-store-bound snapshot-page continuation, not a
+  global stable snapshot across calls.
 - `QueryTraceExistential` allows different span/log/message witnesses in the same
   trace and returns the verified witnesses per clause, with time/limit/budget bounds.
   `TraverseTraceGraph` reads one bounded trace and reports observed parent/child
   adjacency, roots, missing parents/orphans, cycles/depth and OTLP links. Cross-trace
   link targets stay unresolved; missing ancestry is not invented.
 
-**Deferred:** actual upstream Collector ingestion into the **same relational
-catalog/tenant SQL tables** has not been migrated. Exporter adapters, typed joins,
-SQL/index safety prerequisites and upper-stack planner work are not that migration.
-The pending item is tracked in `TODO.md`; this source work does not execute it.
+**Deferred:** an upstream OpenTelemetry Collector component writing these stores
+(see "Collector-model measurement boundary") and metrics tables. Both are tracked
+in `TODO.md`.
 
-## Record Layer bulk saves and compression
+## sql backend ingest and compression
 
-`--save-mode=batch` uses `StoreBuilder.PrefetchRecordBatch` to overlap snapshot
-cache warming with store opening, then `FDBRecordStore.SaveRecordBatch`:
-authoritative old-record loads are pipelined, and every record still passes through the store serializer,
-record-count handling and synchronous old/new index maintenance. Transaction
-ownership, 1500-ms timeout, one-second save-plus-guard limit, 300-KB conservative
-batch estimate and 500-KB actual transaction guard are unchanged.
+`--sql-ingest direct` (default) saves rows through the Record Layer;
+`--sql-ingest insert` uses SQL `INSERT`, which always writes the engine's
+`zlib-default` records. Direct rows are `compiled` `otelv1pb` types (default) or
+`dynamic` messages of the catalog descriptor (`--sql-rows`).
 
-`--record-compression` selects `none`, `zlib-1`, `brotli-0`,
-`brotli-1`, `brotli-3` or `brotli-4` for fresh `--backend fdb` runs. Ordinary
-offline `ingest` defaults to `none`. The `Exporter`, and so `collector-bench`,
-accepts only `none`, `zlib-1` and `zlib-default` (Java-readable version-1
-records) and defaults to `zlib-1`; a Brotli value is a `ConfigError`, because SQL
-and Java read its tenant store (see "Exporter configuration").
-It configures the Record Layer's
-`TransformedRecordSerializer` through `StoreBuilder.SetSerializer`, before normal
-split-record storage. OTLP messages, envelopes, primary keys, eight complete
-covering postings and both native indexes are unchanged. This setting compresses
-**primary record values only**, not posting values or keys. Its byte reduction
-must not be presented as the same reduction in total storage or physical I/O.
-The compression choice is immutable run ownership, not part of source-corpus
-identity. Use the same choice for ingestion, reads, audits and explicit drops;
-a mismatch is refused before accessing the run.
+`--save-mode batch` with compiled rows is the Exporter's `SpanWriter`: its
+admission, prefetch, `SaveRecordBatch`, 500-KB transaction size guard and
+Exporter transaction policy. The other direct saves use `SaveRecord` (`serial`),
+`SaveRecordsPipelined` (`pipelined`, the default) or `PrefetchRecordBatch` plus
+`SaveRecordBatch` (`batch` with dynamic rows), with ordinary old/new index
+maintenance. Each transaction holds at most `--batch` spans (default 32, max 64)
+of one tenant within a conservative 300-KB estimate; `--workers` (default 1,
+range 1..8) bounds concurrent batch transactions, and the first failure cancels
+the rest. A run's database must not exist at ingest.
 
-`--posting-value-format=tuple` (`--backend fdb` only: the `Exporter` has no
-posting values) stores each complete covering projection as a
-standard FDB tuple `(scope,key,type,value,start_ns)` instead of JSON. This removes
-repeated JSON field names without shortening the original values or changing any
-posting key. It is an immutable fresh-run index option; query decoding uses the
-maintainer's metadata, not a caller-provided format guess. The default remains
-legacy JSON. Public trace and log exports reject the entire call with
-`AdmissionError` before any writes if an indexed projection's actual encoded
-covering value exceeds FDB's 100,000-byte limit. This is separate from the decoded
-64,000-byte projection cap: tuple NUL escaping and JSON NUL/HTML escaping expand
-values. Neither raw OTLP nor admitted projections are truncated.
+`--record-compression` selects `none` (otelbench's default), `zlib-1` or
+`zlib-default`: Java-compatible version-1 records, readable by SQL and Java. It
+configures the Record Layer's `TransformedRecordSerializer` before normal
+split-record storage and compresses **primary record values only**, not index
+keys or values; its byte reduction must not be presented as the same reduction
+in total storage or physical I/O. ClickHouse backends refuse it. The `Exporter`,
+and so `collector-bench`, accepts the same values and defaults to `zlib-1` (see
+"Exporter configuration").
 
-`--bulk-index-conflicts` selects `SaveRecordBatchWithOptions` with conservative
-index write-conflict coalescing. Normal implicit write conflicts and all normal
-read conflicts remain. Extra write ranges cover only owned index subspaces, never
-the record subspace. The client can coalesce contained ranges in eligible commits;
-this reduces shipped conflict-vector overhead, not stored posting count or bytes.
-The live transaction-size estimate does not perform this coalescing and can grow
-slightly, so the unchanged 500-KB guard still applies. This execution option is not
-part of stored layout identity. It applies to `--backend fdb`, and to
-`--backend sql --save-mode batch`, whose span writer is the `Exporter`'s
-(`bulk_index_conflicts`, on by default). The widened ranges cover only the
-indexes the batch maintains, so they never touch the message indexes (see
-"GenAI message storage", write conflicts).
+`--bulk-index-conflicts` (only with `--backend sql --save-mode batch`) is the
+Exporter's `bulk_index_conflicts`, on by default there: `SaveRecordBatchWithOptions`
+with conservative index write-conflict coalescing. Normal implicit write
+conflicts and all read conflicts remain. Extra write ranges cover only the
+indexes the batch maintains, never the record subspace or the message indexes
+(see "GenAI message storage", write conflicts). The client can coalesce
+contained ranges in eligible commits; this reduces shipped conflict-vector
+overhead, not stored index entries or bytes. The live transaction-size estimate
+does not perform this coalescing, so the 500-KB guard still applies.
 
-Zlib uses the existing Java-compatible version-1 format. Brotli explicitly uses
-`SetGoOnlyBrotliCompression` and version 2: **Java and default Go serializers
-cannot read those records**. Use it only for Go-only stores. The Record Layer
-checks lengths and checksums, retains clear values when compression does not
-shrink them, and continues to decode and validate old records before replacing
-or deleting them. See [compatibility](../../docs/compatibility.md) and
-[the format boundary](../../DIVERGENCES.md#brotli-record-compression-go-only-extension).
+CH offline loading instead defaults to `--ch-batch 8192` and
+`--ch-batch-bytes 8388608`: it is optimized bulk loading, not an artificial
+FDB-sized synchronous tiny-part workload. **Load wall times are bulk preparation
+comparisons, not equal real-time acknowledgment semantics.**
 
-The bounded compression integration samples report primary/posting/key bytes
-and actual transaction-size estimates for the same source population. They are
-correctness and byte-cost measurements, not sustained ingest-rate results.
+`OTELBENCH_SQL_EXPLAIN` prints each SQL query's plan once to stderr;
+`OTELBENCH_SQL_RPCS` reports FDB requests per query when the backend closes.
+Both are diagnostics outside the measured results.
 
-## Stored-population evidence
+## Historical results of the removed custom store
+
+The two sections below measured the custom FDB store (`otelbench --backend fdb`,
+deleted in phase 3B) in October 2026. They are not results of the current
+OTEL_V1 store or of current master, and the store that produced them no longer
+exists in this tree. The relational store's measurements against it are in
+`docs/benchmarks/otel-relational-local-20261107.md`.
+
+### Custom store: 1M-span stored population
 
 The first completed V2 scale gate stored **1,000,000 spans** on 2026-10-27,
 using source `c7d00bf`, two batch workers, one tenant and eight indexed attributes.
@@ -217,7 +207,7 @@ scope; broader production competitiveness is not established.
 Receipts: [completed 1M load/audit](bench/evidence/2026-10-27/pilot-1m-v2-workers2-complete/)
 and [three warm query rounds](bench/evidence/2026-10-27/query-1m-fdb-warm/).
 
-## One-million-span guarded query comparison
+### Custom store vs ClickHouse: 1M-span guarded query comparison
 
 The separate CH campaign tested fresh, source-audited 8192/512/64-granularity
 layouts under the same four-CPU/16-GiB resource caps. Three rotated rounds per
@@ -245,7 +235,7 @@ Ratios are descriptive bounds across the measured round medians, not independent
 trial estimates. All sixteen classes, first post-restart CH samples and tails
 are retained; no warmup samples were hidden. Timings include ownership checks,
 backend requests and decoding: CH performs a separate ownership SQL request,
-whereas FDB checks ownership inside its transaction. This is a **guarded query
+whereas FDB checked ownership inside its transaction. This is a **guarded query
 path result against the best-tested passing CH profile**, not an isolated-index
 or globally optimal ClickHouse comparison. FDB used `c7d00bf`, CH `9244882`, both
 Go 1.27.3. FDB's command timeout was 20 minutes with diagnostics on; CH's was ten
@@ -265,20 +255,20 @@ Receipts: [CH tuning, confirmation and query-log reconciliation](bench/evidence/
 
 Every physical arm uses a fresh run namespace and maintains only its selected
 layout. HTTP/native query transports intentionally reuse that same loaded arm;
-transport does not change ownership or corpus identity. `--order` changes
-ownership metadata, not source corpus bytes.
+transport does not change ownership or corpus identity. `--order` applies to
+ClickHouse only; it changes ownership metadata, not source corpus bytes.
 
 | Backend | Order | Physical/query strategy |
 |---|---|---|
-| `fdb` | `trace` | One covering posting per attribute, term then trace/span/occurrence. Exhaust every candidate within budgets, collision-verify, then distinct/global top-K. |
-| `fdb` | `time` | Same posting count; term then negative timestamp, descending trace tie key, span/occurrence. Stream in order, verify collisions, stop only after K distinct verified traces establish the frontier. |
+| `sql` | — | OTEL_V1 `spans` rows, one schema store per tenant; typed fan-out VALUE indexes keyed by scope/key/value then start/trace/span. Scan newest first and stop at the K-th distinct trace, within candidate/byte budgets; long strings are matched by digest and verified on the record. |
 | `ch-map` | either | MergeTree ordered by tenant/service/time/trace/span, ZSTD, TraceId and Map-key/value bloom indexes. Map keys injectively encode `(scope,literal key,type)`. Exact paired lookup plus `GROUP BY trace_id,max(time)` and global top-K. This baseline alone cannot establish a competitive win. |
 | `ch-attrs` | `trace` | Same source table plus separately costed typed/scoped attribute table maintained by MV, ordered by tenant/scope/key/type/value/trace/span. Covering grouped max/top-K. |
 | `ch-attrs` | `time` | Same source/MV population, sorted by term/negative timestamp/descending trace/span. `ORDER BY ... LIMIT 1 BY trace_id LIMIT K`, `optimize_read_in_order=1`; verify actual `EXPLAIN`/server work rather than assume optimization. |
 
 CH stores Map, aligned typed terms, and source JSON so every copy is included in
-storage/ingest cost. FDB stores OTLP protobuf plus its custom index, not that JSON
-schema. Report those representation differences, not an unexplained byte ratio.
+storage/ingest cost. The sql stores hold typed columns and attribute arrays, the
+`otlp` protobuf and every OTEL_V1 index, not that JSON schema. Report those
+representation differences, not an unexplained byte ratio.
 CH ingest statistics retain acknowledged source progress on success **and error**:
 rows, source attributes and JSON transport bytes (including each newline) count
 only complete source INSERT batches whose HTTP responses succeeded. A failed or
@@ -289,15 +279,13 @@ publication success, retrying or adopting the run. Progress is not a substitute
 for a successful ready-state source audit; earlier zero-stat error receipts do
 not prove an empty database.
 
-Every FDB arm also maintains built-in `span_id_v2` (tenant/span/time) and
-`span_time_v2` (tenant/time/trace) VALUE indexes on every Record Layer save.
-Every CH source table gets covering `by_trace`, `by_span`, and `by_time`
-projections before load. All their synchronous write work is included in ingest;
-there is no uncosted lookup accelerator. Queries enable projection optimization;
-audit captures actual EXPLAIN choices, named projection row counts and bytes.
-Verify selection and parent/projection byte inclusion before making a trace
-comparison or summing storage. All source data is retained; there is no hidden
-term-time accelerator in the trace-ordered FDB arm.
+Every sql save maintains every OTEL_V1 span index, including `SPANS_SPAN_ID` and
+`SPANS_TIME`. Every CH source table gets covering `by_trace`, `by_span`, and
+`by_time` projections before load. All their synchronous write work is included
+in ingest; there is no uncosted lookup accelerator. CH queries enable projection
+optimization; audit captures actual EXPLAIN choices, named projection row counts
+and bytes. Verify selection and parent/projection byte inclusion before making a
+trace comparison or summing storage. All source data is retained.
 
 ### ClickHouse index granularity
 
@@ -314,9 +302,8 @@ this setting.
 CH ownership manifests pin the value. A mismatch, including an older CH manifest
 without this field, refuses queries, audits and Drop; there is no implicit
 adoption. Every later command must supply the same value as ingest. This setting
-does not change the source corpus, FDB manifest encoding, ToolVersion or FDB run
-namespace, so existing V2 FDB runs remain compatible. HTTP and native use the same
-tables and query semantics.
+does not change the source corpus, ToolVersion or the sql backend's stores. HTTP
+and native use the same tables and query semantics.
 
 Receipts retain the requested value in Config. CH audits additionally retain
 actual `SHOW CREATE TABLE` output for each MergeTree table, server
@@ -373,9 +360,11 @@ bazelisk build //layers/otel/cmd/otelbench
 ```
 
 Correctness validation is **`just test`**, not a selected target or `go test`.
-`//layers/otel:otel_test` contains unit/property cases and a bounded real-FDB
-integration regression. The integration regression starts its own testcontainer,
-uses `t.Parallel()` and random owned roots, and never discovers/reuses an existing
+`//layers/otel:otel_test` contains unit/property cases and real-FDB integration
+tests (`*_fdb_test.go`); `//layers/otel/sqlbackend:sqlbackend_test`,
+`//layers/otel/otelsql:otelsql_test`, `//layers/otel/collector:collector_test` and
+`//layers/otel/cmd/otelbench:otelbench_test` cover their packages. Each real-FDB
+test starts its own testcontainer and never discovers/reuses an existing
 cluster. Only the repository's no-Docker runtime skip is allowed. Final evidence
 uses `tools/lanes/run-verified-lane.sh "$PWD" fast` on committed clean inputs;
 `full` is the separate applicable heavyweight/workstream lane. Do not describe a
@@ -391,156 +380,32 @@ Generate it outside the tool, retain it in the evidence manifest, and use a
 ```sh
 BIN="$(bazelisk info bazel-bin)/layers/otel/cmd/otelbench/otelbench_/otelbench"
 RUN="otel_$(date +%s)_$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
-# Use identical source flags for every mode/arm. Owner manifests reject a wrong
-# corpus/layout/backend on reopen. These are examples, not permission to run.
+# Use identical source flags for every mode of a run: queries regenerate their
+# expected answers from them. These are examples, not permission to run.
 COMMON=(--run "$RUN" --seed 283 --count 10000 --tenants 10 --attrs 8 \
-  --match-every 100 --order trace --save-mode pipelined --revision "$(git rev-parse HEAD)")
-FDB=(--backend fdb --cluster-file /absolute/path/to/owned/fdb.cluster)
-"$BIN" "${COMMON[@]}" "${FDB[@]}" --mode ingest --output "$RUN.ingest.json"
-"$BIN" "${COMMON[@]}" "${FDB[@]}" --mode audit --output "$RUN.audit.json"
-"$BIN" "${COMMON[@]}" "${FDB[@]}" --mode query --suite selective \
+  --match-every 100 --revision "$(git rev-parse HEAD)")
+SQL=(--backend sql --cluster-file /absolute/path/to/owned/fdb.cluster \
+  --save-mode batch --record-compression zlib-1)
+"$BIN" "${COMMON[@]}" "${SQL[@]}" --mode ingest --output "$RUN.ingest.json"
+"$BIN" "${COMMON[@]}" "${SQL[@]}" --mode audit --output "$RUN.audit.json"
+"$BIN" "${COMMON[@]}" "${SQL[@]}" --mode query --suite selective \
   --iterations 100 --output "$RUN.selective.json"
-"$BIN" "${COMMON[@]}" "${FDB[@]}" --mode query --suite trace \
+"$BIN" "${COMMON[@]}" "${SQL[@]}" --sql-query direct --mode query --suite trace \
   --iterations 100 --output "$RUN.trace.json"
-"$BIN" "${COMMON[@]}" "${FDB[@]}" --mode drop --confirm-drop \
+"$BIN" "${COMMON[@]}" "${SQL[@]}" --mode drop --confirm-drop \
   --output "$RUN.drop.json"
 ```
 
-For CH, use `--backend ch-map` or `--backend ch-attrs --ch-url http://127.0.0.1:PORT`
-instead of `FDB`. Create a new `RUN`; compare both attribute-table orders in fresh
-databases. Select `--order time` for the corresponding FDB experiment too.
-CH database names are `otel_<run>`. An FDB run's owner manifest is at
-`("otel_otelbench_v2",run,"owner")`. Drop requires `--confirm-drop` **and** matching owner
-metadata, and removes only that owned database/root. A failed partial load stays
-`loading`; choose a fresh run or explicitly drop it, never resume/replay blindly.
-
-**FDB key layout.** The manifest records the run's key layout, part of its
-stored identity. A run created now uses `"key_layout": "directory_v1"`: its data
-lives under a Record Layer `KeySpace` path whose application
-(`otel_otelbench_v2`) and run directories are the Record Layer's
-`DirectoryLayerDirectory`, resolved through the FDB directory layer
-(`ExtendedDirectoryLayer.global`) to small integers, with integer constants for the store, the log
-subspaces, the message writer counter and the query key, and integer subspace
-keys for the span indexes (`typed_scoped_eq_v2` 1, `span_id_v2` 2,
-`span_time_v2` 3). A key starts with about 6 bytes instead of about 40. A run
-whose manifest has no `key_layout` keeps its tuple prefix
-`("otel_otelbench_v2",run)` and index names and works unchanged; a manifest
-naming an unknown layout is refused. Drop clears the run's tuple prefix and its
-key space path; the directory layer keeps the interned names, as the Java Record
-Layer does.
-
-FDB ingestion uses `--save-mode pipelined` by default: immutable protobuf messages
-are prepared outside the retry closure, then `SaveRecordsPipelined(..., None)`
-retains ordered saves and old/new index maintenance. The API honors the store's
-`INSERT` pipeline sizer, but this backend leaves its default depth at 1, so this
-mode does not overlap existing-record reads. `--save-mode serial` preserves the one-save-at-a-time baseline with
-the same prepared messages; `--save-mode batch` uses `SaveRecordBatch` to issue
-all existing-record reads before collecting them, retaining old/new index
-maintenance. No mode assumes that an identity is absent or skips old-record
-correctness. `--workers` (default 1, range 1..8) bounds concurrent source-batch
-transactions. Each Run has an independent record context and store; batches are
-disjoint and prepared once outside retries. The queue holds at most `workers`
-batches, with at most `workers` running and one being prepared. On failure,
-admission stops, the worker context is canceled, and every worker is joined
-before return; `ready` is published only after every source batch succeeds.
-
-A source Run reporting FDB `transaction_timed_out` (1031) gets at most eight
-fresh Run calls for that same prepared batch, with cancelable waits of
-25/50/100/200/250/250/250 ms between calls. This fixed application policy does
-not change FDB OnError classification or any transaction/save/size guard. The
-1.5-second transaction timeout is armed before initial ownership and all manifest
-reads; setting it again while opening a store does not reset its creation-relative
-budget. Existing finite internal retries remain separate.
-
-A timed-out commit may already have succeeded or may complete later. Each fresh
-Run re-reads ownership and old records and uses normal Record Layer old/new
-maintenance, not captured mutations or an absence assumption. A batch contributes
-acknowledged rows/bytes only once, after a successful Run. Exhaustion, cancellation
-and other errors stop the worker pool; budget/ownership/admission errors are not
-recovered by this policy. Initialization and ready publication are neither retried
-nor ambiguously adopted: a reported error can still have committed its manifest,
-so a command error is not an authoritative persisted-population census. A second
-public Ingest still rejects an existing namespace.
-
-Receipts record strategy and worker count; these and diagnostics do not change
-source fingerprints or stored layout ownership.
-
-`--diagnostics` adds bounded instrumentation to ingest receipts (default off).
-Source counters, phases and timers have scope `source_batches_only` and exclude
-initialization and ready publication; preparation includes batches discarded on
-cancellation. The separately scoped `client_metrics` snapshots are an explicit
-exception described below. `source_runs`
-counts Run calls, `source_attempts` counts closure entries, and `source_replays`
-counts internal closure entries beyond the first per Run, not transport retries
-or RPCs. `source_timeouts` counts source Runs reporting 1031, including exhaustion;
-`source_fresh_retries` counts additional source Run calls actually started because
-of 1031. Fresh retries are not internal `source_replays`. The optional
-`timeout_backoff` phase measures application waits separately from Run time.
-The `phase_nanos` preparation/manifest/open/save/guard/run totals overlap across
-workers and parent/child phases: do not add them or label them critical-path,
-GRV, or server latency. Source attempts issue the owner read before opening the
-store, then validate ownership before saving; manifest timing includes the
-concurrent store-open interval, and both retain their authoritative reads.
-Batch saves also prefetch snapshot record ranges into the same transaction's
-RYW cache alongside metadata reads; normal saves still load old images, validate
-all persisted layouts, and add their ordinary conflicts. Batch `save` timing
-includes prefetch, overlapping metadata work, and normal saves, so it is not
-comparable to a save-only interval. The unchanged one-second save+guard bound
-starts before prefetch; neither retries nor fresh Runs reuse old-image caches.
-Run time includes retry backoff and observer callbacks;
-the context-scoped timer does not capture database-policy retry-delay events.
-`approximate_mutation_bytes` is the historical receipt field name for the sum of
-successful `GetApproximateSize` samples: mutations, read/write conflict ranges and
-FDB accounting overhead, including attempts that later fail a guard or commit.
-It is not a count of persisted mutation bytes, wire bytes or physical storage.
-`timer` is a native StoreTimer snapshot taken after workers join; event kind
-identifies units (timed `CumulativeValue` is nanoseconds; size `Count` is bytes).
-Native commit timing includes successful precommit/commit work **and the
-successful AttemptObserver callback**, including any observer blocking or reads;
-it is emitted only for successful Run returns, not a complete physical commit
-census: a commit reported as 1031 can be durable yet absent from this timer.
-It is not pure server commit latency. Batch mode
-does not emit scalar save/load timers or scalar save
-counters; missing counters are not evidence that this work was free. Failure
-receipts retain acknowledged batch/row counts, not an authoritative persisted
-census when a canceled commit has an unknown outcome. Existing attempt observers
-are preserved.
-
-`phase_latencies` adds exact count/total/min/max nanoseconds for each observed
-phase, including failed attempt phases and discarded preparation. These are not
-quantiles. Commit observations use isolated per-Run timers merged after each Run
-returns, so concurrent workers cannot contaminate each other's samples; the same
-successful-Run/observer boundaries apply as for `timer`. The overlap regression
-covers both trace/time index layouts and exact joined moments; it does not force
-every worker completion or merge order.
-
-`client_metrics.before` and `.after` retain the existing client's cumulative
-snapshots without extra RPCs. Their explicit scope is the **whole database
-handle**, including initialization, ready publication and any concurrent users,
-not just source batches. Latency statistics retain client API units of seconds
-and lifetime populations; never subtract their means, extrema or quantiles to
-claim interval distributions. Read latency covers GetValue, not all range reads.
-Monotonic counters can be differenced, but snapshot fields are not an atomic
-cross-counter transaction. These snapshots accompany receipts with source-batch
-diagnostics; an initialization failure before source processing has no such
-receipt. Neither diagnostics nor the unchanged-posting optimization establishes
-a throughput improvement or a 20k-spans/s result.
-
-For readable custom indexes, updates compare complete encoded posting keys and
-covering values and leave identical pairs untouched. Changed values at the same
-key still replace the old value. WRITE_ONLY maintenance retains full clear/set
-behavior because unchanged entries might not have been built yet. This reduces
-replay/update mutations, not the mandatory postings for fresh inserts. Batch and
-worker defaults remain unchanged; any larger batch still needs fresh and
-already-committed replay checks under the same actual-size guard.
-
-FDB batches use `--batch` (default 32, max 64), conservative 300 KB estimates,
-500 KB approximate-write guards, 1 s save-plus-guard elapsed bound and 1.5 s
-transaction timeout with finite retries in every mode. CH offline loading instead defaults to `--ch-batch 8192`
-and `--ch-batch-bytes 8388608`: it is optimized bulk loading, not an artificial
-FDB-sized synchronous tiny-part workload. **Load wall times are bulk preparation
-comparisons, not equal real-time acknowledgment semantics.** No nonidempotent
-external effects run in an FDB retry closure.
+For CH, use `--backend ch-map --order trace` or `--backend ch-attrs --order trace`
+(or `--order time`) with `--ch-url http://127.0.0.1:PORT` instead of `SQL`.
+Create a new `RUN`; compare both attribute-table orders in fresh databases. CH
+database names are `otel_<run>`, and their owner manifests reject a wrong
+corpus/layout/backend on reopen. The sql backend's run is the relational database
+`/OTELBENCH/R_<RUN>`; it has no manifest, so a mismatched corpus shows up only as
+audit or oracle failures. Drop requires `--confirm-drop` (and, for CH, matching
+owner metadata) and removes only that owned database. A failed partial load
+stays in place; choose a fresh run or explicitly drop it, never resume/replay
+blindly.
 
 ### Profiling otelbench
 
@@ -586,12 +451,13 @@ not establish a CPU or allocation reduction for a particular setting.
 ## Exporter configuration
 
 `otel.Exporter` is the SDK `SpanExporter`, the Collector model's sink and the
-writer `collector-bench` drives. It stores every signal of a `(run, tenant)` in
-one OTEL_V1 schema store (database `/OTEL/R_<RUN>`, schema `T<tenant>`), creates
-the template, database and schema on first open, writes compiled rows through
-the Record Layer and serves every read from a direct scan of a standard OTEL_V1
-index ([migration RFC](rfcs/relational-exporter-migration.md) §0, §1). The
-store's `store_meta` `layout` row records the message layout (`messages=none`,
+writer `collector-bench` drives (it takes no `--backend`). It stores every signal
+of a `(run, tenant)` in one OTEL_V1 schema store (database `/OTEL/R_<RUN>`,
+schema `T<tenant>`), creates the template, database and schema on first open,
+writes compiled rows through the Record Layer and serves every read from a
+direct scan of a standard OTEL_V1 index
+([migration RFC](rfcs/relational-exporter-migration.md) §0, §1). The store's
+`store_meta` `layout` row records the message layout (`messages=none`,
 `messages=deltas` or `messages=fulltext`); an exporter configured for another
 layout is refused with `OwnershipError` before any read.
 
@@ -614,12 +480,12 @@ layout is refused with `OwnershipError` before any read.
 | `max_inflight_transactions` | write transactions in flight, 1..1024 | 32 |
 | `transaction_timeout` | Go duration, 1s..5m | `10s` |
 
-The custom store's layout keys `order` (the store has one time order),
-`hash_bytes` and `posting_value_format` (it has no posting values) were removed
-(D2); a document naming one is refused as removed. Attribute equality is typed
-(D1): `CanonicalAttribute` gives a string, int, double or bool attribute its own
-type; bytes (base64) and arrays, maps and unset values (`json`, canonical JSON)
-are reported but not queryable.
+The removed custom store's layout keys `order`, `hash_bytes` and
+`posting_value_format` are refused with a "was removed" `ConfigError` (D2): the
+relational store has one time order and no posting values. Attribute equality is typed (D1):
+`CanonicalAttribute` gives a string, int, double or bool attribute its own type;
+bytes (base64) and arrays, maps and unset values (`json`, canonical JSON) are
+reported but not queryable.
 
 ## Exporter transaction policy
 
@@ -634,9 +500,9 @@ transaction creation across all retries and includes GRV waits, which take
 seconds under ratekeeper throttling. It must be set because a caller's context
 does not end the wait for a dispatched commit
 (`rfcs/280-client-retry-and-close-bounds.md` §4). The default covers about 5 s
-of GRV queueing plus FDB's 5 s MVCC window. Exporter span batches have no fresh
-Runs and no 1-second elapsed guard. The 500 KB size guard still applies.
-A batch that times out fails its export call.
+of GRV queueing plus FDB's 5 s MVCC window. Exporter span batches have no
+elapsed-time guard; the 500 KB size guard applies. A batch that times out fails
+its export call.
 
 The export calls report a failed transaction with an error kind for retry
 decisions. Domain errors keep their kind: `admission`, `config`, `ownership`
@@ -653,32 +519,30 @@ and `canceled` errors and drops `config`, `admission`, `ownership`,
 `layers/otel/collector` is a custom in-process model of Collector batching,
 queueing, retry and configuration behavior. It is **not** an upstream
 OpenTelemetry Collector component and does not use upstream `exporterhelper`.
-Historical “Collector” rates measure this model and the FDB exporter only, not
-receiver transport, upstream queue semantics or Collector overhead. Actual
-upstream Collector integration remains required for the larger Collector-to-SQL
-product goal; the optimized experimental ingest layer does not complete it.
+“Collector” rates measure this model and the `Exporter` only, not receiver
+transport, upstream queue semantics or Collector overhead. Actual upstream
+Collector integration remains required for the larger Collector-to-SQL product
+goal; the experimental ingest layer does not complete it.
 
 The `Exporter` keeps each span's original single-span `ResourceSpans` in the
 spans row's `otlp` column, so all producer OTLP unknown fields, including tag
 536870911, attribute order and duplicates survive without a fidelity field.
 With messages decomposed, the GenAI content attributes there hold message
-manifests, not repeated content. The custom store behind `otelbench --backend
-fdb` still keeps canonicalization fidelity in `Envelope.fidelity`.
+manifests, not repeated content.
 
 ## GenAI message storage
 
 `enable_message_deltas` and `enable_message_full_text` store each element of
+the GenAI content attributes (`otelsql.MessageAttributeKeys`:
 `gen_ai.input.messages`, `gen_ai.output.messages`,
-`gen_ai.system_instructions` and `gen_ai.tool.definitions` (span and event
-attributes) once per tenant store as `messages` rows, and replace the attribute
+`gen_ai.system_instructions` and `gen_ai.tool.definitions`, on spans and
+events) once per tenant store as `messages` rows, and replace the attribute
 value with a manifest of message IDs. `LoadSpanOTLP` restores the original
 value byte for byte. The layout is the store's `store_meta` `layout` row
 (`messages=deltas` or `messages=fulltext`); an exporter configured for another
-layout is refused before any read. The design is the custom store's; only its
-storage moved to OTEL_V1 rows ([migration RFC](rfcs/relational-exporter-migration.md)
-§0 item 4, §1.5, §3.1). `otelbench --backend fdb` keeps the custom store's
-`Message` records, owner-manifest layouts (`deltas`, `fulltext_v2`) and
-`otel_message_v1` tokenizer as the baseline until phase 3B.
+layout is refused before any read. The design predates the relational store;
+only its storage moved to OTEL_V1 rows
+([migration RFC](rfcs/relational-exporter-migration.md) §0 item 4, §1.5, §3.1).
 
 * **Rows and keys.** A message ID is `(writer, seq)`, writers numbered from the
   `store_meta` `message_writer` counter. A message transaction holds one writer
@@ -767,11 +631,12 @@ storage moved to OTEL_V1 rows ([migration RFC](rfcs/relational-exporter-migratio
 
 ## Repeated local campaign
 
-`bench/local_campaign.sh` runs all five physical arms against already-running,
-explicitly owned services. It requires a clean committed worktree, holds the
-shared heavy-lane lock, audits each corpus, rotates arm order across repetitions,
-and preserves raw failures. Build and validate first; supply the executable and
-service endpoints explicitly:
+`bench/local_campaign.sh` runs four physical arms (`sql_direct`: the Exporter's
+`SpanWriter` and direct reads with `zlib-1`; `ch_map`; `ch_attrs` with trace and
+time order) against already-running, explicitly owned services. It requires a
+clean committed worktree, holds the shared heavy-lane lock, audits each corpus,
+rotates arm order across repetitions, and preserves raw failures. Build and
+validate first; supply the executable and service endpoints explicitly:
 
 ```sh
 BIN="$(bazelisk info bazel-bin)/layers/otel/cmd/otelbench/otelbench_/otelbench" \
@@ -809,40 +674,41 @@ results under this layer after source-integrity checks pass.
   trace and standalone span queries do not silently truncate to K; equality and
   time queries return K distinct traces. All obey candidate/byte budgets.
 * No application result cache. CH explicitly disables `use_query_cache`; HTTP
-  connections and the optional native pool persist. FDB uses its native Go client with one open database.
-  Client protocols, per-query ownership checks and decoding are included in wall
-  latency; they are not identical protocols. FDB covering verification is included.
-* Every query keeps a raw nanosecond sample, result count/digest, failure, FDB
+  connections and the optional native pool persist. The sql backend uses the
+  native Go FDB client with one open database, and its SQL driver runs over the
+  same handle. Client protocols, CH per-query ownership checks and decoding are
+  included in wall latency; they are not identical protocols.
+* Every query keeps a raw nanosecond sample, result count/digest, failure, sql
   consumed candidate/logical-byte count, and CH server `X-ClickHouse-Summary`
   read_rows/read_bytes/elapsed_ns plus HTTP response bytes where available.
   CH data-query IDs, selected transport and server-metrics source accompany each
   sample; native read-work metrics remain honestly unavailable until reconciliation.
   `server_summary_available=false` means unavailable, **not zero engine work**.
-  FDB logical consumed bytes exclude protocol bytes and iterator prefetch; they
-  must not be equated to physical server I/O. CH physical read budgets and FDB
+  sql logical consumed bytes exclude protocol bytes and iterator prefetch; they
+  must not be equated to physical server I/O. CH physical read budgets and sql
   consumed candidate budgets differ; disclose them. Histograms are explicitly
   successful-only and raw failures remain; any failure makes the command nonzero.
 * `--max-candidates` and `--max-bytes` bound work; an insufficient budget returns
-  failure, never partial exact top-K. CH has a 2 s query deadline; FDB per-attempt
-  timeout is 1.5 s. Configurations that fail are not performance wins. There is no
-  durable snapshot across separate queries or audit pages.
+  failure, never partial exact top-K. CH has a 2 s query deadline. Configurations
+  that fail are not performance wins. There is no durable snapshot across
+  separate queries or audit pages.
 * Oracle preparation is outside query timing: at most one streaming source pass
   for all unique equality/time predicates, with at most K retained hits per
   predicate and one two-span trace pair of scratch witnesses. Known trace/span
   needles need no corpus pass. Audits are outside timing and warm caches.
-  CH source audit streams once with a 180 s timeout and ordinal bitset; FDB audits
-  bounded pages and commits bitset bookkeeping only after a successful page.
+  CH source audit streams once with a 180 s timeout and ordinal bitset; the sql
+  audit counts each tenant store's rows and sizes its KV range in bounded pages.
   Mandatory live audits avoid common-term scans; explicit `mixed` workloads and
   integration cases exercise those separately. The rare audit itself can still
   exceed budgets at very high configured match frequency: report failure, or
   deliberately raise audit budgets and label that receipt.
-* Audit receipts include per-index FDB logical keys/key/value bytes (not physical
+* Audit receipts include per-index sql logical keys/key/value bytes (not physical
   compressed size), CH active-part compressed/uncompressed bytes for source and
   MV destination, CH version and equality/trace/span/time EXPLAIN. Named
   projection components are reported separately; verify their inclusion in
   parent-part totals before adding or comparing totals. Merge/part state is observed,
   not forcibly optimized. External engine/log/backup/replica bytes remain outside
-  these measurements. A source fingerprint excludes physical order/hash/backend;
+  these measurements. A source fingerprint excludes physical order/backend; CH
   ownership separately checks these, preventing a wrong-layout reopen.
 
 JSON output files are exclusive-create, mode 0600; default stdout is available.

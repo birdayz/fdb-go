@@ -370,7 +370,7 @@ retain the unnormalized repeated-field order, including collision-heavy names
 and Guava expected-size construction (see DIVERGENCES.md).
 
 Attributes use separate repeated typed structs and standard fan-out VALUE
-indexes, not the existing OTel custom posting index. Only fully bound element
+indexes. Only fully bound element
 keys preserve ordering by the following time/identity columns. Unnest joins
 still explode records rather than use the fan-out index, as in Java. Go repairs
 EXISTS cardinality where Java can return duplicate records; see DIVERGENCES.md.
@@ -401,15 +401,15 @@ every table of a `TemplateDDL` store Go wrote (compiled builders, zlib-1
 records); its SQL has no `TEXT_CONTAINS_*` (`0AF00 Unsupported operator`), and
 Java writers of `messages` would have to bound overlong tokens as
 `IndexableText` does (`OtelTemplateOverlayJavaProbe`). A TEXT index naming a
-tokenizer Java lacks, such as the old exporter's `otel_message_v1`, would make
+tokenizer Java lacks, such as `otelsql`'s registered `otel_message_v1`, would make
 the whole schema unreadable to Java (DIVERGENCES.md). Metrics can be added as
 more tables in the same store; no
 cross-store join is needed. Once stores must be kept, changes go through the
 catalog evolution validator and explicit schema rebinding, e.g.
 fleet.SaveTemplate and fleet.Migrate.
 
-**Writer contract.** `otel.Exporter` is the OTEL_V1 writer
-(`layers/otel/rfcs/relational-exporter-migration.md`, phase 3A). It ensures the
+**Writer contract.** `otel.Exporter` is the OTEL_V1 writer and the OTel
+layer's only store (`layers/otel/rfcs/relational-exporter-migration.md`). It ensures the
 `(run, tenant)` store (database `/OTEL/R_<RUN>`, schema `T<tenant>`, template,
 database and schema created when absent), checks the `store_meta` `layout` row
 against its message configuration, and writes compiled `otelv1pb` rows through
@@ -423,10 +423,7 @@ storage amplification. The projections are query aids, not a lossless
 replacement for OTLP. Event/link projections omit bytes/long-string arrays and
 resource/scope dropped counts; `otlp` preserves them, and SQL projection coverage
 is incomplete. Its records use `none`, `zlib-1` (the default) or `zlib-default`
-compression, all version 1, and it refuses Brotli. The custom store
-(`FDBBackend`, its posting index, raw-KV logs and JSON owner manifests) remains
-only behind `otelbench --backend fdb` as a measurement baseline until phase 3B
-deletes it; the Exporter neither reads nor writes it.
+compression, all version 1, and it refuses Brotli.
 The 1,024-byte indexed-string cap is a writer admission contract, not a DDL
 constraint; long strings belong in the digest-indexed array, with exact values
 verified after digest lookup. The messages_hash unique index deduplicates whole
@@ -442,15 +439,16 @@ indexed; bytes, arrays, kvlists and unset values reported in `bytes_attrs` and
 `any_attrs` (deterministic canonical JSON) and not indexed; GenAI content keys
 excluded when messages are decomposed; event names over 1,024 bytes not
 projected; reference chunks bounded at 8,000 encoded key bytes, zero-byte
-escaping included. Admission and batching are the exporter's. Benchmark runs will use dedicated
-catalog databases/stores; a production tenant's shared signal store must never
-be cleared by the existing run-level Drop operation. Java-readable stores must use
+escaping included. Admission and batching are the exporter's. Benchmark runs use dedicated
+catalog databases (`otelbench --backend sql`: `/OTELBENCH/R_<RUN>`, which its
+run-level Drop removes); a production tenant's shared signal store must never
+be cleared by that operation. Java-readable stores must use
 an interoperable serializer, not Go-only Brotli.
 
 SQL keyset pages use an expanded scalar predicate over `(time, trace, span)`;
 row-value comparison is unsupported in both engines. Go's LIMIT is not Java
 SQL syntax (Java uses maxRows/continuations). Snapshot and budget semantics
-remain those of the relational connection, not the existing OTel signed-token
+remain those of the relational connection, not the Exporter's signed-token
 query API. In particular, separate autocommit pages do not share a snapshot.
 
 Java 4.14.2.0 has an execution bug when the public-template OR keyset's ordered

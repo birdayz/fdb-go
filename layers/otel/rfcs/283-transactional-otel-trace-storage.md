@@ -1,6 +1,6 @@
 # RFC-283: Serve transactional OTel traces with exact custom-attribute indexes
 
-**Status:** Proposed production design; a bounded immutable kernel and diagnostic measurements exist, not a full implementation or production validation.
+**Status:** Proposed production design; diagnostic measurements exist, not a full implementation or production validation. The bounded custom-index kernel was replaced by OTEL_V1 relational tenant stores and deleted ([relational-exporter-migration.md](relational-exporter-migration.md), phase 3B).
 
 **Reference:** FoundationDB 7.3.77; Java Record Layer 4.14.2.0; repository base `a7349ff657e1448a4f6937535129cfdb5afafcda`.
 
