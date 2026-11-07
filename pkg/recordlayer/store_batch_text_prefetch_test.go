@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire"
 	wiretypes "fdb.dev/pkg/fdbgo/wire/types"
@@ -328,6 +330,65 @@ var _ = Describe("Batch TEXT bunch prefetch", func() {
 			Expect(got.commit.transaction.WriteConflictRanges).To(Equal(want.commit.transaction.WriteConflictRanges), m.name)
 			Expect(rows).To(Equal(wantRows), m.name)
 		}
+	})
+
+	// Run with -race: a batch's tokenizations are its own, so saves beside it on
+	// the store neither read nor write them.
+	It("keeps a batch's tokenizations to the batch while SaveRecord runs beside it", func() {
+		md, root := metadata(), specSubspace()
+		const savers, rounds = 4, 8
+		indexed, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			s := open(rc, md, root)
+			var wg sync.WaitGroup
+			errs := make(chan error, savers*rounds)
+			for g := range savers {
+				wg.Add(1)
+				go func() {
+					defer GinkgoRecover()
+					defer wg.Done()
+					for i := range rounds {
+						id := int64(100*g + 2*i)
+						var err error
+						if g%2 == 0 {
+							_, err = s.SaveRecordBatch([]proto.Message{customer(id, words(int(id), 12), "b"), customer(id+1, words(int(id), 12), "b")})
+						} else {
+							_, err = s.SaveRecord(customer(id, words(int(id), 12), "s"))
+						}
+						errs <- err
+					}
+				}()
+			}
+			wg.Wait()
+			close(errs)
+			for err := range errs {
+				if err != nil {
+					return nil, err
+				}
+			}
+			// Every record is indexed under the token all texts share.
+			entries, err := AsList(ctx, s.ScanIndexByType(md.GetIndex("prefetch_text"), IndexScanByTextToken,
+				TupleRangeAllOf(tuple.Tuple{"agent"}), nil, ForwardScan()))
+			if err != nil {
+				return nil, err
+			}
+			var ids []int64
+			for _, e := range entries {
+				ids = append(ids, e.PrimaryKey()[0].(int64))
+			}
+			return ids, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		var want []int64
+		for g := range savers {
+			for i := range rounds {
+				id := int64(100*g + 2*i)
+				want = append(want, id)
+				if g%2 == 0 {
+					want = append(want, id+1)
+				}
+			}
+		}
+		Expect(indexed).To(ConsistOf(want))
 	})
 
 	// Use exporter-shaped records with gated first-wave replies to prove send-before-wait

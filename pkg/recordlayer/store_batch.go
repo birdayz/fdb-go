@@ -293,9 +293,9 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 
 	// Prefetch TEXT bunch reads into the transaction cache before applying any record
 	// (store_batch_text_prefetch.go).
+	var tokens textTokenCache // this batch's alone: other saves on the store run beside it
 	if !options.skipTextPrefetch {
-		store.batchTokenCache = make(map[batchTokenCacheKey]map[string][]int, len(pending))
-		defer func() { store.batchTokenCache = nil }()
+		tokens = make(textTokenCache, len(pending))
 		news := make([]*FDBStoredRecord[proto.Message], len(pending))
 		olds := make([]*FDBStoredRecord[proto.Message], len(pending))
 		for i := range pending {
@@ -305,7 +305,7 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 				olds[i] = &FDBStoredRecord[proto.Message]{PrimaryKey: p.primaryKey, RecordType: p.oldType, Record: p.oldRecord, wire: p.oldWire, Store: store}
 			}
 		}
-		store.prefetchBatchTextBunches(news, olds)
+		store.prefetchBatchTextBunches(news, olds, tokens)
 	}
 
 	// No record mutation precedes the whole batch's collation preflight.
@@ -408,7 +408,7 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 				Version:    oldVersion,
 			}
 		}
-		if err := store.updateSecondaryIndexesLocked(oldRecord, stored, written); err != nil {
+		if err := store.updateSecondaryIndexesLocked(oldRecord, stored, written, tokens); err != nil {
 			return nil, fmt.Errorf("record %d: index update: %w", i, err)
 		}
 

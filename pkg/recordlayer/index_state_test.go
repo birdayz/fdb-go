@@ -84,7 +84,7 @@ var _ = Describe("IndexState", func() {
 			Expect(err).NotTo(HaveOccurred())
 			index := md.GetIndex("Order$price")
 			store.stateMu.RLock()
-			err = store.updateOneIndex(index, nil, record, nil)
+			err = store.updateOneIndex(index, nil, record, nil, nil)
 			store.stateMu.RUnlock()
 			Expect(err).NotTo(HaveOccurred())
 			rows, err := rtx.Transaction().GetRange(store.IndexSubspace(index), fdb.RangeOptions{}).GetSliceWithError()

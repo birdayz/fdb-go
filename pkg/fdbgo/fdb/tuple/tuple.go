@@ -272,6 +272,13 @@ func (p *packer) encodeString(s string) {
 	p.putByte(0x00)
 }
 
+// AppendString appends to dst the encoding Pack gives the string element s.
+func AppendString(dst []byte, s string) []byte {
+	p := packer{versionstampPos: -1, buf: dst}
+	p.encodeString(s)
+	return p.buf
+}
+
 func (p *packer) encodeUint(i uint64) {
 	if i == 0 {
 		p.putByte(intZeroCode)

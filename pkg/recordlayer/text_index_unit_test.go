@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,6 +16,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
 )
 
 // ---------------------------------------------------------------------------
@@ -1661,3 +1663,132 @@ var _ = Describe("InstrumentedBunchedMap", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
+
+// bunchRecordingTx answers a put's snapshot read with canned rows and records
+// its writes and conflict ranges in call order.
+type bunchRecordingTx struct {
+	benchBunchTx
+	ops []string
+}
+
+func (tx *bunchRecordingTx) record(op string, a, b []byte) {
+	tx.ops = append(tx.ops, fmt.Sprintf("%s %x %x", op, a, b))
+}
+
+func (tx *bunchRecordingTx) Set(k fdb.KeyConvertible, v []byte) { tx.record("set", k.FDBKey(), v) }
+func (tx *bunchRecordingTx) SetBytes(k, v []byte)               { tx.record("set", k, v) }
+func (tx *bunchRecordingTx) Clear(k fdb.KeyConvertible)         { tx.record("clear", k.FDBKey(), nil) }
+func (tx *bunchRecordingTx) ClearBytes(k []byte)                { tx.record("clear", k, nil) }
+func (tx *bunchRecordingTx) AppendIfFits(k fdb.KeyConvertible, v []byte) {
+	tx.record("append", k.FDBKey(), v)
+}
+func (tx *bunchRecordingTx) AppendIfFitsBytes(k, v []byte) { tx.record("append", k, v) }
+func (tx *bunchRecordingTx) AddReadConflictKey(k fdb.KeyConvertible) error {
+	tx.record("read-key", k.FDBKey(), nil)
+	return nil
+}
+
+func (tx *bunchRecordingTx) AddReadConflictKeyBytes(k []byte) error {
+	tx.record("read-key", k, nil)
+	return nil
+}
+
+func (tx *bunchRecordingTx) AddWriteConflictKey(k fdb.KeyConvertible) error {
+	tx.record("write-key", k.FDBKey(), nil)
+	return nil
+}
+
+func (tx *bunchRecordingTx) AddWriteConflictKeyBytes(k []byte) error {
+	tx.record("write-key", k, nil)
+	return nil
+}
+
+func (tx *bunchRecordingTx) AddReadConflictRange(r fdb.ExactRange) error {
+	b, e := r.FDBRangeKeys()
+	tx.record("read-range", b.FDBKey(), e.FDBKey())
+	return nil
+}
+
+func (tx *bunchRecordingTx) AddReadConflictRangeBytes(b, e []byte) error {
+	tx.record("read-range", b, e)
+	return nil
+}
+
+func (tx *bunchRecordingTx) AddWriteConflictRange(r fdb.ExactRange) error {
+	b, e := r.FDBRangeKeys()
+	tx.record("write-range", b.FDBKey(), e.FDBKey())
+	return nil
+}
+
+func (tx *bunchRecordingTx) AddWriteConflictRangeBytes(b, e []byte) error {
+	tx.record("write-range", b, e)
+	return nil
+}
+
+// fixedTokenizer tokenizes every text to positions.
+type fixedTokenizer struct {
+	TextTokenizer
+	positions map[string][]int
+}
+
+func (fixedTokenizer) Name() string { return "fixed" }
+func (f fixedTokenizer) TokenizeToMap(string, int, TokenizerMode) (map[string][]int, error) {
+	return f.positions, nil
+}
+
+// A TEXT put that appends to a bunch (APPEND_IF_FITS, its conflict end prepacked)
+// and a key inside one make BunchedMap.Put's writes and conflict ranges, for
+// tokens whose tuple encoding escapes NUL bytes too.
+func TestTextPutMatchesBunchedMapPut(t *testing.T) {
+	t.Parallel()
+	index := NewTextIndex("text", Field("text"))
+	indexSubspace := subspace.Sub("idx", int64(3))
+	put := func(tokens map[string][]int, pk tuple.Tuple, bunch []fdb.KeyValue, viaMaintainer bool) []string {
+		tx := &bunchRecordingTx{benchBunchTx: benchBunchTx{kvs: bunch}}
+		if viaMaintainer {
+			m := &textIndexMaintainer{
+				index: index, indexSubspace: indexSubspace, tx: tx, tokenizer: fixedTokenizer{positions: tokens},
+				bunchedMap: NewBunchedMap(textIndexBunchSize), pipelineSize: 1,
+			}
+			if err := m.updateOneKey(&FDBStoredRecord[proto.Message]{PrimaryKey: pk}, false, []any{"text"}, 0, 0, nil); err != nil {
+				t.Fatal(err)
+			}
+			return tx.ops
+		}
+		for token, positions := range tokens {
+			if _, _, err := NewBunchedMap(textIndexBunchSize).Put(tx, indexSubspace.Sub(token), pk, positions); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return tx.ops
+	}
+	for _, token := range []string{"alpha", "a\x00b", "\x00lead", "trail\x00", "x\x00\x00y"} {
+		ss := indexSubspace.Sub(token)
+		bunch := []fdb.KeyValue{benchBunch(ss, 1000, 10)}
+		for _, tc := range []struct {
+			name   string
+			pk     tuple.Tuple
+			append bool
+		}{
+			{"append", benchMessageKey(1010), true},
+			{"inside", tuple.Tuple{"writer-0042", int64(1004), int64(1)}, false},
+		} {
+			one := map[string][]int{token: {0, 3}}
+			got, want := put(one, tc.pk, bunch, true), put(one, tc.pk, bunch, false)
+			if !slices.Equal(got, want) {
+				t.Fatalf("%q %s: TEXT put\n%s\nBunchedMap.Put\n%s", token, tc.name, strings.Join(got, "\n"), strings.Join(want, "\n"))
+			}
+			appended := slices.ContainsFunc(got, func(op string) bool { return strings.HasPrefix(op, "append ") })
+			if appended != tc.append {
+				t.Fatalf("%q %s: appended=%t, want %t:\n%s", token, tc.name, appended, tc.append, strings.Join(got, "\n"))
+			}
+			if tc.append {
+				keyBytes := tc.pk.PackWithPrefix(ss.Bytes())
+				conflict := fmt.Sprintf("read-range %x %x", []byte(bunch[0].Key), append(keyBytes, 0x00))
+				if !slices.Contains(got, conflict) {
+					t.Fatalf("%q: no APPEND_IF_FITS read conflict [signpost, key+\\x00):\n%s", token, strings.Join(got, "\n"))
+				}
+			}
+		}
+	}
+}

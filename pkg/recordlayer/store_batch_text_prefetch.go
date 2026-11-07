@@ -44,7 +44,33 @@ type textIndexTarget struct {
 	versionSubspace subspace.Subspace
 	tokenizer       TextTokenizer
 	version         int
-	store           *FDBRecordStore
+	tokens          textTokenCache
+}
+
+// textTokenCache holds one batch save's tokenizations, which its TEXT prefetch
+// and maintenance share; it is the batch's own, never another save's. Nil
+// tokenizes every time.
+type textTokenCache map[textTokenKey]map[string][]int
+
+type textTokenKey struct {
+	tokenizer string
+	version   int
+	text      string
+}
+
+func (c textTokenCache) tokenize(tokenizer TextTokenizer, version int, text string) (map[string][]int, error) {
+	if c == nil {
+		return tokenizer.TokenizeToMap(text, version, TokenizerModeIndex)
+	}
+	k := textTokenKey{tokenizer: tokenizer.Name(), version: version, text: text}
+	if positions, ok := c[k]; ok {
+		return positions, nil
+	}
+	positions, err := tokenizer.TokenizeToMap(text, version, TokenizerModeIndex)
+	if err == nil {
+		c[k] = positions
+	}
+	return positions, err
 }
 
 func newTextIndexTarget(index *Index, indexSubspace, secSubspace subspace.Subspace) *textIndexTarget {
@@ -101,21 +127,6 @@ func (r *textBunchReads) addVersionKey(t *textIndexTarget, primaryKey tuple.Tupl
 	}
 }
 
-func (t *textIndexTarget) tokenizeToMap(text string) (map[string][]int, error) {
-	if t.store != nil && t.store.batchTokenCache != nil {
-		ck := batchTokenCacheKey{tokenizer: t.tokenizer.Name(), version: t.version, text: text}
-		if cached, ok := t.store.batchTokenCache[ck]; ok {
-			return cached, nil
-		}
-		positions, err := t.tokenizer.TokenizeToMap(text, t.version, TokenizerModeIndex)
-		if err == nil {
-			t.store.batchTokenCache[ck] = positions
-		}
-		return positions, err
-	}
-	return t.tokenizer.TokenizeToMap(text, t.version, TokenizerModeIndex)
-}
-
 // add best-effort records map keys using updateOneKey’s evaluation;
 // maintenance reads anything it cannot evaluate.
 func (r *textBunchReads) add(t *textIndexTarget, entryKeys []tuple.Tuple) {
@@ -132,7 +143,7 @@ func (r *textBunchReads) add(t *textIndexTarget, entryKeys []tuple.Tuple) {
 		if !ok || text == "" {
 			continue
 		}
-		positions, err := t.tokenizeToMap(text)
+		positions, err := t.tokens.tokenize(t.tokenizer, t.version, text)
 		if err != nil {
 			continue
 		}
@@ -147,7 +158,7 @@ func (r *textBunchReads) add(t *textIndexTarget, entryKeys []tuple.Tuple) {
 		packedGrouped := grouped.Pack()
 		for token := range positions {
 			scratch = append(scratch[:0], groupingPrefix...)
-			scratch = appendPackedToken(scratch, token)
+			scratch = tuple.AppendString(scratch, token)
 			i, ok := r.byMap[string(scratch)]
 			var prefix []byte
 			if !ok {
@@ -244,9 +255,10 @@ func sortSearchKeys(rows []fdb.KeyValue, key []byte) int {
 	return i
 }
 
-// prefetchBatchTextBunches warms maintained new/old TEXT keys and old tokenizer versions.
+// prefetchBatchTextBunches warms maintained new/old TEXT keys and old tokenizer versions,
+// keeping the batch's tokenizations in tokens.
 // olds[i]=nil means an insert or an old image supplied by an earlier record in this batch.
-func (store *FDBRecordStore) prefetchBatchTextBunches(news, olds []*FDBStoredRecord[proto.Message]) {
+func (store *FDBRecordStore) prefetchBatchTextBunches(news, olds []*FDBStoredRecord[proto.Message], tokens textTokenCache) {
 	var reads textBunchReads
 	targets := map[string]*textIndexTarget{}
 	targetsFor := func(rt *RecordType) []*textIndexTarget {
@@ -276,7 +288,7 @@ func (store *FDBRecordStore) prefetchBatchTextBunches(news, olds []*FDBStoredRec
 						versionSubspace: tm.versionSubspace,
 						tokenizer:       tm.tokenizer,
 						version:         tm.tokenizerVersion,
-						store:           store,
+						tokens:          tokens,
 					}
 					targets[index.Name] = t
 				}
