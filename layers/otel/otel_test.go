@@ -1,7 +1,6 @@
 package otel
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,18 +15,6 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
-
-func testConfig() Config {
-	c := DefaultConfig()
-	c.Run = "unit_fixture_283"
-	c.Count = 48
-	c.Tenants = 2
-	c.Attributes = 8
-	c.MatchEvery = 3
-	c.K = 100
-	c.MaxCandidates = 1000
-	return c
-}
 
 func TestConfigSafety(t *testing.T) {
 	t.Parallel()
@@ -143,17 +130,6 @@ func TestUnknownOTLPBytesPreserved(t *testing.T) {
 	}
 	if _, err := decodeRecord(clone); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func collision(target string) string {
-	wanted := sha256.Sum256([]byte(target))
-	for i := 0; ; i++ {
-		s := fmt.Sprintf("collision_%d", i)
-		h := sha256.Sum256([]byte(s))
-		if s != target && h[0] == wanted[0] {
-			return s
-		}
 	}
 }
 
