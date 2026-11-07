@@ -131,7 +131,7 @@ func (r *SpanReader) Time(ctx context.Context, tr TimeRange) (QueryResult, error
 // desc, trace desc). verify, when set, admits a candidate.
 func (r *SpanReader) top(ctx context.Context, op, index string, rng recordlayer.TupleRange, startCol, traceCol int, verify func(*recordlayer.FDBRecordStore, *recordlayer.IndexEntry, *queryWork) (bool, error)) (QueryResult, error) {
 	var out QueryResult
-	err := r.store.run(ctx, op, func(store *recordlayer.FDBRecordStore) error {
+	err := r.store.read(ctx, op, func(store *recordlayer.FDBRecordStore) error {
 		out = QueryResult{Hits: []Hit{}}
 		work := newQueryWork(r.cfg)
 		defer work.result(&out)
@@ -208,7 +208,7 @@ func (r *SpanReader) Span(ctx context.Context, span string) ([]SpanMatch, QueryR
 	if !ok {
 		return out, work, nil
 	}
-	err := r.store.run(ctx, "span", func(store *recordlayer.FDBRecordStore) error {
+	err := r.store.read(ctx, "span", func(store *recordlayer.FDBRecordStore) error {
 		out, work = []SpanMatch{}, QueryResult{}
 		w := newQueryWork(r.cfg)
 		defer w.result(&work)
@@ -244,7 +244,7 @@ func (r *SpanReader) Trace(ctx context.Context, trace string) ([]SpanHit, QueryR
 	if !ok {
 		return out, work, nil
 	}
-	err := r.store.run(ctx, "trace", func(store *recordlayer.FDBRecordStore) error {
+	err := r.store.read(ctx, "trace", func(store *recordlayer.FDBRecordStore) error {
 		out, work = []SpanHit{}, QueryResult{}
 		w := newQueryWork(r.cfg)
 		defer w.result(&work)
