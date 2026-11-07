@@ -28,12 +28,11 @@ func (s *Size) AddKV(prev, key, value []byte) {
 }
 
 type Statistics struct {
-	Rows                int64              `json:"rows"`
-	Attributes          int64              `json:"attributes"`
-	LogicalPayloadBytes int64              `json:"logical_payload_bytes"`
-	Structures          map[string]Size    `json:"structures"`
-	Details             map[string]string  `json:"details,omitempty"`
-	Diagnostics         *IngestDiagnostics `json:"diagnostics,omitempty"`
+	Rows                int64             `json:"rows"`
+	Attributes          int64             `json:"attributes"`
+	LogicalPayloadBytes int64             `json:"logical_payload_bytes"`
+	Structures          map[string]Size   `json:"structures"`
+	Details             map[string]string `json:"details,omitempty"`
 }
 
 type Backend interface {

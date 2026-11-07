@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/recordlayer"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
@@ -324,10 +323,4 @@ func ftsTurns(hits []MessageSpanHit) []int {
 		out[i] = int(h.Start - ftsBase)
 	}
 	return out
-}
-
-func deltaRun(t *testing.T, ctx context.Context, db *recordlayer.FDBDatabase, fn func(*recordlayer.FDBRecordContext) error) error {
-	t.Helper()
-	_, err := db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) { return nil, fn(rc) })
-	return err
 }

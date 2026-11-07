@@ -11,13 +11,11 @@ import (
 	"testing"
 
 	"fdb.dev/layers/otel/otelsql"
-	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 func TestMessageQueueClearsConsumedAndSkippedSlots(t *testing.T) {
@@ -424,7 +422,7 @@ func TestMessageTextExtractionEncodingsAgree(t *testing.T) {
 // except that a token over maxIndexedTokenBytes is "" and keeps its position.
 func TestMessageTokenizer(t *testing.T) {
 	t.Parallel()
-	tok, err := recordlayer.GetTextTokenizer(messageTokenizerName)
+	tok, err := recordlayer.GetTextTokenizer(otelsql.MessageTokenizerName)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -534,45 +532,6 @@ func TestMessageSegments(t *testing.T) {
 	}
 }
 
-// TestPlanMessageParts checks the records of a message larger than one part.
-func TestPlanMessageParts(t *testing.T) {
-	t.Parallel()
-	text := largeText(3 << 20)
-	value := deltaKvlist(deltaKV("role", deltaStr("Tool")), deltaKV("content", deltaStr(text)))
-	raw := ftsAnyWire(t, value)
-	el := &messageElement{digest: messageHash(2, messageEncodingAny, raw), encoding: messageEncodingAny, raw: raw}
-	p, err := planMessage(2, el, true, messageSegmentTokens)
-	if err != nil {
-		t.Fatal(err)
-	}
-	segs, _, err := segmentMessageText(text, messageSegmentTokens)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := max(len(segs), (len(raw)+messagePartRawBytes-1)/messagePartRawBytes); len(p.records) != want || len(p.records) < 2 {
-		t.Fatalf("%d records, want %d", len(p.records), want)
-	}
-	var rebuilt []byte
-	for i, r := range p.records {
-		m := r.ProtoReflect()
-		f := m.Descriptor().Fields()
-		if m.Get(f.ByName("part")).Int() != int64(i) || m.Get(f.ByName("role")).String() != "tool" || m.Get(f.ByName("text")).String() != segs[i].text || m.Get(f.ByName("token_offset")).Int() != int64(segs[i].offset) {
-			t.Fatalf("part %d fields", i)
-		}
-		if m.Has(f.ByName("hash")) != (i == 0) || m.Has(f.ByName("parts")) != (i == 0) || (m.Get(f.ByName("large")).List().Len() == 1) != (i == 0) {
-			t.Fatalf("part %d header fields", i)
-		}
-		rebuilt = append(rebuilt, m.Get(f.ByName("raw")).Bytes()...)
-	}
-	if !bytes.Equal(rebuilt, raw) {
-		t.Fatal("parts do not hold the raw element")
-	}
-	small, err := planMessage(2, &messageElement{encoding: messageEncodingAny, raw: ftsAnyWire(t, deltaStr("hi"))}, true, messageSegmentTokens)
-	if err != nil || len(small.records) != 1 || small.records[0].ProtoReflect().Get(small.records[0].ProtoReflect().Descriptor().Fields().ByName("large")).List().Len() != 0 {
-		t.Fatalf("small message: %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Span references
 // ---------------------------------------------------------------------------
@@ -634,76 +593,27 @@ func TestMessageUses(t *testing.T) {
 		}
 	}
 
-	// The Envelope packs them with the element IDs, or the placeholder.
-	fd, err := recordFile(messagesFullText)
+	// The span's ref_chunks pack them with the element IDs, or the
+	// placeholder (the custom store's Envelope packing left with it).
+	ex.id = messageID{3, 7}
+	chunks, err := (&relMessageStore{}).refChunks(want)
+	if err != nil || len(chunks) != 1 {
+		t.Fatalf("%d chunks: %v", len(chunks), err)
+	}
+	refs, err := otelsql.UnpackRefChunk(chunks[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := dynamicpb.NewMessage(fd.Messages().ByName("Envelope"))
-	ex.id = messageID{3, 7}
-	setEnvelopeRefs(m, want)
-	list := m.Get(m.Descriptor().Fields().ByName("ref_chunks")).List()
-	if list.Len() != 1 {
-		t.Fatalf("%d chunks", list.Len())
-	}
-	c := list.Get(0).Message()
-	refs, err := unpackSpanRefs(c.Get(c.Descriptor().Fields().ByName("refs")).Bytes())
-	if err != nil || c.Get(c.Descriptor().Fields().ByName("chunk")).Int() != 0 {
-		t.Fatal(err)
-	}
-	wantRefs := []spanRef{
-		{id: messageID{3, 7}, attribute: in, newest: true, ordinals: []int{0, 2}},
-		{id: messagePlaceholderID, attribute: in, ordinals: []int{1}},
-		{id: messagePlaceholderID, attribute: out, newest: true, ordinals: []int{0}},
+	wantRefs := []otelsql.MessageRef{
+		{Writer: 3, Seq: 7, Attribute: in, Newest: true, Ordinals: []int{0, 2}},
+		{Writer: messagePlaceholderID.writer, Seq: messagePlaceholderID.seq, Attribute: in, Ordinals: []int{1}},
+		{Writer: messagePlaceholderID.writer, Seq: messagePlaceholderID.seq, Attribute: out, Newest: true, Ordinals: []int{0}},
 	}
 	if !reflect.DeepEqual(refs, wantRefs) {
 		t.Fatalf("references %+v, want %+v", refs, wantRefs)
 	}
-	// Setting again replaces the list.
-	setEnvelopeRefs(m, want[:1])
-	if list := m.Get(m.Descriptor().Fields().ByName("ref_chunks")).List(); list.Len() != 1 {
-		t.Fatalf("%d chunks after replacement", list.Len())
-	}
-	setEnvelopeRefs(m, nil)
-	if m.Has(m.Descriptor().Fields().ByName("ref_chunks")) {
-		t.Fatal("a span without references keeps chunks")
-	}
-}
-
-// TestSpanRefChunks checks that a long history is cut into chunks of at most
-// messageRefChunkBytes that decode, in order, to every reference.
-func TestSpanRefChunks(t *testing.T) {
-	t.Parallel()
-	var uses []messageUse
-	var want []spanRef
-	for i := range 5000 {
-		el := &messageElement{id: messageID{int64(i%16 + 1), int64(i + 1)}}
-		ords := []int{i, i + 7}
-		uses = append(uses, messageUse{element: el, attribute: 1 + int64(i%4), ordinals: ords, newest: i == 4999})
-		want = append(want, spanRef{id: el.id, attribute: 1 + int64(i%4), ordinals: ords, newest: i == 4999})
-	}
-	chunks := packSpanRefs(uses)
-	if len(chunks) < 2 {
-		t.Fatalf("%d chunks", len(chunks))
-	}
-	var got []spanRef
-	for i, c := range chunks {
-		if len(c) > messageRefChunkBytes {
-			t.Fatalf("chunk %d has %d bytes", i, len(c))
-		}
-		refs, err := unpackSpanRefs(c)
-		if err != nil {
-			t.Fatal(err)
-		}
-		got = append(got, refs...)
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatal("chunks do not decode to the references")
-	}
-	for _, bad := range [][]byte{{0xff}, tuple.Tuple{int64(1), int64(2), int64(1), int64(0)}.Pack(), tuple.Tuple{int64(1), int64(2), int64(9), int64(0), tuple.Tuple{int64(0)}}.Pack(), tuple.Tuple{int64(1), int64(2), int64(1), int64(2), tuple.Tuple{int64(0)}}.Pack(), tuple.Tuple{int64(1), int64(2), int64(1), int64(0), tuple.Tuple{}}.Pack()} {
-		if _, err := unpackSpanRefs(bad); err == nil {
-			t.Fatalf("malformed chunk %x accepted", bad)
-		}
+	if chunks, err := (&relMessageStore{}).refChunks(nil); err != nil || len(chunks) != 0 {
+		t.Fatalf("a span without references packs %d chunks: %v", len(chunks), err)
 	}
 }
 
@@ -771,62 +681,5 @@ func TestMessageQueryPlan(t *testing.T) {
 	} {
 		_, err := newMessageQueryPlan(op, q, 7)
 		requireTyped[*ConfigError](t, name, err)
-	}
-}
-
-func TestMessageContinuation(t *testing.T) {
-	t.Parallel()
-	secret := bytes.Repeat([]byte{3}, continuationKeyBytes)
-	b := qaBackend("time")
-	digest := bytes.Repeat([]byte{1}, 32)
-	last := messageRefKey("time", qaID(1, 16), qaID(2, 8), 42, 1, messageID{3, 9})
-	token := signContinuationKind(secret, messageContinuationKind, b.cfg.Run, b.cfg.Tenant, "time", digest, last)
-	c, err := parseContinuationKind(token, messageContinuationKind)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := c.authenticate(secret, b, digest); err != nil {
-		t.Fatal(err)
-	}
-	if r, err := parseMessageResume("time", c.last); err != nil || !bytes.Equal(r, last) {
-		t.Fatalf("resume %x %v", r, err)
-	}
-	// Sort keys order by span, then attribute, then message.
-	keys := [][]byte{
-		messageRefKey("time", qaID(1, 16), qaID(2, 8), 43, 2, messageID{1, 1}),
-		messageRefKey("time", qaID(1, 16), qaID(2, 8), 42, 1, messageID{3, 9}),
-		messageRefKey("time", qaID(1, 16), qaID(2, 8), 42, 1, messageID{3, 10}),
-		messageRefKey("time", qaID(1, 16), qaID(2, 8), 42, 2, messageID{1, 1}),
-	}
-	for i := 1; i < len(keys); i++ {
-		if bytes.Compare(keys[i-1], keys[i]) >= 0 {
-			t.Fatalf("sort key %d does not follow %d", i, i-1)
-		}
-	}
-	_, err = parseContinuationKind(token, continuationKind)
-	requireTyped[*ConfigError](t, "message token as same-span", err)
-	_, err = parseContinuationKind(signContinuation(secret, b.cfg.Run, b.cfg.Tenant, "time", digest, last), messageContinuationKind)
-	requireTyped[*ConfigError](t, "same-span token as message", err)
-	for i := range token {
-		mutated := append([]byte(nil), token...)
-		mutated[i] ^= 0x10
-		c, err := parseContinuationKind(mutated, messageContinuationKind)
-		if err == nil {
-			err = c.authenticate(secret, b, digest)
-		}
-		if err == nil {
-			t.Fatalf("flip at byte %d accepted", i)
-		}
-		requireConfigOrCorruption(t, fmt.Sprintf("flip %d", i), err)
-	}
-	for name, raw := range map[string][]byte{
-		"trace order key": messageRefKey("trace", qaID(1, 16), qaID(2, 8), 42, 1, messageID{3, 9}),
-		"zero seq":        messageRefKey("time", qaID(1, 16), qaID(2, 8), 42, 1, messageID{3, 0}),
-		"garbage":         {0xff},
-		"bad attribute":   append(postingSuffix(Span{Trace: qaID(1, 16), ID: qaID(2, 8), Start: 42}, "time"), "gen_ai.request.model", int64(1), int64(1)).Pack(),
-		"short":           tuple.Tuple{int64(1)}.Pack(),
-	} {
-		_, err := parseMessageResume("time", raw)
-		requireTyped[*CorruptionError](t, name, err)
 	}
 }

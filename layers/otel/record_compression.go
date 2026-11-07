@@ -26,14 +26,6 @@ func recordSerializer(mode string) (*recordlayer.TransformedRecordSerializer, er
 		return b.SetCompressWhenSerializing(true).SetCompressionLevel(1).Build()
 	case "zlib-default":
 		return b.SetCompressWhenSerializing(true).SetCompressionLevel(recordlayer.DeflaterDefaultCompression).Build()
-	case "brotli-0":
-		return b.SetGoOnlyBrotliCompression(0).Build()
-	case "brotli-1":
-		return b.SetGoOnlyBrotliCompression(1).Build()
-	case "brotli-3":
-		return b.SetGoOnlyBrotliCompression(3).Build()
-	case "brotli-4":
-		return b.SetGoOnlyBrotliCompression(4).Build()
 	default:
 		return nil, fail("config", "record compression", "unsupported Record Layer compression mode")
 	}

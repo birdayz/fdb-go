@@ -5,12 +5,10 @@ import (
 	"crypto/rand"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 	"time"
 
 	foundationdbtc "fdb.dev/pkg/testcontainers/foundationdb"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
@@ -139,106 +137,6 @@ func startExporterCluster(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return cluster
-}
-
-func openTestExporter(t *testing.T, ctx context.Context, cluster string, mutate func(*ExporterConfig)) *Exporter {
-	t.Helper()
-	cfg := DefaultExporterConfig()
-	cfg.ClusterFile = cluster
-	cfg.Run = freshRun(t)
-	cfg.Tenant = 11
-	if mutate != nil {
-		mutate(&cfg)
-	}
-	e, err := NewExporter(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if e.Config() != cfg {
-		t.Fatalf("Config() = %+v, want %+v", e.Config(), cfg)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := e.Shutdown(ctx); err != nil {
-			t.Error(err)
-		}
-	})
-	return e
-}
-
-func requireHits(t *testing.T, ctx context.Context, e *Exporter, a Attribute, want ...Hit) QueryResult {
-	t.Helper()
-	got, err := e.Query(ctx, a)
-	if err != nil {
-		t.Fatalf("query %+v: %v", a, err)
-	}
-	if got.Hits == nil {
-		t.Fatalf("query %+v returned nil hits", a)
-	}
-	if len(want) == 0 {
-		want = []Hit{}
-	}
-	if !reflect.DeepEqual(got.Hits, want) {
-		t.Fatalf("query %+v\n got %+v\nwant %+v", a, got.Hits, want)
-	}
-	return got
-}
-
-func requireTrace(t *testing.T, ctx context.Context, e *Exporter, traceID string, want ...SpanHit) {
-	t.Helper()
-	got, err := e.Trace(ctx, traceID)
-	if err != nil {
-		t.Fatalf("trace %s: %v", traceID, err)
-	}
-	if len(want) == 0 {
-		want = []SpanHit{}
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("trace %s\n got %+v\nwant %+v", traceID, got, want)
-	}
-}
-
-func requireSpan(t *testing.T, ctx context.Context, e *Exporter, spanID string, want ...SpanMatch) {
-	t.Helper()
-	got, err := e.Span(ctx, spanID)
-	if err != nil {
-		t.Fatalf("span %s: %v", spanID, err)
-	}
-	if len(want) == 0 {
-		want = []SpanMatch{}
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("span %s\n got %+v\nwant %+v", spanID, got, want)
-	}
-}
-
-func requireTime(t *testing.T, ctx context.Context, e *Exporter, r TimeRange, want ...Hit) {
-	t.Helper()
-	got, err := e.Time(ctx, r)
-	if err != nil {
-		t.Fatalf("time %+v: %v", r, err)
-	}
-	if len(want) == 0 {
-		want = []Hit{}
-	}
-	if !reflect.DeepEqual(got.Hits, want) {
-		t.Fatalf("time %+v\n got %+v\nwant %+v", r, got.Hits, want)
-	}
-}
-
-// requireRecorded checks LoadSpanOTLP against the SDK's own view of every span.
-func requireRecorded(t *testing.T, ctx context.Context, e *Exporter, spans []sdktrace.ReadOnlySpan) {
-	t.Helper()
-	for _, ro := range spans {
-		want := ResourceSpansFromReadOnly([]sdktrace.ReadOnlySpan{ro})
-		sc := ro.SpanContext()
-		got, err := e.LoadSpanOTLP(ctx, sc.TraceID().String(), sc.SpanID().String())
-		if err != nil {
-			t.Fatalf("load %s/%s (%s): %v", sc.TraceID(), sc.SpanID(), ro.Name(), err)
-		}
-		requireProtoEqual(t, "LoadSpanOTLP "+ro.Name(), got, want[0])
-	}
 }
 
 func sortedSpanHits(hits ...SpanHit) []SpanHit {
