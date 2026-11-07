@@ -184,7 +184,7 @@ func (r *SpanReader) ensureContinuationKey(ctx context.Context) ([]byte, error) 
 // Typed predicates
 // ---------------------------------------------------------------------------
 
-// validateRelQueryAttribute is validateQueryAttribute for typed equality
+// validateRelQueryAttribute checks an equality predicate for typed equality
 // (D1): string, int, double and bool values, each in its canonical text.
 func validateRelQueryAttribute(op string, a Attribute, scopes ...string) error {
 	if !slices.Contains(scopes, a.Scope) {

@@ -648,7 +648,7 @@ func TestMessageQueryPlan(t *testing.T) {
 	if !bytes.Equal(plan(MessageFullTextQuery{Query: "a", Role: " USER"}).digest, plan(MessageFullTextQuery{Query: "a", Role: "user"}).digest) {
 		t.Fatal("digest must normalize role")
 	}
-	pred := Attribute{"span", "k", "string", "v"}
+	// Predicates are newRelMessageQueryPlan's (TestRelMessageQueryPlan).
 	for name, q := range map[string]MessageFullTextQuery{
 		"phrase":     {Query: "alpha beta", Mode: MessageMatchPhrase},
 		"any":        {Query: "alpha beta", Mode: MessageMatchAny},
@@ -656,7 +656,6 @@ func TestMessageQueryPlan(t *testing.T) {
 		"attribute":  {Query: "alpha beta", AttributeKey: "gen_ai.input.messages"},
 		"role":       {Query: "alpha beta", Role: "user"},
 		"first turn": {Query: "alpha beta", FirstTurnOnly: true},
-		"predicate":  {Query: "alpha beta", Predicates: []Attribute{pred}},
 		"window":     {Query: "alpha beta", TimeWindow: &TimeRange{Start: 1, End: 2}},
 	} {
 		if bytes.Equal(plan(q).digest, base) {
@@ -673,8 +672,6 @@ func TestMessageQueryPlan(t *testing.T) {
 		"too many terms":        {Query: strings.Repeat("w ", maxMessageQueryTerms+1)},
 		"bad attribute":         {Query: "a", AttributeKey: "gen_ai.request.model"},
 		"negative limit":        {Query: "a", Limit: -1},
-		"bad predicate":         {Query: "a", Predicates: []Attribute{{"event", "k", "string", "v"}}},
-		"message predicate":     {Query: "a", Predicates: []Attribute{{"span", "gen_ai.input.messages", "string", "v"}}},
 		"inverted window":       {Query: "a", TimeWindow: &TimeRange{Start: 3, End: 2}},
 		"long role":             {Query: "a", Role: strings.Repeat("r", maxMessageRoleBytes+1)},
 		"unindexable long term": {Query: strings.Repeat("q", maxIndexedTokenBytes+1)},

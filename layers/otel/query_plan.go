@@ -9,7 +9,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"sort"
-	"strconv"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -45,31 +44,6 @@ func newTimeWindow(r *TimeRange) (timeWindow, error) {
 }
 
 func (w timeWindow) contains(t int64) bool { return !w.set || (t >= w.lo && t < w.hi) }
-
-func validateQueryAttribute(op string, a Attribute, scopes ...string) error {
-	known := false
-	for _, s := range scopes {
-		known = known || a.Scope == s
-	}
-	if !known {
-		return failf("config", op, "unsupported attribute scope %q", a.Scope)
-	}
-	switch a.Type {
-	case "string":
-	case "int":
-		n, err := strconv.ParseInt(a.Value, 10, 64)
-		if err != nil || strconv.FormatInt(n, 10) != a.Value {
-			return fail("config", op, "int attribute value must be a canonical base-10 int64")
-		}
-	default:
-		return failf("config", op, "unsupported attribute type %q; indexed types are string and int", a.Type)
-	}
-	// Larger keys and values are never indexed; an empty answer would not be exhaustive.
-	if len(a.Key) > maxIndexedKeyBytes || len(a.Value) > maxIndexedValueBytes {
-		return fail("config", op, "attribute exceeds the indexed key/value cap")
-	}
-	return nil
-}
 
 func attributeLess(x, y Attribute) bool {
 	if x.Scope != y.Scope {
@@ -199,13 +173,14 @@ type messageQueryPlan struct {
 	attribute int64 // 0: any attribute
 	attrKey   string
 	role      string
-	preds     []Attribute
 	window    timeWindow
 	firstTurn bool
 	limit     int
 	digest    []byte
 }
 
+// newMessageQueryPlan plans q's text, role, attribute, window and limit;
+// newRelMessageQueryPlan plans and digests its same-span predicates.
 func newMessageQueryPlan(op string, q MessageFullTextQuery, k int) (*messageQueryPlan, error) {
 	mode := q.Mode
 	if mode == "" {
@@ -239,18 +214,6 @@ func newMessageQueryPlan(op string, q MessageFullTextQuery, k int) (*messageQuer
 	if len(q.Role) > maxMessageRoleBytes {
 		return nil, failf("config", op, "role exceeds %d bytes", maxMessageRoleBytes)
 	}
-	p.preds = uniqueAttributes(q.Predicates)
-	if len(q.Predicates) > maxQueryPredicates {
-		return nil, failf("config", op, "expected at most %d predicates", maxQueryPredicates)
-	}
-	for _, a := range p.preds {
-		if err := validateQueryAttribute(op, a, "resource", "scope", "span"); err != nil {
-			return nil, err
-		}
-		if err := checkMessageAttributeQuery(op, a, true); err != nil {
-			return nil, err
-		}
-	}
 	if q.Limit < 0 {
 		return nil, fail("config", op, "limit must not be negative")
 	}
@@ -274,7 +237,7 @@ func newMessageQueryPlan(op string, q MessageFullTextQuery, k int) (*messageQuer
 			t = append(t, s)
 		}
 	}
-	t = append(t, p.attrKey, p.role, p.firstTurn, queryDigest(messageContinuationKind, p.preds, p.window))
+	t = append(t, p.attrKey, p.role, p.firstTurn, queryDigest(messageContinuationKind, nil, p.window))
 	h := sha256.Sum256(t.Pack())
 	p.digest = h[:]
 	return p, nil

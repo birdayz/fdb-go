@@ -252,6 +252,7 @@ func TestRelMessageQueryPlan(t *testing.T) {
 		"bytes":             {Query: "x", Predicates: []Attribute{{"span", "k", "bytes", "AQI="}}},
 		"non-canonical":     {Query: "x", Predicates: []Attribute{{"span", "k", "double", "0.50"}}},
 		"log scope":         {Query: "x", Predicates: []Attribute{{LogScopeRecord, "k", "string", "v"}}},
+		"event scope":       {Query: "x", Predicates: []Attribute{{"event", "k", "string", "v"}}},
 		"too many":          {Query: "x", Predicates: many},
 		"no terms":          {Query: "--"},
 		"mode":              {Query: "x", Mode: "regex"},
