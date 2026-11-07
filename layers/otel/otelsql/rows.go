@@ -268,7 +268,7 @@ func (a *attrArrays) add(m protoreflect.Message, scope string, set attrSet) {
 		case *commonpb.AnyValue_IntValue:
 			a.ints.appendAttr(m, scope, key, protoreflect.ValueOfInt64(v.IntValue))
 		case *commonpb.AnyValue_DoubleValue:
-			a.doubles.appendAttr(m, scope, key, protoreflect.ValueOfFloat64(v.DoubleValue))
+			a.doubles.appendAttr(m, scope, key, protoreflect.ValueOfFloat64(ProjectedDouble(v.DoubleValue)))
 		case *commonpb.AnyValue_BoolValue:
 			a.bools.appendAttr(m, scope, key, protoreflect.ValueOfBool(v.BoolValue))
 		case *commonpb.AnyValue_BytesValue:

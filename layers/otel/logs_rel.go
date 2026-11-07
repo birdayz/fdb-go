@@ -870,6 +870,12 @@ func (q relLogAttr) scanRange(w timeWindow) recordlayer.TupleRange {
 	return recordlayer.TupleRangeBetween(at(w.lo), at(w.hi))
 }
 
+// sameDouble is index equality on DOUBLE_VALUEs: the same bits, any NaN
+// matching any NaN as every NaN is stored as otelsql.CanonicalNaN.
+func sameDouble(x, y float64) bool {
+	return math.Float64bits(x) == math.Float64bits(y) || math.IsNaN(x) && math.IsNaN(y)
+}
+
 // holds reports whether row r holds the attribute: what its entry claims,
 // verified on the record.
 func (q relLogAttr) holds(r *otelv1pb.LOGS) bool {
@@ -899,7 +905,7 @@ func (q relLogAttr) holds(r *otelv1pb.LOGS) bool {
 		}
 	case float64:
 		for _, x := range r.GetDOUBLE_ATTRS().GetValues() {
-			if is(x.GetSCOPE(), x.GetATTR_KEY()) && math.Float64bits(x.GetDOUBLE_VALUE()) == math.Float64bits(v) {
+			if is(x.GetSCOPE(), x.GetATTR_KEY()) && sameDouble(x.GetDOUBLE_VALUE(), v) {
 				return true
 			}
 		}

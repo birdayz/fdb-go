@@ -89,11 +89,12 @@ func spanAttrQuery(a Attribute) (attrQuery, bool) {
 	return attrQuery{}, false
 }
 
-// parseCanonicalDouble reads formatDouble's text.
+// parseCanonicalDouble reads formatDouble's text; "NaN" is the stored
+// otelsql.CanonicalNaN, which every NaN payload projects to.
 func parseCanonicalDouble(s string) (float64, error) {
 	switch s {
 	case "NaN":
-		return math.NaN(), nil
+		return otelsql.CanonicalNaN, nil
 	case "+Inf":
 		return math.Inf(1), nil
 	case "-Inf":

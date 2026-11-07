@@ -77,7 +77,7 @@ func TestCanonicalAttributeProjection(t *testing.T) {
 	base := []string{
 		"str:s=v", "str:empty=", "str:kkkk..1024=longest key",
 		"long:prompt=llll..1025/" + digest, "long:longest=mmmm..64000/" + longest,
-		"int:i=-7", "int:dup=2", "double:d=2.5", "double:nan=NaN", "bool:b=false",
+		"int:i=-7", "int:dup=2", "double:d=2.5", "double:nan=NaN", "double:nan_negative=NaN", "bool:b=false",
 		"bytes:raw=0102/true", "bytes:raw_empty=/true",
 		`any:arr=[1]`, `any:kv={"a":"b"}`, "any:none=null", "any:nil=null",
 	}
