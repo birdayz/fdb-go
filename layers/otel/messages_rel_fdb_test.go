@@ -3,6 +3,7 @@ package otel
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -268,6 +269,7 @@ func TestRelMessagesRealFDB(t *testing.T) {
 		"deltas_conversation":         testRelMessageDeltaConversation,
 		"message_free_last_duplicate": testRelMessageFreeLastDuplicate,
 		"marker_runs":                 testRelMessageMarkerRuns,
+		"text_shards":                 testRelMessageTextShards,
 		"unknown_commit":              testRelMessageUnknownCommit,
 		"size_fallback":               testRelMessageSizeFallback,
 		"corruption":                  testRelMessageCorruption,
@@ -1134,6 +1136,140 @@ func testRelMessageMarkerRuns(t *testing.T, h *qrHarness) {
 	}
 }
 
+// A query of several terms scans only the shards that can hold them all:
+// per role it counts each term's postings in shard 0, probes the rarest
+// in the other shards and scans the shards that hold it. Every term common
+// in shard 0 scans every shard; one term scans every shard directly.
+func testRelMessageTextShards(t *testing.T, h *qrHarness) {
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	e := h.msgEnv(t, ctx, messagesFullText, nil)
+	type msg struct {
+		shard      int
+		role, text string
+	}
+	var msgs []msg
+	for s := range messageTextShards {
+		msgs = append(msgs, msg{s, "user", "alpha beta"}, msg{s, "assistant", "alpha gamma"})
+	}
+	msgs = append(msgs, msg{3, "user", "alpha zircon beta"}, msg{9, "user", "zircon alpha"}, msg{5, "system", "beta"})
+	for range textSampleRows {
+		msgs = append(msgs, msg{0, "tool", "delta epsilon"})
+	}
+	// Filler tokens between the terms keep each read of a term to its own
+	// range, as in a store of real size, rather than one read caching the
+	// tiny index for the transaction. Writer 16+s writes shard s.
+	filler := func(i int) string {
+		var b strings.Builder
+		for k := range 64 {
+			fmt.Fprintf(&b, " f%d_%d g%d_%d", i, k, k, i)
+		}
+		return b.String()
+	}
+	ids := make([]messageID, len(msgs))
+	e.run(t, ctx, func(store *recordlayer.FDBRecordStore) error {
+		seqs := map[int64]int64{}
+		var rows []proto.Message
+		for i, m := range msgs {
+			writer := int64(messageTextShards + m.shard)
+			seqs[writer]++
+			ids[i] = messageID{writer, seqs[writer]}
+			hash := sha256.Sum256(fmt.Append(nil, i))
+			rec, err := otelsql.BuildMessageCompiled(otelsql.MessagePart{
+				Writer: writer, Seq: seqs[writer], Text: &otelsql.MessageText{Role: m.role, Content: m.text + filler(i)},
+				Raw: []byte(m.text), ContentHash: hash[:otelsql.MessageHashBytes], Encoding: "string", RawBytes: int64(len(m.text)), Parts: 1,
+			})
+			if err != nil {
+				return err
+			}
+			rows = append(rows, rec)
+		}
+		_, err := store.SaveRecordBatch(rows)
+		return err
+	})
+	user := func(i int, m msg) bool {
+		return m.role == "user" && strings.Contains(m.text, "alpha") && strings.Contains(m.text, "beta")
+	}
+	for _, c := range []struct {
+		name string
+		q    MessageFullTextQuery
+		want func(i int, m msg) bool
+		// The query's range requests and rows, and those of scanning every
+		// shard.
+		requests, rows, everyRequests, everyRows int
+	}{
+		// Four roles, each: both terms counted in shard 0, zircon probed
+		// in the other 15; only user shards 3 and 9 are scanned. Scanning
+		// every shard reads every role's 16 shards for both terms.
+		{"all rare", MessageFullTextQuery{Query: "alpha zircon"}, func(i int, _ msg) bool { return i == 32 || i == 33 }, 66, 15, 120, 41},
+		{"phrase rare", MessageFullTextQuery{Query: "zircon beta", Mode: MessageMatchPhrase}, func(i int, _ msg) bool { return i == 32 }, 66, 12, 119, 24},
+		// Both terms common in shard 0: counted, then every shard scanned;
+		// the scan of shard 0 rereads the counted postings from the
+		// transaction's cache, so only the rows grow.
+		{"all common", MessageFullTextQuery{Query: "delta epsilon", Role: "tool"}, func(_ int, m msg) bool { return m.role == "tool" }, 33, 65, 33, 33},
+		// alpha is in every user shard: probed in 15 and every shard
+		// scanned, its probed postings reread from the cache.
+		{"all everywhere", MessageFullTextQuery{Query: "alpha beta", Role: "user"}, user, 33, 53, 33, 36},
+		// One term scans every shard, as before.
+		{"one term", MessageFullTextQuery{Query: "zircon", Role: "user"}, func(i int, _ msg) bool { return i == 32 || i == 33 }, 16, 2, 16, 2},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			plan, err := newMessageQueryPlan("test", c.q, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The query, and every shard scanned as before textShards, each
+			// in its own transaction: matches, range requests and rows.
+			measure := func(match func(*recordlayer.FDBRecordStore, *queryWork) ([]messageID, error)) (ids []messageID, requests, rows int) {
+				e.run(t, ctx, func(store *recordlayer.FDBRecordStore) error {
+					work := newQueryWork(e.r.cfg)
+					before := e.x.ClientMetrics().TransactionGetRangeRequests
+					var err error
+					ids, err = match(store, work)
+					requests, rows = int(e.x.ClientMetrics().TransactionGetRangeRequests-before), work.candidates
+					return err
+				})
+				return ids, requests, rows
+			}
+			got, requests, rows := measure(func(store *recordlayer.FDBRecordStore, work *queryWork) ([]messageID, error) {
+				cands, err := matchMessages(ctx, store, plan, work)
+				var ids []messageID
+				for _, c := range cands {
+					ids = append(ids, c.id)
+				}
+				return ids, err
+			})
+			every, everyRequests, everyRows := measure(func(store *recordlayer.FDBRecordStore, work *queryWork) ([]messageID, error) {
+				return everyShardTextMatches(ctx, store, plan, work)
+			})
+			var want []int
+			for i, m := range msgs {
+				if c.want(i, m) {
+					want = append(want, i)
+				}
+			}
+			var wantIDs []messageID
+			for _, i := range want {
+				wantIDs = append(wantIDs, ids[i])
+			}
+			slices.SortFunc(wantIDs, func(a, b messageID) int {
+				if a.less(b) {
+					return -1
+				}
+				return 1
+			})
+			if !reflect.DeepEqual(got, wantIDs) || !reflect.DeepEqual(every, wantIDs) {
+				t.Fatalf("matches %v, every shard %v, want %v", got, every, wantIDs)
+			}
+			t.Logf("%s: %d range requests and %d rows; every shard %d and %d", c.name, requests, rows, everyRequests, everyRows)
+			if requests != c.requests || rows != c.rows || everyRequests != c.everyRequests || everyRows != c.everyRows {
+				t.Errorf("%d range requests and %d rows, every shard %d and %d; want %d, %d, %d and %d",
+					requests, rows, everyRequests, everyRows, c.requests, c.rows, c.everyRequests, c.everyRows)
+			}
+		})
+	}
+}
+
 // Port of TestExporterMessageDeltaIntegration: a deltas-only conversation of
 // one trace per turn counts every reference and stores each message once.
 func testRelMessageDeltaConversation(t *testing.T, h *qrHarness) {
@@ -1832,4 +1968,61 @@ func testRelMessageSpanBatchConflicts(t *testing.T, h *qrHarness) {
 			}
 		})
 	}
+}
+
+// everyShardTextMatches is matchMessages' text scan as it was before
+// textShards: every shard of every role, for comparing reads.
+func everyShardTextMatches(ctx context.Context, store *recordlayer.FDBRecordStore, plan *messageQueryPlan, work *queryWork) ([]messageID, error) {
+	idx, err := readableIndex(store, "test", messagesTextIndex)
+	if err != nil {
+		return nil, err
+	}
+	roles := []string{plan.role}
+	if plan.role == "" {
+		if roles, err = messageTextRoles(ctx, store, idx, work); err != nil {
+			return nil, err
+		}
+	}
+	typ, tokens := plan.textComparison()
+	spread := plan.mode == MessageMatchAll && len(plan.terms) > 1
+	var large []messageID
+	if spread {
+		if large, err = largeMessages(ctx, store, work); err != nil {
+			return nil, err
+		}
+	}
+	seen := map[messageID]bool{}
+	var out []messageID
+	for _, role := range roles {
+		scans := make([]*recordlayer.TextScan, messageTextShards)
+		for shard := range scans {
+			scans[shard] = recordlayer.NewTextScan(idx, tuple.Tuple{role, int64(shard)}, recordlayer.NewTextComparisonTokens(typ, tokens, "", ""), nil)
+		}
+		found, err := textScans(ctx, store, scans, 0, work)
+		if err != nil {
+			return nil, err
+		}
+		if spread {
+			more, err := spreadAllMatches(ctx, store, idx, role, plan.terms, large, work)
+			if err != nil {
+				return nil, err
+			}
+			found = append(found, more)
+		}
+		for _, f := range found {
+			for _, id := range f {
+				if !seen[id] {
+					seen[id] = true
+					out = append(out, id)
+				}
+			}
+		}
+	}
+	slices.SortFunc(out, func(a, b messageID) int {
+		if a.less(b) {
+			return -1
+		}
+		return 1
+	})
+	return out, nil
 }
