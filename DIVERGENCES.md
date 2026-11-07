@@ -22,7 +22,12 @@ partition clause, setting the TEXT index options `textTokenizerName` and
 `textTokenizerVersion` that Java's metadata API sets programmatically. Names are
 case-insensitive; an unknown option is `0A000`, a duplicate or a value of the
 wrong kind `42601`, and an unregistered tokenizer or an out-of-range version
-fails the template (`pkg/relational/sqltest/plan/fulltext_options_ddl_fdb_test.go`). Existing schema
+fails the template (`pkg/relational/sqltest/plan/fulltext_options_ddl_fdb_test.go`).
+A tokenizer registered only in Go makes the whole schema unreadable to Java,
+not just the index: Java builds the schema's metadata for every statement and
+its TEXT index validator refuses the unknown name (`42000 MetaDataException
+unrecognized text tokenizer`; `conformance/otel_template_overlay_java_probe_test.go`
+for OTEL_V1's `otel_message_v1` overlay). Existing schema
 macros retain precedence over `TEXT_CONTAINS_*` built-ins. With
 `CASE_SENSITIVE_IDENTIFIERS`, a same-casefold macro family reserves the name
 and exact spelling resolves the macro; a mismatched case is not a builtin
