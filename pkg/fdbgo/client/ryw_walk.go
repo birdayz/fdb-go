@@ -116,7 +116,7 @@ func (w *rywWalk) release() {
 		w.its[i].scrub()
 	}
 	res := w.result
-	clear(res[:cap(res)]) // rows trimmed off the end keep no finished read's bytes alive
+	clear(res) // the epilogue cleared any rows it trimmed off
 	kbuf := w.keyBuf
 	w.rywWalkState = rywWalkState{result: res[:0], keyBuf: kbuf[:0]}
 	walkPool.Put(w)
@@ -823,6 +823,7 @@ func (w *rywWalk) epilogue() {
 			if keep < len(w.result) {
 				w.more = false
 			}
+			clear(w.result[keep:]) // the pooled slice keeps no dropped row's bytes alive
 			w.result = w.result[:keep]
 		}
 		w.readThroughEnd = !w.more && w.readThroughEnd
@@ -833,6 +834,7 @@ func (w *rywWalk) epilogue() {
 			if keep < len(w.result) {
 				w.more = false
 			}
+			clear(w.result[keep:])
 			w.result = w.result[:keep]
 		}
 		w.readToBegin = !w.more && w.readToBegin
