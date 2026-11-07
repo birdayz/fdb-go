@@ -182,4 +182,35 @@ func testSpanReader(t *testing.T, cluster string) {
 	if _, err := budget.Time(ctx, otel.TimeRange{Start: 0, End: 2000}); !errors.As(err, &be) {
 		t.Fatalf("a time scan over 10 bytes: %v", err)
 	}
+
+	// An unreadable index and a deleted store are ownership failures.
+	var oe *otel.OwnershipError
+	inStore := func(fn func(*recordlayer.FDBRecordContext, *recordlayer.FDBRecordStore) error) {
+		t.Helper()
+		if _, err := rl.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+			store, err := ts.Builder(rc).Open()
+			if err != nil {
+				return nil, err
+			}
+			return nil, fn(rc, store)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inStore(func(_ *recordlayer.FDBRecordContext, s *recordlayer.FDBRecordStore) error {
+		_, err := s.MarkIndexDisabled("SPANS_TIME")
+		return err
+	})
+	if _, err := reader.Time(ctx, otel.TimeRange{Start: 0, End: 2000}); !errors.As(err, &oe) {
+		t.Fatalf("Time over a disabled SPANS_TIME: %v", err)
+	}
+	if r, err := reader.Query(ctx, model); err != nil || len(r.Hits) != 2 {
+		t.Fatalf("Query beside a disabled SPANS_TIME = %+v, %v", r, err)
+	}
+	inStore(func(rc *recordlayer.FDBRecordContext, _ *recordlayer.FDBRecordStore) error {
+		return recordlayer.DeleteStore(rc, ts.Subspace)
+	})
+	if _, err := reader.Query(ctx, model); !errors.As(err, &oe) {
+		t.Fatalf("Query of a deleted store: %v", err)
+	}
 }
