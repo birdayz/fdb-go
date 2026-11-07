@@ -324,8 +324,8 @@ func (store *FDBRecordStore) SaveRecordBatchWithOptions(
 			}
 		}
 
-		// Serialize
-		data, err := serializeUnionOver(p.write, p.recordType, priorRecordInner(oldRT, oldWire, p.recordType))
+		// Serialize; the batch's strings were checked before the first write.
+		data, err := serializeUnionOverChecked(p.write, p.recordType, priorRecordInner(oldRT, oldWire, p.recordType))
 		if err != nil {
 			return nil, &RecordSerializationError{Cause: err}
 		}
