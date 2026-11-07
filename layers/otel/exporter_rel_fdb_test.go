@@ -55,6 +55,7 @@ func TestRelExporterRealFDB(t *testing.T) {
 		"public_query_replay":       testRelPublicQueryReplay,
 		"intrinsic_v2":              testRelIntrinsicV2,
 		"nan_payloads":              testRelNaNPayloads,
+		"row_admission":             testRelRowAdmission,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -1384,4 +1385,34 @@ func testRelNaNPayloads(t *testing.T, cluster string) {
 			t.Fatalf("span %d: OTLP keeps %#x, want %#x", i, b, bits)
 		}
 	}
+}
+
+// Admission bounds the whole row. With record_compression none, a span whose
+// 260 KB name the row holds twice (in its OTLP and its NAME column) is
+// refused before any write, so the admissible span of the same call is not
+// written either; a 140 KB name is admitted and its batch fits the 500 KB
+// guard.
+func testRelRowAdmission(t *testing.T, cluster string) {
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	e := openRelExporter(t, ctx, cluster, func(c *ExporterConfig) { c.RecordCompression, c.BatchSize = "none", 1 })
+	named := func(i, n int) *tracepb.ResourceSpans {
+		rs := deltaSpan(i)
+		rs.ScopeSpans[0].Spans[0].Name = strings.Repeat("n", n)
+		return rs
+	}
+	plain, long := deltaSpan(1), named(2, 260000)
+	_, err := e.ExportResourceSpans(ctx, []*tracepb.ResourceSpans{plain, long})
+	requireOtelKind(t, err, "admission")
+	reSpan(t, ctx, e, ftsSpan(1))
+	reSpan(t, ctx, e, ftsSpan(2))
+	fits := named(3, 140000)
+	if stats, err := e.ExportResourceSpans(ctx, []*tracepb.ResourceSpans{fits}); err != nil || stats.Spans != 1 {
+		t.Fatalf("140 KB name: %+v %v", stats, err)
+	}
+	got, err := e.LoadSpanOTLP(ctx, ftsTrace(3), ftsSpan(3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireProtoEqual(t, "140 KB name", got, fits)
 }

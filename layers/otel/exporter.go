@@ -28,8 +28,8 @@ const (
 	exporterCount          = 100000000
 	exporterTenants        = exporterCount / 2
 
-	// exportSpanBudget is the conservative per-transaction estimate shared with
-	// prepareIngestBatch; the 500KB actual-size guard runs inside the save.
+	// exportSpanBudget bounds a span batch's conservative estimate (spanCost)
+	// and so every admitted span; the 500KB actual-size guard runs inside the save.
 	exportSpanBudget = 300000
 
 	// Decoded projection caps; larger values stay unindexed. Encoded covering
