@@ -248,6 +248,31 @@ CPU: parse, plan, executor and driver row conversion.
    - `evaluateIndex` no longer tries the flat path on fan-out roots, which first failed and then evaluated everything again.
    - An equivalence test checks the result against a reference cross product.
 
+## Round 3: the Exporter's read path
+
+The Exporter replacement (`layers/otel/rfcs/relational-exporter-migration.md`)
+reads through `otel.SpanReader`, and `--sql-query direct` now uses it too, so the
+direct column measures production code. Same run and suite as round 2,
+1,200–1,600 iterations, 0 oracle failures in every run.
+
+| class | `fdb` production | `sql` pooled | `sql` pinned | direct (round 2) | `SpanReader` | `SpanReader`, cached read version |
+|---|---:|---:|---:|---:|---:|---:|
+| span | 0.68 | 0.82 | 0.59 | 0.43 | 0.39–0.41 | 0.29–0.32 |
+| trace | 0.77 | 1.16 | 0.94 | 0.53 | 0.48–0.49 | 0.38–0.41 |
+| time_broad | 0.97 | 1.31 | 1.08 | 0.70 | 0.63–0.64 | 0.53–0.56 |
+| genai_model | 1.20 | 1.73 | 1.49 | 0.93 | 0.81–0.84 | 0.71–0.75 |
+
+- **SQL columns:** round 2 plus a per-connection parse cache (a repeated
+  statement skips the ANTLR parse) and a memo of the executor's per-row record
+  type comparison (`executor/record_type_equal_memo.go`).
+- **Cached read version:** the last two columns are an interleaved A/B (three runs
+  per arm, ranges shown). A read-only read takes its version from the client's GRV
+  cache, at most 100 ms old and refreshed by this client's commits, so the next
+  read still sees a process's own writes (FDB test `span reader`). It makes 0 GRVs
+  per query instead of 1.
+- **Remaining round trips:** a point query is now two: the store header and index
+  states (overlapped), then the index scan.
+
 ## Reproduce
 
 ```sh
