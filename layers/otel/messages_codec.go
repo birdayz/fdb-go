@@ -7,7 +7,6 @@ package otel
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -28,10 +27,6 @@ import (
 )
 
 const (
-	messageHashDomain = "otel_msg_v1\x00"
-	// messageHashBytes is the stored SHA-256 prefix of the dedup index.
-	messageHashBytes = 16
-
 	// Element encodings; part of the hash domain so equal bytes in different
 	// encodings never alias.
 	messageEncodingAny  = "otlp_any"
@@ -70,8 +65,8 @@ const (
 	messageTxnMessages = 128
 	messageWorkers     = 8                 // concurrent transactions per message persist call
 	messageWriterLimit = messageTextShards // message writers per backend
-	// messageTextShards is the number of TEXT index groups per (tenant, role).
-	messageTextShards = 16
+	// messageTextShards is the number of MESSAGES_TEXT shard groups per role.
+	messageTextShards = otelsql.MessageTextShards
 	// messageTextPipeline is the TEXT_INDEX_UPDATE pipeline size.
 	messageTextPipeline = 128
 )
@@ -98,21 +93,14 @@ const (
 
 const messageLayoutCount = 4
 
-type messageDigest [messageHashBytes]byte
+// messageDigest is a message element's MESSAGES content_hash
+// (otelsql.MessageContentHash): its identity in memory and in MESSAGES_HASH.
+type messageDigest [otelsql.MessageHashBytes]byte
 
-func messageHash(tenant int, encoding string, element []byte) messageDigest {
-	h := sha256.New()
-	h.Write([]byte(messageHashDomain))
-	h.Write([]byte(strconv.Itoa(tenant)))
-	h.Write([]byte{0})
-	h.Write([]byte(encoding))
-	h.Write([]byte{0})
-	h.Write(element)
-	var sum [sha256.Size]byte
-	h.Sum(sum[:0])
-	var out messageDigest
-	copy(out[:], sum[:])
-	return out
+func messageDigestOf(encoding string, element []byte) messageDigest {
+	var d messageDigest
+	copy(d[:], otelsql.MessageContentHash(encoding, element))
+	return d
 }
 
 // messageID names a stored message: the writer that stored it and its
@@ -516,7 +504,7 @@ var messagePlaceholderID = messageID{math.MaxInt64, math.MaxInt64}
 
 // decomposeMessages clones spans with placeholder GenAI manifests and collects unique elements.
 // encodeManifests installs IDs later; the input remains unchanged.
-func decomposeMessages(ctx context.Context, spans []*tracepb.ResourceSpans, tenant int) (*messageDecomposition, error) {
+func decomposeMessages(ctx context.Context, spans []*tracepb.ResourceSpans) (*messageDecomposition, error) {
 	const op = "message decompose"
 	d := &messageDecomposition{spans: make([]*tracepb.ResourceSpans, len(spans)), uses: map[string][]messageUse{}}
 	byDigest := map[messageDigest]*messageElement{}
@@ -557,7 +545,7 @@ func decomposeMessages(ctx context.Context, spans []*tracepb.ResourceSpans, tena
 				if len(e) > maxMessageBytes {
 					return failf("admission", op, "message element of %d bytes exceeds %d", len(e), maxMessageBytes)
 				}
-				h := messageHash(tenant, m.encoding(), e)
+				h := messageDigestOf(m.encoding(), e)
 				el := byDigest[h]
 				if el == nil {
 					el = &messageElement{digest: h, encoding: m.encoding(), raw: e, trace: hex.EncodeToString(sp.TraceId)}

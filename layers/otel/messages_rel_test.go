@@ -34,7 +34,7 @@ func TestPlanRelMessageParts(t *testing.T) {
 	text := largeText(3 << 20)
 	value := deltaKvlist(deltaKV("role", deltaStr("Tool")), deltaKV("content", deltaStr(text)))
 	raw := ftsAnyWire(t, value)
-	el := &messageElement{digest: messageHash(2, messageEncodingAny, raw), encoding: messageEncodingAny, raw: raw}
+	el := &messageElement{digest: messageDigestOf(messageEncodingAny, raw), encoding: messageEncodingAny, raw: raw}
 	hash := otelsql.MessageContentHash(el.encoding, el.raw)
 	p, err := planRelMessage(el, hash, true, messageSegmentTokens)
 	if err != nil {

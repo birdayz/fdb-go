@@ -103,7 +103,7 @@ func TestMessageDecomposeConversation(t *testing.T) {
 	for _, form := range []string{"array", "json"} {
 		input := deltaConversation(deltaTurns, form)
 		before := cloneDeltaSpans(input)
-		d := decomposeInMemory(t, 7, input)
+		d := decomposeInMemory(t, input)
 		n := deltaTurns
 		// Turn k references the system prompt, two tools, k inputs and 1 output.
 		if s := d.stats; s.TotalMessages != int64(n*(n+1)+3*n) || s.UniqueMessages != int64(2*n+3) || s.ReusedMessages != s.TotalMessages-s.UniqueMessages || s.SavedBytes <= 0 {
@@ -143,7 +143,7 @@ func TestMessageDecomposeInputImmutable(t *testing.T) {
 	), nil)
 	input[0].ScopeSpans[0].Spans[0].Events = []*tracepb.Span_Event{{Name: "details", Attributes: []*commonpb.KeyValue{deltaKV("gen_ai.input.messages", deltaMessages("array", []deltaMsg{{"user", "event copy"}}))}}}
 	before := cloneDeltaSpans(input)
-	d := decomposeInMemory(t, 4, input)
+	d := decomposeInMemory(t, input)
 	requireDeltaSpansEqual(t, input, before)
 	for i := range input {
 		if input[i] != nil && d.spans[i] == input[i] {
@@ -216,7 +216,7 @@ func TestMessageManifestLayouts(t *testing.T) {
 			rs.ScopeSpans[0].Spans[0].Events = []*tracepb.Span_Event{{Name: "gen_ai.client.inference.operation.details", Attributes: []*commonpb.KeyValue{deltaKV("gen_ai.output.messages", proto.Clone(rs.ScopeSpans[0].Spans[0].Attributes[0]).(*commonpb.KeyValue).Value)}}}
 			in := []*tracepb.ResourceSpans{rs, nil}
 			before := cloneDeltaSpans(in)
-			d := decomposeInMemory(t, 3, in)
+			d := decomposeInMemory(t, in)
 			if d.spans[1] != nil || d.spans[0] == rs {
 				t.Fatal("decompose must clone non-nil inputs and keep nil entries")
 			}
@@ -248,7 +248,7 @@ func TestMessageDecomposeAdmission(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	huge := deltaArray(&commonpb.AnyValue{Value: &commonpb.AnyValue_BytesValue{BytesValue: make([]byte, maxMessageBytes)}})
-	_, err := decomposeMessages(ctx, []*tracepb.ResourceSpans{deltaSpan(1, deltaKV("gen_ai.input.messages", huge))}, 0)
+	_, err := decomposeMessages(ctx, []*tracepb.ResourceSpans{deltaSpan(1, deltaKV("gen_ai.input.messages", huge))})
 	requireTyped[*AdmissionError](t, "oversized element", err)
 
 	// Placeholder IDs are 18 bytes, the longest an ID encodes to, so a
@@ -260,17 +260,17 @@ func TestMessageDecomposeAdmission(t *testing.T) {
 	for i := range many {
 		many[i] = deltaStr(fmt.Sprint(i))
 	}
-	_, err = decomposeMessages(ctx, []*tracepb.ResourceSpans{deltaSpan(1, deltaKV("gen_ai.input.messages", deltaArray(many...)))}, 0)
+	_, err = decomposeMessages(ctx, []*tracepb.ResourceSpans{deltaSpan(1, deltaKV("gen_ai.input.messages", deltaArray(many...)))})
 	requireTyped[*AdmissionError](t, "oversized manifest", err)
-	if _, err := decomposeMessages(ctx, []*tracepb.ResourceSpans{deltaSpan(1, deltaKV("gen_ai.input.messages", deltaArray(many[:3000]...)))}, 0); err != nil {
+	if _, err := decomposeMessages(ctx, []*tracepb.ResourceSpans{deltaSpan(1, deltaKV("gen_ai.input.messages", deltaArray(many[:3000]...)))}); err != nil {
 		t.Fatalf("3000-message attribute must fit the manifest cap: %v", err)
 	}
 	canceledCtx, cancel := context.WithCancel(ctx)
 	cancel()
-	if _, err := decomposeMessages(canceledCtx, deltaConversation(1, "array"), 0); !errors.Is(err, context.Canceled) {
+	if _, err := decomposeMessages(canceledCtx, deltaConversation(1, "array")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("want canceled, got %v", err)
 	}
-	d, err := decomposeMessages(ctx, deltaConversation(1, "array"), 0)
+	d, err := decomposeMessages(ctx, deltaConversation(1, "array"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +288,7 @@ func binaryUvarints(vs ...int64) []byte {
 
 func TestMessageManifestCorruption(t *testing.T) {
 	t.Parallel()
-	d := decomposeInMemory(t, 0, deltaConversation(2, "json"))
+	d := decomposeInMemory(t, deltaConversation(2, "json"))
 	good := deltaAttr(t, d.spans[1], "gen_ai.input.messages").GetBytesValue()
 	if _, err := parseMessageManifest(deltaAttr(t, d.spans[1], "gen_ai.input.messages")); err != nil {
 		t.Fatalf("positive control: %v", err)
@@ -354,7 +354,7 @@ func TestMessageTextExtractionConversation(t *testing.T) {
 		want[ftsRoleText{"assistant", deltaText("assistant", k, 800)}] = true
 	}
 	for _, form := range []string{"array", "json"} {
-		d, err := decomposeMessages(t.Context(), deltaConversation(turns, form), 0)
+		d, err := decomposeMessages(t.Context(), deltaConversation(turns, form))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -525,7 +525,7 @@ func TestMessageUses(t *testing.T) {
 		// A later value of the same key does not describe references.
 		deltaKV("gen_ai.input.messages", deltaMessages("array", []deltaMsg{z})),
 	)}
-	d, err := decomposeMessages(t.Context(), spans, 0)
+	d, err := decomposeMessages(t.Context(), spans)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -547,11 +547,11 @@ func TestMessageUses(t *testing.T) {
 	// Turn k of a conversation references its whole history; only its own
 	// prompt and reply are newest. The uses depend only on the span.
 	conv := deltaConversation(4, "array")
-	d, err = decomposeMessages(t.Context(), conv, 0)
+	d, err = decomposeMessages(t.Context(), conv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	alone, err := decomposeMessages(t.Context(), conv[2:3], 0)
+	alone, err := decomposeMessages(t.Context(), conv[2:3])
 	if err != nil {
 		t.Fatal(err)
 	}
