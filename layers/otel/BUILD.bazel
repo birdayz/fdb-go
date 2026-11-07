@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "otel",
     srcs = [
+        "backend.go",
         "clickhouse.go",
         "clickhouse_errors.go",
         "clickhouse_layout.go",
@@ -25,6 +26,7 @@ go_library(
         "messages_text.go",
         "oracle.go",
         "query_advanced.go",
+        "query_plan.go",
         "query_rel.go",
         "record.go",
         "record_compression.go",
@@ -118,6 +120,7 @@ go_test(
         "posting_diff_test.go",
         "posting_value_test.go",
         "query_advanced_test.go",
+        "query_plan_test.go",
         "query_replay_test.go",
         "record_compression_test.go",
         "selectivity_test.go",
