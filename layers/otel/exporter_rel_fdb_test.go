@@ -52,6 +52,7 @@ func TestRelExporterRealFDB(t *testing.T) {
 		"transaction_guard":         testRelTransactionGuard,
 		"typed_scoped_controls":     testRelTypedScopedControls,
 		"selective_v2":              testRelSelectiveV2,
+		"public_query_replay":       testRelPublicQueryReplay,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
