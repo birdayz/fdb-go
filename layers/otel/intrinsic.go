@@ -2,7 +2,6 @@ package otel
 
 import (
 	"context"
-	"encoding/hex"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -12,46 +11,6 @@ const (
 	spanIndexName = "span_id_v2"
 	timeIndexName = "span_time_v2"
 )
-
-// SpanMatch is a span-level identity, deliberately distinct from trace-level Hit.
-// Standalone span-ID lookup returns all matches, not a trace-ID-hinted lookup.
-type SpanMatch struct {
-	Trace string `json:"trace_id"`
-	ID    string `json:"span_id"`
-	Start int64  `json:"start_ns"`
-}
-
-// TimeRange selects intrinsic span start timestamps in [Start, End).
-type TimeRange struct {
-	Start int64 `json:"start_ns"`
-	End   int64 `json:"end_ns"`
-}
-
-func (r TimeRange) Validate() error {
-	if r.End < r.Start {
-		return fail("config", "time range", "end must not precede start")
-	}
-	return nil
-}
-
-// IntrinsicBackend preserves Backend while adding complete span and top-K time
-// lookup; README.md specifies ordering, matching witnesses and work budgets.
-type IntrinsicBackend interface {
-	Span(context.Context, string) ([]SpanMatch, error)
-	Time(context.Context, TimeRange) (QueryResult, error)
-}
-
-func validIdentity(s string, size int) bool {
-	wire, err := hex.DecodeString(s)
-	if err != nil || len(wire) != size || hex.EncodeToString(wire) != s {
-		return false
-	}
-	var nonzero byte
-	for _, b := range wire {
-		nonzero |= b
-	}
-	return nonzero != 0
-}
 
 // intrinsicMatch uses metadata to reconstruct deduplicated primary keys;
 // validate covering shape rather than guessing appended PK positions.
