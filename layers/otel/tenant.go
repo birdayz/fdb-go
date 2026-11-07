@@ -40,7 +40,25 @@ type tenantStore struct {
 // policy, and error classification (runTxnSlot). The store is opened, never
 // created: a dropped schema store fails the transaction as ownership.
 func (s *tenantStore) run(ctx context.Context, op string, fn func(*recordlayer.FDBRecordStore) error) error {
+	return s.runMode(ctx, op, false, fn)
+}
+
+// read is run for a read-only transaction, whose read version may come from
+// the client's GRV cache: at most 100ms old (MAX_VERSION_CACHE_LAG) and never
+// older than this client's last commit, which refreshes the cache, so a read
+// still sees every write this process committed before it began. It saves the
+// GRV round trip of a point read's three.
+func (s *tenantStore) read(ctx context.Context, op string, fn func(*recordlayer.FDBRecordStore) error) error {
+	return s.runMode(ctx, op, true, fn)
+}
+
+func (s *tenantStore) runMode(ctx context.Context, op string, cachedVersion bool, fn func(*recordlayer.FDBRecordStore) error) error {
 	_, err := runTxnSlot(ctx, s.db, op, func(rc *recordlayer.FDBRecordContext) (any, error) {
+		if cachedVersion {
+			if err := rc.Transaction().Options().SetUseGrvCache(); err != nil {
+				return nil, err
+			}
+		}
 		store, err := s.open(rc, op)
 		if err != nil {
 			return nil, err
