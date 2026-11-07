@@ -13,12 +13,15 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// smHoldTransactor holds the first execution of its first transaction after
-// the body succeeded, before the commit, until released.
+// smHoldTransactor holds the first execution of one transaction, the one
+// after skip others, after its body succeeded and before its commit, until
+// released.
 type smHoldTransactor struct {
 	fdb.Database
 	held, release chan struct{}
-	executions    atomic.Int32
+	skip          int32
+	calls         atomic.Int32
+	executions    atomic.Int32 // of the held transaction
 }
 
 func (g *smHoldTransactor) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
@@ -26,6 +29,9 @@ func (g *smHoldTransactor) Transact(fn func(fdb.WritableTransaction) (any, error
 }
 
 func (g *smHoldTransactor) TransactCtx(ctx context.Context, fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	if g.calls.Add(1) != g.skip+1 {
+		return g.Database.TransactCtx(ctx, fn)
+	}
 	return g.Database.TransactCtx(ctx, func(tx fdb.WritableTransaction) (any, error) {
 		out, err := fn(tx)
 		if g.executions.Add(1) == 1 && err == nil {
