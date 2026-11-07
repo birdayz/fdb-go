@@ -30,6 +30,10 @@ func (e *RecordCoreRetriableTransactionError) Unwrap() error { return e.Cause }
 
 func (*RecordCoreRetriableTransactionError) JavaRecordCoreException() {}
 
+// IsRetriable reports whether FDBDatabase.Run would retry an attempt that
+// failed with err (isRetriableAnyCause).
+func IsRetriable(err error) bool { return isRetriableAnyCause(err) }
+
 // isRetriableAnyCause is the transaction runner's retry rule,
 // FDBDatabaseRunnerImpl.RunRetriable.handle (:195-207): retry when ANY cause
 // in the chain is a retryable FDB error or a

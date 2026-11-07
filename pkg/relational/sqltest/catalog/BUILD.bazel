@@ -15,6 +15,7 @@ go_test(
         "mt_catalog_scope_fdb_test.go",
         "mt_ddl_scope_fdb_test.go",
         "record_names_fdb_test.go",
+        "schema_witness_pool_fdb_test.go",
         "view_fdb_test.go",
     ],
     tags = [
@@ -22,6 +23,7 @@ go_test(
         "test-full",
     ],
     deps = [
+        "//gen",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
@@ -29,6 +31,7 @@ go_test(
         "//pkg/recordlayer/query/executor",
         "//pkg/recordlayer/query/plan/cascades/values",
         "//pkg/relational/api",
+        "//pkg/relational/core/catalog",
         "//pkg/relational/core/ddl",
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/metadata",

@@ -202,6 +202,7 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 	}
 	// Template change may affect any schema using it — flush the whole cache.
 	c.sess.ResetSchemaCache()
+	c.schemaWitnesses = nil
 	return 0, nil
 }
 

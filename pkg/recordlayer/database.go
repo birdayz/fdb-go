@@ -302,6 +302,19 @@ func (d *FDBDatabase) applyReadSystemKeys(o fdb.TransactionOptions) {
 	}
 }
 
+// OpenRecordContext opens a transaction and its record context as each Run
+// attempt does (system keys readable unless the database is tenant-scoped),
+// for a caller that commits (CommitWithHooks) or cancels it itself and does
+// its own retrying.
+func (d *FDBDatabase) OpenRecordContext(ctx context.Context) (*FDBRecordContext, error) {
+	tx, err := d.CreateWritableTransaction()
+	if err != nil {
+		return nil, err
+	}
+	d.applyReadSystemKeys(tx.Options())
+	return d.NewRecordContextIn(ctx, tx), nil
+}
+
 // Run executes fn in a transaction and commits it, retrying as Java's
 // FDBDatabaseRunner does (FDBDatabaseRunnerImpl.RunRetriable): at most
 // MaxAttempts attempts (default 10), each a fresh transaction, retried while
