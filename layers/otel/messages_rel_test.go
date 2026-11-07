@@ -306,3 +306,15 @@ func relTemplateMetadata(t *testing.T) *recordlayer.RecordMetaData {
 	}
 	return md
 }
+
+// relKey is tableKey on metadata alone.
+func relKey(md *recordlayer.RecordMetaData, op, name string, cols ...tuple.TupleElement) (tuple.Tuple, error) {
+	rt := md.GetRecordType(name)
+	if rt == nil {
+		return nil, failf("ownership", op, "%s is not in the store's metadata", name)
+	}
+	if rt.PrimaryKeyHasRecordTypePrefix() {
+		return append(tuple.Tuple{rt.GetRecordTypeKey()}, cols...), nil
+	}
+	return tuple.Tuple(cols), nil
+}
