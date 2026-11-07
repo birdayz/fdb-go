@@ -84,12 +84,20 @@ var exporterConfigKeys = func() map[string]bool {
 	return out
 }()
 
+// RemovedConfigKeyError is the cause of the ConfigError that refuses a key
+// the relational store removed: order, hash_bytes or posting_value_format.
+type RemovedConfigKeyError struct{ Key string }
+
+func (e *RemovedConfigKeyError) Error() string {
+	return e.Key + " was removed: the relational store has one time order and no posting values"
+}
+
 // checkExporterKey refuses a key ExporterConfig does not have, naming the
 // removed ones as such.
 func checkExporterKey(op, key string) error {
 	switch {
 	case removedExporterKeys[key]:
-		return failf("config", op, "%s was removed: the relational store has one time order and no posting values", key)
+		return typedError("config", op, "", &RemovedConfigKeyError{Key: key})
 	case !exporterConfigKeys[key]:
 		return failf("config", op, "unknown key %q", key)
 	}
