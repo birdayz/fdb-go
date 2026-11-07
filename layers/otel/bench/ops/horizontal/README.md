@@ -71,7 +71,13 @@ never count as passes.
 
 Two ordinary `otelbench` producers ingest **different Run namespaces**, not a
 shared corpus or tenant. Each owns its complete generated population and ready
-marker. Same-run concurrency is deliberately unsupported. Producer grants bind
+marker. Same-run concurrency is deliberately unsupported. Producers run
+`--backend sql` in the Exporter's relational configuration: compiled-row ingest
+through `otel.SpanWriter` (`--sql-ingest direct --sql-rows compiled --save-mode
+batch`) and direct OTEL_V1 index scans (`--sql-query direct`). The audit census of
+its one tenant store is exact (`11N+1` keys): N `records`, 8N attribute entries split
+between `SPANS_STR_ATTR` and `SPANS_INT_ATTR` as the fixture types them, N each of
+`SPANS_SPAN_ID` and `SPANS_TIME`, and the `store_0` header. Producer grants bind
 run, count, source revision, binary SHA, exact storage options and a token. Both
 ready receipts must bind to their grants before parallel releases. Aggregate
 ACK/s is total ACK rows divided by one common controller monotonic interval from
@@ -108,7 +114,10 @@ The approved plan's required fields are enforced by `policy.validate_plan` and
 `provision.validate_plan`: schema `otel_horizontal_v1`, approved true, unique
 campaign/prefix, HEL1/ccx43, single replication, `topologies: [1,2,3]`,
 `measured_topologies: [3,2,1]`, prerequisite count, explicit measured count,
-batch 32/64, workers 2/4/8, GOMAXPROCS 4, exact storage profile, source revision,
+batch 32/64, workers 2/4/8, GOMAXPROCS 4, exact storage profile
+(`record_compression: zlib-1` with typed `bulk_index_conflicts` false or true; every
+argv passes both, and only a false value may be omitted from evidence, as Go's
+`omitempty` does), source revision,
 absolute first/deadline epochs, one controller /32 or /128, absolute hcloud wrapper,
 controller public/private keys, source root and binary/native/manifest paths with
 SHA-256. Source manifest lines are `sha256  relative-path`; actual nonempty source
@@ -194,7 +203,7 @@ and lifetime fields, but set `schema: otel_native_diagnostic_v1`, typed
 `count: 100000`, `probe_count: 1000000`, and `probe_seconds: 120`. Comparative fields
 (`topologies`, `selected_topologies`, either phase-order field and
 `measured_count`) are forbidden. The total configured insertion upper bound is
-**1.1M rows**. The 100k run must pass strict health, its full `11N+2` census and all
+**1.1M rows**. The 100k run must pass strict health, its full `11N+1` census and all
 1600 oracle checks before the distinct-Run 1M probe can start. The probe's ingest
 is bounded to 120 seconds; it may stop short. Empty/incomplete ingest JSON leaves
 the partial ACK count unknown. Diagnostic summaries never publish an accepted
@@ -309,7 +318,7 @@ Every SS ID must remain stable, with positive input **and durable** counter delt
 for `CAPTURED`; idle/unknown/reset evidence remains INCONCLUSIVE.
 
 Each case uses a fresh FDB arm/datadir and its own complete100k strict-health,
-11N+2 census/1600-oracle gate before its own1M/120s probe. Case runs are9800/9801
+11N+1 census/1600-oracle gate before its own1M/120s probe. Case runs are9800/9801
 then9802/9803. Old data and local receipts are retained. Between cases only exact
 owned native units/application scopes are stopped, with PID/start/cmdline/cgroup
 binding and quiescence proof; a fresh quiet admission precedes the next cluster.
@@ -417,8 +426,8 @@ still uses CPU4/memory16GiB/swap0; every producer uses GOMAXPROCS4. This exercis
 three native storage main threads under fixed4CPU, not pure worker isolation or
 proven memory safety. Existing horizontal/diagnostic/session profiles and native
 argv are unchanged. Application/index/conflict/durability/timeout/retry/byte guards
-remain sealed and unchanged; complete committed rows and nonzero finite source
-phase histograms are required before rate calculation.
+remain sealed and unchanged; complete committed rows, a nonempty committed batch
+count and the `otel.SpanWriter` write path are required before rate calculation.
 
 All producers must be ready before the common release. ACK rate uses release to
 last controller-observed complete ACK; the **primary durable-drained rate** uses

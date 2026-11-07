@@ -139,7 +139,7 @@ func (b *fakeBackend) open(ctx context.Context, c otel.Config, _, _ string) (ote
 }
 
 func cliArgs(mode string) []string {
-	return []string{"-backend=fdb", "-mode=" + mode, "-run=cli_test_run", "-count=12", "-tenants=2", "-k=3", "-iterations=5", "-revision=test-revision"}
+	return []string{"-backend=sql", "-mode=" + mode, "-run=cli_test_run", "-count=12", "-tenants=2", "-k=3", "-iterations=5", "-revision=test-revision"}
 }
 
 func decodeEvidence(t *testing.T, data []byte) otel.Evidence {
@@ -158,7 +158,7 @@ func decodeEvidence(t *testing.T, data []byte) otel.Evidence {
 
 func TestExecuteModes(t *testing.T) {
 	t.Parallel()
-	for _, backend := range []string{"fdb", "ch-map", "ch-attrs"} {
+	for _, backend := range []string{"sql", "ch-map", "ch-attrs"} {
 		for _, mode := range []string{"ingest", "query", "audit", "drop"} {
 			t.Run(backend+"/"+mode, func(t *testing.T) {
 				t.Parallel()
@@ -402,7 +402,11 @@ func TestExecuteRejectsArgumentsBeforeOpeningOrCreatingOutput(t *testing.T) {
 		{"-workers=9"},
 		{"-workers=-1"},
 		{"-workers=bad"},
-		{"-diagnostics=bad"},
+		// Phase 3B removed the custom FDB store and its knobs.
+		{"-backend=fdb"},
+		{"-diagnostics"},
+		{"-posting-value-format=tuple"},
+		{"-hash-bytes=8"},
 		{"-backend=ch-map", "-ch-query-transport="},
 		{"-backend=ch-map", "-ch-query-transport=other"},
 		{"-backend=ch-map", "-ch-query-transport=native"},
@@ -464,8 +468,8 @@ func TestExecuteFlagForwarding(t *testing.T) {
 	for _, saveMode := range []string{"serial", "pipelined", "batch"} {
 		t.Run(saveMode, func(t *testing.T) {
 			t.Parallel()
-			args := []string{"-backend=ch-attrs", "-mode=drop", "-confirm-drop", "-run=flag_test_run", "-seed=42", "-count=24", "-tenants=3", "-attrs=12", "-match-every=2", "-batch=4", "-ch-batch=5", "-ch-batch-bytes=4096", "-tenant=1", "-k=2", "-iterations=3", "-max-candidates=99", "-max-bytes=12345", "-hash-bytes=1", "-order=time", "-cluster-file=owned.cluster", "-ch-url=http://owned.invalid:8123", "-timeout=37s", "-revision=flag-revision", "-suite=mixed", "-save-mode=" + saveMode, "-workers=2", "-diagnostics", "-ch-query-transport=native", "-ch-native-addr=127.0.0.1:9000", "-ch-index-granularity=512"}
-			want := otel.Config{Run: "flag_test_run", Backend: "ch-attrs", Seed: 42, Count: 24, Tenants: 3, Attributes: 12, MatchEvery: 2, Batch: 4, CHBatch: 5, CHBatchBytes: 4096, Tenant: 1, K: 2, Iterations: 3, MaxCandidates: 99, MaxBytes: 12345, HashBytes: 1, Order: "time", SaveMode: saveMode, RecordCompression: "none", PostingValueFormat: "json", Workers: 2, Diagnostics: true, CHQueryTransport: "native", CHNativeAddr: "127.0.0.1:9000", CHIndexGranularity: 512}
+			args := []string{"-backend=ch-attrs", "-mode=drop", "-confirm-drop", "-run=flag_test_run", "-seed=42", "-count=24", "-tenants=3", "-attrs=12", "-match-every=2", "-batch=4", "-ch-batch=5", "-ch-batch-bytes=4096", "-tenant=1", "-k=2", "-iterations=3", "-max-candidates=99", "-max-bytes=12345", "-order=time", "-cluster-file=owned.cluster", "-ch-url=http://owned.invalid:8123", "-timeout=37s", "-revision=flag-revision", "-suite=mixed", "-save-mode=" + saveMode, "-workers=2", "-ch-query-transport=native", "-ch-native-addr=127.0.0.1:9000", "-ch-index-granularity=512"}
+			want := otel.Config{Run: "flag_test_run", Backend: "ch-attrs", Seed: 42, Count: 24, Tenants: 3, Attributes: 12, MatchEvery: 2, Batch: 4, CHBatch: 5, CHBatchBytes: 4096, Tenant: 1, K: 2, Iterations: 3, MaxCandidates: 99, MaxBytes: 12345, HashBytes: 32, Order: "time", SaveMode: saveMode, RecordCompression: "none", PostingValueFormat: "json", Workers: 2, CHQueryTransport: "native", CHNativeAddr: "127.0.0.1:9000", CHIndexGranularity: 512}
 			b := &fakeBackend{t: t}
 			var stdout, stderr bytes.Buffer
 			code := execute(args, &stdout, &stderr, func(ctx context.Context, c otel.Config, cluster, chURL string) (otel.Backend, error) {

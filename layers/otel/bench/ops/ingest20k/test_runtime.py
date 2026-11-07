@@ -719,9 +719,9 @@ class ObservationTests(RuntimeFixture):
         self.reseal()
         path, record = self.install_phase()
         self.assertIsNone(self.runtime.phase())
-        for options in (None, fixtures.STORAGE_PROFILES[0], fixtures.STORAGE_PROFILES[2],
+        for options in (None, fixtures.STORAGE_PROFILES[0], {**fixtures.STORAGE_PROFILES[1], "record_compression": "none"},
                         {**fixtures.STORAGE_PROFILES[1], "bulk_index_conflicts": 1},
-                        {**fixtures.STORAGE_PROFILES[1], "hash_bytes": True}):
+                        {**fixtures.STORAGE_PROFILES[1], "hash_bytes": 8}):
             changed = copy.deepcopy(record)
             if options is None:
                 del changed["storage_options"]
@@ -744,8 +744,8 @@ class ObservationTests(RuntimeFixture):
         self.approved["storage_options"] = copy.deepcopy(fixtures.STORAGE_PROFILES[1])
         self.reseal()
         self.install_phase()
-        self.runtime.approval["storage_options"]["record_compression"] = "brotli-4"
-        self.approved["storage_options"]["hash_bytes"] = 32
+        self.runtime.approval["storage_options"]["record_compression"] = "none"
+        self.approved["storage_options"]["bulk_index_conflicts"] = False
         self.assertEqual(dict(self.runtime.storage_options), fixtures.STORAGE_PROFILES[1])
         with self.assertRaises(TypeError):
             self.runtime.storage_options["record_compression"] = "none"

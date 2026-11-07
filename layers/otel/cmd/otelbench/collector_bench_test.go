@@ -141,11 +141,13 @@ func TestExecuteCollectorBenchRejections(t *testing.T) {
 		{"-backend=ch-map", "-mode=collector-bench", "-run=cli_bench_run", "-cluster-file=/nonexistent/fdb.cluster"},
 		{"-mode=collector-bench", "-run=cli_bench_run"},
 		{"-mode=collector-bench", "-cluster-file=/nonexistent/fdb.cluster"},
-		// D2: the custom store's layout flags and Brotli have no Exporter setting.
+		// D2: the order and Brotli have no Exporter setting; Phase 3B removed
+		// the custom store's layout flags and --backend fdb.
 		collectorBenchArgs("-order=trace"),
 		collectorBenchArgs("-hash-bytes=4"),
 		collectorBenchArgs("-posting-value-format=json"),
 		collectorBenchArgs("-record-compression=brotli-4"),
+		collectorBenchArgs("-backend=fdb"),
 		collectorBenchArgs("--conversations=-1"),
 		collectorBenchArgs("--turns=-1"),
 		collectorBenchArgs("--turns=201"),
@@ -178,20 +180,23 @@ func TestExecuteCollectorBenchRejections(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	if code := execute(collectorBenchArgs("-backend=ch-attrs"), &stdout, &stderr, nil); code != 2 || !strings.Contains(stderr.String(), "explicit valid backend/mode required; see -help") {
-		t.Fatalf("non-fdb collector-bench: exit=%d stderr=%q", code, &stderr)
+		t.Fatalf("collector-bench with a backend: exit=%d stderr=%q", code, &stderr)
 	}
 	stderr.Reset()
-	if code := execute(collectorBenchArgs("-order=trace"), &stdout, &stderr, nil); code != 2 || !strings.Contains(stderr.String(), "--order applies to --backend fdb only") {
+	if code := execute(collectorBenchArgs("-backend=fdb"), &stdout, &stderr, nil); code != 2 || !strings.Contains(stderr.String(), "explicit valid backend/mode required; see -help") {
+		t.Fatalf("collector-bench with --backend fdb: exit=%d stderr=%q", code, &stderr)
+	}
+	stderr.Reset()
+	if code := execute(collectorBenchArgs("-order=trace"), &stdout, &stderr, nil); code != 2 || !strings.Contains(stderr.String(), "--order applies to the ClickHouse backends only") {
 		t.Fatalf("layout flag: exit=%d stderr=%q", code, &stderr)
 	}
 }
 
-// collector-bench drives otel.Exporter: no backend applies, and --backend
-// fdb, the earlier receipts' spelling, is still accepted.
+// collector-bench drives otel.Exporter, so it takes no backend.
 func TestExecuteCollectorBenchBackendFlag(t *testing.T) {
 	calls := stubCollectorBench(t, nil)
 	var stdout, stderr bytes.Buffer
-	if code := execute(collectorBenchArgs("-backend=fdb"), &stdout, &stderr, nil); code != 0 || stderr.Len() != 0 {
+	if code := execute(collectorBenchArgs(), &stdout, &stderr, nil); code != 0 || stderr.Len() != 0 {
 		t.Fatalf("exit=%d stderr=%q", code, &stderr)
 	}
 	if len(*calls) != 1 || (*calls)[0].RecordCompression != "zlib-1" {

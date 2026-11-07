@@ -72,12 +72,19 @@ def hexstr(value, length=64):
 
 
 def storage(options):
-    keys = ("record_compression", "posting_value_format", "bulk_index_conflicts", "hash_bytes")
+    keys = ("record_compression", "bulk_index_conflicts")
     require(type(options) is dict and set(options) == set(keys), "exact storage profile required")
-    require(tuple(type(options[k]) for k in keys) == (str, str, bool, int), "typed storage profile required")
-    require(tuple(options[k] for k in keys) in (("none", "json", False, 32),
-            ("zlib-1", "tuple", True, 8), ("brotli-4", "tuple", True, 8)), "unknown storage profile")
+    require(tuple(type(options[k]) for k in keys) == (str, bool), "typed storage profile required")
+    require(tuple(options[k] for k in keys) in (("zlib-1", False), ("zlib-1", True)), "unknown storage profile")
     return dict(options)
+
+
+def census(count):
+    # One-tenant OTEL_V1 store keys (sqlbackend Audit). Every fixture span has one int
+    # attribute; nonmatching traces' i%3==0 spans also type the query key int (corpus.go).
+    ints = count + sum(1 for i in range(0, count, 3) if (i // 2) % 100)
+    return {"records": count, "SPANS_STR_ATTR": 8 * count - ints, "SPANS_INT_ATTR": ints,
+            "SPANS_SPAN_ID": count, "SPANS_TIME": count, "store_0": 1, "owned_total": 11 * count + 1}
 
 
 def validate_plan(plan, *, check_assets=True):
@@ -362,22 +369,27 @@ def distributed(before, during, hosts, after=()):
 
 
 def evidence(d, plan, run, count, mode):
-    require(d.get("tool") == "otelbench-v2" and d.get("backend") == "fdb" and d.get("revision") == plan["source_revision"]
+    require(d.get("tool") == "otelbench-v2" and d.get("backend") == "sql" and d.get("revision") == plan["source_revision"]
             and type(d.get("failures")) is int and d["failures"] == 0
             and ("error" not in d or type(d["error"]) is str and d["error"] == ""), "failed application evidence")
-    expected = {"run": run, "backend": "fdb", "count": count, "tenants": 1, "attributes": 8, "seed": 283,
+    storage = plan["storage_options"]
+    expected = {"run": run, "backend": "sql", "count": count, "tenants": 1, "attributes": 8, "seed": 283,
                 "match_every": 100, "batch": plan["batch"], "save_mode": "batch", "workers": plan["workers"],
-                "diagnostics": True, "tenant": 0, "k": 100, "max_candidates": 2000000,
-                "max_bytes": 268435456, "order": "time", **plan["storage_options"]}
+                "tenant": 0, "k": 100, "max_candidates": 2000000,
+                "max_bytes": 268435456, "order": "time", "record_compression": storage["record_compression"]}
     config = d.get("config", {})
-    require(d.get("mode") == mode and all(type(config.get(k)) is type(v) and config.get(k) == v for k, v in expected.items()), "application config binding")
+    require(d.get("mode") == mode and all(type(config.get(k)) is type(v) and config.get(k) == v for k, v in expected.items())
+            # Go omits a false bulk_index_conflicts; the argv always passes it explicitly.
+            and config.get("bulk_index_conflicts", False) is storage["bulk_index_conflicts"], "application config binding")
     if mode in ("ingest", "audit"):
         stats = d["stats"]
         require(type(stats.get("rows")) is int and stats["rows"] == count
                 and type(stats.get("attributes")) is int and stats["attributes"] == count * 8, "complete source population")
+        if mode == "ingest":
+            require(type(stats.get("details")) is dict and stats["details"].get("write_path") == "otel.SpanWriter",
+                    "Exporter SpanWriter ingest path required")
         if mode == "audit":
-            for name, keys in {"records": count, "eq_secondary": count * 8, "span_id_v2": count,
-                               "span_time_v2": count, "owned_total": count * 11 + 2, "eq_primary": 0}.items():
+            for name, keys in census(count).items():
                 require(type(stats["structures"][name]["keys"]) is int and stats["structures"][name]["keys"] == keys, "exact index census")
     elif mode == "query":
         require(d.get("suite") == "all" and type(config.get("iterations")) is int and config["iterations"] == 1600

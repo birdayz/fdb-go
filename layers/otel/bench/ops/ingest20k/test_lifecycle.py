@@ -453,15 +453,15 @@ class Lifecycle:
         mode = argv[argv.index("--mode") + 1]
         assert mode in ("ingest", "audit", "query"), "unknown workload mode"
         cap = 300 if mode == "ingest" else 120
-        expected = [str(self.binary), "--backend", "fdb", "--order", "time", "--cluster-file",
+        expected = [str(self.binary), "--backend", "sql", "--sql-ingest", "direct", "--sql-rows", "compiled",
+                    "--sql-query", "direct", "--order", "time", "--cluster-file",
                     str(driver.HERE / "fdb.cluster.seed"), "--run", a["run"], "--seed", "283", "--count", str(count),
                     "--tenants", "1", "--attrs", "8", "--match-every", "100", "--batch", str(a["batch"]),
-                    "--save-mode", "batch", "--workers", str(a["workers"]), "--diagnostics", "--k", "100",
+                    "--save-mode", "batch", "--workers", str(a["workers"]), "--k", "100",
                     "--max-candidates", "2000000", "--max-bytes", "268435456", "--revision", a["source_revision"]]
-        if "storage_options" in a:
-            storage = a["storage_options"]
-            expected += ["--record-compression", storage["record_compression"], "--posting-value-format", storage["posting_value_format"],
-                         "--bulk-index-conflicts=" + str(storage["bulk_index_conflicts"]).lower(), "--hash-bytes", str(storage["hash_bytes"])]
+        storage = a.get("storage_options", fixtures.STORAGE_PROFILES[0])
+        expected += ["--record-compression", storage["record_compression"],
+                     "--bulk-index-conflicts=" + str(storage["bulk_index_conflicts"]).lower()]
         expected += ["--mode", mode, "--timeout", str(cap) + "s", "--output", str(self.out / (mode + ".json"))]
         if mode == "query":
             expected += ["--suite", "all", "--iterations", "1600"]
@@ -472,7 +472,7 @@ class Lifecycle:
             if key.startswith("--bulk-index-conflicts="):
                 options["--bulk-index-conflicts"] = key.split("=", 1)[1] == "true"
             else:
-                options[key] = True if key == "--diagnostics" else next(arguments)
+                options[key] = next(arguments)
         result = fixtures.evidence(mode, run=options["--run"], revision=options["--revision"],
                                    batch=int(options["--batch"]), workers=int(options["--workers"]),
                                    count=int(options["--count"]))["evidence"]
@@ -482,17 +482,20 @@ class Lifecycle:
         for flag, key in (("--seed", "seed"), ("--count", "count"), ("--tenants", "tenants"), ("--attrs", "attributes"),
                           ("--match-every", "match_every"), ("--k", "k"), ("--max-candidates", "max_candidates"), ("--max-bytes", "max_bytes")):
             result["config"][key] = int(options[flag])
-        result["config"]["diagnostics"] = options["--diagnostics"]
-        if "storage_options" in a:
-            result["config"].update(record_compression=options["--record-compression"],
-                                     posting_value_format=options["--posting-value-format"],
-                                     bulk_index_conflicts=options["--bulk-index-conflicts"], hash_bytes=int(options["--hash-bytes"]))
+        result["config"]["record_compression"] = options["--record-compression"]
+        # Like the binary's evidence, a false bulk_index_conflicts is omitted (omitempty).
+        result["config"].pop("bulk_index_conflicts", None)
+        if options["--bulk-index-conflicts"]:
+            result["config"]["bulk_index_conflicts"] = True
         if mode == "query":
             result["suite"] = options["--suite"]
             result["config"]["iterations"] = int(options["--iterations"])
         else:
             result["stats"]["rows"] = int(options["--count"])
             result["stats"]["attributes"] = int(options["--count"]) * int(options["--attrs"])
+        if mode == "ingest":
+            production = (options["--sql-ingest"], options["--sql-rows"], options["--save-mode"]) == ("direct", "compiled", "batch")
+            result["stats"]["details"]["write_path"] = "otel.SpanWriter" if production else "sqlbackend"
         return result
 
     def external_run(self, argv, **kwargs):
@@ -709,8 +712,8 @@ class LifecycleTests(unittest.TestCase):
             self.assertEqual((stats["rows"], stats["attributes"]), (1000000, 8000000))
         structures = driver.read(h.out / "audit.json")["stats"]["structures"]
         self.assertEqual({name: value["keys"] for name, value in structures.items()},
-                         {"records": 1000000, "eq_secondary": 8000000, "span_id_v2": 1000000,
-                          "span_time_v2": 1000000, "owned_total": 11000002, "eq_primary": 0})
+                         {"records": 1000000, "SPANS_STR_ATTR": 6670000, "SPANS_INT_ATTR": 1330000,
+                          "SPANS_SPAN_ID": 1000000, "SPANS_TIME": 1000000, "store_0": 1, "owned_total": 11000001})
         oracle = driver.read(h.out / "query.json")
         self.assertEqual(oracle["config"]["iterations"], 1600)
         self.assertEqual(len(oracle["samples"]), 1600)
@@ -767,31 +770,33 @@ class LifecycleTests(unittest.TestCase):
                 self.assertEqual(len(launched), 3)
                 for argv in launched:
                     self.assertEqual(argv[argv.index("--record-compression") + 1], options["record_compression"])
-                    self.assertEqual(argv[argv.index("--posting-value-format") + 1], options["posting_value_format"])
                     self.assertIn("--bulk-index-conflicts=" + str(options["bulk_index_conflicts"]).lower(), argv)
-                    self.assertEqual(argv[argv.index("--hash-bytes") + 1], str(options["hash_bytes"]))
                     result = driver.read(Path(argv[argv.index("--output") + 1]))
-                    for key, value in options.items():
-                        self.assertIs(type(result["config"][key]), type(value))
-                        self.assertEqual(result["config"][key], value)
+                    self.assertEqual(result["config"]["record_compression"], options["record_compression"])
+                    self.assertIs(result["config"].get("bulk_index_conflicts", False), options["bulk_index_conflicts"])
                     p.evidence(result, h.approved)
-                    for flag in ("--record-compression", "--posting-value-format", "--hash-bytes"):
-                        missing = list(argv)
-                        at = missing.index(flag)
-                        del missing[at:at + 2]
-                        with self.assertRaisesRegex(AssertionError, "Application launch argv"):
-                            h.application_result(missing)
+                    missing = list(argv)
+                    at = missing.index("--record-compression")
+                    del missing[at:at + 2]
+                    with self.assertRaisesRegex(AssertionError, "Application launch argv"):
+                        h.application_result(missing)
                     missing = [arg for arg in argv if not arg.startswith("--bulk-index-conflicts=")]
                     with self.assertRaisesRegex(AssertionError, "Application launch argv"):
                         h.application_result(missing)
                 for stage in ("load", "drain", "census", "oracle"):
                     self.assertEqual(driver.read(h.out / ("phase-" + stage + ".json"))["storage_options"], options)
                 self.assertTrue((h.out / "complete.json").exists())
+        # Absent storage_options runs the zlib-1 profile without bulk index conflicts.
         h = self.harness()
         h.invoke()
-        for argv in (argv for argv in h.calls if argv[0] == str(h.binary)):
-            self.assertFalse(any(arg.startswith(("--record-compression", "--posting-value-format", "--bulk-index-conflicts", "--hash-bytes")) for arg in argv))
+        launched = [argv for argv in h.calls if argv[0] == str(h.binary)]
+        self.assertEqual(len(launched), 3)
+        for argv in launched:
+            self.assertEqual(argv[argv.index("--record-compression") + 1], "zlib-1")
+            self.assertIn("--bulk-index-conflicts=false", argv)
+            self.assertNotIn("bulk_index_conflicts", driver.read(Path(argv[argv.index("--output") + 1]))["config"])
         self.assertNotIn("storage_options", driver.read(h.out / "phase-load.json"))
+        self.assertTrue((h.out / "complete.json").exists())
 
     def test_storage_missing_fallback_evidence_and_rehashed_phase_tampering_fail(self):
         for fault in ("storage_evidence_missing", "storage_evidence_fallback", "storage_phase_tamper"):
@@ -809,7 +814,8 @@ class LifecycleTests(unittest.TestCase):
         application = next(argv for argv in h.calls if argv[0] == str(h.binary))
         for original, validate, flags in (
                 (docker, h.assert_docker_create, ("--memory", "--memory-swap", "--cpus", "--entrypoint", "--mount", "--label")),
-                (application, h.application_result, ("--count", "--batch", "--workers", "--revision", "--timeout", "--max-bytes", "--cluster-file"))):
+                (application, h.application_result, ("--count", "--batch", "--workers", "--revision", "--timeout", "--max-bytes", "--cluster-file",
+                                                     "--backend", "--sql-ingest", "--sql-rows", "--sql-query", "--record-compression"))):
             for flag in flags:
                 with self.subTest(flag=flag):
                     index = original.index(flag)
@@ -825,7 +831,7 @@ class LifecycleTests(unittest.TestCase):
         changed[-1] = str(int(changed[-1]) + 1)
         with self.assertRaisesRegex(AssertionError, "Docker launch argv"):
             h.assert_docker_create(changed)
-        changed = [value for value in application if value != "--diagnostics"]
+        changed = [value for value in application if not value.startswith("--bulk-index-conflicts=")]
         with self.assertRaisesRegex(AssertionError, "Application launch argv"):
             h.application_result(changed)
 

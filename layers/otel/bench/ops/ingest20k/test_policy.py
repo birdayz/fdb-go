@@ -36,11 +36,15 @@ CLASSES = ("trace", "trace_absent", "span", "span_absent", "genai_response",
            "time_empty", "time_absent", "time_broad")
 
 
+# The first profile is also what an absent storage_options runs.
 STORAGE_PROFILES = (
-    {"record_compression": "none", "posting_value_format": "json", "bulk_index_conflicts": False, "hash_bytes": 32},
-    {"record_compression": "zlib-1", "posting_value_format": "tuple", "bulk_index_conflicts": True, "hash_bytes": 8},
-    {"record_compression": "brotli-4", "posting_value_format": "tuple", "bulk_index_conflicts": True, "hash_bytes": 8},
+    {"record_compression": "zlib-1", "bulk_index_conflicts": False},
+    {"record_compression": "zlib-1", "bulk_index_conflicts": True},
 )
+# One-tenant OTEL_V1 audit keys of the fixture corpus (sqlbackend receipts: 11 KV per span).
+CENSUS = {count: {"records": count, "SPANS_STR_ATTR": strs, "SPANS_INT_ATTR": ints, "SPANS_SPAN_ID": count,
+                  "SPANS_TIME": count, "store_0": 1, "owned_total": 11 * count + 1}
+          for count, strs, ints in ((100000, 667000, 133000), (1000000, 6670000, 1330000))}
 
 
 def approval(run="prof20k0290", revision="1" * 40, batch=32, workers=2, count=100000, storage_options=None):
@@ -89,26 +93,30 @@ def phase(run="prof20k0290", stage="load", count=100000, storage_options=None):
 
 
 def evidence(mode, run="prof20k0290", revision="1" * 40, batch=32, workers=2, count=100000, storage_options=None):
-    raw = {"tool": "otelbench-v2", "backend": "fdb", "revision": revision,
+    storage = STORAGE_PROFILES[0] if storage_options is None else storage_options
+    raw = {"tool": "otelbench-v2", "backend": "sql", "revision": revision,
            "mode": mode, "failures": 0,
-           "config": {"run": run, "backend": "fdb", "count": count, "tenants": 1,
+           "config": {"run": run, "backend": "sql", "count": count, "tenants": 1,
                       "attributes": 8, "seed": 283, "match_every": 100, "batch": batch,
-                      "save_mode": "batch", "workers": workers, "diagnostics": True,
+                      "save_mode": "batch", "record_compression": storage["record_compression"], "workers": workers,
                       "tenant": 0, "k": 100, "max_candidates": 2000000,
-                      "max_bytes": 268435456, "hash_bytes": 32, "order": "time"}}
+                      "max_bytes": 268435456, "order": "time"}}
+    # Go's omitempty drops a false bulk_index_conflicts.
+    if storage["bulk_index_conflicts"]:
+        raw["config"]["bulk_index_conflicts"] = True
     if mode in ("ingest", "audit"):
         raw["stats"] = {"rows": count, "attributes": 8 * count}
+        if mode == "ingest":
+            raw["stats"]["details"] = {"ingest": "OTEL_V1 tenant schema stores; direct", "write_path": "otel.SpanWriter",
+                                       "committed_batches": str(-(-count // batch)), "save_mode": "batch",
+                                       "workers": str(workers), "record_compression": storage["record_compression"]}
         if mode == "audit":
-            raw["stats"]["structures"] = {name: {"keys": keys} for name, keys in (
-                ("records", count), ("eq_secondary", 8 * count), ("span_id_v2", count),
-                ("span_time_v2", count), ("owned_total", 11 * count + 2), ("eq_primary", 0))}
+            raw["stats"]["structures"] = {name: {"keys": keys} for name, keys in CENSUS[count].items()}
     else:
         raw.update(suite="all", samples=[{"iteration": i, "class": CLASSES[i % 16],
                                         "ns": i, "result_digest": format(i, "064x")}
                                        for i in range(1600)])
         raw["config"]["iterations"] = 1600
-    if storage_options is not None:
-        raw["config"].update(copy.deepcopy(storage_options))
     return {"approved": approval(run, revision, batch, workers, count, storage_options), "evidence": raw}
 
 
@@ -289,9 +297,10 @@ class PolicyTests(unittest.TestCase):
                     self.assertEqual(receipt["evidence"]["stats"]["attributes"], 8000000)
                 if mode == "audit":
                     self.assertEqual(receipt["evidence"]["stats"]["structures"], {
-                        "records": {"keys": 1000000}, "eq_secondary": {"keys": 8000000},
-                        "span_id_v2": {"keys": 1000000}, "span_time_v2": {"keys": 1000000},
-                        "owned_total": {"keys": 11000002}, "eq_primary": {"keys": 0}})
+                        "records": {"keys": 1000000}, "SPANS_STR_ATTR": {"keys": 6670000},
+                        "SPANS_INT_ATTR": {"keys": 1330000}, "SPANS_SPAN_ID": {"keys": 1000000},
+                        "SPANS_TIME": {"keys": 1000000}, "store_0": {"keys": 1},
+                        "owned_total": {"keys": 11000001}})
                 if mode == "query":
                     self.assertEqual(receipt["evidence"]["config"]["iterations"], 1600)
                     self.assertEqual(len(receipt["evidence"]["samples"]), 1600)
@@ -319,9 +328,10 @@ class PolicyTests(unittest.TestCase):
             "attributes": [800000, 7999999, 8000001, 80000000, True, 8000000.0, None],
         }.items():
             self.reject("evidence", receipt, "evidence.stats." + field, values)
-        for name, expected, old in (("records", 1000000, 100000), ("eq_secondary", 8000000, 800000),
-                                    ("span_id_v2", 1000000, 100000), ("span_time_v2", 1000000, 100000),
-                                    ("owned_total", 11000002, 1100002), ("eq_primary", 0, 1)):
+        for name, expected, old in (("records", 1000000, 100000), ("SPANS_STR_ATTR", 6670000, 667000),
+                                    ("SPANS_INT_ATTR", 1330000, 133000), ("SPANS_SPAN_ID", 1000000, 100000),
+                                    ("SPANS_TIME", 1000000, 100000), ("store_0", 1, 2),
+                                    ("owned_total", 11000001, 1100001)):
             self.reject("evidence", receipt, "evidence.stats.structures." + name + ".keys",
                         [old, expected - 1, expected + 1, True, float(expected), None])
 
@@ -351,17 +361,28 @@ class PolicyTests(unittest.TestCase):
             for mode in ("ingest", "audit", "query"):
                 candidate = evidence(mode, storage_options=options)
                 self.assertEqual(guard.evidence(candidate), {"mode": mode, "verified": True})
-                for key in options:
+                self.assertEqual("bulk_index_conflicts" in candidate["evidence"]["config"], options["bulk_index_conflicts"])
+                missing = copy.deepcopy(candidate)
+                del missing["evidence"]["config"]["record_compression"]
+                with self.assertRaises(ValueError):
+                    guard.evidence(missing)
+                for key, value in (("record_compression", "none"), ("record_compression", "zlib-default"),
+                                   ("bulk_index_conflicts", 1), ("bulk_index_conflicts", 0),
+                                   ("bulk_index_conflicts", not options["bulk_index_conflicts"])):
+                    wrong = copy.deepcopy(candidate)
+                    wrong["evidence"]["config"][key] = value
+                    with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                        guard.evidence(wrong)
+                # Only a false bulk_index_conflicts may be omitted, as Go's omitempty does.
+                if options["bulk_index_conflicts"]:
                     missing = copy.deepcopy(candidate)
-                    del missing["evidence"]["config"][key]
+                    del missing["evidence"]["config"]["bulk_index_conflicts"]
                     with self.assertRaises(ValueError):
                         guard.evidence(missing)
-                    wrong = copy.deepcopy(candidate)
-                    wrong["evidence"]["config"][key] = {"record_compression": "none", "posting_value_format": "json",
-                                                            "bulk_index_conflicts": 1, "hash_bytes": True}[key]
-                    if key in ("bulk_index_conflicts", "hash_bytes") or options != STORAGE_PROFILES[0]:
-                        with self.assertRaises(ValueError):
-                            guard.evidence(wrong)
+                else:
+                    explicit = copy.deepcopy(candidate)
+                    explicit["evidence"]["config"]["bulk_index_conflicts"] = False
+                    self.assertEqual(guard.evidence(explicit), {"mode": mode, "verified": True})
                 if options != STORAGE_PROFILES[0]:
                     fallback = copy.deepcopy(candidate)
                     fallback["evidence"]["config"].update(STORAGE_PROFILES[0])
@@ -383,11 +404,11 @@ class PolicyTests(unittest.TestCase):
             missing = dict(STORAGE_PROFILES[1])
             del missing[key]
             invalid.append(missing)
-        for key, values in (("record_compression", (None, True, 1, "zlib-9", "brotli-1", "none")),
-                            ("posting_value_format", (None, True, 1, "json", "unknown")),
-                            ("bulk_index_conflicts", (None, 0, 1, "true", False)),
-                            ("hash_bytes", (None, True, 8.0, "8", 16, 32))):
+        for key, values in (("record_compression", (None, True, 1, "zlib-9", "brotli-1", "brotli-4", "none", "zlib-default")),
+                            ("bulk_index_conflicts", (None, 0, 1, "true"))):
             invalid.extend({**STORAGE_PROFILES[1], key: value} for value in values)
+        # The removed custom-store layout keys are unknown, not ignored.
+        invalid.extend({**STORAGE_PROFILES[1], key: value} for key, value in (("posting_value_format", "tuple"), ("hash_bytes", 8)))
         for options in invalid:
             with self.subTest(options=options):
                 candidate = {**valid, "storage_options": options}
@@ -692,6 +713,9 @@ class PolicyTests(unittest.TestCase):
                     for field, count in (("rows", 100000), ("attributes", 800000)):
                         self.reject("evidence", base, "evidence.stats." + field,
                                     [count - 1, count + 1, 10000000, True, float(count), None])
+                if mode == "ingest":
+                    self.reject("evidence", base, "evidence.stats.details.write_path", ["sqlbackend", "", None])
+                    self.reject("evidence", base, "evidence.stats.details", [None, [], {}])
         base = evidence("audit")
         for name, value in base["evidence"]["stats"]["structures"].items():
             self.reject("evidence", base, "evidence.stats.structures." + name + ".keys",

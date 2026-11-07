@@ -81,21 +81,36 @@ def floor_bytes(total):
     return ((numerator + 409599) // 409600) * 4096
 
 
+# Absent storage_options runs this profile; the Exporter's default adds bulk index conflicts.
+DEFAULT_STORAGE = {"record_compression": "zlib-1", "bulk_index_conflicts": False}
+
+
 def storage_options(d):
     if "storage_options" not in d:
         return None
     options = d["storage_options"]
-    keys = ("record_compression", "posting_value_format", "bulk_index_conflicts", "hash_bytes")
+    keys = ("record_compression", "bulk_index_conflicts")
     require(type(options) is dict and set(options) == set(keys), "exact storage_options schema required")
-    require(type(options["record_compression"]) is str and type(options["posting_value_format"]) is str
-            and type(options["bulk_index_conflicts"]) is bool and type(options["hash_bytes"]) is int,
+    require(type(options["record_compression"]) is str and type(options["bulk_index_conflicts"]) is bool,
             "typed storage_options required")
     profile = tuple(options[key] for key in keys)
-    require(profile in (("none", "json", False, 32), ("zlib-1", "tuple", True, 8),
-                        ("brotli-4", "tuple", True, 8)), "storage_options profile not approved")
-    if profile != ("none", "json", False, 32):
+    require(profile in (("zlib-1", False), ("zlib-1", True)), "storage_options profile not approved")
+    if profile != ("zlib-1", False):
         require(type(d.get("count")) is int and d["count"] == 100000, "optimized storage requires exactly 100000 spans")
     return dict(options)
+
+
+def effective_storage(d):
+    storage = storage_options(d)
+    return dict(DEFAULT_STORAGE) if storage is None else storage
+
+
+def census(count):
+    # One-tenant OTEL_V1 store keys (sqlbackend Audit). Every fixture span has one int
+    # attribute; nonmatching traces' i%3==0 spans also type the query key int (corpus.go).
+    ints = count + sum(1 for i in range(0, count, 3) if (i // 2) % 100)
+    return {"records": count, "SPANS_STR_ATTR": 8 * count - ints, "SPANS_INT_ATTR": ints,
+            "SPANS_SPAN_ID": count, "SPANS_TIME": count, "store_0": 1, "owned_total": 11 * count + 1}
 
 
 def approval(d):
@@ -271,29 +286,30 @@ def evidence(d, approved=None):
     if approved is None:
         approved, d = d["approved"], d["evidence"]
     approval(approved)
-    require(d.get("tool") == "otelbench-v2" and d.get("backend") == "fdb" and d.get("revision") == approved["source_revision"], "wrong evidence source/backend")
+    require(d.get("tool") == "otelbench-v2" and d.get("backend") == "sql" and d.get("revision") == approved["source_revision"], "wrong evidence source/backend")
     require(d.get("failures") == 0 and type(d.get("failures")) is int and ("error" not in d or type(d["error"]) is str and d["error"] == ""), "failed evidence")
     config = d.get("config", {})
     count = approved["count"]
-    expected = {"run": approved["run"], "backend": "fdb", "count": count, "tenants": 1,
+    storage = effective_storage(approved)
+    expected = {"run": approved["run"], "backend": "sql", "count": count, "tenants": 1,
                 "attributes": 8, "seed": 283, "match_every": 100, "batch": approved["batch"], "save_mode": "batch",
-                "workers": approved["workers"], "diagnostics": True, "tenant": 0, "k": 100, "max_candidates": 2000000,
-                "max_bytes": 268435456, "hash_bytes": 32, "order": "time"}
-    storage = storage_options(approved)
-    if storage is not None:
-        expected.update(storage)
-    require(all(type(config.get(k)) is type(v) and config.get(k) == v for k, v in expected.items()), "wrong evidence config")
+                "workers": approved["workers"], "tenant": 0, "k": 100, "max_candidates": 2000000,
+                "max_bytes": 268435456, "order": "time", "record_compression": storage["record_compression"]}
+    require(all(type(config.get(k)) is type(v) and config.get(k) == v for k, v in expected.items())
+            # Go omits a false bulk_index_conflicts; the argv always passes it explicitly.
+            and config.get("bulk_index_conflicts", False) is storage["bulk_index_conflicts"], "wrong evidence config")
     mode = d.get("mode")
     require(mode in ("ingest", "audit", "query"), "wrong evidence mode")
     if mode in ("ingest", "audit"):
         stats = d.get("stats", {})
         require(type(stats.get("rows")) is int and stats["rows"] == count, "incomplete load/source records")
         require(type(stats.get("attributes")) is int and stats["attributes"] == 8 * count, "incomplete attributes")
+        if mode == "ingest":
+            details = stats.get("details")
+            require(type(details) is dict and details.get("write_path") == "otel.SpanWriter", "Exporter SpanWriter ingest path required")
         if mode == "audit":
             structures = stats.get("structures", {})
-            counts = {"records": count, "eq_secondary": 8 * count, "span_id_v2": count,
-                      "span_time_v2": count, "owned_total": 11 * count + 2, "eq_primary": 0}
-            require(all(type(structures.get(k, {}).get("keys")) is int and structures[k]["keys"] == v for k, v in counts.items()), "incomplete structure census")
+            require(all(type(structures.get(k, {}).get("keys")) is int and structures[k]["keys"] == v for k, v in census(count).items()), "incomplete structure census")
     else:
         require(d.get("suite") == "all" and type(config.get("iterations")) is int and config["iterations"] == 1600, "exact independent oracle suite required")
         classes = ("trace", "trace_absent", "span", "span_absent", "genai_response", "genai_scope_resource",
