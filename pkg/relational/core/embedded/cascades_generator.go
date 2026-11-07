@@ -131,7 +131,7 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 			return false
 		})
 	}
-	root, err := parser.Parse(sql)
+	root, err := g.c.parse(sql)
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +144,7 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 			return nil, err
 		}
 		if changed {
-			if root, err = parser.Parse(expanded); err != nil {
+			if root, err = g.c.parse(expanded); err != nil {
 				return nil, err
 			}
 		}
