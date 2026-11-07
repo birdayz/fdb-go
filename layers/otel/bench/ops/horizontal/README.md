@@ -31,8 +31,10 @@ admission/monitoring checks host memory/PSI/swap, disk floors and allocation,
 cgroup limits/events, and unchanged native process PID/starttimes. Receipt files
 are capped at 1GiB total on the controller. The initial storage free-space floor
 is 200GiB + 6% of device size + 64GiB; the ongoing floor preserves 200GiB + 6%.
-The benchmark's original transaction/save/estimate/actual-size/retry guards remain
-in the sealed application, unmodified by these scripts.
+The sealed application's span writer (`otel.SpanWriter`) applies the Exporter's
+guards, unmodified by these scripts: a 300 KB conservative estimate per batch and
+per admitted span, a 500 KB actual transaction-size guard, and a 10 s transaction
+timeout covering every retry; there is no retry limit and no elapsed-time guard.
 
 ## Fixed sequence and measurement
 

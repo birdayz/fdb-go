@@ -454,7 +454,7 @@ class Lifecycle:
         assert mode in ("ingest", "audit", "query"), "unknown workload mode"
         cap = 300 if mode == "ingest" else 120
         expected = [str(self.binary), "--backend", "sql", "--sql-ingest", "direct", "--sql-rows", "compiled",
-                    "--sql-query", "direct", "--order", "time", "--cluster-file",
+                    "--sql-query", "direct", "--cluster-file",
                     str(driver.HERE / "fdb.cluster.seed"), "--run", a["run"], "--seed", "283", "--count", str(count),
                     "--tenants", "1", "--attrs", "8", "--match-every", "100", "--batch", str(a["batch"]),
                     "--save-mode", "batch", "--workers", str(a["workers"]), "--k", "100",
@@ -477,7 +477,7 @@ class Lifecycle:
                                    batch=int(options["--batch"]), workers=int(options["--workers"]),
                                    count=int(options["--count"]))["evidence"]
         result["backend"], result["mode"] = options["--backend"], options["--mode"]
-        for flag, key in (("--backend", "backend"), ("--order", "order"), ("--save-mode", "save_mode")):
+        for flag, key in (("--backend", "backend"), ("--save-mode", "save_mode")):
             result["config"][key] = options[flag]
         for flag, key in (("--seed", "seed"), ("--count", "count"), ("--tenants", "tenants"), ("--attrs", "attributes"),
                           ("--match-every", "match_every"), ("--k", "k"), ("--max-candidates", "max_candidates"), ("--max-bytes", "max_bytes")):

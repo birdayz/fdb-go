@@ -744,7 +744,7 @@ def run(args):
             write(out / "active-phase.json", {"stage": name, "sha256": p.sha(file)}, exclusive=False)
             return time.monotonic() + cap
 
-        common = [request["binary"], "--backend", "sql", "--sql-ingest", "direct", "--sql-rows", "compiled", "--sql-query", "direct", "--order", "time", "--cluster-file", str(HERE / "fdb.cluster.seed"), "--run", P["run"], "--seed", "283", "--count", str(approval["count"]), "--tenants", "1", "--attrs", "8", "--match-every", "100", "--batch", str(approval["batch"]), "--save-mode", "batch", "--workers", str(approval["workers"]), "--k", "100", "--max-candidates", "2000000", "--max-bytes", "268435456", "--revision", approval["source_revision"]]
+        common = [request["binary"], "--backend", "sql", "--sql-ingest", "direct", "--sql-rows", "compiled", "--sql-query", "direct", "--cluster-file", str(HERE / "fdb.cluster.seed"), "--run", P["run"], "--seed", "283", "--count", str(approval["count"]), "--tenants", "1", "--attrs", "8", "--match-every", "100", "--batch", str(approval["batch"]), "--save-mode", "batch", "--workers", str(approval["workers"]), "--k", "100", "--max-candidates", "2000000", "--max-bytes", "268435456", "--revision", approval["source_revision"]]
         storage = runtime.storage_options if runtime.storage_options is not None else p.DEFAULT_STORAGE
         common += ["--record-compression", storage["record_compression"],
                    "--bulk-index-conflicts=" + str(storage["bulk_index_conflicts"]).lower()]

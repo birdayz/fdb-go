@@ -63,7 +63,7 @@ settings() {
   case "$arm" in
     # The Exporter's relational write and read paths (sqlbackend: SpanWriter, direct scans).
     sql_direct) common+=(--backend sql --sql-ingest direct --sql-rows compiled --sql-query direct
-      --save-mode batch --record-compression zlib-1 --order time --cluster-file "$FDB_CLUSTER_FILE") ;;
+      --save-mode batch --record-compression zlib-1 --cluster-file "$FDB_CLUSTER_FILE") ;;
     ch_map) common+=(--backend ch-map --order trace --ch-url "$CH_URL") ;;
     ch_attrs_trace) common+=(--backend ch-attrs --order trace --ch-url "$CH_URL") ;;
     ch_attrs_time) common+=(--backend ch-attrs --order time --ch-url "$CH_URL") ;;

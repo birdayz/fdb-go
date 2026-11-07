@@ -36,7 +36,7 @@ CENSUS = {count: dict(records=count, SPANS_STR_ATTR=strs, SPANS_INT_ATTR=ints, S
 def evidence(mode="ingest", count=100000):
     config = dict(run="prof20k9000", backend="sql", count=count, tenants=1, attributes=8, seed=283,
                   match_every=100, batch=32, save_mode="batch", workers=4, tenant=0, k=100,
-                  max_candidates=2000000, max_bytes=268435456, order="time", **plan()["storage_options"])
+                  max_candidates=2000000, max_bytes=268435456, order="trace", **plan()["storage_options"])
     value = dict(tool="otelbench-v2", backend="sql", revision="a" * 40, failures=0, mode=mode, config=config,
                  stats=dict(rows=count, attributes=count * 8))
     if mode == "ingest":
@@ -666,7 +666,7 @@ class RuntimeTests(unittest.TestCase):
         argv = d.app_argv(grant, "ingest")
         # The Exporter's relational write (SpanWriter) and read (direct scan) paths.
         self.assertEqual(argv, ["/bin/otel", "--backend", "sql", "--sql-ingest", "direct", "--sql-rows", "compiled",
-                                "--sql-query", "direct", "--order", "time", "--cluster-file", "/cluster",
+                                "--sql-query", "direct", "--cluster-file", "/cluster",
                                 "--run", "prof20k9000", "--seed", "283", "--count", "1000000", "--tenants", "1",
                                 "--attrs", "8", "--match-every", "100", "--batch", "32", "--save-mode", "batch",
                                 "--workers", "4", "--k", "100", "--max-candidates", "2000000", "--max-bytes", "268435456",

@@ -47,7 +47,7 @@ Redwood, FDB checksums/fsync and default queues remain unchanged. The applicatio
 is `otelbench --backend sql` in the Exporter's relational configuration: direct
 compiled-row ingest through `otel.SpanWriter` (`--sql-ingest direct --sql-rows compiled
 --save-mode batch`) and direct OTEL_V1 index scans (`--sql-query direct`). Workload is
-seed283, one tenant, eight attributes, match-every100, batch save mode, time order,
+seed283, one tenant, eight attributes, match-every100, batch save mode,
 K100, two-million candidates and 256 MiB query byte budget. The first
 run is **batch 32 / workers 2**. Sealed configuration may admit batches 32 or 64 and
 workers 2, 4 or 8 (integers only); ordinary ingest does not support `workers=16`. This is not
@@ -57,8 +57,10 @@ gates. Count is a strict integer allowlist: 100000 (legacy default) or 1000000
 (explicit approval only); booleans, floats, strings and other populations are rejected.
 There is no automatic loop/sweep. The 1M arm measures backpressure, not a threshold
 relaxation: all time, resource, health, backlog, disk and transaction guards stay fixed.
-The selected application's 1500ms transaction, 300KB estimated/500KB actual save,
-one-second save and finite fresh-run retry guards remain in force.
+The application's span writer applies the Exporter's guards: a 300 KB conservative
+estimate per batch and per admitted span, a 500 KB actual transaction-size guard,
+and a 10 s transaction timeout covering every retry; there is no retry limit and
+no elapsed-time guard.
 
 An optional sealed `storage_options` object has exactly two keys:
 `record_compression` and `bulk_index_conflicts`. Only these typed combinations

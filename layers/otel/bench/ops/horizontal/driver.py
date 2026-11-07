@@ -87,7 +87,7 @@ def re_run(run):
 def app_argv(d, mode):
     s = d["storage_options"]
     args = [d["binary"], "--backend", "sql", "--sql-ingest", "direct", "--sql-rows", "compiled", "--sql-query", "direct",
-            "--order", "time", "--cluster-file", d["cluster_file"],
+            "--cluster-file", d["cluster_file"],
             "--run", d["run"], "--seed", "283", "--count", str(d["count"]), "--tenants", "1", "--attrs", "8",
             "--match-every", "100", "--batch", str(d["batch"]), "--save-mode", "batch", "--workers", str(d["workers"]),
             "--k", "100", "--max-candidates", "2000000", "--max-bytes", "268435456",
