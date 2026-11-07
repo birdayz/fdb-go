@@ -20,29 +20,6 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-// oracleTopK is the test-only map adapter for independent ordering checks.
-func oracleTopK(m map[string]int64, k int) []Hit {
-	out, _ := oracleTopKContext(context.Background(), m, k)
-	return out
-}
-
-func oracleTopKContext(ctx context.Context, m map[string]int64, k int) ([]Hit, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, wrap("canceled", "oracle topK", err)
-	}
-	if k < 1 {
-		return nil, fail("config", "oracle topK", "positive K required")
-	}
-	h := oracleHeap{}
-	for id, ns := range m {
-		if err := ctx.Err(); err != nil {
-			return nil, wrap("canceled", "oracle topK", err)
-		}
-		retainOracleHit(&h, Hit{Trace: id, Latest: ns}, k)
-	}
-	return finishOracleHeap(ctx, &h)
-}
-
 func TestEveryConfigBound(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
