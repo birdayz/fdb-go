@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -84,6 +85,10 @@ func TestFDB_SQLBackend(t *testing.T) {
 	t.Run("span reader", func(t *testing.T) {
 		t.Parallel()
 		testSpanReader(t, cluster)
+	})
+	t.Run("bench census", func(t *testing.T) {
+		t.Parallel()
+		testBenchCensus(t, open)
 	})
 	for _, c := range []struct {
 		name string
@@ -403,4 +408,49 @@ func queryRows(t *testing.T, ctx context.Context, db *sql.DB, query string) stri
 		t.Fatalf("query %q: %v", query, err)
 	}
 	return strings.Join(out, " ")
+}
+
+// The exact census and ingest details that the ops benchmark guards
+// (bench/ops/ingest20k/policy.py census and the write_path and
+// committed_batches checks, horizontal/policy.py) require of a one-tenant,
+// match_every=100 corpus written by compiled batch direct ingest: records,
+// SPANS_TIME and SPANS_SPAN_ID N, an int attribute per span plus the int-typed
+// query key of nonmatching traces' every third span, one store header key,
+// and 11N+1 owned keys.
+func testBenchCensus(t *testing.T, open func(*testing.T, otel.Config, Options) *Backend) {
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
+	c := testConfig("sqlb_bench_census")
+	c.Count, c.Tenants, c.MatchEvery, c.SaveMode, c.RecordCompression = 300, 1, 100, "batch", "zlib-1"
+	b := open(t, c, Options{})
+	stats, err := b.Ingest(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batches, err := strconv.ParseInt(stats.Details["committed_batches"], 10, 64)
+	if stats.Rows != 300 || stats.Attributes != 8*300 || stats.Details["write_path"] != "otel.SpanWriter" ||
+		err != nil || batches <= 0 || strconv.FormatInt(batches, 10) != stats.Details["committed_batches"] {
+		t.Fatalf("ingest stats %+v", stats)
+	}
+	audit, err := b.Audit(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ints = N + |{i < N, i%3 == 0, (i/2)%100 != 0}|: for N = 300, i = 0 and
+	// i = 201 are matching traces' spans, so 98 of the 100 count.
+	want := map[string]int64{"records": 300, "SPANS_STR_ATTR": 8*300 - 398, "SPANS_INT_ATTR": 398, "SPANS_SPAN_ID": 300, "SPANS_TIME": 300, "store_0": 1, "owned_total": 11*300 + 1}
+	for name, keys := range want {
+		if got := audit.Structures[name].Keys; got != keys {
+			t.Errorf("%s: %d keys, want %d", name, got, keys)
+		}
+	}
+	ints := int64(c.Count)
+	for i := 0; i < c.Count; i += 3 {
+		if (i/2)%100 != 0 {
+			ints++
+		}
+	}
+	if ints != want["SPANS_INT_ATTR"] {
+		t.Fatalf("the guards' formula gives %d int keys, the pinned census %d", ints, want["SPANS_INT_ATTR"])
+	}
 }
