@@ -1,7 +1,6 @@
 package otelsql
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"strings"
 
@@ -9,7 +8,6 @@ import (
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -30,6 +28,13 @@ const (
 
 // Span is one OTLP span with its resource and scope, and the envelope bytes
 // stored in the otlp column (the exporter's single-span ResourceSpans).
+//
+// The attribute arrays project each scope's canonical set: unique keys at
+// their first position with their last value; keys over MaxAttributeKeyBytes
+// and values over MaxAttributeValueBytes left out. Strings up to
+// MaxIndexedStringBytes go to str_attrs, longer ones to long_str_attrs; ints,
+// doubles and bools to their arrays; bytes to bytes_attrs and arrays, kvlists
+// and unset values to any_attrs as CanonicalJSON, neither of which is indexed.
 type Span struct {
 	Resource          *resourcepb.Resource
 	ResourceSchemaURL string
@@ -37,6 +42,12 @@ type Span struct {
 	ScopeSchemaURL    string
 	Span              *tracepb.Span
 	OTLP              []byte
+	// Refs are the span's message back references, packed into ref_chunks.
+	Refs []MessageRef
+	// ExcludeMessageAttributes leaves the GenAI content attributes
+	// (MessageAttributeKeys) of the span and its events out of the arrays:
+	// their values are decomposed into MESSAGES rows.
+	ExcludeMessageAttributes bool
 }
 
 // SpanRows builds SPANS records of one template version. Field descriptors
@@ -52,6 +63,8 @@ type SpanRows struct {
 	evOrdinal, evName, evTime, evDropped                             protoreflect.FieldDescriptor
 	lnOrdinal, lnTraceID, lnSpanID, lnTraceState, lnFlags, lnDropped protoreflect.FieldDescriptor
 	eventAttrs, linkAttrs                                            attrArrays
+	refChunks                                                        arrayField
+	chunk, refs                                                      protoreflect.FieldDescriptor
 }
 
 // NewSpanRows resolves the SPANS record type of md.
@@ -128,6 +141,16 @@ func NewSpanRows(md *recordlayer.RecordMetaData) (*SpanRows, error) {
 	if r.linkAttrs, err = newAttrArrays(ln, false); err != nil {
 		return nil, err
 	}
+	if r.refChunks, err = newArrayField(f, "ref_chunks"); err != nil {
+		return nil, err
+	}
+	rc := fieldsOf(r.refChunks.elem)
+	if r.chunk, err = rc.get("chunk"); err != nil {
+		return nil, err
+	}
+	if r.refs, err = rc.get("refs"); err != nil {
+		return nil, err
+	}
 	return r, nil
 }
 
@@ -161,35 +184,18 @@ func (r *SpanRows) Build(s Span) (proto.Message, error) {
 	m.Set(r.droppedAttributes, intValue(r.droppedAttributes, int64(sp.DroppedAttributesCount)))
 	m.Set(r.droppedEvents, intValue(r.droppedEvents, int64(sp.DroppedEventsCount)))
 	m.Set(r.droppedLinks, intValue(r.droppedLinks, int64(sp.DroppedLinksCount)))
-	if res := s.Resource; res != nil {
-		for _, kv := range res.Attributes {
-			if kv.GetKey() == "service.name" {
-				if v, ok := kv.GetValue().GetValue().(*commonpb.AnyValue_StringValue); ok {
-					setString(m, r.serviceName, v.StringValue)
-				}
-			}
-		}
-		if err := r.attrs.add(m, ScopeResource, res.Attributes); err != nil {
-			return nil, err
-		}
-	}
-	if sc := s.Scope; sc != nil {
-		if err := r.attrs.add(m, ScopeScope, sc.Attributes); err != nil {
-			return nil, err
-		}
-	}
-	if err := r.attrs.add(m, ScopeSpan, sp.Attributes); err != nil {
-		return nil, err
-	}
+	sets := spanSets(s)
+	setString(m, r.serviceName, serviceName(sets[0]))
+	r.attrs.add(m, ScopeResource, sets[0])
+	r.attrs.add(m, ScopeScope, sets[1])
+	r.attrs.add(m, ScopeSpan, sets[2])
 	for i, ev := range sp.Events {
 		e := r.events.appendMessage(m)
 		e.Set(r.evOrdinal, intValue(r.evOrdinal, int64(i)))
 		setString(e, r.evName, ev.Name)
 		e.Set(r.evTime, intValue(r.evTime, int64(ev.TimeUnixNano)))
 		e.Set(r.evDropped, intValue(r.evDropped, int64(ev.DroppedAttributesCount)))
-		if err := r.eventAttrs.add(e, ScopeEvent, ev.Attributes); err != nil {
-			return nil, err
-		}
+		r.eventAttrs.add(e, ScopeEvent, canonicalSet(ev.Attributes, s.ExcludeMessageAttributes))
 	}
 	for i, ln := range sp.Links {
 		l := r.links.appendMessage(m)
@@ -199,9 +205,16 @@ func (r *SpanRows) Build(s Span) (proto.Message, error) {
 		setString(l, r.lnTraceState, ln.TraceState)
 		l.Set(r.lnFlags, intValue(r.lnFlags, int64(ln.Flags)))
 		l.Set(r.lnDropped, intValue(r.lnDropped, int64(ln.DroppedAttributesCount)))
-		if err := r.linkAttrs.add(l, ScopeLink, ln.Attributes); err != nil {
-			return nil, err
-		}
+		r.linkAttrs.add(l, ScopeLink, canonicalSet(ln.Attributes, false))
+	}
+	chunks, err := PackRefChunks(s.Refs)
+	if err != nil {
+		return nil, err
+	}
+	for i, c := range chunks {
+		e := r.refChunks.appendMessage(m)
+		e.Set(r.chunk, protoreflect.ValueOfInt64(int64(i)))
+		e.Set(r.refs, protoreflect.ValueOfBytes(c))
 	}
 	setBytes(m, r.otlp, s.OTLP)
 	return m, nil
@@ -240,22 +253,17 @@ func newAttrArrays(f fieldMap, long bool) (attrArrays, error) {
 	return a, nil
 }
 
-// add projects kvs under scope. Keys or strings beyond the indexed-string cap,
-// and values without a projection, stay only in the envelope.
-func (a *attrArrays) add(m protoreflect.Message, scope string, kvs []*commonpb.KeyValue) error {
-	for _, kv := range kvs {
-		key := kv.GetKey()
-		if len(key) > MaxIndexedStringBytes {
-			continue
-		}
+// add projects a canonical set under scope, as attrLists.add does.
+func (a *attrArrays) add(m protoreflect.Message, scope string, set attrSet) {
+	for _, kv := range set.kvs {
+		key := kv.Key
 		switch v := kv.GetValue().GetValue().(type) {
 		case *commonpb.AnyValue_StringValue:
 			if len(v.StringValue) <= MaxIndexedStringBytes {
 				a.str.appendAttr(m, scope, key, protoreflect.ValueOfString(v.StringValue))
 			} else if a.long {
-				sum := sha256.Sum256([]byte(v.StringValue))
 				e := a.longStr.appendAttr(m, scope, key, protoreflect.ValueOfString(v.StringValue))
-				e.Set(a.longStr.digest, protoreflect.ValueOfBytes(sum[:LongStringDigestBytes]))
+				e.Set(a.longStr.digest, protoreflect.ValueOfBytes(LongStringDigest(v.StringValue)))
 			}
 		case *commonpb.AnyValue_IntValue:
 			a.ints.appendAttr(m, scope, key, protoreflect.ValueOfInt64(v.IntValue))
@@ -267,15 +275,10 @@ func (a *attrArrays) add(m protoreflect.Message, scope string, kvs []*commonpb.K
 			if a.long {
 				a.bytesA.appendAttr(m, scope, key, protoreflect.ValueOfBytes(v.BytesValue))
 			}
-		case *commonpb.AnyValue_ArrayValue, *commonpb.AnyValue_KvlistValue:
-			j, err := protojson.Marshal(kv.GetValue())
-			if err != nil {
-				return fmt.Errorf("otelsql: attribute %q JSON: %w", key, err)
-			}
-			a.anys.appendAttr(m, scope, key, protoreflect.ValueOfString(string(j)))
+		default:
+			a.anys.appendAttr(m, scope, key, protoreflect.ValueOfString(string(CanonicalJSON(kv.GetValue()))))
 		}
 	}
-	return nil
 }
 
 // arrayField is an ARRAY column: repeated directly, or a nullable array's
