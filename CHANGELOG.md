@@ -56,6 +56,10 @@ below; neither publication nor readiness is asserted.
   (direct or insert), `--sql-query` (sql or direct), `--sql-rows` (compiled or
   dynamic), `--sql-pinned-conn` and `--sql-page-rows`; the backend is the new
   `layers/otel/sqlbackend` package (`Options`, `Backend`, `Open`).
+- `otelbench --mode collector-bench --query-only`, `--query-samples` and
+  `--query-classes`: post-ingest queries alone on an existing run, per-iteration
+  samples (`CollectorBenchConfig.QueryOnly`/`QuerySamples`/`QueryClasses`,
+  `CollectorBenchSample`).
 - SQL `CREATE FULLTEXT INDEX ... OPTIONS (TOKENIZER = '<name>',
   TOKENIZER_VERSION = <n>)` (Go extension) sets the TEXT index's tokenizer
   options (`docs/compatibility.md`, "SQL full-text syntax").
@@ -101,7 +105,9 @@ below; neither publication nor readiness is asserted.
   `--diagnostics` and the Brotli values, with `otel.Config`'s
   `PostingValueFormat`, `Diagnostics`, `HashBytes` and `KeyLayout` fields.
   `otelbench --mode collector-bench` takes no `--backend` and always drives
-  `otel.Exporter`. Attribute equality is typed.
+  `otel.Exporter`, and `collector.CollectorBenchConfig` loses its
+  `PostingValueFormat`, `HashBytes` and `Order` fields. Attribute equality is
+  typed.
   `NewExporter` opens the fixed template name OTEL_V1. Exporter reads use the
   client's cached read version.
 - OTel span and log exports still admit the whole call before any write;

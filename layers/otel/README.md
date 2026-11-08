@@ -428,8 +428,8 @@ new file; an existing file or a bad path fails the command before any work.
 
 The window starts `--profile-start` after the run starts and lasts
 `--profile-duration` (0, the default, lasts until the run ends). In
-`collector-bench`, `--profile-start` defaults to `--warmup`, so the profiles
-cover the steady phase; set `--profile-duration` to stop before the final
+`collector-bench`, `--profile-start` defaults to `--warmup` (0 with
+`--query-only`, which has no warmup), so the profiles cover the steady phase; set `--profile-duration` to stop before the final
 flush, audit and post-ingest queries. A run that ends before the window opens
 still writes its report and exits 1. `--blockprofilerate` (default 10000:
 one sample per 10 µs blocked) and `--mutexprofilefraction` (default 100) set
@@ -449,6 +449,12 @@ go tool pprof -sample_index=alloc_space -base heap.pprof.start otelbench heap.pp
 Profiling costs CPU while enabled (the CPU profiler samples at 100 Hz; the
 block and mutex profilers at the rates above); compare throughput only between
 runs profiled alike.
+
+`collector-bench --query-only` skips ingest and audit and runs the post-ingest
+query classes on an existing `--run` that holds the `--conversations` corpus,
+reporting every iteration. `--query-samples` reports every iteration of a normal
+run's post-ingest queries, and `--query-classes` (comma-separated) limits the
+classes; the benchmark doc's quiesced gate uses them.
 
 The exporter's process takes `GOGC` and `GOMEMLIMIT` from its environment.
 Evaluate these settings with profiles of the intended workload; this guide does

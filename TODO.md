@@ -3676,6 +3676,11 @@ these claims; the implementation notes below are not controlled comparisons.
   long strings by digest verified on the record; `TestBuildCompiledIsBuild`,
   `TestRelExporterRealFDB/otlp_fidelity`, `TestRelAdvancedQueriesRealFDB`;
   bytes in the benchmark doc (G2A, G2C).
+- [ ] Event and link projections omit the bytes and long-string attribute arrays
+  and the resource/scope dropped counts (`otelsql/rows.go`, `newAttrArrays(ev,
+  false)`); `otlp` preserves them, so SQL projection coverage is incomplete
+  (docs/compatibility.md). Project them, or record the boundary as final, and
+  compare against a complete raw projection with measured bytes/mutations.
 - [x] Store logs as records instead of raw KV, migrate message markers, choose
   a Java-interoperable serializer and verify exporter writes through SQL reads.
   Delivered: LOGS and MESSAGE_TRACES rows, `zlib-1` default;
