@@ -109,7 +109,9 @@ below; neither publication nor readiness is asserted.
   `PostingValueFormat`, `HashBytes` and `Order` fields; it refuses the
   otelbench flags it ignores (`--count`, `--tenants`, `--save-mode`,
   `--bulk-index-conflicts`, `--k`, the ClickHouse flags, ...) and an explicit
-  zero that would fall back to its defaults. Attribute equality is typed.
+  zero or empty `--seed`, `--record-compression`, `--iterations`, `--batch` or
+  `--workers`, which would fall back to its defaults. Attribute equality is
+  typed.
   `NewExporter` opens the fixed template name OTEL_V1. Exporter reads use the
   client's cached read version.
 - OTel span and log exports still admit the whole call before any write;
