@@ -16,6 +16,7 @@ func memoRecordType(name string, nullable bool) *values.RecordType {
 // recordTypesEqual is RecordType.Equals: memoising a pair that compared equal
 // must not make an unequal pair equal, by value or by a reused object.
 func TestRecordTypesEqualMatchesEquals(t *testing.T) {
+	t.Parallel()
 	a, b := memoRecordType("R", true), memoRecordType("R", true)
 	other := memoRecordType("R", false)
 	for range 3 {
@@ -31,7 +32,8 @@ func TestRecordTypesEqualMatchesEquals(t *testing.T) {
 	}
 }
 
-// A full memo starts over and keeps answering correctly.
+// A full memo starts over and keeps answering correctly. Not parallel: it
+// reads the process-wide memo's size, which parallel tests' evaluations move.
 func TestRecordTypesEqualMemoIsBounded(t *testing.T) {
 	keep := make([]*values.RecordType, 0, 2*(recordTypeEqualMemoEntries+8))
 	for range recordTypeEqualMemoEntries + 8 {
