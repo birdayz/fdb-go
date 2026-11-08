@@ -4933,8 +4933,8 @@ one for one, so updating ps.n from [10] to [10, 10] added 10 where Java adds
 nothing, and compared COUNT_NOT_NULL entries by their group alone, so a counted
 value that changed within a group was skipped. Java's rule leaves a count that
 is not the arithmetic count of the record's current entries (the SUM stays 10
-above); Go reproduces it. VALUE and the other standard index types already
-matched.
+above); Go reproduces it. VALUE indexes already matched: their update
+(`RemoveCommonEntries`) drops every shared entry.
 
 Go now matches Java in all of these cases. There is no automatic migration.
 When Go updates or deletes such a record, it evaluates the old record as Java
