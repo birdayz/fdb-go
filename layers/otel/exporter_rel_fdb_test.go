@@ -1667,7 +1667,7 @@ func testRelSpanIndexKeyModel(t *testing.T, cluster string) {
 			if added > int64(prior) {
 				t.Fatalf("fixture %d (moved %v): replacement adds %d bytes to the fresh save's %d, prior cost %d", i, next == movedRow, added, fresh, prior)
 			}
-			records := relRecordClearCost(m.recordsPrefix+packedTupleLen(pk)+relLogSuffixBytes, rec.KeyCount)
+			records := relRecordClearCost(m.recordKeyBytes(pk), rec.KeyCount)
 			if next == row && prior != records {
 				t.Fatalf("fixture %d: an unchanged replacement costs %d, want its record clears %d", i, prior, records)
 			}

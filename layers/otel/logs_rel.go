@@ -52,8 +52,6 @@ const (
 	relLogFixedCost = 1024
 	// relLogSplitBytes is the Record Layer's split record chunk size.
 	relLogSplitBytes = 100_000
-	// relLogSuffixBytes bounds a record key's split suffix.
-	relLogSuffixBytes = 3
 	// fdbMaxKeyBytes is FDB's key size limit.
 	fdbMaxKeyBytes = 10_000
 )
@@ -86,19 +84,11 @@ const (
 type relLogStore struct {
 	store *tenantStore
 	cfg   ExporterConfig
-	rt    *recordlayer.RecordType
-	// recordsPrefix and index[i].prefix are the byte lengths of the store's
-	// records subspace and of each LOGS index subspace.
-	recordsPrefix int
-	index         [len(relLogIndexes)]relIndexSpace
+	// relTable is LOGS, its index spaces in relLogIndexes order.
+	relTable
 	// zlibLevel is the store serializer's deflate level when it is known,
 	// else noZlib: the serialized row is then bounded by its uncompressed size.
 	zlibLevel int
-}
-
-type relIndexSpace struct {
-	idx    *recordlayer.Index
-	prefix int
 }
 
 const noZlib = math.MinInt
@@ -107,20 +97,11 @@ const noZlib = math.MinInt
 // the batching, K and query budgets, and the record compression the store's
 // serializer was built from.
 func newRelLogStore(store *tenantStore, cfg ExporterConfig) (*relLogStore, error) {
-	const op = "log store"
-	md := store.ts.MetaData
-	rt := md.GetRecordType(logsRecordType)
-	if rt == nil {
-		return nil, failf("ownership", op, "%s is not in the store's metadata", logsRecordType)
+	table, err := newRelTable(store.ts, "log store", logsRecordType, relLogIndexes[:])
+	if err != nil {
+		return nil, err
 	}
-	s := &relLogStore{store: store, cfg: cfg, rt: rt, recordsPrefix: len(store.ts.Subspace.Sub(recordlayer.RecordKey).Bytes()), zlibLevel: noZlib}
-	for i, name := range relLogIndexes {
-		idx := md.GetIndex(name)
-		if idx == nil {
-			return nil, failf("ownership", op, "index %s is not in the store's metadata", name)
-		}
-		s.index[i] = relIndexSpace{idx, len(store.ts.Subspace.Sub(recordlayer.IndexKey, idx.SubspaceTupleKey()).Bytes())}
-	}
+	s := &relLogStore{store: store, cfg: cfg, relTable: table, zlibLevel: noZlib}
 	switch {
 	case store.ts.Serializer == nil:
 		s.zlibLevel = 0 // stored uncompressed
@@ -132,12 +113,7 @@ func newRelLogStore(store *tenantStore, cfg ExporterConfig) (*relLogStore, error
 	return s, nil
 }
 
-func (s *relLogStore) primaryKey(eventID string) tuple.Tuple {
-	if s.rt.PrimaryKeyHasRecordTypePrefix() {
-		return tuple.Tuple{s.rt.GetRecordTypeKey(), eventID}
-	}
-	return tuple.Tuple{eventID}
-}
+func (s *relLogStore) primaryKey(eventID string) tuple.Tuple { return s.key(eventID) }
 
 func (s *relLogStore) newWork() *queryWork {
 	return &queryWork{maxCandidates: s.cfg.MaxCandidates, maxBytes: s.cfg.MaxBytes}
@@ -272,11 +248,6 @@ func (s *relLogStore) rowBytes(r *otelv1pb.LOGS, exact bool) (int, error) {
 		return prefix + len(data), nil
 	}
 	return prefix + 5 + buf.Len(), nil
-}
-
-// recordKeyBytes bounds the byte length of a row's record keys.
-func (s *relLogStore) recordKeyBytes(pk tuple.Tuple) int {
-	return s.recordsPrefix + packedTupleLen(pk) + relLogSuffixBytes
 }
 
 // writeCost is the native cost of saving r as a new row: its record chunks
@@ -435,34 +406,14 @@ func (s *relLogStore) admitPriors(ctx context.Context, items []relPreparedLog) e
 	return err
 }
 
-// loadPriors loads the stored rows of items, loadRecordsBatch in flight,
-// and visits each (nil when absent).
+// loadPriors loads the stored rows of items (loadStoredRows) and visits each
+// (nil when absent).
 func (s *relLogStore) loadPriors(store *recordlayer.FDBRecordStore, op string, items []relPreparedLog, visit func(int, *recordlayer.FDBStoredRecord[proto.Message], *otelv1pb.LOGS) error) error {
-	futures := make([]recordlayer.PendingRead[*recordlayer.FDBStoredRecord[proto.Message]], 0, min(loadRecordsBatch, len(items)))
-	for lo := 0; lo < len(items); lo += loadRecordsBatch {
-		hi := min(lo+loadRecordsBatch, len(items))
-		futures = futures[:0]
-		for i := lo; i < hi; i++ {
-			futures = append(futures, store.LoadRecordAsync(items[i].pk, nil))
-		}
-		for k, f := range futures {
-			old, err := f.Get()
-			if err != nil {
-				return err
-			}
-			var row *otelv1pb.LOGS
-			if old != nil {
-				var ok bool
-				if row, ok = old.Record.(*otelv1pb.LOGS); !ok {
-					return failf("ownership", op, "%s record is not the compiled row", logsRecordType)
-				}
-			}
-			if err := visit(lo+k, old, row); err != nil {
-				return err
-			}
-		}
+	pks := make([]tuple.Tuple, len(items))
+	for i, it := range items {
+		pks[i] = it.pk
 	}
-	return nil
+	return loadStoredRows(store, op, logsRecordType, pks, visit)
 }
 
 func partitionRelLogs(items []relPreparedLog, size int) []relLogBatch {

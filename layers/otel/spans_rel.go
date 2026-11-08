@@ -238,40 +238,20 @@ const (
 	spanIdxRefChunks
 )
 
-// spanKeyModel holds the byte lengths of a store's records subspace and SPANS
-// index subspaces, from which priorCost sizes a stored row's keys; err is
-// set when the store's metadata lacks the table or an index.
+// spanKeyModel is SPANS and its index spaces in spanIndexes order, from
+// which priorCost sizes a stored row's keys; err is set when the store's
+// metadata lacks the table or an index.
 type spanKeyModel struct {
-	rt            *recordlayer.RecordType
-	recordsPrefix int
-	index         [len(spanIndexes)]relIndexSpace
-	err           error
+	relTable
+	err error
 }
 
 func newSpanKeyModel(ts *otelsql.TenantStore) spanKeyModel {
-	const op = "span store"
-	m := spanKeyModel{recordsPrefix: len(ts.Subspace.Sub(recordlayer.RecordKey).Bytes())}
-	if m.rt = ts.MetaData.GetRecordType(spansRecordType); m.rt == nil {
-		m.err = failf("ownership", op, "%s is not in the store's metadata", spansRecordType)
-		return m
-	}
-	for i, name := range spanIndexes {
-		idx := ts.MetaData.GetIndex(name)
-		if idx == nil {
-			m.err = failf("ownership", op, "index %s is not in the store's metadata", name)
-			return m
-		}
-		m.index[i] = relIndexSpace{idx, len(ts.Subspace.Sub(recordlayer.IndexKey, idx.SubspaceTupleKey()).Bytes())}
-	}
-	return m
+	table, err := newRelTable(ts, "span store", spansRecordType, spanIndexes[:])
+	return spanKeyModel{relTable: table, err: err}
 }
 
-func (m *spanKeyModel) primaryKey(r *otelv1pb.SPANS) tuple.Tuple {
-	if m.rt.PrimaryKeyHasRecordTypePrefix() {
-		return tuple.Tuple{m.rt.GetRecordTypeKey(), r.TRACE_ID, r.SPAN_ID}
-	}
-	return tuple.Tuple{r.TRACE_ID, r.SPAN_ID}
-}
+func (m *spanKeyModel) primaryKey(r *otelv1pb.SPANS) tuple.Tuple { return m.key(r.TRACE_ID, r.SPAN_ID) }
 
 // indexEntries visits every index entry the Record Layer maintains for row r,
 // OTEL_V1's SPANS indexes: its spanIndexes position, its key columns before
@@ -336,7 +316,7 @@ func (m *spanKeyModel) priorCost(old, next *otelv1pb.SPANS, pk tuple.Tuple, keyC
 	if err := m.indexEntries(next, pk, func(i int, cols tuple.Tuple, _ int) { kept[key(i, cols)] = struct{}{} }); err != nil {
 		return 0, err
 	}
-	cost := relRecordClearCost(m.recordsPrefix+packedTupleLen(pk)+relLogSuffixBytes, keyCount)
+	cost := relRecordClearCost(m.recordKeyBytes(pk), keyCount)
 	err := m.indexEntries(old, pk, func(i int, cols tuple.Tuple, n int) {
 		if _, ok := kept[key(i, cols)]; !ok {
 			cost += relClearCost(n)
@@ -355,53 +335,42 @@ func (w *SpanWriter) fitting(store *recordlayer.FDBRecordStore, spans []relSpan)
 	if w.keys.err != nil {
 		return 0, false, w.keys.err
 	}
-	futures := make([]recordlayer.PendingRead[*recordlayer.FDBStoredRecord[proto.Message]], 0, min(loadRecordsBatch, len(spans)))
-	pks := make([]tuple.Tuple, 0, cap(futures))
+	pks := make([]tuple.Tuple, len(spans))
+	for i, it := range spans {
+		pks[i] = w.keys.primaryKey(it.row.(*otelv1pb.SPANS))
+	}
+	costs := make([]int, len(spans))
+	err = loadStoredRows(store, op, spansRecordType, pks, func(i int, old *recordlayer.FDBStoredRecord[proto.Message], row *otelv1pb.SPANS) error {
+		costs[i] = spans[i].cost
+		if row == nil {
+			return nil
+		}
+		if i == 0 {
+			replaces = true
+		}
+		prior, err := w.keys.priorCost(row, spans[i].row.(*otelv1pb.SPANS), pks[i], old.KeyCount)
+		costs[i] += prior
+		return err
+	})
+	if err != nil {
+		return 0, false, err
+	}
 	total := 0
-	for lo := 0; lo < len(spans); lo += loadRecordsBatch {
-		futures, pks = futures[:0], pks[:0]
-		for i := lo; i < min(lo+loadRecordsBatch, len(spans)); i++ {
-			pk := w.keys.primaryKey(spans[i].row.(*otelv1pb.SPANS))
-			pks = append(pks, pk)
-			futures = append(futures, store.LoadRecordAsync(pk, nil))
+	for i, cost := range costs {
+		if total+cost > exportSpanBudget {
+			return max(i, 1), replaces, nil
 		}
-		for k, f := range futures {
-			i := lo + k
-			old, err := f.Get()
-			if err != nil {
-				return 0, false, err
-			}
-			cost := spans[i].cost
-			if old != nil {
-				row, ok := old.Record.(*otelv1pb.SPANS)
-				if !ok {
-					return 0, false, failf("ownership", op, "%s record is not the compiled row", spansRecordType)
-				}
-				prior, err := w.keys.priorCost(row, spans[i].row.(*otelv1pb.SPANS), pks[k], old.KeyCount)
-				if err != nil {
-					return 0, false, err
-				}
-				cost += prior
-			}
-			if i == 0 {
-				replaces = old != nil
-			}
-			if total+cost > exportSpanBudget {
-				return max(i, 1), replaces, nil
-			}
-			total += cost
-		}
+		total += cost
 	}
 	return len(spans), replaces, nil
 }
 
 // relBatch is one write transaction's spans.
 type relBatch struct {
-	first, next int // positions in the prepared spans
-	spans       []relSpan
-	logical     int64
-	references  int64
-	estimate    int
+	spans      []relSpan
+	logical    int64
+	references int64
+	estimate   int
 }
 
 func (b *relBatch) add(it relSpan) {
@@ -409,7 +378,6 @@ func (b *relBatch) add(it relSpan) {
 	b.logical += it.logical
 	b.references += int64(it.references)
 	b.estimate += it.cost
-	b.next++
 }
 
 func (b relBatch) rows() []proto.Message {
@@ -423,9 +391,8 @@ func (b relBatch) rows() []proto.Message {
 // cut splits b after its first k spans.
 func (b relBatch) cut(k int) (head, tail relBatch) {
 	if k == len(b.spans) {
-		return b, relBatch{first: b.next, next: b.next}
+		return b, relBatch{}
 	}
-	head, tail = relBatch{first: b.first, next: b.first}, relBatch{first: b.first + k, next: b.first + k}
 	for _, it := range b.spans[:k] {
 		head.add(it)
 	}
@@ -440,10 +407,10 @@ func (b relBatch) cut(k int) (head, tail relBatch) {
 func (w *SpanWriter) partition(items []relSpan) []relBatch {
 	var out []relBatch
 	cur := relBatch{}
-	for i, it := range items {
+	for _, it := range items {
 		if len(cur.spans) > 0 && (len(cur.spans) == w.opts.BatchSize || cur.estimate+it.cost > exportSpanBudget) {
 			out = append(out, cur)
-			cur = relBatch{first: i, next: i}
+			cur = relBatch{}
 		}
 		cur.add(it)
 	}

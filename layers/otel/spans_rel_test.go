@@ -21,7 +21,8 @@ import (
 )
 
 // TestRelPartition: batches end at BatchSize spans or at the
-// conservative transaction estimate, whichever comes first.
+// conservative transaction estimate, whichever comes first, and cut splits
+// a batch's spans and sums.
 func TestRelPartition(t *testing.T) {
 	t.Parallel()
 	w := &SpanWriter{opts: SpanWriterOptions{BatchSize: 2}}
@@ -32,28 +33,39 @@ func TestRelPartition(t *testing.T) {
 	for i := range items {
 		items[i] = relSpan{logical: int64(10 * (i + 1)), cost: 100, references: i}
 	}
+	// Batches are in order, so their span counts are their boundaries.
 	type shape struct {
-		first, next, n int
-		logical        int64
-		references     int64
-		estimate       int
+		n          int
+		logical    int64
+		references int64
+		estimate   int
 	}
-	shapes := func(bs []relBatch) []shape {
+	shapes := func(bs ...relBatch) []shape {
 		var out []shape
 		for _, b := range bs {
-			out = append(out, shape{b.first, b.next, len(b.spans), b.logical, b.references, b.estimate})
+			out = append(out, shape{len(b.spans), b.logical, b.references, b.estimate})
 		}
 		return out
 	}
-	want := []shape{{0, 2, 2, 30, 1, 200}, {2, 4, 2, 70, 5, 200}, {4, 5, 1, 50, 4, 100}}
-	if got := shapes(w.partition(items)); !reflect.DeepEqual(got, want) {
+	batches := w.partition(items)
+	want := []shape{{2, 30, 1, 200}, {2, 70, 5, 200}, {1, 50, 4, 100}}
+	if got := shapes(batches...); !reflect.DeepEqual(got, want) {
 		t.Fatalf("size partition\n got %+v\nwant %+v", got, want)
+	}
+	// cut splits a batch's spans and sums; cutting after all of them leaves
+	// an empty tail.
+	head, tail := batches[1].cut(1)
+	if got, want := shapes(head, tail), []shape{{1, 30, 2, 100}, {1, 40, 3, 100}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("cut\n got %+v\nwant %+v", got, want)
+	}
+	if head, tail := batches[1].cut(2); !reflect.DeepEqual(shapes(head, tail), []shape{{2, 70, 5, 200}, {0, 0, 0, 0}}) {
+		t.Fatalf("cut after every span: %+v %+v", head, tail)
 	}
 	// The conservative transaction estimate splits independently of size.
 	w.opts.BatchSize = 64
 	items = []relSpan{{cost: 200000}, {cost: 200000}, {cost: 50000}, {cost: 50000}, {cost: 1}}
-	want = []shape{{0, 1, 1, 0, 0, 200000}, {1, 4, 3, 0, 0, exportSpanBudget}, {4, 5, 1, 0, 0, 1}}
-	if got := shapes(w.partition(items)); !reflect.DeepEqual(got, want) {
+	want = []shape{{1, 0, 0, 200000}, {3, 0, 0, exportSpanBudget}, {1, 0, 0, 1}}
+	if got := shapes(w.partition(items)...); !reflect.DeepEqual(got, want) {
 		t.Fatalf("budget partition\n got %+v\nwant %+v", got, want)
 	}
 }
