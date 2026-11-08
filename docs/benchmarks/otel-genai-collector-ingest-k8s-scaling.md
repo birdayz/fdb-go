@@ -180,7 +180,9 @@ This is the command these runs used, on the custom FDB store. The relational
 store replaced that store (PR #1035), which removed `--backend fdb`,
 `--posting-value-format` and `--hash-bytes`, so the command now exits 2.
 `collector-bench` now takes no `--backend` and always drives `otel.Exporter`
-on OTEL_V1 tenant stores; it does not reproduce this report's store.
+on OTEL_V1 tenant stores; it does not reproduce this report's store. The
+tree tagged `archive/otel-relational/custom-store` still builds that store
+and the harness these runs used; the code links below point there.
 
 The process contains the whole pipeline:
 
@@ -744,7 +746,7 @@ Run history, for completeness:
 Code:
 
 - Custom Collector-model benchmark, rate windows and CPU accounting:
-  [`layers/otel/collector/bench.go`](../../layers/otel/collector/bench.go),
+  [`layers/otel/collector/bench.go`](https://github.com/birdayz/fdb-go/blob/archive/otel-relational/custom-store/layers/otel/collector/bench.go),
   [`layers/otel/collector/bench_cpu.go`](../../layers/otel/collector/bench_cpu.go)
 - Message storage, TEXT index and persist statistics:
   [`layers/otel/messages.go`](https://github.com/birdayz/fdb-go/blob/archive/otel-relational/custom-store/layers/otel/messages.go)

@@ -174,10 +174,12 @@ below; neither publication nor readiness is asserted.
   to 100 ms. The deleted store read at a fresh version.
 - **OTel admission and budgets:** full-text queries can return a budget error
   for raw role-discovery reads that earlier builds undercounted.
-- **SQL auto-commit SELECT:** the catalog read, planning and first page see one
-  read version unless a retryable failure ends the shared transaction; the
-  failed work then reruns in fresh transactions, as every step did before.
-  Java's auto-commit statement has the same structure.
+- **SQL auto-commit SELECT:** the catalog read, planning and a first page that
+  starts within 250 ms see one read version unless a retryable failure ends
+  the shared transaction; the failed work then reruns in fresh transactions,
+  as every step did before. Later pages run their own transactions. Java reads
+  the whole result in one transaction, so this is a divergence (DIVERGENCES.md,
+  "Auto-commit SELECT").
 - **FULLTEXT `OPTIONS` (persisted):** the clause persists the TEXT index options
   `textTokenizerName` and `textTokenizerVersion`, as Java's metadata API sets
   them. A tokenizer registered only in Go makes the whole schema unreadable to
