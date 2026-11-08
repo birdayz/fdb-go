@@ -4894,26 +4894,40 @@ Converting these subspaces to raw bytes discards the guard; application code doi
 raw FDB reads/writes must enforce its own write freeze and prefix choice. See
 [the upgrade procedure](docs/upgrade.md#earlier-go-keyspace-path-prefixes).
 
-## A fan-out composite under an absent parent: earlier Go wrote an all-null entry
+## A fan-out composite under an absent parent: earlier Go's entries and counts
 
 Earlier Go builds evaluated every child of a composite (`Concat`) as a scalar
-first, and a `FanOut` field on a nil message evaluated as one null. So a
-composite holding a `FanOut` child under an absent singular parent, such as
-`Nest("p", Concat(Field("a"), FanOut("tags")))` on a record without `p`,
-yielded one all-null tuple and the index got the entry `(null, null, pk)`.
-Java 4.14.2.0 writes no entry. NestingKeyExpression.java:77-84 evaluates the
-child on the parent's null value. FieldKeyExpression.java:179-180 returns
-getNullResult() for a null message, which is an empty list for FanOut
-(:229-232). ThenKeyExpression.java:90-98 crosses the children, so the product
-is empty. Go now matches Java.
+first, and a field on a nil message evaluated as one null whatever its fan
+type. Under an absent singular parent that gave Java-incompatible results:
+
+- A composite holding a `FanOut` child, such as
+  `Nest("p", Concat(Field("a"), FanOut("tags")))` on a record without `p`,
+  yielded one all-null tuple. A VALUE index got the entry `(null, null, pk)`;
+  a COUNT or COUNT_UPDATES index grouped by it counted the record at
+  `(null, null)`. Java 4.14.2.0 writes no entry and no count.
+  NestingKeyExpression.java:77-84 evaluates the child on the parent's null
+  value. FieldKeyExpression.java:179-180 returns getNullResult() for a null
+  message, which is an empty list for FanOut (:229-232).
+  ThenKeyExpression.java:90-98 crosses the children, so the product is empty,
+  and AtomicMutationIndexMaintainer.java:125-147 mutates once per entry.
+- A `Concatenate` child under the NOT_NULL standin yielded null where Java's
+  getNullResult yields the empty list, which packs as an empty nested tuple.
+
+Separately, an atomic index whose grouping key is a fan-out nesting, such as
+`GroupAll(NestFanOut("ps", Field("a")))`, read only a record's first element:
+COUNT and COUNT_UPDATES counted a record with several elements once, under the
+first element's group, and one with an empty list at `()` when saved but at
+`(null)` when deleted; SUM added only the first element's value. Java mutates once per entry. Go now matches Java in
+all of these cases.
 
 There is no automatic migration. When Go updates or deletes such a record, it
-evaluates the old record to no entries, so the entry an earlier build wrote is
-never cleared, and Go and Java index scans can still return the record. After
-upgrading, rebuild every index whose expression nests such a composite under a
-singular message field. Pinned by
-`pkg/recordlayer/key_expression_fanout_absent_parent_test.go` (evaluation and
-index maintenance).
+evaluates the old record as Java does, so what an earlier build wrote is never
+corrected: a stale VALUE entry stays visible to Go and Java index scans, and a
+count stays off by what the earlier build added. After upgrading, rebuild every
+index whose expression nests such a composite under a singular message field,
+and every atomic index grouped by a fan-out nesting. Pinned by
+`pkg/recordlayer/key_expression_fanout_absent_parent_test.go` (evaluation;
+VALUE, COUNT, COUNT_UPDATES and SUM maintenance; an online rebuild).
 
 ## Native FDB client read hedging
 

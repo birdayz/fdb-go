@@ -228,7 +228,11 @@ func (f *FieldKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], msg pro
 // EvaluateFlat returns the scalar value directly as a single-element []any.
 func (f *FieldKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
 	if msg == nil {
-		return []any{nil}, nil
+		v, err := f.nilMessageScalar()
+		if err != nil {
+			return nil, err
+		}
+		return []any{v}, nil
 	}
 	m := msg.ProtoReflect()
 	fd, err := f.resolveFieldDescriptor(m)
@@ -250,10 +254,25 @@ func (f *FieldKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message]
 	return []any{result}, nil
 }
 
+// nilMessageScalar is getNullResult's one value, for a nil message. FanOut's
+// result is no entry, so it is an error, and the scalar and flat evaluators
+// defer to Evaluate as they do for a repeated field.
+func (f *FieldKeyExpression) nilMessageScalar() (any, error) {
+	switch f.fanType {
+	case FanTypeFanOut:
+		return nil, fmt.Errorf("fan-out field %s of a nil message has no entry", f.fieldName)
+	case FanTypeConcatenate:
+		if f.nullStandin == NullStandinNotNull {
+			return tuple.Tuple{}, nil
+		}
+	}
+	return nil, nil
+}
+
 // EvaluateScalar returns the single scalar value directly — zero allocs for the return.
 func (f *FieldKeyExpression) EvaluateScalar(record *FDBStoredRecord[proto.Message], msg proto.Message) (any, error) {
 	if msg == nil {
-		return nil, nil
+		return f.nilMessageScalar()
 	}
 	m := msg.ProtoReflect()
 	fd, err := f.resolveFieldDescriptor(m)
@@ -1499,7 +1518,8 @@ func (g *GroupingKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message],
 	return g.wholeKey.Evaluate(record, msg)
 }
 
-// EvaluateFlat delegates to the whole key's EvaluateFlat if available.
+// EvaluateFlat is the whole key's one tuple. A whole key yielding no tuple or
+// several (a fan-out) is an error, so callers evaluate its entries instead.
 func (g *GroupingKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
 	if fe, ok := g.wholeKey.(FlatEvaluator); ok {
 		return fe.EvaluateFlat(record, msg)
@@ -1508,8 +1528,8 @@ func (g *GroupingKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Messa
 	if err != nil {
 		return nil, err
 	}
-	if len(tuples) == 0 {
-		return nil, nil
+	if len(tuples) != 1 {
+		return nil, fmt.Errorf("EvaluateFlat: grouping key produced %d tuples, expected 1", len(tuples))
 	}
 	return tuples[0], nil
 }

@@ -141,8 +141,10 @@ func (m *atomicMutationIndexMaintainer) updateInsertOnly(newRecord *FDBStoredRec
 	}
 
 	// Try zero-alloc path: evaluate grouping key fields directly via ScalarEvaluator,
-	// bypassing CompositeKeyExpression.EvaluateFlat's make([]any, 0, N).
-	if gke, ok := m.index.RootExpression.(*GroupingKeyExpression); ok {
+	// bypassing CompositeKeyExpression.EvaluateFlat's make([]any, 0, N). It
+	// reads one group per record, so a whole key that can fan out (no entry,
+	// or several, each counted as Java does) takes the paths below.
+	if gke, ok := m.index.RootExpression.(*GroupingKeyExpression); ok && !createsDuplicatesRec(gke.wholeKey, true) {
 		if ok, err := m.updateInsertOnlyGrouped(gke, newRecord); ok || err != nil {
 			return ok, err
 		}
