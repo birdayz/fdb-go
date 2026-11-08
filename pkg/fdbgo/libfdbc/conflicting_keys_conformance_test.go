@@ -447,11 +447,7 @@ func ckStartCluster(t *testing.T) string {
 		}
 		t.Fatalf("FDB container startup failed: %v", err)
 	}
-	t.Cleanup(func() {
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer stopCancel()
-		foundationdbtc.TerminateT(t, stopCtx, container)
-	})
+	t.Cleanup(func() { foundationdbtc.TeardownT(t, container) })
 	content, err := container.ClusterFile(ctx)
 	if err != nil {
 		t.Fatalf("cluster file: %v", err)

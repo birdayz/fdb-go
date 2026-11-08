@@ -31,13 +31,7 @@ func TestFDB_ChainedCursorEmptyContinuation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cleanupCancel()
-		if err := foundationdbtc.Terminate(cleanupCtx, container); err != nil {
-			t.Error(err)
-		}
-	})
+	t.Cleanup(func() { foundationdbtc.TeardownT(t, container) })
 	cluster, err := container.ClusterFile(ctx)
 	if err != nil {
 		t.Fatal(err)

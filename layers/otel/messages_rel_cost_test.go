@@ -210,11 +210,7 @@ func startCostCluster(b *testing.B) string {
 	if err != nil {
 		b.Fatal(err)
 	}
-	b.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-		_ = container.Terminate(ctx)
-	})
+	b.Cleanup(func() { foundationdbtc.TeardownT(b, container) })
 	wire, err := container.ClusterFile(setup)
 	if err != nil {
 		b.Fatal(err)

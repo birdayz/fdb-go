@@ -198,13 +198,7 @@ func lrBenchCluster(b *testing.B) string {
 		}
 		b.Fatal(err)
 	}
-	b.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-		if err := container.Terminate(ctx); err != nil {
-			b.Error(err)
-		}
-	})
+	b.Cleanup(func() { foundationdbtc.TeardownT(b, container) })
 	wire, err := container.ClusterFile(setup)
 	if err != nil {
 		b.Fatal(err)
