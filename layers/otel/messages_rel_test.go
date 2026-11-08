@@ -316,10 +316,7 @@ func relKey(md *recordlayer.RecordMetaData, op, name string, cols ...tuple.Tuple
 	if rt == nil {
 		return nil, failf("ownership", op, "%s is not in the store's metadata", name)
 	}
-	if rt.PrimaryKeyHasRecordTypePrefix() {
-		return append(tuple.Tuple{rt.GetRecordTypeKey()}, cols...), nil
-	}
-	return tuple.Tuple(cols), nil
+	return recordTypeKey(rt, cols...), nil
 }
 
 // unpackKey yields space.Unpack's elements and errors for the keys of the
