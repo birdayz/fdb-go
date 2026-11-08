@@ -2657,15 +2657,22 @@ tracked only.
 
 ### HN release evidence
 
-- [ ] Exercise the opt-in `ci.yml` full dispatch on its candidate branch and then the
+- [x] Exercise the opt-in `ci.yml` full dispatch on its candidate branch and then the
   exact merged master release cut. Require the full job to execute, nonempty target
   and artifact populations, unchanged input manifests, and matching tested SHA;
   report executed versus cached tests. Ordinary CI and local `just test` are not
-  substitutes for this gate (`RELEASE.md`).
-- [ ] Complete the release-cut checklist, dry-run the release workflow on that SHA,
+  substitutes for this gate (`RELEASE.md`). Done: candidate run 41871814905 (#1032)
+  and cut `aef9515` run 41882986728 (#1033), all eight jobs; the cut's full lane ran
+  239 targets (1 executed, 238 cached) on unchanged input manifests.
+- [x] Complete the release-cut checklist, dry-run the release workflow on that SHA,
   and verify clean revision installation and examples. The public installer and
   tagged `go install` need a root release containing `cmd/fdb`; obtain explicit
-  authorization before tagging, then verify the actual published artifacts.
+  authorization before tagging, then verify the actual published artifacts. Done:
+  dry run 41884738373 on `aef9515`; v0.2.0 tagged with owner authorization and
+  published 2026-11-07 (run 42423442734); a cold proxy install, the installer,
+  checksums and attestations of the published release were verified. The first
+  fresh-cache install of the untagged cut revision hit a proxy fetch timeout and
+  later recovered; its cause is unknown (#1033).
 
 ### Follow-ups from the fix PRs' reviews
 

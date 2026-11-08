@@ -12,9 +12,9 @@ not additions to that release.
 ## CLI name, commands, and configuration
 
 v0.2.0 replaces `frl` with the root module's `cmd/fdb`
-package. Install it with `go install fdb.dev/cmd/fdb@v0.2.0` or the
-[installer](https://fdb.dev/install.sh), or build a checkout with
-`go build -o .tmpbuild/fdb ./cmd/fdb`. Old nested-module releases do not contain
+package. Install it with `go install fdb.dev/cmd/fdb@v0.2.0` or
+`curl -fsSL https://fdb.dev/install.sh | sh -s -- --version v0.2.0`, or build a
+checkout with `go build -o .tmpbuild/fdb ./cmd/fdb`. Old nested-module releases do not contain
 the new CLI. Remove an old `fdb.dev/cmd/frl` tool dependency if one was added to
 an application's `go.mod`.
 

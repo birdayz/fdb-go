@@ -24,7 +24,7 @@ installer verifies:
 curl -fsSL https://fdb.dev/install.sh | sh
 ```
 
-or build the same version with the Go toolchain:
+or install the latest tagged version with the Go toolchain:
 
 ```sh
 go install fdb.dev/cmd/fdb@latest
