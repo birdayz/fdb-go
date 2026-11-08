@@ -68,9 +68,7 @@ func TestCancelledStartupKeepsDiagnosticsAndCleansUp(t *testing.T) {
 	var cleanupContextOK bool
 	t.Cleanup(func() {
 		if captured != nil {
-			if err := Teardown(&Container{Container: captured}); err != nil {
-				t.Error(err)
-			}
+			TeardownT(t, &Container{Container: captured})
 		}
 	})
 	_, err = Run(ctx, "", testcontainers.WithEnv(map[string]string{"STARTUP_CANARY": canary}),

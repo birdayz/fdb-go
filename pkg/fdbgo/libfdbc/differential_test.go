@@ -695,11 +695,7 @@ func startCluster(t *testing.T) string {
 		}
 		t.Fatalf("FDB container startup failed: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := foundationdbtc.Teardown(container); err != nil {
-			t.Error(err)
-		}
-	})
+	t.Cleanup(func() { foundationdbtc.TeardownT(t, container) })
 	content, err := container.ClusterFile(ctx)
 	if err != nil {
 		t.Fatalf("cluster file: %v", err)

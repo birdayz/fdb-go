@@ -93,7 +93,7 @@ func TestThing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { c.Terminate(context.Background()) })
+	t.Cleanup(func() { foundationdbtc.TeardownT(t, c) })
 
 	clusterFile, err := c.ClusterFilePath(ctx)
 	if err != nil {

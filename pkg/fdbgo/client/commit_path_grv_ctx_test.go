@@ -161,11 +161,7 @@ func newGRVBlockTestDB(t *testing.T, ctx context.Context) (*Database, *grvBlockD
 		t.Fatalf("start FDB container: %v", err)
 	}
 	// Terminate on a FRESH context (t.Cleanup runs after the caller's cancel).
-	t.Cleanup(func() {
-		if err := tcfdb.Teardown(container); err != nil {
-			t.Error(err)
-		}
-	})
+	t.Cleanup(func() { tcfdb.TeardownT(t, container) })
 
 	connStr, err := container.ClusterFile(ctx)
 	if err != nil {

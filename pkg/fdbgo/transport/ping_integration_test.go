@@ -26,11 +26,7 @@ func TestPingRequest_RealServerBidirectional(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if err := foundationdbtc.Teardown(server); err != nil {
-			t.Error(err)
-		}
-	})
+	t.Cleanup(func() { foundationdbtc.TeardownT(t, server) })
 	host, err := server.Host(setup)
 	if err != nil {
 		t.Fatal(err)

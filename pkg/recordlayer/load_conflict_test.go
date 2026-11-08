@@ -28,11 +28,7 @@ func TestFDB_RecordLoadConflicts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if err := foundationdbtc.Teardown(container); err != nil {
-			t.Error(err)
-		}
-	})
+	t.Cleanup(func() { foundationdbtc.TeardownT(t, container) })
 	cluster, err := container.ClusterFile(ctx)
 	if err != nil {
 		t.Fatal(err)

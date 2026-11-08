@@ -68,11 +68,7 @@ func selConfSetup(t *testing.T, ctx context.Context) *selConfEnv {
 	if err != nil {
 		t.Fatalf("cluster startup: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := tcfdb.Teardown(container); err != nil {
-			t.Error(err)
-		}
-	})
+	t.Cleanup(func() { tcfdb.TeardownT(t, container) })
 	content, err := container.ClusterFile(startup)
 	if err != nil {
 		t.Fatal(err)

@@ -153,11 +153,7 @@ func startCRCluster(t *testing.T, ctx context.Context, f *crFixture, opts ...tes
 		}
 		t.Fatalf("multi-process cluster startup: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := foundationdbtc.Teardown(container); err != nil {
-			t.Error(err)
-		}
-	})
+	t.Cleanup(func() { foundationdbtc.TeardownT(t, container) })
 	replicas := 1
 	if f.double {
 		replicas = 2

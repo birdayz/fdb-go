@@ -23,11 +23,7 @@ func TestExecOutputEndsAtTheContextDeadline(t *testing.T) {
 		}
 		t.Fatalf("FDB container startup failed: %v", err)
 	}
-	defer func() {
-		if err := Teardown(container); err != nil {
-			t.Error(err)
-		}
-	}()
+	defer TeardownT(t, container)
 
 	short, shortCancel := context.WithTimeout(ctx, 2*time.Second)
 	defer shortCancel()

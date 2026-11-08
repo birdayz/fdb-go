@@ -2514,11 +2514,7 @@ func TestCollectorTracesExporterRealFDB(t *testing.T) {
 		}
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if err := foundationdbtc.Teardown(container); err != nil {
-			t.Error(err)
-		}
-	})
+	t.Cleanup(func() { foundationdbtc.TeardownT(t, container) })
 	wire, err := container.ClusterFile(setup)
 	if err != nil {
 		t.Fatal(err)

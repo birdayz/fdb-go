@@ -43,6 +43,18 @@ func Teardown(c Terminator) error {
 	return Terminate(ctx, c)
 }
 
+// TeardownT runs Teardown and fails the test or benchmark if cleanup fails.
+func TeardownT(t interface {
+	Helper()
+	Errorf(string, ...any)
+}, c Terminator,
+) {
+	t.Helper()
+	if err := Teardown(c); err != nil {
+		t.Errorf("%v", err)
+	}
+}
+
 // TerminateT stops c and fails the test or benchmark if cleanup fails.
 // Call it from a defer or Cleanup callback with the existing cleanup context.
 func TerminateT(t interface {

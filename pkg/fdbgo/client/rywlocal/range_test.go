@@ -240,11 +240,7 @@ func rangeCluster(t *testing.T) *client.ClusterFile {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if err := foundationdbtc.Teardown(container); err != nil {
-			t.Error(err)
-		}
-	})
+	t.Cleanup(func() { foundationdbtc.TeardownT(t, container) })
 	cluster, err := container.ClusterFile(setup)
 	if err != nil {
 		t.Fatal(err)
