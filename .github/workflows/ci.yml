@@ -222,7 +222,11 @@ jobs:
       - name: Java conformance tests
         id: test
         run: |
-          N=$(bazelisk query --config=ci 'attr(tags, conformance_java, tests(//...))' 2>/dev/null | wc -l)
+          if ! targets=$(bazelisk query --config=ci 'attr(tags, conformance_java, tests(//...))'); then
+            echo "::error::conformance_java target query failed"
+            exit 1
+          fi
+          N=$(printf '%s\n' "$targets" | sed '/^$/d' | wc -l)
           if [ "$N" -eq 0 ]; then echo "::error::no conformance_java test targets — gate would be a no-op"; exit 1; fi
           echo "conformance_java targets: $N"
           bazelisk test --config=ci //... --build_tests_only --define gotags=fdbdocker --test_tag_filters=conformance_java,-stress --build_event_json_file=.bazel-bep.jsonl
@@ -625,8 +629,15 @@ jobs:
             done
             echo "$expr"
           }
-          q() { bazelisk --output_base="$RACE_BASE" --host_jvm_args=-Xmx3g query --config=ci "tests($(qexpr "$1"))" 2>/dev/null | wc -l; }
-          NR=$(q "$REL_SCOPE"); NC=$(q "$CLIENT_SCOPE"); NX=$(q "$CASCADES_SCOPE")
+          q() {
+            local targets
+            if ! targets=$(bazelisk --output_base="$RACE_BASE" --host_jvm_args=-Xmx3g query --config=ci "tests($(qexpr "$2"))"); then
+              echo "::error::$1 race scope target query failed" >&2
+              exit 1
+            fi
+            printf '%s\n' "$targets" | sed '/^$/d' | wc -l
+          }
+          NR=$(q relational "$REL_SCOPE"); NC=$(q client "$CLIENT_SCOPE"); NX=$(q cascades "$CASCADES_SCOPE")
           if [ "$NR" -eq 0 ]; then echo "::error::relational race scope resolved 0 test targets — gate would be a no-op"; exit 1; fi
           if [ "$NC" -eq 0 ]; then echo "::error::client race scope resolved 0 test targets — gate would be a no-op"; exit 1; fi
           if [ "$NX" -eq 0 ]; then echo "::error::cascades race scope resolved 0 test targets — gate would be a no-op"; exit 1; fi

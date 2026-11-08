@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestPrecommitFastLane(t *testing.T) {
@@ -414,4 +416,150 @@ func laneMetadata(t *testing.T, out []byte) string {
 		t.Fatalf("evidence metadata: %v (output %q)", err, out)
 	}
 	return string(meta)
+}
+
+func ciJobStepRun(workflow, jobName, stepName string) (string, error) {
+	var wf struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Name string `yaml:"name"`
+				Run  string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal([]byte(workflow), &wf); err != nil {
+		return "", err
+	}
+	for _, s := range wf.Jobs[jobName].Steps {
+		if s.Name == stepName {
+			return s.Run, nil
+		}
+	}
+	return "", fmt.Errorf("missing step %q in job %q", stepName, jobName)
+}
+
+// TestCIQueryTargetGates verifies that the Java-conformance and race CI steps distinguish
+// a failed `bazelisk query` from a query that succeeds with zero targets, and includes a
+// positive-control mutation restoring `2>/dev/null | wc -l`.
+func TestCIQueryTargetGates(t *testing.T) {
+	t.Parallel()
+	workflow := readRepoFile(t, ".github/workflows/ci.yml")
+	javaStep, err := ciJobStepRun(workflow, "conformance-java", "Java conformance tests")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raceStep, err := ciJobStepRun(workflow, "race", "-race tests (SQL layer + client + cascades) — isolated output_base")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const bazelStub = `#!/bin/bash
+set -eu
+cmd=""
+for arg in "$@"; do
+  case "$arg" in
+    shutdown|query|test) cmd="$arg"; break ;;
+  esac
+done
+if [ "$cmd" = shutdown ]; then
+  exit 0
+fi
+if [ "$cmd" = query ]; then
+  case "$*" in
+    *--output=xml*) printf '<query/>\n'; exit 0 ;;
+    *conformance_java*) scope="java" ;;
+    *//pkg/relational/*) scope="relational" ;;
+    *//pkg/fdbgo/client/*) scope="client" ;;
+    *//pkg/recordlayer/query/plan/cascades/*) scope="cascades" ;;
+    *) echo "unexpected query: $*" >&2; exit 91 ;;
+  esac
+  if [ "${FAIL_SCOPE:-}" = "$scope" ]; then
+    echo "ERROR: fetch failed for $scope" >&2
+    exit 37
+  fi
+  if [ "${EMPTY_SCOPE:-}" = "$scope" ]; then
+    exit 0
+  fi
+  printf '//%s:a_test\n//%s:b_test\n' "$scope" "$scope"
+  exit 0
+fi
+if [ "$cmd" = test ]; then
+  printf '%s\n' "$*" >> "$TEST_CALLS"
+  exit 0
+fi
+exit 91
+`
+
+	runStep := func(t *testing.T, script string, env ...string) (string, string, error) {
+		t.Helper()
+		dir := t.TempDir()
+		writeBuildStub(t, filepath.Join(dir, "bazelisk"), bazelStub)
+		calls := filepath.Join(dir, "test.calls")
+		ghEnv := filepath.Join(dir, "github.env")
+		// ci.yml has no `defaults.run.shell`, so GitHub Actions runs `/usr/bin/bash -e {0}`
+		// without `-o pipefail`.
+		cmd := exec.Command("bash", "-e", "-c", script)
+		cmd.Dir = dir
+		cmd.Env = append(append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "TEST_CALLS="+calls, "GITHUB_ENV="+ghEnv), env...)
+		out, runErr := cmd.CombinedOutput()
+		gotCalls, readErr := os.ReadFile(calls)
+		if readErr != nil && !os.IsNotExist(readErr) {
+			t.Fatal(readErr)
+		}
+		return string(out), string(gotCalls), runErr
+	}
+
+	t.Run("java_conformance", func(t *testing.T) {
+		t.Parallel()
+		out, calls, err := runStep(t, javaStep)
+		if err != nil || !strings.Contains(out, "conformance_java targets: 2\n") || !strings.Contains(calls, "--test_tag_filters=conformance_java,-stress") {
+			t.Fatalf("ok run: err=%v calls=%q out=\n%s", err, calls, out)
+		}
+		out, calls, err = runStep(t, javaStep, "EMPTY_SCOPE=java")
+		if err == nil || !strings.Contains(out, "::error::no conformance_java test targets — gate would be a no-op") || calls != "" {
+			t.Fatalf("empty run: err=%v calls=%q out=\n%s", err, calls, out)
+		}
+		out, calls, err = runStep(t, javaStep, "FAIL_SCOPE=java")
+		if err == nil || !strings.Contains(out, "::error::conformance_java target query failed") || !strings.Contains(out, "ERROR: fetch failed for java") || strings.Contains(out, "gate would be a no-op") || calls != "" {
+			t.Fatalf("fail run: err=%v calls=%q out=\n%s", err, calls, out)
+		}
+		const oldJava = "if ! targets=$(bazelisk query --config=ci 'attr(tags, conformance_java, tests(//...))'); then\n  echo \"::error::conformance_java target query failed\"\n  exit 1\nfi\nN=$(printf '%s\\n' \"$targets\" | sed '/^$/d' | wc -l)"
+		if strings.Count(javaStep, oldJava) != 1 {
+			t.Fatalf("javaStep did not match mutation target once:\n%s", javaStep)
+		}
+		mutated := strings.Replace(javaStep, oldJava, "N=$(bazelisk query --config=ci 'attr(tags, conformance_java, tests(//...))' 2>/dev/null | wc -l)", 1)
+		out, _, err = runStep(t, mutated, "FAIL_SCOPE=java")
+		if err == nil || !strings.Contains(out, "gate would be a no-op") {
+			t.Fatalf("mutated javaStep did not misreport query failure as no-op: err=%v out=\n%s", err, out)
+		}
+	})
+
+	t.Run("race_scopes", func(t *testing.T) {
+		t.Parallel()
+		out, calls, err := runStep(t, raceStep)
+		if err != nil || !strings.Contains(out, "race scope: relational=2 client=2 cascades=2 test targets\n") || len(strings.Split(strings.TrimSpace(calls), "\n")) != 3 {
+			t.Fatalf("ok run: err=%v calls=%q out=\n%s", err, calls, out)
+		}
+		for _, scope := range []string{"relational", "client", "cascades"} {
+			out, calls, err := runStep(t, raceStep, "EMPTY_SCOPE="+scope)
+			wantEmpty := "::error::" + scope + " race scope resolved 0 test targets — gate would be a no-op"
+			if err == nil || !strings.Contains(out, wantEmpty) || calls != "" {
+				t.Fatalf("empty %s: err=%v calls=%q out=\n%s", scope, err, calls, out)
+			}
+			out, calls, err = runStep(t, raceStep, "FAIL_SCOPE="+scope)
+			wantFail := "::error::" + scope + " race scope target query failed"
+			if err == nil || !strings.Contains(out, wantFail) || !strings.Contains(out, "ERROR: fetch failed for "+scope) || strings.Contains(out, "gate would be a no-op") || calls != "" {
+				t.Fatalf("fail %s: err=%v calls=%q out=\n%s", scope, err, calls, out)
+			}
+		}
+		const oldQ = "q() {\n  local targets\n  if ! targets=$(bazelisk --output_base=\"$RACE_BASE\" --host_jvm_args=-Xmx3g query --config=ci \"tests($(qexpr \"$2\"))\"); then\n    echo \"::error::$1 race scope target query failed\" >&2\n    exit 1\n  fi\n  printf '%s\\n' \"$targets\" | sed '/^$/d' | wc -l\n}"
+		if strings.Count(raceStep, oldQ) != 1 {
+			t.Fatalf("raceStep did not match mutation target once:\n%s", raceStep)
+		}
+		mutated := strings.Replace(raceStep, oldQ, "q() { bazelisk --output_base=\"$RACE_BASE\" --host_jvm_args=-Xmx3g query --config=ci \"tests($(qexpr \"$2\"))\" 2>/dev/null | wc -l; }", 1)
+		out, _, err = runStep(t, mutated, "FAIL_SCOPE=client")
+		if err == nil || !strings.Contains(out, "gate would be a no-op") {
+			t.Fatalf("mutated raceStep did not misreport query failure as no-op: err=%v out=\n%s", err, out)
+		}
+	})
 }
