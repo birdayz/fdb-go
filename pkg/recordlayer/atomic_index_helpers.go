@@ -194,7 +194,7 @@ func updateWhileWriteOnlyNonIdempotent(
 	return updateFunc(oldRecord, newRecord)
 }
 
-// evaluateGroupingKeysNotNull extracts the counted entries' whole keys from a
+// evaluateCountedEntriesNotNull extracts the counted entries' whole keys from a
 // record, its first groupingCount columns being an entry's group, filtering
 // out any tuples where the GROUPED (trailing) columns contain a
 // NullStandin.NULL.
@@ -217,7 +217,7 @@ func updateWhileWriteOnlyNonIdempotent(
 // proto structurally: a structural walk cannot see fan-out (a repeated field
 // with no elements yields zero tuples, not a null one) and cannot tell a
 // grouping column from a grouped one.
-func evaluateGroupingKeysNotNull(store IndexStoreContext, index *Index, record *FDBStoredRecord[proto.Message], maintained IndexValues) ([]tuple.Tuple, error) {
+func evaluateCountedEntriesNotNull(store IndexStoreContext, index *Index, record *FDBStoredRecord[proto.Message], maintained IndexValues) ([]tuple.Tuple, error) {
 	tuples, err := maintainedKeyTuples(store, index, record, maintained)
 	if err != nil {
 		return nil, err

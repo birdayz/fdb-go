@@ -54,12 +54,16 @@ type atomicMutationEntry struct {
 	groupKey tuple.Tuple
 	param    []byte // FDB mutation parameter bytes (insert direction)
 	// key is the whole index entry key, the grouping then the grouped
-	// columns, which removeCommon compares; nil when it is groupKey (COUNT,
-	// COUNT_UPDATES: no grouped columns).
+	// columns, which removeCommonAtomicEntries compares. COUNT_NOT_NULL and
+	// SUM set it; COUNT has no grouped columns, so its key is groupKey.
+	// COUNT_UPDATES and MIN/MAX_EVER, which never call removeCommonAtomicEntries,
+	// leave it nil although MIN/MAX_EVER have a grouped column.
 	key tuple.Tuple
 }
 
-// entryKey is Java's IndexEntry key for e.
+// entryKey is Java's IndexEntry key for an entry of COUNT, COUNT_NOT_NULL or
+// SUM, the types that call removeCommonAtomicEntries; for MIN/MAX_EVER it is
+// only the group.
 func (e atomicMutationEntry) entryKey() tuple.Tuple {
 	if e.key != nil {
 		return e.key
@@ -136,7 +140,7 @@ type countNotNullMutation struct {
 }
 
 func (m *countNotNullMutation) evaluateEntries(store IndexStoreContext, record *FDBStoredRecord[proto.Message]) ([]atomicMutationEntry, error) {
-	keys, err := evaluateGroupingKeysNotNull(store, m.index, record, indexValuesFor(store, m.index, record))
+	keys, err := evaluateCountedEntriesNotNull(store, m.index, record, indexValuesFor(store, m.index, record))
 	if err != nil {
 		return nil, err
 	}
