@@ -2331,12 +2331,12 @@ func (r *paginatingRows) fetchPage() error {
 	// Every statement kind joins the explicit transaction captured at Execute
 	// time (r.tx) — SELECT included, which is what gives an explicit
 	// transaction read-your-writes and read conflict ranges (RFC-198
-	// Decision 1). With no explicit transaction (r.tx == nil) each page runs
-	// in its own auto-commit transaction via DB.Run, unchanged. A captured
+	// Decision 1). With no explicit transaction (r.tx == nil) the first page
+	// runs in the transaction its planning read in when that is still usable
+	// (statement_read.go), and commits it before the page is published; every
+	// other page runs in its own auto-commit transaction via DB.Run. A captured
 	// transaction that has since ended is a loud 25F01, never a silent fresh
-	// transaction (Decision 3). An auto-commit statement's first page runs in
-	// the transaction its planning read in when that is still usable
-	// (statement_read.go), and commits it before the page is published.
+	// transaction (Decision 3).
 	_, txErr := c.runPage(r.ctx, r.tx, r.options(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		if attempts > 0 {
 			// Java's ThrottledRetryingIterator decreases work on every failed
@@ -2370,8 +2370,10 @@ func (r *paginatingRows) fetchPage() error {
 		r.scratch.BeginPage()
 
 		// One store per subspace per transaction, reused by every page
-		// (RFC-198 Decision 10) — in auto-commit this still builds a fresh
-		// store per page, because there each page IS a transaction.
+		// (RFC-198 Decision 10). In auto-commit a first page in the shared
+		// transaction reuses the store planning opened there
+		// (statement_read.go); any other page, its own transaction, builds a
+		// fresh one.
 		store, storeErr := c.storeIn(rctx, r.tx, r.ss)
 		if storeErr != nil {
 			return nil, storeErr

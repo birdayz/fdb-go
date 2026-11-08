@@ -51,9 +51,12 @@ import (
 //
 // Transaction model:
 //
-//	Auto-commit: every statement runs in its own FDB transaction. A DML
+//	Auto-commit: every statement runs in its own FDB transactions. A DML
 //	statement's is opened by beginTransaction and committed once, never
-//	replayed; a DDL statement and each result page run through fdbDB.Run().
+//	replayed; a DDL statement runs through fdbDB.Run(). A query's catalog
+//	read, planning and first page share one transaction, which the first
+//	page commits, when that page starts within statementReadMaxAge
+//	(statement_read.go); any other page runs through fdbDB.Run().
 //	Explicit transaction: BeginTx opens an FDB transaction; all statements in
 //	the transaction share it. Commit/Rollback close it.
 type EmbeddedConnection struct {
