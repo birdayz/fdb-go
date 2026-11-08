@@ -487,6 +487,7 @@ benchmark's output lines as recovered from the stream's session log.
 
 - **CPU** per run pair is 0.39–0.45× and bytes and p50 are at most 1.02×, so every G2B criterion (each ≤ 1.10×) passes.
 - **p99** of 400 reads: 2.3–8.0 ms for the custom store and 1.5–5.5 ms for the relational store.
+- **Baseline:** both stores in one binary at `g2b-logs`, a same-stack comparison, not the merge-base. Log ingest CPU and bytes per log were not measured against the merge-base; "G3 at the merge-base" covers only the log query class.
 - **Scope:** the RFC's G2B row names collector-bench's logs; this benchmark exports logs alone. The collector bench's `correlated_logs_by_trace` class is in G3 (0.93× post-ingest) and the quiesced gate (0.89× and 0.98×).
 
 ### Messages through the replacement (R1, R4)
@@ -927,8 +928,9 @@ relational store.
 CF=$(bazelisk run //cmd/fdb -- dev up --name otelcmp --port 4510)
 bazelisk build //layers/otel/cmd/otelbench
 B=bazel-bin/layers/otel/cmd/otelbench/otelbench_/otelbench
-F="--seed 283 --count 100000 --tenants 10 --attrs 8 --match-every 100 --order time --cluster-file $CF"
-$B --backend fdb --mode ingest $F --workers 8 --batch 32 --save-mode batch --run fdb_r1 --output fdb-ingest.json
+F="--seed 283 --count 100000 --tenants 10 --attrs 8 --match-every 100 --cluster-file $CF"
+# The fdb line runs only on an archived tree (e.g. archive/otel-relational/merge-base).
+$B --backend fdb --order time --mode ingest $F --workers 8 --batch 32 --save-mode batch --run fdb_r1 --output fdb-ingest.json
 $B --backend sql --mode ingest $F --workers 8 --batch 32 --save-mode batch --run sql_r1 --output sql-ingest.json
 $B --backend sql --mode audit $F --run sql_r1 --output sql-audit.json
 $B --backend sql --mode query $F --suite all --iterations 600 --run sql_r1 --output sql-q.json
