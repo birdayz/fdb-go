@@ -138,6 +138,7 @@ filegroup(
 )
 BUILDEOF""",
     ],
+    integrity = "sha256-XlpcbZ0Of1EIYaqKo58A/w81rQu7UzQCB8+d383ycwA=",
     strip_prefix = "foundationdb-7.3.77",
     urls = ["https://github.com/apple/foundationdb/archive/refs/tags/7.3.77.tar.gz"],
 )

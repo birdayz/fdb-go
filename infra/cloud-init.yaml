@@ -94,7 +94,7 @@ write_files:
       # fetch-verified.sh URL SHA256 DEST
       set -euo pipefail
       url="$1"; sha="$2"; dest="$3"
-      curl -fsSL -o "$dest" "$url"
+      curl -fsSL --retry 8 --retry-max-time 600 --connect-timeout 15 --speed-limit 1024 --speed-time 60 -o "$dest" "$url"
       echo "$sha  $dest" | sha256sum -c - \
         || { echo "::error::checksum mismatch for $url (expected $sha)"; exit 1; }
 
