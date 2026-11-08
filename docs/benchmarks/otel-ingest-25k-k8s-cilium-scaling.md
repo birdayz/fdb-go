@@ -243,6 +243,11 @@ env GOMAXPROCS=16 otel-demo --backend fdb --order time --run <run> --seed 283 \
   --bulk-index-conflicts=true --hash-bytes 8 --mode ingest --timeout 120s
 ```
 
+This is the command these runs used, on the custom FDB store. The relational
+store replaced that store (PR #1035), which removed `--backend fdb`,
+`--diagnostics`, `--posting-value-format` and `--hash-bytes` from otelbench
+(`otel-demo` here), so the command now exits 2. The tree tagged `archive/otel-relational/custom-store` still builds that store.
+
 `audit` and `query --suite all --iterations 1600` ran with the same identity
 after drain. Workers prepare bounded, disjoint batches outside the retry
 closure. Each batch is one `db.Run` transaction with these steps:
