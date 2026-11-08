@@ -162,7 +162,7 @@ func qrTyped(scope string, kv *commonpb.KeyValue) (Attribute, bool) {
 	default:
 		return a, false
 	}
-	return a, len(a.Key) <= maxIndexedKeyBytes && len(a.Value) <= maxIndexedValueBytes
+	return a, len(a.Key) <= otelsql.MaxAttributeKeyBytes && len(a.Value) <= otelsql.MaxAttributeValueBytes
 }
 
 // qrFixture lists every span of rss with the set of typed attributes (D1) its
@@ -362,8 +362,8 @@ func testRelSameSpanTyped(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 	r := h.open(t, ctx, nil)
-	l1 := strings.Repeat("a", maxIndexedKeyBytes) + "-one"
-	l2 := strings.Repeat("a", maxIndexedKeyBytes) + "-two"
+	l1 := strings.Repeat("a", otelsql.MaxAttributeKeyBytes) + "-one"
+	l2 := strings.Repeat("a", otelsql.MaxAttributeKeyBytes) + "-two"
 	T := func(n int) string { return qaID(n, 16) }
 	S := func(n int) string { return qaID(n, 8) }
 	kvs := func(long string, ratio float64, ok bool) []*commonpb.KeyValue {

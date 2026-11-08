@@ -6,7 +6,7 @@ go_library(
     importpath = "fdb.dev/layers/otel/otelsql/cmd/genotelv1",
     visibility = ["//visibility:private"],
     deps = [
-        "//layers/otel/otelsql",
+        "//layers/otel/otelsql/otelddl",
         "//pkg/relational/core/embedded",
         "@org_golang_google_protobuf//cmd/protoc-gen-go/internal_gengo",
         "@org_golang_google_protobuf//compiler/protogen",

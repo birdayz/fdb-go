@@ -19,6 +19,7 @@ go_library(
     deps = [
         "//internal/unicode15",
         "//internal/unicode15/text/unicode/norm",
+        "//layers/otel/otelsql/otelddl",
         "//layers/otel/otelsql/otelv1pb",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/fdbgo/fdb/tuple",
