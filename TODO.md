@@ -3026,6 +3026,9 @@ The regressions below now pass: `just test` passed 179 targets (3 executed,
 176 cached), including all six new real-FDB ready/interrupted-ingest Drop cases
 with no skips and the 13-case campaign suite. Source inputs were frozen around
 the run. This is fast-lane validation, not full-suite or 100M-scale evidence.
+The two Record Layer adapter regressions (F2, F3) covered the deleted custom
+store (`FDBBackend`) and were removed with it in phase 3B. The sql backend has
+no loading manifest; its `Drop` is SQL `DROP DATABASE` of the run's database.
 
 - [x] **Campaign shared-lock exclusion — contention regression (review F1).**
   `layers/otel/bench/local_campaign_test.sh` uses an uncontested private lock, so
@@ -3654,7 +3657,9 @@ these claims; the implementation notes below are not controlled comparisons.
   a Java-interoperable serializer and verify exporter writes through SQL reads.
   Delivered: LOGS and MESSAGE_TRACES rows, `zlib-1` default;
   `TestRelLogsRealFDB`, SQL reads in `TestFDB_SQLBackend` and
-  `TestFDB_OtelTemplateV1`, Java reads in `OtelTemplateOverlayJavaProbe`.
+  `TestFDB_OtelTemplateV1`, SQL reads of Exporter-written LOGS, MESSAGES and
+  MESSAGE_TRACES in `TestRelExporterRealFDB/logs_messages_sql`, Java reads in
+  `OtelTemplateOverlayJavaProbe`.
 - [ ] Add metrics tables in the same tenant store, then span/log/message/metric
   join regressions; the v1 template has no metrics table yet (RFC
   relational-exporter-migration §4.3, D9).

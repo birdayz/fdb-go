@@ -198,9 +198,10 @@ below; neither publication nor readiness is asserted.
   atomic indexes grouped by a fan-out nesting, and SUM or COUNT_NOT_NULL
   indexes over a fan-out that earlier Go updated (DIVERGENCES.md, "A fan-out
   composite under an absent parent").
-- Apart from the entries above, persisted Record Layer and SQL bytes and FDB
-  client option semantics are unchanged; the Exporter uses the existing
-  GRV-cache option.
+- Apart from the entries above, the relational OTel store change (PR #1035)
+  leaves persisted Record Layer and SQL bytes and FDB client option semantics
+  unchanged; the Exporter uses the existing GRV-cache option. The entries
+  below are from earlier changes.
 - **Schema-template metadata:** Go-written `MetaData.record_types` now follows
   Java's two-stage HashMap iteration order instead of union-declaration order.
   Already-stored templates retain their old order; this does not rewrite them.
