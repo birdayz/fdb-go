@@ -25,8 +25,12 @@ ensure-buf:
         exit 0
     fi
     mkdir -p .tools
-    curl -fsSL -o "$BUF" "https://github.com/bufbuild/buf/releases/download/v{{BUF_VERSION}}/buf-$(uname -s)-$(uname -m)"
-    chmod +x "$BUF"
+    # GitHub release downloads can 5xx for minutes; a failed fetch must not replace $BUF.
+    tmp=$(mktemp .tools/buf.XXXXXX)
+    trap 'rm -f "$tmp"' EXIT
+    curl -fsSL --retry 8 --retry-max-time 600 --connect-timeout 15 -o "$tmp" "https://github.com/bufbuild/buf/releases/download/v{{BUF_VERSION}}/buf-$(uname -s)-$(uname -m)"
+    chmod 755 "$tmp"
+    mv -f "$tmp" "$BUF"
 
 # Regenerate protobuf code + gomock mocks + ANTLR parser. All three are
 # committed to git (clean + regenerate, same pattern). CI re-runs

@@ -11,12 +11,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
 const installerVersion = "v0.2.0"
+
+// installerMinRetries is the least curl --retry every installer fetch must pass: its
+// backoff (1+2+...+32 s) outlasts about a minute of GitHub release-download 5xx.
+const installerMinRetries = 6
 
 // The installer runs unchanged against local release fixtures. curl never calls
 // the network, and uname fixes the asset selection independently of the host.
@@ -26,6 +31,8 @@ type installerFixture struct {
 	home       string
 	installDir string
 	log        string
+	retryLog   string
+	script     string
 	asset      string
 	binary     []byte
 }
@@ -39,6 +46,8 @@ func newInstallerFixture(t *testing.T) *installerFixture {
 		home:       filepath.Join(root, "home"),
 		installDir: filepath.Join(root, "install dir"),
 		log:        filepath.Join(root, "requests"),
+		retryLog:   filepath.Join(root, "retries"),
+		script:     "../website/static/install.sh",
 		asset:      "fdb_" + installerVersion + "_linux_amd64.tar.gz",
 		binary:     []byte("#!/bin/sh\n[ \"$*\" = 'version --short' ] || exit 64\nprintf '%s\\n' '" + installerVersion + "'\n"),
 	}
@@ -58,17 +67,19 @@ esac
 `,
 		"curl": `#!/bin/sh
 set -eu
-out= url=
+out= url= retry=none
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o) out="$2"; shift 2 ;;
-    --retry|--connect-timeout) shift 2 ;;
+    --retry) retry="$2"; shift 2 ;;
+    --connect-timeout) shift 2 ;;
     -*) shift ;;
     *) url="$1"; shift ;;
   esac
 done
 [ -n "$out" ] && [ -n "$url" ] || exit 91
 printf '%s\n' "$url" >> "$INSTALL_FIXTURE_LOG"
+printf '%s %s\n' "$retry" "$url" >> "$INSTALL_FIXTURE_ROOT/retries"
 case "$url" in
   https://api.example.invalid/project/releases\?per_page=100)
     source="$INSTALL_FIXTURE_ROOT/releases.json" ;;
@@ -102,6 +113,7 @@ cp "$source" "$out" || exit 22
 	f.write(t, f.asset, archive.Bytes())
 	f.write(t, "checksums.txt", []byte(fmt.Sprintf("%x  %s\n", sha256.Sum256(archive.Bytes()), f.asset)))
 	f.write(t, "requests", nil)
+	f.write(t, "retries", nil)
 	f.write(t, "releases.json", []byte(`[
   {"tag_name":"cmd/frl/v9.9.9"},
   {"tag_name":"cmd/fdb/v9.9.9"},
@@ -121,7 +133,7 @@ func (f *installerFixture) write(t *testing.T, name string, data []byte) {
 
 func (f *installerFixture) run(t *testing.T, overrides map[string]string, args ...string) (string, error) {
 	t.Helper()
-	script, err := filepath.Abs("../website/static/install.sh")
+	script, err := filepath.Abs(f.script)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,6 +189,32 @@ func (f *installerFixture) requests(t *testing.T, want ...string) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("download requests = %q, want %q", got, want)
 	}
+	if err := f.fetchRetries(len(want)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// fetchRetries checks that each of the n recorded fetches passed curl a --retry of at
+// least installerMinRetries.
+func (f *installerFixture) fetchRetries(n int) error {
+	data, err := os.ReadFile(f.retryLog)
+	if err != nil {
+		return err
+	}
+	var lines []string
+	if s := strings.TrimSuffix(string(data), "\n"); s != "" {
+		lines = strings.Split(s, "\n")
+	}
+	if len(lines) != n {
+		return fmt.Errorf("recorded %d fetches, want %d", len(lines), n)
+	}
+	for _, line := range lines {
+		value, url, _ := strings.Cut(line, " ")
+		if retries, err := strconv.Atoi(value); err != nil || retries < installerMinRetries {
+			return fmt.Errorf("fetch of %s passed curl --retry %s, want at least %d", url, value, installerMinRetries)
+		}
+	}
+	return nil
 }
 
 func (f *installerFixture) checkInstalled(t *testing.T, dir string) {
@@ -415,4 +453,38 @@ func TestCLIInstallerUninstallsOnlyFDB(t *testing.T) {
 	f.requests(t,
 		"https://downloads.example.invalid/project/releases/download/"+installerVersion+"/"+f.asset,
 		"https://downloads.example.invalid/project/releases/download/"+installerVersion+"/checksums.txt")
+}
+
+// TestCLIInstallerFetchRetries is the positive control for the retry check requests()
+// applies to every fetch: installers with a shorter or no --retry still install, and fail it.
+func TestCLIInstallerFetchRetries(t *testing.T) {
+	t.Parallel()
+	shipped, err := os.ReadFile("../website/static/install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	flag := "--retry " + strconv.Itoa(installerMinRetries) + " "
+	if n := strings.Count(string(shipped), flag); n != 1 {
+		t.Fatalf("installer passes curl %q %d times, want once", flag, n)
+	}
+	for _, tc := range []struct{ name, replacement, want string }{
+		{"shipped", flag, ""},
+		{"short", "--retry 3 ", "--retry 3,"},
+		{"missing", "", "--retry none,"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newInstallerFixture(t)
+			f.script = filepath.Join(f.root, "install.sh")
+			f.write(t, "install.sh", []byte(strings.Replace(string(shipped), flag, tc.replacement, 1)))
+			if out, err := f.run(t, nil); err != nil {
+				t.Fatalf("install: %v\n%s", err, out)
+			}
+			f.checkInstalled(t, f.installDir)
+			err := f.fetchRetries(2)
+			if (tc.want == "" && err != nil) || (tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want))) {
+				t.Fatalf("retry check = %v, want %q", err, tc.want)
+			}
+		})
+	}
 }
