@@ -3892,6 +3892,28 @@ boundary in `docs/benchmarks/otel-relational-local-20261107.md`.
   runs only on `workflow_dispatch`; measure it on the runners and move it to
   pull requests if it fits.
 
+## Interval-partitioned SQL tables (RFC-284)
+
+Design: [RFC-284](rfcs/284-interval-partitioned-tables.md), accepted; implementation
+in progress. Opt-in for new tables; existing tables, indexes and OTEL_V1 stores
+remain unchanged.
+
+- [ ] Prove the required singleton partition key function, metadata round-trip,
+  VALUE/TEXT PK reconstruction and complete auxiliary-state cleanup; pin
+  whole-schema Java/old-Go refusal with unpartitioned controls.
+- [ ] Implement the RANGE/INTERVAL DDL, shared write routing and partition
+  directory/fences, then Cascades pruning/enumeration, ordered execution and
+  continuations. No caller-supplied bucket; no time predicate means all active
+  partitions. Admit index types only with the RFC's correctness proofs.
+- [ ] Implement atomic partition DROP with write/build/queued-maintenance
+  exclusion and regression coverage. Measure FTS ingest/query/retention costs
+  separately before OTel adoption; settle V2's explicit-event-ID replay policy
+  and any global trace/identity locator. No automatic V1 migration.
+- [ ] Later, separately scoped: temporal/calendar keys, nonuniform RANGE bounds,
+  HASH/LIST, additional index maintainers, global uniqueness, online
+  repartitioning, TTL/late-data rejection and concurrent drop/backfill. None is
+  supplied merely by adding the partition prefix.
+
 ## TEXT SQL access paths
 
 - [ ] Recover and diagnose the historical RFC-258 fail-on-scan-limit failure
