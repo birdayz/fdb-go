@@ -747,7 +747,7 @@ Code:
   [`layers/otel/collector/bench.go`](../../layers/otel/collector/bench.go),
   [`layers/otel/collector/bench_cpu.go`](../../layers/otel/collector/bench_cpu.go)
 - Message storage, TEXT index and persist statistics:
-  [`layers/otel/messages.go`](../../layers/otel/messages.go)
+  [`layers/otel/messages.go`](https://github.com/birdayz/fdb-go/blob/archive/otel-relational/custom-store/layers/otel/messages.go)
 - Batch TEXT prefetch:
   [`pkg/recordlayer/store_batch_text_prefetch.go`](../../pkg/recordlayer/store_batch_text_prefetch.go)
 - Profiling flags (`--cpuprofile`, `--profile-start`, …):
