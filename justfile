@@ -247,7 +247,7 @@ grafana-build:
 
 # Vet and test the Grafana backend's nested module only, never the root module.
 grafana-test *args:
-    cd layers/otel/grafana && go vet ./... && go test ./... {{args}}
+    cd layers/otel/grafana && go vet ./pkg/... ./cmd/... && go test ./pkg/... ./cmd/... {{args}}
 
 # Format Go source files using Bazel-managed gofumpt (same version as nogo linter)
 fmt:
