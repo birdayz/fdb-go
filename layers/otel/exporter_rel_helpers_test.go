@@ -18,11 +18,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Harness of the Exporter ports: the exporter_helpers_test.go helpers
-// over the read API both exporters share.
+// Harness of the Exporter's FDB tests: opening exporters and checking their
+// reads.
 
-// relTestConfig is a fresh run's tenant 11 on cluster. D2: the relational
-// store refuses Brotli, the v1 default.
+// relTestConfig is a fresh run's tenant 11 on cluster. D2: the store refuses
+// Brotli, the removed custom store's default.
 func relTestConfig(t *testing.T, cluster string, mutate func(*ExporterConfig)) ExporterConfig {
 	t.Helper()
 	cfg := DefaultExporterConfig()
@@ -61,7 +61,7 @@ func openRelExporter(t *testing.T, ctx context.Context, cluster string, mutate f
 	return startRelExporter(t, ctx, relTestConfig(t, cluster, mutate), relParts{})
 }
 
-// relReads is the read API of both exporters.
+// relReads is the Exporter's read methods the check helpers call.
 type relReads interface {
 	Query(context.Context, Attribute) (QueryResult, error)
 	Trace(context.Context, string) ([]SpanHit, error)
