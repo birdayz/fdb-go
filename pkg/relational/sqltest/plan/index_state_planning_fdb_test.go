@@ -40,9 +40,13 @@ type transitionPlanLogger struct {
 
 	mu       sync.Mutex
 	transErr error
+	plans    []string // every planned statement's plan, in order
 }
 
-func (l *transitionPlanLogger) LogPlanGeneration(_ context.Context, _ embedded.PlanGenerationInfo) {
+func (l *transitionPlanLogger) LogPlanGeneration(_ context.Context, info embedded.PlanGenerationInfo) {
+	l.mu.Lock()
+	l.plans = append(l.plans, info.PlanExplain)
+	l.mu.Unlock()
 	l.once.Do(func() {
 		err := l.fn()
 		l.mu.Lock()
@@ -141,6 +145,14 @@ func TestFDB_IndexStatePlanning_TransitionBetweenPlanAndFirstPageReadsOneSnapsho
 	sort.Strings(after)
 	if strings.Join(snapshot, ",") != strings.Join(after, ",") {
 		t.Fatalf("rows at the planning snapshot %v differ from rows after the transition %v", snapshot, after)
+	}
+	// The first statement planned on U_EMAIL readable; the next one sees it
+	// READABLE_UNIQUE_PENDING, which planning does not read, and plans without it.
+	logger.mu.Lock()
+	plans := append([]string(nil), logger.plans...)
+	logger.mu.Unlock()
+	if len(plans) != 2 || !strings.Contains(plans[0], "U_EMAIL") || strings.Contains(plans[1], "U_EMAIL") {
+		t.Fatalf("plans %q: want the first on U_EMAIL and the second, after the transition, without it", plans)
 	}
 }
 
