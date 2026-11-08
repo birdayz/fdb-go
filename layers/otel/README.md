@@ -155,7 +155,8 @@ in total storage or physical I/O. ClickHouse backends refuse it. The `Exporter`,
 and so `collector-bench`, accepts the same values and defaults to `zlib-1` (see
 "Exporter configuration").
 
-`--bulk-index-conflicts` (only with `--backend sql --save-mode batch`) is the
+`--bulk-index-conflicts` (only with `--backend sql --save-mode batch` and direct
+ingest of compiled rows; dynamic rows and `--sql-ingest insert` refuse it) is the
 Exporter's `bulk_index_conflicts`, on by default there: `SaveRecordBatchWithOptions`
 with conservative index write-conflict coalescing. Normal implicit write
 conflicts and all read conflicts remain. Extra write ranges cover only the
