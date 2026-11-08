@@ -23,10 +23,9 @@ type templateCacheKey struct {
 // templateCache memoises the read path's deserializeTemplate across
 // connections and transactions. Every catalog read still loads the row in
 // its own transaction (so DDL is observed at the reader's read version); only
-// the CPU of rebuilding RecordMetaData from identical bytes is shared. That
-// rebuild dominated an auto-commit statement on a pooled *sql.DB, whose
-// ResetSession drops the connection's schema cache at every checkout. The
-// cached api.SchemaTemplate and its RecordMetaData are immutable.
+// the CPU of rebuilding RecordMetaData from identical bytes is shared, work
+// every connection that loads the schema would otherwise repeat. The cached
+// api.SchemaTemplate and its RecordMetaData are immutable.
 var templateCache struct {
 	mu      sync.Mutex
 	entries map[templateCacheKey]api.SchemaTemplate

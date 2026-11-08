@@ -346,7 +346,7 @@ func providedRecordOutputLayout(
 // its own rows, and it exists to make the output boundary below a pointer check
 // instead of a per-row row copy.
 //
-// AttachOrdinalLayout must copy a row whose layout differs, because a row
+// attachCheckedLayout must copy a row whose layout differs, because a row
 // arriving at a boundary may still be held by whoever produced it — a join
 // re-emitting one outer row, a sort keeping its buffer. A row the plan is
 // building right now has exactly one owner, so stamping the handle it is about
@@ -391,7 +391,7 @@ func attachProvidedOutputLayout(
 	// matched is a row type checkLayoutAttachable accepted for this layout
 	// without widening. Types are immutable and a cursor's rows share one
 	// type object, so later rows of that exact object skip the structural
-	// comparison, which dominated wide-row covering scans.
+	// comparison, per-field work that would otherwise repeat for every row.
 	var matched *values.RecordType
 	return recordlayer.MapErrCursor(cursor, func(result QueryResult) (QueryResult, error) {
 		if result.Positional == nil {

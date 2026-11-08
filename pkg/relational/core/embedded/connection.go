@@ -328,8 +328,9 @@ type embeddedTx struct {
 	// Java's transaction-scoped ExecuteState by another name
 	// (ExecuteProperties.java Builder copies the state reference, and
 	// newExecuteProperties runs once per transaction). Auto-commit statements
-	// never see this field — each page stays its own transaction with its own
-	// fresh state, unchanged.
+	// never see this field: each of their pages builds its own fresh state,
+	// the first in the statement's shared planning transaction when it has one
+	// (statement_read.go), the others in transactions of their own.
 	//
 	// NOT to be confused with paginatingRows.execState (RFC-130's memory byte
 	// budget), which deliberately stays STATEMENT-scoped: a memory budget is a

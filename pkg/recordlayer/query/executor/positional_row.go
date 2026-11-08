@@ -106,14 +106,15 @@ func NewLayoutPositionalRow(typ *values.RecordType, layout values.OrdinalLayout)
 // The selected layout must describe exactly the row's logical record type.
 // Dynamic/erased carriers therefore fail at the plan boundary instead of
 // falling back to the legacy ambient positional interpretation.
+//
+// It is checkLayoutAttachable then attachCheckedLayout, for a caller attaching
+// rows one at a time. The plan's output boundary (attachProvidedOutputLayout)
+// calls the two itself, so it can skip the check for a row type it matched.
 func (r *PositionalRow) AttachOrdinalLayout(layout values.OrdinalLayout, carrierType values.Type) (*PositionalRow, error) {
 	// carrierType is supplied by the caller rather than re-derived from
-	// layout.Carrier() here, because deriving it is NOT free and NOT per-row
-	// work: FlowedType thaws a whole fresh Type graph out of the carrier's
-	// exact handle, and the carrier is fixed for an entire cursor. Deriving it
-	// here made a scan allocate one Type graph per row and then deep-compare
-	// against it — measured as the largest single item this method contributed
-	// to the row path.
+	// layout.Carrier() here: FlowedType thaws a whole fresh Type graph out of
+	// the carrier's exact handle, and the carrier is fixed for an entire
+	// cursor, so a caller attaching many rows derives it once.
 	widenTo, err := r.checkLayoutAttachable(layout, carrierType)
 	if err != nil {
 		return nil, err

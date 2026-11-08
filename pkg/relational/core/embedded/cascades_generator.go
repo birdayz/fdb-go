@@ -418,8 +418,9 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// licenses anything when the WHOLE result comes from one read version.
 	// fetchPage routes on exactly this condition: with an explicit transaction
 	// every page joins it and shares its read version; without one each page
-	// runs its own auto-commit transaction and takes a fresh one, so a value
-	// can move between pages and be emitted twice. See
+	// after the first runs its own auto-commit transaction at a fresh one (the
+	// first may share the planning transaction's, statement_read.go), so a
+	// value can move between pages and be emitted twice. See
 	// PlannerConfiguration.SingleReadVersion.
 	popts.config.SingleReadVersion = g.c.activeTx != nil
 	// Plan-cache key parts: a VERBATIM schema+version+planner-options scope

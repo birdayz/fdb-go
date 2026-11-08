@@ -461,9 +461,9 @@ func indexScanRangeFingerprintSaltFields(
 // indexSaltMemo memoises indexScanRangeFingerprintSaltFields per index plan
 // object. Plans are immutable (every With* method copies), so a plan's salt
 // for one scan type and covering column list never changes, while computing
-// it encodes the plan's whole flowed type: per execution of a cached plan over
-// a wide table that encoding dominated a point query. An entry's key holds
-// its plan weakly and is deleted when the plan is collected.
+// it encodes the plan's whole flowed type, which every execution of a cached
+// plan would otherwise repeat. An entry's key holds its plan weakly and is
+// deleted when the plan is collected.
 var indexSaltMemo sync.Map // indexSaltKey → string
 
 type indexSaltKey struct {
