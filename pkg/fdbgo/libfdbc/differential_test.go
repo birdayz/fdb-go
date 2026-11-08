@@ -696,7 +696,7 @@ func startCluster(t *testing.T) string {
 		t.Fatalf("FDB container startup failed: %v", err)
 	}
 	t.Cleanup(func() {
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), foundationdbtc.TerminateTimeout)
 		defer stopCancel()
 		foundationdbtc.TerminateT(t, stopCtx, container)
 	})

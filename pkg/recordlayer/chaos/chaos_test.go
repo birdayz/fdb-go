@@ -40,7 +40,7 @@ func runTests(m *testing.M) (code int) {
 
 	defer func() {
 		// Cleanup must outlive the startup and suite budgets.
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Minute)
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), foundationdbtc.TerminateTimeout)
 		defer stopCancel()
 		if err := foundationdbtc.Terminate(stopCtx, container); err != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", err)

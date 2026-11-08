@@ -25,7 +25,7 @@ func TestCNetworkUsesSharedOpenOwnership(t *testing.T) {
 		t.Fatalf("start FoundationDB: %v", err)
 	}
 	t.Cleanup(func() {
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), foundationdbtc.TerminateTimeout)
 		defer stopCancel()
 		if err := foundationdbtc.Terminate(stopCtx, container); err != nil {
 			t.Errorf("stop FoundationDB: %v", err)

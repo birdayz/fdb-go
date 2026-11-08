@@ -68,7 +68,7 @@ func TestCancelledStartupKeepsDiagnosticsAndCleansUp(t *testing.T) {
 	var cleanupContextOK bool
 	t.Cleanup(func() {
 		if captured != nil {
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), TerminateTimeout)
 			defer cleanupCancel()
 			TerminateT(t, cleanupCtx, &Container{Container: captured})
 		}

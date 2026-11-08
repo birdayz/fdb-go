@@ -69,7 +69,7 @@ func selConfSetup(t *testing.T, ctx context.Context) *selConfEnv {
 		t.Fatalf("cluster startup: %v", err)
 	}
 	t.Cleanup(func() {
-		stop, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		stop, cancel := context.WithTimeout(context.Background(), tcfdb.TerminateTimeout)
 		defer cancel()
 		tcfdb.TerminateT(t, stop, container)
 	})

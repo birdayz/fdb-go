@@ -32,7 +32,7 @@ func TestFDB_ChainedCursorEmptyContinuation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), foundationdbtc.TerminateTimeout)
 		defer cleanupCancel()
 		if err := foundationdbtc.Terminate(cleanupCtx, container); err != nil {
 			t.Error(err)

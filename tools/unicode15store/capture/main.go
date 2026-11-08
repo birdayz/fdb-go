@@ -36,7 +36,7 @@ func capture(writer, out string) (err error) {
 		return err
 	}
 	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), foundationdbtc.TerminateTimeout)
 		defer cancel()
 		if cleanupErr := foundationdbtc.Terminate(ctx, container); cleanupErr != nil && err == nil {
 			err = cleanupErr

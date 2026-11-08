@@ -90,7 +90,7 @@ func rspSetup(t *testing.T, ctx context.Context) rspEnv {
 		t.Fatalf("three-process cluster startup: %v", err)
 	}
 	t.Cleanup(func() {
-		stop, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		stop, cancel := context.WithTimeout(context.Background(), foundationdbtc.TerminateTimeout)
 		defer cancel()
 		foundationdbtc.TerminateT(t, stop, container)
 	})

@@ -3,7 +3,12 @@ package foundationdb
 import (
 	"context"
 	"fmt"
+	"time"
 )
+
+// TerminateTimeout bounds fixture teardown like setup: Docker's forced removal
+// can exceed 30s under concurrent container load.
+const TerminateTimeout = 2 * time.Minute
 
 // Terminator is a container or cluster that can be stopped during fixture cleanup.
 type Terminator interface {

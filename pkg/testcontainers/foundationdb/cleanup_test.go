@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/testcontainers/testcontainers-go"
 )
@@ -65,6 +66,35 @@ func TestTerminateT(t *testing.T) {
 				t.Fatalf("cleanup errors = %v, want container ID and Docker error", r.errors)
 			}
 		})
+	}
+}
+
+// deadlineTerminator is a Docker removal that outlives the caller's cleanup deadline.
+type deadlineTerminator struct{ id string }
+
+func (d deadlineTerminator) GetContainerID() string { return d.id }
+func (d deadlineTerminator) Terminate(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestTerminateTimeoutOverrunFailsCleanup(t *testing.T) {
+	t.Parallel()
+	if TerminateTimeout != 2*time.Minute {
+		t.Fatalf("TerminateTimeout = %v, want the two-minute container setup bound", TerminateTimeout)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	c := deadlineTerminator{id: "slow-123"}
+	err := Terminate(ctx, c)
+	var terminationErr *TerminationError
+	if !errors.As(err, &terminationErr) || terminationErr.ContainerID != "slow-123" || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Terminate = %v, want TerminationError for slow-123 wrapping the deadline", err)
+	}
+	r := &cleanupReporter{}
+	TerminateT(r, ctx, c)
+	if want := "terminate container slow-123: context deadline exceeded"; len(r.errors) != 1 || r.errors[0] != want {
+		t.Fatalf("cleanup errors = %v, want %q", r.errors, want)
 	}
 }
 

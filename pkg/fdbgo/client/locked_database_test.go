@@ -28,7 +28,7 @@ func TestFDB_DatabaseLocked_ReadPathEnforcement(t *testing.T) {
 		t.Fatalf("dedicated FDB container: %v", err)
 	}
 	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), tcfdb.TerminateTimeout)
 		defer cleanupCancel()
 		tcfdb.TerminateT(t, cleanupCtx, container)
 	})

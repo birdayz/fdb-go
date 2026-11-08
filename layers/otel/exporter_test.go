@@ -1091,7 +1091,7 @@ func startExporterCluster(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), foundationdbtc.TerminateTimeout)
 		defer cancel()
 		if err := container.Terminate(ctx); err != nil {
 			t.Error(err)

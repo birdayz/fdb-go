@@ -93,7 +93,7 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), tcfdb.TerminateTimeout)
 	defer cleanupCancel()
 	if err := tcfdb.Terminate(cleanupCtx, container); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)

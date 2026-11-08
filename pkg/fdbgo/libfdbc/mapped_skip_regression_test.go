@@ -33,7 +33,7 @@ func TestLibFDBC_MappedSkipResolvesBeforeMappedRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		stop, cancelStop := context.WithTimeout(context.Background(), 30*time.Second)
+		stop, cancelStop := context.WithTimeout(context.Background(), foundationdbtc.TerminateTimeout)
 		defer cancelStop()
 		foundationdbtc.TerminateT(t, stop, ctr)
 	}()
@@ -258,7 +258,7 @@ func TestLibFDBC_MappedSkipEqualContinuation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		stop, cancelStop := context.WithTimeout(context.Background(), 30*time.Second)
+		stop, cancelStop := context.WithTimeout(context.Background(), foundationdbtc.TerminateTimeout)
 		defer cancelStop()
 		foundationdbtc.TerminateT(t, stop, ctr)
 	}()

@@ -95,7 +95,7 @@ func startContainer() (string, error) {
 func Shutdown() error {
 	var errs []error
 	if container != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), foundationdbtc.TerminateTimeout)
 		errs = append(errs, container.Terminate(ctx))
 		cancel()
 		container = nil

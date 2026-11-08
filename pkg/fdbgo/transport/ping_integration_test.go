@@ -27,7 +27,7 @@ func TestPingRequest_RealServerBidirectional(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), foundationdbtc.TerminateTimeout)
 		defer cancel()
 		if err := foundationdbtc.Terminate(ctx, server); err != nil {
 			t.Error(err)

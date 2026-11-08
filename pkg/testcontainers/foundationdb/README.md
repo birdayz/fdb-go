@@ -30,7 +30,7 @@ func TestSomething(t *testing.T) {
         t.Fatal(err)
     }
     t.Cleanup(func() {
-        cleanupCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+        cleanupCtx, cancel := context.WithTimeout(context.Background(), foundationdbtc.TerminateTimeout)
         defer cancel()
         if err := container.Terminate(cleanupCtx); err != nil {
             t.Errorf("terminate FoundationDB: %v", err)

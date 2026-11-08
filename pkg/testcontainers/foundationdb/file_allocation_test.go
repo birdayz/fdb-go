@@ -41,7 +41,7 @@ func TestRun_InterruptedFileAllocation(t *testing.T) {
 				t.Fatalf("FDB must initialize with interrupted fallocate: %v", err)
 			}
 			defer func() {
-				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), TerminateTimeout)
 				defer cleanupCancel()
 				if err := Terminate(cleanupCtx, container); err != nil {
 					t.Errorf("terminate: %v", err)
@@ -118,7 +118,7 @@ func TestRun_KAIOOverride(t *testing.T) {
 			}
 			container, err := runOnce(ctx, "", opts...)
 			if container != nil {
-				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), TerminateTimeout)
 				defer cleanupCancel()
 				if err := Terminate(cleanupCtx, container); err != nil {
 					t.Errorf("terminate: %v", err)
