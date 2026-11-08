@@ -46,3 +46,6 @@ ci/
 .idea
 
 .eslintcache
+
+# Seed binary (go build -o bin/seed ./cmd/seed)
+bin/

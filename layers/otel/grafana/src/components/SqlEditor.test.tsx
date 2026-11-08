@@ -41,21 +41,28 @@ function setup(query: FDBQuery = base, data?: PanelData) {
 }
 
 describe('SqlEditor', () => {
-  it('commits the SQL and runs on blur', async () => {
+  it('commits the SQL on blur without running it', async () => {
     const { onChange, onRunQuery } = setup();
     const sql = screen.getByLabelText('SQL editor');
     await userEvent.clear(sql);
     await userEvent.type(sql, 'SELECT 2');
     sql.blur();
     expect(onChange).toHaveBeenCalledWith({ ...base, rawSql: 'SELECT 2' });
-    expect(onRunQuery).toHaveBeenCalledTimes(1);
+    expect(onRunQuery).not.toHaveBeenCalled();
   });
 
-  it('runs without a change when the text is unchanged', async () => {
+  it('commits nothing when the text is unchanged', async () => {
     const { onChange, onRunQuery } = setup();
     screen.getByLabelText('SQL editor').focus();
     screen.getByLabelText('SQL editor').blur();
     expect(onChange).not.toHaveBeenCalled();
+    expect(onRunQuery).not.toHaveBeenCalled();
+  });
+
+  it('commits and runs on save (Ctrl/Cmd+S)', () => {
+    const { onChange, onRunQuery } = setup();
+    act(() => mockEditorProps.current!.onSave('SELECT 4'));
+    expect(onChange).toHaveBeenCalledWith({ ...base, rawSql: 'SELECT 4' });
     expect(onRunQuery).toHaveBeenCalledTimes(1);
   });
 

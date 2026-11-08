@@ -1,0 +1,156 @@
+# The Grafana datasource plugin (layers/otel/grafana): a nested Go module and an
+# npm frontend, both outside Bazel (.bazelignore), so the CI workflow's lanes do
+# not build or test them. It replaces fdb.dev with this checkout, so any change
+# can break it: no path filter.
+#
+# The e2e job (Playwright against Grafana 13.1.9 and 12.0.0, FDB and the seed
+# job in Docker Compose) runs on workflow_dispatch only: locally it takes about
+# 20 s per Grafana version once images are cached, but on a cold runner it adds
+# image pulls (Grafana, FDB, Playwright) and a second build, unmeasured here.
+name: Grafana plugin
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      e2e:
+        description: "Also run the Playwright suite (Grafana 13.1.9 and 12.0.0)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: grafana-plugin-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plugin:
+    name: Grafana plugin
+    runs-on: hetzner-fdb-vm
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Reap containers an earlier job left running
+        timeout-minutes: 2
+        run: infra/reap-leaked-containers.sh
+
+      - name: Test against current master
+        timeout-minutes: 5
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_REF: ${{ github.base_ref }}
+        run: infra/merge-current-master.sh
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: layers/otel/grafana/package-lock.json
+
+      - name: Backend tests (go vet, go test; FDB integration in Docker)
+        run: just grafana-test
+
+      - name: Backend build (mage; gpx_foundationdb_*)
+        run: just grafana-build
+
+      - name: Frontend install
+        working-directory: layers/otel/grafana
+        run: npm ci
+
+      - name: Frontend typecheck
+        working-directory: layers/otel/grafana
+        run: npm run typecheck
+
+      - name: Frontend lint
+        working-directory: layers/otel/grafana
+        run: npm run lint
+
+      - name: Frontend tests
+        working-directory: layers/otel/grafana
+        run: npm run test:ci
+
+      - name: Frontend build
+        working-directory: layers/otel/grafana
+        run: npm run build
+
+  e2e:
+    name: Grafana plugin e2e
+    if: github.event_name == 'workflow_dispatch' && inputs.e2e
+    runs-on: hetzner-fdb-vm
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Reap containers an earlier job left running
+        timeout-minutes: 2
+        run: infra/reap-leaked-containers.sh
+
+      - name: Test against current master
+        timeout-minutes: 5
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_REF: ${{ github.base_ref }}
+        run: infra/merge-current-master.sh
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: layers/otel/grafana/package-lock.json
+
+      - name: Docker Compose v2
+        # The runner's docker.io has no compose plugin: take the binary from its
+        # release image, pinned by digest.
+        run: |
+          set -euo pipefail
+          if ! docker compose version > /dev/null 2>&1; then
+            mkdir -p ~/.docker/cli-plugins
+            cid=$(docker create docker/compose-bin@sha256:e39da8206cc48c6e2c99ce371935eef9d7eff7db600a993fd357de8b75621edf x)
+            docker cp "$cid:/docker-compose" ~/.docker/cli-plugins/docker-compose
+            docker rm "$cid" > /dev/null
+          fi
+          docker compose version
+
+      - name: Build backend, frontend and seed
+        run: |
+          set -euo pipefail
+          just grafana-build
+          cd layers/otel/grafana
+          npm ci
+          npm run build
+          CGO_ENABLED=0 go build -o bin/seed ./cmd/seed
+
+      - name: Playwright against Grafana 13.1.9 and 12.0.0
+        working-directory: layers/otel/grafana
+        env:
+          CI: '1'
+        run: tests/e2e.sh
+
+      - name: Upload Playwright results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: grafana-plugin-e2e
+          path: |
+            layers/otel/grafana/test-results/
+            layers/otel/grafana/playwright-report/
+          retention-days: 7

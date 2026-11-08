@@ -120,9 +120,11 @@ describe('ConfigEditor TLS', () => {
     expect(field('Client certificate')).toBeDisabled();
   });
 
-  it('stores CA and verify-peers in jsonData', async () => {
+  it('stores CA and verify-peers in jsonData, and requires the CA as the backend does', async () => {
     const { last } = setup(settings({ tlsMode: 'config' }));
+    expect(screen.getByText('TLS from the settings needs a CA certificate')).toBeInTheDocument();
     await userEvent.type(field('CA certificate'), 'CA');
+    expect(screen.queryByText('TLS from the settings needs a CA certificate')).not.toBeInTheDocument();
     await userEvent.type(field('Verify peers'), 'Check.Valid=0');
     expect(last().jsonData).toEqual({ tlsMode: 'config', tlsCACert: 'CA', tlsVerifyPeers: 'Check.Valid=0' });
   });

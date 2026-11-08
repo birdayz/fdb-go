@@ -164,7 +164,9 @@ export function SqlEditor({ query, datasource, onChange, onRunQuery, data, range
         height={200}
         showLineNumbers
         showMiniMap={false}
-        onBlur={(v) => commit(v, true)}
+        // Blur only commits: running here races Explore's Run button, and Grafana 12.0
+        // aborts the blur's run without starting the button's (as Grafana's SQL editors do).
+        onBlur={(v) => commit(v, false)}
         onSave={(v) => commit(v, true)}
         onEditorDidMount={onEditorDidMount}
       />

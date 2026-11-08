@@ -1,0 +1,509 @@
+{
+  "uid": "fdb-load",
+  "title": "FoundationDB load (R1)",
+  "tags": ["foundationdb", "load"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Spans by service (T0)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "birdayz-foundationdb-datasource",
+        "uid": "fdb-dev"
+      },
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "birdayz-foundationdb-datasource",
+            "uid": "fdb-dev"
+          },
+          "queryType": "sql",
+          "format": 0,
+          "rawSql": "SELECT $__timeGroupAlias(start_ns, $__interval), service_name, COUNT(*) AS spans FROM spans WHERE $__timeFilter(start_ns) GROUP BY $__timeGroup(start_ns, $__interval), service_name ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Error spans",
+      "type": "timeseries",
+      "datasource": {
+        "type": "birdayz-foundationdb-datasource",
+        "uid": "fdb-dev"
+      },
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "birdayz-foundationdb-datasource",
+            "uid": "fdb-dev"
+          },
+          "queryType": "sql",
+          "format": 0,
+          "rawSql": "SELECT $__timeGroupAlias(start_ns, $__interval), COUNT(*) AS spans FROM spans WHERE $__timeFilter(start_ns) AND status_code = 2 GROUP BY $__timeGroup(start_ns, $__interval) ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Mean span duration (ms)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "birdayz-foundationdb-datasource",
+        "uid": "fdb-dev"
+      },
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "birdayz-foundationdb-datasource",
+            "uid": "fdb-dev"
+          },
+          "queryType": "sql",
+          "format": 0,
+          "rawSql": "SELECT $__timeGroupAlias(start_ns, $__interval), AVG(end_ns - start_ns) / 1000000 AS mean_ms FROM spans WHERE $__timeFilter(start_ns) GROUP BY $__timeGroup(start_ns, $__interval) ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Max span duration (ms)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "birdayz-foundationdb-datasource",
+        "uid": "fdb-dev"
+      },
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "birdayz-foundationdb-datasource",
+            "uid": "fdb-dev"
+          },
+          "queryType": "sql",
+          "format": 0,
+          "rawSql": "SELECT $__timeGroupAlias(start_ns, $__interval), MAX(end_ns - start_ns) / 1000000 AS max_ms FROM spans WHERE $__timeFilter(start_ns) GROUP BY $__timeGroup(start_ns, $__interval) ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Logs by severity (T0)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "birdayz-foundationdb-datasource",
+        "uid": "fdb-dev"
+      },
+      "gridPos": { "x": 0, "y": 7, "w": 6, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "birdayz-foundationdb-datasource",
+            "uid": "fdb-dev"
+          },
+          "queryType": "sql",
+          "format": 0,
+          "rawSql": "SELECT $__timeGroupAlias(effective_ns, $__interval), severity_text, COUNT(*) AS logs FROM logs WHERE $__timeFilter(effective_ns) GROUP BY $__timeGroup(effective_ns, $__interval), severity_text ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Server spans",
+      "type": "timeseries",
+      "datasource": {
+        "type": "birdayz-foundationdb-datasource",
+        "uid": "fdb-dev"
+      },
+      "gridPos": { "x": 6, "y": 7, "w": 6, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "birdayz-foundationdb-datasource",
+            "uid": "fdb-dev"
+          },
+          "queryType": "sql",
+          "format": 0,
+          "rawSql": "SELECT $__timeGroupAlias(start_ns, $__interval), COUNT(*) AS spans FROM spans WHERE $__timeFilter(start_ns) AND kind = 2 GROUP BY $__timeGroup(start_ns, $__interval) ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Chat calls",
+      "type": "timeseries",
+      "datasource": {
+        "type": "birdayz-foundationdb-datasource",
+        "uid": "fdb-dev"
+      },
+      "gridPos": { "x": 12, "y": 7, "w": 6, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "birdayz-foundationdb-datasource",
+            "uid": "fdb-dev"
+          },
+          "queryType": "sql",
+          "format": 0,
+          "rawSql": "SELECT $__timeGroupAlias(start_ns, $__interval), COUNT(*) AS spans FROM spans WHERE $__timeFilter(start_ns) AND name = 'chat gpt-4o' GROUP BY $__timeGroup(start_ns, $__interval) ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Spans by service (T1)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "birdayz-foundationdb-datasource",
+        "uid": "fdb-dev"
+      },
+      "gridPos": { "x": 18, "y": 7, "w": 6, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "birdayz-foundationdb-datasource",
+            "uid": "fdb-dev"
+          },
+          "queryType": "sql",
+          "format": 0,
+          "rawSql": "SELECT $__timeGroupAlias(start_ns, $__interval), service_name, COUNT(*) AS spans FROM spans WHERE $__timeFilter(start_ns) GROUP BY $__timeGroup(start_ns, $__interval), service_name ORDER BY 1",
+          "tenant": "T1"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Logs by severity (T1)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "birdayz-foundationdb-datasource",
+        "uid": "fdb-dev"
+      },
+      "gridPos": { "x": 0, "y": 14, "w": 6, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "birdayz-foundationdb-datasource",
+            "uid": "fdb-dev"
+          },
+          "queryType": "sql",
+          "format": 0,
+          "rawSql": "SELECT $__timeGroupAlias(effective_ns, $__interval), severity_text, COUNT(*) AS logs FROM logs WHERE $__timeFilter(effective_ns) GROUP BY $__timeGroup(effective_ns, $__interval), severity_text ORDER BY 1",
+          "tenant": "T1"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Error logs",
+      "type": "timeseries",
+      "datasource": {
+        "type": "birdayz-foundationdb-datasource",
+        "uid": "fdb-dev"
+      },
+      "gridPos": { "x": 6, "y": 14, "w": 6, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "birdayz-foundationdb-datasource",
+            "uid": "fdb-dev"
+          },
+          "queryType": "sql",
+          "format": 0,
+          "rawSql": "SELECT $__timeGroupAlias(effective_ns, $__interval), severity_text, COUNT(*) AS logs FROM logs WHERE $__timeFilter(effective_ns) AND severity_number >= 17 GROUP BY $__timeGroup(effective_ns, $__interval), severity_text ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Database spans",
+      "type": "timeseries",
+      "datasource": {
+        "type": "birdayz-foundationdb-datasource",
+        "uid": "fdb-dev"
+      },
+      "gridPos": { "x": 12, "y": 14, "w": 6, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "birdayz-foundationdb-datasource",
+            "uid": "fdb-dev"
+          },
+          "queryType": "sql",
+          "format": 0,
+          "rawSql": "SELECT $__timeGroupAlias(start_ns, $__interval), COUNT(*) AS spans FROM spans WHERE $__timeFilter(start_ns) AND name = 'SELECT documents' GROUP BY $__timeGroup(start_ns, $__interval) ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Checkout spans",
+      "type": "timeseries",
+      "datasource": {
+        "type": "birdayz-foundationdb-datasource",
+        "uid": "fdb-dev"
+      },
+      "gridPos": { "x": 18, "y": 14, "w": 6, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "birdayz-foundationdb-datasource",
+            "uid": "fdb-dev"
+          },
+          "queryType": "sql",
+          "format": 0,
+          "rawSql": "SELECT $__timeGroupAlias(start_ns, $__interval), COUNT(*) AS spans FROM spans WHERE $__timeFilter(start_ns) AND service_name = 'checkout' GROUP BY $__timeGroup(start_ns, $__interval) ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Operations",
+      "type": "table",
+      "datasource": {
+        "type": "birdayz-foundationdb-datasource",
+        "uid": "fdb-dev"
+      },
+      "gridPos": { "x": 0, "y": 21, "w": 6, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "birdayz-foundationdb-datasource",
+            "uid": "fdb-dev"
+          },
+          "queryType": "sql",
+          "format": 1,
+          "rawSql": "SELECT name, COUNT(*) AS n, AVG(end_ns - start_ns) / 1000000 AS mean_ms FROM spans WHERE $__timeFilter(start_ns) GROUP BY name ORDER BY n DESC"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "title": "Latest errors",
+      "type": "table",
+      "datasource": {
+        "type": "birdayz-foundationdb-datasource",
+        "uid": "fdb-dev"
+      },
+      "gridPos": { "x": 6, "y": 21, "w": 6, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "birdayz-foundationdb-datasource",
+            "uid": "fdb-dev"
+          },
+          "queryType": "sql",
+          "format": 1,
+          "rawSql": "SELECT trace_id, service_name, name, status_message FROM spans WHERE $__timeFilter(start_ns) AND status_code = 2 ORDER BY start_ns DESC LIMIT 20"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "title": "Traces: frontend",
+      "type": "table",
+      "datasource": {
+        "type": "birdayz-foundationdb-datasource",
+        "uid": "fdb-dev"
+      },
+      "gridPos": { "x": 12, "y": 21, "w": 6, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "birdayz-foundationdb-datasource",
+            "uid": "fdb-dev"
+          },
+          "queryType": "traceSearch",
+          "limit": 20,
+          "mode": "attribute",
+          "spanPredicates": [
+            {
+              "scope": "resource",
+              "key": "service.name",
+              "type": "string",
+              "value": "frontend"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "title": "Traces: checkout",
+      "type": "table",
+      "datasource": {
+        "type": "birdayz-foundationdb-datasource",
+        "uid": "fdb-dev"
+      },
+      "gridPos": { "x": 18, "y": 21, "w": 6, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "birdayz-foundationdb-datasource",
+            "uid": "fdb-dev"
+          },
+          "queryType": "traceSearch",
+          "limit": 20,
+          "mode": "attribute",
+          "spanPredicates": [
+            {
+              "scope": "resource",
+              "key": "service.name",
+              "type": "string",
+              "value": "checkout"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "title": "Newest traces",
+      "type": "table",
+      "datasource": {
+        "type": "birdayz-foundationdb-datasource",
+        "uid": "fdb-dev"
+      },
+      "gridPos": { "x": 0, "y": 28, "w": 6, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "birdayz-foundationdb-datasource",
+            "uid": "fdb-dev"
+          },
+          "queryType": "traceSearch",
+          "limit": 20,
+          "mode": "time"
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "title": "Chat calls to gpt-4o",
+      "type": "table",
+      "datasource": {
+        "type": "birdayz-foundationdb-datasource",
+        "uid": "fdb-dev"
+      },
+      "gridPos": { "x": 6, "y": 28, "w": 6, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "birdayz-foundationdb-datasource",
+            "uid": "fdb-dev"
+          },
+          "queryType": "traceSearch",
+          "limit": 20,
+          "mode": "sameSpan",
+          "spanPredicates": [
+            {
+              "scope": "span",
+              "key": "gen_ai.operation.name",
+              "type": "string",
+              "value": "chat"
+            },
+            {
+              "scope": "span",
+              "key": "gen_ai.request.model",
+              "type": "string",
+              "value": "gpt-4o"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "title": "Failed requests with an evaluation",
+      "type": "table",
+      "datasource": {
+        "type": "birdayz-foundationdb-datasource",
+        "uid": "fdb-dev"
+      },
+      "gridPos": { "x": 12, "y": 28, "w": 6, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "birdayz-foundationdb-datasource",
+            "uid": "fdb-dev"
+          },
+          "queryType": "traceSearch",
+          "limit": 20,
+          "mode": "existential",
+          "spanPredicates": [
+            {
+              "scope": "span",
+              "key": "http.status_code",
+              "type": "int",
+              "value": "500"
+            }
+          ],
+          "logPredicates": [
+            {
+              "scope": "event_name",
+              "key": "event_name",
+              "type": "string",
+              "value": "gen_ai.evaluation.result"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "title": "Tool calls (T1)",
+      "type": "table",
+      "datasource": {
+        "type": "birdayz-foundationdb-datasource",
+        "uid": "fdb-dev"
+      },
+      "gridPos": { "x": 18, "y": 28, "w": 6, "h": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "birdayz-foundationdb-datasource",
+            "uid": "fdb-dev"
+          },
+          "queryType": "traceSearch",
+          "limit": 20,
+          "mode": "sameSpan",
+          "spanPredicates": [
+            {
+              "scope": "span",
+              "key": "tool.name",
+              "type": "string",
+              "value": "search"
+            }
+          ],
+          "tenant": "T1"
+        }
+      ]
+    }
+  ]
+}

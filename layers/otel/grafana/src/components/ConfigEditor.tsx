@@ -190,7 +190,14 @@ export function ConfigEditor({ options, onOptionsChange }: Props) {
         </Field>
         {tlsMode === 'config' && (
           <>
-            <Field label="CA certificate" description="PEM. Empty: the system roots." htmlFor="fdb-tls-ca">
+            <Field
+              label="CA certificate"
+              description="PEM. Required: peers are verified against this CA alone."
+              htmlFor="fdb-tls-ca"
+              required
+              invalid={!jsonData.tlsCACert?.trim()}
+              error={!jsonData.tlsCACert?.trim() ? 'TLS from the settings needs a CA certificate' : undefined}
+            >
               <TextArea
                 id="fdb-tls-ca"
                 rows={4}
