@@ -56,8 +56,21 @@ below; neither publication nor readiness is asserted.
   and byte-slice `fdb.Transaction` methods `AppendIfFitsBytes`,
   `AddReadConflictRangeBytes`, `AddReadConflictKeyBytes`,
   `AddWriteConflictRangeBytes` and `AddWriteConflictKeyBytes`.
+- Record Layer `FDBDatabase.OpenRecordContext` (a record context over a
+  transaction its caller commits or cancels and retries), `IsRetriable`
+  (whether `FDBDatabase.Run` would retry an error) and `PrefetchStoreState`
+  (issues a store open's header and index-state reads early); catalog
+  `SchemaWitness` with `RecordLayerStoreCatalog.LoadSchemaWitnessed` and
+  `SchemaUnchanged`; and keyspace `RelationalKeyspace.ResolvedSchemaSubspace`
+  (a schema's store subspace when already resolved, without I/O).
 
 ### Changed / fixed
+- The relational engine caches deserialized schema templates process-wide (up
+  to 256, keyed by name, version and the row's exact bytes; each read still
+  loads the row). A pooled connection keeps its loaded schema across
+  `ResetSession` and reuses it while the catalog still holds the bytes it was
+  built from, one parallel read instead of a reload. Index scans memoise their
+  scan-range identity salt per plan object.
 - `otel.Exporter` stores every signal of a `(run, tenant)` in one OTEL_V1
   relational tenant store (database `/OTEL/R_<RUN>`, schema `T<tenant>`) and
   serves every read from a direct scan of a standard OTEL_V1 index
