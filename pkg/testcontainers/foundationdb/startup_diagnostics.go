@@ -36,10 +36,8 @@ func startupFailure(ctr testcontainers.Container, cause error) error {
 		return cause
 	}
 	diagnostics := startupDiagnostics(ctr)
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cleanupCancel()
 	cleanup := ""
-	cleanupErr := Terminate(cleanupCtx, &Container{Container: ctr})
+	cleanupErr := Teardown(&Container{Container: ctr})
 	if cleanupErr != nil {
 		cleanup = fmt.Sprintf("; cleanup incomplete: %v", cleanupErr)
 	}

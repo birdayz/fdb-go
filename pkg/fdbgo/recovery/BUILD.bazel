@@ -4,7 +4,8 @@ go_test(
     name = "recovery_test",
     timeout = "long",
     srcs = ["coordinator_restart_test.go"],
-    args = ["-test.timeout=6m"],
+    # 4m test budget + 2m TerminateTimeout teardown + 1m margin.
+    args = ["-test.timeout=7m"],
     embedsrcs = ["cluster.bash"],
     tags = [
         "resources:cpu:3",

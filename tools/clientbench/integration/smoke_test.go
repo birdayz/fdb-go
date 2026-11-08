@@ -34,13 +34,7 @@ func TestBothBackendsAgainstFDB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		stop, cancelStop := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancelStop()
-		if err := foundationdb.Terminate(stop, container); err != nil {
-			t.Error(err)
-		}
-	})
+	t.Cleanup(func() { foundationdb.TeardownT(t, container) })
 	cluster, err := container.ClusterFilePath(ctx)
 	if err != nil {
 		t.Fatal(err)

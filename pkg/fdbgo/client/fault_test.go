@@ -314,11 +314,7 @@ func startProxyFDBContainer(t *testing.T, ctx context.Context) (*ClusterFile, *t
 	if err != nil {
 		t.Fatalf("start FDB container: %v", err)
 	}
-	t.Cleanup(func() {
-		termCtx, termCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer termCancel()
-		tcfdb.TerminateT(t, termCtx, container)
-	})
+	t.Cleanup(func() { tcfdb.TeardownT(t, container) })
 
 	connStr, err := container.ClusterFile(ctx)
 	if err != nil {

@@ -29,13 +29,7 @@ func TestSomething(t *testing.T) {
     if err != nil {
         t.Fatal(err)
     }
-    t.Cleanup(func() {
-        cleanupCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
-        defer cancel()
-        if err := container.Terminate(cleanupCtx); err != nil {
-            t.Errorf("terminate FoundationDB: %v", err)
-        }
-    })
+    t.Cleanup(func() { foundationdbtc.TeardownT(t, container) })
 
     // Get cluster file path for your FDB client.
     path, err := container.ClusterFilePath(ctx)
