@@ -107,15 +107,14 @@ func splitContinuation(token []byte) (fields tuple.Tuple, payload, mac []byte, e
 	return fields, payload, mac, nil
 }
 
-// checkContinuationMAC authenticates mac over payload under the signing key
-// of owner (the run, or the tenant store) in domain; an absent key or a
-// failed MAC is corruption.
-func checkContinuationMAC(domain, owner string, secret, payload, mac []byte) error {
+// checkContinuationMAC authenticates mac over payload under the tenant
+// store's signing key; an absent key or a failed MAC is corruption.
+func checkContinuationMAC(secret, payload, mac []byte) error {
 	const op = "continuation"
 	if len(secret) == 0 {
-		return fail("corruption", op, "continuation signing key is absent for this "+owner)
+		return fail("corruption", op, "continuation signing key is absent for this store")
 	}
-	if !hmac.Equal(mac, continuationMACIn(domain, secret, payload)) {
+	if !hmac.Equal(mac, continuationMACIn(relContinuationDomain, secret, payload)) {
 		return fail("corruption", op, "continuation token failed authentication")
 	}
 	return nil

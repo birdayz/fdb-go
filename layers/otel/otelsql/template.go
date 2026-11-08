@@ -19,8 +19,10 @@ import (
 // is created with it.
 const TemplateName = otelddl.Name
 
-// TemplateVersion is the initial catalog version; evolution must use the
-// catalog's version/evolution validator rather than overwrite its DDL.
+// TemplateVersion is the catalog version. The OTel layer is pre-release, so
+// a revision of OTEL_V1 replaces it in place at this version and existing
+// stores must be recreated; once stores must be kept, changes go through the
+// catalog's version/evolution validator.
 const TemplateVersion = 1
 
 // MaxIndexedStringBytes keeps indexed strings within FDB's key limit;

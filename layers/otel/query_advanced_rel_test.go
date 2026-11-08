@@ -168,8 +168,8 @@ func TestRelContinuationRejections(t *testing.T) {
 		_, err := parseRelContinuation(tok, continuationKind)
 		requireTyped[*ConfigError](t, name, err)
 	}
-	// A v2 token never verifies under the v1 domain, nor a v1 token under v2.
-	if _, payload, mac, err := splitContinuation(signV1Continuation(secret, "qa_run_0001", 3, digest, last)); err != nil || checkContinuationMAC(relContinuationDomain, "store", secret, payload, mac) == nil {
+	// A MAC of the v1 domain never verifies as a store token's.
+	if _, payload, mac, err := splitContinuation(signV1Continuation(secret, "qa_run_0001", 3, digest, last)); err != nil || checkContinuationMAC(secret, payload, mac) == nil {
 		t.Fatalf("a v1 MAC verified in the v2 domain: %v", err)
 	}
 }

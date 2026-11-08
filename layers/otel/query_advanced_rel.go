@@ -83,7 +83,7 @@ func parseRelContinuation(token []byte, kind string) (*relContinuation, error) {
 // belongs to this store and query.
 func (c *relContinuation) authenticate(secret []byte, s *tenantStore, digest []byte) error {
 	const op = "continuation"
-	if err := checkContinuationMAC(relContinuationDomain, "store", secret, c.payload, c.mac); err != nil {
+	if err := checkContinuationMAC(secret, c.payload, c.mac); err != nil {
 		return err
 	}
 	switch {
