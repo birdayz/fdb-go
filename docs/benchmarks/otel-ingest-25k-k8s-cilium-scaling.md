@@ -35,7 +35,7 @@ verdict is `NEAR_LINEAR` (threshold: ≥ 90% efficiency at every stage):
 | 3x | 1,125,000 | **25,387.9** | **21,697.6** | 3.249 | **108.3%** | 2.685 | 89.5% |
 
 Efficiency is `(rate_N / rate_1x) / N`. The harness's `summarize_scaling`
-([`scaling.py`](../../layers/otel/bench/ops/horizontal/scaling.py)) computes it
+([`scaling.py`](https://github.com/birdayz/fdb-go/blob/archive/otel-relational/custom-store/layers/otel/bench/ops/horizontal/scaling.py)) computes it
 from the drained rate, and the ACK factor is reported next to it. The drained
 efficiency is above 100% because the 1x stage had a long durability tail: 16.5 s
 from last ACK to stable drain, against 7.2 s at 2x and 7.5 s at 3x. That tail
@@ -246,7 +246,10 @@ env GOMAXPROCS=16 otel-demo --backend fdb --order time --run <run> --seed 283 \
 This is the command these runs used, on the custom FDB store. The relational
 store replaced that store (PR #1035), which removed `--backend fdb`,
 `--diagnostics`, `--posting-value-format` and `--hash-bytes` from otelbench
-(`otel-demo` here), so the command now exits 2. The tree tagged `archive/otel-relational/custom-store` still builds that store.
+(`otel-demo` here), so the command now exits 2, and rewrote the harness's
+ingest validation and census for OTEL_V1. The tree tagged
+`archive/otel-relational/custom-store` still builds that store and holds the
+harness this report ran; its code links point there.
 
 `audit` and `query --suite all --iterations 1600` ran with the same identity
 after drain. Workers prepare bounded, disjoint batches outside the retry
@@ -449,7 +452,7 @@ the boundary says.
   not run these samplers. Its evidence is `status json`, operator
   `FoundationDBCluster` status and pod JSON per stage.
 - **Reusing VMs across arms**, the pattern in
-  [`session.py`](../../layers/otel/bench/ops/horizontal/session.py) and
+  [`session.py`](https://github.com/birdayz/fdb-go/blob/archive/otel-relational/custom-store/layers/otel/bench/ops/horizontal/session.py) and
   `ScalingSession`. One immutable lease holds exactly six newly created,
   unprotected servers for all stages. Between stages only the workload changes
   (here, the `FoundationDBCluster` and its PVCs). After a failed arm, fresh host,
@@ -519,7 +522,7 @@ has 100 samples.
   campaign did not measure Brotli.
 - **The runner is not in this repository.** `k8s_operator_scaling.py` is a
   campaign-local file that imports `driver`, `policy`, `provision` and
-  `scaling` from [`layers/otel/bench/ops/horizontal`](../../layers/otel/bench/ops/horizontal/).
+  `scaling` from [`layers/otel/bench/ops/horizontal`](https://github.com/birdayz/fdb-go/tree/archive/otel-relational/custom-store/layers/otel/bench/ops/horizontal).
 
 ## 6. Receipts and code references
 
@@ -549,8 +552,8 @@ Code:
   (`termPrefix`, `encodeCoveringValue`, collision-checking `Query`)
 - Intrinsic indexes: [`layers/otel/intrinsic.go`](https://github.com/birdayz/fdb-go/blob/archive/otel-relational/custom-store/layers/otel/intrinsic.go)
 - Batch prefetch: [`pkg/recordlayer/store_batch_prefetch.go`](../../pkg/recordlayer/store_batch_prefetch.go)
-- Harness: [`layers/otel/bench/ops/horizontal/scaling.py`](../../layers/otel/bench/ops/horizontal/scaling.py)
+- Harness: [`layers/otel/bench/ops/horizontal/scaling.py`](https://github.com/birdayz/fdb-go/blob/archive/otel-relational/custom-store/layers/otel/bench/ops/horizontal/scaling.py)
   (`run_name`, `producer_grant`, `validate_ingest`, `wave_metrics`,
   `summarize_scaling`, `ScalingArm`, `ScalingSession`),
-  [`session.py`](../../layers/otel/bench/ops/horizontal/session.py)
+  [`session.py`](https://github.com/birdayz/fdb-go/blob/archive/otel-relational/custom-store/layers/otel/bench/ops/horizontal/session.py)
   (`Session`, `classify_arm_failure`)
