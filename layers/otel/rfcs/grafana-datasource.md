@@ -1,7 +1,8 @@
 # Grafana datasource for FDB relational and OTEL_V1 stores
 
-**Status:** draft, nothing implemented. **Base:** PR #1035. Decisions in §12
-are proposals; say no to the ones you don't want.
+**Status:** accepted (owner ACK, decisions §12 as proposed); P0–P3 implemented
+in `layers/otel/grafana`, `otel.Reader` and `sqldriver.NewConnector`/`read_only`;
+P4 (end-to-end, load check, CI) in progress. **Base:** PR #1035.
 
 ## 1. What we build
 

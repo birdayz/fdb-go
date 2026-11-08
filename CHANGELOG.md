@@ -110,6 +110,14 @@ below; neither publication nor readiness is asserted.
   `*otel.StaleMetadataError`, the new error kind `stale`: reopen the Reader.
   `otelsql.OpenTenantStoreCompiledIn` opens a tenant store with its catalog
   reads in a transaction the caller runs (`layers/otel/README.md`, "Reader").
+- Grafana datasource plugin `birdayz-foundationdb-datasource`
+  (`layers/otel/grafana`, a nested Go module with an npm frontend;
+  `just grafana-build`, `just grafana-test`): a Go backend that talks to FDB
+  directly. SQL tables, time series and logs over any relational schema store
+  through read-only `fdbsql` connections, with integer-nanosecond time macros;
+  OTEL_V1 trace by ID in Grafana's TraceView, typed trace search and logs
+  through `otel.Reader`, with span↔log links. Unsigned; self-hosted Grafana
+  12.0 or later (`allow_loading_unsigned_plugins`).
 
 ### Changed / fixed
 - The relational engine caches deserialized schema templates process-wide (up
