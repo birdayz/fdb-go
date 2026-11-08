@@ -33,9 +33,9 @@ func TestLibFDBC_MappedSkipResolvesBeforeMappedRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		stop, cancelStop := context.WithTimeout(context.Background(), foundationdbtc.TerminateTimeout)
-		defer cancelStop()
-		foundationdbtc.TerminateT(t, stop, ctr)
+		if err := foundationdbtc.Teardown(ctr); err != nil {
+			t.Error(err)
+		}
 	}()
 	cf, err := ctr.ClusterFile(startup)
 	if err != nil {
@@ -258,9 +258,9 @@ func TestLibFDBC_MappedSkipEqualContinuation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() {
-		stop, cancelStop := context.WithTimeout(context.Background(), foundationdbtc.TerminateTimeout)
-		defer cancelStop()
-		foundationdbtc.TerminateT(t, stop, ctr)
+		if err := foundationdbtc.Teardown(ctr); err != nil {
+			t.Error(err)
+		}
 	}()
 	cf, err := ctr.ClusterFile(ctx)
 	if err != nil {

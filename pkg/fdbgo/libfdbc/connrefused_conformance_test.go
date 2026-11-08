@@ -154,9 +154,9 @@ func startCRCluster(t *testing.T, ctx context.Context, f *crFixture, opts ...tes
 		t.Fatalf("multi-process cluster startup: %v", err)
 	}
 	t.Cleanup(func() {
-		stop, cancel := context.WithTimeout(context.Background(), foundationdbtc.TerminateTimeout)
-		defer cancel()
-		foundationdbtc.TerminateT(t, stop, container)
+		if err := foundationdbtc.Teardown(container); err != nil {
+			t.Error(err)
+		}
 	})
 	replicas := 1
 	if f.double {

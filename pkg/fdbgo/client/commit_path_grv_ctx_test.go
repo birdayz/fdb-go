@@ -162,9 +162,9 @@ func newGRVBlockTestDB(t *testing.T, ctx context.Context) (*Database, *grvBlockD
 	}
 	// Terminate on a FRESH context (t.Cleanup runs after the caller's cancel).
 	t.Cleanup(func() {
-		termCtx, termCancel := context.WithTimeout(context.Background(), tcfdb.TerminateTimeout)
-		defer termCancel()
-		tcfdb.TerminateT(t, termCtx, container)
+		if err := tcfdb.Teardown(container); err != nil {
+			t.Error(err)
+		}
 	})
 
 	connStr, err := container.ClusterFile(ctx)

@@ -241,9 +241,7 @@ func rangeCluster(t *testing.T) *client.ClusterFile {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), foundationdbtc.TerminateTimeout)
-		defer cancel()
-		if err := foundationdbtc.Terminate(ctx, container); err != nil {
+		if err := foundationdbtc.Teardown(container); err != nil {
 			t.Error(err)
 		}
 	})

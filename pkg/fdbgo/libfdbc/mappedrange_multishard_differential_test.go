@@ -178,9 +178,9 @@ func mdShardSetup(t *testing.T, ctx context.Context) mdShardEnv {
 		t.Fatalf("three-process cross-shard cluster startup: %v", err)
 	}
 	t.Cleanup(func() {
-		stop, cancel := context.WithTimeout(context.Background(), foundationdbtc.TerminateTimeout)
-		defer cancel()
-		foundationdbtc.TerminateT(t, stop, container)
+		if err := foundationdbtc.Teardown(container); err != nil {
+			t.Error(err)
+		}
 	})
 	content, err := container.ClusterFile(startup)
 	if err != nil {

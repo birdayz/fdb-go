@@ -6,8 +6,7 @@ import (
 	"time"
 )
 
-// TerminateTimeout bounds fixture teardown like setup: Docker's forced removal
-// can exceed 30s under concurrent container load.
+// TerminateTimeout is two minutes, CLAUDE.md's setup bound: Docker's forced removal can exceed 30s under concurrent load.
 const TerminateTimeout = 2 * time.Minute
 
 // Terminator is a container or cluster that can be stopped during fixture cleanup.
@@ -35,6 +34,13 @@ func Terminate(ctx context.Context, c Terminator) error {
 		return &TerminationError{ContainerID: id, Err: err}
 	}
 	return nil
+}
+
+// Teardown terminates c under a fresh TerminateTimeout context, so a cancelled caller context cannot cut cleanup short.
+func Teardown(c Terminator) error {
+	ctx, cancel := context.WithTimeout(context.Background(), TerminateTimeout)
+	defer cancel()
+	return Terminate(ctx, c)
 }
 
 // TerminateT stops c and fails the test or benchmark if cleanup fails.

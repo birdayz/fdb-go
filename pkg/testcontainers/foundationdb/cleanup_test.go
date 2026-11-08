@@ -22,15 +22,17 @@ func (r *cleanupReporter) Errorf(format string, args ...any) {
 
 type cleanupContainer struct {
 	testcontainers.Container
-	id    string
-	err   error
-	ctx   context.Context
-	calls int
+	id     string
+	err    error
+	ctx    context.Context
+	ctxErr error
+	calls  int
 }
 
 func (c *cleanupContainer) GetContainerID() string { return c.id }
 func (c *cleanupContainer) Terminate(ctx context.Context, _ ...testcontainers.TerminateOption) error {
 	c.ctx = ctx
+	c.ctxErr = ctx.Err()
 	c.calls++
 	return c.err
 }
@@ -69,32 +71,52 @@ func TestTerminateT(t *testing.T) {
 	}
 }
 
-// deadlineTerminator is a Docker removal that outlives the caller's cleanup deadline.
-type deadlineTerminator struct{ id string }
-
-func (d deadlineTerminator) GetContainerID() string { return d.id }
-func (d deadlineTerminator) Terminate(ctx context.Context) error {
-	<-ctx.Done()
-	return ctx.Err()
-}
-
-func TestTerminateTimeoutOverrunFailsCleanup(t *testing.T) {
+func TestTeardownUsesFreshTerminateTimeout(t *testing.T) {
 	t.Parallel()
-	if TerminateTimeout != 2*time.Minute {
-		t.Fatalf("TerminateTimeout = %v, want the two-minute container setup bound", TerminateTimeout)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
-	defer cancel()
-	c := deadlineTerminator{id: "slow-123"}
-	err := Terminate(ctx, c)
-	var terminationErr *TerminationError
-	if !errors.As(err, &terminationErr) || terminationErr.ContainerID != "slow-123" || !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Terminate = %v, want TerminationError for slow-123 wrapping the deadline", err)
-	}
-	r := &cleanupReporter{}
-	TerminateT(r, ctx, c)
-	if want := "terminate container slow-123: context deadline exceeded"; len(r.errors) != 1 || r.errors[0] != want {
-		t.Fatalf("cleanup errors = %v, want %q", r.errors, want)
+	failure := errors.New("Docker removal failed")
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "success"},
+		{name: "failure", err: failure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := &cleanupContainer{id: "fixture-123", err: tc.err}
+			var callerErr, err error
+			var start, end time.Time
+			t.Run("cleanup", func(t *testing.T) {
+				// t.Context is cancelled before Cleanup callbacks run, as in fixture teardown.
+				t.Cleanup(func() {
+					callerErr = t.Context().Err()
+					start = time.Now()
+					err = Teardown(&Container{Container: c})
+					end = time.Now()
+				})
+			})
+			if callerErr == nil {
+				t.Fatal("caller context was still live; the cancelled-caller case did not run")
+			}
+			if c.calls != 1 || c.ctxErr != nil {
+				t.Fatalf("Terminate calls = %d, context error = %v; want one call with a live context", c.calls, c.ctxErr)
+			}
+			deadline, bounded := c.ctx.Deadline()
+			if !bounded || deadline.Before(start.Add(TerminateTimeout)) || deadline.After(end.Add(TerminateTimeout)) || deadline.Sub(start) <= 30*time.Second {
+				t.Fatalf("teardown deadline = %v after start (bounded %t), want TerminateTimeout %v, above the 30s Docker removal overran", deadline.Sub(start), bounded, TerminateTimeout)
+			}
+			if c.ctx.Err() == nil {
+				t.Fatal("Teardown did not release its context")
+			}
+			var terminationErr *TerminationError
+			if tc.err == nil {
+				if err != nil {
+					t.Fatalf("successful teardown = %v", err)
+				}
+			} else if !errors.As(err, &terminationErr) || terminationErr.ContainerID != "fixture-123" || !errors.Is(err, failure) {
+				t.Fatalf("Teardown = %v, want TerminationError for fixture-123 wrapping the removal failure", err)
+			}
+		})
 	}
 }
 
