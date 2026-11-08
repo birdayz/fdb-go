@@ -101,7 +101,7 @@ func TestFDBFullTextDDLOptions(t *testing.T) {
 		{"OPTIONS (TOKENIZER_VERSION = '0')", api.ErrCodeSyntaxError},
 		{"OPTIONS (TOKENIZER_VERSION = 0L)", api.ErrCodeSyntaxError},
 		{"OPTIONS (TOKENIZER_VERSION = 99999999999)", api.ErrCodeSyntaxError},
-		{"OPTIONS (TOKENIZER_VERSION = -1)", api.ErrCodeSyntaxError},
+		{"OPTIONS (TOKENIZER_VERSION = -1)", api.ErrCodeSyntaxError}, // unsigned, as Java's vectorIndexOptionValue
 		{"OPTIONS (STEMMER = 'x')", api.ErrCodeUnsupportedOperation},
 		{"OPTIONS ()", api.ErrCodeSyntaxError},
 	} {

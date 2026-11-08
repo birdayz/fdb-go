@@ -21,8 +21,9 @@ takes `OPTIONS (TOKENIZER = '<name>', TOKENIZER_VERSION = <int>)` after the
 partition clause, setting the TEXT index options `textTokenizerName` and
 `textTokenizerVersion` that Java's metadata API sets programmatically. Names are
 case-insensitive; an unknown option is `0A000`, a duplicate or a value of the
-wrong kind `42601`, and an unregistered tokenizer or an out-of-range version
-fails the template (`pkg/relational/sqltest/plan/fulltext_options_ddl_fdb_test.go`).
+wrong kind `42601` (the value is an unsigned integer literal, as in Java's
+`vectorIndexOptionValue`, so a negative version is a syntax error), and an
+unregistered tokenizer or a version above the tokenizer's range fails the template (`pkg/relational/sqltest/plan/fulltext_options_ddl_fdb_test.go`).
 A tokenizer registered only in Go makes the whole schema unreadable to Java,
 not just the index: Java builds the schema's metadata for every statement and
 its TEXT index validator refuses the unknown name (`42000 MetaDataException

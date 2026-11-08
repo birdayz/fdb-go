@@ -198,7 +198,8 @@ below; neither publication nor readiness is asserted.
   them. A tokenizer registered only in Go makes the whole schema unreadable to
   Java 4.14.2.0 (`42000 MetaDataException unrecognized text tokenizer`);
   `'default'` opens. An unknown option is `0A000`, a duplicate or wrong-kind
-  value `42601`, an unregistered tokenizer or out-of-range version `42F59`.
+  value (a negative version included) `42601`, an unregistered tokenizer or a
+  version above the tokenizer's range `42F59`.
 - **Fan-out composite index entries and counts:** an index over a composite
   with a `FanOut` child under an absent non-repeated parent no longer gets the
   all-null entry or count earlier Go wrote, a NOT_NULL `Concatenate` field
