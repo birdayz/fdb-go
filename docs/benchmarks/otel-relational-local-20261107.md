@@ -34,12 +34,12 @@ so none of them is in the merged history; the tags keep them resolvable.
 | `archive/otel-relational/g3-cutover` | `f68acec52` | G3: the cutover's Exporter |
 | `archive/otel-relational/fts-before` | `b70072f38` | `fts_single_token`: the Exporter with the query-only harness |
 | `archive/otel-relational/fts-fix` | `f7b2d43bd` | `fts_single_token`: the fix |
+| `archive/otel-relational/quiesced` | `11ae9acbf` | the quiesced gate's Exporter |
 
 The archived tags carry the export benchmarks' old names,
 `BenchmarkRelSpansVsFDB` and `BenchmarkRelLogsVsFDB`; at head they are
 `BenchmarkSpanExport` and `BenchmarkLogExport`, which measure the same
 relational arm.
-| `archive/otel-relational/quiesced` | `11ae9acbf` | the quiesced gate's Exporter |
 
 The receipts record these short hashes, or one of:
 
