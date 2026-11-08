@@ -2657,15 +2657,38 @@ tracked only.
 
 ### HN release evidence
 
-- [ ] Exercise the opt-in `ci.yml` full dispatch on its candidate branch and then the
+- [x] Exercise the opt-in `ci.yml` full dispatch on its candidate branch and then the
   exact merged master release cut. Require the full job to execute, nonempty target
   and artifact populations, unchanged input manifests, and matching tested SHA;
   report executed versus cached tests. Ordinary CI and local `just test` are not
-  substitutes for this gate (`RELEASE.md`).
-- [ ] Complete the release-cut checklist, dry-run the release workflow on that SHA,
+  substitutes for this gate (`RELEASE.md`). Done: candidate run 41871814905 (#1032)
+  and cut `aef9515` run 41882986728 (#1033), all eight jobs; the cut's full lane ran
+  239 targets (1 executed, 238 cached) on unchanged input manifests.
+- [x] Complete the release-cut checklist, dry-run the release workflow on that SHA,
   and verify clean revision installation and examples. The public installer and
   tagged `go install` need a root release containing `cmd/fdb`; obtain explicit
-  authorization before tagging, then verify the actual published artifacts.
+  authorization before tagging, then verify the actual published artifacts. Done:
+  dry run 41884738373 on `aef9515`; v0.2.0 tagged with owner authorization and
+  published 2026-11-07 (run 42423442734); a cold proxy install, the installer,
+  checksums and attestations of the published release were verified.
+- [ ] First-use proxy resolution: twice, the first fresh-cache `go install` of a new,
+  untagged cut revision failed because `proxy.golang.org/fdb.dev/@v/<sha>.info`
+  returned `404 not found: fetch timed out`. Go printed the longer `fdb.dev/cmd/fdb`
+  404 instead. Both recovered minutes later; the tagged v0.2.0 first-use install
+  passed. The cause is unknown (#1033). Re-check a cold `go install` of the next tag
+  and capture the root `.info` response if it fails.
+- [ ] Downloads from GitHub releases need a retry window that survives short GitHub
+  outages. On 2026-11-08, about a minute of HTTP 504s from the release-download
+  endpoint failed CI's `just ensure-buf` (bare `curl`, no retry) before any test ran.
+  The same outage made the installer exhaust `curl --retry 3` on `checksums.txt`
+  and refuse to install, which is correct. Census every `curl`/`wget` fetch in
+  `justfile`, workflows, scripts and `install.sh`, and give each a bounded retry.
+- [ ] The v0.2.0 GitHub release body must be regenerated from the merged notes after
+  #1037 merges (`RELEASE.md` step 6).
+- [ ] Cold-lane container teardown flake: Docker's forced removal exceeded the 30s
+  teardown budget under a fully uncached `just test`
+  (`//tools/clientbench/integration:integration_test`). #1038 moves teardown sites to a
+  shared two-minute `TerminateTimeout`; close this entry when it merges.
 
 ### Follow-ups from the fix PRs' reviews
 

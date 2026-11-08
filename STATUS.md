@@ -1,8 +1,9 @@
 # Project status
 
 **Pre-1.0; not declared production-ready.** This readiness statement covers
-v0.2.0. **Publication is pending**; no tag, completed release gate, or deployment
-certification is asserted here. Pin a revision and evaluate it against your workload.
+v0.2.0, published 2026-11-07 as tag `v0.2.0`; later `master` changes are listed as
+Unreleased in the changelog. No deployment certification is asserted here. Pin a
+revision and evaluate it against your workload.
 
 The project contains three independently useful layers:
 

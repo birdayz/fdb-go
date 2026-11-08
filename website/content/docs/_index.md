@@ -30,5 +30,6 @@ FoundationDB is a separate server. The Record Layer and SQL engine run in your
 application; this project is not a PostgreSQL wire-protocol server.
 
 **Pre-1.0; not declared production-ready.** These docs describe the development
-tree, not the older v0.1.0 release. Read [status and compatibility](maturity/)
+tree (`master`), which can be ahead of the
+[latest release](https://github.com/birdayz/fdb-go/releases/latest). Read [status and compatibility](maturity/)
 before using an existing store or mixing Go and Java writers.

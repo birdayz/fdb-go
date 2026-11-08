@@ -5,7 +5,7 @@ weight: 5
 ---
 
 `fdb` manages local FoundationDB development databases, runs SQL, and inspects
-and updates Record Layer stores. The CLI is pre-release; commands, flags, and
+and updates Record Layer stores. The CLI is pre-1.0; commands, flags, and
 output formats may change.
 
 For setup, see the [CLI overview](/docs/cli/). For schema and store wiring, see

@@ -17,8 +17,21 @@ manages indexes, and runs SQL without an application server or cgo.
 
 ## Install
 
-The renamed CLI has not had a tagged release yet. Build from a current checkout
-with the Go version in
+Install the latest release, a static binary for Linux or macOS whose checksum the
+installer verifies:
+
+```sh
+curl -fsSL https://fdb.dev/install.sh | sh
+```
+
+or install the latest tagged version with the Go toolchain:
+
+```sh
+go install fdb.dev/cmd/fdb@latest
+```
+
+These docs describe `master`, which can include changes after the latest
+release. For those, build from a current checkout with the Go version in
 [`go.mod`](https://github.com/birdayz/fdb-go/blob/master/go.mod):
 
 ```sh
@@ -29,12 +42,6 @@ export PATH="$PWD/.tmpbuild:$PATH" &&
 fdb version &&
 fdb --help
 ```
-
-The release installer (`curl -fsSL https://fdb.dev/install.sh | sh`) and
-`go install fdb.dev/cmd/fdb@<tag>` require a root-module release containing
-`cmd/fdb`; the installer also needs that release's published `fdb` archives.
-Those release artifacts are not available yet. Existing older releases and
-`@latest` cannot supply this renamed CLI; use the checkout build above.
 
 ## Start a local cluster
 
