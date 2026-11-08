@@ -284,11 +284,7 @@ func scanTraceSpans(ctx context.Context, store *recordlayer.FDBRecordStore, op s
 	if f.spanID == nil || f.start == nil || f.parent == nil || f.otlp == nil {
 		return failf("ownership", op, "%s lacks SPAN_ID, START_NS, PARENT_SPAN_ID or OTLP", spansRecordType)
 	}
-	prefix := tuple.Tuple{trace}
-	if rt.PrimaryKeyHasRecordTypePrefix() {
-		// A relational table's primary key leads with its record type key.
-		prefix = tuple.Tuple{rt.GetRecordTypeKey(), trace}
-	}
+	prefix := recordTypeKey(rt, trace)
 	props := recordlayer.ForwardScan()
 	props.ExecuteProperties.ReturnedRowLimit = work.maxCandidates - work.candidates + 1
 	cur := store.ScanRecordsInRange(prefix, prefix, recordlayer.EndpointTypeRangeInclusive, recordlayer.EndpointTypeRangeInclusive, nil, props)
