@@ -454,7 +454,11 @@ runs profiled alike.
 query classes on an existing `--run` that holds the `--conversations` corpus,
 reporting every iteration. `--query-samples` reports every iteration of a normal
 run's post-ingest queries, and `--query-classes` (comma-separated) limits the
-classes; the benchmark doc's quiesced gate uses them.
+classes; the benchmark doc's quiesced gate uses them. `collector-bench` refuses
+the otelbench flags it does not read (corpus, save-mode, query-budget and
+ClickHouse flags, `--bulk-index-conflicts`, `--confirm-drop`) and an explicit
+zero `--seed`, `--iterations`, `--batch` or `--workers`, which would otherwise
+fall back to its defaults.
 
 The exporter's process takes `GOGC` and `GOMEMLIMIT` from its environment.
 Evaluate these settings with profiles of the intended workload; this guide does
