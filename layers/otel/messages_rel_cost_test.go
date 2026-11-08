@@ -21,10 +21,8 @@ import (
 // BenchmarkMessageWriteCostRealFDB is the R1/R4 measurement of
 // rfcs/relational-exporter-migration.md §7: client CPU and stored bytes of
 // GenAI span ingest with messages through the Exporter (relMessageStore,
-// SPANS rows with ref_chunks), one FDB container, sequential arms. Its arms
-// of the custom store's Exporter left with that store; the same-binary
-// comparison's receipts, measured before that, are in
-// docs/benchmarks/otel-relational-local-20261107.md ("Messages through the
+// SPANS rows with ref_chunks), one FDB container, sequential arms (receipts
+// in docs/benchmarks/otel-relational-local-20261107.md, "Messages through the
 // replacement"). Run it alone:
 //
 //	bazelisk test //layers/otel:otel_test --test_arg=-test.run='^$' \
