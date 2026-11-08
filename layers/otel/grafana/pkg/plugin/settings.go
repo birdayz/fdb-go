@@ -44,8 +44,15 @@ const (
 	defaultSearchLimit        = 20
 	maxSearchLimit            = 1_000
 	defaultSearchCandidates   = 20_000
+	maxSearchCandidates       = 100_000_000 // otel.ReaderConfig's ceiling
 	defaultSearchMaxBytes     = 4 << 20
 	defaultLogsLimit          = 1_000
+
+	// otel.ReaderConfig accepts 1s..5min per transaction.
+	minTransactionTimeoutMs = 1_000
+	maxTransactionTimeoutMs = 300_000
+	// FDB's MAX_TRANSACTION_TAG_LENGTH, in bytes.
+	maxTagBytes = 16
 )
 
 // Settings is the parsed and validated datasource configuration.
@@ -231,32 +238,32 @@ func ParseSettings(s backend.DataSourceInstanceSettings) (*Settings, error) {
 	}
 
 	type bound struct {
-		name     string
-		in       *flexInt
-		def, max int64
-		set      func(int64)
+		name          string
+		in            *flexInt
+		def, min, max int64
+		set           func(int64)
 	}
 	bounds := []bound{
-		{"queryTimeoutSeconds", j.QueryTimeoutSeconds, int64(defaultQueryTimeout / time.Second), 3600, func(v int64) { out.QueryTimeout = time.Duration(v) * time.Second }},
-		{"transactionTimeoutMs", j.TransactionTimeoutMs, defaultTransactionTimeout.Milliseconds(), math.MaxInt32, func(v int64) { out.TransactionTimeout = time.Duration(v) * time.Millisecond }},
-		{"sqlPageRows", j.SQLPageRows, defaultSQLPageRows, math.MaxInt32, func(v int64) { out.SQLPageRows = v }},
-		{"sqlPageBytes", j.SQLPageBytes, defaultSQLPageBytes, math.MaxInt64, func(v int64) { out.SQLPageBytes = v }},
-		{"sqlMaxRows", j.SQLMaxRows, defaultSQLMaxRows, math.MaxInt32, func(v int64) { out.SQLMaxRows = v }},
-		{"sqlStatementMemoryBytes", j.SQLStatementMemoryBytes, defaultSQLStatementMemory, math.MaxInt64, func(v int64) { out.SQLStatementMemoryBytes = v }},
-		{"traceMaxSpans", j.TraceMaxSpans, defaultTraceMaxSpans, math.MaxInt32, func(v int64) { out.TraceMaxSpans = int(v) }},
-		{"traceMaxBytes", j.TraceMaxBytes, defaultTraceMaxBytes, math.MaxInt64, func(v int64) { out.TraceMaxBytes = v }},
-		{"searchLimit", j.SearchLimit, defaultSearchLimit, maxSearchLimit, func(v int64) { out.SearchLimit = int(v) }},
-		{"searchMaxCandidates", j.SearchMaxCandidates, defaultSearchCandidates, math.MaxInt32, func(v int64) { out.SearchMaxCandidates = int(v) }},
-		{"searchMaxBytes", j.SearchMaxBytes, defaultSearchMaxBytes, math.MaxInt64, func(v int64) { out.SearchMaxBytes = v }},
-		{"logsLimit", j.LogsLimit, defaultLogsLimit, math.MaxInt32, func(v int64) { out.LogsLimit = int(v) }},
+		{"queryTimeoutSeconds", j.QueryTimeoutSeconds, int64(defaultQueryTimeout / time.Second), 1, 3600, func(v int64) { out.QueryTimeout = time.Duration(v) * time.Second }},
+		{"transactionTimeoutMs", j.TransactionTimeoutMs, defaultTransactionTimeout.Milliseconds(), minTransactionTimeoutMs, maxTransactionTimeoutMs, func(v int64) { out.TransactionTimeout = time.Duration(v) * time.Millisecond }},
+		{"sqlPageRows", j.SQLPageRows, defaultSQLPageRows, 1, math.MaxInt32, func(v int64) { out.SQLPageRows = v }},
+		{"sqlPageBytes", j.SQLPageBytes, defaultSQLPageBytes, 1, math.MaxInt64, func(v int64) { out.SQLPageBytes = v }},
+		{"sqlMaxRows", j.SQLMaxRows, defaultSQLMaxRows, 1, math.MaxInt32, func(v int64) { out.SQLMaxRows = v }},
+		{"sqlStatementMemoryBytes", j.SQLStatementMemoryBytes, defaultSQLStatementMemory, 1, math.MaxInt64, func(v int64) { out.SQLStatementMemoryBytes = v }},
+		{"traceMaxSpans", j.TraceMaxSpans, defaultTraceMaxSpans, 1, math.MaxInt32, func(v int64) { out.TraceMaxSpans = int(v) }},
+		{"traceMaxBytes", j.TraceMaxBytes, defaultTraceMaxBytes, 1, math.MaxInt64, func(v int64) { out.TraceMaxBytes = v }},
+		{"searchLimit", j.SearchLimit, defaultSearchLimit, 1, maxSearchLimit, func(v int64) { out.SearchLimit = int(v) }},
+		{"searchMaxCandidates", j.SearchMaxCandidates, defaultSearchCandidates, 1, maxSearchCandidates, func(v int64) { out.SearchMaxCandidates = int(v) }},
+		{"searchMaxBytes", j.SearchMaxBytes, defaultSearchMaxBytes, 1, math.MaxInt64, func(v int64) { out.SearchMaxBytes = v }},
+		{"logsLimit", j.LogsLimit, defaultLogsLimit, 1, math.MaxInt32, func(v int64) { out.LogsLimit = int(v) }},
 	}
 	for _, b := range bounds {
 		v := b.def
 		if b.in != nil {
 			v = b.in.v
 		}
-		if v < 1 || v > b.max {
-			return nil, settingsErrorf(b.name, "%d is outside 1..%d", v, b.max)
+		if v < b.min || v > b.max {
+			return nil, settingsErrorf(b.name, "%d is outside %d..%d", v, b.min, b.max)
 		}
 		b.set(v)
 	}
@@ -269,8 +276,8 @@ func ParseSettings(s backend.DataSourceInstanceSettings) (*Settings, error) {
 	return out, nil
 }
 
-// parseTransactionTags applies the record layer's tag limits; a comma would
-// split the tag in the DSN's comma-separated transaction_tags parameter.
+// parseTransactionTags applies the record layer's and FDB's tag limits; a
+// comma would split the tag in the DSN's comma-separated transaction_tags.
 func parseTransactionTags(in []string) ([]string, error) {
 	var tags []string
 	for _, t := range in {
@@ -280,6 +287,9 @@ func parseTransactionTags(in []string) ([]string, error) {
 		}
 		if strings.Contains(t, ",") {
 			return nil, settingsErrorf("transactionTags", "tag %q contains a comma", t)
+		}
+		if len(t) > maxTagBytes {
+			return nil, settingsErrorf("transactionTags", "tag %q is longer than %d bytes", t, maxTagBytes)
 		}
 		tags = append(tags, t)
 	}

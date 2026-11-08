@@ -9,6 +9,8 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/datasource"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/instancemgmt"
+
+	"fdb.dev/layers/otel"
 )
 
 // PluginID is the plugin's Grafana ID.
@@ -168,7 +170,7 @@ func (d *Datasource) openTenantReader(ctx context.Context, schema string) (otelR
 	if err != nil {
 		return nil, err
 	}
-	r, err := d.deps.openReader(ctx, h.db, d.cfg.Database, schema, readerConfig{
+	r, err := d.deps.openReader(ctx, h.db, d.cfg.Database, schema, otel.ReaderConfig{
 		MaxCandidates:      d.cfg.SearchMaxCandidates,
 		MaxBytes:           d.cfg.SearchMaxBytes,
 		K:                  d.cfg.SearchLimit,

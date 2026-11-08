@@ -9,14 +9,17 @@ import (
 	"fdb.dev/pkg/recordlayer"
 )
 
-// errRootAPIUnavailable marks the root-module entry points this branch is
-// built without: otel.OpenReader and sqldriver.NewConnector land with the
-// reader and sqldriver streams, and bind.go then calls them directly.
-var errRootAPIUnavailable = errors.New("this build lacks otel.OpenReader / sqldriver.NewConnector")
+// errRootAPIUnavailable marks sqldriver.NewConnector, which this build lacks
+// until the sqldriver stream lands; newConnector then calls it directly.
+var errRootAPIUnavailable = errors.New("this build lacks sqldriver.NewConnector")
 
 // openReader is otel.OpenReader behind the otelReader interface.
-func openReader(_ context.Context, _ *recordlayer.FDBDatabase, _, _ string, _ readerConfig) (otelReader, error) {
-	return nil, errRootAPIUnavailable
+func openReader(ctx context.Context, db *recordlayer.FDBDatabase, database, schema string, cfg otel.ReaderConfig) (otelReader, error) {
+	r, err := otel.OpenReader(ctx, db, database, schema, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 // newConnector is sqldriver.NewConnector.

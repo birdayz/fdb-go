@@ -3,7 +3,6 @@ package plugin
 import (
 	"context"
 	"database/sql/driver"
-	"time"
 
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 
@@ -11,41 +10,11 @@ import (
 	"fdb.dev/pkg/recordlayer"
 )
 
-// STORE_META("layout") values (otel.StoreLayout*).
-const (
-	layoutMessagesNone     = "messages=none"
-	layoutMessagesDeltas   = "messages=deltas"
-	layoutMessagesFullText = "messages=fulltext"
-)
-
-// readerConfig mirrors otel.ReaderConfig.
-type readerConfig struct {
-	MaxCandidates      int
-	MaxBytes           int64
-	K                  int
-	TransactionTimeout time.Duration
-	TransactionTags    []string
-}
-
-// traceBudget mirrors otel.TraceBudget.
-type traceBudget struct {
-	MaxSpans int
-	MaxBytes int64
-}
-
-// traceReadStats mirrors otel.TraceReadStats. Reason is "" or a comma-joined
-// subset of max_spans, max_bytes and messages.
-type traceReadStats struct {
-	Spans     int
-	Bytes     int64
-	Truncated bool
-	Reason    string
-}
-
-// otelReader is the read-only OTEL_V1 facade (*otel.Reader) the plugin uses.
+// otelReader is the read-only OTEL_V1 facade (*otel.Reader) the plugin uses;
+// tests substitute a fake.
 type otelReader interface {
 	Layout() string
-	TraceOTLP(ctx context.Context, traceID string, b traceBudget) ([]*tracepb.ResourceSpans, traceReadStats, error)
+	TraceOTLP(ctx context.Context, traceID string, b otel.TraceBudget) ([]*tracepb.ResourceSpans, otel.TraceReadStats, error)
 	QuerySameSpan(ctx context.Context, q otel.SameSpanQuery) (otel.SpanQueryPage, error)
 	QueryTraceExistential(ctx context.Context, q otel.TraceExistentialQuery) (otel.TraceExistentialResult, error)
 	Query(ctx context.Context, a otel.Attribute) (otel.QueryResult, error)
@@ -57,8 +26,10 @@ type otelReader interface {
 	Close() error
 }
 
+var _ otelReader = (*otel.Reader)(nil)
+
 // readerOpener opens a reader on one tenant schema (otel.OpenReader).
-type readerOpener func(ctx context.Context, db *recordlayer.FDBDatabase, database, schema string, cfg readerConfig) (otelReader, error)
+type readerOpener func(ctx context.Context, db *recordlayer.FDBDatabase, database, schema string, cfg otel.ReaderConfig) (otelReader, error)
 
 // connectorFactory builds a database/sql connector over the instance's FDB
 // database (sqldriver.NewConnector).

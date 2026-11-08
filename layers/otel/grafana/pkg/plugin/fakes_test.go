@@ -137,7 +137,7 @@ type fakeReader struct {
 	closed bool
 
 	layout       string
-	trace        func(id string) ([]*tracepb.ResourceSpans, traceReadStats, error)
+	trace        func(id string) ([]*tracepb.ResourceSpans, otel.TraceReadStats, error)
 	sameSpan     otel.SpanQueryPage
 	existential  otel.TraceExistentialResult
 	queryResult  otel.QueryResult
@@ -151,7 +151,7 @@ type fakeReader struct {
 	lastExist    otel.TraceExistentialQuery
 	lastAttr     otel.Attribute
 	lastTime     otel.TimeRange
-	lastBudget   traceBudget
+	lastBudget   otel.TraceBudget
 	lastLogsArgs []any
 	lastAttrArgs []any
 }
@@ -164,14 +164,14 @@ func (r *fakeReader) record(call string) {
 
 func (r *fakeReader) Layout() string { return r.layout }
 
-func (r *fakeReader) TraceOTLP(_ context.Context, id string, b traceBudget) ([]*tracepb.ResourceSpans, traceReadStats, error) {
+func (r *fakeReader) TraceOTLP(_ context.Context, id string, b otel.TraceBudget) ([]*tracepb.ResourceSpans, otel.TraceReadStats, error) {
 	r.record("TraceOTLP " + id)
 	r.lastBudget = b
 	if r.err != nil {
-		return nil, traceReadStats{}, r.err
+		return nil, otel.TraceReadStats{}, r.err
 	}
 	if r.trace == nil {
-		return nil, traceReadStats{}, nil
+		return nil, otel.TraceReadStats{}, nil
 	}
 	return r.trace(id)
 }
@@ -286,7 +286,7 @@ func newHarness(t testing.TB, jsonData map[string]any) *harness {
 				h.mu.Unlock()
 			}}, nil
 		},
-		openReader: func(_ context.Context, _ *recordlayer.FDBDatabase, _, schema string, _ readerConfig) (otelReader, error) {
+		openReader: func(_ context.Context, _ *recordlayer.FDBDatabase, _, schema string, _ otel.ReaderConfig) (otelReader, error) {
 			h.mu.Lock()
 			defer h.mu.Unlock()
 			if err := h.readerErr[schema]; err != nil {
@@ -297,7 +297,7 @@ func newHarness(t testing.TB, jsonData map[string]any) *harness {
 				if h.readerNew != nil {
 					r = h.readerNew(schema)
 				} else {
-					r = &fakeReader{layout: layoutMessagesDeltas}
+					r = &fakeReader{layout: otel.StoreLayoutDeltas}
 				}
 				r.schema = schema
 				h.readers[schema] = r
@@ -316,7 +316,7 @@ func (h *harness) reader(schema string) *fakeReader {
 	defer h.mu.Unlock()
 	r, ok := h.readers[schema]
 	if !ok {
-		r = &fakeReader{layout: layoutMessagesDeltas, schema: schema}
+		r = &fakeReader{layout: otel.StoreLayoutDeltas, schema: schema}
 		h.readers[schema] = r
 	}
 	return r

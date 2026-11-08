@@ -16,6 +16,8 @@ import (
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
+
+	"fdb.dev/layers/otel"
 )
 
 // Tempo's names (grafana-tempo-datasource trace_transform.go).
@@ -63,7 +65,7 @@ func (d *Datasource) queryTrace(ctx context.Context, pc backend.PluginContext, q
 		return backend.DataResponse{}, err
 	}
 	defer release()
-	rss, stats, err := r.TraceOTLP(ctx, id, traceBudget{MaxSpans: d.cfg.TraceMaxSpans, MaxBytes: d.cfg.TraceMaxBytes})
+	rss, stats, err := r.TraceOTLP(ctx, id, otel.TraceBudget{MaxSpans: d.cfg.TraceMaxSpans, MaxBytes: d.cfg.TraceMaxBytes})
 	if err != nil {
 		return backend.DataResponse{}, err
 	}
@@ -91,15 +93,15 @@ func linkTarget(pc backend.PluginContext, fallback backend.DataSourceInstanceSet
 	return fallback
 }
 
-func truncationNotice(stats traceReadStats, cfg *Settings) string {
+func truncationNotice(stats otel.TraceReadStats, cfg *Settings) string {
 	var parts []string
 	for _, r := range strings.Split(stats.Reason, ",") {
 		switch strings.TrimSpace(r) {
-		case "max_spans":
+		case otel.TraceReasonMaxSpans:
 			parts = append(parts, fmt.Sprintf("more than %d spans (traceMaxSpans)", cfg.TraceMaxSpans))
-		case "max_bytes":
+		case otel.TraceReasonMaxBytes:
 			parts = append(parts, fmt.Sprintf("more than %d bytes read (traceMaxBytes)", cfg.TraceMaxBytes))
-		case "messages":
+		case otel.TraceReasonMessages:
 			parts = append(parts, "GenAI messages past the trace budget are shown as manifests")
 		case "":
 		default:

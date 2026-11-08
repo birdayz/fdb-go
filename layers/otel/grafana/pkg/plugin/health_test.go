@@ -36,7 +36,7 @@ func TestHealthOK(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, nil)
 	res, _ := health(t, h)
-	if res.Status != backend.HealthStatusOk || !strings.Contains(res.Message, "SELECT 1 ok in /OTEL/R_TEST schema T1") || !strings.Contains(res.Message, layoutMessagesDeltas) {
+	if res.Status != backend.HealthStatusOk || !strings.Contains(res.Message, "SELECT 1 ok in /OTEL/R_TEST schema T1") || !strings.Contains(res.Message, otel.StoreLayoutDeltas) {
 		t.Fatalf("%v: %s", res.Status, res.Message)
 	}
 	if q := h.sql.queryLog(); len(q) != 1 || q[0] != "SELECT 1" {

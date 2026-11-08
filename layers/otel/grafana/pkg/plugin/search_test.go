@@ -59,8 +59,8 @@ func TestTraceSearchSameSpan(t *testing.T) {
 	r.sameSpan = otel.SpanQueryPage{Spans: []otel.SpanMatch{
 		{Trace: tid(0), ID: "a", Start: 30}, {Trace: tid(1), ID: "b", Start: 20}, {Trace: tid(0), ID: "c", Start: 10},
 	}}
-	r.trace = func(id string) ([]*tracepb.ResourceSpans, traceReadStats, error) {
-		return traceOf(id, 1_000_000_000), traceReadStats{}, nil
+	r.trace = func(id string) ([]*tracepb.ResourceSpans, otel.TraceReadStats, error) {
+		return traceOf(id, 1_000_000_000), otel.TraceReadStats{}, nil
 	}
 	f := onlyFrame(t, h.query(t, searchModel(modeSameSpan, map[string]any{
 		"spanPredicates": []any{spanPred("http.method", "GET"), map[string]any{"scope": "resource", "key": "n", "type": "int", "value": "3"}},

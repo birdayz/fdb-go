@@ -164,11 +164,11 @@ func TestTraceQueryFrameAndLinks(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, map[string]any{"traceMaxSpans": 3, "traceMaxBytes": 4096})
 	r := h.reader("T1")
-	r.trace = func(id string) ([]*tracepb.ResourceSpans, traceReadStats, error) {
-		return fullTrace(), traceReadStats{Spans: 3, Bytes: 4097, Truncated: true, Reason: "max_bytes,messages"}, nil
+	r.trace = func(id string) ([]*tracepb.ResourceSpans, otel.TraceReadStats, error) {
+		return fullTrace(), otel.TraceReadStats{Spans: 3, Bytes: 4097, Truncated: true, Reason: "max_bytes,messages"}, nil
 	}
 	f := onlyFrame(t, h.query(t, map[string]any{"queryType": queryTypeTrace, "traceId": goldenTraceID}, searchRange))
-	if r.lastBudget != (traceBudget{MaxSpans: 3, MaxBytes: 4096}) {
+	if r.lastBudget != (otel.TraceBudget{MaxSpans: 3, MaxBytes: 4096}) {
 		t.Fatalf("budget %+v", r.lastBudget)
 	}
 	if f.RefID != "A" || f.Meta.PreferredVisualization != data.VisTypeTrace {
@@ -256,10 +256,10 @@ func TestDisposeWaitsForInFlight(t *testing.T) {
 	started, unblock := make(chan struct{}), make(chan struct{})
 	r := h.reader("T1")
 	var once sync.Once
-	r.trace = func(string) ([]*tracepb.ResourceSpans, traceReadStats, error) {
+	r.trace = func(string) ([]*tracepb.ResourceSpans, otel.TraceReadStats, error) {
 		once.Do(func() { close(started) })
 		<-unblock
-		return nil, traceReadStats{}, nil
+		return nil, otel.TraceReadStats{}, nil
 	}
 	done := make(chan backend.DataResponse)
 	go func() {

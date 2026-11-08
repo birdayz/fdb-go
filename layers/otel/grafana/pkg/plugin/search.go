@@ -216,7 +216,7 @@ func (d *Datasource) addSummaries(ctx context.Context, r otelReader, frame *data
 	durations := make([]*float64, len(hits))
 	startField, _ := frame.FieldByName("startTime")
 	for i, h := range hits {
-		rss, _, err := r.TraceOTLP(ctx, h.traceID, traceBudget{MaxSpans: d.cfg.TraceMaxSpans, MaxBytes: d.cfg.TraceMaxBytes})
+		rss, _, err := r.TraceOTLP(ctx, h.traceID, otel.TraceBudget{MaxSpans: d.cfg.TraceMaxSpans, MaxBytes: d.cfg.TraceMaxBytes})
 		if err != nil {
 			return err
 		}
