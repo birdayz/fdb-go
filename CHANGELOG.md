@@ -88,7 +88,11 @@ below; neither publication nor readiness is asserted.
   does; earlier Go yielded one all-null tuple and wrote that index entry or
   count. A `Concatenate` child under NOT_NULL there yields the empty list, not
   null. COUNT, COUNT_UPDATES and SUM indexes grouped by a fan-out nesting count
-  every entry, as Java does, not only a record's first element.
+  every entry, as Java does, not only a record's first element. An update of
+  a SUM or COUNT_NOT_NULL index skips every entry the old and new record share,
+  all occurrences and by whole entry, as Java's `StandardIndexMaintainer.update`
+  does; Go cancelled SUM entries one for one and compared COUNT_NOT_NULL
+  entries by group only.
 - Message full-text role discovery charges the raw TEXT bunch key/value bytes,
   including discovery preceding an empty result, against the remaining query budget.
 - Drained message and Collector queues clear consumed slots and release exhausted
@@ -161,10 +165,15 @@ below; neither publication nor readiness is asserted.
   value `42601`, an unregistered tokenizer or out-of-range version `42F59`.
 - **Fan-out composite index entries and counts:** an index over a composite
   with a `FanOut` child under an absent non-repeated parent no longer gets the
-  all-null entry or count earlier Go wrote, and Go never corrects what an
+  all-null entry or count earlier Go wrote, a NOT_NULL `Concatenate` field
+  there now holds the empty list, not null, and Go never corrects what an
   earlier build wrote there. Atomic indexes grouped by a fan-out nesting now
-  count every entry. Rebuild such indexes after upgrading (DIVERGENCES.md, "A
-  fan-out composite under an absent parent").
+  count every entry, and SUM and COUNT_NOT_NULL updates skip shared entries as
+  Java does. Rebuild after upgrading: indexes over such a composite (a
+  `FanOut` child or a NOT_NULL `Concatenate` field under a singular parent),
+  atomic indexes grouped by a fan-out nesting, and SUM or COUNT_NOT_NULL
+  indexes over a fan-out that earlier Go updated (DIVERGENCES.md, "A fan-out
+  composite under an absent parent").
 - Apart from the entries above, persisted Record Layer and SQL bytes and FDB
   client option semantics are unchanged; the Exporter uses the existing
   GRV-cache option.

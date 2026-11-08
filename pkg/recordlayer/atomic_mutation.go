@@ -53,6 +53,18 @@ type atomicMutation interface {
 type atomicMutationEntry struct {
 	groupKey tuple.Tuple
 	param    []byte // FDB mutation parameter bytes (insert direction)
+	// key is the whole index entry key, the grouping then the grouped
+	// columns, which removeCommon compares; nil when it is groupKey (COUNT,
+	// COUNT_UPDATES: no grouped columns).
+	key tuple.Tuple
+}
+
+// entryKey is Java's IndexEntry key for e.
+func (e atomicMutationEntry) entryKey() tuple.Tuple {
+	if e.key != nil {
+		return e.key
+	}
+	return e.groupKey
 }
 
 // --- COUNT mutation ---
@@ -89,7 +101,7 @@ func (m *countMutation) evaluateEntries(store IndexStoreContext, record *FDBStor
 }
 
 func (m *countMutation) removeCommon(old, new []atomicMutationEntry) ([]atomicMutationEntry, []atomicMutationEntry) {
-	return removeCommonAtomicByKey(old, new)
+	return removeCommonAtomicEntries(old, new)
 }
 
 func (m *countMutation) applyMutation(tx fdb.WritableTransaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error {
@@ -128,15 +140,16 @@ func (m *countNotNullMutation) evaluateEntries(store IndexStoreContext, record *
 	if err != nil {
 		return nil, err
 	}
+	gc := indexGroupingCount(m.index.RootExpression)
 	entries := make([]atomicMutationEntry, len(keys))
 	for i, k := range keys {
-		entries[i] = atomicMutationEntry{groupKey: k, param: littleEndianInt64One}
+		entries[i] = atomicMutationEntry{groupKey: k[:gc:gc], key: k, param: littleEndianInt64One}
 	}
 	return entries, nil
 }
 
 func (m *countNotNullMutation) removeCommon(old, new []atomicMutationEntry) ([]atomicMutationEntry, []atomicMutationEntry) {
-	return removeCommonAtomicByKey(old, new)
+	return removeCommonAtomicEntries(old, new)
 }
 
 func (m *countNotNullMutation) applyMutation(tx fdb.WritableTransaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error {
@@ -221,7 +234,7 @@ func (m *sumMutation) evaluateEntries(store IndexStoreContext, record *FDBStored
 			if groupingCount >= len(values) {
 				return nil, nil
 			}
-			groupKey := make(tuple.Tuple, groupingCount)
+			groupKey := make(tuple.Tuple, groupingCount, groupingCount+1)
 			for j := 0; j < groupingCount; j++ {
 				groupKey[j] = values[j]
 			}
@@ -235,7 +248,7 @@ func (m *sumMutation) evaluateEntries(store IndexStoreContext, record *FDBStored
 			}
 			var param [8]byte
 			binary.LittleEndian.PutUint64(param[:], uint64(sumValue))
-			return []atomicMutationEntry{{groupKey: groupKey, param: param[:]}}, nil
+			return []atomicMutationEntry{{groupKey: groupKey, key: append(groupKey, rawValue), param: param[:]}}, nil
 		}
 		// Fall through to standard Evaluate
 	}
@@ -248,7 +261,7 @@ func (m *sumMutation) evaluateEntries(store IndexStoreContext, record *FDBStored
 	groupingCount := indexGroupingCount(m.index.RootExpression)
 	var result []atomicMutationEntry
 	for _, values := range tuples {
-		groupKey := make(tuple.Tuple, groupingCount)
+		groupKey := make(tuple.Tuple, groupingCount, groupingCount+1)
 		for j := 0; j < groupingCount && j < len(values); j++ {
 			groupKey[j] = values[j]
 		}
@@ -268,6 +281,7 @@ func (m *sumMutation) evaluateEntries(store IndexStoreContext, record *FDBStored
 
 		result = append(result, atomicMutationEntry{
 			groupKey: groupKey,
+			key:      append(groupKey, rawValue),
 			param:    encodeRecordCount(sumValue),
 		})
 	}
@@ -275,7 +289,7 @@ func (m *sumMutation) evaluateEntries(store IndexStoreContext, record *FDBStored
 }
 
 func (m *sumMutation) removeCommon(old, new []atomicMutationEntry) ([]atomicMutationEntry, []atomicMutationEntry) {
-	return removeCommonAtomicByKeyAndValue(old, new)
+	return removeCommonAtomicEntries(old, new)
 }
 
 func (m *sumMutation) applyMutation(tx fdb.WritableTransaction, fdbKey fdb.Key, entry atomicMutationEntry, remove bool) error {
@@ -463,70 +477,35 @@ func (m *minMaxEverTupleMutation) aggregate(accum, entry tuple.Tuple) tuple.Tupl
 
 // --- Shared removeCommon helpers ---
 
-// removeCommonAtomicByKey removes entries with matching groupKey (ignoring param).
-// Used by COUNT, COUNT_NOT_NULL.
-func removeCommonAtomicByKey(old, new []atomicMutationEntry) ([]atomicMutationEntry, []atomicMutationEntry) {
-	newSet := make(map[string]struct{}, len(new))
+// removeCommonAtomicEntries is Java's StandardIndexMaintainer.update for an
+// atomic index that skips unchanged keys, every type but COUNT_UPDATES
+// (AtomicMutationIndexMaintainer.java:235-237): commonKeys holds each old
+// entry the new list contains (StandardIndexMaintainer.java:390-399), and
+// List.removeAll drops every occurrence of each from both lists (:219-227),
+// not one for one. Entries compare by their whole key, as IndexEntry.equals
+// compares key and value (IndexEntry.java:256-271; an atomic entry's value is
+// empty). Used by COUNT, COUNT_NOT_NULL and SUM.
+func removeCommonAtomicEntries(old, new []atomicMutationEntry) ([]atomicMutationEntry, []atomicMutationEntry) {
+	inNew := make(map[string]struct{}, len(new))
 	for _, e := range new {
-		newSet[string(e.groupKey.Pack())] = struct{}{}
+		inNew[string(e.entryKey().Pack())] = struct{}{}
 	}
-
 	common := make(map[string]struct{})
 	var filteredOld []atomicMutationEntry
 	for _, e := range old {
-		p := string(e.groupKey.Pack())
-		if _, ok := newSet[p]; ok {
+		p := string(e.entryKey().Pack())
+		if _, ok := inNew[p]; ok {
 			common[p] = struct{}{}
 		} else {
 			filteredOld = append(filteredOld, e)
 		}
 	}
-
 	var filteredNew []atomicMutationEntry
 	for _, e := range new {
-		if _, ok := common[string(e.groupKey.Pack())]; !ok {
+		if _, ok := common[string(e.entryKey().Pack())]; !ok {
 			filteredNew = append(filteredNew, e)
 		}
 	}
-
-	return filteredOld, filteredNew
-}
-
-// removeCommonAtomicByKeyAndValue removes entries with matching groupKey AND param.
-// Used by SUM (where the value matters for commonality check).
-func removeCommonAtomicByKeyAndValue(old, new []atomicMutationEntry) ([]atomicMutationEntry, []atomicMutationEntry) {
-	type entryKey struct {
-		groupKey string
-		param    string
-	}
-
-	newSet := make(map[entryKey]int, len(new))
-	for _, e := range new {
-		k := entryKey{groupKey: string(e.groupKey.Pack()), param: string(e.param)}
-		newSet[k]++
-	}
-
-	common := make(map[entryKey]int)
-	var filteredOld []atomicMutationEntry
-	for _, e := range old {
-		k := entryKey{groupKey: string(e.groupKey.Pack()), param: string(e.param)}
-		if newSet[k] > common[k] {
-			common[k]++
-		} else {
-			filteredOld = append(filteredOld, e)
-		}
-	}
-
-	var filteredNew []atomicMutationEntry
-	for _, e := range new {
-		k := entryKey{groupKey: string(e.groupKey.Pack()), param: string(e.param)}
-		if common[k] > 0 {
-			common[k]--
-		} else {
-			filteredNew = append(filteredNew, e)
-		}
-	}
-
 	return filteredOld, filteredNew
 }
 
