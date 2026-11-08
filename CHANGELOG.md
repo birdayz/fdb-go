@@ -33,11 +33,13 @@ below; neither publication nor readiness is asserted.
   row builders (`BuildCompiled`, `BuildLogCompiled`, `BuildMessageCompiled`,
   `BuildMessageTraceCompiled`, `BuildStoreMetaCompiled`, with
   `SpanProjection`/`LogProjection`), the reference chunks (`PackRefChunks`,
-  `UnpackRefChunk`, `RefChunkReader`), `IndexableText` and the generated
-  `otelv1pb` row types.
+  `UnpackRefChunk`, `RefChunkReader`), `IndexableText`, the generated
+  `otelv1pb` row types and `InvalidRowError` (input a row builder refuses).
 - `otel.SpanReader`/`NewSpanReader`, `otel.SpanWriter`/`NewSpanWriter`
-  (`SpanWriterOptions`), `otel.RecordSerializer`, `otel.FixtureOTLP` and
-  `Exporter.ClientMetrics`, the pure-Go client's metrics snapshot.
+  (`SpanWriterOptions`), `otel.RecordSerializer`, `otel.FixtureOTLP`,
+  `otel.NewError` (a typed `otel` error of a given kind, for backends outside
+  the package) and `Exporter.ClientMetrics`, the pure-Go client's metrics
+  snapshot.
 - SQL `CREATE FULLTEXT INDEX ... OPTIONS (TOKENIZER = '<name>',
   TOKENIZER_VERSION = <n>)` (Go extension) sets the TEXT index's tokenizer
   options (`docs/compatibility.md`, "SQL full-text syntax").
