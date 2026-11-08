@@ -515,7 +515,7 @@ has 100 samples.
     `status json` counted 6, 12 and 18.
 - **Record compression was `zlib-1`.** Source revision `4af32c3bc` also
   supports Go-only Brotli (`brotli-0/1/3/4`,
-  [`record_compression.go`](../../layers/otel/record_compression.go)), but this
+  [`record_compression.go`](https://github.com/birdayz/fdb-go/blob/archive/otel-relational/custom-store/layers/otel/record_compression.go)), but this
   campaign did not measure Brotli.
 - **The runner is not in this repository.** `k8s_operator_scaling.py` is a
   campaign-local file that imports `driver`, `policy`, `provision` and
