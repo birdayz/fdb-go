@@ -15,7 +15,9 @@ import (
 
 	"github.com/antlr4-go/antlr/v4"
 
+	"fdb.dev/gen/demopb"
 	"fdb.dev/internal/unicode15"
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
@@ -153,13 +155,37 @@ func TestParseCacheIsBounded(t *testing.T) {
 	}
 }
 
+// literalProofMetaData is meta-data with an index whose key holds a literal,
+// so a statement over it keeps its literals exact (requiresLiteralIndexProof).
+func literalProofMetaData(t *testing.T) *recordlayer.RecordMetaData {
+	t.Helper()
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(demopb.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	b.AddIndex("Order", recordlayer.NewIndex("Order$literal_price",
+		recordlayer.Concat(recordlayer.Literal(int64(1)), recordlayer.Field("price"))))
+	md, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !requiresLiteralIndexProof(md) {
+		t.Fatal("an index keyed by a literal does not require a literal proof")
+	}
+	return md
+}
+
 // A compiled binding walk replays the walk it was compiled from: the cache
 // text, equivalence, literal bindings and constants of a fresh compile and of
 // a cached program equal those of the interleaved walk it replaced
 // (referenceQueryBindings), for parameters, runtime literals, NULL and
-// non-runtime sites.
+// non-runtime sites, with literals as runtime bindings (no meta-data) and
+// kept exact (meta-data whose index needs a literal proof). One tree's
+// programs for the two are kept apart.
 func TestBindingProgramReplaysTheWalk(t *testing.T) {
 	t.Parallel()
+	exactMD := literalProofMetaData(t)
+	differing := 0 // statements whose walk depends on the flag
 	for _, sql := range []string{
 		"SELECT v FROM t WHERE id = ? AND v = 3 AND v <> 'x' ORDER BY 1 LIMIT 5",
 		"SELECT v FROM t WHERE id IN (1, 2, ?) OR v IS NULL OR v = NULL",
@@ -174,30 +200,88 @@ func TestBindingProgramReplaysTheWalk(t *testing.T) {
 			t.Fatalf("%s: bind: %v", sql, err)
 		}
 		var programs statementPrograms
-		want, releaseWant, err := referenceQueryBindings(root, true)
-		if err != nil {
-			t.Fatalf("%s: reference: %v", sql, err)
-		}
-		releaseWant()
-		if want.text == "" || len(want.literals) == 0 {
-			t.Fatalf("%s: the reference walk bound nothing: %q %v", sql, want.text, want.literals)
-		}
-		for run, cache := range []*statementPrograms{nil, &programs, &programs} {
-			got, releaseGot, err := normalizeQueryBindingsWith(root, nil, cache)
+		var texts []string
+		for _, md := range []*recordlayer.RecordMetaData{nil, exactMD, nil} {
+			runtimeTop := md == nil
+			want, releaseWant, err := referenceQueryBindings(root, runtimeTop)
 			if err != nil {
-				t.Fatalf("%s run %d: %v", sql, run, err)
+				t.Fatalf("%s: reference: %v", sql, err)
 			}
-			releaseGot()
-			if got.text != want.text || got.equivalence != want.equivalence ||
-				fmt.Sprint(got.literals) != fmt.Sprint(want.literals) || fmt.Sprint(got.constants) != fmt.Sprint(want.constants) {
-				t.Fatalf("%s run %d:\n got %q %q %v %v\nwant %q %q %v %v", sql, run,
-					got.text, got.equivalence, got.literals, got.constants, want.text, want.equivalence, want.literals, want.constants)
+			releaseWant()
+			if want.text == "" || len(want.literals) == 0 {
+				t.Fatalf("%s: the reference walk bound nothing: %q %v", sql, want.text, want.literals)
+			}
+			texts = append(texts, want.text)
+			for run, cache := range []*statementPrograms{nil, &programs, &programs} {
+				got, releaseGot, err := normalizeQueryBindingsWith(root, md, cache)
+				if err != nil {
+					t.Fatalf("%s runtime %t run %d: %v", sql, runtimeTop, run, err)
+				}
+				releaseGot()
+				if got.text != want.text || got.equivalence != want.equivalence ||
+					fmt.Sprint(got.literals) != fmt.Sprint(want.literals) || fmt.Sprint(got.constants) != fmt.Sprint(want.constants) {
+					t.Fatalf("%s runtime %t run %d:\n got %q %q %v %v\nwant %q %q %v %v", sql, runtimeTop, run,
+						got.text, got.equivalence, got.literals, got.constants, want.text, want.equivalence, want.literals, want.constants)
+				}
 			}
 		}
-		if len(programs.m) != 1 {
-			t.Fatalf("%s: %d programs kept", sql, len(programs.m))
+		if texts[0] != texts[1] {
+			differing++
+		}
+		if len(programs.m) != 2 {
+			t.Fatalf("%s: %d programs kept, want one per runtime flag", sql, len(programs.m))
 		}
 		release()
+	}
+	if differing < 2 {
+		t.Fatalf("%d statements' cache text depends on the runtime flag, want 2: the exact walk is barely exercised", differing)
+	}
+}
+
+// A statement keeps at most statementProgramsMax compiled walks; a walk past
+// the bound is compiled each time and still replays the reference.
+func TestStatementProgramsAreBounded(t *testing.T) {
+	t.Parallel()
+	root, err := parser.Parse("SELECT v + 1, v - 2 FROM t WHERE id = 3 AND v > 4 AND v < 5 OR v = 6 ORDER BY v LIMIT 7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var nodes []antlr.ParseTree
+	var collect func(antlr.Tree)
+	collect = func(n antlr.Tree) {
+		if rule, ok := n.(antlr.RuleNode); ok {
+			nodes = append(nodes, rule)
+		}
+		for i := 0; i < n.GetChildCount(); i++ {
+			collect(n.GetChild(i))
+		}
+	}
+	collect(root)
+	if len(nodes) <= statementProgramsMax+1 {
+		t.Fatalf("%d subtrees, want more than %d", len(nodes), statementProgramsMax+1)
+	}
+	nodes = nodes[:statementProgramsMax+2]
+	var programs statementPrograms
+	for run := range 2 {
+		for i, node := range nodes {
+			want, releaseWant, err := referenceQueryBindings(node, true)
+			if err != nil {
+				t.Fatalf("subtree %d: reference: %v", i, err)
+			}
+			releaseWant()
+			got, releaseGot, err := normalizeQueryBindingsWith(node, nil, &programs)
+			if err != nil {
+				t.Fatalf("subtree %d: %v", i, err)
+			}
+			releaseGot()
+			if got.text != want.text || got.equivalence != want.equivalence || fmt.Sprint(got.literals) != fmt.Sprint(want.literals) {
+				t.Fatalf("run %d subtree %d:\n got %q %q %v\nwant %q %q %v", run, i,
+					got.text, got.equivalence, got.literals, want.text, want.equivalence, want.literals)
+			}
+		}
+		if len(programs.m) != statementProgramsMax {
+			t.Fatalf("run %d: %d programs kept for %d walks, want the bound %d", run, len(programs.m), len(nodes), statementProgramsMax)
+		}
 	}
 }
 
