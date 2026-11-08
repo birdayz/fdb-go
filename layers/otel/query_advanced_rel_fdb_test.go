@@ -165,8 +165,8 @@ func qrTyped(scope string, kv *commonpb.KeyValue) (Attribute, bool) {
 	return a, len(a.Key) <= maxIndexedKeyBytes && len(a.Value) <= maxIndexedValueBytes
 }
 
-// qrFixture is qaFixture with typed attribute sets (D1); qaFixture's
-// canonical strings matched bools and doubles as strings.
+// qrFixture lists every span of rss with the set of typed attributes (D1) its
+// resource, scope and span attributes give, as the oracle's input.
 func qrFixture(rss []*tracepb.ResourceSpans) []qaFixtureSpan {
 	var out []qaFixtureSpan
 	for _, rs := range rss {
@@ -190,8 +190,7 @@ func qrFixture(rss []*tracepb.ResourceSpans) []qaFixtureSpan {
 	return out
 }
 
-// qrSortSpans is index order: start desc, trace desc, span desc. D3: v1's
-// time order emitted span IDs ascending at equal (start, trace).
+// qrSortSpans is index order: start desc, trace desc, span desc (D3).
 func qrSortSpans(xs []SpanMatch) {
 	sort.Slice(xs, func(i, j int) bool {
 		a, b := xs[i], xs[j]
@@ -205,7 +204,8 @@ func qrSortSpans(xs []SpanMatch) {
 	})
 }
 
-// qrSameSpanOracle is qaSameSpanOracle over typed sets in index order (D1, D3).
+// qrSameSpanOracle is the expected same-span answer: the spans holding every
+// typed predicate (D1) inside w, in index order (D3).
 func qrSameSpanOracle(spans []qaFixtureSpan, preds []Attribute, w *TimeRange) []SpanMatch {
 	out := []SpanMatch{}
 	for _, s := range spans {
@@ -221,8 +221,8 @@ func qrSameSpanOracle(spans []qaFixtureSpan, preds []Attribute, w *TimeRange) []
 	return out
 }
 
-// qrPaginate is qaPaginate on a SpanReader: it drains a same-span query and
-// checks the page contract. Pages report the one order (D2: time only).
+// qrPaginate drains a same-span query on r and checks the page contract.
+// Pages report the one order (D2: time only).
 func qrPaginate(t *testing.T, ctx context.Context, r *SpanReader, q SameSpanQuery) ([]SpanMatch, int) {
 	t.Helper()
 	limit := q.Limit

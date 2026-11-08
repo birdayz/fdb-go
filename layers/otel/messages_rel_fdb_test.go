@@ -194,8 +194,8 @@ func relFtsLess(t *testing.T, a, b MessageSpanHit) bool {
 	return ftsMessageID(t, a.MessageID).less(ftsMessageID(t, b.MessageID))
 }
 
-// relFtsDrain is ftsDrain on a SpanReader: it follows continuations to
-// exhaustion, checking the page contract and the hit order.
+// relFtsDrain runs a full-text query through e's Exporter and follows its
+// continuations to exhaustion, checking the page contract and the hit order.
 func relFtsDrain(t *testing.T, ctx context.Context, e *relMsgEnv, q MessageFullTextQuery) ([]MessageSpanHit, int) {
 	t.Helper()
 	limit := q.Limit

@@ -54,7 +54,8 @@ func startRelExporter(t *testing.T, ctx context.Context, cfg ExporterConfig, par
 	return e
 }
 
-// openRelExporter is openTestExporter for the relational exporter.
+// openRelExporter opens an Exporter on a fresh run of cluster (relTestConfig,
+// then mutate) and shuts it down at cleanup.
 func openRelExporter(t *testing.T, ctx context.Context, cluster string, mutate func(*ExporterConfig)) *Exporter {
 	t.Helper()
 	return startRelExporter(t, ctx, relTestConfig(t, cluster, mutate), relParts{})
