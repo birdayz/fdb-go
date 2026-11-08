@@ -71,6 +71,8 @@ exports_files([
 # a `//go:build !stress` / `!bazelrunfiles` / `!factorycorpus` file would be silently
 # dropped from every Bazel build — don't introduce one.
 # gazelle:build_tags bazelrunfiles,stress,factorycorpus
+# The Grafana plugin is a nested Go module built with go/mage, not Bazel (.bazelignore).
+# gazelle:exclude layers/otel/grafana
 gazelle(name = "gazelle")
 
 nogo(

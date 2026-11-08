@@ -239,6 +239,16 @@ clean:
 tidy:
     go mod tidy
 
+# Grafana datasource backend: a nested Go module outside Bazel (.bazelignore).
+# The plugin SDK's mage targets build dist/gpx_foundationdb_{linux_amd64,linux_arm64,
+# darwin_arm64}; the executable name comes from src/plugin.json.
+grafana-build:
+    cd layers/otel/grafana && go run github.com/magefile/mage -v
+
+# Vet and test the Grafana backend's nested module only, never the root module.
+grafana-test *args:
+    cd layers/otel/grafana && go vet ./... && go test ./... {{args}}
+
 # Format Go source files using Bazel-managed gofumpt (same version as nogo linter)
 fmt:
     #!/usr/bin/env bash

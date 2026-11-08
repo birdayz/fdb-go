@@ -1,0 +1,408 @@
+{
+  "schema": {
+    "name": "Trace",
+    "meta": {
+      "typeVersion": [
+        0,
+        0
+      ],
+      "preferredVisualisationType": "trace"
+    },
+    "fields": [
+      {
+        "name": "traceID",
+        "type": "string",
+        "typeInfo": {
+          "frame": "string"
+        }
+      },
+      {
+        "name": "spanID",
+        "type": "string",
+        "typeInfo": {
+          "frame": "string"
+        }
+      },
+      {
+        "name": "parentSpanID",
+        "type": "string",
+        "typeInfo": {
+          "frame": "string"
+        }
+      },
+      {
+        "name": "operationName",
+        "type": "string",
+        "typeInfo": {
+          "frame": "string"
+        }
+      },
+      {
+        "name": "serviceName",
+        "type": "string",
+        "typeInfo": {
+          "frame": "string"
+        }
+      },
+      {
+        "name": "serviceNamespace",
+        "type": "string",
+        "typeInfo": {
+          "frame": "string"
+        }
+      },
+      {
+        "name": "kind",
+        "type": "string",
+        "typeInfo": {
+          "frame": "string"
+        }
+      },
+      {
+        "name": "statusCode",
+        "type": "number",
+        "typeInfo": {
+          "frame": "int64"
+        }
+      },
+      {
+        "name": "statusMessage",
+        "type": "string",
+        "typeInfo": {
+          "frame": "string"
+        }
+      },
+      {
+        "name": "instrumentationLibraryName",
+        "type": "string",
+        "typeInfo": {
+          "frame": "string"
+        }
+      },
+      {
+        "name": "instrumentationLibraryVersion",
+        "type": "string",
+        "typeInfo": {
+          "frame": "string"
+        }
+      },
+      {
+        "name": "traceState",
+        "type": "string",
+        "typeInfo": {
+          "frame": "string"
+        }
+      },
+      {
+        "name": "serviceTags",
+        "type": "other",
+        "typeInfo": {
+          "frame": "json.RawMessage"
+        }
+      },
+      {
+        "name": "startTime",
+        "type": "number",
+        "typeInfo": {
+          "frame": "float64"
+        }
+      },
+      {
+        "name": "duration",
+        "type": "number",
+        "typeInfo": {
+          "frame": "float64"
+        }
+      },
+      {
+        "name": "logs",
+        "type": "other",
+        "typeInfo": {
+          "frame": "json.RawMessage"
+        }
+      },
+      {
+        "name": "references",
+        "type": "other",
+        "typeInfo": {
+          "frame": "json.RawMessage"
+        }
+      },
+      {
+        "name": "tags",
+        "type": "other",
+        "typeInfo": {
+          "frame": "json.RawMessage"
+        }
+      }
+    ]
+  },
+  "data": {
+    "values": [
+      [
+        "0102030405060708090a0b0c0d0e0f10",
+        "0102030405060708090a0b0c0d0e0f10",
+        "0102030405060708090a0b0c0d0e0f10"
+      ],
+      [
+        "1111111111111111",
+        "0333333333333333",
+        "2222222222222222"
+      ],
+      [
+        "",
+        "1111111111111111",
+        "1111111111111111"
+      ],
+      [
+        "checkout",
+        "background",
+        "GET /cart"
+      ],
+      [
+        "checkout",
+        "OTLPResourceNoServiceName",
+        "checkout"
+      ],
+      [
+        "shop-alt",
+        "",
+        "shop-alt"
+      ],
+      [
+        "server",
+        "internal",
+        "client"
+      ],
+      [
+        1,
+        0,
+        2
+      ],
+      [
+        "",
+        "",
+        "boom"
+      ],
+      [
+        "io.otel.http",
+        "",
+        "io.otel.http"
+      ],
+      [
+        "1.2.3",
+        "",
+        "1.2.3"
+      ],
+      [
+        "",
+        "",
+        "vendor=a"
+      ],
+      [
+        [
+          {
+            "value": "checkout",
+            "key": "service.name"
+          },
+          {
+            "value": "shop-alt",
+            "key": "service.namespace.name"
+          },
+          {
+            "value": "h1",
+            "key": "host.name"
+          },
+          {
+            "value": 3,
+            "key": "otel.resource.dropped_attributes_count"
+          },
+          {
+            "value": "https://opentelemetry.io/schemas/1.26.0",
+            "key": "otel.resource.schema_url"
+          },
+          {
+            "value": "[{\"schema_url\":\"https://opentelemetry.io/schemas/1.30.0\",\"type\":\"service\",\"id_keys\":[\"service.name\"],\"description_keys\":[\"host.name\"]}]",
+            "key": "otel.resource.entity_refs"
+          }
+        ],
+        null,
+        [
+          {
+            "value": "checkout",
+            "key": "service.name"
+          },
+          {
+            "value": "shop-alt",
+            "key": "service.namespace.name"
+          },
+          {
+            "value": "h1",
+            "key": "host.name"
+          },
+          {
+            "value": 3,
+            "key": "otel.resource.dropped_attributes_count"
+          },
+          {
+            "value": "https://opentelemetry.io/schemas/1.26.0",
+            "key": "otel.resource.schema_url"
+          },
+          {
+            "value": "[{\"schema_url\":\"https://opentelemetry.io/schemas/1.30.0\",\"type\":\"service\",\"id_keys\":[\"service.name\"],\"description_keys\":[\"host.name\"]}]",
+            "key": "otel.resource.entity_refs"
+          }
+        ]
+      ],
+      [
+        1700000000000,
+        1700000000500,
+        1700000000500
+      ],
+      [
+        1000,
+        0,
+        250.25
+      ],
+      [
+        null,
+        null,
+        [
+          {
+            "timestamp": 1700000000600,
+            "fields": [
+              {
+                "value": "Boom",
+                "key": "exception.type"
+              },
+              {
+                "value": 6,
+                "key": "otel.dropped_attributes_count"
+              }
+            ],
+            "name": "exception"
+          }
+        ]
+      ],
+      [
+        null,
+        null,
+        [
+          {
+            "spanID": "aaaaaaaaaaaaaaaa",
+            "traceID": "ffeeddccbbaa99887766554433221100",
+            "tags": [
+              {
+                "value": "follows",
+                "key": "link.kind"
+              },
+              {
+                "value": "vendor=b",
+                "key": "otel.trace_state"
+              },
+              {
+                "value": 257,
+                "key": "otel.flags"
+              },
+              {
+                "value": 8,
+                "key": "otel.dropped_attributes_count"
+              }
+            ]
+          }
+        ]
+      ],
+      [
+        [
+          {
+            "value": "s",
+            "key": "scope.attr"
+          },
+          {
+            "value": 4,
+            "key": "otel.scope.dropped_attributes_count"
+          },
+          {
+            "value": "https://opentelemetry.io/schemas/1.27.0",
+            "key": "otel.scope.schema_url"
+          }
+        ],
+        [],
+        [
+          {
+            "value": "GET",
+            "key": "http.method"
+          },
+          {
+            "value": true,
+            "key": "ok"
+          },
+          {
+            "value": -42,
+            "key": "count"
+          },
+          {
+            "value": 0.25,
+            "key": "ratio"
+          },
+          {
+            "value": "NaN",
+            "key": "nan"
+          },
+          {
+            "value": "Inf",
+            "key": "inf"
+          },
+          {
+            "value": "-Inf",
+            "key": "neginf"
+          },
+          {
+            "value": "3q2+7w==",
+            "key": "blob"
+          },
+          {
+            "value": "[\"a\",2,\"AQ==\"]",
+            "key": "list"
+          },
+          {
+            "value": "{\"deep\":false,\"inner\":\"x\"}",
+            "key": "map"
+          },
+          {
+            "value": "",
+            "key": "empty"
+          },
+          {
+            "value": "s",
+            "key": "scope.attr"
+          },
+          {
+            "value": 5,
+            "key": "otel.span.dropped_attributes_count"
+          },
+          {
+            "value": 7,
+            "key": "otel.span.dropped_events_count"
+          },
+          {
+            "value": 9,
+            "key": "otel.span.dropped_links_count"
+          },
+          {
+            "value": 769,
+            "key": "otel.span.flags"
+          },
+          {
+            "value": 4,
+            "key": "otel.scope.dropped_attributes_count"
+          },
+          {
+            "value": "https://opentelemetry.io/schemas/1.27.0",
+            "key": "otel.scope.schema_url"
+          }
+        ]
+      ]
+    ]
+  }
+}
