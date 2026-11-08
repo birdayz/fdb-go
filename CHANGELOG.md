@@ -84,7 +84,10 @@ below; neither publication nor readiness is asserted.
 - `CompositeKeyExpression` evaluation with a `FanOut` child under an absent
   non-repeated parent (for example `Nest("p", Concat(Field("a"),
   FanOut("tags")))` on a record without `p`) yields no tuple, as Java 4.14.2.0
-  does; earlier Go yielded one all-null tuple and wrote that index entry.
+  does; earlier Go yielded one all-null tuple and wrote that index entry or
+  count. A `Concatenate` child under NOT_NULL there yields the empty list, not
+  null. COUNT, COUNT_UPDATES and SUM indexes grouped by a fan-out nesting count
+  every entry, as Java does, not only a record's first element.
 - Message full-text role discovery charges the raw TEXT bunch key/value bytes,
   including discovery preceding an empty result, against the remaining query budget.
 - Drained message and Collector queues clear consumed slots and release exhausted
@@ -150,11 +153,12 @@ below; neither publication nor readiness is asserted.
   Java 4.14.2.0 (`42000 MetaDataException unrecognized text tokenizer`);
   `'default'` opens. An unknown option is `0A000`, a duplicate or wrong-kind
   value `42601`, an unregistered tokenizer or out-of-range version `42F59`.
-- **Fan-out composite index entries:** an index over a composite with a `FanOut`
-  child under an absent non-repeated parent no longer gets the all-null entry
-  earlier Go wrote, and Go never clears entries an earlier build wrote there.
-  Rebuild such indexes after upgrading (DIVERGENCES.md, "A fan-out composite
-  under an absent parent").
+- **Fan-out composite index entries and counts:** an index over a composite
+  with a `FanOut` child under an absent non-repeated parent no longer gets the
+  all-null entry or count earlier Go wrote, and Go never corrects what an
+  earlier build wrote there. Atomic indexes grouped by a fan-out nesting now
+  count every entry. Rebuild such indexes after upgrading (DIVERGENCES.md, "A
+  fan-out composite under an absent parent").
 - Apart from the entries above, persisted Record Layer and SQL bytes and FDB
   client option semantics are unchanged; the Exporter uses the existing
   GRV-cache option.
