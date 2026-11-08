@@ -233,6 +233,84 @@ func loadRecords(store *recordlayer.FDBRecordStore, op string, pks []tuple.Tuple
 	return nil
 }
 
+// relTable is a tenant store table's record type and the byte lengths of the
+// store's records subspace and of the table's index subspaces, from which
+// the write cost models size its keys.
+type relTable struct {
+	rt            *recordlayer.RecordType
+	recordsPrefix int
+	index         []relIndexSpace
+}
+
+type relIndexSpace struct {
+	idx    *recordlayer.Index
+	prefix int
+}
+
+// relRecordSuffixBytes bounds a record key's split suffix.
+const relRecordSuffixBytes = 3
+
+// newRelTable resolves table and its indexes, in order, in ts's metadata.
+func newRelTable(ts *otelsql.TenantStore, op, table string, indexes []string) (relTable, error) {
+	rt := ts.MetaData.GetRecordType(table)
+	if rt == nil {
+		return relTable{}, failf("ownership", op, "%s is not in the store's metadata", table)
+	}
+	t := relTable{rt: rt, recordsPrefix: len(ts.Subspace.Sub(recordlayer.RecordKey).Bytes()), index: make([]relIndexSpace, len(indexes))}
+	for i, name := range indexes {
+		idx := ts.MetaData.GetIndex(name)
+		if idx == nil {
+			return relTable{}, failf("ownership", op, "index %s is not in the store's metadata", name)
+		}
+		t.index[i] = relIndexSpace{idx, len(ts.Subspace.Sub(recordlayer.IndexKey, idx.SubspaceTupleKey()).Bytes())}
+	}
+	return t, nil
+}
+
+// key is the primary key of the row whose key columns are values.
+func (t *relTable) key(values ...tuple.TupleElement) tuple.Tuple {
+	if t.rt.PrimaryKeyHasRecordTypePrefix() {
+		return append(tuple.Tuple{t.rt.GetRecordTypeKey()}, values...)
+	}
+	return tuple.Tuple(values)
+}
+
+// recordKeyBytes bounds the byte length of a row's record keys.
+func (t *relTable) recordKeyBytes(pk tuple.Tuple) int {
+	return t.recordsPrefix + packedTupleLen(pk) + relRecordSuffixBytes
+}
+
+// loadStoredRows loads the stored rows of pks, keeping up to loadRecordsBatch
+// loads in flight, and visits them in pks order with the stored record and
+// its row, both nil when absent. A stored record that is not a T, the
+// compiled row of table, fails as ownership.
+func loadStoredRows[T proto.Message](store *recordlayer.FDBRecordStore, op, table string, pks []tuple.Tuple, visit func(i int, old *recordlayer.FDBStoredRecord[proto.Message], row T) error) error {
+	futures := make([]recordlayer.PendingRead[*recordlayer.FDBStoredRecord[proto.Message]], 0, min(loadRecordsBatch, len(pks)))
+	for lo := 0; lo < len(pks); lo += loadRecordsBatch {
+		futures = futures[:0]
+		for i := lo; i < min(lo+loadRecordsBatch, len(pks)); i++ {
+			futures = append(futures, store.LoadRecordAsync(pks[i], nil))
+		}
+		for k, f := range futures {
+			old, err := f.Get()
+			if err != nil {
+				return err
+			}
+			var row T
+			if old != nil {
+				var ok bool
+				if row, ok = old.Record.(T); !ok {
+					return failf("ownership", op, "%s record is not the compiled row", table)
+				}
+			}
+			if err := visit(lo+k, old, row); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // configureRecordTimeout bounds the whole transaction including OnError retries.
 // Exporter transactions lift Run’s zero retry limit; both options persist across retries.
 func configureRecordTimeout(rc *recordlayer.FDBRecordContext) error {
