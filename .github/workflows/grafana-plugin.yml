@@ -55,8 +55,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
-          cache: npm
-          cache-dependency-path: layers/otel/grafana/package-lock.json
 
       - name: Backend tests (go vet, go test; FDB integration in Docker)
         run: just grafana-test
@@ -114,8 +112,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
-          cache: npm
-          cache-dependency-path: layers/otel/grafana/package-lock.json
 
       - name: Docker Compose v2
         # The runner's docker.io has no compose plugin: take the binary from its
