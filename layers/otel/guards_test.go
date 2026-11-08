@@ -7,41 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
-
-	"fdb.dev/pkg/fdbgo/fdb/subspace"
-	"fdb.dev/pkg/recordlayer"
-	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
-	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
 )
-
-// oracleTopK is the test-only map adapter for independent ordering checks.
-func oracleTopK(m map[string]int64, k int) []Hit {
-	out, _ := oracleTopKContext(context.Background(), m, k)
-	return out
-}
-
-func oracleTopKContext(ctx context.Context, m map[string]int64, k int) ([]Hit, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, wrap("canceled", "oracle topK", err)
-	}
-	if k < 1 {
-		return nil, fail("config", "oracle topK", "positive K required")
-	}
-	h := oracleHeap{}
-	for id, ns := range m {
-		if err := ctx.Err(); err != nil {
-			return nil, wrap("canceled", "oracle topK", err)
-		}
-		retainOracleHit(&h, Hit{Trace: id, Latest: ns}, k)
-	}
-	return finishOracleHeap(ctx, &h)
-}
 
 func TestEveryConfigBound(t *testing.T) {
 	t.Parallel()
@@ -75,8 +43,6 @@ func TestEveryConfigBound(t *testing.T) {
 		{"candidate low", func(c *Config) { c.MaxCandidates = 0 }},
 		{"candidate high", func(c *Config) { c.MaxCandidates = 100000001 }},
 		{"bytes low", func(c *Config) { c.MaxBytes = 0 }},
-		{"hash low", func(c *Config) { c.HashBytes = 0 }},
-		{"hash high", func(c *Config) { c.HashBytes = 33 }},
 		{"order", func(c *Config) { c.Order = "unordered" }},
 	}
 	for _, tc := range cases {
@@ -117,7 +83,6 @@ func TestEveryConfigBound(t *testing.T) {
 	low.Iterations = 1
 	low.MaxCandidates = 1
 	low.MaxBytes = 1
-	low.HashBytes = 1
 	if err := low.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +96,6 @@ func TestEveryConfigBound(t *testing.T) {
 	high.CHBatchBytes = 64 << 20
 	high.K = 10000
 	high.Iterations = 100000
-	high.HashBytes = 32
 	high.Order = "time"
 	if err := high.Validate(); err != nil {
 		t.Fatal(err)
@@ -144,26 +108,23 @@ func TestSaveModeIsExecutionOnly(t *testing.T) {
 	baseline := manifest(c, "ready")
 	for _, mode := range []string{"serial", "pipelined", "batch"} {
 		for _, workers := range []int{1, 8} {
-			for _, diagnostics := range []bool{false, true} {
-				changed := c
-				changed.SaveMode = mode
-				changed.Workers = workers
-				changed.Diagnostics = diagnostics
-				if err := changed.Validate(); err != nil {
-					t.Fatalf("mode=%s workers=%d diagnostics=%t: %v", mode, workers, diagnostics, err)
-				}
-				if corpusIdentity(changed) != corpusIdentity(c) {
-					t.Fatalf("execution settings changed source corpus: mode=%s workers=%d diagnostics=%t", mode, workers, diagnostics)
-				}
-				if err := checkManifest(changed, baseline, true); err != nil {
-					t.Fatalf("execution settings changed stored ownership: mode=%s workers=%d diagnostics=%t: %v", mode, workers, diagnostics, err)
-				}
+			changed := c
+			changed.SaveMode = mode
+			changed.Workers = workers
+			if err := changed.Validate(); err != nil {
+				t.Fatalf("mode=%s workers=%d: %v", mode, workers, err)
+			}
+			if corpusIdentity(changed) != corpusIdentity(c) {
+				t.Fatalf("execution settings changed source corpus: mode=%s workers=%d", mode, workers)
+			}
+			if err := checkManifest(changed, baseline, true); err != nil {
+				t.Fatalf("execution settings changed stored ownership: mode=%s workers=%d: %v", mode, workers, err)
 			}
 		}
 	}
 	defaults := DefaultConfig()
-	if defaults.SaveMode != "pipelined" || defaults.Workers != 1 || defaults.Diagnostics {
-		t.Fatalf("unexpected ingestion defaults: mode=%s workers=%d diagnostics=%t", defaults.SaveMode, defaults.Workers, defaults.Diagnostics)
+	if defaults.SaveMode != "pipelined" || defaults.Workers != 1 {
+		t.Fatalf("unexpected ingestion defaults: mode=%s workers=%d", defaults.SaveMode, defaults.Workers)
 	}
 }
 
@@ -173,7 +134,7 @@ func TestManifestEveryAxis(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		set  func(*Manifest)
-	}{{"tool", func(m *Manifest) { m.Tool += "x" }}, {"run", func(m *Manifest) { m.Run += "x" }}, {"corpus", func(m *Manifest) { m.Corpus += "x" }}, {"order", func(m *Manifest) { m.Order = "time" }}, {"hash", func(m *Manifest) { m.HashBytes = 1 }}, {"backend", func(m *Manifest) { m.Backend = "ch-attrs" }}, {"state", func(m *Manifest) { m.State = "loading" }}, {"messages", func(m *Manifest) { m.Messages = messagesFullText }}} {
+	}{{"tool", func(m *Manifest) { m.Tool += "x" }}, {"run", func(m *Manifest) { m.Run += "x" }}, {"corpus", func(m *Manifest) { m.Corpus += "x" }}, {"order", func(m *Manifest) { m.Order = "time" }}, {"backend", func(m *Manifest) { m.Backend = "ch-attrs" }}, {"state", func(m *Manifest) { m.State = "loading" }}} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := manifest(c, "ready")
 			tc.set(&m)
@@ -297,71 +258,6 @@ func TestV2GenAIAttributeSlots(t *testing.T) {
 	}
 }
 
-func TestFactoryOptionGuards(t *testing.T) {
-	t.Parallel()
-	c := testConfig()
-	_, index, err := metadata(c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	factory := postingFactory{}
-	types := factory.IndexTypes()
-	if len(types) != 1 || types[0] != indexType {
-		t.Fatal("registration types wrong")
-	}
-	for _, width := range []string{"", "no", "-1", "0", "33"} {
-		copy := *index
-		copy.Options = map[string]string{"order": "trace", "hash_bytes": width}
-		var got *ConfigError
-		if err := factory.ValidateIndexOptions(&copy); !errors.As(err, &got) {
-			t.Fatalf("hash width %q accepted: %v", width, err)
-		}
-	}
-	for _, width := range []string{"1", "32"} {
-		copy := *index
-		copy.Options = map[string]string{"order": "time", "hash_bytes": width}
-		if err := factory.ValidateIndexOptions(&copy); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if factory.ValidateChangedOptions(index, index, nil) != nil || factory.ValidateChangedOptions(index, index, map[string]bool{}) != nil {
-		t.Fatal("empty option changes rejected")
-	}
-	var got *ConfigError
-	if err := factory.ValidateChangedOptions(index, index, map[string]bool{"order": true}); !errors.As(err, &got) {
-		t.Fatalf("immutable option change accepted: %v", err)
-	}
-}
-
-func TestOpenGuardsAndCancellation(t *testing.T) {
-	t.Parallel()
-	c := testConfig()
-	var config *ConfigError
-	if _, err := OpenFDBContext(t.Context(), c, ""); !errors.As(err, &config) {
-		t.Fatal("empty cluster file accepted", err)
-	}
-	for _, endpoint := range []string{"", "ftp://example.test", "http://", "http://127.0.0.1:8123?query=DROP", "http://127.0.0.1:8123#fragment", "http://%zz"} {
-		if _, err := OpenCHContext(t.Context(), c, endpoint, false); !errors.As(err, &config) {
-			t.Fatalf("invalid endpoint %q: %v", endpoint, err)
-		}
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	if _, err := OpenFDBContext(ctx, c, "not-a-cluster-file"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("FDB bootstrap ignored context: %v", err)
-	}
-	if _, err := OpenCHContext(ctx, c, "http://127.0.0.1:8123", false); !errors.Is(err, context.Canceled) {
-		t.Fatalf("CH setup ignored context: %v", err)
-	}
-	path := filepath.Join(t.TempDir(), "empty.cluster")
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := OpenFDBContext(t.Context(), c, path); !errors.As(err, &config) {
-		t.Fatalf("empty cluster contents accepted: %v", err)
-	}
-}
-
 func TestTypedErrorClassification(t *testing.T) {
 	t.Parallel()
 	cause := errors.New("transport cause")
@@ -445,112 +341,4 @@ func TestOracleLiteralTraceOrder(t *testing.T) {
 	if err != nil || !sameJSON(hits, []Hit{{"d", math.MaxInt64}, {"c", math.MaxInt64}}) || cap(hits) != 2 {
 		t.Fatalf("bounded oracle tie order/storage: %v %+v", err, hits)
 	}
-}
-
-func TestProjectionCoverageBoundaries(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name       string
-		key, value int
-		reject     bool
-	}{{"key boundary", 1024, 1, false}, {"key over", 1025, 1, true}, {"value boundary", 1, 64000, false}, {"value over", 1, 64001, true}} {
-		t.Run(tc.name, func(t *testing.T) {
-			s := Generate(testConfig(), 0)
-			s.Attributes = []Attribute{{"span", strings.Repeat("k", tc.key), "string", strings.Repeat("v", tc.value)}}
-			m, err := toRecord(s)
-			if err != nil {
-				t.Fatal(err)
-			}
-			entries, err := postings(subspace.Sub("cap"), 32, "trace", &recordlayer.FDBStoredRecord[proto.Message]{Record: m})
-			var admission *AdmissionError
-			if tc.reject {
-				if !errors.As(err, &admission) || len(entries) != 0 {
-					t.Fatalf("over-cap projection admitted: %v", err)
-				}
-			} else if err != nil || len(entries) != 1 {
-				t.Fatalf("at-cap projection rejected: %v", err)
-			}
-		})
-	}
-	if rows, err := postings(subspace.Sub("nil"), 32, "trace", nil); err != nil || rows != nil {
-		t.Fatal("nil source should have no entries")
-	}
-}
-
-func TestSourceAdmissionFailures(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name   string
-		change func(*Span)
-	}{{"trace hex", func(s *Span) { s.Trace = "zz" }}, {"span hex", func(s *Span) { s.ID = "zz" }}, {"short trace", func(s *Span) { s.Trace = "ab" }}, {"short span", func(s *Span) { s.ID = "ab" }}, {"integer", func(s *Span) { s.Attributes[0].Type = "int"; s.Attributes[0].Value = "not-an-int" }}, {"type", func(s *Span) { s.Attributes[0].Type = "bool" }}, {"scope", func(s *Span) { s.Attributes[0].Scope = "unknown" }}} {
-		t.Run(tc.name, func(t *testing.T) {
-			s := Generate(testConfig(), 0)
-			tc.change(&s)
-			var admission *AdmissionError
-			if _, err := toRecord(s); !errors.As(err, &admission) {
-				t.Fatalf("invalid source accepted/untyped: %v", err)
-			}
-		})
-	}
-	for _, tc := range []struct {
-		name   string
-		change func(proto.Message)
-	}{
-		{"wire", func(m proto.Message) {
-			r := m.ProtoReflect()
-			r.Set(r.Descriptor().Fields().ByName("otlp"), protoreflect.ValueOfBytes([]byte{0xff}))
-		}},
-		{"envelope identity", func(m proto.Message) {
-			r := m.ProtoReflect()
-			r.Set(r.Descriptor().Fields().ByName("trace_id"), protoreflect.ValueOfString(strings.Repeat("a", 32)))
-		}},
-		{"envelope span identity", func(m proto.Message) {
-			r := m.ProtoReflect()
-			r.Set(r.Descriptor().Fields().ByName("span_id"), protoreflect.ValueOfString(strings.Repeat("a", 16)))
-		}},
-		{"envelope start time", func(m proto.Message) {
-			r := m.ProtoReflect()
-			f := r.Descriptor().Fields().ByName("start_ns")
-			r.Set(f, protoreflect.ValueOfInt64(r.Get(f).Int()+1))
-		}},
-		{"multiple sources", func(m proto.Message) {
-			mutateOTLP(t, m, func(r *tracepb.ResourceSpans) {
-				r.ScopeSpans[0].Spans = append(r.ScopeSpans[0].Spans, proto.Clone(r.ScopeSpans[0].Spans[0]).(*tracepb.Span))
-			})
-		}},
-		{"no scope", func(m proto.Message) { mutateOTLP(t, m, func(r *tracepb.ResourceSpans) { r.ScopeSpans = nil }) }},
-		{"unsupported source type", func(m proto.Message) {
-			mutateOTLP(t, m, func(r *tracepb.ResourceSpans) {
-				r.ScopeSpans[0].Spans[0].Attributes[0].Value = &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: true}}
-			})
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			m, err := toRecord(Generate(testConfig(), 0))
-			if err != nil {
-				t.Fatal(err)
-			}
-			tc.change(m)
-			var admission *AdmissionError
-			if _, err := decodeRecord(m); !errors.As(err, &admission) {
-				t.Fatalf("invalid decoded source accepted/untyped: %v", err)
-			}
-		})
-	}
-}
-
-func mutateOTLP(t *testing.T, m proto.Message, change func(*tracepb.ResourceSpans)) {
-	t.Helper()
-	r := m.ProtoReflect()
-	field := r.Descriptor().Fields().ByName("otlp")
-	var source tracepb.ResourceSpans
-	if err := proto.Unmarshal(r.Get(field).Bytes(), &source); err != nil {
-		t.Fatal(err)
-	}
-	change(&source)
-	wire, err := proto.Marshal(&source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.Set(field, protoreflect.ValueOfBytes(wire))
 }

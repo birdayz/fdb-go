@@ -43,9 +43,12 @@ requirement, not a FoundationDB single-redundancy guarantee. Native 7.3.77 can s
 one storage process and recruit another asynchronously. If the desired layout is
 not proven within startup admission, refuse before load and retain actual status;
 do not force internal recruitment/replica knobs or weaken inode proofs.
-Redwood, FDB checksums/fsync and default queues remain unchanged. Workload is
-seed283, one tenant, eight attributes, match-every100, batch save mode, time order,
-K100, hash-bytes32, two-million candidates and 256 MiB query byte budget. The first
+Redwood, FDB checksums/fsync and default queues remain unchanged. The application
+is `otelbench --backend sql` in the Exporter's relational configuration: direct
+compiled-row ingest through `otel.SpanWriter` (`--sql-ingest direct --sql-rows compiled
+--save-mode batch`) and direct OTEL_V1 index scans (`--sql-query direct`). Workload is
+seed283, one tenant, eight attributes, match-every100, batch save mode,
+K100, two-million candidates and 256 MiB query byte budget. The first
 run is **batch 32 / workers 2**. Sealed configuration may admit batches 32 or 64 and
 workers 2, 4 or 8 (integers only); ordinary ingest does not support `workers=16`. This is not
 permission to escalate. Every later pair needs
@@ -54,30 +57,30 @@ gates. Count is a strict integer allowlist: 100000 (legacy default) or 1000000
 (explicit approval only); booleans, floats, strings and other populations are rejected.
 There is no automatic loop/sweep. The 1M arm measures backpressure, not a threshold
 relaxation: all time, resource, health, backlog, disk and transaction guards stay fixed.
-The selected application's 1500ms transaction, 300KB estimated/500KB actual save,
-one-second save and finite fresh-run retry guards remain in force.
+The application's span writer applies the Exporter's guards: a 300 KB conservative
+estimate per batch and per admitted span, a 500 KB actual transaction-size guard,
+and a 10 s transaction timeout covering every retry; there is no retry limit and
+no elapsed-time guard.
 
-An optional sealed `storage_options` object has exactly four keys:
-`record_compression`, `posting_value_format`, `bulk_index_conflicts`, and
-`hash_bytes`. Only these typed combinations are admitted:
+An optional sealed `storage_options` object has exactly two keys:
+`record_compression` and `bulk_index_conflicts`. Only these typed combinations
+are admitted:
 
-| record compression | posting value format | bulk index conflicts | hash bytes |
-| --- | --- | --- | --- |
-| `none` | `json` | `false` | `32` |
-| `zlib-1` | `tuple` | `true` | `8` |
-| `brotli-4` | `tuple` | `true` | `8` |
+| record compression | bulk index conflicts |
+| --- | --- |
+| `zlib-1` | `false` |
+| `zlib-1` | `true` (the Exporter default) |
 
-The optimized profiles admit **100,000 spans only**, not the separate 1M arm.
+Absent `storage_options` runs the first profile. The bulk-index-conflicts profile
+admits **100,000 spans only**, not the separate 1M arm.
 Every choice remains bound to the explicitly approved source, binary and manifest
 hashes. These choices change no resource, health, durability or transaction cap.
-Ingest, audit and query receive all four explicit flags, including
-`--bulk-index-conflicts=false` when approved. All four typed evidence fields must
-be present and equal; missing fields never mean defaults. Each phase binds the
-same immutable option snapshot, independently of its refreshed pointer hash.
-Absent `storage_options` preserves the legacy argv and evidence checks for older
-binaries such as `c0317`; that control must omit the object. The explicit control
-profile requires a binary that emits the `false` evidence field rather than
-omitting it, and is not the legacy-binary control.
+Ingest, audit and query always receive both explicit flags, including
+`--bulk-index-conflicts=false`, so a binary without the flag fails at parse time.
+The typed `record_compression` evidence field must be present and equal; Go omits
+a false `bulk_index_conflicts` (`omitempty`), so only that value may be absent.
+Each phase binds the same immutable option snapshot, independently of its
+refreshed pointer hash; an absent object stays absent from every phase.
 
 ## Independent application and operations seals
 
@@ -91,8 +94,8 @@ manifest SHA256
 Root supplies actual absolute binary/manifest paths from their receipts; the driver
 never builds the app. A separately reviewed b5 baseline can also be explicitly
 bound, without pretending that first-arm performance is a speedup over old 1M.
-The existing `--diagnostics` flag captures the new app's client metrics; no invented
-profiling flags are used. Original evidence is retained, including failures.
+Ingest evidence must name the `otel.SpanWriter` write path; no invented profiling
+flags are used. Original evidence is retained, including failures.
 
 The sealed approval is one strict JSON object containing **every literal** from
 `policy.arm(run, batch, workers, count)`, plus:
@@ -293,15 +296,19 @@ paths, timestamps and hashes. Their scope is the **whole container**, including
 bootstrap, DD, monitoring and workload—not source-only I/O, NAND writes or write
 amplification. Missing files/unknown cgroup membership abort, never become zeros.
 The external client's CPU is **not** measured by these counters; no perf wrapper
-was added to complicate supervision. App phases/client metrics come first.
+was added to complicate supervision.
 
 A successful load alone is insufficient: final strict drain and source audit must
 prove the selected population for the pinned layout:
 
-| Approval | Records | Equality postings | Span-ID index | Time index | Primary equality | Owned keys |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| fresh100k | 100,000 | 800,000 | 100,000 | 100,000 | 0 | 1,100,002 |
-| fresh1m | 1,000,000 | 8,000,000 | 1,000,000 | 1,000,000 | 0 | 11,000,002 |
+| Approval | `records` | `SPANS_STR_ATTR` | `SPANS_INT_ATTR` | `SPANS_SPAN_ID` | `SPANS_TIME` | `store_0` | `owned_total` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| fresh100k | 100,000 | 667,000 | 133,000 | 100,000 | 100,000 | 1 | 1,100,001 |
+| fresh1m | 1,000,000 | 6,670,000 | 1,330,000 | 1,000,000 | 1,000,000 | 1 | 11,000,001 |
+
+The audit names the tenant store's OTEL_V1 indexes. Each fixture span has one
+integer attribute, plus an integer-typed query key on every third span of a
+nonmatching trace; the other attributes are strings (8 per span in total).
 
 The independent
 `all` suite retains1600 samples:16 exact classes ×100, ordered iteration IDs,

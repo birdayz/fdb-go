@@ -1,0 +1,176 @@
+{
+ "tool": "otelbench-v2",
+ "backend": "fdb",
+ "mode": "query",
+ "suite": "all",
+ "revision": "839cc5d3f+harness",
+ "go": "go1.27.3",
+ "config": {
+  "run": "g2amb_fdbp_1",
+  "backend": "fdb",
+  "seed": 283,
+  "count": 50000,
+  "tenants": 10,
+  "attributes": 8,
+  "match_every": 100,
+  "batch": 32,
+  "save_mode": "batch",
+  "record_compression": "brotli-4",
+  "posting_value_format": "tuple",
+  "bulk_index_conflicts": true,
+  "workers": 8,
+  "diagnostics": false,
+  "ch_batch": 8192,
+  "ch_batch_bytes": 8388608,
+  "ch_index_granularity": 8192,
+  "ch_query_transport": "http",
+  "tenant": 0,
+  "k": 100,
+  "iterations": 1200,
+  "max_candidates": 20000,
+  "max_bytes": 4194304,
+  "hash_bytes": 8,
+  "order": "time"
+ },
+ "corpus_fingerprint": "3dd3cb10b91329acbca1a824af7bdd58387b53484fe71009d75cffafe086107f",
+ "start_utc": "2026-11-08T04:03:27.15898607Z",
+ "wall_ns": 956170760,
+ "stats": {
+  "rows": 0,
+  "attributes": 0,
+  "logical_payload_bytes": 0,
+  "structures": null
+ },
+ "histograms": {
+  "genai_absent": {
+   "population": 75,
+   "min_ns": 537308,
+   "p50_ns": 622650,
+   "p95_ns": 819172,
+   "p99_ns": 1315072,
+   "max_ns": 1315072
+  },
+  "genai_model": {
+   "population": 75,
+   "min_ns": 985718,
+   "p50_ns": 1130552,
+   "p95_ns": 1591896,
+   "p99_ns": 5547331,
+   "max_ns": 5547331
+  },
+  "genai_operation": {
+   "population": 75,
+   "min_ns": 997531,
+   "p50_ns": 1116696,
+   "p95_ns": 1560186,
+   "p99_ns": 1683870,
+   "max_ns": 1683870
+  },
+  "genai_provider": {
+   "population": 75,
+   "min_ns": 1005395,
+   "p50_ns": 1134200,
+   "p95_ns": 1598859,
+   "p99_ns": 2081594,
+   "max_ns": 2081594
+  },
+  "genai_response": {
+   "population": 75,
+   "min_ns": 571764,
+   "p50_ns": 640053,
+   "p95_ns": 734321,
+   "p99_ns": 930413,
+   "max_ns": 930413
+  },
+  "genai_scope_resource": {
+   "population": 75,
+   "min_ns": 559791,
+   "p50_ns": 631116,
+   "p95_ns": 859568,
+   "p99_ns": 1829857,
+   "max_ns": 1829857
+  },
+  "genai_scope_scope": {
+   "population": 75,
+   "min_ns": 553538,
+   "p50_ns": 625014,
+   "p95_ns": 738048,
+   "p99_ns": 962234,
+   "max_ns": 962234
+  },
+  "genai_type": {
+   "population": 75,
+   "min_ns": 551866,
+   "p50_ns": 625295,
+   "p95_ns": 717129,
+   "p99_ns": 1549356,
+   "max_ns": 1549356
+  },
+  "span": {
+   "population": 75,
+   "min_ns": 533862,
+   "p50_ns": 635103,
+   "p95_ns": 801498,
+   "p99_ns": 1156852,
+   "max_ns": 1156852
+  },
+  "span_absent": {
+   "population": 75,
+   "min_ns": 546705,
+   "p50_ns": 634252,
+   "p95_ns": 757085,
+   "p99_ns": 949309,
+   "max_ns": 949309
+  },
+  "time_absent": {
+   "population": 75,
+   "min_ns": 529403,
+   "p50_ns": 617840,
+   "p95_ns": 717470,
+   "p99_ns": 760361,
+   "max_ns": 760361
+  },
+  "time_broad": {
+   "population": 75,
+   "min_ns": 806669,
+   "p50_ns": 893694,
+   "p95_ns": 1281518,
+   "p99_ns": 1326354,
+   "max_ns": 1326354
+  },
+  "time_empty": {
+   "population": 75,
+   "min_ns": 449191,
+   "p50_ns": 506700,
+   "p95_ns": 614514,
+   "p99_ns": 838690,
+   "max_ns": 838690
+  },
+  "time_narrow": {
+   "population": 75,
+   "min_ns": 561875,
+   "p50_ns": 645313,
+   "p95_ns": 903181,
+   "p99_ns": 928349,
+   "max_ns": 928349
+  },
+  "trace": {
+   "population": 75,
+   "min_ns": 612080,
+   "p50_ns": 694826,
+   "p95_ns": 991890,
+   "p99_ns": 2073680,
+   "max_ns": 2073680
+  },
+  "trace_absent": {
+   "population": 75,
+   "min_ns": 532098,
+   "p50_ns": 617611,
+   "p95_ns": 771823,
+   "p99_ns": 1093903,
+   "max_ns": 1093903
+  }
+ },
+ "failures": 0,
+ "boundary": "fixture V2 immutable synthetic spans; local closed-loop diagnostic, not SLO/HA/production evidence; typed scoped equality, complete trace, standalone span ID, intrinsic half-open time; synthetic ID/response uniqueness is not a provider or semconv guarantee; ClickHouse ownership checks and data queries use the selected transport, HTTP JSON or native typed transport; DDL, ingest, storage audit and EXPLAIN remain HTTP; transport arms are not protocol-cost-equivalent"
+}

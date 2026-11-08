@@ -504,12 +504,13 @@ class ProvisionTest(unittest.TestCase):
     def owned_scope(self, layout, mode='ingest', history=True):
         root = p.REMOTE_BASE+'/'+self.plan['campaign']; run = 'prof20k9000'
         unit = 'otel-native-'+run+'-'+mode+'.scope'
-        args = [root+'/bin/otel-demo', '--backend', 'fdb', '--order', 'time', '--cluster-file', layout['remote_cluster_file'],
+        args = [root+'/bin/otel-demo', '--backend', 'sql', '--sql-ingest', 'direct', '--sql-rows', 'compiled',
+                '--sql-query', 'direct', '--cluster-file', layout['remote_cluster_file'],
                 '--run', run, '--seed', '283', '--count', '1000000', '--tenants', '1', '--attrs', '8',
-                '--match-every', '100', '--batch', '32', '--save-mode', 'batch', '--workers', '4', '--diagnostics',
+                '--match-every', '100', '--batch', '32', '--save-mode', 'batch', '--workers', '4',
                 '--k', '100', '--max-candidates', '2000000', '--max-bytes', '268435456', '--revision', 'a'*40,
-                '--record-compression', 'brotli-4', '--posting-value-format', 'tuple', '--bulk-index-conflicts=true',
-                '--hash-bytes', '8', '--mode', mode, '--timeout', '120s', '--output', root+'/producers/'+run+'/'+mode+'.json']
+                '--record-compression', 'zlib-1', '--bulk-index-conflicts=true',
+                '--mode', mode, '--timeout', '120s', '--output', root+'/producers/'+run+'/'+mode+'.json']
         if mode == 'query':
             args += ['--suite', 'all', '--iterations', '1600']
         scope = dict(node='client1', unit=unit, args=args, cgroup='/horizontal.slice/horizontal-client.slice/'+unit)

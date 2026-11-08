@@ -54,15 +54,16 @@ finish() {
   exit "$rc"
 }
 trap finish EXIT
-arms=(fdb_trace fdb_time ch_map ch_attrs_trace ch_attrs_time)
+arms=(sql_direct ch_map ch_attrs_trace ch_attrs_time)
 settings() {
   local arm=$1
   common=(--run "${RUN_PREFIX}_${arm}" --count "$count" --attrs "$attrs" --tenants "$tenants"
     --seed 283 --match-every 100 --k 100 --revision "$revision"
     --max-candidates "$max_candidates" --max-bytes "$max_bytes" --timeout 60m)
   case "$arm" in
-    fdb_trace) common+=(--backend fdb --order trace --cluster-file "$FDB_CLUSTER_FILE") ;;
-    fdb_time) common+=(--backend fdb --order time --cluster-file "$FDB_CLUSTER_FILE") ;;
+    # The Exporter's relational write and read paths (sqlbackend: SpanWriter, direct scans).
+    sql_direct) common+=(--backend sql --sql-ingest direct --sql-rows compiled --sql-query direct
+      --save-mode batch --record-compression zlib-1 --cluster-file "$FDB_CLUSTER_FILE") ;;
     ch_map) common+=(--backend ch-map --order trace --ch-url "$CH_URL") ;;
     ch_attrs_trace) common+=(--backend ch-attrs --order trace --ch-url "$CH_URL") ;;
     ch_attrs_time) common+=(--backend ch-attrs --order time --ch-url "$CH_URL") ;;

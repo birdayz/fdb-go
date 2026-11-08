@@ -51,9 +51,12 @@ import (
 //
 // Transaction model:
 //
-//	Auto-commit: every statement runs in its own FDB transaction. A DML
+//	Auto-commit: every statement runs in its own FDB transactions. A DML
 //	statement's is opened by beginTransaction and committed once, never
-//	replayed; a DDL statement and each result page run through fdbDB.Run().
+//	replayed; a DDL statement runs through fdbDB.Run(). A query's catalog
+//	read, planning and first page share one transaction, which the first
+//	page commits, when that page starts within statementReadMaxAge
+//	(statement_read.go); any other page runs through fdbDB.Run().
 //	Explicit transaction: BeginTx opens an FDB transaction; all statements in
 //	the transaction share it. Commit/Rollback close it.
 type EmbeddedConnection struct {
@@ -73,6 +76,24 @@ type EmbeddedConnection struct {
 	// activeTx is non-nil when an explicit transaction is open (BeginTx called).
 	// nil means auto-commit mode.
 	activeTx *embeddedTx
+
+	// stmtRead is an auto-commit QueryContext statement's shared first
+	// transaction, armed for the statement by stmtReadArmed (statement_read.go).
+	stmtRead      *statementRead
+	stmtReadArmed bool
+	// stmtReadMaxAge overrides statementReadMaxAge when positive; only tests
+	// set it (connknob). It outlives ResetSession.
+	stmtReadMaxAge time.Duration
+
+	// schemaWitnesses survive ResetSession, which drops the session schema
+	// cache: an auto-commit statement reuses a schema whose witness bytes the
+	// catalog still holds (one parallel read) instead of loading it again
+	// (a catalog store open and two dependent record loads). Keyed as the
+	// session cache.
+	schemaWitnesses map[string]witnessedSchema
+
+	// parses is the connection's parse cache (parse_cache.go).
+	parses parseCache
 
 	// planCache caches Cascades physical plans. A driver installs its
 	// engine-wide RelationalPlanCache (SetPlanCache), which every connection
@@ -307,8 +328,9 @@ type embeddedTx struct {
 	// Java's transaction-scoped ExecuteState by another name
 	// (ExecuteProperties.java Builder copies the state reference, and
 	// newExecuteProperties runs once per transaction). Auto-commit statements
-	// never see this field — each page stays its own transaction with its own
-	// fresh state, unchanged.
+	// never see this field: each of their pages builds its own fresh state,
+	// the first in the statement's shared planning transaction when it has one
+	// (statement_read.go), the others in transactions of their own.
 	//
 	// NOT to be confused with paginatingRows.execState (RFC-130's memory byte
 	// budget), which deliberately stays STATEMENT-scoped: a memory budget is a
@@ -344,8 +366,9 @@ type embeddedTx struct {
 	// transaction reuses one open store per subspace instead of rebuilding it
 	// per page.
 	//
-	// Per-page rebuilding is free in auto-commit — each page is its own
-	// transaction and the store must be rebuilt anyway — and stops being free
+	// Per-page rebuilding is free in auto-commit — each page after the first is
+	// its own transaction and the store must be rebuilt anyway (the first
+	// reuses the planner's, statement_read.go) — and stops being free
 	// the moment pages share one transaction: each Open() reads the store
 	// header, so an N-page in-transaction SELECT would spend N header reads
 	// out of the same 5-second window the query itself is competing for. The
@@ -379,13 +402,19 @@ type embeddedTx struct {
 
 // storeIn returns the record store for ss inside rctx, reusing this
 // transaction's open store when there is one (RFC-198 Decision 10). tx == nil
-// is auto-commit, where each page is its own transaction and the store must be
-// built fresh — unchanged.
+// is auto-commit: a store opened in the statement's shared transaction is kept
+// there, so the first page reuses the store planning opened
+// (statement_read.go); each later page runs its own transaction and opens
+// the store afresh.
 func (c *EmbeddedConnection) storeIn(rctx *recordlayer.FDBRecordContext, tx *embeddedTx, ss subspace.Subspace) (*recordlayer.FDBRecordStore, error) {
 	if tx != nil {
 		if store, ok := tx.stores[string(ss.Bytes())]; ok {
 			return store, nil
 		}
+	} else if store := c.statementStore(rctx, ss); store != nil {
+		// The statement's shared transaction: the planner's open serves the
+		// first page, as a transaction's open serves its pages.
+		return store, nil
 	}
 	builder, err := c.newStoreBuilder()
 	if err != nil {
@@ -418,6 +447,8 @@ func (c *EmbeddedConnection) storeIn(rctx *recordlayer.FDBRecordContext, tx *emb
 			tx.stores = make(map[string]*recordlayer.FDBRecordStore)
 		}
 		tx.stores[string(ss.Bytes())] = store
+	} else {
+		c.rememberStatementStore(rctx, ss, store)
 	}
 	return store, nil
 }
@@ -580,22 +611,26 @@ func (tx *embeddedTx) Rollback() (err error) {
 	return nil
 }
 
-// runInTx executes fn either inside the open explicit transaction (if one
-// exists) or inside a new auto-commit transaction via fdbDB.Run.
+// runInTx executes fn inside the open explicit transaction (if one exists),
+// as runInCapturedTx does with no explicit transaction otherwise.
 // In explicit-transaction mode, fn errors propagate without retry.
 func (c *EmbeddedConnection) runInTx(ctx context.Context, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
 	return c.runInCapturedTx(ctx, c.activeTx, c.Options(), fn)
 }
 
-// runInCapturedTx executes fn inside tx when one was captured, or inside a new
-// auto-commit transaction via fdbDB.Run when tx is nil (auto-commit is the
-// intended mode — no transaction was ever open). A captured transaction that
-// has since ended is an ERROR (25F01), never a silent fallback to a fresh
-// transaction: the caller captured the transaction precisely because its reads
-// belong to it, and resuming them at a different read version would splice one
-// logical result set across two snapshots with no error (RFC-198 Decision 3).
-// One policy for every route — the paginating SELECT/DML page loop and the
-// system-table reads all come through here.
+// runInCapturedTx executes fn inside tx when one was captured. When tx is nil
+// (auto-commit: no transaction was ever open), fn joins the armed auto-commit
+// statement's shared transaction (statement_read.go) when it has one, and is
+// not committed here: the statement's first page or its end commits it.
+// Otherwise fn runs in a new auto-commit transaction via fdbDB.Run. A captured
+// transaction that has since ended is an ERROR (25F01), never a silent
+// fallback to a fresh transaction: the caller captured the transaction
+// precisely because its reads belong to it, and resuming them at a different
+// read version would splice one logical result set across two snapshots with
+// no error (RFC-198 Decision 3). One policy for every route — the
+// paginating SELECT/DML page loop and the system-table reads come through
+// here; an auto-commit statement's first page tries its shared transaction
+// first (runPage, runFirstPage).
 //
 // In explicit-transaction mode fn errors propagate WITHOUT retry: a retry
 // would have to re-run the whole transaction, and the driver does not hold the
@@ -614,6 +649,9 @@ func (c *EmbeddedConnection) runInCapturedTx(ctx context.Context, tx *embeddedTx
 			return nil, err
 		}
 		return tx.runBound(ctx, fn)
+	}
+	if result, err, ok := c.runStatementRead(ctx, opts, fn); ok {
+		return result, err
 	}
 	return configuredRunner{c.sess.DB, opts}.Run(ctx, fn)
 }
@@ -717,12 +755,68 @@ func (c *EmbeddedConnection) cachedLoadSchema(ctx context.Context, txn api.Trans
 	if s, ok := c.sess.SchemaCache[key]; ok {
 		return s, nil
 	}
-	s, err := c.loadSchemaOfDatabase(txn, dbPath, schemaName)
+	if w, ok := c.schemaWitnesses[key]; ok {
+		// The statement opens its own schema's store next; that open's first
+		// reads ride along with the witness reads. (Other schemas resolved
+		// here, system-table loads, open no store.)
+		wait := func() {}
+		if dbPath == c.sess.DBPath && schemaName == c.sess.Schema {
+			wait = c.prefetchSchemaStore(txn, dbPath, schemaName)
+		}
+		same, err := c.sess.Catalog.SchemaUnchanged(txn, w.witness)
+		wait()
+		if err != nil {
+			return nil, err
+		}
+		if same {
+			c.sess.SchemaCache[key] = w.schema
+			return w.schema, nil
+		}
+		delete(c.schemaWitnesses, key)
+	}
+	s, w, err := c.loadSchemaOfDatabaseWitnessed(txn, dbPath, schemaName)
 	if err != nil {
 		return nil, err
 	}
 	c.sess.SchemaCache[key] = s
+	if c.schemaWitnesses == nil {
+		c.schemaWitnesses = make(map[string]witnessedSchema)
+	}
+	c.schemaWitnesses[key] = witnessedSchema{schema: s, witness: w}
 	return s, nil
+}
+
+// prefetchSchemaStore starts the first reads of opening the schema's store
+// (recordlayer.PrefetchStoreState) when its subspace is already resolved.
+func (c *EmbeddedConnection) prefetchSchemaStore(txn api.Transaction, dbPath, schemaName string) (wait func()) {
+	rctx, ok := txn.Unwrap().(*recordlayer.FDBRecordContext)
+	if !ok || c.sess.Keyspace == nil {
+		return func() {}
+	}
+	ss, ok := c.sess.Keyspace.ResolvedSchemaSubspace(dbPath, schemaName)
+	if !ok {
+		return func() {}
+	}
+	return recordlayer.PrefetchStoreState(rctx, ss)
+}
+
+// witnessedSchema is a loaded schema and the catalog bytes it was built from.
+type witnessedSchema struct {
+	schema  api.Schema
+	witness *catalog.SchemaWitness
+}
+
+// loadSchemaOfDatabaseWitnessed is loadSchemaOfDatabase with the witness of
+// its result.
+func (c *EmbeddedConnection) loadSchemaOfDatabaseWitnessed(txn api.Transaction, dbPath, schemaName string) (api.Schema, *catalog.SchemaWitness, error) {
+	var w *catalog.SchemaWitness
+	s, err := c.loadSchemaWith(txn, dbPath, schemaName, func() (api.Schema, error) {
+		var s api.Schema
+		var err error
+		s, w, err = c.sess.Catalog.LoadSchemaWitnessed(txn, dbPath, schemaName)
+		return s, err
+	})
+	return s, w, err
 }
 
 // loadSchemaOfDatabase is the catalog's LoadSchema, with Java's report of a
@@ -733,7 +827,14 @@ func (c *EmbeddedConnection) cachedLoadSchema(ctx context.Context, txn api.Trans
 // Go connects before the first statement reads the catalog (a connection may
 // create its own database), so the same answer is given here.
 func (c *EmbeddedConnection) loadSchemaOfDatabase(txn api.Transaction, dbPath, schemaName string) (api.Schema, error) {
-	s, err := c.sess.Catalog.LoadSchema(txn, dbPath, schemaName)
+	return c.loadSchemaWith(txn, dbPath, schemaName, func() (api.Schema, error) {
+		return c.sess.Catalog.LoadSchema(txn, dbPath, schemaName)
+	})
+}
+
+// loadSchemaWith is loadSchemaOfDatabase over the catalog read load.
+func (c *EmbeddedConnection) loadSchemaWith(txn api.Transaction, dbPath, schemaName string, load func() (api.Schema, error)) (api.Schema, error) {
+	s, err := load()
 	var ae *api.Error
 	if errors.As(err, &ae) && ae.Code == api.ErrCodeUndefinedSchema {
 		if ok, dbErr := c.sess.Catalog.DoesDatabaseExist(txn, dbPath); dbErr == nil && !ok {
@@ -754,6 +855,7 @@ func (c *EmbeddedConnection) loadSchemaOfDatabase(txn api.Transaction, dbPath, s
 
 func (c *EmbeddedConnection) invalidateSchemaCache(dbPath, schemaName string) {
 	c.sess.InvalidateSchema(dbPath, schemaName)
+	delete(c.schemaWitnesses, session.SchemaCacheKey(dbPath, schemaName))
 	// A DDL issued while an explicit transaction is open (runDDL auto-commits
 	// even inside BeginTx — Decision 8f) must also drop the transaction-scoped
 	// binding, or the rest of the transaction keeps planning against metadata
@@ -875,7 +977,8 @@ func (c *EmbeddedConnection) ensureMetaData(ctx context.Context) error {
 	}
 	// runInTx, not DB.Run: with an explicit transaction open the catalog read
 	// must join it (RFC-198 Decision 8b — this is enumeration site (c)); in
-	// auto-commit it is the same fresh transaction as before.
+	// auto-commit it joins the statement's shared transaction when one is
+	// armed (statement_read.go), else a fresh one.
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		txn := catalog.NewFDBTransaction(rctx)
 		_, loadErr := c.cachedLoadSchema(ctx, txn, c.sess.DBPath, c.sess.Schema)
@@ -1030,6 +1133,12 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, sql string, args 
 	if cerr := c.ensureCatalogInit(ctx); cerr != nil {
 		return nil, cerr
 	}
+	endRead := c.beginStatementRead()
+	// The shared read commits only on the success path below (planning writes
+	// and post-commit hooks a page did not commit); an error or a panic
+	// cancels it.
+	statementOK := false
+	defer func() { endRead(statementOK) }()
 	gen := newCascadesGenerator(c)
 	gen.args = args
 	plan, err := gen.Plan(ctx, sql)
@@ -1062,6 +1171,7 @@ func (c *EmbeddedConnection) QueryContext(ctx context.Context, sql string, args 
 			observe(withMeta.metaData())
 		}
 	}
+	statementOK = true
 	return rows, nil
 }
 

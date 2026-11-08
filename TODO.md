@@ -2511,10 +2511,12 @@ tracked only.
 
 ### SQL
 
-- [ ] **Tracked only (owner excluded it from this work).** An auto-commit SELECT runs each
-  page in its own FDB transaction (`pkg/relational/core/embedded/cascades_generator.go`,
-  `runInCapturedTx` with `r.tx == nil`), so one result set spans read versions; Java holds
-  one transaction per result set. User docs do not say so.
+- [ ] **Tracked only (owner excluded it from this work).** An auto-commit SELECT shares one
+  FDB transaction for the catalog read, planning and a first page that starts within
+  250 ms (`pkg/relational/core/embedded/statement_read.go`); later pages run their own
+  transactions (`cascades_generator.go`, `runInCapturedTx` with `r.tx == nil`), so one
+  result set spans read versions; Java holds one transaction per result set. Documented
+  in docs/compatibility.md and DIVERGENCES.md ("Auto-commit SELECT").
 - [x] **Medium:** inside an explicit transaction the statement context does not reach FDB
   reads (the "KNOWN GAP" at `pkg/relational/core/embedded/connection.go:939`;
   `pkg/recordlayer/database.go:795` sets `context.Background()`), and `TxOptions.ReadOnly`
@@ -2701,6 +2703,17 @@ tracked only.
   lane (run 42479134946).
 
 ### Follow-ups from the fix PRs' reviews
+
+- [ ] **Low:** #1034's final review (ACK at `839cc5d3f`) left low/nit findings in
+  `pkg/fdbgo/client` and the batch TEXT prefetch: `rywEntry.nodeConflict`'s doc says only
+  atomics set it, but `setWith` now sets it and skips the no-op mutates with
+  `atomicWith`'s predicate (one helper with the WriteMap.cpp rationale); the walk's
+  `materializeInto` and `appendIfFitsInto` copy `boundaryArena.bytes` and `keepLocked`'s
+  slot logic (one arena helper); no test pins that `epilogue`'s trims clear the dropped
+  rows of a pooled walk (`w.result[:cap]` all zero after release); the
+  `store_batch_text_prefetch.go` header still says prefetch only warms the RYW cache,
+  though maintenance now reuses its tokenizations; `selectorRangeRead.finish`'s return
+  value is unused; `readThrough` does not use the new `trackError`.
 
 - [x] **Low:** probe two seed-corpus Go extensions against live Java 4.14.2.0 and record each in
   DIVERGENCES.md's Go-extension table or drop the note
@@ -3046,6 +3059,9 @@ The regressions below now pass: `just test` passed 179 targets (3 executed,
 176 cached), including all six new real-FDB ready/interrupted-ingest Drop cases
 with no skips and the 13-case campaign suite. Source inputs were frozen around
 the run. This is fast-lane validation, not full-suite or 100M-scale evidence.
+The two Record Layer adapter regressions (F2, F3) covered the deleted custom
+store (`FDBBackend`) and were removed with it in phase 3B. The sql backend has
+no loading manifest; its `Drop` is SQL `DROP DATABASE` of the run's database.
 
 - [x] **Campaign shared-lock exclusion — contention regression (review F1).**
   `layers/otel/bench/local_campaign_test.sh` uses an uncontested private lock, so
@@ -3074,8 +3090,16 @@ comparison and stop; no 100M load or further scale-up is in scope. Core Record
 Layer fixes are allowed for this proof; keep them in separable commits with
 regressions so they can be proposed upstream after the PoC.
 
-- [ ] Reach a measured 20,000 durably acknowledged spans/s with all eight custom
-  postings and both native indexes maintained synchronously. The completed 1M
+The evidence in this section measured the custom store (`FDBBackend` with its
+eight posting indexes and two native indexes; the sealed app's prefix
+`("otel_otelbench_v2", Run, "store")`), which the relational replacement deleted
+(`layers/otel/rfcs/relational-exporter-migration.md`). It is historical. A
+resumed 10M proof measures the OTEL_V1 Exporter and re-derives its write set,
+key prefixes and guards; nothing below transfers to it unmeasured.
+
+- [ ] Reach a measured 20,000 durably acknowledged spans/s with every OTEL_V1
+  SPANS index maintained synchronously (the custom store measured below
+  maintained eight custom postings and two native indexes). The completed 1M
   arm achieved about 1,101/s at batch 32 / two workers. Its cumulative worker
   timing averages about 58 ms per source batch, including about 32.6 ms in
   successful commit; this is not a pure disk-latency measurement. Add explicit
@@ -3449,7 +3473,11 @@ regressions so they can be proposed upstream after the PoC.
   fresh exact17-ID/ten-kind equality passed, and source seals stayed unchanged.
   Evidence: `/var/tmp/fdb-perf-scaling.v4O6xf/log2g/native-analysis.json`.
 - [ ] Test exact measured-range conditioning before adding more ingest workers or
-  hosts. The sealed app uses physical prefix `("otel_otelbench_v2", Run, "store")`;
+  hosts. OTEL_V1 benchmark stores live at `/OTELBENCH/R_<RUN>` in the relational
+  keyspace, so a rerun re-derives the prefix layout; the append experiment
+  below relied on the deleted store's ready/loading manifests and must be
+  restated against the relational catalog first. The measured, sealed app (the
+  custom store) used physical prefix `("otel_otelbench_v2", Run, "store")`;
   gate Runs9310/9311 and measured Runs9313/9314 are disjoint. Early observed native
   input concentrated85.1153% on one of six SS, with a1.499GB raw MVCC queue; these
   counters include setup/DD activity, so cold-prefix causality is a hypothesis,
@@ -3466,9 +3494,17 @@ regressions so they can be proposed upstream after the PoC.
 
 ### OTel log payload storage migration
 
-- [ ] **Migrate log payloads to standard Record Layer records without silently
-  changing existing `logs_v1` bytes.** `layers/otel/logs.go` currently owns a
-  separate eight-field tuple header `(version, codec, raw_len, stored_len,
+- [x] **Migrate log payloads to standard Record Layer records without silently
+  changing existing `logs_v1` bytes.** Delivered by the relational
+  replacement (`layers/otel/rfcs/relational-exporter-migration.md`, phase 2B
+  and 3B): logs are OTEL_V1 `LOGS` records written by `logs_rel.go` through
+  `SaveRecordBatch` with the Record Layer serializer and split records, and the
+  `logs_v1` format, its codec and readers are deleted. There was no migration:
+  the OTel layer is pre-release and its stores were recreated (owner
+  decision). Regressions: `TestRelLogsRealFDB` (export, replace, large/split
+  rows, admission, corruption) and `TestRelLogOTLPFidelityEncoding`.
+  The original item, against the deleted store, follows.
+  `layers/otel/logs.go` owned a separate eight-field tuple header `(version, codec, raw_len, stored_len,
   chunks, effective, source, inline)`, raw/Brotli codec policy, 90,000-byte
   inline/chunk rows and reassembly/corruption validation. Spans and messages
   already use Record Layer serialization and splitting; the log format is not
@@ -3487,8 +3523,11 @@ regressions so they can be proposed upstream after the PoC.
 
 ### OTel GenAI messages on Record Layer TEXT indexes (2026-11-02)
 
-`layers/otel/messages*.go` stores GenAI messages as `Message` records with a
-standard TEXT index (README "GenAI message storage"). Open work follows.
+`layers/otel/messages_rel.go` stores GenAI messages as OTEL_V1 `MESSAGES` rows
+with the `MESSAGES_TEXT` full-text index and `MESSAGE_TRACES` markers in each
+tenant's store (README "GenAI message storage"); the custom store's `Message`
+records were deleted. Open work follows; the client and Record Layer items
+apply to the new store's TEXT maintenance as well.
 Historical standalone performance numbers have been removed here because the
 paired source trees, compiler and sample populations were not identified with
 these claims; the implementation notes below are not controlled comparisons.
@@ -3572,8 +3611,10 @@ these claims; the implementation notes below are not controlled comparisons.
   Open: `PrefetchRecordBatch` cannot warm an update's removals (old
   images are not yet read); a map whose batch keys lie far apart past
   2*keys+2 rows costs a second prefetch round trip.
-- [ ] **Record Layer KeySpace over the directory layer** (for layers/otel's
-  directory_v1 layout). Done: `keyspace.Path.ToSubspace` is Java's
+- [ ] **Record Layer KeySpace over the directory layer** (raised by layers/otel's
+  `directory_v1` layout, which the relational replacement deleted; OTel stores
+  now live under the relational keyspace, and the open Java-parity gaps below
+  remain Record Layer work). Done: `keyspace.Path.ToSubspace` is Java's
   `new Subspace(toTuple())` (it packed the tuple as one nested element), and
   `recordlayer.DirectoryLayerDirectory` / `KeySpaceResolver` port Java's
   DirectoryLayerDirectory over its default scope `ExtendedDirectoryLayer.global`
@@ -3584,9 +3625,13 @@ these claims; the implementation notes below are not controlled comparisons.
   it up), and `runChild` (resolveWithMetadata's child transaction) takes a
   fresh read version where Java's runAsyncBorrowingReadVersion borrows the
   parent's.
-- [ ] **Measure phrase-query fanout cost.** Profile the TEXT phrase scan of
+- [x] **Measure phrase-query fanout cost.** Profile the TEXT phrase scan of
   16 writer shards per role (`fts_phrase_first_turn`, `fts_multi_turn_history`)
-  before attributing its cost or comparing layouts.
+  before attributing its cost or comparing layouts. Done on OTEL_V1 ("G3
+  findings" below): without a role each class issued 226-293 range requests
+  for about 130-150 rows; probing the rarest term per shard cut that to 72-74
+  requests, 0.49-0.51x the custom store's p50 quiesced (benchmark doc,
+  "Quiesced query gate").
 - [ ] **`bulk_index_conflicts` widens over every index of the store.** Record
   Layer side done: `BatchSaveOptions.CoalesceIndexWriteConflicts` now covers
   only the indexes whose maintainer the batch ran (the saved and overwritten
@@ -3618,14 +3663,17 @@ these claims; the implementation notes below are not controlled comparisons.
 
 ## OTel SQL ingest migration
 
-- [ ] Move the OTel writer onto each tenant's relational schema subspace using
+- [x] Move the OTel writer onto each tenant's relational schema subspace using
   `layers/otel/otelsql.OTEL_V1`; register the template once and create one store
   containing spans, logs, messages and message_traces. Existing ingest is not
   migrated by the schema/SQL tests. Benchmark runs get dedicated catalog
   databases/stores; production tenants share one signal store, which run-level
   Drop must never clear. Define migration of existing data and preserve the
   current API while switching its storage.
-- [ ] Populate typed attribute arrays, promoted fields, event/link projections
+  Delivered (3A): `otel.Exporter` writes every signal into `/OTEL/R_<RUN>`,
+  schema `T<tenant>`, via `EnsureTenant`; no data migration (owner,
+  pre-release); `TestRelExporterRealFDB`, `TestFDB_EnsureTenant`.
+- [x] Populate typed attribute arrays, promoted fields, event/link projections
   and message references. Preserve the exact current duplicate-attribute
   contract and original ordinals where references require them. Pin unknown
   fields, presence, duplicate/order preservation and all AnyValue types end to
@@ -3634,15 +3682,34 @@ these claims; the implementation notes below are not controlled comparisons.
   Compare against a truly complete raw projection with measured bytes/mutations.
   Implement indexed key/value admission and long-string digest lookup
   with collision verification before enabling this schema in production ingest.
-- [ ] Store logs as records instead of raw KV, migrate message markers, choose
+  Delivered: `otelsql` compiled builders, `ref_chunks`/`SPANS_REF_CHUNKS`,
+  long strings by digest verified on the record; `TestBuildCompiledIsBuild`,
+  `TestRelExporterRealFDB/otlp_fidelity`, `TestRelAdvancedQueriesRealFDB`;
+  bytes in the benchmark doc (G2A, G2C).
+- [ ] Event and link projections omit the bytes and long-string attribute arrays
+  and the resource/scope dropped counts (`otelsql/rows.go`, `newAttrArrays(ev,
+  false)`); `otlp` preserves them, so SQL projection coverage is incomplete
+  (docs/compatibility.md). Project them, or record the boundary as final, and
+  compare against a complete raw projection with measured bytes/mutations.
+- [x] Store logs as records instead of raw KV, migrate message markers, choose
   a Java-interoperable serializer and verify exporter writes through SQL reads.
-  Add metrics tables in the same tenant store, then span/log/message/metric join
-  regressions; the v1 template has no metrics table yet.
-- [ ] Decide TEXT grouping/indexing for SQL message search, and reimplement the
+  Delivered: LOGS and MESSAGE_TRACES rows, `zlib-1` default;
+  `TestRelLogsRealFDB`, SQL reads in `TestFDB_SQLBackend` and
+  `TestFDB_OtelTemplateV1`, SQL reads of Exporter-written LOGS, MESSAGES and
+  MESSAGE_TRACES in `TestRelExporterRealFDB/logs_messages_sql`, Java reads in
+  `OtelTemplateOverlayJavaProbe`.
+- [ ] Add metrics tables in the same tenant store, then span/log/message/metric
+  join regressions; the v1 template has no metrics table yet (RFC
+  relational-exporter-migration §4.3, D9).
+- [x] Decide TEXT grouping/indexing for SQL message search, and reimplement the
   typed query API over the standard indexes without losing scan budgets,
   signed keyset tokens, snapshot-page semantics or distinct-trace top-K early
   termination. Measure ingest cost on matched baseline/new workloads; no
   extrapolated CPU or index-size estimate is validation.
+  Delivered: FULLTEXT `MESSAGES_TEXT` partitioned by (role, shard);
+  `SpanReader` direct scans with budgets, v2 signed tokens and early top-K
+  (`TestRelAdvancedQueriesRealFDB`, `TestRelContinuationRejections`); ingest
+  measured at G2A and G3 (benchmark doc).
 - [ ] Probe two-level fan-out event/link attributes and element-level index
   filtering before promising indexed same-event/same-link searches. Current
   OTel probes cover one attribute array; unnest joins remain scan/explode paths
@@ -3654,6 +3721,147 @@ these claims; the implementation notes below are not controlled comparisons.
   ClassCastException / SQLSTATE XXXXX. On a pinned-version update, re-evaluate
   this exact case and replace its strict error pin with exact suffix rows only
   when fixed; preserve every Go page/cursor and Java's working controls.
+- [x] Java readers of OTEL_V1 stores (RFC relational-exporter-migration R2).
+  A TEXT index naming `otel_message_v1` made every Java statement on the schema
+  fail `42000 MetaDataException unrecognized text tokenizer`, so MESSAGES_TEXT
+  uses the default tokenizer and `otelsql.BuildMessageCompiled` stores
+  `IndexableText` (overlong tokens as the placeholder `oteloverlongtoken`,
+  positions kept). `OtelTemplateOverlayJavaProbe` reads every table of a
+  Go-written TemplateDDL store in Java and pins the Go-only-tokenizer refusal.
+  Stream 2C must tokenize terms and count segment postings with the default
+  tokenizer over `IndexableText`, not `otel_message_v1`.
+- [x] `BuildLogCompiled` leaves an `event_name` over 1,024 bytes NULL (LOGS_EVENT
+  keys it) and `LogProjection` counts it; the old log store indexed event names
+  up to 64,000 bytes by digest. Phase 2B decides whether `QueryLogsByAttribute`
+  on such names needs a digest column or refuses them.
+  Decided: refused; a query naming one is `ConfigError`
+  (`TestRelLogsRealFDB/boundary_admission`, `existential_log_clauses`).
+- [x] Data race in `pkg/fdbgo/client` RYW range reads with AppendIfFits writes
+  (found under `-race` by the old and the new message stores): resolved
+  AppendIfFits values lived in the pooled walk's `keyBuf`, which the next walk
+  reused while a pending read that ran in its goroutine still held its rows
+  uncopied. Fixed in PR #1034 (`valBuf`, dropped on release); regression
+  `TestPendingRangeKeepsAppendedValuesAcrossWalks` (range_selector_unit_test).
+- [x] Stream 2C follow-ups (`messages_rel.go`, `messages_query_rel.go`):
+  - 3B must keep what the new files use from messages.go and messages_query.go:
+    `messageTimerStats`, `isTransactionTooLarge`, `messagePipelineSizer`, the
+    `MessageFullTextQuery`/`MessageSpanHit`/`MessageFullTextPage` types and the
+    `MessageMatch*` modes; and from old test files `cacheFixtureMarker`
+    (messages_test.go). Phase 3A moved `awaitMessageCondition` to
+    messages_rel_lifecycle_fdb_test.go.
+  - MESSAGES_TEXT holds 21-23% more bytes than the old TEXT index on the
+    `BenchmarkMessageWriteCostRealFDB` workloads, with the same bunch count
+    (6,017 and 10,143 rows): the schema subspace prefix is 23 bytes against
+    10 (26% of the difference; also all of the +40% written key bytes, 13 B
+    per write), and every entry's primary key carries the record type key
+    (about 1.9 B per posting, the rest). The whole store is 1.04-1.06x.
+    Accepted at the cutover (D4 kept); recorded in the benchmark doc and the
+    RFC's D4 row.
+  - Done: 3B kept the listed helpers and types.
+- [x] Phase 3B deletion (rfcs/relational-exporter-migration.md §6). After 3A
+  the old store's code is reachable only from `otelbench --backend fdb` and its
+  own tests: `FDBBackend`, index.go, the old logs/messages/query storage
+  methods' remaining helpers, `restoreEnvelopeOTLP`, `legacyCanonicalValue`/
+  `legacyCanonicalAttribute` (the old store's string-coerced postings), the
+  FDBBackend tests (`posting_value_test.go`, `record_compression_test.go`,
+  `posting_diff_test.go`, ...), and otelbench's `--posting-value-format`,
+  `--hash-bytes` and Brotli values. The collector's `removedExporterKey`
+  recognizes otel's removed-key `ConfigError` by its " was removed" text; 3B
+  can drop it with the removed keys once no YAML names them.
+  Delivered: the custom store, its tests and the `fdb` otelbench flags are
+  deleted (RFC status line); `removedExporterKey` stays as the migration message
+  and now matches the typed `otel.RemovedConfigKeyError`, not the message text.
+- [ ] **Low:** the collector's own YAML key check (`checkKeys`,
+  `layers/otel/collector/collector.go`) refuses a YAML merge key (`<<`) as an
+  unknown key, as it did before PR #1035; `ExporterConfig` now follows merge
+  keys and aliases (`checkExporterYAMLKeys`). Follow them there too, with a
+  test.
+- [ ] G3 findings (benchmark doc, "Gate G3"):
+  - [x] `fts_single_token` p50 was 1.53x the custom store's. Cause: it is the
+    first post-ingest class and ran inside the storage server's 6-10 s drain
+    of the ingest's non-durable mutations with 818 range requests per query;
+    a 100-iteration p50 is slow when over half the iterations fall inside
+    the drain (benchmark doc, "fts_single_token: the G3 gap explained and
+    fixed"). In-place reference decoding and coalesced marker reads (commits
+    "otel: message queries read reference chunks in place" and "otel: one
+    marker read per run of a writer's matching messages") bring it to 79
+    requests, 0.30x the custom store quiesced and 0.24-0.46x by G3's method.
+  - [x] Message persist wall is 1.39x with the same summed message transaction
+    time and count and 0 retries. Owner decision: G2C's persist criterion is
+    the summed message transaction time (0.93x).
+  - [x] Without a role, `fts_phrase_first_turn` and `fts_multi_turn_history`
+    issued 226-293 range requests for about 130-150 rows: the TextScan of each
+    (role, shard) opens a read per term. An "all" or phrase query of several
+    terms now counts the terms in shard 0, probes the rarest in the other
+    shards and scans only the shards holding it (commit "otel: phrase and all
+    queries scan only shards holding their rarest term"): 72-74
+    requests, 0.49-0.51x the custom store quiesced.
+  - [x] collector-bench's post-ingest phase starts while the storage server
+    still drains 400-500 MB of the ingest (6-10 s), so its first classes
+    absorb the drain. Owner decision: the G3 query gate runs `--query-only`
+    after the queues drain (benchmark doc, "Quiesced query gate"); the
+    post-ingest numbers are reported, not gated. The bench still cannot wait
+    for durability itself (the Go client does not serve
+    `\xff\xff/status/json`).
+  - [x] `tuple.decodeInt` (pkg/fdbgo/fdb/tuple) decoded every int through
+    `binary.Read(bytes.NewBuffer(...))`: four allocations per int, 15% of the
+    old message query's allocations. It now decodes from a stack array (one
+    allocation: boxing the result); `TestDecodeIntMatchesBinaryRead` pins
+    equal results against the binary.Read version for every int type code.
+    decodeFloat and decodeDouble keep the binary.Read pattern.
+  - `otel.NewExporter` uses the fixed template name OTEL_V1, so it cannot open
+    on a shared cluster whose catalog holds OTEL_V1 from another revision
+    (otelcmp after G2A); `sqlbackend` avoids that with `RevisionTemplateName`.
+- [ ] Rename `layers/otel`'s `rel`-prefixed identifiers and `*_rel.go` files
+  to plain names. The prefix told the relational implementation from the
+  custom store while both existed, and the cutover renamed only
+  `relExporter`. About 40 identifiers (`relMessageStore`, `relLogStore`,
+  `relSpan`, `relAttr`, `relParts`, `openRelDatabase`,
+  `validateRelQueryAttribute`, ...) keep it; `relMessageQueryPlan` wraps the
+  storage-free `messageQueryPlan`, and `exporter.go` holds the configuration
+  while the Exporter is in `exporter_rel.go`.
+
+### OTel relational prototype findings (2026-11-07)
+
+Measured with `otelbench --backend sql` (`layers/otel/sqlbackend`); numbers and
+boundary in `docs/benchmarks/otel-relational-local-20261107.md`.
+
+- [x] Ingest CPU parity. Compiled OTEL_V1 row types (`otelsql/otelv1pb`,
+  bound with `WithLocalFileDescriptor`) and single-pass fan-out key evaluation
+  bring direct OTEL_V1 ingest to 258 µs/span uncompressed and 283 with `zlib-1`.
+  The production `fdb` configuration costs 353. Regressions:
+  `TestBuildCompiledIsBuild`, `TestCompiledTypesMatchTemplateDescriptor`,
+  `TestCompositeKeyExpressionFanOutMatchesReferenceCrossProduct`.
+- [ ] Remaining ingest CPU, shared with every Record Layer writer:
+  - the Go client's write path (RYW cache, mutation log, conflict ranges, commit encoding) is about 38% of allocations;
+  - the batch prefetch and batch save both walk the UTF-8 check;
+  - `readIndexState` starts a goroutine-backed `GetReadVersion` future per record and index.
+- [ ] SQL statement floor. A point query costs 0.56–0.60 ms p50 on a pinned
+  connection and 0.77–0.84 ms pooled, against 0.29–0.32 ms for `SpanReader`
+  (which also reads at a cached read version).
+  - Done: per-connection parse cache, binding walk compiled once per cached tree, record-type equality memo in the edge binder.
+  - Left: planning (plan-cache lookup, index-state snapshot) and the executor per row; the pooled path's schema-witness reads.
+  - A read-version cache for SQL would save one round trip but changes autocommit SELECT freshness; only as an opt-in.
+- [ ] `SpanReader` point reads take two round trips (store header and index
+  states overlapped, then the scan). Issuing the scan's first range read with the
+  store open would make it one, but the cursor's first page must then come from
+  the RYW cache, which needs the prefetch to match its first request exactly
+  (limit, streaming mode, byte target). Worth ~0.1 ms per read.
+- [ ] zlib is about 15% of `zlib-1` ingest CPU (stdlib `compress/flate`, dynamic
+  Huffman per ~1.5 KB record). `klauspost/compress` (already an indirect
+  dependency) would likely halve it; it needs a direct dependency and a notices
+  refresh.
+- [ ] SELECT pages are bounded only by time unless
+  `execution_scanned_rows_limit` is set, and a page is read whole before its
+  first row is returned. Java's result set iterates its cursor lazily instead.
+  The OTel backend works around it with `LIMIT` batches (K, 2K, ...) and a
+  `start_ns <=` keyset bound. A generic fix is lazy first-page streaming, or a
+  page bound that grows without penalizing small fully consumed results.
+- [ ] Trace-to-logs-to-metrics joins plan as unpipelined index nested loops
+  (`FlatMap` + `IndexScan(LOGS_TRACE, [=, =])`), one sequential probe per outer
+  span. Pipeline inner probes or plan a shared-prefix scan before relying on
+  SQL joins on the hot path; add the metrics tables (template v2) with an
+  exemplar trace_id fan-out index and a (service, time) index.
 
 ## TEXT SQL access paths
 

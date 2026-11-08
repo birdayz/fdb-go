@@ -1,0 +1,47 @@
+# Gate G0: otelbench --backend sql ingest after phase 0A's OTEL_V1 rewrite, on the
+# shared otelcmp container (foundationdb/foundationdb:7.3.77, single ssd-redwood-1,
+# recreated fresh before the g0e set), 2026-11-07 15:10-15:14 UTC.
+# head: otelbench at archive/otel-relational/g0-template (a6095a7b3), sha256 4e7cd1de65e7517dcf734becb7318b779af9adcde74eb00e2862064724b425ad
+# base: otelbench at archive/otel-relational/pre-0a^ (c191f9c17, the tree before phase 0A), sha256 35ce18e322db73acfd4279cda8db11dd0160457924e07e1c415822d24813409a
+# every run: B=<binary> run.sh <run> sql 50000 --record-compression zlib-1
+#   (seed 283, 10 tenants, 8 attributes, match every 100, order time, workers 8, batch 32, batch saves)
+# cpu_us_span = user+sys of the ingest command (bash time) / 50,000; bytes from the audit receipt.
+# load = 1-minute load average before the run. Receipts: g0e_<arm>_<n>-{ingest,audit}.json.
+# The head and base receipts record revision "unrecorded" (otelbench's default).
+p0a_g0e_head_1: err=null cpu_us_span=268 wall_s=6 logical_B_span=1472 keys_span=11 records_B_span=533 prefix_B_span=878
+p0a_g0e_base_1: err=null cpu_us_span=256 wall_s=7.7 logical_B_span=1472 keys_span=11 records_B_span=533 prefix_B_span=878
+load: 8.34,
+p0a_g0e_head_2: err=null cpu_us_span=257 wall_s=7.5 logical_B_span=1472 keys_span=11 records_B_span=533 prefix_B_span=878
+load: 7.60,
+p0a_g0e_base_2: err=null cpu_us_span=251 wall_s=7.5 logical_B_span=1472 keys_span=11 records_B_span=533 prefix_B_span=878
+load: 6.72,
+p0a_g0e_head_3: err=null cpu_us_span=325 wall_s=17.6 logical_B_span=1472 keys_span=11 records_B_span=533 prefix_B_span=878
+load: 7.76,
+p0a_g0e_base_3: err=null cpu_us_span=268 wall_s=13.5 logical_B_span=1472 keys_span=11 records_B_span=533 prefix_B_span=878
+load: 6.55,
+p0a_g0e_base_4: err=null cpu_us_span=257 wall_s=7.4 logical_B_span=1472 keys_span=11 records_B_span=533 prefix_B_span=878
+load: 7.82,
+p0a_g0e_head_4: err=null cpu_us_span=268 wall_s=9.8 logical_B_span=1472 keys_span=11 records_B_span=533 prefix_B_span=878
+load: 7.52,
+p0a_g0e_base_5: err=null cpu_us_span=262 wall_s=9.2 logical_B_span=1472 keys_span=11 records_B_span=533 prefix_B_span=878
+load: 7.25,
+p0a_g0e_head_5: err=null cpu_us_span=311 wall_s=31.9 logical_B_span=1472 keys_span=11 records_B_span=533 prefix_B_span=878
+#
+# Earlier sets, not gated (log lines verbatim; JSON receipts not archived). Head was
+# archive/otel-relational/g0-template^ (a0829d627; SPANS at record type key 1, sha256
+# e5e86c4f145fa28cacd2a160ff196aee2040ba8054a3ee6dba31f4533fdf1782), the base as above.
+# g0: head failed (otelcmp's catalog held OTEL_V1 from another revision; the audit
+# found no rows). g0c and g0d ran at a 1-minute load of 29-103.
+# g0:
+p0a_g0_base_1: err=null cpu_us_span=294 wall_s=9.1 logical_B_span=1483 keys_span=11 records_B_span=534 prefix_B_span=878
+p0a_g0_base_2: err=null cpu_us_span=264 wall_s=8.4 logical_B_span=1483 keys_span=11 records_B_span=534 prefix_B_span=878
+p0a_g0_base_3: err=null cpu_us_span=263 wall_s=11.5 logical_B_span=1483 keys_span=11 records_B_span=534 prefix_B_span=878
+# g0c:
+p0a_g0c_base_1: err=null cpu_us_span=350 wall_s=29.1 logical_B_span=1483 keys_span=11 records_B_span=534 prefix_B_span=878
+p0a_g0c_head_1: err=null cpu_us_span=343 wall_s=28.8 logical_B_span=1483 keys_span=11 records_B_span=534 prefix_B_span=888
+p0a_g0c_base_2: err=null cpu_us_span=388 wall_s=28.3 logical_B_span=1483 keys_span=11 records_B_span=534 prefix_B_span=878
+# g0d:
+p0a_g0d_head_1: err=null cpu_us_span=362 wall_s=19.4 logical_B_span=1494 keys_span=11 records_B_span=535 prefix_B_span=888
+p0a_g0d_base_1: err=null cpu_us_span=342 wall_s=28.1 logical_B_span=1483 keys_span=11 records_B_span=534 prefix_B_span=878
+p0a_g0d_head_2: err=null cpu_us_span=349 wall_s=33.5 logical_B_span=1494 keys_span=11 records_B_span=535 prefix_B_span=888
+p0a_g0d_base_2: err=null cpu_us_span=352 wall_s=39.6 logical_B_span=1483 keys_span=11 records_B_span=534 prefix_B_span=878

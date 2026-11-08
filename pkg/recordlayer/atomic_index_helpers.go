@@ -194,8 +194,9 @@ func updateWhileWriteOnlyNonIdempotent(
 	return updateFunc(oldRecord, newRecord)
 }
 
-// evaluateGroupingKeysNotNull extracts the grouping key tuple(s) from a record,
-// filtering out any tuples where the GROUPED (trailing) columns contain a
+// evaluateCountedEntriesNotNull extracts the counted entries' whole keys from a
+// record, its first groupingCount columns being an entry's group, filtering
+// out any tuples where the GROUPED (trailing) columns contain a
 // NullStandin.NULL.
 // Used by COUNT_NOT_NULL maintainer.
 //
@@ -216,7 +217,7 @@ func updateWhileWriteOnlyNonIdempotent(
 // proto structurally: a structural walk cannot see fan-out (a repeated field
 // with no elements yields zero tuples, not a null one) and cannot tell a
 // grouping column from a grouped one.
-func evaluateGroupingKeysNotNull(store IndexStoreContext, index *Index, record *FDBStoredRecord[proto.Message], maintained IndexValues) ([]tuple.Tuple, error) {
+func evaluateCountedEntriesNotNull(store IndexStoreContext, index *Index, record *FDBStoredRecord[proto.Message], maintained IndexValues) ([]tuple.Tuple, error) {
 	tuples, err := maintainedKeyTuples(store, index, record, maintained)
 	if err != nil {
 		return nil, err
@@ -249,11 +250,13 @@ func evaluateGroupingKeysNotNull(store IndexStoreContext, index *Index, record *
 			continue
 		}
 
-		groupKey := make(tuple.Tuple, groupingCount)
-		for j := 0; j < groupingCount && j < len(values); j++ {
-			groupKey[j] = values[j]
+		key := make(tuple.Tuple, max(groupingCount, min(len(values), totalColumns)))
+		for j := range key {
+			if j < len(values) {
+				key[j] = values[j]
+			}
 		}
-		result = append(result, groupKey)
+		result = append(result, key)
 	}
 	return result, nil
 }

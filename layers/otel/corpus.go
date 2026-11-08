@@ -13,6 +13,11 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -32,10 +37,8 @@ type Config struct {
 	Batch              int    `json:"batch"`
 	SaveMode           string `json:"save_mode"`
 	RecordCompression  string `json:"record_compression,omitempty"`
-	PostingValueFormat string `json:"posting_value_format,omitempty"`
 	BulkIndexConflicts bool   `json:"bulk_index_conflicts,omitempty"`
 	Workers            int    `json:"workers"`
-	Diagnostics        bool   `json:"diagnostics"`
 	CHBatch            int    `json:"ch_batch"`
 	CHBatchBytes       int    `json:"ch_batch_bytes"`
 	CHIndexGranularity int    `json:"ch_index_granularity"`
@@ -46,58 +49,45 @@ type Config struct {
 	Iterations         int    `json:"iterations"`
 	MaxCandidates      int    `json:"max_candidates"`
 	MaxBytes           int64  `json:"max_bytes"`
-	HashBytes          int    `json:"hash_bytes"`
-	Order              string `json:"order"`
-	// Messages is the GenAI message storage layout: "", "deltas" or "fulltext_v2".
+	// Order is the ClickHouse backends' query layout: trace or time.
+	Order string `json:"order"`
+	// Messages is the tenant store's GenAI message layout the Exporter's
+	// readers query: "", "deltas" or "fulltext_v2". No otelbench backend
+	// stores messages.
 	Messages string `json:"messages,omitempty"`
-	// KeyLayout is the run prefix: legacy tuple ("") or directory_v1 (keyspace.go).
-	// FDB preserves an existing manifest’s layout and uses directory_v1 for fresh runs.
-	KeyLayout string `json:"key_layout,omitempty"`
 }
 
 func DefaultConfig() Config {
-	return Config{Seed: 283, Count: 10000, Tenants: 10, Attributes: 8, MatchEvery: 100, Batch: 32, SaveMode: "pipelined", RecordCompression: "none", PostingValueFormat: "json", Workers: 1, CHBatch: 8192, CHBatchBytes: 8 << 20, CHIndexGranularity: 8192, CHQueryTransport: "http", K: 100, Iterations: 20, MaxCandidates: 20000, MaxBytes: 4 << 20, HashBytes: 32, Order: "trace"}
+	return Config{Seed: 283, Count: 10000, Tenants: 10, Attributes: 8, MatchEvery: 100, Batch: 32, SaveMode: "pipelined", RecordCompression: "none", Workers: 1, CHBatch: 8192, CHBatchBytes: 8 << 20, CHIndexGranularity: 8192, CHQueryTransport: "http", K: 100, Iterations: 20, MaxCandidates: 20000, MaxBytes: 4 << 20, Order: "trace"}
 }
 
 func (c Config) Validate() error {
 	if !regexp.MustCompile(`^[a-z0-9_]{8,48}$`).MatchString(c.Run) {
 		return fail("config", "namespace", "run must be an explicit fresh 8..48 character lowercase alphanumeric/underscore namespace")
 	}
-	if c.Count < 1 || c.Count > 100000000 || c.Tenants < 1 || c.Tenants > (c.Count+1)/2 || c.Attributes < 4 || c.Attributes > 128 || c.MatchEvery < 1 || c.Batch < 1 || c.Batch > 64 || (c.SaveMode != "serial" && c.SaveMode != "pipelined" && c.SaveMode != "batch") || c.Workers < 1 || c.Workers > 8 || c.CHBatch < 1 || c.CHBatch > 65536 || c.CHBatchBytes < 1 || c.CHBatchBytes > 64<<20 || c.Tenant < 0 || c.Tenant >= c.Tenants || c.K < 1 || c.K > 10000 || c.Iterations < 1 || c.Iterations > 100000 || c.MaxCandidates < 1 || c.MaxCandidates > 100000000 || c.MaxBytes < 1 || c.HashBytes < 1 || c.HashBytes > 32 || (c.Order != "trace" && c.Order != "time") {
+	if c.Count < 1 || c.Count > 100000000 || c.Tenants < 1 || c.Tenants > (c.Count+1)/2 || c.Attributes < 4 || c.Attributes > 128 || c.MatchEvery < 1 || c.Batch < 1 || c.Batch > 64 || (c.SaveMode != "serial" && c.SaveMode != "pipelined" && c.SaveMode != "batch") || c.Workers < 1 || c.Workers > 8 || c.CHBatch < 1 || c.CHBatch > 65536 || c.CHBatchBytes < 1 || c.CHBatchBytes > 64<<20 || c.Tenant < 0 || c.Tenant >= c.Tenants || c.K < 1 || c.K > 10000 || c.Iterations < 1 || c.Iterations > 100000 || c.MaxCandidates < 1 || c.MaxCandidates > 100000000 || c.MaxBytes < 1 || (c.Order != "trace" && c.Order != "time") {
 		return fail("config", "bounds", "invalid corpus/query bounds")
 	}
 	switch c.RecordCompression {
 	case "", "none":
-	case "zlib-1", "brotli-0", "brotli-1", "brotli-3", "brotli-4":
-		if c.Backend != "fdb" {
-			return fail("config", "record compression", "Record Layer compression requires the FDB backend")
+	case "zlib-1", "zlib-default":
+		// Java-readable deflate, which the OTEL_V1 stores accept.
+		if c.Backend != "sql" {
+			return fail("config", "record compression", "Record Layer compression requires the SQL backend")
 		}
 	default:
-		return fail("config", "record compression", "record compression must be none, zlib-1, brotli-0, brotli-1, brotli-3, or brotli-4")
-	}
-	switch c.PostingValueFormat {
-	case "", "json":
-	case "tuple":
-		if c.Backend != "fdb" {
-			return fail("config", "posting values", "tuple postings require the FDB backend")
-		}
-	default:
-		return fail("config", "posting values", "posting value format must be json or tuple")
+		return fail("config", "record compression", "record compression must be none, zlib-1 or zlib-default")
 	}
 	switch c.Messages {
-	case messagesNone:
-	case messagesDeltas, messagesFullText:
-		if c.Backend != "fdb" {
-			return fail("config", "message layout", "message records require the FDB backend")
-		}
+	case messagesNone, messagesDeltas, messagesFullText:
 	default:
 		return fail("config", "message layout", "message layout must be empty, deltas or fulltext_v2")
 	}
-	if c.KeyLayout != keyLayoutTuple && (c.KeyLayout != keyLayoutDirectory || c.Backend != "fdb") {
-		return fail("config", "key layout", "key layout must be empty, or directory_v1 for the FDB backend")
-	}
-	if c.BulkIndexConflicts && (c.Backend != "fdb" || c.SaveMode != "batch") {
-		return fail("config", "bulk index conflicts", "bulk index conflicts require the FDB batch save mode")
+	// Coalescing index write conflicts is the Exporter's SpanWriter's option,
+	// which the sql backend's compiled direct batch saves run; sqlbackend.Open
+	// refuses it on its other write paths.
+	if c.BulkIndexConflicts && (c.Backend != "sql" || c.SaveMode != "batch") {
+		return fail("config", "bulk index conflicts", "bulk index conflicts require the batch save mode of the sql backend")
 	}
 	if c.CHIndexGranularity < 1 || c.CHIndexGranularity > 8192 {
 		return fail("config", "CH index granularity", "index granularity must be 1..8192 for fresh tables")
@@ -274,23 +264,6 @@ func oracleTraceSort(out []SpanHit) {
 	}
 }
 
-func sortedHits(m map[string]int64, k int) []Hit {
-	out := make([]Hit, 0, len(m))
-	for tr, t := range m {
-		out = append(out, Hit{tr, t})
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Latest != out[j].Latest {
-			return out[i].Latest > out[j].Latest
-		}
-		return out[i].Trace > out[j].Trace
-	})
-	if len(out) > k {
-		out = out[:k]
-	}
-	return out
-}
-
 func ExpectedTrace(c Config, trace string) []SpanHit {
 	out, _ := ExpectedTraceContext(context.Background(), c, trace)
 	return out
@@ -368,10 +341,6 @@ func (s *ordinalSet) add(i, n int) error {
 	return nil
 }
 
-func fixtureOrdinal(c Config, s Span) (int, bool) {
-	return s.Ordinal, s.Ordinal >= 0 && s.Ordinal < c.Count
-}
-
 func corpusIdentity(c Config) string {
 	b, _ := json.Marshal(struct {
 		Version                                string
@@ -388,27 +357,13 @@ type Manifest struct {
 	Corpus             string `json:"corpus"`
 	State              string `json:"state"`
 	Order              string `json:"order"`
-	HashBytes          int    `json:"hash_bytes"`
 	Backend            string `json:"backend"`
 	CHIndexGranularity int    `json:"ch_index_granularity,omitempty"`
-	RecordCompression  string `json:"record_compression,omitempty"`
-	PostingValueFormat string `json:"posting_value_format,omitempty"`
-	// Messages is Config.Messages; absent for runs without message storage.
-	Messages string `json:"messages,omitempty"`
-	// KeyLayout is Config.KeyLayout; absent for runs with tuple prefixes.
-	KeyLayout string `json:"key_layout,omitempty"`
 }
 
 func manifest(c Config, state string) Manifest {
-	m := Manifest{Tool: ToolVersion, Run: c.Run, Corpus: corpusIdentity(c), State: state, Order: c.Order, HashBytes: c.HashBytes, Backend: c.Backend}
-	m.RecordCompression = recordCompressionMode(c.RecordCompression)
-	if c.PostingValueFormat == "tuple" {
-		m.PostingValueFormat = "tuple"
-	}
-	m.Messages = c.Messages
-	m.KeyLayout = c.KeyLayout
-	// CH table settings are layout identity, not source identity. Omit this
-	// field for FDB so existing V2 manifests retain their exact wire format.
+	m := Manifest{Tool: ToolVersion, Run: c.Run, Corpus: corpusIdentity(c), State: state, Order: c.Order, Backend: c.Backend}
+	// CH table settings are layout identity, not source identity.
 	if c.Backend == "ch-map" || c.Backend == "ch-attrs" {
 		m.CHIndexGranularity = c.CHIndexGranularity
 	}
@@ -416,33 +371,62 @@ func manifest(c Config, state string) Manifest {
 }
 
 func checkManifest(c Config, m Manifest, ready bool) error {
-	if m.Tool != ToolVersion || m.Run != c.Run || m.Corpus != corpusIdentity(c) || m.Order != c.Order || m.HashBytes != c.HashBytes || m.Backend != c.Backend {
+	if m.Tool != ToolVersion || m.Run != c.Run || m.Corpus != corpusIdentity(c) || m.Order != c.Order || m.Backend != c.Backend {
 		return fail("ownership", "manifest", "ownership/corpus manifest mismatch; refusing access")
 	}
 	if (c.Backend == "ch-map" || c.Backend == "ch-attrs") && (m.CHIndexGranularity < 1 || m.CHIndexGranularity != c.CHIndexGranularity) {
 		return fail("ownership", "manifest", "CH index granularity missing or mismatched; refusing access")
 	}
-	if m.RecordCompression != recordCompressionMode(c.RecordCompression) {
-		return fail("ownership", "manifest", "Record Layer compression missing or mismatched; refusing access")
-	}
-	valueFormat := ""
-	if c.PostingValueFormat == "tuple" {
-		valueFormat = "tuple"
-	}
-	if m.PostingValueFormat != valueFormat {
-		return fail("ownership", "manifest", "covering posting value format missing or mismatched; refusing access")
-	}
-	if m.Messages != c.Messages {
-		if m.Messages == messagesNone {
-			return failf("ownership", "manifest", "run has no %s message record layout: it stores no messages or predates message records (msg_blob_v1 layout); refusing access, use a fresh run", c.Messages)
-		}
-		return failf("ownership", "manifest", "run uses message layout %q, not %q; refusing access", m.Messages, c.Messages)
-	}
-	if m.KeyLayout != c.KeyLayout {
-		return failf("ownership", "manifest", "run uses key layout %q, not %q; refusing access", m.KeyLayout, c.KeyLayout)
-	}
 	if ready && m.State != "ready" {
 		return failf("ownership", "manifest", "run is not ready (state %q); explicit owned drop only", m.State)
 	}
 	return nil
+}
+
+// FixtureOTLP is a fixture span's single-span ResourceSpans and its
+// deterministic wire bytes, the otlp the sql backend's OTEL_V1 rows store.
+func FixtureOTLP(s Span) (*tracepb.ResourceSpans, []byte, error) {
+	tr, err := hex.DecodeString(s.Trace)
+	if err != nil {
+		return nil, nil, wrap("admission", "trace identity", err)
+	}
+	id, err := hex.DecodeString(s.ID)
+	if err != nil {
+		return nil, nil, wrap("admission", "span identity", err)
+	}
+	if len(tr) != 16 || len(id) != 8 {
+		return nil, nil, fail("admission", "identity", "expected 16-byte trace and 8-byte span identifiers")
+	}
+	otlp := &tracepb.ResourceSpans{Resource: &resourcepb.Resource{}, SchemaUrl: "otelbench-resource-v2", ScopeSpans: []*tracepb.ScopeSpans{{Scope: &commonpb.InstrumentationScope{Name: "otelbench", Version: "2"}, SchemaUrl: "otelbench-scope-v2", Spans: []*tracepb.Span{{TraceId: tr, SpanId: id, Name: "immutable-fixture", StartTimeUnixNano: uint64(s.Start), EndTimeUnixNano: uint64(s.Start + 1000)}}}}}
+	for _, a := range s.Attributes {
+		v := &commonpb.AnyValue{}
+		switch a.Type {
+		case "string":
+			v.Value = &commonpb.AnyValue_StringValue{StringValue: a.Value}
+		case "int":
+			n, e := strconv.ParseInt(a.Value, 10, 64)
+			if e != nil {
+				return nil, nil, wrap("admission", "integer attribute", e)
+			}
+			v.Value = &commonpb.AnyValue_IntValue{IntValue: n}
+		default:
+			return nil, nil, failf("admission", "OTLP encode", "unsupported fixture type %q", a.Type)
+		}
+		kv := &commonpb.KeyValue{Key: a.Key, Value: v}
+		switch a.Scope {
+		case "span":
+			otlp.ScopeSpans[0].Spans[0].Attributes = append(otlp.ScopeSpans[0].Spans[0].Attributes, kv)
+		case "resource":
+			otlp.Resource.Attributes = append(otlp.Resource.Attributes, kv)
+		case "scope":
+			otlp.ScopeSpans[0].Scope.Attributes = append(otlp.ScopeSpans[0].Scope.Attributes, kv)
+		default:
+			return nil, nil, failf("admission", "OTLP encode", "unsupported fixture scope %q", a.Scope)
+		}
+	}
+	wire, err := proto.MarshalOptions{Deterministic: true}.Marshal(otlp)
+	if err != nil {
+		return nil, nil, err
+	}
+	return otlp, wire, nil
 }

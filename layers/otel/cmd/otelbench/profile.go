@@ -26,7 +26,7 @@ func (p *profileFlags) register(flags *flag.FlagSet) {
 	flags.StringVar(&p.block, "blockprofile", "", "write a goroutine blocking profile of the profiling window to this new file")
 	flags.StringVar(&p.mutex, "mutexprofile", "", "write a mutex contention profile of the profiling window to this new file")
 	flags.StringVar(&p.trace, "trace", "", "write a Go execution trace of the profiling window to this new file (go tool trace)")
-	flags.DurationVar(&p.start, "profile-start", 0, "start of the profiling window after the run starts; collector-bench defaults to --warmup")
+	flags.DurationVar(&p.start, "profile-start", 0, "start of the profiling window after the run starts; collector-bench defaults to --warmup (0 with --query-only)")
 	flags.DurationVar(&p.duration, "profile-duration", 0, "length of the profiling window; 0 lasts until the run ends")
 	flags.IntVar(&p.blockRate, "blockprofilerate", 10000, "with --blockprofile, sample one blocking event per this many nanoseconds blocked (runtime.SetBlockProfileRate)")
 	flags.IntVar(&p.mutexFraction, "mutexprofilefraction", 100, "with --mutexprofile, sample one in this many mutex contention events (runtime.SetMutexProfileFraction)")

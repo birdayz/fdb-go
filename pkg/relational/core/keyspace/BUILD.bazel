@@ -21,10 +21,14 @@ go_test(
     srcs = [
         "domains_test.go",
         "keyspace_test.go",
+        "resolved_schema_subspace_test.go",
     ],
     embed = [":keyspace"],
     deps = [
+        "//pkg/dst",
         "//pkg/fdbgo/fdb/subspace",
+        "//pkg/recordlayer",
         "//pkg/relational/api",
+        "//pkg/simfdb",
     ],
 )

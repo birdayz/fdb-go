@@ -280,7 +280,7 @@ func TestCHPublicOwnershipGuards(t *testing.T) {
 	mutations := map[string]func(*Manifest){
 		"tool": func(m *Manifest) { m.Tool += "_other" }, "run": func(m *Manifest) { m.Run += "_other" },
 		"corpus": func(m *Manifest) { m.Corpus += "_other" }, "order": func(m *Manifest) { m.Order = "time" },
-		"hash_bytes": func(m *Manifest) { m.HashBytes-- }, "backend": func(m *Manifest) { m.Backend = "ch-attrs" },
+		"backend": func(m *Manifest) { m.Backend = "ch-attrs" },
 		"loading": func(m *Manifest) { m.State = "loading" },
 		"missing": nil, "malformed": nil,
 	}

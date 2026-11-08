@@ -67,8 +67,8 @@ type ExecutionStats struct {
 	// retry, on the same basis as RecordsScanned.
 	BytesScanned int64
 	// Pages is the number of page fetches this statement performed. Each page
-	// is its own transaction in auto-commit, so this is also the auto-commit
-	// transaction count before retries.
+	// is its own transaction in auto-commit (the first shares the statement's
+	// planning transaction when it starts within statementReadMaxAge).
 	Pages int
 	// Retries is the number of transaction attempts beyond the first, summed
 	// over all pages. An explicit SQL transaction is never retried

@@ -19,24 +19,32 @@ def plan():
                  source_revision="a" * 40, first_epoch=1000, deadline_epoch=8200,
                  controller_cidr="192.0.2.1/32", hcloud="/private/hcloud", controller_public_key="/private/key.pub",
                  controller_private_key="/private/key", source_root="/private/source",
-                 storage_options=dict(record_compression="brotli-4", posting_value_format="tuple",
-                                      bulk_index_conflicts=True, hash_bytes=8))
+                 storage_options=dict(record_compression="zlib-1", bulk_index_conflicts=True))
     for key in p.ASSETS:
         value[key] = "/private/" + key
         value["input_manifest_sha256" if key == "source_manifest" else key + "_sha256"] = "b" * 64
     return value
 
 
+# One-tenant OTEL_V1 audit keys of the fixture corpus (sqlbackend receipts: 11 KV per span).
+CENSUS = {count: dict(records=count, SPANS_STR_ATTR=strs, SPANS_INT_ATTR=ints, SPANS_SPAN_ID=count,
+                      SPANS_TIME=count, store_0=1, owned_total=11 * count + 1)
+          for count, strs, ints in ((100000, 667000, 133000), (375000, 2501250, 498750),
+                                    (1000000, 6670000, 1330000))}
+
+
 def evidence(mode="ingest", count=100000):
-    config = dict(run="prof20k9000", backend="fdb", count=count, tenants=1, attributes=8, seed=283,
-                  match_every=100, batch=32, save_mode="batch", workers=4, diagnostics=True, tenant=0, k=100,
-                  max_candidates=2000000, max_bytes=268435456, order="time", **plan()["storage_options"])
-    value = dict(tool="otelbench-v2", backend="fdb", revision="a" * 40, failures=0, mode=mode, config=config,
+    config = dict(run="prof20k9000", backend="sql", count=count, tenants=1, attributes=8, seed=283,
+                  match_every=100, batch=32, save_mode="batch", workers=4, tenant=0, k=100,
+                  max_candidates=2000000, max_bytes=268435456, order="trace", **plan()["storage_options"])
+    value = dict(tool="otelbench-v2", backend="sql", revision="a" * 40, failures=0, mode=mode, config=config,
                  stats=dict(rows=count, attributes=count * 8))
+    if mode == "ingest":
+        value["stats"]["details"] = dict(ingest="OTEL_V1 tenant schema stores; direct", write_path="otel.SpanWriter",
+                                         committed_batches=str(-(-count // 32)), save_mode="batch", workers="4",
+                                         record_compression="zlib-1")
     if mode == "audit":
-        value["stats"]["structures"] = {k: dict(keys=v) for k, v in
-            dict(records=100000, eq_secondary=800000, span_id_v2=100000, span_time_v2=100000,
-                 owned_total=1100002, eq_primary=0).items()}
+        value["stats"]["structures"] = {k: dict(keys=v) for k, v in CENSUS[100000].items()}
     if mode == "query":
         value.update(suite="all", samples=[dict(iteration=i, **{"class": p.CLASSES[i % 16]}, ns=1,
                                                result_digest="c" * 64) for i in range(1600)])
@@ -340,7 +348,11 @@ class PolicyTests(unittest.TestCase):
                 with self.assertRaises(ValueError): p.validate_plan(value, check_assets=False)
 
     def test_storage_requires_all_typed_keys(self):
-        for change in ({"bulk_index_conflicts": 1}, {"hash_bytes": True}, {"record_compression": "zstd"}):
+        self.assertEqual(p.storage(dict(record_compression="zlib-1", bulk_index_conflicts=False)),
+                         dict(record_compression="zlib-1", bulk_index_conflicts=False))
+        # The removed custom-store layout keys are unknown, not ignored.
+        for change in ({"bulk_index_conflicts": 1}, {"hash_bytes": 8}, {"posting_value_format": "tuple"},
+                       {"record_compression": "zstd"}, {"record_compression": "none"}, {"record_compression": "brotli-4"}):
             value = plan()["storage_options"]; value.update(change)
             with self.assertRaises(ValueError): p.storage(value)
         value = plan()["storage_options"]; del value["bulk_index_conflicts"]
@@ -413,6 +425,16 @@ class PolicyTests(unittest.TestCase):
     def test_evidence_never_substitutes_missing_or_false_profile(self):
         for key in plan()["storage_options"]:
             value = evidence(); del value["config"][key]
+            with self.assertRaises(ValueError): p.evidence(value, plan(), "prof20k9000", 100000, "ingest")
+        # Only a false bulk_index_conflicts may be omitted, as Go's omitempty does.
+        unbulked = plan(); unbulked["storage_options"]["bulk_index_conflicts"] = False
+        value = evidence(); del value["config"]["bulk_index_conflicts"]
+        self.assertTrue(p.evidence(value, unbulked, "prof20k9000", 100000, "ingest"))
+        for bad in (True, 0, None):
+            value["config"]["bulk_index_conflicts"] = bad
+            with self.assertRaises(ValueError): p.evidence(value, unbulked, "prof20k9000", 100000, "ingest")
+        for details in (None, {}, dict(evidence()["stats"]["details"], write_path="sqlbackend")):
+            value = evidence(); value["stats"]["details"] = details
             with self.assertRaises(ValueError): p.evidence(value, plan(), "prof20k9000", 100000, "ingest")
         for error in (False, 0, None, "failed"):
             value = evidence(); value["error"] = error
@@ -640,9 +662,16 @@ class RuntimeTests(unittest.TestCase):
     def test_explicit_false_argv_no_global_guard_relaxation(self):
         grant = dict(binary="/bin/otel", cluster_file="/cluster", run="prof20k9000", count=1000000, batch=32,
                      workers=4, source_revision="a" * 40, work="/work",
-                     storage_options=dict(record_compression="none", posting_value_format="json",
-                                          bulk_index_conflicts=False, hash_bytes=32))
+                     storage_options=dict(record_compression="zlib-1", bulk_index_conflicts=False))
         argv = d.app_argv(grant, "ingest")
+        # The Exporter's relational write (SpanWriter) and read (direct scan) paths.
+        self.assertEqual(argv, ["/bin/otel", "--backend", "sql", "--sql-ingest", "direct", "--sql-rows", "compiled",
+                                "--sql-query", "direct", "--cluster-file", "/cluster",
+                                "--run", "prof20k9000", "--seed", "283", "--count", "1000000", "--tenants", "1",
+                                "--attrs", "8", "--match-every", "100", "--batch", "32", "--save-mode", "batch",
+                                "--workers", "4", "--k", "100", "--max-candidates", "2000000", "--max-bytes", "268435456",
+                                "--revision", "a" * 40, "--record-compression", "zlib-1", "--bulk-index-conflicts=false",
+                                "--mode", "ingest", "--timeout", "300s", "--output", "/work/ingest.json"])
         self.assertIn("--bulk-index-conflicts=false", argv)
         self.assertEqual(argv[argv.index("--timeout") + 1], "300s")
         self.assertEqual(argv[argv.index("--count") + 1], "1000000")

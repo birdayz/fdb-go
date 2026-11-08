@@ -214,7 +214,8 @@ func drainDistinctProofRows(t *testing.T, rows *sql.Rows) []string {
 // it is why "the transition arrived after we planned" is not a wrong-rows hazard
 // for an in-transaction statement. It replaces an assertion that this shape
 // raises 40001, which was written while the proof was drawn in AUTO-COMMIT —
-// where planning and each page are separate transactions and the hazard is real.
+// where each later page, and a first page past the statement-read age bound
+// (embedded/statement_read.go), runs apart from planning and the hazard is real.
 //
 // It is NOT vacuous: the plan asserted below carries `narrowed-by:U_EMAIL`, so
 // the statement genuinely holds a proof-only dependency on the index being

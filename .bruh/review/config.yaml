@@ -6,3 +6,8 @@ ignore:
   - "pkg/relational/api/apimock/mocks_*.go"
   - "**/*.pb.go"
   - "third_party/**"
+  # Raw benchmark receipts (JSON evidence, logs, patches); the docs/benchmarks
+  # *.md files that cite them are reviewed.
+  - "docs/benchmarks/*/**"
+  # Binary golden fixtures; the golden tests that pin them are reviewed.
+  - "**/*.binpb"

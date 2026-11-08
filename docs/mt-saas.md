@@ -400,7 +400,10 @@ resumed by a new request starts a fresh deadline (`EmbeddedConnection.statementT
 attempts and explicit `BeginTx` transactions (`pkg/relational/core/embedded/connection.go`):
 `-1` inherits the database default, `0` disables the timeout, and a positive value sets a cap.
 FDB error 1031 maps to `ErrCodeTransactionTimeout` / `53F00`. The budget restarts only when a fresh
-backend transaction is created, such as a runner retry or an auto-commit SELECT page. Explicit
+backend transaction is created, such as a runner retry or an auto-commit SELECT page after the first.
+An auto-commit SELECT's catalog read, planning and first page share one transaction, and so one
+budget, when the first page starts within 250 ms of the statement's first read
+(`pkg/relational/core/embedded/statement_read.go`); a 1031 there is not retried. Explicit
 transactions share one budget across statements and pages; atomic auto-commit DML also reuses one
 transaction across its pages (`cascades_generator.go`, `paginatingRows.tx`). Retain the statement
 timeout for a bound spanning fresh page transactions. See also

@@ -38,6 +38,10 @@ generate: ensure-buf generate-mocks generate-parser generate-fdb generate-cli-ex
     rm -rf gen/
     .tools/buf generate
     bazelisk run //:gazelle
+    # genotelv1 builds against gen/, so it runs once gazelle has given gen/
+    # its BUILD files.
+    just generate-otelv1
+    bazelisk run //:gazelle
 
 # Regenerate protobuf code for the `fdb` CLI (its own buf.yaml under cmd/fdb/).
 # Output goes to cmd/fdb/gen/, consumed by the CLI only — never by the library
@@ -45,6 +49,16 @@ generate: ensure-buf generate-mocks generate-parser generate-fdb generate-cli-ex
 generate-fdb: ensure-buf
     rm -rf cmd/fdb/gen/
     cd cmd/fdb && ../../.tools/buf generate
+
+# Regenerate the compiled OTEL_V1 record types (layers/otel/otelsql/otelv1pb)
+# from otelsql.TemplateBody, formatted as `just fmt` formats it; the drift test
+# fails until this runs after a template change.
+generate-otelv1:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    GOFUMPT=$(bazelisk run --run_under="echo" @cc_mvdan_gofumpt//:gofumpt 2>/dev/null)
+    bazelisk run //layers/otel/otelsql/cmd/genotelv1 -- "$PWD/layers/otel/otelsql/otelv1pb"
+    "$GOFUMPT" -w layers/otel/otelsql/otelv1pb/*.go
 
 # Sync the website's standalone annotated-proto example and source archive.
 generate-cli-example:

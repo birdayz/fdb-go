@@ -4,8 +4,9 @@ package embedded
 // collision, open question 4.
 //
 // Decision 10: fetchPage used to rebuild the whole record store on EVERY page.
-// That is free in auto-commit — each page is its own transaction and the store
-// must be rebuilt anyway — and stops being free the moment pages share one
+// That is free in auto-commit — each page after the first is its own
+// transaction and the store must be rebuilt anyway (the first reuses the
+// planner's, statement_read.go) — and stops being free the moment pages share one
 // transaction, because each Open() reads the store header out of the same
 // 5-second window the query is competing for. Java caches one store per
 // transaction (RecordLayerSchema.java:98-108) and so does this.

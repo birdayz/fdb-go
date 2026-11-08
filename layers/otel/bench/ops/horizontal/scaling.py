@@ -80,20 +80,15 @@ def producer_grant(value):
 def validate_ingest(evidence, count):
     p.require(type(count) is int and count in (100000, 375000), "fixed scaling committed row population")
     p.require(type(evidence) is dict and type(evidence.get("stats")) is dict
-              and type(evidence["stats"].get("diagnostics")) is dict, "complete source diagnostics required")
-    diagnostics = evidence["stats"]["diagnostics"]
-    committed = diagnostics.get("committed_rows")
+              and type(evidence["stats"].get("details")) is dict, "complete source ingest details required")
+    stats, details = evidence["stats"], evidence["stats"]["details"]
+    # sqlbackend has no separate committed-row counter: any failed batch fails the whole ingest.
+    committed = stats.get("rows")
     p.require(type(committed) is int and committed == count, "all complete committed ACK populations required")
-    p.require(p.integer(diagnostics.get("committed_batches"), 1), "nonempty committed source batches required")
-    phases = diagnostics.get("phase_latencies")
-    p.require(type(phases) is dict, "complete nonzero source phase diagnostics required")
-    for key in ("open", "save", "commit", "run"):
-        phase = phases.get(key)
-        p.require(type(phase) is dict and all(p.integer(phase.get(field), 1) for field in
-                  ("count", "min_nanos", "max_nanos", "total_nanos"))
-                  and phase["min_nanos"] <= phase["max_nanos"] <= phase["total_nanos"]
-                  and phase["count"] * phase["min_nanos"] <= phase["total_nanos"] <= phase["count"] * phase["max_nanos"],
-                  "complete nonzero source phase diagnostics required: " + key)
+    batches = details.get("committed_batches")
+    p.require(type(batches) is str and batches.isascii() and batches.isdigit() and str(int(batches)) == batches
+              and int(batches) >= 1, "nonempty committed source batches required")
+    p.require(details.get("write_path") == "otel.SpanWriter", "Exporter SpanWriter source path required")
     return True
 
 

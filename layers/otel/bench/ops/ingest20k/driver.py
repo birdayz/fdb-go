@@ -744,13 +744,10 @@ def run(args):
             write(out / "active-phase.json", {"stage": name, "sha256": p.sha(file)}, exclusive=False)
             return time.monotonic() + cap
 
-        common = [request["binary"], "--backend", "fdb", "--order", "time", "--cluster-file", str(HERE / "fdb.cluster.seed"), "--run", P["run"], "--seed", "283", "--count", str(approval["count"]), "--tenants", "1", "--attrs", "8", "--match-every", "100", "--batch", str(approval["batch"]), "--save-mode", "batch", "--workers", str(approval["workers"]), "--diagnostics", "--k", "100", "--max-candidates", "2000000", "--max-bytes", "268435456", "--revision", approval["source_revision"]]
-        if runtime.storage_options is not None:
-            storage = runtime.storage_options
-            common += ["--record-compression", storage["record_compression"],
-                       "--posting-value-format", storage["posting_value_format"],
-                       "--bulk-index-conflicts=" + str(storage["bulk_index_conflicts"]).lower(),
-                       "--hash-bytes", str(storage["hash_bytes"])]
+        common = [request["binary"], "--backend", "sql", "--sql-ingest", "direct", "--sql-rows", "compiled", "--sql-query", "direct", "--cluster-file", str(HERE / "fdb.cluster.seed"), "--run", P["run"], "--seed", "283", "--count", str(approval["count"]), "--tenants", "1", "--attrs", "8", "--match-every", "100", "--batch", str(approval["batch"]), "--save-mode", "batch", "--workers", str(approval["workers"]), "--k", "100", "--max-candidates", "2000000", "--max-bytes", "268435456", "--revision", approval["source_revision"]]
+        storage = runtime.storage_options if runtime.storage_options is not None else p.DEFAULT_STORAGE
+        common += ["--record-compression", storage["record_compression"],
+                   "--bulk-index-conflicts=" + str(storage["bulk_index_conflicts"]).lower()]
         for name, mode, cap in (("load", "ingest", 300), ("drain", None, 300), ("census", "audit", 120), ("oracle", "query", 120)):
             end = stage(name, cap)
             if mode is None:

@@ -94,7 +94,7 @@ var _ = Describe("IndexBugVerify", func() {
 
 	// Bug 2: COUNT_NOT_NULL with NestingKeyExpression — must detect null nested
 	// fields. These specs drive a real SaveRecord, so they exercise the live
-	// maintainer path (evaluateGroupingKeysNotNull), which decides nullness by
+	// maintainer path (evaluateCountedEntriesNotNull), which decides nullness by
 	// EVALUATING the key expression rather than by walking the proto structurally.
 	Describe("COUNT_NOT_NULL with nested field null detection", func() {
 		It("skips counting when nested field is null (flower unset)", func() {

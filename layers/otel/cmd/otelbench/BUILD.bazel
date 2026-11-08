@@ -17,6 +17,7 @@ go_library(
     deps = [
         "//layers/otel",
         "//layers/otel/collector",
+        "//layers/otel/sqlbackend",
     ],
 )
 
@@ -32,5 +33,6 @@ go_test(
     deps = [
         "//layers/otel",
         "//layers/otel/collector",
+        "//layers/otel/sqlbackend",
     ],
 )

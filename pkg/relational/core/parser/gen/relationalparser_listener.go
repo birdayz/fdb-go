@@ -136,6 +136,12 @@ type RelationalParserListener interface {
 	// EnterVectorIndexOptions is called when entering the vectorIndexOptions production.
 	EnterVectorIndexOptions(c *VectorIndexOptionsContext)
 
+	// EnterTextIndexOptions is called when entering the textIndexOptions production.
+	EnterTextIndexOptions(c *TextIndexOptionsContext)
+
+	// EnterTextIndexOption is called when entering the textIndexOption production.
+	EnterTextIndexOption(c *TextIndexOptionContext)
+
 	// EnterVectorIndexOption is called when entering the vectorIndexOption production.
 	EnterVectorIndexOption(c *VectorIndexOptionContext)
 
@@ -987,6 +993,12 @@ type RelationalParserListener interface {
 
 	// ExitVectorIndexOptions is called when exiting the vectorIndexOptions production.
 	ExitVectorIndexOptions(c *VectorIndexOptionsContext)
+
+	// ExitTextIndexOptions is called when exiting the textIndexOptions production.
+	ExitTextIndexOptions(c *TextIndexOptionsContext)
+
+	// ExitTextIndexOption is called when exiting the textIndexOption production.
+	ExitTextIndexOption(c *TextIndexOptionContext)
 
 	// ExitVectorIndexOption is called when exiting the vectorIndexOption production.
 	ExitVectorIndexOption(c *VectorIndexOptionContext)

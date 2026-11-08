@@ -1,0 +1,86 @@
+{
+  "tool": "otelbench-v2",
+  "backend": "fdb",
+  "mode": "audit",
+  "suite": "selective",
+  "revision": "unrecorded",
+  "go": "go1.27.3",
+  "config": {
+    "run": "g2a1107_fdbp_3",
+    "backend": "fdb",
+    "seed": 283,
+    "count": 50000,
+    "tenants": 10,
+    "attributes": 8,
+    "match_every": 100,
+    "batch": 32,
+    "save_mode": "batch",
+    "record_compression": "brotli-4",
+    "posting_value_format": "tuple",
+    "bulk_index_conflicts": true,
+    "workers": 8,
+    "diagnostics": false,
+    "ch_batch": 8192,
+    "ch_batch_bytes": 8388608,
+    "ch_index_granularity": 8192,
+    "ch_query_transport": "http",
+    "tenant": 0,
+    "k": 100,
+    "iterations": 20,
+    "max_candidates": 20000,
+    "max_bytes": 4194304,
+    "hash_bytes": 8,
+    "order": "time"
+  },
+  "corpus_fingerprint": "3dd3cb10b91329acbca1a824af7bdd58387b53484fe71009d75cffafe086107f",
+  "start_utc": "2026-11-07T15:31:11.92097027Z",
+  "wall_ns": 22119738433,
+  "stats": {
+    "rows": 50000,
+    "attributes": 400000,
+    "logical_payload_bytes": 0,
+    "structures": {
+      "eq_primary": {
+        "keys": 0,
+        "key_bytes": 0,
+        "value_bytes": 0
+      },
+      "eq_secondary": {
+        "keys": 400000,
+        "key_bytes": 46363155,
+        "value_bytes": 23399860,
+        "prefix_bytes": 47787613
+      },
+      "owned_total": {
+        "keys": 550002,
+        "key_bytes": 56798204,
+        "value_bytes": 43252259,
+        "prefix_bytes": 75051655
+      },
+      "records": {
+        "keys": 50000,
+        "key_bytes": 3145000,
+        "value_bytes": 19852111,
+        "prefix_bytes": 21546343
+      },
+      "span_id_v2": {
+        "keys": 50000,
+        "key_bytes": 3645000,
+        "value_bytes": 0,
+        "prefix_bytes": 2879767
+      },
+      "span_time_v2": {
+        "keys": 50000,
+        "key_bytes": 3645000,
+        "value_bytes": 0,
+        "prefix_bytes": 2837624
+      }
+    },
+    "details": {
+      "consistency": "immutable corpus only; no concurrent mutation audit",
+      "storage": "FDB logical KV bytes; replication/logs/engine compression excluded"
+    }
+  },
+  "failures": 0,
+  "boundary": "fixture V2 immutable synthetic spans; local closed-loop diagnostic, not SLO/HA/production evidence; typed scoped equality, complete trace, standalone span ID, intrinsic half-open time; synthetic ID/response uniqueness is not a provider or semconv guarantee; ClickHouse ownership checks and data queries use the selected transport, HTTP JSON or native typed transport; DDL, ingest, storage audit and EXPLAIN remain HTTP; transport arms are not protocol-cost-equivalent"
+}

@@ -134,20 +134,62 @@ var (
 
 // UnmarshalYAML starts from the factory defaults, rejects unknown keys, and
 // decodes the flattened otel.ExporterConfig keys alongside the queue settings.
+// A key the relational store removed (order, hash_bytes,
+// posting_value_format) is refused as removed rather than unknown.
 func (c *Config) UnmarshalYAML(node *yaml.Node) error {
-	if err := checkKeys(node, ComponentType, configTypes...); err != nil {
-		return err
-	}
 	type plain Config
 	p := plain(defaultConfig())
+	if err := checkKeys(node, ComponentType, configTypes...); err != nil {
+		if removed := removedExporterKey(node); removed != nil {
+			return removed
+		}
+		return err
+	}
 	if err := node.Decode(&p); err != nil {
 		return err
 	}
-	if err := node.Decode(&p.Exporter); err != nil {
+	if err := exporterBody(node).Decode(&p.Exporter); err != nil {
 		return err
 	}
 	*c = Config(p)
 	return nil
+}
+
+// removedExporterKey is otel.ExporterConfig's refusal of a key the
+// relational store removed, or nil when the flattened body names none.
+func removedExporterKey(node *yaml.Node) error {
+	var scratch otel.ExporterConfig
+	var removed *otel.RemovedConfigKeyError
+	if err := exporterBody(node).Decode(&scratch); errors.As(err, &removed) {
+		return err
+	}
+	return nil
+}
+
+// exporterBody is node without Config's own keys: the flattened
+// otel.ExporterConfig body.
+func exporterBody(node *yaml.Node) *yaml.Node {
+	if node.Kind == yaml.AliasNode {
+		node = node.Alias
+	}
+	if node.Kind != yaml.MappingNode {
+		return node
+	}
+	own := map[string]bool{}
+	t := reflect.TypeOf(Config{})
+	for i := range t.NumField() {
+		if name, _, _ := strings.Cut(t.Field(i).Tag.Get("yaml"), ","); name != "" && name != "-" {
+			own[name] = true
+		}
+	}
+	out := *node
+	out.Content = nil
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if !own[node.Content[i].Value] {
+			out.Content = append(out.Content, node.Content[i], node.Content[i+1])
+		}
+	}
+	return &out
 }
 
 // Validate checks the FDB exporter settings and the queue/retry bounds.

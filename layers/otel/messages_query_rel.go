@@ -1,0 +1,1097 @@
+package otel
+
+// Message full-text queries on a tenant store (rfcs/relational-exporter-migration.md
+// §1.5, §3.2): MESSAGES_TEXT matches, across parts through MESSAGES_LARGE for
+// "all", then MESSAGE_TRACES markers name each match's traces and the traces'
+// SPANS_REF_CHUNKS entries name the referencing spans. Every read is charged
+// to the query's budget; one page is one snapshot.
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"slices"
+	"sort"
+	"sync"
+
+	"fdb.dev/layers/otel/otelsql"
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer"
+)
+
+// relMessageQueryPlan is a validated message query: the storage-free plan of
+// its text, role, attribute, window and limit, and its typed same-span
+// predicates (D1).
+type relMessageQueryPlan struct {
+	base  *messageQueryPlan
+	attrs []relAttr
+	// digest binds the base plan and the predicate set.
+	digest []byte
+}
+
+func newRelMessageQueryPlan(op string, q MessageFullTextQuery, k int) (*relMessageQueryPlan, error) {
+	if len(q.Predicates) > maxQueryPredicates {
+		return nil, failf("config", op, "expected at most %d predicates", maxQueryPredicates)
+	}
+	preds := uniqueAttributes(q.Predicates)
+	q.Predicates = nil
+	base, err := newMessageQueryPlan(op, q, k)
+	if err != nil {
+		return nil, err
+	}
+	p := &relMessageQueryPlan{base: base, attrs: make([]relAttr, len(preds))}
+	for i, a := range preds {
+		if p.attrs[i], err = newRelAttr(op, a, "resource", "scope", "span"); err != nil {
+			return nil, err
+		}
+		if err := checkMessageAttributeQuery(op, a, true); err != nil {
+			return nil, err
+		}
+	}
+	h := sha256.New()
+	h.Write(base.digest)
+	h.Write(queryDigest(messageContinuationKind, preds, base.window))
+	p.digest = h.Sum(nil)
+	return p, nil
+}
+
+// relMessageRefKey is a hit's sort key and a message_fts token's last:
+// (start_ns, trace_id, span_id, attribute key, writer, seq). Hits are in
+// index order, start, trace and span descending (D3), then attribute key and
+// message ID ascending.
+type relMessageRefKey struct {
+	start       int64
+	trace, span []byte
+	attr        string
+	id          messageID
+}
+
+func (k relMessageRefKey) pack() []byte {
+	return tuple.Tuple{k.start, k.trace, k.span, k.attr, k.id.writer, k.id.seq}.Pack()
+}
+
+// before reports whether k sorts before o.
+func (k relMessageRefKey) before(o relMessageRefKey) bool {
+	if k.start != o.start {
+		return k.start > o.start
+	}
+	if c := bytes.Compare(k.trace, o.trace); c != 0 {
+		return c > 0
+	}
+	if c := bytes.Compare(k.span, o.span); c != 0 {
+		return c > 0
+	}
+	if k.attr != o.attr {
+		return k.attr < o.attr
+	}
+	return k.id.less(o.id)
+}
+
+// parseRelMessageRefKey validates an authenticated token's sort key.
+func parseRelMessageRefKey(raw []byte) (relMessageRefKey, error) {
+	bad := fail("corruption", "continuation", "malformed message continuation sort key")
+	t, err := tuple.Unpack(raw)
+	if err != nil || len(t) != 6 {
+		return relMessageRefKey{}, bad
+	}
+	start, sok := t[0].(int64)
+	trace, tok := t[1].([]byte)
+	span, pok := t[2].([]byte)
+	attr, aok := t[3].(string)
+	writer, wok := t[4].(int64)
+	seq, qok := t[5].(int64)
+	k := relMessageRefKey{start, trace, span, attr, messageID{writer, seq}}
+	if !sok || !tok || !pok || !aok || !wok || !qok || start < 0 || len(trace) != 16 || zeroID(trace) || len(span) != 8 || zeroID(span) ||
+		messageAttributeCode(attr) <= 0 || !k.id.valid() {
+		return relMessageRefKey{}, bad
+	}
+	return k, nil
+}
+
+// QueryMessageFullText returns one snapshot page of message hits, one per
+// (span, attribute, message), in relMessageRefKey order. A full page carries
+// a signed message_fts continuation; the next page may be empty.
+func (r *SpanReader) QueryMessageFullText(ctx context.Context, q MessageFullTextQuery) (MessageFullTextPage, error) {
+	const op = "message full-text query"
+	empty := func() MessageFullTextPage { return MessageFullTextPage{Hits: []MessageSpanHit{}} }
+	page := empty()
+	if r.cfg.Messages != messagesFullText {
+		return page, fail("config", op, "message text is not indexed in this store's layout")
+	}
+	plan, err := newRelMessageQueryPlan(op, q, r.cfg.K)
+	if err != nil {
+		return page, err
+	}
+	var token *relContinuation
+	if len(q.Continuation) > 0 {
+		if token, err = parseRelContinuation(q.Continuation, messageContinuationKind); err != nil {
+			return page, err
+		}
+	}
+	var secret []byte
+	var last relMessageRefKey
+	work := newQueryWork(r.cfg)
+	err = r.store.read(ctx, op, func(store *recordlayer.FDBRecordStore) error {
+		page, work, secret = empty(), newQueryWork(r.cfg), nil
+		var resume *relMessageRefKey
+		var err error
+		if token != nil {
+			if secret, err = r.loadContinuationKey(store); err != nil {
+				return err
+			}
+			if err := token.authenticate(secret, r.store, plan.digest); err != nil {
+				return err
+			}
+			k, err := parseRelMessageRefKey(token.last)
+			if err != nil {
+				return err
+			}
+			resume = &k
+		}
+		if page.ReadVersion, err = store.Context().GetReadVersion(); err != nil {
+			return err
+		}
+		err = r.runMessageQuery(ctx, store, plan, resume, timeWindow{}, plan.base.limit, work, func(h MessageSpanHit, k relMessageRefKey) {
+			page.Hits = append(page.Hits, h)
+			last = k
+		})
+		if err == nil && len(page.Hits) == plan.base.limit && secret == nil {
+			secret, err = r.loadContinuationKey(store)
+		}
+		return err
+	})
+	page.Candidates, page.Bytes = work.candidates, work.bytes
+	if err != nil || len(page.Hits) < plan.base.limit {
+		return page, err
+	}
+	if len(secret) == 0 {
+		if secret, err = r.ensureContinuationKey(ctx); err != nil {
+			return page, err
+		}
+	}
+	page.Continuation = signRelContinuation(secret, messageContinuationKind, r.store.databasePath, r.store.schema, plan.digest, last.pack())
+	return page, nil
+}
+
+// messageClause is an existential message clause: every hit of its query
+// inside the window witnesses the hit's trace.
+type messageClause struct {
+	r    *SpanReader
+	plan *relMessageQueryPlan
+}
+
+func (c messageClause) scanWitnesses(ctx context.Context, store *recordlayer.FDBRecordStore, w timeWindow, work *queryWork, visit func(string, MessageSpanHit)) error {
+	return c.r.runMessageQuery(ctx, store, c.plan, nil, w, 0, work, func(h MessageSpanHit, _ relMessageRefKey) { visit(h.Trace, h) })
+}
+
+// relMessageCandidate is one matching message and the role group it matched in.
+type relMessageCandidate struct {
+	id   messageID
+	role string
+}
+
+// relMessageRef is one (span, attribute, message) reference of a match.
+type relMessageRef struct {
+	cand     *relMessageCandidate
+	key      relMessageRefKey
+	ordinals []int
+}
+
+func (ref relMessageRef) hit() MessageSpanHit {
+	return MessageSpanHit{
+		Trace:        hex.EncodeToString(ref.key.trace),
+		Span:         hex.EncodeToString(ref.key.span),
+		Start:        ref.key.start,
+		AttributeKey: ref.key.attr,
+		Role:         ref.cand.role,
+		MessageID:    ref.cand.id.String(),
+		TurnOrdinals: append([]int(nil), ref.ordinals...),
+	}
+}
+
+// runMessageQuery emits plan's hits in sort-key order strictly after resume,
+// stopping after limit hits (0: unbounded); w further restricts start.
+func (r *SpanReader) runMessageQuery(ctx context.Context, store *recordlayer.FDBRecordStore, plan *relMessageQueryPlan, resume *relMessageRefKey, w timeWindow, limit int, work *queryWork, emit func(MessageSpanHit, relMessageRefKey)) error {
+	const op = "message full-text query"
+	w = intersectTimeWindows(plan.base.window, w)
+	if w.empty {
+		return nil
+	}
+	refs, err := r.messageRefs(ctx, store, plan, w, work)
+	if err != nil {
+		return err
+	}
+	if resume != nil {
+		refs = slices.DeleteFunc(refs, func(ref relMessageRef) bool { return !resume.before(ref.key) })
+	}
+	sort.Slice(refs, func(i, j int) bool { return refs[i].key.before(refs[j].key) })
+	var space []subspace.Subspace
+	if len(plan.attrs) > 0 {
+		space = make([]subspace.Subspace, len(plan.attrs))
+		for j, a := range plan.attrs {
+			idx, err := readableIndex(store, op, a.q.index)
+			if err != nil {
+				return err
+			}
+			space[j] = store.IndexSubspace(idx)
+		}
+	}
+	accepted := 0
+	for lo := 0; lo < len(refs); {
+		if err := canceled(ctx, op); err != nil {
+			return err
+		}
+		n := sameSpanProbeBatch
+		if limit > 0 {
+			n = min(n, limit-accepted)
+		}
+		batch := refs[lo:min(lo+n, len(refs))]
+		lo += len(batch)
+		var ok []bool
+		if len(plan.attrs) > 0 {
+			if ok, err = probeRelMessagePredicates(store, plan.attrs, space, batch, work); err != nil {
+				return err
+			}
+		}
+		for i, ref := range batch {
+			if ok != nil && !ok[i] {
+				continue
+			}
+			emit(ref.hit(), ref.key)
+			accepted++
+			if limit > 0 && accepted == limit {
+				return nil
+			}
+		}
+	}
+	return nil
+}
+
+// probeRelMessagePredicates checks every predicate on every distinct span
+// of the batch in one pipelined round of prefix probes of the span
+// attribute indexes, then verifies long strings on the survivors' records.
+func probeRelMessagePredicates(store *recordlayer.FDBRecordStore, attrs []relAttr, spaces []subspace.Subspace, batch []relMessageRef, work *queryWork) ([]bool, error) {
+	const op = "message predicate probe"
+	type span struct {
+		start       int64
+		trace, span string
+	}
+	index := map[span]int{}
+	var spans []relMessageRefKey
+	for _, ref := range batch {
+		k := span{ref.key.start, string(ref.key.trace), string(ref.key.span)}
+		if _, ok := index[k]; !ok {
+			index[k] = len(spans)
+			spans = append(spans, ref.key)
+		}
+	}
+	tx := store.Context().ReadTransaction(false)
+	probes := make([]fdb.RangeResult, 0, len(spans)*len(attrs))
+	for _, s := range spans {
+		for j, a := range attrs {
+			kr, err := fdb.PrefixRange(spaces[j].Pack(append(slices.Clip(a.prefix), s.start, s.trace, s.span)))
+			if err != nil {
+				return nil, err
+			}
+			probes = append(probes, tx.GetRange(kr, fdb.RangeOptions{Mode: fdb.StreamingModeWantAll}))
+		}
+	}
+	ok := make([]bool, len(spans))
+	var verify []int
+	var pks []tuple.Tuple
+	for i, s := range spans {
+		ok[i] = true
+		for j := range attrs {
+			rows, err := probes[i*len(attrs)+j].GetSliceWithError()
+			if err != nil {
+				return nil, err
+			}
+			for _, kv := range rows {
+				if err := work.charge(op, int64(len(kv.Key)+len(kv.Value))); err != nil {
+					return nil, err
+				}
+				if _, err := spaces[j].Unpack(kv.Key); err != nil {
+					return nil, wrap("corruption", op, err)
+				}
+			}
+			ok[i] = ok[i] && len(rows) > 0
+		}
+		if ok[i] && anyLong(attrs) {
+			pk, err := tableKey(store, op, spansRecordType, s.trace, s.span)
+			if err != nil {
+				return nil, err
+			}
+			verify = append(verify, i)
+			pks = append(pks, pk)
+		}
+	}
+	if len(verify) > 0 {
+		held, err := holdLongStrings(store, op, attrs, pks, work)
+		if err != nil {
+			return nil, err
+		}
+		for k, i := range verify {
+			ok[i] = held[k]
+		}
+	}
+	out := make([]bool, len(batch))
+	for i, ref := range batch {
+		out[i] = ok[index[span{ref.key.start, string(ref.key.trace), string(ref.key.span)}]]
+	}
+	return out, nil
+}
+
+// messageRefs follows the matching messages through their MESSAGE_TRACES
+// markers to their traces' SPANS_REF_CHUNKS entries, keeping the references
+// to a match inside w that pass the attribute and first-turn filters. Both
+// rounds read concurrently and load no span record.
+func (r *SpanReader) messageRefs(ctx context.Context, store *recordlayer.FDBRecordStore, plan *relMessageQueryPlan, w timeWindow, work *queryWork) ([]relMessageRef, error) {
+	const op = "message full-text query"
+	cands, err := matchMessages(ctx, store, plan.base, work)
+	if err != nil || len(cands) == 0 {
+		return nil, err
+	}
+	tx := store.Context().ReadTransaction(false)
+
+	// Round 1: the traces of each matching message.
+	byTrace := map[string]map[messageID]*relMessageCandidate{}
+	var traces [][]byte
+	if err := readMessageMarkers(ctx, store, tx, cands, work, func(c *relMessageCandidate, trace []byte) {
+		set := byTrace[string(trace)]
+		if set == nil {
+			set = map[messageID]*relMessageCandidate{}
+			byTrace[string(trace)] = set
+			traces = append(traces, trace)
+		}
+		set[c.id] = c
+	}); err != nil {
+		return nil, err
+	}
+
+	// Round 2: every span of those traces with its packed references.
+	idx, err := readableIndex(store, op, spansRefChunksIndex)
+	if err != nil {
+		return nil, err
+	}
+	space := store.IndexSubspace(idx)
+	sort.Slice(traces, func(i, j int) bool { return bytes.Compare(traces[i], traces[j]) < 0 })
+	ranges := make([]fdb.KeyRange, 0, len(traces))
+	for _, trace := range traces {
+		kr, err := fdb.PrefixRange(space.Pack(tuple.Tuple{trace}))
+		if err != nil {
+			return nil, err
+		}
+		ranges = append(ranges, kr)
+	}
+	// A span's entries are adjacent (its primary key is (trace_id,
+	// span_id)), so a reference split across its chunks is found among
+	// the current span's references.
+	type refID struct {
+		attr int64
+		id   messageID
+	}
+	var out []relMessageRef
+	at := map[refID]int{}
+	curTrace, curSpan := -1, []byte(nil)
+	badRef := fail("corruption", op, "malformed span reference index entry")
+	// Most references name other messages: the reader skips them without
+	// decoding their ordinals.
+	var refs otelsql.RefChunkReader
+	var elems [16]keyElem
+	_, err = relPipelinedRanges(ctx, tx, ranges, nil, work, func(i int, kv fdb.KeyValue) error {
+		// (trace_id, start_ns, span_id, chunk, refs) and the primary key.
+		k, err := unpackKey(space, kv.Key, elems[:0])
+		if err != nil || len(k) < 5 {
+			return badRef
+		}
+		trace, tok := k[0].bytes()
+		start, sok := k[1].int()
+		span, pok := k[2].bytes()
+		packed, rok := k[4].bytes()
+		if !tok || !sok || !pok || !rok || !bytes.Equal(trace, traces[i]) || len(span) != 8 || zeroID(span) {
+			return badRef
+		}
+		if !w.contains(start) {
+			return nil
+		}
+		if i != curTrace || !bytes.Equal(span, curSpan) {
+			curTrace, curSpan = i, span
+			clear(at)
+		}
+		set := byTrace[string(trace)]
+		for refs.Reset(packed); refs.Next(); {
+			ref := refs.Ref()
+			id := messageID{ref.Writer, ref.Seq}
+			c := set[id]
+			if c == nil || (plan.base.attribute > 0 && ref.Attribute != plan.base.attribute) || (plan.base.firstTurn && !ref.Newest) {
+				continue
+			}
+			// A reference whose ordinals outgrow a chunk continues in the
+			// next one (otelsql.PackRefChunks): one hit, all its ordinals.
+			rid := refID{ref.Attribute, id}
+			if j, ok := at[rid]; ok {
+				out[j].ordinals = refs.AppendOrdinals(out[j].ordinals)
+				continue
+			}
+			at[rid] = len(out)
+			out = append(out, relMessageRef{cand: c, key: relMessageRefKey{start, trace, span, messageAttributeKeys[ref.Attribute], id}, ordinals: refs.AppendOrdinals(nil)})
+		}
+		if err := refs.Err(); err != nil {
+			return typedError("corruption", op, "span reference chunk", err)
+		}
+		return nil
+	})
+	return out, err
+}
+
+// A marker range read spans the matching messages of one writer whose seqs
+// lie within markerGap of each other, reading the markers of the messages
+// between them too: a few more rows cost less than a request per message.
+// The read stops after markerSpanRows rows per message it spans, so other
+// messages' dense markers cost at most that before the matching messages
+// it did not reach are read one by one.
+const (
+	markerGap      = 32
+	markerSpanRows = 4
+)
+
+// readMessageMarkers calls visit with every MESSAGE_TRACES marker of cands,
+// which are sorted by ID: the candidate and the marker's trace.
+func readMessageMarkers(ctx context.Context, store *recordlayer.FDBRecordStore, tx fdb.ReadTransaction, cands []*relMessageCandidate, work *queryWork, visit func(*relMessageCandidate, []byte)) error {
+	const op = "message full-text query"
+	records := store.RecordsSubspace()
+	byID := make(map[messageID]*relMessageCandidate, len(cands))
+	for _, c := range cands {
+		byID[c.id] = c
+	}
+	// A run is cands[lo:hi]: one writer, consecutive seqs at most
+	// markerGap apart.
+	type run struct{ lo, hi int }
+	var runs []run
+	for i, c := range cands {
+		if n := len(runs); n > 0 {
+			prev := cands[i-1].id
+			if prev.writer == c.id.writer && c.id.seq-prev.seq <= markerGap+1 {
+				runs[n-1].hi = i + 1
+				continue
+			}
+		}
+		runs = append(runs, run{i, i + 1})
+	}
+	var prefixLen int
+	pkRange := func(first, last messageID) (fdb.KeyRange, error) {
+		lo, err := tableKey(store, op, messageTracesRecordType, first.writer, first.seq)
+		if err != nil {
+			return fdb.KeyRange{}, err
+		}
+		hi, err := tableKey(store, op, messageTracesRecordType, last.writer, last.seq)
+		if err != nil {
+			return fdb.KeyRange{}, err
+		}
+		prefixLen = len(lo)
+		begin, err := fdb.PrefixRange(records.Pack(lo))
+		if err != nil {
+			return fdb.KeyRange{}, err
+		}
+		end, err := fdb.PrefixRange(records.Pack(hi))
+		if err != nil {
+			return fdb.KeyRange{}, err
+		}
+		return fdb.KeyRange{Begin: begin.Begin, End: end.End}, nil
+	}
+	ranges := make([]fdb.KeyRange, len(runs))
+	limits := make([]int, len(runs))
+	for i, rn := range runs {
+		first, last := cands[rn.lo].id, cands[rn.hi-1].id
+		var err error
+		if ranges[i], err = pkRange(first, last); err != nil {
+			return err
+		}
+		if rn.hi-rn.lo > 1 {
+			limits[i] = int(last.seq-first.seq+1) * markerSpanRows
+		}
+	}
+	badMarker := fail("corruption", op, "malformed message trace record key")
+	// The furthest marker each run's read reached.
+	reached := make([]messageID, len(runs))
+	var elems [16]keyElem
+	read := func(i int, kv fdb.KeyValue, only *relMessageCandidate) error {
+		// The primary key (writer, seq, trace_id) and the record's split suffix.
+		t, err := unpackKey(records, kv.Key, elems[:0])
+		if err != nil || len(t) <= prefixLen {
+			return badMarker
+		}
+		writer, wok := t[prefixLen-2].int()
+		seq, sok := t[prefixLen-1].int()
+		trace, tok := t[prefixLen].bytes()
+		if !wok || !sok || !tok || len(trace) != 16 || zeroID(trace) {
+			return badMarker
+		}
+		id := messageID{writer, seq}
+		if only == nil {
+			reached[i] = id
+		}
+		if c := byID[id]; c != nil && (only == nil || c == only) {
+			visit(c, trace)
+		}
+		return nil
+	}
+	counts, err := relPipelinedRanges(ctx, tx, ranges, limits, work, func(i int, kv fdb.KeyValue) error { return read(i, kv, nil) })
+	if err != nil {
+		return err
+	}
+	// A read that stopped at its row cap left the matching messages from
+	// the one it reached on: read those one by one, the reached one again.
+	var rest []*relMessageCandidate
+	for i, rn := range runs {
+		if limits[i] == 0 || counts[i] < limits[i] {
+			continue
+		}
+		for _, c := range cands[rn.lo:rn.hi] {
+			if !c.id.less(reached[i]) {
+				rest = append(rest, c)
+			}
+		}
+	}
+	if len(rest) == 0 {
+		return nil
+	}
+	ranges = ranges[:0]
+	for _, c := range rest {
+		kr, err := pkRange(c.id, c.id)
+		if err != nil {
+			return err
+		}
+		ranges = append(ranges, kr)
+	}
+	_, err = relPipelinedRanges(ctx, tx, ranges, nil, work, func(i int, kv fdb.KeyValue) error { return read(i, kv, rest[i]) })
+	return err
+}
+
+// keyElem is one element of a key unpackKey decoded: an int64, a byte
+// string, or another tuple element.
+type keyElem struct {
+	kind  byte // 'i' int64, 'b' bytes, 'o' other
+	int64 int64
+	buf   []byte
+	other tuple.TupleElement
+}
+
+func (e keyElem) int() (int64, bool)    { return e.int64, e.kind == 'i' }
+func (e keyElem) bytes() ([]byte, bool) { return e.buf, e.kind == 'b' }
+
+// unpackKey is space.Unpack(key) appended to dst. It reads the byte strings
+// and ints of this store's keys in place, copying a byte string only to
+// unescape its zero bytes; a key holding any other element, or an int that
+// tuple.Unpack does not decode as an int64, is decoded by space.Unpack, so
+// both yield the same elements and errors.
+func unpackKey(space subspace.Subspace, key []byte, dst []keyElem) ([]keyElem, error) {
+	if out, ok := readKeyTuple(space.Bytes(), key, dst); ok {
+		return out, nil
+	}
+	t, err := space.Unpack(fdb.Key(key))
+	if err != nil {
+		return nil, err
+	}
+	out := dst[:0]
+	for _, el := range t {
+		switch v := el.(type) {
+		case int64:
+			out = append(out, keyElem{kind: 'i', int64: v})
+		case []byte:
+			out = append(out, keyElem{kind: 'b', buf: v})
+		default:
+			out = append(out, keyElem{kind: 'o', other: v})
+		}
+	}
+	return out, nil
+}
+
+// readKeyTuple decodes key below prefix if every element is a byte string or
+// an int of at most 7 bytes, or of 8 that tuple.Unpack reads as an int64.
+func readKeyTuple(prefix, key []byte, dst []keyElem) ([]keyElem, bool) {
+	if !bytes.HasPrefix(key, prefix) {
+		return nil, false
+	}
+	b, out := key[len(prefix):], dst[:0]
+	for pos := 0; pos < len(b); {
+		c := b[pos]
+		switch {
+		case c == 0x01:
+			v, next, ok := readKeyBytes(b, pos+1)
+			if !ok {
+				return nil, false
+			}
+			out, pos = append(out, keyElem{kind: 'b', buf: v}), next
+		case c >= 0x0d && c <= 0x1b:
+			// Ints of up to 7 bytes; tuple.Unpack decodes 8-byte ones as
+			// uint64 or big ints at the edges, so those take its path.
+			n := int(c) - 0x14
+			neg := n < 0
+			if neg {
+				n = -n
+			}
+			if pos+n >= len(b) && n > 0 {
+				return nil, false
+			}
+			var v int64
+			for _, d := range b[pos+1 : pos+1+n] {
+				v = v<<8 | int64(d)
+			}
+			switch {
+			case neg:
+				v -= 1<<(8*n) - 1
+			case n > 0 && v == 0:
+				// tuple.Unpack decodes this zero as uint64.
+				return nil, false
+			}
+			out, pos = append(out, keyElem{kind: 'i', int64: v}), pos+1+n
+		default:
+			return nil, false
+		}
+	}
+	return out, true
+}
+
+// readKeyBytes reads the byte string whose content starts at b[pos]: a
+// subslice of b, or a copy when it escapes zero bytes as 0x00 0xff.
+func readKeyBytes(b []byte, pos int) ([]byte, int, bool) {
+	var out []byte
+	for i := pos; ; {
+		j := bytes.IndexByte(b[i:], 0x00)
+		if j < 0 {
+			return nil, 0, false
+		}
+		j += i
+		if j+1 < len(b) && b[j+1] == 0xff {
+			if out == nil {
+				out = make([]byte, 0, len(b)-pos)
+			}
+			out, i = append(out, b[i:j+1]...), j+2
+			continue
+		}
+		if out == nil {
+			return b[pos:j:j], j + 1, true
+		}
+		return append(out, b[i:j]...), j + 1, true
+	}
+}
+
+// relPipelinedRanges reads up to messageRefReads ranges concurrently,
+// charging every row read and passing it to visit, and returns each range's
+// row count. A positive limits[i] caps range i's rows below the budget's.
+func relPipelinedRanges(ctx context.Context, tx fdb.ReadTransaction, ranges []fdb.KeyRange, limits []int, work *queryWork, visit func(i int, kv fdb.KeyValue) error) ([]int, error) {
+	const op = "message full-text query"
+	counts := make([]int, len(ranges))
+	for lo := 0; lo < len(ranges); lo += messageRefReads {
+		if err := canceled(ctx, op); err != nil {
+			return nil, err
+		}
+		hi := min(lo+messageRefReads, len(ranges))
+		// No range returns more rows than the budget has left.
+		budget := max(work.maxCandidates-work.candidates, 0) + 1
+		pending := make([]fdb.RangeResult, hi-lo)
+		for i := lo; i < hi; i++ {
+			limit := budget
+			if limits != nil && limits[i] > 0 {
+				limit = min(limit, limits[i])
+			}
+			pending[i-lo] = tx.GetRange(ranges[i], fdb.RangeOptions{Limit: limit, Mode: fdb.StreamingModeWantAll})
+		}
+		for i := lo; i < hi; i++ {
+			rows, err := pending[i-lo].GetSliceWithError()
+			if err != nil {
+				return nil, err
+			}
+			counts[i] = len(rows)
+			for _, kv := range rows {
+				if err := work.charge(op, int64(len(kv.Key)+len(kv.Value))); err != nil {
+					return nil, err
+				}
+				if err := visit(i, kv); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	return counts, nil
+}
+
+// textComparison is plan's TextScan comparison: its type and tokens, a
+// phrase's with "" at the positions of its stop words.
+func (plan *messageQueryPlan) textComparison() (recordlayer.TextComparisonType, []string) {
+	switch plan.mode {
+	case MessageMatchAny:
+		return recordlayer.TextContainsAny, plan.terms
+	case MessageMatchPhrase:
+		tokens := make([]string, plan.phrase[len(plan.phrase)-1].offset+1)
+		for _, pt := range plan.phrase {
+			tokens[pt.offset] = pt.term
+		}
+		return recordlayer.TextContainsPhrase, tokens
+	}
+	return recordlayer.TextContainsAll, plan.terms
+}
+
+// matchMessages returns the messages matching plan, by ID, with the role
+// group each matched in: one TextScan per (role, shard), the shards of a
+// role concurrently, and for "all" across parts one message-bounded scan
+// per term of every multipart message. Segments overlap by
+// messageSegmentOverlap tokens, so phrase and any matches are per part.
+func matchMessages(ctx context.Context, store *recordlayer.FDBRecordStore, plan *messageQueryPlan, work *queryWork) ([]*relMessageCandidate, error) {
+	const op = "message full-text query"
+	idx, err := readableIndex(store, op, messagesTextIndex)
+	if err != nil {
+		return nil, err
+	}
+	roles := []string{plan.role}
+	if plan.role == "" {
+		if roles, err = messageTextRoles(ctx, store, idx, work); err != nil {
+			return nil, err
+		}
+	}
+	typ, tokens := plan.textComparison()
+	// An "all" query of several terms also checks the multipart messages
+	// for terms in different parts.
+	spread := plan.mode == MessageMatchAll && len(plan.terms) > 1
+	var large []messageID
+	if spread {
+		if large, err = largeMessages(ctx, store, work); err != nil {
+			return nil, err
+		}
+	}
+	// The roles run concurrently; each may use the remaining budget, and
+	// their sum must fit it too.
+	found := make([][]messageID, len(roles))
+	subs := make([]queryWork, len(roles))
+	errs := make([]error, len(roles))
+	var wg sync.WaitGroup
+	for i, role := range roles {
+		subs[i] = queryWork{maxCandidates: work.maxCandidates - work.candidates, maxBytes: work.maxBytes - work.bytes}
+		wg.Go(func() {
+			sub := &subs[i]
+			ids, err := shardTextMatches(ctx, store, idx, role, typ, tokens, plan.terms, sub)
+			if err == nil && spread {
+				var more []messageID
+				more, err = spreadAllMatches(ctx, store, idx, role, plan.terms, large, sub)
+				ids = append(ids, more...)
+			}
+			found[i], errs[i] = ids, err
+		})
+	}
+	wg.Wait()
+	for _, s := range subs {
+		work.candidates += s.candidates
+		work.bytes += s.bytes
+	}
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := work.check(op); err != nil {
+		return nil, err
+	}
+	seen := map[messageID]bool{}
+	var out []*relMessageCandidate
+	for i, role := range roles {
+		for _, id := range found[i] {
+			if !seen[id] {
+				seen[id] = true
+				out = append(out, &relMessageCandidate{id: id, role: role})
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].id.less(out[j].id) })
+	return out, nil
+}
+
+// limitedScan sets props' scan limiter one past the budget's remaining
+// work, so a scan over the budget is seen, not cut short.
+func limitedScan(props recordlayer.ScanProperties, work *queryWork) (recordlayer.ScanProperties, *recordlayer.ScanLimiterState) {
+	props.ExecuteProperties.ScannedRecordsLimit = max(work.maxCandidates-work.candidates, 0) + 1
+	props.ExecuteProperties.ScannedBytesLimit = max(work.maxBytes-work.bytes, 0) + 1
+	state := recordlayer.NewScanLimiterState()
+	props.ExecuteProperties.ScanState = state
+	return props, state
+}
+
+// messageTextRoles lists the roles of MESSAGES_TEXT's groups by one
+// positioned token scan per role, each skipping the role's (role, shard)
+// groups.
+func messageTextRoles(ctx context.Context, store *recordlayer.FDBRecordStore, idx *recordlayer.Index, work *queryWork) ([]string, error) {
+	const op = "message roles"
+	var out []string
+	rng := recordlayer.TupleRangeAll
+	for {
+		props := recordlayer.ForwardScan()
+		props.ExecuteProperties.ReturnedRowLimit = 1
+		props, state := limitedScan(props, work)
+		cur := store.ScanIndexByType(idx, recordlayer.IndexScanByTextToken, rng, nil, props)
+		r, err := cur.OnNext(ctx)
+		cur.Close()
+		if err != nil {
+			return nil, err
+		}
+		work.candidates += state.RecordsScanned()
+		work.bytes += state.BytesScanned()
+		if err := work.check(op); err != nil {
+			return nil, err
+		}
+		if !r.HasNext() {
+			if reason := r.GetNoNextReason(); reason != recordlayer.SourceExhausted && reason != recordlayer.ReturnLimitReached {
+				return nil, failf("budget", op, "text scan stopped: %v", reason)
+			}
+			return out, nil
+		}
+		e := r.GetValue()
+		role, ok := "", len(e.Key) > 0
+		if ok {
+			role, ok = e.Key[0].(string)
+		}
+		if !ok {
+			return nil, fail("corruption", op, "malformed message text index entry")
+		}
+		out = append(out, role)
+		rng = recordlayer.TupleRange{Low: tuple.Tuple{role}, LowEndpoint: recordlayer.EndpointTypeRangeExclusive, HighEndpoint: recordlayer.EndpointTypeTreeEnd}
+	}
+}
+
+// textScanMatches runs one TextScan and returns the IDs of the messages its
+// entries name, charging its reads to work.
+func textScanMatches(ctx context.Context, store *recordlayer.FDBRecordStore, scan *recordlayer.TextScan, limit int, work *queryWork) ([]messageID, error) {
+	const op = "message full-text query"
+	props := recordlayer.ForwardScan()
+	props.ExecuteProperties.ReturnedRowLimit = limit
+	props, state := limitedScan(props, work)
+	cur, err := scan.Scan(store, nil, props)
+	if err != nil {
+		return nil, typedError("config", op, "text scan", err)
+	}
+	defer cur.Close()
+	md := store.GetRecordMetaData()
+	var out []messageID
+	for {
+		r, err := cur.OnNext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !r.HasNext() {
+			work.candidates += state.RecordsScanned()
+			work.bytes += state.BytesScanned()
+			if reason := r.GetNoNextReason(); reason != recordlayer.SourceExhausted && reason != recordlayer.ReturnLimitReached {
+				return nil, failf("budget", op, "text scan stopped: %v; candidates=%d logical_bytes=%d", reason, work.candidates, work.bytes)
+			}
+			return out, work.check(op)
+		}
+		id, _, err := messagePK(md, op, r.GetValue().PrimaryKey())
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+}
+
+// shardTextMatches unions the role's shard scans of the comparison typ over
+// tokens. An ALL or PHRASE comparison of several terms matches only in a
+// shard that holds every term, so it scans only the shards textShards keeps.
+func shardTextMatches(ctx context.Context, store *recordlayer.FDBRecordStore, idx *recordlayer.Index, role string, typ recordlayer.TextComparisonType, tokens, terms []string, work *queryWork) ([]messageID, error) {
+	shards := make([]int, messageTextShards)
+	for i := range shards {
+		shards[i] = i
+	}
+	if (typ == recordlayer.TextContainsAll || typ == recordlayer.TextContainsPhrase) && len(terms) > 1 {
+		var err error
+		if shards, err = textShards(ctx, store, idx, role, terms, work); err != nil {
+			return nil, err
+		}
+	}
+	scans := make([]*recordlayer.TextScan, len(shards))
+	for i, shard := range shards {
+		scans[i] = recordlayer.NewTextScan(idx, tuple.Tuple{role, int64(shard)}, recordlayer.NewTextComparisonTokens(typ, tokens, "", ""), nil)
+	}
+	found, err := textScans(ctx, store, scans, 0, work)
+	if err != nil {
+		return nil, err
+	}
+	var ids []messageID
+	for _, f := range found {
+		ids = append(ids, f...)
+	}
+	return ids, nil
+}
+
+// textSampleRows bounds the postings textShards counts per term in shard 0.
+const textSampleRows = 16
+
+// textShards returns the shards of role that hold every one of terms, or
+// may: a scan of several terms opens a range read per term in each shard,
+// so most of a role-less phrase query's reads were of shards lacking a
+// rare term. It counts each term's postings in shard 0, up to
+// textSampleRows, then probes the rarest of them in the other shards and
+// keeps shard 0 if it holds every term and each other shard that holds
+// the rarest. When every term is common in shard 0 a probe would rarely
+// exclude a shard, so it keeps them all.
+func textShards(ctx context.Context, store *recordlayer.FDBRecordStore, idx *recordlayer.Index, role string, terms []string, work *queryWork) ([]int, error) {
+	term := func(shard int, t string) *recordlayer.TextScan {
+		return recordlayer.NewTextScan(idx, tuple.Tuple{role, int64(shard)}, recordlayer.NewTextComparisonTokens(recordlayer.TextContainsAll, []string{t}, "", ""), nil)
+	}
+	sample := make([]*recordlayer.TextScan, len(terms))
+	for i, t := range terms {
+		sample[i] = term(0, t)
+	}
+	counts, err := textScans(ctx, store, sample, textSampleRows, work)
+	if err != nil {
+		return nil, err
+	}
+	rarest, holdsAll := 0, true
+	for i, c := range counts {
+		holdsAll = holdsAll && len(c) > 0
+		if len(c) < len(counts[rarest]) {
+			rarest = i
+		}
+	}
+	var shards []int
+	if holdsAll {
+		shards = append(shards, 0)
+	}
+	if len(counts[rarest]) == textSampleRows {
+		for shard := 1; shard < messageTextShards; shard++ {
+			shards = append(shards, shard)
+		}
+		return shards, nil
+	}
+	probe := make([]*recordlayer.TextScan, messageTextShards-1)
+	for i := range probe {
+		probe[i] = term(i+1, terms[rarest])
+	}
+	held, err := textScans(ctx, store, probe, 1, work)
+	if err != nil {
+		return nil, err
+	}
+	for i, h := range held {
+		if len(h) > 0 {
+			shards = append(shards, i+1)
+		}
+	}
+	return shards, nil
+}
+
+// textScans runs scans concurrently, each returning at most limit message
+// IDs (0: unbounded); each may use the remaining budget, and their sum must
+// fit it too.
+func textScans(ctx context.Context, store *recordlayer.FDBRecordStore, scans []*recordlayer.TextScan, limit int, work *queryWork) ([][]messageID, error) {
+	const op = "message full-text query"
+	found := make([][]messageID, len(scans))
+	subs := make([]queryWork, len(scans))
+	errs := make([]error, len(scans))
+	var wg sync.WaitGroup
+	for i, scan := range scans {
+		subs[i] = queryWork{maxCandidates: work.maxCandidates - work.candidates, maxBytes: work.maxBytes - work.bytes}
+		wg.Go(func() { found[i], errs[i] = textScanMatches(ctx, store, scan, limit, &subs[i]) })
+	}
+	wg.Wait()
+	for _, s := range subs {
+		work.candidates += s.candidates
+		work.bytes += s.bytes
+	}
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := work.check(op); err != nil {
+		return nil, err
+	}
+	return found, nil
+}
+
+// largeMessages lists the multipart messages of MESSAGES_LARGE, whose terms
+// may lie in different parts: one scan.
+func largeMessages(ctx context.Context, store *recordlayer.FDBRecordStore, work *queryWork) ([]messageID, error) {
+	const op = "message full-text query"
+	large, err := readableIndex(store, op, messagesLargeIndex)
+	if err != nil {
+		return nil, err
+	}
+	md := store.GetRecordMetaData()
+	props, state := limitedScan(recordlayer.ForwardScan(), work)
+	cur := store.ScanIndex(large, recordlayer.TupleRangeAllOf(tuple.Tuple{int64(1)}), nil, props)
+	defer cur.Close()
+	var out []messageID
+	var scanned int
+	var scannedBytes int64
+	for {
+		r, err := cur.OnNext(ctx)
+		work.candidates += state.RecordsScanned() - scanned
+		work.bytes += state.BytesScanned() - scannedBytes
+		scanned, scannedBytes = state.RecordsScanned(), state.BytesScanned()
+		if err != nil {
+			return nil, err
+		}
+		if err := work.check(op); err != nil {
+			return nil, err
+		}
+		if !r.HasNext() {
+			if reason := r.GetNoNextReason(); reason != recordlayer.SourceExhausted {
+				return nil, failf("budget", op, "large message scan stopped: %v; candidates=%d logical_bytes=%d", reason, work.candidates, work.bytes)
+			}
+			return out, nil
+		}
+		id, _, err := messagePK(md, op, r.GetValue().PrimaryKey())
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+}
+
+// spreadAllMatches finds the messages of large that hold every term in some
+// part of role's text: per message one scan per term bounded to the
+// message's entries.
+func spreadAllMatches(ctx context.Context, store *recordlayer.FDBRecordStore, text *recordlayer.Index, role string, terms []string, large []messageID, work *queryWork) ([]messageID, error) {
+	const op = "message full-text query"
+	var out []messageID
+	for _, id := range large {
+		// The TEXT entries after the token are the message's primary key.
+		prefix, err := tableKey(store, op, messagesRecordType, id.writer, id.seq)
+		if err != nil {
+			return nil, err
+		}
+		within := recordlayer.TupleRangeAllOf(prefix)
+		group := tuple.Tuple{role, otelsql.MessageShard(id.writer)}
+		all := true
+		for _, t := range terms {
+			cmp := recordlayer.NewTextComparisonTokens(recordlayer.TextContainsAll, []string{t}, "", "")
+			found, err := textScanMatches(ctx, store, recordlayer.NewTextScan(text, group, cmp, &within), 1, work)
+			if err != nil {
+				return nil, err
+			}
+			if len(found) == 0 {
+				all = false
+				break
+			}
+		}
+		if all {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+// QueryMessageFullText searches message text; the exporter must index it.
+func (e *Exporter) QueryMessageFullText(ctx context.Context, q MessageFullTextQuery) (MessageFullTextPage, error) {
+	const op = "message full-text query"
+	empty := MessageFullTextPage{Hits: []MessageSpanHit{}}
+	if !e.cfg.EnableMessageFullText {
+		return empty, fail("config", op, "enable_message_full_text is off; message text is not indexed")
+	}
+	if err := e.begin(op); err != nil {
+		return empty, err
+	}
+	defer e.active.Done()
+	return e.reader.QueryMessageFullText(e.txnContext(ctx), q)
+}

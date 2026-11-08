@@ -68,6 +68,9 @@ type cascadesGenerator struct {
 	// INSERT keeps concrete bindings; SELECT and cached DML extract runtime
 	// constants and constrain only the assumptions used by their cached plan.
 	args []driver.NamedValue
+	// programs are the binding walks compiled over the statement's cached
+	// parse tree (parse_cache.go).
+	programs *statementPrograms
 }
 
 func newCascadesGenerator(c *EmbeddedConnection) *cascadesGenerator {
@@ -131,10 +134,12 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 			return false
 		})
 	}
-	root, err := parser.Parse(sql)
+	st, err := g.c.parseStatement(sql)
 	if err != nil {
 		return nil, err
 	}
+	root := st.root
+	g.programs = &st.programs
 	if err := checkDecimalConstants(root); err != nil {
 		return nil, err
 	}
@@ -144,9 +149,11 @@ func (g *cascadesGenerator) Plan(ctx context.Context, sql string) (query.Plan, e
 			return nil, err
 		}
 		if changed {
-			if root, err = parser.Parse(expanded); err != nil {
+			if st, err = g.c.parseStatement(expanded); err != nil {
 				return nil, err
 			}
+			root = st.root
+			g.programs = &st.programs
 		}
 	}
 	release, err := bindStatementParameters(root, g.args)
@@ -411,8 +418,9 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// licenses anything when the WHOLE result comes from one read version.
 	// fetchPage routes on exactly this condition: with an explicit transaction
 	// every page joins it and shares its read version; without one each page
-	// runs its own auto-commit transaction and takes a fresh one, so a value
-	// can move between pages and be emitted twice. See
+	// after the first runs its own auto-commit transaction at a fresh one (the
+	// first may share the planning transaction's, statement_read.go), so a
+	// value can move between pages and be emitted twice. See
 	// PlannerConfiguration.SingleReadVersion.
 	popts.config.SingleReadVersion = g.c.activeTx != nil
 	// Plan-cache key parts: a VERBATIM schema+version+planner-options scope
@@ -420,7 +428,7 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	if so.rightDeep {
 		popts.config.ShouldJoinRightDeep = true
 	}
-	bindings, releaseBindings, bindErr := normalizeQueryBindings(q, md)
+	bindings, releaseBindings, bindErr := normalizeQueryBindingsWith(q, md, g.programs)
 	if bindErr != nil {
 		return nil, bindErr
 	}
@@ -974,7 +982,7 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	bindings := queryBindings{text: planCacheText(dml)}
 	if dml.InsertStatement() == nil {
 		var releaseBindings func()
-		bindings, releaseBindings, err = normalizeQueryBindings(dml, md)
+		bindings, releaseBindings, err = normalizeQueryBindingsWith(dml, md, g.programs)
 		if err != nil {
 			return nil, err
 		}
@@ -2246,10 +2254,11 @@ func materializeDriverValue(v any) any {
 	}
 }
 
-// fetchPage opens a fresh FDB transaction, creates the cursor hierarchy
-// (or recreates it from the continuation), drains the cursor until it
-// stops, and buffers the results. Everything happens INSIDE DB.Run so
-// FDB reads are against a live transaction.
+// fetchPage runs one page in a live transaction (the explicit one, an
+// auto-commit statement's shared first transaction for its first page, or a
+// fresh DB.Run one: runPage), creates the cursor hierarchy (or recreates it
+// from the continuation), drains the cursor until it stops, and buffers the
+// results.
 //
 // This matches Java's architecture: each transaction creates a fresh
 // cursor hierarchy from the plan + continuation. The continuation
@@ -2270,8 +2279,9 @@ func (r *paginatingRows) fetchPage() error {
 	// The page's OUTCOME is staged in locals and published to r only after the
 	// page's transaction has succeeded.
 	//
-	// In auto-commit the closure below is the body of a DB.Run retry loop, so it
-	// may run more than once, and it RESUMES FROM r.continuation while clearing
+	// In auto-commit the closure below may run more than once (the body of a
+	// DB.Run retry loop, or a first page rerun in DB.Run after its shared
+	// transaction failed), and it RESUMES FROM r.continuation while clearing
 	// r.buf at its top. Any position it writes to r before its transaction
 	// commits is therefore position a re-execution inherits — and a re-execution
 	// that inherits an already-advanced continuation resumes PAST the rows the
@@ -2324,11 +2334,13 @@ func (r *paginatingRows) fetchPage() error {
 	// Every statement kind joins the explicit transaction captured at Execute
 	// time (r.tx) — SELECT included, which is what gives an explicit
 	// transaction read-your-writes and read conflict ranges (RFC-198
-	// Decision 1). With no explicit transaction (r.tx == nil) each page runs
-	// in its own auto-commit transaction via DB.Run, unchanged. A captured
+	// Decision 1). With no explicit transaction (r.tx == nil) the first page
+	// runs in the transaction its planning read in when that is still usable
+	// (statement_read.go), and commits it before the page is published; every
+	// other page runs in its own auto-commit transaction via DB.Run. A captured
 	// transaction that has since ended is a loud 25F01, never a silent fresh
 	// transaction (Decision 3).
-	_, txErr := c.runInCapturedTx(r.ctx, r.tx, r.options(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	_, txErr := c.runPage(r.ctx, r.tx, r.options(), func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		if attempts > 0 {
 			// Java's ThrottledRetryingIterator decreases work on every failed
 			// attempt. SQL pages use time rather than its scanned-row quota:
@@ -2361,8 +2373,10 @@ func (r *paginatingRows) fetchPage() error {
 		r.scratch.BeginPage()
 
 		// One store per subspace per transaction, reused by every page
-		// (RFC-198 Decision 10) — in auto-commit this still builds a fresh
-		// store per page, because there each page IS a transaction.
+		// (RFC-198 Decision 10). In auto-commit a first page in the shared
+		// transaction reuses the store planning opened there
+		// (statement_read.go); any other page, its own transaction, builds a
+		// fresh one.
 		store, storeErr := c.storeIn(rctx, r.tx, r.ss)
 		if storeErr != nil {
 			return nil, storeErr

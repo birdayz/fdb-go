@@ -16,7 +16,21 @@ not every one has been re-measured on 4.14.2.0.
 Go exposes `CREATE FULLTEXT INDEX ... ON table(text_column) [PARTITION BY (...)]`
 and the seven `TEXT_CONTAINS_*` SQL functions as a Go extension. Java Relational
 4.14.2.0 has only the reserved `FULLTEXT` lexer token, not these parser productions
-or built-ins (checked against the exact `4.14.2.0` source tag). Existing schema
+or built-ins (checked against the exact `4.14.2.0` source tag). The Go DDL also
+takes `OPTIONS (TOKENIZER = '<name>', TOKENIZER_VERSION = <int>)` after the
+partition clause, setting the TEXT index options `textTokenizerName` and
+`textTokenizerVersion` that Java's metadata API sets programmatically. Names are
+case-insensitive; an unknown option is `0A000`, a duplicate or a value of the
+wrong kind `42601` (the value is an unsigned integer literal, as in Java's
+`vectorIndexOptionValue`, so a negative version is a syntax error), and an
+unregistered tokenizer or a version above the tokenizer's range fails the template (`pkg/relational/sqltest/plan/fulltext_options_ddl_fdb_test.go`).
+A tokenizer registered only in Go makes the whole schema unreadable to Java,
+not just the index: Java builds the schema's metadata for every statement and
+its TEXT index validator refuses the unknown name (`42000 MetaDataException
+unrecognized text tokenizer`), while one naming `'default'` opens
+(`conformance/otel_template_overlay_java_probe_test.go`). OTEL_V1's
+MESSAGES_TEXT therefore uses the default tokenizer, and Go writers bound
+overlong tokens in the indexed text (`otelsql.IndexableText`). Existing schema
 macros retain precedence over `TEXT_CONTAINS_*` built-ins. With
 `CASE_SENSITIVE_IDENTIFIERS`, a same-casefold macro family reserves the name
 and exact spelling resolves the macro; a mismatched case is not a builtin
@@ -471,6 +485,20 @@ required property. Java also lacks Go's per-leg record-identity check
 (`RecordIdentityWithin`), which Go keeps in place of
 `isPrimaryKeyCompatibleWithOrdering`. Plans agree with Java on the primary-key
 disjunctions in `conformance/or_union_merge_java_probe_test.go`.
+
+### `RecordType.Equals` has no identity short-circuit
+
+Java's `Type.Record.equals` returns true for the same object before it compares
+fields (Type.java:2400-2402). Go's `RecordType.Equals`
+(`pkg/recordlayer/query/plan/cascades/values/type.go`) always compares field by
+field. For acyclic record types, the only kind Go builds, the answers agree and
+only the cost differs. Go omits the check on purpose: a record type that reached
+itself would then fail at its first comparison, even with itself, which is why
+`TypeProtoRepository` needs no cycle guard. Pinned by
+`TestProtoType_RecordEqualsHasNoIdentityShortCircuit`. The executor's edge
+binder compares a cursor's row type with a distinct flowed type object, so an
+identity check would not help it; it memoises equal pairs instead
+(`pkg/recordlayer/query/executor/record_type_equal_memo.go`).
 
 ## Planning-Layer: Java-aligned core with documented Go extensions
 
@@ -1419,6 +1447,42 @@ An FDB operation in flight can only be interrupted by cancelling its
 transaction, and a statement cut off midway may have buffered part of its
 writes, so the transaction cannot continue; PostgreSQL aborts a transaction
 whose statement was cancelled for the second reason.
+
+## Auto-commit SELECT: one transaction up to the first page, not the whole result
+
+Java 4.14.2.0 runs an auto-commit statement in one transaction from its schema
+load to the close of its result set: `AbstractEmbeddedStatement.executeInternal`
+loads the schema and store, plans and executes against `conn.getTransaction()`
+(AbstractEmbeddedStatement.java:71-95), and `RecordLayerResultSet.close` commits
+that transaction (RecordLayerResultSet.java:91-98). Every row is read at one
+read version.
+
+Go's auto-commit SELECT reads the catalog, plans (the index-state store open)
+and takes its first page in one transaction only when the first page starts
+within 250 ms of the statement's first read (`statementReadMaxAge`,
+`pkg/relational/core/embedded/statement_read.go`); the first page commits it
+before its rows are published. A first page starting later, and every page
+after the first, runs in a transaction of its own at a newer read version, as
+every page did before. So:
+
+- the rows of one paged SELECT can come from different snapshots;
+- an index-state transition committed between planning and the first page is
+  not seen when the first page shares the planning transaction (the statement
+  answers at the planning snapshot), and fails the statement with 40001 when
+  the first page runs on its own, since every page revalidates the plan's
+  index-state dependency in its own transaction. Which one happens depends on
+  how long the statement took to plan. Java answers from its one snapshot.
+- the catalog read, planning and first page share one `TRANSACTION_TIMEOUT`
+  budget; each later page gets a fresh one.
+
+With a transaction per page, a result set read for longer than FDB's
+five-second transaction lifetime does not fail with transaction_too_old, as one
+transaction would. Explicit transactions are unaffected: every statement and page runs in the
+transaction, as in Java. Pinned by
+`TestFDB_IndexStatePlanning_TransitionBetweenPlanAndFirstPageReadsOneSnapshot`
+(a shared first page), `TestFDB_IndexStatePlanning_TransitionBeforeASeparateFirstPageFails40001`
+(a separate one) and `TestFDB_IndexStatePlanning_TransitionBetweenPagesFails40001`
+(a later page), in `pkg/relational/sqltest/plan/index_state_planning_fdb_test.go`.
 
 ## GROUP BY keys with bound parameters (RFC-272, unmeasured)
 
@@ -4866,6 +4930,71 @@ acknowledges choosing the flat destination while old data remains. It copies not
 Converting these subspaces to raw bytes discards the guard; application code doing
 raw FDB reads/writes must enforce its own write freeze and prefix choice. See
 [the upgrade procedure](docs/upgrade.md#earlier-go-keyspace-path-prefixes).
+
+## A fan-out composite under an absent parent: earlier Go's entries and counts
+
+Earlier Go builds evaluated every child of a composite (`Concat`) as a scalar
+first, and a field on a nil message evaluated as one null whatever its fan
+type. Under an absent singular parent that gave Java-incompatible results:
+
+- A composite holding a `FanOut` child, such as
+  `Nest("p", Concat(Field("a"), FanOut("tags")))` on a record without `p`,
+  yielded one all-null tuple. A VALUE index got the entry `(null, null, pk)`;
+  a COUNT or COUNT_UPDATES index grouped by it counted the record at
+  `(null, null)`. Java 4.14.2.0 writes no entry and no count.
+  NestingKeyExpression.java:77-84 evaluates the child on the parent's null
+  value. FieldKeyExpression.java:179-180 returns getNullResult() for a null
+  message, which is an empty list for FanOut (:229-232).
+  ThenKeyExpression.java:90-98 crosses the children, so the product is empty,
+  and AtomicMutationIndexMaintainer.java:125-147 mutates once per entry.
+- A `Concatenate` child under the NOT_NULL standin, such as
+  `Nest("p", Concat(Field("a"), FieldWithNullStandin("tags", FanTypeConcatenate,
+  NullStandinNotNull)))` on a record without `p`, yielded null where Java's
+  getNullResult yields the empty list, which packs as an empty nested tuple:
+  earlier Go wrote `(null, null, pk)` where Java writes `(null, (), pk)`.
+
+Separately, an atomic index whose grouping key is a fan-out nesting, such as
+`GroupAll(NestFanOut("ps", Field("a")))`, read only a record's first element:
+COUNT and COUNT_UPDATES counted a record with several elements once, under the
+first element's group, and one with an empty list at `()` when saved but at
+`(null)` when deleted; SUM added only the first element's value. Java mutates
+once per entry.
+
+An update also skipped shared entries differently. Java's
+StandardIndexMaintainer.update (StandardIndexMaintainer.java:219-227) collects
+every old entry the new list contains (commonKeys, :390-399) and removes every
+occurrence of each from both lists with List.removeAll, comparing whole entries
+(IndexEntry.java:256-271). Atomic indexes do the same except COUNT_UPDATES
+(AtomicMutationIndexMaintainer.java:235-237). Earlier Go cancelled SUM entries
+one for one, so updating ps.n from [10] to [10, 10] added 10 where Java adds
+nothing, and compared COUNT_NOT_NULL entries by their group alone, so a counted
+value that changed within a group was skipped. Java's rule leaves a count that
+is not the arithmetic count of the record's current entries (the SUM stays 10
+above); Go reproduces it. VALUE indexes already matched: their update
+(`RemoveCommonEntries`) drops every shared entry.
+
+Go now writes what Java writes in all of these cases, measured against Java
+4.14.2.0: the fan-out cases of `conformance/null_standin_conformance_test.go`
+save the same records and updates through both engines and compare every
+index key-value pair, VALUE entries and COUNT, COUNT_UPDATES, COUNT_NOT_NULL
+and SUM values (including the [10] to [10, 10] to [10] walk).
+
+There is no automatic migration.
+When Go updates or deletes such a record, it evaluates the old record as Java
+does, so what an earlier build wrote is never corrected: a stale VALUE entry
+stays visible to Go and Java index scans, and a count or sum stays off by what
+the earlier build added. After upgrading, rebuild:
+
+- every index whose expression nests, under a singular message field, a
+  composite holding a `FanOut` child or a NOT_NULL `Concatenate` field;
+- every atomic index grouped by a fan-out nesting;
+- every SUM or COUNT_NOT_NULL index over a fan-out that earlier Go updated.
+
+Pinned against Java by those conformance cases, and in Go alone by
+`pkg/recordlayer/key_expression_fanout_absent_parent_test.go`: evaluation;
+VALUE, COUNT, COUNT_UPDATES and SUM through insert, an online rebuild and
+delete; and updates of VALUE, COUNT, COUNT_UPDATES, COUNT_NOT_NULL and SUM
+over a fan-out with repeated values.
 
 ## Native FDB client read hedging
 

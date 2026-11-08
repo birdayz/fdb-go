@@ -228,7 +228,11 @@ func (f *FieldKeyExpression) Evaluate(_ *FDBStoredRecord[proto.Message], msg pro
 // EvaluateFlat returns the scalar value directly as a single-element []any.
 func (f *FieldKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
 	if msg == nil {
-		return []any{nil}, nil
+		v, err := f.nilMessageScalar()
+		if err != nil {
+			return nil, err
+		}
+		return []any{v}, nil
 	}
 	m := msg.ProtoReflect()
 	fd, err := f.resolveFieldDescriptor(m)
@@ -250,10 +254,25 @@ func (f *FieldKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message]
 	return []any{result}, nil
 }
 
+// nilMessageScalar is getNullResult's one value, for a nil message. FanOut's
+// result is no entry, so it is an error, and the scalar and flat evaluators
+// defer to Evaluate as they do for a repeated field.
+func (f *FieldKeyExpression) nilMessageScalar() (any, error) {
+	switch f.fanType {
+	case FanTypeFanOut:
+		return nil, fmt.Errorf("fan-out field %s of a nil message has no entry", f.fieldName)
+	case FanTypeConcatenate:
+		if f.nullStandin == NullStandinNotNull {
+			return tuple.Tuple{}, nil
+		}
+	}
+	return nil, nil
+}
+
 // EvaluateScalar returns the single scalar value directly — zero allocs for the return.
 func (f *FieldKeyExpression) EvaluateScalar(record *FDBStoredRecord[proto.Message], msg proto.Message) (any, error) {
 	if msg == nil {
-		return nil, nil
+		return f.nilMessageScalar()
 	}
 	m := msg.ProtoReflect()
 	fd, err := f.resolveFieldDescriptor(m)
@@ -792,63 +811,123 @@ func flattenThenChildren(exprs []KeyExpression, first int) []KeyExpression {
 // is a single tuple that is the concatenation of all child tuples — identical
 // to the old flat-append behavior.
 func (c *CompositeKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message], msg proto.Message) ([][]any, error) {
-	// Fast path: use EvaluateFlat for children to avoid [][]any allocs.
-	// If all children support it, we build a single tuple directly.
-	fast := make([]any, 0, len(c.expressions))
-	allFlat := true
-
-	for _, expr := range c.expressions {
-		// Try scalar first (zero alloc)
-		if se, ok := expr.(ScalarEvaluator); ok {
-			val, err := se.EvaluateScalar(record, msg)
-			if err == nil {
-				fast = append(fast, val)
-				continue
+	// Each child is evaluated once. A child with one tuple contributes a
+	// segment of flat (through the scalar and flat evaluators where it has
+	// them, which allocate least); a child that can fan out goes straight to
+	// Evaluate, and its tuples are kept for the cross product.
+	flat := make([]any, 0, len(c.expressions))
+	var parts []compositePart // set once a child yields other than one tuple
+	for i, expr := range c.expressions {
+		start := len(flat)
+		if !createsDuplicatesRec(expr, true) {
+			if se, ok := expr.(ScalarEvaluator); ok {
+				if val, err := se.EvaluateScalar(record, msg); err == nil {
+					flat = append(flat, val)
+					parts = appendFlatPart(parts, start, len(flat))
+					continue
+				}
+				// Fall through on error (e.g. repeated field)
 			}
-			// Fall through on error (e.g. repeated field)
-		}
-		if fe, ok := expr.(FlatEvaluator); ok {
-			childFlat, err := fe.EvaluateFlat(record, msg)
-			if err == nil {
-				fast = append(fast, childFlat...)
-				continue
+			if fe, ok := expr.(FlatEvaluator); ok {
+				if childFlat, err := fe.EvaluateFlat(record, msg); err == nil {
+					flat = append(flat, childFlat...)
+					parts = appendFlatPart(parts, start, len(flat))
+					continue
+				}
 			}
-			// Fall through
 		}
 		childTuples, err := expr.Evaluate(record, msg)
 		if err != nil {
 			return nil, err
 		}
-		if len(childTuples) != 1 {
-			allFlat = false
-			break
+		if len(childTuples) == 1 {
+			flat = append(flat, childTuples[0]...)
+			parts = appendFlatPart(parts, start, len(flat))
+			continue
 		}
-		fast = append(fast, childTuples[0]...)
-	}
-
-	if allFlat {
-		return [][]any{fast}, nil
-	}
-
-	// Slow path: cross-product for fan-out expressions
-	result := [][]any{{}}
-	for _, expr := range c.expressions {
-		childTuples, err := expr.Evaluate(record, msg)
-		if err != nil {
-			return nil, err
-		}
-		var crossed [][]any
-		for _, existing := range result {
-			for _, child := range childTuples {
-				combined := make([]any, 0, len(existing)+len(child))
-				combined = append(combined, existing...)
-				combined = append(combined, child...)
-				crossed = append(crossed, combined)
+		if parts == nil {
+			// The children so far are one flat segment.
+			parts = make([]compositePart, 0, len(c.expressions))
+			if i > 0 {
+				parts = append(parts, compositePart{lo: 0, hi: start})
 			}
 		}
-		result = crossed
+		parts = append(parts, compositePart{fan: true, tuples: childTuples})
 	}
-	return result, nil
+	if parts == nil {
+		return [][]any{flat}, nil
+	}
+	return crossCompositeParts(parts, flat), nil
+}
+
+// compositePart is one or more children's contribution to a composite's
+// tuples: flat[lo:hi], or, for a fan-out child (fan), one of tuples, of
+// which there may be none.
+type compositePart struct {
+	lo, hi int
+	fan    bool
+	tuples [][]any
+}
+
+// appendFlatPart records flat[lo:hi] once parts is in use (a fan-out child
+// was seen); before that the whole prefix is one implicit segment.
+func appendFlatPart(parts []compositePart, lo, hi int) []compositePart {
+	if parts == nil {
+		return nil
+	}
+	return append(parts, compositePart{lo: lo, hi: hi})
+}
+
+// crossCompositeParts is the cross product of parts in child order, the
+// earlier part most significant, as the composite's tuples have always been
+// ordered. Each tuple's capacity is its length, so a caller appending to one
+// cannot write into the next.
+func crossCompositeParts(parts []compositePart, flat []any) [][]any {
+	count := 1
+	for _, p := range parts {
+		if p.fan {
+			count *= len(p.tuples)
+		}
+	}
+	if count == 0 {
+		return nil
+	}
+	result := make([][]any, 0, count)
+	idx := make([]int, len(parts))
+	for {
+		width := 0
+		for i, p := range parts {
+			if p.fan {
+				width += len(p.tuples[idx[i]])
+			} else {
+				width += p.hi - p.lo
+			}
+		}
+		t := make([]any, 0, width)
+		for i, p := range parts {
+			if p.fan {
+				t = append(t, p.tuples[idx[i]]...)
+			} else {
+				t = append(t, flat[p.lo:p.hi]...)
+			}
+		}
+		result = append(result, t)
+		// Advance the least significant fan-out part.
+		i := len(parts) - 1
+		for ; i >= 0; i-- {
+			if !parts[i].fan {
+				continue
+			}
+			idx[i]++
+			if idx[i] < len(parts[i].tuples) {
+				break
+			}
+			idx[i] = 0
+		}
+		if i < 0 {
+			return result
+		}
+	}
 }
 
 // FieldNames returns all field names from component expressions
@@ -964,9 +1043,19 @@ func (n *NestingKeyExpression) evaluateRepeated(record *FDBStoredRecord[proto.Me
 		return nil, nil // Empty repeated → no results
 	}
 
-	var result [][]any
+	result := make([][]any, 0, count)
+	// A child that cannot fan out is one tuple per element: its flat form
+	// skips Evaluate's one-tuple wrapper.
+	fe, flat := n.child.(FlatEvaluator)
+	flat = flat && !createsDuplicatesRec(n.child, true)
 	for i := 0; i < count; i++ {
 		subMsg := list.Get(i).Message().Interface()
+		if flat {
+			if t, err := fe.EvaluateFlat(record, subMsg); err == nil {
+				result = append(result, t)
+				continue
+			}
+		}
 		childTuples, err := n.child.Evaluate(record, subMsg)
 		if err != nil {
 			return nil, err
@@ -1429,7 +1518,8 @@ func (g *GroupingKeyExpression) Evaluate(record *FDBStoredRecord[proto.Message],
 	return g.wholeKey.Evaluate(record, msg)
 }
 
-// EvaluateFlat delegates to the whole key's EvaluateFlat if available.
+// EvaluateFlat is the whole key's one tuple. A whole key yielding no tuple or
+// several (a fan-out) is an error, so callers evaluate its entries instead.
 func (g *GroupingKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Message], msg proto.Message) ([]any, error) {
 	if fe, ok := g.wholeKey.(FlatEvaluator); ok {
 		return fe.EvaluateFlat(record, msg)
@@ -1438,8 +1528,8 @@ func (g *GroupingKeyExpression) EvaluateFlat(record *FDBStoredRecord[proto.Messa
 	if err != nil {
 		return nil, err
 	}
-	if len(tuples) == 0 {
-		return nil, nil
+	if len(tuples) != 1 {
+		return nil, fmt.Errorf("EvaluateFlat: grouping key produced %d tuples, expected 1", len(tuples))
 	}
 	return tuples[0], nil
 }

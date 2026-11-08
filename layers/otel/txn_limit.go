@@ -15,8 +15,11 @@ const (
 	maxInFlightTransactionsLimit   = 1024
 )
 
-// The span-ingest benchmark's transaction policy: a 1.5s timeout and, for store
-// transactions, at most 10 OnError retries (configureStoreContext).
+// The default transaction policy, of work whose context carries no exporter
+// policy (withExporterTxns): a SpanReader or SpanWriter caller that sets none,
+// such as otelbench's --sql-query direct reads. A 1.5s timeout and,
+// for store transactions, at most 10 OnError retries (configureStoreContext);
+// the Exporter's transactions have its timeout and no retry limit.
 const (
 	benchTxnTimeout    = 1500 * time.Millisecond
 	benchTxnRetryLimit = 10
@@ -37,7 +40,7 @@ type txnTimeoutKey struct{}
 type txnLimiterKey struct{}
 
 // withExporterTxns marks ctx as carrying Exporter transactions: they run with
-// timeout and no retry limit, and the ingest guard does not bound their elapsed time.
+// timeout and no retry limit; nothing else bounds their elapsed time.
 func withExporterTxns(ctx context.Context, timeout time.Duration) context.Context {
 	return context.WithValue(ctx, txnTimeoutKey{}, timeout)
 }

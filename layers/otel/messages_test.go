@@ -3,23 +3,19 @@ package otel
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
-	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/recordlayer"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
-	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 func TestMessageQueueClearsConsumedAndSkippedSlots(t *testing.T) {
@@ -102,233 +98,12 @@ func TestMarkerCacheCapacityEvictionAndRepeatedWrap(t *testing.T) {
 	}
 }
 
-const deltaTurns = 25
-
-func deltaStr(s string) *commonpb.AnyValue {
-	return &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: s}}
-}
-
-func deltaKV(key string, v *commonpb.AnyValue) *commonpb.KeyValue {
-	return &commonpb.KeyValue{Key: key, Value: v}
-}
-
-func deltaKvlist(kvs ...*commonpb.KeyValue) *commonpb.AnyValue {
-	return &commonpb.AnyValue{Value: &commonpb.AnyValue_KvlistValue{KvlistValue: &commonpb.KeyValueList{Values: kvs}}}
-}
-
-func deltaArray(vs ...*commonpb.AnyValue) *commonpb.AnyValue {
-	return &commonpb.AnyValue{Value: &commonpb.AnyValue_ArrayValue{ArrayValue: &commonpb.ArrayValue{Values: vs}}}
-}
-
-// deltaText is distinct per (role, turn) and about n bytes of English-like text.
-func deltaText(role string, turn, n int) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s turn %d: ", role, turn)
-	for i := 0; b.Len() < n; i++ {
-		fmt.Fprintf(&b, "step %d inspects shard %d of trace %x and reports latency %dms; ", i, (turn*31+i*7)%97, turn*1009+i*13, (turn*17+i*3)%500)
-	}
-	return b.String()
-}
-
-type deltaMsg struct {
-	role, text string
-}
-
-type deltaJSONPart struct {
-	Type    string `json:"type"`
-	Content string `json:"content"`
-}
-
-type deltaJSONMsg struct {
-	Role  string          `json:"role"`
-	Parts []deltaJSONPart `json:"parts"`
-}
-
-type deltaJSONTool struct {
-	Type        string `json:"type"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-}
-
-var deltaTools = []deltaJSONTool{
-	{"function", "query_traces", deltaText("tool-schema query_traces", 0, 700)},
-	{"function", "fetch_logs", deltaText("tool-schema fetch_logs", 0, 700)},
-}
-
-var deltaSystem = deltaText("system", 0, 900)
-
-// deltaMessages encodes one attribute's messages in either RFC-283 form.
-func deltaMessages(form string, msgs []deltaMsg) *commonpb.AnyValue {
-	if form == "json" {
-		out := make([]deltaJSONMsg, len(msgs))
-		for i, m := range msgs {
-			out[i] = deltaJSONMsg{m.role, []deltaJSONPart{{"text", m.text}}}
-		}
-		wire, err := json.Marshal(out)
-		if err != nil {
-			panic(err)
-		}
-		return deltaStr(string(wire))
-	}
-	vs := make([]*commonpb.AnyValue, len(msgs))
-	for i, m := range msgs {
-		vs[i] = deltaKvlist(deltaKV("role", deltaStr(m.role)), deltaKV("parts", deltaArray(deltaKvlist(deltaKV("type", deltaStr("text")), deltaKV("content", deltaStr(m.text))))))
-	}
-	return deltaArray(vs...)
-}
-
-func deltaToolDefinitions(form string) *commonpb.AnyValue {
-	if form == "json" {
-		wire, err := json.Marshal(deltaTools)
-		if err != nil {
-			panic(err)
-		}
-		return deltaStr(string(wire))
-	}
-	vs := make([]*commonpb.AnyValue, len(deltaTools))
-	for i, tool := range deltaTools {
-		vs[i] = deltaKvlist(deltaKV("type", deltaStr(tool.Type)), deltaKV("name", deltaStr(tool.Name)), deltaKV("description", deltaStr(tool.Description)))
-	}
-	return deltaArray(vs...)
-}
-
-func deltaSpan(i int, attrs ...*commonpb.KeyValue) *tracepb.ResourceSpans {
-	trace := bytes.Repeat([]byte{byte(i + 1)}, 16)
-	id := bytes.Repeat([]byte{byte(i + 101)}, 8)
-	return &tracepb.ResourceSpans{
-		Resource:  &resourcepb.Resource{Attributes: []*commonpb.KeyValue{deltaKV("service.name", deltaStr("agent"))}},
-		SchemaUrl: "https://opentelemetry.io/schemas/1.37.0",
-		ScopeSpans: []*tracepb.ScopeSpans{{
-			Scope: &commonpb.InstrumentationScope{Name: "genai-sdk", Version: "1"},
-			Spans: []*tracepb.Span{{TraceId: trace, SpanId: id, Name: "chat", Kind: tracepb.Span_SPAN_KIND_CLIENT, StartTimeUnixNano: uint64(1700000000000000000 + i), EndTimeUnixNano: uint64(1700000000000001000 + i), Attributes: attrs}},
-		}},
-	}
-}
-
-// deltaConversation repeats turn history plus a new user turn and one reply;
-// each turn is its own trace, as in deltaSpan.
-func deltaConversation(turns int, form string) []*tracepb.ResourceSpans {
-	var history []deltaMsg
-	out := make([]*tracepb.ResourceSpans, 0, turns)
-	for k := 1; k <= turns; k++ {
-		history = append(history, deltaMsg{"user", deltaText("user", k, 800)})
-		reply := deltaMsg{"assistant", deltaText("assistant", k, 800)}
-		sys := deltaArray(deltaKvlist(deltaKV("type", deltaStr("text")), deltaKV("content", deltaStr(deltaSystem))))
-		if form == "json" {
-			wire, _ := json.Marshal([]deltaJSONPart{{"text", deltaSystem}})
-			sys = deltaStr(string(wire))
-		}
-		out = append(out, deltaSpan(
-			k,
-			deltaKV("gen_ai.operation.name", deltaStr("chat")),
-			deltaKV("gen_ai.conversation.id", deltaStr("conv-283")),
-			deltaKV("gen_ai.system_instructions", sys),
-			deltaKV("gen_ai.tool.definitions", deltaToolDefinitions(form)),
-			deltaKV("gen_ai.input.messages", deltaMessages(form, history)),
-			deltaKV("gen_ai.output.messages", deltaMessages(form, []deltaMsg{reply})),
-		))
-		history = append(history, reply)
-	}
-	return out
-}
-
-// sameTrace puts every span of spans into the trace of the first.
-func sameTrace(spans []*tracepb.ResourceSpans) []*tracepb.ResourceSpans {
-	for _, rs := range spans {
-		rs.ScopeSpans[0].Spans[0].TraceId = spans[0].ScopeSpans[0].Spans[0].TraceId
-	}
-	return spans
-}
-
-func cloneDeltaSpans(in []*tracepb.ResourceSpans) []*tracepb.ResourceSpans {
-	out := make([]*tracepb.ResourceSpans, len(in))
-	for i, rs := range in {
-		if rs != nil {
-			out[i] = proto.Clone(rs).(*tracepb.ResourceSpans)
-		}
-	}
-	return out
-}
-
-func requireDeltaSpansEqual(t *testing.T, got, want []*tracepb.ResourceSpans) {
-	t.Helper()
-	if len(got) != len(want) {
-		t.Fatalf("got %d resource spans, want %d", len(got), len(want))
-	}
-	for i := range want {
-		if !proto.Equal(got[i], want[i]) {
-			t.Fatalf("resource spans %d differ after reconstruction", i)
-		}
-	}
-}
-
-func deltaAttr(t *testing.T, rs *tracepb.ResourceSpans, key string) *commonpb.AnyValue {
-	t.Helper()
-	for _, kv := range rs.ScopeSpans[0].Spans[0].Attributes {
-		if kv.Key == key {
-			return kv.Value
-		}
-	}
-	t.Fatalf("attribute %s missing", key)
-	return nil
-}
-
-func deltaManifest(t *testing.T, rs *tracepb.ResourceSpans, key string) *messageManifest {
-	t.Helper()
-	m, err := parseMessageManifest(deltaAttr(t, rs, key))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return m
-}
-
-// decomposeInMemory decomposes spans and gives the elements IDs 1.1, 1.2, ...
-// in first-reference order, as a writer storing them would.
-func decomposeInMemory(t *testing.T, tenant int, spans []*tracepb.ResourceSpans) *messageDecomposition {
-	t.Helper()
-	d, err := decomposeMessages(t.Context(), spans, tenant)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i, el := range d.elements {
-		el.id = messageID{1, int64(i + 1)}
-	}
-	if err := d.encodeManifests(false); err != nil {
-		t.Fatal(err)
-	}
-	return d
-}
-
-// reconstructInMemory drives the reconstruct plan over the elements' raw bytes.
-func reconstructInMemory(elements []*messageElement, spans []*tracepb.ResourceSpans) ([]*tracepb.ResourceSpans, error) {
-	p, err := planReconstruct(context.Background(), spans)
-	if err != nil {
-		return nil, err
-	}
-	raws := map[messageID][]byte{}
-	for _, el := range elements {
-		raws[el.id] = el.raw
-	}
-	for _, id := range p.refs {
-		if _, ok := raws[id]; !ok {
-			return nil, fail("corruption", "test", "missing message")
-		}
-	}
-	return p.apply(raws)
-}
-
-func deltaRandom(n int, seed byte) []byte {
-	b := make([]byte, n)
-	_, _ = rand.NewChaCha8([32]byte{seed}).Read(b)
-	return b
-}
-
 func TestMessageDecomposeConversation(t *testing.T) {
 	t.Parallel()
 	for _, form := range []string{"array", "json"} {
 		input := deltaConversation(deltaTurns, form)
 		before := cloneDeltaSpans(input)
-		d := decomposeInMemory(t, 7, input)
+		d := decomposeInMemory(t, input)
 		n := deltaTurns
 		// Turn k references the system prompt, two tools, k inputs and 1 output.
 		if s := d.stats; s.TotalMessages != int64(n*(n+1)+3*n) || s.UniqueMessages != int64(2*n+3) || s.ReusedMessages != s.TotalMessages-s.UniqueMessages || s.SavedBytes <= 0 {
@@ -356,44 +131,6 @@ func TestMessageDecomposeConversation(t *testing.T) {
 	}
 }
 
-// deltaScribble overwrites every string and byte payload under v in place.
-func deltaScribble(v *commonpb.AnyValue) {
-	switch x := v.GetValue().(type) {
-	case *commonpb.AnyValue_StringValue:
-		x.StringValue = "scribbled"
-	case *commonpb.AnyValue_BytesValue:
-		for i := range x.BytesValue {
-			x.BytesValue[i] = 0xee
-		}
-	case *commonpb.AnyValue_ArrayValue:
-		for _, e := range x.ArrayValue.GetValues() {
-			deltaScribble(e)
-		}
-	case *commonpb.AnyValue_KvlistValue:
-		for _, kv := range x.KvlistValue.GetValues() {
-			deltaScribble(kv.GetValue())
-		}
-	}
-}
-
-func deltaScribbleSpans(spans []*tracepb.ResourceSpans) {
-	for _, rs := range spans {
-		for _, ss := range rs.GetScopeSpans() {
-			for _, sp := range ss.GetSpans() {
-				sp.Name = "scribbled"
-				for _, kv := range sp.GetAttributes() {
-					deltaScribble(kv.GetValue())
-				}
-				for _, ev := range sp.GetEvents() {
-					for _, kv := range ev.GetAttributes() {
-						deltaScribble(kv.GetValue())
-					}
-				}
-			}
-		}
-	}
-}
-
 // TestMessageDecomposeInputImmutable proves decomposition and reconstruction
 // neither modify their inputs nor share mutable memory with their outputs.
 func TestMessageDecomposeInputImmutable(t *testing.T) {
@@ -406,7 +143,7 @@ func TestMessageDecomposeInputImmutable(t *testing.T) {
 	), nil)
 	input[0].ScopeSpans[0].Spans[0].Events = []*tracepb.Span_Event{{Name: "details", Attributes: []*commonpb.KeyValue{deltaKV("gen_ai.input.messages", deltaMessages("array", []deltaMsg{{"user", "event copy"}}))}}}
 	before := cloneDeltaSpans(input)
-	d := decomposeInMemory(t, 4, input)
+	d := decomposeInMemory(t, input)
 	requireDeltaSpansEqual(t, input, before)
 	for i := range input {
 		if input[i] != nil && d.spans[i] == input[i] {
@@ -434,10 +171,6 @@ func TestMessageDecomposeInputImmutable(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireDeltaSpansEqual(t, again, before)
-}
-
-func deltaUnknown(m proto.Message) {
-	m.ProtoReflect().SetUnknown(protowire.AppendVarint(protowire.AppendTag(nil, 99, protowire.VarintType), 7))
 }
 
 func TestMessageManifestLayouts(t *testing.T) {
@@ -483,7 +216,7 @@ func TestMessageManifestLayouts(t *testing.T) {
 			rs.ScopeSpans[0].Spans[0].Events = []*tracepb.Span_Event{{Name: "gen_ai.client.inference.operation.details", Attributes: []*commonpb.KeyValue{deltaKV("gen_ai.output.messages", proto.Clone(rs.ScopeSpans[0].Spans[0].Attributes[0]).(*commonpb.KeyValue).Value)}}}
 			in := []*tracepb.ResourceSpans{rs, nil}
 			before := cloneDeltaSpans(in)
-			d := decomposeInMemory(t, 3, in)
+			d := decomposeInMemory(t, in)
 			if d.spans[1] != nil || d.spans[0] == rs {
 				t.Fatal("decompose must clone non-nil inputs and keep nil entries")
 			}
@@ -515,7 +248,7 @@ func TestMessageDecomposeAdmission(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	huge := deltaArray(&commonpb.AnyValue{Value: &commonpb.AnyValue_BytesValue{BytesValue: make([]byte, maxMessageBytes)}})
-	_, err := decomposeMessages(ctx, []*tracepb.ResourceSpans{deltaSpan(1, deltaKV("gen_ai.input.messages", huge))}, 0)
+	_, err := decomposeMessages(ctx, []*tracepb.ResourceSpans{deltaSpan(1, deltaKV("gen_ai.input.messages", huge))})
 	requireTyped[*AdmissionError](t, "oversized element", err)
 
 	// Placeholder IDs are 18 bytes, the longest an ID encodes to, so a
@@ -527,17 +260,17 @@ func TestMessageDecomposeAdmission(t *testing.T) {
 	for i := range many {
 		many[i] = deltaStr(fmt.Sprint(i))
 	}
-	_, err = decomposeMessages(ctx, []*tracepb.ResourceSpans{deltaSpan(1, deltaKV("gen_ai.input.messages", deltaArray(many...)))}, 0)
+	_, err = decomposeMessages(ctx, []*tracepb.ResourceSpans{deltaSpan(1, deltaKV("gen_ai.input.messages", deltaArray(many...)))})
 	requireTyped[*AdmissionError](t, "oversized manifest", err)
-	if _, err := decomposeMessages(ctx, []*tracepb.ResourceSpans{deltaSpan(1, deltaKV("gen_ai.input.messages", deltaArray(many[:3000]...)))}, 0); err != nil {
+	if _, err := decomposeMessages(ctx, []*tracepb.ResourceSpans{deltaSpan(1, deltaKV("gen_ai.input.messages", deltaArray(many[:3000]...)))}); err != nil {
 		t.Fatalf("3000-message attribute must fit the manifest cap: %v", err)
 	}
 	canceledCtx, cancel := context.WithCancel(ctx)
 	cancel()
-	if _, err := decomposeMessages(canceledCtx, deltaConversation(1, "array"), 0); !errors.Is(err, context.Canceled) {
+	if _, err := decomposeMessages(canceledCtx, deltaConversation(1, "array")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("want canceled, got %v", err)
 	}
-	d, err := decomposeMessages(ctx, deltaConversation(1, "array"), 0)
+	d, err := decomposeMessages(ctx, deltaConversation(1, "array"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -555,7 +288,7 @@ func binaryUvarints(vs ...int64) []byte {
 
 func TestMessageManifestCorruption(t *testing.T) {
 	t.Parallel()
-	d := decomposeInMemory(t, 0, deltaConversation(2, "json"))
+	d := decomposeInMemory(t, deltaConversation(2, "json"))
 	good := deltaAttr(t, d.spans[1], "gen_ai.input.messages").GetBytesValue()
 	if _, err := parseMessageManifest(deltaAttr(t, d.spans[1], "gen_ai.input.messages")); err != nil {
 		t.Fatalf("positive control: %v", err)
@@ -609,17 +342,6 @@ func TestMessageManifestCorruption(t *testing.T) {
 // Text extraction, tokenizer and segments
 // ---------------------------------------------------------------------------
 
-type ftsRoleText struct{ role, text string }
-
-func ftsAnyWire(t *testing.T, v *commonpb.AnyValue) []byte {
-	t.Helper()
-	wire, err := proto.MarshalOptions{Deterministic: true}.Marshal(v)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return wire
-}
-
 func TestMessageTextExtractionConversation(t *testing.T) {
 	t.Parallel()
 	const turns = 3
@@ -632,7 +354,7 @@ func TestMessageTextExtractionConversation(t *testing.T) {
 		want[ftsRoleText{"assistant", deltaText("assistant", k, 800)}] = true
 	}
 	for _, form := range []string{"array", "json"} {
-		d, err := decomposeMessages(t.Context(), deltaConversation(turns, form), 0)
+		d, err := decomposeMessages(t.Context(), deltaConversation(turns, form))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -696,31 +418,10 @@ func TestMessageTextExtractionEncodingsAgree(t *testing.T) {
 	}
 }
 
-// TestMessageTokenizer pins the registered tokenizer to the default one,
-// except that a token over maxIndexedTokenBytes is "" and keeps its position.
-func TestMessageTokenizer(t *testing.T) {
+// Query terms are the default tokenizer's query tokens, bounded like
+// indexed tokens; otelsql's TestMessageTokenizer covers index tokens.
+func TestTokenizeQueryTerms(t *testing.T) {
 	t.Parallel()
-	tok, err := recordlayer.GetTextTokenizer(messageTokenizerName)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := "Crème BRÛLÉE, crème! Ångström " + strings.Repeat("a", maxIndexedTokenBytes+1) + " ok " + strings.Repeat("b", maxIndexedTokenBytes)
-	got, err := tok.TokenizeToMap(text, recordlayer.GlobalMinVersion, recordlayer.TokenizerModeIndex)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := map[string][]int{"creme": {0, 2}, "brulee": {1}, "angstrom": {3}, "ok": {5}, strings.Repeat("b", maxIndexedTokenBytes): {6}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("tokens %v", got)
-	}
-	def, err := recordlayer.DefaultTextTokenizerInstance().TokenizeToList(text, 0, recordlayer.TokenizerModeIndex)
-	if err != nil {
-		t.Fatal(err)
-	}
-	list, err := tok.TokenizeToList(text, 0, recordlayer.TokenizerModeIndex)
-	if err != nil || len(list) != len(def) || list[4] != "" || def[4] == "" {
-		t.Fatalf("list %d vs default %d: %v", len(list), len(def), err)
-	}
 	terms, err := tokenizeQueryTerms("Ünïcödé  FAÇADE! query_traces")
 	if err != nil || !reflect.DeepEqual(terms, []messagePhraseTerm{{"unicode", 0}, {"facade", 1}, {"query_traces", 2}}) {
 		t.Fatalf("query terms %v %v", terms, err)
@@ -729,16 +430,6 @@ func TestMessageTokenizer(t *testing.T) {
 	requireTyped[*ConfigError](t, "oversized query term", err)
 	_, err = tokenizeQueryTerms(strings.Repeat("c ", maxMessageQueryBytes))
 	requireTyped[*ConfigError](t, "oversized query", err)
-}
-
-// largeText is about n bytes of text with a vocabulary large enough that it
-// needs several segments.
-func largeText(n int) string {
-	var b strings.Builder
-	for i := 0; b.Len() < n; i++ {
-		fmt.Fprintf(&b, "w%d alpha%d beta, gamma.delta %d\n", i%5000, i%977, i)
-	}
-	return b.String()
 }
 
 // TestMessageSegments checks segment bounds, token identity and containment
@@ -750,7 +441,7 @@ func TestMessageSegments(t *testing.T) {
 	if err != nil || len(segs) != 1 || segs[0].text != small || segs[0].offset != 0 || unindexed != 0 {
 		t.Fatalf("small text: %d segments, %v", len(segs), err)
 	}
-	tok := messageTokenizer{}
+	tok := otelsql.MessageTokenizer{}
 	// A segment's postings are the TEXT index entries it adds.
 	if m, err := tok.TokenizeToMap(small, 0, recordlayer.TokenizerModeIndex); err != nil || segs[0].postings != len(m) {
 		t.Fatalf("small text: %d postings, want %d (%v)", segs[0].postings, len(m), err)
@@ -820,45 +511,6 @@ func TestMessageSegments(t *testing.T) {
 	}
 }
 
-// TestPlanMessageParts checks the records of a message larger than one part.
-func TestPlanMessageParts(t *testing.T) {
-	t.Parallel()
-	text := largeText(3 << 20)
-	value := deltaKvlist(deltaKV("role", deltaStr("Tool")), deltaKV("content", deltaStr(text)))
-	raw := ftsAnyWire(t, value)
-	el := &messageElement{digest: messageHash(2, messageEncodingAny, raw), encoding: messageEncodingAny, raw: raw}
-	p, err := planMessage(2, el, true, messageSegmentTokens)
-	if err != nil {
-		t.Fatal(err)
-	}
-	segs, _, err := segmentMessageText(text, messageSegmentTokens)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := max(len(segs), (len(raw)+messagePartRawBytes-1)/messagePartRawBytes); len(p.records) != want || len(p.records) < 2 {
-		t.Fatalf("%d records, want %d", len(p.records), want)
-	}
-	var rebuilt []byte
-	for i, r := range p.records {
-		m := r.ProtoReflect()
-		f := m.Descriptor().Fields()
-		if m.Get(f.ByName("part")).Int() != int64(i) || m.Get(f.ByName("role")).String() != "tool" || m.Get(f.ByName("text")).String() != segs[i].text || m.Get(f.ByName("token_offset")).Int() != int64(segs[i].offset) {
-			t.Fatalf("part %d fields", i)
-		}
-		if m.Has(f.ByName("hash")) != (i == 0) || m.Has(f.ByName("parts")) != (i == 0) || (m.Get(f.ByName("large")).List().Len() == 1) != (i == 0) {
-			t.Fatalf("part %d header fields", i)
-		}
-		rebuilt = append(rebuilt, m.Get(f.ByName("raw")).Bytes()...)
-	}
-	if !bytes.Equal(rebuilt, raw) {
-		t.Fatal("parts do not hold the raw element")
-	}
-	small, err := planMessage(2, &messageElement{encoding: messageEncodingAny, raw: ftsAnyWire(t, deltaStr("hi"))}, true, messageSegmentTokens)
-	if err != nil || len(small.records) != 1 || small.records[0].ProtoReflect().Get(small.records[0].ProtoReflect().Descriptor().Fields().ByName("large")).List().Len() != 0 {
-		t.Fatalf("small message: %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Span references
 // ---------------------------------------------------------------------------
@@ -873,7 +525,7 @@ func TestMessageUses(t *testing.T) {
 		// A later value of the same key does not describe references.
 		deltaKV("gen_ai.input.messages", deltaMessages("array", []deltaMsg{z})),
 	)}
-	d, err := decomposeMessages(t.Context(), spans, 0)
+	d, err := decomposeMessages(t.Context(), spans)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -895,11 +547,11 @@ func TestMessageUses(t *testing.T) {
 	// Turn k of a conversation references its whole history; only its own
 	// prompt and reply are newest. The uses depend only on the span.
 	conv := deltaConversation(4, "array")
-	d, err = decomposeMessages(t.Context(), conv, 0)
+	d, err = decomposeMessages(t.Context(), conv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	alone, err := decomposeMessages(t.Context(), conv[2:3], 0)
+	alone, err := decomposeMessages(t.Context(), conv[2:3])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -920,76 +572,27 @@ func TestMessageUses(t *testing.T) {
 		}
 	}
 
-	// The Envelope packs them with the element IDs, or the placeholder.
-	fd, err := recordFile(messagesFullText)
+	// The span's ref_chunks pack them with the element IDs, or the
+	// placeholder.
+	ex.id = messageID{3, 7}
+	chunks, err := (&relMessageStore{}).refChunks(want)
+	if err != nil || len(chunks) != 1 {
+		t.Fatalf("%d chunks: %v", len(chunks), err)
+	}
+	refs, err := otelsql.UnpackRefChunk(chunks[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := dynamicpb.NewMessage(fd.Messages().ByName("Envelope"))
-	ex.id = messageID{3, 7}
-	setEnvelopeRefs(m, want)
-	list := m.Get(m.Descriptor().Fields().ByName("ref_chunks")).List()
-	if list.Len() != 1 {
-		t.Fatalf("%d chunks", list.Len())
-	}
-	c := list.Get(0).Message()
-	refs, err := unpackSpanRefs(c.Get(c.Descriptor().Fields().ByName("refs")).Bytes())
-	if err != nil || c.Get(c.Descriptor().Fields().ByName("chunk")).Int() != 0 {
-		t.Fatal(err)
-	}
-	wantRefs := []spanRef{
-		{id: messageID{3, 7}, attribute: in, newest: true, ordinals: []int{0, 2}},
-		{id: messagePlaceholderID, attribute: in, ordinals: []int{1}},
-		{id: messagePlaceholderID, attribute: out, newest: true, ordinals: []int{0}},
+	wantRefs := []otelsql.MessageRef{
+		{Writer: 3, Seq: 7, Attribute: in, Newest: true, Ordinals: []int{0, 2}},
+		{Writer: messagePlaceholderID.writer, Seq: messagePlaceholderID.seq, Attribute: in, Ordinals: []int{1}},
+		{Writer: messagePlaceholderID.writer, Seq: messagePlaceholderID.seq, Attribute: out, Newest: true, Ordinals: []int{0}},
 	}
 	if !reflect.DeepEqual(refs, wantRefs) {
 		t.Fatalf("references %+v, want %+v", refs, wantRefs)
 	}
-	// Setting again replaces the list.
-	setEnvelopeRefs(m, want[:1])
-	if list := m.Get(m.Descriptor().Fields().ByName("ref_chunks")).List(); list.Len() != 1 {
-		t.Fatalf("%d chunks after replacement", list.Len())
-	}
-	setEnvelopeRefs(m, nil)
-	if m.Has(m.Descriptor().Fields().ByName("ref_chunks")) {
-		t.Fatal("a span without references keeps chunks")
-	}
-}
-
-// TestSpanRefChunks checks that a long history is cut into chunks of at most
-// messageRefChunkBytes that decode, in order, to every reference.
-func TestSpanRefChunks(t *testing.T) {
-	t.Parallel()
-	var uses []messageUse
-	var want []spanRef
-	for i := range 5000 {
-		el := &messageElement{id: messageID{int64(i%16 + 1), int64(i + 1)}}
-		ords := []int{i, i + 7}
-		uses = append(uses, messageUse{element: el, attribute: 1 + int64(i%4), ordinals: ords, newest: i == 4999})
-		want = append(want, spanRef{id: el.id, attribute: 1 + int64(i%4), ordinals: ords, newest: i == 4999})
-	}
-	chunks := packSpanRefs(uses)
-	if len(chunks) < 2 {
-		t.Fatalf("%d chunks", len(chunks))
-	}
-	var got []spanRef
-	for i, c := range chunks {
-		if len(c) > messageRefChunkBytes {
-			t.Fatalf("chunk %d has %d bytes", i, len(c))
-		}
-		refs, err := unpackSpanRefs(c)
-		if err != nil {
-			t.Fatal(err)
-		}
-		got = append(got, refs...)
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatal("chunks do not decode to the references")
-	}
-	for _, bad := range [][]byte{{0xff}, tuple.Tuple{int64(1), int64(2), int64(1), int64(0)}.Pack(), tuple.Tuple{int64(1), int64(2), int64(9), int64(0), tuple.Tuple{int64(0)}}.Pack(), tuple.Tuple{int64(1), int64(2), int64(1), int64(2), tuple.Tuple{int64(0)}}.Pack(), tuple.Tuple{int64(1), int64(2), int64(1), int64(0), tuple.Tuple{}}.Pack()} {
-		if _, err := unpackSpanRefs(bad); err == nil {
-			t.Fatalf("malformed chunk %x accepted", bad)
-		}
+	if chunks, err := (&relMessageStore{}).refChunks(nil); err != nil || len(chunks) != 0 {
+		t.Fatalf("a span without references packs %d chunks: %v", len(chunks), err)
 	}
 }
 
@@ -1024,7 +627,7 @@ func TestMessageQueryPlan(t *testing.T) {
 	if !bytes.Equal(plan(MessageFullTextQuery{Query: "a", Role: " USER"}).digest, plan(MessageFullTextQuery{Query: "a", Role: "user"}).digest) {
 		t.Fatal("digest must normalize role")
 	}
-	pred := Attribute{"span", "k", "string", "v"}
+	// Predicates are newRelMessageQueryPlan's (TestRelMessageQueryPlan).
 	for name, q := range map[string]MessageFullTextQuery{
 		"phrase":     {Query: "alpha beta", Mode: MessageMatchPhrase},
 		"any":        {Query: "alpha beta", Mode: MessageMatchAny},
@@ -1032,7 +635,6 @@ func TestMessageQueryPlan(t *testing.T) {
 		"attribute":  {Query: "alpha beta", AttributeKey: "gen_ai.input.messages"},
 		"role":       {Query: "alpha beta", Role: "user"},
 		"first turn": {Query: "alpha beta", FirstTurnOnly: true},
-		"predicate":  {Query: "alpha beta", Predicates: []Attribute{pred}},
 		"window":     {Query: "alpha beta", TimeWindow: &TimeRange{Start: 1, End: 2}},
 	} {
 		if bytes.Equal(plan(q).digest, base) {
@@ -1049,70 +651,11 @@ func TestMessageQueryPlan(t *testing.T) {
 		"too many terms":        {Query: strings.Repeat("w ", maxMessageQueryTerms+1)},
 		"bad attribute":         {Query: "a", AttributeKey: "gen_ai.request.model"},
 		"negative limit":        {Query: "a", Limit: -1},
-		"bad predicate":         {Query: "a", Predicates: []Attribute{{"event", "k", "string", "v"}}},
-		"message predicate":     {Query: "a", Predicates: []Attribute{{"span", "gen_ai.input.messages", "string", "v"}}},
 		"inverted window":       {Query: "a", TimeWindow: &TimeRange{Start: 3, End: 2}},
 		"long role":             {Query: "a", Role: strings.Repeat("r", maxMessageRoleBytes+1)},
 		"unindexable long term": {Query: strings.Repeat("q", maxIndexedTokenBytes+1)},
 	} {
 		_, err := newMessageQueryPlan(op, q, 7)
 		requireTyped[*ConfigError](t, name, err)
-	}
-}
-
-func TestMessageContinuation(t *testing.T) {
-	t.Parallel()
-	secret := bytes.Repeat([]byte{3}, continuationKeyBytes)
-	b := qaBackend("time")
-	digest := bytes.Repeat([]byte{1}, 32)
-	last := messageRefKey("time", qaID(1, 16), qaID(2, 8), 42, 1, messageID{3, 9})
-	token := signContinuationKind(secret, messageContinuationKind, b.cfg.Run, b.cfg.Tenant, "time", digest, last)
-	c, err := parseContinuationKind(token, messageContinuationKind)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := c.authenticate(secret, b, digest); err != nil {
-		t.Fatal(err)
-	}
-	if r, err := parseMessageResume("time", c.last); err != nil || !bytes.Equal(r, last) {
-		t.Fatalf("resume %x %v", r, err)
-	}
-	// Sort keys order by span, then attribute, then message.
-	keys := [][]byte{
-		messageRefKey("time", qaID(1, 16), qaID(2, 8), 43, 2, messageID{1, 1}),
-		messageRefKey("time", qaID(1, 16), qaID(2, 8), 42, 1, messageID{3, 9}),
-		messageRefKey("time", qaID(1, 16), qaID(2, 8), 42, 1, messageID{3, 10}),
-		messageRefKey("time", qaID(1, 16), qaID(2, 8), 42, 2, messageID{1, 1}),
-	}
-	for i := 1; i < len(keys); i++ {
-		if bytes.Compare(keys[i-1], keys[i]) >= 0 {
-			t.Fatalf("sort key %d does not follow %d", i, i-1)
-		}
-	}
-	_, err = parseContinuationKind(token, continuationKind)
-	requireTyped[*ConfigError](t, "message token as same-span", err)
-	_, err = parseContinuationKind(signContinuation(secret, b.cfg.Run, b.cfg.Tenant, "time", digest, last), messageContinuationKind)
-	requireTyped[*ConfigError](t, "same-span token as message", err)
-	for i := range token {
-		mutated := append([]byte(nil), token...)
-		mutated[i] ^= 0x10
-		c, err := parseContinuationKind(mutated, messageContinuationKind)
-		if err == nil {
-			err = c.authenticate(secret, b, digest)
-		}
-		if err == nil {
-			t.Fatalf("flip at byte %d accepted", i)
-		}
-		requireConfigOrCorruption(t, fmt.Sprintf("flip %d", i), err)
-	}
-	for name, raw := range map[string][]byte{
-		"trace order key": messageRefKey("trace", qaID(1, 16), qaID(2, 8), 42, 1, messageID{3, 9}),
-		"zero seq":        messageRefKey("time", qaID(1, 16), qaID(2, 8), 42, 1, messageID{3, 0}),
-		"garbage":         {0xff},
-		"bad attribute":   append(postingSuffix(Span{Trace: qaID(1, 16), ID: qaID(2, 8), Start: 42}, "time"), "gen_ai.request.model", int64(1), int64(1)).Pack(),
-		"short":           tuple.Tuple{int64(1)}.Pack(),
-	} {
-		_, err := parseMessageResume("time", raw)
-		requireTyped[*CorruptionError](t, name, err)
 	}
 }

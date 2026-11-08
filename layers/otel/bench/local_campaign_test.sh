@@ -97,13 +97,13 @@ touch "$fixture/dirty"
 expect_exit 3 env OUT="$scratch/dirty" bash "$script"
 rm "$fixture/dirty"
 [[ ! -s $CALL_LOG && ! -s $CURL_LOG ]]
-# All five layouts and both query modes execute in rotated order, retaining receipts.
+# All four layouts and both query modes execute in rotated order, retaining receipts.
 expect_exit 0 env OUT="$scratch/success" bash "$script"
-[[ $(grep -c '^ingest ' "$CALL_LOG") == 5 ]]
-[[ $(grep -c '^audit ' "$CALL_LOG") == 5 ]]
-[[ $(grep -c '^query ' "$CALL_LOG") == 20 ]]
+[[ $(grep -c '^ingest ' "$CALL_LOG") == 4 ]]
+[[ $(grep -c '^audit ' "$CALL_LOG") == 4 ]]
+[[ $(grep -c '^query ' "$CALL_LOG") == 16 ]]
 [[ $(wc -l < "$CURL_LOG") == 5 ]]
-[[ $(find "$scratch/success" -name '*.json' | wc -l) == 30 ]]
+[[ $(find "$scratch/success" -name '*.json' | wc -l) == 24 ]]
 grep -q '^exit=0 query_command_failures=0 ' "$scratch/success/status"
 cmp "$scratch/success/inputs.before" "$scratch/success/inputs.after"
 # Independently pin every forwarded setting, suite, endpoint, output and rotation.
@@ -114,8 +114,8 @@ assert_invocation() {
     --seed 283 --match-every 100 --k 100 --revision "$revision"
     --max-candidates 1234 --max-bytes 567890 --timeout 60m)
   case "$arm" in
-    fdb_trace) expected+=(--backend fdb --order trace --cluster-file "$scratch/fdb.cluster") ;;
-    fdb_time) expected+=(--backend fdb --order time --cluster-file "$scratch/fdb.cluster") ;;
+    sql_direct) expected+=(--backend sql --sql-ingest direct --sql-rows compiled --sql-query direct
+      --save-mode batch --record-compression zlib-1 --cluster-file "$scratch/fdb.cluster") ;;
     ch_map) expected+=(--backend ch-map --order trace --ch-url http://127.0.0.1:1) ;;
     ch_attrs_trace) expected+=(--backend ch-attrs --order trace --ch-url http://127.0.0.1:1) ;;
     ch_attrs_time) expected+=(--backend ch-attrs --order time --ch-url http://127.0.0.1:1) ;;
@@ -132,7 +132,7 @@ assert_invocation() {
   done | LC_ALL=C sort > "$scratch/expected-args"
   diff -u "$scratch/expected-args" "$ARG_DIR/$index"
 }
-arms=(fdb_trace fdb_time ch_map ch_attrs_trace ch_attrs_time)
+arms=(sql_direct ch_map ch_attrs_trace ch_attrs_time)
 index=0
 for arm in "${arms[@]}"; do
   assert_invocation "$index" "$arm" ingest
@@ -141,15 +141,15 @@ for arm in "${arms[@]}"; do
   index=$((index + 1))
 done
 for ((round=0; round<2; round++)); do
-  for ((offset=0; offset<5; offset++)); do
-    arm=${arms[$(( (round + offset) % 5 ))]}
+  for ((offset=0; offset<4; offset++)); do
+    arm=${arms[$(( (round + offset) % 4 ))]}
     assert_invocation "$index" "$arm" query selective 5
     index=$((index + 1))
     assert_invocation "$index" "$arm" query trace 4
     index=$((index + 1))
   done
 done
-[[ $index == 30 ]]
+[[ $index == 24 ]]
 : > "$scratch/expected-curl"
 for target in ch_map.spans ch_attrs_trace.spans ch_attrs_trace.attr_lookup ch_attrs_time.spans ch_attrs_time.attr_lookup; do
   printf '%q ' --fail --silent --show-error http://127.0.0.1:1 --data-binary "OPTIMIZE TABLE otel_otel_test_${target} FINAL" >> "$scratch/expected-curl"
@@ -200,14 +200,14 @@ if [[ $rc != 0 ]]; then
   exit 1
 fi
 exec 7>&-
-[[ $(wc -l < "$scratch/lock-calls") == 30 ]]
+[[ $(wc -l < "$scratch/lock-calls") == 24 ]]
 [[ $(wc -l < "$scratch/lock-curl-calls") == 5 ]]
 grep -q '^exit=0 query_command_failures=0 ' "$scratch/contended/status"
 "$REAL_FLOCK" -n "$FDB_LANE_LOCK" true
 # Failures remain raw and do not abort later arms.
 expect_exit 1 env FAIL_QUERY=1 OUT="$scratch/query-failures" bash "$script"
-grep -q '^exit=1 query_command_failures=20 ' "$scratch/query-failures/status"
-[[ $(find "$scratch/query-failures" -name '*.json' | wc -l) == 30 ]]
+grep -q '^exit=1 query_command_failures=16 ' "$scratch/query-failures/status"
+[[ $(find "$scratch/query-failures" -name '*.json' | wc -l) == 24 ]]
 # Both file mutations and HEAD-only mutations invalidate otherwise successful receipts.
 expect_exit 4 env MUTATE_INPUT="$fixture/mutated" OUT="$scratch/input-change" bash "$script"
 grep -q '^exit=4 ' "$scratch/input-change/status"

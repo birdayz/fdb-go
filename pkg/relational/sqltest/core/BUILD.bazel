@@ -25,6 +25,7 @@ go_test(
         "sliding_window_view_fdb_test.go",
         "sql_function_columns_fdb_test.go",
         "sql_function_fdb_test.go",
+        "statement_read_fdb_test.go",
         "store_timer_metrics_fdb_test.go",
     ],
     tags = [
@@ -49,6 +50,7 @@ go_test(
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/fleet",
         "//pkg/relational/core/rowstruct",
+        "//pkg/relational/internal/connknob",
         "//pkg/relational/sqldriver",
         "//pkg/relational/sqltest/testkit",
         "//pkg/simfdb",

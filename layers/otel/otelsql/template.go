@@ -4,101 +4,65 @@ package otelsql
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 
+	"fdb.dev/layers/otel/otelsql/internal/otelddl"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/keyspace"
 )
 
 // TemplateName names the schema template; a schema of every tenant database
 // is created with it.
-const TemplateName = "OTEL_V1"
+const TemplateName = otelddl.Name
 
-// TemplateVersion is the initial catalog version; evolution must use the
-// catalog's version/evolution validator rather than overwrite its DDL.
+// TemplateVersion is the catalog version. The OTel layer is pre-release, so
+// a revision of OTEL_V1 replaces it in place at this version and existing
+// stores must be recreated; once stores must be kept, changes go through the
+// catalog's version/evolution validator.
 const TemplateVersion = 1
 
 // MaxIndexedStringBytes keeps indexed strings within FDB's key limit;
 // longer values belong in long_str_attrs and are looked up by digest.
 const MaxIndexedStringBytes = 1024
 
-// TemplateBody follows CREATE SCHEMA TEMPLATE <name>; storage and fidelity
-// contracts are in docs/compatibility.md "OTel SQL schema foundation".
-const TemplateBody = `CREATE TYPE AS STRUCT str_attr (scope STRING, attr_key STRING, str_value STRING)
-CREATE TYPE AS STRUCT long_str_attr (scope STRING, attr_key STRING, digest BYTES, str_value STRING)
-CREATE TYPE AS STRUCT int_attr (scope STRING, attr_key STRING, int_value BIGINT)
-CREATE TYPE AS STRUCT double_attr (scope STRING, attr_key STRING, double_value DOUBLE)
-CREATE TYPE AS STRUCT bool_attr (scope STRING, attr_key STRING, bool_value BOOLEAN)
-CREATE TYPE AS STRUCT bytes_attr (scope STRING, attr_key STRING, bytes_value BYTES)
-CREATE TYPE AS STRUCT any_attr (scope STRING, attr_key STRING, json_value STRING)
-CREATE TYPE AS STRUCT span_event (ordinal BIGINT, name STRING, time_ns BIGINT, dropped_attributes BIGINT,
-  str_attrs str_attr ARRAY, int_attrs int_attr ARRAY, double_attrs double_attr ARRAY,
-  bool_attrs bool_attr ARRAY, any_attrs any_attr ARRAY)
-CREATE TYPE AS STRUCT span_link (ordinal BIGINT, trace_id BYTES, span_id BYTES, trace_state STRING,
-  flags BIGINT, dropped_attributes BIGINT, str_attrs str_attr ARRAY, int_attrs int_attr ARRAY,
-  double_attrs double_attr ARRAY, bool_attrs bool_attr ARRAY, any_attrs any_attr ARRAY)
-CREATE TYPE AS STRUCT message_ref (attribute BIGINT, writer BIGINT, seq BIGINT, newest BOOLEAN, ordinals BIGINT ARRAY)
-CREATE TABLE spans (trace_id BYTES, span_id BYTES, parent_span_id BYTES, trace_state STRING, flags BIGINT,
-  name STRING, kind INTEGER, start_ns BIGINT, end_ns BIGINT, status_code INTEGER, status_message STRING,
-  service_name STRING, scope_name STRING, scope_version STRING, resource_schema_url STRING, scope_schema_url STRING,
-  dropped_attributes BIGINT, dropped_events BIGINT, dropped_links BIGINT,
-  str_attrs str_attr ARRAY, long_str_attrs long_str_attr ARRAY, int_attrs int_attr ARRAY,
-  double_attrs double_attr ARRAY, bool_attrs bool_attr ARRAY, bytes_attrs bytes_attr ARRAY, any_attrs any_attr ARRAY,
-  events span_event ARRAY, links span_link ARRAY, message_refs message_ref ARRAY, otlp BYTES,
-  PRIMARY KEY (trace_id, span_id))
-CREATE INDEX spans_time AS SELECT start_ns, trace_id, span_id FROM spans ORDER BY start_ns, trace_id, span_id
-CREATE INDEX spans_span_id AS SELECT span_id, start_ns, trace_id FROM spans ORDER BY span_id, start_ns, trace_id
-CREATE INDEX spans_str_attr AS SELECT a.scope, a.attr_key, a.str_value, s.start_ns, s.trace_id, s.span_id
-  FROM spans AS s, (SELECT scope, attr_key, str_value FROM s.str_attrs) AS a
-  ORDER BY a.scope, a.attr_key, a.str_value, s.start_ns, s.trace_id, s.span_id
-CREATE INDEX spans_long_str_attr AS SELECT a.scope, a.attr_key, a.digest, s.start_ns, s.trace_id, s.span_id
-  FROM spans AS s, (SELECT scope, attr_key, digest FROM s.long_str_attrs) AS a
-  ORDER BY a.scope, a.attr_key, a.digest, s.start_ns, s.trace_id, s.span_id
-CREATE INDEX spans_int_attr AS SELECT a.scope, a.attr_key, a.int_value, s.start_ns, s.trace_id, s.span_id
-  FROM spans AS s, (SELECT scope, attr_key, int_value FROM s.int_attrs) AS a
-  ORDER BY a.scope, a.attr_key, a.int_value, s.start_ns, s.trace_id, s.span_id
-CREATE INDEX spans_double_attr AS SELECT a.scope, a.attr_key, a.double_value, s.start_ns, s.trace_id, s.span_id
-  FROM spans AS s, (SELECT scope, attr_key, double_value FROM s.double_attrs) AS a
-  ORDER BY a.scope, a.attr_key, a.double_value, s.start_ns, s.trace_id, s.span_id
-CREATE INDEX spans_bool_attr AS SELECT a.scope, a.attr_key, a.bool_value, s.start_ns, s.trace_id, s.span_id
-  FROM spans AS s, (SELECT scope, attr_key, bool_value FROM s.bool_attrs) AS a
-  ORDER BY a.scope, a.attr_key, a.bool_value, s.start_ns, s.trace_id, s.span_id
-CREATE TABLE logs (event_id STRING, trace_id BYTES, span_id BYTES, flags BIGINT, time_ns BIGINT,
-  observed_ns BIGINT, effective_ns BIGINT, time_source STRING, severity_number INTEGER, severity_text STRING,
-  event_name STRING, body_text STRING, service_name STRING, scope_name STRING, scope_version STRING,
-  resource_schema_url STRING, scope_schema_url STRING, dropped_attributes BIGINT,
-  str_attrs str_attr ARRAY, long_str_attrs long_str_attr ARRAY, int_attrs int_attr ARRAY,
-  double_attrs double_attr ARRAY, bool_attrs bool_attr ARRAY, bytes_attrs bytes_attr ARRAY, any_attrs any_attr ARRAY,
-  otlp BYTES, PRIMARY KEY (event_id))
-CREATE INDEX logs_trace AS SELECT trace_id, span_id, effective_ns, event_id FROM logs
-  ORDER BY trace_id, span_id, effective_ns, event_id
-CREATE INDEX logs_time AS SELECT effective_ns, event_id FROM logs ORDER BY effective_ns, event_id
-CREATE INDEX logs_str_attr AS SELECT a.scope, a.attr_key, a.str_value, l.effective_ns, l.event_id
-  FROM logs AS l, (SELECT scope, attr_key, str_value FROM l.str_attrs) AS a
-  ORDER BY a.scope, a.attr_key, a.str_value, l.effective_ns, l.event_id
-CREATE INDEX logs_int_attr AS SELECT a.scope, a.attr_key, a.int_value, l.effective_ns, l.event_id
-  FROM logs AS l, (SELECT scope, attr_key, int_value FROM l.int_attrs) AS a
-  ORDER BY a.scope, a.attr_key, a.int_value, l.effective_ns, l.event_id
-CREATE TABLE messages (writer BIGINT, seq BIGINT, part BIGINT, content_hash BYTES, role STRING, content STRING,
-  token_offset BIGINT, raw BYTES, encoding STRING, raw_bytes BIGINT, parts BIGINT, unindexed_tokens BIGINT,
-  large BIGINT ARRAY, shard BIGINT, PRIMARY KEY (writer, seq, part))
-CREATE UNIQUE INDEX messages_hash AS SELECT content_hash FROM messages ORDER BY content_hash
-CREATE TABLE message_traces (writer BIGINT, seq BIGINT, trace_id BYTES, PRIMARY KEY (writer, seq, trace_id))
-CREATE INDEX message_traces_trace AS SELECT trace_id, writer, seq FROM message_traces ORDER BY trace_id, writer, seq`
+// TemplateBody and TemplateOverlay are the template's DDL (otelddl.Body,
+// otelddl.Overlay): the body Java builds too and the Go-only FULLTEXT index.
+const (
+	TemplateBody    = otelddl.Body
+	TemplateOverlay = otelddl.Overlay
+)
 
-// TemplateDDL is the statement that creates the template.
-func TemplateDDL() string {
-	return "CREATE SCHEMA TEMPLATE " + TemplateName + " " + TemplateBody
+// TemplateDDL is the statement that creates the template: TemplateBody and
+// TemplateOverlay.
+func TemplateDDL() string { return templateDDL(TemplateName) }
+
+func templateDDL(name string) string { return otelddl.DDL(name) }
+
+// RevisionTemplateName is TemplateName suffixed with a digest of
+// TemplateDDL: the template under a name no other revision of OTEL_V1 uses,
+// for benchmark runs on a shared development cluster whose catalog holds
+// OTEL_V1 as another revision defined it. Its stores are OTEL_V1 stores:
+// the name is only the records descriptor's file name.
+func RevisionTemplateName() string {
+	sum := sha256.Sum256([]byte(TemplateDDL()))
+	return fmt.Sprintf("%s_%X", TemplateName, sum[:4])
 }
 
 // CreateTemplate stores the template in the catalog of the connection's
 // cluster.
 func CreateTemplate(ctx context.Context, db *sql.DB) error {
-	if _, err := db.ExecContext(ctx, TemplateDDL()); err != nil {
-		return fmt.Errorf("otelsql: create schema template %s: %w", TemplateName, err)
+	return CreateTemplateNamed(ctx, db, TemplateName)
+}
+
+// CreateTemplateNamed is CreateTemplate under another name, such as
+// RevisionTemplateName.
+func CreateTemplateNamed(ctx context.Context, db *sql.DB, name string) error {
+	if _, err := db.ExecContext(ctx, templateDDL(name)); err != nil {
+		return fmt.Errorf("otelsql: create schema template %s: %w", name, err)
 	}
 	return nil
 }
@@ -106,6 +70,12 @@ func CreateTemplate(ctx context.Context, db *sql.DB) error {
 // CreateTenant creates the schema, resuming if the database already exists.
 // Paths use /DOMAIN/DATABASE and one ASCII schema identifier; names fold uppercase.
 func CreateTenant(ctx context.Context, db *sql.DB, databasePath, schema string) error {
+	return CreateTenantWithTemplate(ctx, db, databasePath, schema, TemplateName)
+}
+
+// CreateTenantWithTemplate is CreateTenant with the schema bound to template,
+// a name CreateTemplateNamed stored.
+func CreateTenantWithTemplate(ctx context.Context, db *sql.DB, databasePath, schema, template string) error {
 	databasePath, schemaPath, err := tenantPaths(databasePath, schema)
 	if err != nil {
 		return err
@@ -116,7 +86,7 @@ func CreateTenant(ctx context.Context, db *sql.DB, databasePath, schema string) 
 			return fmt.Errorf("otelsql: create database %s: %w", databasePath, err)
 		}
 	}
-	if _, err := db.ExecContext(ctx, `CREATE SCHEMA "`+schemaPath+`" WITH TEMPLATE `+TemplateName); err != nil {
+	if _, err := db.ExecContext(ctx, `CREATE SCHEMA "`+schemaPath+`" WITH TEMPLATE `+template); err != nil {
 		return fmt.Errorf("otelsql: create schema %s: %w", schemaPath, err)
 	}
 	return nil

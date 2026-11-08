@@ -86,13 +86,14 @@ def re_run(run):
 
 def app_argv(d, mode):
     s = d["storage_options"]
-    args = [d["binary"], "--backend", "fdb", "--order", "time", "--cluster-file", d["cluster_file"],
+    args = [d["binary"], "--backend", "sql", "--sql-ingest", "direct", "--sql-rows", "compiled", "--sql-query", "direct",
+            "--cluster-file", d["cluster_file"],
             "--run", d["run"], "--seed", "283", "--count", str(d["count"]), "--tenants", "1", "--attrs", "8",
             "--match-every", "100", "--batch", str(d["batch"]), "--save-mode", "batch", "--workers", str(d["workers"]),
-            "--diagnostics", "--k", "100", "--max-candidates", "2000000", "--max-bytes", "268435456",
+            "--k", "100", "--max-candidates", "2000000", "--max-bytes", "268435456",
             "--revision", d["source_revision"], "--record-compression", s["record_compression"],
-            "--posting-value-format", s["posting_value_format"], "--bulk-index-conflicts=" + str(s["bulk_index_conflicts"]).lower(),
-            "--hash-bytes", str(s["hash_bytes"]), "--mode", mode, "--timeout", "300s" if mode == "ingest" else "120s",
+            "--bulk-index-conflicts=" + str(s["bulk_index_conflicts"]).lower(),
+            "--mode", mode, "--timeout", "300s" if mode == "ingest" else "120s",
             "--output", str(Path(d["work"]) / (mode + ".json"))]
     if mode == "query":
         args += ["--suite", "all", "--iterations", "1600"]

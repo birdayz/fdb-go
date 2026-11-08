@@ -127,8 +127,8 @@ class SupervisorFixture(unittest.TestCase):
             workers=8, gomaxprocs=4, storage_process_count=3, storage_max_outstanding=64,
             storage_memory_profile="scaling3ss3g", source_revision="a" * 40,
             first_epoch=1000, deadline_epoch=8200, controller_cidr="192.0.2.1/32",
-            source_root=str(source), storage_options=dict(record_compression="brotli-4",
-                posting_value_format="tuple", bulk_index_conflicts=True, hash_bytes=8),
+            source_root=str(source), storage_options=dict(record_compression="zlib-1",
+                bulk_index_conflicts=True),
             managed_watch=dict(root=str(self.root / "watch"), output=str(self.root / "run")))
         for name in ("binary", "fdbserver", "fdbcli", "hcloud", "controller_private_key",
                      "controller_public_key"):

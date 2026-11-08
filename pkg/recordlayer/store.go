@@ -2505,13 +2505,19 @@ func (store *FDBRecordStore) AddUniquenessViolationWithExisting(index *Index, in
 // record_wire_map_order.go), and is never written with vtproto's MarshalVT,
 // whose map order is Go's random iteration order.
 func serializeUnionOver(record proto.Message, recordType *RecordType, priorInner []byte) ([]byte, error) {
-	if recordType.unionFieldNumber == 0 {
-		return nil, fmt.Errorf("no union field number for record type: %s", recordType.Name)
-	}
 	if err := recordType.checkUTF8Strings(record); err != nil {
 		return nil, err
 	}
+	return serializeUnionOverChecked(record, recordType, priorInner)
+}
 
+// serializeUnionOverChecked is serializeUnionOver for a record whose strings
+// the same save call has already passed through checkUTF8Strings (the record
+// itself, or its asJavaForSave write view, which differs only in enums).
+func serializeUnionOverChecked(record proto.Message, recordType *RecordType, priorInner []byte) ([]byte, error) {
+	if recordType.unionFieldNumber == 0 {
+		return nil, fmt.Errorf("no union field number for record type: %s", recordType.Name)
+	}
 	if recordType.reachesMap {
 		if priorInner == nil && recordType.reachesClosedEnum && holdsUndeclared(record.ProtoReflect(), recordType.closedEnumReach) {
 			// A map value holding an undeclared closed-enum number (the only

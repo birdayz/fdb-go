@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"fdb.dev/layers/otel"
+	"fdb.dev/layers/otel/otelsql"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
@@ -44,10 +45,11 @@ const (
 	benchLogFlushInterval  = 200 * time.Millisecond
 	benchLogAttempts       = 5
 	benchQueryIdle         = 10 * time.Millisecond
-	// Budget bounds: one encoded message element, and one span reference,
-	// posting or metadata row.
-	benchMessageBytes = 1024
-	benchRowBytes     = 512
+	// Budget bounds: one index entry, posting, marker or probe row, and one
+	// packed span reference in a ref chunk's index key (two IDs at otelsql's
+	// bound, attribute, newest and an ordinal).
+	benchRowBytes    = 512
+	benchRefKeyBytes = 48
 
 	benchInputKey  = "gen_ai.input.messages"
 	benchOutputKey = "gen_ai.output.messages"
@@ -93,14 +95,20 @@ type CollectorBenchConfig struct {
 	ExporterBatchSize     int           `json:"exporter_batch_size"`
 	ExporterWorkers       int           `json:"exporter_workers"`
 	RecordCompression     string        `json:"record_compression"`
-	PostingValueFormat    string        `json:"posting_value_format"`
-	HashBytes             int           `json:"hash_bytes"`
-	Order                 string        `json:"order"`
 	EnableMessageDeltas   bool          `json:"enable_message_deltas"`
 	EnableMessageFullText bool          `json:"enable_message_full_text"`
 	QueryIterations       int           `json:"query_iterations"`
 	Revision              string        `json:"revision"`
-	runtime               *benchRuntime
+	// QueryOnly skips ingest and the fidelity audit: Run must already hold
+	// the fixed corpus of Conversations, and only the post-ingest queries
+	// run, each iteration reported as a sample (diagnostics).
+	QueryOnly bool `json:"query_only,omitempty"`
+	// QuerySamples reports every post-ingest query iteration as a sample.
+	QuerySamples bool `json:"query_samples,omitempty"`
+	// QueryClasses restricts the queries to these comma-separated classes;
+	// empty runs all.
+	QueryClasses string `json:"query_classes,omitempty"`
+	runtime      *benchRuntime
 }
 
 // DefaultCollectorBenchConfig returns the defaults; cluster_file and run
@@ -120,10 +128,7 @@ func DefaultCollectorBenchConfig() CollectorBenchConfig {
 		BatchMaxSize:          256,
 		ExporterBatchSize:     64,
 		ExporterWorkers:       8,
-		RecordCompression:     "brotli-4",
-		PostingValueFormat:    "tuple",
-		HashBytes:             8,
-		Order:                 "time",
+		RecordCompression:     "zlib-1",
 		EnableMessageDeltas:   true,
 		EnableMessageFullText: true,
 		QueryIterations:       100,
@@ -146,7 +151,6 @@ func (c CollectorBenchConfig) WithDefaults() CollectorBenchConfig {
 		{&c.BatchMaxSize, &d.BatchMaxSize},
 		{&c.ExporterBatchSize, &d.ExporterBatchSize},
 		{&c.ExporterWorkers, &d.ExporterWorkers},
-		{&c.HashBytes, &d.HashBytes},
 		{&c.QueryIterations, &d.QueryIterations},
 	} {
 		if *f.v == 0 {
@@ -161,7 +165,7 @@ func (c CollectorBenchConfig) WithDefaults() CollectorBenchConfig {
 		}
 	}
 	for _, f := range []struct{ v, d *string }{
-		{&c.RecordCompression, &d.RecordCompression}, {&c.PostingValueFormat, &d.PostingValueFormat}, {&c.Order, &d.Order}, {&c.Revision, &d.Revision},
+		{&c.RecordCompression, &d.RecordCompression}, {&c.Revision, &d.Revision},
 	} {
 		if *f.v == "" {
 			*f.v = *f.d
@@ -171,6 +175,14 @@ func (c CollectorBenchConfig) WithDefaults() CollectorBenchConfig {
 		c.Seed = d.Seed
 	}
 	return c
+}
+
+// queryClasses is QueryClasses as a list.
+func (c CollectorBenchConfig) queryClasses() []string {
+	if c.QueryClasses == "" {
+		return nil
+	}
+	return strings.Split(c.QueryClasses, ",")
 }
 
 // Validate checks the benchmark bounds and the derived exporter configuration.
@@ -204,6 +216,14 @@ func (c CollectorBenchConfig) Validate() error {
 	if c.QueueSize < c.TurnsPerConversation {
 		errs = append(errs, componentErrorf("queue_size must hold one conversation request (turns_per_conversation spans)"))
 	}
+	if c.QueryOnly && c.Duration > 0 {
+		errs = append(errs, componentErrorf("query_only reads a fixed corpus; duration must be 0"))
+	}
+	for _, class := range c.queryClasses() {
+		if !slices.Contains(CollectorBenchQueryClasses, class) {
+			errs = append(errs, componentErrorf("unknown query class %q", class))
+		}
+	}
 	if len(errs) == 0 {
 		cc := c.collectorConfig()
 		if err := cc.Validate(); err != nil {
@@ -216,19 +236,26 @@ func (c CollectorBenchConfig) Validate() error {
 	return nil
 }
 
-// benchQueryBudget allows two blocks of candidates/logical bytes, independent of corpus size,
-// so an accidental corpus scan fails rather than degrading as a sustained run grows.
+// benchQueryBudget allows twice the reads of one block's query on the
+// OTEL_V1 store, independent of corpus size, so an accidental corpus scan
+// fails rather than degrading as a sustained run grows.
 func benchQueryBudget(turns, k int) (int, int64) {
 	n := int64(turns)
-	// References to one block's user (or assistant) messages: message j of a
-	// conversation is in the history of turns j..n.
-	refs := benchBlockSize * n * (n + 1) / 2
-	// Existential queries read postings, messages, markers and reference chunks;
-	// K-limited queries add bounded verification and batched predicate probes.
-	rows := benchBlockSize*(4*n+1) + refs + 4*int64(k+64)
-	// This also covers one trace stored without decomposition, whose n spans
-	// carry n(n+4) message elements.
-	bytes := refs*benchRowBytes + benchBlockSize*n*(2*benchMessageBytes+3*benchRowBytes)
+	spans := benchBlockSize * n
+	// SPANS_REF_CHUNKS entries per span: turn j's span references its 2j+3
+	// elements, packed to at most otelsql.MaxRefChunkKeyBytes per chunk.
+	chunks := 1 + (2*n+3)*benchRefKeyBytes/otelsql.MaxRefChunkKeyBytes
+	// The widest classes read, per span of a block: an FTS block query one
+	// TEXT posting, one MESSAGE_TRACES marker, its ref chunks and two
+	// same-span predicate probes; the 3-way existential one span-attribute
+	// entry, a posting, a marker and the chunks, plus one log per
+	// conversation. Role discovery, bunch boundaries and the K-limited
+	// classes' verification add the constant terms.
+	rows := spans*(4+chunks) + benchBlockSize + 4*int64(k+64) + 16
+	// Every row at benchRowBytes, plus the block's packed references (n(n+4)
+	// per conversation) at their key bound. It also covers one trace stored
+	// without decomposition, whose n spans carry n(n+4) message elements.
+	bytes := rows*benchRowBytes + benchBlockSize*n*(n+4)*benchRefKeyBytes
 	return int(2*rows + 1000), 2*bytes + 1<<20
 }
 
@@ -237,7 +264,7 @@ func (c CollectorBenchConfig) collectorConfig() *Config {
 	cc := defaultConfig()
 	e := &cc.Exporter
 	e.ClusterFile, e.Run, e.Tenant = c.ClusterFile, c.Run, c.Tenant
-	e.Order, e.HashBytes, e.PostingValueFormat, e.RecordCompression = c.Order, c.HashBytes, c.PostingValueFormat, c.RecordCompression
+	e.RecordCompression = c.RecordCompression
 	e.EnableMessageDeltas, e.EnableMessageFullText = c.EnableMessageDeltas, c.EnableMessageFullText
 	e.BatchSize, e.Workers = c.ExporterBatchSize, c.ExporterWorkers
 	e.MaxCandidates, e.MaxBytes = benchQueryBudget(c.TurnsPerConversation, e.K)
@@ -375,6 +402,27 @@ type CollectorBenchQuery struct {
 	QPS        float64        `json:"qps"`
 	Histogram  otel.Histogram `json:"histogram"`
 	Error      string         `json:"error,omitempty"`
+	// Samples are the post-ingest iterations of a QuerySamples or QueryOnly
+	// run, in order.
+	Samples []CollectorBenchSample `json:"samples,omitempty"`
+}
+
+// CollectorBenchSample is one sampled post-ingest iteration: its target, latency,
+// the reads the query charged (FTS classes) and the FDB client requests of
+// the exporter's database handle while it ran.
+type CollectorBenchSample struct {
+	Iteration    int    `json:"iteration"`
+	Block        int    `json:"block"`
+	Conversation int    `json:"conversation"`
+	Ns           int64  `json:"ns"`
+	Rows         int    `json:"rows"`
+	Candidates   int64  `json:"candidates"`
+	Bytes        int64  `json:"logical_read_bytes"`
+	GRVs         int64  `json:"grvs"`
+	GRVCacheHits int64  `json:"grv_cache_hits"`
+	GetRanges    int64  `json:"get_range_requests"`
+	GetValues    int64  `json:"get_values"`
+	Error        string `json:"error,omitempty"`
 }
 
 // CollectorBenchReport is the collector-bench evidence receipt. Queries holds
@@ -1019,6 +1067,16 @@ func runBenchmark(ctx context.Context, cfg CollectorBenchConfig, rep *CollectorB
 	exp := r.sink.exp
 	r.logs = &benchLogWriter{gen: r.gen, exp: exp, track: r.track, in: make(chan int, benchLogBatch)}
 	r.queries = benchQueries(cfg, r.gen, exp)
+	if classes := cfg.queryClasses(); len(classes) > 0 {
+		r.queries = slices.DeleteFunc(r.queries, func(q benchQuery) bool { return !slices.Contains(classes, q.class) })
+		if len(r.queries) != len(slices.Compact(slices.Sorted(slices.Values(classes)))) {
+			return componentErrorf("collector bench: query classes %q are not all enabled in this layout", cfg.QueryClasses)
+		}
+	}
+	if cfg.QueryOnly {
+		r.total = cfg.Conversations
+		return r.queryOnly(ctx, rep, exp)
+	}
 	r.load = newBenchLoad(r.queries)
 
 	// Phase 1: producers, logs and query workers until the deadline or the
@@ -1058,20 +1116,79 @@ func runBenchmark(ctx context.Context, cfg CollectorBenchConfig, rep *CollectorB
 	rep.Failures += rep.Fidelity.Mismatches
 
 	// Phase 3: verified query classes over the whole ingested corpus.
+	return r.postQueries(ctx, rep, exp)
+}
+
+// queryOnly runs the post-ingest query classes on the stored corpus.
+func (r *benchRun) queryOnly(ctx context.Context, rep *CollectorBenchReport, exp *otel.Exporter) error {
+	if start, ok := ctx.Value(benchmarkIngestStartKey{}).(func()); ok {
+		start()
+	}
+	return r.postQueries(ctx, rep, exp)
+}
+
+// postQueries runs every query class over the whole corpus, one iteration
+// at a time. With QuerySamples or QueryOnly it reports every iteration: its
+// reads and the client requests issued while it ran, which are the query's
+// own because nothing else runs.
+func (r *benchRun) postQueries(ctx context.Context, rep *CollectorBenchReport, exp *otel.Exporter) error {
+	sampled := r.cfg.QuerySamples || r.cfg.QueryOnly
 	for _, q := range r.queries {
-		res := measureQuery(ctx, cfg.QueryIterations, func(ctx context.Context, i int) (int, error) {
-			return q.run(ctx, r.postTarget(q, i))
+		if !sampled {
+			res := measureQuery(ctx, r.cfg.QueryIterations, func(ctx context.Context, i int) (int, error) {
+				return q.run(ctx, r.postTarget(q, i))
+			})
+			rep.Queries[q.class] = res
+			rep.Failures += res.Failures
+			continue
+		}
+		samples := make([]CollectorBenchSample, 0, r.cfg.QueryIterations)
+		res := measureQuery(ctx, r.cfg.QueryIterations, func(ctx context.Context, i int) (int, error) {
+			t := r.postTarget(q, i)
+			w := &benchWork{}
+			before := exp.ClientMetrics()
+			t0 := time.Now()
+			rows, err := q.run(context.WithValue(ctx, benchWorkKey{}, w), t)
+			d := time.Since(t0)
+			after := exp.ClientMetrics()
+			s := CollectorBenchSample{
+				Iteration: i, Block: t.block, Conversation: t.conv, Ns: d.Nanoseconds(), Rows: rows, Candidates: w.candidates, Bytes: w.bytes,
+				GRVs:         after.TransactionReadVersionsCompleted - before.TransactionReadVersionsCompleted,
+				GRVCacheHits: after.GRVCacheHits - before.GRVCacheHits,
+				GetRanges:    after.TransactionGetRangeRequests - before.TransactionGetRangeRequests,
+				GetValues:    int64(after.ReadLatency.Count) - int64(before.ReadLatency.Count),
+			}
+			if err != nil {
+				s.Error = err.Error()
+			}
+			samples = append(samples, s)
+			return rows, err
 		})
+		res.Samples = samples
 		rep.Queries[q.class] = res
 		rep.Failures += res.Failures
 	}
 	return ctx.Err()
 }
 
+type benchWorkKey struct{}
+
+// benchWork is the reads one sampled post-ingest iteration's query charged.
+type benchWork struct{ candidates, bytes int64 }
+
+// noteBenchWork adds a query's charged reads to the iteration's benchWork.
+func noteBenchWork(ctx context.Context, candidates int, bytes int64) {
+	if w, ok := ctx.Value(benchWorkKey{}).(*benchWork); ok {
+		w.candidates += int64(candidates)
+		w.bytes += bytes
+	}
+}
+
 type benchmarkIngestStartKey struct{}
 
 // WithBenchmarkIngestStart attaches an instrumentation callback invoked once,
-// after exporter setup at the actual ingest clock origin, before producers run.
+// after exporter setup at the actual ingest clock origin, before producers run;
+// in a QueryOnly run, before the first query.
 func WithBenchmarkIngestStart(ctx context.Context, start func()) context.Context {
 	return context.WithValue(ctx, benchmarkIngestStartKey{}, start)
 }
@@ -1574,6 +1691,7 @@ func benchQueries(cfg CollectorBenchConfig, gen *benchGen, exp *otel.Exporter) [
 			out,
 			benchQuery{QueryFTSSingleToken, true, func(ctx context.Context, t benchTarget) (int, error) {
 				page, err := exp.QueryMessageFullText(ctx, otel.MessageFullTextQuery{Query: fmt.Sprintf("incident_token_%d", t.block), Mode: otel.MessageMatchAll, Role: "user"})
+				noteBenchWork(ctx, page.Candidates, page.Bytes)
 				if err != nil {
 					return 0, err
 				}
@@ -1588,6 +1706,7 @@ func benchQueries(cfg CollectorBenchConfig, gen *benchGen, exp *otel.Exporter) [
 			benchQuery{QueryFTSPhraseFirstTurn, false, func(ctx context.Context, t benchTarget) (int, error) {
 				c, turn := t.conv, t.iter%n+1
 				page, err := exp.QueryMessageFullText(ctx, otel.MessageFullTextQuery{Query: fmt.Sprintf("user turn %d conversation %d conv_%d", turn, c, c), Mode: otel.MessageMatchPhrase, FirstTurnOnly: true})
+				noteBenchWork(ctx, page.Candidates, page.Bytes)
 				if err != nil {
 					return 0, err
 				}
@@ -1602,6 +1721,7 @@ func benchQueries(cfg CollectorBenchConfig, gen *benchGen, exp *otel.Exporter) [
 			benchQuery{QueryFTSMultiTurnHistory, false, func(ctx context.Context, t benchTarget) (int, error) {
 				c := t.conv
 				page, err := exp.QueryMessageFullText(ctx, otel.MessageFullTextQuery{Query: fmt.Sprintf("user turn 1 conversation %d conv_%d", c, c), Mode: otel.MessageMatchPhrase, AttributeKey: benchInputKey})
+				noteBenchWork(ctx, page.Candidates, page.Bytes)
 				if err != nil {
 					return 0, err
 				}
@@ -1615,6 +1735,7 @@ func benchQueries(cfg CollectorBenchConfig, gen *benchGen, exp *otel.Exporter) [
 			}},
 			benchQuery{QueryFTSSameSpanPreds, true, func(ctx context.Context, t benchTarget) (int, error) {
 				page, err := exp.QueryMessageFullText(ctx, otel.MessageFullTextQuery{Query: fmt.Sprintf("incident_token_%d", t.block), FirstTurnOnly: true, Predicates: []otel.Attribute{chat, model}})
+				noteBenchWork(ctx, page.Candidates, page.Bytes)
 				if err != nil {
 					return 0, err
 				}
