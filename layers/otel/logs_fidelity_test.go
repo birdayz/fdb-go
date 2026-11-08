@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/layers/otel/otelsql"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -42,7 +43,7 @@ func logFidelityFixture(t *testing.T) []*logspb.ResourceLogs {
 				exKV("duplicate", exStr("first")),
 				exKV("duplicate", exStr("last")),
 				exKV("bool", exBool(true)),
-				exKV("oversize", exStr(strings.Repeat("x", maxIndexedValueBytes+1))),
+				exKV("oversize", exStr(strings.Repeat("x", otelsql.MaxAttributeValueBytes+1))),
 			},
 		}
 		logFidelityUnknown(rec, "record-"+name)

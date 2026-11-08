@@ -31,9 +31,11 @@ ensure-buf:
 # Regenerate protobuf code + gomock mocks + ANTLR parser. All three are
 # committed to git (clean + regenerate, same pattern). CI re-runs
 # `just generate` and fails on any diff, so CI is the source of truth.
-generate: ensure-buf generate-mocks generate-parser generate-fdb generate-cli-example generate-unicode15 generate-otelv1
+generate: ensure-buf generate-mocks generate-parser generate-fdb generate-cli-example generate-unicode15
     rm -rf gen/
     .tools/buf generate
+    # genotelv1 builds against gen/, so it runs after buf generate.
+    just generate-otelv1
     bazelisk run //:gazelle
 
 # Regenerate protobuf code for the `fdb` CLI (its own buf.yaml under cmd/fdb/).

@@ -31,11 +31,6 @@ const (
 	// exportSpanBudget bounds a span batch's conservative estimate (spanCost)
 	// and so every admitted span; the 500KB actual-size guard runs inside the save.
 	exportSpanBudget = 300000
-
-	// The projection caps (otelsql): a larger key or value is not indexed,
-	// so a query naming one is refused.
-	maxIndexedKeyBytes   = otelsql.MaxAttributeKeyBytes
-	maxIndexedValueBytes = otelsql.MaxAttributeValueBytes
 )
 
 // ExporterConfig is shared by the SDK exporter and the Collector exporter.

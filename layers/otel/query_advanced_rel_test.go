@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
@@ -196,15 +197,15 @@ func TestRelSameSpanPlanValidation(t *testing.T) {
 		"double word":         {Predicates: []Attribute{{"span", "k", "double", "half"}}},
 		"lowercase inf":       {Predicates: []Attribute{{"span", "k", "double", "inf"}}},
 		"noncanonical bool":   {Predicates: []Attribute{{"span", "k", "bool", "TRUE"}}},
-		"oversized key":       {Predicates: []Attribute{{"span", string(make([]byte, maxIndexedKeyBytes+1)), "string", "v"}}},
-		"oversized value":     {Predicates: []Attribute{{"span", "k", "string", string(make([]byte, maxIndexedValueBytes+1))}}},
+		"oversized key":       {Predicates: []Attribute{{"span", string(make([]byte, otelsql.MaxAttributeKeyBytes+1)), "string", "v"}}},
+		"oversized value":     {Predicates: []Attribute{{"span", "k", "string", string(make([]byte, otelsql.MaxAttributeValueBytes+1))}}},
 		"negative limit":      {Predicates: []Attribute{ok}, Limit: -1},
 		"inverted interval":   {Predicates: []Attribute{ok}, TimeWindow: &TimeRange{Start: 5, End: 4}},
 	} {
 		_, err := r.newSameSpanPlan("same-span query", q)
 		requireTyped[*ConfigError](t, name, err)
 	}
-	long := strings.Repeat("y", maxIndexedKeyBytes+1)
+	long := strings.Repeat("y", otelsql.MaxAttributeKeyBytes+1)
 	p, err := r.newSameSpanPlan("same-span query", SameSpanQuery{Predicates: []Attribute{
 		{"resource", "k", "int", "-12"},
 		{"span", "b", "bool", "true"},

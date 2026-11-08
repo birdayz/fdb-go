@@ -1,0 +1,8 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "otelddl",
+    srcs = ["ddl.go"],
+    importpath = "fdb.dev/layers/otel/otelsql/otelddl",
+    visibility = ["//visibility:public"],
+)

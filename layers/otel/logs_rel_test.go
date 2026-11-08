@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -99,7 +100,7 @@ func TestRelLogProjection(t *testing.T) {
 	l := LogRecord{
 		EventID: "ev", Timestamp: 50, TraceID: qaID(1, 16), SpanID: qaID(2, 8), EventName: "gen_ai.evaluation.result",
 		ResourceAttributes: []*commonpb.KeyValue{exKV("service.name", exStr("svc"))},
-		ScopeAttributes:    []*commonpb.KeyValue{exKV("big", exStr(strings.Repeat("x", maxIndexedValueBytes+1)))},
+		ScopeAttributes:    []*commonpb.KeyValue{exKV("big", exStr(strings.Repeat("x", otelsql.MaxAttributeValueBytes+1)))},
 		Attributes: []*commonpb.KeyValue{
 			exKV("k", exStr("first")), nil, exKV("flag", exBool(true)), exKV("k", exStr("last")),
 			exKV("score", exDouble(0.5)), exKV("n", exInt(-4)), exKV("list", exArray(exStr("a"), exInt(1))),
@@ -167,7 +168,7 @@ func TestRelLogProjection(t *testing.T) {
 		"span scope":     {"span", "k", "string", "v"},
 		"bytes":          {LogScopeRecord, "k", "bytes", "AQI="},
 		"long event":     {LogScopeIntrinsic, "event_name", "string", strings.Repeat("e", 1025)},
-		"over the cap":   {LogScopeRecord, "k", "string", strings.Repeat("v", maxIndexedValueBytes+1)},
+		"over the cap":   {LogScopeRecord, "k", "string", strings.Repeat("v", otelsql.MaxAttributeValueBytes+1)},
 		"noncanonical":   {LogScopeRecord, "k", "int", "+1"},
 		"double as text": {LogScopeRecord, "k", "double", "0.50"},
 	} {

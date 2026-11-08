@@ -20,7 +20,7 @@ import (
 	"sort"
 	"strings"
 
-	"fdb.dev/layers/otel/otelsql"
+	"fdb.dev/layers/otel/otelsql/otelddl"
 	"fdb.dev/pkg/relational/core/embedded"
 	gengo "google.golang.org/protobuf/cmd/protoc-gen-go/internal_gengo"
 	"google.golang.org/protobuf/compiler/protogen"
@@ -46,7 +46,7 @@ func main() {
 }
 
 func run(out string) error {
-	tmpl, err := embedded.BuildSchemaTemplateFromDDL(otelsql.TemplateDDL())
+	tmpl, err := embedded.BuildSchemaTemplateFromDDL(otelddl.DDL(otelddl.Name))
 	if err != nil {
 		return err
 	}

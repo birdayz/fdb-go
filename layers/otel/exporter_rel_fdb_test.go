@@ -392,8 +392,8 @@ func testRelOTLPFidelity(t *testing.T, cluster string) {
 	traceID, spanA, spanB := exRandomID(t, 16), exRandomID(t, 8), exRandomID(t, 8)
 	tr, idA, idB := hex.EncodeToString(traceID), hex.EncodeToString(spanA), hex.EncodeToString(spanB)
 	const start = int64(1_770_000_000_000_000_000)
-	longKey := strings.Repeat("k", maxIndexedKeyBytes+1)
-	hugeValue := strings.Repeat("v", maxIndexedValueBytes+1)
+	longKey := strings.Repeat("k", otelsql.MaxAttributeKeyBytes+1)
+	hugeValue := strings.Repeat("v", otelsql.MaxAttributeValueBytes+1)
 	nested := exKvlist(exKV("list", exArray(exInt(1), exDouble(2.5), exBool(false))), exKV("who", exStr("me")), exKV("list", exStr("again")))
 
 	rs := &tracepb.ResourceSpans{
@@ -1238,8 +1238,8 @@ func testRelAdmissionCaps(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 	e := openRelExporter(t, ctx, cluster, func(c *ExporterConfig) { c.BatchSize = 1 })
-	key, value := strings.Repeat("\x00", maxIndexedKeyBytes), strings.Repeat("\x00", maxIndexedValueBytes)
-	short := strings.Repeat("\x00", maxIndexedKeyBytes)
+	key, value := strings.Repeat("\x00", otelsql.MaxAttributeKeyBytes), strings.Repeat("\x00", otelsql.MaxAttributeValueBytes)
+	short := strings.Repeat("\x00", otelsql.MaxAttributeKeyBytes)
 	for i, c := range []struct {
 		key, value string
 		indexed    bool
@@ -1266,7 +1266,7 @@ func testRelAdmissionCaps(t *testing.T, cluster string) {
 		if c.indexed {
 			want = []Hit{{hex.EncodeToString(sp.TraceId), int64(sp.StartTimeUnixNano)}}
 		}
-		if len(c.key) <= maxIndexedKeyBytes {
+		if len(c.key) <= otelsql.MaxAttributeKeyBytes {
 			reHits(t, ctx, e, Attribute{"span", c.key, "string", c.value}, want...)
 		}
 		got, err := e.LoadSpanOTLP(ctx, hex.EncodeToString(sp.TraceId), hex.EncodeToString(sp.SpanId))

@@ -211,7 +211,7 @@ func validateRelQueryAttribute(op string, a Attribute, scopes ...string) error {
 		return failf("config", op, "unsupported attribute type %q; indexed types are string, int, double and bool", a.Type)
 	}
 	// Larger keys and values are never indexed; an empty answer would not be exhaustive.
-	if len(a.Key) > maxIndexedKeyBytes || len(a.Value) > maxIndexedValueBytes {
+	if len(a.Key) > otelsql.MaxAttributeKeyBytes || len(a.Value) > otelsql.MaxAttributeValueBytes {
 		return fail("config", op, "attribute exceeds the indexed key/value cap")
 	}
 	return nil
