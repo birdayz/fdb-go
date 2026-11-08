@@ -360,3 +360,72 @@ func TestRelExporterBootstrapCancellationAfterConnect(t *testing.T) {
 		requireOtelKind(t, err, "config")
 	}
 }
+
+// canceledAfterFirstErr is a canceled context whose first Err() reports it
+// live: cancellation arriving between openRelDatabase's two checks.
+type canceledAfterFirstErr struct {
+	context.Context
+	calls int
+}
+
+func (c *canceledAfterFirstErr) Err() error {
+	if c.calls++; c.calls == 1 {
+		return nil
+	}
+	return c.Context.Err()
+}
+
+// TestOpenRelDatabaseGuards: openRelDatabase refuses a canceled caller
+// before and after parsing the cluster file, an empty path, and an absent,
+// empty or malformed cluster file, without dialing (Validate is bypassed).
+func TestOpenRelDatabaseGuards(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	write := func(name, contents string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	valid := write("valid.cluster", "otelguards:guards283@127.0.0.1:1\n")
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	requireOp := func(err error, kind, op string) {
+		t.Helper()
+		requireOtelKind(t, err, kind)
+		var typed *OtelError
+		if !errors.As(err, &typed) || typed.Op != op {
+			t.Fatalf("want %s error from %q: %v", kind, op, err)
+		}
+	}
+	// Before parsing, a canceled caller wins over an unreadable cluster file;
+	// after parsing, it is refused before the dial.
+	for name, open := range map[string]func() (fdb.Database, error){
+		"canceled_before_parse": func() (fdb.Database, error) { return openRelDatabase(canceled, "not-a-cluster-file") },
+		"canceled_after_parse": func() (fdb.Database, error) {
+			return openRelDatabase(&canceledAfterFirstErr{Context: canceled}, valid)
+		},
+	} {
+		_, err := open()
+		requireOp(err, "canceled", "open FDB")
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("%s: cause is not context.Canceled: %v", name, err)
+		}
+	}
+	_, err := openRelDatabase(t.Context(), "")
+	requireOp(err, "config", "open FDB")
+	for _, path := range []string{
+		filepath.Join(dir, "absent.cluster"),
+		write("empty.cluster", ""),
+		write("comments.cluster", "# no connection string\n\n"),
+		write("malformed.cluster", "not a connection string\n"),
+	} {
+		_, err := openRelDatabase(t.Context(), path)
+		var config *ConfigError
+		if !errors.As(err, &config) {
+			t.Fatalf("cluster file %s: want *ConfigError, got %T: %v", filepath.Base(path), err, err)
+		}
+		requireOp(err, "config", "cluster file")
+	}
+}
