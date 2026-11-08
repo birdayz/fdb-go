@@ -152,7 +152,7 @@ func (r *retryInjector) TransactCtx(ctx context.Context, fn func(fdb.WritableTra
 
 // runTxnSlot and the transaction policies on a plain FDBDatabase: write-slot
 // bounds, cancellation, error classification, retry absorption, the
-// benchmark retry limit, and the exporter's timeout and deadline bounds.
+// default policy's retry limit, and the exporter's timeout and deadline bounds.
 // One FDB testcontainer serves every subtest; each opens its own handle.
 func TestTxnLimitRealFDB(t *testing.T) {
 	t.Parallel()
@@ -297,7 +297,7 @@ func attemptRecorder(db *recordlayer.FDBDatabase) func() []error {
 	}
 }
 
-// A benchmark caller gets Run's error unchanged.
+// A caller without the exporter policy gets Run's error unchanged.
 func testTxnBenchErrors(t *testing.T, fixture txnFixture) {
 	ctx, db, _ := fixture(t)
 	for _, want := range []error{fdb.Error{Code: 2101}, errors.New("boom")} {
@@ -310,7 +310,7 @@ func testTxnBenchErrors(t *testing.T, fixture txnFixture) {
 }
 
 // An exporter transaction retries transaction_too_old, future_version,
-// not_committed and process_behind beyond the benchmark limit within one
+// not_committed and process_behind beyond the default limit within one
 // attempt and write slot; only the final execution commits.
 func testExporterTxnAbsorbs(t *testing.T, fixture txnFixture) {
 	ctx, db, root := fixture(t)
@@ -352,8 +352,9 @@ func testExporterTxnAbsorbs(t *testing.T, fixture txnFixture) {
 	}
 }
 
-// A benchmark transaction keeps the retry limit of 10: OnError gives up
-// after 11 executions and the Record Layer runs a second transaction.
+// A transaction without the exporter policy keeps the default retry limit
+// of 10: OnError gives up after 11 executions and the Record Layer runs a
+// second transaction.
 func testBenchTxnRetryLimit(t *testing.T, fixture txnFixture) {
 	ctx, db, _ := fixture(t)
 	runs := attemptRecorder(db)

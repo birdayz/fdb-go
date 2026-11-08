@@ -287,7 +287,7 @@ func testRelBootstrapPolicy(t *testing.T, cluster string) {
 		return recordlayer.NewFDBDatabaseWithTransactor(inject, raw)
 	}})
 	if inject == nil || !inject.delayed.Load() {
-		t.Fatal("the first bootstrap transaction did not cross the benchmark timeout boundary")
+		t.Fatal("the first bootstrap transaction did not cross the default timeout boundary")
 	}
 	inject.mu.Lock()
 	transactions, minimum := inject.transactions, inject.minimum

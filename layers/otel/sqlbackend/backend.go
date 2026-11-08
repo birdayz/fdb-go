@@ -5,8 +5,8 @@
 // ("direct"; compiled rows in batch save mode go through otel.SpanWriter, the
 // Exporter's span writer) or through SQL INSERT ("insert"). Queries run as SQL
 // through the driver (QuerySQL) or through otel.SpanReader, the Exporter's
-// reader (QueryDirect); results are checked against the same independent
-// oracle as the other backends.
+// reader under otel's default transaction policy (QueryDirect); results are
+// checked against the same independent oracle as the other backends.
 package sqlbackend
 
 import (

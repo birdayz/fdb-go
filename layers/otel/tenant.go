@@ -251,8 +251,8 @@ func recordTransactionConfigurer(ctx context.Context) recordlayer.TransactionCon
 	}
 }
 
-// configureStoreContext is configureRecordTimeout plus the benchmark's retry
-// limit for benchmark transactions.
+// configureStoreContext is configureRecordTimeout plus the default policy's
+// retry limit for transactions without the exporter policy.
 func configureStoreContext(rc *recordlayer.FDBRecordContext) error {
 	if err := configureRecordTimeout(rc); err != nil {
 		return err
