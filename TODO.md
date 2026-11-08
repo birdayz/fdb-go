@@ -3786,16 +3786,13 @@ these claims; the implementation notes below are not controlled comparisons.
     on a shared cluster whose catalog holds OTEL_V1 from another revision
     (otelcmp after G2A); `sqlbackend` avoids that with `RevisionTemplateName`.
 - [ ] Rename `layers/otel`'s `rel`-prefixed identifiers and `*_rel.go` files
-  once their dead twins are gone. The prefix told the relational
-  implementation from the custom store while both existed, and the cutover
-  renamed only `relExporter`. About 40 identifiers (`relMessageStore`,
-  `relLogStore`, `relSpan`, `relAttr`, `relParts`, `openRelDatabase`, ...) keep
-  it, and next to a dead twin it misleads: `validateRelQueryAttribute` (live,
-  typed) beside `validateQueryAttribute` (string/int only, reached only by the
-  message-plan predicate branch no caller takes), `relMessageQueryPlan`
-  wrapping `messageQueryPlan`. Delete the twins first, then rename to plain
-  names; `exporter.go` holds the configuration while the Exporter is in
-  `exporter_rel.go`.
+  to plain names. The prefix told the relational implementation from the
+  custom store while both existed, and the cutover renamed only
+  `relExporter`. About 40 identifiers (`relMessageStore`, `relLogStore`,
+  `relSpan`, `relAttr`, `relParts`, `openRelDatabase`,
+  `validateRelQueryAttribute`, ...) keep it; `relMessageQueryPlan` wraps the
+  storage-free `messageQueryPlan`, and `exporter.go` holds the configuration
+  while the Exporter is in `exporter_rel.go`.
 
 ### OTel relational prototype findings (2026-11-07)
 
