@@ -203,7 +203,10 @@ func (d *Datasource) handleAttributeKeys(w http.ResponseWriter, r *http.Request)
 		httpError(w, err)
 		return
 	}
-	respondJSON(w, map[string]any{"keys": res.Values, "truncated": res.Truncated})
+	respondJSON(w, struct {
+		Keys      []string `json:"keys"`
+		Truncated bool     `json:"truncated"`
+	}{res.Values, res.Truncated})
 }
 
 // GET attribute-values?tenant=&signal=&scope=&key=&type=&prefix=&limit= → {"values", "truncated"}
@@ -220,7 +223,10 @@ func (d *Datasource) handleAttributeValues(w http.ResponseWriter, r *http.Reques
 		httpError(w, err)
 		return
 	}
-	respondJSON(w, map[string]any{"values": res.Values, "truncated": res.Truncated})
+	respondJSON(w, struct {
+		Values    []string `json:"values"`
+		Truncated bool     `json:"truncated"`
+	}{res.Values, res.Truncated})
 }
 
 // ttlCache is a size-bounded LRU whose entries expire.

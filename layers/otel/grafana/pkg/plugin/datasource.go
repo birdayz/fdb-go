@@ -231,11 +231,7 @@ func (e *NotOTelStoreError) Error() string {
 func (e *NotOTelStoreError) Unwrap() error { return e.Err }
 
 // errorResponse states err with its FDB code or SQLSTATE. Query, tenant,
-// settings, budget and FDB failures are downstream; a missing root API is ours.
+// settings, budget and FDB failures are all downstream of the plugin.
 func errorResponse(err error) backend.DataResponse {
-	e := errors.New(describeError(err))
-	if errors.Is(err, errRootAPIUnavailable) {
-		return backend.ErrorResponseWithErrorSource(backend.PluginError(e))
-	}
-	return backend.ErrorResponseWithErrorSource(backend.DownstreamError(e))
+	return backend.ErrorResponseWithErrorSource(backend.DownstreamError(errors.New(describeError(err))))
 }

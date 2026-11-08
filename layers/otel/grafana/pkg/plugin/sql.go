@@ -172,7 +172,7 @@ func (c *completer) Schemas(context.Context, sqlds.Options) ([]string, error) {
 }
 
 func (c *completer) Tables(ctx context.Context, _ sqlds.Options) ([]string, error) {
-	rows, err := c.db().QueryContext(ctx, `SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES`)
+	rows, err := c.db().QueryContext(ctx, `SELECT TABLE_SCHEMA, TABLE_NAME FROM "INFORMATION_SCHEMA"."TABLES"`)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +182,7 @@ func (c *completer) Tables(ctx context.Context, _ sqlds.Options) ([]string, erro
 }
 
 func (c *completer) Columns(ctx context.Context, o sqlds.Options) ([]string, error) {
-	rows, err := c.db().QueryContext(ctx, `SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS`)
+	rows, err := c.db().QueryContext(ctx, `SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME FROM "INFORMATION_SCHEMA"."COLUMNS"`)
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +222,7 @@ func collectMatching(rows *sql.Rows, keep func([]string) (string, bool)) ([]stri
 
 // listSchemas returns the database's schemas that allowedSchemas admits.
 func listSchemas(ctx context.Context, db *sql.DB, policy schemaPolicy) ([]string, error) {
-	rows, err := db.QueryContext(ctx, `SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA`)
+	rows, err := db.QueryContext(ctx, `SELECT SCHEMA_NAME FROM "INFORMATION_SCHEMA"."SCHEMATA"`)
 	if err != nil {
 		return nil, err
 	}

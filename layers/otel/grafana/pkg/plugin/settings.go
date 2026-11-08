@@ -152,8 +152,9 @@ func (f *flexInt) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// databasePath is a relational database path such as /OTEL/R_RUN.
-var databasePath = regexp.MustCompile(`^(/[A-Za-z0-9_]+)+$`)
+// databasePath is a relational database path /DOMAIN/DATABASE such as
+// /OTEL/R_RUN; the keyspace resolves no other shape.
+var databasePath = regexp.MustCompile(`^/[A-Za-z0-9_]+/[A-Za-z0-9_]+$`)
 
 // ParseSettings reads and validates the instance settings. It does no I/O.
 func ParseSettings(s backend.DataSourceInstanceSettings) (*Settings, error) {
@@ -214,7 +215,7 @@ func ParseSettings(s backend.DataSourceInstanceSettings) (*Settings, error) {
 		return nil, settingsErrorf("database", "a relational database path is required, for example /OTEL/R_RUN")
 	}
 	if !databasePath.MatchString(out.Database) {
-		return nil, settingsErrorf("database", "%q is not a database path (/SEGMENT[/SEGMENT...], letters, digits and _)", out.Database)
+		return nil, settingsErrorf("database", "%q is not a database path /DOMAIN/DATABASE (letters, digits and _)", out.Database)
 	}
 
 	policy, err := parseSchemaPolicy(j.AllowedSchemas)

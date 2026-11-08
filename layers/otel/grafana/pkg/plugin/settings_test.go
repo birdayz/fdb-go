@@ -2,11 +2,15 @@ package plugin
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/core/keyspace"
 )
 
 func TestParseSettingsDefaults(t *testing.T) {
@@ -109,6 +113,8 @@ func TestParseSettingsRefusals(t *testing.T) {
 		{"relative database", map[string]any{"database": "OTEL/R"}, nil, "database"},
 		{"database with query", map[string]any{"database": "/OTEL?x=1"}, nil, "database"},
 		{"database trailing slash", map[string]any{"database": "/OTEL/"}, nil, "database"},
+		{"database one segment", map[string]any{"database": "/OTEL"}, nil, "database"},
+		{"database three segments", map[string]any{"database": "/OTEL/R/X"}, nil, "database"},
 		{"bad allowed schema", map[string]any{"allowedSchemas": []string{"T 1"}}, nil, "allowedSchemas"},
 		{"two prefixes", map[string]any{"allowedSchemas": []string{"T*", "U*"}}, nil, "allowedSchemas"},
 		{"inner star", map[string]any{"allowedSchemas": []string{"T*1"}}, nil, "allowedSchemas"},
@@ -164,5 +170,25 @@ func TestDSN(t *testing.T) {
 	}
 	if got := s.dsn(""); strings.Contains(got, "schema=") || !strings.Contains(got, "read_only=true") {
 		t.Fatalf("catalog dsn %s", got)
+	}
+}
+
+// NewConnector resolves /DOMAIN/DATABASE only under a registered domain; the
+// binding registers the DSN's.
+func TestNewConnectorRegistersDomain(t *testing.T) {
+	t.Parallel()
+	const domain = "GDPLUGINDOMAIN"
+	if slices.Contains(keyspace.RegisteredDomains(), domain) {
+		t.Fatal("domain registered before the test")
+	}
+	s, err := ParseSettings(instanceSettings(t, map[string]any{"database": "/" + domain + "/DB"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newConnector(&recordlayer.FDBDatabase{}, s.dsn("T1")); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(keyspace.RegisteredDomains(), domain) {
+		t.Fatalf("domain not registered: %v", keyspace.RegisteredDomains())
 	}
 }

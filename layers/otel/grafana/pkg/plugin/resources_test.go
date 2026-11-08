@@ -41,9 +41,9 @@ func schemataAnswer(dsn, query string) fakeResult {
 	switch {
 	case strings.Contains(query, "SCHEMATA"):
 		return fakeResult{cols: []string{"SCHEMA_NAME"}, types: []string{"STRING"}, rows: [][]driver.Value{{"T2"}, {"U1"}, {"T1"}, {"T10"}}}
-	case strings.Contains(query, "INFORMATION_SCHEMA.TABLES"):
+	case strings.Contains(query, `"TABLES"`):
 		return fakeResult{cols: []string{"TABLE_SCHEMA", "TABLE_NAME"}, types: []string{"STRING", "STRING"}, rows: [][]driver.Value{{"T1", "SPANS"}, {"T2", "OTHER"}, {"T1", "LOGS"}}}
-	case strings.Contains(query, "INFORMATION_SCHEMA.COLUMNS"):
+	case strings.Contains(query, `"COLUMNS"`):
 		return fakeResult{cols: []string{"TABLE_SCHEMA", "TABLE_NAME", "COLUMN_NAME"}, types: []string{"STRING", "STRING", "STRING"}, rows: [][]driver.Value{
 			{"T1", "SPANS", "TRACE_ID"}, {"T1", "SPANS", "START_NS"}, {"T2", "SPANS", "X"}, {"T1", "LOGS", "BODY"},
 		}}

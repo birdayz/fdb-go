@@ -4,14 +4,13 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
+	"net/url"
+	"strings"
 
 	"fdb.dev/layers/otel"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/sqldriver"
 )
-
-// errRootAPIUnavailable marks sqldriver.NewConnector, which this build lacks
-// until the sqldriver stream lands; newConnector then calls it directly.
-var errRootAPIUnavailable = errors.New("this build lacks sqldriver.NewConnector")
 
 // openReader is otel.OpenReader behind the otelReader interface.
 func openReader(ctx context.Context, db *recordlayer.FDBDatabase, database, schema string, cfg otel.ReaderConfig) (otelReader, error) {
@@ -22,9 +21,17 @@ func openReader(ctx context.Context, db *recordlayer.FDBDatabase, database, sche
 	return r, nil
 }
 
-// newConnector is sqldriver.NewConnector.
-func newConnector(_ *recordlayer.FDBDatabase, _ string) (driver.Connector, error) {
-	return nil, errRootAPIUnavailable
+// newConnector is sqldriver.NewConnector over a /DOMAIN/DATABASE path, whose
+// domain the keyspace must know before a path under it resolves.
+func newConnector(db *recordlayer.FDBDatabase, dsn string) (driver.Connector, error) {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return nil, err
+	}
+	if domain, _, ok := strings.Cut(strings.TrimPrefix(u.Path, "/"), "/"); ok && domain != "" {
+		sqldriver.RegisterDomainIfNotExists(domain)
+	}
+	return sqldriver.NewConnector(db, dsn)
 }
 
 // isOwnershipError reports the reader's error for a schema that is not an
