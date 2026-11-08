@@ -4,6 +4,7 @@ load("@rules_go//go:def.bzl", "nogo")
 exports_files([
     "buf.yaml",
     "justfile",
+    "sift_repo.bzl",
     "website/content/docs/cli/_index.md",
     "website/content/docs/cli/metadata.md",
     "website/content/docs/cli/protobuf.md",
