@@ -21,9 +21,10 @@ import (
 )
 
 // otel.SpanReader over a tenant store a Record Layer writer fills: every read
-// sees the writes this process committed before it (its read version may come
-// from the GRV cache, which this client's commits refresh), typed attribute
-// equality, long strings verified against the record, and the budgets.
+// sees the writes this database handle committed before it (its read version
+// may come from the GRV cache, which the handle's commits refresh), typed
+// attribute equality, long strings verified against the record, and the
+// budgets.
 func testSpanReader(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()

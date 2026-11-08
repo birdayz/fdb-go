@@ -66,6 +66,15 @@ func typedError(kind, op, message string, cause error) error {
 		return &OperationError{e}
 	}
 }
+
+// NewError is this package's typed error of kind (config, ownership,
+// admission, budget, corruption, http, audit, oracle, transient; anything
+// else is an OperationError), wrapping cause when it is set: the errors a
+// Backend outside this package returns, as this package's backends do.
+func NewError(kind, op, message string, cause error) error {
+	return typedError(kind, op, message, cause)
+}
+
 func fail(kind, op, message string) error { return typedError(kind, op, message, nil) }
 func failf(kind, op, format string, args ...any) error {
 	return fail(kind, op, fmt.Sprintf(format, args...))

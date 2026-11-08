@@ -49,7 +49,7 @@ func OpenTenantStore(ctx context.Context, db *recordlayer.FDBDatabase, databaseP
 			Underlying() *recordlayer.RecordMetaData
 		})
 		if !ok {
-			return nil, fmt.Errorf("otelsql: template of %s/%s is not Record Layer metadata", databasePath, schema)
+			return nil, &TemplateMismatchError{DatabasePath: databasePath, Schema: schema, Reason: "its template is not Record Layer metadata"}
 		}
 		return up.Underlying(), nil
 	})

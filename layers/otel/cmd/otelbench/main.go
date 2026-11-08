@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"fdb.dev/layers/otel"
@@ -102,6 +103,17 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 	}
 	// collector-bench drives otel.Exporter, so no backend applies.
 	collectorBench := mode == "collector-bench" && backend == ""
+	// The --sql-* flags shape the sql backend's paths only.
+	var sqlFlags []string
+	flags.Visit(func(f *flag.Flag) {
+		if strings.HasPrefix(f.Name, "sql-") {
+			sqlFlags = append(sqlFlags, "--"+f.Name)
+		}
+	})
+	if len(sqlFlags) > 0 && (collectorBench || backend != "sql") {
+		fmt.Fprintf(stderr, "%s apply to the sql backend only\n", strings.Join(sqlFlags, ", "))
+		return 2
+	}
 	if !collectorBench {
 		c.Backend = backend
 		if err := c.Validate(); err != nil {

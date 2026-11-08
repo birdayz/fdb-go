@@ -1,8 +1,6 @@
 package otelsql
 
 import (
-	"fmt"
-
 	"fdb.dev/layers/otel/otelsql/otelv1pb"
 	"google.golang.org/protobuf/proto"
 )
@@ -15,7 +13,7 @@ import (
 func BuildCompiled(s Span) (*otelv1pb.SPANS, error) {
 	sp := s.Span
 	if sp == nil {
-		return nil, fmt.Errorf("otelsql: nil span")
+		return nil, &InvalidRowError{Table: "SPANS", Reason: "nil span"}
 	}
 	r := &otelv1pb.SPANS{
 		TRACE_ID:            nonEmptyBytes(sp.TraceId),

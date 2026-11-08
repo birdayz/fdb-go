@@ -1,8 +1,11 @@
 package sqlbackend
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	"fdb.dev/layers/otel"
 )
 
 // Open refuses --bulk-index-conflicts on the write paths that do not run the
@@ -19,8 +22,9 @@ func TestOpenRefusesBulkConflictsOffSpanWriter(t *testing.T) {
 		"SQL INSERT":      {Options{Ingest: IngestInsert}, "--bulk-index-conflicts requires direct ingest of compiled rows"},
 		"SpanWriter (ok)": {Options{}, "explicit owned FDB cluster file required"},
 	} {
-		if _, err := Open(t.Context(), cfg, "", c.opts); err == nil || !strings.Contains(err.Error(), c.want) {
-			t.Errorf("%s: Open = %v, want %q", name, err, c.want)
+		var config *otel.ConfigError
+		if _, err := Open(t.Context(), cfg, "", c.opts); !errors.As(err, &config) || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: Open = %v, want an *otel.ConfigError: %q", name, err, c.want)
 		}
 	}
 }

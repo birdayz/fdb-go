@@ -3,6 +3,8 @@ package otelsql
 import (
 	"bytes"
 	"crypto/sha256"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -71,9 +73,8 @@ func TestBuildLogCompiled(t *testing.T) {
 		t.Fatalf("long event name projection %+v", p)
 	}
 	for _, bad := range []Log{{EventID: "x"}, {Log: &logspb.LogRecord{}}} {
-		if _, err := BuildLogCompiled(bad); err == nil {
-			t.Errorf("BuildLogCompiled(%+v) succeeded", bad)
-		}
+		_, err := BuildLogCompiled(bad)
+		requireInvalidRow(t, err, "LOGS", fmt.Sprintf("BuildLogCompiled(%+v)", bad))
 	}
 }
 
@@ -113,19 +114,26 @@ func TestBuildMessageCompiled(t *testing.T) {
 		{Writer: 1, Seq: 1, Part: 1, Large: true},
 		{Writer: 1, Seq: 1, Part: 1, Parts: 2},
 	} {
-		if _, err := BuildMessageCompiled(bad); err == nil {
-			t.Errorf("BuildMessageCompiled(%+v) succeeded", bad)
-		}
+		_, err := BuildMessageCompiled(bad)
+		requireInvalidRow(t, err, "MESSAGES", fmt.Sprintf("BuildMessageCompiled(%+v)", bad))
 	}
 	mt := BuildMessageTraceCompiled(1, 2, []byte{3})
 	if mt.GetWRITER() != 1 || mt.GetSEQ() != 2 || !bytes.Equal(mt.GetTRACE_ID(), []byte{3}) {
 		t.Fatalf("marker %v", mt)
 	}
-	if _, err := BuildStoreMetaCompiled(StoreMeta{}); err == nil {
-		t.Error("unnamed store_meta row built")
-	}
+	_, err = BuildStoreMetaCompiled(StoreMeta{})
+	requireInvalidRow(t, err, "STORE_META", "unnamed store_meta row")
 	m, err := BuildStoreMetaCompiled(StoreMeta{Name: StoreMetaContinuationHMAC, Bytes: []byte{9}})
 	if err != nil || m.GetNAME() != "continuation_hmac" || m.INT_VALUE != nil || m.STR_VALUE != nil || !bytes.Equal(m.BYTES_VALUE, []byte{9}) {
 		t.Fatalf("store_meta %v %v", m, err)
+	}
+}
+
+// requireInvalidRow checks that err is an *InvalidRowError of table.
+func requireInvalidRow(t *testing.T, err error, table, what string) {
+	t.Helper()
+	var bad *InvalidRowError
+	if !errors.As(err, &bad) || bad.Table != table {
+		t.Errorf("%s: %v, want an *InvalidRowError of %s", what, err, table)
 	}
 }

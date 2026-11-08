@@ -167,12 +167,10 @@ func TestBuildCompiledIsBuild(t *testing.T) {
 			t.Errorf("span %d: compiled record reads back as another row", i)
 		}
 	}
-	if _, err := BuildCompiled(Span{}); err == nil {
-		t.Error("BuildCompiled of a nil span succeeded")
-	}
-	if _, err := rows.Build(Span{}); err == nil {
-		t.Error("Build of a nil span succeeded")
-	}
+	_, err = BuildCompiled(Span{})
+	requireInvalidRow(t, err, "SPANS", "BuildCompiled of a nil span")
+	_, err = rows.Build(Span{})
+	requireInvalidRow(t, err, "SPANS", "Build of a nil span")
 
 	for i, l := range fixtureLogs() {
 		r, err := BuildLogCompiled(l)
