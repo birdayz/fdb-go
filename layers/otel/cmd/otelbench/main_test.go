@@ -408,6 +408,9 @@ func TestExecuteRejectsArgumentsBeforeOpeningOrCreatingOutput(t *testing.T) {
 		{"-diagnostics"},
 		{"-posting-value-format=tuple"},
 		{"-hash-bytes=8"},
+		// The sql backend has one time order; --order is ClickHouse's.
+		{"-order=time"},
+		{"-order=trace"},
 		{"-backend=ch-map", "-ch-query-transport="},
 		{"-backend=ch-map", "-ch-query-transport=other"},
 		{"-backend=ch-map", "-ch-query-transport=native"},

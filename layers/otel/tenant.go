@@ -49,9 +49,11 @@ func (s *tenantStore) run(ctx context.Context, op string, fn func(*recordlayer.F
 
 // read is run for a read-only transaction, whose read version may come from
 // the client's GRV cache: at most 100ms old (MAX_VERSION_CACHE_LAG) and never
-// older than this client's last commit, which refreshes the cache, so a read
-// still sees every write this process committed before it began. It saves the
-// GRV round trip of a point read's three.
+// older than this database handle's last commit, which refreshes its cache,
+// so a read still sees every write this handle (this Exporter) committed
+// before it began; another handle's commit, in this process or another, can
+// be invisible for up to 100ms. It saves the GRV round trip of a point
+// read's three.
 func (s *tenantStore) read(ctx context.Context, op string, fn func(*recordlayer.FDBRecordStore) error) error {
 	return s.runMode(ctx, op, true, fn)
 }
@@ -296,12 +298,6 @@ func loadStoredRows[T proto.Message](store *recordlayer.FDBRecordStore, op, tabl
 	})
 }
 
-// configureRecordTimeout bounds the whole transaction including OnError retries.
-// Exporter transactions lift Run’s zero retry limit; both options persist across retries.
-func configureRecordTimeout(rc *recordlayer.FDBRecordContext) error {
-	return rc.Configure(recordTransactionConfigurer(rc.Context()))
-}
-
 func recordTransactionConfigurer(ctx context.Context) recordlayer.TransactionConfigurer {
 	return func(options fdb.TransactionOptions) error {
 		if err := options.SetTimeout(txnTimeout(ctx).Milliseconds()); err != nil {
@@ -314,10 +310,11 @@ func recordTransactionConfigurer(ctx context.Context) recordlayer.TransactionCon
 	}
 }
 
-// configureStoreContext is configureRecordTimeout plus the default policy's
-// retry limit for transactions without the exporter policy.
+// configureStoreContext bounds the whole transaction including OnError
+// retries: Exporter transactions lift Run’s zero retry limit, the others
+// get the default policy's retry limit. The options persist across retries.
 func configureStoreContext(rc *recordlayer.FDBRecordContext) error {
-	if err := configureRecordTimeout(rc); err != nil {
+	if err := rc.Configure(recordTransactionConfigurer(rc.Context())); err != nil {
 		return err
 	}
 	if isExporterTxn(rc.Context()) {

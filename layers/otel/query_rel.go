@@ -3,7 +3,6 @@ package otel
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
 	"math"
 	"strconv"
@@ -68,8 +67,7 @@ func spanAttrQuery(a Attribute) (attrQuery, bool) {
 		if len(a.Value) <= otelsql.MaxIndexedStringBytes {
 			return attrQuery{index: spansStrAttrIndex, value: a.Value}, true
 		}
-		sum := sha256.Sum256([]byte(a.Value))
-		return attrQuery{index: spansLongStrIndex, value: sum[:otelsql.LongStringDigestBytes], long: &a.Value}, true
+		return attrQuery{index: spansLongStrIndex, value: otelsql.LongStringDigest(a.Value), long: &a.Value}, true
 	case "int":
 		n, err := strconv.ParseInt(a.Value, 10, 64)
 		if err != nil {

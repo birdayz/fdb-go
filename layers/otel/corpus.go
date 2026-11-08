@@ -83,8 +83,9 @@ func (c Config) Validate() error {
 	default:
 		return fail("config", "message layout", "message layout must be empty, deltas or fulltext_v2")
 	}
-	// The sql backend's batch saves are the Exporter's SpanWriter, whose
-	// default coalesces index write conflicts.
+	// Coalescing index write conflicts is the Exporter's SpanWriter's option,
+	// which the sql backend's compiled direct batch saves run; sqlbackend.Open
+	// refuses it on its other write paths.
 	if c.BulkIndexConflicts && (c.Backend != "sql" || c.SaveMode != "batch") {
 		return fail("config", "bulk index conflicts", "bulk index conflicts require the batch save mode of the sql backend")
 	}

@@ -60,7 +60,7 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 	flags.IntVar(&c.Batch, "batch", c.Batch, "sql maximum spans per transaction, 1..64; byte guards also apply")
 	flags.StringVar(&c.SaveMode, "save-mode", c.SaveMode, "sql direct save mode: serial, pipelined, or batch (batch is the Exporter's SpanWriter)")
 	flags.StringVar(&c.RecordCompression, "record-compression", c.RecordCompression, "sql Record Layer primary storage: none, zlib-1, or zlib-default; Java- and SQL-readable")
-	flags.BoolVar(&c.BulkIndexConflicts, "bulk-index-conflicts", c.BulkIndexConflicts, "sql batch saves conservatively coalesce index write-conflict ranges; read conflicts unchanged")
+	flags.BoolVar(&c.BulkIndexConflicts, "bulk-index-conflicts", c.BulkIndexConflicts, "sql compiled direct batch saves (the Exporter's SpanWriter) conservatively coalesce index write-conflict ranges; read conflicts unchanged")
 	flags.IntVar(&c.Workers, "workers", c.Workers, "sql ingest workers, 1..8")
 	flags.IntVar(&c.CHBatch, "ch-batch", c.CHBatch, "CH offline bulk insert row cap; separately reported, not matched live ack batching")
 	flags.IntVar(&c.CHBatchBytes, "ch-batch-bytes", c.CHBatchBytes, "CH offline bulk insert byte cap, at most 64MiB")
@@ -79,7 +79,7 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 	flags.StringVar(&output, "output", "-", "JSON evidence path, created exclusively; - writes stdout")
 	flags.StringVar(&revision, "revision", "unrecorded", "actual source revision for evidence receipt")
 	flags.DurationVar(&timeout, "timeout", 10*time.Minute, "whole-command context deadline")
-	flags.BoolVar(&confirm, "confirm-drop", false, "required with drop; only matching owned run manifest may be removed")
+	flags.BoolVar(&confirm, "confirm-drop", false, "required with drop; ClickHouse also checks the run's owner manifest, sql drops the run's database")
 	bench := collector.DefaultCollectorBenchConfig()
 	flags.IntVar(&bench.Conversations, "conversations", bench.Conversations, "collector-bench: synthetic multi-turn GenAI conversations, one trace each; ignored with --duration")
 	flags.IntVar(&bench.TurnsPerConversation, "turns", bench.TurnsPerConversation, "collector-bench: turns per conversation; one span per turn, each turn the parent of the next")
@@ -106,6 +106,12 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 		c.Backend = backend
 		if err := c.Validate(); err != nil {
 			fmt.Fprintln(stderr, err)
+			return 2
+		}
+		ordered := false
+		flags.Visit(func(f *flag.Flag) { ordered = ordered || f.Name == "order" })
+		if ordered && backend == "sql" {
+			fmt.Fprintln(stderr, "--order applies to the ClickHouse backends only; the sql backend has one time order")
 			return 2
 		}
 	}

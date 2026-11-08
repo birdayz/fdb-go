@@ -26,6 +26,7 @@ go_test(
     size = "large",
     srcs = [
         "backend_fdb_test.go",
+        "backend_test.go",
         "span_reader_fdb_test.go",
     ],
     embed = [":sqlbackend"],

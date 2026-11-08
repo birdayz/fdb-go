@@ -157,6 +157,11 @@ func Open(ctx context.Context, c otel.Config, cluster string, opts Options) (*Ba
 	if mode == IngestInsert && c.RecordCompression != "" && c.RecordCompression != "none" && c.RecordCompression != "zlib-default" {
 		return nil, errors.New("sqlbackend: SQL INSERT writes zlib-default records; --record-compression must be none or zlib-default")
 	}
+	// Only the SpanWriter (compiled direct batch saves) coalesces index
+	// write conflicts.
+	if c.BulkIndexConflicts && (mode != IngestDirect || opts.Rows != RowsCompiled) {
+		return nil, errors.New("sqlbackend: --bulk-index-conflicts requires direct ingest of compiled rows")
+	}
 	readSer, err := otel.RecordSerializer("zlib-default")
 	if err != nil {
 		return nil, err

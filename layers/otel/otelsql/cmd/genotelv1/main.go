@@ -1,6 +1,7 @@
 // genotelv1 writes compiled Go types for the OTEL_V1 schema template's
 // records descriptor, which writers bind to the catalog's metadata with
-// recordlayer.WithLocalFileDescriptor (otelsql.OpenTenantStore). The
+// recordlayer.WithLocalFileDescriptor (otelsql.OpenTenantStoreCompiled and
+// otelsql.EnsureTenant). The
 // descriptor is the one the template's DDL compiles to, so regenerate after
 // every template change with `just generate-otelv1`, which runs
 //
