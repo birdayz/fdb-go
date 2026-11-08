@@ -7,12 +7,13 @@ import (
 	"fdb.dev/layers/otel/otelsql"
 )
 
-// The direct query path is the Exporter's: otel.SpanReader over the query
-// tenant's store, one Record Layer transaction per query through the same
-// OTEL_V1 indexes SQL's plans use (EXPLAIN: a covering reverse scan of
+// The direct query path is the Exporter's read code, otel.SpanReader over the
+// query tenant's store: one Record Layer transaction per query through the
+// same OTEL_V1 indexes SQL's plans use (EXPLAIN: a covering reverse scan of
 // SPANS_STR_ATTR / SPANS_INT_ATTR / SPANS_TIME, a covering SPANS_SPAN_ID scan,
 // a primary-key scan for a trace), with no catalog read, no planning and no
-// per-page store reopen.
+// per-page store reopen. Its transactions keep otel's default policy (a 1.5 s
+// timeout, at most 10 retries), not the Exporter's (10 s, no retry limit).
 
 // directReader resolves the query tenant's store once.
 func (b *Backend) directReader(ctx context.Context) (*otel.SpanReader, error) {

@@ -34,7 +34,10 @@ const (
 // SpanReader serves Query, Time, Span and Trace from a tenant store, and the
 // advanced queries of query_advanced_rel.go. The Exporter reads through it,
 // and so does otelbench's sql backend with --sql-query direct, so benchmarks
-// measure the production read path. Its methods are safe for concurrent use.
+// measure the Exporter's read code. Its transactions follow the caller
+// context's policy: the Exporter's, or the default (benchTxnTimeout, at most
+// benchTxnRetryLimit retries) for a caller like otelbench that sets none. Its
+// methods are safe for concurrent use.
 type SpanReader struct {
 	store *tenantStore
 	cfg   Config
