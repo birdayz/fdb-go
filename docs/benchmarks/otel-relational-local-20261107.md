@@ -40,7 +40,7 @@ reproducible receipts.
 | `archive/otel-relational/quiesced` | `11ae9acbf` | the quiesced gate's Exporter |
 | `archive/otel-relational/merge-base` | `839cc5d3f` | the change's merge-base: the custom store (`--backend fdb`) in "G3 at the merge-base", with `g3-merge-base/base-harness-839cc5d3f.patch`, and its `Exporter.ExportLogs` in "Gate G2B", with `g2b-merge-base/base-bench-839cc5d3f.patch` |
 | `archive/otel-relational/g3-head` | `8d3959aa6` | the measured head: the Exporter and `--backend sql` in "G3 at the merge-base"; that section lists the later commits' code changes, none on a measured path |
-| `archive/otel-relational/g2b-head` | `dc6a2f835` | the reviewed head: `BenchmarkLogExport` against the merge-base in "Gate G2B" |
+| `archive/otel-relational/g2b-head` | `dc6a2f835` | a later head of the change: `BenchmarkLogExport` against the merge-base in "Gate G2B" |
 
 The archived tags carry the export benchmarks' old names,
 `BenchmarkRelSpansVsFDB` and `BenchmarkRelLogsVsFDB`; at head they are
@@ -59,7 +59,7 @@ baseline. "G3 at the merge-base" below measures that comparison: the
 measured head (`g3-head`) against the custom store at the merge-base, for
 the collector bench's quiesced gate and for otelbench's G2A suite. It is the
 G3 result. "Gate G2B" measures log ingest against the merge-base the same
-way, at the reviewed head (`g2b-head`).
+way, at a later head of the change (`g2b-head`).
 The earlier gates' custom-store arms are not the merge-base. Each is the
 custom store on the same stack as the relational arm it is compared with:
 G2A, G2B's first comparison and R1/R4 ran both stores in one binary, and the first G3 run, the
@@ -495,8 +495,8 @@ benchmark's output lines as recovered from the stream's session log.
 - **Scope:** the RFC's G2B row names collector-bench's logs; this benchmark exports logs alone. The collector bench's `correlated_logs_by_trace` class is in G3 (0.93× post-ingest) and the quiesced gate (0.89× and 0.98×).
 
 **Against the merge-base.** The same workload and metrics, with head's
-`BenchmarkLogExport` at `archive/otel-relational/g2b-head` (`dc6a2f835`, the
-reviewed head) against the custom store's `Exporter.ExportLogs` at
+`BenchmarkLogExport` at `archive/otel-relational/g2b-head` (`dc6a2f835`, a
+later head of the change) against the custom store's `Exporter.ExportLogs` at
 `archive/otel-relational/merge-base` (`839cc5d3f`).
 
 - **Merge-base arm:** `BenchmarkRelLogsVsFDB`'s custom-store arm, ported to the merge-base as `BenchmarkLogExportCustomStore` by `g2b-merge-base/base-bench-839cc5d3f.patch`. The patch adds one test file and its BUILD `srcs` line and changes no store code. The corpus, cluster and run helpers are copied unchanged from `g2b-logs`. The size scan is `g2b-logs`'s `FDBBackend.size` with the prefix count in the test, because the merge-base's `Size` has none.
@@ -798,13 +798,14 @@ above compare against custom-store; this one is the G3 result.
   - head: the measured head, `archive/otel-relational/g3-head` (`8d3959aa6`), the collector bench without `--backend` and otelbench with `--backend sql`;
   - baseline: the merge-base, `archive/otel-relational/merge-base` (`839cc5d3f`, #1034's head), with `--backend fdb` and its own defaults (brotli-4, tuple postings, 8-byte hashes, time order).
 - **Harness at the merge-base:** `fts-perf/base-harness.patch` does not apply there. Its BUILD hunk's context lists files the merge-base's `layers/otel/BUILD.bazel` does not have yet. Every other hunk applied unchanged, and `exporter_clientmetrics.go` was added to the library's `srcs` by hand, after `exporter.go`. The applied change is `g3-merge-base/base-harness-839cc5d3f.patch`. It adds `--query-only`, `--query-classes`, `--query-samples` and per-iteration client counters, and changes no store code.
-- **After the measured head:** the commits up to the reviewed head, `dc6a2f835`, change library code that was not re-measured:
+- **After the measured head:** later commits of the change (to `g2b-head` and after it) change library code that was not re-measured:
   - `SpanReader.Query` reads every `strconv.ParseFloat` spelling of NaN in a double attribute as the stored NaN, where it read only `NaN`; other text parses as before;
   - sqlbackend and otelsql return typed errors (`otel.NewError`, `otelsql.InvalidRowError`, `TemplateMismatchError`) on their failure paths;
   - `checkContinuationMAC` lost its domain and owner parameters and computes the same MAC; long-string span queries call `otelsql.LongStringDigest`, the same SHA-256 prefix;
   - otelbench refuses `--sql-*` flags without `--backend sql` and `--order` with it, and sqlbackend refuses `--bulk-index-conflicts` outside direct ingest of compiled rows;
+  - after `g2b-head`, sqlbackend's ingest takes its span-write and batch-save functions from fields that tests replace (the defaults are the same functions), `parseCanonicalDouble` is renamed `parseAttrDouble`, and the template DDL moved to `otelsql/internal/otelddl`;
   - none of these is on a measured path: every measured write and query succeeded, and no measured query has a double attribute;
-  - the head's otelbench commands here passed `--order time`, which the sql backend ignored at `g3-head` and otelbench now refuses; to reproduce them at the reviewed head, drop it.
+  - the head's otelbench commands here passed `--order time`, which the sql backend ignored at `g3-head` and otelbench now refuses; to reproduce them at a later head, drop it.
 - **Binaries:** `bazelisk build //layers/otel/cmd/otelbench` in detached worktrees, go1.27.3; their sha256 are in `runs.txt`.
 - **Container:** a fresh `otelg3mb` (foundationdb/foundationdb:7.3.77, `configure new single ssd-redwood-1`, G3's environment), removed afterwards.
 - **Discipline:** every measured command started once the 1-minute load was below 12 and the storage and log queues were below 1 MB on two polls. It held the machine's two test-lane locks, so no test lane ran beside it. The load at the starts was 2.1–6.6.

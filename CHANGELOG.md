@@ -31,9 +31,20 @@ below; neither publication nor readiness is asserted.
   `OpenTenantStore`/`OpenTenantStoreCompiled` and `TenantStore`, the compiled
   row builders (`BuildCompiled`, `BuildLogCompiled`, `BuildMessageCompiled`,
   `BuildMessageTraceCompiled`, `BuildStoreMetaCompiled`, with
-  `SpanProjection`/`LogProjection`), the reference chunks (`PackRefChunks`,
-  `UnpackRefChunk`, `RefChunkReader`), `IndexableText`, the generated
-  `otelv1pb` row types and `InvalidRowError` (input a row builder refuses).
+  `SpanProjection`/`LogProjection`), the row inputs (`Span`, `Log`,
+  `MessagePart`, `MessageRef`, `MessageText`, `StoreMeta`, `Projection`,
+  `SpanRows`/`NewSpanRows`, `ScopeLog`), the reference chunks
+  (`PackRefChunks`, `UnpackRefChunk`, `RefChunkReader`,
+  `MalformedRefChunkError`, `InvalidMessageRefError`, `MaxRefChunkKeyBytes`),
+  full text (`IndexableText`, `UnindexableTextError`, `MaxIndexedTokenBytes`,
+  `OverlongTokenPlaceholder`, `MessageTokenizer`/`MessageTokenizerName`),
+  message keys (`MessageContentHash`, `MessageHashBytes`, `MessageShard`,
+  `MessageTextShards`, `MessageAttributeKeys`, `MessageAttributeCode`),
+  attribute projection (`CanonicalJSON`, `FormatDouble`, `CanonicalNaN`,
+  `ProjectedDouble`, `LongStringDigest`, `LongStringDigestBytes`), the
+  generated `otelv1pb` row types and `InvalidRowError` (input a row builder
+  refuses). Importing `otelsql` registers the `otel_message_v1` tokenizer in
+  the process-wide TEXT tokenizer registry.
 - `otel.SpanReader`/`NewSpanReader`, `otel.SpanWriter`/`NewSpanWriter`
   (`SpanWriterOptions`), `otel.RecordSerializer`, `otel.FixtureOTLP`,
   `otel.NewError` (a typed `otel` error of a given kind, for backends outside
