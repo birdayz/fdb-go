@@ -16,8 +16,12 @@ import (
 
 	"fdb.dev/layers/otel/otelsql"
 	"fdb.dev/layers/otel/otelsql/otelv1pb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/core/catalog"
+	"fdb.dev/pkg/relational/core/embedded"
+	"fdb.dev/pkg/relational/core/keyspace"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/instrumentation"
@@ -971,6 +975,49 @@ func testRelConcurrent(t *testing.T, cluster string) {
 	byLatest(third)
 	reHits(t, ctx, e, Attribute{"span", "gen_ai.operation.name", "string", "chat"}, all...)
 	reHits(t, ctx, e, typedAttr(t, "span", "ratio", exDouble(1.5)), third...)
+}
+
+// TestRelExporterTemplateMismatchRealFDB: on a cluster whose catalog holds an
+// OTEL_V1 template of another revision, NewExporter fails as ownership with
+// the *otelsql.TemplateMismatchError. The template is catalog-global, so the
+// test has a cluster of its own.
+func TestRelExporterTemplateMismatchRealFDB(t *testing.T) {
+	t.Parallel()
+	cluster := startExporterCluster(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	raw, err := openRelDatabase(ctx, cluster)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(raw.Close)
+	stale, err := embedded.BuildSchemaTemplateFromDDL("CREATE SCHEMA TEMPLATE " + otelsql.TemplateName + " CREATE TABLE spans (trace_id BYTES, PRIMARY KEY (trace_id))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat, err := catalog.NewRecordLayerStoreCatalog(keyspace.New(subspace.Sub()).CatalogSubspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recordlayer.NewFDBDatabase(raw).Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
+		txn := catalog.NewFDBTransaction(rc)
+		if err := cat.Initialize(txn); err != nil {
+			return nil, err
+		}
+		return nil, cat.SchemaTemplateCatalog().CreateTemplate(txn, stale)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e, err := NewExporter(ctx, relTestConfig(t, cluster, nil))
+	if err == nil {
+		_ = e.Shutdown(ctx)
+		t.Fatal("NewExporter accepted another OTEL_V1 revision")
+	}
+	requireOtelKind(t, err, "ownership")
+	var mismatch *otelsql.TemplateMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("NewExporter = %v, want a *otelsql.TemplateMismatchError", err)
+	}
 }
 
 // §3.4, §4.5: a removed store and an unreadable index are ownership; the
