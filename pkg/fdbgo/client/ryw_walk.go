@@ -35,9 +35,13 @@ type rywWalkState struct {
 	reverse bool
 	getKey  bool // read(GetKeyReq) (A9)
 
-	begin, end                         KeySelector
-	limits                             rangeLimits
-	result                             []KeyValue // the walk's own slice (append from nil); rows alias the cache and write map
+	begin, end KeySelector
+	limits     rangeLimits
+	result     []KeyValue // the walk's own slice; rows alias the cache, the write map and valBuf
+	keyBuf     []byte     // the walk's materialized selectors, valid until release hands it on
+	// valBuf holds the rows' resolved AppendIfFits values. Rows outlive the walk
+	// until Get copies them, so unlike keyBuf it is dropped on release.
+	valBuf                             []byte
 	more                               bool
 	additionalRows                     int64
 	itemsPast                          int32 // itemsPastEnd / itemsPastBegin
@@ -75,21 +79,25 @@ type rywRangeResult struct {
 	more, readToBegin, readThroughEnd bool
 }
 
-// newRangeWalkLocked starts nothing; start runs it to its first wait. view must
-// stay immutable while the walk runs: the live version only while c.mu is held,
-// a pinned one until it is unpinned.
+// newRangeWalkLocked builds a walk over begin and end after removeOrEqual (RYW:1752-1756);
+// view stays immutable while it runs: live only under c.mu, pinned until unpinned.
 func (c *rywCache) newRangeWalkLocked(view *rywWrites, begin, end KeySelector, limits rangeLimits, reverse bool, maxKey []byte) *rywWalk {
 	c.checkViewLocked(view)
-	return c.rangeWalk(view, c.serverCache.snapshot(), c.gen, begin, end, limits, reverse, maxKey)
+	w := c.rangeWalk(view, c.serverCache.snapshot(), c.gen, KeySelector{}, KeySelector{}, limits, reverse, maxKey)
+	w.begin, w.end = removeOrEqualPair(&w.keyBuf, begin, end)
+	w.actualBeginOffset, w.actualEndOffset = w.begin.Offset, w.end.Offset // RYW:607-608, 911-912
+	return w
 }
 
 // rangeWalk is a walk over view and the cache snapshot cache, issued at gen.
 func (c *rywCache) rangeWalk(view *rywWrites, cache pseq[cacheEntry], gen uint64, begin, end KeySelector, limits rangeLimits, reverse bool, maxKey []byte) *rywWalk {
-	w := walkPool.Get().(*rywWalk) // released walks hold zero state and scrubbed iterators
+	w := walkPool.Get().(*rywWalk) // released walks hold only emptied result and keyBuf scratch, and scrubbed iterators
+	res, kbuf := w.result, w.keyBuf
 	w.rywWalkState = rywWalkState{
 		c: c, view: view, cache: cache, gen: gen, maxKey: maxKey, reverse: reverse,
 		begin: begin, end: end, limits: limits,
 		actualBeginOffset: begin.Offset, actualEndOffset: end.Offset, // RYW:607-608, 911-912
+		result: res, keyBuf: kbuf,
 	}
 	return w
 }
@@ -107,7 +115,10 @@ func (w *rywWalk) release() {
 	for i := range w.its {
 		w.its[i].scrub()
 	}
-	w.rywWalkState = rywWalkState{}
+	res := w.result
+	clear(res) // the epilogue cleared any rows it trimmed off
+	kbuf := w.keyBuf
+	w.rywWalkState = rywWalkState{result: res[:0], keyBuf: kbuf[:0]}
 	walkPool.Put(w)
 }
 
@@ -204,6 +215,7 @@ func (w *rywWalk) start() {
 func (w *rywWalk) resolveBoth() (it, itEnd *rywIter) {
 	it, itEnd = &w.its[0], &w.its[1]
 	initIter(it, w.view, &w.cache)
+	it.valBuf = &w.valBuf
 	if !w.reverse {
 		w.resolve(&w.begin, it, &w.actualBeginOffset)
 		itEnd.copyFrom(it)
@@ -227,6 +239,7 @@ func (w *rywWalk) copyIter(i int, it *rywIter) *rywIter {
 // snapshot and runs it to its first wait, as the nested actor runs synchronously
 // until then. If it finishes without waiting, the parent resumes at once.
 func (w *rywWalk) startSub(sel KeySelector, pc walkPC) {
+	sel.Key = bytes.Clone(sel.Key)
 	w.sub = w.c.getKeyWalk(w.view, w.cache, w.gen, sel, w.maxKey)
 	w.sub.onRequest = w.onRequest
 	w.sub.start()
@@ -434,7 +447,24 @@ func (w *rywWalk) resolve(sel *KeySelector, it *rywIter, actualOffset *int32) {
 		it.next()
 		keykey = it.b
 	}
-	sel.Key = keykey.materialize()
+	sel.Key = materializeInto(&w.keyBuf, keykey)
+}
+
+// materializeInto is b's key, a successor appended to *buf; earlier keys in it stay valid.
+func materializeInto(buf *[]byte, b rywBoundary) []byte {
+	if !b.after {
+		return b.key
+	}
+	n := b.size()
+	if cap(*buf)-len(*buf) < n {
+		*buf = make([]byte, 0, max(256, 2*cap(*buf), n))
+	}
+	off := len(*buf)
+	s := (*buf)[off : off+n : off+n]
+	copy(s, b.key)
+	clear(s[len(b.key):])
+	*buf = (*buf)[:off+n]
+	return s
 }
 
 // clearLimit is A4's counted-clear cap (RYW:701, 1007).
@@ -583,6 +613,8 @@ func (w *rywWalk) readUnknown(it, itEnd *rywIter) bool {
 }
 
 func (w *rywWalk) await(req walkRequest) {
+	req.begin.Key = bytes.Clone(req.begin.Key)
+	req.end.Key = bytes.Clone(req.end.Key)
 	w.req, w.pc = req, pcAwaitStorage
 	if w.onRequest != nil {
 		w.onRequest(req)
@@ -613,7 +645,7 @@ func (w *rywWalk) kvForward(it *rywIter) {
 // reserve gives a first run of one row room for a second, as a selector
 // range's rows often come in separate runs.
 func (w *rywWalk) reserve(count int) {
-	if w.result == nil && count == 1 && !w.limits.isReached() {
+	if cap(w.result) == 0 && count == 1 && !w.limits.isReached() {
 		w.result = make([]KeyValue, 0, 2)
 	}
 }
@@ -791,6 +823,7 @@ func (w *rywWalk) epilogue() {
 			if keep < len(w.result) {
 				w.more = false
 			}
+			clear(w.result[keep:]) // the pooled slice keeps no dropped row's bytes alive
 			w.result = w.result[:keep]
 		}
 		w.readThroughEnd = !w.more && w.readThroughEnd
@@ -801,6 +834,7 @@ func (w *rywWalk) epilogue() {
 			if keep < len(w.result) {
 				w.more = false
 			}
+			clear(w.result[keep:])
 			w.result = w.result[:keep]
 		}
 		w.readToBegin = !w.more && w.readToBegin

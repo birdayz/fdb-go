@@ -75,9 +75,7 @@ func (tx *Transaction) admitState(lease *executionLease) {
 				tx.armTimeoutLocked()
 				cause = inc.cause
 			}
-			inc.users++
-			lease.inc = inc
-			lease.active.Store(true)
+			tx.activateLeaseLocked(inc, false, lease)
 			tx.readErrMu.Unlock()
 			if cause != nil {
 				inc.cancel(cause)
@@ -88,6 +86,17 @@ func (tx *Transaction) admitState(lease *executionLease) {
 		tx.readErrMu.Unlock()
 		<-ready
 	}
+}
+
+// activateLeaseLocked admits a fresh lease into inc, counting it as an issued read
+// if issued. Caller holds readErrMu with no turnover under way (readReady nil).
+func (tx *Transaction) activateLeaseLocked(inc *readIncarnation, issued bool, lease *executionLease) {
+	inc.users++
+	if issued {
+		inc.issuedReads++
+	}
+	lease.tx, lease.inc, lease.issued = tx, inc, issued
+	lease.active.Store(true)
 }
 
 // observeReadReadyLocked registers a waiter while readErrMu holds publication.
@@ -123,15 +132,10 @@ func (tx *Transaction) enterReadStateInto(ctx context.Context, inc *readIncarnat
 				tx.armTimeoutLocked()
 				cause = inc.cause
 			}
-			inc.users++
-			if issued {
-				inc.issuedReads++
-			}
 			if lease == nil {
 				lease = &executionLease{}
 			}
-			lease.tx, lease.inc, lease.issued = tx, inc, issued
-			lease.active.Store(true)
+			tx.activateLeaseLocked(inc, issued, lease)
 			tx.readErrMu.Unlock()
 			if cause != nil {
 				inc.cancel(cause)

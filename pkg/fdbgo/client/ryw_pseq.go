@@ -173,6 +173,15 @@ func (s *pseq[T]) mutItem(n *pnode[T]) *pnode[T] {
 	return s.copyOf(n, l, r, int32(psize(n, s.rv)))
 }
 
+// mutNode is mutAt(i) for n, the node at index i: n's own item when s's current
+// unshared version owns it, sparing the descent.
+func (s *pseq[T]) mutNode(i int, n *pnode[T]) *T {
+	if s.ver != 0 && n.stamp == s.ver && !s.frozen {
+		return &n.item
+	}
+	return s.mutAt(i)
+}
+
 // Len is the number of items.
 func (s *pseq[T]) Len() int { return psize(s.root, s.rv) }
 
@@ -218,41 +227,54 @@ func (s *pseq[T]) search(pred func(*T) bool) int {
 
 // find is search that also returns the item found, nil when none.
 func (s *pseq[T]) find(pred func(*T) bool) (int, *T) {
-	at := s.rv
-	i, n, base := s.Len(), s.root, 0
-	var item *T
-	for n != nil {
-		l, r := n.kids(at)
-		ls := psize(l, at)
-		if pred(&n.item) {
-			i, item = base+ls, &n.item
-			n = l
-		} else {
-			base += ls + 1
-			n = r
-		}
+	i, n := s.findNode(pred)
+	if n == nil {
+		return i, nil
 	}
-	return i, item
+	return i, &n.item
 }
 
-// before returns the last index whose item does not satisfy pred, and the
-// item: search(pred)-1, or -1 and nil when every item does.
-func (s *pseq[T]) before(pred func(*T) bool) (int, *T) {
+// findNode is find returning the node itself, nil when none.
+func (s *pseq[T]) findNode(pred func(*T) bool) (int, *pnode[T]) {
 	at := s.rv
-	i, n, base := -1, s.root, 0
-	var item *T
-	for n != nil {
-		l, r := n.kids(at)
-		ls := psize(l, at)
+	base, winBase := 0, 0
+	var found *pnode[T]
+	for n := s.root; n != nil; {
 		if pred(&n.item) {
-			n = l
+			found, winBase = n, base
+			n = n.leftAt(at)
 		} else {
-			i, item = base+ls, &n.item
-			base += ls + 1
+			l, r := n.kids(at)
+			base += psize(l, at) + 1
 			n = r
 		}
 	}
-	return i, item
+	if found == nil {
+		return base, nil
+	}
+	return winBase + psize(found.leftAt(at), at), found
+}
+
+// beforeNode returns the last index whose item does not satisfy pred, and its
+// node: search(pred)-1, or -1 and nil when every item does.
+func (s *pseq[T]) beforeNode(pred func(*T) bool) (int, *pnode[T]) {
+	at := s.rv
+	base, winBase := 0, 0
+	var found *pnode[T]
+	for n := s.root; n != nil; {
+		if pred(&n.item) {
+			n = n.leftAt(at)
+		} else {
+			found, winBase = n, base
+			l, r := n.kids(at)
+			base += psize(l, at) + 1
+			n = r
+		}
+	}
+	if found == nil {
+		return -1, nil
+	}
+	return winBase + psize(found.leftAt(at), at), found
 }
 
 func (s *pseq[T]) split(n *pnode[T], k int) (l, r *pnode[T]) {
@@ -531,20 +553,22 @@ func pathSeek[T any](path []*pnode[T], root *pnode[T], at uint64, i int) []*pnod
 // the path to the first item satisfying pred, empty when none, and its index.
 func pathSeekFirst[T any](path []*pnode[T], root *pnode[T], at uint64, pred func(*T) bool) ([]*pnode[T], int) {
 	path = path[:0]
-	depth, i, base := 0, psize(root, at), 0
+	depth, base, winBase := 0, 0, 0
 	for n := root; n != nil; {
 		path = append(path, n)
-		l, r := n.kids(at)
-		ls := psize(l, at)
 		if pred(&n.item) {
-			depth, i = len(path), base+ls
-			n = l
+			depth, winBase = len(path), base
+			n = n.leftAt(at)
 		} else {
-			base += ls + 1
+			l, r := n.kids(at)
+			base += psize(l, at) + 1
 			n = r
 		}
 	}
-	return path[:depth], i
+	if depth == 0 {
+		return path[:0], base
+	}
+	return path[:depth], winBase + psize(path[depth-1].leftAt(at), at)
 }
 
 // pathPeekNext is the item after the end of a non-empty path, nil at the end.
@@ -643,16 +667,16 @@ func (c *pcursor[T]) seekFirstFrom(s *pseq[T], pred func(*T) bool) {
 // descend extends the path down subtree n (first item at index base) to its first item
 // satisfying pred; false, with the path unchanged, when none does.
 func (c *pcursor[T]) descend(n *pnode[T], base int, pred func(*T) bool) bool {
-	start, depth := len(c.path), 0
+	start, depth, winBase := len(c.path), 0, 0
 	for n != nil {
 		c.path = append(c.path, n)
-		ls := psize(n.leftAt(c.at), c.at)
 		if pred(&n.item) {
-			depth, c.idx = len(c.path), base+ls
+			depth, winBase = len(c.path), base
 			n = n.leftAt(c.at)
 		} else {
-			base += ls + 1
-			n = n.rightAt(c.at)
+			l, r := n.kids(c.at)
+			base += psize(l, c.at) + 1
+			n = r
 		}
 	}
 	if depth == 0 {
@@ -660,6 +684,7 @@ func (c *pcursor[T]) descend(n *pnode[T], base int, pred func(*T) bool) bool {
 		return false
 	}
 	c.path = c.path[:depth]
+	c.idx = winBase + psize(c.path[depth-1].leftAt(c.at), c.at)
 	return true
 }
 
@@ -717,6 +742,9 @@ func (f *pfinger[T]) valid() bool { return f.n > 0 }
 
 // item is the current item; the finger must be valid. It must not be written.
 func (f *pfinger[T]) item() *T { return &f.path[f.n-1].item }
+
+// node is the current node; the finger must be valid.
+func (f *pfinger[T]) node() *pnode[T] { return f.path[f.n-1] }
 
 // peekNext is the item after the current one, nil at the end; the finger must be valid.
 func (f *pfinger[T]) peekNext() *T { return pathPeekNext(f.path[:f.n], f.at) }

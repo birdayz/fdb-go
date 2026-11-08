@@ -1298,12 +1298,12 @@ func (store *FDBRecordStore) updateSecondaryIndexes(oldRecord, newRecord *FDBSto
 	defer store.stateMu.RUnlock()
 	store.indexStateView.maintenance.RLock()
 	defer store.indexStateView.maintenance.RUnlock()
-	return store.updateSecondaryIndexesLocked(oldRecord, newRecord, written)
+	return store.updateSecondaryIndexesLocked(oldRecord, newRecord, written, nil)
 }
 
 // updateSecondaryIndexesLocked is the lock-free variant for use when the caller
 // already holds stateMu.RLock and the shared maintenance read lock (e.g. SaveRecordBatch).
-func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *FDBStoredRecord[proto.Message], written indexWriteSet) error {
+func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *FDBStoredRecord[proto.Message], written indexWriteSet, tokens textTokenCache) error {
 	if oldRecord == nil && newRecord == nil {
 		return nil
 	}
@@ -1332,7 +1332,7 @@ func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *
 			if !maintain {
 				continue
 			}
-			if err := store.updateOneIndex(index, oldRecord, newRecord, written); err != nil {
+			if err := store.updateOneIndex(index, oldRecord, newRecord, written, tokens); err != nil {
 				return err
 			}
 		}
@@ -1344,7 +1344,7 @@ func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *
 			if !maintain {
 				continue
 			}
-			if err := store.updateOneIndex(index, oldRecord, newRecord, written); err != nil {
+			if err := store.updateOneIndex(index, oldRecord, newRecord, written, tokens); err != nil {
 				return err
 			}
 		}
@@ -1366,19 +1366,19 @@ func (store *FDBRecordStore) updateSecondaryIndexesLocked(oldRecord, newRecord *
 
 	// Delete entries from indexes that only the old type had.
 	for _, index := range oldOnly {
-		if err := store.updateOneIndex(index, oldRecord, nil, written); err != nil {
+		if err := store.updateOneIndex(index, oldRecord, nil, written, tokens); err != nil {
 			return err
 		}
 	}
 	// Insert entries into indexes that only the new type has.
 	for _, index := range newOnly {
-		if err := store.updateOneIndex(index, nil, newRecord, written); err != nil {
+		if err := store.updateOneIndex(index, nil, newRecord, written, tokens); err != nil {
 			return err
 		}
 	}
 	// Update entries in indexes shared by both types.
 	for _, index := range commonIndexes {
-		if err := store.updateOneIndex(index, oldRecord, newRecord, written); err != nil {
+		if err := store.updateOneIndex(index, oldRecord, newRecord, written, tokens); err != nil {
 			return err
 		}
 	}
@@ -1440,7 +1440,7 @@ func partitionIndexes(oldIndexes, newIndexes []*Index) (common, oldOnly, newOnly
 
 // updateOneIndex dispatches maintenance by state; caller must hold stateMu.
 // written records maintainers that ran, excluding queued or disabled indexes.
-func (store *FDBRecordStore) updateOneIndex(index *Index, oldRecord, newRecord *FDBStoredRecord[proto.Message], written indexWriteSet) error {
+func (store *FDBRecordStore) updateOneIndex(index *Index, oldRecord, newRecord *FDBStoredRecord[proto.Message], written indexWriteSet, tokens textTokenCache) error {
 	maintainer, err := store.getIndexMaintainer(index)
 	if err != nil {
 		return err
@@ -1465,19 +1465,23 @@ func (store *FDBRecordStore) updateOneIndex(index *Index, oldRecord, newRecord *
 		store.context.addToSessionSet(WriteOnlyWithQueueIndexesUpdated, index.Name)
 		return nil
 	}
-	if state.IsWriteOnlyNoQueue() {
-		written.add(index)
-		if err := maintainer.UpdateWhileWriteOnly(oldRecord, newRecord); err != nil {
-			return err
-		}
-		store.context.addToSessionSet(WriteOnlyIndexesUpdated, index.Name)
-		return nil
-	}
+	writeOnly := state.IsWriteOnlyNoQueue()
 	written.add(index)
-	if err := maintainer.Update(oldRecord, newRecord); err != nil {
+	if text, ok := maintainer.(*textIndexMaintainer); ok {
+		err = text.update(oldRecord, newRecord, tokens) // its UpdateWhileWriteOnly is Update
+	} else if writeOnly {
+		err = maintainer.UpdateWhileWriteOnly(oldRecord, newRecord)
+	} else {
+		err = maintainer.Update(oldRecord, newRecord)
+	}
+	if err != nil {
 		return err
 	}
-	store.context.addToSessionSet(ReadableIndexesUpdated, index.Name)
+	if writeOnly {
+		store.context.addToSessionSet(WriteOnlyIndexesUpdated, index.Name)
+	} else {
+		store.context.addToSessionSet(ReadableIndexesUpdated, index.Name)
+	}
 	return nil
 }
 

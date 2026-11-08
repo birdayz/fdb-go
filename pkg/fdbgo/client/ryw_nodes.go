@@ -281,9 +281,9 @@ func (n *rywNodes) iter() rywNodeIter { return rywNodeIter{s: &n.seq} }
 // insert is PTreeImpl::insert (VersionedMap.h:284-303): an equal key replaces
 // the node (:288-289).
 func (n *rywNodes) insert(node rywNode) {
-	i, at := n.seq.find(func(e *rywNode) bool { return bytes.Compare(e.key, node.key) >= 0 })
-	if at != nil && bytes.Equal(at.key, node.key) {
-		n.seq.set(i, node)
+	i, pnode := n.seq.findNode(func(e *rywNode) bool { return bytes.Compare(e.key, node.key) >= 0 })
+	if pnode != nil && bytes.Equal(pnode.item.key, node.key) {
+		*n.seq.mutNode(i, pnode) = node
 		return
 	}
 	n.seq.insert(i, node)
@@ -328,20 +328,21 @@ func mutatedEntry(key []byte, e rywNode, offset, addConflict, versionstamp bool)
 func (n *rywNodes) applyMutate(key []byte, addConflict, versionstamp bool) {
 	// skip(key) (:89-91): the entry is the last node <= key, which for a key below
 	// allKeys.end is never past the node skip clamps to.
-	i, e := n.seq.before(func(nd *rywNode) bool { return bytes.Compare(nd.key, key) > 0 })
+	i, pnode := n.seq.beforeNode(func(nd *rywNode) bool { return bytes.Compare(nd.key, key) > 0 })
 	if i > n.seq.Len()-2 {
 		it := n.iter()
 		it.skip(key)
 		n.insert(mutatedEntry(key, *it.entry(), it.offset, addConflict, versionstamp))
 		return
 	}
+	e := &pnode.item
 	at := bytes.Equal(e.key, key)
 	node := mutatedEntry(key, *e, !e.op || !at, addConflict, versionstamp) // offset (:346)
 	// :102-123 insert a node at key; :124-156 remove the node at key and insert
 	// the updated one. Both are an insert at key (VersionedMap.h:288-289): the
 	// node at key is replaced, or the new one goes right after the entry.
 	if at {
-		n.seq.set(i, node)
+		*n.seq.mutNode(i, pnode) = node
 	} else {
 		n.seq.insert(i+1, node)
 	}
@@ -471,6 +472,7 @@ func (n *rywNodes) applyConflictRange(begin, end []byte) {
 	type edit struct {
 		at      int
 		replace bool
+		pnode   *pnode[rywNode]
 		node    rywNode
 	}
 	var buf [4]edit
@@ -486,7 +488,7 @@ func (n *rywNodes) applyConflictRange(begin, end []byte) {
 			isUnreadable:        e.isUnreadable,
 		}
 		if bytes.Equal(e.key, begin) { // removals.push_back(keys.begin) (:254-256)
-			edits = append(edits, edit{at: it.cur.idx, replace: true, node: node})
+			edits = append(edits, edit{at: it.cur.idx, replace: true, pnode: it.cur.node(), node: node})
 		} else {
 			edits = append(edits, edit{at: it.cur.idx + 1, node: node})
 		}
@@ -498,7 +500,7 @@ func (n *rywNodes) applyConflictRange(begin, end []byte) {
 			c := *e // :269-273
 			c.followingConflict = true
 			c.isConflict = true
-			edits = append(edits, edit{at: it.cur.idx, replace: true, node: c})
+			edits = append(edits, edit{at: it.cur.idx, replace: true, pnode: it.cur.node(), node: c})
 		}
 	}
 
@@ -521,7 +523,7 @@ func (n *rywNodes) applyConflictRange(begin, end []byte) {
 	// :293-302, by position: from the last, so earlier positions stay valid.
 	for i := len(edits) - 1; i >= 0; i-- {
 		if e := edits[i]; e.replace {
-			n.seq.set(e.at, e.node)
+			*n.seq.mutNode(e.at, e.pnode) = e.node
 		} else {
 			n.seq.insert(e.at, e.node)
 		}

@@ -229,7 +229,7 @@ var _ = Describe("Rank and TEXT edges match Java", func() {
 				{2, `text index "customer$name_text": text position 2 is past the key's 2 columns`},
 				{5, `text index "customer$name_text": text position 5 is past the key's 2 columns`},
 			} {
-				err = m.(*textIndexMaintainer).updateOneKey(rec, false, []any{"word"}, tc.position, 0)
+				err = m.(*textIndexMaintainer).updateOneKey(rec, false, []any{"word"}, tc.position, 0, nil)
 				var oob *IndexOutOfBoundsError
 				Expect(errors.As(err, &oob)).To(BeTrue(), "%v", err)
 				Expect(oob.Message).To(Equal(tc.message))

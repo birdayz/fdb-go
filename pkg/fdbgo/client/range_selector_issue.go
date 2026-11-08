@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"sync"
 
 	"fdb.dev/pkg/fdbgo/wire"
 )
@@ -23,8 +24,9 @@ import (
 // the read to `reading` (:1767).
 type selectorRangeRead struct {
 	tx      *Transaction
-	ctx     context.Context
-	release context.CancelFunc
+	ctx     context.Context // the read's operation: &op when admitted into it
+	op      readOperation   // admitted in place, so a read answered at issue allocates none
+	release opRelease
 	inc     *readIncarnation // counted in inc.issuedReads until complete; nil if not counted
 	// begin and end are GetRangeReq's selectors, after removeOrEqual (:1752-1756):
 	// the conflict range is computed from them (RYW:245-319).
@@ -34,117 +36,183 @@ type selectorRangeRead struct {
 	maxKey            []byte
 	disabled          bool     // RYW disabled: readThrough (RYW:187-215)
 	walk              *rywWalk // the RYW and snapshot-cache routes
-	// view is the pinned write-map version (RFC-262 D11): set when the walk reads
-	// the write map, which it does without c.mu. Released once, in complete.
-	view           *rywWrites
-	localConflicts []conflictSpan // a read answered at issue: its filtered conflict
-	finished       bool           // answered by the synchronous checks; nothing to run
-	local          bool           // the walk finished at issue
-	kvs            []KeyValue
-	more           bool
-	err            error
-	afterReply     func() // test seam, captured at issue
+	// view is the pinned write-map version the walk reads without c.mu (RFC-262 D11);
+	// released once: at issue if the walk finishes there, else in complete.
+	view              *rywWrites
+	localConflicts    []conflictSpan // a read answered at issue when > 4 spans
+	localConflictsBuf [4]conflictSpan
+	localConflictsLen int8
+	finished          bool // answered by the synchronous checks; nothing to run
+	local             bool // the walk finished at issue
+	kvs               []KeyValue
+	more              bool
+	err               error
+	afterReply        func() // test seam, captured at issue
 }
 
-// issueSelectorRange runs the synchronous part of RYW getRange (RYW:1711-1769):
+// selectorBoundary is a selector's key after removeOrEqual as a zero-alloc rywBoundary.
+func selectorBoundary(s KeySelector) rywBoundary {
+	if s.OrEqual && !bytes.Equal(s.Key, allKeysEnd) {
+		return rywBoundary{key: s.Key, after: true}
+	}
+	return rywBoundary{key: s.Key}
+}
+
+// issueSelectorRangeInto runs the synchronous part of RYW getRange (RYW:1711-1769):
 // the checks in C++ order, the route (readWithConflictRange, :397-406), the walk
 // to its first wait, the pin, and registration in the commit barrier.
-func (tx *Transaction) issueSelectorRange(parent context.Context, begin, end KeySelector, limit, byteTarget int, reverse, snapshot bool) *selectorRangeRead {
+func (tx *Transaction) issueSelectorRangeInto(r *selectorRangeRead, parent context.Context, begin, end KeySelector, limit, byteTarget int, reverse, snapshot bool) {
 	if tx.routesSpecialKeyRange(begin.Key, end.Key) { // RYW:1716-1721, before every other check
-		r := &selectorRangeRead{tx: tx, release: noopRelease}
-		return r.finish(tx.specialKeyRange(begin, end, limit, byteTarget, reverse))
+		*r = selectorRangeRead{tx: tx}
+		r.finish(tx.specialKeyRange(begin, end, limit, byteTarget, reverse))
+		return
 	}
-	ctx, release, counted := tx.opContextFor(parent, true)
-	r := &selectorRangeRead{tx: tx, ctx: ctx, release: release, reverse: reverse, snapshot: snapshot}
-	if err := tx.checkReadState(ctx); err != nil { // used_during_commit, resetPromise (:1732-1737)
-		return r.finish(nil, false, tx.trackReadOperation(ctx, err))
+	*r = selectorRangeRead{tx: tx, reverse: reverse, snapshot: snapshot}
+	ctx, release, owned := tx.opContextInto(parent, true, &r.op)
+	r.ctx, r.release = ctx, release
+	counted := owned != nil
+	if stateErr := tx.checkReadState(ctx); stateErr != nil { // used_during_commit, resetPromise (:1732-1737)
+		r.finish(nil, false, r.trackError(stateErr))
+		return
 	}
 	r.maxKey = tx.maxReadKey()
 	if bytes.Compare(begin.Key, r.maxKey) > 0 || bytes.Compare(end.Key, r.maxKey) > 0 { // :1739-1741
-		return r.finish(nil, false, &wire.FDBError{Code: 2004})
+		r.finish(nil, false, &wire.FDBError{Code: 2004})
+		return
 	}
 	// GetRangeLimits(limit, target_bytes) as fdb_c builds it: 0 is unlimited
 	// (fdb_c.cpp:991-994, 1057).
 	r.limits = newRangeLimits(limit, byteTarget)
 	if r.limits.isReached() { // :1744-1747
-		return r.finish(nil, false, nil)
+		r.finish(nil, false, nil)
+		return
 	}
 	if !r.limits.isValid() { // :1749-1750
-		return r.finish(nil, false, &wire.FDBError{Code: ErrRangeLimitsInvalid})
+		r.finish(nil, false, &wire.FDBError{Code: ErrRangeLimitsInvalid})
+		return
 	}
-	r.begin, r.end = removeOrEqualPair(begin, end)                                    // :1752-1756
-	if r.begin.Offset >= r.end.Offset && bytes.Compare(r.begin.Key, r.end.Key) >= 0 { // :1758-1761
-		return r.finish(nil, false, nil)
+	if begin.Offset >= end.Offset && selectorBoundary(begin).compare(selectorBoundary(end)) >= 0 { // :1758-1761
+		r.finish(nil, false, nil)
+		return
 	}
 	tx.hadRead.Store(true)
 	if tx.rywDisabled {
+		var buf []byte
+		r.begin, r.end = removeOrEqualPair(&buf, begin, end)
 		r.disabled = true
-	} else {
-		c := &tx.ryw
-		backstop := tx.rangeReadBackstop()
-		var panicked bool
-		c.withLock(func() {
-			// As keyRead: c.mu covers only pinning the version and snapshotting the
-			// cache; the walk then runs to its first wait on the caller's goroutine,
-			// and a panic fails the read with nothing locked, pinned or leased (RFC-110).
-			panicked = backstop.run(func() {
-				var view *rywWrites
-				if !snapshot || tx.snapshotRYWDisableCount <= 0 {
-					// RYWIterator (:378-395); nil: SnapshotCache::iterator (:366-377)
-					view = c.pinWritesLocked()
-					r.view = view
+	} else if r.startWalk(begin, end) {
+		r.finish(nil, false, r.trackError(&wire.FDBError{Code: ErrInternalError}))
+		return
+	}
+	if !counted && !r.local {
+		r.inc = tx.enterIssuedRead(r.ctx) // a borrowed operation's lease does not count
+	}
+	r.afterReply = tx.afterRangeReply
+}
+
+func (r *selectorRangeRead) startWalk(begin, end KeySelector) (panicked bool) {
+	tx := r.tx
+	c := &tx.ryw
+	backstop := tx.rangeReadBackstop()
+	c.mu.Lock()
+	// As keyRead: c.mu covers only pinning the version and snapshotting the
+	// cache; the walk then runs to its first wait on the caller's goroutine,
+	// and a panic fails the read with nothing locked, pinned or leased (RFC-110).
+	panicked = backstop.run(func() {
+		var view *rywWrites
+		if !r.snapshot || tx.snapshotRYWDisableCount <= 0 {
+			// RYWIterator (:378-395); nil: SnapshotCache::iterator (:366-377)
+			view = c.pinWritesLocked()
+			r.view = view
+		}
+		r.walk = c.newRangeWalkLocked(view, begin, end, r.limits, r.reverse, r.maxKey)
+		r.begin, r.end = r.walk.begin, r.walk.end
+	})
+	if panicked && r.view != nil {
+		c.unpinWritesLocked(r.view)
+		r.view = nil
+	}
+	c.mu.Unlock()
+	if panicked {
+		return true
+	}
+	panicked = backstop.run(func() {
+		w := r.walk
+		w.onRequest = tx.walkOnRequest
+		w.start()
+		if w.done() {
+			r.local = true
+			if w.err == nil && !r.snapshot {
+				b, e := rywRangeConflictSpan(r.begin, r.end, w.rangeResult(), r.reverse, r.maxKey)
+				var scratch [4]conflictSpan
+				spans := r.view.appendConflictSpans(scratch[:0], b, e)
+				if len(spans) <= len(r.localConflictsBuf) {
+					copy(r.localConflictsBuf[:], spans)
+					r.localConflictsLen = int8(len(spans))
+				} else {
+					r.localConflicts = spans
 				}
-				r.walk = c.newRangeWalkLocked(view, r.begin, r.end, r.limits, reverse, r.maxKey)
-			})
-			if panicked && r.view != nil {
-				c.unpinWritesLocked(r.view)
-				r.view = nil
 			}
-		})
-		if !panicked {
-			panicked = backstop.run(func() {
-				r.walk.onRequest = tx.walkOnRequest
-				r.walk.start()
-				if r.walk.done() {
-					r.local = true
-					if r.walk.err == nil && !snapshot {
-						b, e := rywRangeConflictSpan(r.begin, r.end, r.walk.rangeResult(), reverse, r.maxKey)
-						r.localConflicts = r.view.appendConflictSpans(nil, b, e)
-					}
-				}
-			})
-			if panicked && r.view != nil {
+			if r.view != nil {
 				c.withLock(func() { c.unpinWritesLocked(r.view) })
 				r.view = nil
 			}
 		}
-		if panicked {
-			return r.finish(nil, false, tx.trackReadOperation(ctx, &wire.FDBError{Code: ErrInternalError}))
+	})
+	if panicked && r.view != nil {
+		c.withLock(func() { c.unpinWritesLocked(r.view) })
+		r.view = nil
+	}
+	return panicked
+}
+
+var selectorReadPool = sync.Pool{New: func() any { return new(selectorRangeRead) }}
+
+func (r *selectorRangeRead) recycle() {
+	if r.finished || r.local {
+		*r = selectorRangeRead{}
+		selectorReadPool.Put(r)
+	}
+}
+
+// bindHeap readies a read that outlives its call. Unless the caller handed its
+// selector keys over, the read copies the keys that may still be the caller's.
+func (r *selectorRangeRead) bindHeap(handed bool) *selectorRangeRead {
+	if !handed {
+		r.begin, r.end = ownedSelector(r.begin), ownedSelector(r.end)
+		if r.walk != nil {
+			r.walk.begin, r.walk.end = ownedSelector(r.walk.begin), ownedSelector(r.walk.end)
 		}
 	}
-	if !counted && !r.local {
-		r.inc = tx.enterIssuedRead(ctx) // a borrowed operation's lease does not count
-	}
-	r.afterReply = tx.afterRangeReply
 	return r
 }
 
 func (r *selectorRangeRead) finish(kvs []KeyValue, more bool, err error) *selectorRangeRead {
 	r.finished, r.kvs, r.more, r.err = true, kvs, more, err
-	r.release()
+	r.release.release()
 	return r
+}
+
+func (r *selectorRangeRead) trackError(err error) error {
+	return r.tx.trackReadOperation(r.ctx, err)
 }
 
 // run performs the read's I/O and records its read conflict. Exactly once. With
 // clone the rows are copied out of RYW storage for the caller.
 func (r *selectorRangeRead) run(clone bool) (kvs []KeyValue, more bool, err error) {
+	return r.runInto(clone, nil)
+}
+
+func (r *selectorRangeRead) runInto(clone bool, dst []KeyValue) (kvs []KeyValue, more bool, err error) {
 	if r.finished {
-		return r.kvs, r.more, r.err
+		kvs, more, err = r.kvs, r.more, r.err
+		r.recycle()
+		return kvs, more, err
 	}
 	defer r.complete()
 	pb := r.tx.rangeReadBackstop()
-	if pb.run(func() { kvs, more, err = r.read(clone) }) {
-		return nil, false, r.tx.trackReadOperation(r.ctx, &wire.FDBError{Code: ErrInternalError})
+	if pb.run(func() { kvs, more, err = r.read(clone, dst) }) {
+		return nil, false, r.trackError(&wire.FDBError{Code: ErrInternalError})
 	}
 	return kvs, more, err
 }
@@ -155,11 +223,12 @@ func (r *selectorRangeRead) reset() bool {
 	return op != nil && r.tx.readIncarnationCause(op.inc) != nil
 }
 
-func (r *selectorRangeRead) read(clone bool) ([]KeyValue, bool, error) {
+func (r *selectorRangeRead) read(clone bool, dst []KeyValue) ([]KeyValue, bool, error) {
 	if r.disabled {
 		return r.readThrough()
 	}
-	// Its rows are the cache's and the write map's, not the walk's.
+	// Rows alias the cache, the write map and the walk's valBuf, which release drops
+	// rather than reuses, so the walk can be released before the rows are returned.
 	defer func() { r.walk.release(); r.walk = nil }()
 	tx, ctx := r.tx, r.ctx
 	if !r.local {
@@ -181,30 +250,36 @@ func (r *selectorRangeRead) read(clone bool) ([]KeyValue, bool, error) {
 			return res, err
 		}
 		if err := r.walk.run(ctx, native); err != nil {
-			return nil, false, tx.trackReadOperation(ctx, err)
+			return nil, false, r.trackError(err)
 		}
 	} else if r.walk.err != nil {
-		return nil, false, tx.trackReadOperation(ctx, r.walk.err)
+		return nil, false, r.trackError(r.walk.err)
 	}
 	res := r.walk.rangeResult()
 	if !r.snapshot { // addConflictRange after a successful read only (RYW:387-388)
 		spans := r.localConflicts
+		if spans == nil {
+			spans = r.localConflictsBuf[:r.localConflictsLen]
+		}
 		if !r.local {
 			var scratch [4]conflictSpan
 			b, e := rywRangeConflictSpan(r.begin, r.end, res, r.reverse, r.maxKey)
 			spans = r.view.appendConflictSpans(scratch[:0], b, e) // a pinned version is immutable: no lock
 		}
 		if err := tx.addReadConflictSpansFor(ctx, spans); err != nil {
-			return nil, false, tx.trackReadOperation(ctx, err)
+			return nil, false, r.trackError(err)
 		}
 	}
 	kvs := res.kvs
-	if clone {
-		// The rows' bytes are the cache's and the write map's, the caller may write
-		// them; the slice is the walk's own, so the copies replace its rows.
-		kvs = cloneReadKVsInPlace(kvs)
+	switch {
+	case len(kvs) == 0:
+		kvs = nil
+	case clone:
+		kvs = cloneReadKVs(kvs)
+	default:
+		kvs = append(dst, kvs...) // the walk's slice is reused
 	}
-	return kvs, res.more, tx.trackReadOperation(ctx, nil)
+	return kvs, res.more, nil
 }
 
 // readThrough is readThrough(GetRangeReq) (RYW:187-215): NativeAPI getRange with
@@ -271,24 +346,32 @@ func (r *selectorRangeRead) complete() {
 		r.view = nil
 	}
 	r.tx.leaveIssuedRead(r.inc)
-	r.release()
+	r.release.release()
+	r.recycle()
 }
 
-// removeOrEqualPair is removeOrEqual of both selectors (RYW:1752-1756) with their
-// successors in one allocation, as in C++'s request arena; selector keys are never written.
-func removeOrEqualPair(begin, end KeySelector) (KeySelector, KeySelector) {
-	if !begin.OrEqual || !end.OrEqual || bytes.Equal(begin.Key, allKeysEnd) || bytes.Equal(end.Key, allKeysEnd) {
-		return begin.removeOrEqual(), end.removeOrEqual()
+// removeOrEqualPair is removeOrEqual of both selectors (RYW:1752-1756), their
+// successors appended to buf as to C++'s request arena; selector keys are never written.
+func removeOrEqualPair(buf *[]byte, begin, end KeySelector) (KeySelector, KeySelector) {
+	if begin.Key == nil {
+		begin.Key = allKeysBegin
 	}
-	if bytes.Equal(begin.Key, end.Key) {
-		k := keyAfterBytes(begin.Key)
-		return KeySelector{Key: k, Offset: begin.Offset}, KeySelector{Key: k, Offset: end.Offset}
+	if end.Key == nil {
+		end.Key = allKeysBegin
 	}
-	nb := len(begin.Key) + 1
-	buf := make([]byte, nb+len(end.Key)+1)
-	copy(buf, begin.Key)
-	copy(buf[nb:], end.Key)
-	return KeySelector{Key: buf[:nb:nb], Offset: begin.Offset}, KeySelector{Key: buf[nb:], Offset: end.Offset}
+	b, e := selectorBoundary(begin), selectorBoundary(end)
+	begin.OrEqual, end.OrEqual = false, false
+	if b.after {
+		begin.Key = materializeInto(buf, b)
+	}
+	if e.after {
+		if b.after && bytes.Equal(b.key, e.key) {
+			end.Key = begin.Key
+		} else {
+			end.Key = materializeInto(buf, e)
+		}
+	}
+	return begin, end
 }
 
 // rywRangeConflictSpan is addConflictRange(GetRangeReq<false>) (RYW:245-281) and
@@ -348,44 +431,44 @@ type issuedRangeRead interface {
 // limit 0 and -1 are unlimited rows; byteTarget 0 is no byte limit. Commit
 // waits for the read whether or not Get is called (RYW:1767).
 func (tx *Transaction) StartGetRangeSelectors(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse bool) *PendingRange {
-	return tx.startSelectorRange(ctx, ownedSelector(begin), ownedSelector(end), limit, byteTarget, reverse, false)
+	return tx.startSelectorRange(ctx, begin, end, limit, byteTarget, reverse, false, false)
 }
 
 // StartGetRangeSelectors is the snapshot form of Transaction.StartGetRangeSelectors.
-func (s *Snapshot) StartGetRangeSelectors(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse bool) *PendingRange {
-	return s.tx.startSelectorRange(ctx, ownedSelector(begin), ownedSelector(end), limit, byteTarget, reverse, true)
+func (s Snapshot) StartGetRangeSelectors(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse bool) *PendingRange {
+	return s.tx.startSelectorRange(ctx, begin, end, limit, byteTarget, reverse, true, false)
 }
 
 // StartGetRangeOwnedSelectors is StartGetRangeSelectors for selectors whose keys
 // the caller hands over: it never modifies them afterwards, so the read keeps
 // them instead of copying them.
 func (tx *Transaction) StartGetRangeOwnedSelectors(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse bool) *PendingRange {
-	return tx.startSelectorRange(ctx, handedSelector(begin), handedSelector(end), limit, byteTarget, reverse, false)
+	return tx.startSelectorRange(ctx, begin, end, limit, byteTarget, reverse, false, true)
 }
 
 // StartGetRangeOwnedSelectors is the snapshot form of Transaction.StartGetRangeOwnedSelectors.
-func (s *Snapshot) StartGetRangeOwnedSelectors(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse bool) *PendingRange {
-	return s.tx.startSelectorRange(ctx, handedSelector(begin), handedSelector(end), limit, byteTarget, reverse, true)
+func (s Snapshot) StartGetRangeOwnedSelectors(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse bool) *PendingRange {
+	return s.tx.startSelectorRange(ctx, begin, end, limit, byteTarget, reverse, true, true)
 }
 
 // GetRangeOwnedSelectors is StartGetRangeOwnedSelectors waited for in the call.
 func (tx *Transaction) GetRangeOwnedSelectors(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
-	return tx.issueSelectorRange(ctx, handedSelector(begin), handedSelector(end), limit, byteTarget, reverse, false).run(true)
+	return tx.getSelectorRange(ctx, begin, end, limit, byteTarget, reverse, false, true)
 }
 
 // GetRangeOwnedSelectors is the snapshot form of Transaction.GetRangeOwnedSelectors.
-func (s *Snapshot) GetRangeOwnedSelectors(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
-	return s.tx.issueSelectorRange(ctx, handedSelector(begin), handedSelector(end), limit, byteTarget, reverse, true).run(true)
+func (s Snapshot) GetRangeOwnedSelectors(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
+	return s.tx.getSelectorRange(ctx, begin, end, limit, byteTarget, reverse, true, true)
 }
 
 // GetRangeSelectors is StartGetRangeSelectors waited for in the call.
 func (tx *Transaction) GetRangeSelectors(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
-	return tx.issueSelectorRange(ctx, ownedSelector(begin), ownedSelector(end), limit, byteTarget, reverse, false).run(true)
+	return tx.getSelectorRange(ctx, begin, end, limit, byteTarget, reverse, false, false)
 }
 
 // GetRangeSelectors is the snapshot form of Transaction.GetRangeSelectors.
-func (s *Snapshot) GetRangeSelectors(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
-	return s.tx.issueSelectorRange(ctx, ownedSelector(begin), ownedSelector(end), limit, byteTarget, reverse, true).run(true)
+func (s Snapshot) GetRangeSelectors(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse bool) ([]KeyValue, bool, error) {
+	return s.tx.getSelectorRange(ctx, begin, end, limit, byteTarget, reverse, true, false)
 }
 
 // ownedSelector copies the selector's key: the read outlives the call, as C++
@@ -398,22 +481,27 @@ func ownedSelector(s KeySelector) KeySelector {
 	return s
 }
 
-// handedSelector is ownedSelector for a key the caller handed over.
-func handedSelector(s KeySelector) KeySelector {
-	if s.Key == nil {
-		s.Key = []byte{}
+// getSelectorRange and startSelectorRange copy no selector key for a read answered
+// at issue, and for one that runs on only the keys the caller did not hand over.
+func (tx *Transaction) getSelectorRange(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse, snapshot, handed bool) ([]KeyValue, bool, error) {
+	r := selectorReadPool.Get().(*selectorRangeRead)
+	tx.issueSelectorRangeInto(r, ctx, begin, end, limit, byteTarget, reverse, snapshot)
+	if r.finished || r.local {
+		return r.run(true)
 	}
-	return s
+	return r.bindHeap(handed).run(true)
 }
 
-// startSelectorRange takes owned selectors.
-func (tx *Transaction) startSelectorRange(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse, snapshot bool) *PendingRange {
-	r := tx.issueSelectorRange(ctx, begin, end, limit, byteTarget, reverse, snapshot)
+func (tx *Transaction) startSelectorRange(ctx context.Context, begin, end KeySelector, limit, byteTarget int, reverse, snapshot, handed bool) *PendingRange {
+	r := selectorReadPool.Get().(*selectorRangeRead)
+	tx.issueSelectorRangeInto(r, ctx, begin, end, limit, byteTarget, reverse, snapshot)
 	if r.finished || r.local {
+		// The rows stay in RYW storage, whose bytes inside a row's length are never overwritten
+		// (in-place writes only extend past it, TestRYWLocalStartRowSurvivesInPlaceWrites).
 		p := &PendingRange{done: closedDone}
 		p.state.Store(pendingClaimed)
-		p.kvs, p.more, p.err = r.run(false)
+		p.kvs, p.more, p.err = r.runInto(false, p.kv0[:0])
 		return p
 	}
-	return tx.startPendingRange(r)
+	return tx.startPendingRange(r.bindHeap(handed))
 }

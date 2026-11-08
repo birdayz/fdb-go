@@ -111,14 +111,16 @@ func (tx *Transaction) insertReadConflictLocked(b, e rywBoundary) {
 	}
 	s := &tx.readMap
 	// lo is the first range ending at or after b: the first it overlaps or touches.
-	var c pfinger[rywRange]
+	c := &tx.readMapFinger
 	c.seekFirst(s, func(r *rywRange) bool { return (rywBoundary{key: r.end}).compare(b) >= 0 })
 	lo := c.idx
 	hi := lo
 	var merged rywRange
+	var firstNode *pnode[rywRange]
 	keepBegin, keepEnd := false, false
 	if c.valid() {
-		first := c.item()
+		firstNode = c.node()
+		first := &firstNode.item
 		if (rywBoundary{key: first.begin}).compare(e) <= 0 {
 			keepBegin = (rywBoundary{key: first.begin}).compare(b) <= 0
 			if keepBegin && (rywBoundary{key: first.end}).compare(e) >= 0 {
@@ -127,9 +129,11 @@ func (tx *Transaction) insertReadConflictLocked(b, e rywBoundary) {
 			// The ranges beginning at or before e join it; ranges never touch, so
 			// they are consecutive from lo.
 			last := first
-			for c.next(); c.valid() && (rywBoundary{key: c.item().begin}).compare(e) <= 0; c.next() {
-				last = c.item()
-				hi++
+			if (rywBoundary{key: first.end}).compare(e) < 0 {
+				for c.next(); c.valid() && (rywBoundary{key: c.item().begin}).compare(e) <= 0; c.next() {
+					last = c.item()
+					hi++
+				}
 			}
 			hi++ // first
 			keepEnd = (rywBoundary{key: last.end}).compare(e) >= 0
@@ -146,7 +150,7 @@ func (tx *Transaction) insertReadConflictLocked(b, e rywBoundary) {
 	case 0:
 		s.insert(lo, merged)
 	case 1:
-		s.set(lo, merged)
+		*s.mutNode(lo, firstNode) = merged
 	default:
 		s.delete(lo, hi)
 		s.insert(lo, merged)

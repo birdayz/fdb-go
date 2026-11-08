@@ -22,7 +22,7 @@ type keyRead struct {
 	walk     *rywWalk // the RYW and snapshot-cache routes
 	// view is the pinned version (D11): set when the walk reads the write map,
 	// which it does without c.mu; the conflict is filtered through it. Released
-	// once, in complete.
+	// once: at issue if the walk finishes there, else in complete.
 	view *rywWrites
 	// localConflicts is the filtered conflict of a read answered at issue, computed
 	// then through the version it read.
@@ -85,6 +85,10 @@ func (tx *Transaction) issueKey(parent context.Context, sel KeySelector, snapsho
 						if b, e := getKeyConflictSpan(sel, r.walk.keyResult()); bytes.Compare(b, e) < 0 {
 							r.localConflicts = r.view.appendConflictSpans(nil, b, e)
 						}
+					}
+					if r.view != nil {
+						c.withLock(func() { c.unpinWritesLocked(r.view) })
+						r.view = nil
 					}
 				}
 			})
@@ -271,7 +275,7 @@ func (tx *Transaction) StartGetKey(ctx context.Context, sel KeySelector) *Pendin
 }
 
 // StartGetKey is the snapshot form of Transaction.StartGetKey.
-func (s *Snapshot) StartGetKey(ctx context.Context, sel KeySelector) *PendingKey {
+func (s Snapshot) StartGetKey(ctx context.Context, sel KeySelector) *PendingKey {
 	return s.tx.startKey(ctx, sel, true)
 }
 

@@ -38,11 +38,38 @@ type textBunchMap struct {
 
 // textIndexTarget is what the prefetch needs of a TEXT index.
 type textIndexTarget struct {
-	index         *Index
-	indexSubspace subspace.Subspace
-	secSubspace   subspace.Subspace
-	tokenizer     TextTokenizer
-	version       int
+	index           *Index
+	indexSubspace   subspace.Subspace
+	secSubspace     subspace.Subspace
+	versionSubspace subspace.Subspace
+	tokenizer       TextTokenizer
+	version         int
+	tokens          textTokenCache
+}
+
+// textTokenCache is one batch save's tokenizations, shared by its TEXT prefetch and
+// maintenance and never by another save; nil tokenizes every time.
+type textTokenCache map[textTokenKey]map[string][]int
+
+type textTokenKey struct {
+	tokenizer string
+	version   int
+	text      string
+}
+
+func (c textTokenCache) tokenize(tokenizer TextTokenizer, version int, text string) (map[string][]int, error) {
+	if c == nil {
+		return tokenizer.TokenizeToMap(text, version, TokenizerModeIndex)
+	}
+	k := textTokenKey{tokenizer: tokenizer.Name(), version: version, text: text}
+	if positions, ok := c[k]; ok {
+		return positions, nil
+	}
+	positions, err := tokenizer.TokenizeToMap(text, version, TokenizerModeIndex)
+	if err == nil {
+		c[k] = positions
+	}
+	return positions, err
 }
 
 func newTextIndexTarget(index *Index, indexSubspace, secSubspace subspace.Subspace) *textIndexTarget {
@@ -54,7 +81,14 @@ func newTextIndexTarget(index *Index, indexSubspace, secSubspace subspace.Subspa
 	if err != nil {
 		return nil
 	}
-	return &textIndexTarget{index: index, indexSubspace: indexSubspace, secSubspace: secSubspace, tokenizer: tokenizer, version: version}
+	return &textIndexTarget{
+		index:           index,
+		indexSubspace:   indexSubspace,
+		secSubspace:     secSubspace,
+		versionSubspace: secSubspace.Sub(tokenizerVersionSubspaceTuple[0]),
+		tokenizer:       tokenizer,
+		version:         version,
+	}
 }
 
 // entryKeys are record's index entry keys, as updateOneKey builds them; nil
@@ -85,7 +119,7 @@ func (r *textBunchReads) addVersionKey(t *textIndexTarget, primaryKey tuple.Tupl
 	if r.seenVersion == nil {
 		r.seenVersion = map[string]struct{}{}
 	}
-	key := t.secSubspace.Sub(tokenizerVersionSubspaceTuple[0]).Sub(tupleToTupleElements(primaryKey)...).Bytes()
+	key := []byte(t.versionSubspace.Pack(primaryKey))
 	if _, seen := r.seenVersion[string(key)]; !seen {
 		r.seenVersion[string(key)] = struct{}{}
 		r.versionKeys = append(r.versionKeys, key)
@@ -99,6 +133,7 @@ func (r *textBunchReads) add(t *textIndexTarget, entryKeys []tuple.Tuple) {
 		r.byMap = map[string]int{}
 	}
 	textPosition := textFieldPosition(t.index.RootExpression)
+	var scratch []byte
 	for _, entryKey := range entryKeys {
 		if textPosition >= len(entryKey) {
 			continue
@@ -107,24 +142,36 @@ func (r *textBunchReads) add(t *textIndexTarget, entryKeys []tuple.Tuple) {
 		if !ok || text == "" {
 			continue
 		}
-		positions, err := t.tokenizer.TokenizeToMap(text, t.version, TokenizerModeIndex)
+		positions, err := t.tokens.tokenize(t.tokenizer, t.version, text)
 		if err != nil {
 			continue
 		}
 		grouping := entryKey[:textPosition]
 		grouped := entryKey[textPosition+1:]
+		var groupingPrefix []byte
+		if len(grouping) == 0 {
+			groupingPrefix = t.indexSubspace.Bytes()
+		} else {
+			groupingPrefix = t.indexSubspace.Pack(grouping)
+		}
+		packedGrouped := grouped.Pack()
 		for token := range positions {
-			subspaceTuple := make(tuple.Tuple, 0, len(grouping)+1)
-			subspaceTuple = append(subspaceTuple, grouping...)
-			subspaceTuple = append(subspaceTuple, token)
-			prefix := t.indexSubspace.Sub(tupleToTupleElements(subspaceTuple)...).Bytes()
-			i, ok := r.byMap[string(prefix)]
+			scratch = append(scratch[:0], groupingPrefix...)
+			scratch = tuple.AppendString(scratch, token)
+			i, ok := r.byMap[string(scratch)]
+			var prefix []byte
 			if !ok {
+				prefix = bytes.Clone(scratch)
 				i = len(r.maps)
 				r.byMap[string(prefix)] = i
 				r.maps = append(r.maps, textBunchMap{prefix: prefix})
+			} else {
+				prefix = r.maps[i].prefix
 			}
-			r.maps[i].keys = append(r.maps[i].keys, grouped.PackWithPrefix(prefix))
+			key := make([]byte, len(prefix)+len(packedGrouped))
+			copy(key, prefix)
+			copy(key[len(prefix):], packedGrouped)
+			r.maps[i].keys = append(r.maps[i].keys, key)
 		}
 	}
 }
@@ -207,9 +254,9 @@ func sortSearchKeys(rows []fdb.KeyValue, key []byte) int {
 	return i
 }
 
-// prefetchBatchTextBunches warms maintained new/old TEXT keys and old tokenizer versions.
+// prefetchBatchTextBunches warms maintained new/old TEXT keys and old tokenizer versions, tokenizing into tokens;
 // olds[i]=nil means an insert or an old image supplied by an earlier record in this batch.
-func (store *FDBRecordStore) prefetchBatchTextBunches(news, olds []*FDBStoredRecord[proto.Message]) {
+func (store *FDBRecordStore) prefetchBatchTextBunches(news, olds []*FDBStoredRecord[proto.Message], tokens textTokenCache) {
 	var reads textBunchReads
 	targets := map[string]*textIndexTarget{}
 	targetsFor := func(rt *RecordType) []*textIndexTarget {
@@ -232,7 +279,15 @@ func (store *FDBRecordStore) prefetchBatchTextBunches(news, olds []*FDBStoredRec
 					if !isText {
 						continue
 					}
-					t = &textIndexTarget{index: index, indexSubspace: tm.indexSubspace, secSubspace: tm.secSubspace, tokenizer: tm.tokenizer, version: tm.tokenizerVersion}
+					t = &textIndexTarget{
+						index:           index,
+						indexSubspace:   tm.indexSubspace,
+						secSubspace:     tm.secSubspace,
+						versionSubspace: tm.versionSubspace,
+						tokenizer:       tm.tokenizer,
+						version:         tm.tokenizerVersion,
+						tokens:          tokens,
+					}
 					targets[index.Name] = t
 				}
 				out = append(out, t)

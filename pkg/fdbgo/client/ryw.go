@@ -35,6 +35,10 @@ type rywCache struct {
 	// (resetPromise, ReadYourWrites.actor.cpp:358-364).
 	gen uint64
 
+	// nextVer stamps mutable write-map lineages so coalesceOverAtomics (inPlace)
+	// can update an unshared atomic stack in place.
+	nextVer uint64
+
 	// onPin and onClone are test seams (S4): every pin/unpin and every clone.
 	onPin   func(w *rywWrites, pin bool)
 	onClone func(from, to *rywWrites)
@@ -79,6 +83,7 @@ type rywEntry struct {
 	// valueOwned is the owned length of value's backing array (appendIfFitsOwned).
 	valueOwned int32
 	atomics    []rywMutation
+	atomicsVer uint64
 	// unreadable: a versionstamped op landed on this key, making it UNREADABLE for
 	// the transaction's lifetime — reads reaching it throw accessed_unreadable (1036)
 	// unless bypassed. STICKY, mirroring C++ WriteMap.cpp:97
@@ -253,11 +258,19 @@ func (c *rywCache) setWith(key, value []byte, addConflict bool) (keptKey, keptVa
 	// unreadable entry the Set is pushed and :141 keeps the flag).
 	kb := c.keepCopyLocked(key) // one copy serves the write map and the nodes
 	k := unsafe.String(unsafe.SliceData(kb), len(kb))
-	prev, _ := w.entry(k)
-	if nodeKey(key) {
+	idx, node, prev, exists := w.lookupForWrite(k)
+	if exists && node != nil {
+		k = node.item.key
+	}
+	mutate := nodeKey(key) && !(exists && (!addConflict || prev.nodeConflict) && !w.isUnreadable(key))
+	if mutate {
 		w.nodes.mutate(stringBytes(k), addConflict, false)
 	}
-	w.putEntry(k, rywEntry{value: copied, unreadable: prev.unreadable})
+	w.putEntryAt(idx, node, k, rywEntry{
+		value:        copied,
+		unreadable:   prev.unreadable,
+		nodeConflict: prev.nodeConflict || (addConflict && nodeKey(key)),
+	})
 	keptKey, keptValue = kb, copied
 	// A Set after ClearRange wins — no need to remove from cleared, because
 	// get() checks writes before cleared.
@@ -572,14 +585,18 @@ func (c *rywCache) atomicWith(op MutationType, key, param []byte, addConflict bo
 	w := c.mutableWritesLocked()
 	// A view of the caller's key for lookups; copied only where the map retains it.
 	k := unsafe.String(unsafe.SliceData(key), len(key))
-	entry, exists := w.entry(k)
+	idx, node, entry, exists := w.lookupForWrite(k)
+	if exists && node != nil {
+		k = node.item.key
+	}
 	versionstamp := isUnresolvedVersionstamp(op)
 	// On an operation key mutate only ORs both flags in (WriteMap.cpp:95-98, 139-156); an SVK
 	// unreadable range drops the key's node but keeps its entry, so there it always applies.
 	mutate := nodeKey(key) && !(exists && (!addConflict || entry.nodeConflict) && (!versionstamp || entry.unreadable) &&
 		!w.isUnreadable(key))
-	if mutate || !exists || !w.isSorted || (versionstamp && !entry.unreadable) {
-		k = string(key)
+	if !(exists && node != nil) && (mutate || !exists || !w.isSorted || (versionstamp && !entry.unreadable)) {
+		kb := c.keepCopyLocked(key)
+		k = unsafe.String(unsafe.SliceData(kb), len(kb))
 	}
 	if mutate {
 		w.nodes.mutate(stringBytes(k), addConflict, versionstamp) // WriteMap.cpp:87-158
@@ -607,7 +624,7 @@ func (c *rywCache) atomicWith(op MutationType, key, param []byte, addConflict bo
 					entry.value = []byte{} // present-empty, as below
 				}
 				entry.absent = false
-				w.putEntry(k, entry)
+				w.putEntryAt(idx, node, k, entry)
 				return
 			}
 			val, clr := applyAtomic(op, entry.value, param)
@@ -621,7 +638,7 @@ func (c *rywCache) atomicWith(op MutationType, key, param []byte, addConflict bo
 			entry.value = val
 			entry.valueOwned = 0
 			entry.absent = clr
-			w.putEntry(k, entry)
+			w.putEntryAt(idx, node, k, entry)
 			return
 		}
 		if !exists && w.isCleared(key) {
@@ -633,7 +650,7 @@ func (c *rywCache) atomicWith(op MutationType, key, param []byte, addConflict bo
 			if !clr && val == nil {
 				val = []byte{} // present-empty, not absent (see site B).
 			}
-			w.putEntry(k, rywEntry{value: val, absent: clr, nodeConflict: entry.nodeConflict})
+			w.putEntryAt(idx, node, k, rywEntry{value: val, absent: clr, nodeConflict: entry.nodeConflict})
 			return
 		}
 	}
@@ -658,8 +675,10 @@ func (c *rywCache) atomicWith(op MutationType, key, param []byte, addConflict bo
 	// Coalesce onto the pending chain (C++ WriteMap::coalesceOver at insert time, WriteMap.cpp:106/144):
 	// repeated same-type resolvable atomics fold to one op, so a 150k-`ADD 1` chain on an unread key ships
 	// one mutation, not 150k (the RFC-172 / #28 fix). Read-transparent; versionstamps/CompareAndClear push.
-	entry.atomics = coalesceOverAtomics(entry.atomics, newMut)
-	w.putEntry(k, entry)
+	inPlace := w.ver != 0 && entry.atomicsVer == w.ver
+	entry.atomics = coalesceOverAtomics(entry.atomics, newMut, inPlace)
+	entry.atomicsVer = w.ver
+	w.putEntryAt(idx, node, k, entry)
 }
 
 // localPointLocked evaluates the merged point view without changing the write
@@ -1074,11 +1093,13 @@ func (c *rywCache) replyEdgeKnown(begin, end []byte, kvs []KeyValue, reverse boo
 // later writes do not change (WriteMap.h:158-160). The copy is never c.w and never
 // pinned, so mergeBatchLocked may fold resolved atomics into it. It has no nodes; its
 // cursor keeps the legacy boundary sources until phase 3 deletes the loop (RFC-262 D2).
-// The span shares the live version's nodes, so it costs O(log n); atomic stacks are
-// shared too, as coalesceOverAtomics never writes one in place.
+// The span shares the live version's nodes and atomic stacks, so it costs O(log n).
+// Re-stamping the live version here keeps later folds from writing those stacks in place.
 func (c *rywCache) captureWriteSpanLocked(begin, end []byte) *rywWrites {
 	w := c.liveLocked()
 	w.ensureSorted()
+	c.nextVer++
+	w.ver = c.nextVer
 	ui := w.unreadableKeys.search(func(k *string) bool { return *k >= string(begin) })
 	uj := w.unreadableKeys.search(func(k *string) bool { return *k >= string(end) })
 	return &rywWrites{
@@ -1615,10 +1636,14 @@ func isNonAssociativeOp(op MutationType) bool {
 // versionstamped op is kept intact so the entry's unreadable/resolve semantics are byte-for-byte unchanged
 // (its 10-byte stamp is assigned at commit, so folding cannot combine operands anyway). The fold is
 // read-transparent: resolveAtomics over the folded chain yields the identical value.
-func coalesceOverAtomics(stack []rywMutation, newMut rywMutation) []rywMutation {
-	// The stack may be shared with a write-map snapshot (rywWrites.clone): never
-	// write its backing array, so a push and a fold both build a new one.
+//
+// The stack may be shared with a write-map snapshot (rywWrites.clone) or a captured
+// span: its backing array is written only when inPlace proves this version owns it.
+func coalesceOverAtomics(stack []rywMutation, newMut rywMutation, inPlace bool) []rywMutation {
 	if !foldsOnto(stack, newMut) {
+		if inPlace {
+			return append(stack, newMut)
+		}
 		return append(stack[:len(stack):len(stack)], newMut)
 	}
 	top := stack[len(stack)-1]
@@ -1642,7 +1667,9 @@ func coalesceOverAtomics(stack []rywMutation, newMut rywMutation) []rywMutation 
 		folded.param, _ = applyAtomic(top.typ, existing(top.param), newMut.param)
 	}
 	folded.typ = top.typ
-	stack = slices.Clone(stack)
+	if !inPlace {
+		stack = slices.Clone(stack)
+	}
 	stack[len(stack)-1] = folded
 	return stack
 }
@@ -1947,14 +1974,8 @@ func doByteMin(base, param []byte) []byte {
 // doAppendIfFits — C++ doAppendIfFits. Concatenates if within 100KB limit.
 func doAppendIfFits(base, param []byte) []byte {
 	e := existing(base)
-	if len(e) == 0 {
-		return append([]byte(nil), param...)
-	}
-	if len(param) == 0 {
-		return append([]byte(nil), e...)
-	}
-	if len(e)+len(param) > valueSizeLimit { // CLIENT_KNOBS->VALUE_SIZE_LIMIT (pkg const)
-		return append([]byte(nil), e...)
+	if kept, concat := appendIfFitsKept(e, param); !concat {
+		return append([]byte(nil), kept...)
 	}
 	result := make([]byte, len(e)+len(param))
 	copy(result, e)
@@ -1962,16 +1983,29 @@ func doAppendIfFits(base, param []byte) []byte {
 	return result
 }
 
+// appendIfFitsKept is doAppendIfFits's choice (Atomic.h:114-137) for an existing value e:
+// the operand it returns unchanged, or concat when it concatenates e and param.
+func appendIfFitsKept(e, param []byte) (kept []byte, concat bool) {
+	if len(e) == 0 {
+		return param, false
+	}
+	if len(param) == 0 || len(e)+len(param) > valueSizeLimit { // CLIENT_KNOBS->VALUE_SIZE_LIMIT (pkg const)
+		return e, false
+	}
+	return nil, true
+}
+
 // appendIfFitsOwned is doAppendIfFits (Atomic.h:114-137) appending in place past len(v), into bytes only
 // the live lineage owns (owned; v is capped), so versions sharing v see it unchanged (WriteMap.h:158-160).
 func appendIfFitsOwned(v []byte, owned int32, param []byte) ([]byte, int32) {
-	n := len(v) + len(param)
-	switch {
-	case len(v) == 0:
-		return doAppendIfFits(v, param), 0
-	case len(param) == 0 || n > valueSizeLimit:
+	if kept, concat := appendIfFitsKept(v, param); !concat {
+		if len(v) == 0 {
+			return append([]byte(nil), kept...), 0
+		}
 		return v, owned
-	case int(owned) >= n:
+	}
+	n := len(v) + len(param)
+	if int(owned) >= n {
 		buf := unsafe.Slice(unsafe.SliceData(v), owned)
 		copy(buf[len(v):n], param)
 		return buf[:n:n], owned

@@ -222,6 +222,8 @@ func TestRYWGetRangeMultiFetchUsesIssueTimeWriteSpan(t *testing.T) {
 		"versionstamp-existing": func(c *rywCache, k, _ []byte) { c.atomic(MutSetVersionstampedValue, k, operand) },
 		"versionstamp-new":      func(c *rywCache, _, gap []byte) { c.atomic(MutSetVersionstampedValue, gap, operand) },
 		"svk-range":             func(c *rywCache, k, _ []byte) { c.addUnreadableRange(k, keyAfterBytes(k)) },
+		// A same-type fold onto the stack the captured span shares.
+		"fold-existing-stack": func(c *rywCache, _, _ []byte) { c.atomic(MutAddValue, []byte("mf/d"), issueViewNum(5)) },
 	}
 	issue := func(c *rywCache) {
 		c.set([]byte("mf/a5"), []byte("local"))

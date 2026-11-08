@@ -387,17 +387,17 @@ func (tx *Transaction) opContextFor(parent context.Context, issued bool) (contex
 	return ctx, release.cancelFunc(), owned != nil && issued
 }
 
-// opRelease ends an admitted operation: fn, when set, ends its derived context
-// and lease together; otherwise lease alone (nil when borrowed) is released.
-// A value, so an operation without a derived context allocates no closure.
+// opRelease ends an admitted operation: op, when set, is a deferred operation
+// whose merged context and lease end together; otherwise lease alone (nil when
+// borrowed) is released. A value, so releasing allocates no closure.
 type opRelease struct {
-	fn    context.CancelFunc
+	op    *readOperation
 	lease *executionLease
 }
 
 func (r opRelease) release() {
-	if r.fn != nil {
-		r.fn()
+	if r.op != nil {
+		r.op.endDeferred()
 		return
 	}
 	r.lease.release()
@@ -405,8 +405,8 @@ func (r opRelease) release() {
 
 func (r opRelease) cancelFunc() context.CancelFunc {
 	switch {
-	case r.fn != nil:
-		return r.fn
+	case r.op != nil:
+		return r.op.endDeferred
 	case r.lease != nil:
 		return r.lease.release
 	default:
@@ -417,8 +417,8 @@ func (r opRelease) cancelFunc() context.CancelFunc {
 // afterLease is the cleanup left for a holder that outlives the already
 // released lease: only a derived context remains to end.
 func (r opRelease) afterLease() context.CancelFunc {
-	if r.fn != nil {
-		return r.fn
+	if r.op != nil {
+		return r.op.endDeferred
 	}
 	return func() {}
 }
@@ -426,6 +426,12 @@ func (r opRelease) afterLease() context.CancelFunc {
 // opContextWithLease returns release authority only to the admitting frame.
 // Borrowers retain identity and effective cancellation, but own no token.
 func (tx *Transaction) opContextWithLease(parent context.Context, issued bool) (context.Context, opRelease, *executionLease) {
+	return tx.opContextInto(parent, issued, nil)
+}
+
+// opContextInto is opContextWithLease admitting a fresh operation into into, when
+// set, instead of a new one: a pooled read answered at issue allocates none.
+func (tx *Transaction) opContextInto(parent context.Context, issued bool, into *readOperation) (context.Context, opRelease, *executionLease) {
 	if op := tx.readOperation(parent); op != nil {
 		if op.lease.isActive() {
 			return parent, opRelease{}, nil
@@ -451,7 +457,8 @@ func (tx *Transaction) opContextWithLease(parent context.Context, issued bool) (
 		if cause != nil {
 			inc.cancel(cause)
 		}
-		op := &readOperation{Context: parent, readAdmission: readAdmission{tx: tx, inc: inc, parent: parent}, joined: true}
+		op := freshOperation(into)
+		*op = readOperation{Context: parent, readAdmission: readAdmission{tx: tx, inc: inc, parent: parent}, joined: true}
 		op.lease = tx.enterReadStateInto(op, inc, true, issued, &op.leaseStorage)
 		if op.lease != nil {
 			op.entryErr = tx.deferredErr.Load()
@@ -462,17 +469,31 @@ func (tx *Transaction) opContextWithLease(parent context.Context, issued bool) (
 		inc.cancel(cause)
 	}
 	// The merged context is derived when first needed (see deferred).
-	op := &readOperation{Context: parent, readAdmission: readAdmission{tx: tx, inc: inc, parent: parent}, deferred: true}
+	op := freshOperation(into)
+	*op = readOperation{Context: parent, readAdmission: readAdmission{tx: tx, inc: inc, parent: parent}, deferred: true}
 	op.lease = tx.enterReadStateInto(op, inc, true, issued, &op.leaseStorage)
 	if op.lease != nil {
 		// The lease pins this incarnation's slot across reset. Preserve even a
 		// clean entry through nested work; later poison gates later operations.
 		op.entryErr = tx.deferredErr.Load()
 	}
-	return op, opRelease{fn: op.endDeferred}, op.lease
+	return op, opRelease{op: op}, op.lease
+}
+
+func freshOperation(into *readOperation) *readOperation {
+	if into != nil {
+		return into
+	}
+	return new(readOperation)
 }
 
 func (tx *Transaction) readOperation(ctx context.Context) *readOperation {
+	if op, ok := ctx.(*readOperation); ok && op.tx == tx {
+		return op
+	}
+	if ctx.Done() == nil {
+		return nil
+	}
 	op, _ := ctx.Value(readContextKey{tx}).(*readOperation)
 	return op
 }
@@ -582,6 +603,9 @@ func (tx *Transaction) mapReadError(ctx context.Context, err error) error {
 }
 
 func (tx *Transaction) trackReadOperation(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
 	err = tx.mapReadError(ctx, err)
 	if op := tx.readOperation(ctx); op != nil {
 		return tx.trackReadErrorGen(err, op.inc.gen)

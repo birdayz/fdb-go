@@ -269,8 +269,11 @@ func (tx *Transaction) waitIssuedReads(ctx context.Context, inc *readIncarnation
 type PendingRange struct {
 	r     issuedRangeRead
 	state atomic.Int32 // pendingReady → pendingClaimed by whichever of the goroutine or Get runs r
+	taken atomic.Bool  // the first Get has claimed kv1
 	done  chan struct{}
-	kvs   []KeyValue // shared RYW/cache storage; Get copies
+	kvs   []KeyValue  // the rows in shared RYW/cache storage, bytes never overwritten within their length
+	kv0   [2]KeyValue // a local read's row headers
+	kv1   [2]KeyValue // the first Get's copy, when it fits
 	more  bool
 	err   error
 	// ranByCaller reports that Get ran the read itself (test observability).
@@ -291,6 +294,9 @@ func (p *PendingRange) Get() ([]KeyValue, bool, error) {
 		p.execute()
 	}
 	<-p.done
+	if n := len(p.kvs); n > 0 && n <= len(p.kv1) && p.taken.CompareAndSwap(false, true) {
+		return cloneReadKVsInto(p.kv1[:n:n], p.kvs), p.more, p.err
+	}
 	return cloneReadKVs(p.kvs), p.more, p.err
 }
 
@@ -310,7 +316,7 @@ func (tx *Transaction) StartGetRange(ctx context.Context, begin, end []byte, lim
 }
 
 // StartGetRange is the snapshot form of Transaction.StartGetRange.
-func (s *Snapshot) StartGetRange(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool) *PendingRange {
+func (s Snapshot) StartGetRange(ctx context.Context, begin, end []byte, limit, byteTarget int, reverse bool) *PendingRange {
 	return s.tx.startRange(ctx, begin, end, limit, byteTarget, reverse, true)
 }
 
@@ -347,7 +353,10 @@ var closedDone = func() chan struct{} { ch := make(chan struct{}); close(ch); re
 // transaction without a database.
 func (tx *Transaction) rangeReadBackstop() *panicBackstop {
 	if tx.db == nil {
-		return &panicBackstop{name: "rangeRead"}
+		// Once: a transaction's pending reads run concurrently, and each asks
+		// for the backstop.
+		tx.rangeReadPanicsInit.Do(func() { tx.rangeReadPanics.name = "rangeRead" })
+		return &tx.rangeReadPanics
 	}
 	return &tx.db.rangeReadPanics
 }

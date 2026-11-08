@@ -3,14 +3,17 @@ package recordlayer
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"fdb.dev/gen/demopb"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/fdbgo/transport"
 	"fdb.dev/pkg/fdbgo/wire"
 	wiretypes "fdb.dev/pkg/fdbgo/wire/types"
@@ -18,6 +21,73 @@ import (
 	. "github.com/onsi/gomega"
 	"google.golang.org/protobuf/proto"
 )
+
+// countingTextTokenizer is the default tokenizer under its own name, counting
+// TokenizeToMap calls per text; onTokenize runs inside each call.
+type countingTextTokenizer struct {
+	*DefaultTextTokenizer
+	name       string
+	mu         sync.Mutex
+	calls      map[string]int
+	onTokenize func(text string)
+}
+
+func (t *countingTextTokenizer) Name() string                { return t.name }
+func (t *countingTextTokenizer) GetTokenizer() TextTokenizer { return t }
+
+func (t *countingTextTokenizer) TokenizeToMap(text string, version int, mode TokenizerMode) (map[string][]int, error) {
+	t.mu.Lock()
+	t.calls[text]++
+	hook := t.onTokenize
+	t.mu.Unlock()
+	if hook != nil {
+		hook(text)
+	}
+	return t.DefaultTextTokenizer.TokenizeToMap(text, version, mode)
+}
+
+// reset clears the counts and sets the hook.
+func (t *countingTextTokenizer) reset(onTokenize func(text string)) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.calls, t.onTokenize = map[string]int{}, onTokenize
+}
+
+func (t *countingTextTokenizer) counts() map[string]int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make(map[string]int, len(t.calls))
+	for text, n := range t.calls {
+		out[text] = n
+	}
+	return out
+}
+
+// taggedTextTokenizer is the default tokenizer at versions 0 and 1, tagging each
+// token with its prefix and version, so two of them, or two versions, differ.
+type taggedTextTokenizer struct {
+	*DefaultTextTokenizer
+	name, prefix string
+}
+
+func (t *taggedTextTokenizer) Name() string                { return t.name }
+func (t *taggedTextTokenizer) GetTokenizer() TextTokenizer { return t }
+func (t *taggedTextTokenizer) MaxVersion() int             { return 1 }
+
+func (t *taggedTextTokenizer) TokenizeToMap(text string, version int, mode TokenizerMode) (map[string][]int, error) {
+	if err := ValidateTokenizerVersion(t, version); err != nil {
+		return nil, err
+	}
+	positions, err := t.DefaultTextTokenizer.TokenizeToMap(text, GlobalMinVersion, mode)
+	if err != nil {
+		return nil, err
+	}
+	tagged := make(map[string][]int, len(positions))
+	for token, p := range positions {
+		tagged[fmt.Sprintf("%s%d_%s", t.prefix, version, token)] = p
+	}
+	return tagged, nil
+}
 
 // textPrefetchRun describes the successful attempt's commit and owned storage reads.
 type textPrefetchRun struct {
@@ -328,6 +398,226 @@ var _ = Describe("Batch TEXT bunch prefetch", func() {
 			Expect(got.commit.transaction.WriteConflictRanges).To(Equal(want.commit.transaction.WriteConflictRanges), m.name)
 			Expect(rows).To(Equal(wantRows), m.name)
 		}
+	})
+
+	// countingMetadata indexes Customer.name with a counting tokenizer registered as name.
+	countingMetadata := func(name string) (*RecordMetaData, *countingTextTokenizer) {
+		tok := &countingTextTokenizer{DefaultTextTokenizer: &DefaultTextTokenizer{}, name: name, calls: map[string]int{}}
+		Expect(GlobalTextTokenizerRegistry().Register(tok)).To(Succeed())
+		b := baseBuilder()
+		b.AddIndex("Customer", NewTextIndex("counted_text", Field("name")).SetOption(IndexOptionTextTokenizerName, name))
+		md, err := b.Build()
+		Expect(err).NotTo(HaveOccurred())
+		return md, tok
+	}
+
+	It("tokenizes each text of a batch once, maintenance reusing the prefetch's tokenization", func() {
+		md, tok := countingMetadata("batch_token_reuse_test_tokenizer")
+		for _, m := range []struct {
+			mode
+			// TokenizeToMap calls per inserted text, and per old and new text of an update.
+			insert, old, updated int
+		}{
+			{modes[1], 1, 1, 1},   // batch: the prefetch tokenizes, maintenance reuses it
+			{modes[0], 1, 1, 1},   // batch without prefetch: maintenance alone
+			{modes[2], 2, 1, 2},   // PrefetchRecordBatch (new texts only) then SaveRecord
+			{sequential, 1, 1, 1}, // SaveRecord alone
+		} {
+			root := specSubspace().Sub(m.name)
+			save := func(records []proto.Message) map[string]int {
+				_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+					b := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root)
+					s, err := b.CreateOrOpen()
+					if err != nil {
+						return nil, err
+					}
+					tok.reset(nil) // the counts are the committing attempt's
+					return nil, m.save(s, b, records)
+				})
+				Expect(err).NotTo(HaveOccurred(), m.name)
+				return tok.counts()
+			}
+			var inserts, updates []proto.Message
+			wantInsert, wantUpdate := map[string]int{}, map[string]int{}
+			for id := range int64(6) {
+				old, updated := fmt.Sprintf("%s record%d", words(int(id), 6), id), fmt.Sprintf("%s changed%d", words(int(id)+50, 6), id)
+				inserts, updates = append(inserts, customer(id, old, "")), append(updates, customer(id, updated, ""))
+				wantInsert[old], wantUpdate[old], wantUpdate[updated] = m.insert, m.old, m.updated
+			}
+			Expect(save(inserts)).To(Equal(wantInsert), m.name+": insert")
+			Expect(save(updates)).To(Equal(wantUpdate), m.name+": update")
+		}
+	})
+
+	// sameRowsEveryMode runs save from initial in each mode and expects sequential's rows.
+	sameRowsEveryMode := func(md *RecordMetaData, root subspace.Subspace, initial []fdb.KeyValue, records []proto.Message) []fdb.KeyValue {
+		var want []fdb.KeyValue
+		for i, m := range append([]mode{sequential}, modes...) {
+			restore(root, initial)
+			_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+				b := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root)
+				s, err := b.CreateOrOpen()
+				if err != nil {
+					return nil, err
+				}
+				return nil, m.save(s, b, records)
+			})
+			Expect(err).NotTo(HaveOccurred(), m.name)
+			if rows := dump(root); i == 0 {
+				want = rows
+			} else {
+				Expect(rows).To(Equal(want), m.name)
+			}
+		}
+		return want
+	}
+	indexed := func(rows []fdb.KeyValue, tag string) bool {
+		return slices.ContainsFunc(rows, func(kv fdb.KeyValue) bool { return bytes.Contains(kv.Key, []byte(tag)) })
+	}
+
+	// The prefetch tokenizes an update's old text at the index's version; maintenance
+	// removes its entries at the record's stored one, so the cache keys the version.
+	It("removes a batch update's old entries at the record's tokenizer version", func() {
+		tok := &taggedTextTokenizer{DefaultTextTokenizer: &DefaultTextTokenizer{}, name: "batch_token_version_test_tokenizer", prefix: "v"}
+		Expect(GlobalTextTokenizerRegistry().Register(tok)).To(Succeed())
+		at := func(version string) *RecordMetaData {
+			b := baseBuilder()
+			b.AddIndex("Customer", NewTextIndex("versioned_text", Field("name")).
+				SetOption(IndexOptionTextTokenizerName, tok.name).SetOption(IndexOptionTextTokenizerVersion, version))
+			md, err := b.Build()
+			Expect(err).NotTo(HaveOccurred())
+			return md
+		}
+		root := specSubspace()
+		var seed, updates []proto.Message
+		for id := range int64(6) {
+			seed = append(seed, customer(id, words(int(id), 8), ""))
+			updates = append(updates, customer(id, words(int(id)+20, 8)+" changed", ""))
+		}
+		_, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			_, err := open(rc, at("0"), root).SaveRecordBatch(seed)
+			return nil, err
+		})
+		Expect(err).NotTo(HaveOccurred())
+		initial := dump(root)
+		Expect(indexed(initial, "v0_")).To(BeTrue(), "the seed is indexed at version 0")
+		want := sameRowsEveryMode(at("1"), root, initial, updates)
+		Expect(indexed(want, "v1_")).To(BeTrue(), "the updates are indexed at version 1")
+		Expect(indexed(want, "v0_")).To(BeFalse(), "the updates removed every version-0 entry")
+	})
+
+	It("tokenizes a batch's text apart for two TEXT indexes with different tokenizers", func() {
+		a := &taggedTextTokenizer{DefaultTextTokenizer: &DefaultTextTokenizer{}, name: "batch_token_tokenizer_a", prefix: "a"}
+		z := &taggedTextTokenizer{DefaultTextTokenizer: &DefaultTextTokenizer{}, name: "batch_token_tokenizer_z", prefix: "z"}
+		Expect(GlobalTextTokenizerRegistry().Register(a)).To(Succeed())
+		Expect(GlobalTextTokenizerRegistry().Register(z)).To(Succeed())
+		b := baseBuilder()
+		b.AddIndex("Customer", NewTextIndex("text_a", Field("name")).SetOption(IndexOptionTextTokenizerName, a.name))
+		b.AddIndex("Customer", NewTextIndex("text_z", Field("name")).SetOption(IndexOptionTextTokenizerName, z.name))
+		md, err := b.Build()
+		Expect(err).NotTo(HaveOccurred())
+		root := specSubspace()
+		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) { return open(rc, md, root), nil })
+		Expect(err).NotTo(HaveOccurred())
+		var records []proto.Message
+		for id := range int64(6) {
+			records = append(records, customer(id, words(int(id), 8), ""))
+		}
+		want := sameRowsEveryMode(md, root, dump(root), records)
+		Expect(indexed(want, "a0_") && indexed(want, "z0_")).To(BeTrue(), "both indexes hold their own tokens")
+	})
+
+	// Deterministic, without -race: saves run inside a batch's prefetch, after it
+	// tokenized t1, neither use nor replace the batch's tokenizations.
+	It("keeps a batch's tokenizations from a SaveRecord and a batch run during it", func() {
+		md, tok := countingMetadata("batch_token_isolation_test_tokenizer")
+		root := specSubspace()
+		t1, t2 := "alpha beta gamma", "delta epsilon zeta"
+		counts, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			s := open(rc, md, root)
+			var nested error
+			fired := false
+			tok.reset(func(text string) {
+				if text != t2 || fired {
+					return
+				}
+				fired = true
+				if _, nested = s.SaveRecord(customer(900, t1, "")); nested == nil {
+					_, nested = s.SaveRecordBatch([]proto.Message{customer(901, t1, "")})
+				}
+			})
+			defer tok.reset(nil)
+			if _, err := s.SaveRecordBatch([]proto.Message{customer(1, t1, ""), customer(2, t2, "")}); err != nil {
+				return nil, err
+			}
+			if !fired {
+				return nil, errors.New("the batch never tokenized t2")
+			}
+			return tok.counts(), nested
+		})
+		Expect(err).NotTo(HaveOccurred())
+		// t1: once each by the batch's prefetch, the SaveRecord and the inner batch's
+		// prefetch; t2: once, by the prefetch. Neither batch's maintenance tokenizes.
+		Expect(counts).To(Equal(map[string]int{t1: 3, t2: 1}))
+	})
+
+	// Run with -race: a batch's tokenizations are its own, so saves beside it on
+	// the store neither read nor write them.
+	It("keeps a batch's tokenizations to the batch while SaveRecord runs beside it", func() {
+		md, root := metadata(), specSubspace()
+		const savers, rounds = 4, 8
+		indexed, err := sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			s := open(rc, md, root)
+			var wg sync.WaitGroup
+			errs := make(chan error, savers*rounds)
+			for g := range savers {
+				wg.Add(1)
+				go func() {
+					defer GinkgoRecover()
+					defer wg.Done()
+					for i := range rounds {
+						id := int64(100*g + 2*i)
+						var err error
+						if g%2 == 0 {
+							_, err = s.SaveRecordBatch([]proto.Message{customer(id, words(int(id), 12), "b"), customer(id+1, words(int(id), 12), "b")})
+						} else {
+							_, err = s.SaveRecord(customer(id, words(int(id), 12), "s"))
+						}
+						errs <- err
+					}
+				}()
+			}
+			wg.Wait()
+			close(errs)
+			for err := range errs {
+				if err != nil {
+					return nil, err
+				}
+			}
+			// Every record is indexed under the token all texts share.
+			entries, err := AsList(ctx, s.ScanIndexByType(md.GetIndex("prefetch_text"), IndexScanByTextToken,
+				TupleRangeAllOf(tuple.Tuple{"agent"}), nil, ForwardScan()))
+			if err != nil {
+				return nil, err
+			}
+			var ids []int64
+			for _, e := range entries {
+				ids = append(ids, e.PrimaryKey()[0].(int64))
+			}
+			return ids, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		var want []int64
+		for g := range savers {
+			for i := range rounds {
+				id := int64(100*g + 2*i)
+				want = append(want, id)
+				if g%2 == 0 {
+					want = append(want, id+1)
+				}
+			}
+		}
+		Expect(indexed).To(ConsistOf(want))
 	})
 
 	// Use exporter-shaped records with gated first-wave replies to prove send-before-wait
