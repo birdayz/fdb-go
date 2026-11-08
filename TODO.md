@@ -2670,9 +2670,25 @@ tracked only.
   authorization before tagging, then verify the actual published artifacts. Done:
   dry run 41884738373 on `aef9515`; v0.2.0 tagged with owner authorization and
   published 2026-11-07 (run 42423442734); a cold proxy install, the installer,
-  checksums and attestations of the published release were verified. The first
-  fresh-cache install of the untagged cut revision hit a proxy fetch timeout and
-  later recovered; its cause is unknown (#1033).
+  checksums and attestations of the published release were verified.
+- [ ] First-use proxy resolution: twice, the first fresh-cache `go install` of a new,
+  untagged cut revision failed because `proxy.golang.org/fdb.dev/@v/<sha>.info`
+  returned `404 not found: fetch timed out`. Go printed the longer `fdb.dev/cmd/fdb`
+  404 instead. Both recovered minutes later; the tagged v0.2.0 first-use install
+  passed. The cause is unknown (#1033). Re-check a cold `go install` of the next tag
+  and capture the root `.info` response if it fails.
+- [ ] Downloads from GitHub releases need a retry window that survives short GitHub
+  outages. On 2026-11-08, about a minute of HTTP 504s from the release-download
+  endpoint failed CI's `just ensure-buf` (bare `curl`, no retry) before any test ran.
+  The same outage made the installer exhaust `curl --retry 3` on `checksums.txt`
+  and refuse to install, which is correct. Census every `curl`/`wget` fetch in
+  `justfile`, workflows, scripts and `install.sh`, and give each a bounded retry.
+- [ ] The v0.2.0 GitHub release body must be regenerated from the merged notes after
+  #1037 merges (`RELEASE.md` step 6).
+- [ ] Cold-lane container teardown flake: Docker's forced removal exceeded the 30s
+  teardown budget under a fully uncached `just test`
+  (`//tools/clientbench/integration:integration_test`). #1038 moves teardown sites to a
+  shared two-minute `TerminateTimeout`; close this entry when it merges.
 
 ### Follow-ups from the fix PRs' reviews
 

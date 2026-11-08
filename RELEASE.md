@@ -89,7 +89,9 @@ the maintainer chooses to cut `vX.Y.Z`:
 6. **Record publication** in a follow-up PR: pages that say publication is pending
    (step 1's pages, `docs/release-notes/vX.Y.0.md`) say the tag is published, and
    `SECURITY.md` names the new supported minor. If the notes change, regenerate the
-   release body: `scripts/release-notes.sh vX.Y.Z | gh release edit vX.Y.Z --notes-file -`.
+   release body only after that PR merges, from a clean checkout of the merged commit:
+   diff `scripts/release-notes.sh vX.Y.Z` against `gh release view vX.Y.Z --json body`,
+   then `scripts/release-notes.sh vX.Y.Z | gh release edit vX.Y.Z --notes-file -`.
 
 The CLI is the root module's `cmd/fdb` package. Releases contain
 `fdb_<version>_<os>_<arch>.tar.gz` with the `fdb` binary and license notices,
