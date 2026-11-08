@@ -16,9 +16,8 @@ const (
 )
 
 // parseCache keeps a connection's recent parse trees by exact SQL text, so a
-// repeated statement skips the ANTLR parse that precedes the plan cache (about
-// a quarter of a cached point query's CPU). A tree is a pure function of its
-// text and is only read after parsing. It is reused by one connection only,
+// repeated statement skips the ANTLR parse that precedes the plan cache. A
+// tree is a pure function of its text and is only read after parsing. It is reused by one connection only,
 // one statement at a time: parameter values are bound to its tokens for the
 // statement (bindStatementParameters) and released at the statement's end,
 // so two statements must not hold one tree at once. Nothing mutates a tree

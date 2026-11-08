@@ -611,6 +611,7 @@ go_test(
     deps = [
         "//gen",
         "//gen/demopb",
+        "//internal/unicode15",
         "//pkg/dst",
         "//pkg/fdbgo/fdb",
         "//pkg/fdbgo/fdb/subspace",
