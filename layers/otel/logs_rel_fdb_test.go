@@ -603,9 +603,9 @@ func testRelLogsTyped(t *testing.T, h *qrHarness) {
 	requireTyped[*ConfigError](t, "unindexed event name", err)
 }
 
-// Log clauses of QueryTraceExistential beyond the parity port: a long-string
-// clause verified on the rows, the window on effective_ns, and uncorrelated
-// logs witnessing no trace.
+// testRelLogExistential: log clauses of QueryTraceExistential beyond
+// testRelTraceExistential's: a long-string clause verified on the rows, the
+// window on effective_ns, and uncorrelated logs witnessing no trace.
 func testRelLogExistential(t *testing.T, h *qrHarness) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
