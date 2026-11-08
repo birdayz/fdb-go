@@ -38,9 +38,10 @@ Each campaign's reports live in a folder named after the campaign.
   that replaced the custom-index store. Span ingest through the replacement's
   writer costs 283 against 372 µs/span of client CPU (0.76x) with 42% fewer
   prefix-compressed bytes (G2A), and log ingest 0.41x the CPU per log (G2B).
-  With messages, collector-bench ingest takes 0.87x the wall time and 0.72x
-  the process CPU, and every query class's p50 is at most 0.98x the custom
-  store's after the queues drain (G3, quiesced). Round 1's 1.32x CPU figure is
+  Against the custom store at the merge-base (G3), collector-bench ingest with
+  messages takes 0.93x the wall time and 0.70x the process CPU, every query
+  class's p50 is at most 0.95x after the queues drain, and otelbench's direct
+  reads are at most 0.63x and its ingest 0.68x the CPU. Round 1's 1.32x CPU figure is
   superseded. Also covers SQL and direct-scan query latency and the relational
   fixes the comparison found.
 - [GenAI/OTel collector ingest 1x/2x/3x on Kubernetes + Cilium](otel-genai-collector-ingest-k8s-scaling.md):

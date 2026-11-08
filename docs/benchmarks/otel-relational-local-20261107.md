@@ -37,6 +37,8 @@ reproducible receipts.
 | `archive/otel-relational/fts-before` | `b70072f38` | `fts_single_token`: the Exporter with the query-only harness |
 | `archive/otel-relational/fts-fix` | `f7b2d43bd` | `fts_single_token`: the fix |
 | `archive/otel-relational/quiesced` | `11ae9acbf` | the quiesced gate's Exporter |
+| `archive/otel-relational/merge-base` | `839cc5d3f` | the change's merge-base: the custom store (`--backend fdb`) in "G3 at the merge-base", with `g3-merge-base/base-harness-839cc5d3f.patch` |
+| `archive/otel-relational/g3-head` | `8d3959aa6` | the change's head: the Exporter and `--backend sql` in "G3 at the merge-base" |
 
 The archived tags carry the export benchmarks' old names,
 `BenchmarkRelSpansVsFDB` and `BenchmarkRelLogsVsFDB`; at head they are
@@ -51,16 +53,19 @@ The receipts record these short hashes, or one of:
 - `unrecorded`: the G0 and G2A otelbench receipts, whose trees their sections name.
 
 **Baseline.** CLAUDE.md and the RFC's gates name the merge-base as the
-baseline. No custom-store arm here is the merge-base. Each is the custom store
-on the same stack as the relational arm it is compared with: G2A, G2B and
-R1/R4 ran both stores in one binary, and G3 and later use custom-store, the
-cutover's parent (pre-0a is the same stack before phase 0A). Both
-arms of a comparison therefore share one Record Layer, client and relational
-tree, and the ratios compare the two stores, not those libraries' changes
-since the merge-base. The merge-base's otelbench also lacks the `--query-only`
-harness that the quiesced gate uses. The custom store was not re-measured at
-the merge-base, and no tree of the merged change contains it. G0 compares the
-relational store before and after phase 0A.
+baseline. "G3 at the merge-base" below measures that comparison: the
+change's head against the custom store at the merge-base, for the collector
+bench's quiesced gate and for otelbench's G2A suite. It is the G3 result.
+The earlier gates' custom-store arms are not the merge-base. Each is the
+custom store on the same stack as the relational arm it is compared with:
+G2A, G2B and R1/R4 ran both stores in one binary, and the first G3 run, the
+`fts_single_token` runs and the quiesced gate use custom-store, the cutover's
+parent (pre-0a is the same stack before phase 0A). Both arms of those
+comparisons share one Record Layer, client and relational tree, so their
+ratios compare the two stores, not those libraries' changes since the
+merge-base. G0 compares the relational store before and after phase 0A.
+Rounds 1 to 3 are history with no recorded tree; G0's and G2A's thresholds
+(283 and 353 µs/span) come from round 2's figures.
 
 ## Setup
 
@@ -748,6 +753,166 @@ the custom store.
 - **With messages:** ingest wall is 0.87×, process CPU 0.72×, and the summed message transaction time (the G2C criterion) 0.95×.
 - **With messages off:** wall is 0.76× and CPU 0.72×.
 - **Process CPU** covers the queries too, which are now cheaper.
+
+### G3 at the merge-base
+
+G3 as the RFC defines it (§6): the collector bench against the merge-base,
+with defaults and with messages off, and otelbench `sql --sql-query direct`
+against `fdb` production, every class within the G2 thresholds. The sections
+above compare against custom-store; this one is the G3 result.
+
+**Setup.**
+
+- **Trees:**
+  - head: `archive/otel-relational/g3-head` (`8d3959aa6`), the collector bench without `--backend` and otelbench with `--backend sql`;
+  - baseline: the merge-base, `archive/otel-relational/merge-base` (`839cc5d3f`, #1034's head), with `--backend fdb` and its own defaults (brotli-4, tuple postings, 8-byte hashes, time order).
+- **Harness at the merge-base:** `fts-perf/base-harness.patch` does not apply there. Its BUILD hunk's context lists files the merge-base's `layers/otel/BUILD.bazel` does not have yet. Every other hunk applied unchanged, and `exporter_clientmetrics.go` was added to the library's `srcs` by hand, after `exporter.go`. The applied change is `g3-merge-base/base-harness-839cc5d3f.patch`. It adds `--query-only`, `--query-classes`, `--query-samples` and per-iteration client counters, and changes no store code.
+- **Binaries:** `bazelisk build //layers/otel/cmd/otelbench` in detached worktrees, go1.27.3; their sha256 are in `runs.txt`.
+- **Container:** a fresh `otelg3mb` (foundationdb/foundationdb:7.3.77, `configure new single ssd-redwood-1`, G3's environment), removed afterwards.
+- **Discipline:** every measured command started once the 1-minute load was below 12 and the storage and log queues were below 1 MB on two polls. It held the machine's two test-lane locks, so no test lane ran beside it. The load at the starts was 2.1–6.6.
+- **Collector bench**, as in "Quiesced query gate":
+  - `--conversations 1000`, with defaults (deltas + FTS) and with messages off;
+  - two fresh runs per arm and configuration, the arms alternating, the order flipped in round 2;
+  - each run is a default `collector-bench` (post-ingest queries, reported), then `--query-only` once the queues drained (every class ×100, gated).
+- **otelbench**, as in G2A:
+  - 50k spans, the round 2 fixture and flags (`--seed 283 --tenants 10 --attrs 8 --match-every 100 --order time --workers 8 --batch 32 --save-mode batch`);
+  - three alternating ingest runs per arm, each followed by an audit;
+  - then suite `all` ×1,200 on run 1 of each arm, two interleaved runs per arm;
+  - `fdb` production: `--posting-value-format tuple --hash-bytes 8 --record-compression brotli-4 --bulk-index-conflicts`; `sql`: `--record-compression zlib-1 --sql-ingest direct --sql-rows compiled`, queries with `--sql-query direct`.
+- **Outcomes:** every command exited 0. Every collector-bench run had 0 failures, 0 fidelity mismatches over 32 checked spans and 0 message retries. Every otelbench ingest and query run had 0 oracle failures.
+- **Raw evidence:** `otel-relational-local-20261107/g3-merge-base/`: `runs.txt` (trees, sha256, every command's load, CPU and wall time), the receipts (per-iteration samples in the `qo-*` ones), the patch and the scripts.
+
+**Collector bench, quiesced (gated)**, p50 / p99 ms, runs 1 and 2. Ratios
+compare the means of the two runs. "Requests" are the client range requests
+per query, merge-base against head.
+
+| class | merge-base | head | p50 ratio | p99 ratio | requests |
+|---|---|---|---:|---:|---|
+| fts_single_token | 31.71 / 35.31, 32.13 / 36.25 | 9.22 / 15.21, 8.68 / 10.12 | 0.28 | 0.35 | 818 / 76–193 |
+| fts_phrase_first_turn | 9.18 / 11.05, 8.95 / 10.58 | 4.03 / 5.63, 3.95 / 5.72 | 0.44 | 0.52 | 276–298 / 61–82 |
+| fts_multi_turn_history | 9.15 / 10.24, 8.99 / 10.75 | 4.01 / 5.63, 3.93 / 5.58 | 0.44 | 0.53 | 276–296 / 59–80 |
+| fts_same_span_predicates | 31.22 / 33.50, 31.58 / 35.82 | 11.61 / 14.04, 10.42 / 12.31 | 0.35 | 0.38 | 1,051–1,053 / 307–424 |
+| same_span_conjunction | 1.68 / 2.44, 1.80 / 2.66 | 1.10 / 1.68, 1.02 / 2.04 | 0.61 | 0.73 | 33 / 32 |
+| trace_existential_3way | 29.56 / 32.18, 29.96 / 32.09 | 10.31 / 13.84, 8.62 / 10.30 | 0.32 | 0.38 | 828 / 84–200 |
+| trace_graph_traversal | 1.68 / 2.43, 1.72 / 2.36 | 1.29 / 2.34, 1.10 / 2.12 | 0.70 | 0.93 | 5 / 4 |
+| correlated_logs_by_trace | 0.60 / 1.03, 0.59 / 1.11 | 0.59 / 1.23, 0.52 / 1.08 | 0.93 | 1.08 | 2 / 3 |
+| *messages off* | | | | | |
+| same_span_conjunction | 1.64 / 2.68, 1.60 / 2.54 | 0.95 / 2.01, 1.03 / 2.38 | 0.61 | 0.84 | 33 / 32 |
+| trace_existential_3way | 4.50 / 5.40, 4.48 / 5.07 | 2.61 / 3.83, 2.83 / 4.54 | 0.61 | 0.80 | 12 / 10 |
+| trace_graph_traversal | 4.94 / 5.95, 4.60 / 5.18 | 3.26 / 4.47, 3.25 / 4.79 | 0.68 | 0.83 | 7 / 6–7 |
+| correlated_logs_by_trace | 0.53 / 1.06, 0.54 / 0.86 | 0.51 / 0.78, 0.49 / 0.65 | 0.95 | 0.74 | 2 / 3 |
+
+Every class is within the 1.10× threshold at p50 (at most 0.95×), and every
+`fts_*` class at p99 (at most 0.53×).
+
+**Collector bench, post-ingest (not gated)**, from the same runs' default
+phase, p50 / p99 ms:
+
+| class | merge-base | head | p50 ratio | p99 ratio |
+|---|---|---|---:|---:|
+| fts_single_token | 27.38 / 100.24, 27.31 / 83.15 | 8.11 / 44.90, 8.19 / 36.31 | 0.30 | 0.44 |
+| fts_phrase_first_turn | 7.59 / 104.78, 7.63 / 93.42 | 3.72 / 6.06, 3.92 / 62.75 | 0.50 | 0.35 |
+| fts_multi_turn_history | 7.28 / 90.14, 7.55 / 95.88 | 3.81 / 5.41, 3.84 / 6.58 | 0.52 | 0.06 |
+| fts_same_span_predicates | 26.66 / 32.29, 26.87 / 32.51 | 11.96 / 75.87, 10.49 / 79.49 | 0.42 | 2.40 |
+| same_span_conjunction | 1.45 / 1.98, 1.50 / 2.04 | 0.99 / 1.25, 1.09 / 24.83 | 0.71 | 6.50 |
+| trace_existential_3way | 24.94 / 27.12, 25.10 / 30.68 | 10.26 / 103.93, 8.33 / 84.13 | 0.37 | 3.25 |
+| trace_graph_traversal | 1.50 / 2.66, 1.52 / 2.31 | 1.07 / 1.36, 1.07 / 6.74 | 0.71 | 1.63 |
+| correlated_logs_by_trace | 0.45 / 0.58, 0.45 / 0.55 | 0.46 / 0.52, 0.46 / 0.53 | 1.02 | 0.92 |
+| *messages off* | | | | |
+| same_span_conjunction | 1.59 / 2.82, 1.58 / 2.27 | 1.23 / 2.79, 1.07 / 1.76 | 0.73 | 0.89 |
+| trace_existential_3way | 4.34 / 5.96, 4.12 / 5.17 | 3.03 / 5.73, 2.82 / 4.36 | 0.69 | 0.91 |
+| trace_graph_traversal | 4.51 / 6.40, 4.26 / 5.65 | 3.62 / 5.45, 3.26 / 5.27 | 0.78 | 0.89 |
+| correlated_logs_by_trace | 0.47 / 0.59, 0.47 / 0.68 | 0.52 / 0.94, 0.53 / 0.71 | 1.11 | 1.30 |
+
+- **p50:** at most 0.78×, except `correlated_logs_by_trace` (1.02× with messages, 1.11× without; 0.45–0.53 ms in both stores).
+- **p99:** the post-ingest phase still meets the storage server's drain. The head's p99s include 24–104 ms stalls in five classes with messages; the merge-base's 83–105 ms stalls fall on `fts_single_token`, `fts_phrase_first_turn` and `fts_multi_turn_history`.
+
+**Collector bench, ingest**, the same runs. Process CPU is user+sys of the
+default command, which includes its post-ingest queries.
+
+| arm | ingest s | spans/s | process CPU s | persist s | message txn s | message txns | logical span MB |
+|---|---|---|---|---|---|---|---:|
+| merge-base, deltas + FTS | 8.08 / 8.85 | 1,857 / 1,694 | 109.6 / 108.4 | 17.0 / 18.3 | 53.3 / 56.5 | 305 / 305 | 13.2 |
+| head, deltas + FTS | 7.80 / 7.89 | 1,923 / 1,901 | 77.0 / 74.8 | 24.0 / 24.0 | 54.2 / 52.9 | 303 / 301 | 9.8 |
+| merge-base, messages off | 4.22 / 4.24 | 3,558 / 3,539 | 40.5 / 40.7 | — | — | — | 372.5 |
+| head, messages off | 3.33 / 3.11 | 4,511 / 4,825 | 29.7 / 28.6 | — | — | — | 190.2 |
+
+- **With messages:**
+  - wall 0.93×, spans/s 1.08×, process CPU 0.70×;
+  - the summed message transaction time, G2C's persist criterion since G3, is 0.98×;
+  - persist wall is 1.36×, as at the cutover: spans finish sooner, and each call waits longer for its messages' group commit.
+- **With messages off:** wall 0.76×, spans/s 1.32×, process CPU 0.72×.
+- **MESSAGES_TEXT** wrote 83.9–84.0 MB of keys against 60.2 MB (1.39×) for the same 1,698,165 postings. That is R1's cost, accepted at the cutover (D4).
+- **Storage:** the collector bench reports no store size. Logical span bytes are each store's own count, not storage. The span storage comparison is the otelbench audit below, and the message store's is R1/R4's 1.04–1.06×.
+
+**otelbench, ingest** (client CPU per span, 50k spans):
+
+| run | µs/span | wall s | load start/end |
+|---|---:|---:|---|
+| `fdb` merge-base 1 | 452 | 8.1 | 2.06 / 4.25 |
+| `sql` head 1 | 281 | 5.9 | 4.95 / 4.96 |
+| `sql` head 2 | 264 | 5.8 | 3.79 / 4.05 |
+| `fdb` merge-base 2 | 381 | 5.7 | 2.57 / 3.41 |
+| `fdb` merge-base 3 | 379 | 5.9 | 3.49 / 3.77 |
+| `sql` head 3 | 276 | 6.2 | 4.00 / 4.32 |
+| **mean** | `fdb` 404, `sql` 274 (0.68×) | | |
+
+The first `fdb` run, the campaign's first command on the fresh container, is
+the slowest. Without it the ratio is 0.72×.
+
+| per span, every run | logical B | prefix B | records B | keys |
+|---|---:|---:|---:|---:|
+| `fdb` merge-base | 2,001 | not reported | 460 | 11 |
+| `sql` head (SpanWriter, zlib-1) | 1,483 | 878 | 534 | 11 |
+
+The merge-base's audit has no prefix-byte count; the stack added it later.
+Its key and value bytes (56,798,202 and 43,252,257 per 50k spans) equal G2A's
+`fdb` production audit within 2 bytes each, so the layout is the same as the
+one G2A measured at 1,501 prefix bytes per span. The gate here uses logical
+bytes: 0.74×.
+
+**otelbench, queries.** Tenant 0 of run 1 of each arm, suite `all`, 1,200
+iterations, two interleaved runs per arm; p50 in ms, run a / run b.
+
+| class | `fdb` merge-base | `sql` direct (head) | ratio |
+|---|---:|---:|---:|
+| span | 0.64 / 0.61 | 0.28 / 0.29 | 0.46 |
+| span_absent | 0.63 / 0.59 | 0.28 / 0.29 | 0.46 |
+| trace | 0.69 / 0.67 | 0.38 / 0.37 | 0.55 |
+| trace_absent | 0.62 / 0.59 | 0.27 / 0.29 | 0.46 |
+| time_narrow | 0.65 / 0.62 | 0.29 / 0.30 | 0.47 |
+| time_broad | 0.89 / 0.85 | 0.52 / 0.53 | 0.60 |
+| time_absent | 0.62 / 0.59 | 0.28 / 0.29 | 0.47 |
+| time_empty | 0.51 / 0.47 | 0 (no read) | 0 |
+| genai_response | 0.64 / 0.61 | 0.29 / 0.29 | 0.47 |
+| genai_type | 0.63 / 0.59 | 0.29 / 0.28 | 0.47 |
+| genai_scope_resource | 0.63 / 0.57 | 0.29 / 0.29 | 0.48 |
+| genai_scope_scope | 0.63 / 0.58 | 0.28 / 0.28 | 0.47 |
+| genai_absent | 0.62 / 0.58 | 0.27 / 0.29 | 0.47 |
+| genai_operation | 1.12 / 1.08 | 0.69 / 0.70 | 0.63 |
+| genai_provider | 1.13 / 1.13 | 0.69 / 0.71 | 0.62 |
+| genai_model | 1.13 / 1.12 | 0.70 / 0.70 | 0.62 |
+
+The median per-class p99 was 1.21 ms for `fdb` and 0.64 ms for `sql`.
+
+**Verdict against the RFC's thresholds:**
+
+- **G3 query gate** (every class's quiesced p50 within 1.10×): passes, at most 0.95×.
+- **G2C** (with messages):
+  - spans/s 1.08×, process CPU 0.70×, the summed message transaction time 0.98×;
+  - `fts_*` p50 at most 0.44× and p99 at most 0.53×;
+  - these pass. Persist wall (1.36×) fails the criterion's original wording, as at the cutover, where the owner replaced it with the summed transaction time.
+  - Storage is not measured by the collector bench; the TEXT index's written key bytes are 1.39×.
+- **G2D** (`same_span_conjunction`, `trace_existential_3way`, `trace_graph_traversal` p50 within 1.10×): 0.32–0.70×, passes.
+- **G2B, query half** (`correlated_logs_by_trace` p50 within 1.10×): 0.93× and 0.95×, passes.
+- **G3's otelbench arm** (G2A's criteria against `fdb` production): every class's p50 at most 0.63×, ingest CPU 0.68×, logical bytes 0.74×, 0 oracle failures; passes.
+
+**Against custom-store.** On the quiesced classes, the merge-base's custom
+store ran at 0.90–1.12× the p50s of custom-store (`7fb269417`) in "Quiesced
+query gate", and the head's Exporter at 0.91–1.00× the quiesced tree's. These
+are different sessions, not a controlled comparison. For the two role-less
+phrase classes, the merge-base issued 276–298 range requests per query where
+custom-store issued 226–240.
 
 ## Reproduce
 
