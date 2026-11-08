@@ -97,7 +97,6 @@ type Backend struct {
 	// driverKey is the cluster_file key under which the SQL driver runs over
 	// this backend's FDB client handle (sqldriver.RegisterBackend).
 	driverKey string
-	mode      string
 	opts      Options
 	raw       fdb.Database
 	db        *recordlayer.FDBDatabase
@@ -152,7 +151,6 @@ func Open(ctx context.Context, c otel.Config, cluster string, opts Options) (*Ba
 	if opts.Rows != RowsCompiled && opts.Rows != RowsDynamic {
 		return nil, otel.NewError("config", "sqlbackend open", fmt.Sprintf("rows must be %s or %s", RowsCompiled, RowsDynamic), nil)
 	}
-	mode := opts.Ingest
 	// Direct saves write --record-compression (Java-readable zlib or none,
 	// both of which SQL reads); SQL INSERT always writes the engine's own
 	// zlib-default records.
@@ -160,12 +158,12 @@ func Open(ctx context.Context, c otel.Config, cluster string, opts Options) (*Ba
 	if err != nil {
 		return nil, err
 	}
-	if mode == IngestInsert && c.RecordCompression != "" && c.RecordCompression != "none" && c.RecordCompression != "zlib-default" {
+	if opts.Ingest == IngestInsert && c.RecordCompression != "" && c.RecordCompression != "none" && c.RecordCompression != "zlib-default" {
 		return nil, otel.NewError("config", "sqlbackend open", "SQL INSERT writes zlib-default records; --record-compression must be none or zlib-default", nil)
 	}
 	// Only the SpanWriter (compiled direct batch saves) coalesces index
 	// write conflicts.
-	if c.BulkIndexConflicts && (mode != IngestDirect || opts.Rows != RowsCompiled) {
+	if c.BulkIndexConflicts && (opts.Ingest != IngestDirect || opts.Rows != RowsCompiled) {
 		return nil, otel.NewError("config", "sqlbackend open", "--bulk-index-conflicts requires direct ingest of compiled rows", nil)
 	}
 	readSer, err := otel.RecordSerializer("zlib-default")
@@ -188,7 +186,7 @@ func Open(ctx context.Context, c otel.Config, cluster string, opts Options) (*Ba
 		return nil, err
 	}
 	b := &Backend{
-		cfg: c, mode: mode, opts: opts, raw: raw, db: recordlayer.NewFDBDatabase(raw),
+		cfg: c, opts: opts, raw: raw, db: recordlayer.NewFDBDatabase(raw),
 		dbPath:   "/" + domain + "/R_" + strings.ToUpper(c.Run),
 		writeSer: writeSer, readSer: readSer,
 		spanWrite: (*otel.SpanWriter).Write,
@@ -230,7 +228,7 @@ func tenantSchema(tenant int) string { return "T" + strconv.Itoa(tenant) }
 
 // effectiveCompression is the record format ingest writes.
 func (b *Backend) effectiveCompression() string {
-	if b.mode == IngestInsert {
+	if b.opts.Ingest == IngestInsert {
 		return "zlib-default"
 	}
 	if b.cfg.RecordCompression == "" {
@@ -349,7 +347,7 @@ func (b *Backend) Ingest(ctx context.Context) (otel.Statistics, error) {
 	rows := make([]*otelsql.SpanRows, b.cfg.Tenants)
 	inserts := make([]*sql.DB, b.cfg.Tenants)
 	writers := make([]*otel.SpanWriter, b.cfg.Tenants)
-	compiled := b.mode == IngestDirect && b.opts.Rows != RowsDynamic
+	compiled := b.opts.Ingest == IngestDirect && b.opts.Rows != RowsDynamic
 	// Compiled batch saves are the Exporter's write path, so otelbench
 	// measures production code: rows, admission, prefetch, bulk index
 	// conflicts, the size guard and the exporter's transaction policy.
@@ -372,7 +370,7 @@ func (b *Backend) Ingest(ctx context.Context) (otel.Statistics, error) {
 				TransactionTimeout: otel.DefaultExporterConfig().TransactionTimeout,
 			})
 		}
-		if b.mode == IngestInsert {
+		if b.opts.Ingest == IngestInsert {
 			if inserts[t], err = sql.Open("fdbsql", b.dsn(tenantSchema(t))); err != nil {
 				return otel.Statistics{}, err
 			}
@@ -399,7 +397,7 @@ func (b *Backend) Ingest(ctx context.Context) (otel.Statistics, error) {
 				var err error
 				var done, txns int64
 				switch {
-				case b.mode == IngestInsert:
+				case b.opts.Ingest == IngestInsert:
 					err = b.insertBatch(workCtx, inserts[bt.tenant], bt)
 				case production:
 					var st otel.ExportStats
@@ -467,7 +465,7 @@ produce:
 				break
 			}
 			bt.rss = append(bt.rss, rs)
-		} else if b.mode == IngestDirect {
+		} else if b.opts.Ingest == IngestDirect {
 			m, err := buildRow(rows[s.Tenant], compiled, s)
 			if err != nil {
 				produceErr = err
@@ -484,7 +482,7 @@ produce:
 	close(jobs)
 	wg.Wait()
 	stats := otel.Statistics{Rows: count, Attributes: count * int64(b.cfg.Attributes), LogicalPayloadBytes: logical, Details: map[string]string{
-		"ingest":             "OTEL_V1 tenant schema stores; " + b.mode,
+		"ingest":             "OTEL_V1 tenant schema stores; " + b.opts.Ingest,
 		"write_path":         map[bool]string{true: "otel.SpanWriter", false: "sqlbackend"}[production],
 		"committed_batches":  strconv.FormatInt(batches, 10),
 		"save_mode":          b.cfg.SaveMode,

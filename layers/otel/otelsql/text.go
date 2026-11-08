@@ -35,7 +35,15 @@ func (e *UnindexableTextError) Error() string {
 // as is.
 func IndexableText(text string) (string, error) {
 	tok := recordlayer.DefaultTextTokenizerInstance()
-	tokens, err := tok.TokenizeToList(text, recordlayer.GlobalMinVersion, recordlayer.TokenizerModeIndex)
+	return indexableText(text, func(s string) ([]string, error) {
+		return tok.TokenizeToList(s, recordlayer.GlobalMinVersion, recordlayer.TokenizerModeIndex)
+	})
+}
+
+// indexableText is IndexableText over tokenize, the default tokenizer's
+// index tokens: a test's tokenize reaches the fail-closed checks.
+func indexableText(text string, tokenize func(string) ([]string, error)) (string, error) {
+	tokens, err := tokenize(text)
 	if err != nil {
 		return "", err
 	}
@@ -73,12 +81,15 @@ func IndexableText(text string) (string, error) {
 		}
 		next++
 	}
+	if next != len(tokens) {
+		return "", &UnindexableTextError{Reason: "fewer word segments than tokens"}
+	}
 	out := b.String()
-	got, err := tok.TokenizeToList(out, recordlayer.GlobalMinVersion, recordlayer.TokenizerModeIndex)
+	got, err := tokenize(out)
 	if err != nil {
 		return "", err
 	}
-	if next != len(tokens) || len(got) != len(want) {
+	if len(got) != len(want) {
 		return "", &UnindexableTextError{Reason: fmt.Sprintf("%d tokens after replacement, want %d", len(got), len(want))}
 	}
 	for i := range got {

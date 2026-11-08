@@ -477,7 +477,9 @@ func otlpValue(v attribute.Value) *commonpb.AnyValue {
 	}
 }
 
-// Message storage layouts, part of a run's stored layout identity.
+// Message storage layouts: Config.Messages, which selects the readers'
+// message queries. They are not stored; a store's layout identity is
+// relStoreLayout's STORE_META("layout") string.
 const (
 	messagesNone     = ""
 	messagesDeltas   = "deltas"      // MESSAGES rows; spans carry manifests

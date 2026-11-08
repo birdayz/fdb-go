@@ -1,6 +1,7 @@
 package otelsql
 
 import (
+	"errors"
 	"math/rand"
 	"strings"
 	"testing"
@@ -110,5 +111,50 @@ func TestIndexableText(t *testing.T) {
 	m, err := BuildMessageCompiled(MessagePart{Writer: 1, Seq: 1, Text: &MessageText{Role: "user", Content: "alpha " + long + " beta"}})
 	if err != nil || m.GetCONTENT() != "alpha  "+OverlongTokenPlaceholder+"  beta" {
 		t.Fatalf("content %.80q (%v)", m.GetCONTENT(), err)
+	}
+}
+
+// TestIndexableTextFailsClosed: tokens that disagree with the word segments
+// IndexableText walks, or with the replaced text's tokens, refuse the text
+// as *UnindexableTextError instead of storing moved tokens.
+func TestIndexableTextFailsClosed(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("x", MaxIndexedTokenBytes+1)
+	text := long + " bb"
+	defaultTokens := func(s string) ([]string, error) {
+		return recordlayer.DefaultTextTokenizerInstance().TokenizeToList(s, recordlayer.GlobalMinVersion, recordlayer.TokenizerModeIndex)
+	}
+	for _, tc := range []struct {
+		name string
+		// tokens is tokenize's list for text, again for the replaced text
+		// (nil: the default tokenizer's).
+		tokens, again []string
+		reason        string // "": accepted
+	}{
+		{"default tokenizer", []string{long, "bb"}, nil, ""},
+		{"more segments than tokens", []string{long}, nil, "more word segments than tokens"},
+		{"fewer segments than tokens", []string{long, "bb", "cc"}, []string{OverlongTokenPlaceholder, "bb", "cc"}, "fewer word segments than tokens"},
+		{"replacement drops a token", []string{long, "bb"}, []string{OverlongTokenPlaceholder}, "1 tokens after replacement, want 2"},
+		{"replacement changes a token", []string{long, "BB"}, nil, "token 1 changed by the replacement"},
+	} {
+		out, err := indexableText(text, func(s string) ([]string, error) {
+			switch {
+			case s == text:
+				return tc.tokens, nil
+			case tc.again != nil:
+				return tc.again, nil
+			}
+			return defaultTokens(s)
+		})
+		if tc.reason == "" {
+			if want, _ := IndexableText(text); err != nil || out != want {
+				t.Errorf("%s: %.80q (%v), want %.80q", tc.name, out, err, want)
+			}
+			continue
+		}
+		var unindexable *UnindexableTextError
+		if !errors.As(err, &unindexable) || unindexable.Reason != tc.reason {
+			t.Errorf("%s: want UnindexableTextError %q, got %T: %v", tc.name, tc.reason, err, err)
+		}
 	}
 }
