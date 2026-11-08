@@ -198,14 +198,14 @@ func (s *skipScan) run(ctx context.Context, ts *tenantStore, op string) {
 		}
 		space := store.IndexSubspace(idx)
 		begin := space.Pack(s.fixed)
+		end := append(slices.Clone(begin), 0xFF)
 		if s.prefix != "" {
 			// The packed string without its terminator: every string it begins.
 			p := tuple.Tuple{s.prefix}.Pack()
 			begin = append(begin, p[:len(p)-1]...)
-		}
-		end, err := fdb.Strinc(begin)
-		if err != nil {
-			return err
+			if end, err = fdb.Strinc(begin); err != nil {
+				return err
+			}
 		}
 		tx := store.Context().ReadTransaction(true)
 		deadline := time.Now().Add(s.maxTime)
@@ -230,10 +230,8 @@ func (s *skipScan) run(ctx context.Context, ts *tenantStore, op string) {
 			if !ok {
 				return failf("corruption", op, "%s entry column %d is a %T", s.index, len(s.fixed), v)
 			}
-			// Past every entry of this value.
-			if begin, err = fdb.Strinc(space.Pack(append(s.fixed[:len(s.fixed):len(s.fixed)], v))); err != nil {
-				return err
-			}
+			// Past every entry of this value (no tuple element tag is 0xFF).
+			begin = append(space.Pack(append(s.fixed[:len(s.fixed):len(s.fixed)], v)), 0xFF)
 			if s.keep != nil && !s.keep(text) {
 				continue
 			}

@@ -125,6 +125,49 @@ describe('SqlEditor', () => {
     setup({ ...base, rawSql: ' ' });
     expect(screen.getByRole('button', { name: /Explain/ })).toBeDisabled();
   });
+
+  it('enables EXPLAIN as the user types in a new query and explains the live buffer', async () => {
+    const ds = makeDataSource();
+    const plan = createDataFrame({ fields: [{ name: 'PLAN', type: FieldType.string, values: ['Scan(T)'] }] });
+    const query = jest.spyOn(ds, 'query').mockReturnValue(of({ data: [plan] }));
+    const onChange = jest.fn();
+    render(<SqlEditor query={{ ...base, rawSql: '' }} datasource={ds} onChange={onChange} onRunQuery={jest.fn()} />);
+    expect(screen.getByRole('button', { name: /Explain/ })).toBeDisabled();
+
+    let text = '';
+    let onContentChange: (() => void) | undefined;
+    const editor = {
+      getModel: () => ({ id: 'm1' }),
+      getValue: () => text,
+      onDidChangeModelContent: (f: () => void) => {
+        onContentChange = f;
+        return { dispose: jest.fn() };
+      },
+      onDidDispose: jest.fn(),
+      addCommand: jest.fn(),
+    };
+    const monaco = {
+      KeyMod: { CtrlCmd: 2048 },
+      KeyCode: { Enter: 3 },
+      languages: {
+        CompletionItemKind: {},
+        CompletionItemInsertTextRule: {},
+        registerCompletionItemProvider: () => ({ dispose: jest.fn() }),
+      },
+    };
+    act(() => mockEditorProps.current!.onEditorDidMount(editor, monaco));
+    expect(screen.getByRole('button', { name: /Explain/ })).toBeDisabled();
+
+    act(() => {
+      text = 'SELECT 9;';
+      onContentChange!();
+    });
+    expect(screen.getByRole('button', { name: /Explain/ })).not.toBeDisabled();
+
+    await userEvent.click(screen.getByRole('button', { name: /Explain/ }));
+    expect(onChange).toHaveBeenCalledWith({ ...base, rawSql: 'SELECT 9;' });
+    expect(query.mock.calls[0][0].targets[0].rawSql).toBe('EXPLAIN SELECT 9');
+  });
 });
 
 describe('SqlEditor completion', () => {

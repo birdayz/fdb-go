@@ -150,7 +150,9 @@ func (k *RelationalKeyspace) LookupSchemaSubspace(ctx context.Context, db Runner
 	if err != nil {
 		return nil, err
 	}
-	return out.(subspace.Subspace), nil
+	ss := out.(subspace.Subspace)
+	k.resolved.Store(dbPath+"\x00"+schemaName, ss)
+	return ss, nil
 }
 
 func firstErr(err, otherwise error) error {

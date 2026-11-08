@@ -1,6 +1,7 @@
 package embedded
 
 import (
+	"bytes"
 	"context"
 	"database/sql/driver"
 	"errors"
@@ -145,11 +146,31 @@ func TestReadOnly_SchemaSubspaceInternsNothing(t *testing.T) {
 	// What persisted, through a database and keyspace with no cached names.
 	fresh := recordlayer.NewFDBDatabaseWithBackend(g.gate).SetEnv(g.env)
 	ks := keyspace.New(subspace.Sub())
-	if _, err := ks.LookupSchemaSubspace(ctx, fresh, "/FRL/SIMDB", "NOPE_RW"); err != nil {
+	runs := 0
+	counted := countingRunner{r: ReadOnlyRunner(fresh), runs: &runs}
+	ss, err := ks.LookupSchemaSubspace(ctx, counted, "/FRL/SIMDB", "NOPE_RW")
+	if err != nil {
 		t.Fatalf("the writable resolution interned nothing (%v), so the read-only half proves nothing", err)
+	}
+	ss2, err := ks.LookupSchemaSubspace(ctx, counted, "/FRL/SIMDB", "NOPE_RW")
+	if !bytes.Equal(ss2.Bytes(), ss.Bytes()) || err != nil || runs != 1 {
+		t.Fatalf("second lookup = (%v, %v), runs = %d; want cached subspace after 1 run", ss2, err, runs)
+	}
+	if cached, ok := ks.ResolvedSchemaSubspace("/FRL/SIMDB", "NOPE_RW"); !ok || !bytes.Equal(cached.Bytes(), ss.Bytes()) {
+		t.Fatalf("ResolvedSchemaSubspace after lookup = (%v, %v); want (%v, true)", cached, ok, ss)
 	}
 	if _, err := ks.LookupSchemaSubspace(ctx, fresh, "/FRL/SIMDB", "NOPE_RO"); !errors.As(err, &ae) ||
 		ae.Code != api.ErrCodeUndefinedSchema {
 		t.Errorf("lookup of the name the read-only connection resolved = %v; want UNDEFINED_SCHEMA (not interned)", err)
 	}
+}
+
+type countingRunner struct {
+	r    keyspace.Runner
+	runs *int
+}
+
+func (c countingRunner) Run(ctx context.Context, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
+	*c.runs++
+	return c.r.Run(ctx, fn)
 }

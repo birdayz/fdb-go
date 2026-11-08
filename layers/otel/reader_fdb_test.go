@@ -727,17 +727,21 @@ func rdAttrSpans(trace []byte) []*tracepb.ResourceSpans {
 			[]*commonpb.KeyValue{exKV("service.name", exStr("svc-a")), exKV("host.cpu", exInt(8))},
 			[]*commonpb.KeyValue{exKV("lib.flag", exBool(true))},
 			[]*commonpb.KeyValue{
-				exKV("http.method", exStr("GET")), exKV("http.status", exInt(200)), exKV("ratio", exDouble(0.5)), exKV("ok", exBool(true)),
+				exKV("http.method", exStr("GET")), exKV("http.status", exInt(200)), exKV("ratio", exDouble(0.5)), exKV("ok", exBool(true)), exKV("nul", exStr("")),
 				exKV("nul\x00key", exStr("x")), exKV("big", exStr(long)), exKV("blob", exBytes([]byte{1})), exKV("list", exArray(exInt(1))), exKV(overKey, exStr("v")),
 			}),
 		mk(1,
 			[]*commonpb.KeyValue{exKV("service.name", exStr("svc-b")), exKV("host.cpu", exInt(16))},
 			[]*commonpb.KeyValue{exKV("lib.flag", exBool(false))},
-			[]*commonpb.KeyValue{exKV("http.method", exStr("POST")), exKV("http.status", exInt(404)), exKV("ratio", exDouble(-2.25)), exKV("ok", exBool(false)), exKV("http", exStr("h"))}),
+			[]*commonpb.KeyValue{exKV("http.method", exStr("POST")), exKV("http.status", exInt(404)), exKV("ratio", exDouble(-2.25)), exKV("ok", exBool(false)), exKV("http", exStr("h")), exKV("nul", exStr("\x00x"))}),
 		mk(2,
 			[]*commonpb.KeyValue{exKV("service.name", exStr("svc-a"))},
 			nil,
-			[]*commonpb.KeyValue{exKV("http.method", exStr("GET")), exKV("http.status", exInt(-1)), exKV("ratio", exDouble(math.NaN())), exKV("ok", exBool(true))}),
+			[]*commonpb.KeyValue{exKV("http.method", exStr("GET")), exKV("http.status", exInt(-1)), exKV("ratio", exDouble(math.NaN())), exKV("ok", exBool(true)), exKV("nul", exStr("v"))}),
+		mk(3,
+			[]*commonpb.KeyValue{exKV("service.name", exStr("svc-a"))},
+			nil,
+			[]*commonpb.KeyValue{exKV("nul", exStr("v\x00x"))}),
 	}
 }
 
@@ -893,6 +897,7 @@ func testReaderAttributes(t *testing.T, cluster string) {
 	}{
 		{"prefix", "http.", 0, []string{"http.method", "http.status"}, false},
 		{"prefix is a key", "http", 0, []string{"http", "http.method", "http.status"}, false},
+		{"prefix is a key before NUL", "nul", 0, []string{"nul", "nul\x00key"}, false},
 		{"prefix with NUL", "nul\x00", 0, []string{"nul\x00key"}, false},
 		{"no key", "zzz", 0, []string{}, false},
 		{"limit at the count", "http", 3, []string{"http", "http.method", "http.status"}, false},

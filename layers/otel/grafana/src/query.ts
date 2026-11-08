@@ -146,6 +146,9 @@ export function valueError(type: AttrType, value: string): string | undefined {
       return n < INT64_MIN || n > INT64_MAX ? 'Outside the 64-bit integer range' : undefined;
     }
     case 'double':
+      if (v === 'NaN' || v === '+Inf' || v === '-Inf') {
+        return undefined;
+      }
       return /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(v) && Number.isFinite(Number(v))
         ? undefined
         : 'Expected a finite number';

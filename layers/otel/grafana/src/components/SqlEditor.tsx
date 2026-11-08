@@ -61,6 +61,11 @@ interface ExplainState {
 export function SqlEditor({ query, datasource, onChange, onRunQuery, data, range }: Props) {
   const [showQuery, setShowQuery] = useState(false);
   const [explain, setExplain] = useState<ExplainState | undefined>();
+  const editorRef = useRef<MonacoEditor | undefined>();
+  const [hasText, setHasText] = useState(Boolean(query.rawSql?.trim()));
+  useEffect(() => {
+    setHasText(Boolean((editorRef.current?.getValue() ?? query.rawSql ?? '').trim()));
+  }, [query.rawSql]);
   // Monaco callbacks are registered once; they read the current props through refs.
   const latest = useRef({ query, onChange, onRunQuery });
   useEffect(() => {
@@ -78,6 +83,9 @@ export function SqlEditor({ query, datasource, onChange, onRunQuery, data, range
   };
 
   const onEditorDidMount = (editor: MonacoEditor, monaco: Monaco) => {
+    editorRef.current = editor;
+    setHasText(Boolean(editor.getValue().trim()));
+    const contentSub = editor.onDidChangeModelContent?.(() => setHasText(Boolean(editor.getValue().trim())));
     const provider = monaco.languages.registerCompletionItemProvider('sql', {
       triggerCharacters: ['.', '$'],
       provideCompletionItems: async (model, position) => {
@@ -120,11 +128,17 @@ export function SqlEditor({ query, datasource, onChange, onRunQuery, data, range
         };
       },
     });
-    editor.onDidDispose(() => provider.dispose());
+    editor.onDidDispose(() => {
+      provider.dispose();
+      contentSub?.dispose?.();
+      editorRef.current = undefined;
+    });
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => commit(editor.getValue(), true));
   };
 
   const runExplain = async () => {
+    const sql = editorRef.current?.getValue() ?? latest.current.query.rawSql ?? '';
+    commit(sql, false);
     setExplain({ loading: true });
     const request: DataQueryRequest<FDBQuery> = {
       app: CoreApp.Unknown,
@@ -138,7 +152,7 @@ export function SqlEditor({ query, datasource, onChange, onRunQuery, data, range
           refId: query.refId,
           queryType: 'sql',
           tenant: query.tenant,
-          rawSql: explainSql(query.rawSql ?? ''),
+          rawSql: explainSql(sql),
           format: SqlFormat.Table,
         },
       ],
@@ -192,7 +206,7 @@ export function SqlEditor({ query, datasource, onChange, onRunQuery, data, range
           variant="secondary"
           size="sm"
           icon={explain?.loading ? 'spinner' : 'list-ul'}
-          disabled={!query.rawSql?.trim() || explain?.loading}
+          disabled={!hasText || explain?.loading}
           onClick={runExplain}
         >
           Explain
