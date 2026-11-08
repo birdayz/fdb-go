@@ -2505,9 +2505,6 @@ func (store *FDBRecordStore) AddUniquenessViolationWithExisting(index *Index, in
 // record_wire_map_order.go), and is never written with vtproto's MarshalVT,
 // whose map order is Go's random iteration order.
 func serializeUnionOver(record proto.Message, recordType *RecordType, priorInner []byte) ([]byte, error) {
-	if recordType.unionFieldNumber == 0 {
-		return nil, fmt.Errorf("no union field number for record type: %s", recordType.Name)
-	}
 	if err := recordType.checkUTF8Strings(record); err != nil {
 		return nil, err
 	}
