@@ -788,4 +788,4 @@ Further `--backend sql` flags:
 
 Production `fdb` configuration: `--posting-value-format tuple --hash-bytes 8 --record-compression brotli-4 --bulk-index-conflicts`.
 Regenerate the compiled types after an OTEL_V1 change with
-`bazelisk run //layers/otel/otelsql/cmd/genotelv1 -- "$PWD/layers/otel/otelsql/otelv1pb"`.
+`just generate-otelv1`.

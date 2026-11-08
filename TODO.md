@@ -2511,10 +2511,12 @@ tracked only.
 
 ### SQL
 
-- [ ] **Tracked only (owner excluded it from this work).** An auto-commit SELECT runs each
-  page in its own FDB transaction (`pkg/relational/core/embedded/cascades_generator.go`,
-  `runInCapturedTx` with `r.tx == nil`), so one result set spans read versions; Java holds
-  one transaction per result set. User docs do not say so.
+- [ ] **Tracked only (owner excluded it from this work).** An auto-commit SELECT shares one
+  FDB transaction for the catalog read, planning and a first page that starts within
+  250 ms (`pkg/relational/core/embedded/statement_read.go`); later pages run their own
+  transactions (`cascades_generator.go`, `runInCapturedTx` with `r.tx == nil`), so one
+  result set spans read versions; Java holds one transaction per result set. Documented
+  in docs/compatibility.md and DIVERGENCES.md ("Auto-commit SELECT").
 - [x] **Medium:** inside an explicit transaction the statement context does not reach FDB
   reads (the "KNOWN GAP" at `pkg/relational/core/embedded/connection.go:939`;
   `pkg/recordlayer/database.go:795` sets `context.Background()`), and `TxOptions.ReadOnly`
