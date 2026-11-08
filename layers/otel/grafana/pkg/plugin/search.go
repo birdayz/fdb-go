@@ -50,21 +50,32 @@ func (d *Datasource) queryTraceSearch(ctx context.Context, pc backend.PluginCont
 	if err := checkSearchShape(m.Mode, len(spanAttrs), len(logAttrs)); err != nil {
 		return backend.DataResponse{}, err
 	}
-	window := timeRange(q.TimeRange)
+	var frame *data.Frame
 	var notices []data.Notice
-
-	r, release, err := d.readerFor(ctx, tenant)
+	err = d.withReader(ctx, tenant, func(r otelReader) error {
+		var err error
+		frame, notices, err = d.search(ctx, r, m.Mode, spanAttrs, logAttrs, timeRange(q.TimeRange), limit)
+		return err
+	})
 	if err != nil {
 		return backend.DataResponse{}, err
 	}
-	defer release()
+	frame.RefID = q.RefID
+	traceField, _ := frame.FieldByName("traceID")
+	addLinks(traceField, traceLink(linkTarget(pc, d.inst), tenant))
+	frame.AppendNotices(notices...)
+	return backend.DataResponse{Frames: data.Frames{frame}}, nil
+}
 
+// search runs one search mode on r and builds Tempo's search table.
+func (d *Datasource) search(ctx context.Context, r otelReader, mode string, spanAttrs, logAttrs []otel.Attribute, window otel.TimeRange, limit int) (*data.Frame, []data.Notice, error) {
+	var notices []data.Notice
 	var hits []searchHit
-	switch m.Mode {
+	switch mode {
 	case modeSameSpan:
 		page, err := r.QuerySameSpan(ctx, otel.SameSpanQuery{Predicates: spanAttrs, TimeWindow: &window, Limit: limit})
 		if err != nil {
-			return backend.DataResponse{}, err
+			return nil, nil, err
 		}
 		hits = groupSpans(page.Spans)
 		if len(page.Continuation) > 0 {
@@ -73,7 +84,7 @@ func (d *Datasource) queryTraceSearch(ctx context.Context, pc backend.PluginCont
 	case modeExistential:
 		res, err := r.QueryTraceExistential(ctx, otel.TraceExistentialQuery{Clauses: spanAttrs, LogClauses: logAttrs, TimeWindow: &window, Limit: limit})
 		if err != nil {
-			return backend.DataResponse{}, err
+			return nil, nil, err
 		}
 		for _, h := range res.Hits {
 			seen := map[string]bool{}
@@ -88,13 +99,13 @@ func (d *Datasource) queryTraceSearch(ctx context.Context, pc backend.PluginCont
 	case modeAttribute:
 		res, err := r.Query(ctx, spanAttrs[0])
 		if err != nil {
-			return backend.DataResponse{}, err
+			return nil, nil, err
 		}
 		hits, notices = topHits(res, limit, d.cfg.SearchLimit)
 	case modeTime:
 		res, err := r.Time(ctx, window)
 		if err != nil {
-			return backend.DataResponse{}, err
+			return nil, nil, err
 		}
 		hits, notices = topHits(res, limit, d.cfg.SearchLimit)
 	}
@@ -102,16 +113,12 @@ func (d *Datasource) queryTraceSearch(ctx context.Context, pc backend.PluginCont
 	frame := searchFrame(hits)
 	if len(hits) <= summaryHitLimit {
 		if err := d.addSummaries(ctx, r, frame, hits); err != nil {
-			return backend.DataResponse{}, err
+			return nil, nil, err
 		}
 	} else {
 		notices = append(notices, data.Notice{Severity: data.NoticeSeverityInfo, Text: fmt.Sprintf("more than %d traces: service, name and duration are omitted and start time is the newest matching span's", summaryHitLimit)})
 	}
-	frame.RefID = q.RefID
-	traceField, _ := frame.FieldByName("traceID")
-	addLinks(traceField, traceLink(linkTarget(pc, d.inst), tenant))
-	frame.AppendNotices(notices...)
-	return backend.DataResponse{Frames: data.Frames{frame}}, nil
+	return frame, notices, nil
 }
 
 // checkSearchShape refuses a mode/predicate combination before any read.
@@ -216,7 +223,7 @@ func (d *Datasource) addSummaries(ctx context.Context, r otelReader, frame *data
 	durations := make([]*float64, len(hits))
 	startField, _ := frame.FieldByName("startTime")
 	for i, h := range hits {
-		rss, _, err := r.TraceOTLP(ctx, h.traceID, otel.TraceBudget{MaxSpans: d.cfg.TraceMaxSpans, MaxBytes: d.cfg.TraceMaxBytes})
+		rss, _, err := r.TraceOTLP(ctx, h.traceID, d.traceBudget())
 		if err != nil {
 			return err
 		}

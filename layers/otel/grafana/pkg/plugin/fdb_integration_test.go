@@ -321,6 +321,14 @@ func itTraceQuery(t *testing.T, h *itHarness) {
 	if n, _ := f.RowLen(); n != 2 || len(f.Meta.Notices) != 1 || !strings.Contains(f.Meta.Notices[0].Text, "traceMaxSpans") {
 		t.Fatalf("budgeted trace: %d rows, %+v", n, f.Meta.Notices)
 	}
+	// traceMaxBytes bounds what Grafana receives (the decoded spans).
+	tiny := instanceSettings(t, map[string]any{"clusterString": nil, "clusterFilePath": h.cluster, "database": "/OTEL/R_" + strings.ToUpper(itRun), "traceMaxBytes": 600})
+	ht := &itHarness{ds: newDatasource(tiny, defaultDeps), cluster: h.cluster}
+	defer ht.ds.Dispose()
+	f = onlyFrame(t, ht.query(t, map[string]any{"queryType": queryTypeTrace, "traceId": hex.EncodeToString(traceIDOf(1))}))
+	if n, _ := f.RowLen(); n >= 3 || len(f.Meta.Notices) != 1 || !strings.Contains(f.Meta.Notices[0].Text, "traceMaxBytes") {
+		t.Fatalf("decoded-size budget: %d rows, %+v", n, f.Meta.Notices)
+	}
 }
 
 func itSearch(t *testing.T, h *itHarness) {

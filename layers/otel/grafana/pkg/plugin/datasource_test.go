@@ -165,10 +165,10 @@ func TestTraceQueryFrameAndLinks(t *testing.T) {
 	h := newHarness(t, map[string]any{"traceMaxSpans": 3, "traceMaxBytes": 4096})
 	r := h.reader("T1")
 	r.trace = func(id string) ([]*tracepb.ResourceSpans, otel.TraceReadStats, error) {
-		return fullTrace(), otel.TraceReadStats{Spans: 3, Bytes: 4097, Truncated: true, Reason: "max_bytes,messages"}, nil
+		return fullTrace(), otel.TraceReadStats{Spans: 3, Bytes: 9000, DecodedBytes: 4000, Truncated: true, Reason: "max_decoded_bytes,messages"}, nil
 	}
 	f := onlyFrame(t, h.query(t, map[string]any{"queryType": queryTypeTrace, "traceId": goldenTraceID}, searchRange))
-	if r.lastBudget != (otel.TraceBudget{MaxSpans: 3, MaxBytes: 4096}) {
+	if r.lastBudget != (otel.TraceBudget{MaxSpans: 3, MaxDecodedBytes: 4096}) {
 		t.Fatalf("budget %+v", r.lastBudget)
 	}
 	if f.RefID != "A" || f.Meta.PreferredVisualization != data.VisTypeTrace {
@@ -286,4 +286,52 @@ func TestDisposeWaitsForInFlight(t *testing.T) {
 	if closes != 1 || !r.closed {
 		t.Fatalf("after the last request: %d FDB closes, reader closed %v", closes, r.closed)
 	}
+}
+
+// A stale-metadata failure re-opens the tenant's reader and retries once.
+func TestStaleMetadataReopensReader(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil)
+	r := h.reader("T1")
+	r.stale = 1
+	model := map[string]any{"queryType": queryTypeTrace, "traceId": goldenTraceID}
+	if res := h.query(t, model, searchRange); res.Error != nil {
+		t.Fatalf("retry failed: %v", res.Error)
+	}
+	if h.opens["T1"] != 2 || len(r.callLog()) != 2 {
+		t.Fatalf("%d opens, calls %v", h.opens["T1"], r.callLog())
+	}
+
+	// Stale twice: one retry only, and the error reaches the panel.
+	r.stale = 2
+	res := h.query(t, model, searchRange)
+	if res.Error == nil || !strings.Contains(res.Error.Error(), "stale") {
+		t.Fatalf("got %v", res.Error)
+	}
+	if h.opens["T1"] != 3 {
+		t.Fatalf("%d opens", h.opens["T1"])
+	}
+}
+
+func TestRefLRUInvalidate(t *testing.T) {
+	t.Parallel()
+	p := newProbe()
+	c := p.lru(4)
+	v, release, err := c.acquire(context.Background(), "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.invalidate("a", func(x string) bool { return x != v }) // another value: kept
+	if len(c.keys()) != 1 {
+		t.Fatal("invalidated a different value")
+	}
+	c.invalidate("a", func(x string) bool { return x == v })
+	if len(c.keys()) != 0 || len(p.closedList()) != 0 {
+		t.Fatalf("resident %v, closed %v: dropped, closed on release", c.keys(), p.closedList())
+	}
+	release()
+	if len(p.closedList()) != 1 {
+		t.Fatal("not closed on release")
+	}
+	c.invalidate("missing", func(string) bool { return true })
 }

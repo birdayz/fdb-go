@@ -60,12 +60,13 @@ func (d *Datasource) queryTrace(ctx context.Context, pc backend.PluginContext, q
 	if err != nil {
 		return backend.DataResponse{}, err
 	}
-	r, release, err := d.readerFor(ctx, tenant)
-	if err != nil {
-		return backend.DataResponse{}, err
-	}
-	defer release()
-	rss, stats, err := r.TraceOTLP(ctx, id, otel.TraceBudget{MaxSpans: d.cfg.TraceMaxSpans, MaxBytes: d.cfg.TraceMaxBytes})
+	var rss []*tracepb.ResourceSpans
+	var stats otel.TraceReadStats
+	err = d.withReader(ctx, tenant, func(r otelReader) error {
+		var err error
+		rss, stats, err = r.TraceOTLP(ctx, id, d.traceBudget())
+		return err
+	})
 	if err != nil {
 		return backend.DataResponse{}, err
 	}
@@ -99,10 +100,12 @@ func truncationNotice(stats otel.TraceReadStats, cfg *Settings) string {
 		switch strings.TrimSpace(r) {
 		case otel.TraceReasonMaxSpans:
 			parts = append(parts, fmt.Sprintf("more than %d spans (traceMaxSpans)", cfg.TraceMaxSpans))
+		case otel.TraceReasonMaxDecodedBytes:
+			parts = append(parts, fmt.Sprintf("more than %d bytes to return (traceMaxBytes)", cfg.TraceMaxBytes))
 		case otel.TraceReasonMaxBytes:
-			parts = append(parts, fmt.Sprintf("more than %d bytes read (traceMaxBytes)", cfg.TraceMaxBytes))
+			parts = append(parts, "the stored-bytes read budget was reached")
 		case otel.TraceReasonMessages:
-			parts = append(parts, "GenAI messages past the trace budget are shown as manifests")
+			parts = append(parts, "GenAI messages are shown as their stored manifests")
 		case "":
 		default:
 			parts = append(parts, r)
@@ -111,7 +114,8 @@ func truncationNotice(stats otel.TraceReadStats, cfg *Settings) string {
 	if len(parts) == 0 {
 		parts = append(parts, "budget reached")
 	}
-	return fmt.Sprintf("partial trace (%d spans, %d bytes read): %s", stats.Spans, stats.Bytes, strings.Join(parts, "; "))
+	return fmt.Sprintf("trace budget reached, %d spans returned (%d bytes read, %d returned): %s",
+		stats.Spans, stats.Bytes, stats.DecodedBytes, strings.Join(parts, "; "))
 }
 
 // spanEntry is one span with the resource and scope it was exported under.

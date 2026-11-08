@@ -147,6 +147,7 @@ type fakeReader struct {
 	values       []string
 	truncated    bool
 	err          error
+	stale        int // TraceOTLP fails stale this many times
 	lastSameSpan otel.SameSpanQuery
 	lastExist    otel.TraceExistentialQuery
 	lastAttr     otel.Attribute
@@ -167,6 +168,15 @@ func (r *fakeReader) Layout() string { return r.layout }
 func (r *fakeReader) TraceOTLP(_ context.Context, id string, b otel.TraceBudget) ([]*tracepb.ResourceSpans, otel.TraceReadStats, error) {
 	r.record("TraceOTLP " + id)
 	r.lastBudget = b
+	r.mu.Lock()
+	stale := r.stale > 0
+	if stale {
+		r.stale--
+	}
+	r.mu.Unlock()
+	if stale {
+		return nil, otel.TraceReadStats{}, &otel.StaleMetadataError{OtelError: &otel.OtelError{Kind: "stale", Op: "trace", Message: "metadata changed"}}
+	}
 	if r.err != nil {
 		return nil, otel.TraceReadStats{}, r.err
 	}
@@ -244,6 +254,7 @@ type harness struct {
 	readers   map[string]*fakeReader
 	openErr   error
 	readerErr map[string]error
+	opens     map[string]int
 	fdbOpens  int
 	fdbCloses int
 	readerNew func(schema string) *fakeReader
@@ -271,7 +282,7 @@ func instanceSettings(t testing.TB, jsonData map[string]any) backend.DataSourceI
 
 func newHarness(t testing.TB, jsonData map[string]any) *harness {
 	t.Helper()
-	h := &harness{sql: &fakeSQL{}, readers: map[string]*fakeReader{}, readerErr: map[string]error{}}
+	h := &harness{sql: &fakeSQL{}, readers: map[string]*fakeReader{}, readerErr: map[string]error{}, opens: map[string]int{}}
 	d := deps{
 		openFDB: func(context.Context, *Settings, backend.DataSourceInstanceSettings) (*fdbHandle, error) {
 			h.mu.Lock()
@@ -289,6 +300,7 @@ func newHarness(t testing.TB, jsonData map[string]any) *harness {
 		openReader: func(_ context.Context, _ *recordlayer.FDBDatabase, _, schema string, _ otel.ReaderConfig) (otelReader, error) {
 			h.mu.Lock()
 			defer h.mu.Unlock()
+			h.opens[schema]++
 			if err := h.readerErr[schema]; err != nil {
 				return nil, err
 			}

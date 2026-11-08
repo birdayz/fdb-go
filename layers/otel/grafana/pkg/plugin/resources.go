@@ -172,12 +172,13 @@ func (d *Datasource) attributeLookup(ctx context.Context, kind string, a attrReq
 	if v, ok := d.attrs.get(cacheKey); ok {
 		return v, nil
 	}
-	rd, release, err := d.readerFor(ctx, a.tenant)
-	if err != nil {
-		return attrResult{}, err
-	}
-	defer release()
-	vals, truncated, err := read(rd)
+	var vals []string
+	var truncated bool
+	err := d.withReader(ctx, a.tenant, func(r otelReader) error {
+		var err error
+		vals, truncated, err = read(r)
+		return err
+	})
 	if err != nil {
 		return attrResult{}, err
 	}

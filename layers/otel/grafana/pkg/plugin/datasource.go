@@ -165,6 +165,33 @@ func (d *Datasource) readerFor(ctx context.Context, tenant string) (otelReader, 
 	return d.readers.acquire(ctx, tenant)
 }
 
+// withReader runs fn on the tenant's reader. A store whose metadata changed
+// since the reader opened fails stale: the reader is re-opened and fn retried
+// once (RFC §8, D12).
+func (d *Datasource) withReader(ctx context.Context, tenant string, fn func(otelReader) error) error {
+	for attempt := 0; ; attempt++ {
+		r, release, err := d.readerFor(ctx, tenant)
+		if err != nil {
+			return err
+		}
+		err = fn(r)
+		var stale *otel.StaleMetadataError
+		if attempt == 0 && errors.As(err, &stale) {
+			d.readers.invalidate(tenant, func(x otelReader) bool { return x == r })
+			release()
+			continue
+		}
+		release()
+		return err
+	}
+}
+
+// traceBudget bounds a trace read: traceMaxBytes is what Grafana receives
+// (decoded protobuf); stored bytes read keep the reader's default.
+func (d *Datasource) traceBudget() otel.TraceBudget {
+	return otel.TraceBudget{MaxSpans: d.cfg.TraceMaxSpans, MaxDecodedBytes: d.cfg.TraceMaxBytes}
+}
+
 func (d *Datasource) openTenantReader(ctx context.Context, schema string) (otelReader, error) {
 	h, err := d.database(ctx)
 	if err != nil {

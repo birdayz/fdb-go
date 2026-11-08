@@ -54,17 +54,16 @@ func (d *Datasource) queryLogs(ctx context.Context, pc backend.PluginContext, q 
 		return backend.DataResponse{}, queryErrorf("logs", "set a traceId or an attribute")
 	}
 
-	r, release, err := d.readerFor(ctx, tenant)
-	if err != nil {
-		return backend.DataResponse{}, err
-	}
-	defer release()
 	var recs []otel.LogRecord
-	if traceID != "" {
-		recs, err = r.QueryLogsByTrace(ctx, traceID, spanID)
-	} else {
-		recs, err = r.QueryLogsByAttribute(ctx, attr, limit)
-	}
+	err = d.withReader(ctx, tenant, func(r otelReader) error {
+		var err error
+		if traceID != "" {
+			recs, err = r.QueryLogsByTrace(ctx, traceID, spanID)
+		} else {
+			recs, err = r.QueryLogsByAttribute(ctx, attr, limit)
+		}
+		return err
+	})
 	if err != nil {
 		return backend.DataResponse{}, err
 	}

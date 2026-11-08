@@ -134,6 +134,33 @@ func (c *refLRU[V]) closeAll(es []*lruEntry[V]) {
 	}
 }
 
+// invalidate drops key's entry if it holds a value same accepts, so the next
+// acquire opens a fresh one; the dropped value closes once released.
+func (c *refLRU[V]) invalidate(key string, same func(V) bool) {
+	c.mu.Lock()
+	e, ok := c.items[key]
+	if !ok {
+		c.mu.Unlock()
+		return
+	}
+	select {
+	case <-e.ready:
+	default:
+		c.mu.Unlock()
+		return // still opening: it is not the value the caller saw
+	}
+	if e.err != nil || !same(e.val) {
+		c.mu.Unlock()
+		return
+	}
+	c.removeLocked(e)
+	idle := e.refs == 0
+	c.mu.Unlock()
+	if idle {
+		c.closeAll([]*lruEntry[V]{e})
+	}
+}
+
 // keys returns the resident keys, most recent first.
 func (c *refLRU[V]) keys() []string {
 	c.mu.Lock()
