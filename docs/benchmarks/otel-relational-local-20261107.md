@@ -34,6 +34,11 @@ so none of them is in the merged history; the tags keep them resolvable.
 | `archive/otel-relational/g3-cutover` | `f68acec52` | G3: the cutover's Exporter |
 | `archive/otel-relational/fts-before` | `b70072f38` | `fts_single_token`: the Exporter with the query-only harness |
 | `archive/otel-relational/fts-fix` | `f7b2d43bd` | `fts_single_token`: the fix |
+
+The archived tags carry the export benchmarks' old names,
+`BenchmarkRelSpansVsFDB` and `BenchmarkRelLogsVsFDB`; at head they are
+`BenchmarkSpanExport` and `BenchmarkLogExport`, which measure the same
+relational arm.
 | `archive/otel-relational/quiesced` | `11ae9acbf` | the quiesced gate's Exporter |
 
 The receipts record these short hashes, or one of:
@@ -762,11 +767,12 @@ $B --backend sql --mode query $F --suite all --iterations 600 --run sql_r1 --out
 $B --backend sql --sql-query direct --mode query $F --suite all --iterations 600 --run sql_r1 --output sqld-q.json
 ```
 
-G2A's Exporter benchmark runs on its own FDB testcontainer:
+G2A's Exporter benchmark (the relational arm; the custom store's arm exists
+only at `archive/otel-relational/g2a`) runs on its own FDB testcontainer:
 
 ```sh
 bazelisk test //layers/otel:otel_test --test_arg=-test.run=^$ \
-  --test_arg=-test.bench=BenchmarkRelSpansVsFDB --test_arg=-test.benchtime=1x \
+  --test_arg=-test.bench=BenchmarkSpanExport --test_arg=-test.benchtime=1x \
   --test_output=streamed --nocache_test_results
 ```
 
