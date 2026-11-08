@@ -86,6 +86,16 @@ below; neither publication nor readiness is asserted.
   `SchemaWitness` with `RecordLayerStoreCatalog.LoadSchemaWitnessed` and
   `SchemaUnchanged`; and keyspace `RelationalKeyspace.ResolvedSchemaSubspace`
   (a schema's store subspace when already resolved, without I/O).
+- `sqldriver.NewConnector(db, dsn)`, a `driver.Connector` over an FDB
+  database the caller opened, for `sql.OpenDB` (no `cluster_file`; nothing is
+  opened, cached or registered), and the Go-only DSN option `read_only=true`:
+  only SELECT and EXPLAIN/DESCRIBE of a SELECT run (anything else, a
+  multi-statement batch included, is `0A000`); every transaction of the
+  connection is cancelled instead of committed, so a read persists nothing,
+  not even a store-header upgrade; `BeginTx` accepts
+  `TxOptions{ReadOnly: true}`, still `0A000` without `read_only`
+  (`docs/operations.md` §1). The engine side is
+  `EmbeddedConnection.SetReadOnly` and `embedded.ReadOnlyRunner`.
 
 ### Changed / fixed
 - The relational engine caches deserialized schema templates process-wide (up
@@ -169,6 +179,11 @@ below; neither publication nor readiness is asserted.
   checks; explicit failed commits release their transaction handles.
 
 ### Breaking changes / compatibility
+- **`read_only` and `NewConnector`:** no persisted or wire change; SQL
+  behaviour changes only on a `read_only` connection. The unknown-DSN-parameter
+  error lists `read_only`. `RelationalKeyspace.LookupSchemaSubspace` and
+  `embedded.StoredQueryTemplates` take a `keyspace.Runner` where they took an
+  `*recordlayer.FDBDatabase`, which still satisfies it.
 - **OTel store (persisted format):** the custom store's persisted layout
   (posting indexes, `logs_v1` rows, `Message` records, manifests, the
   `directory_v1` keyspace) is gone, with no migration and no reader: an OTel

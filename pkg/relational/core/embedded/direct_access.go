@@ -84,7 +84,7 @@ func (s *directAccessStatement) run(ctx context.Context, tableName string, opts 
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"direct access to table %q of schema %q from a connection to schema %q", table, schemaName, c.sess.Schema)
 	}
-	ss, err := c.sess.Keyspace.SchemaSubspaceIn(ctx, configuredRunner{c.sess.DB, c.Options()}, c.sess.DBPath, c.sess.Schema)
+	ss, err := c.sessionSchemaSubspace(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -145,6 +145,9 @@ func (s *directAccessStatement) schemaAndTable(tableName string) (string, string
 // the record (BackingRecordStore.insert, :170-189).
 func (s *directAccessStatement) ExecuteInsert(ctx context.Context, tableName string, data []api.Struct, opts *api.Options) (_ int64, err error) {
 	defer s.c.recoverInto(&err)
+	if s.c.readOnly {
+		return 0, errReadOnlyOperation("a direct-access insert")
+	}
 	if len(data) == 0 {
 		return 0, nil
 	}
@@ -270,6 +273,9 @@ func directRowLimit(o *api.Options) int {
 // returns how many it deleted (executeDelete, :189-217).
 func (s *directAccessStatement) ExecuteDelete(ctx context.Context, tableName string, key *api.KeySet, opts *api.Options) (_ int64, err error) {
 	defer s.c.recoverInto(&err)
+	if s.c.readOnly {
+		return 0, errReadOnlyOperation("a direct-access delete")
+	}
 	n, err := s.run(ctx, tableName, opts, func(t directTable, _ *api.Options) (any, error) {
 		pk, err := buildDirectKey(t.rt, t.rt.PrimaryKey, "primary key of <"+t.name+">", keySetMap(key), true)
 		if err != nil {
@@ -294,6 +300,9 @@ func (s *directAccessStatement) ExecuteDelete(ctx context.Context, tableName str
 // one, as the target falls back.
 func (s *directAccessStatement) ExecuteDeleteRange(ctx context.Context, tableName string, keyPrefix *api.KeySet, opts *api.Options) (_ int64, err error) {
 	defer s.c.recoverInto(&err)
+	if s.c.readOnly {
+		return 0, errReadOnlyOperation("a direct-access delete")
+	}
 	n, err := s.run(ctx, tableName, opts, func(t directTable, _ *api.Options) (any, error) {
 		columns := keySetMap(keyPrefix)
 		prefix, err := buildDirectKey(t.rt, t.rt.PrimaryKey, "primary key of <"+t.name+">", columns, false)

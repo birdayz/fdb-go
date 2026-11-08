@@ -39,6 +39,7 @@ var driverTestFiles = []string{
 	"param_rendering_probe_test.go",
 	"param_string_edge_probe_test.go",
 	"prepared_stmt_probe_test.go",
+	"read_only_test.go",
 	"resource_limits_fdb_test.go",
 	"serializer_options_fdb_test.go",
 	"sim_not_exists_time_limit_test.go",

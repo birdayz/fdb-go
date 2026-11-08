@@ -113,8 +113,10 @@ func (k *RelationalKeyspace) SchemaSubspace(rctx *recordlayer.FDBRecordContext, 
 
 // LookupSchemaSubspace resolves a schema's store subspace without creating
 // any mapping (readInTransaction): a domain, database or schema name that was
-// never interned names no store, and is UNDEFINED_SCHEMA.
-func (k *RelationalKeyspace) LookupSchemaSubspace(ctx context.Context, db *recordlayer.FDBDatabase, dbPath, schemaName string) (subspace.Subspace, error) {
+// never interned names no store, and is UNDEFINED_SCHEMA. The lookup runs in a
+// transaction of db's (an *recordlayer.FDBDatabase, or a runner that cancels
+// its transactions).
+func (k *RelationalKeyspace) LookupSchemaSubspace(ctx context.Context, db Runner, dbPath, schemaName string) (subspace.Subspace, error) {
 	if ss, ok := k.resolved.Load(dbPath + "\x00" + schemaName); ok {
 		return ss.(subspace.Subspace), nil
 	}

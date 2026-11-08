@@ -1439,7 +1439,7 @@ surface has no counterpart:
 
 | Aspect | Java (JDBC) | Go (database/sql) |
 |---|---|---|
-| Read-only transaction | `setReadOnly` is accepted and ignored, a hint (`EmbeddedRelationalConnection.java:143`) | `TxOptions{ReadOnly: true}` is refused with 0A000: database/sql requires a driver that does not enforce it to return an error |
+| Read-only transaction | `setReadOnly` is accepted and ignored, a hint (`EmbeddedRelationalConnection.java:143`) | `TxOptions{ReadOnly: true}` is refused with 0A000: database/sql requires a driver that does not enforce it to return an error. A connection opened with the Go-only DSN option `read_only=true` enforces it (only SELECT and EXPLAIN of a SELECT run, every transaction is cancelled instead of committed) and accepts it |
 | Cancelling a statement | `Statement.cancel` throws UNSUPPORTED_OPERATION | A statement's context that ends before or while the statement runs in an explicit transaction cancels the FDB transaction; the statement returns the context's error and the transaction is over (later statements and `Commit` 25F01) |
 | Transaction context | none | The `BeginTx` context is used until the transaction ends; when it ends the FDB transaction is cancelled and database/sql rolls it back |
 

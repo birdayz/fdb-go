@@ -31,6 +31,19 @@
 //	fdbsql:///PATH?cluster_file=/path       — embedded, explicit cluster file
 //	fdbsql://HOST:PORT/PATH                 — remote (gRPC) — NOT YET IMPLEMENTED
 //
+// read_only=true makes every connection read-only: only SELECT and EXPLAIN of a
+// SELECT run (anything else, a multi-statement batch included, is 0A000), and
+// every transaction is cancelled instead of committed, so nothing a read does
+// persists, not even the store-header upgrade an open makes on a store an older
+// version wrote. sql.TxOptions{ReadOnly: true} is accepted on such a
+// connection and refused on any other.
+//
+// NewConnector drives the driver over an FDB database the caller already has,
+// with no cluster_file:
+//
+//	connector, err := sqldriver.NewConnector(fdbDB, "fdbsql:///FRL/MYDB?schema=S&read_only=true")
+//	db := sql.OpenDB(connector)
+//
 // This is the public entry point. Internally it wraps
 // pkg/relational/core which implements the SQL engine over FDB.
 //
@@ -197,7 +210,41 @@ func (d *Driver) OpenConnector(name string) (driver.Connector, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Connector{driver: d, dsn: dsn, connOpts: connOpts}, nil
+	readOnly, err := dsn.ReadOnly()
+	if err != nil {
+		return nil, err
+	}
+	return &Connector{driver: d, dsn: dsn, connOpts: connOpts, readOnly: readOnly}, nil
+}
+
+// NewConnector returns a Connector over db, an FDB database the caller opened
+// and owns, for sql.OpenDB. Unlike sql.Open it neither opens nor caches a
+// database by cluster file, and unlike RegisterBackend it touches no
+// process-global state: the connector, its catalog, keyspace and plan cache
+// are its own. dsn is an embedded DSN without cluster_file, for example
+// "fdbsql:///FRL/MYDB?schema=S&read_only=true"; its domain must be registered
+// (RegisterDomainIfNotExists) like any other. The DSN is checked here, as in
+// OpenConnector. A StoreTimer is the caller's to set on db
+// (EnableStoreTimer arms only databases the driver opens by cluster file).
+func NewConnector(db *recordlayer.FDBDatabase, dsn string) (driver.Connector, error) {
+	if db == nil {
+		return nil, api.NewError(api.ErrCodeInvalidParameter, "NewConnector: nil FDB database")
+	}
+	c, err := (&Driver{}).OpenConnector(dsn)
+	if err != nil {
+		return nil, err
+	}
+	connector := c.(*Connector)
+	if connector.dsn.Mode != ModeEmbedded {
+		return nil, api.NewError(api.ErrCodeInvalidParameter,
+			"NewConnector takes an embedded DSN (fdbsql:///PATH), not a remote one")
+	}
+	if _, ok := connector.dsn.Options["cluster_file"]; ok {
+		return nil, api.NewError(api.ErrCodeInvalidParameter,
+			"NewConnector does not take cluster_file: the FDB database is the caller's")
+	}
+	connector.fdbDB, connector.callerDB = db, true
+	return connector, nil
 }
 
 // Connector holds a parsed DSN and produces connections on demand.
@@ -212,6 +259,13 @@ type Connector struct {
 	// OpenConnector so a malformed value is a DSN error rather than a
 	// connect-time failure. Never nil.
 	connOpts *api.Options
+	// readOnly is the DSN's read_only: every connection is made read-only
+	// (EmbeddedConnection.SetReadOnly), and the connector's own catalog read
+	// at its start is cancelled too.
+	readOnly bool
+	// callerDB marks fdbDB as the caller's (NewConnector): initialize neither
+	// opens nor caches one.
+	callerDB bool
 
 	init    initFlight
 	fdbDB   *recordlayer.FDBDatabase
@@ -311,6 +365,9 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 		return nil, err
 	}
 	conn := embedded.New(c.dsn.Path, c.fdbDB, c.cat, c.factory, c.ks)
+	if c.readOnly {
+		conn.SetReadOnly()
+	}
 	conn.SetOptions(c.connOpts)
 	conn.SetPlanCache(c.planCache)
 	if c.dsn.Schema != "" {
@@ -319,7 +376,8 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	return conn, nil
 }
 
-// initialize opens FDB and wires catalog + factory. The catalog Bootstrap
+// initialize opens FDB, unless the database is the caller's (NewConnector),
+// and wires catalog + factory. The catalog Bootstrap
 // (Initialize) is deferred — it runs on the first DDL transaction, not here.
 func (c *Connector) initialize(ctx context.Context) error {
 	clusterFile := c.dsn.Options["cluster_file"]
@@ -338,7 +396,9 @@ func (c *Connector) initialize(ctx context.Context) error {
 	// Reuse a previously-opened FDB database for this cluster file.
 	// See fdbDBCache docstring above for why this is necessary.
 	cacheKey := clusterFile
-	if cached, ok := fdbDBCache.Load(cacheKey); ok {
+	if c.callerDB {
+		// NewConnector's database: the caller's, neither opened nor cached here.
+	} else if cached, ok := fdbDBCache.Load(cacheKey); ok {
 		c.fdbDB = cached.(*recordlayer.FDBDatabase)
 	} else {
 		// Leave an empty path for the selected backend's default lookup, including
@@ -365,7 +425,9 @@ func (c *Connector) initialize(ctx context.Context) error {
 	// cache on every branch, which is what closes the ordering window against a
 	// concurrent EnableStoreTimer: that call stores the timer before it looks in the
 	// cache, so if it missed this database then this read cannot miss its timer.
-	applyStoreTimer(cacheKey, c.fdbDB)
+	if !c.callerDB {
+		applyStoreTimer(cacheKey, c.fdbDB)
+	}
 
 	// root subspace is the empty subspace — all catalog and schema data lives
 	// under well-known tuple prefixes via RelationalKeyspace.
@@ -380,8 +442,12 @@ func (c *Connector) initialize(ctx context.Context) error {
 	// Java's RecordLayerEngine.makeEngine: the engine's start plans every
 	// template's stored queries into the shared cache. Failures are logged,
 	// never returned.
+	var catalogReader keyspace.Runner = c.fdbDB
+	if c.readOnly {
+		catalogReader = embedded.ReadOnlyRunner(c.fdbDB)
+	}
 	warmUp := embedded.WarmStoredQueries(ctx, c.planCache,
-		embedded.StoredQueryTemplates(ctx, c.fdbDB, c.cat))
+		embedded.StoredQueryTemplates(ctx, catalogReader, c.cat))
 	c.warmUp.Store(&warmUp)
 	return nil
 }

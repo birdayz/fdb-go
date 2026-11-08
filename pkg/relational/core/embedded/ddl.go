@@ -1232,8 +1232,13 @@ func (c *EmbeddedConnection) ensureCatalogInit(ctx context.Context) error {
 		return nil
 	}
 	// Unconfigured: this is the shared catalog's bootstrap, which Java runs at
-	// engine start rather than in any connection's transaction.
-	_, err := c.sess.DB.Run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
+	// engine start rather than in any connection's transaction. A read-only
+	// connection bootstraps nothing: its transaction is cancelled.
+	run := c.sess.DB.Run
+	if c.readOnly {
+		run = ReadOnlyRunner(c.sess.DB).Run
+	}
+	_, err := run(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		txn := catalog.NewFDBTransaction(rctx)
 		// Run commits; a commit in its body is refused (RecordContextNotActiveError).
 		return nil, c.sess.Catalog.Initialize(txn)
@@ -1277,6 +1282,9 @@ func (c *EmbeddedConnection) runDDL(ctx context.Context, action apiddl.ConstantA
 // SQL. The catalog is bootstrapped first, as any DDL on the connection is.
 func (c *EmbeddedConnection) ApplyMetadataOperation(ctx context.Context, op func(factory apiddl.MetadataOperationsFactory, txn api.Transaction) error) (err error) {
 	defer c.recoverInto(&err)
+	if c.readOnly {
+		return errReadOnlyOperation("a metadata operation")
+	}
 	if err := c.ensureCatalogInit(ctx); err != nil {
 		return err
 	}
