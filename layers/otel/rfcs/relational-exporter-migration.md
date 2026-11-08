@@ -49,7 +49,7 @@ Every Exporter method calls `begin` (exporter.go:262): after `Shutdown` it fails
 
 | Guarantee | Cite | New |
 |---|---|---|
-| Every span is admitted before any write; an inadmissible span fails the call with no partial write. Batches then commit independently; the first error cancels the rest; stats count only committed batches; cancellation gives `canceled`. | exporter.go:305-357, 359-414, 169-170 | keep |
+| Every span is admitted before any write; an inadmissible span fails the call with no partial write. Batches then commit independently; the first error cancels the rest; stats count only committed batches; cancellation gives `canceled`. | exporter.go:305-357, 359-414, 169-170 | keep; a save that replaced spans' index clears push past the 500 KB guard is retried in transactions that fit them, and a replacement past it even alone fails as `operation` after earlier batches committed (as a log's grown prior image) |
 | Identity: nonzero 16-byte trace ID and 8-byte span ID, `start ≤ MaxInt64`; otherwise `AdmissionError`. | exporter.go:720-739 | keep |
 | Per-span estimate `2048+len(otlp)+Σ2·(k+v+256)+refs` ≤ 300,000; partition by `BatchSize` and estimate. | exporter.go:42-44, 744-761, 416-434 | keep formula; refs count encoded key bytes |
 | Actual transaction ≤ 500 KB (`GetApproximateSize`), else `budget`; no 1 s elapsed guard for the exporter. | ingest.go:247-256 | keep |

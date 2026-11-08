@@ -70,8 +70,11 @@ below; neither publication nor readiness is asserted.
   `--diagnostics` and the Brotli values. Attribute equality is typed.
   `NewExporter` opens the fixed template name OTEL_V1. Exporter reads use the
   client's cached read version.
-- OTel span and log exports still admit the whole call before any write. An
-  attribute is indexed up to a 1,024-byte key and a 64,000-byte value (strings
+- OTel span and log exports still admit the whole call before any write;
+  admission writes nothing. A failure found while saving (a log's prior image
+  grown since admission, a span replacement whose index clears pass the 500 KB
+  guard even alone) is an `OperationError`, after the call's earlier batches
+  committed. An attribute is indexed up to a 1,024-byte key and a 64,000-byte value (strings
   over 1,024 bytes through the digest-indexed array), so tuple NUL escaping
   cannot push an OTEL_V1 index key past FDB's limits; larger attributes stay in
   the stored OTLP but are not indexed. Raw OTLP is never truncated.
@@ -140,12 +143,13 @@ below; neither publication nor readiness is asserted.
 - **OTel span admission:** the 300 KB estimate counts the whole serialized
   `SPANS` row (OTLP plus every copied column such as name, status message,
   events and links) plus each index entry, so a new span always fits the
-  500 KB guard; a span over it fails the call before any write. A batch that
-  replaces stored spans with changed index keys (a re-export with a new start
-  time or attribute values) is split: each transaction holds the spans that
-  fit the estimate with the clears of the spans they replace, read from the
-  save's prefetch. A span whose replacement fits no transaction fails as
-  admission; the call's batches committed before it stay committed.
+  500 KB guard; a span over it fails the call before any write. A save that
+  the index clears of the spans it replaces (a re-export with a new start time
+  or attribute values) push past the guard is retried in smaller
+  transactions, each holding the spans that fit the estimate with those
+  clears, read from the save's prefetch, or a span over it alone. A
+  replacement that passes the guard even alone fails as an `OperationError`;
+  the call's batches committed before it stay committed.
 - **Exporter read consistency:** reads take their read version from the
   client's GRV cache, at most 100 ms old. A read sees every write committed
   through the same Exporter before it began, but a commit by another Exporter

@@ -62,7 +62,7 @@ func TestRelExporterRealFDB(t *testing.T) {
 		"intrinsic_v2":              testRelIntrinsicV2,
 		"nan_payloads":              testRelNaNPayloads,
 		"row_admission":             testRelRowAdmission,
-		"replacement_admission":     testRelReplacementAdmission,
+		"replacement_split":         testRelReplacementSplit,
 		"span_index_key_model":      testRelSpanIndexKeyModel,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1488,15 +1488,17 @@ func relMoved(rs *tracepb.ResourceSpans) *tracepb.ResourceSpans {
 	return out
 }
 
-// testRelReplacementAdmission: a batch's transaction counts the clears of the
-// stored spans its spans replace and holds only the spans that fit, so none
-// exceeds the transaction guard, with GenAI messages off and on. A span of 80
-// one-kilobyte string attributes fits fresh and replays unchanged, but its
-// re-export at a new start time, which changes every index key, fits no
-// transaction: it fails as admission and stays as stored, after the span
-// before it in its batch committed. Three spans of 20 such attributes share
-// one transaction fresh, and commit one per transaction when they move.
-func testRelReplacementAdmission(t *testing.T, cluster string) {
+// testRelReplacementSplit: a batch whose replaced spans' index clears pass the
+// transaction guard is saved again in transactions that fit them, with GenAI
+// messages off and on. Moving a span to a new start time changes every index
+// key. Three spans of 20 one-kilobyte string attributes share one
+// transaction fresh and commit one per transaction when they move. Two spans
+// of 40 such attributes share one fresh; moved, each is over the estimate
+// with its clears but under the guard, and commits alone. A span of 80 fits
+// fresh and replays unchanged, but moved it passes the guard even alone: it
+// fails as an operation and stays as stored, after the span before it in its
+// batch committed.
+func testRelReplacementSplit(t *testing.T, cluster string) {
 	for _, messages := range []bool{false, true} {
 		t.Run(map[bool]string{false: "messages_off", true: "fulltext"}[messages], func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
@@ -1520,7 +1522,7 @@ func testRelReplacementAdmission(t *testing.T, cluster string) {
 			}
 			small := deltaSpan(9)
 			stats, err := e.ExportResourceSpans(ctx, []*tracepb.ResourceSpans{small, relMoved(big)})
-			requireOtelKind(t, err, "admission")
+			requireOtelKind(t, err, "operation")
 			if stats.Spans != 1 || stats.Batches != 1 {
 				t.Fatalf("refused replacement: %+v, want the span before it committed", stats)
 			}
@@ -1543,6 +1545,20 @@ func testRelReplacementAdmission(t *testing.T, cluster string) {
 			}
 			for i, rs := range moved {
 				reSpan(t, ctx, e, ftsSpan(i+2), SpanMatch{ftsTrace(i + 2), ftsSpan(i + 2), int64(rs.ScopeSpans[0].Spans[0].StartTimeUnixNano)})
+			}
+
+			pair := []*tracepb.ResourceSpans{span(5, 40), span(6, 40)}
+			if stats, err := e.ExportResourceSpans(ctx, pair); err != nil || stats.Spans != 2 || stats.Batches != 1 {
+				t.Fatalf("fresh 40-attribute spans: %+v %v, want one batch of 2", stats, err)
+			}
+			for i, rs := range pair {
+				pair[i] = relMoved(rs)
+			}
+			if stats, err := e.ExportResourceSpans(ctx, pair); err != nil || stats.Spans != 2 || stats.Batches != 2 {
+				t.Fatalf("moved 40-attribute spans: %+v %v, want two batches", stats, err)
+			}
+			for i, rs := range pair {
+				reSpan(t, ctx, e, ftsSpan(i+5), SpanMatch{ftsTrace(i + 5), ftsSpan(i + 5), int64(rs.ScopeSpans[0].Spans[0].StartTimeUnixNano)})
 			}
 		})
 	}
