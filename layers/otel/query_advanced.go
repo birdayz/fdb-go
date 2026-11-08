@@ -4,8 +4,9 @@ import (
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 )
 
-// SameSpanQuery intersects predicates on one (trace_id, span_id), in posting order.
-// Predicates[0] drives the scan; put the most selective predicate first.
+// SameSpanQuery finds the spans that hold every predicate, newest first in
+// index order (start, trace, span descending). Predicates[0] drives the scan
+// of its typed OTEL_V1 attribute index; put the most selective predicate first.
 type SameSpanQuery struct {
 	Predicates   []Attribute `json:"predicates"`
 	TimeWindow   *TimeRange  `json:"time_window,omitempty"`
@@ -24,7 +25,9 @@ type SpanQueryPage struct {
 }
 
 // TraceExistentialQuery allows different span/log/message witnesses within one trace (RFC-283 §6.1).
-// Logs use LOG_TRACE correlation; message clauses take neither Limit nor Continuation.
+// Log witnesses join on the trace_id their LOGS attribute index entries carry,
+// so uncorrelated logs witness no trace; message clauses take neither Limit
+// nor Continuation.
 type TraceExistentialQuery struct {
 	Clauses        []Attribute            `json:"clauses"`
 	LogClauses     []Attribute            `json:"log_clauses,omitempty"`

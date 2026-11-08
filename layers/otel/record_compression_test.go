@@ -16,8 +16,8 @@ func TestRecordCompressionConfigAndOwnership(t *testing.T) {
 			if err := d.Validate(); err != nil {
 				t.Fatal(err)
 			}
-			serializer, err := recordSerializer(mode)
-			if err != nil || (serializer == nil) != (recordCompressionMode(mode) == "") {
+			serializer, err := RecordSerializer(mode)
+			if err != nil || (serializer == nil) != (mode == "" || mode == "none") {
 				t.Fatalf("serializer %q: %v %v", mode, serializer, err)
 			}
 			if corpusIdentity(c) != corpusIdentity(d) {
@@ -31,7 +31,7 @@ func TestRecordCompressionConfigAndOwnership(t *testing.T) {
 		if d.Validate() == nil {
 			t.Fatalf("accepted compression mode %q", mode)
 		}
-		if _, err := recordSerializer(mode); err == nil {
+		if _, err := RecordSerializer(mode); err == nil {
 			t.Fatalf("constructed compression mode %q", mode)
 		}
 	}

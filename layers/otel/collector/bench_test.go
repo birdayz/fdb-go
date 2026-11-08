@@ -603,7 +603,7 @@ func TestRunBenchmarkRealFDB(t *testing.T) {
 	for _, class := range CollectorBenchQueryClasses {
 		q, ok := r.Queries[class]
 		if !ok || q.Iterations != iters || q.Failures != 0 || q.Error != "" || q.Rows != wantRows[class] || q.Histogram.Population != iters ||
-			q.Histogram.Min <= 0 || q.Histogram.Max < q.Histogram.P99 || q.QPS <= 0 {
+			q.Histogram.Min <= 0 || q.Histogram.Max < q.Histogram.P99 || q.QPS <= 0 || len(q.Samples) != 0 {
 			t.Fatalf("%s: %+v, want %d rows", class, q, wantRows[class])
 		}
 		// Fewer than one block commits during a fixed run, so only
@@ -614,8 +614,9 @@ func TestRunBenchmarkRealFDB(t *testing.T) {
 	}
 
 	// Re-running on the same run is an idempotent replace: nothing is
-	// stored again and every answer is unchanged.
-	cfg.QueryIterations = 1
+	// stored again and every answer is unchanged. With QuerySamples every
+	// post-ingest iteration of every class is reported.
+	cfg.QueryIterations, cfg.QuerySamples = 2, true
 	again, err := RunBenchmark(ctx, cfg)
 	if err != nil || again.Failures != 0 {
 		t.Fatalf("re-run: %v, %+v", err, again)
@@ -625,6 +626,17 @@ func TestRunBenchmarkRealFDB(t *testing.T) {
 	}
 	if again.Ingest.Collector.StoredSpans != convs*n || again.Ingest.Logs.Replaced != convs || again.Fidelity.Mismatches != 0 {
 		t.Fatalf("re-run ingest %+v fidelity %+v", again.Ingest, again.Fidelity)
+	}
+	for _, class := range CollectorBenchQueryClasses {
+		q := again.Queries[class]
+		if q.Iterations != 2 || q.Rows != wantRows[class]/iters*2 || len(q.Samples) != 2 {
+			t.Fatalf("sampled %s: %+v, want 2 samples", class, q)
+		}
+		for i, s := range q.Samples {
+			if s.Iteration != i || s.Ns <= 0 || s.Error != "" || int64(s.Rows)*2 != q.Rows {
+				t.Fatalf("sampled %s sample %d: %+v", class, i, s)
+			}
+		}
 	}
 
 	// QueryOnly reruns only the named classes on the stored corpus, writes
@@ -671,6 +683,13 @@ func TestRunBenchmarkRealFDB(t *testing.T) {
 		if q := p.Queries[class]; q.Iterations != 2 || q.Failures != 0 || q.Histogram.Population != 2 {
 			t.Fatalf("plain %s: %+v", class, q)
 		}
+	}
+	// A named class this layout does not enable is refused, so a receipt
+	// never covers fewer classes than it names.
+	refused := plain
+	refused.QueryOnly, refused.QueryClasses = true, QueryFTSSingleToken+","+QueryTraceGraph
+	if _, err := RunBenchmark(ctx, refused); err == nil || !strings.Contains(err.Error(), "are not all enabled in this layout") {
+		t.Fatalf("FTS class on the plain layout: %v", err)
 	}
 }
 

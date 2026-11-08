@@ -69,7 +69,7 @@ func BenchmarkLogExport(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			if ts.Serializer, err = recordSerializer(cfg.RecordCompression); err != nil {
+			if ts.Serializer, err = RecordSerializer(cfg.RecordCompression); err != nil {
 				b.Fatal(err)
 			}
 			s, err := newRelLogStore(&tenantStore{db: db, ts: ts, databasePath: path, schema: schema}, cfg)

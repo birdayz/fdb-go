@@ -51,7 +51,7 @@ func TestCompiledTypesMatchTemplateDescriptor(t *testing.T) {
 		}
 	}
 	if !proto.Equal(want, got) {
-		t.Fatal("otelv1pb is stale: regenerate with bazelisk run //layers/otel/otelsql/cmd/genotelv1 -- \"$PWD/layers/otel/otelsql/otelv1pb\"")
+		t.Fatal("otelv1pb is stale: regenerate with just generate-otelv1")
 	}
 	var tables []string
 	for name := range md.RecordTypes() {

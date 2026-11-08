@@ -67,7 +67,8 @@ func (l LogRecord) OTLP() (*logspb.ResourceLogs, error) {
 	return proto.Clone(rl).(*logspb.ResourceLogs), nil
 }
 
-// LogMatch is one verified log witness from a log equality posting.
+// LogMatch is one verified log witness: a LOGS attribute or event-name index
+// entry whose row holds the equality.
 type LogMatch struct {
 	EventID string `json:"event_id"`
 	Trace   string `json:"trace_id,omitempty"`

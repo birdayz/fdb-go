@@ -64,6 +64,7 @@ func TestRelExporterRealFDB(t *testing.T) {
 		"row_admission":             testRelRowAdmission,
 		"replacement_split":         testRelReplacementSplit,
 		"span_index_key_model":      testRelSpanIndexKeyModel,
+		"read_version_cache":        testRelReadVersionCache,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -1561,6 +1562,37 @@ func testRelReplacementSplit(t *testing.T, cluster string) {
 				reSpan(t, ctx, e, ftsSpan(i+5), SpanMatch{ftsTrace(i + 5), ftsSpan(i + 5), int64(rs.ScopeSpans[0].Spans[0].StartTimeUnixNano)})
 			}
 		})
+	}
+}
+
+// testRelReadVersionCache: Exporter reads take their read version from the
+// client's GRV cache (tenantStore.read) and writes do not. An export takes no
+// cached version; reads right after its commit, which refreshes the cache,
+// take cached ones.
+func testRelReadVersionCache(t *testing.T, cluster string) {
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	e := openRelExporter(t, ctx, cluster, nil)
+	rs := deltaSpan(1, exKV("cached", exStr("yes")))
+	before := e.ClientMetrics()
+	if _, err := e.ExportResourceSpans(ctx, []*tracepb.ResourceSpans{rs}); err != nil {
+		t.Fatal(err)
+	}
+	if hits := e.ClientMetrics().GRVCacheHits - before.GRVCacheHits; hits != 0 {
+		t.Fatalf("an export took %d cached read versions", hits)
+	}
+	before = e.ClientMetrics()
+	const reads = 5
+	for range reads {
+		reHits(t, ctx, e, Attribute{"span", "cached", "string", "yes"}, Hit{ftsTrace(1), int64(rs.ScopeSpans[0].Spans[0].StartTimeUnixNano)})
+		if _, err := e.LoadSpanOTLP(ctx, ftsTrace(1), ftsSpan(1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after := e.ClientMetrics()
+	t.Logf("%d reads: %d cached read versions, %d fetched", 2*reads, after.GRVCacheHits-before.GRVCacheHits, after.TransactionReadVersionsCompleted-before.TransactionReadVersionsCompleted)
+	if after.GRVCacheHits == before.GRVCacheHits {
+		t.Fatalf("no Exporter read took a cached read version")
 	}
 }
 

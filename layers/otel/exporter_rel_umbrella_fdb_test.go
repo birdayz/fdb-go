@@ -19,7 +19,7 @@ import (
 // The relational reader always stops at the K-th distinct trace (§1.3), and
 // the indexes hold attribute values, not digests.
 
-// relFixtureSpan is s's single-span envelope, as every backend stores it.
+// relFixtureSpan is s's single-span ResourceSpans (FixtureOTLP).
 func relFixtureSpan(t *testing.T, s Span) *tracepb.ResourceSpans {
 	t.Helper()
 	rs, _, err := FixtureOTLP(s)
