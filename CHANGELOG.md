@@ -94,7 +94,8 @@ below; neither publication nor readiness is asserted.
   a SUM or COUNT_NOT_NULL index skips every entry the old and new record share,
   all occurrences and by whole entry, as Java's `StandardIndexMaintainer.update`
   does; Go cancelled SUM entries one for one and compared COUNT_NOT_NULL
-  entries by group only.
+  entries by group only. The Java 4.14.2.0 differential in
+  `conformance/null_standin_conformance_test.go` measures each case.
 - Message full-text role discovery charges the raw TEXT bunch key/value bytes,
   including discovery preceding an empty result, against the remaining query budget.
 - Drained message and Collector queues clear consumed slots and release exhausted
