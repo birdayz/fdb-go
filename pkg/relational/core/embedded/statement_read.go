@@ -147,7 +147,7 @@ func (c *EmbeddedConnection) runStatementRead(ctx context.Context, opts *api.Opt
 // transaction and commits it before the page is published. ok is false when
 // the statement has no usable shared transaction (none, too old, or a
 // retryable failure), and the caller runs the page as before.
-func (c *EmbeddedConnection) runFirstPage(opts *api.Options, fn func(*recordlayer.FDBRecordContext) (any, error)) (result any, err error, ok bool) {
+func (c *EmbeddedConnection) runFirstPage(fn func(*recordlayer.FDBRecordContext) (any, error)) (result any, err error, ok bool) {
 	// Whatever happens here, the statement's pages run their own
 	// transactions from now on: a page is published only after the
 	// transaction that produced it committed, which a shared transaction
@@ -184,7 +184,7 @@ func (c *EmbeddedConnection) runFirstPage(opts *api.Options, fn func(*recordlaye
 // auto-commit transaction (runInCapturedTx).
 func (c *EmbeddedConnection) runPage(ctx context.Context, tx *embeddedTx, opts *api.Options, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
 	if tx == nil {
-		if result, err, ok := c.runFirstPage(opts, fn); ok {
+		if result, err, ok := c.runFirstPage(fn); ok {
 			return result, err
 		}
 	}
