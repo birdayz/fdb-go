@@ -109,7 +109,9 @@ They are not proof of an upstream Collector receiver pipeline.
   image. All admission happens before any batch writes; admitted batches commit
   independently. A prior image grown beyond the budget after admission returns
   `OperationError`, not the no-partial-write `AdmissionError`; earlier committed
-  batches are not rolled back.
+  batches are not rolled back. Span exports follow the same rule: a span
+  replacement whose index clears pass the 500-KB transaction guard even in a
+  transaction of its own returns `OperationError`.
 - `QuerySameSpan` requires every predicate on one span; predicate zero drives the
   index scan (put the selective predicate first). It supports a time window,
   limit and authenticated, tenant-store-bound snapshot-page continuation, not a
@@ -133,17 +135,16 @@ in `TODO.md`.
 
 `--save-mode batch` with compiled rows is the Exporter's `SpanWriter`: its
 admission, prefetch, `SaveRecordBatch`, 500-KB transaction size guard and
-Exporter transaction policy. The other direct saves use `SaveRecord` (`serial`),
+Exporter transaction policy. Its transactions hold at most `--batch` spans
+(default 32, max 64) of one tenant within a conservative 300-KB estimate that
+counts each span's whole serialized row and its index entries, so a batch of
+new spans fits the guard. The other direct saves use `SaveRecord` (`serial`),
 `SaveRecordsPipelined` (`pipelined`, the default) or `PrefetchRecordBatch` plus
 `SaveRecordBatch` (`batch` with dynamic rows), with ordinary old/new index
-maintenance. Each transaction holds at most `--batch` spans (default 32, max 64)
-of one tenant within a conservative 300-KB estimate that counts each span's
-whole serialized row and its index entries, so a batch of new spans fits the
-500-KB guard; a batch whose replaced spans' index clears would pass it commits
-in smaller transactions that fit the estimate with those clears, and a span
-whose replacement fits none fails as admission; `--workers` (default 1,
-range 1..8) bounds concurrent batch transactions, and the first failure cancels
-the rest. A run's database must not exist at ingest.
+maintenance; their transactions hold at most `--batch` spans of one tenant
+within a 300-KB estimate of the spans' attributes, with no size guard.
+`--workers` (default 1, range 1..8) bounds concurrent batch transactions, and
+the first failure cancels the rest. A run's database must not exist at ingest.
 
 `--record-compression` selects `none` (otelbench's default), `zlib-1` or
 `zlib-default`: Java-compatible version-1 records, readable by SQL and Java. It

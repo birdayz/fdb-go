@@ -21,7 +21,8 @@ import (
 // Span writes on a tenant store (rfcs/relational-exporter-migration.md §1.2,
 // §3.1): every span of a call is admitted before any write, then batches of
 // SPANS rows commit independently, one write slot per transaction; a batch
-// that replaces stored spans holds only the spans that fit with their clears.
+// whose replaced spans' clears pass the transaction guard is saved again in
+// smaller transactions (save).
 
 // maxSpanTxnBytes is the actual-size guard of a span write transaction
 // (GetApproximateSize), under FDB's 10 MB limit by the conservative estimate.
@@ -346,12 +347,13 @@ func (m *spanKeyModel) priorCost(old, next *otelv1pb.SPANS, pk tuple.Tuple, keyC
 
 // fitting is how many of spans, from the first, fit the conservative
 // transaction estimate with the clears of the stored spans they replace,
-// whose rows it loads from store (the save's prefetch has read them). A first
-// span that does not fit alone fails as admission.
-func (w *SpanWriter) fitting(store *recordlayer.FDBRecordStore, spans []relSpan) (int, error) {
+// whose rows it loads from store (the save's prefetch has read them), and
+// whether the first replaces a stored span. A first span over the estimate
+// with its clears is a transaction alone.
+func (w *SpanWriter) fitting(store *recordlayer.FDBRecordStore, spans []relSpan) (k int, replaces bool, err error) {
 	const op = "export batch"
 	if w.keys.err != nil {
-		return 0, w.keys.err
+		return 0, false, w.keys.err
 	}
 	futures := make([]recordlayer.PendingRead[*recordlayer.FDBStoredRecord[proto.Message]], 0, min(loadRecordsBatch, len(spans)))
 	pks := make([]tuple.Tuple, 0, cap(futures))
@@ -367,30 +369,30 @@ func (w *SpanWriter) fitting(store *recordlayer.FDBRecordStore, spans []relSpan)
 			i := lo + k
 			old, err := f.Get()
 			if err != nil {
-				return 0, err
+				return 0, false, err
 			}
 			cost := spans[i].cost
 			if old != nil {
 				row, ok := old.Record.(*otelv1pb.SPANS)
 				if !ok {
-					return 0, failf("ownership", op, "%s record is not the compiled row", spansRecordType)
+					return 0, false, failf("ownership", op, "%s record is not the compiled row", spansRecordType)
 				}
 				prior, err := w.keys.priorCost(row, spans[i].row.(*otelv1pb.SPANS), pks[k], old.KeyCount)
 				if err != nil {
-					return 0, err
+					return 0, false, err
 				}
 				cost += prior
 			}
+			if i == 0 {
+				replaces = old != nil
+			}
 			if total+cost > exportSpanBudget {
-				if i == 0 {
-					return 0, fail("admission", op, "single span with the clears of the span it replaces exceeds conservative 300KB transaction estimate")
-				}
-				return i, nil
+				return max(i, 1), replaces, nil
 			}
 			total += cost
 		}
 	}
-	return len(spans), nil
+	return len(spans), replaces, nil
 }
 
 // relBatch is one write transaction's spans.
@@ -525,8 +527,10 @@ func (s *ExportStats) addBatch(b relBatch) {
 // every transaction must stay within maxTxnBytes. Within the estimate only
 // the clears of the stored spans the batch replaces can pass the guard, so a
 // batch that does is saved again in as few transactions as fit: each holds
-// the longest prefix within the estimate with those clears (fitting), and
-// the rest continue in the next.
+// the longest prefix within the estimate with those clears (fitting), or the
+// first span alone, and the rest continue in the next. A replacement that
+// passes the guard alone fails as an operation, after the transactions
+// before it committed, as a log's prior image grown after admission does.
 func (w *SpanWriter) save(ctx context.Context, b relBatch, committed func(relBatch)) error {
 	const op = "export batch"
 	fit := false
@@ -546,9 +550,9 @@ func (w *SpanWriter) save(ctx context.Context, b relBatch, committed func(relBat
 			if err := pending.Wait(); err != nil {
 				return nil, err
 			}
-			k := len(rows)
+			k, replaces := len(rows), false
 			if fit {
-				if k, err = w.fitting(store, b.spans); err != nil {
+				if k, replaces, err = w.fitting(store, b.spans); err != nil {
 					return nil, err
 				}
 			}
@@ -561,6 +565,9 @@ func (w *SpanWriter) save(ctx context.Context, b relBatch, committed func(relBat
 				return nil, err
 			}
 			if n > w.maxTxnBytes {
+				if fit && k == 1 && replaces {
+					return nil, failf("operation", "export transaction", "span replacement exceeds the transaction guard with the clears of the span it replaces: bytes=%d", n)
+				}
 				over = true
 				return nil, failf("budget", "export transaction", "transaction guard exceeded: bytes=%d", n)
 			}
@@ -581,10 +588,11 @@ func (w *SpanWriter) save(ctx context.Context, b relBatch, committed func(relBat
 
 // ExportResourceSpans admits every span before writing, so an inadmissible
 // span fails the call without partial writes; batches then commit
-// independently, and a replacement too large for any transaction with its
-// clears fails as admission after the batches before it committed. With messages on, the GenAI content attributes are
-// decomposed: spans are admitted with placeholder manifests and references,
-// the messages persist, and the spans are prepared again with final ones.
+// independently, and a replacement whose clears pass the transaction guard
+// even alone fails as an operation after the batches before it committed
+// (save). With messages on, the GenAI content attributes are decomposed:
+// spans are admitted with placeholder manifests and references, the
+// messages persist, and the spans are prepared again with final ones.
 func (e *Exporter) ExportResourceSpans(ctx context.Context, spans []*tracepb.ResourceSpans) (ExportStats, error) {
 	if err := e.begin("export"); err != nil {
 		return ExportStats{}, err
