@@ -321,7 +321,7 @@ func testConfig(run string) otel.Config {
 	c := otel.DefaultConfig()
 	c.Run, c.Backend = run, "sql"
 	c.Count, c.Tenants, c.Attributes, c.MatchEvery, c.K, c.Iterations = 240, 2, 8, 20, 5, 34
-	c.Workers, c.Batch, c.SaveMode, c.Order = 3, 16, "batch", "time"
+	c.Workers, c.Batch, c.SaveMode = 3, 16, "batch"
 	return c
 }
 

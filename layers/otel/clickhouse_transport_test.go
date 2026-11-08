@@ -51,6 +51,42 @@ func TestCHTransportExecutionIdentityAndAddress(t *testing.T) {
 	}
 }
 
+// OpenCHContext refuses, as config, every endpoint that is not an explicit
+// http(s) host without query or fragment, and a context canceled before it
+// opens; the valid endpoint opens without connecting.
+func TestOpenCHContextGuards(t *testing.T) {
+	t.Parallel()
+	c := testConfig()
+	const explicit = "CH URL must be explicit http(s) endpoint without query/fragment"
+	for _, tc := range []struct{ endpoint, want string }{
+		{"", explicit},
+		{"ftp://example.test", explicit},
+		{"http://", explicit},
+		{"http://127.0.0.1:8123?query=DROP", explicit},
+		{"http://127.0.0.1:8123#fragment", explicit},
+		{"http://%zz", "invalid CH URL"},
+	} {
+		b, err := OpenCHContext(t.Context(), c, tc.endpoint, false)
+		if b != nil {
+			b.Close()
+		}
+		var config *ConfigError
+		if !errors.As(err, &config) || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("endpoint %q: %v, want a config error: %s", tc.endpoint, err, tc.want)
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := OpenCHContext(ctx, c, "http://127.0.0.1:8123", false); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CH open ignored a canceled context: %v", err)
+	}
+	b, err := OpenCHContext(t.Context(), c, "https://127.0.0.1:8123", false)
+	if err != nil {
+		t.Fatalf("valid endpoint: %v", err)
+	}
+	b.Close()
+}
+
 func TestCHNativeOpenIsLazyAndAdminLoopbackOnly(t *testing.T) {
 	t.Parallel()
 	c := testConfig()

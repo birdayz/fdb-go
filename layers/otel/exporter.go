@@ -99,6 +99,38 @@ func checkExporterKey(op, key string) error {
 	return nil
 }
 
+// checkExporterYAMLKeys checks the keys of a mapping node and of the
+// mappings its merge keys (<<) bring in, through aliases and sequences;
+// seen stops an alias cycle.
+func checkExporterYAMLKeys(op string, node *yaml.Node, seen map[*yaml.Node]bool) error {
+	for node.Kind == yaml.AliasNode && node.Alias != nil {
+		node = node.Alias
+	}
+	if seen[node] {
+		return nil
+	}
+	seen[node] = true
+	switch node.Kind {
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if key := node.Content[i]; key.ShortTag() == "!!merge" {
+				if err := checkExporterYAMLKeys(op, node.Content[i+1], seen); err != nil {
+					return err
+				}
+			} else if err := checkExporterKey(op, key.Value); err != nil {
+				return err
+			}
+		}
+	case yaml.SequenceNode: // the value of a merge key
+		for _, n := range node.Content {
+			if err := checkExporterYAMLKeys(op, n, seen); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // exporterConfigFields is ExporterConfig without its JSON methods.
 type exporterConfigFields ExporterConfig
 
@@ -144,12 +176,8 @@ func (c *ExporterConfig) UnmarshalJSON(data []byte) error {
 // defaults. Removed and unknown keys are refused.
 func (c *ExporterConfig) UnmarshalYAML(node *yaml.Node) error {
 	const op = "exporter YAML"
-	if node.Kind == yaml.MappingNode {
-		for i := 0; i+1 < len(node.Content); i += 2 {
-			if err := checkExporterKey(op, node.Content[i].Value); err != nil {
-				return err
-			}
-		}
+	if err := checkExporterYAMLKeys(op, node, map[*yaml.Node]bool{}); err != nil {
+		return err
 	}
 	type plain ExporterConfig
 	p := plain(DefaultExporterConfig())

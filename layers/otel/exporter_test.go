@@ -156,6 +156,35 @@ transaction_timeout: 45s
 			requireRemovedKey(t, err, doc)
 		})
 	}
+	// YAML merge keys (<<) bring in their mappings' keys, through an alias or
+	// inline: accepted and refused as the config's own keys are. An alias of
+	// the whole config is checked too; a quoted "<<" is a plain key.
+	t.Run("merge keys and aliases", func(t *testing.T) {
+		var doc struct {
+			Defaults yaml.Node      `yaml:"defaults"`
+			Exporter ExporterConfig `yaml:"exporter"`
+		}
+		src := "defaults: &d {batch_size: 8, workers: 2}\nexporter:\n  <<: [*d, {tenant: 3}]\n  run: live_run_0001\n"
+		if err := yaml.Unmarshal([]byte(src), &doc); err != nil {
+			t.Fatal(err)
+		}
+		want := DefaultExporterConfig()
+		want.Run, want.BatchSize, want.Workers, want.Tenant = "live_run_0001", 8, 2, 3
+		if doc.Exporter != want {
+			t.Fatalf("merged config %+v, want %+v", doc.Exporter, want)
+		}
+		for src, message := range map[string]string{
+			"defaults: &d {not_a_field: 1}\nexporter:\n  <<: *d\n":             `unknown key "not_a_field"`,
+			"defaults: &d {order: time}\nexporter:\n  <<: [{tenant: 3}, *d]\n": "order was removed",
+			"defaults: &d {run: live_run_0001, extra: 1}\nexporter: *d\n":      `unknown key "extra"`,
+			"exporter:\n  \"<<\": {batch_size: 8}\n":                           `unknown key "<<"`,
+		} {
+			var config *ConfigError
+			if err := yaml.Unmarshal([]byte(src), &doc); !errors.As(err, &config) || !strings.Contains(err.Error(), message) {
+				t.Fatalf("%q: %v, want a config error: %s", src, err, message)
+			}
+		}
+	})
 	for _, doc := range []string{"batch_size: not-a-number\n", "tenant: [1, 2]\n", "bulk_index_conflicts: maybe\n", "max_bytes: {a: 1}\n", "max_inflight_transactions: many\n", "transaction_timeout: 10\n", "transaction_timeout: soon\n"} {
 		t.Run("rejects "+strings.TrimSpace(doc), func(t *testing.T) {
 			var got ExporterConfig
