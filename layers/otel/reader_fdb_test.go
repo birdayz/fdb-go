@@ -57,6 +57,7 @@ func TestReaderRealFDB(t *testing.T) {
 	t.Run("empty_store", func(t *testing.T) { t.Parallel(); testReaderEmptyStore(t, cluster) })
 	t.Run("open_refusals", func(t *testing.T) { t.Parallel(); testReaderOpenRefusals(t, cluster) })
 	t.Run("transactions_never_commit", func(t *testing.T) { t.Parallel(); testReaderTransactions(t, cluster) })
+	t.Run("stale_metadata", func(t *testing.T) { t.Parallel(); testReaderStaleMetadata(t, cluster) })
 }
 
 // ---------------------------------------------------------------------------
@@ -348,7 +349,9 @@ func testReaderOlderStore(t *testing.T, cluster string) {
 	}
 	db := rdDB(t, ctx, cluster)
 	// The Exporter is not used from here: its opens would upgrade the store.
-	rdSetHeaderVersion(t, ctx, db, e.store.ts.Subspace, 0)
+	if was := rdSetHeaderVersion(t, ctx, db, e.store.ts.Subspace, func(int32) int32 { return 0 }); was <= 0 {
+		t.Fatalf("the store header's metadata version was %d", was)
+	}
 	before := rdKeys(t, ctx, db)
 	r := rdOpen(t, ctx, db, e.Config(), ReaderConfig{K: e.Config().K, MaxCandidates: e.Config().MaxCandidates, MaxBytes: e.Config().MaxBytes})
 	got, err := r.Query(ctx, attr)
@@ -372,10 +375,11 @@ func testReaderOlderStore(t *testing.T, cluster string) {
 	}
 }
 
-// rdSetHeaderVersion rewrites the store header's metadata version, which
-// must have been above it.
-func rdSetHeaderVersion(t *testing.T, ctx context.Context, db *recordlayer.FDBDatabase, store subspace.Subspace, version int32) {
+// rdSetHeaderVersion rewrites the store header's metadata version as set
+// maps it and returns the version it had.
+func rdSetHeaderVersion(t *testing.T, ctx context.Context, db *recordlayer.FDBDatabase, store subspace.Subspace, set func(int32) int32) int32 {
 	t.Helper()
+	var was int32
 	_, err := db.Run(ctx, func(rc *recordlayer.FDBRecordContext) (any, error) {
 		key := store.Pack(tuple.Tuple{recordlayer.StoreInfoKey})
 		raw, err := rc.Transaction().Get(key).Get()
@@ -386,9 +390,8 @@ func rdSetHeaderVersion(t *testing.T, ctx context.Context, db *recordlayer.FDBDa
 		if err := info.UnmarshalVT(raw); err != nil {
 			return nil, err
 		}
-		if info.GetMetaDataversion() <= version {
-			return nil, errors.New("the store header's metadata version is not above the target")
-		}
+		was = info.GetMetaDataversion()
+		version := set(was)
 		info.MetaDataversion = &version
 		b, err := info.MarshalVT()
 		if err != nil {
@@ -399,6 +402,56 @@ func rdSetHeaderVersion(t *testing.T, ctx context.Context, db *recordlayer.FDBDa
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	return was
+}
+
+// testReaderStaleMetadata: a store whose header names a newer metadata
+// version than a Reader loaded is never read with the old metadata (the
+// rebuild check that would refuse it is skipped): every read, and an open,
+// fail stale.
+func testReaderStaleMetadata(t *testing.T, cluster string) {
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	e := openRelExporter(t, ctx, cluster, nil)
+	trace := exRandomID(t, 16)
+	rdExport(t, ctx, e, rdTrace(trace, 2, 0), rdLogs(trace))
+	db := rdDB(t, ctx, cluster)
+	r := rdOpen(t, ctx, db, e.Config(), ReaderConfig{})
+	attr := Attribute{"span", "turn", "int", "1"}
+	if got, err := r.Query(ctx, attr); err != nil || len(got.Hits) != 1 {
+		t.Fatalf("before: %+v (%v)", got, err)
+	}
+	was := rdSetHeaderVersion(t, ctx, db, e.store.ts.Subspace, func(v int32) int32 { return v + 1 })
+	requireStale := func(t *testing.T, err error) bool {
+		t.Helper()
+		var stale *StaleMetadataError
+		var versions *recordlayer.StaleMetaDataVersionError
+		if !errors.As(err, &stale) {
+			return false
+		}
+		if stale.Kind != "stale" || !errors.As(err, &versions) || versions.StoredVersion != int(was)+1 || versions.LocalVersion != int(was) {
+			t.Fatalf("stale error %v", err)
+		}
+		return true
+	}
+	rdEventually(t, "the stale store refused", func() bool {
+		_, err := r.Query(ctx, attr)
+		return requireStale(t, err)
+	})
+	tr := hex.EncodeToString(trace)
+	for name, read := range map[string]func() error{
+		"trace": func() error { _, _, err := r.TraceOTLP(ctx, tr, TraceBudget{}); return err },
+		"logs":  func() error { _, err := r.QueryLogsByTrace(ctx, tr, ""); return err },
+		"keys":  func() error { _, _, err := r.AttributeKeys(ctx, "span", "span", "", "", 0); return err },
+	} {
+		if err := read(); !requireStale(t, err) {
+			t.Fatalf("%s on a stale store: %v", name, err)
+		}
+	}
+	path, schema := relTenantPaths(e.Config().Run, e.Config().Tenant)
+	if _, err := OpenReader(ctx, db, path, schema, ReaderConfig{}); !requireStale(t, err) {
+		t.Fatalf("open of a stale store: %v", err)
 	}
 }
 
@@ -434,7 +487,7 @@ func testReaderTraceOTLP(t *testing.T, cluster string, mutate func(*ExporterConf
 		}
 	}
 	rdRequireSpans(t, "LoadSpanOTLP", got, loaded)
-	if stats.Spans != len(want) || stats.Truncated || stats.Reason != "" || stats.Bytes <= 0 {
+	if stats.Spans != len(want) || stats.Truncated || stats.Reason != "" || stats.Bytes <= 0 || stats.DecodedBytes != rdDecoded(want) {
 		t.Fatalf("stats %+v", stats)
 	}
 	got, stats, err = r.TraceOTLP(ctx, hex.EncodeToString(exRandomID(t, 16)), TraceBudget{})
@@ -505,9 +558,11 @@ func rdSum(xs []int64) int64 {
 }
 
 // testReaderTraceBudgets drives each limit of TraceOTLP at its boundary on a
-// trace with a message stored in parts: the span count, the span rows'
-// bytes, and the message rows' bytes, after their heads (the parts are then
-// not read) and after their parts. Bytes is exactly the rows read.
+// trace with a message stored in parts: the span count; the stored bytes of
+// the span rows and of the message rows, after their heads (the parts are
+// then not read) and after their parts; and the decoded bytes of the span
+// rows, of the messages' raw elements (the parts are then not read) and of
+// the restored spans. Bytes and DecodedBytes are exact.
 func testReaderTraceBudgets(t *testing.T, cluster string) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -521,34 +576,53 @@ func testReaderTraceBudgets(t *testing.T, cluster string) {
 	}
 	spanBytes := rdSum(stored.rowBytes)
 	total := spanBytes + stored.heads + stored.parts
+	restored, manifests := rdDecoded(spans), rdDecoded(stored.spans)
+	if restored <= 3*manifests {
+		t.Fatalf("fixture: restored spans %d bytes, manifests %d: the messages must dominate", restored, manifests)
+	}
 	r := rdOpen(t, ctx, rdDB(t, ctx, cluster), e.Config(), ReaderConfig{})
 	tr := hex.EncodeToString(trace)
+	byBytes, byDecoded := TraceReasonMaxBytes+","+TraceReasonMessages, TraceReasonMaxDecodedBytes+","+TraceReasonMessages
 	for _, c := range []struct {
-		name   string
-		budget TraceBudget
-		want   []*tracepb.ResourceSpans
-		reason string
-		bytes  int64 // -1: not checked
+		name    string
+		budget  TraceBudget
+		want    []*tracepb.ResourceSpans
+		reason  string
+		bytes   int64 // -1: not checked
+		decoded int64
 	}{
-		{"default budget", TraceBudget{}, spans, "", total},
-		{"exact bytes", TraceBudget{MaxBytes: total}, spans, "", total},
-		{"exact span count", TraceBudget{MaxSpans: 4}, spans, "", total},
-		{"one span fewer", TraceBudget{MaxSpans: 3}, spans[:3], TraceReasonMaxSpans, -1},
-		{"parts read, one byte over", TraceBudget{MaxBytes: total - 1}, stored.spans, TraceReasonMessages, total},
-		{"heads one byte over", TraceBudget{MaxBytes: spanBytes + stored.heads - 1}, stored.spans, TraceReasonMessages, spanBytes + stored.heads},
-		{"heads exactly, parts over", TraceBudget{MaxBytes: spanBytes + stored.heads}, stored.spans, TraceReasonMessages, total},
-		{"span rows exactly", TraceBudget{MaxBytes: spanBytes}, stored.spans, TraceReasonMessages, spanBytes + stored.heads},
-		{"last span row over", TraceBudget{MaxBytes: spanBytes - 1}, stored.spans[:3], TraceReasonMaxBytes + "," + TraceReasonMessages, rdSum(stored.rowBytes[:3])},
+		{"default budget", TraceBudget{}, spans, "", total, restored},
+		{"exact span count", TraceBudget{MaxSpans: 4}, spans, "", total, restored},
+		{"one span fewer", TraceBudget{MaxSpans: 3}, spans[:3], TraceReasonMaxSpans, -1, rdDecoded(spans[:3])},
+		{"exact bytes", TraceBudget{MaxBytes: total}, spans, "", total, restored},
+		{"parts read, one byte over", TraceBudget{MaxBytes: total - 1}, stored.spans, byBytes, total, manifests},
+		{"heads one byte over", TraceBudget{MaxBytes: spanBytes + stored.heads - 1}, stored.spans, byBytes, spanBytes + stored.heads, manifests},
+		{"heads exactly, parts over", TraceBudget{MaxBytes: spanBytes + stored.heads}, stored.spans, byBytes, total, manifests},
+		{"span rows exactly", TraceBudget{MaxBytes: spanBytes}, stored.spans, byBytes, spanBytes + stored.heads, manifests},
+		{"last span row over", TraceBudget{MaxBytes: spanBytes - 1}, stored.spans[:3], byBytes, rdSum(stored.rowBytes[:3]), rdDecoded(stored.spans[:3])},
+		{"exact decoded bytes", TraceBudget{MaxDecodedBytes: restored}, spans, "", total, restored},
+		{"restored one byte over", TraceBudget{MaxDecodedBytes: restored - 1}, stored.spans, byDecoded, total, manifests},
+		{"raw elements over", TraceBudget{MaxDecodedBytes: manifests}, stored.spans, byDecoded, spanBytes + stored.heads, manifests},
+		{"last span decoded over", TraceBudget{MaxDecodedBytes: manifests - 1}, stored.spans[:3], byDecoded, rdSum(stored.rowBytes[:3]), rdDecoded(stored.spans[:3])},
 	} {
 		got, stats, err := r.TraceOTLP(ctx, tr, c.budget)
 		if err != nil {
 			t.Fatalf("%s: %v", c.name, err)
 		}
 		rdRequireSpans(t, c.name, got, c.want)
-		if stats.Spans != len(c.want) || stats.Truncated != (c.reason != "") || stats.Reason != c.reason || c.bytes >= 0 && stats.Bytes != c.bytes {
-			t.Fatalf("%s: stats %+v, want reason %q and %d bytes", c.name, stats, c.reason, c.bytes)
+		if stats.Spans != len(c.want) || stats.Truncated != (c.reason != "") || stats.Reason != c.reason || c.bytes >= 0 && stats.Bytes != c.bytes || stats.DecodedBytes != c.decoded {
+			t.Fatalf("%s: stats %+v, want reason %q, %d bytes, %d decoded", c.name, stats, c.reason, c.bytes, c.decoded)
 		}
 	}
+}
+
+// rdDecoded is the spans' protobuf size.
+func rdDecoded(spans []*tracepb.ResourceSpans) int64 {
+	var n int64
+	for _, rs := range spans {
+		n += int64(proto.Size(rs))
+	}
+	return n
 }
 
 // ---------------------------------------------------------------------------

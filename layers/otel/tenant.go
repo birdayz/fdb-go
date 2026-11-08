@@ -121,6 +121,13 @@ func (s *tenantStore) openWith(rc *recordlayer.FDBRecordContext, op string, prep
 		}
 		return nil, err
 	}
+	if s.reader != nil {
+		// The skipped rebuild check would refuse a store of newer metadata.
+		stored, local := int(store.GetStoreHeader().GetMetaDataversion()), store.GetRecordMetaData().Version()
+		if stored > local {
+			return nil, wrap("stale", op, &recordlayer.StaleMetaDataVersionError{LocalVersion: local, StoredVersion: stored})
+		}
+	}
 	return store, nil
 }
 

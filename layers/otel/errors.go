@@ -39,6 +39,10 @@ type (
 	// TransientError is an FDB failure a new call can pass: a transaction
 	// timeout or a retryable condition that outlasted the timeout.
 	TransientError struct{ *OtelError }
+	// StaleMetadataError (kind stale) is a store whose header names a newer
+	// metadata version than the Reader opened with: reopening it reloads the
+	// schema's metadata.
+	StaleMetadataError struct{ *OtelError }
 )
 
 func typedError(kind, op, message string, cause error) error {
@@ -62,13 +66,15 @@ func typedError(kind, op, message string, cause error) error {
 		return &OracleError{e}
 	case "transient":
 		return &TransientError{e}
+	case "stale":
+		return &StaleMetadataError{e}
 	default:
 		return &OperationError{e}
 	}
 }
 
 // NewError is this package's typed error of kind (config, ownership,
-// admission, budget, corruption, http, audit, oracle, transient; anything
+// admission, budget, corruption, http, audit, oracle, transient, stale; anything
 // else is an OperationError), wrapping cause when it is set: the errors a
 // Backend outside this package returns, as this package's backends do.
 func NewError(kind, op, message string, cause error) error {

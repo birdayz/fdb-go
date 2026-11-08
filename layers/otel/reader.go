@@ -15,6 +15,7 @@ import (
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/keyspace"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // The Reader (rfcs/grafana-datasource.md §5, §7, §8): a dashboard's view of
@@ -90,27 +91,34 @@ func (c ReaderConfig) Validate() error {
 	return nil
 }
 
-// TraceBudget bounds TraceOTLP; zero fields take the defaults (10,000 spans,
-// 64 MiB of logical read bytes, span rows and GenAI messages together).
+// TraceBudget bounds TraceOTLP; zero fields take the defaults. MaxBytes
+// bounds the stored bytes read, span rows and GenAI message rows together
+// (the load on FDB); MaxDecodedBytes the protobuf size of the spans returned
+// (what a caller sends on).
 type TraceBudget struct {
-	MaxSpans int
-	MaxBytes int64
+	MaxSpans        int   // default 10,000
+	MaxBytes        int64 // default 64 MiB
+	MaxDecodedBytes int64 // default 64 MiB
 }
 
 const (
-	defaultTraceMaxSpans = 10_000
-	defaultTraceMaxBytes = 64 << 20
+	defaultTraceMaxSpans        = 10_000
+	defaultTraceMaxBytes        = 64 << 20
+	defaultTraceMaxDecodedBytes = 64 << 20
 )
 
-// TraceReadStats is what TraceOTLP read. Truncated reports a partial result;
-// Reason lists the limits it hit, comma-separated, among the TraceReason
-// values. Bytes counts every row read, including message rows a budget then
-// left unused.
+// TraceReadStats is what TraceOTLP read and returned. Bytes is the stored
+// bytes of the span rows returned and of every message row read, including
+// those a budget then left unused; DecodedBytes is the returned spans'
+// protobuf size. Truncated reports a
+// partial result, and Reason lists the TraceReason values that apply,
+// comma-separated: the limits reached, then TraceReasonMessages.
 type TraceReadStats struct {
-	Spans     int
-	Bytes     int64
-	Truncated bool
-	Reason    string
+	Spans        int
+	Bytes        int64
+	DecodedBytes int64
+	Truncated    bool
+	Reason       string
 }
 
 // The reasons of a partial TraceOTLP result.
@@ -118,11 +126,15 @@ const (
 	// TraceReasonMaxSpans: the trace has more than MaxSpans spans; the first
 	// MaxSpans in span ID order are returned.
 	TraceReasonMaxSpans = "max_spans"
-	// TraceReasonMaxBytes: the span rows pass MaxBytes; those read before
-	// it, in span ID order, are returned.
+	// TraceReasonMaxBytes: reading on would pass MaxBytes, so the span rows
+	// read before it are returned, in span ID order, or their GenAI message
+	// values are not restored.
 	TraceReasonMaxBytes = "max_bytes"
-	// TraceReasonMessages: restoring the spans' GenAI message values would
-	// pass MaxBytes, so they are the stored manifests.
+	// TraceReasonMaxDecodedBytes: returning more would pass MaxDecodedBytes,
+	// with the same effects.
+	TraceReasonMaxDecodedBytes = "max_decoded_bytes"
+	// TraceReasonMessages: the spans' GenAI message values are the stored
+	// manifests, not restored.
 	TraceReasonMessages = "messages"
 )
 
@@ -361,7 +373,10 @@ func (r *Reader) TraceOTLP(ctx context.Context, traceID string, b TraceBudget) (
 	if b.MaxBytes == 0 {
 		b.MaxBytes = defaultTraceMaxBytes
 	}
-	if b.MaxSpans < 0 || b.MaxBytes < 0 {
+	if b.MaxDecodedBytes == 0 {
+		b.MaxDecodedBytes = defaultTraceMaxDecodedBytes
+	}
+	if b.MaxSpans < 0 || b.MaxBytes < 0 || b.MaxDecodedBytes < 0 {
 		return out, TraceReadStats{}, fail("config", op, "trace budget must not be negative")
 	}
 	trace, _ := hex.DecodeString(traceID)
@@ -369,7 +384,7 @@ func (r *Reader) TraceOTLP(ctx context.Context, traceID string, b TraceBudget) (
 	err = r.store.read(ctx, op, func(store *recordlayer.FDBRecordStore) error {
 		var reasons []string
 		work := &queryWork{maxCandidates: math.MaxInt, maxBytes: b.MaxBytes}
-		spans, reason, err := scanTraceOTLP(ctx, store, op, trace, b, work)
+		spans, decoded, reason, err := scanTraceOTLP(ctx, store, op, trace, b, work)
 		if err != nil {
 			return err
 		}
@@ -377,31 +392,15 @@ func (r *Reader) TraceOTLP(ctx context.Context, traceID string, b TraceBudget) (
 			reasons = append(reasons, reason)
 		}
 		if r.spans.cfg.Messages != messagesNone && len(spans) > 0 {
-			p, err := planReconstruct(ctx, spans)
-			if err != nil {
+			cut := reason == TraceReasonMaxBytes || reason == TraceReasonMaxDecodedBytes
+			var more []string
+			if spans, decoded, more, err = restoreTrace(ctx, store, spans, decoded, b, work, cut); err != nil {
 				return err
 			}
-			if len(p.sites) > 0 {
-				restored := false
-				if reason != TraceReasonMaxBytes {
-					raws, ok, err := loadRelMessages(store, p.refs, p.encodings, work, b.MaxBytes)
-					if err != nil {
-						return err
-					}
-					if ok {
-						if spans, err = p.apply(raws); err != nil {
-							return err
-						}
-						restored = true
-					}
-				}
-				if !restored {
-					reasons = append(reasons, TraceReasonMessages)
-				}
-			}
+			reasons = append(reasons, more...)
 		}
 		out = spans
-		stats = TraceReadStats{Spans: len(spans), Bytes: work.bytes, Truncated: len(reasons) > 0, Reason: strings.Join(reasons, ",")}
+		stats = TraceReadStats{Spans: len(spans), Bytes: work.bytes, DecodedBytes: decoded, Truncated: len(reasons) > 0, Reason: strings.Join(reasons, ",")}
 		return nil
 	})
 	if err != nil {
@@ -410,18 +409,75 @@ func (r *Reader) TraceOTLP(ctx context.Context, traceID string, b TraceBudget) (
 	return out, stats, nil
 }
 
+// restoreTrace restores the GenAI message values of spans, of decoded size
+// decoded, unless the span rows were cut or the restore would pass b; it
+// returns the spans to return, their decoded size and the reasons the values
+// stay manifests.
+func restoreTrace(ctx context.Context, store *recordlayer.FDBRecordStore, spans []*tracepb.ResourceSpans, decoded int64, b TraceBudget, work *queryWork, cut bool) ([]*tracepb.ResourceSpans, int64, []string, error) {
+	p, err := planReconstruct(ctx, spans)
+	if err != nil || len(p.sites) == 0 {
+		return spans, decoded, nil, err
+	}
+	if cut {
+		return spans, decoded, []string{TraceReasonMessages}, nil
+	}
+	var limit string
+	admit := func(sizes map[messageID]int64) bool {
+		if work.bytes > b.MaxBytes {
+			limit = TraceReasonMaxBytes
+			return false
+		}
+		// Every site holds its elements' raw bytes: a lower bound of the
+		// restored spans' size.
+		var raw int64
+		for _, s := range p.sites {
+			for _, id := range s.manifest.ids {
+				raw += sizes[id]
+			}
+		}
+		if raw > b.MaxDecodedBytes {
+			limit = TraceReasonMaxDecodedBytes
+			return false
+		}
+		return true
+	}
+	raws, ok, err := loadRelMessages(store, p.refs, p.encodings, work, admit)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	if ok && work.bytes > b.MaxBytes {
+		ok, limit = false, TraceReasonMaxBytes
+	}
+	if ok {
+		restored, err := p.apply(raws)
+		if err != nil {
+			return nil, 0, nil, err
+		}
+		var size int64
+		for _, rs := range restored {
+			size += int64(proto.Size(rs))
+		}
+		if size <= b.MaxDecodedBytes {
+			return restored, size, nil, nil
+		}
+		limit = TraceReasonMaxDecodedBytes
+	}
+	return spans, decoded, []string{limit, TraceReasonMessages}, nil
+}
+
 // scanTraceOTLP reads the trace's SPANS rows in primary-key (span ID) order
-// until b's span count or bytes, charging work's bytes, and decodes each
-// row's single-span ResourceSpans; reason names the limit that stopped it.
-func scanTraceOTLP(ctx context.Context, store *recordlayer.FDBRecordStore, op string, trace []byte, b TraceBudget, work *queryWork) ([]*tracepb.ResourceSpans, string, error) {
-	out := []*tracepb.ResourceSpans{}
+// until b's span count, bytes or decoded bytes, charging work's bytes, and
+// decodes each row's single-span ResourceSpans; it returns their decoded
+// size and the limit that stopped it.
+func scanTraceOTLP(ctx context.Context, store *recordlayer.FDBRecordStore, op string, trace []byte, b TraceBudget, work *queryWork) (out []*tracepb.ResourceSpans, decoded int64, reason string, err error) {
+	out = []*tracepb.ResourceSpans{}
 	rt := store.GetRecordMetaData().GetRecordType(spansRecordType)
 	if rt == nil {
-		return nil, "", failf("ownership", op, "%s is not in the store's metadata", spansRecordType)
+		return nil, 0, "", failf("ownership", op, "%s is not in the store's metadata", spansRecordType)
 	}
 	spanF := rt.Descriptor.Fields().ByName("SPAN_ID")
 	if spanF == nil {
-		return nil, "", failf("ownership", op, "%s lacks SPAN_ID", spansRecordType)
+		return nil, 0, "", failf("ownership", op, "%s lacks SPAN_ID", spansRecordType)
 	}
 	prefix := recordTypeKey(rt, trace)
 	props := recordlayer.ForwardScan()
@@ -432,29 +488,34 @@ func scanTraceOTLP(ctx context.Context, store *recordlayer.FDBRecordStore, op st
 	for {
 		res, err := cur.OnNext(ctx)
 		if err != nil {
-			return nil, "", err
+			return nil, 0, "", err
 		}
 		if !res.HasNext() {
-			if reason := res.GetNoNextReason(); reason != recordlayer.SourceExhausted {
-				return nil, "", failf("operation", op, "trace scan stopped: %v", reason)
+			if stop := res.GetNoNextReason(); stop != recordlayer.SourceExhausted {
+				return nil, 0, "", failf("operation", op, "trace scan stopped: %v", stop)
 			}
-			return out, "", nil
+			return out, decoded, "", nil
 		}
 		if len(out) == b.MaxSpans {
-			return out, TraceReasonMaxSpans, nil
+			return out, decoded, TraceReasonMaxSpans, nil
 		}
 		rec := res.GetValue()
 		n := int64(rec.KeySize + rec.ValueSize)
 		if work.bytes+n > b.MaxBytes {
-			return out, TraceReasonMaxBytes, nil
+			return out, decoded, TraceReasonMaxBytes, nil
 		}
-		work.candidates++
-		work.bytes += n
 		m := rec.Record.ProtoReflect()
 		rs, err := rowOTLP(op, m, trace, m.Get(spanF).Bytes())
 		if err != nil {
-			return nil, "", err
+			return nil, 0, "", err
 		}
+		d := int64(proto.Size(rs))
+		if decoded+d > b.MaxDecodedBytes {
+			return out, decoded, TraceReasonMaxDecodedBytes, nil
+		}
+		work.candidates++
+		work.bytes += n
+		decoded += d
 		out = append(out, rs)
 	}
 }

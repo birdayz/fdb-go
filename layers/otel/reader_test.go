@@ -132,7 +132,7 @@ func TestReaderArgumentRefusals(t *testing.T) {
 			t.Fatalf("%s: %v %+v", name, got, stats)
 		}
 	}
-	for name, b := range map[string]TraceBudget{"negative spans": {MaxSpans: -1}, "negative bytes": {MaxBytes: -1}} {
+	for name, b := range map[string]TraceBudget{"negative spans": {MaxSpans: -1}, "negative bytes": {MaxBytes: -1}, "negative decoded bytes": {MaxDecodedBytes: -1}} {
 		_, _, err := r.TraceOTLP(t.Context(), strings.Repeat("ab", 16), b)
 		requireTyped[*ConfigError](t, name, err)
 	}

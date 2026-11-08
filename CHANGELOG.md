@@ -96,6 +96,20 @@ below; neither publication nor readiness is asserted.
   `TxOptions{ReadOnly: true}`, still `0A000` without `read_only`
   (`docs/operations.md` §1). The engine side is
   `EmbeddedConnection.SetReadOnly` and `embedded.ReadOnlyRunner`.
+- `otel.Reader`, a read-only view of one OTEL_V1 tenant store for dashboards
+  (`layers/otel/rfcs/grafana-datasource.md`): `OpenReader` with
+  `ReaderConfig`; `Reader.Layout` and the `StoreLayoutNone`,
+  `StoreLayoutDeltas` and `StoreLayoutFullText` values; `TraceOTLP`, one scan
+  of a trace's spans with GenAI messages restored, bounded by `TraceBudget`
+  and reported in `TraceReadStats` with the `TraceReason*` values; the span
+  searches and log queries; and `AttributeKeys`/`AttributeValues`, capped
+  skip scans of the typed span and log attribute indexes
+  (`MaxAttributeKeys`, `MaxAttributeValues`). The open creates and publishes
+  nothing, and every transaction is cancelled, never committed. A store whose
+  header names newer metadata than a Reader loaded fails with
+  `*otel.StaleMetadataError`, the new error kind `stale`: reopen the Reader.
+  `otelsql.OpenTenantStoreCompiledIn` opens a tenant store with its catalog
+  reads in a transaction the caller runs (`layers/otel/README.md`, "Reader").
 
 ### Changed / fixed
 - The relational engine caches deserialized schema templates process-wide (up

@@ -550,6 +550,49 @@ are `operation`. The Collector's `IsPermanent` retries `transient`, `budget`
 and `canceled` errors and drops `config`, `admission`, `ownership`,
 `corruption` and `operation` errors.
 
+## Reader
+
+`otel.Reader` is the read side a dashboard uses
+([Grafana datasource RFC](rfcs/grafana-datasource.md) §7, §8): one OTEL_V1
+tenant store, opened with `OpenReader(ctx, db, "/OTEL/R_<RUN>", "T<n>", cfg)`
+on an FDB database its caller owns and closes. It writes nothing:
+
+- The open reads the catalog, the store and its `STORE_META("layout")` row.
+  It creates no template, database, schema or store and publishes no
+  `STORE_META` row. A schema no Exporter has opened has no layout and is
+  refused as `ownership`; an unknown database or schema is `config`.
+- Every transaction is cancelled when it ends, never committed, so not even a
+  store-header upgrade persists, and stores open without the rebuild check
+  that upgrades a header or rebuilds indexes. A store whose header names a
+  newer metadata version than the Reader loaded fails with
+  `*StaleMetadataError` (kind `stale`); reopen the Reader.
+- Same-span pages are signed with the store's stored continuation key. The
+  Reader never publishes one, so on a store without it a full page carries no
+  continuation.
+
+Reads take their read version from the GRV cache, so a span or log another
+handle committed in the last 100 ms can be missing. Each transaction has the
+`ReaderConfig` timeout (default 5 s) and its `TransactionTags`, set as
+auto-throttle tags so an operator can throttle the Reader in FDB; retryable
+FDB errors retry, at most 11 attempts in all.
+
+Budgets:
+
+- Searches: `K` (default 20, at most 1,000), `MaxCandidates` (20,000) and
+  `MaxBytes` (4 MiB of logical read bytes). Exceeding one is a `budget` error,
+  never a truncated answer.
+- `TraceOTLP` reads the trace's spans in one scan and restores their GenAI
+  messages within `TraceBudget`: `MaxSpans` (10,000), `MaxBytes` (64 MiB of
+  stored bytes read, the load on FDB; compressed records count as stored) and
+  `MaxDecodedBytes` (64 MiB of protobuf returned). Past a limit it returns
+  what fits, in span ID order, and `TraceReadStats` reports `Truncated` and
+  the limits reached. Message values whose restoring would pass a byte limit
+  stay manifests (reason `messages`).
+- `AttributeKeys` and `AttributeValues` skip-scan the typed attribute indexes
+  of spans or logs, one range read per distinct key or value, capped at
+  1,000 keys or 100 values and 2 s; `truncated` reports a stop at a cap. Long
+  strings, indexed by digest, are not offered.
+
 ## Collector-model measurement boundary
 
 `layers/otel/collector` is a custom in-process model of Collector batching,
