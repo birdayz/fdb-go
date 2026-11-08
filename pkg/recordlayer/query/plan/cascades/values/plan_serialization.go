@@ -331,6 +331,8 @@ func (c *SerializationContext) ValueToProto(v Value) (*gen.PValue, error) {
 		return &gen.PValue{SpecificValue: &gen.PValue_FieldValue{FieldValue: &gen.PFieldValue{ChildValue: child, FieldPath: path}}}, nil
 	}
 	switch vv := v.(type) {
+	case *PartitionValue:
+		return c.partitionValueToProto(vv)
 	case *ArithmeticValue:
 		lane, ok := vv.Lane()
 		if !ok {
@@ -833,6 +835,9 @@ func (c *SerializationContext) ValueFromProto(p *gen.PValue) (Value, error) {
 		}
 		return NewArrayConstructorValue(t, elems), nil
 	case p.GetAdditionalValues() != nil:
+		if p.GetAdditionalValues().GetTypeUrl() == partitionValueTypeURL {
+			return c.partitionValueFromProto(p.GetAdditionalValues().GetValue())
+		}
 		if p.GetAdditionalValues().GetTypeUrl() == tautologicalValueTypeURL {
 			return TautologicalValue{}, nil
 		}

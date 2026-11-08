@@ -98,6 +98,42 @@ and its `TISCAN` plan fail with `RecordCoreStorageException`; Java does not
 provide a supported reconstruction being deferred here. Optional compatibility
 and migration work is tracked in TODO.md. See [full-text boundaries](docs/compatibility.md#full-text-queries).
 
+## Interval-partitioned tables (Go-only, RFC-284)
+
+**Unreleased; implementation in progress.** The Record Layer foundation for
+[RFC-284](rfcs/284-interval-partitioned-tables.md) uses a required
+`fdb_partition_v1(source, width)` Function key expression. It computes signed
+BIGINT floor division with a positive interval; existing `div` and generic
+function fan-out semantics are unchanged. Canonical keys are
+`(RecordTypeKey, partition, logical primary key...)`; supported single-table
+VALUE indexes lead with the same partition and TEXT indexes group by it. The
+source must also occur as an ordinary column in the logical primary key and
+every unique index. Plain tables acquire no prefix.
+
+This metadata is **not Java-compatible**. Java 4.14.2.0 resolves every record
+type's required primary-key function while loading metadata and refuses the
+unknown function before opening any table. Go before this extension loads an
+unknown function as potentially duplicate-producing and refuses it in a primary
+key. The boundary is therefore the whole schema, including plain tables in a
+mixed schema. It protects normal metadata/store opens, not raw FDB access or
+clients deliberately substituting metadata or function implementations.
+
+`PartitionRefusalJavaProbe` in
+`conformance/partition_refusal_java_probe_test.go` exercises Java Record Layer,
+Java Relational, and a required source-pinned pre-feature Go CLI. Both no-index
+and local VALUE/TEXT layouts include plain-schema read/write controls and an
+audit of all user keys after every refused attempt. The pinned Go source is
+`50365a91093b4f410f5589de4e597be2d3e0d936`, built separately rather than simulated
+by unregistering a function in the new binary.
+
+This foundation is not yet the complete SQL feature: DDL, directory/fences,
+partition access paths and concurrent retirement remain implementation gates.
+`ClearPartitionData` is only a prevalidated storage cleanup primitive; its
+caller must exclude concurrent writers. It covers TEXT tokenizer-version and
+UNIQUE violation auxiliary keys without changing ordinary `DeleteRecordsWhere`.
+No existing table is repartitioned automatically; there is no in-place conversion
+or OTEL_V1 migration.
+
 ## Record-load strategy
 
 Go implements Java 4.14.2.0's default `SplitHelper.loadWithSplit` range read,

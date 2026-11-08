@@ -43,7 +43,12 @@ func validateKeyExpressionFields(expr KeyExpression, desc protoreflect.MessageDe
 	case *EmptyKeyExpression, *RecordTypeKeyExpression, *LiteralKeyExpression, *VersionKeyExpression:
 		return nil, nil
 	case *FunctionKeyExpression:
+		if e.name == FunctionNamePartitionV1 {
+			return validatePartitionFunction(e.arguments, desc)
+		}
 		return validateKeyExpressionFields(e.arguments, desc)
+	case *PartitionFunctionKeyExpression:
+		return validatePartitionFunction(e.arguments, desc)
 	case *CardinalityFunctionKeyExpression:
 		// CardinalityFunctionKeyExpression.validate (:156-161): the argument's
 		// column size is create's check; a duplicate-producing argument is

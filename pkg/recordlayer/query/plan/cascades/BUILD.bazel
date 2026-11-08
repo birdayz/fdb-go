@@ -361,6 +361,7 @@ go_test(
         "partial_match_identity_test.go",
         "partial_match_ref_test.go",
         "partial_match_test.go",
+        "partition_key_expansion_test.go",
         "partition_rollup_totality_test.go",
         "partition_select_interning_baseline_test.go",
         "phase2_correctness_test.go",
@@ -1181,6 +1182,7 @@ go_test(
         "rule_java_bindings_test.go",
         "text_index_candidate.go",
         "text_index_candidate_test.go",
+        "partition_key_expansion_test.go",
     ],
     tags = ["resources:cpu:2"],
     deps = [

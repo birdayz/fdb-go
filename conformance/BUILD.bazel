@@ -628,6 +628,7 @@ go_test(
         "outer_join_canonical_java_probe_test.go",
         "paren_flatten_java_probe_test.go",
         "paren_star_java_probe_test.go",
+        "partition_refusal_java_probe_test.go",
         "permuted_min_null_group_java_probe_test.go",
         "pk_intersection_leg_bound_key_java_probe_test.go",
         "projected_exists_left_join_java_probe_test.go",
@@ -643,7 +644,11 @@ go_test(
         "whole_struct_comparison_java_probe_test.go",
         "window_in_where_java_probe_test.go",
     ],
-    data = [":conformance_server"],
+    data = [
+        ":conformance_server",
+        "@fdb_go_before_partitioning//cmd/fdb",
+    ],
+    env = {"PARTITION_OLD_GO_BINARY": "$(rlocationpath @fdb_go_before_partitioning//cmd/fdb:fdb)"},
     tags = [
         "conformance_java",
         "resources:cpu:3",

@@ -595,6 +595,12 @@ var longArithmeticValueFunctions = map[string]string{
 // functionKeyHasValue reports whether functionKeyToValue models the function
 // over that many argument columns.
 func functionKeyHasValue(name string, argumentCount int) error {
+	if name == "fdb_partition_v1" {
+		if argumentCount != 2 {
+			return unsupportedKeyExpansion("partition function requires two arguments")
+		}
+		return nil
+	}
 	if _, arithmetic := longArithmeticValueFunctions[name]; arithmetic {
 		if argumentCount != 2 {
 			return unsupportedKeyExpansion("%s over %d arguments has no value", name, argumentCount)
@@ -623,6 +629,21 @@ func functionKeyHasValue(name string, argumentCount int) error {
 func functionKeyToValue(name string, arguments []values.Value) (values.Value, error) {
 	if err := functionKeyHasValue(name, len(arguments)); err != nil {
 		return nil, err
+	}
+	if name == "fdb_partition_v1" {
+		literal, ok := arguments[1].(*values.ConstantValue)
+		if !ok || literal.Type().Code() != values.TypeCodeLong {
+			return nil, unsupportedKeyExpansion("partition interval must be a BIGINT literal")
+		}
+		width, ok := literal.Value.(int64)
+		if !ok {
+			return nil, unsupportedKeyExpansion("partition interval must be a BIGINT literal")
+		}
+		value, err := values.NewPartitionValue(arguments[0], width)
+		if err != nil {
+			return nil, err
+		}
+		return value, nil
 	}
 	if function, arithmetic := longArithmeticValueFunctions[name]; arithmetic {
 		for _, argument := range arguments {

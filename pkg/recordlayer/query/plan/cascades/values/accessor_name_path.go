@@ -127,6 +127,13 @@ func ColumnNamePathsEqual(a, b Value) bool {
 	if a == nil || b == nil {
 		return false
 	}
+	if ap, ok := a.(*PartitionValue); ok {
+		bp, ok := b.(*PartitionValue)
+		return ok && ap.Width == bp.Width && ColumnNamePathsEqual(ap.Source, bp.Source)
+	}
+	if _, ok := b.(*PartitionValue); ok {
+		return false
+	}
 	if ac, ok := a.(*CardinalityValue); ok {
 		bc, ok := b.(*CardinalityValue)
 		return ok && ac.Child != nil && bc.Child != nil && ColumnNamePathsEqual(ac.Child, bc.Child)

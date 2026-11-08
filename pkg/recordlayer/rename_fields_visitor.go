@@ -111,6 +111,16 @@ func renameFields(expr KeyExpression, sourceDesc, targetDesc protoreflect.Messag
 		}
 		return &GroupingKeyExpression{wholeKey: newWhole, groupedCount: e.groupedCount}, nil
 
+	case *PartitionFunctionKeyExpression:
+		newArgs, err := renameFields(e.arguments, sourceDesc, targetDesc)
+		if err != nil {
+			return nil, err
+		}
+		if newArgs == e.arguments {
+			return e, nil
+		}
+		return &PartitionFunctionKeyExpression{FunctionKeyExpression: FunctionKeyExpression{name: e.name, arguments: newArgs}}, nil
+
 	case *FunctionKeyExpression:
 		newArgs, err := renameFields(e.arguments, sourceDesc, targetDesc)
 		if err != nil {
