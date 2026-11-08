@@ -92,11 +92,13 @@ func TestFDB_IndexStatePlanning_TransitionBetweenPagesFails40001(t *testing.T) {
 }
 
 // An auto-commit statement plans and runs its first page in ONE transaction
-// (embedded/statement_read.go), as Java's auto-commit statement does: a
-// transition another transaction commits between planning and the first page
-// is after the statement's read version, so the plan and the page read one
-// snapshot and the statement answers at it. The next statement sees the
-// transition. The age bound is raised so a slow plan still shares.
+// (embedded/statement_read.go) when the page starts within the age bound,
+// raised here so a slow plan still shares: a transition another transaction
+// commits between planning and the first page is after the statement's read
+// version, so the plan and the page read one snapshot and the statement
+// answers at it. The next statement sees the transition. Java reads its whole
+// result in one transaction; Go's later pages do not (DIVERGENCES.md,
+// "Auto-commit SELECT").
 func TestFDB_IndexStatePlanning_TransitionBetweenPlanAndFirstPageReadsOneSnapshot(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -146,7 +148,8 @@ func TestFDB_IndexStatePlanning_TransitionBetweenPlanAndFirstPageReadsOneSnapsho
 // after the statement's first read than the connection's age bound allows,
 // set here to a nanosecond), it runs in a transaction of its own; a
 // transition between planning and that page must then refuse rather than run
-// the stale plan.
+// the stale plan. Java, reading at its one snapshot, answers instead
+// (DIVERGENCES.md, "Auto-commit SELECT").
 func TestFDB_IndexStatePlanning_TransitionBeforeASeparateFirstPageFails40001(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

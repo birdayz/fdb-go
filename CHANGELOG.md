@@ -83,7 +83,11 @@ below; neither publication nor readiness is asserted.
   published; later pages, and a first page starting more than 250 ms after
   the statement's first read, run in their own transactions. A retryable
   failure reruns the work in a fresh transaction. Explicit transactions are
-  unchanged.
+  unchanged. The shared transaction has one `TRANSACTION_TIMEOUT` budget for
+  the catalog read, planning and first page. Java reads the whole result in
+  one transaction; Go's pages can come from different snapshots, and an
+  index-state transition before a separate first page fails 40001
+  (DIVERGENCES.md, "Auto-commit SELECT: one transaction up to the first page").
 - `CompositeKeyExpression` evaluation with a `FanOut` child under an absent
   non-repeated parent (for example `Nest("p", Concat(Field("a"),
   FanOut("tags")))` on a record without `p`) yields no tuple, as Java 4.14.2.0

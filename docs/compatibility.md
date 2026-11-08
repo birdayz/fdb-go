@@ -257,6 +257,19 @@ returns every record completed before the stop. Java's record pipeline may drop
 or pre-empt records whose version read is still pending
 (MapPipelinedCursor.java:157-175), so Java can return fewer rows there.
 
+### Auto-commit SELECT transactions
+
+Java's auto-commit statement reads its whole result in one transaction, at one
+read version. Go's auto-commit SELECT shares one transaction for the catalog
+read, planning and the first page only when the first page starts within 250
+ms of the statement's first read; a later first page and every later page run
+in their own transactions at newer read versions. The rows of one paged SELECT
+can therefore come from different snapshots, and an index-state transition
+committed between planning and a separate first page fails the statement with
+40001 where Java answers. The shared transaction carries one
+`TRANSACTION_TIMEOUT` budget for its three steps. See [the
+boundary](../DIVERGENCES.md#auto-commit-select-one-transaction-up-to-the-first-page-not-the-whole-result).
+
 ### Index scan Skip
 
 Index cursors (VALUE, VERSION, RANK, leaderboard, PERMUTED_MIN/MAX, COUNT/SUM,

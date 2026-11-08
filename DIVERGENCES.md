@@ -1447,6 +1447,42 @@ transaction, and a statement cut off midway may have buffered part of its
 writes, so the transaction cannot continue; PostgreSQL aborts a transaction
 whose statement was cancelled for the second reason.
 
+## Auto-commit SELECT: one transaction up to the first page, not the whole result
+
+Java 4.14.2.0 runs an auto-commit statement in one transaction from its schema
+load to the close of its result set: `AbstractEmbeddedStatement.executeInternal`
+loads the schema and store, plans and executes against `conn.getTransaction()`
+(AbstractEmbeddedStatement.java:71-95), and `RecordLayerResultSet.close` commits
+that transaction (RecordLayerResultSet.java:91-98). Every row is read at one
+read version.
+
+Go's auto-commit SELECT reads the catalog, plans (the index-state store open)
+and takes its first page in one transaction only when the first page starts
+within 250 ms of the statement's first read (`statementReadMaxAge`,
+`pkg/relational/core/embedded/statement_read.go`); the first page commits it
+before its rows are published. A first page starting later, and every page
+after the first, runs in a transaction of its own at a newer read version, as
+every page did before. So:
+
+- the rows of one paged SELECT can come from different snapshots;
+- an index-state transition committed between planning and the first page is
+  not seen when the first page shares the planning transaction (the statement
+  answers at the planning snapshot), and fails the statement with 40001 when
+  the first page runs on its own, since every page revalidates the plan's
+  index-state dependency in its own transaction. Which one happens depends on
+  how long the statement took to plan. Java answers from its one snapshot.
+- the catalog read, planning and first page share one `TRANSACTION_TIMEOUT`
+  budget; each later page gets a fresh one.
+
+With a transaction per page, a result set read for longer than FDB's
+five-second transaction lifetime does not fail with transaction_too_old, as one
+transaction would. Explicit transactions are unaffected: every statement and page runs in the
+transaction, as in Java. Pinned by
+`TestFDB_IndexStatePlanning_TransitionBetweenPlanAndFirstPageReadsOneSnapshot`
+(a shared first page), `TestFDB_IndexStatePlanning_TransitionBeforeASeparateFirstPageFails40001`
+(a separate one) and `TestFDB_IndexStatePlanning_TransitionBetweenPagesFails40001`
+(a later page), in `pkg/relational/sqltest/plan/index_state_planning_fdb_test.go`.
+
 ## GROUP BY keys with bound parameters (RFC-272, unmeasured)
 
 Go compares `GROUP BY amount = ?, amount = ?` by the bound values: equal values
