@@ -61,6 +61,10 @@ const (
 func relSetCost(key, value int) int { return 3*key + value + 69 }
 func relClearCost(key int) int      { return 4*key + 70 }
 
+// relRecordClearCost is the native cost of clearing a stored record of
+// keyCount record keys, each at most rk bytes, and its version.
+func relRecordClearCost(rk, keyCount int) int { return (keyCount+1)*relClearCost(rk) + 2*(2*rk) + 68 }
+
 // relLogIndexes are the LOGS indexes in relLogIndex order.
 var relLogIndexes = [...]string{logsTraceIndex, logsTimeIndex, logsStrAttrIndex, logsLongStrIndex, logsIntAttrIndex, logsDoubleAttrIndex, logsBoolAttrIndex, logsEventIndex}
 
@@ -86,13 +90,13 @@ type relLogStore struct {
 	// recordsPrefix and index[i].prefix are the byte lengths of the store's
 	// records subspace and of each LOGS index subspace.
 	recordsPrefix int
-	index         [len(relLogIndexes)]relLogIndexSpace
+	index         [len(relLogIndexes)]relIndexSpace
 	// zlibLevel is the store serializer's deflate level when it is known,
 	// else noZlib: the serialized row is then bounded by its uncompressed size.
 	zlibLevel int
 }
 
-type relLogIndexSpace struct {
+type relIndexSpace struct {
 	idx    *recordlayer.Index
 	prefix int
 }
@@ -115,7 +119,7 @@ func newRelLogStore(store *tenantStore, cfg ExporterConfig) (*relLogStore, error
 		if idx == nil {
 			return nil, failf("ownership", op, "index %s is not in the store's metadata", name)
 		}
-		s.index[i] = relLogIndexSpace{idx, len(store.ts.Subspace.Sub(recordlayer.IndexKey, idx.SubspaceTupleKey()).Bytes())}
+		s.index[i] = relIndexSpace{idx, len(store.ts.Subspace.Sub(recordlayer.IndexKey, idx.SubspaceTupleKey()).Bytes())}
 	}
 	switch {
 	case store.ts.Serializer == nil:
@@ -292,8 +296,7 @@ func (s *relLogStore) writeCost(r *otelv1pb.LOGS, pk tuple.Tuple, rowBytes int) 
 // priorCost is the native cost of replacing the stored row old (keyCount
 // record keys): clearing its record keys, version and every index entry.
 func (s *relLogStore) priorCost(old *otelv1pb.LOGS, pk tuple.Tuple, keyCount int) (int, error) {
-	rk := s.recordKeyBytes(pk)
-	cost := (keyCount+1)*relClearCost(rk) + 2*(2*rk) + 68
+	cost := relRecordClearCost(s.recordKeyBytes(pk), keyCount)
 	_, err := s.indexKeys(old, pk, func(key int) { cost += relClearCost(key) })
 	return cost, err
 }

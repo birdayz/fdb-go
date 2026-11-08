@@ -113,7 +113,7 @@ func newExporter(ctx context.Context, cfg ExporterConfig, parts relParts) (*Expo
 	e := &Exporter{
 		cfg: cfg, raw: raw, store: store,
 		reader:   &SpanReader{store: store, cfg: cfg.backendConfig(), keys: storeMetaContinuationKeys{}},
-		writer:   &SpanWriter{store: store, opts: SpanWriterOptions{BatchSize: cfg.BatchSize, Workers: cfg.Workers, BulkIndexConflicts: cfg.BulkIndexConflicts}, maxTxnBytes: maxSpanTxnBytes},
+		writer:   newSpanWriter(store, SpanWriterOptions{BatchSize: cfg.BatchSize, Workers: cfg.Workers, BulkIndexConflicts: cfg.BulkIndexConflicts}),
 		txnSlots: make(chan struct{}, cfg.MaxInFlightTransactions),
 		done:     make(chan struct{}),
 	}

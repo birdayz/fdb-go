@@ -138,8 +138,10 @@ Exporter transaction policy. The other direct saves use `SaveRecord` (`serial`),
 `SaveRecordBatch` (`batch` with dynamic rows), with ordinary old/new index
 maintenance. Each transaction holds at most `--batch` spans (default 32, max 64)
 of one tenant within a conservative 300-KB estimate that counts each span's
-whole serialized row and its index entries, so an admitted batch fits the 500-KB
-guard; `--workers` (default 1,
+whole serialized row and its index entries, so a batch of new spans fits the
+500-KB guard; a batch whose replaced spans' index clears would pass it commits
+in smaller transactions that fit the estimate with those clears, and a span
+whose replacement fits none fails as admission; `--workers` (default 1,
 range 1..8) bounds concurrent batch transactions, and the first failure cancels
 the rest. A run's database must not exist at ingest.
 
