@@ -22,6 +22,8 @@ local diagnostic evidence, not a multi-host or production measurement.
 **Measured trees.** The gates name their trees by these archive tags. The
 trees come from the stack before it was rebased onto the change's merge-base,
 so none of them is in the merged history; the tags keep them resolvable.
+Rounds 1 to 3 predate the tags and recorded no tree; they are history, not
+reproducible receipts.
 
 | tag | commit | measured as |
 |---|---|---|
@@ -69,7 +71,7 @@ against the bench's independent oracle; all runs below report 0 failures.
 
 | Backend | Storage | Queries |
 |---|---|---|
-| `fdb` (current) | one Record Layer store per run, `typed_scoped_eq_v2` custom covering posting index, `span_id_v2`, `span_time_v2` | custom index scanner, one transaction |
+| `fdb` (the custom store, archived at `archive/otel-relational/custom-store`) | one Record Layer store per run, `typed_scoped_eq_v2` custom covering posting index, `span_id_v2`, `span_time_v2` | custom index scanner, one transaction |
 | `sql --sql-query sql` | one OTEL_V1 tenant schema per tenant (`layers/otel/otelsql`); records written directly with Record Layer `SaveRecordBatch` (`--sql-ingest direct`) | SQL through `database/sql` |
 | `sql --sql-query direct` | the same stores | Record Layer scans of the same OTEL_V1 indexes the SQL plans use, one transaction |
 
