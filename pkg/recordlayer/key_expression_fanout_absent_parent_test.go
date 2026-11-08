@@ -255,66 +255,7 @@ func TestCountIndexesOverFanOutCountEveryEntry(t *testing.T) {
 		NewCountIndex("Rec$count_all_ps", GroupAll(NestFanOut("ps", EmptyKey()))),
 		NewSumIndex("Rec$sum_ps", Ungrouped(NestFanOut("ps", Field("n")))),
 	}
-	builder := NewRecordMetaDataBuilder().SetRecords(fd)
-	builder.GetRecordType("Rec").SetPrimaryKey(Field("id"))
-	for _, idx := range indexes {
-		builder.AddIndex("Rec", idx)
-	}
-	md, err := builder.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
-	env := dst.NewSim(1036)
-	env.Buggify = dst.DisabledBuggifier()
-	db := NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env)
-	sub := subspace.FromBytes(tuple.Tuple{"absent_parent_fanout_count"}.Pack())
-
-	// run runs fn on the store and returns every index's counts by key.
-	run := func(t *testing.T, what string, fn func(store *FDBRecordStore) error) map[string]map[string]int64 {
-		t.Helper()
-		got := map[string]map[string]int64{}
-		if _, err := db.Run(ctx, func(rctx *FDBRecordContext) (any, error) {
-			clear(got)
-			store, err := NewStoreBuilder().SetContext(rctx).SetMetaDataProvider(md).SetSubspace(sub).CreateOrOpen()
-			if err != nil {
-				return nil, err
-			}
-			if err := fn(store); err != nil {
-				return nil, err
-			}
-			for _, idx := range indexes {
-				// From the bare prefix: the key of group (), which a range
-				// over the subspace's tuples does not hold.
-				_, end := store.IndexSubspace(idx).FDBRangeKeys()
-				begin := fdb.Key(store.IndexSubspace(idx).Bytes())
-				kvs, err := rctx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
-				if err != nil {
-					return nil, err
-				}
-				counts := map[string]int64{}
-				for _, kv := range kvs {
-					key, err := store.IndexSubspace(idx).Unpack(kv.Key)
-					if err != nil {
-						return nil, err
-					}
-					counts[key.String()] = int64(binary.LittleEndian.Uint64(kv.Value))
-				}
-				got[idx.Name] = counts
-			}
-			return nil, nil
-		}); err != nil {
-			t.Fatalf("%s: %v", what, err)
-		}
-		return got
-	}
-	check := func(t *testing.T, what string, got, want map[string]map[string]int64) {
-		t.Helper()
-		for _, idx := range indexes {
-			if !reflect.DeepEqual(got[idx.Name], want[idx.Name]) {
-				t.Errorf("%s: %s counts %v, want %v", what, idx.Name, got[idx.Name], want[idx.Name])
-			}
-		}
-	}
+	h := newIndexStateHarness(t, fd, 1036, "absent_parent_fanout_count", indexes...)
 
 	// Entries: 1 has ps (z); 2 has none; 3 has p's (x, t0) and (x, t1) and
 	// ps (x), (x), (y). Four ps entries over three records, two p entries;
@@ -331,7 +272,7 @@ func TestCountIndexesOverFanOutCountEveryEntry(t *testing.T) {
 		"Rec$count_all_ps":    {`()`: 4},
 		"Rec$sum_ps":          {`()`: 70},
 	}
-	check(t, "after insert", run(t, "insert", func(store *FDBRecordStore) error {
+	h.check(t, "after insert", h.run(t, "insert", func(store *FDBRecordStore) error {
 		for _, rec := range records {
 			if _, err := store.SaveRecord(rec); err != nil {
 				return err
@@ -340,7 +281,7 @@ func TestCountIndexesOverFanOutCountEveryEntry(t *testing.T) {
 		return nil
 	}), inserted)
 
-	run(t, "clear", func(store *FDBRecordStore) error {
+	h.run(t, "clear", func(store *FDBRecordStore) error {
 		for _, idx := range indexes {
 			if _, err := store.ClearAndMarkIndexWriteOnly(idx.Name); err != nil {
 				return err
@@ -349,7 +290,7 @@ func TestCountIndexesOverFanOutCountEveryEntry(t *testing.T) {
 		return nil
 	})
 	for _, idx := range indexes {
-		indexer, err := NewOnlineIndexerBuilder().SetDatabase(db).SetMetaData(md).SetIndex(idx).SetSubspace(sub).Build()
+		indexer, err := NewOnlineIndexerBuilder().SetDatabase(h.db).SetMetaData(h.md).SetIndex(idx).SetSubspace(h.sub).Build()
 		if err != nil {
 			t.Fatalf("online indexer for %s: %v", idx.Name, err)
 		}
@@ -357,9 +298,9 @@ func TestCountIndexesOverFanOutCountEveryEntry(t *testing.T) {
 			t.Fatalf("rebuild %s: %v", idx.Name, err)
 		}
 	}
-	check(t, "after an online rebuild", run(t, "read", func(*FDBRecordStore) error { return nil }), inserted)
+	h.check(t, "after an online rebuild", h.run(t, "read", func(*FDBRecordStore) error { return nil }), inserted)
 
-	check(t, "after delete", run(t, "delete", func(store *FDBRecordStore) error {
+	h.check(t, "after delete", h.run(t, "delete", func(store *FDBRecordStore) error {
 		for id := int64(1); id <= 3; id++ {
 			if _, err := store.DeleteRecord(tuple.Tuple{id}); err != nil {
 				return err
@@ -373,4 +314,156 @@ func TestCountIndexesOverFanOutCountEveryEntry(t *testing.T) {
 		"Rec$count_all_ps":    {`()`: 0},
 		"Rec$sum_ps":          {`()`: 0},
 	})
+}
+
+// indexStateHarness is a SimFDB store of Recs with indexes whose contents a
+// test reads after each transaction.
+type indexStateHarness struct {
+	db      *FDBDatabase
+	md      *RecordMetaData
+	sub     subspace.Subspace
+	indexes []*Index
+}
+
+func newIndexStateHarness(t *testing.T, fd protoreflect.FileDescriptor, seed uint64, name string, indexes ...*Index) *indexStateHarness {
+	t.Helper()
+	builder := NewRecordMetaDataBuilder().SetRecords(fd)
+	builder.GetRecordType("Rec").SetPrimaryKey(Field("id"))
+	for _, idx := range indexes {
+		builder.AddIndex("Rec", idx)
+	}
+	md, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := dst.NewSim(seed)
+	env.Buggify = dst.DisabledBuggifier()
+	return &indexStateHarness{
+		db:      NewFDBDatabaseWithBackend(simfdb.New(env)).SetEnv(env),
+		md:      md,
+		sub:     subspace.FromBytes(tuple.Tuple{name}.Pack()),
+		indexes: indexes,
+	}
+}
+
+// run runs fn on the store in one transaction and returns every index's
+// contents by key: an atomic index's value, and 1 for a VALUE index's entry.
+func (h *indexStateHarness) run(t *testing.T, what string, fn func(store *FDBRecordStore) error) map[string]map[string]int64 {
+	t.Helper()
+	got := map[string]map[string]int64{}
+	if _, err := h.db.Run(context.Background(), func(rctx *FDBRecordContext) (any, error) {
+		clear(got)
+		store, err := NewStoreBuilder().SetContext(rctx).SetMetaDataProvider(h.md).SetSubspace(h.sub).CreateOrOpen()
+		if err != nil {
+			return nil, err
+		}
+		if err := fn(store); err != nil {
+			return nil, err
+		}
+		for _, idx := range h.indexes {
+			// From the bare prefix: the key of group (), which a range
+			// over the subspace's tuples does not hold.
+			_, end := store.IndexSubspace(idx).FDBRangeKeys()
+			begin := fdb.Key(store.IndexSubspace(idx).Bytes())
+			kvs, err := rctx.Transaction().GetRange(fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
+			if err != nil {
+				return nil, err
+			}
+			contents := map[string]int64{}
+			for _, kv := range kvs {
+				key, err := store.IndexSubspace(idx).Unpack(kv.Key)
+				if err != nil {
+					return nil, err
+				}
+				contents[key.String()] = 1
+				if idx.Type != IndexTypeValue {
+					contents[key.String()] = int64(binary.LittleEndian.Uint64(kv.Value))
+				}
+			}
+			got[idx.Name] = contents
+		}
+		return nil, nil
+	}); err != nil {
+		t.Fatalf("%s: %v", what, err)
+	}
+	return got
+}
+
+func (h *indexStateHarness) check(t *testing.T, what string, got, want map[string]map[string]int64) {
+	t.Helper()
+	for _, idx := range h.indexes {
+		if !reflect.DeepEqual(got[idx.Name], want[idx.Name]) {
+			t.Errorf("%s: %s %v, want %v", what, idx.Name, got[idx.Name], want[idx.Name])
+		}
+	}
+}
+
+// psRec is a Rec whose ps holds one P per (a, n) pair.
+func psRec(fd protoreflect.FileDescriptor, id int64, elems ...any) *dynamicpb.Message {
+	recD, pD := fd.Messages().ByName("Rec"), fd.Messages().ByName("P")
+	m := dynamicpb.NewMessage(recD)
+	m.Set(recD.Fields().ByName("id"), protoreflect.ValueOfInt64(id))
+	list := m.Mutable(recD.Fields().ByName("ps")).List()
+	for i := 0; i < len(elems); i += 2 {
+		p := dynamicpb.NewMessage(pD)
+		p.Set(pD.Fields().ByName("a"), protoreflect.ValueOfString(elems[i].(string)))
+		p.Set(pD.Fields().ByName("n"), protoreflect.ValueOfInt64(elems[i+1].(int64)))
+		list.Append(protoreflect.ValueOfMessage(p))
+	}
+	return m
+}
+
+// An update skips every index entry the old and new record share, all of its
+// occurrences, as Java's StandardIndexMaintainer.update does
+// (StandardIndexMaintainer.java:219-227): commonKeys (:390-399) holds each old
+// entry the new list contains, and List.removeAll drops every occurrence from
+// both lists, comparing whole entries (IndexEntry.java:256-271). Atomic
+// indexes skip them too, but for COUNT_UPDATES
+// (AtomicMutationIndexMaintainer.java:235-237). So a value repeated in a
+// fan-out is maintained once whatever its multiplicity: ps.n [10] to [10, 10]
+// and back leaves the SUM at 10, not 20 then 10, and COUNT ends at -1 for x:
+// both x entries are removed though they were counted once. COUNT_NOT_NULL
+// compares its counted value, not only its group; a VALUE entry shared by
+// both records stays.
+func TestIndexUpdateSkipsEveryCommonEntry(t *testing.T) {
+	t.Parallel()
+	fd := absentParentFanOutFile(t)
+	h := newIndexStateHarness(t, fd, 1037, "fanout_update_common_entries",
+		NewSumIndex("Rec$sum_n", Ungrouped(NestFanOut("ps", Field("n")))),
+		NewCountIndex("Rec$count_a", GroupAll(NestFanOut("ps", Field("a")))),
+		NewCountNotNullIndex("Rec$count_not_null_n", Ungrouped(NestFanOut("ps", Field("n")))),
+		NewCountUpdatesIndex("Rec$count_updates_a", GroupAll(NestFanOut("ps", Field("a")))),
+		NewIndex("Rec$value_a", NestFanOut("ps", Field("a"))),
+	)
+	for _, step := range []struct {
+		what string
+		rec  *dynamicpb.Message
+		want map[string]map[string]int64
+	}{
+		{"save ps [(x, 10)]", psRec(fd, 1, "x", int64(10)), map[string]map[string]int64{
+			"Rec$sum_n": {`()`: 10}, "Rec$count_a": {`("x")`: 1}, "Rec$count_not_null_n": {`()`: 1},
+			"Rec$count_updates_a": {`("x")`: 1}, "Rec$value_a": {`("x", 1)`: 1},
+		}},
+		{"update to [(x, 10), (x, 10)]", psRec(fd, 1, "x", int64(10), "x", int64(10)), map[string]map[string]int64{
+			"Rec$sum_n": {`()`: 10}, "Rec$count_a": {`("x")`: 1}, "Rec$count_not_null_n": {`()`: 1},
+			"Rec$count_updates_a": {`("x")`: 3}, "Rec$value_a": {`("x", 1)`: 1},
+		}},
+		{"update back to [(x, 10)]", psRec(fd, 1, "x", int64(10)), map[string]map[string]int64{
+			"Rec$sum_n": {`()`: 10}, "Rec$count_a": {`("x")`: 1}, "Rec$count_not_null_n": {`()`: 1},
+			"Rec$count_updates_a": {`("x")`: 4}, "Rec$value_a": {`("x", 1)`: 1},
+		}},
+		{"update to [(x, 10), (x, 20)]", psRec(fd, 1, "x", int64(10), "x", int64(20)), map[string]map[string]int64{
+			"Rec$sum_n": {`()`: 30}, "Rec$count_a": {`("x")`: 1}, "Rec$count_not_null_n": {`()`: 2},
+			"Rec$count_updates_a": {`("x")`: 6}, "Rec$value_a": {`("x", 1)`: 1},
+		}},
+		{"update to [(y, 20)]", psRec(fd, 1, "y", int64(20)), map[string]map[string]int64{
+			"Rec$sum_n": {`()`: 20}, "Rec$count_a": {`("x")`: -1, `("y")`: 1}, "Rec$count_not_null_n": {`()`: 1},
+			"Rec$count_updates_a": {`("x")`: 6, `("y")`: 1}, "Rec$value_a": {`("y", 1)`: 1},
+		}},
+	} {
+		h.check(t, step.what, h.run(t, step.what, func(store *FDBRecordStore) error {
+			_, err := store.SaveRecord(step.rec)
+			return err
+		}), step.want)
+	}
 }

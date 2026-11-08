@@ -194,8 +194,9 @@ func updateWhileWriteOnlyNonIdempotent(
 	return updateFunc(oldRecord, newRecord)
 }
 
-// evaluateGroupingKeysNotNull extracts the grouping key tuple(s) from a record,
-// filtering out any tuples where the GROUPED (trailing) columns contain a
+// evaluateGroupingKeysNotNull extracts the counted entries' whole keys from a
+// record, its first groupingCount columns being an entry's group, filtering
+// out any tuples where the GROUPED (trailing) columns contain a
 // NullStandin.NULL.
 // Used by COUNT_NOT_NULL maintainer.
 //
@@ -249,11 +250,13 @@ func evaluateGroupingKeysNotNull(store IndexStoreContext, index *Index, record *
 			continue
 		}
 
-		groupKey := make(tuple.Tuple, groupingCount)
-		for j := 0; j < groupingCount && j < len(values); j++ {
-			groupKey[j] = values[j]
+		key := make(tuple.Tuple, max(groupingCount, min(len(values), totalColumns)))
+		for j := range key {
+			if j < len(values) {
+				key[j] = values[j]
+			}
 		}
-		result = append(result, groupKey)
+		result = append(result, key)
 	}
 	return result, nil
 }

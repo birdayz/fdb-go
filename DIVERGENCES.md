@@ -4910,24 +4910,47 @@ type. Under an absent singular parent that gave Java-incompatible results:
   message, which is an empty list for FanOut (:229-232).
   ThenKeyExpression.java:90-98 crosses the children, so the product is empty,
   and AtomicMutationIndexMaintainer.java:125-147 mutates once per entry.
-- A `Concatenate` child under the NOT_NULL standin yielded null where Java's
-  getNullResult yields the empty list, which packs as an empty nested tuple.
+- A `Concatenate` child under the NOT_NULL standin, such as
+  `Nest("p", Concat(Field("a"), FieldWithNullStandin("tags", FanTypeConcatenate,
+  NullStandinNotNull)))` on a record without `p`, yielded null where Java's
+  getNullResult yields the empty list, which packs as an empty nested tuple:
+  earlier Go wrote `(null, null, pk)` where Java writes `(null, (), pk)`.
 
 Separately, an atomic index whose grouping key is a fan-out nesting, such as
 `GroupAll(NestFanOut("ps", Field("a")))`, read only a record's first element:
 COUNT and COUNT_UPDATES counted a record with several elements once, under the
 first element's group, and one with an empty list at `()` when saved but at
-`(null)` when deleted; SUM added only the first element's value. Java mutates once per entry. Go now matches Java in
-all of these cases.
+`(null)` when deleted; SUM added only the first element's value. Java mutates
+once per entry.
 
-There is no automatic migration. When Go updates or deletes such a record, it
-evaluates the old record as Java does, so what an earlier build wrote is never
-corrected: a stale VALUE entry stays visible to Go and Java index scans, and a
-count stays off by what the earlier build added. After upgrading, rebuild every
-index whose expression nests such a composite under a singular message field,
-and every atomic index grouped by a fan-out nesting. Pinned by
-`pkg/recordlayer/key_expression_fanout_absent_parent_test.go` (evaluation;
-VALUE, COUNT, COUNT_UPDATES and SUM maintenance; an online rebuild).
+An update also skipped shared entries differently. Java's
+StandardIndexMaintainer.update (StandardIndexMaintainer.java:219-227) collects
+every old entry the new list contains (commonKeys, :390-399) and removes every
+occurrence of each from both lists with List.removeAll, comparing whole entries
+(IndexEntry.java:256-271). Atomic indexes do the same except COUNT_UPDATES
+(AtomicMutationIndexMaintainer.java:235-237). Earlier Go cancelled SUM entries
+one for one, so updating ps.n from [10] to [10, 10] added 10 where Java adds
+nothing, and compared COUNT_NOT_NULL entries by their group alone, so a counted
+value that changed within a group was skipped. Java's rule leaves a count that
+is not the arithmetic count of the record's current entries (the SUM stays 10
+above); Go reproduces it. VALUE and the other standard index types already
+matched.
+
+Go now matches Java in all of these cases. There is no automatic migration.
+When Go updates or deletes such a record, it evaluates the old record as Java
+does, so what an earlier build wrote is never corrected: a stale VALUE entry
+stays visible to Go and Java index scans, and a count or sum stays off by what
+the earlier build added. After upgrading, rebuild:
+
+- every index whose expression nests, under a singular message field, a
+  composite holding a `FanOut` child or a NOT_NULL `Concatenate` field;
+- every atomic index grouped by a fan-out nesting;
+- every SUM or COUNT_NOT_NULL index over a fan-out that earlier Go updated.
+
+Pinned by `pkg/recordlayer/key_expression_fanout_absent_parent_test.go`:
+evaluation; VALUE, COUNT, COUNT_UPDATES and SUM through insert, an online
+rebuild and delete; and updates of VALUE, COUNT, COUNT_UPDATES,
+COUNT_NOT_NULL and SUM over a fan-out with repeated values.
 
 ## Native FDB client read hedging
 

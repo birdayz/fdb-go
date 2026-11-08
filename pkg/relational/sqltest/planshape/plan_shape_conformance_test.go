@@ -2171,7 +2171,7 @@ func TestFDB_AggregateIndex_UpdateAggColumn(t *testing.T) {
 
 	t.Run("noop_update_preserves_sum", func(t *testing.T) {
 		// No-op UPDATE (same value): SUM should remain unchanged.
-		// Tests removeCommonAtomicByKeyAndValue skipping common entries.
+		// Tests removeCommonAtomicEntries skipping common entries.
 		if _, err := db.ExecContext(ctx, "UPDATE accounts SET balance = 200 WHERE id = 2"); err != nil {
 			t.Fatalf("UPDATE: %v", err)
 		}
