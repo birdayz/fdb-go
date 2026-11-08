@@ -2253,10 +2253,11 @@ func materializeDriverValue(v any) any {
 	}
 }
 
-// fetchPage opens a fresh FDB transaction, creates the cursor hierarchy
-// (or recreates it from the continuation), drains the cursor until it
-// stops, and buffers the results. Everything happens INSIDE DB.Run so
-// FDB reads are against a live transaction.
+// fetchPage runs one page in a live transaction (the explicit one, an
+// auto-commit statement's shared first transaction for its first page, or a
+// fresh DB.Run one: runPage), creates the cursor hierarchy (or recreates it
+// from the continuation), drains the cursor until it stops, and buffers the
+// results.
 //
 // This matches Java's architecture: each transaction creates a fresh
 // cursor hierarchy from the plan + continuation. The continuation
@@ -2277,8 +2278,9 @@ func (r *paginatingRows) fetchPage() error {
 	// The page's OUTCOME is staged in locals and published to r only after the
 	// page's transaction has succeeded.
 	//
-	// In auto-commit the closure below is the body of a DB.Run retry loop, so it
-	// may run more than once, and it RESUMES FROM r.continuation while clearing
+	// In auto-commit the closure below may run more than once (the body of a
+	// DB.Run retry loop, or a first page rerun in DB.Run after its shared
+	// transaction failed), and it RESUMES FROM r.continuation while clearing
 	// r.buf at its top. Any position it writes to r before its transaction
 	// commits is therefore position a re-execution inherits — and a re-execution
 	// that inherits an already-advanced continuation resumes PAST the rows the

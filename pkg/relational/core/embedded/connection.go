@@ -610,22 +610,26 @@ func (tx *embeddedTx) Rollback() (err error) {
 	return nil
 }
 
-// runInTx executes fn either inside the open explicit transaction (if one
-// exists) or inside a new auto-commit transaction via fdbDB.Run.
+// runInTx executes fn inside the open explicit transaction (if one exists),
+// as runInCapturedTx does with no explicit transaction otherwise.
 // In explicit-transaction mode, fn errors propagate without retry.
 func (c *EmbeddedConnection) runInTx(ctx context.Context, fn func(*recordlayer.FDBRecordContext) (any, error)) (any, error) {
 	return c.runInCapturedTx(ctx, c.activeTx, c.Options(), fn)
 }
 
-// runInCapturedTx executes fn inside tx when one was captured, or inside a new
-// auto-commit transaction via fdbDB.Run when tx is nil (auto-commit is the
-// intended mode — no transaction was ever open). A captured transaction that
-// has since ended is an ERROR (25F01), never a silent fallback to a fresh
-// transaction: the caller captured the transaction precisely because its reads
-// belong to it, and resuming them at a different read version would splice one
-// logical result set across two snapshots with no error (RFC-198 Decision 3).
-// One policy for every route — the paginating SELECT/DML page loop and the
-// system-table reads all come through here.
+// runInCapturedTx executes fn inside tx when one was captured. When tx is nil
+// (auto-commit: no transaction was ever open), fn joins the armed auto-commit
+// statement's shared transaction (statement_read.go) when it has one, and is
+// not committed here: the statement's first page or its end commits it.
+// Otherwise fn runs in a new auto-commit transaction via fdbDB.Run. A captured
+// transaction that has since ended is an ERROR (25F01), never a silent
+// fallback to a fresh transaction: the caller captured the transaction
+// precisely because its reads belong to it, and resuming them at a different
+// read version would splice one logical result set across two snapshots with
+// no error (RFC-198 Decision 3). One policy for every route — the
+// paginating SELECT/DML page loop and the system-table reads come through
+// here; an auto-commit statement's first page tries its shared transaction
+// first (runPage, runFirstPage).
 //
 // In explicit-transaction mode fn errors propagate WITHOUT retry: a retry
 // would have to re-run the whole transaction, and the driver does not hold the
@@ -972,7 +976,8 @@ func (c *EmbeddedConnection) ensureMetaData(ctx context.Context) error {
 	}
 	// runInTx, not DB.Run: with an explicit transaction open the catalog read
 	// must join it (RFC-198 Decision 8b — this is enumeration site (c)); in
-	// auto-commit it is the same fresh transaction as before.
+	// auto-commit it joins the statement's shared transaction when one is
+	// armed (statement_read.go), else a fresh one.
 	_, err := c.runInTx(ctx, func(rctx *recordlayer.FDBRecordContext) (any, error) {
 		txn := catalog.NewFDBTransaction(rctx)
 		_, loadErr := c.cachedLoadSchema(ctx, txn, c.sess.DBPath, c.sess.Schema)
