@@ -109,7 +109,7 @@ func (r *SpanReader) Query(ctx context.Context, a Attribute) (QueryResult, error
 		return QueryResult{Hits: []Hit{}}, err
 	}
 	q, ok := spanAttrQuery(a)
-	if !ok || len(a.Key) > otelsql.MaxIndexedStringBytes {
+	if !ok || len(a.Key) > otelsql.MaxAttributeKeyBytes {
 		return QueryResult{Hits: []Hit{}}, nil
 	}
 	rng := recordlayer.TupleRangeAllOf(tuple.Tuple{a.Scope, a.Key, q.value})

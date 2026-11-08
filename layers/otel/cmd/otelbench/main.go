@@ -256,26 +256,35 @@ func executeContext(parent context.Context, args []string, stdout, stderr io.Wri
 
 // collectorBenchConfig applies the shared flags that were set explicitly;
 // unset ones keep the collector-bench defaults, which differ from ingest's.
-// ClickHouse's order has no Exporter setting (D2).
+// The shared flags it has no setting for are refused: ClickHouse's order
+// (D2), and the corpus, query, backend and drop flags. So is an explicit
+// zero, which the defaults would replace; bench.Validate bounds the rest.
 func collectorBenchConfig(flags *flag.FlagSet, bench collector.CollectorBenchConfig, c otel.Config, cluster, revision string) (collector.CollectorBenchConfig, error) {
 	bench.ClusterFile, bench.Run, bench.Revision = cluster, c.Run, revision
 	var err error
 	flags.Visit(func(f *flag.Flag) {
+		zero := false
 		switch f.Name {
 		case "seed":
-			bench.Seed = c.Seed
+			bench.Seed, zero = c.Seed, c.Seed == 0
 		case "tenant":
 			bench.Tenant = c.Tenant
 		case "record-compression":
-			bench.RecordCompression = c.RecordCompression
+			bench.RecordCompression, zero = c.RecordCompression, c.RecordCompression == ""
 		case "order":
 			err = fmt.Errorf("--order applies to the ClickHouse backends only; the Exporter has one time order")
+		case "count", "tenants", "attrs", "match-every", "save-mode", "bulk-index-conflicts", "k", "max-candidates", "max-bytes", "suite",
+			"ch-url", "ch-batch", "ch-batch-bytes", "ch-index-granularity", "ch-query-transport", "ch-native-addr", "confirm-drop":
+			err = fmt.Errorf("--%s does not apply to collector-bench, which drives otel.Exporter", f.Name)
 		case "iterations":
-			bench.QueryIterations = c.Iterations
+			bench.QueryIterations, zero = c.Iterations, c.Iterations == 0
 		case "batch":
-			bench.ExporterBatchSize = c.Batch
+			bench.ExporterBatchSize, zero = c.Batch, c.Batch == 0
 		case "workers":
-			bench.ExporterWorkers = c.Workers
+			bench.ExporterWorkers, zero = c.Workers, c.Workers == 0
+		}
+		if zero {
+			err = fmt.Errorf("--%s=%s would run with collector-bench's default", f.Name, f.Value)
 		}
 	})
 	return bench, err

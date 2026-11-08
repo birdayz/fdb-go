@@ -174,6 +174,18 @@ func TestRelContinuationRejections(t *testing.T) {
 	}
 }
 
+// TestRelQueryOverCapKey: a key over otelsql.MaxAttributeKeyBytes is never
+// indexed, so SpanReader.Query answers it without the store (this reader
+// has none); testRelAdmissionCaps finds a key at the cap on FDB.
+func TestRelQueryOverCapKey(t *testing.T) {
+	t.Parallel()
+	r := &SpanReader{cfg: Config{K: 100}}
+	got, err := r.Query(t.Context(), Attribute{"span", strings.Repeat("k", otelsql.MaxAttributeKeyBytes+1), "string", "v"})
+	if err != nil || got.Hits == nil || len(got.Hits) != 0 {
+		t.Fatalf("over-cap key: %+v (%v)", got, err)
+	}
+}
+
 // D1: double and bool are typed predicates now, so the formerly rejected bool
 // type is valid; bytes and JSON stay unqueryable, and typed values must be
 // canonical.

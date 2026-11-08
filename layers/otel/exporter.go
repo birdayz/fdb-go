@@ -22,11 +22,10 @@ import (
 )
 
 const (
-	// exporterSeed and exporterCount only satisfy Config.Validate in
+	// exporterCount only bounds Tenants for Config.Validate in
 	// backendConfig; exporterTenants bounds an ExporterConfig's tenant.
-	exporterSeed    uint64 = 0x6f746c706c697665
-	exporterCount          = 100000000
-	exporterTenants        = exporterCount / 2
+	exporterCount   = 100000000
+	exporterTenants = exporterCount / 2
 
 	// exportSpanBudget bounds a span batch's conservative estimate (spanCost)
 	// and so every admitted span; the 500KB actual-size guard runs inside the save.
@@ -220,7 +219,7 @@ func (c ExporterConfig) Validate() error {
 // run, tenant, K, budgets and message layout. The store has one time order
 // (D2); the remaining fields only satisfy Config.Validate.
 func (c ExporterConfig) backendConfig() Config {
-	return Config{Run: c.Run, Backend: "sql", Seed: exporterSeed, Count: exporterCount, Tenants: exporterTenants, Attributes: 4, MatchEvery: 1, Batch: c.BatchSize, SaveMode: "batch", RecordCompression: c.RecordCompression, BulkIndexConflicts: c.BulkIndexConflicts, Workers: 1, CHBatch: 8192, CHBatchBytes: 8 << 20, CHIndexGranularity: 8192, CHQueryTransport: "http", Tenant: c.Tenant, K: c.K, Iterations: 1, MaxCandidates: c.MaxCandidates, MaxBytes: c.MaxBytes, Order: "time", Messages: c.messageLayout()}
+	return Config{Run: c.Run, Backend: "sql", Count: exporterCount, Tenants: exporterTenants, Attributes: 4, MatchEvery: 1, Batch: c.BatchSize, SaveMode: "batch", RecordCompression: c.RecordCompression, BulkIndexConflicts: c.BulkIndexConflicts, Workers: 1, CHBatch: 8192, CHBatchBytes: 8 << 20, CHIndexGranularity: 8192, CHQueryTransport: "http", Tenant: c.Tenant, K: c.K, Iterations: 1, MaxCandidates: c.MaxCandidates, MaxBytes: c.MaxBytes, Order: "time", Messages: c.messageLayout()}
 }
 
 // messageLayout is the stored message layout the flags select.

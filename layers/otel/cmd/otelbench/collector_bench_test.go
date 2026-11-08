@@ -210,6 +210,50 @@ func TestExecuteCollectorBenchRejections(t *testing.T) {
 	if code := execute(collectorBenchArgs("-order=trace"), &stdout, &stderr, nil); code != 2 || !strings.Contains(stderr.String(), "--order applies to the ClickHouse backends only") {
 		t.Fatalf("layout flag: exit=%d stderr=%q", code, &stderr)
 	}
+	// The shared flags collector-bench has no setting for are refused, and
+	// so is an explicit zero its defaults would replace; its Validate bounds
+	// the flags it reads.
+	for _, tc := range []struct{ arg, want string }{
+		{"-count=100", "--count does not apply to collector-bench"},
+		{"-tenants=2", "--tenants does not apply to collector-bench"},
+		{"-attrs=8", "--attrs does not apply to collector-bench"},
+		{"-match-every=10", "--match-every does not apply to collector-bench"},
+		{"-save-mode=batch", "--save-mode does not apply to collector-bench"},
+		{"-bulk-index-conflicts=false", "--bulk-index-conflicts does not apply to collector-bench"},
+		{"-k=10", "--k does not apply to collector-bench"},
+		{"-max-candidates=100", "--max-candidates does not apply to collector-bench"},
+		{"-max-bytes=1000", "--max-bytes does not apply to collector-bench"},
+		{"-suite=trace", "--suite does not apply to collector-bench"},
+		{"-ch-url=http://127.0.0.1:8123", "--ch-url does not apply to collector-bench"},
+		{"-ch-batch=100", "--ch-batch does not apply to collector-bench"},
+		{"-ch-batch-bytes=1000", "--ch-batch-bytes does not apply to collector-bench"},
+		{"-ch-index-granularity=100", "--ch-index-granularity does not apply to collector-bench"},
+		{"-ch-query-transport=native", "--ch-query-transport does not apply to collector-bench"},
+		{"-ch-native-addr=127.0.0.1:9000", "--ch-native-addr does not apply to collector-bench"},
+		{"-confirm-drop", "--confirm-drop does not apply to collector-bench"},
+		{"-seed=0", "--seed=0 would run with collector-bench's default"},
+		{"-record-compression=", "--record-compression= would run with collector-bench's default"},
+		{"-iterations=0", "--iterations=0 would run with collector-bench's default"},
+		{"-batch=0", "--batch=0 would run with collector-bench's default"},
+		{"-workers=0", "--workers=0 would run with collector-bench's default"},
+		{"-iterations=-1", "query_iterations must be 1..1000000"},
+		{"-iterations=1000001", "query_iterations must be 1..1000000"},
+		{"-batch=-1", "batch_size must be 1..64"},
+		{"-batch=65", "batch_size must be 1..64"},
+		{"-workers=-1", "workers must be 1..16"},
+		{"-workers=17", "workers must be 1..16"},
+		{"-tenant=-1", "tenant must be 0..49999999"},
+		{"-tenant=50000000", "tenant must be 0..49999999"},
+	} {
+		stdout.Reset()
+		stderr.Reset()
+		if code := execute(collectorBenchArgs(tc.arg), &stdout, &stderr, nil); code != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), tc.want) {
+			t.Errorf("%s: exit=%d stderr=%q, want %q", tc.arg, code, &stderr, tc.want)
+		}
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("refused flags reached the runner: %+v", *calls)
+	}
 }
 
 // collector-bench drives otel.Exporter, so it takes no backend.
