@@ -19,9 +19,10 @@ Wall time on this server swung by 5x between identical runs for both backends
 CPU (user+sys of the bench process), which was stable to about 5%. This is
 local diagnostic evidence, not a multi-host or production measurement.
 
-**Measured trees.** The gates name their trees by these archive tags. The
-trees come from the stack before it was rebased onto the change's merge-base,
-so none of them is in the merged history; the tags keep them resolvable.
+**Measured trees.** The gates name their trees by these archive tags. Most
+trees come from the stack before it was rebased onto the change's merge-base;
+`g3-head` and `g2b-head` are the change's own commits. None of them but the
+merge-base is in the merged history; the tags keep them resolvable.
 Rounds 1 to 3 predate the tags and recorded no tree; they are history, not
 reproducible receipts.
 
@@ -37,8 +38,9 @@ reproducible receipts.
 | `archive/otel-relational/fts-before` | `b70072f38` | `fts_single_token`: the Exporter with the query-only harness |
 | `archive/otel-relational/fts-fix` | `f7b2d43bd` | `fts_single_token`: the fix |
 | `archive/otel-relational/quiesced` | `11ae9acbf` | the quiesced gate's Exporter |
-| `archive/otel-relational/merge-base` | `839cc5d3f` | the change's merge-base: the custom store (`--backend fdb`) in "G3 at the merge-base", with `g3-merge-base/base-harness-839cc5d3f.patch` |
-| `archive/otel-relational/g3-head` | `8d3959aa6` | the change's head: the Exporter and `--backend sql` in "G3 at the merge-base" |
+| `archive/otel-relational/merge-base` | `839cc5d3f` | the change's merge-base: the custom store (`--backend fdb`) in "G3 at the merge-base", with `g3-merge-base/base-harness-839cc5d3f.patch`, and its `Exporter.ExportLogs` in "Gate G2B", with `g2b-merge-base/base-bench-839cc5d3f.patch` |
+| `archive/otel-relational/g3-head` | `8d3959aa6` | the measured head: the Exporter and `--backend sql` in "G3 at the merge-base"; that section lists the later commits' code changes, none on a measured path |
+| `archive/otel-relational/g2b-head` | `dc6a2f835` | the reviewed head: `BenchmarkLogExport` against the merge-base in "Gate G2B" |
 
 The archived tags carry the export benchmarks' old names,
 `BenchmarkRelSpansVsFDB` and `BenchmarkRelLogsVsFDB`; at head they are
@@ -54,11 +56,13 @@ The receipts record these short hashes, or one of:
 
 **Baseline.** CLAUDE.md and the RFC's gates name the merge-base as the
 baseline. "G3 at the merge-base" below measures that comparison: the
-change's head against the custom store at the merge-base, for the collector
-bench's quiesced gate and for otelbench's G2A suite. It is the G3 result.
+measured head (`g3-head`) against the custom store at the merge-base, for
+the collector bench's quiesced gate and for otelbench's G2A suite. It is the
+G3 result. "Gate G2B" measures log ingest against the merge-base the same
+way, at the reviewed head (`g2b-head`).
 The earlier gates' custom-store arms are not the merge-base. Each is the
 custom store on the same stack as the relational arm it is compared with:
-G2A, G2B and R1/R4 ran both stores in one binary, and the first G3 run, the
+G2A, G2B's first comparison and R1/R4 ran both stores in one binary, and the first G3 run, the
 `fts_single_token` runs and the quiesced gate use custom-store, the cutover's
 parent (pre-0a is the same stack before phase 0A). Both arms of those
 comparisons share one Record Layer, client and relational tree, so their
@@ -485,10 +489,36 @@ benchmark's output lines as recovered from the stream's session log.
 | keys | 11.8 | 13.0 | |
 | `QueryLogsByTrace` p50 ms | 0.698, 0.577, 0.852, 0.597 | 0.686, 0.587, 0.862, 0.579 | 0.97–1.02 |
 
-- **CPU** per run pair is 0.39–0.45× and bytes and p50 are at most 1.02×, so every G2B criterion (each ≤ 1.10×) passes.
+- **CPU** per run pair is 0.39–0.45× and bytes and p50 are at most 1.02×, so this comparison meets every G2B criterion (each ≤ 1.10×).
 - **p99** of 400 reads: 2.3–8.0 ms for the custom store and 1.5–5.5 ms for the relational store.
-- **Baseline:** both stores in one binary at `g2b-logs`, a same-stack comparison, not the merge-base. Log ingest CPU and bytes per log were not measured against the merge-base; "G3 at the merge-base" covers only the log query class.
+- **Baseline:** both stores in one binary at `g2b-logs`, a same-stack comparison, not the merge-base. The merge-base comparison follows.
 - **Scope:** the RFC's G2B row names collector-bench's logs; this benchmark exports logs alone. The collector bench's `correlated_logs_by_trace` class is in G3 (0.93× post-ingest) and the quiesced gate (0.89× and 0.98×).
+
+**Against the merge-base.** The same workload and metrics, with head's
+`BenchmarkLogExport` at `archive/otel-relational/g2b-head` (`dc6a2f835`, the
+reviewed head) against the custom store's `Exporter.ExportLogs` at
+`archive/otel-relational/merge-base` (`839cc5d3f`).
+
+- **Merge-base arm:** `BenchmarkRelLogsVsFDB`'s custom-store arm, ported to the merge-base as `BenchmarkLogExportCustomStore` by `g2b-merge-base/base-bench-839cc5d3f.patch`. The patch adds one test file and its BUILD `srcs` line and changes no store code. The corpus, cluster and run helpers are copied unchanged from `g2b-logs`. The size scan is `g2b-logs`'s `FDBBackend.size` with the prefix count in the test, because the merge-base's `Size` has none.
+- **Runs:** `bazelisk build //layers/otel:otel_test` in detached worktrees, then four `bazelisk test` invocations in the order merge-base, head, head, merge-base. Each invocation started its own testcontainer and made two fresh runs, so each arm has four runs.
+- **Discipline:** every invocation started once the 1-minute load was below 12 (5.3–10.6 at the starts) and held the machine's two test-lane locks. Every invocation executed, not from cache, and passed.
+- **Raw evidence:** `otel-relational-local-20261107/g2b-merge-base/`: `runs.txt` (trees, test-binary sha256, loads and the benchmark's output), the patch and the scripts.
+
+| per log | merge-base (4 runs) | head (4 runs) | ratio |
+|---|---|---|---:|
+| client CPU µs | 785.2, 785.8, 783.8, 781.2 (mean 784) | 296.4, 298.0, 304.8, 296.9 (mean 299) | 0.38 |
+| logical KV bytes | 2,351.5 | 2,244.5 | 0.95 |
+| prefix bytes | 1,821.4 | 1,499.1 | 0.82 |
+| keys | 11.8 | 13.0 | |
+| `QueryLogsByTrace` p50 ms | 0.482, 0.476, 0.484, 0.481 | 0.463, 0.467, 0.453, 0.454 | 0.96 |
+| `QueryLogsByTrace` p99 ms | 1.949, 5.869, 1.261, 6.484 | 0.710, 0.683, 0.642, 0.868 | 0.19 |
+
+Ratios compare the means.
+
+- **Verdict:** CPU per log is 0.38× (0.38–0.39× for any pair of runs), logical KV bytes 0.95×, prefix bytes 0.82× and p50 0.96× (0.94–0.98× per pair). G2B's ingest half passes against the merge-base, each criterion ≤ 1.10×. With `correlated_logs_by_trace` in "G3 at the merge-base" (0.93× and 0.95×), both halves of G2B pass against the merge-base, for this benchmark's logs (see Scope).
+- **p99:** the merge-base's first run in each invocation had a p99 of 1.3–1.9 ms and its second 5.9–6.5 ms; the head's were 0.64–0.87 ms.
+- **Wall** over the export calls: 5.66–5.84 s at the merge-base, 2.03–2.07 s at head.
+- **Against the same-stack runs:** the merge-base's custom store wrote the same bytes and keys per log as at `g2b-logs`, and head's relational store 0.1 B less. Both arms' CPU per log is lower than in the same-stack runs (784 against 827, 299 against 337), which ran at a load of 14–24.
 
 ### Messages through the replacement (R1, R4)
 
@@ -765,9 +795,16 @@ above compare against custom-store; this one is the G3 result.
 **Setup.**
 
 - **Trees:**
-  - head: `archive/otel-relational/g3-head` (`8d3959aa6`), the collector bench without `--backend` and otelbench with `--backend sql`;
+  - head: the measured head, `archive/otel-relational/g3-head` (`8d3959aa6`), the collector bench without `--backend` and otelbench with `--backend sql`;
   - baseline: the merge-base, `archive/otel-relational/merge-base` (`839cc5d3f`, #1034's head), with `--backend fdb` and its own defaults (brotli-4, tuple postings, 8-byte hashes, time order).
 - **Harness at the merge-base:** `fts-perf/base-harness.patch` does not apply there. Its BUILD hunk's context lists files the merge-base's `layers/otel/BUILD.bazel` does not have yet. Every other hunk applied unchanged, and `exporter_clientmetrics.go` was added to the library's `srcs` by hand, after `exporter.go`. The applied change is `g3-merge-base/base-harness-839cc5d3f.patch`. It adds `--query-only`, `--query-classes`, `--query-samples` and per-iteration client counters, and changes no store code.
+- **After the measured head:** the commits up to the reviewed head, `dc6a2f835`, change library code that was not re-measured:
+  - `SpanReader.Query` reads every `strconv.ParseFloat` spelling of NaN in a double attribute as the stored NaN, where it read only `NaN`; other text parses as before;
+  - sqlbackend and otelsql return typed errors (`otel.NewError`, `otelsql.InvalidRowError`, `TemplateMismatchError`) on their failure paths;
+  - `checkContinuationMAC` lost its domain and owner parameters and computes the same MAC; long-string span queries call `otelsql.LongStringDigest`, the same SHA-256 prefix;
+  - otelbench refuses `--sql-*` flags without `--backend sql` and `--order` with it, and sqlbackend refuses `--bulk-index-conflicts` outside direct ingest of compiled rows;
+  - none of these is on a measured path: every measured write and query succeeded, and no measured query has a double attribute;
+  - the head's otelbench commands here passed `--order time`, which the sql backend ignored at `g3-head` and otelbench now refuses; to reproduce them at the reviewed head, drop it.
 - **Binaries:** `bazelisk build //layers/otel/cmd/otelbench` in detached worktrees, go1.27.3; their sha256 are in `runs.txt`.
 - **Container:** a fresh `otelg3mb` (foundationdb/foundationdb:7.3.77, `configure new single ssd-redwood-1`, G3's environment), removed afterwards.
 - **Discipline:** every measured command started once the 1-minute load was below 12 and the storage and log queues were below 1 MB on two polls. It held the machine's two test-lane locks, so no test lane ran beside it. The load at the starts was 2.1–6.6.
@@ -905,7 +942,7 @@ The median per-class p99 was 1.21 ms for `fdb` and 0.64 ms for `sql`.
   - these pass. Persist wall (1.36×) fails the criterion's original wording, as at the cutover, where the owner replaced it with the summed transaction time.
   - Storage is not measured by the collector bench; the TEXT index's written key bytes are 1.39×.
 - **G2D** (`same_span_conjunction`, `trace_existential_3way`, `trace_graph_traversal` p50 within 1.10×): 0.32–0.70×, passes.
-- **G2B, query half** (`correlated_logs_by_trace` p50 within 1.10×): 0.93× and 0.95×, passes.
+- **G2B, query half** (`correlated_logs_by_trace` p50 within 1.10×): 0.93× and 0.95×, passes. The ingest half is in "Gate G2B": 0.38× CPU and at most 0.95× bytes per log against the merge-base, passes.
 - **G3's otelbench arm** (G2A's criteria against `fdb` production): every class's p50 at most 0.63×, ingest CPU 0.68×, logical bytes 0.74×, 0 oracle failures; passes.
 
 **Against custom-store.** On the quiesced classes, the merge-base's custom

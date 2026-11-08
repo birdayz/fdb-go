@@ -1,0 +1,30 @@
+# G2B log ingest at the merge-base, 2026-11-08 05:19-05:21 UTC. Each invocation starts its own FDB testcontainer (foundationdb/foundationdb:7.3.77 via pkg/testcontainers/foundationdb, as the benchmark does).
+# head: //layers/otel:otel_test at dc6a2f835 (PR #1035 head, archive/otel-relational/g2b-head), BenchmarkLogExport, test binary sha256 684de8401e65f66317fca09b020dc120b89a0649db574ab6d40bc4dba9ee65d9
+# base: //layers/otel:otel_test at the merge-base 839cc5d3f (archive/otel-relational/merge-base) plus base-bench-839cc5d3f.patch (benchmark only: logs_custom_store_bench_test.go and its BUILD srcs line), BenchmarkLogExportCustomStore, test binary sha256 1b375ad510f97c51c1238bd4ca1b5f649c07da031a3d82dd2300838f5eb8050c
+# Both built with bazelisk build //layers/otel:otel_test in detached worktrees (go1.27.3), then run by campaign.sh: bazelisk test //layers/otel:otel_test --test_arg=-test.run='^$' --test_arg=-test.bench='^<bench>$' --test_arg=-test.benchtime=1x --test_output=streamed --nocache_test_results; every invocation executed (not cached) and passed.
+# Order: base, head, head, base; two fresh runs (new run name) per invocation. Every invocation ran through measured.sh: it waited until the 1-minute load was < 12 on two polls (quiet.sh), then held /tmp/fdb-heavy-lane.lock and /tmp/otelcmp/justtest.lock, rechecked the load, and ran.
+# quiet=[load] at the wait's end; load = 1-minute load average at start/end inside the locks; time = user sys real (s) of the bazelisk client (the benchmark's own CPU is cpu_us_per_log, the test process's user+sys over the export calls); at = UTC time at the end.
+g2bmb_base_1 rc=0 quiet=[10.62] load 10.62/9.08 time 0.009 0.020 19.531 at 05:19:34Z
+g2bmb_head_1 rc=0 quiet=[8.35] load 8.35/7.28 time 0.011 0.015 11.989 at 05:19:51Z
+g2bmb_head_2 rc=0 quiet=[6.70] load 6.70/5.75 time 0.015 0.009 11.288 at 05:20:07Z
+g2bmb_base_2 rc=0 quiet=[5.29] load 5.29/4.33 time 0.010 0.017 18.606 at 05:20:31Z
+# inv-base_1: the benchmark's output
+logs_custom_store_bench_test.go:107: arm=fdb run=0 logs=20000 batches=320 cpu_us_per_log=785.2 wall_s=5.72 kv_bytes_per_log=2351.5 prefix_bytes_per_log=1821.4 keys_per_log=11.80 stats_stored_per_log=380.2 logical_per_log=502.8 by_trace_reads=400 logs_read=1280 p50_ms=0.482 p99_ms=1.949
+logs_custom_store_bench_test.go:107: arm=fdb run=1 logs=20000 batches=320 cpu_us_per_log=785.8 wall_s=5.84 kv_bytes_per_log=2351.5 prefix_bytes_per_log=1821.4 keys_per_log=11.80 stats_stored_per_log=380.2 logical_per_log=502.8 by_trace_reads=400 logs_read=1280 p50_ms=0.476 p99_ms=5.869
+BenchmarkLogExportCustomStore-24    	       1	18127925452 ns/op	      2352 B/log	       785.8 cpu-us/log
+PASS
+# inv-head_1: the benchmark's output
+logs_rel_bench_test.go:125: run=0 logs=20000 batches=320 cpu_us_per_log=296.4 wall_s=2.04 kv_bytes_per_log=2244.5 prefix_bytes_per_log=1499.1 keys_per_log=13.00 stats_stored_per_log=601.4 logical_per_log=502.8 by_trace_reads=400 logs_read=1280 p50_ms=0.463 p99_ms=0.710
+logs_rel_bench_test.go:125: run=1 logs=20000 batches=320 cpu_us_per_log=298.0 wall_s=2.07 kv_bytes_per_log=2244.5 prefix_bytes_per_log=1499.1 keys_per_log=13.00 stats_stored_per_log=601.5 logical_per_log=502.8 by_trace_reads=400 logs_read=1280 p50_ms=0.467 p99_ms=0.683
+BenchmarkLogExport-24    	       1	10608623021 ns/op	      2244 B/log	       298.0 cpu-us/log
+PASS
+# inv-head_2: the benchmark's output
+logs_rel_bench_test.go:125: run=0 logs=20000 batches=320 cpu_us_per_log=304.8 wall_s=2.03 kv_bytes_per_log=2244.5 prefix_bytes_per_log=1499.1 keys_per_log=13.00 stats_stored_per_log=601.5 logical_per_log=502.8 by_trace_reads=400 logs_read=1280 p50_ms=0.453 p99_ms=0.642
+logs_rel_bench_test.go:125: run=1 logs=20000 batches=320 cpu_us_per_log=296.9 wall_s=2.04 kv_bytes_per_log=2244.5 prefix_bytes_per_log=1499.1 keys_per_log=13.00 stats_stored_per_log=601.5 logical_per_log=502.8 by_trace_reads=400 logs_read=1280 p50_ms=0.454 p99_ms=0.868
+BenchmarkLogExport-24    	       1	10494848288 ns/op	      2244 B/log	       296.9 cpu-us/log
+PASS
+# inv-base_2: the benchmark's output
+logs_custom_store_bench_test.go:107: arm=fdb run=0 logs=20000 batches=320 cpu_us_per_log=783.8 wall_s=5.66 kv_bytes_per_log=2351.5 prefix_bytes_per_log=1821.4 keys_per_log=11.80 stats_stored_per_log=380.2 logical_per_log=502.8 by_trace_reads=400 logs_read=1280 p50_ms=0.484 p99_ms=1.261
+logs_custom_store_bench_test.go:107: arm=fdb run=1 logs=20000 batches=320 cpu_us_per_log=781.2 wall_s=5.78 kv_bytes_per_log=2351.5 prefix_bytes_per_log=1821.4 keys_per_log=11.80 stats_stored_per_log=380.2 logical_per_log=502.8 by_trace_reads=400 logs_read=1280 p50_ms=0.481 p99_ms=6.484
+BenchmarkLogExportCustomStore-24    	       1	17822967189 ns/op	      2352 B/log	       781.2 cpu-us/log
+PASS
