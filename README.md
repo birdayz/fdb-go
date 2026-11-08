@@ -24,11 +24,10 @@ go run ./example/sql &&
 go run ./example
 ```
 
-`fdb dev down` removes the cluster. Tagged installation with
-`go install fdb.dev/cmd/fdb@<tag>` requires a release containing `cmd/fdb`; the
-[installer](https://fdb.dev/install.sh) also requires matching `fdb_` release
-archives. Use the checkout build until that release is available. See the
-[CLI guide](https://fdb.dev/docs/cli/) for configuration and commands.
+`fdb dev down` removes the cluster. To install the latest released CLI instead, run
+`curl -fsSL https://fdb.dev/install.sh | sh` (Linux and macOS) or
+`go install fdb.dev/cmd/fdb@latest`; the checkout build includes unreleased changes
+on `master`. See the [CLI guide](https://fdb.dev/docs/cli/) for configuration and commands.
 
 Pre-1.0; expect API changes. [Status and known gaps](STATUS.md). Independent project,
 not affiliated with Apple or the FoundationDB project.

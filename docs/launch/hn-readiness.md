@@ -25,7 +25,8 @@ it updates release decisions and evidence, not a fresh audit of every row.
   CI including the full lane and the dry run on the cut commit (steps 2–3), then
   explicit maintainer tagging authorization. No local full lane or premature tag.
   The renamed CLI installs from `fdb.dev/cmd/fdb`; publish and verify the root-module
-  release and its `fdb` archives before advertising the new install path.
+  release and its `fdb` archives before advertising the new install path. Done for
+  v0.2.0 ([#1033] cut, published 2026-11-07); [#1037] advertises the install path.
 
 ## 1. Owner decisions
 
@@ -70,7 +71,7 @@ No API refactor or replacement release milestone is authorized by that deferral.
 |---|---|---|---|
 | B | Every quickstart fails (domain registration, `NOT NULL`, DSN case, unconfigured docker FDB, swallowed errors, typed-store snippet) | done [#808]: [#788] fixed the listed failures; [#808] chains the steps so a failed `fdb dev up` stops the demo | hn-health-ws2 |
 | B | "2–4× faster" claims are false (pre-RFC-104 GRV cache; one-way netem labelled as RTT) | done [#788]: claims removed, website check guards them | perf-lead2 |
-| B | `go get` gives v0.1.0, 682 commits behind and storage-incompatible; the renamed `fdb.dev/cmd/fdb` package needs a root-module release | in progress: [#825] landed the notes and checklist; a rehearsal dry run on master e047fc58c passed (run 38152910574). The CLI now uses `cmd/fdb` without a nested-module fallback. Next: reviewed readiness PR, correctness fixes, exact-cut CI/full-lane and `fdb-release.yml` dry-run gates, explicit tagging approval, then verify v0.2.0 through the proxy and installer; no tag is done | release-ws |
+| B | `go get` gives v0.1.0, 682 commits behind and storage-incompatible; the renamed `fdb.dev/cmd/fdb` package needs a root-module release | done [#1033]: [#825] landed the notes and checklist; tag `v0.2.0` → `aef9515` after the exact-cut full lane (run 41882986728) and release dry run (run 41884738373) passed and the owner authorized tagging; release run 42423442734 published it on 2026-11-07. The proxy install, installer, checksums and attestations of the published release were verified | release-ws |
 | M | `fdb dev up` hangs silently on a nearly full host disk (FDB throttles to 0 TPS) | done [#814] | hn-health-ws2 |
 | H | macOS: `fdb dev up` used `--network host` | done [#788]: loopback-published bridge network | hn-health-ws2 |
 | H | Positioning: what it is, and the "unofficial / not Apple" disclaimer | done [#788]: README, website, NOTICE | release-ws |
@@ -115,7 +116,7 @@ No API refactor or replacement release milestone is authorized by that deferral.
 | H | Limits (retries, timeouts, statement memory/rows) not settable from the DSN | done [#799]: DSN-settable timeouts and statement limits; no retry-limit parameter | hn-sql-ws3 |
 | H | Unbounded default limits | not started: [#799] keeps Java's unbounded defaults; decide or document | hn-sql-ws3 |
 | H | No CONTRIBUTING / SUPPORT / issue templates | done [#788]: `CONTRIBUTING.md`, `SUPPORT.md`, issue forms | release-ws |
-| M | `go 1.27.3` minimum; root v0.1.0 has no GitHub release (only `cmd/frl/v0.1.0` does) | in progress: v0.2.0 gets a GitHub release ([#825]). `go 1.27.3` enforces the minimum and selects the tested build SDK without a redundant toolchain directive | release-ws |
+| M | `go 1.27.3` minimum; root v0.1.0 has no GitHub release (only `cmd/frl/v0.1.0` does) | done [#1033]: v0.2.0 has a GitHub release with `fdb` archives (run 42423442734). `go 1.27.3` enforces the minimum and selects the tested build SDK without a redundant toolchain directive | release-ws |
 
 ## 3. Launch framing (from the HN-thread simulation)
 
@@ -138,7 +139,7 @@ No API refactor or replacement release milestone is authorized by that deferral.
 | Re-measured performance with a committed harness (`/tmp/hn-perf` is gone) | in progress: the Go/CGo harness landed ([#822]); re-measurement pending | perf-lead2 |
 | Architecture page | not started | release-ws |
 | Compatibility table and FDB 8.0 stance | done [#788]: `docs/compatibility.md` | hn-compat-ws2 |
-| Known gaps in one list | in progress: STATUS.md lists the five launch concerns and scoped mitigations in the v0.2.0 candidate | release-gpt |
+| Known gaps in one list | in progress: STATUS.md lists the five launch concerns and scoped mitigations for v0.2.0 | release-gpt |
 | Answer on the N+1 question | not started: [#798] landed; FlatMap still open | hn-sql-ws3 |
 | Answer on the 5 s per-RPC timeout question | not started: after the client timeout fixes | hn-client-ws2 |
 | Answer on bus factor | not started | owner |
@@ -178,3 +179,5 @@ No API refactor or replacement release milestone is authorized by that deferral.
 [#844]: https://github.com/birdayz/fdb-go/pull/844
 [#857]: https://github.com/birdayz/fdb-go/pull/857
 [#882]: https://github.com/birdayz/fdb-go/pull/882
+[#1033]: https://github.com/birdayz/fdb-go/pull/1033
+[#1037]: https://github.com/birdayz/fdb-go/pull/1037

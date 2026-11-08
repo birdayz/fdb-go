@@ -35,7 +35,7 @@ linux binaries run on glibc, musl, and \`FROM scratch\`).
 
 **Install**
 
-    curl -fsSL https://fdb.dev/install.sh | sh
+    curl -fsSL https://fdb.dev/install.sh | sh -s -- --version ${tag}
 
 or with the Go toolchain (builds the identical version):
 

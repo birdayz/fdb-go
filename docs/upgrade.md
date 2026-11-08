@@ -5,16 +5,16 @@
 pre-1.0 project does not promise an automatic upgrade or downgrade between every
 pair of Go revisions. The current readiness statement is [STATUS.md](../STATUS.md).
 
-**v0.2.0 publication is pending.** Its frozen scope is in `CHANGELOG.md`;
+**v0.2.0 was published on 2026-11-07.** Its scope is in `CHANGELOG.md`;
 sections explicitly marked **Unreleased (post-v0.2.0)** describe later development,
-not additions to that cut or completion of [release gates](../RELEASE.md).
+not additions to that release.
 
 ## CLI name, commands, and configuration
 
 v0.2.0 replaces `frl` with the root module's `cmd/fdb`
-package. Build the checkout with `go build -o .tmpbuild/fdb ./cmd/fdb` until a
-release containing this package is published; then install its exact root tag
-with `go install fdb.dev/cmd/fdb@<tag>`. Old nested-module releases do not contain
+package. Install it with `go install fdb.dev/cmd/fdb@v0.2.0` or
+`curl -fsSL https://fdb.dev/install.sh | sh -s -- --version v0.2.0`, or build a
+checkout with `go build -o .tmpbuild/fdb ./cmd/fdb`. Old nested-module releases do not contain
 the new CLI. Remove an old `fdb.dev/cmd/frl` tool dependency if one was added to
 an application's `go.mod`.
 

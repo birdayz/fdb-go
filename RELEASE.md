@@ -27,10 +27,10 @@ in `MODULE.bazel` / `go.mod`.
 
 - The **latest tagged minor** is supported; security and correctness fixes land there.
 - Older minors are best-effort only until `v1`.
-- The first tag is **v0.1.0** (2026-08-26). **v0.2.0 is pending publication.**
-  Its documented scope is not evidence of a published tag or completed release gates.
-  Documentation at HEAD describes HEAD. A support policy is not evidence of a
-  backport or a published tag. Pin a revision and read its changelog and upgrade guidance.
+- The first tag is **v0.1.0** (2026-08-26). The latest tag is **v0.2.0** (2026-11-07,
+  commit `aef9515`). Documentation at HEAD describes HEAD, which can include unreleased
+  changes after the latest tag. A support policy is not evidence of a backport.
+  Pin a revision and read its changelog and upgrade guidance.
 - Security fixes follow `SECURITY.md` (private report → fix on the latest minor / `master` → disclose).
 
 ## Cutting a release (checklist)
@@ -86,6 +86,12 @@ the maintainer chooses to cut `vX.Y.Z`:
    ```
 
    `curl -fsSL https://fdb.dev/install.sh | sh` installs vX.Y.Z.
+6. **Record publication** in a follow-up PR: pages that say publication is pending
+   (step 1's pages, `docs/release-notes/vX.Y.0.md`) say the tag is published, and
+   `SECURITY.md` names the new supported minor. If the notes change, regenerate the
+   release body only after that PR merges, from a clean checkout of the merged commit:
+   `diff <(gh release view vX.Y.Z --json body --jq .body) <(scripts/release-notes.sh vX.Y.Z)`,
+   then `scripts/release-notes.sh vX.Y.Z | gh release edit vX.Y.Z --notes-file -`.
 
 The CLI is the root module's `cmd/fdb` package. Releases contain
 `fdb_<version>_<os>_<arch>.tar.gz` with the `fdb` binary and license notices,
