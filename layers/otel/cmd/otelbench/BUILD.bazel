@@ -33,5 +33,6 @@ go_test(
     deps = [
         "//layers/otel",
         "//layers/otel/collector",
+        "//layers/otel/sqlbackend",
     ],
 )
