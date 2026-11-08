@@ -77,6 +77,15 @@ func TestFDB_EnsureTenant(t *testing.T) {
 			t.Fatalf("EnsureTenant = %v, want a template mismatch for schema %q", err, schema)
 		}
 	}
+	// cancelled runs fn in one transaction that it cancels, a reader's.
+	cancelled := func(fn func(*recordlayer.FDBRecordContext) error) error {
+		rc, err := db.OpenRecordContext(t.Context())
+		if err != nil {
+			return err
+		}
+		defer rc.Cancel()
+		return fn(rc)
+	}
 	dropTemplate := func(t *testing.T) {
 		catalogRun(t, func(txn api.Transaction) error {
 			return cat.SchemaTemplateCatalog().DeleteTemplate(txn, TemplateName, true)
@@ -116,6 +125,22 @@ func TestFDB_EnsureTenant(t *testing.T) {
 		})
 		_, err = EnsureTenant(t.Context(), db, "/OTELT/R_LATER", "T0", nil)
 		requireMismatch(t, err, "")
+		// A schema bound to the later version is refused by the read-only open.
+		catalogRun(t, func(txn api.Transaction) error {
+			if err := ddl.NewCreateDatabaseConstantAction("/OTELT/R_LATER", cat).Execute(txn); err != nil {
+				return err
+			}
+			return ddl.NewCreateSchemaConstantAction("/OTELT/R_LATER", "T0", TemplateName, cat, keyspace.New(subspace.Sub())).Execute(txn)
+		})
+		_, err = OpenTenantStoreCompiledIn(cancelled, "/OTELT/R_LATER", "T0", nil)
+		requireMismatch(t, err, "T0")
+		if !strings.Contains(err.Error(), "version 2") {
+			t.Fatalf("schema of a later version: %v", err)
+		}
+		catalogRun(t, func(txn api.Transaction) error {
+			_, err := cat.DeleteDatabase(txn, "/OTELT/R_LATER", true)
+			return err
+		})
 		dropTemplate(t)
 	})
 
@@ -185,7 +210,19 @@ func TestFDB_EnsureTenant(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, ts := range []*TenantStore{again, stores[1], opened} {
+		read, err := OpenTenantStoreCompiledIn(cancelled, strings.ToLower(path), "t0", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if read.MetaData.GetRecordType("SPANS") == nil {
+			t.Fatal("the read-only open lacks SPANS")
+		}
+		if _, err := OpenTenantStoreCompiledIn(cancelled, path, "T8", nil); err == nil {
+			t.Fatal("the read-only open found an unknown schema")
+		} else if apiErr := (*api.Error)(nil); !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUndefinedSchema {
+			t.Fatalf("unknown schema: %v", err)
+		}
+		for _, ts := range []*TenantStore{again, stores[1], opened, read} {
 			if ts.DatabasePath != path || ts.Schema != "T0" || !bytesEqual(ts.Subspace.Bytes(), again.Subspace.Bytes()) {
 				t.Fatalf("store named %q/%q", ts.DatabasePath, ts.Schema)
 			}
@@ -230,6 +267,8 @@ func TestFDB_EnsureTenant(t *testing.T) {
 			return ddl.NewCreateSchemaConstantAction(path, "T9", "OTHER_T", cat, keyspace.New(subspace.Sub())).Execute(txn)
 		})
 		_, err = EnsureTenant(t.Context(), db, path, "T9", nil)
+		requireMismatch(t, err, "T9")
+		_, err = OpenTenantStoreCompiledIn(cancelled, path, "T9", nil)
 		requireMismatch(t, err, "T9")
 	})
 	t.Run("removed store", func(t *testing.T) {

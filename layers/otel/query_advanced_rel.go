@@ -413,6 +413,10 @@ func (r *SpanReader) QuerySameSpan(ctx context.Context, q SameSpanQuery) (SpanQu
 		return page, err
 	}
 	if len(secret) == 0 {
+		if r.store.reader != nil {
+			// A Reader publishes no key: without a stored one its page ends.
+			return page, nil
+		}
 		if secret, err = r.ensureContinuationKey(ctx); err != nil {
 			return page, err
 		}

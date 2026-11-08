@@ -37,6 +37,10 @@ type tenantStore struct {
 	// fullText sets the message pipeline sizer on every open, for the
 	// fulltext layout.
 	fullText bool
+	// reader, when set, makes this a Reader's store: every transaction is
+	// read-only and cancelled, never committed (readerTxns.run), no open
+	// upgrades or rebuilds the store, and run refuses.
+	reader *readerTxns
 }
 
 // run runs fn on the store in one transaction under the exporter's policy:
@@ -59,6 +63,18 @@ func (s *tenantStore) read(ctx context.Context, op string, fn func(*recordlayer.
 }
 
 func (s *tenantStore) runMode(ctx context.Context, op string, cachedVersion bool, fn func(*recordlayer.FDBRecordStore) error) error {
+	if s.reader != nil {
+		if !cachedVersion {
+			return fail("operation", op, "a Reader writes nothing")
+		}
+		return s.reader.run(ctx, s.db, op, func(rc *recordlayer.FDBRecordContext) error {
+			store, err := s.open(rc, op)
+			if err != nil {
+				return err
+			}
+			return fn(store)
+		})
+	}
 	_, err := runTxnSlot(ctx, s.db, op, func(rc *recordlayer.FDBRecordContext) (any, error) {
 		if cachedVersion {
 			if err := rc.Transaction().Options().SetUseGrvCache(); err != nil {
@@ -89,6 +105,10 @@ func (s *tenantStore) openWith(rc *recordlayer.FDBRecordContext, op string, prep
 	builder := s.ts.Builder(rc)
 	if s.fullText {
 		builder.SetPipelineSizer(messagePipelineSizer)
+	}
+	if s.reader != nil {
+		// Upgrading the header or rebuilding indexes is the writer's work.
+		builder.SetSkipPossiblyRebuild(true)
 	}
 	if prepare != nil {
 		prepare(builder)

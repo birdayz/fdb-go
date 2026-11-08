@@ -924,7 +924,7 @@ func (m *relMessageStore) reconstruct(ctx context.Context, store *recordlayer.FD
 	if err != nil || len(p.sites) == 0 {
 		return err
 	}
-	raws, err := loadRelMessages(store, p.refs, p.encodings, work)
+	raws, _, err := loadRelMessages(store, p.refs, p.encodings, work, 0)
 	if err != nil {
 		return err
 	}
@@ -937,8 +937,10 @@ func (m *relMessageStore) reconstruct(ctx context.Context, store *recordlayer.FD
 	return nil
 }
 
-// loadRelMessages returns the raw element bytes of each message.
-func loadRelMessages(store *recordlayer.FDBRecordStore, refs []messageID, encodings map[messageID]string, work *queryWork) (map[messageID][]byte, error) {
+// loadRelMessages returns the raw element bytes of each message. With a
+// positive limit, ok is false when work's bytes pass it after either wave;
+// the second is not read when the first passed it.
+func loadRelMessages(store *recordlayer.FDBRecordStore, refs []messageID, encodings map[messageID]string, work *queryWork, limit int64) (raws map[messageID][]byte, ok bool, err error) {
 	const op = "message reconstruct"
 	load := func(id messageID, part int64) (recordlayer.PendingRead[*recordlayer.FDBStoredRecord[proto.Message]], error) {
 		pk, err := tableKey(store, op, messagesRecordType, id.writer, id.seq, part)
@@ -963,12 +965,13 @@ func loadRelMessages(store *recordlayer.FDBRecordStore, refs []messageID, encodi
 	for i, id := range refs {
 		var err error
 		if heads[i], err = load(id, 0); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 	type rest struct {
 		id    messageID
 		size  int64
+		count int64 // parts after the head
 		parts []recordlayer.PendingRead[*recordlayer.FDBStoredRecord[proto.Message]]
 	}
 	var more []rest
@@ -976,11 +979,11 @@ func loadRelMessages(store *recordlayer.FDBRecordStore, refs []messageID, encodi
 	for i, id := range refs {
 		h, err := get(heads[i], id, "head")
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		parts, size := h.GetPARTS(), h.GetRAW_BYTES()
 		if h.GetENCODING() != encodings[id] || parts < 1 || size < 0 || size > maxMessageBytes {
-			return nil, failf("corruption", op, "message %d/%d header disagrees with its manifest", id.writer, id.seq)
+			return nil, false, failf("corruption", op, "message %d/%d header disagrees with its manifest", id.writer, id.seq)
 		}
 		if raw := h.GetRAW(); int64(len(raw)) == size {
 			out[id] = raw
@@ -989,25 +992,36 @@ func loadRelMessages(store *recordlayer.FDBRecordStore, refs []messageID, encodi
 		x := rest{id: id, size: size}
 		out[id] = append([]byte(nil), h.GetRAW()...)
 		for p := int64(1); p < parts && p*messagePartRawBytes < size; p++ {
-			f, err := load(id, p)
-			if err != nil {
-				return nil, err
-			}
-			x.parts = append(x.parts, f)
+			x.count++
 		}
 		more = append(more, x)
+	}
+	if limit > 0 && work.bytes > limit {
+		return nil, false, nil
+	}
+	for k := range more {
+		for p := int64(1); p <= more[k].count; p++ {
+			f, err := load(more[k].id, p)
+			if err != nil {
+				return nil, false, err
+			}
+			more[k].parts = append(more[k].parts, f)
+		}
 	}
 	for _, x := range more {
 		for _, f := range x.parts {
 			r, err := get(f, x.id, "part")
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			out[x.id] = append(out[x.id], r.GetRAW()...)
 		}
 		if int64(len(out[x.id])) != x.size {
-			return nil, failf("corruption", op, "message %d/%d has %d raw bytes, header says %d", x.id.writer, x.id.seq, len(out[x.id]), x.size)
+			return nil, false, failf("corruption", op, "message %d/%d has %d raw bytes, header says %d", x.id.writer, x.id.seq, len(out[x.id]), x.size)
 		}
 	}
-	return out, nil
+	if limit > 0 && work.bytes > limit {
+		return nil, false, nil
+	}
+	return out, true, nil
 }
