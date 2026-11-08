@@ -41,7 +41,9 @@ below; neither publication nor readiness is asserted.
   message keys (`MessageContentHash`, `MessageHashBytes`, `MessageShard`,
   `MessageTextShards`, `MessageAttributeKeys`, `MessageAttributeCode`),
   attribute projection (`CanonicalJSON`, `FormatDouble`, `CanonicalNaN`,
-  `ProjectedDouble`, `LongStringDigest`, `LongStringDigestBytes`), the
+  `ProjectedDouble`, `LongStringDigest`, `LongStringDigestBytes`,
+  `MaxAttributeKeyBytes`, `MaxAttributeValueBytes`, the `Scope*` constants),
+  `TemplateOverlay`, the `StoreMeta*` row names, the
   generated `otelv1pb` row types and `InvalidRowError` (input a row builder
   refuses). Importing `otelsql` registers the `otel_message_v1` tokenizer in
   the process-wide TEXT tokenizer registry.
