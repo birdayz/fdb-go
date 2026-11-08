@@ -96,6 +96,7 @@ below; neither publication nor readiness is asserted.
 
 **Published 2026-11-07** as tag `v0.2.0` (commit `aef9515`), from the scope cut on
 2026-11-04. Publication does not declare production readiness; see `STATUS.md`.
+Install wording below predates publication: install with `go install fdb.dev/cmd/fdb@v0.2.0`.
 
 ### Breaking changes
 Each is described in full under Compatibility or Changed below.
