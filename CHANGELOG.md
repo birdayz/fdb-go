@@ -52,6 +52,10 @@ below; neither publication nor readiness is asserted.
   `otel.NewError` (a typed `otel` error of a given kind, for backends outside
   the package) and `Exporter.ClientMetrics`, the pure-Go client's metrics
   snapshot.
+- `otelbench --backend sql` on OTEL_V1 tenant stores, with `--sql-ingest`
+  (direct or insert), `--sql-query` (sql or direct), `--sql-rows` (compiled or
+  dynamic), `--sql-pinned-conn` and `--sql-page-rows`; the backend is the new
+  `layers/otel/sqlbackend` package (`Options`, `Backend`, `Open`).
 - SQL `CREATE FULLTEXT INDEX ... OPTIONS (TOKENIZER = '<name>',
   TOKENIZER_VERSION = <n>)` (Go extension) sets the TEXT index's tokenizer
   options (`docs/compatibility.md`, "SQL full-text syntax").
@@ -94,7 +98,10 @@ below; neither publication nor readiness is asserted.
   `Message` records, the ownership manifests, `otel.OpenFDB`/`OpenFDBContext`,
   `IngestClientMetrics`/`IngestDiagnostics`/`IngestPhaseLatency`, and
   `otelbench --backend fdb`, `--posting-value-format`, `--hash-bytes`,
-  `--diagnostics` and the Brotli values. Attribute equality is typed.
+  `--diagnostics` and the Brotli values, with `otel.Config`'s
+  `PostingValueFormat`, `Diagnostics`, `HashBytes` and `KeyLayout` fields.
+  `otelbench --mode collector-bench` takes no `--backend` and always drives
+  `otel.Exporter`. Attribute equality is typed.
   `NewExporter` opens the fixed template name OTEL_V1. Exporter reads use the
   client's cached read version.
 - OTel span and log exports still admit the whole call before any write;
