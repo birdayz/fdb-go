@@ -44,8 +44,8 @@ const (
 
 // The write cost model (§3.1 admission). Costs are native transaction bytes:
 // a set is its key three times (mutation and write conflict range) and its
-// value plus 69, a clear its key four times plus 70 (logSetWriteCost,
-// logClearWriteCost).
+// value plus 69, a clear its key four times plus 70 (relSetCost,
+// relClearCost).
 const (
 	// relLogFixedCost is a log's share of its transaction's store header,
 	// index state and existence reads.
