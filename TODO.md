@@ -3756,6 +3756,11 @@ these claims; the implementation notes below are not controlled comparisons.
   Delivered: the custom store, its tests and the `fdb` otelbench flags are
   deleted (RFC status line); `removedExporterKey` stays as the migration message
   and now matches the typed `otel.RemovedConfigKeyError`, not the message text.
+- [ ] **Low:** the collector's own YAML key check (`checkKeys`,
+  `layers/otel/collector/collector.go`) refuses a YAML merge key (`<<`) as an
+  unknown key, as it did before PR #1035; `ExporterConfig` now follows merge
+  keys and aliases (`checkExporterYAMLKeys`). Follow them there too, with a
+  test.
 - [ ] G3 findings (benchmark doc, "Gate G3"):
   - [x] `fts_single_token` p50 was 1.53x the custom store's. Cause: it is the
     first post-ingest class and ran inside the storage server's 6-10 s drain

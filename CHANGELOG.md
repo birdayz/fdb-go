@@ -162,7 +162,9 @@ below; neither publication nor readiness is asserted.
 - **`ExporterConfig`:** the `Order`, `HashBytes` and `PostingValueFormat`
   fields are removed. A JSON or YAML document naming `order`, `hash_bytes` or
   `posting_value_format` fails with a "was removed" `ConfigError`, and any other
-  unknown key fails too; earlier builds ignored unknown keys.
+  unknown key fails too; earlier builds ignored unknown keys. YAML merge keys
+  (`<<`) and aliases are followed, and the keys they bring in are checked the
+  same way.
   `record_compression` takes `none`, `zlib-1` or `zlib-default` and refuses
   Brotli (SQL and Java read the records); the default is `zlib-1` instead of
   `brotli-4`. A removed key fails with the typed `RemovedConfigKeyError`.
