@@ -581,7 +581,8 @@ func (w *SpanWriter) save(ctx context.Context, b relBatch, committed func(relBat
 
 // ExportResourceSpans admits every span before writing, so an inadmissible
 // span fails the call without partial writes; batches then commit
-// independently. With messages on, the GenAI content attributes are
+// independently, and a replacement too large for any transaction with its
+// clears fails as admission after the batches before it committed. With messages on, the GenAI content attributes are
 // decomposed: spans are admitted with placeholder manifests and references,
 // the messages persist, and the spans are prepared again with final ones.
 func (e *Exporter) ExportResourceSpans(ctx context.Context, spans []*tracepb.ResourceSpans) (ExportStats, error) {
