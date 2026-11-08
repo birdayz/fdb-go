@@ -108,7 +108,11 @@ function fan-out semantics are unchanged. Canonical keys are
 `(RecordTypeKey, partition, logical primary key...)`; supported single-table
 VALUE indexes lead with the same partition and TEXT indexes group by it. The
 source must also occur as an ordinary column in the logical primary key and
-every unique index. Plain tables acquire no prefix.
+every unique index. Plain tables acquire no prefix. The v1 allowlist rejects
+covering layouts whose primary-key overlap occurs only in included values, and
+TEXT layouts that trim a primary-key component from the tokenized body. Those
+existing maintainer/overlap limitations could otherwise merge distinct records'
+index entries; safe covering and grouped TEXT layouts remain supported.
 
 This metadata is **not Java-compatible**. Java 4.14.2.0 resolves every record
 type's required primary-key function while loading metadata and refuses the
@@ -4127,11 +4131,23 @@ The restore refuses an inverted template history, where a lower template version
 
 Java admits the second, because it has no guard, and refuses the first.
 
-### Function names in stored key expressions are loaded whether or not Go registers them (RFC-257 WS-J)
+### Ordinary function names in stored key expressions are loaded whether or not Go registers them (RFC-257 WS-J)
 
 The target creates a `FunctionKeyExpression` at load through its classpath's registry. It refuses a name that no module registers with "Function not defined" (FunctionKeyExpression.java:118-122). Its Lucene and Geophile spatial modules, and applications, add names.
 
-Go's registry is its own. Go loads any function name (`functionFromProto`, `pkg/recordlayer/key_expression_proto.go:425-446`). It fails only when it maintains or evaluates an index whose function it does not know ("unknown function key expression", `FunctionKeyExpression.Evaluate`, `pkg/recordlayer/key_expression.go:1725-1736`). Refusing at load would lock Go out of every Java store with such an index.
+Go's registry is its own. Ordinary unknown function names can be decoded by
+`functionFromProto` and loaded in index metadata. They fail when Go maintains or
+evaluates that index ("unknown function key expression",
+`FunctionKeyExpression.Evaluate`). Refusing all unknown names at load would lock
+Go out of every Java store with such an index. This does not admit generic
+potentially duplicate-producing functions as primary keys.
+
+**RFC-284 exception:** the `fdb_partition_*` namespace is reserved. Decoding an
+unknown version's key expression does not imply successful metadata loading:
+`Build`/`RecordMetaDataFromProto` reject unsupported versions, malformed partition
+layouts and partition functions on plain-table indexes before any index is used.
+The supported v1 function is admitted only in its validated partition layout.
+See the [whole-schema boundary](#interval-partitioned-tables-go-only-rfc-284).
 
 The column size of an unregistered name is 1 in Go (`key_expression.go:1746-1751`); in the target it is the function's own. A function that Go does register is checked at load against the target's bounds, with the target's refusal. Go's `Build` refuses an in-code `FunctionExpr` of a name Go does not register, as the target's `create` refuses it (`FunctionExpr`, `key_expression.go:1715-1721`; `functionConstructionFault`, `:1685-1694`). Conformance: "RFC-257 key functions: the registry and create's refusals as Java's" (`conformance/function_registry_conformance_test.go:37`).
 

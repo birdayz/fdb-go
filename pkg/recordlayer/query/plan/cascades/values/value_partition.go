@@ -12,9 +12,13 @@ import (
 const partitionValueTypeURL = "type.fdb.dev/recordlayer/PartitionValueV1"
 
 // PartitionValueError reports an invalid typed interval coordinate.
-type PartitionValueError struct{ Message string }
+type PartitionValueError struct {
+	Message string
+	Cause   error
+}
 
 func (e *PartitionValueError) Error() string { return "partition value: " + e.Message }
+func (e *PartitionValueError) Unwrap() error { return e.Cause }
 
 // PartitionValue is the internal BIGINT floor coordinate, not SQL division.
 // Width is part of its identity and is never a query parameter.
@@ -78,7 +82,7 @@ func (c *SerializationContext) partitionValueToProto(v *PartitionValue) (*gen.PV
 func (c *SerializationContext) partitionValueFromProto(data []byte) (Value, error) {
 	payload := &gen.PDerivedValue{}
 	if err := proto.Unmarshal(data, payload); err != nil {
-		return nil, &PartitionValueError{Message: fmt.Sprintf("invalid serialized coordinate: %v", err)}
+		return nil, &PartitionValueError{Message: fmt.Sprintf("invalid serialized coordinate: %v", err), Cause: err}
 	}
 	if len(payload.Children) != 2 {
 		return nil, &PartitionValueError{Message: "serialized coordinate requires source and interval"}

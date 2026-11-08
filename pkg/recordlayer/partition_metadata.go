@@ -27,11 +27,14 @@ type PartitionMetadataError struct {
 	RecordType string
 	IndexName  string
 	Message    string
+	Cause      error
 }
 
 func (e *PartitionMetadataError) Error() string {
 	return fmt.Sprintf("partition metadata: %s (record_type=%q, index=%q)", e.Message, e.RecordType, e.IndexName)
 }
+
+func (e *PartitionMetadataError) Unwrap() error { return e.Cause }
 
 // PartitionSpec derives the specification from the canonical physical primary key.
 // An unpartitioned record type returns nil, nil.
@@ -63,7 +66,7 @@ func partitionSpecForPrimaryKey(name string, primaryKey KeyExpression) (*Partiti
 	}
 	spec, err := partitionArguments(p.arguments)
 	if err != nil {
-		return bad(err.Error())
+		return nil, &PartitionMetadataError{RecordType: name, Message: err.Error(), Cause: err}
 	}
 	if !ordinaryPartitionSource(columns[2:], spec.sourceColumn) {
 		return bad("logical primary key must include the source as an ordinary key column")
@@ -176,10 +179,23 @@ func validatePartitionIndex(name string, primaryKey KeyExpression, spec *Partiti
 	if hasTypeKey {
 		return bad("single-table local indexes must not repeat the record type discriminator")
 	}
+	positions := buildPrimaryKeyComponentPositions(idx.RootExpression, primaryKey)
+	if covering, ok := idx.RootExpression.(*KeyWithValueExpression); ok {
+		for _, position := range positions {
+			if position >= covering.splitPoint {
+				return bad("covering index cannot trim a primary key column from included values")
+			}
+		}
+	}
 	if idx.Type == IndexTypeText {
 		grouping, ok := idx.RootExpression.(*GroupingKeyExpression)
 		if !ok || grouping.wholeKey.ColumnSize()-grouping.groupedCount < 1 {
 			return bad("TEXT index must group by the partition coordinate")
+		}
+		for _, position := range positions {
+			if position == textFieldPosition(idx.RootExpression) {
+				return bad("TEXT index cannot trim a primary key column from the tokenized body")
+			}
 		}
 	} else if _, grouped := idx.RootExpression.(*GroupingKeyExpression); grouped {
 		return bad("grouped VALUE indexes are not supported")

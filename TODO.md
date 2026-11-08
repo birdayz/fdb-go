@@ -3909,6 +3909,11 @@ remain unchanged.
   exclusion and regression coverage. Measure FTS ingest/query/retention costs
   separately before OTel adoption; settle V2's explicit-event-ID replay policy
   and any global trace/identity locator. No automatic V1 migration.
+- [ ] Extend the validated local-index allowlist only after proving PK identity:
+  covering indexes with value-only PK overlaps and TEXT indexes whose tokenized
+  body overlaps the PK are rejected in v1. Supporting them requires preserving
+  every original PK component through maintenance and fetch, with shared-key/token
+  collision regressions; do not change plain-store layouts as a side effect.
 - [ ] Later, separately scoped: temporal/calendar keys, nonuniform RANGE bounds,
   HASH/LIST, additional index maintainers, global uniqueness, online
   repartitioning, TTL/late-data rejection and concurrent drop/backfill. None is

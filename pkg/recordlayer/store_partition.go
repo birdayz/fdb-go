@@ -18,10 +18,8 @@ func (e *PartitionCleanupError) Error() string {
 	return fmt.Sprintf("partition cleanup: %s (record_type=%q, index=%q)", e.Reason, e.RecordType, e.IndexName)
 }
 
-// ClearPartitionData clears one physical interval's records and supported local
-// index structures. This is a storage primitive, not DROP PARTITION: callers
-// must exclude concurrent writers until directory generations/fences are added.
-// It neither checks partition existence nor retires a directory entry.
+// ClearPartitionData clears physical interval data, not partition existence or lifecycle state.
+// Callers must exclude concurrent writers; this primitive is not DROP PARTITION.
 func (store *FDBRecordStore) ClearPartitionData(recordTypeName string, coordinate int64) error {
 	finishWrite, err := store.context.beginRecordWrite()
 	if err != nil {

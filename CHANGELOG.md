@@ -201,6 +201,15 @@ below; neither publication nor readiness is asserted.
   checks; explicit failed commits release their transaction handles.
 
 ### Breaking changes / compatibility
+- **Interval-partition metadata (RFC-284; implementation in progress):** opting
+  in through the Record Layer writes the required `fdb_partition_v1` key
+  function. Java 4.14.2.0 and pre-feature Go refuse the entire schema, including
+  its plain tables; rolling back to an older binary cannot reopen it. Existing
+  unpartitioned schemas are unchanged. There is no automatic conversion or
+  in-place repartitioning: migration requires a separately created table/store
+  and explicit copying. This is the layout/cleanup foundation, not complete SQL
+  partition routing, planning or safe DROP. See the
+  [compatibility boundary](DIVERGENCES.md#interval-partitioned-tables-go-only-rfc-284).
 - **`read_only` and `NewConnector`:** no persisted or wire change; SQL
   behaviour changes only on a `read_only` connection. The unknown-DSN-parameter
   error lists `read_only`. `RelationalKeyspace.LookupSchemaSubspace` and

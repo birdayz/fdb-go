@@ -9,6 +9,30 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+func TestPartitionValuesMatchColumnIncludesSource(t *testing.T) {
+	t.Parallel()
+	row := indexExpansionRowType("T", "SOURCE", "OTHER")
+	coordinate := func(alias string, ordinal int) values.Value {
+		source := indexExpansionField(t, values.NamedCorrelationIdentifier(alias), row, ordinal)
+		v, err := values.NewPartitionValue(source, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	query, same, other := coordinate("query", 0), coordinate("candidate", 0), coordinate("candidate", 1)
+	for _, pair := range [][2]values.Value{{query, same}, {same, query}} {
+		if !valuesMatchColumn(pair[0], pair[1]) {
+			t.Fatal("independent same-source partition columns did not match")
+		}
+	}
+	for _, pair := range [][2]values.Value{{query, other}, {other, query}} {
+		if valuesMatchColumn(pair[0], pair[1]) {
+			t.Fatal("equal-width partition columns with different sources matched")
+		}
+	}
+}
+
 func TestPartitionKeyExpandsToTypedValue(t *testing.T) {
 	t.Parallel()
 	root := &gen.KeyExpression{Function: &gen.Function{

@@ -101,11 +101,14 @@ func TestPartitionFunctionProtoAndStructuralEquality(t *testing.T) {
 		Concat(Field("coord_x"), Literal(int64(0))), Concat(Field("coord_x"), Literal(int64(-1))),
 		Concat(Field("coord_x"), Literal(int32(10))), Concat(FanOut("tags"), Literal(int64(10))),
 		Concat(Field("coord_x"), Field("coord_y")),
+		Concat(FieldWithNullStandin("coord_x", FanTypeNone, NullStandinNotNull), Literal(int64(10))),
 	} {
 		_, err := KeyExpressionFromProto((&FunctionKeyExpression{name: FunctionNamePartitionV1, arguments: arguments}).ToKeyExpression())
 		var typed *KeyExpressionDeserializationError
-		if !errors.As(err, &typed) {
-			t.Fatalf("malformed arguments %v accepted: %v", arguments.ToKeyExpression(), err)
+		var cause *KeyExpressionError
+		var core *RecordCoreError
+		if !errors.As(err, &typed) || !errors.As(err, &cause) || !errors.As(err, &core) || typed.Cause != cause {
+			t.Fatalf("malformed arguments %v lost typed validation cause: %v", arguments.ToKeyExpression(), err)
 		}
 	}
 }
@@ -145,6 +148,154 @@ func TestPartitionFunctionRenamePreservesSubtype(t *testing.T) {
 	}
 }
 
+// Serialize deliberately invalid builder state without invoking Build's guards.
+func partitionMetadataProtoUnchecked(t testing.TB, b *RecordMetaDataBuilder) *gen.MetaData {
+	t.Helper()
+	md := &RecordMetaData{
+		recordTypes: b.recordTypes, fileDescriptor: b.fileDescriptor, unionDescriptor: b.unionDescriptor,
+		indexes: b.indexes, universalIndexes: b.universalIndexes, version: b.version,
+		recordCountKey: b.recordCountKey,
+	}
+	wire, err := md.ToProto()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wire
+}
+
+func TestPartitionCanonicalGuardsAtBuildAndLoad(t *testing.T) {
+	t.Parallel()
+	p := func() KeyExpression { return PartitionExpr(Field("coord_x"), 10) }
+	window := func(t testing.TB, idx *Index) *Index {
+		t.Helper()
+		if err := idx.SetPredicateProto(&gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+			OrderingField: []string{"price"}, Size: proto.Int32(2), Direction: gen.RowNumberWindowPredicate_ASC.Enum(),
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		return idx
+	}
+	for _, tc := range []struct {
+		name, recordType, indexName, message string
+		configure                            func(testing.TB, *RecordMetaDataBuilder)
+	}{
+		{"universal", "Order", "", "universal and multi-type indexes are not supported", func(_ testing.TB, b *RecordMetaDataBuilder) {
+			b.AddUniversalIndex(NewIndex("bad", Field("price")))
+		}},
+		{"multi-type", "Order", "", "universal and multi-type indexes are not supported", func(_ testing.TB, b *RecordMetaDataBuilder) {
+			b.AddMultiTypeIndex([]string{"Order", "TypedRecord"}, NewIndex("bad", Field("price")))
+		}},
+		{"nonleading discriminator", "Order", "bad", "single-table local indexes must not repeat the record type discriminator", func(_ testing.TB, b *RecordMetaDataBuilder) {
+			b.AddIndex("Order", NewIndex("bad", Concat(p(), RecordTypeKey(), Field("price"))))
+		}},
+		{"duplicate PK coordinate", "Order", "", "primary key must be (RecordTypeKey, partition function, logical key...)", func(_ testing.TB, b *RecordMetaDataBuilder) {
+			b.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), p(), p(), Field("coord_x"), Field("order_id")))
+		}},
+		{"duplicate index coordinate", "Order", "bad", "local index must begin with the identical partition function", func(_ testing.TB, b *RecordMetaDataBuilder) {
+			b.AddIndex("Order", NewIndex("bad", Concat(p(), p(), Field("price"))))
+		}},
+		{"coordinate in values", "Order", "bad", "covering index must keep the partition coordinate in its key", func(_ testing.TB, b *RecordMetaDataBuilder) {
+			b.AddIndex("Order", NewIndex("bad", KeyWithValue(Concat(p(), Field("price")), 0)))
+		}},
+		{"windowed VALUE", "Order", "bad", "windowed indexes are not supported", func(t testing.TB, b *RecordMetaDataBuilder) {
+			b.AddIndex("Order", window(t, NewIndex("bad", Concat(p(), Field("price")))))
+		}},
+		{"windowed TEXT", "Order", "bad", "windowed indexes are not supported", func(t testing.TB, b *RecordMetaDataBuilder) {
+			b.AddIndex("Order", window(t, NewTextIndex("bad", GroupBy(Nest("flower", Field("type")), p()))))
+		}},
+		{"covering source only in values", "Order", "bad", "covering index cannot trim a primary key column from included values", func(_ testing.TB, b *RecordMetaDataBuilder) {
+			b.AddIndex("Order", NewIndex("bad", KeyWithValue(Concat(p(), Field("price"), Field("coord_x")), 2)))
+		}},
+		{"covering other PK only in values", "Order", "bad", "covering index cannot trim a primary key column from included values", func(_ testing.TB, b *RecordMetaDataBuilder) {
+			b.AddIndex("Order", NewIndex("bad", KeyWithValue(Concat(p(), Field("price"), Field("order_id")), 2)))
+		}},
+		{"tokenized PK", "TypedRecord", "bad", "TEXT index cannot trim a primary key column from the tokenized body", func(_ testing.TB, b *RecordMetaDataBuilder) {
+			q := PartitionExpr(Field("val_int64"), 10)
+			b.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), q, Field("val_int64"), Field("val_string")))
+			b.AddIndex("TypedRecord", NewTextIndex("bad", GroupBy(Field("val_string"), q)))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b := partitionTestBuilder()
+			tc.configure(t, b)
+			wire := partitionMetadataProtoUnchecked(t, b)
+			_, buildErr := b.Build()
+			_, loadErr := RecordMetaDataFromProto(wire)
+			for label, err := range map[string]error{"Build": buildErr, "Load": loadErr} {
+				var typed *PartitionMetadataError
+				if !errors.As(err, &typed) || typed.Message != tc.message || typed.RecordType != tc.recordType || typed.IndexName != tc.indexName {
+					t.Fatalf("%s = %v, want PartitionMetadataError(%q,%q,%q)", label, err, tc.recordType, tc.indexName, tc.message)
+				}
+			}
+		})
+	}
+	// These controls prove the ordinary descriptor/window validators permit
+	// the shapes that the partition-specific restrictions refuse above.
+	for _, kind := range []string{"universal", "multi-type", "windowed VALUE", "windowed TEXT", "covering value-only PK", "tokenized PK"} {
+		t.Run("plain control "+kind, func(t *testing.T) {
+			t.Parallel()
+			b := partitionTestBuilder()
+			b.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("coord_x"), Field("order_id")))
+			b.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("val_int64"), Field("id")))
+			switch kind {
+			case "universal":
+				b.AddUniversalIndex(NewIndex("control", Field("price")))
+			case "multi-type":
+				b.AddMultiTypeIndex([]string{"Order", "TypedRecord"}, NewIndex("control", Field("price")))
+			case "windowed VALUE":
+				b.AddIndex("Order", window(t, NewIndex("control", Field("price"))))
+			case "windowed TEXT":
+				b.AddIndex("Order", window(t, NewTextIndex("control", Nest("flower", Field("type")))))
+			case "covering value-only PK":
+				b.AddIndex("Order", NewIndex("control", KeyWithValue(Concat(Field("price"), Field("coord_x")), 1)))
+			case "tokenized PK":
+				b.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("val_int64"), Field("val_string")))
+				b.AddIndex("TypedRecord", NewTextIndex("control", Field("val_string")))
+			}
+			md, err := b.Build()
+			if err != nil {
+				t.Fatal(err)
+			}
+			wire, err := md.ToProto()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := RecordMetaDataFromProto(wire); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestPartitionNotNullSourceAndMetadataCauses(t *testing.T) {
+	t.Parallel()
+	b := partitionTestBuilder()
+	p := PartitionExpr(FieldWithNullStandin("coord_x", FanTypeNone, NullStandinNotNull), 10)
+	b.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), p, Field("coord_x"), Field("order_id")))
+	wire := partitionMetadataProtoUnchecked(t, b)
+	_, buildErr := b.Build()
+	_, loadErr := RecordMetaDataFromProto(wire)
+	for label, err := range map[string]error{"Build": buildErr, "Load": loadErr} {
+		var key *KeyExpressionError
+		if !errors.As(err, &key) || key.Message != "partition source must be an ordinary scalar field" {
+			t.Fatalf("%s = %v, want the NOT_NULL source guard", label, err)
+		}
+	}
+	var decoded *KeyExpressionDeserializationError
+	if !errors.As(loadErr, &decoded) || decoded.Cause == nil {
+		t.Fatalf("metadata load lost the key-expression validation cause: %v", loadErr)
+	}
+	bad := PartitionExpr(Field("coord_x"), 0)
+	rt := &RecordType{Name: "Order", PrimaryKey: Concat(RecordTypeKey(), bad, Field("coord_x"), Field("order_id"))}
+	_, err := rt.PartitionSpec()
+	var metadata *PartitionMetadataError
+	var key *KeyExpressionError
+	if !errors.As(err, &metadata) || !errors.As(err, &key) || metadata.Cause != key || key.Message != "partition interval must be a positive BIGINT literal" {
+		t.Fatalf("derived metadata lost its validation cause: %v", err)
+	}
+}
+
 func TestPartitionMetadataValidation(t *testing.T) {
 	t.Parallel()
 	p := func() KeyExpression { return PartitionExpr(Field("coord_x"), 10) }
@@ -178,7 +329,7 @@ func TestPartitionMetadataValidation(t *testing.T) {
 			b.AddIndex("Order", NewIndex("bad", Concat(PartitionExpr(Field("coord_x"), 11), Field("price"))))
 		}},
 		{"index type discriminator", func(b *RecordMetaDataBuilder) {
-			b.AddIndex("Order", NewIndex("bad", Concat(RecordTypeKey(), p(), Field("price"))))
+			b.AddIndex("Order", NewIndex("bad", Concat(p(), RecordTypeKey(), Field("price"))))
 		}},
 		{"unique without source", func(b *RecordMetaDataBuilder) {
 			b.AddIndex("Order", NewIndex("bad", Concat(p(), Field("price"))).SetUnique())
@@ -195,9 +346,9 @@ func TestPartitionMetadataValidation(t *testing.T) {
 		{"aggregate", func(b *RecordMetaDataBuilder) {
 			b.AddIndex("Order", NewCountIndex("bad", GroupBy(Field("price"), p())))
 		}},
-		{"universal", func(b *RecordMetaDataBuilder) { b.AddUniversalIndex(NewIndex("bad", Concat(p(), Field("price")))) }},
+		{"universal", func(b *RecordMetaDataBuilder) { b.AddUniversalIndex(NewIndex("bad", Field("price"))) }},
 		{"multi-type", func(b *RecordMetaDataBuilder) {
-			b.AddMultiTypeIndex([]string{"Order", "TypedRecord"}, NewIndex("bad", Concat(p(), Field("price"))))
+			b.AddMultiTypeIndex([]string{"Order", "TypedRecord"}, NewIndex("bad", Field("price")))
 		}},
 		{"store count", func(b *RecordMetaDataBuilder) { b.SetRecordCountKey(RecordTypeKey()) }},
 		{"plain table partition index", func(b *RecordMetaDataBuilder) {

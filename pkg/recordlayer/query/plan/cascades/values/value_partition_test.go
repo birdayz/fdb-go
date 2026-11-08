@@ -69,6 +69,160 @@ func TestPartitionValueEvaluationAndErrors(t *testing.T) {
 	}
 }
 
+func TestPartitionValueUncheckedReplacement(t *testing.T) {
+	t.Parallel()
+	source := &ConstantValue{Value: int64(31), Typ: NotNullLong}
+	v, err := NewPartitionValue(source, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := &ConstantValue{Value: int64(-11), Typ: NotNullLong}
+	hit := false
+	replaced := Replace(v, func(node Value) Value {
+		if node == source {
+			hit = true
+			return replacement
+		}
+		return node
+	})
+	if !hit {
+		t.Fatal("replacement did not visit the source")
+	}
+	for label, result := range map[string]Value{"Replace": replaced, "WithChildren": WithChildren(v, []Value{replacement})} {
+		got, ok := result.(*PartitionValue)
+		if !ok || got == v || got.Source != replacement || got.Width != 10 {
+			t.Fatalf("%s lost replacement or width: %#v", label, result)
+		}
+		if coordinate, err := got.Evaluate(nil); err != nil || coordinate != int64(-2) {
+			t.Fatalf("%s coordinate = %v,%v", label, coordinate, err)
+		}
+	}
+	bad := &ConstantValue{Value: "bad", Typ: NotNullString}
+	if result := Replace(v, func(node Value) Value {
+		if node == source {
+			return bad
+		}
+		return node
+	}); result != nil {
+		t.Fatalf("invalid Replace retained a value: %#v", result)
+	}
+	for _, children := range [][]Value{nil, {bad}, {nil}, {replacement, replacement}} {
+		if result := WithChildren(v, children); result != nil {
+			t.Fatalf("invalid WithChildren(%v) retained a value: %#v", children, result)
+		}
+	}
+	if v.Source != source || v.Width != 10 {
+		t.Fatal("replacement mutated the original")
+	}
+}
+
+func TestPartitionValueAccessorIdentityIncludesSource(t *testing.T) {
+	t.Parallel()
+	row := NewRecordType("T", false, []Field{{Name: "SOURCE", FieldType: NotNullLong}, {Name: "OTHER", Ordinal: 1, FieldType: NotNullLong}})
+	root, err := NewQuantifiedObjectValue(NamedCorrelationIdentifier("row"), row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := func(ordinal int) *PartitionValue {
+		source, err := ResolveFieldOrdinals(root, []int{ordinal})
+		if err != nil {
+			t.Fatal(err)
+		}
+		v, err := NewPartitionValue(source, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	a, same, other := build(0), build(0), build(1)
+	if a.Source == same.Source {
+		t.Fatal("positive control reused the source object")
+	}
+	for _, pair := range [][2]Value{{a, same}, {same, a}} {
+		if !ColumnNamePathsEqual(pair[0], pair[1]) {
+			t.Fatal("independently built same-source coordinates did not match")
+		}
+	}
+	for _, pair := range [][2]Value{{a, other}, {other, a}} {
+		if ColumnNamePathsEqual(pair[0], pair[1]) {
+			t.Fatal("equal-width coordinates over different columns matched")
+		}
+	}
+}
+
+func TestPartitionValueTypedDecoding(t *testing.T) {
+	t.Parallel()
+	long := func(x int64) Value { return &ConstantValue{Value: x, Typ: NotNullLong} }
+	nonliteral, err := NewQuantifiedObjectValue(NamedCorrelationIdentifier("width"), NotNullLong)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name          string
+		source, width Value
+		message       string
+		routing       bool
+	}{
+		{"source INT", &ConstantValue{Value: int32(1), Typ: NotNullInt}, long(10), "source must have BIGINT type", false},
+		{"source STRING", &ConstantValue{Value: "1", Typ: NotNullString}, long(10), "source must have BIGINT type", false},
+		{"nonliteral width", long(1), nonliteral, "serialized interval must be a BIGINT literal", false},
+		{"NULL width node", long(1), NewNullValue(NullableLong), "serialized interval must be a BIGINT literal", false},
+		{"NULL width literal", long(1), &ConstantValue{Value: nil, Typ: NullableLong}, "serialized interval must be a BIGINT literal", false},
+		{"INT width", long(1), &ConstantValue{Value: int32(10), Typ: NotNullInt}, "serialized interval must be a BIGINT literal", false},
+		{"STRING width", long(1), &ConstantValue{Value: "10", Typ: NotNullString}, "serialized interval must be a BIGINT literal", false},
+		{"zero width", long(1), long(0), "interval width must be positive", true},
+		{"negative width", long(1), long(-1), "interval width must be positive", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := NewSerializationContext()
+			source, err := c.ValueToProto(tc.source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var width *gen.PValue
+			if literal, ok := tc.width.(*ConstantValue); ok && literal.Value == nil {
+				resultType, err := c.TypeToProto(literal.Type())
+				if err != nil {
+					t.Fatal(err)
+				}
+				// An empty primitive object carries NULL; result_type retains LONG.
+				width = &gen.PValue{SpecificValue: &gen.PValue_LiteralValue{LiteralValue: &gen.PLiteralValue{
+					ResultType: resultType,
+					Value:      &gen.PComparableObject{SpecificObject: &gen.PComparableObject_PrimitiveObject{PrimitiveObject: &gen.Value{}}},
+				}}}
+				decoded, err := NewSerializationContext().ValueFromProto(width)
+				constant, ok := decoded.(*ConstantValue)
+				if err != nil || !ok || constant.Value != nil || !constant.Type().Equals(NullableLong) {
+					t.Fatalf("NULL width fixture did not decode as a nullable-LONG literal: %#v, %v", decoded, err)
+				}
+			} else {
+				width, err = c.ValueToProto(tc.width)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			payload, err := proto.Marshal(&gen.PDerivedValue{Children: []*gen.PValue{source, width}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			wire := &gen.PValue{SpecificValue: &gen.PValue_AdditionalValues{AdditionalValues: &anypb.Any{TypeUrl: partitionValueTypeURL, Value: payload}}}
+			_, err = NewSerializationContext().ValueFromProto(wire)
+			if tc.routing {
+				var typed *partition.RoutingError
+				if !errors.As(err, &typed) || typed.Reason != tc.message {
+					t.Fatalf("typed width rejection = %v", err)
+				}
+			} else {
+				var typed *PartitionValueError
+				if !errors.As(err, &typed) || typed.Message != tc.message {
+					t.Fatalf("typed decode rejection = %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestPartitionValueRebaseEqualityHashAndSerialization(t *testing.T) {
 	t.Parallel()
 	oldAlias, newAlias := NamedCorrelationIdentifier("old"), NamedCorrelationIdentifier("new")
@@ -136,8 +290,12 @@ func TestPartitionValueRebaseEqualityHashAndSerialization(t *testing.T) {
 	}
 	for _, payload := range [][]byte{nil, {0xff}} {
 		_, err := NewSerializationContext().ValueFromProto(&gen.PValue{SpecificValue: &gen.PValue_AdditionalValues{AdditionalValues: &anypb.Any{TypeUrl: partitionValueTypeURL, Value: payload}}})
-		if err == nil {
-			t.Fatal("malformed serialized partition value accepted")
+		var typed *PartitionValueError
+		if !errors.As(err, &typed) {
+			t.Fatalf("malformed serialized partition value = %v", err)
+		}
+		if len(payload) != 0 && (typed.Cause == nil || !errors.Is(err, proto.Error)) {
+			t.Fatalf("malformed protobuf cause was discarded: %v", err)
 		}
 	}
 }

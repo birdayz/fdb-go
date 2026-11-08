@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 
@@ -188,6 +189,301 @@ var _ = Describe("Partitioned physical layout", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("refuses NULL routing at SaveRecord without mutations even when the caller commits", func() {
+		b := partitionTestBuilder().SetStoreRecordVersions(true)
+		b.AddIndex("Order", NewIndex("null_value", Concat(PartitionExpr(Field("coord_x"), 10), Field("price"))))
+		b.AddIndex("Order", NewTextIndex("null_text", GroupBy(Nest("flower", Field("type")), PartitionExpr(Field("coord_x"), 10))))
+		md, err := b.Build()
+		Expect(err).NotTo(HaveOccurred())
+		root := specSubspace()
+		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), CoordX: proto.Int64(10), Price: proto.Int32(7), Flower: &demopb.Flower{Type: proto.String("connection timeout")}})
+			Expect(err).NotTo(HaveOccurred())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		var before []fdb.KeyValue
+		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).Open()
+			Expect(err).NotTo(HaveOccurred())
+			before, err = rc.Transaction().GetRange(root, fdb.RangeOptions{}).GetSliceWithError()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(before).NotTo(BeEmpty())
+			for _, record := range []proto.Message{&demopb.Order{OrderId: proto.Int64(2)}, &demopb.TypedRecord{Id: proto.Int64(2)}} {
+				_, err := store.SaveRecord(record)
+				var routing *PartitionRoutingError
+				Expect(errors.As(err, &routing)).To(BeTrue(), "%v", err)
+				Expect(routing.Value).To(BeNil())
+				Expect(routing.Width).To(Equal(int64(10)))
+				Expect(routing.Reason).To(Equal("source must be a non-NULL BIGINT"))
+			}
+			after, err := rc.Transaction().GetRange(root, fdb.RangeOptions{}).GetSliceWithError()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(after).To(Equal(before))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			after, err := rc.Transaction().GetRange(root, fdb.RangeOptions{}).GetSliceWithError()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(after).To(Equal(before))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("preserves both covering entries when the sources share a coordinate and logical ID", func() {
+		b := partitionTestBuilder()
+		p := func() KeyExpression { return PartitionExpr(Field("coord_x"), 10) }
+		indexes := []*Index{
+			NewIndex("cover_uncovered_source", KeyWithValue(Concat(p(), Field("price"), Field("quantity")), 2)),
+			NewIndex("cover_source_in_key_and_value", KeyWithValue(Concat(p(), Field("price"), Field("coord_x"), Field("coord_x")), 3)),
+			NewIndex("cover_id_in_key_and_value", KeyWithValue(Concat(p(), Field("price"), Field("order_id"), Field("order_id")), 3)),
+		}
+		for _, idx := range indexes {
+			b.AddIndex("Order", idx)
+		}
+		md, err := b.Build()
+		Expect(err).NotTo(HaveOccurred())
+		wire, err := md.ToProto()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = RecordMetaDataFromProto(wire)
+		Expect(err).NotTo(HaveOccurred())
+		root := specSubspace()
+		typeKey := md.GetRecordType("Order").GetRecordTypeKey()
+		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).CreateOrOpen()
+			Expect(err).NotTo(HaveOccurred())
+			for _, source := range []int64{-11, -12} {
+				_, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), CoordX: proto.Int64(source), Price: proto.Int32(7), Quantity: proto.Int32(3)})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).Open()
+			Expect(err).NotTo(HaveOccurred())
+			for i, idx := range indexes {
+				rows, err := AsList(ctx, store.ScanIndexRecords(idx.Name, TupleRangeAll, nil, ForwardScan()))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(rows).To(HaveLen(2), idx.Name)
+				seen := map[int64]bool{}
+				for _, row := range rows {
+					msg := row.Record.Record.ProtoReflect()
+					source := msg.Get(msg.Descriptor().Fields().ByName("coord_x")).Int()
+					seen[source] = true
+					pk := tuple.Tuple{typeKey, int64(-2), source, int64(1)}
+					Expect(row.Record.PrimaryKey).To(Equal(pk))
+					Expect(row.IndexEntry.PrimaryKey()).To(Equal(pk))
+					included := int64(3)
+					if i == 1 {
+						included = source
+					}
+					if i == 2 {
+						included = 1
+					}
+					Expect(row.IndexEntry.Value).To(Equal(tuple.Tuple{included}))
+				}
+				Expect(seen).To(Equal(map[int64]bool{-11: true, -12: true}))
+			}
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	for _, bodyInPK := range []bool{false, true} {
+		It(fmt.Sprintf("preserves shared-token TEXT documents with body in PK=%t", bodyInPK), func() {
+			b := partitionTestBuilder()
+			p := PartitionExpr(Field("val_int64"), 10)
+			groups := []KeyExpression{p}
+			if bodyInPK {
+				b.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), p, Field("val_int64"), Field("val_string")))
+				groups = append(groups, Field("val_string"))
+			}
+			idx := NewTextIndex("shared_token", GroupBy(Field("val_string"), groups...))
+			b.AddIndex("TypedRecord", idx)
+			md, err := b.Build()
+			Expect(err).NotTo(HaveOccurred())
+			wire, err := md.ToProto()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = RecordMetaDataFromProto(wire)
+			Expect(err).NotTo(HaveOccurred())
+			root := specSubspace()
+			typeKey := md.GetRecordType("TypedRecord").GetRecordTypeKey()
+			bodies := []string{"connection timeout", "connection error"}
+			_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).CreateOrOpen()
+				Expect(err).NotTo(HaveOccurred())
+				for i, body := range bodies {
+					_, err := store.SaveRecord(&demopb.TypedRecord{Id: proto.Int64(int64(i + 1)), ValInt64: proto.Int64(-11), ValString: proto.String(body)})
+					Expect(err).NotTo(HaveOccurred())
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+				store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).Open()
+				Expect(err).NotTo(HaveOccurred())
+				prefixes := []tuple.Tuple{{int64(-2), "connection"}}
+				if bodyInPK {
+					prefixes = []tuple.Tuple{{int64(-2), bodies[0], "connection"}, {int64(-2), bodies[1], "connection"}}
+				}
+				var rows []*FDBIndexedRecord
+				for _, prefix := range prefixes {
+					postings := store.ScanIndexByType(idx, IndexScanByTextToken, TupleRangeAllOf(prefix), nil, ForwardScan())
+					fetched, err := AsList(ctx, store.FetchIndexRecords(postings, IndexOrphanError, nil))
+					Expect(err).NotTo(HaveOccurred())
+					if bodyInPK {
+						Expect(fetched).To(HaveLen(1))
+					} else {
+						Expect(fetched).To(HaveLen(2))
+					}
+					rows = append(rows, fetched...)
+				}
+				Expect(rows).To(HaveLen(2))
+				seen := map[string]bool{}
+				for _, row := range rows {
+					msg := row.Record.Record.ProtoReflect()
+					body := msg.Get(msg.Descriptor().Fields().ByName("val_string")).String()
+					seen[body] = true
+					var logicalLast any = msg.Get(msg.Descriptor().Fields().ByName("id")).Int()
+					if bodyInPK {
+						logicalLast = body
+					}
+					pk := tuple.Tuple{typeKey, int64(-2), int64(-11), logicalLast}
+					Expect(row.Record.PrimaryKey).To(Equal(pk))
+					Expect(row.IndexEntry.PrimaryKey()).To(Equal(pk))
+					Expect(row.IndexEntry.Value).To(Equal(tuple.Tuple{tuple.Tuple{int64(0)}}))
+				}
+				Expect(seen).To(Equal(map[string]bool{bodies[0]: true, bodies[1]: true}))
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	}
+
+	for _, format := range []int32{formatVersionSaveUnsplitWithSuffix, formatVersionDefault} {
+		for _, pending := range []bool{false, true} {
+			It(fmt.Sprintf("reclaims format %d versions with pending=%t and preserves neighboring versions", format, pending), func() {
+				b := partitionTestBuilder().SetStoreRecordVersions(true)
+				md, err := b.Build()
+				Expect(err).NotTo(HaveOccurred())
+				root := specSubspace()
+				typeKey := md.GetRecordType("Order").GetRecordTypeKey()
+				targetPK := tuple.Tuple{typeKey, int64(-2), int64(-11), int64(1)}
+				neighborPK := tuple.Tuple{typeKey, int64(1), int64(10), int64(1)}
+				var neighborLocal int
+				var neighborCommitted []byte
+				open := func(rc *FDBRecordContext) *FDBRecordStore {
+					store, err := NewStoreBuilder().SetContext(rc).SetMetaDataProvider(md).SetSubspace(root).SetFormatVersion(format).CreateOrOpen()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(store.useOldVersionFormat()).To(Equal(format < formatVersionSaveVersionWithRecord))
+					return store
+				}
+				buffered := func(rc *FDBRecordContext, key fdb.Key) bool {
+					r, err := fdb.PrefixRange(key)
+					Expect(err).NotTo(HaveOccurred())
+					return rc.HasVersionMutationsInRange(r.Begin.FDBKey(), r.End.FDBKey())
+				}
+				assertTargetEmpty := func(rc *FDBRecordContext) {
+					for _, sub := range []int{RecordKey, RecordVersionKey} {
+						r, err := fdb.PrefixRange(root.Sub(sub).Pack(tuple.Tuple{typeKey, int64(-2)}))
+						Expect(err).NotTo(HaveOccurred())
+						rows, err := rc.Transaction().GetRange(r, fdb.RangeOptions{}).GetSliceWithError()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(rows).To(BeEmpty(), "target record/version keys must not be resurrected")
+					}
+				}
+				seed := func(rc *FDBRecordContext, store *FDBRecordStore) {
+					for _, source := range []int64{-11, 10} {
+						saved, err := store.SaveRecord(&demopb.Order{OrderId: proto.Int64(1), CoordX: proto.Int64(source)})
+						Expect(err).NotTo(HaveOccurred())
+						Expect(saved.Version).NotTo(BeNil())
+						Expect(saved.Version.IsComplete()).To(BeFalse())
+						key := store.versionKey(saved.PrimaryKey)
+						local, present := rc.GetLocalVersion(key)
+						Expect(present).To(BeTrue(), "local-version positive control")
+						Expect(local).To(Equal(saved.Version.GetLocalVersion()))
+						Expect(buffered(rc, key)).To(BeTrue(), "pending-mutation positive control")
+						if source == 10 {
+							neighborLocal = local
+						}
+					}
+				}
+				clear := func(rc *FDBRecordContext, store *FDBRecordStore) {
+					targetKey, neighborKey := store.versionKey(targetPK), store.versionKey(neighborPK)
+					if pending {
+						Expect(buffered(rc, targetKey)).To(BeTrue())
+						Expect(buffered(rc, neighborKey)).To(BeTrue())
+					} else {
+						target, err := rc.Transaction().Get(targetKey).Get()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(target).NotTo(BeEmpty(), "committed target-version positive control")
+						neighborCommitted, err = rc.Transaction().Get(neighborKey).Get()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(neighborCommitted).NotTo(BeEmpty(), "committed neighbor-version positive control")
+					}
+					body, err := store.LoadRecord(targetPK)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(body).NotTo(BeNil())
+					Expect(body.Version).NotTo(BeNil())
+					Expect(store.ClearPartitionData("Order", -2)).To(Succeed())
+					assertTargetEmpty(rc)
+					Expect(buffered(rc, targetKey)).To(BeFalse())
+					_, targetCached := rc.GetLocalVersion(targetKey)
+					Expect(targetCached).To(BeFalse())
+					if pending {
+						Expect(buffered(rc, neighborKey)).To(BeTrue())
+						local, present := rc.GetLocalVersion(neighborKey)
+						Expect(present).To(BeTrue())
+						Expect(local).To(Equal(neighborLocal))
+					} else {
+						version, err := rc.Transaction().Get(neighborKey).Get()
+						Expect(err).NotTo(HaveOccurred())
+						Expect(version).To(Equal(neighborCommitted))
+					}
+				}
+				_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+					store := open(rc)
+					seed(rc, store)
+					if pending {
+						clear(rc, store)
+					}
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+				if !pending {
+					_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) { clear(rc, open(rc)); return nil, nil })
+					Expect(err).NotTo(HaveOccurred())
+				}
+				_, err = sharedDB.Run(ctx, func(rc *FDBRecordContext) (any, error) {
+					store := open(rc)
+					assertTargetEmpty(rc)
+					target, err := store.LoadRecord(targetPK)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(target).To(BeNil())
+					neighbor, err := store.LoadRecord(neighborPK)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(neighbor).NotTo(BeNil())
+					Expect(neighbor.Version).NotTo(BeNil())
+					Expect(neighbor.Version.IsComplete()).To(BeTrue())
+					Expect(neighbor.Version.GetLocalVersion()).To(Equal(neighborLocal))
+					version, err := rc.Transaction().Get(store.versionKey(neighborPK)).Get()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(version).NotTo(BeEmpty())
+					if !pending {
+						Expect(version).To(Equal(neighborCommitted))
+					}
+					return nil, nil
+				})
+				Expect(err).NotTo(HaveOccurred())
+			})
+		}
+	}
 
 	for _, rejection := range []string{"write-only", "heartbeat", "pending queue", "inconsistent expression", "intermingled sibling", "plain table", "unknown table"} {
 		It("stages no clear when cleanup refuses "+rejection, func() {

@@ -210,6 +210,8 @@ var _ = Describe("PartitionRefusalJavaProbe", func() {
 						if partitioned {
 							var exit *exec.ExitError
 							Expect(errors.As(err, &exit)).To(BeTrue(), "a failed launch or timeout is not a metadata refusal: %v", err)
+							Expect(exit.ExitCode()).To(Equal(1), "the CLI must exit normally through its error path")
+							Expect(stdout).To(BeEmpty(), "a refused query or insert must not return rows or a success result")
 							Expect(stderr).To(ContainSubstring("Primary key for DOCS can generate more than one entry"))
 							audit("old Go " + sql)
 						} else {
@@ -275,11 +277,11 @@ func partitionProbeTemplate(name string, partitioned, indexed bool) *metadata.Re
 func partitionProbeJavaRefusal(err error) {
 	var je *JavaError
 	Expect(errors.As(err, &je)).To(BeTrue(), "a transport failure is not a metadata refusal: %v", err)
+	fmt.Fprintf(GinkgoWriter, "Java refusal: SQLSTATE=%q class=%s message=%q\n", je.SQLState, je.ExceptionFullClass, je.Message)
 	// FunctionKeyExpression.create/fromProto and RecordMetaDataBuilder.loadProto
 	// in 4.14.2.0 throw/wrap this root cause before any table can be used.
 	Expect(je.ExceptionFullClass).To(Equal("com.apple.foundationdb.record.metadata.expressions.KeyExpression$InvalidExpressionException"))
 	Expect(je.Message).To(Equal("Function not defined"))
-	fmt.Fprintf(GinkgoWriter, "Java refusal: SQLSTATE=%q class=%s message=%q\n", je.SQLState, je.ExceptionFullClass, je.Message)
 }
 
 func partitionProbeSnapshot(ctx context.Context) []fdb.KeyValue {
@@ -299,5 +301,8 @@ func partitionProbeOldGo(ctx context.Context, binary, clusterFile, path, sql str
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
+	if ctx.Err() != nil {
+		err = ctx.Err()
+	}
 	return stdout.String(), stderr.String(), err
 }
