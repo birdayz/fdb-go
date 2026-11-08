@@ -90,7 +90,7 @@ var _ = Describe("Bug Bounty Round 3", func() {
 	// whose GROUPING column is null when the grouped column is not".
 	//
 	// It is worth recording why it stayed unpinned long after it was fixed. The
-	// maintainer was repointed at evaluateGroupingKeysNotNull, but the function
+	// maintainer was repointed at evaluateCountedEntriesNotNull, but the function
 	// carrying the bug was left in the tree with its tests still asserting the
 	// PRE-FIX semantics as correct — and every COUNT_NOT_NULL spec used Ungrouped
 	// or GroupAll, i.e. groupingCount == 0, where the whole key and the grouped
