@@ -9,10 +9,17 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/antlr4-go/antlr/v4"
+
+	"fdb.dev/internal/unicode15"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/parser"
+	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/query/expr"
 )
 
 // parseCacheQuery runs sql with args on c and returns its single BIGINT column.
@@ -147,8 +154,10 @@ func TestParseCacheIsBounded(t *testing.T) {
 }
 
 // A compiled binding walk replays the walk it was compiled from: the cache
-// text, equivalence and literal bindings of a cached program equal those of a
-// fresh compile, for parameters, runtime literals, NULL and non-runtime sites.
+// text, equivalence, literal bindings and constants of a fresh compile and of
+// a cached program equal those of the interleaved walk it replaced
+// (referenceQueryBindings), for parameters, runtime literals, NULL and
+// non-runtime sites.
 func TestBindingProgramReplaysTheWalk(t *testing.T) {
 	t.Parallel()
 	for _, sql := range []string{
@@ -165,20 +174,24 @@ func TestBindingProgramReplaysTheWalk(t *testing.T) {
 			t.Fatalf("%s: bind: %v", sql, err)
 		}
 		var programs statementPrograms
-		fresh, releaseFresh, err := normalizeQueryBindingsWith(root, nil, nil)
+		want, releaseWant, err := referenceQueryBindings(root, true)
 		if err != nil {
-			t.Fatalf("%s: %v", sql, err)
+			t.Fatalf("%s: reference: %v", sql, err)
 		}
-		releaseFresh()
-		for run := range 2 {
-			got, releaseGot, err := normalizeQueryBindingsWith(root, nil, &programs)
+		releaseWant()
+		if want.text == "" || len(want.literals) == 0 {
+			t.Fatalf("%s: the reference walk bound nothing: %q %v", sql, want.text, want.literals)
+		}
+		for run, cache := range []*statementPrograms{nil, &programs, &programs} {
+			got, releaseGot, err := normalizeQueryBindingsWith(root, nil, cache)
 			if err != nil {
 				t.Fatalf("%s run %d: %v", sql, run, err)
 			}
 			releaseGot()
-			if got.text != fresh.text || got.equivalence != fresh.equivalence ||
-				fmt.Sprint(got.literals) != fmt.Sprint(fresh.literals) || fmt.Sprint(got.constants) != fmt.Sprint(fresh.constants) {
-				t.Fatalf("%s run %d:\n got %q %q %v\nwant %q %q %v", sql, run, got.text, got.equivalence, got.literals, fresh.text, fresh.equivalence, fresh.literals)
+			if got.text != want.text || got.equivalence != want.equivalence ||
+				fmt.Sprint(got.literals) != fmt.Sprint(want.literals) || fmt.Sprint(got.constants) != fmt.Sprint(want.constants) {
+				t.Fatalf("%s run %d:\n got %q %q %v %v\nwant %q %q %v %v", sql, run,
+					got.text, got.equivalence, got.literals, got.constants, want.text, want.equivalence, want.literals, want.constants)
 			}
 		}
 		if len(programs.m) != 1 {
@@ -186,4 +199,134 @@ func TestBindingProgramReplaysTheWalk(t *testing.T) {
 		}
 		release()
 	}
+}
+
+// referenceQueryBindings is the binding walk as normalizeQueryBindings ran it
+// before it was compiled into a program (one interleaved walk of the tree):
+// the oracle the compiled program's replay must match. Its bindings are
+// released with the returned func, as the code under test's are.
+func referenceQueryBindings(tree antlr.ParseTree, runtimeTop bool) (queryBindings, func(), error) {
+	result := queryBindings{constants: make(map[string]any), pins: literalPins{}}
+	var text, equivalence strings.Builder
+	byValue := make(map[string]int)
+	type replacement struct {
+		token antlr.Token
+		value values.Value
+	}
+	var replaced []replacement
+	var refs []*values.ConstantObjectValue
+	release := func() {
+		for _, ref := range refs {
+			expr.ForgetSpecializable(ref)
+		}
+		for _, old := range replaced {
+			if old.value == nil {
+				expr.UnbindParameter(old.token)
+			} else {
+				expr.BindParameter(old.token, old.value)
+			}
+		}
+	}
+	appendText := func(s string) {
+		if text.Len() != 0 {
+			text.WriteByte(' ')
+		}
+		text.WriteString(s)
+	}
+	bind := func(token antlr.Token, v values.Value, runtime bool) {
+		var exact strings.Builder
+		writeLengthPrefixed(&exact, v.Type().String())
+		writeBindingKey(&exact, constantPayload(v))
+		position := len(result.literals)
+		literal := queryLiteralBinding{typeName: v.Type().String(), valueKey: exact.String(), equalTo: position}
+		switch v.Type().Code() {
+		case values.TypeCodeNull, values.TypeCodeBoolean, values.TypeCodeFloat, values.TypeCodeDouble:
+			runtime = false
+		}
+		if !runtime {
+			literal.exact = true
+			result.literals = append(result.literals, literal)
+			equivalence.WriteByte('E')
+			writeLengthPrefixed(&equivalence, exact.String())
+			return
+		}
+		if first, exists := byValue[exact.String()]; exists {
+			literal.equalTo = first
+		} else {
+			byValue[exact.String()] = position
+		}
+		result.literals = append(result.literals, literal)
+		result.constants[strconv.Itoa(position)] = constantPayload(v)
+		id := strconv.Itoa(literal.equalTo)
+		equivalence.WriteByte('R')
+		writeLengthPrefixed(&equivalence, v.Type().String())
+		writeLengthPrefixed(&equivalence, id)
+		old, _ := expr.BoundParameter(token)
+		replaced = append(replaced, replacement{token: token, value: old})
+		ref := values.NewConstantObjectValue(queryConstantsAlias, id, v.Type())
+		refs = append(refs, ref)
+		pins := result.pins
+		expr.BindSpecializableParameter(token, ref, v, func() { pins[position] = true })
+	}
+	var walk func(antlr.Tree, bool) error
+	walk = func(node antlr.Tree, runtime bool) error {
+		switch n := node.(type) {
+		case *antlrgen.LimitClauseContext, *antlrgen.InListContext:
+			runtime = false
+		case *antlrgen.ScalarFunctionCallContext:
+			if n.ScalarFunctionName().GetStart().GetTokenType() == antlrgen.RelationalParserCOALESCE {
+				runtime = false
+			}
+		case *antlrgen.OrderByExpressionContext:
+			if _, positional := selectListPosition(n.Expression()); positional {
+				runtime = false
+			}
+		case *antlrgen.GroupByItemContext:
+			if _, positional := selectListPosition(n.Expression()); positional {
+				runtime = false
+			}
+		case *antlrgen.PreparedStatementParameterContext:
+			if value, ok := expr.BoundParameter(n.GetStart()); ok {
+				bind(n.GetStart(), value, runtime)
+			}
+		case antlrgen.IConstantContext:
+			if runtime {
+				value, err := expr.ResolveLiteral(n)
+				if err != nil {
+					if mapped := mapPredicateWalkError(err); mapped != nil {
+						return mapped
+					}
+					return err
+				}
+				if value.Type().Code() != values.TypeCodeNull {
+					bind(n.GetStart(), value, true)
+					appendText("?")
+					return nil
+				}
+			}
+		}
+		if terminal, ok := node.(antlr.TerminalNode); ok {
+			token := terminal.GetSymbol()
+			if token != nil && token.GetTokenType() != antlr.TokenEOF {
+				spelling := token.GetText()
+				if foldsInCacheText(token.GetTokenType()) {
+					spelling = unicode15.ToUpperString(spelling)
+				}
+				appendText(spelling)
+			}
+			return nil
+		}
+		for i := 0; i < node.GetChildCount(); i++ {
+			if err := walk(node.GetChild(i), runtime); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := walk(tree, runtimeTop); err != nil {
+		release()
+		return queryBindings{}, func() {}, err
+	}
+	result.text, result.equivalence = text.String(), equivalence.String()
+	return result, release, nil
 }
