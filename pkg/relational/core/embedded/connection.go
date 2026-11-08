@@ -362,8 +362,9 @@ type embeddedTx struct {
 	// transaction reuses one open store per subspace instead of rebuilding it
 	// per page.
 	//
-	// Per-page rebuilding is free in auto-commit — each page is its own
-	// transaction and the store must be rebuilt anyway — and stops being free
+	// Per-page rebuilding is free in auto-commit — each page after the first is
+	// its own transaction and the store must be rebuilt anyway (the first
+	// reuses the planner's, statement_read.go) — and stops being free
 	// the moment pages share one transaction: each Open() reads the store
 	// header, so an N-page in-transaction SELECT would spend N header reads
 	// out of the same 5-second window the query itself is competing for. The

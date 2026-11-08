@@ -50,6 +50,9 @@ func (c *EmbeddedConnection) stmtReadAgeBound() time.Duration {
 // It is not an explicit transaction: no other statement sees it, the planner
 // does not treat it as a single read version (later pages run their own
 // transactions, as before), and nothing outside the statement can resume it.
+// Java's auto-commit statement instead reads its whole result in one
+// transaction (AbstractEmbeddedStatement.java:71-95, RecordLayerResultSet.java:
+// 91-98); DIVERGENCES.md, "Auto-commit SELECT", records the difference.
 // The first page commits it, which persists a store header the open wrote
 // (checkPossiblyRebuild), before the page's rows are published. A retryable
 // failure anywhere in it ends it, and the failed work reruns in a fresh,
