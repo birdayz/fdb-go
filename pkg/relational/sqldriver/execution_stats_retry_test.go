@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/embedded"
@@ -93,6 +94,9 @@ func TestExecutionStats_RetryIsCountedAndCharged(t *testing.T) {
 				Set(api.OptExecutionScannedRowsLimit, pageRetryScanLimit).
 				Build())
 			ec.SetExecutionStatsLogger(capture)
+			// Page one always shares its statement's transaction, so each
+			// ordinal lands on the same page in every run.
+			setStatementReadMaxAge(t, ec, time.Hour)
 		})
 
 		if armAt >= 0 {
