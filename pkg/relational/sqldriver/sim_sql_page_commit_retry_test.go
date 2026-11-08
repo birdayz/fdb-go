@@ -297,7 +297,10 @@ func openRetryOnceSchema(t *testing.T, seed uint64, tableDDL string) (*sql.DB, *
 }
 
 // seedPageRetryRows fills the table and returns a connection whose per-page scan
-// budget forces pagination.
+// budget forces pagination. Its first pages always join their statements'
+// shared transactions, so a sweep calibrated by an unarmed run's Transact
+// calls counts the same transactions as its armed runs, however slowly
+// either plans.
 func seedPageRetryRows(t *testing.T, ctx context.Context, db *sql.DB) *sql.Conn {
 	t.Helper()
 	for i := 0; i < pageRetryRows; i++ {
@@ -307,7 +310,17 @@ func seedPageRetryRows(t *testing.T, ctx context.Context, db *sql.DB) *sql.Conn 
 		ec.SetOptions(api.NewOptionsBuilder().
 			Set(api.OptExecutionScannedRowsLimit, pageRetryScanLimit).
 			Build())
+		setStatementReadMaxAge(t, ec, time.Hour)
 	})
+}
+
+// setStatementReadMaxAge sets how long after a statement's first read its first
+// page may still join the statement's shared transaction.
+func setStatementReadMaxAge(t *testing.T, ec *embedded.EmbeddedConnection, maxAge time.Duration) {
+	t.Helper()
+	if !connknob.SetStatementReadMaxAge(ec, maxAge) {
+		t.Fatal("connknob refused the embedded connection")
+	}
 }
 
 // TestPageRetry_ContinuationAdvancesOnlyOnTransactionSuccess is the regression:
@@ -629,6 +642,11 @@ func TestPageRetry_StoreOpenWritesHeaderOnStaleFormat(t *testing.T) {
 // reaches it exactly as a concurrent writer's conflict would. The retry must
 // re-drain page one, not resume past it.
 //
+// The connection's age bound is a nanosecond, so page one runs in a DB.Run of
+// its own, at ordinal 0: the separate-first-page shape.
+// TestPageRetry_SharedFirstPageCommitFailureReturnsEveryRowOnce fails page one
+// in the statement's shared transaction instead.
+//
 // This is the arm that makes the defect shipped rather than latent: on the
 // unfixed code the caller loses page one's rows and the query reports success.
 func TestPageRetry_StaleFormatHeaderPageSurvivesCommitConflict(t *testing.T) {
@@ -637,6 +655,15 @@ func TestPageRetry_StaleFormatHeaderPageSurvivesCommitConflict(t *testing.T) {
 	db, backend := openRetryOnceSchema(t, 9600,
 		"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id))")
 	conn := seedPageRetryRows(t, ctx, db)
+	capture := &retryStatsCapture{}
+	if err := conn.Raw(func(driverConn any) error {
+		ec := driverConn.(*embedded.EmbeddedConnection)
+		setStatementReadMaxAge(t, ec, time.Nanosecond)
+		ec.SetExecutionStatsLogger(capture)
+		return nil
+	}); err != nil {
+		t.Fatalf("Raw: %v", err)
+	}
 
 	rdb := recordlayer.NewFDBDatabaseWithBackend(backend)
 	ss := pageRetrySchemaSubspace(t, ctx, rdb)
@@ -651,6 +678,7 @@ func TestPageRetry_StaleFormatHeaderPageSurvivesCommitConflict(t *testing.T) {
 	for warm.Next() {
 	}
 	warm.Close()
+	capture.takeOne(t)
 
 	// Now make the store look like one an older writer left behind. The next
 	// statement's FIRST page must upgrade the header, which is what gives that
@@ -692,6 +720,11 @@ func TestPageRetry_StaleFormatHeaderPageSurvivesCommitConflict(t *testing.T) {
 		t.Fatalf("the store is still at format version %d after the query: no page upgraded the "+
 			"header, so no page carried writes and the injected not_committed was taken by the "+
 			"read-only fast path. This test armed nothing", got)
+	}
+	// A commit consumed the fault: exactly one page attempt was rerun.
+	if s := capture.takeOne(t); s.Retries != 1 {
+		t.Fatalf("the statement retried %d page attempts, want 1: the not_committed armed at "+
+			"page one's DB.Run was not consumed by its commit", s.Retries)
 	}
 
 	var missing, duplicated []int64
@@ -745,14 +778,12 @@ func sharedFirstPageRun(t *testing.T, ctx context.Context, seed uint64, query st
 	capture := &retryStatsCapture{}
 	if err := conn.Raw(func(driverConn any) error {
 		ec := driverConn.(*embedded.EmbeddedConnection)
-		if err := ec.ResetSession(ctx); err != nil { // keeps the scan limit SetOptions installed
+		// ResetSession keeps the scan limit SetOptions installed and the
+		// connection's age bound.
+		if err := ec.ResetSession(ctx); err != nil {
 			return err
 		}
 		ec.SetExecutionStatsLogger(capture)
-		// Page one joins the shared transaction however long planning takes.
-		if !connknob.SetStatementReadMaxAge(ec, time.Hour) {
-			return errors.New("connknob.SetStatementReadMaxAge refused the embedded connection")
-		}
 		return nil
 	}); err != nil {
 		t.Fatalf("Raw: %v", err)
