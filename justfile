@@ -37,7 +37,9 @@ ensure-buf:
 generate: ensure-buf generate-mocks generate-parser generate-fdb generate-cli-example generate-unicode15
     rm -rf gen/
     .tools/buf generate
-    # genotelv1 builds against gen/, so it runs after buf generate.
+    bazelisk run //:gazelle
+    # genotelv1 builds against gen/, so it runs once gazelle has given gen/
+    # its BUILD files.
     just generate-otelv1
     bazelisk run //:gazelle
 
