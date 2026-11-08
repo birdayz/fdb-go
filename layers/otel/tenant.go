@@ -203,8 +203,8 @@ const loadRecordsBatch = 64
 
 // loadRecords loads the records of pks, keeping up to loadRecordsBatch loads
 // in flight, and visits them in pks order, charging each record's key and
-// value bytes. A missing record is passed as nil; the caller decides whether
-// that is corruption.
+// value bytes to work (nil charges nothing). A missing record is passed as
+// nil; the caller decides whether that is corruption.
 func loadRecords(store *recordlayer.FDBRecordStore, op string, pks []tuple.Tuple, work *queryWork, visit func(i int, rec *recordlayer.FDBStoredRecord[proto.Message]) error) error {
 	futures := make([]recordlayer.PendingRead[*recordlayer.FDBStoredRecord[proto.Message]], 0, min(loadRecordsBatch, len(pks)))
 	for lo := 0; lo < len(pks); lo += loadRecordsBatch {
@@ -222,8 +222,10 @@ func loadRecords(store *recordlayer.FDBRecordStore, op string, pks []tuple.Tuple
 			if rec != nil {
 				n = int64(rec.KeySize + rec.ValueSize)
 			}
-			if err := work.charge(op, n); err != nil {
-				return err
+			if work != nil {
+				if err := work.charge(op, n); err != nil {
+					return err
+				}
 			}
 			if err := visit(lo+i, rec); err != nil {
 				return err
@@ -269,10 +271,7 @@ func newRelTable(ts *otelsql.TenantStore, op, table string, indexes []string) (r
 
 // key is the primary key of the row whose key columns are values.
 func (t *relTable) key(values ...tuple.TupleElement) tuple.Tuple {
-	if t.rt.PrimaryKeyHasRecordTypePrefix() {
-		return append(tuple.Tuple{t.rt.GetRecordTypeKey()}, values...)
-	}
-	return tuple.Tuple(values)
+	return recordTypeKey(t.rt, values...)
 }
 
 // recordKeyBytes bounds the byte length of a row's record keys.
@@ -280,35 +279,21 @@ func (t *relTable) recordKeyBytes(pk tuple.Tuple) int {
 	return t.recordsPrefix + packedTupleLen(pk) + relRecordSuffixBytes
 }
 
-// loadStoredRows loads the stored rows of pks, keeping up to loadRecordsBatch
-// loads in flight, and visits them in pks order with the stored record and
-// its row, both nil when absent. A stored record that is not a T, the
-// compiled row of table, fails as ownership.
+// loadStoredRows loads the stored rows of pks uncharged (loadRecords) and
+// visits them in pks order with the stored record and its row, both nil when
+// absent. A stored record that is not a T, the compiled row of table, fails
+// as ownership.
 func loadStoredRows[T proto.Message](store *recordlayer.FDBRecordStore, op, table string, pks []tuple.Tuple, visit func(i int, old *recordlayer.FDBStoredRecord[proto.Message], row T) error) error {
-	futures := make([]recordlayer.PendingRead[*recordlayer.FDBStoredRecord[proto.Message]], 0, min(loadRecordsBatch, len(pks)))
-	for lo := 0; lo < len(pks); lo += loadRecordsBatch {
-		futures = futures[:0]
-		for i := lo; i < min(lo+loadRecordsBatch, len(pks)); i++ {
-			futures = append(futures, store.LoadRecordAsync(pks[i], nil))
-		}
-		for k, f := range futures {
-			old, err := f.Get()
-			if err != nil {
-				return err
-			}
-			var row T
-			if old != nil {
-				var ok bool
-				if row, ok = old.Record.(T); !ok {
-					return failf("ownership", op, "%s record is not the compiled row", table)
-				}
-			}
-			if err := visit(lo+k, old, row); err != nil {
-				return err
+	return loadRecords(store, op, pks, nil, func(i int, old *recordlayer.FDBStoredRecord[proto.Message]) error {
+		var row T
+		if old != nil {
+			var ok bool
+			if row, ok = old.Record.(T); !ok {
+				return failf("ownership", op, "%s record is not the compiled row", table)
 			}
 		}
-	}
-	return nil
+		return visit(i, old, row)
+	})
 }
 
 // configureRecordTimeout bounds the whole transaction including OnError retries.

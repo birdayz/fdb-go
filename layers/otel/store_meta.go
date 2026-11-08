@@ -22,10 +22,16 @@ func tableKey(store *recordlayer.FDBRecordStore, op, table string, values ...tup
 	if rt == nil {
 		return nil, failf("ownership", op, "%s is not in the store's metadata", table)
 	}
+	return recordTypeKey(rt, values...), nil
+}
+
+// recordTypeKey is the primary key of a row of rt whose key columns are
+// values.
+func recordTypeKey(rt *recordlayer.RecordType, values ...tuple.TupleElement) tuple.Tuple {
 	if rt.PrimaryKeyHasRecordTypePrefix() {
-		return append(tuple.Tuple{rt.GetRecordTypeKey()}, values...), nil
+		return append(tuple.Tuple{rt.GetRecordTypeKey()}, values...)
 	}
-	return tuple.Tuple(values), nil
+	return tuple.Tuple(values)
 }
 
 // loadStoreMeta reads STORE_META row name in store's transaction; ok is false
