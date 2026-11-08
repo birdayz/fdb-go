@@ -83,7 +83,7 @@ func (s *sqlDriver) Connect(_ context.Context, _ backend.DataSourceInstanceSetti
 	if err != nil {
 		return nil, err
 	}
-	db := sql.OpenDB(conn)
+	db := sql.OpenDB(&statsConnector{Connector: conn, m: s.d.deps.metrics, labels: s.d.labels(queryTypeSQL, s.schema)})
 	db.SetMaxOpenConns(sqlMaxOpenConns)
 	db.SetMaxIdleConns(sqlMaxIdleConns)
 	s.db = db
@@ -100,9 +100,13 @@ func (s *sqlDriver) Macros() sqlutil.Macros { return macros }
 
 func (s *sqlDriver) Converters() []sqlutil.Converter { return converters() }
 
-// MutateResponse links trace_id columns to the trace query (RFC §7).
+// MutateResponse marks format=logs results that have the data-plane fields
+// as log-lines frames and links trace_id columns to the trace query (RFC §7).
 func (s *sqlDriver) MutateResponse(_ context.Context, frames data.Frames) (data.Frames, error) {
 	for _, f := range frames {
+		if f.Meta != nil && f.Meta.PreferredVisualization == data.VisTypeLogs {
+			markLogLines(f)
+		}
 		for _, field := range f.Fields {
 			if strings.EqualFold(field.Name, "trace_id") {
 				addLinks(field, traceLink(s.d.inst, s.schema))
@@ -234,4 +238,43 @@ func listSchemas(ctx context.Context, db *sql.DB, policy schemaPolicy) ([]string
 	}
 	slices.Sort(out)
 	return out, nil
+}
+
+// logLinesFields are the data-plane log-lines fields and the types each must
+// have; timestamp and body are required.
+var logLinesFields = map[string]func(data.FieldType) bool{
+	"timestamp": data.FieldType.Time,
+	"body":      isString,
+	"severity":  isString,
+	"id":        isString,
+	"labels":    func(t data.FieldType) bool { return t.NonNullableType() == data.FieldTypeJSON },
+}
+
+func isString(t data.FieldType) bool { return t.NonNullableType() == data.FieldTypeString }
+
+// markLogLines types f as a data-plane log-lines frame when its columns
+// (matched case-insensitively, as unquoted SQL names are upper case) include
+// timestamp and body and every log-lines column has its type; the columns
+// then take the contract's names. Otherwise f keeps only the logs hint.
+func markLogLines(f *data.Frame) {
+	found := map[string]*data.Field{}
+	for _, field := range f.Fields {
+		name := strings.ToLower(field.Name)
+		ok, isLogField := logLinesFields[name]
+		if !isLogField {
+			continue
+		}
+		if _, dup := found[name]; dup || !ok(field.Type()) {
+			return
+		}
+		found[name] = field
+	}
+	if found["timestamp"] == nil || found["body"] == nil {
+		return
+	}
+	for name, field := range found {
+		field.Name = name
+	}
+	f.Meta.Type = data.FrameTypeLogLines
+	f.Meta.TypeVersion = data.FrameTypeVersion{0, 0}
 }

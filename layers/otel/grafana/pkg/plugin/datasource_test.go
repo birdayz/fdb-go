@@ -335,3 +335,60 @@ func TestRefLRUInvalidate(t *testing.T) {
 	}
 	c.invalidate("missing", func(string) bool { return true })
 }
+
+// format=logs results become data-plane log-lines frames when they carry
+// timestamp and body of the contract's types; otherwise only the hint stays.
+func TestSQLFormatLogs(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		cols      []string
+		types     []string
+		format    int
+		logLines  bool
+		wantNames string
+	}{
+		{"upper-case columns", []string{"TIMESTAMP", "BODY", "SEVERITY", "ID", "SERVICE"}, []string{"BIGINT", "STRING", "STRING", "STRING", "STRING"}, 2, true, "timestamp,body,severity,id,SERVICE"},
+		{"labels as JSON", []string{"timestamp", "body", "labels"}, []string{"BIGINT", "STRING", "STRUCT"}, 2, true, "timestamp,body,labels"},
+		{"no body", []string{"timestamp", "message"}, []string{"BIGINT", "STRING"}, 2, false, "timestamp,message"},
+		{"no timestamp", []string{"ts", "body"}, []string{"BIGINT", "STRING"}, 2, false, "ts,body"},
+		{"body not a string", []string{"timestamp", "body"}, []string{"BIGINT", "BIGINT"}, 2, false, "timestamp,body"},
+		{"labels not JSON", []string{"timestamp", "body", "labels"}, []string{"BIGINT", "STRING", "STRING"}, 2, false, "timestamp,body,labels"},
+		{"severity not a string", []string{"timestamp", "body", "severity"}, []string{"BIGINT", "STRING", "BIGINT"}, 2, false, "timestamp,body,severity"},
+		{"table format", []string{"timestamp", "body"}, []string{"BIGINT", "STRING"}, 1, false, "timestamp,body"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t, nil)
+			h.sql.answer = func(string, string) fakeResult {
+				row := make([]driver.Value, len(c.cols))
+				for i, typ := range c.types {
+					switch typ {
+					case "BIGINT":
+						row[i] = int64(1_700_000_000_000_000_000)
+					case "STRUCT":
+						row[i] = testStruct{names: []string{"service.name"}, vals: []any{"svc"}}
+					default:
+						row[i] = "x"
+					}
+				}
+				return fakeResult{cols: c.cols, types: c.types, rows: [][]driver.Value{row}}
+			}
+			f := onlyFrame(t, h.query(t, sqlModel("", "SELECT", c.format), backend.TimeRange{}))
+			var names []string
+			for _, fl := range f.Fields {
+				names = append(names, fl.Name)
+			}
+			if got := strings.Join(names, ","); got != c.wantNames {
+				t.Fatalf("names %s, want %s", got, c.wantNames)
+			}
+			if isLog := f.Meta.Type == data.FrameTypeLogLines; isLog != c.logLines {
+				t.Fatalf("meta type %q, want log-lines %v", f.Meta.Type, c.logLines)
+			}
+			if c.format == 2 && f.Meta.PreferredVisualization != data.VisTypeLogs {
+				t.Fatalf("logs hint lost: %+v", f.Meta)
+			}
+		})
+	}
+}

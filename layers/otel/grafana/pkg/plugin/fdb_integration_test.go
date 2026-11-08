@@ -16,6 +16,8 @@ import (
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -199,6 +201,8 @@ func auditKeys(t *testing.T, cluster string) []fdb.KeyValue {
 type itHarness struct {
 	ds      *Datasource
 	cluster string
+	deps    deps
+	reg     *prometheus.Registry
 }
 
 func (h *itHarness) query(t *testing.T, model map[string]any) backend.DataResponse {
@@ -243,7 +247,10 @@ func TestPluginAgainstFDB(t *testing.T) {
 		"defaultSchema": "T1", "allowedSchemas": []string{"T1", "T2"}, "otelMode": "on",
 		"transactionTags": []string{"grafana"},
 	})
-	h := &itHarness{ds: newDatasource(inst, defaultDeps), cluster: cluster}
+	reg := prometheus.NewRegistry()
+	itDeps := defaultDeps()
+	itDeps.metrics = newMetrics(reg)
+	h := &itHarness{ds: newDatasource(inst, itDeps), cluster: cluster, deps: itDeps, reg: reg}
 	t.Cleanup(h.ds.Dispose)
 
 	before := auditKeys(t, cluster)
@@ -261,6 +268,7 @@ func TestPluginAgainstFDB(t *testing.T) {
 	t.Run("resources", func(t *testing.T) { itResources(t, h) })
 	t.Run("sql", func(t *testing.T) { itSQL(t, h) })
 	t.Run("sql_read_only", func(t *testing.T) { itSQLReadOnly(t, h) })
+	t.Run("metrics", func(t *testing.T) { itMetrics(t, h) })
 
 	if after := auditKeys(t, cluster); !slices.EqualFunc(before, after, func(a, b fdb.KeyValue) bool {
 		return bytes.Equal(a.Key, b.Key) && bytes.Equal(a.Value, b.Value)
@@ -315,7 +323,7 @@ func itTraceQuery(t *testing.T, h *itHarness) {
 	}
 	// A tiny budget returns a partial trace with a notice.
 	small := instanceSettings(t, map[string]any{"clusterString": nil, "clusterFilePath": h.cluster, "database": "/OTEL/R_" + strings.ToUpper(itRun), "traceMaxSpans": 2})
-	hs := &itHarness{ds: newDatasource(small, defaultDeps), cluster: h.cluster}
+	hs := &itHarness{ds: newDatasource(small, h.deps), cluster: h.cluster}
 	defer hs.ds.Dispose()
 	f := onlyFrame(t, hs.query(t, map[string]any{"queryType": queryTypeTrace, "traceId": hex.EncodeToString(traceIDOf(1))}))
 	if n, _ := f.RowLen(); n != 2 || len(f.Meta.Notices) != 1 || !strings.Contains(f.Meta.Notices[0].Text, "traceMaxSpans") {
@@ -323,7 +331,7 @@ func itTraceQuery(t *testing.T, h *itHarness) {
 	}
 	// traceMaxBytes bounds what Grafana receives (the decoded spans).
 	tiny := instanceSettings(t, map[string]any{"clusterString": nil, "clusterFilePath": h.cluster, "database": "/OTEL/R_" + strings.ToUpper(itRun), "traceMaxBytes": 600})
-	ht := &itHarness{ds: newDatasource(tiny, defaultDeps), cluster: h.cluster}
+	ht := &itHarness{ds: newDatasource(tiny, h.deps), cluster: h.cluster}
 	defer ht.ds.Dispose()
 	f = onlyFrame(t, ht.query(t, map[string]any{"queryType": queryTypeTrace, "traceId": hex.EncodeToString(traceIDOf(1))}))
 	if n, _ := f.RowLen(); n >= 3 || len(f.Meta.Notices) != 1 || !strings.Contains(f.Meta.Notices[0].Text, "traceMaxBytes") {
@@ -472,6 +480,19 @@ func itSQL(t *testing.T, h *itHarness) {
 		t.Fatalf("trace_id rendered %q", *v)
 	}
 
+	// format=logs over the LOGS table is a data-plane log-lines frame.
+	r = h.query(t, map[string]any{
+		"queryType": queryTypeSQL, "format": 2,
+		"rawSql": `SELECT effective_ns AS "timestamp", body_text AS "body", severity_text AS "severity", event_id AS "id" FROM logs WHERE $__timeFilter(effective_ns)`,
+	})
+	f = onlyFrame(t, r)
+	if n, _ := f.RowLen(); n != 3 || f.Meta.Type != data.FrameTypeLogLines {
+		t.Fatalf("SQL logs: %d rows, meta %+v", n, f.Meta)
+	}
+	if body, _ := f.FieldByName("body"); body == nil || *body.At(0).(*string) == "" {
+		t.Fatal("SQL logs: no body")
+	}
+
 	// Time series: buckets in ns become a time field for long-to-wide.
 	r = h.query(t, map[string]any{
 		"queryType": queryTypeSQL, "format": 0, "tenant": "T2",
@@ -499,5 +520,75 @@ func itSQLReadOnly(t *testing.T, h *itHarness) {
 		if r.Error == nil || !strings.Contains(r.Error.Error(), code) {
 			t.Errorf("%s: want %s, got %v", stmt, code, r.Error)
 		}
+	}
+}
+
+// sumCounter adds every series of the counter name whose labels include want.
+func sumCounter(t *testing.T, reg *prometheus.Registry, name string, want prometheus.Labels) float64 {
+	t.Helper()
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := 0.0
+	for _, f := range families {
+		if f.GetName() != name {
+			continue
+		}
+	series:
+		for _, m := range f.GetMetric() {
+			have := map[string]string{}
+			for _, lp := range m.GetLabel() {
+				have[lp.GetName()] = lp.GetValue()
+			}
+			for k, v := range want {
+				if have[k] != v {
+					continue series
+				}
+			}
+			total += m.GetCounter().GetValue()
+		}
+	}
+	return total
+}
+
+// The §9 counters moved for the reads above, under the right labels.
+func itMetrics(t *testing.T, h *itHarness) {
+	m := h.deps.metrics
+	val := func(c *prometheus.CounterVec, l prometheus.Labels) float64 { return testutil.ToFloat64(c.With(l)) }
+	sqlT1 := h.ds.labels(queryTypeSQL, "T1")
+	if val(m.sqlScannedRows, sqlT1) <= 0 || val(m.sqlScannedBytes, sqlT1) <= 0 || val(m.sqlPages, sqlT1) <= 0 {
+		t.Fatalf("SQL scan counters: rows %v bytes %v pages %v", val(m.sqlScannedRows, sqlT1), val(m.sqlScannedBytes, sqlT1), val(m.sqlPages, sqlT1))
+	}
+	if n := val(m.sqlFailures, withLabel(sqlT1, "sqlstate", "0A000")); n != 5 {
+		t.Fatalf("0A000 failures %v, want the 5 refused writes", n)
+	}
+	if n := val(m.sqlFailures, withLabel(sqlT1, "sqlstate", "42703")); n != 1 {
+		t.Fatalf("42703 failures %v", n)
+	}
+	// A statement failing as it executes is counted once, not by both the
+	// statistics hook and QueryContext.
+	before := sumCounter(t, h.reg, "fdb_datasource_sql_failures_total", sqlT1)
+	if r := h.query(t, map[string]any{"queryType": queryTypeSQL, "format": 1, "rawSql": "SELECT start_ns / 0 FROM spans"}); r.Error == nil {
+		t.Fatal("division by zero succeeded")
+	}
+	if after := sumCounter(t, h.reg, "fdb_datasource_sql_failures_total", sqlT1); after != before+1 {
+		t.Fatalf("failures %v → %v, want +1", before, after)
+	}
+	for _, tenant := range []string{"T1", "T2"} {
+		tr := h.ds.labels(queryTypeTrace, tenant)
+		if val(m.readBytes, tr) <= 0 || val(m.decodedBytes, tr) <= 0 {
+			t.Fatalf("%s trace bytes %v decoded %v", tenant, val(m.readBytes, tr), val(m.decodedBytes, tr))
+		}
+	}
+	tr1 := h.ds.labels(queryTypeTrace, "T1")
+	for _, reason := range []string{otel.TraceReasonMaxSpans, otel.TraceReasonMaxDecodedBytes} {
+		if val(m.truncations, withLabel(tr1, "reason", reason)) < 1 {
+			t.Fatalf("no %s truncation counted", reason)
+		}
+	}
+	ts := h.ds.labels(queryTypeTraceSearch, "T1")
+	if val(m.candidates, ts) <= 0 || val(m.readBytes, ts) <= 0 || val(m.decodedBytes, ts) <= 0 {
+		t.Fatalf("search candidates %v bytes %v decoded %v", val(m.candidates, ts), val(m.readBytes, ts), val(m.decodedBytes, ts))
 	}
 }

@@ -28,3 +28,8 @@ just grafana-test    # go vet + go test inside this module only
 - `plugin/trace.go`, `search.go`, `logs.go`, `links.go`: OTel frames.
 - `plugin/resources.go`: tenants, attribute-keys, attribute-values, completion.
 - `plugin/health.go`: open cluster, `SELECT 1`, OTel store layout.
+- `plugin/metrics.go`: RFC §9 counters `fdb_datasource_*` on the SDK's
+  Prometheus registry, labelled by datasource UID, query type and tenant:
+  SQL scanned rows and bytes, pages and failures by SQLSTATE (every statement
+  on the tenant's pool, health and completion included); OTel candidates,
+  read and decoded bytes, trace truncations by reason, reader re-opens.

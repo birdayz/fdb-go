@@ -62,7 +62,7 @@ func (d *Datasource) queryTrace(ctx context.Context, pc backend.PluginContext, q
 	}
 	var rss []*tracepb.ResourceSpans
 	var stats otel.TraceReadStats
-	err = d.withReader(ctx, tenant, func(r otelReader) error {
+	err = d.withReader(ctx, queryTypeTrace, tenant, func(r otelReader) error {
 		var err error
 		rss, stats, err = r.TraceOTLP(ctx, id, d.traceBudget())
 		return err
@@ -70,6 +70,7 @@ func (d *Datasource) queryTrace(ctx context.Context, pc backend.PluginContext, q
 	if err != nil {
 		return backend.DataResponse{}, err
 	}
+	d.deps.metrics.traceRead(d.labels(queryTypeTrace, tenant), stats)
 	frame, err := traceFrame(rss)
 	if err != nil {
 		return backend.DataResponse{}, err

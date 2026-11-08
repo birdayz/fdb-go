@@ -55,7 +55,7 @@ func (d *Datasource) queryLogs(ctx context.Context, pc backend.PluginContext, q 
 	}
 
 	var recs []otel.LogRecord
-	err = d.withReader(ctx, tenant, func(r otelReader) error {
+	err = d.withReader(ctx, queryTypeLogs, tenant, func(r otelReader) error {
 		var err error
 		if traceID != "" {
 			recs, err = r.QueryLogsByTrace(ctx, traceID, spanID)

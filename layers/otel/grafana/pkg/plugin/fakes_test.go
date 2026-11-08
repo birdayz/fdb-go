@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/prometheus/client_golang/prometheus"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 
 	"fdb.dev/layers/otel"
@@ -255,6 +256,7 @@ type harness struct {
 	openErr   error
 	readerErr map[string]error
 	opens     map[string]int
+	m         *metrics
 	fdbOpens  int
 	fdbCloses int
 	readerNew func(schema string) *fakeReader
@@ -317,7 +319,9 @@ func newHarness(t testing.TB, jsonData map[string]any) *harness {
 			return r, nil
 		},
 		newConnector: h.sql.factory,
+		metrics:      newMetrics(prometheus.NewRegistry()),
 	}
+	h.m = d.metrics
 	h.ds = newDatasource(instanceSettings(t, jsonData), d)
 	t.Cleanup(h.ds.Dispose)
 	return h

@@ -7,6 +7,7 @@ import (
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
+	"github.com/prometheus/client_golang/prometheus"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 
 	"fdb.dev/layers/otel"
@@ -52,9 +53,9 @@ func (d *Datasource) queryTraceSearch(ctx context.Context, pc backend.PluginCont
 	}
 	var frame *data.Frame
 	var notices []data.Notice
-	err = d.withReader(ctx, tenant, func(r otelReader) error {
+	err = d.withReader(ctx, queryTypeTraceSearch, tenant, func(r otelReader) error {
 		var err error
-		frame, notices, err = d.search(ctx, r, m.Mode, spanAttrs, logAttrs, timeRange(q.TimeRange), limit)
+		frame, notices, err = d.search(ctx, r, d.labels(queryTypeTraceSearch, tenant), m.Mode, spanAttrs, logAttrs, timeRange(q.TimeRange), limit)
 		return err
 	})
 	if err != nil {
@@ -67,8 +68,9 @@ func (d *Datasource) queryTraceSearch(ctx context.Context, pc backend.PluginCont
 	return backend.DataResponse{Frames: data.Frames{frame}}, nil
 }
 
-// search runs one search mode on r and builds Tempo's search table.
-func (d *Datasource) search(ctx context.Context, r otelReader, mode string, spanAttrs, logAttrs []otel.Attribute, window otel.TimeRange, limit int) (*data.Frame, []data.Notice, error) {
+// search runs one search mode on r and builds Tempo's search table; its
+// reads count under labels.
+func (d *Datasource) search(ctx context.Context, r otelReader, labels prometheus.Labels, mode string, spanAttrs, logAttrs []otel.Attribute, window otel.TimeRange, limit int) (*data.Frame, []data.Notice, error) {
 	var notices []data.Notice
 	var hits []searchHit
 	switch mode {
@@ -77,6 +79,7 @@ func (d *Datasource) search(ctx context.Context, r otelReader, mode string, span
 		if err != nil {
 			return nil, nil, err
 		}
+		d.deps.metrics.otelRead(labels, page.Candidates, page.Bytes, 0)
 		hits = groupSpans(page.Spans)
 		if len(page.Continuation) > 0 {
 			notices = append(notices, data.Notice{Severity: data.NoticeSeverityInfo, Text: fmt.Sprintf("showing the newest %d matching spans; narrow the time range or raise the limit for more", limit)})
@@ -86,6 +89,7 @@ func (d *Datasource) search(ctx context.Context, r otelReader, mode string, span
 		if err != nil {
 			return nil, nil, err
 		}
+		d.deps.metrics.otelRead(labels, res.Candidates, res.Bytes, 0)
 		for _, h := range res.Hits {
 			seen := map[string]bool{}
 			for _, ws := range h.Witnesses {
@@ -101,18 +105,20 @@ func (d *Datasource) search(ctx context.Context, r otelReader, mode string, span
 		if err != nil {
 			return nil, nil, err
 		}
+		d.deps.metrics.otelRead(labels, res.Candidates, res.Bytes, 0)
 		hits, notices = topHits(res, limit, d.cfg.SearchLimit)
 	case modeTime:
 		res, err := r.Time(ctx, window)
 		if err != nil {
 			return nil, nil, err
 		}
+		d.deps.metrics.otelRead(labels, res.Candidates, res.Bytes, 0)
 		hits, notices = topHits(res, limit, d.cfg.SearchLimit)
 	}
 
 	frame := searchFrame(hits)
 	if len(hits) <= summaryHitLimit {
-		if err := d.addSummaries(ctx, r, frame, hits); err != nil {
+		if err := d.addSummaries(ctx, r, labels, frame, hits); err != nil {
 			return nil, nil, err
 		}
 	} else {
@@ -217,16 +223,17 @@ func searchFrame(hits []searchHit) *data.Frame {
 
 // addSummaries reads each hit's trace for its root service, name, start
 // and duration (Tempo's traceService, traceName, traceDuration).
-func (d *Datasource) addSummaries(ctx context.Context, r otelReader, frame *data.Frame, hits []searchHit) error {
+func (d *Datasource) addSummaries(ctx context.Context, r otelReader, labels prometheus.Labels, frame *data.Frame, hits []searchHit) error {
 	services := make([]*string, len(hits))
 	names := make([]*string, len(hits))
 	durations := make([]*float64, len(hits))
 	startField, _ := frame.FieldByName("startTime")
 	for i, h := range hits {
-		rss, _, err := r.TraceOTLP(ctx, h.traceID, d.traceBudget())
+		rss, stats, err := r.TraceOTLP(ctx, h.traceID, d.traceBudget())
 		if err != nil {
 			return err
 		}
+		d.deps.metrics.traceRead(labels, stats)
 		sum, ok := summarize(rss)
 		if !ok {
 			continue

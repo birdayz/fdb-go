@@ -9,6 +9,7 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/datasource"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/instancemgmt"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"fdb.dev/layers/otel"
 )
@@ -26,14 +27,17 @@ const (
 	attributeCacheMaxLen = 1024
 )
 
-// deps are the I/O entry points; tests substitute fakes.
+// deps are the I/O entry points and the metrics sink; tests substitute fakes.
 type deps struct {
 	openFDB      fdbOpener
 	openReader   readerOpener
 	newConnector connectorFactory
+	metrics      *metrics
 }
 
-var defaultDeps = deps{openFDB: openFDB, openReader: openReader, newConnector: newConnector}
+func defaultDeps() deps {
+	return deps{openFDB: openFDB, openReader: openReader, newConnector: newConnector, metrics: processMetrics()}
+}
 
 // Datasource is one datasource instance: one FDB database, per-tenant SQL
 // pools and OTel readers, all closed by Dispose.
@@ -67,7 +71,7 @@ var (
 // I/O: invalid settings and an unreachable cluster surface through
 // CheckHealth and queries, with the failing step named.
 func NewDatasource(_ context.Context, s backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
-	return newDatasource(s, defaultDeps), nil
+	return newDatasource(s, defaultDeps()), nil
 }
 
 func newDatasource(s backend.DataSourceInstanceSettings, d deps) *Datasource {
@@ -168,7 +172,7 @@ func (d *Datasource) readerFor(ctx context.Context, tenant string) (otelReader, 
 // withReader runs fn on the tenant's reader. A store whose metadata changed
 // since the reader opened fails stale: the reader is re-opened and fn retried
 // once (RFC §8, D12).
-func (d *Datasource) withReader(ctx context.Context, tenant string, fn func(otelReader) error) error {
+func (d *Datasource) withReader(ctx context.Context, queryType, tenant string, fn func(otelReader) error) error {
 	for attempt := 0; ; attempt++ {
 		r, release, err := d.readerFor(ctx, tenant)
 		if err != nil {
@@ -177,6 +181,7 @@ func (d *Datasource) withReader(ctx context.Context, tenant string, fn func(otel
 		err = fn(r)
 		var stale *otel.StaleMetadataError
 		if attempt == 0 && errors.As(err, &stale) {
+			d.deps.metrics.readerReopens.With(d.labels(queryType, tenant)).Inc()
 			d.readers.invalidate(tenant, func(x otelReader) bool { return x == r })
 			release()
 			continue
@@ -184,6 +189,11 @@ func (d *Datasource) withReader(ctx context.Context, tenant string, fn func(otel
 		release()
 		return err
 	}
+}
+
+// labels are the metric labels of one query type on one tenant.
+func (d *Datasource) labels(queryType, tenant string) prometheus.Labels {
+	return prometheus.Labels{"datasource": d.inst.UID, "query_type": queryType, "tenant": tenant}
 }
 
 // traceBudget bounds a trace read: traceMaxBytes is what Grafana receives

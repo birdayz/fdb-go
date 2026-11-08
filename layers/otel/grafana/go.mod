@@ -7,6 +7,7 @@ require (
 	github.com/grafana/grafana-plugin-sdk-go v0.298.0
 	github.com/grafana/sqlds/v4 v4.2.7
 	github.com/magefile/mage v1.17.2
+	github.com/prometheus/client_golang v1.24.1
 	go.opentelemetry.io/proto/otlp v1.11.1
 	golang.org/x/net v0.61.0
 	google.golang.org/protobuf v1.36.12
@@ -69,6 +70,7 @@ require (
 	github.com/jszwedko/go-datemath v0.1.1-0.20260113213115-7f666eef0523 // indirect
 	github.com/klauspost/compress v1.20.1 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.1 // indirect
+	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/magiconair/properties v1.8.10 // indirect
 	github.com/mattetti/filebuffer v1.0.1 // indirect
@@ -105,7 +107,6 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/planetscale/vtprotobuf v0.6.1-0.20250313105119-ba97887b0a25 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
-	github.com/prometheus/client_golang v1.24.1 // indirect
 	github.com/prometheus/client_model v0.6.3 // indirect
 	github.com/prometheus/common v0.72.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect

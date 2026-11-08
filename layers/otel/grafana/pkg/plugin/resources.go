@@ -174,7 +174,7 @@ func (d *Datasource) attributeLookup(ctx context.Context, kind string, a attrReq
 	}
 	var vals []string
 	var truncated bool
-	err := d.withReader(ctx, a.tenant, func(r otelReader) error {
+	err := d.withReader(ctx, "attribute-"+kind, a.tenant, func(r otelReader) error {
 		var err error
 		vals, truncated, err = read(r)
 		return err
